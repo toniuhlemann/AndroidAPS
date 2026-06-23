@@ -573,6 +573,8 @@ open class OpenAPSAutoISFPlugin @Inject constructor(
                     put("carb_ratio", oapsProfile.carb_ratio)
                     put("profile_percentage", profile_percentage)
                     put("iob_threshold_percent", iobThresholdPercent)
+                    put("name", profileFunction.getProfileName())
+                    put("name_remaining", profileFunction.getProfileNameWithRemainingTime())
                 })
                 gsAisf?.let { gs ->
                     put("glucose", JSONObject().apply {
