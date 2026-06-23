@@ -582,11 +582,15 @@ open class OpenAPSAutoISFPlugin @Inject constructor(
                     put("bgBrake_ISF_weight", bgBrake_ISF_weight)
                     put("dura_ISF_weight", dura_ISF_weight)
                 })
+                // Match the AAPS overview header exactly: calculateFromTreatmentsAndTemps is the
+                // same calc the header uses (iobArray[0] is the SMB-decision array and reports a
+                // different basaliob). Fall back to iobData if the profile is momentarily null.
+                val headerIob = runCatching { profileFunction.getProfile()?.let { iobCobCalculator.calculateFromTreatmentsAndTemps(now, it) } }.getOrNull()
                 put("iob", JSONObject().apply {
-                    put("net", iobData.iob)
-                    put("basal", iobData.basaliob)
-                    put("bolus", iobData.iob - iobData.basaliob)
-                    put("activity", iobData.activity)
+                    put("net", headerIob?.iob ?: iobData.iob)
+                    put("basal", headerIob?.basaliob ?: iobData.basaliob)
+                    put("bolus", (headerIob?.iob ?: iobData.iob) - (headerIob?.basaliob ?: iobData.basaliob))
+                    put("activity", headerIob?.activity ?: iobData.activity)
                 })
                 put("device", JSONObject().apply {
                     put("reservoir", activePlugin.activePump.reservoirLevel)
