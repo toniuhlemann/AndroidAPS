@@ -575,6 +575,7 @@ open class OpenAPSAutoISFPlugin @Inject constructor(
                     put("iob_threshold_percent", iobThresholdPercent)
                     put("name", profileFunction.getProfileName())
                     put("name_remaining", profileFunction.getProfileNameWithRemainingTime())
+                    put("enable_autoISF", autoIsfWeights)
                 })
                 gsAisf?.let { gs ->
                     put("glucose", JSONObject().apply {
