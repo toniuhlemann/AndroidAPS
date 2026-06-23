@@ -1,6 +1,7 @@
 import org.gradle.kotlin.dsl.debugImplementation
 import java.text.SimpleDateFormat
 import java.util.Date
+import java.util.Properties
 
 plugins {
     alias(libs.plugins.ksp)
@@ -133,6 +134,27 @@ android {
             versionName = Versions.appVersion + "-aapsclient"
             manifestPlaceholders["appIcon"] = "@mipmap/ic_blueowl"
             manifestPlaceholders["appIconRound"] = "@mipmap/ic_blueowl"
+        }
+    }
+
+    // IOB Action: sign builds with your own keystore (values in keystore.properties,
+    // gitignored). With the file present, debug + release are signed with that key so the
+    // patched APK keeps the SAME signature as your installed AAPS → installs over it.
+    // Without the file, nothing changes (default debug signing).
+    val iobKeystoreProps = rootProject.file("keystore.properties")
+    if (iobKeystoreProps.exists()) {
+        val kp = Properties().apply { iobKeystoreProps.inputStream().use { load(it) } }
+        signingConfigs {
+            create("iobaction") {
+                storeFile = file(kp.getProperty("storeFile"))
+                storePassword = kp.getProperty("storePassword")
+                keyAlias = kp.getProperty("keyAlias")
+                keyPassword = kp.getProperty("keyPassword")
+            }
+        }
+        buildTypes {
+            getByName("debug") { signingConfig = signingConfigs.getByName("iobaction") }
+            getByName("release") { signingConfig = signingConfigs.getByName("iobaction") }
         }
     }
 
