@@ -576,7 +576,23 @@ open class OpenAPSAutoISFPlugin @Inject constructor(
                     put("name", profileFunction.getProfileName())
                     put("name_remaining", profileFunction.getProfileNameWithRemainingTime())
                     put("enable_autoISF", autoIsfWeights)
+                    put("current_basal", oapsProfile.current_basal)
+                    put("bgAccel_ISF_weight", bgAccel_ISF_weight)
+                    put("pp_ISF_weight", pp_ISF_weight)
+                    put("bgBrake_ISF_weight", bgBrake_ISF_weight)
+                    put("dura_ISF_weight", dura_ISF_weight)
                 })
+                put("iob", JSONObject().apply {
+                    put("net", iobData.iob)
+                    put("basal", iobData.basaliob)
+                    put("bolus", iobData.iob - iobData.basaliob)
+                    put("activity", iobData.activity)
+                })
+                put("device", JSONObject().apply {
+                    put("reservoir", activePlugin.activePump.reservoirLevel)
+                    put("battery", activePlugin.activePump.batteryLevel)
+                })
+                put("carbsReq", lastAPSResult?.carbsReq)
                 gsAisf?.let { gs ->
                     put("glucose", JSONObject().apply {
                         put("bgAcceleration", gs.bgAcceleration)
