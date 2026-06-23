@@ -549,6 +549,55 @@ open class OpenAPSAutoISFPlugin @Inject constructor(
         autoIsfValues.timestamp = now
         //aapsLogger.debug(LTag.APS, "autoIsfValues to write contains: $autoIsfValues")
         disposable += persistenceLayer.insertOrUpdateAutoIsfValues(autoIsfValues).subscribe()
+        // IOB Action native-viewer export — write-only, fully guarded, never affects dosing.
+        runCatching {
+            val activeTt = persistenceLayer.getTemporaryTargetActiveAt(now)
+            val gsAisf = glucoseStatus as? app.aaps.core.interfaces.aps.GlucoseStatusAutoIsf
+            IobActionExporter.write(JSONObject().apply {
+                put("ts", now)
+                put("aps", lastAPSResult?.json() ?: JSONObject())
+                put("autoIsf", JSONObject().apply {
+                    put("acce", autoIsfValues.acceIsf)
+                    put("bg", autoIsfValues.bgIsf)
+                    put("pp", autoIsfValues.ppIsf)
+                    put("dura", autoIsfValues.duraIsf)
+                    put("final", autoIsfValues.finalIsf)
+                    put("iobThEffectiveU", autoIsfValues.iobThEffective)
+                })
+                put("profile", JSONObject().apply {
+                    put("max_iob", oapsProfile.max_iob)
+                    put("sens", oapsProfile.sens)
+                    put("target_bg", oapsProfile.target_bg)
+                    put("min_bg", oapsProfile.min_bg)
+                    put("max_bg", oapsProfile.max_bg)
+                    put("carb_ratio", oapsProfile.carb_ratio)
+                    put("profile_percentage", profile_percentage)
+                    put("iob_threshold_percent", iobThresholdPercent)
+                })
+                gsAisf?.let { gs ->
+                    put("glucose", JSONObject().apply {
+                        put("bgAcceleration", gs.bgAcceleration)
+                        put("corrSqu", gs.corrSqu)
+                        put("delta", gs.delta)
+                        put("shortAvgDelta", gs.shortAvgDelta)
+                        put("longAvgDelta", gs.longAvgDelta)
+                        put("duraISFminutes", gs.duraISFminutes)
+                        put("duraISFaverage", gs.duraISFaverage)
+                    })
+                }
+                put("meal", JSONObject().apply {
+                    put("mealCOB", mealData.mealCOB)
+                    put("carbs", mealData.carbs)
+                    put("slopeFromMaxDeviation", mealData.slopeFromMaxDeviation)
+                })
+                activeTt?.let { tt ->
+                    put("tt", JSONObject().apply {
+                        put("target", tt.lowTarget)
+                        put("remainingMin", (tt.timestamp + tt.duration - now) / 60000L)
+                    })
+                }
+            })
+        }
         //val autoIsfRecords = persistenceLayer.getAutoIsfValuesFromTime(now-100000L)
         //aapsLogger.debug(LTag.APS, "autoIsfValues records read contain: $autoIsfRecords")
         rxBus.send(EventOpenAPSUpdateGui())

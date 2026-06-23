@@ -33,3 +33,6 @@ wear/pumpcontrol/*
 /buildSrc/.kotlin
 .claude/settings.local.json
 .claude/CLAUDE_COMMANDS.md
+
+# IOB Action local signing (secrets)
+keystore.properties
