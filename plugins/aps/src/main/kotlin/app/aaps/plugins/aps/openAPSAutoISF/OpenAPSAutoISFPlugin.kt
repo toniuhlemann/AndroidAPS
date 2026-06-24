@@ -564,6 +564,13 @@ open class OpenAPSAutoISFPlugin @Inject constructor(
                     put("final", autoIsfValues.finalIsf)
                     put("iobThEffectiveU", autoIsfValues.iobThEffective)
                 })
+                put("smb", JSONObject().apply {
+                    put("ratio", smbRatio)                        // effective SMB delivery ratio this cycle
+                    put("ratio_fixed", smb_delivery_ratio)
+                    put("ratio_min", smb_delivery_ratio_min)
+                    put("ratio_max", smb_delivery_ratio_max)
+                    put("ratio_bg_range", smb_delivery_ratio_bg_range)
+                })
                 put("profile", JSONObject().apply {
                     put("max_iob", oapsProfile.max_iob)
                     put("sens", oapsProfile.sens)
