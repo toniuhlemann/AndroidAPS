@@ -606,19 +606,23 @@ open class OpenAPSAutoISFPlugin @Inject constructor(
                 put("carbsReq", lastAPSResult?.carbsReq)
                 gsAisf?.let { gs ->
                     put("glucose", JSONObject().apply {
-                        put("bgAcceleration", gs.bgAcceleration)
-                        put("corrSqu", gs.corrSqu)
-                        put("delta", gs.delta)
-                        put("shortAvgDelta", gs.shortAvgDelta)
-                        put("longAvgDelta", gs.longAvgDelta)
-                        put("duraISFminutes", gs.duraISFminutes)
-                        put("duraISFaverage", gs.duraISFaverage)
+                        // NaN/Infinity guard: the autoISF fit values (bgAcceleration/corrSqu) can
+                        // be non-finite on a degenerate (flat) BG window, and JSONObject.put(NaN)
+                        // THROWS — which (caught silently) would freeze the whole export. Skip
+                        // non-finite values so the export keeps writing every cycle.
+                        put("bgAcceleration", gs.bgAcceleration.takeIf { it.isFinite() })
+                        put("corrSqu", gs.corrSqu.takeIf { it.isFinite() })
+                        put("delta", gs.delta.takeIf { it.isFinite() })
+                        put("shortAvgDelta", gs.shortAvgDelta.takeIf { it.isFinite() })
+                        put("longAvgDelta", gs.longAvgDelta.takeIf { it.isFinite() })
+                        put("duraISFminutes", gs.duraISFminutes.takeIf { it.isFinite() })
+                        put("duraISFaverage", gs.duraISFaverage.takeIf { it.isFinite() })
                     })
                 }
                 put("meal", JSONObject().apply {
-                    put("mealCOB", mealData.mealCOB)
+                    put("mealCOB", mealData.mealCOB.takeIf { it.isFinite() })
                     put("carbs", mealData.carbs)
-                    put("slopeFromMaxDeviation", mealData.slopeFromMaxDeviation)
+                    put("slopeFromMaxDeviation", mealData.slopeFromMaxDeviation.takeIf { it.isFinite() })
                 })
                 activeTt?.let { tt ->
                     put("tt", JSONObject().apply {
