@@ -557,12 +557,15 @@ open class OpenAPSAutoISFPlugin @Inject constructor(
                 put("ts", now)
                 put("aps", lastAPSResult?.json() ?: JSONObject())
                 put("autoIsf", JSONObject().apply {
-                    put("acce", autoIsfValues.acceIsf)
-                    put("bg", autoIsfValues.bgIsf)
-                    put("pp", autoIsfValues.ppIsf)
-                    put("dura", autoIsfValues.duraIsf)
-                    put("final", autoIsfValues.finalIsf)
-                    put("iobThEffectiveU", autoIsfValues.iobThEffective)
+                    // NaN-guard (same reason as the glucose block): these factors are derived
+                    // from the fit values and can be non-finite on a degenerate window; a NaN put
+                    // throws and freezes the whole export.
+                    put("acce", autoIsfValues.acceIsf.takeIf { it.isFinite() })
+                    put("bg", autoIsfValues.bgIsf.takeIf { it.isFinite() })
+                    put("pp", autoIsfValues.ppIsf.takeIf { it.isFinite() })
+                    put("dura", autoIsfValues.duraIsf.takeIf { it.isFinite() })
+                    put("final", autoIsfValues.finalIsf.takeIf { it.isFinite() })
+                    put("iobThEffectiveU", autoIsfValues.iobThEffective.takeIf { it.isFinite() })
                 })
                 put("smb", JSONObject().apply {
                     put("ratio", smbRatio)                        // effective SMB delivery ratio this cycle

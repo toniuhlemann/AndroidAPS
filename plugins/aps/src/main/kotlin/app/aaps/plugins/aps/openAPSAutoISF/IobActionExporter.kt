@@ -32,6 +32,12 @@ object IobActionExporter {
                 target.writeText(json.toString())
                 tmp.delete()
             }
+            // Bump the mtime explicitly. On Android's emulated storage the rename keeps a STALE
+            // mtime, and a SAF/ContentResolver reader (the companion app) caches file content
+            // keyed on that mtime — so without this it keeps reading OLD export content until it
+            // restarts and clears its resolver cache (the "IOB lags / needs app restart" bug).
+            // Forcing the mtime makes every write visible to readers immediately.
+            target.setLastModified(System.currentTimeMillis())
         }
     }
 }
