@@ -69,6 +69,13 @@ object IobActionCoreExporter {
                     })
                 }
                 put("profile", JSONObject().apply {
+                    // Profile target/ISF/IC are loop-INDEPENDENT (same getters the AAPS widget uses
+                    // live) — so a day/night profile switch (98<->97) shows immediately even on an
+                    // idle loop, instead of waiting for the next determineBasal to write state.json.
+                    // (An oref-OVERRIDDEN target is genuinely loop-only → stays in the state file.)
+                    put("target_bg", profile.getTargetMgdl().takeIf { it.isFinite() })
+                    put("sens", profile.getProfileIsfMgdl().takeIf { it.isFinite() })
+                    put("carb_ratio", profile.getIc().takeIf { it.isFinite() })
                     put("current_basal", profile.getBasal(now).takeIf { it.isFinite() })
                     put("name", profileFunction.getProfileName())
                     put("name_remaining", profileFunction.getProfileNameWithRemainingTime())
