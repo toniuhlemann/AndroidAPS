@@ -6,6 +6,9 @@ import app.aaps.core.interfaces.iob.IobCobCalculator
 import app.aaps.core.interfaces.plugin.ActivePlugin
 import app.aaps.core.interfaces.profile.ProfileFunction
 import app.aaps.core.interfaces.utils.DateUtil
+import app.aaps.core.keys.DoubleKey
+import app.aaps.core.keys.IntKey
+import app.aaps.core.keys.interfaces.Preferences
 import app.aaps.core.objects.extensions.convertedToAbsolute
 import app.aaps.core.objects.extensions.plannedRemainingMinutes
 import org.json.JSONObject
@@ -35,6 +38,7 @@ object IobActionCoreExporter {
         persistenceLayer: PersistenceLayer,
         profileFunction: ProfileFunction,
         activePlugin: ActivePlugin,
+        preferences: Preferences,
         dateUtil: DateUtil
     ) {
         runCatching {
@@ -79,6 +83,14 @@ object IobActionCoreExporter {
                     put("current_basal", profile.getBasal(now).takeIf { it.isFinite() })
                     put("name", profileFunction.getProfileName())
                     put("name_remaining", profileFunction.getProfileNameWithRemainingTime())
+                    // autoISF SETTINGS (not outputs) — pure preferences that the per-TT automations
+                    // flip on every target switch, so they belong live in the core. The COMPUTED
+                    // factors (acce/pp/dura/final, iobThEffectiveU) stay loop-side (state.json).
+                    put("iob_threshold_percent", preferences.get(IntKey.ApsAutoIsfIobThPercent))
+                    put("bgAccel_ISF_weight", preferences.get(DoubleKey.ApsAutoIsfBgAccelWeight))
+                    put("pp_ISF_weight", preferences.get(DoubleKey.ApsAutoIsfPpWeight))
+                    put("bgBrake_ISF_weight", preferences.get(DoubleKey.ApsAutoIsfBgBrakeWeight))
+                    put("dura_ISF_weight", preferences.get(DoubleKey.ApsAutoIsfDuraWeight))
                 })
                 put("device", JSONObject().apply {
                     put("reservoir", activePlugin.activePump.reservoirLevel)
