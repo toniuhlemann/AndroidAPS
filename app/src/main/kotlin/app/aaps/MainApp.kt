@@ -25,8 +25,11 @@ import app.aaps.core.interfaces.aps.Loop
 import app.aaps.core.interfaces.configuration.Config
 import app.aaps.core.interfaces.configuration.ConfigBuilder
 import app.aaps.core.interfaces.db.PersistenceLayer
+import app.aaps.core.interfaces.db.ProcessedTbrEbData
+import app.aaps.core.interfaces.iob.IobCobCalculator
 import app.aaps.core.interfaces.logging.AAPSLogger
 import app.aaps.core.interfaces.logging.LTag
+import app.aaps.core.interfaces.plugin.ActivePlugin
 import app.aaps.core.interfaces.plugin.PluginBase
 import app.aaps.core.interfaces.profile.ProfileFunction
 import app.aaps.core.interfaces.resources.ResourceHelper
@@ -111,6 +114,11 @@ class MainApp : DaggerApplication() {
     @Inject lateinit var loop: Loop
     @Inject lateinit var profileFunction: ProfileFunction
     @Inject lateinit var fabricPrivacy: FabricPrivacy
+    // Live core-snapshot deps for the IOB Action viewer (already-bound interfaces, same ones the
+    // AAPS widget injects) — passed to the plain IobActionCoreExporter object on the 60s heartbeat.
+    @Inject lateinit var iobCobCalculator: IobCobCalculator
+    @Inject lateinit var processedTbrEbData: ProcessedTbrEbData
+    @Inject lateinit var activePlugin: ActivePlugin
     lateinit var appComponent: AppComponent
 
     private var handler = Handler(HandlerThread(this::class.simpleName + "Handler").also { it.start() }.looper)
@@ -202,6 +210,11 @@ class MainApp : DaggerApplication() {
         refreshWidget = Runnable {
                 handler.postDelayed(refreshWidget, 60000)
                 Widget.updateWidget(this@MainApp, "ScheduleEveryMin")
+                // Live core snapshot for the IOB Action viewer on the SAME 60s heartbeat the
+                // AAPS widget uses — keeps IOB/COB/TBR/TT fresh even when the loop hasn't run.
+                app.aaps.plugins.aps.openAPSAutoISF.IobActionCoreExporter.snapshot(
+                    iobCobCalculator, processedTbrEbData, persistenceLayer, profileFunction, activePlugin, dateUtil
+                )
         }
         handler.postDelayed(refreshWidget, 60000)
         config.appInitialized = true
