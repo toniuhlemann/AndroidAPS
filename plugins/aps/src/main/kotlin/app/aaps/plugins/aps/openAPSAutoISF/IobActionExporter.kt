@@ -15,18 +15,34 @@ import java.io.File
  * influence determine-basal / dosing. The JSON is written atomically (temp + rename) so the
  * reader never sees a half-written file. Output: <ext>/Documents/aapsLogs/iobaction_state.json
  * (same dir AAPS already writes its logs to, so it is readable by the companion app).
+ *
+ * Two separate files, two separate writers (no shared-file read-modify-write race):
+ *  - iobaction_state.json: the FULL autoISF/loop state, written by the determineBasal hook
+ *    (loop-gated — only as fresh as the last loop cycle).
+ *  - iobaction_core.json:  a small LIVE core snapshot (BG-independent: IOB/COB/TBR/TT/device),
+ *    written every 60s from the live calculators by [IobActionCoreExporter], decoupled from the
+ *    loop — mirrors how the AAPS-native widget stays fresh. The viewer merges both, preferring
+ *    the (always-fresh) core for the live fields and falling back to the loop file for the
+ *    autoISF-only fields (evBG/predBGs/bgAccel/dura/iobTH/…).
  */
 object IobActionExporter {
 
     private const val FILE_NAME = "iobaction_state.json"
+    private const val CORE_FILE_NAME = "iobaction_core.json"
 
-    fun write(json: JSONObject) {
+    /** Full loop/autoISF state — called from the determineBasal hook (loop-gated). */
+    fun write(json: JSONObject) = writeFile(json, FILE_NAME)
+
+    /** Live core snapshot — called every 60s from [IobActionCoreExporter] (loop-independent). */
+    fun writeCore(json: JSONObject) = writeFile(json, CORE_FILE_NAME)
+
+    private fun writeFile(json: JSONObject, fileName: String) {
         runCatching {
             val dir = File(Environment.getExternalStorageDirectory(), "Documents/aapsLogs")
             if (!dir.exists()) dir.mkdirs()
-            val tmp = File(dir, "$FILE_NAME.tmp")
+            val tmp = File(dir, "$fileName.tmp")
             tmp.writeText(json.toString())
-            val target = File(dir, FILE_NAME)
+            val target = File(dir, fileName)
             if (!tmp.renameTo(target)) {
                 // Fallback if rename across the same dir failed for any reason.
                 target.writeText(json.toString())
