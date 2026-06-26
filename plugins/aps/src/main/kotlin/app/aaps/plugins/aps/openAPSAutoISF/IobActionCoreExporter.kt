@@ -92,15 +92,22 @@ object IobActionCoreExporter {
                     put("bgBrake_ISF_weight", preferences.get(DoubleKey.ApsAutoIsfBgBrakeWeight))
                     put("dura_ISF_weight", preferences.get(DoubleKey.ApsAutoIsfDuraWeight))
                 })
-                put("device", JSONObject().apply {
-                    put("reservoir", activePlugin.activePump.reservoirLevel)
-                    put("battery", activePlugin.activePump.batteryLevel)
-                })
-                activeTt?.let { tt ->
-                    put("tt", JSONObject().apply {
-                        put("target", tt.lowTarget)
-                        put("remainingMin", (tt.timestamp + tt.duration - now) / 60000L)
+                // device/tt each in their own runCatching + finite-guarded Doubles, so a NaN
+                // reservoir (disconnected pump) or odd TT value can never abort the WHOLE 60s
+                // snapshot (which would drop the still-good IOB/COB/TBR for that cycle).
+                runCatching {
+                    put("device", JSONObject().apply {
+                        activePlugin.activePump.reservoirLevel.takeIf { it.isFinite() }?.let { put("reservoir", it) }
+                        put("battery", activePlugin.activePump.batteryLevel)
                     })
+                }
+                activeTt?.let { tt ->
+                    runCatching {
+                        put("tt", JSONObject().apply {
+                            tt.lowTarget.takeIf { it.isFinite() }?.let { put("target", it) }
+                            put("remainingMin", (tt.timestamp + tt.duration - now) / 60000L)
+                        })
+                    }
                 }
             }
             IobActionExporter.writeCore(json)
