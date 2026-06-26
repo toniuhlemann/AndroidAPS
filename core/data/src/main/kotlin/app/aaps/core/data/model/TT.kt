@@ -39,7 +39,17 @@ data class TT(
         ACTIVITY("Activity"),
         EATING_SOON("Eating Soon"),
         AUTOMATION("Automation"),
-        WEAR("Wear")
+        WEAR("Wear"),
+        // IOB-Action native viewer — tool-specific TT reasons. Appended at the END so existing
+        // ordinals/names are untouched (the DB stores reason as a String → no migration). Lets the
+        // companion app's NS POST show the SPECIFIC reason ("Peak-Stop", "Rebound-Schutz", …) in the
+        // AAPS Treatments tab instead of the generic "Automation".
+        PEAK_STOP("Peak-Stop"),
+        CORRECTION("Korrektur"),
+        REBOUND("Rebound-Schutz"),
+        BRAKE("Bremse"),
+        MEAL("Mahlzeit"),
+        LOW_PROTECT("Tief-Schutz")
         ;
 
         companion object {

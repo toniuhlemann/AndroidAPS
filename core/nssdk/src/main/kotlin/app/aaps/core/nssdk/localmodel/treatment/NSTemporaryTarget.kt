@@ -36,7 +36,15 @@ data class NSTemporaryTarget(
         ACTIVITY("Activity"),
         EATING_SOON("Eating Soon"),
         AUTOMATION("Automation"),
-        WEAR("Wear")
+        WEAR("Wear"),
+        // IOB-Action native viewer — tool-specific TT reasons (must mirror TT.Reason so the NS import
+        // maps the POSTed reason text to the matching value instead of falling back to CUSTOM).
+        PEAK_STOP("Peak-Stop"),
+        CORRECTION("Korrektur"),
+        REBOUND("Rebound-Schutz"),
+        BRAKE("Bremse"),
+        MEAL("Mahlzeit"),
+        LOW_PROTECT("Tief-Schutz")
         ;
 
         companion object {

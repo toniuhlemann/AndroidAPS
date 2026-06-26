@@ -240,8 +240,9 @@ class TranslatorImpl @Inject internal constructor(
         TT.Reason.ACTIVITY     -> rh.gs(R.string.activity)
         TT.Reason.AUTOMATION   -> rh.gs(R.string.automation)
         TT.Reason.WEAR         -> rh.gs(R.string.wear)
-
-        else                   -> rh.gs(R.string.unknown)
+        // Tool-specific reasons (IOB-Action native): show their own text directly (Peak-Stop, Rebound-
+        // Schutz, …) — future-proof: any future appended Reason value shows its text without a branch.
+        else                   -> reason?.text ?: rh.gs(R.string.unknown)
     }
 
     override fun translate(mode: RM.Mode?): String = when (mode) {

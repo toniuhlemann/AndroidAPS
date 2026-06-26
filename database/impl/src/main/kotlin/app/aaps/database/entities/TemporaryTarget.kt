@@ -48,7 +48,14 @@ data class TemporaryTarget(
         ACTIVITY,
         EATING_SOON,
         AUTOMATION,
-        WEAR
+        WEAR,
+        // IOB-Action native viewer — tool-specific reasons (appended at END; stored by .name → safe).
+        PEAK_STOP,
+        CORRECTION,
+        REBOUND,
+        BRAKE,
+        MEAL,
+        LOW_PROTECT
         ;
     }
 }
