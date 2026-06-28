@@ -2,6 +2,7 @@ package app.aaps.plugins.aps.openAPSAutoISF
 
 import app.aaps.core.interfaces.db.PersistenceLayer
 import app.aaps.core.interfaces.db.ProcessedTbrEbData
+import app.aaps.core.interfaces.iob.GlucoseStatusProvider
 import app.aaps.core.interfaces.iob.IobCobCalculator
 import app.aaps.core.interfaces.plugin.ActivePlugin
 import app.aaps.core.interfaces.profile.ProfileFunction
@@ -39,11 +40,16 @@ object IobActionCoreExporter {
         profileFunction: ProfileFunction,
         activePlugin: ActivePlugin,
         preferences: Preferences,
-        dateUtil: DateUtil
+        dateUtil: DateUtil,
+        glucoseStatusProvider: GlucoseStatusProvider
     ) {
         runCatching {
             val now = dateUtil.now()
             val profile = profileFunction.getProfile() ?: return
+            // Live loop BG + deltas (same GlucoseStatus the AAPS overview shows) so the viewer can
+            // display/compare the LOOP basis fresh every 60s — not only the loop-gated state.json
+            // (which lags a cycle). The viewer already parses aps.bg + glucose.delta/shortAvgDelta.
+            val gs = runCatching { glucoseStatusProvider.glucoseStatusData }.getOrNull()
             // Same calc the AAPS overview header / loop export use, so IOB matches exactly.
             val headerIob = runCatching { iobCobCalculator.calculateFromTreatmentsAndTemps(now, profile) }.getOrNull()
             val cob = runCatching { iobCobCalculator.getCobInfo("IobAction core").displayCob }.getOrNull()
@@ -63,7 +69,15 @@ object IobActionCoreExporter {
                     cob?.takeIf { it.isFinite() }?.let { put("COB", it) }
                     tbrRate?.takeIf { it.isFinite() }?.let { put("rate", it) }
                     tbrRemaining?.let { put("duration", it) }
+                    gs?.glucose?.takeIf { it.isFinite() }?.let { put("bg", it) }
                 })
+                gs?.let { g ->
+                    put("glucose", JSONObject().apply {
+                        g.delta.takeIf { it.isFinite() }?.let { put("delta", it) }
+                        g.shortAvgDelta.takeIf { it.isFinite() }?.let { put("shortAvgDelta", it) }
+                        g.longAvgDelta.takeIf { it.isFinite() }?.let { put("longAvgDelta", it) }
+                    })
+                }
                 headerIob?.let { iob ->
                     put("iob", JSONObject().apply {
                         put("net", iob.iob.takeIf { it.isFinite() })
