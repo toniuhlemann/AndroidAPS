@@ -119,6 +119,7 @@ class MainApp : DaggerApplication() {
     @Inject lateinit var iobCobCalculator: IobCobCalculator
     @Inject lateinit var processedTbrEbData: ProcessedTbrEbData
     @Inject lateinit var activePlugin: ActivePlugin
+    @Inject lateinit var glucoseStatusProvider: app.aaps.core.interfaces.iob.GlucoseStatusProvider
     lateinit var appComponent: AppComponent
 
     private var handler = Handler(HandlerThread(this::class.simpleName + "Handler").also { it.start() }.looper)
@@ -213,7 +214,7 @@ class MainApp : DaggerApplication() {
                 // Live core snapshot for the IOB Action viewer on the SAME 60s heartbeat the
                 // AAPS widget uses — keeps IOB/COB/TBR/TT fresh even when the loop hasn't run.
                 app.aaps.plugins.aps.openAPSAutoISF.IobActionCoreExporter.snapshot(
-                    iobCobCalculator, processedTbrEbData, persistenceLayer, profileFunction, activePlugin, preferences, dateUtil
+                    iobCobCalculator, processedTbrEbData, persistenceLayer, profileFunction, activePlugin, preferences, dateUtil, glucoseStatusProvider
                 )
         }
         handler.postDelayed(refreshWidget, 60000)
