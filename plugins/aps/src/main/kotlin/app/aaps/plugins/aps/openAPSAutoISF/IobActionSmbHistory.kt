@@ -31,6 +31,11 @@ object IobActionSmbHistory {
 
     private const val FILE_NAME = "iobaction_smb_history.json"
     private const val WINDOW_MS = 6 * 60 * 60 * 1000L
+    // Only an SMB delivered within this window of `now` is "this cycle" → stamped with the current
+    // factors (exact). An older SMB seen for the FIRST time (empty side file after a fresh start)
+    // pre-dates our tracking — we do NOT know which factors drove it, so we leave them null instead
+    // of fabricating the current ones (which would mis-color the whole 6h history one weight).
+    private const val STAMP_WINDOW_MS = 10 * 60 * 1000L
 
     /** Current-cycle autoISF factors to stamp onto newly seen SMBs. Non-finite values pass as null. */
     data class Factors(
@@ -57,12 +62,14 @@ object IobActionSmbHistory {
         for (smb in dbSmbs.sortedBy { it.tsMs }) {
             if (smb.tsMs < cutoff) continue
             val prev = remembered[smb.tsMs]
-            merged[smb.tsMs] = if (prev != null) {
+            merged[smb.tsMs] = when {
                 // Known SMB → keep its original (deciding-cycle) factor stamp, refresh units.
-                prev.copy(units = smb.units)
-            } else {
-                // New SMB delivered this cycle → stamp with the current cycle's factors.
-                Stamp(smb.tsMs, smb.units, current.acce, current.bg, current.pp, current.dura, current.final)
+                prev != null -> prev.copy(units = smb.units)
+                // New SMB delivered this cycle → stamp with the current cycle's factors (exact).
+                smb.tsMs >= nowMs - STAMP_WINDOW_MS ->
+                    Stamp(smb.tsMs, smb.units, current.acce, current.bg, current.pp, current.dura, current.final)
+                // Pre-existing SMB first seen after a fresh start → unknown driver, leave null.
+                else -> Stamp(smb.tsMs, smb.units, null, null, null, null, null)
             }
         }
         persist(merged.values)
