@@ -14,6 +14,7 @@ import androidx.preference.SwitchPreference
 import app.aaps.core.data.aps.SMBDefaults
 import app.aaps.core.data.configuration.Constants
 import app.aaps.core.data.model.AIV
+import app.aaps.core.data.model.BS
 import app.aaps.core.data.model.GlucoseUnit
 import app.aaps.core.data.model.SC
 import app.aaps.core.data.plugin.PluginType
@@ -82,6 +83,7 @@ import app.aaps.plugins.aps.openAPSSMB.StepService
 import com.google.gson.Gson
 import io.reactivex.rxjava3.disposables.CompositeDisposable
 import io.reactivex.rxjava3.kotlin.plusAssign
+import org.json.JSONArray
 import org.json.JSONObject
 import java.util.Locale
 import javax.inject.Inject
@@ -607,6 +609,44 @@ open class OpenAPSAutoISFPlugin @Inject constructor(
                     put("battery", activePlugin.activePump.batteryLevel)
                 })
                 put("carbsReq", lastAPSResult?.carbsReq)
+                // SMB history with exact autoISF factor attribution (Option b): each delivered SMB
+                // (from the bolus DB, last 6h) carries the factors that drove it, stamped at
+                // delivery. Lets the viewer color SMB bars by dominant weight without tail-parsing
+                // the log. Inner runCatching so a DB/IO hiccup can never break the export.
+                put("smbHistory", runCatching {
+                    val sixHoursAgo = now - 6 * 60 * 60 * 1000L
+                    val dbSmbs = persistenceLayer.getBolusesFromTimeToTime(sixHoursAgo, now, true)
+                        .filter { it.type == BS.Type.SMB && it.isValid && it.amount > 0.0 }
+                        .map { IobActionSmbHistory.SmbIn(it.timestamp, it.amount) }
+                    IobActionSmbHistory.buildAndPersist(
+                        nowMs = now,
+                        dbSmbs = dbSmbs,
+                        current = IobActionSmbHistory.Factors(
+                            acce = autoIsfValues.acceIsf.takeIf { it.isFinite() },
+                            bg = autoIsfValues.bgIsf.takeIf { it.isFinite() },
+                            pp = autoIsfValues.ppIsf.takeIf { it.isFinite() },
+                            dura = autoIsfValues.duraIsf.takeIf { it.isFinite() },
+                            final = autoIsfValues.finalIsf.takeIf { it.isFinite() },
+                        )
+                    )
+                }.getOrNull() ?: JSONArray())
+                // Recent manual bolus + rescue carbs straight from the DB, so the viewer's meal-mode
+                // and rebound-hold logic no longer needs the (then disable-able) glucose/events log.
+                runCatching {
+                    val halfHourAgo = now - 30 * 60 * 1000L
+                    persistenceLayer.getBolusesFromTimeToTime(halfHourAgo, now, false)
+                        .firstOrNull { it.type == BS.Type.NORMAL && it.isValid && it.amount > 0.0 }
+                        ?.let { manual ->
+                            put("manualBolusU", manual.amount)
+                            put("manualBolusAgeMin", ((now - manual.timestamp) / 60000L).toInt())
+                        }
+                    val carbs = persistenceLayer.getCarbsFromTimeToTimeExpanded(halfHourAgo, now, false)
+                        .filter { it.isValid && it.amount > 0.0 }
+                    if (carbs.isNotEmpty()) {
+                        put("rescueCarbsTakenG", carbs.sumOf { minOf(it.amount, 20.0) })
+                        put("rescueCarbsAgeMin", ((now - carbs.maxOf { it.timestamp }) / 60000L).toInt())
+                    }
+                }
                 gsAisf?.let { gs ->
                     put("glucose", JSONObject().apply {
                         // NaN/Infinity guard: the autoISF fit values (bgAcceleration/corrSqu) can
