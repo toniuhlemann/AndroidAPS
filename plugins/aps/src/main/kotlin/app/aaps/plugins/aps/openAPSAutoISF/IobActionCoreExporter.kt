@@ -1,5 +1,6 @@
 package app.aaps.plugins.aps.openAPSAutoISF
 
+import app.aaps.core.interfaces.aps.Loop
 import app.aaps.core.interfaces.db.PersistenceLayer
 import app.aaps.core.interfaces.db.ProcessedTbrEbData
 import app.aaps.core.interfaces.iob.GlucoseStatusProvider
@@ -41,7 +42,8 @@ object IobActionCoreExporter {
         activePlugin: ActivePlugin,
         preferences: Preferences,
         dateUtil: DateUtil,
-        glucoseStatusProvider: GlucoseStatusProvider
+        glucoseStatusProvider: GlucoseStatusProvider,
+        loop: Loop
     ) {
         runCatching {
             val now = dateUtil.now()
@@ -70,6 +72,13 @@ object IobActionCoreExporter {
                     tbrRate?.takeIf { it.isFinite() }?.let { put("rate", it) }
                     tbrRemaining?.let { put("duration", it) }
                     gs?.glucose?.takeIf { it.isFinite() }?.let { put("bg", it) }
+                    // Loop running mode → lets the viewer gate auto-TT writes (closed/LGS = will dose)
+                    // WITHOUT reading the AAPS log. loopClosedOrLgs = the exact dosing-allowed signal.
+                    runCatching {
+                        val rm = loop.runningMode
+                        put("loopMode", rm.name)
+                        put("loopClosedOrLgs", rm.isClosedLoopOrLgs())
+                    }
                 })
                 gs?.let { g ->
                     put("glucose", JSONObject().apply {

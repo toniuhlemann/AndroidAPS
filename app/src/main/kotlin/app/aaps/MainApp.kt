@@ -214,7 +214,7 @@ class MainApp : DaggerApplication() {
                 // Live core snapshot for the IOB Action viewer on the SAME 60s heartbeat the
                 // AAPS widget uses — keeps IOB/COB/TBR/TT fresh even when the loop hasn't run.
                 app.aaps.plugins.aps.openAPSAutoISF.IobActionCoreExporter.snapshot(
-                    iobCobCalculator, processedTbrEbData, persistenceLayer, profileFunction, activePlugin, preferences, dateUtil, glucoseStatusProvider
+                    iobCobCalculator, processedTbrEbData, persistenceLayer, profileFunction, activePlugin, preferences, dateUtil, glucoseStatusProvider, loop
                 )
         }
         handler.postDelayed(refreshWidget, 60000)
