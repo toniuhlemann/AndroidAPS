@@ -640,11 +640,15 @@ open class OpenAPSAutoISFPlugin @Inject constructor(
                             put("manualBolusU", manual.amount)
                             put("manualBolusAgeMin", ((now - manual.timestamp) / 60000L).toInt())
                         }
-                    val carbs = persistenceLayer.getCarbsFromTimeToTimeExpanded(halfHourAgo, now, false)
-                        .filter { it.isValid && it.amount > 0.0 }
-                    if (carbs.isNotEmpty()) {
-                        put("rescueCarbsTakenG", carbs.sumOf { minOf(it.amount, 20.0) })
-                        put("rescueCarbsAgeMin", ((now - carbs.maxOf { it.timestamp }) / 60000L).toInt())
+                    // A rescue is a SMALL carb entry (treating a low). A meal-sized entry (e.g. 45g) is
+                    // NOT a rescue — EXCLUDE it (don't cap-and-mislabel it as "Rescue 20g"). Matches the
+                    // viewer's log-fallback (parseRecentRescueCarbs: g <= maxPerEntryG). The full meal
+                    // is still seen via COB; only the rescue label/offset must not eat a meal entry.
+                    val rescueCarbs = persistenceLayer.getCarbsFromTimeToTimeExpanded(halfHourAgo, now, false)
+                        .filter { it.isValid && it.amount > 0.0 && it.amount <= 20.0 }
+                    if (rescueCarbs.isNotEmpty()) {
+                        put("rescueCarbsTakenG", rescueCarbs.sumOf { it.amount })
+                        put("rescueCarbsAgeMin", ((now - rescueCarbs.maxOf { it.timestamp }) / 60000L).toInt())
                     }
                 }
                 gsAisf?.let { gs ->
