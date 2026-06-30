@@ -634,18 +634,22 @@ open class OpenAPSAutoISFPlugin @Inject constructor(
                 // and rebound-hold logic no longer needs the (then disable-able) glucose/events log.
                 runCatching {
                     val halfHourAgo = now - 30 * 60 * 1000L
-                    persistenceLayer.getBolusesFromTimeToTime(halfHourAgo, now, false)
-                        .firstOrNull { it.type == BS.Type.NORMAL && it.isValid && it.amount > 0.0 }
-                        ?.let { manual ->
-                            put("manualBolusU", manual.amount)
-                            put("manualBolusAgeMin", ((now - manual.timestamp) / 60000L).toInt())
-                        }
-                    // A rescue is a SMALL carb entry (treating a low). A meal-sized entry (e.g. 45g) is
-                    // NOT a rescue — EXCLUDE it (don't cap-and-mislabel it as "Rescue 20g"). Matches the
-                    // viewer's log-fallback (parseRecentRescueCarbs: g <= maxPerEntryG). The full meal
-                    // is still seen via COB; only the rescue label/offset must not eat a meal entry.
+                    val bolusWindowMs = 15 * 60 * 1000L
+                    // Manual (NORMAL) boluses, fetched a bit wider since a meal pre-bolus can precede the
+                    // carb entry. SMBs are excluded (loop auto-dosing, present in a rescue context too).
+                    val normalBoluses = persistenceLayer.getBolusesFromTimeToTime(halfHourAgo - bolusWindowMs, now, false)
+                        .filter { it.type == BS.Type.NORMAL && it.isValid && it.amount > 0.0 }
+                    normalBoluses.firstOrNull { it.timestamp >= halfHourAgo }?.let { manual ->
+                        put("manualBolusU", manual.amount)
+                        put("manualBolusAgeMin", ((now - manual.timestamp) / 60000L).toInt())
+                    }
+                    // RESCUE = carbs WITHOUT an accompanying manual bolus (+/-15min). In HCL, carbs with
+                    // no manual bolus are ALWAYS rescue (eaten because of a low / excess IOB); a real
+                    // meal carries a manual bolus. Robust vs a size cap: a >20g rescue AND a small
+                    // meal-with-bolus both classify correctly. The full meal is still seen via COB.
                     val rescueCarbs = persistenceLayer.getCarbsFromTimeToTimeExpanded(halfHourAgo, now, false)
-                        .filter { it.isValid && it.amount > 0.0 && it.amount <= 20.0 }
+                        .filter { c -> c.isValid && c.amount > 0.0 &&
+                            normalBoluses.none { kotlin.math.abs(it.timestamp - c.timestamp) <= bolusWindowMs } }
                     if (rescueCarbs.isNotEmpty()) {
                         put("rescueCarbsTakenG", rescueCarbs.sumOf { it.amount })
                         put("rescueCarbsAgeMin", ((now - rescueCarbs.maxOf { it.timestamp }) / 60000L).toInt())
