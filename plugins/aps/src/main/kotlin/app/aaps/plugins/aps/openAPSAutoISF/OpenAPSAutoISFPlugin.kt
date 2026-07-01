@@ -576,6 +576,17 @@ open class OpenAPSAutoISFPlugin @Inject constructor(
                     put("ratio_max", smb_delivery_ratio_max)
                     put("ratio_bg_range", smb_delivery_ratio_bg_range)
                 })
+                // Dosing-neutral SMB decision for this cycle (viewer graph markers): wantedU vs
+                // deliveredU + state (delivered/capped/blocked/waiting/none). Computed inside
+                // determine_basal where all vars are in scope, read from the singleton right after.
+                determineBasalAutoISF.lastSmbDecision?.let { d ->
+                    put("smbDecision", JSONObject().apply {
+                        put("wantedU", d.wantedU.takeIf { it.isFinite() })
+                        put("deliveredU", d.deliveredU.takeIf { it.isFinite() })
+                        d.maxBolusU?.takeIf { it.isFinite() }?.let { put("maxBolusU", it) }
+                        put("state", d.state)
+                    })
+                }
                 put("profile", JSONObject().apply {
                     put("max_iob", oapsProfile.max_iob)
                     put("sens", oapsProfile.sens)
