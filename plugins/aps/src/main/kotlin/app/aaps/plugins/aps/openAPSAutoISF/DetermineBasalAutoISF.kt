@@ -35,6 +35,17 @@ class DetermineBasalAutoISF @Inject constructor(
     private val consoleError = mutableListOf<String>()
     private val consoleLog = mutableListOf<String>()
 
+    /**
+     * Dosing-neutral snapshot of the CURRENT cycle's SMB decision, for the IOB Action viewer graph
+     * (SMB delivered/capped/blocked markers). Set inside [determine_basal]; read by the plugin's
+     * export hook right after the call, on the same thread. Pure side-output — it is NEVER read back
+     * into any dosing path, so it cannot influence insulin delivery.
+     */
+    var lastSmbDecision: SmbDecision? = null
+
+    /** wantedU = ungecappte SMB-Wunschmenge (insulinReq*ratio); deliveredU = rT.units after all caps. */
+    data class SmbDecision(val wantedU: Double, val deliveredU: Double, val maxBolusU: Double?, val state: String)
+
     private fun Double.toFixed2(): String = DecimalFormat("0.00#").format(round(this, 2))
 
     fun round_basal(value: Double): Double = value
@@ -161,6 +172,7 @@ class DetermineBasalAutoISF @Inject constructor(
         consoleError.clear()
         consoleError.add(activity_consoleLog)
         consoleLog.clear()
+        lastSmbDecision = null   // reset each cycle → a cycle not reaching the SMB branch reports nothing
         var rT = RT(
             algorithm = APSResult.Algorithm.AUTO_ISF,
             runningAutoIsf = true,
@@ -1040,6 +1052,10 @@ class DetermineBasalAutoISF @Inject constructor(
             rate = round_basal(rate)
             insulinReq = round(insulinReq, 3)
             rT.insulinReq = insulinReq
+            // IOB Action viewer (dosing-neutral): default SMB decision for this cycle. If the SMB
+            // block below is entered it overrides this with the precise state; otherwise (SMB off /
+            // bg<=threshold) a positive insulinReq means SMB was WANTED but suppressed = "blocked".
+            lastSmbDecision = SmbDecision(0.0, 0.0, null, if (insulinReq > 0.0) "blocked" else "none")
             //console.error(iob_data.lastBolusTime);
             //console.error(profile.temptargetSet, target_bg, rT.COB);
             // only allow microboluses with COB or low temp targets, or within DIA hours of a bolus
@@ -1120,6 +1136,28 @@ class DetermineBasalAutoISF @Inject constructor(
                     rT.reason.append("Waiting ${waitingMins.withoutZeros()}m ${waitingSeconds.withoutZeros()}s to microbolus again.")
                 }
                 //rT.reason += ". ";
+
+                // IOB Action viewer (dosing-neutral): the precise SMB decision this cycle. wantedU =
+                // the ungecappte desire (autoISF: insulinReq*ratio); deliveredU = rT.units after all
+                // caps + the SMB-interval gate. wantedFloored removes bolus-increment rounding so a
+                // pure increment round-down isn't mislabelled "capped". Never read back into dosing.
+                run {
+                    val deliveredU = rT.units ?: 0.0
+                    val wantedU = if (autoIsfMode) insulinReq * smb_ratio else Math.min(insulinReq / 2.0, maxBolus)
+                    val wantedFloored = Math.floor(wantedU * roundSMBTo) / roundSMBTo
+                    lastSmbDecision = SmbDecision(
+                        wantedU = round(wantedU, 3),
+                        deliveredU = round(deliveredU, 3),
+                        maxBolusU = maxBolus,
+                        state = when {
+                            deliveredU > 0.0 && deliveredU < wantedFloored - 1e-9 -> "capped"
+                            deliveredU > 0.0                                       -> "delivered"
+                            microBolus > 0.0                                       -> "waiting"   // would deliver, SMB interval not elapsed
+                            insulinReq > 0.0                                       -> "blocked"   // wanted, nothing delivered (too small / iobTH full)
+                            else                                                   -> "none"
+                        }
+                    )
+                }
 
                 // if no zero temp is required, don't return yet; allow later code to set a high temp
                 if (durationReq > 0) {
