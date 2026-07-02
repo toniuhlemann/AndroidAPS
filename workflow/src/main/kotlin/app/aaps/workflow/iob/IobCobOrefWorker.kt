@@ -91,7 +91,11 @@ class IobCobOrefWorker @Inject internal constructor(
             for (i in bucketedData.size - 4 downTo 0) {
                 rxBus.send(EventIobCalculationProgress(CalculationWorkflow.ProgressData.IOB_COB_OREF, 100 - (100.0 * i / bucketedData.size).toInt(), data.cause))
                 if (isStopped) {
-                    aapsLogger.debug(LTag.AUTOSENS) { "Aborting calculation thread (trigger): ${data.reason}" }
+                    // Preserve partial progress so the restarted calculation RESUMES instead of
+                    // restarting from scratch — see the identical fix + rationale in IobCobOref1Worker
+                    // (1-min-CGM livelock after a settings-change full recalc).
+                    data.iobCobCalculator.ads = ads
+                    aapsLogger.debug(LTag.AUTOSENS) { "Aborting calculation thread (trigger): ${data.reason}, keeping ${autosensDataTable.size()} partial entries" }
                     return Result.failure(workDataOf("Error" to "Aborting calculation thread (trigger): ${data.reason}"))
                 }
                 // check if data already exists

@@ -45,9 +45,17 @@ class CalculationWorkflowImpl @Inject constructor(
     override fun stopCalculation(job: String, from: String) {
         aapsLogger.debug(LTag.WORKER, "Stopping calculation thread: $from")
         WorkManager.getInstance(context).cancelUniqueWork(job)
-        val workStatus = WorkManager.getInstance(context).getWorkInfosForUniqueWork(job).get()
-        while (workStatus.isNotEmpty() && workStatus[0].state == WorkInfo.State.RUNNING)
+        // The old wait fetched the WorkInfo list ONCE and then busy-looped on the immutable
+        // snapshot — if it caught state RUNNING the loop never terminated, permanently blocking
+        // the single-threaded historyWorker (a second, independent "loop hangs until reboot"
+        // path besides the 1-min recalc livelock). Re-fetch each iteration + bounded timeout;
+        // any straggler is cancelled by ExistingWorkPolicy.REPLACE anyway and works on a clone.
+        val timeout = SystemClock.elapsedRealtime() + 10_000
+        var workStatus = WorkManager.getInstance(context).getWorkInfosForUniqueWork(job).get()
+        while (workStatus.any { it.state == WorkInfo.State.RUNNING } && SystemClock.elapsedRealtime() < timeout) {
             SystemClock.sleep(100)
+            workStatus = WorkManager.getInstance(context).getWorkInfosForUniqueWork(job).get()
+        }
         aapsLogger.debug(LTag.WORKER, "Calculation thread stopped: $from")
     }
 

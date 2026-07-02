@@ -94,7 +94,17 @@ class IobCobOref1Worker(
             for (i in bucketedData.size - 4 downTo 0) {
                 rxBus.send(EventIobCalculationProgress(CalculationWorkflow.ProgressData.IOB_COB_OREF, 100 - (100.0 * i / bucketedData.size).toInt(), data.cause))
                 if (isStopped) {
-                    aapsLogger.debug(LTag.AUTOSENS, "Aborting calculation thread (trigger): ${data.reason}")
+                    // Preserve partial progress so the restarted calculation RESUMES (the per-bucket
+                    // "existing != null -> continue" check above skips already-computed buckets)
+                    // instead of restarting from scratch. Without this a 1-min CGM cancels+restarts
+                    // the post-settings-change full recalc every 60s forever (livelock): the loop's
+                    // InvokeLoopWorker is never reached and determineBasal never runs again until a
+                    // reboot. Each entry in autosensDataTable is only put() after its bucket is fully
+                    // computed, so the written-back table is always consistent ("correct up to time X"
+                    // - the same state every in-progress recalc has today). The loop itself is still
+                    // only invoked after a COMPLETE pass (EventAutosensCalculationFinished below).
+                    data.iobCobCalculator.ads = ads
+                    aapsLogger.debug(LTag.AUTOSENS, "Aborting calculation thread (trigger): ${data.reason}, keeping ${autosensDataTable.size()} partial entries")
                     return Result.failure(workDataOf("Error" to "Aborting calculation thread (trigger): ${data.reason}"))
                 }
                 // check if data already exists
