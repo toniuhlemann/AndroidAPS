@@ -33,7 +33,11 @@ object IobActionConfigExporter {
         "autosens", "activity", "absorption", "cgm", "libre", "glucose", "delta",
         // fsl_exp1_factor = the Libre smoothing ALPHA (Toni's key tuning knob) + fslCal offsets —
         // none matched the patterns above (found in the first export review).
-        "fsl"
+        "fsl",
+        // automation_state_service / automation_state_values = the AutomationStateService JSON
+        // (AISF / WEIGHTS / isStateTuning ...) — Toni's state machine, previously only probeable
+        // via his tap-test buttons; the viewer shows it live from here.
+        "automation_state"
     )
 
     fun snapshot(sp: SP, profileFunction: ProfileFunction, dateUtil: DateUtil) {
