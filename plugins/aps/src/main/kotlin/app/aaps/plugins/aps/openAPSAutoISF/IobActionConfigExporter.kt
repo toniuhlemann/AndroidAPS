@@ -30,7 +30,10 @@ object IobActionConfigExporter {
         "autoisf", "auto_isf", "openaps", "smb", "uam", "iob", "dia", "insulin", "peak",
         "sens", "isf", "carb", "target", "basal", "bolus", "loop", "apsmode", "smooth",
         "bgacc", "brake", "pp_", "dura", "range", "ratio", "max", "min_5m", "safety",
-        "autosens", "activity", "absorption", "cgm", "libre", "glucose", "delta"
+        "autosens", "activity", "absorption", "cgm", "libre", "glucose", "delta",
+        // fsl_exp1_factor = the Libre smoothing ALPHA (Toni's key tuning knob) + fslCal offsets —
+        // none matched the patterns above (found in the first export review).
+        "fsl"
     )
 
     fun snapshot(sp: SP, profileFunction: ProfileFunction, dateUtil: DateUtil) {
