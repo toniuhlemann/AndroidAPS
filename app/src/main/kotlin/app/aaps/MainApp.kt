@@ -216,6 +216,9 @@ class MainApp : DaggerApplication() {
                 app.aaps.plugins.aps.openAPSAutoISF.IobActionCoreExporter.snapshot(
                     iobCobCalculator, processedTbrEbData, persistenceLayer, profileFunction, activePlugin, preferences, dateUtil, glucoseStatusProvider, loop
                 )
+                // Config snapshot (filtered prefs + profile + automations) for the IOB Action
+                // viewer — change-triggered inside, so most heartbeats are a cheap hash check.
+                app.aaps.plugins.aps.openAPSAutoISF.IobActionConfigExporter.snapshot(sp, profileFunction, dateUtil)
         }
         handler.postDelayed(refreshWidget, 60000)
         config.appInitialized = true

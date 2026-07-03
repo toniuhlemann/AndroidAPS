@@ -29,12 +29,16 @@ object IobActionExporter {
 
     private const val FILE_NAME = "iobaction_state.json"
     private const val CORE_FILE_NAME = "iobaction_core.json"
+    private const val CONFIG_FILE_NAME = "iobaction_config.json"
 
     /** Full loop/autoISF state — called from the determineBasal hook (loop-gated). */
     fun write(json: JSONObject) = writeFile(json, FILE_NAME)
 
     /** Live core snapshot — called every 60s from [IobActionCoreExporter] (loop-independent). */
     fun writeCore(json: JSONObject) = writeFile(json, CORE_FILE_NAME)
+
+    /** Config snapshot (prefs + profile + automations) — change-triggered from [IobActionConfigExporter]. */
+    fun writeConfig(json: JSONObject) = writeFile(json, CONFIG_FILE_NAME)
 
     private fun writeFile(json: JSONObject, fileName: String) {
         runCatching {
