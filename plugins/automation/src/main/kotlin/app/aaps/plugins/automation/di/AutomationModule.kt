@@ -1,4 +1,4 @@
-package app.aaps.plugins.automation.di
+﻿package app.aaps.plugins.automation.di
 
 import app.aaps.core.interfaces.automation.Automation
 import app.aaps.plugins.automation.AutomationEventObject
@@ -20,6 +20,7 @@ import app.aaps.plugins.automation.actions.ActionSetAcceWeight
 import app.aaps.plugins.automation.actions.ActionSetPpWeight
 import app.aaps.plugins.automation.actions.ActionSetDuraWeight
 import app.aaps.plugins.automation.actions.ActionSetIobTH
+import app.aaps.plugins.automation.actions.ActionSetSmbDeliveryRatio
 import app.aaps.plugins.automation.actions.ActionSetAutomationState
 import app.aaps.plugins.automation.actions.ActionSettingsExport
 import app.aaps.plugins.automation.actions.ActionStartTempTarget
@@ -48,6 +49,7 @@ import app.aaps.plugins.automation.triggers.TriggerHeartRate
 import app.aaps.plugins.automation.triggers.TriggerInsulinAge
 import app.aaps.plugins.automation.triggers.TriggerIob
 import app.aaps.plugins.automation.triggers.TriggerIobTH
+import app.aaps.plugins.automation.triggers.TriggerSmbDeliveryRatio
 import app.aaps.plugins.automation.triggers.TriggerLocation
 import app.aaps.plugins.automation.triggers.TriggerPodChange
 import app.aaps.plugins.automation.triggers.TriggerProfilePercent
@@ -115,6 +117,7 @@ abstract class AutomationModule {
     @ContributesAndroidInjector abstract fun triggerStepsCountInjector(): TriggerStepsCount
     @ContributesAndroidInjector abstract fun triggerBgAcceWeightInjector(): TriggerBgAcceWeight
     @ContributesAndroidInjector abstract fun triggerIonTHWeightInjector(): TriggerIobTH
+    @ContributesAndroidInjector abstract fun triggerSmbDeliveryRatioInjector(): TriggerSmbDeliveryRatio
 
     @ContributesAndroidInjector abstract fun actionInjector(): Action
     @ContributesAndroidInjector abstract fun actionSMBChangeInjector(): ActionSMBChange
@@ -133,6 +136,7 @@ abstract class AutomationModule {
     @ContributesAndroidInjector abstract fun actionSetPpWeightInjector(): ActionSetPpWeight
     @ContributesAndroidInjector abstract fun actionSetDuraWeightInjector(): ActionSetDuraWeight
     @ContributesAndroidInjector abstract fun actionSetIobTHInjector(): ActionSetIobTH
+    @ContributesAndroidInjector abstract fun actionSetSmbDeliveryRatioInjector(): ActionSetSmbDeliveryRatio
     @ContributesAndroidInjector abstract fun actionSendSMSInjector(): ActionSendSMS
     @ContributesAndroidInjector abstract fun actionStartTempTargetInjector(): ActionStartTempTarget
     @ContributesAndroidInjector abstract fun actionStopTempTargetInjector(): ActionStopTempTarget
