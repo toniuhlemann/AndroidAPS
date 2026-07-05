@@ -1,4 +1,4 @@
-package app.aaps.plugins.automation
+﻿package app.aaps.plugins.automation
 
 import android.content.Context
 import android.os.Handler
@@ -51,6 +51,7 @@ import app.aaps.plugins.automation.actions.ActionSetAcceWeight
 import app.aaps.plugins.automation.actions.ActionSetPpWeight
 import app.aaps.plugins.automation.actions.ActionSetDuraWeight
 import app.aaps.plugins.automation.actions.ActionSetIobTH
+import app.aaps.plugins.automation.actions.ActionSetSmbDeliveryRatio
 import app.aaps.plugins.automation.actions.ActionSettingsExport
 import app.aaps.plugins.automation.actions.ActionStartTempTarget
 import app.aaps.plugins.automation.actions.ActionStopProcessing
@@ -77,6 +78,7 @@ import app.aaps.plugins.automation.triggers.TriggerHeartRate
 import app.aaps.plugins.automation.triggers.TriggerInsulinAge
 import app.aaps.plugins.automation.triggers.TriggerIob
 import app.aaps.plugins.automation.triggers.TriggerIobTH
+import app.aaps.plugins.automation.triggers.TriggerSmbDeliveryRatio
 import app.aaps.plugins.automation.triggers.TriggerLocation
 import app.aaps.plugins.automation.triggers.TriggerPodChange
 //import app.aaps.plugins.automation.triggers.TriggerProfile
@@ -320,7 +322,7 @@ class AutomationPlugin @Inject constructor(
                             val sb = StringBuilder()
                                 .append(dateUtil.timeString(dateUtil.now()))
                                 .append(" ")
-                                .append(if (result.success) "☺" else "▼")
+                                .append(if (result.success) "â˜º" else "â–¼")
                                 .append(" <b>")
                                 .append(event.title)
                                 .append(":</b> ")
@@ -423,6 +425,7 @@ class AutomationPlugin @Inject constructor(
             actions.add(ActionSetPpWeight(injector))
             actions.add(ActionSetDuraWeight(injector))
             actions.add(ActionSetIobTH(injector))
+            actions.add(ActionSetSmbDeliveryRatio(injector))
         }
         return actions.toList()
     }
@@ -456,6 +459,7 @@ class AutomationPlugin @Inject constructor(
         if (config.isEngineeringMode() && config.isDev()) {
             triggers.add(TriggerBgAcceWeight(injector))
             triggers.add(TriggerIobTH(injector))
+            triggers.add(TriggerSmbDeliveryRatio(injector))
         }
 
         val pump = activePlugin.activePump
