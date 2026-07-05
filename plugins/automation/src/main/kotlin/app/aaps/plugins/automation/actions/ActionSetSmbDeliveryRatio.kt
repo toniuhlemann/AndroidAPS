@@ -33,8 +33,9 @@ class ActionSetSmbDeliveryRatio(injector: HasAndroidInjector) : Action(injector)
     @DrawableRes override fun icon(): Int = R.drawable.ic_acce_weight
 
     // Pref valid range 0.1–1.0 (DoubleKey.ApsAutoIsfSmbDeliveryRatio); 0.01 steps so the
-    // 0.18 base value is reachable by the reset guard.
-    var new_ratio = InputWeightRanged(minVal = 0.1, maxVal = 1.0, stepVal = 0.01)
+    // 0.18 base value is reachable by the reset guard. Initial MUST be within [min,max] —
+    // a 0.0 initial below min left the NumberPicker dialog empty (Toni's first-use report).
+    var new_ratio = InputWeightRanged(0.18, minVal = 0.1, maxVal = 1.0, stepVal = 0.01)
 
     override fun doAction(callback: Callback) {
         val current: Double = sp.getDouble(R.string.key_openapsama_smb_delivery_ratio, 0.5)
@@ -72,7 +73,7 @@ class ActionSetSmbDeliveryRatio(injector: HasAndroidInjector) : Action(injector)
 
     override fun fromJSON(data: String): Action {
         val o = JSONObject(data)
-        new_ratio.value = JsonHelper.safeGetDouble(o, "ratio")
+        new_ratio.value = JsonHelper.safeGetDouble(o, "ratio").coerceIn(0.1, 1.0)
         return this
     }
 
