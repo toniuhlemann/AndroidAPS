@@ -25,7 +25,8 @@ class TriggerSmbDeliveryRatio(injector: HasAndroidInjector) : Trigger(injector) 
 
     @Inject lateinit var sp: SP
 
-    var ratio = InputWeightRanged(minVal = 0.1, maxVal = 1.0, stepVal = 0.01)
+    // Initial within [min,max] — a below-min initial leaves the NumberPicker dialog empty.
+    var ratio = InputWeightRanged(0.18, minVal = 0.1, maxVal = 1.0, stepVal = 0.01)
     var comparator = Comparator(rh)
 
     constructor(injector: HasAndroidInjector, triggerSmbDeliveryRatio: TriggerSmbDeliveryRatio) : this(injector) {
@@ -60,7 +61,7 @@ class TriggerSmbDeliveryRatio(injector: HasAndroidInjector) : Trigger(injector) 
 
     override fun fromJSON(data: String): Trigger {
         val d = JSONObject(data)
-        ratio.value = JsonHelper.safeGetDouble(d, "ratio")
+        ratio.value = JsonHelper.safeGetDouble(d, "ratio").coerceIn(0.1, 1.0)
         comparator.value = Comparator.Compare.valueOf(JsonHelper.safeGetString(d, "comparator")!!)
         return this
     }
