@@ -45,7 +45,9 @@ class TriggerSmbDeliveryRatio(injector: HasAndroidInjector) : Trigger(injector) 
     }
 
     override fun shouldRun(): Boolean {
-        val actual = sp.getDouble(R.string.key_openapsama_smb_delivery_ratio, 0.5)
+        // Round to 2 decimals: the pref survives a float round-trip in storage (0.18 reads back
+        // as 0.18000000715…) — without rounding "IS_GREATER 0.18" stayed true by 7e-9 forever.
+        val actual = Math.round(sp.getDouble(R.string.key_openapsama_smb_delivery_ratio, 0.5) * 100.0) / 100.0
         if (comparator.value.check(actual, ratio.value)) {
             aapsLogger.debug(LTag.AUTOMATION, "smb_delivery_ratio ready for execution: " + friendlyDescription())
             return true
