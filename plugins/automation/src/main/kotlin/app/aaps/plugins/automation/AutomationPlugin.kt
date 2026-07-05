@@ -322,7 +322,7 @@ class AutomationPlugin @Inject constructor(
                             val sb = StringBuilder()
                                 .append(dateUtil.timeString(dateUtil.now()))
                                 .append(" ")
-                                .append(if (result.success) "â˜º" else "â–¼")
+                                .append(if (result.success) "☺" else "▼")
                                 .append(" <b>")
                                 .append(event.title)
                                 .append(":</b> ")
