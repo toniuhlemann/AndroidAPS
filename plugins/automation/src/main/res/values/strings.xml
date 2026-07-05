@@ -167,6 +167,7 @@
     <string name="autoisf_smb_delivery_ratio">SMB delivery ratio (fixed)</string>
     <string name="automate_set_smb_delivery_ratio">Set smb_delivery_ratio (fixed) to %1$.2f</string>
     <string name="smbdeliveryratiocompared">SMB delivery ratio (fixed) %1$s %2$.2f</string>
+    <string name="automate_reset_profile_percent">Reset profile percent to 100% (permanent)</string>
     <string name="disableautoisf">Disable glucose ISF weights(autoISF)</string>
     <string name="enableautoisf">Enable glucose ISF weights(autoISF)</string>
 

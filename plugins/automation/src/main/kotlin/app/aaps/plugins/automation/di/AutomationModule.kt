@@ -20,6 +20,7 @@ import app.aaps.plugins.automation.actions.ActionSetAcceWeight
 import app.aaps.plugins.automation.actions.ActionSetPpWeight
 import app.aaps.plugins.automation.actions.ActionSetDuraWeight
 import app.aaps.plugins.automation.actions.ActionSetIobTH
+import app.aaps.plugins.automation.actions.ActionResetProfilePercent
 import app.aaps.plugins.automation.actions.ActionSetSmbDeliveryRatio
 import app.aaps.plugins.automation.actions.ActionSetAutomationState
 import app.aaps.plugins.automation.actions.ActionSettingsExport
@@ -137,6 +138,7 @@ abstract class AutomationModule {
     @ContributesAndroidInjector abstract fun actionSetDuraWeightInjector(): ActionSetDuraWeight
     @ContributesAndroidInjector abstract fun actionSetIobTHInjector(): ActionSetIobTH
     @ContributesAndroidInjector abstract fun actionSetSmbDeliveryRatioInjector(): ActionSetSmbDeliveryRatio
+    @ContributesAndroidInjector abstract fun actionResetProfilePercentInjector(): ActionResetProfilePercent
     @ContributesAndroidInjector abstract fun actionSendSMSInjector(): ActionSendSMS
     @ContributesAndroidInjector abstract fun actionStartTempTargetInjector(): ActionStartTempTarget
     @ContributesAndroidInjector abstract fun actionStopTempTargetInjector(): ActionStopTempTarget
