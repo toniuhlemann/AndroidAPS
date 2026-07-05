@@ -39,7 +39,10 @@ class ActionSetSmbDeliveryRatio(injector: HasAndroidInjector) : Action(injector)
 
     override fun doAction(callback: Callback) {
         val current: Double = sp.getDouble(R.string.key_openapsama_smb_delivery_ratio, 0.5)
-        if (current != new_ratio.value) {
+        // TOLERANCE compare, not equality: the pref survives a float round-trip in storage
+        // (0.18 comes back as 0.18000000715…), an exact != re-fired the base guard every
+        // 5 minutes forever ("new value" loop, Toni 2026-07-05 12:53/12:58).
+        if (kotlin.math.abs(current - new_ratio.value) >= 0.005) {
             uel.log(
                 app.aaps.core.data.ue.Action.ACCE_WEIGHT_SET,
                 Sources.Automation,
