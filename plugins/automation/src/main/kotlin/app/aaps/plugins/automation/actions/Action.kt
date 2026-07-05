@@ -66,6 +66,7 @@ abstract class Action(val injector: HasAndroidInjector) {
                 ActionProfileSwitch::class.java.simpleName        -> ActionProfileSwitch(injector).fromJSON(data.toString())
                 //ActionStopProfilePercent::class.java.simpleName   -> ActionStopProfilePercent(injector).fromJSON(data.toString())
                 ActionProfileSwitchPercent::class.java.simpleName -> ActionProfileSwitchPercent(injector).fromJSON(data.toString())
+                ActionResetProfilePercent::class.java.simpleName  -> ActionResetProfilePercent(injector).fromJSON(data.toString())
                 ActionAutoisfEnable::class.java.simpleName        -> ActionAutoisfEnable(injector).fromJSON(data.toString())
                 ActionAutoisfDisable::class.java.simpleName       -> ActionAutoisfDisable(injector).fromJSON(data.toString())
                 ActionSetAcceWeight::class.java.simpleName        -> ActionSetAcceWeight(injector).fromJSON(data.toString())

@@ -43,6 +43,7 @@ import app.aaps.plugins.automation.actions.ActionCarePortalEvent
 import app.aaps.plugins.automation.actions.ActionNotification
 import app.aaps.plugins.automation.actions.ActionProfileSwitch
 import app.aaps.plugins.automation.actions.ActionProfileSwitchPercent
+import app.aaps.plugins.automation.actions.ActionResetProfilePercent
 import app.aaps.plugins.automation.actions.ActionRunAutotune
 import app.aaps.plugins.automation.actions.ActionSMBChange
 import app.aaps.plugins.automation.actions.ActionSendSMS
@@ -426,6 +427,7 @@ class AutomationPlugin @Inject constructor(
             actions.add(ActionSetDuraWeight(injector))
             actions.add(ActionSetIobTH(injector))
             actions.add(ActionSetSmbDeliveryRatio(injector))
+            actions.add(ActionResetProfilePercent(injector))
         }
         return actions.toList()
     }
