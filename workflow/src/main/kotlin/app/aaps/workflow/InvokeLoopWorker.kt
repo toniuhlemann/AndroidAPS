@@ -6,7 +6,6 @@ import androidx.work.workDataOf
 import app.aaps.core.interfaces.aps.Loop
 import app.aaps.core.interfaces.iob.IobCobCalculator
 import app.aaps.core.interfaces.rx.events.Event
-import app.aaps.core.interfaces.rx.events.EventNewBG
 import app.aaps.core.objects.workflow.LoggingWorker
 import app.aaps.core.utils.receivers.DataWorkerStorage
 import kotlinx.coroutines.Dispatchers
@@ -27,17 +26,29 @@ class InvokeLoopWorker(
 
     /*
      This method is triggered once autosens calculation has completed, so the LoopPlugin
-     has current data to work with. However, autosens calculation can be triggered by multiple
-     sources and currently only a new BG should trigger a loop run. Hence we return early if
-     the event causing the calculation is not EventNewBG.
-     <p>
+     has current data to work with.
+
+     A loop run needs a FRESH, NOT-YET-LOOPED BG - regardless of which event caused this
+     calculation. Historically only EventNewBG-caused calculations could invoke the loop, but
+     on a 1-min CGM with a slow-confirming pump (Medtrum: enact + confirmation ~45-70s) the
+     SMB's own treatment writes (bolus + TBR records) fire EventNewHistoryData, whose recalc
+     CANCELS the already running EventNewBG calculation of the NEXT reading
+     (IobCobCalculatorPlugin.newHistoryData -> stopCalculation(MAIN_CALCULATION)). The
+     replacement calculation then returned early here ("no calculation needed") -> every
+     second loop run was swallowed -> SMBs only every ~2 min despite SMBInterval=1
+     (log-verified 2026-07-10 21:39-21:53: BG :37 -> its calc :42 -> confirmation recalc
+     kills it :48 -> "no calculation needed"; during non-delivery phases the loop ran every
+     60s). The two remaining gates keep every safety property: actualBg() returns null for
+     data older than 9 min (no loop on a stale/dead sensor), and lastBgTriggeredRun
+     guarantees at most ONE loop run per BG value (recalcs without a fresh reading still
+     end in "already looped with that value").
     */
     override suspend fun doWorkAndLog(): Result {
 
-        val data = dataWorkerStorage.pickupObject(inputData.getLong(DataWorkerStorage.STORE_KEY, -1)) as InvokeLoopData?
+        // Input integrity check only - the cause itself no longer gates the loop (see above).
+        dataWorkerStorage.pickupObject(inputData.getLong(DataWorkerStorage.STORE_KEY, -1)) as InvokeLoopData?
             ?: return Result.failure(workDataOf("Error" to "missing input data"))
 
-        if (data.cause !is EventNewBG) return Result.success(workDataOf("Result" to "no calculation needed"))
         val glucoseValue = iobCobCalculator.ads.actualBg() ?: return Result.success(workDataOf("Result" to "bg outdated"))
         if (glucoseValue.timestamp <= loop.lastBgTriggeredRun) return Result.success(workDataOf("Result" to "already looped with that value"))
         loop.lastBgTriggeredRun = glucoseValue.timestamp
