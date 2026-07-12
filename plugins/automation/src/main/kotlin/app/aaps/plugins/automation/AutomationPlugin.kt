@@ -78,6 +78,7 @@ import app.aaps.plugins.automation.triggers.TriggerDelta
 import app.aaps.plugins.automation.triggers.TriggerHeartRate
 import app.aaps.plugins.automation.triggers.TriggerInsulinAge
 import app.aaps.plugins.automation.triggers.TriggerIob
+import app.aaps.plugins.automation.triggers.TriggerCoverage
 import app.aaps.plugins.automation.triggers.TriggerIobTH
 import app.aaps.plugins.automation.triggers.TriggerSmbDeliveryRatio
 import app.aaps.plugins.automation.triggers.TriggerLocation
@@ -462,6 +463,7 @@ class AutomationPlugin @Inject constructor(
             triggers.add(TriggerBgAcceWeight(injector))
             triggers.add(TriggerIobTH(injector))
             triggers.add(TriggerSmbDeliveryRatio(injector))
+            triggers.add(TriggerCoverage(injector))
         }
 
         val pump = activePlugin.activePump
