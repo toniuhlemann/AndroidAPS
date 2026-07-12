@@ -505,12 +505,13 @@ class LoopPlugin @Inject constructor(
             resultAfterConstraints.smb = constraintChecker.applyBolusConstraints(resultAfterConstraints.smbConstraint!!).value()
 
             // safety check for multiple SMBs
-            // IOB-Action patch (2026-07-12): apply the SAME 6s tolerance the determine gate uses
-            // (DetermineBasalAutoISF "lastBolusAge > SMBInterval - 6.0"). Without it, three enact
-            // gates (here, applySMBRequest, CommandSMBBolus) enforced the FULL interval while
-            // determine had already released the SMB at interval-6s: in the 54-60s window (1-min
-            // CGM, smbinterval=1) a wanted SMB was silently zeroed by sub-second enact jitter and
-            // never retried. Determine remains the planner; the enact gates just stop lying to it.
+            // IOB-Action patches (2026-07-12): all four gates (determine, here, applySMBRequest,
+            // CommandSMBBolus) share ONE tolerance — first 6s (so the enact gates stop silently
+            // zeroing determine-approved SMBs), then raised to 15s: the bolus RECORD lands ~10s
+            // after the decision, so with a 60s BG cadence the next cycle always saw an age of
+            // ~50s and waited — SMBInterval=1 effectively delivered every OTHER minute during
+            // sustained demand. Gate at interval-15s absorbs that enact offset; amounts remain
+            // capped by the smb ratio and the iobTH bands (cadence changes, budget does not).
             val lastBolusTime = persistenceLayer.getNewestBolus()?.timestamp ?: 0L
             if (lastBolusTime != 0L && lastBolusTime + T.mins(preferences.get(IntKey.ApsMaxSmbFrequency).toLong()).msecs() - T.secs(15).msecs() > dateUtil.now()) {
                 aapsLogger.debug(LTag.APS, "SMB requested but still in ${preferences.get(IntKey.ApsMaxSmbFrequency)} min interval")
