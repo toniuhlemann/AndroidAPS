@@ -512,7 +512,7 @@ class LoopPlugin @Inject constructor(
             // CGM, smbinterval=1) a wanted SMB was silently zeroed by sub-second enact jitter and
             // never retried. Determine remains the planner; the enact gates just stop lying to it.
             val lastBolusTime = persistenceLayer.getNewestBolus()?.timestamp ?: 0L
-            if (lastBolusTime != 0L && lastBolusTime + T.mins(preferences.get(IntKey.ApsMaxSmbFrequency).toLong()).msecs() - T.secs(6).msecs() > dateUtil.now()) {
+            if (lastBolusTime != 0L && lastBolusTime + T.mins(preferences.get(IntKey.ApsMaxSmbFrequency).toLong()).msecs() - T.secs(15).msecs() > dateUtil.now()) {
                 aapsLogger.debug(LTag.APS, "SMB requested but still in ${preferences.get(IntKey.ApsMaxSmbFrequency)} min interval")
                 resultAfterConstraints.smb = 0.0
             }
@@ -866,8 +866,9 @@ class LoopPlugin @Inject constructor(
     private fun applySMBRequest(request: APSResult, callback: Callback?) {
         val pump = activePlugin.activePump
         val lastBolusTime = persistenceLayer.getNewestBolus()?.timestamp ?: 0L
-        // 6s tolerance — same rationale as the constraints gate above (match determine's gate).
-        if (lastBolusTime != 0L && lastBolusTime + T.mins(preferences.get(IntKey.ApsMaxSmbFrequency).toLong()).msecs() - T.secs(6).msecs() > dateUtil.now()) {
+        // 15s tolerance — same rationale as the constraints gate above (match determine's gate;
+        // absorbs the ~10s enact offset so SMBInterval=1 truly allows every-minute delivery).
+        if (lastBolusTime != 0L && lastBolusTime + T.mins(preferences.get(IntKey.ApsMaxSmbFrequency).toLong()).msecs() - T.secs(15).msecs() > dateUtil.now()) {
             aapsLogger.debug(LTag.APS, "SMB requested but still in ${preferences.get(IntKey.ApsMaxSmbFrequency)} min interval")
             callback?.result(
                 pumpEnactResultProvider.get()
