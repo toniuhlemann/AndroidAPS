@@ -273,7 +273,9 @@ open class OpenAPSAutoISFPlugin @Inject constructor(
         // Round down to minutesClass min and use it as a key for caching
         // Add BG to key as it affects calculation
         val key = timestamp - timestamp % T.mins(minutesClass).msecs() + glucose.toLong()
-        val sensitivity = autoISF(profile)
+        // 0044: throwaway console - this path serves getIsfMgdl() display/NS callers and must
+        // not pollute the live AUTO-ISF console the loop run owns.
+        val sensitivity = autoISF(profile, mutableListOf())
         if (sensitivity > 0) {
             // can default to 0, e.g. for the first 2-3 loops in a virgin setup
             aapsLogger.debug("calculateVariableIsf CALC ${dateUtil.dateAndTimeAndSecondsString(timestamp)} $sensitivity")
@@ -896,7 +898,13 @@ open class OpenAPSAutoISFPlugin @Inject constructor(
         return activityRatio
     }
 
-    fun autoISF(profile: Profile): Double {
+    // IOB-Action patch 0044 (2026-07-12): autoISF() is ALSO called via getIsfMgdl() ->
+    // calculateVariableIsf() by ANY component asking for the dynamic ISF (overview, NS upload,
+    // widgets, automation evaluations - since 0042 every 60s). All those side calls appended
+    // their full factor block into the SAME live consoleError list the AUTO-ISF tab shows and
+    // determine_basal copies, multiplying the block 4-5x per cycle. Callers outside the loop
+    // now pass a throwaway list; dosing math is untouched (return value identical).
+    fun autoISF(profile: Profile, console: MutableList<String> = consoleError): Double {
         val sens = profile.getProfileIsfMgdl()
         val glucose_status = glucoseStatusProvider.glucoseStatusData as GlucoseStatusAutoIsf?
 
@@ -922,7 +930,7 @@ open class OpenAPSAutoISFPlugin @Inject constructor(
                 val c = (mgdlHalfBasalExerciseTarget - normalTarget)
                 if (c * (c + target_bg - normalTarget) <= 0.0) {
                     sensitivityRatio = resistanceMax
-                    // consoleError.add("Sensitivity decrease for temp target of $target_bg limited by Autosens_max; ")
+                    // console.add("Sensitivity decrease for temp target of $target_bg limited by Autosens_max; ")
 
                 } else {
                     sensitivityRatio = c / (c + target_bg - normalTarget)
@@ -950,16 +958,16 @@ open class OpenAPSAutoISFPlugin @Inject constructor(
         val calibrationMinutes = calibrationDuration - (dateUtil.now() - preferences.get(LongKey.FslCalibrationStart)) / 60000
         val calibrationStopsSMB = calibrationMinutes > 0 && !preferences.get(BooleanKey.FslCalibrationEnd)
         if (calibrationStopsSMB) {
-            consoleError.add("AutoISF weights disabled while calibrating")
+            console.add("AutoISF weights disabled while calibrating")
             skipWeights = true
         } else if ( !autoIsfWeights || glucose_status == null) {
-            consoleError.add("AutoISF weights disabled in Preferences")
+            console.add("AutoISF weights disabled in Preferences")
             skipWeights = true
         }
         if (skipWeights) {
-            consoleError.add("----------------------------------")
-            consoleError.add("end AutoISF")
-            consoleError.add("----------------------------------")
+            console.add("----------------------------------")
+            console.add("end AutoISF")
+            console.add("----------------------------------")
             return round(sens / sensitivityRatio, 1)
         }
         val autosensResult = AutosensResult()
@@ -985,24 +993,24 @@ open class OpenAPSAutoISFPlugin @Inject constructor(
         // calculate acce_ISF from bg acceleration and adapt ISF accordingly
         val fit_corr: Double = glucose_status.corrSqu
         val bg_acce: Double = glucose_status.bgAcceleration
-        //consoleError.add("Parabola fit results were acceleration:${round(bg_acce, 2)}, correlation:$fit_corr, duration:${glucose_status.parabolaMinutes}m")
+        //console.add("Parabola fit results were acceleration:${round(bg_acce, 2)}, correlation:$fit_corr, duration:${glucose_status.parabolaMinutes}m")
         if (glucose_status.a2 != 0.0 && fit_corr >= 0.9) {
             var minmax_delta: Double = -glucose_status.a1 / 2 / glucose_status.a2 * 5      // back from 5min block to 1 min
             val minmax_value: Double = round(glucose_status.a0 - minmax_delta * minmax_delta / 25 * glucose_status.a2, 1)
             minmax_delta = round(minmax_delta, 1)
             if (minmax_delta > 0 && bg_acce < 0) {
-                consoleError.add("Parabolic fit extrapolates a maximum of ${convert_bg(minmax_value)} in about $minmax_delta minutes")
+                console.add("Parabolic fit extrapolates a maximum of ${convert_bg(minmax_value)} in about $minmax_delta minutes")
             } else if (minmax_delta > 0 && bg_acce > 0.0) {
 
-                consoleError.add("Parabolic fit extrapolates a minimum of ${convert_bg(minmax_value)} in about $minmax_delta minutes")
+                console.add("Parabolic fit extrapolates a minimum of ${convert_bg(minmax_value)} in about $minmax_delta minutes")
                 if (minmax_delta <= 30 && minmax_value < target_bg) {   // start braking
                     acce_weight = -bgBrake_ISF_weight
-                    consoleError.add("extrapolation below target soon: use bgBrake_ISF_weight instead")
+                    console.add("extrapolation below target soon: use bgBrake_ISF_weight instead")
                 }
             }
         }
         if (fit_corr < 0.9) {
-            consoleError.add("acce_ISF adaptation by-passed as correlation ${round(fit_corr, 3)} is too low")
+            console.add("acce_ISF adaptation by-passed as correlation ${round(fit_corr, 3)} is too low")
         } else {
             val fit_share = 10 * (fit_corr - 0.9)                            // 0 at correlation 0.9, 1 at 1.00
             var cap_weight = 1.0                                             // full contribution above target
@@ -1023,7 +1031,7 @@ open class OpenAPSAutoISFPlugin @Inject constructor(
                 }
             }
             acce_ISF = 1.0 + bg_acce * cap_weight * acce_weight * fit_share
-            consoleError.add("acce_ISF adaptation is ${round(acce_ISF, 2)}")
+            console.add("acce_ISF adaptation is ${round(acce_ISF, 2)}")
             if (acce_ISF != 1.0) {
                 sens_modified = true
             }
@@ -1031,7 +1039,7 @@ open class OpenAPSAutoISFPlugin @Inject constructor(
         autoIsfValues.acceIsf = acce_ISF
 
         val bg_ISF = 1 + interpolate(100 - bg_off)
-        consoleError.add("bg_ISF adaptation is ${round(bg_ISF, 2)}")
+        console.add("bg_ISF adaptation is ${round(bg_ISF, 2)}")
         autoIsfValues.bgIsf = bg_ISF
         var liftISF: Double
         val final_ISF: Double
@@ -1039,9 +1047,9 @@ open class OpenAPSAutoISFPlugin @Inject constructor(
             liftISF = min(bg_ISF, acce_ISF)
             if (acce_ISF > 1.0) {
                 liftISF = bg_ISF * acce_ISF                                 // bg_ISF could become > 1 now
-                consoleError.add("bg_ISF adaptation lifted to ${round(liftISF, 2)} as bg accelerates already")
+                console.add("bg_ISF adaptation lifted to ${round(liftISF, 2)} as bg accelerates already")
             }
-            final_ISF = withinISFlimits(liftISF, autoISF_min, maxISFReduction, sensitivityRatio, exerciseModeActive, resistanceModeActive, stepActivityDetected, stepInactivityDetected)
+            final_ISF = withinISFlimits(liftISF, autoISF_min, maxISFReduction, sensitivityRatio, exerciseModeActive, resistanceModeActive, stepActivityDetected, stepInactivityDetected, console)
             return min(720.0, round(sens / final_ISF, 1))         // observe ISF maximum of 720(?)
         } else if (bg_ISF > 1.0) {
             sens_modified = true
@@ -1051,16 +1059,16 @@ open class OpenAPSAutoISFPlugin @Inject constructor(
         val deltaType = "pp"
         when {
             bg_off > 0.0                     -> {
-                consoleError.add("${deltaType}_ISF adaptation by-passed as average glucose < $target_bg+10")
+                console.add("${deltaType}_ISF adaptation by-passed as average glucose < $target_bg+10")
             }
 
             glucose_status.shortAvgDelta < 0 -> {
-                consoleError.add("${deltaType}_ISF adaptation by-passed as no rise or too short lived")
+                console.add("${deltaType}_ISF adaptation by-passed as no rise or too short lived")
             }
 
             else                             -> {
                 pp_ISF = 1.0 + max(0.0, bg_delta * pp_ISF_weight)
-                consoleError.add("pp_ISF adaptation is ${round(pp_ISF, 2)}")
+                console.add("pp_ISF adaptation is ${round(pp_ISF, 2)}")
                 if (pp_ISF != 1.0) {
                     sens_modified = true
                 }
@@ -1073,11 +1081,11 @@ open class OpenAPSAutoISFPlugin @Inject constructor(
         val weightISF: Double = dura_ISF_weight
         when {
             dura05 < 10.0      -> {
-                consoleError.add("dura_ISF by-passed; bg is only $dura05 m at level $avg05")
+                console.add("dura_ISF by-passed; bg is only $dura05 m at level $avg05")
             }
 
             avg05 <= target_bg -> {
-                consoleError.add("dura_ISF by-passed; avg. glucose $avg05 below target $target_bg")
+                console.add("dura_ISF by-passed; avg. glucose $avg05 below target $target_bg")
             }
 
             else               -> {
@@ -1086,7 +1094,7 @@ open class OpenAPSAutoISFPlugin @Inject constructor(
                 val avg05Weight = weightISF / target_bg
                 dura_ISF += dura05Weight * avg05Weight * (avg05 - target_bg)
                 sens_modified = true
-                consoleError.add("dura_ISF adaptation is ${round(dura_ISF, 2)} because ISF ${round(sens, 1)} did not do it for ${round(dura05, 1)}m")
+                console.add("dura_ISF adaptation is ${round(dura_ISF, 2)} because ISF ${round(sens, 1)} did not do it for ${round(dura05, 1)}m")
             }
         }
         autoIsfValues.duraIsf = dura_ISF
@@ -1094,15 +1102,15 @@ open class OpenAPSAutoISFPlugin @Inject constructor(
         if (sens_modified) {
             liftISF = max(dura_ISF, max(bg_ISF, max(acce_ISF, pp_ISF)))
             if (acce_ISF < 1.0) {
-                consoleError.add("strongest autoISF factor ${round(liftISF, 2)} weakened to ${round(liftISF * acce_ISF, 2)} as bg decelerates already")
+                console.add("strongest autoISF factor ${round(liftISF, 2)} weakened to ${round(liftISF * acce_ISF, 2)} as bg decelerates already")
                 liftISF = liftISF * acce_ISF
             }
-            final_ISF = withinISFlimits(liftISF, autoISF_min, maxISFReduction, sensitivityRatio, exerciseModeActive, resistanceModeActive, stepActivityDetected, stepInactivityDetected)
+            final_ISF = withinISFlimits(liftISF, autoISF_min, maxISFReduction, sensitivityRatio, exerciseModeActive, resistanceModeActive, stepActivityDetected, stepInactivityDetected, console)
             return round(sens / final_ISF, 1)
         }
-        consoleError.add("----------------------------------")
-        consoleError.add("end AutoISF")
-        consoleError.add("----------------------------------")
+        console.add("----------------------------------")
+        console.add("end AutoISF")
+        console.add("----------------------------------")
         return round(sens / sensitivityRatio, 1)     // nothing changed
     }
 
@@ -1174,14 +1182,15 @@ open class OpenAPSAutoISFPlugin @Inject constructor(
 
     fun withinISFlimits(
         liftISF: Double, minISFReduction: Double, maxISFReduction: Double, sensitivityRatio: Double,
-        exerciseModeActive: Boolean, resistanceModeActive: Boolean, stepActivityDetected:Boolean, stepInactivityDetected: Boolean
+        exerciseModeActive: Boolean, resistanceModeActive: Boolean, stepActivityDetected:Boolean, stepInactivityDetected: Boolean,
+        console: MutableList<String> = consoleError
     ): Double {
         var liftISFlimited: Double = liftISF
         if (liftISF < minISFReduction) {
-            consoleError.add("weakest autoISF factor ${round(liftISF, 2)} limited by autoISF_min $minISFReduction")
+            console.add("weakest autoISF factor ${round(liftISF, 2)} limited by autoISF_min $minISFReduction")
             liftISFlimited = minISFReduction
         } else if (liftISF > maxISFReduction) {
-            consoleError.add("strongest autoISF factor ${round(liftISF, 2)} limited by autoISF_max $maxISFReduction")
+            console.add("strongest autoISF factor ${round(liftISF, 2)} limited by autoISF_max $maxISFReduction")
             liftISFlimited = maxISFReduction
         }
         val finalISF: Double
@@ -1213,10 +1222,10 @@ open class OpenAPSAutoISFPlugin @Inject constructor(
                 finalISF = min(liftISFlimited, sensitivityRatio)            // low TT lowers sensitivity dominates
             }
         }
-        consoleError.add("final ISF factor is ${round(finalISF, 2)} " + originSens)
-        consoleError.add("----------------------------------")
-        consoleError.add("end AutoISF")
-        consoleError.add("----------------------------------")
+        console.add("final ISF factor is ${round(finalISF, 2)} " + originSens)
+        console.add("----------------------------------")
+        console.add("end AutoISF")
+        console.add("----------------------------------")
         autoIsfValues.finalIsf = finalISF
         return finalISF
     }
