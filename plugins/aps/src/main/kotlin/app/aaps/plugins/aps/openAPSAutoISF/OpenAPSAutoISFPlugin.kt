@@ -511,6 +511,27 @@ open class OpenAPSAutoISFPlugin @Inject constructor(
         val flatBGsDetected = bgQualityCheck.state == BgQualityCheck.State.FLAT
         val smbRatio = determine_varSMBratio(glucoseStatus.glucose.toInt(), target_bg, loopWantedSmb)
 
+        // IOB-Action patch 0041 (2026-07-12): COVERAGE line in the AUTO-ISF console — the physiologic
+        // insulin coverage the new TriggerCoverage automations gate on, visible in the AUTO-ISF tab /
+        // state export. Deliberately: RAW bg (leads the smoothed dosing value at turns), PROFILE
+        // target/ISF/IC (NOT the TT target or the per-cycle autoISF-modulated ISF — a stable
+        // physiologic denominator; Bernie's "carb math on profileISF/IC" principle), and
+        // max(bolusIOB, netIOB) so withheld basal never inflates coverage (mirrors the 0040 gate).
+        // need floor 0.2U guards div/sign. Write-only diagnostic, never read back into dosing.
+        runCatching {
+            val covProfile = profileFunction.getProfile()
+            if (covProfile != null) {
+                val covRaw = persistenceLayer.getLastGlucoseValue()?.value ?: glucoseStatus.glucose
+                val covIsf = covProfile.getProfileIsfMgdl()
+                val covIc = covProfile.getIc()
+                val covTarget = covProfile.getTargetMgdl()
+                val covNeed = max(0.2, (covRaw - covTarget) / covIsf + mealData.mealCOB / covIc)
+                val covGateIob = iobData.iob - min(0.0, iobData.basaliob)   // max(bolusIOB, netIOB)
+                val covPct = (100.0 * covGateIob / covNeed).roundToInt()
+                consoleError.add("Coverage $covPct% (raw ${covRaw.roundToInt()}, profTgt ${covTarget.roundToInt()}, need ${"%.2f".format(covNeed)}U, iobGate ${"%.2f".format(covGateIob)}U [max bol/net])")
+            }
+        }
+
         val gson = Gson()
         aapsLogger.debug(LTag.APS, ">>> Invoking determine_basal AutoISF <<<")
         aapsLogger.debug(LTag.APS, "Glucose status:     $glucoseStatus")
