@@ -5,6 +5,7 @@ import androidx.work.WorkerParameters
 import androidx.work.workDataOf
 import app.aaps.core.interfaces.aps.Loop
 import app.aaps.core.interfaces.iob.IobCobCalculator
+import app.aaps.core.interfaces.queue.CommandQueue
 import app.aaps.core.interfaces.rx.events.Event
 import app.aaps.core.objects.workflow.LoggingWorker
 import app.aaps.core.utils.receivers.DataWorkerStorage
@@ -19,6 +20,7 @@ class InvokeLoopWorker(
     @Inject lateinit var dataWorkerStorage: DataWorkerStorage
     @Inject lateinit var iobCobCalculator: IobCobCalculator
     @Inject lateinit var loop: Loop
+    @Inject lateinit var commandQueue: CommandQueue
 
     class InvokeLoopData(
         val cause: Event?
@@ -51,6 +53,15 @@ class InvokeLoopWorker(
 
         val glucoseValue = iobCobCalculator.ads.actualBg() ?: return Result.success(workDataOf("Result" to "bg outdated"))
         if (glucoseValue.timestamp <= loop.lastBgTriggeredRun) return Result.success(workDataOf("Result" to "already looped with that value"))
+        // PUMP-BUSY-PEEK (2026-07-12): lastBgTriggeredRun was consumed BEFORE invoke(); if invoke
+        // then hit the pump-busy path (queue occupied by the previous cycle's SMB enact + sync,
+        // LoopPlugin waits up to 2 min then RETURNS without dosing), the BG counted as looped and
+        // no later recalculation could retry it — the cycle was lost. Now: while the queue is
+        // busy we DON'T consume the BG and return; the next calculation (treatment writes fire
+        // one within seconds during delivery) retries with the BG still eligible. In quiet phases
+        // the queue is virtually never busy, so behaviour there is unchanged.
+        if (commandQueue.size() > 0 || commandQueue.performing() != null)
+            return Result.success(workDataOf("Result" to "pump busy - retry on next calculation"))
         loop.lastBgTriggeredRun = glucoseValue.timestamp
         loop.invoke("Calculation for $glucoseValue", true)
         return Result.success()
