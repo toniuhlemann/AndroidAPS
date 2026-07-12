@@ -159,7 +159,12 @@ class AutomationPlugin @Inject constructor(
     init {
         refreshLoop = Runnable {
             processActions()
-            handler?.postDelayed(refreshLoop, T.secs(150).msecs())
+            // 150s was the 5-min-CGM half-interval ("check twice per reading"). With a 1-min CGM
+            // that poll misses two of three readings and delays trigger detection by up to 2.5min.
+            // 60s only shortens DETECTION latency — the repeat guard is per-event and stays at
+            // 5min (AutomationEventObject.shouldRun), and the next run is posted only after this
+            // one completes, so runs can never overlap or queue up.
+            handler?.postDelayed(refreshLoop, T.secs(60).msecs())
         }
     }
 
