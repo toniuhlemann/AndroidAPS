@@ -76,6 +76,35 @@ class CalculationWorkflowImpl @Inject constructor(
                 if (bgDataReload) OneTimeWorkRequest.Builder(LoadBgDataWorker::class.java).setInputData(dataWorkerStorage.storeInputData(LoadBgDataWorker.LoadBgData(iobCobCalculator, end))).build()
                 else OneTimeWorkRequest.Builder(DummyWorker::class.java).build()
             )
+            // IOB-Action patch 0033 (2026-07-12): DOSING BEFORE DRAWING. The dosing-relevant
+            // pipeline is only LoadBgData (creates the bucketed data) -> IobCobOref -> InvokeLoop;
+            // everything else prepares overviewData for the UI. The graph workers used to run
+            // BEFORE the loop (PrepareBasalData alone ~27s on 1-min data with DIA 9), so every
+            // loop run waited ~40s on chart preparation — and when an SMB's treatment writes
+            // cancelled+restarted this chain (see InvokeLoopWorker, patch 0032), the REPLACEMENT
+            // run paid those ~40s again: effective delivery cadence stayed ~115-128s during
+            // sustained delivery phases (log-verified 2026-07-12 12:54-13:07). With the loop
+            // directly after IobCobOref the replacement reaches it in a few seconds instead.
+            // Dependency audit: PrepareBucketedDataWorker only builds overviewData.bucketed-
+            // GraphSeries (display; the bucketed data itself is created in LoadBgDataWorker);
+            // UpdateIobCobSens + PrepareIobAutosensGraphData consume IobCobOref results and stay
+            // after it; PreparePredictions/UpdateWidget consume the loop result and stay after.
+            .then(
+                if (activePlugin.activeSensitivity.isOref1)
+                    OneTimeWorkRequest.Builder(IobCobOref1Worker::class.java)
+                        .setInputData(dataWorkerStorage.storeInputData(IobCobOref1Worker.IobCobOref1WorkerData(iobCobCalculator, reason, end, job == MAIN_CALCULATION, cause)))
+                        .build()
+                else
+                    OneTimeWorkRequest.Builder(IobCobOrefWorker::class.java)
+                        .setInputData(dataWorkerStorage.storeInputData(IobCobOrefWorker.IobCobOrefWorkerData(iobCobCalculator, reason, end, job == MAIN_CALCULATION, cause)))
+                        .build()
+            )
+            .then(
+                runIf = job == MAIN_CALCULATION,
+                OneTimeWorkRequest.Builder(InvokeLoopWorker::class.java)
+                    .setInputData(dataWorkerStorage.storeInputData(InvokeLoopWorker.InvokeLoopData(cause)))
+                    .build()
+            )
             .then(
                 OneTimeWorkRequest.Builder(PrepareBucketedDataWorker::class.java)
                     .setInputData(dataWorkerStorage.storeInputData(PrepareBucketedDataWorker.PrepareBucketedData(iobCobCalculator, overviewData)))
@@ -116,16 +145,6 @@ class CalculationWorkflowImpl @Inject constructor(
                     .setInputData(Data.Builder().putString(JOB, job).putInt(PASS, CalculationWorkflow.ProgressData.DRAW_TT.pass).build())
                     .build()
             )
-            .then(
-                if (activePlugin.activeSensitivity.isOref1)
-                    OneTimeWorkRequest.Builder(IobCobOref1Worker::class.java)
-                        .setInputData(dataWorkerStorage.storeInputData(IobCobOref1Worker.IobCobOref1WorkerData(iobCobCalculator, reason, end, job == MAIN_CALCULATION, cause)))
-                        .build()
-                else
-                    OneTimeWorkRequest.Builder(IobCobOrefWorker::class.java)
-                        .setInputData(dataWorkerStorage.storeInputData(IobCobOrefWorker.IobCobOrefWorkerData(iobCobCalculator, reason, end, job == MAIN_CALCULATION, cause)))
-                        .build()
-            )
             .then(OneTimeWorkRequest.Builder(UpdateIobCobSensWorker::class.java).build())
             .then(
                 OneTimeWorkRequest.Builder(PrepareIobAutosensGraphDataWorker::class.java)
@@ -136,12 +155,6 @@ class CalculationWorkflowImpl @Inject constructor(
                 runIf = job == MAIN_CALCULATION,
                 OneTimeWorkRequest.Builder(UpdateGraphWorker::class.java)
                     .setInputData(Data.Builder().putString(JOB, job).putInt(PASS, CalculationWorkflow.ProgressData.DRAW_IOB.pass).build())
-                    .build()
-            )
-            .then(
-                runIf = job == MAIN_CALCULATION,
-                OneTimeWorkRequest.Builder(InvokeLoopWorker::class.java)
-                    .setInputData(dataWorkerStorage.storeInputData(InvokeLoopWorker.InvokeLoopData(cause)))
                     .build()
             )
             .then(
