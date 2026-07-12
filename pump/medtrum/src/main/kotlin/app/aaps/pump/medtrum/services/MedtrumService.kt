@@ -479,8 +479,15 @@ class MedtrumService : DaggerService(), BLECommCallback {
             SystemClock.sleep(1000)
         }
 
-        // Allow time for notification packet with new sequence number to arrive
-        SystemClock.sleep(2000)
+        // Allow time for notification packet with new sequence number to arrive.
+        // IOB-Action patch (2026-07-12): 2000 -> 750 ms. This fixed sleep is charged to EVERY
+        // bolus while it only pads the sequence-number freshness for the loadEvents below; the
+        // pump's done-notification has already arrived at this point (bolusDone was the loop-exit
+        // above). Should a sequence race still occur, syncRecords simply fetches the record on
+        // the NEXT loadEvents — a delayed history entry, never a dosing error. On a 1-min CGM
+        // the 1.25s saved per SMB directly shortens the queue-busy window the next loop run
+        // collides with.
+        SystemClock.sleep(750)
 
         // Do not call update status directly, reconnection may be needed
         commandQueue.loadEvents(object : Callback() {
