@@ -505,8 +505,14 @@ class LoopPlugin @Inject constructor(
             resultAfterConstraints.smb = constraintChecker.applyBolusConstraints(resultAfterConstraints.smbConstraint!!).value()
 
             // safety check for multiple SMBs
+            // IOB-Action patch (2026-07-12): apply the SAME 6s tolerance the determine gate uses
+            // (DetermineBasalAutoISF "lastBolusAge > SMBInterval - 6.0"). Without it, three enact
+            // gates (here, applySMBRequest, CommandSMBBolus) enforced the FULL interval while
+            // determine had already released the SMB at interval-6s: in the 54-60s window (1-min
+            // CGM, smbinterval=1) a wanted SMB was silently zeroed by sub-second enact jitter and
+            // never retried. Determine remains the planner; the enact gates just stop lying to it.
             val lastBolusTime = persistenceLayer.getNewestBolus()?.timestamp ?: 0L
-            if (lastBolusTime != 0L && lastBolusTime + T.mins(preferences.get(IntKey.ApsMaxSmbFrequency).toLong()).msecs() > dateUtil.now()) {
+            if (lastBolusTime != 0L && lastBolusTime + T.mins(preferences.get(IntKey.ApsMaxSmbFrequency).toLong()).msecs() - T.secs(6).msecs() > dateUtil.now()) {
                 aapsLogger.debug(LTag.APS, "SMB requested but still in ${preferences.get(IntKey.ApsMaxSmbFrequency)} min interval")
                 resultAfterConstraints.smb = 0.0
             }
@@ -860,7 +866,8 @@ class LoopPlugin @Inject constructor(
     private fun applySMBRequest(request: APSResult, callback: Callback?) {
         val pump = activePlugin.activePump
         val lastBolusTime = persistenceLayer.getNewestBolus()?.timestamp ?: 0L
-        if (lastBolusTime != 0L && lastBolusTime + T.mins(preferences.get(IntKey.ApsMaxSmbFrequency).toLong()).msecs() > dateUtil.now()) {
+        // 6s tolerance — same rationale as the constraints gate above (match determine's gate).
+        if (lastBolusTime != 0L && lastBolusTime + T.mins(preferences.get(IntKey.ApsMaxSmbFrequency).toLong()).msecs() - T.secs(6).msecs() > dateUtil.now()) {
             aapsLogger.debug(LTag.APS, "SMB requested but still in ${preferences.get(IntKey.ApsMaxSmbFrequency)} min interval")
             callback?.result(
                 pumpEnactResultProvider.get()
