@@ -49,6 +49,7 @@ import app.aaps.plugins.automation.triggers.TriggerDummy
 import app.aaps.plugins.automation.triggers.TriggerHeartRate
 import app.aaps.plugins.automation.triggers.TriggerInsulinAge
 import app.aaps.plugins.automation.triggers.TriggerIob
+import app.aaps.plugins.automation.triggers.TriggerBgRaw
 import app.aaps.plugins.automation.triggers.TriggerCoverage
 import app.aaps.plugins.automation.triggers.TriggerIobTH
 import app.aaps.plugins.automation.triggers.TriggerSmbDeliveryRatio
@@ -121,6 +122,7 @@ abstract class AutomationModule {
     @ContributesAndroidInjector abstract fun triggerIonTHWeightInjector(): TriggerIobTH
     @ContributesAndroidInjector abstract fun triggerSmbDeliveryRatioInjector(): TriggerSmbDeliveryRatio
     @ContributesAndroidInjector abstract fun triggerCoverageInjector(): TriggerCoverage
+    @ContributesAndroidInjector abstract fun triggerBgRawInjector(): TriggerBgRaw
 
     @ContributesAndroidInjector abstract fun actionInjector(): Action
     @ContributesAndroidInjector abstract fun actionSMBChangeInjector(): ActionSMBChange

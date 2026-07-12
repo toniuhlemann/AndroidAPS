@@ -1,6 +1,7 @@
 package app.aaps.plugins.automation.triggers
 
 import android.widget.LinearLayout
+import app.aaps.core.data.time.T
 import app.aaps.core.interfaces.logging.LTag
 import app.aaps.core.utils.JsonHelper
 import app.aaps.core.utils.JsonHelper.safeGetDouble
@@ -64,7 +65,11 @@ class TriggerCoverage(injector: HasAndroidInjector) : Trigger(injector) {
     /** Live coverage % from RAW bg + PROFILE isf/ic/target + max(bolusIOB, netIOB); null if no profile/bg. */
     private fun currentCoverage(): Int? {
         val profile = profileFunction.getProfile() ?: return null
-        val rawBg = persistenceLayer.getLastGlucoseValue()?.value
+        // 0045 hardening: a dead/stale sensor must NOT keep the coverage alive on a frozen value —
+        // raw older than 9min (the loop's actualBg staleness convention) counts as unavailable,
+        // making every coverage condition false, exactly like TriggerBg behaves without fresh data.
+        val rawBg = persistenceLayer.getLastGlucoseValue()
+            ?.takeIf { dateUtil.now() - it.timestamp <= T.mins(9).msecs() }?.value
             ?: glucoseStatusProvider.glucoseStatusData?.glucose
             ?: return null
         val isf = profile.getProfileIsfMgdl()

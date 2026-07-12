@@ -104,6 +104,7 @@ abstract class Trigger(val injector: HasAndroidInjector) {
                 TriggerIobTH::class.java.simpleName              -> TriggerIobTH(injector).fromJSON(data.toString())
                 TriggerSmbDeliveryRatio::class.java.simpleName   -> TriggerSmbDeliveryRatio(injector).fromJSON(data.toString())
                 TriggerCoverage::class.java.simpleName           -> TriggerCoverage(injector).fromJSON(data.toString())
+                TriggerBgRaw::class.java.simpleName              -> TriggerBgRaw(injector).fromJSON(data.toString())
                 TriggerCOB::class.java.simpleName                -> TriggerCOB(injector).fromJSON(data.toString())
                 TriggerConnector::class.java.simpleName          -> TriggerConnector(injector).fromJSON(data.toString())
                 TriggerDelta::class.java.simpleName              -> TriggerDelta(injector).fromJSON(data.toString())
