@@ -92,7 +92,10 @@ class IobCobOref1Worker(
             var previous = autosensDataTable[prevDataTime]
             // start from oldest to be able sub cob
             for (i in bucketedData.size - 4 downTo 0) {
-                rxBus.send(EventIobCalculationProgress(CalculationWorkflow.ProgressData.IOB_COB_OREF, 100 - (100.0 * i / bucketedData.size).toInt(), data.cause))
+                // IOB-Action patch (2026-07-12): throttle the progress event — this fired once per
+                // bucket (~408 RxBus sends EVERY minute on a 1-min CGM with 24h+DIA lookback),
+                // pure display-progress overhead. Every 20th bucket + the final one is plenty.
+                if (i % 20 == 0 || i == 0) rxBus.send(EventIobCalculationProgress(CalculationWorkflow.ProgressData.IOB_COB_OREF, 100 - (100.0 * i / bucketedData.size).toInt(), data.cause))
                 if (isStopped) {
                     // Preserve partial progress so the restarted calculation RESUMES (the per-bucket
                     // "existing != null -> continue" check above skips already-computed buckets)

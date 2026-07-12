@@ -201,28 +201,35 @@ class AutosensDataStoreObject : AutosensDataStore {
         if (fiveMinData) createBucketedData5min(aapsLogger, dateUtil) else createBucketedDataRecalculated(aapsLogger, dateUtil)
     }
 
+    // IOB-Action patch (2026-07-12): binary search instead of linear scans. bgReadings is
+    // sorted DESCENDING by timestamp; createBucketedDataRecalculated calls findNewer+findOlder
+    // once per 5-min bucket over 24h+DIA (~408 buckets) against ~2040 one-minute readings on a
+    // 1-min CGM — the former linear scans burned ~0.8-1.6M comparisons EVERY minute (the
+    // dominant per-cycle CPU cost). Semantics preserved: findNewer = reading with the SMALLEST
+    // timestamp >= time, findOlder = reading with the LARGEST timestamp <= time, null when out
+    // of range — identical results on the sorted series, O(log n) instead of O(n).
     fun findNewer(time: Long): GV? {
-        var lastFound = bgReadings[0]
-        if (lastFound.timestamp < time) return null
-        for (i in 1 until bgReadings.size) {
-            if (bgReadings[i].timestamp == time) return bgReadings[i]
-            if (bgReadings[i].timestamp > time) continue
-            lastFound = bgReadings[i - 1]
-            if (bgReadings[i].timestamp < time) break
+        if (bgReadings.isEmpty() || bgReadings[0].timestamp < time) return null
+        var lo = 0
+        var hi = bgReadings.size - 1
+        var res = 0
+        while (lo <= hi) {
+            val mid = (lo + hi) / 2
+            if (bgReadings[mid].timestamp >= time) { res = mid; lo = mid + 1 } else hi = mid - 1
         }
-        return lastFound
+        return bgReadings[res]
     }
 
     fun findOlder(time: Long): GV? {
-        var lastFound = bgReadings[bgReadings.size - 1]
-        if (lastFound.timestamp > time) return null
-        for (i in bgReadings.size - 2 downTo 0) {
-            if (bgReadings[i].timestamp == time) return bgReadings[i]
-            if (bgReadings[i].timestamp < time) continue
-            lastFound = bgReadings[i + 1]
-            if (bgReadings[i].timestamp > time) break
+        if (bgReadings.isEmpty() || bgReadings[bgReadings.size - 1].timestamp > time) return null
+        var lo = 0
+        var hi = bgReadings.size - 1
+        var res = bgReadings.size - 1
+        while (lo <= hi) {
+            val mid = (lo + hi) / 2
+            if (bgReadings[mid].timestamp <= time) { res = mid; hi = mid - 1 } else lo = mid + 1
         }
-        return lastFound
+        return bgReadings[res]
     }
 
     private fun createBucketedDataRecalculated(aapsLogger: AAPSLogger, dateUtil: DateUtil) {
