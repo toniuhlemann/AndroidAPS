@@ -497,7 +497,17 @@ open class OpenAPSAutoISFPlugin @Inject constructor(
         }
         val iobTHtolerance = 130.0
         val iobTHvirtual = iobThresholdPercent * iobTHtolerance / 10000.0 * oapsProfile.max_iob * iobTH_reduction_ratio
-        val loopWantedSmb = loop_smb(microBolusAllowed, oapsProfile, iobData.iob, use_iobTH, iobTHvirtual / iobTHtolerance * 100.0)
+        // IOB-Action patch 0040 (2026-07-12): the SMB budget gate compares against
+        // max(bolusIOB, netIOB) instead of net IOB. Negative basal-IOB (withheld basal from
+        // zero-temps) accrues exactly during PROTECTIVE phases and was "freeing up" bolus
+        // headroom right when the ceiling should be tightest (live: bolus 0.86U > TH 0.80U
+        // > net 0.33U -> SMBs still allowed; 28h quantification: 13 of 72 SMBs / 1.65U were
+        // only possible through this hole, all near protective phases). Asymmetric on purpose:
+        // positive basal-IOB (high temps) still CONSUMES budget (net > bolus -> max = net),
+        // withheld basal can no longer CREATE budget. Predictions/eventualBG keep using net
+        // IOB everywhere - this only changes the budget gate.
+        val gateIob = iobData.iob - min(0.0, iobData.basaliob)   // = max(bolusIOB, netIOB)
+        val loopWantedSmb = loop_smb(microBolusAllowed, oapsProfile, gateIob, use_iobTH, iobTHvirtual / iobTHtolerance * 100.0)
         val flatBGsDetected = bgQualityCheck.state == BgQualityCheck.State.FLAT
         val smbRatio = determine_varSMBratio(glucoseStatus.glucose.toInt(), target_bg, loopWantedSmb)
 
