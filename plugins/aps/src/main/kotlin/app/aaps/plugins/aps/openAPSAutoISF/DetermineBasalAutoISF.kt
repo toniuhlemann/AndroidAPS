@@ -1123,7 +1123,13 @@ class DetermineBasalAutoISF @Inject constructor(
                 val SMBInterval = min(10, max(1, profile.SMBInterval)) * 60.0   // in seconds
                 //console.error(naive_eventualBG, insulinReq, worstCaseInsulinReq, durationReq);
                 consoleError.add("naive_eventualBG $naive_eventualBG,${durationReq}m ${smbLowTempReq}U/h temp needed; last bolus ${round(lastBolusAge / 60.0, 1)}m ago; maxBolus: $maxBolus")
-                if (lastBolusAge > SMBInterval - 6.0) {   // 6s tolerance
+                // IOB-Action patch (2026-07-12): tolerance 6s -> 15s. The bolus RECORD lands ~10s
+                // after the decision (queue + enact start), so with a 60s BG cadence the next
+                // cycle always saw lastBolusAge ~50s < 54s and waited: SMBInterval=1 effectively
+                // delivered every OTHER minute during sustained demand (log-verified 15:44-15:51:
+                // deltas 119-121s). 15s tolerance (gate 45s) absorbs the enact offset so the
+                // setting means what it says; amounts stay capped by smb ratio and the iobTH bands.
+                if (lastBolusAge > SMBInterval - 15.0) {   // 15s tolerance (enact offset, see above)
                     if (microBolus > 0) {
                         rT.units = microBolus
                         rT.reason.append("Microbolusing ${microBolus}U. ")
