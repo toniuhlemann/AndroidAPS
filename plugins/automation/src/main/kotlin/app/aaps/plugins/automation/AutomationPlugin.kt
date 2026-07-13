@@ -266,10 +266,15 @@ class AutomationPlugin @Inject constructor(
     // action sequences (each action sleeps 3s, so the window is wide): live case 08:21 — an
     // IOBTH guard evaluated MEAL_ACTIVE=false mid-way through a meal-boost event's action list
     // and its SetIobTH landed BETWEEN the boost's actions, stomping the boost threshold.
-    // @Synchronized serializes complete passes; a colliding trigger waits a few seconds and
-    // then evaluates against the CONSISTENT post-pass state. Upstream-AAPS candidate.
-    @Synchronized
-    internal fun processActions() {
+    // Passes are serialized on a DEDICATED lock (0047): the first 0046 attempt used
+    // @Synchronized = the plugin's object monitor, which userEvents()/add()/remove() (called
+    // from the OVERVIEW UI THREAD to render the automation buttons) also take — a multi-action
+    // pass held it 25-30s and froze the UI into an ANR. The private lock serializes passes
+    // against each other only; the quick list accessors keep the object monitor and never wait.
+    private val processActionsLock = Any()
+    internal fun processActions() = synchronized(processActionsLock) { processActionsLocked() }
+
+    private fun processActionsLocked() {
         if (!config.appInitialized) return
         /**
          * Changed to false if some condition prevents automation from running.
