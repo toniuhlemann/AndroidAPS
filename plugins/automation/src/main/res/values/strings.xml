@@ -169,6 +169,8 @@
     <string name="smbdeliveryratiocompared">SMB delivery ratio (fixed) %1$s %2$.2f</string>
     <string name="autoisf_coverage">Insulin coverage</string>
     <string name="coveragecompared">Insulin coverage %1$s %2$.0f%%</string>
+    <string name="autoisf_bolus_coverage">Bolus coverage</string>
+    <string name="boluscoveragecompared">Bolus coverage %1$s %2$.0f%%</string>
     <string name="autoisf_raw_bg">Raw glucose</string>
     <string name="rawbgcomparedmgdl">Raw glucose %1$s %2$.0f %3$s</string>
     <string name="rawbgcomparedmmol">Raw glucose %1$s %2$.1f %3$s</string>
