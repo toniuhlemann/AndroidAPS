@@ -260,6 +260,15 @@ class AutomationPlugin @Inject constructor(
             automationEvents.add(AutomationEventObject(injector).fromJSON(EMPTY_EVENT))
     }
 
+    // IOB-Action patch 0046 (2026-07-13): processActions() is invoked from TWO threads — the
+    // refreshLoop on the automation handler thread AND the rx event subscriptions (BT/charging/
+    // network/location) on the io scheduler. Unsynchronized, two passes can interleave their
+    // action sequences (each action sleeps 3s, so the window is wide): live case 08:21 — an
+    // IOBTH guard evaluated MEAL_ACTIVE=false mid-way through a meal-boost event's action list
+    // and its SetIobTH landed BETWEEN the boost's actions, stomping the boost threshold.
+    // @Synchronized serializes complete passes; a colliding trigger waits a few seconds and
+    // then evaluates against the CONSISTENT post-pass state. Upstream-AAPS candidate.
+    @Synchronized
     internal fun processActions() {
         if (!config.appInitialized) return
         /**
