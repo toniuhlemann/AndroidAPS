@@ -530,7 +530,11 @@ open class OpenAPSAutoISFPlugin @Inject constructor(
                 val covNeed = max(0.2, (covRaw - covTarget) / covIsf + mealData.mealCOB / covIc)
                 val covGateIob = iobData.iob - min(0.0, iobData.basaliob)   // max(bolusIOB, netIOB)
                 val covPct = (100.0 * covGateIob / covNeed).roundToInt()
-                consoleError.add("Coverage $covPct% (raw ${covRaw.roundToInt()}, profTgt ${covTarget.roundToInt()}, need ${"%.2f".format(covNeed)}U, iobGate ${"%.2f".format(covGateIob)}U [max bol/net])")
+                // 0048: bolus coverage next to it — the irrevocable-insulin view the LOW rules
+                // gate on (max() self-locks as an opening criterion under TBR correction).
+                val covBolusIob = max(0.0, iobData.iob - iobData.basaliob)
+                val covBolusPct = (100.0 * covBolusIob / covNeed).roundToInt()
+                consoleError.add("Coverage $covPct% (raw ${covRaw.roundToInt()}, profTgt ${covTarget.roundToInt()}, need ${"%.2f".format(covNeed)}U, iobGate ${"%.2f".format(covGateIob)}U [max bol/net]) | BolusCov $covBolusPct% (bolus ${"%.2f".format(covBolusIob)}U)")
             }
         }
 
