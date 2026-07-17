@@ -21,6 +21,7 @@ object AutoIsfShadow {
         val rmseBest: Double?, val nPoints: Int,
         val signAgreeShortMid: Boolean?,
         val use1MinuteRaw: Boolean,
+        val capturedAtMs: Long = System.currentTimeMillis(),   // 0054: formal staleness check
     )
 
     /**
@@ -37,6 +38,7 @@ object AutoIsfShadow {
         val ppLive: Double,
         val ppCandidate: Double?,        // null when candidate conditions not met (== live then)
         val persistentDelta: Double?,
+        val capturedAtMs: Long = System.currentTimeMillis(),   // 0054: formal staleness check
     )
 
     const val MID_WINDOW_MIN = 25.0

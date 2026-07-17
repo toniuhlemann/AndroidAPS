@@ -625,6 +625,7 @@ open class OpenAPSAutoISFPlugin @Inject constructor(
                         d.limitReason?.let { put("limitReason", it) }
                         d.capIobU?.takeIf { it.isFinite() }?.let { put("capIobU", it) }
                         d.headroomU?.takeIf { it.isFinite() }?.let { put("headroomU", it) }
+                        d.headroomAfterU?.takeIf { it.isFinite() }?.let { put("headroomAfterU", it) }
                     })
                 }
                 // Build A: Shadow-Telemetrie (Paket_final Punkt 5) — Dual-Horizon-Fit, Faktor-
@@ -644,6 +645,7 @@ open class OpenAPSAutoISFPlugin @Inject constructor(
                                 put("nPoints", f.nPoints)
                                 f.signAgreeShortMid?.let { put("signAgreeShortMid", it) }
                                 put("use1MinuteRaw", f.use1MinuteRaw)
+                                put("cycleTs", f.capturedAtMs)
                             })
                         }
                         AutoIsfShadow.factors?.let { fc ->
@@ -655,6 +657,7 @@ open class OpenAPSAutoISFPlugin @Inject constructor(
                                 put("ppLive", fc.ppLive.takeIf { it.isFinite() })
                                 fc.ppCandidate?.takeIf { it.isFinite() }?.let { put("ppCandidate", it) }
                                 fc.persistentDelta?.takeIf { it.isFinite() }?.let { put("persistentDelta", it) }
+                                put("cycleTs", fc.capturedAtMs)
                             })
                         }
                     })
