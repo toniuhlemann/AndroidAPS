@@ -1,6 +1,7 @@
 package app.aaps.plugins.constraints.bgQualityCheck
 
 import androidx.annotation.DrawableRes
+import app.aaps.core.data.model.SourceSensor
 import app.aaps.core.data.plugin.PluginType
 import app.aaps.core.data.time.T
 import app.aaps.core.interfaces.bgQualityCheck.BgQualityCheck
@@ -83,7 +84,15 @@ class BgQualityCheckPlugin @Inject constructor(
                     message = rh.gs(R.string.bg_too_close, dateUtil.dateAndTimeAndSecondsString(readings[i].timestamp), dateUtil.dateAndTimeAndSecondsString(readings[i + 1].timestamp))
                     return
                 }
-        if (lastBg?.sourceSensor?.isLibre1() == true && isBgFlatForInterval(staleBgCheckPeriodMinutes, staleBgMaxDeltaMgdl) == true) {
+        // 0050 (Paket_final Punkt 4): the FLAT ("sensor frozen ~45min on one value") safeguard was
+        // wired to isLibre1() ONLY, so it never fired for Libre 2/3. Toni's Libre 3+ arrives via
+        // Juggluco tagged LIBRE_2 (live-log verified 2026-07-17: sourceSensor=LIBRE_2), and Libre
+        // 2/3 can freeze exactly like Libre 1. Same sensor set the parabola fit already treats as
+        // 1-min-native (XdripSourcePlugin). Reactivates a dead safety net; no normal-run change.
+        val flatSensor = lastBg?.sourceSensor
+        val flatEligible = flatSensor?.isLibre1() == true ||
+            flatSensor == SourceSensor.LIBRE_2 || flatSensor == SourceSensor.LIBRE_2_NATIVE || flatSensor == SourceSensor.LIBRE_3
+        if (flatEligible && isBgFlatForInterval(staleBgCheckPeriodMinutes, staleBgMaxDeltaMgdl) == true) {
             state = BgQualityCheck.State.FLAT
             message = rh.gs(R.string.a11y_bg_quality_flat)
         } else if (iobCobCalculator.ads.lastUsed5minCalculation == true) {
