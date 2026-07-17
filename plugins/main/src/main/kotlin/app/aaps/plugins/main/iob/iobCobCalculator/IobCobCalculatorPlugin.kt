@@ -34,6 +34,7 @@ import app.aaps.core.interfaces.rx.events.EventEffectiveProfileSwitchChanged
 import app.aaps.core.interfaces.rx.events.EventNewBG
 import app.aaps.core.interfaces.rx.events.EventNewHistoryData
 import app.aaps.core.interfaces.rx.events.EventPreferenceChange
+import app.aaps.core.interfaces.rx.events.EventQueueIdleRetryLoop
 import app.aaps.core.interfaces.rx.events.EventRunningModeChange
 import app.aaps.core.interfaces.rx.events.EventTherapyEventChange
 import app.aaps.core.interfaces.utils.DateUtil
@@ -148,6 +149,29 @@ class IobCobCalculatorPlugin @Inject constructor(
             .toObservable(EventNewHistoryData::class.java)
             .observeOn(aapsSchedulers.io)
             .subscribe({ event -> scheduleHistoryDataChange(event) }, fabricPrivacy::logException)
+        // 0055: pump queue drained after a pump-busy BG skip (QueueWorker already verified
+        // Loop.pendingRetryBgTs > 0, so this fires only for a genuine skip, not every command
+        // batch). Run ONE full recalc — bgDataReload=TRUE so it reloads the freshest BG from the
+        // DB and can NEVER displace a concurrently-arrived newer BG with a stale cache (the 0032/
+        // 0035 regression class Codex flagged). REPLACE serialises it with any in-flight recalc;
+        // it ends in the SAME guarded InvokeLoopWorker, so an already-looped BG is a no-op.
+        disposable += rxBus
+            .toObservable(EventQueueIdleRetryLoop::class.java)
+            .observeOn(aapsSchedulers.io)
+            .subscribe({ event ->
+                           // Plain runCalculation (NOT resetDataAndRunCalculation): bgDataReload=true
+                           // reloads BG (LoadBgDataWorker → clearCache) but WITHOUT ads.reset()/full
+                           // autosens rebuild — the pending-gate makes this rare, so the cost is fine.
+                           calculationWorkflow.runCalculation(
+                               CalculationWorkflow.MAIN_CALCULATION,
+                               this,
+                               overviewData,
+                               "onQueueIdleRetry(bg=${event.bgTs})",
+                               System.currentTimeMillis(),
+                               bgDataReload = true,
+                               cause = event
+                           )
+                       }, fabricPrivacy::logException)
         disposable += rxBus
             .toObservable(EventTherapyEventChange::class.java)
             .observeOn(aapsSchedulers.io)

@@ -137,6 +137,11 @@ class LoopPlugin @Inject constructor(
 
     private val disposable = CompositeDisposable()
     override var lastBgTriggeredRun: Long = 0
+    // 0055 v3: atomic monotonic holder (Codex round 2 — @Volatile lacked atomic check-then-set).
+    private val pendingRetry = PendingRetryTracker()
+    override fun markPendingRetry(bgTs: Long) = pendingRetry.mark(bgTs)
+    override fun clearPendingRetryThrough(claimedTs: Long) = pendingRetry.clearThrough(claimedTs)
+    override fun pendingRetryBgTs(): Long = pendingRetry.value()
     private var carbsSuggestionsSuspendedUntil: Long = 0
     private var prevCarbsreq = 0
     override var lastRun: LastRun? = null

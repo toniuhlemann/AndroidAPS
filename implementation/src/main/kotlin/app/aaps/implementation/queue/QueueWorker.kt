@@ -8,6 +8,7 @@ import androidx.work.WorkerParameters
 import app.aaps.core.data.configuration.Constants
 import app.aaps.core.data.time.T
 import app.aaps.core.interfaces.androidPermissions.AndroidPermission
+import app.aaps.core.interfaces.aps.Loop
 import app.aaps.core.interfaces.configuration.Config
 import app.aaps.core.interfaces.logging.LTag
 import app.aaps.core.interfaces.plugin.ActivePlugin
@@ -18,6 +19,7 @@ import app.aaps.core.interfaces.rx.bus.RxBus
 import app.aaps.core.interfaces.rx.events.EventDismissBolusProgressIfRunning
 import app.aaps.core.interfaces.rx.events.EventPumpStatusChanged
 import app.aaps.core.interfaces.rx.events.EventQueueChanged
+import app.aaps.core.interfaces.rx.events.EventQueueIdleRetryLoop
 import app.aaps.core.keys.BooleanKey
 import app.aaps.core.keys.LongNonKey
 import app.aaps.core.keys.interfaces.Preferences
@@ -42,8 +44,11 @@ class QueueWorker internal constructor(
     @Inject lateinit var preferences: Preferences
     @Inject lateinit var androidPermission: AndroidPermission
     @Inject lateinit var config: Config
+    @Inject lateinit var loop: Loop
 
     private var connectLogged = false
+    private var performedAnyCommand = false   // 0055: gate the queue-idle retry to drains that actually enacted something
+    private var retrySignalSent = false       // 0055: send the retry at most once per idle epoch (reset on each new command)
 
     override suspend fun doWorkAndLog(): Result {
         queue.waitingForDisconnect = false
@@ -144,6 +149,11 @@ class QueueWorker internal constructor(
                             queue.resetPerforming()
                             rxBus.send(EventQueueChanged())
                             lastCommandTime = System.currentTimeMillis()
+                            performedAnyCommand = true   // 0055: this drain enacted a command
+                            // 0055 v3 (Codex round 2): a new command opens a NEW busy/idle epoch,
+                            // so re-arm the retry signal — a BG skipped DURING this command must
+                            // still get its retry when the queue drains again.
+                            retrySignalSent = false
                             SystemClock.sleep(100)
                             true
                         } == true
@@ -153,6 +163,19 @@ class QueueWorker internal constructor(
                     }
                 }
                 if (queue.size() == 0 && queue.performing() == null) {
+                    // 0055: queue is idle. If this run enacted a command AND a BG is provably
+                    // waiting on a pump-busy skip (Loop.pendingRetryBgTs, set only in
+                    // InvokeLoopWorker's busy branch), prompt ONE retry now — before the disconnect
+                    // wait, so the full latency is recovered. Sent at most once per idle epoch. The retry
+                    // recalc reloads BG (bgDataReload=true) so a newer concurrent BG can't be lost;
+                    // InvokeLoopWorker's dedupe makes an already-looped BG a no-op. Quiet phases:
+                    // pendingRetryBgTs stays 0 (the pump is virtually never busy) → nothing fires.
+                    val pendingBg = loop.pendingRetryBgTs()
+                    if (performedAnyCommand && !retrySignalSent && pendingBg > 0) {
+                        retrySignalSent = true
+                        aapsLogger.debug(LTag.PUMPQUEUE, "queue idle - prompting loop retry for skipped BG $pendingBg")
+                        rxBus.send(EventQueueIdleRetryLoop(pendingBg))
+                    }
                     val secondsFromLastCommand = (System.currentTimeMillis() - lastCommandTime) / 1000
                     if (secondsFromLastCommand >= pump.waitForDisconnectionInSeconds()) {
                         queue.waitingForDisconnect = true

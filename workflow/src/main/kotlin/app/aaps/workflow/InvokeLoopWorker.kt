@@ -51,8 +51,17 @@ class InvokeLoopWorker(
         dataWorkerStorage.pickupObject(inputData.getLong(DataWorkerStorage.STORE_KEY, -1)) as InvokeLoopData?
             ?: return Result.failure(workDataOf("Error" to "missing input data"))
 
-        val glucoseValue = iobCobCalculator.ads.actualBg() ?: return Result.success(workDataOf("Result" to "bg outdated"))
-        if (glucoseValue.timestamp <= loop.lastBgTriggeredRun) return Result.success(workDataOf("Result" to "already looped with that value"))
+        val glucoseValue = iobCobCalculator.ads.actualBg()
+            // 0055 v4 (Codex round 3, blocker 2): sensor stale → just return. Do NOT clear pending
+            // here: a concurrent worker may have marked a fresh BG between our actualBg()==null and
+            // reading pendingRetryBgTs(), and we'd erase it. A stale marker is harmless — the next
+            // successful claim's clearThrough(claimedTs) cleans it up.
+            ?: return Result.success(workDataOf("Result" to "bg outdated"))
+        // Fast-path (NOT authoritative — re-checked atomically at the claim below).
+        if (glucoseValue.timestamp <= loop.lastBgTriggeredRun) {
+            loop.clearPendingRetryThrough(loop.lastBgTriggeredRun)
+            return Result.success(workDataOf("Result" to "already looped with that value"))
+        }
         // PUMP-BUSY-PEEK (2026-07-12): lastBgTriggeredRun was consumed BEFORE invoke(); if invoke
         // then hit the pump-busy path (queue occupied by the previous cycle's SMB enact + sync,
         // LoopPlugin waits up to 2 min then RETURNS without dosing), the BG counted as looped and
@@ -60,9 +69,27 @@ class InvokeLoopWorker(
         // busy we DON'T consume the BG and return; the next calculation (treatment writes fire
         // one within seconds during delivery) retries with the BG still eligible. In quiet phases
         // the queue is virtually never busy, so behaviour there is unchanged.
-        if (commandQueue.size() > 0 || commandQueue.performing() != null)
-            return Result.success(workDataOf("Result" to "pump busy - retry on next calculation"))
-        loop.lastBgTriggeredRun = glucoseValue.timestamp
+        if (commandQueue.size() > 0 || commandQueue.performing() != null) {
+            // 0055: RECORD the skipped BG (monotonic) so QueueWorker can prompt a retry the instant
+            // the queue drains — instead of waiting for the next natural trigger (~45s onset
+            // latency). This is the ONLY place a retry is marked, so it provably follows a real skip.
+            loop.markPendingRetry(glucoseValue.timestamp)
+            return Result.success(workDataOf("Result" to "pump busy - retry when queue idle"))
+        }
+        // 0055 v4 (Codex round 3, blocker 1): ATOMIC check-then-claim of lastBgTriggeredRun.
+        // ExistingWorkPolicy.REPLACE is NOT mutual exclusion — cancellation isn't instant (the fork's
+        // own stopCalculation() waits up to 10s for a running worker), so two InvokeLoopWorkers can
+        // briefly overlap and both pass the fast-path check for the same BG. Guard the claim under
+        // the loop monitor so exactly one wins; the loser reports already-looped and never doses.
+        val claimed = synchronized(loop) {
+            if (glucoseValue.timestamp <= loop.lastBgTriggeredRun) false
+            else { loop.lastBgTriggeredRun = glucoseValue.timestamp; true }
+        }
+        if (!claimed) {
+            loop.clearPendingRetryThrough(loop.lastBgTriggeredRun)
+            return Result.success(workDataOf("Result" to "already looped with that value (raced)"))
+        }
+        loop.clearPendingRetryThrough(glucoseValue.timestamp)   // 0055: claim satisfies retry up through this BG
         loop.invoke("Calculation for $glucoseValue", true)
         return Result.success()
     }
