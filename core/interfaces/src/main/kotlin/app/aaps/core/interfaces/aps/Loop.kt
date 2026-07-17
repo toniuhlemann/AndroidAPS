@@ -73,6 +73,24 @@ interface Loop {
     var lastBgTriggeredRun: Long
 
     /**
+     * 0055: record a BG whose loop run was SKIPPED because the pump queue was busy. Monotonic —
+     * keeps the newest pending ts (set only from InvokeLoopWorker's pump-busy branch).
+     */
+    fun markPendingRetry(bgTs: Long)
+
+    /**
+     * 0055: clear the pending-retry marker IFF it points at [claimedTs] or older (it has been
+     * handled / aged out). A pending BG newer than [claimedTs] survives.
+     */
+    fun clearPendingRetryThrough(claimedTs: Long)
+
+    /**
+     * 0055: current pending-retry BG ts, or 0 when nothing awaits a retry. QueueWorker reads this
+     * to gate the prompt retry to a provable busy-skip.
+     */
+    fun pendingRetryBgTs(): Long
+
+    /**
      * Invoke new loop run
      *
      * @param initiator Identifies who triggered the run
