@@ -622,6 +622,41 @@ open class OpenAPSAutoISFPlugin @Inject constructor(
                         put("deliveredU", d.deliveredU.takeIf { it.isFinite() })
                         d.maxBolusU?.takeIf { it.isFinite() }?.let { put("maxBolusU", it) }
                         put("state", d.state)
+                        d.limitReason?.let { put("limitReason", it) }
+                        d.capIobU?.takeIf { it.isFinite() }?.let { put("capIobU", it) }
+                        d.headroomU?.takeIf { it.isFinite() }?.let { put("headroomU", it) }
+                    })
+                }
+                // Build A: Shadow-Telemetrie (Paket_final Punkt 5) — Dual-Horizon-Fit, Faktor-
+                // Kette und PP-Persistenz-Kandidat. Export-only; Kandidaten dosieren NIE.
+                runCatching {
+                    put("shadow", JSONObject().apply {
+                        AutoIsfShadow.fit?.let { f ->
+                            put("fit", JSONObject().apply {
+                                put("acceShort", f.acceShort.takeIf { it.isFinite() })
+                                put("winShortMin", f.winShortMin.takeIf { it.isFinite() })
+                                f.acceMid?.takeIf { it.isFinite() }?.let { put("acceMid", it) }
+                                f.winMidMin?.takeIf { it.isFinite() }?.let { put("winMidMin", it) }
+                                put("acceBest", f.acceBest.takeIf { it.isFinite() })
+                                put("winBestMin", f.winBestMin.takeIf { it.isFinite() })
+                                put("rSquBest", f.rSquBest.takeIf { it.isFinite() })
+                                f.rmseBest?.takeIf { it.isFinite() }?.let { put("rmseBest", it) }
+                                put("nPoints", f.nPoints)
+                                f.signAgreeShortMid?.let { put("signAgreeShortMid", it) }
+                                put("use1MinuteRaw", f.use1MinuteRaw)
+                            })
+                        }
+                        AutoIsfShadow.factors?.let { fc ->
+                            put("factors", JSONObject().apply {
+                                put("strongestPreBrake", fc.strongestPreBrake.takeIf { it.isFinite() })
+                                fc.acceBrake?.takeIf { it.isFinite() }?.let { put("acceBrake", it) }
+                                put("liftAfterBrake", fc.liftAfterBrake.takeIf { it.isFinite() })
+                                put("finalAfterClamp", fc.finalAfterClamp.takeIf { it.isFinite() })
+                                put("ppLive", fc.ppLive.takeIf { it.isFinite() })
+                                fc.ppCandidate?.takeIf { it.isFinite() }?.let { put("ppCandidate", it) }
+                                fc.persistentDelta?.takeIf { it.isFinite() }?.let { put("persistentDelta", it) }
+                            })
+                        }
                     })
                 }
                 put("profile", JSONObject().apply {
@@ -1054,6 +1089,14 @@ open class OpenAPSAutoISFPlugin @Inject constructor(
                 console.add("bg_ISF adaptation lifted to ${round(liftISF, 2)} as bg accelerates already")
             }
             final_ISF = withinISFlimits(liftISF, autoISF_min, maxISFReduction, sensitivityRatio, exerciseModeActive, resistanceModeActive, stepActivityDetected, stepInactivityDetected, console)
+            // Build A shadow (below-target path; only for the live determine call, 0044-style).
+            if (console === consoleError) runCatching {
+                AutoIsfShadow.factors = AutoIsfShadow.FactorShadow(
+                    strongestPreBrake = min(bg_ISF, acce_ISF), acceBrake = acce_ISF.takeIf { it < 1.0 },
+                    liftAfterBrake = liftISF, finalAfterClamp = final_ISF,
+                    ppLive = 1.0, ppCandidate = null, persistentDelta = null,
+                )
+            }
             return min(720.0, round(sens / final_ISF, 1))         // observe ISF maximum of 720(?)
         } else if (bg_ISF > 1.0) {
             sens_modified = true
@@ -1081,6 +1124,18 @@ open class OpenAPSAutoISFPlugin @Inject constructor(
         }
         autoIsfValues.ppIsf = pp_ISF
 
+        // Build A shadow — PP-Persistenz-KANDIDAT (Paket_final Punkt 2, dosiert NICHT):
+        // frisch berechnet, kein Peak-Speicher. Nur gültig solange delta, shortAvg und longAvg
+        // gleichzeitig positiv sind und die pp-Zone aktiv ist (bg über Target+10, wie live).
+        // Bei delta <= 0 gilt sofort die Live-Berechnung (Kandidat = null).
+        val ppCandidate: Double? = if (console === consoleError &&
+            bg_off <= 0.0 && bg_delta > 0.0 &&
+            glucose_status.shortAvgDelta > 0.0 && glucose_status.longAvgDelta > 0.0
+        ) {
+            val persistentDelta = max(bg_delta, min(glucose_status.shortAvgDelta, glucose_status.longAvgDelta))
+            1.0 + max(0.0, persistentDelta * pp_ISF_weight)
+        } else null
+
         var dura_ISF = 1.0
         val weightISF: Double = dura_ISF_weight
         when {
@@ -1104,17 +1159,35 @@ open class OpenAPSAutoISFPlugin @Inject constructor(
         autoIsfValues.duraIsf = dura_ISF
 
         if (sens_modified) {
-            liftISF = max(dura_ISF, max(bg_ISF, max(acce_ISF, pp_ISF)))
+            val strongestPreBrake = max(dura_ISF, max(bg_ISF, max(acce_ISF, pp_ISF)))
+            liftISF = strongestPreBrake
             if (acce_ISF < 1.0) {
                 console.add("strongest autoISF factor ${round(liftISF, 2)} weakened to ${round(liftISF * acce_ISF, 2)} as bg decelerates already")
                 liftISF = liftISF * acce_ISF
             }
             final_ISF = withinISFlimits(liftISF, autoISF_min, maxISFReduction, sensitivityRatio, exerciseModeActive, resistanceModeActive, stepActivityDetected, stepInactivityDetected, console)
+            // Build A shadow — Faktor-Kette (nur Live-Pfad; Export-only, dosiert unverändert).
+            if (console === consoleError) runCatching {
+                AutoIsfShadow.factors = AutoIsfShadow.FactorShadow(
+                    strongestPreBrake = strongestPreBrake, acceBrake = acce_ISF.takeIf { it < 1.0 },
+                    liftAfterBrake = liftISF, finalAfterClamp = final_ISF,
+                    ppLive = pp_ISF, ppCandidate = ppCandidate,
+                    persistentDelta = ppCandidate?.let { max(bg_delta, min(glucose_status.shortAvgDelta, glucose_status.longAvgDelta)) },
+                )
+            }
             return round(sens / final_ISF, 1)
         }
         console.add("----------------------------------")
         console.add("end AutoISF")
         console.add("----------------------------------")
+        // Build A shadow — neutraler Zyklus (kein Faktor aktiv), damit der Export nie einen
+        // veralteten Kettenzustand aus dem Vor-Zyklus zeigt.
+        if (console === consoleError) runCatching {
+            AutoIsfShadow.factors = AutoIsfShadow.FactorShadow(
+                strongestPreBrake = 1.0, acceBrake = null, liftAfterBrake = 1.0,
+                finalAfterClamp = 1.0, ppLive = pp_ISF, ppCandidate = ppCandidate, persistentDelta = null,
+            )
+        }
         return round(sens / sensitivityRatio, 1)     // nothing changed
     }
 
