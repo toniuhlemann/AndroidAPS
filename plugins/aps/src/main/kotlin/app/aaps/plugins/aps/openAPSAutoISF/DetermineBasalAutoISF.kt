@@ -44,7 +44,15 @@ class DetermineBasalAutoISF @Inject constructor(
     var lastSmbDecision: SmbDecision? = null
 
     /** wantedU = ungecappte SMB-Wunschmenge (insulinReq*ratio); deliveredU = rT.units after all caps. */
-    data class SmbDecision(val wantedU: Double, val deliveredU: Double, val maxBolusU: Double?, val state: String)
+    data class SmbDecision(
+        val wantedU: Double, val deliveredU: Double, val maxBolusU: Double?, val state: String,
+        // Build A shadow (Paket_final Punkt 5, export-only): WHICH constraint shaped this
+        // cycle's SMB (maxBolus/iobTH/rounding/interval/smb-off/none) + the consistent
+        // commitment view (capIob = max(net, bolus)) and the iobTH headroom before the SMB.
+        val limitReason: String? = null,
+        val capIobU: Double? = null,
+        val headroomU: Double? = null,
+    )
 
     private fun Double.toFixed2(): String = DecimalFormat("0.00#").format(round(this, 2))
 
@@ -1055,7 +1063,12 @@ class DetermineBasalAutoISF @Inject constructor(
             // IOB Action viewer (dosing-neutral): default SMB decision for this cycle. If the SMB
             // block below is entered it overrides this with the precise state; otherwise (SMB off /
             // bg<=threshold) a positive insulinReq means SMB was WANTED but suppressed = "blocked".
-            lastSmbDecision = SmbDecision(0.0, 0.0, null, if (insulinReq > 0.0) "blocked" else "none")
+            lastSmbDecision = SmbDecision(
+                0.0, 0.0, null, if (insulinReq > 0.0) "blocked" else "none",
+                limitReason = if (insulinReq > 0.0) "smb-off" else null,
+                capIobU = round(iob_data.iob - min(0.0, iob_data.basaliob), 3),
+                headroomU = round(iobTHvirtual - (iob_data.iob - min(0.0, iob_data.basaliob)), 3),
+            )
             //console.error(iob_data.lastBolusTime);
             //console.error(profile.temptargetSet, target_bg, rT.COB);
             // only allow microboluses with COB or low temp targets, or within DIA hours of a bolus
@@ -1076,13 +1089,20 @@ class DetermineBasalAutoISF @Inject constructor(
                 val roundSMBTo = 1 / profile.bolus_increment
                 //var microBolus: Double
                 var microBolus = Math.floor(Math.min(insulinReq / 2, maxBolus) * roundSMBTo) / roundSMBTo
+                // Build A shadow: track WHICH constraint shaped this SMB (export-only).
+                var shadowLimitReason: String? = null
                 if (autoIsfMode) {
-                    microBolus = Math.min(insulinReq * smb_ratio, maxBolus)
+                    val rawWant = insulinReq * smb_ratio
+                    microBolus = Math.min(rawWant, maxBolus)
+                    if (rawWant > maxBolus) shadowLimitReason = "maxBolus"
                     if (microBolus > iobTHvirtual - iob_data.iob && (loop_wanted_smb == "fullLoop" || loop_wanted_smb == "enforced")) {
                         microBolus = iobTHvirtual - iob_data.iob
+                        shadowLimitReason = "iobTH"
                         consoleError.add("Full loop capped SMB at ${round(microBolus, 2)} to not exceed $iobTHtolerance% of effective iobTH ${round(iobTHvirtual / iobTHtolerance * 100, 2)}U")
                     }
+                    val preFloor = microBolus
                     microBolus = Math.floor(microBolus * roundSMBTo) / roundSMBTo
+                    if (shadowLimitReason == null && preFloor > 0 && microBolus < preFloor - 1e-9) shadowLimitReason = "rounding"
                 }
 
                 // calculate a long enough zero temp to eventually correct back up to target
@@ -1151,17 +1171,27 @@ class DetermineBasalAutoISF @Inject constructor(
                     val deliveredU = rT.units ?: 0.0
                     val wantedU = if (autoIsfMode) insulinReq * smb_ratio else Math.min(insulinReq / 2.0, maxBolus)
                     val wantedFloored = Math.floor(wantedU * roundSMBTo) / roundSMBTo
+                    val capIob = iob_data.iob - min(0.0, iob_data.basaliob)
+                    val state = when {
+                        deliveredU > 0.0 && deliveredU < wantedFloored - 1e-9 -> "capped"
+                        deliveredU > 0.0                                       -> "delivered"
+                        microBolus > 0.0                                       -> "waiting"   // would deliver, SMB interval not elapsed
+                        insulinReq > 0.0                                       -> "blocked"   // wanted, nothing delivered (too small / iobTH full)
+                        else                                                   -> "none"
+                    }
                     lastSmbDecision = SmbDecision(
                         wantedU = round(wantedU, 3),
                         deliveredU = round(deliveredU, 3),
                         maxBolusU = maxBolus,
-                        state = when {
-                            deliveredU > 0.0 && deliveredU < wantedFloored - 1e-9 -> "capped"
-                            deliveredU > 0.0                                       -> "delivered"
-                            microBolus > 0.0                                       -> "waiting"   // would deliver, SMB interval not elapsed
-                            insulinReq > 0.0                                       -> "blocked"   // wanted, nothing delivered (too small / iobTH full)
-                            else                                                   -> "none"
-                        }
+                        state = state,
+                        limitReason = when {
+                            state == "waiting"                          -> "interval"
+                            state == "delivered" && shadowLimitReason == null -> null
+                            state == "none"                             -> null
+                            else                                        -> shadowLimitReason ?: if (state == "blocked") "rounding" else null
+                        },
+                        capIobU = round(capIob, 3),
+                        headroomU = round(iobTHvirtual - capIob, 3),
                     )
                 }
 

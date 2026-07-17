@@ -134,6 +134,15 @@ class GlucoseStatusCalculatorAutoIsf @Inject constructor(
         val calibrationDuration = preferences.get(IntKey.FslCalibrationDuration)
         val calibrationMinutes = calibrationDuration - (dateUtil.now() - preferences.get(LongKey.FslCalibrationStart)) / 60000
         val calibrationStopsSMB = calibrationMinutes > 0 && !preferences.get(BooleanKey.FslCalibrationEnd)
+        // Build A shadow (Paket_final Punkt 5): dual-horizon capture INSIDE the existing
+        // incremental loop — first valid fit = short horizon, fit nearest 25min = mid horizon,
+        // rSqu winner = legacy (doses, unchanged). Export-only, never read back into dosing.
+        var shadowShortAcce: Double? = null
+        var shadowShortWin = 0.0
+        var shadowMidAcce: Double? = null
+        var shadowMidWin: Double? = null
+        var shadowRmseBest: Double? = null
+        var shadowN = 0
         if (sizeRecords > 3 && !calibrationStopsSMB) {
             var sy = 0.0 // y
             var sx = 0.0 // x
@@ -230,8 +239,21 @@ class GlucoseStatusCalculatorAutoIsf @Inject constructor(
                         if (sSquares != 0.0) {
                             rSqu = 1 - sResidualSquares / sSquares
                         }
+                        // Build A shadow capture: shortest valid fit + fit nearest the mid horizon.
+                        // Read-only observation of this iteration; winner selection below unchanged.
+                        val winMin = -ti * scaleTime / 60.0
+                        if (shadowShortAcce == null) {
+                            shadowShortAcce = 2 * a
+                            shadowShortWin = winMin
+                        }
+                        if (shadowMidAcce == null && winMin >= AutoIsfShadow.MID_WINDOW_MIN) {
+                            shadowMidAcce = 2 * a
+                            shadowMidWin = winMin
+                        }
                         if (rSqu >= corrMax) {
                             corrMax = rSqu
+                            shadowRmseBest = if (n > 0) kotlin.math.sqrt(sResidualSquares / n) * scaleBg else null
+                            shadowN = n
 
                             duraP = -ti * scaleTime / 60.0 // remember we are going backwards in time
                             val delta5Min = 1.0 //5 * 60 / scaleTime
@@ -247,6 +269,21 @@ class GlucoseStatusCalculatorAutoIsf @Inject constructor(
             }
         }
         // End parabola fit
+
+        // Build A shadow publish (export-only; runCatching so telemetry can never break the
+        // glucose status this loop run doses on).
+        runCatching {
+            AutoIsfShadow.fit = shadowShortAcce?.let { shortAcce ->
+                AutoIsfShadow.FitShadow(
+                    acceShort = shortAcce, winShortMin = shadowShortWin,
+                    acceMid = shadowMidAcce, winMidMin = shadowMidWin,
+                    acceBest = bgAcceleration, winBestMin = duraP, rSquBest = corrMax,
+                    rmseBest = shadowRmseBest, nPoints = shadowN,
+                    signAgreeShortMid = shadowMidAcce?.let { mid -> (shortAcce >= 0) == (mid >= 0) },
+                    use1MinuteRaw = use1MinuteRaw,
+                )
+            }
+        }
 
         return GlucoseStatusAutoIsf(
             glucose = now.recalculated,
