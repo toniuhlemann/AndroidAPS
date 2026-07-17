@@ -52,6 +52,7 @@ class DetermineBasalAutoISF @Inject constructor(
         val limitReason: String? = null,
         val capIobU: Double? = null,
         val headroomU: Double? = null,
+        val headroomAfterU: Double? = null,   // 0054: headroom after this cycle's delivery
     )
 
     private fun Double.toFixed2(): String = DecimalFormat("0.00#").format(round(this, 2))
@@ -1065,7 +1066,13 @@ class DetermineBasalAutoISF @Inject constructor(
             // bg<=threshold) a positive insulinReq means SMB was WANTED but suppressed = "blocked".
             lastSmbDecision = SmbDecision(
                 0.0, 0.0, null, if (insulinReq > 0.0) "blocked" else "none",
-                limitReason = if (insulinReq > 0.0) "smb-off" else null,
+                // 0054: precise reason — SMB feature off vs. BG below the LGS-style threshold.
+                limitReason = when {
+                    insulinReq <= 0.0                  -> null
+                    !microBolusAllowed || !enableSMB   -> "smb-disabled"
+                    bg <= threshold                    -> "bg-below-threshold"
+                    else                               -> "smb-off"
+                },
                 capIobU = round(iob_data.iob - min(0.0, iob_data.basaliob), 3),
                 headroomU = round(iobTHvirtual - (iob_data.iob - min(0.0, iob_data.basaliob)), 3),
             )
@@ -1095,10 +1102,15 @@ class DetermineBasalAutoISF @Inject constructor(
                     val rawWant = insulinReq * smb_ratio
                     microBolus = Math.min(rawWant, maxBolus)
                     if (rawWant > maxBolus) shadowLimitReason = "maxBolus"
-                    if (microBolus > iobTHvirtual - iob_data.iob && (loop_wanted_smb == "fullLoop" || loop_wanted_smb == "enforced")) {
-                        microBolus = iobTHvirtual - iob_data.iob
+                    // 0049 (Paket_final Punkt 1): the single-SMB cap uses the SAME commitment basis
+                    // as the 0040 entry gate — max(netIOB, bolusIOB). Negative basal-IOB (zero-temp
+                    // protection phases) no longer frees additional single-SMB budget; in boost
+                    // fronts (positive basal-IOB) capIob == netIOB and nothing changes.
+                    val capIob0049 = iob_data.iob - min(0.0, iob_data.basaliob)
+                    if (microBolus > iobTHvirtual - capIob0049 && (loop_wanted_smb == "fullLoop" || loop_wanted_smb == "enforced")) {
+                        microBolus = iobTHvirtual - capIob0049
                         shadowLimitReason = "iobTH"
-                        consoleError.add("Full loop capped SMB at ${round(microBolus, 2)} to not exceed $iobTHtolerance% of effective iobTH ${round(iobTHvirtual / iobTHtolerance * 100, 2)}U")
+                        consoleError.add("Full loop capped SMB at ${round(microBolus, 2)} to not exceed $iobTHtolerance% of effective iobTH ${round(iobTHvirtual / iobTHtolerance * 100, 2)}U (capIob ${round(capIob0049, 2)}U = max(net, bolus))")
                     }
                     val preFloor = microBolus
                     microBolus = Math.floor(microBolus * roundSMBTo) / roundSMBTo
@@ -1192,6 +1204,7 @@ class DetermineBasalAutoISF @Inject constructor(
                         },
                         capIobU = round(capIob, 3),
                         headroomU = round(iobTHvirtual - capIob, 3),
+                        headroomAfterU = round(iobTHvirtual - capIob - deliveredU, 3),
                     )
                 }
 
