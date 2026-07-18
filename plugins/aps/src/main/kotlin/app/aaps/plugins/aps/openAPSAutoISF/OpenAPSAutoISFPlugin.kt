@@ -614,9 +614,12 @@ open class OpenAPSAutoISFPlugin @Inject constructor(
                 })
                 // 0059: pump bolus increment as a real source (bolus_amount_to_be_delivered is a
                 // delivery AMOUNT, not the increment) + the exact BG timestamp determine ran on
-                // (better raw-join anchor than the cycle timestamp).
-                put("bolusIncrementU", activePlugin.activePump.pumpDescription.bolusStep)
-                put("apsGlucoseTs", glucoseStatus.date)
+                // (better raw-join anchor than the cycle timestamp). Guards (review round 8):
+                // the profile value frozen for THIS cycle, finite/positive only — an absent
+                // field must stay absent (viewer treats it as unknown), never 0.0/NaN.
+                oapsProfile.bolus_increment.takeIf { it.isFinite() && it > 0.0 }
+                    ?.let { put("bolusIncrementU", it) }
+                glucoseStatus.date.takeIf { it > 0L }?.let { put("apsGlucoseTs", it) }
                 put("smb", JSONObject().apply {
                     put("ratio", smbRatio)                        // effective SMB delivery ratio this cycle
                     put("ratio_fixed", smb_delivery_ratio)
