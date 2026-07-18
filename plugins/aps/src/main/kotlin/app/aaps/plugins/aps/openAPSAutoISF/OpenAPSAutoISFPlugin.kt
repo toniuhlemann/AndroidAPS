@@ -509,7 +509,9 @@ open class OpenAPSAutoISFPlugin @Inject constructor(
         // withheld basal can no longer CREATE budget. Predictions/eventualBG keep using net
         // IOB everywhere - this only changes the budget gate.
         val gateIob = iobData.iob - min(0.0, iobData.basaliob)   // = max(bolusIOB, netIOB)
-        val loopWantedSmb = loop_smb(microBolusAllowed, oapsProfile, gateIob, use_iobTH, iobTHvirtual / iobTHtolerance * 100.0)
+        // 0059: structured decision — mode drives dosing exactly as before, reason goes export-only.
+        val loopSmbDecision = loop_smb(microBolusAllowed, oapsProfile, gateIob, use_iobTH, iobTHvirtual / iobTHtolerance * 100.0)
+        val loopWantedSmb = loopSmbDecision.mode
         val flatBGsDetected = bgQualityCheck.state == BgQualityCheck.State.FLAT
         val smbRatio = determine_varSMBratio(glucoseStatus.glucose.toInt(), target_bg, loopWantedSmb)
 
@@ -605,7 +607,16 @@ open class OpenAPSAutoISFPlugin @Inject constructor(
                     put("dura", autoIsfValues.duraIsf.takeIf { it.isFinite() })
                     put("final", autoIsfValues.finalIsf.takeIf { it.isFinite() })
                     put("iobThEffectiveU", autoIsfValues.iobThEffective.takeIf { it.isFinite() })
+                    // 0059: exact loop_smb gate branch — disambiguates smb-disabled (iobTH gate
+                    // vs odd-target vs calibration vs ...). Cycle-atomic (local val, no holder).
+                    put("smbGateMode", loopSmbDecision.mode)
+                    put("smbGateReason", loopSmbDecision.reason)
                 })
+                // 0059: pump bolus increment as a real source (bolus_amount_to_be_delivered is a
+                // delivery AMOUNT, not the increment) + the exact BG timestamp determine ran on
+                // (better raw-join anchor than the cycle timestamp).
+                put("bolusIncrementU", activePlugin.activePump.pumpDescription.bolusStep)
+                put("apsGlucoseTs", glucoseStatus.date)
                 put("smb", JSONObject().apply {
                     put("ratio", smbRatio)                        // effective SMB delivery ratio this cycle
                     put("ratio_fixed", smb_delivery_ratio)
@@ -1310,7 +1321,13 @@ open class OpenAPSAutoISFPlugin @Inject constructor(
         return finalISF
     }
 
-    fun loop_smb(microBolusAllowed: Boolean, profile: OapsProfileAutoIsf, iob_data_iob: Double, useIobTh: Boolean, iobThEffective: Double): String {
+    // IOB-Action patch 0059 (2026-07-18): cycle-atomic exact gate reason. The mode strings and
+    // every branch condition are UNCHANGED (dosing behavior identical) — reason only names the
+    // exact branch for the export, threaded through the same calculate call (no global holder,
+    // no staleness). limitReason=smb-disabled in smbDecision is ambiguous without this.
+    data class LoopSmbDecision(val mode: String, val reason: String)
+
+    fun loop_smb(microBolusAllowed: Boolean, profile: OapsProfileAutoIsf, iob_data_iob: Double, useIobTh: Boolean, iobThEffective: Double): LoopSmbDecision {
         val iobThUser = preferences.get(IntKey.ApsAutoIsfIobThPercent)
         if (useIobTh) {
             val iobThPercent: Double
@@ -1332,7 +1349,7 @@ open class OpenAPSAutoISFPlugin @Inject constructor(
         autoIsfValues.iobThEffective = if (useIobTh) iobThEffective else profile.max_iob
 
         if (!microBolusAllowed) {
-            return "AAPS"                                                 // see message in enable_smb
+            return LoopSmbDecision("AAPS", "microbolus-disabled")         // see message in enable_smb
         }
 
         if (preferences.get(BooleanKey.FslCalibrationTrigger)) {
@@ -1347,7 +1364,7 @@ open class OpenAPSAutoISFPlugin @Inject constructor(
         aapsLogger.debug(LTag.APS, CalibrationMsg)
         if (calibrationStopsSMB) {
             consoleLog.add("SMB disabled while calibrating for another ${calibrationMinutes}m")
-            return "blocked"
+            return LoopSmbDecision("blocked", "calibration")
         } else if (enableSMB_EvenOn_OddOff_always) {
             //TODO: cleaner conversion back to original mmol/L if applicable
             var target = convert_bg_to_units(profile.target_bg, profile)
@@ -1371,27 +1388,27 @@ open class OpenAPSAutoISFPlugin @Inject constructor(
             if (!evenTarget) {
                 consoleLog.add("SMB disabled; current target $target $msgUnits $msgEven $msgTail")
                 consoleLog.add("Loop allows minimal power")
-                return "blocked"
+                return LoopSmbDecision("blocked", "odd-target")
             } else if (profile.max_iob == 0.0) {
                 consoleLog.add("SMB disabled because of max_iob=0")
-                return "blocked"
+                return LoopSmbDecision("blocked", "max-iob-zero")
             } else if (useIobTh && iobThEffective < iob_data_iob) {
                 consoleLog.add("SMB disabled by Full Loop logic: iob $iob_data_iob is above effective iobTH $iobThEffective")
                 consoleLog.add("Loop power level temporarily capped")
-                return "iobTH"
+                return LoopSmbDecision("iobTH", "iobTH")
             } else {
                 consoleLog.add("SMB enabled; current target $target $msgUnits $msgEven $msgTail")
                 return if (profile.target_bg < 100) {     // indirect assessment; later set it in GUI
                     consoleLog.add("Loop allows maximum power")
-                    "fullLoop"                                      // even number
+                    LoopSmbDecision("fullLoop", "none")             // even number
                 } else {
                     consoleLog.add("Loop allows medium power")
-                    "enforced"                                      // even number
+                    LoopSmbDecision("enforced", "none")             // even number
                 }
             }
         }
         consoleLog.add("Loop allows AAPS power level")
-        return "AAPS"                                                      // leave it to standard AAPS
+        return LoopSmbDecision("AAPS", "even-odd-off")                     // leave it to standard AAPS
     }
 
     fun determine_varSMBratio(bg: Int, target_bg: Double, loop_wanted_smb: String): Double {   // let SMB delivery ratio increase from min to max depending on how much bg exceeds target
