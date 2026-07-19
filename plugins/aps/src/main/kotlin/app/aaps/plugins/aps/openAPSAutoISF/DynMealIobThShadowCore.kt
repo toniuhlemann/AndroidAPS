@@ -13,13 +13,15 @@ import kotlin.math.min
  */
 
 object DynShadowSpec {
-    const val SPEC_VERSION = 1
-    const val MEAL_FLOOR_PERCENT = 40
+    const val SPEC_VERSION = 2
     const val MEAL_CEILING_PERCENT = 90
     const val SCORE_WINDOW_CYCLES = 5
     const val SCORE_WINDOW_MAX_MS = 7 * 60_000L
     const val UP_THRESHOLD_ROWS = 3          // = +60 % der ±20er-Skala
     const val DOWN_THRESHOLD_ROWS = 3        // = −60 %
+    // v2: Hard-Down braucht dieselbe Persistenz wie Up — ein einzelner Safety-roter Zyklus
+    // ist in FCL (COB=0, evBG-Flicker) Rauschen, kein Signal.
+    const val RED_THRESHOLD_ROWS = 3
     const val POST_UP_DOWN_HYSTERESIS_MS = 10 * 60_000L
     const val TELEMETRY_EPS = 0.01
     const val VIRTUAL_CAP_TOLERANCE = 1.30
@@ -27,10 +29,11 @@ object DynShadowSpec {
     /** Policy-Identitaet: jede verhaltenswirksame Konstante; Wechsel = neue Kohorte.
      *  R6 F8: kanonischer String wird MIT exportiert, Hash ist SHA-256. */
     fun policyCanonical(): String =
-        "v=$SPEC_VERSION;floor=$MEAL_FLOOR_PERCENT;ceil=$MEAL_CEILING_PERCENT;" +
+        "v=$SPEC_VERSION;base=live-delta;ceil=$MEAL_CEILING_PERCENT;" +
             "win=$SCORE_WINDOW_CYCLES/${SCORE_WINDOW_MAX_MS};up=$UP_THRESHOLD_ROWS;" +
-            "down=$DOWN_THRESHOLD_ROWS;hyst=$POST_UP_DOWN_HYSTERESIS_MS;eps=$TELEMETRY_EPS;" +
-            "cap=$VIRTUAL_CAP_TOLERANCE;sem=r6;cands=" + DYN_SHADOW_CANDIDATES.joinToString(",") { it.id }
+            "down=$DOWN_THRESHOLD_ROWS;red=$RED_THRESHOLD_ROWS;" +
+            "hyst=$POST_UP_DOWN_HYSTERESIS_MS;eps=$TELEMETRY_EPS;" +
+            "cap=$VIRTUAL_CAP_TOLERANCE;sem=v2-base-delta;cands=" + DYN_SHADOW_CANDIDATES.joinToString(",") { it.id }
 
     /** R7: voller SHA-256-Digest (64 Hexzeichen), kein Praefix-Truncate. */
     fun policyHash(): String = java.security.MessageDigest.getInstance("SHA-256")
@@ -38,17 +41,18 @@ object DynShadowSpec {
 }
 
 data class DynShadowCandidateCfg(val id: String, val stepPercent: Int, val loopBgFloor: Int?, val upCooldownMin: Int) {
-    /** Rung-Sequenz Floor..Ceiling; Ceiling wird erreicht bzw. geclampt, nie uebersprungen. */
-    fun rungs(): List<Int> {
-        val out = ArrayList<Int>()
-        var r = DynShadowSpec.MEAL_FLOOR_PERCENT
-        while (r < DynShadowSpec.MEAL_CEILING_PERCENT) { out += r; r += stepPercent }
-        out += DynShadowSpec.MEAL_CEILING_PERCENT
-        return out
+    /**
+     * v2-Delta-Leiter: die Engine haelt ein verdientes DELTA ueber der Live-Basis (realer
+     * User-iobTH%). Effektive Sprosse = Basis + Delta, gedeckelt aufs Ceiling; unter die Basis
+     * fuehrt kein Pfad (Delta-Floor 0 — Abwaerts unter Basis gehoert Loop/Brakes/User).
+     */
+    fun nextDeltaAbove(basePercent: Int, delta: Int): Int? {
+        if (basePercent + delta >= DynShadowSpec.MEAL_CEILING_PERCENT) return null
+        return (delta + stepPercent).coerceAtMost(DynShadowSpec.MEAL_CEILING_PERCENT - basePercent)
     }
 
-    fun nextRungAbove(current: Int): Int? = rungs().firstOrNull { it > current }
-    fun nextRungBelow(current: Int): Int? = rungs().lastOrNull { it < current }
+    fun nextDeltaBelow(delta: Int): Int? =
+        if (delta <= 0) null else (delta - stepPercent).coerceAtLeast(0)
 }
 
 /** 12 Kandidaten: step {5,10} × loopBgFloor {none,155} × upCooldown {5,10,15} (v1.3 §8). */

@@ -1,21 +1,27 @@
 package app.aaps.plugins.aps.openAPSAutoISF
 
 /**
- * DynamicMealIobTH — SHADOW-Zustandsmaschine (Spez v1.1-v1.3, Bauauflage A, R6-Korrekturen).
+ * DynamicMealIobTH — SHADOW-Zustandsmaschine (Spez v2: Basis/Delta-Semantik, 19.07.2026).
  * Pure, deterministisch, dosierungsneutral. Reihenfolge je Zyklus: 1. Fensterflanken IMMER,
- * 2. Rung-Change/Confounder IMMER monoton, 3. Hard-Safety IMMER, 4.-6. Glukose-Dedupe nur
- * fuer Score-Evidenz. R6: MEAL_ACTIVE-unknown blockt Score/UP/SOFT_DOWN im laufenden Fenster
- * (F1); Evidenz strikt MONOTON auf der apsGlucoseTs-Achse mit echtem 7-min-Fenster (F2);
- * Binding wird auch am Ceiling gemessen, Confounder/CommitCount post-transition (F7);
- * numerische Waende/Headrooms/Ratio/MaxBolus je Kandidat fuer den Export (F8).
+ * 2. Rung-Change/Confounder IMMER monoton + Basis-Drop-Reset, 3.-5. Glukose-Dedupe fuer
+ * ALLE Evidenz (auch rot). v2-Kernaenderungen gegenueber v1 (R6/R7):
+ *  - Die Leiter startet auf der LIVE-BASIS (realer User-iobTH%) statt auf einem 40er-Floor;
+ *    die Engine haelt nur ein verdientes DELTA daruber (einseitiger Fehler-Korrektor: sie
+ *    repariert Unterschaetzung der Basis, nie Ueberschaetzung).
+ *  - Hard-Down braucht PERSISTENZ (RED_THRESHOLD_ROWS rote Zyklen im 5/7-min-Fenster,
+ *    symmetrisch zur Up-Seite) statt Einzel-Zyklus-Trigger — FCL-evBG flackert (COB=0).
+ *  - Hard-Down setzt das Delta auf 0 (zurueck zur Basis), NIE unter die Basis; der
+ *    window-permanente Up-Latch entfaellt ersatzlos (Cooldown + Persistenz genuegen).
+ *  - Basis-Bewegungen: aufwaerts (User eskaliert) faehrt das Delta mit; ABWAERTS
+ *    (Brake/manuelle Korrektur) resettet das verdiente Delta aller Kandidaten auf 0 —
+ *    die Engine darf eine bewusste Abwaerts-Korrektur nie ueberstimmen.
  */
 
-data class DynEvidenceRow(val glucoseTs: Long, val pos: Boolean?, val neg: Boolean?)
+data class DynEvidenceRow(val glucoseTs: Long, val pos: Boolean?, val neg: Boolean?, val red: Boolean = false)
 
 data class DynCandidateState(
     val candidateId: String,
-    val currentRung: Int = DynShadowSpec.MEAL_FLOOR_PERCENT,
-    val upLatchedForWindow: Boolean = false,
+    val deltaPercent: Int = 0,
     val lastTransitionTs: Long = 0L,
     val lastTransitionWasUp: Boolean = false,
     val rows: List<DynEvidenceRow> = emptyList(),
@@ -36,8 +42,9 @@ data class DynWindowState(
 data class DynCandidateDecision(
     val candidateId: String,
     val direction: String,               // UP | SOFT_DOWN | HARD_DOWN | HOLD | UNKNOWN
-    val rungBefore: Int, val rungAfter: Int,
-    val upCount: Int, val downCount: Int,
+    val rungBefore: Int, val rungAfter: Int,   // ABSOLUT: Basis + Delta
+    val deltaAfter: Int,
+    val upCount: Int, val downCount: Int, val redCount: Int,
     val positiveRow: Boolean?, val negativeRow: Boolean?,
     val virtualGateBound: Boolean?, val virtualSingleCapBound: Boolean?,
     val requestedRung: Int?,
@@ -45,7 +52,6 @@ data class DynCandidateDecision(
     val cooldownRemainingMs: Long,
     val trajectoryConfounded: Boolean,   // R6 F7: aus dem POST-Transition-State
     val commitCountAfter: Int,
-    val upLatched: Boolean,
     // R6 F8: numerische Kalibrier-Groessen
     val simulatedEffectiveGateU: Double?, val simulatedVirtualCapU: Double?,
     val entryGateHeadroomU: Double?, val singleSmbCapHeadroomU: Double?,
@@ -61,7 +67,9 @@ data class DynStepResult(
     val duplicateGlucose: Boolean,       // apsGlucoseTs == lastEvidenceGlucoseTs
     val outOfOrderGlucose: Boolean,      // apsGlucoseTs <  lastEvidenceGlucoseTs (Backfill)
     val scoreBlocked: Boolean,           // R6 F1: meal-active-unknown im laufenden Fenster
-    val hardDown: Boolean,
+    val redSignal: Boolean,              // Safety-rot in DIESEM Zyklus (Persistenz entscheidet)
+    val basePercent: Int?,               // Live-Basis dieses Zyklus (realer User-iobTH%)
+    val baseDropReset: Boolean,          // Abwaerts-Basisaenderung hat alle Deltas resettet
     val safety: DynSafetyEligibility,
 )
 
@@ -75,35 +83,47 @@ object DynShadowStep {
         var w: DynWindowState? = prev
         var scoreBlocked = false
         if (!i.mealActiveKnown) {
-            if (w == null) return DynStepResult(null, emptyList(), null, false, false, true, false, safety)
+            if (w == null) return DynStepResult(null, emptyList(), null, false, false, true, false, i.actualConfiguredPercent, false, safety)
             scoreBlocked = true          // R6 F1: Fenster besteht, aber Score/UP/DOWN gesperrt
         } else if (i.mealActive && w == null) {
             w = DynWindowState("meal-${i.cycleTs}", i.cycleTs, leftTruncated = false)
             windowEvent = "window-start"
         } else if (!i.mealActive && w != null) {
-            return DynStepResult(null, emptyList(), "window-end", false, false, false, false, safety)
+            return DynStepResult(null, emptyList(), "window-end", false, false, false, false, i.actualConfiguredPercent, false, safety)
         } else if (!i.mealActive) {
-            return DynStepResult(null, emptyList(), null, false, false, false, false, safety)
+            return DynStepResult(null, emptyList(), null, false, false, false, false, i.actualConfiguredPercent, false, safety)
         }
         var window = w!!
 
-        // (2) Actual-Rung-Change monoton latchen (Test 37; Alignment loescht nie, Test 22)
+        // (2) Actual-Rung-Change monoton latchen (Test 37; Alignment loescht nie, Test 22).
+        //     v2: eine ABWAERTS-Basisaenderung (Brake/manuelle Korrektur) resettet zusaetzlich
+        //     das verdiente Delta ALLER Kandidaten — die Engine ueberstimmt nie nach unten.
+        var baseDropReset = false
         if (i.actualConfiguredPercent != null) {
             val last = window.lastActualConfiguredPercent
+            baseDropReset = last != null && i.actualConfiguredPercent < last
             window = window.copy(
                 actualRungChangeObserved = window.actualRungChangeObserved ||
                     (last != null && last != i.actualConfiguredPercent),
                 lastActualConfiguredPercent = i.actualConfiguredPercent,
             )
+            if (baseDropReset) {
+                window = window.copy(candidates = window.candidates.mapValues { (_, c) ->
+                    c.copy(deltaPercent = 0, rows = emptyList(), lastTransitionTs = i.cycleTs, lastTransitionWasUp = false)
+                })
+            }
         }
+        // Live-Basis: aktueller realer Wert, sonst letzter im Fenster gesehener.
+        val basePercent = i.actualConfiguredPercent ?: window.lastActualConfiguredPercent
 
-        // (3) Hard-Safety IMMER — vor Dedupe UND vor Score-Block (Test 35; F1-Ausnahme)
+        // (3) Safety-rot DIESES Zyklus — wirkt als Up-Blocker sofort, als Abstufung erst
+        //     mit Persistenz (RED_THRESHOLD_ROWS im Evidenz-Fenster).
         val hardReasons = setOf(
             DynSafetyReason.MIN_GUARD_BELOW_THRESHOLD,
             DynSafetyReason.EVENTUAL_BELOW_MIN_BG,
             DynSafetyReason.BG_AT_OR_BELOW_THRESHOLD,
         )
-        val hardDown = (i.carbsReq != null && i.carbsReq > 0) ||
+        val redSignal = (i.carbsReq != null && i.carbsReq > 0) ||
             safety.reasons.any { it in hardReasons }
 
         // (4) R6 F2: strikt MONOTONE Glukose-Achse — <= zaehlt nie (A,B,A + Backfill)
@@ -117,7 +137,7 @@ object DynShadowStep {
         val newCands = HashMap<String, DynCandidateState>()
         for (cfg in DYN_SHADOW_CANDIDATES) {
             val st = window.candidates[cfg.id] ?: DynCandidateState(cfg.id)
-            val (next, dec) = stepCandidate(cfg, st, window, i, safety, hardDown, countsForScore, duplicate, outOfOrder, scoreBlocked)
+            val (next, dec) = stepCandidate(cfg, st, window, i, safety, redSignal, basePercent, countsForScore, duplicate, outOfOrder, scoreBlocked)
             newCands[cfg.id] = next
             decisions += dec
         }
@@ -125,21 +145,26 @@ object DynShadowStep {
             candidates = newCands,
             lastEvidenceGlucoseTs = if (countsForScore) glucoseTs!! else window.lastEvidenceGlucoseTs,
         )
-        return DynStepResult(window, decisions, windowEvent, duplicate, outOfOrder, scoreBlocked, hardDown, safety)
+        return DynStepResult(window, decisions, windowEvent, duplicate, outOfOrder, scoreBlocked, redSignal, basePercent, baseDropReset, safety)
     }
 
     private fun stepCandidate(
         cfg: DynShadowCandidateCfg, st: DynCandidateState, w: DynWindowState,
-        i: DynShadowInputs, safety: DynSafetyEligibility, hardDown: Boolean,
+        i: DynShadowInputs, safety: DynSafetyEligibility, redSignal: Boolean, basePercent: Int?,
         countsForScore: Boolean, duplicate: Boolean, outOfOrder: Boolean, scoreBlocked: Boolean,
     ): Pair<DynCandidateState, DynCandidateDecision> {
         val missing = ArrayList<String>()
 
+        // v2: effektive Sprosse = Basis + verdientes Delta. Ohne bekannte Basis keine
+        // Simulation und keine Transition (alles unknown).
+        if (basePercent == null) missing += "basePercent"
+        val effRung = basePercent?.plus(st.deltaPercent)
+
         // R6 F7: Binding IMMER fuer die AKTUELLE Sprosse messen — auch am Ceiling.
-        val simGate = DynShadowLogic.simulatedEffectiveGateU(i, st.currentRung)
+        val simGate = effRung?.let { DynShadowLogic.simulatedEffectiveGateU(i, it) }
         val simCap = simGate?.let { DynShadowSpec.VIRTUAL_CAP_TOLERANCE * it }
         val gateBound = DynShadowLogic.and3(
-            DynShadowLogic.virtualGateBranchEligible(i, st.currentRung),
+            effRung?.let { DynShadowLogic.virtualGateBranchEligible(i, it) },
             if (i.capIobU != null && simGate != null) i.capIobU > simGate else null,
         )
         val hypRatio = if (i.loopBg != null && i.targetBg != null &&
@@ -150,16 +175,18 @@ object DynShadowStep {
         ) else null
         if (hypRatio == null) missing += "hypotheticalSmbRatio"
         val simMaxBolus = DynShadowLogic.simulatedMaxBolusU(i)
-        val capBound = hypRatio?.let { DynShadowLogic.virtualSingleCapBound(i, st.currentRung, it) }
+        val capBound = if (hypRatio != null && effRung != null)
+            DynShadowLogic.virtualSingleCapBound(i, effRung, hypRatio) else null
         val binding = DynShadowLogic.or3(gateBound, capBound)
         val deliverable = hypRatio?.let { DynShadowLogic.deliverableWantedU(i, it) }
         val demand = deliverable?.let { d -> i.bolusIncrementU?.let { d >= it } }
         val trendUp = DynShadowLogic.and3(i.delta?.let { it > 0 }, i.shortAvgDelta?.let { it > 0 })
         val floorOk: Boolean? = cfg.loopBgFloor?.let { f -> i.loopBg?.let { it >= f } } ?: true
         val posRow = DynShadowLogic.and3(binding, demand)
-        val lowerRung = cfg.nextRungBelow(st.currentRung)
-        val lowerHeadroomOk: Boolean? = if (lowerRung == null) false
-        else DynShadowLogic.simulatedEffectiveGateU(i, lowerRung)?.let { lg ->
+        // v2: SOFT_DOWN nur bis zur Basis (Delta-Floor 0) — nextDeltaBelow(0) = null.
+        val lowerDelta = cfg.nextDeltaBelow(st.deltaPercent)
+        val lowerHeadroomOk: Boolean? = if (lowerDelta == null || basePercent == null) false
+        else DynShadowLogic.simulatedEffectiveGateU(i, basePercent + lowerDelta)?.let { lg ->
             i.capIobU?.let { cap -> i.bolusIncrementU?.let { incr -> lg - cap >= incr } }
         }
         val negRow = DynShadowLogic.and3(
@@ -174,32 +201,29 @@ object DynShadowStep {
 
         fun decision(
             next: DynCandidateState, direction: String, requested: Int?, reason: String,
-            upCount: Int, downCount: Int,
+            upCount: Int, downCount: Int, redCount: Int,
         ) = DynCandidateDecision(
-            cfg.id, direction, st.currentRung, next.currentRung, upCount, downCount,
+            cfg.id, direction,
+            basePercent?.plus(st.deltaPercent) ?: st.deltaPercent,
+            basePercent?.plus(next.deltaPercent) ?: next.deltaPercent,
+            next.deltaPercent,
+            upCount, downCount, redCount,
             posRow, negRow, gateBound, capBound, requested, reason,
             cooldownRemaining(cfg, next, i.cycleTs),
             // R6 F7: Confounder aus dem POST-Transition-State
             next.virtualCommitCountInWindow > 0 || w.actualRungChangeObserved,
-            next.virtualCommitCountInWindow, next.upLatchedForWindow,
+            next.virtualCommitCountInWindow,
             simGate, simCap, entryHeadroom, singleCapHeadroom,
             hypRatio, deliverable, simMaxBolus, missing,
         )
 
-        // (3) Hard-Down wirkt IMMER virtuell — auch bei duplicate/scoreBlocked (Test 35)
-        if (hardDown) {
-            val next = st.copy(
-                currentRung = DynShadowSpec.MEAL_FLOOR_PERCENT,
-                upLatchedForWindow = true, rows = emptyList(),
-                lastTransitionTs = i.cycleTs, lastTransitionWasUp = false,
-            )
-            return next to decision(next, "HARD_DOWN", DynShadowSpec.MEAL_FLOOR_PERCENT, "hard-safety", 0, 0)
-        }
-
-        // (5) R6 F1/F2: keine Score-Zeile ohne neue monotone Glukose bzw. bei unknown-Meal
+        // (5) R6 F1/F2: keine Evidenz-Zeile (auch keine rote) ohne neue monotone Glukose
+        //     bzw. bei unknown-Meal. Ein roter Zyklus ohne frische Glukose blockt UP
+        //     (redSignal unten), stuft aber nicht ab — Persistenz braucht echte Ablesungen.
         if (!countsForScore) {
             val reason = when {
                 scoreBlocked -> "meal-active-unknown"
+                redSignal -> "safety-red"
                 duplicate -> "duplicate-glucose"
                 outOfOrder -> "out-of-order-glucose"
                 else -> "unknown-glucose-ts"
@@ -207,51 +231,69 @@ object DynShadowStep {
             if (i.apsGlucoseTs == null) missing += "apsGlucoseTs"
             val dir = if (scoreBlocked || i.apsGlucoseTs == null) "UNKNOWN" else "HOLD"
             return st to decision(st, dir, null, reason,
-                st.rows.count { it.pos == true }, st.rows.count { it.neg == true })
+                st.rows.count { it.pos == true }, st.rows.count { it.neg == true }, st.rows.count { it.red })
         }
 
-        // (6) R6 F2: echtes 5-in-<=7-min-Fenster auf der GLUKOSE-Zeitachse
+        // (6) R6 F2: echtes 5-in-<=7-min-Fenster auf der GLUKOSE-Zeitachse (pos/neg/rot gemeinsam)
         val gTs = i.apsGlucoseTs!!
         var rows = st.rows.filter { it.glucoseTs >= gTs - DynShadowSpec.SCORE_WINDOW_MAX_MS }
-        rows = (rows + DynEvidenceRow(gTs, posRow, negRow)).takeLast(DynShadowSpec.SCORE_WINDOW_CYCLES)
+        rows = (rows + DynEvidenceRow(gTs, posRow, negRow, redSignal)).takeLast(DynShadowSpec.SCORE_WINDOW_CYCLES)
         val upCount = rows.count { it.pos == true }
         val downCount = rows.count { it.neg == true }
+        val redCount = rows.count { it.red }
 
         val cooldownMs = cfg.upCooldownMin * 60_000L
         val cooldownOk = st.lastTransitionTs == 0L || i.cycleTs - st.lastTransitionTs >= cooldownMs
         val hysteresisBlocksDown = st.lastTransitionWasUp &&
             i.cycleTs - st.lastTransitionTs < DynShadowSpec.POST_UP_DOWN_HYSTERESIS_MS
-        val nextUp = cfg.nextRungAbove(st.currentRung)
+        val nextDelta = basePercent?.let { cfg.nextDeltaAbove(it, st.deltaPercent) }
+
+        // (7) v2 Hard-Down: nur mit Persistenz (3/5 rote Zyklen) und nur bis zur Basis
+        //     (Delta 0). Kein Latch — nach Cooldown darf neue Evidenz wieder oeffnen.
+        //     Ignoriert Hysterese/Cooldown (Safety schlaegt Formalia), aber nie unter Basis.
+        if (redCount >= DynShadowSpec.RED_THRESHOLD_ROWS && st.deltaPercent > 0) {
+            val next = st.copy(
+                deltaPercent = 0, rows = emptyList(),
+                lastTransitionTs = i.cycleTs, lastTransitionWasUp = false,
+            )
+            return next to decision(next, "HARD_DOWN", basePercent, "hard-safety-3of5", 0, 0, 0)
+        }
 
         val upAllowed = upCount >= DynShadowSpec.UP_THRESHOLD_ROWS &&
             downCount < DynShadowSpec.DOWN_THRESHOLD_ROWS &&
+            redCount < DynShadowSpec.RED_THRESHOLD_ROWS &&
             trendUp == true && floorOk == true && safety.eligible == true &&
-            !st.upLatchedForWindow && nextUp != null && cooldownOk
+            !redSignal && nextDelta != null && cooldownOk
         val downAllowed = downCount >= DynShadowSpec.DOWN_THRESHOLD_ROWS &&
             upCount < DynShadowSpec.UP_THRESHOLD_ROWS &&
-            !hysteresisBlocksDown && lowerRung != null && cooldownOk
+            !hysteresisBlocksDown && lowerDelta != null && cooldownOk
 
         return when {
             upAllowed -> {
                 val next = st.copy(
-                    currentRung = nextUp!!, rows = emptyList(),
+                    deltaPercent = nextDelta!!, rows = emptyList(),
                     lastTransitionTs = i.cycleTs, lastTransitionWasUp = true,
                     virtualCommitCountInWindow = st.virtualCommitCountInWindow + 1,
                 )
-                next to decision(next, "UP", nextUp, "up-earned-3of5", upCount, downCount)
+                next to decision(next, "UP", basePercent!! + nextDelta, "up-earned-3of5", upCount, downCount, redCount)
             }
             downAllowed -> {
                 val next = st.copy(
-                    currentRung = lowerRung!!, rows = emptyList(),
+                    deltaPercent = lowerDelta!!, rows = emptyList(),
                     lastTransitionTs = i.cycleTs, lastTransitionWasUp = false,
                     virtualCommitCountInWindow = st.virtualCommitCountInWindow + 1,
                 )
-                next to decision(next, "SOFT_DOWN", lowerRung, "budget-unused-3of5", upCount, downCount)
+                next to decision(next, "SOFT_DOWN", basePercent?.plus(lowerDelta), "budget-unused-3of5", upCount, downCount, redCount)
             }
             else -> {
                 val dir = if (missing.isNotEmpty() && posRow == null && negRow == null) "UNKNOWN" else "HOLD"
+                val reason = when {
+                    dir == "UNKNOWN" -> "unknown-inputs"
+                    redSignal -> "safety-red"
+                    else -> "hold"
+                }
                 val next = st.copy(rows = rows)
-                next to decision(next, dir, null, if (dir == "UNKNOWN") "unknown-inputs" else "hold", upCount, downCount)
+                next to decision(next, dir, null, reason, upCount, downCount, redCount)
             }
         }
     }
