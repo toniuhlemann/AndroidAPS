@@ -61,4 +61,18 @@ interface AutomationStateInterface {
      * @param stateName The name of the state to delete
      */
     fun deleteState(stateName: String)
-} 
+
+    /**
+     * DynamicMealIobTH shadow (spec v1.3 / Bauauflage B): read state DEFINITION and current
+     * VALUE atomically under one lock. inState()/getState() as two independent reads cannot
+     * distinguish "state missing" (unknown) from "false", and can race a concurrent write.
+     * Read-only; existing triggers/actions keep their behavior.
+     */
+    fun getStateSnapshot(stateName: String): AutomationStateSnapshot
+}
+
+/** known=false means the state is not defined (unknown != false). */
+data class AutomationStateSnapshot(
+    val known: Boolean,
+    val value: String?,
+)
