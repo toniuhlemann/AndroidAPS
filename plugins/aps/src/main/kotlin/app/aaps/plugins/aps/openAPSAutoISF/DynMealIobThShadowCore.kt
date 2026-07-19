@@ -32,8 +32,9 @@ object DynShadowSpec {
             "down=$DOWN_THRESHOLD_ROWS;hyst=$POST_UP_DOWN_HYSTERESIS_MS;eps=$TELEMETRY_EPS;" +
             "cap=$VIRTUAL_CAP_TOLERANCE;sem=r6;cands=" + DYN_SHADOW_CANDIDATES.joinToString(",") { it.id }
 
+    /** R7: voller SHA-256-Digest (64 Hexzeichen), kein Praefix-Truncate. */
     fun policyHash(): String = java.security.MessageDigest.getInstance("SHA-256")
-        .digest(policyCanonical().toByteArray()).joinToString("") { "%02x".format(it) }.take(16)
+        .digest(policyCanonical().toByteArray()).joinToString("") { "%02x".format(it) }
 }
 
 data class DynShadowCandidateCfg(val id: String, val stepPercent: Int, val loopBgFloor: Int?, val upCooldownMin: Int) {

@@ -99,8 +99,11 @@ object DynMealIobThShadowRunner {
             skipNeutralTemps = skipNeutralTemps, localMinute = localMinute,
             actualMaxBolusU = actualMaxBolusU,
         )
+        // R7 P2: nur ein BEKANNTER Meal-State zaehlt als Beobachtung — die Folge
+        // unknown->true ohne Snapshot muss leftTruncated ergeben (nie eine echte
+        // false->true-Flanke gesehen).
         val freshProcessMidMeal = !observedSinceLoad && window == null && mealActiveKnown && mealActive
-        observedSinceLoad = true
+        if (mealActiveKnown) observedSinceLoad = true
         var result = DynShadowStep.step(window, inputs)
         if (freshProcessMidMeal && result.windowEvent == "window-start") {
             result = result.copy(window = result.window?.copy(leftTruncated = true))
@@ -282,4 +285,10 @@ object DynMealIobThShadowRunner {
 
     private fun tri(v: Boolean?): Int = when (v) { true -> 1; false -> 0; null -> -1 }
     private fun unTri(v: Int): Boolean? = when (v) { 1 -> true; 0 -> false; else -> null }
+
+    /** NUR fuer Tests (R7 P1 Persistence-Roundtrip): simuliert einen Prozess-Neustart —
+     *  kompletter In-Memory-Reset, naechster runShadow laedt aus der Datei. */
+    internal fun resetForTest() {
+        window = null; loaded = false; observedSinceLoad = false; lastCycleTs = 0L; lastMode = null
+    }
 }
