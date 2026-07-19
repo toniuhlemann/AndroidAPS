@@ -33,6 +33,18 @@ class AutomationStateService  @Inject constructor(
         }
     }
 
+    /** DynMealIobTH shadow (spec v1.3 / Bauauflage B): definition + value under ONE lock —
+     *  distinguishes missing state (known=false) from a real value; race-free vs setState. */
+    @Synchronized
+    override fun getStateSnapshot(stateName: String): app.aaps.core.interfaces.automation.AutomationStateSnapshot {
+        val trimmedName = stateName.trim()
+        if (!stateValues.containsKey(trimmedName)) {
+            return app.aaps.core.interfaces.automation.AutomationStateSnapshot(known = false, value = null)
+        }
+        val value = automationStates[trimmedName]
+        return app.aaps.core.interfaces.automation.AutomationStateSnapshot(known = value != null, value = value)
+    }
+
    override fun inState(stateName: String, state: String): Boolean {
         if (automationStates.containsKey(stateName.trim())) {
             return automationStates[stateName.trim()] == state.trim()
@@ -40,6 +52,7 @@ class AutomationStateService  @Inject constructor(
         return false
     }
 
+    @Synchronized
     override fun setState(stateName: String, state: String) {
         val trimmedName = stateName.trim()
         val trimmedState = state.trim()
