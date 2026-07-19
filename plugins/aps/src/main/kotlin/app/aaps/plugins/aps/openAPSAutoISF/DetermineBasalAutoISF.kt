@@ -43,6 +43,11 @@ class DetermineBasalAutoISF @Inject constructor(
      */
     var lastSmbDecision: SmbDecision? = null
 
+    /** DynMealIobTH shadow (spec v1.3): cycle-frozen raw internals for the pure safety helper.
+     *  Same pattern/contract as [lastSmbDecision] — write-only, never read by dosing. */
+    data class ShadowCycleRaw(val minGuardBg: Double, val thresholdBg: Double, val maxDelta: Double, val eventualBg: Double)
+    var lastShadowRaw: ShadowCycleRaw? = null
+
     /** wantedU = ungecappte SMB-Wunschmenge (insulinReq*ratio); deliveredU = rT.units after all caps. */
     data class SmbDecision(
         val wantedU: Double, val deliveredU: Double, val maxBolusU: Double?, val state: String,
@@ -182,6 +187,7 @@ class DetermineBasalAutoISF @Inject constructor(
         consoleError.add(activity_consoleLog)
         consoleLog.clear()
         lastSmbDecision = null   // reset each cycle → a cycle not reaching the SMB branch reports nothing
+        lastShadowRaw = null     // dito (DynMealIobTH shadow): no stale cross-cycle raw values
         var rT = RT(
             algorithm = APSResult.Algorithm.AUTO_ISF,
             runningAutoIsf = true,
@@ -742,6 +748,9 @@ class DetermineBasalAutoISF @Inject constructor(
         }
         minGuardBG = round(minGuardBG, 0)
         //console.error(minCOBGuardBG, minUAMGuardBG, minIOBGuardBG, minGuardBG);
+        // DynMealIobTH shadow (spec v1.3): freeze the raw internals the pure safety helper
+        // needs — write-only side output, never read back into dosing (same as lastSmbDecision).
+        lastShadowRaw = ShadowCycleRaw(minGuardBG, threshold, maxDelta, eventualBG)
 
         var minZTUAMPredBG = minUAMPredBG
         // if minZTGuardBG is below threshold, bring down any super-high minUAMPredBG by averaging

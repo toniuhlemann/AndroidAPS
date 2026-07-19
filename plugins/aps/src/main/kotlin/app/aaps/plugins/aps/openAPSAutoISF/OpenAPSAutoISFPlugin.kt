@@ -135,6 +135,9 @@ open class OpenAPSAutoISFPlugin @Inject constructor(
 
     @Inject lateinit var automationStateService: AutomationStateInterface
 
+    // DynMealIobTH shadow (spec v1.3): nur fuer den Modus-Schalter (OFF/SHADOW), read-only.
+    @Inject lateinit var sp: app.aaps.core.interfaces.sharedPreferences.SP
+
     // last values
     override var lastAPSRun: Long = 0
     override val algorithm = APSResult.Algorithm.AUTO_ISF
@@ -675,6 +678,52 @@ open class OpenAPSAutoISFPlugin @Inject constructor(
                             })
                         }
                     })
+                }
+                // DynMealIobTH SHADOW (Spez v1.1-v1.3, R5 Bau-GO): post-Determine, rein
+                // beobachtend — Ergebnis geht NUR in diesen Export, nichts wird je vom Loop
+                // gelesen. Eigenes runCatching: ein Shadow-Fehler darf den Export nie stoppen.
+                runCatching {
+                    val engineMode = sp.getString("dynmeal_shadow_mode", "SHADOW")
+                    val mealSnap = automationStateService.getStateSnapshot("MEAL_ACTIVE")
+                    val mealKnown = mealSnap.known && mealSnap.value in listOf("true", "false")
+                    val shadowRaw = determineBasalAutoISF.lastShadowRaw
+                    val stateDir = java.io.File(android.os.Environment.getExternalStoragePublicDirectory(
+                        android.os.Environment.DIRECTORY_DOCUMENTS), "aapsLogs").also { it.mkdirs() }
+                    DynMealIobThShadowRunner.runShadow(
+                        engineMode = engineMode,
+                        cycleTs = now,
+                        mealActiveKnown = mealKnown, mealActive = mealKnown && mealSnap.value == "true",
+                        apsGlucoseTs = glucoseStatus.date.takeIf { it > 0L },
+                        smbGateReason = loopSmbDecision.reason,
+                        actualUseIobTh = use_iobTH, actualConfiguredPercent = iobThresholdPercent,
+                        actualEffectiveGateU = autoIsfValues.iobThEffective.takeIf { it.isFinite() },
+                        capIobU = gateIob.takeIf { it.isFinite() },
+                        netIobU = iobData.iob.takeIf { it.isFinite() },
+                        maxIobU = oapsProfile.max_iob,
+                        profilePercent = profile_percentage, sensitivityRatio = sensitivityRatio,
+                        loopBg = glucoseStatus.glucose.takeIf { it.isFinite() },
+                        noise = glucoseStatus.noise,
+                        bgAgeMin = ((now - glucoseStatus.date) / 60000.0).takeIf { glucoseStatus.date > 0L },
+                        flatBgs = flatBGsDetected,
+                        delta = glucoseStatus.delta.takeIf { it.isFinite() },
+                        shortAvgDelta = glucoseStatus.shortAvgDelta.takeIf { it.isFinite() },
+                        raw = shadowRaw,
+                        insReq = lastAPSResult?.json()?.optDouble("insulinReq")?.takeIf { it.isFinite() },
+                        carbsReq = lastAPSResult?.carbsReq,
+                        minBg = oapsProfile.min_bg, targetBg = oapsProfile.target_bg,
+                        ratioFix = smb_delivery_ratio, ratioMin = smb_delivery_ratio_min,
+                        ratioMax = smb_delivery_ratio_max, ratioBgRange = smb_delivery_ratio_bg_range,
+                        mealCob = mealData.mealCOB, carbRatio = oapsProfile.carb_ratio,
+                        currentBasal = oapsProfile.current_basal,
+                        maxSmbMinutes = oapsProfile.maxSMBBasalMinutes.toDouble(),
+                        maxUamSmbMinutes = oapsProfile.maxUAMSMBBasalMinutes.toDouble(),
+                        smbMaxRangeExt = smbMaxRangeExtension,
+                        bolusIncrementU = oapsProfile.bolus_increment.takeIf { it.isFinite() && it > 0.0 },
+                        skipNeutralTemps = oapsProfile.skip_neutral_temps,
+                        localMinute = java.util.Calendar.getInstance().get(java.util.Calendar.MINUTE),
+                        actualMaxBolusU = determineBasalAutoISF.lastSmbDecision?.maxBolusU,
+                        stateDir = stateDir,
+                    )?.let { put("dynMealShadow", it) }
                 }
                 put("profile", JSONObject().apply {
                     put("max_iob", oapsProfile.max_iob)
