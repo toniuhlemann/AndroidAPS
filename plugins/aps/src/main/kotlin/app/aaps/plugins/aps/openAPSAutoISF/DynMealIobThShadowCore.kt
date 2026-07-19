@@ -33,7 +33,7 @@ object DynShadowSpec {
             "win=$SCORE_WINDOW_CYCLES/${SCORE_WINDOW_MAX_MS};up=$UP_THRESHOLD_ROWS;" +
             "down=$DOWN_THRESHOLD_ROWS;red=$RED_THRESHOLD_ROWS;" +
             "hyst=$POST_UP_DOWN_HYSTERESIS_MS;eps=$TELEMETRY_EPS;" +
-            "cap=$VIRTUAL_CAP_TOLERANCE;sem=v2-base-delta;cands=" + DYN_SHADOW_CANDIDATES.joinToString(",") { it.id }
+            "cap=$VIRTUAL_CAP_TOLERANCE;sem=v2-base-delta-ceiling-clamp;cands=" + DYN_SHADOW_CANDIDATES.joinToString(",") { it.id }
 
     /** R7: voller SHA-256-Digest (64 Hexzeichen), kein Praefix-Truncate. */
     fun policyHash(): String = java.security.MessageDigest.getInstance("SHA-256")

@@ -149,15 +149,19 @@ class DynMealIobThShadowTest {
         assertThat(r4.decisions.none { it.direction == "UP" }).isTrue()
     }
 
-    // --- v2: EIN roter Zyklus stuft NICHT ab (blockt nur UP), Persistenz 3/5 stuft ab ---
+    // --- v2/R9: EIN roter Zyklus stuft NICHT ab (blockt nur UP), Persistenz 3/5 stuft ab;
+    //     Export-Ehrlichkeit: redSignal (Signal) vs hardDown (echte Abstufung) getrennt ---
     @Test fun singleRedHoldsAndPersistedRedHardDowns() {
-        // (a) Einzel-rot auf duplizierter Glukose: kein HARD_DOWN, Reason safety-red, Rung bleibt.
+        // (a) Einzel-rot auf duplizierter Glukose: kein HARD_DOWN, Reason safety-red, Rung bleibt;
+        //     R9-Pflichttest 2: redCount bleibt unveraendert (keine neue rote Evidenz auf Duplikat).
         var w = DynShadowStep.step(null, boundInputs(t0, glucoseTs = t0)).window
         val dup = DynShadowStep.step(w, boundInputs(t0 + 10_000, glucoseTs = t0, carbsReq = 5))
         assertThat(dup.duplicateGlucose).isTrue()
         assertThat(dup.redSignal).isTrue()
+        assertThat(dup.hardDown).isFalse()
         assertThat(dup.decisions.none { it.direction == "HARD_DOWN" }).isTrue()
         assertThat(dup.decisions.first().reason).isEqualTo("safety-red")
+        assertThat(dup.decisions.first().redCount).isEqualTo(0)
         // (b) Erst Delta verdienen (UP auf 50), dann 3 rote Zyklen mit FRISCHER Glukose ->
         //     HARD_DOWN zurueck zur BASIS (40), nicht tiefer.
         w = null
@@ -167,13 +171,25 @@ class DynMealIobThShadowTest {
         for (k in 3..5) {
             val r = DynShadowStep.step(w, boundInputs(t0 + min(k), glucoseTs = t0 + min(k), carbsReq = 5))
             w = r.window
-            r.decisions.first { it.candidateId == "s10_fnone_cd5" }
-                .takeIf { it.direction == "HARD_DOWN" }?.let { hard = it }
+            // R9-Pflichttest 1: frische rote Zyklen VOR der 3. Evidenz melden redSignal, aber
+            // KEIN hardDown; Pflichttest 3: der 3. frische rote Zyklus bei Delta>0 meldet BEIDE.
+            assertThat(r.redSignal).isTrue()
+            val d = r.decisions.first { it.candidateId == "s10_fnone_cd5" }
+            if (d.direction == "HARD_DOWN") { hard = d; assertThat(r.hardDown).isTrue() }
+            else assertThat(r.hardDown).isFalse()
         }
         assertThat(hard).isNotNull()
         assertThat(hard!!.rungAfter).isEqualTo(40)      // Basis, kein 40er-Floor darunter
         assertThat(hard!!.reason).isEqualTo("hard-safety-3of5")
         assertThat(w!!.candidates["s10_fnone_cd5"]!!.deltaPercent).isEqualTo(0)
+        // R9-Pflichttest 4: weitere rote Zyklen bei Delta 0 — redSignal ja, hardDown NIE
+        // (es gibt nichts abzustufen; die Basis gehoert dem User).
+        for (k in 6..8) {
+            val r = DynShadowStep.step(w, boundInputs(t0 + min(k), glucoseTs = t0 + min(k), carbsReq = 5))
+            w = r.window
+            assertThat(r.redSignal).isTrue()
+            assertThat(r.hardDown).isFalse()
+        }
         // (c) KEIN Latch: nach Cooldown darf frische Evidenz wieder oeffnen.
         var ts = t0 + min(11)
         var reUp = false
@@ -207,6 +223,44 @@ class DynMealIobThShadowTest {
         val d = r.decisions.first { it.candidateId == "s10_fnone_cd5" }
         assertThat(d.deltaAfter).isEqualTo(10)
         assertThat(d.rungAfter).isEqualTo(70)           // 60 Basis + 10 verdient
+        assertThat(d.deltaBeforeClamp).isNull()         // kein Clamp noetig
+    }
+
+    // --- R9 P1: Basis-Raise nahe/ueber Ceiling clampt vorhandenes Delta (nie ueber 90) ---
+    @Test fun baseRaiseClampsDeltaAtCeiling() {
+        fun climbTo10(): DynWindowState {
+            var w: DynWindowState? = null
+            for (k in 0..2) { w = DynShadowStep.step(w, boundInputs(t0 + min(k), glucoseTs = t0 + min(k))).window }
+            return w!!
+        }
+        // Basis 40 + Delta 10 -> Basis 85: Delta 5, Rung exakt 90
+        val r85 = DynShadowStep.step(climbTo10(), boundInputs(t0 + min(3), glucoseTs = t0 + min(3)).copy(actualConfiguredPercent = 85))
+        val d85 = r85.decisions.first { it.candidateId == "s10_fnone_cd5" }
+        assertThat(d85.deltaAfter).isEqualTo(5)
+        assertThat(d85.rungAfter).isEqualTo(90)
+        assertThat(d85.deltaBeforeClamp).isEqualTo(10)
+        assertThat(r85.window!!.candidates["s10_fnone_cd5"]!!.deltaPercent).isEqualTo(5)   // persistiert normalisiert
+        // Basis 40 + Delta 10 -> Basis 90: Delta 0, Rung 90
+        val r90 = DynShadowStep.step(climbTo10(), boundInputs(t0 + min(3), glucoseTs = t0 + min(3)).copy(actualConfiguredPercent = 90))
+        val d90 = r90.decisions.first { it.candidateId == "s10_fnone_cd5" }
+        assertThat(d90.deltaAfter).isEqualTo(0)
+        assertThat(d90.rungAfter).isEqualTo(90)
+        // Basis 40 + Delta 10 -> Basis 100 (User-Basis DARF > Ceiling): Engine-Zusatz 0, Rung 100
+        val r100 = DynShadowStep.step(climbTo10(), boundInputs(t0 + min(3), glucoseTs = t0 + min(3)).copy(actualConfiguredPercent = 100))
+        val d100 = r100.decisions.first { it.candidateId == "s10_fnone_cd5" }
+        assertThat(d100.deltaAfter).isEqualTo(0)
+        assertThat(d100.rungAfter).isEqualTo(100)
+        // "Reload"-Fall: persistierter Delta-State trifft direkt auf hoehere Live-Basis —
+        // Normalisierung greift VOR der ersten Auswertung (kein Zwischenzyklus noetig).
+        val stale = DynWindowState(
+            "meal-$t0", t0, leftTruncated = false, lastActualConfiguredPercent = 40,
+            candidates = DYN_SHADOW_CANDIDATES.associate { it.id to DynCandidateState(it.id, deltaPercent = 10) },
+        )
+        val rReload = DynShadowStep.step(stale, boundInputs(t0 + min(1), glucoseTs = t0 + min(1)).copy(actualConfiguredPercent = 88))
+        val dReload = rReload.decisions.first { it.candidateId == "s10_fnone_cd5" }
+        assertThat(dReload.deltaAfter).isEqualTo(2)
+        assertThat(dReload.rungAfter).isEqualTo(90)
+        assertThat(dReload.deltaBeforeClamp).isEqualTo(10)
     }
 
     // --- Test 36 (R5): duplicate + MEAL_ACTIVE-Flanke schliesst das Fenster trotzdem ---

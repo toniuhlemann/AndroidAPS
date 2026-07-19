@@ -133,9 +133,10 @@ object DynMealIobThShadowRunner {
             }
             put("duplicateGlucose", result.duplicateGlucose)
             put("outOfOrderGlucose", result.outOfOrderGlucose)
-            // v2: "hardDown" ist jetzt das ROTE SIGNAL dieses Zyklus (Abstufung erst mit
-            // 3/5-Persistenz je Kandidat); basePercent = Live-Basis der Delta-Leitern.
-            put("hardDown", result.redSignal)
+            // R9 P1: ehrliche Trennung — redSignal = Safety-rot DIESES Zyklus,
+            // hardDown = mindestens ein Kandidat hat WIRKLICH abgestuft (3/5-Persistenz).
+            put("redSignal", result.redSignal)
+            put("hardDown", result.hardDown)
             result.basePercent?.let { put("basePercent", it) }
             if (result.baseDropReset) put("baseDropReset", true)
             put("actual", JSONObject().apply {
@@ -180,7 +181,8 @@ object DynMealIobThShadowRunner {
                         put("rungBefore", d.rungBefore); put("rungAfter", d.rungAfter)
                         put("deltaAfter", d.deltaAfter)
                         put("upCoverage", 20 * d.upCount); put("downCoverage", -20 * d.downCount)
-                        put("redCoverage", 20 * d.redCount)
+                        put("redCoverage", 20 * d.redCount); put("redCount", d.redCount)
+                        d.deltaBeforeClamp?.let { put("deltaCeilingClamped", true); put("deltaBeforeClamp", it) }
                         put3(this, "positiveRow", d.positiveRow); put3(this, "negativeRow", d.negativeRow)
                         put3(this, "virtualGateBound", d.virtualGateBound)
                         put3(this, "virtualSingleCapBound", d.virtualSingleCapBound)
