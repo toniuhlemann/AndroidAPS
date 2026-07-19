@@ -5,12 +5,14 @@ import org.json.JSONObject
 import java.io.File
 
 /**
- * DynamicMealIobTH — SHADOW-Runner (R6-Fassung): verdrahtet den puren Evaluator mit dem realen
- * Zyklus. POST-Determine aus dem Export-Block (runCatching), Ergebnis geht NUR in den Export.
- * R6: gesamter Lauf @Synchronized (F4), interne App-Files + strikt atomare Persistenz ohne
- * Direkt-Overwrite-Fallback (F4), Modus via Automation-State DYNMEAL_SHADOW mit Default OFF
- * und Re-enable-Reset (F5), zyklusgleiche Inputs inkl. Raw-Stempel-Abgleich (F6),
- * vollstaendige numerische Telemetrie + maxBolusAgreement (F8).
+ * DynamicMealIobTH — SHADOW-Runner (v2 Basis/Delta, auf R6/R7-Infrastruktur): verdrahtet den
+ * puren Evaluator mit dem realen Zyklus. POST-Determine aus dem Export-Block (runCatching),
+ * Ergebnis geht NUR in den Export. R6: gesamter Lauf @Synchronized (F4), interne App-Files +
+ * strikt atomare Persistenz ohne Direkt-Overwrite-Fallback (F4), Modus via Automation-State
+ * DYNMEAL_SHADOW mit Default OFF und Re-enable-Reset (F5), zyklusgleiche Inputs inkl.
+ * Raw-Stempel-Abgleich (F6), vollstaendige numerische Telemetrie + maxBolusAgreement (F8).
+ * v2 (19.07.2026): Leitern = Delta ueber der Live-Basis (siehe DynMealIobThShadowState);
+ * Export zusaetzlich basePercent/baseDropReset/deltaAfter/redCoverage, upLatched entfaellt.
  */
 object DynMealIobThShadowRunner {
 
@@ -131,7 +133,11 @@ object DynMealIobThShadowRunner {
             }
             put("duplicateGlucose", result.duplicateGlucose)
             put("outOfOrderGlucose", result.outOfOrderGlucose)
-            put("hardDown", result.hardDown)
+            // v2: "hardDown" ist jetzt das ROTE SIGNAL dieses Zyklus (Abstufung erst mit
+            // 3/5-Persistenz je Kandidat); basePercent = Live-Basis der Delta-Leitern.
+            put("hardDown", result.redSignal)
+            result.basePercent?.let { put("basePercent", it) }
+            if (result.baseDropReset) put("baseDropReset", true)
             put("actual", JSONObject().apply {
                 put("configuredIobThPercent", actualConfiguredPercent)
                 put("useIobTh", actualUseIobTh)
@@ -172,7 +178,9 @@ object DynMealIobThShadowRunner {
                         put("upCooldownMin", cfg.upCooldownMin)
                         put("direction", d.direction)
                         put("rungBefore", d.rungBefore); put("rungAfter", d.rungAfter)
+                        put("deltaAfter", d.deltaAfter)
                         put("upCoverage", 20 * d.upCount); put("downCoverage", -20 * d.downCount)
+                        put("redCoverage", 20 * d.redCount)
                         put3(this, "positiveRow", d.positiveRow); put3(this, "negativeRow", d.negativeRow)
                         put3(this, "virtualGateBound", d.virtualGateBound)
                         put3(this, "virtualSingleCapBound", d.virtualSingleCapBound)
@@ -189,7 +197,6 @@ object DynMealIobThShadowRunner {
                         put("cooldownRemainingMs", d.cooldownRemainingMs)
                         put("trajectoryConfounded", d.trajectoryConfounded)
                         put("virtualCommitCountInWindow", d.commitCountAfter)
-                        put("upLatchedForWindow", d.upLatched)
                         put("counterfactualOutcomeUnknown", true)
                         put("inputsComplete", d.missing.isEmpty())
                         if (d.missing.isNotEmpty()) put("missing", JSONArray(d.missing))
@@ -221,13 +228,13 @@ object DynMealIobThShadowRunner {
                 put("cands", JSONObject().apply {
                     win.candidates.forEach { (id, c) ->
                         put(id, JSONObject().apply {
-                            put("rung", c.currentRung); put("upLatch", c.upLatchedForWindow)
+                            put("delta", c.deltaPercent)
                             put("lastT", c.lastTransitionTs); put("lastUp", c.lastTransitionWasUp)
                             put("commits", c.virtualCommitCountInWindow)
                             put("rows", JSONArray().apply {
                                 c.rows.forEach { r ->
                                     put(JSONObject().put("t", r.glucoseTs)
-                                        .put("p", tri(r.pos)).put("n", tri(r.neg)))
+                                        .put("p", tri(r.pos)).put("n", tri(r.neg)).put("r", if (r.red) 1 else 0))
                                 }
                             })
                         })
@@ -262,12 +269,11 @@ object DynMealIobThShadowRunner {
                 val rows = ArrayList<DynEvidenceRow>()
                 c.optJSONArray("rows")?.let { arr ->
                     for (k in 0 until arr.length()) arr.optJSONObject(k)?.let { r ->
-                        rows += DynEvidenceRow(r.getLong("t"), unTri(r.optInt("p", -1)), unTri(r.optInt("n", -1)))
+                        rows += DynEvidenceRow(r.getLong("t"), unTri(r.optInt("p", -1)), unTri(r.optInt("n", -1)), r.optInt("r", 0) == 1)
                     }
                 }
                 cands[id] = DynCandidateState(
-                    candidateId = id, currentRung = c.optInt("rung", DynShadowSpec.MEAL_FLOOR_PERCENT),
-                    upLatchedForWindow = c.optBoolean("upLatch"),
+                    candidateId = id, deltaPercent = c.optInt("delta", 0),
                     lastTransitionTs = c.optLong("lastT", 0L), lastTransitionWasUp = c.optBoolean("lastUp"),
                     rows = rows, virtualCommitCountInWindow = c.optInt("commits", 0),
                 )

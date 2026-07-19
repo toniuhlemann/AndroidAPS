@@ -149,20 +149,64 @@ class DynMealIobThShadowTest {
         assertThat(r4.decisions.none { it.direction == "UP" }).isTrue()
     }
 
-    // --- Test 35 (R5): duplicate + neues Hard-Signal -> trotzdem virtueller Floor/Up-Latch ---
-    @Test fun hardDownOverridesDedupe() {
+    // --- v2: EIN roter Zyklus stuft NICHT ab (blockt nur UP), Persistenz 3/5 stuft ab ---
+    @Test fun singleRedHoldsAndPersistedRedHardDowns() {
+        // (a) Einzel-rot auf duplizierter Glukose: kein HARD_DOWN, Reason safety-red, Rung bleibt.
         var w = DynShadowStep.step(null, boundInputs(t0, glucoseTs = t0)).window
         val dup = DynShadowStep.step(w, boundInputs(t0 + 10_000, glucoseTs = t0, carbsReq = 5))
         assertThat(dup.duplicateGlucose).isTrue()
-        assertThat(dup.hardDown).isTrue()
-        assertThat(dup.decisions.all { it.direction == "HARD_DOWN" }).isTrue()
-        // Up-Latch: auch mit frischer Glukose + voller Evidenz kein UP mehr in diesem Fenster (Test 8)
-        w = dup.window
-        for (k in 1..4) {
-            val r = DynShadowStep.step(w, boundInputs(t0 + min(k), glucoseTs = t0 + min(k)))
+        assertThat(dup.redSignal).isTrue()
+        assertThat(dup.decisions.none { it.direction == "HARD_DOWN" }).isTrue()
+        assertThat(dup.decisions.first().reason).isEqualTo("safety-red")
+        // (b) Erst Delta verdienen (UP auf 50), dann 3 rote Zyklen mit FRISCHER Glukose ->
+        //     HARD_DOWN zurueck zur BASIS (40), nicht tiefer.
+        w = null
+        for (k in 0..2) { w = DynShadowStep.step(w, boundInputs(t0 + min(k), glucoseTs = t0 + min(k))).window }
+        assertThat(w!!.candidates["s10_fnone_cd5"]!!.deltaPercent).isEqualTo(10)
+        var hard: DynCandidateDecision? = null
+        for (k in 3..5) {
+            val r = DynShadowStep.step(w, boundInputs(t0 + min(k), glucoseTs = t0 + min(k), carbsReq = 5))
             w = r.window
-            assertThat(r.decisions.none { it.direction == "UP" }).isTrue()
+            r.decisions.first { it.candidateId == "s10_fnone_cd5" }
+                .takeIf { it.direction == "HARD_DOWN" }?.let { hard = it }
         }
+        assertThat(hard).isNotNull()
+        assertThat(hard!!.rungAfter).isEqualTo(40)      // Basis, kein 40er-Floor darunter
+        assertThat(hard!!.reason).isEqualTo("hard-safety-3of5")
+        assertThat(w!!.candidates["s10_fnone_cd5"]!!.deltaPercent).isEqualTo(0)
+        // (c) KEIN Latch: nach Cooldown darf frische Evidenz wieder oeffnen.
+        var ts = t0 + min(11)
+        var reUp = false
+        for (k in 0..2) {
+            val r = DynShadowStep.step(w, boundInputs(ts + min(k), glucoseTs = ts + min(k)))
+            w = r.window
+            if (r.decisions.first { it.candidateId == "s10_fnone_cd5" }.direction == "UP") reUp = true
+        }
+        assertThat(reUp).isTrue()
+    }
+
+    // --- v2: Basis-Drop (Brake/manuelle Korrektur) resettet verdiente Deltas sofort ---
+    @Test fun baseDropResetsEarnedDelta() {
+        var w: DynWindowState? = null
+        for (k in 0..2) { w = DynShadowStep.step(w, boundInputs(t0 + min(k), glucoseTs = t0 + min(k))).window }
+        assertThat(w!!.candidates["s10_fnone_cd5"]!!.deltaPercent).isEqualTo(10)
+        val r = DynShadowStep.step(w, boundInputs(t0 + min(3), glucoseTs = t0 + min(3)).copy(actualConfiguredPercent = 30))
+        assertThat(r.baseDropReset).isTrue()
+        assertThat(r.window!!.actualRungChangeObserved).isTrue()
+        val d = r.decisions.first { it.candidateId == "s10_fnone_cd5" }
+        assertThat(d.deltaAfter).isEqualTo(0)
+        assertThat(d.rungAfter).isEqualTo(30)           // neue Basis, Delta weg
+    }
+
+    // --- v2: Aufwaerts-Basisaenderung (User eskaliert) laesst das Delta mitfahren ---
+    @Test fun baseRaiseCarriesDelta() {
+        var w: DynWindowState? = null
+        for (k in 0..2) { w = DynShadowStep.step(w, boundInputs(t0 + min(k), glucoseTs = t0 + min(k))).window }
+        val r = DynShadowStep.step(w, boundInputs(t0 + min(3), glucoseTs = t0 + min(3)).copy(actualConfiguredPercent = 60))
+        assertThat(r.baseDropReset).isFalse()
+        val d = r.decisions.first { it.candidateId == "s10_fnone_cd5" }
+        assertThat(d.deltaAfter).isEqualTo(10)
+        assertThat(d.rungAfter).isEqualTo(70)           // 60 Basis + 10 verdient
     }
 
     // --- Test 36 (R5): duplicate + MEAL_ACTIVE-Flanke schliesst das Fenster trotzdem ---
@@ -216,7 +260,7 @@ class DynMealIobThShadowTest {
             if (r.decisions.first { it.candidateId == "s10_fnone_cd5" }.direction == "SOFT_DOWN") sawDown = true
         }
         assertThat(sawDown).isTrue()
-        assertThat(w!!.candidates["s10_fnone_cd5"]!!.currentRung).isEqualTo(40)
+        assertThat(w!!.candidates["s10_fnone_cd5"]!!.deltaPercent).isEqualTo(0)   // zurueck zur Basis
     }
 
     // --- Eligibility aus 0059-reason: Paritaet by construction ---
@@ -235,10 +279,17 @@ class DynMealIobThShadowTest {
         assertThat(e4.calibrationStopsSmb).isEqualTo(true)
     }
 
-    // --- Test 24 (R3): Rung-Sequenzen erreichen das Ceiling exakt ---
-    @Test fun rungSequencesReachCeiling() {
-        assertThat(DynShadowCandidateCfg("t", 10, null, 5).rungs()).containsExactly(40, 50, 60, 70, 80, 90).inOrder()
-        assertThat(DynShadowCandidateCfg("t", 5, null, 5).rungs().last()).isEqualTo(90)
+    // --- v2: Delta-Leiter erreicht das Ceiling exakt und faellt nie unter die Basis ---
+    @Test fun deltaLadderClampsAtCeilingAndBase() {
+        val s10 = DynShadowCandidateCfg("t", 10, null, 5)
+        assertThat(s10.nextDeltaAbove(40, 0)).isEqualTo(10)
+        assertThat(s10.nextDeltaAbove(85, 0)).isEqualTo(5)     // Teilschritt exakt aufs Ceiling
+        assertThat(s10.nextDeltaAbove(40, 50)).isNull()        // 40+50=90 = Ceiling
+        assertThat(s10.nextDeltaAbove(90, 0)).isNull()         // Basis schon am Ceiling
+        assertThat(s10.nextDeltaAbove(100, 0)).isNull()        // Basis ueber Ceiling (iobTH aus)
+        assertThat(s10.nextDeltaBelow(0)).isNull()             // nie unter die Basis
+        assertThat(s10.nextDeltaBelow(5)).isEqualTo(0)
+        assertThat(DynShadowCandidateCfg("t", 5, null, 5).nextDeltaAbove(88, 0)).isEqualTo(2)
         assertThat(DYN_SHADOW_CANDIDATES).hasSize(12)
     }
 
@@ -252,10 +303,12 @@ class DynMealIobThShadowTest {
             assertThat(r.decisions.none { it.direction == "UP" || it.direction == "SOFT_DOWN" }).isTrue()
             assertThat(r.decisions.first().reason).isEqualTo("meal-active-unknown")
         }
-        assertThat(w!!.candidates.values.all { it.currentRung == 40 }).isTrue()
-        // Hard-Safety wirkt trotz unknown weiter (R6 F1-Ausnahme)
-        val hard = DynShadowStep.step(w, boundInputs(t0 + min(4), glucoseTs = t0 + min(4), mealActiveKnown = false, carbsReq = 5))
-        assertThat(hard.decisions.all { it.direction == "HARD_DOWN" }).isTrue()
+        assertThat(w!!.candidates.values.all { it.deltaPercent == 0 }).isTrue()
+        // v2: rotes Signal unter unknown-Meal stuft NICHT ab (keine Evidenz-Zeile ohne
+        // bekannten Meal-State) — es wird nur gemeldet und blockt UP.
+        val red = DynShadowStep.step(w, boundInputs(t0 + min(4), glucoseTs = t0 + min(4), mealActiveKnown = false, carbsReq = 5))
+        assertThat(red.redSignal).isTrue()
+        assertThat(red.decisions.none { it.direction == "HARD_DOWN" }).isTrue()
     }
 
     // --- R6 F2: A,B,A out-of-order zaehlt nicht; >7-min-Spanne wird beschnitten ---
@@ -276,8 +329,9 @@ class DynMealIobThShadowTest {
     @Test fun ceilingStillMeasuresBindingAndCommitConfounds() {
         val atCeiling = DynWindowState(
             "meal-$t0", t0, leftTruncated = false,
+            lastActualConfiguredPercent = 40,
             candidates = DYN_SHADOW_CANDIDATES.associate {
-                it.id to DynCandidateState(it.id, currentRung = 90)
+                it.id to DynCandidateState(it.id, deltaPercent = 50)   // Basis 40 + 50 = Ceiling 90
             },
         )
         // capIob 7.5 > simGate(90%) = 7.2 -> Binding MUSS am Ceiling sichtbar sein, aber kein UP
