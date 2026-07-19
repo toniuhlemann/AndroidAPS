@@ -5,26 +5,28 @@ import org.json.JSONObject
 import java.io.File
 
 /**
- * DynamicMealIobTH — SHADOW-Runner (Stufe 3): verdrahtet den puren Evaluator mit dem realen
- * Zyklus. Wird POST-Determine aus dem Export-Block aufgerufen (runCatching), Ergebnis geht
- * NUR in den Export. Keine Shadow-Groesse wird je vom Loop gelesen (R5 Gate 1).
+ * DynamicMealIobTH — SHADOW-Runner (R6-Fassung): verdrahtet den puren Evaluator mit dem realen
+ * Zyklus. POST-Determine aus dem Export-Block (runCatching), Ergebnis geht NUR in den Export.
+ * R6: gesamter Lauf @Synchronized (F4), interne App-Files + strikt atomare Persistenz ohne
+ * Direkt-Overwrite-Fallback (F4), Modus via Automation-State DYNMEAL_SHADOW mit Default OFF
+ * und Re-enable-Reset (F5), zyklusgleiche Inputs inkl. Raw-Stempel-Abgleich (F6),
+ * vollstaendige numerische Telemetrie + maxBolusAgreement (F8).
  */
 object DynMealIobThShadowRunner {
 
     private const val STATE_FILE = "dynmeal_shadow_state.json"
-    @Volatile private var window: DynWindowState? = null
-    @Volatile private var loaded = false
-    @Volatile private var observedSinceLoad = false
-    @Volatile private var lastCycleTs = 0L
+    private var window: DynWindowState? = null
+    private var loaded = false
+    private var observedSinceLoad = false
+    private var lastCycleTs = 0L
+    private var lastMode: String? = null
 
-    /** Exakte loop_smb-Branch-Rekonstruktion aus dem 0059-reason — Paritaet by construction:
-     *  jeder reason beweist genau die Branches, die VOR ihm lagen (Reihenfolge loop_smb()):
-     *  microbolus -> calibration -> even/odd-Feature -> odd-target -> max-iob-zero -> iobTH. */
     internal data class GateEligibility(
         val microBolusAllowed: Boolean?, val evenOddFeatureEnabled: Boolean?,
         val calibrationStopsSmb: Boolean?, val targetIsEven: Boolean?, val maxIobPositive: Boolean?,
     )
 
+    /** Exakte loop_smb-Branch-Rekonstruktion aus dem 0059-reason — Paritaet by construction. */
     internal fun eligibilityFromReason(reason: String?): GateEligibility = when (reason) {
         "microbolus-disabled" -> GateEligibility(false, null, null, null, null)
         "calibration"         -> GateEligibility(true, null, true, null, null)
@@ -36,7 +38,9 @@ object DynMealIobThShadowRunner {
         else                  -> GateEligibility(null, null, null, null, null)
     }
 
-    /** Baut Inputs, fuehrt step() aus, persistiert atomar, liefert Export-JSON (oder null). */
+    /** R6 F4: EIN Lock um Load/Step/Save — Retry-/Parallel-Aufrufe koennen den State weder
+     *  verlieren noch doppelt fortschreiben. */
+    @Synchronized
     fun runShadow(
         engineMode: String,
         cycleTs: Long,
@@ -49,7 +53,7 @@ object DynMealIobThShadowRunner {
         loopBg: Double?, noise: Double?, bgAgeMin: Double?, flatBgs: Boolean?,
         delta: Double?, shortAvgDelta: Double?,
         raw: DetermineBasalAutoISF.ShadowCycleRaw?,
-        insReq: Double?, carbsReq: Int?,
+        insReq: Double?,
         minBg: Double?, targetBg: Double?,
         ratioFix: Double?, ratioMin: Double?, ratioMax: Double?, ratioBgRange: Double?,
         mealCob: Double?, carbRatio: Double?, currentBasal: Double?,
@@ -58,10 +62,21 @@ object DynMealIobThShadowRunner {
         actualMaxBolusU: Double?,
         stateDir: File,
     ): JSONObject? {
-        if (engineMode == "OFF") return null
-        if (!loaded) { window = loadState(stateDir); loaded = true }
-        if (cycleTs <= lastCycleTs) return null            // gleicher Calculate-Zyklus: idempotent (Test 12)
+        // R6 F5: alles ausser exakt "SHADOW" ist OFF; OFF->SHADOW = frischer Start (neue Kohorte,
+        // leftTruncated-Pfad greift, alter Snapshot wird verworfen).
+        val mode = if (engineMode == "SHADOW") "SHADOW" else "OFF"
+        if (lastMode != null && lastMode == "OFF" && mode == "SHADOW") {
+            window = null; loaded = true; observedSinceLoad = false
+            runCatching { File(stateDir, STATE_FILE).delete() }
+        }
+        lastMode = mode
+        if (mode == "OFF") return null
 
+        if (!loaded) { window = loadState(stateDir); loaded = true }
+        if (cycleTs <= lastCycleTs) return null            // gleicher Calculate-Zyklus: idempotent
+
+        // R6 F6: Raw-Stempel-Abgleich — Rohwerte eines anderen Zyklus gelten als unknown.
+        val rawSynced = raw?.takeIf { it.cycleTs == cycleTs }
         val elig = eligibilityFromReason(smbGateReason)
         val inputs = DynShadowInputs(
             cycleTs = cycleTs, apsGlucoseTs = apsGlucoseTs,
@@ -73,9 +88,10 @@ object DynMealIobThShadowRunner {
             microBolusAllowed = elig.microBolusAllowed, evenOddFeatureEnabled = elig.evenOddFeatureEnabled,
             calibrationStopsSmb = elig.calibrationStopsSmb, targetIsEven = elig.targetIsEven,
             loopBg = loopBg, loopBgNoise = noise, bgAgeMin = bgAgeMin, flatBgsDetected = flatBgs,
-            delta = delta, shortAvgDelta = shortAvgDelta, maxDelta = raw?.maxDelta,
-            insReq = insReq, eventualBg = raw?.eventualBg, minGuardBg = raw?.minGuardBg,
-            minBg = minBg, thresholdBg = raw?.thresholdBg, targetBg = targetBg, carbsReq = carbsReq,
+            delta = delta, shortAvgDelta = shortAvgDelta, maxDelta = rawSynced?.maxDelta,
+            insReq = insReq, eventualBg = rawSynced?.eventualBg, minGuardBg = rawSynced?.minGuardBg,
+            minBg = minBg, thresholdBg = rawSynced?.thresholdBg, targetBg = targetBg,
+            carbsReq = rawSynced?.carbsReqRaw?.toInt(),    // R6 F6: lokaler, IMMER berechneter Wert
             smbRatioFix = ratioFix, smbRatioMin = ratioMin, smbRatioMax = ratioMax, smbRatioBgRange = ratioBgRange,
             mealCob = mealCob, carbRatio = carbRatio, currentBasal = currentBasal,
             maxSmbBasalMinutes = maxSmbMinutes, maxUamSmbBasalMinutes = maxUamSmbMinutes,
@@ -86,8 +102,6 @@ object DynMealIobThShadowRunner {
         val freshProcessMidMeal = !observedSinceLoad && window == null && mealActiveKnown && mealActive
         observedSinceLoad = true
         var result = DynShadowStep.step(window, inputs)
-        // Neustart mitten im Fenster ohne kompatiblen Snapshot: leftTruncated-Kohorte am Floor
-        // (v1.2 §Fenster / R3 §3) — Anchor-/Sequenz-Auswertungen sind dann zensierbar.
         if (freshProcessMidMeal && result.windowEvent == "window-start") {
             result = result.copy(window = result.window?.copy(leftTruncated = true))
         }
@@ -95,14 +109,17 @@ object DynMealIobThShadowRunner {
         lastCycleTs = cycleTs
         runCatching { saveState(stateDir) }
 
+        val firstSim = result.decisions.firstOrNull()?.simulatedMaxBolusU
         return JSONObject().apply {
             put("specVersion", DynShadowSpec.SPEC_VERSION)
             put("policyHash", DynShadowSpec.policyHash())
-            put("engineMode", engineMode)
+            put("policyCanonical", DynShadowSpec.policyCanonical())
+            put("engineMode", mode)
             put("cycleTs", cycleTs)
             put("realAction", false)
             put("mealActiveKnown", mealActiveKnown)
             put("mealActive", mealActive)
+            if (result.scoreBlocked) put("scoreBlocked", true)
             result.windowEvent?.let { put("windowEvent", it) }
             result.window?.let { w ->
                 put("mealWindowId", w.windowId)
@@ -110,6 +127,7 @@ object DynMealIobThShadowRunner {
                 put("actualRungChangeObserved", w.actualRungChangeObserved)
             }
             put("duplicateGlucose", result.duplicateGlucose)
+            put("outOfOrderGlucose", result.outOfOrderGlucose)
             put("hardDown", result.hardDown)
             put("actual", JSONObject().apply {
                 put("configuredIobThPercent", actualConfiguredPercent)
@@ -125,11 +143,16 @@ object DynMealIobThShadowRunner {
                 val inf = DynShadowLogic.actualGateBoundInferred(inputs)
                 if (ex != null && inf != null) put("gateAgreement", ex == inf)
                 actualMaxBolusU?.let { put("maxBolusU", it) }
-                raw?.let {
+                // R6 F8: Paritaetskontrolle reale vs simulierte MaxBolus-Herleitung
+                if (actualMaxBolusU != null && firstSim != null)
+                    put("maxBolusAgreement", Math.abs(actualMaxBolusU - firstSim) <= DynShadowSpec.TELEMETRY_EPS)
+                rawSynced?.let {
+                    put("rawCycleTs", it.cycleTs)
                     put("minGuardBg", it.minGuardBg); put("thresholdBg", it.thresholdBg)
                     put("maxDelta", it.maxDelta); put("eventualBg", it.eventualBg)
+                    put("carbsReqRaw", it.carbsReqRaw)
                 }
-                carbsReq?.let { put("carbsReq", it) }
+                if (raw != null && rawSynced == null) put("rawStale", true)
             })
             put("safety", JSONObject().apply {
                 put3(this, "eligible", result.safety.eligible)
@@ -138,19 +161,34 @@ object DynMealIobThShadowRunner {
             })
             put("candidates", JSONArray().apply {
                 result.decisions.forEach { d ->
+                    val cfg = DYN_SHADOW_CANDIDATES.first { it.id == d.candidateId }
                     put(JSONObject().apply {
                         put("id", d.candidateId)
+                        put("stepPercent", cfg.stepPercent)
+                        cfg.loopBgFloor?.let { put("loopBgFloor", it) }
+                        put("upCooldownMin", cfg.upCooldownMin)
                         put("direction", d.direction)
                         put("rungBefore", d.rungBefore); put("rungAfter", d.rungAfter)
                         put("upCoverage", 20 * d.upCount); put("downCoverage", -20 * d.downCount)
                         put3(this, "positiveRow", d.positiveRow); put3(this, "negativeRow", d.negativeRow)
                         put3(this, "virtualGateBound", d.virtualGateBound)
                         put3(this, "virtualSingleCapBound", d.virtualSingleCapBound)
+                        // R6 F8: numerische Kalibrier-Groessen
+                        d.simulatedEffectiveGateU?.let { put("simulatedEffectiveGateU", it) }
+                        d.simulatedVirtualCapU?.let { put("simulatedVirtualCapU", it) }
+                        d.entryGateHeadroomU?.let { put("entryGateHeadroomU", it) }
+                        d.singleSmbCapHeadroomU?.let { put("singleSmbCapHeadroomU", it) }
+                        d.hypotheticalSmbRatio?.let { put("hypotheticalSmbRatio", it) }
+                        d.deliverableWantedU?.let { put("deliverableWantedU", it) }
+                        d.simulatedMaxBolusU?.let { put("simulatedMaxBolusU", it) }
                         d.requestedRung?.let { put("requestedRung", it) }
                         put("reason", d.reason)
                         put("cooldownRemainingMs", d.cooldownRemainingMs)
                         put("trajectoryConfounded", d.trajectoryConfounded)
+                        put("virtualCommitCountInWindow", d.commitCountAfter)
+                        put("upLatchedForWindow", d.upLatched)
                         put("counterfactualOutcomeUnknown", true)
+                        put("inputsComplete", d.missing.isEmpty())
                         if (d.missing.isNotEmpty()) put("missing", JSONArray(d.missing))
                     })
                 }
@@ -162,7 +200,9 @@ object DynMealIobThShadowRunner {
         when (v) { null -> o.put(key, "unknown"); else -> o.put(key, v) }
     }
 
-    // --- Persistenz: atomarer Snapshot (tmp + rename), Kohorten-Check via policyHash ---
+    // --- Persistenz: strikt atomar (tmp + ATOMIC_MOVE), KEIN Direkt-Overwrite-Fallback (R6 F4).
+    // Schlaegt der Move fehl, bleibt die alte Datei unversehrt; der State lebt im Speicher und
+    // der naechste Zyklus versucht es erneut.
     private fun stateFile(dir: File) = File(dir, STATE_FILE)
 
     private fun saveState(dir: File) {
@@ -199,7 +239,7 @@ object DynMealIobThShadowRunner {
             java.nio.file.Files.move(tmp.toPath(), f.toPath(),
                 java.nio.file.StandardCopyOption.ATOMIC_MOVE, java.nio.file.StandardCopyOption.REPLACE_EXISTING)
         } catch (_: Exception) {
-            if (!tmp.renameTo(f)) { f.writeText(o.toString()); tmp.delete() }
+            runCatching { tmp.delete() }   // alte Datei bleibt gueltig; naechster Zyklus retryt
         }
     }
 
@@ -207,7 +247,6 @@ object DynMealIobThShadowRunner {
         val f = stateFile(dir)
         if (!f.exists()) return null
         val o = JSONObject(f.readText())
-        // Kohorten-/Versions-Check: inkompatibel -> leftTruncated-Neustart am Floor (Test 10/11)
         if (o.optInt("v", -1) != DynShadowSpec.SPEC_VERSION ||
             o.optString("policyHash") != DynShadowSpec.policyHash()
         ) return null

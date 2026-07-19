@@ -80,15 +80,18 @@ class AutomationStateService  @Inject constructor(
         return automationStates.toList()
     }
 
+    @Synchronized
     fun clearStates() {
         automationStates.clear()
         sp.putString(spKey, "{}")
     }
 
+   @Synchronized
    override fun getStateValues(stateName: String): List<String> {
         return stateValues[stateName.trim()] ?: emptyList()
     }
 
+   @Synchronized
    override fun setStateValues(stateName: String, values: List<String>) {
         val trimmedName = stateName.trim()
         val trimmedValues = values.map { it.trim() }
@@ -105,10 +108,12 @@ class AutomationStateService  @Inject constructor(
         sp.putString(stateValuesKey, Json.encodeToString(stateValues))
     }
 
+   @Synchronized
    override fun hasStateValues(stateName: String): Boolean {
         return stateValues.containsKey(stateName.trim())
     }
 
+   @Synchronized
    override fun deleteState(stateName: String) {
         val trimmedName = stateName.trim()
         automationStates.remove(trimmedName)

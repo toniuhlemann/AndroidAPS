@@ -24,16 +24,16 @@ object DynShadowSpec {
     const val TELEMETRY_EPS = 0.01
     const val VIRTUAL_CAP_TOLERANCE = 1.30
 
-    /** Policy-Identitaet: jede verhaltenswirksame Konstante; Wechsel = neue Kohorte. */
-    fun policyHash(): String {
-        val s = "v=$SPEC_VERSION;floor=$MEAL_FLOOR_PERCENT;ceil=$MEAL_CEILING_PERCENT;" +
+    /** Policy-Identitaet: jede verhaltenswirksame Konstante; Wechsel = neue Kohorte.
+     *  R6 F8: kanonischer String wird MIT exportiert, Hash ist SHA-256. */
+    fun policyCanonical(): String =
+        "v=$SPEC_VERSION;floor=$MEAL_FLOOR_PERCENT;ceil=$MEAL_CEILING_PERCENT;" +
             "win=$SCORE_WINDOW_CYCLES/${SCORE_WINDOW_MAX_MS};up=$UP_THRESHOLD_ROWS;" +
             "down=$DOWN_THRESHOLD_ROWS;hyst=$POST_UP_DOWN_HYSTERESIS_MS;eps=$TELEMETRY_EPS;" +
-            "cap=$VIRTUAL_CAP_TOLERANCE;cands=" + DYN_SHADOW_CANDIDATES.joinToString(",") { it.id }
-        var h = 1125899906842597L
-        for (c in s) h = 31 * h + c.code
-        return java.lang.Long.toHexString(h)
-    }
+            "cap=$VIRTUAL_CAP_TOLERANCE;sem=r6;cands=" + DYN_SHADOW_CANDIDATES.joinToString(",") { it.id }
+
+    fun policyHash(): String = java.security.MessageDigest.getInstance("SHA-256")
+        .digest(policyCanonical().toByteArray()).joinToString("") { "%02x".format(it) }.take(16)
 }
 
 data class DynShadowCandidateCfg(val id: String, val stepPercent: Int, val loopBgFloor: Int?, val upCooldownMin: Int) {

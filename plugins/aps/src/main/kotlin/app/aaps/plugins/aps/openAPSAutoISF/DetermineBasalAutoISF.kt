@@ -45,7 +45,11 @@ class DetermineBasalAutoISF @Inject constructor(
 
     /** DynMealIobTH shadow (spec v1.3): cycle-frozen raw internals for the pure safety helper.
      *  Same pattern/contract as [lastSmbDecision] — write-only, never read by dosing. */
-    data class ShadowCycleRaw(val minGuardBg: Double, val thresholdBg: Double, val maxDelta: Double, val eventualBg: Double)
+    data class ShadowCycleRaw(
+        val cycleTs: Long,                   // R6 F6: Zyklus-Stempel — Hook gleicht exakt ab
+        val minGuardBg: Double, val thresholdBg: Double, val maxDelta: Double, val eventualBg: Double,
+        val carbsReqRaw: Double,             // lokaler, IMMER berechneter Wert (nicht publiziert-gefiltert)
+    )
     var lastShadowRaw: ShadowCycleRaw? = null
 
     /** wantedU = ungecappte SMB-Wunschmenge (insulinReq*ratio); deliveredU = rT.units after all caps. */
@@ -748,9 +752,6 @@ class DetermineBasalAutoISF @Inject constructor(
         }
         minGuardBG = round(minGuardBG, 0)
         //console.error(minCOBGuardBG, minUAMGuardBG, minIOBGuardBG, minGuardBG);
-        // DynMealIobTH shadow (spec v1.3): freeze the raw internals the pure safety helper
-        // needs — write-only side output, never read back into dosing (same as lastSmbDecision).
-        lastShadowRaw = ShadowCycleRaw(minGuardBG, threshold, maxDelta, eventualBG)
 
         var minZTUAMPredBG = minUAMPredBG
         // if minZTGuardBG is below threshold, bring down any super-high minUAMPredBG by averaging
@@ -900,6 +901,10 @@ class DetermineBasalAutoISF @Inject constructor(
             rT.carbsReqWithin = minutesAboveThreshold
             rT.reason.append("$carbsReq add\'l carbs req w/in ${minutesAboveThreshold}m; ")
         }
+        // DynMealIobTH shadow (spec v1.3 + R6 F6): freeze the raw internals the pure safety
+        // helper needs, INCLUDING the cycle stamp and the local always-computed carbsReq —
+        // write-only side output, never read back into dosing (same contract as lastSmbDecision).
+        lastShadowRaw = ShadowCycleRaw(currentTime, minGuardBG, threshold, maxDelta, eventualBG, carbsReq.toDouble())
 
         // don't low glucose suspend if IOB is already super negative and BG is rising faster than predicted
         if (bg < threshold && iob_data.iob < -profile.current_basal * 20 / 60 && minDelta > 0 && minDelta > expectedDelta) {

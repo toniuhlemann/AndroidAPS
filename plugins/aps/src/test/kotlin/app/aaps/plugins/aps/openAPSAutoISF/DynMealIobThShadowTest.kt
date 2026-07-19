@@ -242,6 +242,131 @@ class DynMealIobThShadowTest {
         assertThat(DYN_SHADOW_CANDIDATES).hasSize(12)
     }
 
+    // --- R6 F1: MEAL_ACTIVE unknown im laufenden Fenster -> kein Score/UP/SOFT_DOWN ---
+    @Test fun unknownMealActiveBlocksScoreInOpenWindow() {
+        var w = DynShadowStep.step(null, boundInputs(t0, glucoseTs = t0)).window
+        for (k in 1..3) {
+            val r = DynShadowStep.step(w, boundInputs(t0 + min(k), glucoseTs = t0 + min(k), mealActiveKnown = false))
+            w = r.window
+            assertThat(r.scoreBlocked).isTrue()
+            assertThat(r.decisions.none { it.direction == "UP" || it.direction == "SOFT_DOWN" }).isTrue()
+            assertThat(r.decisions.first().reason).isEqualTo("meal-active-unknown")
+        }
+        assertThat(w!!.candidates.values.all { it.currentRung == 40 }).isTrue()
+        // Hard-Safety wirkt trotz unknown weiter (R6 F1-Ausnahme)
+        val hard = DynShadowStep.step(w, boundInputs(t0 + min(4), glucoseTs = t0 + min(4), mealActiveKnown = false, carbsReq = 5))
+        assertThat(hard.decisions.all { it.direction == "HARD_DOWN" }).isTrue()
+    }
+
+    // --- R6 F2: A,B,A out-of-order zaehlt nicht; >7-min-Spanne wird beschnitten ---
+    @Test fun outOfOrderAndWindowSpan() {
+        var w = DynShadowStep.step(null, boundInputs(t0, glucoseTs = t0)).window
+        w = DynShadowStep.step(w, boundInputs(t0 + min(1), glucoseTs = t0 + min(1))).window
+        // A,B,A: aelterer Timestamp wieder -> outOfOrder, keine dritte Evidenz, kein UP
+        val aba = DynShadowStep.step(w, boundInputs(t0 + min(2), glucoseTs = t0))
+        assertThat(aba.outOfOrderGlucose).isTrue()
+        assertThat(aba.decisions.none { it.direction == "UP" }).isTrue()
+        // >7-min-Luecke auf der GLUKOSE-Achse: alte Rows fallen raus -> 2 alte + 1 neue reichen nicht
+        val late = DynShadowStep.step(aba.window, boundInputs(t0 + min(10), glucoseTs = t0 + min(10)))
+        assertThat(late.decisions.none { it.direction == "UP" }).isTrue()
+        assertThat(late.decisions.first { it.candidateId == "s10_fnone_cd5" }.upCount).isEqualTo(1)
+    }
+
+    // --- R6 F7: Binding wird auch am Ceiling gemessen; erster Commit meldet Confounder ---
+    @Test fun ceilingStillMeasuresBindingAndCommitConfounds() {
+        val atCeiling = DynWindowState(
+            "meal-$t0", t0, leftTruncated = false,
+            candidates = DYN_SHADOW_CANDIDATES.associate {
+                it.id to DynCandidateState(it.id, currentRung = 90)
+            },
+        )
+        // capIob 7.5 > simGate(90%) = 7.2 -> Binding MUSS am Ceiling sichtbar sein, aber kein UP
+        val r = DynShadowStep.step(atCeiling, boundInputs(t0 + min(1), glucoseTs = t0 + min(1), capIob = 7.5))
+        val d = r.decisions.first { it.candidateId == "s10_fnone_cd5" }
+        assertThat(d.virtualGateBound).isEqualTo(true)
+        assertThat(d.simulatedEffectiveGateU).isWithin(1e-6).of(7.2)
+        assertThat(d.direction).isNotEqualTo("UP")
+        // erster virtueller Commit traegt Confounder + CommitCount sofort (Post-State)
+        var w: DynWindowState? = null
+        var upDecision: DynCandidateDecision? = null
+        for (k in 0..2) {
+            val rr = DynShadowStep.step(w, boundInputs(t0 + min(k), glucoseTs = t0 + min(k)))
+            w = rr.window
+            rr.decisions.first { it.candidateId == "s10_fnone_cd5" }
+                .takeIf { it.direction == "UP" }?.let { upDecision = it }
+        }
+        assertThat(upDecision!!.trajectoryConfounded).isTrue()
+        assertThat(upDecision!!.commitCountAfter).isEqualTo(1)
+    }
+
+    // --- R6 F5: OFF (und alles ausser SHADOW) tut nichts ---
+    @Test fun offModeDoesNothing() {
+        val dir = java.io.File(System.getProperty("java.io.tmpdir"), "dynshadow-${System.nanoTime()}").apply { mkdirs() }
+        try {
+            val r = DynMealIobThShadowRunner.runShadow(
+                engineMode = "OFF", cycleTs = t0, mealActiveKnown = true, mealActive = true,
+                apsGlucoseTs = t0, smbGateReason = "none", actualUseIobTh = true,
+                actualConfiguredPercent = 40, actualEffectiveGateU = 3.2, capIobU = 1.0,
+                netIobU = 1.0, maxIobU = 8.0, profilePercent = 100, sensitivityRatio = 1.0,
+                loopBg = 120.0, noise = 1.0, bgAgeMin = 1.0, flatBgs = false, delta = 1.0,
+                shortAvgDelta = 1.0, raw = null, insReq = 0.0, minBg = 90.0, targetBg = 98.0,
+                ratioFix = 0.175, ratioMin = 0.175, ratioMax = 0.175, ratioBgRange = 0.0,
+                mealCob = 0.0, carbRatio = 9.0, currentBasal = 0.55, maxSmbMinutes = 90.0,
+                maxUamSmbMinutes = 60.0, smbMaxRangeExt = 1.0, bolusIncrementU = 0.05,
+                skipNeutralTemps = false, localMinute = 30, actualMaxBolusU = null, stateDir = dir,
+            )
+            assertThat(r).isNull()
+            assertThat(java.io.File(dir, "dynmeal_shadow_state.json").exists()).isFalse()
+            // invalid mode wird wie OFF behandelt
+            assertThat(DynMealIobThShadowRunner.eligibilityFromReason("garbage").microBolusAllowed).isNull()
+        } finally { dir.deleteRecursively() }
+    }
+
+    // --- R6 F4: SHADOW schreibt atomaren Snapshot; gleicher Zyklus ist idempotent ---
+    @Test fun shadowPersistsAndIsIdempotent() {
+        val dir = java.io.File(System.getProperty("java.io.tmpdir"), "dynshadow-${System.nanoTime()}").apply { mkdirs() }
+        try {
+            fun call(ts: Long) = DynMealIobThShadowRunner.runShadow(
+                engineMode = "SHADOW", cycleTs = ts, mealActiveKnown = true, mealActive = true,
+                apsGlucoseTs = ts, smbGateReason = "iobTH", actualUseIobTh = true,
+                actualConfiguredPercent = 40, actualEffectiveGateU = 3.2, capIobU = 3.5,
+                netIobU = 3.5, maxIobU = 8.0, profilePercent = 100, sensitivityRatio = 1.0,
+                loopBg = 170.0, noise = 1.0, bgAgeMin = 1.0, flatBgs = false, delta = 5.0,
+                shortAvgDelta = 4.0,
+                raw = DetermineBasalAutoISF.ShadowCycleRaw(ts, 120.0, 65.0, 5.0, 140.0, 0.0),
+                insReq = 1.0, minBg = 90.0, targetBg = 98.0,
+                ratioFix = 0.175, ratioMin = 0.175, ratioMax = 0.175, ratioBgRange = 0.0,
+                mealCob = 0.0, carbRatio = 9.0, currentBasal = 0.55, maxSmbMinutes = 90.0,
+                maxUamSmbMinutes = 60.0, smbMaxRangeExt = 1.0, bolusIncrementU = 0.05,
+                skipNeutralTemps = false, localMinute = 30, actualMaxBolusU = 0.6, stateDir = dir,
+            )
+            val ts = System.nanoTime()          // eindeutig ggü. anderen Tests (Runner-Singleton)
+            val first = call(ts)
+            assertThat(first).isNotNull()
+            assertThat(first!!.getString("engineMode")).isEqualTo("SHADOW")
+            assertThat(first.getJSONObject("actual").getBoolean("maxBolusAgreement")).isTrue()
+            assertThat(java.io.File(dir, "dynmeal_shadow_state.json").exists()).isTrue()
+            assertThat(java.io.File(dir, "dynmeal_shadow_state.json.tmp").exists()).isFalse()
+            assertThat(call(ts)).isNull()       // gleicher Calculate-Zyklus: idempotent (Test 12)
+        } finally { dir.deleteRecursively() }
+    }
+
+    // --- eligibilityFromReason: vollstaendige Matrix ueber alle Reasons (R6 Attention 1) ---
+    @Test fun eligibilityMatrixComplete() {
+        for (reason in listOf("microbolus-disabled", "calibration", "even-odd-off", "odd-target", "max-iob-zero", "iobTH", "none", null, "future-reason")) {
+            val e = DynMealIobThShadowRunner.eligibilityFromReason(reason)
+            when (reason) {
+                "none", "iobTH" -> {
+                    assertThat(e.microBolusAllowed).isEqualTo(true)
+                    assertThat(e.targetIsEven).isEqualTo(true)
+                    assertThat(e.maxIobPositive).isEqualTo(true)
+                }
+                null, "future-reason" -> assertThat(e.microBolusAllowed).isNull()
+                else -> assertThat(e.microBolusAllowed != null || e.calibrationStopsSmb != null).isTrue()
+            }
+        }
+    }
+
     // --- loopBgFloor (Test 33): Kandidat mit Floor 155 blockt UP unter 155 ---
     @Test fun loopBgFloorBlocksUp() {
         var w: DynWindowState? = null
