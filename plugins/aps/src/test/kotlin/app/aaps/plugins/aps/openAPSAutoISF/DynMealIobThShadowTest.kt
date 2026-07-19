@@ -351,6 +351,96 @@ class DynMealIobThShadowTest {
         } finally { dir.deleteRecursively() }
     }
 
+    private fun runnerCall(ts: Long, dir: java.io.File, mode: String = "SHADOW", mealKnown: Boolean = true, mealActive: Boolean = true) =
+        DynMealIobThShadowRunner.runShadow(
+            engineMode = mode, cycleTs = ts, mealActiveKnown = mealKnown, mealActive = mealActive,
+            apsGlucoseTs = ts, smbGateReason = "iobTH", actualUseIobTh = true,
+            actualConfiguredPercent = 40, actualEffectiveGateU = 3.2, capIobU = 3.5,
+            netIobU = 3.5, maxIobU = 8.0, profilePercent = 100, sensitivityRatio = 1.0,
+            loopBg = 170.0, noise = 1.0, bgAgeMin = 1.0, flatBgs = false, delta = 5.0,
+            shortAvgDelta = 4.0,
+            raw = DetermineBasalAutoISF.ShadowCycleRaw(ts, 120.0, 65.0, 5.0, 140.0, 0.0),
+            insReq = 1.0, minBg = 90.0, targetBg = 98.0,
+            ratioFix = 0.175, ratioMin = 0.175, ratioMax = 0.175, ratioBgRange = 0.0,
+            mealCob = 0.0, carbRatio = 9.0, currentBasal = 0.55, maxSmbMinutes = 90.0,
+            maxUamSmbMinutes = 60.0, smbMaxRangeExt = 1.0, bolusIncrementU = 0.05,
+            skipNeutralTemps = false, localMinute = 30, actualMaxBolusU = 0.6, stateDir = dir,
+        )
+
+    // --- R7 P1: ECHTER Persistence-Roundtrip (Reset -> Reload -> feldgleicher State) ---
+    @Test fun persistenceRoundtripSurvivesRestart() {
+        val dir = java.io.File(System.getProperty("java.io.tmpdir"), "dynshadow-${System.nanoTime()}").apply { mkdirs() }
+        try {
+            DynMealIobThShadowRunner.resetForTest()
+            val ts = t0 + 500_000_000L
+            val first = runnerCall(ts, dir)!!
+            val secondBefore = runnerCall(ts + min(1), dir)!!   // 2 Evidenzzeilen im Fenster
+            val windowId = secondBefore.getString("mealWindowId")
+            // "Neustart": In-Memory weg, aus DERSELBEN Datei laden
+            DynMealIobThShadowRunner.resetForTest()
+            val afterRestart = runnerCall(ts + min(2), dir)!!
+            assertThat(afterRestart.getString("mealWindowId")).isEqualTo(windowId)       // Fenster ueberlebt
+            assertThat(afterRestart.optString("windowEvent")).isNotEqualTo("window-start")
+            // 3. eindeutige Evidenz nach Reload -> UP: Rows/lastEvidenceGlucoseTs haben ueberlebt
+            val cd5 = afterRestart.getJSONArray("candidates").let { arr ->
+                (0 until arr.length()).map { arr.getJSONObject(it) }.first { it.getString("id") == "s10_fnone_cd5" }
+            }
+            assertThat(cd5.getString("direction")).isEqualTo("UP")
+            assertThat(cd5.getInt("virtualCommitCountInWindow")).isEqualTo(1)
+        } finally { dir.deleteRecursively(); DynMealIobThShadowRunner.resetForTest() }
+    }
+
+    // --- R7 P1: korruptes JSON + Policy-Mismatch -> neue leftTruncated-Kohorte ---
+    @Test fun corruptOrMismatchedSnapshotStartsTruncatedCohort() {
+        val dir = java.io.File(System.getProperty("java.io.tmpdir"), "dynshadow-${System.nanoTime()}").apply { mkdirs() }
+        try {
+            java.io.File(dir, "dynmeal_shadow_state.json").writeText("{ this is not json")
+            DynMealIobThShadowRunner.resetForTest()
+            val r = runnerCall(t0 + 600_000_000L, dir)!!
+            assertThat(r.getString("windowEvent")).isEqualTo("window-start")
+            assertThat(r.getBoolean("leftTruncated")).isTrue()
+            // Policy-Mismatch: gueltiges JSON, falscher Hash
+            java.io.File(dir, "dynmeal_shadow_state.json")
+                .writeText("""{"v":${DynShadowSpec.SPEC_VERSION},"policyHash":"deadbeef","lastCycleTs":1}""")
+            DynMealIobThShadowRunner.resetForTest()
+            val r2 = runnerCall(t0 + 700_000_000L, dir)!!
+            assertThat(r2.getBoolean("leftTruncated")).isTrue()
+        } finally { dir.deleteRecursively(); DynMealIobThShadowRunner.resetForTest() }
+    }
+
+    // --- R7 P2: unknown -> true ohne Snapshot ergibt leftTruncated ---
+    @Test fun unknownThenTrueIsLeftTruncated() {
+        val dir = java.io.File(System.getProperty("java.io.tmpdir"), "dynshadow-${System.nanoTime()}").apply { mkdirs() }
+        try {
+            DynMealIobThShadowRunner.resetForTest()
+            val ts = t0 + 800_000_000L
+            runnerCall(ts, dir, mealKnown = false)              // erster Kontakt: unknown
+            val r = runnerCall(ts + min(1), dir, mealKnown = true, mealActive = true)!!
+            assertThat(r.getString("windowEvent")).isEqualTo("window-start")
+            assertThat(r.getBoolean("leftTruncated")).isTrue()  // nie eine bekannte false->true-Flanke
+            // Gegenprobe: bekanntes false zuerst -> echte Flanke -> NICHT truncated
+            DynMealIobThShadowRunner.resetForTest()
+            val dir2 = java.io.File(dir, "d2").apply { mkdirs() }
+            runnerCall(ts + min(2), dir2, mealKnown = true, mealActive = false)
+            val r2 = runnerCall(ts + min(3), dir2, mealKnown = true, mealActive = true)!!
+            assertThat(r2.getBoolean("leftTruncated")).isFalse()
+        } finally { dir.deleteRecursively(); DynMealIobThShadowRunner.resetForTest() }
+    }
+
+    // --- R7: invalid Mode WIRKLICH ueber runShadow + Persist-Fehler bleibt folgenlos ---
+    @Test fun invalidModeAndPersistFailureAreSafe() {
+        val dir = java.io.File(System.getProperty("java.io.tmpdir"), "dynshadow-${System.nanoTime()}").apply { mkdirs() }
+        try {
+            DynMealIobThShadowRunner.resetForTest()
+            assertThat(runnerCall(t0 + 900_000_000L, dir, mode = "garbage")).isNull()   // invalid = OFF
+            // Persist-Fehler: stateDir ist eine DATEI -> saveState wirft intern, runShadow liefert trotzdem
+            val asFile = java.io.File(dir, "not-a-dir").apply { writeText("x") }
+            DynMealIobThShadowRunner.resetForTest()
+            val r = runnerCall(t0 + 910_000_000L, asFile)
+            assertThat(r).isNotNull()                            // Export trotz Persistenzfehler
+        } finally { dir.deleteRecursively(); DynMealIobThShadowRunner.resetForTest() }
+    }
+
     // --- eligibilityFromReason: vollstaendige Matrix ueber alle Reasons (R6 Attention 1) ---
     @Test fun eligibilityMatrixComplete() {
         for (reason in listOf("microbolus-disabled", "calibration", "even-odd-off", "odd-target", "max-iob-zero", "iobTH", "none", null, "future-reason")) {
