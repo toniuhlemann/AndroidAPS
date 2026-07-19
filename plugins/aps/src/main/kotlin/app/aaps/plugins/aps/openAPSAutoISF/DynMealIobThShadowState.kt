@@ -49,6 +49,7 @@ data class DynCandidateDecision(
     val virtualGateBound: Boolean?, val virtualSingleCapBound: Boolean?,
     val requestedRung: Int?,
     val reason: String,
+    val deltaBeforeClamp: Int?,          // R9 P1: gesetzt, wenn die Ceiling-Normalisierung griff
     val cooldownRemainingMs: Long,
     val trajectoryConfounded: Boolean,   // R6 F7: aus dem POST-Transition-State
     val commitCountAfter: Int,
@@ -68,6 +69,7 @@ data class DynStepResult(
     val outOfOrderGlucose: Boolean,      // apsGlucoseTs <  lastEvidenceGlucoseTs (Backfill)
     val scoreBlocked: Boolean,           // R6 F1: meal-active-unknown im laufenden Fenster
     val redSignal: Boolean,              // Safety-rot in DIESEM Zyklus (Persistenz entscheidet)
+    val hardDown: Boolean,               // R9 P1: mindestens EIN Kandidat hat WIRKLICH abgestuft
     val basePercent: Int?,               // Live-Basis dieses Zyklus (realer User-iobTH%)
     val baseDropReset: Boolean,          // Abwaerts-Basisaenderung hat alle Deltas resettet
     val safety: DynSafetyEligibility,
@@ -83,15 +85,15 @@ object DynShadowStep {
         var w: DynWindowState? = prev
         var scoreBlocked = false
         if (!i.mealActiveKnown) {
-            if (w == null) return DynStepResult(null, emptyList(), null, false, false, true, false, i.actualConfiguredPercent, false, safety)
+            if (w == null) return DynStepResult(null, emptyList(), null, false, false, true, false, false, i.actualConfiguredPercent, false, safety)
             scoreBlocked = true          // R6 F1: Fenster besteht, aber Score/UP/DOWN gesperrt
         } else if (i.mealActive && w == null) {
             w = DynWindowState("meal-${i.cycleTs}", i.cycleTs, leftTruncated = false)
             windowEvent = "window-start"
         } else if (!i.mealActive && w != null) {
-            return DynStepResult(null, emptyList(), "window-end", false, false, false, false, i.actualConfiguredPercent, false, safety)
+            return DynStepResult(null, emptyList(), "window-end", false, false, false, false, false, i.actualConfiguredPercent, false, safety)
         } else if (!i.mealActive) {
-            return DynStepResult(null, emptyList(), null, false, false, false, false, i.actualConfiguredPercent, false, safety)
+            return DynStepResult(null, emptyList(), null, false, false, false, false, false, i.actualConfiguredPercent, false, safety)
         }
         var window = w!!
 
@@ -116,6 +118,21 @@ object DynShadowStep {
         // Live-Basis: aktueller realer Wert, sonst letzter im Fenster gesehener.
         val basePercent = i.actualConfiguredPercent ?: window.lastActualConfiguredPercent
 
+        // R9 P1: Ceiling-Normalisierung VOR jeder Kandidaten-Auswertung — ein bereits
+        // verdientes (oder persistiertes) Delta darf mit einer hoeher gesetzten Basis nie
+        // ueber das Ceiling schieben: delta := min(delta, max(0, CEIL - Basis)). Der
+        // normalisierte Wert landet im Window-State und damit in der Persistenz.
+        val clampedFrom = HashMap<String, Int>()
+        if (basePercent != null) {
+            val maxDelta = (DynShadowSpec.MEAL_CEILING_PERCENT - basePercent).coerceAtLeast(0)
+            window = window.copy(candidates = window.candidates.mapValues { (_, c) ->
+                if (c.deltaPercent > maxDelta) {
+                    clampedFrom[c.candidateId] = c.deltaPercent
+                    c.copy(deltaPercent = maxDelta)
+                } else c
+            })
+        }
+
         // (3) Safety-rot DIESES Zyklus — wirkt als Up-Blocker sofort, als Abstufung erst
         //     mit Persistenz (RED_THRESHOLD_ROWS im Evidenz-Fenster).
         val hardReasons = setOf(
@@ -137,7 +154,7 @@ object DynShadowStep {
         val newCands = HashMap<String, DynCandidateState>()
         for (cfg in DYN_SHADOW_CANDIDATES) {
             val st = window.candidates[cfg.id] ?: DynCandidateState(cfg.id)
-            val (next, dec) = stepCandidate(cfg, st, window, i, safety, redSignal, basePercent, countsForScore, duplicate, outOfOrder, scoreBlocked)
+            val (next, dec) = stepCandidate(cfg, st, window, i, safety, redSignal, basePercent, clampedFrom[cfg.id], countsForScore, duplicate, outOfOrder, scoreBlocked)
             newCands[cfg.id] = next
             decisions += dec
         }
@@ -145,12 +162,15 @@ object DynShadowStep {
             candidates = newCands,
             lastEvidenceGlucoseTs = if (countsForScore) glucoseTs!! else window.lastEvidenceGlucoseTs,
         )
-        return DynStepResult(window, decisions, windowEvent, duplicate, outOfOrder, scoreBlocked, redSignal, basePercent, baseDropReset, safety)
+        // R9 P1: hardDown = mindestens ein Kandidat hat WIRKLICH abgestuft (nicht das rote Signal).
+        val hardDown = decisions.any { it.direction == "HARD_DOWN" }
+        return DynStepResult(window, decisions, windowEvent, duplicate, outOfOrder, scoreBlocked, redSignal, hardDown, basePercent, baseDropReset, safety)
     }
 
     private fun stepCandidate(
         cfg: DynShadowCandidateCfg, st: DynCandidateState, w: DynWindowState,
         i: DynShadowInputs, safety: DynSafetyEligibility, redSignal: Boolean, basePercent: Int?,
+        deltaBeforeClamp: Int?,
         countsForScore: Boolean, duplicate: Boolean, outOfOrder: Boolean, scoreBlocked: Boolean,
     ): Pair<DynCandidateState, DynCandidateDecision> {
         val missing = ArrayList<String>()
@@ -209,6 +229,7 @@ object DynShadowStep {
             next.deltaPercent,
             upCount, downCount, redCount,
             posRow, negRow, gateBound, capBound, requested, reason,
+            deltaBeforeClamp,
             cooldownRemaining(cfg, next, i.cycleTs),
             // R6 F7: Confounder aus dem POST-Transition-State
             next.virtualCommitCountInWindow > 0 || w.actualRungChangeObserved,
