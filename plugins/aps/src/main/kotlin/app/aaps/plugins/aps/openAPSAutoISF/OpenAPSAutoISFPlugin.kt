@@ -135,8 +135,8 @@ open class OpenAPSAutoISFPlugin @Inject constructor(
 
     @Inject lateinit var automationStateService: AutomationStateInterface
 
-    // DynMealIobTH shadow (spec v1.3): nur fuer den Modus-Schalter (OFF/SHADOW), read-only.
-    @Inject lateinit var sp: app.aaps.core.interfaces.sharedPreferences.SP
+    // DynMealIobTH shadow (R6 F4): interner App-Files-Pfad fuer den State-Snapshot.
+    @Inject lateinit var shadowContext: android.content.Context
 
     // last values
     override var lastAPSRun: Long = 0
@@ -683,12 +683,15 @@ open class OpenAPSAutoISFPlugin @Inject constructor(
                 // beobachtend — Ergebnis geht NUR in diesen Export, nichts wird je vom Loop
                 // gelesen. Eigenes runCatching: ein Shadow-Fehler darf den Export nie stoppen.
                 runCatching {
-                    val engineMode = sp.getString("dynmeal_shadow_mode", "SHADOW")
+                    // R6 F5: Modus via Automation-State (im Automations-Tab schaltbar):
+                    // DYNMEAL_SHADOW=="true" -> SHADOW; fehlend/false/ungueltig -> OFF (Default).
+                    val modeSnap = automationStateService.getStateSnapshot("DYNMEAL_SHADOW")
+                    val engineMode = if (modeSnap.known && modeSnap.value == "true") "SHADOW" else "OFF"
                     val mealSnap = automationStateService.getStateSnapshot("MEAL_ACTIVE")
                     val mealKnown = mealSnap.known && mealSnap.value in listOf("true", "false")
                     val shadowRaw = determineBasalAutoISF.lastShadowRaw
-                    val stateDir = java.io.File(android.os.Environment.getExternalStoragePublicDirectory(
-                        android.os.Environment.DIRECTORY_DOCUMENTS), "aapsLogs").also { it.mkdirs() }
+                    // R6 F4: interne App-Files statt oeffentlichem Documents-Verzeichnis.
+                    val stateDir = java.io.File(shadowContext.filesDir, "dynmeal").also { it.mkdirs() }
                     DynMealIobThShadowRunner.runShadow(
                         engineMode = engineMode,
                         cycleTs = now,
@@ -703,13 +706,14 @@ open class OpenAPSAutoISFPlugin @Inject constructor(
                         profilePercent = profile_percentage, sensitivityRatio = sensitivityRatio,
                         loopBg = glucoseStatus.glucose.takeIf { it.isFinite() },
                         noise = glucoseStatus.noise,
-                        bgAgeMin = ((now - glucoseStatus.date) / 60000.0).takeIf { glucoseStatus.date > 0L },
+                        // R6 F6: gleiche Rundung wie Determine vor den -5/12-Grenzen
+                        bgAgeMin = (Math.round((now - glucoseStatus.date) / 60000.0 * 10.0) / 10.0)
+                            .takeIf { glucoseStatus.date > 0L },
                         flatBgs = flatBGsDetected,
                         delta = glucoseStatus.delta.takeIf { it.isFinite() },
                         shortAvgDelta = glucoseStatus.shortAvgDelta.takeIf { it.isFinite() },
                         raw = shadowRaw,
                         insReq = lastAPSResult?.json()?.optDouble("insulinReq")?.takeIf { it.isFinite() },
-                        carbsReq = lastAPSResult?.carbsReq,
                         minBg = oapsProfile.min_bg, targetBg = oapsProfile.target_bg,
                         ratioFix = smb_delivery_ratio, ratioMin = smb_delivery_ratio_min,
                         ratioMax = smb_delivery_ratio_max, ratioBgRange = smb_delivery_ratio_bg_range,
@@ -720,7 +724,10 @@ open class OpenAPSAutoISFPlugin @Inject constructor(
                         smbMaxRangeExt = smbMaxRangeExtension,
                         bolusIncrementU = oapsProfile.bolus_increment.takeIf { it.isFinite() && it > 0.0 },
                         skipNeutralTemps = oapsProfile.skip_neutral_temps,
-                        localMinute = java.util.Calendar.getInstance().get(java.util.Calendar.MINUTE),
+                        // R6 F6: Minute aus dem EINGEFRORENEN Zyklus-Zeitstempel, kein zweiter
+                        // Wallclock-Read (54:59/55:00-Kante).
+                        localMinute = java.util.Calendar.getInstance()
+                            .also { it.timeInMillis = now }.get(java.util.Calendar.MINUTE),
                         actualMaxBolusU = determineBasalAutoISF.lastSmbDecision?.maxBolusU,
                         stateDir = stateDir,
                     )?.let { put("dynMealShadow", it) }
