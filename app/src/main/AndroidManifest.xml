@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
@@ -145,6 +146,15 @@
         <uses-library
             android:name="org.apache.http.legacy"
             android:required="false" />
+
+        <!-- LocalCommandChannel (Spec v1.2/v1.3, Codex R3 OFF/Auth-GO): exported, weil die
+             Autorisierung vollstaendig im Service selbst geprueft wird (UID -> Pakete ->
+             Signatur-Digest-Allowlist, default-deny + HMAC). In diesem Build existiert kein
+             Mutationszweig; Kanal-Schalter sind default AUS. -->
+        <service
+            android:name="app.aaps.iobaction.LocalCommandService"
+            android:exported="true"
+            tools:ignore="ExportedService" />
 
     </application>
 

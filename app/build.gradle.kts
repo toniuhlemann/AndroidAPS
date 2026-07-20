@@ -164,6 +164,8 @@ android {
     buildFeatures {
         dataBinding = true
         buildConfig = true
+        // LocalCommandChannel (Spec v1.2, R3 OFF/Auth-GO): eine AIDL-Schnittstelle
+        aidl = true
     }
 }
 
