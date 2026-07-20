@@ -102,10 +102,26 @@ class LocalCommandProtocolTest {
         assertThat(err(root("CANCEL_OWNED_TEMP_TARGET", cancelParams(owner = sentinel)))).isEqualTo(M)                    // CANCEL mit Sentinel
         assertThat(err(okPayload, hmac = "ff".repeat(31))).isEqualTo(M)
         assertThat(err("x".repeat(5000))).isEqualTo(M)
-        // Zeitfenster
-        assertThat(err(okPayload, now = t1 + 1000)).isEqualTo(LocalCommandProtocol.E_TIME)
-        assertThat(err(okPayload, now = t0 - 6_000)).isEqualTo(LocalCommandProtocol.E_TIME)
+        // R5-F1: Sentinel nie als echte Root-/Query-ID
+        assertThat(err(root("SET_OWNED_TEMP_TARGET", setParams(), requestId = sentinel))).isEqualTo(M)
+        assertThat(err(root("GET_SERVICE_STATUS", "{}", requestId = sentinel))).isEqualTo(M)
+        assertThat(err(root("GET_COMMAND_STATUS", """{"queryRequestId":"$sentinel"}"""))).isEqualTo(M)
+        // Zeitfenster: exakte Kanten (R5-F2-Testliste)
+        assertThat(err(okPayload, now = t0 - 5_000)).isNotEqualTo(LocalCommandProtocol.E_TIME)   // exakt -5s ok (HMAC greift danach)
+        assertThat(err(okPayload, now = t0 - 5_001)).isEqualTo(LocalCommandProtocol.E_TIME)
+        assertThat(err(okPayload, now = t1)).isNotEqualTo(LocalCommandProtocol.E_TIME)           // exakt expiresAt ok
+        assertThat(err(okPayload, now = t1 + 1)).isEqualTo(LocalCommandProtocol.E_TIME)
         assertThat(err(root("SET_OWNED_TEMP_TARGET", setParams(), expiresAt = t0 + 31_000))).isEqualTo(LocalCommandProtocol.E_TIME)
+        assertThat(err(root("SET_OWNED_TEMP_TARGET", setParams(), expiresAt = t0))).isEqualTo(LocalCommandProtocol.E_TIME)          // Gueltigkeit 0
+        assertThat(err(root("SET_OWNED_TEMP_TARGET", setParams(), expiresAt = t0 - 10))).isEqualTo(LocalCommandProtocol.E_TIME)     // negativ
+        // R5-F2: signierter Long-Ueberlauf darf NIE eine Zeitregel umgehen
+        assertThat(err(root("SET_OWNED_TEMP_TARGET", setParams(), issuedAt = Long.MIN_VALUE + 10_000, expiresAt = Long.MAX_VALUE)))
+            .isEqualTo(LocalCommandProtocol.E_TIME)
+        assertThat(err(root("SET_OWNED_TEMP_TARGET", setParams(), issuedAt = Long.MAX_VALUE, expiresAt = Long.MIN_VALUE)))
+            .isEqualTo(LocalCommandProtocol.E_TIME)
+        assertThat(LocalCommandProtocol.parseAndVerify(
+            root("SET_OWNED_TEMP_TARGET", setParams(), issuedAt = Long.MAX_VALUE - 1, expiresAt = Long.MAX_VALUE), okMac, secret, Long.MIN_VALUE + 5,
+        ).errorCode).isEqualTo(LocalCommandProtocol.E_TIME)                                       // futureSkew-Ueberlauf
         // Bounds: ablehnen, nie clampen
         assertThat(err(root("SET_OWNED_TEMP_TARGET", setParams(target = 69)), sign("SET_OWNED_TEMP_TARGET", canonSet(target = 69)))).isEqualTo(LocalCommandProtocol.E_BOUNDS)
         assertThat(err(root("SET_OWNED_TEMP_TARGET", setParams(target = 162)), sign("SET_OWNED_TEMP_TARGET", canonSet(target = 162)))).isEqualTo(LocalCommandProtocol.E_BOUNDS)
@@ -132,14 +148,15 @@ class LocalCommandProtocolTest {
             "72bbb70bcaaa5d8eb1ab6ccbff65a6a3b4204e4dd31bc28d0cf3e19d7702071a", secret, t0 + 1000,
         ).request!!
         fun cfg(ch: Boolean, tt: Boolean, vo: Boolean = false) = LocalCommandProtocol.GateConfig(ch, tt, vo)
+        fun reject(r: LocalCommandProtocol.GateResult): String? = (r as? LocalCommandProtocol.GateResult.Reject)?.errorCode
         // Read-only geht IMMER durch die Gates (R4 §1: sonst kann der Preflight OFF nicht melden)
-        assertThat(LocalCommandProtocol.gateDecision(cfg(false, false), statusReq)).isNull()
-        assertThat(LocalCommandProtocol.gateDecision(cfg(false, false), cmdStatusReq)).isNull()
-        // Mutation: Channel → Capability → Mutations-Abwesenheit
-        assertThat(LocalCommandProtocol.gateDecision(cfg(false, true), setReq)).isEqualTo(LocalCommandProtocol.E_CHANNEL_DISABLED)
-        assertThat(LocalCommandProtocol.gateDecision(cfg(true, false), setReq)).isEqualTo(LocalCommandProtocol.E_CAPABILITY_DISABLED)
-        assertThat(LocalCommandProtocol.gateDecision(cfg(true, true), setReq)).isEqualTo(LocalCommandProtocol.E_MUTATION_UNAVAILABLE)
-        assertThat(LocalCommandProtocol.gateDecision(cfg(true, true, vo = true), setReq)).isEqualTo(LocalCommandProtocol.E_MUTATION_UNAVAILABLE)
+        assertThat(LocalCommandProtocol.gate(cfg(false, false), statusReq)).isEqualTo(LocalCommandProtocol.GateResult.ReadOnly)
+        assertThat(LocalCommandProtocol.gate(cfg(false, false), cmdStatusReq)).isEqualTo(LocalCommandProtocol.GateResult.ReadOnly)
+        // Mutation: Channel → Capability → Mutations-Abwesenheit (R5-F5: expliziter Modus)
+        assertThat(reject(LocalCommandProtocol.gate(cfg(false, true), setReq))).isEqualTo(LocalCommandProtocol.E_CHANNEL_DISABLED)
+        assertThat(reject(LocalCommandProtocol.gate(cfg(true, false), setReq))).isEqualTo(LocalCommandProtocol.E_CAPABILITY_DISABLED)
+        assertThat(reject(LocalCommandProtocol.gate(cfg(true, true), setReq))).isEqualTo(LocalCommandProtocol.E_MUTATION_UNAVAILABLE)
+        assertThat(reject(LocalCommandProtocol.gate(cfg(true, true, vo = true), setReq))).isEqualTo(LocalCommandProtocol.E_MUTATION_UNAVAILABLE)
         assertThat(LocalCommandProtocol.MUTATION_BUILD_PRESENT).isFalse()
     }
 

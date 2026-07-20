@@ -19,7 +19,8 @@ object LocalCommandProtocol {
     const val PROTOCOL_VERSION = "v1"
     const val TARGET_PACKAGE = "info.nightscout.androidaps"
     const val MAX_PAYLOAD_BYTES = 4096
-    const val MAX_CLOCK_SKEW_PAST_MS = 5_000L
+    // R5-F2: Name praezisiert — geprueft wird, wie weit issuedAt in der ZUKUNFT liegen darf.
+    const val MAX_ISSUED_AT_FUTURE_SKEW_MS = 5_000L
     const val MAX_VALIDITY_WINDOW_MS = 30_000L
     /** R3-Grenze: dieser Build enthaelt strukturell keinen Mutationspfad. */
     const val MUTATION_BUILD_PRESENT = false
@@ -97,15 +98,26 @@ object LocalCommandProtocol {
         if (asString(root, "v") != PROTOCOL_VERSION) return ParseOutcome(null, E_MALFORMED)
         val cmd = asString(root, "cmd")?.let { c -> Cmd.entries.firstOrNull { it.name == c } }
             ?: return ParseOutcome(null, E_MALFORMED)
-        val requestId = asString(root, "requestId")?.takeIf { HEX32.matches(it) }
+        // R5-F1: die reservierte All-Zero-Sentinel-ID ist NIE eine echte Request-ID.
+        val requestId = asString(root, "requestId")?.takeIf { HEX32.matches(it) && it != SENTINEL_REQUEST_ID }
             ?: return ParseOutcome(null, E_MALFORMED)
         val issuedAt = asLong(root, "issuedAt") ?: return ParseOutcome(null, E_MALFORMED)
         val expiresAt = asLong(root, "expiresAt") ?: return ParseOutcome(null, E_MALFORMED)
         val params = root.optJSONObject("params") ?: return ParseOutcome(null, E_MALFORMED)
 
-        // Zeitfenster: Gueltigkeit max. 30 s, now ∈ [issuedAt-5s, expiresAt]
-        if (expiresAt <= issuedAt || expiresAt - issuedAt > MAX_VALIDITY_WINDOW_MS) return ParseOutcome(null, E_TIME)
-        if (nowMs < issuedAt - MAX_CLOCK_SKEW_PAST_MS || nowMs > expiresAt) return ParseOutcome(null, E_TIME)
+        // R5-F2: Zeitfenster OVERFLOW-SICHER — signierter Long-Ueberlauf darf nie eine
+        // Zeitregel umgehen (Math.subtractExact; Overflow = E_TIME).
+        val validityMs = try { Math.subtractExact(expiresAt, issuedAt) } catch (_: ArithmeticException) {
+            return ParseOutcome(null, E_TIME)
+        }
+        if (validityMs !in 1..MAX_VALIDITY_WINDOW_MS) return ParseOutcome(null, E_TIME)
+        if (nowMs > expiresAt) return ParseOutcome(null, E_TIME)
+        if (issuedAt > nowMs) {
+            val futureSkewMs = try { Math.subtractExact(issuedAt, nowMs) } catch (_: ArithmeticException) {
+                return ParseOutcome(null, E_TIME)
+            }
+            if (futureSkewMs > MAX_ISSUED_AT_FUTURE_SKEW_MS) return ParseOutcome(null, E_TIME)
+        }
 
         val req = parseParams(cmd, params, requestId, issuedAt, expiresAt) ?: return ParseOutcome(null, E_MALFORMED)
         // Bounds (v1.1-Hard-Bounds; Policy-Matrix ist Server-Phase 2+)
@@ -175,7 +187,8 @@ object LocalCommandProtocol {
             }
             Cmd.GET_COMMAND_STATUS -> {
                 if (!keysExactly("queryRequestId")) return null
-                val q = asString(p, "queryRequestId")?.takeIf { HEX32.matches(it) } ?: return null
+                // R5-F1: der Sentinel ist per Definition nie eine persistierte echte Request-ID.
+                val q = asString(p, "queryRequestId")?.takeIf { HEX32.matches(it) && it != SENTINEL_REQUEST_ID } ?: return null
                 build(cmd, requestId, issuedAt, expiresAt, Request(
                     cmd, requestId, issuedAt, expiresAt, validateOnly = false,
                     queryRequestId = q, canonicalString = "",
@@ -235,21 +248,31 @@ object LocalCommandProtocol {
     // ---- Gate-Prioritaet (v1.2-A4 + R3-A4): Schalter reduzieren nur, nie erzeugen. ----
     data class GateConfig(val channelEnabled: Boolean, val ttCapabilityEnabled: Boolean, val forcedValidateOnly: Boolean)
 
+    /** R5-F5: expliziter Ausfuehrungsmodus statt "null = irgendwie erlaubt" — der spaetere
+     *  Pilot-Bau kann validateOnly damit strukturell nicht uebersehen. */
+    sealed class GateResult {
+        data class Reject(val errorCode: String) : GateResult()
+        object ReadOnly : GateResult()
+        object ValidateOnly : GateResult()
+        object Apply : GateResult()
+    }
+
     /**
      * v1.4/R4-§1-Command-Gate-Matrix (einzige normative Quelle): read-only-Befehle stehen
      * AUSSERHALB der Channel-/Capability-Gates (sonst koennte der Preflight channelEnabled=false
-     * nie berichten; GET_COMMAND_STATUS ist der Recovery-Pfad). Nur Mutationen sind gegated.
-     * Liefert errorCode oder null (= Request darf zur — hier nicht existenten — Ausfuehrung).
+     * nie berichten; GET_COMMAND_STATUS ist der Recovery-Pfad). Nur Mutationen sind gegated;
+     * forcedValidateOnly/request.validateOnly reduzieren APPLY auf VALIDATE_ONLY.
      */
-    fun gateDecision(cfg: GateConfig, req: Request): String? = when (req.cmd) {
-        Cmd.GET_SERVICE_STATUS, Cmd.GET_COMMAND_STATUS -> null       // Caller+HMAC genuegen, nie Mutation
+    fun gate(cfg: GateConfig, req: Request): GateResult = when (req.cmd) {
+        Cmd.GET_SERVICE_STATUS, Cmd.GET_COMMAND_STATUS -> GateResult.ReadOnly
         Cmd.SET_OWNED_TEMP_TARGET, Cmd.CANCEL_OWNED_TEMP_TARGET -> when {
-            !cfg.channelEnabled -> E_CHANNEL_DISABLED
-            !cfg.ttCapabilityEnabled -> E_CAPABILITY_DISABLED
+            !cfg.channelEnabled -> GateResult.Reject(E_CHANNEL_DISABLED)
+            !cfg.ttCapabilityEnabled -> GateResult.Reject(E_CAPABILITY_DISABLED)
             // OFF/Auth-Build: Mutationszweig existiert nicht — auch validateOnly-Pfade
             // enden hier, weil die Validierungs-Persistenz erst mit der Room-Migration kommt.
-            !MUTATION_BUILD_PRESENT -> E_MUTATION_UNAVAILABLE
-            else -> null
+            !MUTATION_BUILD_PRESENT -> GateResult.Reject(E_MUTATION_UNAVAILABLE)
+            cfg.forcedValidateOnly || req.validateOnly -> GateResult.ValidateOnly
+            else -> GateResult.Apply
         }
     }
 }
