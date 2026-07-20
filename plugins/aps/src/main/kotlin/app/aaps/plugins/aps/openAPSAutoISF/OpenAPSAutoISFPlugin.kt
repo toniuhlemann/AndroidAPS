@@ -1661,6 +1661,15 @@ open class OpenAPSAutoISFPlugin @Inject constructor(
                         androidx.appcompat.app.AlertDialog.Builder(context)
                             .setTitle("Kanal-Secret (einmalige Anzeige)")
                             .setMessage(hex.chunked(16).joinToString("\n"))
+                            .setNeutralButton("Kopieren") { _, _ ->
+                                // Zwischenablage statt 64 Zeichen abtippen; als sensibel markiert
+                                // (Android 13+: keine Clipboard-Vorschau/Overlay-Anzeige).
+                                val cm = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                                val clip = android.content.ClipData.newPlainText("secret", hex)
+                                if (android.os.Build.VERSION.SDK_INT >= 33) clip.description.extras =
+                                    android.os.PersistableBundle().apply { putBoolean(android.content.ClipDescription.EXTRA_IS_SENSITIVE, true) }
+                                cm.setPrimaryClip(clip)
+                            }
                             .setPositiveButton(android.R.string.ok, null).show()
                     }
                     true
