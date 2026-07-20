@@ -13,6 +13,9 @@ build/
 .idea/*
 !.idea/codeStyles/
 full/
+# LocalCommandChannel (Fork): app/src/full ist QUELLE (Flavor-Manifest), kein Build-Output
+!app/src/full/
+!app/src/full/**
 app/com.crashlytics.settings.json
 app/session_analytics.tap
 .project

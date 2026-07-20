@@ -1,5 +1,6 @@
 package app.aaps.database.transactions
 
+import app.aaps.database.DelegatedAppDatabase
 import app.aaps.database.entities.LocalCommandOutcome
 import app.aaps.database.entities.LocalCommandOwnership
 import app.aaps.database.entities.TemporaryTarget
@@ -78,26 +79,9 @@ class ExecuteLocalTtCommandTransaction(
             return reject("REJECTED_RATE_LIMITED")
 
         // (3) Aktives TT + Ownership lesen und abgleichen — im selben Commit (TOCTOU-frei).
-        val activeTt = database.temporaryTargetDao.getTemporaryTargetActiveAtLegacy(nowMs)
-        var ownership = dao.activeOwnership()
-        if (ownership != null) {
-            val o = ownership
-            when {
-                activeTt == null || activeTt.id != o.ttDbId -> {
-                    // Eigenes TT weg/ersetzt → Ownership terminal; das aktive TT (falls vorhanden) ist fremd.
-                    o.terminatedAt = nowMs; o.terminalReason = "TT_GONE"; dao.updateOwnership(o); ownership = null
-                }
-                !contentMatches(activeTt, o) -> {
-                    // INHALTLICHE Fremdaenderung (auch NS): Ownership verfaellt (R2-B2).
-                    o.terminatedAt = nowMs; o.terminalReason = "FOREIGN_MODIFIED"; dao.updateOwnership(o); ownership = null
-                }
-                activeTt.version != o.ttEntityVersion -> {
-                    // NS-ID-Echo-Ausnahme (R2-B3): Inhalt identisch, nur Version fortgeschrieben
-                    // (z.B. nachgetragene NS-Id) → Fingerprint atomar aktualisieren.
-                    o.ttEntityVersion = activeTt.version; dao.updateOwnership(o)
-                }
-            }
-        }
+        //     R6-F4: DIESELBE Regel laeuft auch in ReadLocalCommandStateTransaction, damit der
+        //     Status nie abgelaufene/fremd ersetzte Ownership als OWNED exportiert.
+        val (activeTt, ownership) = reconcileOwnership(database, nowMs)
 
         // (4) CAS-/Ownership-Regeln je Kommando.
         when (cmd) {
@@ -166,9 +150,45 @@ class ExecuteLocalTtCommandTransaction(
         }
     }
 
-    private fun contentMatches(tt: TemporaryTarget, o: LocalCommandOwnership): Boolean =
-        tt.isValid && tt.timestamp == o.ttTimestamp && tt.lowTarget == o.lowTarget &&
-            tt.highTarget == o.highTarget && tt.duration == o.durationMs
+    companion object {
+
+        /**
+         * Gemeinsame Ownership-Reconciliation (Mutation Schritt 3 == Status, R6-F4): TT weg/
+         * abgelaufen → TT_GONE; inhaltliche Fremdaenderung → FOREIGN_MODIFIED; reines
+         * NS-ID-Echo → Version-Fortschreibung. Schreibt NUR Ownership-Zeilen, NIE TTs.
+         */
+        internal fun reconcileOwnership(database: DelegatedAppDatabase, nowMs: Long): Pair<TemporaryTarget?, LocalCommandOwnership?> {
+            val dao = database.localCommandDao
+            val activeTt = database.temporaryTargetDao.getTemporaryTargetActiveAtLegacy(nowMs)
+            var ownership = dao.activeOwnership()
+            if (ownership != null) {
+                val o = ownership
+                when {
+                    activeTt == null || activeTt.id != o.ttDbId -> {
+                        // Eigenes TT weg/ersetzt/abgelaufen → Ownership terminal; das aktive TT (falls vorhanden) ist fremd.
+                        o.terminatedAt = nowMs; o.terminalReason = "TT_GONE"; dao.updateOwnership(o); ownership = null
+                    }
+                    !contentMatches(activeTt, o) -> {
+                        // INHALTLICHE Fremdaenderung (auch NS): Ownership verfaellt (R2-B2).
+                        o.terminatedAt = nowMs; o.terminalReason = "FOREIGN_MODIFIED"; dao.updateOwnership(o); ownership = null
+                    }
+                    activeTt.version != o.ttEntityVersion -> {
+                        // NS-ID-Echo-Ausnahme (R2-B3): Inhalt identisch, nur Version fortgeschrieben
+                        // (z.B. nachgetragene NS-Id) → Fingerprint atomar aktualisieren.
+                        o.ttEntityVersion = activeTt.version; dao.updateOwnership(o)
+                    }
+                }
+            }
+            return activeTt to ownership
+        }
+
+        // R6-F5: reason gehoert zum Fingerprint — eine Fremdaenderung, die nur den Reason
+        // wechselt, ist eine inhaltliche Aenderung (Fork-Enum traegt die Protokoll-Namen).
+        private fun contentMatches(tt: TemporaryTarget, o: LocalCommandOwnership): Boolean =
+            tt.isValid && tt.timestamp == o.ttTimestamp && tt.lowTarget == o.lowTarget &&
+                tt.highTarget == o.highTarget && tt.duration == o.durationMs &&
+                tt.reason.name == o.reasonKey
+    }
 
     private fun reject(code: String): Result {
         // Fachliche Ablehnungen sind TERMINAL fuer diese requestId (R2-B4: kein Fallback,

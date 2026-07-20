@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- LocalCommandChannel (R5-F4): der Service existiert AUSSCHLIESSLICH im full-Flavor —
+     das Protokoll bindet signiert an info.nightscout.androidaps; pumpcontrol/aapsclient
+     bekommen keine exportierte Service-Oberflaeche. Exported, weil die Autorisierung
+     vollstaendig im Service selbst geprueft wird (UID -> Pakete -> Signatur-Digest-
+     Allowlist, default-deny + HMAC). PILOT-Build (R6): Mutationszweig vorhanden, alle
+     Gates default AUS und nur per AAPS-UI schaltbar. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <application>
+        <service
+            android:name="app.aaps.iobaction.LocalCommandService"
+            android:exported="true"
+            tools:ignore="ExportedService" />
+    </application>
+
+</manifest>

@@ -18,8 +18,9 @@ import java.security.MessageDigest
  * LocalCommandChannel — Android-GLUE (R5-F3-Refactor): die gesamte Bundle→ACK-Logik lebt
  * unit-getestet in [LocalCommandServiceCore]; dieser Service sammelt nur die Umgebung
  * (Binder-Caller → Pakete → Signatur-Digests, Secret aus noBackupFilesDir, Gate-Schalter)
- * und konvertiert Map↔Bundle. OFF/Auth-Build: kein Mutationszweig, Schalter default AUS,
- * Signer-Allowlist default leer (default-deny). Deklariert NUR im full-Flavor (R5-F4).
+ * und konvertiert Map↔Bundle. PILOT-Build (R6): Mutationszweig VORHANDEN, aber alle drei
+ * Gates default AUS und nur per AAPS-UI schaltbar; Signer-Allowlist default leer
+ * (default-deny). Deklariert NUR im full-Flavor (R5-F4).
  */
 class LocalCommandService : Service() {
 
@@ -32,7 +33,8 @@ class LocalCommandService : Service() {
         const val KEY_UNAUTH_COUNT = "unauth_count"
         const val KEY_UNAUTH_LAST = "unauth_last_ms"
         const val SECRET_FILE = "local_command_secret"      // hex, unter noBackupFilesDir
-        // Validate-only-Startwert (R2-B8/v1.4): vor APPLIED per wouldRateLimit-Messung kalibrieren.
+        // Validate-only-Startwert (R2-B8/v1.4). R6-F2 ehrlich: ein wouldRateLimit ist NICHT
+        // implementiert — die VO-Phase kalibriert per LCC-Log (VALIDATED-Zaehlung pro Stunde).
         const val RATE_CAP_PER_HOUR = 30
     }
 
@@ -114,8 +116,15 @@ class LocalCommandService : Service() {
         )
         val result = repo.runTransactionForResult(tx).blockingGet()
         // Audit nach erfolgreichem Commit; ein Audit-Fehler wiederholt NIE die Mutation.
-        var auditStatus = "WRITTEN"
-        if (!result.replayed) runCatching {
+        // R6-F9: UserEntry NUR fuer echte Mutationen (APPLIED, nicht replayed) — VALIDATED/
+        // REJECTED erzeugen kein Treatments-Rauschen (LCC-Log + Outcome-Tabelle genuegen),
+        // und Replays melden ehrlich, dass kein neuer Audit geschrieben wurde.
+        var auditStatus = when {
+            result.replayed -> "SKIPPED_REPLAY"
+            result.outcome != "APPLIED" -> "SKIPPED_NO_MUTATION"
+            else -> "WRITTEN"
+        }
+        if (!result.replayed && result.outcome == "APPLIED") runCatching {
             LocalCommandRuntime.persistenceLayer?.insertUserEntries(listOf(
                 app.aaps.core.data.model.UE(
                     timestamp = System.currentTimeMillis(),
@@ -142,7 +151,7 @@ class LocalCommandService : Service() {
 
     private fun readOwnedTt(): Map<String, Any>? = runCatching {
         val r = LocalCommandRuntime.repository!!
-            .runTransactionForResult(app.aaps.database.transactions.ReadLocalCommandStateTransaction()).blockingGet()
+            .runTransactionForResult(app.aaps.database.transactions.ReadLocalCommandStateTransaction(nowMs = System.currentTimeMillis())).blockingGet()
         r.ownership?.let { o ->
             mapOf(
                 "ownerRequestId" to o.requestId, "ttDbId" to o.ttDbId, "ttEntityVersion" to o.ttEntityVersion,
@@ -154,7 +163,7 @@ class LocalCommandService : Service() {
 
     private fun readOutcome(queryRequestId: String): Map<String, Any>? = runCatching {
         val r = LocalCommandRuntime.repository!!
-            .runTransactionForResult(app.aaps.database.transactions.ReadLocalCommandStateTransaction(queryRequestId)).blockingGet()
+            .runTransactionForResult(app.aaps.database.transactions.ReadLocalCommandStateTransaction(nowMs = System.currentTimeMillis(), queryRequestId = queryRequestId)).blockingGet()
         r.queriedOutcome?.let { o ->
             buildMap<String, Any> {
                 put("originalOutcome", o.outcome)
