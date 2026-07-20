@@ -161,19 +161,20 @@ class LocalCommandProtocolTest {
         assertThat(LocalCommandProtocol.MUTATION_BUILD_PRESENT).isTrue()
     }
 
-    // --- Policy-Matrix: (reason,target)-Paare, Dauer nur Bounds (Incident-Fix 20.07.) ---
+    // --- Policy-Matrix: geschlossene ZIEL-Liste, Dauer nur Bounds (Vollaudit 20.07.) ---
     @Test fun policyCanonicalAndHash() {
-        assertThat(LocalCommandPolicy.canonical()).isEqualTo(
-            """[["BRAKE",120],["BRAKE",130],["BRAKE",140],["CORRECTION",90],["LOW_PROTECT",101],["LOW_PROTECT",141],["LOW_PROTECT",161],["MEAL",76],["MEAL",88],["PEAK_STOP",101],["REBOUND",140]]"""
-        )
+        assertThat(LocalCommandPolicy.canonical()).isEqualTo("[76,88,90,101,120,130,140,141,161]")
         assertThat(LocalCommandPolicy.hash())
-            .isEqualTo("f42d8a7271211196d15a7b7ad83b85715c5f4a8aa00f5b403afdadc60fb68332")
-        assertThat(LocalCommandPolicy.isAllowed(LocalCommandProtocol.ReasonKey.PEAK_STOP, 101, 30)).isTrue()
-        assertThat(LocalCommandPolicy.isAllowed(LocalCommandProtocol.ReasonKey.PEAK_STOP, 90, 30)).isFalse()
-        // Dauer ist Tuning: jede Dauer in [5..120] ist fuer ein erlaubtes Paar gueltig …
-        assertThat(LocalCommandPolicy.isAllowed(LocalCommandProtocol.ReasonKey.CORRECTION, 90, 10)).isTrue()
-        assertThat(LocalCommandPolicy.isAllowed(LocalCommandProtocol.ReasonKey.MEAL, 88, 60)).isTrue()
-        // … ausserhalb der Bounds nicht.
+            .isEqualTo("37b72ab7dab9aa0d488d08a46ba1aebdcd5eaab75c08ae1796722e2333ac839f")
+        // Renewal-Kreuzfaelle vom ersten ARMED-Abend: Reason ist Metadatum, Ziel entscheidet.
+        assertThat(LocalCommandPolicy.isAllowed(LocalCommandProtocol.ReasonKey.LOW_PROTECT, 90, 10)).isTrue()   // TT90-Renewal unter "Schutz"
+        assertThat(LocalCommandPolicy.isAllowed(LocalCommandProtocol.ReasonKey.LOW_PROTECT, 140, 15)).isTrue()  // Brems-TT in der Nacht gehalten
+        assertThat(LocalCommandPolicy.isAllowed(LocalCommandProtocol.ReasonKey.CORRECTION, 90, 10)).isTrue()    // Live-Dauer 10 statt Default 12
+        assertThat(LocalCommandPolicy.isAllowed(LocalCommandProtocol.ReasonKey.MEAL, 88, 60)).isTrue()          // Welle mit Live-Dauer 60
+        // Fremde Ziele bleiben verboten …
+        assertThat(LocalCommandPolicy.isAllowed(LocalCommandProtocol.ReasonKey.MEAL, 100, 30)).isFalse()
+        assertThat(LocalCommandPolicy.isAllowed(LocalCommandProtocol.ReasonKey.LOW_PROTECT, 72, 30)).isFalse()  // Boost-Ziele sind manuell, nie Kanal
+        // … und Dauern ausserhalb der Bounds auch.
         assertThat(LocalCommandPolicy.isAllowed(LocalCommandProtocol.ReasonKey.MEAL, 88, 4)).isFalse()
         assertThat(LocalCommandPolicy.isAllowed(LocalCommandProtocol.ReasonKey.MEAL, 88, 121)).isFalse()
     }
