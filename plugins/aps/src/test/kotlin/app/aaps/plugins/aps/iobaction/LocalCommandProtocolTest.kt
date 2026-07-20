@@ -161,16 +161,21 @@ class LocalCommandProtocolTest {
         assertThat(LocalCommandProtocol.MUTATION_BUILD_PRESENT).isTrue()
     }
 
-    // --- Policy-Matrix: R4-verifizierter Hash + Tupel-Semantik ---
+    // --- Policy-Matrix: (reason,target)-Paare, Dauer nur Bounds (Incident-Fix 20.07.) ---
     @Test fun policyCanonicalAndHash() {
         assertThat(LocalCommandPolicy.canonical()).isEqualTo(
-            """[["BRAKE",120,15],["BRAKE",130,15],["BRAKE",140,15],["CORRECTION",90,12],["LOW_PROTECT",101,30],["LOW_PROTECT",141,20],["LOW_PROTECT",161,20],["MEAL",76,5],["MEAL",88,40],["PEAK_STOP",101,30],["REBOUND",140,15]]"""
+            """[["BRAKE",120],["BRAKE",130],["BRAKE",140],["CORRECTION",90],["LOW_PROTECT",101],["LOW_PROTECT",141],["LOW_PROTECT",161],["MEAL",76],["MEAL",88],["PEAK_STOP",101],["REBOUND",140]]"""
         )
         assertThat(LocalCommandPolicy.hash())
-            .isEqualTo("5ec7c298695a7ac77174e283da0884b192423123944ab86041aaced60ba7b8a5")
+            .isEqualTo("f42d8a7271211196d15a7b7ad83b85715c5f4a8aa00f5b403afdadc60fb68332")
         assertThat(LocalCommandPolicy.isAllowed(LocalCommandProtocol.ReasonKey.PEAK_STOP, 101, 30)).isTrue()
         assertThat(LocalCommandPolicy.isAllowed(LocalCommandProtocol.ReasonKey.PEAK_STOP, 90, 30)).isFalse()
-        assertThat(LocalCommandPolicy.isAllowed(LocalCommandProtocol.ReasonKey.MEAL, 88, 41)).isFalse()
+        // Dauer ist Tuning: jede Dauer in [5..120] ist fuer ein erlaubtes Paar gueltig …
+        assertThat(LocalCommandPolicy.isAllowed(LocalCommandProtocol.ReasonKey.CORRECTION, 90, 10)).isTrue()
+        assertThat(LocalCommandPolicy.isAllowed(LocalCommandProtocol.ReasonKey.MEAL, 88, 60)).isTrue()
+        // … ausserhalb der Bounds nicht.
+        assertThat(LocalCommandPolicy.isAllowed(LocalCommandProtocol.ReasonKey.MEAL, 88, 4)).isFalse()
+        assertThat(LocalCommandPolicy.isAllowed(LocalCommandProtocol.ReasonKey.MEAL, 88, 121)).isFalse()
     }
 
     // --- Caller-Entscheidung: Shared-UID-Prinzip, default-deny ---
