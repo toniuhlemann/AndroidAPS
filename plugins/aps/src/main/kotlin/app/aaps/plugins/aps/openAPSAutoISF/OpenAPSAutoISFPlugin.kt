@@ -1617,5 +1617,88 @@ open class OpenAPSAutoISFPlugin @Inject constructor(
                 })
              })
         }
+        if (requiredKey == null) addLocalCommandChannelCategory(parent, context)
+    }
+
+    /**
+     * LocalCommandChannel-Einrichtung (Spec v1.2 C2 / R5-Pilot-Bau): eigener SP-Namespace
+     * `local_command_channel` (NICHT im Config-Export) + Secret unter noBackupFilesDir.
+     * Schalter default AUS; "Viewer vertrauen" liest den Signatur-Digest der INSTALLIERTEN
+     * Viewer-App automatisch (kein Hex-Abtippen — die explizite Nutzeraktion in der AAPS-UI
+     * ist der Vertrauensakt). Kein Kanal-Kommando kann diese Werte setzen (R2-A4).
+     */
+    private fun addLocalCommandChannelCategory(parent: PreferenceScreen, context: Context) {
+        val sp = context.getSharedPreferences("local_command_channel", Context.MODE_PRIVATE)
+        val category = PreferenceCategory(context)
+        parent.addPreference(category)
+        category.apply {
+            key = "local_command_channel_settings"
+            title = "Lokaler Command-Kanal (IOB-Action)"
+            initialExpandedChildrenCount = 0
+            fun switchPref(prefKey: String, titleText: String, summaryText: String) =
+                androidx.preference.SwitchPreferenceCompat(context).apply {
+                    isPersistent = false
+                    title = titleText; summary = summaryText
+                    isChecked = sp.getBoolean(prefKey, false)
+                    setOnPreferenceChangeListener { _, v -> sp.edit().putBoolean(prefKey, v as Boolean).apply(); true }
+                }
+            addPreference(switchPref("channel_enabled", "Kanal aktiv", "Master-Schalter — AUS lehnt jede Mutation ab (Status bleibt lesbar)"))
+            addPreference(switchPref("tt_capability_enabled", "TT-Capability", "erlaubt SET/CANCEL fuer Auto-Executor-TTs (nur mit aktivem Kanal)"))
+            addPreference(switchPref("forced_validate_only", "Validate-only erzwingen", "Kanal validiert nur (VALIDATED), mutiert NIE — Pilotmodus"))
+            addPreference(androidx.preference.Preference(context).apply {
+                title = "Secret generieren & anzeigen"
+                summary = "32-Byte-CSPRNG unter noBackupFilesDir; einmalig anzeigen, im Viewer erfassen. Neu generieren = Rotation (Viewer muss nachziehen)."
+                setOnPreferenceClickListener {
+                    runCatching {
+                        val bytes = ByteArray(32).also { java.security.SecureRandom().nextBytes(it) }
+                        val hex = bytes.joinToString("") { "%02x".format(it) }
+                        val dir = context.noBackupFilesDir
+                        val tmp = java.io.File(dir, "local_command_secret.tmp")
+                        tmp.writeText(hex)
+                        if (!tmp.renameTo(java.io.File(dir, "local_command_secret"))) {
+                            java.io.File(dir, "local_command_secret").writeText(hex); tmp.delete()
+                        }
+                        android.app.AlertDialog.Builder(context)
+                            .setTitle("Kanal-Secret (einmalige Anzeige)")
+                            .setMessage(hex.chunked(16).joinToString("\n"))
+                            .setPositiveButton(android.R.string.ok, null).show()
+                    }
+                    true
+                }
+            })
+            addPreference(androidx.preference.Preference(context).apply {
+                title = "Viewer-App vertrauen"
+                summary = "liest den Signatur-Digest der installierten iob-action-native-viewer-App und setzt die Allowlist"
+                setOnPreferenceClickListener {
+                    runCatching {
+                        val pkg = "de.toniuhlemann.iobactionnativeviewer"
+                        val info = context.packageManager.getPackageInfo(pkg, android.content.pm.PackageManager.GET_SIGNING_CERTIFICATES)
+                        val digests = info.signingInfo?.apkContentsSigners.orEmpty().map { signer ->
+                            java.security.MessageDigest.getInstance("SHA-256").digest(signer.toByteArray())
+                                .joinToString("") { "%02x".format(it) }
+                        }
+                        if (digests.isEmpty()) error("keine Signatur lesbar")
+                        sp.edit().putString("trusted_signer_sha256", digests.joinToString(",")).apply()
+                        android.app.AlertDialog.Builder(context)
+                            .setTitle("Viewer vertraut")
+                            .setMessage("Digest: ${digests.first().take(16)}…\n(bei Viewer-Neusignierung erneut ausfuehren)")
+                            .setPositiveButton(android.R.string.ok, null).show()
+                    }.onFailure {
+                        android.app.AlertDialog.Builder(context)
+                            .setTitle("Viewer nicht gefunden")
+                            .setMessage("iob-action-native-viewer ist nicht installiert oder Signatur nicht lesbar.")
+                            .setPositiveButton(android.R.string.ok, null).show()
+                    }
+                    true
+                }
+            })
+            addPreference(androidx.preference.Preference(context).apply {
+                title = "Status"
+                val secretSet = java.io.File(context.noBackupFilesDir, "local_command_secret").exists()
+                val trusted = !sp.getString("trusted_signer_sha256", "").isNullOrBlank()
+                summary = "Secret: ${if (secretSet) "vorhanden" else "FEHLT"} · Allowlist: ${if (trusted) "gesetzt" else "LEER (default-deny)"} · Unauth-Zaehler: ${sp.getInt("unauth_count", 0)}"
+                isSelectable = false
+            })
+        }
     }
 }
