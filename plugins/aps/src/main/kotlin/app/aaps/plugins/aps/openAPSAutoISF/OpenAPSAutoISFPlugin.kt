@@ -839,6 +839,9 @@ open class OpenAPSAutoISFPlugin @Inject constructor(
                 }
             })
         }
+        // Loop-Signal an den Viewer: Widget liest jetzt statt beim naechsten 60s-Poll.
+        // Eigenes runCatching — ein Broadcast-Fehler darf weder Export noch Loop beruehren.
+        runCatching { IobActionLoopSignal.send(shadowContext, now) }
         //val autoIsfRecords = persistenceLayer.getAutoIsfValuesFromTime(now-100000L)
         //aapsLogger.debug(LTag.APS, "autoIsfValues records read contain: $autoIsfRecords")
         rxBus.send(EventOpenAPSUpdateGui())
