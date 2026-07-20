@@ -45,7 +45,10 @@ import app.aaps.database.entities.TotalDailyDose
 import app.aaps.database.entities.UserEntry
 import app.aaps.database.entities.VersionChange
 
-const val DATABASE_VERSION = 32
+// 33: LocalCommandChannel (localCommandOutcome + localCommandOwnership, fork-only).
+// MERGE-HINWEIS: kollidiert eine kuenftige Upstream-Version mit 33, unsere Migration
+// einfach auf die naechste freie Nummer renumbern (Migration-Objekt + diese Konstante).
+const val DATABASE_VERSION = 33
 
 @Database(
     version = DATABASE_VERSION,
@@ -53,7 +56,8 @@ const val DATABASE_VERSION = 32
         EffectiveProfileSwitch::class, ExtendedBolus::class, GlucoseValue::class, ProfileSwitch::class,
         TemporaryBasal::class, TemporaryTarget::class, TherapyEvent::class, TotalDailyDose::class,
         PreferenceChange::class, VersionChange::class, UserEntry::class,
-        Food::class, DeviceStatus::class, RunningMode::class, HeartRate::class, StepsCount::class, AutoIsfValues::class],
+        Food::class, DeviceStatus::class, RunningMode::class, HeartRate::class, StepsCount::class, AutoIsfValues::class,
+        app.aaps.database.entities.LocalCommandOutcome::class, app.aaps.database.entities.LocalCommandOwnership::class],
     exportSchema = true
 )
 @TypeConverters(Converters::class)
@@ -100,4 +104,5 @@ internal abstract class AppDatabase : RoomDatabase() {
     abstract val stepsCountDao: StepsCountDao
 
     abstract val autoIsfValuesDao: AutoIsfValuesDao
+    abstract val localCommandDao: app.aaps.database.daos.LocalCommandDao
 }
