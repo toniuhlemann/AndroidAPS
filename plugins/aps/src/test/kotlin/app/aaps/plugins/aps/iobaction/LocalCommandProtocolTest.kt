@@ -152,12 +152,13 @@ class LocalCommandProtocolTest {
         // Read-only geht IMMER durch die Gates (R4 §1: sonst kann der Preflight OFF nicht melden)
         assertThat(LocalCommandProtocol.gate(cfg(false, false), statusReq)).isEqualTo(LocalCommandProtocol.GateResult.ReadOnly)
         assertThat(LocalCommandProtocol.gate(cfg(false, false), cmdStatusReq)).isEqualTo(LocalCommandProtocol.GateResult.ReadOnly)
-        // Mutation: Channel → Capability → Mutations-Abwesenheit (R5-F5: expliziter Modus)
+        // Mutation: Channel → Capability → Ausfuehrungsmodus (R5-F5; Pilot-Build: Mutationspfad da)
         assertThat(reject(LocalCommandProtocol.gate(cfg(false, true), setReq))).isEqualTo(LocalCommandProtocol.E_CHANNEL_DISABLED)
         assertThat(reject(LocalCommandProtocol.gate(cfg(true, false), setReq))).isEqualTo(LocalCommandProtocol.E_CAPABILITY_DISABLED)
-        assertThat(reject(LocalCommandProtocol.gate(cfg(true, true), setReq))).isEqualTo(LocalCommandProtocol.E_MUTATION_UNAVAILABLE)
-        assertThat(reject(LocalCommandProtocol.gate(cfg(true, true, vo = true), setReq))).isEqualTo(LocalCommandProtocol.E_MUTATION_UNAVAILABLE)
-        assertThat(LocalCommandProtocol.MUTATION_BUILD_PRESENT).isFalse()
+        assertThat(LocalCommandProtocol.gate(cfg(true, true), setReq)).isEqualTo(LocalCommandProtocol.GateResult.Apply)
+        // validateOnly (forced ODER request) reduziert IMMER auf VALIDATE_ONLY — nie umgekehrt
+        assertThat(LocalCommandProtocol.gate(cfg(true, true, vo = true), setReq)).isEqualTo(LocalCommandProtocol.GateResult.ValidateOnly)
+        assertThat(LocalCommandProtocol.MUTATION_BUILD_PRESENT).isTrue()
     }
 
     // --- Policy-Matrix: R4-verifizierter Hash + Tupel-Semantik ---

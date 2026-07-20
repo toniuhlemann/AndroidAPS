@@ -20,6 +20,12 @@ object LocalCommandServiceCore {
         val serviceInstanceId: String,
         val startedAt: Long,
         val serverPolicyHash: String,
+        /** Pilot-Glue (app-Modul): fuehrt SET/CANCEL ueber die eine Room-Transaktion aus.
+         *  validateOnly=true darf NIE mutieren. null = kein Mutationspfad verfuegbar. */
+        val mutationExecutor: ((LocalCommandProtocol.Request, Boolean) -> Map<String, Any>)? = null,
+        /** Status-Anreicherung (read-only DB): aktive Ownership-Tokens bzw. Outcome-Lookup. */
+        val ownedTtProvider: (() -> Map<String, Any>?)? = null,
+        val outcomeProvider: ((String) -> Map<String, Any>?)? = null,
     )
 
     /** Rohwerte direkt aus dem Bundle (Any? — Typpruefung passiert HIER, nie im Glue). */
@@ -39,29 +45,35 @@ object LocalCommandServiceCore {
                 "outcome" to "REJECTED", "errorCode" to g.errorCode,
             )
             LocalCommandProtocol.GateResult.ReadOnly -> when (req.cmd) {
-                LocalCommandProtocol.Cmd.GET_SERVICE_STATUS -> ackBase(req.requestId) + mapOf(
-                    "outcome" to "APPLIED",
-                    "mutationBuildPresent" to LocalCommandProtocol.MUTATION_BUILD_PRESENT,
-                    "channelEnabled" to env.gates.channelEnabled,
-                    "ttCapabilityEnabled" to env.gates.ttCapabilityEnabled,
-                    "forcedValidateOnly" to env.gates.forcedValidateOnly,
-                    "serverPolicyHash" to env.serverPolicyHash,
-                    "databaseSchemaReady" to false,     // Room-Migration kommt mit Pilot-Stufe
-                    "ownedTt" to "NONE",                // Ownership-Modell kommt mit Pilot-Stufe
-                    "serviceInstanceId" to env.serviceInstanceId,
-                    "startedAt" to env.startedAt,
-                )
-                LocalCommandProtocol.Cmd.GET_COMMAND_STATUS -> ackBase(req.requestId) + mapOf(
-                    "outcome" to "APPLIED",
-                    "queryRequestId" to (req.queryRequestId ?: ""),
-                    "queryStatus" to "NOT_FOUND",       // kein Outcome-Store in diesem Build
-                )
+                LocalCommandProtocol.Cmd.GET_SERVICE_STATUS -> {
+                    val owned = env.ownedTtProvider?.invoke()
+                    ackBase(req.requestId) + mapOf(
+                        "outcome" to "APPLIED",
+                        "mutationBuildPresent" to LocalCommandProtocol.MUTATION_BUILD_PRESENT,
+                        "channelEnabled" to env.gates.channelEnabled,
+                        "ttCapabilityEnabled" to env.gates.ttCapabilityEnabled,
+                        "forcedValidateOnly" to env.gates.forcedValidateOnly,
+                        "serverPolicyHash" to env.serverPolicyHash,
+                        "databaseSchemaReady" to (env.ownedTtProvider != null),
+                        "serviceInstanceId" to env.serviceInstanceId,
+                        "startedAt" to env.startedAt,
+                    ) + (owned?.let { mapOf("ownedTt" to "OWNED") + it } ?: mapOf("ownedTt" to "NONE"))
+                }
+                LocalCommandProtocol.Cmd.GET_COMMAND_STATUS -> {
+                    val original = env.outcomeProvider?.invoke(req.queryRequestId!!)
+                    ackBase(req.requestId) + mapOf(
+                        "outcome" to "APPLIED",
+                        "queryRequestId" to (req.queryRequestId ?: ""),
+                    ) + (original?.let { mapOf("queryStatus" to "FOUND") + it } ?: mapOf("queryStatus" to "NOT_FOUND"))
+                }
                 else -> neutral(LocalCommandProtocol.E_MALFORMED)   // unerreichbar
             }
-            // OFF/Auth-Build: strukturell unerreichbar (gate liefert vorher Reject, weil
-            // MUTATION_BUILD_PRESENT=false). Defensive Antwort statt Exception.
-            LocalCommandProtocol.GateResult.ValidateOnly,
-            LocalCommandProtocol.GateResult.Apply -> neutral(LocalCommandProtocol.E_MUTATION_UNAVAILABLE)
+            // Pilot: expliziter Ausfuehrungsmodus aus dem Gate (R5-F5) — validateOnly wird
+            // strukturell VOR dem Executor entschieden und darf dort nie mutieren.
+            LocalCommandProtocol.GateResult.ValidateOnly ->
+                env.mutationExecutor?.invoke(req, true) ?: neutral(LocalCommandProtocol.E_MUTATION_UNAVAILABLE)
+            LocalCommandProtocol.GateResult.Apply ->
+                env.mutationExecutor?.invoke(req, false) ?: neutral(LocalCommandProtocol.E_MUTATION_UNAVAILABLE)
         }
     }
 

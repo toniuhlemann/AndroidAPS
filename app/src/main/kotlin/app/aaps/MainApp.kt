@@ -105,6 +105,7 @@ class MainApp : DaggerApplication() {
     @Inject lateinit var plugins: List<@JvmSuppressWildcards PluginBase>
     @Inject lateinit var compatDBHelper: CompatDBHelper
     @Inject lateinit var persistenceLayer: PersistenceLayer
+    @Inject lateinit var repository: app.aaps.database.AppRepository
     @Inject lateinit var dateUtil: DateUtil
     @Inject lateinit var uiInteraction: UiInteraction
     @Inject lateinit var processLifecycleListener: Provider<ProcessLifecycleListener>
@@ -131,6 +132,10 @@ class MainApp : DaggerApplication() {
 
         // Here should be everything injected
         aapsLogger.debug("onCreate")
+        // LocalCommandChannel-Runtime (IobActionCoreExporter-Muster): bereits gebundene
+        // Singletons an den nicht-DI-verwalteten Service durchreichen. Ohne init bleibt
+        // der Mutationspfad REJECTED_MUTATION_UNAVAILABLE.
+        app.aaps.iobaction.LocalCommandRuntime.init(repository, persistenceLayer)
         ProcessLifecycleOwner.get().lifecycle.addObserver(processLifecycleListener.get())
         // Configure LeakCanary with Firebase reporting
         // Memory leaks will be uploaded to Firebase Crashlytics via FabricPrivacy.logException

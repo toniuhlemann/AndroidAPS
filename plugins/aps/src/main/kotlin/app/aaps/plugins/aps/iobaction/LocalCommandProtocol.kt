@@ -22,8 +22,9 @@ object LocalCommandProtocol {
     // R5-F2: Name praezisiert — geprueft wird, wie weit issuedAt in der ZUKUNFT liegen darf.
     const val MAX_ISSUED_AT_FUTURE_SKEW_MS = 5_000L
     const val MAX_VALIDITY_WINDOW_MS = 30_000L
-    /** R3-Grenze: dieser Build enthaelt strukturell keinen Mutationspfad. */
-    const val MUTATION_BUILD_PRESENT = false
+    /** Pilot-Build (Block 2): Mutationspfad vorhanden — erreichbar NUR hinter Channel- UND
+     *  TT-Capability-Gate (beide default AUS) und nur via ExecuteLocalTtCommandTransaction. */
+    const val MUTATION_BUILD_PRESENT = true
 
     private val HEX32 = Regex("^[0-9a-f]{32}$")
     private val HEX64 = Regex("^[0-9a-f]{64}$")
