@@ -40,6 +40,9 @@ class ExecuteLocalTtCommandTransaction(
     private val expectedTtDbId: Long? = null,
     private val expectedTtEntityVersion: Int? = null,
     private val expectedOwnerPolicyHash: String? = null,   // nur CANCEL
+    /** Vom Domain-Glue vorentschiedener Policy-Fehler (Matrix/Hash, statisch — kein Race):
+     *  wird HIER terminal persistiert, damit Retries das Original sehen (R2-B4). */
+    private val policyErrorCode: String? = null,
     private val rateCapPerHour: Int,
 ) : Transaction<ExecuteLocalTtCommandTransaction.Result>() {
 
@@ -66,6 +69,9 @@ class ExecuteLocalTtCommandTransaction(
             ) else Result(outcome = "REJECTED", errorCode = "REJECTED_REQUEST_ID_REUSE")
         }
         dao.pruneOutcomes(nowMs)
+
+        // (1b) Fachlicher Policy-Fehler (Matrix/Hash): terminal persistieren.
+        if (policyErrorCode != null) return reject(policyErrorCode)
 
         // (2) Rate-Limit (persistent, Replays zaehlen nicht — R2-B8/R1-F8).
         if (!validateOnly && dao.countAppliedSince(nowMs - 3_600_000L) >= rateCapPerHour)

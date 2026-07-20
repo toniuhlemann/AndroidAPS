@@ -56,12 +56,13 @@ class LocalCommandServiceCoreTest {
         assertThat(ack["outcome"]).isEqualTo("APPLIED")
         assertThat(ack["channelEnabled"]).isEqualTo(false)
         assertThat(ack["ttCapabilityEnabled"]).isEqualTo(false)
-        assertThat(ack["mutationBuildPresent"]).isEqualTo(false)
+        assertThat(ack["mutationBuildPresent"]).isEqualTo(true)   // Pilot-Build; Gates trotzdem AUS
         assertThat(ack["serverPolicyHash"]).isEqualTo(LocalCommandPolicy.hash())
         assertThat(ack["ownedTt"]).isEqualTo("NONE")
     }
 
-    // (4) SET-Gate-Kette: OFF → Channel-Fehler; Channel ON/TT OFF → Capability; beide ON → Mutation-unavailable
+    // (4) SET-Gate-Kette: OFF → Channel-Fehler; Channel ON/TT OFF → Capability;
+    //     beide ON ohne Runtime (executor null) → Mutation-unavailable
     @Test fun setGateChain() {
         assertThat(LocalCommandServiceCore.execute(keysOk, setPayload, setMac, env(ch = false, tt = true))["errorCode"])
             .isEqualTo(LocalCommandProtocol.E_CHANNEL_DISABLED)
@@ -69,6 +70,32 @@ class LocalCommandServiceCoreTest {
             .isEqualTo(LocalCommandProtocol.E_CAPABILITY_DISABLED)
         assertThat(LocalCommandServiceCore.execute(keysOk, setPayload, setMac, env(ch = true, tt = true))["errorCode"])
             .isEqualTo(LocalCommandProtocol.E_MUTATION_UNAVAILABLE)
+    }
+
+    // Pilot-Verdrahtung: Executor bekommt den korrekten validateOnly-Modus (R5-F5) und
+    // sein Ergebnis wird unveraendert durchgereicht; forced-VO reduziert Apply.
+    @Test fun executorReceivesExplicitMode() {
+        val calls = mutableListOf<Boolean>()
+        val exec: (LocalCommandProtocol.Request, Boolean) -> Map<String, Any> = { _, vo ->
+            calls += vo; mapOf("outcome" to if (vo) "VALIDATED" else "APPLIED", "marker" to "fromExecutor")
+        }
+        val apply = LocalCommandServiceCore.execute(keysOk, setPayload, setMac, env(ch = true, tt = true).copy(mutationExecutor = exec))
+        assertThat(apply["outcome"]).isEqualTo("APPLIED"); assertThat(apply["marker"]).isEqualTo("fromExecutor")
+        val forced = LocalCommandServiceCore.execute(keysOk, setPayload, setMac, env(ch = true, tt = true, vo = true).copy(mutationExecutor = exec))
+        assertThat(forced["outcome"]).isEqualTo("VALIDATED")
+        assertThat(calls).containsExactly(false, true).inOrder()
+    }
+
+    // Status-Anreicherung: ownedTt-Provider liefert Tokens; Outcome-Provider FOUND
+    @Test fun statusEnrichmentFromProviders() {
+        val e = env().copy(
+            ownedTtProvider = { mapOf("ownerRequestId" to "1".repeat(32), "ttDbId" to 42L, "ttEntityVersion" to 3) },
+            outcomeProvider = { q -> if (q == "1".repeat(32).replace('1', '2')) null else mapOf("originalOutcome" to "APPLIED") },
+        )
+        val status = LocalCommandServiceCore.execute(keysOk, statusPayload, statusMac, e)
+        assertThat(status["ownedTt"]).isEqualTo("OWNED")
+        assertThat(status["ttDbId"]).isEqualTo(42L)
+        assertThat(status["databaseSchemaReady"]).isEqualTo(true)
     }
 
     // (5) Bundle-Oberflaeche: Extra-/fehlende Keys, falsche Typen → neutral malformed, keine Exception
