@@ -77,9 +77,11 @@ class LocalCommandService : Service() {
                 putBoolean("channelEnabled", cfg.channelEnabled)
                 putBoolean("ttCapabilityEnabled", cfg.ttCapabilityEnabled)
                 putBoolean("forcedValidateOnly", cfg.forcedValidateOnly)
-                putString("serverPolicyHash", "")           // Policy-Matrix kommt mit Validate-only-Stufe
-                putBoolean("secretConfigured", readSecret() != null)
+                // R4 §1: secretConfigured entfaellt (nach bestandenem HMAC logisch immer true);
+                // fehlendes Secret liefert schon der Parser als REJECTED_AUTH_NOT_CONFIGURED.
+                putString("serverPolicyHash", app.aaps.plugins.aps.iobaction.LocalCommandPolicy.hash())
                 putBoolean("databaseSchemaReady", false)    // Room-Migration kommt mit Pilot-Stufe
+                putString("ownedTt", "NONE")                // Ownership-Modell kommt mit Pilot-Stufe
                 putString("serviceInstanceId", serviceInstanceId)
                 putLong("startedAt", startedAt)
             }
