@@ -218,7 +218,26 @@ open class DatabaseModule {
             dropCustomIndexes(db)
         }
     }
+    // LocalCommandChannel-Tabellen (Fork, Spec v1.2 B1): SQL 1:1 aus dem Room-Schema-Export
+    // 33.json uebernommen (Identity-Hash-sicher). MERGE-HINWEIS: bei Upstream-Kollision mit
+    // Version 33 dieses Objekt + DATABASE_VERSION renumbern.
+    internal val migration32to33 = object : Migration(32, 33) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            db.execSQL(
+                "CREATE TABLE IF NOT EXISTS `localCommandOutcome` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `requestId` TEXT NOT NULL, `requestHash` TEXT NOT NULL, `cmd` TEXT NOT NULL, `outcome` TEXT NOT NULL, `errorCode` TEXT, `appliedAt` INTEGER, `ttDbId` INTEGER, `ttEntityVersion` INTEGER, `validateOnly` INTEGER NOT NULL, `createdAt` INTEGER NOT NULL, `retainUntil` INTEGER NOT NULL)"
+            )
+            db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS `index_localCommandOutcome_requestId` ON `localCommandOutcome` (`requestId`)")
+            db.execSQL("CREATE INDEX IF NOT EXISTS `index_localCommandOutcome_createdAt` ON `localCommandOutcome` (`createdAt`)")
+            db.execSQL(
+                "CREATE TABLE IF NOT EXISTS `localCommandOwnership` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `requestId` TEXT NOT NULL, `ttDbId` INTEGER NOT NULL, `ttEntityVersion` INTEGER NOT NULL, `ttTimestamp` INTEGER NOT NULL, `lowTarget` REAL NOT NULL, `highTarget` REAL NOT NULL, `durationMs` INTEGER NOT NULL, `reasonKey` TEXT NOT NULL, `ownerPolicyHash` TEXT NOT NULL, `createdAt` INTEGER NOT NULL, `terminatedAt` INTEGER, `terminalReason` TEXT)"
+            )
+            db.execSQL("CREATE INDEX IF NOT EXISTS `index_localCommandOwnership_terminatedAt` ON `localCommandOwnership` (`terminatedAt`)")
+            db.execSQL("CREATE INDEX IF NOT EXISTS `index_localCommandOwnership_ttDbId` ON `localCommandOwnership` (`ttDbId`)")
+            dropCustomIndexes(db)
+        }
+    }
+
     /** List of all migrations for easy reply in tests. */
     @VisibleForTesting
-    internal val migrations = arrayOf(migration20to21, migration21to22, migration22to23, migration23to24, migration24to25, migration25to26, migration26to27, migration27to28, migration28to29, migration29to30, migration30to31, migration31to32)
+    internal val migrations = arrayOf(migration20to21, migration21to22, migration22to23, migration23to24, migration24to25, migration25to26, migration26to27, migration27to28, migration28to29, migration29to30, migration30to31, migration31to32, migration32to33)
 }

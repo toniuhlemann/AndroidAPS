@@ -67,5 +67,8 @@ internal class DelegatedAppDatabase(val changes: MutableList<DBEntry>, val datab
     val heartRateDao: HeartRateDao = DelegatedHeartRateDao(changes, database.heartRateDao)
     val stepsCountDao: StepsCountDao = DelegatedStepsCountDao(changes, database.stepsCountDao)
     val autoIsfValuesDao: AutoIsfValuesDao = DelegatedAutoIsfValuesDao(changes, database.autoIsfValuesDao)
+    // LocalCommandChannel: lokal-only, KEIN NS-Sync → bewusst ohne Delegated-Wrapper (kein
+    // NewEntries-Tracking); nur von ExecuteLocalTtCommandTransaction genutzt.
+    val localCommandDao: app.aaps.database.daos.LocalCommandDao = database.localCommandDao
     fun clearAllTables() = database.clearAllTables()
 }
