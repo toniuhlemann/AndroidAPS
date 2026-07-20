@@ -240,4 +240,51 @@ class ExecuteLocalTtCommandTransactionTest {
         assertThat(localDao.ownerships.first().terminalReason).isEqualTo("TT_GONE")
         assertThat(localDao.activeOwnership()!!.requestId).isEqualTo(rid1)
     }
+
+    // (16) R6-F5: Reason-only-Fremdaenderung (gleiche ID/Zeiten/Ziele) ist eine INHALTLICHE
+    //      Aenderung — Ownership verfaellt, TT gilt als fremd
+    @Test fun reasonOnlyForeignChangeInvalidatesOwnership() {
+        val own = tt(id = 100); activeTt = own
+        localDao.insertOwnership(ownFor(own))
+        activeTt = tt(id = 100, version = 1).also { it.reason = TemporaryTarget.Reason.MEAL }   // nur Reason geaendert
+        val r = setOwned(owner = rid1, ttId = 100, ver = 0).run()
+        assertThat(r.errorCode).isEqualTo("REJECTED_NOT_OWNED")
+        assertThat(localDao.ownerships.first().terminalReason).isEqualTo("FOREIGN_MODIFIED")
+        assertThat(updatedTts).isEmpty()
+    }
+
+    // ---- R6-F4: Status-Transaktion nutzt DIESELBE Reconciliation wie die Mutation ----
+
+    private fun readState(now: Long = t0) =
+        ReadLocalCommandStateTransaction(nowMs = now).also { it.database = database }
+
+    // (17) Abgelaufenes/verschwundenes eigenes TT wird NIE als OWNED exportiert
+    @Test fun statusNeverReportsExpiredOwnership() {
+        localDao.insertOwnership(ownFor(tt(id = 100)))           // Ownership, aber kein aktives TT (abgelaufen)
+        val r = readState().run()
+        assertThat(r.ownership).isNull()
+        assertThat(localDao.ownerships.first().terminalReason).isEqualTo("TT_GONE")
+    }
+
+    // (18) NS-ID-Echo im Status: Preflight bekommt FRISCHE Tokens (kein vermeidbarer
+    //      STATE_CONFLICT an der TT-Grenze mehr)
+    @Test fun statusCarriesEchoVersionForward() {
+        val own = tt(id = 100); activeTt = own
+        localDao.insertOwnership(ownFor(own))
+        activeTt = tt(id = 100, version = 3)                     // Inhalt identisch, NS-Echo bumpt Version
+        val r = readState().run()
+        assertThat(r.ownership).isNotNull()
+        assertThat(r.ownership!!.ttEntityVersion).isEqualTo(3)   // fortgeschrieben, nicht stale
+        assertThat(r.ownership!!.terminatedAt).isNull()
+    }
+
+    // (19) Fremd ersetztes TT (auch bei GLEICHEM Ziel): Status meldet NONE, nie OWNED
+    @Test fun statusNeverReportsForeignReplacedTt() {
+        val own = tt(id = 100); activeTt = own
+        localDao.insertOwnership(ownFor(own))
+        activeTt = tt(id = 999)                                  // manuelles TT, gleicher Inhalt, andere ID
+        val r = readState().run()
+        assertThat(r.ownership).isNull()
+        assertThat(localDao.ownerships.first().terminalReason).isEqualTo("TT_GONE")
+    }
 }

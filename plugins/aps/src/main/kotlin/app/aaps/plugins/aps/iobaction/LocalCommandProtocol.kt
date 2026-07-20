@@ -11,8 +11,8 @@ import org.json.JSONObject
  * typisierten Objekt (nie aus rohem JSON-Text, R3-A1-Auflage); HMAC-SHA256 mit
  * konstantzeitigem Vergleich; strikte unknown-reject-Semantik ohne Clamping.
  *
- * OFF/Auth-Build: MUTATION_BUILD_PRESENT=false — es existiert kein Mutationszweig;
- * SET/CANCEL koennen dieses Build-Artefakt nie ueber die Gates hinaus erreichen.
+ * PILOT-Build (R6): MUTATION_BUILD_PRESENT=true — der Mutationszweig existiert, wird aber
+ * weiterhin von den default-AUS-Gates (Kanal/Capability, nur AAPS-UI) geschuetzt.
  */
 object LocalCommandProtocol {
 
@@ -269,8 +269,8 @@ object LocalCommandProtocol {
         Cmd.SET_OWNED_TEMP_TARGET, Cmd.CANCEL_OWNED_TEMP_TARGET -> when {
             !cfg.channelEnabled -> GateResult.Reject(E_CHANNEL_DISABLED)
             !cfg.ttCapabilityEnabled -> GateResult.Reject(E_CAPABILITY_DISABLED)
-            // OFF/Auth-Build: Mutationszweig existiert nicht — auch validateOnly-Pfade
-            // enden hier, weil die Validierungs-Persistenz erst mit der Room-Migration kommt.
+            // Build-Wachposten: in einem Build ohne Mutationszweig (historischer OFF/Auth-
+            // Stand) enden auch validateOnly-Pfade hier; im Pilot-Build immer durchlaessig.
             !MUTATION_BUILD_PRESENT -> GateResult.Reject(E_MUTATION_UNAVAILABLE)
             cfg.forcedValidateOnly || req.validateOnly -> GateResult.ValidateOnly
             else -> GateResult.Apply
