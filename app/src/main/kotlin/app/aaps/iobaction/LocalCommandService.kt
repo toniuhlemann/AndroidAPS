@@ -8,18 +8,18 @@ import android.os.Binder
 import android.os.Bundle
 import android.os.IBinder
 import app.aaps.plugins.aps.iobaction.LocalCommandAuth
+import app.aaps.plugins.aps.iobaction.LocalCommandPolicy
 import app.aaps.plugins.aps.iobaction.LocalCommandProtocol
+import app.aaps.plugins.aps.iobaction.LocalCommandServiceCore
 import java.io.File
 import java.security.MessageDigest
 
 /**
- * LocalCommandChannel — OFF/Auth-Build (Spec v1.2/v1.3, Codex-R3-GO mit harten Grenzen):
- * kein kompilierter Mutationszweig (LocalCommandProtocol.MUTATION_BUILD_PRESENT=false),
- * keine AAPS-DB-Beruehrung, Kanal + TT-Capability default AUS (und in diesem Build ohne
- * jede UI zum Einschalten → praktisch dauerhaft OFF). Implementiert: Binder-Callerpruefung,
- * Secret/Auth, Parser/Kanonisierung via LocalCommandProtocol, ACK-Grundgeruest, Gate-Logik,
- * Security-Zaehler. Exported, weil die Autorisierung KOMPLETT selbst geprueft wird
- * (UID→Pakete→Signatur-Digests, default-deny bei leerer Allowlist).
+ * LocalCommandChannel — Android-GLUE (R5-F3-Refactor): die gesamte Bundle→ACK-Logik lebt
+ * unit-getestet in [LocalCommandServiceCore]; dieser Service sammelt nur die Umgebung
+ * (Binder-Caller → Pakete → Signatur-Digests, Secret aus noBackupFilesDir, Gate-Schalter)
+ * und konvertiert Map↔Bundle. OFF/Auth-Build: kein Mutationszweig, Schalter default AUS,
+ * Signer-Allowlist default leer (default-deny). Deklariert NUR im full-Flavor (R5-F4).
  */
 class LocalCommandService : Service() {
 
@@ -32,7 +32,6 @@ class LocalCommandService : Service() {
         const val KEY_UNAUTH_COUNT = "unauth_count"
         const val KEY_UNAUTH_LAST = "unauth_last_ms"
         const val SECRET_FILE = "local_command_secret"      // hex, unter noBackupFilesDir
-        val ALLOWED_REQUEST_KEYS = setOf("payloadJsonUtf8", "hmacHex")
     }
 
     private val serviceInstanceId = java.util.UUID.randomUUID().toString()
@@ -41,56 +40,47 @@ class LocalCommandService : Service() {
     private val binder = object : ILocalCommandChannel.Stub() {
         override fun execute(request: Bundle?): Bundle = runCatching {
             handle(request, Binder.getCallingUid())
-        }.getOrElse { neutralReject(LocalCommandProtocol.E_MALFORMED) }   // nie Exceptions ueber Binder leaken
+        }.getOrElse {
+            toBundle(mapOf(
+                "protocolVersion" to LocalCommandProtocol.PROTOCOL_VERSION,
+                "outcome" to "REJECTED", "replayed" to false,
+                "errorCode" to LocalCommandProtocol.E_MALFORMED,
+            ))
+        }
     }
 
     override fun onBind(intent: Intent?): IBinder = binder
 
     private fun handle(request: Bundle?, callingUid: Int): Bundle {
-        // 1. Caller-Identitaet (R1-F1/R2-C1): UID → alle Pakete → jeder Signer vertraut.
-        if (!callerTrusted(callingUid)) {
-            recordUnauthenticated()
-            return neutralReject(LocalCommandProtocol.E_AUTH)
-        }
-        // 2. Bundle-Haertung (R2-A3): exakt zwei String-Keys, nie Parcelables deserialisieren.
-        if (request == null) return neutralReject(LocalCommandProtocol.E_MALFORMED)
-        val keys = runCatching { request.keySet() }.getOrNull() ?: return neutralReject(LocalCommandProtocol.E_MALFORMED)
-        if (keys != ALLOWED_REQUEST_KEYS) return neutralReject(LocalCommandProtocol.E_MALFORMED)
-        val payload = request.getString("payloadJsonUtf8") ?: return neutralReject(LocalCommandProtocol.E_MALFORMED)
-        val hmac = request.getString("hmacHex") ?: return neutralReject(LocalCommandProtocol.E_MALFORMED)
-        // 3. Protokoll + HMAC (pure).
-        val parsed = LocalCommandProtocol.parseAndVerify(payload, hmac, readSecret(), System.currentTimeMillis())
-        val req = parsed.request ?: return neutralReject(parsed.errorCode ?: LocalCommandProtocol.E_MALFORMED)
-        // 4. Gates (v1.2-A4-Prioritaet; Schalter existieren, sind default AUS).
+        val trusted = callerTrusted(callingUid)
+        if (!trusted) recordUnauthenticated()
         val sp = getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-        val cfg = LocalCommandProtocol.GateConfig(
-            channelEnabled = sp.getBoolean(KEY_CHANNEL, false),
-            ttCapabilityEnabled = sp.getBoolean(KEY_TT, false),
-            forcedValidateOnly = sp.getBoolean(KEY_FORCED_VALIDATE, false),
+        val env = LocalCommandServiceCore.Env(
+            callerTrusted = trusted,
+            secret = readSecret(),
+            gates = LocalCommandProtocol.GateConfig(
+                channelEnabled = sp.getBoolean(KEY_CHANNEL, false),
+                ttCapabilityEnabled = sp.getBoolean(KEY_TT, false),
+                forcedValidateOnly = sp.getBoolean(KEY_FORCED_VALIDATE, false),
+            ),
+            nowMs = System.currentTimeMillis(),
+            serviceInstanceId = serviceInstanceId,
+            startedAt = startedAt,
+            serverPolicyHash = LocalCommandPolicy.hash(),
         )
-        LocalCommandProtocol.gateDecision(cfg, req)?.let { return ack(req.requestId) { putString("errorCode", it); putString("outcome", "REJECTED") } }
-        // 5. Read-only-Befehle (einzige in diesem Build erreichbare Pfade, nur bei Kanal AN):
-        return when (req.cmd) {
-            LocalCommandProtocol.Cmd.GET_SERVICE_STATUS -> ack(req.requestId) {
-                putString("outcome", "APPLIED")   // read-only Antwort, keine Mutation
-                putBoolean("mutationBuildPresent", LocalCommandProtocol.MUTATION_BUILD_PRESENT)
-                putBoolean("channelEnabled", cfg.channelEnabled)
-                putBoolean("ttCapabilityEnabled", cfg.ttCapabilityEnabled)
-                putBoolean("forcedValidateOnly", cfg.forcedValidateOnly)
-                // R4 §1: secretConfigured entfaellt (nach bestandenem HMAC logisch immer true);
-                // fehlendes Secret liefert schon der Parser als REJECTED_AUTH_NOT_CONFIGURED.
-                putString("serverPolicyHash", app.aaps.plugins.aps.iobaction.LocalCommandPolicy.hash())
-                putBoolean("databaseSchemaReady", false)    // Room-Migration kommt mit Pilot-Stufe
-                putString("ownedTt", "NONE")                // Ownership-Modell kommt mit Pilot-Stufe
-                putString("serviceInstanceId", serviceInstanceId)
-                putLong("startedAt", startedAt)
-            }
-            LocalCommandProtocol.Cmd.GET_COMMAND_STATUS -> ack(req.requestId) {
-                putString("outcome", "APPLIED")
-                putString("queryRequestId", req.queryRequestId)
-                putString("queryStatus", "NOT_FOUND")       // kein Outcome-Store in diesem Build
-            }
-            else -> neutralReject(LocalCommandProtocol.E_MUTATION_UNAVAILABLE)   // strukturell unerreichbar
+        // Bundle-Rohwerte OHNE Typannahme extrahieren; Typpruefung macht der Core.
+        val keys = runCatching { request?.keySet()?.toSet() }.getOrNull()
+        val payload = runCatching { request?.getString("payloadJsonUtf8") }.getOrNull()
+        val hmac = runCatching { request?.getString("hmacHex") }.getOrNull()
+        return toBundle(LocalCommandServiceCore.execute(keys, payload, hmac, env))
+    }
+
+    private fun toBundle(map: Map<String, Any>): Bundle = Bundle().apply {
+        for ((k, v) in map) when (v) {
+            is String -> putString(k, v)
+            is Boolean -> putBoolean(k, v)
+            is Long -> putLong(k, v)
+            is Int -> putInt(k, v)
         }
     }
 
@@ -126,20 +116,5 @@ class LocalCommandService : Service() {
         if (now - sp.getLong(KEY_UNAUTH_LAST, 0L) > 1_000L) {
             sp.edit().putInt(KEY_UNAUTH_COUNT, sp.getInt(KEY_UNAUTH_COUNT, 0) + 1).putLong(KEY_UNAUTH_LAST, now).apply()
         }
-    }
-
-    private fun neutralReject(code: String): Bundle = Bundle().apply {
-        putString("protocolVersion", LocalCommandProtocol.PROTOCOL_VERSION)
-        putString("outcome", "REJECTED")
-        putBoolean("replayed", false)
-        putString("errorCode", code)
-    }
-
-    private fun ack(requestId: String, fill: Bundle.() -> Unit): Bundle = Bundle().apply {
-        putString("protocolVersion", LocalCommandProtocol.PROTOCOL_VERSION)
-        putString("requestId", requestId)
-        putBoolean("replayed", false)
-        putBoolean("fallbackEligible", false)
-        fill()
     }
 }

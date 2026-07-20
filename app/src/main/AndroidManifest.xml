@@ -147,14 +147,8 @@
             android:name="org.apache.http.legacy"
             android:required="false" />
 
-        <!-- LocalCommandChannel (Spec v1.2/v1.3, Codex R3 OFF/Auth-GO): exported, weil die
-             Autorisierung vollstaendig im Service selbst geprueft wird (UID -> Pakete ->
-             Signatur-Digest-Allowlist, default-deny + HMAC). In diesem Build existiert kein
-             Mutationszweig; Kanal-Schalter sind default AUS. -->
-        <service
-            android:name="app.aaps.iobaction.LocalCommandService"
-            android:exported="true"
-            tools:ignore="ExportedService" />
+        <!-- LocalCommandChannel-Service: NUR im full-Flavor deklariert (R5-F4) —
+             siehe app/src/full/AndroidManifest.xml. -->
 
     </application>
 
