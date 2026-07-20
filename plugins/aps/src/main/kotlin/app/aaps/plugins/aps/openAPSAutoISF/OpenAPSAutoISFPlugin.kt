@@ -1658,7 +1658,7 @@ open class OpenAPSAutoISFPlugin @Inject constructor(
                         if (!tmp.renameTo(java.io.File(dir, "local_command_secret"))) {
                             java.io.File(dir, "local_command_secret").writeText(hex); tmp.delete()
                         }
-                        android.app.AlertDialog.Builder(context)
+                        androidx.appcompat.app.AlertDialog.Builder(context)
                             .setTitle("Kanal-Secret (einmalige Anzeige)")
                             .setMessage(hex.chunked(16).joinToString("\n"))
                             .setPositiveButton(android.R.string.ok, null).show()
@@ -1679,12 +1679,12 @@ open class OpenAPSAutoISFPlugin @Inject constructor(
                         }
                         if (digests.isEmpty()) error("keine Signatur lesbar")
                         sp.edit().putString("trusted_signer_sha256", digests.joinToString(",")).apply()
-                        android.app.AlertDialog.Builder(context)
+                        androidx.appcompat.app.AlertDialog.Builder(context)
                             .setTitle("Viewer vertraut")
                             .setMessage("Digest: ${digests.first().take(16)}…\n(bei Viewer-Neusignierung erneut ausfuehren)")
                             .setPositiveButton(android.R.string.ok, null).show()
                     }.onFailure {
-                        android.app.AlertDialog.Builder(context)
+                        androidx.appcompat.app.AlertDialog.Builder(context)
                             .setTitle("Viewer nicht gefunden")
                             .setMessage("iob-action-native-viewer ist nicht installiert oder Signatur nicht lesbar.")
                             .setPositiveButton(android.R.string.ok, null).show()
