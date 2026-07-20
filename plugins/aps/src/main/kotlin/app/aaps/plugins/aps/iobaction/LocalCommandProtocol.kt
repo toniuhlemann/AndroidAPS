@@ -27,12 +27,18 @@ object LocalCommandProtocol {
     private val HEX32 = Regex("^[0-9a-f]{32}$")
     private val HEX64 = Regex("^[0-9a-f]{64}$")
 
+    /** v1.4 Variante B: Sentinel-Tripel fuer expectedState=NONE — als echte Werte verboten. */
+    const val SENTINEL_REQUEST_ID = "00000000000000000000000000000000"
+    const val SENTINEL_TT_DB_ID = 0L
+    const val SENTINEL_ENTITY_VERSION = -1
+
     enum class Cmd { SET_OWNED_TEMP_TARGET, CANCEL_OWNED_TEMP_TARGET, GET_COMMAND_STATUS, GET_SERVICE_STATUS }
     enum class ReasonKey { PEAK_STOP, CORRECTION, REBOUND, BRAKE, MEAL, LOW_PROTECT }
 
     // Fehler-Codes (abschliessend fuer OFF/Auth; neutral, kein Detail-Leak)
     const val E_MALFORMED = "REJECTED_MALFORMED"
     const val E_AUTH = "REJECTED_AUTH"
+    const val E_AUTH_NOT_CONFIGURED = "REJECTED_AUTH_NOT_CONFIGURED"   // R4 §1: Secret fehlt (Caller war vertraut)
     const val E_TIME = "REJECTED_TIME_WINDOW"
     const val E_BOUNDS = "REJECTED_BOUNDS"
     const val E_CHANNEL_DISABLED = "REJECTED_CHANNEL_DISABLED"
@@ -49,8 +55,9 @@ object LocalCommandProtocol {
         val targetMgdl: Int? = null,
         val durationMin: Int? = null,
         val reasonKey: ReasonKey? = null,
-        val clientPolicyHash: String? = null,
-        val expectedState: String? = null,  // "NONE" | "OWNED" (SET); CANCEL: implizit OWNED
+        val clientPolicyHash: String? = null,          // SET: aktuelle Server-Policy (R4 §2)
+        val expectedOwnerPolicyHash: String? = null,   // CANCEL: Policy-Hash der ERSTELLUNG (R4 §2)
+        val expectedState: String? = null,             // SET: "NONE" | "OWNED" (Variante B, immer vorhanden)
         val expectedOwnerRequestId: String? = null,
         val expectedTtDbId: Long? = null,
         val expectedTtEntityVersion: Int? = null,
@@ -106,7 +113,7 @@ object LocalCommandProtocol {
             if (req.targetMgdl!! !in 70..161) return ParseOutcome(null, E_BOUNDS)
             if (req.durationMin!! !in 5..120) return ParseOutcome(null, E_BOUNDS)
         }
-        if (secret == null || secret.isEmpty()) return ParseOutcome(null, E_AUTH)
+        if (secret == null || secret.isEmpty()) return ParseOutcome(null, E_AUTH_NOT_CONFIGURED)
         val expected = hmacHex(secret, req.canonicalString)
         if (!MessageDigest.isEqual(expected.toByteArray(Charsets.US_ASCII), hmacHex.toByteArray(Charsets.US_ASCII)))
             return ParseOutcome(null, E_AUTH)
@@ -121,24 +128,29 @@ object LocalCommandProtocol {
         }
         return when (cmd) {
             Cmd.SET_OWNED_TEMP_TARGET -> {
-                val base = arrayOf("targetMgdl", "durationMin", "reasonKey", "validateOnly", "clientPolicyHash", "expectedState")
-                val owned = base + arrayOf("expectedOwnerRequestId", "expectedTtDbId", "expectedTtEntityVersion")
+                // v1.4 Variante B: ALLE 9 Felder immer Pflicht; NONE verlangt EXAKT das
+                // Sentinel-Tripel, OWNED verlangt echte Werte. Mischformen → reject.
+                if (!keysExactly(
+                        "targetMgdl", "durationMin", "reasonKey", "validateOnly", "clientPolicyHash",
+                        "expectedState", "expectedOwnerRequestId", "expectedTtDbId", "expectedTtEntityVersion",
+                    )
+                ) return null
                 val state = asString(p, "expectedState") ?: return null
-                val ok = when (state) {
-                    "NONE" -> keysExactly(*base)
-                    "OWNED" -> keysExactly(*owned)
-                    else -> false
-                }
-                if (!ok) return null
                 val reason = asString(p, "reasonKey")?.let { r -> ReasonKey.entries.firstOrNull { it.name == r } } ?: return null
                 val hash = asString(p, "clientPolicyHash")?.takeIf { HEX64.matches(it) } ?: return null
                 val target = asInt(p, "targetMgdl") ?: return null
                 val duration = asInt(p, "durationMin") ?: return null
                 val validateOnly = asBool(p, "validateOnly") ?: return null
-                val ownerId = if (state == "OWNED") asString(p, "expectedOwnerRequestId")?.takeIf { HEX32.matches(it) } ?: return null else null
-                val ttId = if (state == "OWNED") asLong(p, "expectedTtDbId") ?: return null else null
-                val ttVer = if (state == "OWNED") asInt(p, "expectedTtEntityVersion") ?: return null else null
-                build(cmd, p, requestId, issuedAt, expiresAt, Request(
+                val ownerId = asString(p, "expectedOwnerRequestId")?.takeIf { HEX32.matches(it) } ?: return null
+                val ttId = asLong(p, "expectedTtDbId") ?: return null
+                val ttVer = asInt(p, "expectedTtEntityVersion") ?: return null
+                val consistent = when (state) {
+                    "NONE" -> ownerId == SENTINEL_REQUEST_ID && ttId == SENTINEL_TT_DB_ID && ttVer == SENTINEL_ENTITY_VERSION
+                    "OWNED" -> ownerId != SENTINEL_REQUEST_ID && ttId >= 1L && ttVer >= 0
+                    else -> false
+                }
+                if (!consistent) return null
+                build(cmd, requestId, issuedAt, expiresAt, Request(
                     cmd, requestId, issuedAt, expiresAt, validateOnly,
                     targetMgdl = target, durationMin = duration, reasonKey = reason,
                     clientPolicyHash = hash, expectedState = state,
@@ -147,13 +159,16 @@ object LocalCommandProtocol {
                 ))
             }
             Cmd.CANCEL_OWNED_TEMP_TARGET -> {
-                if (!keysExactly("validateOnly", "expectedOwnerRequestId", "expectedTtDbId", "expectedTtEntityVersion")) return null
+                // v1.4/R4 §2: expectedOwnerPolicyHash (Erstellungs-Hash) statt aktuellem clientPolicyHash.
+                if (!keysExactly("validateOnly", "expectedOwnerPolicyHash", "expectedOwnerRequestId", "expectedTtDbId", "expectedTtEntityVersion")) return null
                 val validateOnly = asBool(p, "validateOnly") ?: return null
-                val ownerId = asString(p, "expectedOwnerRequestId")?.takeIf { HEX32.matches(it) } ?: return null
-                val ttId = asLong(p, "expectedTtDbId") ?: return null
-                val ttVer = asInt(p, "expectedTtEntityVersion") ?: return null
-                build(cmd, p, requestId, issuedAt, expiresAt, Request(
+                val ownerHash = asString(p, "expectedOwnerPolicyHash")?.takeIf { HEX64.matches(it) } ?: return null
+                val ownerId = asString(p, "expectedOwnerRequestId")?.takeIf { HEX32.matches(it) && it != SENTINEL_REQUEST_ID } ?: return null
+                val ttId = asLong(p, "expectedTtDbId")?.takeIf { it >= 1L } ?: return null
+                val ttVer = asInt(p, "expectedTtEntityVersion")?.takeIf { it >= 0 } ?: return null
+                build(cmd, requestId, issuedAt, expiresAt, Request(
                     cmd, requestId, issuedAt, expiresAt, validateOnly,
+                    expectedOwnerPolicyHash = ownerHash,
                     expectedOwnerRequestId = ownerId, expectedTtDbId = ttId, expectedTtEntityVersion = ttVer,
                     canonicalString = "",
                 ))
@@ -161,14 +176,14 @@ object LocalCommandProtocol {
             Cmd.GET_COMMAND_STATUS -> {
                 if (!keysExactly("queryRequestId")) return null
                 val q = asString(p, "queryRequestId")?.takeIf { HEX32.matches(it) } ?: return null
-                build(cmd, p, requestId, issuedAt, expiresAt, Request(
+                build(cmd, requestId, issuedAt, expiresAt, Request(
                     cmd, requestId, issuedAt, expiresAt, validateOnly = false,
                     queryRequestId = q, canonicalString = "",
                 ))
             }
             Cmd.GET_SERVICE_STATUS -> {
                 if (p.length() != 0) return null
-                build(cmd, p, requestId, issuedAt, expiresAt, Request(
+                build(cmd, requestId, issuedAt, expiresAt, Request(
                     cmd, requestId, issuedAt, expiresAt, validateOnly = false, canonicalString = "",
                 ))
             }
@@ -176,7 +191,7 @@ object LocalCommandProtocol {
     }
 
     /** Kanonischer String wird aus dem TYPISIERTEN Request neu erzeugt (R3-A1). */
-    private fun build(cmd: Cmd, p: JSONObject, requestId: String, issuedAt: Long, expiresAt: Long, r: Request): Request {
+    private fun build(cmd: Cmd, requestId: String, issuedAt: Long, expiresAt: Long, r: Request): Request {
         val canonParams = canonicalParams(r)
         return r.copy(canonicalString = canonicalString(cmd.name, canonParams, issuedAt, expiresAt, requestId))
     }
@@ -189,16 +204,16 @@ object LocalCommandProtocol {
         fun putB(k: String, v: Boolean) { fields[k] = if (v) "true" else "false" }
         when (r.cmd) {
             Cmd.SET_OWNED_TEMP_TARGET -> {
+                // v1.4 Variante B: alle 9 Felder IMMER im kanonischen String (auch die Sentinels).
                 putI("durationMin", r.durationMin!!.toLong()); putS("reasonKey", r.reasonKey!!.name)
                 putI("targetMgdl", r.targetMgdl!!.toLong()); putB("validateOnly", r.validateOnly)
                 putS("clientPolicyHash", r.clientPolicyHash!!); putS("expectedState", r.expectedState!!)
-                if (r.expectedState == "OWNED") {
-                    putS("expectedOwnerRequestId", r.expectedOwnerRequestId!!)
-                    putI("expectedTtDbId", r.expectedTtDbId!!); putI("expectedTtEntityVersion", r.expectedTtEntityVersion!!.toLong())
-                }
+                putS("expectedOwnerRequestId", r.expectedOwnerRequestId!!)
+                putI("expectedTtDbId", r.expectedTtDbId!!); putI("expectedTtEntityVersion", r.expectedTtEntityVersion!!.toLong())
             }
             Cmd.CANCEL_OWNED_TEMP_TARGET -> {
                 putB("validateOnly", r.validateOnly)
+                putS("expectedOwnerPolicyHash", r.expectedOwnerPolicyHash!!)
                 putS("expectedOwnerRequestId", r.expectedOwnerRequestId!!)
                 putI("expectedTtDbId", r.expectedTtDbId!!); putI("expectedTtEntityVersion", r.expectedTtEntityVersion!!.toLong())
             }
@@ -220,18 +235,21 @@ object LocalCommandProtocol {
     // ---- Gate-Prioritaet (v1.2-A4 + R3-A4): Schalter reduzieren nur, nie erzeugen. ----
     data class GateConfig(val channelEnabled: Boolean, val ttCapabilityEnabled: Boolean, val forcedValidateOnly: Boolean)
 
-    /** Liefert errorCode oder null (= Request darf zur — hier nicht existenten — Ausfuehrung). */
-    fun gateDecision(cfg: GateConfig, req: Request): String? {
-        if (!cfg.channelEnabled) return E_CHANNEL_DISABLED
-        return when (req.cmd) {
-            Cmd.GET_SERVICE_STATUS, Cmd.GET_COMMAND_STATUS -> null   // read-only, nur Channel-Gate
-            Cmd.SET_OWNED_TEMP_TARGET, Cmd.CANCEL_OWNED_TEMP_TARGET -> {
-                if (!cfg.ttCapabilityEnabled) return E_CAPABILITY_DISABLED
-                // OFF/Auth-Build: Mutationszweig existiert nicht — auch validateOnly-Pfade
-                // enden hier, weil die Validierungs-Persistenz erst mit der Room-Migration kommt.
-                if (!MUTATION_BUILD_PRESENT) return E_MUTATION_UNAVAILABLE
-                null
-            }
+    /**
+     * v1.4/R4-§1-Command-Gate-Matrix (einzige normative Quelle): read-only-Befehle stehen
+     * AUSSERHALB der Channel-/Capability-Gates (sonst koennte der Preflight channelEnabled=false
+     * nie berichten; GET_COMMAND_STATUS ist der Recovery-Pfad). Nur Mutationen sind gegated.
+     * Liefert errorCode oder null (= Request darf zur — hier nicht existenten — Ausfuehrung).
+     */
+    fun gateDecision(cfg: GateConfig, req: Request): String? = when (req.cmd) {
+        Cmd.GET_SERVICE_STATUS, Cmd.GET_COMMAND_STATUS -> null       // Caller+HMAC genuegen, nie Mutation
+        Cmd.SET_OWNED_TEMP_TARGET, Cmd.CANCEL_OWNED_TEMP_TARGET -> when {
+            !cfg.channelEnabled -> E_CHANNEL_DISABLED
+            !cfg.ttCapabilityEnabled -> E_CAPABILITY_DISABLED
+            // OFF/Auth-Build: Mutationszweig existiert nicht — auch validateOnly-Pfade
+            // enden hier, weil die Validierungs-Persistenz erst mit der Room-Migration kommt.
+            !MUTATION_BUILD_PRESENT -> E_MUTATION_UNAVAILABLE
+            else -> null
         }
     }
 }
