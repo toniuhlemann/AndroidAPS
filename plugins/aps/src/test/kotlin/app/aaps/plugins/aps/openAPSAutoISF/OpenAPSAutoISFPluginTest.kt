@@ -33,16 +33,24 @@ class OpenAPSAutoISFPluginTest : TestBaseWithProfile() {
     @Mock lateinit var profiler: Profiler
     @Mock lateinit var uiInteraction: UiInteraction
     @Mock lateinit var automationStateService: AutomationStateInterface
+    @Mock lateinit var effectiveAutoIsfSettings: app.aaps.core.interfaces.aps.EffectiveAutoIsfSettingsProvider
     private lateinit var openAPSAutoISFPlugin: OpenAPSAutoISFPlugin
 
     @BeforeEach fun prepare() {
         openAPSAutoISFPlugin = OpenAPSAutoISFPlugin(
             aapsLogger, rxBus, constraintChecker, rh, profileFunction, profileUtil, config, activePlugin,
-            iobCobCalculator, hardLimits, preferences, dateUtil, processedTbrEbData, persistenceLayer, glucoseStatusProvider,
+            iobCobCalculator, hardLimits, preferences, effectiveAutoIsfSettings, dateUtil, processedTbrEbData, persistenceLayer, glucoseStatusProvider,
             bgQualityCheck, uiInteraction, determineBasalSMB, profiler,
             GlucoseStatusCalculatorAutoIsf(aapsLogger, iobCobCalculator, dateUtil, deltaCalculator), apsResultProvider
         )
         openAPSAutoISFPlugin.automationStateService = automationStateService
+        // A1: neutraler Provider-Stub (NONE ⇒ effective == base) — lenient, weil nicht jeder
+        // Testfall den invoke()-Pfad erreicht.
+        org.mockito.Mockito.lenient().`when`(effectiveAutoIsfSettings.snapshot()).thenReturn(
+            app.aaps.core.interfaces.aps.EffectiveAutoIsfSettingsProvider.Snapshot(
+                100, 100, app.aaps.core.interfaces.aps.AutoIsfOverrideState.NONE, null, null, null
+            )
+        )
     }
 
     @Test

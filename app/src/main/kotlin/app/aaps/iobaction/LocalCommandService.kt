@@ -7,7 +7,9 @@ import android.content.pm.PackageManager
 import android.os.Binder
 import android.os.Bundle
 import android.os.IBinder
+import app.aaps.plugins.aps.iobaction.AutoIsfValueLeaseCoordinator
 import app.aaps.plugins.aps.iobaction.LocalCommandAuth
+import app.aaps.plugins.aps.iobaction.LocalCommandIobthPolicy
 import app.aaps.plugins.aps.iobaction.LocalCommandPolicy
 import app.aaps.plugins.aps.iobaction.LocalCommandProtocol
 import app.aaps.plugins.aps.iobaction.LocalCommandServiceCore
@@ -28,7 +30,10 @@ class LocalCommandService : Service() {
         const val PREFS = "local_command_channel"           // eigener Namespace — NICHT im Config-Export
         const val KEY_CHANNEL = "channel_enabled"
         const val KEY_TT = "tt_capability_enabled"
+        const val KEY_IOBTH = "iobth_capability_enabled"    // A1: eigener Schalter je Wert-Hebel
         const val KEY_FORCED_VALIDATE = "forced_validate_only"
+        /** v1.1/R10: AAPS-Prozessneustart beendet aktive Value-Leases BEVOR APS sie je nutzt. */
+        private val processRestartDone = java.util.concurrent.atomic.AtomicBoolean(false)
         const val KEY_TRUSTED = "trusted_signer_sha256"     // kommaseparierte Hex-Digests, default leer
         const val KEY_UNAUTH_COUNT = "unauth_count"
         const val KEY_UNAUTH_LAST = "unauth_last_ms"
@@ -62,6 +67,13 @@ class LocalCommandService : Service() {
         if (!trusted) recordUnauthenticated()
         val sp = getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         val repo = LocalCommandRuntime.repository
+        val coordinator = LocalCommandRuntime.valueLeaseCoordinator
+        // v1.1/R10-Test 3: aktive Value-Lease eines frueheren Prozesses terminalisieren
+        // (RAM startet leer; die Room-Zeile darf nie wieder als OWNED erscheinen).
+        if (repo != null && processRestartDone.compareAndSet(false, true)) runCatching {
+            repo.runTransactionForResult(app.aaps.database.transactions.TerminalizeValueLeaseTransaction(
+                "IOBTH", "PROCESS_RESTART", System.currentTimeMillis())).blockingGet()
+        }
         val env = LocalCommandServiceCore.Env(
             callerTrusted = trusted,
             secret = readSecret(),
@@ -69,14 +81,29 @@ class LocalCommandService : Service() {
                 channelEnabled = sp.getBoolean(KEY_CHANNEL, false),
                 ttCapabilityEnabled = sp.getBoolean(KEY_TT, false),
                 forcedValidateOnly = sp.getBoolean(KEY_FORCED_VALIDATE, false),
+                iobthCapabilityEnabled = sp.getBoolean(KEY_IOBTH, false),
             ),
             nowMs = System.currentTimeMillis(),
             serviceInstanceId = serviceInstanceId,
             startedAt = startedAt,
             serverPolicyHash = LocalCommandPolicy.hash(),
-            mutationExecutor = if (repo != null) { req, validateOnly -> executeMutation(req, validateOnly) } else null,
+            mutationExecutor = if (repo != null) { req, validateOnly ->
+                if (req.cmd == LocalCommandProtocol.Cmd.SET_IOBTH || req.cmd == LocalCommandProtocol.Cmd.CLEAR_IOBTH)
+                    executeValueMutation(req, validateOnly)
+                else executeMutation(req, validateOnly)
+            } else null,
             ownedTtProvider = if (repo != null) ({ readOwnedTt() }) else null,
             outcomeProvider = if (repo != null) ({ q -> readOutcome(q) }) else null,
+            iobthStatusProvider = if (coordinator != null) ({
+                val snap = coordinator.snapshot()
+                buildMap {
+                    put("serverIobthPolicyHash", LocalCommandIobthPolicy.hash())
+                    put("iobthLeaseState", snap.overrideState.name)
+                    snap.leaseId?.let { put("iobthLeaseId", it) }
+                    snap.leaseVersion?.let { put("iobthLeaseVersion", it) }
+                    snap.expiresAtWallMs?.let { put("iobthLeaseExpiresAt", it) }
+                }
+            }) else null,
         )
         // Bundle-Rohwerte OHNE Typannahme extrahieren; Typpruefung macht der Core.
         val keys = runCatching { request?.keySet()?.toSet() }.getOrNull()
@@ -146,6 +173,96 @@ class LocalCommandService : Service() {
             result.appliedAt?.let { put("appliedAt", it) }
             result.ttDbId?.let { put("ttDbId", it) }
             result.ttEntityVersion?.let { put("ttEntityVersion", it) }
+        }
+    }
+
+    /**
+     * Capability-Matrix A1 — Wert-Mutation (SET_IOBTH/CLEAR_IOBTH) ueber DIE eine
+     * Value-Lease-Transaktion + Coordinator-Publish (R10-F2: Room-Commit = historischer
+     * Linearization Point; APPLIED-ACK erst NACH dem RAM-Publish; R11-P1: commandResult
+     * historisch, currentLeaseState live). In A1 live nur als Forced-VO erreichbar.
+     */
+    private fun executeValueMutation(req: LocalCommandProtocol.Request, validateOnly: Boolean): Map<String, Any> {
+        val repo = LocalCommandRuntime.repository
+        val coordinator = LocalCommandRuntime.valueLeaseCoordinator
+        if (repo == null || coordinator == null) return mapOf(
+            "protocolVersion" to LocalCommandProtocol.PROTOCOL_VERSION, "outcome" to "REJECTED",
+            "replayed" to false, "errorCode" to LocalCommandProtocol.E_MUTATION_UNAVAILABLE)
+        val now = System.currentTimeMillis()
+        // Nachlaufende Terminalisierung eines RAM-Widerrufs (Gate-/TTL-/Invalidator-Latch).
+        coordinator.consumePendingRoomTerminal()?.let { reason -> runCatching {
+            repo.runTransactionForResult(app.aaps.database.transactions.TerminalizeValueLeaseTransaction("IOBTH", reason, now)).blockingGet()
+        } }
+        // Statische Policy-Vorpruefung (nur SET; CLEAR prueft den ERSTELLUNGS-Hash in der txn).
+        val policyError = if (req.cmd == LocalCommandProtocol.Cmd.SET_IOBTH) when {
+            req.clientPolicyHash != LocalCommandIobthPolicy.hash() -> "REJECTED_POLICY_VERSION"
+            !LocalCommandIobthPolicy.isAllowed(req.percent!!, req.ttlMin!!) -> "REJECTED_POLICY"
+            else -> null
+        } else null
+        val requestHash = java.security.MessageDigest.getInstance("SHA-256")
+            .digest(req.canonicalString.toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }
+
+        fun runTxn(capture: AutoIsfValueLeaseCoordinator.BaseCapture?): AutoIsfValueLeaseCoordinator.RoomSetResult {
+            val tx = app.aaps.database.transactions.ExecuteValueLeaseCommandTransaction(
+                cmd = if (req.cmd == LocalCommandProtocol.Cmd.SET_IOBTH)
+                    app.aaps.database.transactions.ExecuteValueLeaseCommandTransaction.Cmd.SET
+                else app.aaps.database.transactions.ExecuteValueLeaseCommandTransaction.Cmd.CLEAR,
+                capability = "IOBTH", requestId = req.requestId, requestHash = requestHash,
+                nowMs = now, validateOnly = validateOnly,
+                setPayload = req.percent?.let { """{"percent":$it}""" }, ttlMin = req.ttlMin,
+                expiresAtWallMs = capture?.expiresAtWallMs,
+                basePayload = capture?.let { """{"percent":${it.basePercent}}""" },
+                baseGeneration = capture?.baseGeneration, gateGeneration = capture?.gateGeneration,
+                currentPolicyHash = LocalCommandIobthPolicy.hash(), expectedState = req.expectedState,
+                expectedLeaseId = req.expectedLeaseId, expectedLeaseVersion = req.expectedLeaseVersion,
+                expectedOwnerPolicyHash = req.expectedOwnerPolicyHash, policyErrorCode = policyError,
+            )
+            val r = repo.runTransactionForResult(tx).blockingGet()
+            return AutoIsfValueLeaseCoordinator.RoomSetResult(r.outcome, r.errorCode, r.replayed, r.resultJson, r.leaseId, r.leaseVersion)
+        }
+
+        val (room, leaseState) = if (validateOnly) {
+            // VO: keine Lease, kein Publish — Gegenwart ist der aktuelle Snapshot (R10-F5).
+            val r = runTxn(null)
+            r to coordinator.snapshot().overrideState
+        } else if (req.cmd == LocalCommandProtocol.Cmd.SET_IOBTH) {
+            val a = coordinator.executeArmedSet(req.percent!!, req.ttlMin!!) { capture -> runTxn(capture) }
+            a.room to a.currentLeaseState
+        } else {
+            val a = coordinator.executeArmedClear { runTxn(null) }
+            a.room to a.currentLeaseState
+        }
+
+        // Audit (G2): genau ein UserEntry je neuem APPLIED nach Commit+Publish; nie VO/Reject/Replay.
+        var auditStatus = when {
+            room.replayed -> "SKIPPED_REPLAY"
+            room.outcome != "APPLIED" -> "SKIPPED_NO_MUTATION"
+            else -> "WRITTEN"
+        }
+        if (!room.replayed && room.outcome == "APPLIED") runCatching {
+            LocalCommandRuntime.persistenceLayer?.insertUserEntries(listOf(
+                app.aaps.core.data.model.UE(
+                    timestamp = now,
+                    action = app.aaps.core.data.ue.Action.IOB_TH_SET,
+                    source = app.aaps.core.data.ue.Sources.Automation,
+                    note = "IOB-Action lokal: ${req.cmd.name} ${req.percent ?: ""}% ttl=${req.ttlMin ?: ""} → ${room.outcome} · Lease=${leaseState.name}",
+                    values = listOf(),
+                )
+            ))?.blockingGet()
+        }.onFailure { auditStatus = "FAILED" }
+
+        return buildMap {
+            put("protocolVersion", LocalCommandProtocol.PROTOCOL_VERSION)
+            put("requestId", req.requestId)
+            put("outcome", room.outcome)
+            put("replayed", room.replayed)
+            put("fallbackEligible", false)
+            put("auditStatus", auditStatus)
+            put("currentLeaseState", leaseState.name)                 // R11-P1: LIVE, darf beim Replay abweichen
+            room.resultJson?.let { put("commandResult", it) }         // R11-P1: HISTORISCH, replay-gleich
+            room.errorCode?.let { put("errorCode", it) }
+            room.leaseId?.let { put("leaseId", it) }
+            room.leaseVersion?.let { put("leaseVersion", it) }
         }
     }
 

@@ -27,5 +27,10 @@ abstract class ApsModule {
 
         @Binds fun bindLoop(loopPlugin: LoopPlugin): Loop
         @Binds fun bindAutotune(autotunePlugin: AutotunePlugin): Autotune
+
+        // Capability-Matrix A1 (R9-G1/R10-G1): EIN Coordinator hinter BEIDEN Core-Ports —
+        // read-only Provider (APS/Trigger/Export) + Writer-Invalidator (ActionSetIobTH).
+        @Binds fun bindEffectiveAutoIsfSettingsProvider(coordinator: app.aaps.plugins.aps.iobaction.AutoIsfValueLeaseCoordinator): app.aaps.core.interfaces.aps.EffectiveAutoIsfSettingsProvider
+        @Binds fun bindAutoIsfValueLeaseInvalidator(coordinator: app.aaps.plugins.aps.iobaction.AutoIsfValueLeaseCoordinator): app.aaps.core.interfaces.aps.AutoIsfValueLeaseInvalidator
     }
 }

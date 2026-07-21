@@ -15,9 +15,18 @@ object LocalCommandRuntime {
         private set
     @Volatile var persistenceLayer: PersistenceLayer? = null
         private set
+    /** Capability-Matrix A1: der eine ValueLeaseCoordinator (Dagger-Singleton aus plugins/aps),
+     *  fuer den nicht-DI-verwalteten Service durchgereicht. */
+    @Volatile var valueLeaseCoordinator: app.aaps.plugins.aps.iobaction.AutoIsfValueLeaseCoordinator? = null
+        private set
 
-    fun init(repository: AppRepository, persistenceLayer: PersistenceLayer) {
+    fun init(
+        repository: AppRepository,
+        persistenceLayer: PersistenceLayer,
+        valueLeaseCoordinator: app.aaps.plugins.aps.iobaction.AutoIsfValueLeaseCoordinator? = null,
+    ) {
         this.repository = repository
         this.persistenceLayer = persistenceLayer
+        this.valueLeaseCoordinator = valueLeaseCoordinator
     }
 }

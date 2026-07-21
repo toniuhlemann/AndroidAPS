@@ -20,6 +20,7 @@ class ActionSetIobTH(injector: HasAndroidInjector) : Action(injector) {
 
     @Inject lateinit var uel: UserEntryLogger
     @Inject lateinit var sp: SP
+    @Inject lateinit var leaseInvalidator: app.aaps.core.interfaces.aps.AutoIsfValueLeaseInvalidator
 
     var new_iobTH = InputIobTH ( )
     // new_weight.value = 1
@@ -29,6 +30,13 @@ class ActionSetIobTH(injector: HasAndroidInjector) : Action(injector) {
     @DrawableRes override fun icon(): Int = R.drawable.ic_iobth
 
     override fun doAction(callback: Callback) {
+        // Capability-Matrix A1 (R10-G1 + R9-F2): therapeutischer Writer invalidiert eine
+        // etwaige lokale Kanal-Lease SYNCHRON VOR dem Basis-Write — Schutz gewinnt vor dem
+        // naechsten APS-Snapshot. false ⇒ fail-closed: KEIN Write, KEIN Erfolgsaudit.
+        if (!leaseInvalidator.invalidateBeforeExternalWrite(app.aaps.core.interfaces.aps.AutoIsfCapability.IOBTH, "ActionSetIobTH")) {
+            callback.result(pumpEnactResultProvider.get().success(false).comment(R.string.iobth_lease_invalidation_failed)).run()
+            return
+        }
         val currentIobTH:Int = sp.getInt(R.string.iob_threshold_percent, 100)
         if (currentIobTH != new_iobTH.value) {
             uel.log(

@@ -106,6 +106,7 @@ class MainApp : DaggerApplication() {
     @Inject lateinit var compatDBHelper: CompatDBHelper
     @Inject lateinit var persistenceLayer: PersistenceLayer
     @Inject lateinit var repository: app.aaps.database.AppRepository
+    @Inject lateinit var valueLeaseCoordinator: app.aaps.plugins.aps.iobaction.AutoIsfValueLeaseCoordinator
     @Inject lateinit var dateUtil: DateUtil
     @Inject lateinit var uiInteraction: UiInteraction
     @Inject lateinit var processLifecycleListener: Provider<ProcessLifecycleListener>
@@ -127,6 +128,8 @@ class MainApp : DaggerApplication() {
     private lateinit var refreshWidget: Runnable
     private val scope = CoroutineScope(Dispatchers.Default + Job())
 
+    private var iobThBaseListener: android.content.SharedPreferences.OnSharedPreferenceChangeListener? = null
+
     override fun onCreate() {
         super.onCreate()
 
@@ -135,7 +138,14 @@ class MainApp : DaggerApplication() {
         // LocalCommandChannel-Runtime (IobActionCoreExporter-Muster): bereits gebundene
         // Singletons an den nicht-DI-verwalteten Service durchreichen. Ohne init bleibt
         // der Mutationspfad REJECTED_MUTATION_UNAVAILABLE.
-        app.aaps.iobaction.LocalCommandRuntime.init(repository, persistenceLayer)
+        app.aaps.iobaction.LocalCommandRuntime.init(repository, persistenceLayer, valueLeaseCoordinator)
+        // Capability-Matrix A1: SP-Fangnetz (R9-F5) — JEDER externe Write auf die iobTH-
+        // Basis-Preference (Preference-UI, sonstige Writer) bumpt die Basis-Generation;
+        // wertgleiche Schutz-Writes werden damit erkannt. Listener statisch gehalten.
+        iobThBaseListener = android.content.SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+            if (key == app.aaps.core.keys.IntKey.ApsAutoIsfIobThPercent.key) valueLeaseCoordinator.onExternalBaseWrite()
+        }
+        androidx.preference.PreferenceManager.getDefaultSharedPreferences(this).registerOnSharedPreferenceChangeListener(iobThBaseListener)
         ProcessLifecycleOwner.get().lifecycle.addObserver(processLifecycleListener.get())
         // Configure LeakCanary with Firebase reporting
         // Memory leaks will be uploaded to Firebase Crashlytics via FabricPrivacy.logException

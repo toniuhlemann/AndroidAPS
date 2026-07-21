@@ -80,6 +80,7 @@ import app.aaps.plugins.automation.triggers.TriggerInsulinAge
 import app.aaps.plugins.automation.triggers.TriggerIob
 import app.aaps.plugins.automation.triggers.TriggerBgRaw
 import app.aaps.plugins.automation.triggers.TriggerBolusCoverage
+import app.aaps.plugins.automation.triggers.TriggerAutoIsfLeaseActive
 import app.aaps.plugins.automation.triggers.TriggerCoverage
 import app.aaps.plugins.automation.triggers.TriggerIobTH
 import app.aaps.plugins.automation.triggers.TriggerSmbDeliveryRatio
@@ -485,6 +486,7 @@ class AutomationPlugin @Inject constructor(
             triggers.add(TriggerIobTH(injector))
             triggers.add(TriggerSmbDeliveryRatio(injector))
             triggers.add(TriggerCoverage(injector))
+            triggers.add(TriggerAutoIsfLeaseActive(injector))
             triggers.add(TriggerBolusCoverage(injector))
             triggers.add(TriggerBgRaw(injector))
         }

@@ -109,6 +109,7 @@ open class OpenAPSAutoISFPlugin @Inject constructor(
     private val iobCobCalculator: IobCobCalculator,
     private val hardLimits: HardLimits,
     private val preferences: Preferences,
+    private val effectiveAutoIsfSettings: app.aaps.core.interfaces.aps.EffectiveAutoIsfSettingsProvider,
     protected val dateUtil: DateUtil,
     private val processedTbrEbData: ProcessedTbrEbData,
     private val persistenceLayer: PersistenceLayer,
@@ -292,6 +293,10 @@ open class OpenAPSAutoISFPlugin @Inject constructor(
     override fun invoke(initiator: String, tempBasalFallback: Boolean) {
         aapsLogger.debug(LTag.APS, "invoke from $initiator tempBasalFallback: $tempBasalFallback")
         lastAPSResult = null
+        // Capability-Matrix A1 (R9-F3/R11): EIN effektiver Settings-Snapshot pro APS-Lauf,
+        // reiner RAM-Read. Bei OFF/Forced-VO/keiner Lease ist effective == Basis-Preference
+        // (OFF-Diff-Garantie, R11-Grenzen) — dieser Lauf rechnet dann exakt wie vor A1.
+        val effectiveIobThPercent = effectiveAutoIsfSettings.snapshot().iobThPercentEffective
         val glucoseStatus = glucoseStatusProvider.glucoseStatusData
         val profile = profileFunction.getProfile()
         val pump = activePlugin.activePump
@@ -466,7 +471,7 @@ open class OpenAPSAutoISFPlugin @Inject constructor(
             smb_delivery_ratio_bg_range = preferences.get(DoubleKey.ApsAutoIsfSmbDeliveryRatioBgRange),   //smb_delivery_ratio_bg_range was always in mg/dL
             smb_max_range_extension = smbMaxRangeExtension,
             enableSMB_EvenOn_OddOff_always = enableSMB_EvenOn_OddOff_always,
-            iob_threshold_percent = iobThresholdPercent,
+            iob_threshold_percent = effectiveIobThPercent,
             profile_percentage = profile_percentage
         )
         var sensitivityRatio = 1.0
@@ -496,12 +501,12 @@ open class OpenAPSAutoISFPlugin @Inject constructor(
         }
         var iobTH_reduction_ratio = 1.0
         var use_iobTH = false
-        if (iobThresholdPercent != 100) {
+        if (effectiveIobThPercent != 100) {
             iobTH_reduction_ratio = profile_percentage / 100.0 * sensitivityRatio
             use_iobTH = true
         }
         val iobTHtolerance = 130.0
-        val iobTHvirtual = iobThresholdPercent * iobTHtolerance / 10000.0 * oapsProfile.max_iob * iobTH_reduction_ratio
+        val iobTHvirtual = effectiveIobThPercent * iobTHtolerance / 10000.0 * oapsProfile.max_iob * iobTH_reduction_ratio
         // IOB-Action patch 0040 (2026-07-12): the SMB budget gate compares against
         // max(bolusIOB, netIOB) instead of net IOB. Negative basal-IOB (withheld basal from
         // zero-temps) accrues exactly during PROTECTIVE phases and was "freeing up" bolus
@@ -571,7 +576,7 @@ open class OpenAPSAutoISFPlugin @Inject constructor(
             profile_percentage = profile_percentage,
             smb_ratio = smbRatio,
             smb_max_range_extension = smbMaxRangeExtension,
-            iob_threshold_percent = iobThresholdPercent,
+            iob_threshold_percent = effectiveIobThPercent,
             activity_consoleLog = activityLog,
             auto_isf_consoleError = consoleError,
             auto_isf_consoleLog = consoleLog
@@ -1628,7 +1633,9 @@ open class OpenAPSAutoISFPlugin @Inject constructor(
      * ist der Vertrauensakt). Kein Kanal-Kommando kann diese Werte setzen (R2-A4).
      */
     private fun addLocalCommandChannelCategory(parent: PreferenceScreen, context: Context) {
-        val sp = context.getSharedPreferences("local_command_channel", Context.MODE_PRIVATE)
+        // Null-sicher: gemockte Test-Contexte liefern hier null — Kategorie dann ueberspringen
+        // (auf echtem Android nie null; Produktionsverhalten unveraendert).
+        val sp = context.getSharedPreferences("local_command_channel", Context.MODE_PRIVATE) ?: return
         val category = PreferenceCategory(context)
         parent.addPreference(category)
         category.apply {
@@ -1644,7 +1651,9 @@ open class OpenAPSAutoISFPlugin @Inject constructor(
                 }
             addPreference(switchPref("channel_enabled", "Kanal aktiv", "Master-Schalter — AUS lehnt jede Mutation ab (Status bleibt lesbar)"))
             addPreference(switchPref("tt_capability_enabled", "TT-Capability", "erlaubt SET/CANCEL fuer Auto-Executor-TTs (nur mit aktivem Kanal)"))
-            addPreference(switchPref("forced_validate_only", "Validate-only erzwingen", "Kanal validiert nur (VALIDATED), mutiert NIE — Pilotmodus"))
+            // A1 (G3): NUR der implementierte IOBTH-Schalter — WEIGHTS/SMBR erscheinen erst mit B1/B2.
+            addPreference(switchPref("iobth_capability_enabled", "iobTH-Capability (A1)", "erlaubt SET/CLEAR_IOBTH als Wert-Lease (Basis bleibt unangetastet; TTL-begrenzt; nur mit aktivem Kanal)"))
+            addPreference(switchPref("forced_validate_only", "Validate-only erzwingen", "Kanal validiert nur (VALIDATED), mutiert NIE — Pilotmodus (wirkt auf ALLE Capabilities)"))
             addPreference(androidx.preference.Preference(context).apply {
                 title = "Secret generieren & anzeigen"
                 summary = "32-Byte-CSPRNG unter noBackupFilesDir; einmalig anzeigen, im Viewer erfassen. Neu generieren = Rotation (Viewer muss nachziehen)."

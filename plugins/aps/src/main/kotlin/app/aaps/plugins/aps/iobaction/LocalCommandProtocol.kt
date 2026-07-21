@@ -34,8 +34,12 @@ object LocalCommandProtocol {
     const val SENTINEL_TT_DB_ID = 0L
     const val SENTINEL_ENTITY_VERSION = -1
 
-    enum class Cmd { SET_OWNED_TEMP_TARGET, CANCEL_OWNED_TEMP_TARGET, GET_COMMAND_STATUS, GET_SERVICE_STATUS }
+    enum class Cmd { SET_OWNED_TEMP_TARGET, CANCEL_OWNED_TEMP_TARGET, SET_IOBTH, CLEAR_IOBTH, GET_COMMAND_STATUS, GET_SERVICE_STATUS }
     enum class ReasonKey { PEAK_STOP, CORRECTION, REBOUND, BRAKE, MEAL, LOW_PROTECT }
+
+    /** Value-Lease-Sentinel (A1, Variante B analog TT): leaseVersion beginnt bei 1 → 0 ist
+     *  als echte Version unmoeglich und dient als NONE-Sentinel. */
+    const val SENTINEL_LEASE_VERSION = 0L
 
     // Fehler-Codes (abschliessend fuer OFF/Auth; neutral, kein Detail-Leak)
     const val E_MALFORMED = "REJECTED_MALFORMED"
@@ -65,6 +69,12 @@ object LocalCommandProtocol {
         val expectedTtEntityVersion: Int? = null,
         // STATUS
         val queryRequestId: String? = null,
+        // VALUE-LEASE (A1: SET_IOBTH/CLEAR_IOBTH; Prozent/TTL als ganze Zahlen = R8-F7
+        // "skalierte Integer", keine JSON-Doubles in HMAC/Policy/Room)
+        val percent: Int? = null,
+        val ttlMin: Int? = null,
+        val expectedLeaseId: String? = null,
+        val expectedLeaseVersion: Long? = null,
         val canonicalString: String,
     )
 
@@ -126,6 +136,12 @@ object LocalCommandProtocol {
             if (req.targetMgdl!! !in 70..161) return ParseOutcome(null, E_BOUNDS)
             if (req.durationMin!! !in 5..120) return ParseOutcome(null, E_BOUNDS)
         }
+        if (cmd == Cmd.SET_IOBTH) {
+            // Parser-Bounds strukturell (reject-not-clamp); die geschlossene Werteliste
+            // {60,70,80,90} prueft die IOBTH-Policy serverseitig.
+            if (req.percent!! !in 10..100) return ParseOutcome(null, E_BOUNDS)
+            if (req.ttlMin!! !in LocalCommandIobthPolicy.TTL_MIN..LocalCommandIobthPolicy.TTL_MAX) return ParseOutcome(null, E_BOUNDS)
+        }
         if (secret == null || secret.isEmpty()) return ParseOutcome(null, E_AUTH_NOT_CONFIGURED)
         val expected = hmacHex(secret, req.canonicalString)
         if (!MessageDigest.isEqual(expected.toByteArray(Charsets.US_ASCII), hmacHex.toByteArray(Charsets.US_ASCII)))
@@ -186,6 +202,46 @@ object LocalCommandProtocol {
                     canonicalString = "",
                 ))
             }
+            Cmd.SET_IOBTH -> {
+                // A1 Variante B analog TT-SET: ALLE 6 Felder immer Pflicht; NONE verlangt
+                // exakt das Sentinel-Paar, OWNED echte Werte. clientPolicyHash = IOBTH-Policy.
+                if (!keysExactly("percent", "ttlMin", "validateOnly", "clientPolicyHash", "expectedState", "expectedLeaseId", "expectedLeaseVersion")) return null
+                val state = asString(p, "expectedState") ?: return null
+                val hash = asString(p, "clientPolicyHash")?.takeIf { HEX64.matches(it) } ?: return null
+                val percent = asInt(p, "percent") ?: return null
+                val ttl = asInt(p, "ttlMin") ?: return null
+                val validateOnly = asBool(p, "validateOnly") ?: return null
+                val leaseId = asString(p, "expectedLeaseId")?.takeIf { HEX32.matches(it) } ?: return null
+                val leaseVer = asLong(p, "expectedLeaseVersion") ?: return null
+                val consistent = when (state) {
+                    "NONE" -> leaseId == SENTINEL_REQUEST_ID && leaseVer == SENTINEL_LEASE_VERSION
+                    "OWNED" -> leaseId != SENTINEL_REQUEST_ID && leaseVer >= 1L
+                    else -> false
+                }
+                if (!consistent) return null
+                build(cmd, requestId, issuedAt, expiresAt, Request(
+                    cmd, requestId, issuedAt, expiresAt, validateOnly,
+                    clientPolicyHash = hash, expectedState = state,
+                    percent = percent, ttlMin = ttl,
+                    expectedLeaseId = leaseId, expectedLeaseVersion = leaseVer,
+                    canonicalString = "",
+                ))
+            }
+            Cmd.CLEAR_IOBTH -> {
+                // Analog TT-CANCEL: expectedOwnerPolicyHash = Hash der LEASE-ERSTELLUNG
+                // (R11/F5: Policy-Upgrade blockiert das Beenden nie).
+                if (!keysExactly("validateOnly", "expectedOwnerPolicyHash", "expectedLeaseId", "expectedLeaseVersion")) return null
+                val validateOnly = asBool(p, "validateOnly") ?: return null
+                val ownerHash = asString(p, "expectedOwnerPolicyHash")?.takeIf { HEX64.matches(it) } ?: return null
+                val leaseId = asString(p, "expectedLeaseId")?.takeIf { HEX32.matches(it) && it != SENTINEL_REQUEST_ID } ?: return null
+                val leaseVer = asLong(p, "expectedLeaseVersion")?.takeIf { it >= 1L } ?: return null
+                build(cmd, requestId, issuedAt, expiresAt, Request(
+                    cmd, requestId, issuedAt, expiresAt, validateOnly,
+                    expectedOwnerPolicyHash = ownerHash,
+                    expectedLeaseId = leaseId, expectedLeaseVersion = leaseVer,
+                    canonicalString = "",
+                ))
+            }
             Cmd.GET_COMMAND_STATUS -> {
                 if (!keysExactly("queryRequestId")) return null
                 // R5-F1: der Sentinel ist per Definition nie eine persistierte echte Request-ID.
@@ -231,6 +287,17 @@ object LocalCommandProtocol {
                 putS("expectedOwnerRequestId", r.expectedOwnerRequestId!!)
                 putI("expectedTtDbId", r.expectedTtDbId!!); putI("expectedTtEntityVersion", r.expectedTtEntityVersion!!.toLong())
             }
+            Cmd.SET_IOBTH -> {
+                putI("percent", r.percent!!.toLong()); putI("ttlMin", r.ttlMin!!.toLong())
+                putB("validateOnly", r.validateOnly)
+                putS("clientPolicyHash", r.clientPolicyHash!!); putS("expectedState", r.expectedState!!)
+                putS("expectedLeaseId", r.expectedLeaseId!!); putI("expectedLeaseVersion", r.expectedLeaseVersion!!)
+            }
+            Cmd.CLEAR_IOBTH -> {
+                putB("validateOnly", r.validateOnly)
+                putS("expectedOwnerPolicyHash", r.expectedOwnerPolicyHash!!)
+                putS("expectedLeaseId", r.expectedLeaseId!!); putI("expectedLeaseVersion", r.expectedLeaseVersion!!)
+            }
             Cmd.GET_COMMAND_STATUS -> putS("queryRequestId", r.queryRequestId!!)
             Cmd.GET_SERVICE_STATUS -> {}
         }
@@ -247,7 +314,8 @@ object LocalCommandProtocol {
     }
 
     // ---- Gate-Prioritaet (v1.2-A4 + R3-A4): Schalter reduzieren nur, nie erzeugen. ----
-    data class GateConfig(val channelEnabled: Boolean, val ttCapabilityEnabled: Boolean, val forcedValidateOnly: Boolean)
+    // A1: iobthCapabilityEnabled default false — bestehende Aufrufer/Vektoren unveraendert (G3).
+    data class GateConfig(val channelEnabled: Boolean, val ttCapabilityEnabled: Boolean, val forcedValidateOnly: Boolean, val iobthCapabilityEnabled: Boolean = false)
 
     /** R5-F5: expliziter Ausfuehrungsmodus statt "null = irgendwie erlaubt" — der spaetere
      *  Pilot-Bau kann validateOnly damit strukturell nicht uebersehen. */
@@ -271,6 +339,14 @@ object LocalCommandProtocol {
             !cfg.ttCapabilityEnabled -> GateResult.Reject(E_CAPABILITY_DISABLED)
             // Build-Wachposten: in einem Build ohne Mutationszweig (historischer OFF/Auth-
             // Stand) enden auch validateOnly-Pfade hier; im Pilot-Build immer durchlaessig.
+            !MUTATION_BUILD_PRESENT -> GateResult.Reject(E_MUTATION_UNAVAILABLE)
+            cfg.forcedValidateOnly || req.validateOnly -> GateResult.ValidateOnly
+            else -> GateResult.Apply
+        }
+        // A1: eigener Capability-Schalter je Wert-Hebel (Matrix-Prinzip); sonst identische Semantik.
+        Cmd.SET_IOBTH, Cmd.CLEAR_IOBTH -> when {
+            !cfg.channelEnabled -> GateResult.Reject(E_CHANNEL_DISABLED)
+            !cfg.iobthCapabilityEnabled -> GateResult.Reject(E_CAPABILITY_DISABLED)
             !MUTATION_BUILD_PRESENT -> GateResult.Reject(E_MUTATION_UNAVAILABLE)
             cfg.forcedValidateOnly || req.validateOnly -> GateResult.ValidateOnly
             else -> GateResult.Apply

@@ -26,6 +26,9 @@ object LocalCommandServiceCore {
         /** Status-Anreicherung (read-only DB): aktive Ownership-Tokens bzw. Outcome-Lookup. */
         val ownedTtProvider: (() -> Map<String, Any>?)? = null,
         val outcomeProvider: ((String) -> Map<String, Any>?)? = null,
+        /** A1: IOBTH-Capability-Status (Policy-Hash + Lease-Zustand aus dem EINEN
+         *  Provider-Snapshot — R11: nie eine zweite Wahrheit). null = Feature nicht verdrahtet. */
+        val iobthStatusProvider: (() -> Map<String, Any>)? = null,
     )
 
     /** Rohwerte direkt aus dem Bundle (Any? — Typpruefung passiert HIER, nie im Glue). */
@@ -57,7 +60,9 @@ object LocalCommandServiceCore {
                         "databaseSchemaReady" to (env.ownedTtProvider != null),
                         "serviceInstanceId" to env.serviceInstanceId,
                         "startedAt" to env.startedAt,
-                    ) + (owned?.let { mapOf("ownedTt" to "OWNED") + it } ?: mapOf("ownedTt" to "NONE"))
+                        "iobthCapabilityEnabled" to env.gates.iobthCapabilityEnabled,
+                    ) + (owned?.let { mapOf("ownedTt" to "OWNED") + it } ?: mapOf("ownedTt" to "NONE")) +
+                        (env.iobthStatusProvider?.invoke() ?: emptyMap())
                 }
                 LocalCommandProtocol.Cmd.GET_COMMAND_STATUS -> {
                     val original = env.outcomeProvider?.invoke(req.queryRequestId!!)

@@ -192,4 +192,71 @@ class LocalCommandProtocolTest {
         assertThat(LocalCommandAuth.decide(listOf(pkg(viewer, trusted, evil)), listOf(trusted))).isFalse()
         assertThat(LocalCommandAuth.decide(listOf(pkg(viewer)), listOf(trusted))).isFalse()
     }
+
+    // ---- Capability-Matrix A1: SET_IOBTH/CLEAR_IOBTH + eigene IOBTH-Policy (R8-F7) ----
+
+    private fun setIobthParams(
+        percent: Int = 80, ttl: Int = 60, validateOnly: Boolean = false,
+        state: String = "NONE", leaseId: String = sentinel, leaseVer: Long = 0L,
+    ): String =
+        """{"percent":$percent,"ttlMin":$ttl,"validateOnly":$validateOnly,"clientPolicyHash":"$policyHash",""" +
+            """"expectedState":"$state","expectedLeaseId":"$leaseId","expectedLeaseVersion":$leaseVer}"""
+
+    @Test fun iobthPolicyPinned() {
+        assertThat(LocalCommandIobthPolicy.canonical()).isEqualTo("""["IOBTH",[60,70,80,90],[30,720,1]]""")
+        assertThat(LocalCommandIobthPolicy.hash())
+            .isEqualTo("80b5930109b2b12888e103fd54baf93b6a861be929ac0f8ef31683dfa8c89eba")
+        assertThat(LocalCommandIobthPolicy.isAllowed(80, 30)).isTrue()
+        assertThat(LocalCommandIobthPolicy.isAllowed(80, 720)).isTrue()
+        assertThat(LocalCommandIobthPolicy.isAllowed(65, 60)).isFalse()   // geschlossene Liste
+        assertThat(LocalCommandIobthPolicy.isAllowed(80, 29)).isFalse()
+        assertThat(LocalCommandIobthPolicy.isAllowed(80, 721)).isFalse()
+    }
+
+    @Test fun setIobthParsesCanonicalizesAndBounds() {
+        // Kanonik literal gepinnt (sortierte Schluessel) + HMAC-Roundtrip aus dem typisierten Objekt.
+        val canonParams = """{"clientPolicyHash":"$policyHash","expectedLeaseId":"$sentinel","expectedLeaseVersion":0,""" +
+            """"expectedState":"NONE","percent":80,"ttlMin":60,"validateOnly":false}"""
+        val canonical = LocalCommandProtocol.canonicalString("SET_IOBTH", canonParams, t0, t1, rid)
+        val hmac = LocalCommandProtocol.hmacHex(secret, canonical)
+        val out = LocalCommandProtocol.parseAndVerify(root("SET_IOBTH", setIobthParams()), hmac, secret, t0 + 1000)
+        assertThat(out.errorCode).isNull()
+        val req = out.request!!
+        assertThat(req.percent).isEqualTo(80)
+        assertThat(req.ttlMin).isEqualTo(60)
+        assertThat(req.expectedState).isEqualTo("NONE")
+        assertThat(req.canonicalString).isEqualTo(canonical)
+        // Variante-B-Konsistenz: NONE mit echten Lease-Tokens bzw. OWNED mit Sentinels → MALFORMED.
+        fun rejected(params: String, expected: String) {
+            val r = LocalCommandProtocol.parseAndVerify(root("SET_IOBTH", params), hmac, secret, t0 + 1000)
+            assertThat(r.errorCode).isEqualTo(expected)
+        }
+        rejected(setIobthParams(leaseId = ownerId), LocalCommandProtocol.E_MALFORMED)
+        rejected(setIobthParams(state = "OWNED"), LocalCommandProtocol.E_MALFORMED)
+        rejected(setIobthParams(percent = 101), LocalCommandProtocol.E_BOUNDS)
+        rejected(setIobthParams(percent = 9), LocalCommandProtocol.E_BOUNDS)
+        rejected(setIobthParams(ttl = 29), LocalCommandProtocol.E_BOUNDS)
+        rejected(setIobthParams(ttl = 721), LocalCommandProtocol.E_BOUNDS)
+    }
+
+    @Test fun clearIobthParsesAndValueGateMatrix() {
+        val clearParams = """{"validateOnly":false,"expectedOwnerPolicyHash":"$ownerPolicyHash",""" +
+            """"expectedLeaseId":"$ownerId","expectedLeaseVersion":3}"""
+        val canonParams = """{"expectedLeaseId":"$ownerId","expectedLeaseVersion":3,""" +
+            """"expectedOwnerPolicyHash":"$ownerPolicyHash","validateOnly":false}"""
+        val hmac = LocalCommandProtocol.hmacHex(secret, LocalCommandProtocol.canonicalString("CLEAR_IOBTH", canonParams, t0, t1, rid))
+        val out = LocalCommandProtocol.parseAndVerify(root("CLEAR_IOBTH", clearParams), hmac, secret, t0 + 1000)
+        assertThat(out.errorCode).isNull()
+        val req = out.request!!
+        assertThat(req.expectedLeaseVersion).isEqualTo(3L)
+        // Gate-Matrix: eigener IOBTH-Schalter; TT-Capability ist fuer Wert-Kommandos irrelevant.
+        fun cfg(ch: Boolean, iobth: Boolean, vo: Boolean = false) =
+            LocalCommandProtocol.GateConfig(channelEnabled = ch, ttCapabilityEnabled = false, forcedValidateOnly = vo, iobthCapabilityEnabled = iobth)
+        assertThat(LocalCommandProtocol.gate(cfg(false, true), req))
+            .isEqualTo(LocalCommandProtocol.GateResult.Reject(LocalCommandProtocol.E_CHANNEL_DISABLED))
+        assertThat(LocalCommandProtocol.gate(cfg(true, false), req))
+            .isEqualTo(LocalCommandProtocol.GateResult.Reject(LocalCommandProtocol.E_CAPABILITY_DISABLED))
+        assertThat(LocalCommandProtocol.gate(cfg(true, true, vo = true), req)).isEqualTo(LocalCommandProtocol.GateResult.ValidateOnly)
+        assertThat(LocalCommandProtocol.gate(cfg(true, true), req)).isEqualTo(LocalCommandProtocol.GateResult.Apply)
+    }
 }
