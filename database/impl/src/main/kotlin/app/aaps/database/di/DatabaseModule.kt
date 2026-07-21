@@ -37,6 +37,7 @@ open class DatabaseModule {
                 override fun onOpen(db: SupportSQLiteDatabase) {
                     super.onOpen(db)
                     createCustomIndexes(db)
+                    createValueLeaseGuards(db)
                 }
             })
             .fallbackToDestructiveMigration(false)
@@ -44,6 +45,26 @@ open class DatabaseModule {
 
     @Qualifier
     annotation class DbFileName
+
+    /**
+     * R11-P2: activeSlot-Domaenen-Invariante DB-seitig erzwingen — NUR NULL oder 1 ist
+     * zulaessig. Der Unique-Index (capability, activeSlot) allein liesse (IOBTH,1)+(IOBTH,2)
+     * gleichzeitig zu; diese Trigger machen zwei aktive Zeilen auch gegen Raw-SQL/
+     * Fehlimplementierung unmoeglich. Laeuft IDENTISCH auf Migration (33→34) und Fresh-DB
+     * (onOpen, IF NOT EXISTS — Room-Schemavalidierung liest keine Trigger).
+     */
+    internal fun createValueLeaseGuards(database: SupportSQLiteDatabase) {
+        database.execSQL(
+            "CREATE TRIGGER IF NOT EXISTS `lcvl_activeSlot_insert_guard` BEFORE INSERT ON `localCommandValueLease` " +
+                "WHEN NEW.activeSlot IS NOT NULL AND NEW.activeSlot != 1 " +
+                "BEGIN SELECT RAISE(ABORT, 'activeSlot must be NULL or 1'); END"
+        )
+        database.execSQL(
+            "CREATE TRIGGER IF NOT EXISTS `lcvl_activeSlot_update_guard` BEFORE UPDATE ON `localCommandValueLease` " +
+                "WHEN NEW.activeSlot IS NOT NULL AND NEW.activeSlot != 1 " +
+                "BEGIN SELECT RAISE(ABORT, 'activeSlot must be NULL or 1'); END"
+        )
+    }
 
     private fun createCustomIndexes(database: SupportSQLiteDatabase) {
         database.execSQL("CREATE INDEX IF NOT EXISTS `index_temporaryBasals_end` ON `temporaryBasals` (`timestamp` + `duration`)")
@@ -252,6 +273,7 @@ open class DatabaseModule {
             db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS `index_localCommandValueLease_capability_activeSlot` ON `localCommandValueLease` (`capability`, `activeSlot`)")
             db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS `index_localCommandValueLease_capability_leaseVersion` ON `localCommandValueLease` (`capability`, `leaseVersion`)")
             db.execSQL("CREATE INDEX IF NOT EXISTS `index_localCommandValueLease_terminatedAt` ON `localCommandValueLease` (`terminatedAt`)")
+            createValueLeaseGuards(db)   // R11-P2: identisch zum Fresh-DB-Pfad (onOpen)
             dropCustomIndexes(db)
         }
     }
