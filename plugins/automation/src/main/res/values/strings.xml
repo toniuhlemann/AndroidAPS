@@ -167,6 +167,9 @@
     <string name="autoisf_smb_delivery_ratio">SMB delivery ratio (fixed)</string>
     <string name="automate_set_smb_delivery_ratio">Set smb_delivery_ratio (fixed) to %1$.2f</string>
     <string name="smbdeliveryratiocompared">SMB delivery ratio (fixed) %1$s %2$.2f</string>
+    <string name="autoisf_iobth_lease">Local iobTH lease</string>
+    <string name="iobth_lease_invalidation_failed">iobTH write blocked: local lease invalidation failed</string>
+    <string name="iobthleasecompared">Local iobTH lease %1$s</string>
     <string name="autoisf_coverage">Insulin coverage</string>
     <string name="coveragecompared">Insulin coverage %1$s %2$.0f%%</string>
     <string name="autoisf_bolus_coverage">Bolus coverage</string>

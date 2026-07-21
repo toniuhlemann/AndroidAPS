@@ -17,10 +17,5 @@ package app.aaps.core.interfaces.aps
  */
 interface AutoIsfValueLeaseInvalidator {
 
-    fun invalidateBeforeExternalWrite(capability: String, reason: String): Boolean
-
-    companion object {
-
-        const val CAPABILITY_IOBTH = "IOBTH"
-    }
+    fun invalidateBeforeExternalWrite(capability: AutoIsfCapability, reason: String): Boolean
 }

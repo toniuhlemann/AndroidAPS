@@ -30,8 +30,8 @@ class ExecuteLocalTtCommandTransactionTest {
     private val rid2 = "2".repeat(32)
     private val hash1 = "aa".repeat(32)
 
-    // ---- Stateful Fakes ----
-    private class FakeLocalDao : LocalCommandDao {
+    // ---- Stateful Fakes (auch von ExecuteValueLeaseCommandTransactionTest genutzt) ----
+    class FakeLocalDao : LocalCommandDao {
         val outcomes = mutableListOf<LocalCommandOutcome>()
         val ownerships = mutableListOf<LocalCommandOwnership>()
         private var nextId = 1L
