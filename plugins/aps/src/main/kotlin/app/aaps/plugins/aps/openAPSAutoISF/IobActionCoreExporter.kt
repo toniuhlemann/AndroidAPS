@@ -117,8 +117,12 @@ object IobActionCoreExporter {
                     // Sektion, klar bezeichnet); effektiver Wert + Zustand kommen getrennt dazu.
                     put("iob_threshold_percent", preferences.get(IntKey.ApsAutoIsfIobThPercent))
                     effectiveAutoIsfSettings?.snapshot()?.let { snap ->
+                        put("iob_threshold_percent_base", snap.iobThPercentBase)
                         put("iob_threshold_percent_effective", snap.iobThPercentEffective)
                         put("iobth_override_state", snap.overrideState.name)
+                        snap.leaseId?.let { put("iobth_lease_id", it) }
+                        snap.leaseVersion?.let { put("iobth_lease_version", it) }
+                        snap.expiresAtWallMs?.let { put("iobth_lease_expires_at", it) }
                     }
                     put("bgAccel_ISF_weight", preferences.get(DoubleKey.ApsAutoIsfBgAccelWeight))
                     put("pp_ISF_weight", preferences.get(DoubleKey.ApsAutoIsfPpWeight))

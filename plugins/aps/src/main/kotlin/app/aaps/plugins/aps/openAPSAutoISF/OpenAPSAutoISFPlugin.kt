@@ -746,11 +746,15 @@ open class OpenAPSAutoISFPlugin @Inject constructor(
                     put("max_bg", oapsProfile.max_bg)
                     put("carb_ratio", oapsProfile.carb_ratio)
                     put("profile_percentage", profile_percentage)
-                    // R12-F3: WIRKSAMER Wert (der Lauf hat exakt damit gerechnet) + Basis +
-                    // Override-Zustand unverwechselbar getrennt — eine Wahrheit pro Zyklus.
-                    put("iob_threshold_percent", effectiveIobThPercent)
+                    // R13-F3 kanonisches Schema (State==Core): Legacy-Feld traegt in BEIDEN
+                    // Dateien die BASIS (Viewer-Kompatibilitaet); effective/state/lease getrennt.
+                    put("iob_threshold_percent", autoIsfSettingsSnapshot.iobThPercentBase)
                     put("iob_threshold_percent_base", autoIsfSettingsSnapshot.iobThPercentBase)
+                    put("iob_threshold_percent_effective", effectiveIobThPercent)
                     put("iobth_override_state", autoIsfSettingsSnapshot.overrideState.name)
+                    autoIsfSettingsSnapshot.leaseId?.let { put("iobth_lease_id", it) }
+                    autoIsfSettingsSnapshot.leaseVersion?.let { put("iobth_lease_version", it) }
+                    autoIsfSettingsSnapshot.expiresAtWallMs?.let { put("iobth_lease_expires_at", it) }
                     put("name", profileFunction.getProfileName())
                     put("name_remaining", profileFunction.getProfileNameWithRemainingTime())
                     put("enable_autoISF", autoIsfWeights)
@@ -1655,10 +1659,18 @@ open class OpenAPSAutoISFPlugin @Inject constructor(
                     title = titleText; summary = summaryText
                     isChecked = sp.getBoolean(prefKey, false)
                     setOnPreferenceChangeListener { _, v ->
-                        sp.edit().putBoolean(prefKey, v as Boolean).apply()
-                        // R12-F2: synchroner Gate-Writer-Pfad — Transition wird SOFORT beobachtet
-                        // (gateGeneration bumpt vor dem naechsten Snapshot); SP-Listener = Fangnetz.
-                        runCatching { effectiveAutoIsfSettings.let { p -> (p as? app.aaps.plugins.aps.iobaction.AutoIsfValueLeaseCoordinator)?.onGateWrite() } }
+                        val newValue = v as Boolean
+                        // R13-F1: Coordinator-Lock VOR dem SP-Write — Gate-Write und Command-
+                        // Publish sind damit echt linearisiert; eine bestehende Lease wird bei
+                        // unsicherer Transition JETZT revoked, bevor der Wert ueberhaupt steht.
+                        runCatching {
+                            (effectiveAutoIsfSettings as? app.aaps.plugins.aps.iobaction.AutoIsfValueLeaseCoordinator)?.beforeGateWrite(
+                                newChannel = if (prefKey == "channel_enabled") newValue else null,
+                                newIobth = if (prefKey == "iobth_capability_enabled") newValue else null,
+                                newForcedVo = if (prefKey == "forced_validate_only") newValue else null,
+                            )
+                        }
+                        sp.edit().putBoolean(prefKey, newValue).apply()
                         true
                     }
                 }

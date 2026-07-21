@@ -180,12 +180,14 @@ class AutoIsfValueLeaseCoordinatorTest {
         assertThat(c.drainPendingTerminals().single().reason).isEqualTo("DISABLED")
     }
 
-    // (16) R12-F2: dasselbe fuer ForcedVO AN→AUS zwischen Snapshots.
-    @Test fun forcedVoOnOffBetweenSnapshots_revokesForever() {
+    // (16) R12-F2 + R13-F4: ForcedVO AN→AUS zwischen Snapshots — dauerhaft revoked UND
+    //      mit dem EHRLICHEN Grund VO_FORCED (nicht pauschal DISABLED).
+    @Test fun forcedVoOnOffBetweenSnapshots_revokesForeverWithHonestReason() {
         armSet()
         gates = gates.copy(forcedValidateOnly = true); c.onGateWrite()
         gates = gates.copy(forcedValidateOnly = false); c.onGateWrite()
-        assertThat(c.snapshot().overrideState).isEqualTo(AutoIsfOverrideState.DISABLED)
+        assertThat(c.snapshot().overrideState).isEqualTo(AutoIsfOverrideState.VO_FORCED)
+        assertThat(c.drainPendingTerminals().single().reason).isEqualTo("VO_FORCED")
     }
 
     // (17) R12-F2 Pflichttest: Gate-Wechsel WAEHREND des Room-Commits → historisch APPLIED,
@@ -222,5 +224,41 @@ class AutoIsfValueLeaseCoordinatorTest {
         c.invalidateBeforeExternalWrite(AutoIsfCapability.IOBTH, "w2")
         val pts = c.drainPendingTerminals()
         assertThat(pts.map { it.leaseId }).containsExactly("lease-1", "lease-2").inOrder()
+    }
+
+    // (20) R13-F1: beforeGateWrite revoked VOR dem SP-Write — unter dem Coordinator-Lock,
+    //      identitaetsgebunden, mit ehrlichem Grund; sichere Transitionen sind No-ops.
+    @Test fun beforeGateWriteRevokesUnderLockBeforeWrite() {
+        armSet()
+        c.beforeGateWrite(newIobth = false)                          // unsichere Transition angekuendigt
+        // Der SP-Wert ist noch UNVERAENDERT (gates weiterhin an) — trotzdem ist die Lease weg:
+        assertThat(c.snapshot().overrideState).isEqualTo(AutoIsfOverrideState.DISABLED)
+        assertThat(c.snapshot().iobThPercentEffective).isEqualTo(50)
+        val pt = c.drainPendingTerminals().single()
+        assertThat(pt.leaseId).isEqualTo("lease-1")
+        // Sichere Transition (AN→AN): kein Revoke.
+        val r2 = c.executeArmedSet(70, 60) { roomApplied(id = "lease-2", version = 2) }
+        assertThat(r2.currentLeaseState).isEqualTo(AutoIsfOverrideState.ACTIVE)
+        c.beforeGateWrite(newChannel = true)
+        assertThat(c.snapshot().overrideState).isEqualTo(AutoIsfOverrideState.ACTIVE)
+    }
+
+    // (21) R13-F1: VO-Ankuendigung via beforeGateWrite traegt den VO_FORCED-Grund.
+    @Test fun beforeGateWriteVoCarriesHonestReason() {
+        armSet()
+        c.beforeGateWrite(newForcedVo = true)
+        assertThat(c.snapshot().overrideState).isEqualTo(AutoIsfOverrideState.VO_FORCED)
+    }
+
+    // (22) R13-F2: peek/ack — ein fehlgeschlagener Terminalisierungsversuch verliert nichts.
+    @Test fun peekAckLosesNothingOnFailure() {
+        armSet()
+        c.invalidateBeforeExternalWrite(AutoIsfCapability.IOBTH, "w")
+        val pt = c.peekPendingTerminal()!!
+        // "Versuch schlaegt fehl" = kein ack → Auftrag liegt weiter vorn:
+        assertThat(c.peekPendingTerminal()).isEqualTo(pt)
+        // Erfolgreicher zweiter Versuch → ack raeumt genau diesen Auftrag:
+        c.ackPendingTerminal(pt)
+        assertThat(c.peekPendingTerminal()).isNull()
     }
 }
