@@ -54,6 +54,14 @@ class Migration33to34Test {
         db.query("SELECT COUNT(*) FROM localCommandValueLease WHERE capability='IOBTH' AND activeSlot IS NOT NULL").use { c ->
             c.moveToFirst(); Assert.assertEquals(1, c.getInt(0))
         }
+        // R11-P2: Domaenen-Guard — activeSlot darf NUR NULL oder 1 sein. Ohne die Trigger
+        // waeren (IOBTH,1)+(IOBTH,2) gleichzeitig aktiv (Unique-Index prueft nur GLEICHE Slots).
+        Assert.assertThrows(SQLiteConstraintException::class.java) {
+            db.execSQL(leaseInsertSql("IOBTH", 9, "2"))
+        }
+        Assert.assertThrows(SQLiteConstraintException::class.java) {
+            db.execSQL("UPDATE localCommandValueLease SET activeSlot = 2 WHERE leaseVersion = 1")
+        }
     }
 
     private fun indexNames(db: SupportSQLiteDatabase): Set<String> {
@@ -91,6 +99,9 @@ class Migration33to34Test {
         val fresh = Room.inMemoryDatabaseBuilder(ApplicationProvider.getApplicationContext(), AppDatabase::class.java).build()
         try {
             fresh.openHelper.writableDatabase.let { fdb ->
+                // Fresh-Pfad erhaelt die Guards wie in Produktion via onOpen (hier explizit,
+                // weil der Test-Builder den DatabaseModule-Callback nicht durchlaeuft).
+                DatabaseModule().createValueLeaseGuards(fdb)
                 Assert.assertEquals(migratedIndexes, indexNames(fdb))
                 assertInvariants(fdb)
             }
