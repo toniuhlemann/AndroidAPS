@@ -189,9 +189,11 @@ class LocalCommandService : Service() {
             "protocolVersion" to LocalCommandProtocol.PROTOCOL_VERSION, "outcome" to "REJECTED",
             "replayed" to false, "errorCode" to LocalCommandProtocol.E_MUTATION_UNAVAILABLE)
         val now = System.currentTimeMillis()
-        // Nachlaufende Terminalisierung eines RAM-Widerrufs (Gate-/TTL-/Invalidator-Latch).
-        coordinator.consumePendingRoomTerminal()?.let { reason -> runCatching {
-            repo.runTransactionForResult(app.aaps.database.transactions.TerminalizeValueLeaseTransaction("IOBTH", reason, now)).blockingGet()
+        // Nachlaufende Terminalisierung von RAM-Widerrufen — IDENTITAETSGEBUNDEN (R12-F1):
+        // jeder Auftrag traegt leaseId+Version und kann per CAS nie einen Nachfolger treffen.
+        coordinator.drainPendingTerminals().forEach { pt -> runCatching {
+            repo.runTransactionForResult(app.aaps.database.transactions.TerminalizeValueLeaseTransaction(
+                pt.capability, pt.reason, now, pt.leaseId, pt.leaseVersion)).blockingGet()
         } }
         // Statische Policy-Vorpruefung (nur SET; CLEAR prueft den ERSTELLUNGS-Hash in der txn).
         val policyError = if (req.cmd == LocalCommandProtocol.Cmd.SET_IOBTH) when {
@@ -217,8 +219,24 @@ class LocalCommandService : Service() {
                 expectedLeaseId = req.expectedLeaseId, expectedLeaseVersion = req.expectedLeaseVersion,
                 expectedOwnerPolicyHash = req.expectedOwnerPolicyHash, policyErrorCode = policyError,
             )
-            val r = repo.runTransactionForResult(tx).blockingGet()
-            return AutoIsfValueLeaseCoordinator.RoomSetResult(r.outcome, r.errorCode, r.replayed, r.resultJson, r.leaseId, r.leaseVersion)
+            val r = try {
+                repo.runTransactionForResult(tx).blockingGet()
+            } catch (_: app.aaps.database.transactions.ExecuteValueLeaseCommandTransaction.ValueLeaseConflictException) {
+                // R12-F6: Mutations-Txn blieb mutationsneutral — terminales Reject SEPARAT
+                // und idempotent persistieren, dann deterministisch melden.
+                runCatching {
+                    repo.runTransactionForResult(app.aaps.database.transactions.PersistValueLeaseRejectTransaction(
+                        if (req.cmd == LocalCommandProtocol.Cmd.SET_IOBTH) "SET" else "CLEAR", "IOBTH",
+                        req.requestId, requestHash, "REJECTED_STATE_CONFLICT", now)).blockingGet()
+                }
+                return AutoIsfValueLeaseCoordinator.RoomSetResult("REJECTED", "REJECTED_STATE_CONFLICT", false, null, null, null)
+            }
+            // R12-F5: die TATSAECHLICH persistierten Herkunftswerte an den Publish geben.
+            val basePercentUsed = r.basePayloadUsed?.let { bp -> Regex("-?\\d+").find(bp)?.value?.toIntOrNull() }
+            return AutoIsfValueLeaseCoordinator.RoomSetResult(
+                r.outcome, r.errorCode, r.replayed, r.resultJson, r.leaseId, r.leaseVersion,
+                basePercentUsed = basePercentUsed, baseGenerationUsed = r.baseGenerationUsed, gateGenerationUsed = r.gateGenerationUsed,
+            )
         }
 
         val (room, leaseState) = if (validateOnly) {
@@ -284,6 +302,9 @@ class LocalCommandService : Service() {
         r.queriedOutcome?.let { o ->
             buildMap<String, Any> {
                 put("originalOutcome", o.outcome)
+                // R12-F4: das historische commandResult MUSS auch ueber die Lost-ACK-
+                // Recovery bytegleich verfuegbar sein (Replay == Status).
+                o.resultJson?.let { put("commandResult", it) }
                 o.errorCode?.let { put("originalErrorCode", it) }
                 o.appliedAt?.let { put("originalAppliedAt", it) }
                 o.ttDbId?.let { put("originalTtDbId", it) }

@@ -62,7 +62,11 @@ class AutoIsfValueLeaseCoordinatorTest {
         gates = gates.copy(iobthCapabilityEnabled = true)          // Re-enable VOR jedem Cleanup
         assertThat(c.snapshot().overrideState).isEqualTo(AutoIsfOverrideState.DISABLED)
         assertThat(c.snapshot().iobThPercentEffective).isEqualTo(50)
-        assertThat(c.consumePendingRoomTerminal()).isEqualTo("DISABLED")
+        // R12-F1: Pending ist IDENTITAETSGEBUNDEN — exakt diese Lease, nie nur ein String.
+        val pt = c.drainPendingTerminals().single()
+        assertThat(pt.leaseId).isEqualTo("lease-1")
+        assertThat(pt.leaseVersion).isEqualTo(1L)
+        assertThat(pt.reason).isEqualTo("DISABLED")
     }
 
     // (4) R9: ForcedVO AN wirkt als Kill-Switch mit eigenem Terminalgrund und latcht ebenso.
@@ -117,7 +121,9 @@ class AutoIsfValueLeaseCoordinatorTest {
         assertThat(r.room.outcome).isEqualTo("APPLIED")                  // Historie unveraendert
         assertThat(r.currentLeaseState).isEqualTo(AutoIsfOverrideState.FOREIGN_MODIFIED)
         assertThat(c.snapshot().iobThPercentEffective).isEqualTo(40)
-        assertThat(c.consumePendingRoomTerminal()).isEqualTo("FOREIGN_MODIFIED")
+        val pt = c.drainPendingTerminals().single()
+        assertThat(pt.reason).isEqualTo("FOREIGN_MODIFIED")
+        assertThat(pt.leaseId).isEqualTo("lease-1")
     }
 
     // (10) Writer-Invalidator: aktive Lease wird VOR dem naechsten Snapshot widerrufen; true.
@@ -161,5 +167,60 @@ class AutoIsfValueLeaseCoordinatorTest {
         assertThrows(ArithmeticException::class.java) {
             c.executeArmedSet(80, 60) { roomApplied() }
         }
+    }
+
+    // (15) R12-F2 Pflichttest: Gate AUS→AN ZWISCHEN zwei Snapshots (nur der Writer-Pfad
+    //      hat es gesehen) → gateGeneration verraet es, Lease dauerhaft DISABLED.
+    @Test fun gateOffOnBetweenSnapshots_revokesForever() {
+        armSet()
+        gates = gates.copy(channelEnabled = false); c.onGateWrite()
+        gates = gates.copy(channelEnabled = true); c.onGateWrite()   // AN, bevor je ein Snapshot lief
+        assertThat(c.snapshot().overrideState).isEqualTo(AutoIsfOverrideState.DISABLED)
+        assertThat(c.snapshot().iobThPercentEffective).isEqualTo(50)
+        assertThat(c.drainPendingTerminals().single().reason).isEqualTo("DISABLED")
+    }
+
+    // (16) R12-F2: dasselbe fuer ForcedVO AN→AUS zwischen Snapshots.
+    @Test fun forcedVoOnOffBetweenSnapshots_revokesForever() {
+        armSet()
+        gates = gates.copy(forcedValidateOnly = true); c.onGateWrite()
+        gates = gates.copy(forcedValidateOnly = false); c.onGateWrite()
+        assertThat(c.snapshot().overrideState).isEqualTo(AutoIsfOverrideState.DISABLED)
+    }
+
+    // (17) R12-F2 Pflichttest: Gate-Wechsel WAEHREND des Room-Commits → historisch APPLIED,
+    //      aber NIEMALS ACTIVE publiziert (revoked + identitaetsgebundener Pending).
+    @Test fun gateChangesDuringRoomCommit_ackAppliedButRevoked() {
+        val r = c.executeArmedSet(80, 60) {
+            gates = gates.copy(iobthCapabilityEnabled = false); c.onGateWrite()
+            gates = gates.copy(iobthCapabilityEnabled = true); c.onGateWrite()
+            roomApplied()
+        }
+        assertThat(r.room.outcome).isEqualTo("APPLIED")
+        assertThat(r.currentLeaseState).isEqualTo(AutoIsfOverrideState.DISABLED)
+        assertThat(c.snapshot().iobThPercentEffective).isEqualTo(50)
+        assertThat(c.drainPendingTerminals().single().leaseId).isEqualTo("lease-1")
+    }
+
+    // (18) R12-F2 Belt: bei unsicherem Gate laeuft die Transaktion GAR NICHT erst.
+    @Test fun armedSetWithUnsafeGateRunsNoTxn() {
+        gates = gates.copy(channelEnabled = false)
+        var txnRan = false
+        val r = c.executeArmedSet(80, 60) { txnRan = true; roomApplied() }
+        assertThat(txnRan).isFalse()
+        assertThat(r.room.outcome).isEqualTo("REJECTED")
+    }
+
+    // (19) R12-F1: mehrere Widerrufe stapeln sich in der Queue (kein Ein-Slot-Verlust).
+    @Test fun multipleRevocationsAllQueued() {
+        armSet()
+        assertThat(c.invalidateBeforeExternalWrite(AutoIsfCapability.IOBTH, "w1")).isTrue()
+        val r2 = c.executeArmedSet(70, 60, ) { roomApplied(id = "lease-2", version = 2) }
+        // lease-2 wurde nach dem Invalidator-Bump publiziert-geprueft: base-Gen passt nicht
+        // mehr zum Capture? Capture lief NACH dem Bump -> ACTIVE ist korrekt.
+        assertThat(r2.currentLeaseState).isEqualTo(AutoIsfOverrideState.ACTIVE)
+        c.invalidateBeforeExternalWrite(AutoIsfCapability.IOBTH, "w2")
+        val pts = c.drainPendingTerminals()
+        assertThat(pts.map { it.leaseId }).containsExactly("lease-1", "lease-2").inOrder()
     }
 }

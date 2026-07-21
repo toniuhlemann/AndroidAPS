@@ -33,6 +33,10 @@ import org.json.JSONObject
  */
 object IobActionCoreExporter {
 
+    /** R12-F3: Provider fuer den effektiven iobTH (MainApp setzt den Singleton — gleiches
+     *  Muster wie die uebrigen durchgereichten Singletons dieses plain objects). */
+    @Volatile var effectiveAutoIsfSettings: app.aaps.core.interfaces.aps.EffectiveAutoIsfSettingsProvider? = null
+
     /** Build + atomically write the live core JSON. Called from MainApp's 60s widget heartbeat. */
     fun snapshot(
         iobCobCalculator: IobCobCalculator,
@@ -109,7 +113,13 @@ object IobActionCoreExporter {
                     // autoISF SETTINGS (not outputs) — pure preferences that the per-TT automations
                     // flip on every target switch, so they belong live in the core. The COMPUTED
                     // factors (acce/pp/dura/final, iobThEffectiveU) stay loop-side (state.json).
+                    // R12-F3: iob_threshold_percent bleibt hier bewusst die BASIS (Settings-
+                    // Sektion, klar bezeichnet); effektiver Wert + Zustand kommen getrennt dazu.
                     put("iob_threshold_percent", preferences.get(IntKey.ApsAutoIsfIobThPercent))
+                    effectiveAutoIsfSettings?.snapshot()?.let { snap ->
+                        put("iob_threshold_percent_effective", snap.iobThPercentEffective)
+                        put("iobth_override_state", snap.overrideState.name)
+                    }
                     put("bgAccel_ISF_weight", preferences.get(DoubleKey.ApsAutoIsfBgAccelWeight))
                     put("pp_ISF_weight", preferences.get(DoubleKey.ApsAutoIsfPpWeight))
                     put("bgBrake_ISF_weight", preferences.get(DoubleKey.ApsAutoIsfBgBrakeWeight))

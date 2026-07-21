@@ -296,7 +296,8 @@ open class OpenAPSAutoISFPlugin @Inject constructor(
         // Capability-Matrix A1 (R9-F3/R11): EIN effektiver Settings-Snapshot pro APS-Lauf,
         // reiner RAM-Read. Bei OFF/Forced-VO/keiner Lease ist effective == Basis-Preference
         // (OFF-Diff-Garantie, R11-Grenzen) — dieser Lauf rechnet dann exakt wie vor A1.
-        val effectiveIobThPercent = effectiveAutoIsfSettings.snapshot().iobThPercentEffective
+        val autoIsfSettingsSnapshot = effectiveAutoIsfSettings.snapshot()
+        val effectiveIobThPercent = autoIsfSettingsSnapshot.iobThPercentEffective
         val glucoseStatus = glucoseStatusProvider.glucoseStatusData
         val profile = profileFunction.getProfile()
         val pump = activePlugin.activePump
@@ -703,7 +704,7 @@ open class OpenAPSAutoISFPlugin @Inject constructor(
                         mealActiveKnown = mealKnown, mealActive = mealKnown && mealSnap.value == "true",
                         apsGlucoseTs = glucoseStatus.date.takeIf { it > 0L },
                         smbGateReason = loopSmbDecision.reason,
-                        actualUseIobTh = use_iobTH, actualConfiguredPercent = iobThresholdPercent,
+                        actualUseIobTh = use_iobTH, actualConfiguredPercent = effectiveIobThPercent,
                         actualEffectiveGateU = autoIsfValues.iobThEffective.takeIf { it.isFinite() },
                         capIobU = gateIob.takeIf { it.isFinite() },
                         netIobU = iobData.iob.takeIf { it.isFinite() },
@@ -745,7 +746,11 @@ open class OpenAPSAutoISFPlugin @Inject constructor(
                     put("max_bg", oapsProfile.max_bg)
                     put("carb_ratio", oapsProfile.carb_ratio)
                     put("profile_percentage", profile_percentage)
-                    put("iob_threshold_percent", iobThresholdPercent)
+                    // R12-F3: WIRKSAMER Wert (der Lauf hat exakt damit gerechnet) + Basis +
+                    // Override-Zustand unverwechselbar getrennt — eine Wahrheit pro Zyklus.
+                    put("iob_threshold_percent", effectiveIobThPercent)
+                    put("iob_threshold_percent_base", autoIsfSettingsSnapshot.iobThPercentBase)
+                    put("iobth_override_state", autoIsfSettingsSnapshot.overrideState.name)
                     put("name", profileFunction.getProfileName())
                     put("name_remaining", profileFunction.getProfileNameWithRemainingTime())
                     put("enable_autoISF", autoIsfWeights)
@@ -1395,7 +1400,9 @@ open class OpenAPSAutoISFPlugin @Inject constructor(
     data class LoopSmbDecision(val mode: String, val reason: String)
 
     fun loop_smb(microBolusAllowed: Boolean, profile: OapsProfileAutoIsf, iob_data_iob: Double, useIobTh: Boolean, iobThEffective: Double): LoopSmbDecision {
-        val iobThUser = preferences.get(IntKey.ApsAutoIsfIobThPercent)
+        // R12-F3: dieselbe Wahrheit wie die Rechnung — profile.iob_threshold_percent IST der
+        // effektive Wert dieses Laufs (kein zweiter Preference-Read im selben Zyklus).
+        val iobThUser = profile.iob_threshold_percent
         if (useIobTh) {
             val iobThPercent: Double
             if ( profile.max_iob<0.001 ) {
@@ -1647,7 +1654,13 @@ open class OpenAPSAutoISFPlugin @Inject constructor(
                     isPersistent = false
                     title = titleText; summary = summaryText
                     isChecked = sp.getBoolean(prefKey, false)
-                    setOnPreferenceChangeListener { _, v -> sp.edit().putBoolean(prefKey, v as Boolean).apply(); true }
+                    setOnPreferenceChangeListener { _, v ->
+                        sp.edit().putBoolean(prefKey, v as Boolean).apply()
+                        // R12-F2: synchroner Gate-Writer-Pfad — Transition wird SOFORT beobachtet
+                        // (gateGeneration bumpt vor dem naechsten Snapshot); SP-Listener = Fangnetz.
+                        runCatching { effectiveAutoIsfSettings.let { p -> (p as? app.aaps.plugins.aps.iobaction.AutoIsfValueLeaseCoordinator)?.onGateWrite() } }
+                        true
+                    }
                 }
             addPreference(switchPref("channel_enabled", "Kanal aktiv", "Master-Schalter — AUS lehnt jede Mutation ab (Status bleibt lesbar)"))
             addPreference(switchPref("tt_capability_enabled", "TT-Capability", "erlaubt SET/CANCEL fuer Auto-Executor-TTs (nur mit aktivem Kanal)"))
