@@ -49,6 +49,19 @@ class ExecuteLocalTtCommandTransactionTest {
         override fun updateOwnership(ownership: LocalCommandOwnership) {
             ownerships.replaceAll { if (it.id == ownership.id) ownership else it }
         }
+
+        // Capability-Wert-Leases (A1) — stateful analog zu den Ownership-Fakes.
+        val valueLeases = mutableListOf<app.aaps.database.entities.LocalCommandValueLease>()
+        override fun insertValueLease(lease: app.aaps.database.entities.LocalCommandValueLease): Long {
+            lease.id = nextId++; valueLeases += lease; return lease.id
+        }
+        override fun activeValueLease(capability: String) =
+            valueLeases.firstOrNull { it.capability == capability && it.activeSlot != null }
+        override fun maxLeaseVersion(capability: String) =
+            valueLeases.filter { it.capability == capability }.maxOfOrNull { it.leaseVersion } ?: 0L
+        override fun updateValueLease(lease: app.aaps.database.entities.LocalCommandValueLease) {
+            valueLeases.replaceAll { if (it.id == lease.id) lease else it }
+        }
     }
 
     private lateinit var database: DelegatedAppDatabase
