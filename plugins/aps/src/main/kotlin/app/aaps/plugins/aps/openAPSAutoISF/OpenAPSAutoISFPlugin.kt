@@ -1660,17 +1660,21 @@ open class OpenAPSAutoISFPlugin @Inject constructor(
                     isChecked = sp.getBoolean(prefKey, false)
                     setOnPreferenceChangeListener { _, v ->
                         val newValue = v as Boolean
-                        // R13-F1: Coordinator-Lock VOR dem SP-Write — Gate-Write und Command-
-                        // Publish sind damit echt linearisiert; eine bestehende Lease wird bei
-                        // unsicherer Transition JETZT revoked, bevor der Wert ueberhaupt steht.
-                        runCatching {
-                            (effectiveAutoIsfSettings as? app.aaps.plugins.aps.iobaction.AutoIsfValueLeaseCoordinator)?.beforeGateWrite(
+                        // R13-F1 + R14-F2: der SP-Write laeuft als Callback INNERHALB des
+                        // Coordinator-Locks — Bump/Revoke und neuer Gate-Wert sind eine
+                        // ununterbrechbare Einheit gegen parallele SET-Commands. Ohne
+                        // Coordinator (oder bei einem Fehler VOR dem Write) schreibt der
+                        // Fallback direkt — der Schalter darf nie stumm verpuffen.
+                        val writeGate = { sp.edit().putBoolean(prefKey, newValue).apply() }
+                        val coordinator = effectiveAutoIsfSettings as? app.aaps.plugins.aps.iobaction.AutoIsfValueLeaseCoordinator
+                        if (coordinator == null) writeGate() else runCatching {
+                            coordinator.beforeGateWrite(
                                 newChannel = if (prefKey == "channel_enabled") newValue else null,
                                 newIobth = if (prefKey == "iobth_capability_enabled") newValue else null,
                                 newForcedVo = if (prefKey == "forced_validate_only") newValue else null,
+                                write = writeGate,
                             )
-                        }
-                        sp.edit().putBoolean(prefKey, newValue).apply()
+                        }.onFailure { runCatching { writeGate() } }
                         true
                     }
                 }

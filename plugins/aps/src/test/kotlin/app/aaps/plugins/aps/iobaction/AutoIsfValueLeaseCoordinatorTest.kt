@@ -243,6 +243,36 @@ class AutoIsfValueLeaseCoordinatorTest {
         assertThat(c.snapshot().overrideState).isEqualTo(AutoIsfOverrideState.ACTIVE)
     }
 
+    // (23) R14-F2-Barrier: der SP-Write laeuft als Callback UNTER dem Coordinator-Lock —
+    //      ein SET, der WAEHREND der Gate-Abschaltung eintrifft, kann nie mit den alten
+    //      sicheren Gates publizieren: er blockiert am Lock und sieht danach die neuen
+    //      Gates (Reject ohne Transaktion). Kein Fenster zwischen Bump und Wert.
+    @Test fun beforeGateWriteBarrierBlocksConcurrentSet() {
+        val setStarted = java.util.concurrent.CountDownLatch(1)
+        val setDone = java.util.concurrent.CountDownLatch(1)
+        var txnRan = false
+        var result: AutoIsfValueLeaseCoordinator.ArmedResult? = null
+        val setter = Thread {
+            setStarted.await()
+            result = c.executeArmedSet(80, 60) { txnRan = true; roomApplied() }
+            setDone.countDown()
+        }.apply { start() }
+        c.beforeGateWrite(newIobth = false, write = {
+            // Unter dem Lock: den parallelen SET jetzt losschicken und ihm Zeit geben,
+            // den Lock-Erwerb zu versuchen — er MUSS blockieren, bis der Write durch ist.
+            setStarted.countDown()
+            Thread.sleep(150)
+            gates = gates.copy(iobthCapabilityEnabled = false)   // "SP-Write" unter dem Lock
+        })
+        assertThat(setDone.await(5, java.util.concurrent.TimeUnit.SECONDS)).isTrue()
+        setter.join(1_000)
+        // Der SET durfte NIE eine Transaktion ausfuehren oder ACTIVE publizieren:
+        assertThat(txnRan).isFalse()
+        assertThat(result!!.room.outcome).isEqualTo("REJECTED")
+        assertThat(result!!.currentLeaseState).isNotEqualTo(AutoIsfOverrideState.ACTIVE)
+        assertThat(c.snapshot().iobThPercentEffective).isEqualTo(50)
+    }
+
     // (21) R13-F1: VO-Ankuendigung via beforeGateWrite traegt den VO_FORCED-Grund.
     @Test fun beforeGateWriteVoCarriesHonestReason() {
         armSet()
