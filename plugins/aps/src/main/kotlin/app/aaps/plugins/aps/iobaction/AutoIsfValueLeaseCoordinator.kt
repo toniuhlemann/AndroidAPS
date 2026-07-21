@@ -47,7 +47,12 @@ class AutoIsfValueLeaseCoordinator @Inject constructor(
         val unsafeReason: AutoIsfOverrideState get() = if (forcedValidateOnly && channelEnabled && iobthCapabilityEnabled) AutoIsfOverrideState.VO_FORCED else AutoIsfOverrideState.DISABLED
     }
 
-    @VisibleForTesting internal data class GateObservation(val gates: Gates?, val generation: Long)
+    @VisibleForTesting internal data class GateObservation(
+        val gates: Gates?, val generation: Long,
+        /** R13-F4: Grund der LETZTEN unsicheren Transition — Terminalgruende bleiben ehrlich,
+         *  auch wenn kein Snapshot den unsicheren Moment selbst gesehen hat. */
+        val lastUnsafeReason: AutoIsfOverrideState? = null,
+    )
 
     @VisibleForTesting internal data class PublishedLease(
         val leaseId: String,
@@ -85,10 +90,42 @@ class AutoIsfValueLeaseCoordinator @Inject constructor(
         baseGeneration.incrementAndGet()
     }
 
-    /** Synchroner Gate-Writer-Pfad (R12-F2): Settings-Switch ruft das direkt nach seinem
-     *  SP-Write; der SP-Listener in MainApp bleibt Fangnetz. */
+    /** Fangnetz-Pfad (SP-Listener/sonstige Writer): beobachtet die Gates nachtraeglich. */
     fun onGateWrite() {
         observeGates()
+    }
+
+    /**
+     * R13-F1: SYNCHRONER Gate-Writer-Pfad — nimmt den Coordinator-Lock VOR dem SP-Write.
+     * Damit sind Gate-Write und Command-Publish echt linearisiert: waehrend executeArmedSet
+     * den Lock haelt, kann kein Gate-Write dazwischen; ein Gate-Write VOR dem Command
+     * revoked die Lease, bevor der Command je publiziert. Der Aufrufer (Settings-Switch)
+     * schreibt den SP-Wert erst NACH Rueckkehr dieser Methode.
+     */
+    fun beforeGateWrite(newChannel: Boolean? = null, newIobth: Boolean? = null, newForcedVo: Boolean? = null): Unit = lock.withLock {
+        val cur = gatesReader()
+        val next = Gates(
+            newChannel ?: cur.channelEnabled,
+            newIobth ?: cur.iobthCapabilityEnabled,
+            newForcedVo ?: cur.forcedValidateOnly,
+        )
+        val becameUnsafe = (cur.channelEnabled && !next.channelEnabled) ||
+            (cur.iobthCapabilityEnabled && !next.iobthCapabilityEnabled) ||
+            (!cur.forcedValidateOnly && next.forcedValidateOnly)
+        if (!becameUnsafe) return
+        val reason = if (!cur.forcedValidateOnly && next.forcedValidateOnly && next.channelEnabled && next.iobthCapabilityEnabled)
+            AutoIsfOverrideState.VO_FORCED else AutoIsfOverrideState.DISABLED
+        // Generation-Bump + Reason VOR dem eigentlichen SP-Write (gates=null zwingt die
+        // naechste Beobachtung zum frischen Read ohne Doppel-Bump).
+        while (true) {
+            val curObs = gateObservation.get()
+            if (gateObservation.compareAndSet(curObs, GateObservation(null, Math.addExact(curObs.generation, 1L), reason))) break
+        }
+        val p = published.get()
+        if (p != null && p.revokedReason == null) {
+            published.set(p.copy(revokedReason = reason))
+            pendingTerminals.add(PendingTerminal("IOBTH", p.leaseId, p.leaseVersion, reason.name))
+        }
     }
 
     /**
@@ -107,7 +144,14 @@ class AutoIsfValueLeaseCoordinator @Inject constructor(
                     (cur.gates.iobthCapabilityEnabled && !gates.iobthCapabilityEnabled) ||
                     (!cur.gates.forcedValidateOnly && gates.forcedValidateOnly)
                 )
-            val next = GateObservation(gates, if (becameUnsafe) Math.addExact(cur.generation, 1L) else cur.generation)
+            // R13-F4: VO-Puls und Schalter-AUS bekommen ihren ECHTEN Grund.
+            val reason = when {
+                !becameUnsafe -> cur.lastUnsafeReason
+                cur.gates != null && !cur.gates.forcedValidateOnly && gates.forcedValidateOnly &&
+                    gates.channelEnabled && gates.iobthCapabilityEnabled -> AutoIsfOverrideState.VO_FORCED
+                else -> AutoIsfOverrideState.DISABLED
+            }
+            val next = GateObservation(gates, if (becameUnsafe) Math.addExact(cur.generation, 1L) else cur.generation, reason)
             if (gateObservation.compareAndSet(cur, next)) return next
         }
     }
@@ -126,7 +170,7 @@ class AutoIsfValueLeaseCoordinator @Inject constructor(
             val reason: AutoIsfOverrideState? = when {
                 obs.gates!!.unsafe -> obs.gates.unsafeReason
                 // R12-F2: Gate war ZWISCHEN den Snapshots unsicher (AUS→AN) — Generation verraet es.
-                p.gateGeneration != obs.generation -> AutoIsfOverrideState.DISABLED
+                p.gateGeneration != obs.generation -> obs.lastUnsafeReason ?: AutoIsfOverrideState.DISABLED
                 wallNow < p.createdAtWallMs - CLOCK_ANOMALY_TOLERANCE_MS -> AutoIsfOverrideState.CLOCK_ANOMALY
                 wallNow >= p.expiresAtWallMs || elapsedNow >= p.expiresAtElapsedMs -> AutoIsfOverrideState.EXPIRED
                 p.baseGeneration != baseGeneration.get() || p.basePercent != base -> AutoIsfOverrideState.FOREIGN_MODIFIED
@@ -159,6 +203,13 @@ class AutoIsfValueLeaseCoordinator @Inject constructor(
     fun drainPendingTerminals(): List<PendingTerminal> {
         val out = mutableListOf<PendingTerminal>()
         while (true) out.add(pendingTerminals.poll() ?: return out)
+    }
+
+    /** R13-F2 peek/ack: Auftrag bleibt in der Queue, bis die Room-Terminalisierung
+     *  ERFOLGREICH war (bzw. beweisbar stale) — ein transienter DB-Fehler verliert nichts. */
+    fun peekPendingTerminal(): PendingTerminal? = pendingTerminals.peek()
+    fun ackPendingTerminal(pt: PendingTerminal) {
+        if (pendingTerminals.peek() == pt) pendingTerminals.poll()
     }
 
     // ---- WRITER-Port (ActionSetIobTH, R10-G1) ----

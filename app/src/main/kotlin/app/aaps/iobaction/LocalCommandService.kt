@@ -189,12 +189,18 @@ class LocalCommandService : Service() {
             "protocolVersion" to LocalCommandProtocol.PROTOCOL_VERSION, "outcome" to "REJECTED",
             "replayed" to false, "errorCode" to LocalCommandProtocol.E_MUTATION_UNAVAILABLE)
         val now = System.currentTimeMillis()
-        // Nachlaufende Terminalisierung von RAM-Widerrufen — IDENTITAETSGEBUNDEN (R12-F1):
-        // jeder Auftrag traegt leaseId+Version und kann per CAS nie einen Nachfolger treffen.
-        coordinator.drainPendingTerminals().forEach { pt -> runCatching {
-            repo.runTransactionForResult(app.aaps.database.transactions.TerminalizeValueLeaseTransaction(
-                pt.capability, pt.reason, now, pt.leaseId, pt.leaseVersion)).blockingGet()
-        } }
+        // Nachlaufende Terminalisierung von RAM-Widerrufen — IDENTITAETSGEBUNDEN (R12-F1)
+        // und VERLUSTFREI via peek/ack (R13-F2): der Auftrag verlaesst die Queue erst nach
+        // ERFOLGREICHER Room-Transaktion; ein transienter DB-Fehler laesst ihn fuer den
+        // naechsten Versuch liegen (die RAM-Lease ist laengst sicher revoked).
+        while (true) {
+            val pt = coordinator.peekPendingTerminal() ?: break
+            val ok = runCatching {
+                repo.runTransactionForResult(app.aaps.database.transactions.TerminalizeValueLeaseTransaction(
+                    pt.capability, pt.reason, now, pt.leaseId, pt.leaseVersion)).blockingGet()
+            }.isSuccess
+            if (ok) coordinator.ackPendingTerminal(pt) else break
+        }
         // Statische Policy-Vorpruefung (nur SET; CLEAR prueft den ERSTELLUNGS-Hash in der txn).
         val policyError = if (req.cmd == LocalCommandProtocol.Cmd.SET_IOBTH) when {
             req.clientPolicyHash != LocalCommandIobthPolicy.hash() -> "REJECTED_POLICY_VERSION"
