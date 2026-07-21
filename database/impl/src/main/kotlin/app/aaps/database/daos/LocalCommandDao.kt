@@ -6,8 +6,10 @@ import androidx.room.Query
 import androidx.room.Update
 import app.aaps.database.entities.LocalCommandOutcome
 import app.aaps.database.entities.LocalCommandOwnership
+import app.aaps.database.entities.LocalCommandValueLease
 import app.aaps.database.entities.TABLE_LOCAL_COMMAND_OUTCOME
 import app.aaps.database.entities.TABLE_LOCAL_COMMAND_OWNERSHIP
+import app.aaps.database.entities.TABLE_LOCAL_COMMAND_VALUE_LEASE
 
 /**
  * LocalCommandChannel-DAO (lokal-only, kein NS-Sync → bewusst OHNE Delegated-Wrapper/
@@ -39,4 +41,19 @@ internal interface LocalCommandDao {
 
     @Update
     fun updateOwnership(ownership: LocalCommandOwnership)
+
+    // ---- Capability-Wert-Leases (A1, Spec v1.1 + R9/R10) ----
+
+    @Insert
+    fun insertValueLease(lease: LocalCommandValueLease): Long
+
+    @Query("SELECT * FROM $TABLE_LOCAL_COMMAND_VALUE_LEASE WHERE capability = :capability AND activeSlot IS NOT NULL LIMIT 1")
+    fun activeValueLease(capability: String): LocalCommandValueLease?
+
+    /** Monotonie-Basis (R10-F4): leaseVersion laeuft UEBER Terminalisierungen hinweg weiter. */
+    @Query("SELECT COALESCE(MAX(leaseVersion), 0) FROM $TABLE_LOCAL_COMMAND_VALUE_LEASE WHERE capability = :capability")
+    fun maxLeaseVersion(capability: String): Long
+
+    @Update
+    fun updateValueLease(lease: LocalCommandValueLease)
 }

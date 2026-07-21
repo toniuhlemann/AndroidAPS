@@ -237,7 +237,26 @@ open class DatabaseModule {
         }
     }
 
+    // Capability-Matrix A1 (Spec v1.1 + R9/R10): Value-Lease-Tabelle + Outcome.resultJson.
+    // SQL 1:1 aus dem Room-Schema-Export 34.json (Identity-Hash-sicher). Die Unique-Indizes
+    // tragen die R10-F4-Invarianten OHNE Partial-Index (activeSlot NULL kollidiert nicht):
+    // (capability, activeSlot=1) = max. eine aktive Lease; (capability, leaseVersion) =
+    // CAS-Token nie wiederverwendbar. MERGE-HINWEIS: bei Upstream-Kollision mit Version 34
+    // dieses Objekt + DATABASE_VERSION renumbern.
+    internal val migration33to34 = object : Migration(33, 34) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            db.execSQL("ALTER TABLE `localCommandOutcome` ADD COLUMN `resultJson` TEXT")
+            db.execSQL(
+                "CREATE TABLE IF NOT EXISTS `localCommandValueLease` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `capability` TEXT NOT NULL, `leaseId` TEXT NOT NULL, `leaseVersion` INTEGER NOT NULL, `ownerPolicyHash` TEXT NOT NULL, `basePayload` TEXT NOT NULL, `baseGeneration` INTEGER NOT NULL, `setPayload` TEXT NOT NULL, `gateGeneration` INTEGER NOT NULL, `createdAt` INTEGER NOT NULL, `expiresAtWallMs` INTEGER NOT NULL, `activeSlot` INTEGER, `terminatedAt` INTEGER, `terminalReason` TEXT)"
+            )
+            db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS `index_localCommandValueLease_capability_activeSlot` ON `localCommandValueLease` (`capability`, `activeSlot`)")
+            db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS `index_localCommandValueLease_capability_leaseVersion` ON `localCommandValueLease` (`capability`, `leaseVersion`)")
+            db.execSQL("CREATE INDEX IF NOT EXISTS `index_localCommandValueLease_terminatedAt` ON `localCommandValueLease` (`terminatedAt`)")
+            dropCustomIndexes(db)
+        }
+    }
+
     /** List of all migrations for easy reply in tests. */
     @VisibleForTesting
-    internal val migrations = arrayOf(migration20to21, migration21to22, migration22to23, migration23to24, migration24to25, migration25to26, migration26to27, migration27to28, migration28to29, migration29to30, migration30to31, migration31to32, migration32to33)
+    internal val migrations = arrayOf(migration20to21, migration21to22, migration22to23, migration23to24, migration24to25, migration25to26, migration26to27, migration27to28, migration28to29, migration29to30, migration30to31, migration31to32, migration32to33, migration33to34)
 }

@@ -15,6 +15,7 @@ import androidx.room.PrimaryKey
 
 const val TABLE_LOCAL_COMMAND_OUTCOME = "localCommandOutcome"
 const val TABLE_LOCAL_COMMAND_OWNERSHIP = "localCommandOwnership"
+const val TABLE_LOCAL_COMMAND_VALUE_LEASE = "localCommandValueLease"
 
 /**
  * Terminales Ergebnis je requestId (persistente Idempotenz, R1-F4/R2-A2): Retry derselben
@@ -39,6 +40,9 @@ data class LocalCommandOutcome(
     var validateOnly: Boolean,
     var createdAt: Long,
     var retainUntil: Long,
+    /** R10-F7: kanonisches, servererzeugtes Resultat (Value-Kommandos) — Replay liefert
+     *  EXAKT dieses historische Resultat, unabhaengig vom spaeteren Lease-Zustand. */
+    var resultJson: String? = null,
 )
 
 /**
@@ -68,4 +72,45 @@ data class LocalCommandOwnership(
     var createdAt: Long,
     var terminatedAt: Long? = null,
     var terminalReason: String? = null,   // REPLACED | CANCELLED | FOREIGN_MODIFIED | TT_GONE | EXPIRED
+)
+
+/**
+ * Capability-Wert-Lease (Capability-Matrix A1, Spec v1.1 + R9/R10): zeitbegrenztes
+ * Overlay UEBER einer Basis-Preference — die Basis wird vom Kanal NIE beschrieben.
+ * TTL/Kill-Switch/Fremdaenderung wirken am READ-Pfad (Resolver); diese Zeile ist die
+ * persistente Wahrheit dazu.
+ *
+ * DB-Invarianten (R10-F4, Fresh-DB-sicher via normale Room-Indizes statt Partial-Index):
+ *  - activeSlot = 1 solange aktiv, NULL nach Terminalisierung → unique(capability,
+ *    activeSlot) erlaubt beliebig viele terminale Zeilen, aber nur EINE aktive je
+ *    Capability (SQLite: NULLs kollidieren nicht).
+ *  - unique(capability, leaseVersion): ein alter CAS-Token kann nie wieder passen.
+ * leaseVersion ist monoton je Capability UEBER Terminalisierungen hinweg (max+1 in der
+ * Transaktion). gateGeneration = Gate-Stand bei Erstellung (R9-F1: Abweichung = dauerhaft
+ * unwirksam; Schalter-Reaktivierung belebt nie).
+ */
+@Entity(
+    tableName = TABLE_LOCAL_COMMAND_VALUE_LEASE,
+    indices = [
+        Index(value = ["capability", "activeSlot"], unique = true),
+        Index(value = ["capability", "leaseVersion"], unique = true),
+        Index("terminatedAt"),
+    ]
+)
+data class LocalCommandValueLease(
+    @PrimaryKey(autoGenerate = true)
+    var id: Long = 0,
+    var capability: String,            // "IOBTH" (A1); WEIGHTS/SMBR erst B1/B2
+    var leaseId: String,               // ownerRequestId des erzeugenden SET
+    var leaseVersion: Long,            // monoton je Capability, nie wiederverwendet
+    var ownerPolicyHash: String,       // Policy-Hash der ERSTELLUNG (CLEAR prueft DIESEN)
+    var basePayload: String,           // kanonischer Basis-Payload (skalierte Int) beim ersten SET
+    var baseGeneration: Long,          // SP-Generation beim Basis-Capture (R9-F5)
+    var setPayload: String,            // kanonischer Override-Payload
+    var gateGeneration: Long,          // Gate-Stand bei Erstellung (R9-F1)
+    var createdAt: Long,
+    var expiresAtWallMs: Long,         // Wall-Frist (Room/Status); elapsedRealtime-Frist lebt NUR im RAM
+    var activeSlot: Int? = 1,          // 1 = aktiv, NULL = terminal (Unique-Traeger)
+    var terminatedAt: Long? = null,
+    var terminalReason: String? = null, // EXPIRED | CLEARED | REPLACED | FOREIGN_MODIFIED | DISABLED | VO_FORCED | CLOCK_ANOMALY | PROCESS_RESTART
 )

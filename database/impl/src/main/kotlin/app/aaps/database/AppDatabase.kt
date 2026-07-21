@@ -46,9 +46,10 @@ import app.aaps.database.entities.UserEntry
 import app.aaps.database.entities.VersionChange
 
 // 33: LocalCommandChannel (localCommandOutcome + localCommandOwnership, fork-only).
+// 34: Capability-Matrix A1 (localCommandValueLease + Outcome.resultJson, fork-only).
 // MERGE-HINWEIS: kollidiert eine kuenftige Upstream-Version mit 33, unsere Migration
 // einfach auf die naechste freie Nummer renumbern (Migration-Objekt + diese Konstante).
-const val DATABASE_VERSION = 33
+const val DATABASE_VERSION = 34
 
 @Database(
     version = DATABASE_VERSION,
@@ -57,7 +58,8 @@ const val DATABASE_VERSION = 33
         TemporaryBasal::class, TemporaryTarget::class, TherapyEvent::class, TotalDailyDose::class,
         PreferenceChange::class, VersionChange::class, UserEntry::class,
         Food::class, DeviceStatus::class, RunningMode::class, HeartRate::class, StepsCount::class, AutoIsfValues::class,
-        app.aaps.database.entities.LocalCommandOutcome::class, app.aaps.database.entities.LocalCommandOwnership::class],
+        app.aaps.database.entities.LocalCommandOutcome::class, app.aaps.database.entities.LocalCommandOwnership::class,
+        app.aaps.database.entities.LocalCommandValueLease::class],
     exportSchema = true
 )
 @TypeConverters(Converters::class)
