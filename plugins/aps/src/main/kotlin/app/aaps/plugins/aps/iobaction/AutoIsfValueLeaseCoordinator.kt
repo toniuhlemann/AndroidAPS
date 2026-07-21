@@ -96,11 +96,12 @@ class AutoIsfValueLeaseCoordinator @Inject constructor(
     }
 
     /**
-     * R13-F1: SYNCHRONER Gate-Writer-Pfad — nimmt den Coordinator-Lock VOR dem SP-Write.
-     * Damit sind Gate-Write und Command-Publish echt linearisiert: waehrend executeArmedSet
-     * den Lock haelt, kann kein Gate-Write dazwischen; ein Gate-Write VOR dem Command
-     * revoked die Lease, bevor der Command je publiziert. Der Aufrufer (Settings-Switch)
-     * schreibt den SP-Wert erst NACH Rueckkehr dieser Methode.
+     * R13-F1 + R14-F2: SYNCHRONER Gate-Writer-Pfad. Der Aufrufer (Settings-Switch) uebergibt
+     * den SP-Write als [write]-Callback, der INNERHALB des Coordinator-Locks ausgefuehrt wird —
+     * Bump/Revoke und der sichtbar neue Gate-Wert sind damit eine ununterbrechbare Einheit:
+     * waehrend executeArmedSet den Lock haelt, kann kein Gate-Write dazwischen; ein zwischen
+     * Ankuendigung und Wert eintreffender SET blockiert am Lock und sieht danach die NEUEN
+     * Gates (Reject ohne Transaktion). Auch sichere Transitionen schreiben unter dem Lock.
      */
     fun beforeGateWrite(
         newChannel: Boolean? = null, newIobth: Boolean? = null, newForcedVo: Boolean? = null,
