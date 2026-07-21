@@ -102,7 +102,14 @@ class AutoIsfValueLeaseCoordinator @Inject constructor(
      * revoked die Lease, bevor der Command je publiziert. Der Aufrufer (Settings-Switch)
      * schreibt den SP-Wert erst NACH Rueckkehr dieser Methode.
      */
-    fun beforeGateWrite(newChannel: Boolean? = null, newIobth: Boolean? = null, newForcedVo: Boolean? = null): Unit = lock.withLock {
+    fun beforeGateWrite(
+        newChannel: Boolean? = null, newIobth: Boolean? = null, newForcedVo: Boolean? = null,
+        // R14-F2: der eigentliche SP-Write laeuft als Callback UNTER DEMSELBEN Lock — zwischen
+        // Bump/Revoke und sichtbarem neuen Gate-Wert existiert damit KEIN Fenster mehr, in dem
+        // ein neuer SET den Lock bekommen, die alten sicheren Gates lesen und vollstaendig
+        // publizieren koennte (executeArmedSet haelt denselben Lock).
+        write: () -> Unit = {},
+    ): Unit = lock.withLock {
         val cur = gatesReader()
         val next = Gates(
             newChannel ?: cur.channelEnabled,
@@ -112,20 +119,24 @@ class AutoIsfValueLeaseCoordinator @Inject constructor(
         val becameUnsafe = (cur.channelEnabled && !next.channelEnabled) ||
             (cur.iobthCapabilityEnabled && !next.iobthCapabilityEnabled) ||
             (!cur.forcedValidateOnly && next.forcedValidateOnly)
-        if (!becameUnsafe) return
-        val reason = if (!cur.forcedValidateOnly && next.forcedValidateOnly && next.channelEnabled && next.iobthCapabilityEnabled)
-            AutoIsfOverrideState.VO_FORCED else AutoIsfOverrideState.DISABLED
-        // Generation-Bump + Reason VOR dem eigentlichen SP-Write (gates=null zwingt die
-        // naechste Beobachtung zum frischen Read ohne Doppel-Bump).
-        while (true) {
-            val curObs = gateObservation.get()
-            if (gateObservation.compareAndSet(curObs, GateObservation(null, Math.addExact(curObs.generation, 1L), reason))) break
+        if (becameUnsafe) {
+            val reason = if (!cur.forcedValidateOnly && next.forcedValidateOnly && next.channelEnabled && next.iobthCapabilityEnabled)
+                AutoIsfOverrideState.VO_FORCED else AutoIsfOverrideState.DISABLED
+            // Generation-Bump + Reason VOR dem eigentlichen SP-Write (gates=null zwingt die
+            // naechste Beobachtung zum frischen Read ohne Doppel-Bump).
+            while (true) {
+                val curObs = gateObservation.get()
+                if (gateObservation.compareAndSet(curObs, GateObservation(null, Math.addExact(curObs.generation, 1L), reason))) break
+            }
+            val p = published.get()
+            if (p != null && p.revokedReason == null) {
+                published.set(p.copy(revokedReason = reason))
+                pendingTerminals.add(PendingTerminal("IOBTH", p.leaseId, p.leaseVersion, reason.name))
+            }
         }
-        val p = published.get()
-        if (p != null && p.revokedReason == null) {
-            published.set(p.copy(revokedReason = reason))
-            pendingTerminals.add(PendingTerminal("IOBTH", p.leaseId, p.leaseVersion, reason.name))
-        }
+        // Auch SICHERE Transitionen schreiben unter dem Lock (ein AUS->AN zwischen Snapshots
+        // faengt weiterhin observeGates via Transitions-Bump).
+        write()
     }
 
     /**
