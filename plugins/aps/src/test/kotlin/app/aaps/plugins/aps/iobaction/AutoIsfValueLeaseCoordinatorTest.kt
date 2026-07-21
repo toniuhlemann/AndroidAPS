@@ -258,10 +258,16 @@ class AutoIsfValueLeaseCoordinatorTest {
             setDone.countDown()
         }.apply { start() }
         c.beforeGateWrite(newIobth = false, write = {
-            // Unter dem Lock: den parallelen SET jetzt losschicken und ihm Zeit geben,
-            // den Lock-Erwerb zu versuchen — er MUSS blockieren, bis der Write durch ist.
+            // R15-N2: deterministische Naht statt Sleep — der parallele SET wird unter dem
+            // Lock losgeschickt und wir warten BEWEISBAR, bis er am Lock parkt (ReentrantLock
+            // -> Thread.State WAITING/BLOCKED), BEVOR der Gate-Wert faellt. Damit steht fest:
+            // der Setter hat den Lock angefordert, waehrend der Write noch lief.
             setStarted.countDown()
-            Thread.sleep(150)
+            val deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(5)
+            while (setter.state != Thread.State.WAITING && setter.state != Thread.State.BLOCKED &&
+                setter.state != Thread.State.TERMINATED && System.nanoTime() < deadline
+            ) Thread.onSpinWait()
+            assertThat(setter.state).isAnyOf(Thread.State.WAITING, Thread.State.BLOCKED)
             gates = gates.copy(iobthCapabilityEnabled = false)   // "SP-Write" unter dem Lock
         })
         assertThat(setDone.await(5, java.util.concurrent.TimeUnit.SECONDS)).isTrue()
