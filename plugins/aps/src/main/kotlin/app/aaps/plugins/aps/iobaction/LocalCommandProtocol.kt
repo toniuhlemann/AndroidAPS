@@ -137,9 +137,9 @@ object LocalCommandProtocol {
             if (req.durationMin!! !in 5..120) return ParseOutcome(null, E_BOUNDS)
         }
         if (cmd == Cmd.SET_IOBTH) {
-            // Parser-Bounds strukturell (reject-not-clamp); die geschlossene Werteliste
-            // {60,70,80,90} prueft die IOBTH-Policy serverseitig.
-            if (req.percent!! !in 10..100) return ParseOutcome(null, E_BOUNDS)
+            // Parser-Bounds strukturell (reject-not-clamp) — aus der Policy abgeleitet,
+            // die ihrerseits die Preference-Definition spiegelt (keine erfundenen Zahlen).
+            if (req.percent!! !in LocalCommandIobthPolicy.PERCENT_MIN..LocalCommandIobthPolicy.PERCENT_MAX) return ParseOutcome(null, E_BOUNDS)
             if (req.ttlMin!! !in LocalCommandIobthPolicy.TTL_MIN..LocalCommandIobthPolicy.TTL_MAX) return ParseOutcome(null, E_BOUNDS)
         }
         if (secret == null || secret.isEmpty()) return ParseOutcome(null, E_AUTH_NOT_CONFIGURED)

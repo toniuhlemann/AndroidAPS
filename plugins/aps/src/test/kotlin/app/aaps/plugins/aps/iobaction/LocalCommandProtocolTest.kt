@@ -203,15 +203,18 @@ class LocalCommandProtocolTest {
             """"expectedState":"$state","expectedLeaseId":"$leaseId","expectedLeaseVersion":$leaseVer}"""
 
     @Test fun iobthPolicyPinned() {
-        // BEREICH statt Liste (21.07.): Werte INNERHALB sind Tuning (55/65/DynMeal-Leiter
-        // ohne Flash); gepinnt sind nur die Grenzen — obere Kappe 90 bleibt hart.
-        assertThat(LocalCommandIobthPolicy.canonical()).isEqualTo("""["IOBTH",[10,90,1],[30,720,1]]""")
+        // PREFERENCE-PARITAET (21.07., Tonis Grundsatz): Grenzen ABGELEITET aus
+        // IntKey.ApsAutoIsfIobThPercent (10..100) — keine erfundenen Zahlen im Kanal.
+        // Der Hash-Pin macht eine kuenftige Upstream-Aenderung der Preference-Grenzen
+        // LAUT (Test rot = bewusste neue Kohorte dokumentieren).
+        assertThat(LocalCommandIobthPolicy.canonical()).isEqualTo("""["IOBTH",[10,100,1],[30,720,1]]""")
         assertThat(LocalCommandIobthPolicy.hash())
-            .isEqualTo("36a9de0afef86b3b27141a430db42c64c49f81f9d580fc2b14a9a351b2edb6fe")
-        assertThat(LocalCommandIobthPolicy.isAllowed(80, 30)).isTrue()
+            .isEqualTo("152260fe4e890d847c903cdacf6533696f4b873c7899fc7ba11ce86ca60639af")
+        assertThat(LocalCommandIobthPolicy.PERCENT_MIN).isEqualTo(app.aaps.core.keys.IntKey.ApsAutoIsfIobThPercent.min)
+        assertThat(LocalCommandIobthPolicy.PERCENT_MAX).isEqualTo(app.aaps.core.keys.IntKey.ApsAutoIsfIobThPercent.max)
         assertThat(LocalCommandIobthPolicy.isAllowed(55, 60)).isTrue()    // Tonis 55er — ohne Flash
-        assertThat(LocalCommandIobthPolicy.isAllowed(65, 720)).isTrue()
-        assertThat(LocalCommandIobthPolicy.isAllowed(91, 60)).isFalse()   // Aggressions-Kappe
+        assertThat(LocalCommandIobthPolicy.isAllowed(95, 720)).isTrue()   // alles was der Regler kann
+        assertThat(LocalCommandIobthPolicy.isAllowed(101, 60)).isFalse()  // mehr als der Regler: nie
         assertThat(LocalCommandIobthPolicy.isAllowed(9, 60)).isFalse()
         assertThat(LocalCommandIobthPolicy.isAllowed(80, 29)).isFalse()
         assertThat(LocalCommandIobthPolicy.isAllowed(80, 721)).isFalse()
