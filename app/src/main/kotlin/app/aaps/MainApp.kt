@@ -129,6 +129,7 @@ class MainApp : DaggerApplication() {
     private val scope = CoroutineScope(Dispatchers.Default + Job())
 
     private var iobThBaseListener: android.content.SharedPreferences.OnSharedPreferenceChangeListener? = null
+    private var gateListener: android.content.SharedPreferences.OnSharedPreferenceChangeListener? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -146,6 +147,14 @@ class MainApp : DaggerApplication() {
             if (key == app.aaps.core.keys.IntKey.ApsAutoIsfIobThPercent.key) valueLeaseCoordinator.onExternalBaseWrite()
         }
         androidx.preference.PreferenceManager.getDefaultSharedPreferences(this).registerOnSharedPreferenceChangeListener(iobThBaseListener)
+        // R12-F3: der Core-Exporter (plain object) bekommt denselben Provider-Singleton.
+        app.aaps.plugins.aps.openAPSAutoISF.IobActionCoreExporter.effectiveAutoIsfSettings = valueLeaseCoordinator
+        // R12-F2: Gate-SP-Fangnetz — jeder Write auf den Kanal-Namespace beobachtet die Gates
+        // sofort (Transition bumpt die gateGeneration, bevor der naechste Snapshot laeuft).
+        gateListener = android.content.SharedPreferences.OnSharedPreferenceChangeListener { _, _ ->
+            valueLeaseCoordinator.onGateWrite()
+        }
+        getSharedPreferences("local_command_channel", MODE_PRIVATE).registerOnSharedPreferenceChangeListener(gateListener)
         ProcessLifecycleOwner.get().lifecycle.addObserver(processLifecycleListener.get())
         // Configure LeakCanary with Firebase reporting
         // Memory leaks will be uploaded to Firebase Crashlytics via FabricPrivacy.logException

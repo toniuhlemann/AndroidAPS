@@ -44,8 +44,12 @@ class TriggerIobTH(injector: HasAndroidInjector) : Trigger(injector) {
         return this
     }
 
+    @javax.inject.Inject lateinit var effectiveAutoIsfSettingsProvider: app.aaps.core.interfaces.aps.EffectiveAutoIsfSettingsProvider
+
     override fun shouldRun(): Boolean {
-        val actualPercent = sp.getInt(R.string.iob_threshold_percent,100)
+        // R12-F3 (Split-Brain-Verbot): dieselbe Wahrheit wie der APS-Rechenpfad — der
+        // EFFEKTIVE Wert aus dem Provider, nie ein zweiter direkter Preference-Read.
+        val actualPercent = effectiveAutoIsfSettingsProvider.snapshot().iobThPercentEffective
         if (comparator.value.check(actualPercent, IobTHpercent.value)) {
             aapsLogger.debug(LTag.AUTOMATION, "set iob_threshold_percent ready for execution: " + friendlyDescription())
             return true

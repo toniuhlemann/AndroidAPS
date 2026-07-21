@@ -8,6 +8,7 @@ import app.aaps.core.interfaces.aps.AutoIsfValueLeaseInvalidator
 import app.aaps.core.interfaces.aps.EffectiveAutoIsfSettingsProvider
 import app.aaps.core.keys.IntKey
 import app.aaps.core.keys.interfaces.Preferences
+import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 import java.util.concurrent.locks.ReentrantLock
@@ -16,25 +17,24 @@ import javax.inject.Singleton
 import kotlin.concurrent.withLock
 
 /**
- * Capability-Matrix A1 — DER ValueLeaseCoordinator (Spec v1.1 §2 + R9-F1/F2/F3 + R10-F2):
- * RAM-Wahrheit des Wert-Overlays. Implementiert BEIDE Core-Vertraege:
- * [EffectiveAutoIsfSettingsProvider] (read-only Snapshot, eine Quelle fuer APS/Trigger/
- * Export/Status) und [AutoIsfValueLeaseInvalidator] (Writer-Port fuer ActionSetIobTH).
+ * Capability-Matrix A1 — DER ValueLeaseCoordinator (Spec v1.1 §2 + R9-F1/F2/F3 + R10-F2 +
+ * R12-F1/F2/F5): RAM-Wahrheit des Wert-Overlays. Implementiert BEIDE Core-Vertraege.
  *
  * Architektur-Invarianten:
- *  - APS-Hotpath liest NUR RAM (AtomicReference + Basis-Preference) — nie Room/IO/Locks
- *    mit Wartezeit (der Coordinator-Lock wird ausschliesslich von Command-/Writer-Pfaden
- *    gehalten, die selbst kein APS sind; snapshot() nimmt ihn NICHT).
- *  - Room-Commit ist der historische Linearization Point (R10-F2): executeArmedSet
- *    publiziert NACH dem Commit aktiv ODER revoked — ein ACK existiert erst nach Publish.
- *  - Gate-/TTL-/Generation-Verletzungen werden am READ-Pfad irreversibel GELATCHT
- *    (R10-F1): einmal unsicher gesehen = diese Lease ist dauerhaft widerrufen; nur ein
- *    NEUER SET (neues CAS) aktiviert wieder.
- *  - Doppelte TTL-Frist (R9-F3): wall (Room/Status) UND elapsedRealtime (RAM, monoton);
- *    now == deadline ist bereits abgelaufen; Arithmetik add/multiplyExact.
+ *  - APS-Hotpath liest NUR RAM — snapshot() nimmt NIE den Coordinator-Lock; die Bewertung
+ *    laeuft in einer CAS-Schleife ueber FRISCHE Reads (R12-F1: ein verlorener CAS bewertet
+ *    neu statt einen veralteten Zustand zu melden).
+ *  - Room-Commit ist der historische Linearization Point (R10-F2).
+ *  - Gate-/TTL-/Generation-Verletzungen werden am READ-Pfad irreversibel GELATCHT; die
+ *    ECHTE monotone gateGeneration (R12-F2) faengt auch AUS→AN ZWISCHEN zwei Snapshots:
+ *    jede unsichere Transition bumpt die Generation, jede Lease traegt ihre
+ *    Erstellungs-Generation — Abweichung = dauerhaft widerrufen.
+ *  - Nachlaufende Room-Terminalisierung ist IDENTITAETSGEBUNDEN (R12-F1): Queue von
+ *    {leaseId, leaseVersion, reason}; ein Nachfolger kann nie getroffen werden.
+ *  - Doppelte TTL-Frist wall+elapsed, now==deadline abgelaufen, add/multiplyExact (R9-F3).
  *
  * A1-Scope: nur IOBTH; im OFF-/Forced-VO-Pilot entsteht NIE eine Lease → snapshot()
- * liefert IMMER die Basis (OFF-Diff-Garantie, R11-Grenzen).
+ * liefert IMMER die Basis (OFF-Diff-Garantie).
  */
 @Singleton
 class AutoIsfValueLeaseCoordinator @Inject constructor(
@@ -46,6 +46,8 @@ class AutoIsfValueLeaseCoordinator @Inject constructor(
         val unsafe: Boolean get() = !channelEnabled || !iobthCapabilityEnabled || forcedValidateOnly
         val unsafeReason: AutoIsfOverrideState get() = if (forcedValidateOnly && channelEnabled && iobthCapabilityEnabled) AutoIsfOverrideState.VO_FORCED else AutoIsfOverrideState.DISABLED
     }
+
+    @VisibleForTesting internal data class GateObservation(val gates: Gates?, val generation: Long)
 
     @VisibleForTesting internal data class PublishedLease(
         val leaseId: String,
@@ -60,6 +62,9 @@ class AutoIsfValueLeaseCoordinator @Inject constructor(
         val revokedReason: AutoIsfOverrideState? = null,   // != null ⇒ dauerhaft widerrufen
     )
 
+    /** R12-F1: identitaetsgebundener Terminalisierungs-Auftrag — nie nur ein Reason-String. */
+    data class PendingTerminal(val capability: String, val leaseId: String, val leaseVersion: Long, val reason: String)
+
     // ---- injizierbare Umwelt (Tests ueberschreiben; Produktion = echte Quellen) ----
     @VisibleForTesting internal var basePercentReader: () -> Int = { preferences.get(IntKey.ApsAutoIsfIobThPercent) }
     @VisibleForTesting internal var gatesReader: () -> Gates = {
@@ -72,52 +77,89 @@ class AutoIsfValueLeaseCoordinator @Inject constructor(
     private val lock = ReentrantLock()
     @VisibleForTesting internal val published = AtomicReference<PublishedLease?>(null)
     @VisibleForTesting internal val baseGeneration = AtomicLong(0)
+    private val gateObservation = AtomicReference(GateObservation(null, 0L))
+    @VisibleForTesting internal val pendingTerminals = ConcurrentLinkedQueue<PendingTerminal>()
 
     /** Externe Basis-Writes (SP-Listener-Fangnetz, R9-F5): Generation invalidiert auch wertgleiche Writes. */
     fun onExternalBaseWrite() {
         baseGeneration.incrementAndGet()
     }
 
+    /** Synchroner Gate-Writer-Pfad (R12-F2): Settings-Switch ruft das direkt nach seinem
+     *  SP-Write; der SP-Listener in MainApp bleibt Fangnetz. */
+    fun onGateWrite() {
+        observeGates()
+    }
+
+    /**
+     * R12-F2: monotone Gate-Generation. Jede UNSICHERE Transition (channel AN→AUS,
+     * iobth-Capability AN→AUS, forcedVO AUS→AN) bumpt die Generation — eine Lease mit
+     * aelterer Erstellungs-Generation ist damit dauerhaft widerrufen, auch wenn kein
+     * Snapshot den AUS-Moment je gesehen hat.
+     */
+    @VisibleForTesting internal fun observeGates(): GateObservation {
+        while (true) {
+            val cur = gateObservation.get()
+            val gates = gatesReader()
+            if (cur.gates == gates) return cur
+            val becameUnsafe = cur.gates != null && (
+                (cur.gates.channelEnabled && !gates.channelEnabled) ||
+                    (cur.gates.iobthCapabilityEnabled && !gates.iobthCapabilityEnabled) ||
+                    (!cur.gates.forcedValidateOnly && gates.forcedValidateOnly)
+                )
+            val next = GateObservation(gates, if (becameUnsafe) Math.addExact(cur.generation, 1L) else cur.generation)
+            if (gateObservation.compareAndSet(cur, next)) return next
+        }
+    }
+
     // ---- READ-Pfad (APS/Trigger/Export/Status) — lockfrei, latcht irreversibel ----
 
     override fun snapshot(): EffectiveAutoIsfSettingsProvider.Snapshot {
-        val base = basePercentReader()
-        val p = published.get() ?: return none(base)
-        p.revokedReason?.let { return revokedSnapshot(base, p, it) }
+        while (true) {
+            val base = basePercentReader()
+            val obs = observeGates()
+            val p = published.get() ?: return none(base)
+            p.revokedReason?.let { return revokedSnapshot(base, p, it) }
 
-        val gates = gatesReader()
-        if (gates.unsafe) return latchAndReturn(base, p, gates.unsafeReason)
-        val wallNow = wallClock()
-        val elapsedNow = elapsedClock()
-        if (wallNow < p.createdAtWallMs - CLOCK_ANOMALY_TOLERANCE_MS) return latchAndReturn(base, p, AutoIsfOverrideState.CLOCK_ANOMALY)
-        if (wallNow >= p.expiresAtWallMs || elapsedNow >= p.expiresAtElapsedMs) return latchAndReturn(base, p, AutoIsfOverrideState.EXPIRED)
-        if (p.baseGeneration != baseGeneration.get() || p.basePercent != base) return latchAndReturn(base, p, AutoIsfOverrideState.FOREIGN_MODIFIED)
-
-        return EffectiveAutoIsfSettingsProvider.Snapshot(
-            iobThPercentBase = base, iobThPercentEffective = p.setPercent,
-            overrideState = AutoIsfOverrideState.ACTIVE,
-            leaseId = p.leaseId, leaseVersion = p.leaseVersion, expiresAtWallMs = p.expiresAtWallMs,
-        )
+            val wallNow = wallClock()
+            val elapsedNow = elapsedClock()
+            val reason: AutoIsfOverrideState? = when {
+                obs.gates!!.unsafe -> obs.gates.unsafeReason
+                // R12-F2: Gate war ZWISCHEN den Snapshots unsicher (AUS→AN) — Generation verraet es.
+                p.gateGeneration != obs.generation -> AutoIsfOverrideState.DISABLED
+                wallNow < p.createdAtWallMs - CLOCK_ANOMALY_TOLERANCE_MS -> AutoIsfOverrideState.CLOCK_ANOMALY
+                wallNow >= p.expiresAtWallMs || elapsedNow >= p.expiresAtElapsedMs -> AutoIsfOverrideState.EXPIRED
+                p.baseGeneration != baseGeneration.get() || p.basePercent != base -> AutoIsfOverrideState.FOREIGN_MODIFIED
+                else -> null
+            }
+            if (reason == null) return EffectiveAutoIsfSettingsProvider.Snapshot(
+                iobThPercentBase = base, iobThPercentEffective = p.setPercent,
+                overrideState = AutoIsfOverrideState.ACTIVE,
+                leaseId = p.leaseId, leaseVersion = p.leaseVersion, expiresAtWallMs = p.expiresAtWallMs,
+            )
+            // R12-F1: Pending NUR nach ERFOLGREICHEM CAS fuer GENAU diese Lease; verlorener
+            // CAS (Command hat parallel ersetzt) ⇒ Schleife bewertet den FRISCHEN Zustand.
+            if (published.compareAndSet(p, p.copy(revokedReason = reason))) {
+                pendingTerminals.add(PendingTerminal("IOBTH", p.leaseId, p.leaseVersion, reason.name))
+                return revokedSnapshot(base, p, reason)
+            }
+        }
     }
 
     override fun isIobThLeaseActive(): Boolean = snapshot().overrideState == AutoIsfOverrideState.ACTIVE
-
-    /** R10-F1: Latch per CAS — schnelles Re-enable/Uhr-Vorwaerts belebt NIE wieder. */
-    private fun latchAndReturn(base: Int, p: PublishedLease, reason: AutoIsfOverrideState): EffectiveAutoIsfSettingsProvider.Snapshot {
-        published.compareAndSet(p, p.copy(revokedReason = reason))
-        pendingRoomTerminal.compareAndSet(null, reason.name)
-        return revokedSnapshot(base, p, reason)
-    }
 
     private fun none(base: Int) = EffectiveAutoIsfSettingsProvider.Snapshot(base, base, AutoIsfOverrideState.NONE, null, null, null)
 
     private fun revokedSnapshot(base: Int, p: PublishedLease, reason: AutoIsfOverrideState) =
         EffectiveAutoIsfSettingsProvider.Snapshot(base, base, reason, p.leaseId, p.leaseVersion, p.expiresAtWallMs)
 
-    /** Nachlaufende Room-Terminalisierung (R10-F2 §5: rein metadatisch, nie therapeutisch):
-     *  der Service konsumiert das beim naechsten Kommando/Status ausserhalb des APS-Pfads. */
-    @VisibleForTesting internal val pendingRoomTerminal = AtomicReference<String?>(null)
-    fun consumePendingRoomTerminal(): String? = pendingRoomTerminal.getAndSet(null)
+    /** Nachlaufende, IDENTITAETSGEBUNDENE Room-Terminalisierung (R10-F2 §5 + R12-F1):
+     *  der Service draint die Queue ausserhalb des APS-Pfads; jeder Auftrag trifft nur
+     *  exakt seine Lease (CAS in der Transaktion), nie einen Nachfolger. */
+    fun drainPendingTerminals(): List<PendingTerminal> {
+        val out = mutableListOf<PendingTerminal>()
+        while (true) out.add(pendingTerminals.poll() ?: return out)
+    }
 
     // ---- WRITER-Port (ActionSetIobTH, R10-G1) ----
 
@@ -129,7 +171,7 @@ class AutoIsfValueLeaseCoordinator @Inject constructor(
         val p = published.get()
         if (p != null && p.revokedReason == null) {
             published.set(p.copy(revokedReason = AutoIsfOverrideState.FOREIGN_MODIFIED))
-            pendingRoomTerminal.compareAndSet(null, AutoIsfOverrideState.FOREIGN_MODIFIED.name)
+            pendingTerminals.add(PendingTerminal("IOBTH", p.leaseId, p.leaseVersion, AutoIsfOverrideState.FOREIGN_MODIFIED.name))
         }
         true   // RAM-Widerruf kann nicht fehlschlagen; Room-Terminalisierung laeuft nach.
     }
@@ -140,41 +182,64 @@ class AutoIsfValueLeaseCoordinator @Inject constructor(
     data class RoomSetResult(
         val outcome: String, val errorCode: String?, val replayed: Boolean,
         val resultJson: String?, val leaseId: String?, val leaseVersion: Long?,
+        /** R12-F5: die TATSAECHLICH persistierten Basis-/Generationswerte (bei OWNED aus der
+         *  ersetzten Lease GEERBT) — der RAM-Snapshot publiziert exakt diese. */
+        val basePercentUsed: Int? = null,
+        val baseGenerationUsed: Long? = null,
+        val gateGenerationUsed: Long? = null,
     )
     data class ArmedResult(val room: RoomSetResult, val currentLeaseState: AutoIsfOverrideState)
 
     /**
-     * R10-F2-Ablauf: Basis-Capture → Room-Commit (txn) → ZWEITE Basis-Pruefung → Publish
-     * aktiv ODER revoked → erst dann Ergebnis (= ACK-Grundlage). Historisches APPLIED
-     * bleibt APPLIED; currentLeaseState traegt die Gegenwart (R11-P1).
+     * R10-F2 + R12-F2/F5-Ablauf: Gates+Capture → Room-Commit (txn) → ZWEITE Pruefung
+     * (Basis UND Gates) → Publish aktiv ODER revoked → erst dann Ergebnis. Historisches
+     * APPLIED bleibt APPLIED; currentLeaseState traegt die Gegenwart (R11-P1). Nach
+     * zwischenzeitlicher Gate-Unsicherheit wird NIEMALS ACTIVE publiziert.
      */
     fun executeArmedSet(setPercent: Int, ttlMin: Int, txn: (BaseCapture) -> RoomSetResult): ArmedResult = lock.withLock {
+        val preObs = observeGates()
+        if (preObs.gates == null || preObs.gates.unsafe) {
+            // Belt zum Service-Gate: ohne sicheres Gate keine Transaktion (kein Outcome —
+            // identisch zur Service-Gate-Ablehnung, idempotenzfrei wiederholbar).
+            return ArmedResult(
+                RoomSetResult("REJECTED", LocalCommandProtocol.E_CAPABILITY_DISABLED, false, null, null, null),
+                snapshot().overrideState,
+            )
+        }
         val ttlMs = Math.multiplyExact(ttlMin.toLong(), 60_000L)
         val wallNow = wallClock()
         val elapsedDeadline = Math.addExact(elapsedClock(), ttlMs)
         val capture = BaseCapture(
             basePercent = basePercentReader(), baseGeneration = baseGeneration.get(),
-            gateGeneration = 0L, wallNow = wallNow, expiresAtWallMs = Math.addExact(wallNow, ttlMs),
+            gateGeneration = preObs.generation, wallNow = wallNow, expiresAtWallMs = Math.addExact(wallNow, ttlMs),
         )
         val room = txn(capture)
         if (room.outcome != "APPLIED" || room.replayed) {
-            // Reject/VO/Replay publizieren nichts — Gegenwart ist der aktuelle Snapshot.
             return ArmedResult(room, snapshot().overrideState)
         }
-        // Zweite Pruefung (R9-F2 §3): Fremd-Write zwischen Capture und Publish?
-        val base2 = basePercentReader()
-        val gen2 = baseGeneration.get()
         val lease = PublishedLease(
             leaseId = room.leaseId!!, leaseVersion = room.leaseVersion!!, setPercent = setPercent,
-            basePercent = capture.basePercent, baseGeneration = capture.baseGeneration, gateGeneration = 0L,
+            basePercent = room.basePercentUsed ?: capture.basePercent,
+            baseGeneration = room.baseGenerationUsed ?: capture.baseGeneration,
+            gateGeneration = room.gateGenerationUsed ?: capture.gateGeneration,
             createdAtWallMs = wallNow, expiresAtWallMs = capture.expiresAtWallMs, expiresAtElapsedMs = elapsedDeadline,
         )
-        return if (base2 != capture.basePercent || gen2 != capture.baseGeneration) {
-            // Post-Commit-Fremdaenderung (R10-F2 §4): ATOMAR revoked publizieren; historisch
-            // bleibt das Kommando APPLIED, Room-Terminalisierung laeuft nach.
-            published.set(lease.copy(revokedReason = AutoIsfOverrideState.FOREIGN_MODIFIED))
-            pendingRoomTerminal.set(AutoIsfOverrideState.FOREIGN_MODIFIED.name)
-            ArmedResult(room, AutoIsfOverrideState.FOREIGN_MODIFIED)
+        // ZWEITE Pruefung (R9-F2 §3 + R12-F2): Basis UND Gates gegen die persistierten Werte.
+        val postObs = observeGates()
+        val base2 = basePercentReader()
+        val gen2 = baseGeneration.get()
+        val revokeReason: AutoIsfOverrideState? = when {
+            postObs.gates == null || postObs.gates.unsafe -> postObs.gates?.unsafeReason ?: AutoIsfOverrideState.DISABLED
+            postObs.generation != lease.gateGeneration -> AutoIsfOverrideState.DISABLED
+            base2 != lease.basePercent || gen2 != lease.baseGeneration -> AutoIsfOverrideState.FOREIGN_MODIFIED
+            else -> null
+        }
+        return if (revokeReason != null) {
+            // Post-Commit-Konflikt (R10-F2 §4): ATOMAR revoked publizieren; historisch bleibt
+            // das Kommando APPLIED, Room-Terminalisierung laeuft identitaetsgebunden nach.
+            published.set(lease.copy(revokedReason = revokeReason))
+            pendingTerminals.add(PendingTerminal("IOBTH", lease.leaseId, lease.leaseVersion, revokeReason.name))
+            ArmedResult(room, revokeReason)
         } else {
             published.set(lease)
             ArmedResult(room, AutoIsfOverrideState.ACTIVE)

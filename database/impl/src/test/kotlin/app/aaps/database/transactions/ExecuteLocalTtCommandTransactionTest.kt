@@ -52,7 +52,9 @@ class ExecuteLocalTtCommandTransactionTest {
 
         // Capability-Wert-Leases (A1) — stateful analog zu den Ownership-Fakes.
         val valueLeases = mutableListOf<app.aaps.database.entities.LocalCommandValueLease>()
+        var throwOnInsertLease = false          // R12-F6: simulierter Unique-Constraint
         override fun insertValueLease(lease: app.aaps.database.entities.LocalCommandValueLease): Long {
+            if (throwOnInsertLease) throw android.database.sqlite.SQLiteConstraintException("unique")
             lease.id = nextId++; valueLeases += lease; return lease.id
         }
         override fun activeValueLease(capability: String) =
