@@ -249,20 +249,25 @@ class AutoIsfValueLeaseCoordinatorTest {
     //      Gates (Reject ohne Transaktion). Kein Fenster zwischen Bump und Wert.
     @Test fun beforeGateWriteBarrierBlocksConcurrentSet() {
         val setStarted = java.util.concurrent.CountDownLatch(1)
+        val aboutToEnter = java.util.concurrent.CountDownLatch(1)
         val setDone = java.util.concurrent.CountDownLatch(1)
         var txnRan = false
         var result: AutoIsfValueLeaseCoordinator.ArmedResult? = null
         val setter = Thread {
             setStarted.await()
+            // R16-F2: unmittelbar VOR executeArmedSet signalisieren — danach hat der Setter
+            // KEINEN anderen wartenden Schritt mehr, ein spaeteres WAITING/BLOCKED ist damit
+            // eindeutig dem Coordinator-Lock zuzuordnen (nicht dem gerade freigegebenen Latch).
+            aboutToEnter.countDown()
             result = c.executeArmedSet(80, 60) { txnRan = true; roomApplied() }
             setDone.countDown()
         }.apply { start() }
         c.beforeGateWrite(newIobth = false, write = {
-            // R15-N2: deterministische Naht statt Sleep — der parallele SET wird unter dem
-            // Lock losgeschickt und wir warten BEWEISBAR, bis er am Lock parkt (ReentrantLock
-            // -> Thread.State WAITING/BLOCKED), BEVOR der Gate-Wert faellt. Damit steht fest:
-            // der Setter hat den Lock angefordert, waehrend der Write noch lief.
+            // R15-N2/R16-F2: deterministische Naht statt Sleep — der parallele SET wird unter dem
+            // Lock losgeschickt; wir warten auf den Handshake DIREKT vor executeArmedSet und dann
+            // BEWEISBAR, bis der Thread am Lock parkt (WAITING/BLOCKED), BEVOR der Gate-Wert faellt.
             setStarted.countDown()
+            aboutToEnter.await()
             val deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(5)
             while (setter.state != Thread.State.WAITING && setter.state != Thread.State.BLOCKED &&
                 setter.state != Thread.State.TERMINATED && System.nanoTime() < deadline
