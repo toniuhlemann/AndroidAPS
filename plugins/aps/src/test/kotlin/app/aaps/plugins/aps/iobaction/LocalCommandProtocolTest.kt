@@ -203,12 +203,16 @@ class LocalCommandProtocolTest {
             """"expectedState":"$state","expectedLeaseId":"$leaseId","expectedLeaseVersion":$leaseVer}"""
 
     @Test fun iobthPolicyPinned() {
-        assertThat(LocalCommandIobthPolicy.canonical()).isEqualTo("""["IOBTH",[60,70,80,90],[30,720,1]]""")
+        // BEREICH statt Liste (21.07.): Werte INNERHALB sind Tuning (55/65/DynMeal-Leiter
+        // ohne Flash); gepinnt sind nur die Grenzen — obere Kappe 90 bleibt hart.
+        assertThat(LocalCommandIobthPolicy.canonical()).isEqualTo("""["IOBTH",[10,90,1],[30,720,1]]""")
         assertThat(LocalCommandIobthPolicy.hash())
-            .isEqualTo("80b5930109b2b12888e103fd54baf93b6a861be929ac0f8ef31683dfa8c89eba")
+            .isEqualTo("36a9de0afef86b3b27141a430db42c64c49f81f9d580fc2b14a9a351b2edb6fe")
         assertThat(LocalCommandIobthPolicy.isAllowed(80, 30)).isTrue()
-        assertThat(LocalCommandIobthPolicy.isAllowed(80, 720)).isTrue()
-        assertThat(LocalCommandIobthPolicy.isAllowed(65, 60)).isFalse()   // geschlossene Liste
+        assertThat(LocalCommandIobthPolicy.isAllowed(55, 60)).isTrue()    // Tonis 55er — ohne Flash
+        assertThat(LocalCommandIobthPolicy.isAllowed(65, 720)).isTrue()
+        assertThat(LocalCommandIobthPolicy.isAllowed(91, 60)).isFalse()   // Aggressions-Kappe
+        assertThat(LocalCommandIobthPolicy.isAllowed(9, 60)).isFalse()
         assertThat(LocalCommandIobthPolicy.isAllowed(80, 29)).isFalse()
         assertThat(LocalCommandIobthPolicy.isAllowed(80, 721)).isFalse()
     }
