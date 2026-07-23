@@ -27,9 +27,9 @@ import java.security.MessageDigest
 object LocalCommandPolicy {
 
     /** Erlaubte TT-Ziele (mg/dl) — Stand tt-decision-rules + Engine-Vollaudit 20.07.2026:
-     *  76 Meal · 88 Welle · 90 Korrektur · 101 Soft-Protect/Peak-Stop · 120/130/140 Bremsen
-     *  (140 auch Rebound) · 141/161 Hard-Protect. */
-    val TARGETS: List<Int> = listOf(76, 88, 90, 101, 120, 130, 140, 141, 161)
+     *  72/74/78 manuelle L/M/S-Boost-Brücken · 76 Meal · 88 Welle · 90 Korrektur ·
+     *  101 Soft-Protect/Peak-Stop · 120/130/140 Bremsen (140 auch Rebound) · 141/161 Hard-Protect. */
+    val TARGETS: List<Int> = listOf(72, 74, 76, 78, 88, 90, 101, 120, 130, 140, 141, 161)
 
     const val DURATION_MIN = 5
     const val DURATION_MAX = 120
