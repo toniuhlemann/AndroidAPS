@@ -163,17 +163,20 @@ class LocalCommandProtocolTest {
 
     // --- Policy-Matrix: geschlossene ZIEL-Liste, Dauer nur Bounds (Vollaudit 20.07.) ---
     @Test fun policyCanonicalAndHash() {
-        assertThat(LocalCommandPolicy.canonical()).isEqualTo("[76,88,90,101,120,130,140,141,161]")
+        assertThat(LocalCommandPolicy.canonical()).isEqualTo("[72,74,76,78,88,90,101,120,130,140,141,161]")
         assertThat(LocalCommandPolicy.hash())
-            .isEqualTo("37b72ab7dab9aa0d488d08a46ba1aebdcd5eaab75c08ae1796722e2333ac839f")
+            .isEqualTo("29c93bf81f998d324f9af40cd59006a2168b7238d3a7e99750bfc81caa53ee62")
         // Renewal-Kreuzfaelle vom ersten ARMED-Abend: Reason ist Metadatum, Ziel entscheidet.
         assertThat(LocalCommandPolicy.isAllowed(LocalCommandProtocol.ReasonKey.LOW_PROTECT, 90, 10)).isTrue()   // TT90-Renewal unter "Schutz"
         assertThat(LocalCommandPolicy.isAllowed(LocalCommandProtocol.ReasonKey.LOW_PROTECT, 140, 15)).isTrue()  // Brems-TT in der Nacht gehalten
         assertThat(LocalCommandPolicy.isAllowed(LocalCommandProtocol.ReasonKey.CORRECTION, 90, 10)).isTrue()    // Live-Dauer 10 statt Default 12
         assertThat(LocalCommandPolicy.isAllowed(LocalCommandProtocol.ReasonKey.MEAL, 88, 60)).isTrue()          // Welle mit Live-Dauer 60
+        assertThat(LocalCommandPolicy.isAllowed(LocalCommandProtocol.ReasonKey.MEAL, 72, 60)).isTrue()          // manueller L-Boost
+        assertThat(LocalCommandPolicy.isAllowed(LocalCommandProtocol.ReasonKey.MEAL, 74, 60)).isTrue()          // manueller M-Boost
+        assertThat(LocalCommandPolicy.isAllowed(LocalCommandProtocol.ReasonKey.MEAL, 78, 60)).isTrue()          // manueller S-Boost
         // Fremde Ziele bleiben verboten …
         assertThat(LocalCommandPolicy.isAllowed(LocalCommandProtocol.ReasonKey.MEAL, 100, 30)).isFalse()
-        assertThat(LocalCommandPolicy.isAllowed(LocalCommandProtocol.ReasonKey.LOW_PROTECT, 72, 30)).isFalse()  // Boost-Ziele sind manuell, nie Kanal
+        assertThat(LocalCommandPolicy.isAllowed(LocalCommandProtocol.ReasonKey.MEAL, 73, 30)).isFalse()
         // … und Dauern ausserhalb der Bounds auch.
         assertThat(LocalCommandPolicy.isAllowed(LocalCommandProtocol.ReasonKey.MEAL, 88, 4)).isFalse()
         assertThat(LocalCommandPolicy.isAllowed(LocalCommandProtocol.ReasonKey.MEAL, 88, 121)).isFalse()
