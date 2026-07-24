@@ -43,14 +43,6 @@ class DetermineBasalAutoISF @Inject constructor(
      */
     var lastSmbDecision: SmbDecision? = null
 
-    /** DynMealIobTH shadow (spec v1.3): cycle-frozen raw internals for the pure safety helper.
-     *  Same pattern/contract as [lastSmbDecision] — write-only, never read by dosing. */
-    data class ShadowCycleRaw(
-        val cycleTs: Long,                   // R6 F6: Zyklus-Stempel — Hook gleicht exakt ab
-        val minGuardBg: Double, val thresholdBg: Double, val maxDelta: Double, val eventualBg: Double,
-        val carbsReqRaw: Double,             // lokaler, IMMER berechneter Wert (nicht publiziert-gefiltert)
-    )
-    var lastShadowRaw: ShadowCycleRaw? = null
 
     /** wantedU = ungecappte SMB-Wunschmenge (insulinReq*ratio); deliveredU = rT.units after all caps. */
     data class SmbDecision(
@@ -191,7 +183,6 @@ class DetermineBasalAutoISF @Inject constructor(
         consoleError.add(activity_consoleLog)
         consoleLog.clear()
         lastSmbDecision = null   // reset each cycle → a cycle not reaching the SMB branch reports nothing
-        lastShadowRaw = null     // dito (DynMealIobTH shadow): no stale cross-cycle raw values
         var rT = RT(
             algorithm = APSResult.Algorithm.AUTO_ISF,
             runningAutoIsf = true,
@@ -904,7 +895,6 @@ class DetermineBasalAutoISF @Inject constructor(
         // DynMealIobTH shadow (spec v1.3 + R6 F6): freeze the raw internals the pure safety
         // helper needs, INCLUDING the cycle stamp and the local always-computed carbsReq —
         // write-only side output, never read back into dosing (same contract as lastSmbDecision).
-        lastShadowRaw = ShadowCycleRaw(currentTime, minGuardBG, threshold, maxDelta, eventualBG, carbsReq.toDouble())
 
         // don't low glucose suspend if IOB is already super negative and BG is rising faster than predicted
         if (bg < threshold && iob_data.iob < -profile.current_basal * 20 / 60 && minDelta > 0 && minDelta > expectedDelta) {
