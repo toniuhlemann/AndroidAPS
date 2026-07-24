@@ -136,7 +136,7 @@ open class OpenAPSAutoISFPlugin @Inject constructor(
 
     @Inject lateinit var automationStateService: AutomationStateInterface
 
-    // DynMealIobTH shadow (R6 F4): interner App-Files-Pfad fuer den State-Snapshot.
+    // App-Context fuer das Loop-Signal an den Viewer (IobActionLoopSignal).
     @Inject lateinit var shadowContext: android.content.Context
 
     // last values
@@ -685,58 +685,18 @@ open class OpenAPSAutoISFPlugin @Inject constructor(
                         }
                     })
                 }
-                // DynMealIobTH SHADOW (Spez v1.1-v1.3, R5 Bau-GO): post-Determine, rein
-                // beobachtend — Ergebnis geht NUR in diesen Export, nichts wird je vom Loop
-                // gelesen. Eigenes runCatching: ein Shadow-Fehler darf den Export nie stoppen.
+                // AAPS-Automation-State MEAL_ACTIVE als eigenes, schlankes Export-Feld.
+                // Ersetzt den frueheren DynMeal-SHADOW-Block (1443 Zeilen, 12 virtuelle
+                // Kandidaten): dieselbe Frage beantwortet der Viewer-Meal-iobTH-Pilot
+                // inzwischen LIVE und sichtbar. Der Viewer-Waechter braucht von hier nur noch
+                // die Fork-Wahrheit ueber MEAL_ACTIVE, um Split-Brain zu erkennen.
                 runCatching {
-                    // R6 F5: Modus via Automation-State (im Automations-Tab schaltbar):
-                    // DYNMEAL_SHADOW=="true" -> SHADOW; fehlend/false/ungueltig -> OFF (Default).
-                    val modeSnap = automationStateService.getStateSnapshot("DYNMEAL_SHADOW")
-                    val engineMode = if (modeSnap.known && modeSnap.value == "true") "SHADOW" else "OFF"
                     val mealSnap = automationStateService.getStateSnapshot("MEAL_ACTIVE")
                     val mealKnown = mealSnap.known && mealSnap.value in listOf("true", "false")
-                    val shadowRaw = determineBasalAutoISF.lastShadowRaw
-                    // R6 F4: interne App-Files statt oeffentlichem Documents-Verzeichnis.
-                    val stateDir = java.io.File(shadowContext.filesDir, "dynmeal").also { it.mkdirs() }
-                    DynMealIobThShadowRunner.runShadow(
-                        engineMode = engineMode,
-                        cycleTs = now,
-                        mealActiveKnown = mealKnown, mealActive = mealKnown && mealSnap.value == "true",
-                        apsGlucoseTs = glucoseStatus.date.takeIf { it > 0L },
-                        smbGateReason = loopSmbDecision.reason,
-                        actualUseIobTh = use_iobTH, actualConfiguredPercent = effectiveIobThPercent,
-                        actualEffectiveGateU = autoIsfValues.iobThEffective.takeIf { it.isFinite() },
-                        capIobU = gateIob.takeIf { it.isFinite() },
-                        netIobU = iobData.iob.takeIf { it.isFinite() },
-                        maxIobU = oapsProfile.max_iob,
-                        profilePercent = profile_percentage, sensitivityRatio = sensitivityRatio,
-                        loopBg = glucoseStatus.glucose.takeIf { it.isFinite() },
-                        noise = glucoseStatus.noise,
-                        // R6 F6: gleiche Rundung wie Determine vor den -5/12-Grenzen
-                        bgAgeMin = (Math.round((now - glucoseStatus.date) / 60000.0 * 10.0) / 10.0)
-                            .takeIf { glucoseStatus.date > 0L },
-                        flatBgs = flatBGsDetected,
-                        delta = glucoseStatus.delta.takeIf { it.isFinite() },
-                        shortAvgDelta = glucoseStatus.shortAvgDelta.takeIf { it.isFinite() },
-                        raw = shadowRaw,
-                        insReq = lastAPSResult?.json()?.optDouble("insulinReq")?.takeIf { it.isFinite() },
-                        minBg = oapsProfile.min_bg, targetBg = oapsProfile.target_bg,
-                        ratioFix = smb_delivery_ratio, ratioMin = smb_delivery_ratio_min,
-                        ratioMax = smb_delivery_ratio_max, ratioBgRange = smb_delivery_ratio_bg_range,
-                        mealCob = mealData.mealCOB, carbRatio = oapsProfile.carb_ratio,
-                        currentBasal = oapsProfile.current_basal,
-                        maxSmbMinutes = oapsProfile.maxSMBBasalMinutes.toDouble(),
-                        maxUamSmbMinutes = oapsProfile.maxUAMSMBBasalMinutes.toDouble(),
-                        smbMaxRangeExt = smbMaxRangeExtension,
-                        bolusIncrementU = oapsProfile.bolus_increment.takeIf { it.isFinite() && it > 0.0 },
-                        skipNeutralTemps = oapsProfile.skip_neutral_temps,
-                        // R6 F6: Minute aus dem EINGEFRORENEN Zyklus-Zeitstempel, kein zweiter
-                        // Wallclock-Read (54:59/55:00-Kante).
-                        localMinute = java.util.Calendar.getInstance()
-                            .also { it.timeInMillis = now }.get(java.util.Calendar.MINUTE),
-                        actualMaxBolusU = determineBasalAutoISF.lastSmbDecision?.maxBolusU,
-                        stateDir = stateDir,
-                    )?.let { put("dynMealShadow", it) }
+                    put("automation", JSONObject().apply {
+                        put("mealActiveKnown", mealKnown)
+                        put("mealActive", mealKnown && mealSnap.value == "true")
+                    })
                 }
                 put("profile", JSONObject().apply {
                     put("max_iob", oapsProfile.max_iob)
