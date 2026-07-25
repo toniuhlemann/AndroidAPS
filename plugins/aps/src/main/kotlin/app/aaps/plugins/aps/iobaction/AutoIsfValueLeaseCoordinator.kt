@@ -547,7 +547,11 @@ class AutoIsfValueLeaseCoordinator @Inject constructor(
             },
         )
         val stored = if (revokeReason != null) lease.copy(revokedReason = revokeReason) else lease
-        publishedValues.set(publishedValues.get() + (cap to stored))
+        // CAS statt set(): der Lock schuetzt nur den Kommandopfad, der Widerruf im LESE-Pfad
+        // laeuft bewusst lockfrei. Ein read-modify-write wuerde einen Latch verlieren, der
+        // zwischen get() und set() fuer eine ANDERE Capability eingetragen wurde — die Lease
+        // stuende wieder aktiv da, obwohl ihre Frist abgelaufen ist (Invariante 3).
+        putValueLease(cap, stored)
         return if (revokeReason != null) {
             pendingTerminals.add(PendingTerminal(cap.name, lease.leaseId, lease.leaseVersion, revokeReason.name))
             ArmedResult(room, revokeReason)
@@ -559,10 +563,25 @@ class AutoIsfValueLeaseCoordinator @Inject constructor(
     fun executeArmedValueClear(cap: AutoIsfCapability, txn: () -> RoomSetResult): ArmedResult = lock.withLock {
         val room = txn()
         if (room.outcome == "APPLIED" && !room.replayed) {
-            publishedValues.set(publishedValues.get() - cap)
+            removeValueLease(cap)
             return ArmedResult(room, AutoIsfOverrideState.NONE)
         }
         return ArmedResult(room, valueLeaseState(cap))
+    }
+
+    /** Genau diesen Slot ersetzen, ohne fremde Slots zu ueberschreiben. */
+    private fun putValueLease(cap: AutoIsfCapability, lease: ValueLease) {
+        while (true) {
+            val cur = publishedValues.get()
+            if (publishedValues.compareAndSet(cur, cur + (cap to lease))) return
+        }
+    }
+
+    private fun removeValueLease(cap: AutoIsfCapability) {
+        while (true) {
+            val cur = publishedValues.get()
+            if (publishedValues.compareAndSet(cur, cur - cap)) return
+        }
     }
 
     /** Zustand einer generischen Lease ohne Snapshot-Umweg (fuer ACK/Status). */

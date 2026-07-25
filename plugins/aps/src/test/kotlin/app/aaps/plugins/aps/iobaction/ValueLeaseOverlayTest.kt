@@ -158,4 +158,33 @@ class ValueLeaseOverlayTest {
         assertThat(pt.leaseId).isEqualTo("v-1")
         assertThat(pt.reason).isEqualTo(AutoIsfOverrideState.EXPIRED.name)
     }
+
+    // Selbstreview 25.07.: der frueher hier stehende read-modify-write auf der Slot-Map konnte
+    // einen Widerruf verlieren, der lockfrei aus dem LESE-Pfad kam. Folge waere eine abgelaufene
+    // Lease gewesen, die wieder aktiv erscheint — Verletzung der Latch-Invariante.
+    @Test fun `ein Kommando auf Capability B loescht keinen Widerruf von Capability A`() {
+        setRatio(0.3, ttl = 30)
+        setWeights(ValueOverlayPolicy.F_ACCE to 0.4)
+        // Ratio laeuft ab und wird beim Lesen gelatcht
+        wall += 30 * 60_000
+        assertThat(c.snapshot().smbRatioState).isEqualTo(AutoIsfOverrideState.EXPIRED)
+        // jetzt ein neues WEIGHTS-Kommando: es darf den Ratio-Widerruf NICHT aufheben
+        c.executeArmedValueSet(
+            AutoIsfCapability.WEIGHTS, mapOf(ValueOverlayPolicy.F_DURA to 1200L), 60,
+        ) { applied("w-2", 2) }
+        val s = c.snapshot()
+        assertThat(s.smbRatioState).isEqualTo(AutoIsfOverrideState.EXPIRED)
+        assertThat(s.smbRatioEffective).isNull()
+        assertThat(s.weightsState).isEqualTo(AutoIsfOverrideState.ACTIVE)
+    }
+
+    @Test fun `CLEAR auf B laesst eine aktive Lease auf A stehen`() {
+        setRatio(0.3)
+        setWeights(ValueOverlayPolicy.F_ACCE to 0.4)
+        c.executeArmedValueClear(AutoIsfCapability.WEIGHTS) { applied("w-1", 1) }
+        val s = c.snapshot()
+        assertThat(s.weightsState).isEqualTo(AutoIsfOverrideState.NONE)
+        assertThat(s.smbRatioState).isEqualTo(AutoIsfOverrideState.ACTIVE)
+        assertThat(s.smbRatioEffective!!).isWithin(1e-9).of(0.3)
+    }
 }
