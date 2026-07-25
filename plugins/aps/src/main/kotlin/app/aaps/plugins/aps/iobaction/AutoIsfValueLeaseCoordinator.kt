@@ -105,6 +105,29 @@ class AutoIsfValueLeaseCoordinator @Inject constructor(
         val revokedReason: AutoIsfOverrideState? = null,   // != null ⇒ dauerhaft widerrufen
     )
 
+    /**
+     * Generische Wert-Lease fuer die Double-wertigen Capabilities (SMBRATIO, WEIGHTS).
+     *
+     * [setScaled] traegt Tausendstel (Draht-/Room-Format, keine Doubles im HMAC), [baseRaw]
+     * dagegen den ROHEN Preference-Double — Gewichte liegen als Float in den Prefs, aus 0.23
+     * wird 0.23000000417232513. Wuerde die Basis gerundet gespeichert, schluege der
+     * Fremdschreiber-Vergleich sofort und dauerhaft an, und das Zurueckschreiben wuerde den
+     * Wert bei jedem Lease-Zyklus minimal verschieben.
+     */
+    @VisibleForTesting internal data class ValueLease(
+        val capability: AutoIsfCapability,
+        val leaseId: String,
+        val leaseVersion: Long,
+        val setScaled: Map<String, Long>,
+        val baseRaw: Map<String, Double>,
+        val baseGeneration: Long,
+        val gateGeneration: Long,
+        val createdAtWallMs: Long,
+        val expiresAtWallMs: Long,
+        val expiresAtElapsedMs: Long,
+        val revokedReason: AutoIsfOverrideState? = null,
+    )
+
     /** R12-F1: identitaetsgebundener Terminalisierungs-Auftrag — nie nur ein Reason-String. */
     data class PendingTerminal(val capability: String, val leaseId: String, val leaseVersion: Long, val reason: String)
 
@@ -122,6 +145,9 @@ class AutoIsfValueLeaseCoordinator @Inject constructor(
             forcedValidateOnly = sp.getBoolean("forced_validate_only", false),
         )
     }
+    @VisibleForTesting internal var ratioReader: () -> Double = { preferences.get(ValueOverlayPolicy.RATIO_KEY) }
+    @VisibleForTesting internal var weightReader: (String) -> Double =
+        { field -> ValueOverlayPolicy.WEIGHT_KEYS[field]?.let { preferences.get(it) } ?: 0.0 }
     @VisibleForTesting internal var wallClock: () -> Long = { System.currentTimeMillis() }
     @VisibleForTesting internal var elapsedClock: () -> Long = { android.os.SystemClock.elapsedRealtime() }
 
@@ -130,6 +156,8 @@ class AutoIsfValueLeaseCoordinator @Inject constructor(
     @VisibleForTesting internal val baseGeneration = AtomicLong(0)
     private val gateObservation = AtomicReference(GateObservation(null))
     @VisibleForTesting internal val pendingTerminals = ConcurrentLinkedQueue<PendingTerminal>()
+    /** Slots der generischen Wert-Leases; IOBTH bleibt bewusst in [published]. */
+    @VisibleForTesting internal val publishedValues = AtomicReference<Map<AutoIsfCapability, ValueLease>>(emptyMap())
 
     /** Externe Basis-Writes (SP-Listener-Fangnetz, R9-F5): Generation invalidiert auch wertgleiche Writes. */
     fun onExternalBaseWrite() {
@@ -235,36 +263,110 @@ class AutoIsfValueLeaseCoordinator @Inject constructor(
 
     // ---- READ-Pfad (APS/Trigger/Export/Status) — lockfrei, latcht irreversibel ----
 
+    /**
+     * Die EINE Bewertung "darf diese Lease jetzt noch gelten?" — Gate, Gate-Generation,
+     * Uhren-Anomalie, TTL, Fremdaenderung. Beide Pfade (iobTH und generisch) nutzen sie; nur
+     * die Basis-Pruefung unterscheidet sich und kommt deshalb als [baseUnchanged] herein.
+     * Zwei Kopien dieser Latch-Regeln wuerden frueher oder spaeter auseinanderlaufen.
+     */
+    private fun revokeReasonFor(
+        cap: AutoIsfCapability,
+        obs: GateObservation,
+        leaseGateGeneration: Long,
+        createdAtWallMs: Long,
+        expiresAtWallMs: Long,
+        expiresAtElapsedMs: Long,
+        wallNow: Long,
+        elapsedNow: Long,
+        baseUnchanged: () -> Boolean,
+    ): AutoIsfOverrideState? = when {
+        obs.gates == null || obs.gates.unsafe(cap) -> obs.gates?.unsafeReason(cap) ?: AutoIsfOverrideState.DISABLED
+        // R12-F2: Gate war ZWISCHEN den Snapshots unsicher (AUS→AN) — Generation verraet es.
+        leaseGateGeneration != obs.generation(cap) -> obs.lastUnsafeReason(cap) ?: AutoIsfOverrideState.DISABLED
+        wallNow < createdAtWallMs - CLOCK_ANOMALY_TOLERANCE_MS -> AutoIsfOverrideState.CLOCK_ANOMALY
+        wallNow >= expiresAtWallMs || elapsedNow >= expiresAtElapsedMs -> AutoIsfOverrideState.EXPIRED
+        !baseUnchanged() -> AutoIsfOverrideState.FOREIGN_MODIFIED
+        else -> null
+    }
+
+    /** Aktueller Zustand einer generischen Lease; latcht Widerrufe wie der iobTH-Pfad. */
+    private fun evaluateValueLease(cap: AutoIsfCapability): Pair<ValueLease, AutoIsfOverrideState?>? {
+        while (true) {
+            val all = publishedValues.get()
+            val lease = all[cap] ?: return null
+            lease.revokedReason?.let { return lease to it }
+            val obs = observeGates()
+            val reason = revokeReasonFor(
+                cap = cap, obs = obs, leaseGateGeneration = lease.gateGeneration,
+                createdAtWallMs = lease.createdAtWallMs, expiresAtWallMs = lease.expiresAtWallMs,
+                expiresAtElapsedMs = lease.expiresAtElapsedMs,
+                wallNow = wallClock(), elapsedNow = elapsedClock(),
+                baseUnchanged = {
+                    lease.baseGeneration == baseGeneration.get() &&
+                        lease.baseRaw.all { (field, v) -> ValueOverlayPolicy.sameValue(currentBase(cap, field), v) }
+                },
+            ) ?: return lease to null
+            if (publishedValues.compareAndSet(all, all + (cap to lease.copy(revokedReason = reason)))) {
+                pendingTerminals.add(PendingTerminal(cap.name, lease.leaseId, lease.leaseVersion, reason.name))
+                return lease to reason
+            }
+        }
+    }
+
+    private fun currentBase(cap: AutoIsfCapability, field: String): Double =
+        if (cap == AutoIsfCapability.SMBRATIO) ratioReader() else weightReader(field)
+
     override fun snapshot(): EffectiveAutoIsfSettingsProvider.Snapshot {
         while (true) {
             val base = basePercentReader()
             val obs = observeGates()
-            val p = published.get() ?: return none(base)
-            p.revokedReason?.let { return revokedSnapshot(base, p, it) }
+            val p = published.get() ?: return withValueOverlays(none(base))
+            p.revokedReason?.let { return withValueOverlays(revokedSnapshot(base, p, it)) }
 
-            val wallNow = wallClock()
-            val elapsedNow = elapsedClock()
-            val reason: AutoIsfOverrideState? = when {
-                obs.gates!!.unsafe -> obs.gates.unsafeReason
-                // R12-F2: Gate war ZWISCHEN den Snapshots unsicher (AUS→AN) — Generation verraet es.
-                p.gateGeneration != obs.generation -> obs.lastUnsafeReason ?: AutoIsfOverrideState.DISABLED
-                wallNow < p.createdAtWallMs - CLOCK_ANOMALY_TOLERANCE_MS -> AutoIsfOverrideState.CLOCK_ANOMALY
-                wallNow >= p.expiresAtWallMs || elapsedNow >= p.expiresAtElapsedMs -> AutoIsfOverrideState.EXPIRED
-                p.baseGeneration != baseGeneration.get() || p.basePercent != base -> AutoIsfOverrideState.FOREIGN_MODIFIED
-                else -> null
-            }
-            if (reason == null) return EffectiveAutoIsfSettingsProvider.Snapshot(
-                iobThPercentBase = base, iobThPercentEffective = p.setPercent,
-                overrideState = AutoIsfOverrideState.ACTIVE,
-                leaseId = p.leaseId, leaseVersion = p.leaseVersion, expiresAtWallMs = p.expiresAtWallMs,
+            // Dieselbe Bewertung wie fuer die generischen Leases; nur die Basis-Pruefung ist
+            // iobTH-spezifisch (Int-Gleichheit statt Toleranz).
+            val reason: AutoIsfOverrideState? = revokeReasonFor(
+                cap = AutoIsfCapability.IOBTH, obs = obs, leaseGateGeneration = p.gateGeneration,
+                createdAtWallMs = p.createdAtWallMs, expiresAtWallMs = p.expiresAtWallMs,
+                expiresAtElapsedMs = p.expiresAtElapsedMs,
+                wallNow = wallClock(), elapsedNow = elapsedClock(),
+                baseUnchanged = { p.baseGeneration == baseGeneration.get() && p.basePercent == base },
+            )
+            if (reason == null) return withValueOverlays(
+                EffectiveAutoIsfSettingsProvider.Snapshot(
+                    iobThPercentBase = base, iobThPercentEffective = p.setPercent,
+                    overrideState = AutoIsfOverrideState.ACTIVE,
+                    leaseId = p.leaseId, leaseVersion = p.leaseVersion, expiresAtWallMs = p.expiresAtWallMs,
+                )
             )
             // R12-F1: Pending NUR nach ERFOLGREICHEM CAS fuer GENAU diese Lease; verlorener
             // CAS (Command hat parallel ersetzt) ⇒ Schleife bewertet den FRISCHEN Zustand.
             if (published.compareAndSet(p, p.copy(revokedReason = reason))) {
                 pendingTerminals.add(PendingTerminal("IOBTH", p.leaseId, p.leaseVersion, reason.name))
-                return revokedSnapshot(base, p, reason)
+                return withValueOverlays(revokedSnapshot(base, p, reason))
             }
         }
+    }
+
+    /**
+     * Haengt die Overlays der generischen Capabilities an den Snapshot. Bewusst EIN Ort: jeder
+     * Rueckgabepfad von snapshot() laeuft hier durch, damit "ein Snapshot pro APS-Lauf" auch
+     * fuer Ratio und Gewichte gilt und kein Zweig sie versehentlich weglaesst.
+     *
+     * null/leer heisst immer "keine Lease, es gilt die Basis" — Leser muessen nie zwischen
+     * "kein Overlay" und "Overlay mit Basiswert" unterscheiden.
+     */
+    private fun withValueOverlays(base: EffectiveAutoIsfSettingsProvider.Snapshot): EffectiveAutoIsfSettingsProvider.Snapshot {
+        val ratio = evaluateValueLease(AutoIsfCapability.SMBRATIO)
+        val weights = evaluateValueLease(AutoIsfCapability.WEIGHTS)
+        return base.copy(
+            smbRatioEffective = ratio?.takeIf { it.second == null }
+                ?.first?.setScaled?.get(ValueOverlayPolicy.F_RATIO)?.let { ValueOverlayPolicy.unscaled(it) },
+            smbRatioState = ratio?.let { it.second ?: AutoIsfOverrideState.ACTIVE } ?: AutoIsfOverrideState.NONE,
+            weightOverrides = weights?.takeIf { it.second == null }
+                ?.first?.setScaled?.mapValues { ValueOverlayPolicy.unscaled(it.value) } ?: emptyMap(),
+            weightsState = weights?.let { it.second ?: AutoIsfOverrideState.ACTIVE } ?: AutoIsfOverrideState.NONE,
+        )
     }
 
     override fun isIobThLeaseActive(): Boolean = snapshot().overrideState == AutoIsfOverrideState.ACTIVE
@@ -383,6 +485,89 @@ class AutoIsfValueLeaseCoordinator @Inject constructor(
         }
         return ArmedResult(room, snapshot().overrideState)
     }
+
+    // ---- COMMAND-Pfad fuer die generischen Wert-Leases (SMBRATIO / WEIGHTS) ----
+
+    data class ValueBaseCapture(
+        val baseRaw: Map<String, Double>,
+        val baseGeneration: Long,
+        val gateGeneration: Long,
+        val wallNow: Long,
+        val expiresAtWallMs: Long,
+    )
+
+    /**
+     * Gleiche Reihenfolge wie [executeArmedSet]: Gates -> Capture -> Room -> ZWEITE Pruefung ->
+     * Publish. Die Basis wird ROH erfasst (Float-Rundtrip) und mit Toleranz nachgeprueft.
+     */
+    fun executeArmedValueSet(
+        cap: AutoIsfCapability,
+        setScaled: Map<String, Long>,
+        ttlMin: Int,
+        txn: (ValueBaseCapture) -> RoomSetResult,
+    ): ArmedResult = lock.withLock {
+        val preObs = observeGates()
+        if (preObs.gates == null || preObs.gates.unsafe(cap)) {
+            return ArmedResult(
+                RoomSetResult("REJECTED", LocalCommandProtocol.E_CAPABILITY_DISABLED, false, null, null, null),
+                valueLeaseState(cap),
+            )
+        }
+        val ttlMs = Math.multiplyExact(ttlMin.toLong(), 60_000L)
+        val wallNow = wallClock()
+        val elapsedDeadline = Math.addExact(elapsedClock(), ttlMs)
+        // NUR die Felder erfassen, die dieses Kommando ueberlagert — eine Teil-Nutzlast darf
+        // beim Auslaufen keine fremden Felder anfassen.
+        val capture = ValueBaseCapture(
+            baseRaw = setScaled.keys.associateWith { currentBase(cap, it) },
+            baseGeneration = baseGeneration.get(),
+            gateGeneration = preObs.generation(cap),
+            wallNow = wallNow,
+            expiresAtWallMs = Math.addExact(wallNow, ttlMs),
+        )
+        val room = txn(capture)
+        if (room.outcome != "APPLIED" || room.replayed) return ArmedResult(room, valueLeaseState(cap))
+
+        val lease = ValueLease(
+            capability = cap, leaseId = room.leaseId!!, leaseVersion = room.leaseVersion!!,
+            setScaled = setScaled, baseRaw = capture.baseRaw,
+            baseGeneration = capture.baseGeneration, gateGeneration = capture.gateGeneration,
+            createdAtWallMs = wallNow, expiresAtWallMs = capture.expiresAtWallMs,
+            expiresAtElapsedMs = elapsedDeadline,
+        )
+        val postObs = observeGates()
+        val revokeReason = revokeReasonFor(
+            cap = cap, obs = postObs, leaseGateGeneration = lease.gateGeneration,
+            createdAtWallMs = lease.createdAtWallMs, expiresAtWallMs = lease.expiresAtWallMs,
+            expiresAtElapsedMs = lease.expiresAtElapsedMs,
+            wallNow = wallNow, elapsedNow = elapsedClock(),
+            baseUnchanged = {
+                baseGeneration.get() == lease.baseGeneration &&
+                    lease.baseRaw.all { (f, v) -> ValueOverlayPolicy.sameValue(currentBase(cap, f), v) }
+            },
+        )
+        val stored = if (revokeReason != null) lease.copy(revokedReason = revokeReason) else lease
+        publishedValues.set(publishedValues.get() + (cap to stored))
+        return if (revokeReason != null) {
+            pendingTerminals.add(PendingTerminal(cap.name, lease.leaseId, lease.leaseVersion, revokeReason.name))
+            ArmedResult(room, revokeReason)
+        } else {
+            ArmedResult(room, AutoIsfOverrideState.ACTIVE)
+        }
+    }
+
+    fun executeArmedValueClear(cap: AutoIsfCapability, txn: () -> RoomSetResult): ArmedResult = lock.withLock {
+        val room = txn()
+        if (room.outcome == "APPLIED" && !room.replayed) {
+            publishedValues.set(publishedValues.get() - cap)
+            return ArmedResult(room, AutoIsfOverrideState.NONE)
+        }
+        return ArmedResult(room, valueLeaseState(cap))
+    }
+
+    /** Zustand einer generischen Lease ohne Snapshot-Umweg (fuer ACK/Status). */
+    fun valueLeaseState(cap: AutoIsfCapability): AutoIsfOverrideState =
+        evaluateValueLease(cap)?.let { it.second ?: AutoIsfOverrideState.ACTIVE } ?: AutoIsfOverrideState.NONE
 
     /** v1.1: AAPS-Prozessneustart beendet aktive Value-Leases BEVOR APS sie je nutzt.
      *  RAM startet ohnehin leer; der Aufrufer terminalisiert die Room-Zeile nachlaufend. */
