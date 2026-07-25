@@ -32,8 +32,16 @@ object ValueOverlayPolicy {
     /** Draht-Skala: Tausendstel. Deckt die feinsten UI-Schritte (0.01 bei pp/acce, 0.1 bei dura) exakt ab. */
     const val SCALE = 1000L
 
-    /** Float-Rundungstoleranz fuer den Basis-/Fremdschreiber-Vergleich (halbes Tausendstel). */
-    const val EPS = 0.0005
+    /**
+     * Float-Rundungstoleranz fuer den Basis-/Fremdschreiber-Vergleich.
+     *
+     * Befund 10 des Reviews: 0.0005 war ein halber DRAHT-Schritt, nicht eine Float-Toleranz.
+     * Der Rundtrip-Fehler, der die Toleranz ueberhaupt begruendet (0.23 -> 0.23000000417),
+     * liegt bei ~1e-8 — die alte Schwelle war fuenf Groessenordnungen zu gross und haette eine
+     * echte Fremdaenderung von exakt 0.0005 als "unveraendert" durchgehen lassen. 1e-6 deckt
+     * den Rundtrip mit zwei Groessenordnungen Reserve und laesst keine Luecke.
+     */
+    const val EPS = 1e-6
 
     /** Kanonische Feldnamen — sie stehen im Draht-Payload, in Room und im Policy-Hash. */
     const val F_RATIO = "ratio"

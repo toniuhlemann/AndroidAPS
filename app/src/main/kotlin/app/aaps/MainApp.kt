@@ -146,6 +146,19 @@ class MainApp : DaggerApplication() {
         // wertgleiche Schutz-Writes werden damit erkannt. Listener statisch gehalten.
         iobThBaseListener = android.content.SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
             if (key == app.aaps.core.keys.IntKey.ApsAutoIsfIobThPercent.key) valueLeaseCoordinator.onExternalBaseWrite()
+            // Befund 8: fuer die Double-Keys fehlte dieses Netz ganz — dort haette allein der
+            // Wertvergleich gegriffen, und ein WERTGLEICHER Schutz-Write waere unsichtbar geblieben.
+            if (key == app.aaps.core.keys.DoubleKey.ApsAutoIsfSmbDeliveryRatio.key)
+                valueLeaseCoordinator.onExternalBaseWrite(app.aaps.core.interfaces.aps.AutoIsfCapability.SMBRATIO)
+            if (key in setOf(
+                    app.aaps.core.keys.DoubleKey.ApsAutoIsfBgAccelWeight.key,
+                    app.aaps.core.keys.DoubleKey.ApsAutoIsfBgBrakeWeight.key,
+                    app.aaps.core.keys.DoubleKey.ApsAutoIsfPpWeight.key,
+                    app.aaps.core.keys.DoubleKey.ApsAutoIsfDuraWeight.key,
+                    app.aaps.core.keys.DoubleKey.ApsAutoIsfLowBgWeight.key,
+                    app.aaps.core.keys.DoubleKey.ApsAutoIsfHighBgWeight.key,
+                )
+            ) valueLeaseCoordinator.onExternalBaseWrite(app.aaps.core.interfaces.aps.AutoIsfCapability.WEIGHTS)
         }
         androidx.preference.PreferenceManager.getDefaultSharedPreferences(this).registerOnSharedPreferenceChangeListener(iobThBaseListener)
         // R12-F3: der Core-Exporter (plain object) bekommt denselben Provider-Singleton.

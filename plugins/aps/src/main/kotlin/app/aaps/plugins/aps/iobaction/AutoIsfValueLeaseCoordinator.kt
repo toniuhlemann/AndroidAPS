@@ -155,14 +155,35 @@ class AutoIsfValueLeaseCoordinator @Inject constructor(
     private val lock = ReentrantLock()
     @VisibleForTesting internal val published = AtomicReference<PublishedLease?>(null)
     @VisibleForTesting internal val baseGeneration = AtomicLong(0)
+    /**
+     * Befund 8: die Basis-Generation war EINE gemeinsame Zahl. Jeder Fremdschreiber-Bump — egal
+     * fuer welchen Wert — haette damit auch die Leases der anderen Capabilities getoetet. Die
+     * Capability-Unabhaengigkeit (Invariante 6) galt also nur fuer die Gates, nicht fuer die
+     * Basis. [baseGeneration] bleibt die IOBTH-Zahl (bestehender Pfad unveraendert), die
+     * uebrigen liegen hier.
+     */
+    private val baseGenerations = AtomicReference<Map<AutoIsfCapability, Long>>(emptyMap())
+
+    private fun baseGenerationOf(cap: AutoIsfCapability): Long =
+        if (cap == AutoIsfCapability.IOBTH) baseGeneration.get() else baseGenerations.get()[cap] ?: 0L
+
+    private fun bumpBaseGeneration(cap: AutoIsfCapability) {
+        if (cap == AutoIsfCapability.IOBTH) { baseGeneration.incrementAndGet(); return }
+        while (true) {
+            val cur = baseGenerations.get()
+            if (baseGenerations.compareAndSet(cur, cur + (cap to (cur[cap] ?: 0L) + 1L))) return
+        }
+    }
     private val gateObservation = AtomicReference(GateObservation(null))
     @VisibleForTesting internal val pendingTerminals = ConcurrentLinkedQueue<PendingTerminal>()
     /** Slots der generischen Wert-Leases; IOBTH bleibt bewusst in [published]. */
     @VisibleForTesting internal val publishedValues = AtomicReference<Map<AutoIsfCapability, ValueLease>>(emptyMap())
 
     /** Externe Basis-Writes (SP-Listener-Fangnetz, R9-F5): Generation invalidiert auch wertgleiche Writes. */
-    fun onExternalBaseWrite() {
-        baseGeneration.incrementAndGet()
+    fun onExternalBaseWrite() = onExternalBaseWrite(AutoIsfCapability.IOBTH)
+
+    fun onExternalBaseWrite(cap: AutoIsfCapability) {
+        bumpBaseGeneration(cap)
     }
 
     /** Fangnetz-Pfad (SP-Listener/sonstige Writer): beobachtet die Gates nachtraeglich. */
@@ -303,7 +324,7 @@ class AutoIsfValueLeaseCoordinator @Inject constructor(
                 expiresAtElapsedMs = lease.expiresAtElapsedMs,
                 wallNow = wallClock(), elapsedNow = elapsedClock(),
                 baseUnchanged = {
-                    lease.baseGeneration == baseGeneration.get() &&
+                    lease.baseGeneration == baseGenerationOf(cap) &&
                         lease.baseRaw.all { (field, v) -> ValueOverlayPolicy.sameValue(currentBase(cap, field), v) }
                 },
             ) ?: return lease to null
@@ -395,14 +416,24 @@ class AutoIsfValueLeaseCoordinator @Inject constructor(
     // ---- WRITER-Port (ActionSetIobTH, R10-G1) ----
 
     override fun invalidateBeforeExternalWrite(capability: AutoIsfCapability, reason: String): Boolean = lock.withLock {
+        // Befund 8: der Parameter wurde frueher ignoriert — jeder Aufruf traf IOBTH und bumpte
+        // die gemeinsame Generation, tötete also auch Ratio-/Weights-Leases.
         // Generation IMMER bumpen (faengt wertgleiche Schutz-Writes, R9-F5) …
-        baseGeneration.incrementAndGet()
-        // … und eine aktive Lease sofort im RAM widerrufen (Schutz gewinnt vor dem
-        // naechsten APS-Snapshot, beweisbar statt eventual-consistent).
-        val p = published.get()
-        if (p != null && p.revokedReason == null) {
-            published.set(p.copy(revokedReason = AutoIsfOverrideState.FOREIGN_MODIFIED))
-            pendingTerminals.add(PendingTerminal("IOBTH", p.leaseId, p.leaseVersion, AutoIsfOverrideState.FOREIGN_MODIFIED.name))
+        bumpBaseGeneration(capability)
+        // … und eine aktive Lease DIESER Capability sofort im RAM widerrufen (Schutz gewinnt
+        // vor dem naechsten APS-Snapshot, beweisbar statt eventual-consistent).
+        if (capability == AutoIsfCapability.IOBTH) {
+            val p = published.get()
+            if (p != null && p.revokedReason == null) {
+                published.set(p.copy(revokedReason = AutoIsfOverrideState.FOREIGN_MODIFIED))
+                pendingTerminals.add(PendingTerminal("IOBTH", p.leaseId, p.leaseVersion, AutoIsfOverrideState.FOREIGN_MODIFIED.name))
+            }
+        } else {
+            val cur = publishedValues.get()[capability]
+            if (cur != null && cur.revokedReason == null) {
+                putValueLease(capability, cur.copy(revokedReason = AutoIsfOverrideState.FOREIGN_MODIFIED))
+                pendingTerminals.add(PendingTerminal(capability.name, cur.leaseId, cur.leaseVersion, AutoIsfOverrideState.FOREIGN_MODIFIED.name))
+            }
         }
         true   // RAM-Widerruf kann nicht fehlschlagen; Room-Terminalisierung laeuft nach.
     }
@@ -521,7 +552,7 @@ class AutoIsfValueLeaseCoordinator @Inject constructor(
         // beim Auslaufen keine fremden Felder anfassen.
         val capture = ValueBaseCapture(
             baseRaw = setScaled.keys.associateWith { currentBase(cap, it) },
-            baseGeneration = baseGeneration.get(),
+            baseGeneration = baseGenerationOf(cap),
             gateGeneration = preObs.generation(cap),
             wallNow = wallNow,
             expiresAtWallMs = Math.addExact(wallNow, ttlMs),
@@ -529,10 +560,14 @@ class AutoIsfValueLeaseCoordinator @Inject constructor(
         val room = txn(capture)
         if (room.outcome != "APPLIED" || room.replayed) return ArmedResult(room, valueLeaseState(cap))
 
+        // Befund 7: bei einem Replacement erbt Room die Kohorte des ERSTEN SET. Der RAM muss
+        // dieselbe uebernehmen — sonst verzeiht er ein Gate-AUS→AN, das zwischen den beiden SETs
+        // lag, obwohl Room es festhaelt (R12-F5, im iobTH-Pfad seit jeher so).
         val lease = ValueLease(
             capability = cap, leaseId = room.leaseId!!, leaseVersion = room.leaseVersion!!,
             setScaled = setScaled, baseRaw = capture.baseRaw,
-            baseGeneration = capture.baseGeneration, gateGeneration = capture.gateGeneration,
+            baseGeneration = room.baseGenerationUsed ?: capture.baseGeneration,
+            gateGeneration = room.gateGenerationUsed ?: capture.gateGeneration,
             createdAtWallMs = wallNow, expiresAtWallMs = capture.expiresAtWallMs,
             expiresAtElapsedMs = elapsedDeadline,
         )
@@ -543,7 +578,7 @@ class AutoIsfValueLeaseCoordinator @Inject constructor(
             expiresAtElapsedMs = lease.expiresAtElapsedMs,
             wallNow = wallNow, elapsedNow = elapsedClock(),
             baseUnchanged = {
-                baseGeneration.get() == lease.baseGeneration &&
+                baseGenerationOf(cap) == lease.baseGeneration &&
                     lease.baseRaw.all { (f, v) -> ValueOverlayPolicy.sameValue(currentBase(cap, f), v) }
             },
         )
