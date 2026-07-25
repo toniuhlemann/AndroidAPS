@@ -1632,6 +1632,8 @@ open class OpenAPSAutoISFPlugin @Inject constructor(
                                 newChannel = if (prefKey == "channel_enabled") newValue else null,
                                 newIobth = if (prefKey == "iobth_capability_enabled") newValue else null,
                                 newAutoState = if (prefKey == "autostate_capability_enabled") newValue else null,
+                                newSmbRatio = if (prefKey == "smbratio_capability_enabled") newValue else null,
+                                newWeights = if (prefKey == "weights_capability_enabled") newValue else null,
                                 newForcedVo = if (prefKey == "forced_validate_only") newValue else null,
                                 write = writeGate,
                             )
@@ -1644,6 +1646,8 @@ open class OpenAPSAutoISFPlugin @Inject constructor(
             // A1 (G3): NUR der implementierte IOBTH-Schalter — WEIGHTS/SMBR erscheinen erst mit B1/B2.
             addPreference(switchPref("iobth_capability_enabled", "iobTH-Capability (A1)", "erlaubt SET/CLEAR_IOBTH als Wert-Lease (Basis bleibt unangetastet; TTL-begrenzt; nur mit aktivem Kanal)"))
             addPreference(switchPref("autostate_capability_enabled", "Automation-State-Capability", "erlaubt SET/CLEAR_AUTOSTATE als Wert-Lease auf AAPS-Automation-States (nur existierende States, nur deren eigene Werte; TTL-begrenzt)"))
+            addPreference(switchPref("smbratio_capability_enabled", "SMB-Ratio-Capability", "erlaubt SET/CLEAR_SMBRATIO als Wert-Lease (Basis bleibt unangetastet; TTL-begrenzt)"))
+            addPreference(switchPref("weights_capability_enabled", "Weights-Capability (acce/brake/pp/dura/Range)", "erlaubt SET/CLEAR_WEIGHTS als Wert-Lease mit TEIL-Nutzlast — nur genannte Gewichte werden ueberlagert"))
             addPreference(switchPref("forced_validate_only", "Validate-only erzwingen", "Kanal validiert nur (VALIDATED), mutiert NIE — Pilotmodus (wirkt auf ALLE Capabilities)"))
             addPreference(androidx.preference.Preference(context).apply {
                 title = "Secret generieren & anzeigen"

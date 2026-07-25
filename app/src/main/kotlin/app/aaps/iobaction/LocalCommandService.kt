@@ -10,6 +10,7 @@ import android.os.IBinder
 import app.aaps.plugins.aps.iobaction.AutoIsfValueLeaseCoordinator
 import app.aaps.plugins.aps.iobaction.LocalCommandAuth
 import app.aaps.plugins.aps.iobaction.AutoStateLeaseCoordinator
+import app.aaps.plugins.aps.iobaction.ValueOverlayPolicy
 import app.aaps.plugins.aps.iobaction.LocalCommandAutoStatePolicy
 import app.aaps.plugins.aps.iobaction.LocalCommandIobthPolicy
 import app.aaps.plugins.aps.iobaction.LocalCommandPolicy
@@ -34,6 +35,8 @@ class LocalCommandService : Service() {
         const val KEY_TT = "tt_capability_enabled"
         const val KEY_IOBTH = "iobth_capability_enabled"    // A1: eigener Schalter je Wert-Hebel
         const val KEY_AUTOSTATE = "autostate_capability_enabled"
+        const val KEY_SMBRATIO = "smbratio_capability_enabled"
+        const val KEY_WEIGHTS = "weights_capability_enabled"
         const val KEY_FORCED_VALIDATE = "forced_validate_only"
         /** v1.1/R10: AAPS-Prozessneustart beendet aktive Value-Leases BEVOR APS sie je nutzt. */
         private val processRestartDone = java.util.concurrent.atomic.AtomicBoolean(false)
@@ -123,6 +126,8 @@ class LocalCommandService : Service() {
                 forcedValidateOnly = sp.getBoolean(KEY_FORCED_VALIDATE, false),
                 iobthCapabilityEnabled = sp.getBoolean(KEY_IOBTH, false),
                 autoStateCapabilityEnabled = sp.getBoolean(KEY_AUTOSTATE, false),
+                smbRatioCapabilityEnabled = sp.getBoolean(KEY_SMBRATIO, false),
+                weightsCapabilityEnabled = sp.getBoolean(KEY_WEIGHTS, false),
             ),
             nowMs = System.currentTimeMillis(),
             serviceInstanceId = serviceInstanceId,
@@ -134,6 +139,10 @@ class LocalCommandService : Service() {
                         executeValueMutation(req, validateOnly)
                     LocalCommandProtocol.Cmd.SET_AUTOSTATE, LocalCommandProtocol.Cmd.CLEAR_AUTOSTATE ->
                         executeAutoStateMutation(req, validateOnly)
+                    LocalCommandProtocol.Cmd.SET_SMBRATIO, LocalCommandProtocol.Cmd.CLEAR_SMBRATIO ->
+                        executeOverlayMutation(req, validateOnly, app.aaps.core.interfaces.aps.AutoIsfCapability.SMBRATIO)
+                    LocalCommandProtocol.Cmd.SET_WEIGHTS, LocalCommandProtocol.Cmd.CLEAR_WEIGHTS ->
+                        executeOverlayMutation(req, validateOnly, app.aaps.core.interfaces.aps.AutoIsfCapability.WEIGHTS)
                     else -> executeMutation(req, validateOnly)
                 }
             } else null,
@@ -457,6 +466,127 @@ class LocalCommandService : Service() {
     private fun basePayload(c: AutoStateLeaseCoordinator.BaseCapture) =
         if (c.baseKnown && c.baseValue != null) """{"name":"${c.stateName}","known":true,"value":"${c.baseValue}"}"""
         else """{"name":"${c.stateName}","known":false}"""
+
+    /**
+     * SMBRATIO/WEIGHTS ueber den generischen Wert-Lease-Pfad. Gleiche Reihenfolge wie ueberall:
+     * Nachlauf-Terminalisierung, statische Policy-Vorpruefung, Room als Linearization Point,
+     * Publish erst nach APPLIED.
+     */
+    private fun executeOverlayMutation(
+        req: LocalCommandProtocol.Request,
+        validateOnly: Boolean,
+        cap: app.aaps.core.interfaces.aps.AutoIsfCapability,
+    ): Map<String, Any> {
+        val repo = LocalCommandRuntime.repository
+        val coordinator = LocalCommandRuntime.valueLeaseCoordinator
+        if (repo == null || coordinator == null) return mapOf(
+            "protocolVersion" to LocalCommandProtocol.PROTOCOL_VERSION, "outcome" to "REJECTED",
+            "replayed" to false, "errorCode" to LocalCommandProtocol.E_MUTATION_UNAVAILABLE)
+        val now = System.currentTimeMillis()
+        val isRatio = cap == app.aaps.core.interfaces.aps.AutoIsfCapability.SMBRATIO
+        val isSet = req.cmd == LocalCommandProtocol.Cmd.SET_SMBRATIO || req.cmd == LocalCommandProtocol.Cmd.SET_WEIGHTS
+        while (true) {
+            val pt = coordinator.peekPendingTerminal() ?: break
+            val ok = runCatching {
+                repo.runTransactionForResult(app.aaps.database.transactions.TerminalizeValueLeaseTransaction(
+                    pt.capability, pt.reason, now, pt.leaseId, pt.leaseVersion)).blockingGet()
+            }.isSuccess
+            if (ok) coordinator.ackPendingTerminal(pt) else break
+        }
+        val serverHash = if (isRatio) ValueOverlayPolicy.ratioHash() else ValueOverlayPolicy.weightsHash()
+        val scaled: Map<String, Long> =
+            if (!isSet) emptyMap()
+            else if (isRatio) mapOf(ValueOverlayPolicy.F_RATIO to req.ratioScaled!!)
+            else req.weightsScaled!!
+        val policyError = if (isSet) when {
+            req.clientPolicyHash != serverHash -> "REJECTED_POLICY_VERSION"
+            isRatio && !ValueOverlayPolicy.isRatioAllowed(req.ratioScaled!!) -> "REJECTED_POLICY"
+            !isRatio && !ValueOverlayPolicy.areWeightsAllowed(req.weightsScaled!!) -> "REJECTED_POLICY"
+            else -> null
+        } else null
+        val requestHash = java.security.MessageDigest.getInstance("SHA-256")
+            .digest(req.canonicalString.toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }
+
+        fun runTxn(capture: AutoIsfValueLeaseCoordinator.ValueBaseCapture?): AutoIsfValueLeaseCoordinator.RoomSetResult {
+            val tx = app.aaps.database.transactions.ExecuteValueLeaseCommandTransaction(
+                cmd = if (isSet) app.aaps.database.transactions.ExecuteValueLeaseCommandTransaction.Cmd.SET
+                else app.aaps.database.transactions.ExecuteValueLeaseCommandTransaction.Cmd.CLEAR,
+                capability = cap.name, requestId = req.requestId, requestHash = requestHash,
+                nowMs = now, validateOnly = validateOnly,
+                setPayload = if (isSet) scaledJson(scaled) else null,
+                ttlMin = req.ttlMin, expiresAtWallMs = capture?.expiresAtWallMs,
+                basePayload = capture?.let { rawJson(it.baseRaw) },
+                baseGeneration = capture?.baseGeneration, gateGeneration = capture?.gateGeneration,
+                currentPolicyHash = serverHash, expectedState = req.expectedState,
+                expectedLeaseId = req.expectedLeaseId, expectedLeaseVersion = req.expectedLeaseVersion,
+                expectedOwnerPolicyHash = req.expectedOwnerPolicyHash, policyErrorCode = policyError,
+            )
+            val r = try {
+                repo.runTransactionForResult(tx).blockingGet()
+            } catch (_: app.aaps.database.transactions.ExecuteValueLeaseCommandTransaction.ValueLeaseConflictException) {
+                runCatching {
+                    repo.runTransactionForResult(app.aaps.database.transactions.PersistValueLeaseRejectTransaction(
+                        if (isSet) "SET" else "CLEAR", cap.name, req.requestId, requestHash,
+                        "REJECTED_STATE_CONFLICT", now)).blockingGet()
+                }
+                return AutoIsfValueLeaseCoordinator.RoomSetResult("REJECTED", "REJECTED_STATE_CONFLICT", false, null, null, null)
+            }
+            return AutoIsfValueLeaseCoordinator.RoomSetResult(
+                r.outcome, r.errorCode, r.replayed, r.resultJson, r.leaseId, r.leaseVersion,
+                baseGenerationUsed = r.baseGenerationUsed, gateGenerationUsed = r.gateGenerationUsed,
+            )
+        }
+
+        val (room, leaseState) = when {
+            validateOnly -> runTxn(null) to coordinator.valueLeaseState(cap)
+            isSet -> {
+                val a = coordinator.executeArmedValueSet(cap, scaled, req.ttlMin!!) { runTxn(it) }
+                a.room to a.currentLeaseState
+            }
+            else -> {
+                val a = coordinator.executeArmedValueClear(cap) { runTxn(null) }
+                a.room to a.currentLeaseState
+            }
+        }
+
+        var auditStatus = when {
+            room.replayed -> "SKIPPED_REPLAY"
+            room.outcome != "APPLIED" -> "SKIPPED_NO_MUTATION"
+            else -> "WRITTEN"
+        }
+        if (!room.replayed && room.outcome == "APPLIED") runCatching {
+            LocalCommandRuntime.persistenceLayer?.insertUserEntries(listOf(
+                app.aaps.core.data.model.UE(
+                    timestamp = now,
+                    action = app.aaps.core.data.ue.Action.CAREPORTAL,
+                    source = app.aaps.core.data.ue.Sources.Automation,
+                    note = "IOB-Action lokal: ${req.cmd.name} ${scaledJson(scaled)} ttl=${req.ttlMin ?: ""} -> ${room.outcome}",
+                    values = listOf(),
+                )
+            ))?.blockingGet()
+        }.onFailure { auditStatus = "FAILED" }
+
+        return buildMap {
+            put("protocolVersion", LocalCommandProtocol.PROTOCOL_VERSION)
+            put("requestId", req.requestId)
+            put("outcome", room.outcome)
+            put("replayed", room.replayed)
+            put("fallbackEligible", false)
+            put("auditStatus", auditStatus)
+            put("currentLeaseState", leaseState.name)
+            room.resultJson?.let { put("commandResult", it) }
+            room.errorCode?.let { put("errorCode", it) }
+            room.leaseId?.let { put("leaseId", it) }
+            room.leaseVersion?.let { put("leaseVersion", it) }
+        }
+    }
+
+    /** Kanonische Payloads: sortierte Schluessel, damit Room-Zeilen vergleichbar bleiben. */
+    private fun scaledJson(m: Map<String, Long>) =
+        m.entries.sortedBy { it.key }.joinToString(",", "{", "}") { "\"${it.key}\":${it.value}" }
+
+    private fun rawJson(m: Map<String, Double>) =
+        m.entries.sortedBy { it.key }.joinToString(",", "{", "}") { "\"${it.key}\":${it.value}" }
 
     private fun readOwnedTt(): Map<String, Any>? = runCatching {
         val r = LocalCommandRuntime.repository!!
