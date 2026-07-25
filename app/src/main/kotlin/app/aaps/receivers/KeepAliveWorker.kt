@@ -132,12 +132,19 @@ class KeepAliveWorker(
         }
         lastRun = dateUtil.now()
 
-        // AUTOSTATE-Wachposten ALARMGETRIEBEN (Runde 3 / F2). Der 60s-Handler in MainApp rechnet
-        // in uptimeMillis und steht im Deep Sleep — eine Lease konnte ihre Frist unbegrenzt
-        // ueberziehen, waehrend die Verbraucher (AAPS-Automationen) ueber BG-Wakeups weiterliefen.
-        // KeepAlive kommt per Alarm und ueberlebt Doze. EHRLICH DAZU (Runde 4): das ist ein
-        // 5-Minuten-Raster, keine sekundengenaue Frist — im Doze kann eine Lease also weiterhin
-        // um bis zu ~5 min ueberziehen. Aus "unbegrenzt" wird "begrenzt", nicht "exakt".
+        // AUTOSTATE-Wachposten (F2). Der 60s-Handler in MainApp rechnet in uptimeMillis und
+        // steht im Deep Sleep — eine Lease konnte ihre Frist dort unbegrenzt ueberziehen,
+        // waehrend die Verbraucher (AAPS-Automationen) ueber BG-Wakeups weiterliefen.
+        //
+        // PRAEZISE (Runde 5 korrigierte meine frueheren Formulierungen): das hier ist
+        // WorkManager, NICHT AlarmManager — "alarmgetrieben" war schlicht falsch. Im Doze
+        // verschiebt JobScheduler die Arbeit, sofern die App nicht von der Akku-Optimierung
+        // ausgenommen ist. AAPS verlangt diese Ausnahme ohnehin, weshalb der ~5-Minuten-Takt
+        // in der Praxis traegt — aber die Frist haengt an dieser Voraussetzung und ist weder
+        // sekundengenau noch garantiert. Aus "unbegrenzt" wird "in der Regel wenige Minuten".
+        //
+        // Der Early-Return oben (Schedule broken) liegt VOR dieser Stelle, die +5/+10-Instanzen
+        // ueberspringen den Wachposten also gelegentlich; der 15-min-Periodic traegt ihn sicher.
         runCatching {
             autoStateLeaseCoordinator.enforce(dateUtil.now(), android.os.SystemClock.elapsedRealtime())
         }

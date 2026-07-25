@@ -28,6 +28,10 @@ import javax.inject.Singleton
  *    und Verwandte). Steht beim Auslaufen oder beim CLEAR nicht mehr unser Wert, wird die Basis
  *    NICHT zurueckgeschrieben — wer nach uns geschrieben hat, besitzt den State. Sonst wuerde
  *    eine auslaufende Lease einen Schutz-Reset rueckgaengig machen.
+ *    AUSNAHME, ehrlich benannt: erkannt wird nur ueber den WERT. Schreibt eine Automation
+ *    exakt den Wert, den wir ohnehin halten, bleibt sie unsichtbar und wir kassieren beim
+ *    Ablauf ihren Write. Kostet einen Automations-Write pro Lease; warum kein Generations-
+ *    Netz dagegen steht, erklaert der Block weiter unten.
  *  - KEIN automatisches Nachsetzen. Waehrend die Lease laeuft, wird der Wert nicht zyklisch
  *    wieder durchgedrueckt. Wer nachsetzen will, muss ein neues Kommando schicken — sichtbar in
  *    den Entscheidungen des Viewers statt unsichtbar im Fork. Automatisches Nachsetzen wuerde
@@ -284,11 +288,6 @@ class AutoStateLeaseCoordinator @Inject constructor(
     }
 
     /** Nur wiederherstellen, wenn unser Wert noch steht UND es eine Basis gab. */
-    /**
-     * Nur wiederherstellen, wenn unser Wert noch steht, es eine Basis gab UND seit dem Setzen
-     * niemand sonst geschrieben hat. Die dritte Bedingung ist F4: ein WERTGLEICHER
-     * Automations-Write ist am Wert nicht erkennbar, an der Generation schon.
-     */
     private fun restoreIfStillOurs(p: Published) {
         val current = runCatching { automationState.getStateSnapshot(p.stateName) }.getOrNull()
         if (current?.known != true || current.value != p.setValue) return
