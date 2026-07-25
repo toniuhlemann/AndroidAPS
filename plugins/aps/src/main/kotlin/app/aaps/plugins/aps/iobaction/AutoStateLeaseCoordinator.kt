@@ -4,6 +4,7 @@ import app.aaps.core.interfaces.aps.AutoIsfCapability
 import app.aaps.core.interfaces.aps.AutoIsfOverrideState
 import app.aaps.core.interfaces.automation.AutomationStateInterface
 import java.util.concurrent.ConcurrentLinkedQueue
+import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -82,9 +83,31 @@ class AutoStateLeaseCoordinator @Inject constructor(
         val expiresAtWallMs: Long,
         val expiresAtElapsedMs: Long,
         val gateGeneration: Long,
+        val externalGeneration: Long,
     )
 
     private val published = AtomicReference<Published?>(null)
+
+    /**
+     * FREMDSCHREIBER-NETZ (Runde 3 / F4). Die Erkennung war rein WERTBASIERT: schreibt eine
+     * AAPS-Automation denselben Wert, den wir gesetzt haben, ist sie unsichtbar — und beim
+     * Ablauf macht restoreIfStillOurs dann genau ihren Write rueckgaengig, obwohl der
+     * Klassenkommentar Unantastbarkeit verspricht. Dieselbe Luecke, die R9-F5 fuer die
+     * Preferences mit einer Generation schliesst.
+     *
+     * [externalGeneration] zaehlt JEDE Aenderung am persistierten Automation-State-Blob. Unsere
+     * EIGENEN Schreibvorgaenge zaehlen nicht mit: der Aufrufer meldet sie ueber
+     * [noteOwnStateWrite], das die Lease sofort auf den dann gueltigen Stand nachfuehrt. Der
+     * SP-Listener feuert asynchron und kann danach noch einmal bumpen — dieser Rest faellt in
+     * die SICHERE Richtung: die Lease gilt als fremdberuehrt, es wird NICHT zurueckgeschrieben.
+     * Lieber ein Overlay einen Zyklus zu lange stehen lassen als den Schreibvorgang eines
+     * Schutz-Automaten aufheben.
+     */
+    private val externalGeneration = AtomicLong(0)
+
+    fun onExternalStateWrite() {
+        externalGeneration.incrementAndGet()
+    }
     private val pendingTerminals = ConcurrentLinkedQueue<PendingTerminal>()
 
     companion object {
@@ -189,6 +212,7 @@ class AutoStateLeaseCoordinator @Inject constructor(
                         expiresAtWallMs = capture.expiresAtWallMs,
                         expiresAtElapsedMs = Math.addExact(nowElapsed, Math.multiplyExact(ttlMin.toLong(), 60_000L)),
                         gateGeneration = capture.gateGeneration,
+                        externalGeneration = externalGeneration.get(),
                     )
                 )
             } else {
@@ -249,7 +273,7 @@ class AutoStateLeaseCoordinator @Inject constructor(
         // NUR das Fremdschreiber-Urteil braucht den Wert. Ist er nicht lesbar, wissen wir nichts —
         // dann nicht widerrufen, sondern beim naechsten Durchlauf erneut versuchen.
         val current = runCatching { automationState.getStateSnapshot(p.stateName) }.getOrNull() ?: return
-        if (!(current.known && current.value == p.setValue)) {
+        if (externalGeneration.get() != p.externalGeneration || !(current.known && current.value == p.setValue)) {
             // Fremdschreiber hat uebernommen: Lease stirbt, Basis bleibt UNANGETASTET.
             pendingTerminals.add(PendingTerminal(CAPABILITY, p.leaseId, p.leaseVersion, REASON_FOREIGN))
             published.set(null)
@@ -257,11 +281,24 @@ class AutoStateLeaseCoordinator @Inject constructor(
     }
 
     /** Nur wiederherstellen, wenn unser Wert noch steht UND es eine Basis gab. */
+    /**
+     * Nur wiederherstellen, wenn unser Wert noch steht, es eine Basis gab UND seit dem Setzen
+     * niemand sonst geschrieben hat. Die dritte Bedingung ist F4: ein WERTGLEICHER
+     * Automations-Write ist am Wert nicht erkennbar, an der Generation schon.
+     */
     private fun restoreIfStillOurs(p: Published) {
+        if (externalGeneration.get() != p.externalGeneration) return
         val current = runCatching { automationState.getStateSnapshot(p.stateName) }.getOrNull()
         if (current?.known != true || current.value != p.setValue) return
         if (!p.baseKnown || p.baseValue == null) return
         runCatching { automationState.setState(p.stateName, p.baseValue) }
+        noteOwnStateWrite()
+    }
+
+    /** Eigener Schreibvorgang: die Lease auf den dann gueltigen Stand nachfuehren. */
+    private fun noteOwnStateWrite() {
+        val cur = published.get() ?: return
+        published.set(cur.copy(externalGeneration = externalGeneration.get()))
     }
 
     fun currentState(): String = if (published.get() == null) STATE_NONE else STATE_ACTIVE
