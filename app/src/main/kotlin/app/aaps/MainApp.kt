@@ -107,6 +107,7 @@ class MainApp : DaggerApplication() {
     @Inject lateinit var persistenceLayer: PersistenceLayer
     @Inject lateinit var repository: app.aaps.database.AppRepository
     @Inject lateinit var valueLeaseCoordinator: app.aaps.plugins.aps.iobaction.AutoIsfValueLeaseCoordinator
+    @Inject lateinit var autoStateCoordinator: app.aaps.plugins.aps.iobaction.AutoStateLeaseCoordinator
     @Inject lateinit var dateUtil: DateUtil
     @Inject lateinit var uiInteraction: UiInteraction
     @Inject lateinit var processLifecycleListener: Provider<ProcessLifecycleListener>
@@ -139,7 +140,7 @@ class MainApp : DaggerApplication() {
         // LocalCommandChannel-Runtime (IobActionCoreExporter-Muster): bereits gebundene
         // Singletons an den nicht-DI-verwalteten Service durchreichen. Ohne init bleibt
         // der Mutationspfad REJECTED_MUTATION_UNAVAILABLE.
-        app.aaps.iobaction.LocalCommandRuntime.init(repository, persistenceLayer, valueLeaseCoordinator)
+        app.aaps.iobaction.LocalCommandRuntime.init(repository, persistenceLayer, valueLeaseCoordinator, autoStateCoordinator)
         // Capability-Matrix A1: SP-Fangnetz (R9-F5) — JEDER externe Write auf die iobTH-
         // Basis-Preference (Preference-UI, sonstige Writer) bumpt die Basis-Generation;
         // wertgleiche Schutz-Writes werden damit erkannt. Listener statisch gehalten.
