@@ -112,6 +112,14 @@ class LocalCommandService : Service() {
                     snap.expiresAtWallMs?.let { put("iobthLeaseExpiresAt", it) }
                 }
             }) else null,
+            // AUTOSTATE: Lease-Status + Policy-Hash, damit der Viewer die Capability ueberhaupt
+            // als vorhanden erkennt (der Transport gated auf autoStateCapabilityEnabled).
+            autoStateStatusProvider = LocalCommandRuntime.autoStateCoordinator?.let { asc ->
+                {
+                    asc.enforce(System.currentTimeMillis(), android.os.SystemClock.elapsedRealtime())
+                    asc.statusMap()
+                }
+            },
         )
         // Bundle-Rohwerte OHNE Typannahme extrahieren; Typpruefung macht der Core.
         val keys = runCatching { request?.keySet()?.toSet() }.getOrNull()
