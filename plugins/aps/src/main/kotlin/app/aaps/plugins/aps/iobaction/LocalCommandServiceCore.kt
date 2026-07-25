@@ -30,6 +30,9 @@ object LocalCommandServiceCore {
          *  Provider-Snapshot — R11: nie eine zweite Wahrheit). null = Feature nicht verdrahtet. */
         val iobthStatusProvider: (() -> Map<String, Any>)? = null,
         val autoStateStatusProvider: (() -> Map<String, Any>)? = null,
+        /** Lease-Zustand von SMBRATIO/WEIGHTS — ohne ihn kann der Viewer nicht wissen,
+         *  dass es die Capabilities ueberhaupt gibt (derselbe Fehler wie zuvor bei AUTOSTATE). */
+        val overlayStatusProvider: (() -> Map<String, Any>)? = null,
     )
 
     /** Rohwerte direkt aus dem Bundle (Any? — Typpruefung passiert HIER, nie im Glue). */
@@ -63,9 +66,14 @@ object LocalCommandServiceCore {
                         "startedAt" to env.startedAt,
                         "iobthCapabilityEnabled" to env.gates.iobthCapabilityEnabled,
                         "autoStateCapabilityEnabled" to env.gates.autoStateCapabilityEnabled,
+                        "smbRatioCapabilityEnabled" to env.gates.smbRatioCapabilityEnabled,
+                        "weightsCapabilityEnabled" to env.gates.weightsCapabilityEnabled,
+                        "serverSmbRatioPolicyHash" to ValueOverlayPolicy.ratioHash(),
+                        "serverWeightsPolicyHash" to ValueOverlayPolicy.weightsHash(),
                     ) + (owned?.let { mapOf("ownedTt" to "OWNED") + it } ?: mapOf("ownedTt" to "NONE")) +
                         (env.iobthStatusProvider?.invoke() ?: emptyMap()) +
-                        (env.autoStateStatusProvider?.invoke() ?: emptyMap())
+                        (env.autoStateStatusProvider?.invoke() ?: emptyMap()) +
+                        (env.overlayStatusProvider?.invoke() ?: emptyMap())
                 }
                 LocalCommandProtocol.Cmd.GET_COMMAND_STATUS -> {
                     val original = env.outcomeProvider?.invoke(req.queryRequestId!!)
