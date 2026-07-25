@@ -144,11 +144,7 @@ class MainApp : DaggerApplication() {
         // Capability-Matrix A1: SP-Fangnetz (R9-F5) — JEDER externe Write auf die iobTH-
         // Basis-Preference (Preference-UI, sonstige Writer) bumpt die Basis-Generation;
         // wertgleiche Schutz-Writes werden damit erkannt. Listener statisch gehalten.
-        // F4: der Automation-State-Blob liegt in DENSELBEN Default-Prefs. Jede Aenderung daran
-        // — auch eine wertgleiche — bumpt die Generation des AUTOSTATE-Koordinators, damit eine
-        // auslaufende Lease den Schreibvorgang eines Automaten nicht rueckgaengig macht.
         iobThBaseListener = android.content.SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
-            if (key == "automation_state_service") autoStateCoordinator.onExternalStateWrite()
             if (key == app.aaps.core.keys.IntKey.ApsAutoIsfIobThPercent.key) valueLeaseCoordinator.onExternalBaseWrite()
             // Befund 8: fuer die Double-Keys fehlte dieses Netz ganz — dort haette allein der
             // Wertvergleich gegriffen, und ein WERTGLEICHER Schutz-Write waere unsichtbar geblieben.
