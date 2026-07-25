@@ -9,6 +9,8 @@ import android.os.Bundle
 import android.os.IBinder
 import app.aaps.plugins.aps.iobaction.AutoIsfValueLeaseCoordinator
 import app.aaps.plugins.aps.iobaction.LocalCommandAuth
+import app.aaps.plugins.aps.iobaction.AutoStateLeaseCoordinator
+import app.aaps.plugins.aps.iobaction.LocalCommandAutoStatePolicy
 import app.aaps.plugins.aps.iobaction.LocalCommandIobthPolicy
 import app.aaps.plugins.aps.iobaction.LocalCommandPolicy
 import app.aaps.plugins.aps.iobaction.LocalCommandProtocol
@@ -93,18 +95,8 @@ class LocalCommandService : Service() {
                 when (req.cmd) {
                     LocalCommandProtocol.Cmd.SET_IOBTH, LocalCommandProtocol.Cmd.CLEAR_IOBTH ->
                         executeValueMutation(req, validateOnly)
-                    // AUTOSTATE Schritt 1: Draht steht (Protokoll/Policy/Schalter), der
-                    // Ausfuehrungspfad noch nicht. Bewusst ein ehrliches REJECT statt eines
-                    // Durchreichens in den TT-Zweig — ein halb verdrahtetes Kommando darf nie
-                    // in einem fremden Executor landen.
                     LocalCommandProtocol.Cmd.SET_AUTOSTATE, LocalCommandProtocol.Cmd.CLEAR_AUTOSTATE ->
-                        mapOf(
-                            "protocolVersion" to LocalCommandProtocol.PROTOCOL_VERSION,
-                            "requestId" to req.requestId,
-                            "outcome" to "REJECTED",
-                            "replayed" to false,
-                            "errorCode" to LocalCommandProtocol.E_MUTATION_UNAVAILABLE,
-                        )
+                        executeAutoStateMutation(req, validateOnly)
                     else -> executeMutation(req, validateOnly)
                 }
             } else null,
@@ -305,6 +297,117 @@ class LocalCommandService : Service() {
             room.leaseVersion?.let { put("leaseVersion", it) }
         }
     }
+
+    /**
+     * AUTOSTATE-Mutation. Gleiche Reihenfolge wie beim Wert-Lease: Nachlauf-Terminalisierung,
+     * statische Policy-Vorpruefung, Room-Transaktion als Linearization Point, State-Schreiben
+     * erst nach APPLIED.
+     */
+    private fun executeAutoStateMutation(req: LocalCommandProtocol.Request, validateOnly: Boolean): Map<String, Any> {
+        val repo = LocalCommandRuntime.repository
+        val coordinator = LocalCommandRuntime.autoStateCoordinator
+        if (repo == null || coordinator == null) return mapOf(
+            "protocolVersion" to LocalCommandProtocol.PROTOCOL_VERSION, "outcome" to "REJECTED",
+            "replayed" to false, "errorCode" to LocalCommandProtocol.E_MUTATION_UNAVAILABLE)
+        val now = System.currentTimeMillis()
+        val nowElapsed = android.os.SystemClock.elapsedRealtime()
+        coordinator.enforce(now, nowElapsed)
+        while (true) {
+            val pt = coordinator.peekPendingTerminal() ?: break
+            val ok = runCatching {
+                repo.runTransactionForResult(app.aaps.database.transactions.TerminalizeValueLeaseTransaction(
+                    pt.capability, pt.reason, now, pt.leaseId, pt.leaseVersion)).blockingGet()
+            }.isSuccess
+            if (ok) coordinator.ackPendingTerminal(pt) else break
+        }
+        val isSet = req.cmd == LocalCommandProtocol.Cmd.SET_AUTOSTATE
+        // Statische Vorpruefung. Die Wertliste kommt vom State SELBST, nicht aus der Policy —
+        // ein unbekannter State oder ein Wert ausserhalb SEINER Liste ist REJECTED_POLICY.
+        val policyError = if (isSet) when {
+            req.clientPolicyHash != LocalCommandAutoStatePolicy.hash() -> "REJECTED_POLICY_VERSION"
+            !LocalCommandAutoStatePolicy.isWellFormed(req.stateName!!, req.stateValue!!, req.ttlMin!!) -> "REJECTED_POLICY"
+            !coordinator.isValueAllowed(req.stateName!!, req.stateValue!!) -> "REJECTED_POLICY"
+            else -> null
+        } else null
+        val requestHash = java.security.MessageDigest.getInstance("SHA-256")
+            .digest(req.canonicalString.toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }
+
+        fun runTxn(capture: AutoStateLeaseCoordinator.BaseCapture?): AutoStateLeaseCoordinator.RoomSetResult {
+            val tx = app.aaps.database.transactions.ExecuteValueLeaseCommandTransaction(
+                cmd = if (isSet) app.aaps.database.transactions.ExecuteValueLeaseCommandTransaction.Cmd.SET
+                else app.aaps.database.transactions.ExecuteValueLeaseCommandTransaction.Cmd.CLEAR,
+                capability = AutoStateLeaseCoordinator.CAPABILITY, requestId = req.requestId,
+                requestHash = requestHash, nowMs = now, validateOnly = validateOnly,
+                setPayload = if (isSet) statePayload(req.stateName!!, req.stateValue!!) else null,
+                ttlMin = req.ttlMin, expiresAtWallMs = capture?.expiresAtWallMs,
+                basePayload = capture?.let { basePayload(it) },
+                baseGeneration = null, gateGeneration = null,
+                currentPolicyHash = LocalCommandAutoStatePolicy.hash(), expectedState = req.expectedState,
+                expectedLeaseId = req.expectedLeaseId, expectedLeaseVersion = req.expectedLeaseVersion,
+                expectedOwnerPolicyHash = req.expectedOwnerPolicyHash, policyErrorCode = policyError,
+            )
+            val r = try {
+                repo.runTransactionForResult(tx).blockingGet()
+            } catch (_: app.aaps.database.transactions.ExecuteValueLeaseCommandTransaction.ValueLeaseConflictException) {
+                runCatching {
+                    repo.runTransactionForResult(app.aaps.database.transactions.PersistValueLeaseRejectTransaction(
+                        if (isSet) "SET" else "CLEAR", AutoStateLeaseCoordinator.CAPABILITY,
+                        req.requestId, requestHash, "REJECTED_STATE_CONFLICT", now)).blockingGet()
+                }
+                return AutoStateLeaseCoordinator.RoomSetResult("REJECTED", "REJECTED_STATE_CONFLICT", false, null, null, null)
+            }
+            return AutoStateLeaseCoordinator.RoomSetResult(r.outcome, r.errorCode, r.replayed, r.resultJson, r.leaseId, r.leaseVersion)
+        }
+
+        val (room, leaseState) = when {
+            validateOnly -> runTxn(null) to coordinator.currentState()
+            isSet -> {
+                val a = coordinator.executeArmedSet(req.stateName!!, req.stateValue!!, req.ttlMin!!, now, nowElapsed) { runTxn(it) }
+                a.room to a.currentLeaseState
+            }
+            else -> {
+                val a = coordinator.executeArmedClear(now, nowElapsed) { runTxn(null) }
+                a.room to a.currentLeaseState
+            }
+        }
+
+        var auditStatus = when {
+            room.replayed -> "SKIPPED_REPLAY"
+            room.outcome != "APPLIED" -> "SKIPPED_NO_MUTATION"
+            else -> "WRITTEN"
+        }
+        if (!room.replayed && room.outcome == "APPLIED") runCatching {
+            LocalCommandRuntime.persistenceLayer?.insertUserEntries(listOf(
+                app.aaps.core.data.model.UE(
+                    timestamp = now,
+                    action = app.aaps.core.data.ue.Action.CAREPORTAL,
+                    source = app.aaps.core.data.ue.Sources.Automation,
+                    note = "IOB-Action lokal: ${req.cmd.name} ${req.stateName ?: ""}=${req.stateValue ?: ""} ttl=${req.ttlMin ?: ""} -> ${room.outcome} - Lease=$leaseState",
+                    values = listOf(),
+                )
+            ))?.blockingGet()
+        }.onFailure { auditStatus = "FAILED" }
+
+        return buildMap {
+            put("protocolVersion", LocalCommandProtocol.PROTOCOL_VERSION)
+            put("requestId", req.requestId)
+            put("outcome", room.outcome)
+            put("replayed", room.replayed)
+            put("fallbackEligible", false)
+            put("auditStatus", auditStatus)
+            put("currentLeaseState", leaseState)
+            room.resultJson?.let { put("commandResult", it) }
+            room.errorCode?.let { put("errorCode", it) }
+            room.leaseId?.let { put("leaseId", it) }
+            room.leaseVersion?.let { put("leaseVersion", it) }
+        }
+    }
+
+    /** Kanonische Payloads (ASCII, keine Whitespaces) - die Policy garantiert die Zeichenmenge. */
+    private fun statePayload(name: String, value: String) = """{"name":"$name","value":"$value"}"""
+    private fun basePayload(c: AutoStateLeaseCoordinator.BaseCapture) =
+        if (c.baseKnown && c.baseValue != null) """{"name":"${c.stateName}","known":true,"value":"${c.baseValue}"}"""
+        else """{"name":"${c.stateName}","known":false}"""
 
     private fun readOwnedTt(): Map<String, Any>? = runCatching {
         val r = LocalCommandRuntime.repository!!

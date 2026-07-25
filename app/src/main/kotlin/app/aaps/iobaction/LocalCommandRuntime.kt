@@ -19,14 +19,19 @@ object LocalCommandRuntime {
      *  fuer den nicht-DI-verwalteten Service durchgereicht. */
     @Volatile var valueLeaseCoordinator: app.aaps.plugins.aps.iobaction.AutoIsfValueLeaseCoordinator? = null
         private set
+    /** Capability AUTOSTATE: eigener, schlankerer Koordinator (Automation-States statt Preference). */
+    @Volatile var autoStateCoordinator: app.aaps.plugins.aps.iobaction.AutoStateLeaseCoordinator? = null
+        private set
 
     fun init(
         repository: AppRepository,
         persistenceLayer: PersistenceLayer,
         valueLeaseCoordinator: app.aaps.plugins.aps.iobaction.AutoIsfValueLeaseCoordinator? = null,
+        autoStateCoordinator: app.aaps.plugins.aps.iobaction.AutoStateLeaseCoordinator? = null,
     ) {
         this.repository = repository
         this.persistenceLayer = persistenceLayer
         this.valueLeaseCoordinator = valueLeaseCoordinator
+        this.autoStateCoordinator = autoStateCoordinator
     }
 }
