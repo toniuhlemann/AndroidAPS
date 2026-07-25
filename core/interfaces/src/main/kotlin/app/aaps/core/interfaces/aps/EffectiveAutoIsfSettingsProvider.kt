@@ -37,6 +37,19 @@ interface EffectiveAutoIsfSettingsProvider {
         val leaseId: String?,
         val leaseVersion: Long?,
         val expiresAtWallMs: Long?,
+        /**
+         * Weitere Wert-Overlays (ab 25.07.). ADDITIV mit Defaults: die bestehenden ~44
+         * Lesestellen bleiben unveraendert gueltig, iobTH-Felder aendern ihre Bedeutung nicht.
+         *
+         * null bzw. leer heisst IMMER "keine Lease, es gilt die Basis-Preference" — ein Leser
+         * muss also nie zwischen "kein Overlay" und "Overlay mit Basiswert" unterscheiden.
+         * Gewichte sind eine TEIL-Map: nur die genannten Schluessel sind ueberlagert, alle
+         * anderen stehen weiter auf ihrer Preference.
+         */
+        val smbRatioEffective: Double? = null,
+        val smbRatioState: AutoIsfOverrideState = AutoIsfOverrideState.NONE,
+        val weightOverrides: Map<String, Double> = emptyMap(),
+        val weightsState: AutoIsfOverrideState = AutoIsfOverrideState.NONE,
     )
 
     /** Ein Snapshot pro invoke() — der Aufrufer haelt ihn fuer den GESAMTEN Lauf. */
