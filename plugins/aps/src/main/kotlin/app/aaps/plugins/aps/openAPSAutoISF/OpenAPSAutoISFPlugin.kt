@@ -1642,6 +1642,7 @@ open class OpenAPSAutoISFPlugin @Inject constructor(
             addPreference(switchPref("tt_capability_enabled", "TT-Capability", "erlaubt SET/CANCEL fuer Auto-Executor-TTs (nur mit aktivem Kanal)"))
             // A1 (G3): NUR der implementierte IOBTH-Schalter — WEIGHTS/SMBR erscheinen erst mit B1/B2.
             addPreference(switchPref("iobth_capability_enabled", "iobTH-Capability (A1)", "erlaubt SET/CLEAR_IOBTH als Wert-Lease (Basis bleibt unangetastet; TTL-begrenzt; nur mit aktivem Kanal)"))
+            addPreference(switchPref("autostate_capability_enabled", "Automation-State-Capability", "erlaubt SET/CLEAR_AUTOSTATE als Wert-Lease auf AAPS-Automation-States (nur existierende States, nur deren eigene Werte; TTL-begrenzt)"))
             addPreference(switchPref("forced_validate_only", "Validate-only erzwingen", "Kanal validiert nur (VALIDATED), mutiert NIE — Pilotmodus (wirkt auf ALLE Capabilities)"))
             addPreference(androidx.preference.Preference(context).apply {
                 title = "Secret generieren & anzeigen"
