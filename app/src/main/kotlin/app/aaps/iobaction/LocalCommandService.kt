@@ -31,6 +31,7 @@ class LocalCommandService : Service() {
         const val KEY_CHANNEL = "channel_enabled"
         const val KEY_TT = "tt_capability_enabled"
         const val KEY_IOBTH = "iobth_capability_enabled"    // A1: eigener Schalter je Wert-Hebel
+        const val KEY_AUTOSTATE = "autostate_capability_enabled"
         const val KEY_FORCED_VALIDATE = "forced_validate_only"
         /** v1.1/R10: AAPS-Prozessneustart beendet aktive Value-Leases BEVOR APS sie je nutzt. */
         private val processRestartDone = java.util.concurrent.atomic.AtomicBoolean(false)
@@ -82,15 +83,30 @@ class LocalCommandService : Service() {
                 ttCapabilityEnabled = sp.getBoolean(KEY_TT, false),
                 forcedValidateOnly = sp.getBoolean(KEY_FORCED_VALIDATE, false),
                 iobthCapabilityEnabled = sp.getBoolean(KEY_IOBTH, false),
+                autoStateCapabilityEnabled = sp.getBoolean(KEY_AUTOSTATE, false),
             ),
             nowMs = System.currentTimeMillis(),
             serviceInstanceId = serviceInstanceId,
             startedAt = startedAt,
             serverPolicyHash = LocalCommandPolicy.hash(),
             mutationExecutor = if (repo != null) { req, validateOnly ->
-                if (req.cmd == LocalCommandProtocol.Cmd.SET_IOBTH || req.cmd == LocalCommandProtocol.Cmd.CLEAR_IOBTH)
-                    executeValueMutation(req, validateOnly)
-                else executeMutation(req, validateOnly)
+                when (req.cmd) {
+                    LocalCommandProtocol.Cmd.SET_IOBTH, LocalCommandProtocol.Cmd.CLEAR_IOBTH ->
+                        executeValueMutation(req, validateOnly)
+                    // AUTOSTATE Schritt 1: Draht steht (Protokoll/Policy/Schalter), der
+                    // Ausfuehrungspfad noch nicht. Bewusst ein ehrliches REJECT statt eines
+                    // Durchreichens in den TT-Zweig — ein halb verdrahtetes Kommando darf nie
+                    // in einem fremden Executor landen.
+                    LocalCommandProtocol.Cmd.SET_AUTOSTATE, LocalCommandProtocol.Cmd.CLEAR_AUTOSTATE ->
+                        mapOf(
+                            "protocolVersion" to LocalCommandProtocol.PROTOCOL_VERSION,
+                            "requestId" to req.requestId,
+                            "outcome" to "REJECTED",
+                            "replayed" to false,
+                            "errorCode" to LocalCommandProtocol.E_MUTATION_UNAVAILABLE,
+                        )
+                    else -> executeMutation(req, validateOnly)
+                }
             } else null,
             ownedTtProvider = if (repo != null) ({ readOwnedTt() }) else null,
             outcomeProvider = if (repo != null) ({ q -> readOutcome(q) }) else null,
