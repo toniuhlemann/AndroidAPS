@@ -5,10 +5,8 @@ import app.aaps.core.interfaces.aps.AutoIsfOverrideState
 import app.aaps.core.interfaces.automation.AutomationStateInterface
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.atomic.AtomicReference
-import java.util.concurrent.locks.ReentrantLock
 import javax.inject.Inject
 import javax.inject.Singleton
-import kotlin.concurrent.withLock
 
 /**
  * Capability AUTOSTATE — Lease-Koordinator fuer AAPS-Automation-States.
@@ -86,7 +84,6 @@ class AutoStateLeaseCoordinator @Inject constructor(
         val gateGeneration: Long,
     )
 
-    private val lock = ReentrantLock()
     private val published = AtomicReference<Published?>(null)
     private val pendingTerminals = ConcurrentLinkedQueue<PendingTerminal>()
 
@@ -135,22 +132,30 @@ class AutoStateLeaseCoordinator @Inject constructor(
         nowWall: Long,
         nowElapsed: Long,
         txn: (BaseCapture) -> RoomSetResult,
-    ): ArmedResult = lock.withLock {
+    ): ArmedResult = gateSource.withGateLock {
         enforceLocked(nowWall, nowElapsed)
         val (unsafe, _, _) = gateSource.gateSnapshot(AutoIsfCapability.AUTOSTATE)
-        if (unsafe) return ArmedResult(
+        if (unsafe) return@withGateLock ArmedResult(
             RoomSetResult("REJECTED", LocalCommandProtocol.E_CAPABILITY_DISABLED, false, null, null, null),
             currentState(),
         )
         // Befund 2: eine laufende Lease wird NICHT auf einen anderen State umgebogen — sonst
         // bliebe der alte State ueberlagert, ohne dass ihn noch irgendetwas haelt.
         published.get()?.let { running ->
-            if (running.stateName != stateName) return ArmedResult(
+            if (running.stateName != stateName) return@withGateLock ArmedResult(
                 RoomSetResult("REJECTED", "REJECTED_STATE_CONFLICT", false, null, null, null),
                 currentState(),
             )
         }
         val capture = captureBase(stateName, ttlMin, nowWall)
+        // Runde 3 / F5: hat der State noch NIE einen Wert getragen, gibt es keinen Rueckweg —
+        // AutomationStateInterface kennt kein "Wert entfernen". Eine Lease darauf wuerde den
+        // Wert PERMANENT festschreiben, den weder TTL noch CLEAR noch Prozess-Neustart
+        // zuruecknehmen koennten. Also gar nicht erst anfangen.
+        if (!capture.baseKnown || capture.baseValue == null) return@withGateLock ArmedResult(
+            RoomSetResult("REJECTED", "REJECTED_POLICY", false, null, null, null),
+            currentState(),
+        )
         val room = txn(capture)
         if (room.outcome == "APPLIED" && !room.replayed && room.leaseId != null && room.leaseVersion != null) {
             // ZWEITE PRUEFUNG nach dem Commit (Re-Review B3) — der iobTH-Zwilling macht sie seit
@@ -160,13 +165,20 @@ class AutoStateLeaseCoordinator @Inject constructor(
             // Herzschlag halten. Historisch bleibt das Kommando APPLIED, publiziert wird nichts.
             val (unsafeNow, unsafeNowReason, generationNow) = gateSource.gateSnapshot(AutoIsfCapability.AUTOSTATE)
             if (unsafeNow || generationNow != capture.gateGeneration) {
+                // Runde 3 / F1: hier fehlte das Aufraeumen. Bei einer VERLAENGERUNG hat Room die
+                // alte Zeile bereits als REPLACED terminalisiert — bleibt die alte Published im
+                // RAM stehen, meldet currentState() ACTIVE fuer eine Lease, die es nicht mehr
+                // gibt, und die naechste Verlaengerung laeuft in REJECTED_STATE_CONFLICT.
+                // Dieselbe Fehlerklasse, die zwoelf Zeilen tiefer schon behoben ist.
+                published.get()?.let { restoreIfStillOurs(it) }
+                published.set(null)
                 pendingTerminals.add(
                     PendingTerminal(
                         CAPABILITY, room.leaseId, room.leaseVersion,
                         (unsafeNowReason ?: AutoIsfOverrideState.DISABLED).name,
                     )
                 )
-                return ArmedResult(room, currentState())
+                return@withGateLock ArmedResult(room, currentState())
             }
             val written = runCatching { automationState.setState(stateName, stateValue) }.isSuccess
             if (written) {
@@ -195,7 +207,7 @@ class AutoStateLeaseCoordinator @Inject constructor(
     }
 
     /** CLEAR: Basis nur zurueckschreiben, wenn noch UNSER Wert steht. */
-    fun executeArmedClear(nowWall: Long, nowElapsed: Long, txn: () -> RoomSetResult): ArmedResult = lock.withLock {
+    fun executeArmedClear(nowWall: Long, nowElapsed: Long, txn: () -> RoomSetResult): ArmedResult = gateSource.withGateLock {
         enforceLocked(nowWall, nowElapsed)
         val p = published.get()
         val room = txn()
@@ -210,7 +222,7 @@ class AutoStateLeaseCoordinator @Inject constructor(
      * Zyklischer Wachposten: Ablauf und Fremdschreiber erkennen. Muss regelmaessig laufen —
      * ohne Aufruf laeuft die Frist nicht ab (dieselbe Eigenschaft wie beim iobTH-Snapshot).
      */
-    fun enforce(nowWall: Long, nowElapsed: Long) = lock.withLock { enforceLocked(nowWall, nowElapsed) }
+    fun enforce(nowWall: Long, nowElapsed: Long) = gateSource.withGateLock { enforceLocked(nowWall, nowElapsed) }
 
     private fun enforceLocked(nowWall: Long, nowElapsed: Long) {
         val p = published.get() ?: return

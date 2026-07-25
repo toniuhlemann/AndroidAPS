@@ -148,15 +148,18 @@ class AutoStateLeaseCoordinatorTest {
         assertThat(c.isValueAllowed("GIBT_ES_NICHT", "true")).isFalse()
     }
 
-    @Test fun `State ohne Basis wird beim Ablauf nicht erfunden`() {
+    // Runde 3 / F5: frueher wurde ein State OHNE Vorwert gesetzt und beim Ablauf nicht
+    // zurueckgenommen — AutomationStateInterface kennt kein "Wert entfernen", der Wert waere
+    // also PERMANENT festgeschrieben gewesen. Solche SETs werden jetzt abgelehnt.
+    @Test fun `State ohne bekannte Basis wird gar nicht erst gesetzt`() {
         val st = FakeStates().apply { setStateValues("NEUER_STATE", listOf("A", "B")) }
         val c = AutoStateLeaseCoordinator(st, gateSource())
-        c.executeArmedSet("NEUER_STATE", "A", 30, t0, e0) { applied() }
-        assertThat(st.values["NEUER_STATE"]).isEqualTo("A")
-        c.enforce(t0 + 30 * 60_000, e0 + 30 * 60_000)
-        // Es gab keinen Vorwert -> es wird auch keiner zurueckgeschrieben, der Wert bleibt stehen.
-        assertThat(st.values["NEUER_STATE"]).isEqualTo("A")
-        assertThat(c.peekPendingTerminal()!!.reason).isEqualTo(AutoStateLeaseCoordinator.REASON_EXPIRED)
+        var called = false
+        val r = c.executeArmedSet("NEUER_STATE", "A", 30, t0, e0) { called = true; applied() }
+        assertThat(called).isFalse()
+        assertThat(r.room.errorCode).isEqualTo("REJECTED_POLICY")
+        assertThat(st.values["NEUER_STATE"]).isNull()
+        assertThat(c.currentState()).isEqualTo(AutoStateLeaseCoordinator.STATE_NONE)
     }
 
     @Test fun `scheiterndes setState fuehrt zu keiner lebenden Lease`() {
@@ -354,5 +357,22 @@ class AutoStateLeaseCoordinatorTest {
         assertThat(c.restoreAfterProcessRestart("MEAL_ACTIVE", "true", "false")).isFalse()
         // ohne bekannte Basis wird nichts erfunden
         assertThat(c.restoreAfterProcessRestart("MEAL_ACTIVE", "true", null)).isFalse()
+    }
+
+    // Runde 3 / F1: der Abbruchzweig nach der zweiten Gate-Pruefung muss aufraeumen wie der
+    // Gate-Widerruf — sonst meldet currentState() ACTIVE fuer eine Lease, die Room ersetzt hat.
+    @Test fun `Abbruch nach der zweiten Gate-Pruefung laesst keine Geister-Lease`() {
+        val st = states()
+        val open = gateSource()
+        val c = AutoStateLeaseCoordinator(st, open)
+        c.executeArmedSet("MEAL_ACTIVE", "true", 120, t0, e0) { applied("l1", 1L) }
+        assertThat(c.currentState()).isEqualTo(AutoStateLeaseCoordinator.STATE_ACTIVE)
+        // Verlaengerung, waehrend der "Transaktion" faellt das Gate
+        c.executeArmedSet("MEAL_ACTIVE", "true", 120, t0 + 60_000, e0 + 60_000) {
+            open.gatesReader = gateSource(channel = false).gatesReader
+            applied("l1", 2L)
+        }
+        assertThat(c.currentState()).isEqualTo(AutoStateLeaseCoordinator.STATE_NONE)
+        assertThat(st.values["MEAL_ACTIVE"]).isEqualTo("false")   // Basis zurueckgestellt
     }
 }
