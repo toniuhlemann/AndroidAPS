@@ -153,6 +153,21 @@ class AutoStateLeaseCoordinator @Inject constructor(
         val capture = captureBase(stateName, ttlMin, nowWall)
         val room = txn(capture)
         if (room.outcome == "APPLIED" && !room.replayed && room.leaseId != null && room.leaseVersion != null) {
+            // ZWEITE PRUEFUNG nach dem Commit (Re-Review B3) — der iobTH-Zwilling macht sie seit
+            // R10-F2, hier fehlte sie. Die Room-Transaktion laeuft ueber I/O; in dieser Zeit kann
+            // der Nutzer den Kanal- oder Capability-Schalter umlegen. Ohne diese Pruefung wuerde
+            // der Fork den Automation-State DANACH trotzdem schreiben und bis zum naechsten
+            // Herzschlag halten. Historisch bleibt das Kommando APPLIED, publiziert wird nichts.
+            val (unsafeNow, unsafeNowReason, generationNow) = gateSource.gateSnapshot(AutoIsfCapability.AUTOSTATE)
+            if (unsafeNow || generationNow != capture.gateGeneration) {
+                pendingTerminals.add(
+                    PendingTerminal(
+                        CAPABILITY, room.leaseId, room.leaseVersion,
+                        (unsafeNowReason ?: AutoIsfOverrideState.DISABLED).name,
+                    )
+                )
+                return ArmedResult(room, currentState())
+            }
             val written = runCatching { automationState.setState(stateName, stateValue) }.isSuccess
             if (written) {
                 published.set(
@@ -169,6 +184,11 @@ class AutoStateLeaseCoordinator @Inject constructor(
                 // Room-Zeile ist bereits committet, also SOFORT terminalisieren statt eine
                 // Lease zu fuehren, die nichts haelt.
                 pendingTerminals.add(PendingTerminal(CAPABILITY, room.leaseId, room.leaseVersion, REASON_FOREIGN))
+                // Re-Review B5: bei einer VERLAENGERUNG stand hier noch die alte Published mit
+                // alter leaseId, waehrend Room sie bereits als REPLACED terminalisiert hatte —
+                // currentState() haette dauerhaft ACTIVE fuer eine Lease gemeldet, die es nicht
+                // mehr gibt, und restoreIfStillOurs haette gegen den alten Wert verglichen.
+                published.set(null)
             }
         }
         ArmedResult(room, currentState())
@@ -196,30 +216,31 @@ class AutoStateLeaseCoordinator @Inject constructor(
         val p = published.get() ?: return
         val (unsafe, unsafeReason, generation) = gateSource.gateSnapshot(AutoIsfCapability.AUTOSTATE)
         val expired = nowWall >= p.expiresAtWallMs || nowElapsed >= p.expiresAtElapsedMs
-        // Befund 9: ein nicht lesbarer Snapshot ist KEIN Fremdschreiber. Bei null wissen wir
-        // nichts — dann nicht widerrufen, sondern es beim naechsten Durchlauf erneut versuchen.
+        // Reihenfolge zaehlt (Re-Review B4): Gate und Frist haengen NICHT davon ab, ob der State
+        // gerade lesbar ist. Frueher stand der Snapshot-Read ueber dem when und ein
+        // Lesefehler hat damit auch Gate- und TTL-Pruefung unterdrueckt — eine Lease mit
+        // abgeschaltetem Gate haette ueberlebt, solange der State nicht lesbar war.
+        if (unsafe || p.gateGeneration != generation) {
+            restoreIfStillOurs(p)
+            pendingTerminals.add(
+                PendingTerminal(CAPABILITY, p.leaseId, p.leaseVersion, (unsafeReason ?: AutoIsfOverrideState.DISABLED).name)
+            )
+            published.set(null)
+            return
+        }
+        if (expired) {
+            restoreIfStillOurs(p)
+            pendingTerminals.add(PendingTerminal(CAPABILITY, p.leaseId, p.leaseVersion, REASON_EXPIRED))
+            published.set(null)
+            return
+        }
+        // NUR das Fremdschreiber-Urteil braucht den Wert. Ist er nicht lesbar, wissen wir nichts —
+        // dann nicht widerrufen, sondern beim naechsten Durchlauf erneut versuchen.
         val current = runCatching { automationState.getStateSnapshot(p.stateName) }.getOrNull() ?: return
-        val stillOurs = current.known && current.value == p.setValue
-        when {
-            // Gate schlaegt alles: Schalter aus oder Validate-only beendet die Lease und stellt
-            // die Basis zurueck, solange noch unser Wert steht.
-            unsafe || p.gateGeneration != generation -> {
-                restoreIfStillOurs(p)
-                pendingTerminals.add(
-                    PendingTerminal(CAPABILITY, p.leaseId, p.leaseVersion, (unsafeReason ?: AutoIsfOverrideState.DISABLED).name)
-                )
-                published.set(null)
-            }
-            !stillOurs -> {
-                // Fremdschreiber hat uebernommen: Lease stirbt, Basis bleibt UNANGETASTET.
-                pendingTerminals.add(PendingTerminal(CAPABILITY, p.leaseId, p.leaseVersion, REASON_FOREIGN))
-                published.set(null)
-            }
-            expired -> {
-                restoreIfStillOurs(p)
-                pendingTerminals.add(PendingTerminal(CAPABILITY, p.leaseId, p.leaseVersion, REASON_EXPIRED))
-                published.set(null)
-            }
+        if (!(current.known && current.value == p.setValue)) {
+            // Fremdschreiber hat uebernommen: Lease stirbt, Basis bleibt UNANGETASTET.
+            pendingTerminals.add(PendingTerminal(CAPABILITY, p.leaseId, p.leaseVersion, REASON_FOREIGN))
+            published.set(null)
         }
     }
 
@@ -233,7 +254,11 @@ class AutoStateLeaseCoordinator @Inject constructor(
 
     fun currentState(): String = if (published.get() == null) STATE_NONE else STATE_ACTIVE
 
-    /** Status fuer GET_SERVICE_STATUS; ohne Seiteneffekt. */
+    /**
+     * Status fuer GET_SERVICE_STATUS. Reiner RAM-Read — der Aufrufer ruft allerdings vorher
+     * enforce(), das sehr wohl schreiben kann (Re-Review B6: der Kommentar behauptete frueher
+     * Seiteneffektfreiheit fuer den GESAMTEN Statusabruf).
+     */
     fun statusMap(): Map<String, Any> {
         val p = published.get()
         return buildMap {
@@ -255,6 +280,21 @@ class AutoStateLeaseCoordinator @Inject constructor(
         if (pendingTerminals.peek() === pt) pendingTerminals.poll()
     }
 
-    /** Prozessneustart: die RAM-Lease ist weg — der State bleibt stehen, wie ihn AAPS fand. */
+    /**
+     * Prozessneustart: die RAM-Lease ist weg, die Room-Zeile traegt die Basis aber noch.
+     *
+     * Re-Review B7: frueher wurde nur die Zeile terminalisiert und der ueberlagerte Wert blieb
+     * DAUERHAFT stehen — ein OOM-Kill oder ein Update mitten in einer Lease konnte also z.B.
+     * MEAL_ACTIVE=true fuer immer festschreiben, und das steuert Automationen. Zurueckgestellt
+     * wird nur, wenn noch UNSER Wert steht; hat inzwischen ein Automat geschrieben, gehoert ihm
+     * der State (dieselbe Regel wie beim Ablauf).
+     */
+    fun restoreAfterProcessRestart(stateName: String, ourValue: String, baseValue: String?): Boolean {
+        if (baseValue == null) return false
+        val current = runCatching { automationState.getStateSnapshot(stateName) }.getOrNull() ?: return false
+        if (!current.known || current.value != ourValue) return false
+        return runCatching { automationState.setState(stateName, baseValue) }.isSuccess
+    }
+
     fun onProcessRestart(): String = REASON_PROCESS_RESTART
 }

@@ -293,4 +293,66 @@ class AutoStateLeaseCoordinatorTest {
         assertThat(seen).isNotNull()
         assertThat(seen!!.gateGeneration).isAtLeast(0L)
     }
+
+    // ---- Re-Review-Befunde (B) ----
+
+    // B4: Gate und Frist duerfen NICHT davon abhaengen, ob der State gerade lesbar ist.
+    @Test fun `unlesbarer Snapshot blockiert weder Gate- noch TTL-Widerruf`() {
+        val st = object : FakeStates(mapOf("MEAL_ACTIVE" to "false")) {
+            var fail = false
+            override fun getStateSnapshot(stateName: String) =
+                if (fail) throw IllegalStateException("transient") else super.getStateSnapshot(stateName)
+        }.apply { setStateValues("MEAL_ACTIVE", listOf("true", "false")) }
+        val open = gateSource()
+        val c = AutoStateLeaseCoordinator(st, open)
+        c.executeArmedSet("MEAL_ACTIVE", "true", 30, t0, e0) { applied() }
+        st.fail = true
+        // Frist abgelaufen, State unlesbar -> die Lease muss trotzdem sterben
+        c.enforce(t0 + 30 * 60_000, e0 + 30 * 60_000)
+        assertThat(c.currentState()).isEqualTo(AutoStateLeaseCoordinator.STATE_NONE)
+        assertThat(c.peekPendingTerminal()!!.reason).isEqualTo(AutoStateLeaseCoordinator.REASON_EXPIRED)
+    }
+
+    // B3: Gate-Wechsel WAEHREND der Room-Transaktion darf den State nicht mehr schreiben.
+    @Test fun `Gate-Wechsel waehrend der Transaktion verhindert den State-Schreibvorgang`() {
+        val st = states()
+        val open = gateSource()
+        val c = AutoStateLeaseCoordinator(st, open)
+        val r = c.executeArmedSet("MEAL_ACTIVE", "true", 120, t0, e0) {
+            // waehrend der "Transaktion" legt der Nutzer den Schalter um
+            open.gatesReader = gateSource(channel = false).gatesReader
+            applied()
+        }
+        assertThat(st.values["MEAL_ACTIVE"]).isEqualTo("false")   // NICHT geschrieben
+        assertThat(c.currentState()).isEqualTo(AutoStateLeaseCoordinator.STATE_NONE)
+        assertThat(r.room.outcome).isEqualTo("APPLIED")           // historisch bleibt es APPLIED
+        assertThat(c.peekPendingTerminal()).isNotNull()
+    }
+
+    // B5: fehlgeschlagenes setState bei einer VERLAENGERUNG darf keine Geister-Lease lassen.
+    @Test fun `fehlgeschlagenes setState bei Verlaengerung hinterlaesst keine Geister-Lease`() {
+        val st = states()
+        val c = AutoStateLeaseCoordinator(st, gateSource())
+        c.executeArmedSet("MEAL_ACTIVE", "true", 120, t0, e0) { applied("l1", 1L) }
+        assertThat(c.currentState()).isEqualTo(AutoStateLeaseCoordinator.STATE_ACTIVE)
+        // Wertliste des States schrumpft -> setState wirft bei der Verlaengerung
+        st.allowed["MEAL_ACTIVE"] = listOf("false")
+        c.executeArmedSet("MEAL_ACTIVE", "true", 120, t0 + 60_000, e0 + 60_000) { applied("l1", 2L) }
+        assertThat(c.currentState()).isEqualTo(AutoStateLeaseCoordinator.STATE_NONE)
+    }
+
+    // B7: nach einem Prozesstod muss die Basis zurueckgeschrieben werden — aber nur, wenn noch
+    // unser Wert steht.
+    @Test fun `Wiederherstellung nach Prozesstod nur bei unveraendertem Wert`() {
+        val st = states()
+        val c = AutoStateLeaseCoordinator(st, gateSource())
+        st.values["MEAL_ACTIVE"] = "true"
+        assertThat(c.restoreAfterProcessRestart("MEAL_ACTIVE", "true", "false")).isTrue()
+        assertThat(st.values["MEAL_ACTIVE"]).isEqualTo("false")
+        // Fremdschreiber war schneller -> nicht anfassen
+        st.values["MEAL_ACTIVE"] = "false"
+        assertThat(c.restoreAfterProcessRestart("MEAL_ACTIVE", "true", "false")).isFalse()
+        // ohne bekannte Basis wird nichts erfunden
+        assertThat(c.restoreAfterProcessRestart("MEAL_ACTIVE", "true", null)).isFalse()
+    }
 }

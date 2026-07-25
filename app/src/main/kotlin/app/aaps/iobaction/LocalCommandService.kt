@@ -79,6 +79,28 @@ class LocalCommandService : Service() {
         // Capability war unbrauchbar UND der Automation-State blieb ueberlagert.
         if (repo != null && processRestartDone.compareAndSet(false, true)) {
             val now0 = System.currentTimeMillis()
+            // Re-Review B7: VOR dem Terminalisieren die Basis zurueckschreiben. Ein Prozesstod
+            // mitten in einer AUTOSTATE-Lease liess den ueberlagerten Wert sonst DAUERHAFT
+            // stehen — bei MEAL_ACTIVE steuert das die Automationen um. Nur wenn noch unser
+            // Wert steht; hat inzwischen ein Automat geschrieben, gehoert ihm der State.
+            runCatching {
+                val row = repo.runTransactionForResult(
+                    app.aaps.database.transactions.ReadActiveValueLeaseTransaction(
+                        AutoStateLeaseCoordinator.CAPABILITY
+                    )
+                ).blockingGet()
+                val coord = LocalCommandRuntime.autoStateCoordinator
+                if (row.found && coord != null) {
+                    val setJson = org.json.JSONObject(row.setPayload)
+                    val baseJson = org.json.JSONObject(row.basePayload)
+                    val name = setJson.optString("name", "")
+                    val ourValue = setJson.optString("value", "")
+                    val baseValue = if (baseJson.optBoolean("known", false)) baseJson.optString("value", null) else null
+                    if (name.isNotEmpty() && ourValue.isNotEmpty()) {
+                        coord.restoreAfterProcessRestart(name, ourValue, baseValue)
+                    }
+                }
+            }
             app.aaps.core.interfaces.aps.AutoIsfCapability.entries.forEach { cap ->
                 runCatching {
                     repo.runTransactionForResult(app.aaps.database.transactions.TerminalizeValueLeaseTransaction(
