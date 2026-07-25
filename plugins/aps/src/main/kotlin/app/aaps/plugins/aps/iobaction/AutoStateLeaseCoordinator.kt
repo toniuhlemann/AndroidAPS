@@ -1,5 +1,7 @@
 package app.aaps.plugins.aps.iobaction
 
+import app.aaps.core.interfaces.aps.AutoIsfCapability
+import app.aaps.core.interfaces.aps.AutoIsfOverrideState
 import app.aaps.core.interfaces.automation.AutomationStateInterface
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.atomic.AtomicReference
@@ -11,12 +13,14 @@ import kotlin.concurrent.withLock
 /**
  * Capability AUTOSTATE — Lease-Koordinator fuer AAPS-Automation-States.
  *
- * BEWUSST SCHLANKER ALS [AutoIsfValueLeaseCoordinator], und zwar aus einem sachlichen Grund:
- * der iobTH-Koordinator bewacht eine PREFERENCE, die der APS-Hotpath jeden Zyklus liest. Er
- * braucht dafuer SP-Generationen, Gate-Generationen und eine sperrfreie CAS-Leseschleife.
- * Ein Automation-State ist nichts davon — er wird ueber [AutomationStateInterface] gelesen und
- * geschrieben, nicht ueber Preferences, und kein Dosier-Hotpath haengt an ihm. Diese Maschinerie
- * hier nachzubauen waere Zeremonie ohne Schutzwirkung.
+ * SCHLANKER als [AutoIsfValueLeaseCoordinator], aber NICHT ohne dessen Sicherheitsnetze — das
+ * war der Fehler der ersten Fassung. Richtig bleibt: ein Automation-State ist keine Preference
+ * im APS-Hotpath, also braucht er keine SP-Basis-Generation und keine sperrfreie CAS-Leseschleife.
+ * FALSCH war der Schluss, damit ganz ohne Gates und ohne Herzschlag auszukommen (Review 25.07.,
+ * Befunde 3 und 4): Master-Schalter, Capability-Schalter und Validate-only beendeten eine
+ * laufende Lease nicht, und die TTL lief nur, solange der Viewer selbst anrief. Gates kommen
+ * jetzt aus DERSELBEN Beobachtung wie beim Wert-Overlay, und der APS-Lauf treibt enforce() von
+ * innen.
  *
  * Was dagegen sehr wohl noetig ist:
  *
@@ -36,6 +40,14 @@ import kotlin.concurrent.withLock
 @Singleton
 class AutoStateLeaseCoordinator @Inject constructor(
     private val automationState: AutomationStateInterface,
+    /**
+     * Befund 3/4 des Reviews vom 25.07.: dieser Koordinator hatte KEINE Gate-Logik. Master-
+     * Schalter, Capability-Schalter und Validate-only beendeten eine laufende Lease nicht — und
+     * ein abgeschalteter Kanal blockierte zusaetzlich das CLEAR, der State blieb also bis zu
+     * 12h eingefroren OHNE Weg zurueck. Die Gates kommen jetzt aus DERSELBEN Beobachtung wie
+     * beim Wert-Overlay; zwei getrennte Gate-Leser wuerden auseinanderlaufen.
+     */
+    private val gateSource: AutoIsfValueLeaseCoordinator,
 ) {
 
     /** Was beim SET als Herkunft festgehalten wurde. known=false: der State existierte nicht. */
@@ -45,6 +57,8 @@ class AutoStateLeaseCoordinator @Inject constructor(
         val baseValue: String?,
         val wallNow: Long,
         val expiresAtWallMs: Long,
+        /** Befund 1: Room verlangt beim ERSTEN SET nicht-nullable Generationen. */
+        val gateGeneration: Long,
     )
 
     data class RoomSetResult(
@@ -69,6 +83,7 @@ class AutoStateLeaseCoordinator @Inject constructor(
         val setValue: String,
         val expiresAtWallMs: Long,
         val expiresAtElapsedMs: Long,
+        val gateGeneration: Long,
     )
 
     private val lock = ReentrantLock()
@@ -90,14 +105,21 @@ class AutoStateLeaseCoordinator @Inject constructor(
         automationState.hasStateValues(stateName) && stateValue in automationState.getStateValues(stateName)
     }.getOrDefault(false)
 
+    /**
+     * Befund 2: bei einer VERLAENGERUNG darf die Basis NICHT neu erfasst werden — sonst wird der
+     * bereits ueberlagerte Wert zur neuen "Basis" und der State kehrt nie zum Original zurueck.
+     * Bei 30-min-TTL ist Verlaengern der Normalfall, nicht der Randfall.
+     */
     fun captureBase(stateName: String, ttlMin: Int, nowWall: Long): BaseCapture {
-        val snap = runCatching { automationState.getStateSnapshot(stateName) }.getOrNull()
+        val running = published.get()?.takeIf { it.stateName == stateName }
+        val snap = if (running == null) runCatching { automationState.getStateSnapshot(stateName) }.getOrNull() else null
         return BaseCapture(
             stateName = stateName,
-            baseKnown = snap?.known == true,
-            baseValue = snap?.value,
+            baseKnown = running?.baseKnown ?: (snap?.known == true),
+            baseValue = if (running != null) running.baseValue else snap?.value,
             wallNow = nowWall,
             expiresAtWallMs = Math.addExact(nowWall, Math.multiplyExact(ttlMin.toLong(), 60_000L)),
+            gateGeneration = gateSource.gateSnapshot(AutoIsfCapability.AUTOSTATE).third,
         )
     }
 
@@ -115,6 +137,19 @@ class AutoStateLeaseCoordinator @Inject constructor(
         txn: (BaseCapture) -> RoomSetResult,
     ): ArmedResult = lock.withLock {
         enforceLocked(nowWall, nowElapsed)
+        val (unsafe, _, _) = gateSource.gateSnapshot(AutoIsfCapability.AUTOSTATE)
+        if (unsafe) return ArmedResult(
+            RoomSetResult("REJECTED", LocalCommandProtocol.E_CAPABILITY_DISABLED, false, null, null, null),
+            currentState(),
+        )
+        // Befund 2: eine laufende Lease wird NICHT auf einen anderen State umgebogen — sonst
+        // bliebe der alte State ueberlagert, ohne dass ihn noch irgendetwas haelt.
+        published.get()?.let { running ->
+            if (running.stateName != stateName) return ArmedResult(
+                RoomSetResult("REJECTED", "REJECTED_STATE_CONFLICT", false, null, null, null),
+                currentState(),
+            )
+        }
         val capture = captureBase(stateName, ttlMin, nowWall)
         val room = txn(capture)
         if (room.outcome == "APPLIED" && !room.replayed && room.leaseId != null && room.leaseVersion != null) {
@@ -126,6 +161,7 @@ class AutoStateLeaseCoordinator @Inject constructor(
                         baseKnown = capture.baseKnown, baseValue = capture.baseValue, setValue = stateValue,
                         expiresAtWallMs = capture.expiresAtWallMs,
                         expiresAtElapsedMs = Math.addExact(nowElapsed, Math.multiplyExact(ttlMin.toLong(), 60_000L)),
+                        gateGeneration = capture.gateGeneration,
                     )
                 )
             } else {
@@ -158,10 +194,22 @@ class AutoStateLeaseCoordinator @Inject constructor(
 
     private fun enforceLocked(nowWall: Long, nowElapsed: Long) {
         val p = published.get() ?: return
+        val (unsafe, unsafeReason, generation) = gateSource.gateSnapshot(AutoIsfCapability.AUTOSTATE)
         val expired = nowWall >= p.expiresAtWallMs || nowElapsed >= p.expiresAtElapsedMs
-        val current = runCatching { automationState.getStateSnapshot(p.stateName) }.getOrNull()
-        val stillOurs = current?.known == true && current.value == p.setValue
+        // Befund 9: ein nicht lesbarer Snapshot ist KEIN Fremdschreiber. Bei null wissen wir
+        // nichts — dann nicht widerrufen, sondern es beim naechsten Durchlauf erneut versuchen.
+        val current = runCatching { automationState.getStateSnapshot(p.stateName) }.getOrNull() ?: return
+        val stillOurs = current.known && current.value == p.setValue
         when {
+            // Gate schlaegt alles: Schalter aus oder Validate-only beendet die Lease und stellt
+            // die Basis zurueck, solange noch unser Wert steht.
+            unsafe || p.gateGeneration != generation -> {
+                restoreIfStillOurs(p)
+                pendingTerminals.add(
+                    PendingTerminal(CAPABILITY, p.leaseId, p.leaseVersion, (unsafeReason ?: AutoIsfOverrideState.DISABLED).name)
+                )
+                published.set(null)
+            }
             !stillOurs -> {
                 // Fremdschreiber hat uebernommen: Lease stirbt, Basis bleibt UNANGETASTET.
                 pendingTerminals.add(PendingTerminal(CAPABILITY, p.leaseId, p.leaseVersion, REASON_FOREIGN))

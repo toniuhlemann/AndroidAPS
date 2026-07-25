@@ -141,6 +141,7 @@ class AutoIsfValueLeaseCoordinator @Inject constructor(
                 AutoIsfCapability.IOBTH to sp.getBoolean("iobth_capability_enabled", false),
                 AutoIsfCapability.SMBRATIO to sp.getBoolean("smbratio_capability_enabled", false),
                 AutoIsfCapability.WEIGHTS to sp.getBoolean("weights_capability_enabled", false),
+                AutoIsfCapability.AUTOSTATE to sp.getBoolean("autostate_capability_enabled", false),
             ),
             forcedValidateOnly = sp.getBoolean("forced_validate_only", false),
         )
@@ -582,6 +583,18 @@ class AutoIsfValueLeaseCoordinator @Inject constructor(
             val cur = publishedValues.get()
             if (publishedValues.compareAndSet(cur, cur - cap)) return
         }
+    }
+
+    /**
+     * Gate-Sicht fuer Koordinatoren, die NICHT im Preference-Overlay leben (AUTOSTATE).
+     * Bewusst DIESELBE Beobachtung wie der Wert-Pfad: zwei getrennte Gate-Leser wuerden
+     * frueher oder spaeter unterschiedliche Wahrheiten melden (Split-Brain-Verbot).
+     */
+    fun gateSnapshot(cap: AutoIsfCapability): Triple<Boolean, AutoIsfOverrideState?, Long> {
+        val obs = observeGates()
+        val gates = obs.gates
+        val unsafe = gates == null || gates.unsafe(cap)
+        return Triple(unsafe, if (unsafe) gates?.unsafeReason(cap) ?: AutoIsfOverrideState.DISABLED else null, obs.generation(cap))
     }
 
     /** Zustand einer generischen Lease ohne Snapshot-Umweg (fuer ACK/Status). */

@@ -73,9 +73,18 @@ class LocalCommandService : Service() {
         val coordinator = LocalCommandRuntime.valueLeaseCoordinator
         // v1.1/R10-Test 3: aktive Value-Lease eines frueheren Prozesses terminalisieren
         // (RAM startet leer; die Room-Zeile darf nie wieder als OWNED erscheinen).
-        if (repo != null && processRestartDone.compareAndSet(false, true)) runCatching {
-            repo.runTransactionForResult(app.aaps.database.transactions.TerminalizeValueLeaseTransaction(
-                "IOBTH", "PROCESS_RESTART", System.currentTimeMillis())).blockingGet()
+        // Befund 5: die Capability war hart auf "IOBTH" verdrahtet. Eine AUTOSTATE-Zeile blieb
+        // nach einem Prozesstod aktiv, waehrend der RAM NONE meldete — der Viewer schickte dann
+        // dauerhaft expectedState=NONE und bekam ebenso dauerhaft REJECTED_STATE_CONFLICT, die
+        // Capability war unbrauchbar UND der Automation-State blieb ueberlagert.
+        if (repo != null && processRestartDone.compareAndSet(false, true)) {
+            val now0 = System.currentTimeMillis()
+            app.aaps.core.interfaces.aps.AutoIsfCapability.entries.forEach { cap ->
+                runCatching {
+                    repo.runTransactionForResult(app.aaps.database.transactions.TerminalizeValueLeaseTransaction(
+                        cap.name, "PROCESS_RESTART", now0)).blockingGet()
+                }
+            }
         }
         val env = LocalCommandServiceCore.Env(
             callerTrusted = trusted,
@@ -349,7 +358,11 @@ class LocalCommandService : Service() {
                 setPayload = if (isSet) statePayload(req.stateName!!, req.stateValue!!) else null,
                 ttlMin = req.ttlMin, expiresAtWallMs = capture?.expiresAtWallMs,
                 basePayload = capture?.let { basePayload(it) },
-                baseGeneration = null, gateGeneration = null,
+                // Befund 1: Room verlangt beim ERSTEN SET (expectedState NONE) nicht-nullable
+                // Generationen — null fuehrte dort zu einer NPE, Rollback und einem ACK ohne
+                // requestId. AUTOSTATE hat keine SP-Basis-Generation, also 0; die Gate-Generation
+                // ist echt und kommt aus derselben Beobachtung wie beim Wert-Overlay.
+                baseGeneration = 0L, gateGeneration = capture?.gateGeneration ?: 0L,
                 currentPolicyHash = LocalCommandAutoStatePolicy.hash(), expectedState = req.expectedState,
                 expectedLeaseId = req.expectedLeaseId, expectedLeaseVersion = req.expectedLeaseVersion,
                 expectedOwnerPolicyHash = req.expectedOwnerPolicyHash, policyErrorCode = policyError,
