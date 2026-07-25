@@ -257,6 +257,16 @@ class MainApp : DaggerApplication() {
                 // Config snapshot (filtered prefs + profile + automations) for the IOB Action
                 // viewer — change-triggered inside, so most heartbeats are a cheap hash check.
                 app.aaps.plugins.aps.openAPSAutoISF.IobActionConfigExporter.snapshot(sp, profileFunction, dateUtil)
+                // AUTOSTATE-Wachposten auf DIESEM Herzschlag (Re-Review B1/B2). Zuvor hing er im
+                // APS-Lauf: dort koppelte er den Dosier-Thread an den Lock des AutoState-
+                // Koordinators, den der Binder-Thread ueber eine ganze Room-Transaktion haelt —
+                // Invariante 1 verbietet genau das. Ausserdem stand er mitten im JSON-Export, wo
+                // ein geworfenes put() ihn still ausfallen liess, und er entfiel bei jedem
+                // Early-Return von invoke(). Hier laeuft er auf eigenem Thread, unabhaengig davon
+                // ob der Loop rechnet, und ein Fehler trifft nur ihn selbst.
+                runCatching {
+                    autoStateCoordinator.enforce(dateUtil.now(), android.os.SystemClock.elapsedRealtime())
+                }
         }
         handler.postDelayed(refreshWidget, 60000)
         config.appInitialized = true

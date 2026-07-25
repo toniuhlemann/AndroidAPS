@@ -201,7 +201,7 @@ class AutoIsfValueLeaseCoordinator @Inject constructor(
      */
     fun beforeGateWrite(
         newChannel: Boolean? = null, newIobth: Boolean? = null, newForcedVo: Boolean? = null,
-        newSmbRatio: Boolean? = null, newWeights: Boolean? = null,
+        newSmbRatio: Boolean? = null, newWeights: Boolean? = null, newAutoState: Boolean? = null,
         // R14-F2: der eigentliche SP-Write laeuft als Callback UNTER DEMSELBEN Lock — zwischen
         // Bump/Revoke und sichtbarem neuen Gate-Wert existiert damit KEIN Fenster mehr, in dem
         // ein neuer SET den Lock bekommen, die alten sicheren Gates lesen und vollstaendig
@@ -215,6 +215,9 @@ class AutoIsfValueLeaseCoordinator @Inject constructor(
                 newIobth?.let { put(AutoIsfCapability.IOBTH, it) }
                 newSmbRatio?.let { put(AutoIsfCapability.SMBRATIO, it) }
                 newWeights?.let { put(AutoIsfCapability.WEIGHTS, it) }
+                // Re-Review B3: ohne diesen Zweig blieb unsafeNow leer, es gab keinen Bump unter
+                // dem Lock — die R14-F2-Garantie galt fuer IOBTH, aber nicht fuer AUTOSTATE.
+                newAutoState?.let { put(AutoIsfCapability.AUTOSTATE, it) }
             },
             forcedValidateOnly = newForcedVo ?: cur.forcedValidateOnly,
         )

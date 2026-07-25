@@ -135,7 +135,6 @@ open class OpenAPSAutoISFPlugin @Inject constructor(
 ), APS, PluginConstraints {
 
     @Inject lateinit var automationStateService: AutomationStateInterface
-    @Inject lateinit var autoStateLeaseCoordinator: app.aaps.plugins.aps.iobaction.AutoStateLeaseCoordinator
 
     // App-Context fuer das Loop-Signal an den Viewer (IobActionLoopSignal).
     @Inject lateinit var shadowContext: android.content.Context
@@ -692,13 +691,6 @@ open class OpenAPSAutoISFPlugin @Inject constructor(
                 // inzwischen LIVE und sichtbar. Der Viewer-Waechter braucht von hier nur noch
                 // die Fork-Wahrheit ueber MEAL_ACTIVE, um Split-Brain zu erkennen.
                 runCatching {
-                    // Befund 4: AUTOSTATE hatte KEINEN Herzschlag — enforce() lief nur bei
-                    // eingehenden Binder-Aufrufen. Stirbt der Viewer, waere die Lease nie
-                    // abgelaufen und die Basis nie zurueckgeschrieben worden. Jetzt treibt der
-                    // APS-Lauf sie von INNEN, wie snapshot() es fuer iobTH tut.
-                    runCatching {
-                        autoStateLeaseCoordinator.enforce(System.currentTimeMillis(), android.os.SystemClock.elapsedRealtime())
-                    }
                     val mealSnap = automationStateService.getStateSnapshot("MEAL_ACTIVE")
                     val mealKnown = mealSnap.known && mealSnap.value in listOf("true", "false")
                     put("automation", JSONObject().apply {
@@ -1639,6 +1631,7 @@ open class OpenAPSAutoISFPlugin @Inject constructor(
                             coordinator.beforeGateWrite(
                                 newChannel = if (prefKey == "channel_enabled") newValue else null,
                                 newIobth = if (prefKey == "iobth_capability_enabled") newValue else null,
+                                newAutoState = if (prefKey == "autostate_capability_enabled") newValue else null,
                                 newForcedVo = if (prefKey == "forced_validate_only") newValue else null,
                                 write = writeGate,
                             )
