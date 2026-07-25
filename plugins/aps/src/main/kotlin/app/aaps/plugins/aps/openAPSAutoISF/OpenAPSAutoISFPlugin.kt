@@ -149,13 +149,33 @@ open class OpenAPSAutoISFPlugin @Inject constructor(
     val autoIsfWeights; get() = preferences.get(BooleanKey.ApsUseAutoIsfWeights)
     private val autoISF_max; get() = preferences.get(DoubleKey.ApsAutoIsfMax)
     private val autoISF_min; get() = preferences.get(DoubleKey.ApsAutoIsfMin)
-    private val bgAccel_ISF_weight; get() = preferences.get(DoubleKey.ApsAutoIsfBgAccelWeight)
-    private val bgBrake_ISF_weight; get() = preferences.get(DoubleKey.ApsAutoIsfBgBrakeWeight)
-    private val pp_ISF_weight; get() = preferences.get(DoubleKey.ApsAutoIsfPpWeight)
-    private val lower_ISFrange_weight; get() = preferences.get(DoubleKey.ApsAutoIsfLowBgWeight)
-    private val higher_ISFrange_weight; get() = preferences.get(DoubleKey.ApsAutoIsfHighBgWeight)
-    private val dura_ISF_weight; get() = preferences.get(DoubleKey.ApsAutoIsfDuraWeight)
-    private val smb_delivery_ratio; get() = preferences.get(DoubleKey.ApsAutoIsfSmbDeliveryRatio)
+    /**
+     * LESE-PFAD DER WERT-OVERLAYS (SMBRATIO / WEIGHTS).
+     *
+     * Die Getter lesen NICHT mehr direkt die Preference, sondern zuerst den Snapshot DIESES
+     * APS-Laufs. Das ist keine Kosmetik: ohne ihn waere jeder Zugriff ein eigenes get(), und
+     * eine Lease, die mitten im Lauf ablaeuft, wuerde denselben Durchgang mit zwei
+     * verschiedenen Werten rechnen lassen. Der iobTH-Pfad haelt seinen Snapshot seit R9-F3
+     * genau deshalb ueber den ganzen Lauf.
+     *
+     * [runSnapshot] wird zu Beginn von invoke() gesetzt und am Ende wieder geleert. Ist es
+     * null — jeder Aufrufer ausserhalb eines Laufs, etwa die Overview oder ein Automations-
+     * Poll —, gilt unveraendert die Basis-Preference. Leere Overlay-Map heisst ebenfalls
+     * Basis; ein Leser muss nie zwischen "kein Overlay" und "Overlay mit Basiswert"
+     * unterscheiden.
+     */
+    @Volatile private var runSnapshot: app.aaps.core.interfaces.aps.EffectiveAutoIsfSettingsProvider.Snapshot? = null
+
+    private fun weightOverlay(field: String, key: DoubleKey): Double =
+        runSnapshot?.weightOverrides?.get(field) ?: preferences.get(key)
+
+    private val bgAccel_ISF_weight; get() = weightOverlay(app.aaps.plugins.aps.iobaction.ValueOverlayPolicy.F_ACCE, DoubleKey.ApsAutoIsfBgAccelWeight)
+    private val bgBrake_ISF_weight; get() = weightOverlay(app.aaps.plugins.aps.iobaction.ValueOverlayPolicy.F_BRAKE, DoubleKey.ApsAutoIsfBgBrakeWeight)
+    private val pp_ISF_weight; get() = weightOverlay(app.aaps.plugins.aps.iobaction.ValueOverlayPolicy.F_PP, DoubleKey.ApsAutoIsfPpWeight)
+    private val lower_ISFrange_weight; get() = weightOverlay(app.aaps.plugins.aps.iobaction.ValueOverlayPolicy.F_LOW, DoubleKey.ApsAutoIsfLowBgWeight)
+    private val higher_ISFrange_weight; get() = weightOverlay(app.aaps.plugins.aps.iobaction.ValueOverlayPolicy.F_HIGH, DoubleKey.ApsAutoIsfHighBgWeight)
+    private val dura_ISF_weight; get() = weightOverlay(app.aaps.plugins.aps.iobaction.ValueOverlayPolicy.F_DURA, DoubleKey.ApsAutoIsfDuraWeight)
+    private val smb_delivery_ratio; get() = runSnapshot?.smbRatioEffective ?: preferences.get(DoubleKey.ApsAutoIsfSmbDeliveryRatio)
     private val smb_delivery_ratio_min; get() = preferences.get(DoubleKey.ApsAutoIsfSmbDeliveryRatioMin)
     private val smb_delivery_ratio_max; get() = preferences.get(DoubleKey.ApsAutoIsfSmbDeliveryRatioMax)
     private val smb_delivery_ratio_bg_range
@@ -291,12 +311,28 @@ open class OpenAPSAutoISFPlugin @Inject constructor(
     }
 
     override fun invoke(initiator: String, tempBasalFallback: Boolean) {
+        // try/finally, weil invoke() an vielen Stellen frueh zurueckkehrt (kein Profil, kein
+        // Glukosewert, Pumpe nicht bereit). Ohne das bliebe ein Overlay-Snapshot haengen und
+        // ein spaeterer Aufrufer AUSSERHALB eines Laufs — Overview, Automations-Poll,
+        // Widget — saehe einen veralteten Lease-Wert statt der Basis-Preference.
+        try {
+            invokeInner(initiator, tempBasalFallback)
+        } finally {
+            runSnapshot = null
+        }
+    }
+
+    private fun invokeInner(initiator: String, tempBasalFallback: Boolean) {
         aapsLogger.debug(LTag.APS, "invoke from $initiator tempBasalFallback: $tempBasalFallback")
         lastAPSResult = null
         // Capability-Matrix A1 (R9-F3/R11): EIN effektiver Settings-Snapshot pro APS-Lauf,
         // reiner RAM-Read. Bei OFF/Forced-VO/keiner Lease ist effective == Basis-Preference
         // (OFF-Diff-Garantie, R11-Grenzen) — dieser Lauf rechnet dann exakt wie vor A1.
         val autoIsfSettingsSnapshot = effectiveAutoIsfSettings.snapshot()
+        // Denselben Snapshot fuer den GANZEN Lauf halten — die Ratio-/Gewichts-Getter lesen ihn.
+        // Wird am Ende von invoke() wieder geleert, damit Aufrufer ausserhalb eines Laufs die
+        // Basis-Preference sehen und kein veralteter Overlay-Stand haengen bleibt.
+        runSnapshot = autoIsfSettingsSnapshot
         val effectiveIobThPercent = autoIsfSettingsSnapshot.iobThPercentEffective
         val glucoseStatus = glucoseStatusProvider.glucoseStatusData
         val profile = profileFunction.getProfile()
