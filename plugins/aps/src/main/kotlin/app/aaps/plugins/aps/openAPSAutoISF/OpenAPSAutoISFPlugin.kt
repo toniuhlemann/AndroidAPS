@@ -185,7 +185,7 @@ open class OpenAPSAutoISFPlugin @Inject constructor(
         set(v) = if (v == null) runSnapshotTl.remove() else runSnapshotTl.set(v)
 
     private fun weightOverlay(field: String, key: DoubleKey): Double =
-        runSnapshot?.weightOverrides?.get(field) ?: preferences.get(key)
+        app.aaps.plugins.aps.iobaction.ValueOverlayReader.weight(runSnapshot, field, preferences.get(key))
 
     private val bgAccel_ISF_weight; get() = weightOverlay(app.aaps.plugins.aps.iobaction.ValueOverlayPolicy.F_ACCE, DoubleKey.ApsAutoIsfBgAccelWeight)
     private val bgBrake_ISF_weight; get() = weightOverlay(app.aaps.plugins.aps.iobaction.ValueOverlayPolicy.F_BRAKE, DoubleKey.ApsAutoIsfBgBrakeWeight)
@@ -193,7 +193,7 @@ open class OpenAPSAutoISFPlugin @Inject constructor(
     private val lower_ISFrange_weight; get() = weightOverlay(app.aaps.plugins.aps.iobaction.ValueOverlayPolicy.F_LOW, DoubleKey.ApsAutoIsfLowBgWeight)
     private val higher_ISFrange_weight; get() = weightOverlay(app.aaps.plugins.aps.iobaction.ValueOverlayPolicy.F_HIGH, DoubleKey.ApsAutoIsfHighBgWeight)
     private val dura_ISF_weight; get() = weightOverlay(app.aaps.plugins.aps.iobaction.ValueOverlayPolicy.F_DURA, DoubleKey.ApsAutoIsfDuraWeight)
-    private val smb_delivery_ratio; get() = runSnapshot?.smbRatioEffective ?: preferences.get(DoubleKey.ApsAutoIsfSmbDeliveryRatio)
+    private val smb_delivery_ratio; get() = app.aaps.plugins.aps.iobaction.ValueOverlayReader.ratio(runSnapshot, preferences.get(DoubleKey.ApsAutoIsfSmbDeliveryRatio))
     private val smb_delivery_ratio_min; get() = preferences.get(DoubleKey.ApsAutoIsfSmbDeliveryRatioMin)
     private val smb_delivery_ratio_max; get() = preferences.get(DoubleKey.ApsAutoIsfSmbDeliveryRatioMax)
     private val smb_delivery_ratio_bg_range
