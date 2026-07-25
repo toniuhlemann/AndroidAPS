@@ -56,10 +56,10 @@ class AutoIsfValueLeaseCoordinatorTest {
     // (3) R10-Test 1: Gate AUS latcht irreversibel — schnelles Wieder-AN belebt NIE.
     @Test fun gateOffLatchesForever() {
         armSet()
-        gates = gates.copy(iobthCapabilityEnabled = false)
+        gates = gates.withCapability(app.aaps.core.interfaces.aps.AutoIsfCapability.IOBTH, false)
         assertThat(c.snapshot().iobThPercentEffective).isEqualTo(50)
         assertThat(c.snapshot().overrideState).isEqualTo(AutoIsfOverrideState.DISABLED)
-        gates = gates.copy(iobthCapabilityEnabled = true)          // Re-enable VOR jedem Cleanup
+        gates = gates.withCapability(app.aaps.core.interfaces.aps.AutoIsfCapability.IOBTH, true)          // Re-enable VOR jedem Cleanup
         assertThat(c.snapshot().overrideState).isEqualTo(AutoIsfOverrideState.DISABLED)
         assertThat(c.snapshot().iobThPercentEffective).isEqualTo(50)
         // R12-F1: Pending ist IDENTITAETSGEBUNDEN — exakt diese Lease, nie nur ein String.
@@ -194,8 +194,8 @@ class AutoIsfValueLeaseCoordinatorTest {
     //      aber NIEMALS ACTIVE publiziert (revoked + identitaetsgebundener Pending).
     @Test fun gateChangesDuringRoomCommit_ackAppliedButRevoked() {
         val r = c.executeArmedSet(80, 60) {
-            gates = gates.copy(iobthCapabilityEnabled = false); c.onGateWrite()
-            gates = gates.copy(iobthCapabilityEnabled = true); c.onGateWrite()
+            gates = gates.withCapability(app.aaps.core.interfaces.aps.AutoIsfCapability.IOBTH, false); c.onGateWrite()
+            gates = gates.withCapability(app.aaps.core.interfaces.aps.AutoIsfCapability.IOBTH, true); c.onGateWrite()
             roomApplied()
         }
         assertThat(r.room.outcome).isEqualTo("APPLIED")
@@ -273,7 +273,7 @@ class AutoIsfValueLeaseCoordinatorTest {
                 setter.state != Thread.State.TERMINATED && System.nanoTime() < deadline
             ) Thread.onSpinWait()
             assertThat(setter.state).isAnyOf(Thread.State.WAITING, Thread.State.BLOCKED)
-            gates = gates.copy(iobthCapabilityEnabled = false)   // "SP-Write" unter dem Lock
+            gates = gates.withCapability(app.aaps.core.interfaces.aps.AutoIsfCapability.IOBTH, false)   // "SP-Write" unter dem Lock
         })
         assertThat(setDone.await(5, java.util.concurrent.TimeUnit.SECONDS)).isTrue()
         setter.join(1_000)
@@ -301,5 +301,83 @@ class AutoIsfValueLeaseCoordinatorTest {
         // Erfolgreicher zweiter Versuch → ack raeumt genau diesen Auftrag:
         c.ackPendingTerminal(pt)
         assertThat(c.peekPendingTerminal()).isNull()
+    }
+
+    // ---- Capability-Trennung (25.07.): Schalter duerfen sich nicht gegenseitig erschlagen ----
+
+    // Vor der Trennung galt `unsafe = !channel || !iobth || vo` fuer JEDE Lease dieses
+    // Koordinators. Ein AUS des iobTH-Schalters haette damit auch eine Ratio-/Weights-Lease
+    // widerrufen und ueber den Generations-Bump dauerhaft gelatcht.
+    @Test fun capabilitySwitchesAreIndependent() {
+        gates = AutoIsfValueLeaseCoordinator.Gates(
+            channelEnabled = true,
+            capabilityEnabled = mapOf(
+                AutoIsfCapability.IOBTH to true,
+                AutoIsfCapability.SMBRATIO to true,
+                AutoIsfCapability.WEIGHTS to true,
+            ),
+            forcedValidateOnly = false,
+        )
+        assertThat(gates.unsafe(AutoIsfCapability.IOBTH)).isFalse()
+        assertThat(gates.unsafe(AutoIsfCapability.SMBRATIO)).isFalse()
+        // iobTH aus -> NUR iobTH ist unsicher
+        gates = gates.withCapability(AutoIsfCapability.IOBTH, false)
+        assertThat(gates.unsafe(AutoIsfCapability.IOBTH)).isTrue()
+        assertThat(gates.unsafe(AutoIsfCapability.SMBRATIO)).isFalse()
+        assertThat(gates.unsafe(AutoIsfCapability.WEIGHTS)).isFalse()
+    }
+
+    // Der Generations-Bump ist ebenfalls getrennt: sonst wuerde eine fremde Capability-
+    // Transition eine Lease dauerhaft entwerten, obwohl ihr eigener Schalter nie aus war.
+    @Test fun gateGenerationBumpsOnlyForTheAffectedCapability() {
+        gates = AutoIsfValueLeaseCoordinator.Gates(
+            channelEnabled = true,
+            capabilityEnabled = mapOf(
+                AutoIsfCapability.IOBTH to true,
+                AutoIsfCapability.SMBRATIO to true,
+                AutoIsfCapability.WEIGHTS to true,
+            ),
+            forcedValidateOnly = false,
+        )
+        val before = c.observeGates()
+        gates = gates.withCapability(AutoIsfCapability.SMBRATIO, false)
+        val after = c.observeGates()
+        assertThat(after.generation(AutoIsfCapability.SMBRATIO)).isEqualTo(before.generation(AutoIsfCapability.SMBRATIO) + 1)
+        assertThat(after.generation(AutoIsfCapability.IOBTH)).isEqualTo(before.generation(AutoIsfCapability.IOBTH))
+        assertThat(after.generation(AutoIsfCapability.WEIGHTS)).isEqualTo(before.generation(AutoIsfCapability.WEIGHTS))
+    }
+
+    // Eine LAUFENDE iobTH-Lease ueberlebt das Abschalten einer fremden Capability.
+    @Test fun foreignCapabilitySwitchDoesNotRevokeAnIobthLease() {
+        gates = AutoIsfValueLeaseCoordinator.Gates(
+            channelEnabled = true,
+            capabilityEnabled = mapOf(
+                AutoIsfCapability.IOBTH to true,
+                AutoIsfCapability.SMBRATIO to true,
+            ),
+            forcedValidateOnly = false,
+        )
+        armSet(percent = 80)
+        assertThat(c.snapshot().overrideState).isEqualTo(AutoIsfOverrideState.ACTIVE)
+        gates = gates.withCapability(AutoIsfCapability.SMBRATIO, false)
+        assertThat(c.snapshot().overrideState).isEqualTo(AutoIsfOverrideState.ACTIVE)
+        assertThat(c.snapshot().iobThPercentEffective).isEqualTo(80)
+    }
+
+    // Master-Schalter und Validate-only wirken WEITERHIN auf alle Capabilities.
+    @Test fun masterAndValidateOnlyStillHitEveryCapability() {
+        val all = AutoIsfValueLeaseCoordinator.Gates(
+            channelEnabled = true,
+            capabilityEnabled = AutoIsfCapability.entries.associateWith { true },
+            forcedValidateOnly = false,
+        )
+        val noChannel = all.copy(channelEnabled = false)
+        val vo = all.copy(forcedValidateOnly = true)
+        AutoIsfCapability.entries.forEach { cap ->
+            assertThat(noChannel.unsafe(cap)).isTrue()
+            assertThat(vo.unsafe(cap)).isTrue()
+            assertThat(vo.unsafeReason(cap)).isEqualTo(AutoIsfOverrideState.VO_FORCED)
+            assertThat(noChannel.unsafeReason(cap)).isEqualTo(AutoIsfOverrideState.DISABLED)
+        }
     }
 }

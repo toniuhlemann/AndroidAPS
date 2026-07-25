@@ -1,8 +1,12 @@
 package app.aaps.core.interfaces.aps
 
 /** Capability-Matrix: geschlossene Capability-Liste (R11: Enum statt freier String im Code;
- *  DB/JSON speichern die kanonischen Namen). A1 exponiert NUR IOBTH. */
-enum class AutoIsfCapability { IOBTH }
+ *  DB/JSON speichern die kanonischen Namen).
+ *
+ *  SMBRATIO/WEIGHTS sind ab 25.07. Teil der Liste, damit die Gate-Trennung je Capability
+ *  ueberhaupt ausdrueckbar ist. Ein Wert-Overlay veroeffentlichen sie noch nicht — bis dahin
+ *  wirken sie ausschliesslich als eigener Schalter- und Generations-Namensraum. */
+enum class AutoIsfCapability { IOBTH, SMBRATIO, WEIGHTS }
 
 /** Lease-/Override-Lebenszyklus (R11: Enum). NONE = keine Lease publiziert. */
 enum class AutoIsfOverrideState { NONE, ACTIVE, EXPIRED, FOREIGN_MODIFIED, DISABLED, VO_FORCED, CLOCK_ANOMALY, PROCESS_RESTART }

@@ -42,17 +42,55 @@ class AutoIsfValueLeaseCoordinator @Inject constructor(
     private val context: Context,
 ) : EffectiveAutoIsfSettingsProvider, AutoIsfValueLeaseInvalidator {
 
-    data class Gates(val channelEnabled: Boolean, val iobthCapabilityEnabled: Boolean, val forcedValidateOnly: Boolean) {
-        val unsafe: Boolean get() = !channelEnabled || !iobthCapabilityEnabled || forcedValidateOnly
-        val unsafeReason: AutoIsfOverrideState get() = if (forcedValidateOnly && channelEnabled && iobthCapabilityEnabled) AutoIsfOverrideState.VO_FORCED else AutoIsfOverrideState.DISABLED
+    /**
+     * Gates JE CAPABILITY (25.07.). Vorher galt `unsafe = !channel || !iobth || vo` fuer ALLES,
+     * was dieser Koordinator fuehrt — mit einer zweiten Capability haette ein Ausschalten des
+     * iobTH-Schalters auch deren Lease widerrufen UND ueber den Generations-Bump dauerhaft
+     * gelatcht. Die Schalter im AAPS-Einstellungsscreen waeren nur scheinbar unabhaengig gewesen.
+     * Master-Schalter und Validate-only wirken weiterhin auf alle; die Capability-Schalter nicht.
+     */
+    data class Gates(
+        val channelEnabled: Boolean,
+        val capabilityEnabled: Map<AutoIsfCapability, Boolean>,
+        val forcedValidateOnly: Boolean,
+    ) {
+        /** Bestehende Aufrufer/Tests: iobTH-Form bleibt gueltig. */
+        constructor(channelEnabled: Boolean, iobthCapabilityEnabled: Boolean, forcedValidateOnly: Boolean) :
+            this(channelEnabled, mapOf(AutoIsfCapability.IOBTH to iobthCapabilityEnabled), forcedValidateOnly)
+
+        val iobthCapabilityEnabled: Boolean get() = capabilityEnabled[AutoIsfCapability.IOBTH] == true
+
+        fun enabled(cap: AutoIsfCapability): Boolean = capabilityEnabled[cap] == true
+        fun unsafe(cap: AutoIsfCapability): Boolean = !channelEnabled || !enabled(cap) || forcedValidateOnly
+        fun unsafeReason(cap: AutoIsfCapability): AutoIsfOverrideState =
+            if (forcedValidateOnly && channelEnabled && enabled(cap)) AutoIsfOverrideState.VO_FORCED
+            else AutoIsfOverrideState.DISABLED
+
+        /** Einen Capability-Schalter aendern, ohne die anderen anzufassen. */
+        fun withCapability(cap: AutoIsfCapability, isEnabled: Boolean): Gates =
+            copy(capabilityEnabled = capabilityEnabled + (cap to isEnabled))
+
+        /** Kompatibilitaet fuer den iobTH-Pfad (identische Semantik wie vor der Trennung). */
+        val unsafe: Boolean get() = unsafe(AutoIsfCapability.IOBTH)
+        val unsafeReason: AutoIsfOverrideState get() = unsafeReason(AutoIsfCapability.IOBTH)
     }
 
     @VisibleForTesting internal data class GateObservation(
-        val gates: Gates?, val generation: Long,
-        /** R13-F4: Grund der LETZTEN unsicheren Transition — Terminalgruende bleiben ehrlich,
-         *  auch wenn kein Snapshot den unsicheren Moment selbst gesehen hat. */
-        val lastUnsafeReason: AutoIsfOverrideState? = null,
-    )
+        val gates: Gates?,
+        /** Generation JE Capability — eine fuer iobTH unsichere Transition darf eine
+         *  Weights-/Ratio-Lease nicht mit erschlagen. */
+        val generations: Map<AutoIsfCapability, Long> = emptyMap(),
+        /** R13-F4: Grund der LETZTEN unsicheren Transition, je Capability — Terminalgruende
+         *  bleiben ehrlich, auch wenn kein Snapshot den unsicheren Moment selbst gesehen hat. */
+        val lastUnsafeReasons: Map<AutoIsfCapability, AutoIsfOverrideState> = emptyMap(),
+    ) {
+        fun generation(cap: AutoIsfCapability): Long = generations[cap] ?: 0L
+        fun lastUnsafeReason(cap: AutoIsfCapability): AutoIsfOverrideState? = lastUnsafeReasons[cap]
+
+        /** iobTH-Sicht, damit der bestehende Pfad unveraendert lesbar bleibt. */
+        val generation: Long get() = generation(AutoIsfCapability.IOBTH)
+        val lastUnsafeReason: AutoIsfOverrideState? get() = lastUnsafeReason(AutoIsfCapability.IOBTH)
+    }
 
     @VisibleForTesting internal data class PublishedLease(
         val leaseId: String,
@@ -74,7 +112,15 @@ class AutoIsfValueLeaseCoordinator @Inject constructor(
     @VisibleForTesting internal var basePercentReader: () -> Int = { preferences.get(IntKey.ApsAutoIsfIobThPercent) }
     @VisibleForTesting internal var gatesReader: () -> Gates = {
         val sp = context.getSharedPreferences("local_command_channel", Context.MODE_PRIVATE)
-        Gates(sp.getBoolean("channel_enabled", false), sp.getBoolean("iobth_capability_enabled", false), sp.getBoolean("forced_validate_only", false))
+        Gates(
+            channelEnabled = sp.getBoolean("channel_enabled", false),
+            capabilityEnabled = mapOf(
+                AutoIsfCapability.IOBTH to sp.getBoolean("iobth_capability_enabled", false),
+                AutoIsfCapability.SMBRATIO to sp.getBoolean("smbratio_capability_enabled", false),
+                AutoIsfCapability.WEIGHTS to sp.getBoolean("weights_capability_enabled", false),
+            ),
+            forcedValidateOnly = sp.getBoolean("forced_validate_only", false),
+        )
     }
     @VisibleForTesting internal var wallClock: () -> Long = { System.currentTimeMillis() }
     @VisibleForTesting internal var elapsedClock: () -> Long = { android.os.SystemClock.elapsedRealtime() }
@@ -82,7 +128,7 @@ class AutoIsfValueLeaseCoordinator @Inject constructor(
     private val lock = ReentrantLock()
     @VisibleForTesting internal val published = AtomicReference<PublishedLease?>(null)
     @VisibleForTesting internal val baseGeneration = AtomicLong(0)
-    private val gateObservation = AtomicReference(GateObservation(null, 0L))
+    private val gateObservation = AtomicReference(GateObservation(null))
     @VisibleForTesting internal val pendingTerminals = ConcurrentLinkedQueue<PendingTerminal>()
 
     /** Externe Basis-Writes (SP-Listener-Fangnetz, R9-F5): Generation invalidiert auch wertgleiche Writes. */
@@ -105,6 +151,7 @@ class AutoIsfValueLeaseCoordinator @Inject constructor(
      */
     fun beforeGateWrite(
         newChannel: Boolean? = null, newIobth: Boolean? = null, newForcedVo: Boolean? = null,
+        newSmbRatio: Boolean? = null, newWeights: Boolean? = null,
         // R14-F2: der eigentliche SP-Write laeuft als Callback UNTER DEMSELBEN Lock — zwischen
         // Bump/Revoke und sichtbarem neuen Gate-Wert existiert damit KEIN Fenster mehr, in dem
         // ein neuer SET den Lock bekommen, die alten sicheren Gates lesen und vollstaendig
@@ -113,26 +160,41 @@ class AutoIsfValueLeaseCoordinator @Inject constructor(
     ): Unit = lock.withLock {
         val cur = gatesReader()
         val next = Gates(
-            newChannel ?: cur.channelEnabled,
-            newIobth ?: cur.iobthCapabilityEnabled,
-            newForcedVo ?: cur.forcedValidateOnly,
+            channelEnabled = newChannel ?: cur.channelEnabled,
+            capabilityEnabled = cur.capabilityEnabled + buildMap {
+                newIobth?.let { put(AutoIsfCapability.IOBTH, it) }
+                newSmbRatio?.let { put(AutoIsfCapability.SMBRATIO, it) }
+                newWeights?.let { put(AutoIsfCapability.WEIGHTS, it) }
+            },
+            forcedValidateOnly = newForcedVo ?: cur.forcedValidateOnly,
         )
-        val becameUnsafe = (cur.channelEnabled && !next.channelEnabled) ||
-            (cur.iobthCapabilityEnabled && !next.iobthCapabilityEnabled) ||
-            (!cur.forcedValidateOnly && next.forcedValidateOnly)
-        if (becameUnsafe) {
-            val reason = if (!cur.forcedValidateOnly && next.forcedValidateOnly && next.channelEnabled && next.iobthCapabilityEnabled)
-                AutoIsfOverrideState.VO_FORCED else AutoIsfOverrideState.DISABLED
+        // JE CAPABILITY bewerten: Master/VO treffen alle, ein Capability-Schalter nur seine eigene.
+        val unsafeNow = AutoIsfCapability.entries.filter { cap ->
+            (cur.channelEnabled && !next.channelEnabled) ||
+                (cur.enabled(cap) && !next.enabled(cap)) ||
+                (!cur.forcedValidateOnly && next.forcedValidateOnly)
+        }
+        if (unsafeNow.isNotEmpty()) {
+            val reasons = unsafeNow.associateWith { cap ->
+                if (!cur.forcedValidateOnly && next.forcedValidateOnly && next.channelEnabled && next.enabled(cap))
+                    AutoIsfOverrideState.VO_FORCED else AutoIsfOverrideState.DISABLED
+            }
             // Generation-Bump + Reason VOR dem eigentlichen SP-Write (gates=null zwingt die
             // naechste Beobachtung zum frischen Read ohne Doppel-Bump).
             while (true) {
                 val curObs = gateObservation.get()
-                if (gateObservation.compareAndSet(curObs, GateObservation(null, Math.addExact(curObs.generation, 1L), reason))) break
+                val bumped = curObs.generations.toMutableMap()
+                unsafeNow.forEach { cap -> bumped[cap] = Math.addExact(curObs.generation(cap), 1L) }
+                val nextObs = GateObservation(null, bumped, curObs.lastUnsafeReasons + reasons)
+                if (gateObservation.compareAndSet(curObs, nextObs)) break
             }
-            val p = published.get()
-            if (p != null && p.revokedReason == null) {
-                published.set(p.copy(revokedReason = reason))
-                pendingTerminals.add(PendingTerminal("IOBTH", p.leaseId, p.leaseVersion, reason.name))
+            // Nur die Lease der betroffenen Capability widerrufen (A1 fuehrt bisher nur IOBTH).
+            reasons[AutoIsfCapability.IOBTH]?.let { reason ->
+                val p = published.get()
+                if (p != null && p.revokedReason == null) {
+                    published.set(p.copy(revokedReason = reason))
+                    pendingTerminals.add(PendingTerminal("IOBTH", p.leaseId, p.leaseVersion, reason.name))
+                }
             }
         }
         // Auch SICHERE Transitionen schreiben unter dem Lock (ein AUS->AN zwischen Snapshots
@@ -151,19 +213,22 @@ class AutoIsfValueLeaseCoordinator @Inject constructor(
             val cur = gateObservation.get()
             val gates = gatesReader()
             if (cur.gates == gates) return cur
-            val becameUnsafe = cur.gates != null && (
-                (cur.gates.channelEnabled && !gates.channelEnabled) ||
-                    (cur.gates.iobthCapabilityEnabled && !gates.iobthCapabilityEnabled) ||
-                    (!cur.gates.forcedValidateOnly && gates.forcedValidateOnly)
-                )
-            // R13-F4: VO-Puls und Schalter-AUS bekommen ihren ECHTEN Grund.
-            val reason = when {
-                !becameUnsafe -> cur.lastUnsafeReason
-                cur.gates != null && !cur.gates.forcedValidateOnly && gates.forcedValidateOnly &&
-                    gates.channelEnabled && gates.iobthCapabilityEnabled -> AutoIsfOverrideState.VO_FORCED
-                else -> AutoIsfOverrideState.DISABLED
+            val becameUnsafe = AutoIsfCapability.entries.filter { cap ->
+                cur.gates != null && (
+                    (cur.gates.channelEnabled && !gates.channelEnabled) ||
+                        (cur.gates.enabled(cap) && !gates.enabled(cap)) ||
+                        (!cur.gates.forcedValidateOnly && gates.forcedValidateOnly)
+                    )
             }
-            val next = GateObservation(gates, if (becameUnsafe) Math.addExact(cur.generation, 1L) else cur.generation, reason)
+            // R13-F4: VO-Puls und Schalter-AUS bekommen ihren ECHTEN Grund — je Capability.
+            val reasons = becameUnsafe.associateWith { cap ->
+                if (cur.gates != null && !cur.gates.forcedValidateOnly && gates.forcedValidateOnly &&
+                    gates.channelEnabled && gates.enabled(cap)
+                ) AutoIsfOverrideState.VO_FORCED else AutoIsfOverrideState.DISABLED
+            }
+            val gens = cur.generations.toMutableMap()
+            becameUnsafe.forEach { cap -> gens[cap] = Math.addExact(cur.generation(cap), 1L) }
+            val next = GateObservation(gates, gens, cur.lastUnsafeReasons + reasons)
             if (gateObservation.compareAndSet(cur, next)) return next
         }
     }
