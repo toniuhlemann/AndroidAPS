@@ -38,6 +38,8 @@ object LocalCommandProtocol {
         SET_OWNED_TEMP_TARGET, CANCEL_OWNED_TEMP_TARGET,
         SET_IOBTH, CLEAR_IOBTH,
         SET_AUTOSTATE, CLEAR_AUTOSTATE,
+        SET_SMBRATIO, CLEAR_SMBRATIO,
+        SET_WEIGHTS, CLEAR_WEIGHTS,
         GET_COMMAND_STATUS, GET_SERVICE_STATUS
     }
     enum class ReasonKey { PEAK_STOP, CORRECTION, REBOUND, BRAKE, MEAL, LOW_PROTECT }
@@ -84,6 +86,11 @@ object LocalCommandProtocol {
         // den State gibt und ob der Wert zu seiner Wertliste gehoert, entscheidet der Service.
         val stateName: String? = null,
         val stateValue: String? = null,
+        // SMBRATIO/WEIGHTS: skalierte Tausendstel (nie Doubles im HMAC). Weights ist eine
+        // TEIL-Map — nur genannte Felder werden ueberlagert, ungenannte bleiben auf ihrer
+        // Preference. Die Kanonisierung sortiert die Schluessel, damit der HMAC stabil ist.
+        val ratioScaled: Long? = null,
+        val weightsScaled: Map<String, Long>? = null,
         val canonicalString: String,
     )
 
@@ -154,6 +161,14 @@ object LocalCommandProtocol {
         if (cmd == Cmd.SET_AUTOSTATE) {
             // Wie bei SET_IOBTH: strukturelle Bounds, abgeleitet aus der Policy statt dupliziert.
             if (!LocalCommandAutoStatePolicy.isTtlAllowed(req.ttlMin!!)) return ParseOutcome(null, E_BOUNDS)
+        }
+        if (cmd == Cmd.SET_SMBRATIO) {
+            if (!LocalCommandAutoStatePolicy.isTtlAllowed(req.ttlMin!!)) return ParseOutcome(null, E_BOUNDS)
+            if (!ValueOverlayPolicy.isRatioAllowed(req.ratioScaled!!)) return ParseOutcome(null, E_BOUNDS)
+        }
+        if (cmd == Cmd.SET_WEIGHTS) {
+            if (!LocalCommandAutoStatePolicy.isTtlAllowed(req.ttlMin!!)) return ParseOutcome(null, E_BOUNDS)
+            if (!ValueOverlayPolicy.areWeightsAllowed(req.weightsScaled!!)) return ParseOutcome(null, E_BOUNDS)
         }
         if (secret == null || secret.isEmpty()) return ParseOutcome(null, E_AUTH_NOT_CONFIGURED)
         val expected = hmacHex(secret, req.canonicalString)
@@ -296,6 +311,61 @@ object LocalCommandProtocol {
                     canonicalString = "",
                 ))
             }
+            Cmd.SET_SMBRATIO -> {
+                if (!keysExactly("ratio", "ttlMin", "validateOnly", "clientPolicyHash", "expectedState", "expectedLeaseId", "expectedLeaseVersion")) return null
+                val state = asString(p, "expectedState") ?: return null
+                val hash = asString(p, "clientPolicyHash")?.takeIf { HEX64.matches(it) } ?: return null
+                val ratio = asLong(p, "ratio") ?: return null
+                val ttl = asInt(p, "ttlMin") ?: return null
+                val validateOnly = asBool(p, "validateOnly") ?: return null
+                val leaseId = asString(p, "expectedLeaseId")?.takeIf { HEX32.matches(it) } ?: return null
+                val leaseVer = asLong(p, "expectedLeaseVersion") ?: return null
+                if (!sentinelConsistent(state, leaseId, leaseVer)) return null
+                build(cmd, requestId, issuedAt, expiresAt, Request(
+                    cmd, requestId, issuedAt, expiresAt, validateOnly,
+                    clientPolicyHash = hash, expectedState = state, ttlMin = ttl, ratioScaled = ratio,
+                    expectedLeaseId = leaseId, expectedLeaseVersion = leaseVer, canonicalString = "",
+                ))
+            }
+            Cmd.SET_WEIGHTS -> {
+                if (!keysExactly("weights", "ttlMin", "validateOnly", "clientPolicyHash", "expectedState", "expectedLeaseId", "expectedLeaseVersion")) return null
+                val state = asString(p, "expectedState") ?: return null
+                val hash = asString(p, "clientPolicyHash")?.takeIf { HEX64.matches(it) } ?: return null
+                val ttl = asInt(p, "ttlMin") ?: return null
+                val validateOnly = asBool(p, "validateOnly") ?: return null
+                val leaseId = asString(p, "expectedLeaseId")?.takeIf { HEX32.matches(it) } ?: return null
+                val leaseVer = asLong(p, "expectedLeaseVersion") ?: return null
+                if (!sentinelConsistent(state, leaseId, leaseVer)) return null
+                // Teil-Map: mindestens ein Feld, nur bekannte Felder, Werte strikt als Integer.
+                val wObj = p.optJSONObject("weights") ?: return null
+                if (wObj.length() == 0) return null
+                val weights = HashMap<String, Long>()
+                val it = wObj.keys()
+                while (it.hasNext()) {
+                    val k = it.next()
+                    if (k !in ValueOverlayPolicy.WEIGHT_KEYS.keys) return null
+                    val v = wObj.opt(k)
+                    if (v !is Int && v !is Long) return null
+                    weights[k] = (v as Number).toLong()
+                }
+                build(cmd, requestId, issuedAt, expiresAt, Request(
+                    cmd, requestId, issuedAt, expiresAt, validateOnly,
+                    clientPolicyHash = hash, expectedState = state, ttlMin = ttl, weightsScaled = weights,
+                    expectedLeaseId = leaseId, expectedLeaseVersion = leaseVer, canonicalString = "",
+                ))
+            }
+            Cmd.CLEAR_SMBRATIO, Cmd.CLEAR_WEIGHTS -> {
+                if (!keysExactly("validateOnly", "expectedOwnerPolicyHash", "expectedLeaseId", "expectedLeaseVersion")) return null
+                val validateOnly = asBool(p, "validateOnly") ?: return null
+                val ownerHash = asString(p, "expectedOwnerPolicyHash")?.takeIf { HEX64.matches(it) } ?: return null
+                val leaseId = asString(p, "expectedLeaseId")?.takeIf { HEX32.matches(it) && it != SENTINEL_REQUEST_ID } ?: return null
+                val leaseVer = asLong(p, "expectedLeaseVersion")?.takeIf { it >= 1L } ?: return null
+                build(cmd, requestId, issuedAt, expiresAt, Request(
+                    cmd, requestId, issuedAt, expiresAt, validateOnly,
+                    expectedOwnerPolicyHash = ownerHash,
+                    expectedLeaseId = leaseId, expectedLeaseVersion = leaseVer, canonicalString = "",
+                ))
+            }
             Cmd.GET_COMMAND_STATUS -> {
                 if (!keysExactly("queryRequestId")) return null
                 // R5-F1: der Sentinel ist per Definition nie eine persistierte echte Request-ID.
@@ -321,6 +391,13 @@ object LocalCommandProtocol {
     }
 
     /** Sortierte Schluessel, keine Whitespaces, Int dezimal, Bool true/false, ASCII-Strings. */
+    /** Variante B: NONE verlangt exakt das Sentinel-Paar, OWNED echte Werte. */
+    private fun sentinelConsistent(state: String, leaseId: String, leaseVer: Long): Boolean = when (state) {
+        "NONE" -> leaseId == SENTINEL_REQUEST_ID && leaseVer == SENTINEL_LEASE_VERSION
+        "OWNED" -> leaseId != SENTINEL_REQUEST_ID && leaseVer >= 1L
+        else -> false
+    }
+
     fun canonicalParams(r: Request): String {
         val fields = sortedMapOf<String, String>()
         fun putS(k: String, v: String) { fields[k] = "\"" + v + "\"" }   // ASCII-only per Schema
@@ -363,6 +440,25 @@ object LocalCommandProtocol {
                 putS("expectedOwnerPolicyHash", r.expectedOwnerPolicyHash!!)
                 putS("expectedLeaseId", r.expectedLeaseId!!); putI("expectedLeaseVersion", r.expectedLeaseVersion!!)
             }
+            Cmd.SET_SMBRATIO -> {
+                putI("ratio", r.ratioScaled!!); putI("ttlMin", r.ttlMin!!.toLong())
+                putB("validateOnly", r.validateOnly)
+                putS("clientPolicyHash", r.clientPolicyHash!!); putS("expectedState", r.expectedState!!)
+                putS("expectedLeaseId", r.expectedLeaseId!!); putI("expectedLeaseVersion", r.expectedLeaseVersion!!)
+            }
+            Cmd.SET_WEIGHTS -> {
+                // Sortierte Schluessel, damit der HMAC unabhaengig von der Map-Reihenfolge ist.
+                fields["weights"] = r.weightsScaled!!.entries.sortedBy { it.key }
+                    .joinToString(",", prefix = "{", postfix = "}") { "\"${it.key}\":${it.value}" }
+                putI("ttlMin", r.ttlMin!!.toLong()); putB("validateOnly", r.validateOnly)
+                putS("clientPolicyHash", r.clientPolicyHash!!); putS("expectedState", r.expectedState!!)
+                putS("expectedLeaseId", r.expectedLeaseId!!); putI("expectedLeaseVersion", r.expectedLeaseVersion!!)
+            }
+            Cmd.CLEAR_SMBRATIO, Cmd.CLEAR_WEIGHTS -> {
+                putB("validateOnly", r.validateOnly)
+                putS("expectedOwnerPolicyHash", r.expectedOwnerPolicyHash!!)
+                putS("expectedLeaseId", r.expectedLeaseId!!); putI("expectedLeaseVersion", r.expectedLeaseVersion!!)
+            }
             Cmd.GET_COMMAND_STATUS -> putS("queryRequestId", r.queryRequestId!!)
             Cmd.GET_SERVICE_STATUS -> {}
         }
@@ -387,6 +483,8 @@ object LocalCommandProtocol {
         val iobthCapabilityEnabled: Boolean = false,
         /** AUTOSTATE: eigener Schalter, default AUS — bestehende Aufrufer bleiben unveraendert. */
         val autoStateCapabilityEnabled: Boolean = false,
+        val smbRatioCapabilityEnabled: Boolean = false,
+        val weightsCapabilityEnabled: Boolean = false,
     )
 
     /** R5-F5: expliziter Ausfuehrungsmodus statt "null = irgendwie erlaubt" — der spaetere
@@ -419,6 +517,20 @@ object LocalCommandProtocol {
         Cmd.SET_IOBTH, Cmd.CLEAR_IOBTH -> when {
             !cfg.channelEnabled -> GateResult.Reject(E_CHANNEL_DISABLED)
             !cfg.iobthCapabilityEnabled -> GateResult.Reject(E_CAPABILITY_DISABLED)
+            !MUTATION_BUILD_PRESENT -> GateResult.Reject(E_MUTATION_UNAVAILABLE)
+            cfg.forcedValidateOnly || req.validateOnly -> GateResult.ValidateOnly
+            else -> GateResult.Apply
+        }
+        Cmd.SET_SMBRATIO, Cmd.CLEAR_SMBRATIO -> when {
+            !cfg.channelEnabled -> GateResult.Reject(E_CHANNEL_DISABLED)
+            !cfg.smbRatioCapabilityEnabled -> GateResult.Reject(E_CAPABILITY_DISABLED)
+            !MUTATION_BUILD_PRESENT -> GateResult.Reject(E_MUTATION_UNAVAILABLE)
+            cfg.forcedValidateOnly || req.validateOnly -> GateResult.ValidateOnly
+            else -> GateResult.Apply
+        }
+        Cmd.SET_WEIGHTS, Cmd.CLEAR_WEIGHTS -> when {
+            !cfg.channelEnabled -> GateResult.Reject(E_CHANNEL_DISABLED)
+            !cfg.weightsCapabilityEnabled -> GateResult.Reject(E_CAPABILITY_DISABLED)
             !MUTATION_BUILD_PRESENT -> GateResult.Reject(E_MUTATION_UNAVAILABLE)
             cfg.forcedValidateOnly || req.validateOnly -> GateResult.ValidateOnly
             else -> GateResult.Apply
