@@ -163,8 +163,26 @@ open class OpenAPSAutoISFPlugin @Inject constructor(
      * Poll —, gilt unveraendert die Basis-Preference. Leere Overlay-Map heisst ebenfalls
      * Basis; ein Leser muss nie zwischen "kein Overlay" und "Overlay mit Basiswert"
      * unterscheiden.
+     *
+     * THREADLOCAL, NICHT @Volatile (Review 25.07., F1/F2). Das Plugin ist ein Singleton, ein
+     * Feld haette prozessweit statt laufweit gegolten — mit zwei realen Folgen:
+     *
+     *  1. calculateVariableIsf() wird auch von FREMD-Threads gerufen (xDrip-Broadcast,
+     *     Wear-Datenhandler, Overview, Automations-Polls). Faellt so ein Aufruf ins Fenster
+     *     eines Laufs, rechnete er mit den Lease-Gewichten — und schrieb das Ergebnis in den
+     *     autoIsfCache, der ueber getAverageIsfMgdl in die COB-/Deviations-Rechnung geht und
+     *     bis zu 24h haelt. Eine 30-min-Lease haette so weit ueber ihre Frist hinaus gewirkt;
+     *     genau das zerstoert die Zusage "TTL-begrenzt".
+     *  2. OpenAPSFragment ruft invoke() direkt, am @Synchronized des LoopPlugin vorbei. Ein
+     *     Swipe-Refresh waehrend eines Laufs haette im finally des ZWEITEN Laufs den Snapshot
+     *     des ersten geloescht — die Mid-Run-Inkonsistenz, die dieser Snapshot verhindern soll.
+     *
+     * Mit ThreadLocal gilt der Snapshot genau fuer den Thread, der den Lauf macht.
      */
-    @Volatile private var runSnapshot: app.aaps.core.interfaces.aps.EffectiveAutoIsfSettingsProvider.Snapshot? = null
+    private val runSnapshotTl = ThreadLocal<app.aaps.core.interfaces.aps.EffectiveAutoIsfSettingsProvider.Snapshot?>()
+    private var runSnapshot: app.aaps.core.interfaces.aps.EffectiveAutoIsfSettingsProvider.Snapshot?
+        get() = runSnapshotTl.get()
+        set(v) = if (v == null) runSnapshotTl.remove() else runSnapshotTl.set(v)
 
     private fun weightOverlay(field: String, key: DoubleKey): Double =
         runSnapshot?.weightOverrides?.get(field) ?: preferences.get(key)

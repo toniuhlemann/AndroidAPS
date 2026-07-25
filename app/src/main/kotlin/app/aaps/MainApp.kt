@@ -131,6 +131,15 @@ class MainApp : DaggerApplication() {
 
     private var iobThBaseListener: android.content.SharedPreferences.OnSharedPreferenceChangeListener? = null
     private var gateListener: android.content.SharedPreferences.OnSharedPreferenceChangeListener? = null
+    /** Einmal statt bei jedem Change-Callback der Default-Prefs neu allokiert (Review F5). */
+    private val weightPrefKeys = setOf(
+        app.aaps.core.keys.DoubleKey.ApsAutoIsfBgAccelWeight.key,
+        app.aaps.core.keys.DoubleKey.ApsAutoIsfBgBrakeWeight.key,
+        app.aaps.core.keys.DoubleKey.ApsAutoIsfPpWeight.key,
+        app.aaps.core.keys.DoubleKey.ApsAutoIsfDuraWeight.key,
+        app.aaps.core.keys.DoubleKey.ApsAutoIsfLowBgWeight.key,
+        app.aaps.core.keys.DoubleKey.ApsAutoIsfHighBgWeight.key,
+    )
 
     override fun onCreate() {
         super.onCreate()
@@ -150,15 +159,8 @@ class MainApp : DaggerApplication() {
             // Wertvergleich gegriffen, und ein WERTGLEICHER Schutz-Write waere unsichtbar geblieben.
             if (key == app.aaps.core.keys.DoubleKey.ApsAutoIsfSmbDeliveryRatio.key)
                 valueLeaseCoordinator.onExternalBaseWrite(app.aaps.core.interfaces.aps.AutoIsfCapability.SMBRATIO)
-            if (key in setOf(
-                    app.aaps.core.keys.DoubleKey.ApsAutoIsfBgAccelWeight.key,
-                    app.aaps.core.keys.DoubleKey.ApsAutoIsfBgBrakeWeight.key,
-                    app.aaps.core.keys.DoubleKey.ApsAutoIsfPpWeight.key,
-                    app.aaps.core.keys.DoubleKey.ApsAutoIsfDuraWeight.key,
-                    app.aaps.core.keys.DoubleKey.ApsAutoIsfLowBgWeight.key,
-                    app.aaps.core.keys.DoubleKey.ApsAutoIsfHighBgWeight.key,
-                )
-            ) valueLeaseCoordinator.onExternalBaseWrite(app.aaps.core.interfaces.aps.AutoIsfCapability.WEIGHTS)
+            if (key in weightPrefKeys)
+                valueLeaseCoordinator.onExternalBaseWrite(app.aaps.core.interfaces.aps.AutoIsfCapability.WEIGHTS)
         }
         androidx.preference.PreferenceManager.getDefaultSharedPreferences(this).registerOnSharedPreferenceChangeListener(iobThBaseListener)
         // R12-F3: der Core-Exporter (plain object) bekommt denselben Provider-Singleton.
