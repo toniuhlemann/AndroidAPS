@@ -187,4 +187,59 @@ class ValueLeaseOverlayTest {
         assertThat(s.smbRatioState).isEqualTo(AutoIsfOverrideState.ACTIVE)
         assertThat(s.smbRatioEffective!!).isWithin(1e-9).of(0.3)
     }
+
+    // ---- Review-Befunde 7, 8, 10 ----
+
+    // Befund 8: die Basis-Generation war EINE gemeinsame Zahl — ein Fremdschreiber-Bump fuer
+    // einen Wert haette die Leases der anderen Capabilities mit getoetet.
+    @Test fun `Fremdschreiber-Bump trifft nur die eigene Capability`() {
+        setRatio(0.3)
+        setWeights(ValueOverlayPolicy.F_ACCE to 0.4)
+        c.onExternalBaseWrite(AutoIsfCapability.SMBRATIO)
+        val s = c.snapshot()
+        assertThat(s.smbRatioState).isEqualTo(AutoIsfOverrideState.FOREIGN_MODIFIED)
+        assertThat(s.weightsState).isEqualTo(AutoIsfOverrideState.ACTIVE)
+    }
+
+    // ... und der iobTH-Bump laesst die neuen Capabilities in Ruhe.
+    @Test fun `iobTH-Bump toetet keine Ratio-Lease`() {
+        setRatio(0.3)
+        c.onExternalBaseWrite()
+        assertThat(c.snapshot().smbRatioState).isEqualTo(AutoIsfOverrideState.ACTIVE)
+    }
+
+    // Befund 8b: der Invalidator ignorierte seinen capability-Parameter.
+    @Test fun `Invalidator widerruft die genannte Capability`() {
+        setRatio(0.3)
+        setWeights(ValueOverlayPolicy.F_ACCE to 0.4)
+        c.invalidateBeforeExternalWrite(AutoIsfCapability.WEIGHTS, "test")
+        val s = c.snapshot()
+        assertThat(s.weightsState).isEqualTo(AutoIsfOverrideState.FOREIGN_MODIFIED)
+        assertThat(s.smbRatioState).isEqualTo(AutoIsfOverrideState.ACTIVE)
+    }
+
+    // Befund 7: beim Replacement erbt Room die Kohorte des ERSTEN SET; der RAM muss dieselbe
+    // uebernehmen, sonst verzeiht er ein Gate-AUS→AN zwischen den beiden SETs.
+    @Test fun `Replacement uebernimmt die geerbte Kohorte aus Room`() {
+        setRatio(0.3)
+        val geerbt = AutoIsfValueLeaseCoordinator.RoomSetResult(
+            "APPLIED", null, false, null, "v-1", 2L,
+            baseGenerationUsed = 0L, gateGenerationUsed = 99L,
+        )
+        c.executeArmedValueSet(
+            AutoIsfCapability.SMBRATIO,
+            mapOf(ValueOverlayPolicy.F_RATIO to ValueOverlayPolicy.scaled(0.4)), 60,
+        ) { geerbt }
+        // gateGeneration 99 passt zu keiner beobachteten Generation -> dauerhaft widerrufen
+        assertThat(c.snapshot().smbRatioState).isNotEqualTo(AutoIsfOverrideState.ACTIVE)
+    }
+
+    // Befund 10: die Toleranz muss den Float-Rundtrip decken, aber keine echte Aenderung.
+    @Test fun `Toleranz deckt den Rundtrip, nicht einen halben Draht-Schritt`() {
+        setWeights(ValueOverlayPolicy.F_ACCE to 0.4)
+        weights[ValueOverlayPolicy.F_ACCE] = 0.23000000417232515      // Rundtrip
+        assertThat(c.snapshot().weightsState).isEqualTo(AutoIsfOverrideState.ACTIVE)
+        weights[ValueOverlayPolicy.F_ACCE] = 0.23000000417232513 + 0.0005   // echte Aenderung
+        assertThat(c.snapshot().weightsState).isEqualTo(AutoIsfOverrideState.FOREIGN_MODIFIED)
+    }
 }
