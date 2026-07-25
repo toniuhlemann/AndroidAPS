@@ -53,6 +53,7 @@ class KeepAliveWorker(
     @Inject lateinit var iobCobCalculator: IobCobCalculator
     @Inject lateinit var loop: Loop
     @Inject lateinit var dateUtil: DateUtil
+    @Inject lateinit var autoStateLeaseCoordinator: app.aaps.plugins.aps.iobaction.AutoStateLeaseCoordinator
     @Inject lateinit var activePlugin: ActivePlugin
     @Inject lateinit var profileFunction: ProfileFunction
     @Inject lateinit var rxBus: RxBus
@@ -130,6 +131,15 @@ class KeepAliveWorker(
             fabricPrivacy.logCustom("KeepAliveFail")
         }
         lastRun = dateUtil.now()
+
+        // AUTOSTATE-Wachposten ALARMGETRIEBEN (Runde 3 / F2). Der 60s-Handler in MainApp rechnet
+        // in uptimeMillis und steht im Deep Sleep — eine Lease konnte ihre Frist also deutlich
+        // ueberziehen, waehrend die Verbraucher (AAPS-Automationen) ueber BG-Wakeups sehr wohl
+        // weiterliefen. KeepAlive kommt per Alarm und ueberlebt Doze; der Handler bleibt als
+        // feinerer Takt im Wachzustand daneben stehen.
+        runCatching {
+            autoStateLeaseCoordinator.enforce(dateUtil.now(), android.os.SystemClock.elapsedRealtime())
+        }
 
         dstHelperPlugin.dstCheck()
         localAlertUtils.shortenSnoozeInterval()
