@@ -133,10 +133,11 @@ class KeepAliveWorker(
         lastRun = dateUtil.now()
 
         // AUTOSTATE-Wachposten ALARMGETRIEBEN (Runde 3 / F2). Der 60s-Handler in MainApp rechnet
-        // in uptimeMillis und steht im Deep Sleep — eine Lease konnte ihre Frist also deutlich
-        // ueberziehen, waehrend die Verbraucher (AAPS-Automationen) ueber BG-Wakeups sehr wohl
-        // weiterliefen. KeepAlive kommt per Alarm und ueberlebt Doze; der Handler bleibt als
-        // feinerer Takt im Wachzustand daneben stehen.
+        // in uptimeMillis und steht im Deep Sleep — eine Lease konnte ihre Frist unbegrenzt
+        // ueberziehen, waehrend die Verbraucher (AAPS-Automationen) ueber BG-Wakeups weiterliefen.
+        // KeepAlive kommt per Alarm und ueberlebt Doze. EHRLICH DAZU (Runde 4): das ist ein
+        // 5-Minuten-Raster, keine sekundengenaue Frist — im Doze kann eine Lease also weiterhin
+        // um bis zu ~5 min ueberziehen. Aus "unbegrenzt" wird "begrenzt", nicht "exakt".
         runCatching {
             autoStateLeaseCoordinator.enforce(dateUtil.now(), android.os.SystemClock.elapsedRealtime())
         }

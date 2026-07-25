@@ -376,20 +376,9 @@ class AutoStateLeaseCoordinatorTest {
         assertThat(st.values["MEAL_ACTIVE"]).isEqualTo("false")   // Basis zurueckgestellt
     }
 
-    // Runde 3 / F4: ein WERTGLEICHER Automations-Write ist am Wert nicht erkennbar. Ohne
-    // Generation haette die auslaufende Lease genau ihn rueckgaengig gemacht.
-    @Test fun `wertgleicher Fremdschreiber verhindert das Zurueckstellen`() {
-        val st = states()
-        val c = AutoStateLeaseCoordinator(st, gateSource())
-        c.executeArmedSet("MEAL_ACTIVE", "true", 30, t0, e0) { applied() }
-        // Eine Automation setzt DENSELBEN Wert — am Wert nicht zu sehen, an der Generation schon.
-        st.setState("MEAL_ACTIVE", "true")
-        c.onExternalStateWrite()
-        c.enforce(t0 + 30 * 60_000, e0 + 30 * 60_000)
-        assertThat(st.values["MEAL_ACTIVE"]).isEqualTo("true")   // NICHT auf false zurueckgestellt
-        assertThat(c.currentState()).isEqualTo(AutoStateLeaseCoordinator.STATE_NONE)
-    }
-
+    // Runde 4: das Generations-Netz ist zurueckgenommen. Ein WERTGLEICHER Fremdschreiber
+    // bleibt damit unerkannt — bekannte, bewusst akzeptierte Luecke (siehe Klassenkopf).
+    // Der Test haelt fest, was stattdessen GILT: die Rueckstellung funktioniert.
     @Test fun `ohne Fremdschreiber wird beim Ablauf normal zurueckgestellt`() {
         val st = states()
         val c = AutoStateLeaseCoordinator(st, gateSource())
