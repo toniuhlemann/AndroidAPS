@@ -160,6 +160,17 @@ class LocalCommandService : Service() {
             }) else null,
             // AUTOSTATE: Lease-Status + Policy-Hash, damit der Viewer die Capability ueberhaupt
             // als vorhanden erkennt (der Transport gated auf autoStateCapabilityEnabled).
+            overlayStatusProvider = coordinator?.let { vlc ->
+                {
+                    buildMap<String, Any> {
+                        put("smbRatioLeaseState", vlc.valueLeaseState(app.aaps.core.interfaces.aps.AutoIsfCapability.SMBRATIO).name)
+                        put("weightsLeaseState", vlc.valueLeaseState(app.aaps.core.interfaces.aps.AutoIsfCapability.WEIGHTS).name)
+                        vlc.snapshot().smbRatioEffective?.let { put("smbRatioEffective", it) }
+                        vlc.snapshot().weightOverrides.takeIf { it.isNotEmpty() }
+                            ?.let { put("weightOverrides", org.json.JSONObject(it as Map<*, *>).toString()) }
+                    }
+                }
+            },
             autoStateStatusProvider = LocalCommandRuntime.autoStateCoordinator?.let { asc ->
                 {
                     asc.enforce(System.currentTimeMillis(), android.os.SystemClock.elapsedRealtime())
