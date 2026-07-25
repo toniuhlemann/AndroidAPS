@@ -628,6 +628,16 @@ class AutoIsfValueLeaseCoordinator @Inject constructor(
      * Bewusst DIESELBE Beobachtung wie der Wert-Pfad: zwei getrennte Gate-Leser wuerden
      * frueher oder spaeter unterschiedliche Wahrheiten melden (Split-Brain-Verbot).
      */
+    /**
+     * DER gemeinsame Schreib-Lock. Runde 3 (Frage 6): [AutoStateLeaseCoordinator] hatte einen
+     * EIGENEN Lock, deshalb schlossen sich `beforeGateWrite` und dessen `executeArmedSet` nie
+     * aus — die R14-F2-Garantie (zwischen Gate-Ankuendigung und sichtbarem neuen Wert kann kein
+     * SET dazwischen) galt strukturell nur fuer IOBTH. Ein Schalter-AUS im falschen Moment
+     * schrieb den Automation-State trotzdem. Mit demselben Lock existiert das Fenster nicht mehr.
+     * Der APS-Hotpath ist davon unberuehrt: snapshot() nimmt diesen Lock weiterhin nie.
+     */
+    fun <T> withGateLock(block: () -> T): T = lock.withLock(block)
+
     fun gateSnapshot(cap: AutoIsfCapability): Triple<Boolean, AutoIsfOverrideState?, Long> {
         val obs = observeGates()
         val gates = obs.gates

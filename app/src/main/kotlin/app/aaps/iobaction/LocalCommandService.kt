@@ -77,7 +77,12 @@ class LocalCommandService : Service() {
         // nach einem Prozesstod aktiv, waehrend der RAM NONE meldete — der Viewer schickte dann
         // dauerhaft expectedState=NONE und bekam ebenso dauerhaft REJECTED_STATE_CONFLICT, die
         // Capability war unbrauchbar UND der Automation-State blieb ueberlagert.
-        if (repo != null && processRestartDone.compareAndSet(false, true)) {
+        // Runde 3 / F3: das Flag wurde frueher VOR der Arbeit gesetzt — jeder Fehler im
+        // runCatching (Room, JSON, Koordinator noch nicht da) verschwand und wurde in diesem
+        // Prozessleben NIE wiederholt, waehrend die Terminalisierung trotzdem lief: der
+        // ueberlagerte State blieb dauerhaft, die Basis nur noch in einer toten Zeile.
+        // Jetzt wird erst gearbeitet und das Flag nur bei Erfolg gesetzt.
+        if (repo != null && !processRestartDone.get()) {
             val now0 = System.currentTimeMillis()
             // Re-Review B7: VOR dem Terminalisieren die Basis zurueckschreiben. Ein Prozesstod
             // mitten in einer AUTOSTATE-Lease liess den ueberlagerten Wert sonst DAUERHAFT
@@ -101,12 +106,13 @@ class LocalCommandService : Service() {
                     }
                 }
             }
-            app.aaps.core.interfaces.aps.AutoIsfCapability.entries.forEach { cap ->
+            val allTerminalized = app.aaps.core.interfaces.aps.AutoIsfCapability.entries.all { cap ->
                 runCatching {
                     repo.runTransactionForResult(app.aaps.database.transactions.TerminalizeValueLeaseTransaction(
                         cap.name, "PROCESS_RESTART", now0)).blockingGet()
-                }
+                }.isSuccess
             }
+            if (allTerminalized) processRestartDone.set(true)
         }
         val env = LocalCommandServiceCore.Env(
             callerTrusted = trusted,
