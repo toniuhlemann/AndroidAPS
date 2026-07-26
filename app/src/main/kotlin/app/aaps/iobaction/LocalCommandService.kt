@@ -91,25 +91,38 @@ class LocalCommandService : Service() {
             // mitten in einer AUTOSTATE-Lease liess den ueberlagerten Wert sonst DAUERHAFT
             // stehen — bei MEAL_ACTIVE steuert das die Automationen um. Nur wenn noch unser
             // Wert steht; hat inzwischen ein Automat geschrieben, gehoert ihm der State.
-            runCatching {
+            // Review 26.07. (Befund 5): das Ergebnis der Rueckstellung wurde verworfen — weder
+            // die Exception aus runCatching noch der Rueckgabewert. Quittiert wurde der
+            // Prozessneustart trotzdem, und zwar allein anhand der Terminalisierung. Damit war
+            // der Ablauf "Neustart mitten in einer Lease → Rueckstellung scheitert → Zeile
+            // trotzdem terminal → nie wieder versucht" moeglich: der ueberlagerte Wert bliebe
+            // dauerhaft stehen, und weil die Zeile nicht mehr aktiv ist, findet auch kein
+            // spaeterer Reparaturlauf sie noch. Jetzt haengt das Quittieren an BEIDEM.
+            val restoreOk = runCatching {
                 val row = repo.runTransactionForResult(
                     app.aaps.database.transactions.ReadActiveValueLeaseTransaction(
                         AutoStateLeaseCoordinator.CAPABILITY
                     )
                 ).blockingGet()
                 val coord = LocalCommandRuntime.autoStateCoordinator
-                if (row.found && coord != null) {
-                    val setJson = org.json.JSONObject(row.setPayload)
-                    val baseJson = org.json.JSONObject(row.basePayload)
-                    val name = setJson.optString("name", "")
-                    val ourValue = setJson.optString("value", "")
-                    val baseValue = if (baseJson.optBoolean("known", false)) baseJson.optString("value", null) else null
-                    if (name.isNotEmpty() && ourValue.isNotEmpty()) {
-                        coord.restoreAfterProcessRestart(name, ourValue, baseValue)
-                    }
-                }
-            }
-            val allTerminalized = app.aaps.core.interfaces.aps.AutoIsfCapability.entries.all { cap ->
+                if (!row.found) return@runCatching true
+                if (coord == null) return@runCatching false
+                val setJson = org.json.JSONObject(row.setPayload)
+                val baseJson = org.json.JSONObject(row.basePayload)
+                val name = setJson.optString("name", "")
+                val ourValue = setJson.optString("value", "")
+                val baseValue = if (baseJson.optBoolean("known", false)) baseJson.optString("value", null) else null
+                if (name.isEmpty() || ourValue.isEmpty()) return@runCatching true
+                coord.restoreAfterProcessRestart(name, ourValue, baseValue) !=
+                    AutoStateLeaseCoordinator.RestartRestore.FAILED
+            }.getOrDefault(false)
+            // Und die Terminalisierung haengt am selben Ergebnis: sie ist es, die die Zeile
+            // unauffindbar macht. Liefe sie trotz gescheiterter Rueckstellung, waere der
+            // Wiederholversuch wertlos — beim naechsten Kommando ist row.found false und der
+            // ueberlagerte Wert bliebe fuer immer stehen. Die Zeilen der anderen Capabilities
+            // koennen gefahrlos mitwarten: nach einem Neustart ist der RAM ohnehin leer, eine
+            // aktive Room-Zeile ohne publizierte Lease wirkt nicht.
+            val allTerminalized = restoreOk && app.aaps.core.interfaces.aps.AutoIsfCapability.entries.all { cap ->
                 runCatching {
                     repo.runTransactionForResult(app.aaps.database.transactions.TerminalizeValueLeaseTransaction(
                         cap.name, "PROCESS_RESTART", now0)).blockingGet()

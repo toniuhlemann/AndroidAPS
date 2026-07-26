@@ -350,13 +350,16 @@ class AutoStateLeaseCoordinatorTest {
         val st = states()
         val c = AutoStateLeaseCoordinator(st, gateSource())
         st.values["MEAL_ACTIVE"] = "true"
-        assertThat(c.restoreAfterProcessRestart("MEAL_ACTIVE", "true", "false")).isTrue()
+        assertThat(c.restoreAfterProcessRestart("MEAL_ACTIVE", "true", "false"))
+            .isEqualTo(AutoStateLeaseCoordinator.RestartRestore.RESTORED)
         assertThat(st.values["MEAL_ACTIVE"]).isEqualTo("false")
-        // Fremdschreiber war schneller -> nicht anfassen
+        // Fremdschreiber war schneller -> nicht anfassen. KEIN Fehler: erledigter Fall.
         st.values["MEAL_ACTIVE"] = "false"
-        assertThat(c.restoreAfterProcessRestart("MEAL_ACTIVE", "true", "false")).isFalse()
-        // ohne bekannte Basis wird nichts erfunden
-        assertThat(c.restoreAfterProcessRestart("MEAL_ACTIVE", "true", null)).isFalse()
+        assertThat(c.restoreAfterProcessRestart("MEAL_ACTIVE", "true", "false"))
+            .isEqualTo(AutoStateLeaseCoordinator.RestartRestore.NOT_OURS)
+        // ohne bekannte Basis wird nichts erfunden — ebenfalls kein Fehler
+        assertThat(c.restoreAfterProcessRestart("MEAL_ACTIVE", "true", null))
+            .isEqualTo(AutoStateLeaseCoordinator.RestartRestore.NO_BASE)
     }
 
     // Runde 3 / F1: der Abbruchzweig nach der zweiten Gate-Pruefung muss aufraeumen wie der
@@ -385,5 +388,67 @@ class AutoStateLeaseCoordinatorTest {
         c.executeArmedSet("MEAL_ACTIVE", "true", 30, t0, e0) { applied() }
         c.enforce(t0 + 30 * 60_000, e0 + 30 * 60_000)
         assertThat(st.values["MEAL_ACTIVE"]).isEqualTo("false")
+    }
+
+    // ---- Review 26.07. ----
+
+    // Befund 3: das gefaehrlichste der Runde. Zwischen Gate-Pruefung und Schreiben liegt die
+    // Room-Transaktion; AutomationStateService synchronisiert auf sich selbst, nicht auf
+    // unseren Lock. Ein Griff des Nutzers in diesem Fenster darf NICHT ueberschrieben und mit
+    // frischer TTL wieder festgeschrieben werden — das waere kein verlorenes Rennen, sondern
+    // eine spurlos geloeschte Ruecknahme.
+    @Test fun `manuelle Ruecknahme waehrend des SET-Fensters wird nicht ueberschrieben`() {
+        val st = states()
+        val c = AutoStateLeaseCoordinator(st, gateSource())
+        c.executeArmedSet("MEAL_ACTIVE", "true", 30, t0, e0) { applied("L1", 1) }
+        assertThat(st.values["MEAL_ACTIVE"]).isEqualTo("true")
+        assertThat(c.currentState()).isEqualTo(AutoStateLeaseCoordinator.STATE_ACTIVE)
+
+        // Verlaengerung — und WAEHREND der Room-Transaktion greift der Nutzer in AAPS ein.
+        val res = c.executeArmedSet("MEAL_ACTIVE", "true", 30, t0 + 60_000L, e0 + 60_000L) {
+            st.values["MEAL_ACTIVE"] = "false"
+            applied("L2", 2)
+        }
+
+        assertThat(st.values["MEAL_ACTIVE"]).isEqualTo("false")   // seine Hand gewinnt
+        assertThat(res.currentLeaseState).isEqualTo(AutoStateLeaseCoordinator.STATE_NONE)
+        assertThat(c.peekPendingTerminal()!!.reason).isEqualTo(AutoStateLeaseCoordinator.REASON_FOREIGN)
+    }
+
+    // Befund 8: schlaegt der State-Write bei einer VERLAENGERUNG fehl, steht unser Wert aus der
+    // vorigen Runde noch — und die Lease, die ihn gehalten hat, ist gleich weg. Ohne
+    // Rueckstellung bliebe er ohne jede Frist stehen.
+    @Test fun `fehlgeschlagener Write bei Verlaengerung laesst keinen fristlosen Wert stehen`() {
+        val st = states()
+        val c = AutoStateLeaseCoordinator(st, gateSource())
+        c.executeArmedSet("MEAL_ACTIVE", "true", 30, t0, e0) { applied("L1", 1) }
+        assertThat(st.values["MEAL_ACTIVE"]).isEqualTo("true")
+
+        // "true" faellt aus der Werteliste — der naechste Write darauf scheitert.
+        st.allowed["MEAL_ACTIVE"] = listOf("false")
+        c.executeArmedSet("MEAL_ACTIVE", "true", 30, t0 + 60_000L, e0 + 60_000L) { applied("L2", 2) }
+
+        assertThat(c.currentState()).isEqualTo(AutoStateLeaseCoordinator.STATE_NONE)
+        assertThat(st.values["MEAL_ACTIVE"]).isEqualTo("false")   // Basis zurueckgestellt
+    }
+
+    // Befund 4 / H2: der Grund des letzten Endes muss den Status erreichen — "von Hand
+    // entzogen" und "abgelaufen" verlangen entgegengesetztes Verhalten vom Aufrufer.
+    @Test fun `der Status meldet den Grund des letzten Lease-Endes`() {
+        val st = states()
+        val c = AutoStateLeaseCoordinator(st, gateSource())
+        assertThat(c.statusMap()["autoStateLastTerminalReason"]).isNull()
+
+        c.executeArmedSet("MEAL_ACTIVE", "true", 30, t0, e0) { applied("L1", 1) }
+        st.values["MEAL_ACTIVE"] = "false"                       // Fremdschreiber
+        c.enforce(t0 + 60_000L, e0 + 60_000L)
+        assertThat(c.statusMap()["autoStateLastTerminalReason"])
+            .isEqualTo(AutoStateLeaseCoordinator.REASON_FOREIGN)
+
+        // und nach einem echten Ablauf steht dort der ANDERE Grund
+        c.executeArmedSet("MEAL_ACTIVE", "true", 30, t0 + 120_000L, e0 + 120_000L) { applied("L3", 3) }
+        c.enforce(t0 + 120_000L + 31 * 60_000L, e0 + 120_000L + 31 * 60_000L)
+        assertThat(c.statusMap()["autoStateLastTerminalReason"])
+            .isEqualTo(AutoStateLeaseCoordinator.REASON_EXPIRED)
     }
 }
