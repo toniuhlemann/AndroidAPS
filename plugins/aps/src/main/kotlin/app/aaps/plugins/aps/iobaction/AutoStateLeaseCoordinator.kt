@@ -17,8 +17,12 @@ import javax.inject.Singleton
  * FALSCH war der Schluss, damit ganz ohne Gates und ohne Herzschlag auszukommen (Review 25.07.,
  * Befunde 3 und 4): Master-Schalter, Capability-Schalter und Validate-only beendeten eine
  * laufende Lease nicht, und die TTL lief nur, solange der Viewer selbst anrief. Gates kommen
- * jetzt aus DERSELBEN Beobachtung wie beim Wert-Overlay, und der APS-Lauf treibt enforce() von
- * innen.
+ * jetzt aus DERSELBEN Beobachtung wie beim Wert-Overlay, und enforce() wird von AUSSERHALB des
+ * APS-Laufs getrieben: KeepAliveWorker (15 min), der 60-s-Herzschlag in MainApp und jeder
+ * Kommando-/Statusaufruf. Frueher stand hier "der APS-Lauf treibt enforce() von innen" — das
+ * war einmal so und wurde bewusst entfernt, weil es den Dosier-Thread an ein Lock gekoppelt
+ * hat, das ueber eine Room-Transaktion gehalten wird (siehe MainApp). Die Frist laeuft damit
+ * NICHT von selbst ab: sie braucht einen dieser Treiber, und im Doze koennen die aussetzen.
  *
  * Was dagegen sehr wohl noetig ist:
  *
@@ -118,6 +122,26 @@ class AutoStateLeaseCoordinator @Inject constructor(
      */
     private val pendingTerminals = ConcurrentLinkedQueue<PendingTerminal>()
 
+    /**
+     * Review 26.07. (Befund 4 / H2): der GRUND des letzten Lease-Endes, ueberlebend.
+     *
+     * [pendingTerminals] wird geleert, sobald der Dienst die Room-Zeile terminalisiert hat — der
+     * Grund ist dann weg, und der Status meldet nur noch NONE. Damit kann ein unbeaufsichtigter
+     * Aufrufer "der Mensch hat mir die Hoheit entzogen" nicht von "TTL abgelaufen" oder
+     * "AAPS neu gestartet" unterscheiden. Diese Faelle muessen ENTGEGENGESETZT behandelt werden:
+     * das eine ist endgueltig, das andere darf von selbst wieder aufnehmen. Ohne den Grund kann
+     * ein Aufrufer nur eins von beidem richtig machen.
+     */
+    private val lastTerminalReason = AtomicReference<String?>(null)
+
+    /** Terminal queuen UND den Grund festhalten — die beiden duerfen nicht auseinanderlaufen. */
+    private fun pendingTerminal(leaseId: String?, leaseVersion: Long?, reason: String) {
+        lastTerminalReason.set(reason)
+        if (leaseId != null && leaseVersion != null) {
+            pendingTerminals.add(PendingTerminal(CAPABILITY, leaseId, leaseVersion, reason))
+        }
+    }
+
     companion object {
         const val CAPABILITY = "AUTOSTATE"
         const val STATE_NONE = "NONE"
@@ -178,6 +202,10 @@ class AutoStateLeaseCoordinator @Inject constructor(
                 currentState(),
             )
         }
+        // Review 26.07. (Befund 3): fuer die Wert-Nachpruefung nach dem Commit muss festgehalten
+        // werden, WAS zu diesem Zeitpunkt stehen sollte. captureBase liest bei einer
+        // Verlaengerung absichtlich nicht neu, kann die Frage also nicht beantworten.
+        val runningBefore = published.get()?.takeIf { it.stateName == stateName }
         val capture = captureBase(stateName, ttlMin, nowWall)
         // Runde 3 / F5: hat der State noch NIE einen Wert getragen, gibt es keinen Rueckweg —
         // AutomationStateInterface kennt kein "Wert entfernen". Eine Lease darauf wuerde den
@@ -203,12 +231,23 @@ class AutoStateLeaseCoordinator @Inject constructor(
                 // Dieselbe Fehlerklasse, die zwoelf Zeilen tiefer schon behoben ist.
                 published.get()?.let { restoreIfStillOurs(it) }
                 published.set(null)
-                pendingTerminals.add(
-                    PendingTerminal(
-                        CAPABILITY, room.leaseId, room.leaseVersion,
-                        (unsafeNowReason ?: AutoIsfOverrideState.DISABLED).name,
-                    )
-                )
+                pendingTerminal(room.leaseId, room.leaseVersion, (unsafeNowReason ?: AutoIsfOverrideState.DISABLED).name)
+                return@withGateLock ArmedResult(room, currentState())
+            }
+            // Review 26.07. (Befund 3): WERT-Nachpruefung, unmittelbar vor dem Schreiben und
+            // unter demselben Lock. Zwischen gateSnapshot und hier liegt die komplette
+            // Room-Transaktion, also I/O — und AutomationStateService.setState synchronisiert
+            // auf SICH SELBST, nicht auf diesen Lock. Ein Griff des Nutzers in den AAPS-Screen
+            // kann also mitten in dieses Fenster fallen. Ohne die Pruefung wuerde er hier
+            // ueberschrieben und mit frischer TTL wieder festgeschrieben, ohne dass je ein
+            // FOREIGN entsteht: der naechste enforce() sieht wieder unseren Wert und findet
+            // alles in Ordnung. Die Ruecknahme waere nicht verloren gegangen, sondern
+            // SPURLOS GELOESCHT worden.
+            val expectedNow = runningBefore?.setValue ?: capture.baseValue
+            val currentNow = runCatching { automationState.getStateSnapshot(stateName) }.getOrNull()
+            if (currentNow?.known != true || currentNow.value != expectedNow) {
+                published.set(null)
+                pendingTerminal(room.leaseId, room.leaseVersion, REASON_FOREIGN)
                 return@withGateLock ArmedResult(room, currentState())
             }
             val written = runCatching { automationState.setState(stateName, stateValue) }.isSuccess
@@ -226,7 +265,13 @@ class AutoStateLeaseCoordinator @Inject constructor(
                 // Der State liess sich nicht schreiben (existiert nicht / Wert ungueltig). Die
                 // Room-Zeile ist bereits committet, also SOFORT terminalisieren statt eine
                 // Lease zu fuehren, die nichts haelt.
-                pendingTerminals.add(PendingTerminal(CAPABILITY, room.leaseId, room.leaseVersion, REASON_FOREIGN))
+                // Review 26.07. (Befund 8): bei einer VERLAENGERUNG steht unser Wert aus der
+                // vorigen Runde noch — und die Lease, die ihn gehalten hat, ist gleich weg. Ohne
+                // Rueckstellung bliebe er OHNE FRIST stehen, also genau der Zustand, den dieser
+                // Koordinator ausschliessen soll. Der Zweig zwoelf Zeilen hoeher macht es
+                // richtig; hier fehlte es.
+                runningBefore?.let { restoreIfStillOurs(it) }
+                pendingTerminal(room.leaseId, room.leaseVersion, REASON_FOREIGN)
                 // Re-Review B5: bei einer VERLAENGERUNG stand hier noch die alte Published mit
                 // alter leaseId, waehrend Room sie bereits als REPLACED terminalisiert hatte —
                 // currentState() haette dauerhaft ACTIVE fuer eine Lease gemeldet, die es nicht
@@ -245,6 +290,7 @@ class AutoStateLeaseCoordinator @Inject constructor(
         if (room.outcome == "APPLIED" && !room.replayed && p != null) {
             restoreIfStillOurs(p)
             published.set(null)
+            lastTerminalReason.set(REASON_CLEARED)
         }
         ArmedResult(room, currentState())
     }
@@ -265,15 +311,13 @@ class AutoStateLeaseCoordinator @Inject constructor(
         // abgeschaltetem Gate haette ueberlebt, solange der State nicht lesbar war.
         if (unsafe || p.gateGeneration != generation) {
             restoreIfStillOurs(p)
-            pendingTerminals.add(
-                PendingTerminal(CAPABILITY, p.leaseId, p.leaseVersion, (unsafeReason ?: AutoIsfOverrideState.DISABLED).name)
-            )
+            pendingTerminal(p.leaseId, p.leaseVersion, (unsafeReason ?: AutoIsfOverrideState.DISABLED).name)
             published.set(null)
             return
         }
         if (expired) {
             restoreIfStillOurs(p)
-            pendingTerminals.add(PendingTerminal(CAPABILITY, p.leaseId, p.leaseVersion, REASON_EXPIRED))
+            pendingTerminal(p.leaseId, p.leaseVersion, REASON_EXPIRED)
             published.set(null)
             return
         }
@@ -282,7 +326,7 @@ class AutoStateLeaseCoordinator @Inject constructor(
         val current = runCatching { automationState.getStateSnapshot(p.stateName) }.getOrNull() ?: return
         if (!(current.known && current.value == p.setValue)) {
             // Fremdschreiber hat uebernommen: Lease stirbt, Basis bleibt UNANGETASTET.
-            pendingTerminals.add(PendingTerminal(CAPABILITY, p.leaseId, p.leaseVersion, REASON_FOREIGN))
+            pendingTerminal(p.leaseId, p.leaseVersion, REASON_FOREIGN)
             published.set(null)
         }
     }
@@ -307,6 +351,10 @@ class AutoStateLeaseCoordinator @Inject constructor(
         return buildMap {
             put("serverAutoStatePolicyHash", LocalCommandAutoStatePolicy.hash())
             put("autoStateLeaseState", if (p == null) STATE_NONE else STATE_ACTIVE)
+            // Review 26.07. (Befund 4 / H2): OHNE den Grund kann ein Aufrufer "von Hand
+            // entzogen" nicht von "abgelaufen/neu gestartet" unterscheiden — und die beiden
+            // muessen entgegengesetzt behandelt werden.
+            lastTerminalReason.get()?.let { put("autoStateLastTerminalReason", it) }
             p?.let {
                 put("autoStateLeaseId", it.leaseId)
                 put("autoStateLeaseVersion", it.leaseVersion)
@@ -332,11 +380,36 @@ class AutoStateLeaseCoordinator @Inject constructor(
      * wird nur, wenn noch UNSER Wert steht; hat inzwischen ein Automat geschrieben, gehoert ihm
      * der State (dieselbe Regel wie beim Ablauf).
      */
-    fun restoreAfterProcessRestart(stateName: String, ourValue: String, baseValue: String?): Boolean {
-        if (baseValue == null) return false
-        val current = runCatching { automationState.getStateSnapshot(stateName) }.getOrNull() ?: return false
-        if (!current.known || current.value != ourValue) return false
-        return runCatching { automationState.setState(stateName, baseValue) }.isSuccess
+    fun restoreAfterProcessRestart(stateName: String, ourValue: String, baseValue: String?): RestartRestore {
+        // Review 26.07. (Befund 5): frueher ein Boolean, und der kollabierte drei verschiedene
+        // Ausgaenge auf "false" — kein Rueckweg vorhanden, gehoert inzwischen jemand anderem,
+        // und Schreiben fehlgeschlagen. Nur der letzte ist ein Fehler; die ersten beiden sind
+        // erledigte Faelle. Der Aufrufer muss das unterscheiden koennen, sonst quittiert er den
+        // Prozessneustart auch dann als behandelt, wenn die Rueckstellung gescheitert ist —
+        // und die Room-Zeile ist dann bereits terminal, es gibt also keinen zweiten Versuch.
+        if (baseValue == null) return RestartRestore.NO_BASE
+        val current = runCatching { automationState.getStateSnapshot(stateName) }.getOrNull()
+            ?: return RestartRestore.FAILED
+        if (!current.known || current.value != ourValue) return RestartRestore.NOT_OURS
+        return if (runCatching { automationState.setState(stateName, baseValue) }.isSuccess) {
+            lastTerminalReason.set(REASON_PROCESS_RESTART)
+            RestartRestore.RESTORED
+        } else RestartRestore.FAILED
+    }
+
+    /** Ausgang der Rueckstellung nach einem Prozessneustart. Nur [FAILED] ist ein Fehler. */
+    enum class RestartRestore {
+        /** Basis zurueckgeschrieben. */
+        RESTORED,
+
+        /** Der State gehoert inzwischen einem anderen Schreiber — nichts zu tun, korrekt so. */
+        NOT_OURS,
+
+        /** Es gab keinen erfassten Rueckweg — nichts zu tun. */
+        NO_BASE,
+
+        /** Lesen oder Schreiben gescheitert. Der Prozessneustart ist NICHT abgehakt. */
+        FAILED,
     }
 
     fun onProcessRestart(): String = REASON_PROCESS_RESTART
