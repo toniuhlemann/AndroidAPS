@@ -72,4 +72,14 @@ internal interface BolusDao : TraceableDao<Bolus> {
     // invisible to any dateCreated cursor. Ordered by id: cursor-paginated without OFFSET.
     @Query("SELECT * FROM $TABLE_BOLUSES WHERE id > :afterId ORDER BY id ASC LIMIT :limit")
     fun getBolusRowsAfterId(afterId: Long, limit: Int): List<Bolus>
+
+    // FUSE P-1.0 transition collector (R11/F7): deterministic KEYSET pagination over the
+    // dateCreated dimension — continues via the (dateCreated, id) tuple, so a sweep larger
+    // than the per-tick row cap resumes BEHIND the last processed row instead of re-reading
+    // the same unordered first page forever. INCLUDING historic rows.
+    @Query(
+        "SELECT * FROM $TABLE_BOLUSES WHERE (dateCreated > :sinceDc OR (dateCreated = :sinceDc AND id > :sinceId)) " +
+            "AND dateCreated <= :until ORDER BY dateCreated ASC, id ASC LIMIT :limit"
+    )
+    fun getNewEntriesKeyset(sinceDc: Long, sinceId: Long, until: Long, limit: Int): List<Bolus>
 }

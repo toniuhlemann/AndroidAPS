@@ -803,12 +803,12 @@ class AppRepository @Inject internal constructor(
         database.autoIsfValuesDao.getFromTimeToTime(startMillis, endMillis)
 
 
-    /** FUSE P-1.0 transition collector: bolus-only variant of [collectNewEntriesSince].
-     *  Same dateCreated-cursor query (INCLUDING historic referenceId!=null rows), but touches
-     *  only the bolus table — the full NewEntries sweep scans 13 tables (incl. the huge
-     *  glucoseValue table) and is too heavy for a 60s heartbeat. Read-only. */
-    fun collectNewBolusEntriesSince(since: Long, until: Long, limit: Int, offset: Int): List<Bolus> =
-        database.bolusDao.getNewEntriesSince(since, until, limit, offset)
+    /** FUSE P-1.0 transition collector (R11/F7): bolus-only KEYSET variant of the
+     *  [collectNewEntriesSince] idea. Touches only the bolus table (the full NewEntries sweep
+     *  scans 13 tables incl. the huge glucoseValue table) and paginates deterministically via
+     *  the (dateCreated, id) tuple instead of a fragile OFFSET. Read-only. */
+    fun collectNewBolusEntriesKeyset(sinceDc: Long, sinceId: Long, until: Long, limit: Int): List<Bolus> =
+        database.bolusDao.getNewEntriesKeyset(sinceDc, sinceId, until, limit)
 
     /** FUSE P-1.0: physical-id cursor companion to [collectNewBolusEntriesSince] — catches
      *  pump-sync rows whose dateCreated is -1 (raw insert path). Read-only. */

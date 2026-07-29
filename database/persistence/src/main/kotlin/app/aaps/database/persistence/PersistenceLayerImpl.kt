@@ -162,8 +162,8 @@ class PersistenceLayerImpl @Inject constructor(
         repository.getBolusesDataFromTime(startTime, ascending)
             .map { list -> list.asSequence().map { it.fromDb() }.toList() }
 
-    override fun collectNewBolusEntriesSince(since: Long, until: Long, limit: Int, offset: Int): List<BS> =
-        repository.collectNewBolusEntriesSince(since, until, limit, offset).map { it.fromDb() }
+    override fun collectNewBolusEntriesKeyset(sinceDc: Long, sinceId: Long, until: Long, limit: Int): List<BS> =
+        repository.collectNewBolusEntriesKeyset(sinceDc, sinceId, until, limit).map { it.fromDb() }
 
     override fun collectBolusRowsAfterId(afterId: Long, limit: Int): List<BS> =
         repository.collectBolusRowsAfterId(afterId, limit).map { it.fromDb() }
