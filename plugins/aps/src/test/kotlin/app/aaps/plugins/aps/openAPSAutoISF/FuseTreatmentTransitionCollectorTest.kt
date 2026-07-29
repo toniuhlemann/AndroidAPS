@@ -131,6 +131,8 @@ class FuseTreatmentTransitionCollectorTest {
         val cursorSaves = ArrayList<Long>()
         val prevSink = FuseTreatmentTransitionCollector.appendSink
         val prevStore = FuseTreatmentTransitionCollector.cursorStore
+        val prevDiag = FuseTreatmentTransitionCollector.diagSink
+        FuseTreatmentTransitionCollector.diagSink = { }   // keep unit tests filesystem-free
         FuseTreatmentTransitionCollector.appendSink = { text ->
             if (failNext) throw java.io.IOException("disk full")
             written.append(text)
@@ -153,6 +155,7 @@ class FuseTreatmentTransitionCollectorTest {
         } finally {
             FuseTreatmentTransitionCollector.appendSink = prevSink
             FuseTreatmentTransitionCollector.cursorStore = prevStore
+            FuseTreatmentTransitionCollector.diagSink = prevDiag
             FuseTreatmentTransitionCollectorTestReset.reset()
         }
     }

@@ -77,9 +77,12 @@ object FuseTreatmentTransitionCollector {
     private var cursorMs: Long = -1L
     private var cursorLoaded = false
 
-    /** Injectable sinks/sources so the F1/F2 behavior is unit-testable without Android. */
+    /** Injectable sinks/sources so the F1/F2 behavior is unit-testable without Android.
+     *  diagSink included: the Environment stub returns null under unit tests, which would
+     *  otherwise turn the diag path RELATIVE and drop a stray file into the module dir. */
     internal var appendSink: (String) -> Unit = { text -> appendToFile(text) }
     internal var cursorStore: CursorStore = FileCursorStore
+    internal var diagSink: (JSONObject) -> Unit = { json -> writeDiagFile(json) }
 
     internal interface CursorStore {
 
@@ -269,7 +272,6 @@ object FuseTreatmentTransitionCollector {
     /** R9/F5: small atomic diagnostics file — observability only, never read back anywhere. */
     private fun writeDiag(nowMs: Long, startedNanos: Long, plan: Plan?, errorClass: String?) {
         runCatching {
-            val dir = logsDir()
             val json = JSONObject().apply {
                 put("ts", nowMs)
                 put("tickDurationMs", (System.nanoTime() - startedNanos) / 1_000_000)
@@ -279,13 +281,18 @@ object FuseTreatmentTransitionCollector {
                 put("seenKeys", seenKeys.size)
                 errorClass?.let { put("lastErrorClass", it) }
             }
-            val tmp = File(dir, "$DIAG_FILE_NAME.tmp")
-            tmp.writeText(json.toString())
-            val target = File(dir, DIAG_FILE_NAME)
-            if (!tmp.renameTo(target)) {
-                target.writeText(json.toString())
-                tmp.delete()
-            }
+            diagSink(json)
+        }
+    }
+
+    private fun writeDiagFile(json: JSONObject) {
+        val dir = logsDir()
+        val tmp = File(dir, "$DIAG_FILE_NAME.tmp")
+        tmp.writeText(json.toString())
+        val target = File(dir, DIAG_FILE_NAME)
+        if (!tmp.renameTo(target)) {
+            target.writeText(json.toString())
+            tmp.delete()
         }
     }
 }
