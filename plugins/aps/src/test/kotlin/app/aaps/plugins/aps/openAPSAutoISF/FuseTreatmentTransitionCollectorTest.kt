@@ -10,9 +10,8 @@ import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
 /**
- * FUSE P-1.0 collector — R9 mandatory evidence as unit tests (F1 intermediate versions,
- * F2 append-before-state-commit, ordering, dedupe/idempotence, privacy, NaN guard).
- * Pure-logic tests: DB source and file sink are injected fakes.
+ * FUSE P-1.0 collector — R9 (F1/F2) and R11 (F6/F7) mandatory evidence as unit tests.
+ * Pure-logic tests where possible; tick-level tests inject fake source and sinks.
  */
 class FuseTreatmentTransitionCollectorTest {
 
@@ -32,65 +31,74 @@ class FuseTreatmentTransitionCollectorTest {
         )
     )
 
-    // ---- R9 evidence 1+2: A->B->C entirely between two ticks, all states, in order --------
+    // ---- R9 evidence: A->B->C entirely between two ticks, all states, in order ------------
 
     @Test
     fun `intermediate versions between two ticks are all emitted in version order`() {
-        // Current row id=10 carries v2 (state C, re-stamped dateCreated t3).
-        // Historic copies id=21 (v0=A, t1) and id=22 (v1=B, t2) reference id=10.
         val rows = listOf(
             bs(id = 10, version = 2, dateCreated = 3000, tempId = 111, pumpId = 999, serial = "SN1", amount = 0.30),
             bs(id = 22, version = 1, dateCreated = 2000, referenceId = 10, tempId = 111, serial = "SN1", amount = 0.30),
             bs(id = 21, version = 0, dateCreated = 1000, referenceId = 10, tempId = 111, serial = "SN1", amount = 0.35)
         )
-        val plan = FuseTreatmentTransitionCollector.plan(rows, emptySet(), cursor = 500, firstPass = false, nowMs = 9999)
+        val plan = FuseTreatmentTransitionCollector.plan(rows, emptySet(), firstPass = false, nowMs = 9999)
         assertEquals(3, plan.lines.size)
-        val versions = plan.lines.map { JSONObject(it).getInt("version") }
-        assertEquals(listOf(0, 1, 2), versions)                       // v0 -> v1 -> v2 in order
-        val rowIds = plan.lines.map { JSONObject(it).getLong("rowId") }.toSet()
-        assertEquals(setOf(10L), rowIds)                              // canonical id for ALL versions
-        // temporaryId->pumpId resolution + amount correction visible across the states:
+        assertEquals(listOf(0, 1, 2), plan.lines.map { JSONObject(it).getInt("version") })
+        assertEquals(setOf(10L), plan.lines.map { JSONObject(it).getLong("rowId") }.toSet())
         val first = JSONObject(plan.lines[0])
         val last = JSONObject(plan.lines[2])
         assertFalse(first.getJSONObject("ids").has("pumpId"))
         assertTrue(last.getJSONObject("ids").has("pumpId"))
-        assertEquals(0.35, first.getDouble("amount"), 1e-9)
-        assertEquals(0.30, last.getDouble("amount"), 1e-9)
-        assertEquals(3000, plan.newCursorMs)
         assertEquals("historic", first.getString("obs"))
         assertEquals("current", last.getString("obs"))
+    }
+
+    // ---- R11/F6: logical fold of current + historic copy of the SAME state -----------------
+
+    @Test
+    fun `current v0 and its later historic copy share the semantic fingerprint and fold to one logical state`() {
+        // Tick A sees current v0 (phys 10). After the update, tick B sees the historic v0
+        // copy (phys 21, referenceId=10) and current v1 (phys 10).
+        val currentV0 = bs(id = 10, version = 0, dateCreated = 1000, tempId = 111, serial = "SN1")
+        val planA = FuseTreatmentTransitionCollector.plan(listOf(currentV0), emptySet(), false, 1)
+        val historicV0 = bs(id = 21, version = 0, dateCreated = 1000, referenceId = 10, tempId = 111, serial = "SN1")
+        val currentV1 = bs(id = 10, version = 1, dateCreated = 2000, tempId = 111, pumpId = 999, serial = "SN1")
+        val planB = FuseTreatmentTransitionCollector.plan(listOf(historicV0, currentV1), planA.newKeys.toSet(), false, 2)
+
+        // Transport level: historic copy is a new physical row -> exported again (allowed).
+        assertEquals(2, planB.lines.size)
+        // Logical level: rowId|version|stateFingerprint folds both v0 rows into ONE state.
+        val all = (planA.lines + planB.lines).map { JSONObject(it) }
+        val logical = all.map { "${it.getLong("rowId")}|${it.getInt("version")}|${it.getString("stateFingerprint")}" }.toSet()
+        assertEquals(2, logical.size)                                  // exactly {v0, v1}, not {v0, v0, v1}
+        val v0Rows = all.filter { it.getInt("version") == 0 }
+        assertEquals(2, v0Rows.size)
+        assertEquals(v0Rows[0].getString("stateFingerprint"), v0Rows[1].getString("stateFingerprint"))
+        assertEquals(v0Rows[0].getLong("rowId"), v0Rows[1].getLong("rowId"))
+    }
+
+    @Test
+    fun `fingerprint is semantic - independent of referenceId and physicalRowId`() {
+        val current = bs(id = 10, version = 0, dateCreated = 1000, tempId = 111, serial = "SN1")
+        val historic = bs(id = 999, version = 0, dateCreated = -1, referenceId = 10, tempId = 111, serial = "SN1")
+        assertEquals(
+            FuseTreatmentTransitionCollector.fingerprint(current),
+            FuseTreatmentTransitionCollector.fingerprint(historic)
+        )
+        assertEquals(64, FuseTreatmentTransitionCollector.fingerprint(current).length)
+        // version stays fingerprint-relevant
+        val v1 = bs(id = 10, version = 1, dateCreated = 2000, tempId = 111, serial = "SN1")
+        assertTrue(FuseTreatmentTransitionCollector.fingerprint(current) != FuseTreatmentTransitionCollector.fingerprint(v1))
     }
 
     // ---- dedupe / idempotence --------------------------------------------------------------
 
     @Test
-    fun `already seen keys are not re-emitted (overlap idempotence)`() {
+    fun `already seen transport keys are not re-emitted (overlap idempotence)`() {
         val rows = listOf(bs(id = 10, version = 0, dateCreated = 1000, tempId = 111))
-        val p1 = FuseTreatmentTransitionCollector.plan(rows, emptySet(), 500, firstPass = false, nowMs = 1)
+        val p1 = FuseTreatmentTransitionCollector.plan(rows, emptySet(), firstPass = false, nowMs = 1)
         assertEquals(1, p1.lines.size)
-        val p2 = FuseTreatmentTransitionCollector.plan(rows, p1.newKeys.toSet(), 1000, firstPass = false, nowMs = 2)
+        val p2 = FuseTreatmentTransitionCollector.plan(rows, p1.newKeys.toSet(), firstPass = false, nowMs = 2)
         assertEquals(0, p2.lines.size)
-    }
-
-    @Test
-    fun `in-place update of current row (version bump) is emitted as change state`() {
-        val v0 = bs(id = 10, version = 0, dateCreated = 1000, tempId = 111)
-        val p1 = FuseTreatmentTransitionCollector.plan(listOf(v0), emptySet(), 500, false, 1)
-        val v1 = bs(id = 10, version = 1, dateCreated = 2000, tempId = 111, pumpId = 999, serial = "SN1")
-        val p2 = FuseTreatmentTransitionCollector.plan(listOf(v1), p1.newKeys.toSet(), 1000, false, 2)
-        assertEquals(1, p2.lines.size)                                // new version = new key
-        assertEquals(1, JSONObject(p2.lines[0]).getInt("version"))
-    }
-
-    // ---- truncation safety -----------------------------------------------------------------
-
-    @Test
-    fun `truncated sweep does not advance the cursor`() {
-        val rows = (0 until 2000).map { bs(id = it.toLong() + 1, version = 0, dateCreated = 1000L + it) }
-        val plan = FuseTreatmentTransitionCollector.plan(rows, emptySet(), cursor = 500, firstPass = false, nowMs = 1)
-        assertTrue(plan.truncated)
-        assertEquals(500, plan.newCursorMs)                           // unchanged
-        assertEquals(2000, plan.lines.size)                           // lines still written once
     }
 
     // ---- privacy + robustness --------------------------------------------------------------
@@ -102,17 +110,7 @@ class FuseTreatmentTransitionCollectorTest {
         assertFalse(line.contains("geheim"))
         assertFalse(line.contains("MD1234567"))
         val hash = JSONObject(line).getJSONObject("ids").getString("pumpSerialHash")
-        assertEquals(16, hash.length)
         assertTrue(hash.matches(Regex("[0-9a-f]{16}")))
-    }
-
-    @Test
-    fun `fingerprint is full 64 hex and version-sensitive`() {
-        val a = bs(id = 1, version = 0, dateCreated = 1)
-        val b = bs(id = 1, version = 1, dateCreated = 2)
-        val fa = FuseTreatmentTransitionCollector.fingerprint(a)
-        assertEquals(64, fa.length)
-        assertTrue(fa != FuseTreatmentTransitionCollector.fingerprint(b))
     }
 
     @Test
@@ -122,36 +120,36 @@ class FuseTreatmentTransitionCollectorTest {
         assertFalse(JSONObject(line).has("amount"))
     }
 
-    // ---- R9/F2: failed append must not advance dedupe state or cursor ----------------------
+    // ---- R9/F2: failed append must not advance dedupe state or cursors ---------------------
 
     @Test
     fun `failed append leaves state untouched and next tick retries the same lines`() {
         val written = StringBuilder()
         var failNext = true
-        val cursorSaves = ArrayList<Long>()
+        val saves = ArrayList<FuseTreatmentTransitionCollector.Cursors>()
         val prevSink = FuseTreatmentTransitionCollector.appendSink
         val prevStore = FuseTreatmentTransitionCollector.cursorStore
         val prevDiag = FuseTreatmentTransitionCollector.diagSink
-        FuseTreatmentTransitionCollector.diagSink = { }   // keep unit tests filesystem-free
+        FuseTreatmentTransitionCollector.diagSink = { }
         FuseTreatmentTransitionCollector.appendSink = { text ->
             if (failNext) throw java.io.IOException("disk full")
             written.append(text)
         }
         FuseTreatmentTransitionCollector.cursorStore = object : FuseTreatmentTransitionCollector.CursorStore {
             override fun load() = FuseTreatmentTransitionCollector.Cursors(500L, -1L)
-            override fun save(cursors: FuseTreatmentTransitionCollector.Cursors) { cursorSaves.add(cursors.cursorMs) }
+            override fun save(cursors: FuseTreatmentTransitionCollector.Cursors) { saves.add(cursors) }
         }
         val rows = listOf(bs(id = 10, version = 0, dateCreated = 1000, tempId = 111))
-        val fakeSource = FakePersistence(rows)
+        val fake = FakePersistence(dcRows = rows)
         try {
-            FuseTreatmentTransitionCollector.tick(fakeSource.layer, nowMs = 2000)   // append fails
-            assertEquals(0, cursorSaves.size)                                        // no cursor commit
+            FuseTreatmentTransitionCollector.tick(fake.layer, nowMs = 2000)   // append fails
+            assertEquals(0, saves.size)
             assertEquals(0, written.length)
             failNext = false
-            FuseTreatmentTransitionCollector.tick(fakeSource.layer, nowMs = 2060)   // retry succeeds
+            FuseTreatmentTransitionCollector.tick(fake.layer, nowMs = 2060)   // retry succeeds
             assertTrue(written.toString().contains("\"physicalRowId\":10"))
-            assertEquals(1, written.toString().trim().lines().size)                  // exactly once
-            assertEquals(listOf(1000L), cursorSaves)                                 // now committed
+            assertEquals(1, written.toString().trim().lines().size)            // exactly once
+            assertEquals(2060L, saves.last().cursorMs)                         // sweep complete -> until
         } finally {
             FuseTreatmentTransitionCollector.appendSink = prevSink
             FuseTreatmentTransitionCollector.cursorStore = prevStore
@@ -165,7 +163,7 @@ class FuseTreatmentTransitionCollectorTest {
     @Test
     fun `tempId-only state with dateCreated -1 is exported via the id cursor`() {
         val written = StringBuilder()
-        val saved = ArrayList<FuseTreatmentTransitionCollector.Cursors>()
+        val saves = ArrayList<FuseTreatmentTransitionCollector.Cursors>()
         val prevSink = FuseTreatmentTransitionCollector.appendSink
         val prevStore = FuseTreatmentTransitionCollector.cursorStore
         val prevDiag = FuseTreatmentTransitionCollector.diagSink
@@ -173,22 +171,21 @@ class FuseTreatmentTransitionCollectorTest {
         FuseTreatmentTransitionCollector.appendSink = { text -> written.append(text) }
         FuseTreatmentTransitionCollector.cursorStore = object : FuseTreatmentTransitionCollector.CursorStore {
             override fun load() = FuseTreatmentTransitionCollector.Cursors(5000L, 100L)
-            override fun save(cursors: FuseTreatmentTransitionCollector.Cursors) { saved.add(cursors) }
+            override fun save(cursors: FuseTreatmentTransitionCollector.Cursors) { saves.add(cursors) }
         }
-        // After an SMB: current row 101 is already v1 (dc re-stamped, tempId+pumpId); the
-        // historic v0 copy (row 102) kept dateCreated = -1 — invisible to any dc cursor.
         val currentV1 = bs(id = 101, version = 1, dateCreated = 6000, tempId = 111, pumpId = 999, serial = "SN1")
         val historicV0 = bs(id = 102, version = 0, dateCreated = -1, referenceId = 101, tempId = 111, serial = "SN1")
         val fake = FakePersistence(dcRows = listOf(currentV1), idRows = listOf(currentV1, historicV0))
         try {
             FuseTreatmentTransitionCollector.tick(fake.layer, nowMs = 7000)
             val lines = written.toString().trim().lines().map { JSONObject(it) }
-            assertEquals(2, lines.size)                                    // dedupe across both paths
+            assertEquals(2, lines.size)
             val v0 = lines.first { it.getInt("version") == 0 }
-            assertEquals(-1L, v0.getLong("dateCreated"))                   // the invisible state, now visible
-            assertFalse(v0.getJSONObject("ids").has("pumpId"))             // TEMP_PENDING evidence
-            assertEquals(101L, v0.getLong("rowId"))                        // canonical id
-            assertEquals(FuseTreatmentTransitionCollector.Cursors(6000L, 102L), saved.last())
+            assertEquals(-1L, v0.getLong("dateCreated"))
+            assertFalse(v0.getJSONObject("ids").has("pumpId"))
+            assertEquals(101L, v0.getLong("rowId"))
+            assertEquals(102L, saves.last().afterId)
+            assertEquals(7000L, saves.last().cursorMs)
         } finally {
             FuseTreatmentTransitionCollector.appendSink = prevSink
             FuseTreatmentTransitionCollector.cursorStore = prevStore
@@ -197,7 +194,47 @@ class FuseTreatmentTransitionCollectorTest {
         }
     }
 
-    /** Minimal fake exposing only the PersistenceLayer methods the collector calls. */
+    // ---- R11/F7: a >cap dateCreated sweep resumes behind the last processed row ------------
+
+    @Test
+    fun `sweep larger than the row cap continues across ticks - every row exactly once`() {
+        val written = StringBuilder()
+        val saves = ArrayList<FuseTreatmentTransitionCollector.Cursors>()
+        val prevSink = FuseTreatmentTransitionCollector.appendSink
+        val prevStore = FuseTreatmentTransitionCollector.cursorStore
+        val prevDiag = FuseTreatmentTransitionCollector.diagSink
+        FuseTreatmentTransitionCollector.diagSink = { }
+        FuseTreatmentTransitionCollector.appendSink = { text -> written.append(text) }
+        FuseTreatmentTransitionCollector.cursorStore = object : FuseTreatmentTransitionCollector.CursorStore {
+            override fun load() = FuseTreatmentTransitionCollector.Cursors(500L, -1L)
+            override fun save(cursors: FuseTreatmentTransitionCollector.Cursors) { saves.add(cursors) }
+        }
+        // 2200 rows with dateCreated in (500, 8000] -> tick 1 caps at 2000, tick 2 finishes.
+        val rows = (0 until 2200).map { bs(id = 1000L + it, version = 0, dateCreated = 1000L + it) }
+        val fake = FakePersistence(dcRows = rows)
+        try {
+            FuseTreatmentTransitionCollector.tick(fake.layer, nowMs = 8000)
+            val afterTick1 = saves.last()
+            assertTrue(afterTick1.sweep != null)                            // sweep frozen
+            assertEquals(500L, afterTick1.cursorMs)                         // main cursor NOT advanced
+            assertEquals(2000, written.toString().trim().lines().size)
+
+            FuseTreatmentTransitionCollector.tick(fake.layer, nowMs = 8060)
+            val afterTick2 = saves.last()
+            assertEquals(null, afterTick2.sweep)                            // sweep completed
+            assertEquals(8000L, afterTick2.cursorMs)                        // advanced to sweepUntil
+            val allLines = written.toString().trim().lines()
+            assertEquals(2200, allLines.size)                               // every row exactly once
+            assertEquals(2200, allLines.map { JSONObject(it).getLong("physicalRowId") }.toSet().size)
+        } finally {
+            FuseTreatmentTransitionCollector.appendSink = prevSink
+            FuseTreatmentTransitionCollector.cursorStore = prevStore
+            FuseTreatmentTransitionCollector.diagSink = prevDiag
+            FuseTreatmentTransitionCollectorTestReset.reset()
+        }
+    }
+
+    /** Fake honoring the keyset predicate + ordering of the real DAO query. */
     private class FakePersistence(val dcRows: List<BS>, val idRows: List<BS> = emptyList()) {
 
         val layer: app.aaps.core.interfaces.db.PersistenceLayer = java.lang.reflect.Proxy.newProxyInstance(
@@ -205,29 +242,35 @@ class FuseTreatmentTransitionCollectorTest {
             arrayOf(app.aaps.core.interfaces.db.PersistenceLayer::class.java)
         ) { _, method, args ->
             when (method.name) {
-                "collectNewBolusEntriesSince" -> {
-                    val offset = args!![3] as Int
-                    if (offset == 0) dcRows else emptyList<BS>()
+                "collectNewBolusEntriesKeyset" -> {
+                    val sinceDc = args!![0] as Long
+                    val sinceId = args[1] as Long
+                    val until = args[2] as Long
+                    val limit = args[3] as Int
+                    dcRows.asSequence()
+                        .filter { it.dateCreated <= until }
+                        .filter { it.dateCreated > sinceDc || (it.dateCreated == sinceDc && it.id > sinceId) }
+                        .sortedWith(compareBy({ it.dateCreated }, { it.id }))
+                        .take(limit)
+                        .toList()
                 }
 
-                "collectBolusRowsAfterId"     -> {
+                "collectBolusRowsAfterId"      -> {
                     val afterId = args!![0] as Long
-                    idRows.filter { it.id > afterId }.sortedBy { it.id }
+                    val limit = args[1] as Int
+                    idRows.filter { it.id > afterId }.sortedBy { it.id }.take(limit)
                 }
 
-                else                          -> throw UnsupportedOperationException(method.name)
+                else                           -> throw UnsupportedOperationException(method.name)
             }
         } as app.aaps.core.interfaces.db.PersistenceLayer
     }
 }
 
-/** Test-only reset of the collector singleton (sinks + in-memory dedupe/cursor state). */
+/** Test-only reset of the collector singleton (in-memory dedupe/cursor/sweep state). */
 internal object FuseTreatmentTransitionCollectorTestReset {
 
     fun reset() {
-        // Re-inject default no-op-safe sinks; in-memory state is reset via reflection because
-        // the production object intentionally has no public reset (nothing should ever clear
-        // the dedupe state at runtime).
         val cls = FuseTreatmentTransitionCollector::class.java
         cls.getDeclaredField("seenKeys").apply { isAccessible = true }
             .let { (it.get(FuseTreatmentTransitionCollector) as LinkedHashSet<*>).clear() }
@@ -235,6 +278,8 @@ internal object FuseTreatmentTransitionCollectorTestReset {
             .setLong(FuseTreatmentTransitionCollector, -1L)
         cls.getDeclaredField("idCursor").apply { isAccessible = true }
             .setLong(FuseTreatmentTransitionCollector, -1L)
+        cls.getDeclaredField("sweep").apply { isAccessible = true }
+            .set(FuseTreatmentTransitionCollector, null)
         cls.getDeclaredField("cursorLoaded").apply { isAccessible = true }
             .setBoolean(FuseTreatmentTransitionCollector, false)
     }

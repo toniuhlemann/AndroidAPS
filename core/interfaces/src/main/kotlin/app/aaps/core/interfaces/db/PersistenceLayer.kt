@@ -93,19 +93,20 @@ interface PersistenceLayer {
     fun getBolusesFromTime(startTime: Long, ascending: Boolean): Single<List<BS>>
 
     /**
-     * FUSE P-1.0: bolus rows whose dateCreated lies in (since, until], INCLUDING historic
-     * versions (referenceId != null). Every state a bolus row ever had exists either as the
-     * current row (dateCreated re-stamped on each update) or as a historic copy keeping its
-     * original dateCreated — so a monotone dateCreated cursor over this query yields a
-     * lossless state stream. Read-only; bounded by limit/offset pagination.
+     * FUSE P-1.0: bolus rows with (dateCreated, id) strictly greater than the given tuple and
+     * dateCreated <= until, ordered by (dateCreated, id), INCLUDING historic versions
+     * (referenceId != null). Deterministic keyset pagination (R11/F7): a sweep larger than
+     * the per-tick cap resumes behind the last processed row via the tuple instead of
+     * re-reading an unordered first page. Start a fresh window with sinceId = Long.MAX_VALUE
+     * (only dateCreated > sinceDc matches then). Read-only.
      *
-     * @return list of bolus states, historic versions included
+     * @return ordered list of bolus states, historic versions included
      */
-    fun collectNewBolusEntriesSince(since: Long, until: Long, limit: Int, offset: Int): List<BS>
+    fun collectNewBolusEntriesKeyset(sinceDc: Long, sinceId: Long, until: Long, limit: Int): List<BS>
 
     /**
      * FUSE P-1.0: bolus rows with physical id > afterId, ordered by id, historic versions
-     * included. Companion cursor to [collectNewBolusEntriesSince]: pump-sync inserts go
+     * included. Companion cursor to [collectNewBolusEntriesKeyset]: pump-sync inserts go
      * through the raw insert() and carry dateCreated = -1 (as do their historic copies), so
      * a dateCreated cursor alone can never see the temporaryId-only (TEMP_PENDING) state.
      * Read-only; bounded by limit, paginated via the id cursor itself (no OFFSET).
