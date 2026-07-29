@@ -93,6 +93,17 @@ interface PersistenceLayer {
     fun getBolusesFromTime(startTime: Long, ascending: Boolean): Single<List<BS>>
 
     /**
+     * FUSE P-1.0: bolus rows whose dateCreated lies in (since, until], INCLUDING historic
+     * versions (referenceId != null). Every state a bolus row ever had exists either as the
+     * current row (dateCreated re-stamped on each update) or as a historic copy keeping its
+     * original dateCreated — so a monotone dateCreated cursor over this query yields a
+     * lossless state stream. Read-only; bounded by limit/offset pagination.
+     *
+     * @return list of bolus states, historic versions included
+     */
+    fun collectNewBolusEntriesSince(since: Long, until: Long, limit: Int, offset: Int): List<BS>
+
+    /**
      * Get boluses in time interval
      *
      * @param startTime from

@@ -803,6 +803,13 @@ class AppRepository @Inject internal constructor(
         database.autoIsfValuesDao.getFromTimeToTime(startMillis, endMillis)
 
 
+    /** FUSE P-1.0 transition collector: bolus-only variant of [collectNewEntriesSince].
+     *  Same dateCreated-cursor query (INCLUDING historic referenceId!=null rows), but touches
+     *  only the bolus table — the full NewEntries sweep scans 13 tables (incl. the huge
+     *  glucoseValue table) and is too heavy for a 60s heartbeat. Read-only. */
+    fun collectNewBolusEntriesSince(since: Long, until: Long, limit: Int, offset: Int): List<Bolus> =
+        database.bolusDao.getNewEntriesSince(since, until, limit, offset)
+
     fun collectNewEntriesSince(since: Long, until: Long, limit: Int, offset: Int) = NewEntries(
         apsResults = database.apsResultDao.getNewEntriesSince(since, until, limit, offset),
         bolusCalculatorResults = database.bolusCalculatorResultDao.getNewEntriesSince(since, until, limit, offset),
