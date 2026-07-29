@@ -75,6 +75,7 @@ object FuseTreatmentTransitionCollector {
     /** Dedupe keys "physId|version|fingerprint" — only touched on the heartbeat thread. */
     private val seenKeys = LinkedHashSet<String>()
     private var cursorMs: Long = -1L
+    private var idCursor: Long = -1L
     private var cursorLoaded = false
 
     /** Injectable sinks/sources so the F1/F2 behavior is unit-testable without Android.
@@ -84,10 +85,12 @@ object FuseTreatmentTransitionCollector {
     internal var cursorStore: CursorStore = FileCursorStore
     internal var diagSink: (JSONObject) -> Unit = { json -> writeDiagFile(json) }
 
+    internal data class Cursors(val cursorMs: Long, val afterId: Long)
+
     internal interface CursorStore {
 
-        fun load(): Long?
-        fun save(cursorMs: Long)
+        fun load(): Cursors?
+        fun save(cursors: Cursors)
     }
 
     /** Result of the pure planning step — nothing is committed until the append succeeded. */
@@ -99,39 +102,70 @@ object FuseTreatmentTransitionCollector {
         val truncated: Boolean
     )
 
-    /** Called from MainApp's 60s heartbeat. Fully isolated; never throws to the caller. */
+    /** Called from MainApp's 60s heartbeat. Fully isolated; never throws to the caller.
+     *
+     *  TWO cursors, because AAPS' pump-sync insert path (InsertBolusWithTempIdTransaction)
+     *  uses the RAW insert() and leaves dateCreated = -1 on the fresh row — and the historic
+     *  copy created by the later temporaryId->pumpId update INHERITS that -1. A dateCreated
+     *  cursor alone can therefore never see the temporaryId-only (TEMP_PENDING) state — the
+     *  single most important state for the P-1.0 ledger audit (found via the R9 live proof).
+     *   - id cursor:  catches every NEW physical row (inserts AND historic copies, dc=-1 too)
+     *   - dc cursor:  catches in-place updates of current rows (dateCreated is re-stamped)
+     *  Together every state change is one of the two. */
     fun tick(persistenceLayer: PersistenceLayer, nowMs: Long) {
         val started = System.nanoTime()
         var errorClass: String? = null
         var plan: Plan? = null
         runCatching {
             if (!cursorLoaded) {
-                cursorMs = cursorStore.load() ?: -1L
+                val c = cursorStore.load()
+                cursorMs = c?.cursorMs ?: -1L
+                idCursor = c?.afterId ?: -1L
                 cursorLoaded = true
             }
             val firstPass = cursorMs < 0L
             val since = if (firstPass) nowMs - BASELINE_LOOKBACK_MS else cursorMs - OVERLAP_MS
-            val rows = fetchPaged(persistenceLayer, since, nowMs)
-            val p = plan(rows, seenKeys, cursorMs, firstPass, nowMs)
+            val dcRows = fetchDcPaged(persistenceLayer, since, nowMs)
+            var idFetchLast = idCursor
+            val idRows = ArrayList<BS>()
+            if (idCursor >= 0L) {
+                while (idRows.size < MAX_ROWS_PER_TICK) {
+                    val page = persistenceLayer.collectBolusRowsAfterId(idFetchLast, PAGE_SIZE)
+                    if (page.isEmpty()) break
+                    idRows.addAll(page)
+                    idFetchLast = page.last().id
+                    if (page.size < PAGE_SIZE) break
+                }
+            }
+            val p = plan(dcRows + idRows, seenKeys, cursorMs, firstPass, nowMs)
             plan = p
             if (p.lines.isNotEmpty()) appendSink(p.lines.joinToString("\n", postfix = "\n"))
             // R9/F2: commit ONLY after the append returned without throwing.
             p.newKeys.forEach { seenKeys.add(it) }
             while (seenKeys.size > MAX_SEEN_KEYS) seenKeys.remove(seenKeys.first())
+            var dirty = false
             if (p.newCursorMs > cursorMs) {
-                cursorMs = p.newCursorMs
-                cursorStore.save(cursorMs)
+                cursorMs = p.newCursorMs; dirty = true
             } else if (firstPass && !p.truncated) {
                 // Empty, complete first window: persist a cursor so the baseline pass ends.
                 // (A truncated first pass keeps cursor < 0 and re-sweeps next tick.)
-                cursorMs = nowMs
-                cursorStore.save(cursorMs)
+                cursorMs = nowMs; dirty = true
             }
+            if (idCursor < 0L) {
+                // One-time id-cursor initialization from whatever this tick saw. Historic
+                // dc=-1 copies OLDER than this point stay unexported (documented one-time gap;
+                // the backlog is Development/Calibration material anyway).
+                val maxSeen = (dcRows + idRows).maxOfOrNull { it.id }
+                if (maxSeen != null) { idCursor = maxSeen; dirty = true }
+            } else if (idFetchLast > idCursor) {
+                idCursor = idFetchLast; dirty = true
+            }
+            if (dirty) cursorStore.save(Cursors(cursorMs, idCursor))
         }.onFailure { errorClass = it.javaClass.simpleName }
         writeDiag(nowMs, started, plan, errorClass)
     }
 
-    private fun fetchPaged(persistenceLayer: PersistenceLayer, since: Long, until: Long): List<BS> {
+    private fun fetchDcPaged(persistenceLayer: PersistenceLayer, since: Long, until: Long): List<BS> {
         val out = ArrayList<BS>()
         var offset = 0
         while (out.size < MAX_ROWS_PER_TICK) {
@@ -252,18 +286,25 @@ object FuseTreatmentTransitionCollector {
 
     private object FileCursorStore : CursorStore {
 
-        override fun load(): Long? = runCatching {
+        override fun load(): Cursors? = runCatching {
             val f = File(File(Environment.getExternalStorageDirectory(), "Documents/aapsLogs"), CURSOR_FILE_NAME)
-            if (!f.exists()) null else JSONObject(f.readText()).optLong("cursorMs", -1L).takeIf { it > 0L }
+            if (!f.exists()) null else JSONObject(f.readText()).let { json ->
+                val ms = json.optLong("cursorMs", -1L)
+                if (ms <= 0L) null
+                // afterId tolerant: a v2-era cursor file has no afterId -> -1 triggers the
+                // one-time id-cursor initialization in tick().
+                else Cursors(ms, json.optLong("afterId", -1L))
+            }
         }.getOrNull()
 
-        override fun save(cursorMs: Long) {
+        override fun save(cursors: Cursors) {
             val dir = File(Environment.getExternalStorageDirectory(), "Documents/aapsLogs")
+            val payload = JSONObject().put("cursorMs", cursors.cursorMs).put("afterId", cursors.afterId).toString()
             val tmp = File(dir, "$CURSOR_FILE_NAME.tmp")
-            tmp.writeText(JSONObject().put("cursorMs", cursorMs).toString())
+            tmp.writeText(payload)
             val target = File(dir, CURSOR_FILE_NAME)
             if (!tmp.renameTo(target)) {
-                target.writeText(JSONObject().put("cursorMs", cursorMs).toString())
+                target.writeText(payload)
                 tmp.delete()
             }
         }
@@ -278,6 +319,7 @@ object FuseTreatmentTransitionCollector {
                 put("rowsScanned", plan?.rowsScanned ?: -1)
                 put("rowsAppended", plan?.lines?.size ?: -1)
                 put("cursorMs", cursorMs)
+                put("afterId", idCursor)
                 put("seenKeys", seenKeys.size)
                 errorClass?.let { put("lastErrorClass", it) }
             }

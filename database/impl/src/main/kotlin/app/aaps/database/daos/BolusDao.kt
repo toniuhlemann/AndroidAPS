@@ -65,4 +65,11 @@ internal interface BolusDao : TraceableDao<Bolus> {
 
     @Query("SELECT * FROM $TABLE_BOLUSES WHERE dateCreated > :since AND dateCreated <= :until LIMIT :limit OFFSET :offset")
     fun getNewEntriesSince(since: Long, until: Long, limit: Int, offset: Int): List<Bolus>
+
+    // FUSE P-1.0 transition collector: physical-id cursor, INCLUDING historic rows. Needed
+    // because InsertBolusWithTempIdTransaction uses the raw insert() (not insertNewEntry()),
+    // so pump-sync bolus rows carry dateCreated = -1 and their historic copies inherit it —
+    // invisible to any dateCreated cursor. Ordered by id: cursor-paginated without OFFSET.
+    @Query("SELECT * FROM $TABLE_BOLUSES WHERE id > :afterId ORDER BY id ASC LIMIT :limit")
+    fun getBolusRowsAfterId(afterId: Long, limit: Int): List<Bolus>
 }
