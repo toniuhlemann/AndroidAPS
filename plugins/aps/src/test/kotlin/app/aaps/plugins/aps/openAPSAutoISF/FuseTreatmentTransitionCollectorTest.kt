@@ -138,8 +138,8 @@ class FuseTreatmentTransitionCollectorTest {
             written.append(text)
         }
         FuseTreatmentTransitionCollector.cursorStore = object : FuseTreatmentTransitionCollector.CursorStore {
-            override fun load(): Long? = 500L
-            override fun save(cursorMs: Long) { cursorSaves.add(cursorMs) }
+            override fun load() = FuseTreatmentTransitionCollector.Cursors(500L, -1L)
+            override fun save(cursors: FuseTreatmentTransitionCollector.Cursors) { cursorSaves.add(cursors.cursorMs) }
         }
         val rows = listOf(bs(id = 10, version = 0, dateCreated = 1000, tempId = 111))
         val fakeSource = FakePersistence(rows)
@@ -160,8 +160,45 @@ class FuseTreatmentTransitionCollectorTest {
         }
     }
 
-    /** Minimal fake exposing only the one PersistenceLayer method the collector calls. */
-    private class FakePersistence(val rows: List<BS>) {
+    // ---- dc=-1 pump-sync rows (AAPS raw-insert quirk) are caught by the id cursor ----------
+
+    @Test
+    fun `tempId-only state with dateCreated -1 is exported via the id cursor`() {
+        val written = StringBuilder()
+        val saved = ArrayList<FuseTreatmentTransitionCollector.Cursors>()
+        val prevSink = FuseTreatmentTransitionCollector.appendSink
+        val prevStore = FuseTreatmentTransitionCollector.cursorStore
+        val prevDiag = FuseTreatmentTransitionCollector.diagSink
+        FuseTreatmentTransitionCollector.diagSink = { }
+        FuseTreatmentTransitionCollector.appendSink = { text -> written.append(text) }
+        FuseTreatmentTransitionCollector.cursorStore = object : FuseTreatmentTransitionCollector.CursorStore {
+            override fun load() = FuseTreatmentTransitionCollector.Cursors(5000L, 100L)
+            override fun save(cursors: FuseTreatmentTransitionCollector.Cursors) { saved.add(cursors) }
+        }
+        // After an SMB: current row 101 is already v1 (dc re-stamped, tempId+pumpId); the
+        // historic v0 copy (row 102) kept dateCreated = -1 — invisible to any dc cursor.
+        val currentV1 = bs(id = 101, version = 1, dateCreated = 6000, tempId = 111, pumpId = 999, serial = "SN1")
+        val historicV0 = bs(id = 102, version = 0, dateCreated = -1, referenceId = 101, tempId = 111, serial = "SN1")
+        val fake = FakePersistence(dcRows = listOf(currentV1), idRows = listOf(currentV1, historicV0))
+        try {
+            FuseTreatmentTransitionCollector.tick(fake.layer, nowMs = 7000)
+            val lines = written.toString().trim().lines().map { JSONObject(it) }
+            assertEquals(2, lines.size)                                    // dedupe across both paths
+            val v0 = lines.first { it.getInt("version") == 0 }
+            assertEquals(-1L, v0.getLong("dateCreated"))                   // the invisible state, now visible
+            assertFalse(v0.getJSONObject("ids").has("pumpId"))             // TEMP_PENDING evidence
+            assertEquals(101L, v0.getLong("rowId"))                        // canonical id
+            assertEquals(FuseTreatmentTransitionCollector.Cursors(6000L, 102L), saved.last())
+        } finally {
+            FuseTreatmentTransitionCollector.appendSink = prevSink
+            FuseTreatmentTransitionCollector.cursorStore = prevStore
+            FuseTreatmentTransitionCollector.diagSink = prevDiag
+            FuseTreatmentTransitionCollectorTestReset.reset()
+        }
+    }
+
+    /** Minimal fake exposing only the PersistenceLayer methods the collector calls. */
+    private class FakePersistence(val dcRows: List<BS>, val idRows: List<BS> = emptyList()) {
 
         val layer: app.aaps.core.interfaces.db.PersistenceLayer = java.lang.reflect.Proxy.newProxyInstance(
             app.aaps.core.interfaces.db.PersistenceLayer::class.java.classLoader,
@@ -170,7 +207,12 @@ class FuseTreatmentTransitionCollectorTest {
             when (method.name) {
                 "collectNewBolusEntriesSince" -> {
                     val offset = args!![3] as Int
-                    if (offset == 0) rows else emptyList<BS>()
+                    if (offset == 0) dcRows else emptyList<BS>()
+                }
+
+                "collectBolusRowsAfterId"     -> {
+                    val afterId = args!![0] as Long
+                    idRows.filter { it.id > afterId }.sortedBy { it.id }
                 }
 
                 else                          -> throw UnsupportedOperationException(method.name)
@@ -190,6 +232,8 @@ internal object FuseTreatmentTransitionCollectorTestReset {
         cls.getDeclaredField("seenKeys").apply { isAccessible = true }
             .let { (it.get(FuseTreatmentTransitionCollector) as LinkedHashSet<*>).clear() }
         cls.getDeclaredField("cursorMs").apply { isAccessible = true }
+            .setLong(FuseTreatmentTransitionCollector, -1L)
+        cls.getDeclaredField("idCursor").apply { isAccessible = true }
             .setLong(FuseTreatmentTransitionCollector, -1L)
         cls.getDeclaredField("cursorLoaded").apply { isAccessible = true }
             .setBoolean(FuseTreatmentTransitionCollector, false)

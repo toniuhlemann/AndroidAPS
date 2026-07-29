@@ -104,6 +104,15 @@ interface PersistenceLayer {
     fun collectNewBolusEntriesSince(since: Long, until: Long, limit: Int, offset: Int): List<BS>
 
     /**
+     * FUSE P-1.0: bolus rows with physical id > afterId, ordered by id, historic versions
+     * included. Companion cursor to [collectNewBolusEntriesSince]: pump-sync inserts go
+     * through the raw insert() and carry dateCreated = -1 (as do their historic copies), so
+     * a dateCreated cursor alone can never see the temporaryId-only (TEMP_PENDING) state.
+     * Read-only; bounded by limit, paginated via the id cursor itself (no OFFSET).
+     */
+    fun collectBolusRowsAfterId(afterId: Long, limit: Int): List<BS>
+
+    /**
      * Get boluses in time interval
      *
      * @param startTime from

@@ -810,6 +810,11 @@ class AppRepository @Inject internal constructor(
     fun collectNewBolusEntriesSince(since: Long, until: Long, limit: Int, offset: Int): List<Bolus> =
         database.bolusDao.getNewEntriesSince(since, until, limit, offset)
 
+    /** FUSE P-1.0: physical-id cursor companion to [collectNewBolusEntriesSince] — catches
+     *  pump-sync rows whose dateCreated is -1 (raw insert path). Read-only. */
+    fun collectBolusRowsAfterId(afterId: Long, limit: Int): List<Bolus> =
+        database.bolusDao.getBolusRowsAfterId(afterId, limit)
+
     fun collectNewEntriesSince(since: Long, until: Long, limit: Int, offset: Int) = NewEntries(
         apsResults = database.apsResultDao.getNewEntriesSince(since, until, limit, offset),
         bolusCalculatorResults = database.bolusCalculatorResultDao.getNewEntriesSince(since, until, limit, offset),
