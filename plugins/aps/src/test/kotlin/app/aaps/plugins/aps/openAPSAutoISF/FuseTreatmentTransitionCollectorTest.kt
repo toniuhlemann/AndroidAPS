@@ -234,6 +234,49 @@ class FuseTreatmentTransitionCollectorTest {
         }
     }
 
+    // ---- R13 §4: a capped BASELINE sweep survives a process restart and continues ----------
+
+    @Test
+    fun `capped baseline sweep survives restart and continues without duplicates`() {
+        val written = StringBuilder()
+        var stored: FuseTreatmentTransitionCollector.Cursors? = null
+        val prevSink = FuseTreatmentTransitionCollector.appendSink
+        val prevStore = FuseTreatmentTransitionCollector.cursorStore
+        val prevDiag = FuseTreatmentTransitionCollector.diagSink
+        FuseTreatmentTransitionCollector.diagSink = { }
+        FuseTreatmentTransitionCollector.appendSink = { text -> written.append(text) }
+        FuseTreatmentTransitionCollector.cursorStore = object : FuseTreatmentTransitionCollector.CursorStore {
+            override fun load() = stored
+            override fun save(cursors: FuseTreatmentTransitionCollector.Cursors) { stored = cursors }
+        }
+        // First pass ever (no cursor file), 2200-row backlog -> tick 1 caps at 2000 with
+        // cursorMs still -1 and an active sweep persisted.
+        val nowT1 = 100_000_000L
+        val rows = (0 until 2200).map { bs(id = 1000L + it, version = 0, dateCreated = nowT1 - 1_000_000L + it) }
+        val fake = FakePersistence(dcRows = rows)
+        try {
+            FuseTreatmentTransitionCollector.tick(fake.layer, nowMs = nowT1)
+            assertTrue(stored!!.sweep != null)
+            assertEquals(-1L, stored!!.cursorMs)                              // baseline not closed
+            assertEquals(2000, written.toString().trim().lines().size)
+
+            // Simulated process restart: in-memory state gone, cursor file survives.
+            FuseTreatmentTransitionCollectorTestReset.reset()
+
+            FuseTreatmentTransitionCollector.tick(fake.layer, nowMs = nowT1 + 60_000)
+            assertEquals(null, stored!!.sweep)                                // sweep completed
+            assertEquals(nowT1, stored!!.cursorMs)                            // advanced to sweepUntil
+            val allLines = written.toString().trim().lines()
+            assertEquals(2200, allLines.size)                                 // no loss, no duplicates
+            assertEquals(2200, allLines.map { JSONObject(it).getLong("physicalRowId") }.toSet().size)
+        } finally {
+            FuseTreatmentTransitionCollector.appendSink = prevSink
+            FuseTreatmentTransitionCollector.cursorStore = prevStore
+            FuseTreatmentTransitionCollector.diagSink = prevDiag
+            FuseTreatmentTransitionCollectorTestReset.reset()
+        }
+    }
+
     /** Fake honoring the keyset predicate + ordering of the real DAO query. */
     private class FakePersistence(val dcRows: List<BS>, val idRows: List<BS> = emptyList()) {
 
