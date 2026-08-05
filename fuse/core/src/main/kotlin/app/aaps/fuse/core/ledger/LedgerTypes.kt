@@ -61,6 +61,22 @@ enum class LedgerError {
      *  ein bilanzierter Datensatz mit positiver Menge. Kein normaler
      *  Zustandswechsel, sondern ein unmoeglicher Zustand. */
     IMPOSSIBLE_STATE_CONFLICT,
+    /** R91-F1: ein zuvor nachgewiesener Treatment-Fakt fehlt in der aktuellen
+     *  Vollsicht. Die Buchung wird zurueckgenommen — sonst verloere der Tail
+     *  dieselbe Menge auf BEIDEN Seiten: nicht mehr im Bestands-IOB, wegen der
+     *  veralteten Buchung aber auch nicht mehr im Transportrest. */
+    MISSING_ACCOUNTED_TREATMENT,
+    /** R91-F2: mehrere passende Fakten fuer dieselbe gebundene Identitaet.
+     *  Welcher gilt, darf NIE die Listenreihenfolge entscheiden. */
+    AMBIGUOUS_TREATMENT_IDENTITY,
+    /**
+     * R91-F4: gebucht ist MEHR als die konservative Haftung. Das wirkt
+     * konservativ und sperrt deshalb NICHT — es muss aber sichtbar sein,
+     * weil es auf eine Fehlbindung hindeuten kann.
+     *
+     * Bewusst NICHT in [LedgerState.FAIL_CLOSED_ERRORS].
+     */
+    OVERACCOUNTED_CONSERVATIVE,
 }
 
 data class LedgerErrorRecord(val proposalId: String?, val error: LedgerError, val detail: String)
@@ -253,13 +269,30 @@ data class ProposalEntry(
      * revisionsfaehig (Medtrum legt erst die angeforderte Menge an).
      */
     val accountedAmountU: Double?,
+    /**
+     * Die Mengentoleranz als GEPINNTE Policy (R91-F3).
+     *
+     * Sie steht in der Zeile, nicht im Aufrufer: eine spaetere
+     * Policy-Aenderung darf eine offene Zeile nicht rueckwirkend neu deuten.
+     * Und sie gilt fuer ALLE Mengenvergleiche — vorher rechnete die
+     * Korrekturlogik mit Epsilon, der Rest aber exakt, sodass eine innerhalb
+     * der Policy identische Buchung einen Zwergrest behalten und die Zeile
+     * offen halten konnte.
+     */
+    val amountEpsU: Double,
+    /** Der ERSTE Nachweis — historische Provenienz, nicht die aktuelle Sicht. */
+    val firstAccountedSnapshotHash: String?,
+    /** Die zuletzt gegen diese Zeile abgeglichene Vollsicht (R91-F5). Nur DIESE
+     *  traegt die aktuelle Mitgliedschaftsaussage. */
+    val lastReconciledViewHash: String?,
+    val lastReconciledAtTs: Long?,
     val terminalSeen: Boolean,
     val failClosed: Boolean,
     val corrections: Int,
     val decisionTs: Long,
     val latestBolusTimestampAtDecision: Long,
     val errors: List<LedgerError>,
-    val accountedSnapshotHash: String?,
+
 ) {
 
     /**
@@ -296,7 +329,18 @@ data class ProposalEntry(
      * beweist nicht, dass dessen Menge die ganze moegliche Lieferung abdeckt.
      */
     val unaccountedResidualU: Double
-        get() = maxOf(grossLiabilityU - (accountedAmountU ?: 0.0), 0.0)
+        get() {
+            val raw = grossLiabilityU - (accountedAmountU ?: 0.0)
+            // R91-F3: Werte innerhalb der Policy sind kanonisch 0. Sonst haelt
+            // ein Zwergrest aus Double-Arithmetik die Zeile offen, obwohl
+            // dieselbe Policy die Mengen anderswo als gleich behandelt.
+            return if (raw <= amountEpsU) 0.0 else raw
+        }
+
+    /** Gebucht ist MEHR als die konservative Haftung (R91-F4). Konservativ,
+     *  also nicht sperrend — aber sichtbar. */
+    val overAccounted: Boolean
+        get() = (accountedAmountU ?: 0.0) - grossLiabilityU > amountEpsU
 
     /** Nichts mehr offen: es floss beweisbar nichts, oder es ist restlos gebucht. */
     val closed: Boolean
@@ -364,6 +408,10 @@ data class LedgerState(
             LedgerError.NON_FINITE_AMOUNT,
             LedgerError.ACCOUNTING_WITHOUT_IDENTITY,
             LedgerError.IMPOSSIBLE_STATE_CONFLICT,
+            LedgerError.MISSING_ACCOUNTED_TREATMENT,
+            LedgerError.AMBIGUOUS_TREATMENT_IDENTITY,
+            // OVERACCOUNTED_CONSERVATIVE fehlt hier ABSICHTLICH: sichtbar, aber
+            // nicht sperrend (R91-F4).
         )
     }
 

@@ -107,7 +107,7 @@ object LedgerReducer {
     fun reduce(state: LedgerState, event: LedgerEvent, cfg: LedgerConfig): LedgerState = when (event) {
         is LedgerEvent.IobSnapshotObserved -> onSnapshot(state, event, cfg)
         is LedgerEvent.RestartObserved     -> onRestart(state)
-        is LedgerEvent.Proposed            -> onProposed(state, event)
+        is LedgerEvent.Proposed            -> onProposed(state, event, cfg)
         is LedgerEvent.OfProposal          -> {
             val entry = state.entries[event.proposalId]
             if (entry == null) fail(state, event.proposalId, LedgerError.UNKNOWN_PROPOSAL, event.toString())
@@ -117,7 +117,7 @@ object LedgerReducer {
 
     // ---- einzelne Ereignisse ---------------------------------------------
 
-    private fun onProposed(state: LedgerState, e: LedgerEvent.Proposed): LedgerState {
+    private fun onProposed(state: LedgerState, e: LedgerEvent.Proposed, cfg: LedgerConfig): LedgerState {
         if (!e.proposedU.isFinite() || e.proposedU < 0.0)
             return fail(state, e.proposalId, LedgerError.NON_FINITE_AMOUNT, "proposedU=${e.proposedU}")
         val existing = state.entries[e.proposalId]
@@ -149,7 +149,10 @@ object LedgerReducer {
             decisionTs = e.decisionTs,
             latestBolusTimestampAtDecision = e.latestBolusTimestamp,
             errors = emptyList(),
-            accountedSnapshotHash = null,
+            amountEpsU = cfg.amountEpsU,
+            firstAccountedSnapshotHash = null,
+            lastReconciledViewHash = null,
+            lastReconciledAtTs = null,
         )
         return state.copy(entries = state.entries + (e.proposalId to entry))
     }
@@ -447,119 +450,121 @@ object LedgerReducer {
      * falsch zuordnen.
      */
     private fun onSnapshot(state: LedgerState, e: LedgerEvent.IobSnapshotObserved, cfg: LedgerConfig): LedgerState {
-        var changed = false
         var errors = state.errors
+
+        fun note(entry: ProposalEntry, error: LedgerError, detail: String, failClosed: Boolean): ProposalEntry {
+            val record = LedgerErrorRecord(entry.proposalId, error, detail)
+            if (!errors.contains(record)) errors = errors + record
+            return entry.copy(
+                failClosed = entry.failClosed || failClosed,
+                errors = if (entry.errors.contains(error)) entry.errors else entry.errors + error,
+            )
+        }
+
+        val viewHash = e.snapshot.treatmentSnapshotHash
         val next = state.entries.mapValues { (_, entry) ->
-            // R87-F1: NUR der endgueltige Abschluss ueberspringt. `closed` fasst
-            // drei Sachverhalte zusammen, und einer davon — die Befreiung durch
-            // Reject/Rueckzug — ist AUSDRUECKLICH widerrufbar. Wer ihn wie einen
-            // Endzustand behandelt, uebergeht genau den Fall, fuer den
-            // `contradicted` gebaut wurde: das angeblich nie gelieferte
-            // Treatment taucht im IOB-Snapshot auf.
-            // R89-F1: auch eine bereits gebuchte Zeile bleibt beobachtet — eine
-            // spaetere Mengenkorrektur kann den Restbetrag wieder oeffnen.
             val id = entry.identity ?: return@mapValues entry
+
             val compat = e.snapshot.containedTreatments.map { it to id.compatibility(it) }
             // R79-F3: ein Widerspruch darf nicht als Nichttreffer verschwinden.
-            // {temp=7,pump=8} gegen {temp=7,pump=9} ist KEIN Treffer, sondern
-            // ein Konflikt - vorher wurde er per ODER-Match wegbucht.
             val conflict = compat.firstOrNull { it.second == IdentityMatch.CONFLICT }
-            if (conflict != null) {
-                changed = true
-                val record = LedgerErrorRecord(
-                    entry.proposalId, LedgerError.IDENTITY_CONFLICT,
-                    "snapshot ${e.snapshot.treatmentSnapshotHash}: $id vs ${conflict.first}"
+            if (conflict != null)
+                return@mapValues note(
+                    entry, LedgerError.IDENTITY_CONFLICT,
+                    "snapshot $viewHash: $id vs ${conflict.first}", failClosed = true
                 )
-                if (!errors.contains(record)) errors = errors + record
-                return@mapValues entry.copy(
+
+            // R91-F2: NIE firstOrNull. Zwei passende Fakten fuer dieselbe
+            // gebundene Identitaet haetten sonst je nach Listenreihenfolge
+            // verschiedene Restmengen ergeben - aus demselben Inhalt.
+            val hits = compat.filter { it.second == IdentityMatch.MATCH }.map { it.first }
+            if (hits.size > 1)
+                return@mapValues note(
+                    entry, LedgerError.AMBIGUOUS_TREATMENT_IDENTITY,
+                    "snapshot $viewHash: ${hits.size} facts for $id", failClosed = true
+                )
+
+            val hit = hits.firstOrNull()
+
+            // R91-F1: FEHLT der zuvor nachgewiesene Fakt in der aktuellen
+            // Vollsicht, wird die Buchung zurueckgenommen. Sonst waere die
+            // Menge auf BEIDEN Seiten verschwunden: nicht mehr im Bestands-IOB
+            // und wegen der veralteten Buchung auch nicht im Transportrest.
+            if (hit == null) {
+                if ((entry.accountedAmountU ?: 0.0) <= cfg.amountEpsU) return@mapValues entry
+                return@mapValues note(
+                    entry.copy(
+                        accountedAmountU = 0.0,
+                        accounting = AccountingState.NOT_ACCOUNTED,
+                        lastReconciledViewHash = viewHash,
+                        lastReconciledAtTs = e.snapshot.calculatedAt,
+                    ),
+                    LedgerError.MISSING_ACCOUNTED_TREATMENT,
+                    "snapshot $viewHash: previously accounted ${entry.accountedAmountU} gone",
                     failClosed = true,
-                    errors = if (entry.errors.contains(LedgerError.IDENTITY_CONFLICT)) entry.errors
-                    else entry.errors + LedgerError.IDENTITY_CONFLICT,
                 )
             }
-            val hit = compat.firstOrNull { it.second == IdentityMatch.MATCH }?.first
-                ?: return@mapValues entry
+
             // Ein kaputter Betrag im Snapshot bucht nicht aus: der Nachweis
             // "diese Menge steckt im IOB" waere dann selbst ungueltig.
-            if (!LedgerRules.isStorableAmount(hit.amountU)) {
-                changed = true
-                val record = LedgerErrorRecord(
-                    entry.proposalId, LedgerError.NON_FINITE_AMOUNT,
-                    "snapshot amount=${hit.amountU}"
+            if (!LedgerRules.isStorableAmount(hit.amountU))
+                return@mapValues note(
+                    entry, LedgerError.NON_FINITE_AMOUNT, "snapshot amount=${hit.amountU}", failClosed = true
                 )
-                if (!errors.contains(record)) errors = errors + record
-                return@mapValues entry.copy(
-                    failClosed = true,
-                    errors = if (entry.errors.contains(LedgerError.NON_FINITE_AMOUNT)) entry.errors
-                    else entry.errors + LedgerError.NON_FINITE_AMOUNT,
-                )
-            }
-            // R89-F2: Fuer die Aussage "Nullnachweis gegen positiven Fakt" ist
-            // nicht die Pumpenrundung entscheidend, sondern Positivitaet.
-            // Ueber canonicalTicks waere ein Betrag unter einer halben
-            // Pumpenstufe stillschweigend 0 gewesen — und trotzdem als
-            // Buchungsfakt akzeptiert worden.
+
+            // R89-F2: fuer "Nullnachweis gegen positiven Fakt" entscheidet
+            // Positivitaet, nicht die Pumpenrundung.
             val positiveFact = hit.amountU > cfg.amountEpsU
-
-            // R89-F1/F2: Ein Datensatz ueber 0 U schliesst keine positive
-            // Verpflichtung. Er ist hoechstens vertraeglich mit einem SEPARAT
-            // bewiesenen CONFIRMED_ZERO — beweisen tut er es nicht.
-            if (!positiveFact && entry.grossLiabilityU > cfg.amountEpsU) return@mapValues entry
-
             val sameAmount = LedgerRules.sameAmount(entry.accountedAmountU, hit.amountU, cfg.amountEpsU)
-            if (entry.accounting == AccountingState.IOB_ACCOUNTED && sameAmount &&
-                entry.delivery != DeliveryState.CONFIRMED_ZERO
-            ) return@mapValues entry
 
-            changed = true
-            var accounted = entry.copy(
-                accounting = AccountingState.IOB_ACCOUNTED,
-                // Der ERSTE beweisende Snapshot bleibt die Provenienz; spaetere
-                // Revisionen aendern die Menge, nicht den Nachweis.
-                accountedSnapshotHash = entry.accountedSnapshotHash ?: e.snapshot.treatmentSnapshotHash,
+            // R91-F1: der aktuelle Fakt gilt, AUCH wenn er 0 ist. Vorher liess
+            // ein auf 0 korrigierter Fakt die alte Buchung stehen.
+            var reconciled = entry.copy(
+                accounting = if (positiveFact) AccountingState.IOB_ACCOUNTED else AccountingState.NOT_ACCOUNTED,
                 accountedAmountU = hit.amountU,
-                amounts = if (entry.amounts.dbAccountedU == null) entry.amounts.copy(dbAccountedU = hit.amountU)
-                else entry.amounts,
+                // Der ERSTE Nachweis bleibt historische Provenienz (R91-F5);
+                // die aktuelle Mitgliedschaftsaussage traegt lastReconciled*.
+                firstAccountedSnapshotHash =
+                    if (positiveFact) entry.firstAccountedSnapshotHash ?: viewHash else entry.firstAccountedSnapshotHash,
+                lastReconciledViewHash = viewHash,
+                lastReconciledAtTs = e.snapshot.calculatedAt,
+                amounts = if (entry.amounts.dbAccountedU == null && positiveFact)
+                    entry.amounts.copy(dbAccountedU = hit.amountU) else entry.amounts,
                 corrections = if (entry.accountedAmountU != null && !sameAmount) entry.corrections + 1
                 else entry.corrections,
             )
 
-            // Die Menge steckt jetzt nachweislich im IOB — sie bindet also nicht
-            // mehr als Transportmenge. Der Widerspruch zur Befreiung bleibt
-            // trotzdem sichtbar.
-            if (entry.debtFreeingReject) {
-                val record = LedgerErrorRecord(
-                    entry.proposalId, LedgerError.PHASE_VIOLATION,
-                    "accounted after ${entry.queueReject?.name ?: "withdrawal"}: snapshot ${e.snapshot.treatmentSnapshotHash}"
-                )
-                if (!errors.contains(record)) errors = errors + record
-                accounted = accounted.copy(
-                    contradicted = true,
+            if (positiveFact && entry.debtFreeingReject)
+            // Die Menge steckt nachweislich im IOB, bindet also nicht mehr als
+            // Transportmenge. Der Widerspruch bleibt trotzdem sichtbar.
+                reconciled = note(
+                    reconciled, LedgerError.PHASE_VIOLATION,
+                    "accounted after ${entry.queueReject?.name ?: "withdrawal"}: snapshot $viewHash",
                     failClosed = true,
-                    errors = if (accounted.errors.contains(LedgerError.PHASE_VIOLATION)) accounted.errors
-                    else accounted.errors + LedgerError.PHASE_VIOLATION,
-                )
-            }
+                ).copy(contradicted = true)
 
-            // Ein bewiesenes CONFIRMED_ZERO und ein Treatment mit positiver
-            // Menge im IOB koennen nicht beide wahr sein. Das ist kein normaler
-            // Widerspruch, sondern ein unmoeglicher Zustand: zwei NACHWEISE
-            // widersprechen sich.
-            if (entry.delivery == DeliveryState.CONFIRMED_ZERO && positiveFact) {
-                val record = LedgerErrorRecord(
-                    entry.proposalId, LedgerError.IMPOSSIBLE_STATE_CONFLICT,
-                    "CONFIRMED_ZERO vs accounted amount=${hit.amountU}"
+            // Zwei NACHWEISE koennen sich nicht widersprechen.
+            if (entry.delivery == DeliveryState.CONFIRMED_ZERO && positiveFact)
+                reconciled = note(
+                    reconciled, LedgerError.IMPOSSIBLE_STATE_CONFLICT,
+                    "CONFIRMED_ZERO vs accounted amount=${hit.amountU}", failClosed = true
                 )
-                if (!errors.contains(record)) errors = errors + record
-                accounted = accounted.copy(
-                    failClosed = true,
-                    errors = if (accounted.errors.contains(LedgerError.IMPOSSIBLE_STATE_CONFLICT)) accounted.errors
-                    else accounted.errors + LedgerError.IMPOSSIBLE_STATE_CONFLICT,
+
+            // R91-F4: mehr gebucht als gehaftet ist konservativ, aber nicht
+            // selbstverstaendlich - es kann auf eine Fehlbindung hindeuten.
+            if (reconciled.overAccounted)
+                reconciled = note(
+                    reconciled, LedgerError.OVERACCOUNTED_CONSERVATIVE,
+                    "accounted=${hit.amountU} > gross=${entry.grossLiabilityU}", failClosed = false
                 )
-            }
-            accounted
+
+            reconciled
         }
-        return if (changed) state.copy(entries = next, errors = errors) else state
+
+        // Wert-, nicht Flaggenvergleich: eine Reconciliation ohne inhaltliche
+        // Folge darf den Zustand nicht veraendern.
+        val touched = next.any { (k, v) -> v != state.entries[k] }
+        return if (touched || errors !== state.errors) state.copy(entries = next, errors = errors) else state
     }
 
     /** Ein Absturzfenster bleibt epistemisch UNBEKANNT. Konservativ heisst:

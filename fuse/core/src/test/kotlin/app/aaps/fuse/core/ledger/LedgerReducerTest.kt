@@ -424,13 +424,19 @@ class LedgerReducerTest {
         val snapshot = IobAccountingSnapshot("h1", "c1", t0, 1L, listOf(AccountedTreatment(null, 4711L, 0.30)))
         val once = LedgerReducer.reduce(s, LedgerEvent.IobSnapshotObserved(snapshot), cfg)
         assertEquals(0.0, once.transportCommitmentU, 1e-12)
-        assertEquals("h1", entry(once).accountedSnapshotHash)
+        assertEquals("h1", entry(once).firstAccountedSnapshotHash)
         assertEquals(0, entry(once).corrections)
 
-        // ein zweiter Snapshot mit demselben Datensatz aendert nichts mehr
+        // Ein zweiter Snapshot mit demselben Datensatz aendert die BUCHUNG nicht
+        // mehr - wohl aber die Aussage darueber, gegen WELCHE Sicht zuletzt
+        // abgeglichen wurde (R91-F5: Erstnachweis und aktuelle Vollsicht sind
+        // getrennte Felder).
         val twice = LedgerReducer.reduce(once, LedgerEvent.IobSnapshotObserved(snapshot.copy(treatmentSnapshotHash = "h2")), cfg)
-        assertSame(once, twice)
         assertEquals(0.0, twice.transportCommitmentU, 1e-12)
+        assertEquals(0.30, entry(twice).accountedAmountU)
+        assertEquals(0, entry(twice).corrections)
+        assertEquals("h1", entry(twice).firstAccountedSnapshotHash)
+        assertEquals("h2", entry(twice).lastReconciledViewHash)
     }
 
     @Test
@@ -810,11 +816,14 @@ class LedgerReducerTest {
         // die Menge steckt im IOB, bindet also nicht zusaetzlich als Transport
         assertEquals(0.0, s.transportCommitmentU, 1e-12)
 
-        // ein Datensatz mit Menge 0 widerspricht dagegen nicht
+        // ein Datensatz mit Menge 0 widerspricht dagegen nicht - und bucht auch
+        // nichts: im IOB steckt nichts Positives (R91-F1).
         val consistent = IobAccountingSnapshot("h4", "c4", t0, 4L, listOf(AccountedTreatment(null, 4711L, 0.0)))
         val ok = LedgerReducer.reduce(base, LedgerEvent.IobSnapshotObserved(consistent), cfg)
         assertFalse(entry(ok).errors.contains(LedgerError.IMPOSSIBLE_STATE_CONFLICT))
-        assertEquals(AccountingState.IOB_ACCOUNTED, entry(ok).accounting)
+        assertEquals(AccountingState.NOT_ACCOUNTED, entry(ok).accounting)
+        assertEquals(0.0, entry(ok).accountedAmountU)
+        assertEquals(0.0, ok.transportCommitmentU, 1e-12)
     }
 
     // ---- R89-F1: Accounting ist eine Mengenbilanz -------------------------
@@ -846,11 +855,14 @@ class LedgerReducerTest {
         val more = LedgerReducer.reduce(bound, snapshotWith(0.50, "h3"), cfg)
         assertEquals(0.0, more.transportCommitmentU, 1e-12)
 
-        // ein Datensatz ueber 0 U schliesst eine positive Verpflichtung NICHT
+        // ein Datensatz ueber 0 U schliesst eine positive Verpflichtung NICHT.
+        // Er wird aber REGISTRIERT (accountedAmountU = 0) - das ist die
+        // Voraussetzung dafuer, dass eine Korrektur auf 0 spaeter greift.
         val zero = LedgerReducer.reduce(bound, snapshotWith(0.0, "h4"), cfg)
-        assertSame(bound, zero)
         assertEquals(0.30, zero.transportCommitmentU, 1e-12)
         assertEquals(AccountingState.NOT_ACCOUNTED, entry(zero).accounting)
+        assertEquals(0.0, entry(zero).accountedAmountU)
+        assertFalse(entry(zero).closed)
     }
 
     @Test
@@ -885,7 +897,7 @@ class LedgerReducerTest {
         )
         assertEquals(0.25, revised.transportCommitmentU, 1e-12)
         // der ERSTE beweisende Snapshot bleibt die Provenienz
-        assertEquals("h1", entry(revised).accountedSnapshotHash)
+        assertEquals("h1", entry(revised).firstAccountedSnapshotHash)
     }
 
     @Test
@@ -950,6 +962,145 @@ class LedgerReducerTest {
         )
         assertTrue(entry(s).errors.contains(LedgerError.IMPOSSIBLE_STATE_CONFLICT))
         assertTrue(s.holdActuation)
+    }
+
+    // ---- R91: Reconciliation der Vollsicht --------------------------------
+
+    /** Ein Snapshot ist die AKTUELLE VOLLSICHT, nicht eine Liste positiver
+     *  Treffer. Diese Faelle pruefen die Gegenrichtungen. */
+    private fun boundAndAccounted(accounted: Double): LedgerState = LedgerReducer.reduceAll(
+        LedgerState(),
+        throughPump(0.30) + listOf(
+            LedgerEvent.PumpIdentityBound(id, null, 4711L, "VIRTUAL", "h", t0),
+            LedgerEvent.IobSnapshotObserved(
+                IobAccountingSnapshot("h1", "c", t0, 1L, listOf(AccountedTreatment(null, 4711L, accounted)))
+            ),
+        ),
+        cfg,
+    )
+
+    @Test
+    fun `R91-F1 eine Korrektur des Fakts auf 0 nimmt die Buchung zurueck`() {
+        for (accounted in listOf(0.10, 0.30)) {
+            val base = boundAndAccounted(accounted)
+            assertEquals(0.30 - accounted, base.transportCommitmentU, 1e-12, "accounted=$accounted")
+
+            val corrected = LedgerReducer.reduce(
+                base,
+                LedgerEvent.IobSnapshotObserved(
+                    IobAccountingSnapshot("h2", "c", t0, 2L, listOf(AccountedTreatment(null, 4711L, 0.0)))
+                ),
+                cfg,
+            )
+            assertEquals(0.30, corrected.transportCommitmentU, 1e-12, "accounted=$accounted")
+            assertEquals(0.0, entry(corrected).accountedAmountU, "accounted=$accounted")
+            assertEquals(AccountingState.NOT_ACCOUNTED, entry(corrected).accounting, "accounted=$accounted")
+            assertFalse(entry(corrected).closed, "accounted=$accounted")
+        }
+    }
+
+    @Test
+    fun `R91-F1 ein verschwundener Fakt loescht die Buchung und wird sichtbar`() {
+        for (accounted in listOf(0.10, 0.30)) {
+            val base = boundAndAccounted(accounted)
+            // Vollsicht OHNE unseren Datensatz - der Tail wuerde die Menge sonst
+            // auf beiden Seiten verlieren.
+            val gone = LedgerReducer.reduce(
+                base,
+                LedgerEvent.IobSnapshotObserved(
+                    IobAccountingSnapshot("h2", "c", t0, 2L, listOf(AccountedTreatment(null, 999L, 1.20)))
+                ),
+                cfg,
+            )
+            assertEquals(0.30, gone.transportCommitmentU, 1e-12, "accounted=$accounted")
+            assertEquals(0.0, entry(gone).accountedAmountU, "accounted=$accounted")
+            assertTrue(entry(gone).errors.contains(LedgerError.MISSING_ACCOUNTED_TREATMENT), "accounted=$accounted")
+            assertTrue(gone.holdActuation, "accounted=$accounted")
+
+            // Neustart dazwischen aendert daran nichts
+            val viaRestart = LedgerReducer.reduceAll(
+                base,
+                listOf(
+                    LedgerEvent.RestartObserved(t0 + 60_000L),
+                    LedgerEvent.IobSnapshotObserved(
+                        IobAccountingSnapshot("h3", "c", t0, 3L, listOf(AccountedTreatment(null, 999L, 1.20)))
+                    ),
+                ),
+                cfg,
+            )
+            assertEquals(0.30, viaRestart.transportCommitmentU, 1e-12, "accounted=$accounted")
+
+            // Taucht der Fakt stabil wieder auf, wird neu gebucht - der
+            // historische Fehler wird aber NICHT still geloescht.
+            val back = LedgerReducer.reduce(
+                gone,
+                LedgerEvent.IobSnapshotObserved(
+                    IobAccountingSnapshot("h4", "c", t0, 4L, listOf(AccountedTreatment(null, 4711L, accounted)))
+                ),
+                cfg,
+            )
+            assertEquals(0.30 - accounted, back.transportCommitmentU, 1e-12, "accounted=$accounted")
+            assertTrue(entry(back).errors.contains(LedgerError.MISSING_ACCOUNTED_TREATMENT), "accounted=$accounted")
+            assertTrue(back.holdActuation, "accounted=$accounted")
+        }
+    }
+
+    @Test
+    fun `R91-F2 zwei passende Fakten sind reihenfolgeunabhaengig ein Fehler`() {
+        val bound = LedgerReducer.reduceAll(
+            LedgerState(),
+            throughPump(0.30) + listOf(LedgerEvent.PumpIdentityBound(id, 7L, 4711L, "VIRTUAL", "h", t0)),
+            cfg,
+        )
+        val a = AccountedTreatment(7L, null, 0.10)
+        val b = AccountedTreatment(null, 4711L, 0.30)
+        val results = listOf(listOf(a, b), listOf(b, a)).map { facts ->
+            LedgerReducer.reduce(
+                bound,
+                LedgerEvent.IobSnapshotObserved(IobAccountingSnapshot("h1", "c", t0, 1L, facts)),
+                cfg,
+            )
+        }
+        for (r in results) {
+            assertTrue(entry(r).errors.contains(LedgerError.AMBIGUOUS_TREATMENT_IDENTITY))
+            assertTrue(r.holdActuation)
+            assertEquals(AccountingState.NOT_ACCOUNTED, entry(r).accounting)
+            assertEquals(0.30, r.transportCommitmentU, 1e-12)
+        }
+        // beide Reihenfolgen ergeben denselben Zustand - nicht 0,20 gegen 0,00
+        assertEquals(results[0].transportCommitmentU, results[1].transportCommitmentU)
+        assertEquals(entry(results[0]).accountedAmountU, entry(results[1]).accountedAmountU)
+    }
+
+    @Test
+    fun `R91-F3 Epsilon gilt auch fuer Rest und Abschluss, nicht nur fuer Vergleiche`() {
+        val base = LedgerReducer.reduceAll(
+            LedgerState(),
+            listOf<LedgerEvent>(
+                LedgerEvent.Proposed(id, 0.3000000004, t0, t0 - 600_000L),
+                LedgerEvent.AmountObserved(id, AmountStage.PUMP_COMMAND, 0.3000000004),
+                LedgerEvent.PumpIdentityBound(id, null, 4711L, "VIRTUAL", "h", t0),
+                LedgerEvent.IobSnapshotObserved(
+                    IobAccountingSnapshot("h1", "c", t0, 1L, listOf(AccountedTreatment(null, 4711L, 0.3000000000)))
+                ),
+            ),
+            cfg,
+        )
+        // Differenz 4e-10 liegt unter amountEps 1e-9 -> kanonisch 0
+        assertEquals(0.0, base.transportCommitmentU, 0.0)
+        assertTrue(entry(base).closed)
+        assertEquals(cfg.amountEpsU, entry(base).amountEpsU)
+    }
+
+    @Test
+    fun `R91-F4 mehr gebucht als gehaftet ist sichtbar, aber nicht sperrend`() {
+        val over = boundAndAccounted(0.50)
+        assertTrue(entry(over).overAccounted)
+        assertTrue(entry(over).errors.contains(LedgerError.OVERACCOUNTED_CONSERVATIVE))
+        assertEquals(0.0, over.transportCommitmentU, 1e-12)
+        // konservativ - also kein Hold
+        assertFalse(over.holdActuation)
+        assertFalse(entry(over).failClosed)
     }
 
     // ---- R79-F2: ungueltige Mengen ---------------------------------------
