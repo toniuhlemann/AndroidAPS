@@ -120,13 +120,19 @@ data class PumpTreatmentIdentity(
      *     Anker passt, nichts widerspricht  -> MATCH
      *     Anker passt UND etwas widerspricht -> CONFLICT
      */
-    fun compatibility(temporaryId: Long?, pumpId: Long?): IdentityMatch {
-        val tempHit = this.temporaryId != null && this.temporaryId == temporaryId
-        val pumpHit = this.pumpId != null && this.pumpId == pumpId
+    fun compatibility(other: AccountedTreatment): IdentityMatch {
+        val tempHit = temporaryId != null && temporaryId == other.temporaryId
+        val pumpHit = pumpId != null && pumpId == other.pumpId
         if (!tempHit && !pumpHit) return IdentityMatch.NO_MATCH
-        val tempConflict = this.temporaryId != null && temporaryId != null && this.temporaryId != temporaryId
-        val pumpConflict = this.pumpId != null && pumpId != null && this.pumpId != pumpId
-        return if (tempConflict || pumpConflict) IdentityMatch.CONFLICT else IdentityMatch.MATCH
+        val tempConflict = temporaryId != null && other.temporaryId != null && temporaryId != other.temporaryId
+        val pumpConflict = pumpId != null && other.pumpId != null && pumpId != other.pumpId
+        // R83-F3: die Geraeteprovenienz war bisher im Ledger vorhanden, aber
+        // beim eigentlichen Nachweis wirkungslos — verglichen wurden nur die
+        // beiden Zahlen. Eine gleiche temporaryId auf einer ANDEREN Pumpe ist
+        // kein Treffer, sondern ein Widerspruch.
+        val deviceConflict = (other.pumpType != null && other.pumpType != pumpType) ||
+            (other.pumpSerialHash != null && other.pumpSerialHash != pumpSerialHash)
+        return if (tempConflict || pumpConflict || deviceConflict) IdentityMatch.CONFLICT else IdentityMatch.MATCH
     }
 }
 
@@ -181,7 +187,22 @@ data class AmountAxis(
  * (Provenienz beim Cache-Aufbau erzeugen ODER IOB aus derselben eingefrorenen
  * Treatment-Liste rechnen) ist noch nicht entschieden und bleibt gesperrt.
  */
-data class AccountedTreatment(val temporaryId: Long?, val pumpId: Long?, val amountU: Double)
+/**
+ * Ein Datensatz, der nachweislich in DIESEM Treatment-Snapshot steckt.
+ *
+ * [pumpType] und [pumpSerialHash] sind nullbar, weil eine Quelle sie nicht
+ * immer mitliefert: `null` heisst "keine Aussage" und erzeugt keinen Konflikt.
+ * Traegt die Quelle sie dagegen, MUESSEN sie zur gebundenen Identitaet passen —
+ * sonst waere eine gleiche temporaryId auf einer anderen Pumpe ein Treffer
+ * (R83-F3). Vor dem produktionsnahen Adapter sind sie Pflichtfeld der Quelle.
+ */
+data class AccountedTreatment(
+    val temporaryId: Long?,
+    val pumpId: Long?,
+    val amountU: Double,
+    val pumpType: String? = null,
+    val pumpSerialHash: String? = null,
+)
 
 data class IobAccountingSnapshot(
     val treatmentSnapshotHash: String,
@@ -202,6 +223,15 @@ data class ProposalEntry(
     val queueReject: QueueRejectReason?,
     /** Belegter Rueckzug VOR der Ausfuehrung (R79-F1 Punkt 3). */
     val withdrawnProven: Boolean,
+    /**
+     * Nach dem Reject/Rueckzug ging es doch weiter (R83-F2).
+     *
+     * Der Hold allein genuegte nicht: er verhinderte zwar die naechste Freigabe,
+     * liess den Ledgerwert aber bei 0 U — und damit sachlich falsch fuer Audit,
+     * Cap-Rechnung und Wiederanlauf. Ein Widerspruch ist gerade KEIN Beweis
+     * mehr, dass nichts floss.
+     */
+    val contradicted: Boolean,
     val terminalSeen: Boolean,
     val failClosed: Boolean,
     val corrections: Int,
@@ -225,13 +255,17 @@ data class ProposalEntry(
     val closed: Boolean
         get() = accounting == AccountingState.IOB_ACCOUNTED ||
             delivery == DeliveryState.CONFIRMED_ZERO ||
-            (debtFreeingReject && !anyDeliverySignal)
+            debtReleaseEffective
 
     /** Ein Reject/Rueckzug befreit nur, solange KEIN Lieferzeichen vorliegt.
      *  R79-F1: sonst konnte ein spaeteres positives Terminalereignis die
      *  Nullbuchung nicht mehr korrigieren — die Menge verschwand aus
      *  `transportCommitmentU`, bevor sie im IOB nachgewiesen war. */
     val debtFreeingReject: Boolean get() = queueReject != null || withdrawnProven
+
+    /** ... und er befreit nur, solange ihm nicht widersprochen wurde (R83-F2). */
+    val debtReleaseEffective: Boolean
+        get() = debtFreeingReject && !contradicted && !anyDeliverySignal
 
     /**
      * Was diese Zeile noch AUSSERHALB des IOB bindet.
@@ -245,7 +279,7 @@ data class ProposalEntry(
         get() = when {
             accounting == AccountingState.IOB_ACCOUNTED       -> 0.0
             delivery == DeliveryState.CONFIRMED_ZERO          -> 0.0
-            debtFreeingReject && !anyDeliverySignal           -> 0.0
+            debtReleaseEffective                              -> 0.0
             amounts.provenDeliveredU != null                  -> amounts.provenDeliveredU!!
             else                                              -> maxOf(amounts.latestKnownCommandU, amounts.reportedDeliveredU ?: 0.0)
         }

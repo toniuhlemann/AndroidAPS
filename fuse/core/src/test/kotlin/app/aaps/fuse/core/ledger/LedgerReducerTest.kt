@@ -639,28 +639,63 @@ class LedgerReducerTest {
     }
 
     @Test
-    fun `R81-F3 nach einem Rueckzug ist jede Fortsetzung ein sichtbarer Widerspruch`() {
+    fun `R81-F3 und R83-F2 nach Rueckzug oder Reject stellt jede Fortsetzung die Buchung wieder her`() {
         val withdrawn = run(
             proposed(0.30),
             LedgerEvent.QueueAccepted(id),
-            LedgerEvent.QueueWithdrawnProven(id, "removeAll(SMB_BOLUS)"),
+            LedgerEvent.QueueWithdrawnProven(id, "cancelAllBoluses removed cmd#7"),
         )
-        assertEquals(0.0, withdrawn.transportCommitmentU, 1e-12)
+        val rejected = run(
+            proposed(0.30),
+            amount(AmountStage.RT_PUBLISHED, 0.30),
+            LedgerEvent.QueueRejected(id, QueueRejectReason.BOLUS_IN_QUEUE),
+        )
+        for ((name, base) in listOf("withdrawn" to withdrawn, "rejected" to rejected)) {
+            assertEquals(0.0, base.transportCommitmentU, 1e-12, name)
 
-        // erneute Annahme: lief vorher still ins Leere
-        val reAccepted = LedgerReducer.reduce(withdrawn, LedgerEvent.QueueAccepted(id), cfg)
-        assertTrue(reAccepted.holdActuation)
-        assertTrue(entry(reAccepted).errors.contains(LedgerError.PHASE_VIOLATION))
+            // (1) erneute Annahme: setzte vorher nur den Hold, die Buchung blieb
+            // bei 0 U - sachlich falsch, weil ein Widerspruch kein Beweis mehr
+            // ist, dass nichts floss.
+            val reAccepted = LedgerReducer.reduce(base, LedgerEvent.QueueAccepted(id), cfg)
+            assertTrue(reAccepted.holdActuation, name)
+            assertTrue(reAccepted.transportCommitmentU > 0.0, "$name: reAccept -> ${reAccepted.transportCommitmentU}")
+            assertFalse(entry(reAccepted).closed, name)
+            assertTrue(entry(reAccepted).contradicted, name)
 
-        // Pumpenkommando: Menge kehrt zurueck UND wird sichtbar
-        val commanded = LedgerReducer.reduce(withdrawn, amount(AmountStage.PUMP_COMMAND, 0.30), cfg)
-        assertEquals(0.30, commanded.transportCommitmentU, 1e-12)
-        assertTrue(commanded.holdActuation)
+            // (2) jede erstmals beobachtete spaetere Mengenstufe - auch eine,
+            // die KEIN Pumpenkommando ist
+            for (stage in listOf(AmountStage.LOOP_CONSTRAINED, AmountStage.QUEUE_CONSTRAINED, AmountStage.PUMP_COMMAND)) {
+                if (entry(base).amounts.stage(stage) != null) continue
+                val later = LedgerReducer.reduce(base, amount(stage, 0.25), cfg)
+                assertTrue(later.holdActuation, "$name/$stage")
+                assertTrue(later.transportCommitmentU > 0.0, "$name/$stage -> ${later.transportCommitmentU}")
+                assertFalse(entry(later).closed, "$name/$stage")
+            }
 
-        // Terminalmeldung
-        val executed = LedgerReducer.reduce(withdrawn, LedgerEvent.ExecutionResult(id, true, false, 0.30), cfg)
-        assertEquals(0.30, executed.transportCommitmentU, 1e-12)
-        assertTrue(executed.holdActuation)
+            // (3) ExecutionResult(0) ohne Nachweis bleibt gebucht ...
+            val zero = LedgerReducer.reduce(base, LedgerEvent.ExecutionResult(id, true, false, 0.0), cfg)
+            assertTrue(zero.transportCommitmentU > 0.0, name)
+            assertEquals(DeliveryState.UNKNOWN_ASSUMED, entry(zero).delivery, name)
+            // ... und wird erst durch den Nachweis zu CONFIRMED_ZERO
+            val proven = LedgerReducer.reduce(zero, LedgerEvent.DeliveryProven(id, 0.0, "pump history"), cfg)
+            assertEquals(DeliveryState.CONFIRMED_ZERO, entry(proven).delivery, name)
+            assertEquals(0.0, proven.transportCommitmentU, 1e-12, name)
+
+            // (4) oder durch den passenden IOB-Snapshot
+            val bound = LedgerReducer.reduceAll(
+                base,
+                listOf(
+                    LedgerEvent.QueueAccepted(id),
+                    LedgerEvent.PumpIdentityBound(id, null, 4711L, "VIRTUAL", "h", t0),
+                    LedgerEvent.IobSnapshotObserved(
+                        IobAccountingSnapshot("h1", "c1", t0, 1L, listOf(AccountedTreatment(null, 4711L, 0.30)))
+                    ),
+                ),
+                cfg,
+            )
+            assertEquals(AccountingState.IOB_ACCOUNTED, entry(bound).accounting, name)
+            assertEquals(0.0, bound.transportCommitmentU, 1e-12, name)
+        }
     }
 
     // ---- R79-F2: ungueltige Mengen ---------------------------------------
@@ -746,20 +781,57 @@ class LedgerReducerTest {
     @Test
     fun `R79-F3 und R81-F2 Vertraeglichkeit unterscheidet Treffer, Nichttreffer und Konflikt`() {
         val id78 = PumpTreatmentIdentity(id, 7L, 8L, "MEDTRUM", "h", t0)
-        assertEquals(IdentityMatch.MATCH, id78.compatibility(7L, 8L))
-        assertEquals(IdentityMatch.MATCH, id78.compatibility(7L, null))
-        assertEquals(IdentityMatch.MATCH, id78.compatibility(null, 8L))
-        assertEquals(IdentityMatch.CONFLICT, id78.compatibility(7L, 9L))
-        assertEquals(IdentityMatch.CONFLICT, id78.compatibility(6L, 8L))
-        assertEquals(IdentityMatch.NO_MATCH, id78.compatibility(null, null))
+        fun t(temp: Long?, pump: Long?) = AccountedTreatment(temp, pump, 0.30)
+        assertEquals(IdentityMatch.MATCH, id78.compatibility(t(7L, 8L)))
+        assertEquals(IdentityMatch.MATCH, id78.compatibility(t(7L, null)))
+        assertEquals(IdentityMatch.MATCH, id78.compatibility(t(null, 8L)))
+        assertEquals(IdentityMatch.CONFLICT, id78.compatibility(t(7L, 9L)))
+        assertEquals(IdentityMatch.CONFLICT, id78.compatibility(t(6L, 8L)))
+        assertEquals(IdentityMatch.NO_MATCH, id78.compatibility(t(null, null)))
         // R81-F2: OHNE gemeinsamen Anker ist es ein FREMDER Datensatz, kein
         // Konflikt. Ein normaler IOB-Snapshot enthaelt fremde Boli.
-        assertEquals(IdentityMatch.NO_MATCH, id78.compatibility(6L, 9L))
-        assertEquals(IdentityMatch.NO_MATCH, id78.compatibility(100L, null))
+        assertEquals(IdentityMatch.NO_MATCH, id78.compatibility(t(6L, 9L)))
+        assertEquals(IdentityMatch.NO_MATCH, id78.compatibility(t(100L, null)))
         val tempOnly = PumpTreatmentIdentity(id, 7L, null, "MEDTRUM", "h", t0)
-        assertEquals(IdentityMatch.NO_MATCH, tempOnly.compatibility(null, 9L))
-        assertEquals(IdentityMatch.NO_MATCH, tempOnly.compatibility(100L, null))
-        assertEquals(IdentityMatch.MATCH, tempOnly.compatibility(7L, 9L))
+        assertEquals(IdentityMatch.NO_MATCH, tempOnly.compatibility(t(null, 9L)))
+        assertEquals(IdentityMatch.NO_MATCH, tempOnly.compatibility(t(100L, null)))
+        assertEquals(IdentityMatch.MATCH, tempOnly.compatibility(t(7L, 9L)))
+    }
+
+    @Test
+    fun `R83-F3 die Geraeteprovenienz entscheidet mit`() {
+        val id7 = PumpTreatmentIdentity(id, 7L, null, "MEDTRUM", "serialA", t0)
+        // gleiche temporaryId, ANDERE Pumpe -> kein Treffer, sondern Widerspruch
+        assertEquals(
+            IdentityMatch.CONFLICT,
+            id7.compatibility(AccountedTreatment(7L, null, 0.30, pumpType = "MEDTRUM", pumpSerialHash = "serialB"))
+        )
+        assertEquals(
+            IdentityMatch.CONFLICT,
+            id7.compatibility(AccountedTreatment(7L, null, 0.30, pumpType = "VIRTUAL", pumpSerialHash = "serialA"))
+        )
+        // passende Provenienz -> Treffer
+        assertEquals(
+            IdentityMatch.MATCH,
+            id7.compatibility(AccountedTreatment(7L, null, 0.30, pumpType = "MEDTRUM", pumpSerialHash = "serialA"))
+        )
+        // keine Angabe ist keine Aussage - und kein Konflikt
+        assertEquals(IdentityMatch.MATCH, id7.compatibility(AccountedTreatment(7L, null, 0.30)))
+
+        // und derselbe Fall am Reducer: die Zeile wird NICHT ausgebucht
+        val s = LedgerReducer.reduceAll(
+            LedgerState(),
+            throughPump(0.30) + listOf(LedgerEvent.PumpIdentityBound(id, 7L, null, "MEDTRUM", "serialA", t0)),
+            cfg,
+        )
+        val foreignPump = IobAccountingSnapshot(
+            "h1", "c1", t0, 1L,
+            listOf(AccountedTreatment(7L, null, 0.30, "MEDTRUM", "serialB"))
+        )
+        val after = LedgerReducer.reduce(s, LedgerEvent.IobSnapshotObserved(foreignPump), cfg)
+        assertEquals(AccountingState.NOT_ACCOUNTED, entry(after).accounting)
+        assertEquals(0.30, after.transportCommitmentU, 1e-12)
+        assertTrue(after.holdActuation)
     }
 
     @Test
@@ -878,13 +950,14 @@ class LedgerReducerTest {
             val commitment = s.transportCommitmentU
             assertTrue(commitment.isFinite(), "$a|$b|$c -> $commitment")
             // Die Kernaussage: nichts faellt auf 0, solange ein Lieferzeichen
-            // ohne IOB-Nachweis existiert.
-            if (e.anyDeliverySignal && e.accounting == AccountingState.NOT_ACCOUNTED &&
+            // ODER ein Fortsetzungsindiz ohne IOB-Nachweis existiert (R83-F2 —
+            // anyDeliverySignal allein war dafuer zu schwach).
+            if ((e.anyDeliverySignal || e.contradicted) && e.accounting == AccountingState.NOT_ACCOUNTED &&
                 e.delivery != DeliveryState.CONFIRMED_ZERO
             ) assertTrue(commitment > 0.0, "$a|$b|$c -> $commitment")
             // Und: eine Befreiung gibt es nur ueber den einen erlaubten Weg.
             if (commitment == 0.0 && e.accounting == AccountingState.NOT_ACCOUNTED)
-                assertTrue(e.debtFreeingReject && !e.anyDeliverySignal, "$a|$b|$c befreit ohne Grund")
+                assertTrue(e.debtReleaseEffective, "$a|$b|$c befreit ohne Grund")
             checked++
         }
         assertEquals(216, checked)
@@ -915,12 +988,13 @@ class LedgerReducerTest {
             val c = s.transportCommitmentU
             assertTrue(c.isFinite(), "seed=$seed commitment=$c")
             assertTrue(c >= 0.0, "seed=$seed commitment=$c")
-            // Sobald ein Lieferzeichen existiert, darf nichts mehr auf 0 fallen,
-            // solange die Menge nicht im IOB nachgewiesen ist.
+            // Sobald ein Lieferzeichen ODER ein Fortsetzungsindiz existiert,
+            // darf nichts mehr auf 0 fallen, solange die Menge nicht im IOB
+            // nachgewiesen ist.
             val e = entry(s)
-            if (e.anyDeliverySignal && e.accounting == AccountingState.NOT_ACCOUNTED &&
+            if ((e.anyDeliverySignal || e.contradicted) && e.accounting == AccountingState.NOT_ACCOUNTED &&
                 e.delivery != DeliveryState.CONFIRMED_ZERO
-            ) assertTrue(c > 0.0, "seed=$seed: Lieferzeichen, aber Buchung $c")
+            ) assertTrue(c > 0.0, "seed=$seed: Fortsetzung, aber Buchung $c")
         }
     }
 

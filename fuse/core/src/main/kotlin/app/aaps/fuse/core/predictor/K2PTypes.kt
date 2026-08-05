@@ -196,6 +196,16 @@ data class PredictorResult(
      * explizit statt implizit.
      */
     val predictionAnchorTs: Long,
+    /**
+     * BG am Anker selbst (R83-F1). Mittel- und Untergrenze sind dort identisch —
+     * die Baender oeffnen sich erst mit der ersten Zukunftsminute.
+     *
+     * Er steht hier, weil `points` bei Minute 1 beginnt: `minLowerBg` des
+     * Predictors ENTHAELT den Anker (er wird damit initialisiert), ein
+     * Verbraucher, der nur ueber `points` laeuft, aber nicht. Ohne dieses Feld
+     * gaebe es zwei verschiedene Definitionen von "Minimum ueber [0..H]".
+     */
+    val bgAtAnchor: Double,
     val minMeanBg: Double,
     val minLowerBg: Double,
     val timeToMinLowerMin: Int,

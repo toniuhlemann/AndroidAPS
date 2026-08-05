@@ -124,6 +124,7 @@ object TrajectoryCore {
             PredictorResult(
                 points = pts,
                 predictionAnchorTs = anchor,
+                bgAtAnchor = input.bgAtAnchor,
                 minMeanBg = minMean,
                 minLowerBg = minLower,
                 timeToMinLowerMin = timeToMinLower,

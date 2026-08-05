@@ -38,17 +38,20 @@ sealed interface LedgerEvent {
     /**
      * Belegter Rueckzug NACH der Queue-Annahme (R79-F1 Punkt 3).
      *
-     * Diesen Pfad gibt es in AAPS wirklich: `CommandQueueImplementation.bolus()`
-     * ruft fuer SMBs `removeAll(CommandType.SMB_BOLUS)` und wirft bereits
-     * eingereihte Kommandos OHNE Callback weg. Der Beleg, dass dabei kein
-     * Pumpenkommando entstehen konnte, steckt in der Queue-Mechanik selbst:
-     * das laufende Kommando liegt in `performing` und NICHT mehr in `queue`
-     * (`performing = queue.poll()`), `removeAll` iteriert nur ueber `queue`.
-     * Entfernt werden kann also ausschliesslich, was nie gestartet ist.
+     * KORREKTUR ZU R80 (R81-F4): Der Pfad ist NICHT `bolus()`. Dort kommt man
+     * nie bis zum `removeAll(SMB_BOLUS)`, weil `bolusInQueue()` bereits true
+     * meldet, sobald ein BOLUS/SMB queued ODER laufend ist, und die Methode
+     * vorher zurueckkehrt. Der reale Entferner ist `cancelAllBoluses()`:
+     * `removeAll(BOLUS)` + `removeAll(SMB_BOLUS)` und PARALLEL
+     * `stopBolusDelivering()` — eine laufende Abgabe wird dort also gestoppt,
+     * moeglicherweise mit Teilmenge.
      *
-     * Ein generischer Reject reicht dafuer NICHT — er traegt diesen Beleg nicht.
-     * Das Ereignis kann erst mit dem (weiterhin gesperrten) Queue-Hook erzeugt
-     * werden; der Vertrag steht hier schon.
+     * Was bestehen bleibt: `removeAll` iteriert nur ueber `queue`, das laufende
+     * Kommando liegt in `performing` (`performing = queue.poll()`). Entfernt
+     * werden kann also nur, was nie gestartet ist — aber genau DAS muss der
+     * spaetere Hook ID-genau melden. Ein blosses Beobachten des Methodenaufrufs
+     * waere eine Vermutung, kein Beleg; freier Evidenztext genuegt in
+     * Produktion nicht.
      */
     data class QueueWithdrawnProven(override val proposalId: String, val evidence: String) : OfProposal
 
@@ -137,6 +140,7 @@ object LedgerReducer {
             identity = null,
             queueReject = null,
             withdrawnProven = false,
+            contradicted = false,
             terminalSeen = false,
             failClosed = false,
             corrections = 0,
@@ -181,7 +185,8 @@ object LedgerReducer {
                     state, entry.proposalId, LedgerError.PHASE_VIOLATION,
                     "${e.stage} after ${entry.queueReject?.name ?: "withdrawal"}"
                 ),
-                entry.copy(amounts = entry.amounts.withStage(e.stage, e.amountU)).failed(LedgerError.PHASE_VIOLATION)
+                entry.copy(amounts = entry.amounts.withStage(e.stage, e.amountU), contradicted = true)
+                    .failed(LedgerError.PHASE_VIOLATION)
             )
         val known = entry.amounts.stage(e.stage)
         if (known != null) {
@@ -221,7 +226,7 @@ object LedgerReducer {
                     state, entry.proposalId, LedgerError.PHASE_VIOLATION,
                     "accepted after ${entry.queueReject?.name ?: "withdrawal"}"
                 ),
-                entry.failed(LedgerError.PHASE_VIOLATION)
+                entry.copy(contradicted = true).failed(LedgerError.PHASE_VIOLATION)
             )
         if (entry.phase == LedgerPhase.QUEUE_ACCEPTED || entry.phase == LedgerPhase.TERMINAL) return state
         return put(state, entry.copy(phase = LedgerPhase.QUEUE_ACCEPTED))
@@ -297,6 +302,8 @@ object LedgerReducer {
             s = fail(s, entry.proposalId, LedgerError.PHASE_VIOLATION, "execution result after ${entry.queueReject ?: "withdrawal"}")
             contradiction = true
         }
+        // Der Latch bleibt auch dann noetig, wenn schon ein Lieferzeichen
+        // vorliegt: er haelt den Widerspruch fuer das Audit fest.
         val commandU = entry.amounts.pumpCommandU ?: entry.amounts.latestKnownCommandU
         val delivery = LedgerRules.classifyDelivery(commandU, e.bolusDeliveredU, cfg.bolusStepU)
         if (entry.terminalSeen) {
@@ -314,7 +321,7 @@ object LedgerReducer {
             terminalSeen = true,
             phase = LedgerPhase.TERMINAL,
         )
-        if (contradiction) next = next.failed(LedgerError.PHASE_VIOLATION)
+        if (contradiction) next = next.copy(contradicted = true).failed(LedgerError.PHASE_VIOLATION)
         if (delivery == DeliveryState.OVERDELIVERY_ANOMALY) {
             s = fail(s, entry.proposalId, LedgerError.OVERDELIVERY_ANOMALY, "command=$commandU delivered=${e.bolusDeliveredU}")
             next = next.failed(LedgerError.OVERDELIVERY_ANOMALY)
@@ -352,7 +359,7 @@ object LedgerReducer {
             delivery = delivery,
             corrections = corrections,
         )
-        if (contradiction) next = next.failed(LedgerError.PHASE_VIOLATION)
+        if (contradiction) next = next.copy(contradicted = true).failed(LedgerError.PHASE_VIOLATION)
         if (delivery == DeliveryState.OVERDELIVERY_ANOMALY) {
             s0 = fail(s0, entry.proposalId, LedgerError.OVERDELIVERY_ANOMALY, "command=$commandU proven=${e.provenDeliveredU}")
             next = next.failed(LedgerError.OVERDELIVERY_ANOMALY)
@@ -418,7 +425,7 @@ object LedgerReducer {
         val next = state.entries.mapValues { (_, entry) ->
             if (entry.accounting == AccountingState.IOB_ACCOUNTED || entry.closed) return@mapValues entry
             val id = entry.identity ?: return@mapValues entry
-            val compat = e.snapshot.containedTreatments.map { it to id.compatibility(it.temporaryId, it.pumpId) }
+            val compat = e.snapshot.containedTreatments.map { it to id.compatibility(it) }
             // R79-F3: ein Widerspruch darf nicht als Nichttreffer verschwinden.
             // {temp=7,pump=8} gegen {temp=7,pump=9} ist KEIN Treffer, sondern
             // ein Konflikt - vorher wurde er per ODER-Match wegbucht.

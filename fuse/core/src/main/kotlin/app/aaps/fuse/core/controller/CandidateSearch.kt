@@ -128,9 +128,16 @@ object CandidateSearch {
         // Punkt fuer den Anker haelt, weist eine Lieferung am Anker als
         // "vor dem Bahnanfang" ab und verliert die erste Wirkminute.
         val anchorTs = prediction.predictionAnchorTs
-        for (p in points) {
-            if (p.tsMs != anchorTs + p.offsetMin * 60_000L)
-                return no(Reject.GRID_INCONSISTENT, "offset=${p.offsetMin} ts=${p.tsMs} anchor=$anchorTs")
+        if (!prediction.bgAtAnchor.isFinite())
+            return no(Reject.GRID_INCONSISTENT, "bgAtAnchor=${prediction.bgAtAnchor}")
+        // R83-F6: Es genuegt NICHT, jeden Punkt einzeln gegen seinen eigenen
+        // Offset zu pruefen — die Offsets 1,3,2 erfuellen das und werden danach
+        // indexbasiert als Minute 1,2,3 gelesen. Verlangt wird das lueckenlose,
+        // geordnete Raster, das der echte Predictor ohnehin erzeugt.
+        for (i in points.indices) {
+            val p = points[i]
+            if (p.offsetMin != i + 1 || p.tsMs != anchorTs + (i + 1) * 60_000L)
+                return no(Reject.GRID_INCONSISTENT, "index=$i offset=${p.offsetMin} ts=${p.tsMs} anchor=$anchorTs")
         }
 
         val windowEndTs = points[maxOf(releaseIdx, liabilityIdx)].tsMs
@@ -197,8 +204,15 @@ object CandidateSearch {
         // 3. Groesster Kandidat, der BEIDE Bedingungen besteht. Absteigend, weil
         //    die zulaessige Menge nach oben begrenzt ist: mehr Insulin senkt
         //    Guardbahn UND Mittelwert monoton.
+        // R83-F1: Das Minimum laeuft ueber [0..H] und beginnt deshalb AM ANKER.
+        // Die Punkte starten bei Minute 1; wer nur ueber sie laeuft, prueft
+        // [1..H] und laesst genau den Zeitpunkt aus, an dem der Predictor sein
+        // eigenes Minimum initialisiert. Ein BG von 68 am Anker haette so einen
+        // SMB durchgelassen, weil Minute 1 schon wieder ueber dem Floor lag.
+        // Die Kandidatenwirkung ist am Anker null (er liegt nie nach der
+        // Lieferung), deshalb geht u hier nicht ein.
         fun minLowerWith(u: Double): Double {
-            var m = Double.MAX_VALUE
+            var m = prediction.bgAtAnchor
             for (i in 0..liabilityIdx) {
                 val v = points[i].lowerBg - u * effectPerU[i]
                 if (v < m) m = v

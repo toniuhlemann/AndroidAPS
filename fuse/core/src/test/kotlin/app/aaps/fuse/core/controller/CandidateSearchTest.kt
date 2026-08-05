@@ -63,6 +63,7 @@ class CandidateSearchTest {
         return PredictorResult(
             points = pts,
             predictionAnchorTs = anchor,
+            bgAtAnchor = meanAt(0),
             minMeanBg = pts.minOf { it.meanBg }, minLowerBg = pts.minOf { it.lowerBg },
             timeToMinLowerMin = 0, bgAtHorizonMean = pts.last().meanBg, bgAtHorizonLower = pts.last().lowerBg,
             lineageKind = "VIRTUAL", trajectoryContentHash = "h",
@@ -319,7 +320,7 @@ class CandidateSearchTest {
 
     /** Die Bahn kommt aus `TrajectoryCore`, nicht aus handgebauten Punkten.
      *  Genau dieser Vertrag war gebrochen: echte Punkte beginnen bei Minute 1. */
-    private fun realPrediction(): PredictorResult {
+    private fun realPrediction(bgAtAnchor: Double = 220.0, drive: Double = 0.0): PredictorResult {
         val gridMs = 60_000L
         val n = horizonMin + 60
         val pts = (0..n).map {
@@ -335,8 +336,8 @@ class CandidateSearchTest {
         val outcome = TrajectoryCore.predict(
             PredictorInput(
                 predictionAnchorTs = anchor,
-                bgAtAnchor = 220.0,
-                drive = DriveEstimate(0.0, 0.0, 0.8, "test"),
+                bgAtAnchor = bgAtAnchor,
+                drive = DriveEstimate(drive, drive, 0.8, "test"),
                 decay = DriveDecayModel.ExponentialDecay(60.0),
                 trajectory = trajectory,
                 isfSlots = listOf(IsfSlot(anchor - 3_600_000L, anchor + 10 * 3_600_000L, isf)),
@@ -377,6 +378,52 @@ class CandidateSearchTest {
     fun `R81-F1 eine Lieferung vor dem Anker bleibt abgewiesen`() {
         val r = CandidateSearch.search(realPrediction(), kernel(anchor - 1L), isfSlots, band, caps())
         assertEquals(CandidateSearch.Reject.DELIVERY_BEFORE_ANCHOR, r.reject)
+    }
+
+    // ---- R83-F1 / F6 ------------------------------------------------------
+
+    @Test
+    fun `R83-F1 ein BG unter dem Floor AM ANKER verhindert jeden SMB`() {
+        // 68 am Anker, Minute 1 schon wieder ueber dem Floor, danach steiler
+        // Anstieg mit klarem Bedarf. Der Guard laeuft ueber [0..H] - wer erst
+        // bei Minute 1 anfaengt, gibt hier frei.
+        val real = realPrediction(bgAtAnchor = 68.0, drive = 6.0)
+        assertTrue(real.points.first().lowerBg > band.guardFloorMgdl, "Minute 1 = ${real.points.first().lowerBg}")
+        assertTrue(real.points[29].meanBg > band.releaseTargetHighMgdl + band.demandDeadbandMgdl)
+
+        val r = CandidateSearch.search(real, kernel(anchor), isfSlots, band, caps())
+        assertEquals(CandidateSearch.Reject.GUARD_FLOOR, r.reject)
+        assertEquals(0.0, r.smbU)
+
+        // Gegenprobe: derselbe Verlauf mit sicherem Anker gibt frei.
+        val safe = realPrediction(bgAtAnchor = 120.0, drive = 6.0)
+        assertNull(CandidateSearch.search(safe, kernel(anchor), isfSlots, band, caps()).reject)
+    }
+
+    @Test
+    fun `R83-F1 der Kandidat wirkt am Anker nicht - das Minimum dort ist dosisunabhaengig`() {
+        val real = realPrediction(bgAtAnchor = 71.0, drive = 6.0)
+        val r = CandidateSearch.search(real, kernel(anchor), isfSlots, band, caps())
+        // 71 liegt ueber dem Floor, also darf dosiert werden ...
+        assertNull(r.reject)
+        // ... aber das Minimum kann nie unter den Ankerwert gedrueckt werden,
+        // weil die Kandidatenwirkung dort exakt null ist.
+        assertTrue(r.minLowerWithCandidateMgdl!! <= 71.0)
+    }
+
+    @Test
+    fun `R83-F6 ein unsortiertes, lueckenhaftes oder doppeltes Raster wird abgewiesen`() {
+        val real = realPrediction()
+        val p = real.points
+        val cases = mapOf(
+            "unsortiert" to p.toMutableList().also { val x = it[1]; it[1] = it[2]; it[2] = x },
+            "luecke" to p.filterIndexed { i, _ -> i != 5 },
+            "duplikat" to p.toMutableList().also { it[3] = it[2] },
+        )
+        for ((name, pts) in cases) {
+            val r = CandidateSearch.search(real.copy(points = pts), kernel(anchor), isfSlots, band, caps())
+            assertEquals(CandidateSearch.Reject.GRID_INCONSISTENT, r.reject, name)
+        }
     }
 
     @Test

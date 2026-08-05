@@ -15,7 +15,7 @@ class FuseControllerTest {
             TrajectoryPoint(it, it * 60_000L, if (it == 30) bgAt30 else bgAt30, minLower, 0.0, 0.0, 0.0)
         }
         return PredictorResult(
-            points = pts, predictionAnchorTs = 0L,
+            points = pts, predictionAnchorTs = 0L, bgAtAnchor = bgAt30,
             minMeanBg = bgAt30, minLowerBg = minLower, timeToMinLowerMin = 30,
             bgAtHorizonMean = bgAt30, bgAtHorizonLower = minLower,
             lineageKind = "ACTUAL", trajectoryContentHash = "h",
