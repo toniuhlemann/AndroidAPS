@@ -386,6 +386,11 @@ class LedgerReducerTest {
         val after = LedgerReducer.reduce(s, LedgerEvent.IobSnapshotObserved(foreign), cfg)
         assertEquals(AccountingState.NOT_ACCOUNTED, entry(after).accounting)
         assertEquals(0.30, after.transportCommitmentU, 1e-12)
+        // Und er ist auch kein Konflikt: ein fremder Bolus ist der Normalfall,
+        // kein Grund, die Aktuation zu sperren (R81-F2 - diese Zeile fehlte,
+        // weshalb der Testlauf den Fehler nicht bemerkt hat).
+        assertFalse(after.holdActuation)
+        assertSame(s, after)
     }
 
     @Test
@@ -611,6 +616,53 @@ class LedgerReducerTest {
         assertTrue(tooLate.holdActuation)
     }
 
+    @Test
+    fun `R81-F3 der Rueckzugsbeleg gilt NUR fuer den Uebergang aus der Queue-Annahme`() {
+        // vor der Annahme gibt es nichts zurueckzuziehen
+        val tooEarly = run(
+            proposed(0.30),
+            amount(AmountStage.RT_PUBLISHED, 0.30),
+            LedgerEvent.QueueWithdrawnProven(id, "removeAll"),
+        )
+        assertEquals(0.30, tooEarly.transportCommitmentU, 1e-12)
+        assertTrue(tooEarly.holdActuation)
+        assertFalse(entry(tooEarly).withdrawnProven)
+
+        // ein leerer Beleg ist kein Beleg
+        val empty = run(
+            proposed(0.30),
+            LedgerEvent.QueueAccepted(id),
+            LedgerEvent.QueueWithdrawnProven(id, "   "),
+        )
+        assertEquals(0.30, empty.transportCommitmentU, 1e-12)
+        assertTrue(empty.holdActuation)
+    }
+
+    @Test
+    fun `R81-F3 nach einem Rueckzug ist jede Fortsetzung ein sichtbarer Widerspruch`() {
+        val withdrawn = run(
+            proposed(0.30),
+            LedgerEvent.QueueAccepted(id),
+            LedgerEvent.QueueWithdrawnProven(id, "removeAll(SMB_BOLUS)"),
+        )
+        assertEquals(0.0, withdrawn.transportCommitmentU, 1e-12)
+
+        // erneute Annahme: lief vorher still ins Leere
+        val reAccepted = LedgerReducer.reduce(withdrawn, LedgerEvent.QueueAccepted(id), cfg)
+        assertTrue(reAccepted.holdActuation)
+        assertTrue(entry(reAccepted).errors.contains(LedgerError.PHASE_VIOLATION))
+
+        // Pumpenkommando: Menge kehrt zurueck UND wird sichtbar
+        val commanded = LedgerReducer.reduce(withdrawn, amount(AmountStage.PUMP_COMMAND, 0.30), cfg)
+        assertEquals(0.30, commanded.transportCommitmentU, 1e-12)
+        assertTrue(commanded.holdActuation)
+
+        // Terminalmeldung
+        val executed = LedgerReducer.reduce(withdrawn, LedgerEvent.ExecutionResult(id, true, false, 0.30), cfg)
+        assertEquals(0.30, executed.transportCommitmentU, 1e-12)
+        assertTrue(executed.holdActuation)
+    }
+
     // ---- R79-F2: ungueltige Mengen ---------------------------------------
 
     @Test
@@ -692,7 +744,7 @@ class LedgerReducerTest {
     }
 
     @Test
-    fun `R79-F3 Vertraeglichkeit unterscheidet Treffer, Nichttreffer und Konflikt`() {
+    fun `R79-F3 und R81-F2 Vertraeglichkeit unterscheidet Treffer, Nichttreffer und Konflikt`() {
         val id78 = PumpTreatmentIdentity(id, 7L, 8L, "MEDTRUM", "h", t0)
         assertEquals(IdentityMatch.MATCH, id78.compatibility(7L, 8L))
         assertEquals(IdentityMatch.MATCH, id78.compatibility(7L, null))
@@ -700,8 +752,56 @@ class LedgerReducerTest {
         assertEquals(IdentityMatch.CONFLICT, id78.compatibility(7L, 9L))
         assertEquals(IdentityMatch.CONFLICT, id78.compatibility(6L, 8L))
         assertEquals(IdentityMatch.NO_MATCH, id78.compatibility(null, null))
+        // R81-F2: OHNE gemeinsamen Anker ist es ein FREMDER Datensatz, kein
+        // Konflikt. Ein normaler IOB-Snapshot enthaelt fremde Boli.
+        assertEquals(IdentityMatch.NO_MATCH, id78.compatibility(6L, 9L))
+        assertEquals(IdentityMatch.NO_MATCH, id78.compatibility(100L, null))
         val tempOnly = PumpTreatmentIdentity(id, 7L, null, "MEDTRUM", "h", t0)
         assertEquals(IdentityMatch.NO_MATCH, tempOnly.compatibility(null, 9L))
+        assertEquals(IdentityMatch.NO_MATCH, tempOnly.compatibility(100L, null))
+        assertEquals(IdentityMatch.MATCH, tempOnly.compatibility(7L, 9L))
+    }
+
+    @Test
+    fun `R81-F2 ein Snapshot voller fremder Boli setzt keine Zeile fail-closed`() {
+        val s = LedgerReducer.reduceAll(
+            LedgerState(),
+            throughPump(0.30) + listOf(LedgerEvent.PumpIdentityBound(id, 7L, null, "MEDTRUM", "h", t0)),
+            cfg,
+        )
+        val onlyForeign = IobAccountingSnapshot(
+            "h1", "c1", t0, 1L,
+            listOf(
+                AccountedTreatment(100L, null, 1.20),
+                AccountedTreatment(null, 555L, 0.30),
+                AccountedTreatment(101L, 556L, 2.50),
+            )
+        )
+        val after = LedgerReducer.reduce(s, LedgerEvent.IobSnapshotObserved(onlyForeign), cfg)
+        assertSame(s, after)
+        assertFalse(after.holdActuation)
+        assertEquals(0.30, after.transportCommitmentU, 1e-12)
+    }
+
+    @Test
+    fun `R81-F2 fremde Boli vor und nach dem echten Treffer stoeren die Buchung nicht`() {
+        val s = LedgerReducer.reduceAll(
+            LedgerState(),
+            throughPump(0.30) + listOf(LedgerEvent.PumpIdentityBound(id, 7L, null, "MEDTRUM", "h", t0)),
+            cfg,
+        )
+        val mixed = IobAccountingSnapshot(
+            "h1", "c1", t0, 1L,
+            listOf(
+                AccountedTreatment(100L, null, 1.20),   // fremd, VOR dem Treffer
+                AccountedTreatment(7L, null, 0.30),     // unser Datensatz
+                AccountedTreatment(101L, null, 2.50),   // fremd, danach
+            )
+        )
+        val after = LedgerReducer.reduce(s, LedgerEvent.IobSnapshotObserved(mixed), cfg)
+        assertEquals(AccountingState.IOB_ACCOUNTED, entry(after).accounting)
+        assertEquals(0.0, after.transportCommitmentU, 1e-12)
+        assertFalse(after.holdActuation)
     }
 
     @Test
@@ -737,6 +837,59 @@ class LedgerReducerTest {
 
     // ---- Invariante ueber alle Reihenfolgen -------------------------------
 
+    /** Deterministischer LCG — der frueher benutzte Ausdruck
+     *  `(i*31 + seed*17) % size` erzeugte trotz 300 Seeds nur 14 verschiedene
+     *  Ordnungen (R81-F7). Der Seed steht im Fehlertext, damit jeder Fall
+     *  reproduzierbar ist. */
+    private fun shuffledOrder(size: Int, seed: Int): List<Int> {
+        var s = (seed * 2_654_435_761L + 12_345L) and 0xFFFFFFFFL
+        fun next(): Long {
+            s = (s * 6_364_136_223_846_793_005L + 1_442_695_040_888_963_407L) ushr 1
+            return s
+        }
+        val idx = (0 until size).toMutableList()
+        for (i in size - 1 downTo 1) {
+            val j = (next() % (i + 1)).toInt()
+            val tmp = idx[i]; idx[i] = idx[j]; idx[j] = tmp
+        }
+        return idx
+    }
+
+    @Test
+    fun `R81-F7 der Reihenfolgengenerator erzeugt wirklich verschiedene Ordnungen`() {
+        val seen = (0 until 300).map { shuffledOrder(14, it) }.toSet()
+        assertTrue(seen.size > 250, "nur ${seen.size} verschiedene Ordnungen")
+    }
+
+    @Test
+    fun `R81-F7 jeder Zweier- und Dreieruebergang der kritischen Ereignisse haelt die Invariante`() {
+        val critical = listOf<LedgerEvent>(
+            LedgerEvent.QueueAccepted(id),
+            LedgerEvent.QueueRejected(id, QueueRejectReason.OTHER),
+            LedgerEvent.QueueWithdrawnProven(id, "e"),
+            amount(AmountStage.PUMP_COMMAND, 0.30),
+            LedgerEvent.ExecutionResult(id, true, false, 0.30),
+            LedgerEvent.DeliveryProven(id, 0.30, "e"),
+        )
+        var checked = 0
+        for (a in critical) for (b in critical) for (c in critical) {
+            val s = LedgerReducer.reduceAll(LedgerState(), listOf(proposed(0.30), a, b, c), cfg)
+            val e = entry(s)
+            val commitment = s.transportCommitmentU
+            assertTrue(commitment.isFinite(), "$a|$b|$c -> $commitment")
+            // Die Kernaussage: nichts faellt auf 0, solange ein Lieferzeichen
+            // ohne IOB-Nachweis existiert.
+            if (e.anyDeliverySignal && e.accounting == AccountingState.NOT_ACCOUNTED &&
+                e.delivery != DeliveryState.CONFIRMED_ZERO
+            ) assertTrue(commitment > 0.0, "$a|$b|$c -> $commitment")
+            // Und: eine Befreiung gibt es nur ueber den einen erlaubten Weg.
+            if (commitment == 0.0 && e.accounting == AccountingState.NOT_ACCOUNTED)
+                assertTrue(e.debtFreeingReject && !e.anyDeliverySignal, "$a|$b|$c befreit ohne Grund")
+            checked++
+        }
+        assertEquals(216, checked)
+    }
+
     @Test
     fun `R79-F2 die Gesamtbuchung ist in JEDER Ereignisfolge endlich und nie kleiner als der Nachweisstand`() {
         val vocabulary = listOf<LedgerEvent>(
@@ -755,9 +908,8 @@ class LedgerReducerTest {
             LedgerEvent.RestartObserved(t0),
             LedgerEvent.ProposalIdLost(id, "station"),
         )
-        // deterministische Streuung ueber viele Reihenfolgen, ohne Zufall
         for (seed in 0 until 300) {
-            val order = vocabulary.indices.sortedBy { (it * 31 + seed * 17) % vocabulary.size }
+            val order = shuffledOrder(vocabulary.size, seed)
             val events = listOf<LedgerEvent>(proposed(0.30)) + order.map { vocabulary[it] }
             val s = LedgerReducer.reduceAll(LedgerState(), events, cfg)
             val c = s.transportCommitmentU

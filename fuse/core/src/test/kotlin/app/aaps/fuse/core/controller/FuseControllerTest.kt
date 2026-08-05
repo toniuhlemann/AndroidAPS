@@ -15,7 +15,8 @@ class FuseControllerTest {
             TrajectoryPoint(it, it * 60_000L, if (it == 30) bgAt30 else bgAt30, minLower, 0.0, 0.0, 0.0)
         }
         return PredictorResult(
-            points = pts, minMeanBg = bgAt30, minLowerBg = minLower, timeToMinLowerMin = 30,
+            points = pts, predictionAnchorTs = 0L,
+            minMeanBg = bgAt30, minLowerBg = minLower, timeToMinLowerMin = 30,
             bgAtHorizonMean = bgAt30, bgAtHorizonLower = minLower,
             lineageKind = "ACTUAL", trajectoryContentHash = "h",
             iobArraySpanMin = 235.0, iobArrayGridMin = 5.0,

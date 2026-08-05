@@ -123,6 +123,7 @@ object TrajectoryCore {
         return PredictorOutcome.Ok(
             PredictorResult(
                 points = pts,
+                predictionAnchorTs = anchor,
                 minMeanBg = minMean,
                 minLowerBg = minLower,
                 timeToMinLowerMin = timeToMinLower,

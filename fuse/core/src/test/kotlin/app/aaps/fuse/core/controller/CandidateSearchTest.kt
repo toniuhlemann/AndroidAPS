@@ -10,10 +10,18 @@ import app.aaps.fuse.core.ledger.LedgerConfig
 import app.aaps.fuse.core.ledger.LedgerEvent
 import app.aaps.fuse.core.ledger.LedgerReducer
 import app.aaps.fuse.core.ledger.LedgerState
+import app.aaps.fuse.core.predictor.DriveDecayModel
+import app.aaps.fuse.core.predictor.DriveEstimate
+import app.aaps.fuse.core.predictor.InsulinLineage
 import app.aaps.fuse.core.predictor.InsulinModelProvenance
+import app.aaps.fuse.core.predictor.IobPoint
 import app.aaps.fuse.core.predictor.IsfSlot
+import app.aaps.fuse.core.predictor.PredictorInput
+import app.aaps.fuse.core.predictor.PredictorOutcome
 import app.aaps.fuse.core.predictor.PredictorResult
+import app.aaps.fuse.core.predictor.TrajectoryCore
 import app.aaps.fuse.core.predictor.TrajectoryPoint
+import app.aaps.fuse.core.predictor.VirtualTrajectoryFactory
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
@@ -43,12 +51,18 @@ class CandidateSearchTest {
         return (UnitInsulinKernelBuilder.build(sampler, deliveryTs, model, "flat") as KernelOutcome.Ok).kernel
     }
 
+    /**
+     * Punkte ab offsetMin = 1 — wie der echte `TrajectoryCore` (R81-F1). Die
+     * frueheren Testpunkte begannen bei 0 und haben damit genau den Fehler
+     * verdeckt, den `EchteBahn...` unten nachweist.
+     */
     private fun prediction(meanAt: (Int) -> Double, lowerAt: (Int) -> Double): PredictorResult {
-        val pts = (0..horizonMin).map {
+        val pts = (1..horizonMin).map {
             TrajectoryPoint(it, anchor + it * 60_000L, meanAt(it), lowerAt(it), 0.0, 0.0, 0.0)
         }
         return PredictorResult(
             points = pts,
+            predictionAnchorTs = anchor,
             minMeanBg = pts.minOf { it.meanBg }, minLowerBg = pts.minOf { it.lowerBg },
             timeToMinLowerMin = 0, bgAtHorizonMean = pts.last().meanBg, bgAtHorizonLower = pts.last().lowerBg,
             lineageKind = "VIRTUAL", trajectoryContentHash = "h",
@@ -299,6 +313,70 @@ class CandidateSearchTest {
         )
         assertEquals(CandidateSearch.Reject.INVALID_BAND, r.reject)
         assertTrue(r.bindingLimit.contains("releaseHorizon"))
+    }
+
+    // ---- R81-F1: Ankervertrag gegen den ECHTEN Predictor ------------------
+
+    /** Die Bahn kommt aus `TrajectoryCore`, nicht aus handgebauten Punkten.
+     *  Genau dieser Vertrag war gebrochen: echte Punkte beginnen bei Minute 1. */
+    private fun realPrediction(): PredictorResult {
+        val gridMs = 60_000L
+        val n = horizonMin + 60
+        val pts = (0..n).map {
+            IobPoint(anchor + it * gridMs, iob = 1.0, activity = 0.0, basalIob = 0.0)
+        }
+        val trajectory = VirtualTrajectoryFactory.of(
+            lineage = InsulinLineage.VirtualController("session", 1L, "modelhash"),
+            points = pts,
+            arrayAsOfTs = anchor,
+            model = InsulinModelProvenance("TEST_FLAT", 3.0, 60, "test"),
+            iobCalculationHash = "hash",
+        )
+        val outcome = TrajectoryCore.predict(
+            PredictorInput(
+                predictionAnchorTs = anchor,
+                bgAtAnchor = 220.0,
+                drive = DriveEstimate(0.0, 0.0, 0.8, "test"),
+                decay = DriveDecayModel.ExponentialDecay(60.0),
+                trajectory = trajectory,
+                isfSlots = listOf(IsfSlot(anchor - 3_600_000L, anchor + 10 * 3_600_000L, isf)),
+                horizonMin = horizonMin,
+            )
+        )
+        assertTrue(outcome is PredictorOutcome.Ok, "predictor rejected: $outcome")
+        return (outcome as PredictorOutcome.Ok).result
+    }
+
+    @Test
+    fun `R81-F1 eine echte Predictor-Bahn wird akzeptiert und die erste Minute zaehlt mit`() {
+        val real = realPrediction()
+        // Vertrag des echten Kerns: erster Punkt bei Minute 1.
+        assertEquals(1, real.points.first().offsetMin)
+        assertEquals(anchor, real.predictionAnchorTs)
+
+        // Lieferung GENAU am Anker - der Normalfall, der vorher als
+        // DELIVERY_BEFORE_ANCHOR abgewiesen wurde.
+        val r = CandidateSearch.search(real, kernel(anchor), isfSlots, band, caps())
+        assertNull(r.reject, "reject=${r.reject} (${r.bindingLimit})")
+        assertTrue(r.smbU > 0.0)
+
+        // Die erste Minute nach dem Anker ist integriert: 30 volle Minuten,
+        // nicht 29.
+        assertEquals(30.0 / 120.0 * isf, r.effectPerUAtReleaseMgdl!!, 1e-9)
+    }
+
+    @Test
+    fun `R81-F1 ein Punktraster, das nicht zum Anker passt, wird abgewiesen`() {
+        val real = realPrediction()
+        val shifted = real.copy(predictionAnchorTs = anchor + 17_000L)
+        val r = CandidateSearch.search(shifted, kernel(anchor), isfSlots, band, caps())
+        assertEquals(CandidateSearch.Reject.GRID_INCONSISTENT, r.reject)
+    }
+
+    @Test
+    fun `R81-F1 eine Lieferung vor dem Anker bleibt abgewiesen`() {
+        val r = CandidateSearch.search(realPrediction(), kernel(anchor - 1L), isfSlots, band, caps())
+        assertEquals(CandidateSearch.Reject.DELIVERY_BEFORE_ANCHOR, r.reject)
     }
 
     @Test

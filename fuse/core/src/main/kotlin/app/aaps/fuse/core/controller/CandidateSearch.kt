@@ -80,6 +80,7 @@ object CandidateSearch {
         HORIZON_MISSING,         // Bahn deckt Release-/Liability-Horizont nicht
         MODEL_HORIZON_TOO_SHORT, // Einheitskern deckt das Bewertungsfenster nicht (KC2-37)
         ISF_SLOT_MISSING,        // Luecke in den ISF-Slots -> kein Ersatzwert
+        GRID_INCONSISTENT,       // Punktraster passt nicht zum Anker (R81-F1)
         DELIVERY_BEFORE_ANCHOR,  // Kandidat waere vor dem Bahnanfang geliefert
         DELIVERY_AFTER_RELEASE,  // Lieferung liegt hinter dem Freigabehorizont (R79-F5)
         NO_EFFECT_IN_WINDOW,     // Kandidat waere im Schutzfenster wirkungslos
@@ -122,9 +123,19 @@ object CandidateSearch {
         val liabilityIdx = points.indexOfFirst { it.offsetMin == band.liabilityHorizonMin }
         if (releaseIdx < 0 || liabilityIdx < 0) return no(Reject.HORIZON_MISSING, "release/liability offset absent")
 
+        // R81-F1: Der Anker kommt aus dem Predictor, NICHT aus dem ersten Punkt.
+        // Das echte Zukunftsarray beginnt bei offsetMin = 1; wer den ersten
+        // Punkt fuer den Anker haelt, weist eine Lieferung am Anker als
+        // "vor dem Bahnanfang" ab und verliert die erste Wirkminute.
+        val anchorTs = prediction.predictionAnchorTs
+        for (p in points) {
+            if (p.tsMs != anchorTs + p.offsetMin * 60_000L)
+                return no(Reject.GRID_INCONSISTENT, "offset=${p.offsetMin} ts=${p.tsMs} anchor=$anchorTs")
+        }
+
         val windowEndTs = points[maxOf(releaseIdx, liabilityIdx)].tsMs
-        if (kernel.deliveryTs < points.first().tsMs)
-            return no(Reject.DELIVERY_BEFORE_ANCHOR, "deliveryTs=${kernel.deliveryTs}")
+        if (kernel.deliveryTs < anchorTs)
+            return no(Reject.DELIVERY_BEFORE_ANCHOR, "deliveryTs=${kernel.deliveryTs} anchor=$anchorTs")
         // R79-F5: liegt die Lieferung hinter dem Freigabehorizont, ist die
         // Wirkung im ganzen Bewertungsfenster null — Bedarf, Guard und Zielband
         // wuerden sich nicht verschlechtern, und die Suche haette den groessten
@@ -145,7 +156,9 @@ object CandidateSearch {
         for (i in points.indices) {
             val p = points[i]
             val isf = ProfileSlots.isfAt(isfSlots, p.tsMs) ?: return no(Reject.ISF_SLOT_MISSING, "ts=${p.tsMs}")
-            val intervalStart = maxOf(if (i == 0) p.tsMs else points[i - 1].tsMs, kernel.deliveryTs)
+            // Das erste Intervall beginnt am ANKER, nicht am ersten Punkt.
+            val previousTs = if (i == 0) anchorTs else points[i - 1].tsMs
+            val intervalStart = maxOf(previousTs, kernel.deliveryTs)
             val overlapMin = if (p.tsMs > intervalStart) (p.tsMs - intervalStart) / 60_000.0 else 0.0
             if (overlapMin > 0.0) acc += kernel.activityAt(p.tsMs, 1.0) * isf * overlapMin
             effectPerU[i] = acc

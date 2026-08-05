@@ -173,6 +173,16 @@ object LedgerReducer {
                 fail(state, entry.proposalId, LedgerError.NON_FINITE_AMOUNT, "${e.stage}=${e.amountU}"),
                 entry.failed(LedgerError.NON_FINITE_AMOUNT)
             )
+        // Eine weitere Mengenstufe nach einem Reject oder belegten Rueckzug
+        // widerspricht diesem (R81-F3): die Kette lief offenbar weiter.
+        if (entry.debtFreeingReject && entry.amounts.stage(e.stage) == null)
+            return put(
+                fail(
+                    state, entry.proposalId, LedgerError.PHASE_VIOLATION,
+                    "${e.stage} after ${entry.queueReject?.name ?: "withdrawal"}"
+                ),
+                entry.copy(amounts = entry.amounts.withStage(e.stage, e.amountU)).failed(LedgerError.PHASE_VIOLATION)
+            )
         val known = entry.amounts.stage(e.stage)
         if (known != null) {
             if (LedgerRules.sameAmount(known, e.amountU, cfg.amountEpsU)) return state
@@ -202,9 +212,15 @@ object LedgerReducer {
                 fail(state, entry.proposalId, LedgerError.PHASE_VIOLATION, "queueConstrainedU=$q accepted"),
                 entry.failed(LedgerError.PHASE_VIOLATION)
             )
-        if (entry.queueReject != null)
+        // Eine Annahme NACH Reject oder belegtem Rueckzug ist ein Widerspruch —
+        // vorher lief sie still ins Leere, weil die Phase schon TERMINAL war
+        // und das Commitment auf 0 stehen blieb (R81-F3).
+        if (entry.debtFreeingReject)
             return put(
-                fail(state, entry.proposalId, LedgerError.PHASE_VIOLATION, "accepted after reject ${entry.queueReject}"),
+                fail(
+                    state, entry.proposalId, LedgerError.PHASE_VIOLATION,
+                    "accepted after ${entry.queueReject?.name ?: "withdrawal"}"
+                ),
                 entry.failed(LedgerError.PHASE_VIOLATION)
             )
         if (entry.phase == LedgerPhase.QUEUE_ACCEPTED || entry.phase == LedgerPhase.TERMINAL) return state
@@ -238,13 +254,27 @@ object LedgerReducer {
         return put(state, entry.copy(queueReject = e.reason, phase = LedgerPhase.TERMINAL))
     }
 
+    /**
+     * Der EINZIGE schuldbefreiende Uebergang ist `QUEUE_ACCEPTED -> withdrawn`
+     * (R81-F3).
+     *
+     * Vorher genuegte "kein Lieferzeichen" — damit konnte schon
+     * `Proposed -> QueueWithdrawnProven` die Verpflichtung auf null setzen, mit
+     * einem beliebigen Freitext als Beleg. Ein Rueckzug, den es an dieser
+     * Stelle gar nicht geben kann, darf nichts befreien.
+     */
     private fun onWithdrawn(state: LedgerState, entry: ProposalEntry, e: LedgerEvent.QueueWithdrawnProven): LedgerState {
         if (entry.withdrawnProven) return state
-        // Der Beleg gilt nur, solange kein Lieferzeichen existiert. Danach ist
-        // er entweder falsch oder zu spaet - beides ist ein Widerspruch.
-        if (entry.anyDeliverySignal)
+        val problem = when {
+            e.evidence.isBlank()                        -> "empty evidence"
+            entry.phase != LedgerPhase.QUEUE_ACCEPTED   -> "phase=${entry.phase}"
+            entry.anyDeliverySignal                     -> "delivery signal present"
+            entry.queueReject != null                   -> "already rejected"
+            else                                        -> null
+        }
+        if (problem != null)
             return put(
-                fail(state, entry.proposalId, LedgerError.PHASE_VIOLATION, "withdrawn after delivery signal: ${e.evidence}"),
+                fail(state, entry.proposalId, LedgerError.PHASE_VIOLATION, "withdrawn invalid: $problem"),
                 entry.failed(LedgerError.PHASE_VIOLATION)
             )
         return put(state, entry.copy(withdrawnProven = true, phase = LedgerPhase.TERMINAL))

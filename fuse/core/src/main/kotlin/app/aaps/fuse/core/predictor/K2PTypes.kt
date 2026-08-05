@@ -85,8 +85,20 @@ sealed interface InsulinLineage {
 data class IobPoint(val timeMs: Long, val iob: Double, val activity: Double, val basalIob: Double)
 
 /** Absolut aufgeloester ISF-Block; Uhrzeitbloecke allein genuegen nicht, weil
- *  ein Profile-Switch im Horizont ablaufen kann (R69-F6.1). */
-data class IsfSlot(val startTsInclusive: Long, val endTsExclusive: Long, val isfMgdlPerU: Double)
+ *  ein Profile-Switch im Horizont ablaufen kann (R69-F6.1).
+ *
+ *  Geprueft wird hier NUR die Intervall-Invariante. Der WERT bleibt bewusst
+ *  ungeprueft: seine Grenzen sind versionierte Policy
+ *  ([PredictorInputBounds]), und ein unzulaessiger ISF ergibt im Kern eine
+ *  benannte Ablehnung (`ISF_OUT_OF_BOUNDS`) statt einer Ausnahme. Eine
+ *  Wertpruefung an dieser Stelle wuerde diese Ablehnung in einen Wurf
+ *  verwandeln (R81-F6). */
+data class IsfSlot(val startTsInclusive: Long, val endTsExclusive: Long, val isfMgdlPerU: Double) {
+
+    init {
+        require(endTsExclusive > startTsInclusive) { "empty isf slot: $startTsInclusive..$endTsExclusive" }
+    }
+}
 
 data class InsulinModelProvenance(
     val insulinType: String,
@@ -174,6 +186,16 @@ data class TrajectoryPoint(
  */
 data class PredictorResult(
     val points: List<TrajectoryPoint>,
+    /**
+     * Der Anker, auf den sich `offsetMin` bezieht (R81-F1).
+     *
+     * Der erste Punkt liegt bei offsetMin = 1, NICHT bei 0 — das Zukunftsarray
+     * beginnt eine Minute nach dem Anker. Wer den Anker aus `points.first()`
+     * ableitet, verliert genau diese erste Minute und weist eine Lieferung am
+     * Anker faelschlich als "vor dem Bahnanfang" ab. Deshalb steht er hier
+     * explizit statt implizit.
+     */
+    val predictionAnchorTs: Long,
     val minMeanBg: Double,
     val minLowerBg: Double,
     val timeToMinLowerMin: Int,

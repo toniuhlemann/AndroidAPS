@@ -88,6 +88,13 @@ object CycleAssembly {
     fun compressIsfSlots(ts: LongArray, isf: DoubleArray, endExclusive: Long): List<IsfSlot> {
         require(ts.size == isf.size) { "isf columns differ in length" }
         if (ts.isEmpty()) return emptyList()
+        // Symmetrisch zu compressBasal (R81-F6): unsortierte Stuetzstellen
+        // ergaeben still ueberlappende Slots, und NaN ist kein Profilwert, den
+        // ein Adapter je liefern duerfte. Der ZULAESSIGE BEREICH bleibt dagegen
+        // Sache der versionierten Policy im Kern.
+        require(endExclusive > ts.last()) { "endExclusive must lie behind the last support point" }
+        for (i in 1 until ts.size) require(ts[i] > ts[i - 1]) { "isf support points not strictly increasing at $i" }
+        for (v in isf) require(v.isFinite()) { "isf value not finite: $v" }
         val out = ArrayList<IsfSlot>()
         var start = ts[0]
         var cur = isf[0]

@@ -107,20 +107,26 @@ data class PumpTreatmentIdentity(
     }
 
     /**
-     * Vertraeglichkeit statt ODER-Treffer (R79-F3).
+     * Vertraeglichkeit statt ODER-Treffer (R79-F3), aber nur bei tatsaechlicher
+     * Verknuepfung (R81-F2).
      *
-     * Ein logisches ODER haette `{temp=7, pump=8}` gegen einen Datensatz
-     * `{temp=7, pump=9}` als Treffer gewertet und die Verpflichtung freigegeben,
-     * obwohl die pumpId widerspricht. Ein Widerspruch darf nicht als
-     * Nichttreffer verschwinden — er ist ein sichtbarer Fehler.
+     * Ein logisches ODER haette `{temp=7, pump=8}` gegen `{temp=7, pump=9}` als
+     * Treffer gewertet und ausgebucht, obwohl die pumpId widerspricht.
+     * Ein reiner Widerspruchstest wiederum haette JEDEN fremden Bolus im
+     * Snapshot zum Konflikt gemacht — und ein normaler IOB-Snapshot enthaelt
+     * fremde Boli. Beides ist falsch:
+     *
+     *     kein gemeinsamer Anker            -> NO_MATCH  (fremder Datensatz)
+     *     Anker passt, nichts widerspricht  -> MATCH
+     *     Anker passt UND etwas widerspricht -> CONFLICT
      */
     fun compatibility(temporaryId: Long?, pumpId: Long?): IdentityMatch {
-        val tempConflict = this.temporaryId != null && temporaryId != null && this.temporaryId != temporaryId
-        val pumpConflict = this.pumpId != null && pumpId != null && this.pumpId != pumpId
-        if (tempConflict || pumpConflict) return IdentityMatch.CONFLICT
         val tempHit = this.temporaryId != null && this.temporaryId == temporaryId
         val pumpHit = this.pumpId != null && this.pumpId == pumpId
-        return if (tempHit || pumpHit) IdentityMatch.MATCH else IdentityMatch.NO_MATCH
+        if (!tempHit && !pumpHit) return IdentityMatch.NO_MATCH
+        val tempConflict = this.temporaryId != null && temporaryId != null && this.temporaryId != temporaryId
+        val pumpConflict = this.pumpId != null && pumpId != null && this.pumpId != pumpId
+        return if (tempConflict || pumpConflict) IdentityMatch.CONFLICT else IdentityMatch.MATCH
     }
 }
 
