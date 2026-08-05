@@ -32,4 +32,8 @@ dependencies {
     implementation(project(":shared:impl"))
 
     testImplementation(project(":shared:tests"))
+    // NUR fuer den Test: KC2-61 vergleicht den Einheitskern gegen das ECHTE
+    // aktive Insulinplugin. Ein Vergleich gegen eine nachgebaute Formel wuerde
+    // genau den Fehler nicht finden, den C1.1 verhindern soll.
+    testImplementation(project(":plugins:insulin"))
 }
