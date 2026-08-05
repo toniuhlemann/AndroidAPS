@@ -192,6 +192,7 @@ dependencies {
     implementation(project(":core:validators"))
     implementation(project(":ui"))
     implementation(project(":plugins:aps"))
+    implementation(project(":fuse:plugin"))
     implementation(project(":plugins:automation"))
     implementation(project(":plugins:automation-state"))
     implementation(project(":plugins:configuration"))
