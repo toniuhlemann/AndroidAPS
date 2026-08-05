@@ -244,6 +244,15 @@ data class ProposalEntry(
      * die groessere bekannte Menge die konservative Wahrheit.
      */
     val conservativeFloorU: Double?,
+    /**
+     * Die Menge, die NACHWEISLICH im IOB-Snapshot steckt (R89-F1).
+     *
+     * `accounting` sagt nur, DASS der Datensatz in der IOB-Basis ist; wie viel
+     * davon, steht hier. Eine spaetere Korrektur des Datensatzes veraendert den
+     * Wert in BEIDE Richtungen — die Mengenachse ist ausdruecklich
+     * revisionsfaehig (Medtrum legt erst die angeforderte Menge an).
+     */
+    val accountedAmountU: Double?,
     val terminalSeen: Boolean,
     val failClosed: Boolean,
     val corrections: Int,
@@ -263,11 +272,37 @@ data class ProposalEntry(
         get() = terminalSeen || amounts.reportedDeliveredU != null || amounts.provenDeliveredU != null ||
             amounts.pumpCommandU != null
 
-    /** Nichts mehr offen: es floss beweisbar nichts, oder die Menge steckt im IOB. */
+    /**
+     * Die konservativ moegliche Gesamtmenge dieser Zeile (R89-F1).
+     *
+     * Ein Nachweis schlaegt jede Schaetzung; sonst gilt die groesste bekannte
+     * Groesse, inklusive der Untergrenze aus einem Widerspruch.
+     */
+    val grossLiabilityU: Double
+        get() = amounts.provenDeliveredU
+            ?: maxOf(
+                amounts.latestKnownCommandU,
+                amounts.reportedDeliveredU ?: 0.0,
+                conservativeFloorU ?: 0.0,
+            )
+
+    /**
+     * Was von [grossLiabilityU] noch NICHT im IOB steckt.
+     *
+     * Accounting ist eine MENGENBILANZ, keine boolesche Eigenschaft der
+     * proposalId. Vorher loeschte jeder passende Treffer die gesamte Haftung —
+     * auch ein Datensatz ueber 0,10 U gegen eine Verpflichtung von 0,30 U.
+     * Ein passender Identifier beweist, WELCHER Datensatz gemeint ist; er
+     * beweist nicht, dass dessen Menge die ganze moegliche Lieferung abdeckt.
+     */
+    val unaccountedResidualU: Double
+        get() = maxOf(grossLiabilityU - (accountedAmountU ?: 0.0), 0.0)
+
+    /** Nichts mehr offen: es floss beweisbar nichts, oder es ist restlos gebucht. */
     val closed: Boolean
-        get() = accounting == AccountingState.IOB_ACCOUNTED ||
-            delivery == DeliveryState.CONFIRMED_ZERO ||
-            debtReleaseEffective
+        get() = delivery == DeliveryState.CONFIRMED_ZERO ||
+            debtReleaseEffective ||
+            unaccountedResidualU <= 0.0
 
     /** Ein Reject/Rueckzug befreit nur, solange KEIN Lieferzeichen vorliegt.
      *  R79-F1: sonst konnte ein spaeteres positives Terminalereignis die
@@ -289,16 +324,9 @@ data class ProposalEntry(
      */
     val commitmentU: Double
         get() = when {
-            accounting == AccountingState.IOB_ACCOUNTED       -> 0.0
-            delivery == DeliveryState.CONFIRMED_ZERO          -> 0.0
-            debtReleaseEffective                              -> 0.0
-            // Ein Nachweis schlaegt jede Schaetzung - auch die Untergrenze.
-            amounts.provenDeliveredU != null                  -> amounts.provenDeliveredU!!
-            else                                              -> maxOf(
-                amounts.latestKnownCommandU,
-                amounts.reportedDeliveredU ?: 0.0,
-                conservativeFloorU ?: 0.0,
-            )
+            delivery == DeliveryState.CONFIRMED_ZERO -> 0.0
+            debtReleaseEffective                     -> 0.0
+            else                                     -> unaccountedResidualU
         }
 }
 

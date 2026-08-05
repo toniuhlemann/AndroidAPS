@@ -142,6 +142,7 @@ object LedgerReducer {
             withdrawnProven = false,
             contradicted = false,
             conservativeFloorU = null,
+            accountedAmountU = null,
             terminalSeen = false,
             failClosed = false,
             corrections = 0,
@@ -422,7 +423,18 @@ object LedgerReducer {
             )
         if (LedgerRules.sameAmount(entry.amounts.dbAccountedU, e.dbAccountedU, cfg.amountEpsU)) return state
         val corrections = if (entry.amounts.dbAccountedU != null) entry.corrections + 1 else entry.corrections
-        return put(state, entry.copy(amounts = entry.amounts.copy(dbAccountedU = e.dbAccountedU), corrections = corrections))
+        return put(
+            state,
+            entry.copy(
+                amounts = entry.amounts.copy(dbAccountedU = e.dbAccountedU),
+                // Ist die Zugehoerigkeit zur IOB-Basis bereits bewiesen, ist die
+                // Menge eine Eigenschaft DIESES Datensatzes: eine Korrektur
+                // verschiebt den Restbetrag in beide Richtungen (R89-F1).
+                accountedAmountU = if (entry.accounting == AccountingState.IOB_ACCOUNTED) e.dbAccountedU
+                else entry.accountedAmountU,
+                corrections = corrections,
+            )
+        )
     }
 
     /**
@@ -444,7 +456,8 @@ object LedgerReducer {
             // Endzustand behandelt, uebergeht genau den Fall, fuer den
             // `contradicted` gebaut wurde: das angeblich nie gelieferte
             // Treatment taucht im IOB-Snapshot auf.
-            if (entry.accounting == AccountingState.IOB_ACCOUNTED) return@mapValues entry
+            // R89-F1: auch eine bereits gebuchte Zeile bleibt beobachtet — eine
+            // spaetere Mengenkorrektur kann den Restbetrag wieder oeffnen.
             val id = entry.identity ?: return@mapValues entry
             val compat = e.snapshot.containedTreatments.map { it to id.compatibility(it) }
             // R79-F3: ein Widerspruch darf nicht als Nichttreffer verschwinden.
@@ -481,15 +494,34 @@ object LedgerReducer {
                     else entry.errors + LedgerError.NON_FINITE_AMOUNT,
                 )
             }
+            // R89-F2: Fuer die Aussage "Nullnachweis gegen positiven Fakt" ist
+            // nicht die Pumpenrundung entscheidend, sondern Positivitaet.
+            // Ueber canonicalTicks waere ein Betrag unter einer halben
+            // Pumpenstufe stillschweigend 0 gewesen — und trotzdem als
+            // Buchungsfakt akzeptiert worden.
+            val positiveFact = hit.amountU > cfg.amountEpsU
+
+            // R89-F1/F2: Ein Datensatz ueber 0 U schliesst keine positive
+            // Verpflichtung. Er ist hoechstens vertraeglich mit einem SEPARAT
+            // bewiesenen CONFIRMED_ZERO — beweisen tut er es nicht.
+            if (!positiveFact && entry.grossLiabilityU > cfg.amountEpsU) return@mapValues entry
+
+            val sameAmount = LedgerRules.sameAmount(entry.accountedAmountU, hit.amountU, cfg.amountEpsU)
+            if (entry.accounting == AccountingState.IOB_ACCOUNTED && sameAmount &&
+                entry.delivery != DeliveryState.CONFIRMED_ZERO
+            ) return@mapValues entry
+
             changed = true
             var accounted = entry.copy(
                 accounting = AccountingState.IOB_ACCOUNTED,
-                accountedSnapshotHash = e.snapshot.treatmentSnapshotHash,
+                // Der ERSTE beweisende Snapshot bleibt die Provenienz; spaetere
+                // Revisionen aendern die Menge, nicht den Nachweis.
+                accountedSnapshotHash = entry.accountedSnapshotHash ?: e.snapshot.treatmentSnapshotHash,
+                accountedAmountU = hit.amountU,
                 amounts = if (entry.amounts.dbAccountedU == null) entry.amounts.copy(dbAccountedU = hit.amountU)
                 else entry.amounts,
-                corrections = if (entry.amounts.dbAccountedU != null &&
-                    !LedgerRules.sameAmount(entry.amounts.dbAccountedU, hit.amountU, cfg.amountEpsU)
-                ) entry.corrections + 1 else entry.corrections,
+                corrections = if (entry.accountedAmountU != null && !sameAmount) entry.corrections + 1
+                else entry.corrections,
             )
 
             // Die Menge steckt jetzt nachweislich im IOB — sie bindet also nicht
@@ -513,9 +545,7 @@ object LedgerReducer {
             // Menge im IOB koennen nicht beide wahr sein. Das ist kein normaler
             // Widerspruch, sondern ein unmoeglicher Zustand: zwei NACHWEISE
             // widersprechen sich.
-            if (entry.delivery == DeliveryState.CONFIRMED_ZERO &&
-                LedgerRules.canonicalTicks(hit.amountU, cfg.bolusStepU) > 0L
-            ) {
+            if (entry.delivery == DeliveryState.CONFIRMED_ZERO && positiveFact) {
                 val record = LedgerErrorRecord(
                     entry.proposalId, LedgerError.IMPOSSIBLE_STATE_CONFLICT,
                     "CONFIRMED_ZERO vs accounted amount=${hit.amountU}"

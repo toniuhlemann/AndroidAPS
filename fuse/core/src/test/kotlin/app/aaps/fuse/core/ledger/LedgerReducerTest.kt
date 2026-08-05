@@ -817,6 +817,141 @@ class LedgerReducerTest {
         assertEquals(AccountingState.IOB_ACCOUNTED, entry(ok).accounting)
     }
 
+    // ---- R89-F1: Accounting ist eine Mengenbilanz -------------------------
+
+    @Test
+    fun `R89-F1 eine Teilmenge im IOB loescht nur diesen Teil der Haftung`() {
+        val bound = LedgerReducer.reduceAll(
+            LedgerState(),
+            throughPump(0.30) + listOf(LedgerEvent.PumpIdentityBound(id, null, 4711L, "VIRTUAL", "h", t0)),
+            cfg,
+        )
+        fun snapshotWith(amount: Double, hash: String) = LedgerEvent.IobSnapshotObserved(
+            IobAccountingSnapshot(hash, "c", t0, 1L, listOf(AccountedTreatment(null, 4711L, amount)))
+        )
+
+        // gross 0,30 / gebucht 0,10 -> Rest 0,20 (vorher: alles weg)
+        val partial = LedgerReducer.reduce(bound, snapshotWith(0.10, "h1"), cfg)
+        assertEquals(AccountingState.IOB_ACCOUNTED, entry(partial).accounting)
+        assertEquals(0.10, entry(partial).accountedAmountU)
+        assertEquals(0.20, partial.transportCommitmentU, 1e-12)
+        assertFalse(entry(partial).closed)
+
+        // gross 0,30 / gebucht 0,30 -> Rest 0
+        val full = LedgerReducer.reduce(bound, snapshotWith(0.30, "h2"), cfg)
+        assertEquals(0.0, full.transportCommitmentU, 1e-12)
+        assertTrue(entry(full).closed)
+
+        // gebucht MEHR als die Haftung -> Rest 0, nie negativ
+        val more = LedgerReducer.reduce(bound, snapshotWith(0.50, "h3"), cfg)
+        assertEquals(0.0, more.transportCommitmentU, 1e-12)
+
+        // ein Datensatz ueber 0 U schliesst eine positive Verpflichtung NICHT
+        val zero = LedgerReducer.reduce(bound, snapshotWith(0.0, "h4"), cfg)
+        assertSame(bound, zero)
+        assertEquals(0.30, zero.transportCommitmentU, 1e-12)
+        assertEquals(AccountingState.NOT_ACCOUNTED, entry(zero).accounting)
+    }
+
+    @Test
+    fun `R89-F1 eine spaetere Mengenkorrektur verschiebt den Rest in beide Richtungen`() {
+        val partial = LedgerReducer.reduceAll(
+            LedgerState(),
+            throughPump(0.30) + listOf(
+                LedgerEvent.PumpIdentityBound(id, 99L, null, "MEDTRUM", "h", t0),
+                LedgerEvent.IobSnapshotObserved(
+                    IobAccountingSnapshot("h1", "c", t0, 1L, listOf(AccountedTreatment(99L, null, 0.10)))
+                ),
+            ),
+            cfg,
+        )
+        assertEquals(0.20, partial.transportCommitmentU, 1e-12)
+
+        // Korrektur nach oben schliesst den Rest ...
+        val up = LedgerReducer.reduce(partial, LedgerEvent.DbAmountObserved(id, 0.30), cfg)
+        assertEquals(0.0, up.transportCommitmentU, 1e-12)
+        // ... und eine Korrektur nach unten oeffnet ihn wieder
+        val down = LedgerReducer.reduce(up, LedgerEvent.DbAmountObserved(id, 0.10), cfg)
+        assertEquals(0.20, down.transportCommitmentU, 1e-12)
+        assertFalse(entry(down).closed)
+
+        // auch ein spaeterer Snapshot mit korrigierter Menge wirkt
+        val revised = LedgerReducer.reduce(
+            up,
+            LedgerEvent.IobSnapshotObserved(
+                IobAccountingSnapshot("h2", "c", t0, 2L, listOf(AccountedTreatment(99L, null, 0.05)))
+            ),
+            cfg,
+        )
+        assertEquals(0.25, revised.transportCommitmentU, 1e-12)
+        // der ERSTE beweisende Snapshot bleibt die Provenienz
+        assertEquals("h1", entry(revised).accountedSnapshotHash)
+    }
+
+    @Test
+    fun `R89-F1 ein Nachweis bestimmt die Haftung, die Buchung nur den gebuchten Teil`() {
+        val base = LedgerReducer.reduceAll(
+            LedgerState(),
+            throughPump(0.30) + listOf(LedgerEvent.PumpIdentityBound(id, null, 4711L, "VIRTUAL", "h", t0)),
+            cfg,
+        )
+        // DeliveryProven 0,10 senkt die Haftung auf 0,10 ...
+        val proven = LedgerReducer.reduce(base, LedgerEvent.DeliveryProven(id, 0.10, "pump history"), cfg)
+        assertEquals(0.10, proven.transportCommitmentU, 1e-12)
+        // ... und die passende Buchung schliesst sie
+        val accounted = LedgerReducer.reduce(
+            proven,
+            LedgerEvent.IobSnapshotObserved(
+                IobAccountingSnapshot("h1", "c", t0, 1L, listOf(AccountedTreatment(null, 4711L, 0.10)))
+            ),
+            cfg,
+        )
+        assertEquals(0.0, accounted.transportCommitmentU, 1e-12)
+    }
+
+    @Test
+    fun `R89-F1 ein Neustart zwischen Teilbuchung und Korrektur verliert den Rest nicht`() {
+        val partial = LedgerReducer.reduceAll(
+            LedgerState(),
+            throughPump(0.30) + listOf(
+                LedgerEvent.PumpIdentityBound(id, null, 4711L, "VIRTUAL", "h", t0),
+                LedgerEvent.IobSnapshotObserved(
+                    IobAccountingSnapshot("h1", "c", t0, 1L, listOf(AccountedTreatment(null, 4711L, 0.10)))
+                ),
+            ),
+            cfg,
+        )
+        val restarted = LedgerReducer.reduce(partial, LedgerEvent.RestartObserved(t0 + 60_000L), cfg)
+        assertEquals(0.20, restarted.transportCommitmentU, 1e-12)
+        assertFalse(entry(restarted).closed)
+    }
+
+    @Test
+    fun `R89-F2 ein positiver Betrag unter einer halben Pumpenstufe ist kein rundungsbedingtes Null`() {
+        val base = LedgerReducer.reduceAll(
+            LedgerState(),
+            throughPump(0.30) + listOf(
+                LedgerEvent.PumpIdentityBound(id, null, 4711L, "VIRTUAL", "h", t0),
+                LedgerEvent.ExecutionResult(id, true, false, 0.0),
+                LedgerEvent.DeliveryProven(id, 0.0, "pump history"),
+            ),
+            cfg,
+        )
+        assertEquals(DeliveryState.CONFIRMED_ZERO, entry(base).delivery)
+        // 0,02 U rundet auf 0 Pumpenstufen - fuer die logische Aussage
+        // "Nullnachweis gegen positiven Fakt" zaehlt aber Positivitaet.
+        assertEquals(0L, LedgerRules.canonicalTicks(0.02, cfg.bolusStepU))
+        val s = LedgerReducer.reduce(
+            base,
+            LedgerEvent.IobSnapshotObserved(
+                IobAccountingSnapshot("h9", "c", t0, 9L, listOf(AccountedTreatment(null, 4711L, 0.02)))
+            ),
+            cfg,
+        )
+        assertTrue(entry(s).errors.contains(LedgerError.IMPOSSIBLE_STATE_CONFLICT))
+        assertTrue(s.holdActuation)
+    }
+
     // ---- R79-F2: ungueltige Mengen ---------------------------------------
 
     @Test
