@@ -1,0 +1,97 @@
+package app.aaps.fuse.core.signal
+
+/**
+ * BGI-bereinigte Reihe und Theil-Sen-Steigung — der R(t)-Kern des K1-Observers
+ * (Spec v0.5 §1.1, GELOCKT gegen den v6-Holdout-Evaluator).
+ *
+ * Kandidatenidentitaet — jede Abweichung hier waere ein NEUER, ungelockter
+ * Kandidat:
+ *  - bgiRate = -activity * profileIsf, RECHTER (aktueller) Wert fuer (t-1, t]
+ *    (v6: cum_bgi += bgi * dt mit dem bgi des AKTUELLEN Samples)
+ *  - adjusted = q1 - cumulativeBgi, Reset je R-Segment
+ *  - Theil-Sen: Paare nur mit dt >= PAIR_DT_MIN_MS, mindestens MIN_POINTS
+ *    Punkte und MIN_SLOPES Paare, sonst KEIN R (null — nie 0, Spec §12 U1-U5)
+ *
+ * UNKNOWN ist ein Zustand, kein Wert: fehlende activity/profileIsf erzeugen
+ * hier keinen Ersatzwert — der Aufrufer (Adapter/State-Machine) bricht das
+ * Segment und meldet DEGRADED. Diese Klasse rechnet nur auf VOLLSTAENDIGEN
+ * Samples.
+ */
+object BgiAdjustedSeries {
+
+    const val PAIR_DT_MIN_MS = 120_000L   // THEIL_SEN_PAIR_DT_MIN 2.0 min (v6 DT_MIN_PAIR)
+    const val MIN_POINTS = 5              // THEIL_SEN_MIN_POINTS (v6)
+    const val MIN_SLOPES = 8              // THEIL_SEN_MIN_SLOPES (v6)
+    const val WINDOW_MS = 18 * 60_000L    // W = 18 min (Candidate-Lock R58)
+
+    /** Ein vollstaendiges Sample: q1 aus [UkfQ1], activity [U/min] und
+     *  profileIsf [mg/dl/U] bereits validiert (kausales LOCF, Slot bei sourceTs). */
+    data class Sample(
+        val sourceTs: Long,
+        val q1: Double,
+        val activity: Double,
+        val profileIsf: Double,
+    )
+
+    /** Punkt der bereinigten Reihe innerhalb EINES R-Segments. */
+    data class AdjustedPoint(val sourceTs: Long, val adjusted: Double)
+
+    /**
+     * Baut die BGI-bereinigte Reihe fuer EIN R-Segment. Die Eingabe muss streng
+     * aufsteigend und frei von Segmentbruechen sein — Bruecherkennung (dt > 3 min,
+     * Epochen, Input-Step) ist Sache des Aufrufers, nicht dieser Rechnung.
+     *
+     * Integrationsregel (gelockt): bgiIncrement = bgiRate(t) * dtMinutes mit dem
+     * RECHTEN Wert; das erste Sample des Segments traegt cumulativeBgi = 0.
+     */
+    fun adjust(segment: List<Sample>): List<AdjustedPoint> {
+        if (segment.isEmpty()) return emptyList()
+        val out = ArrayList<AdjustedPoint>(segment.size)
+        var cumulativeBgi = 0.0
+        var prevTs = segment.first().sourceTs
+        for (s in segment) {
+            val dtMin = (s.sourceTs - prevTs) / 60_000.0
+            require(dtMin >= 0.0) { "segment not ascending at ${s.sourceTs}" }
+            val bgiRate = -s.activity * s.profileIsf
+            cumulativeBgi += bgiRate * dtMin
+            out.add(AdjustedPoint(s.sourceTs, s.q1 - cumulativeBgi))
+            prevTs = s.sourceTs
+        }
+        return out
+    }
+
+    /**
+     * Theil-Sen-Steigung [mg/dl/min] ueber die letzten [WINDOW_MS] der Reihe,
+     * mit den drei gelockten Mindestbedingungen. null = R NICHT BERECHENBAR
+     * (Spec: rSigned = null + DEGRADED(INSUFFICIENT_SIGNAL_HISTORY)) —
+     * ausdruecklich KEIN 0.0, das waere die Behauptung "flach".
+     */
+    fun theilSen(points: List<AdjustedPoint>, nowTs: Long): Double? {
+        val window = points.filter { nowTs - it.sourceTs <= WINDOW_MS && it.sourceTs <= nowTs }
+        if (window.size < MIN_POINTS) return null
+        val slopes = ArrayList<Double>()
+        for (i in window.indices) for (j in i + 1 until window.size) {
+            val dtMs = window[j].sourceTs - window[i].sourceTs
+            if (dtMs >= PAIR_DT_MIN_MS) {
+                slopes.add((window[j].adjusted - window[i].adjusted) / (dtMs / 60_000.0))
+            }
+        }
+        if (slopes.size < MIN_SLOPES) return null
+        slopes.sort()
+        val mid = slopes.size / 2
+        return if (slopes.size % 2 == 1) slopes[mid] else (slopes[mid - 1] + slopes[mid]) / 2.0
+    }
+
+    /**
+     * Minutenbin fuer die Outcome-Coverage (Addendum A6): half-up ueber
+     * floor(x + 0.5) — bewusst NICHT round(), dessen .5-Verhalten
+     * sprachabhaengig ist. Exakt +30 s faellt in den SPAETEREN Bin.
+     * null bei negativer Distanz oder Bin ausserhalb 0..maxBin.
+     */
+    fun minuteBin(sourceTs: Long, anchorTs: Long, maxBin: Int): Int? {
+        val delta = sourceTs - anchorTs
+        if (delta < 0) return null
+        val bin = Math.floor(delta / 60_000.0 + 0.5).toInt()
+        return if (bin in 0..maxBin) bin else null
+    }
+}
