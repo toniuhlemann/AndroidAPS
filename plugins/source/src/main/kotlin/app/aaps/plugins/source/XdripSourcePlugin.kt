@@ -30,6 +30,7 @@ import app.aaps.core.keys.BooleanKey
 import app.aaps.core.keys.interfaces.Preferences
 import app.aaps.core.keys.DoubleKey
 import app.aaps.core.keys.IntKey
+import app.aaps.core.keys.StringKey
 import app.aaps.core.keys.LongKey
 import app.aaps.core.objects.workflow.LoggingWorker
 import app.aaps.core.utils.receivers.DataWorkerStorage
@@ -202,25 +203,27 @@ class XdripSourcePlugin @Inject constructor(
                                history.size + 1, boundedBy to from)
                     }.onSuccess { (q1, inputCount, bounds) ->
                         val (boundedBy, windowFromTs) = bounds
-                        if (q1 != null) {
-                            aapsLogger.debug(
-                                LTag.BGSOURCE,
-                                "UkfQ1 json: {\"q1\":${q1.glucose},\"rate\":${q1.ratePerMin},\"learnedR\":${q1.learnedR}," +
-                                    "\"outlier\":${q1.outlier},\"ema\":$smooth,\"applied\":true," +
-                                    "\"inputCount\":$inputCount,\"boundedBy\":\"$boundedBy\",\"windowFromTs\":$windowFromTs}"
-                            )
-                            smooth = q1.glucose
-                        } else {
-                            // Q1 nicht berechenbar -> EMA bleibt stehen. Das darf NIE still
-                            // passieren, sonst steht ein EMA-Punkt unmarkiert in einer Q1-Reihe.
-                            aapsLogger.debug(
-                                LTag.BGSOURCE,
-                                "UkfQ1 json: {\"applied\":false,\"fallback\":\"emaKept\",\"ema\":$smooth," +
-                                    "\"inputCount\":$inputCount,\"boundedBy\":\"$boundedBy\",\"windowFromTs\":$windowFromTs}"
-                            )
-                        }
+                        val ema = smooth
+                        if (q1 != null) smooth = q1.glucose
+                        val status = "{\"applied\":${q1 != null},\"ts\":$thisTimeRaw," +
+                            "\"loopValue\":$smooth,\"ema\":$ema," +
+                            (q1?.let {
+                                "\"q1\":${it.glucose},\"rate\":${it.ratePerMin}," +
+                                    "\"learnedR\":${it.learnedR},\"outlier\":${it.outlier},"
+                            } ?: "\"fallback\":\"emaKept\",") +
+                            "\"inputCount\":$inputCount,\"boundedBy\":\"$boundedBy\"," +
+                            "\"windowFromTs\":$windowFromTs}"
+                        aapsLogger.debug(LTag.BGSOURCE, "UkfQ1 json: $status")
+                        // R60-F3: derselbe Status in die Preferences, damit ihn der
+                        // State-Export je Zyklus mitgeben und der VIEWER ihn anzeigen
+                        // kann. Ein stiller EMA-Rueckfall wird so sichtbar, ohne dass
+                        // jemand ins Log schauen muss.
+                        preferences.put(StringKey.FslUkfQ1Status, status)
                     }.onFailure {
-                        aapsLogger.error(LTag.BGSOURCE, "UkfQ1 json: {\"applied\":false,\"fallback\":\"error\"}", it)
+                        val status = "{\"applied\":false,\"ts\":$thisTimeRaw," +
+                            "\"loopValue\":$smooth,\"ema\":$smooth,\"fallback\":\"error\"}"
+                        aapsLogger.error(LTag.BGSOURCE, "UkfQ1 json: $status", it)
+                        preferences.put(StringKey.FslUkfQ1Status, status)
                     }
                 }
             }

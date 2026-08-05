@@ -58,6 +58,7 @@ import app.aaps.core.keys.DoubleKey
 import app.aaps.core.keys.IntKey
 import app.aaps.core.keys.IntentKey
 import app.aaps.core.keys.LongKey
+import app.aaps.core.keys.StringKey
 import app.aaps.core.keys.UnitDoubleKey
 import app.aaps.core.keys.interfaces.Preferences
 import app.aaps.core.objects.constraints.ConstraintObject
@@ -858,7 +859,20 @@ open class OpenAPSAutoISFPlugin @Inject constructor(
                     put("mealCOB", mealData.mealCOB.takeIf { it.isFinite() })
                     put("carbs", mealData.carbs)
                     put("slopeFromMaxDeviation", mealData.slopeFromMaxDeviation.takeIf { it.isFinite() })
+                    // 999 ist AAPS' Sentinel fuer "keine gueltige 1-Stunden-Historie" und
+                    // schaltet ueber slopeFromDeviations = -333 die UAM-Prognose faktisch ab
+                    // (UAMduration 0). Sichtbar machen, sonst sieht niemand, WARUM der Loop
+                    // nach einem Neustart zurueckhaltender dosiert.
+                    put("slopeFromMinDeviation", mealData.slopeFromMinDeviation.takeIf { it.isFinite() })
                 })
+                // R60-F3: welcher Filter den Loop-Wert erzeugt hat — im Viewer sichtbar,
+                // statt nur im Log. Roh durchgereicht, damit der Export keine eigene
+                // Semantik erfindet; fehlt der Schluessel, lief nie ein Q1-Zyklus.
+                runCatching {
+                    preferences.get(StringKey.FslUkfQ1Status)
+                        .takeIf { it.isNotBlank() }
+                        ?.let { put("filter", JSONObject(it)) }
+                }
                 activeTt?.let { tt ->
                     put("tt", JSONObject().apply {
                         put("target", tt.lowTarget)
