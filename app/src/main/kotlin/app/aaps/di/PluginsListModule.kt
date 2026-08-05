@@ -1,6 +1,7 @@
 package app.aaps.di
 
 import app.aaps.core.interfaces.plugin.PluginBase
+import app.aaps.fuse.plugin.FusePlugin
 import app.aaps.plugins.aps.autotune.AutotunePlugin
 import app.aaps.plugins.aps.loop.LoopPlugin
 import app.aaps.plugins.aps.openAPSAMA.OpenAPSAMAPlugin
@@ -254,6 +255,21 @@ abstract class PluginsListModule {
     @IntoMap
     @IntKey(225)
     abstract fun bindOpenAPSAutoISFPlugin(plugin: OpenAPSAutoISFPlugin): PluginBase
+
+    /**
+     * FUSE steht unter `@APS` und NICHT unter `@AllConfigs` wie die anderen
+     * Algorithmen.
+     *
+     * Grund: `AppModule.providesPlugins` fuegt die `@APS`-Gruppe nur bei
+     * `config.APS` hinzu. Ein aktuierender Regler hat in einem AAPSClient- oder
+     * PumpControl-Build nichts verloren — er soll dort nicht bloss unsichtbar
+     * sein, sondern gar nicht erst entstehen.
+     */
+    @Binds
+    @APS
+    @IntoMap
+    @IntKey(226)
+    abstract fun bindFusePlugin(plugin: FusePlugin): PluginBase
 
     @Binds
     @AllConfigs

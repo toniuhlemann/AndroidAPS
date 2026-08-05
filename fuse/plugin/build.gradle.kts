@@ -29,6 +29,9 @@ dependencies {
     implementation(project(":core:objects"))
     implementation(project(":core:utils"))
     implementation(project(":core:ui"))
+    // Nur fuer den Einstellungsbildschirm (AdaptiveDoublePreference/AdaptiveIntPreference).
+    // Der Regelpfad kennt dieses Modul nicht.
+    implementation(project(":core:validators"))
     implementation(project(":shared:impl"))
 
     testImplementation(project(":shared:tests"))

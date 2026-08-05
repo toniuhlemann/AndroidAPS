@@ -41,6 +41,10 @@ class FuseSignalSource(
 
     data class Signal(
         val sourceTs: Long,
+        /** Der KALIBRIERTE ROHWERT am Anker, ungefiltert. Die Sprungerkennung
+         *  des Observers laeuft darauf: ein Kalibriersprung soll gesehen werden,
+         *  bevor q1 ihn glaettet. */
+        val rawBg: Double,
         val q1: Double,
         /** `null` heisst: nicht berechenbar (zu wenige Punkte/Paare) — NICHT 0. */
         val rSigned: Double?,
@@ -70,7 +74,8 @@ class FuseSignalSource(
             .toList()
         if (readings.isEmpty()) return Outcome.Unavailable("no raw glucose values")
 
-        val sourceTs = readings.last().tsMs
+        val newest = readings.last()
+        val sourceTs = newest.tsMs
         val leading = UkfQ1.leadingEdge(readings.takeLast(UkfQ1.WINDOW_SAMPLES))
             ?: return Outcome.Unavailable("q1 not computable from ${readings.size} points")
 
@@ -101,6 +106,7 @@ class FuseSignalSource(
         return Outcome.Ok(
             Signal(
                 sourceTs = sourceTs,
+                rawBg = newest.value,
                 q1 = leading.glucose,
                 rSigned = rSigned,
                 // Die Aktivitaet wurde AM Zeitpunkt selbst gerechnet, nicht per

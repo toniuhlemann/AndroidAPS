@@ -88,6 +88,17 @@ object FuseController {
     enum class Block {
         NONE, HEALTH_NOT_READY, SAFETY_HOLD, PUMP_BUSY, GUARD_FLOOR,
         NO_DEMAND, IOB_TH_REACHED, MAX_IOB_REACHED, BELOW_PUMP_INCREMENT, HORIZON_MISSING,
+
+        /**
+         * Der Zyklus kam gar nicht bis zum Regler: kein Profil, kein Signal,
+         * eine ungueltige Eingabe.
+         *
+         * Bewusst NICHT als `HEALTH_NOT_READY` getarnt — das waere eine Aussage
+         * ueber den Observer, den es in diesem Fall noch gar nicht gesehen hat.
+         * Wer spaeter auswertet, muss "Regler sagt nein" von "Regler lief nicht"
+         * unterscheiden koennen.
+         */
+        NO_INPUT,
     }
 
     data class Decision(
@@ -99,6 +110,20 @@ object FuseController {
         val minLowerMgdl: Double?,
         val bindingLimit: String,
     )
+
+    /**
+     * Die fail-closed Entscheidung fuer einen Zyklus, der den Regler nie
+     * erreicht hat.
+     *
+     * Sie steht hier und nicht im Adapter, damit es genau EINE Form von "FUSE
+     * hat nichts entschieden" gibt: keine Menge, nichts Positives mehr, und der
+     * Grund im Klartext. `NO_NEW_POSITIVE` und nicht `ZERO_TEMP`: eine fehlende
+     * Eingabe ist kein Sicherheitsbefund. Wer bei jedem Signalaussetzer 30
+     * Minuten Basal stoppt, hat eine eigene Fehldosis gebaut, nur mit
+     * umgekehrtem Vorzeichen.
+     */
+    fun noInput(reason: String): Decision =
+        Decision(0.0, TbrAction.NO_NEW_POSITIVE, Block.NO_INPUT, 0.0, null, null, reason)
 
     fun decide(state: State, prediction: PredictorResult?, limits: Limits = Limits()): Decision {
         fun none(block: Block, tbr: TbrAction = TbrAction.NO_NEW_POSITIVE) =

@@ -20,15 +20,22 @@ import app.aaps.fuse.core.controller.FuseController
  */
 object FuseRtBuilder {
 
+    /**
+     * `bgMgdl`, `targetMgdl`, `iobU` und `profileIsfMgdlPerU` sind NULLBAR: ein
+     * Zyklus, der schon am fehlenden Profil oder am fehlenden Signal endet,
+     * kennt sie nicht. `0.0` einzutragen waere kein Platzhalter, sondern eine
+     * Behauptung — und im Nightscout-Verlauf spaeter nicht mehr von einem echten
+     * Messwert zu unterscheiden.
+     */
     fun build(
         nowMs: Long,
-        bgMgdl: Double,
-        targetMgdl: Double,
-        iobU: Double,
+        bgMgdl: Double?,
+        targetMgdl: Double?,
+        iobU: Double?,
         decision: FuseController.Decision,
         tbr: FuseController.TbrRequest?,
         gate: FusePumpGate.Result,
-        profileIsfMgdlPerU: Double,
+        profileIsfMgdlPerU: Double?,
     ): RT {
         val reason = StringBuilder()
         reason.append("FUSE ").append(gate.reason)

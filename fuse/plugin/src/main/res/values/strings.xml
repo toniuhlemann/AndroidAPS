@@ -1,0 +1,25 @@
+<resources>
+    <string name="fuse">FUSE</string>
+    <string name="fuse_shortname">FUSE</string>
+    <string name="description_fuse">Full-loop Unannounced-disturbance Safety &amp; Exposure Controller. Alpha: aktuiert ausschliesslich gegen die VirtualPump.</string>
+
+    <string name="fuse_settings">FUSE</string>
+
+    <string name="fuse_smb_ratio_title">SMB-Anteil</string>
+    <string name="fuse_smb_ratio_summary">Anteil des berechneten Bedarfs, der ueber den schnellen Kanal (SMB) freigegeben wird. Der Rest bleibt beim Basal.</string>
+
+    <string name="fuse_max_smb_u_title">Maximaler einzelner SMB [U]</string>
+    <string name="fuse_max_smb_u_summary">Feste Obergrenze je Mikrobolus. Anders als bei autoISF haengt sie NICHT am Profilbasal und aendert sich damit nachts nicht von selbst.</string>
+
+    <string name="fuse_guard_floor_title">Guard-Untergrenze [mg/dl]</string>
+    <string name="fuse_guard_floor_summary">Unterschreitet die pessimistische Bahn diesen Wert irgendwo im Haftungshorizont, gibt es keinen SMB und eine Null-TBR.</string>
+
+    <string name="fuse_iob_th_percent_title">iobTH [% von maxIOB]</string>
+    <string name="fuse_iob_th_percent_summary">Grenze zwischen schnellem und langsamem Kanal — NICHT der Gesamtdeckel. Oberhalb laeuft nur noch Basal weiter. 100 %% bedeutet: der SMB-Kanal schliesst erst bei maxIOB.</string>
+
+    <string name="fuse_release_horizon_title">Freigabe-Horizont [min]</string>
+    <string name="fuse_release_horizon_summary">Auf diesem Punkt der Bahn wird der Insulinbedarf abgelesen.</string>
+
+    <string name="fuse_liability_horizon_title">Haftungs-Horizont [min]</string>
+    <string name="fuse_liability_horizon_summary">Ueber diese Spanne wird die pessimistische Bahn gegen die Guard-Untergrenze geprueft.</string>
+</resources>
