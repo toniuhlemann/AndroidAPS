@@ -37,6 +37,10 @@ object ProfileSlots {
         require(ts.size == rateUPerH.size) { "basal columns differ in length" }
         if (ts.isEmpty()) return emptyList()
         require(endExclusive > ts.last()) { "endExclusive must lie behind the last support point" }
+        // Streng steigende Stuetzstellen sind Voraussetzung, nicht Annahme
+        // (R79-F7): unsortierte Zeiten ergaeben still ueberlappende Slots.
+        for (i in 1 until ts.size) require(ts[i] > ts[i - 1]) { "basal support points not strictly increasing at $i" }
+        for (r in rateUPerH) require(r.isFinite() && r >= 0.0) { "basal rate invalid: $r" }
         val out = ArrayList<BasalSlot>()
         var start = ts[0]
         var cur = rateUPerH[0]

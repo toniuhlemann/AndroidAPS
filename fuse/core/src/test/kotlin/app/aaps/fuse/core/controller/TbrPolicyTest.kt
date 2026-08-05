@@ -105,11 +105,7 @@ class TbrPolicyTest {
     fun `KC2-31 ein FAKE_EXTENDED wird gelesen, nie ersetzt`() {
         for (intent in TbrPolicy.Intent.entries) {
             val d = decide(intent, tbr(1.20, type = TbrPolicy.SourceType.FAKE_EXTENDED))
-            if (intent == TbrPolicy.Intent.PUMP_BUSY) {
-                assertEquals(TbrPolicy.Outcome.NoRequest, d.outcome, intent.name)
-            } else {
-                assertEquals(TbrPolicy.Outcome.ReadOnlyHold, d.outcome, intent.name)
-            }
+            assertEquals(TbrPolicy.Outcome.ReadOnlyHold, d.outcome, intent.name)
         }
     }
 
@@ -164,10 +160,63 @@ class TbrPolicyTest {
         assertTrue(d.reason.startsWith("TEMP_BASAL_FALLBACK"))
     }
 
+    // ---- R79-F6: Pumpe beschaeftigt ist eine eigene Achse -----------------
+
     @Test
     fun `bei arbeitender Pumpe wird nichts angefordert`() {
         for (current in listOf(null, tbr(1.50), tbr(0.0), tbr(0.30))) {
-            assertEquals(TbrPolicy.Outcome.NoRequest, decide(TbrPolicy.Intent.PUMP_BUSY, current).outcome)
+            for (intent in TbrPolicy.Intent.entries) {
+                val d = TbrPolicy.decide(intent, current, scheduled, cfg, pumpBusy = true)
+                assertTrue(d.outcome !is TbrPolicy.Outcome.Request, "$intent/$current")
+                assertTrue(d.smbBlocked, "$intent/$current")
+            }
+        }
+    }
+
+    @Test
+    fun `R79-F6 unsichere Bahn bei beschaeftigter Pumpe behaelt Grund und Alarm`() {
+        // Frueher war PUMP_BUSY ein Intent und ERSETZTE SAFETY_ZERO - der
+        // Zustand "Guard unsicher, aber Pumpe beschaeftigt" war nicht
+        // darstellbar, und der Alarmgrund verschwand mit ihm.
+        val busy = TbrPolicy.decide(TbrPolicy.Intent.SAFETY_ZERO, tbr(1.50), scheduled, cfg, pumpBusy = true)
+        assertEquals(TbrPolicy.Outcome.NoRequest, busy.outcome)
+        assertTrue(busy.smbBlocked)
+        assertTrue(busy.reason.startsWith("PUMP_BUSY|"))
+        assertTrue(busy.reason.contains("SAFETY_ZERO"), busy.reason)
+
+        // dasselbe mit einem nicht stoppbaren FAKE_EXTENDED: der Alarm bleibt
+        val fake = TbrPolicy.decide(
+            TbrPolicy.Intent.SAFETY_ZERO, tbr(1.20, type = TbrPolicy.SourceType.FAKE_EXTENDED),
+            scheduled, cfg, pumpBusy = true
+        )
+        assertTrue(fake.alarm)
+        assertTrue(fake.smbBlocked)
+        assertTrue(fake.reason.contains("FAKE_EXTENDED_READ_ONLY"))
+    }
+
+    @Test
+    fun `R79-F6 ohne beschaeftigte Pumpe bleibt die Entscheidung unveraendert`() {
+        val free = TbrPolicy.decide(TbrPolicy.Intent.SAFETY_ZERO, tbr(1.50), scheduled, cfg, pumpBusy = false)
+        assertEquals(TbrPolicy.Outcome.Request(0.0, 30), free.outcome)
+    }
+
+    // ---- R79-F7: Eingangsvalidierung --------------------------------------
+
+    @Test
+    fun `R79-F7 ungueltige Eingaben werden fail-closed beantwortet, nicht geworfen`() {
+        val bad = listOf(
+            "rate NaN" to TbrPolicy.decide(TbrPolicy.Intent.SAFETY_ZERO, tbr(Double.NaN), scheduled, cfg),
+            "rate negativ" to TbrPolicy.decide(TbrPolicy.Intent.NO_POSITIVE, tbr(-1.0), scheduled, cfg),
+            "remaining negativ" to TbrPolicy.decide(TbrPolicy.Intent.KEEP, tbr(0.5, remainingMin = -5), scheduled, cfg),
+            "basalStep 0" to TbrPolicy.decide(TbrPolicy.Intent.KEEP, tbr(0.5), scheduled, cfg.copy(basalStepUPerH = 0.0)),
+            "dauer 0" to TbrPolicy.decide(TbrPolicy.Intent.SAFETY_ZERO, null, scheduled, cfg.copy(defaultDurationMin = 0)),
+            "scheduled NaN" to TbrPolicy.decide(TbrPolicy.Intent.NO_POSITIVE, tbr(0.5), Double.NaN, cfg),
+        )
+        for ((name, d) in bad) {
+            assertEquals(TbrPolicy.Outcome.NoRequest, d.outcome, name)
+            assertTrue(d.alarm, name)
+            assertTrue(d.smbBlocked, name)
+            assertTrue(d.reason.startsWith("INVALID_INPUT|"), "$name -> ${d.reason}")
         }
     }
 

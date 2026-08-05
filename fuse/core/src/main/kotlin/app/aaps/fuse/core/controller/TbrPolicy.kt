@@ -24,7 +24,13 @@ import kotlin.math.abs
  */
 object TbrPolicy {
 
-    enum class Intent { SAFETY_ZERO, NO_POSITIVE, KEEP, PUMP_BUSY }
+    /**
+     * NUR die Safety-Kategorie. `PUMP_BUSY` stand hier frueher mit drin und
+     * ERSETZTE damit `SAFETY_ZERO` — der Zustand "Guard unsicher, aber Pumpe
+     * gerade beschaeftigt" war nicht darstellbar, und mit ihm verschwand der
+     * Alarmgrund (R79-F6). Ausfuehrbarkeit ist eine eigene Achse.
+     */
+    enum class Intent { SAFETY_ZERO, NO_POSITIVE, KEEP }
 
     /**
      * Fehlerachse, GETRENNT von der TBR-Kategorie (v0.3 §12).
@@ -52,13 +58,29 @@ object TbrPolicy {
         val absoluteRateUPerH: Double,
         val remainingMin: Int,
         val sourceType: SourceType,
-    )
+    ) {
+
+        fun violation(): String? = when {
+            !absoluteRateUPerH.isFinite() -> "rate=$absoluteRateUPerH"
+            absoluteRateUPerH < 0.0       -> "rate negative"
+            remainingMin < 0              -> "remainingMin=$remainingMin"
+            else                          -> null
+        }
+    }
 
     data class Config(
         val basalStepUPerH: Double,
         val tbrRenewMinRemainingMin: Int = 10,
         val defaultDurationMin: Int = 30,
-    )
+    ) {
+
+        fun violation(): String? = when {
+            !basalStepUPerH.isFinite() || basalStepUPerH <= 0.0 -> "basalStep=$basalStepUPerH"
+            tbrRenewMinRemainingMin < 0                         -> "renewMin=$tbrRenewMinRemainingMin"
+            defaultDurationMin <= 0                             -> "duration=$defaultDurationMin"
+            else                                                -> null
+        }
+    }
 
     enum class Direction { POSITIVE, NEUTRAL, NEGATIVE }
 
@@ -108,7 +130,34 @@ object TbrPolicy {
         scheduledBasalUPerH: Double,
         cfg: Config,
         fault: FaultCode = FaultCode.NONE,
+        pumpBusy: Boolean = false,
     ): Decision {
+        val base = decideIgnoringPump(intent, current, scheduledBasalUPerH, cfg, fault)
+        if (!pumpBusy) return base
+        // Eine arbeitende Pumpe bekommt keine zweite Anweisung — aber der
+        // Safety-Grund und sein Alarm bleiben erhalten. Unterdrueckt wird die
+        // ANFORDERUNG, nicht die Erkenntnis.
+        return base.copy(
+            outcome = if (base.outcome is Outcome.Request) Outcome.NoRequest else base.outcome,
+            reason = "PUMP_BUSY|${base.reason}",
+            smbBlocked = true,
+        )
+    }
+
+    private fun decideIgnoringPump(
+        intent: Intent,
+        current: Current?,
+        scheduledBasalUPerH: Double,
+        cfg: Config,
+        fault: FaultCode,
+    ): Decision {
+        // Ungueltige Eingaben werden nicht geworfen, sondern fail-closed
+        // beantwortet: eine Ausnahme aus dem Regelpfad landet sonst im Loop.
+        val invalid = cfg.violation() ?: current?.violation()
+            ?: if (!scheduledBasalUPerH.isFinite() || scheduledBasalUPerH < 0.0) "scheduledBasal=$scheduledBasalUPerH" else null
+        if (invalid != null)
+            return Decision(Outcome.NoRequest, "INVALID_INPUT|$invalid", alarm = true, smbBlocked = true)
+
         // Ohne frischen Safety-Snapshot wird GAR NICHTS angefordert — auch kein
         // Abbruch, dessen Wirkung ohne Zustandskenntnis unbekannt waere.
         if (fault == FaultCode.SAFETY_SNAPSHOT_MISSING)
@@ -119,11 +168,6 @@ object TbrPolicy {
         val effective = if (fault == FaultCode.CORE_INPUT_INVALID) Intent.NO_POSITIVE else intent
         val unsafe = effective == Intent.SAFETY_ZERO
         val smbBlockedByFault = fault != FaultCode.NONE
-
-        // Eine Pumpe, die gerade arbeitet, bekommt keine zweite Anweisung —
-        // vor jeder anderen Regel.
-        if (effective == Intent.PUMP_BUSY)
-            return Decision(Outcome.NoRequest, "PUMP_BUSY", alarm = false, smbBlocked = true)
 
         if (current?.sourceType == SourceType.FAKE_EXTENDED)
         // Vorrangregel (v0.3 §7): FAKE_EXTENDED wird in Alpha 1 NIE ersetzt
@@ -143,7 +187,6 @@ object TbrPolicy {
             Intent.SAFETY_ZERO -> safetyZero(current, cfg)
             Intent.NO_POSITIVE -> noPositive(current, scheduledBasalUPerH, cfg)
             Intent.KEEP        -> Decision(Outcome.NoRequest, "KEEP", alarm = false, smbBlocked = false)
-            Intent.PUMP_BUSY   -> Decision(Outcome.NoRequest, "PUMP_BUSY", alarm = false, smbBlocked = true)
         }
         return if (fault == FaultCode.NONE) base
         else base.copy(reason = "${fault.name}|${base.reason}", smbBlocked = true)

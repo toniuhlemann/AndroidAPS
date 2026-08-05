@@ -532,6 +532,246 @@ class LedgerReducerTest {
         assertEquals(LedgerError.UNKNOWN_PROPOSAL, unknown.errors.single().error)
     }
 
+    // ---- R79-F1: Reject vs. Lieferbeleg ----------------------------------
+
+    @Test
+    fun `R79-F1 ein Reject nach der Queue-Annahme ist ein Widerspruch, kein Beleg`() {
+        val s = run(
+            proposed(0.30),
+            amount(AmountStage.RT_PUBLISHED, 0.30),
+            amount(AmountStage.QUEUE_CONSTRAINED, 0.30),
+            LedgerEvent.QueueAccepted(id),
+            LedgerEvent.QueueRejected(id, QueueRejectReason.OTHER),
+        )
+        // Die Menge bleibt gebucht - vorher fiel sie hier auf 0 U.
+        assertEquals(0.30, s.transportCommitmentU, 1e-12)
+        assertTrue(s.holdActuation)
+        assertTrue(entry(s).errors.contains(LedgerError.PHASE_VIOLATION))
+        assertNull(entry(s).queueReject)
+        assertFalse(entry(s).closed)
+    }
+
+    @Test
+    fun `R79-F1 ein Terminalereignis nach einem Reject holt die Buchung zurueck`() {
+        val rejected = run(
+            proposed(0.30),
+            amount(AmountStage.RT_PUBLISHED, 0.30),
+            LedgerEvent.QueueRejected(id, QueueRejectReason.BOLUS_IN_QUEUE),
+        )
+        assertEquals(0.0, rejected.transportCommitmentU, 1e-12)
+
+        val delivered = LedgerReducer.reduce(rejected, LedgerEvent.ExecutionResult(id, true, false, 0.30), cfg)
+        assertEquals(0.30, delivered.transportCommitmentU, 1e-12)
+        assertTrue(delivered.holdActuation)
+        assertTrue(entry(delivered).errors.contains(LedgerError.PHASE_VIOLATION))
+        assertFalse(entry(delivered).closed)
+    }
+
+    @Test
+    fun `R79-F1 auch ein spaeterer Lieferbeleg holt die Buchung zurueck`() {
+        val rejected = run(
+            proposed(0.30),
+            amount(AmountStage.RT_PUBLISHED, 0.30),
+            LedgerEvent.QueueRejected(id, QueueRejectReason.BOLUS_IN_QUEUE),
+        )
+        val proven = LedgerReducer.reduce(rejected, LedgerEvent.DeliveryProven(id, 0.20, "pump history"), cfg)
+        assertEquals(0.20, proven.transportCommitmentU, 1e-12)
+        assertTrue(proven.holdActuation)
+
+        // und der IOB-Snapshot kann die Zeile danach ueberhaupt noch schliessen
+        val bound = LedgerReducer.reduce(proven, LedgerEvent.PumpIdentityBound(id, null, 4711L, "VIRTUAL", "h", t0), cfg)
+        val snapshot = IobAccountingSnapshot("h1", "c1", t0, 1L, listOf(AccountedTreatment(null, 4711L, 0.20)))
+        val accounted = LedgerReducer.reduce(bound, LedgerEvent.IobSnapshotObserved(snapshot), cfg)
+        assertEquals(AccountingState.IOB_ACCOUNTED, entry(accounted).accounting)
+        assertEquals(0.0, accounted.transportCommitmentU, 1e-12)
+    }
+
+    @Test
+    fun `R79-F1 ein belegter Rueckzug vor der Ausfuehrung befreit, ein spaeterer nicht`() {
+        // Beleg: removeAll() kann nur Kommandos entfernen, die noch in der
+        // Queue liegen - das laufende steckt in performing.
+        val withdrawn = run(
+            proposed(0.30),
+            amount(AmountStage.RT_PUBLISHED, 0.30),
+            LedgerEvent.QueueAccepted(id),
+            LedgerEvent.QueueWithdrawnProven(id, "removeAll(SMB_BOLUS) before pickup"),
+        )
+        assertEquals(0.0, withdrawn.transportCommitmentU, 1e-12)
+        assertTrue(entry(withdrawn).closed)
+        assertFalse(withdrawn.holdActuation)
+        assertSame(withdrawn, LedgerReducer.reduce(withdrawn, LedgerEvent.QueueWithdrawnProven(id, "again"), cfg))
+
+        // nach einem Pumpenkommando ist derselbe Beleg wertlos
+        val tooLate = LedgerReducer.reduceAll(
+            LedgerState(),
+            throughPump(0.30) + listOf(LedgerEvent.QueueWithdrawnProven(id, "too late")),
+            cfg,
+        )
+        assertEquals(0.30, tooLate.transportCommitmentU, 1e-12)
+        assertTrue(tooLate.holdActuation)
+    }
+
+    // ---- R79-F2: ungueltige Mengen ---------------------------------------
+
+    @Test
+    fun `R79-F2 NaN und Infinity werden nie zum Ledger-Fakt`() {
+        for (bad in listOf(Double.NaN, Double.POSITIVE_INFINITY, Double.NEGATIVE_INFINITY, -0.5)) {
+            val s = LedgerReducer.reduceAll(
+                LedgerState(),
+                throughPump(0.30) + listOf(LedgerEvent.ExecutionResult(id, true, true, bad)),
+                cfg,
+            )
+            val c = s.transportCommitmentU
+            assertTrue(c.isFinite(), "commitment nicht endlich bei $bad: $c")
+            assertEquals(0.30, c, 1e-12, "bei $bad")
+            assertTrue(s.holdActuation, "bei $bad")
+            assertTrue(entry(s).errors.contains(LedgerError.NON_FINITE_AMOUNT), "bei $bad")
+            assertEquals(DeliveryState.UNKNOWN_ASSUMED, entry(s).delivery, "bei $bad")
+            assertNull(entry(s).amounts.reportedDeliveredU, "bei $bad")
+        }
+    }
+
+    @Test
+    fun `R79-F2 auch DB-Menge und Nachweis werden geprueft`() {
+        for (bad in listOf(Double.NaN, Double.POSITIVE_INFINITY, -0.5)) {
+            val db = LedgerReducer.reduceAll(
+                LedgerState(),
+                throughPump(0.30) + listOf(LedgerEvent.DbAmountObserved(id, bad)),
+                cfg,
+            )
+            assertTrue(db.transportCommitmentU.isFinite(), "db $bad")
+            assertNull(entry(db).amounts.dbAccountedU, "db $bad")
+            assertTrue(entry(db).errors.contains(LedgerError.NON_FINITE_AMOUNT), "db $bad")
+
+            val proven = LedgerReducer.reduceAll(
+                LedgerState(),
+                throughPump(0.30) + listOf(LedgerEvent.DeliveryProven(id, bad, "x")),
+                cfg,
+            )
+            assertTrue(proven.transportCommitmentU.isFinite(), "proven $bad")
+            assertEquals(0.30, proven.transportCommitmentU, 1e-12, "proven $bad")
+        }
+    }
+
+    @Test
+    fun `R79-F2 auch ein kaputter Snapshot-Betrag bucht nicht aus`() {
+        val s = LedgerReducer.reduceAll(
+            LedgerState(),
+            throughPump(0.30) + listOf(LedgerEvent.PumpIdentityBound(id, null, 4711L, "VIRTUAL", "h", t0)),
+            cfg,
+        )
+        val broken = IobAccountingSnapshot("h1", "c1", t0, 1L, listOf(AccountedTreatment(null, 4711L, Double.NaN)))
+        val after = LedgerReducer.reduce(s, LedgerEvent.IobSnapshotObserved(broken), cfg)
+        assertEquals(AccountingState.NOT_ACCOUNTED, entry(after).accounting)
+        assertEquals(0.30, after.transportCommitmentU, 1e-12)
+        assertTrue(after.holdActuation)
+    }
+
+    // ---- R79-F3: Identitaetsvertraeglichkeit ------------------------------
+
+    @Test
+    fun `R79-F3 eine teilpassende, widerspruechliche Identitaet ist ein Konflikt, kein Treffer`() {
+        val s = LedgerReducer.reduceAll(
+            LedgerState(),
+            throughPump(0.30) + listOf(
+                LedgerEvent.PumpIdentityBound(id, temporaryId = 7L, pumpId = null, pumpType = "MEDTRUM", pumpSerialHash = "h", treatmentTimestamp = t0),
+                LedgerEvent.PumpIdentityBound(id, temporaryId = null, pumpId = 8L, pumpType = "MEDTRUM", pumpSerialHash = "h", treatmentTimestamp = t0),
+            ),
+            cfg,
+        )
+        assertEquals(7L, entry(s).identity!!.temporaryId)
+        assertEquals(8L, entry(s).identity!!.pumpId)
+
+        // temporaryId passt, pumpId widerspricht
+        val snapshot = IobAccountingSnapshot("h1", "c1", t0, 1L, listOf(AccountedTreatment(7L, 9L, 0.30)))
+        val after = LedgerReducer.reduce(s, LedgerEvent.IobSnapshotObserved(snapshot), cfg)
+        assertEquals(AccountingState.NOT_ACCOUNTED, entry(after).accounting)
+        assertEquals(0.30, after.transportCommitmentU, 1e-12)
+        assertTrue(after.holdActuation)
+        assertTrue(entry(after).errors.contains(LedgerError.IDENTITY_CONFLICT))
+    }
+
+    @Test
+    fun `R79-F3 Vertraeglichkeit unterscheidet Treffer, Nichttreffer und Konflikt`() {
+        val id78 = PumpTreatmentIdentity(id, 7L, 8L, "MEDTRUM", "h", t0)
+        assertEquals(IdentityMatch.MATCH, id78.compatibility(7L, 8L))
+        assertEquals(IdentityMatch.MATCH, id78.compatibility(7L, null))
+        assertEquals(IdentityMatch.MATCH, id78.compatibility(null, 8L))
+        assertEquals(IdentityMatch.CONFLICT, id78.compatibility(7L, 9L))
+        assertEquals(IdentityMatch.CONFLICT, id78.compatibility(6L, 8L))
+        assertEquals(IdentityMatch.NO_MATCH, id78.compatibility(null, null))
+        val tempOnly = PumpTreatmentIdentity(id, 7L, null, "MEDTRUM", "h", t0)
+        assertEquals(IdentityMatch.NO_MATCH, tempOnly.compatibility(null, 9L))
+    }
+
+    @Test
+    fun `R79-F3 eine verschobene Behandlungszeit beim Binden ist eine Korrektur, kein Konflikt`() {
+        // SyncBolusWithTempIdTransaction ueberschreibt beim Binden der pumpId
+        // timestamp UND amount des vorhandenen Datensatzes - die Verschiebung
+        // ist AAPS-normal.
+        val s = LedgerReducer.reduceAll(
+            LedgerState(),
+            throughPump(0.30) + listOf(
+                LedgerEvent.PumpIdentityBound(id, 7L, null, "MEDTRUM", "h", t0),
+                LedgerEvent.PumpIdentityBound(id, null, 8L, "MEDTRUM", "h", t0 + 4_000L),
+            ),
+            cfg,
+        )
+        assertFalse(s.holdActuation)
+        assertEquals(t0 + 4_000L, entry(s).identity!!.treatmentTimestamp)
+        assertEquals(1, entry(s).corrections)
+    }
+
+    @Test
+    fun `eine andere Pumpe oder Seriennummer bleibt ein Konflikt`() {
+        val s = LedgerReducer.reduceAll(
+            LedgerState(),
+            throughPump(0.30) + listOf(
+                LedgerEvent.PumpIdentityBound(id, 7L, null, "MEDTRUM", "h", t0),
+                LedgerEvent.PumpIdentityBound(id, null, 8L, "MEDTRUM", "andere", t0),
+            ),
+            cfg,
+        )
+        assertTrue(entry(s).errors.contains(LedgerError.IDENTITY_CONFLICT))
+    }
+
+    // ---- Invariante ueber alle Reihenfolgen -------------------------------
+
+    @Test
+    fun `R79-F2 die Gesamtbuchung ist in JEDER Ereignisfolge endlich und nie kleiner als der Nachweisstand`() {
+        val vocabulary = listOf<LedgerEvent>(
+            amount(AmountStage.RT_PUBLISHED, 0.30),
+            amount(AmountStage.LOOP_CONSTRAINED, 0.25),
+            amount(AmountStage.QUEUE_CONSTRAINED, 0.25),
+            LedgerEvent.QueueAccepted(id),
+            LedgerEvent.QueueRejected(id, QueueRejectReason.OTHER),
+            LedgerEvent.QueueWithdrawnProven(id, "e"),
+            amount(AmountStage.PUMP_COMMAND, 0.25),
+            LedgerEvent.ExecutionResult(id, true, false, 0.25),
+            LedgerEvent.ExecutionResult(id, false, false, Double.NaN),
+            LedgerEvent.DeliveryProven(id, 0.25, "e"),
+            LedgerEvent.DbAmountObserved(id, Double.NaN),
+            LedgerEvent.PumpIdentityBound(id, null, 4711L, "VIRTUAL", "h", t0),
+            LedgerEvent.RestartObserved(t0),
+            LedgerEvent.ProposalIdLost(id, "station"),
+        )
+        // deterministische Streuung ueber viele Reihenfolgen, ohne Zufall
+        for (seed in 0 until 300) {
+            val order = vocabulary.indices.sortedBy { (it * 31 + seed * 17) % vocabulary.size }
+            val events = listOf<LedgerEvent>(proposed(0.30)) + order.map { vocabulary[it] }
+            val s = LedgerReducer.reduceAll(LedgerState(), events, cfg)
+            val c = s.transportCommitmentU
+            assertTrue(c.isFinite(), "seed=$seed commitment=$c")
+            assertTrue(c >= 0.0, "seed=$seed commitment=$c")
+            // Sobald ein Lieferzeichen existiert, darf nichts mehr auf 0 fallen,
+            // solange die Menge nicht im IOB nachgewiesen ist.
+            val e = entry(s)
+            if (e.anyDeliverySignal && e.accounting == AccountingState.NOT_ACCOUNTED &&
+                e.delivery != DeliveryState.CONFIRMED_ZERO
+            ) assertTrue(c > 0.0, "seed=$seed: Lieferzeichen, aber Buchung $c")
+        }
+    }
+
     // ---- Kanonische Mengen -----------------------------------------------
 
     @Test

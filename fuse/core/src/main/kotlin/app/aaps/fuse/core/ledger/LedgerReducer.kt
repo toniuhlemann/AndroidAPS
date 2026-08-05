@@ -35,6 +35,23 @@ sealed interface LedgerEvent {
 
     data class QueueRejected(override val proposalId: String, val reason: QueueRejectReason) : OfProposal
 
+    /**
+     * Belegter Rueckzug NACH der Queue-Annahme (R79-F1 Punkt 3).
+     *
+     * Diesen Pfad gibt es in AAPS wirklich: `CommandQueueImplementation.bolus()`
+     * ruft fuer SMBs `removeAll(CommandType.SMB_BOLUS)` und wirft bereits
+     * eingereihte Kommandos OHNE Callback weg. Der Beleg, dass dabei kein
+     * Pumpenkommando entstehen konnte, steckt in der Queue-Mechanik selbst:
+     * das laufende Kommando liegt in `performing` und NICHT mehr in `queue`
+     * (`performing = queue.poll()`), `removeAll` iteriert nur ueber `queue`.
+     * Entfernt werden kann also ausschliesslich, was nie gestartet ist.
+     *
+     * Ein generischer Reject reicht dafuer NICHT — er traegt diesen Beleg nicht.
+     * Das Ereignis kann erst mit dem (weiterhin gesperrten) Queue-Hook erzeugt
+     * werden; der Vertrag steht hier schon.
+     */
+    data class QueueWithdrawnProven(override val proposalId: String, val evidence: String) : OfProposal
+
     /** EIN Terminalereignis mit vier Eigenschaften — keine Zustandsfolge.
      *  `success`/`enacted` sind Diagnose; die Menge steht in [bolusDeliveredU]. */
     data class ExecutionResult(
@@ -119,6 +136,7 @@ object LedgerReducer {
             delivery = DeliveryState.UNKNOWN,
             identity = null,
             queueReject = null,
+            withdrawnProven = false,
             terminalSeen = false,
             failClosed = false,
             corrections = 0,
@@ -140,6 +158,7 @@ object LedgerReducer {
         is LedgerEvent.AmountObserved    -> onAmount(state, entry, e, cfg)
         is LedgerEvent.QueueAccepted     -> onQueueAccepted(state, entry, cfg)
         is LedgerEvent.QueueRejected     -> onQueueRejected(state, entry, e)
+        is LedgerEvent.QueueWithdrawnProven -> onWithdrawn(state, entry, e)
         is LedgerEvent.ExecutionResult   -> onExecutionResult(state, entry, e, cfg)
         is LedgerEvent.DeliveryProven    -> onDeliveryProven(state, entry, e, cfg)
         is LedgerEvent.PumpIdentityBound -> onIdentity(state, entry, e)
@@ -192,26 +211,70 @@ object LedgerReducer {
         return put(state, entry.copy(phase = LedgerPhase.QUEUE_ACCEPTED))
     }
 
+    /**
+     * Ein Reject befreit NUR, wenn er vor der Queue-Annahme, vor dem
+     * Pumpenkommando und vor jedem Terminalereignis kommt (R79-F1).
+     *
+     * Vorher genuegte es, dass noch kein Pumpenkommando GEMELDET war — die Folge
+     * `Proposed -> QueueAccepted -> QueueRejected` setzte die Verpflichtung auf
+     * null, obwohl das Kommando bereits in der Queue lag. Nach der Annahme ist
+     * ein generischer Reject ein Widerspruch, kein Beleg.
+     */
     private fun onQueueRejected(state: LedgerState, entry: ProposalEntry, e: LedgerEvent.QueueRejected): LedgerState {
         if (entry.queueReject == e.reason) return state          // genau EIN Reject-Ereignis
-        if (entry.queueReject != null || entry.terminalSeen || entry.amounts.pumpCommandU != null)
+        val after = when {
+            entry.queueReject != null              -> "reject ${entry.queueReject}"
+            entry.phase == LedgerPhase.QUEUE_ACCEPTED -> "QUEUE_ACCEPTED"
+            entry.terminalSeen                     -> "terminal"
+            entry.amounts.pumpCommandU != null     -> "pump command"
+            else                                   -> null
+        }
+        if (after != null)
             return put(
-                fail(state, entry.proposalId, LedgerError.PHASE_VIOLATION, "reject ${e.reason} after ${entry.queueReject ?: "terminal/command"}"),
+                fail(state, entry.proposalId, LedgerError.PHASE_VIOLATION, "reject ${e.reason} after $after"),
                 entry.failed(LedgerError.PHASE_VIOLATION)
             )
         // Nichts wurde eingereiht, also floss nichts: die Schuld ist aufgeloest.
         return put(state, entry.copy(queueReject = e.reason, phase = LedgerPhase.TERMINAL))
     }
 
+    private fun onWithdrawn(state: LedgerState, entry: ProposalEntry, e: LedgerEvent.QueueWithdrawnProven): LedgerState {
+        if (entry.withdrawnProven) return state
+        // Der Beleg gilt nur, solange kein Lieferzeichen existiert. Danach ist
+        // er entweder falsch oder zu spaet - beides ist ein Widerspruch.
+        if (entry.anyDeliverySignal)
+            return put(
+                fail(state, entry.proposalId, LedgerError.PHASE_VIOLATION, "withdrawn after delivery signal: ${e.evidence}"),
+                entry.failed(LedgerError.PHASE_VIOLATION)
+            )
+        return put(state, entry.copy(withdrawnProven = true, phase = LedgerPhase.TERMINAL))
+    }
+
     private fun onExecutionResult(state: LedgerState, entry: ProposalEntry, e: LedgerEvent.ExecutionResult, cfg: LedgerConfig): LedgerState {
+        // R79-F2: NaN ist nie "unbekannt". Ein kaputter Wert wird NICHT
+        // gespeichert - die letzte gueltige konservative Menge bleibt stehen.
+        if (!LedgerRules.isStorableAmount(e.bolusDeliveredU))
+            return put(
+                fail(state, entry.proposalId, LedgerError.NON_FINITE_AMOUNT, "bolusDelivered=${e.bolusDeliveredU}"),
+                entry.copy(delivery = DeliveryState.UNKNOWN_ASSUMED, terminalSeen = true, phase = LedgerPhase.TERMINAL)
+                    .failed(LedgerError.NON_FINITE_AMOUNT)
+            )
+        // R79-F1: ein Terminalereignis nach einem Reject widerspricht dem
+        // Reject. Die Menge bleibt gebucht, der Widerspruch wird sichtbar.
+        var s = state
+        var contradiction = false
+        if (entry.debtFreeingReject) {
+            s = fail(s, entry.proposalId, LedgerError.PHASE_VIOLATION, "execution result after ${entry.queueReject ?: "withdrawal"}")
+            contradiction = true
+        }
         val commandU = entry.amounts.pumpCommandU ?: entry.amounts.latestKnownCommandU
         val delivery = LedgerRules.classifyDelivery(commandU, e.bolusDeliveredU, cfg.bolusStepU)
         if (entry.terminalSeen) {
             val same = LedgerRules.sameAmount(entry.amounts.reportedDeliveredU, e.bolusDeliveredU, cfg.amountEpsU)
-            if (same) return state
+            if (same && !contradiction) return state
             val conservative = maxOf(entry.amounts.reportedDeliveredU ?: 0.0, e.bolusDeliveredU ?: 0.0)
             return put(
-                fail(state, entry.proposalId, LedgerError.DUPLICATE_TERMINAL, "delivered ${entry.amounts.reportedDeliveredU} -> ${e.bolusDeliveredU}"),
+                fail(s, entry.proposalId, LedgerError.DUPLICATE_TERMINAL, "delivered ${entry.amounts.reportedDeliveredU} -> ${e.bolusDeliveredU}"),
                 entry.copy(amounts = entry.amounts.copy(reportedDeliveredU = conservative)).failed(LedgerError.DUPLICATE_TERMINAL)
             )
         }
@@ -221,7 +284,7 @@ object LedgerReducer {
             terminalSeen = true,
             phase = LedgerPhase.TERMINAL,
         )
-        var s = state
+        if (contradiction) next = next.failed(LedgerError.PHASE_VIOLATION)
         if (delivery == DeliveryState.OVERDELIVERY_ANOMALY) {
             s = fail(s, entry.proposalId, LedgerError.OVERDELIVERY_ANOMALY, "command=$commandU delivered=${e.bolusDeliveredU}")
             next = next.failed(LedgerError.OVERDELIVERY_ANOMALY)
@@ -236,6 +299,15 @@ object LedgerReducer {
                 entry.failed(LedgerError.NON_FINITE_AMOUNT)
             )
         if (LedgerRules.sameAmount(entry.amounts.provenDeliveredU, e.provenDeliveredU, cfg.amountEpsU)) return state
+        // Ein Beleg ueber eine POSITIVE Lieferung nach einem Reject widerspricht
+        // dem Reject (R79-F1). Der Beleg gilt trotzdem - er ist die staerkere
+        // Aussage -, aber der Widerspruch wird sichtbar und sperrt.
+        var contradiction = false
+        var s0 = state
+        if (entry.debtFreeingReject && e.provenDeliveredU > 0.0) {
+            s0 = fail(s0, entry.proposalId, LedgerError.PHASE_VIOLATION, "proven delivery after ${entry.queueReject ?: "withdrawal"}")
+            contradiction = true
+        }
         val commandU = entry.amounts.pumpCommandU ?: entry.amounts.latestKnownCommandU
         val ticks = LedgerRules.canonicalTicks(e.provenDeliveredU, cfg.bolusStepU)
         val delivery = when {
@@ -250,12 +322,12 @@ object LedgerReducer {
             delivery = delivery,
             corrections = corrections,
         )
-        var s = state
+        if (contradiction) next = next.failed(LedgerError.PHASE_VIOLATION)
         if (delivery == DeliveryState.OVERDELIVERY_ANOMALY) {
-            s = fail(s, entry.proposalId, LedgerError.OVERDELIVERY_ANOMALY, "command=$commandU proven=${e.provenDeliveredU}")
+            s0 = fail(s0, entry.proposalId, LedgerError.OVERDELIVERY_ANOMALY, "command=$commandU proven=${e.provenDeliveredU}")
             next = next.failed(LedgerError.OVERDELIVERY_ANOMALY)
         }
-        return put(s, next)
+        return put(s0, next)
     }
 
     private fun onIdentity(state: LedgerState, entry: ProposalEntry, e: LedgerEvent.PumpIdentityBound): LedgerState {
@@ -281,10 +353,21 @@ object LedgerReducer {
                 fail(state, entry.proposalId, LedgerError.IDENTITY_CONFLICT, "$current vs $incoming"),
                 entry.failed(LedgerError.IDENTITY_CONFLICT)
             )
-        return put(state, entry.copy(identity = merged))
+        // Eine verschobene Behandlungszeit ist beim Binden der pumpId normal
+        // (SyncBolusWithTempIdTransaction ueberschreibt timestamp und amount)
+        // und wird als Korrektur gezaehlt, nicht als Widerspruch.
+        val corrections =
+            if (merged.treatmentTimestamp != current.treatmentTimestamp) entry.corrections + 1 else entry.corrections
+        return put(state, entry.copy(identity = merged, corrections = corrections))
     }
 
     private fun onDbAmount(state: LedgerState, entry: ProposalEntry, e: LedgerEvent.DbAmountObserved, cfg: LedgerConfig): LedgerState {
+        // R79-F2: auch der DB-Wert wird nie ungeprueft zum Ledger-Fakt.
+        if (!LedgerRules.isStorableAmount(e.dbAccountedU))
+            return put(
+                fail(state, entry.proposalId, LedgerError.NON_FINITE_AMOUNT, "dbAccounted=${e.dbAccountedU}"),
+                entry.failed(LedgerError.NON_FINITE_AMOUNT)
+            )
         if (LedgerRules.sameAmount(entry.amounts.dbAccountedU, e.dbAccountedU, cfg.amountEpsU)) return state
         val corrections = if (entry.amounts.dbAccountedU != null) entry.corrections + 1 else entry.corrections
         return put(state, entry.copy(amounts = entry.amounts.copy(dbAccountedU = e.dbAccountedU), corrections = corrections))
@@ -301,11 +384,45 @@ object LedgerReducer {
      */
     private fun onSnapshot(state: LedgerState, e: LedgerEvent.IobSnapshotObserved, cfg: LedgerConfig): LedgerState {
         var changed = false
+        var errors = state.errors
         val next = state.entries.mapValues { (_, entry) ->
             if (entry.accounting == AccountingState.IOB_ACCOUNTED || entry.closed) return@mapValues entry
             val id = entry.identity ?: return@mapValues entry
-            val hit = e.snapshot.containedTreatments.firstOrNull { id.matches(it.temporaryId, it.pumpId) }
+            val compat = e.snapshot.containedTreatments.map { it to id.compatibility(it.temporaryId, it.pumpId) }
+            // R79-F3: ein Widerspruch darf nicht als Nichttreffer verschwinden.
+            // {temp=7,pump=8} gegen {temp=7,pump=9} ist KEIN Treffer, sondern
+            // ein Konflikt - vorher wurde er per ODER-Match wegbucht.
+            val conflict = compat.firstOrNull { it.second == IdentityMatch.CONFLICT }
+            if (conflict != null) {
+                changed = true
+                val record = LedgerErrorRecord(
+                    entry.proposalId, LedgerError.IDENTITY_CONFLICT,
+                    "snapshot ${e.snapshot.treatmentSnapshotHash}: $id vs ${conflict.first}"
+                )
+                if (!errors.contains(record)) errors = errors + record
+                return@mapValues entry.copy(
+                    failClosed = true,
+                    errors = if (entry.errors.contains(LedgerError.IDENTITY_CONFLICT)) entry.errors
+                    else entry.errors + LedgerError.IDENTITY_CONFLICT,
+                )
+            }
+            val hit = compat.firstOrNull { it.second == IdentityMatch.MATCH }?.first
                 ?: return@mapValues entry
+            // Ein kaputter Betrag im Snapshot bucht nicht aus: der Nachweis
+            // "diese Menge steckt im IOB" waere dann selbst ungueltig.
+            if (!LedgerRules.isStorableAmount(hit.amountU)) {
+                changed = true
+                val record = LedgerErrorRecord(
+                    entry.proposalId, LedgerError.NON_FINITE_AMOUNT,
+                    "snapshot amount=${hit.amountU}"
+                )
+                if (!errors.contains(record)) errors = errors + record
+                return@mapValues entry.copy(
+                    failClosed = true,
+                    errors = if (entry.errors.contains(LedgerError.NON_FINITE_AMOUNT)) entry.errors
+                    else entry.errors + LedgerError.NON_FINITE_AMOUNT,
+                )
+            }
             changed = true
             entry.copy(
                 accounting = AccountingState.IOB_ACCOUNTED,
@@ -317,7 +434,7 @@ object LedgerReducer {
                 ) entry.corrections + 1 else entry.corrections,
             )
         }
-        return if (changed) state.copy(entries = next) else state
+        return if (changed) state.copy(entries = next, errors = errors) else state
     }
 
     /** Ein Absturzfenster bleibt epistemisch UNBEKANNT. Konservativ heisst:

@@ -38,10 +38,20 @@ object CandidateSearch {
         val liabilityHorizonMin: Int,
     ) {
 
-        init {
-            require(releaseTargetLowMgdl <= releaseTargetHighMgdl) { "target band inverted" }
-            require(demandDeadbandMgdl >= 0.0) { "deadband negative" }
-            require(releaseHorizonMin > 0 && liabilityHorizonMin > 0) { "horizon not positive" }
+        /** Kein `require`: eine Ausnahme aus dem Regelpfad wuerde im Loop
+         *  landen. Ungueltige Konfiguration ergibt einen benannten
+         *  Ablehnungsgrund (R79-F7). */
+        fun violation(): String? = when {
+            !releaseTargetLowMgdl.isFinite() || !releaseTargetHighMgdl.isFinite() -> "target not finite"
+            !demandDeadbandMgdl.isFinite() || !guardFloorMgdl.isFinite()          -> "deadband/guard not finite"
+            releaseTargetLowMgdl > releaseTargetHighMgdl                          -> "target band inverted"
+            demandDeadbandMgdl < 0.0                                              -> "deadband negative"
+            guardFloorMgdl <= 0.0                                                 -> "guardFloor not positive"
+            releaseHorizonMin <= 0 || liabilityHorizonMin <= 0                    -> "horizon not positive"
+            // Der Guard muss mindestens so weit reichen wie das Freigabeziel —
+            // sonst wuerde gegen einen Zeitpunkt dosiert, den er nie prueft.
+            releaseHorizonMin > liabilityHorizonMin                               -> "releaseHorizon beyond liabilityHorizon"
+            else                                                                  -> null
         }
     }
 
@@ -53,7 +63,17 @@ object CandidateSearch {
         val effectiveMaxIobHeadroomU: Double,
         val pumpIncrementU: Double,
         val maxSmbU: Double,
-    )
+    ) {
+
+        fun violation(): String? = when {
+            !pumpIncrementU.isFinite() || pumpIncrementU <= 0.0 -> "pumpIncrement=$pumpIncrementU"
+            !remainingReleaseBudgetU.isFinite()                 -> "releaseBudget not finite"
+            !effectiveIobThHeadroomU.isFinite()                 -> "iobThHeadroom not finite"
+            !effectiveMaxIobHeadroomU.isFinite()                -> "maxIobHeadroom not finite"
+            !maxSmbU.isFinite() || maxSmbU < 0.0                -> "maxSmb=$maxSmbU"
+            else                                                -> null
+        }
+    }
 
     enum class Reject {
         LEDGER_HOLD,             // Vertragsbruch im Ledger -> keine neue Dosis
@@ -61,6 +81,10 @@ object CandidateSearch {
         MODEL_HORIZON_TOO_SHORT, // Einheitskern deckt das Bewertungsfenster nicht (KC2-37)
         ISF_SLOT_MISSING,        // Luecke in den ISF-Slots -> kein Ersatzwert
         DELIVERY_BEFORE_ANCHOR,  // Kandidat waere vor dem Bahnanfang geliefert
+        DELIVERY_AFTER_RELEASE,  // Lieferung liegt hinter dem Freigabehorizont (R79-F5)
+        NO_EFFECT_IN_WINDOW,     // Kandidat waere im Schutzfenster wirkungslos
+        INVALID_BAND,
+        INVALID_CAPS,
         NON_FINITE,
         NO_HEADROOM,             // eine Mengengrenze ist bereits ausgeschoepft
         NO_DEMAND,               // Eintrittstor: Baseline liegt im Zielband
@@ -89,12 +113,8 @@ object CandidateSearch {
         ledgerHold: Boolean = false,
     ): Result {
         if (ledgerHold) return no(Reject.LEDGER_HOLD, "ledgerHold")
-        if (!caps.pumpIncrementU.isFinite() || caps.pumpIncrementU <= 0.0) return no(Reject.NON_FINITE, "pumpIncrement")
-        if (listOf(
-                caps.remainingReleaseBudgetU, caps.effectiveIobThHeadroomU,
-                caps.effectiveMaxIobHeadroomU, caps.maxSmbU
-            ).any { !it.isFinite() }
-        ) return no(Reject.NON_FINITE, "caps")
+        band.violation()?.let { return no(Reject.INVALID_BAND, it) }
+        caps.violation()?.let { return no(Reject.INVALID_CAPS, it) }
 
         val points = prediction.points
         if (points.isEmpty()) return no(Reject.HORIZON_MISSING, "no points")
@@ -105,6 +125,13 @@ object CandidateSearch {
         val windowEndTs = points[maxOf(releaseIdx, liabilityIdx)].tsMs
         if (kernel.deliveryTs < points.first().tsMs)
             return no(Reject.DELIVERY_BEFORE_ANCHOR, "deliveryTs=${kernel.deliveryTs}")
+        // R79-F5: liegt die Lieferung hinter dem Freigabehorizont, ist die
+        // Wirkung im ganzen Bewertungsfenster null — Bedarf, Guard und Zielband
+        // wuerden sich nicht verschlechtern, und die Suche haette den groessten
+        // durch die Kappen erlaubten Kandidaten genehmigt, ohne dass eine
+        // einzige Minute seiner Wirkung geprueft worden waere.
+        if (kernel.deliveryTs >= points[releaseIdx].tsMs)
+            return no(Reject.DELIVERY_AFTER_RELEASE, "deliveryTs=${kernel.deliveryTs} releaseTs=${points[releaseIdx].tsMs}")
         // KC2-37: Deckt der Modellhorizont das Bewertungsfenster nicht ab, wird
         // NICHT mit einer stillen Null weitergerechnet.
         if (!kernel.covers(windowEndTs)) return no(Reject.MODEL_HORIZON_TOO_SHORT, "supportEnd=${kernel.supportEndTs}")
@@ -124,6 +151,11 @@ object CandidateSearch {
             effectPerU[i] = acc
             if (!acc.isFinite()) return no(Reject.NON_FINITE, "effect at offset ${p.offsetMin}")
         }
+
+        // Ein Kandidat ohne nachweisbare Wirkung am Freigabehorizont darf nicht
+        // genehmigt werden — er waere im Schutzfenster unsichtbar.
+        if (!(effectPerU[releaseIdx] > 0.0))
+            return no(Reject.NO_EFFECT_IN_WINDOW, "effectPerU@release=${effectPerU[releaseIdx]}")
 
         val baselineMean = points[releaseIdx].meanBg
 

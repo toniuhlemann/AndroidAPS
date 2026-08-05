@@ -83,8 +83,17 @@ data class PumpTreatmentIdentity(
         require(temporaryId != null || pumpId != null) { "identity needs temporaryId or pumpId" }
     }
 
-    /** Medtrum: erst temporaryId, spaeter pumpId. Die Zusammenfuehrung ist ein
-     *  EIGENES Bindungsereignis, keine Korrelation ueber Zeit- und Mengennaehe. */
+    /**
+     * Medtrum: erst temporaryId, spaeter pumpId. Die Zusammenfuehrung ist ein
+     * EIGENES Bindungsereignis, keine Korrelation ueber Zeit- und Mengennaehe.
+     *
+     * `treatmentTimestamp` DARF sich dabei aendern, und das ist kein Konflikt:
+     * `SyncBolusWithTempIdTransaction.run()` ueberschreibt beim Binden der
+     * pumpId sowohl `timestamp` als auch `amount` des vorhandenen Datensatzes.
+     * Die spaetere, pumpenbestaetigte Zeit gewinnt; die Abweichung wird als
+     * KORREKTUR gezaehlt, nicht als Widerspruch. (R79-F3 verlangte eine
+     * explizite Policy — das ist sie, mit Quelle.)
+     */
     fun mergedWith(other: PumpTreatmentIdentity): PumpTreatmentIdentity? {
         if (other.proposalId != proposalId) return null
         if (temporaryId != null && other.temporaryId != null && temporaryId != other.temporaryId) return null
@@ -93,13 +102,29 @@ data class PumpTreatmentIdentity(
         return copy(
             temporaryId = temporaryId ?: other.temporaryId,
             pumpId = pumpId ?: other.pumpId,
+            treatmentTimestamp = other.treatmentTimestamp,
         )
     }
 
-    fun matches(temporaryId: Long?, pumpId: Long?): Boolean =
-        (this.temporaryId != null && this.temporaryId == temporaryId) ||
-            (this.pumpId != null && this.pumpId == pumpId)
+    /**
+     * Vertraeglichkeit statt ODER-Treffer (R79-F3).
+     *
+     * Ein logisches ODER haette `{temp=7, pump=8}` gegen einen Datensatz
+     * `{temp=7, pump=9}` als Treffer gewertet und die Verpflichtung freigegeben,
+     * obwohl die pumpId widerspricht. Ein Widerspruch darf nicht als
+     * Nichttreffer verschwinden — er ist ein sichtbarer Fehler.
+     */
+    fun compatibility(temporaryId: Long?, pumpId: Long?): IdentityMatch {
+        val tempConflict = this.temporaryId != null && temporaryId != null && this.temporaryId != temporaryId
+        val pumpConflict = this.pumpId != null && pumpId != null && this.pumpId != pumpId
+        if (tempConflict || pumpConflict) return IdentityMatch.CONFLICT
+        val tempHit = this.temporaryId != null && this.temporaryId == temporaryId
+        val pumpHit = this.pumpId != null && this.pumpId == pumpId
+        return if (tempHit || pumpHit) IdentityMatch.MATCH else IdentityMatch.NO_MATCH
+    }
 }
+
+enum class IdentityMatch { NO_MATCH, MATCH, CONFLICT }
 
 /** Die Mengenachse (v0.3 §2). Die Bolusmenge wird DREIMAL beschnitten —
  *  im Loop, in der Queue und noch einmal im Treiber. */
@@ -169,6 +194,8 @@ data class ProposalEntry(
     val delivery: DeliveryState,
     val identity: PumpTreatmentIdentity?,
     val queueReject: QueueRejectReason?,
+    /** Belegter Rueckzug VOR der Ausfuehrung (R79-F1 Punkt 3). */
+    val withdrawnProven: Boolean,
     val terminalSeen: Boolean,
     val failClosed: Boolean,
     val corrections: Int,
@@ -178,9 +205,27 @@ data class ProposalEntry(
     val accountedSnapshotHash: String?,
 ) {
 
+    /**
+     * Gibt es IRGENDEIN Anzeichen, dass ein Pumpenkommando stattgefunden hat?
+     *
+     * Ein Terminalereignis zaehlt auch dann, wenn es 0 meldet: dass die Pumpe
+     * geantwortet hat, heisst, dass sie gefragt wurde.
+     */
+    val anyDeliverySignal: Boolean
+        get() = terminalSeen || amounts.reportedDeliveredU != null || amounts.provenDeliveredU != null ||
+            amounts.pumpCommandU != null
+
     /** Nichts mehr offen: es floss beweisbar nichts, oder die Menge steckt im IOB. */
     val closed: Boolean
-        get() = queueReject != null || delivery == DeliveryState.CONFIRMED_ZERO || accounting == AccountingState.IOB_ACCOUNTED
+        get() = accounting == AccountingState.IOB_ACCOUNTED ||
+            delivery == DeliveryState.CONFIRMED_ZERO ||
+            (debtFreeingReject && !anyDeliverySignal)
+
+    /** Ein Reject/Rueckzug befreit nur, solange KEIN Lieferzeichen vorliegt.
+     *  R79-F1: sonst konnte ein spaeteres positives Terminalereignis die
+     *  Nullbuchung nicht mehr korrigieren — die Menge verschwand aus
+     *  `transportCommitmentU`, bevor sie im IOB nachgewiesen war. */
+    val debtFreeingReject: Boolean get() = queueReject != null || withdrawnProven
 
     /**
      * Was diese Zeile noch AUSSERHALB des IOB bindet.
@@ -192,14 +237,12 @@ data class ProposalEntry(
      */
     val commitmentU: Double
         get() = when {
-            queueReject != null                        -> 0.0
-            delivery == DeliveryState.CONFIRMED_ZERO   -> 0.0
-            accounting == AccountingState.IOB_ACCOUNTED -> 0.0
-            provenExactly != null                      -> provenExactly!!
-            else                                       -> maxOf(amounts.latestKnownCommandU, amounts.reportedDeliveredU ?: 0.0)
+            accounting == AccountingState.IOB_ACCOUNTED       -> 0.0
+            delivery == DeliveryState.CONFIRMED_ZERO          -> 0.0
+            debtFreeingReject && !anyDeliverySignal           -> 0.0
+            amounts.provenDeliveredU != null                  -> amounts.provenDeliveredU!!
+            else                                              -> maxOf(amounts.latestKnownCommandU, amounts.reportedDeliveredU ?: 0.0)
         }
-
-    private val provenExactly: Double? get() = amounts.provenDeliveredU
 }
 
 data class LedgerState(
@@ -302,6 +345,14 @@ object LedgerRules {
             else                           -> DeliveryState.UNKNOWN_ASSUMED
         }
     }
+
+    /**
+     * `null` heisst UNBEKANNT und ist zulaessig. `NaN` heisst nie unbekannt —
+     * es ist ein kaputter Wert und darf nie zu einem Ledger-Fakt werden
+     * (R79-F2): `maxOf(command, NaN)` ergibt NaN, und damit waere die gesamte
+     * `transportCommitmentU` ungueltig statt konservativ.
+     */
+    fun isStorableAmount(u: Double?): Boolean = u == null || (u.isFinite() && u >= 0.0)
 
     fun sameAmount(a: Double?, b: Double?, epsU: Double = 1e-9): Boolean = when {
         a == null && b == null -> true

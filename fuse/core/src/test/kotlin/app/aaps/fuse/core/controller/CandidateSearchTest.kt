@@ -259,4 +259,70 @@ class CandidateSearchTest {
         )
         assertEquals(CandidateSearch.Reject.DELIVERY_BEFORE_ANCHOR, r.reject)
     }
+
+    // ---- R79-F5 / F7 -----------------------------------------------------
+
+    @Test
+    fun `R79-F5 eine Lieferung hinter dem Freigabehorizont wird nicht als Maximalkandidat genehmigt`() {
+        // Ohne die Pruefung waere effectPerU im ganzen Fenster null: Bedarf,
+        // Guard und Zielband blieben unveraendert, und die Suche haette den
+        // groessten durch die Kappen erlaubten Kandidaten zurueckgegeben.
+        val late = kernel(anchor + 45 * 60_000L)      // Release-Horizont ist 30 min
+        val r = CandidateSearch.search(prediction({ 400.0 }, { 400.0 }), late, isfSlots, band, caps())
+        assertEquals(CandidateSearch.Reject.DELIVERY_AFTER_RELEASE, r.reject)
+        assertEquals(0.0, r.smbU)
+    }
+
+    @Test
+    fun `R79-F5 genau auf dem Freigabehorizont zaehlt schon als zu spaet`() {
+        val onTheDot = kernel(anchor + 30 * 60_000L)
+        val r = CandidateSearch.search(prediction({ 400.0 }, { 400.0 }), onTheDot, isfSlots, band, caps())
+        assertEquals(CandidateSearch.Reject.DELIVERY_AFTER_RELEASE, r.reject)
+    }
+
+    @Test
+    fun `R79-F5 ein im Fenster wirkungsloser Kandidat wird abgewiesen`() {
+        // Kernel ohne Aktivitaet: IOB faellt, aber es wirkt nichts.
+        val inert = UnitInsulinSampler { doseU, offsetMin ->
+            if (offsetMin >= 120) InsulinSample(0.0, 0.0) else InsulinSample(doseU * (1.0 - offsetMin / 120.0), 0.0)
+        }
+        val inertKernel = (UnitInsulinKernelBuilder.build(inert, anchor, model, "inert") as KernelOutcome.Ok).kernel
+        val r = CandidateSearch.search(prediction({ 400.0 }, { 400.0 }), inertKernel, isfSlots, band, caps())
+        assertEquals(CandidateSearch.Reject.NO_EFFECT_IN_WINDOW, r.reject)
+    }
+
+    @Test
+    fun `R79-F5 der Freigabehorizont darf nicht hinter dem Guard-Horizont liegen`() {
+        val r = CandidateSearch.search(
+            prediction({ 400.0 }, { 400.0 }), kernel(), isfSlots,
+            band.copy(releaseHorizonMin = 60, liabilityHorizonMin = 30), caps()
+        )
+        assertEquals(CandidateSearch.Reject.INVALID_BAND, r.reject)
+        assertTrue(r.bindingLimit.contains("releaseHorizon"))
+    }
+
+    @Test
+    fun `R79-F7 ungueltige Konfiguration wirft nicht, sondern wird benannt abgelehnt`() {
+        val nan = Double.NaN
+        assertEquals(
+            CandidateSearch.Reject.INVALID_BAND,
+            CandidateSearch.search(prediction({ 400.0 }, { 400.0 }), kernel(), isfSlots, band.copy(guardFloorMgdl = nan), caps()).reject
+        )
+        assertEquals(
+            CandidateSearch.Reject.INVALID_BAND,
+            CandidateSearch.search(prediction({ 400.0 }, { 400.0 }), kernel(), isfSlots, band.copy(releaseTargetLowMgdl = 200.0, releaseTargetHighMgdl = 100.0), caps()).reject
+        )
+        assertEquals(
+            CandidateSearch.Reject.INVALID_CAPS,
+            CandidateSearch.search(prediction({ 400.0 }, { 400.0 }), kernel(), isfSlots, band, caps(increment = 0.0)).reject
+        )
+        assertEquals(
+            CandidateSearch.Reject.INVALID_CAPS,
+            CandidateSearch.search(prediction({ 400.0 }, { 400.0 }), kernel(), isfSlots, band, caps(budget = nan)).reject
+        )
+        assertEquals(
+            CandidateSearch.Reject.INVALID_CAPS,
+            CandidateSearch.search(prediction({ 400.0 }, { 400.0 }), kernel(), isfSlots, band, caps(maxSmb = -1.0)).reject
+        )
+    }
 }

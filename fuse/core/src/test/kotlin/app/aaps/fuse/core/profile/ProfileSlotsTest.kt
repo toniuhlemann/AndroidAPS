@@ -61,6 +61,24 @@ class ProfileSlotsTest {
     }
 
     @Test
+    fun `R79-F7 unsortierte oder ungueltige Stuetzstellen werden nicht still verarbeitet`() {
+        val unsorted = longArrayOf(min(0), min(20), min(10))
+        val ex = runCatching { ProfileSlots.compressBasal(unsorted, doubleArrayOf(0.7, 0.8, 0.9), min(30)) }.exceptionOrNull()
+        assertTrue(ex is IllegalArgumentException, "erwartet IllegalArgumentException, war $ex")
+
+        val duplicate = longArrayOf(min(0), min(10), min(10))
+        assertTrue(
+            runCatching { ProfileSlots.compressBasal(duplicate, doubleArrayOf(0.7, 0.8, 0.9), min(30)) }
+                .exceptionOrNull() is IllegalArgumentException
+        )
+
+        val badRate = runCatching {
+            ProfileSlots.compressBasal(longArrayOf(min(0), min(10)), doubleArrayOf(0.7, Double.NaN), min(30))
+        }.exceptionOrNull()
+        assertTrue(badRate is IllegalArgumentException, "erwartet IllegalArgumentException, war $badRate")
+    }
+
+    @Test
     fun `Basal- und ISF-Abfrage sind halboffen`() {
         val basal = listOf(BasalSlot(min(0), min(10), 0.7))
         assertEquals(0.7, ProfileSlots.basalAt(basal, min(0)))
