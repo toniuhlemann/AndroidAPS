@@ -90,11 +90,25 @@ class FuseControllerTest {
 
     // ---- Bedarf ----------------------------------------------------------
 
+    // VERTRAGSAENDERUNG: bis dahin erwartete dieser Test ZERO_TEMP. Das
+    // widersprach TbrPolicys eigener Tabelle ("kein Bedarf" -> NO_POSITIVE) und
+    // haette bei jedem Zyklus mit predBG <= Ziel das Profilbasal 30 Minuten
+    // gestoppt. Der Sicherheitsfall laeuft ueber den Guard, nicht hierueber.
     @Test
-    fun `kein Bedarf ergibt Zero-Temp statt SMB`() {
+    fun `kein Bedarf fordert nichts Positives mehr an - aber kein Zero-Temp`() {
         val d = FuseController.decide(state(), pred(bgAt30 = 90.0))
         assertEquals(0.0, d.smbU)
         assertEquals(FuseController.Block.NO_DEMAND, d.block)
+        assertEquals(FuseController.TbrAction.NO_NEW_POSITIVE, d.tbr)
+    }
+
+    /** Gegenprobe zur Aenderung darueber: die gefaehrliche Lage muss weiterhin
+     *  eine echte Null ergeben — sonst haette der Fix den Schutz mit entfernt. */
+    @Test
+    fun `unsichere Bahn ergibt weiterhin Zero-Temp`() {
+        val d = FuseController.decide(state(), pred(bgAt30 = 90.0, minLower = 60.0))
+        assertEquals(0.0, d.smbU)
+        assertEquals(FuseController.Block.GUARD_FLOOR, d.block)
         assertEquals(FuseController.TbrAction.ZERO_TEMP, d.tbr)
     }
 
@@ -179,12 +193,19 @@ class FuseControllerTest {
         assertEquals(null, FuseController.tbrRequest(FuseController.TbrAction.NO_NEW_POSITIVE, 0.8, 3.0))
     }
 
+    // VERTRAGSAENDERUNG (zweite Haelfte): frueher hiess dieser Test "Guard UND
+    // fehlender Bedarf fuehren beide zu einer echten Zero-Temp" und pruefte
+    // beide Faelle gemeinsam. Genau das war der Fehler — er zementierte die
+    // Vermengung, die TbrPolicy ausdruecklich trennt. Jetzt wird der
+    // UNTERSCHIED geprueft, nicht die Gleichheit.
     @Test
-    fun `Guard und fehlender Bedarf fuehren beide zu einer echten Zero-Temp`() {
-        listOf(pred(250.0, minLower = 60.0), pred(90.0)).forEach { p ->
-            val d = FuseController.decide(state(), p)
-            val r = FuseController.tbrRequest(d.tbr, 0.8, 3.0)
-            assertEquals(0.0, r!!.rateUPerH)
-        }
+    fun `nur die unsichere Bahn ergibt eine echte Null - fehlender Bedarf nicht`() {
+        val guard = FuseController.decide(state(), pred(250.0, minLower = 60.0))
+        assertEquals(0.0, FuseController.tbrRequest(guard.tbr, 0.8, 3.0)!!.rateUPerH)
+
+        val noDemand = FuseController.decide(state(), pred(90.0))
+        // null heisst: nichts anfordern. Eine laufende Absenkung laeuft weiter,
+        // das Profilbasal wird NICHT gestoppt.
+        assertEquals(null, FuseController.tbrRequest(noDemand.tbr, 0.8, 3.0))
     }
 }

@@ -1,5 +1,6 @@
 package app.aaps.fuse.plugin
 
+import app.aaps.core.data.model.TE
 import app.aaps.core.interfaces.constraints.ConstraintsChecker
 import app.aaps.core.interfaces.db.PersistenceLayer
 import app.aaps.core.interfaces.iob.IobCobCalculator
@@ -9,9 +10,12 @@ import app.aaps.core.interfaces.profile.ProfileFunction
 import app.aaps.core.interfaces.queue.Command
 import app.aaps.core.interfaces.queue.CommandQueue
 import app.aaps.core.interfaces.utils.DateUtil
+import app.aaps.core.interfaces.utils.HardLimits
+import app.aaps.core.keys.LongKey
 import app.aaps.core.keys.interfaces.Preferences
 import app.aaps.core.objects.extensions.convertedToAbsolute
 import app.aaps.core.objects.extensions.plannedRemainingMinutes
+import app.aaps.core.objects.extensions.target
 import app.aaps.core.utils.MidnightUtils
 import app.aaps.fuse.core.adapter.CoreInputGuard
 import app.aaps.fuse.core.adapter.CycleAssembly
@@ -104,6 +108,10 @@ class FuseCycleRunner(
          *  Profil endet, kennt weder Ziel noch ISF. */
         val bgMgdl: Double?,
         val targetMgdl: Double?,
+        /** Woher das Ziel kam: `TT` oder `profile`. Steht im `RT.reason`, damit
+         *  im Nachhinein nie geraten werden muss, gegen welches Ziel FUSE
+         *  gerechnet hat. */
+        val targetSource: String?,
         val isfMgdlPerU: Double?,
         val iobU: Double?,
         /** Warum NICHT gerechnet wurde. `null` heisst: der Zyklus lief durch. */
@@ -117,7 +125,8 @@ class FuseCycleRunner(
         fun abort(reason: String) = Outcome(
             decision = FuseController.noInput(reason), tbr = null, prediction = null, sourceTs = null,
             computeTs = computeTs, health = null, gate = gate, reason = reason, alarm = false,
-            bgMgdl = null, targetMgdl = null, isfMgdlPerU = null, iobU = null, abortReason = reason,
+            bgMgdl = null, targetMgdl = null, targetSource = null, isfMgdlPerU = null, iobU = null,
+            abortReason = reason,
         )
 
         val profile = profileFunction.getProfile(computeTs) ?: return abort("no profile")
@@ -140,10 +149,17 @@ class FuseCycleRunner(
                 q1 = signal.q1,
                 rSigned = signal.rSigned,
                 sensorEpoch = sensorEpoch(),
-                // Der Fork fuehrt den Kalibrierbeginn noch nicht als lesbares
-                // Ereignis; 0 ist der ehrliche Wert. NICHT computeTs — das waere
-                // eine Dauerkalibrierung und damit ein Dauerblock.
-                calibrationEpoch = 0L,
+                // Der Kalibrierbeginn IST lesbar: `LongKey.FslCalibrationStart`
+                // wird vom Fork in XdripSourcePlugin geschrieben. Hier stand
+                // vorher hart 0L mit der Begruendung, es gebe kein solches
+                // Ereignis — das war falsch und hat CALIBRATION_RESET und
+                // CALIBRATION_BLIND stillgelegt. Folge waere gewesen: nach jeder
+                // Kalibrierung filtert Q1 zwei Messregime als eine Reihe, ohne
+                // dass ein Health-Grund das anzeigt.
+                //
+                // Default ist -1, nicht 0 — deshalb `takeIf { it > 0L }` und
+                // nicht `coerceAtLeast`.
+                calibrationEpoch = calibrationEpoch(),
                 activity = signal.activity,
                 profileIsfValid = true,
                 inputGap = false,
@@ -176,7 +192,7 @@ class FuseCycleRunner(
         val maxIobU = constraintsChecker.getMaxIOBAllowed().value()
         val iobTotal = iobCobCalculator.calculateFromTreatmentsAndTemps(computeTs, profile)
         val isf = profile.getIsfMgdlTimeFromMidnight(MidnightUtils.secondsFromMidnight(signal.sourceTs))
-        val target = profile.getTargetMgdl()
+        val (target, targetSource) = activeTarget(profile, computeTs)
 
         val state = when (
             val s = CoreInputGuard.build {
@@ -245,6 +261,7 @@ class FuseCycleRunner(
             alarm = combined.alarm,
             bgMgdl = signal.q1,
             targetMgdl = target,
+            targetSource = targetSource,
             isfMgdlPerU = isf,
             iobU = iobTotal.iob,
             abortReason = null,
@@ -254,7 +271,41 @@ class FuseCycleRunner(
     /** Sensorwechsel als Therapieereignis. Fehlt es, ist 0 die ehrliche
      *  Antwort: "kein Embargo bekannt" — nicht "gerade gewechselt". */
     private fun sensorEpoch(): Long =
-        persistenceLayer.getLastTherapyRecordUpToNow(app.aaps.core.data.model.TE.Type.SENSOR_CHANGE)?.timestamp ?: 0L
+        persistenceLayer.getLastTherapyRecordUpToNow(TE.Type.SENSOR_CHANGE)?.timestamp ?: 0L
+
+    /** Beginn der laufenden Kalibrierung. `-1` ist der Default des Keys und
+     *  heisst "nie kalibriert" — er darf nicht als Zeitstempel durchgereicht
+     *  werden, sonst laege der Kalibrierbeginn 1970 und die Blindzeit waere
+     *  immer vorbei. */
+    private fun calibrationEpoch(): Long =
+        preferences.get(LongKey.FslCalibrationStart).takeIf { it > 0L } ?: 0L
+
+    /**
+     * Das AKTIVE Ziel: TempTarget, sonst Profilziel.
+     *
+     * Umfang bewusst eng (K2 v0.2 §3, K2-P v0.1, R67-Q6/R68): FUSE LIEST die TT
+     * und veraendert sie nie — kein Setzen, kein Stoppen, keine Verlaengerung.
+     * Manuelle TTs sind unantastbar.
+     *
+     * Ausdruecklich NICHT uebernommen wird autoISFs Zusatzmechanik
+     * (`high_temptarget_raises_sensitivity`, `low_temptarget_lowers_sensitivity`,
+     * `half_basal_exercise_target`). Eine TT ist hier eine Zielaenderung, keine
+     * Empfindlichkeitsaenderung — das ist der Unterschied zwischen einer
+     * Nutzerabsicht und einer geerbten Algorithmusregel.
+     *
+     * Ein Wert ausserhalb der AAPS-Grenzen faellt auf das Profilziel zurueck,
+     * statt eine unsinnige Zahl in den Regler zu lassen: `TT.target()` mittelt
+     * low/high, und ein kaputter Datensatz aus einem Nightscout-Import wuerde
+     * sonst ungeprueft zum Sollwert.
+     */
+    private fun activeTarget(profile: Profile, nowMs: Long): Pair<Double, String> {
+        val tt = persistenceLayer.getTemporaryTargetActiveAt(nowMs) ?: return profile.getTargetMgdl() to "profile"
+        val t = tt.target()
+        val ok = t.isFinite() && t >= HardLimits.LIMIT_TEMP_TARGET_BG[0] && t <= HardLimits.LIMIT_TEMP_TARGET_BG[1]
+        return if (ok) t to "TT" else profile.getTargetMgdl() to "profile(TT ${fmt(t)} out of range)"
+    }
+
+    private fun fmt(d: Double) = String.format(java.util.Locale.ROOT, "%.0f", d)
 
     /**
      * Eine arbeitende Pumpe bekommt keine zweite Anweisung.

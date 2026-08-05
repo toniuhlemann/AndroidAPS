@@ -151,8 +151,22 @@ object FuseController {
         // Kein zweites "- iob": die IOB-Wirkung ist in predBG bereits enthalten.
         val insulinReq = (release.meanBg - state.targetMgdl) / state.isfMgdlPerU
         if (insulinReq <= 0.0) {
+            // NO_NEW_POSITIVE und NICHT ZERO_TEMP. Die erste Fassung stand hier
+            // auf Zero-Temp und widersprach damit dem Vertrag, den [TbrPolicy]
+            // selbst aufschreibt: "Kein zusaetzlicher Bedarf heisst nicht, dass
+            // das Profilbasal 30 Minuten gestoppt gehoert. Ein blindes
+            // Zero-Temp bei sicherer Bahn ist eine eigene Fehldosis, nur mit
+            // umgekehrtem Vorzeichen." Die gefaehrliche Lage faengt der Guard
+            // oben ab, und der faengt sie ueber das MINIMUM der Bahn, nicht nur
+            // ueber den Freigabepunkt.
+            //
+            // Was dabei mit verschwindet, gehoert benannt: das alte Zero-Temp
+            // hat unbeabsichtigt das FEHLENDE Unsicherheitsband kompensiert
+            // (lower == mean, Alpha 1). Der Guard ist damit heute genau so
+            // empfindlich wie die Mittelbahn — nicht empfindlicher. Das ist ein
+            // Argument fuer das Band, nicht fuer ein pauschales Basal-Aus.
             return Decision(
-                0.0, TbrAction.ZERO_TEMP, Block.NO_DEMAND, insulinReq,
+                0.0, TbrAction.NO_NEW_POSITIVE, Block.NO_DEMAND, insulinReq,
                 release.meanBg, prediction.minLowerBg, "insulinReq<=0",
             )
         }

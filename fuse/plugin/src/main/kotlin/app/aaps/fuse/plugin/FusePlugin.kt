@@ -145,6 +145,7 @@ class FusePlugin @Inject constructor(
                 tbr = outcome.tbr,
                 gate = outcome.gate,
                 profileIsfMgdlPerU = outcome.isfMgdlPerU,
+                targetSource = outcome.targetSource,
             )
         }
         outcome?.let { if (it.abortReason != null) rt.reason.append(" | abort=").append(it.abortReason) }

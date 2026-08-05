@@ -36,10 +36,15 @@ object FuseRtBuilder {
         tbr: FuseController.TbrRequest?,
         gate: FusePumpGate.Result,
         profileIsfMgdlPerU: Double?,
+        /** `TT` oder `profile`. Steht im Klartext im Grund, weil ein Ziel ohne
+         *  Herkunft im Nachhinein nicht mehr zuzuordnen ist: 100 mg/dl koennen
+         *  das Profilziel ODER eine gesetzte TT sein. */
+        targetSource: String? = null,
     ): RT {
         val reason = StringBuilder()
         reason.append("FUSE ").append(gate.reason)
         reason.append(" | phase=").append(decision.block.name)
+        targetMgdl?.let { reason.append(" | target=").append(fmt(it)).append('(').append(targetSource ?: "?").append(')') }
         reason.append(" | insulinReq=").append(fmt(decision.insulinReqU))
         decision.predAtReleaseMgdl?.let { reason.append(" | predRelease=").append(fmt(it)) }
         decision.minLowerMgdl?.let { reason.append(" | minLower=").append(fmt(it)) }
