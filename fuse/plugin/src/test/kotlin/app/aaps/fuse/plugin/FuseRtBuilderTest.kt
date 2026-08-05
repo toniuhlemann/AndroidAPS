@@ -65,12 +65,32 @@ class FuseRtBuilderTest {
 
     /** Der Riegel wirkt AUCH hier: ein Pumpenwechsel zur Laufzeit darf keinen
      *  bereits berechneten SMB durchrutschen lassen. */
+    /** R74-F1: Die erste Fassung sperrte nur den SMB und liess die TBR durch.
+     *  Der Test prueft deshalb jetzt ALLE vier Aktuatorfelder gemeinsam — ein
+     *  Test, der nur die Haelfte einer Sicherheitszusage prueft, erzeugt
+     *  falsche Sicherheit. */
     @Test
-    fun `blockierte Pumpe laesst keinen SMB durch`() {
-        val rt = build(0.5, gate = blocked)
+    fun `blockierte Pumpe laesst weder SMB noch TBR durch`() {
+        val rt = FuseRtBuilder.build(
+            now, 160.0, 100.0, 2.0, decision(0.5),
+            FuseController.TbrRequest(1.5, 30), blocked, 50.0,
+        )
         assertNull(rt.units)
         assertNull(rt.deliverAt)
+        assertNull(rt.rate)
+        assertNull(rt.duration)
         assertTrue(rt.reason.toString().contains("BLOCKED"))
+    }
+
+    @Test
+    fun `bei offener Pumpe kommen beide Aktuatoren durch`() {
+        val rt = FuseRtBuilder.build(
+            now, 160.0, 100.0, 2.0, decision(0.5),
+            FuseController.TbrRequest(1.5, 30), allowed, 50.0,
+        )
+        assertEquals(0.5, rt.units)
+        assertEquals(1.5, rt.rate)
+        assertEquals(30, rt.duration)
     }
 
     @Test

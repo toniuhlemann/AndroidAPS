@@ -40,6 +40,16 @@ object FuseRtBuilder {
         if (decision.smbU > 0.0) reason.append(" | SMB=").append(fmt(decision.smbU))
         tbr?.let { reason.append(" | TBR=").append(fmt(it.rateUPerH)).append("U/h/").append(it.durationMin).append("min") }
 
+        // R74-F1: Der Riegel sperrt ALLE Aktuatoren gemeinsam, nicht nur den SMB.
+        // Die erste Fassung filterte units/deliverAt und liess rate/duration
+        // ungehindert durch — die dokumentierte Invariante "FUSE aktuiert nur
+        // gegen VirtualPump" war damit nur zur Haelfte umgesetzt, und der Test
+        // dazu prueft genau diese Haelfte. Deshalb wird hier EIN Schalter fuer
+        // alles verwendet, statt die Bedingung je Feld zu wiederholen.
+        val mayActuate = gate.allowed
+        val emitSmb = mayActuate && decision.smbU > 0.0
+        val emitTbr = mayActuate && tbr != null
+
         return RT(
             algorithm = APSResult.Algorithm.FUSE,
             timestamp = nowMs,
@@ -50,13 +60,10 @@ object FuseRtBuilder {
             IOB = iobU,
             reason = reason,
             // Beide oder keines — s. Punkt 1 oben.
-            rate = tbr?.rateUPerH,
-            duration = tbr?.durationMin,
-            // Mikrobolus nur, wenn der Riegel offen ist. Der Riegel steht bewusst
-            // AUCH hier, nicht nur beim Plugin-Start: ein Pumpenwechsel zur Laufzeit
-            // darf keinen bereits berechneten SMB durchrutschen lassen.
-            units = if (gate.allowed && decision.smbU > 0.0) decision.smbU else null,
-            deliverAt = if (gate.allowed && decision.smbU > 0.0) nowMs else null,
+            rate = if (emitTbr) tbr!!.rateUPerH else null,
+            duration = if (emitTbr) tbr!!.durationMin else null,
+            units = if (emitSmb) decision.smbU else null,
+            deliverAt = if (emitSmb) nowMs else null,
             variable_sens = profileIsfMgdlPerU,
             consoleLog = mutableListOf(reason.toString()),
         )

@@ -316,4 +316,60 @@ class K2PCoreTest {
         assertEquals(90, r.points.last().offsetMin)
         assertTrue(abs(r.inputSkewMs) < 1L)
     }
+
+    // ---- Fail-closed (R74-F5/F6) -----------------------------------------
+
+    @Test
+    fun `leeres Array wirft nicht, sondern lehnt ab`() {
+        val empty = ActualTrajectoryFactory.of(
+            InsulinLineage.ActualTreatment("d", "s", "m"), emptyList(), t0, model(), "c",
+        )
+        assertEquals(PredictorReason.ARRAY_TOO_SHORT, rejected(input(trajectory = empty)).reason)
+    }
+
+    @Test
+    fun `Horizont 0 oder negativ wird abgelehnt`() {
+        assertEquals(PredictorReason.ARRAY_TOO_SHORT, rejected(input(horizon = 0)).reason)
+        assertEquals(PredictorReason.ARRAY_TOO_SHORT, rejected(input(horizon = -5)).reason)
+    }
+
+    @Test
+    fun `nicht finiter Anker-BG wird abgelehnt statt NaN zu erzeugen`() {
+        assertEquals(PredictorReason.NON_FINITE_INPUT, rejected(input(bg = Double.NaN)).reason)
+        assertEquals(PredictorReason.NON_FINITE_INPUT, rejected(input(bg = Double.POSITIVE_INFINITY)).reason)
+    }
+
+    @Test
+    fun `nicht finites basalIob wird abgelehnt`() {
+        val bad = traj(pts = points(0.0).mapIndexed { i, p -> if (i == 2) p.copy(basalIob = Double.NaN) else p })
+        assertEquals(PredictorReason.NON_FINITE_INPUT, rejected(input(trajectory = bad)).reason)
+    }
+
+    /** NaN entkommt jedem Bereichsvergleich: `<` und `>` sind beide false.
+     *  Ohne eigene Endlichkeitspruefung landete NaN in der Bahn. */
+    @Test
+    fun `NaN-ISF rutscht nicht durch den Bereichsvergleich`() {
+        assertEquals(
+            PredictorReason.ISF_OUT_OF_BOUNDS,
+            rejected(input(isfSlots = isf(Double.NaN))).reason,
+        )
+    }
+
+    /** Ein spaeterer 6-min-Abstand blieb bisher unerkannt, weil nur Monotonie
+     *  geprueft wurde. Verglichen wird gegen den ERSTEN Abstand, damit der Kern
+     *  keine AAPS-Konstante festschreibt. */
+    @Test
+    fun `spaetere Rasterabweichung wird erkannt`() {
+        val pts = points(0.0).toMutableList()
+        for (i in 20 until pts.size) pts[i] = pts[i].copy(timeMs = pts[i].timeMs + 60_000L)
+        val bad = traj(pts = pts)
+        val r = rejected(input(trajectory = bad))
+        assertEquals(PredictorReason.GRID_MISMATCH, r.reason)
+        assertTrue(r.detail.contains("360000")) { "erste Abweichung soll benannt sein: ${r.detail}" }
+    }
+
+    @Test
+    fun `sauberes Raster wird nicht faelschlich abgelehnt`() {
+        assertTrue(TrajectoryCore.predict(input()) is PredictorOutcome.Ok)
+    }
 }

@@ -15,9 +15,23 @@ object TrajectoryCore {
 
     private const val STEP_MS = 60_000L
 
+    /** Toleranz der Rasterpruefung (R71-A/Q8). */
+    const val GRID_TOLERANCE_MS = 1_000L
+
     fun predict(input: PredictorInput): PredictorOutcome {
         val t = input.trajectory
         val anchor = input.predictionAnchorTs
+
+        // R74-F5: fail-closed BEVOR irgendetwas gerechnet wird. Ein
+        // Forschungs-Predictor darf bei ungueltiger Eingabe niemals werfen und
+        // niemals ein formal gueltiges Ok(NaN) liefern — beides waere schlimmer
+        // als eine Ablehnung, weil es wie ein Ergebnis aussieht.
+        if (t.points.isEmpty())
+            return PredictorOutcome.Rejected(PredictorReason.ARRAY_TOO_SHORT, "points empty")
+        if (input.horizonMin <= 0)
+            return PredictorOutcome.Rejected(PredictorReason.ARRAY_TOO_SHORT, "horizon=${input.horizonMin}")
+        if (!input.bgAtAnchor.isFinite())
+            return PredictorOutcome.Rejected(PredictorReason.NON_FINITE_INPUT, "bgAtAnchor")
 
         // --- Zeitachsen-Gates -------------------------------------------------
         // BG/Q1 haengt an sourceTs, das IOB-Array an seinem eigenen now. Beides
@@ -38,11 +52,21 @@ object TrajectoryCore {
 
         // --- Eingaben pruefen -------------------------------------------------
         var prevTs = Long.MIN_VALUE
+        var gridStepMs = 0L
         for (p in t.points) {
-            if (!p.activity.isFinite() || !p.iob.isFinite())
+            if (!p.activity.isFinite() || !p.iob.isFinite() || !p.basalIob.isFinite())
                 return PredictorOutcome.Rejected(PredictorReason.NON_FINITE_INPUT, "point ${p.timeMs}")
             if (p.timeMs <= prevTs)
                 return PredictorOutcome.Rejected(PredictorReason.NON_MONOTONIC_TIMESTAMPS, "at ${p.timeMs}")
+            if (prevTs != Long.MIN_VALUE) {
+                val step = p.timeMs - prevTs
+                if (gridStepMs == 0L) gridStepMs = step
+                else if (Math.abs(step - gridStepMs) > GRID_TOLERANCE_MS)
+                    return PredictorOutcome.Rejected(
+                        PredictorReason.GRID_MISMATCH,
+                        "step ${step}ms != ${gridStepMs}ms at ${p.timeMs}",
+                    )
+            }
             prevTs = p.timeMs
             // NUR der Betrag wird geprueft: negative Aktivitaet ist nach einer
             // Zero-/Low-TBR gueltige Physik (netBasalRate = rate - basalRate) und
@@ -73,7 +97,9 @@ object TrajectoryCore {
                 ?: return PredictorOutcome.Rejected(PredictorReason.GRID_MISMATCH, "no activity at $ts")
             val isf = isfAt(input.isfSlots, ts)
                 ?: return PredictorOutcome.Rejected(PredictorReason.MISSING_ISF_SLOT, "no ISF slot at $ts")
-            if (isf < input.bounds.minIsfMgdlPerU || isf > input.bounds.maxIsfMgdlPerU)
+            // NaN entkommt einem Bereichsvergleich: sowohl `<` als auch `>` sind
+            // fuer NaN false. Endlichkeit muss deshalb EIGENS geprueft werden.
+            if (!isf.isFinite() || isf < input.bounds.minIsfMgdlPerU || isf > input.bounds.maxIsfMgdlPerU)
                 return PredictorOutcome.Rejected(PredictorReason.ISF_OUT_OF_BOUNDS, "isf=$isf")
 
             // Vorzeichentreu, identisch zur gelockten K1-Regel bgiRate = -activity*profileIsf.
