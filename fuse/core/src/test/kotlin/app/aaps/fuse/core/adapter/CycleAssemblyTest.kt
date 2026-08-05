@@ -4,6 +4,7 @@ import app.aaps.fuse.core.observer.ActivityValidity
 import app.aaps.fuse.core.predictor.PredictorReason
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNull
+import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.assertThrows
 
@@ -97,6 +98,34 @@ class CycleAssemblyTest {
             PredictorReason.MISSING_ISF_SLOT,
             CycleAssembly.isfCoverageGap(emptyList(), t0, t0 + 60_000),
         )
+    }
+
+    @Test
+    fun `R81-F6 ISF-Stuetzstellen werden wie Basal-Stuetzstellen geprueft`() {
+        // unsortiert
+        assertTrue(
+            runCatching {
+                CycleAssembly.compressIsfSlots(longArrayOf(t0 + 60_000, t0), doubleArrayOf(90.0, 45.0), t0 + 120_000)
+            }.exceptionOrNull() is IllegalArgumentException
+        )
+        // endExclusive nicht hinter der letzten Stuetzstelle
+        assertTrue(
+            runCatching {
+                CycleAssembly.compressIsfSlots(longArrayOf(t0, t0 + 60_000), doubleArrayOf(90.0, 45.0), t0 + 60_000)
+            }.exceptionOrNull() is IllegalArgumentException
+        )
+        // NaN ist kein Profilwert
+        assertTrue(
+            runCatching {
+                CycleAssembly.compressIsfSlots(longArrayOf(t0, t0 + 60_000), doubleArrayOf(90.0, Double.NaN), t0 + 120_000)
+            }.exceptionOrNull() is IllegalArgumentException
+        )
+        // Der WERTEBEREICH bleibt dagegen Sache der versionierten Policy im
+        // Kern: ein zu grosser ISF ist dort eine Ablehnung, kein Wurf.
+        val hugeButBuildable = CycleAssembly.compressIsfSlots(
+            longArrayOf(t0, t0 + 60_000), doubleArrayOf(1500.0, 1500.0), t0 + 120_000
+        )
+        assertEquals(1, hugeButBuildable.size)
     }
 
     @Test
