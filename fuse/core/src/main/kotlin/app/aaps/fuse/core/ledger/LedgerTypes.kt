@@ -57,6 +57,10 @@ enum class LedgerError {
     OVERDELIVERY_ANOMALY,      // C3
     NON_FINITE_AMOUNT,
     ACCOUNTING_WITHOUT_IDENTITY,
+    /** Zwei NACHWEISE widersprechen sich (R87-F1): bestaetigte Nullabgabe und
+     *  ein bilanzierter Datensatz mit positiver Menge. Kein normaler
+     *  Zustandswechsel, sondern ein unmoeglicher Zustand. */
+    IMPOSSIBLE_STATE_CONFLICT,
 }
 
 data class LedgerErrorRecord(val proposalId: String?, val error: LedgerError, val detail: String)
@@ -331,6 +335,7 @@ data class LedgerState(
             LedgerError.OVERDELIVERY_ANOMALY,
             LedgerError.NON_FINITE_AMOUNT,
             LedgerError.ACCOUNTING_WITHOUT_IDENTITY,
+            LedgerError.IMPOSSIBLE_STATE_CONFLICT,
         )
     }
 

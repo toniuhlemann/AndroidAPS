@@ -734,6 +734,89 @@ class LedgerReducerTest {
         }
     }
 
+    @Test
+    fun `R87-F1 ein passender Snapshot erreicht auch eine durch Reject oder Rueckzug befreite Zeile`() {
+        val bind = LedgerEvent.PumpIdentityBound(id, null, 4711L, "VIRTUAL", "h", t0)
+        val snapshot = IobAccountingSnapshot(
+            "h1", "c1", t0, 1L, listOf(AccountedTreatment(null, 4711L, 0.30))
+        )
+        val foreign = IobAccountingSnapshot(
+            "h2", "c2", t0, 2L, listOf(AccountedTreatment(null, 999L, 1.20))
+        )
+        // Die beiden Befreiungen haben VERSCHIEDENE gueltige Vorgeschichten:
+        // ein Reject gilt nur VOR der Queue-Annahme (R79-F1), ein belegter
+        // Rueckzug nur DANACH (R81-F3). Ein gemeinsamer Praefix waere in einem
+        // der beiden Faelle selbst schon ein Widerspruch.
+        val freeing = listOf(
+            Triple(
+                "reject",
+                listOf<LedgerEvent>(proposed(0.30), amount(AmountStage.RT_PUBLISHED, 0.30)),
+                LedgerEvent.QueueRejected(id, QueueRejectReason.BOLUS_IN_QUEUE) as LedgerEvent,
+            ),
+            Triple(
+                "withdrawal",
+                listOf<LedgerEvent>(proposed(0.30), LedgerEvent.QueueAccepted(id)),
+                LedgerEvent.QueueWithdrawnProven(id, "cancelAllBoluses removed cmd#7") as LedgerEvent,
+            ),
+        )
+        for ((name, prefix, free) in freeing) {
+            // (1) Identitaet VOR der Schuldbefreiung
+            val before = LedgerReducer.reduceAll(LedgerState(), prefix + listOf(bind, free), cfg)
+            // (2) Identitaet ERST danach
+            val after = LedgerReducer.reduceAll(LedgerState(), prefix + listOf(free, bind), cfg)
+
+            for ((order, base) in listOf("id-vorher" to before, "id-nachher" to after)) {
+                val tag = "$name/$order"
+                assertEquals(0.0, base.transportCommitmentU, 1e-12, tag)
+
+                // (3) fremder Snapshot laesst die befreite Zeile unberuehrt
+                assertSame(base, LedgerReducer.reduce(base, LedgerEvent.IobSnapshotObserved(foreign), cfg), tag)
+
+                // (4) passender Snapshot: gebucht, Commitment 0, Widerspruch sichtbar
+                val s = LedgerReducer.reduce(base, LedgerEvent.IobSnapshotObserved(snapshot), cfg)
+                assertEquals(AccountingState.IOB_ACCOUNTED, entry(s).accounting, tag)
+                assertEquals(0.0, s.transportCommitmentU, 1e-12, tag)
+                assertTrue(s.holdActuation, "$tag: Widerspruch nicht sichtbar")
+                assertTrue(entry(s).contradicted, tag)
+                assertTrue(entry(s).errors.contains(LedgerError.PHASE_VIOLATION), tag)
+            }
+        }
+    }
+
+    @Test
+    fun `R87-F1 eine bestaetigte Nullabgabe wird von einem fremden Snapshot nicht wieder geoeffnet`() {
+        val base = LedgerReducer.reduceAll(
+            LedgerState(),
+            throughPump(0.30) + listOf(
+                LedgerEvent.PumpIdentityBound(id, null, 4711L, "VIRTUAL", "h", t0),
+                LedgerEvent.ExecutionResult(id, true, false, 0.0),
+                LedgerEvent.DeliveryProven(id, 0.0, "pump history"),
+            ),
+            cfg,
+        )
+        assertEquals(DeliveryState.CONFIRMED_ZERO, entry(base).delivery)
+        assertEquals(0.0, base.transportCommitmentU, 1e-12)
+
+        // fremder Datensatz -> keine Aenderung
+        val foreign = IobAccountingSnapshot("h2", "c2", t0, 2L, listOf(AccountedTreatment(null, 999L, 1.20)))
+        assertSame(base, LedgerReducer.reduce(base, LedgerEvent.IobSnapshotObserved(foreign), cfg))
+
+        // (5) ein EXAKT gegenteiliger Nachweis ist kein normaler Widerspruch,
+        // sondern ein unmoeglicher Zustand: zwei Nachweise schliessen sich aus.
+        val contrary = IobAccountingSnapshot("h3", "c3", t0, 3L, listOf(AccountedTreatment(null, 4711L, 0.30)))
+        val s = LedgerReducer.reduce(base, LedgerEvent.IobSnapshotObserved(contrary), cfg)
+        assertTrue(entry(s).errors.contains(LedgerError.IMPOSSIBLE_STATE_CONFLICT))
+        assertTrue(s.holdActuation)
+        // die Menge steckt im IOB, bindet also nicht zusaetzlich als Transport
+        assertEquals(0.0, s.transportCommitmentU, 1e-12)
+
+        // ein Datensatz mit Menge 0 widerspricht dagegen nicht
+        val consistent = IobAccountingSnapshot("h4", "c4", t0, 4L, listOf(AccountedTreatment(null, 4711L, 0.0)))
+        val ok = LedgerReducer.reduce(base, LedgerEvent.IobSnapshotObserved(consistent), cfg)
+        assertFalse(entry(ok).errors.contains(LedgerError.IMPOSSIBLE_STATE_CONFLICT))
+        assertEquals(AccountingState.IOB_ACCOUNTED, entry(ok).accounting)
+    }
+
     // ---- R79-F2: ungueltige Mengen ---------------------------------------
 
     @Test

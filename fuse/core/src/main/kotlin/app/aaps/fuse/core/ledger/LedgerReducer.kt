@@ -438,7 +438,13 @@ object LedgerReducer {
         var changed = false
         var errors = state.errors
         val next = state.entries.mapValues { (_, entry) ->
-            if (entry.accounting == AccountingState.IOB_ACCOUNTED || entry.closed) return@mapValues entry
+            // R87-F1: NUR der endgueltige Abschluss ueberspringt. `closed` fasst
+            // drei Sachverhalte zusammen, und einer davon — die Befreiung durch
+            // Reject/Rueckzug — ist AUSDRUECKLICH widerrufbar. Wer ihn wie einen
+            // Endzustand behandelt, uebergeht genau den Fall, fuer den
+            // `contradicted` gebaut wurde: das angeblich nie gelieferte
+            // Treatment taucht im IOB-Snapshot auf.
+            if (entry.accounting == AccountingState.IOB_ACCOUNTED) return@mapValues entry
             val id = entry.identity ?: return@mapValues entry
             val compat = e.snapshot.containedTreatments.map { it to id.compatibility(it) }
             // R79-F3: ein Widerspruch darf nicht als Nichttreffer verschwinden.
@@ -476,7 +482,7 @@ object LedgerReducer {
                 )
             }
             changed = true
-            entry.copy(
+            var accounted = entry.copy(
                 accounting = AccountingState.IOB_ACCOUNTED,
                 accountedSnapshotHash = e.snapshot.treatmentSnapshotHash,
                 amounts = if (entry.amounts.dbAccountedU == null) entry.amounts.copy(dbAccountedU = hit.amountU)
@@ -485,6 +491,43 @@ object LedgerReducer {
                     !LedgerRules.sameAmount(entry.amounts.dbAccountedU, hit.amountU, cfg.amountEpsU)
                 ) entry.corrections + 1 else entry.corrections,
             )
+
+            // Die Menge steckt jetzt nachweislich im IOB — sie bindet also nicht
+            // mehr als Transportmenge. Der Widerspruch zur Befreiung bleibt
+            // trotzdem sichtbar.
+            if (entry.debtFreeingReject) {
+                val record = LedgerErrorRecord(
+                    entry.proposalId, LedgerError.PHASE_VIOLATION,
+                    "accounted after ${entry.queueReject?.name ?: "withdrawal"}: snapshot ${e.snapshot.treatmentSnapshotHash}"
+                )
+                if (!errors.contains(record)) errors = errors + record
+                accounted = accounted.copy(
+                    contradicted = true,
+                    failClosed = true,
+                    errors = if (accounted.errors.contains(LedgerError.PHASE_VIOLATION)) accounted.errors
+                    else accounted.errors + LedgerError.PHASE_VIOLATION,
+                )
+            }
+
+            // Ein bewiesenes CONFIRMED_ZERO und ein Treatment mit positiver
+            // Menge im IOB koennen nicht beide wahr sein. Das ist kein normaler
+            // Widerspruch, sondern ein unmoeglicher Zustand: zwei NACHWEISE
+            // widersprechen sich.
+            if (entry.delivery == DeliveryState.CONFIRMED_ZERO &&
+                LedgerRules.canonicalTicks(hit.amountU, cfg.bolusStepU) > 0L
+            ) {
+                val record = LedgerErrorRecord(
+                    entry.proposalId, LedgerError.IMPOSSIBLE_STATE_CONFLICT,
+                    "CONFIRMED_ZERO vs accounted amount=${hit.amountU}"
+                )
+                if (!errors.contains(record)) errors = errors + record
+                accounted = accounted.copy(
+                    failClosed = true,
+                    errors = if (accounted.errors.contains(LedgerError.IMPOSSIBLE_STATE_CONFLICT)) accounted.errors
+                    else accounted.errors + LedgerError.IMPOSSIBLE_STATE_CONFLICT,
+                )
+            }
+            accounted
         }
         return if (changed) state.copy(entries = next, errors = errors) else state
     }
