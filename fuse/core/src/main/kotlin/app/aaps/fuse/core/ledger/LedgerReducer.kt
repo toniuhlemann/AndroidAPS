@@ -141,6 +141,7 @@ object LedgerReducer {
             queueReject = null,
             withdrawnProven = false,
             contradicted = false,
+            conservativeFloorU = null,
             terminalSeen = false,
             failClosed = false,
             corrections = 0,
@@ -179,15 +180,29 @@ object LedgerReducer {
             )
         // Eine weitere Mengenstufe nach einem Reject oder belegten Rueckzug
         // widerspricht diesem (R81-F3): die Kette lief offenbar weiter.
-        if (entry.debtFreeingReject && entry.amounts.stage(e.stage) == null)
-            return put(
-                fail(
-                    state, entry.proposalId, LedgerError.PHASE_VIOLATION,
-                    "${e.stage} after ${entry.queueReject?.name ?: "withdrawal"}"
-                ),
-                entry.copy(amounts = entry.amounts.withStage(e.stage, e.amountU), contradicted = true)
-                    .failed(LedgerError.PHASE_VIOLATION)
+        if (entry.debtFreeingReject && entry.amounts.stage(e.stage) == null) {
+            // R85-F1: auch der Widerspruchspfad durchlaeuft die Kettenpruefung.
+            // Sonst verliert der Ledger seine zugesicherte Stufeninvariante
+            // ausgerechnet dort, wo ein lueckenloses Audit am meisten zaehlt.
+            val axis = entry.amounts.withStage(e.stage, e.amountU)
+            val violation = LedgerRules.chainViolation(axis, cfg.amountEpsU)
+            var s = fail(
+                state, entry.proposalId, LedgerError.PHASE_VIOLATION,
+                "${e.stage} after ${entry.queueReject?.name ?: "withdrawal"}"
             )
+            var next = entry.copy(
+                amounts = axis,
+                contradicted = true,
+                // Die vorher bekannte Menge bleibt Untergrenze der Buchung: eine
+                // widersprechende KLEINERE Stufe darf die Schuld nicht senken.
+                conservativeFloorU = maxOf(entry.conservativeFloorU ?: 0.0, entry.amounts.latestKnownCommandU),
+            ).failed(LedgerError.PHASE_VIOLATION)
+            if (violation != null) {
+                s = fail(s, entry.proposalId, LedgerError.CONSTRAINT_CHAIN_INVALID, violation)
+                next = next.failed(LedgerError.CONSTRAINT_CHAIN_INVALID)
+            }
+            return put(s, next)
+        }
         val known = entry.amounts.stage(e.stage)
         if (known != null) {
             if (LedgerRules.sameAmount(known, e.amountU, cfg.amountEpsU)) return state

@@ -232,6 +232,14 @@ data class ProposalEntry(
      * mehr, dass nichts floss.
      */
     val contradicted: Boolean,
+    /**
+     * Untergrenze der Buchung nach einem Widerspruch (R85-F1).
+     *
+     * Eine widersprechende Stufe kann auch KLEINER sein als die zuletzt
+     * bekannte. Dann darf sie die Schuld nicht senken — im Widerspruchsfall ist
+     * die groessere bekannte Menge die konservative Wahrheit.
+     */
+    val conservativeFloorU: Double?,
     val terminalSeen: Boolean,
     val failClosed: Boolean,
     val corrections: Int,
@@ -280,8 +288,13 @@ data class ProposalEntry(
             accounting == AccountingState.IOB_ACCOUNTED       -> 0.0
             delivery == DeliveryState.CONFIRMED_ZERO          -> 0.0
             debtReleaseEffective                              -> 0.0
+            // Ein Nachweis schlaegt jede Schaetzung - auch die Untergrenze.
             amounts.provenDeliveredU != null                  -> amounts.provenDeliveredU!!
-            else                                              -> maxOf(amounts.latestKnownCommandU, amounts.reportedDeliveredU ?: 0.0)
+            else                                              -> maxOf(
+                amounts.latestKnownCommandU,
+                amounts.reportedDeliveredU ?: 0.0,
+                conservativeFloorU ?: 0.0,
+            )
         }
 }
 

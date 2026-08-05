@@ -64,7 +64,11 @@ class CandidateSearchTest {
             points = pts,
             predictionAnchorTs = anchor,
             bgAtAnchor = meanAt(0),
-            minMeanBg = pts.minOf { it.meanBg }, minLowerBg = pts.minOf { it.lowerBg },
+            // R85-F5: die Minima schliessen den ANKER ein - genau wie beim
+            // echten TrajectoryCore. Ein Testobjekt, das dem Vertrag nicht
+            // folgt, prueft am Ende nur sich selbst.
+            minMeanBg = minOf(meanAt(0), pts.minOf { it.meanBg }),
+            minLowerBg = minOf(meanAt(0), pts.minOf { it.lowerBg }),
             timeToMinLowerMin = 0, bgAtHorizonMean = pts.last().meanBg, bgAtHorizonLower = pts.last().lowerBg,
             lineageKind = "VIRTUAL", trajectoryContentHash = "h",
             iobArraySpanMin = 240.0, iobArrayGridMin = 1.0, modelTailBeyondArrayMin = 0.0, inputSkewMs = 0L,
@@ -401,14 +405,27 @@ class CandidateSearchTest {
     }
 
     @Test
-    fun `R83-F1 der Kandidat wirkt am Anker nicht - das Minimum dort ist dosisunabhaengig`() {
+    fun `R83-F1 der Ankerwert selbst geht dosisunabhaengig in das Minimum ein`() {
+        // Steil steigende Bahn: ALLE Zukunftspunkte bleiben auch mit dem
+        // groessten zulaessigen Kandidaten oberhalb des Ankers. Dann - und nur
+        // dann - ist das Minimum exakt der Ankerwert.
+        //
+        // Die fruehere Fassung pruefte `minLower <= 71` und behauptete damit
+        // Dosisunabhaengigkeit, die daraus gar nicht folgt: das GESAMTminimum
+        // darf sehr wohl durch Kandidatenwirkung in einer spaeteren Minute
+        // unter den Ankerwert fallen. Dosisunabhaengig ist nur der Wert bei t=0.
         val real = realPrediction(bgAtAnchor = 71.0, drive = 6.0)
         val r = CandidateSearch.search(real, kernel(anchor), isfSlots, band, caps())
-        // 71 liegt ueber dem Floor, also darf dosiert werden ...
         assertNull(r.reject)
-        // ... aber das Minimum kann nie unter den Ankerwert gedrueckt werden,
-        // weil die Kandidatenwirkung dort exakt null ist.
-        assertTrue(r.minLowerWithCandidateMgdl!! <= 71.0)
+        assertTrue(r.smbU > 0.0)
+        assertEquals(71.0, r.minLowerWithCandidateMgdl!!, 1e-9)
+
+        // Gegenprobe zur Konstruktion: der tiefste Zukunftspunkt liegt auch mit
+        // der gewaehlten Dosis ueber dem Anker.
+        val lowestFuture = real.points.indices.minOf { i ->
+            real.points[i].lowerBg - r.smbU * (minOf(i + 1, 119) / 120.0 * isf)
+        }
+        assertTrue(lowestFuture > 71.0, "tiefster Zukunftspunkt war $lowestFuture")
     }
 
     @Test

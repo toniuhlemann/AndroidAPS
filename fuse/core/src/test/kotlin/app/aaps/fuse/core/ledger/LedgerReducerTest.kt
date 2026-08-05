@@ -698,6 +698,42 @@ class LedgerReducerTest {
         }
     }
 
+    @Test
+    fun `R85-F1 auch der Widerspruchspfad durchlaeuft die Kettenpruefung`() {
+        val withdrawn = run(
+            proposed(0.30),
+            LedgerEvent.QueueAccepted(id),
+            LedgerEvent.QueueWithdrawnProven(id, "cancelAllBoluses removed cmd#7"),
+        )
+        val rejected = run(
+            proposed(0.30),
+            amount(AmountStage.RT_PUBLISHED, 0.30),
+            LedgerEvent.QueueRejected(id, QueueRejectReason.BOLUS_IN_QUEUE),
+        )
+        for ((name, base) in listOf("withdrawn" to withdrawn, "rejected" to rejected)) {
+            // Stufe GROESSER als die vorherige: beide Fehler muessen sichtbar
+            // sein, nicht nur der Widerspruch.
+            val bigger = LedgerReducer.reduce(base, amount(AmountStage.PUMP_COMMAND, 0.50), cfg)
+            val e = entry(bigger)
+            assertTrue(e.errors.contains(LedgerError.PHASE_VIOLATION), name)
+            assertTrue(e.errors.contains(LedgerError.CONSTRAINT_CHAIN_INVALID), "$name: Kettenpruefung fehlt")
+            assertTrue(bigger.holdActuation, name)
+            assertEquals(0.50, bigger.transportCommitmentU, 1e-12, name)
+
+            // Stufe KLEINER als die zuletzt bekannte: die Kette ist in Ordnung,
+            // aber die Buchung darf nicht sinken.
+            val smaller = LedgerReducer.reduce(base, amount(AmountStage.PUMP_COMMAND, 0.10), cfg)
+            assertTrue(entry(smaller).errors.contains(LedgerError.PHASE_VIOLATION), name)
+            assertFalse(entry(smaller).errors.contains(LedgerError.CONSTRAINT_CHAIN_INVALID), name)
+            assertEquals(0.30, smaller.transportCommitmentU, 1e-12, "$name: Buchung gesunken")
+
+            // Ein spaeterer Nachweis schlaegt die Untergrenze - er ist die
+            // staerkere Aussage.
+            val proven = LedgerReducer.reduce(smaller, LedgerEvent.DeliveryProven(id, 0.10, "pump history"), cfg)
+            assertEquals(0.10, proven.transportCommitmentU, 1e-12, name)
+        }
+    }
+
     // ---- R79-F2: ungueltige Mengen ---------------------------------------
 
     @Test

@@ -16,7 +16,8 @@ class FuseControllerTest {
         }
         return PredictorResult(
             points = pts, predictionAnchorTs = 0L, bgAtAnchor = bgAt30,
-            minMeanBg = bgAt30, minLowerBg = minLower, timeToMinLowerMin = 30,
+            // Minima einschliesslich Anker, wie beim echten TrajectoryCore (R85-F5)
+            minMeanBg = bgAt30, minLowerBg = minOf(bgAt30, minLower), timeToMinLowerMin = 30,
             bgAtHorizonMean = bgAt30, bgAtHorizonLower = minLower,
             lineageKind = "ACTUAL", trajectoryContentHash = "h",
             iobArraySpanMin = 235.0, iobArrayGridMin = 5.0,
