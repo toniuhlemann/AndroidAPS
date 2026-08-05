@@ -106,10 +106,27 @@ data class LedgerErrorRecord(
     val firstDetail: String,
     val lastDetail: String,
     val occurrences: Int,
+    /**
+     * Historie und AKTIVER Zustand sind zwei Dinge (R95-F1).
+     *
+     * Vorher hing der globale Hold an der blossen EXISTENZ eines Fehlereintrags.
+     * Eine Quittung, die nur das Entry-Flag loeschte, war damit rein kosmetisch —
+     * `holdActuation` blieb wahr, weil die historische Zeile weiter zaehlte.
+     */
+    val active: Boolean = true,
+    /** Hold-Generation, in der dieser Fehler aktiv wurde. Die Quittung nennt
+     *  sie ausdruecklich, damit sie keinen JUENGEREN, noch ungesehenen Fehler
+     *  mitfreigibt. */
+    val activeGeneration: Long = 0L,
+    val resolvedBy: String? = null,
+    val resolvedReason: String? = null,
+    val resolvedGeneration: Long? = null,
 ) {
 
-    val key: Pair<String?, LedgerError> get() = proposalId to error
+    val key: LedgerErrorKey get() = LedgerErrorKey(proposalId, error)
 }
+
+data class LedgerErrorKey(val proposalId: String?, val error: LedgerError)
 
 /**
  * Ordnung der Vollsnapshots (R93-F2).
@@ -301,7 +318,7 @@ data class IobAccountingSnapshot(
     val containedTreatments: List<AccountedTreatment>,
     /** Epoch der Quelle. Wechselt beim Neustart; ueber Epochgrenzen wird die
      *  Ordnung NICHT verglichen, sondern ausdruecklich rebasiert. */
-    val sourceEpochId: String = "default",
+    val sourceEpochId: String,
 ) {
 
     val order: SnapshotOrder get() = SnapshotOrder(sourceEpochId, calculatorGeneration, calculatedAt)
@@ -467,6 +484,16 @@ data class LedgerState(
     /** Inhalt der zuletzt akzeptierten Ordnung — gleiche Ordnung mit anderem
      *  Inhalt ist ein Widerspruch, kein Fortschritt. */
     val lastSnapshotViewHash: String? = null,
+    /** Steigt, sobald ein fail-closed-Fehler AKTIV wird. Die Quittung nennt sie
+     *  ausdruecklich (CAS) — sonst gaebe ein alter UI-Zustand einen juengeren,
+     *  noch ungesehenen Fehler mit frei (R95-F1). */
+    val holdGeneration: Long = 0L,
+    /** Epochs, die schon einmal aktiv waren. Eine Wiederverwendung ist KEIN
+     *  Rebase, sondern ein Umgehungsversuch der Monotonie (R95-F2). */
+    val seenEpochs: Set<String> = emptySet(),
+    /** Eine per SnapshotSourceRestarted ANGEKUENDIGTE neue Epoch. Nur sie darf
+     *  die Ordnung neu beginnen (R95-F2). */
+    val announcedEpochId: String? = null,
 ) {
 
     /** Summe aller Mengen, die noch nicht im IOB-Snapshot stecken. Geht in
@@ -481,7 +508,12 @@ data class LedgerState(
      *  unbekannten proposalId heisst, dass die Zuordnung irgendwo verloren ging —
      *  dann weiss der Ledger gerade nicht mehr, was draussen unterwegs ist. */
     val holdActuation: Boolean
-        get() = entries.values.any { it.failClosed } || errors.any { it.error in FAIL_CLOSED_ERRORS }
+        get() = entries.values.any { it.failClosed } ||
+            errors.any { it.active && it.error in FAIL_CLOSED_ERRORS }
+
+    /** Was eine Quittung ueberhaupt betreffen koennte. */
+    val activeHoldErrors: List<LedgerErrorRecord>
+        get() = errors.filter { it.active && it.error in FAIL_CLOSED_ERRORS }
 
     companion object {
 
@@ -509,6 +541,31 @@ data class LedgerState(
             //   SNAPSHOT_EPOCH_REBASED      ist der dokumentierte Neustartfall
             //   HOLD_ACKNOWLEDGED           ist die Quittung selbst (R93-F5)
         )
+
+        /**
+         * Fehler, die AUSDRUECKLICH quittiert werden duerfen (R95-F1).
+         *
+         * Ausgeschlossen bleiben die harten Widersprueche: bei ihnen ist der
+         * Zustand nicht "unklar, aber vermutlich harmlos", sondern nachweislich
+         * inkonsistent. Die brauchen eine Reparatur, keine Unterschrift.
+         */
+        val RECOVERABLE_ERRORS = setOf(
+            LedgerError.PHASE_VIOLATION,
+            LedgerError.PROPOSAL_ID_LOST,
+            LedgerError.UNKNOWN_PROPOSAL,
+            LedgerError.MISSING_ACCOUNTED_TREATMENT,
+            LedgerError.AMBIGUOUS_TREATMENT_IDENTITY,
+            LedgerError.SNAPSHOT_ORDER_CONFLICT,
+            LedgerError.NON_FINITE_AMOUNT,
+            LedgerError.CONFLICTING_STAGE_AMOUNT,
+            LedgerError.DUPLICATE_TERMINAL,
+            LedgerError.DUPLICATE_PROPOSAL,
+        )
+
+        /** NICHT quittierbar und damit nur durch Reparatur aufloesbar:
+         *  IMPOSSIBLE_STATE_CONFLICT, IDENTITY_CONFLICT,
+         *  CONSTRAINT_CHAIN_INVALID, OVERDELIVERY_ANOMALY,
+         *  ACCOUNTING_WITHOUT_IDENTITY. */
     }
 
     val openEntries: List<ProposalEntry> get() = entries.values.filter { !it.closed }

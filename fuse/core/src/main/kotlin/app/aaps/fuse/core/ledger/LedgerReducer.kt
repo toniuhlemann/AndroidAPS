@@ -101,7 +101,28 @@ sealed interface LedgerEvent {
         override val proposalId: String,
         val acknowledgedBy: String,
         val reason: String,
+        /** CAS gegen veraltete Bedienzustaende (R95-F1): quittiert wird die
+         *  Hold-Generation, die der Quittierende GESEHEN hat. Ist inzwischen ein
+         *  juengerer Fehler dazugekommen, greift die Quittung nicht. */
+        val expectedHoldGeneration: Long,
+        /** Die konkret quittierten Fehler. Eine pauschale Freigabe "alles an
+         *  dieser Zeile" wuerde Ungesehenes mitfreigeben. */
+        val acknowledgedErrors: Set<LedgerError>,
     ) : OfProposal
+
+    /**
+     * Belegter Neustart der Snapshot-Quelle (R95-F2).
+     *
+     * Ohne dieses Ereignis war die Epoch ein frei waehlbarer Reset-Knopf fuer
+     * die Monotonie: A(100) -> B(1) -> A(50) waere dreimal als Rebase
+     * durchgegangen. Ein Tippfehler oder ein Replay alter Daten haette die
+     * Absicherung ausgehebelt.
+     */
+    data class SnapshotSourceRestarted(
+        val oldEpochId: String?,
+        val newEpochId: String,
+        val evidence: String,
+    ) : LedgerEvent
 
     /** Global: ein IOB-Snapshot MIT Treatment-Provenienz wurde gebaut. */
     data class IobSnapshotObserved(val snapshot: IobAccountingSnapshot) : LedgerEvent
@@ -121,6 +142,7 @@ object LedgerReducer {
     fun reduce(state: LedgerState, event: LedgerEvent, cfg: LedgerConfig): LedgerState = when (event) {
         is LedgerEvent.IobSnapshotObserved -> onSnapshot(state, event, cfg)
         is LedgerEvent.RestartObserved     -> onRestart(state)
+        is LedgerEvent.SnapshotSourceRestarted -> onSourceRestarted(state, event)
         is LedgerEvent.Proposed            -> onProposed(state, event, cfg)
         is LedgerEvent.OfProposal          -> {
             val entry = state.entries[event.proposalId]
@@ -310,16 +332,75 @@ object LedgerReducer {
      * einem beliebigen Freitext als Beleg. Ein Rueckzug, den es an dieser
      * Stelle gar nicht geben kann, darf nichts befreien.
      */
+    /**
+     * Die Quittung loest den GLOBALEN Hold — vorher tat sie das nachweislich
+     * nicht (R95-F1): sie setzte nur `entry.failClosed = false`, waehrend
+     * `holdActuation` weiter an der blossen Existenz der Fehlerzeile hing.
+     */
     private fun onHoldAcknowledged(state: LedgerState, entry: ProposalEntry, e: LedgerEvent.HoldAcknowledged): LedgerState {
-        if (e.acknowledgedBy.isBlank() || e.reason.isBlank())
-            return fail(state, entry.proposalId, LedgerError.PHASE_VIOLATION, "empty acknowledgement")
-        if (!entry.failClosed) return state
-        // Die Sperre faellt, die Historie bleibt: errors und Zaehler sind der
-        // Grund, warum spaeter noch jemand nachsehen kann, was hier war.
-        return put(
-            fail(state, entry.proposalId, LedgerError.HOLD_ACKNOWLEDGED, "${e.acknowledgedBy}: ${e.reason}"),
-            entry.copy(failClosed = false),
+        fun reject(detail: String) =
+            // Eine ungueltige Quittung darf NICHT selbst zu einem dauerhaften
+            // globalen Fehler werden - sonst macht der Bedienfehler den Weg
+            // zurueck endgueltig zu.
+            state.copy(errors = state.errors + LedgerErrorRecord(
+                entry.proposalId, LedgerError.HOLD_ACKNOWLEDGED,
+                "REJECTED: $detail", "REJECTED: $detail", 1, active = false,
+            ))
+
+        if (e.acknowledgedBy.isBlank() || e.reason.isBlank()) return reject("empty acknowledgement")
+        if (e.acknowledgedErrors.isEmpty()) return reject("no error keys named")
+        if (e.expectedHoldGeneration != state.holdGeneration)
+            return reject("stale: expected gen ${e.expectedHoldGeneration}, actual ${state.holdGeneration}")
+        val notWaivable = e.acknowledgedErrors - LedgerState.RECOVERABLE_ERRORS
+        if (notWaivable.isNotEmpty()) return reject("not waivable: $notWaivable")
+
+        val target = state.errors.filter {
+            it.active && it.proposalId == entry.proposalId && it.error in e.acknowledgedErrors
+        }
+        if (target.isEmpty()) return reject("nothing active to acknowledge")
+
+        val errors = state.errors.map {
+            if (it.active && it.proposalId == entry.proposalId && it.error in e.acknowledgedErrors)
+                it.copy(
+                    active = false,
+                    resolvedBy = e.acknowledgedBy,
+                    resolvedReason = e.reason,
+                    resolvedGeneration = state.holdGeneration,
+                )
+            else it
+        } + LedgerErrorRecord(
+            entry.proposalId, LedgerError.HOLD_ACKNOWLEDGED,
+            "${e.acknowledgedBy}: ${e.reason} (${e.acknowledgedErrors.joinToString(",")})",
+            "${e.acknowledgedBy}: ${e.reason}", 1, active = false,
         )
+        // Der Entry-Latch faellt nur, wenn KEIN aktiver Fehler dieser Zeile
+        // mehr uebrig ist.
+        val stillActive = errors.any { it.active && it.proposalId == entry.proposalId }
+        return state.copy(
+            errors = errors,
+            entries = state.entries + (entry.proposalId to entry.copy(failClosed = stillActive)),
+        )
+    }
+
+    /**
+     * Ein Epochwechsel ist ein ANGEKUENDIGTES Ereignis, keine neue Zeichenkette
+     * im naechsten Snapshot (R95-F2). Eine schon benutzte Epoch kann nicht
+     * wiederbelebt werden.
+     */
+    private fun onSourceRestarted(state: LedgerState, e: LedgerEvent.SnapshotSourceRestarted): LedgerState {
+        val problem = when {
+            e.newEpochId.isBlank()                       -> "empty epoch"
+            e.newEpochId == "default"                    -> "default epoch"
+            e.evidence.isBlank()                         -> "no evidence"
+            e.newEpochId in state.seenEpochs             -> "epoch already used: ${e.newEpochId}"
+            state.lastSnapshotOrder != null && e.oldEpochId != state.lastSnapshotOrder.sourceEpochId ->
+                "old epoch mismatch: ${e.oldEpochId} vs ${state.lastSnapshotOrder.sourceEpochId}"
+            else                                         -> null
+        }
+        if (problem != null)
+            return fail(state, null, LedgerError.SNAPSHOT_ORDER_CONFLICT, "source restart rejected: $problem")
+        return fail(state, null, LedgerError.SNAPSHOT_EPOCH_REBASED, "${e.oldEpochId} -> ${e.newEpochId}: ${e.evidence}")
+            .copy(announcedEpochId = e.newEpochId)
     }
 
     private fun onWithdrawn(state: LedgerState, entry: ProposalEntry, e: LedgerEvent.QueueWithdrawnProven): LedgerState {
@@ -485,27 +566,21 @@ object LedgerReducer {
      * falsch zuordnen.
      */
     private fun onSnapshot(state: LedgerState, e: LedgerEvent.IobSnapshotObserved, cfg: LedgerConfig): LedgerState {
-        var errors = state.errors
-
-        fun note(entry: ProposalEntry, error: LedgerError, detail: String, failClosed: Boolean): ProposalEntry {
-            errors = upsert(errors, entry.proposalId, error, detail)
-            return entry.copy(
-                failClosed = entry.failClosed || failClosed,
-                errors = if (entry.errors.contains(error)) entry.errors else entry.errors + error,
-            )
-        }
-
         val viewHash = e.snapshot.treatmentSnapshotHash
         val order = e.snapshot.order
         val last = state.lastSnapshotOrder
 
-        // R93-F2: die Ordnung entscheidet EINMAL je Snapshot, vor jeder Zeile.
-        // Ohne sie konnte ein verspaeteter Snapshot einen neueren Zustand
-        // zurueckrollen - und ein verspaeteter LEERER sogar einen dauerhaften
-        // Removal-Hold erzeugen, obwohl der Datensatz laengst wieder da ist.
+        // R95-F4: eine unbrauchbare Ordnung wird abgewiesen, nicht interpretiert.
+        if (order.sourceEpochId.isBlank() || order.sourceEpochId == "default" ||
+            order.calculatorGeneration < 0L || order.calculatedAt <= 0L
+        ) return fail(
+            state, null, LedgerError.SNAPSHOT_ORDER_CONFLICT,
+            "invalid order: epoch='${order.sourceEpochId}' gen=${order.calculatorGeneration} at=${order.calculatedAt}"
+        )
+
         if (last != null && last.sourceEpochId == order.sourceEpochId) {
-            if (order.sameOrderAs(last) && viewHash != (state.lastSnapshotViewHash ?: viewHash))
-            // Gleiche Ordnung, anderer Inhalt: einer der beiden luegt.
+            // R93-F2: die Ordnung entscheidet EINMAL je Snapshot, vor jeder Zeile.
+            if (order.sameOrderAs(last) && viewHash != state.lastSnapshotViewHash)
                 return fail(
                     state, null, LedgerError.SNAPSHOT_ORDER_CONFLICT,
                     "gen=${order.calculatorGeneration} at=${order.calculatedAt}: $viewHash vs ${state.lastSnapshotViewHash}"
@@ -515,12 +590,29 @@ object LedgerReducer {
                     state, null, LedgerError.STALE_SNAPSHOT_IGNORED,
                     "gen=${order.calculatorGeneration} at=${order.calculatedAt} behind gen=${last.calculatorGeneration} at=${last.calculatedAt}"
                 )
+        } else if (last != null) {
+            // R95-F2: ein Epochwechsel gilt nur ANGEKUENDIGT. Sonst waere die
+            // Epoch der Reset-Knopf fuer die Monotonie.
+            if (order.sourceEpochId != state.announcedEpochId)
+                return fail(
+                    state, null, LedgerError.SNAPSHOT_ORDER_CONFLICT,
+                    "unannounced epoch change ${last.sourceEpochId} -> ${order.sourceEpochId}"
+                )
         }
-        // Ueber Epochgrenzen wird NICHT verglichen, sondern sichtbar rebasiert.
-        var s0 = if (last != null && last.sourceEpochId != order.sourceEpochId)
-            fail(state, null, LedgerError.SNAPSHOT_EPOCH_REBASED, "${last.sourceEpochId} -> ${order.sourceEpochId}")
-        else state
-        errors = s0.errors
+
+        var s0 = state.copy(
+            seenEpochs = state.seenEpochs + order.sourceEpochId,
+            announcedEpochId = if (state.announcedEpochId == order.sourceEpochId) null else state.announcedEpochId,
+        )
+        var noteState = s0
+
+        fun note(entry: ProposalEntry, error: LedgerError, detail: String, failClosed: Boolean): ProposalEntry {
+            noteState = upsert(noteState, entry.proposalId, error, detail)
+            return entry.copy(
+                failClosed = entry.failClosed || failClosed,
+                errors = if (entry.errors.contains(error)) entry.errors else entry.errors + error,
+            )
+        }
 
         val next = s0.entries.mapValues { (_, entry) ->
             val id = entry.identity ?: return@mapValues entry
@@ -630,8 +722,8 @@ object LedgerReducer {
         // Folge darf den Zustand nicht veraendern.
         val touched = next.any { (k, v) -> v != s0.entries[k] }
         val orderChanged = state.lastSnapshotOrder != order || state.lastSnapshotViewHash != viewHash
-        return if (touched || errors !== s0.errors || orderChanged)
-            s0.copy(entries = next, errors = errors, lastSnapshotOrder = order, lastSnapshotViewHash = viewHash)
+        return if (touched || noteState.errors !== s0.errors || orderChanged || s0 !== state)
+            noteState.copy(entries = next, lastSnapshotOrder = order, lastSnapshotViewHash = viewHash)
         else s0
     }
 
@@ -659,20 +751,45 @@ object LedgerReducer {
      * Fehler-UPSERT statt Anhaengen (R93-F5). Derselbe Fehler derselben Zeile
      * bleibt EIN Eintrag mit Zaehler; nur die Detailprobe wandert mit.
      */
+    /**
+     * Fehler-UPSERT statt Anhaengen (R93-F5), jetzt mit Aktiv-Semantik (R95-F1).
+     *
+     * Ein bereits quittierter Fehler, der ERNEUT auftritt, wird wieder aktiv —
+     * eine Unterschrift gilt fuer das Gesehene, nicht fuer die Zukunft.
+     */
     private fun upsert(
-        errors: List<LedgerErrorRecord>,
+        state: LedgerState,
         proposalId: String?,
         error: LedgerError,
         detail: String,
-    ): List<LedgerErrorRecord> {
+    ): LedgerState {
+        val errors = state.errors
         val idx = errors.indexOfFirst { it.proposalId == proposalId && it.error == error }
-        if (idx < 0) return errors + LedgerErrorRecord(proposalId, error, detail, detail, 1)
-        val old = errors[idx]
-        // Der Zaehler waechst, die Darstellung nicht. Das ist der ganze Zweck:
-        // 10.000 gleiche Fehler kosten einen Eintrag, nicht 10.000.
-        return errors.toMutableList().also {
-            it[idx] = old.copy(lastDetail = detail, occurrences = old.occurrences + 1)
+        val failClosed = error in LedgerState.FAIL_CLOSED_ERRORS
+        if (idx < 0) {
+            val gen = if (failClosed) state.holdGeneration + 1 else state.holdGeneration
+            return state.copy(
+                errors = errors + LedgerErrorRecord(proposalId, error, detail, detail, 1, activeGeneration = gen),
+                holdGeneration = gen,
+            )
         }
+        val old = errors[idx]
+        // Der Zaehler waechst, die Darstellung nicht.
+        val reactivated = !old.active && failClosed
+        val gen = if (reactivated) state.holdGeneration + 1 else state.holdGeneration
+        val updated = old.copy(
+            lastDetail = detail,
+            occurrences = old.occurrences + 1,
+            active = true,
+            activeGeneration = if (reactivated) gen else old.activeGeneration,
+            resolvedBy = if (reactivated) null else old.resolvedBy,
+            resolvedReason = if (reactivated) null else old.resolvedReason,
+            resolvedGeneration = if (reactivated) null else old.resolvedGeneration,
+        )
+        return state.copy(
+            errors = errors.toMutableList().also { it[idx] = updated },
+            holdGeneration = gen,
+        )
     }
 
     private fun fail(
@@ -682,13 +799,12 @@ object LedgerReducer {
         detail: String,
         markEntry: Boolean = false,
     ): LedgerState {
-        val errors = upsert(state.errors, proposalId, error, detail)
+        val withError = upsert(state, proposalId, error, detail)
         val entries =
-            if (markEntry && proposalId != null && state.entries.containsKey(proposalId))
-                state.entries + (proposalId to state.entries.getValue(proposalId).failed(error))
-            else state.entries
-        if (errors === state.errors && entries === state.entries) return state
-        return state.copy(entries = entries, errors = errors)
+            if (markEntry && proposalId != null && withError.entries.containsKey(proposalId))
+                withError.entries + (proposalId to withError.entries.getValue(proposalId).failed(error))
+            else withError.entries
+        return if (entries === withError.entries) withError else withError.copy(entries = entries)
     }
 
     private fun ProposalEntry.failed(error: LedgerError): ProposalEntry =
