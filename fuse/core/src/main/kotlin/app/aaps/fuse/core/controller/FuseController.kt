@@ -51,6 +51,40 @@ object FuseController {
 
     enum class TbrAction { KEEP_CURRENT, CANCEL_TO_SCHEDULED, ZERO_TEMP, NO_NEW_POSITIVE }
 
+    /**
+     * Konkrete TBR-Antwort. AAPS setzt die TBR in JEDEM Zyklus VOR dem SMB — ein
+     * APS ohne Rate und Dauer liesse das Basal ungeregelt.
+     *
+     * [rateUPerH] ist ABSOLUT (nicht Prozent), [durationMin] die angeforderte
+     * Laufzeit. `null` heisst ausdruecklich "keine neue Anforderung, laufende
+     * TBR unberuehrt lassen" — nicht "Rate 0".
+     */
+    data class TbrRequest(val rateUPerH: Double, val durationMin: Int)
+
+    /** Uebersetzt die Kategorie in eine konkrete Anforderung.
+     *
+     *  Die Trennung ist Absicht: die Kategorie sagt, WAS gilt; erst hier kommen
+     *  Profilbasal und Pumpengrenzen dazu. So bleibt die Entscheidung testbar,
+     *  ohne dass jede Regel Pumpendetails kennen muss. */
+    fun tbrRequest(
+        action: TbrAction,
+        scheduledBasalUPerH: Double,
+        maxBasalUPerH: Double,
+        durationMin: Int = 30,
+    ): TbrRequest? = when (action) {
+        // Zero-Temp ist die einzige Rueckholmoeglichkeit des Loops. Sie wird
+        // ueber die volle Dauer gesetzt, nicht minutenweise erneuert.
+        TbrAction.ZERO_TEMP           -> TbrRequest(0.0, durationMin)
+        // Zurueck auf Profilbasal: als absolute Rate, damit eine laufende
+        // Abweichung sicher endet statt nur auszulaufen.
+        TbrAction.CANCEL_TO_SCHEDULED -> TbrRequest(scheduledBasalUPerH.coerceIn(0.0, maxBasalUPerH), durationMin)
+        // Nichts anfordern: eine bestehende TBR laeuft weiter. NICHT Rate 0.
+        TbrAction.KEEP_CURRENT        -> null
+        // Kein neues POSITIVES Temp — eine bereits laufende Absenkung darf
+        // bleiben, weil sie in die sichere Richtung wirkt.
+        TbrAction.NO_NEW_POSITIVE     -> null
+    }
+
     enum class Block {
         NONE, HEALTH_NOT_READY, SAFETY_HOLD, PUMP_BUSY, GUARD_FLOOR,
         NO_DEMAND, IOB_TH_REACHED, MAX_IOB_REACHED, BELOW_PUMP_INCREMENT, HORIZON_MISSING,

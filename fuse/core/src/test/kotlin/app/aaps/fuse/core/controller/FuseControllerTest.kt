@@ -153,4 +153,36 @@ class FuseControllerTest {
         assertEquals(0.0, d.smbU)
         assertEquals(FuseController.Block.BELOW_PUMP_INCREMENT, d.block)
     }
+
+    // ---- TBR konkret -----------------------------------------------------
+
+    @Test
+    fun `ZERO_TEMP wird zu Rate 0 ueber die volle Dauer`() {
+        val r = FuseController.tbrRequest(FuseController.TbrAction.ZERO_TEMP, 0.8, 3.0, 30)!!
+        assertEquals(0.0, r.rateUPerH)
+        assertEquals(30, r.durationMin)
+    }
+
+    @Test
+    fun `CANCEL_TO_SCHEDULED setzt das Profilbasal absolut und respektiert maxBasal`() {
+        assertEquals(0.8, FuseController.tbrRequest(FuseController.TbrAction.CANCEL_TO_SCHEDULED, 0.8, 3.0)!!.rateUPerH)
+        assertEquals(3.0, FuseController.tbrRequest(FuseController.TbrAction.CANCEL_TO_SCHEDULED, 9.0, 3.0)!!.rateUPerH)
+    }
+
+    /** null heisst "nichts anfordern" — ausdruecklich NICHT Rate 0. Eine
+     *  laufende Absenkung darf weiterlaufen, sie wirkt in die sichere Richtung. */
+    @Test
+    fun `KEEP_CURRENT und NO_NEW_POSITIVE fordern nichts an`() {
+        assertEquals(null, FuseController.tbrRequest(FuseController.TbrAction.KEEP_CURRENT, 0.8, 3.0))
+        assertEquals(null, FuseController.tbrRequest(FuseController.TbrAction.NO_NEW_POSITIVE, 0.8, 3.0))
+    }
+
+    @Test
+    fun `Guard und fehlender Bedarf fuehren beide zu einer echten Zero-Temp`() {
+        listOf(pred(250.0, minLower = 60.0), pred(90.0)).forEach { p ->
+            val d = FuseController.decide(state(), p)
+            val r = FuseController.tbrRequest(d.tbr, 0.8, 3.0)
+            assertEquals(0.0, r!!.rateUPerH)
+        }
+    }
 }
