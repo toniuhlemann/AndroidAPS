@@ -96,4 +96,36 @@ class UkfQ1Test {
         val windowOnly = long.takeLast(UkfQ1.WINDOW_SAMPLES)
         assertEquals(UkfQ1.leadingEdge(windowOnly), UkfQ1.leadingEdge(long))
     }
+
+    // ---- R60-F1: Reset-Grenzen (die Fensterkappung selbst liegt im Plugin,
+    // hier wird die FOLGE geprueft: ein am Reset abgeschnittenes Fenster darf
+    // die Vorgeschichte nicht mehr sehen) ----
+
+    @Test
+    fun `am Reset abgeschnittenes Fenster ignoriert die alte Kalibrierskala`() {
+        // Vor der Kalibrierung lag die Reihe ~40 mg/dl hoeher (alte Slope/Offset).
+        val alt = series(t0, *DoubleArray(60) { 160.0 }.toTypedArray().toDoubleArray())
+        val neu = series(t0 + 60 * 60_000L, *DoubleArray(10) { 120.0 }.toTypedArray().toDoubleArray())
+        val mitVorgeschichte = UkfQ1.leadingEdge(alt + neu)!!
+        val abgeschnitten = UkfQ1.leadingEdge(neu)!!
+        // Ungetrennt uebernimmt der Filter den Kalibriersprung als STEILEN ABFALL und
+        // schiesst unter den neuen Pegel (116,2 statt 120) - der Fehler zeigt also nach
+        // UNTEN, was im Loop die gefaehrlichere Richtung ist. Geprueft wird deshalb der
+        // Betrag der Abweichung, nicht ihr Vorzeichen.
+        assertTrue(abs(mitVorgeschichte.glucose - abgeschnitten.glucose) > 1.0,
+                   "ungetrennt=${mitVorgeschichte.glucose} abgeschnitten=${abgeschnitten.glucose}")
+        assertTrue(mitVorgeschichte.ratePerMin < -0.05,
+                   "Sprung erzeugt Phantom-Rate: ${mitVorgeschichte.ratePerMin}")
+        assertTrue(abs(abgeschnitten.glucose - 120.0) < 1.5, "abgeschnitten=${abgeschnitten.glucose}")
+    }
+
+    @Test
+    fun `Sensorwechsel ohne Zeitluecke wird ohne Grenze NICHT erkannt`() {
+        // Belegt, warum die Grenze im Plugin noetig ist: der Filter selbst sieht
+        // einen nahtlosen Sensorwechsel nicht (kein Gap, kein Sentinel).
+        val alt = series(t0, *DoubleArray(60) { 200.0 }.toTypedArray().toDoubleArray())
+        val neu = series(t0 + 60 * 60_000L, *DoubleArray(5) { 100.0 }.toTypedArray().toDoubleArray())
+        val r = UkfQ1.leadingEdge(alt + neu)!!
+        assertTrue(r.glucose > 105.0, "Filter glaettet ueber den Wechsel: ${r.glucose}")
+    }
 }

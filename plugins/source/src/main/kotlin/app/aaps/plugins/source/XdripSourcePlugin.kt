@@ -169,18 +169,38 @@ class XdripSourcePlugin @Inject constructor(
                 // die EMA zurueck (Wert bleibt dann `smooth`).
                 if (preferences.get(BooleanKey.FslUkfQ1Enabled)) {
                     runCatching {
-                        val from = thisTimeRaw - UkfQ1.WINDOW_SAMPLES * 60_000L
+                        // R60-F1: RESET-GRENZEN. Ein Sensorwechsel erzeugt nicht zwingend eine
+                        // 60-min-Luecke, und nach einer Kalibrierung tragen die historischen
+                        // GV.raw-Punkte noch die ALTE Slope/Offset-Skala, waehrend der aktuelle
+                        // Punkt bereits die neue nutzt. Ohne diese Grenzen wuerde Q1 zwei
+                        // Messregime als EINE durchgehende Reihe filtern. Das Viewer-
+                        // Referenzmodell begrenzt genau so (sensorStartMs/calibrationStartMs).
+                        val sensorStart = maxOf(
+                            getSensorStartTime(bundle) ?: 0L,
+                            persistenceLayer.getLastTherapyRecordUpToNow(TE.Type.SENSOR_CHANGE)?.timestamp ?: 0L,
+                        )
+                        val calibrationStart = preferences.get(LongKey.FslCalibrationStart)
+                            .takeIf { it > 0L } ?: 0L
+                        val resetBoundary = maxOf(sensorStart, calibrationStart)
+                        val from = maxOf(thisTimeRaw - UkfQ1.WINDOW_SAMPLES * 60_000L, resetBoundary)
                         val history = persistenceLayer
                             .getBgReadingsDataFromTimeToTime(from, thisTimeRaw - 1, true)
                             .mapNotNull { gv ->
                                 gv.raw?.takeIf { it > 39.0 }?.let { UkfQ1.Point(gv.timestamp, it) }
                             }
-                        UkfQ1.leadingEdge(history + UkfQ1.Point(thisTimeRaw, extraBgEstimate))
-                    }.onSuccess { q1 ->
+                        val resetReason = when {
+                            history.isEmpty()                 -> "coldStart"
+                            resetBoundary > from - 1          -> if (sensorStart >= calibrationStart) "sensorChange" else "calibrationStart"
+                            else                              -> null
+                        }
+                        Triple(UkfQ1.leadingEdge(history + UkfQ1.Point(thisTimeRaw, extraBgEstimate)),
+                               history.size + 1, resetReason)
+                    }.onSuccess { (q1, inputCount, resetReason) ->
                         if (q1 != null) {
                             aapsLogger.debug(
                                 LTag.BGSOURCE,
-                                "UkfQ1 json: {\"q1\":${q1.glucose},\"rate\":${q1.ratePerMin},\"learnedR\":${q1.learnedR},\"outlier\":${q1.outlier},\"ema\":$smooth}"
+                                "UkfQ1 json: {\"q1\":${q1.glucose},\"rate\":${q1.ratePerMin},\"learnedR\":${q1.learnedR}," +
+                                    "\"outlier\":${q1.outlier},\"ema\":$smooth,\"inputCount\":$inputCount,\"resetReason\":\"$resetReason\"}"
                             )
                             smooth = q1.glucose
                         }
