@@ -44,6 +44,26 @@ data class APSResult(
         UNKNOWN,
         AMA,
         SMB,
-        AUTO_ISF
+        AUTO_ISF,
+
+        /**
+         * FUSE. Die Spalte speichert den NAMEN als Text (Converters.kt:
+         * `fromAlgorithm = algorithm?.name`), deshalb braucht dieser Wert KEINE
+         * Room-Migration — das Schema aendert sich nicht.
+         *
+         * Er wird trotzdem gebraucht: `LoopPlugin` persistiert JEDES APSResult,
+         * und `toDb()` endet fuer unbekannte Werte in `error("Unsupported")`.
+         * Ohne diesen Eintrag flöge der erste FUSE-Loop-Lauf aus
+         * `LoopPlugin.invoke()` heraus — die Methode hat try/finally, aber kein
+         * catch. Es kompiliert anstandslos; es knallt erst zur Laufzeit.
+         *
+         * ACHTUNG BEIM RUECKFLASH: ein Build ohne diesen Enum-Wert kann Zeilen
+         * mit `algorithm = "FUSE"` nicht lesen (`Converters.toAlgorithm` nutzt
+         * `valueOf`). Betroffen sind die rollenden Abfragen
+         * (OpenAPS*Plugin.onStart 24 h, Graph-Worker) — es heilt sich also nach
+         * einem Tag von selbst, aber innerhalb des Fensters trifft es den
+         * Plugin-Start. Der aisf-Fork sollte denselben Wert kennen.
+         */
+        FUSE
     }
 }
