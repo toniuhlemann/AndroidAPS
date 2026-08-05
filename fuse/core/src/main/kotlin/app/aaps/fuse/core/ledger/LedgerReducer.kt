@@ -89,6 +89,20 @@ sealed interface LedgerEvent {
     /** v0.3.1 C6: die Identitaet ist an einer Station verloren gegangen. */
     data class ProposalIdLost(override val proposalId: String, val station: String) : OfProposal
 
+    /**
+     * AUSDRUECKLICHE Quittung eines Holds (R93-F5).
+     *
+     * Ein Hold verschwindet NIE von selbst. Ohne einen expliziten Weg zurueck
+     * macht aber ein einziger transienter Fehler den Testpfad dauerhaft
+     * unbenutzbar. Die Quittung loescht die Sperre — und NICHT die Historie:
+     * Fehlerliste und Zaehler bleiben stehen.
+     */
+    data class HoldAcknowledged(
+        override val proposalId: String,
+        val acknowledgedBy: String,
+        val reason: String,
+    ) : OfProposal
+
     /** Global: ein IOB-Snapshot MIT Treatment-Provenienz wurde gebaut. */
     data class IobSnapshotObserved(val snapshot: IobAccountingSnapshot) : LedgerEvent
 
@@ -120,6 +134,13 @@ object LedgerReducer {
     private fun onProposed(state: LedgerState, e: LedgerEvent.Proposed, cfg: LedgerConfig): LedgerState {
         if (!e.proposedU.isFinite() || e.proposedU < 0.0)
             return fail(state, e.proposalId, LedgerError.NON_FINITE_AMOUNT, "proposedU=${e.proposedU}")
+        // R93-F1: eine ungueltige Policy darf nicht in die Zeile gepinnt werden -
+        // sie wuerde dort ueber deren gesamte Lebensdauer weiterwirken.
+        if (!cfg.amountEpsU.isFinite() || cfg.amountEpsU < 0.0 || !cfg.bolusStepU.isFinite() || cfg.bolusStepU <= 0.0)
+            return fail(
+                state, e.proposalId, LedgerError.NON_FINITE_AMOUNT,
+                "invalid policy: eps=${cfg.amountEpsU} step=${cfg.bolusStepU}"
+            )
         val existing = state.entries[e.proposalId]
         if (existing != null) {
             // Ein Wiederholungsversuch mit demselben Inhalt darf keinen zweiten
@@ -150,6 +171,7 @@ object LedgerReducer {
             latestBolusTimestampAtDecision = e.latestBolusTimestamp,
             errors = emptyList(),
             amountEpsU = cfg.amountEpsU,
+            bolusStepU = cfg.bolusStepU,
             firstAccountedSnapshotHash = null,
             lastReconciledViewHash = null,
             lastReconciledAtTs = null,
@@ -172,6 +194,7 @@ object LedgerReducer {
         is LedgerEvent.DeliveryProven    -> onDeliveryProven(state, entry, e, cfg)
         is LedgerEvent.PumpIdentityBound -> onIdentity(state, entry, e)
         is LedgerEvent.DbAmountObserved  -> onDbAmount(state, entry, e, cfg)
+        is LedgerEvent.HoldAcknowledged  -> onHoldAcknowledged(state, entry, e)
         is LedgerEvent.ProposalIdLost    ->
             put(fail(state, entry.proposalId, LedgerError.PROPOSAL_ID_LOST, e.station), entry.failed(LedgerError.PROPOSAL_ID_LOST))
     }
@@ -189,7 +212,7 @@ object LedgerReducer {
             // Sonst verliert der Ledger seine zugesicherte Stufeninvariante
             // ausgerechnet dort, wo ein lueckenloses Audit am meisten zaehlt.
             val axis = entry.amounts.withStage(e.stage, e.amountU)
-            val violation = LedgerRules.chainViolation(axis, cfg.amountEpsU)
+            val violation = LedgerRules.chainViolation(axis, entry.amountEpsU)
             var s = fail(
                 state, entry.proposalId, LedgerError.PHASE_VIOLATION,
                 "${e.stage} after ${entry.queueReject?.name ?: "withdrawal"}"
@@ -209,14 +232,14 @@ object LedgerReducer {
         }
         val known = entry.amounts.stage(e.stage)
         if (known != null) {
-            if (LedgerRules.sameAmount(known, e.amountU, cfg.amountEpsU)) return state
+            if (LedgerRules.sameAmount(known, e.amountU, entry.amountEpsU)) return state
             return put(
                 fail(state, entry.proposalId, LedgerError.CONFLICTING_STAGE_AMOUNT, "${e.stage}: $known -> ${e.amountU}"),
                 entry.failed(LedgerError.CONFLICTING_STAGE_AMOUNT)
             )
         }
         val axis = entry.amounts.withStage(e.stage, e.amountU)
-        val violation = LedgerRules.chainViolation(axis, cfg.amountEpsU)
+        val violation = LedgerRules.chainViolation(axis, entry.amountEpsU)
         if (violation != null)
             return put(
                 fail(state, entry.proposalId, LedgerError.CONSTRAINT_CHAIN_INVALID, violation),
@@ -231,7 +254,7 @@ object LedgerReducer {
         val q = entry.amounts.queueConstrainedU
         // C4: eine auf Null constrainte Menge darf NIE in die Queue gelangen —
         // der Treiber scheitert danach an require(insulin > 0).
-        if (q != null && LedgerRules.queueWouldRejectAsZero(q, cfg.bolusStepU))
+        if (q != null && LedgerRules.queueWouldRejectAsZero(q, entry.bolusStepU))
             return put(
                 fail(state, entry.proposalId, LedgerError.PHASE_VIOLATION, "queueConstrainedU=$q accepted"),
                 entry.failed(LedgerError.PHASE_VIOLATION)
@@ -287,6 +310,18 @@ object LedgerReducer {
      * einem beliebigen Freitext als Beleg. Ein Rueckzug, den es an dieser
      * Stelle gar nicht geben kann, darf nichts befreien.
      */
+    private fun onHoldAcknowledged(state: LedgerState, entry: ProposalEntry, e: LedgerEvent.HoldAcknowledged): LedgerState {
+        if (e.acknowledgedBy.isBlank() || e.reason.isBlank())
+            return fail(state, entry.proposalId, LedgerError.PHASE_VIOLATION, "empty acknowledgement")
+        if (!entry.failClosed) return state
+        // Die Sperre faellt, die Historie bleibt: errors und Zaehler sind der
+        // Grund, warum spaeter noch jemand nachsehen kann, was hier war.
+        return put(
+            fail(state, entry.proposalId, LedgerError.HOLD_ACKNOWLEDGED, "${e.acknowledgedBy}: ${e.reason}"),
+            entry.copy(failClosed = false),
+        )
+    }
+
     private fun onWithdrawn(state: LedgerState, entry: ProposalEntry, e: LedgerEvent.QueueWithdrawnProven): LedgerState {
         if (entry.withdrawnProven) return state
         val problem = when {
@@ -324,9 +359,9 @@ object LedgerReducer {
         // Der Latch bleibt auch dann noetig, wenn schon ein Lieferzeichen
         // vorliegt: er haelt den Widerspruch fuer das Audit fest.
         val commandU = entry.amounts.pumpCommandU ?: entry.amounts.latestKnownCommandU
-        val delivery = LedgerRules.classifyDelivery(commandU, e.bolusDeliveredU, cfg.bolusStepU)
+        val delivery = LedgerRules.classifyDelivery(commandU, e.bolusDeliveredU, entry.bolusStepU)
         if (entry.terminalSeen) {
-            val same = LedgerRules.sameAmount(entry.amounts.reportedDeliveredU, e.bolusDeliveredU, cfg.amountEpsU)
+            val same = LedgerRules.sameAmount(entry.amounts.reportedDeliveredU, e.bolusDeliveredU, entry.amountEpsU)
             if (same && !contradiction) return state
             val conservative = maxOf(entry.amounts.reportedDeliveredU ?: 0.0, e.bolusDeliveredU ?: 0.0)
             return put(
@@ -354,7 +389,7 @@ object LedgerReducer {
                 fail(state, entry.proposalId, LedgerError.NON_FINITE_AMOUNT, "proven=${e.provenDeliveredU}"),
                 entry.failed(LedgerError.NON_FINITE_AMOUNT)
             )
-        if (LedgerRules.sameAmount(entry.amounts.provenDeliveredU, e.provenDeliveredU, cfg.amountEpsU)) return state
+        if (LedgerRules.sameAmount(entry.amounts.provenDeliveredU, e.provenDeliveredU, entry.amountEpsU)) return state
         // Ein Beleg ueber eine POSITIVE Lieferung nach einem Reject widerspricht
         // dem Reject (R79-F1). Der Beleg gilt trotzdem - er ist die staerkere
         // Aussage -, aber der Widerspruch wird sichtbar und sperrt.
@@ -365,11 +400,11 @@ object LedgerReducer {
             contradiction = true
         }
         val commandU = entry.amounts.pumpCommandU ?: entry.amounts.latestKnownCommandU
-        val ticks = LedgerRules.canonicalTicks(e.provenDeliveredU, cfg.bolusStepU)
+        val ticks = LedgerRules.canonicalTicks(e.provenDeliveredU, entry.bolusStepU)
         val delivery = when {
             ticks == 0L                                                      -> DeliveryState.CONFIRMED_ZERO
-            ticks > LedgerRules.canonicalTicks(commandU, cfg.bolusStepU)      -> DeliveryState.OVERDELIVERY_ANOMALY
-            ticks == LedgerRules.canonicalTicks(commandU, cfg.bolusStepU)     -> DeliveryState.REPORTED_FULL
+            ticks > LedgerRules.canonicalTicks(commandU, entry.bolusStepU)      -> DeliveryState.OVERDELIVERY_ANOMALY
+            ticks == LedgerRules.canonicalTicks(commandU, entry.bolusStepU)     -> DeliveryState.REPORTED_FULL
             else                                                             -> DeliveryState.REPORTED_PARTIAL
         }
         val corrections = if (entry.amounts.provenDeliveredU != null) entry.corrections + 1 else entry.corrections
@@ -424,7 +459,7 @@ object LedgerReducer {
                 fail(state, entry.proposalId, LedgerError.NON_FINITE_AMOUNT, "dbAccounted=${e.dbAccountedU}"),
                 entry.failed(LedgerError.NON_FINITE_AMOUNT)
             )
-        if (LedgerRules.sameAmount(entry.amounts.dbAccountedU, e.dbAccountedU, cfg.amountEpsU)) return state
+        if (LedgerRules.sameAmount(entry.amounts.dbAccountedU, e.dbAccountedU, entry.amountEpsU)) return state
         val corrections = if (entry.amounts.dbAccountedU != null) entry.corrections + 1 else entry.corrections
         return put(
             state,
@@ -453,8 +488,7 @@ object LedgerReducer {
         var errors = state.errors
 
         fun note(entry: ProposalEntry, error: LedgerError, detail: String, failClosed: Boolean): ProposalEntry {
-            val record = LedgerErrorRecord(entry.proposalId, error, detail)
-            if (!errors.contains(record)) errors = errors + record
+            errors = upsert(errors, entry.proposalId, error, detail)
             return entry.copy(
                 failClosed = entry.failClosed || failClosed,
                 errors = if (entry.errors.contains(error)) entry.errors else entry.errors + error,
@@ -462,7 +496,33 @@ object LedgerReducer {
         }
 
         val viewHash = e.snapshot.treatmentSnapshotHash
-        val next = state.entries.mapValues { (_, entry) ->
+        val order = e.snapshot.order
+        val last = state.lastSnapshotOrder
+
+        // R93-F2: die Ordnung entscheidet EINMAL je Snapshot, vor jeder Zeile.
+        // Ohne sie konnte ein verspaeteter Snapshot einen neueren Zustand
+        // zurueckrollen - und ein verspaeteter LEERER sogar einen dauerhaften
+        // Removal-Hold erzeugen, obwohl der Datensatz laengst wieder da ist.
+        if (last != null && last.sourceEpochId == order.sourceEpochId) {
+            if (order.sameOrderAs(last) && viewHash != (state.lastSnapshotViewHash ?: viewHash))
+            // Gleiche Ordnung, anderer Inhalt: einer der beiden luegt.
+                return fail(
+                    state, null, LedgerError.SNAPSHOT_ORDER_CONFLICT,
+                    "gen=${order.calculatorGeneration} at=${order.calculatedAt}: $viewHash vs ${state.lastSnapshotViewHash}"
+                )
+            if (!order.isNewerThan(last) && !order.sameOrderAs(last))
+                return fail(
+                    state, null, LedgerError.STALE_SNAPSHOT_IGNORED,
+                    "gen=${order.calculatorGeneration} at=${order.calculatedAt} behind gen=${last.calculatorGeneration} at=${last.calculatedAt}"
+                )
+        }
+        // Ueber Epochgrenzen wird NICHT verglichen, sondern sichtbar rebasiert.
+        var s0 = if (last != null && last.sourceEpochId != order.sourceEpochId)
+            fail(state, null, LedgerError.SNAPSHOT_EPOCH_REBASED, "${last.sourceEpochId} -> ${order.sourceEpochId}")
+        else state
+        errors = s0.errors
+
+        val next = s0.entries.mapValues { (_, entry) ->
             val id = entry.identity ?: return@mapValues entry
 
             val compat = e.snapshot.containedTreatments.map { it to id.compatibility(it) }
@@ -491,7 +551,12 @@ object LedgerReducer {
             // Menge auf BEIDEN Seiten verschwunden: nicht mehr im Bestands-IOB
             // und wegen der veralteten Buchung auch nicht im Transportrest.
             if (hit == null) {
-                if ((entry.accountedAmountU ?: 0.0) <= cfg.amountEpsU) return@mapValues entry
+                // R93-F4: auch die BESTAETIGTE Abwesenheit ist eine Aussage der
+                // aktuellen Vollsicht - sonst kann ein spaeterer Cycle-Snapshot
+                // nicht belegen, dass alle Zeilen gegen dieselbe Sicht
+                // abgeglichen wurden.
+                val seen = entry.copy(lastReconciledViewHash = viewHash, lastReconciledAtTs = e.snapshot.calculatedAt)
+                if ((entry.accountedAmountU ?: 0.0) <= entry.amountEpsU) return@mapValues seen
                 return@mapValues note(
                     entry.copy(
                         accountedAmountU = 0.0,
@@ -514,8 +579,8 @@ object LedgerReducer {
 
             // R89-F2: fuer "Nullnachweis gegen positiven Fakt" entscheidet
             // Positivitaet, nicht die Pumpenrundung.
-            val positiveFact = hit.amountU > cfg.amountEpsU
-            val sameAmount = LedgerRules.sameAmount(entry.accountedAmountU, hit.amountU, cfg.amountEpsU)
+            val positiveFact = hit.amountU > entry.amountEpsU
+            val sameAmount = LedgerRules.sameAmount(entry.accountedAmountU, hit.amountU, entry.amountEpsU)
 
             // R91-F1: der aktuelle Fakt gilt, AUCH wenn er 0 ist. Vorher liess
             // ein auf 0 korrigierter Fakt die alte Buchung stehen.
@@ -563,8 +628,11 @@ object LedgerReducer {
 
         // Wert-, nicht Flaggenvergleich: eine Reconciliation ohne inhaltliche
         // Folge darf den Zustand nicht veraendern.
-        val touched = next.any { (k, v) -> v != state.entries[k] }
-        return if (touched || errors !== state.errors) state.copy(entries = next, errors = errors) else state
+        val touched = next.any { (k, v) -> v != s0.entries[k] }
+        val orderChanged = state.lastSnapshotOrder != order || state.lastSnapshotViewHash != viewHash
+        return if (touched || errors !== s0.errors || orderChanged)
+            s0.copy(entries = next, errors = errors, lastSnapshotOrder = order, lastSnapshotViewHash = viewHash)
+        else s0
     }
 
     /** Ein Absturzfenster bleibt epistemisch UNBEKANNT. Konservativ heisst:
@@ -587,6 +655,26 @@ object LedgerReducer {
     private fun put(state: LedgerState, entry: ProposalEntry): LedgerState =
         state.copy(entries = state.entries + (entry.proposalId to entry))
 
+    /**
+     * Fehler-UPSERT statt Anhaengen (R93-F5). Derselbe Fehler derselben Zeile
+     * bleibt EIN Eintrag mit Zaehler; nur die Detailprobe wandert mit.
+     */
+    private fun upsert(
+        errors: List<LedgerErrorRecord>,
+        proposalId: String?,
+        error: LedgerError,
+        detail: String,
+    ): List<LedgerErrorRecord> {
+        val idx = errors.indexOfFirst { it.proposalId == proposalId && it.error == error }
+        if (idx < 0) return errors + LedgerErrorRecord(proposalId, error, detail, detail, 1)
+        val old = errors[idx]
+        // Der Zaehler waechst, die Darstellung nicht. Das ist der ganze Zweck:
+        // 10.000 gleiche Fehler kosten einen Eintrag, nicht 10.000.
+        return errors.toMutableList().also {
+            it[idx] = old.copy(lastDetail = detail, occurrences = old.occurrences + 1)
+        }
+    }
+
     private fun fail(
         state: LedgerState,
         proposalId: String?,
@@ -594,13 +682,12 @@ object LedgerReducer {
         detail: String,
         markEntry: Boolean = false,
     ): LedgerState {
-        val record = LedgerErrorRecord(proposalId, error, detail)
-        if (state.errors.contains(record) && !markEntry) return state
-        val errors = if (state.errors.contains(record)) state.errors else state.errors + record
+        val errors = upsert(state.errors, proposalId, error, detail)
         val entries =
             if (markEntry && proposalId != null && state.entries.containsKey(proposalId))
                 state.entries + (proposalId to state.entries.getValue(proposalId).failed(error))
             else state.entries
+        if (errors === state.errors && entries === state.entries) return state
         return state.copy(entries = entries, errors = errors)
     }
 

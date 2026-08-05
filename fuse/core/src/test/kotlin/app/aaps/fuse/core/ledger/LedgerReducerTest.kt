@@ -32,6 +32,21 @@ class LedgerReducerTest {
 
     private fun entry(s: LedgerState, pid: String = id) = s.entries.getValue(pid)
 
+    /** R93-F4: ein fremder Snapshot laesst Buchung, Rest und Hold unberuehrt —
+     *  er aktualisiert aber die Provenienz, weil er die Abwesenheit BESTAETIGT.
+     *  Instanzgleichheit ist damit kein gueltiges Kriterium mehr. */
+    private fun assertUnaffected(before: LedgerState, after: LedgerState, tag: String = "") {
+        val a = before.entries.getValue(id)
+        val b = after.entries.getValue(id)
+        assertEquals(a.accounting, b.accounting, tag)
+        assertEquals(a.accountedAmountU, b.accountedAmountU, tag)
+        assertEquals(before.transportCommitmentU, after.transportCommitmentU, 1e-12, tag)
+        assertEquals(before.holdActuation, after.holdActuation, tag)
+        assertEquals(a.errors, b.errors, tag)
+        assertEquals(a.delivery, b.delivery, tag)
+    }
+
+
     /** Die ganze Kette bis zum Pumpenkommando, ohne Terminalereignis. */
     private fun throughPump(u: Double = 0.30, pid: String = id) = listOf(
         proposed(u, pid),
@@ -390,14 +405,14 @@ class LedgerReducerTest {
         // kein Grund, die Aktuation zu sperren (R81-F2 - diese Zeile fehlte,
         // weshalb der Testlauf den Fehler nicht bemerkt hat).
         assertFalse(after.holdActuation)
-        assertSame(s, after)
+        assertUnaffected(s, after)
     }
 
     @Test
     fun `ohne gebundene Identitaet gibt es keine Buchung`() {
         val s = LedgerReducer.reduceAll(LedgerState(), throughPump(0.30), cfg)
         val snapshot = IobAccountingSnapshot("h", "c", t0, 1L, listOf(AccountedTreatment(null, 4711L, 0.30)))
-        assertSame(s, LedgerReducer.reduce(s, LedgerEvent.IobSnapshotObserved(snapshot), cfg))
+        assertUnaffected(s, LedgerReducer.reduce(s, LedgerEvent.IobSnapshotObserved(snapshot), cfg))
     }
 
     // ---- Accounting-Achse ------------------------------------------------
@@ -431,7 +446,16 @@ class LedgerReducerTest {
         // mehr - wohl aber die Aussage darueber, gegen WELCHE Sicht zuletzt
         // abgeglichen wurde (R91-F5: Erstnachweis und aktuelle Vollsicht sind
         // getrennte Felder).
-        val twice = LedgerReducer.reduce(once, LedgerEvent.IobSnapshotObserved(snapshot.copy(treatmentSnapshotHash = "h2")), cfg)
+        // Ein spaeterer Snapshot traegt eine NEUERE Ordnung. Gleiche Ordnung mit
+        // anderem Inhalt waere seit R93-F2 ein Widerspruch - und war als
+        // Testkonstruktion von Anfang an unmoeglich.
+        val twice = LedgerReducer.reduce(
+            once,
+            LedgerEvent.IobSnapshotObserved(
+                snapshot.copy(treatmentSnapshotHash = "h2", calculatorGeneration = 2L, calculatedAt = t0 + 60_000L)
+            ),
+            cfg,
+        )
         assertEquals(0.0, twice.transportCommitmentU, 1e-12)
         assertEquals(0.30, entry(twice).accountedAmountU)
         assertEquals(0, entry(twice).corrections)
@@ -776,7 +800,7 @@ class LedgerReducerTest {
                 assertEquals(0.0, base.transportCommitmentU, 1e-12, tag)
 
                 // (3) fremder Snapshot laesst die befreite Zeile unberuehrt
-                assertSame(base, LedgerReducer.reduce(base, LedgerEvent.IobSnapshotObserved(foreign), cfg), tag)
+                assertUnaffected(base, LedgerReducer.reduce(base, LedgerEvent.IobSnapshotObserved(foreign), cfg), tag)
 
                 // (4) passender Snapshot: gebucht, Commitment 0, Widerspruch sichtbar
                 val s = LedgerReducer.reduce(base, LedgerEvent.IobSnapshotObserved(snapshot), cfg)
@@ -805,7 +829,7 @@ class LedgerReducerTest {
 
         // fremder Datensatz -> keine Aenderung
         val foreign = IobAccountingSnapshot("h2", "c2", t0, 2L, listOf(AccountedTreatment(null, 999L, 1.20)))
-        assertSame(base, LedgerReducer.reduce(base, LedgerEvent.IobSnapshotObserved(foreign), cfg))
+        assertUnaffected(base, LedgerReducer.reduce(base, LedgerEvent.IobSnapshotObserved(foreign), cfg))
 
         // (5) ein EXAKT gegenteiliger Nachweis ist kein normaler Widerspruch,
         // sondern ein unmoeglicher Zustand: zwei Nachweise schliessen sich aus.
@@ -1103,6 +1127,201 @@ class LedgerReducerTest {
         assertFalse(entry(over).failClosed)
     }
 
+    // ---- R93: gepinnte Policy und Snapshot-Ordnung ------------------------
+
+    @Test
+    fun `R93-F1 nach dem Vorschlag gilt ausschliesslich die gepinnte Policy`() {
+        val policyA = LedgerConfig(bolusStepU = 0.05, amountEpsU = 1e-9)
+        val policyB = LedgerConfig(bolusStepU = 0.01, amountEpsU = 0.10)
+        val events = throughPump(0.30) + listOf(
+            LedgerEvent.PumpIdentityBound(id, null, 4711L, "VIRTUAL", "h", t0),
+            LedgerEvent.IobSnapshotObserved(
+                IobAccountingSnapshot("h1", "c", t0, 1L, listOf(AccountedTreatment(null, 4711L, 0.05)))
+            ),
+            LedgerEvent.ExecutionResult(id, true, false, 0.25),
+        )
+        // Alles unter A
+        val allA = LedgerReducer.reduceAll(LedgerState(), events, policyA)
+        // Erst A (nur der Vorschlag), dann ALLES uebrige unter B
+        val mixed = LedgerReducer.reduceAll(
+            LedgerReducer.reduce(LedgerState(), events.first(), policyA),
+            events.drop(1),
+            policyB,
+        )
+        assertEquals(allA.entries.getValue(id), mixed.entries.getValue(id))
+        assertEquals(allA.transportCommitmentU, mixed.transportCommitmentU, 0.0)
+        // Unter B waere 0,05 kein positiver Fakt gewesen (eps 0,10) und die
+        // Lieferklassifikation haette mit 0,01er-Stufen gerechnet.
+        assertEquals(AccountingState.IOB_ACCOUNTED, entry(mixed).accounting)
+        assertEquals(1e-9, entry(mixed).amountEpsU)
+        assertEquals(0.05, entry(mixed).bolusStepU)
+    }
+
+    @Test
+    fun `R93-F1 eine ungueltige Policy wird beim Vorschlag abgewiesen`() {
+        for (bad in listOf(
+            LedgerConfig(bolusStepU = 0.05, amountEpsU = Double.NaN),
+            LedgerConfig(bolusStepU = 0.05, amountEpsU = -1.0),
+            LedgerConfig(bolusStepU = 0.0, amountEpsU = 1e-9),
+        )) {
+            val s = LedgerReducer.reduce(LedgerState(), proposed(0.30), bad)
+            assertTrue(s.entries.isEmpty(), bad.toString())
+            assertTrue(s.holdActuation, bad.toString())
+        }
+    }
+
+    @Test
+    fun `R93-F2 ein aelterer Snapshot rollt einen neueren Zustand nicht zurueck`() {
+        val bound = LedgerReducer.reduceAll(
+            LedgerState(),
+            throughPump(0.30) + listOf(LedgerEvent.PumpIdentityBound(id, null, 4711L, "VIRTUAL", "h", t0)),
+            cfg,
+        )
+        val s2 = LedgerReducer.reduce(
+            bound,
+            LedgerEvent.IobSnapshotObserved(
+                IobAccountingSnapshot("v2", "c", t0 + 200_000L, 2L, listOf(AccountedTreatment(null, 4711L, 0.30)))
+            ),
+            cfg,
+        )
+        assertEquals(0.0, s2.transportCommitmentU, 1e-12)
+
+        // verspaeteter aelterer Snapshot mit kleinerer Menge
+        val late = LedgerReducer.reduce(
+            s2,
+            LedgerEvent.IobSnapshotObserved(
+                IobAccountingSnapshot("v1", "c", t0 + 100_000L, 1L, listOf(AccountedTreatment(null, 4711L, 0.10)))
+            ),
+            cfg,
+        )
+        assertEquals(0.0, late.transportCommitmentU, 1e-12)
+        assertEquals(0.30, entry(late).accountedAmountU)
+        assertTrue(late.errors.any { it.error == LedgerError.STALE_SNAPSHOT_IGNORED })
+        // stale ist normal in einem nebenlaeufigen System - kein Hold
+        assertFalse(late.holdActuation)
+
+        // und der gefaehrlichere Fall: ein verspaeteter LEERER Snapshot
+        val lateEmpty = LedgerReducer.reduce(
+            s2,
+            LedgerEvent.IobSnapshotObserved(IobAccountingSnapshot("v0", "c", t0, 1L, emptyList())),
+            cfg,
+        )
+        assertEquals(0.0, lateEmpty.transportCommitmentU, 1e-12)
+        assertFalse(entry(lateEmpty).errors.contains(LedgerError.MISSING_ACCOUNTED_TREATMENT))
+        assertFalse(lateEmpty.holdActuation)
+    }
+
+    @Test
+    fun `R93-F2 gleiche Ordnung mit anderem Inhalt ist ein Widerspruch`() {
+        val base = LedgerReducer.reduce(
+            LedgerReducer.reduceAll(LedgerState(), throughPump(0.30), cfg),
+            LedgerEvent.IobSnapshotObserved(IobAccountingSnapshot("va", "c", t0, 1L, emptyList())),
+            cfg,
+        )
+        val conflicting = LedgerReducer.reduce(
+            base,
+            LedgerEvent.IobSnapshotObserved(IobAccountingSnapshot("vb", "c", t0, 1L, emptyList())),
+            cfg,
+        )
+        assertTrue(conflicting.errors.any { it.error == LedgerError.SNAPSHOT_ORDER_CONFLICT })
+        assertTrue(conflicting.holdActuation)
+    }
+
+    @Test
+    fun `R93-F2 eine neue Epoch wird rebasiert, nicht verglichen`() {
+        val base = LedgerReducer.reduce(
+            LedgerReducer.reduceAll(LedgerState(), throughPump(0.30), cfg),
+            LedgerEvent.IobSnapshotObserved(
+                IobAccountingSnapshot("va", "c", t0 + 500_000L, 9L, emptyList(), sourceEpochId = "epoch-1")
+            ),
+            cfg,
+        )
+        // Nach dem Neustart beginnt die Zaehlung neu - kleinere Zahlen, aber
+        // NICHT stale: ueber Epochgrenzen wird nicht verglichen.
+        val rebased = LedgerReducer.reduce(
+            base,
+            LedgerEvent.IobSnapshotObserved(
+                IobAccountingSnapshot("vb", "c", t0, 1L, emptyList(), sourceEpochId = "epoch-2")
+            ),
+            cfg,
+        )
+        assertTrue(rebased.errors.any { it.error == LedgerError.SNAPSHOT_EPOCH_REBASED })
+        assertFalse(rebased.errors.any { it.error == LedgerError.STALE_SNAPSHOT_IGNORED })
+        assertEquals("epoch-2", rebased.lastSnapshotOrder!!.sourceEpochId)
+    }
+
+    @Test
+    fun `R93-F4 auch die bestaetigte Abwesenheit aktualisiert die Provenienz`() {
+        val bound = LedgerReducer.reduceAll(
+            LedgerState(),
+            throughPump(0.30) + listOf(LedgerEvent.PumpIdentityBound(id, null, 4711L, "VIRTUAL", "h", t0)),
+            cfg,
+        )
+        assertNull(entry(bound).lastReconciledViewHash)
+        val absent = LedgerReducer.reduce(
+            bound,
+            LedgerEvent.IobSnapshotObserved(IobAccountingSnapshot("v1", "c", t0, 1L, emptyList())),
+            cfg,
+        )
+        assertEquals("v1", entry(absent).lastReconciledViewHash)
+        assertEquals(t0, entry(absent).lastReconciledAtTs)
+        // ohne inhaltliche Folge: Buchung und Rest unveraendert
+        assertEquals(0.30, absent.transportCommitmentU, 1e-12)
+        assertFalse(absent.holdActuation)
+    }
+
+    @Test
+    fun `R93-F5 ein dauerhafter Fehler waechst im Zaehler, nicht in der Liste`() {
+        var s = LedgerReducer.reduceAll(
+            LedgerState(),
+            throughPump(0.30) + listOf(LedgerEvent.PumpIdentityBound(id, 7L, 4711L, "VIRTUAL", "h", t0)),
+            cfg,
+        )
+        val ambiguous = listOf(AccountedTreatment(7L, null, 0.10), AccountedTreatment(null, 4711L, 0.30))
+        for (i in 1..10_000) {
+            s = LedgerReducer.reduce(
+                s,
+                LedgerEvent.IobSnapshotObserved(
+                    IobAccountingSnapshot("view-$i", "c", t0 + i * 60_000L, i.toLong(), ambiguous)
+                ),
+                cfg,
+            )
+        }
+        // EIN Eintrag, nicht 10.000
+        assertEquals(1, s.errors.size)
+        val rec = s.errors.single()
+        assertEquals(LedgerError.AMBIGUOUS_TREATMENT_IDENTITY, rec.error)
+        assertEquals(10_000, rec.occurrences)
+        assertTrue(rec.firstDetail.contains("view-1"))
+        assertTrue(rec.lastDetail.contains("view-10000"))
+        assertTrue(s.holdActuation)
+    }
+
+    @Test
+    fun `R93-F5 ein Hold faellt nur durch ausdrueckliche Quittung, die Historie bleibt`() {
+        val held = LedgerReducer.reduceAll(
+            LedgerState(),
+            throughPump(0.30) + listOf(LedgerEvent.ProposalIdLost(id, "DetailedBolusInfo")),
+            cfg,
+        )
+        assertTrue(held.holdActuation)
+
+        // leere Quittung zaehlt nicht
+        val empty = LedgerReducer.reduce(held, LedgerEvent.HoldAcknowledged(id, "", "weil"), cfg)
+        assertTrue(empty.holdActuation)
+
+        val ack = LedgerReducer.reduce(
+            held, LedgerEvent.HoldAcknowledged(id, "toni", "transienter Adapterfehler geprueft"), cfg
+        )
+        assertFalse(entry(ack).failClosed)
+        // Die Historie bleibt - sie ist der Grund, warum das spaeter noch
+        // jemand nachvollziehen kann.
+        assertTrue(entry(ack).errors.contains(LedgerError.PROPOSAL_ID_LOST))
+        assertTrue(ack.errors.any { it.error == LedgerError.HOLD_ACKNOWLEDGED })
+        // und die Menge bleibt gebucht
+        assertEquals(0.30, ack.transportCommitmentU, 1e-12)
+    }
+
     // ---- R79-F2: ungueltige Mengen ---------------------------------------
 
     @Test
@@ -1255,7 +1474,7 @@ class LedgerReducerTest {
             )
         )
         val after = LedgerReducer.reduce(s, LedgerEvent.IobSnapshotObserved(onlyForeign), cfg)
-        assertSame(s, after)
+        assertUnaffected(s, after)
         assertFalse(after.holdActuation)
         assertEquals(0.30, after.transportCommitmentU, 1e-12)
     }

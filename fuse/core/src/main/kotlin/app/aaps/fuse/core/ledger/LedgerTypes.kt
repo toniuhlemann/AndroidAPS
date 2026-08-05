@@ -77,9 +77,64 @@ enum class LedgerError {
      * Bewusst NICHT in [LedgerState.FAIL_CLOSED_ERRORS].
      */
     OVERACCOUNTED_CONSERVATIVE,
+    /** R93-F2: ein aelterer Vollsnapshot traf nach einem neueren ein. Normal in
+     *  einem nebenlaeufigen System, deshalb sichtbar, aber NICHT sperrend. */
+    STALE_SNAPSHOT_IGNORED,
+    /** R93-F2: dieselbe Ordnung, anderer Inhalt. Einer der beiden luegt. */
+    SNAPSHOT_ORDER_CONFLICT,
+    /** R93-F2: neue Source-Epoch (Neustart). Die Ordnung beginnt neu — sichtbar,
+     *  weil ueber Epochgrenzen nicht verglichen werden darf. */
+    SNAPSHOT_EPOCH_REBASED,
+    /** R93-F5: ein Hold wurde AUSDRUECKLICH quittiert. Nie automatisch. */
+    HOLD_ACKNOWLEDGED,
 }
 
-data class LedgerErrorRecord(val proposalId: String?, val error: LedgerError, val detail: String)
+/**
+ * Ein AGGREGIERTER Fehlereintrag (R93-F5).
+ *
+ * Vorher war jede Meldung ein eigener Datensatz, dedupliziert ueber den vollen
+ * Detailtext — und der enthaelt bei Snapshot-Fehlern den View-Hash. Ein
+ * dauerhaft mehrdeutiger Zustand haette bei 1-min-Takt jede Minute einen neuen
+ * globalen Eintrag erzeugt, also unbegrenztes Wachstum fuer EINEN Fehler.
+ *
+ * Kein Zeitstempel: der Reducer kennt bewusst keine Uhr. Statt firstSeenTs
+ * tragen [occurrences] und die beiden Detailproben die Historie.
+ */
+data class LedgerErrorRecord(
+    val proposalId: String?,
+    val error: LedgerError,
+    val firstDetail: String,
+    val lastDetail: String,
+    val occurrences: Int,
+) {
+
+    val key: Pair<String?, LedgerError> get() = proposalId to error
+}
+
+/**
+ * Ordnung der Vollsnapshots (R93-F2).
+ *
+ * Ohne sie kann ein VERSPAETETER Snapshot einen neueren Zustand zurueckrollen —
+ * und ein verspaeteter LEERER sogar einen dauerhaften Removal-Hold erzeugen,
+ * obwohl der Datensatz laengst wieder da ist.
+ *
+ * Ueber Epochgrenzen hinweg wird NICHT verglichen: nach einem Neustart sind
+ * Generation und Zeit eine neue Zaehlung, und ein Zahlenvergleich waere geraten.
+ */
+data class SnapshotOrder(
+    val sourceEpochId: String,
+    val calculatorGeneration: Long,
+    val calculatedAt: Long,
+) {
+
+    /** Nur INNERHALB derselben Epoch definiert. */
+    fun isNewerThan(other: SnapshotOrder): Boolean =
+        calculatorGeneration > other.calculatorGeneration ||
+            (calculatorGeneration == other.calculatorGeneration && calculatedAt > other.calculatedAt)
+
+    fun sameOrderAs(other: SnapshotOrder): Boolean =
+        calculatorGeneration == other.calculatorGeneration && calculatedAt == other.calculatedAt
+}
 
 /**
  * Pumpenidentitaet OHNE `temporaryId`-Zwang (v0.3.1 C2, R77-F1).
@@ -229,8 +284,28 @@ data class IobAccountingSnapshot(
     val treatmentCursor: String,
     val calculatedAt: Long,
     val calculatorGeneration: Long,
+    /**
+     * VOLLSICHT-VERTRAG (R93-F3), bindend fuer den Adapter:
+     *
+     * Diese Liste enthaelt ALLE Treatments, aus denen die zugehoerigen
+     * iobPoints berechnet wurden, PLUS jeden Treatment-Fakt, der an eine noch
+     * aktive Ledger-Zeile gebunden ist — auch wenn er aus dem normalen
+     * IOB-Zeitfenster herausgealtert ist.
+     *
+     * Wird stattdessen ein rollendes Fenster uebergeben, meldet die
+     * Reconciliation vertragsgemaess, aber sachlich falsch
+     * MISSING_ACCOUNTED_TREATMENT, oeffnet die volle Bruttohaftung und haelt
+     * FUSE dauerhaft an. "Fehlt in der Sicht" muss LOESCHUNG heissen, nicht
+     * ALTERUNG.
+     */
     val containedTreatments: List<AccountedTreatment>,
-)
+    /** Epoch der Quelle. Wechselt beim Neustart; ueber Epochgrenzen wird die
+     *  Ordnung NICHT verglichen, sondern ausdruecklich rebasiert. */
+    val sourceEpochId: String = "default",
+) {
+
+    val order: SnapshotOrder get() = SnapshotOrder(sourceEpochId, calculatorGeneration, calculatedAt)
+}
 
 /** Ein Vorschlag mit allem, was ueber ihn bewiesen ist. */
 data class ProposalEntry(
@@ -280,6 +355,15 @@ data class ProposalEntry(
      * offen halten konnte.
      */
     val amountEpsU: Double,
+    /**
+     * Auch die Pumpenstufe wird GEPINNT.
+     *
+     * R93-F1 verlangt das nur fuer die Toleranz — aber dasselbe Argument gilt
+     * hier staerker: die Menge wurde unter DIESER Stufe kommandiert. Wechselt
+     * die Pumpe, wuerde eine spaetere Klassifikation FULL/PARTIAL mit einem
+     * Raster rechnen, das es beim Kommando nicht gab.
+     */
+    val bolusStepU: Double,
     /** Der ERSTE Nachweis — historische Provenienz, nicht die aktuelle Sicht. */
     val firstAccountedSnapshotHash: String?,
     /** Die zuletzt gegen diese Zeile abgeglichene Vollsicht (R91-F5). Nur DIESE
@@ -377,6 +461,12 @@ data class ProposalEntry(
 data class LedgerState(
     val entries: Map<String, ProposalEntry> = emptyMap(),
     val errors: List<LedgerErrorRecord> = emptyList(),
+    /** Zuletzt AKZEPTIERTE Snapshot-Ordnung (R93-F2). Die Entscheidung faellt
+     *  einmal je Snapshot, nicht je Zeile. */
+    val lastSnapshotOrder: SnapshotOrder? = null,
+    /** Inhalt der zuletzt akzeptierten Ordnung — gleiche Ordnung mit anderem
+     *  Inhalt ist ein Widerspruch, kein Fortschritt. */
+    val lastSnapshotViewHash: String? = null,
 ) {
 
     /** Summe aller Mengen, die noch nicht im IOB-Snapshot stecken. Geht in
@@ -410,8 +500,14 @@ data class LedgerState(
             LedgerError.IMPOSSIBLE_STATE_CONFLICT,
             LedgerError.MISSING_ACCOUNTED_TREATMENT,
             LedgerError.AMBIGUOUS_TREATMENT_IDENTITY,
-            // OVERACCOUNTED_CONSERVATIVE fehlt hier ABSICHTLICH: sichtbar, aber
-            // nicht sperrend (R91-F4).
+            // Gleiche Ordnung, anderer Inhalt: einer der beiden Snapshots luegt,
+            // und welcher, ist von hier aus nicht entscheidbar (R93-F2).
+            LedgerError.SNAPSHOT_ORDER_CONFLICT,
+            // ABSICHTLICH NICHT sperrend:
+            //   OVERACCOUNTED_CONSERVATIVE  wirkt konservativ (R91-F4)
+            //   STALE_SNAPSHOT_IGNORED      ist in einem nebenlaeufigen System normal
+            //   SNAPSHOT_EPOCH_REBASED      ist der dokumentierte Neustartfall
+            //   HOLD_ACKNOWLEDGED           ist die Quittung selbst (R93-F5)
         )
     }
 
