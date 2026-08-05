@@ -265,6 +265,8 @@
     <string name="key_fslCal_Slope" translatable="false">fslCalSlope</string>
     <string name="key_fsl_exp1_factor" translatable="false">fslExp1SmoothFactor</string>
     <string name="fsl_exp1_factor_title">Libre 1st order exponential smoothing factor</string>
+    <string name="fsl_ukf_q1_title">Use causal 1-min UKF (Q1) instead of EMA</string>
+    <string name="fsl_ukf_q1_summary">Replaces the EMA loop value with the causal 1-minute UKF leading edge (holdout-locked candidate K1/K2). The EMA keeps running warm, so switching off takes effect on the NEXT value - but the stored history keeps the Q1 values already written, so deltas and fits see a mixed series for roughly 15-20 minutes afterwards. A Q1 failure falls back to the EMA value and is logged as applied=false. The Q1 window restarts at every sensor change and calibration start.</string>
     <string name="fsl_exp1_factor_summary">Used without xDrip 1 minute smoothing in between\n0.0 : max. effect\n1.0 : min. effect</string>
     <string name="key_fsl_exp1_correction" translatable="false">fslExp1SmoothCorrection</string>
     <!--

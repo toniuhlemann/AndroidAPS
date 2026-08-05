@@ -18,6 +18,10 @@ enum class StringKey(
     override val exportable: Boolean = true
 ) : StringPreferenceKey {
 
+    /** Letzter Q1-Filterstatus als JSON — von XdripSourcePlugin geschrieben, vom
+     *  State-Export gelesen. Der Viewer soll SEHEN koennen, welcher Filter den
+     *  Loop-Wert erzeugt hat (R60-F3); das Log ist dafuer kein Bedienelement. */
+    FslUkfQ1Status("fsl_ukf_q1_status", ""),
     GeneralUnits("units", "mg/dl"),
     GeneralLanguage("language", "default", defaultedBySM = true),
     GeneralPatientName("patient_name", ""),

@@ -30,6 +30,7 @@ import app.aaps.core.keys.BooleanKey
 import app.aaps.core.keys.interfaces.Preferences
 import app.aaps.core.keys.DoubleKey
 import app.aaps.core.keys.IntKey
+import app.aaps.core.keys.StringKey
 import app.aaps.core.keys.LongKey
 import app.aaps.core.objects.workflow.LoggingWorker
 import app.aaps.core.utils.receivers.DataWorkerStorage
@@ -159,6 +160,72 @@ class XdripSourcePlugin @Inject constructor(
                 CalibrationMsg += ",\"calibrationStart\":${preferences.get(LongKey.FslCalibrationStart)},\"calibrationIgnore\":${preferences.get(BooleanKey.FslCalibrationEnd)}"
                 CalibrationMsg += "}"
                 aapsLogger.debug(LTag.BGSOURCE, CalibrationMsg)
+                // UKF-Q1 (K2, Holdout-gelockter Kandidat R58): das kausale 1-min-UKF
+                // ersetzt die EMA als LOOP-WERT. Eingang ist die kalibrierte Reihe VOR
+                // der EMA (= persistierte GV.raw + aktueller extraBgEstimate) — exakt
+                // die Kandidatenidentitaet des ukfQ1-Holdout-Arms (R59-B1), NIE
+                // GV.value und NIE der unkalibrierte Sensorwert. Die EMA-Kette oben
+                // laeuft unveraendert weiter und bleibt warm: die Preference ist ein
+                // SOFORT-Rollback ohne Einschwingzeit; jeder Fehler faellt still auf
+                // die EMA zurueck (Wert bleibt dann `smooth`).
+                if (preferences.get(BooleanKey.FslUkfQ1Enabled)) {
+                    runCatching {
+                        // R60-F1: RESET-GRENZEN. Ein Sensorwechsel erzeugt nicht zwingend eine
+                        // 60-min-Luecke, und nach einer Kalibrierung tragen die historischen
+                        // GV.raw-Punkte noch die ALTE Slope/Offset-Skala, waehrend der aktuelle
+                        // Punkt bereits die neue nutzt. Ohne diese Grenzen wuerde Q1 zwei
+                        // Messregime als EINE durchgehende Reihe filtern. Das Viewer-
+                        // Referenzmodell begrenzt genau so (sensorStartMs/calibrationStartMs).
+                        val sensorStart = maxOf(
+                            getSensorStartTime(bundle) ?: 0L,
+                            persistenceLayer.getLastTherapyRecordUpToNow(TE.Type.SENSOR_CHANGE)?.timestamp ?: 0L,
+                        )
+                        val calibrationStart = preferences.get(LongKey.FslCalibrationStart)
+                            .takeIf { it > 0L } ?: 0L
+                        val resetBoundary = maxOf(sensorStart, calibrationStart)
+                        val windowStart = thisTimeRaw - UkfQ1.WINDOW_SAMPLES * 60_000L
+                        val from = maxOf(windowStart, resetBoundary)
+                        val history = persistenceLayer
+                            .getBgReadingsDataFromTimeToTime(from, thisTimeRaw - 1, true)
+                            .mapNotNull { gv ->
+                                gv.raw?.takeIf { it > 39.0 }?.let { UkfQ1.Point(gv.timestamp, it) }
+                            }
+                        // R61: ZUSTAND, nicht Ereignis. Welche Grenze das Fenster gerade
+                        // begrenzt, gilt fuer ihre ganze Wirkdauer — ein "reason" waere hier
+                        // eine Flanke, die es nicht gibt. Deshalb boundedBy + windowFromTs
+                        // als beobachtbarer Zustand, ohne String-"null".
+                        val boundedBy = when {
+                            from == windowStart             -> "window"
+                            sensorStart >= calibrationStart -> "sensorChange"
+                            else                            -> "calibrationStart"
+                        }
+                        Triple(UkfQ1.leadingEdge(history + UkfQ1.Point(thisTimeRaw, extraBgEstimate)),
+                               history.size + 1, boundedBy to from)
+                    }.onSuccess { (q1, inputCount, bounds) ->
+                        val (boundedBy, windowFromTs) = bounds
+                        val ema = smooth
+                        if (q1 != null) smooth = q1.glucose
+                        val status = "{\"applied\":${q1 != null},\"ts\":$thisTimeRaw," +
+                            "\"loopValue\":$smooth,\"ema\":$ema," +
+                            (q1?.let {
+                                "\"q1\":${it.glucose},\"rate\":${it.ratePerMin}," +
+                                    "\"learnedR\":${it.learnedR},\"outlier\":${it.outlier},"
+                            } ?: "\"fallback\":\"emaKept\",") +
+                            "\"inputCount\":$inputCount,\"boundedBy\":\"$boundedBy\"," +
+                            "\"windowFromTs\":$windowFromTs}"
+                        aapsLogger.debug(LTag.BGSOURCE, "UkfQ1 json: $status")
+                        // R60-F3: derselbe Status in die Preferences, damit ihn der
+                        // State-Export je Zyklus mitgeben und der VIEWER ihn anzeigen
+                        // kann. Ein stiller EMA-Rueckfall wird so sichtbar, ohne dass
+                        // jemand ins Log schauen muss.
+                        preferences.put(StringKey.FslUkfQ1Status, status)
+                    }.onFailure {
+                        val status = "{\"applied\":false,\"ts\":$thisTimeRaw," +
+                            "\"loopValue\":$smooth,\"ema\":$smooth,\"fallback\":\"error\"}"
+                        aapsLogger.error(LTag.BGSOURCE, "UkfQ1 json: $status", it)
+                        preferences.put(StringKey.FslUkfQ1Status, status)
+                    }
+                }
             }
             glucoseValues += GV(
                 timestamp = thisTimeRaw,        // bundle.getLong(Intents.EXTRA_TIMESTAMP, 0),

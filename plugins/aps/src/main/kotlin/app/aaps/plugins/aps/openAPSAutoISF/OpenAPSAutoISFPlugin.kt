@@ -58,6 +58,7 @@ import app.aaps.core.keys.DoubleKey
 import app.aaps.core.keys.IntKey
 import app.aaps.core.keys.IntentKey
 import app.aaps.core.keys.LongKey
+import app.aaps.core.keys.StringKey
 import app.aaps.core.keys.UnitDoubleKey
 import app.aaps.core.keys.interfaces.Preferences
 import app.aaps.core.objects.constraints.ConstraintObject
@@ -858,7 +859,20 @@ open class OpenAPSAutoISFPlugin @Inject constructor(
                     put("mealCOB", mealData.mealCOB.takeIf { it.isFinite() })
                     put("carbs", mealData.carbs)
                     put("slopeFromMaxDeviation", mealData.slopeFromMaxDeviation.takeIf { it.isFinite() })
+                    // 999 ist AAPS' Sentinel fuer "keine gueltige 1-Stunden-Historie" und
+                    // schaltet ueber slopeFromDeviations = -333 die UAM-Prognose faktisch ab
+                    // (UAMduration 0). Sichtbar machen, sonst sieht niemand, WARUM der Loop
+                    // nach einem Neustart zurueckhaltender dosiert.
+                    put("slopeFromMinDeviation", mealData.slopeFromMinDeviation.takeIf { it.isFinite() })
                 })
+                // R60-F3: welcher Filter den Loop-Wert erzeugt hat — im Viewer sichtbar,
+                // statt nur im Log. Roh durchgereicht, damit der Export keine eigene
+                // Semantik erfindet; fehlt der Schluessel, lief nie ein Q1-Zyklus.
+                runCatching {
+                    preferences.get(StringKey.FslUkfQ1Status)
+                        .takeIf { it.isNotBlank() }
+                        ?.let { put("filter", JSONObject(it)) }
+                }
                 activeTt?.let { tt ->
                     put("tt", JSONObject().apply {
                         put("target", tt.lowTarget)
@@ -1615,6 +1629,7 @@ open class OpenAPSAutoISFPlugin @Inject constructor(
                     addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = DoubleKey.FslCalOffset, dialogMessage = R.string.fslCal_Offset_summary, title = R.string.fslCal_Offset_title))
                     addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = DoubleKey.FslCalSlope, dialogMessage = R.string.fslCal_Slope_summary, title = R.string.fslCal_Slope_title))
                     addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = DoubleKey.FslSmoothAlpha, dialogMessage = R.string.fsl_exp1_factor_summary, title = R.string.fsl_exp1_factor_title))
+                    addPreference(AdaptiveSwitchPreference(ctx = context, booleanKey = BooleanKey.FslUkfQ1Enabled, summary = R.string.fsl_ukf_q1_summary, title = R.string.fsl_ukf_q1_title))
                     addPreference(AdaptiveIntPreference(ctx = context, intKey = IntKey.MaintenanceCleanupDays, dialogMessage = R.string.MaintenanceCleanupDays_summary, title = R.string.MaintenanceCleanupDays_title))
                 })
                 addPreference(AdaptiveSwitchPreference(ctx = context, booleanKey = BooleanKey.ApsUseAutoIsfWeights, summary = R.string.openapsama_enable_autoISF, title = R.string.openapsama_enable_autoISF))
