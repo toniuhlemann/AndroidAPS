@@ -182,30 +182,45 @@ class XdripSourcePlugin @Inject constructor(
                         val calibrationStart = preferences.get(LongKey.FslCalibrationStart)
                             .takeIf { it > 0L } ?: 0L
                         val resetBoundary = maxOf(sensorStart, calibrationStart)
-                        val from = maxOf(thisTimeRaw - UkfQ1.WINDOW_SAMPLES * 60_000L, resetBoundary)
+                        val windowStart = thisTimeRaw - UkfQ1.WINDOW_SAMPLES * 60_000L
+                        val from = maxOf(windowStart, resetBoundary)
                         val history = persistenceLayer
                             .getBgReadingsDataFromTimeToTime(from, thisTimeRaw - 1, true)
                             .mapNotNull { gv ->
                                 gv.raw?.takeIf { it > 39.0 }?.let { UkfQ1.Point(gv.timestamp, it) }
                             }
-                        val resetReason = when {
-                            history.isEmpty()                 -> "coldStart"
-                            resetBoundary > from - 1          -> if (sensorStart >= calibrationStart) "sensorChange" else "calibrationStart"
-                            else                              -> null
+                        // R61: ZUSTAND, nicht Ereignis. Welche Grenze das Fenster gerade
+                        // begrenzt, gilt fuer ihre ganze Wirkdauer — ein "reason" waere hier
+                        // eine Flanke, die es nicht gibt. Deshalb boundedBy + windowFromTs
+                        // als beobachtbarer Zustand, ohne String-"null".
+                        val boundedBy = when {
+                            from == windowStart             -> "window"
+                            sensorStart >= calibrationStart -> "sensorChange"
+                            else                            -> "calibrationStart"
                         }
                         Triple(UkfQ1.leadingEdge(history + UkfQ1.Point(thisTimeRaw, extraBgEstimate)),
-                               history.size + 1, resetReason)
-                    }.onSuccess { (q1, inputCount, resetReason) ->
+                               history.size + 1, boundedBy to from)
+                    }.onSuccess { (q1, inputCount, bounds) ->
+                        val (boundedBy, windowFromTs) = bounds
                         if (q1 != null) {
                             aapsLogger.debug(
                                 LTag.BGSOURCE,
                                 "UkfQ1 json: {\"q1\":${q1.glucose},\"rate\":${q1.ratePerMin},\"learnedR\":${q1.learnedR}," +
-                                    "\"outlier\":${q1.outlier},\"ema\":$smooth,\"inputCount\":$inputCount,\"resetReason\":\"$resetReason\"}"
+                                    "\"outlier\":${q1.outlier},\"ema\":$smooth,\"applied\":true," +
+                                    "\"inputCount\":$inputCount,\"boundedBy\":\"$boundedBy\",\"windowFromTs\":$windowFromTs}"
                             )
                             smooth = q1.glucose
+                        } else {
+                            // Q1 nicht berechenbar -> EMA bleibt stehen. Das darf NIE still
+                            // passieren, sonst steht ein EMA-Punkt unmarkiert in einer Q1-Reihe.
+                            aapsLogger.debug(
+                                LTag.BGSOURCE,
+                                "UkfQ1 json: {\"applied\":false,\"fallback\":\"emaKept\",\"ema\":$smooth," +
+                                    "\"inputCount\":$inputCount,\"boundedBy\":\"$boundedBy\",\"windowFromTs\":$windowFromTs}"
+                            )
                         }
                     }.onFailure {
-                        aapsLogger.error(LTag.BGSOURCE, "UkfQ1 failed, falling back to EMA", it)
+                        aapsLogger.error(LTag.BGSOURCE, "UkfQ1 json: {\"applied\":false,\"fallback\":\"error\"}", it)
                     }
                 }
             }
