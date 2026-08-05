@@ -159,6 +159,35 @@ class XdripSourcePlugin @Inject constructor(
                 CalibrationMsg += ",\"calibrationStart\":${preferences.get(LongKey.FslCalibrationStart)},\"calibrationIgnore\":${preferences.get(BooleanKey.FslCalibrationEnd)}"
                 CalibrationMsg += "}"
                 aapsLogger.debug(LTag.BGSOURCE, CalibrationMsg)
+                // UKF-Q1 (K2, Holdout-gelockter Kandidat R58): das kausale 1-min-UKF
+                // ersetzt die EMA als LOOP-WERT. Eingang ist die kalibrierte Reihe VOR
+                // der EMA (= persistierte GV.raw + aktueller extraBgEstimate) — exakt
+                // die Kandidatenidentitaet des ukfQ1-Holdout-Arms (R59-B1), NIE
+                // GV.value und NIE der unkalibrierte Sensorwert. Die EMA-Kette oben
+                // laeuft unveraendert weiter und bleibt warm: die Preference ist ein
+                // SOFORT-Rollback ohne Einschwingzeit; jeder Fehler faellt still auf
+                // die EMA zurueck (Wert bleibt dann `smooth`).
+                if (preferences.get(BooleanKey.FslUkfQ1Enabled)) {
+                    runCatching {
+                        val from = thisTimeRaw - UkfQ1.WINDOW_SAMPLES * 60_000L
+                        val history = persistenceLayer
+                            .getBgReadingsDataFromTimeToTime(from, thisTimeRaw - 1, true)
+                            .mapNotNull { gv ->
+                                gv.raw?.takeIf { it > 39.0 }?.let { UkfQ1.Point(gv.timestamp, it) }
+                            }
+                        UkfQ1.leadingEdge(history + UkfQ1.Point(thisTimeRaw, extraBgEstimate))
+                    }.onSuccess { q1 ->
+                        if (q1 != null) {
+                            aapsLogger.debug(
+                                LTag.BGSOURCE,
+                                "UkfQ1 json: {\"q1\":${q1.glucose},\"rate\":${q1.ratePerMin},\"learnedR\":${q1.learnedR},\"outlier\":${q1.outlier},\"ema\":$smooth}"
+                            )
+                            smooth = q1.glucose
+                        }
+                    }.onFailure {
+                        aapsLogger.error(LTag.BGSOURCE, "UkfQ1 failed, falling back to EMA", it)
+                    }
+                }
             }
             glucoseValues += GV(
                 timestamp = thisTimeRaw,        // bundle.getLong(Intents.EXTRA_TIMESTAMP, 0),
