@@ -42,6 +42,24 @@ object TailLiability {
      *  schlimmer als gar keiner. */
     const val COMPLETENESS_STAGE1 = "INCOMPLETE(1of3,noLedger,noCandidate)"
 
+    /**
+     * Unterhalb dieses Werts ist die Bahn keine Blutglukose mehr, sondern eine
+     * Extrapolation ins Unphysiologische.
+     *
+     * Beobachtet am 06.08.: bei 5,92 U an Bord und ISF 95 projizierte die Bahn
+     * auf `minLower = -31 mg/dl`. Die ENTSCHEIDUNG war richtig (sperren), aber
+     * die ZAHL bedeutet nichts — und `budgetU = (lowerBgAtH - floor)/isf`
+     * haette daraus ein ebenso bedeutungsloses Budget gerechnet, das spaeter
+     * jemand als Messwert liest.
+     *
+     * Die Bahn selbst wird NICHT geklammert: das waere eine Aenderung am
+     * Predictor, und eine geklammerte Bahn wuerde die Groesse des Ueberschusses
+     * verstecken. Stattdessen wird sie hier als solche BENANNT.
+     */
+    const val PHYSIOLOGICAL_FLOOR_MGDL = 20.0
+
+    const val REASON_UNPHYSIOLOGICAL = "lowerBgAtH below physiological floor"
+
     /** Woher die Bahn am Horizont stammt. Kein Schmuck: sobald Stufe 2 den
      *  Kandidaten propagiert, aendert sich dieser Name — und damit ist im
      *  Nachhinein unterscheidbar, welche Zahlen womit gerechnet wurden. */
@@ -96,9 +114,14 @@ object TailLiability {
          *  Schwanz-Guard NICHT — er darf keine Entscheidung auf einer Zahl
          *  gruenden, die er selbst verworfen hat. */
         val invalidReason: String? = null,
+        /** Die Bahn lag unter dem physiologischen Boden. Der Bericht SPERRT
+         *  trotzdem, aber `budgetU` ist dann keine auswertbare Groesse. */
+        val unphysiological: Boolean = false,
     ) {
 
         val usable: Boolean get() = invalidReason == null
+        /** Darf `budgetU` als Messwert gelesen werden? */
+        val budgetMeaningful: Boolean get() = usable && !unphysiological
     }
 
     /**
@@ -113,6 +136,18 @@ object TailLiability {
     fun evaluate(input: Input): Report {
         input.violation()?.let {
             return Report(0.0, 0.0, 0.0, COMPLETENESS_STAGE1, SOURCE_BASELINE, invalidReason = it)
+        }
+        // Eine Bahn unter dem physiologischen Boden ist kein Messwert mehr.
+        // Sie SPERRT weiterhin - das ist unstrittig richtig -, aber sie liefert
+        // keine Budgetzahl, die irgendjemand auswerten duerfte.
+        if (input.lowerBgAtH < PHYSIOLOGICAL_FLOOR_MGDL) {
+            return Report(
+                budgetU = 0.0, existingU = input.existingIobAtH,
+                headroomU = -input.existingIobAtH,      // sperrt, solange IOB > 0
+                completeness = COMPLETENESS_STAGE1, lowerBgAtHSource = SOURCE_BASELINE,
+                invalidReason = null,
+                unphysiological = true,
+            )
         }
         val budget = (input.lowerBgAtH - input.tailFloorMgdl) / input.isfTailMgdlPerU + input.tailRecoveryU
         return Report(

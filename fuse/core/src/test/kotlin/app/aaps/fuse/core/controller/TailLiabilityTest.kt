@@ -150,4 +150,27 @@ class TailLiabilityTest {
         assertEquals(FuseController.Block.GUARD_FLOOR, d.block)
         assertEquals(FuseController.TbrAction.ZERO_TEMP, d.tbr)
     }
+
+    /**
+     * GEMESSEN am 06.08.: bei 5,92 U an Bord projizierte die Bahn auf -31 mg/dl.
+     * Sperren ist richtig - aber (-31 - 70)/95 waere ein Budget, das jemand
+     * spaeter als Zahl liest.
+     */
+    @Test
+    fun `eine unphysiologische Bahn sperrt, liefert aber keine auswertbare Zahl`() {
+        val r = TailLiability.evaluate(input(lowerBgAtH = -31.0, existingIob = 5.92))
+        assertTrue(r.usable)                 // die Eingabe war gueltig
+        assertTrue(r.unphysiological)
+        assertFalse(r.budgetMeaningful)      // die ZAHL nicht
+        assertTrue(r.headroomU < 0.0)        // sperrt trotzdem
+        assertEquals(0.0, r.budgetU, 0.0)
+    }
+
+    @Test
+    fun `knapp ueber dem physiologischen Boden wird normal gerechnet`() {
+        val r = TailLiability.evaluate(input(lowerBgAtH = 25.0, existingIob = 0.1))
+        assertFalse(r.unphysiological)
+        assertTrue(r.budgetMeaningful)
+        assertEquals((25.0 - 70.0) / 50.0, r.budgetU, 1e-12)
+    }
 }
