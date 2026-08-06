@@ -247,4 +247,18 @@ enum class FuseBooleanKey(
      * tail=-Abschnitt. Wer messen will, schaltet ihn ein.
      */
     TailGuardEnabled("fuse_tail_guard_enabled", false),
+
+    /**
+     * Zweite Bahn aus der SCHNELLEN Rate, die ausschliesslich BREMSEN darf.
+     *
+     * DEFAULT AN, und anders als beim Schwanz-Guard ist das unkritisch: der
+     * Eingriff ist beweisbar einseitig. Er nimmt das MINIMUM beider Bahnen und
+     * kann damit keine Dosis erhoehen und keinen bestehenden Block entfernen —
+     * nur zusaetzlich zurueckhalten.
+     *
+     * Gemessen am 06.08.: FUSE gab nach dem Wendepunkt noch 2,20 U in 14 SMBs,
+     * bei bis zu -3,7 mg/dl/min FALLENDER Glukose, weil `rSigned` dort noch
+     * +5,8 sagte. Genau diese Zyklen faengt die Bremse.
+     */
+    FastRestraintEnabled("fuse_fast_restraint_enabled", true),
 }

@@ -80,6 +80,10 @@ object FuseStateJson {
                 .put("predAtReleaseMgdl", fin(d.predAtReleaseMgdl))
                 .put("minLowerMgdl", fin(d.minLowerMgdl))
                 .put("minMeanMgdl", fin(outcome.prediction?.minMeanBg))
+                // Hat die SCHNELLE Bahn gebremst? Ohne dieses Feld ist im
+                // Nachhinein nicht unterscheidbar, ob eine Zurueckhaltung aus
+                // dem traegen Antrieb kam oder aus der Bremse.
+                .put("restraintBound", d.restraintBound)
                 .put("reason", outcome.reason)
                 .put("alarm", outcome.alarm)
         )
@@ -293,6 +297,7 @@ object FuseStateJson {
         .put("tailGuardEnabled", p.tailGuardEnabled)
         .put("tailFloorMgdl", fin(p.tailFloorMgdl))
         .put("tailRecoveryU", fin(p.tailRecoveryU))
+        .put("fastRestraintEnabled", p.fastRestraintEnabled)
 
     /**
      * `null` bei nicht-endlichen Eingaben. [Sha.lossless] WIRFT bei NaN/Inf,
@@ -307,7 +312,7 @@ object FuseStateJson {
             doubles.map { Sha.lossless(it) } +
             listOf(
                 p.iobThPercent, p.releaseHorizonMin, p.liabilityHorizonMin,
-                p.driveTauMin, p.driveLowerQuantilePct, p.tailGuardEnabled,
+                p.driveTauMin, p.driveLowerQuantilePct, p.tailGuardEnabled, p.fastRestraintEnabled,
             ).map { it.toString() }
         return Sha.of(parts.joinToString("|"))
     }

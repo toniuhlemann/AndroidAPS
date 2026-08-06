@@ -318,4 +318,82 @@ class FuseControllerTest {
         // das Profilbasal wird NICHT gestoppt.
         assertEquals(null, FuseController.tbrRequest(noDemand.tbr, 0.8, 3.0))
     }
+
+    // ---- Die schnelle Bremsbahn ------------------------------------------
+
+    /**
+     * DIE INVARIANTE, die den ganzen Entwurf traegt: die schnelle Bahn darf
+     * NIE mehr Insulin ergeben. Ueber Zufallslagen geprueft, nicht an einem
+     * Beispiel — wenn diese Eigenschaft faellt, ist der Eingriff nicht mehr
+     * einseitig und braucht eine ganz andere Begruendung.
+     */
+    @Test
+    fun `die Bremsbahn kann eine Dosis niemals erhoehen`() {
+        val rnd = kotlin.random.Random(20260806)
+        repeat(500) {
+            val langsam = pred(bgAt30 = rnd.nextDouble(60.0, 400.0), minLower = rnd.nextDouble(40.0, 300.0))
+            val schnell = pred(bgAt30 = rnd.nextDouble(60.0, 400.0), minLower = rnd.nextDouble(40.0, 300.0))
+            val st = state(netIob = 0.0, bolusIob = 0.0, maxSmb = 5.0, iobTh = 20.0, maxIob = 20.0)
+            val ohne = FuseController.decide(st, langsam)
+            val mit = FuseController.decide(st, langsam, restraint = schnell)
+            assertTrue(mit.smbU <= ohne.smbU + 1e-12) {
+                "Bremse hat erhoeht: ${ohne.smbU} -> ${mit.smbU}"
+            }
+        }
+    }
+
+    /**
+     * DER FALL VOM 06.08., 14:49: rSigned sagte +5,84, die rohe Steigung
+     * -3,73 — FUSE gab 0,15 U. Die Bremsbahn muss das verhindern.
+     */
+    @Test
+    fun `an der Wende bremst die schnelle Bahn`() {
+        val langsam = pred(bgAt30 = 300.0, minLower = 200.0)   // r noch hoch
+        val schnell = pred(bgAt30 = 120.0, minLower = 55.0)    // faellt bereits
+        val st = state(netIob = 4.5, bolusIob = 4.5, iobTh = 20.0, maxIob = 20.0)
+        val ohne = FuseController.decide(st, langsam)
+        val mit = FuseController.decide(st, langsam, restraint = schnell)
+        assertTrue(ohne.smbU > 0.0) { "ohne Bremse haette dosiert werden muessen" }
+        assertEquals(0.0, mit.smbU)
+        assertEquals(FuseController.Block.GUARD_FLOOR, mit.block)
+        assertTrue(mit.restraintBound)
+    }
+
+    /**
+     * GEGENPROBE ZUM GEGENBEISPIEL: am ONSET ist die langsame Bahn die
+     * pessimistischere. Die Bremse darf dort NICHT oeffnen — sie behebt den
+     * Onset ausdruecklich nicht, und dieser Test haelt das fest, damit niemand
+     * spaeter faelschlich annimmt, sie taete es.
+     */
+    @Test
+    fun `am Onset oeffnet die Bremse nichts - sie behebt ihn nicht`() {
+        val langsam = pred(bgAt30 = 60.0, minLower = 60.0)     // r noch negativ
+        val schnell = pred(bgAt30 = 200.0, minLower = 150.0)   // steigt bereits
+        val st = state()
+        val d = FuseController.decide(st, langsam, restraint = schnell)
+        assertEquals(FuseController.Block.GUARD_FLOOR, d.block)
+        assertEquals(0.0, d.smbU)
+        // Die schnelle Bahn war die harmlosere und wurde deshalb verworfen.
+        assertEquals(false, d.restraintBound)
+    }
+
+    @Test
+    fun `ohne Bremsbahn bleibt alles wie vorher`() {
+        val p = pred(300.0)
+        val st = state()
+        assertEquals(FuseController.decide(st, p).smbU, FuseController.decide(st, p, restraint = null).smbU, 0.0)
+        assertEquals(false, FuseController.decide(st, p).restraintBound)
+    }
+
+    /** Eine schnelle Bahn, die HARMLOSER ist, aendert nichts und wird auch
+     *  nicht als bindend gemeldet. */
+    @Test
+    fun `eine harmlosere Bremsbahn bindet nicht`() {
+        val langsam = pred(bgAt30 = 250.0, minLower = 100.0)
+        val schnell = pred(bgAt30 = 400.0, minLower = 300.0)
+        val st = state()
+        val d = FuseController.decide(st, langsam, restraint = schnell)
+        assertEquals(FuseController.decide(st, langsam).smbU, d.smbU, 1e-12)
+        assertEquals(false, d.restraintBound)
+    }
 }

@@ -223,6 +223,10 @@ object FuseController {
          *  Schirm: dieselbe Zahl bedeutet in RISE etwas anderes als in
          *  CORRECTION. */
         val context: Context? = null,
+        /** Hat die SCHNELLE Bahn die Entscheidung gebremst? Gehoert in den
+         *  Export: sonst ist im Nachhinein nicht unterscheidbar, ob eine
+         *  Zurueckhaltung aus dem Antrieb oder aus der Bremse kam. */
+        val restraintBound: Boolean = false,
     )
 
     /**
@@ -246,6 +250,39 @@ object FuseController {
         /** `null` = Schwanz-Guard aus. Vierter Parameter mit Default, damit
          *  bestehende Aufrufe unveraendert bleiben. */
         tail: TailLiability.Report? = null,
+        /**
+         * ZWEITE Bahn aus einer SCHNELLEN Rate — sie darf ausschliesslich
+         * BREMSEN.
+         *
+         * Warum eine reine Bremse und keine Ersetzung: `rSigned` ist der Median
+         * ueber 18 Minuten und haengt an jedem Wendepunkt rund sechs Minuten
+         * nach. Am 06.08. gemessen, in BEIDE Richtungen:
+         *
+         *   Onset 13:08   roh +1,00 mg/dl/min   r -0,60   -> zu spaet dosiert
+         *   Wende 14:05   roh -1,00             r +5,49   -> zu lange dosiert
+         *
+         * Die Wende kostete 2,20 U in 14 SMBs, abgegeben bei bis zu
+         * -3,7 mg/dl/min FALLENDER Glukose.
+         *
+         * WARUM NUR BREMSEN, und nicht die naheliegende Asymmetrie: der erste
+         * Entwurf lautete "Guard nimmt das MAXIMUM beider Bahnen, damit die
+         * schnelle nur oeffnen kann". Das ist im ABSTIEG falsch — dort ist die
+         * schnelle Bahn die alarmierende, und `max` wirft sie weg. Welche Bahn
+         * "die sichere" ist, wechselt mit der Richtung; eine feste Asymmetrie
+         * kann das nicht abbilden.
+         *
+         * Das MINIMUM beider Bahnen ist dagegen richtungsunabhaengig richtig:
+         * ein Guard ist pessimistisch, und die pessimistischere zweier
+         * gleichzeitiger Schaetzungen zu nehmen ist genau das. Es kann keine
+         * Dosis erhoehen und keinen heute vorhandenen Block entfernen — der
+         * Eingriff ist damit beweisbar einseitig.
+         *
+         * WAS ES NICHT BEHEBT: den Onset. Dort ist die langsame Bahn die
+         * pessimistischere, gewinnt also, und FUSE bleibt zu zaghaft. Das ist
+         * ein Problem des ANTRIEBS, nicht der Kombination, und wird getrennt
+         * behandelt.
+         */
+        restraint: PredictorResult? = null,
     ): Decision {
         // Der Kontext gehoert an JEDEN Rueckgabepfad, nicht nur an den
         // Erfolgsfall. Gerade beim Blockieren ist die Frage "war das die
@@ -265,12 +302,20 @@ object FuseController {
         val release = prediction.points.firstOrNull { it.offsetMin == limits.releaseHorizonMin }
             ?: return none(Block.HORIZON_MISSING)
 
+        // Die pessimistischere zweier gleichzeitiger Schaetzungen. `restraint`
+        // kann nur senken, nie anheben.
+        val restraintRelease = restraint?.points?.firstOrNull { it.offsetMin == limits.releaseHorizonMin }
+        val minLower = minOf(prediction.minLowerBg, restraint?.minLowerBg ?: Double.MAX_VALUE)
+        val releaseMean = minOf(release.meanBg, restraintRelease?.meanBg ?: Double.MAX_VALUE)
+        val restraintBound = restraint != null &&
+            (minLower < prediction.minLowerBg || releaseMean < release.meanBg)
+
         // Guard: bewertet wird das MINIMUM der pessimistischen Bahn, nicht ihr
         // Endwert — eine Bahn kann harmlos enden und zwischendurch tief gehen.
-        if (prediction.minLowerBg < limits.guardFloorMgdl) {
+        if (minLower < limits.guardFloorMgdl) {
             return Decision(
                 0.0, TbrAction.ZERO_TEMP, Block.GUARD_FLOOR, 0.0,
-                release.meanBg, prediction.minLowerBg, "guardFloor=${limits.guardFloorMgdl}", context = ctx,
+                releaseMean, minLower, "guardFloor=${limits.guardFloorMgdl}", context = ctx, restraintBound = restraintBound,
             )
         }
 
@@ -287,12 +332,12 @@ object FuseController {
         if (tail != null && tail.usable && tail.headroomU <= 0.0) {
             return Decision(
                 0.0, TbrAction.NO_NEW_POSITIVE, Block.TAIL, 0.0,
-                release.meanBg, prediction.minLowerBg, "tailHeadroom=${tail.headroomU}", tail, context = ctx,
+                releaseMean, minLower, "tailHeadroom=${tail.headroomU}", tail, context = ctx, restraintBound = restraintBound,
             )
         }
 
         // Kein zweites "- iob": die IOB-Wirkung ist in predBG bereits enthalten.
-        val insulinReq = (release.meanBg - state.targetMgdl) / state.isfMgdlPerU
+        val insulinReq = (releaseMean - state.targetMgdl) / state.isfMgdlPerU
         if (insulinReq <= 0.0) {
             // NO_NEW_POSITIVE und NICHT ZERO_TEMP. Die erste Fassung stand hier
             // auf Zero-Temp und widersprach damit dem Vertrag, den [TbrPolicy]
@@ -310,7 +355,7 @@ object FuseController {
             // Argument fuer das Band, nicht fuer ein pauschales Basal-Aus.
             return Decision(
                 0.0, TbrAction.NO_NEW_POSITIVE, Block.NO_DEMAND, insulinReq,
-                release.meanBg, prediction.minLowerBg, "insulinReq<=0", context = ctx,
+                releaseMean, minLower, "insulinReq<=0", context = ctx, restraintBound = restraintBound,
             )
         }
 
@@ -318,7 +363,7 @@ object FuseController {
         if (maxIobHeadroom <= 0.0) {
             return Decision(
                 0.0, TbrAction.NO_NEW_POSITIVE, Block.MAX_IOB_REACHED, insulinReq,
-                release.meanBg, prediction.minLowerBg, "maxIOB=${state.maxIobU}", context = ctx,
+                releaseMean, minLower, "maxIOB=${state.maxIobU}", context = ctx, restraintBound = restraintBound,
             )
         }
 
@@ -328,7 +373,7 @@ object FuseController {
         if (fastHeadroom <= 0.0) {
             return Decision(
                 0.0, TbrAction.NO_NEW_POSITIVE, Block.IOB_TH_REACHED, insulinReq,
-                release.meanBg, prediction.minLowerBg, "iobTH=${state.iobThU}", context = ctx,
+                releaseMean, minLower, "iobTH=${state.iobThU}", context = ctx, restraintBound = restraintBound,
             )
         }
 
@@ -362,7 +407,7 @@ object FuseController {
         if (deliverable < state.pumpIncrementU) {
             return Decision(
                 0.0, TbrAction.KEEP_CURRENT, Block.BELOW_PUMP_INCREMENT, insulinReq,
-                release.meanBg, prediction.minLowerBg, binding.first, tail, tailCost, ctx,
+                releaseMean, minLower, binding.first, tail, tailCost, ctx, restraintBound,
             )
         }
 
@@ -371,12 +416,13 @@ object FuseController {
             tbr = TbrAction.KEEP_CURRENT,
             block = Block.NONE,
             insulinReqU = insulinReq,
-            predAtReleaseMgdl = release.meanBg,
-            minLowerMgdl = prediction.minLowerBg,
+            predAtReleaseMgdl = releaseMean,
+            minLowerMgdl = minLower,
             bindingLimit = binding.first,
             tail = tail,
             tailCostU = tailCost,
             context = ctx,
+            restraintBound = restraintBound,
         )
     }
 }

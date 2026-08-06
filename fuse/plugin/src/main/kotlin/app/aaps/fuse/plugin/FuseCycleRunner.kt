@@ -219,6 +219,21 @@ class FuseCycleRunner(
             is PredictorOutcome.Rejected -> return abort("predictor: ${p.reason} ${p.detail}", signal, cfg)
         }
 
+        // ZWEITE Bahn aus der schnellen Rate. Sie nutzt DASSELBE IOB-Array und
+        // dieselben ISF-Slots — nur der Antrieb ist ein anderer. Der Aufwand ist
+        // eine reine Arithmetikschleife ueber die Punkte, kein zusaetzlicher
+        // Datenbankzugriff.
+        //
+        // Eine abgelehnte schnelle Bahn ist KEIN Abbruchgrund: sie darf nur
+        // bremsen, also ist ihr Fehlen gleichbedeutend mit "bremst nicht".
+        val restraint = if (!cfg.fastRestraintEnabled) null else
+            fastDrive(signal)?.let { fast ->
+                val fi = built.input.copy(
+                    drive = DriveEstimate(fast, fast, null, "UKF_RATE_RESTRAINT_V1"),
+                )
+                (TrajectoryCore.predict(fi) as? PredictorOutcome.Ok)?.result
+            }
+
         // ---- 4 Menge -------------------------------------------------------
         val pumpDescription = activePlugin.activePump.pumpDescription
         val bolusStep = pumpDescription.bolusStep
@@ -282,6 +297,7 @@ class FuseCycleRunner(
             state, prediction,
             FuseController.Limits(guardFloorMgdl = cfg.guardFloorMgdl, releaseHorizonMin = cfg.releaseHorizonMin),
             tail,
+            restraint,
         )
 
         // ---- 5 Kanal -------------------------------------------------------
@@ -329,6 +345,21 @@ class FuseCycleRunner(
             abortReason = null,
         )
     }
+
+    /**
+     * Die SCHNELLE Rate fuer die Bremsbahn.
+     *
+     * `ukfRatePerMin` und nicht die rohe Sekante: der Kalman-Zustand ist am
+     * 06.08. an der Wende korrekt ins Negative gedreht (-1,65), waehrend
+     * `rSigned` noch +5,41 sagte — er ist also richtungstreu. Die rohe Sekante
+     * war am selben Tag zwischen +2,2 und +5,95 unruhig; ueber einen Horizont
+     * mit Zerfallssumme ~51 wuerde dieses Rauschen um zwei Groessenordnungen
+     * verstaerkt.
+     *
+     * `null` heisst: keine Bremse. Nie ein Ersatzwert.
+     */
+    private fun fastDrive(signal: FuseSignalSource.Signal): Double? =
+        signal.ukfRatePerMin.takeIf { it.isFinite() }
 
     /** Sensorwechsel als Therapieereignis. Fehlt es, ist 0 die ehrliche
      *  Antwort: "kein Embargo bekannt" — nicht "gerade gewechselt". */
@@ -402,6 +433,7 @@ class FuseCycleRunner(
         val tailGuardEnabled: Boolean,
         val tailFloorMgdl: Double,
         val tailRecoveryU: Double,
+        val fastRestraintEnabled: Boolean,
     )
 
     /**
@@ -425,6 +457,7 @@ class FuseCycleRunner(
         tailGuardEnabled = preferences.get(FuseBooleanKey.TailGuardEnabled),
         tailFloorMgdl = preferences.get(FuseDoubleKey.TailFloorMgdl),
         tailRecoveryU = preferences.get(FuseDoubleKey.TailRecoveryU),
+        fastRestraintEnabled = preferences.get(FuseBooleanKey.FastRestraintEnabled),
     ).also {
         // Die Preference-Grenzen gelten nur im Einstellungsdialog. Ein Wert aus
         // einem alten Import geht daran vorbei — deshalb hier nochmal, und zwar

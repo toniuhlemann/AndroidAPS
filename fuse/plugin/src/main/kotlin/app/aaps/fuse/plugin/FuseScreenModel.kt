@@ -86,7 +86,7 @@ object FuseScreenModel {
         // ---- Menge ---------------------------------------------------------
         row(b, "Kontext", d.context?.name ?: "-")
         row(b, "Block", d.block.name)
-        row(b, "Grenze", d.bindingLimit)
+        row(b, "Grenze", d.bindingLimit + if (d.restraintBound) "  (gebremst)" else "")
         row(b, "insulinReq", f2(d.insulinReqU) + " U")
         row(b, "IOB", outcome.iobU?.let { f2(it) + " U" } ?: "-")
         outcome.state?.let {
