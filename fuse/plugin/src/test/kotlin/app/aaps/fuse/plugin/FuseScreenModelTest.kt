@@ -18,7 +18,7 @@ class FuseScreenModelTest {
     private fun signal(rSigned: Double? = 0.8, bound: SignalWindow.Bound = SignalWindow.Bound.NONE) =
         FuseSignalSource.Signal(
             sourceTs = 1_700_000_000_000L, rawBg = 132.0, q1 = 130.0, rSigned = rSigned,
-            ukfRatePerMin = 1.1, rawSlopePerMin = 1.4,
+            ukfRatePerMin = 1.1, rawSlopePerMin = 1.4, activityAtAnchor = 0.01, isfAtAnchor = 90.0,
             adjusted = emptyList(), activity = ActivityValidity.VALID,
             samplesUsed = 19, rawSeriesSize = 200, q1Outlier = false,
             boundedBy = bound, windowFromTs = 1_699_988_120_000L,

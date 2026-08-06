@@ -69,6 +69,18 @@ class FuseSignalSource(
          * messbar wird, wieviel Vorsprung ein kurzes Fenster wirklich hat.
          */
         val rawSlopePerMin: Double?,
+        /**
+         * Insulinaktivitaet und ISF AM ANKER — sie werden gebraucht, um eine
+         * rohe Rate BGI-zu-bereinigen:
+         *
+         *     bereinigt = roh + activity * isf
+         *
+         * `rSigned` ist bereinigt, [ukfRatePerMin] und [rawSlopePerMin] sind es
+         * NICHT. Wer eine der beiden ungefiltert als Antrieb einsetzt, laesst
+         * `TrajectoryCore` die Insulinwirkung ein ZWEITES Mal abziehen.
+         */
+        val activityAtAnchor: Double,
+        val isfAtAnchor: Double,
         /** Die BGI-korrigierte Reihe des Fensters. Sie wird durchgereicht, damit
          *  der Zyklus die Untergrenze mit dem eingestellten Quantil bilden kann,
          *  OHNE dass die Signalquelle Preferences liest — die Fensterbildung
@@ -173,6 +185,8 @@ class FuseSignalSource(
                 q1 = leading.glucose,
                 rSigned = rSigned,
                 ukfRatePerMin = leading.ratePerMin,
+                activityAtAnchor = samples.last().activity,
+                isfAtAnchor = samples.last().profileIsf,
                 rawSlopePerMin = rawSlope(readings, sourceTs),
                 adjusted = adjusted,
                 // Die Aktivitaet wurde AM Zeitpunkt selbst gerechnet, nicht per

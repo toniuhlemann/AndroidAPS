@@ -358,8 +358,22 @@ class FuseCycleRunner(
      *
      * `null` heisst: keine Bremse. Nie ein Ersatzwert.
      */
-    private fun fastDrive(signal: FuseSignalSource.Signal): Double? =
-        signal.ukfRatePerMin.takeIf { it.isFinite() }
+    private fun fastDrive(signal: FuseSignalSource.Signal): Double? {
+        val raw = signal.ukfRatePerMin
+        val a = signal.activityAtAnchor
+        val isf = signal.isfAtAnchor
+        if (!raw.isFinite() || !a.isFinite() || !isf.isFinite()) return null
+        // BGI-BEREINIGUNG, und sie ist tragend: `rSigned` ist die Steigung der
+        // um die Insulinwirkung bereinigten Reihe, `ukfRatePerMin` die der
+        // ROHEN. Beide sind Antriebe im selben Sinn nur nach dieser Korrektur —
+        // sonst zieht TrajectoryCore die Insulinwirkung ein zweites Mal ab
+        // (es addiert bgiRate = -activity*isf selbst) und die Bremsbahn faellt
+        // bei hohem IOB drastisch zu tief.
+        //
+        // Vorzeichen: bgiRate = -activity*isf, also
+        //   d/dt(bereinigt) = d/dt(roh) - bgiRate = roh + activity*isf.
+        return raw + a * isf
+    }
 
     /** Sensorwechsel als Therapieereignis. Fehlt es, ist 0 die ehrliche
      *  Antwort: "kein Embargo bekannt" — nicht "gerade gewechselt". */
