@@ -198,6 +198,7 @@ class FusePlugin @Inject constructor(
                 outcome = o,
                 rt = rt,
                 policy = o.policy,
+                build = FuseStateJson.Build(config.VERSION_NAME, config.HEAD, config.COMMITTED),
                 buildStartNs = start,
                 prev = prevWrite,
                 nowNs = System::nanoTime,

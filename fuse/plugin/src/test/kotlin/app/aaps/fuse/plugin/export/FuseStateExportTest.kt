@@ -22,6 +22,8 @@ import java.io.File
 
 class FuseStateExportTest {
 
+    private val BUILD = FuseStateJson.Build("3.4.2.5+fuse0.1.0-toni", "abc1234", true)
+
     private val cfg = FuseCycleRunner.Config(
         smbRatio = 0.2, maxSmbU = 0.3, guardFloorMgdl = 70.0, iobThPercent = 100,
         releaseHorizonMin = 30, liabilityHorizonMin = 120, driveTauMin = 60,
@@ -75,7 +77,7 @@ class FuseStateExportTest {
     )
 
     private fun record(o: FuseCycleRunner.Outcome = outcome(), r: RT = rt()) =
-        FuseStateJson.record("s#1", o, r, o.policy, 0L, null) { 5_000_000L }
+        FuseStateJson.record("s#1", o, r, o.policy, BUILD, 0L, null) { 5_000_000L }
 
     // ---- Der wichtigste Test: nichts wird vorgetaeuscht -------------------
 
@@ -209,7 +211,7 @@ class FuseStateExportTest {
         assertTrue(gapReasons(erster).contains(FuseStateJson.GAP_METRICS_LAG))
 
         val zweiter = FuseStateJson.record(
-            "s#2", outcome(), rt(), cfg, 0L, FuseStateJson.PrevWrite(3L, 1800)
+            "s#2", outcome(), rt(), cfg, BUILD, 0L, FuseStateJson.PrevWrite(3L, 1800)
         ) { 5_000_000L }
         assertEquals(3L, zweiter.getJSONObject("export").getLong("prevWriteMs"))
         assertFalse(gapReasons(zweiter).contains(FuseStateJson.GAP_METRICS_LAG))
@@ -283,6 +285,15 @@ class FuseStateExportTest {
         val j = record(outcome(abort = "no profile", policy = null, signal = null, step = null))
         assertFalse(j.has("observer"))
         assertTrue(gapReasons(j).contains("NO_STEP_THIS_CYCLE"))
+    }
+
+    /** Ohne Build-Hash ist ein Geraetelauf keinem Commit zuzuordnen. */
+    @Test
+    fun `der Build steht mit Hash und Sauberkeitsflag im Datensatz`() {
+        val b = record().getJSONObject("build")
+        assertEquals("3.4.2.5+fuse0.1.0-toni", b.getString("versionName"))
+        assertEquals("abc1234", b.getString("head"))
+        assertTrue(b.getBoolean("committed"))
     }
 
     private fun gapReasons(j: JSONObject): List<String> {

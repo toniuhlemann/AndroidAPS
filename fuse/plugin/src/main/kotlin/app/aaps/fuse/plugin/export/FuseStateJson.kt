@@ -43,11 +43,17 @@ object FuseStateJson {
      *  Datensatz stehen — die Dauer des Schreibens ist erst danach bekannt. */
     data class PrevWrite(val writeMs: Long, val bytes: Int)
 
+    /** Woher der laufende Build stammt. `committed = false` heisst: es lag
+     *  Unversioniertes im Baum — der Hash allein identifiziert den Stand dann
+     *  NICHT, und genau das muss im Datensatz stehen. */
+    data class Build(val versionName: String, val head: String, val committed: Boolean)
+
     fun record(
         cycleId: String,
         outcome: FuseCycleRunner.Outcome,
         rt: RT,
         policy: FuseCycleRunner.Config?,
+        build: Build?,
         buildStartNs: Long,
         prev: PrevWrite?,
         nowNs: () -> Long,
@@ -228,6 +234,18 @@ object FuseStateJson {
             } else pol.put("hash", h)
         }
         o.put("policy", pol)
+
+        // ---- Build ---------------------------------------------------------
+        // R89 verlangt Policy- UND Build-Hash. Ohne den zweiten laesst sich ein
+        // Geraetelauf nicht auf einen Commit zurueckfuehren - und genau das ist
+        // die Frage, die man nach einer auffaelligen Nacht als erstes stellt.
+        if (build == null) gap("build", "BUILD_INFO_MISSING")
+        else o.put(
+            "build", JSONObject()
+                .put("versionName", build.versionName)
+                .put("head", build.head)
+                .put("committed", build.committed)
+        )
 
         // ---- Exportmetrik --------------------------------------------------
         val ex = JSONObject().put("buildMs", (nowNs() - buildStartNs) / 1_000_000)
