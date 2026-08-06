@@ -232,4 +232,40 @@ class TbrPolicyTest {
         // Bindungsgroesse ist capIob, nicht netIob
         assertEquals(1.0, IobThreshold.headroomU(3.0, capIobU = 2.0), 1e-12)
     }
+
+    // ---- Die eigene Null zuruecknehmen -----------------------------------
+
+    /**
+     * GEMESSEN am 06.08.: FUSE setzte 13:01 eine 30-min-Null aus einem falschen
+     * GUARD_FLOOR, gab ab 13:14 wieder SMBs und liess die Null bis 13:31
+     * laufen. Basal aus und schneller Kanal offen — gleichzeitig.
+     */
+    @Test
+    fun `dosiert der Regler, wird eine laufende Null abgebrochen`() {
+        val laufendeNull = TbrPolicy.Current(0.0, 20, TbrPolicy.SourceType.TEMP_BASAL)
+        val d = TbrPolicy.decide(TbrPolicy.Intent.KEEP, laufendeNull, 0.8, TbrPolicy.Config(basalStepUPerH = 0.05))
+        val r = d.outcome as TbrPolicy.Outcome.Request
+        assertEquals(0.0, r.rateUPerH, 0.0)
+        assertEquals(0, r.durationMin)          // rate 0 + duration 0 = Abbruch
+        assertEquals("KEEP_CANCEL_STALE_ZERO", d.reason)
+        assertFalse(d.smbBlocked)
+    }
+
+    /** Eine bloss ABGESENKTE TBR bleibt unangetastet — sie kann von woanders
+     *  stammen und wirkt weiter in die sichere Richtung. */
+    @Test
+    fun `eine abgesenkte TBR wird beim Dosieren nicht angetastet`() {
+        val abgesenkt = TbrPolicy.Current(0.3, 20, TbrPolicy.SourceType.TEMP_BASAL)
+        val d = TbrPolicy.decide(TbrPolicy.Intent.KEEP, abgesenkt, 0.8, TbrPolicy.Config(basalStepUPerH = 0.05))
+        assertTrue(d.outcome is TbrPolicy.Outcome.NoRequest)
+        assertEquals("KEEP", d.reason)
+    }
+
+    /** Ohne laufende TBR bleibt KEEP was es war: nichts anfordern. */
+    @Test
+    fun `ohne laufende TBR fordert KEEP weiterhin nichts an`() {
+        val d = TbrPolicy.decide(TbrPolicy.Intent.KEEP, null, 0.8, TbrPolicy.Config(basalStepUPerH = 0.05))
+        assertTrue(d.outcome is TbrPolicy.Outcome.NoRequest)
+        assertEquals("KEEP", d.reason)
+    }
 }

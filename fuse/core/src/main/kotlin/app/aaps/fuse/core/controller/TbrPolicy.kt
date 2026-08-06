@@ -186,7 +186,27 @@ object TbrPolicy {
         val base = when (effective) {
             Intent.SAFETY_ZERO -> safetyZero(current, cfg)
             Intent.NO_POSITIVE -> noPositive(current, scheduledBasalUPerH, cfg)
-            Intent.KEEP        -> Decision(Outcome.NoRequest, "KEEP", alarm = false, smbBlocked = false)
+            // KEEP heisst "der Regler dosiert" — und dann darf keine eigene
+            // Sicherheits-Null mehr laufen. Bis hierher gab es dafuer KEINEN
+            // Pfad: `noPositive` behaelt eine nicht-positive TBR absichtlich,
+            // und KEEP forderte gar nichts an. Auf dem Geraet hat FUSE deshalb
+            // am 06.08. um 13:01 eine 30-min-Null aus einem FALSCHEN
+            // GUARD_FLOOR gesetzt, ab 13:14 wieder SMBs gegeben und die Null
+            // trotzdem bis 13:31 laufen lassen: Basal aus und schneller Kanal
+            // offen, gleichzeitig.
+            //
+            // Das ist ein Widerspruch in sich. Entweder ist die Lage unsicher,
+            // dann kein SMB — oder sie ist sicher, dann kein Basalstopp. Die
+            // Umkehrung von C8 ("kann FUSE nicht stoppen, darf es nicht geben")
+            // in die andere Richtung.
+            //
+            // Bewusst NUR die echte NULL: eine bloss abgesenkte TBR kann von
+            // woanders stammen und wirkt weiter in die sichere Richtung. Eine
+            // Null dagegen setzt in Alpha 1 ausschliesslich FUSE selbst.
+            Intent.KEEP        ->
+                if (current != null && isZeroRate(current.absoluteRateUPerH, cfg.basalStepUPerH))
+                    Decision(Outcome.Request(0.0, 0), "KEEP_CANCEL_STALE_ZERO", alarm = false, smbBlocked = false)
+                else Decision(Outcome.NoRequest, "KEEP", alarm = false, smbBlocked = false)
         }
         return if (fault == FaultCode.NONE) base
         else base.copy(reason = "${fault.name}|${base.reason}", smbBlocked = true)
