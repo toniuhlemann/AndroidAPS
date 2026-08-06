@@ -24,6 +24,7 @@ import app.aaps.fuse.core.controller.IobThreshold
 import app.aaps.fuse.core.controller.TbrPolicy
 import app.aaps.fuse.core.observer.Health
 import app.aaps.fuse.core.observer.ObserverStateMachine
+import app.aaps.fuse.core.signal.PairSlopeBand
 import app.aaps.fuse.core.predictor.ActualTrajectoryFactory
 import app.aaps.fuse.core.predictor.DriveDecayModel
 import app.aaps.fuse.core.predictor.DriveEstimate
@@ -84,10 +85,6 @@ class FuseCycleRunner(
          *  an einer Rundung scheitert. */
         const val IOB_MARGIN_MIN = 30
 
-        /** Alpha 1: es gibt noch KEIN Unsicherheitsband. Der Bezeichner steht im
-         *  Export, damit eine spaetere Auswertung nicht raten muss, ob die
-         *  Guardbahn eine echte Untergrenze war. */
-        const val UNCERTAINTY_METHOD_ALPHA1 = "IDENTITY_NO_BAND_ALPHA1"
     }
 
     data class Outcome(
@@ -114,6 +111,10 @@ class FuseCycleRunner(
          *  Zyklus bricht ab, und ohne dieses Feld fehlte im Export ausgerechnet
          *  dann die Fenstergrenze, die den Abbruch erklaert. */
         val signal: FuseSignalSource.Signal?,
+        /** Antriebsschaetzung inkl. Spreizung und Paaranzahl. Genau diese beiden
+         *  Zahlen entscheiden nach dem ersten Lauf, ob das Quantil brauchbar
+         *  gewaehlt war — deshalb gehoeren sie in den Grund, nicht ins Log. */
+        val band: PairSlopeBand.Estimate?,
         val isfMgdlPerU: Double?,
         val iobU: Double?,
         /** Warum NICHT gerechnet wurde. `null` heisst: der Zyklus lief durch. */
@@ -128,7 +129,7 @@ class FuseCycleRunner(
             decision = FuseController.noInput(reason), tbr = null, prediction = null,
             sourceTs = signal?.sourceTs, computeTs = computeTs, health = null, gate = gate,
             reason = reason, alarm = false, bgMgdl = signal?.q1, targetMgdl = null, targetSource = null,
-            signal = signal, isfMgdlPerU = null, iobU = null, abortReason = reason,
+            signal = signal, band = null, isfMgdlPerU = null, iobU = null, abortReason = reason,
         )
 
         val profile = profileFunction.getProfile(computeTs) ?: return abort("no profile")
@@ -180,7 +181,14 @@ class FuseCycleRunner(
             is CoreInputGuard.Outcome.Failed -> return abort("config: ${c.failure.detail}", signal)
         }
 
-        val input = when (val b = CoreInputGuard.build { buildPredictorInput(signal, profile, cfg) }) {
+        // Mittel- UND Untergrenze aus DEMSELBEN Aufruf. Es darf keinen Zustand
+        // "Mittel da, Band fehlt" geben: ein Rueckfall auf lower = mean wuerde
+        // den Null-Abstand ausgerechnet bei der schlechtesten Datenlage still
+        // wiederherstellen.
+        val band = PairSlopeBand.estimate(signal.adjusted, signal.sourceTs, cfg.driveLowerQuantilePct)
+            ?: return abort("drive not estimable (${signal.samplesUsed} samples)", signal)
+
+        val input = when (val b = CoreInputGuard.build { buildPredictorInput(signal, profile, cfg, band) }) {
             is CoreInputGuard.Outcome.Built  -> b.value ?: return abort("input incomplete", signal)
             is CoreInputGuard.Outcome.Failed -> return abort("input: ${b.failure.detail}", signal)
         }
@@ -271,6 +279,7 @@ class FuseCycleRunner(
             targetMgdl = target,
             targetSource = targetSource,
             signal = signal,
+            band = band,
             isfMgdlPerU = isf,
             iobU = iobTotal.iob,
             abortReason = null,
@@ -336,6 +345,7 @@ class FuseCycleRunner(
         val releaseHorizonMin: Int,
         val liabilityHorizonMin: Int,
         val driveTauMin: Int,
+        val driveLowerQuantilePct: Int,
     )
 
     /**
@@ -352,6 +362,7 @@ class FuseCycleRunner(
         releaseHorizonMin = preferences.get(FuseIntKey.ReleaseHorizonMin),
         liabilityHorizonMin = preferences.get(FuseIntKey.LiabilityHorizonMin),
         driveTauMin = preferences.get(FuseIntKey.DriveTauMin),
+        driveLowerQuantilePct = preferences.get(FuseIntKey.DriveLowerQuantilePct),
     ).also {
         // Die Preference-Grenzen gelten nur im Einstellungsdialog. Ein Wert aus
         // einem alten Import geht daran vorbei — deshalb hier nochmal, und zwar
@@ -364,6 +375,9 @@ class FuseCycleRunner(
         // Gleiche Grenzen wie DriveDecayModel.ExponentialDecay - sonst wirft der
         // Kern bei einem Wert, den der Einstellungsdialog erlaubt hat.
         require(it.driveTauMin in 10..240) { "driveTau=${it.driveTauMin}" }
+        require(it.driveLowerQuantilePct in PairSlopeBand.MIN_PCT..PairSlopeBand.MAX_PCT) {
+            "driveLowerQuantile=${it.driveLowerQuantilePct}"
+        }
         require(it.liabilityHorizonMin >= it.releaseHorizonMin) {
             "liabilityHorizon=${it.liabilityHorizonMin} < releaseHorizon=${it.releaseHorizonMin}"
         }
@@ -378,6 +392,7 @@ class FuseCycleRunner(
         signal: FuseSignalSource.Signal,
         profile: Profile,
         cfg: Config,
+        band: PairSlopeBand.Estimate,
     ): PredictorInput? {
         val liabilityHorizonMin = cfg.liabilityHorizonMin
         val anchor = signal.sourceTs
@@ -410,7 +425,6 @@ class FuseCycleRunner(
         // eines Off-by-one, den niemand mehr findet.
         val isfSlots = CycleAssembly.compressIsfSlots(times, isfValues, times.last() + IOB_GRID_MS)
 
-        val rSigned = signal.rSigned ?: return null
         val insulin = activePlugin.activeInsulin
         val trajectory = ActualTrajectoryFactory.of(
             lineage = InsulinLineage.ActualTreatment(
@@ -436,7 +450,20 @@ class FuseCycleRunner(
             // identisch mit der Mittelbahn — der Sicherheitsabstand FEHLT also,
             // statt heimlich erfunden zu werden. Das ist eine offene
             // Entscheidung und steht unter diesem Namen im Export.
-            drive = DriveEstimate(rSigned, rSigned, 0.5, UNCERTAINTY_METHOD_ALPHA1),
+            // Die Untergrenze hat GENAU EINEN Verbraucher: den Hypo-Guard
+            // (TrajectoryCore -> minLowerBg -> FuseController). Die DOSIS haengt
+            // weiter an der Mittelbahn. Deshalb ist "pessimistisch" hier die
+            // untere Kante der Steigungsverteilung, und eine obere Kante wird
+            // gar nicht erst gebildet — sie haette null Verbraucher und waere
+            // damit ein stiller Sammler.
+            //
+            // confidence bleibt null: NICHT KALIBRIERT. Was stattdessen
+            // mitgefuehrt wird, ist das Gemessene (Spreizung, Paaranzahl) —
+            // s. Outcome und RT.reason.
+            drive = DriveEstimate(
+                band.mean, band.lower, null,
+                PairSlopeBand.methodId(cfg.driveLowerQuantilePct),
+            ),
             decay = DriveDecayModel.ExponentialDecay(cfg.driveTauMin.toDouble()),
             trajectory = trajectory,
             isfSlots = isfSlots,

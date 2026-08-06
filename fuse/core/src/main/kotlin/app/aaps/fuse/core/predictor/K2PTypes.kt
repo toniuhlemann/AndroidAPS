@@ -46,13 +46,21 @@ data class PredictorInputBounds(
 data class DriveEstimate(
     val meanMgdlPerMin: Double,
     val lowerMgdlPerMin: Double,
-    val confidence: Double,
+    /**
+     * NULLBAR = NICHT KALIBRIERT.
+     *
+     * Vorher stand hier fest 0.5 — eine erfundene Zahl, die im Export wie "halb
+     * sicher" aussieht und keinen einzigen Verbraucher hat. Was stattdessen
+     * mitgefuehrt wird, ist das GEMESSENE: Paaranzahl und Spreizung, beides im
+     * Adapter. Erst eine Kalibrierung darf daraus eine Konfidenz machen.
+     */
+    val confidence: Double?,
     val uncertaintyMethodId: String,
 ) {
     init {
         require(meanMgdlPerMin.isFinite() && lowerMgdlPerMin.isFinite()) { "drive not finite" }
         require(lowerMgdlPerMin <= meanMgdlPerMin) { "lower > mean" }
-        require(confidence in 0.0..1.0) { "confidence out of range" }
+        require(confidence == null || confidence in 0.0..1.0) { "confidence out of range" }
         require(uncertaintyMethodId.isNotBlank()) { "uncertaintyMethodId blank" }
     }
 }

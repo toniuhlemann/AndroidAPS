@@ -49,6 +49,11 @@ class FuseSignalSource(
         val q1: Double,
         /** `null` heisst: nicht berechenbar (zu wenige Punkte/Paare) — NICHT 0. */
         val rSigned: Double?,
+        /** Die BGI-korrigierte Reihe des Fensters. Sie wird durchgereicht, damit
+         *  der Zyklus die Untergrenze mit dem eingestellten Quantil bilden kann,
+         *  OHNE dass die Signalquelle Preferences liest — die Fensterbildung
+         *  bleibt so eine Sache, die Bandpolitik eine andere. */
+        val adjusted: List<BgiAdjustedSeries.AdjustedPoint>,
         val activity: ActivityValidity,
         val samplesUsed: Int,
         val rawSeriesSize: Int,
@@ -130,6 +135,7 @@ class FuseSignalSource(
                 rawBg = newest.value,
                 q1 = leading.glucose,
                 rSigned = rSigned,
+                adjusted = adjusted,
                 // Die Aktivitaet wurde AM Zeitpunkt selbst gerechnet, nicht per
                 // LOCF uebernommen — sie ist damit definitionsgemaess kausal
                 // und aktuell.

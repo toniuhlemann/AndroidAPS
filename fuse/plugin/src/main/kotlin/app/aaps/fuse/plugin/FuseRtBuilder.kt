@@ -43,6 +43,13 @@ object FuseRtBuilder {
         /** Das Signal des Zyklus. Nullbar, weil ein Abbruch vor Schritt 1 keines
          *  hat — dann fehlt der Abschnitt, statt Nullen zu behaupten. */
         signal: FuseSignalSource.Signal? = null,
+        band: app.aaps.fuse.core.signal.PairSlopeBand.Estimate? = null,
+        methodId: String? = null,
+        /** Das Minimum der MITTELbahn. Ohne diesen Wert ist ab dem Moment, in
+         *  dem lower < mean gilt, nicht mehr entscheidbar, ob ein GUARD_FLOOR
+         *  vom Band kommt oder von der Lage — und genau diese Unterscheidung
+         *  ist der Zweck des ersten Laufs. */
+        minMeanMgdl: Double? = null,
     ): RT {
         val reason = StringBuilder()
         reason.append("FUSE ").append(gate.reason)
@@ -62,6 +69,12 @@ object FuseRtBuilder {
         reason.append(" | insulinReq=").append(fmt(decision.insulinReqU))
         decision.predAtReleaseMgdl?.let { reason.append(" | predRelease=").append(fmt(it)) }
         decision.minLowerMgdl?.let { reason.append(" | minLower=").append(fmt(it)) }
+        minMeanMgdl?.let { reason.append(" minMean=").append(fmt(it)) }
+        band?.let {
+            reason.append(" | drive=").append(f3(it.mean)).append('/').append(f3(it.lower))
+                .append(" spread=").append(f3(it.spread)).append(" pairs=").append(it.pairCount)
+            methodId?.let { m -> reason.append(" m=").append(m) }
+        }
         reason.append(" | limit=").append(decision.bindingLimit)
         if (decision.smbU > 0.0) reason.append(" | SMB=").append(fmt(decision.smbU))
         tbr?.let { reason.append(" | TBR=").append(fmt(it.rateUPerH)).append("U/h/").append(it.durationMin).append("min") }
@@ -94,6 +107,8 @@ object FuseRtBuilder {
             consoleLog = mutableListOf(reason.toString()),
         )
     }
+
+    private fun f3(d: Double) = String.format(java.util.Locale.ROOT, "%.3f", d)
 
     private fun fmt(d: Double) = String.format(java.util.Locale.ROOT, "%.2f", d)
 }

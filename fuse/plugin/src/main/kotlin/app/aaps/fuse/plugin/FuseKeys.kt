@@ -133,4 +133,25 @@ enum class FuseIntKey(
      * wirft.
      */
     DriveTauMin("fuse_drive_tau_min", 60, 10, 240),
+
+    /**
+     * Rangstelle in der Verteilung der paarweisen Steigungen, aus der die
+     * GUARDBAHN ihren Antrieb nimmt (Prozent).
+     *
+     * DEFAULT 50 = AUS, und das ist Absicht. Bei 50 ist die Untergrenze der
+     * Median selbst, also bitgleich zum Verhalten ohne Band. Wie breit die
+     * Verteilung real ist, ist NICHT gemessen — und die Rechnung zeigt, dass
+     * eine Spreizung von 1 mg/dl/min die Guardbahn ueber 120 min um bis zu
+     * ~51 mg/dl absenkt. Bei einer Guard-Untergrenze von 70 waere das der
+     * Unterschied zwischen Sicherheitsabstand und Dauer-Null-TBR.
+     *
+     * Also: erster Lauf misst Spreizung und Paaranzahl, DANN wird das Quantil
+     * aus Daten gesetzt statt aus Plausibilitaet. Eine Spur, live, mit
+     * Ein/Aus-Schalter.
+     *
+     * Zum Minimum ehrlich: bei wenigen Paaren (Untergrenze sind 8) ist ein
+     * kleines Quantil wirkungsgleich mit dem kleinsten Einzelpaar —
+     * `floor(0.05 * 7) = 0`. Deshalb steht die Paaranzahl im Export.
+     */
+    DriveLowerQuantilePct("fuse_drive_lower_quantile_pct", 50, 5, 50),
 }

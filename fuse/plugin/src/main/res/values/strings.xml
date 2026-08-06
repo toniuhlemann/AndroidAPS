@@ -25,4 +25,7 @@
 
     <string name="fuse_drive_tau_title">Antriebs-Zerfallszeit Tau [min]</string>
     <string name="fuse_drive_tau_summary">Wie lange ein gemessener Anstieg in die Zukunft fortgeschrieben wird. Praegt die Bahn staerker als jeder andere Wert hier. 60 ist ein Platzhalter, kein Messergebnis.</string>
+
+    <string name="fuse_drive_quantile_title">Guard-Quantil [%]</string>
+    <string name="fuse_drive_quantile_summary">Rangstelle in der Verteilung der paarweisen Steigungen, aus der die GUARDBAHN ihren Antrieb nimmt. 50 = kein Band, identisch zum bisherigen Verhalten. Kleinere Werte machen die Guardbahn pessimistischer und den Schutz frueher wirksam - wie weit, ist noch nicht gemessen. Erst Spreizung und Paaranzahl im Grund ansehen, dann absenken.</string>
 </resources>

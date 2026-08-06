@@ -66,7 +66,23 @@ object BgiAdjustedSeries {
      * (Spec: rSigned = null + DEGRADED(INSUFFICIENT_SIGNAL_HISTORY)) —
      * ausdruecklich KEIN 0.0, das waere die Behauptung "flach".
      */
-    fun theilSen(points: List<AdjustedPoint>, nowTs: Long): Double? {
+    fun theilSen(points: List<AdjustedPoint>, nowTs: Long): Double? =
+        pairSlopes(points, nowTs)?.let { median(it) }
+
+    /**
+     * Die SORTIERTE Liste der paarweisen Steigungen [mg/dl/min] — die
+     * Zwischengroesse, aus der der Median oben ein einzelner Rang ist.
+     *
+     * Herausgezogen, NICHT veraendert: gleiche Schleife, gleiche
+     * Mindestbedingungen, gleicher Container (`ArrayList<Double>`, damit auch
+     * dieselbe Sortierung greift). Der Kandidat bleibt damit woertlich
+     * derselbe.
+     *
+     * `internal`, weil sie ein Zwischenschritt ist und kein Ergebnis: eine
+     * Untergrenze DARAUS zu bilden ist Policy und gehoert nach
+     * [PairSlopeBand], nicht in diese gelockte Datei.
+     */
+    internal fun pairSlopes(points: List<AdjustedPoint>, nowTs: Long): ArrayList<Double>? {
         val window = points.filter { nowTs - it.sourceTs <= WINDOW_MS && it.sourceTs <= nowTs }
         if (window.size < MIN_POINTS) return null
         val slopes = ArrayList<Double>()
@@ -78,8 +94,14 @@ object BgiAdjustedSeries {
         }
         if (slopes.size < MIN_SLOPES) return null
         slopes.sort()
-        val mid = slopes.size / 2
-        return if (slopes.size % 2 == 1) slopes[mid] else (slopes[mid - 1] + slopes[mid]) / 2.0
+        return slopes
+    }
+
+    /** Median einer bereits SORTIERTEN Liste — exakt die Zeilen, die vorher am
+     *  Ende von [theilSen] standen. */
+    internal fun median(sorted: List<Double>): Double {
+        val mid = sorted.size / 2
+        return if (sorted.size % 2 == 1) sorted[mid] else (sorted[mid - 1] + sorted[mid]) / 2.0
     }
 
     /**
