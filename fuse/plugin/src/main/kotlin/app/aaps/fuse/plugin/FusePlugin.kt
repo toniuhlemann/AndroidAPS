@@ -1,6 +1,7 @@
 package app.aaps.fuse.plugin
 
 import android.content.Context
+import android.os.Environment
 import androidx.preference.PreferenceCategory
 import androidx.preference.PreferenceManager
 import androidx.preference.PreferenceScreen
@@ -8,6 +9,7 @@ import app.aaps.core.data.plugin.PluginType
 import app.aaps.core.interfaces.aps.APS
 import app.aaps.core.interfaces.aps.APSResult
 import app.aaps.core.interfaces.aps.GlucoseStatus
+import app.aaps.core.interfaces.aps.RT
 import app.aaps.core.interfaces.configuration.Config
 import app.aaps.core.interfaces.constraints.ConstraintsChecker
 import app.aaps.core.interfaces.db.PersistenceLayer
@@ -29,7 +31,10 @@ import app.aaps.core.objects.extensions.store
 import app.aaps.core.validators.preferences.AdaptiveDoublePreference
 import app.aaps.core.validators.preferences.AdaptiveIntPreference
 import app.aaps.core.validators.preferences.AdaptiveSwitchPreference
+import app.aaps.fuse.plugin.export.FuseStateExporter
+import app.aaps.fuse.plugin.export.FuseStateJson
 import org.json.JSONObject
+import java.io.File
 import javax.inject.Inject
 import javax.inject.Provider
 import javax.inject.Singleton
@@ -93,6 +98,14 @@ class FusePlugin @Inject constructor(
      * Deshalb genau eine Instanz je Prozess, angelegt beim ersten Zyklus.
      */
     private var runner: FuseCycleRunner? = null
+
+    /** Prozessgebundene Kennung. Sie trennt die Zyklen eines Laufs von denen
+     *  nach einem Neustart und ist der erste Teil der Cycle-Id. */
+    private val sessionId: String by lazy { "fuse-${'$'}{dateUtil.now()}" }
+
+    private val exporter = FuseStateExporter()
+    private var cycleCounter = 0L
+    private var prevWrite: FuseStateJson.PrevWrite? = null
 
     /** Was der letzte Zyklus gesehen hat — Grundlage des spaeteren
      *  Zustandsexports und der Fragment-Anzeige. */
@@ -159,6 +172,53 @@ class FusePlugin @Inject constructor(
         lastAPSRun = dateUtil.now()
         aapsLogger.debug(LTag.APS, "FUSE result: ${rt.reason}")
         rxBus.send(EventAPSCalculationFinished())
+
+        exportState(outcome, rt)
+    }
+
+    /**
+     * Der Zustandsexport — R89 macht ihn zur Installationsvoraussetzung.
+     *
+     * Er steht am ENDE von invoke() und laeuft auf JEDEM Pfad, auch dem
+     * Ausnahmepfad. Gerade dort will man ihn: ein Zyklus, der nichts
+     * entschieden hat, ist die interessanteste Zeile im Trail.
+     *
+     * Vollstaendig in runCatching: der Export ist Beobachtung und darf den
+     * Regler unter keinen Umstaenden anhalten. Selbst ein Fehler im
+     * Datensatzbau bleibt hier.
+     */
+    private fun exportState(outcome: FuseCycleRunner.Outcome?, rt: RT) {
+        runCatching {
+            val start = System.nanoTime()
+            val o = outcome ?: return
+            val cycleId = "${'$'}{sessionId}#${'$'}{++cycleCounter}"
+            val json = FuseStateJson.record(
+                cycleId = cycleId,
+                outcome = o,
+                rt = rt,
+                policy = o.policy,
+                buildStartNs = start,
+                prev = prevWrite,
+                nowNs = System::nanoTime,
+            )
+            // Die Android-Aufloesung des Verzeichnisses passiert AUSSCHLIESSLICH
+            // hier — der Schreiber selbst kennt kein Environment und bleibt
+            // damit ohne Geraet pruefbar.
+            val dir = File(Environment.getExternalStorageDirectory(), "Documents/aapsLogs")
+            when (val r = exporter.append(dir, json.toString())) {
+                is FuseStateExporter.Result.Written -> {
+                    prevWrite = FuseStateJson.PrevWrite(r.writeMs, r.bytes)
+                    if (r.rotated) aapsLogger.debug(LTag.APS, "FUSE state trail rotated")
+                }
+
+                is FuseStateExporter.Result.Failed  -> {
+                    // NICHT stumm: ein Export, der nicht schreibt, ist der Fall,
+                    // in dem man spaeter vergeblich nach Daten sucht.
+                    prevWrite = null
+                    aapsLogger.error(LTag.APS, "FUSE state export failed: ${'$'}{r.reason}")
+                }
+            }
+        }.onFailure { aapsLogger.error(LTag.APS, "FUSE state export threw", it) }
     }
 
     private fun cycleRunner(): FuseCycleRunner =

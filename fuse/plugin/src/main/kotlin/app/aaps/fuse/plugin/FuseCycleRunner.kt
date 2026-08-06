@@ -116,6 +116,10 @@ class FuseCycleRunner(
          *  Zahlen entscheiden nach dem ersten Lauf, ob das Quantil brauchbar
          *  gewaehlt war — deshalb gehoeren sie in den Grund, nicht ins Log. */
         val band: PairSlopeBand.Estimate?,
+        /** `null` = der Zyklus kam nicht bis zum Lesen der Einstellungen. Dann
+         *  hat er auch keine Politik, und der Export sagt das statt eine zu
+         *  erfinden. */
+        val policy: Config?,
         val isfMgdlPerU: Double?,
         val iobU: Double?,
         /** Warum NICHT gerechnet wurde. `null` heisst: der Zyklus lief durch. */
@@ -126,11 +130,12 @@ class FuseCycleRunner(
         val computeTs = dateUtil.now()
         val gate = FusePumpGate.evaluate(runCatching { activePlugin.activePump }.getOrNull())
 
-        fun abort(reason: String, signal: FuseSignalSource.Signal? = null) = Outcome(
+        fun abort(reason: String, signal: FuseSignalSource.Signal? = null, policy: Config? = null) = Outcome(
             decision = FuseController.noInput(reason), tbr = null, prediction = null,
             sourceTs = signal?.sourceTs, computeTs = computeTs, health = null, gate = gate,
             reason = reason, alarm = false, bgMgdl = signal?.q1, targetMgdl = null, targetSource = null,
-            signal = signal, band = null, isfMgdlPerU = null, iobU = null, abortReason = reason,
+            signal = signal, band = null, policy = policy, isfMgdlPerU = null, iobU = null,
+            abortReason = reason,
         )
 
         val profile = profileFunction.getProfile(computeTs) ?: return abort("no profile")
@@ -187,16 +192,16 @@ class FuseCycleRunner(
         // den Null-Abstand ausgerechnet bei der schlechtesten Datenlage still
         // wiederherstellen.
         val band = PairSlopeBand.estimate(signal.adjusted, signal.sourceTs, cfg.driveLowerQuantilePct)
-            ?: return abort("drive not estimable (${signal.samplesUsed} samples)", signal)
+            ?: return abort("drive not estimable (${signal.samplesUsed} samples)", signal, cfg)
 
         val built = when (val b = CoreInputGuard.build { buildPredictorInput(signal, profile, cfg, band) }) {
-            is CoreInputGuard.Outcome.Built  -> b.value ?: return abort("input incomplete", signal)
-            is CoreInputGuard.Outcome.Failed -> return abort("input: ${b.failure.detail}", signal)
+            is CoreInputGuard.Outcome.Built  -> b.value ?: return abort("input incomplete", signal, cfg)
+            is CoreInputGuard.Outcome.Failed -> return abort("input: ${b.failure.detail}", signal, cfg)
         }
 
         val prediction = when (val p = TrajectoryCore.predict(built.input)) {
             is PredictorOutcome.Ok       -> p.result
-            is PredictorOutcome.Rejected -> return abort("predictor: ${p.reason} ${p.detail}", signal)
+            is PredictorOutcome.Rejected -> return abort("predictor: ${p.reason} ${p.detail}", signal, cfg)
         }
 
         // ---- 4 Menge -------------------------------------------------------
@@ -204,7 +209,7 @@ class FuseCycleRunner(
         val bolusStep = pumpDescription.bolusStep
         // 0.0 waere GEFAEHRLICHER als ein Block: floor(x/0)*0 ergibt NaN, und
         // NaN < 0.0 ist false — der Zyklus fiele durch statt zu sperren.
-        if (!bolusStep.isFinite() || bolusStep <= 0.0) return abort("bolusStep=$bolusStep", signal)
+        if (!bolusStep.isFinite() || bolusStep <= 0.0) return abort("bolusStep=$bolusStep", signal, cfg)
 
         val maxIobU = constraintsChecker.getMaxIOBAllowed().value()
         val iobTotal = iobCobCalculator.calculateFromTreatmentsAndTemps(computeTs, profile)
@@ -238,7 +243,7 @@ class FuseCycleRunner(
             }
         ) {
             is CoreInputGuard.Outcome.Built  -> s.value
-            is CoreInputGuard.Outcome.Failed -> return abort("state: ${s.failure.detail}", signal)
+            is CoreInputGuard.Outcome.Failed -> return abort("state: ${s.failure.detail}", signal, cfg)
         }
 
         // Schwanzhaftung. `bgAtHorizonLower` ist die BASELINE-Bahn ohne
@@ -295,6 +300,7 @@ class FuseCycleRunner(
             targetSource = targetSource,
             signal = signal,
             band = band,
+            policy = cfg,
             isfMgdlPerU = isf,
             iobU = iobTotal.iob,
             abortReason = null,
@@ -352,7 +358,13 @@ class FuseCycleRunner(
             commandQueue.isRunning(Command.CommandType.BOLUS) ||
             commandQueue.isRunning(Command.CommandType.SMB_BOLUS)
 
-    private data class Config(
+    /**
+     * Die Stellgroessen, mit denen DIESER Zyklus gerechnet hat. Oeffentlich,
+     * weil der Zustandsexport den Politik-Hash aus genau diesen Werten bildet —
+     * ein Hash aus spaeter neu gelesenen Preferences waere die Politik eines
+     * anderen Zeitpunkts.
+     */
+    data class Config(
         val smbRatio: Double,
         val maxSmbU: Double,
         val guardFloorMgdl: Double,
