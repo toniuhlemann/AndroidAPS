@@ -40,10 +40,24 @@ object FuseRtBuilder {
          *  Herkunft im Nachhinein nicht mehr zuzuordnen ist: 100 mg/dl koennen
          *  das Profilziel ODER eine gesetzte TT sein. */
         targetSource: String? = null,
+        /** Das Signal des Zyklus. Nullbar, weil ein Abbruch vor Schritt 1 keines
+         *  hat — dann fehlt der Abschnitt, statt Nullen zu behaupten. */
+        signal: FuseSignalSource.Signal? = null,
     ): RT {
         val reason = StringBuilder()
         reason.append("FUSE ").append(gate.reason)
         reason.append(" | phase=").append(decision.block.name)
+        signal?.let {
+            reason.append(" | q1=").append(fmt(it.q1))
+            it.rSigned?.let { r -> reason.append(" r=").append(String.format(java.util.Locale.ROOT, "%.3f", r)) }
+            reason.append(" n=").append(it.samplesUsed).append('/').append(it.rawSeriesSize)
+            // Die Fenstergrenze steht NUR dann im Grund, wenn sie wirklich
+            // gegriffen hat. Ein "bound=NONE" in jeder Zeile waere Rauschen und
+            // wuerde die Faelle verdecken, auf die es ankommt.
+            if (it.boundedBy != app.aaps.fuse.core.signal.SignalWindow.Bound.NONE)
+                reason.append(" bound=").append(it.boundedBy.name).append('@').append(it.windowFromTs)
+            if (it.q1Outlier) reason.append(" OUTLIER")
+        }
         targetMgdl?.let { reason.append(" | target=").append(fmt(it)).append('(').append(targetSource ?: "?").append(')') }
         reason.append(" | insulinReq=").append(fmt(decision.insulinReqU))
         decision.predAtReleaseMgdl?.let { reason.append(" | predRelease=").append(fmt(it)) }

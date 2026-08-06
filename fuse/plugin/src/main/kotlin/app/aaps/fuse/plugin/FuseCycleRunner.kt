@@ -108,6 +108,12 @@ class FuseCycleRunner(
          *  im Nachhinein nie geraten werden muss, gegen welches Ziel FUSE
          *  gerechnet hat. */
         val targetSource: String?,
+        /** Das Signal des Zyklus - auch auf den Abbruchpfaden NACH Schritt 1.
+         *  Genau dort wird es gebraucht: direkt nach einem Sensorwechsel oder
+         *  einer Kalibrierung liefert Theil-Sen mangels Punkten `null`, der
+         *  Zyklus bricht ab, und ohne dieses Feld fehlte im Export ausgerechnet
+         *  dann die Fenstergrenze, die den Abbruch erklaert. */
+        val signal: FuseSignalSource.Signal?,
         val isfMgdlPerU: Double?,
         val iobU: Double?,
         /** Warum NICHT gerechnet wurde. `null` heisst: der Zyklus lief durch. */
@@ -118,17 +124,23 @@ class FuseCycleRunner(
         val computeTs = dateUtil.now()
         val gate = FusePumpGate.evaluate(runCatching { activePlugin.activePump }.getOrNull())
 
-        fun abort(reason: String) = Outcome(
-            decision = FuseController.noInput(reason), tbr = null, prediction = null, sourceTs = null,
-            computeTs = computeTs, health = null, gate = gate, reason = reason, alarm = false,
-            bgMgdl = null, targetMgdl = null, targetSource = null, isfMgdlPerU = null, iobU = null,
-            abortReason = reason,
+        fun abort(reason: String, signal: FuseSignalSource.Signal? = null) = Outcome(
+            decision = FuseController.noInput(reason), tbr = null, prediction = null,
+            sourceTs = signal?.sourceTs, computeTs = computeTs, health = null, gate = gate,
+            reason = reason, alarm = false, bgMgdl = signal?.q1, targetMgdl = null, targetSource = null,
+            signal = signal, isfMgdlPerU = null, iobU = null, abortReason = reason,
         )
 
         val profile = profileFunction.getProfile(computeTs) ?: return abort("no profile")
 
+        // Beide Epochen EINMAL je Zyklus. Sie begrenzen die Signalreihe UND
+        // steuern die Health-Gruende des Observers - zwei verschiedene Lesungen
+        // waeren zwei verschiedene Zustaende in derselben Momentaufnahme.
+        val sensorEpoch = sensorEpoch()
+        val calibrationEpoch = calibrationEpoch()
+
         // ---- 1 Signal ------------------------------------------------------
-        val signal = when (val s = signalSource.read()) {
+        val signal = when (val s = signalSource.read(sensorEpoch, calibrationEpoch)) {
             is FuseSignalSource.Outcome.Ok          -> s.signal
             is FuseSignalSource.Outcome.Unavailable -> return abort("signal: ${s.reason}")
         }
@@ -144,7 +156,7 @@ class FuseCycleRunner(
                 signalInputBg = signal.rawBg,
                 q1 = signal.q1,
                 rSigned = signal.rSigned,
-                sensorEpoch = sensorEpoch(),
+                sensorEpoch = sensorEpoch,
                 // Der Kalibrierbeginn IST lesbar: `LongKey.FslCalibrationStart`
                 // wird vom Fork in XdripSourcePlugin geschrieben. Hier stand
                 // vorher hart 0L mit der Begruendung, es gebe kein solches
@@ -155,7 +167,7 @@ class FuseCycleRunner(
                 //
                 // Default ist -1, nicht 0 — deshalb `takeIf { it > 0L }` und
                 // nicht `coerceAtLeast`.
-                calibrationEpoch = calibrationEpoch(),
+                calibrationEpoch = calibrationEpoch,
                 activity = signal.activity,
                 profileIsfValid = true,
                 inputGap = false,
@@ -165,17 +177,17 @@ class FuseCycleRunner(
         // ---- 3 Bahn --------------------------------------------------------
         val cfg = when (val c = CoreInputGuard.build { readConfig() }) {
             is CoreInputGuard.Outcome.Built  -> c.value
-            is CoreInputGuard.Outcome.Failed -> return abort("config: ${c.failure.detail}")
+            is CoreInputGuard.Outcome.Failed -> return abort("config: ${c.failure.detail}", signal)
         }
 
         val input = when (val b = CoreInputGuard.build { buildPredictorInput(signal, profile, cfg) }) {
-            is CoreInputGuard.Outcome.Built  -> b.value ?: return abort("input incomplete")
-            is CoreInputGuard.Outcome.Failed -> return abort("input: ${b.failure.detail}")
+            is CoreInputGuard.Outcome.Built  -> b.value ?: return abort("input incomplete", signal)
+            is CoreInputGuard.Outcome.Failed -> return abort("input: ${b.failure.detail}", signal)
         }
 
         val prediction = when (val p = TrajectoryCore.predict(input)) {
             is PredictorOutcome.Ok       -> p.result
-            is PredictorOutcome.Rejected -> return abort("predictor: ${p.reason} ${p.detail}")
+            is PredictorOutcome.Rejected -> return abort("predictor: ${p.reason} ${p.detail}", signal)
         }
 
         // ---- 4 Menge -------------------------------------------------------
@@ -183,7 +195,7 @@ class FuseCycleRunner(
         val bolusStep = pumpDescription.bolusStep
         // 0.0 waere GEFAEHRLICHER als ein Block: floor(x/0)*0 ergibt NaN, und
         // NaN < 0.0 ist false — der Zyklus fiele durch statt zu sperren.
-        if (!bolusStep.isFinite() || bolusStep <= 0.0) return abort("bolusStep=$bolusStep")
+        if (!bolusStep.isFinite() || bolusStep <= 0.0) return abort("bolusStep=$bolusStep", signal)
 
         val maxIobU = constraintsChecker.getMaxIOBAllowed().value()
         val iobTotal = iobCobCalculator.calculateFromTreatmentsAndTemps(computeTs, profile)
@@ -217,7 +229,7 @@ class FuseCycleRunner(
             }
         ) {
             is CoreInputGuard.Outcome.Built  -> s.value
-            is CoreInputGuard.Outcome.Failed -> return abort("state: ${s.failure.detail}")
+            is CoreInputGuard.Outcome.Failed -> return abort("state: ${s.failure.detail}", signal)
         }
 
         val decision = FuseController.decide(
@@ -258,6 +270,7 @@ class FuseCycleRunner(
             bgMgdl = signal.q1,
             targetMgdl = target,
             targetSource = targetSource,
+            signal = signal,
             isfMgdlPerU = isf,
             iobU = iobTotal.iob,
             abortReason = null,

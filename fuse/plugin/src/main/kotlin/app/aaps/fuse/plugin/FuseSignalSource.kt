@@ -5,6 +5,7 @@ import app.aaps.core.interfaces.profile.ProfileFunction
 import app.aaps.core.utils.MidnightUtils
 import app.aaps.fuse.core.observer.ActivityValidity
 import app.aaps.fuse.core.signal.BgiAdjustedSeries
+import app.aaps.fuse.core.signal.SignalWindow
 import app.aaps.fuse.core.signal.UkfQ1
 
 /**
@@ -52,6 +53,12 @@ class FuseSignalSource(
         val samplesUsed: Int,
         val rawSeriesSize: Int,
         val q1Outlier: Boolean,
+        /** Was den Reihenanfang gesetzt hat: NONE / SENSOR_CHANGE /
+         *  CALIBRATION_START. Gehoert in den Export - ein q1 aus einem frisch
+         *  begrenzten Fenster ist eine andere Zahl als eines aus voller
+         *  Historie, und das darf man hinterher nicht raten muessen. */
+        val boundedBy: SignalWindow.Bound,
+        val windowFromTs: Long,
     )
 
     sealed interface Outcome {
@@ -61,7 +68,11 @@ class FuseSignalSource(
         data class Unavailable(val reason: String) : Outcome
     }
 
-    fun read(): Outcome {
+    /**
+     * @param sensorStartTs Beginn der Sensorlaufzeit, `<= 0` = unbekannt.
+     * @param calibrationStartTs Beginn der Kalibrierung, `<= 0` = unbekannt.
+     */
+    fun read(sensorStartTs: Long, calibrationStartTs: Long): Outcome {
         // Aufsteigend, und nur kalibrierte Rohwerte: `raw` ist der Eingang, den
         // auch der Fork-Q1 nutzt. `value` waere der (moeglicherweise schon
         // geglaettete) Anzeigewert, `noise` ist entgegen dem Namen der
@@ -76,16 +87,26 @@ class FuseSignalSource(
 
         val newest = readings.last()
         val sourceTs = newest.tsMs
-        val leading = UkfQ1.leadingEdge(readings.takeLast(UkfQ1.WINDOW_SAMPLES))
-            ?: return Outcome.Unavailable("q1 not computable from ${readings.size} points")
+
+        // R60-F1: die Reihe beginnt am Regimewechsel, nicht am Datenanfang.
+        // EINMAL vorne angewandt und nicht in der Praefixschleife - das ist
+        // wirkungsgleich und kann nicht in einem der ~19 Durchlaeufe vergessen
+        // werden: jedes Praefix ist ein Suffix der aufsteigenden Reihe, also gilt
+        //   praefix(beschnitten) = praefix(voll) geschnitten mit {ts >= fromTs}.
+        val window = SignalWindow.of(sourceTs, sensorStartTs, calibrationStartTs)
+        val series = readings.filter { it.tsMs >= window.fromTs }
+        if (series.isEmpty()) return Outcome.Unavailable("window empty after ${window.label} @${window.fromTs}")
+
+        val leading = UkfQ1.leadingEdge(series.takeLast(UkfQ1.WINDOW_SAMPLES))
+            ?: return Outcome.Unavailable("q1 not computable from ${series.size} points (${window.label})")
 
         // Ein Sample je Rohpunkt im 18-min-Fenster. q1 wird KAUSAL je Punkt
         // gerechnet: jeder Punkt sieht nur seine eigene Vergangenheit.
         val windowStart = sourceTs - BgiAdjustedSeries.WINDOW_MS
         val samples = ArrayList<BgiAdjustedSeries.Sample>()
-        for ((index, point) in readings.withIndex()) {
+        for ((index, point) in series.withIndex()) {
             if (point.tsMs < windowStart) continue
-            val prefix = readings.subList(maxOf(0, index + 1 - UkfQ1.WINDOW_SAMPLES), index + 1)
+            val prefix = series.subList(maxOf(0, index + 1 - UkfQ1.WINDOW_SAMPLES), index + 1)
             val q1 = UkfQ1.leadingEdge(prefix)?.glucose ?: continue
             val profile = profileFunction.getProfile(point.tsMs)
                 ?: return Outcome.Unavailable("no profile at ${point.tsMs}")
@@ -98,7 +119,7 @@ class FuseSignalSource(
             if (!activity.isFinite()) return Outcome.Unavailable("activity not finite at ${point.tsMs}")
             samples.add(BgiAdjustedSeries.Sample(point.tsMs, q1, activity, isf))
         }
-        if (samples.isEmpty()) return Outcome.Unavailable("no samples in window")
+        if (samples.isEmpty()) return Outcome.Unavailable("no samples in window (${window.label})")
 
         val adjusted = BgiAdjustedSeries.adjust(samples)
         val rSigned = BgiAdjustedSeries.theilSen(adjusted, sourceTs)
@@ -114,8 +135,10 @@ class FuseSignalSource(
                 // und aktuell.
                 activity = ActivityValidity.VALID,
                 samplesUsed = samples.size,
-                rawSeriesSize = readings.size,
+                rawSeriesSize = series.size,
                 q1Outlier = leading.outlier,
+                boundedBy = window.bound,
+                windowFromTs = window.fromTs,
             )
         )
     }

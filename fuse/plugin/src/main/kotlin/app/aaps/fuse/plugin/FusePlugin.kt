@@ -146,6 +146,7 @@ class FusePlugin @Inject constructor(
                 gate = outcome.gate,
                 profileIsfMgdlPerU = outcome.isfMgdlPerU,
                 targetSource = outcome.targetSource,
+                signal = outcome.signal,
             )
         }
         outcome?.let { if (it.abortReason != null) rt.reason.append(" | abort=").append(it.abortReason) }
