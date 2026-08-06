@@ -32,6 +32,7 @@ class FuseStateExportTest {
 
     private fun signal() = FuseSignalSource.Signal(
         sourceTs = 1_700_000_000_000L, rawBg = 132.0, q1 = 130.0, rSigned = 0.8,
+        ukfRatePerMin = 1.1, rawSlopePerMin = 1.4,
         adjusted = emptyList(), activity = ActivityValidity.VALID,
         samplesUsed = 19, rawSeriesSize = 200, q1Outlier = false,
         boundedBy = SignalWindow.Bound.NONE, windowFromTs = 1_699_988_120_000L,
@@ -255,6 +256,16 @@ class FuseStateExportTest {
         val r = FuseStateExporter().append(File(blockiert, "unter"), "{}")
         assertTrue(r is FuseStateExporter.Result.Failed)
         assertNotNull((r as FuseStateExporter.Result.Failed).reason)
+    }
+
+    /** Drei Ratenmaasse muessen nebeneinander im Trail stehen - sonst laesst
+     *  sich die Traegheit des 18-min-Medians nie beziffern. */
+    @Test
+    fun `alle drei Ratenmaasse stehen im Datensatz`() {
+        val s = record().getJSONObject("signal")
+        assertEquals(0.8, s.getDouble("rSigned"), 1e-12)
+        assertEquals(1.1, s.getDouble("ukfRatePerMin"), 1e-12)
+        assertEquals(1.4, s.getDouble("rawSlopePerMin"), 1e-12)
     }
 
     // ---- Observer: die Grundlage der spaeteren Nachrechnung ---------------

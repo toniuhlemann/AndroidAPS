@@ -47,8 +47,28 @@ class FuseSignalSource(
          *  bevor q1 ihn glaettet. */
         val rawBg: Double,
         val q1: Double,
-        /** `null` heisst: nicht berechenbar (zu wenige Punkte/Paare) — NICHT 0. */
+        /** `null` heisst: nicht berechenbar (zu wenige Punkte/Paare) — NICHT 0.
+         *
+         *  TRAEGHEIT, gemessen: nach einem Steigungssprung folgt der Median mit
+         *  0 % bis Minute 5, 50 % bei Minute 9, 100 % ab Minute 13. Theil-Sen
+         *  ist robust gegen Rauschen — am Mahlzeiten-Onset heisst Robustheit
+         *  Langsamkeit. Deshalb stehen daneben zwei schnellere Maasse. */
         val rSigned: Double?,
+        /**
+         * Die EIGENE Ratenschaetzung des Filters (`UkfQ1.Result.ratePerMin`).
+         *
+         * Sie wurde bisher weggeworfen, obwohl der Filter sie in jedem Zyklus
+         * mitrechnet — ein Kalman-Zustand, kein Batch-Median, und damit
+         * konstruktionsbedingt schneller als [rSigned]. Kostet nichts.
+         */
+        val ukfRatePerMin: Double,
+        /**
+         * Steigung der ROHEN Reihe ueber die letzten Minuten — das naivste und
+         * schnellste Maass, und ungefaehr das, womit autoISF ueber `delta`
+         * arbeitet. Es ist hier NICHT im Regelpfad; es steht da, damit
+         * messbar wird, wieviel Vorsprung ein kurzes Fenster wirklich hat.
+         */
+        val rawSlopePerMin: Double?,
         /** Die BGI-korrigierte Reihe des Fensters. Sie wird durchgereicht, damit
          *  der Zyklus die Untergrenze mit dem eingestellten Quantil bilden kann,
          *  OHNE dass die Signalquelle Preferences liest — die Fensterbildung
@@ -77,6 +97,23 @@ class FuseSignalSource(
      * @param sensorStartTs Beginn der Sensorlaufzeit, `<= 0` = unbekannt.
      * @param calibrationStartTs Beginn der Kalibrierung, `<= 0` = unbekannt.
      */
+    companion object {
+
+        /** Fenster des Rohvergleichsmaasses. 5 min, weil das die Groesse ist,
+         *  mit der AAPS' `delta` arbeitet — der Vergleich soll fair sein. */
+        const val RAW_SLOPE_WINDOW_MS = 5 * 60_000L
+    }
+
+    /** Einfache Sekante ueber das Rohfenster. `null` bei zu wenig Abstand —
+     *  kein Ersatzwert. */
+    private fun rawSlope(points: List<UkfQ1.Point>, nowTs: Long): Double? {
+        val from = nowTs - RAW_SLOPE_WINDOW_MS
+        val first = points.firstOrNull { it.tsMs >= from } ?: return null
+        val dtMin = (nowTs - first.tsMs) / 60_000.0
+        if (dtMin < 2.0) return null
+        return (points.last().value - first.value) / dtMin
+    }
+
     fun read(sensorStartTs: Long, calibrationStartTs: Long): Outcome {
         // Aufsteigend, und nur kalibrierte Rohwerte: `raw` ist der Eingang, den
         // auch der Fork-Q1 nutzt. `value` waere der (moeglicherweise schon
@@ -135,6 +172,8 @@ class FuseSignalSource(
                 rawBg = newest.value,
                 q1 = leading.glucose,
                 rSigned = rSigned,
+                ukfRatePerMin = leading.ratePerMin,
+                rawSlopePerMin = rawSlope(readings, sourceTs),
                 adjusted = adjusted,
                 // Die Aktivitaet wurde AM Zeitpunkt selbst gerechnet, nicht per
                 // LOCF uebernommen — sie ist damit definitionsgemaess kausal

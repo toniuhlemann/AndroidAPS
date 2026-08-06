@@ -113,6 +113,11 @@ object FuseStateJson {
                 .put("q1", fin(s.q1))
                 .put("rawBg", fin(s.rawBg))
                 .put("rSigned", fin(s.rSigned))
+                // DREI Ratenmaasse nebeneinander - ein zweites Thermometer,
+                // kein zweiter Regler. Nur rSigned wirkt; die anderen beiden
+                // machen messbar, wieviel Vorsprung ein kuerzeres Fenster hat.
+                .put("ukfRatePerMin", fin(s.ukfRatePerMin))
+                .put("rawSlopePerMin", fin(s.rawSlopePerMin))
                 .put("samplesUsed", s.samplesUsed)
                 .put("rawSeriesSize", s.rawSeriesSize)
                 .put("q1Outlier", s.q1Outlier)
