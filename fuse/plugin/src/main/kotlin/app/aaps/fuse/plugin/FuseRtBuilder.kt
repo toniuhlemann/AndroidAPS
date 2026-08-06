@@ -75,6 +75,17 @@ object FuseRtBuilder {
                 .append(" spread=").append(f3(it.spread)).append(" pairs=").append(it.pairCount)
             methodId?.let { m -> reason.append(" m=").append(m) }
         }
+        decision.tail?.let {
+            reason.append(" | tail=")
+            if (it.usable) reason.append(f3(it.headroomU)).append("U(budget=").append(f3(it.budgetU))
+                .append(" iobH=").append(f3(it.existingU)).append(')')
+            else reason.append("INVALID(").append(it.invalidReason).append(')')
+            // Der Unvollstaendigkeitsvermerk steht in JEDER Zeile, in der der
+            // Schwanz bewertet wurde. Er ist der Unterschied zwischen "geprueft"
+            // und "so weit geprueft, wie es heute geht".
+            reason.append(' ').append(it.completeness).append(' ').append(it.lowerBgAtHSource)
+            if (decision.tailCostU > 0.0) reason.append(" cost=").append(f3(decision.tailCostU))
+        }
         reason.append(" | limit=").append(decision.bindingLimit)
         if (decision.smbU > 0.0) reason.append(" | SMB=").append(fmt(decision.smbU))
         tbr?.let { reason.append(" | TBR=").append(fmt(it.rateUPerH)).append("U/h/").append(it.durationMin).append("min") }

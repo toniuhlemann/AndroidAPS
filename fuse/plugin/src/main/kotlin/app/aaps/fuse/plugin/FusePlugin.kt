@@ -28,6 +28,7 @@ import app.aaps.core.objects.extensions.put
 import app.aaps.core.objects.extensions.store
 import app.aaps.core.validators.preferences.AdaptiveDoublePreference
 import app.aaps.core.validators.preferences.AdaptiveIntPreference
+import app.aaps.core.validators.preferences.AdaptiveSwitchPreference
 import org.json.JSONObject
 import javax.inject.Inject
 import javax.inject.Provider
@@ -78,7 +79,7 @@ class FusePlugin @Inject constructor(
         .preferencesVisibleInSimpleMode(false)
         .showInList { config.APS }
         .description(R.string.description_fuse),
-    ownPreferences = listOf(FuseDoubleKey::class.java, FuseIntKey::class.java),
+    ownPreferences = listOf(FuseDoubleKey::class.java, FuseIntKey::class.java, FuseBooleanKey::class.java),
     aapsLogger, rh, preferences
 ), APS {
 
@@ -198,6 +199,9 @@ class FusePlugin @Inject constructor(
             .put(FuseIntKey.LiabilityHorizonMin, preferences)
             .put(FuseIntKey.DriveTauMin, preferences)
             .put(FuseIntKey.DriveLowerQuantilePct, preferences)
+            .put(FuseBooleanKey.TailGuardEnabled, preferences)
+            .put(FuseDoubleKey.TailFloorMgdl, preferences)
+            .put(FuseDoubleKey.TailRecoveryU, preferences)
 
     override fun applyConfiguration(configuration: JSONObject) {
         configuration
@@ -209,6 +213,9 @@ class FusePlugin @Inject constructor(
             .store(FuseIntKey.LiabilityHorizonMin, preferences)
             .store(FuseIntKey.DriveTauMin, preferences)
             .store(FuseIntKey.DriveLowerQuantilePct, preferences)
+            .store(FuseBooleanKey.TailGuardEnabled, preferences)
+            .store(FuseDoubleKey.TailFloorMgdl, preferences)
+            .store(FuseDoubleKey.TailRecoveryU, preferences)
     }
 
     override fun addPreferenceScreen(preferenceManager: PreferenceManager, parent: PreferenceScreen, context: Context, requiredKey: String?) {
@@ -267,6 +274,24 @@ class FusePlugin @Inject constructor(
                 AdaptiveIntPreference(
                     ctx = context, intKey = FuseIntKey.DriveLowerQuantilePct,
                     dialogMessage = R.string.fuse_drive_quantile_summary, title = R.string.fuse_drive_quantile_title
+                )
+            )
+            addPreference(
+                AdaptiveSwitchPreference(
+                    ctx = context, booleanKey = FuseBooleanKey.TailGuardEnabled,
+                    summary = R.string.fuse_tail_guard_summary, title = R.string.fuse_tail_guard_title
+                )
+            )
+            addPreference(
+                AdaptiveDoublePreference(
+                    ctx = context, doubleKey = FuseDoubleKey.TailFloorMgdl,
+                    dialogMessage = R.string.fuse_tail_floor_summary, title = R.string.fuse_tail_floor_title
+                )
+            )
+            addPreference(
+                AdaptiveDoublePreference(
+                    ctx = context, doubleKey = FuseDoubleKey.TailRecoveryU,
+                    dialogMessage = R.string.fuse_tail_recovery_summary, title = R.string.fuse_tail_recovery_title
                 )
             )
         }

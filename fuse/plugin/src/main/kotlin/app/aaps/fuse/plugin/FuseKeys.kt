@@ -80,6 +80,23 @@ enum class FuseDoubleKey(
      * die falsche Stelle fuer Bequemlichkeit.
      */
     GuardFloorMgdl("fuse_guard_floor_mgdl", 70.0, 40.0, 120.0),
+
+    /**
+     * Untergrenze fuer das SCHWANZFENSTER hinter dem Haftungshorizont [mg/dl].
+     * Getrennt von [GuardFloorMgdl], weil die beiden verschiedene Zeitraeume
+     * absichern und man sie unabhaengig verstellen koennen muss.
+     */
+    TailFloorMgdl("fuse_tail_floor_mgdl", 70.0, 40.0, 120.0),
+
+    /**
+     * Erholung, die im Schwanzfenster eingeplant werden darf [U].
+     *
+     * DEFAULT 0,0 — Guard v0.4 setzt ihn ausdruecklich auf 0,0 und schreibt
+     * dazu: AENDERUNG NUR MIT MESSUNG. Wer hier eine Zahl eintraegt, behauptet
+     * zu wissen, wieviel Erholung der Schwanz traegt; ohne Messung ist das
+     * geraten.
+     */
+    TailRecoveryU("fuse_tail_recovery_u", 0.0, 0.0, 5.0),
 }
 
 enum class FuseIntKey(
@@ -154,4 +171,40 @@ enum class FuseIntKey(
      * `floor(0.05 * 7) = 0`. Deshalb steht die Paaranzahl im Export.
      */
     DriveLowerQuantilePct("fuse_drive_lower_quantile_pct", 50, 5, 50),
+}
+
+/**
+ * Schalter. Bewusst eine eigene Enum-Klasse statt eines Int-Flags: ein
+ * Ein/Aus-Zustand gehoert als Schalter in den Bildschirm, nicht als Zahl.
+ */
+enum class FuseBooleanKey(
+    override val key: String,
+    override val defaultValue: Boolean,
+    override val defaultedBySM: Boolean = false,
+    override val calculatedDefaultValue: Boolean = false,
+    override val engineeringModeOnly: Boolean = false,
+    override val showInApsMode: Boolean = true,
+    override val showInNsClientMode: Boolean = false,
+    override val showInPumpControlMode: Boolean = false,
+    override val dependency: BooleanPreferenceKey? = null,
+    override val negativeDependency: BooleanPreferenceKey? = null,
+    override val hideParentScreenIfHidden: Boolean = false,
+    override val exportable: Boolean = true,
+) : BooleanPreferenceKey {
+
+    /**
+     * Schwanz-Guard: bewertet die unvermeidbare Restwirkung HINTER dem
+     * Haftungshorizont.
+     *
+     * Er rechnet heute nur EINEN der drei Terme aus R79-F4 — die beiden
+     * anderen brauchen den Commitment-Ledger und den verdrahteten
+     * Einheitskern. Deshalb traegt jede seiner Zahlen einen
+     * Unvollstaendigkeitsvermerk.
+     *
+     * WARUM ES DIESEN SCHALTER GIBT: mit Erholungsterm 0 und typischem
+     * FCL-IOB kann der Guard den schnellen Kanal weitgehend schliessen. Ob er
+     * das tut, ist NICHT gemessen. Der Schalter macht aus dieser Unsicherheit
+     * eine Einstellung statt eines Flashs.
+     */
+    TailGuardEnabled("fuse_tail_guard_enabled", true),
 }

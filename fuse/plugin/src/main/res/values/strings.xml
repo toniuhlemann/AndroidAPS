@@ -28,4 +28,13 @@
 
     <string name="fuse_drive_quantile_title">Guard-Quantil [%]</string>
     <string name="fuse_drive_quantile_summary">Rangstelle in der Verteilung der paarweisen Steigungen, aus der die GUARDBAHN ihren Antrieb nimmt. 50 = kein Band, identisch zum bisherigen Verhalten. Kleinere Werte machen die Guardbahn pessimistischer und den Schutz frueher wirksam - wie weit, ist noch nicht gemessen. Erst Spreizung und Paaranzahl im Grund ansehen, dann absenken.</string>
+
+    <string name="fuse_tail_guard_title">Schwanz-Guard</string>
+    <string name="fuse_tail_guard_summary">Bewertet die unvermeidbare Restwirkung HINTER dem Haftungshorizont. Rechnet heute nur einen von drei Termen - die anderen brauchen den Ledger und den verdrahteten Einheitskern; jede Zahl traegt deshalb einen Unvollstaendigkeitsvermerk. Kann den schnellen Kanal spuerbar bremsen; ob und wie stark, ist noch nicht gemessen.</string>
+
+    <string name="fuse_tail_floor_title">Schwanz-Untergrenze [mg/dl]</string>
+    <string name="fuse_tail_floor_summary">Untergrenze fuer das Fenster hinter dem Haftungshorizont. Getrennt von der Guard-Untergrenze, weil beide verschiedene Zeitraeume absichern.</string>
+
+    <string name="fuse_tail_recovery_title">Schwanz-Erholung [U]</string>
+    <string name="fuse_tail_recovery_summary">Erholung, die im Schwanzfenster eingeplant werden darf. Default 0,0 - AENDERUNG NUR MIT MESSUNG. Wer hier eine Zahl eintraegt, behauptet zu wissen, wieviel Erholung der Schwanz traegt.</string>
 </resources>

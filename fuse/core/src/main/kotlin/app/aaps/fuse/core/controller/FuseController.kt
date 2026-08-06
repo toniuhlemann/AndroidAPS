@@ -90,6 +90,16 @@ object FuseController {
         NO_DEMAND, IOB_TH_REACHED, MAX_IOB_REACHED, BELOW_PUMP_INCREMENT, HORIZON_MISSING,
 
         /**
+         * Der SCHWANZ traegt nichts mehr: was am Haftungshorizont noch an Bord
+         * ist, schoepft das Budget der Bahn danach bereits aus.
+         *
+         * Heisst TAIL und nicht TAIL_FLOOR, weil v0.4 §268 den bindenden Grund
+         * so nennt (NEAR_TERM_GUARD | TAIL | TARGET_BAND | CAP). Ein zweiter
+         * Name fuer dieselbe Sache waere im Export nicht zuzuordnen.
+         */
+        TAIL,
+
+        /**
          * Der Zyklus kam gar nicht bis zum Regler: kein Profil, kein Signal,
          * eine ungueltige Eingabe.
          *
@@ -109,6 +119,19 @@ object FuseController {
         val predAtReleaseMgdl: Double?,
         val minLowerMgdl: Double?,
         val bindingLimit: String,
+        /** Schwanzhaftung, falls bewertet. `null` = Guard aus oder nicht
+         *  auswertbar. Traegt seinen eigenen Unvollstaendigkeitsvermerk. */
+        val tail: TailLiability.Report? = null,
+        /**
+         * Was der Schwanz-Guard die Freigabe GEKOSTET hat [U] — die Differenz
+         * zwischen der bindenden Grenze ohne und mit Schwanzterm.
+         *
+         * Reine Arithmetik INNERHALB des Zyklus, also messbar und kein
+         * Counterfactual: beide Zahlen entstehen aus derselben Momentaufnahme.
+         * Guard v0.3 §5 verlangt, dass der Onset-Verlust ueber H BEZIFFERT wird
+         * — genau das ist diese Zahl.
+         */
+        val tailCostU: Double = 0.0,
     )
 
     /**
@@ -125,7 +148,14 @@ object FuseController {
     fun noInput(reason: String): Decision =
         Decision(0.0, TbrAction.NO_NEW_POSITIVE, Block.NO_INPUT, 0.0, null, null, reason)
 
-    fun decide(state: State, prediction: PredictorResult?, limits: Limits = Limits()): Decision {
+    fun decide(
+        state: State,
+        prediction: PredictorResult?,
+        limits: Limits = Limits(),
+        /** `null` = Schwanz-Guard aus. Vierter Parameter mit Default, damit
+         *  bestehende Aufrufe unveraendert bleiben. */
+        tail: TailLiability.Report? = null,
+    ): Decision {
         fun none(block: Block, tbr: TbrAction = TbrAction.NO_NEW_POSITIVE) =
             Decision(0.0, tbr, block, 0.0, null, null, block.name)
 
@@ -145,6 +175,23 @@ object FuseController {
             return Decision(
                 0.0, TbrAction.ZERO_TEMP, Block.GUARD_FLOOR, 0.0,
                 release.meanBg, prediction.minLowerBg, "guardFloor=${limits.guardFloorMgdl}",
+            )
+        }
+
+        // SCHWANZ-GUARD. Er sitzt NACH dem Nahzonen-Guard und VOR der
+        // Bedarfsrechnung: was der Schwanz nicht mehr traegt, ist kein
+        // Mengenproblem, sondern eine Haftungsgrenze.
+        //
+        // Die Kategorie ist NO_NEW_POSITIVE und ausdruecklich NICHT ZERO_TEMP.
+        // Zwei Gruende, beide aus der Sache: ein Zero-Temp kann die bereits
+        // gelieferte Wirkung, um die es hier geht, gar nicht zurueckholen — und
+        // ein blindes Zero-Temp bei sicherer Nahbahn waere eine eigene
+        // Fehldosis mit umgekehrtem Vorzeichen (s. NO_DEMAND weiter unten).
+        // Ein Schwanzbefund ist kein Sicherheitsbefund der Nahzone.
+        if (tail != null && tail.usable && tail.headroomU <= 0.0) {
+            return Decision(
+                0.0, TbrAction.NO_NEW_POSITIVE, Block.TAIL, 0.0,
+                release.meanBg, prediction.minLowerBg, "tailHeadroom=${tail.headroomU}", tail,
             )
         }
 
@@ -189,14 +236,19 @@ object FuseController {
             )
         }
 
-        val candidates = listOf(
+        val baseCandidates = listOf(
             "smbRatio" to insulinReq * state.smbRatio,
             "iobThHeadroom" to fastHeadroom,
             "maxIobHeadroom" to maxIobHeadroom,
             "maxSmb" to state.maxSmbU,
         )
+        val withoutTail = baseCandidates.minOf { it.second }
+        val candidates =
+            if (tail != null && tail.usable) baseCandidates + ("tailHeadroom" to tail.headroomU)
+            else baseCandidates
         val binding = candidates.minByOrNull { it.second }!!
         val raw = binding.second
+        val tailCost = (withoutTail - raw).coerceAtLeast(0.0)
 
         // AUSSCHLIESSLICH abwaerts runden: eine Freigabe darf durch Rundung nie
         // groesser werden. Unter dem Pumpeninkrement gibt es keinen SMB — es
@@ -205,7 +257,7 @@ object FuseController {
         if (deliverable < state.pumpIncrementU) {
             return Decision(
                 0.0, TbrAction.KEEP_CURRENT, Block.BELOW_PUMP_INCREMENT, insulinReq,
-                release.meanBg, prediction.minLowerBg, binding.first,
+                release.meanBg, prediction.minLowerBg, binding.first, tail, tailCost,
             )
         }
 
@@ -217,6 +269,8 @@ object FuseController {
             predAtReleaseMgdl = release.meanBg,
             minLowerMgdl = prediction.minLowerBg,
             bindingLimit = binding.first,
+            tail = tail,
+            tailCostU = tailCost,
         )
     }
 }

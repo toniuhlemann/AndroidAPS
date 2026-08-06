@@ -21,6 +21,7 @@ import app.aaps.fuse.core.adapter.CoreInputGuard
 import app.aaps.fuse.core.adapter.CycleAssembly
 import app.aaps.fuse.core.controller.FuseController
 import app.aaps.fuse.core.controller.IobThreshold
+import app.aaps.fuse.core.controller.TailLiability
 import app.aaps.fuse.core.controller.TbrPolicy
 import app.aaps.fuse.core.observer.Health
 import app.aaps.fuse.core.observer.ObserverStateMachine
@@ -188,12 +189,12 @@ class FuseCycleRunner(
         val band = PairSlopeBand.estimate(signal.adjusted, signal.sourceTs, cfg.driveLowerQuantilePct)
             ?: return abort("drive not estimable (${signal.samplesUsed} samples)", signal)
 
-        val input = when (val b = CoreInputGuard.build { buildPredictorInput(signal, profile, cfg, band) }) {
+        val built = when (val b = CoreInputGuard.build { buildPredictorInput(signal, profile, cfg, band) }) {
             is CoreInputGuard.Outcome.Built  -> b.value ?: return abort("input incomplete", signal)
             is CoreInputGuard.Outcome.Failed -> return abort("input: ${b.failure.detail}", signal)
         }
 
-        val prediction = when (val p = TrajectoryCore.predict(input)) {
+        val prediction = when (val p = TrajectoryCore.predict(built.input)) {
             is PredictorOutcome.Ok       -> p.result
             is PredictorOutcome.Rejected -> return abort("predictor: ${p.reason} ${p.detail}", signal)
         }
@@ -240,9 +241,23 @@ class FuseCycleRunner(
             is CoreInputGuard.Outcome.Failed -> return abort("state: ${s.failure.detail}", signal)
         }
 
+        // Schwanzhaftung. `bgAtHorizonLower` ist die BASELINE-Bahn ohne
+        // Kandidat - der Vermerk dazu steht in TailLiability und wandert in den
+        // Grund, damit der Guard keine Deckung behauptet, die er nicht hat.
+        val tail = if (!cfg.tailGuardEnabled) null else TailLiability.evaluate(
+            TailLiability.Input(
+                lowerBgAtH = prediction.bgAtHorizonLower,
+                existingIobAtH = built.iobAtH,
+                isfTailMgdlPerU = built.isfTail,
+                tailFloorMgdl = cfg.tailFloorMgdl,
+                tailRecoveryU = cfg.tailRecoveryU,
+            )
+        )
+
         val decision = FuseController.decide(
             state, prediction,
             FuseController.Limits(guardFloorMgdl = cfg.guardFloorMgdl, releaseHorizonMin = cfg.releaseHorizonMin),
+            tail,
         )
 
         // ---- 5 Kanal -------------------------------------------------------
@@ -346,6 +361,9 @@ class FuseCycleRunner(
         val liabilityHorizonMin: Int,
         val driveTauMin: Int,
         val driveLowerQuantilePct: Int,
+        val tailGuardEnabled: Boolean,
+        val tailFloorMgdl: Double,
+        val tailRecoveryU: Double,
     )
 
     /**
@@ -363,6 +381,9 @@ class FuseCycleRunner(
         liabilityHorizonMin = preferences.get(FuseIntKey.LiabilityHorizonMin),
         driveTauMin = preferences.get(FuseIntKey.DriveTauMin),
         driveLowerQuantilePct = preferences.get(FuseIntKey.DriveLowerQuantilePct),
+        tailGuardEnabled = preferences.get(FuseBooleanKey.TailGuardEnabled),
+        tailFloorMgdl = preferences.get(FuseDoubleKey.TailFloorMgdl),
+        tailRecoveryU = preferences.get(FuseDoubleKey.TailRecoveryU),
     ).also {
         // Die Preference-Grenzen gelten nur im Einstellungsdialog. Ein Wert aus
         // einem alten Import geht daran vorbei — deshalb hier nochmal, und zwar
@@ -378,6 +399,8 @@ class FuseCycleRunner(
         require(it.driveLowerQuantilePct in PairSlopeBand.MIN_PCT..PairSlopeBand.MAX_PCT) {
             "driveLowerQuantile=${it.driveLowerQuantilePct}"
         }
+        require(it.tailFloorMgdl.isFinite() && it.tailFloorMgdl > 0.0) { "tailFloor=${it.tailFloorMgdl}" }
+        require(it.tailRecoveryU.isFinite() && it.tailRecoveryU >= 0.0) { "tailRecovery=${it.tailRecoveryU}" }
         require(it.liabilityHorizonMin >= it.releaseHorizonMin) {
             "liabilityHorizon=${it.liabilityHorizonMin} < releaseHorizon=${it.releaseHorizonMin}"
         }
@@ -388,12 +411,18 @@ class FuseCycleRunner(
      * strukturell erfuellt, nicht zufaellig: das Array beginnt AM Anker und
      * reicht ueber den Horizont hinaus.
      */
+    /** Eingabe UND die beiden Groessen, die nur beim Bau der Arrays anfallen:
+     *  das IOB am Haftungshorizont und der konservative ISF des Schwanzfensters.
+     *  Sie hier mitzunehmen kostet keinen einzigen zusaetzlichen Aufruf — sie
+     *  stehen ohnehin in den Arrays. */
+    private class Built(val input: PredictorInput, val iobAtH: Double, val isfTail: Double)
+
     private fun buildPredictorInput(
         signal: FuseSignalSource.Signal,
         profile: Profile,
         cfg: Config,
         band: PairSlopeBand.Estimate,
-    ): PredictorInput? {
+    ): Built? {
         val liabilityHorizonMin = cfg.liabilityHorizonMin
         val anchor = signal.sourceTs
         val steps = ((liabilityHorizonMin + IOB_MARGIN_MIN) * 60_000L / IOB_GRID_MS).toInt()
@@ -425,6 +454,16 @@ class FuseCycleRunner(
         // eines Off-by-one, den niemand mehr findet.
         val isfSlots = CycleAssembly.compressIsfSlots(times, isfValues, times.last() + IOB_GRID_MS)
 
+        // Schwanzgroessen aus DENSELBEN Arrays - kein zusaetzlicher Aufruf.
+        // Der Index des Haftungshorizonts im 5-min-Raster; ab dort beginnt das
+        // Schwanzfenster.
+        val hIndex = (liabilityHorizonMin * 60_000L / IOB_GRID_MS).toInt().coerceIn(0, steps)
+        val iobAtH = iob[hIndex]
+        // MAXIMUM der beruehrten ISF-Bloecke: ein hoeherer ISF macht das
+        // Schwanzbudget KLEINER, ist also die konservative Wahl.
+        var isfTail = isfValues[hIndex]
+        for (i in hIndex..steps) if (isfValues[i] > isfTail) isfTail = isfValues[i]
+
         val insulin = activePlugin.activeInsulin
         val trajectory = ActualTrajectoryFactory.of(
             lineage = InsulinLineage.ActualTreatment(
@@ -443,7 +482,10 @@ class FuseCycleRunner(
             iobCalculationHash = "calculateFromTreatmentsAndTemps",
         )
 
-        return PredictorInput(
+        return Built(
+            iobAtH = iobAtH,
+            isfTail = isfTail,
+            input = PredictorInput(
             predictionAnchorTs = anchor,
             bgAtAnchor = signal.q1,
             // ALPHA 1: `lower = mean` heisst, die Guardbahn ist im Moment
@@ -468,6 +510,7 @@ class FuseCycleRunner(
             trajectory = trajectory,
             isfSlots = isfSlots,
             horizonMin = liabilityHorizonMin,
+            ),
         )
     }
 }
