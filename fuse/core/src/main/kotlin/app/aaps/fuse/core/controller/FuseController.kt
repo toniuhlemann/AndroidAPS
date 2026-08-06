@@ -57,6 +57,16 @@ object FuseController {
          * selbst.
          */
         val smbRatioRise: Double,
+        /**
+         * Die GEMESSENE Evidenz — dieselbe Groesse, aus der auch die Bahn
+         * entsteht. `null` heisst nicht berechenbar; dann gilt der
+         * Korrekturanteil, denn ohne Evidenz gibt es keinen Grund fuer mehr.
+         */
+        val rSignedMgdlPerMin: Double?,
+        /** Untere Kante der Rampe: bis hierher gilt der Korrekturanteil. */
+        val riseRampLowRPerMin: Double,
+        /** Obere Kante: ab hier gilt der volle Anstiegsanteil. */
+        val riseRampHighRPerMin: Double,
         val pumpIncrementU: Double,
         val maxSmbU: Double,
         val pumpBusy: Boolean,
@@ -65,9 +75,34 @@ object FuseController {
          *  darf KEIN zusaetzliches SMB-Budget erzeugen (Fork-Praxis). */
         val capIobU: Double get() = max(netIobU, bolusIobU)
 
-        /** Der Anteil, der in DIESER Lage gilt. */
+        /**
+         * Der Anteil, der in DIESER Lage gilt — STETIG an `r` gekoppelt, nicht
+         * an die Observer-Phase.
+         *
+         * WARUM NICHT AN DIE PHASE: die Phasenschwelle ist `thr = 0,50
+         * mg/dl/min` und erkennt "irgendetwas steigt", nicht "eine Mahlzeit
+         * laeuft". Ein echter Onset liegt bei 3-5 mg/dl/min. Der erste
+         * Geraetelauf hat das sofort gezeigt: ein flacher Verlauf 100-105 mit
+         * r ~ 0,65 stand als RISE_ACTIVE da und haette mit einem binaeren
+         * Schalter den vollen Mahlzeitenanteil bekommen. Eine Detektionsschwelle
+         * als Verstaerkungsschalter zweckzuentfremden behauptet eine
+         * Trennschaerfe, die sie nicht hat.
+         *
+         * Die Phase bleibt, wofuer sie gebaut ist: sie sagt, OB eine Episode
+         * laeuft. Wie STARK die Evidenz ist, steht in `r` — und die Verstaerkung
+         * soll damit wachsen, nicht springen.
+         *
+         * Kein Phasen-Gate obendrauf: nach dem Peak faellt `r` von selbst, die
+         * Rampe regelt das ohne zweite Regel.
+         */
         val effectiveSmbRatio: Double
-            get() = if (contextOf(phase) == Context.RISE) smbRatioRise else smbRatioCorrection
+            get() {
+                val r = rSignedMgdlPerMin ?: return smbRatioCorrection
+                if (!r.isFinite() || riseRampHighRPerMin <= riseRampLowRPerMin) return smbRatioCorrection
+                val f = ((r - riseRampLowRPerMin) / (riseRampHighRPerMin - riseRampLowRPerMin))
+                    .coerceIn(0.0, 1.0)
+                return smbRatioCorrection + f * (smbRatioRise - smbRatioCorrection)
+            }
     }
 
     data class Limits(
@@ -78,8 +113,13 @@ object FuseController {
     )
 
     /**
-     * Mahlzeit oder Korrektur — die einzige Stelle, an der diese Unterscheidung
-     * getroffen wird.
+     * EPISODENZUSTAND, nicht Verstaerkungsschalter.
+     *
+     * Er wird BERICHTET (Schirm, Export), steuert aber nichts mehr: die
+     * Verstaerkung haengt an `r`, s. [State.effectiveSmbRatio]. Die
+     * Unterscheidung bleibt trotzdem wertvoll — sie sagt, ob der Observer eine
+     * Episode fuehrt, und das ist beim Auswerten etwas anderes als die Hoehe
+     * des Anstiegs.
      *
      * `CANDIDATE` zaehlt schon zum Anstieg, obwohl er noch nicht bestaetigt
      * ist: die Schwelle ist ueberschritten, und genau die ersten Minuten sind

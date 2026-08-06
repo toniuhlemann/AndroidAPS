@@ -25,7 +25,7 @@ class FuseStateExportTest {
     private val BUILD = FuseStateJson.Build("3.4.2.5+fuse0.1.0-toni", "abc1234", true)
 
     private val cfg = FuseCycleRunner.Config(
-        smbRatio = 0.2, smbRatioRise = 0.35, maxSmbU = 0.3, guardFloorMgdl = 70.0, iobThPercent = 100,
+        smbRatio = 0.2, smbRatioRise = 0.35, riseRampLowR = 0.5, riseRampHighR = 2.0, maxSmbU = 0.3, guardFloorMgdl = 70.0, iobThPercent = 100,
         releaseHorizonMin = 30, liabilityHorizonMin = 120, driveTauMin = 60,
         driveLowerQuantilePct = 50, tailGuardEnabled = false, tailFloorMgdl = 70.0, tailRecoveryU = 0.0,
     )

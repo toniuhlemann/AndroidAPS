@@ -35,11 +35,14 @@ class FuseControllerTest {
         busy: Boolean = false,
         smbRatio: Double = 0.5,
         maxSmb: Double = 0.75,
+        r: Double? = null,
     ) = FuseController.State(
         health = health, safetyHold = hold, phase = Phase.REARMING,
         netIobU = netIob, bolusIobU = bolusIob, basalIobU = 0.0,
         iobThU = iobTh, maxIobU = maxIob, targetMgdl = 100.0, isfMgdlPerU = 50.0,
-        smbRatioCorrection = smbRatio, smbRatioRise = smbRatio, pumpIncrementU = 0.05, maxSmbU = maxSmb, pumpBusy = busy,
+        smbRatioCorrection = smbRatio, smbRatioRise = smbRatio,
+        rSignedMgdlPerMin = r, riseRampLowRPerMin = 0.5, riseRampHighRPerMin = 2.0,
+        pumpIncrementU = 0.05, maxSmbU = maxSmb, pumpBusy = busy,
     )
 
     // ---- Mahlzeit oder Korrektur -----------------------------------------
@@ -57,23 +60,58 @@ class FuseControllerTest {
             assertEquals(FuseController.Context.CORRECTION, FuseController.contextOf(p)) { "$p" }
     }
 
+    /**
+     * DER BEFUND DES ERSTEN GERAETELAUFS, als Test festgehalten: ein flacher
+     * Verlauf 100-105 hatte r ~ 0,65 und stand damit als RISE_ACTIVE da. Mit
+     * einem binaeren Schalter an der Phase haette er den vollen
+     * Mahlzeitenanteil bekommen — 0,9 U statt 0,35 U auf einem Drift.
+     * Die Rampe muss dort praktisch beim Korrekturanteil bleiben.
+     */
     @Test
-    fun `im Anstieg wird mehr freigegeben als in der Korrektur`() {
-        fun s(phase: Phase) = FuseController.State(
+    fun `ein flacher Drift bekommt fast den Korrekturanteil - egal welche Phase`() {
+        fun s(phase: Phase, r: Double) = FuseController.State(
             health = Health.READY, safetyHold = false, phase = phase,
             netIobU = 0.0, bolusIobU = 0.0, basalIobU = 0.0,
             iobThU = 8.0, maxIobU = 8.0, targetMgdl = 100.0, isfMgdlPerU = 50.0,
-            smbRatioCorrection = 0.15, smbRatioRise = 0.35,
+            smbRatioCorrection = 0.20, smbRatioRise = 0.35,
+            rSignedMgdlPerMin = r, riseRampLowRPerMin = 0.5, riseRampHighRPerMin = 2.0,
             pumpIncrementU = 0.05, maxSmbU = 2.0, pumpBusy = false,
         )
-        val korr = FuseController.decide(s(Phase.ARMED), pred(300.0))
-        val rise = FuseController.decide(s(Phase.RISE_ACTIVE), pred(300.0))
-        assertTrue(rise.smbU > korr.smbU) { "Anstieg ${rise.smbU} muss ueber Korrektur ${korr.smbU} liegen" }
-        assertEquals(FuseController.Context.RISE, rise.context)
-        assertEquals(FuseController.Context.CORRECTION, korr.context)
-        // insulinReq = (300-100)/50 = 4.0 -> 0.15 bzw. 0.35 davon
-        assertEquals(0.60, korr.smbU, 1e-9)
-        assertEquals(1.40, rise.smbU, 1e-9)
+        // r = 0,65 -> 10 % der Rampe -> 0,20 + 0,10*0,15 = 0,215
+        assertEquals(0.215, s(Phase.RISE_ACTIVE, 0.65).effectiveSmbRatio, 1e-9)
+        // Die PHASE aendert daran nichts mehr - das ist der Punkt.
+        assertEquals(
+            s(Phase.RISE_ACTIVE, 0.65).effectiveSmbRatio,
+            s(Phase.REARMING, 0.65).effectiveSmbRatio, 1e-12
+        )
+    }
+
+    @Test
+    fun `ein echter Onset bekommt den vollen Anstiegsanteil`() {
+        fun s(r: Double?) = FuseController.State(
+            health = Health.READY, safetyHold = false, phase = Phase.RISE_ACTIVE,
+            netIobU = 0.0, bolusIobU = 0.0, basalIobU = 0.0,
+            iobThU = 8.0, maxIobU = 8.0, targetMgdl = 100.0, isfMgdlPerU = 50.0,
+            smbRatioCorrection = 0.20, smbRatioRise = 0.35,
+            rSignedMgdlPerMin = r, riseRampLowRPerMin = 0.5, riseRampHighRPerMin = 2.0,
+            pumpIncrementU = 0.05, maxSmbU = 2.0, pumpBusy = false,
+        )
+        assertEquals(0.35, s(3.0).effectiveSmbRatio, 1e-9)   // ueber der Rampe
+        assertEquals(0.35, s(2.0).effectiveSmbRatio, 1e-9)   // genau oben
+        assertEquals(0.275, s(1.25).effectiveSmbRatio, 1e-9) // Mitte
+        assertEquals(0.20, s(0.5).effectiveSmbRatio, 1e-9)   // genau unten
+        assertEquals(0.20, s(-1.0).effectiveSmbRatio, 1e-9)  // fallend
+        // OHNE Evidenz gilt der Korrekturanteil - nicht der Anstiegswert.
+        assertEquals(0.20, s(null).effectiveSmbRatio, 1e-9)
+        assertEquals(0.20, s(Double.NaN).effectiveSmbRatio, 1e-9)
+    }
+
+    /** Die Phase bleibt als EPISODENZUSTAND erhalten und wird berichtet — sie
+     *  steuert nur die Verstaerkung nicht mehr. */
+    @Test
+    fun `die Phase wird weiterhin als Kontext berichtet`() {
+        assertEquals(FuseController.Context.RISE, FuseController.contextOf(Phase.RISE_ACTIVE))
+        assertEquals(FuseController.Context.CORRECTION, FuseController.contextOf(Phase.TURN))
     }
 
     /**

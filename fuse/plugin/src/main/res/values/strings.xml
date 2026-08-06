@@ -46,4 +46,8 @@
          einzubinden waere gegen die Additiv-Disziplin. -->
     <string name="fuse_limit_pref">FUSE: max value in preferences</string>
     <string name="fuse_limit_hard">FUSE: hard limit</string>
+
+    <string name="fuse_ramp_low_title">Rampe unten [mg/dl/min]</string>
+    <string name="fuse_ramp_high_title">Rampe oben [mg/dl/min]</string>
+    <string name="fuse_ramp_summary">Zwischen diesen beiden Anstiegsraten waechst der SMB-Anteil linear vom Korrektur- auf den Anstiegswert. Unten gilt der Korrekturanteil, oben der volle Anstiegsanteil. Ein flacher Drift liegt bei 0,5-0,8, ein echter Mahlzeiten-Onset bei 3-5 mg/dl/min - die obere Kante ist NICHT gemessen, dafuer steht r in jeder Zeile des Trails.</string>
 </resources>

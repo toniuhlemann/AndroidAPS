@@ -247,6 +247,9 @@ class FuseCycleRunner(
                     isfMgdlPerU = isf,
                     smbRatioCorrection = cfg.smbRatio,
                     smbRatioRise = cfg.smbRatioRise,
+                    rSignedMgdlPerMin = signal.rSigned,
+                    riseRampLowRPerMin = cfg.riseRampLowR,
+                    riseRampHighRPerMin = cfg.riseRampHighR,
                     pumpIncrementU = bolusStep,
                     maxSmbU = cfg.maxSmbU,
                     // pumpBusy gehoert NICHT in den Regler, sondern
@@ -387,6 +390,8 @@ class FuseCycleRunner(
     data class Config(
         val smbRatio: Double,
         val smbRatioRise: Double,
+        val riseRampLowR: Double,
+        val riseRampHighR: Double,
         val maxSmbU: Double,
         val guardFloorMgdl: Double,
         val iobThPercent: Int,
@@ -408,6 +413,8 @@ class FuseCycleRunner(
     private fun readConfig() = Config(
         smbRatio = preferences.get(FuseDoubleKey.SmbRatio),
         smbRatioRise = preferences.get(FuseDoubleKey.SmbRatioRise),
+        riseRampLowR = preferences.get(FuseDoubleKey.RiseRampLowR),
+        riseRampHighR = preferences.get(FuseDoubleKey.RiseRampHighR),
         maxSmbU = preferences.get(FuseDoubleKey.MaxSmbU),
         guardFloorMgdl = preferences.get(FuseDoubleKey.GuardFloorMgdl),
         iobThPercent = preferences.get(FuseIntKey.IobThPercent),
@@ -424,6 +431,8 @@ class FuseCycleRunner(
         // werfend, damit der Guard daraus einen benannten Abbruch macht.
         require(it.smbRatio.isFinite() && it.smbRatio in 0.0..1.0) { "smbRatio=${it.smbRatio}" }
         require(it.smbRatioRise.isFinite() && it.smbRatioRise in 0.0..1.0) { "smbRatioRise=${it.smbRatioRise}" }
+        require(it.riseRampLowR.isFinite() && it.riseRampHighR.isFinite()) { "riseRamp not finite" }
+        require(it.riseRampHighR > it.riseRampLowR) { "riseRamp ${it.riseRampLowR}..${it.riseRampHighR} invertiert" }
         require(it.maxSmbU.isFinite() && it.maxSmbU >= 0.0) { "maxSmb=${it.maxSmbU}" }
         require(it.guardFloorMgdl.isFinite() && it.guardFloorMgdl > 0.0) { "guardFloor=${it.guardFloorMgdl}" }
         require(it.iobThPercent >= 0) { "iobThPercent=${it.iobThPercent}" }

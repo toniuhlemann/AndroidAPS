@@ -93,7 +93,9 @@ class TailLiabilityTest {
         health = Health.READY, safetyHold = false, phase = Phase.REARMING,
         netIobU = 1.0, bolusIobU = 1.0, basalIobU = 0.0,
         iobThU = 4.0, maxIobU = 8.0, targetMgdl = 100.0, isfMgdlPerU = 50.0,
-        smbRatioCorrection = 0.5, smbRatioRise = 0.5, pumpIncrementU = 0.05, maxSmbU = 0.75, pumpBusy = false,
+        smbRatioCorrection = 0.5, smbRatioRise = 0.5,
+        rSignedMgdlPerMin = null, riseRampLowRPerMin = 0.5, riseRampHighRPerMin = 2.0,
+        pumpIncrementU = 0.05, maxSmbU = 0.75, pumpBusy = false,
     )
 
     @Test

@@ -77,6 +77,23 @@ enum class FuseDoubleKey(
     SmbRatioRise("fuse_smb_ratio_rise", 0.35, 0.0, 1.0),
 
     /**
+     * Untere Kante der Rampe [mg/dl/min] — bis hierher gilt der Korrekturanteil.
+     *
+     * NICHT die Observer-Schwelle (0,50). Die erkennt "irgendetwas steigt";
+     * hier geht es um "wieviel Evidenz rechtfertigt wieviel Verstaerkung".
+     */
+    RiseRampLowR("fuse_rise_ramp_low_r", 0.5, 0.0, 5.0),
+
+    /**
+     * Obere Kante [mg/dl/min] — ab hier gilt der volle Anstiegsanteil.
+     *
+     * 2,0 als Startwert, weil ein echter Mahlzeiten-Onset bei 3-5 mg/dl/min
+     * liegt und ein flacher Drift bei 0,5-0,8. Der Wert ist NICHT gemessen —
+     * genau dafuer steht `r` in jeder Zeile des Trails.
+     */
+    RiseRampHighR("fuse_rise_ramp_high_r", 2.0, 0.1, 10.0),
+
+    /**
      * Obergrenze eines einzelnen SMB, in Einheiten.
      *
      * autoISF hat dafuer KEINE Einstellung, sondern leitet sie ab

@@ -285,6 +285,8 @@ class FusePlugin @Inject constructor(
         JSONObject()
             .put(FuseDoubleKey.SmbRatio, preferences)
             .put(FuseDoubleKey.SmbRatioRise, preferences)
+            .put(FuseDoubleKey.RiseRampLowR, preferences)
+            .put(FuseDoubleKey.RiseRampHighR, preferences)
             .put(FuseDoubleKey.MaxSmbU, preferences)
             .put(FuseDoubleKey.GuardFloorMgdl, preferences)
             .put(FuseIntKey.IobThPercent, preferences)
@@ -300,6 +302,8 @@ class FusePlugin @Inject constructor(
         configuration
             .store(FuseDoubleKey.SmbRatio, preferences)
             .store(FuseDoubleKey.SmbRatioRise, preferences)
+            .store(FuseDoubleKey.RiseRampLowR, preferences)
+            .store(FuseDoubleKey.RiseRampHighR, preferences)
             .store(FuseDoubleKey.MaxSmbU, preferences)
             .store(FuseDoubleKey.GuardFloorMgdl, preferences)
             .store(FuseIntKey.IobThPercent, preferences)
@@ -332,6 +336,18 @@ class FusePlugin @Inject constructor(
                 AdaptiveDoublePreference(
                     ctx = context, doubleKey = FuseDoubleKey.SmbRatioRise,
                     dialogMessage = R.string.fuse_smb_ratio_rise_summary, title = R.string.fuse_smb_ratio_rise_title
+                )
+            )
+            addPreference(
+                AdaptiveDoublePreference(
+                    ctx = context, doubleKey = FuseDoubleKey.RiseRampLowR,
+                    dialogMessage = R.string.fuse_ramp_summary, title = R.string.fuse_ramp_low_title
+                )
+            )
+            addPreference(
+                AdaptiveDoublePreference(
+                    ctx = context, doubleKey = FuseDoubleKey.RiseRampHighR,
+                    dialogMessage = R.string.fuse_ramp_summary, title = R.string.fuse_ramp_high_title
                 )
             )
             addPreference(
