@@ -201,10 +201,18 @@ enum class FuseBooleanKey(
      * Einheitskern. Deshalb traegt jede seiner Zahlen einen
      * Unvollstaendigkeitsvermerk.
      *
-     * WARUM ES DIESEN SCHALTER GIBT: mit Erholungsterm 0 und typischem
-     * FCL-IOB kann der Guard den schnellen Kanal weitgehend schliessen. Ob er
-     * das tut, ist NICHT gemessen. Der Schalter macht aus dieser Unsicherheit
-     * eine Einstellung statt eines Flashs.
+     * DEFAULT FALSE, und das ist eine bewusste Entscheidung gegen den ersten
+     * Reflex. Rechnung mit den Defaults: lowerBgAtH 120, Schwanzuntergrenze 70,
+     * ISF 50 ergeben ein Budget von 1,0 U. Das IOB am 120-min-Horizont liegt
+     * bei DIA 9 im FCL regelmaessig darueber - der Guard wuerde den schnellen
+     * Kanal also nicht gelegentlich bremsen, sondern weitgehend schliessen. Ob
+     * das so ist, ist NICHT gemessen; ein Default, der die Dosierung
+     * flaechendeckend stilllegt, waere eine unbeschlossene Norm.
+     *
+     * Der Schalter macht aus dieser Unsicherheit eine Einstellung statt eines
+     * Flashs: einschalten kostet fuenf Sekunden am Geraet. Solange er aus ist,
+     * wird der Schwanz gar nicht erst bewertet - im Grund steht dann auch kein
+     * tail=-Abschnitt. Wer messen will, schaltet ihn ein.
      */
-    TailGuardEnabled("fuse_tail_guard_enabled", true),
+    TailGuardEnabled("fuse_tail_guard_enabled", false),
 }

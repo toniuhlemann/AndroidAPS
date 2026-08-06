@@ -30,7 +30,7 @@
     <string name="fuse_drive_quantile_summary">Rangstelle in der Verteilung der paarweisen Steigungen, aus der die GUARDBAHN ihren Antrieb nimmt. 50 = kein Band, identisch zum bisherigen Verhalten. Kleinere Werte machen die Guardbahn pessimistischer und den Schutz frueher wirksam - wie weit, ist noch nicht gemessen. Erst Spreizung und Paaranzahl im Grund ansehen, dann absenken.</string>
 
     <string name="fuse_tail_guard_title">Schwanz-Guard</string>
-    <string name="fuse_tail_guard_summary">Bewertet die unvermeidbare Restwirkung HINTER dem Haftungshorizont. Rechnet heute nur einen von drei Termen - die anderen brauchen den Ledger und den verdrahteten Einheitskern; jede Zahl traegt deshalb einen Unvollstaendigkeitsvermerk. Kann den schnellen Kanal spuerbar bremsen; ob und wie stark, ist noch nicht gemessen.</string>
+    <string name="fuse_tail_guard_summary">Bewertet die unvermeidbare Restwirkung HINTER dem Haftungshorizont. Rechnet heute nur einen von drei Termen - die anderen brauchen den Ledger und den verdrahteten Einheitskern; jede Zahl traegt deshalb einen Unvollstaendigkeitsvermerk. Standard AUS: mit Erholung 0 und typischem FCL-IOB kann er den schnellen Kanal weitgehend schliessen, und ob er das tut, ist nicht gemessen. Solange er aus ist, wird der Schwanz gar nicht bewertet und steht auch nicht im Grund.</string>
 
     <string name="fuse_tail_floor_title">Schwanz-Untergrenze [mg/dl]</string>
     <string name="fuse_tail_floor_summary">Untergrenze fuer das Fenster hinter dem Haftungshorizont. Getrennt von der Guard-Untergrenze, weil beide verschiedene Zeitraeume absichern.</string>
