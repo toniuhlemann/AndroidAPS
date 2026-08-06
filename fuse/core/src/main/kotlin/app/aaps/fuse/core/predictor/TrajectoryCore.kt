@@ -108,6 +108,75 @@ object TrajectoryCore {
             val dMean = input.drive.meanMgdlPerMin * f
             val dLower = input.drive.lowerMgdlPerMin * f
 
+            // ============================================================
+            // KEIN COB-TERM. Bewusste Entscheidung, und sie steht HIER, weil
+            // die naechste Zeile die Stelle ist, an der man ihn addieren wuerde.
+            //
+            // `dMean` stammt aus rSigned = Theil-Sen-Steigung der BGI-BEREINIGTEN
+            // Reihe (BgiAdjustedSeries.adjust/theilSen). Das ist die GEMESSENE
+            // Netto-Stoerung, ursachenagnostisch: Kohlenhydrate, Dawn/EGP,
+            // Stress, Sport, Basalabweichung, Sensordrift. Eine laufende
+            // Mahlzeit steckt darin bereits, sobald sie sich in der BG zeigt.
+            //
+            // AM AAPS-QUELLCODE NACHGEPRUEFT, und es ist dort dieselbe Groesse:
+            //   IobCobOref1Worker.kt:145-146  bgi = -iob.activity*sens*5
+            //                                 deviation = delta - bgi
+            //   :224   ci = max(deviation, totalMinCarbsImpact)
+            //   :226   this5MinAbsorption = ci * getIc / sens
+            //   :228   cob = max(previous.cob - this5MinAbsorption, 0)
+            // (IobCobOrefWorker.kt:133-134 / 220 / 222 / 224 — dieselbe Regel,
+            //  andere Herkunft der Untergrenze.)
+            //
+            // Praezise, damit der Satz nicht angreifbar ist: COB ist die
+            // GETIPPTE Menge minus einem Abbau, der aus `deviation` gerechnet
+            // wird. Nur der ABBAU ist dieselbe Messung wie rSigned; die Zunahme
+            // ist eine Eingabe, keine zweite Beobachtung. Ein `+ carbImpact(t)`
+            // hier speist damit fuer jede bereits sichtbare Mahlzeit dieselbe
+            // Messung ein zweites Mal ein.
+            //
+            // DIE EINE ECHTE LUECKE, beziffert statt behauptet: auf den
+            // gelockten Konstanten (Fenster 18 min, Paarabstand >= 2 min) folgt
+            // der Median einem Steigungssprung mit 0 % bis Minute 5, 50 % bei
+            // Minute 9 und 100 % ab Minute 13. Dazu kommen Q1-Lag und
+            // Resorptionsbeginn, beide NICHT gemessen. In diesem Fenster traegt
+            // COB tatsaechlich Information bei. Und `dMean = drive * factorAt`
+            // kann nie wachsen (factorAt <= 1 in allen drei Modellen, live
+            // verdrahtet ist das monoton fallende M1) — eine beginnende
+            // Resorption ist als Beschleunigung nicht ausdrueckbar. Die BAHN
+            // kann sehr wohl steiler werden, weil bgiRate mit abklingender
+            // Insulinaktivitaet gegen 0 laeuft; der ANTRIEBSTERM kann es nicht.
+            //
+            // Trotzdem nicht gebaut, vier Gruende:
+            //  (i)   Es waere ein Prebolus auf eine getippte Zahl. Eine Dosis aus
+            //        Minute 0-13 wird von keiner Messung mehr korrigiert, bevor
+            //        sie wirkt — und im FCL ist die Carb-Eingabe der
+            //        unzuverlaessigste Eingang des Systems.
+            //  (ii)  Es fehlte die Untergrenze, die den Irrtum auffinge. Einen
+            //        AUFWAERTS wirkenden Modellterm in eine Bahn ohne
+            //        Sicherheitsband zu haengen ist die falsche Reihenfolge.
+            //  (iii) Die nicht doppelzaehlende Bauform waere eine ZERLEGUNG von
+            //        rSigned, keine Addition — das aendert `adjust()`, und
+            //        BgiAdjustedSeries sagt ausdruecklich, jede Abweichung dort
+            //        sei ein NEUER, ungelockter Kandidat.
+            //  (iv)  Eine dritte Bauform gaebe es noch: COB als FORM-Information
+            //        fuer `input.decay` statt als Summand. Auch die faellt aus —
+            //        sie aendert die Predictor-Identitaet, und eine gemessene
+            //        Resorptionskurve gibt es nicht.
+            //
+            // Und der Bezugsweg selbst waere unsauber: `getCobInfo` liest
+            // `ads.getLastAutosensData`, und dessen Rueckfall
+            // `storedLastAutosensResult` liefert einen Wert GENAU DANN, wenn er
+            // aelter als 11 Minuten ist (AutosensDataStoreObject.kt:129) — also
+            // einen stillen Altwert ohne Kennzeichnung. Das verletzt die Regel
+            // "UNKNOWN ist ein Zustand, kein Wert" unmittelbar.
+            //
+            // Wiedervorlage: wenn das Unsicherheitsband kalibriert ist UND die
+            // Prognosefehler im Export zeigen, dass die ersten 13 Minuten nach
+            // einer Carb-Eingabe systematisch danebenliegen. Zyklen ohne
+            // predRelease/minLower (Abbruchzyklen) zaehlen dabei als LUECKE,
+            // nicht als "kein Fehler".
+            // ============================================================
+
             // RECHTE Regel: der Wert bei ts gilt fuer das Intervall (ts-1min, ts].
             // Dieselbe Konvention wie cumulativeBgi in K1 — eine zweite waere eine
             // Fehlerquelle ohne Nutzen.
