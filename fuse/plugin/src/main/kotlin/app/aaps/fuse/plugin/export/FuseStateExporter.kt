@@ -31,12 +31,16 @@ class FuseStateExporter(
         const val FILE_NAME = "fuse_state_history.jsonl"
 
         /**
-         * VORLAEUFIG. Die Groesse eines Datensatzes haengt am
-         * Haftungshorizont (bis 360 Punkte moeglich) und ist noch nicht
-         * gemessen — `export.prevBytes` im Trail liefert sie ab dem zweiten
-         * Zyklus. Erst danach ist diese Zahl mehr als eine Schaetzung.
+         * GEMESSEN am ersten Geraetelauf (06.08.): ~2,2 kB je Datensatz bei
+         * 1-min-Kadenz, also rund 3,2 MB am Tag. Die vorherigen 8 MB haetten
+         * damit nur zweieinhalb Tage getragen — zu wenig fuer einen
+         * Mehrtageslauf, und die Rotation haette ausgerechnet die Nacht
+         * weggeschoben, die man ansehen will.
+         *
+         * 32 MB x 3 sind bei diesem Mass rund vier Wochen. Die Zahl bleibt
+         * beobachtet: `export.prevBytes` steht in jedem Datensatz.
          */
-        const val MAX_BYTES = 8L * 1024 * 1024
+        const val MAX_BYTES = 32L * 1024 * 1024
         const val GENERATIONS = 3
     }
 

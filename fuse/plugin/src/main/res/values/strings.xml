@@ -37,4 +37,10 @@
 
     <string name="fuse_tail_recovery_title">Schwanz-Erholung [U]</string>
     <string name="fuse_tail_recovery_summary">Erholung, die im Schwanzfenster eingeplant werden darf. Default 0,0 - AENDERUNG NUR MIT MESSUNG. Wer hier eine Zahl eintraegt, behauptet zu wissen, wieviel Erholung der Schwanz traegt.</string>
+
+    <!-- Eigene Fassungen statt einer Abhaengigkeit auf plugins:aps: dort liegen
+         "maxvalueinpreferences"/"hardlimit", und ein ganzes Modul dafuer
+         einzubinden waere gegen die Additiv-Disziplin. -->
+    <string name="fuse_limit_pref">FUSE: max value in preferences</string>
+    <string name="fuse_limit_hard">FUSE: hard limit</string>
 </resources>

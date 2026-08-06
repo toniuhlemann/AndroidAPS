@@ -11,7 +11,9 @@ import app.aaps.core.interfaces.aps.APSResult
 import app.aaps.core.interfaces.aps.GlucoseStatus
 import app.aaps.core.interfaces.aps.RT
 import app.aaps.core.interfaces.configuration.Config
+import app.aaps.core.interfaces.constraints.Constraint
 import app.aaps.core.interfaces.constraints.ConstraintsChecker
+import app.aaps.core.interfaces.constraints.PluginConstraints
 import app.aaps.core.interfaces.db.PersistenceLayer
 import app.aaps.core.interfaces.iob.IobCobCalculator
 import app.aaps.core.interfaces.logging.AAPSLogger
@@ -25,6 +27,8 @@ import app.aaps.core.interfaces.resources.ResourceHelper
 import app.aaps.core.interfaces.rx.bus.RxBus
 import app.aaps.core.interfaces.rx.events.EventAPSCalculationFinished
 import app.aaps.core.interfaces.utils.DateUtil
+import app.aaps.core.interfaces.utils.HardLimits
+import app.aaps.core.keys.DoubleKey
 import app.aaps.core.keys.interfaces.Preferences
 import app.aaps.core.objects.extensions.put
 import app.aaps.core.objects.extensions.store
@@ -52,8 +56,15 @@ import javax.inject.Singleton
  *  - kein `supportsDynamicIsf()`: FUSE liefert dem Rest der App kein variables
  *    ISF. Ein `true` hier wuerde Bolusrechner und Overview auf `getIsfMgdl()`
  *    umleiten, und das ist eine Zusage, die Alpha 1 nicht einloest.
- *  - keine `PluginConstraints`: FUSE verschaerft keine fremden Grenzen. Es liest
- *    maxIOB ueber den [ConstraintsChecker], statt es selbst zu setzen.
+ *  - `PluginConstraints` NUR fuer maxIOB, und das ist eine Korrektur: die erste
+ *    Fassung hat bewusst darauf verzichtet ("FUSE verschaerft keine fremden
+ *    Grenzen"). Der erste Geraetelauf hat gezeigt, wohin das fuehrt —
+ *    `getMaxIOBAllowed()` lieferte `Double.MAX_VALUE`, weil der EINZIGE
+ *    Anwender von `ApsSmbMaxIob` das autoISF-Plugin ist und das abgeschaltet
+ *    wird, sobald FUSE aktiv ist. Damit konnten `MAX_IOB_REACHED` und
+ *    `IOB_TH_REACHED` NIE feuern; bindend blieben nur `smbRatio` und `maxSmbU`.
+ *    Es gab also gar keinen IOB-Deckel. Basal- und Bolusgrenzen bleiben
+ *    unangetastet — die zieht `SafetyPlugin` ungeklammert.
  *  - kein Persistieren als `AUTO_ISF`: [APSResult.Algorithm.FUSE] ist ein
  *    eigener Wert. Ein FUSE-Ergebnis unter fremdem Etikett waere im
  *    Nachhinein nicht mehr von autoISF zu trennen — genau die Sorte
@@ -73,6 +84,7 @@ class FusePlugin @Inject constructor(
     private val commandQueue: CommandQueue,
     private val persistenceLayer: PersistenceLayer,
     private val dateUtil: DateUtil,
+    private val hardLimits: HardLimits,
     private val apsResultProvider: Provider<APSResult>,
 ) : PluginBaseWithPreferences(
     PluginDescription()
@@ -87,7 +99,7 @@ class FusePlugin @Inject constructor(
         .description(R.string.description_fuse),
     ownPreferences = listOf(FuseDoubleKey::class.java, FuseIntKey::class.java, FuseBooleanKey::class.java),
     aapsLogger, rh, preferences
-), APS {
+), APS, PluginConstraints {
 
     override var lastAPSRun: Long = 0
     override var lastAPSResult: APSResult? = null
@@ -102,7 +114,7 @@ class FusePlugin @Inject constructor(
 
     /** Prozessgebundene Kennung. Sie trennt die Zyklen eines Laufs von denen
      *  nach einem Neustart und ist der erste Teil der Cycle-Id. */
-    private val sessionId: String by lazy { "fuse-${'$'}{dateUtil.now()}" }
+    private val sessionId: String by lazy { "fuse-" + dateUtil.now() }
 
     private val exporter = FuseStateExporter()
     private var cycleCounter = 0L
@@ -112,6 +124,24 @@ class FusePlugin @Inject constructor(
      *  Zustandsexports und der Fragment-Anzeige. */
     @Volatile var lastOutcome: FuseCycleRunner.Outcome? = null
         private set
+
+    /**
+     * Derselbe Schluessel wie bei den OpenAPS-Plugins: `ApsSmbMaxIob` ist KEINE
+     * autoISF-Groesse, sondern AAPS' eigene maxIOB-Einstellung. Eine
+     * FUSE-eigene waere hier falsch — eine Sicherheitsgrenze in zwei Zahlen zu
+     * spalten heisst, dass eine davon irgendwann vergessen wird.
+     *
+     * `setIfSmaller`: FUSE VERSCHAERFT nur. Die uebrigen Teilnehmer der Kette
+     * (LGS, BG-Qualitaet, abgelaufene App) schaerfen weiter nach.
+     */
+    override fun applyMaxIOBConstraints(maxIob: Constraint<Double>): Constraint<Double> {
+        if (isEnabled()) {
+            val pref = preferences.get(DoubleKey.ApsSmbMaxIob)
+            maxIob.setIfSmaller(pref, rh.gs(app.aaps.core.ui.R.string.limiting_iob, pref, rh.gs(R.string.fuse_limit_pref)), this)
+            maxIob.setIfSmaller(hardLimits.maxIobSMB(), rh.gs(app.aaps.core.ui.R.string.limiting_iob, hardLimits.maxIobSMB(), rh.gs(R.string.fuse_limit_hard)), this)
+        }
+        return maxIob
+    }
 
     override fun specialEnableCondition(): Boolean =
         try {
@@ -192,7 +222,7 @@ class FusePlugin @Inject constructor(
         runCatching {
             val start = System.nanoTime()
             val o = outcome ?: return
-            val cycleId = "${'$'}{sessionId}#${'$'}{++cycleCounter}"
+            val cycleId = sessionId + "#" + (++cycleCounter)
             val json = FuseStateJson.record(
                 cycleId = cycleId,
                 outcome = o,
@@ -217,7 +247,7 @@ class FusePlugin @Inject constructor(
                     // NICHT stumm: ein Export, der nicht schreibt, ist der Fall,
                     // in dem man spaeter vergeblich nach Daten sucht.
                     prevWrite = null
-                    aapsLogger.error(LTag.APS, "FUSE state export failed: ${'$'}{r.reason}")
+                    aapsLogger.error(LTag.APS, "FUSE state export failed: " + r.reason)
                 }
             }
         }.onFailure { aapsLogger.error(LTag.APS, "FUSE state export threw", it) }

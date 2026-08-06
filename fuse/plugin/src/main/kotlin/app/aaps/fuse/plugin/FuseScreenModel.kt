@@ -119,6 +119,19 @@ object FuseScreenModel {
     private fun f1(d: Double) = fmt(d, 1)
     private fun f2(d: Double) = fmt(d, 2)
     private fun f3(d: Double) = fmt(d, 3)
-    private fun fmt(d: Double, n: Int) =
-        if (d.isFinite()) String.format(java.util.Locale.ROOT, "%.${n}f", d) else "?"
+    /**
+     * `%.2f` auf `Double.MAX_VALUE` ergibt ueber 300 Ziffern und sprengt den
+     * Schirm — genau so ist der fehlende IOB-Deckel beim ersten Geraetelauf
+     * aufgefallen. Die Grenze ist bewusst niedrig: keine Groesse in diesem
+     * Regler hat je einen sinnvollen Wert ueber 10.000, und "unbegrenzt" ist
+     * eine ehrlichere Anzeige als eine Zahl, die niemand liest.
+     */
+    private const val ABSURD = 10_000.0
+
+    private fun fmt(d: Double, n: Int) = when {
+        !d.isFinite()          -> "?"
+        d >= ABSURD            -> "unbegrenzt"
+        d <= -ABSURD           -> "-unbegrenzt"
+        else                   -> String.format(java.util.Locale.ROOT, "%.${n}f", d)
+    }
 }
