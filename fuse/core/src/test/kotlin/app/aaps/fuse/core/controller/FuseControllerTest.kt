@@ -39,8 +39,42 @@ class FuseControllerTest {
         health = health, safetyHold = hold, phase = Phase.REARMING,
         netIobU = netIob, bolusIobU = bolusIob, basalIobU = 0.0,
         iobThU = iobTh, maxIobU = maxIob, targetMgdl = 100.0, isfMgdlPerU = 50.0,
-        smbRatio = smbRatio, pumpIncrementU = 0.05, maxSmbU = maxSmb, pumpBusy = busy,
+        smbRatioCorrection = smbRatio, smbRatioRise = smbRatio, pumpIncrementU = 0.05, maxSmbU = maxSmb, pumpBusy = busy,
     )
+
+    // ---- Mahlzeit oder Korrektur -----------------------------------------
+
+    /** Die Phasenzuordnung ist die einzige Stelle, an der FUSE zwischen
+     *  Mahlzeit und Korrektur unterscheidet — bei autoISF brauchte es dafuer
+     *  eine gesetzte TT. */
+    @Test
+    fun `die Phase entscheidet ueber Mahlzeit oder Korrektur`() {
+        for (p in listOf(Phase.CANDIDATE, Phase.RISE_ACTIVE, Phase.CARRY))
+            assertEquals(FuseController.Context.RISE, FuseController.contextOf(p)) { "$p" }
+        // TURN gehoert bewusst zur Korrektur: Peak ueberschritten, das meiste
+        // bereits gegebene Insulin ist noch nicht angekommen.
+        for (p in listOf(Phase.REARMING, Phase.ARMED, Phase.TURN))
+            assertEquals(FuseController.Context.CORRECTION, FuseController.contextOf(p)) { "$p" }
+    }
+
+    @Test
+    fun `im Anstieg wird mehr freigegeben als in der Korrektur`() {
+        fun s(phase: Phase) = FuseController.State(
+            health = Health.READY, safetyHold = false, phase = phase,
+            netIobU = 0.0, bolusIobU = 0.0, basalIobU = 0.0,
+            iobThU = 8.0, maxIobU = 8.0, targetMgdl = 100.0, isfMgdlPerU = 50.0,
+            smbRatioCorrection = 0.15, smbRatioRise = 0.35,
+            pumpIncrementU = 0.05, maxSmbU = 2.0, pumpBusy = false,
+        )
+        val korr = FuseController.decide(s(Phase.ARMED), pred(300.0))
+        val rise = FuseController.decide(s(Phase.RISE_ACTIVE), pred(300.0))
+        assertTrue(rise.smbU > korr.smbU) { "Anstieg ${rise.smbU} muss ueber Korrektur ${korr.smbU} liegen" }
+        assertEquals(FuseController.Context.RISE, rise.context)
+        assertEquals(FuseController.Context.CORRECTION, korr.context)
+        // insulinReq = (300-100)/50 = 4.0 -> 0.15 bzw. 0.35 davon
+        assertEquals(0.60, korr.smbU, 1e-9)
+        assertEquals(1.40, rise.smbU, 1e-9)
+    }
 
     // ---- Zustand vor Zahlen ----------------------------------------------
 
@@ -161,6 +195,22 @@ class FuseControllerTest {
         // insulinReq = (240-100)/50 = 2.8; * 0.5 = 1.4 -> maxSmb 0.75 bindet
         val d = FuseController.decide(state(maxSmb = 0.74), pred(240.0))
         assertEquals(0.70, d.smbU, 1e-9)   // floor(0.74/0.05)*0.05
+    }
+
+    /**
+     * WAECHTER gegen einen Fehler, der lange unbemerkt blieb: ohne Epsilon
+     * verliert `floor` an exakten Vielfachen einen ganzen Pumpenschritt, weil
+     * 0,15 als Double knapp UNTER 0,15 liegt. Bei diesen Dosen sind das 17 bis
+     * 100 % der Menge — systematisch zu wenig.
+     */
+    @Test
+    fun `exakte Vielfache des Pumpenschritts verlieren keinen Schritt`() {
+        // insulinReq = (250-100)/50 = 3.0; x 0.05 = 0.15 -> exakt 3 Schritte
+        val d = FuseController.decide(state(smbRatio = 0.05, maxSmb = 2.0, netIob = 0.0, bolusIob = 0.0), pred(250.0))
+        assertEquals(0.15, d.smbU, 1e-9)
+        // (500-100)/50 = 8.0; x 0.15 = 1.20 -> exakt 24 Schritte
+        val e = FuseController.decide(state(smbRatio = 0.15, maxSmb = 5.0, netIob = 0.0, bolusIob = 0.0, iobTh = 20.0, maxIob = 20.0), pred(500.0))
+        assertEquals(1.20, e.smbU, 1e-9)
     }
 
     @Test

@@ -54,12 +54,27 @@ enum class FuseDoubleKey(
 ) : DoublePreferenceKey {
 
     /**
-     * Anteil des Insulinbedarfs, der ueber den schnellen Kanal freigegeben wird.
-     * Eigene Groesse, eigener Default — bewusst identisch zum heutigen
-     * Fork-Wert, damit der erste Vergleich nicht schon an der Einstellung
-     * scheitert, ab jetzt aber getrennt verstellbar.
+     * Anteil im KORREKTURBETRIEB — kein bestaetigter Anstieg.
+     *
+     * Der Schluessel heisst weiter `fuse_smb_ratio`, damit ein bereits
+     * eingestellter Wert nicht verlorengeht. Seine BEDEUTUNG ist jetzt enger:
+     * er gilt nur noch, wenn der Observer keinen Anstieg bestaetigt hat.
+     * Default 0,15 statt 0,2 — die Korrektur darf ruhiger sein, seit der
+     * Anstieg seinen eigenen Wert hat.
      */
-    SmbRatio("fuse_smb_ratio", 0.2, 0.0, 1.0),
+    SmbRatio("fuse_smb_ratio", 0.15, 0.0, 1.0),
+
+    /**
+     * Anteil im ANSTIEGSBETRIEB — Observer-Phase CANDIDATE/RISE_ACTIVE/CARRY.
+     *
+     * Das ist der FCL-Wert: frueh den Grossteil aufbauen. Ein einzelner Anteil
+     * fuer beide Lagen kann das nicht — er ist entweder fuer die Korrektur zu
+     * scharf oder fuer die Mahlzeit zu zaghaft.
+     *
+     * Anders als bei autoISF muss dafuer KEINE TT gesetzt werden: der Observer
+     * erkennt den Anstieg selbst (r >= 0,50 mg/dl/min ueber zwei Punkte).
+     */
+    SmbRatioRise("fuse_smb_ratio_rise", 0.35, 0.0, 1.0),
 
     /**
      * Obergrenze eines einzelnen SMB, in Einheiten.

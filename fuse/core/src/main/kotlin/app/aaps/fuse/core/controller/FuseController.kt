@@ -21,6 +21,11 @@ import kotlin.math.min
  */
 object FuseController {
 
+    /** Toleranz beim Abwaertsrunden auf Pumpenschritte. Gross genug gegen die
+     *  Binaerdarstellung von Zehnteln, klein genug, um nie einen zusaetzlichen
+     *  Schritt zu erfinden. */
+    private const val TICK_EPS = 1e-9
+
     data class State(
         val health: Health,
         val safetyHold: Boolean,
@@ -32,7 +37,26 @@ object FuseController {
         val maxIobU: Double,
         val targetMgdl: Double,
         val isfMgdlPerU: Double,
-        val smbRatio: Double,
+        /**
+         * Anteil im KORREKTURBETRIEB — kein bestaetigter Anstieg.
+         * Hier ist Zurueckhaltung richtig: was hier zuviel gegeben wird, faellt
+         * in eine Lage, in der ohnehin nichts drueckt.
+         */
+        val smbRatioCorrection: Double,
+        /**
+         * Anteil im ANSTIEGSBETRIEB — der Observer hat einen Anstieg bestaetigt.
+         *
+         * DAS ist die Unterscheidung, um die es bei FCL geht: frueh den
+         * Grossteil aufbauen, hinten heraus ruhiger. Bisher gab es EINEN
+         * Anteil fuer beide Faelle, und ein einzelner Wert kann das nicht
+         * leisten — er ist entweder fuer die Korrektur zu scharf oder fuer die
+         * Mahlzeit zu zaghaft.
+         *
+         * Und der Unterschied zu autoISF: dort musste eine TT gesetzt werden,
+         * damit die Gewichtsbruecke umschaltet. Hier erkennt der Observer es
+         * selbst.
+         */
+        val smbRatioRise: Double,
         val pumpIncrementU: Double,
         val maxSmbU: Double,
         val pumpBusy: Boolean,
@@ -40,6 +64,10 @@ object FuseController {
         /** Bindungsgroesse fuer iobTH: zurueckgehaltenes Basal waehrend Zero-TBR
          *  darf KEIN zusaetzliches SMB-Budget erzeugen (Fork-Praxis). */
         val capIobU: Double get() = max(netIobU, bolusIobU)
+
+        /** Der Anteil, der in DIESER Lage gilt. */
+        val effectiveSmbRatio: Double
+            get() = if (contextOf(phase) == Context.RISE) smbRatioRise else smbRatioCorrection
     }
 
     data class Limits(
@@ -48,6 +76,25 @@ object FuseController {
         /** Horizont, auf dem der Bedarf abgelesen wird (Index in points). */
         val releaseHorizonMin: Int = 30,
     )
+
+    /**
+     * Mahlzeit oder Korrektur — die einzige Stelle, an der diese Unterscheidung
+     * getroffen wird.
+     *
+     * `CANDIDATE` zaehlt schon zum Anstieg, obwohl er noch nicht bestaetigt
+     * ist: die Schwelle ist ueberschritten, und genau die ersten Minuten sind
+     * die, in denen ein FCL vorn sein muss. Der Guard bleibt in beiden Faellen
+     * derselbe — es geht um die Verstaerkung, nicht um den Schutz.
+     *
+     * `TURN` liegt bewusst im Korrekturtopf: der Peak ist ueberschritten, das
+     * meiste bereits gegebene Insulin ist noch gar nicht angekommen.
+     */
+    enum class Context { CORRECTION, RISE }
+
+    fun contextOf(phase: Phase): Context = when (phase) {
+        Phase.CANDIDATE, Phase.RISE_ACTIVE, Phase.CARRY -> Context.RISE
+        Phase.REARMING, Phase.ARMED, Phase.TURN         -> Context.CORRECTION
+    }
 
     enum class TbrAction { KEEP_CURRENT, CANCEL_TO_SCHEDULED, ZERO_TEMP, NO_NEW_POSITIVE }
 
@@ -132,6 +179,10 @@ object FuseController {
          * — genau das ist diese Zahl.
          */
         val tailCostU: Double = 0.0,
+        /** In welcher Lage entschieden wurde. Gehoert in den Export und auf den
+         *  Schirm: dieselbe Zahl bedeutet in RISE etwas anderes als in
+         *  CORRECTION. */
+        val context: Context? = null,
     )
 
     /**
@@ -237,7 +288,7 @@ object FuseController {
         }
 
         val baseCandidates = listOf(
-            "smbRatio" to insulinReq * state.smbRatio,
+            "smbRatio" to insulinReq * state.effectiveSmbRatio,
             "iobThHeadroom" to fastHeadroom,
             "maxIobHeadroom" to maxIobHeadroom,
             "maxSmb" to state.maxSmbU,
@@ -253,7 +304,16 @@ object FuseController {
         // AUSSCHLIESSLICH abwaerts runden: eine Freigabe darf durch Rundung nie
         // groesser werden. Unter dem Pumpeninkrement gibt es keinen SMB — es
         // wird NICHT auf die Mindestmenge aufgerundet.
-        val deliverable = floor(raw / state.pumpIncrementU) * state.pumpIncrementU
+        //
+        // DAS EPSILON IST TRAGEND, nicht Kosmetik. Ohne es verliert `floor` an
+        // exakten Vielfachen einen GANZEN Pumpenschritt: 0,15 U sind als Double
+        // 0,1499999999999999944…, geteilt durch 0,05 ergibt das 2,9999999999…
+        // und floor macht daraus 2 — also 0,10 statt 0,15. Bei Dosen zwischen
+        // 0,05 und 0,30 U sind das 17 bis 100 % der Menge, systematisch nach
+        // unten. Gefunden hat es der Kontext-Test: erwartet 0,60, geliefert
+        // 0,55. `CandidateSearch` hatte dieselbe Stelle von Anfang an mit
+        // Epsilon.
+        val deliverable = floor(raw / state.pumpIncrementU + TICK_EPS) * state.pumpIncrementU
         if (deliverable < state.pumpIncrementU) {
             return Decision(
                 0.0, TbrAction.KEEP_CURRENT, Block.BELOW_PUMP_INCREMENT, insulinReq,
@@ -271,6 +331,7 @@ object FuseController {
             bindingLimit = binding.first,
             tail = tail,
             tailCostU = tailCost,
+            context = contextOf(state.phase),
         )
     }
 }

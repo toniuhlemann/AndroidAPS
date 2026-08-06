@@ -189,7 +189,11 @@ object FuseStateJson {
                 .put("isfMgdlPerU", fin(outcome.isfMgdlPerU))
                 .put("iobThU", fin(outcome.state?.iobThU))
                 .put("maxIobU", fin(outcome.state?.maxIobU))
-                .put("smbRatio", fin(outcome.state?.smbRatio))
+                // Der WIRKSAME Anteil, nicht beide Rohwerte: welche Zahl gegolten hat,
+                // haengt an der Phase, und im Nachhinein soll niemand die falsche
+                // von zweien lesen. Die Rohwerte stehen ohnehin unter policy.values.
+                .put("smbRatioEffective", fin(outcome.state?.effectiveSmbRatio))
+                .put("context", outcome.decision.context?.name ?: JSONObject.NULL)
         )
 
         // ---- Schwanz -------------------------------------------------------
@@ -272,7 +276,8 @@ object FuseStateJson {
      * der die kaputte Einstellung dokumentiert.
      */
     fun policyValues(p: FuseCycleRunner.Config): JSONObject = JSONObject()
-        .put("smbRatio", fin(p.smbRatio))
+        .put("smbRatioCorrection", fin(p.smbRatio))
+        .put("smbRatioRise", fin(p.smbRatioRise))
         .put("maxSmbU", fin(p.maxSmbU))
         .put("guardFloorMgdl", fin(p.guardFloorMgdl))
         .put("iobThPercent", p.iobThPercent)
@@ -291,7 +296,7 @@ object FuseStateJson {
      * Grund als ein Ersatzwert.
      */
     fun hashOf(p: FuseCycleRunner.Config): String? {
-        val doubles = listOf(p.smbRatio, p.maxSmbU, p.guardFloorMgdl, p.tailFloorMgdl, p.tailRecoveryU)
+        val doubles = listOf(p.smbRatio, p.smbRatioRise, p.maxSmbU, p.guardFloorMgdl, p.tailFloorMgdl, p.tailRecoveryU)
         if (doubles.any { !it.isFinite() }) return null
         val parts = listOf("fuse-policy-v$RULE_SET_VERSION") +
             doubles.map { Sha.lossless(it) } +

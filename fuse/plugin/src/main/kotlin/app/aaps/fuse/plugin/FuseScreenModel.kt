@@ -80,12 +80,14 @@ object FuseScreenModel {
         b.append('\n')
 
         // ---- Menge ---------------------------------------------------------
+        row(b, "Kontext", d.context?.name ?: "-")
         row(b, "Block", d.block.name)
         row(b, "Grenze", d.bindingLimit)
         row(b, "insulinReq", f2(d.insulinReqU) + " U")
         row(b, "IOB", outcome.iobU?.let { f2(it) + " U" } ?: "-")
         outcome.state?.let {
             row(b, "iobTH / maxIOB", "${f2(it.iobThU)} / ${f2(it.maxIobU)} U")
+            row(b, "SMB-Anteil", f2(it.effectiveSmbRatio))
         }
         d.tail?.let {
             row(

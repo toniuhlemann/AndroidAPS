@@ -245,7 +245,8 @@ class FuseCycleRunner(
                     maxIobU = maxIobU,
                     targetMgdl = target,
                     isfMgdlPerU = isf,
-                    smbRatio = cfg.smbRatio,
+                    smbRatioCorrection = cfg.smbRatio,
+                    smbRatioRise = cfg.smbRatioRise,
                     pumpIncrementU = bolusStep,
                     maxSmbU = cfg.maxSmbU,
                     // pumpBusy gehoert NICHT in den Regler, sondern
@@ -385,6 +386,7 @@ class FuseCycleRunner(
      */
     data class Config(
         val smbRatio: Double,
+        val smbRatioRise: Double,
         val maxSmbU: Double,
         val guardFloorMgdl: Double,
         val iobThPercent: Int,
@@ -405,6 +407,7 @@ class FuseCycleRunner(
      */
     private fun readConfig() = Config(
         smbRatio = preferences.get(FuseDoubleKey.SmbRatio),
+        smbRatioRise = preferences.get(FuseDoubleKey.SmbRatioRise),
         maxSmbU = preferences.get(FuseDoubleKey.MaxSmbU),
         guardFloorMgdl = preferences.get(FuseDoubleKey.GuardFloorMgdl),
         iobThPercent = preferences.get(FuseIntKey.IobThPercent),
@@ -420,6 +423,7 @@ class FuseCycleRunner(
         // einem alten Import geht daran vorbei — deshalb hier nochmal, und zwar
         // werfend, damit der Guard daraus einen benannten Abbruch macht.
         require(it.smbRatio.isFinite() && it.smbRatio in 0.0..1.0) { "smbRatio=${it.smbRatio}" }
+        require(it.smbRatioRise.isFinite() && it.smbRatioRise in 0.0..1.0) { "smbRatioRise=${it.smbRatioRise}" }
         require(it.maxSmbU.isFinite() && it.maxSmbU >= 0.0) { "maxSmb=${it.maxSmbU}" }
         require(it.guardFloorMgdl.isFinite() && it.guardFloorMgdl > 0.0) { "guardFloor=${it.guardFloorMgdl}" }
         require(it.iobThPercent >= 0) { "iobThPercent=${it.iobThPercent}" }

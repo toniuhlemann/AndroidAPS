@@ -5,8 +5,11 @@
 
     <string name="fuse_settings">FUSE</string>
 
-    <string name="fuse_smb_ratio_title">SMB-Anteil</string>
-    <string name="fuse_smb_ratio_summary">Anteil des berechneten Bedarfs, der ueber den schnellen Kanal (SMB) freigegeben wird. Der Rest bleibt beim Basal.</string>
+    <string name="fuse_smb_ratio_title">SMB-Anteil (Korrektur)</string>
+    <string name="fuse_smb_ratio_summary">Anteil des berechneten Bedarfs im KORREKTURBETRIEB - wenn der Observer KEINEN Anstieg bestaetigt hat. Darf ruhiger sein als der Anstiegswert.</string>
+
+    <string name="fuse_smb_ratio_rise_title">SMB-Anteil (Anstieg)</string>
+    <string name="fuse_smb_ratio_rise_summary">Anteil im ANSTIEGSBETRIEB - Observer-Phase CANDIDATE, RISE_ACTIVE oder CARRY. Das ist der FCL-Wert: frueh den Grossteil aufbauen. Es muss dafuer KEINE Temp-Target gesetzt werden, der Observer erkennt den Anstieg selbst.</string>
 
     <string name="fuse_max_smb_u_title">Maximaler einzelner SMB [U]</string>
     <string name="fuse_max_smb_u_summary">Feste Obergrenze je Mikrobolus. Anders als bei autoISF haengt sie NICHT am Profilbasal und aendert sich damit nachts nicht von selbst.</string>

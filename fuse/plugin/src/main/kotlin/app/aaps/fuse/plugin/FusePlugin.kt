@@ -284,6 +284,7 @@ class FusePlugin @Inject constructor(
     override fun configuration(): JSONObject =
         JSONObject()
             .put(FuseDoubleKey.SmbRatio, preferences)
+            .put(FuseDoubleKey.SmbRatioRise, preferences)
             .put(FuseDoubleKey.MaxSmbU, preferences)
             .put(FuseDoubleKey.GuardFloorMgdl, preferences)
             .put(FuseIntKey.IobThPercent, preferences)
@@ -298,6 +299,7 @@ class FusePlugin @Inject constructor(
     override fun applyConfiguration(configuration: JSONObject) {
         configuration
             .store(FuseDoubleKey.SmbRatio, preferences)
+            .store(FuseDoubleKey.SmbRatioRise, preferences)
             .store(FuseDoubleKey.MaxSmbU, preferences)
             .store(FuseDoubleKey.GuardFloorMgdl, preferences)
             .store(FuseIntKey.IobThPercent, preferences)
@@ -324,6 +326,12 @@ class FusePlugin @Inject constructor(
                 AdaptiveDoublePreference(
                     ctx = context, doubleKey = FuseDoubleKey.SmbRatio,
                     dialogMessage = R.string.fuse_smb_ratio_summary, title = R.string.fuse_smb_ratio_title
+                )
+            )
+            addPreference(
+                AdaptiveDoublePreference(
+                    ctx = context, doubleKey = FuseDoubleKey.SmbRatioRise,
+                    dialogMessage = R.string.fuse_smb_ratio_rise_summary, title = R.string.fuse_smb_ratio_rise_title
                 )
             )
             addPreference(
