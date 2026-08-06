@@ -76,6 +76,28 @@ class FuseControllerTest {
         assertEquals(1.40, rise.smbU, 1e-9)
     }
 
+    /**
+     * Der Kontext muss an JEDEM Rueckgabepfad haengen, nicht nur am
+     * Erfolgsfall — beim Blockieren ist "war das Mahlzeit oder Korrektur" die
+     * erste Frage. Genau das hat der erste Geraetelauf als "Kontext -" gezeigt.
+     */
+    @Test
+    fun `jeder Entscheidungspfad traegt den Kontext`() {
+        val faelle = listOf(
+            FuseController.decide(state(health = Health.DEGRADED), pred(250.0)),
+            FuseController.decide(state(hold = true), pred(250.0)),
+            FuseController.decide(state(busy = true), pred(250.0)),
+            FuseController.decide(state(), null),
+            FuseController.decide(state(), pred(250.0, minLower = 60.0)),
+            FuseController.decide(state(), pred(90.0)),
+            FuseController.decide(state(netIob = 8.0, bolusIob = 8.0), pred(250.0)),
+            FuseController.decide(state(netIob = 4.5, bolusIob = 4.5), pred(250.0)),
+            FuseController.decide(state(maxSmb = 0.04), pred(250.0)),
+            FuseController.decide(state(), pred(250.0)),
+        )
+        for (d in faelle) assertEquals(FuseController.Context.CORRECTION, d.context) { "${d.block} ohne Kontext" }
+    }
+
     // ---- Zustand vor Zahlen ----------------------------------------------
 
     @Test

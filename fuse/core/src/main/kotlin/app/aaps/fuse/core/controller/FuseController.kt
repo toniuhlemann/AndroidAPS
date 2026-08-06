@@ -207,8 +207,13 @@ object FuseController {
          *  bestehende Aufrufe unveraendert bleiben. */
         tail: TailLiability.Report? = null,
     ): Decision {
+        // Der Kontext gehoert an JEDEN Rueckgabepfad, nicht nur an den
+        // Erfolgsfall. Gerade beim Blockieren ist die Frage "war das die
+        // Mahlzeiten- oder die Korrekturlage" die erste, die man stellt.
+        val ctx = contextOf(state.phase)
+
         fun none(block: Block, tbr: TbrAction = TbrAction.NO_NEW_POSITIVE) =
-            Decision(0.0, tbr, block, 0.0, null, null, block.name)
+            Decision(0.0, tbr, block, 0.0, null, null, block.name, context = ctx)
 
         // Reihenfolge ist Absicht: Zustand vor Zahlen. Eine Dosis aus einer
         // Trajektorie, die gar nicht gelten darf, waere der teuerste Fehler.
@@ -225,7 +230,7 @@ object FuseController {
         if (prediction.minLowerBg < limits.guardFloorMgdl) {
             return Decision(
                 0.0, TbrAction.ZERO_TEMP, Block.GUARD_FLOOR, 0.0,
-                release.meanBg, prediction.minLowerBg, "guardFloor=${limits.guardFloorMgdl}",
+                release.meanBg, prediction.minLowerBg, "guardFloor=${limits.guardFloorMgdl}", context = ctx,
             )
         }
 
@@ -242,7 +247,7 @@ object FuseController {
         if (tail != null && tail.usable && tail.headroomU <= 0.0) {
             return Decision(
                 0.0, TbrAction.NO_NEW_POSITIVE, Block.TAIL, 0.0,
-                release.meanBg, prediction.minLowerBg, "tailHeadroom=${tail.headroomU}", tail,
+                release.meanBg, prediction.minLowerBg, "tailHeadroom=${tail.headroomU}", tail, context = ctx,
             )
         }
 
@@ -265,7 +270,7 @@ object FuseController {
             // Argument fuer das Band, nicht fuer ein pauschales Basal-Aus.
             return Decision(
                 0.0, TbrAction.NO_NEW_POSITIVE, Block.NO_DEMAND, insulinReq,
-                release.meanBg, prediction.minLowerBg, "insulinReq<=0",
+                release.meanBg, prediction.minLowerBg, "insulinReq<=0", context = ctx,
             )
         }
 
@@ -273,7 +278,7 @@ object FuseController {
         if (maxIobHeadroom <= 0.0) {
             return Decision(
                 0.0, TbrAction.NO_NEW_POSITIVE, Block.MAX_IOB_REACHED, insulinReq,
-                release.meanBg, prediction.minLowerBg, "maxIOB=${state.maxIobU}",
+                release.meanBg, prediction.minLowerBg, "maxIOB=${state.maxIobU}", context = ctx,
             )
         }
 
@@ -283,7 +288,7 @@ object FuseController {
         if (fastHeadroom <= 0.0) {
             return Decision(
                 0.0, TbrAction.NO_NEW_POSITIVE, Block.IOB_TH_REACHED, insulinReq,
-                release.meanBg, prediction.minLowerBg, "iobTH=${state.iobThU}",
+                release.meanBg, prediction.minLowerBg, "iobTH=${state.iobThU}", context = ctx,
             )
         }
 
@@ -317,7 +322,7 @@ object FuseController {
         if (deliverable < state.pumpIncrementU) {
             return Decision(
                 0.0, TbrAction.KEEP_CURRENT, Block.BELOW_PUMP_INCREMENT, insulinReq,
-                release.meanBg, prediction.minLowerBg, binding.first, tail, tailCost,
+                release.meanBg, prediction.minLowerBg, binding.first, tail, tailCost, ctx,
             )
         }
 
@@ -331,7 +336,7 @@ object FuseController {
             bindingLimit = binding.first,
             tail = tail,
             tailCostU = tailCost,
-            context = contextOf(state.phase),
+            context = ctx,
         )
     }
 }
