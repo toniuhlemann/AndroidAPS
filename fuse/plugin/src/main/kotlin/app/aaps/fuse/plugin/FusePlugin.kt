@@ -77,6 +77,7 @@ class FusePlugin @Inject constructor(
 ) : PluginBaseWithPreferences(
     PluginDescription()
         .mainType(PluginType.APS)
+        .fragmentClass(FuseFragment::class.java.name)
         .pluginIcon(app.aaps.core.ui.R.drawable.ic_generic_icon)
         .pluginName(R.string.fuse)
         .shortName(R.string.fuse_shortname)
@@ -109,7 +110,7 @@ class FusePlugin @Inject constructor(
 
     /** Was der letzte Zyklus gesehen hat — Grundlage des spaeteren
      *  Zustandsexports und der Fragment-Anzeige. */
-    var lastOutcome: FuseCycleRunner.Outcome? = null
+    @Volatile var lastOutcome: FuseCycleRunner.Outcome? = null
         private set
 
     override fun specialEnableCondition(): Boolean =

@@ -19,6 +19,8 @@ plugins {
 
 android {
     namespace = "app.aaps.fuse.plugin"
+    // Nur fuer den FUSE-Reiter. Erzeugt FuseFragmentBinding aus fuse_fragment.xml.
+    buildFeatures { viewBinding = true }
 }
 
 dependencies {

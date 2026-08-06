@@ -25,6 +25,7 @@ import app.aaps.fuse.core.controller.TailLiability
 import app.aaps.fuse.core.controller.TbrPolicy
 import app.aaps.fuse.core.observer.Health
 import app.aaps.fuse.core.observer.ObserverStateMachine
+import app.aaps.fuse.core.observer.ObserverStep
 import app.aaps.fuse.core.signal.PairSlopeBand
 import app.aaps.fuse.core.predictor.ActualTrajectoryFactory
 import app.aaps.fuse.core.predictor.DriveDecayModel
@@ -120,6 +121,14 @@ class FuseCycleRunner(
          *  hat er auch keine Politik, und der Export sagt das statt eine zu
          *  erfinden. */
         val policy: Config?,
+        /** Der REGLERZUSTAND dieses Zyklus, unveraendert wie er in `decide`
+         *  ging. Als Referenz statt als neun einzelne Zahlen: so kann beim
+         *  Erweitern kein Feld vergessen werden, und iobTH wird nicht ein
+         *  zweites Mal gerechnet. */
+        val state: FuseController.State?,
+        /** Der Observer-Schritt. Traegt Phase, Health-Gruende und
+         *  Safety-Gruende, die der Regler selbst nicht weitergibt. */
+        val step: ObserverStep?,
         val isfMgdlPerU: Double?,
         val iobU: Double?,
         /** Warum NICHT gerechnet wurde. `null` heisst: der Zyklus lief durch. */
@@ -134,8 +143,8 @@ class FuseCycleRunner(
             decision = FuseController.noInput(reason), tbr = null, prediction = null,
             sourceTs = signal?.sourceTs, computeTs = computeTs, health = null, gate = gate,
             reason = reason, alarm = false, bgMgdl = signal?.q1, targetMgdl = null, targetSource = null,
-            signal = signal, band = null, policy = policy, isfMgdlPerU = null, iobU = null,
-            abortReason = reason,
+            signal = signal, band = null, policy = policy, state = null, step = null,
+            isfMgdlPerU = null, iobU = null, abortReason = reason,
         )
 
         val profile = profileFunction.getProfile(computeTs) ?: return abort("no profile")
@@ -301,6 +310,8 @@ class FuseCycleRunner(
             signal = signal,
             band = band,
             policy = cfg,
+            state = state,
+            step = step,
             isfMgdlPerU = isf,
             iobU = iobTotal.iob,
             abortReason = null,

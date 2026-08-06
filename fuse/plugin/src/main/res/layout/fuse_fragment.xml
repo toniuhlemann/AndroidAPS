@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Bewusst schlicht: EIN Textfeld in Monospace. Der gesamte Inhalt entsteht in
+     FuseScreenModel und ist damit ohne Geraet pruefbar. Eine Zeilenliste aus
+     inflatierten Layouts haette dieselbe Information gekostet, aber die
+     Testflaeche verdoppelt. -->
+<androidx.core.widget.NestedScrollView
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent">
+
+    <TextView
+        android:id="@+id/fuse_state"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:padding="8dp"
+        android:textIsSelectable="true"
+        android:fontFamily="monospace"
+        android:textSize="12sp" />
+
+</androidx.core.widget.NestedScrollView>

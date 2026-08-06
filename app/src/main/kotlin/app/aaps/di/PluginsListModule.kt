@@ -1,6 +1,7 @@
 package app.aaps.di
 
 import app.aaps.core.interfaces.plugin.PluginBase
+import app.aaps.fuse.plugin.FuseFragment
 import app.aaps.fuse.plugin.FusePlugin
 import app.aaps.plugins.aps.autotune.AutotunePlugin
 import app.aaps.plugins.aps.loop.LoopPlugin
@@ -72,6 +73,7 @@ import app.aaps.pump.omnipod.eros.OmnipodErosPumpPlugin
 import app.aaps.pump.virtual.VirtualPumpPlugin
 import dagger.Binds
 import dagger.Module
+import dagger.android.ContributesAndroidInjector
 import dagger.multibindings.IntKey
 import dagger.multibindings.IntoMap
 import info.nightscout.pump.combov2.ComboV2Plugin
@@ -270,6 +272,13 @@ abstract class PluginsListModule {
     @IntoMap
     @IntKey(226)
     abstract fun bindFusePlugin(plugin: FusePlugin): PluginBase
+
+    /**
+     * Der FUSE-Reiter. Erster `@ContributesAndroidInjector` in dieser Datei —
+     * das Muster stammt aus `ApsModule`, und der dagger-android-Prozessor laeuft
+     * im app-Modul, also greift es auch hier.
+     */
+    @ContributesAndroidInjector abstract fun contributesFuseFragment(): FuseFragment
 
     @Binds
     @AllConfigs

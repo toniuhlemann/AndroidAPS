@@ -49,7 +49,7 @@ class FuseStateExportTest {
         health = Health.READY, gate = FusePumpGate.Result(FusePumpGate.Verdict.ALLOWED, "VirtualPumpPlugin"),
         reason = "KEEP", alarm = false, bgMgdl = 130.0, targetMgdl = 97.0, targetSource = "profile",
         signal = signal, band = PairSlopeBand.Estimate(0.8, 0.4, 153), policy = policy,
-        isfMgdlPerU = 85.0, iobU = 1.2, abortReason = abort,
+        state = null, step = null, isfMgdlPerU = 85.0, iobU = 1.2, abortReason = abort,
     )
 
     private fun rt(units: Double? = 0.15) = RT(

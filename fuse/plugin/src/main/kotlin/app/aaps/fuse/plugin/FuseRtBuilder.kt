@@ -53,7 +53,10 @@ object FuseRtBuilder {
     ): RT {
         val reason = StringBuilder()
         reason.append("FUSE ").append(gate.reason)
-        reason.append(" | phase=").append(decision.block.name)
+        // "block=", nicht "phase=": das hier ist FuseController.Block, die
+        // Observer-PHASE ist etwas anderes. Die alte Beschriftung hat zwei
+        // Groessen unter einem Namen gefuehrt.
+        reason.append(" | block=").append(decision.block.name)
         signal?.let {
             reason.append(" | q1=").append(fmt(it.q1))
             it.rSigned?.let { r -> reason.append(" r=").append(String.format(java.util.Locale.ROOT, "%.3f", r)) }
