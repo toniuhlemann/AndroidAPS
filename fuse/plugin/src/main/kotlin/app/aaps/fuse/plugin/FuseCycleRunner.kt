@@ -88,10 +88,6 @@ class FuseCycleRunner(
          *  Export, damit eine spaetere Auswertung nicht raten muss, ob die
          *  Guardbahn eine echte Untergrenze war. */
         const val UNCERTAINTY_METHOD_ALPHA1 = "IDENTITY_NO_BAND_ALPHA1"
-
-        /** Zeitkonstante des Antriebszerfalls. Noch nicht gemessen, deshalb
-         *  benannt statt versteckt. */
-        const val DRIVE_TAU_MIN = 60.0
     }
 
     data class Outcome(
@@ -172,7 +168,7 @@ class FuseCycleRunner(
             is CoreInputGuard.Outcome.Failed -> return abort("config: ${c.failure.detail}")
         }
 
-        val input = when (val b = CoreInputGuard.build { buildPredictorInput(signal, profile, cfg.liabilityHorizonMin) }) {
+        val input = when (val b = CoreInputGuard.build { buildPredictorInput(signal, profile, cfg) }) {
             is CoreInputGuard.Outcome.Built  -> b.value ?: return abort("input incomplete")
             is CoreInputGuard.Outcome.Failed -> return abort("input: ${b.failure.detail}")
         }
@@ -326,6 +322,7 @@ class FuseCycleRunner(
         val iobThPercent: Int,
         val releaseHorizonMin: Int,
         val liabilityHorizonMin: Int,
+        val driveTauMin: Int,
     )
 
     /**
@@ -341,6 +338,7 @@ class FuseCycleRunner(
         iobThPercent = preferences.get(FuseIntKey.IobThPercent),
         releaseHorizonMin = preferences.get(FuseIntKey.ReleaseHorizonMin),
         liabilityHorizonMin = preferences.get(FuseIntKey.LiabilityHorizonMin),
+        driveTauMin = preferences.get(FuseIntKey.DriveTauMin),
     ).also {
         // Die Preference-Grenzen gelten nur im Einstellungsdialog. Ein Wert aus
         // einem alten Import geht daran vorbei — deshalb hier nochmal, und zwar
@@ -350,6 +348,9 @@ class FuseCycleRunner(
         require(it.guardFloorMgdl.isFinite() && it.guardFloorMgdl > 0.0) { "guardFloor=${it.guardFloorMgdl}" }
         require(it.iobThPercent >= 0) { "iobThPercent=${it.iobThPercent}" }
         require(it.releaseHorizonMin > 0) { "releaseHorizon=${it.releaseHorizonMin}" }
+        // Gleiche Grenzen wie DriveDecayModel.ExponentialDecay - sonst wirft der
+        // Kern bei einem Wert, den der Einstellungsdialog erlaubt hat.
+        require(it.driveTauMin in 10..240) { "driveTau=${it.driveTauMin}" }
         require(it.liabilityHorizonMin >= it.releaseHorizonMin) {
             "liabilityHorizon=${it.liabilityHorizonMin} < releaseHorizon=${it.releaseHorizonMin}"
         }
@@ -363,8 +364,9 @@ class FuseCycleRunner(
     private fun buildPredictorInput(
         signal: FuseSignalSource.Signal,
         profile: Profile,
-        liabilityHorizonMin: Int,
+        cfg: Config,
     ): PredictorInput? {
+        val liabilityHorizonMin = cfg.liabilityHorizonMin
         val anchor = signal.sourceTs
         val steps = ((liabilityHorizonMin + IOB_MARGIN_MIN) * 60_000L / IOB_GRID_MS).toInt()
 
@@ -422,7 +424,7 @@ class FuseCycleRunner(
             // statt heimlich erfunden zu werden. Das ist eine offene
             // Entscheidung und steht unter diesem Namen im Export.
             drive = DriveEstimate(rSigned, rSigned, 0.5, UNCERTAINTY_METHOD_ALPHA1),
-            decay = DriveDecayModel.ExponentialDecay(DRIVE_TAU_MIN),
+            decay = DriveDecayModel.ExponentialDecay(cfg.driveTauMin.toDouble()),
             trajectory = trajectory,
             isfSlots = isfSlots,
             horizonMin = liabilityHorizonMin,

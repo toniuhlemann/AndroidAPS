@@ -117,4 +117,20 @@ enum class FuseIntKey(
 
     /** Horizont, ueber den die Guardbahn geprueft wird. */
     LiabilityHorizonMin("fuse_liability_horizon_min", 120, 30, 360),
+
+    /**
+     * Zeitkonstante des Antriebszerfalls (Tau) in Minuten.
+     *
+     * Sie praegt die Bahn staerker als jede andere Zahl hier: sie sagt, wie
+     * lange ein gemessener Anstieg in die Zukunft fortgeschrieben wird. 60 ist
+     * ein PLATZHALTER, nicht ein Messergebnis — deshalb einstellbar, statt im
+     * Code zu stehen. Ein Versuch am Testgeraet soll keine Neuinstallation
+     * kosten.
+     *
+     * Der Bereich 10..240 ist NICHT frei gewaehlt, sondern der Definitionsbereich
+     * von [app.aaps.fuse.core.predictor.DriveDecayModel.ExponentialDecay]. Beide
+     * muessen gleich bleiben: sonst laesst der Dialog Werte zu, an denen der Kern
+     * wirft.
+     */
+    DriveTauMin("fuse_drive_tau_min", 60, 10, 240),
 }

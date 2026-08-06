@@ -22,4 +22,7 @@
 
     <string name="fuse_liability_horizon_title">Haftungs-Horizont [min]</string>
     <string name="fuse_liability_horizon_summary">Ueber diese Spanne wird die pessimistische Bahn gegen die Guard-Untergrenze geprueft.</string>
+
+    <string name="fuse_drive_tau_title">Antriebs-Zerfallszeit Tau [min]</string>
+    <string name="fuse_drive_tau_summary">Wie lange ein gemessener Anstieg in die Zukunft fortgeschrieben wird. Praegt die Bahn staerker als jeder andere Wert hier. 60 ist ein Platzhalter, kein Messergebnis.</string>
 </resources>

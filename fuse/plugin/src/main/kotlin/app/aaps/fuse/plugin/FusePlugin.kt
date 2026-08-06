@@ -192,6 +192,7 @@ class FusePlugin @Inject constructor(
             .put(FuseIntKey.IobThPercent, preferences)
             .put(FuseIntKey.ReleaseHorizonMin, preferences)
             .put(FuseIntKey.LiabilityHorizonMin, preferences)
+            .put(FuseIntKey.DriveTauMin, preferences)
 
     override fun applyConfiguration(configuration: JSONObject) {
         configuration
@@ -201,6 +202,7 @@ class FusePlugin @Inject constructor(
             .store(FuseIntKey.IobThPercent, preferences)
             .store(FuseIntKey.ReleaseHorizonMin, preferences)
             .store(FuseIntKey.LiabilityHorizonMin, preferences)
+            .store(FuseIntKey.DriveTauMin, preferences)
     }
 
     override fun addPreferenceScreen(preferenceManager: PreferenceManager, parent: PreferenceScreen, context: Context, requiredKey: String?) {
@@ -247,6 +249,12 @@ class FusePlugin @Inject constructor(
                 AdaptiveIntPreference(
                     ctx = context, intKey = FuseIntKey.LiabilityHorizonMin,
                     dialogMessage = R.string.fuse_liability_horizon_summary, title = R.string.fuse_liability_horizon_title
+                )
+            )
+            addPreference(
+                AdaptiveIntPreference(
+                    ctx = context, intKey = FuseIntKey.DriveTauMin,
+                    dialogMessage = R.string.fuse_drive_tau_summary, title = R.string.fuse_drive_tau_title
                 )
             )
         }
