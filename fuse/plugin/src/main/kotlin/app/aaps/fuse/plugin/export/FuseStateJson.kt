@@ -125,6 +125,54 @@ object FuseStateJson {
                 .put("methodId", policy?.let { app.aaps.fuse.core.signal.PairSlopeBand.methodId(it.driveLowerQuantilePct) } ?: JSONObject.NULL)
         )
 
+        // ---- Observer ------------------------------------------------------
+        // ALLES, was eine spaetere Nachrechnung von PERSISTENCE und TURN
+        // braucht. Bewusst der ZUSTAND und nicht das Ergebnis: die Rohreihe
+        // liegt ohnehin in der Datenbank, und welche Minuten FUSE gesehen hat,
+        // steht als computeTs/sourceTs in jeder Zeile dieses Trails. Damit ist
+        // die Bewertungsregel nachtraeglich aenderbar, statt in der
+        // Zustandsmaschine festzustehen.
+        //
+        // Der EINGEFRORENE Peak einer Episode wird NICHT hier gebildet - er
+        // ergibt sich aus livePeak ueber die Zeilen zwischen Confirm und
+        // Phasenende. Ihn im Kern einzufrieren hiesse, eine Regel zu locken,
+        // die noch nie an Daten geprueft wurde.
+        val st = outcome.step
+        if (st == null) gap("observer", "NO_STEP_THIS_CYCLE")
+        else {
+            val obs = JSONObject()
+                .put("accepted", st.accepted)
+                .put("phase", st.phase.name)
+                .put("healthReasons", JSONArray(st.healthReasons.map { it.name }))
+                .put("safetyReasons", JSONArray(st.safetyReasons.map { it.name }))
+                .put("candidateId", st.candidateId ?: JSONObject.NULL)
+                .put("eventId", st.eventId ?: JSONObject.NULL)
+                .put("livePeakTs", st.livePeak?.sourceTs ?: JSONObject.NULL)
+                .put("livePeakValue", fin(st.livePeak?.value))
+                .put("quietAccumMin", fin(st.quietAccumMin))
+                .put("confirmCount", st.confirmCount)
+                .put("carryDurMin", fin(st.carryDurMin))
+                .put("resetCauses", JSONArray(st.resetCauses.map { it.name }))
+                .put("sensorEpoch", outcome.sensorEpoch ?: JSONObject.NULL)
+                .put("calibrationEpoch", outcome.calibrationEpoch ?: JSONObject.NULL)
+            // Der Uebergang ist der ANKER: triggerSourceTs beim RISE_CONFIRMED
+            // ist der Zeitpunkt, gegen den eine Episode spaeter bewertet wird.
+            st.transition?.let { tr ->
+                obs.put(
+                    "transition", JSONObject()
+                        .put("type", tr.type.name)
+                        .put("from", tr.from.name)
+                        .put("to", tr.to.name)
+                        .put("reasons", JSONArray(tr.reasons.toList()))
+                        .put("triggerSourceTs", tr.triggerSourceTs)
+                        .put("triggerComputeTs", tr.triggerComputeTs)
+                        .put("candidateId", tr.candidateId ?: JSONObject.NULL)
+                        .put("eventId", tr.eventId ?: JSONObject.NULL)
+                )
+            }
+            o.put("observer", obs)
+        }
+
         // ---- Zustand -------------------------------------------------------
         o.put(
             "state", JSONObject()
@@ -133,6 +181,9 @@ object FuseStateJson {
                 .put("targetMgdl", fin(outcome.targetMgdl))
                 .put("targetSource", outcome.targetSource ?: JSONObject.NULL)
                 .put("isfMgdlPerU", fin(outcome.isfMgdlPerU))
+                .put("iobThU", fin(outcome.state?.iobThU))
+                .put("maxIobU", fin(outcome.state?.maxIobU))
+                .put("smbRatio", fin(outcome.state?.smbRatio))
         )
 
         // ---- Schwanz -------------------------------------------------------

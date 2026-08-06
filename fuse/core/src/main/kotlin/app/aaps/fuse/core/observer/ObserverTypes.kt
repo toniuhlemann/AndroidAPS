@@ -60,9 +60,20 @@ data class Transition(
     val eventId: String? = null,
 )
 
-/** Peak auf signalInputBg. livePeak endet mit der Phase, outcomePeak wird
- *  eingefroren und ueberlebt sie (Addendum A2) — sonst wuerde TURN_OUTCOME
- *  gegen einen zu fruehen Peak bewertet. */
+/**
+ * Peak auf signalInputBg — der LIVE-Peak. Er endet mit der Phase.
+ *
+ * RICHTIGSTELLUNG: hier stand frueher, `outcomePeak` werde eingefroren und
+ * ueberlebe die Phase. Das war eine Behauptung ueber Code, den es nicht gibt —
+ * weder [Peak] noch [ObserverStep] haben ein solches Feld, und beide Endpfade
+ * der Maschine loeschen `livePeak` gemeinsam mit `eventId`.
+ *
+ * Das Einfrieren gehoert auch nicht hierher: solange Phase, `eventId`,
+ * `livePeak` und der Ankerzeitpunkt je Zyklus EXPORTIERT werden, laesst sich
+ * der Peak einer Episode nachtraeglich exakt bestimmen — aus der Rohreihe, die
+ * ohnehin in der Datenbank liegt. Die Bewertungsregel bleibt damit aenderbar,
+ * statt in der Zustandsmaschine festzustehen.
+ */
 data class Peak(val sourceTs: Long, val value: Double)
 
 /** Eingabe je Observer-Aufruf. Der Adapter hat Q1, R und die Gueltigkeiten

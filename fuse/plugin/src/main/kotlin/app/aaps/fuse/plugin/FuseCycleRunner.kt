@@ -129,6 +129,11 @@ class FuseCycleRunner(
         /** Der Observer-Schritt. Traegt Phase, Health-Gruende und
          *  Safety-Gruende, die der Regler selbst nicht weitergibt. */
         val step: ObserverStep?,
+        /** Die Regimegrenzen dieses Zyklus. Sie gehoeren in den Export, weil
+         *  eine spaetere Nachrechnung sonst nicht weiss, welche Punkte
+         *  ueberhaupt zu derselben Messreihe gehoeren. */
+        val sensorEpoch: Long?,
+        val calibrationEpoch: Long?,
         val isfMgdlPerU: Double?,
         val iobU: Double?,
         /** Warum NICHT gerechnet wurde. `null` heisst: der Zyklus lief durch. */
@@ -144,6 +149,7 @@ class FuseCycleRunner(
             sourceTs = signal?.sourceTs, computeTs = computeTs, health = null, gate = gate,
             reason = reason, alarm = false, bgMgdl = signal?.q1, targetMgdl = null, targetSource = null,
             signal = signal, band = null, policy = policy, state = null, step = null,
+            sensorEpoch = null, calibrationEpoch = null,
             isfMgdlPerU = null, iobU = null, abortReason = reason,
         )
 
@@ -312,6 +318,8 @@ class FuseCycleRunner(
             policy = cfg,
             state = state,
             step = step,
+            sensorEpoch = sensorEpoch,
+            calibrationEpoch = calibrationEpoch,
             isfMgdlPerU = isf,
             iobU = iobTotal.iob,
             abortReason = null,

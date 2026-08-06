@@ -35,11 +35,27 @@ class FuseStateExportTest {
         boundedBy = SignalWindow.Bound.NONE, windowFromTs = 1_699_988_120_000L,
     )
 
+    private fun step() = app.aaps.fuse.core.observer.ObserverStep(
+        accepted = true, health = Health.READY, healthReasons = emptySet(),
+        safetyReasons = emptySet(), phase = app.aaps.fuse.core.observer.Phase.RISE_ACTIVE,
+        transition = app.aaps.fuse.core.observer.Transition(
+            type = app.aaps.fuse.core.observer.TransitionType.RISE_CONFIRMED,
+            from = app.aaps.fuse.core.observer.Phase.CANDIDATE,
+            to = app.aaps.fuse.core.observer.Phase.RISE_ACTIVE,
+            reasons = setOf("confirmed"), triggerSourceTs = 1_700_000_000_000L,
+            triggerComputeTs = 1_700_000_030_000L, candidateId = "c1", eventId = "e1",
+        ),
+        candidateId = "c1", eventId = "e1",
+        livePeak = app.aaps.fuse.core.observer.Peak(1_700_000_000_000L, 150.0),
+        quietAccumMin = 0.0, confirmCount = 2, carryDurMin = 0.0, resetCauses = emptySet(),
+    )
+
     private fun outcome(
         abort: String? = null,
         policy: FuseCycleRunner.Config? = cfg,
         signal: FuseSignalSource.Signal? = signal(),
         tail: TailLiability.Report? = null,
+        step: app.aaps.fuse.core.observer.ObserverStep? = step(),
     ) = FuseCycleRunner.Outcome(
         decision = FuseController.Decision(
             0.15, FuseController.TbrAction.KEEP_CURRENT, FuseController.Block.NONE,
@@ -49,7 +65,8 @@ class FuseStateExportTest {
         health = Health.READY, gate = FusePumpGate.Result(FusePumpGate.Verdict.ALLOWED, "VirtualPumpPlugin"),
         reason = "KEEP", alarm = false, bgMgdl = 130.0, targetMgdl = 97.0, targetSource = "profile",
         signal = signal, band = PairSlopeBand.Estimate(0.8, 0.4, 153), policy = policy,
-        state = null, step = null, isfMgdlPerU = 85.0, iobU = 1.2, abortReason = abort,
+        state = null, step = step, sensorEpoch = 1_699_000_000_000L, calibrationEpoch = 0L,
+        isfMgdlPerU = 85.0, iobU = 1.2, abortReason = abort,
     )
 
     private fun rt(units: Double? = 0.15) = RT(
@@ -236,6 +253,36 @@ class FuseStateExportTest {
         val r = FuseStateExporter().append(File(blockiert, "unter"), "{}")
         assertTrue(r is FuseStateExporter.Result.Failed)
         assertNotNull((r as FuseStateExporter.Result.Failed).reason)
+    }
+
+    // ---- Observer: die Grundlage der spaeteren Nachrechnung ---------------
+
+    @Test
+    fun `der Observer-Zustand steht vollstaendig im Datensatz`() {
+        val obs = record().getJSONObject("observer")
+        assertEquals("RISE_ACTIVE", obs.getString("phase"))
+        assertEquals("e1", obs.getString("eventId"))
+        assertEquals("c1", obs.getString("candidateId"))
+        assertEquals(150.0, obs.getDouble("livePeakValue"), 1e-12)
+        assertEquals(2, obs.getInt("confirmCount"))
+        assertEquals(1_699_000_000_000L, obs.getLong("sensorEpoch"))
+    }
+
+    /** Der ANKER einer Episode: `triggerSourceTs` des Confirms. Ohne ihn ist
+     *  spaeter nicht bestimmbar, wogegen bewertet werden soll. */
+    @Test
+    fun `der Uebergang traegt den Ankerzeitpunkt`() {
+        val tr = record().getJSONObject("observer").getJSONObject("transition")
+        assertEquals("RISE_CONFIRMED", tr.getString("type"))
+        assertEquals(1_700_000_000_000L, tr.getLong("triggerSourceTs"))
+        assertEquals("e1", tr.getString("eventId"))
+    }
+
+    @Test
+    fun `ohne Observer-Schritt steht der Grund statt eines leeren Geruests`() {
+        val j = record(outcome(abort = "no profile", policy = null, signal = null, step = null))
+        assertFalse(j.has("observer"))
+        assertTrue(gapReasons(j).contains("NO_STEP_THIS_CYCLE"))
     }
 
     private fun gapReasons(j: JSONObject): List<String> {

@@ -38,7 +38,8 @@ class FuseScreenModelTest {
         health = Health.READY, gate = FusePumpGate.Result(FusePumpGate.Verdict.ALLOWED, "VirtualPumpPlugin"),
         reason = "KEEP", alarm = false, bgMgdl = 130.0, targetMgdl = 97.0, targetSource = "TT",
         signal = signal, band = PairSlopeBand.Estimate(0.8, 0.4, 153), policy = null,
-        state = null, step = null, isfMgdlPerU = 85.0, iobU = 1.2, abortReason = abort,
+        state = null, step = null, sensorEpoch = null, calibrationEpoch = null,
+        isfMgdlPerU = 85.0, iobU = 1.2, abortReason = abort,
     )
 
     /** Ohne Zyklus GENAU eine Zeile — kein Geruest aus Nullen, das wie ein

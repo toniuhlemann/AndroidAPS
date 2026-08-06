@@ -52,6 +52,8 @@ object FuseScreenModel {
         row(b, "Health", outcome.health?.name ?: "-")
         outcome.step?.healthReasons?.takeIf { it.isNotEmpty() }?.let { row(b, "  Gruende", it.joinToString(",") { r -> r.name }) }
         outcome.step?.safetyReasons?.takeIf { it.isNotEmpty() }?.let { row(b, "  Safety", it.joinToString(",") { r -> r.name }) }
+        outcome.step?.eventId?.let { row(b, "Ereignis", it) }
+        outcome.step?.transition?.let { row(b, "Uebergang", "${it.type.name} ${it.from.name}->${it.to.name}") }
         b.append('\n')
 
         // ---- Signal --------------------------------------------------------
