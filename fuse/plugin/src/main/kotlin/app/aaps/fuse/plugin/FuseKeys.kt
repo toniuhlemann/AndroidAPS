@@ -112,6 +112,15 @@ enum class FuseDoubleKey(
     OnsetEnvelopeU("fuse_onset_envelope_u", 1.5, 0.0, 5.0),
 
     /**
+     * Huelle der Sofort-Freigabe am Mahlzeiten-Marker [U]. Default 1,2 =
+     * das gemessene Reversibilitaetsmass KC2-53 (per Basal-Null in 120 min
+     * rueckholbar: 0,9-1,4 U). Obergrenze 2,0 liegt bereits JENSEITS der
+     * gemessenen Rueckholkapazitaet - wer sie ausreizt, gibt die
+     * Rueckholbarkeits-Garantie auf.
+     */
+    PrimeEnvelopeU("fuse_prime_envelope_u", 1.2, 0.0, 2.0),
+
+    /**
      * Obergrenze eines einzelnen SMB, in Einheiten.
      *
      * autoISF hat dafuer KEINE Einstellung, sondern leitet sie ab
@@ -313,4 +322,12 @@ enum class FuseBooleanKey(
      * Haftungshuelle, Uebergabe an die Rampe bei r >= riseRampLowR.
      */
     OnsetChannelEnabled("fuse_onset_channel_enabled", true),
+
+    /**
+     * Sofort-Freigabe am Mahlzeiten-Marker (PrimeRelease): verteilte Abgabe
+     * ab Knopfdruck, OHNE auf CGM-Evidenz zu warten. Nur mit Marker, nur im
+     * 15-min-Fenster, Clearance-Gate gegen die Guardbahn, alle Sperren und
+     * Deckel gewinnen. Huelle: PrimeEnvelopeU.
+     */
+    PrimeReleaseEnabled("fuse_prime_release_enabled", true),
 }

@@ -30,6 +30,7 @@ import app.aaps.fuse.core.signal.PairSlopeBand
 import app.aaps.fuse.core.predictor.ActualTrajectoryFactory
 import app.aaps.fuse.core.predictor.DriveDecayModel
 import app.aaps.fuse.core.controller.OnsetChannel
+import app.aaps.fuse.core.controller.PrimeRelease
 import app.aaps.fuse.core.predictor.DriveDiscount
 import app.aaps.fuse.core.predictor.DriveEstimate
 import app.aaps.fuse.core.predictor.InsulinLineage
@@ -127,6 +128,9 @@ class FuseCycleRunner(
         /** Zustand des Onset-Kanals dieses Zyklus. `null` nur auf
          *  Abbruchpfaden vor der Signalstufe. */
         val onset: OnsetChannel.Result?,
+        /** Plan der Sofort-Freigabe dieses Zyklus. `null` nur auf
+         *  Abbruchpfaden vor der Bahn. */
+        val prime: PrimeRelease.Plan?,
         /** `null` = der Zyklus kam nicht bis zum Lesen der Einstellungen. Dann
          *  hat er auch keine Politik, und der Export sagt das statt eine zu
          *  erfinden. */
@@ -158,7 +162,7 @@ class FuseCycleRunner(
             decision = FuseController.noInput(reason), tbr = null, prediction = null,
             sourceTs = signal?.sourceTs, computeTs = computeTs, health = null, gate = gate,
             reason = reason, alarm = false, bgMgdl = signal?.q1, targetMgdl = null, targetSource = null,
-            signal = signal, band = null, discount = null, onset = null, policy = policy, state = null, step = null,
+            signal = signal, band = null, discount = null, onset = null, prime = null, policy = policy, state = null, step = null,
             sensorEpoch = null, calibrationEpoch = null,
             isfMgdlPerU = null, iobU = null, abortReason = reason,
         )
@@ -237,6 +241,10 @@ class FuseCycleRunner(
         // selbst. Er ist ZUSTAND und wird je Zyklus frisch gelesen - nie
         // gecached, damit ein Druck sofort im naechsten Zyklus wirkt.
         val markerTs = preferences.get(FuseLongKey.MealMarkerArmedTs)
+        if (markerTs != primeArmedTsSeen) {
+            primeArmedTsSeen = markerTs
+            primeSpentU = 0.0
+        }
         val mealMarkerActive = markerTs > 0 &&
             computeTs - markerTs in 0..(OnsetChannel.MARKER_WINDOW_MIN * 60_000L)
 
@@ -347,13 +355,35 @@ class FuseCycleRunner(
             )
         )
 
-        val decision = FuseController.decide(
+        val baseDecision = FuseController.decide(
             state, prediction,
             FuseController.Limits(guardFloorMgdl = cfg.guardFloorMgdl, releaseHorizonMin = cfg.releaseHorizonMin),
             tail,
             restraint,
             onsetCapU = if (onset.active) onset.remainingU else null,
         )
+
+        // Sofort-Freigabe: Plan aus derselben Momentaufnahme, Anhebung NUR
+        // wenn der Basisentscheidung nichts als Bedarf fehlte. Sperren und
+        // Deckel gewinnen in PrimeRelease.lift unveraendert.
+        val primePlan = PrimeRelease.plan(
+            PrimeRelease.Input(
+                enabled = cfg.primeReleaseEnabled,
+                mealMarkerActive = mealMarkerActive,
+                armedTsMs = markerTs,
+                nowMs = computeTs,
+                envelopeU = cfg.primeEnvelopeU,
+                spentU = primeSpentU,
+                minLowerMgdl = prediction.minLowerBg,
+                guardFloorMgdl = cfg.guardFloorMgdl,
+                isfMgdlPerU = isf,
+                pumpIncrementU = bolusStep,
+            )
+        )
+        val decision = PrimeRelease.lift(baseDecision, primePlan, state)
+        val primeWindowOpen = mealMarkerActive && markerTs > 0 &&
+            computeTs - markerTs < PrimeRelease.WINDOW_MIN * 60_000L
+        if (primeWindowOpen) primeSpentU += decision.smbU
 
         // Huellen-Buchfuehrung: verbraucht wird nur, was der offene Kanal
         // freigegeben hat; nach REARM_QUIET_MIN geschlossenen Minuten wird die
@@ -406,6 +436,7 @@ class FuseCycleRunner(
             band = band,
             discount = built.discount,
             onset = onset,
+            prime = primePlan,
             policy = cfg,
             state = state,
             step = step,
@@ -437,6 +468,12 @@ class FuseCycleRunner(
     private val onsetRing = ArrayDeque<OnsetChannel.Sample>()
     private var onsetSpentU = 0.0
     private var onsetQuietMin = 0
+
+    /** Huellen-Buchfuehrung der Sofort-Freigabe. Ein NEUER Knopfdruck (anderer
+     *  armedTs) beginnt eine neue Episode mit voller Huelle; JEDE im Fenster
+     *  gelieferte Einheit zaehlt dagegen - auch evidenzgetriebene. */
+    private var primeSpentU = 0.0
+    private var primeArmedTsSeen = 0L
 
     private fun fastDrive(signal: FuseSignalSource.Signal): Double? {
         val raw = signal.ukfRatePerMin
@@ -531,6 +568,8 @@ class FuseCycleRunner(
         val bolusShareLambda: Double,
         val onsetChannelEnabled: Boolean,
         val onsetEnvelopeU: Double,
+        val primeReleaseEnabled: Boolean,
+        val primeEnvelopeU: Double,
     )
 
     /**
@@ -558,6 +597,8 @@ class FuseCycleRunner(
         bolusShareLambda = preferences.get(FuseDoubleKey.BolusShareLambda),
         onsetChannelEnabled = preferences.get(FuseBooleanKey.OnsetChannelEnabled),
         onsetEnvelopeU = preferences.get(FuseDoubleKey.OnsetEnvelopeU),
+        primeReleaseEnabled = preferences.get(FuseBooleanKey.PrimeReleaseEnabled),
+        primeEnvelopeU = preferences.get(FuseDoubleKey.PrimeEnvelopeU),
     ).also {
         // Die Preference-Grenzen gelten nur im Einstellungsdialog. Ein Wert aus
         // einem alten Import geht daran vorbei — deshalb hier nochmal, und zwar
@@ -580,6 +621,7 @@ class FuseCycleRunner(
         require(it.tailRecoveryU.isFinite() && it.tailRecoveryU >= 0.0) { "tailRecovery=${it.tailRecoveryU}" }
         require(it.bolusShareLambda.isFinite() && it.bolusShareLambda in 0.0..2.0) { "bolusShareLambda=${it.bolusShareLambda}" }
         require(it.onsetEnvelopeU.isFinite() && it.onsetEnvelopeU in 0.0..5.0) { "onsetEnvelope=${it.onsetEnvelopeU}" }
+        require(it.primeEnvelopeU.isFinite() && it.primeEnvelopeU in 0.0..2.0) { "primeEnvelope=${it.primeEnvelopeU}" }
         require(it.liabilityHorizonMin >= it.releaseHorizonMin) {
             "liabilityHorizon=${it.liabilityHorizonMin} < releaseHorizon=${it.releaseHorizonMin}"
         }

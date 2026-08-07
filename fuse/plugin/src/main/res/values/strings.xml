@@ -61,4 +61,8 @@
     <string name="fuse_onset_envelope_summary">Hoechstmenge je unbestaetigter Onset-Episode. Massstab: Rueckholkapazitaet ueber 30 min ist 0,225-0,35 U - die Huelle ist eine bezifferte Wette.</string>
     <string name="fuse_meal_marker_button">Mahlzeit-Marker setzen</string>
     <string name="fuse_meal_marker_button_armed">Mahlzeit-Marker AKTIV - tippen zum Zuruecknehmen</string>
+    <string name="fuse_prime_release_title">Sofort-Freigabe am Marker</string>
+    <string name="fuse_prime_release_summary">Verteilte Abgabe ab Mahlzeit-Marker, ohne auf CGM-Evidenz zu warten (15-min-Fenster). Clearance-Gate gegen die Guardbahn; alle Sperren und Deckel gewinnen. Nur mit gesetztem Marker.</string>
+    <string name="fuse_prime_envelope_title">Freigabe-Huelle [U]</string>
+    <string name="fuse_prime_envelope_summary">Hoechstmenge je Marker-Episode. Default 1,2 U = per Basal-Null in 120 min rueckholbar (gemessen). Werte darueber geben die Rueckholbarkeits-Garantie auf.</string>
 </resources>

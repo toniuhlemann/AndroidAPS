@@ -388,6 +388,18 @@ class FusePlugin @Inject constructor(
                 )
             )
             addPreference(
+                AdaptiveSwitchPreference(
+                    ctx = context, booleanKey = FuseBooleanKey.PrimeReleaseEnabled,
+                    summary = R.string.fuse_prime_release_summary, title = R.string.fuse_prime_release_title
+                )
+            )
+            addPreference(
+                AdaptiveDoublePreference(
+                    ctx = context, doubleKey = FuseDoubleKey.PrimeEnvelopeU,
+                    dialogMessage = R.string.fuse_prime_envelope_summary, title = R.string.fuse_prime_envelope_title
+                )
+            )
+            addPreference(
                 AdaptiveDoublePreference(
                     ctx = context, doubleKey = FuseDoubleKey.MaxSmbU,
                     dialogMessage = R.string.fuse_max_smb_u_summary, title = R.string.fuse_max_smb_u_title
