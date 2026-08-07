@@ -62,6 +62,15 @@ interface APSResult {
         UNKNOWN,
         AMA,
         SMB,
-        AUTO_ISF
+        AUTO_ISF,
+
+        /**
+         * ROLLBACK-PFAD, kein Verhalten: der FUSE-Testtraeger schreibt
+         * APSResult-Zeilen mit algorithm=FUSE in die Datenbank. Ein aisf-APK,
+         * das diesen Wert nicht kennt, wirft beim Lesen (valueOf) - dieser
+         * Eintrag macht FUSE-APK und aisf-APK beliebig uebereinander
+         * flashbar. Dieses APS selbst erzeugt den Wert nie.
+         */
+        FUSE
     }
 }

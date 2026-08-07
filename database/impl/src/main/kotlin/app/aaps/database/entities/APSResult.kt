@@ -44,6 +44,11 @@ data class APSResult(
         UNKNOWN,
         AMA,
         SMB,
-        AUTO_ISF
+        AUTO_ISF,
+
+        /** Rollback-Pfad: Zeilen des FUSE-Testtraegers bleiben lesbar, wenn
+         *  dieses aisf-APK ueber eine FUSE-Installation geflasht wird. Dieses
+         *  APK erzeugt den Wert nie. */
+        FUSE
     }
 }

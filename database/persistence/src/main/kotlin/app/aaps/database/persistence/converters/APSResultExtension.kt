@@ -48,6 +48,18 @@ fun app.aaps.database.entities.APSResult.fromDb(apsResultProvider: Provider<APSR
                 result.autosensResult = this.autosensDataJson?.let { Json.decodeFromString(it) }
             }
 
+        // FUSE-Zeilen stammen vom Testtraeger. Sie muessen LESBAR sein, nicht
+        // deutbar: resultJson defensiv dekodieren, jeder Fehler ergibt ein
+        // leeres Ergebnis mit Zeitstempel statt eines Absturzes im Rollback.
+        app.aaps.database.entities.APSResult.Algorithm.FUSE     ->
+            try {
+                apsResultProvider.get().with(Json.decodeFromString(this.resultJson)).also { result ->
+                    result.date = this.timestamp
+                }
+            } catch (_: Exception) {
+                apsResultProvider.get().also { it.date = this.timestamp }
+            }
+
         else                                                    -> error("Unsupported")
     }
 
