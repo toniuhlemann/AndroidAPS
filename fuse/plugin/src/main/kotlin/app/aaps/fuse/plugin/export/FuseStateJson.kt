@@ -31,7 +31,7 @@ object FuseStateJson {
      * einen unveraenderten Wert NICHT als Beweis lesen, dass sich die Regeln
      * nicht geaendert haben.
      */
-    const val RULE_SET_VERSION = 1
+    const val RULE_SET_VERSION = 2
 
     /** Gruende fuer fehlende Felder. Benannt statt weggelassen. */
     const val GAP_NO_LEDGER = "LEDGER_NOT_WIRED"
@@ -122,6 +122,17 @@ object FuseStateJson {
                 // machen messbar, wieviel Vorsprung ein kuerzeres Fenster hat.
                 .put("ukfRatePerMin", fin(s.ukfRatePerMin))
                 .put("rawSlopePerMin", fin(s.rawSlopePerMin))
+                .put("activityAtAnchor", fin(s.activityAtAnchor))
+                .put("isfAtAnchor", fin(s.isfAtAnchor))
+                .put("ukfLearnedR", fin(s.ukfLearnedR))
+                // 4.0 = der Clamp aus UkfQ1.kt:136 (nacktes Literal DORT; hier
+                // nicht referenzierbar, ohne die gelockte Datei anzufassen -
+                // die Fork-Kopie ist byteidentisch, eine einseitige Aenderung
+                // ergaebe zwei stumm divergierende Filter).
+                .put("ukfRateSaturated", kotlin.math.abs(s.ukfRatePerMin) >= 4.0 - 1e-9)
+                // Der Antrieb der Bremsbahn, fertig BGI-bereinigt - exakt die
+                // am 06.08. korrigierte Groesse, jetzt nachrechenbar.
+                .put("fastDriveAdjusted", fin(s.ukfRatePerMin + s.activityAtAnchor * s.isfAtAnchor))
                 .put("samplesUsed", s.samplesUsed)
                 .put("rawSeriesSize", s.rawSeriesSize)
                 .put("q1Outlier", s.q1Outlier)
@@ -138,6 +149,15 @@ object FuseStateJson {
                 .put("spread", fin(b.spread))
                 .put("pairCount", b.pairCount)
                 .put("methodId", policy?.let { app.aaps.fuse.core.signal.PairSlopeBand.methodId(it.driveLowerQuantilePct) } ?: JSONObject.NULL)
+                .put("discount", outcome.discount?.let { d ->
+                    JSONObject()
+                        .put("lambda", fin(d.lambda))
+                        .put("bolusActivityUPerMin", fin(d.bolusActivityUPerMin))
+                        .put("isfMgdlPerU", fin(d.isfMgdlPerU))
+                        .put("termMgdlPerMin", fin(d.termMgdlPerMin))
+                        .put("lowerBefore", fin(d.lowerBeforeMgdlPerMin))
+                        .put("lowerAfter", fin(d.lowerAfterMgdlPerMin))
+                } ?: JSONObject.NULL)
         )
 
         // ---- Observer ------------------------------------------------------
@@ -298,6 +318,9 @@ object FuseStateJson {
         .put("tailFloorMgdl", fin(p.tailFloorMgdl))
         .put("tailRecoveryU", fin(p.tailRecoveryU))
         .put("fastRestraintEnabled", p.fastRestraintEnabled)
+        .put("riseRampLowR", fin(p.riseRampLowR))
+        .put("riseRampHighR", fin(p.riseRampHighR))
+        .put("bolusShareLambda", fin(p.bolusShareLambda))
 
     /**
      * `null` bei nicht-endlichen Eingaben. [Sha.lossless] WIRFT bei NaN/Inf,
@@ -306,7 +329,12 @@ object FuseStateJson {
      * Grund als ein Ersatzwert.
      */
     fun hashOf(p: FuseCycleRunner.Config): String? {
-        val doubles = listOf(p.smbRatio, p.smbRatioRise, p.maxSmbU, p.guardFloorMgdl, p.tailFloorMgdl, p.tailRecoveryU)
+        val doubles = listOf(
+            p.smbRatio, p.smbRatioRise, p.maxSmbU, p.guardFloorMgdl, p.tailFloorMgdl, p.tailRecoveryU,
+            // Rampe + Abschlag: fehlten bis v1 - zwei Laeufe mit verschiedenen
+            // Rampen bekamen denselben Hash (Audit 07.08.). Version 1->2.
+            p.riseRampLowR, p.riseRampHighR, p.bolusShareLambda,
+        )
         if (doubles.any { !it.isFinite() }) return null
         val parts = listOf("fuse-policy-v$RULE_SET_VERSION") +
             doubles.map { Sha.lossless(it) } +

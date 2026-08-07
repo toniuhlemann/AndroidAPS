@@ -25,14 +25,14 @@ class FuseStateExportTest {
     private val BUILD = FuseStateJson.Build("3.4.2.5+fuse0.1.0-toni", "abc1234", true)
 
     private val cfg = FuseCycleRunner.Config(
-        smbRatio = 0.2, smbRatioRise = 0.35, riseRampLowR = 0.5, riseRampHighR = 2.0, maxSmbU = 0.3, guardFloorMgdl = 70.0, iobThPercent = 100,
+        smbRatio = 0.2, smbRatioRise = 0.35, riseRampLowR = 0.5, riseRampHighR = 2.0, bolusShareLambda = 1.0, maxSmbU = 0.3, guardFloorMgdl = 70.0, iobThPercent = 100,
         releaseHorizonMin = 30, liabilityHorizonMin = 120, driveTauMin = 60,
         driveLowerQuantilePct = 50, tailGuardEnabled = false, tailFloorMgdl = 70.0, tailRecoveryU = 0.0, fastRestraintEnabled = true,
     )
 
     private fun signal() = FuseSignalSource.Signal(
         sourceTs = 1_700_000_000_000L, rawBg = 132.0, q1 = 130.0, rSigned = 0.8,
-        ukfRatePerMin = 1.1, rawSlopePerMin = 1.4, activityAtAnchor = 0.01, isfAtAnchor = 90.0,
+        ukfRatePerMin = 1.1, ukfLearnedR = 2.2, rawSlopePerMin = 1.4, activityAtAnchor = 0.01, isfAtAnchor = 90.0,
         adjusted = emptyList(), activity = ActivityValidity.VALID,
         samplesUsed = 19, rawSeriesSize = 200, q1Outlier = false,
         boundedBy = SignalWindow.Bound.NONE, windowFromTs = 1_699_988_120_000L,
@@ -67,7 +67,8 @@ class FuseStateExportTest {
         tbr = null, prediction = null, sourceTs = signal?.sourceTs, computeTs = 1_700_000_030_000L,
         health = Health.READY, gate = FusePumpGate.Result(FusePumpGate.Verdict.ALLOWED, "VirtualPumpPlugin"),
         reason = "KEEP", alarm = false, bgMgdl = 130.0, targetMgdl = 97.0, targetSource = "profile",
-        signal = signal, band = PairSlopeBand.Estimate(0.8, 0.4, 153), policy = policy,
+        signal = signal, band = PairSlopeBand.Estimate(0.8, 0.4, 153),
+        discount = app.aaps.fuse.core.predictor.DriveDiscount.apply(0.8, 0.4, 0.01, 85.0, 1.0), policy = policy,
         state = null, step = step, sensorEpoch = 1_699_000_000_000L, calibrationEpoch = 0L,
         isfMgdlPerU = 85.0, iobU = 1.2, abortReason = abort,
     )
@@ -145,6 +146,20 @@ class FuseStateExportTest {
         assertTrue(FuseStateJson.hashOf(cfg.copy(driveTauMin = 61)) != h)
         assertTrue(FuseStateJson.hashOf(cfg.copy(tailGuardEnabled = true)) != h)
         assertEquals(h, FuseStateJson.hashOf(cfg.copy()))
+    }
+
+    /**
+     * Die Luecke aus dem Audit 07.08.: bis v1 standen genau diese Knoepfe NICHT
+     * im Hash - zwei Laeufe mit voellig verschiedenen Rampen bekamen dieselbe
+     * Politik-Signatur. Der Test prueft die Knoepfe EINZELN, damit ein
+     * kuenftiges Config-Feld ohne Hash-Eintrag hier wieder auffaellt.
+     */
+    @Test
+    fun `Rampe und Abschlag stehen im Politik-Hash`() {
+        val h = FuseStateJson.hashOf(cfg)!!
+        assertTrue(FuseStateJson.hashOf(cfg.copy(riseRampLowR = 0.6)) != h)
+        assertTrue(FuseStateJson.hashOf(cfg.copy(riseRampHighR = 2.5)) != h)
+        assertTrue(FuseStateJson.hashOf(cfg.copy(bolusShareLambda = 0.0)) != h)
     }
 
     /** `Sha.lossless` WIRFT bei NaN. Der Wurf laege im runCatching des Exports

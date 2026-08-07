@@ -107,6 +107,16 @@ object PairSlopeBand {
      * Fuer p <= 0.5 gilt strukturell `idx <= Medianindex`, also immer
      * `lower <= mean`.
      */
+    /**
+     * GESCHLOSSENE FORM auf konvexer Reihe (Audit 07.08., nachgerechnet):
+     * fuer y = a/2*t^2 ist Paarsteigung(i,j) = a*(i+j)/2 - die sortierte Liste
+     * ist exakt nach dem PAAR-MITTELPUNKT sortiert. Ein Quantil ist dann KEINE
+     * Unsicherheit, sondern ein Zeitversatz: q50 = Steigung der Fenstermitte
+     * (t-9), q25 = t-11,5, q10 = t-14. Ein niedriges Quantil liefert am Onset
+     * also nur eine AELTERE Steigung - deshalb ist das Quantil kein
+     * Onset-Werkzeug, und der Bolus-Deckungs-Abschlag (DriveDiscount) haengt
+     * bewusst NICHT an dieser Verteilung.
+     */
     internal fun quantile(sorted: List<Double>, mean: Double, quantilePct: Int): Double {
         if (quantilePct >= MAX_PCT) return mean
         val p = quantilePct.coerceAtLeast(0) / 100.0

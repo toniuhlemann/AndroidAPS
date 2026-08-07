@@ -29,6 +29,7 @@ import app.aaps.fuse.core.observer.ObserverStep
 import app.aaps.fuse.core.signal.PairSlopeBand
 import app.aaps.fuse.core.predictor.ActualTrajectoryFactory
 import app.aaps.fuse.core.predictor.DriveDecayModel
+import app.aaps.fuse.core.predictor.DriveDiscount
 import app.aaps.fuse.core.predictor.DriveEstimate
 import app.aaps.fuse.core.predictor.InsulinLineage
 import app.aaps.fuse.core.predictor.InsulinModelProvenance
@@ -117,6 +118,11 @@ class FuseCycleRunner(
          *  Zahlen entscheiden nach dem ersten Lauf, ob das Quantil brauchbar
          *  gewaehlt war — deshalb gehoeren sie in den Grund, nicht ins Log. */
         val band: PairSlopeBand.Estimate?,
+        /** Der angewandte Bolus-Deckungs-Abschlag. `null` nur auf Abbruchpfaden
+         *  vor dem Bahnbau - im Erfolgsfall steht er IMMER da, auch bei
+         *  lambda 0, damit "aus" von "alter Build ohne Abschlag" unterscheidbar
+         *  bleibt. */
+        val discount: DriveDiscount.Applied?,
         /** `null` = der Zyklus kam nicht bis zum Lesen der Einstellungen. Dann
          *  hat er auch keine Politik, und der Export sagt das statt eine zu
          *  erfinden. */
@@ -148,7 +154,7 @@ class FuseCycleRunner(
             decision = FuseController.noInput(reason), tbr = null, prediction = null,
             sourceTs = signal?.sourceTs, computeTs = computeTs, health = null, gate = gate,
             reason = reason, alarm = false, bgMgdl = signal?.q1, targetMgdl = null, targetSource = null,
-            signal = signal, band = null, policy = policy, state = null, step = null,
+            signal = signal, band = null, discount = null, policy = policy, state = null, step = null,
             sensorEpoch = null, calibrationEpoch = null,
             isfMgdlPerU = null, iobU = null, abortReason = reason,
         )
@@ -209,7 +215,13 @@ class FuseCycleRunner(
         val band = PairSlopeBand.estimate(signal.adjusted, signal.sourceTs, cfg.driveLowerQuantilePct)
             ?: return abort("drive not estimable (${signal.samplesUsed} samples)", signal, cfg)
 
-        val built = when (val b = CoreInputGuard.build { buildPredictorInput(signal, profile, cfg, band) }) {
+        // Bolus-Aktivitaet am Anker - Eingang des Deckungs-Abschlags.
+        // `calculateIobFromBolus()` rechnet auf `dateUtil.now()`, bis zu ~1 min
+        // neben `sourceTs`. Fuer einen ABSCHLAG (keinen Bahnpunkt) ist der
+        // Versatz zweitrangig; die Zahl steht im Export und ist nachpruefbar.
+        val bolusActivityUPerMin = iobCobCalculator.calculateIobFromBolus().activity
+
+        val built = when (val b = CoreInputGuard.build { buildPredictorInput(signal, profile, cfg, band, bolusActivityUPerMin) }) {
             is CoreInputGuard.Outcome.Built  -> b.value ?: return abort("input incomplete", signal, cfg)
             is CoreInputGuard.Outcome.Failed -> return abort("input: ${b.failure.detail}", signal, cfg)
         }
@@ -229,7 +241,13 @@ class FuseCycleRunner(
         val restraint = if (!cfg.fastRestraintEnabled) null else
             fastDrive(signal)?.let { fast ->
                 val fi = built.input.copy(
-                    drive = DriveEstimate(fast, fast, null, "UKF_RATE_RESTRAINT_V1"),
+                    // DERSELBE Abschlag wie auf der Hauptbahn: auch die schnelle
+                    // Untergrenze darf den bolusgedeckten Stoerungsanteil nicht
+                    // als gesichert fortschreiben.
+                    drive = DriveEstimate(
+                        fast, fast - built.discount.termMgdlPerMin, null,
+                        DriveDiscount.methodId("UKF_RATE_RESTRAINT_V1", cfg.bolusShareLambda),
+                    ),
                 )
                 (TrajectoryCore.predict(fi) as? PredictorOutcome.Ok)?.result
             }
@@ -335,6 +353,7 @@ class FuseCycleRunner(
             targetSource = targetSource,
             signal = signal,
             band = band,
+            discount = built.discount,
             policy = cfg,
             state = state,
             step = step,
@@ -448,6 +467,7 @@ class FuseCycleRunner(
         val tailFloorMgdl: Double,
         val tailRecoveryU: Double,
         val fastRestraintEnabled: Boolean,
+        val bolusShareLambda: Double,
     )
 
     /**
@@ -472,6 +492,7 @@ class FuseCycleRunner(
         tailFloorMgdl = preferences.get(FuseDoubleKey.TailFloorMgdl),
         tailRecoveryU = preferences.get(FuseDoubleKey.TailRecoveryU),
         fastRestraintEnabled = preferences.get(FuseBooleanKey.FastRestraintEnabled),
+        bolusShareLambda = preferences.get(FuseDoubleKey.BolusShareLambda),
     ).also {
         // Die Preference-Grenzen gelten nur im Einstellungsdialog. Ein Wert aus
         // einem alten Import geht daran vorbei — deshalb hier nochmal, und zwar
@@ -492,6 +513,7 @@ class FuseCycleRunner(
         }
         require(it.tailFloorMgdl.isFinite() && it.tailFloorMgdl > 0.0) { "tailFloor=${it.tailFloorMgdl}" }
         require(it.tailRecoveryU.isFinite() && it.tailRecoveryU >= 0.0) { "tailRecovery=${it.tailRecoveryU}" }
+        require(it.bolusShareLambda.isFinite() && it.bolusShareLambda in 0.0..2.0) { "bolusShareLambda=${it.bolusShareLambda}" }
         require(it.liabilityHorizonMin >= it.releaseHorizonMin) {
             "liabilityHorizon=${it.liabilityHorizonMin} < releaseHorizon=${it.releaseHorizonMin}"
         }
@@ -506,13 +528,14 @@ class FuseCycleRunner(
      *  das IOB am Haftungshorizont und der konservative ISF des Schwanzfensters.
      *  Sie hier mitzunehmen kostet keinen einzigen zusaetzlichen Aufruf — sie
      *  stehen ohnehin in den Arrays. */
-    private class Built(val input: PredictorInput, val iobAtH: Double, val isfTail: Double)
+    private class Built(val input: PredictorInput, val iobAtH: Double, val isfTail: Double, val discount: DriveDiscount.Applied)
 
     private fun buildPredictorInput(
         signal: FuseSignalSource.Signal,
         profile: Profile,
         cfg: Config,
         band: PairSlopeBand.Estimate,
+        bolusActivityUPerMin: Double,
     ): Built? {
         val liabilityHorizonMin = cfg.liabilityHorizonMin
         val anchor = signal.sourceTs
@@ -573,9 +596,18 @@ class FuseCycleRunner(
             iobCalculationHash = "calculateFromTreatmentsAndTemps",
         )
 
+        val discount = DriveDiscount.apply(
+            meanMgdlPerMin = band.mean,
+            bandLowerMgdlPerMin = band.lower,
+            bolusActivityUPerMin = bolusActivityUPerMin,
+            isfMgdlPerU = signal.isfAtAnchor,
+            lambda = cfg.bolusShareLambda,
+        )
+
         return Built(
             iobAtH = iobAtH,
             isfTail = isfTail,
+            discount = discount,
             input = PredictorInput(
             predictionAnchorTs = anchor,
             bgAtAnchor = signal.q1,
@@ -594,8 +626,8 @@ class FuseCycleRunner(
             // mitgefuehrt wird, ist das Gemessene (Spreizung, Paaranzahl) —
             // s. Outcome und RT.reason.
             drive = DriveEstimate(
-                band.mean, band.lower, null,
-                PairSlopeBand.methodId(cfg.driveLowerQuantilePct),
+                band.mean, discount.lowerAfterMgdlPerMin, null,
+                DriveDiscount.methodId(PairSlopeBand.methodId(cfg.driveLowerQuantilePct), cfg.bolusShareLambda),
             ),
             decay = DriveDecayModel.ExponentialDecay(cfg.driveTauMin.toDouble()),
             trajectory = trajectory,

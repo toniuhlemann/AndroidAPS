@@ -53,4 +53,6 @@
 
     <string name="fuse_restraint_title">Schnelle Bremsbahn</string>
     <string name="fuse_restraint_summary">Rechnet eine zweite Bahn aus der schnellen UKF-Rate und nimmt von beiden immer die pessimistischere. Sie kann eine Dosis NIE erhoehen, nur zurueckhalten. Sie faengt den Fall ab, dass der 18-min-Median nach einem Wendepunkt noch Anstieg meldet, waehrend die Glukose bereits faellt. Den verspaeteten Onset behebt sie NICHT - dort ist die langsame Bahn die pessimistischere.</string>
+    <string name="fuse_bolus_share_lambda_title">Bolus-Deckungs-Abschlag (Lambda)</string>
+    <string name="fuse_bolus_share_lambda_summary">Untere Bahn: der von Bolus-Aktivitaet gedeckte Anteil der Stoerung wird nicht als anhaltend unterstellt. 1,0 = voller Abschlag, 0,0 = aus. Wirkt nur auf Guard und Schwanz-Budget, nie auf die Dosisrechnung - kann Dosen nur verkleinern.</string>
 </resources>

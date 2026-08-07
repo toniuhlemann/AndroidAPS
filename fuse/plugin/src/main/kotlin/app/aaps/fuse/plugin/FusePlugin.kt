@@ -354,6 +354,12 @@ class FusePlugin @Inject constructor(
             )
             addPreference(
                 AdaptiveDoublePreference(
+                    ctx = context, doubleKey = FuseDoubleKey.BolusShareLambda,
+                    dialogMessage = R.string.fuse_bolus_share_lambda_summary, title = R.string.fuse_bolus_share_lambda_title
+                )
+            )
+            addPreference(
+                AdaptiveDoublePreference(
                     ctx = context, doubleKey = FuseDoubleKey.MaxSmbU,
                     dialogMessage = R.string.fuse_max_smb_u_summary, title = R.string.fuse_max_smb_u_title
                 )

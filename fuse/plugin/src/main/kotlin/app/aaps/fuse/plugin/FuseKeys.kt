@@ -94,6 +94,15 @@ enum class FuseDoubleKey(
     RiseRampHighR("fuse_rise_ramp_high_r", 2.0, 0.1, 10.0),
 
     /**
+     * Bolus-Deckungs-Abschlag der UNTEREN Bahn (lambda). 1.0 = der von
+     * Bolus-Aktivitaet gedeckte Anteil der Stoerung wird in der Guardbahn
+     * nicht als anhaltend unterstellt. 0.0 = aus (bit-identisch zum Stand
+     * davor). Wirkt NUR auf `lower` - die Dosis haengt an der Mittelbahn
+     * (s. DriveDiscount).
+     */
+    BolusShareLambda("fuse_bolus_share_lambda", 1.0, 0.0, 2.0),
+
+    /**
      * Obergrenze eines einzelnen SMB, in Einheiten.
      *
      * autoISF hat dafuer KEINE Einstellung, sondern leitet sie ab

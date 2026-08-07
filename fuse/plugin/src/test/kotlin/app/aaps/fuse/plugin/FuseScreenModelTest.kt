@@ -18,7 +18,7 @@ class FuseScreenModelTest {
     private fun signal(rSigned: Double? = 0.8, bound: SignalWindow.Bound = SignalWindow.Bound.NONE) =
         FuseSignalSource.Signal(
             sourceTs = 1_700_000_000_000L, rawBg = 132.0, q1 = 130.0, rSigned = rSigned,
-            ukfRatePerMin = 1.1, rawSlopePerMin = 1.4, activityAtAnchor = 0.01, isfAtAnchor = 90.0,
+            ukfRatePerMin = 1.1, ukfLearnedR = 2.2, rawSlopePerMin = 1.4, activityAtAnchor = 0.01, isfAtAnchor = 90.0,
             adjusted = emptyList(), activity = ActivityValidity.VALID,
             samplesUsed = 19, rawSeriesSize = 200, q1Outlier = false,
             boundedBy = bound, windowFromTs = 1_699_988_120_000L,
@@ -38,7 +38,8 @@ class FuseScreenModelTest {
         tbr = null, prediction = null, sourceTs = signal?.sourceTs, computeTs = 1_700_000_030_000L,
         health = Health.READY, gate = FusePumpGate.Result(FusePumpGate.Verdict.ALLOWED, "VirtualPumpPlugin"),
         reason = "KEEP", alarm = false, bgMgdl = 130.0, targetMgdl = 97.0, targetSource = "TT",
-        signal = signal, band = PairSlopeBand.Estimate(0.8, 0.4, 153), policy = null,
+        signal = signal, band = PairSlopeBand.Estimate(0.8, 0.4, 153),
+        discount = app.aaps.fuse.core.predictor.DriveDiscount.apply(0.8, 0.4, 0.01, 85.0, 1.0), policy = null,
         state = null, step = null, sensorEpoch = null, calibrationEpoch = null,
         isfMgdlPerU = 85.0, iobU = 1.2, abortReason = abort,
     )

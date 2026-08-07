@@ -69,6 +69,10 @@ class FuseSignalSource(
          * messbar wird, wieviel Vorsprung ein kurzes Fenster wirklich hat.
          */
         val rawSlopePerMin: Double?,
+        /** Das vom UKF GELERNTE Messrauschen R - die einzige eingebaute
+         *  Signalqualitaetszahl. Bisher nirgends exportiert; eine spaetere
+         *  Qualitaets-Schranke braucht genau diese Reihe zum Kalibrieren. */
+        val ukfLearnedR: Double,
         /**
          * Insulinaktivitaet und ISF AM ANKER — sie werden gebraucht, um eine
          * rohe Rate BGI-zu-bereinigen:
@@ -185,6 +189,7 @@ class FuseSignalSource(
                 q1 = leading.glucose,
                 rSigned = rSigned,
                 ukfRatePerMin = leading.ratePerMin,
+                ukfLearnedR = leading.learnedR,
                 activityAtAnchor = samples.last().activity,
                 isfAtAnchor = samples.last().profileIsf,
                 rawSlopePerMin = rawSlope(readings, sourceTs),
