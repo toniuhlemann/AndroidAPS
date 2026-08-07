@@ -259,7 +259,9 @@ enum class FuseLongKey(
 ) : app.aaps.core.keys.interfaces.LongPreferenceKey {
 
     /** 0 = kein Marker. Sonst: Zeitpunkt des Knopfdrucks "Mahlzeit". */
-    MealMarkerArmedTs("fuse_meal_marker_armed_ts", 0, 0),
+    /** exportable = false: der Marker ist ZUSTAND - ein Settings-Import darf
+     *  keinen alten Mahlzeiten-Marker wiederbeleben. */
+    MealMarkerArmedTs("fuse_meal_marker_armed_ts", 0, 0, exportable = false),
 }
 
 enum class FuseBooleanKey(

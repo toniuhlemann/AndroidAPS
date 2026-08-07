@@ -97,7 +97,7 @@ class FusePlugin @Inject constructor(
         .preferencesVisibleInSimpleMode(false)
         .showInList { config.APS }
         .description(R.string.description_fuse),
-    ownPreferences = listOf(FuseDoubleKey::class.java, FuseIntKey::class.java, FuseBooleanKey::class.java),
+    ownPreferences = listOf(FuseDoubleKey::class.java, FuseIntKey::class.java, FuseBooleanKey::class.java, FuseLongKey::class.java),
     aapsLogger, rh, preferences
 ), APS, PluginConstraints, app.aaps.core.interfaces.overview.FuseOverviewSource {
 
@@ -342,6 +342,11 @@ class FusePlugin @Inject constructor(
             .put(FuseBooleanKey.FastRestraintEnabled, preferences)
             .put(FuseDoubleKey.TailFloorMgdl, preferences)
             .put(FuseDoubleKey.TailRecoveryU, preferences)
+            .put(FuseDoubleKey.BolusShareLambda, preferences)
+            .put(FuseDoubleKey.OnsetEnvelopeU, preferences)
+            .put(FuseBooleanKey.OnsetChannelEnabled, preferences)
+            .put(FuseBooleanKey.PrimeReleaseEnabled, preferences)
+            .put(FuseDoubleKey.PrimeEnvelopeU, preferences)
 
     override fun applyConfiguration(configuration: JSONObject) {
         configuration
@@ -360,6 +365,11 @@ class FusePlugin @Inject constructor(
             .store(FuseBooleanKey.FastRestraintEnabled, preferences)
             .store(FuseDoubleKey.TailFloorMgdl, preferences)
             .store(FuseDoubleKey.TailRecoveryU, preferences)
+            .store(FuseDoubleKey.BolusShareLambda, preferences)
+            .store(FuseDoubleKey.OnsetEnvelopeU, preferences)
+            .store(FuseBooleanKey.OnsetChannelEnabled, preferences)
+            .store(FuseBooleanKey.PrimeReleaseEnabled, preferences)
+            .store(FuseDoubleKey.PrimeEnvelopeU, preferences)
     }
 
     override fun addPreferenceScreen(preferenceManager: PreferenceManager, parent: PreferenceScreen, context: Context, requiredKey: String?) {
