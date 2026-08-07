@@ -175,6 +175,9 @@ object FuseController {
     enum class Block {
         NONE, HEALTH_NOT_READY, SAFETY_HOLD, PUMP_BUSY, GUARD_FLOOR,
         NO_DEMAND, IOB_TH_REACHED, MAX_IOB_REACHED, BELOW_PUMP_INCREMENT, HORIZON_MISSING,
+        /** Die Kandidatensuche hat den Vorschlag inhaltlich auf null gesetzt
+         *  (Guard risse MIT der Dosis, Band, Headroom) - s. CandidateGate. */
+        CANDIDATE,
 
         /**
          * Der SCHWANZ traegt nichts mehr: was am Haftungshorizont noch an Bord

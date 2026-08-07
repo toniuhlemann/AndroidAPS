@@ -29,8 +29,12 @@ import app.aaps.fuse.core.observer.ObserverStep
 import app.aaps.fuse.core.signal.PairSlopeBand
 import app.aaps.fuse.core.predictor.ActualTrajectoryFactory
 import app.aaps.fuse.core.predictor.DriveDecayModel
+import app.aaps.fuse.core.controller.CandidateGate
+import app.aaps.fuse.core.controller.CandidateSearch
 import app.aaps.fuse.core.controller.OnsetChannel
 import app.aaps.fuse.core.controller.PrimeRelease
+import app.aaps.fuse.core.insulin.KernelOutcome
+import app.aaps.fuse.core.insulin.UnitInsulinKernelBuilder
 import app.aaps.fuse.core.predictor.DriveDiscount
 import app.aaps.fuse.core.predictor.DriveEstimate
 import app.aaps.fuse.core.predictor.InsulinLineage
@@ -131,6 +135,11 @@ class FuseCycleRunner(
         /** Plan der Sofort-Freigabe dieses Zyklus. `null` nur auf
          *  Abbruchpfaden vor der Bahn. */
         val prime: PrimeRelease.Plan?,
+        /** Ergebnis der Kandidatensuche. `null` = kein Vorschlag > 0 oder
+         *  Abbruchpfad. */
+        val candidate: CandidateSearch.Result?,
+        /** Pruefer-Ausfall (z.B. KERNEL_*): Basis galt unveraendert. */
+        val candidateGap: String?,
         /** `null` = der Zyklus kam nicht bis zum Lesen der Einstellungen. Dann
          *  hat er auch keine Politik, und der Export sagt das statt eine zu
          *  erfinden. */
@@ -162,7 +171,7 @@ class FuseCycleRunner(
             decision = FuseController.noInput(reason), tbr = null, prediction = null,
             sourceTs = signal?.sourceTs, computeTs = computeTs, health = null, gate = gate,
             reason = reason, alarm = false, bgMgdl = signal?.q1, targetMgdl = null, targetSource = null,
-            signal = signal, band = null, discount = null, onset = null, prime = null, policy = policy, state = null, step = null,
+            signal = signal, band = null, discount = null, onset = null, prime = null, candidate = null, candidateGap = null, policy = policy, state = null, step = null,
             sensorEpoch = null, calibrationEpoch = null,
             isfMgdlPerU = null, iobU = null, abortReason = reason,
         )
@@ -363,6 +372,62 @@ class FuseCycleRunner(
             onsetCapU = if (onset.active) onset.remainingU else null,
         )
 
+        // KANDIDATENPRUEFUNG (Audit 07.08.: 0,30 U bei ISF 95 senken die Bahn
+        // 4,3 mg/dl @30 min / 21,6 @120 min - der Baseline-Guard sieht das
+        // strukturell nicht). Der Ratio-Pfad hat VORGESCHLAGEN; die Suche
+        // prueft den Vorschlag MIT seiner Wirkung und darf ihn ueber
+        // CandidateGate nur beschneiden. Kernel-/Technik-Ausfaelle lassen die
+        // Basis unveraendert und stehen als candidateGap im Export.
+        var candidateResult: CandidateSearch.Result? = null
+        var candidateGap: String? = null
+        val vetted = if (baseDecision.smbU <= 0.0) baseDecision else {
+            val insulin = activePlugin.activeInsulin
+            when (val k = UnitInsulinKernelBuilder.build(
+                sampler = AapsUnitInsulinSampler(insulin, profile.dia, computeTs),
+                deliveryTs = computeTs,
+                model = InsulinModelProvenance(
+                    insulinType = insulin.id.name,
+                    diaHours = profile.dia,
+                    peakMin = insulin.peak,
+                    codeProvenance = "activePlugin.activeInsulin",
+                ),
+                insulinPluginId = insulin.id.name,
+            )) {
+                is KernelOutcome.Rejected -> {
+                    candidateGap = "KERNEL_" + k.reason.name
+                    baseDecision
+                }
+
+                is KernelOutcome.Ok       -> {
+                    candidateResult = CandidateSearch.search(
+                        prediction = prediction,
+                        kernel = k.kernel,
+                        isfSlots = built.input.isfSlots,
+                        band = CandidateSearch.Band(
+                            releaseTargetLowMgdl = target - CandidateGate.RELEASE_LOW_MARGIN_MGDL,
+                            releaseTargetHighMgdl = target,
+                            demandDeadbandMgdl = CandidateGate.DEMAND_DEADBAND_MGDL,
+                            guardFloorMgdl = cfg.guardFloorMgdl,
+                            releaseHorizonMin = cfg.releaseHorizonMin,
+                            liabilityHorizonMin = cfg.liabilityHorizonMin,
+                        ),
+                        caps = CandidateSearch.Caps(
+                            // Budgetpolicy bis KC2-53 offen: maxSmb als
+                            // neutraler Platzhalter, bindet nie unterhalb der
+                            // echten Kappen. Ledger-Anteil kommt spaeter ueber
+                            // DIESE Headrooms herein (Vertrag der Suche).
+                            remainingReleaseBudgetU = cfg.maxSmbU,
+                            effectiveIobThHeadroomU = state.iobThU - state.capIobU,
+                            effectiveMaxIobHeadroomU = state.maxIobU - state.netIobU,
+                            pumpIncrementU = bolusStep,
+                            maxSmbU = cfg.maxSmbU,
+                        ),
+                    )
+                    CandidateGate.apply(baseDecision, candidateResult)
+                }
+            }
+        }
+
         // Sofort-Freigabe: Plan aus derselben Momentaufnahme, Anhebung NUR
         // wenn der Basisentscheidung nichts als Bedarf fehlte. Sperren und
         // Deckel gewinnen in PrimeRelease.lift unveraendert.
@@ -380,7 +445,7 @@ class FuseCycleRunner(
                 pumpIncrementU = bolusStep,
             )
         )
-        val decision = PrimeRelease.lift(baseDecision, primePlan, state)
+        val decision = PrimeRelease.lift(vetted, primePlan, state)
         val primeWindowOpen = mealMarkerActive && markerTs > 0 &&
             computeTs - markerTs < PrimeRelease.WINDOW_MIN * 60_000L
         if (primeWindowOpen) primeSpentU += decision.smbU
@@ -437,6 +502,8 @@ class FuseCycleRunner(
             discount = built.discount,
             onset = onset,
             prime = primePlan,
+            candidate = candidateResult,
+            candidateGap = candidateGap,
             policy = cfg,
             state = state,
             step = step,

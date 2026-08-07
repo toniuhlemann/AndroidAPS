@@ -149,6 +149,17 @@ object FuseStateJson {
                 .put("spread", fin(b.spread))
                 .put("pairCount", b.pairCount)
                 .put("methodId", policy?.let { app.aaps.fuse.core.signal.PairSlopeBand.methodId(it.driveLowerQuantilePct) } ?: JSONObject.NULL)
+                .put("candidate", outcome.candidate?.let { c ->
+                    JSONObject()
+                        .put("smbU", fin(c.smbU))
+                        .put("reject", c.reject?.name ?: JSONObject.NULL)
+                        .put("bindingLimit", c.bindingLimit)
+                        .put("meanWithCandidate", c.meanWithCandidateMgdl?.let { fin(it) } ?: JSONObject.NULL)
+                        .put("minLowerWithCandidate", c.minLowerWithCandidateMgdl?.let { fin(it) } ?: JSONObject.NULL)
+                        .put("effectPerU", c.effectPerUAtReleaseMgdl?.let { fin(it) } ?: JSONObject.NULL)
+                        .put("evaluated", c.candidatesEvaluated)
+                } ?: JSONObject.NULL)
+                .put("candidateGap", outcome.candidateGap ?: JSONObject.NULL)
                 .put("prime", outcome.prime?.let { pr ->
                     JSONObject()
                         .put("active", pr.active)
