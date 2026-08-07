@@ -73,25 +73,52 @@ object FuseScreenModel {
         outcome.band?.let {
             row(b, "Antrieb", "${f3(it.mean)} / ${f3(it.lower)} (Spreizung ${f3(it.spread)}, ${it.pairCount} Paare)")
         }
+        // Die vier Mechanismen mit Namen und Grund - der Schirm soll die
+        // Kette zeigen, nicht nur das Ergebnis.
+        outcome.discount?.let {
+            row(
+                b, "Abschlag",
+                if (it.termMgdlPerMin > 0.0) "-${f3(it.termMgdlPerMin)} auf die Guardbahn (Bolus-Deckung, Lambda ${f1(it.lambda)})"
+                else "0 (keine Bolus-Aktivitaet)"
+            )
+        }
+        outcome.onset?.let { o ->
+            row(b, "Onset-Kanal", onsetText(o))
+            if (o.mealMarker) row(b, "Marker", "AKTIV")
+        }
+        outcome.prime?.let { pr -> primeText(pr)?.let { row(b, "Freigabe", it) } }
         b.append('\n')
 
         // ---- Bahn ----------------------------------------------------------
         val d = outcome.decision
         row(b, "Ziel", outcome.targetMgdl?.let { "${f0(it)} (${outcome.targetSource})" } ?: "-")
-        row(b, "predBG", d.predAtReleaseMgdl?.let { f0(it) } ?: "-")
-        row(b, "minLower", d.minLowerMgdl?.let { f0(it) } ?: "-")
-        row(b, "minMean", outcome.prediction?.minMeanBg?.let { f0(it) } ?: "-")
+        row(b, "predBG", d.predAtReleaseMgdl?.let { f0(it) + subFloor(it) } ?: "-")
+        row(b, "minLower", d.minLowerMgdl?.let { f0(it) + subFloor(it) } ?: "-")
+        row(b, "minMean", outcome.prediction?.minMeanBg?.let { f0(it) + subFloor(it) } ?: "-")
         b.append('\n')
 
         // ---- Menge ---------------------------------------------------------
-        row(b, "Kontext", d.context?.name ?: "-")
+        // "Kontext" ist die LAGEBESCHREIBUNG des Beobachters - sie steuert
+        // nichts. Der wirksame SMB-Anteil kommt aus der Rampe; seine
+        // Zusammensetzung steht in der SMB-Anteil-Zeile, damit "Kontext
+        // CORRECTION, Anteil 0,35" kein Raetsel mehr ist.
+        row(b, "Kontext", (d.context?.name ?: "-") + "  (Lage, steuert nicht)")
         row(b, "Block", d.block.name)
         row(b, "Grenze", d.bindingLimit + if (d.restraintBound) "  (gebremst)" else "")
         row(b, "insulinReq", f2(d.insulinReqU) + " U")
         row(b, "IOB", outcome.iobU?.let { f2(it) + " U" } ?: "-")
         outcome.state?.let {
             row(b, "iobTH / maxIOB", "${f2(it.iobThU)} / ${f2(it.maxIobU)} U")
-            row(b, "SMB-Anteil", f2(it.effectiveSmbRatio))
+            val rampPct = it.rSignedMgdlPerMin?.let { r ->
+                (((r - it.riseRampLowRPerMin) / (it.riseRampHighRPerMin - it.riseRampLowRPerMin))
+                    .coerceIn(0.0, 1.0) * 100).toInt()
+            }
+            row(
+                b, "SMB-Anteil",
+                f2(it.effectiveSmbRatio) +
+                    "  = Basis ${f2(it.smbRatioCorrection)} + Rampe ${rampPct?.toString() ?: "-"} %% Richtung ${f2(it.smbRatioRise)}"
+                        .replace("%%", "%")
+            )
         }
         d.tail?.let {
             row(
@@ -115,6 +142,33 @@ object FuseScreenModel {
             )
         }
         return b.toString()
+    }
+
+    /** Bahnwerte unter dem physiologischen Boden sind keine Blutzuckerwerte
+     *  mehr, sondern "tief unter dem Boden" - die Sperre ist richtig, die
+     *  Zahl aber nur noch ein Mass fuer den Ueberschuss. */
+    private fun subFloor(v: Double) = if (v < 20.0) "  (unter Boden - sperrt)" else ""
+
+    private fun onsetText(o: app.aaps.fuse.core.controller.OnsetChannel.Result): String = when (o.reason) {
+        "OPEN"            -> "OFFEN - Antrieb ${f2(o.driveMgdlPerMin ?: Double.NaN)}, Rest-Huelle ${f2(o.remainingU)} U"
+        "OPEN_MARKER"     -> "OFFEN (Marker) - Antrieb ${f2(o.driveMgdlPerMin ?: Double.NaN)}, Rest ${f2(o.remainingU)} U"
+        "R_CONFIRMED"     -> "zu - r bestaetigt, Rampe traegt"
+        "UKF_BELOW_THR"   -> "zu - kein echter Anstieg"
+        "TOO_FEW_SAMPLES" -> "zu - sammelt Werte"
+        "GAP"             -> "zu - Messluecke"
+        "OUTLIER"         -> "zu - Ausreisser"
+        "ENVELOPE_SPENT"  -> "zu - Huelle verbraucht"
+        "DISABLED"        -> "aus"
+        else              -> "zu - ${o.reason}"
+    }
+
+    private fun primeText(p: app.aaps.fuse.core.controller.PrimeRelease.Plan): String? = when (p.reason) {
+        "NO_MARKER", "DISABLED" -> null // ohne Marker keine Zeile - kein Geruest
+        "PRIME"                 -> "laeuft - ${f2(p.floorU)} U diese Minute, Rest ${f2(p.remainingU)} U"
+        "WINDOW_OVER"           -> "zu - 15-min-Fenster vorbei"
+        "CLEARANCE"             -> "zu - Bahn zu nah am Boden"
+        "ENVELOPE_SPENT"        -> "zu - Huelle verbraucht"
+        else                    -> "zu - ${p.reason}"
     }
 
     private fun row(b: StringBuilder, label: String, value: String) {

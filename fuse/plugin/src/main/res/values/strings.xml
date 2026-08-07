@@ -6,40 +6,40 @@
     <string name="fuse_settings">FUSE</string>
 
     <string name="fuse_smb_ratio_title">SMB-Anteil (Korrektur)</string>
-    <string name="fuse_smb_ratio_summary">Anteil des berechneten Bedarfs im KORREKTURBETRIEB - wenn der Observer KEINEN Anstieg bestaetigt hat. Darf ruhiger sein als der Anstiegswert.</string>
+    <string name="fuse_smb_ratio_summary">Wie viel vom rechnerisch fehlenden Insulin FUSE pro Minute gibt, wenn der Zucker NICHT ansteigt, sondern nur zu hoch steht. 0,15 = 15 %%. Bewusst klein: FUSE darf jede Minute neu entscheiden - lieber oft und wenig als einmal zu viel.</string>
 
     <string name="fuse_smb_ratio_rise_title">SMB-Anteil (Anstieg)</string>
-    <string name="fuse_smb_ratio_rise_summary">Anteil im ANSTIEGSBETRIEB - Observer-Phase CANDIDATE, RISE_ACTIVE oder CARRY. Das ist der FCL-Wert: frueh den Grossteil aufbauen. Es muss dafuer KEINE Temp-Target gesetzt werden, der Observer erkennt den Anstieg selbst.</string>
+    <string name="fuse_smb_ratio_rise_summary">Wie viel pro Minute bei ECHTEM Anstieg (Mahlzeit). Ob dieser Wert gilt, entscheidet die GEMESSENE Anstiegsrate ueber die Rampe (unten/oben) - nicht ein Temp-Target und nicht die Beobachter-Phase. Das ist der FCL-Wert: frueh den Grossteil aufbauen.</string>
 
     <string name="fuse_max_smb_u_title">Maximaler einzelner SMB [U]</string>
-    <string name="fuse_max_smb_u_summary">Feste Obergrenze je Mikrobolus. Anders als bei autoISF haengt sie NICHT am Profilbasal und aendert sich damit nachts nicht von selbst.</string>
+    <string name="fuse_max_smb_u_summary">Absolute Obergrenze fuer einen einzelnen Schluck - egal was die Rechnung sagt. Bei minuetlicher Abgabe kommt trotzdem schnell etwas zusammen: 10 Minuten Vollgas = 3 U. Haengt anders als bei autoISF nicht am Profilbasal.</string>
 
     <string name="fuse_guard_floor_title">Guard-Untergrenze [mg/dl]</string>
-    <string name="fuse_guard_floor_summary">Unterschreitet die pessimistische Bahn diesen Wert irgendwo im Haftungshorizont, gibt es keinen SMB und eine Null-TBR.</string>
+    <string name="fuse_guard_floor_summary">Vor jeder Abgabe rechnet FUSE die Zuckerkurve voraus. Wuerde sie irgendwo unter diesen Wert rutschen: kein SMB, und das Basal wird gestoppt. Der wichtigste Schutz.</string>
 
     <string name="fuse_iob_th_percent_title">iobTH [% von maxIOB]</string>
-    <string name="fuse_iob_th_percent_summary">Grenze zwischen schnellem und langsamem Kanal — NICHT der Gesamtdeckel. Oberhalb laeuft nur noch Basal weiter. 100 %% bedeutet: der SMB-Kanal schliesst erst bei maxIOB.</string>
+    <string name="fuse_iob_th_percent_summary">Erbe von autoISF: ab so viel Insulin an Bord schliesst der schnelle Kanal (SMBs), nur Basal laeuft weiter. FUSE beantwortet dieselbe Frage direkt in der Vorhersagekurve - deshalb 100 %% = neutral, reiner Reserve-Anker. KEIN Gesamtdeckel.</string>
 
     <string name="fuse_release_horizon_title">Freigabe-Horizont [min]</string>
-    <string name="fuse_release_horizon_summary">Auf diesem Punkt der Bahn wird der Insulinbedarf abgelesen.</string>
+    <string name="fuse_release_horizon_summary">Die Frage "wo steht der Zucker in so vielen Minuten?" - an diesem Punkt der Kurve wird abgelesen, wie viel Insulin gerade fehlt.</string>
 
     <string name="fuse_liability_horizon_title">Haftungs-Horizont [min]</string>
-    <string name="fuse_liability_horizon_summary">Ueber diese Spanne wird die pessimistische Bahn gegen die Guard-Untergrenze geprueft.</string>
+    <string name="fuse_liability_horizon_summary">So weit sucht der Guard in der Kurve nach kuenftigen Tiefs. 120 Minuten decken etwa die Haelfte der Insulinwirkung ab - fuer den Rest ist der Schwanz-Guard zustaendig.</string>
 
     <string name="fuse_drive_tau_title">Antriebs-Zerfallszeit Tau [min]</string>
-    <string name="fuse_drive_tau_summary">Wie lange ein gemessener Anstieg in die Zukunft fortgeschrieben wird. Praegt die Bahn staerker als jeder andere Wert hier. 60 ist ein Platzhalter, kein Messergebnis.</string>
+    <string name="fuse_drive_tau_summary">Wie lange FUSE annimmt, dass ein beobachteter Anstieg noch weiterwirkt - nach so vielen Minuten ist noch etwa ein Drittel davon uebrig. Praegt die Vorhersage staerker als jeder andere Wert hier. 60 ist ein Platzhalter, kein Messergebnis.</string>
 
     <string name="fuse_drive_quantile_title">Guard-Quantil [%]</string>
-    <string name="fuse_drive_quantile_summary">Rangstelle in der Verteilung der paarweisen Steigungen, aus der die GUARDBAHN ihren Antrieb nimmt. 50 = kein Band, identisch zum bisherigen Verhalten. Kleinere Werte machen die Guardbahn pessimistischer und den Schutz frueher wirksam - wie weit, ist noch nicht gemessen. Erst Spreizung und Paaranzahl im Grund ansehen, dann absenken.</string>
+    <string name="fuse_drive_quantile_summary">Geplanter Sicherheitsabstand in der Vorhersage. 50 = ausgeschaltet. NICHT absenken: nachgerechnet liefert ein niedrigeres Quantil hier keine Vorsicht, sondern nur AELTERE Messwerte (25 = die Steigung von vor 11,5 Minuten). Bleibt stehen, bis es etwas Besseres gibt.</string>
 
     <string name="fuse_tail_guard_title">Schwanz-Guard</string>
-    <string name="fuse_tail_guard_summary">Bewertet die unvermeidbare Restwirkung HINTER dem Haftungshorizont. Rechnet heute nur einen von drei Termen - die anderen brauchen den Ledger und den verdrahteten Einheitskern; jede Zahl traegt deshalb einen Unvollstaendigkeitsvermerk. Standard AUS: mit Erholung 0 und typischem FCL-IOB kann er den schnellen Kanal weitgehend schliessen, und ob er das tut, ist nicht gemessen. Solange er aus ist, wird der Schwanz gar nicht bewertet und steht auch nicht im Grund.</string>
+    <string name="fuse_tail_guard_summary">Insulin wirkt 6-9 Stunden nach - laenger, als die normale Vorhersage schaut. Dieser Waechter fragt zusaetzlich: vertraegt auch der SPAETE Teil der Wirkung diese Dosis noch, ohne unter die Schwanz-Untergrenze zu fuehren? Wenn nein, wird gedeckelt, auch wenn es jetzt gerade gut aussieht. Rechnet erst einen von drei Termen und traegt deshalb einen Unvollstaendigkeitsvermerk.</string>
 
     <string name="fuse_tail_floor_title">Schwanz-Untergrenze [mg/dl]</string>
-    <string name="fuse_tail_floor_summary">Untergrenze fuer das Fenster hinter dem Haftungshorizont. Getrennt von der Guard-Untergrenze, weil beide verschiedene Zeitraeume absichern.</string>
+    <string name="fuse_tail_floor_summary">Die Untergrenze fuer den spaeten Teil der Insulinwirkung (hinter dem Haftungshorizont). Getrennt von der Guard-Untergrenze, weil beide verschiedene Zeitraeume schuetzen.</string>
 
     <string name="fuse_tail_recovery_title">Schwanz-Erholung [U]</string>
-    <string name="fuse_tail_recovery_summary">Erholung, die im Schwanzfenster eingeplant werden darf. Default 0,0 - AENDERUNG NUR MIT MESSUNG. Wer hier eine Zahl eintraegt, behauptet zu wissen, wieviel Erholung der Schwanz traegt.</string>
+    <string name="fuse_tail_recovery_summary">Wie viel "von selbst wieder hochkommen" (Leber, spaetes Essen) dem spaeten Fenster zugetraut wird. 0 = wir trauen nichts, bis es gemessen ist. AENDERUNG NUR MIT MESSUNG.</string>
 
     <!-- Eigene Fassungen statt einer Abhaengigkeit auf plugins:aps: dort liegen
          "maxvalueinpreferences"/"hardlimit", und ein ganzes Modul dafuer
@@ -49,20 +49,20 @@
 
     <string name="fuse_ramp_low_title">Rampe unten [mg/dl/min]</string>
     <string name="fuse_ramp_high_title">Rampe oben [mg/dl/min]</string>
-    <string name="fuse_ramp_summary">Zwischen diesen beiden Anstiegsraten waechst der SMB-Anteil linear vom Korrektur- auf den Anstiegswert. Unten gilt der Korrekturanteil, oben der volle Anstiegsanteil. Ein flacher Drift liegt bei 0,5-0,8, ein echter Mahlzeiten-Onset bei 3-5 mg/dl/min - die obere Kante ist NICHT gemessen, dafuer steht r in jeder Zeile des Trails.</string>
+    <string name="fuse_ramp_summary">Der gleitende Uebergang zwischen Korrektur- und Anstiegs-Anteil, gesteuert von der gemessenen Anstiegsrate: unterhalb der unteren Kante gilt der Korrekturanteil, oberhalb der oberen der volle Anstiegsanteil, dazwischen wird ueberblendet - kein harter Schalter. Zur Einordnung: flacher Drift 0,5-0,8, echter Mahlzeitenbeginn 3-5 mg/dl/min.</string>
 
     <string name="fuse_restraint_title">Schnelle Bremsbahn</string>
-    <string name="fuse_restraint_summary">Rechnet eine zweite Bahn aus der schnellen UKF-Rate und nimmt von beiden immer die pessimistischere. Sie kann eine Dosis NIE erhoehen, nur zurueckhalten. Sie faengt den Fall ab, dass der 18-min-Median nach einem Wendepunkt noch Anstieg meldet, waehrend die Glukose bereits faellt. Den verspaeteten Onset behebt sie NICHT - dort ist die langsame Bahn die pessimistischere.</string>
+    <string name="fuse_restraint_summary">FUSE hat zwei Blicke auf den Zucker: einen gruendlichen (verlaesslich, aber ~15 min traege) und einen schnellen (sieht Wenden frueher). Diese Bremse heisst: sieht der schnelle Blick Gefahr, darf er jederzeit bremsen - Gas geben darf er hierueber nie. Kann eine Dosis nur verkleinern.</string>
     <string name="fuse_bolus_share_lambda_title">Bolus-Deckungs-Abschlag (Lambda)</string>
-    <string name="fuse_bolus_share_lambda_summary">Untere Bahn: der von Bolus-Aktivitaet gedeckte Anteil der Stoerung wird nicht als anhaltend unterstellt. 1,0 = voller Abschlag, 0,0 = aus. Wirkt nur auf Guard und Schwanz-Budget, nie auf die Dosisrechnung - kann Dosen nur verkleinern.</string>
+    <string name="fuse_bolus_share_lambda_summary">Die Lehre aus der Nacht: Wirkt viel Bolus-Insulin und der Zucker steht trotzdem, sieht die Rechnung eine unsichtbare Gegenkraft - die oft nur die eigene fruehere Dosis ist. Dieser Abschlag sagt den Waechtern: glaub nur dem Anstieg, den du wirklich siehst. 1,0 = voller Zweifel, 0,0 = aus. Kann Dosen nur verkleinern, nie vergroessern.</string>
     <string name="fuse_onset_channel_title">Onset-Kanal (oeffnend)</string>
-    <string name="fuse_onset_channel_summary">Bruecke bis Theil-Sen bestaetigt: 3 Minuten rohe UKF-Rate ueber der Rampen-Unterkante oeffnen eine begrenzte fruehe Freigabe. Gates: Persistenz, Ausreisser, Haftungshuelle; Guard und Schwanz rechnen weiter auf der ungehobenen Bahn.</string>
+    <string name="fuse_onset_channel_summary">Der gruendliche Blick braucht ~15 Minuten, bis er einen Mahlzeitenbeginn glaubt. Dieser Kanal erlaubt einen frueheren Start, wenn der schnelle Blick 3 Minuten hintereinander einen ECHTEN Anstieg sieht - begrenzt durch die Onset-Haftungshuelle, bis die Bestaetigung da ist. Ein Vorschuss, kein Freifahrtschein.</string>
     <string name="fuse_onset_envelope_title">Onset-Haftungshuelle [U]</string>
-    <string name="fuse_onset_envelope_summary">Hoechstmenge je unbestaetigter Onset-Episode. Massstab: Rueckholkapazitaet ueber 30 min ist 0,225-0,35 U - die Huelle ist eine bezifferte Wette.</string>
+    <string name="fuse_onset_envelope_summary">Hoechstmenge, die der Onset-Kanal je Episode auf UNBESTAETIGTER Evidenz freigeben darf. Eine bezifferte Wette - zum Massstab: per Basal-Stopp sind in 30 Minuten nur 0,2-0,35 U wieder einfangbar.</string>
     <string name="fuse_meal_marker_button">Mahlzeit-Marker setzen</string>
     <string name="fuse_meal_marker_button_armed">Mahlzeit-Marker AKTIV - tippen zum Zuruecknehmen</string>
     <string name="fuse_prime_release_title">Sofort-Freigabe am Marker</string>
-    <string name="fuse_prime_release_summary">Verteilte Abgabe ab Mahlzeit-Marker, ohne auf CGM-Evidenz zu warten (15-min-Fenster). Clearance-Gate gegen die Guardbahn; alle Sperren und Deckel gewinnen. Nur mit gesetztem Marker.</string>
+    <string name="fuse_prime_release_summary">Ab deinem Mahlzeit-Marker beginnt FUSE SOFORT mit kleinen Portionen - noch bevor der Sensor etwas sieht (der hinkt dem Essen ~20 Minuten hinterher). Nur mit gesetztem Marker, nur 15 Minuten, und alle Waechter behalten Vorrang.</string>
     <string name="fuse_prime_envelope_title">Freigabe-Huelle [U]</string>
-    <string name="fuse_prime_envelope_summary">Hoechstmenge je Marker-Episode. Default 1,2 U = per Basal-Null in 120 min rueckholbar (gemessen). Werte darueber geben die Rueckholbarkeits-Garantie auf.</string>
+    <string name="fuse_prime_envelope_summary">Hoechstmenge je Marker-Episode. 1,2 U ist nicht gewuerfelt: genau so viel kann FUSE per Basal-Stopp in 2 Stunden wieder einfangen, falls du den Marker setzt und doch nichts isst - ein Irrtum kostet nichts Bleibendes. Groessere Werte geben diese Garantie auf.</string>
 </resources>
