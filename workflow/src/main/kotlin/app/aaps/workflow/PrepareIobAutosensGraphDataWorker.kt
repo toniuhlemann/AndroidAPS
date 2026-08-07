@@ -59,6 +59,7 @@ class PrepareIobAutosensGraphDataWorker(
     @Inject lateinit var rxBus: RxBus
     @Inject lateinit var decimalFormatter: DecimalFormatter
     @Inject lateinit var glucoseStatusProvider: GlucoseStatusProvider
+    @Inject lateinit var fuseOverviewSource: app.aaps.core.interfaces.overview.FuseOverviewSource
     private var ctx: Context
 
     init {
@@ -238,6 +239,100 @@ class PrepareIobAutosensGraphDataWorker(
 
             time += 5 * 60 * 1000L
         }
+
+
+        // FUSE: Antrieb (r durchgezogen, fastDrive gestrichelt) und Guard-Abstand.
+
+        // Quelle ist der Prozess-Ring des FusePlugin - bewusst KEIN Schreiben in
+
+        // die autoISF-Tabelle (AIV), das waere eine falsche Herkunftsbehauptung.
+
+        run {
+
+            val driveArr: MutableList<ScaledDataPoint> = ArrayList()
+
+            val fastArr: MutableList<ScaledDataPoint> = ArrayList()
+
+            val guardArr: MutableList<ScaledDataPoint> = ArrayList()
+
+            data.overviewData.maxFuseDriveValueFound = Double.MIN_VALUE
+
+            data.overviewData.maxFuseGuardValueFound = Double.MIN_VALUE
+
+            fuseOverviewSource.fuseGraphPoints(fromTime, endTime).forEach { pnt ->
+
+                pnt.driveMgdlPerMin?.let { v ->
+
+                    driveArr.add(ScaledDataPoint(pnt.timestamp, v, data.overviewData.fuseDriveScale))
+
+                    data.overviewData.maxFuseDriveValueFound = max(data.overviewData.maxFuseDriveValueFound, kotlin.math.abs(v))
+
+                }
+
+                pnt.fastDriveMgdlPerMin?.let { v ->
+
+                    fastArr.add(ScaledDataPoint(pnt.timestamp, v, data.overviewData.fuseDriveScale))
+
+                    data.overviewData.maxFuseDriveValueFound = max(data.overviewData.maxFuseDriveValueFound, kotlin.math.abs(v))
+
+                }
+
+                pnt.guardMarginMgdl?.let { v ->
+
+                    guardArr.add(ScaledDataPoint(pnt.timestamp, v, data.overviewData.fuseGuardScale))
+
+                    data.overviewData.maxFuseGuardValueFound = max(data.overviewData.maxFuseGuardValueFound, kotlin.math.abs(v))
+
+                }
+
+            }
+
+            data.overviewData.fuseDriveSeries = LineGraphSeries(Array(driveArr.size) { i -> driveArr[i] }).also {
+
+                it.setCustomPaint(Paint().also { paint ->
+
+                    paint.style = Paint.Style.STROKE
+
+                    paint.strokeWidth = 3f
+
+                    paint.color = rh.gac(ctx, app.aaps.core.ui.R.attr.fuseDriveColor)
+
+                })
+
+            }
+
+            data.overviewData.fuseFastDriveSeries = LineGraphSeries(Array(fastArr.size) { i -> fastArr[i] }).also {
+
+                it.setCustomPaint(Paint().also { paint ->
+
+                    paint.style = Paint.Style.STROKE
+
+                    paint.strokeWidth = 2f
+
+                    paint.pathEffect = DashPathEffect(floatArrayOf(4f, 4f), 0f)
+
+                    paint.color = rh.gac(ctx, app.aaps.core.ui.R.attr.fuseDriveColor)
+
+                })
+
+            }
+
+            data.overviewData.fuseGuardSeries = LineGraphSeries(Array(guardArr.size) { i -> guardArr[i] }).also {
+
+                it.setCustomPaint(Paint().also { paint ->
+
+                    paint.style = Paint.Style.STROKE
+
+                    paint.strokeWidth = 3f
+
+                    paint.color = rh.gac(ctx, app.aaps.core.ui.R.attr.fuseGuardColor)
+
+                })
+
+            }
+
+        }
+
 
         // IOB_TH
         val iobThArray: MutableList<ScaledDataPoint> = ArrayList()

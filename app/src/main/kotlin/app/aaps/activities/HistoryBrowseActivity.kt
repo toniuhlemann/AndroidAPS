@@ -363,6 +363,8 @@ class HistoryBrowseActivity : TranslatedDaggerAppCompatActivity() {
             var useBG_ISFForScale = false
             var usePP_ISFForScale = false
             var useDURA_ISFForScale = false
+            var useFUSE_DRVForScale = false
+            var useFUSE_GRDForScale = false
             when {
                 overviewMenus.isActiveCharTypeData(g+1,OverviewMenus.CharType.ABS.ordinal)      -> useABSForScale = true
                 overviewMenus.isActiveCharTypeData(g+1,OverviewMenus.CharType.IOB.ordinal)      -> useIobForScale = true
@@ -380,6 +382,8 @@ class HistoryBrowseActivity : TranslatedDaggerAppCompatActivity() {
                 overviewMenus.isActiveCharTypeData(g+1,OverviewMenus.CharType.BG_ISF.ordinal)   -> useBG_ISFForScale = true
                 overviewMenus.isActiveCharTypeData(g+1,OverviewMenus.CharType.PP_ISF.ordinal)   -> usePP_ISFForScale = true
                 overviewMenus.isActiveCharTypeData(g+1,OverviewMenus.CharType.DUR_ISF.ordinal)  -> useDURA_ISFForScale = true
+                overviewMenus.isActiveCharTypeData(g+1,OverviewMenus.CharType.FUSE_DRV.ordinal)   -> useFUSE_DRVForScale = true
+                overviewMenus.isActiveCharTypeData(g+1,OverviewMenus.CharType.FUSE_GRD.ordinal)   -> useFUSE_GRDForScale = true
 
             }
             val alignDevBgiScale = menuChartSettings[g + 1][OverviewMenus.CharType.DEV.ordinal] && menuChartSettings[g + 1][OverviewMenus.CharType.BGI.ordinal]
@@ -425,6 +429,8 @@ class HistoryBrowseActivity : TranslatedDaggerAppCompatActivity() {
             if (overviewMenus.isActiveCharTypeData(g+1,OverviewMenus.CharType.IOB.ordinal)) secondGraphData.addIob(useIobForScale, 1.0, maxCommonIob)
             if (overviewMenus.isActiveCharTypeData(g+1,OverviewMenus.CharType.COB.ordinal)) secondGraphData.addCob(useCobForScale, if (useCobForScale) 1.0 else 0.5)
             if (overviewMenus.isActiveCharTypeData(g+1,OverviewMenus.CharType.IOB_TH.ordinal)) secondGraphData.addIobTh( useIobThForScale,   if (maxCommonIob>0.0) 1.0 else 0.8, maxCommonIob)
+            if (overviewMenus.isActiveCharTypeData(g+1,OverviewMenus.CharType.FUSE_DRV.ordinal)) secondGraphData.addFuseDrive(useFUSE_DRVForScale, if (useFUSE_DRVForScale) 1.0 else 0.8)
+            if (overviewMenus.isActiveCharTypeData(g+1,OverviewMenus.CharType.FUSE_GRD.ordinal)) secondGraphData.addFuseGuard(useFUSE_GRDForScale, if (useFUSE_GRDForScale) 1.0 else 0.8)
             if (overviewMenus.isActiveCharTypeData(g+1,OverviewMenus.CharType.DEV.ordinal)) secondGraphData.addDeviations(useDevForScale, 1.0)
             if (overviewMenus.isActiveCharTypeData(g+1,OverviewMenus.CharType.BGI.ordinal)) secondGraphData.addMinusBGI(useBGIForScale, if (alignDevBgiScale) 1.0 else 0.8)
             if (overviewMenus.isActiveCharTypeData(g+1,OverviewMenus.CharType.SEN.ordinal)) secondGraphData.addRatio(useRatioForScale, if (useRatioForScale) 1.0 else 0.8)
@@ -464,7 +470,9 @@ class HistoryBrowseActivity : TranslatedDaggerAppCompatActivity() {
                     overviewMenus.isActiveCharTypeData(g+1,OverviewMenus.CharType.ACC_ISF.ordinal) ||
                     overviewMenus.isActiveCharTypeData(g+1,OverviewMenus.CharType.BG_ISF.ordinal) ||
                     overviewMenus.isActiveCharTypeData(g+1,OverviewMenus.CharType.PP_ISF.ordinal) ||
-                    overviewMenus.isActiveCharTypeData(g+1,OverviewMenus.CharType.DUR_ISF.ordinal)
+                    overviewMenus.isActiveCharTypeData(g+1,OverviewMenus.CharType.DUR_ISF.ordinal) ||
+                    overviewMenus.isActiveCharTypeData(g+1,OverviewMenus.CharType.FUSE_DRV.ordinal) ||
+                    overviewMenus.isActiveCharTypeData(g+1,OverviewMenus.CharType.FUSE_GRD.ordinal)
                 ).toVisibility()
             secondaryGraphsData[g].performUpdate()
         }

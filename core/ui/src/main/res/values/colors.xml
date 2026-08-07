@@ -108,6 +108,8 @@
     <color name="duraIsfColor">#FF8800</color>
     <color name="finalIsfColor">#00FFFF</color>
     <color name="iobThColor">#00FFFF</color>
+    <color name="fuseDriveColor">#FFA726</color>
+    <color name="fuseGuardColor">#66BB6A</color>
 
     <color name="ribbonDefault">#8C8C8C</color>
     <color name="daySelected">#D000FF00</color>

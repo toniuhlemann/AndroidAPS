@@ -26,6 +26,8 @@ interface OverviewMenus {
         BG_ISF,
         PP_ISF,
         DUR_ISF,
+        FUSE_DRV,
+        FUSE_GRD,
     }
 
     val setting: List<Array<Boolean>>

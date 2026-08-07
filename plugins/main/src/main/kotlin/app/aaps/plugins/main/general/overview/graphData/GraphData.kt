@@ -166,6 +166,30 @@ class GraphData @Inject constructor(
         //addSeries(overviewData.iobPredictions2Series)
     }
 
+    /** FUSE-Antrieb: r (durchgezogen) und fastDrive (gestrichelt) in einer
+     *  Auswahl - die Schere zwischen beiden IST die Information (Onset-Lag,
+     *  Wende, Phantom-r). Skala symmetrisch, mindestens +/-1 mg/dl/min. */
+    fun addFuseDrive(useForScale: Boolean, scale: Double) {
+        if (useForScale) {
+            maxY = max(1.0, overviewData.maxFuseDriveValueFound)
+            minY = -maxY
+        }
+        overviewData.fuseDriveScale.multiplier = maxY * scale / max(1.0, overviewData.maxFuseDriveValueFound)
+        addSeries(overviewData.fuseDriveSeries as LineGraphSeries<ScaledDataPoint>)
+        addSeries(overviewData.fuseFastDriveSeries as LineGraphSeries<ScaledDataPoint>)
+    }
+
+    /** Guard-Abstand minLower - guardFloor: ueber Null offen, unter Null
+     *  sperrt der Guard. An der Quelle auf -50..150 geklippt. */
+    fun addFuseGuard(useForScale: Boolean, scale: Double) {
+        if (useForScale) {
+            maxY = max(10.0, overviewData.maxFuseGuardValueFound)
+            minY = -maxY
+        }
+        overviewData.fuseGuardScale.multiplier = maxY * scale / max(10.0, overviewData.maxFuseGuardValueFound)
+        addSeries(overviewData.fuseGuardSeries as LineGraphSeries<ScaledDataPoint>)
+    }
+
     // scale in % of vertical size (like 0.3)
     fun addIob(useForScale: Boolean, scale: Double, maxCommonIob: Double) {
         if (maxCommonIob>0.0) {

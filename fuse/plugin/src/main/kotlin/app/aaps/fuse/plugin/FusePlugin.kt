@@ -99,7 +99,7 @@ class FusePlugin @Inject constructor(
         .description(R.string.description_fuse),
     ownPreferences = listOf(FuseDoubleKey::class.java, FuseIntKey::class.java, FuseBooleanKey::class.java),
     aapsLogger, rh, preferences
-), APS, PluginConstraints {
+), APS, PluginConstraints, app.aaps.core.interfaces.overview.FuseOverviewSource {
 
     override var lastAPSRun: Long = 0
     override var lastAPSResult: APSResult? = null
@@ -124,6 +124,14 @@ class FusePlugin @Inject constructor(
      *  Zustandsexports und der Fragment-Anzeige. */
     @Volatile var lastOutcome: FuseCycleRunner.Outcome? = null
         private set
+
+    /** Ring fuer die Overview-Untergraphen (~25 h bei 1-min-Takt). Bewusst im
+     *  Prozess statt in der DB - nach Neustart beginnt der Graph leer, der
+     *  Trail bleibt die vollstaendige Historie. */
+    private val graphRing = ArrayDeque<app.aaps.core.interfaces.overview.FuseOverviewSource.Point>()
+
+    override fun fuseGraphPoints(fromTime: Long, endTime: Long): List<app.aaps.core.interfaces.overview.FuseOverviewSource.Point> =
+        synchronized(graphRing) { graphRing.filter { it.timestamp in fromTime..endTime } }
 
     /**
      * Derselbe Schluessel wie bei den OpenAPS-Plugins: `ApsSmbMaxIob` ist KEINE
@@ -184,6 +192,25 @@ class FusePlugin @Inject constructor(
             null
         }
         lastOutcome = outcome
+        outcome?.let { o ->
+            val ts = o.sourceTs ?: o.computeTs
+            val sig = o.signal
+            synchronized(graphRing) {
+                if (graphRing.lastOrNull()?.timestamp != ts) {
+                    graphRing.addLast(
+                        app.aaps.core.interfaces.overview.FuseOverviewSource.Point(
+                            timestamp = ts,
+                            driveMgdlPerMin = sig?.rSigned?.takeIf { it.isFinite() },
+                            fastDriveMgdlPerMin = sig?.let { (it.ukfRatePerMin + it.activityAtAnchor * it.isfAtAnchor).takeIf { v -> v.isFinite() } },
+                            guardMarginMgdl = o.decision.minLowerMgdl
+                                ?.let { ml -> ml - (o.policy?.guardFloorMgdl ?: 70.0) }
+                                ?.takeIf { it.isFinite() }?.coerceIn(-50.0, 150.0),
+                        )
+                    )
+                    while (graphRing.size > 1_500) graphRing.removeFirst()
+                }
+            }
+        }
 
         val rt = if (outcome == null) {
             FuseRtBuilder.build(

@@ -82,6 +82,8 @@ class OverviewMenusImpl @Inject constructor(
         BG_ISF(R.string.overview_show_bg_isf, app.aaps.core.ui.R.attr.bgIsfColor, app.aaps.core.ui.R.attr.menuTextColorInverse, primary = false, secondary = true, shortnameId = R.string.bg_isf_shortname),
         PP_ISF(R.string.overview_show_pp_isf, app.aaps.core.ui.R.attr.ppIsfColor, app.aaps.core.ui.R.attr.menuTextColor, primary = false, secondary = true, shortnameId = R.string.pp_isf_shortname),
         DUR_ISF(R.string.overview_show_dura_isf, app.aaps.core.ui.R.attr.duraIsfColor, app.aaps.core.ui.R.attr.menuTextColor, primary = false, secondary = true, shortnameId = R.string.dura_isf_shortname),
+        FUSE_DRV(R.string.overview_show_fuse_drive, app.aaps.core.ui.R.attr.fuseDriveColor, app.aaps.core.ui.R.attr.menuTextColor, primary = false, secondary = true, shortnameId = R.string.fuse_drive_shortname),
+        FUSE_GRD(R.string.overview_show_fuse_guard, app.aaps.core.ui.R.attr.fuseGuardColor, app.aaps.core.ui.R.attr.menuTextColor, primary = false, secondary = true, shortnameId = R.string.fuse_guard_shortname),
     }
 
     private val runningAutoIsf: Boolean
@@ -91,6 +93,15 @@ class OverviewMenusImpl @Inject constructor(
             false
         }
     private val masterAutoIsf: Boolean; get() = runningAutoIsf && !config.AAPSCLIENT
+
+    /** Analog masterAutoIsf: die FUSE-Untergraphen erscheinen nur, wenn FUSE
+     *  das aktive APS ist. */
+    private val masterFuse: Boolean
+        get() = try {
+            activePlugin.activeAPS.algorithm.name == "FUSE" && !config.AAPSCLIENT
+        } catch (e: Exception) {
+            false
+        }
     private val runningDynIsf: Boolean
         get() = preferences.get(BooleanKey.ApsUseDynamicSensitivity) &&
             try {
@@ -152,9 +163,9 @@ class OverviewMenusImpl @Inject constructor(
                 }
             else
                 listOf(
-                    arrayOf(true, false, true, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false),
-                    arrayOf(false, false, false, false, false, true, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false),
-                    arrayOf(false, false, false, false, false, false, true, false, false, false, false, false, false, false, false, false, false, false, false, false, false)
+                    arrayOf(true, false, true, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false),
+                    arrayOf(false, false, false, false, false, true, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false),
+                    arrayOf(false, false, false, false, false, false, true, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false)
                 )
 
     @Synchronized
@@ -174,6 +185,8 @@ class OverviewMenusImpl @Inject constructor(
             m == CharTypeData.BG_ISF.ordinal    -> masterAutoIsf
             m == CharTypeData.PP_ISF.ordinal    -> masterAutoIsf
             m == CharTypeData.DUR_ISF.ordinal   -> masterAutoIsf
+            m == CharTypeData.FUSE_DRV.ordinal  -> masterFuse
+            m == CharTypeData.FUSE_GRD.ordinal  -> masterFuse
             m == CharTypeData.HR.ordinal        -> !config.AAPSCLIENT
             m == CharTypeData.STEPS.ordinal     -> !config.AAPSCLIENT
             else                                -> true

@@ -273,6 +273,9 @@ abstract class PluginsListModule {
     @IntKey(226)
     abstract fun bindFusePlugin(plugin: FusePlugin): PluginBase
 
+    @Binds
+    abstract fun bindFuseOverviewSource(plugin: FusePlugin): app.aaps.core.interfaces.overview.FuseOverviewSource
+
     /**
      * Der FUSE-Reiter. Erster `@ContributesAndroidInjector` in dieser Datei —
      * das Muster stammt aus `ApsModule`, und der dagger-android-Prozessor laeuft

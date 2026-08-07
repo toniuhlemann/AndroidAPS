@@ -199,6 +199,8 @@
     <attr name="duraIsfColor" format="reference|color"/>
     <attr name="finalIsfColor" format="reference|color"/>
     <attr name="iobThColor" format="reference|color"/>
+    <attr name="fuseDriveColor" format="reference|color"/>
+    <attr name="fuseGuardColor" format="reference|color"/>
     <!-- Graph specific colors  -->
     <attr name="graphHorizontalLabelText" format="reference|color" />
     <attr name="graphVerticalLabelText" format="reference|color" />

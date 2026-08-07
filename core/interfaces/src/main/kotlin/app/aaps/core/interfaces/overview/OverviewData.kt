@@ -126,6 +126,15 @@ interface OverviewData {
     var minIobThValueFound: Double
     val iobThScale: Scale
     var iobThSeries: SeriesData
+
+    // FUSE graph series (Quelle: FuseOverviewSource-Ring, kein DB-Zugriff)
+    var maxFuseDriveValueFound: Double
+    val fuseDriveScale: Scale
+    var fuseDriveSeries: SeriesData
+    var fuseFastDriveSeries: SeriesData
+    var maxFuseGuardValueFound: Double
+    val fuseGuardScale: Scale
+    var fuseGuardSeries: SeriesData
     var maxAcceIsfValueFound: Double
     var minAcceIsfValueFound: Double
     val acceIsfScale: Scale
