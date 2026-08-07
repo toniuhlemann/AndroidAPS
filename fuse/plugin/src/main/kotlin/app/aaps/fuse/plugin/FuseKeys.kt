@@ -103,6 +103,15 @@ enum class FuseDoubleKey(
     BolusShareLambda("fuse_bolus_share_lambda", 1.0, 0.0, 2.0),
 
     /**
+     * Haftungshuelle des Onset-Kanals [U]: hoechstens so viel darf der
+     * unbestaetigte schnelle Kanal je Episode freigeben, bevor Theil-Sen
+     * uebernimmt. Zum Massstab: die Rueckholkapazitaet ueber 30 min ist
+     * 0,225-0,35 U (KC2-53) - die Huelle ist eine bezifferte Wette, kein
+     * rueckholbarer Betrag.
+     */
+    OnsetEnvelopeU("fuse_onset_envelope_u", 1.5, 0.0, 5.0),
+
+    /**
      * Obergrenze eines einzelnen SMB, in Einheiten.
      *
      * autoISF hat dafuer KEINE Einstellung, sondern leitet sie ab
@@ -270,4 +279,12 @@ enum class FuseBooleanKey(
      * +5,8 sagte. Genau diese Zyklen faengt die Bremse.
      */
     FastRestraintEnabled("fuse_fast_restraint_enabled", true),
+
+    /**
+     * Der oeffnende schnelle Kanal (OnsetChannel): Bruecke zwischen "UKF sieht
+     * den Anstieg" und "Theil-Sen bestaetigt". NICHT einseitig - er hebt die
+     * Mittelbahn. Gates: 3-min-Persistenz auf der ROHEN UKF-Rate, Ausreisser,
+     * Haftungshuelle, Uebergabe an die Rampe bei r >= riseRampLowR.
+     */
+    OnsetChannelEnabled("fuse_onset_channel_enabled", true),
 }

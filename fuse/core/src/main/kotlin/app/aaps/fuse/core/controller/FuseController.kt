@@ -283,6 +283,10 @@ object FuseController {
          * behandelt.
          */
         restraint: PredictorResult? = null,
+        /** Rest der Onset-Haftungshuelle [U]. Nicht-null NUR, wenn der
+         *  OnsetChannel in diesem Zyklus die Mittelbahn gehoben hat - dann
+         *  kappt er die Menge, die auf seiner eigenen Hebung beruht. */
+        onsetCapU: Double? = null,
     ): Decision {
         // Der Kontext gehoert an JEDEN Rueckgabepfad, nicht nur an den
         // Erfolgsfall. Gerade beim Blockieren ist die Frage "war das die
@@ -383,10 +387,15 @@ object FuseController {
             "maxIobHeadroom" to maxIobHeadroom,
             "maxSmb" to state.maxSmbU,
         )
-        val withoutTail = baseCandidates.minOf { it.second }
-        val candidates =
-            if (tail != null && tail.usable) baseCandidates + ("tailHeadroom" to tail.headroomU)
+        // Die Onset-Huelle gehoert zu den Basis-Kandidaten: sie ist die Grenze
+        // des Kanals, der die Bahn gehoben hat - nicht Teil der Schwanzkosten.
+        val baseWithOnset =
+            if (onsetCapU != null) baseCandidates + ("onsetEnvelope" to onsetCapU)
             else baseCandidates
+        val withoutTail = baseWithOnset.minOf { it.second }
+        val candidates =
+            if (tail != null && tail.usable) baseWithOnset + ("tailHeadroom" to tail.headroomU)
+            else baseWithOnset
         val binding = candidates.minByOrNull { it.second }!!
         val raw = binding.second
         val tailCost = (withoutTail - raw).coerceAtLeast(0.0)

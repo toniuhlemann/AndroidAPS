@@ -359,6 +359,18 @@ class FusePlugin @Inject constructor(
                 )
             )
             addPreference(
+                AdaptiveSwitchPreference(
+                    ctx = context, booleanKey = FuseBooleanKey.OnsetChannelEnabled,
+                    summary = R.string.fuse_onset_channel_summary, title = R.string.fuse_onset_channel_title
+                )
+            )
+            addPreference(
+                AdaptiveDoublePreference(
+                    ctx = context, doubleKey = FuseDoubleKey.OnsetEnvelopeU,
+                    dialogMessage = R.string.fuse_onset_envelope_summary, title = R.string.fuse_onset_envelope_title
+                )
+            )
+            addPreference(
                 AdaptiveDoublePreference(
                     ctx = context, doubleKey = FuseDoubleKey.MaxSmbU,
                     dialogMessage = R.string.fuse_max_smb_u_summary, title = R.string.fuse_max_smb_u_title

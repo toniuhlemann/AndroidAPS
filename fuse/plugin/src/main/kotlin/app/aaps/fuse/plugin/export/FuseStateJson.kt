@@ -31,7 +31,7 @@ object FuseStateJson {
      * einen unveraenderten Wert NICHT als Beweis lesen, dass sich die Regeln
      * nicht geaendert haben.
      */
-    const val RULE_SET_VERSION = 2
+    const val RULE_SET_VERSION = 3
 
     /** Gruende fuer fehlende Felder. Benannt statt weggelassen. */
     const val GAP_NO_LEDGER = "LEDGER_NOT_WIRED"
@@ -149,6 +149,13 @@ object FuseStateJson {
                 .put("spread", fin(b.spread))
                 .put("pairCount", b.pairCount)
                 .put("methodId", policy?.let { app.aaps.fuse.core.signal.PairSlopeBand.methodId(it.driveLowerQuantilePct) } ?: JSONObject.NULL)
+                .put("onset", outcome.onset?.let { o ->
+                    JSONObject()
+                        .put("active", o.active)
+                        .put("driveMgdlPerMin", o.driveMgdlPerMin?.let { fin(it) } ?: JSONObject.NULL)
+                        .put("remainingU", fin(o.remainingU))
+                        .put("reason", o.reason)
+                } ?: JSONObject.NULL)
                 .put("discount", outcome.discount?.let { d ->
                     JSONObject()
                         .put("lambda", fin(d.lambda))
@@ -321,6 +328,8 @@ object FuseStateJson {
         .put("riseRampLowR", fin(p.riseRampLowR))
         .put("riseRampHighR", fin(p.riseRampHighR))
         .put("bolusShareLambda", fin(p.bolusShareLambda))
+        .put("onsetChannelEnabled", p.onsetChannelEnabled)
+        .put("onsetEnvelopeU", fin(p.onsetEnvelopeU))
 
     /**
      * `null` bei nicht-endlichen Eingaben. [Sha.lossless] WIRFT bei NaN/Inf,
@@ -333,14 +342,14 @@ object FuseStateJson {
             p.smbRatio, p.smbRatioRise, p.maxSmbU, p.guardFloorMgdl, p.tailFloorMgdl, p.tailRecoveryU,
             // Rampe + Abschlag: fehlten bis v1 - zwei Laeufe mit verschiedenen
             // Rampen bekamen denselben Hash (Audit 07.08.). Version 1->2.
-            p.riseRampLowR, p.riseRampHighR, p.bolusShareLambda,
+            p.riseRampLowR, p.riseRampHighR, p.bolusShareLambda, p.onsetEnvelopeU,
         )
         if (doubles.any { !it.isFinite() }) return null
         val parts = listOf("fuse-policy-v$RULE_SET_VERSION") +
             doubles.map { Sha.lossless(it) } +
             listOf(
                 p.iobThPercent, p.releaseHorizonMin, p.liabilityHorizonMin,
-                p.driveTauMin, p.driveLowerQuantilePct, p.tailGuardEnabled, p.fastRestraintEnabled,
+                p.driveTauMin, p.driveLowerQuantilePct, p.tailGuardEnabled, p.fastRestraintEnabled, p.onsetChannelEnabled,
             ).map { it.toString() }
         return Sha.of(parts.joinToString("|"))
     }

@@ -29,6 +29,7 @@ import app.aaps.fuse.core.observer.ObserverStep
 import app.aaps.fuse.core.signal.PairSlopeBand
 import app.aaps.fuse.core.predictor.ActualTrajectoryFactory
 import app.aaps.fuse.core.predictor.DriveDecayModel
+import app.aaps.fuse.core.controller.OnsetChannel
 import app.aaps.fuse.core.predictor.DriveDiscount
 import app.aaps.fuse.core.predictor.DriveEstimate
 import app.aaps.fuse.core.predictor.InsulinLineage
@@ -123,6 +124,9 @@ class FuseCycleRunner(
          *  lambda 0, damit "aus" von "alter Build ohne Abschlag" unterscheidbar
          *  bleibt. */
         val discount: DriveDiscount.Applied?,
+        /** Zustand des Onset-Kanals dieses Zyklus. `null` nur auf
+         *  Abbruchpfaden vor der Signalstufe. */
+        val onset: OnsetChannel.Result?,
         /** `null` = der Zyklus kam nicht bis zum Lesen der Einstellungen. Dann
          *  hat er auch keine Politik, und der Export sagt das statt eine zu
          *  erfinden. */
@@ -154,7 +158,7 @@ class FuseCycleRunner(
             decision = FuseController.noInput(reason), tbr = null, prediction = null,
             sourceTs = signal?.sourceTs, computeTs = computeTs, health = null, gate = gate,
             reason = reason, alarm = false, bgMgdl = signal?.q1, targetMgdl = null, targetSource = null,
-            signal = signal, band = null, discount = null, policy = policy, state = null, step = null,
+            signal = signal, band = null, discount = null, onset = null, policy = policy, state = null, step = null,
             sensorEpoch = null, calibrationEpoch = null,
             isfMgdlPerU = null, iobU = null, abortReason = reason,
         )
@@ -221,7 +225,27 @@ class FuseCycleRunner(
         // Versatz zweitrangig; die Zahl steht im Export und ist nachpruefbar.
         val bolusActivityUPerMin = iobCobCalculator.calculateIobFromBolus().activity
 
-        val built = when (val b = CoreInputGuard.build { buildPredictorInput(signal, profile, cfg, band, bolusActivityUPerMin) }) {
+        // Onset-Kanal: Ring pflegen (gleicher sourceTs ersetzt statt doppelt),
+        // dann bewerten. Der Antrieb des Kanals ist der BGI-bereinigte
+        // fastDrive, das Gate die rohe UKF-Rate - s. OnsetChannel.
+        fastDrive(signal)?.let { fd ->
+            if (onsetRing.lastOrNull()?.tsMs == signal.sourceTs) onsetRing.removeLast()
+            onsetRing.addLast(OnsetChannel.Sample(signal.sourceTs, signal.ukfRatePerMin, fd))
+            while (onsetRing.size > 10) onsetRing.removeFirst()
+        }
+        val onset = OnsetChannel.evaluate(
+            OnsetChannel.Input(
+                enabled = cfg.onsetChannelEnabled,
+                samples = onsetRing.toList(),
+                rSignedMgdlPerMin = band.mean,
+                thresholdMgdlPerMin = cfg.riseRampLowR,
+                q1Outlier = signal.q1Outlier,
+                envelopeU = cfg.onsetEnvelopeU,
+                spentU = onsetSpentU,
+            )
+        )
+
+        val built = when (val b = CoreInputGuard.build { buildPredictorInput(signal, profile, cfg, band, bolusActivityUPerMin, if (onset.active) onset.driveMgdlPerMin else null) }) {
             is CoreInputGuard.Outcome.Built  -> b.value ?: return abort("input incomplete", signal, cfg)
             is CoreInputGuard.Outcome.Failed -> return abort("input: ${b.failure.detail}", signal, cfg)
         }
@@ -280,7 +304,11 @@ class FuseCycleRunner(
                     isfMgdlPerU = isf,
                     smbRatioCorrection = cfg.smbRatio,
                     smbRatioRise = cfg.smbRatioRise,
-                    rSignedMgdlPerMin = signal.rSigned,
+                    // Bei aktivem Onset-Kanal laeuft die Rampe auf dem
+                    // gehobenen Antrieb - sonst haette der Kanal die Bahn
+                    // gehoben, aber die Ratio stuende noch auf Korrektur.
+                    rSignedMgdlPerMin = onset.driveMgdlPerMin?.takeIf { onset.active }
+                        ?.let { d -> maxOf(signal.rSigned ?: d, d) } ?: signal.rSigned,
                     riseRampLowRPerMin = cfg.riseRampLowR,
                     riseRampHighRPerMin = cfg.riseRampHighR,
                     pumpIncrementU = bolusStep,
@@ -316,7 +344,22 @@ class FuseCycleRunner(
             FuseController.Limits(guardFloorMgdl = cfg.guardFloorMgdl, releaseHorizonMin = cfg.releaseHorizonMin),
             tail,
             restraint,
+            onsetCapU = if (onset.active) onset.remainingU else null,
         )
+
+        // Huellen-Buchfuehrung: verbraucht wird nur, was der offene Kanal
+        // freigegeben hat; nach REARM_QUIET_MIN geschlossenen Minuten wird die
+        // Huelle neu bewaffnet.
+        if (onset.active) {
+            onsetSpentU += decision.smbU
+            onsetQuietMin = 0
+        } else if (onsetSpentU > 0.0) {
+            onsetQuietMin += 1
+            if (onsetQuietMin >= OnsetChannel.REARM_QUIET_MIN) {
+                onsetSpentU = 0.0
+                onsetQuietMin = 0
+            }
+        }
 
         // ---- 5 Kanal -------------------------------------------------------
         val runningTbr = persistenceLayer.getTemporaryBasalActiveAt(computeTs)
@@ -354,6 +397,7 @@ class FuseCycleRunner(
             signal = signal,
             band = band,
             discount = built.discount,
+            onset = onset,
             policy = cfg,
             state = state,
             step = step,
@@ -377,6 +421,15 @@ class FuseCycleRunner(
      *
      * `null` heisst: keine Bremse. Nie ein Ersatzwert.
      */
+    /**
+     * Episodenzustand des Onset-Kanals. IM PROZESS, bewusst nicht persistiert:
+     * nach einem Neustart ist der Ring leer und der Kanal faellt geschlossen
+     * aus (fail-closed) - die Persistenz baut sich in 3 Minuten neu auf.
+     */
+    private val onsetRing = ArrayDeque<OnsetChannel.Sample>()
+    private var onsetSpentU = 0.0
+    private var onsetQuietMin = 0
+
     private fun fastDrive(signal: FuseSignalSource.Signal): Double? {
         val raw = signal.ukfRatePerMin
         val a = signal.activityAtAnchor
@@ -468,6 +521,8 @@ class FuseCycleRunner(
         val tailRecoveryU: Double,
         val fastRestraintEnabled: Boolean,
         val bolusShareLambda: Double,
+        val onsetChannelEnabled: Boolean,
+        val onsetEnvelopeU: Double,
     )
 
     /**
@@ -493,6 +548,8 @@ class FuseCycleRunner(
         tailRecoveryU = preferences.get(FuseDoubleKey.TailRecoveryU),
         fastRestraintEnabled = preferences.get(FuseBooleanKey.FastRestraintEnabled),
         bolusShareLambda = preferences.get(FuseDoubleKey.BolusShareLambda),
+        onsetChannelEnabled = preferences.get(FuseBooleanKey.OnsetChannelEnabled),
+        onsetEnvelopeU = preferences.get(FuseDoubleKey.OnsetEnvelopeU),
     ).also {
         // Die Preference-Grenzen gelten nur im Einstellungsdialog. Ein Wert aus
         // einem alten Import geht daran vorbei — deshalb hier nochmal, und zwar
@@ -514,6 +571,7 @@ class FuseCycleRunner(
         require(it.tailFloorMgdl.isFinite() && it.tailFloorMgdl > 0.0) { "tailFloor=${it.tailFloorMgdl}" }
         require(it.tailRecoveryU.isFinite() && it.tailRecoveryU >= 0.0) { "tailRecovery=${it.tailRecoveryU}" }
         require(it.bolusShareLambda.isFinite() && it.bolusShareLambda in 0.0..2.0) { "bolusShareLambda=${it.bolusShareLambda}" }
+        require(it.onsetEnvelopeU.isFinite() && it.onsetEnvelopeU in 0.0..5.0) { "onsetEnvelope=${it.onsetEnvelopeU}" }
         require(it.liabilityHorizonMin >= it.releaseHorizonMin) {
             "liabilityHorizon=${it.liabilityHorizonMin} < releaseHorizon=${it.releaseHorizonMin}"
         }
@@ -536,6 +594,7 @@ class FuseCycleRunner(
         cfg: Config,
         band: PairSlopeBand.Estimate,
         bolusActivityUPerMin: Double,
+        onsetDriveMgdlPerMin: Double?,
     ): Built? {
         val liabilityHorizonMin = cfg.liabilityHorizonMin
         val anchor = signal.sourceTs
@@ -625,9 +684,14 @@ class FuseCycleRunner(
             // confidence bleibt null: NICHT KALIBRIERT. Was stattdessen
             // mitgefuehrt wird, ist das Gemessene (Spreizung, Paaranzahl) —
             // s. Outcome und RT.reason.
+            // Onset-Kanal hebt NUR die Mittelbahn. Die untere Bahn bleibt die
+            // abgeschlagene Band-Untergrenze - Guard und Schwanz rechnen also
+            // weiter gegen die UNGEHOBENE, konservative Bahn.
             drive = DriveEstimate(
-                band.mean, discount.lowerAfterMgdlPerMin, null,
-                DriveDiscount.methodId(PairSlopeBand.methodId(cfg.driveLowerQuantilePct), cfg.bolusShareLambda),
+                onsetDriveMgdlPerMin?.let { maxOf(band.mean, it) } ?: band.mean,
+                discount.lowerAfterMgdlPerMin, null,
+                DriveDiscount.methodId(PairSlopeBand.methodId(cfg.driveLowerQuantilePct), cfg.bolusShareLambda) +
+                    if (onsetDriveMgdlPerMin != null && onsetDriveMgdlPerMin > band.mean) "+ONSET" else "",
             ),
             decay = DriveDecayModel.ExponentialDecay(cfg.driveTauMin.toDouble()),
             trajectory = trajectory,

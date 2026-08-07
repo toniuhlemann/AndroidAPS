@@ -25,7 +25,7 @@ class FuseStateExportTest {
     private val BUILD = FuseStateJson.Build("3.4.2.5+fuse0.1.0-toni", "abc1234", true)
 
     private val cfg = FuseCycleRunner.Config(
-        smbRatio = 0.2, smbRatioRise = 0.35, riseRampLowR = 0.5, riseRampHighR = 2.0, bolusShareLambda = 1.0, maxSmbU = 0.3, guardFloorMgdl = 70.0, iobThPercent = 100,
+        smbRatio = 0.2, smbRatioRise = 0.35, riseRampLowR = 0.5, riseRampHighR = 2.0, bolusShareLambda = 1.0, onsetChannelEnabled = true, onsetEnvelopeU = 1.5, maxSmbU = 0.3, guardFloorMgdl = 70.0, iobThPercent = 100,
         releaseHorizonMin = 30, liabilityHorizonMin = 120, driveTauMin = 60,
         driveLowerQuantilePct = 50, tailGuardEnabled = false, tailFloorMgdl = 70.0, tailRecoveryU = 0.0, fastRestraintEnabled = true,
     )
@@ -68,7 +68,8 @@ class FuseStateExportTest {
         health = Health.READY, gate = FusePumpGate.Result(FusePumpGate.Verdict.ALLOWED, "VirtualPumpPlugin"),
         reason = "KEEP", alarm = false, bgMgdl = 130.0, targetMgdl = 97.0, targetSource = "profile",
         signal = signal, band = PairSlopeBand.Estimate(0.8, 0.4, 153),
-        discount = app.aaps.fuse.core.predictor.DriveDiscount.apply(0.8, 0.4, 0.01, 85.0, 1.0), policy = policy,
+        discount = app.aaps.fuse.core.predictor.DriveDiscount.apply(0.8, 0.4, 0.01, 85.0, 1.0),
+        onset = app.aaps.fuse.core.controller.OnsetChannel.Result(false, null, 1.5, "R_CONFIRMED"), policy = policy,
         state = null, step = step, sensorEpoch = 1_699_000_000_000L, calibrationEpoch = 0L,
         isfMgdlPerU = 85.0, iobU = 1.2, abortReason = abort,
     )
