@@ -247,6 +247,7 @@ object FuseStateJson {
                 // Der WIRKSAME Anteil, nicht beide Rohwerte: welche Zahl gegolten hat,
                 // haengt an der Phase, und im Nachhinein soll niemand die falsche
                 // von zweien lesen. Die Rohwerte stehen ohnehin unter policy.values.
+                .put("reboundWindow", outcome.state?.reboundWindow ?: JSONObject.NULL)
                 .put("smbRatioEffective", fin(outcome.state?.effectiveSmbRatio))
                 .put("context", outcome.decision.context?.name ?: JSONObject.NULL)
         )

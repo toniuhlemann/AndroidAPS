@@ -26,6 +26,21 @@ object FuseController {
      *  Schritt zu erfinden. */
     private const val TICK_EPS = 1e-9
 
+    /**
+     * REBOUND-FENSTER NACH TIEF (4x gemessen am 07.08.: 07:09, 15:0x, 16:28,
+     * ~17:3x): nach einem Tief liest der 18-min-Median die Erholungssteigung
+     * als grosse Stoerung (16:28: r 3,3 elf Minuten nach q1<75 -> 1,65 U in
+     * die zweite Senke). Die EINZIGE Information, die diese Lage von einem
+     * Mahlzeitenbeginn unterscheidet, ist das juengste Tief selbst. War q1 in
+     * den letzten [REBOUND_WINDOW_MIN] Minuten unter [REBOUND_LOW_MGDL],
+     * bleibt die Rampe auf dem Korrektur-Anteil gedeckelt - egal wie hoch r
+     * steigt. Beweisbar einseitig: der Deckel kann den Anteil nur senken.
+     * Konstanten PROVISORISCH (Toni-Konvention Tief-Schutz ~101/75, Fenster
+     * an die 45-min-Gerueststaffel angelehnt); Preferences erst nach Messung.
+     */
+    const val REBOUND_LOW_MGDL = 75.0
+    const val REBOUND_WINDOW_MIN = 45
+
     data class State(
         val health: Health,
         val safetyHold: Boolean,
@@ -70,6 +85,9 @@ object FuseController {
         val pumpIncrementU: Double,
         val maxSmbU: Double,
         val pumpBusy: Boolean,
+        /** q1 war in den letzten [REBOUND_WINDOW_MIN] min unter
+         *  [REBOUND_LOW_MGDL] - die Rampe bleibt auf dem Korrektur-Anteil. */
+        val reboundWindow: Boolean = false,
     ) {
         /** Bindungsgroesse fuer iobTH: zurueckgehaltenes Basal waehrend Zero-TBR
          *  darf KEIN zusaetzliches SMB-Budget erzeugen (Fork-Praxis). */
@@ -97,6 +115,9 @@ object FuseController {
          */
         val effectiveSmbRatio: Double
             get() {
+                // Rebound-Deckel VOR der Rampe: die Erholung nach einem Tief
+                // ist keine Mahlzeit, egal was der Median glaubt.
+                if (reboundWindow) return smbRatioCorrection
                 val r = rSignedMgdlPerMin ?: return smbRatioCorrection
                 if (!r.isFinite() || riseRampHighRPerMin <= riseRampLowRPerMin) return smbRatioCorrection
                 val f = ((r - riseRampLowRPerMin) / (riseRampHighRPerMin - riseRampLowRPerMin))

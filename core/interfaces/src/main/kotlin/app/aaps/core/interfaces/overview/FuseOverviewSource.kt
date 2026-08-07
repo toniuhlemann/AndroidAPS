@@ -25,4 +25,8 @@ interface FuseOverviewSource {
     )
 
     fun fuseGraphPoints(fromTime: Long, endTime: Long): List<Point>
+
+    /** Aktuelle Rampenkanten (unten, oben) [mg/dl/min] fuer die Referenz-
+     *  linien im Antriebs-Untergraphen - dynamisch aus den Preferences. */
+    fun fuseRampLevels(): Pair<Double, Double>
 }

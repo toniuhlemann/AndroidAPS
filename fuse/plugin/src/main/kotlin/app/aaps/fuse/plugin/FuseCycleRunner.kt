@@ -236,6 +236,10 @@ class FuseCycleRunner(
         // `calculateIobFromBolus()` rechnet auf `dateUtil.now()`, bis zu ~1 min
         // neben `sourceTs`. Fuer einen ABSCHLAG (keinen Bahnpunkt) ist der
         // Versatz zweitrangig; die Zahl steht im Export und ist nachpruefbar.
+        if (signal.q1 < FuseController.REBOUND_LOW_MGDL) lastLowTs = signal.sourceTs
+        val reboundWindow = lastLowTs > 0 &&
+            signal.sourceTs - lastLowTs < FuseController.REBOUND_WINDOW_MIN * 60_000L
+
         val bolusActivityUPerMin = iobCobCalculator.calculateIobFromBolus().activity
 
         // Onset-Kanal: Ring pflegen (gleicher sourceTs ersetzt statt doppelt),
@@ -332,6 +336,7 @@ class FuseCycleRunner(
                     // Bei aktivem Onset-Kanal laeuft die Rampe auf dem
                     // gehobenen Antrieb - sonst haette der Kanal die Bahn
                     // gehoben, aber die Ratio stuende noch auf Korrektur.
+                    reboundWindow = reboundWindow,
                     rSignedMgdlPerMin = onset.driveMgdlPerMin?.takeIf { onset.active }
                         ?.let { d -> maxOf(signal.rSigned ?: d, d) } ?: signal.rSigned,
                     riseRampLowRPerMin = cfg.riseRampLowR,
@@ -541,6 +546,11 @@ class FuseCycleRunner(
      *  gelieferte Einheit zaehlt dagegen - auch evidenzgetriebene. */
     private var primeSpentU = 0.0
     private var primeArmedTsSeen = 0L
+
+    /** Letztes q1 < REBOUND_LOW_MGDL. Im Prozess: nach Neustart fehlt bis zu
+     *  45 min Tief-Gedaechtnis (fail-open, dokumentiert) - die uebrigen
+     *  Wachen (Guard, Abschlag, Clearance) stehen davon unberuehrt. */
+    private var lastLowTs = 0L
 
     private fun fastDrive(signal: FuseSignalSource.Signal): Double? {
         val raw = signal.ukfRatePerMin

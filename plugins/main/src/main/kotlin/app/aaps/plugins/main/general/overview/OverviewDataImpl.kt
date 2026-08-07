@@ -130,6 +130,8 @@ class OverviewDataImpl @Inject constructor(
         maxFuseDriveValueFound = 0.0
         fuseDriveSeries = LineGraphSeries<ScaledDataPoint>()
         fuseFastDriveSeries = LineGraphSeries<ScaledDataPoint>()
+        fuseRampLowSeries = LineGraphSeries<ScaledDataPoint>()
+        fuseRampHighSeries = LineGraphSeries<ScaledDataPoint>()
         maxFuseGuardValueFound = 0.0
         fuseGuardSeries = LineGraphSeries<ScaledDataPoint>()
         iobThSeries = LineGraphSeries<ScaledDataPoint>()
@@ -258,6 +260,8 @@ class OverviewDataImpl @Inject constructor(
     override val fuseDriveScale = Scale()
     override var fuseDriveSeries: SeriesData = LineGraphSeries<ScaledDataPoint>()
     override var fuseFastDriveSeries: SeriesData = LineGraphSeries<ScaledDataPoint>()
+    override var fuseRampLowSeries: SeriesData = LineGraphSeries<ScaledDataPoint>()
+    override var fuseRampHighSeries: SeriesData = LineGraphSeries<ScaledDataPoint>()
     override var maxFuseGuardValueFound = Double.MIN_VALUE
     override val fuseGuardScale = Scale()
     override var fuseGuardSeries: SeriesData = LineGraphSeries<ScaledDataPoint>()

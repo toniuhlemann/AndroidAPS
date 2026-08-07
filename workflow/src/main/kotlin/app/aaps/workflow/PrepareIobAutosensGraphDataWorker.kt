@@ -317,6 +317,26 @@ class PrepareIobAutosensGraphDataWorker(
 
             }
 
+            // Referenzlinien auf den Rampenkanten - dynamisch aus den aktuellen
+            // Preferences; das Skalen-Minimum haengt an der OBEREN Kante, damit
+            // sie nie aus dem Bild rutscht (Tonis Wunsch 07.08.).
+            val ramp = fuseOverviewSource.fuseRampLevels()
+            data.overviewData.maxFuseDriveValueFound =
+                max(data.overviewData.maxFuseDriveValueFound, ramp.second * 1.25)
+            fun rampLine(level: Double): LineGraphSeries<ScaledDataPoint> =
+                LineGraphSeries(arrayOf(
+                    ScaledDataPoint(fromTime, level, data.overviewData.fuseDriveScale),
+                    ScaledDataPoint(endTime, level, data.overviewData.fuseDriveScale),
+                )).also {
+                    it.setCustomPaint(Paint().also { paint ->
+                        paint.style = Paint.Style.STROKE
+                        paint.strokeWidth = 1f
+                        paint.pathEffect = DashPathEffect(floatArrayOf(2f, 6f), 0f)
+                        paint.color = rh.gac(ctx, app.aaps.core.ui.R.attr.fuseGuardColor)
+                    })
+                }
+            data.overviewData.fuseRampLowSeries = rampLine(ramp.first)
+            data.overviewData.fuseRampHighSeries = rampLine(ramp.second)
             data.overviewData.fuseGuardSeries = LineGraphSeries(Array(guardArr.size) { i -> guardArr[i] }).also {
 
                 it.setCustomPaint(Paint().also { paint ->

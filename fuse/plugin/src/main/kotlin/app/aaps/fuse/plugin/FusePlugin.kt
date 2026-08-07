@@ -130,6 +130,9 @@ class FusePlugin @Inject constructor(
      *  Trail bleibt die vollstaendige Historie. */
     private val graphRing = ArrayDeque<app.aaps.core.interfaces.overview.FuseOverviewSource.Point>()
 
+    override fun fuseRampLevels(): Pair<Double, Double> =
+        Pair(preferences.get(FuseDoubleKey.RiseRampLowR), preferences.get(FuseDoubleKey.RiseRampHighR))
+
     override fun fuseGraphPoints(fromTime: Long, endTime: Long): List<app.aaps.core.interfaces.overview.FuseOverviewSource.Point> =
         synchronized(graphRing) { graphRing.filter { it.timestamp in fromTime..endTime } }
 
