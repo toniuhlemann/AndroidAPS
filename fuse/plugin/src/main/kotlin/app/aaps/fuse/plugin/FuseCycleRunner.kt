@@ -233,6 +233,13 @@ class FuseCycleRunner(
             onsetRing.addLast(OnsetChannel.Sample(signal.sourceTs, signal.ukfRatePerMin, fd))
             while (onsetRing.size > 10) onsetRing.removeFirst()
         }
+        // Marker: Knopf im FUSE-Tab, verfaellt nach MARKER_WINDOW_MIN von
+        // selbst. Er ist ZUSTAND und wird je Zyklus frisch gelesen - nie
+        // gecached, damit ein Druck sofort im naechsten Zyklus wirkt.
+        val markerTs = preferences.get(FuseLongKey.MealMarkerArmedTs)
+        val mealMarkerActive = markerTs > 0 &&
+            computeTs - markerTs in 0..(OnsetChannel.MARKER_WINDOW_MIN * 60_000L)
+
         val onset = OnsetChannel.evaluate(
             OnsetChannel.Input(
                 enabled = cfg.onsetChannelEnabled,
@@ -240,6 +247,7 @@ class FuseCycleRunner(
                 rSignedMgdlPerMin = band.mean,
                 thresholdMgdlPerMin = cfg.riseRampLowR,
                 q1Outlier = signal.q1Outlier,
+                mealMarkerActive = mealMarkerActive,
                 envelopeU = cfg.onsetEnvelopeU,
                 spentU = onsetSpentU,
             )

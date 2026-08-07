@@ -40,7 +40,7 @@ class FuseScreenModelTest {
         reason = "KEEP", alarm = false, bgMgdl = 130.0, targetMgdl = 97.0, targetSource = "TT",
         signal = signal, band = PairSlopeBand.Estimate(0.8, 0.4, 153),
         discount = app.aaps.fuse.core.predictor.DriveDiscount.apply(0.8, 0.4, 0.01, 85.0, 1.0),
-        onset = app.aaps.fuse.core.controller.OnsetChannel.Result(false, null, 1.5, "R_CONFIRMED"), policy = null,
+        onset = app.aaps.fuse.core.controller.OnsetChannel.Result(false, false, null, 1.5, "R_CONFIRMED"), policy = null,
         state = null, step = null, sensorEpoch = null, calibrationEpoch = null,
         isfMgdlPerU = 85.0, iobU = 1.2, abortReason = abort,
     )

@@ -46,6 +46,16 @@ object OnsetChannel {
      *  verschenken eine Minute gegen das gemessene 09:13-Fenster. */
     const val PERSIST_N = 3
 
+    /** Mit gesetztem Mahlzeiten-Marker reicht EIN Wert ueber der Schwelle:
+     *  der Nutzer hat die Vorinformation geliefert, die die Persistenz sonst
+     *  ersetzen muss. Gemessen 07.08.: die erste CGM-Regung kam 08:51, eine
+     *  Minute nach dem Marker - Persistenz 3 haette sie verworfen. */
+    const val PERSIST_N_MARKER = 1
+
+    /** Marker-Fenster [min]. Danach verfaellt der Marker von selbst - ein
+     *  vergessener Knopf darf nicht den ganzen Tag die Schwelle senken. */
+    const val MARKER_WINDOW_MIN = 90
+
     /** Zwei 1-min-Werte gelten als aufeinanderfolgend bis 90 s Abstand -
      *  dieselbe Toleranz wie die Persistenzpruefung der Serienanalyse. */
     const val MAX_GAP_MS = 90_000L
@@ -74,6 +84,10 @@ object OnsetChannel {
          *  damit "Kanal schliesst" und "Rampe beginnt" ein Punkt sind. */
         val thresholdMgdlPerMin: Double,
         val q1Outlier: Boolean,
+        /** Mahlzeiten-Marker aktiv (Knopf im FUSE-Tab, Fenster
+         *  [MARKER_WINDOW_MIN] min). Senkt NUR die Persistenzanforderung -
+         *  er erzeugt selbst keine Dosis und hebt keine Bahn. */
+        val mealMarkerActive: Boolean,
         val envelopeU: Double,
         val spentU: Double,
     )
@@ -81,6 +95,9 @@ object OnsetChannel {
     data class Result(
         /** Kanal hebt in diesem Zyklus die Mittelbahn und kappt an der Huelle. */
         val active: Boolean,
+        /** Der Marker war zum Entscheidungszeitpunkt aktiv - fuer Trail und
+         *  Fensterzuordnung (Mahlzeit vs. Korrektur). */
+        val mealMarker: Boolean,
         /** Konservativ das MINIMUM der letzten [PERSIST_N] Antriebe - der
          *  juengste Wert allein waere der rauschanfaelligste. Nur bei
          *  [active]. */
@@ -91,7 +108,7 @@ object OnsetChannel {
 
     fun evaluate(input: Input): Result {
         val remaining = max(0.0, input.envelopeU - input.spentU)
-        fun closed(reason: String) = Result(false, null, remaining, reason)
+        fun closed(reason: String) = Result(false, input.mealMarkerActive, null, remaining, reason)
 
         if (!input.enabled) return closed("DISABLED")
         // Uebergabe VOR allen anderen Gates: ein bestaetigter Anstieg gehoert
@@ -100,8 +117,9 @@ object OnsetChannel {
             return closed("R_CONFIRMED")
         if (input.q1Outlier) return closed("OUTLIER")
 
-        val last = input.samples.takeLast(PERSIST_N)
-        if (last.size < PERSIST_N) return closed("TOO_FEW_SAMPLES")
+        val persistN = if (input.mealMarkerActive) PERSIST_N_MARKER else PERSIST_N
+        val last = input.samples.takeLast(persistN)
+        if (last.size < persistN) return closed("TOO_FEW_SAMPLES")
         for (i in 1 until last.size) {
             if (last[i].tsMs - last[i - 1].tsMs > MAX_GAP_MS) return closed("GAP")
             if (last[i].tsMs <= last[i - 1].tsMs) return closed("NOT_ASCENDING")
@@ -114,9 +132,10 @@ object OnsetChannel {
 
         return Result(
             active = true,
+            mealMarker = input.mealMarkerActive,
             driveMgdlPerMin = last.minOf { it.fastDriveMgdlPerMin },
             remainingU = remaining,
-            reason = "OPEN",
+            reason = if (input.mealMarkerActive) "OPEN_MARKER" else "OPEN",
         )
     }
 }

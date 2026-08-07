@@ -45,6 +45,14 @@ class FuseFragment : DaggerFragment() {
     override fun onCreateView(inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?): View =
         FuseFragmentBinding.inflate(inflater, container, false).also { _binding = it }.root
 
+    override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
+        super.onViewCreated(view, savedInstanceState)
+        binding.fuseMealMarker.setOnClickListener {
+            fusePlugin.toggleMealMarker(dateUtil.now())
+            update()
+        }
+    }
+
     override fun onResume() {
         super.onResume()
         disposable += rxBus
@@ -70,5 +78,9 @@ class FuseFragment : DaggerFragment() {
         _binding ?: return
         binding.fuseState.text =
             FuseScreenModel.render(fusePlugin.lastOutcome, fusePlugin.lastAPSResult, dateUtil.now())
+        binding.fuseMealMarker.text = getString(
+            if (fusePlugin.mealMarkerActive(dateUtil.now())) R.string.fuse_meal_marker_button_armed
+            else R.string.fuse_meal_marker_button
+        )
     }
 }

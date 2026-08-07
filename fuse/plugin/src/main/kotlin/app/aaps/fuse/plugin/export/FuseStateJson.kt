@@ -152,6 +152,7 @@ object FuseStateJson {
                 .put("onset", outcome.onset?.let { o ->
                     JSONObject()
                         .put("active", o.active)
+                        .put("mealMarker", o.mealMarker)
                         .put("driveMgdlPerMin", o.driveMgdlPerMin?.let { fin(it) } ?: JSONObject.NULL)
                         .put("remainingU", fin(o.remainingU))
                         .put("reason", o.reason)

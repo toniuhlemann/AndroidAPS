@@ -227,6 +227,32 @@ enum class FuseIntKey(
  * Schalter. Bewusst eine eigene Enum-Klasse statt eines Int-Flags: ein
  * Ein/Aus-Zustand gehoert als Schalter in den Bildschirm, nicht als Zahl.
  */
+/**
+ * Zeitstempel ausserhalb des Einstellungsdialogs. Der Marker ist ZUSTAND,
+ * keine Politik - er steht deshalb bewusst NICHT im Politik-Hash, aber in
+ * jedem Trail-Datensatz (`onset.mealMarker`).
+ */
+enum class FuseLongKey(
+    override val key: String,
+    override val defaultValue: Long,
+    override val min: Long = Long.MIN_VALUE,
+    override val max: Long = Long.MAX_VALUE,
+    override val calculatedDefaultValue: Boolean = false,
+    override val engineeringModeOnly: Boolean = false,
+    override val defaultedBySM: Boolean = false,
+    override val showInApsMode: Boolean = true,
+    override val showInNsClientMode: Boolean = true,
+    override val showInPumpControlMode: Boolean = true,
+    override val dependency: app.aaps.core.keys.interfaces.BooleanPreferenceKey? = null,
+    override val negativeDependency: app.aaps.core.keys.interfaces.BooleanPreferenceKey? = null,
+    override val hideParentScreenIfHidden: Boolean = false,
+    override val exportable: Boolean = true,
+) : app.aaps.core.keys.interfaces.LongPreferenceKey {
+
+    /** 0 = kein Marker. Sonst: Zeitpunkt des Knopfdrucks "Mahlzeit". */
+    MealMarkerArmedTs("fuse_meal_marker_armed_ts", 0, 0),
+}
+
 enum class FuseBooleanKey(
     override val key: String,
     override val defaultValue: Boolean,

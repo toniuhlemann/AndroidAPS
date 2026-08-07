@@ -8,6 +8,20 @@
     android:layout_width="match_parent"
     android:layout_height="match_parent">
 
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical">
+
+    <!-- Der EINE Bedienknopf des Reiters. Er dosiert nichts und rechnet
+         nichts - er setzt einen Zeitstempel, den der naechste Zyklus liest. -->
+    <Button
+        android:id="@+id/fuse_meal_marker"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_margin="8dp"
+        android:text="@string/fuse_meal_marker_button" />
+
     <TextView
         android:id="@+id/fuse_state"
         android:layout_width="match_parent"
@@ -16,5 +30,7 @@
         android:textIsSelectable="true"
         android:fontFamily="monospace"
         android:textSize="12sp" />
+
+    </LinearLayout>
 
 </androidx.core.widget.NestedScrollView>

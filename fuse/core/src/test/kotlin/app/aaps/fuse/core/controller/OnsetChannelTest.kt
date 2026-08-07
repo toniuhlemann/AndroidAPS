@@ -17,9 +17,10 @@ class OnsetChannelTest {
         enabled: Boolean = true,
         threshold: Double = 0.5,
         outlier: Boolean = false,
+        marker: Boolean = false,
         envelope: Double = 1.5,
         spent: Double = 0.0,
-    ) = OnsetChannel.Input(enabled, samples, r, threshold, outlier, envelope, spent)
+    ) = OnsetChannel.Input(enabled, samples, r, threshold, outlier, marker, envelope, spent)
 
     // ---- Die drei gemessenen Lagen ----------------------------------------
 
@@ -112,5 +113,34 @@ class OnsetChannelTest {
     fun `der Antrieb ist das Minimum der letzten drei`() {
         val res = OnsetChannel.evaluate(input(listOf(s(0, 0.8, 2.9), s(1, 1.2, 1.1), s(2, 2.0, 3.5))))
         assertEquals(1.1, res.driveMgdlPerMin!!, 1e-12)
+    }
+
+    // ---- Mahlzeiten-Marker ------------------------------------------------
+
+    /** Gemessen 07.08.: Marker 08:50, erste CGM-Regung 08:51 - mit Marker
+     *  reicht EIN Wert ueber der Schwelle. */
+    @Test
+    fun `mit Marker reicht ein einziger Wert ueber der Schwelle`() {
+        val res = OnsetChannel.evaluate(input(listOf(s(0, 0.9, 1.2)), marker = true))
+        assertTrue(res.active)
+        assertTrue(res.mealMarker)
+        assertEquals("OPEN_MARKER", res.reason)
+        assertEquals(1.2, res.driveMgdlPerMin!!, 1e-12)
+    }
+
+    /** Der Marker senkt die Schwelle NICHT - ein flacher Verlauf bleibt auch
+     *  mit Marker geschlossen. Der Knopf allein erzeugt keine Dosis. */
+    @Test
+    fun `der Marker allein oeffnet nichts`() {
+        val res = OnsetChannel.evaluate(input(listOf(s(0, 0.1, 0.1)), marker = true))
+        assertFalse(res.active)
+        assertEquals("UKF_BELOW_THR", res.reason)
+    }
+
+    /** Auch mit Marker gelten Ausreisser-Gate und Uebergabe an die Rampe. */
+    @Test
+    fun `Marker hebelt weder Ausreisser noch Uebergabe aus`() {
+        assertEquals("OUTLIER", OnsetChannel.evaluate(input(listOf(s(0, 0.9)), marker = true, outlier = true)).reason)
+        assertEquals("R_CONFIRMED", OnsetChannel.evaluate(input(listOf(s(0, 0.9)), marker = true, r = 2.0)).reason)
     }
 }

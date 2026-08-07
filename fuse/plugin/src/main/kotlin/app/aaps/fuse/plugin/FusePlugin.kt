@@ -143,6 +143,23 @@ class FusePlugin @Inject constructor(
         return maxIob
     }
 
+    /**
+     * Mahlzeiten-Marker: TT-UNABHAENGIG, bewusst. Ein TT wuerde Marker und
+     * Zielverschiebung vermischen; dieser Knopf senkt ausschliesslich die
+     * Evidenzschwelle des OnsetChannel und erzeugt selbst keine Dosis.
+     * Zweiter Druck nimmt ihn zurueck; nach MARKER_WINDOW_MIN verfaellt er.
+     */
+    fun toggleMealMarker(now: Long): Boolean {
+        val armed = mealMarkerActive(now)
+        preferences.put(FuseLongKey.MealMarkerArmedTs, if (armed) 0L else now)
+        return !armed
+    }
+
+    fun mealMarkerActive(now: Long): Boolean {
+        val ts = preferences.get(FuseLongKey.MealMarkerArmedTs)
+        return ts > 0 && now - ts in 0..(app.aaps.fuse.core.controller.OnsetChannel.MARKER_WINDOW_MIN * 60_000L)
+    }
+
     override fun specialEnableCondition(): Boolean =
         try {
             activePlugin.activePump.pumpDescription.isTempBasalCapable
