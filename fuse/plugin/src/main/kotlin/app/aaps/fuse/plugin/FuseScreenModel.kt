@@ -110,7 +110,7 @@ object FuseScreenModel {
                 row(b, "Freigabe", txt + stand)
             }
         }
-        sec(b, "Pruefungen")
+        if (outcome.candidate != null || outcome.candidateGap != null) sec(b, "Pruefungen")
         outcome.candidate?.let { c ->
             row(
                 b, "Kandidat",
