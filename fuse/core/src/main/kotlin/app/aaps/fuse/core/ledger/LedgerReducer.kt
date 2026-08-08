@@ -437,17 +437,35 @@ object LedgerReducer {
             s = fail(s, entry.proposalId, LedgerError.PHASE_VIOLATION, "execution result after ${entry.queueReject ?: "withdrawal"}")
             contradiction = true
         }
+        // G3 (Codex-Adjudication bae885f1): eine POSITIVE Liefermeldung nach
+        // einem bewiesenen NULL-Nachweis ist kein normaler Zustandswechsel,
+        // sondern ein unmoeglicher Zustand - zwei Beweislagen schliessen sich
+        // aus. Vorher lief die Meldung wirkungslos durch: grossLiabilityU gab
+        // dem Nachweis unbedingten Vorrang, und die Haftung blieb 0.
+        val zeroProofConflict = entry.provenZeroDelivery && (e.bolusDeliveredU ?: 0.0) > entry.amountEpsU
+        if (zeroProofConflict)
+            s = fail(
+                s, entry.proposalId, LedgerError.IMPOSSIBLE_STATE_CONFLICT,
+                "proven zero vs reported delivery ${e.bolusDeliveredU}"
+            )
+
+        fun ProposalEntry.withZeroProofConflict(): ProposalEntry =
+            if (zeroProofConflict) copy(contradicted = true).failed(LedgerError.IMPOSSIBLE_STATE_CONFLICT) else this
+
         // Der Latch bleibt auch dann noetig, wenn schon ein Lieferzeichen
         // vorliegt: er haelt den Widerspruch fuer das Audit fest.
         val commandU = entry.amounts.pumpCommandU ?: entry.amounts.latestKnownCommandU
         val delivery = LedgerRules.classifyDelivery(commandU, e.bolusDeliveredU, entry.bolusStepU)
         if (entry.terminalSeen) {
             val same = LedgerRules.sameAmount(entry.amounts.reportedDeliveredU, e.bolusDeliveredU, entry.amountEpsU)
-            if (same && !contradiction) return state
+            // Eine identische WIEDERHOLUNG ist kein DUPLICATE_TERMINAL - der
+            // Null-Beweis-Widerspruch wird trotzdem festgehalten.
+            if (same && !contradiction) return if (zeroProofConflict) put(s, entry.withZeroProofConflict()) else state
             val conservative = maxOf(entry.amounts.reportedDeliveredU ?: 0.0, e.bolusDeliveredU ?: 0.0)
             return put(
                 fail(s, entry.proposalId, LedgerError.DUPLICATE_TERMINAL, "delivered ${entry.amounts.reportedDeliveredU} -> ${e.bolusDeliveredU}"),
-                entry.copy(amounts = entry.amounts.copy(reportedDeliveredU = conservative)).failed(LedgerError.DUPLICATE_TERMINAL)
+                entry.copy(amounts = entry.amounts.copy(reportedDeliveredU = conservative))
+                    .failed(LedgerError.DUPLICATE_TERMINAL).withZeroProofConflict()
             )
         }
         var next = entry.copy(
@@ -457,6 +475,7 @@ object LedgerReducer {
             phase = LedgerPhase.TERMINAL,
         )
         if (contradiction) next = next.copy(contradicted = true).failed(LedgerError.PHASE_VIOLATION)
+        next = next.withZeroProofConflict()
         if (delivery == DeliveryState.OVERDELIVERY_ANOMALY) {
             s = fail(s, entry.proposalId, LedgerError.OVERDELIVERY_ANOMALY, "command=$commandU delivered=${e.bolusDeliveredU}")
             next = next.failed(LedgerError.OVERDELIVERY_ANOMALY)
@@ -495,6 +514,17 @@ object LedgerReducer {
             corrections = corrections,
         )
         if (contradiction) next = next.copy(contradicted = true).failed(LedgerError.PHASE_VIOLATION)
+        // G3, ANDERE Reihenfolge (Ordnungsinvarianz): der Null-Nachweis trifft
+        // NACH einer positiven Terminalmeldung ein. Auch dann schliessen sich
+        // die beiden Aussagen aus - der Nachweis darf die gemeldete Menge nicht
+        // stillschweigend loeschen (CONFIRMED_ZERO wuerde die Zeile schliessen).
+        if (delivery == DeliveryState.CONFIRMED_ZERO && (entry.amounts.reportedDeliveredU ?: 0.0) > entry.amountEpsU) {
+            s0 = fail(
+                s0, entry.proposalId, LedgerError.IMPOSSIBLE_STATE_CONFLICT,
+                "proven zero vs reported delivery ${entry.amounts.reportedDeliveredU}"
+            )
+            next = next.copy(contradicted = true).failed(LedgerError.IMPOSSIBLE_STATE_CONFLICT)
+        }
         if (delivery == DeliveryState.OVERDELIVERY_ANOMALY) {
             s0 = fail(s0, entry.proposalId, LedgerError.OVERDELIVERY_ANOMALY, "command=$commandU proven=${e.provenDeliveredU}")
             next = next.failed(LedgerError.OVERDELIVERY_ANOMALY)

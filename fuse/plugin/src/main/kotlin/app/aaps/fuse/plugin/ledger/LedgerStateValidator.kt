@@ -110,10 +110,15 @@ object LedgerStateValidator {
         // und keine Phase faellt je wieder zurueck.
         if (e.terminalSeen)
             require(e.phase == LedgerPhase.TERMINAL) { "terminalSeen in phase ${e.phase} (${e.proposalId})" }
-        // JEDER Widerspruchspfad des Reducers persistiert PHASE_VIOLATION an
-        // der Zeile - contradicted ohne den Befund ist Fremdinhalt.
+        // JEDER Widerspruchspfad des Reducers persistiert einen BEFUND an der
+        // Zeile - contradicted ohne ihn ist Fremdinhalt. Neben dem
+        // Reject-/Rueckzugs-Widerspruch (PHASE_VIOLATION) gibt es seit G3
+        // (Codex-Adjudication bae885f1) den Nachweis-Widerspruch: bewiesene
+        // Null gegen positive Liefermeldung -> IMPOSSIBLE_STATE_CONFLICT.
         if (e.contradicted)
-            require(LedgerError.PHASE_VIOLATION in e.errors) { "contradicted without PHASE_VIOLATION (${e.proposalId})" }
+            require(
+                LedgerError.PHASE_VIOLATION in e.errors || LedgerError.IMPOSSIBLE_STATE_CONFLICT in e.errors
+            ) { "contradicted without PHASE_VIOLATION/IMPOSSIBLE_STATE_CONFLICT (${e.proposalId})" }
         // Der schuldbefreiende Reject/Rueckzug (onQueueRejected/onWithdrawn):
         // beide setzen phase=TERMINAL, beide verlangen VORHER weder Annahme
         // noch Terminalereignis noch Pumpenkommando - und JEDES spaetere

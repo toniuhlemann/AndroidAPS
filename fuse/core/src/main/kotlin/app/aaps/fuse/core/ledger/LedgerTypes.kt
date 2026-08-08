@@ -407,18 +407,57 @@ data class ProposalEntry(
             amounts.pumpCommandU != null
 
     /**
+     * Ein NACHWEIS ueber eine Nullabgabe (G3) - genau der Beleg, aus dem
+     * [DeliveryState.CONFIRMED_ZERO] entsteht und der eine offene Haftung
+     * ohne IOB-Buchung schliessen darf.
+     */
+    val provenZeroDelivery: Boolean
+        get() = amounts.provenDeliveredU?.let { LedgerRules.canonicalTicks(it, bolusStepU) == 0L } == true
+
+    /**
+     * Dem NACHWEIS wurde widersprochen (G3, Codex-Adjudication bae885f1).
+     *
+     * Der Reducer setzt [LedgerError.IMPOSSIBLE_STATE_CONFLICT] genau dann,
+     * wenn sich zwei Beweislagen ausschliessen - bestaetigte Nullabgabe gegen
+     * eine positive Liefermeldung bzw. gegen einen positiv bilanzierten
+     * Datensatz. Danach ist der Nachweis keine belastbare Wahrheit mehr,
+     * sondern eine von zwei sich widersprechenden Aussagen.
+     */
+    val provenContradicted: Boolean
+        get() = LedgerError.IMPOSSIBLE_STATE_CONFLICT in errors
+
+    /** Eine bestaetigte Null zaehlt nur, solange ihr nicht widersprochen
+     *  wurde (G3) - sonst wuerde ausgerechnet der bestrittene Beweis die
+     *  Zeile schliessen. */
+    val confirmedZeroEffective: Boolean
+        get() = delivery == DeliveryState.CONFIRMED_ZERO && !provenContradicted
+
+    /**
      * Die konservativ moegliche Gesamtmenge dieser Zeile (R89-F1).
      *
      * Ein Nachweis schlaegt jede Schaetzung; sonst gilt die groesste bekannte
      * Groesse, inklusive der Untergrenze aus einem Widerspruch.
+     *
+     * G3 (Codex-Adjudication bae885f1): der Vorrang des Nachweises gilt NUR,
+     * solange ihm nicht widersprochen wurde. Vorher gab ein frueher Null-Beweis
+     * (provenDeliveredU = 0) unbedingt den Ton an - eine SPAETERE positive
+     * Terminalmeldung stellte die Haftung nicht wieder her, und die Zeile blieb
+     * bei 0. Im Widerspruchsfall gilt das konservative MAXIMUM aller bekannten
+     * Groessen; welche Aussage stimmt, ist von hier aus nicht entscheidbar.
      */
     val grossLiabilityU: Double
-        get() = amounts.provenDeliveredU
-            ?: maxOf(
-                amounts.latestKnownCommandU,
-                amounts.reportedDeliveredU ?: 0.0,
-                conservativeFloorU ?: 0.0,
+        get() {
+            val proven = amounts.provenDeliveredU
+            if (proven != null && !provenContradicted) return proven
+            return maxOf(
+                maxOf(
+                    amounts.latestKnownCommandU,
+                    amounts.reportedDeliveredU ?: 0.0,
+                    conservativeFloorU ?: 0.0,
+                ),
+                proven ?: 0.0,
             )
+        }
 
     /**
      * Was von [grossLiabilityU] noch NICHT im IOB steckt.
@@ -443,9 +482,10 @@ data class ProposalEntry(
     val overAccounted: Boolean
         get() = (accountedAmountU ?: 0.0) - grossLiabilityU > amountEpsU
 
-    /** Nichts mehr offen: es floss beweisbar nichts, oder es ist restlos gebucht. */
+    /** Nichts mehr offen: es floss beweisbar nichts, oder es ist restlos
+     *  gebucht. G3: ein BESTRITTENER Nullnachweis schliesst nicht mehr. */
     val closed: Boolean
-        get() = delivery == DeliveryState.CONFIRMED_ZERO ||
+        get() = confirmedZeroEffective ||
             debtReleaseEffective ||
             unaccountedResidualU <= 0.0
 
@@ -469,9 +509,11 @@ data class ProposalEntry(
      */
     val commitmentU: Double
         get() = when {
-            delivery == DeliveryState.CONFIRMED_ZERO -> 0.0
-            debtReleaseEffective                     -> 0.0
-            else                                     -> unaccountedResidualU
+            // G3: NUR die unbestrittene Null befreit - einem widersprochenen
+            // Nachweis darf die Menge nicht folgen.
+            confirmedZeroEffective -> 0.0
+            debtReleaseEffective   -> 0.0
+            else                   -> unaccountedResidualU
         }
 }
 

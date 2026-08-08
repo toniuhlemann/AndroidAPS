@@ -193,6 +193,20 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
         const val HOLD_REASON_RECOVERY = "LEDGER_RECOVERY_HOLD"
         const val HOLD_REASON_STATE = "LEDGER_STATE_HOLD"
         const val HOLD_REASON_MIGRATION = "LEDGER_MIGRATION_PENDING"
+
+        /**
+         * G5 (Codex-Adjudication bae885f1): ENTRYLOSE, globale Fehler
+         * (Snapshot-Ordnungskonflikt, Struktur) haben keinen Vorschlag, an dem
+         * sie haengen - im holdReason standen sie bisher pauschal als
+         * [HOLD_REASON_STATE], und Tab/Trail zeigten nicht, WAS gehalten wird.
+         * Der Grund traegt jetzt die Fehlerliste: `LEDGER_GLOBAL_HOLD:<fehler>`.
+         *
+         * AUSDRUECKLICH KEIN Quittungsweg: [app.aaps.fuse.core.ledger.LedgerEvent.HoldAcknowledged]
+         * ist proposal-bezogen und bleibt es - eine globale Quittung waere der
+         * Reparatur-Workflow, und der ist noch nicht gebaut (K1.4). Bis dahin
+         * ist ein globaler Hold nur sichtbar, nicht aufloesbar.
+         */
+        const val HOLD_REASON_GLOBAL = "LEDGER_GLOBAL_HOLD"
     }
 
     var state: LedgerState = LedgerState()
@@ -222,13 +236,34 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
     var persistFailed: Boolean = false
         private set
 
-    /** REG-01c: beim Laden gab es eine Vorgeschichte, die nicht (vollstaendig)
-     *  lesbar war - entweder ALLE Generationen unlesbar (Leerstart trotz
-     *  Vorgeschichte) oder mindestens eine (stiller Generationsverlust).
-     *  Sticky fuer die Prozesslebensdauer: der Verlust verschwindet nicht
-     *  dadurch, dass der Prozess weiterlaeuft. */
+    /**
+     * REG-01c: beim Laden gab es eine Vorgeschichte, die nicht (vollstaendig)
+     * lesbar war - entweder ALLE Generationen unlesbar (Leerstart trotz
+     * Vorgeschichte) oder mindestens eine (stiller Generationsverlust).
+     * Sticky fuer die Prozesslebensdauer: der Verlust verschwindet nicht
+     * dadurch, dass der Prozess weiterlaeuft.
+     *
+     * C8d (Codex-Adjudication bae885f1): das Feld allein reichte NICHT. Es
+     * lebte nur im RAM, und die Rotation des Stores haelt genau EINE
+     * Vorgeneration - zwei gehaltene Zyklen ersetzten also die korrupten
+     * Beweis-Generationen durch saubere leere. Nach dem Neustart existierte
+     * kein invalider Kandidat mehr, der Hold fiel weg und die unbekannte
+     * moegliche Abgabe war refinanzierbar. Seitdem haengt der Hold an ZWEI
+     * dauerhaften Dingen auf Platte: den QUARANTAENIERTEN Generationen
+     * (Beweis) und dem HOLD-MARKER [FuseLedgerStore.HOLD_NAME] (Aussage).
+     */
     var recoveryHold: Boolean = false
         private set
+
+    /**
+     * Inhalt des noch NICHT durabel geschriebenen Hold-Markers (C8d).
+     *
+     * Gesetzt beim Setzen von [recoveryHold]; solange er nicht auf Platte
+     * steht, meldet [persistVerified] false - ein Persist, dessen Verlust-
+     * beweis fehlt, ist kein vollstaendiger Persist (dieselbe Logik wie beim
+     * Sentinel, R4-01).
+     */
+    private var pendingHoldMarker: String? = null
 
     /**
      * Fix 1a (Re-Audit c750169, REG-03): die Uebernahme der Vorgeschichte aus
@@ -261,12 +296,21 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
      *  Recovery-/Migrations-Vorbehalt. Der Grund ist fuer Anzeige/Trail; bei
      *  mehreren gewinnt der handlungsleitende: erst die ausstehende
      *  Migration (ohne sie ist alles Uebrige vorlaeufig), dann Persistenz/
-     *  Recovery (Reducer-Holds stehen zusaetzlich im state). */
+     *  Recovery (Reducer-Holds stehen zusaetzlich im state).
+     *
+     *  G5 (Codex-Adjudication bae885f1): ENTRYLOSE Fehler (Snapshot-Ordnung,
+     *  Struktur) haben keinen Vorschlag, an dem sie haengen - sie werden
+     *  jetzt ausdruecklich als GLOBALER Hold mit Fehlerliste benannt, statt
+     *  im pauschalen [HOLD_REASON_STATE] zu verschwinden. Ein Weg, sie zu
+     *  quittieren, entsteht dadurch NICHT (s. [HOLD_REASON_GLOBAL]). */
     fun view(): LedgerView {
+        val globalErrors = state.activeHoldErrors.filter { it.proposalId == null }
         val reason = when {
             migrationPending    -> HOLD_REASON_MIGRATION
             persistFailed       -> HOLD_REASON_PERSIST_FAILED
             recoveryHold        -> HOLD_REASON_RECOVERY
+            state.holdActuation && globalErrors.isNotEmpty() ->
+                HOLD_REASON_GLOBAL + ":" + globalErrors.joinToString(",") { it.error.name }
             state.holdActuation -> HOLD_REASON_STATE
             else                -> null
         }
@@ -287,6 +331,19 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
      * NICHT still leer gestartet, sondern [recoveryHold] gesetzt (REG-01c):
      * "leer" waere die Behauptung, es habe nie ein Commitment gegeben. Nur
      * der echte Erststart (kein Kandidat existiert) startet ohne Hold.
+     *
+     * C8d (Codex-Adjudication bae885f1) macht diesen Hold DAUERHAFT:
+     *  1. die ungueltigen Generationen werden SOFORT quarantaeniert
+     *     (`<name>.corrupt.<ts>`) - danach kann die Rotation sie nicht mehr
+     *     ueberschreiben, und ihr Inhalt bleibt als Beweis liegen;
+     *  2. ein eigener Marker [FuseLedgerStore.HOLD_NAME] wird VERIFIZIERT
+     *     geschrieben (Grund, Zeit, quarantaenierte Namen, letzte lesbare
+     *     transportCommitmentU); schlaegt er fehl, ist der naechste
+     *     [persistVerified] ungueltig;
+     *  3. EXISTIERT dieser Marker beim Laden, gilt der Hold - unabhaengig
+     *     davon, ob der Zustand sauber laedt.
+     * Aufgeloest wird er NICHT durch Zeit, Zyklen oder Neustart; ein
+     * Reparatur-Workflow dafuer ist noch nicht gebaut (fail-closed).
      *
      * Traegt der geladene Zustand eine Snapshot-Ordnung aus einer anderen
      * Epoch, wird der Epochwechsel VOR dem ersten Snapshot ANGEKUENDIGT
@@ -320,35 +377,82 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
             // Zeile ist bedeutungslos (geprunte Zeilen sperrt retiredBoundIds).
             proposalPumpEpochs.putAll(decoded.pumpEpochs.filterKeys { it in decoded.state.entries })
         }
-        if (read.anyCandidateExisted && decoded == null) {
-            // Vorgeschichte existiert, aber KEINE Generation ist lesbar:
-            // Leerstart NUR unter Recovery-Hold - moeglicherweise abgegebenes
-            // Insulin darf nicht als "nie passiert" verbucht werden.
+        // C8d (3): der HOLD-MARKER gilt UNABHAENGIG davon, ob der Zustand
+        // sauber laedt. Er ist der einzige Zeuge, der einen Prozesswechsel
+        // ueberlebt - genau daran scheiterte der alte RAM-Hold.
+        if (FuseLedgerStore.holdExists(dir)) {
             recoveryHold = true
             log(
-                "FUSE ledger RECOVERY_HOLD: Generationen vorhanden, aber keine lesbar/gueltig - " +
-                    "Leerstart nur mit Sperre, Aktuation bleibt zu bis zum Neustart nach Klaerung (dir=$dir)"
+                "FUSE ledger RECOVERY_HOLD: Hold-Marker ${FuseLedgerStore.HOLD_NAME} vorhanden - " +
+                    "ein frueherer Lauf hat einen Verlust festgestellt; Aktuation bleibt zu, bis der " +
+                    "(noch nicht gebaute) Reparatur-Workflow ihn aufloest (dir=$dir)"
             )
-        } else if (!read.anyCandidateExisted && FuseLedgerStore.sentinelExists(dir)) {
-            // Fix 1b (Re-Audit 6.1): der SENTINEL sagt "es gab schon einen
-            // Ledger", aber KEINE Generation liegt mehr da - das ist
-            // DATENVERLUST, kein Erststart. Ohne den Marker waere beides
-            // ununterscheidbar, und verlorene offene Haftung wuerde still
-            // als "nie passiert" verbucht.
+        }
+        val cause = when {
+            read.anyCandidateExisted && decoded == null -> {
+                // Vorgeschichte existiert, aber KEINE Generation ist lesbar:
+                // Leerstart NUR unter Recovery-Hold - moeglicherweise abgegebenes
+                // Insulin darf nicht als "nie passiert" verbucht werden.
+                log(
+                    "FUSE ledger RECOVERY_HOLD: Generationen vorhanden, aber keine lesbar/gueltig - " +
+                        "Leerstart nur mit Sperre, Aktuation bleibt zu bis zum Neustart nach Klaerung (dir=$dir)"
+                )
+                "ALL_GENERATIONS_INVALID"
+            }
+
+            !read.anyCandidateExisted && FuseLedgerStore.sentinelExists(dir) -> {
+                // Fix 1b (Re-Audit 6.1): der SENTINEL sagt "es gab schon einen
+                // Ledger", aber KEINE Generation liegt mehr da - das ist
+                // DATENVERLUST, kein Erststart. Ohne den Marker waere beides
+                // ununterscheidbar, und verlorene offene Haftung wuerde still
+                // als "nie passiert" verbucht.
+                log(
+                    "FUSE ledger RECOVERY_HOLD: Sentinel vorhanden, aber keine Generation mehr lesbar - " +
+                        "Datenverlust statt Erststart, Aktuation bleibt zu (dir=$dir)"
+                )
+                "SENTINEL_WITHOUT_GENERATION"
+            }
+
+            read.anyCandidateInvalid                   -> {
+                // Eine Generation war da, aber unlesbar - stiller
+                // Generationsverlust: die gewaehlte Generation kann aelter sein
+                // als das zuletzt Publizierte. Konservativ: Sperre.
+                log(
+                    "FUSE ledger RECOVERY_HOLD: mindestens eine existierende Generation unlesbar " +
+                        "(stiller Generationsverlust moeglich) - geladen wurde revision=$revision (dir=$dir)"
+                )
+                "SILENT_GENERATION_LOSS"
+            }
+
+            else                                       -> null
+        }
+        if (cause != null) {
             recoveryHold = true
-            log(
-                "FUSE ledger RECOVERY_HOLD: Sentinel vorhanden, aber keine Generation mehr lesbar - " +
-                    "Datenverlust statt Erststart, Aktuation bleibt zu (dir=$dir)"
-            )
-        } else if (read.anyCandidateInvalid) {
-            // Eine Generation war da, aber unlesbar - stiller
-            // Generationsverlust: die gewaehlte Generation kann aelter sein
-            // als das zuletzt Publizierte. Konservativ: Sperre.
-            recoveryHold = true
-            log(
-                "FUSE ledger RECOVERY_HOLD: mindestens eine existierende Generation unlesbar " +
-                    "(stiller Generationsverlust moeglich) - geladen wurde revision=$revision (dir=$dir)"
-            )
+            // C8d (1) QUARANTAENE: die ungueltigen Generationen SOFORT aus dem
+            // Weg der Rotation nehmen. Bleiben sie unter ihrem
+            // Generationsnamen liegen, ueberschreibt sie der naechste
+            // (gehaltene) Persist - erst target->bak, dann bak.delete() - und
+            // der Beweis ist weg.
+            val quarantined = FuseLedgerStore.quarantineInvalid(read.invalidFiles, nowTs)
+            if (quarantined.isNotEmpty())
+                log("FUSE ledger QUARANTAENE: ${quarantined.joinToString(",")} (dir=$dir)")
+            // C8d (2) DAUERHAFTER MARKER.
+            val marker = JSONObject()
+                .put("v", 1)
+                .put("reason", cause)
+                .put("ts", nowTs)
+                .put("quarantined", org.json.JSONArray(quarantined))
+                // Die letzte LESBARE offene Haftung - fehlt sie (nichts
+                // dekodierbar), bleibt das Feld weg: unbekannt ist nicht 0.
+                .putOpt("transportCommitmentU", decoded?.state?.transportCommitmentU)
+                .toString()
+            if (!FuseLedgerStore.writeHoldVerified(dir, marker)) {
+                pendingHoldMarker = marker
+                log(
+                    "FUSE ledger RECOVERY_HOLD: Hold-Marker konnte nicht geschrieben werden - " +
+                        "persistVerified bleibt fail-closed, bis er auf Platte steht (dir=$dir)"
+                )
+            }
         }
         val oldEpoch = state.lastSnapshotOrder?.sourceEpochId
         if (oldEpoch != null && oldEpoch != sessionId)
@@ -558,6 +662,11 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
      * Vorgeschichte verdecken und den naechsten Migrationsversuch dauerhaft
      * blockieren (das Ziel saehe "schon belegt" aus).
      *
+     * C8d: derselbe Vertragsgedanke gilt fuer den HOLD-MARKER. Steht er nach
+     * einem Recovery-Hold noch aus, wird gar nicht erst geschrieben und der
+     * Persist meldet false - eine saubere neue Generation OHNE Verlustbeweis
+     * ist genau der Zustand, in dem der naechste Start nichts mehr merkt.
+     *
      * R4-01 (vorher Fix 1b, tolerant): der SENTINEL ist BESTANDTEIL des
      * Persist-Erfolgs. Erfolg = writeVerified UND (Marker existiert oder
      * wurde jetzt verifiziert geschrieben). Ein Persist ohne Verlustmarker
@@ -571,13 +680,36 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
             persistFailed = true
             return false
         }
-        val ok = runCatching {
+        // C8d (2): der HOLD-MARKER ist Vertragsbestandteil wie der Sentinel -
+        // und er steht VOR dem Zustandsschreiben. Solange der Verlustbeweis
+        // nicht durabel ist, entsteht auch keine neue saubere Generation:
+        // genau diese Kombination (saubere Generationen ohne Verlustbeweis)
+        // war der C8d-Pfad, auf dem der Hold verschwand.
+        val ok = writeHoldMarkerIfPending(dir) && runCatching {
             store.writeVerified(
                 dir,
                 LedgerCodec.encode(state, episodes, revision, retiredBoundIds.toList(), proposalPumpEpochs.toMap()).toString(),
             )
         }.getOrDefault(false) && FuseLedgerStore.writeSentinel(dir)
         persistFailed = !ok
+        return ok
+    }
+
+    /**
+     * Den beim Laden entstandenen Hold-Marker nachziehen (C8d).
+     *
+     * Steht nichts aus, ist das Ergebnis true - der Normalfall kostet nichts.
+     * Ein noch ausstehender Marker wird bei JEDEM Persist erneut versucht;
+     * bis er liegt, ist der Persist ungueltig (fail-closed).
+     *
+     * Der Marker wird hier NIE geloescht - auch nicht nach einem gelungenen
+     * Persist. Es gibt bewusst noch keinen Aufloesungsweg; er gehoert in den
+     * eigenen Reparatur-Workflow (Adjudication K1.1/G4).
+     */
+    private fun writeHoldMarkerIfPending(dir: File): Boolean {
+        val marker = pendingHoldMarker ?: return true
+        val ok = FuseLedgerStore.writeHoldVerified(dir, marker)
+        if (ok) pendingHoldMarker = null
         return ok
     }
 

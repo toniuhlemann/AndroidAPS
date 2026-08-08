@@ -1,7 +1,11 @@
 package app.aaps.fuse.plugin.ledger
 
+import app.aaps.core.data.model.BS
+import app.aaps.core.data.model.IDs
+import app.aaps.core.data.pump.defs.PumpType
 import app.aaps.core.interfaces.aps.APSResult
 import app.aaps.core.interfaces.aps.RT
+import app.aaps.fuse.core.util.Sha
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNotNull
@@ -98,6 +102,45 @@ class LedgerPublicationGateTest {
         // Platte, und weil er durabel ist, sperrt NUR dieser Zyklus.
         assertTrue(File(dir, FuseLedgerStore.FILE_NAME).exists())
         assertFalse(a.view().hold)
+    }
+
+    // ---- G2 (Codex-Adjudication bae885f1): Hold im SELBEN Zyklus ----------
+
+    private fun smb(ts: Long, amount: Double, pumpId: Long) = BS(
+        timestamp = ts,
+        amount = amount,
+        type = BS.Type.SMB,
+        ids = IDs(pumpType = PumpType.GENERIC_AAPS, pumpSerial = "vs", pumpId = pumpId),
+    )
+
+    /**
+     * DER G2-Repro: die Reconciliation entdeckt WAEHREND der Events einen
+     * Hold (hier MISSING_ACCOUNTED_TREATMENT - der zuvor nachgewiesene Fakt
+     * fehlt in der neuen Vollsicht), der Persist gelingt - und das Gate gab
+     * das positive RT trotzdem unveraendert zurueck. Der Hold griff erst im
+     * NAECHSTEN Zyklus, also eine Dosis zu spaet.
+     */
+    @Test
+    fun `G2 ein waehrend der Events entdeckter Hold strippt den SMB im selben Zyklus`(@TempDir dir: File) {
+        val a = loadedAdapter(dir)
+        val b = smb(t0 + 5_000L, 0.30, pumpId = 4711L)
+        val out = LedgerPublicationGate.publish(rtWithSmb(), a, dir, events = {
+            a.onPublished("p1", 0.30, t0, 0L, 0.05, PumpType.GENERIC_AAPS.name, Sha.of("vs"))
+            a.bindIdentities(listOf(b))
+            // Erst nachgewiesen ...
+            a.onCycleSnapshot(listOf(LedgerFacts.fact(b)), LedgerFacts.snapshotHash(listOf(b)), t0 + 60_000L)
+            // ... dann aus der Vollsicht verschwunden: MISSING_ACCOUNTED_TREATMENT.
+            a.onCycleSnapshot(emptyList(), LedgerFacts.snapshotHash(emptyList()), t0 + 120_000L)
+        })
+        assertTrue(a.view().hold, "der Ledger haelt nicht - Testaufbau falsch")
+        assertNull(out.units, "der SMB wurde trotz Hold publiziert")
+        assertNull(out.deliverAt)
+        // Die Safety-TBR bleibt, wie bei den anderen Strip-Pfaden.
+        assertEquals(0.0, out.rate!!, 1e-12)
+        assertEquals(30, out.duration)
+        assertTrue(out.reason.contains(LedgerPublicationGate.REASON_LATE_HOLD), "reason=${out.reason}")
+        // Der Persist selbst war erfolgreich - es ist KEIN Persist-Fehlschlag.
+        assertFalse(a.persistFailed)
     }
 
     @Test

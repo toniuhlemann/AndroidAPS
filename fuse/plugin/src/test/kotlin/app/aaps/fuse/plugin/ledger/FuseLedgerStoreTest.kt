@@ -3,6 +3,7 @@ package app.aaps.fuse.plugin.ledger
 import org.json.JSONObject
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
+import org.junit.jupiter.api.Assertions.assertNotEquals
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
@@ -164,5 +165,93 @@ class FuseLedgerStoreTest {
         assertNull(r.content)
         assertTrue(r.anyCandidateExisted)
         assertTrue(r.anyCandidateInvalid)
+    }
+
+    // ---- C8d: Quarantaene der ungueltigen Generationen --------------------
+
+    /** Der Leser meldet nicht nur DASS, sondern WELCHE Kandidaten ungueltig
+     *  waren - ohne die Dateiliste kann der Adapter sie nicht der Rotation
+     *  entziehen (Codex C8d). */
+    @Test
+    fun `readNewestValid benennt die ungueltigen Kandidaten`(@TempDir dir: File) {
+        store.write(dir, json(1))
+        store.write(dir, json(2))
+        File(dir, FuseLedgerStore.FILE_NAME).writeText("{kaputt")
+        val r = store.readNewestValid(dir, validate)
+        assertEquals(listOf(FuseLedgerStore.FILE_NAME), r.invalidFiles.map { it.name })
+    }
+
+    /** QUARANTAENE: die unlesbare Generation wird umbenannt, nicht geloescht -
+     *  danach kann die Rotation sie nicht mehr ueberschreiben, und der Inhalt
+     *  bleibt als Beweis liegen. */
+    @Test
+    fun `quarantineInvalid benennt um und erhaelt den Inhalt`(@TempDir dir: File) {
+        val target = File(dir, FuseLedgerStore.FILE_NAME).also { it.writeText("{kaputt") }
+        val bak = File(dir, FuseLedgerStore.FILE_NAME + ".bak").also { it.writeText("auch kaputt") }
+
+        val names = FuseLedgerStore.quarantineInvalid(listOf(target, bak), 4711L)
+        assertEquals(2, names.size)
+        assertFalse(target.exists())
+        assertFalse(bak.exists())
+        val inhalte = names.map { File(dir, it).readText() }.toSet()
+        assertEquals(setOf("{kaputt", "auch kaputt"), inhalte)
+        assertTrue(names.all { it.contains(FuseLedgerStore.CORRUPT_SUFFIX) }, "$names")
+    }
+
+    /** Zweimal derselbe Stempel darf den ersten Beweis nicht ueberschreiben. */
+    @Test
+    fun `quarantineInvalid ueberschreibt keinen aelteren Beweis`(@TempDir dir: File) {
+        val f = File(dir, FuseLedgerStore.FILE_NAME)
+        f.writeText("erster")
+        val first = FuseLedgerStore.quarantineInvalid(listOf(f), 4711L)
+        f.writeText("zweiter")
+        val second = FuseLedgerStore.quarantineInvalid(listOf(f), 4711L)
+        assertNotEquals(first.single(), second.single())
+        assertEquals("erster", File(dir, first.single()).readText())
+        assertEquals("zweiter", File(dir, second.single()).readText())
+    }
+
+    @Test
+    fun `quarantineInvalid vertraegt fehlende Dateien ohne Wurf`(@TempDir dir: File) {
+        assertTrue(FuseLedgerStore.quarantineInvalid(listOf(File(dir, "gibt-es-nicht")), 1L).isEmpty())
+    }
+
+    // ---- C8d: der dauerhafte Hold-Marker ----------------------------------
+
+    @Test
+    fun `writeHoldVerified legt den Marker an und meldet ihn`(@TempDir dir: File) {
+        assertFalse(FuseLedgerStore.holdExists(dir))
+        assertTrue(FuseLedgerStore.writeHoldVerified(dir, """{"reason":"TEST"}"""))
+        assertTrue(FuseLedgerStore.holdExists(dir))
+        assertEquals("""{"reason":"TEST"}""", File(dir, FuseLedgerStore.HOLD_NAME).readText())
+    }
+
+    /** Ein vorhandener Marker wird NICHT ueberschrieben: der aelteste Befund
+     *  ist der, der den Hold ausgeloest hat. */
+    @Test
+    fun `writeHoldVerified laesst einen vorhandenen Marker stehen`(@TempDir dir: File) {
+        assertTrue(FuseLedgerStore.writeHoldVerified(dir, "erster"))
+        assertTrue(FuseLedgerStore.writeHoldVerified(dir, "zweiter"))
+        assertEquals("erster", File(dir, FuseLedgerStore.HOLD_NAME).readText())
+    }
+
+    /** Blockade (Verzeichnis unter dem Markernamen): false statt Wurf - der
+     *  Aufrufer haelt daraufhin fail-closed an. */
+    @Test
+    fun `writeHoldVerified meldet Blockade als false statt zu werfen`(@TempDir dir: File) {
+        assertTrue(File(dir, FuseLedgerStore.HOLD_NAME).mkdirs())
+        assertFalse(FuseLedgerStore.writeHoldVerified(dir, "x"))
+        assertFalse(FuseLedgerStore.holdExists(dir))
+    }
+
+    /** Der Marker ist KEIN Ledger-Kandidat: er darf die Generationenwahl
+     *  nicht beeinflussen. */
+    @Test
+    fun `der Hold-Marker ist kein Generationskandidat`(@TempDir dir: File) {
+        assertTrue(FuseLedgerStore.writeHoldVerified(dir, "hold"))
+        val r = store.readNewestValid(dir, validate)
+        assertNull(r.content)
+        assertFalse(r.anyCandidateExisted)
+        assertFalse(r.anyCandidateInvalid)
     }
 }

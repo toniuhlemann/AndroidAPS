@@ -1443,6 +1443,80 @@ class LedgerReducerTest {
         }
     }
 
+    // ---- G3 (Codex-Adjudication bae885f1): Null-Beweis vs. Terminalmeldung -
+
+    /**
+     * DER G3-Repro: ein frueher Null-Beweis liess eine spaetere POSITIVE
+     * Liefermeldung ins Leere laufen - `grossLiabilityU` gab dem Nachweis
+     * unbedingten Vorrang, die Haftung blieb 0 und die Zeile geschlossen.
+     * Zwei Beweise, die sich widersprechen, sind aber kein Fortschritt,
+     * sondern ein unmoeglicher Zustand: Hold + konservatives Maximum.
+     */
+    @Test
+    fun `G3 eine positive Terminalmeldung nach bewiesener Null ist ein Widerspruch`() {
+        val proven = run(proposed(0.30), LedgerEvent.DeliveryProven(id, 0.0, "pump history"))
+        assertEquals(DeliveryState.CONFIRMED_ZERO, entry(proven).delivery)
+        assertEquals(0.0, proven.transportCommitmentU, 1e-12)
+
+        val s = LedgerReducer.reduce(proven, LedgerEvent.ExecutionResult(id, true, true, 0.30), cfg)
+        val e = entry(s)
+        assertTrue(e.contradicted, "Widerspruch nicht markiert")
+        assertTrue(e.errors.contains(LedgerError.IMPOSSIBLE_STATE_CONFLICT), "kein Fehlereintrag: ${e.errors}")
+        assertTrue(s.holdActuation, "der Widerspruch sperrt nicht")
+        assertTrue(e.grossLiabilityU >= 0.30, "grossLiability ${e.grossLiabilityU} < 0.30")
+        assertEquals(0.30, s.transportCommitmentU, 1e-12)
+        assertFalse(e.closed, "die Zeile gilt trotz Widerspruch als geschlossen")
+    }
+
+    /** Dieselbe Aussage in der anderen Reihenfolge (Ordnungsinvarianz): der
+     *  Null-Beweis trifft NACH der positiven Meldung ein. Auch dann darf die
+     *  bestaetigte Null die Haftung nicht loeschen. */
+    @Test
+    fun `G3 auch der spaetere Null-Beweis loescht eine positive Meldung nicht`() {
+        val s = run(
+            proposed(0.30),
+            LedgerEvent.ExecutionResult(id, true, true, 0.30),
+            LedgerEvent.DeliveryProven(id, 0.0, "pump history"),
+        )
+        val e = entry(s)
+        assertTrue(e.contradicted)
+        assertTrue(e.errors.contains(LedgerError.IMPOSSIBLE_STATE_CONFLICT), "kein Fehlereintrag: ${e.errors}")
+        assertTrue(s.holdActuation)
+        assertTrue(e.grossLiabilityU >= 0.30, "grossLiability ${e.grossLiabilityU} < 0.30")
+        assertEquals(0.30, s.transportCommitmentU, 1e-12)
+    }
+
+    /** Der Widerspruch ist NICHT quittierbar: er braucht eine Reparatur,
+     *  keine Unterschrift (fail-closed, s. FAIL_CLOSED_ERRORS). */
+    @Test
+    fun `G3 der Widerspruch ist fail-closed und nicht quittierbar`() {
+        assertTrue(LedgerError.IMPOSSIBLE_STATE_CONFLICT in LedgerState.FAIL_CLOSED_ERRORS)
+        assertFalse(LedgerError.IMPOSSIBLE_STATE_CONFLICT in LedgerState.RECOVERABLE_ERRORS)
+    }
+
+    /** GEGENPROBE: der Null-Beweis OHNE spaetere positive Gegenmeldung bleibt
+     *  genau das, was er war - CONFIRMED_ZERO mit Commitment 0. Der Fix darf
+     *  den belegten Normalfall nicht mit anhalten. */
+    @Test
+    fun `G3 ein unwidersprochener Null-Beweis bleibt eine bestaetigte Null`() {
+        val s = LedgerReducer.reduceAll(
+            LedgerState(),
+            throughPump(0.30) + listOf(
+                LedgerEvent.ExecutionResult(id, true, false, 0.0),
+                LedgerEvent.DeliveryProven(id, 0.0, "pump history"),
+            ),
+            cfg,
+        )
+        val e = entry(s)
+        assertEquals(DeliveryState.CONFIRMED_ZERO, e.delivery)
+        assertFalse(e.contradicted)
+        assertFalse(e.errors.contains(LedgerError.IMPOSSIBLE_STATE_CONFLICT))
+        assertFalse(s.holdActuation)
+        assertEquals(0.0, e.grossLiabilityU, 1e-12)
+        assertEquals(0.0, s.transportCommitmentU, 1e-12)
+        assertTrue(e.closed)
+    }
+
     // ---- R79-F2: ungueltige Mengen ---------------------------------------
 
     @Test

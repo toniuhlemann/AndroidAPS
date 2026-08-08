@@ -437,6 +437,137 @@ class FuseLedgerAdapterTest {
         assertEquals(0.0, b.view().transportCommitmentU, 1e-12)
     }
 
+    // ---- C8d (Codex-Adjudication bae885f1): DAUERHAFTER Recovery-Hold -----
+
+    /** Vorgeschichte mit OFFENER Verpflichtung, danach werden ALLE
+     *  Generationen unlesbar gemacht. Die Inhalte sind unterscheidbar, damit
+     *  der Beweis-Erhalt pruefbar ist. */
+    private fun korrupteVorgeschichte(dir: File) {
+        val a = loadedAdapter(dir, "epoch-a")
+        a.publishVs("p1", 0.30, t0)
+        assertTrue(a.persistVerified(dir))
+        a.publishVs("p2", 0.15, t0 + 60_000L)
+        assertTrue(a.persistVerified(dir)) // target + bak liegen
+        File(dir, FuseLedgerStore.FILE_NAME).writeText("{kaputt-target")
+        File(dir, FuseLedgerStore.FILE_NAME + ".bak").writeText("{kaputt-bak")
+        File(dir, FuseLedgerStore.FILE_NAME + ".tmp").writeText("{kaputt-tmp")
+    }
+
+    /**
+     * DER C8d-Repro: zwei GEHALTENE Zyklen rotierten die korrupten
+     * Beweis-Generationen durch saubere leere - nach dem Neustart existierte
+     * kein invalider Kandidat mehr, der Hold fiel weg und die moeglicherweise
+     * abgegebene Menge war refinanzierbar. Der Hold muss beliebig viele
+     * gehaltene Zyklen UND den Prozesswechsel ueberleben.
+     */
+    @Test
+    fun `C8d der Recovery-Hold ueberlebt zwei gehaltene Zyklen und den Neustart`(@TempDir dir: File) {
+        korrupteVorgeschichte(dir)
+
+        val b = FuseLedgerAdapter().also { it.loadOnce(dir, "epoch-b", t0 + 120_000L) }
+        assertTrue(b.recoveryHold)
+        assertTrue(b.persistVerified(dir))
+        assertTrue(b.persistVerified(dir))
+
+        val c = FuseLedgerAdapter().also { it.loadOnce(dir, "epoch-c", t0 + 180_000L) }
+        assertTrue(c.recoveryHold, "Recovery-Hold nach zwei gehaltenen Zyklen verloren")
+        assertTrue(c.view().hold)
+        assertEquals(FuseLedgerAdapter.HOLD_REASON_RECOVERY, c.view().holdReason)
+    }
+
+    /** BEWEIS-ERHALT: die urspruenglich korrupten Inhalte duerfen nach den
+     *  gehaltenen Persists nicht spurlos verschwunden sein - sie sind der
+     *  einzige Anhaltspunkt fuer die spaetere Reparatur. */
+    @Test
+    fun `C8d die korrupten Generationen bleiben als Beweis erhalten`(@TempDir dir: File) {
+        korrupteVorgeschichte(dir)
+
+        val b = FuseLedgerAdapter().also { it.loadOnce(dir, "epoch-b", t0 + 120_000L) }
+        assertTrue(b.persistVerified(dir))
+        assertTrue(b.persistVerified(dir))
+
+        val beweise = dir.listFiles().orEmpty()
+            .filter { it.name.contains(FuseLedgerStore.CORRUPT_SUFFIX) }
+            .map { it.readText() }
+            .toSet()
+        assertEquals(setOf("{kaputt-target", "{kaputt-bak", "{kaputt-tmp"), beweise)
+
+        // Der Marker nennt die quarantaenierten Dateien.
+        val marker = org.json.JSONObject(File(dir, FuseLedgerStore.HOLD_NAME).readText())
+        assertEquals(3, marker.getJSONArray("quarantined").length())
+        assertTrue(marker.getString("reason").isNotBlank())
+    }
+
+    /** Der Marker allein sperrt: er gilt UNABHAENGIG davon, ob der Zustand
+     *  sauber laedt - sonst waere der Hold wieder eine Prozesslaune. */
+    @Test
+    fun `C8d ein vorhandener Hold-Marker sperrt auch bei sauberem Zustand`(@TempDir dir: File) {
+        val a = loadedAdapter(dir, "epoch-a")
+        a.publishVs("p1", 0.30, t0)
+        assertTrue(a.persistVerified(dir))
+        assertTrue(FuseLedgerStore.writeHoldVerified(dir, """{"reason":"TEST","ts":1}"""))
+
+        val b = FuseLedgerAdapter().also { it.loadOnce(dir, "epoch-b", t0 + 60_000L) }
+        // Der Zustand laedt vollstaendig ...
+        assertEquals(0.30, b.view().transportCommitmentU, 1e-12)
+        // ... und ist trotzdem gesperrt.
+        assertTrue(b.recoveryHold)
+        assertEquals(FuseLedgerAdapter.HOLD_REASON_RECOVERY, b.view().holdReason)
+        // Ein normaler Persist loescht den Marker NIE (fail-closed, die
+        // Aufloesung ist ein eigener Reparatur-Workflow).
+        assertTrue(b.persistVerified(dir))
+        assertTrue(File(dir, FuseLedgerStore.HOLD_NAME).isFile)
+        assertTrue(b.view().hold)
+    }
+
+    /** Kann der Marker nicht entstehen, ist der Persist NICHT gueltig - sonst
+     *  entstuenden saubere Generationen, waehrend der Verlustbeweis fehlt. */
+    @Test
+    fun `C8d ein nicht schreibbarer Hold-Marker macht den Persist ungueltig`(@TempDir dir: File) {
+        File(dir, FuseLedgerStore.FILE_NAME).writeText("{kaputt")
+        assertTrue(File(dir, FuseLedgerStore.HOLD_NAME).mkdirs())
+
+        val a = FuseLedgerAdapter().also { it.loadOnce(dir, "epoch-a", t0) }
+        assertTrue(a.recoveryHold)
+        assertFalse(a.persistVerified(dir))
+        assertTrue(a.persistFailed)
+        // Es wurde auch keine saubere Generation geschrieben.
+        assertFalse(File(dir, FuseLedgerStore.FILE_NAME).exists())
+
+        // Blockade weg -> der naechste Persist zieht den Marker nach ...
+        assertTrue(File(dir, FuseLedgerStore.HOLD_NAME).delete())
+        assertTrue(a.persistVerified(dir))
+        assertTrue(File(dir, FuseLedgerStore.HOLD_NAME).isFile)
+        // ... und der Hold bleibt trotzdem stehen.
+        assertTrue(a.view().hold)
+        assertEquals(FuseLedgerAdapter.HOLD_REASON_RECOVERY, a.view().holdReason)
+    }
+
+    // ---- G5: globale Hold-Identitaet --------------------------------------
+
+    /** Ein entryloser (globaler) Fehler - hier die WIEDERVERWENDUNG einer
+     *  schon benutzten Epoch - muss im holdReason als solcher benannt sein.
+     *  Vorher stand dort pauschal LEDGER_STATE_HOLD, und Tab/Trail zeigten
+     *  nicht, WAS gehalten wird. */
+    @Test
+    fun `G5 ein globaler Hold wird als solcher benannt`(@TempDir dir: File) {
+        val a = loadedAdapter(dir, "epoch-a")
+        a.onCycleSnapshot(emptyList(), LedgerFacts.snapshotHash(emptyList()), t0 + 1_000L)
+        assertTrue(a.persistVerified(dir))
+        val b = loadedAdapter(dir, "epoch-b", t0 + 60_000L)
+        b.onCycleSnapshot(emptyList(), LedgerFacts.snapshotHash(emptyList()), t0 + 61_000L)
+        assertTrue(b.persistVerified(dir))
+
+        // Dritter Start mit einer BEREITS BENUTZTEN Epoch: der Rebase wird
+        // abgewiesen (SNAPSHOT_ORDER_CONFLICT ohne proposalId).
+        val c = loadedAdapter(dir, "epoch-a", t0 + 120_000L)
+        assertFalse(c.recoveryHold)
+        assertTrue(c.view().hold)
+        val reason = c.view().holdReason
+        assertTrue(reason!!.startsWith(FuseLedgerAdapter.HOLD_REASON_GLOBAL), "holdReason=$reason")
+        assertTrue(reason.contains("SNAPSHOT_ORDER_CONFLICT"), "holdReason=$reason")
+    }
+
     // ---- R4-03: UNPINNED statt API-Fallback --------------------------------
 
     /** ROT gegen den Altstand: eine Publikation OHNE Pumpen-Info (beide

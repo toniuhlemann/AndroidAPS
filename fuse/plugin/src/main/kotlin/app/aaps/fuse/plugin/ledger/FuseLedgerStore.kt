@@ -66,6 +66,83 @@ class FuseLedgerStore {
             f.writeText("v1", Charsets.UTF_8)
             f.isFile
         }.getOrDefault(false)
+
+        /**
+         * QUARANTAENE-Suffix fuer ungueltige Generationen (Codex C8d).
+         *
+         * Der vollstaendige Name ist `<generation>.corrupt.<ts>`; er ist
+         * bewusst KEIN Kandidat von [readNewestValid] - eine quarantaenierte
+         * Datei nimmt nie wieder an der Generationswahl teil.
+         */
+        const val CORRUPT_SUFFIX = ".corrupt."
+
+        /**
+         * DAUERHAFTER Hold-Marker (Codex C8d, G4).
+         *
+         * WARUM eine eigene Datei: der Recovery-Hold lebte als RAM-Feld im
+         * Adapter, und die Rotation ([write]) haelt nur EINE Vorgeneration -
+         * zwei gehaltene Zyklen ersetzten also die korrupten Beweis-
+         * Generationen durch saubere leere. Nach dem Neustart existierte kein
+         * invalider Kandidat mehr, der Hold fiel weg, und eine unbekannte
+         * moegliche Abgabe war refinanzierbar. Diese Datei liegt AUSSERHALB
+         * der rotierenden Generationen und wird von keinem normalen Persist
+         * angefasst.
+         *
+         * Es gibt bewusst noch KEINEN Aufloesungsweg (fail-closed): das
+         * Loeschen ist Teil eines eigenen, noch nicht gebauten
+         * Reparatur-Workflows (Adjudication K1.1/G4).
+         */
+        const val HOLD_NAME = "fuse_ledger.hold"
+
+        /** isFile wie beim Sentinel: ein VERZEICHNIS unter dem Namen ist kein
+         *  Marker (und [writeHoldVerified] meldet dann false). */
+        fun holdExists(dir: File): Boolean =
+            runCatching { File(dir, HOLD_NAME).isFile }.getOrDefault(false)
+
+        /**
+         * Den Hold-Marker VERIFIZIERT schreiben - Erfolg heisst, die Datei
+         * liegt danach mit genau diesem Inhalt (Rueckleseprinzip wie bei
+         * [writeVerified]). Nie werfend.
+         *
+         * IDEMPOTENT und NICHT ueberschreibend: ein bereits vorhandener
+         * Marker bleibt unveraendert stehen und gilt als Erfolg - der
+         * AELTESTE Befund ist der, der den Hold ausgeloest hat, und der darf
+         * von einem spaeteren Vorfall nicht ueberschrieben werden.
+         */
+        fun writeHoldVerified(dir: File, content: String): Boolean = runCatching {
+            val f = File(dir, HOLD_NAME)
+            if (f.isFile) return@runCatching true
+            if (!dir.exists() && !dir.mkdirs() && !dir.exists()) return@runCatching false
+            f.writeText(content, Charsets.UTF_8)
+            f.isFile && f.readText(Charsets.UTF_8) == content
+        }.getOrDefault(false)
+
+        /**
+         * Ungueltige Generationen der Rotation ENTZIEHEN (Codex C8d).
+         *
+         * Umbenennen statt loeschen: der Inhalt ist der einzige Anhaltspunkt
+         * dafuer, WAS verloren ging - und solange die Datei unter ihrem
+         * Generationsnamen liegt, ueberschreibt sie der naechste [write]
+         * (bak.delete()/rename) einfach.
+         *
+         * Kollisionsfrei: ein schon belegter Zielname bekommt einen Zaehler -
+         * ein zweiter Vorfall mit demselben Stempel darf den ersten Beweis
+         * nicht ueberschreiben. Nie werfend; zurueck kommen nur die
+         * TATSAECHLICH umbenannten Dateien.
+         */
+        fun quarantineInvalid(files: List<File>, nowTs: Long): List<String> = files.mapNotNull { f ->
+            runCatching {
+                if (!f.isFile) return@runCatching null
+                val dir = f.parentFile ?: return@runCatching null
+                var target = File(dir, "${f.name}$CORRUPT_SUFFIX$nowTs")
+                var n = 1
+                while (target.exists() && n <= 1_000) {
+                    target = File(dir, "${f.name}$CORRUPT_SUFFIX$nowTs-$n")
+                    n++
+                }
+                if (!target.exists() && f.renameTo(target)) target.name else null
+            }.getOrNull()
+        }
     }
 
     /**
@@ -79,6 +156,13 @@ class FuseLedgerStore {
         val content: String?,
         val anyCandidateExisted: Boolean,
         val anyCandidateInvalid: Boolean,
+        /**
+         * WELCHE Kandidaten ungueltig waren (Codex C8d). Ohne die Dateiliste
+         * kann der Aufrufer sie nicht [quarantineInvalid] uebergeben - und
+         * genau ihre Ueberschreibung durch die Rotation war der Weg, auf dem
+         * der Recovery-Hold verschwand.
+         */
+        val invalidFiles: List<File> = emptyList(),
     )
 
     /** @return true, wenn die Hauptdatei nach dem Aufruf den neuen Inhalt
@@ -130,6 +214,7 @@ class FuseLedgerStore {
         val candidates = listOf(File(dir, "$FILE_NAME.tmp"), File(dir, FILE_NAME), File(dir, "$FILE_NAME.bak"))
         var anyExisted = false
         var anyInvalid = false
+        val invalid = mutableListOf<File>()
         var best: String? = null
         var bestRevision = Long.MIN_VALUE
         for (f in candidates) {
@@ -139,6 +224,7 @@ class FuseLedgerStore {
             val revision = text?.let { t -> runCatching { validate(t) }.getOrNull() }
             if (text == null || revision == null) {
                 anyInvalid = true
+                invalid += f
                 continue
             }
             // Striktes '>' laesst bei Revisionsgleichstand den FRUEHEREN
@@ -149,6 +235,6 @@ class FuseLedgerStore {
                 bestRevision = revision
             }
         }
-        ReadResult(best, anyExisted, anyInvalid)
+        ReadResult(best, anyExisted, anyInvalid, invalid.toList())
     }.getOrDefault(ReadResult(null, false, false))
 }
