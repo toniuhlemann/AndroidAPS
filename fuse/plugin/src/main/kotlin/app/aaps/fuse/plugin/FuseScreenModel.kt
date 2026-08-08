@@ -153,11 +153,10 @@ object FuseScreenModel {
                 !it.mealWindow   -> "Korrektur-Fenster"
                 else             -> "Mahlzeit-Fenster"
             }
-            row(
-                b, "eff. SMB-Ratio",
-                f2(it.effectiveSmbRatio) +
-                    "  [$fensterTag]  Basis ${f2(it.smbRatioCorrection)} | Rampe ${rampPct?.toString() ?: "-"} % -> ${f2(it.smbRatioRise)}"
-            )
+            // Zwei Zeilen statt einer (Toni 08.08.): die Zusammensetzung
+            // sprengte das 16er-Label-Raster und brach hart um.
+            row(b, "eff. SMB-Ratio", f2(it.effectiveSmbRatio) + "  [$fensterTag]")
+            row(b, "", "Basis ${f2(it.smbRatioCorrection)} | Rampe ${rampPct?.toString() ?: "-"} % -> ${f2(it.smbRatioRise)}")
         }
         d.tail?.let {
             row(
