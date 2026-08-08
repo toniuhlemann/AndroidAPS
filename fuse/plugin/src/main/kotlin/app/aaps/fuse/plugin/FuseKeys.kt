@@ -120,6 +120,18 @@ enum class FuseDoubleKey(
      */
     PrimeEnvelopeU("fuse_prime_envelope_u", 1.2, 0.0, 2.0),
 
+    /** Stufe KLEIN: voll rueckholbar (deutlich unter der 30-min-Kapazitaet
+     *  ueber das Fenster gerechnet). */
+    PrimeEnvelopeSmallU("fuse_prime_envelope_small_u", 0.8, 0.0, 1.2),
+
+    /**
+     * Stufe GROSS: BEWUSSTE WETTE jenseits der Rueckholbarkeit (per
+     * Basal-Null sind nur 0,9-1,4 U in 120 min einfangbar) - faktisch ein
+     * verteilter, gate-ueberwachter Teil-Prebolus. Der Nutzer garantiert mit
+     * seinem Wissen ueber den Teller, nicht die Physik.
+     */
+    PrimeEnvelopeLargeU("fuse_prime_envelope_large_u", 2.0, 0.0, 3.0),
+
     /**
      * Obergrenze eines einzelnen SMB, in Einheiten.
      *
@@ -262,6 +274,10 @@ enum class FuseLongKey(
     /** exportable = false: der Marker ist ZUSTAND - ein Settings-Import darf
      *  keinen alten Mahlzeiten-Marker wiederbeleben. */
     MealMarkerArmedTs("fuse_meal_marker_armed_ts", 0, 0, exportable = false),
+
+    /** Gewaehlte Marker-Stufe (0=klein, 1=normal, 2=gross). Zustand wie der
+     *  Marker selbst. */
+    MealMarkerTier("fuse_meal_marker_tier", 1, 0, 2, exportable = false),
 }
 
 enum class FuseBooleanKey(

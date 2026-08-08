@@ -337,6 +337,30 @@ class PrepareIobAutosensGraphDataWorker(
                 }
             data.overviewData.fuseRampLowSeries = rampLine(ramp.first)
             data.overviewData.fuseRampHighSeries = rampLine(ramp.second)
+            // Essensbeginn als senkrechte Linien (Tonis Viewer-Analogie):
+            // je Marker eine Linie ueber die volle Hoehe beider Untergraphen.
+            val markers = fuseOverviewSource.fuseMealMarkerTimes(fromTime, endTime)
+            fun markerLines(scale: app.aaps.core.interfaces.graph.Scale, lo: Double, hi: Double): LineGraphSeries<ScaledDataPoint> {
+                val pts = ArrayList<ScaledDataPoint>()
+                markers.forEach { ts ->
+                    pts.add(ScaledDataPoint(ts - 1, lo, scale))
+                    pts.add(ScaledDataPoint(ts, hi, scale))
+                    pts.add(ScaledDataPoint(ts + 1, lo, scale))
+                }
+                return LineGraphSeries(Array(pts.size) { i -> pts[i] }).also {
+                    it.setCustomPaint(Paint().also { paint ->
+                        paint.style = Paint.Style.STROKE
+                        paint.strokeWidth = 2f
+                        paint.color = android.graphics.Color.WHITE
+                    })
+                }
+            }
+            data.overviewData.fuseDriveMarkerSeries =
+                if (markers.isEmpty()) LineGraphSeries<ScaledDataPoint>()
+                else markerLines(data.overviewData.fuseDriveScale, -data.overviewData.maxFuseDriveValueFound, data.overviewData.maxFuseDriveValueFound)
+            data.overviewData.fuseGuardMarkerSeries =
+                if (markers.isEmpty()) LineGraphSeries<ScaledDataPoint>()
+                else markerLines(data.overviewData.fuseGuardScale, -data.overviewData.maxFuseGuardValueFound, data.overviewData.maxFuseGuardValueFound)
             data.overviewData.fuseGuardSeries = LineGraphSeries(Array(guardArr.size) { i -> guardArr[i] }).also {
 
                 it.setCustomPaint(Paint().also { paint ->

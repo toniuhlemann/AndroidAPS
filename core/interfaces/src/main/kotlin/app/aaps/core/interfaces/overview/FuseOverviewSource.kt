@@ -29,4 +29,8 @@ interface FuseOverviewSource {
     /** Aktuelle Rampenkanten (unten, oben) [mg/dl/min] fuer die Referenz-
      *  linien im Antriebs-Untergraphen - dynamisch aus den Preferences. */
     fun fuseRampLevels(): Pair<Double, Double>
+
+    /** Marker-Druck-Zeitpunkte im Fenster - je einer wird als senkrechte
+     *  Linie in die FUSE-Untergraphen gezeichnet (Essensbeginn sichtbar). */
+    fun fuseMealMarkerTimes(fromTime: Long, endTime: Long): List<Long>
 }

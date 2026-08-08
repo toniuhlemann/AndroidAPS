@@ -30,7 +30,11 @@ object FuseScreenModel {
      *   stehen dort die Sentinels -1.0 / -1, und die roh anzuzeigen waere eine
      *   erfundene TBR.
      */
-    fun render(outcome: FuseCycleRunner.Outcome?, apsResult: APSResult?, nowMs: Long): String {
+    /** Marker-Zustand fuer Timer-Zeile - kommt vom Fragment (Plugin-Prefs),
+     *  nicht aus dem Outcome: der Timer soll auch zwischen Zyklen laufen. */
+    data class MarkerInfo(val armedTs: Long, val tier: Int, val windowMin: Int)
+
+    fun render(outcome: FuseCycleRunner.Outcome?, apsResult: APSResult?, nowMs: Long, marker: MarkerInfo? = null): String {
         val b = StringBuilder()
         if (outcome == null) {
             // Genau EINE Zeile. Kein Geruest mit Nullen, das wie ein Ergebnis
@@ -62,16 +66,20 @@ object FuseScreenModel {
             row(b, "q1 / roh", "${f1(s.q1)} / ${f1(s.rawBg)} mg/dl" + if (s.q1Outlier) "  AUSREISSER" else "")
             // rSigned NUR von hier. Aus der Bahn rekonstruiert waere es bereits
             // einen Zerfallsschritt gealtert und damit eine falsche Zahl.
-            row(b, "r (18min)", s.rSigned?.let { "${f3(it)} mg/dl/min" } ?: "nicht berechenbar")
+            row(b, "Stoerung r (18min)", s.rSigned?.let { "${f3(it)} mg/dl/min" } ?: "nicht berechenbar")
             // Danebengestellt, damit die Traegheit des 18-min-Medians am Onset
             // sichtbar ist statt erklaert werden zu muessen.
             row(b, "  UKF-Rate", f3(s.ukfRatePerMin))
             row(b, "  roh 5min", s.rawSlopePerMin?.let { f3(it) } ?: "-")
-            row(b, "Punkte", "${s.samplesUsed} von ${s.rawSeriesSize}")
+            // Tonis Dreiteilung 08.08.: Fenster, Vorrat und Paare sind drei
+            // verschiedene Dinge - "19 von 190" verquickte sie.
+            row(b, "Drive-Fenster", "${s.samplesUsed} Punkte / 18 min")
+            row(b, "Rohhistorie", "${s.rawSeriesSize} Punkte (198 min)")
             if (s.boundedBy != SignalWindow.Bound.NONE) row(b, "Fenster ab", s.boundedBy.name)
         }
         outcome.band?.let {
-            row(b, "Antrieb", "${f3(it.mean)} / ${f3(it.lower)} (Spreizung ${f3(it.spread)}, ${it.pairCount} Paare)")
+            row(b, "Stoerung m/l", "${f3(it.mean)} / ${f3(it.lower)}")
+            row(b, "Steigungspaare", "${it.pairCount} (Spreizung ${f3(it.spread)})")
         }
         // Die vier Mechanismen mit Namen und Grund - der Schirm soll die
         // Kette zeigen, nicht nur das Ergebnis.
@@ -82,11 +90,25 @@ object FuseScreenModel {
                 else "0 (keine Bolus-Aktivitaet)"
             )
         }
-        outcome.onset?.let { o ->
-            row(b, "Onset-Kanal", onsetText(o))
-            if (o.mealMarker) row(b, "Marker", "AKTIV")
+        outcome.onset?.let { o -> row(b, "Onset-Kanal", onsetText(o)) }
+        marker?.takeIf { it.armedTs > 0 }?.let { m ->
+            val elapsed = ((nowMs - m.armedTs) / 60_000L).toInt()
+            val restMin = (m.windowMin - elapsed).coerceAtLeast(0)
+            val tierName = when (m.tier) { 0 -> "S"; 2 -> "L"; else -> "M" }
+            row(b, "Marker", if (restMin > 0) "AKTIV ($tierName) - Rest $restMin/${m.windowMin} min" else "abgelaufen ($tierName)")
+        }
+        outcome.mealStats?.let { ms ->
+            row(b, "seit Mahlzeit", "${f2(ms.totalU)} U  (+30: ${f2(ms.last30U)} / +60: ${f2(ms.last60U)}) nach ${ms.sinceMin} min")
         }
         outcome.prime?.let { pr -> primeText(pr)?.let { row(b, "Freigabe", it) } }
+        outcome.candidate?.let { c ->
+            row(
+                b, "Kandidat",
+                if (c.reject == null) "bestaetigt bis ${f2(c.smbU)} U (${c.candidatesEvaluated} geprueft)"
+                else "${c.reject!!.name} - erlaubt ${f2(c.smbU)} U"
+            )
+        }
+        outcome.candidateGap?.let { row(b, "Kandidat", "Pruefer-Ausfall: $it (Basis galt)") }
         b.append('\n')
 
         // ---- Bahn ----------------------------------------------------------
@@ -113,11 +135,15 @@ object FuseScreenModel {
                 (((r - it.riseRampLowRPerMin) / (it.riseRampHighRPerMin - it.riseRampLowRPerMin))
                     .coerceIn(0.0, 1.0) * 100).toInt()
             }
+            val fensterTag = when {
+                it.reboundWindow -> "REBOUND-Deckel"
+                !it.mealWindow   -> "Korrektur-Fenster"
+                else             -> "Mahlzeit-Fenster"
+            }
             row(
-                b, "SMB-Anteil",
+                b, "eff. SMB-Ratio",
                 f2(it.effectiveSmbRatio) +
-                    "  = Basis ${f2(it.smbRatioCorrection)} + Rampe ${rampPct?.toString() ?: "-"} %% Richtung ${f2(it.smbRatioRise)}"
-                        .replace("%%", "%")
+                    "  [$fensterTag]  Basis ${f2(it.smbRatioCorrection)} | Rampe ${rampPct?.toString() ?: "-"} % -> ${f2(it.smbRatioRise)}"
             )
         }
         d.tail?.let {

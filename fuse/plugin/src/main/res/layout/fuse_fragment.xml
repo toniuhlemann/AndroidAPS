@@ -13,14 +13,36 @@
         android:layout_height="wrap_content"
         android:orientation="vertical">
 
-    <!-- Der EINE Bedienknopf des Reiters. Er dosiert nichts und rechnet
-         nichts - er setzt einen Zeitstempel, den der naechste Zyklus liest. -->
-    <Button
-        android:id="@+id/fuse_meal_marker"
+    <!-- Die Marker-Stufen S/M/L. Sie dosieren nichts und rechnen nichts -
+         sie setzen Zeitstempel+Stufe, die der naechste Zyklus liest. Ein
+         Druck bei aktivem Marker nimmt ihn zurueck (jeder der drei). -->
+    <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_margin="8dp"
-        android:text="@string/fuse_meal_marker_button" />
+        android:orientation="horizontal"
+        android:layout_margin="4dp">
+        <Button
+            android:id="@+id/fuse_meal_marker_s"
+            android:layout_width="0dp"
+            android:layout_weight="1"
+            android:layout_height="wrap_content"
+            android:layout_margin="4dp"
+            android:text="@string/fuse_marker_s" />
+        <Button
+            android:id="@+id/fuse_meal_marker"
+            android:layout_width="0dp"
+            android:layout_weight="1"
+            android:layout_height="wrap_content"
+            android:layout_margin="4dp"
+            android:text="@string/fuse_marker_m" />
+        <Button
+            android:id="@+id/fuse_meal_marker_l"
+            android:layout_width="0dp"
+            android:layout_weight="1"
+            android:layout_height="wrap_content"
+            android:layout_margin="4dp"
+            android:text="@string/fuse_marker_l" />
+    </LinearLayout>
 
     <TextView
         android:id="@+id/fuse_state"

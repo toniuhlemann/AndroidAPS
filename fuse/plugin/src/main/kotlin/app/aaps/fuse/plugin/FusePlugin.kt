@@ -130,6 +130,69 @@ class FusePlugin @Inject constructor(
      *  Trail bleibt die vollstaendige Historie. */
     private val graphRing = ArrayDeque<app.aaps.core.interfaces.overview.FuseOverviewSource.Point>()
 
+    /** Marker-Druecke des Prozesses + der letzte persistierte (uebersteht
+     *  Neustarts via Preference). */
+    private val markerPressRing = ArrayDeque<Long>()
+
+    @Volatile private var graphRingWarmed = false
+
+    override fun fuseMealMarkerTimes(fromTime: Long, endTime: Long): List<Long> {
+        val fromPref = mealMarkerArmedTs()
+        val all = synchronized(markerPressRing) { markerPressRing.toList() } + listOf(fromPref).filter { it > 0 }
+        return all.distinct().filter { it in fromTime..endTime }.sorted()
+    }
+
+    /**
+     * RING-WARMSTART (08.08.): die F.DRV/F.GRD-Linien leben im Prozess und
+     * waren nach jedem Flash leer. Beim ersten Zyklus wird der Ring einmalig
+     * aus dem Trail (letzte ~24 h) nachgefuellt - der Trail bleibt die
+     * einzige Wahrheit, keine DB. Fehler sind still-tolerant: ein kaputter
+     * Warmstart darf keinen Zyklus kosten.
+     */
+    private fun warmGraphRingOnce() {
+        if (graphRingWarmed) return
+        graphRingWarmed = true
+        runCatching {
+            val f = java.io.File(
+                android.os.Environment.getExternalStorageDirectory(),
+                "Documents/aapsLogs/fuse_state_history.jsonl"
+            )
+            if (!f.exists()) return
+            val cutoff = System.currentTimeMillis() - 25L * 3600_000L
+            val pts = ArrayList<app.aaps.core.interfaces.overview.FuseOverviewSource.Point>()
+            f.bufferedReader().useLines { lines ->
+                for (line in lines) {
+                    val j = runCatching { org.json.JSONObject(line) }.getOrNull() ?: continue
+                    val ts = j.optLong("sourceTs", 0L)
+                    if (ts < cutoff) continue
+                    val sig = j.optJSONObject("signal") ?: continue
+                    val dec = j.optJSONObject("decision")
+                    val pol = j.optJSONObject("policy")?.optJSONObject("values")
+                    val r = sig.optDouble("rSigned", Double.NaN)
+                    val ukf = sig.optDouble("ukfRatePerMin", Double.NaN)
+                    val act = sig.optDouble("activityAtAnchor", Double.NaN)
+                    val isf = sig.optDouble("isfAtAnchor", Double.NaN)
+                    val fast = if (ukf.isFinite() && act.isFinite() && isf.isFinite()) ukf + act * isf else Double.NaN
+                    val ml = dec?.optDouble("minLowerMgdl", Double.NaN) ?: Double.NaN
+                    val gf = pol?.optDouble("guardFloorMgdl", 70.0) ?: 70.0
+                    pts.add(
+                        app.aaps.core.interfaces.overview.FuseOverviewSource.Point(
+                            timestamp = ts,
+                            driveMgdlPerMin = r.takeIf { it.isFinite() },
+                            fastDriveMgdlPerMin = fast.takeIf { it.isFinite() },
+                            guardMarginMgdl = (ml - gf).takeIf { it.isFinite() }?.coerceIn(-50.0, 150.0),
+                        )
+                    )
+                }
+            }
+            synchronized(graphRing) {
+                if (graphRing.isEmpty()) {
+                    graphRing.addAll(pts.takeLast(1_500))
+                }
+            }
+        }
+    }
+
     override fun fuseRampLevels(): Pair<Double, Double> =
         Pair(preferences.get(FuseDoubleKey.RiseRampLowR), preferences.get(FuseDoubleKey.RiseRampHighR))
 
@@ -160,11 +223,29 @@ class FusePlugin @Inject constructor(
      * Evidenzschwelle des OnsetChannel und erzeugt selbst keine Dosis.
      * Zweiter Druck nimmt ihn zurueck; nach MARKER_WINDOW_MIN verfaellt er.
      */
-    fun toggleMealMarker(now: Long): Boolean {
+    fun toggleMealMarker(now: Long): Boolean = toggleMealMarker(now, 1)
+
+    /** Armen mit Stufe (0=S,1=M,2=L); erneuter Druck derselben ODER anderer
+     *  Stufe bei aktivem Marker nimmt ihn zurueck bzw. wechselt die Stufe
+     *  NICHT stillschweigend - Zuruecknehmen ist immer explizit. */
+    fun toggleMealMarker(now: Long, tier: Int): Boolean {
         val armed = mealMarkerActive(now)
-        preferences.put(FuseLongKey.MealMarkerArmedTs, if (armed) 0L else now)
-        return !armed
+        if (armed) {
+            preferences.put(FuseLongKey.MealMarkerArmedTs, 0L)
+            return false
+        }
+        preferences.put(FuseLongKey.MealMarkerTier, tier.toLong().coerceIn(0L, 2L))
+        preferences.put(FuseLongKey.MealMarkerArmedTs, now)
+        synchronized(markerPressRing) {
+            markerPressRing.addLast(now)
+            while (markerPressRing.size > 20) markerPressRing.removeFirst()
+        }
+        return true
     }
+
+    fun mealMarkerTier(): Int = preferences.get(FuseLongKey.MealMarkerTier).toInt().coerceIn(0, 2)
+
+    fun mealMarkerArmedTs(): Long = preferences.get(FuseLongKey.MealMarkerArmedTs)
 
     fun mealMarkerActive(now: Long): Boolean {
         val ts = preferences.get(FuseLongKey.MealMarkerArmedTs)
@@ -194,6 +275,7 @@ class FusePlugin @Inject constructor(
             aapsLogger.error(LTag.APS, "FUSE cycle failed", e)
             null
         }
+        warmGraphRingOnce()
         lastOutcome = outcome
         outcome?.let { o ->
             val ts = o.sourceTs ?: o.computeTs
@@ -350,6 +432,8 @@ class FusePlugin @Inject constructor(
             .put(FuseBooleanKey.OnsetChannelEnabled, preferences)
             .put(FuseBooleanKey.PrimeReleaseEnabled, preferences)
             .put(FuseDoubleKey.PrimeEnvelopeU, preferences)
+            .put(FuseDoubleKey.PrimeEnvelopeSmallU, preferences)
+            .put(FuseDoubleKey.PrimeEnvelopeLargeU, preferences)
 
     override fun applyConfiguration(configuration: JSONObject) {
         configuration
@@ -373,6 +457,8 @@ class FusePlugin @Inject constructor(
             .store(FuseBooleanKey.OnsetChannelEnabled, preferences)
             .store(FuseBooleanKey.PrimeReleaseEnabled, preferences)
             .store(FuseDoubleKey.PrimeEnvelopeU, preferences)
+            .store(FuseDoubleKey.PrimeEnvelopeSmallU, preferences)
+            .store(FuseDoubleKey.PrimeEnvelopeLargeU, preferences)
     }
 
     override fun addPreferenceScreen(preferenceManager: PreferenceManager, parent: PreferenceScreen, context: Context, requiredKey: String?) {
@@ -435,8 +521,20 @@ class FusePlugin @Inject constructor(
             )
             addPreference(
                 AdaptiveDoublePreference(
+                    ctx = context, doubleKey = FuseDoubleKey.PrimeEnvelopeSmallU,
+                    dialogMessage = R.string.fuse_prime_small_summary, title = R.string.fuse_prime_small_title
+                )
+            )
+            addPreference(
+                AdaptiveDoublePreference(
                     ctx = context, doubleKey = FuseDoubleKey.PrimeEnvelopeU,
                     dialogMessage = R.string.fuse_prime_envelope_summary, title = R.string.fuse_prime_envelope_title
+                )
+            )
+            addPreference(
+                AdaptiveDoublePreference(
+                    ctx = context, doubleKey = FuseDoubleKey.PrimeEnvelopeLargeU,
+                    dialogMessage = R.string.fuse_prime_large_summary, title = R.string.fuse_prime_large_title
                 )
             )
             addPreference(

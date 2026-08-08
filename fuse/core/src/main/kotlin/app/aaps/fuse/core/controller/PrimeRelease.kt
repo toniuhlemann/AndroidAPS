@@ -54,6 +54,19 @@ object PrimeRelease {
      *  minLower - Anteil*restU*ISF >= guardFloor. */
     const val CLEARANCE_60MIN_FRACTION = 0.2
 
+    /**
+     * MARKER-PRIOR (08.08., Antwort auf Tonis Vorrang-Frage): Der Knopf ist
+     * eine bewusste ERKLAERUNG "Kohlenhydrate kommen" - FUSE ist COB-blind,
+     * seine Waechterbahn rechnet also das Worst-Case "es kommen KEINE Carbs",
+     * das im Marker-Fenster nachweislich falsch ist (Abendessen 07.08.:
+     * 58 min GUARD_FLOOR + 12 min CLEARANCE gegen die deklarierte Mahlzeit,
+     * Kopf 33 min zu spaet). Der Prior schreibt der UNTEREN Bahn einen
+     * minimalen deklarierten Carb-Antrieb gut (~10-15 g ueber 45 min bei
+     * ISF 80) - Gates bleiben souveraen, rechnen aber mit korrekten Fakten.
+     * Gekappt an der Mittelbahn (lower <= mean bleibt erhalten).
+     */
+    const val MARKER_PRIOR_MGDL_PER_MIN = 0.7
+
     private const val TICK_EPS = 1e-9
 
     data class Input(

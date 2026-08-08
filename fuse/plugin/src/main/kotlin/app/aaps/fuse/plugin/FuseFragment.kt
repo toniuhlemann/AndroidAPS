@@ -47,10 +47,9 @@ class FuseFragment : DaggerFragment() {
 
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
-        binding.fuseMealMarker.setOnClickListener {
-            fusePlugin.toggleMealMarker(dateUtil.now())
-            update()
-        }
+        binding.fuseMealMarkerS.setOnClickListener { fusePlugin.toggleMealMarker(dateUtil.now(), 0); update() }
+        binding.fuseMealMarker.setOnClickListener { fusePlugin.toggleMealMarker(dateUtil.now(), 1); update() }
+        binding.fuseMealMarkerL.setOnClickListener { fusePlugin.toggleMealMarker(dateUtil.now(), 2); update() }
     }
 
     override fun onResume() {
@@ -76,11 +75,18 @@ class FuseFragment : DaggerFragment() {
         // Nach onDestroyView kann ein Ereignis noch eintreffen — dann gibt es
         // kein Binding mehr, und ein Zugriff waere ein Absturz im Beobachter.
         _binding ?: return
-        binding.fuseState.text =
-            FuseScreenModel.render(fusePlugin.lastOutcome, fusePlugin.lastAPSResult, dateUtil.now())
-        binding.fuseMealMarker.text = getString(
-            if (fusePlugin.mealMarkerActive(dateUtil.now())) R.string.fuse_meal_marker_button_armed
-            else R.string.fuse_meal_marker_button
+        binding.fuseState.text = FuseScreenModel.render(
+            fusePlugin.lastOutcome, fusePlugin.lastAPSResult, dateUtil.now(),
+            FuseScreenModel.MarkerInfo(
+                armedTs = fusePlugin.mealMarkerArmedTs(),
+                tier = fusePlugin.mealMarkerTier(),
+                windowMin = app.aaps.fuse.core.controller.OnsetChannel.MARKER_WINDOW_MIN,
+            ),
         )
+        val armed = fusePlugin.mealMarkerActive(dateUtil.now())
+        val tier = fusePlugin.mealMarkerTier()
+        binding.fuseMealMarkerS.text = if (armed && tier == 0) "◉ S AKTIV" else getString(R.string.fuse_marker_s)
+        binding.fuseMealMarker.text = if (armed && tier == 1) "◉ M AKTIV" else getString(R.string.fuse_marker_m)
+        binding.fuseMealMarkerL.text = if (armed && tier == 2) "◉ L AKTIV" else getString(R.string.fuse_marker_l)
     }
 }

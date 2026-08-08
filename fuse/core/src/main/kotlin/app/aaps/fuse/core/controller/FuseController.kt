@@ -41,6 +41,20 @@ object FuseController {
     const val REBOUND_LOW_MGDL = 75.0
     const val REBOUND_WINDOW_MIN = 45
 
+    /**
+     * REBOUND v2 - TOTBAND (Vorfaelle #5/#6, Nacht 07./08.08.: 1,05 U + 0,60 U
+     * TROTZ Ratio-Deckel, Treiber war insulinReq aus der tau-60-Extrapolation
+     * der Erholungssteigung): Im Rebound-Fenster ist die Rueckkehr bis leicht
+     * UEBER das Ziel ERWUENSCHT - kein Bedarf, solange der Anker unter
+     * Ziel + [REBOUND_DEADBAND_MGDL] liegt. Haette in der Nacht alle 20
+     * Rebound-Dosen genullt (BG lief 65->121 bei Ziel 97).
+     */
+    const val REBOUND_DEADBAND_MGDL = 25.0
+
+    /** Kurzes tau im Rebound-Fenster [min]: Erholungssteigungen sterben in
+     *  ~15 min - tau 60 schreibt sie eine Stunde fort. */
+    const val REBOUND_TAU_MIN = 15
+
     data class State(
         val health: Health,
         val safetyHold: Boolean,
@@ -88,6 +102,17 @@ object FuseController {
         /** q1 war in den letzten [REBOUND_WINDOW_MIN] min unter
          *  [REBOUND_LOW_MGDL] - die Rampe bleibt auf dem Korrektur-Anteil. */
         val reboundWindow: Boolean = false,
+        /**
+         * MAHLZEIT-FENSTER (Fenster-Trio, 08.08.): offen durch Marker, offene
+         * Onset-Episode ODER kinematische Persistenz - mit 10-min-Gedaechtnis
+         * gegen Plateau-Flattern (Abendessen 07.08.: echte langsame Mahlzeit
+         * war kinematisch schwach, der Marker-Zweig traegt sie). AUSSERHALB
+         * gilt der Korrektur-Anteil, egal wie hoch r steht - r kann positiv
+         * sein, waehrend BG faellt (insulinbereinigte Stoerung, GPT-Befund
+         * 07.08. bestaetigt: "BG faellt, r 0,98 -> Ratio 0,21" war semantisch
+         * falsch).
+         */
+        val mealWindow: Boolean = false,
     ) {
         /** Bindungsgroesse fuer iobTH: zurueckgehaltenes Basal waehrend Zero-TBR
          *  darf KEIN zusaetzliches SMB-Budget erzeugen (Fork-Praxis). */
@@ -118,6 +143,8 @@ object FuseController {
                 // Rebound-Deckel VOR der Rampe: die Erholung nach einem Tief
                 // ist keine Mahlzeit, egal was der Median glaubt.
                 if (reboundWindow) return smbRatioCorrection
+                // Fenster-Trio: volle Rampe nur im Mahlzeit-Fenster.
+                if (!mealWindow) return smbRatioCorrection
                 val r = rSignedMgdlPerMin ?: return smbRatioCorrection
                 if (!r.isFinite() || riseRampHighRPerMin <= riseRampLowRPerMin) return smbRatioCorrection
                 val f = ((r - riseRampLowRPerMin) / (riseRampHighRPerMin - riseRampLowRPerMin))
@@ -366,6 +393,18 @@ object FuseController {
 
         // Kein zweites "- iob": die IOB-Wirkung ist in predBG bereits enthalten.
         val insulinReq = (releaseMean - state.targetMgdl) / state.isfMgdlPerU
+
+        // REBOUND-TOTBAND (v2): Nach einem Tief ist die Erholung bis leicht
+        // ueber das Ziel das ZIEL der Traubenzucker-Aktion, keine Stoerung.
+        // Der Anker (nicht die Bahn) entscheidet - die Bahn ist im Rebound
+        // vom aufgeblaehten r verzerrt, genau deshalb existiert das Fenster.
+        if (state.reboundWindow && prediction.bgAtAnchor < state.targetMgdl + REBOUND_DEADBAND_MGDL) {
+            return Decision(
+                0.0, TbrAction.NO_NEW_POSITIVE, Block.NO_DEMAND, insulinReq,
+                releaseMean, minLower, "reboundDeadband", tail, context = ctx, restraintBound = restraintBound,
+            )
+        }
+
         if (insulinReq <= 0.0) {
             // NO_NEW_POSITIVE und NICHT ZERO_TEMP. Die erste Fassung stand hier
             // auf Zero-Temp und widersprach damit dem Vertrag, den [TbrPolicy]

@@ -179,6 +179,7 @@ class GraphData @Inject constructor(
         addSeries(overviewData.fuseFastDriveSeries as LineGraphSeries<ScaledDataPoint>)
         addSeries(overviewData.fuseRampLowSeries as LineGraphSeries<ScaledDataPoint>)
         addSeries(overviewData.fuseRampHighSeries as LineGraphSeries<ScaledDataPoint>)
+        addSeries(overviewData.fuseDriveMarkerSeries as LineGraphSeries<ScaledDataPoint>)
     }
 
     /** Guard-Abstand minLower - guardFloor: ueber Null offen, unter Null
@@ -190,6 +191,7 @@ class GraphData @Inject constructor(
         }
         overviewData.fuseGuardScale.multiplier = maxY * scale / max(10.0, overviewData.maxFuseGuardValueFound)
         addSeries(overviewData.fuseGuardSeries as LineGraphSeries<ScaledDataPoint>)
+        addSeries(overviewData.fuseGuardMarkerSeries as LineGraphSeries<ScaledDataPoint>)
     }
 
     // scale in % of vertical size (like 0.3)

@@ -140,6 +140,11 @@ class FuseCycleRunner(
         val candidate: CandidateSearch.Result?,
         /** Pruefer-Ausfall (z.B. KERNEL_*): Basis galt unveraendert. */
         val candidateGap: String?,
+        /** Reine Rechenzeit dieses Zyklus [ms] - die Messgrundlage VOR jeder
+         *  Akku-Optimierung (Kernel-Cache, inkrementelles Q1, Activity-Cache). */
+        val computeDurationMs: Long?,
+        /** Abgabe-Bilanz seit Marker-Druck - null ohne Marker. */
+        val mealStats: MealStats?,
         /** `null` = der Zyklus kam nicht bis zum Lesen der Einstellungen. Dann
          *  hat er auch keine Politik, und der Export sagt das statt eine zu
          *  erfinden. */
@@ -173,7 +178,7 @@ class FuseCycleRunner(
             reason = reason, alarm = false, bgMgdl = signal?.q1, targetMgdl = null, targetSource = null,
             signal = signal, band = null, discount = null, onset = null, prime = null, candidate = null, candidateGap = null, policy = policy, state = null, step = null,
             sensorEpoch = null, calibrationEpoch = null,
-            isfMgdlPerU = null, iobU = null, abortReason = reason,
+            isfMgdlPerU = null, iobU = null, computeDurationMs = null, mealStats = null, abortReason = reason,
         )
 
         val profile = profileFunction.getProfile(computeTs) ?: return abort("no profile")
@@ -254,9 +259,19 @@ class FuseCycleRunner(
         // selbst. Er ist ZUSTAND und wird je Zyklus frisch gelesen - nie
         // gecached, damit ein Druck sofort im naechsten Zyklus wirkt.
         val markerTs = preferences.get(FuseLongKey.MealMarkerArmedTs)
+        val markerTier = preferences.get(FuseLongKey.MealMarkerTier).toInt().coerceIn(0, 2)
+        val tierEnvelopeU = when (markerTier) {
+            0    -> cfg.primeEnvelopeSmallU
+            2    -> cfg.primeEnvelopeLargeU
+            else -> cfg.primeEnvelopeU
+        }
         if (markerTs != primeArmedTsSeen) {
             primeArmedTsSeen = markerTs
             primeSpentU = 0.0
+        }
+        if (markerTs != mealDeliveriesArmedTs) {
+            mealDeliveriesArmedTs = markerTs
+            mealDeliveries.clear()
         }
         val mealMarkerActive = markerTs > 0 &&
             computeTs - markerTs in 0..(OnsetChannel.MARKER_WINDOW_MIN * 60_000L)
@@ -274,7 +289,21 @@ class FuseCycleRunner(
             )
         )
 
-        val built = when (val b = CoreInputGuard.build { buildPredictorInput(signal, profile, cfg, band, bolusActivityUPerMin, if (onset.active) onset.driveMgdlPerMin else null) }) {
+        // FENSTER-TRIO: Marker ODER offene Onset-Episode ODER Kinematik
+        // (r und schnelle Rate beide ueber der Rampen-Unterkante) oeffnen das
+        // Mahlzeit-Fenster fuer 10 min rollierend; nachhaltige Wende schliesst.
+        run {
+            val ukfNow = signal.ukfRatePerMin
+            val kinematic = signal.rSigned?.let { it >= cfg.riseRampLowR } == true &&
+                ukfNow.isFinite() && ukfNow >= cfg.riseRampLowR
+            if (mealMarkerActive || onset.active || kinematic)
+                mealWindowHoldUntil = signal.sourceTs + 10 * 60_000L
+            if (ukfNow.isFinite() && ukfNow <= -cfg.riseRampLowR)
+                mealWindowHoldUntil = signal.sourceTs
+        }
+        val mealWindow = signal.sourceTs < mealWindowHoldUntil
+
+        val built = when (val b = CoreInputGuard.build { buildPredictorInput(signal, profile, cfg, band, bolusActivityUPerMin, if (onset.active) onset.driveMgdlPerMin else null, reboundWindow, mealMarkerActive) }) {
             is CoreInputGuard.Outcome.Built  -> b.value ?: return abort("input incomplete", signal, cfg)
             is CoreInputGuard.Outcome.Failed -> return abort("input: ${b.failure.detail}", signal, cfg)
         }
@@ -337,6 +366,7 @@ class FuseCycleRunner(
                     // gehobenen Antrieb - sonst haette der Kanal die Bahn
                     // gehoben, aber die Ratio stuende noch auf Korrektur.
                     reboundWindow = reboundWindow,
+                    mealWindow = mealWindow,
                     rSignedMgdlPerMin = onset.driveMgdlPerMin?.takeIf { onset.active }
                         ?.let { d -> maxOf(signal.rSigned ?: d, d) } ?: signal.rSigned,
                     riseRampLowRPerMin = cfg.riseRampLowR,
@@ -442,7 +472,7 @@ class FuseCycleRunner(
                 mealMarkerActive = mealMarkerActive,
                 armedTsMs = markerTs,
                 nowMs = computeTs,
-                envelopeU = cfg.primeEnvelopeU,
+                envelopeU = tierEnvelopeU,
                 spentU = primeSpentU,
                 minLowerMgdl = prediction.minLowerBg,
                 guardFloorMgdl = cfg.guardFloorMgdl,
@@ -489,7 +519,18 @@ class FuseCycleRunner(
             pumpBusy = pumpBusy(),
         )
 
+        if (markerTs > 0 && decision.smbU > 0.0) mealDeliveries.addLast(signal.sourceTs to decision.smbU)
+        val mealStats = if (markerTs > 0) MealStats(
+            sinceMin = ((computeTs - markerTs) / 60_000L).toInt(),
+            totalU = mealDeliveries.sumOf { it.second },
+            last30U = mealDeliveries.filter { computeTs - it.first <= 30 * 60_000L }.sumOf { it.second },
+            last60U = mealDeliveries.filter { computeTs - it.first <= 60 * 60_000L }.sumOf { it.second },
+        ) else null
+
+        val computeDurationMs = dateUtil.now() - computeTs
         return Outcome(
+            computeDurationMs = computeDurationMs,
+            mealStats = mealStats,
             decision = combined.decision,
             tbr = combined.request,
             prediction = prediction,
@@ -551,6 +592,19 @@ class FuseCycleRunner(
      *  45 min Tief-Gedaechtnis (fail-open, dokumentiert) - die uebrigen
      *  Wachen (Guard, Abschlag, Clearance) stehen davon unberuehrt. */
     private var lastLowTs = 0L
+
+    /** Mahlzeit-Fenster-Gedaechtnis (Fenster-Trio): jede erfuellte
+     *  Oeffnungsbedingung verlaengert um 10 min; eine nachhaltige Wende
+     *  (schnelle Rate <= -Schwelle) schliesst sofort. */
+    private var mealWindowHoldUntil = 0L
+
+    /** Abgaben seit Marker-Druck (ts, U) - Basis der Mahlzeit-Bilanz im Tab
+     *  und im Trail (Zielkurve +15/+30 live ablesbar). Reset bei neuem
+     *  armedTs. */
+    private val mealDeliveries = ArrayDeque<Pair<Long, Double>>()
+    private var mealDeliveriesArmedTs = 0L
+
+    data class MealStats(val sinceMin: Int, val totalU: Double, val last30U: Double, val last60U: Double)
 
     private fun fastDrive(signal: FuseSignalSource.Signal): Double? {
         val raw = signal.ukfRatePerMin
@@ -647,6 +701,8 @@ class FuseCycleRunner(
         val onsetEnvelopeU: Double,
         val primeReleaseEnabled: Boolean,
         val primeEnvelopeU: Double,
+        val primeEnvelopeSmallU: Double,
+        val primeEnvelopeLargeU: Double,
     )
 
     /**
@@ -676,6 +732,8 @@ class FuseCycleRunner(
         onsetEnvelopeU = preferences.get(FuseDoubleKey.OnsetEnvelopeU),
         primeReleaseEnabled = preferences.get(FuseBooleanKey.PrimeReleaseEnabled),
         primeEnvelopeU = preferences.get(FuseDoubleKey.PrimeEnvelopeU),
+        primeEnvelopeSmallU = preferences.get(FuseDoubleKey.PrimeEnvelopeSmallU),
+        primeEnvelopeLargeU = preferences.get(FuseDoubleKey.PrimeEnvelopeLargeU),
     ).also {
         // Die Preference-Grenzen gelten nur im Einstellungsdialog. Ein Wert aus
         // einem alten Import geht daran vorbei — deshalb hier nochmal, und zwar
@@ -699,6 +757,8 @@ class FuseCycleRunner(
         require(it.bolusShareLambda.isFinite() && it.bolusShareLambda in 0.0..2.0) { "bolusShareLambda=${it.bolusShareLambda}" }
         require(it.onsetEnvelopeU.isFinite() && it.onsetEnvelopeU in 0.0..5.0) { "onsetEnvelope=${it.onsetEnvelopeU}" }
         require(it.primeEnvelopeU.isFinite() && it.primeEnvelopeU in 0.0..2.0) { "primeEnvelope=${it.primeEnvelopeU}" }
+        require(it.primeEnvelopeSmallU.isFinite() && it.primeEnvelopeSmallU in 0.0..1.2) { "primeSmall=${it.primeEnvelopeSmallU}" }
+        require(it.primeEnvelopeLargeU.isFinite() && it.primeEnvelopeLargeU in 0.0..3.0) { "primeLarge=${it.primeEnvelopeLargeU}" }
         require(it.liabilityHorizonMin >= it.releaseHorizonMin) {
             "liabilityHorizon=${it.liabilityHorizonMin} < releaseHorizon=${it.releaseHorizonMin}"
         }
@@ -722,6 +782,8 @@ class FuseCycleRunner(
         band: PairSlopeBand.Estimate,
         bolusActivityUPerMin: Double,
         onsetDriveMgdlPerMin: Double?,
+        reboundWindow: Boolean,
+        mealMarkerActive: Boolean,
     ): Built? {
         val liabilityHorizonMin = cfg.liabilityHorizonMin
         val anchor = signal.sourceTs
@@ -816,11 +878,22 @@ class FuseCycleRunner(
             // weiter gegen die UNGEHOBENE, konservative Bahn.
             drive = DriveEstimate(
                 onsetDriveMgdlPerMin?.let { maxOf(band.mean, it) } ?: band.mean,
-                discount.lowerAfterMgdlPerMin, null,
+                // MARKER-PRIOR: deklarierter Carb-Kredit NUR in der unteren
+                // Bahn, gekappt an der Mittelbahn - s. PrimeRelease-Doku.
+                if (mealMarkerActive)
+                    minOf(band.mean, discount.lowerAfterMgdlPerMin + PrimeRelease.MARKER_PRIOR_MGDL_PER_MIN)
+                else discount.lowerAfterMgdlPerMin,
+                null,
                 DriveDiscount.methodId(PairSlopeBand.methodId(cfg.driveLowerQuantilePct), cfg.bolusShareLambda) +
                     if (onsetDriveMgdlPerMin != null && onsetDriveMgdlPerMin > band.mean) "+ONSET" else "",
             ),
-            decay = DriveDecayModel.ExponentialDecay(cfg.driveTauMin.toDouble()),
+            // Rebound v2: Erholungssteigungen sterben in ~15 min - im Fenster
+            // wird tau hart gekuerzt, sonst schreibt tau 60 sie eine Stunde
+            // fort (Treiber der Vorfaelle #5/#6).
+            decay = DriveDecayModel.ExponentialDecay(
+                if (reboundWindow) minOf(cfg.driveTauMin, FuseController.REBOUND_TAU_MIN).toDouble()
+                else cfg.driveTauMin.toDouble()
+            ),
             trajectory = trajectory,
             isfSlots = isfSlots,
             horizonMin = liabilityHorizonMin,

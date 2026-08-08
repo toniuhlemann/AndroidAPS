@@ -75,7 +75,7 @@ class FuseControllerTest {
             iobThU = 8.0, maxIobU = 8.0, targetMgdl = 100.0, isfMgdlPerU = 50.0,
             smbRatioCorrection = 0.20, smbRatioRise = 0.35,
             rSignedMgdlPerMin = r, riseRampLowRPerMin = 0.5, riseRampHighRPerMin = 2.0,
-            pumpIncrementU = 0.05, maxSmbU = 2.0, pumpBusy = false,
+            pumpIncrementU = 0.05, maxSmbU = 2.0, pumpBusy = false, mealWindow = true,
         )
         // r = 0,65 -> 10 % der Rampe -> 0,20 + 0,10*0,15 = 0,215
         assertEquals(0.215, s(Phase.RISE_ACTIVE, 0.65).effectiveSmbRatio, 1e-9)
@@ -94,7 +94,7 @@ class FuseControllerTest {
             iobThU = 8.0, maxIobU = 8.0, targetMgdl = 100.0, isfMgdlPerU = 50.0,
             smbRatioCorrection = 0.20, smbRatioRise = 0.35,
             rSignedMgdlPerMin = r, riseRampLowRPerMin = 0.5, riseRampHighRPerMin = 2.0,
-            pumpIncrementU = 0.05, maxSmbU = 2.0, pumpBusy = false,
+            pumpIncrementU = 0.05, maxSmbU = 2.0, pumpBusy = false, mealWindow = true,
         )
         assertEquals(0.35, s(3.0).effectiveSmbRatio, 1e-9)   // ueber der Rampe
         assertEquals(0.35, s(2.0).effectiveSmbRatio, 1e-9)   // genau oben

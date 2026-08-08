@@ -31,7 +31,7 @@ object FuseStateJson {
      * einen unveraenderten Wert NICHT als Beweis lesen, dass sich die Regeln
      * nicht geaendert haben.
      */
-    const val RULE_SET_VERSION = 4
+    const val RULE_SET_VERSION = 5
 
     /** Gruende fuer fehlende Felder. Benannt statt weggelassen. */
     const val GAP_NO_LEDGER = "LEDGER_NOT_WIRED"
@@ -65,6 +65,11 @@ object FuseStateJson {
         o.put("v", VERSION)
         o.put("cycleId", cycleId)
         o.put("computeTs", outcome.computeTs)
+            .put("computeDurationMs", outcome.computeDurationMs ?: JSONObject.NULL)
+            .put("mealStats", outcome.mealStats?.let { m ->
+                JSONObject().put("sinceMin", m.sinceMin).put("totalU", fin(m.totalU))
+                    .put("last30U", fin(m.last30U)).put("last60U", fin(m.last60U))
+            } ?: JSONObject.NULL)
         putOrGap(o, "sourceTs", outcome.sourceTs, gaps, "NO_SIGNAL_THIS_CYCLE")
         o.put("abortReason", outcome.abortReason ?: JSONObject.NULL)
 
@@ -84,6 +89,9 @@ object FuseStateJson {
                 // Nachhinein nicht unterscheidbar, ob eine Zurueckhaltung aus
                 // dem traegen Antrieb kam oder aus der Bremse.
                 .put("restraintBound", d.restraintBound)
+                // FEHLTE bis 08.08. - der Schirm zeigte die Schwanz-Kosten,
+                // der Trail nicht (18 bindende Zyklen der Nacht alle "0").
+                .put("tailCostU", fin(d.tailCostU))
                 .put("reason", outcome.reason)
                 .put("alarm", outcome.alarm)
         )
@@ -248,6 +256,7 @@ object FuseStateJson {
                 // haengt an der Phase, und im Nachhinein soll niemand die falsche
                 // von zweien lesen. Die Rohwerte stehen ohnehin unter policy.values.
                 .put("reboundWindow", outcome.state?.reboundWindow ?: JSONObject.NULL)
+                .put("mealWindow", outcome.state?.mealWindow ?: JSONObject.NULL)
                 .put("smbRatioEffective", fin(outcome.state?.effectiveSmbRatio))
                 .put("context", outcome.decision.context?.name ?: JSONObject.NULL)
         )
@@ -352,6 +361,8 @@ object FuseStateJson {
         .put("onsetEnvelopeU", fin(p.onsetEnvelopeU))
         .put("primeReleaseEnabled", p.primeReleaseEnabled)
         .put("primeEnvelopeU", fin(p.primeEnvelopeU))
+        .put("primeEnvelopeSmallU", fin(p.primeEnvelopeSmallU))
+        .put("primeEnvelopeLargeU", fin(p.primeEnvelopeLargeU))
 
     /**
      * `null` bei nicht-endlichen Eingaben. [Sha.lossless] WIRFT bei NaN/Inf,
@@ -365,6 +376,7 @@ object FuseStateJson {
             // Rampe + Abschlag: fehlten bis v1 - zwei Laeufe mit verschiedenen
             // Rampen bekamen denselben Hash (Audit 07.08.). Version 1->2.
             p.riseRampLowR, p.riseRampHighR, p.bolusShareLambda, p.onsetEnvelopeU, p.primeEnvelopeU,
+            p.primeEnvelopeSmallU, p.primeEnvelopeLargeU,
         )
         if (doubles.any { !it.isFinite() }) return null
         val parts = listOf("fuse-policy-v$RULE_SET_VERSION") +

@@ -134,6 +134,8 @@ interface OverviewData {
     var fuseFastDriveSeries: SeriesData
     var fuseRampLowSeries: SeriesData
     var fuseRampHighSeries: SeriesData
+    var fuseDriveMarkerSeries: SeriesData
+    var fuseGuardMarkerSeries: SeriesData
     var maxFuseGuardValueFound: Double
     val fuseGuardScale: Scale
     var fuseGuardSeries: SeriesData

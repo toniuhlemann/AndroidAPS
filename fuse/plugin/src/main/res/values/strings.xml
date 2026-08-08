@@ -49,7 +49,7 @@
 
     <string name="fuse_ramp_low_title">Rampe unten [mg/dl/min]</string>
     <string name="fuse_ramp_high_title">Rampe oben [mg/dl/min]</string>
-    <string name="fuse_ramp_summary">Der gleitende Uebergang zwischen Korrektur- und Anstiegs-Anteil, gesteuert von der gemessenen Anstiegsrate: unterhalb der unteren Kante gilt der Korrekturanteil, oberhalb der oberen der volle Anstiegsanteil, dazwischen wird ueberblendet - kein harter Schalter. Zur Einordnung: flacher Drift 0,5-0,8, echter Mahlzeitenbeginn 3-5 mg/dl/min.</string>
+    <string name="fuse_ramp_summary">Der gleitende Uebergang zwischen Korrektur- und Anstiegs-Anteil, gesteuert von der insulinbereinigten Stoerungsrate r (kann positiv sein, waehrend BG faellt!): unterhalb der unteren Kante gilt der Korrekturanteil, oberhalb der oberen der volle Anstiegsanteil, dazwischen wird ueberblendet - kein harter Schalter. Zur Einordnung: flacher Drift 0,5-0,8, echter Mahlzeitenbeginn 3-5 mg/dl/min.</string>
 
     <string name="fuse_restraint_title">Schnelle Bremsbahn</string>
     <string name="fuse_restraint_summary">FUSE hat zwei Blicke auf den Zucker: einen gruendlichen (verlaesslich, aber ~15 min traege) und einen schnellen (sieht Wenden frueher). Diese Bremse heisst: sieht der schnelle Blick Gefahr, darf er jederzeit bremsen - Gas geben darf er hierueber nie. Kann eine Dosis nur verkleinern.</string>
@@ -65,4 +65,11 @@
     <string name="fuse_prime_release_summary">Ab deinem Mahlzeit-Marker beginnt FUSE SOFORT mit kleinen Portionen - noch bevor der Sensor etwas sieht (der hinkt dem Essen ~20 Minuten hinterher). Nur mit gesetztem Marker, nur 15 Minuten, und alle Waechter behalten Vorrang.</string>
     <string name="fuse_prime_envelope_title">Freigabe-Huelle [U]</string>
     <string name="fuse_prime_envelope_summary">Hoechstmenge je Marker-Episode. 1,2 U ist nicht gewuerfelt: genau so viel kann FUSE per Basal-Stopp in 2 Stunden wieder einfangen, falls du den Marker setzt und doch nichts isst - ein Irrtum kostet nichts Bleibendes. Groessere Werte geben diese Garantie auf.</string>
+    <string name="fuse_prime_small_title">Freigabe-Huelle KLEIN [U]</string>
+    <string name="fuse_prime_small_summary">Marker-Stufe S: kleiner Snack. Voll per Basal-Stopp rueckholbar.</string>
+    <string name="fuse_prime_large_title">Freigabe-Huelle GROSS [U]</string>
+    <string name="fuse_prime_large_summary">Marker-Stufe L: grosse/schnelle Mahlzeit. BEWUSSTE WETTE jenseits der Rueckholbarkeit (einfangbar sind nur ~1,2 U) - faktisch ein verteilter, ueberwachter Teil-Prebolus.</string>
+    <string name="fuse_marker_s">Mahlzeit S</string>
+    <string name="fuse_marker_m">Mahlzeit M</string>
+    <string name="fuse_marker_l">Mahlzeit L</string>
 </resources>
