@@ -99,7 +99,14 @@ class FuseScreenModelTest {
         val tail = TailLiability.evaluate(TailLiability.Input(120.0, 0.5, 85.0, 70.0, 0.0))
         val t = FuseScreenModel.render(outcome(tail = tail), null, now)
         assertTrue(t.contains("Schwanz"))
-        assertTrue(t.contains(TailLiability.COMPLETENESS_STAGE1))
+        // Seit dem Sektions-Umbau (c750169) wird der Vermerk uebersetzt statt
+        // roh gezeigt: "INCOMPLETE(1of3,noLedger,noCandidate)" -> Modellzeile
+        // plus Haken. Der Test bindet den ANZEIGE-Vertrag, nicht den Rohtext
+        // (REG-05 des Re-Audits: genau dieser Vertrag war nicht mitgezogen).
+        assertTrue(t.contains("PARTIAL 1/3"))
+        assertTrue(t.contains("IOB ✓  Transport ✗  Kandidat ✗"))
+        // Der Rohtext selbst gehoert NICHT mehr in die Anzeige.
+        assertFalse(t.contains(TailLiability.COMPLETENESS_STAGE1))
     }
 
     /** Ein unbrauchbarer Schwanzbericht darf nicht wie ein Ergebnis aussehen. */
