@@ -67,11 +67,62 @@ object FuseTbrTranslator {
     ): Result {
         val tbr = TbrPolicy.decide(intentOf(decision.tbr), current, scheduledBasalUPerH, cfg, fault, pumpBusy)
         val effective = if (tbr.smbBlocked) decision.copy(smbU = 0.0) else decision
+        // C7a — GEMEINSAMES ZERTIFIKAT (Codex-Adjudication H3, D-Tabelle C7).
+        val jointVeto = effective.smbU > 0.0 && endsWithholding(tbr.outcome, current, scheduledBasalUPerH, cfg)
         return Result(
-            request = requestOf(tbr.outcome),
+            request = if (jointVeto) null else requestOf(tbr.outcome),
             decision = effective,
-            reason = tbr.reason,
+            reason = if (jointVeto) "$C7A_REASON|${tbr.reason}" else tbr.reason,
             alarm = tbr.alarm,
         )
+    }
+
+    /** Grund-Praefix des C7a-Vetos. Als Konstante, weil er im Trail gesucht
+     *  wird: ohne ihn saehe der unterdrueckte Abbruch aus wie "es lief nichts". */
+    const val C7A_REASON = "C7A_SMB_KEEPS_WITHHOLD"
+
+    /**
+     * Wuerde diese TBR-Anforderung eine laufende ZURUECKHALTUNG beenden?
+     *
+     * DER BEFUND (Codex, "C7 combined-action counterexample"): der SMB wird
+     * gegen eine Bahn geprueft, in der die aktuelle - oft FUSE-eigene -
+     * Null-TBR steckt. Beendet die TBR-Achse diese Null im SELBEN Zyklus
+     * (KEEP_CANCEL_STALE_ZERO), laeuft Profilbasal wieder an, das im Zeugnis
+     * nicht enthalten war: zurueckgehaltene 0,30 U sind bei ISF 80 bis zu
+     * 24 mg/dl zusaetzliche modellierte Wirkung. Zeugnis und ausgefuehrte
+     * Aktion beschreiben dann zwei verschiedene Zukuenfte.
+     *
+     * AUFLOESUNG (konservativ, nicht symmetrisch): beides darf nicht gelten,
+     * also faellt der ABBRUCH weg und die Zurueckhaltung BLEIBT - der SMB
+     * bleibt. Begruendung: der SMB ist die geprueftere Groesse (er hat die
+     * Kandidaten- UND die finale Wirkungspruefung bestanden) und die
+     * granularere (Pumpenschritt statt 30 min Profilbasal); das Freigeben von
+     * Basal dagegen war in keiner Pruefung enthalten. Und die Richtung
+     * stimmt: eine bestehende Zurueckhaltung stehen zu lassen kann Insulin
+     * nur senken, nie erhoehen.
+     *
+     * Gleiche Bauart wie [app.aaps.fuse.core.controller.LedgerHoldGate]: die
+     * lockere Achse wird an der Stelle verschaerft, an der beide Groessen
+     * zusammenkommen - nicht in der TBR-Tabelle, die den SMB gar nicht kennt.
+     *
+     * Ein Abbruch OBERHALB des Profilbasals ist ausdruecklich nicht betroffen:
+     * er senkt Insulin und gehoert zum selben konservativen Vertrag.
+     */
+    private fun endsWithholding(
+        outcome: TbrPolicy.Outcome,
+        current: TbrPolicy.Current?,
+        scheduledBasalUPerH: Double,
+        cfg: TbrPolicy.Config,
+    ): Boolean {
+        if (current == null) return false
+        val req = outcome as? TbrPolicy.Outcome.Request ?: return false
+        // Nur eine laufende Zurueckhaltung ist zu schuetzen.
+        if (TbrPolicy.classify(current.absoluteRateUPerH, scheduledBasalUPerH, cfg.basalStepUPerH) == TbrPolicy.Direction.POSITIVE)
+            return false
+        // Beendet wird sie durch den Abbruch (Dauer 0) ODER durch eine
+        // ANHEBUNG der laufenden Rate. Die Erneuerung derselben Null
+        // (SAFETY_ZERO_RENEW: Rate 0, Dauer 30) ist keines von beidem.
+        return req.durationMin <= 0 ||
+            req.rateUPerH > current.absoluteRateUPerH + cfg.basalStepUPerH / 2.0
     }
 }

@@ -3,6 +3,7 @@ package app.aaps.fuse.core.controller
 import app.aaps.fuse.core.insulin.UnitInsulinKernel
 import app.aaps.fuse.core.predictor.IsfSlot
 import app.aaps.fuse.core.predictor.PredictorResult
+import app.aaps.fuse.core.predictor.minSafetyLowerOf
 import app.aaps.fuse.core.profile.ProfileSlots
 import kotlin.math.floor
 
@@ -23,6 +24,24 @@ import kotlin.math.floor
  *
  * Rein: keine Uhr, keine Pumpe, kein Ledger-Zugriff. Was der Ledger beitraegt
  * (transportCommitment) steckt bereits in den uebergebenen Headrooms.
+ *
+ * ZWEI BAHNEN STATT EINER (C1/C2, Codex-Adjudication D + H1/H2, K2 Punkte 6/8).
+ * Der Baseline-Guard im [FuseController] nahm laengst das Minimum aus Haupt-
+ * und Bremsbahn; [search] und [verifyGuardFloor] bekamen aber nur die
+ * Hauptbahn. Codex' kuerzestes Gegenbeispiel bei Boden 70:
+ *
+ *     Hauptbahn-lower   95   ->  mit Kandidatenwirkung -5:  90  (passiert)
+ *     Bremsbahn-lower   74   ->  mit DERSELBEN Wirkung:     69  (muesste sperren)
+ *
+ * Die Wirkung ist auf beiden Bahnen dieselbe (`candidateU * effectPerU[i]`),
+ * also wird punktweise das MINIMUM beider Bahnen geprueft. Zusaetzlich
+ * verwendet die Pruefung je Bahn die PRIOR-FREIE Untergrenze
+ * ([app.aaps.fuse.core.predictor.TrajectoryPoint.safetyLowerBg]): ein
+ * Marker-Prior darf Bedarf erzeugen, aber kein Sicherheitszeugnis.
+ *
+ * EINSEITIG: `restraint = null` (Bremse abgeschaltet) ergibt exakt das
+ * bisherige Verhalten; eine vorhandene Bremsbahn kann nur zusaetzlich sperren,
+ * niemals eine Menge vergroessern.
  */
 object CandidateSearch {
 
@@ -129,6 +148,9 @@ object CandidateSearch {
         isfSlots: List<IsfSlot>,
         band: Band,
         candidateU: Double,
+        /** Die schnelle Bremsbahn (C1). `null` = Bremse aus -> Verhalten wie
+         *  bisher. Vorhanden kann sie nur zusaetzlich sperren. */
+        restraint: PredictorResult? = null,
     ): Reject? {
         if (!candidateU.isFinite() || candidateU <= 0.0) return Reject.NON_FINITE
         if (band.violation() != null) return Reject.INVALID_BAND
@@ -143,12 +165,13 @@ object CandidateSearch {
             val p = points[i]
             if (p.offsetMin != i + 1 || p.tsMs != anchorTs + (i + 1) * 60_000L) return Reject.GRID_INCONSISTENT
         }
+        if (!restraintFits(prediction, restraint, liabilityIdx)) return Reject.GRID_INCONSISTENT
         if (kernel.deliveryTs < anchorTs) return Reject.DELIVERY_BEFORE_ANCHOR
         if (kernel.deliveryTs >= points[releaseIdx].tsMs) return Reject.DELIVERY_AFTER_RELEASE
         if (!kernel.covers(points[maxOf(releaseIdx, liabilityIdx)].tsMs)) return Reject.MODEL_HORIZON_TOO_SHORT
 
         var acc = 0.0
-        var minLower = prediction.bgAtAnchor
+        var minLower = safetyAnchor(prediction, restraint)
         for (i in 0..liabilityIdx) {
             val p = points[i]
             val isf = ProfileSlots.isfAt(isfSlots, p.tsMs) ?: return Reject.ISF_SLOT_MISSING
@@ -157,7 +180,11 @@ object CandidateSearch {
             val overlapMin = if (p.tsMs > intervalStart) (p.tsMs - intervalStart) / 60_000.0 else 0.0
             if (overlapMin > 0.0) acc += kernel.activityAt(p.tsMs, 1.0) * isf * overlapMin
             if (!acc.isFinite()) return Reject.NON_FINITE
-            val v = p.lowerBg - candidateU * acc
+            // C1: punktweise die pessimistischere BEIDER Bahnen, C2: je Bahn die
+            // prior-freie Kante. Die Kandidatenwirkung ist auf beiden dieselbe.
+            val base = safetyLowerAt(prediction, restraint, i)
+            if (!base.isFinite()) return Reject.NON_FINITE
+            val v = base - candidateU * acc
             if (v < minLower) minLower = v
         }
         return if (minLower < band.guardFloorMgdl) Reject.GUARD_FLOOR else null
@@ -170,6 +197,9 @@ object CandidateSearch {
         band: Band,
         caps: Caps,
         ledgerHold: Boolean = false,
+        /** Die schnelle Bremsbahn (C1). `null` = Bremse aus -> Verhalten wie
+         *  bisher. Vorhanden kann sie die Menge nur verkleinern. */
+        restraint: PredictorResult? = null,
     ): Result {
         if (ledgerHold) return no(Reject.LEDGER_HOLD, "ledgerHold")
         band.violation()?.let { return no(Reject.INVALID_BAND, it) }
@@ -197,6 +227,11 @@ object CandidateSearch {
             if (p.offsetMin != i + 1 || p.tsMs != anchorTs + (i + 1) * 60_000L)
                 return no(Reject.GRID_INCONSISTENT, "index=$i offset=${p.offsetMin} ts=${p.tsMs} anchor=$anchorTs")
         }
+        // C1: eine Bremsbahn, die nicht Punkt fuer Punkt zur Hauptbahn passt,
+        // ist kein Zeugnis - fail-closed statt stillschweigend ignorieren. Sonst
+        // waere "Bremse unbrauchbar" wieder die durchlaessigere Lage.
+        if (!restraintFits(prediction, restraint, liabilityIdx))
+            return no(Reject.GRID_INCONSISTENT, "restraint grid mismatch")
 
         val windowEndTs = points[maxOf(releaseIdx, liabilityIdx)].tsMs
         if (kernel.deliveryTs < anchorTs)
@@ -242,7 +277,10 @@ object CandidateSearch {
         if (baselineMean <= band.releaseTargetHighMgdl + band.demandDeadbandMgdl)
             return Result(
                 0.0, Reject.NO_DEMAND, "baselineMean<=targetHigh+deadband",
-                baselineMean, baselineMean, prediction.minLowerBg, effectPerU[releaseIdx], 0
+                // Berichtet wird die SICHERHEITSBAHN (pessimistisch ueber beide,
+                // prior-frei) - eine Zahl, die guenstiger aussieht als das, was
+                // geprueft wurde, gehoert in keinen Export.
+                baselineMean, baselineMean, minSafetyLowerOf(prediction, restraint), effectPerU[releaseIdx], 0
             )
 
         // 2. Mengenraum
@@ -269,10 +307,17 @@ object CandidateSearch {
         // SMB durchgelassen, weil Minute 1 schon wieder ueber dem Floor lag.
         // Die Kandidatenwirkung ist am Anker null (er liegt nie nach der
         // Lieferung), deshalb geht u hier nicht ein.
+        //
+        // C1/C2: `guardLower` ist punktweise das Minimum aus Haupt- und
+        // Bremsbahn, je Bahn die PRIOR-FREIE Kante. Einmal vorberechnet, weil
+        // die Schleife je Kandidat erneut darueber laeuft.
+        val guardLower = DoubleArray(liabilityIdx + 1) { i -> safetyLowerAt(prediction, restraint, i) }
+        for (v in guardLower) if (!v.isFinite()) return no(Reject.NON_FINITE, "guard lower not finite")
+        val guardAnchor = safetyAnchor(prediction, restraint)
         fun minLowerWith(u: Double): Double {
-            var m = prediction.bgAtAnchor
+            var m = guardAnchor
             for (i in 0..liabilityIdx) {
-                val v = points[i].lowerBg - u * effectPerU[i]
+                val v = guardLower[i] - u * effectPerU[i]
                 if (v < m) m = v
             }
             return m
@@ -308,4 +353,35 @@ object CandidateSearch {
 
     private fun no(reject: Reject, detail: String) =
         Result(0.0, reject, detail, null, null, null, null, 0)
+
+    /**
+     * Passt die Bremsbahn Punkt fuer Punkt auf die Hauptbahn? (C1)
+     *
+     * Geprueft wird bis EINSCHLIESSLICH `neededIdx` (Haftungshorizont) - weiter
+     * laeuft keine Guardpruefung. Ein `null` ist gueltig (Bremse abgeschaltet);
+     * eine VORHANDENE, aber unpassende Bahn ist ein technischer Ausfall und
+     * fuehrt beim Aufrufer zu GRID_INCONSISTENT, nicht zu stillem Ignorieren:
+     * sonst waere eine kaputte Bremse durchlaessiger als eine funktionierende.
+     */
+    private fun restraintFits(prediction: PredictorResult, restraint: PredictorResult?, neededIdx: Int): Boolean {
+        if (restraint == null) return true
+        if (restraint.predictionAnchorTs != prediction.predictionAnchorTs) return false
+        if (!restraint.bgAtAnchor.isFinite()) return false
+        if (restraint.points.size <= neededIdx) return false
+        for (i in 0..neededIdx) {
+            val r = restraint.points[i]
+            if (r.offsetMin != i + 1 || r.tsMs != prediction.points[i].tsMs) return false
+        }
+        return true
+    }
+
+    /** Punktweise pessimistischste, PRIOR-FREIE Untergrenze (C1 + C2). */
+    private fun safetyLowerAt(prediction: PredictorResult, restraint: PredictorResult?, i: Int): Double =
+        minOf(prediction.points[i].safetyLowerBg, restraint?.points?.get(i)?.safetyLowerBg ?: Double.MAX_VALUE)
+
+    /** Der Ankerwert derselben Betrachtung. Am Anker sind Mittel- und
+     *  Untergrenze identisch und die Kandidatenwirkung ist null (R83-F1) -
+     *  pessimistisch ist hier also schlicht der kleinere der beiden Anker. */
+    private fun safetyAnchor(prediction: PredictorResult, restraint: PredictorResult?): Double =
+        minOf(prediction.bgAtAnchor, restraint?.bgAtAnchor ?: Double.MAX_VALUE)
 }

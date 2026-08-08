@@ -222,6 +222,19 @@ enum class FuseIntKey(
      */
     DriveTauMin("fuse_drive_tau_min", 60, 10, 240),
 
+    /** Absorptions-Fenster des ERKLAERTEN Kredits (Toni 09.08.): ueber diese
+     *  Zeit wird die Stufen-Huelle als erwarteter Anstieg auf die Mittelbahn
+     *  gelegt. KUERZER = mehr erwarteter Anstieg je Minute = frueher scharf.
+     *  Der eigentliche Aggressivitaets-Regler des Markers; bewusst als
+     *  Einstellung, weil das Feintuning im laufenden Betrieb passiert. */
+    AbsorptionCreditWindowMin("fuse_absorption_credit_window_min", 60, 20, 180),
+
+    /** Dauer der Marker-SONDERRECHTE ab Druck (erklaerter Kredit + Entwaffnung
+     *  der Rebound-Bremsen + Marker-Zweig des Mahlzeit-Fensters). Endet
+     *  frueher, sobald nach einem Anstieg eine Wende gelatcht wurde. 0 = keine
+     *  Sonderrechte (Marker bleibt Kontext/Anzeige). */
+    MarkerBoostMaxMin("fuse_marker_boost_max_min", 45, 0, 90),
+
     /**
      * Rangstelle in der Verteilung der paarweisen Steigungen, aus der die
      * GUARDBAHN ihren Antrieb nimmt (Prozent).

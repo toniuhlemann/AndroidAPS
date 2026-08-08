@@ -50,6 +50,8 @@ import app.aaps.fuse.core.predictor.PredictorInput
 import app.aaps.fuse.core.predictor.PredictorOutcome
 import app.aaps.fuse.core.predictor.PredictorResult
 import app.aaps.fuse.core.predictor.TrajectoryCore
+import app.aaps.fuse.core.predictor.minSafetyHorizonLowerOf
+import app.aaps.fuse.core.predictor.minSafetyLowerOf
 
 /**
  * Der Zyklus: AAPS hinein, Entscheidung heraus. Er entscheidet NICHTS selbst.
@@ -218,24 +220,14 @@ class FuseCycleRunner(
 
         // Audit R95 F-P0-07: ein Abort liess eine LAUFENDE POSITIVE TBR bis zu
         // ihrem Ende weiterlaufen (fail-silent, war nur fuer VPUMP akzeptiert).
-        // Jetzt: Snapshot der aktiven TBR lesen; liegt sie UEBER dem Profil-
-        // basal, wird ein Cancel (rate 0 / duration 0) angefordert. Negative/
-        // Null-TBRs bleiben unangetastet - ein blinder Cancel wuerde sie
-        // beenden und damit MEHR Insulin freigeben. Ist der Snapshot selbst
-        // nicht lesbar oder nicht klassifizierbar (kein Profil), gibt es
-        // keinen blinden Eingriff, aber einen Alarm.
-        fun abortTbr(): Pair<FuseController.TbrRequest?, Boolean> = runCatching {
-            val running = processedTbrEbData.getTempBasalIncludingConvertedExtended(computeTs)
-                ?: return@runCatching null to false
-            // NEU-05: ein EB-gefakter "Temp" ist eine laufende, nicht
-            // abbrechbare Abgabe - Cancel wuerde den Vertrag der TbrPolicy
-            // (ReadOnlyHold) brechen. Kein Eingriff, aber Alarm.
-            if (running.type == app.aaps.core.data.model.TB.Type.FAKE_EXTENDED) return@runCatching null to true
-            val prof = profileFunction.getProfile(computeTs) ?: return@runCatching null to true
-            val rate = running.convertedToAbsolute(computeTs, prof)
-            if (rate > prof.getBasal(computeTs) + 1e-9) FuseController.TbrRequest(0.0, 0) to false
-            else null to false
-        }.getOrElse { null to true }
+        //
+        // C7c (Codex-Adjudication, K2 Punkt 10): die Regel steht seit
+        // Fix-Pass 5 in [FuseAbortTbr] und NICHT mehr hier - eine Ausnahme,
+        // die aus run() entkommt, wird erst in FusePlugin.invoke() gefangen
+        // und braucht DENSELBEN Vertrag. Genau EINE Implementierung, keine
+        // Kopie.
+        fun abortTbr(): Pair<FuseController.TbrRequest?, Boolean> =
+            FuseAbortTbr.evaluate(processedTbrEbData, profileFunction, computeTs).let { it.request to it.alarm }
 
         fun abort(reason: String, signal: FuseSignalSource.Signal? = null, policy: Config? = null, step: ObserverStep? = null): Outcome {
             val (cancelTbr, tbrAlarm) = abortTbr()
@@ -413,7 +405,7 @@ class FuseCycleRunner(
             signal.ukfRatePerMin.isFinite() && signal.ukfRatePerMin <= -cfg.riseRampLowR
         ) episodes.markerTurnTs = signal.sourceTs
         val markerBoost = mealMarkerActive &&
-            MarkerScope.boostActive(markerTs, computeTs, episodes.markerTurnTs)
+            MarkerScope.boostActive(markerTs, computeTs, episodes.markerTurnTs, cfg.markerBoostMaxMin)
 
         val reboundWindow = reboundRaw && !markerBoost
         val reboundSuppressedByMarker = reboundRaw && markerBoost
@@ -447,7 +439,23 @@ class FuseCycleRunner(
 
         // Fix 7: der Marker-PRIOR auf der unteren Bahn haengt an den
         // Sonderrechten (markerBoost), nicht am 90-min-Kontextfenster.
-        val built = when (val b = CoreInputGuard.build { buildPredictorInput(signal, profile, cfg, band, bolusActivityUPerMin, if (onset.active) onset.driveMgdlPerMin else null, reboundWindow, markerBoost) }) {
+        // ERKLAERTE ABSORPTION (Toni 09.08.): der Marker erzeugt BEDARF auf der
+        // Mittelbahn, ab Knopfdruck und ohne auf den Anstieg zu warten - im FCL
+        // ist Warten strukturell zu spaet (Insulin ~20 min Anlauf, Carbs nicht).
+        // Das Guard-Veto der prior-freien Bahn bleibt: bei vollem Insulinbuch
+        // gibt es trotz Ankuendigung nichts. Der Kredit rechnet mit dem REST
+        // der Stufen-Huelle - was die Episode schon geliefert hat (Sofort-
+        // Freigabe ODER Rampe), zieht ihn herunter: EINE Huelle fuer beide
+        // Pfade, die Erklaerung verbraucht sich selbst.
+        val mealDeliveredU = if (markerTs > 0) episodes.mealDeliveries.sumOf { it.second } else 0.0
+        val declaredDrive = if (markerBoost) MarkerScope.declaredAbsorptionDriveMgdlPerMin(
+            envelopeU = tierEnvelopeU,
+            deliveredU = mealDeliveredU,
+            isfMgdlPerU = profile.getIsfMgdlTimeFromMidnight(MidnightUtils.secondsFromMidnight(signal.sourceTs)),
+            windowMin = cfg.absorptionCreditWindowMin.toDouble(),
+        ) else 0.0
+
+        val built = when (val b = CoreInputGuard.build { buildPredictorInput(signal, profile, cfg, band, bolusActivityUPerMin, if (onset.active) onset.driveMgdlPerMin else null, reboundWindow, markerBoost, declaredDrive) }) {
             is CoreInputGuard.Outcome.Built  -> b.value ?: return abort("input incomplete", signal, cfg, step)
             is CoreInputGuard.Outcome.Failed -> return abort("input: ${b.failure.detail}", signal, cfg, step)
         }
@@ -535,12 +543,14 @@ class FuseCycleRunner(
             is CoreInputGuard.Outcome.Failed -> return abort("state: ${s.failure.detail}", signal, cfg, step)
         }
 
-        // Schwanzhaftung. `bgAtHorizonLower` ist die BASELINE-Bahn ohne
+        // Schwanzhaftung. Die uebergebene Bahn ist die BASELINE-Bahn ohne
         // Kandidat - der Vermerk dazu steht in TailLiability und wandert in den
         // Grund, damit der Guard keine Deckung behauptet, die er nicht hat.
+        // C1/C2: pessimistisch ueber Haupt- UND Bremsbahn und PRIOR-FREI - ein
+        // Marker-Prior darf kein Schwanzbudget erzeugen (Codex H1/H2).
         val tail = if (!cfg.tailGuardEnabled) null else TailLiability.evaluate(
             TailLiability.Input(
-                lowerBgAtH = prediction.bgAtHorizonLower,
+                lowerBgAtH = minSafetyHorizonLowerOf(prediction, restraint),
                 existingIobAtH = built.iobAtH,
                 isfTailMgdlPerU = built.isfTail,
                 tailFloorMgdl = cfg.tailFloorMgdl,
@@ -629,6 +639,11 @@ class FuseCycleRunner(
                             maxSmbU = cfg.maxSmbU,
                         ),
                         ledgerHold = ledgerView.hold,
+                        // C1 (Codex D/H1): die Bremsbahn wird MIT der
+                        // Kandidatenwirkung geprueft, nicht nur ohne. Bisher
+                        // sah nur der Baseline-Guard sie; Hauptbahn-lower 95 /
+                        // Bremsbahn-lower 74 / Wirkung -5 / Boden 70 passierte.
+                        restraint = restraint,
                     )
                     CandidateGate.apply(baseDecision, candidateResult)
                 }
@@ -646,17 +661,15 @@ class FuseCycleRunner(
                 nowMs = computeTs,
                 envelopeU = tierEnvelopeU,
                 spentU = episodes.primeSpentU,
-                // Fix 7 Entzirkularisierung (NEU-01): der Marker-Prior hebt die
-                // untere Bahn - dieselbe gehobene Bahn darf der Clearance der
-                // Prime-Dosis nicht als Deckung dienen. Sein analytischer Hub
-                // am Release-Horizont wird hier wieder abgezogen.
-                minLowerMgdl = prediction.minLowerBg - (
-                    if (markerBoost) MarkerScope.priorLiftAtHorizonMgdl(
-                        PrimeRelease.MARKER_PRIOR_MGDL_PER_MIN,
-                        (if (reboundWindow) minOf(cfg.driveTauMin, FuseController.REBOUND_TAU_MIN) else cfg.driveTauMin).toDouble(),
-                        cfg.releaseHorizonMin,
-                    ) else 0.0
-                    ),
+                // C1 + C2 (Codex H1/H2, K2 Punkte 6/8) ERSETZEN die frueher hier
+                // stehende analytische Entzirkularisierung: statt den Prior-Hub
+                // am RELEASE-Horizont (30 min) abzuziehen, rechnet die Clearance
+                // jetzt gegen die punktweise prior-freie Bahn - und zusaetzlich
+                // gegen die Bremsbahn. Der alte Abzug war unvollstaendig, weil
+                // das Minimum typisch am HAFTUNGS-Horizont liegt: 16,53 mg/dl
+                // (30 min) gegen 36,32 mg/dl (120 min) bei prior 0,7 / tau 60,
+                // also bis ~19,8 mg/dl selbstlizenzierter Kredit.
+                safetyMinLowerMgdl = minSafetyLowerOf(prediction, restraint),
                 guardFloorMgdl = cfg.guardFloorMgdl,
                 isfMgdlPerU = isf,
                 pumpIncrementU = bolusStep,
@@ -678,9 +691,16 @@ class FuseCycleRunner(
         // Kernel-Ausfall-fail-open-Pfad (Basis passierte unverifiziert) tot.
         // Transiente Technik-Ausfaelle kosten genau einen 1-min-Zyklus.
         val kernelFinal = kernelForVerify ?: (buildKernel() as? KernelOutcome.Ok)?.kernel
+        // C1/C2: DASSELBE Zeugnis wie in der Suche - beide Bahnen, prior-frei.
+        // Das ist der Riegel, an dem KEINE positive Menge vorbeikommt: auch der
+        // Ratio-Pfad bei Kernel-Ausfall und die Sofort-Freigabe laufen hier
+        // durch. Ein optimistischerer Baseline-Guard weiter oben kann deshalb
+        // keine Dosis mehr autorisieren, die hier durchfaellt.
         fun finalVeto(u: Double): CandidateSearch.Reject? =
             if (kernelFinal == null) CandidateSearch.Reject.MODEL_HORIZON_TOO_SHORT
-            else CandidateSearch.verifyGuardFloor(prediction, kernelFinal, built.input.isfSlots, candidateBand, u)
+            else CandidateSearch.verifyGuardFloor(
+                prediction, kernelFinal, built.input.isfSlots, candidateBand, u, restraint = restraint,
+            )
         val verifiedLift = if (lifted.smbU <= 0.0) lifted else {
             when {
                 finalVeto(lifted.smbU) == null -> lifted
@@ -950,6 +970,10 @@ class FuseCycleRunner(
         val releaseHorizonMin: Int,
         val liabilityHorizonMin: Int,
         val driveTauMin: Int,
+        /** Fenster des erklaerten Absorptions-Kredits [min] - s. FuseKeys. */
+        val absorptionCreditWindowMin: Int,
+        /** Dauer der Marker-Sonderrechte ab Druck [min]; 0 = aus. */
+        val markerBoostMaxMin: Int,
         val driveLowerQuantilePct: Int,
         val tailGuardEnabled: Boolean,
         val tailFloorMgdl: Double,
@@ -982,6 +1006,8 @@ class FuseCycleRunner(
         releaseHorizonMin = preferences.get(FuseIntKey.ReleaseHorizonMin),
         liabilityHorizonMin = preferences.get(FuseIntKey.LiabilityHorizonMin),
         driveTauMin = preferences.get(FuseIntKey.DriveTauMin),
+        absorptionCreditWindowMin = preferences.get(FuseIntKey.AbsorptionCreditWindowMin),
+        markerBoostMaxMin = preferences.get(FuseIntKey.MarkerBoostMaxMin),
         driveLowerQuantilePct = preferences.get(FuseIntKey.DriveLowerQuantilePct),
         tailGuardEnabled = preferences.get(FuseBooleanKey.TailGuardEnabled),
         tailFloorMgdl = preferences.get(FuseDoubleKey.TailFloorMgdl),
@@ -1012,6 +1038,8 @@ class FuseCycleRunner(
         // Gleiche Grenzen wie DriveDecayModel.ExponentialDecay - sonst wirft der
         // Kern bei einem Wert, den der Einstellungsdialog erlaubt hat.
         require(it.driveTauMin in 10..240) { "driveTau=${it.driveTauMin}" }
+        require(it.absorptionCreditWindowMin in 20..180) { "absorptionCreditWindow=${it.absorptionCreditWindowMin}" }
+        require(it.markerBoostMaxMin in 0..90) { "markerBoostMax=${it.markerBoostMaxMin}" }
         require(it.driveLowerQuantilePct in PairSlopeBand.MIN_PCT..PairSlopeBand.MAX_PCT) {
             "driveLowerQuantile=${it.driveLowerQuantilePct}"
         }
@@ -1047,6 +1075,10 @@ class FuseCycleRunner(
         onsetDriveMgdlPerMin: Double?,
         reboundWindow: Boolean,
         mealMarkerActive: Boolean,
+        /** ERKLAERTE ABSORPTION (Toni 09.08.): erwarteter Anstieg aus der
+         *  Marker-Stufe [mg/dl/min], 0 wenn kein Kredit gilt. Wirkt NUR auf
+         *  der Mittelbahn - s. MarkerScope.declaredAbsorptionDriveMgdlPerMin. */
+        declaredDriveMgdlPerMin: Double = 0.0,
     ): Built? {
         val liabilityHorizonMin = cfg.liabilityHorizonMin
         val anchor = signal.sourceTs
@@ -1140,7 +1172,12 @@ class FuseCycleRunner(
             // abgeschlagene Band-Untergrenze - Guard und Schwanz rechnen also
             // weiter gegen die UNGEHOBENE, konservative Bahn.
             drive = DriveEstimate(
-                onsetDriveMgdlPerMin?.let { maxOf(band.mean, it) } ?: band.mean,
+                // MITTELBAHN: gemessener Antrieb, Onset-Kanal ODER erklaerte
+                // Absorption - was am groessten ist. MAX statt Summe: sobald
+                // die Messung die Ankuendigung ueberholt, zaehlt nur noch die
+                // Messung, und zwei Erklaerungen desselben Anstiegs koennen
+                // sich nie addieren.
+                maxOf(onsetDriveMgdlPerMin?.let { maxOf(band.mean, it) } ?: band.mean, declaredDriveMgdlPerMin),
                 // MARKER-PRIOR: deklarierter Carb-Kredit NUR in der unteren
                 // Bahn, gekappt an der Mittelbahn - s. PrimeRelease-Doku.
                 if (mealMarkerActive)
@@ -1149,6 +1186,12 @@ class FuseCycleRunner(
                 null,
                 DriveDiscount.methodId(PairSlopeBand.methodId(cfg.driveLowerQuantilePct), cfg.bolusShareLambda) +
                     if (onsetDriveMgdlPerMin != null && onsetDriveMgdlPerMin > band.mean) "+ONSET" else "",
+                // C2 (Codex H2): DERSELBE untere Antrieb ohne den Prior. Aus ihm
+                // rechnet TrajectoryCore die prior-freie Zwillingsbahn, gegen die
+                // ALLE Sicherheitszertifikate laufen. Der Prior bleibt in der
+                // angezeigten unteren Bahn sichtbar, lizenziert aber keine Dosis
+                // mehr.
+                discount.lowerAfterMgdlPerMin,
             ),
             // Rebound v2: Erholungssteigungen sterben in ~15 min - im Fenster
             // wird tau hart gekuerzt, sonst schreibt tau 60 sie eine Stunde
@@ -1157,6 +1200,14 @@ class FuseCycleRunner(
                 if (reboundWindow) minOf(cfg.driveTauMin, FuseController.REBOUND_TAU_MIN).toDouble()
                 else cfg.driveTauMin.toDouble()
             ),
+            // C10 (Codex H5): die Kuerzung gilt NUR fuer positive Antriebs-
+            // anteile. Ein negativer Antrieb (Bahn faellt) behaelt das lange tau
+            // - sonst wuerde der schnellere Zerfall den negativen Beitrag
+            // verkleinern und die untere Bahn ANHEBEN, also den Hypo-Schutz
+            // ausgerechnet nach einem Tief schwaechen. Ausserhalb des
+            // Rebound-Fensters sind beide Modelle identisch, deshalb null.
+            decayNegativeDrive =
+                if (reboundWindow) DriveDecayModel.ExponentialDecay(cfg.driveTauMin.toDouble()) else null,
             trajectory = trajectory,
             isfSlots = isfSlots,
             horizonMin = liabilityHorizonMin,

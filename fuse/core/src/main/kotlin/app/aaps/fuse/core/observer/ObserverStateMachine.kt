@@ -192,7 +192,14 @@ class ObserverStateMachine(
         val now = input.signalInputBg
         if (prev != null && now != null &&
             ResetCause.CALIBRATION_RESET !in out && ResetCause.SENSOR_RESET !in out &&
-            dtMin <= p.stateContMaxMin && kotlin.math.abs(now - prev) >= p.inputStepMgdl
+            // C9 (Codex-Adjudication 09.08.): das Sprungfenster reicht bis zur
+            // R-SEGMENTGRENZE, nicht nur bis zur Zustands-Kontinuitaet. Mit
+            // stateContMaxMin (1,5) blieb das Band (1,5 .. 3,0] min ungedeckt:
+            // dort greift weder die Sprungerkennung noch der Segmentbruch der
+            // r-Reihe - alter und neuer Messregime-Punkt lagen zusammen in
+            // derselben Steigungsschaetzung. Jenseits von rSegmentBreakMin
+            // bricht das Segment ohnehin, dort braucht es die Pruefung nicht.
+            dtMin <= p.rSegmentBreakMin && kotlin.math.abs(now - prev) >= p.inputStepMgdl
         ) out += ResetCause.INPUT_STEP_SUSPECTED
         return out
     }

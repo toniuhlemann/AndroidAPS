@@ -45,10 +45,12 @@ class K2PCoreTest {
         bounds: PredictorInputBounds = PredictorInputBounds(),
         isfSlots: List<IsfSlot> = isf(),
         trajectory: InsulinTrajectoryInput = traj(activity),
+        /** Prior-freier Zwilling des unteren Antriebs (C2); null = kein Prior. */
+        driveLowerPriorFree: Double? = null,
     ) = PredictorInput(
         predictionAnchorTs = t0,
         bgAtAnchor = bg,
-        drive = DriveEstimate(driveMean, driveLower, 0.8, "test-v1"),
+        drive = DriveEstimate(driveMean, driveLower, 0.8, "test-v1", driveLowerPriorFree),
         decay = DriveDecayModel.ExponentialDecay(60.0),
         trajectory = trajectory,
         isfSlots = isfSlots,
@@ -371,5 +373,90 @@ class K2PCoreTest {
     @Test
     fun `sauberes Raster wird nicht faelschlich abgelehnt`() {
         assertTrue(TrajectoryCore.predict(input()) is PredictorOutcome.Ok)
+    }
+
+    // ---- C10: vorzeichenbewusster Zerfall (Codex H5) -----------------------
+
+    private fun tau(min: Double) = DriveDecayModel.ExponentialDecay(min)
+
+    /**
+     * DER FEHLER, den C10 beschreibt: im Rebound-Fenster wird tau von 60 auf 15
+     * gekuerzt. Vorzeichenblind angewandt verkleinert die Kuerzung auch einen
+     * NEGATIVEN Antrieb - die untere Bahn steigt von ~68 auf ~105, der
+     * Hypo-Schutz wird ausgerechnet NACH einem Tief schwaecher.
+     *
+     * Der erste assert haelt den Fehler fest, der zweite den Fix.
+     */
+    @Test
+    fun `C10 die Rebound-Kuerzung darf eine negative Bahn nicht anheben`() {
+        val long = input(driveMean = -1.0, driveLower = -1.0, horizon = 120)
+        val blind = long.copy(decay = tau(15.0))
+        val signAware = blind.copy(decayNegativeDrive = tau(60.0))
+
+        assertTrue(ok(blind).minLowerBg > ok(long).minLowerBg + 10.0) {
+            "vorzeichenblind muesste die Bahn deutlich anheben"
+        }
+        assertEquals(ok(long).minLowerBg, ok(signAware).minLowerBg, 1e-9)
+        assertTrue(ok(signAware).minLowerBg <= ok(long).minLowerBg + 1e-9)
+    }
+
+    /** Die Kuerzung bleibt fuer POSITIVEN Antrieb voll wirksam - sie ist dort
+     *  konservativ und genau dafuer gebaut (Vorfaelle #5/#6). */
+    @Test
+    fun `C10 fuer positiven Antrieb bleibt die Kuerzung wirksam`() {
+        val long = input(driveMean = 1.0, driveLower = 1.0, horizon = 120)
+        val shortened = long.copy(decay = tau(15.0), decayNegativeDrive = tau(60.0))
+        assertTrue(ok(shortened).bgAtHorizonMean < ok(long).bgAtHorizonMean - 10.0)
+    }
+
+    /** Die Einseitigkeit haengt nicht an der Disziplin des Aufrufers: ein
+     *  SCHNELLERES Negativ-Modell kann den Schutz nicht verkuerzen. */
+    @Test
+    fun `C10 ein schnelleres Negativ-Modell kann den Schutz nicht verkuerzen`() {
+        val base = input(driveMean = -1.0, driveLower = -1.0, horizon = 120)
+        val bad = base.copy(decayNegativeDrive = tau(10.0))
+        assertEquals(ok(base).minLowerBg, ok(bad).minLowerBg, 1e-9)
+    }
+
+    /** KP-33 bleibt gueltig, auch wenn beide Bahnen verschiedene Faktoren
+     *  bekommen: lower darf mean nie ueberholen. */
+    @Test
+    fun `C10 lower bleibt auch bei gemischten Vorzeichen unter mean`() {
+        val r = ok(input(driveMean = 0.5, driveLower = -0.5).copy(decay = tau(15.0), decayNegativeDrive = tau(60.0)))
+        r.points.forEach { assertTrue(it.lowerBg <= it.meanBg) }
+    }
+
+    /** Ohne Negativ-Modell ist die Rechnung unveraendert vorzeichenblind. */
+    @Test
+    fun `C10 ohne Negativ-Modell aendert sich nichts`() {
+        val a = ok(input(driveMean = -1.0, driveLower = -1.0).copy(decay = tau(15.0)))
+        val b = ok(input(driveMean = -1.0, driveLower = -1.0).copy(decay = tau(15.0), decayNegativeDrive = null))
+        assertEquals(Canonical.goldenOutputHash(a), Canonical.goldenOutputHash(b))
+    }
+
+    // ---- C2: prior-freie Zwillingsbahn (Codex H2) --------------------------
+
+    @Test
+    fun `C2 die prior-freie Bahn liegt nie ueber der gehobenen und ist ohne Prior identisch`() {
+        val plain = ok(input(driveMean = 1.0, driveLower = -0.2))
+        plain.points.forEach { assertEquals(it.lowerBg, it.safetyLowerBg, 0.0) }
+        assertEquals(plain.minLowerBg, plain.minSafetyLowerBg, 0.0)
+        assertEquals(plain.bgAtHorizonLower, plain.bgAtHorizonSafetyLower, 0.0)
+
+        val lifted = ok(input(driveMean = 1.0, driveLower = 0.5, driveLowerPriorFree = -0.2))
+        lifted.points.forEach { assertTrue(it.safetyLowerBg <= it.lowerBg) }
+        assertTrue(lifted.minLowerBg > plain.minLowerBg)
+        // Das Zeugnis ist Punkt fuer Punkt das der Bahn OHNE Prior.
+        lifted.points.forEachIndexed { i, p -> assertEquals(plain.points[i].lowerBg, p.safetyLowerBg, 1e-9) }
+        assertEquals(plain.minLowerBg, lifted.minSafetyLowerBg, 1e-9)
+        assertEquals(plain.bgAtHorizonLower, lifted.bgAtHorizonSafetyLower, 1e-9)
+    }
+
+    /** Ein "Prior", der die untere Bahn SENKEN wuerde, ist kein Prior - er
+     *  waere eine zweite, unkontrollierte Bahn. */
+    @Test
+    fun `C2 ein prior-freier Antrieb ueber der unteren Bahn wird abgewiesen`() {
+        assertThrows<IllegalArgumentException> { DriveEstimate(1.0, 0.2, 0.8, "m", 0.5) }
+        assertThrows<IllegalArgumentException> { DriveEstimate(1.0, 0.2, 0.8, "m", Double.NaN) }
     }
 }

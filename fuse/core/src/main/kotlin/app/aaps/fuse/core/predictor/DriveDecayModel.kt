@@ -9,6 +9,21 @@ import kotlin.math.exp
  * ist vom ersten Kotlin-GO ausdruecklich ausgenommen (R70-F6/R71-C): Suchraster,
  * Score und Tie-Schwelle muessen feststehen, BEVOR ein Modellergebnis sichtbar
  * ist. Diese Klassen entscheiden nichts, sie rechnen nur.
+ *
+ * KEIN VORZEICHEN HIER (C10, Codex H5): die Rebound-Kuerzung darf nur auf
+ * POSITIVE Antriebsanteile wirken - fuer negative wuerde derselbe schnellere
+ * Zerfall den negativen Beitrag verkleinern und die untere Bahn ANHEBEN.
+ * Umgesetzt ist das trotzdem NICHT hier als `tauPositive/tauNegative`, sondern
+ * in [TrajectoryCore] ueber [app.aaps.fuse.core.predictor.PredictorInput.decayNegativeDrive].
+ * Gruende:
+ *  - `factorAt(sMin)` bliebe sonst eine Funktion mit stiller Zusatzbedeutung;
+ *    jeder Aufrufer muesste das Vorzeichen mitgeben, und die bestehenden
+ *    M1/M2/M3-Tests pruefen genau diese eine Signatur.
+ *  - Die Kuerzung ist eine Eigenschaft des ZYKLUS (Rebound-Fenster), nicht des
+ *    Zerfallsmodells. Zwei taus in M1 wuerden eine Regelentscheidung in eine
+ *    reine Rechenklasse verschieben.
+ *  - So bleibt "welches Modell" und "wie streng je Vorzeichen" getrennt
+ *    testbar, und M2/M3 erben die Eigenschaft ohne eigene Aenderung.
  */
 sealed interface DriveDecayModel {
 

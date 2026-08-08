@@ -9,6 +9,22 @@ import kotlin.math.abs
  * Minimum. Ein Endwert allein genuegt nicht: die Bahn kann ein Tief durchlaufen
  * und danach wieder steigen — genau der Fall, der spaeter eine Dosis verbietet.
  *
+ * SEIT C2 (Codex-Adjudication, K2 Punkt 8) eine DRITTE Bahn: die PRIOR-FREIE
+ * Untergrenze. Sie laeuft in DERSELBEN Schleife wie die anderen beiden und
+ * nicht in einem zweiten `predict()`-Aufruf. Zwei Gruende, und der zweite ist
+ * der tragende:
+ *
+ *  1. Sie teilt Punkt fuer Punkt `bgiRate`, ISF-Slot und Zerfallsfaktor mit der
+ *     gehobenen Bahn — die einzige Differenz ist der Antriebsterm. Ein zweiter
+ *     Aufruf muesste all das erneut interpolieren und koennte auseinanderlaufen.
+ *  2. Ein zweiter Aufruf kann UNABHAENGIG ABGELEHNT werden. Dann haette der
+ *     Zyklus eine gueltige Dosierbahn und KEIN Sicherheitszeugnis — genau die
+ *     Sorte Zustand, aus der ein fail-open-Pfad entsteht. Ein zweiter
+ *     Akkumulator in derselben Schleife kann das strukturell nicht.
+ *
+ * Kosten: zwei zusaetzliche Additionen je Minute, kein zusaetzlicher
+ * Datenbank- oder Interpolationszugriff.
+ *
  * Die oeffentliche API liefert bewusst KEINE Dosis, keine Rate und keine Dauer.
  */
 object TrajectoryCore {
@@ -77,7 +93,11 @@ object TrajectoryCore {
             }
         }
         input.bounds.maxAbsDriveMgdlPerMin?.let { lim ->
-            if (abs(input.drive.meanMgdlPerMin) > lim || abs(input.drive.lowerMgdlPerMin) > lim)
+            // Die prior-freie Untergrenze zaehlt mit: sie ist per Vertrag <= lower
+            // und kann damit betragsmaessig GROESSER sein als beide anderen.
+            if (abs(input.drive.meanMgdlPerMin) > lim || abs(input.drive.lowerMgdlPerMin) > lim ||
+                abs(input.drive.safetyLowerMgdlPerMin) > lim
+            )
                 return PredictorOutcome.Rejected(PredictorReason.DRIVE_OUT_OF_BOUNDS, "drive beyond $lim")
         }
 
@@ -85,8 +105,11 @@ object TrajectoryCore {
         val pts = ArrayList<TrajectoryPoint>(input.horizonMin)
         var meanBg = input.bgAtAnchor
         var lowerBg = input.bgAtAnchor
+        // C2: dritte Bahn, gleicher Anker — am Anker sind alle drei identisch.
+        var lowerBgPriorFree = input.bgAtAnchor
         var minMean = input.bgAtAnchor
         var minLower = input.bgAtAnchor
+        var minLowerPriorFree = input.bgAtAnchor
         var timeToMinLower = 0
 
         for (i in 1..input.horizonMin) {
@@ -105,8 +128,16 @@ object TrajectoryCore {
             // Vorzeichentreu, identisch zur gelockten K1-Regel bgiRate = -activity*profileIsf.
             val bgiRate = -activity * isf
             val f = input.decay.factorAt(sMin)
-            val dMean = input.drive.meanMgdlPerMin * f
-            val dLower = input.drive.lowerMgdlPerMin * f
+            // C10 (Codex H5): der Zerfall ist VORZEICHENBEWUSST. Fuer negative
+            // Antriebsanteile gilt der LANGSAMERE der beiden Faktoren - ein
+            // negativer Antrieb darf nie schneller wegsterben als ohne die
+            // Kuerzung. `maxOf` statt "nimm einfach decayNegativeDrive": so
+            // haengt die Einseitigkeit an der Rechnung und nicht daran, dass
+            // der Aufrufer das langsamere Modell einsetzt.
+            val fNegative = input.decayNegativeDrive?.let { maxOf(f, it.factorAt(sMin)) } ?: f
+            val dMean = decayed(input.drive.meanMgdlPerMin, f, fNegative)
+            val dLower = decayed(input.drive.lowerMgdlPerMin, f, fNegative)
+            val dLowerPriorFree = decayed(input.drive.safetyLowerMgdlPerMin, f, fNegative)
 
             // ============================================================
             // KEIN COB-TERM. Bewusste Entscheidung, und sie steht HIER, weil
@@ -182,11 +213,13 @@ object TrajectoryCore {
             // Fehlerquelle ohne Nutzen.
             meanBg += (dMean + bgiRate)
             lowerBg += (dLower + bgiRate)
+            lowerBgPriorFree += (dLowerPriorFree + bgiRate)
 
             if (meanBg < minMean) minMean = meanBg
             if (lowerBg < minLower) { minLower = lowerBg; timeToMinLower = i }
+            if (lowerBgPriorFree < minLowerPriorFree) minLowerPriorFree = lowerBgPriorFree
 
-            pts.add(TrajectoryPoint(i, ts, meanBg, lowerBg, bgiRate, dMean, dLower))
+            pts.add(TrajectoryPoint(i, ts, meanBg, lowerBg, bgiRate, dMean, dLower, lowerBgPriorFree))
         }
 
         return PredictorOutcome.Ok(
@@ -199,6 +232,11 @@ object TrajectoryCore {
                 timeToMinLowerMin = timeToMinLower,
                 bgAtHorizonMean = meanBg,
                 bgAtHorizonLower = lowerBg,
+                // IMMER gesetzt, auch ohne Zuschlag (dann identisch zur unteren
+                // Bahn): ein null aus dem Kern waere nicht von "alter Build ohne
+                // prior-freie Bahn" zu unterscheiden.
+                minLowerBgPriorFree = minLowerPriorFree,
+                bgAtHorizonLowerPriorFree = lowerBgPriorFree,
                 lineageKind = t.lineage.lineageKind,
                 trajectoryContentHash = t.contentHash,
                 iobArraySpanMin = t.spanMin,
@@ -208,6 +246,21 @@ object TrajectoryCore {
             )
         )
     }
+
+    /**
+     * Antrieb mal Zerfallsfaktor, VORZEICHENBEWUSST (C10).
+     *
+     * Positive Anteile (Stoerung nach oben) bekommen `fPositive` — dort ist ein
+     * schnellerer Zerfall konservativ, er nimmt Bedarf weg. Negative Anteile
+     * bekommen `fNegative` >= `fPositive` — ein schnellerer Zerfall waere dort
+     * das Gegenteil von konservativ: er verkleinert den negativen Beitrag und
+     * HEBT die untere Bahn.
+     *
+     * Bei `fNegative == fPositive` (Normalfall, kein Rebound-Fenster) ist das
+     * bitgleich zur alten vorzeichenblinden Rechnung.
+     */
+    internal fun decayed(drive: Double, fPositive: Double, fNegative: Double): Double =
+        drive * (if (drive < 0.0) fNegative else fPositive)
 
     /** Lineare Interpolation zwischen den 5-min-Stuetzstellen; ausserhalb des
      *  Arrays gibt es KEINEN Wert (kein Extrapolieren, Spec §1 P2). */

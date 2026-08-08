@@ -195,7 +195,12 @@ class FuseSignalSource(
                 rawBg = newest.value,
                 q1 = leading.glucose,
                 rSigned = rSigned,
-                ukfRatePerMin = leading.ratePerMin,
+                // C1b (Codex-Adjudication): nach einem Segmentbruch traegt der
+                // erste Punkt KEINE Rate. NaN statt der frueheren 0.0 - alle
+                // Konsumenten pruefen bereits isFinite() und werden dadurch
+                // fail-closed (Onset-Sample entfaellt, aktivierte Bremsbahn
+                // bricht den Zyklus ab), statt eine erfundene Null zu glauben.
+                ukfRatePerMin = if (leading.rateUnavailable) Double.NaN else leading.ratePerMin,
                 ukfLearnedR = leading.learnedR,
                 activityAtAnchor = samples.last().activity,
                 isfAtAnchor = samples.last().profileIsf,

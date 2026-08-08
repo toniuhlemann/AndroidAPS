@@ -56,13 +56,35 @@ data class DriveEstimate(
      */
     val confidence: Double?,
     val uncertaintyMethodId: String,
+    /**
+     * DERSELBE untere Antrieb OHNE ERKLAERUNGSBASIERTE ZUSCHLAEGE (C2, Codex
+     * H2 "a marker may create demand evidence, not protection").
+     *
+     * Der Marker-Prior schreibt der unteren Bahn einen deklarierten
+     * Carb-Antrieb gut. Genau diese gehobene Bahn diente bisher den
+     * Sicherheitszertifikaten als Deckung — die Erklaerung "Carbs kommen"
+     * lizenzierte ihre eigene Dosis. Der Prior darf BEDARF erzeugen, aber
+     * keine SICHERHEIT vortaeuschen.
+     *
+     * `null` heisst: es gab keinen Zuschlag, [lowerMgdlPerMin] IST bereits
+     * prior-frei. Ein Wert MUSS <= [lowerMgdlPerMin] sein — ein Zuschlag kann
+     * die untere Bahn nur heben, nie senken.
+     */
+    val lowerPriorFreeMgdlPerMin: Double? = null,
 ) {
     init {
         require(meanMgdlPerMin.isFinite() && lowerMgdlPerMin.isFinite()) { "drive not finite" }
         require(lowerMgdlPerMin <= meanMgdlPerMin) { "lower > mean" }
         require(confidence == null || confidence in 0.0..1.0) { "confidence out of range" }
         require(uncertaintyMethodId.isNotBlank()) { "uncertaintyMethodId blank" }
+        require(lowerPriorFreeMgdlPerMin == null || lowerPriorFreeMgdlPerMin.isFinite()) { "priorFree not finite" }
+        require(lowerPriorFreeMgdlPerMin == null || lowerPriorFreeMgdlPerMin <= lowerMgdlPerMin) {
+            "priorFree > lower: ein Zuschlag kann nur heben"
+        }
     }
+
+    /** Der Antrieb, gegen den SICHERHEIT gerechnet wird. */
+    val safetyLowerMgdlPerMin: Double get() = lowerPriorFreeMgdlPerMin ?: lowerMgdlPerMin
 }
 
 /** Insulinherkunft. Actual darf gegen die reale BG benotet werden, Virtual nie. */
@@ -174,6 +196,22 @@ data class PredictorInput(
     val isfSlots: List<IsfSlot>,
     val horizonMin: Int,
     val bounds: PredictorInputBounds = PredictorInputBounds(),
+    /**
+     * VORZEICHENBEWUSSTER ZERFALL (C10, Codex H5): Zerfallsmodell fuer die
+     * NEGATIVEN Antriebsanteile.
+     *
+     * Das Rebound-Fenster kuerzt tau (60 -> 15 min), weil eine
+     * Erholungssteigung nach einem Tief in ~15 min stirbt. Vorzeichenblind
+     * angewandt verkleinert derselbe schnellere Zerfall aber auch einen
+     * NEGATIVEN Antrieb — und HEBT damit die untere Bahn: der Hypo-Schutz
+     * wuerde ausgerechnet nach einem Tief schwaecher.
+     *
+     * `null` = vorzeichenblind wie bisher. Ist ein Modell gesetzt, bekommt ein
+     * negativer Antrieb den LANGSAMEREN der beiden Faktoren (s.
+     * [TrajectoryCore]) — die Einseitigkeit haengt damit nicht an der
+     * Disziplin des Aufrufers.
+     */
+    val decayNegativeDrive: DriveDecayModel? = null,
 )
 
 /** Ein Minutenpunkt beider Bahnen. */
@@ -185,7 +223,18 @@ data class TrajectoryPoint(
     val bgiRate: Double,
     val driveMean: Double,
     val driveLower: Double,
-)
+    /**
+     * Die untere Bahn OHNE erklaerungsbasierten Zuschlag (C2). `null` heisst:
+     * es gab keinen Zuschlag, [lowerBg] ist bereits prior-frei — nicht "0".
+     * [TrajectoryCore] setzt das Feld IMMER; null tritt nur bei handgebauten
+     * Punkten auf.
+     */
+    val lowerBgPriorFree: Double? = null,
+) {
+
+    /** Die Bahn, gegen die SICHERHEIT gerechnet wird (Guard, Clearance, Tail). */
+    val safetyLowerBg: Double get() = lowerBgPriorFree ?: lowerBg
+}
 
 /**
  * Ergebnis. Heisst `meanTrajectory`/`lowerTrajectory` und NICHT "guard" —
@@ -226,7 +275,27 @@ data class PredictorResult(
     val iobArrayGridMin: Double,
     val modelTailBeyondArrayMin: Double,
     val inputSkewMs: Long,
+    /** Minimum der PRIOR-FREIEN unteren Bahn ueber [0..H], Anker eingeschlossen
+     *  (C2). `null` = kein Zuschlag im Spiel, [minLowerBg] ist prior-frei. */
+    val minLowerBgPriorFree: Double? = null,
+    /** Prior-freie untere Bahn AM Haftungshorizont (C2) — Eingang des
+     *  Schwanz-Guards. `null` wie oben. */
+    val bgAtHorizonLowerPriorFree: Double? = null,
 ) {
+
+    /**
+     * Das Minimum, gegen das SICHERHEIT gerechnet wird.
+     *
+     * Bewusst ein eigener Name statt einer Umdeutung von [minLowerBg]:
+     * [minLowerBg] bleibt die Bahn, die im Export/Schirm steht (dort ist der
+     * Prior-Hub eine gewollte Information), [minSafetyLowerBg] ist die, die
+     * eine Dosis autorisieren darf.
+     */
+    val minSafetyLowerBg: Double get() = minLowerBgPriorFree ?: minLowerBg
+
+    /** Prior-freie Untergrenze am Horizont — s. [minSafetyLowerBg]. */
+    val bgAtHorizonSafetyLower: Double get() = bgAtHorizonLowerPriorFree ?: bgAtHorizonLower
+
     companion object {
         /** Rueckkehr zum GEPLANTEN PROFILBASAL, nicht Pumpenstopp: AAPS rechnet
          *  Temp-Basal als Nettoabweichung (netBasalRate = rate - basalRate), das
@@ -239,3 +308,26 @@ sealed interface PredictorOutcome {
     data class Ok(val result: PredictorResult) : PredictorOutcome
     data class Rejected(val reason: PredictorReason, val detail: String) : PredictorOutcome
 }
+
+/**
+ * Die pessimistischste Untergrenze ueber ALLE glaubwuerdigen Bahnen
+ * (C1 + C2, Codex H1/H2).
+ *
+ * H1 sagt: "the same set of trajectories must flow through baseline, candidate
+ * search, Prime and final verification". Wer nur EINE Bahn prueft, laesst eine
+ * gleichzeitig gerechnete, pessimistischere Schaetzung unbewertet - der
+ * Baseline-Guard nahm das Minimum aus Haupt- und Bremsbahn, die Mit-Dosis-
+ * Pruefungen sahen die Bremsbahn nie.
+ *
+ * Verwendet je Bahn [PredictorResult.minSafetyLowerBg], also die PRIOR-FREIE
+ * Variante. `null`-Bahnen (Bremse abgeschaltet) zaehlen nicht mit; ist gar
+ * keine Bahn da, ist das Ergebnis NaN - fail-closed, weil jeder Verbraucher
+ * auf Endlichkeit prueft.
+ */
+fun minSafetyLowerOf(vararg trajectories: PredictorResult?): Double =
+    trajectories.filterNotNull().minOfOrNull { it.minSafetyLowerBg } ?: Double.NaN
+
+/** Wie [minSafetyLowerOf], aber AM Haftungshorizont - Eingang des
+ *  Schwanz-Guards (TailLiability). */
+fun minSafetyHorizonLowerOf(vararg trajectories: PredictorResult?): Double =
+    trajectories.filterNotNull().minOfOrNull { it.bgAtHorizonSafetyLower } ?: Double.NaN

@@ -62,11 +62,24 @@ object TailLiability {
 
     /** Woher die Bahn am Horizont stammt. Kein Schmuck: sobald Stufe 2 den
      *  Kandidaten propagiert, aendert sich dieser Name — und damit ist im
-     *  Nachhinein unterscheidbar, welche Zahlen womit gerechnet wurden. */
+     *  Nachhinein unterscheidbar, welche Zahlen womit gerechnet wurden.
+     *
+     *  "NO_CANDIDATE" bleibt richtig (die Kandidatenwirkung VOR H fehlt weiter);
+     *  was sich mit C1/C2 geaendert hat, ist die HERKUNFT der uebergebenen Zahl
+     *  — s. [Input.lowerBgAtH]. */
     const val SOURCE_BASELINE = "BASELINE_NO_CANDIDATE"
 
     data class Input(
-        /** Untere Bahn am Haftungshorizont [mg/dl] — aus `bgAtHorizonLower`. */
+        /**
+         * Untere Bahn am Haftungshorizont [mg/dl].
+         *
+         * SEIT C2/C1 nicht mehr `bgAtHorizonLower` der Hauptbahn, sondern
+         * `minSafetyHorizonLowerOf(prediction, restraint)`: die PRIOR-FREIE
+         * Kante, punktweise pessimistisch ueber alle glaubwuerdigen Bahnen.
+         * Grund (Codex H2): der Marker-Prior hob auch diese Zahl - eine
+         * Erklaerung "Carbs kommen" verlaengerte damit das Schwanzbudget, das
+         * ihre eigene Dosis finanziert.
+         */
         val lowerBgAtH: Double,
         /**
          * Was an Insulin am Horizont noch an Bord ist [U].

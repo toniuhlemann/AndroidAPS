@@ -396,4 +396,73 @@ class FuseControllerTest {
         assertEquals(FuseController.decide(st, langsam).smbU, d.smbU, 1e-12)
         assertEquals(false, d.restraintBound)
     }
+
+    // ---- C7 / K2 Punkt 8: der Prior darf keinen Schutz vortaeuschen --------
+
+    /**
+     * Wie [pred], aber mit einer PRIOR-GEHOBENEN unteren Bahn: `minLower` ist
+     * die gehobene Anzeigebahn, `priorFree` die Sicherheitsbahn darunter.
+     */
+    private fun predWithPrior(bgAt30: Double, minLower: Double, priorFree: Double): PredictorResult {
+        val pts = (1..60).map { TrajectoryPoint(it, it * 60_000L, bgAt30, minLower, 0.0, 0.0, 0.0, priorFree) }
+        return PredictorResult(
+            points = pts, predictionAnchorTs = 0L, bgAtAnchor = bgAt30,
+            minMeanBg = bgAt30, minLowerBg = minOf(bgAt30, minLower), timeToMinLowerMin = 30,
+            bgAtHorizonMean = bgAt30, bgAtHorizonLower = minLower,
+            lineageKind = "ACTUAL", trajectoryContentHash = "h",
+            iobArraySpanMin = 235.0, iobArrayGridMin = 5.0,
+            modelTailBeyondArrayMin = 0.0, inputSkewMs = 0L,
+            minLowerBgPriorFree = priorFree, bgAtHorizonLowerPriorFree = priorFree,
+        )
+    }
+
+    /**
+     * DER OFFENE PUNKT AUS DEM BAHN-FIX (C7, Codex-Adjudication H2/H3): der
+     * Regler bekam weiter die PRIOR-GEHOBENE Bahn. Autorisieren konnte sie
+     * keine Dosis mehr - das finale Zeugnis im Runner ist prior-frei -, aber
+     * sie konnte einen SCHUETZENDEN ZERO_TEMP UNTERDRUECKEN: prior-frei liegt
+     * das Minimum bei 65 (Boden 70, also GUARD_FLOOR -> ZERO_TEMP),
+     * prior-gehoben bei 95, und der Fall lief als normale Dosierlage aus.
+     * Damit fiel der Basalstopp ersatzlos weg.
+     */
+    @Test
+    fun `ein Marker-Prior darf einen schuetzenden Zero-Temp nicht unterdruecken`() {
+        val gehoben = predWithPrior(bgAt30 = 150.0, minLower = 95.0, priorFree = 65.0)
+        val d = FuseController.decide(state(), gehoben, FuseController.Limits(guardFloorMgdl = 70.0))
+        assertEquals(FuseController.Block.GUARD_FLOOR, d.block)
+        assertEquals(FuseController.TbrAction.ZERO_TEMP, d.tbr)
+        assertEquals(0.0, d.smbU)
+        // Berichtet wird die Bahn, gegen die entschieden wurde - nicht die
+        // guenstiger aussehende Anzeigebahn.
+        assertEquals(65.0, d.minLowerMgdl!!, 1e-9)
+        // Gegenprobe: OHNE Prior-Hub war die Lage schon immer ZERO_TEMP.
+        assertEquals(
+            FuseController.Block.GUARD_FLOOR,
+            FuseController.decide(state(), pred(bgAt30 = 150.0, minLower = 65.0), FuseController.Limits(guardFloorMgdl = 70.0)).block
+        )
+    }
+
+    /** Derselbe Vertrag auf der BREMSBAHN: auch dort zaehlt die prior-freie
+     *  Kante, und das Minimum laeuft ueber beide Bahnen. */
+    @Test
+    fun `auch die Bremsbahn wird prior-frei gegen den Boden geprueft`() {
+        val langsam = pred(bgAt30 = 150.0, minLower = 120.0)
+        val schnell = predWithPrior(bgAt30 = 150.0, minLower = 100.0, priorFree = 60.0)
+        val d = FuseController.decide(state(), langsam, FuseController.Limits(guardFloorMgdl = 70.0), restraint = schnell)
+        assertEquals(FuseController.Block.GUARD_FLOOR, d.block)
+        assertEquals(FuseController.TbrAction.ZERO_TEMP, d.tbr)
+        assertTrue(d.restraintBound)
+    }
+
+    /** EINSEITIGKEIT: ein Prior, der die Sicherheitsbahn nicht unter den Boden
+     *  zieht, aendert nichts - der Eingriff kann nur haeufiger schuetzen, nie
+     *  seltener. */
+    @Test
+    fun `ein Prior ueber dem Boden aendert die Entscheidung nicht`() {
+        val gehoben = predWithPrior(bgAt30 = 200.0, minLower = 140.0, priorFree = 120.0)
+        val ohne = FuseController.decide(state(), pred(bgAt30 = 200.0, minLower = 120.0))
+        val mit = FuseController.decide(state(), gehoben)
+        assertEquals(ohne.smbU, mit.smbU, 1e-12)
+        assertEquals(FuseController.Block.NONE, mit.block)
+    }
 }

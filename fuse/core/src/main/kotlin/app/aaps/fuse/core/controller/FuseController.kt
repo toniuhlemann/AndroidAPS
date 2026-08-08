@@ -3,6 +3,7 @@ package app.aaps.fuse.core.controller
 import app.aaps.fuse.core.observer.Health
 import app.aaps.fuse.core.observer.Phase
 import app.aaps.fuse.core.predictor.PredictorResult
+import app.aaps.fuse.core.predictor.minSafetyLowerOf
 import kotlin.math.floor
 import kotlin.math.max
 import kotlin.math.min
@@ -293,6 +294,13 @@ object FuseController {
         val block: Block,
         val insulinReqU: Double,
         val predAtReleaseMgdl: Double?,
+        /**
+         * Die SICHERHEITSBAHN, gegen die der Guard entschieden hat: prior-frei
+         * und ueber Haupt- UND Bremsbahn minimiert (C7, Codex H2). Bewusst
+         * NICHT die prior-gehobene Anzeigebahn - eine Zahl, die guenstiger
+         * aussieht als das, was geprueft wurde, gehoert in keinen Export
+         * (gleiche Regel wie in [CandidateSearch]).
+         */
         val minLowerMgdl: Double?,
         val bindingLimit: String,
         /** Schwanzhaftung, falls bewertet. `null` = Guard aus oder nicht
@@ -398,10 +406,29 @@ object FuseController {
         // Die pessimistischere zweier gleichzeitiger Schaetzungen. `restraint`
         // kann nur senken, nie anheben.
         val restraintRelease = restraint?.points?.firstOrNull { it.offsetMin == limits.releaseHorizonMin }
-        val minLower = minOf(prediction.minLowerBg, restraint?.minLowerBg ?: Double.MAX_VALUE)
+        //
+        // C7 / K2 Punkt 8 (Codex-Adjudication H2/H3): die SCHUTZ-Sicht ist die
+        // PRIOR-FREIE, ueber ALLE Bahnen minimierte - dieselbe Zahl, die
+        // CandidateSearch, PrimeRelease und die finale Wirkungspruefung
+        // benutzen (`minSafetyLowerOf`).
+        //
+        // Hier stand die PRIOR-GEHOBENE Bahn. Eine Dosis konnte sie zwar nicht
+        // mehr autorisieren - das finale Zeugnis ist prior-frei -, aber sie
+        // konnte einen SCHUETZENDEN ZERO_TEMP UNTERDRUECKEN: prior-frei war
+        // der Fall GUARD_FLOOR -> ZERO_TEMP, prior-gehoben lief er als
+        // CANDIDATE/KEEP_CURRENT aus, und die Bremswirkung des Basalstopps
+        // fiel ersatzlos weg. Ein Marker-Prior ist BEDARFS-Evidenz (H2) und
+        // darf Sicherheit nie vortaeuschen.
+        //
+        // Der BEDARF (releaseMean -> insulinReq) bleibt bewusst auf der
+        // Mittelbahn: dass der Prior Bedarf erzeugen darf, ist gewollt.
+        //
+        // Einseitig: die prior-freie Kante liegt nie UEBER der gehobenen, der
+        // Guard kann dadurch nur haeufiger greifen, nie seltener.
+        val minLower = minSafetyLowerOf(prediction, restraint)
         val releaseMean = minOf(release.meanBg, restraintRelease?.meanBg ?: Double.MAX_VALUE)
         val restraintBound = restraint != null &&
-            (minLower < prediction.minLowerBg || releaseMean < release.meanBg)
+            (minLower < prediction.minSafetyLowerBg || releaseMean < release.meanBg)
 
         // Guard: bewertet wird das MINIMUM der pessimistischen Bahn, nicht ihr
         // Endwert — eine Bahn kann harmlos enden und zwischendurch tief gehen.

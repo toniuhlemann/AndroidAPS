@@ -26,7 +26,7 @@ class FuseStateExportTest {
 
     private val cfg = FuseCycleRunner.Config(
         smbRatio = 0.2, smbRatioRise = 0.35, sharedMaxIobU = 7.0, riseRampLowR = 0.5, riseRampHighR = 2.0, bolusShareLambda = 1.0, onsetChannelEnabled = true, onsetEnvelopeU = 1.5, primeReleaseEnabled = true, primeEnvelopeU = 1.2, primeEnvelopeSmallU = 0.8, primeEnvelopeLargeU = 2.0, maxSmbU = 0.3, guardFloorMgdl = 70.0, iobThPercent = 100,
-        releaseHorizonMin = 30, liabilityHorizonMin = 120, driveTauMin = 60,
+        releaseHorizonMin = 30, liabilityHorizonMin = 120, driveTauMin = 60, absorptionCreditWindowMin = 60, markerBoostMaxMin = 45,
         driveLowerQuantilePct = 50, tailGuardEnabled = false, tailFloorMgdl = 70.0, tailRecoveryU = 0.0, fastRestraintEnabled = true,
     )
 

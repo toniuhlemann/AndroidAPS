@@ -2,6 +2,9 @@ package app.aaps.fuse.core.controller
 
 import app.aaps.fuse.core.observer.Health
 import app.aaps.fuse.core.observer.Phase
+import app.aaps.fuse.core.predictor.PredictorResult
+import app.aaps.fuse.core.predictor.TrajectoryPoint
+import app.aaps.fuse.core.predictor.minSafetyLowerOf
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
@@ -152,5 +155,55 @@ class PrimeReleaseTest {
         val p = PrimeRelease.plan(input(spent = 1.17))
         val d = PrimeRelease.lift(base(FuseController.Block.NO_DEMAND), p, state())
         assertEquals(0.0, d.smbU, 0.0)
+    }
+
+    // ---- C1/C2: gegen WELCHE Bahn die Clearance rechnet --------------------
+
+    private fun traj(minLower: Double, priorFree: Double? = null) = PredictorResult(
+        points = (1..120).map {
+            TrajectoryPoint(it, t0 + it * 60_000L, 200.0, minLower, 0.0, 0.0, 0.0, priorFree)
+        },
+        predictionAnchorTs = t0, bgAtAnchor = 200.0,
+        minMeanBg = 200.0, minLowerBg = minLower, timeToMinLowerMin = 1,
+        bgAtHorizonMean = 200.0, bgAtHorizonLower = minLower,
+        lineageKind = "ACTUAL", trajectoryContentHash = "h",
+        iobArraySpanMin = 235.0, iobArrayGridMin = 5.0, modelTailBeyondArrayMin = 0.0, inputSkewMs = 0L,
+        minLowerBgPriorFree = priorFree, bgAtHorizonLowerPriorFree = priorFree,
+    )
+
+    /**
+     * DAS Gegenbeispiel aus der Codex-Adjudication, uebersetzt auf die
+     * Sofort-Freigabe (C1 + C2, Punkte 6/8):
+     *
+     *   Huelle 1,2 U, ISF 80 -> Clearance = 0,2 * 1,2 * 80 = 19,2 mg/dl
+     *   Hauptbahn 95     -> 95 - 19,2 = 75,8 >= 70  -> offen
+     *   Bremsbahn 74     -> 74 - 19,2 = 54,8 <  70  -> muss sperren
+     *   Prior hebt 74 auf 95 -> derselbe Fall, nur ueber den Marker
+     *
+     * Die Minimierung macht der Aufrufer; getestet wird, dass sie die
+     * Entscheidung traegt und dass beide Wege dasselbe ergeben.
+     */
+    @Test
+    fun `C1-C2 die Clearance rechnet gegen die pessimistischste prior-freie Bahn`() {
+        val main = traj(95.0)
+        val brake = traj(74.0)
+        val liftedByPrior = traj(minLower = 95.0, priorFree = 74.0)
+
+        assertEquals(95.0, minSafetyLowerOf(main), 1e-12)
+        assertEquals(74.0, minSafetyLowerOf(main, brake), 1e-12)
+        assertEquals(74.0, minSafetyLowerOf(liftedByPrior), 1e-12)
+        // Bremse abgeschaltet = null aendert nichts (Einseitigkeit).
+        assertEquals(95.0, minSafetyLowerOf(main, null), 1e-12)
+
+        assertTrue(PrimeRelease.plan(input(minLower = minSafetyLowerOf(main))).active)
+        assertEquals("CLEARANCE", PrimeRelease.plan(input(minLower = minSafetyLowerOf(main, brake))).reason)
+        assertEquals("CLEARANCE", PrimeRelease.plan(input(minLower = minSafetyLowerOf(liftedByPrior))).reason)
+    }
+
+    /** Ohne jede Bahn gibt es keinen Ersatzwert: NaN -> NOT_FINITE, nicht
+     *  "offen". */
+    @Test
+    fun `C1 ohne Bahn faellt die Clearance geschlossen aus`() {
+        assertEquals("NOT_FINITE", PrimeRelease.plan(input(minLower = minSafetyLowerOf())).reason)
     }
 }

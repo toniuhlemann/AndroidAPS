@@ -37,6 +37,9 @@ import kotlin.math.min
  *    nicht verdrahtet ist - konservativ genug fuer die Nacht (Bahn nahe am
  *    Boden -> gesperrt), durchlaessig am Mahlzeitenbeginn (Bahn ~100 bei
  *    Boden 70 -> offen).
+ *    WELCHE Guardbahn, seit C1/C2 (Codex-Adjudication H1/H2, K2 Punkte 6/8):
+ *    die pessimistischste ueber ALLE glaubwuerdigen Bahnen - Haupt UND Bremse -
+ *    und PRIOR-FREI. S. [Input.safetyMinLowerMgdl].
  *  - Verteilung statt Klumpen: der Rest der Huelle wird gleichmaessig ueber
  *    das restliche Fenster gestreckt. JEDE im Fenster gelieferte Einheit
  *    zaehlt gegen die Huelle - auch evidenzgetriebene; sobald die Mahlzeit
@@ -64,6 +67,16 @@ object PrimeRelease {
      * minimalen deklarierten Carb-Antrieb gut (~10-15 g ueber 45 min bei
      * ISF 80) - Gates bleiben souveraen, rechnen aber mit korrekten Fakten.
      * Gekappt an der Mittelbahn (lower <= mean bleibt erhalten).
+     *
+     * ENTZIRKULARISIERT SEIT C2 (Codex H2 "a marker may create demand evidence,
+     * not protection"): der Prior hebt weiterhin die ANGEZEIGTE untere Bahn,
+     * aber KEIN Sicherheitszertifikat rechnet mehr gegen die gehobene Kante -
+     * Guard, Clearance und Schwanz nehmen die punktweise prior-freie Zwillings-
+     * bahn ([app.aaps.fuse.core.predictor.PredictorResult.minSafetyLowerBg]).
+     * Die frueher hier angesetzte ANALYTISCHE Korrektur (Hub am Release-
+     * Horizont abziehen) war unvollstaendig: das Minimum liegt typisch am
+     * Haftungshorizont, und dort ist der Hub bei tau 60 fast doppelt so gross
+     * (30 min 16,53 mg/dl gegen 120 min 36,32 mg/dl).
      */
     const val MARKER_PRIOR_MGDL_PER_MIN = 0.7
 
@@ -77,7 +90,21 @@ object PrimeRelease {
         val nowMs: Long,
         val envelopeU: Double,
         val spentU: Double,
-        val minLowerMgdl: Double,
+        /**
+         * Die Bahn, gegen die die Clearance rechnet [mg/dl] - BEREITS
+         * MINIMIERT vom Aufrufer (C1/C2).
+         *
+         * Der Name traegt die Auflage: hier gehoert das punktweise Minimum
+         * ueber ALLE glaubwuerdigen Bahnen hinein (Haupt- UND Bremsbahn), je
+         * Bahn die PRIOR-FREIE Kante - im Runner
+         * `minSafetyLowerOf(prediction, restraint)`. Frueher hiess das Feld
+         * `minLowerMgdl` und bekam die Hauptbahn samt Marker-Prior; beides war
+         * zu guenstig (Codex C1/C2).
+         *
+         * Die Minimierung steht bewusst beim Aufrufer und nicht hier: nur er
+         * weiss, welche Bahnen dieser Zyklus ueberhaupt hat.
+         */
+        val safetyMinLowerMgdl: Double,
         val guardFloorMgdl: Double,
         val isfMgdlPerU: Double,
         val pumpIncrementU: Double,
@@ -100,7 +127,7 @@ object PrimeRelease {
         val ageMin = (input.nowMs - input.armedTsMs) / 60_000.0
         if (ageMin < 0.0) return off("CLOCK_SKEW")
         if (ageMin >= WINDOW_MIN) return off("WINDOW_OVER")
-        if (!input.minLowerMgdl.isFinite() || !input.isfMgdlPerU.isFinite() || input.isfMgdlPerU <= 0.0)
+        if (!input.safetyMinLowerMgdl.isFinite() || !input.isfMgdlPerU.isFinite() || input.isfMgdlPerU <= 0.0)
             return off("NOT_FINITE")
         if (input.pumpIncrementU <= 0.0 || !input.pumpIncrementU.isFinite()) return off("NO_PUMP_STEP")
         if (remaining < input.pumpIncrementU) return off("ENVELOPE_SPENT")
@@ -109,7 +136,7 @@ object PrimeRelease {
         // unter den Boden druecken. Konservativ gegen den Rest, nicht gegen
         // die Einzeldosis - die Wette wird als Ganzes bewertet.
         val clearance = CLEARANCE_60MIN_FRACTION * remaining * input.isfMgdlPerU
-        if (input.minLowerMgdl - clearance < input.guardFloorMgdl) return off("CLEARANCE")
+        if (input.safetyMinLowerMgdl - clearance < input.guardFloorMgdl) return off("CLEARANCE")
 
         // Gleichmaessig ueber das Restfenster; mindestens ein Pumpenschritt,
         // sonst schoebe die Rundung alles ans Fensterende.

@@ -402,6 +402,8 @@ object FuseStateJson {
         .put("releaseHorizonMin", p.releaseHorizonMin)
         .put("liabilityHorizonMin", p.liabilityHorizonMin)
         .put("driveTauMin", p.driveTauMin)
+        .put("absorptionCreditWindowMin", p.absorptionCreditWindowMin)
+        .put("markerBoostMaxMin", p.markerBoostMaxMin)
         .put("driveLowerQuantilePct", p.driveLowerQuantilePct)
         .put("tailGuardEnabled", p.tailGuardEnabled)
         .put("tailFloorMgdl", fin(p.tailFloorMgdl))

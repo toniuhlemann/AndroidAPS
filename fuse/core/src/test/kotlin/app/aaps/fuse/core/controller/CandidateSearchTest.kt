@@ -324,7 +324,13 @@ class CandidateSearchTest {
 
     /** Die Bahn kommt aus `TrajectoryCore`, nicht aus handgebauten Punkten.
      *  Genau dieser Vertrag war gebrochen: echte Punkte beginnen bei Minute 1. */
-    private fun realPrediction(bgAtAnchor: Double = 220.0, drive: Double = 0.0): PredictorResult {
+    private fun realPrediction(
+        bgAtAnchor: Double = 220.0,
+        drive: Double = 0.0,
+        driveLower: Double = drive,
+        /** Prior-freier Zwilling des unteren Antriebs (C2); null = kein Prior. */
+        driveLowerPriorFree: Double? = null,
+    ): PredictorResult {
         val gridMs = 60_000L
         val n = horizonMin + 60
         val pts = (0..n).map {
@@ -341,7 +347,7 @@ class CandidateSearchTest {
             PredictorInput(
                 predictionAnchorTs = anchor,
                 bgAtAnchor = bgAtAnchor,
-                drive = DriveEstimate(drive, drive, 0.8, "test"),
+                drive = DriveEstimate(drive, driveLower, 0.8, "test", driveLowerPriorFree),
                 decay = DriveDecayModel.ExponentialDecay(60.0),
                 trajectory = trajectory,
                 isfSlots = listOf(IsfSlot(anchor - 3_600_000L, anchor + 10 * 3_600_000L, isf)),
@@ -507,5 +513,168 @@ class CandidateSearchTest {
                 p, kernel(), listOf(IsfSlot(anchor, anchor + 30 * 60_000L, isf)), band, 0.3
             )
         )
+    }
+
+    // ---- C1: die BREMSBAHN in jeder Mit-Dosis-Pruefung ---------------------
+    // Codex-Adjudication (D-Tabelle C1, H1, K2 Punkt 6): der Baseline-Guard nahm
+    // laengst das Minimum aus Haupt- und Bremsbahn, search/verifyGuardFloor
+    // bekamen aber nur die Hauptbahn. Die Wirkung einer konkreten Dosis wurde
+    // damit NIE gegen die pessimistischere Bahn geprueft.
+
+    /**
+     * Codex' kuerzestes Gegenbeispiel, Zahl fuer Zahl:
+     *
+     *   Boden 70, Hauptbahn-lower 95, Bremsbahn-lower 74
+     *   kleinster Kandidat 0,05 U wirkt am Haftungshorizont
+     *     0,05 * 119/120 * 100 = 4,96 mg/dl
+     *   Hauptbahn  95 - 4,96 = 90,04  -> passiert
+     *   Bremsbahn  74 - 4,96 = 69,04  -> muss sperren
+     *
+     * Der erste Teil des Tests haelt das ALTE Verhalten fest (restraint = null),
+     * der zweite das neue - so steht die Regression im Test selbst.
+     */
+    @Test
+    fun `C1 die Bremsbahn wird MIT der Kandidatenwirkung geprueft`() {
+        val main = prediction({ 220.0 }, { 95.0 })
+        val brake = prediction({ 220.0 }, { 74.0 })
+        val c = caps(maxSmb = 0.05)
+
+        val mainOnly = CandidateSearch.search(main, kernel(), isfSlots, band, c)
+        assertNull(mainOnly.reject, "Hauptbahn allein laesst 0,05 U durch (Gegenbeispiel)")
+        assertEquals(0.05, mainOnly.smbU, 1e-12)
+        assertTrue(mainOnly.minLowerWithCandidateMgdl!! > 70.0)
+
+        val dual = CandidateSearch.search(main, kernel(), isfSlots, band, c, restraint = brake)
+        assertEquals(CandidateSearch.Reject.GUARD_FLOOR, dual.reject)
+        assertEquals(0.0, dual.smbU)
+    }
+
+    @Test
+    fun `C1 auch die finale Wirkungspruefung sieht die Bremsbahn`() {
+        val main = prediction({ 220.0 }, { 95.0 })
+        val brake = prediction({ 220.0 }, { 74.0 })
+        assertNull(CandidateSearch.verifyGuardFloor(main, kernel(), isfSlots, band, 0.05))
+        assertEquals(
+            CandidateSearch.Reject.GUARD_FLOOR,
+            CandidateSearch.verifyGuardFloor(main, kernel(), isfSlots, band, 0.05, restraint = brake),
+        )
+    }
+
+    /** Einseitigkeit, die Grundbedingung: ohne Bremsbahn aendert sich NICHTS. */
+    @Test
+    fun `C1 ohne Bremsbahn gilt exakt das bisherige Verhalten`() {
+        for (lower in listOf(300.0, 130.0, 95.0, 71.0)) {
+            val p = prediction({ 220.0 }, { lower })
+            val a = CandidateSearch.search(p, kernel(), isfSlots, band, caps())
+            val b = CandidateSearch.search(p, kernel(), isfSlots, band, caps(), restraint = null)
+            assertEquals(a.smbU, b.smbU, 0.0)
+            assertEquals(a.reject, b.reject)
+        }
+    }
+
+    /**
+     * J1/J2 (Codex J-Tabelle): verletzt eine Dosis den Guard auf EINER der
+     * beiden Bahnen, darf auch keine groessere Dosis zulaessig sein. Geprueft
+     * ueber das gesamte Pumpenraster - Monotonie ist der Grund, warum die Suche
+     * absteigend abbrechen darf.
+     */
+    @Test
+    fun `J1-J2 nach dem ersten Guard-Verstoss ist keine groessere Dosis mehr zulaessig`() {
+        val main = prediction({ 220.0 }, { 95.0 })
+        val brake = prediction({ 220.0 }, { 74.0 })
+        var firstRejectTicks = Int.MAX_VALUE
+        for (ticks in 1..40) {
+            val u = ticks * 0.05
+            val r = CandidateSearch.verifyGuardFloor(main, kernel(), isfSlots, band, u, restraint = brake)
+            if (r != null) {
+                assertEquals(CandidateSearch.Reject.GUARD_FLOOR, r, "u=$u")
+                if (ticks < firstRejectTicks) firstRejectTicks = ticks
+            } else {
+                assertTrue(ticks < firstRejectTicks) { "u=$u war nach dem ersten Reject wieder erlaubt" }
+            }
+        }
+        // Konstruktion: schon der kleinste Schritt reisst die Bremsbahn.
+        assertEquals(1, firstRejectTicks)
+    }
+
+    /**
+     * J6: eine monoton pessimistischere Bremsbahn darf die Menge nur
+     * verkleinern - nie vergroessern.
+     */
+    @Test
+    fun `J6 eine pessimistischere Bremsbahn kann die Menge nur verkleinern`() {
+        val main = prediction({ 400.0 }, { 200.0 })
+        val without = CandidateSearch.search(main, kernel(), isfSlots, band, caps()).smbU
+        assertTrue(without > 0.0)
+        var previous = without
+        for (lower in listOf(200.0, 180.0, 150.0, 120.0, 100.0, 80.0, 70.0)) {
+            val r = CandidateSearch.search(
+                main, kernel(), isfSlots, band, caps(),
+                restraint = prediction({ 400.0 }, { lower }),
+            )
+            assertTrue(r.smbU <= previous + 1e-12) { "bei Bremsbahn $lower stieg die Menge: ${r.smbU} > $previous" }
+            assertTrue(r.smbU <= without + 1e-12)
+            previous = r.smbU
+        }
+        assertEquals(0.0, previous, 0.0, "bei Bremsbahn genau am Boden darf nichts mehr laufen")
+    }
+
+    /** Eine vorhandene, aber nicht passende Bremsbahn ist fail-closed - sonst
+     *  waere eine kaputte Bremse durchlaessiger als eine funktionierende. */
+    @Test
+    fun `C1 eine unpassende Bremsbahn sperrt statt ignoriert zu werden`() {
+        val main = prediction({ 220.0 }, { 300.0 })
+        val shifted = main.copy(predictionAnchorTs = anchor + 60_000L)
+        assertEquals(
+            CandidateSearch.Reject.GRID_INCONSISTENT,
+            CandidateSearch.search(main, kernel(), isfSlots, band, caps(), restraint = shifted).reject,
+        )
+        assertEquals(
+            CandidateSearch.Reject.GRID_INCONSISTENT,
+            CandidateSearch.verifyGuardFloor(main, kernel(), isfSlots, band, 0.05, restraint = shifted),
+        )
+        val tooShort = main.copy(points = main.points.take(60))
+        assertEquals(
+            CandidateSearch.Reject.GRID_INCONSISTENT,
+            CandidateSearch.search(main, kernel(), isfSlots, band, caps(), restraint = tooShort).reject,
+        )
+    }
+
+    // ---- C2: prior-freie Sicherheitsbahn ----------------------------------
+
+    /**
+     * J7 (Codex J-Tabelle, H2): der Marker-Prior darf das Sicherheitszeugnis
+     * NICHT veraendern. Gegenprobe im selben Test: die ANGEZEIGTE untere Bahn
+     * darf er sehr wohl heben - sonst pruefte der Test eine Bahn ohne Prior.
+     */
+    @Test
+    fun `J7 der Marker-Prior aendert kein Sicherheitszeugnis`() {
+        // Mittelbahn steigt (Bedarf da), untere Bahn faellt leicht - die Lage,
+        // in der der Prior gebaut wurde.
+        val plain = realPrediction(bgAtAnchor = 110.0, drive = 3.0, driveLower = -0.2)
+        val lifted = realPrediction(
+            bgAtAnchor = 110.0, drive = 3.0,
+            driveLower = -0.2 + PrimeRelease.MARKER_PRIOR_MGDL_PER_MIN,
+            driveLowerPriorFree = -0.2,
+        )
+        // Der Prior HEBT die untere Bahn - sonst waere der Test wertlos.
+        assertTrue(lifted.minLowerBg > plain.minLowerBg + 1.0) {
+            "prior wirkt nicht: ${lifted.minLowerBg} vs ${plain.minLowerBg}"
+        }
+        // Aber das Zeugnis ist identisch zur Bahn ohne Prior.
+        assertEquals(plain.minLowerBg, lifted.minSafetyLowerBg, 1e-9)
+        assertEquals(plain.bgAtHorizonLower, lifted.bgAtHorizonSafetyLower, 1e-9)
+        for (u in listOf(0.05, 0.20, 0.50, 1.00)) {
+            assertEquals(
+                CandidateSearch.verifyGuardFloor(plain, kernel(anchor), isfSlots, band, u),
+                CandidateSearch.verifyGuardFloor(lifted, kernel(anchor), isfSlots, band, u),
+                "u=$u",
+            )
+        }
+        val plainSmb = CandidateSearch.search(plain, kernel(anchor), isfSlots, band, caps()).smbU
+        val liftedSmb = CandidateSearch.search(lifted, kernel(anchor), isfSlots, band, caps()).smbU
+        // Nicht leerlaufen lassen: ohne Dosis wuerde der Test nichts zeigen.
+        assertTrue(plainSmb > 0.0, "Testaufbau ohne Dosis")
+        assertEquals(plainSmb, liftedSmb, 0.0)
     }
 }

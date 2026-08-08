@@ -268,4 +268,54 @@ class TbrPolicyTest {
         assertTrue(d.outcome is TbrPolicy.Outcome.NoRequest)
         assertEquals("KEEP", d.reason)
     }
+
+    // ---- C7b: die Null-Toleranz ist keine Rastertoleranz ------------------
+
+    /**
+     * C7b (Codex-Adjudication D-Tabelle C7): `abs(rate) <= basalStep/2` liess
+     * auf einer Pumpe mit grobem Basalschritt (0,5 U/h) eine FREMDE Absenkung
+     * von 0,20 U/h als "Null" durchgehen - KEEP haette sie abgebrochen und
+     * damit das volle Profilbasal wieder freigegeben. Ein Abbruch einer
+     * Absenkung ist eine Insulin-ERHOEHUNG durch Nichtstun.
+     */
+    @Test
+    fun `C7b eine fremde Absenkung wird auch bei grobem Basalschritt nicht abgebrochen`() {
+        val grob = TbrPolicy.Config(basalStepUPerH = 0.5)   // basalStep/2 = 0,25 > 0,20
+        val fremd = tbr(0.20)
+        assertFalse(TbrPolicy.isZeroRate(0.20, grob.basalStepUPerH))
+        val d = TbrPolicy.decide(TbrPolicy.Intent.KEEP, fremd, 0.5, grob)
+        assertTrue(d.outcome is TbrPolicy.Outcome.NoRequest, d.reason)
+        assertEquals("KEEP", d.reason)
+        // Auch der Sicherheitspfad liest sie nicht mehr als bereits laufende
+        // Null: er zieht sie SOFORT auf eine echte Null (weniger Insulin).
+        assertEquals(
+            TbrPolicy.Outcome.Request(0.0, 30),
+            TbrPolicy.decide(TbrPolicy.Intent.SAFETY_ZERO, fremd, 0.5, grob).outcome
+        )
+    }
+
+    /** Die echte Null bleibt die echte Null - der Abbruch der eigenen
+     *  Sicherheits-Null bleibt erhalten. */
+    @Test
+    fun `C7b eine echte Null wird weiterhin als Null erkannt`() {
+        for (step in listOf(0.01, 0.05, 0.1, 0.5))
+            assertTrue(TbrPolicy.isZeroRate(0.0, step), "step=$step")
+        assertEquals(
+            "KEEP_CANCEL_STALE_ZERO",
+            TbrPolicy.decide(TbrPolicy.Intent.KEEP, tbr(0.0), 0.8, TbrPolicy.Config(basalStepUPerH = 0.5)).reason
+        )
+    }
+
+    /**
+     * Die zweite erlaubte Bedingung des Abbruch-Zweigs: eine Rate UEBER dem
+     * Profilbasal. Sie zu beenden senkt Insulin - waehrend FUSE dosiert, ist
+     * sie eine zweite, ungeprueft mitlaufende Quelle (H3: SMB PLUS TBR).
+     */
+    @Test
+    fun `dosiert der Regler, wird eine laufende positive TBR beendet`() {
+        val d = TbrPolicy.decide(TbrPolicy.Intent.KEEP, tbr(1.50), scheduled, cfg)
+        assertEquals(TbrPolicy.Outcome.Request(0.0, 0), d.outcome)
+        assertEquals("KEEP_CANCEL_POSITIVE", d.reason)
+        assertFalse(d.smbBlocked)
+    }
 }

@@ -104,4 +104,62 @@ class FuseTbrTranslatorTest {
         assertFalse(r.alarm)
         assertNull(r.request)
     }
+
+    // ---- C7a: ein Zertifikat fuer BEIDE Groessen --------------------------
+
+    /**
+     * DAS GEGENBEISPIEL DES CONTROL-AUDITS (Codex-Adjudication, "C7
+     * combined-action counterexample"): der SMB wird gegen eine Bahn geprueft,
+     * in der die laufende Null-TBR steckt; beendet die TBR-Achse diese Null im
+     * SELBEN Zyklus, enthaelt die ausgefuehrte Aktion Insulin, das im Zeugnis
+     * nicht vorkam (0,30 U zurueckgehaltenes Basal sind bei ISF 80 bis zu
+     * 24 mg/dl). Konservative Aufloesung: die Zurueckhaltung BLEIBT, der SMB
+     * bleibt - kein Cancel.
+     */
+    @Test
+    fun `C7a ein SMB und das Ende der laufenden Null gelten nicht beide`() {
+        val r = FuseTbrTranslator.combine(
+            decision(0.20, FuseController.TbrAction.KEEP_CURRENT), running(0.0), scheduled, cfg
+        )
+        assertNull(r.request)
+        assertEquals(0.20, r.decision.smbU, 1e-12)
+        assertTrue(r.reason.startsWith(FuseTbrTranslator.C7A_REASON), r.reason)
+        // Der unterdrueckte Abbruch bleibt im Grund lesbar.
+        assertTrue(r.reason.contains("KEEP_CANCEL_STALE_ZERO"), r.reason)
+    }
+
+    /** OHNE Menge bleibt der Abbruch der eigenen Null erhalten - der
+     *  Widerspruch "Basal aus und schneller Kanal offen" entsteht erst mit
+     *  einem SMB. */
+    @Test
+    fun `C7a ohne SMB wird die laufende Null weiterhin beendet`() {
+        val r = FuseTbrTranslator.combine(
+            decision(0.0, FuseController.TbrAction.KEEP_CURRENT), running(0.0), scheduled, cfg
+        )
+        assertEquals(FuseController.TbrRequest(0.0, 0), r.request)
+    }
+
+    /** Die Einseitigkeit: der Abbruch einer POSITIVEN TBR senkt Insulin und
+     *  bleibt deshalb auch neben einem SMB bestehen. */
+    @Test
+    fun `C7a beruehrt den Abbruch einer positiven TBR nicht`() {
+        val r = FuseTbrTranslator.combine(
+            decision(0.20, FuseController.TbrAction.KEEP_CURRENT), running(1.50), scheduled, cfg
+        )
+        assertEquals(FuseController.TbrRequest(0.0, 0), r.request)
+        assertEquals(0.20, r.decision.smbU, 1e-12)
+        assertFalse(r.reason.startsWith(FuseTbrTranslator.C7A_REASON), r.reason)
+    }
+
+    /** Auch die ERNEUERUNG einer auslaufenden Null ist kein Ende der
+     *  Zurueckhaltung - sie darf nicht am C7a-Veto haengenbleiben. Der SMB ist
+     *  auf diesem Pfad ohnehin gesperrt; geprueft wird die Anforderung. */
+    @Test
+    fun `C7a unterdrueckt keine Erneuerung derselben Null`() {
+        val r = FuseTbrTranslator.combine(
+            decision(0.20, FuseController.TbrAction.ZERO_TEMP),
+            TbrPolicy.Current(0.0, 5, TbrPolicy.SourceType.TEMP_BASAL), scheduled, cfg
+        )
+        assertEquals(FuseController.TbrRequest(0.0, 30), r.request)
+    }
 }

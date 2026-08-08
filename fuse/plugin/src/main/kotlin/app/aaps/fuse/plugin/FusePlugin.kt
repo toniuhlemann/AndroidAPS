@@ -410,12 +410,23 @@ class FusePlugin @Inject constructor(
         }
 
         val rt = if (outcome == null) {
-            FuseRtBuilder.build(
-                nowMs = dateUtil.now(),
-                bgMgdl = null, targetMgdl = null, iobU = null, profileIsfMgdlPerU = null,
-                decision = app.aaps.fuse.core.controller.FuseController.noInput("EXCEPTION"),
-                tbr = null,
+            // C7c (Codex-Adjudication D-Tabelle C7 / Frage 2, K2 Punkt 10):
+            // hier stand `tbr = null` - eine bereits laufende POSITIVE TBR lief
+            // damit ungehindert weiter, obwohl der Abbruch-Vertrag (F-P0-07)
+            // genau das verhindern soll. Der Ausnahmepfad ist der Pfad, auf dem
+            // FUSE am wenigsten weiss; er darf nicht der einzige sein, der die
+            // Aktuatoren unberuehrt laesst. Jetzt gilt DERSELBE Vertrag wie in
+            // runner.abort(), aus DERSELBEN Implementierung.
+            // EINE Uhrlesung fuer Klassifikation und RT: zwei Lesungen waeren
+            // zwei verschiedene Momentaufnahmen in derselben Entscheidung.
+            val abortTs = dateUtil.now()
+            val abortTbr = FuseAbortTbr.evaluate(processedTbrEbData, profileFunction, abortTs)
+            if (abortTbr.alarm)
+                aapsLogger.error(LTag.APS, "FUSE exception path: running TBR not classifiable - no intervention")
+            FuseAbortTbr.abortRt(
+                nowMs = abortTs,
                 gate = FusePumpGate.evaluate(runCatching { activePlugin.activePump }.getOrNull()),
+                outcome = abortTbr,
             )
         } else {
             FuseRtBuilder.build(
@@ -688,6 +699,8 @@ class FusePlugin @Inject constructor(
             addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.PrimeEnvelopeSmallU, dialogMessage = R.string.fuse_prime_small_summary, title = R.string.fuse_prime_small_title))
             addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.PrimeEnvelopeU, dialogMessage = R.string.fuse_prime_envelope_summary, title = R.string.fuse_prime_envelope_title))
             addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.PrimeEnvelopeLargeU, dialogMessage = R.string.fuse_prime_large_summary, title = R.string.fuse_prime_large_title))
+            addPreference(AdaptiveIntPreference(ctx = context, intKey = FuseIntKey.AbsorptionCreditWindowMin, dialogMessage = R.string.fuse_absorption_credit_summary, title = R.string.fuse_absorption_credit_title))
+            addPreference(AdaptiveIntPreference(ctx = context, intKey = FuseIntKey.MarkerBoostMaxMin, dialogMessage = R.string.fuse_marker_boost_summary, title = R.string.fuse_marker_boost_title))
         }
 
         cat("fuse_tail", "Haftung / Schwanz") {

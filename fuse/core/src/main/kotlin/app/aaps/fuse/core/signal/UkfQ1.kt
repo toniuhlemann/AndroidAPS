@@ -59,6 +59,16 @@ object UkfQ1 {
         val ratePerMin: Double,
         val outlier: Boolean,
         val learnedR: Double,
+        /**
+         * C1b (Codex-Adjudication 09.08.): das juengste Segment traegt noch
+         * KEINE Rate - ein einzelner Punkt nach Segmentbruch/Reset kann keine
+         * Steigung belegen. Frueher stand hier 0.0, und 0.0 ist eine
+         * BEHAUPTUNG ("flach"), keine fehlende Zahl: die schnelle Bremsbahn
+         * hielt sie fuer berechenbar und bremste mit einer erfundenen Null.
+         * Wer die Rate zum Dosieren oder Bremsen braucht, MUSS dieses Flag
+         * pruefen und fail-closed abbrechen.
+         */
+        val rateUnavailable: Boolean = false,
     )
 
     private data class Matrix2(var a: Double, var b: Double, var c: Double, var d: Double)
@@ -85,7 +95,10 @@ object UkfQ1 {
         }
         val segment = ordered.subList(segmentStart, ordered.size)
         if (segment.size < 2) {
-            return Result(max(segment.last().value, 39.0), 0.0, false, R_INIT)
+            // C1b: Glukose ja (der Wert existiert), Rate NEIN - siehe
+            // Result.rateUnavailable. Die 0.0 bleibt als Platzhalter stehen,
+            // damit alte Leser nicht auf NaN laufen; entscheidend ist das Flag.
+            return Result(max(segment.last().value, 39.0), 0.0, false, R_INIT, rateUnavailable = true)
         }
 
         var glucose = segment.first().value

@@ -116,8 +116,23 @@ object TbrPolicy {
         }
     }
 
+    /**
+     * HARTE Obergrenze der Null-Toleranz [U/h] (C7b, Codex-Adjudication D/C7).
+     *
+     * `basalStepUPerH / 2` allein ist KEINE Null-Toleranz, sondern eine
+     * Vorzeichen-Toleranz: sie skaliert mit dem Pumpenraster. Auf einer Pumpe
+     * mit grobem Basalschritt (0,5 U/h) galten damit 0,20 U/h als "Null" - und
+     * eine FREMDE Absenkung wurde ueber [Intent.KEEP] abgebrochen. Ein Abbruch
+     * einer Absenkung ist eine Insulin-ERHOEHUNG durch Nichtstun.
+     *
+     * Die Toleranz existiert gegen Double-Rauschen, nicht gegen Rasterbreite;
+     * deshalb zusaetzlich absolut gedeckelt. Einseitig: die Toleranz kann nur
+     * kleiner werden, also wird seltener etwas faelschlich als Null gelesen.
+     */
+    const val ZERO_RATE_TOL_MAX_UPERH = 0.025
+
     fun isZeroRate(absoluteRateUPerH: Double, basalStepUPerH: Double): Boolean =
-        abs(absoluteRateUPerH) <= basalStepUPerH / 2.0
+        abs(absoluteRateUPerH) <= minOf(basalStepUPerH / 2.0, ZERO_RATE_TOL_MAX_UPERH)
 
     /**
      * [fault] liegt bewusst NEBEN [intent] und ersetzt ihn nicht: der Fehlerfall
@@ -186,30 +201,54 @@ object TbrPolicy {
         val base = when (effective) {
             Intent.SAFETY_ZERO -> safetyZero(current, cfg)
             Intent.NO_POSITIVE -> noPositive(current, scheduledBasalUPerH, cfg)
-            // KEEP heisst "der Regler dosiert" — und dann darf keine eigene
-            // Sicherheits-Null mehr laufen. Bis hierher gab es dafuer KEINEN
-            // Pfad: `noPositive` behaelt eine nicht-positive TBR absichtlich,
-            // und KEEP forderte gar nichts an. Auf dem Geraet hat FUSE deshalb
-            // am 06.08. um 13:01 eine 30-min-Null aus einem FALSCHEN
-            // GUARD_FLOOR gesetzt, ab 13:14 wieder SMBs gegeben und die Null
-            // trotzdem bis 13:31 laufen lassen: Basal aus und schneller Kanal
-            // offen, gleichzeitig.
-            //
-            // Das ist ein Widerspruch in sich. Entweder ist die Lage unsicher,
-            // dann kein SMB — oder sie ist sicher, dann kein Basalstopp. Die
-            // Umkehrung von C8 ("kann FUSE nicht stoppen, darf es nicht geben")
-            // in die andere Richtung.
-            //
-            // Bewusst NUR die echte NULL: eine bloss abgesenkte TBR kann von
-            // woanders stammen und wirkt weiter in die sichere Richtung. Eine
-            // Null dagegen setzt in Alpha 1 ausschliesslich FUSE selbst.
-            Intent.KEEP        ->
-                if (current != null && isZeroRate(current.absoluteRateUPerH, cfg.basalStepUPerH))
-                    Decision(Outcome.Request(0.0, 0), "KEEP_CANCEL_STALE_ZERO", alarm = false, smbBlocked = false)
-                else Decision(Outcome.NoRequest, "KEEP", alarm = false, smbBlocked = false)
+            Intent.KEEP        -> keep(current, scheduledBasalUPerH, cfg)
         }
         return if (fault == FaultCode.NONE) base
         else base.copy(reason = "${fault.name}|${base.reason}", smbBlocked = true)
+    }
+
+    /**
+     * KEEP heisst "der Regler dosiert" — und dann darf keine eigene
+     * Sicherheits-Null mehr laufen. Bis zur v0.3.1 gab es dafuer KEINEN Pfad:
+     * `noPositive` behaelt eine nicht-positive TBR absichtlich, und KEEP
+     * forderte gar nichts an. Auf dem Geraet hat FUSE deshalb am 06.08. um
+     * 13:01 eine 30-min-Null aus einem FALSCHEN GUARD_FLOOR gesetzt, ab 13:14
+     * wieder SMBs gegeben und die Null trotzdem bis 13:31 laufen lassen: Basal
+     * aus und schneller Kanal offen, gleichzeitig.
+     *
+     * Das ist ein Widerspruch in sich. Entweder ist die Lage unsicher, dann
+     * kein SMB — oder sie ist sicher, dann kein Basalstopp. Die Umkehrung von
+     * C8 ("kann FUSE nicht stoppen, darf es nicht geben") in die andere
+     * Richtung.
+     *
+     * C7b (Codex-Adjudication D/C7): der Abbruch greift NUR noch bei
+     *
+     *   1. einer ECHTEN Null (harte absolute Toleranz, s. [isZeroRate]) —
+     *      die setzt in Alpha 1 ausschliesslich FUSE selbst, und
+     *   2. einer Rate UEBER dem Profilbasal — sie zu beenden SENKT Insulin.
+     *
+     * Eine FREMDE Absenkung (z.B. 30 % Basal aus einer Automation) bleibt
+     * unangetastet: sie wirkt weiter in die sichere Richtung, und ihr Abbruch
+     * waere eine Insulin-Erhoehung durch Nichtstun. Vorher entschied das
+     * allein `abs(rate) <= basalStep/2` — auf grobem Raster hat das eine
+     * laufende Absenkung als "Null" gelesen.
+     *
+     * ZUSAETZLICH gilt oberhalb, im FuseTbrTranslator (Plugin-Modul, deshalb
+     * hier kein Verweis), das C7a-Zertifikat:
+     * faellt in DEMSELBEN Zyklus ein positiver SMB an, bleibt die
+     * Zurueckhaltung stehen und der Abbruch entfaellt.
+     */
+    private fun keep(current: Current?, scheduledBasalUPerH: Double, cfg: Config): Decision {
+        val keep = Decision(Outcome.NoRequest, "KEEP", alarm = false, smbBlocked = false)
+        if (current == null) return keep
+        fun cancel(reason: String) = Decision(Outcome.Request(0.0, 0), reason, alarm = false, smbBlocked = false)
+        if (isZeroRate(current.absoluteRateUPerH, cfg.basalStepUPerH)) return cancel("KEEP_CANCEL_STALE_ZERO")
+        // Ueber Profilbasal: derselbe Abbruch wie unter NO_POSITIVE. Waehrend
+        // FUSE dosiert, ist eine laufende positive TBR eine zweite, ungeprueft
+        // mitlaufende Insulinquelle (H3: die Aktion ist SMB PLUS TBR).
+        if (classify(current.absoluteRateUPerH, scheduledBasalUPerH, cfg.basalStepUPerH) == Direction.POSITIVE)
+            return cancel("KEEP_CANCEL_POSITIVE")
+        return keep
     }
 
     private fun safetyZero(current: Current?, cfg: Config): Decision {
