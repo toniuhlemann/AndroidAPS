@@ -35,8 +35,9 @@ abstract class OverviewModule {
         fun providesGraphData(
             profileFunction: ProfileFunction,
             preferences: Preferences,
-            rh: ResourceHelper
-        ): GraphData = GraphData(profileFunction, preferences, rh)
+            rh: ResourceHelper,
+            fuseOverviewSource: app.aaps.core.interfaces.overview.FuseOverviewSource
+        ): GraphData = GraphData(profileFunction, preferences, rh, fuseOverviewSource)
     }
 
     @Module

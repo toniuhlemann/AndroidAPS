@@ -19,6 +19,7 @@ import app.aaps.core.graph.data.ScaledDataPoint
 import app.aaps.core.graph.data.TimeAsXAxisLabelFormatter
 import app.aaps.core.interfaces.logging.AAPSLogger
 import app.aaps.core.interfaces.logging.LTag
+import app.aaps.core.interfaces.overview.FuseOverviewSource
 import app.aaps.core.interfaces.overview.OverviewData
 import app.aaps.core.interfaces.profile.ProfileFunction
 import app.aaps.core.interfaces.resources.ResourceHelper
@@ -37,7 +38,8 @@ import kotlin.math.max
 class GraphData @Inject constructor(
     private val profileFunction: ProfileFunction,
     private val preferences: Preferences,
-    private val rh: ResourceHelper
+    private val rh: ResourceHelper,
+    private val fuseOverviewSource: FuseOverviewSource
 ) {
 
     private var maxY = Double.MIN_VALUE
@@ -102,6 +104,28 @@ class GraphData @Inject constructor(
 
     fun addTargetLine() {
         addSeries(overviewData.temporaryTargetSeries as LineGraphSeries<DataPoint>)
+    }
+
+    // Essensbeginn-Marker als senkrechte weisse Linien - dieselbe Optik wie in
+    // den FUSE-Untergraphen, damit ein Marker in allen drei Graphen dieselbe
+    // Stelle bezeichnet. Muss NACH addBgReadings laufen (maxY dort gesetzt).
+    // Auf Nicht-FUSE-Geraeten ist der Marker-Ring leer -> no-op.
+    fun addFuseMealMarkers() {
+        val markers = fuseOverviewSource.fuseMealMarkerTimes(overviewData.fromTime, overviewData.endTime)
+        if (markers.isEmpty() || maxY == Double.MIN_VALUE) return
+        val pts = ArrayList<DataPoint>()
+        markers.sorted().forEach { ts ->
+            pts.add(DataPoint((ts - 1).toDouble(), 0.0))
+            pts.add(DataPoint(ts.toDouble(), maxY))
+            pts.add(DataPoint((ts + 1).toDouble(), 0.0))
+        }
+        addSeries(LineGraphSeries(Array(pts.size) { i -> pts[i] }).also {
+            it.setCustomPaint(Paint().also { paint ->
+                paint.style = Paint.Style.STROKE
+                paint.strokeWidth = 2f
+                paint.color = android.graphics.Color.WHITE
+            })
+        })
     }
 
     fun addRunningModes() {

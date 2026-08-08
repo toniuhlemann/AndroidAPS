@@ -1134,6 +1134,7 @@ class OverviewFragment : DaggerFragment(), View.OnClickListener, OnLongClickList
             graphData.addBasals()
         graphData.addTargetLine()
         graphData.addRunningModes()
+        graphData.addFuseMealMarkers()
         graphData.addNowLine(dateUtil.now())
 
         // set manual x bounds to have nice steps
