@@ -184,7 +184,12 @@ object FuseScreenModel {
             if (it.usable) {
                 row(b, "frei", f2(it.headroomU) + " U")
                 row(b, "Budget @ H", f2(it.budgetU) + " U")
-                row(b, "IOB @ H", f2(it.existingU) + " U")
+                // C4: die Haftung hat DREI Terme. Sie stehen einzeln da, sobald
+                // sie nicht null sind - eine Summe ohne Herkunft ist die Zahl,
+                // die spaeter niemand mehr auseinandernimmt.
+                row(b, "IOB @ H", f2(it.existingIobAtHU) + " U")
+                if (it.transportLiabilityU > 0.0) row(b, "  Transport @ H", f2(it.transportLiabilityU) + " U")
+                if (it.candidateLiabilityU > 0.0) row(b, "  Dosis @ H", f2(it.candidateLiabilityU) + " U")
             } else {
                 row(b, "frei", "-  (unbrauchbar: ${it.invalidReason})")
             }
@@ -207,20 +212,40 @@ object FuseScreenModel {
         return b.toString()
     }
 
-    /** "INCOMPLETE(1of3,noLedger,noCandidate)" -> "PARTIAL 1/3"; unbekannte
-     *  Formate unveraendert durchreichen (ehrlicher als raten). */
+    /** "INCOMPLETE(1of3,noLedger,noCandidate)" -> "PARTIAL 1/3",
+     *  "COMPLETE(3of3)" -> "VOLLSTAENDIG 3/3"; unbekannte Formate unveraendert
+     *  durchreichen (ehrlicher als raten).
+     *
+     *  Abgeleitet, nicht gepflegt: der Vermerk entsteht in [TailLiability] aus
+     *  den tatsaechlich gerechneten Termen - die Anzeige kann deshalb nie etwas
+     *  anderes behaupten als die Rechnung (C4c). */
     private fun modellText(completeness: String): String {
         val m = Regex("""\((\d)of(\d)""").find(completeness) ?: return completeness
-        return "PARTIAL ${m.groupValues[1]}/${m.groupValues[2]}"
+        val wort = if (completeness.startsWith("COMPLETE")) "VOLLSTAENDIG" else "PARTIAL"
+        return "$wort ${m.groupValues[1]}/${m.groupValues[2]}"
     }
 
     /** Haken-Zeile zum Modellstand: IOB traegt Stufe 1 immer; Transport-
-     *  und Kandidaten-Anteil je nach Vermerk. */
+     *  und Kandidaten-Anteil je nach Vermerk.
+     *
+     *  "~" ist KEIN Haken: der Term steht in der Gleichung, aber nur als obere
+     *  Schranke (volle Menge statt gerechneter Restwirkung, weil der
+     *  Einheitskern fehlte). Das ist konservativ - und es soll nicht wie eine
+     *  Messung aussehen. */
     private fun modellChecks(completeness: String): String? {
         if ("of" !in completeness) return null
-        val transport = if ("noLedger" in completeness) "✗" else "✓"
-        val kandidat = if ("noCandidate" in completeness) "✗" else "✓"
-        return "IOB ✓  Transport $transport  Kandidat $kandidat"
+        val transport = when {
+            "noLedger" in completeness         -> "✗"
+            "transportBounded" in completeness -> "~"
+            else                               -> "✓"
+        }
+        val kandidat = when {
+            "noCandidate" in completeness      -> "✗"
+            "candidateBounded" in completeness -> "~"
+            else                               -> "✓"
+        }
+        val legende = if (transport == "~" || kandidat == "~") "   (~ = obere Schranke)" else ""
+        return "IOB ✓  Transport $transport  Kandidat $kandidat$legende"
     }
 
     /** Bahnwerte unter dem physiologischen Boden sind keine Blutzuckerwerte

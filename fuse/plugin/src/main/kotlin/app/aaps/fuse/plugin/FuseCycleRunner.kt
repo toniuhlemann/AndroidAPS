@@ -47,6 +47,7 @@ import app.aaps.fuse.core.predictor.DriveDiscount
 import app.aaps.fuse.core.predictor.DriveEstimate
 import app.aaps.fuse.core.predictor.InsulinLineage
 import app.aaps.fuse.core.predictor.InsulinModelProvenance
+import app.aaps.fuse.core.predictor.PendingInsulinEffect
 import app.aaps.fuse.core.predictor.PredictorInput
 import app.aaps.fuse.core.predictor.PredictorOutcome
 import app.aaps.fuse.core.predictor.PredictorResult
@@ -112,6 +113,37 @@ class FuseCycleRunner(
          *  an einer Rundung scheitert. */
         const val IOB_MARGIN_MIN = 30
 
+        /** Name des Schwanz-Vetos in `bindingLimit` (C4). */
+        const val TAIL_VETO = "TAIL_LIABILITY"
+
+        /** Rundungsluft des Schwanz-Vetos [U]. Ein Spielraum von exakt 0 ist
+         *  KEIN Vertragsbruch - er ist die Grenze, und die Menge wurde genau an
+         *  ihr gewaehlt. */
+        const val TAIL_VETO_EPS_U = 1e-9
+
+        /**
+         * Wie weit der Lieferanker der Transportmenge zurueckreichen darf [min]
+         * (C3).
+         *
+         * Anker ist der FRUEHESTE plausible Lieferzeitpunkt - konservativ ist
+         * frueh, weil dann mehr Wirkung ins Bewertungsfenster faellt. Der
+         * aelteste offene Vorschlag kann aber beliebig alt sein (eine Zeile
+         * bleibt offen, bis sie bewiesen ist), und ein stundenalter Anker
+         * verschoebe den Modelltraeger so weit, dass er das Fenster nicht mehr
+         * deckt - der Zyklus fiele dann dauerhaft mit PENDING_MODEL_TOO_SHORT
+         * aus.
+         *
+         * 30 min sind rund das Doppelte der GEMESSENEN Groesse: 765
+         * Medtrum-SMBs, Sichtbarkeits-Latenz p99 175 s, MAX 854 s, maximaler
+         * Pump-ID-Verzug 901 s.
+         */
+        const val TRANSPORT_ANCHOR_MAX_AGE_MIN = 30
+
+        /** Lieferanker der synthetischen Dosis - s. [TRANSPORT_ANCHOR_MAX_AGE_MIN].
+         *  Ohne offene Zeile ist `computeTs` die ehrliche Antwort: dann ist die
+         *  Menge gerade erst publiziert worden. */
+        internal fun transportAnchorTs(oldestOpenTs: Long?, computeTs: Long): Long =
+            oldestOpenTs?.coerceIn(computeTs - TRANSPORT_ANCHOR_MAX_AGE_MIN * 60_000L, computeTs) ?: computeTs
     }
 
     data class Outcome(
@@ -325,6 +357,73 @@ class FuseCycleRunner(
             is CoreInputGuard.Outcome.Failed -> return abort("config: ${c.failure.detail}", signal, step = step)
         }
 
+        // LEDGER-SICHT dieses Zyklus (Audit R95, Fix 3): was publiziert, aber
+        // noch nicht im IOB nachgewiesen ist, ist KEIN freier Spielraum. Die
+        // Transportmenge geht von BEIDEN Headrooms ab; ein Hold sperrt die
+        // Suche und - nach dem Lift - die gesamte Menge.
+        //
+        // C3 (Codex-Adjudication bae885f1): sie wird HIER gelesen und nicht
+        // mehr erst in Schritt 4, weil dieselbe Zahl jetzt schon in die BAHN
+        // eingeht. Der Ledger wird im Zyklus nur gelesen, die Sicht ist also
+        // dieselbe wie vorher.
+        val ledgerView = ledger.view()
+
+        // DER EINHEITSKERN, EINMAL JE ZYKLUS und gemerkt.
+        //
+        // Drei Verbraucher brauchen ihn: die Transportmenge in der Bahn (C3),
+        // die Kandidatensuche und die finale Wirkungspruefung. Ein zweiter Bau
+        // kostete ~540 Modellabfragen und koennte - bei einem Profilwechsel
+        // zwischen den Aufrufen - ein ANDERES Modell liefern; dann waere die
+        // gepruefte Bahn eine andere als die dosierte. Gebaut wird traege: ohne
+        // Transportmenge und ohne positive Basis faellt der Aufwand weiterhin
+        // ganz weg.
+        fun buildKernel(): KernelOutcome {
+            val insulin = activePlugin.activeInsulin
+            return UnitInsulinKernelBuilder.build(
+                sampler = AapsUnitInsulinSampler(insulin, profile.dia, computeTs),
+                deliveryTs = computeTs,
+                model = InsulinModelProvenance(
+                    insulinType = insulin.id.name,
+                    diaHours = profile.dia,
+                    peakMin = insulin.peak,
+                    codeProvenance = "activePlugin.activeInsulin",
+                ),
+                insulinPluginId = insulin.id.name,
+            )
+        }
+
+        var kernelTried = false
+        var kernelCache: UnitInsulinKernel? = null
+        var kernelReject: String? = null
+        fun kernel(): UnitInsulinKernel? {
+            if (!kernelTried) {
+                kernelTried = true
+                when (val k = buildKernel()) {
+                    is KernelOutcome.Ok       -> kernelCache = k.kernel
+                    is KernelOutcome.Rejected -> kernelReject = "KERNEL_" + k.reason.name
+                }
+            }
+            return kernelCache
+        }
+
+        // C3: DIE TRANSPORTMENGE ALS SYNTHETISCHE DOSIS.
+        //
+        // Bisher wurde sie nur von den Headrooms abgezogen. Das begrenzt, was
+        // NOCH angefordert werden darf - es macht die Bahn aber nicht wahr:
+        // gemessen (765 Medtrum-SMBs) liegt die Sichtbarkeits-Latenz bei p50
+        // 15 s, p90 56 s, p99 175 s, MAX 854 s. In diesen 1 bis ~15 Zyklen
+        // glaubten Guard und Schwanz, die Menge habe keine Zukunftswirkung.
+        //
+        // Ohne Kern gibt es keine synthetische Dosis - die Bahn ist dann zu
+        // optimistisch. Das bleibt folgenlos, weil OHNE Kern ohnehin keine
+        // positive Menge den Zyklus verlaesst (finalVeto -> MODEL_HORIZON_TOO_
+        // SHORT); der Schwanz rechnet in diesem Fall mit der vollen Menge
+        // (TailLiability.Dose ohne Restwirkung), statt sie zu vergessen.
+        val pendingU = ledgerView.transportCommitmentU
+        val pending = if (!(pendingU > 0.0)) null else kernel()?.let { k ->
+            KernelPendingInsulin(k, pendingU, transportAnchorTs(ledger.oldestOpenTs(), computeTs))
+        }
+
         // Mittel- UND Untergrenze aus DEMSELBEN Aufruf. Es darf keinen Zustand
         // "Mittel da, Band fehlt" geben: ein Rueckfall auf lower = mean wuerde
         // den Null-Abstand ausgerechnet bei der schlechtesten Datenlage still
@@ -456,7 +555,7 @@ class FuseCycleRunner(
             windowMin = cfg.absorptionCreditWindowMin.toDouble(),
         ) else 0.0
 
-        val built = when (val b = CoreInputGuard.build { buildPredictorInput(signal, profile, cfg, band, bolusActivityUPerMin, if (onset.active) onset.driveMgdlPerMin else null, reboundWindow, markerBoost, declaredDrive) }) {
+        val built = when (val b = CoreInputGuard.build { buildPredictorInput(signal, profile, cfg, band, bolusActivityUPerMin, if (onset.active) onset.driveMgdlPerMin else null, reboundWindow, markerBoost, declaredDrive, pending) }) {
             is CoreInputGuard.Outcome.Built  -> b.value ?: return abort("input incomplete", signal, cfg, step)
             is CoreInputGuard.Outcome.Failed -> return abort("input: ${b.failure.detail}", signal, cfg, step)
         }
@@ -544,20 +643,32 @@ class FuseCycleRunner(
             is CoreInputGuard.Outcome.Failed -> return abort("state: ${s.failure.detail}", signal, cfg, step)
         }
 
-        // Schwanzhaftung. Die uebergebene Bahn ist die BASELINE-Bahn ohne
-        // Kandidat - der Vermerk dazu steht in TailLiability und wandert in den
-        // Grund, damit der Guard keine Deckung behauptet, die er nicht hat.
-        // C1/C2: pessimistisch ueber Haupt- UND Bremsbahn und PRIOR-FREI - ein
-        // Marker-Prior darf kein Schwanzbudget erzeugen (Codex H1/H2).
-        val tail = if (!cfg.tailGuardEnabled) null else TailLiability.evaluate(
-            TailLiability.Input(
-                lowerBgAtH = minSafetyHorizonLowerOf(prediction, restraint),
-                existingIobAtH = built.iobAtH,
-                isfTailMgdlPerU = built.isfTail,
-                tailFloorMgdl = cfg.tailFloorMgdl,
-                tailRecoveryU = cfg.tailRecoveryU,
-            )
+        // Schwanzhaftung. C1/C2: pessimistisch ueber Haupt- UND Bremsbahn und
+        // PRIOR-FREI - ein Marker-Prior darf kein Schwanzbudget erzeugen
+        // (Codex H1/H2). Die Bahn traegt seit C3 ausserdem die Wirkung der
+        // Transportmenge BIS zum Horizont.
+        //
+        // C4a: was von der Transportmenge NACH dem Horizont noch kommt, ist der
+        // zweite Haftungsterm (R79-F4). Ohne Einheitskern ist die Restwirkung
+        // unbekannt - dann rechnet TailLiability mit der VOLLEN Menge statt mit
+        // 0. Ist nichts unterwegs, ist der Term exakt 0 und der Vermerk sagt
+        // "gerechnet", nicht "geschaetzt".
+        val liabilityHorizonTs = signal.sourceTs + cfg.liabilityHorizonMin * 60_000L
+        val tailBase = TailLiability.Input(
+            lowerBgAtH = minSafetyHorizonLowerOf(prediction, restraint),
+            existingIobAtH = built.iobAtH,
+            isfTailMgdlPerU = built.isfTail,
+            tailFloorMgdl = cfg.tailFloorMgdl,
+            tailRecoveryU = cfg.tailRecoveryU,
+            transport = TailLiability.Dose(
+                amountU = pendingU,
+                residualAtHU = if (pendingU > 0.0) pending?.iobAt(liabilityHorizonTs) else 0.0,
+            ),
         )
+        // Der KAPPEN-Bericht: ohne Kandidat, denn der ist genau die Groesse, die
+        // er begrenzen soll. Die finale Pruefung MIT beschlossener Menge steht
+        // unten (C4b).
+        val tail = if (!cfg.tailGuardEnabled) null else TailLiability.evaluate(tailBase)
 
         val baseDecision = FuseController.decide(
             state, prediction,
@@ -566,12 +677,6 @@ class FuseCycleRunner(
             restraint,
             onsetCapU = if (onset.active) onset.remainingU else null,
         )
-
-        // LEDGER-SICHT dieses Zyklus (Audit R95, Fix 3): was publiziert, aber
-        // noch nicht im IOB nachgewiesen ist, ist KEIN freier Spielraum. Die
-        // Transportmenge geht von BEIDEN Headrooms ab; ein Hold sperrt die
-        // Suche und - nach dem Lift - die gesamte Menge.
-        val ledgerView = ledger.view()
 
         // KANDIDATENPRUEFUNG (Audit 07.08.: 0,30 U bei ISF 95 senken die Bahn
         // 4,3 mg/dl @30 min / 21,6 @120 min - der Baseline-Guard sieht das
@@ -595,59 +700,42 @@ class FuseCycleRunner(
             releaseHorizonMin = cfg.releaseHorizonMin,
             liabilityHorizonMin = cfg.liabilityHorizonMin,
         )
-        fun buildKernel(): KernelOutcome {
-            val insulin = activePlugin.activeInsulin
-            return UnitInsulinKernelBuilder.build(
-                sampler = AapsUnitInsulinSampler(insulin, profile.dia, computeTs),
-                deliveryTs = computeTs,
-                model = InsulinModelProvenance(
-                    insulinType = insulin.id.name,
-                    diaHours = profile.dia,
-                    peakMin = insulin.peak,
-                    codeProvenance = "activePlugin.activeInsulin",
-                ),
-                insulinPluginId = insulin.id.name,
-            )
-        }
-        var kernelForVerify: UnitInsulinKernel? = null
+        // Der Kern steht jetzt WEITER OBEN (C3) und wird hier nur abgerufen -
+        // gebaut wird er beim ersten Verbraucher, gemerkt fuer alle weiteren.
         val vetted = if (baseDecision.smbU <= 0.0) baseDecision else {
-            when (val k = buildKernel()) {
-                is KernelOutcome.Rejected -> {
-                    candidateGap = "KERNEL_" + k.reason.name
-                    baseDecision
-                }
-
-                is KernelOutcome.Ok       -> {
-                    kernelForVerify = k.kernel
-                    candidateResult = CandidateSearch.search(
-                        prediction = prediction,
-                        kernel = k.kernel,
-                        isfSlots = built.input.isfSlots,
-                        band = candidateBand,
-                        caps = CandidateSearch.Caps(
-                            // Budgetpolicy bis KC2-53 offen: maxSmb als
-                            // neutraler Platzhalter, bindet nie unterhalb der
-                            // echten Kappen. Der Ledger-Anteil kommt ueber die
-                            // Headrooms herein (Vertrag der Suche): die noch
-                            // nicht im IOB nachgewiesene Transportmenge zaehlt
-                            // wie bereits vorhandenes Insulin.
-                            remainingReleaseBudgetU = cfg.maxSmbU,
-                            effectiveIobThHeadroomU = state.iobThU - state.capIobU - ledgerView.transportCommitmentU,
-                            // Tonis IOB-Referenz-Regel: Dosier-Grenzen auf
-                            // capIob - negatives Basal-Delta ist kein Budget.
-                            effectiveMaxIobHeadroomU = state.maxIobU - state.capIobU - ledgerView.transportCommitmentU,
-                            pumpIncrementU = bolusStep,
-                            maxSmbU = cfg.maxSmbU,
-                        ),
-                        ledgerHold = ledgerView.hold,
-                        // C1 (Codex D/H1): die Bremsbahn wird MIT der
-                        // Kandidatenwirkung geprueft, nicht nur ohne. Bisher
-                        // sah nur der Baseline-Guard sie; Hauptbahn-lower 95 /
-                        // Bremsbahn-lower 74 / Wirkung -5 / Boden 70 passierte.
-                        restraint = restraint,
-                    )
-                    CandidateGate.apply(baseDecision, candidateResult)
-                }
+            val k = kernel()
+            if (k == null) {
+                candidateGap = kernelReject
+                baseDecision
+            } else {
+                candidateResult = CandidateSearch.search(
+                    prediction = prediction,
+                    kernel = k,
+                    isfSlots = built.input.isfSlots,
+                    band = candidateBand,
+                    caps = CandidateSearch.Caps(
+                        // Budgetpolicy bis KC2-53 offen: maxSmb als
+                        // neutraler Platzhalter, bindet nie unterhalb der
+                        // echten Kappen. Der Ledger-Anteil kommt ueber die
+                        // Headrooms herein (Vertrag der Suche): die noch
+                        // nicht im IOB nachgewiesene Transportmenge zaehlt
+                        // wie bereits vorhandenes Insulin.
+                        remainingReleaseBudgetU = cfg.maxSmbU,
+                        effectiveIobThHeadroomU = state.iobThU - state.capIobU - ledgerView.transportCommitmentU,
+                        // Tonis IOB-Referenz-Regel: Dosier-Grenzen auf
+                        // capIob - negatives Basal-Delta ist kein Budget.
+                        effectiveMaxIobHeadroomU = state.maxIobU - state.capIobU - ledgerView.transportCommitmentU,
+                        pumpIncrementU = bolusStep,
+                        maxSmbU = cfg.maxSmbU,
+                    ),
+                    ledgerHold = ledgerView.hold,
+                    // C1 (Codex D/H1): die Bremsbahn wird MIT der
+                    // Kandidatenwirkung geprueft, nicht nur ohne. Bisher
+                    // sah nur der Baseline-Guard sie; Hauptbahn-lower 95 /
+                    // Bremsbahn-lower 74 / Wirkung -5 / Boden 70 passierte.
+                    restraint = restraint,
+                )
+                CandidateGate.apply(baseDecision, candidateResult)
             }
         }
 
@@ -691,17 +779,58 @@ class FuseCycleRunner(
         // Menge > 0 muss verifyGuardFloor bestehen - damit ist auch der alte
         // Kernel-Ausfall-fail-open-Pfad (Basis passierte unverifiziert) tot.
         // Transiente Technik-Ausfaelle kosten genau einen 1-min-Zyklus.
-        val kernelFinal = kernelForVerify ?: (buildKernel() as? KernelOutcome.Ok)?.kernel
+        val kernelFinal = kernel()
+
+        // C4b: DIE WIRKUNG DER BESCHLOSSENEN MENGE GEHOERT IN DIESELBE
+        // GLEICHUNG WIE DIE HAFTUNG.
+        //
+        // Der Guard prueft bis liabilityHorizonMin (Default 120 min), Tonis
+        // Insulin wirkt ueber DIA 9 h - die zweite Wirkhaelfte bewertet nur der
+        // Schwanz. Der kannte den Kandidaten bisher nicht (`noCandidate`), weil
+        // der Aufrufer ihn erst nach der Wahl kennt. Geloest wird das mit ZWEI
+        // BEWERTUNGEN DESSELBEN SCHWANZES statt einer zweiten API: oben die
+        // Kappe fuer die Suche, hier die finale Pruefung der beschlossenen
+        // Menge. Der Kandidat ist damit schlicht ein weiterer Term - die
+        // Kopplung bleibt "TailLiability rechnet mit Zahlen".
+        //
+        // Die Wirkung selbst kommt aus der Kandidatensuche, wo die
+        // Integrationsregel ohnehin steht; zwei Rechnungen fuer dieselbe
+        // Groesse waeren zwei Wahrheiten.
+        val candidateEffectAtHPerU = kernelFinal?.let {
+            CandidateSearch.effectPerUAtLiabilityHorizon(prediction, it, built.input.isfSlots, candidateBand)
+        }
+        fun tailWith(u: Double): TailLiability.Report? {
+            if (tail == null) return null
+            // Ohne berechenbare Wirkung ist die konservative Annahme, dass die
+            // ganze Menge bis H auf die Bahn durchschlaegt UND am Horizont noch
+            // haftet (Dose ohne Restwirkung) - NICHT, dass sie nichts tut.
+            val drop = if (u <= 0.0) 0.0 else candidateEffectAtHPerU?.times(u) ?: (u * tailBase.isfTailMgdlPerU)
+            return TailLiability.evaluate(
+                tailBase.copy(
+                    lowerBgAtH = tailBase.lowerBgAtH - drop,
+                    candidate = TailLiability.Dose(
+                        amountU = u,
+                        residualAtHU = if (u > 0.0) kernelFinal?.iobAt(liabilityHorizonTs, u) else 0.0,
+                    ),
+                )
+            )
+        }
+
         // C1/C2: DASSELBE Zeugnis wie in der Suche - beide Bahnen, prior-frei.
         // Das ist der Riegel, an dem KEINE positive Menge vorbeikommt: auch der
         // Ratio-Pfad bei Kernel-Ausfall und die Sofort-Freigabe laufen hier
         // durch. Ein optimistischerer Baseline-Guard weiter oben kann deshalb
         // keine Dosis mehr autorisieren, die hier durchfaellt.
-        fun finalVeto(u: Double): CandidateSearch.Reject? =
-            if (kernelFinal == null) CandidateSearch.Reject.MODEL_HORIZON_TOO_SHORT
-            else CandidateSearch.verifyGuardFloor(
+        // C4: und er endet nicht am Haftungshorizont - was danach noch wirkt,
+        // muss der Schwanz MIT dieser Menge tragen.
+        fun finalVeto(u: Double): String? {
+            if (kernelFinal == null) return CandidateSearch.Reject.MODEL_HORIZON_TOO_SHORT.name
+            CandidateSearch.verifyGuardFloor(
                 prediction, kernelFinal, built.input.isfSlots, candidateBand, u, restraint = restraint,
-            )
+            )?.let { return it.name }
+            tailWith(u)?.takeIf { it.usable && it.headroomU < -TAIL_VETO_EPS_U }?.let { return TAIL_VETO }
+            return null
+        }
         // REST-ZAEHLER (Toni 09.08.): was die Pumpenschritt-Rasterung verwirft,
         // wird aufgeschoben statt vernichtet - sonst faellt jede Absicht unter
         // 0,05 U dauerhaft aus (insulinReq 0,24 x Ratio 0,15 = 0,036 U), und
@@ -752,7 +881,7 @@ class FuseCycleRunner(
                 // Anhebung fiel durch: zurueck auf die kleinere Basis, aber
                 // nur, wenn AUCH sie das Zeugnis besteht.
                 withCarry.smbU > vetted.smbU + 1e-9 && vetted.smbU > 0.0 && finalVeto(vetted.smbU) == null ->
-                    vetted.copy(bindingLimit = vetted.bindingLimit + "|primeVeto:${finalVeto(withCarry.smbU)?.name}")
+                    vetted.copy(bindingLimit = vetted.bindingLimit + "|primeVeto:${finalVeto(withCarry.smbU)}")
                 else -> {
                     // Die Wirkungspruefung hat die Menge verworfen - damit ist
                     // auch der aufgeschobene Rest nicht mehr gewollt (Tonis
@@ -761,7 +890,7 @@ class FuseCycleRunner(
                     withCarry.copy(
                         smbU = 0.0,
                         block = FuseController.Block.CANDIDATE,
-                        bindingLimit = "finalVerify:${finalVeto(withCarry.smbU)?.name}",
+                        bindingLimit = "finalVerify:${finalVeto(withCarry.smbU)}",
                     )
                 }
             }
@@ -770,7 +899,13 @@ class FuseCycleRunner(
         // und Sofort-Freigabe laufen am LEDGER_HOLD-Reject der Suche vorbei -
         // ohne diesen Riegel waere der Hold genau ueber die Pfade umgehbar,
         // die ohne Wirkungspruefung dosieren.
-        val decision = LedgerHoldGate.apply(verifiedLift, ledgerView.hold)
+        val held = LedgerHoldGate.apply(verifiedLift, ledgerView.hold)
+        // C4c: Anzeige, Export und RT-Grund bekommen den FINALEN Schwanzbericht -
+        // den mit der Menge, die wirklich hinausgeht. Auch eine beschlossene
+        // NULL ist eine Entscheidung und kein fehlender Term; erst damit steht
+        // dort 3/3 statt 1/3. Er ersetzt nur den BERICHT, nie die Menge - die
+        // hat der Riegel oben bereits entschieden.
+        val decision = tailWith(held.smbU)?.let { held.copy(tail = it) } ?: held
         val primeWindowOpen = mealMarkerActive && markerTs > 0 &&
             computeTs - markerTs < PrimeRelease.WINDOW_MIN * 60_000L
 
@@ -1140,6 +1275,9 @@ class FuseCycleRunner(
          *  Marker-Stufe [mg/dl/min], 0 wenn kein Kredit gilt. Wirkt NUR auf
          *  der Mittelbahn - s. MarkerScope.declaredAbsorptionDriveMgdlPerMin. */
         declaredDriveMgdlPerMin: Double = 0.0,
+        /** C3: publizierte, im IOB noch nicht sichtbare Menge als synthetische
+         *  Dosis. `null` = nichts unterwegs (oder kein Einheitskern). */
+        pending: PendingInsulinEffect? = null,
     ): Built? {
         val liabilityHorizonMin = cfg.liabilityHorizonMin
         val anchor = signal.sourceTs
@@ -1272,7 +1410,38 @@ class FuseCycleRunner(
             trajectory = trajectory,
             isfSlots = isfSlots,
             horizonMin = liabilityHorizonMin,
+            // C3: die Transportmenge wirkt auf ALLE DREI Bahnen (mean, lower,
+            // prior-frei). Senken ist in beide Richtungen konservativ: der Guard
+            // sperrt eher UND der Bedarf auf der Mittelbahn sinkt.
+            pending = pending,
             ),
         )
     }
+}
+
+/**
+ * Die synthetische Dosis der Transportmenge (C3) - DERSELBE Einheitskern wie in
+ * der Kandidatensuche, nur auf einen frueheren Lieferzeitpunkt verschoben.
+ *
+ * WARUM VERSCHIEBEN STATT NEU SAMPELN: die Stuetzstellen des Kerns sind Offsets
+ * AB DER LIEFERUNG - eine Verschiebung ist damit reine Zeitrechnung an der
+ * Abfragestelle. Ein zweiter Bau kostete ~540 Modellabfragen je Zyklus und
+ * koennte, bei einem Profilwechsel dazwischen, ein anderes Modell liefern.
+ *
+ * Die Nullregel vor der Lieferung kommt aus dem Kern selbst
+ * ([UnitInsulinKernel.activityAt] ist vor `deliveryTs` exakt 0) und wird hier
+ * nicht nachgebaut.
+ */
+internal class KernelPendingInsulin(
+    private val kernel: UnitInsulinKernel,
+    override val amountU: Double,
+    override val deliveryTs: Long,
+) : PendingInsulinEffect {
+
+    /** Anfrage-Zeitpunkt in die Zeitachse des Kerns umgerechnet. */
+    private fun shifted(tsMs: Long): Long = tsMs - deliveryTs + kernel.deliveryTs
+
+    override fun covers(tsMs: Long): Boolean = kernel.covers(shifted(tsMs))
+    override fun activityAt(tsMs: Long): Double = kernel.activityAt(shifted(tsMs), amountU)
+    override fun iobAt(tsMs: Long): Double = kernel.iobAt(shifted(tsMs), amountU)
 }

@@ -19,6 +19,50 @@ enum class PredictorReason {
     NON_MONOTONIC_TIMESTAMPS,
     GRID_MISMATCH,
     MISSING_ISF_SLOT,
+    PENDING_MODEL_TOO_SHORT,  // Kern der Transportmenge deckt das Fenster nicht (C3)
+}
+
+/**
+ * Bereits PUBLIZIERTES, im IOB noch nicht sichtbares Insulin (C3,
+ * Codex-Adjudication bae885f1 Abschnitt "C3 interpretation", K4 Punkt 17).
+ *
+ * WARUM DAS IN DIE BAHN GEHOERT und nicht nur ins Budget: die Transportmenge
+ * wurde bisher nur von den Headrooms abgezogen (iobTH/maxIOB/Prime). Das
+ * begrenzt, wieviel NOCH angefordert werden darf - es macht die untere
+ * Glukosebahn aber nicht wahr. Gemessen an Tonis Medtrum (765 SMBs) betraegt die
+ * Sichtbarkeits-Latenz p50 15 s, p90 56 s, p99 175 s, MAX 854 s: in 1 bis ~15
+ * Zyklen glaubten Guard und Schwanz, diese Menge habe keine Zukunftswirkung.
+ *
+ * DOPPELZAEHLUNG ist ueber GENAU EINE ZAHL geregelt: sobald die Behandlung im
+ * IOB nachgewiesen ist, faellt `transportCommitmentU` im Ledger auf 0 - der
+ * Aufrufer reicht dann [amountU] = 0 herein (oder gar nichts), und die Bahn ist
+ * bitgleich die alte. Ein zweiter Merker waere ein zweiter Zustand, der
+ * auseinanderlaufen kann.
+ *
+ * [deliveryTs] ist der FRUEHESTE plausible Lieferzeitpunkt - konservativ ist
+ * frueh, weil damit mehr Wirkung ins Bewertungsfenster faellt.
+ */
+interface PendingInsulinEffect {
+
+    /** Menge [U]. 0 heisst "nichts unterwegs", NICHT "unbekannt". */
+    val amountU: Double
+
+    /** Fruehester plausibler Lieferzeitpunkt. */
+    val deliveryTs: Long
+
+    /** Deckt das Modell [tsMs] noch? Ein "nein" ist ein Grund fuer eine
+     *  benannte Ablehnung, nie fuer eine stille Null. */
+    fun covers(tsMs: Long): Boolean
+
+    /** Aktivitaet der GESAMTEN Menge [U/min] bei [tsMs]; vor der Lieferung 0.
+     *  Nie negativ - eine negative Aktivitaet wuerde die Bahn ANHEBEN. */
+    fun activityAt(tsMs: Long): Double
+
+    /** Restwirkung als IOB [U] bei [tsMs]. Der Trajektorienkern braucht sie
+     *  nicht; der Schwanz-Guard (C4a) rechnet damit seine Haftung am
+     *  Horizont - beides aus DEMSELBEN Objekt, damit es nicht zwei Modelle
+     *  derselben Menge gibt. */
+    fun iobAt(tsMs: Long): Double
 }
 
 /**
@@ -212,6 +256,16 @@ data class PredictorInput(
      * Disziplin des Aufrufers.
      */
     val decayNegativeDrive: DriveDecayModel? = null,
+    /**
+     * TRANSPORTMENGE ALS SYNTHETISCHE DOSIS (C3). `null` = nichts publiziert,
+     * das nicht schon im IOB-Array steckt.
+     *
+     * Sie senkt mean, lower UND die prior-freie Bahn - senken ist in BEIDE
+     * Richtungen konservativ: der Guard sperrt eher, und der Bedarf auf der
+     * Mittelbahn sinkt. Eine Erhoehung ist strukturell ausgeschlossen, weil
+     * [TrajectoryCore] eine anhebende (negative) Aktivitaet ablehnt.
+     */
+    val pending: PendingInsulinEffect? = null,
 )
 
 /** Ein Minutenpunkt beider Bahnen. */
@@ -281,6 +335,18 @@ data class PredictorResult(
     /** Prior-freie untere Bahn AM Haftungshorizont (C2) — Eingang des
      *  Schwanz-Guards. `null` wie oben. */
     val bgAtHorizonLowerPriorFree: Double? = null,
+    /**
+     * Die eingerechnete Transportmenge [U] (C3). 0 = nichts unterwegs.
+     *
+     * Steht im Ergebnis, weil eine Bahn, die um eine unsichtbare Menge gesenkt
+     * wurde, das SAGEN muss - sonst sucht spaeter jemand den Fehler im
+     * Antriebsmodell. Der Name meidet bewusst "dose": das Feld ist der ECHO
+     * einer bereits publizierten Menge, keine Dosierentscheidung - und die
+     * Feldnamenprobe in K2PCoreTest ("G4") haelt genau diese Grenze.
+     */
+    val pendingTransportU: Double = 0.0,
+    /** Wieviel mg/dl diese Menge die Bahn AM HORIZONT gesenkt hat (C3), >= 0. */
+    val pendingDropAtHorizonMgdl: Double = 0.0,
 ) {
 
     /**

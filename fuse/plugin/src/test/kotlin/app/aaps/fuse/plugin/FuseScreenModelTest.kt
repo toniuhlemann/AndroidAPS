@@ -109,6 +109,45 @@ class FuseScreenModelTest {
         assertFalse(t.contains(TailLiability.COMPLETENESS_STAGE1))
     }
 
+    /**
+     * C4 (Codex-Adjudication bae885f1): mit Transportmenge und beschlossener
+     * Menge ist der Schwanz 3/3 - und die Anzeige muss das AUTOMATISCH zeigen,
+     * ohne dass jemand eine zweite Wahrheit ueber den Modellstand pflegt.
+     */
+    @Test
+    fun `ein vollstaendiger Schwanzbericht zeigt drei von drei und drei Haken`() {
+        val tail = TailLiability.evaluate(
+            TailLiability.Input(
+                120.0, 0.5, 85.0, 70.0, 0.0,
+                transport = TailLiability.Dose(0.20, 0.12),
+                candidate = TailLiability.Dose(0.10, 0.07),
+            )
+        )
+        val t = FuseScreenModel.render(outcome(tail = tail), null, now)
+        assertTrue(t.contains("VOLLSTAENDIG 3/3")) { t }
+        assertTrue(t.contains("IOB ✓  Transport ✓  Kandidat ✓")) { t }
+        // Die drei Terme stehen einzeln da - eine Summe ohne Herkunft waere
+        // genau die Zahl, die spaeter niemand mehr auseinandernehmen kann.
+        assertTrue(t.contains("Transport @ H")) { t }
+        assertTrue(t.contains("Dosis @ H")) { t }
+    }
+
+    /** Eine obere Schranke (kein Einheitskern -> volle Menge gerechnet) ist
+     *  KEIN gesicherter Haken. */
+    @Test
+    fun `eine obere Schranke wird nicht als gesicherter Haken gezeigt`() {
+        val tail = TailLiability.evaluate(
+            TailLiability.Input(
+                120.0, 0.5, 85.0, 70.0, 0.0,
+                transport = TailLiability.Dose(0.20, null),
+                candidate = TailLiability.Dose(0.10, 0.07),
+            )
+        )
+        val t = FuseScreenModel.render(outcome(tail = tail), null, now)
+        assertTrue(t.contains("IOB ✓  Transport ~  Kandidat ✓")) { t }
+        assertTrue(t.contains("obere Schranke")) { t }
+    }
+
     /** Ein unbrauchbarer Schwanzbericht darf nicht wie ein Ergebnis aussehen. */
     @Test
     fun `ein unbrauchbarer Schwanzbericht wird als solcher gezeigt`() {

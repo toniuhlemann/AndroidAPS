@@ -25,6 +25,13 @@ import kotlin.math.abs
  * Kosten: zwei zusaetzliche Additionen je Minute, kein zusaetzlicher
  * Datenbank- oder Interpolationszugriff.
  *
+ * SEIT C3 (Codex-Adjudication, K4 Punkt 17) kann die Bahn zusaetzlich eine
+ * SYNTHETISCHE DOSIS tragen: die publizierte, im IOB noch nicht sichtbare
+ * Transportmenge ([PredictorInput.pending]). Sie wirkt auf ALLE DREI Bahnen -
+ * senken ist in beide Richtungen konservativ (der Guard sperrt eher, der Bedarf
+ * sinkt) - und verschwindet atomar mit derselben Zahl, mit der der Ledger sie
+ * freigibt.
+ *
  * Die oeffentliche API liefert bewusst KEINE Dosis, keine Rate und keine Dauer.
  */
 object TrajectoryCore {
@@ -92,6 +99,23 @@ object TrajectoryCore {
                     return PredictorOutcome.Rejected(PredictorReason.ACTIVITY_OUT_OF_BOUNDS, "|${p.activity}| > $lim")
             }
         }
+        // C3: die TRANSPORTMENGE als synthetische Dosis. Gepruefte Eingabe VOR
+        // der Integration - eine Menge, deren Modell das Fenster nicht deckt,
+        // wuerde sonst ab dem Traegerende still mit 0 weiterrechnen, und genau
+        // diese stille Null waere die optimistische Lesart (Codex Abschnitt 10).
+        input.pending?.let { p ->
+            if (!p.amountU.isFinite() || p.amountU < 0.0)
+                return PredictorOutcome.Rejected(PredictorReason.NON_FINITE_INPUT, "pending amount=${p.amountU}")
+            if (p.amountU > 0.0 && !p.covers(lastQueryTs))
+                return PredictorOutcome.Rejected(
+                    PredictorReason.PENDING_MODEL_TOO_SHORT,
+                    "pending delivery=${p.deliveryTs} does not cover $lastQueryTs",
+                )
+        }
+        // Menge 0 ist KEINE Dosis: dann rechnet die Bahn bitgleich wie ohne
+        // Transportmenge weiter. Genau daran haengt die Doppelzaehlungs-Sperre.
+        val pendingDose = input.pending?.takeIf { it.amountU > 0.0 }
+
         input.bounds.maxAbsDriveMgdlPerMin?.let { lim ->
             // Die prior-freie Untergrenze zaehlt mit: sie ist per Vertrag <= lower
             // und kann damit betragsmaessig GROESSER sein als beide anderen.
@@ -111,6 +135,8 @@ object TrajectoryCore {
         var minLower = input.bgAtAnchor
         var minLowerPriorFree = input.bgAtAnchor
         var timeToMinLower = 0
+        // C3: was die synthetische Dosis der Bahn bis zum Horizont genommen hat.
+        var pendingDrop = 0.0
 
         for (i in 1..input.horizonMin) {
             val ts = anchor + i * STEP_MS
@@ -208,12 +234,37 @@ object TrajectoryCore {
             // nicht als "kein Fehler".
             // ============================================================
 
+            // C3: Wirkung der publizierten, im IOB noch unsichtbaren Menge.
+            // Dieselbe Vorzeichenregel wie oben: bgi = -activity*isf, also
+            // senkend. Ein POSITIVER Wert hiesse negative Aktivitaet - das waere
+            // eine Dosis, die die Bahn ANHEBT und sich selbst rechtfertigt;
+            // dagegen steht hier ein Riegel und keine Annahme ueber den
+            // Aufrufer. Bewusst NICHT in `bgiRate` addiert: jenes Feld ist die
+            // Wirkung des AAPS-IOB-ARRAYS und muss dagegen nachpruefbar bleiben.
+            //
+            // RECHTE REGEL AUCH HIER, und in der Lieferminute ist sie
+            // GROSSZUEGIG: faellt die Lieferung mitten in ein Minutenintervall,
+            // rechnet diese Minute trotzdem voll. Das UEBERschaetzt die Wirkung
+            // um Sekundenbruchteile - also in die konservative Richtung (Bahn
+            // tiefer). Die anteilige Rechnung von [CandidateSearch] waere hier
+            // die OPTIMISTISCHERE, und bei den echten Insulinmodellen ist die
+            // Aktivitaet zum Lieferzeitpunkt ohnehin 0.
+            var pendingBgi = 0.0
+            if (pendingDose != null) {
+                pendingBgi = -pendingDose.activityAt(ts) * isf
+                if (!pendingBgi.isFinite() || pendingBgi > 0.0)
+                    return PredictorOutcome.Rejected(
+                        PredictorReason.NON_FINITE_INPUT, "pending activity at $ts -> bgi=$pendingBgi",
+                    )
+                pendingDrop -= pendingBgi
+            }
+
             // RECHTE Regel: der Wert bei ts gilt fuer das Intervall (ts-1min, ts].
             // Dieselbe Konvention wie cumulativeBgi in K1 — eine zweite waere eine
             // Fehlerquelle ohne Nutzen.
-            meanBg += (dMean + bgiRate)
-            lowerBg += (dLower + bgiRate)
-            lowerBgPriorFree += (dLowerPriorFree + bgiRate)
+            meanBg += (dMean + bgiRate + pendingBgi)
+            lowerBg += (dLower + bgiRate + pendingBgi)
+            lowerBgPriorFree += (dLowerPriorFree + bgiRate + pendingBgi)
 
             if (meanBg < minMean) minMean = meanBg
             if (lowerBg < minLower) { minLower = lowerBg; timeToMinLower = i }
@@ -243,6 +294,10 @@ object TrajectoryCore {
                 iobArrayGridMin = t.gridMin,
                 modelTailBeyondArrayMin = t.modelTailBeyondArrayMin,
                 inputSkewMs = t.firstTs - anchor,
+                // C3: was eingerechnet wurde, steht im Ergebnis - 0 heisst
+                // "nichts unterwegs", nicht "nicht betrachtet".
+                pendingTransportU = pendingDose?.amountU ?: 0.0,
+                pendingDropAtHorizonMgdl = pendingDrop,
             )
         )
     }

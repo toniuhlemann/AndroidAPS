@@ -190,6 +190,54 @@ object CandidateSearch {
         return if (minLower < band.guardFloorMgdl) Reject.GUARD_FLOOR else null
     }
 
+    /**
+     * Die Wirkung EINER Einheit auf die Bahn AM HAFTUNGSHORIZONT [mg/dl] (C4b).
+     *
+     * Der Schwanz-Guard braucht die Bahn MIT der beschlossenen Menge; die
+     * Integrationsregel dafuer steht bereits hier (rechte Regel, Lieferintervall
+     * anteilig, Nullregel vor der Lieferung). Eine zweite Rechnung im Schwanz
+     * waere eine zweite Wahrheit ueber dieselbe Groesse - deshalb liefert die
+     * Suche die Zahl, und [TailLiability] bleibt eine reine Formel.
+     *
+     * `null` = NICHT BERECHENBAR (kein Raster, kein Modellhorizont, ISF-Luecke).
+     * Der Aufrufer darf daraus keine 0 machen: 0 hiesse "die Dosis wirkt am
+     * Horizont nicht" und waere die optimistische Lesart (Codex Abschnitt 10).
+     *
+     * Die Vorpruefungen sind absichtlich dieselben wie in [verifyGuardFloor] -
+     * Aenderungen dort muessen hier nachgezogen werden.
+     */
+    fun effectPerUAtLiabilityHorizon(
+        prediction: PredictorResult,
+        kernel: UnitInsulinKernel,
+        isfSlots: List<IsfSlot>,
+        band: Band,
+    ): Double? {
+        if (band.violation() != null) return null
+        val points = prediction.points
+        val liabilityIdx = points.indexOfFirst { it.offsetMin == band.liabilityHorizonMin }
+        val releaseIdx = points.indexOfFirst { it.offsetMin == band.releaseHorizonMin }
+        if (liabilityIdx < 0 || releaseIdx < 0) return null
+        val anchorTs = prediction.predictionAnchorTs
+        for (i in 0..liabilityIdx) {
+            val p = points[i]
+            if (p.offsetMin != i + 1 || p.tsMs != anchorTs + (i + 1) * 60_000L) return null
+        }
+        if (kernel.deliveryTs < anchorTs) return null
+        if (!kernel.covers(points[maxOf(releaseIdx, liabilityIdx)].tsMs)) return null
+
+        var acc = 0.0
+        for (i in 0..liabilityIdx) {
+            val p = points[i]
+            val isf = ProfileSlots.isfAt(isfSlots, p.tsMs) ?: return null
+            val previousTs = if (i == 0) anchorTs else points[i - 1].tsMs
+            val intervalStart = maxOf(previousTs, kernel.deliveryTs)
+            val overlapMin = if (p.tsMs > intervalStart) (p.tsMs - intervalStart) / 60_000.0 else 0.0
+            if (overlapMin > 0.0) acc += kernel.activityAt(p.tsMs, 1.0) * isf * overlapMin
+            if (!acc.isFinite()) return null
+        }
+        return acc
+    }
+
     fun search(
         prediction: PredictorResult,
         kernel: UnitInsulinKernel,

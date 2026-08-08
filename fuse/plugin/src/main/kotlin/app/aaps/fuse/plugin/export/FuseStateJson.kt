@@ -31,6 +31,9 @@ object FuseStateJson {
      * einen unveraenderten Wert NICHT als Beweis lesen, dass sich die Regeln
      * nicht geaendert haben.
      */
+    // v8 (09.08.): Fix-Pass 5 - prior-freie Sicherheitsbahn, Bremsbahn in
+    // allen Mit-Dosis-Pruefungen, Transportmenge in Bahn+Schwanz (3of3),
+    // erklaerte Absorption als Bedarf, Puls-Zaehler, SMB+TBR gemeinsam.
     // v6 (08.08. mittags): Marker entwaffnet Rebound-Bremse (Gas-vor-Bremse
     // nur fuer erklaertes Wissen) + Mess-Flag reboundSuppressedByMarker.
     // v7 (08.08. abends, Audit R95 Fix 3): Commitment-Ledger verdrahtet -
@@ -38,7 +41,7 @@ object FuseStateJson {
     // holdGeneration/aktive Fehler), Transportmenge geht von den Headrooms
     // der Kandidatensuche ab, Hold nullt nach dem Lift, Episodenbudgets
     // restartfest, Huellen-Belastung auf gate-wirksame Menge umgestellt.
-    const val RULE_SET_VERSION = 7
+    const val RULE_SET_VERSION = 8
 
     /** Gruende fuer fehlende Felder. Benannt statt weggelassen. */
     const val GAP_NO_LEDGER = "LEDGER_NOT_WIRED"
@@ -283,7 +286,15 @@ object FuseStateJson {
             "tail", JSONObject()
                 .put("usable", t.usable)
                 .put("budgetU", fin(t.budgetU))
+                // ACHTUNG SEMANTIKWECHSEL (C3/C4, 09.08.): existingU ist ab
+                // jetzt die GESAMTE Haftung am Horizont (IOB + Transport +
+                // beschlossene Menge), nicht mehr nur das sichtbare IOB. Die
+                // drei Anteile stehen einzeln daneben - eine Auswertung, die
+                // alte und neue Exporte mischt, muss das wissen.
                 .put("existingU", fin(t.existingU))
+                .put("existingIobAtHU", fin(t.existingIobAtHU))
+                .put("transportLiabilityU", fin(t.transportLiabilityU))
+                .put("candidateLiabilityU", fin(t.candidateLiabilityU))
                 .put("headroomU", fin(t.headroomU))
                 .put("costU", fin(d.tailCostU))
                 .put("completeness", t.completeness)
