@@ -271,6 +271,14 @@ class FuseCycleRunner(
             is FuseSignalSource.Outcome.Unavailable -> return abort("signal: ${s.reason}")
         }
 
+        // Zeitachsen-Tor (Fix-Pass 2 Nr. 5, REG-02): VOR observer.step - ein
+        // akzeptierter Zukunfts-Punkt zog sonst lastAcceptedSourceTs vor und
+        // sperrte danach jede REALE Reihe als out-of-order (Lockout bis zum
+        // Aufholen). Jetzt sieht der Observer den Punkt gar nicht erst.
+        app.aaps.fuse.core.signal.SignalTimeGate.futureReason(signal.sourceTs, computeTs)?.let {
+            return abort(it, signal)
+        }
+
         // ---- 2 Zustand -----------------------------------------------------
         val step = observer.step(
             CycleAssembly.observerInput(
@@ -312,13 +320,6 @@ class FuseCycleRunner(
         val cfg = when (val c = CoreInputGuard.build { readConfig() }) {
             is CoreInputGuard.Outcome.Built  -> c.value
             is CoreInputGuard.Outcome.Failed -> return abort("config: ${c.failure.detail}", signal, step = step)
-        }
-
-        // Zeitachsen-Tor (Audit R95, F-P0-04): Zukunfts-Anker fail-closed,
-        // BEVOR irgendetwas auf sourceTs rechnet. Deckt auch den Kopf-klebt-
-        // an-der-Ladefenster-Kappe-Fall ab, in dem STALE nie feuern wuerde.
-        app.aaps.fuse.core.signal.SignalTimeGate.futureReason(signal.sourceTs, computeTs)?.let {
-            return abort(it, signal, cfg, step)
         }
 
         // Mittel- UND Untergrenze aus DEMSELBEN Aufruf. Es darf keinen Zustand
@@ -365,6 +366,7 @@ class FuseCycleRunner(
             episodes.primeSpentU = 0.0
             // Fix 7: neue Marker-Episode -> Wende-Latch der Sonderrechte neu.
             episodes.markerTurnTs = 0L
+            episodes.markerRiseSeen = false
         }
         if (markerTs != episodes.mealArmedTs) {
             episodes.mealArmedTs = markerTs
@@ -384,7 +386,15 @@ class FuseCycleRunner(
         // nach MarkerScope.BOOST_MAX_MIN - der Fruehstueckssturz vom 08.08.
         // fiel sonst noch in die entwaffnete Zone. KONTEXT (Stufen-Huelle,
         // Onset-Evidenz, Anzeige) behaelt die vollen 90 min.
-        if (mealMarkerActive && episodes.markerTurnTs == 0L &&
+        // Fix-Pass 2 Nr. 4 (NEU-BS-05): eine Wende zaehlt erst NACH einer
+        // Anstiegsphase. Sonst verriegelte der Marker-Druck IM FALL (Essen
+        // im Tief - der Fruehstuecksfall vom 08.08.!) die Sonderrechte
+        // sofort, und Gas-vor-Bremse waere genau dort tot, wofuer es
+        // gebaut wurde.
+        if (mealMarkerActive && !episodes.markerRiseSeen &&
+            signal.ukfRatePerMin.isFinite() && signal.ukfRatePerMin >= cfg.riseRampLowR
+        ) episodes.markerRiseSeen = true
+        if (mealMarkerActive && episodes.markerRiseSeen && episodes.markerTurnTs == 0L &&
             signal.ukfRatePerMin.isFinite() && signal.ukfRatePerMin <= -cfg.riseRampLowR
         ) episodes.markerTurnTs = signal.sourceTs
         val markerBoost = mealMarkerActive &&
@@ -623,6 +633,10 @@ class FuseCycleRunner(
             vetted, primePlan, state,
             tailHeadroomU = tail?.takeIf { it.usable }?.headroomU,
             onsetCapU = if (onset.active) onset.remainingU else null,
+            // Fix-Pass 2 Nr. 2: dieselbe Ledger-Korrektur wie in den
+            // Such-Headrooms - sonst finanziert der NO_DEMAND->Lift-Pfad
+            // In-Flight-Mengen doppelt.
+            transportCommitmentU = ledgerView.transportCommitmentU,
         )
         // HART NACH dem Lift (Audit R95, Fix 3): Ratio-Pfad (Kernel-Ausfall)
         // und Sofort-Freigabe laufen am LEDGER_HOLD-Reject der Suche vorbei -
@@ -932,14 +946,14 @@ class FuseCycleRunner(
             "driveLowerQuantile=${it.driveLowerQuantilePct}"
         }
         require(it.tailFloorMgdl.isFinite() && it.tailFloorMgdl in 40.0..120.0) { "tailFloor=${it.tailFloorMgdl}" }
-        require(it.tailRecoveryU.isFinite() && it.tailRecoveryU >= 0.0) { "tailRecovery=${it.tailRecoveryU}" }
+        require(it.tailRecoveryU.isFinite() && it.tailRecoveryU in 0.0..5.0) { "tailRecovery=${it.tailRecoveryU}" }
         require(it.bolusShareLambda.isFinite() && it.bolusShareLambda in 0.0..2.0) { "bolusShareLambda=${it.bolusShareLambda}" }
         require(it.onsetEnvelopeU.isFinite() && it.onsetEnvelopeU in 0.0..5.0) { "onsetEnvelope=${it.onsetEnvelopeU}" }
         require(it.primeEnvelopeU.isFinite() && it.primeEnvelopeU in 0.0..2.0) { "primeEnvelope=${it.primeEnvelopeU}" }
         require(it.primeEnvelopeSmallU.isFinite() && it.primeEnvelopeSmallU in 0.0..1.2) { "primeSmall=${it.primeEnvelopeSmallU}" }
         require(it.primeEnvelopeLargeU.isFinite() && it.primeEnvelopeLargeU in 0.0..3.0) { "primeLarge=${it.primeEnvelopeLargeU}" }
-        require(it.liabilityHorizonMin >= it.releaseHorizonMin && it.liabilityHorizonMin <= 360) {
-            "liabilityHorizon=${it.liabilityHorizonMin} (releaseHorizon=${it.releaseHorizonMin}, max 360)"
+        require(it.liabilityHorizonMin >= 30 && it.liabilityHorizonMin >= it.releaseHorizonMin && it.liabilityHorizonMin <= 360) {
+            "liabilityHorizon=${it.liabilityHorizonMin} (releaseHorizon=${it.releaseHorizonMin}, UI 30..360)"
         }
     }
 

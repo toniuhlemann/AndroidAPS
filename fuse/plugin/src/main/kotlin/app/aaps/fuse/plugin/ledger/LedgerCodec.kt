@@ -32,29 +32,65 @@ import org.json.JSONObject
  * Aufrufers, die Vorgaengerdatei bleibt stehen).
  *
  * Unbekannte Enum-Namen (Datei aus einer NEUEREN Version) werfen beim
- * Decode - der Adapter behandelt das als "nicht lesbar" und startet leer,
- * statt einen halb geratenen Zustand zu uebernehmen.
+ * Decode - der Adapter behandelt das als "nicht lesbar" und haelt an
+ * (RECOVERY_HOLD), statt einen halb geratenen Zustand zu uebernehmen.
+ *
+ * SEMANTISCHE VALIDIERUNG (Audit 2d273cb, REG-01d/NEU-BS-07): decode nimmt
+ * nur Werte an, die eine selbstgeschriebene Datei ueberhaupt tragen kann -
+ * Mengen finite/>=0/<=50 U, Episodenbudgets nicht negativ, mealDeliveries
+ * begrenzt. Die Datei liegt zwar app-privat, aber ein Bug ODER eine
+ * manipulierte Generation darf nie als Buchhaltung durchgehen: Verletzung
+ * wirft, der Wurf zaehlt beim Laden als invalid (Hold), nicht als Leerstart.
  */
 object LedgerCodec {
 
     const val VERSION = 1
 
+    /** Obergrenze jeder Einzelmenge [U]. Weit ueber jedem realen SMB/Budget
+     *  (maxSmbU-Hardlimit liegt darunter) - der Zweck ist, absurde Werte als
+     *  Korruption zu erkennen, nicht Dosen zu begrenzen. */
+    private const val MAX_AMOUNT_U = 50.0
+
+    /** Obergrenze eines einzelnen Mahlzeit-Lieferpostens [U]. */
+    private const val MAX_MEAL_DELIVERY_U = 25.0
+
+    /** Obergrenze der mealDeliveries-Liste - eine groessere Datei ist kein
+     *  plausibler Eigenzustand (Sammlung ist episodisch), sondern Befund. */
+    private const val MAX_MEAL_DELIVERIES = 500
+
     // ---- Gesamtdatei ------------------------------------------------------
 
-    data class Decoded(val state: LedgerState, val episodes: EpisodeBudgets, val revision: Long)
+    data class Decoded(
+        val state: LedgerState,
+        val episodes: EpisodeBudgets,
+        val revision: Long,
+        val retiredBoundIds: List<RetiredBoundId> = emptyList(),
+    )
 
-    fun encode(state: LedgerState, episodes: EpisodeBudgets, revision: Long): JSONObject = JSONObject()
+    fun encode(
+        state: LedgerState,
+        episodes: EpisodeBudgets,
+        revision: Long,
+        retiredBoundIds: List<RetiredBoundId> = emptyList(),
+    ): JSONObject = JSONObject()
         .put("v", VERSION)
         .put("revision", revision)
         .put("state", encodeState(state))
         .put("episodes", encodeEpisodes(episodes))
+        // Fix 6 (NEU-BS-02): Identitaeten geprunter gebundener Zeilen bleiben
+        // persistent "verbraucht" - sonst wuerde ein prune die Bindungs-
+        // Ausschlussmenge leeren und ein fremder Bolus koennte neu binden.
+        .put("retiredBoundIds", JSONArray(retiredBoundIds.map { encodeRetired(it) }))
 
     fun decode(o: JSONObject): Decoded {
         require(o.getInt("v") == VERSION) { "ledger file version ${o.getInt("v")}" }
+        val revision = o.getLong("revision")
+        require(revision >= 0L) { "negative ledger revision $revision" }
         return Decoded(
             state = decodeState(o.getJSONObject("state")),
             episodes = decodeEpisodes(o.getJSONObject("episodes")),
-            revision = o.getLong("revision"),
+            revision = revision,
+            retiredBoundIds = decodeRetiredList(o),
         )
     }
 
@@ -92,22 +128,65 @@ object LedgerCodec {
         .put("onsetQuietMin", e.onsetQuietMin)
         .put("mealArmedTs", e.mealArmedTs)
         .put("markerTurnTs", e.markerTurnTs)
+        .put("markerRiseSeen", e.markerRiseSeen)
         .put("mealDeliveries", JSONArray(e.mealDeliveries.map { (ts, u) -> JSONArray(listOf(ts, u)) }))
 
     fun decodeEpisodes(o: JSONObject): EpisodeBudgets {
         val e = EpisodeBudgets()
-        e.primeSpentU = o.getDouble("primeSpentU")
-        e.primeArmedTs = o.getLong("primeArmedTs")
-        e.onsetSpentU = o.getDouble("onsetSpentU")
-        e.onsetQuietMin = o.getInt("onsetQuietMin")
-        e.mealArmedTs = o.getLong("mealArmedTs")
-        e.markerTurnTs = o.optLong("markerTurnTs", 0L)
+        // Budgets sind VERBRAUCH: negativ hiesse "Huelle groesser als
+        // konfiguriert" - genau der Angriffs-/Korruptionspfad aus REG-01d.
+        e.primeSpentU = requireAmount("primeSpentU", o.getDouble("primeSpentU"))
+        e.primeArmedTs = requireTs("primeArmedTs", o.getLong("primeArmedTs"))
+        e.onsetSpentU = requireAmount("onsetSpentU", o.getDouble("onsetSpentU"))
+        e.onsetQuietMin = o.getInt("onsetQuietMin").also { require(it >= 0) { "negative onsetQuietMin $it" } }
+        e.mealArmedTs = requireTs("mealArmedTs", o.getLong("mealArmedTs"))
+        e.markerTurnTs = requireTs("markerTurnTs", o.optLong("markerTurnTs", 0L))
+        // optBoolean: Dateien vor diesem Feld lesen sich als "keine
+        // Anstiegsphase gesehen" - die konservative Richtung.
+        e.markerRiseSeen = o.optBoolean("markerRiseSeen", false)
         val md = o.getJSONArray("mealDeliveries")
+        require(md.length() <= MAX_MEAL_DELIVERIES) { "mealDeliveries size ${md.length()}" }
         for (i in 0 until md.length()) {
             val pair = md.getJSONArray(i)
-            e.mealDeliveries.addLast(pair.getLong(0) to pair.getDouble(1))
+            val ts = requireTs("mealDeliveries[$i].ts", pair.getLong(0))
+            val u = pair.getDouble(1)
+            require(u.isFinite() && u > 0.0 && u <= MAX_MEAL_DELIVERY_U) { "mealDeliveries[$i].u out of range: $u" }
+            e.mealDeliveries.addLast(ts to u)
         }
         return e
+    }
+
+    // ---- Verbrauchte Bindungs-Identitaeten (Fix 6, NEU-BS-02) -------------
+
+    private fun encodeRetired(r: RetiredBoundId): JSONObject = JSONObject()
+        .putNullable("temporaryId", r.temporaryId)
+        .putNullable("pumpId", r.pumpId)
+
+    private fun decodeRetiredList(o: JSONObject): List<RetiredBoundId> {
+        // opt statt get: Dateien vor Fix 6 tragen das Feld nicht - fuer sie
+        // ist die leere Menge der ehrliche Zustand, kein Fehler.
+        val arr = o.optJSONArray("retiredBoundIds") ?: return emptyList()
+        val list = arr.objects().map { r ->
+            RetiredBoundId(temporaryId = r.lngOrNull("temporaryId"), pumpId = r.lngOrNull("pumpId"))
+                .also { require(it.temporaryId != null || it.pumpId != null) { "retiredBoundIds entry without id" } }
+        }
+        // Defensiv auf die juengsten Eintraege kappen - der Schreiber haelt
+        // dieselbe Grenze, eine groessere Datei ist Fremdinhalt.
+        return list.takeLast(FuseLedgerAdapter.MAX_RETIRED_BOUND_IDS)
+    }
+
+    // ---- Validierungs-Helfer ---------------------------------------------
+
+    private fun requireAmount(name: String, v: Double): Double {
+        require(v.isFinite() && v >= 0.0 && v <= MAX_AMOUNT_U) { "$name out of range: $v" }
+        return v
+    }
+
+    private fun requireAmountOrNull(name: String, v: Double?): Double? = v?.let { requireAmount(name, it) }
+
+    private fun requireTs(name: String, v: Long): Long {
+        require(v >= 0L) { "$name negative timestamp: $v" }
+        return v
     }
 
     // ---- Einzelteile ------------------------------------------------------
@@ -148,10 +227,10 @@ object LedgerCodec {
             queueReject = o.strOrNull("queueReject")?.let { QueueRejectReason.valueOf(it) },
             withdrawnProven = o.getBoolean("withdrawnProven"),
             contradicted = o.getBoolean("contradicted"),
-            conservativeFloorU = o.dblOrNull("conservativeFloorU"),
-            accountedAmountU = o.dblOrNull("accountedAmountU"),
-            amountEpsU = o.getDouble("amountEpsU"),
-            bolusStepU = o.getDouble("bolusStepU"),
+            conservativeFloorU = requireAmountOrNull("conservativeFloorU", o.dblOrNull("conservativeFloorU")),
+            accountedAmountU = requireAmountOrNull("accountedAmountU", o.dblOrNull("accountedAmountU")),
+            amountEpsU = requireAmount("amountEpsU", o.getDouble("amountEpsU")),
+            bolusStepU = requireAmount("bolusStepU", o.getDouble("bolusStepU")),
             firstAccountedSnapshotHash = o.strOrNull("firstAccountedSnapshotHash"),
             lastReconciledViewHash = o.strOrNull("lastReconciledViewHash"),
             lastReconciledAtTs = o.lngOrNull("lastReconciledAtTs"),
@@ -174,15 +253,18 @@ object LedgerCodec {
         .putNullable("provenDeliveredU", a.provenDeliveredU)
         .putNullable("dbAccountedU", a.dbAccountedU)
 
+    // Jede Stufe der Mengenachse ist eine Insulinmenge - finite/>=0/<=50
+    // (REG-01d: eine negative oder absurde Menge in der Datei darf nie
+    // Buchhaltung werden, sie ist Korruptions-Befund und wirft).
     private fun decodeAmounts(o: JSONObject): AmountAxis = AmountAxis(
-        proposedU = o.getDouble("proposedU"),
-        rtPublishedU = o.dblOrNull("rtPublishedU"),
-        loopConstrainedU = o.dblOrNull("loopConstrainedU"),
-        queueConstrainedU = o.dblOrNull("queueConstrainedU"),
-        pumpCommandU = o.dblOrNull("pumpCommandU"),
-        reportedDeliveredU = o.dblOrNull("reportedDeliveredU"),
-        provenDeliveredU = o.dblOrNull("provenDeliveredU"),
-        dbAccountedU = o.dblOrNull("dbAccountedU"),
+        proposedU = requireAmount("proposedU", o.getDouble("proposedU")),
+        rtPublishedU = requireAmountOrNull("rtPublishedU", o.dblOrNull("rtPublishedU")),
+        loopConstrainedU = requireAmountOrNull("loopConstrainedU", o.dblOrNull("loopConstrainedU")),
+        queueConstrainedU = requireAmountOrNull("queueConstrainedU", o.dblOrNull("queueConstrainedU")),
+        pumpCommandU = requireAmountOrNull("pumpCommandU", o.dblOrNull("pumpCommandU")),
+        reportedDeliveredU = requireAmountOrNull("reportedDeliveredU", o.dblOrNull("reportedDeliveredU")),
+        provenDeliveredU = requireAmountOrNull("provenDeliveredU", o.dblOrNull("provenDeliveredU")),
+        dbAccountedU = requireAmountOrNull("dbAccountedU", o.dblOrNull("dbAccountedU")),
     )
 
     private fun encodeIdentity(i: PumpTreatmentIdentity): JSONObject = JSONObject()

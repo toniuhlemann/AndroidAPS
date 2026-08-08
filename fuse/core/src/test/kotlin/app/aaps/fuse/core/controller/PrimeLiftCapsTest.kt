@@ -52,4 +52,16 @@ class PrimeLiftCapsTest {
         val d = PrimeRelease.lift(base(0.05), plan, state(), tailHeadroomU = 0.15, onsetCapU = 0.10)
         assertEquals(0.10, d.smbU, 1e-9)
     }
+
+    /** Fix-Pass 2 Nr. 2 (NEU-BS-01): In-Flight-Menge reduziert die
+     *  Lift-Headrooms genauso wie die Such-Headrooms. State: iobTH 8,
+     *  capIob 0,5 -> nominal 7,5 frei; mit 7,45 U In-Flight bleibt 0,05 -
+     *  der Lift darf nicht mehr auf 0,20 heben. */
+    @Test
+    fun `transportCommitment kappt den Lift`() {
+        val d = PrimeRelease.lift(base(0.05), plan, state(), transportCommitmentU = 7.45)
+        assertEquals(0.05, d.smbU, 1e-9)
+        // Ohne Transportmenge hebt derselbe Aufruf weiterhin.
+        assertEquals(0.20, PrimeRelease.lift(base(0.05), plan, state()).smbU, 1e-9)
+    }
 }

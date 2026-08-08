@@ -76,6 +76,7 @@ class FusePlugin @Inject constructor(
     aapsLogger: AAPSLogger,
     rh: ResourceHelper,
     preferences: Preferences,
+    private val context: Context,
     private val config: Config,
     private val rxBus: RxBus,
     private val profileFunction: ProfileFunction,
@@ -127,9 +128,51 @@ class FusePlugin @Inject constructor(
      *  Episodenbudgets und offenen Commitments ueberleben damit Neustarts. */
     private val ledgerAdapter = app.aaps.fuse.plugin.ledger.FuseLedgerAdapter()
 
-    /** Dasselbe Verzeichnis wie der Trail - die Android-Aufloesung passiert
-     *  ausschliesslich hier, Store und Adapter bleiben ohne Geraet pruefbar. */
-    private fun ledgerDir() = File(Environment.getExternalStorageDirectory(), "Documents/aapsLogs")
+    /**
+     * Fix 8 (Audit 2d273cb, NEU-BS-07): der Ledger ist ZUSTAND, kein Export -
+     * er liegt deshalb APP-PRIVAT (filesDir), nicht mehr im geteilten
+     * Documents/aapsLogs. Auf dem geteilten Speicher kann jede App mit
+     * All-Files-Zugriff, MTP/PC-Sync oder ein versehentliches Aufraeumen die
+     * Buchhaltung ersetzen oder loeschen - ein syntaktisch gueltiger
+     * Fremdinhalt wuerde zu Buchhaltung. Der Trail bleibt bewusst geteilt
+     * (den LIEST der Viewer); den Ledger liest nur FUSE selbst. Die
+     * Android-Aufloesung passiert ausschliesslich hier, Store und Adapter
+     * bleiben ohne Geraet pruefbar. mkdirs uebernimmt der Store beim
+     * Schreiben bzw. [migrateLedgerDirOnce] beim Umzug.
+     */
+    private fun ledgerDir() = File(context.filesDir, "fuse_ledger")
+
+    @Volatile private var ledgerMigrationDone = false
+
+    /**
+     * EINMALIGER Umzug vom alten geteilten Verzeichnis: nur wenn das neue
+     * Verzeichnis noch KEINE Generation traegt und im alten etwas liegt.
+     * Die alten Dateien werden nach `.migrated` umbenannt, nicht geloescht -
+     * ein Rueckbau/Vergleich bleibt moeglich, aber ein zweiter Lauf findet
+     * sie nicht mehr als Kandidaten.
+     */
+    private fun migrateLedgerDirOnce() {
+        if (ledgerMigrationDone) return
+        ledgerMigrationDone = true
+        runCatching {
+            val newDir = ledgerDir()
+            val names = listOf(
+                app.aaps.fuse.plugin.ledger.FuseLedgerStore.FILE_NAME,
+                app.aaps.fuse.plugin.ledger.FuseLedgerStore.FILE_NAME + ".bak",
+            )
+            if (names.any { File(newDir, it).exists() }) return@runCatching
+            val oldDir = File(Environment.getExternalStorageDirectory(), "Documents/aapsLogs")
+            val oldFiles = names.map { File(oldDir, it) }.filter { it.exists() }
+            if (oldFiles.isEmpty()) return@runCatching
+            newDir.mkdirs()
+            for (old in oldFiles) {
+                old.copyTo(File(newDir, old.name), overwrite = false)
+                if (!old.renameTo(File(oldDir, old.name + ".migrated")))
+                    aapsLogger.error(LTag.APS, "FUSE ledger migration: rename to .migrated failed for ${old.name}")
+            }
+            aapsLogger.debug(LTag.APS, "FUSE ledger migrated to app-private storage (${oldFiles.size} file(s))")
+        }.onFailure { aapsLogger.error(LTag.APS, "FUSE ledger migration failed", it) }
+    }
 
     /** Was der letzte Zyklus gesehen hat — Grundlage des spaeteren
      *  Zustandsexports und der Fragment-Anzeige. */
@@ -291,7 +334,9 @@ class FusePlugin @Inject constructor(
         // Ledger VOR dem Lauf restaurieren - NICHT wie warmGraphRingOnce nach
         // dem Lauf: der Zyklus rechnet mit den restaurierten Commitments und
         // Episodenbudgets, ein nachtraegliches Laden kaeme eine Dosis zu spaet.
-        runCatching { ledgerAdapter.loadOnce(ledgerDir(), sessionId, dateUtil.now()) }
+        // Davor der einmalige Umzug ins app-private Verzeichnis (Fix 8).
+        migrateLedgerDirOnce()
+        runCatching { ledgerAdapter.loadOnce(ledgerDir(), sessionId, dateUtil.now()) { aapsLogger.error(LTag.APS, it) } }
             .onFailure { aapsLogger.error(LTag.APS, "FUSE ledger load failed", it) }
 
         // `LoopPlugin.invoke` hat try/finally OHNE catch: eine Ausnahme von hier
@@ -361,36 +406,47 @@ class FusePlugin @Inject constructor(
         // deshalb HIER und nicht erst im Export.
         val cycleId = sessionId + "#" + (++cycleCounter)
 
-        // Ledger-Verdrahtung (Audit R95, Fix 3): erst der NEUE Vorschlag (nur
-        // wenn das RT wirklich units traegt - das Gate hat sie sonst schon
-        // gefiltert), dann Identitaeten binden, dann die Vollsicht abgleichen,
-        // dann aufraeumen - und SYNCHRON persistieren, bevor der Loop mit dem
-        // RT weiterarbeitet. Ein Kill nach der Rueckkehr findet den Vorschlag
-        // damit in der Datei, nicht nur im Speicher.
-        runCatching {
-            outcome?.let { o ->
-                if (rt.units != null) ledgerAdapter.onPublished(
-                    proposalId = cycleId,
-                    unitsU = rt.units!!,
-                    decisionTs = o.computeTs,
-                    latestBolusTs = o.treatmentView?.latestBolusTs ?: 0L,
-                    bolusStepU = o.state?.pumpIncrementU ?: Double.NaN,
-                )
-                o.treatmentView?.let { v ->
-                    ledgerAdapter.bindIdentities(v.boluses)
-                    ledgerAdapter.onCycleSnapshot(v.facts, v.snapshotHash, o.computeTs)
-                    ledgerAdapter.prune(o.computeTs, v.diaHours)
+        // Ledger-Verdrahtung + PUBLIKATIONS-GATING (Audit R95 Fix 3; Audit
+        // 2d273cb REG-01a): erst der NEUE Vorschlag (nur wenn das RT wirklich
+        // units traegt - das Gate hat sie sonst schon gefiltert), dann
+        // Identitaeten binden, Vollsicht abgleichen, aufraeumen - und dann
+        // MUSS ein VERIFIZIERTER Persist liegen, BEVOR der Loop das RT sieht.
+        // Schlaegt der Persist fehl oder wirft ein Ledger-Schritt, publiziert
+        // das Gate das RT OHNE SMB (Safety-TBR bleibt): ein Commitment, das
+        // nicht auf Platte steht, existiert nach einem Kill nicht mehr, und
+        // die Huelle stuende ein zweites Mal zur Verfuegung. persistFailed
+        // haelt zusaetzlich kuenftige Zyklen ueber view().hold zu.
+        val publishRt = app.aaps.fuse.plugin.ledger.LedgerPublicationGate.publish(
+            rt = rt,
+            adapter = ledgerAdapter,
+            dir = ledgerDir(),
+            events = {
+                outcome?.let { o ->
+                    if (rt.units != null) ledgerAdapter.onPublished(
+                        proposalId = cycleId,
+                        unitsU = rt.units!!,
+                        decisionTs = o.computeTs,
+                        latestBolusTs = o.treatmentView?.latestBolusTs ?: 0L,
+                        bolusStepU = o.state?.pumpIncrementU ?: Double.NaN,
+                    )
+                    o.treatmentView?.let { v ->
+                        ledgerAdapter.bindIdentities(v.boluses)
+                        ledgerAdapter.onCycleSnapshot(v.facts, v.snapshotHash, o.computeTs)
+                        ledgerAdapter.prune(o.computeTs, v.diaHours)
+                    }
                 }
-            }
-            ledgerAdapter.persist(ledgerDir())
-        }.onFailure { aapsLogger.error(LTag.APS, "FUSE ledger update failed", it) }
+            },
+            onError = { aapsLogger.error(LTag.APS, "FUSE ledger update failed", it) },
+        )
+        if (publishRt.units == null && rt.units != null)
+            aapsLogger.error(LTag.APS, "FUSE ledger not durable - SMB stripped from published RT")
 
-        lastAPSResult = apsResultProvider.get().with(rt)
+        lastAPSResult = apsResultProvider.get().with(publishRt)
         lastAPSRun = dateUtil.now()
-        aapsLogger.debug(LTag.APS, "FUSE result: ${rt.reason}")
+        aapsLogger.debug(LTag.APS, "FUSE result: ${publishRt.reason}")
         rxBus.send(EventAPSCalculationFinished())
 
-        exportState(outcome, rt, cycleId)
+        exportState(outcome, publishRt, cycleId)
     }
 
     /**

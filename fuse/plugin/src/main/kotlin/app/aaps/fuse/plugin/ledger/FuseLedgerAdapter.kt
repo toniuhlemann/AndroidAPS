@@ -35,11 +35,28 @@ class EpisodeBudgets {
      *  Restartfest, damit ein Neustart nach der Wende die Rechte nicht
      *  wiederbelebt. */
     var markerTurnTs: Long = 0L
+
+    /** Fix-Pass 2 Nr. 4: seit Marker-Druck wurde eine Anstiegsphase gesehen;
+     *  erst danach darf eine Wende die Sonderrechte latchen. Gesetzt und beim
+     *  Marker-Reset genullt im Runner (parallele Sitzung) - hier liegt nur
+     *  Feld + Persistenz, damit ein Neustart die schon gesehene Anstiegs-
+     *  phase nicht vergisst. */
+    var markerRiseSeen: Boolean = false
     val mealDeliveries: ArrayDeque<Pair<Long, Double>> = ArrayDeque()
 }
 
-/** Was der Zyklus vom Ledger sieht: Sperre und gebundene Transportmenge. */
-data class LedgerView(val hold: Boolean, val transportCommitmentU: Double)
+/**
+ * Fix 6 (Audit 2d273cb, NEU-BS-02): Identitaet einer beim [FuseLedgerAdapter.prune]
+ * entfernten Zeile, die GEBUNDEN war. Diese IDs bleiben persistent
+ * "verbraucht" - sonst leert der prune die Ausschlussmenge der Bindung, und
+ * ein bereits verbuchter fremder Bolus koennte eine alte offene Zeile
+ * schliessen, ohne dass je Insulin nachgewiesen wurde.
+ */
+data class RetiredBoundId(val temporaryId: Long?, val pumpId: Long?)
+
+/** Was der Zyklus vom Ledger sieht: Sperre (mit Grund fuer Anzeige/Trail)
+ *  und gebundene Transportmenge. */
+data class LedgerView(val hold: Boolean, val transportCommitmentU: Double, val holdReason: String? = null)
 
 /**
  * EINE Stelle fuer die Abbildung BS -> Ledger-Fakt. Identitaetsbindung und
@@ -113,6 +130,17 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
          *  vom Loop gekappte Menge bleibt bewusst ungebunden (konservativ:
          *  die Zeile haelt ihre volle Haftung). */
         const val BIND_AMOUNT_EPS_U = 1e-4
+
+        /** Obergrenze der persistierten [RetiredBoundId]-Menge (Fix 6):
+         *  300 juengste Eintraege decken bei 1-min-Takt Tage von SMBs ab -
+         *  weit laenger als jedes Bindungsfenster leben kann. */
+        const val MAX_RETIRED_BOUND_IDS = 300
+
+        /** Hold-Gruende fuer Anzeige/Trail - Konstanten, damit Publikations-
+         *  Gating (RT-reason) und view() dieselbe Vokabel sprechen. */
+        const val HOLD_REASON_PERSIST_FAILED = "LEDGER_PERSIST_FAILED"
+        const val HOLD_REASON_RECOVERY = "LEDGER_RECOVERY_HOLD"
+        const val HOLD_REASON_STATE = "LEDGER_STATE_HOLD"
     }
 
     var state: LedgerState = LedgerState()
@@ -126,15 +154,54 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
     var episodes: EpisodeBudgets = EpisodeBudgets()
         private set
 
+    /** Fix 6 (NEU-BS-02): verbrauchte Bindungs-Identitaeten geprunter
+     *  Zeilen. Persistiert, gekappt auf [MAX_RETIRED_BOUND_IDS] juengste. */
+    val retiredBoundIds: ArrayDeque<RetiredBoundId> = ArrayDeque()
+
+    /** REG-01a: der letzte [persistVerified] ist FEHLGESCHLAGEN - sticky bis
+     *  zum naechsten Erfolg. Solange gesetzt, sperrt view().hold die
+     *  Aktuation: ein Ledger, der nicht auf Platte steht, darf keine neuen
+     *  Verbindlichkeiten eingehen. */
+    var persistFailed: Boolean = false
+        private set
+
+    /** REG-01c: beim Laden gab es eine Vorgeschichte, die nicht (vollstaendig)
+     *  lesbar war - entweder ALLE Generationen unlesbar (Leerstart trotz
+     *  Vorgeschichte) oder mindestens eine (stiller Generationsverlust).
+     *  Sticky fuer die Prozesslebensdauer: der Verlust verschwindet nicht
+     *  dadurch, dass der Prozess weiterlaeuft. */
+    var recoveryHold: Boolean = false
+        private set
+
     private var epochId: String = ""
     private var generation: Long = 0L
     private var cfg = LedgerConfig(bolusStepU = 0.05)
     private var loaded = false
 
-    fun view(): LedgerView = LedgerView(state.holdActuation, state.transportCommitmentU)
+    /** Sperre = Reducer-Holds ODER fehlgeschlagene Persistenz ODER
+     *  Recovery-Vorbehalt. Der Grund ist fuer Anzeige/Trail; bei mehreren
+     *  gewinnt der Persistenz-/Recovery-Grund, weil er der aktuell
+     *  handlungsleitende ist (Reducer-Holds stehen zusaetzlich im state). */
+    fun view(): LedgerView {
+        val reason = when {
+            persistFailed       -> HOLD_REASON_PERSIST_FAILED
+            recoveryHold        -> HOLD_REASON_RECOVERY
+            state.holdActuation -> HOLD_REASON_STATE
+            else                -> null
+        }
+        return LedgerView(state.holdActuation || persistFailed || recoveryHold, state.transportCommitmentU, reason)
+    }
 
     /**
      * Restaurieren, GENAU EINMAL je Prozess, VOR dem ersten Zyklus.
+     *
+     * Der Leser betrachtet ALLE drei Generationen (tmp/target/bak) und
+     * waehlt die juengste GUELTIGE (REG-01b: eine vollstaendige `.tmp` nach
+     * Kill zwischen den Renames traegt den neuesten Vorschlag). Existierte
+     * eine Vorgeschichte, die nicht oder nicht vollstaendig lesbar war, wird
+     * NICHT still leer gestartet, sondern [recoveryHold] gesetzt (REG-01c):
+     * "leer" waere die Behauptung, es habe nie ein Commitment gegeben. Nur
+     * der echte Erststart (kein Kandidat existiert) startet ohne Hold.
      *
      * Traegt der geladene Zustand eine Snapshot-Ordnung aus einer anderen
      * Epoch, wird der Epochwechsel VOR dem ersten Snapshot ANGEKUENDIGT
@@ -143,19 +210,39 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
      * RestartObserved: was offen und unbewiesen ist, gilt konservativ als
      * abgegeben - nicht als geloescht.
      */
-    fun loadOnce(dir: File, sessionId: String, nowTs: Long) {
+    fun loadOnce(dir: File, sessionId: String, nowTs: Long, log: (String) -> Unit = {}) {
         if (loaded) return
         loaded = true
         epochId = sessionId
-        // Kandidaten in Vertrauensreihenfolge; die erste decodierbare gewinnt.
-        // Beide unlesbar -> leerer Start (dokumentierter Datenverlust, kein
-        // geratener Zustand).
-        for (text in store.read(dir)) {
-            val decoded = runCatching { LedgerCodec.decode(JSONObject(text)) }.getOrNull() ?: continue
+        val read = store.readNewestValid(dir) { text ->
+            runCatching { LedgerCodec.decode(JSONObject(text)).revision }.getOrNull()
+        }
+        val decoded = read.content?.let { runCatching { LedgerCodec.decode(JSONObject(it)) }.getOrNull() }
+        if (decoded != null) {
             state = decoded.state
             revision = decoded.revision
             episodes = decoded.episodes
-            break
+            retiredBoundIds.clear()
+            retiredBoundIds.addAll(decoded.retiredBoundIds)
+        }
+        if (read.anyCandidateExisted && decoded == null) {
+            // Vorgeschichte existiert, aber KEINE Generation ist lesbar:
+            // Leerstart NUR unter Recovery-Hold - moeglicherweise abgegebenes
+            // Insulin darf nicht als "nie passiert" verbucht werden.
+            recoveryHold = true
+            log(
+                "FUSE ledger RECOVERY_HOLD: Generationen vorhanden, aber keine lesbar/gueltig - " +
+                    "Leerstart nur mit Sperre, Aktuation bleibt zu bis zum Neustart nach Klaerung (dir=$dir)"
+            )
+        } else if (read.anyCandidateInvalid) {
+            // Eine Generation war da, aber unlesbar - stiller
+            // Generationsverlust: die gewaehlte Generation kann aelter sein
+            // als das zuletzt Publizierte. Konservativ: Sperre.
+            recoveryHold = true
+            log(
+                "FUSE ledger RECOVERY_HOLD: mindestens eine existierende Generation unlesbar " +
+                    "(stiller Generationsverlust moeglich) - geladen wurde revision=$revision (dir=$dir)"
+            )
         }
         val oldEpoch = state.lastSnapshotOrder?.sourceEpochId
         if (oldEpoch != null && oldEpoch != sessionId)
@@ -193,15 +280,25 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
         val unbound = state.entries.values.filter { it.identity == null && !it.closed }
         if (unbound.isEmpty()) return
         val decisionTimes = state.entries.values.map { it.decisionTs }.sorted()
-        val boundTemp = state.entries.values.mapNotNull { it.identity?.temporaryId }.toMutableSet()
-        val boundPump = state.entries.values.mapNotNull { it.identity?.pumpId }.toMutableSet()
+        // Fix 6 (NEU-BS-02): auch die Identitaeten GEPRUNTER Zeilen bleiben
+        // ausgeschlossen - sonst wuerde ein prune die Ausschlussmenge leeren
+        // und ein bereits verbuchter Bolus koennte eine fremde Zeile binden.
+        val boundTemp = (state.entries.values.mapNotNull { it.identity?.temporaryId } +
+            retiredBoundIds.mapNotNull { it.temporaryId }).toMutableSet()
+        val boundPump = (state.entries.values.mapNotNull { it.identity?.pumpId } +
+            retiredBoundIds.mapNotNull { it.pumpId }).toMutableSet()
         for (entry in unbound.sortedBy { it.decisionTs }) {
             val amountU = entry.amounts.rtPublishedU ?: entry.amounts.proposedU
-            // Obergrenze: die Entscheidung des NAECHSTEN Vorschlags. Ein Bolus
-            // danach kann nur noch zu dessen Zeile gehoeren - das macht die
-            // Fenster disjunkt und die Zuordnung deterministisch.
-            val upper = decisionTimes.firstOrNull { it > entry.decisionTs }
-                ?: (entry.decisionTs + BIND_WINDOW_MS)
+            // Obergrenze: die Entscheidung des NAECHSTEN Vorschlags, HART
+            // gekappt auf BIND_WINDOW_MS (Fix 6, NEU-BS-02): faellt eine
+            // Nachbarzeile dem prune zum Opfer, darf sich das Fenster nicht
+            // auf Stunden aufblaehen - "der naechste Vorschlag" ist nur so
+            // lange eine gueltige Grenze, wie er auch wirklich der zeitlich
+            // naechste war.
+            val upper = minOf(
+                decisionTimes.firstOrNull { it > entry.decisionTs } ?: (entry.decisionTs + BIND_WINDOW_MS),
+                entry.decisionTs + BIND_WINDOW_MS,
+            )
             val hits = boluses.filter { b ->
                 b.isValid && b.type == BS.Type.SMB &&
                     (b.ids.pumpId != null || b.ids.temporaryId != null) &&
@@ -266,15 +363,34 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
         val cutoff = nowTs - (diaHours * 3600_000.0).toLong() - 2L * 3600_000L
         val keep = state.entries.filterValues { !(it.closed && it.errors.isEmpty() && it.decisionTs < cutoff) }
         if (keep.size != state.entries.size) {
+            // Fix 6 (NEU-BS-02): getragene Identitaeten der entfernten Zeilen
+            // in die persistente Ausschlussmenge uebernehmen, BEVOR sie mit
+            // der Zeile verschwinden.
+            for (removed in state.entries.values) {
+                if (removed.proposalId in keep) continue
+                val id = removed.identity ?: continue
+                retiredBoundIds.addLast(RetiredBoundId(id.temporaryId, id.pumpId))
+                while (retiredBoundIds.size > MAX_RETIRED_BOUND_IDS) retiredBoundIds.removeFirst()
+            }
             state = state.copy(entries = keep)
             revision += 1
         }
     }
 
-    /** Synchron, nie werfend. Ein fehlgeschlagenes Schreiben laesst die
-     *  letzte Generation stehen - schlechter als frisch, besser als kaputt. */
-    fun persist(dir: File) {
-        runCatching { store.write(dir, LedgerCodec.encode(state, episodes, revision).toString()) }
+    /**
+     * Synchron, NIE werfend, mit RUECKLESEPROBE (Audit 2d273cb, REG-01a):
+     * das Ergebnis ist der Persistenzvertrag des Zyklus - nur nach `true`
+     * darf der Aufrufer einen SMB publizieren. Ein Fehlschlag setzt
+     * [persistFailed] (sticky bis zum naechsten Erfolg) und sperrt damit
+     * auch KUENFTIGE Zyklen ueber view().hold, bis der Ledger wieder
+     * durabel ist.
+     */
+    fun persistVerified(dir: File): Boolean {
+        val ok = runCatching {
+            store.writeVerified(dir, LedgerCodec.encode(state, episodes, revision, retiredBoundIds.toList()).toString())
+        }.getOrDefault(false)
+        persistFailed = !ok
+        return ok
     }
 
     private fun reduce(e: LedgerEvent) {

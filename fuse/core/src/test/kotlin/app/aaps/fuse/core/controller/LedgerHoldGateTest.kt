@@ -37,15 +37,26 @@ class LedgerHoldGateTest {
         assertEquals(0.0, d.smbU, 1e-12)
         assertEquals(FuseController.Block.LEDGER_HOLD, d.block)
         assertEquals("ledgerHold", d.bindingLimit)
-        // Die TBR-Achse bleibt unangetastet - Hold ist "keine NEUE Dosis",
-        // kein Sicherheitsbefund der Bahn.
-        assertEquals(FuseController.TbrAction.KEEP_CURRENT, d.tbr)
+        // Fix-Pass 2 Nr. 3: KEEP_CURRENT wird unter Hold zu NO_NEW_POSITIVE -
+        // sonst konnte KEEP_CANCEL_STALE_ZERO eine laufende Sicherheits-Null
+        // beenden, waehrend der Ledger blind ist.
+        assertEquals(FuseController.TbrAction.NO_NEW_POSITIVE, d.tbr)
     }
 
     @Test
-    fun `Hold ohne Menge laesst die Entscheidung unveraendert`() {
-        val d = base(0.0, FuseController.Block.NO_DEMAND)
-        assertSame(d, LedgerHoldGate.apply(d, hold = true))
+    fun `Hold ohne Menge verschaerft nur die TBR-Achse`() {
+        val d = LedgerHoldGate.apply(base(0.0, FuseController.Block.NO_DEMAND), hold = true)
+        assertEquals(0.0, d.smbU, 1e-12)
+        assertEquals(FuseController.TbrAction.NO_NEW_POSITIVE, d.tbr)
+        // Block/Grund bleiben die des Reglers - der Hold hat keine Menge
+        // genullt, nur das Loslassen der Null verhindert.
+        assertEquals(FuseController.Block.NO_DEMAND, d.block)
+    }
+
+    @Test
+    fun `Sicherheits-Aktionen bleiben unter Hold erhalten`() {
+        val zero = base(0.10).copy(tbr = FuseController.TbrAction.ZERO_TEMP)
+        assertEquals(FuseController.TbrAction.ZERO_TEMP, LedgerHoldGate.apply(zero, hold = true).tbr)
     }
 
     /** Der Kernfall des Audits: die Sofort-Freigabe hebt eine NO_DEMAND-Basis

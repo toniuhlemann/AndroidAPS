@@ -110,7 +110,7 @@ class FuseLedgerAdapterTest {
         a.episodes.onsetSpentU = 0.10
         a.episodes.mealArmedTs = t0
         a.episodes.mealDeliveries.addLast(t0 + 30_000L to 0.15)
-        a.persist(dir)
+        assertTrue(a.persistVerified(dir))
 
         val b = loadedAdapter(dir, "epoch-b", t0 + 120_000L)
         // Budget bleibt belastet - die Huelle steht nach dem Neustart NICHT
@@ -144,14 +144,130 @@ class FuseLedgerAdapterTest {
         assertEquals(0.30, a.view().transportCommitmentU, 1e-12)
     }
 
-    /** Beide Dateigenerationen unlesbar: leerer Start statt geratener
-     *  Zustand - und kein Wurf. */
+    /** ALLE Generationen unlesbar: leerer Start NUR mit Recovery-Hold
+     *  (Audit 2d273cb, REG-01c) - "leer" waere sonst die Behauptung, es habe
+     *  nie ein Commitment gegeben. Und weiterhin: kein Wurf. */
     @Test
-    fun `korrupte Dateien fuehren zum leeren Start`(@TempDir dir: File) {
+    fun `korrupte Dateien starten leer aber nur mit Recovery-Hold`(@TempDir dir: File) {
         File(dir, FuseLedgerStore.FILE_NAME).writeText("{kaputt")
         val a = loadedAdapter(dir)
         assertEquals(0.0, a.view().transportCommitmentU, 1e-12)
+        assertTrue(a.recoveryHold)
+        assertTrue(a.view().hold)
+        assertEquals(FuseLedgerAdapter.HOLD_REASON_RECOVERY, a.view().holdReason)
+    }
+
+    /** Semantisch UNGUELTIGE Datei (JSON-valide, aber negatives Budget):
+     *  zaehlt wie Korruption - Hold, keine Uebernahme (REG-01d). */
+    @Test
+    fun `semantisch ungueltige Datei zaehlt als korrupt`(@TempDir dir: File) {
+        val a = loadedAdapter(dir)
+        assertTrue(a.persistVerified(dir))
+        val target = File(dir, FuseLedgerStore.FILE_NAME)
+        val tampered = org.json.JSONObject(target.readText())
+        tampered.getJSONObject("episodes").put("primeSpentU", -1.0)
+        target.writeText(tampered.toString())
+        val b = FuseLedgerAdapter().also { it.loadOnce(dir, "epoch-x", t0) }
+        assertEquals(0.0, b.episodes.primeSpentU, 0.0)
+        assertTrue(b.recoveryHold)
+        assertTrue(b.view().hold)
+    }
+
+    /** Hauptdatei unlesbar, bak gueltig: geladen wird die bak-Generation,
+     *  aber der STILLE Generationsverlust haelt trotzdem an - die gewaehlte
+     *  Generation kann aelter sein als das zuletzt Publizierte. */
+    @Test
+    fun `unlesbare Hauptdatei mit gueltiger bak laedt bak und haelt trotzdem an`(@TempDir dir: File) {
+        val a = loadedAdapter(dir, "epoch-a")
+        a.onPublished("p1", 0.30, t0, 0L, 0.05)
+        assertTrue(a.persistVerified(dir))
+        a.onPublished("p2", 0.15, t0 + 60_000L, 0L, 0.05)
+        assertTrue(a.persistVerified(dir)) // dreht p1-Stand nach bak
+        File(dir, FuseLedgerStore.FILE_NAME).writeText("{kaputt")
+
+        val b = FuseLedgerAdapter().also { it.loadOnce(dir, "epoch-b", t0 + 120_000L) }
+        // Die bak-Generation traegt p1, p2 ist verloren gegangen ...
+        assertTrue("p1" in b.state.entries)
+        assertFalse("p2" in b.state.entries)
+        // ... und genau deshalb steht die Sperre.
+        assertTrue(b.recoveryHold)
+        assertEquals(FuseLedgerAdapter.HOLD_REASON_RECOVERY, b.view().holdReason)
+    }
+
+    /** Echter Erststart (kein Kandidat existiert): KEIN Hold - sonst waere
+     *  jede Neuinstallation dauerhaft gesperrt. */
+    @Test
+    fun `echter Erststart haelt nicht an`(@TempDir dir: File) {
+        val a = loadedAdapter(dir)
+        assertFalse(a.recoveryHold)
         assertFalse(a.view().hold)
+        assertNull(a.view().holdReason)
+    }
+
+    // ---- Persistenzvertrag ------------------------------------------------
+
+    /** REG-01a: ein fehlgeschlagener persistVerified sperrt STICKY ueber
+     *  view().hold, bis der naechste Persist wieder durchgeht. */
+    @Test
+    fun `persistVerified-Fehlschlag sperrt sticky bis zum naechsten Erfolg`(@TempDir dir: File) {
+        val a = loadedAdapter(dir)
+        a.onPublished("p1", 0.30, t0, 0L, 0.05)
+        val blockiert = File(dir, "datei-statt-verzeichnis").also { it.writeText("x") }
+        assertFalse(a.persistVerified(File(blockiert, "unter")))
+        assertTrue(a.persistFailed)
+        assertTrue(a.view().hold)
+        assertEquals(FuseLedgerAdapter.HOLD_REASON_PERSIST_FAILED, a.view().holdReason)
+        // Der naechste ERFOLG loescht die Sperre wieder.
+        assertTrue(a.persistVerified(dir))
+        assertFalse(a.persistFailed)
+        assertFalse(a.view().hold)
+        assertNull(a.view().holdReason)
+    }
+
+    // ---- Bindungsfenster (Fix 6, NEU-BS-02) -------------------------------
+
+    /** Das Fenster bleibt HART auf BIND_WINDOW_MS gekappt, auch wenn der
+     *  naechste Vorschlag Stunden spaeter kommt (z.B. weil die Zwischenzeile
+     *  dem prune zum Opfer fiel): ein Bolus jenseits der 5 min darf nie
+     *  mehr binden. */
+    @Test
+    fun `Bindungsfenster bleibt hart gekappt trotz spaetem Folgevorschlag`(@TempDir dir: File) {
+        val a = loadedAdapter(dir)
+        a.onPublished("p1", 0.30, t0, 0L, 0.05)
+        a.onPublished("p2", 0.15, t0 + 10 * 3600_000L, 0L, 0.05)
+        // 20 min nach p1: laege im alten Fenster [t0, p2), aber jenseits der
+        // harten Kappe - bindet NICHT.
+        a.bindIdentities(listOf(smb(t0 + 20 * 60_000L, 0.30, 1L)))
+        assertNull(a.state.entries.getValue("p1").identity)
+        // Innerhalb der Kappe bindet er.
+        a.bindIdentities(listOf(smb(t0 + 2 * 60_000L, 0.30, 2L)))
+        assertEquals(2L, a.state.entries.getValue("p1").identity?.pumpId)
+    }
+
+    /** Die Identitaet einer GEPRUNTEN gebundenen Zeile bleibt verbraucht -
+     *  auch ueber persist + Neustart: der bereits verbuchte Bolus darf keine
+     *  fremde Zeile mehr schliessen. */
+    @Test
+    fun `geprunte gebundene Identitaet bleibt dauerhaft ausgeschlossen`(@TempDir dir: File) {
+        val a = loadedAdapter(dir)
+        a.onPublished("p1", 0.30, t0, 0L, 0.05)
+        val b = smb(t0 + 5_000L, 0.30, pumpId = 77L)
+        a.bindIdentities(listOf(b))
+        a.onCycleSnapshot(listOf(LedgerFacts.fact(b)), LedgerFacts.snapshotHash(listOf(b)), t0 + 60_000L)
+        a.prune(t0 + 12 * 3600_000L, diaHours = 9.0)
+        assertFalse("p1" in a.state.entries)
+
+        // Neue Zeile, deren Fenster den Bolus zeitlich einschliesst: die
+        // verbrauchte Identitaet darf NICHT erneut binden.
+        a.onPublished("p2", 0.30, t0 + 1_000L, 0L, 0.05)
+        a.bindIdentities(listOf(b))
+        assertNull(a.state.entries.getValue("p2").identity)
+
+        // ... und die Ausschlussmenge ueberlebt den Neustart.
+        assertTrue(a.persistVerified(dir))
+        val fresh = FuseLedgerAdapter().also { it.loadOnce(dir, "epoch-c", t0 + 13 * 3600_000L) }
+        fresh.bindIdentities(listOf(b))
+        assertNull(fresh.state.entries.getValue("p2").identity)
     }
 
     // ---- Aufraeumen -------------------------------------------------------

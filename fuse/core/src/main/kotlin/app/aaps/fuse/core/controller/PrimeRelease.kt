@@ -142,13 +142,21 @@ object PrimeRelease {
     fun lift(
         base: FuseController.Decision, p: Plan, state: FuseController.State,
         tailHeadroomU: Double? = null, onsetCapU: Double? = null,
+        // Fix-Pass 2 Nr. 2 (NEU-BS-01, doppelt unabhaengig gefunden): die
+        // Suche kappt an LEDGER-korrigierten Headrooms, der Lift kappte an
+        // den NOMINALEN - ueber den NO_DEMAND-Pfad (Suche laeuft nie) konnte
+        // eine In-Flight-Menge doppelt in den iobTH-/maxIOB-Spielraum.
+        transportCommitmentU: Double = 0.0,
     ): FuseController.Decision {
         if (!p.active || p.floorU <= 0.0) return base
         if (base.block !in LIFTABLE) return base
 
         var caps = min(
             min(state.maxSmbU, p.remainingU),
-            min(state.maxIobU - state.netIobU, state.iobThU - state.capIobU),
+            min(
+                state.maxIobU - state.netIobU - transportCommitmentU,
+                state.iobThU - state.capIobU - transportCommitmentU,
+            ),
         )
         tailHeadroomU?.let { caps = min(caps, it) }
         onsetCapU?.let { caps = min(caps, it) }
