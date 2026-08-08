@@ -101,11 +101,10 @@ object FuseScreenModel {
             row(b, "Marker", if (restMin > 0) "AKTIV ($tierName) - Rest $restMin/${m.windowMin} min" else "abgelaufen ($tierName)")
         }
         outcome.mealStats?.let { ms ->
-            // "letzte 30/60" statt "+30/+60": die Fenster sind ROLLIEREND
-            // (geliefert in den letzten 30/60 min), nicht "Stand bei Minute
-            // 30/60 nach Essensbeginn" - Toni hat es am 08.08. genau so
-            // fehlgelesen, die Zahlen selbst stimmten.
-            row(b, "seit Mahlzeit", "${f2(ms.totalU)} U nach ${ms.sinceMin} min (letzte 30: ${f2(ms.last30U)} / 60: ${f2(ms.last60U)})")
+            // T0-Anker (Toni 08.08.): Stand nach 30/60 min AB ESSENSBEGINN,
+            // waechst bis zur Marke und friert dann ein - rollierende Fenster
+            // waren nicht die gewuenschte Groesse.
+            row(b, "seit Mahlzeit", "${f2(ms.totalU)} U nach ${ms.sinceMin} min (T0+30: ${f2(ms.first30U)} / T0+60: ${f2(ms.first60U)})")
         }
         outcome.prime?.let { pr ->
             primeText(pr)?.let { txt ->

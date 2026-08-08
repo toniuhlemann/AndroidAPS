@@ -70,7 +70,7 @@ object FuseStateJson {
             .put("computeDurationMs", outcome.computeDurationMs ?: JSONObject.NULL)
             .put("mealStats", outcome.mealStats?.let { m ->
                 JSONObject().put("sinceMin", m.sinceMin).put("totalU", fin(m.totalU))
-                    .put("last30U", fin(m.last30U)).put("last60U", fin(m.last60U))
+                    .put("first30U", fin(m.first30U)).put("first60U", fin(m.first60U))
             } ?: JSONObject.NULL)
         putOrGap(o, "sourceTs", outcome.sourceTs, gaps, "NO_SIGNAL_THIS_CYCLE")
         o.put("abortReason", outcome.abortReason ?: JSONObject.NULL)

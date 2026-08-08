@@ -534,8 +534,12 @@ class FuseCycleRunner(
         ) MealStats(
             sinceMin = ((computeTs - markerTs) / 60_000L).toInt(),
             totalU = mealDeliveries.sumOf { it.second },
-            last30U = mealDeliveries.filter { computeTs - it.first <= 30 * 60_000L }.sumOf { it.second },
-            last60U = mealDeliveries.filter { computeTs - it.first <= 60 * 60_000L }.sumOf { it.second },
+            // T0-ANKER statt rollierender Fenster (Toni 08.08.): interessant
+            // ist "wie viel stand nach 30/60 min ab Essensbeginn", nicht
+            // "letzte 30 min" - die Werte wachsen bis zur Marke und frieren
+            // dann von selbst ein (Filter auf Abgabezeit relativ zum Marker).
+            first30U = mealDeliveries.filter { it.first - markerTs <= 30 * 60_000L }.sumOf { it.second },
+            first60U = mealDeliveries.filter { it.first - markerTs <= 60 * 60_000L }.sumOf { it.second },
         ) else null
 
         val computeDurationMs = dateUtil.now() - computeTs
@@ -615,7 +619,7 @@ class FuseCycleRunner(
     private val mealDeliveries = ArrayDeque<Pair<Long, Double>>()
     private var mealDeliveriesArmedTs = 0L
 
-    data class MealStats(val sinceMin: Int, val totalU: Double, val last30U: Double, val last60U: Double)
+    data class MealStats(val sinceMin: Int, val totalU: Double, val first30U: Double, val first60U: Double)
 
     private fun fastDrive(signal: FuseSignalSource.Signal): Double? {
         val raw = signal.ukfRatePerMin
