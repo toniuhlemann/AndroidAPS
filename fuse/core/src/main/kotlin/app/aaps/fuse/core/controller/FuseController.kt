@@ -256,6 +256,16 @@ object FuseController {
         CANDIDATE,
 
         /**
+         * Der Commitment-Ledger meldet einen Vertragsbruch (holdActuation):
+         * der Regler weiss nicht mehr sicher, was draussen unterwegs ist -
+         * keine neue Dosis, bis repariert oder ausdruecklich quittiert ist.
+         * Gesetzt vom [LedgerHoldGate] NACH PrimeRelease.lift, damit weder
+         * der Ratio-Pfad (bei Kernel-Ausfall) noch die Sofort-Freigabe am
+         * Kandidaten-Reject vorbeikommen.
+         */
+        LEDGER_HOLD,
+
+        /**
          * Der SCHWANZ traegt nichts mehr: was am Haftungshorizont noch an Bord
          * ist, schoepft das Budget der Bahn danach bereits aus.
          *

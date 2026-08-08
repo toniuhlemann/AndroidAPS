@@ -88,11 +88,11 @@ class FuseStateExportTest {
 
     /**
      * Ein Datensatz, der vollstaendig AUSSIEHT, wuerde als Freigabe gelesen.
-     * Solange der Ledger keine Aufrufstelle hat, muss das Gegenteil in den
-     * Daten stehen — nicht in einer Fussnote.
+     * Fehlt die Ledger-Sicht (alter Aufrufer, Adapterfehler), muss das
+     * Gegenteil in den Daten stehen — nicht in einer Fussnote.
      */
     @Test
-    fun `der Datensatz erklaert sich selbst fuer unvollstaendig`() {
+    fun `ohne Ledger-Sicht erklaert sich der Datensatz fuer unvollstaendig`() {
         val j = record()
         assertFalse(j.getBoolean("r89Complete"))
         assertEquals(JSONObject.NULL, j.get("ledger"))
@@ -103,6 +103,66 @@ class FuseStateExportTest {
         assertTrue(fields.contains("ledger.accountedU"))
         assertTrue(fields.contains("ledger.residualU"))
         assertTrue(reasons.contains(FuseStateJson.GAP_NO_LEDGER))
+    }
+
+    /** Seit v7 (R95 Fix 3): MIT Ledger-Sicht steht die R89-Mengenbilanz im
+     *  Datensatz, die Luecken entfallen, r89Complete kippt auf true. */
+    @Test
+    fun `mit Ledger-Sicht steht die Mengenbilanz im Datensatz`() {
+        val lcfg = app.aaps.fuse.core.ledger.LedgerConfig(bolusStepU = 0.05)
+        val state = app.aaps.fuse.core.ledger.LedgerReducer.reduceAll(
+            app.aaps.fuse.core.ledger.LedgerState(),
+            listOf(
+                app.aaps.fuse.core.ledger.LedgerEvent.Proposed("s#1", 0.30, 1_700_000_000_000L, 0L),
+                app.aaps.fuse.core.ledger.LedgerEvent.AmountObserved(
+                    "s#1", app.aaps.fuse.core.ledger.AmountStage.RT_PUBLISHED, 0.30
+                ),
+            ),
+            lcfg,
+        )
+        val j = FuseStateJson.record(
+            "s#1", outcome(), rt(), cfg, BUILD, 0L, null,
+            ledger = FuseStateJson.LedgerSnapshot(revision = 2L, state = state),
+        ) { 5_000_000L }
+
+        assertTrue(j.getBoolean("r89Complete"))
+        val l = j.getJSONObject("ledger")
+        assertEquals(2L, l.getLong("revision"))
+        assertEquals(0.30, l.getDouble("transportCommitmentU"), 1e-12)
+        assertEquals(0.30, l.getDouble("grossLiabilityU"), 1e-12)
+        assertEquals(0.0, l.getDouble("accountedU"), 1e-12)
+        assertEquals(0.30, l.getDouble("residualU"), 1e-12)
+        assertFalse(l.getBoolean("hold"))
+        val open = l.getJSONArray("openEntries")
+        assertEquals(1, open.length())
+        assertEquals("s#1", open.getJSONObject(0).getString("proposalId"))
+        assertEquals("PUBLISHED", open.getJSONObject(0).getString("phase"))
+        assertFalse(gapReasons(j).contains(FuseStateJson.GAP_NO_LEDGER))
+    }
+
+    /** Aktive Fehler muessen im Trail stehen - ein Hold ohne sichtbaren Grund
+     *  wirkt wie ein defektes FUSE. */
+    @Test
+    fun `ein aktiver Ledger-Fehler steht mit Hold im Datensatz`() {
+        val lcfg = app.aaps.fuse.core.ledger.LedgerConfig(bolusStepU = 0.05)
+        val state = app.aaps.fuse.core.ledger.LedgerReducer.reduce(
+            app.aaps.fuse.core.ledger.LedgerState(),
+            // Ereignis zu einer nie vorgeschlagenen Id -> UNKNOWN_PROPOSAL.
+            app.aaps.fuse.core.ledger.LedgerEvent.AmountObserved(
+                "ghost", app.aaps.fuse.core.ledger.AmountStage.RT_PUBLISHED, 0.10
+            ),
+            lcfg,
+        )
+        val l = FuseStateJson.record(
+            "s#1", outcome(), rt(), cfg, BUILD, 0L, null,
+            ledger = FuseStateJson.LedgerSnapshot(1L, state),
+        ) { 5_000_000L }.getJSONObject("ledger")
+
+        assertTrue(l.getBoolean("hold"))
+        assertEquals(1L, l.getLong("holdGeneration"))
+        val errs = l.getJSONArray("activeErrors")
+        assertEquals(1, errs.length())
+        assertEquals("UNKNOWN_PROPOSAL", errs.getJSONObject(0).getString("error"))
     }
 
     /** Die vier Felder, ueber die AAPS ueberhaupt aktuiert (R89). */

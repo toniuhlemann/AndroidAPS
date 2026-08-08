@@ -9,13 +9,13 @@ import org.json.JSONObject
 /**
  * Der Zyklus-Datensatz, den R89 zur Installationsvoraussetzung macht.
  *
- * NICHT ERFUELLT, und das steht in jedem Datensatz statt in einer Fussnote:
- * R89 §360-361 verlangt Ledgerrevision und die Mengenbilanz
- * (gross/accounted/residual). Der Commitment-Ledger ist gebaut und getestet,
- * hat aber KEINE Aufrufstelle im Livepfad — jede dieser Zahlen waere heute
- * erfunden. Sie stehen deshalb als `null` unter einem maschinenlesbaren
- * `gaps`-Block, und `header.r89Complete` ist `false`. Ein Datensatz, der
- * vollstaendig AUSSIEHT, wuerde sonst als Freigabe gelesen.
+ * Seit v7 (Audit R95, Fix 3) ist der Commitment-Ledger verdrahtet: R89
+ * §360-361 verlangt Ledgerrevision und die Mengenbilanz
+ * (gross/accounted/residual), und beides kommt jetzt aus der ECHTEN
+ * Ledger-Sicht des Zyklus statt als benannte Luecke. `r89Complete` haengt
+ * an der tatsaechlich uebergebenen Sicht: fehlt sie (alter Aufrufer, Fehler
+ * im Adapter), stehen die GAP_NO_LEDGER-Luecken wieder da - ein Datensatz,
+ * der vollstaendig AUSSIEHT, wuerde sonst als Freigabe gelesen.
  *
  * Reine Erzeugung: kein Dateizugriff, kein Android. Das Schreiben liegt in
  * [FuseStateExporter], damit der Inhalt ohne Geraet pruefbar bleibt.
@@ -33,7 +33,12 @@ object FuseStateJson {
      */
     // v6 (08.08. mittags): Marker entwaffnet Rebound-Bremse (Gas-vor-Bremse
     // nur fuer erklaertes Wissen) + Mess-Flag reboundSuppressedByMarker.
-    const val RULE_SET_VERSION = 6
+    // v7 (08.08. abends, Audit R95 Fix 3): Commitment-Ledger verdrahtet -
+    // ledger-Block gefuellt (revision/transportCommitment/hold/openEntries/
+    // holdGeneration/aktive Fehler), Transportmenge geht von den Headrooms
+    // der Kandidatensuche ab, Hold nullt nach dem Lift, Episodenbudgets
+    // restartfest, Huellen-Belastung auf gate-wirksame Menge umgestellt.
+    const val RULE_SET_VERSION = 7
 
     /** Gruende fuer fehlende Felder. Benannt statt weggelassen. */
     const val GAP_NO_LEDGER = "LEDGER_NOT_WIRED"
@@ -50,6 +55,10 @@ object FuseStateJson {
      *  NICHT, und genau das muss im Datensatz stehen. */
     data class Build(val versionName: String, val head: String, val committed: Boolean)
 
+    /** Die Ledger-Sicht NACH den Buchungen des Zyklus. [revision] ist die
+     *  monotone Aenderungszaehlung des Adapters (R89 §360). */
+    data class LedgerSnapshot(val revision: Long, val state: app.aaps.fuse.core.ledger.LedgerState)
+
     fun record(
         cycleId: String,
         outcome: FuseCycleRunner.Outcome,
@@ -58,6 +67,9 @@ object FuseStateJson {
         build: Build?,
         buildStartNs: Long,
         prev: PrevWrite?,
+        // VOR nowNs, damit bestehende Aufrufe mit Trailing-Lambda den neuen
+        // Parameter per Default ueberspringen koennen.
+        ledger: LedgerSnapshot? = null,
         nowNs: () -> Long,
     ): JSONObject {
         val gaps = JSONArray()
@@ -279,12 +291,46 @@ object FuseStateJson {
                 .put("invalidReason", t.invalidReason ?: JSONObject.NULL)
         )
 
-        // ---- Ledger: existiert nicht, und das ist die Aussage ---------------
-        o.put("ledger", JSONObject.NULL)
-        gap("ledger.revision", GAP_NO_LEDGER)
-        gap("ledger.grossLiabilityU", GAP_NO_LEDGER)
-        gap("ledger.accountedU", GAP_NO_LEDGER)
-        gap("ledger.residualU", GAP_NO_LEDGER)
+        // ---- Ledger (R89 §360-361, verdrahtet seit v7) ----------------------
+        if (ledger == null) {
+            // Kein Ersatzwert: fehlt die Sicht, stehen die Luecken wieder da.
+            o.put("ledger", JSONObject.NULL)
+            gap("ledger.revision", GAP_NO_LEDGER)
+            gap("ledger.grossLiabilityU", GAP_NO_LEDGER)
+            gap("ledger.accountedU", GAP_NO_LEDGER)
+            gap("ledger.residualU", GAP_NO_LEDGER)
+        } else {
+            val ls = ledger.state
+            val open = ls.openEntries
+            o.put(
+                "ledger", JSONObject()
+                    .put("revision", ledger.revision)
+                    .put("transportCommitmentU", fin(ls.transportCommitmentU))
+                    .put("hold", ls.holdActuation)
+                    .put("holdGeneration", ls.holdGeneration)
+                    // Die R89-Mengenbilanz ueber die OFFENEN Zeilen:
+                    // gross - accounted = residual (= transportCommitment,
+                    // geschlossene Zeilen tragen 0).
+                    .put("grossLiabilityU", fin(open.sumOf { it.grossLiabilityU }))
+                    .put("accountedU", fin(open.sumOf { it.accountedAmountU ?: 0.0 }))
+                    .put("residualU", fin(ls.transportCommitmentU))
+                    .put("openEntries", JSONArray(open.map { e ->
+                        JSONObject()
+                            .put("proposalId", e.proposalId)
+                            .put("phase", e.phase.name)
+                            .put("accounting", e.accounting.name)
+                            .put("delivery", e.delivery.name)
+                            .put("commitmentU", fin(e.commitmentU))
+                    }))
+                    .put("activeErrors", JSONArray(ls.errors.filter { it.active }.map { r ->
+                        JSONObject()
+                            .put("proposalId", r.proposalId ?: JSONObject.NULL)
+                            .put("error", r.error.name)
+                            .put("occurrences", r.occurrences)
+                            .put("lastDetail", r.lastDetail)
+                    }))
+            )
+        }
 
         // ---- Politik -------------------------------------------------------
         val pol = JSONObject()
@@ -329,8 +375,9 @@ object FuseStateJson {
 
         o.put("gaps", gaps)
         // Der Kopf sagt in EINEM Feld, ob dieser Datensatz die R89-Bedingung
-        // erfuellt. Solange der Ledger nicht verdrahtet ist: nein.
-        o.put("r89Complete", false)
+        // erfuellt - und das haengt an der TATSAECHLICH uebergebenen
+        // Ledger-Sicht, nicht an der Codeversion.
+        o.put("r89Complete", ledger != null)
         return o
     }
 

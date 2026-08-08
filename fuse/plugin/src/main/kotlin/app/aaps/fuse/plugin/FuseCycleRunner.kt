@@ -17,9 +17,15 @@ import app.aaps.core.objects.extensions.convertedToAbsolute
 import app.aaps.core.objects.extensions.plannedRemainingMinutes
 import app.aaps.core.objects.extensions.target
 import app.aaps.core.utils.MidnightUtils
+import app.aaps.core.data.model.BS
 import app.aaps.fuse.core.adapter.CoreInputGuard
 import app.aaps.fuse.core.adapter.CycleAssembly
 import app.aaps.fuse.core.controller.FuseController
+import app.aaps.fuse.core.controller.LedgerHoldGate
+import app.aaps.fuse.core.controller.MarkerScope
+import app.aaps.fuse.core.ledger.AccountedTreatment
+import app.aaps.fuse.plugin.ledger.FuseLedgerAdapter
+import app.aaps.fuse.plugin.ledger.LedgerFacts
 import app.aaps.fuse.core.controller.IobThreshold
 import app.aaps.fuse.core.controller.TailLiability
 import app.aaps.fuse.core.controller.TbrPolicy
@@ -77,7 +83,15 @@ class FuseCycleRunner(
     private val commandQueue: CommandQueue,
     private val preferences: Preferences,
     private val persistenceLayer: PersistenceLayer,
+    /** Audit R95 NEU-05: TBR-Sicht INKLUSIVE konvertierter Extended-Boli -
+     *  die rohe TB-Tabelle sieht auf EB-fakenden Pumpen (Dana) eine laufende
+     *  Abgabe nicht, die der Loop als activeTemp fuehrt. */
+    private val processedTbrEbData: app.aaps.core.interfaces.db.ProcessedTbrEbData,
     private val dateUtil: DateUtil,
+    /** Commitment-Ledger (Audit R95, Fix 3): liefert Hold + Transportmenge in
+     *  den Zyklus und traegt die restartfesten Episodenbudgets. Geladen und
+     *  persistiert wird er im Plugin - der Runner LIEST und BELASTET nur. */
+    private val ledger: FuseLedgerAdapter,
     sessionId: String,
 ) {
 
@@ -166,6 +180,30 @@ class FuseCycleRunner(
         val iobU: Double?,
         /** Warum NICHT gerechnet wurde. `null` heisst: der Zyklus lief durch. */
         val abortReason: String?,
+        /** Die Treatment-Vollsicht dieses Zyklus fuer den Ledger-Abgleich.
+         *  `null` auf Abbruchpfaden UND wenn die Datenbankabfrage scheitert -
+         *  dann gibt es diesen Zyklus keinen Abgleich, und offene Commitments
+         *  bleiben konservativ stehen. Default, damit Abbruchpfade und Tests
+         *  unveraendert konstruieren. */
+        val treatmentView: TreatmentView? = null,
+    )
+
+    /**
+     * Vollsicht-Vertrag (R93-F3): ALLE gueltigen Boli des IOB-Fensters PLUS
+     * jeder Fakt, der an eine offene Ledger-Zeile gebunden ist - auch wenn er
+     * aus dem DIA-Fenster herausgealtert ist. "Fehlt in der Sicht" muss
+     * LOESCHUNG heissen, nicht Alterung - sonst meldet die Reconciliation
+     * vertragsgemaess, aber sachlich falsch MISSING_ACCOUNTED_TREATMENT und
+     * haelt FUSE dauerhaft an.
+     */
+    data class TreatmentView(
+        val boluses: List<BS>,
+        val facts: List<AccountedTreatment>,
+        val snapshotHash: String,
+        /** Juengster Bolus der Sicht - geht als latestBolusTimestamp in den
+         *  Vorschlag (C5-Guard der Bindung). 0 = keiner bekannt. */
+        val latestBolusTs: Long,
+        val diaHours: Double,
     )
 
     fun run(tempBasalFallback: Boolean): Outcome {
@@ -181,7 +219,12 @@ class FuseCycleRunner(
         // nicht lesbar oder nicht klassifizierbar (kein Profil), gibt es
         // keinen blinden Eingriff, aber einen Alarm.
         fun abortTbr(): Pair<FuseController.TbrRequest?, Boolean> = runCatching {
-            val running = persistenceLayer.getTemporaryBasalActiveAt(computeTs) ?: return@runCatching null to false
+            val running = processedTbrEbData.getTempBasalIncludingConvertedExtended(computeTs)
+                ?: return@runCatching null to false
+            // NEU-05: ein EB-gefakter "Temp" ist eine laufende, nicht
+            // abbrechbare Abgabe - Cancel wuerde den Vertrag der TbrPolicy
+            // (ReadOnlyHold) brechen. Kein Eingriff, aber Alarm.
+            if (running.type == app.aaps.core.data.model.TB.Type.FAKE_EXTENDED) return@runCatching null to true
             val prof = profileFunction.getProfile(computeTs) ?: return@runCatching null to true
             val rate = running.convertedToAbsolute(computeTs, prof)
             if (rate > prof.getBasal(computeTs) + 1e-9) FuseController.TbrRequest(0.0, 0) to false
@@ -299,13 +342,19 @@ class FuseCycleRunner(
             2    -> cfg.primeEnvelopeLargeU
             else -> cfg.primeEnvelopeU
         }
-        if (markerTs != primeArmedTsSeen) {
-            primeArmedTsSeen = markerTs
-            primeSpentU = 0.0
+        // Episodenbudgets leben im Ledger-Adapter und ueberleben Neustarts
+        // (Audit R95, Fix 3) - nur der Reset-ANLASS steht hier: ein neuer
+        // armedTs ist eine neue Episode mit voller Huelle.
+        val episodes = ledger.episodes
+        if (markerTs != episodes.primeArmedTs) {
+            episodes.primeArmedTs = markerTs
+            episodes.primeSpentU = 0.0
+            // Fix 7: neue Marker-Episode -> Wende-Latch der Sonderrechte neu.
+            episodes.markerTurnTs = 0L
         }
-        if (markerTs != mealDeliveriesArmedTs) {
-            mealDeliveriesArmedTs = markerTs
-            mealDeliveries.clear()
+        if (markerTs != episodes.mealArmedTs) {
+            episodes.mealArmedTs = markerTs
+            episodes.mealDeliveries.clear()
         }
         val mealMarkerActive = markerTs > 0 &&
             computeTs - markerTs in 0..(OnsetChannel.MARKER_WINDOW_MIN * 60_000L)
@@ -315,8 +364,20 @@ class FuseCycleRunner(
         // Gegenesser. Ein gedrueckter Marker IST die Ankuendigung - er
         // entwaffnet die Heuristik-Bremse (Ratio-Deckel, Totband, tau-
         // Kuerzung). Guard-Floor, Freigabe-Tor und Huellen bleiben unberuehrt.
-        val reboundWindow = reboundRaw && !mealMarkerActive
-        val reboundSuppressedByMarker = reboundRaw && mealMarkerActive
+        // Fix 7 (Audit R95 NEU-01/02, Tonis Entscheid "bis zur Wende, max
+        // 45 min"): die Marker-SONDERRECHTE (Rebound-Entwaffnung, Prior,
+        // Marker-Zweig des Fensters) enden mit der nachhaltigen Wende oder
+        // nach MarkerScope.BOOST_MAX_MIN - der Fruehstueckssturz vom 08.08.
+        // fiel sonst noch in die entwaffnete Zone. KONTEXT (Stufen-Huelle,
+        // Onset-Evidenz, Anzeige) behaelt die vollen 90 min.
+        if (mealMarkerActive && episodes.markerTurnTs == 0L &&
+            signal.ukfRatePerMin.isFinite() && signal.ukfRatePerMin <= -cfg.riseRampLowR
+        ) episodes.markerTurnTs = signal.sourceTs
+        val markerBoost = mealMarkerActive &&
+            MarkerScope.boostActive(markerTs, computeTs, episodes.markerTurnTs)
+
+        val reboundWindow = reboundRaw && !markerBoost
+        val reboundSuppressedByMarker = reboundRaw && markerBoost
 
         val onset = OnsetChannel.evaluate(
             OnsetChannel.Input(
@@ -327,7 +388,7 @@ class FuseCycleRunner(
                 q1Outlier = signal.q1Outlier,
                 mealMarkerActive = mealMarkerActive,
                 envelopeU = cfg.onsetEnvelopeU,
-                spentU = onsetSpentU,
+                spentU = episodes.onsetSpentU,
             )
         )
 
@@ -338,14 +399,16 @@ class FuseCycleRunner(
             val ukfNow = signal.ukfRatePerMin
             val kinematic = signal.rSigned?.let { it >= cfg.riseRampLowR } == true &&
                 ukfNow.isFinite() && ukfNow >= cfg.riseRampLowR
-            if (mealMarkerActive || onset.active || kinematic)
+            if (markerBoost || onset.active || kinematic)
                 mealWindowHoldUntil = signal.sourceTs + 10 * 60_000L
             if (ukfNow.isFinite() && ukfNow <= -cfg.riseRampLowR)
                 mealWindowHoldUntil = signal.sourceTs
         }
         val mealWindow = signal.sourceTs < mealWindowHoldUntil
 
-        val built = when (val b = CoreInputGuard.build { buildPredictorInput(signal, profile, cfg, band, bolusActivityUPerMin, if (onset.active) onset.driveMgdlPerMin else null, reboundWindow, mealMarkerActive) }) {
+        // Fix 7: der Marker-PRIOR auf der unteren Bahn haengt an den
+        // Sonderrechten (markerBoost), nicht am 90-min-Kontextfenster.
+        val built = when (val b = CoreInputGuard.build { buildPredictorInput(signal, profile, cfg, band, bolusActivityUPerMin, if (onset.active) onset.driveMgdlPerMin else null, reboundWindow, markerBoost) }) {
             is CoreInputGuard.Outcome.Built  -> b.value ?: return abort("input incomplete", signal, cfg)
             is CoreInputGuard.Outcome.Failed -> return abort("input: ${b.failure.detail}", signal, cfg)
         }
@@ -450,6 +513,12 @@ class FuseCycleRunner(
             onsetCapU = if (onset.active) onset.remainingU else null,
         )
 
+        // LEDGER-SICHT dieses Zyklus (Audit R95, Fix 3): was publiziert, aber
+        // noch nicht im IOB nachgewiesen ist, ist KEIN freier Spielraum. Die
+        // Transportmenge geht von BEIDEN Headrooms ab; ein Hold sperrt die
+        // Suche und - nach dem Lift - die gesamte Menge.
+        val ledgerView = ledger.view()
+
         // KANDIDATENPRUEFUNG (Audit 07.08.: 0,30 U bei ISF 95 senken die Bahn
         // 4,3 mg/dl @30 min / 21,6 @120 min - der Baseline-Guard sieht das
         // strukturell nicht). Der Ratio-Pfad hat VORGESCHLAGEN; die Suche
@@ -492,14 +561,17 @@ class FuseCycleRunner(
                         caps = CandidateSearch.Caps(
                             // Budgetpolicy bis KC2-53 offen: maxSmb als
                             // neutraler Platzhalter, bindet nie unterhalb der
-                            // echten Kappen. Ledger-Anteil kommt spaeter ueber
-                            // DIESE Headrooms herein (Vertrag der Suche).
+                            // echten Kappen. Der Ledger-Anteil kommt ueber die
+                            // Headrooms herein (Vertrag der Suche): die noch
+                            // nicht im IOB nachgewiesene Transportmenge zaehlt
+                            // wie bereits vorhandenes Insulin.
                             remainingReleaseBudgetU = cfg.maxSmbU,
-                            effectiveIobThHeadroomU = state.iobThU - state.capIobU,
-                            effectiveMaxIobHeadroomU = state.maxIobU - state.netIobU,
+                            effectiveIobThHeadroomU = state.iobThU - state.capIobU - ledgerView.transportCommitmentU,
+                            effectiveMaxIobHeadroomU = state.maxIobU - state.netIobU - ledgerView.transportCommitmentU,
                             pumpIncrementU = bolusStep,
                             maxSmbU = cfg.maxSmbU,
                         ),
+                        ledgerHold = ledgerView.hold,
                     )
                     CandidateGate.apply(baseDecision, candidateResult)
                 }
@@ -516,45 +588,49 @@ class FuseCycleRunner(
                 armedTsMs = markerTs,
                 nowMs = computeTs,
                 envelopeU = tierEnvelopeU,
-                spentU = primeSpentU,
-                minLowerMgdl = prediction.minLowerBg,
+                spentU = episodes.primeSpentU,
+                // Fix 7 Entzirkularisierung (NEU-01): der Marker-Prior hebt die
+                // untere Bahn - dieselbe gehobene Bahn darf der Clearance der
+                // Prime-Dosis nicht als Deckung dienen. Sein analytischer Hub
+                // am Release-Horizont wird hier wieder abgezogen.
+                minLowerMgdl = prediction.minLowerBg - (
+                    if (markerBoost) MarkerScope.priorLiftAtHorizonMgdl(
+                        PrimeRelease.MARKER_PRIOR_MGDL_PER_MIN,
+                        (if (reboundWindow) minOf(cfg.driveTauMin, FuseController.REBOUND_TAU_MIN) else cfg.driveTauMin).toDouble(),
+                        cfg.releaseHorizonMin,
+                    ) else 0.0
+                    ),
                 guardFloorMgdl = cfg.guardFloorMgdl,
                 isfMgdlPerU = isf,
                 pumpIncrementU = bolusStep,
             )
         )
-        val decision = PrimeRelease.lift(
+        val lifted = PrimeRelease.lift(
             vetted, primePlan, state,
             tailHeadroomU = tail?.takeIf { it.usable }?.headroomU,
             onsetCapU = if (onset.active) onset.remainingU else null,
         )
+        // HART NACH dem Lift (Audit R95, Fix 3): Ratio-Pfad (Kernel-Ausfall)
+        // und Sofort-Freigabe laufen am LEDGER_HOLD-Reject der Suche vorbei -
+        // ohne diesen Riegel waere der Hold genau ueber die Pfade umgehbar,
+        // die ohne Wirkungspruefung dosieren.
+        val decision = LedgerHoldGate.apply(lifted, ledgerView.hold)
         val primeWindowOpen = mealMarkerActive && markerTs > 0 &&
             computeTs - markerTs < PrimeRelease.WINDOW_MIN * 60_000L
-        if (primeWindowOpen) primeSpentU += decision.smbU
-
-        // Huellen-Buchfuehrung: verbraucht wird nur, was der offene Kanal
-        // freigegeben hat; nach REARM_QUIET_MIN geschlossenen Minuten wird die
-        // Huelle neu bewaffnet.
-        if (onset.active) {
-            onsetSpentU += decision.smbU
-            onsetQuietMin = 0
-        } else if (onsetSpentU > 0.0) {
-            onsetQuietMin += 1
-            if (onsetQuietMin >= OnsetChannel.REARM_QUIET_MIN) {
-                onsetSpentU = 0.0
-                onsetQuietMin = 0
-            }
-        }
 
         // ---- 5 Kanal -------------------------------------------------------
-        val runningTbr = persistenceLayer.getTemporaryBasalActiveAt(computeTs)
+        // Audit R95 NEU-05: die PROZESSIERTE Sicht inkl. konvertierter
+        // Extended-Boli - erst damit ist der FAKE_EXTENDED-Vertrag der
+        // TbrPolicy (nur lesen, nie ersetzen; C8-SMB-Sperre) erreichbar.
+        val runningTbr = processedTbrEbData.getTempBasalIncludingConvertedExtended(computeTs)
         val current = runningTbr?.let {
             TbrPolicy.Current(
                 // Prozent-TBR wird HIER absolut gemacht — der Kern sieht nie
                 // beides in derselben Zahl.
                 absoluteRateUPerH = it.convertedToAbsolute(computeTs, profile),
                 remainingMin = it.plannedRemainingMinutes,
-                sourceType = TbrPolicy.SourceType.TEMP_BASAL,
+                sourceType = if (it.type == app.aaps.core.data.model.TB.Type.FAKE_EXTENDED) TbrPolicy.SourceType.FAKE_EXTENDED
+                else TbrPolicy.SourceType.TEMP_BASAL,
             )
         }
         val combined = FuseTbrTranslator.combine(
@@ -566,18 +642,40 @@ class FuseCycleRunner(
             pumpBusy = pumpBusy(),
         )
 
-        if (markerTs > 0 && decision.smbU > 0.0) mealDeliveries.addLast(signal.sourceTs to decision.smbU)
+        // GATE-WIRKSAME Menge (Audit R95, Fix 3): Huellen und Bilanz belasten
+        // nur, was nach TBR-Tabelle (smbBlocked) UND Pumpen-Gate wirklich
+        // hinausgeht. Vorher zaehlte der Vor-Combine-Wert - ein blockierter
+        // Zyklus belastete die Huelle, ohne dass eine Einheit floss
+        // (Zaehlfalle rowId, 06.08.).
+        val actuatedU = if (gate.allowed) combined.decision.smbU else 0.0
+        if (primeWindowOpen) episodes.primeSpentU += actuatedU
+
+        // Huellen-Buchfuehrung: verbraucht wird nur, was der offene Kanal
+        // freigegeben hat; nach REARM_QUIET_MIN geschlossenen Minuten wird die
+        // Huelle neu bewaffnet.
+        if (onset.active) {
+            episodes.onsetSpentU += actuatedU
+            episodes.onsetQuietMin = 0
+        } else if (episodes.onsetSpentU > 0.0) {
+            episodes.onsetQuietMin += 1
+            if (episodes.onsetQuietMin >= OnsetChannel.REARM_QUIET_MIN) {
+                episodes.onsetSpentU = 0.0
+                episodes.onsetQuietMin = 0
+            }
+        }
+
+        if (markerTs > 0 && actuatedU > 0.0) episodes.mealDeliveries.addLast(signal.sourceTs to actuatedU)
         val mealStats = if (markerTs > 0 &&
             computeTs - markerTs <= (OnsetChannel.MARKER_WINDOW_MIN + 120) * 60_000L
         ) MealStats(
             sinceMin = ((computeTs - markerTs) / 60_000L).toInt(),
-            totalU = mealDeliveries.sumOf { it.second },
+            totalU = episodes.mealDeliveries.sumOf { it.second },
             // T0-ANKER statt rollierender Fenster (Toni 08.08.): interessant
             // ist "wie viel stand nach 30/60 min ab Essensbeginn", nicht
             // "letzte 30 min" - die Werte wachsen bis zur Marke und frieren
             // dann von selbst ein (Filter auf Abgabezeit relativ zum Marker).
-            first30U = mealDeliveries.filter { it.first - markerTs <= 30 * 60_000L }.sumOf { it.second },
-            first60U = mealDeliveries.filter { it.first - markerTs <= 60 * 60_000L }.sumOf { it.second },
+            first30U = episodes.mealDeliveries.filter { it.first - markerTs <= 30 * 60_000L }.sumOf { it.second },
+            first60U = episodes.mealDeliveries.filter { it.first - markerTs <= 60 * 60_000L }.sumOf { it.second },
         ) else null
 
         val computeDurationMs = dateUtil.now() - computeTs
@@ -611,6 +709,27 @@ class FuseCycleRunner(
             isfMgdlPerU = isf,
             iobU = iobTotal.iob,
             abortReason = null,
+            // runCatching: eine scheiternde DB-Abfrage darf den Zyklus nicht
+            // kosten - dann faellt nur der Ledger-Abgleich dieses Zyklus aus
+            // und offene Commitments bleiben konservativ stehen.
+            treatmentView = runCatching { buildTreatmentView(computeTs, profile.dia) }.getOrNull(),
+        )
+    }
+
+    /** Die Treatment-Vollsicht fuer den Ledger-Abgleich - s. [TreatmentView].
+     *  Fensteranfang: DIA + Marge zurueck, zusaetzlich verlaengert bis vor den
+     *  aeltesten Fakt einer noch offenen Ledger-Zeile. */
+    private fun buildTreatmentView(computeTs: Long, diaHours: Double): TreatmentView {
+        val windowStart = computeTs - (diaHours * 3600_000.0).toLong() - IOB_MARGIN_MIN * 60_000L
+        val from = minOf(windowStart, (ledger.oldestOpenTs() ?: Long.MAX_VALUE - 60_000L) - 60_000L)
+        val boluses = persistenceLayer.getBolusesFromTimeToTime(from, computeTs, true)
+            .filter { it.isValid && it.type != BS.Type.PRIMING }
+        return TreatmentView(
+            boluses = boluses,
+            facts = boluses.map { LedgerFacts.fact(it) },
+            snapshotHash = LedgerFacts.snapshotHash(boluses),
+            latestBolusTs = boluses.maxOfOrNull { it.timestamp } ?: 0L,
+            diaHours = diaHours,
         )
     }
 
@@ -632,14 +751,10 @@ class FuseCycleRunner(
      * aus (fail-closed) - die Persistenz baut sich in 3 Minuten neu auf.
      */
     private val onsetRing = ArrayDeque<OnsetChannel.Sample>()
-    private var onsetSpentU = 0.0
-    private var onsetQuietMin = 0
 
-    /** Huellen-Buchfuehrung der Sofort-Freigabe. Ein NEUER Knopfdruck (anderer
-     *  armedTs) beginnt eine neue Episode mit voller Huelle; JEDE im Fenster
-     *  gelieferte Einheit zaehlt dagegen - auch evidenzgetriebene. */
-    private var primeSpentU = 0.0
-    private var primeArmedTsSeen = 0L
+    // Die Episodenbudgets (primeSpent/onsetSpent/mealDeliveries) lagen bis
+    // Audit R95 Fix 3 HIER als Prozessfelder - jetzt restartfest im
+    // Ledger-Adapter (s. EpisodeBudgets).
 
     /** Letztes q1 < REBOUND_LOW_MGDL. Im Prozess: nach Neustart fehlt bis zu
      *  45 min Tief-Gedaechtnis (fail-open, dokumentiert) - die uebrigen
@@ -650,12 +765,6 @@ class FuseCycleRunner(
      *  Oeffnungsbedingung verlaengert um 10 min; eine nachhaltige Wende
      *  (schnelle Rate <= -Schwelle) schliesst sofort. */
     private var mealWindowHoldUntil = 0L
-
-    /** Abgaben seit Marker-Druck (ts, U) - Basis der Mahlzeit-Bilanz im Tab
-     *  und im Trail (Zielkurve +15/+30 live ablesbar). Reset bei neuem
-     *  armedTs. */
-    private val mealDeliveries = ArrayDeque<Pair<Long, Double>>()
-    private var mealDeliveriesArmedTs = 0L
 
     data class MealStats(val sinceMin: Int, val totalU: Double, val first30U: Double, val first60U: Double)
 
@@ -793,27 +902,30 @@ class FuseCycleRunner(
         // werfend, damit der Guard daraus einen benannten Abbruch macht.
         require(it.smbRatio.isFinite() && it.smbRatio in 0.0..1.0) { "smbRatio=${it.smbRatio}" }
         require(it.smbRatioRise.isFinite() && it.smbRatioRise in 0.0..1.0) { "smbRatioRise=${it.smbRatioRise}" }
-        require(it.riseRampLowR.isFinite() && it.riseRampHighR.isFinite()) { "riseRamp not finite" }
+        // Audit R95 F-P1-05: Runtime mindestens so streng wie die UI-Grenzen
+        // der Keys - Import/Migration umgeht den Einstellungsdialog.
+        require(it.riseRampLowR.isFinite() && it.riseRampLowR in 0.0..5.0) { "riseRampLow=${it.riseRampLowR}" }
+        require(it.riseRampHighR.isFinite() && it.riseRampHighR in 0.1..10.0) { "riseRampHigh=${it.riseRampHighR}" }
         require(it.riseRampHighR > it.riseRampLowR) { "riseRamp ${it.riseRampLowR}..${it.riseRampHighR} invertiert" }
-        require(it.maxSmbU.isFinite() && it.maxSmbU >= 0.0) { "maxSmb=${it.maxSmbU}" }
-        require(it.guardFloorMgdl.isFinite() && it.guardFloorMgdl > 0.0) { "guardFloor=${it.guardFloorMgdl}" }
-        require(it.iobThPercent >= 0) { "iobThPercent=${it.iobThPercent}" }
-        require(it.releaseHorizonMin > 0) { "releaseHorizon=${it.releaseHorizonMin}" }
+        require(it.maxSmbU.isFinite() && it.maxSmbU in 0.0..5.0) { "maxSmb=${it.maxSmbU}" }
+        require(it.guardFloorMgdl.isFinite() && it.guardFloorMgdl in 40.0..120.0) { "guardFloor=${it.guardFloorMgdl}" }
+        require(it.iobThPercent in 0..300) { "iobThPercent=${it.iobThPercent}" }
+        require(it.releaseHorizonMin in 5..120) { "releaseHorizon=${it.releaseHorizonMin}" }
         // Gleiche Grenzen wie DriveDecayModel.ExponentialDecay - sonst wirft der
         // Kern bei einem Wert, den der Einstellungsdialog erlaubt hat.
         require(it.driveTauMin in 10..240) { "driveTau=${it.driveTauMin}" }
         require(it.driveLowerQuantilePct in PairSlopeBand.MIN_PCT..PairSlopeBand.MAX_PCT) {
             "driveLowerQuantile=${it.driveLowerQuantilePct}"
         }
-        require(it.tailFloorMgdl.isFinite() && it.tailFloorMgdl > 0.0) { "tailFloor=${it.tailFloorMgdl}" }
+        require(it.tailFloorMgdl.isFinite() && it.tailFloorMgdl in 40.0..120.0) { "tailFloor=${it.tailFloorMgdl}" }
         require(it.tailRecoveryU.isFinite() && it.tailRecoveryU >= 0.0) { "tailRecovery=${it.tailRecoveryU}" }
         require(it.bolusShareLambda.isFinite() && it.bolusShareLambda in 0.0..2.0) { "bolusShareLambda=${it.bolusShareLambda}" }
         require(it.onsetEnvelopeU.isFinite() && it.onsetEnvelopeU in 0.0..5.0) { "onsetEnvelope=${it.onsetEnvelopeU}" }
         require(it.primeEnvelopeU.isFinite() && it.primeEnvelopeU in 0.0..2.0) { "primeEnvelope=${it.primeEnvelopeU}" }
         require(it.primeEnvelopeSmallU.isFinite() && it.primeEnvelopeSmallU in 0.0..1.2) { "primeSmall=${it.primeEnvelopeSmallU}" }
         require(it.primeEnvelopeLargeU.isFinite() && it.primeEnvelopeLargeU in 0.0..3.0) { "primeLarge=${it.primeEnvelopeLargeU}" }
-        require(it.liabilityHorizonMin >= it.releaseHorizonMin) {
-            "liabilityHorizon=${it.liabilityHorizonMin} < releaseHorizon=${it.releaseHorizonMin}"
+        require(it.liabilityHorizonMin >= it.releaseHorizonMin && it.liabilityHorizonMin <= 360) {
+            "liabilityHorizon=${it.liabilityHorizonMin} (releaseHorizon=${it.releaseHorizonMin}, max 360)"
         }
     }
 

@@ -36,6 +36,32 @@ object BgiAdjustedSeries {
     /** Punkt der bereinigten Reihe innerhalb EINES R-Segments. */
     data class AdjustedPoint(val sourceTs: Long, val adjusted: Double)
 
+    /** Kontraktgrenze aus dem KDoc von [adjust]: dt darueber ist ein
+     *  Segmentbruch und beendet das R-Segment. */
+    const val SEGMENT_BREAK_MS: Long = 3 * 60_000L
+
+    /**
+     * Audit R95 NEU-03: die Brucherkennung war "Sache des Aufrufers" - und der
+     * Live-Aufrufer hat sie nicht geleistet. Nach einer CGM-Luecke ueberspannte
+     * der Theil-Sen die Luecke (Rechteck-BGI ueber die volle Fehlzeit,
+     * verschmolzene Messregime) und war eine Minute spaeter wieder dosierfaehig.
+     *
+     * Liefert den Beginn des JUENGSTEN lueckenfreien Segments: den Zeitstempel
+     * des ersten Punkts nach dem letzten Bruch mit dt > [SEGMENT_BREAK_MS]
+     * innerhalb des betrachteten Fensters - oder [windowStartTs], wenn das
+     * Fenster bruchfrei ist. r existiert damit nach einem Bruch erst wieder,
+     * wenn das NEUE Segment genug Punkte traegt (Spec v0.5 Abs. 4.2).
+     */
+    fun segmentStart(ascendingTs: List<Long>, windowStartTs: Long): Long {
+        for (i in ascendingTs.size - 1 downTo 1) {
+            if (ascendingTs[i - 1] < windowStartTs && ascendingTs[i] < windowStartTs) break
+            if (ascendingTs[i] - ascendingTs[i - 1] > SEGMENT_BREAK_MS) {
+                return maxOf(windowStartTs, ascendingTs[i])
+            }
+        }
+        return windowStartTs
+    }
+
     /**
      * Baut die BGI-bereinigte Reihe fuer EIN R-Segment. Die Eingabe muss streng
      * aufsteigend und frei von Segmentbruechen sein — Bruecherkennung (dt > 3 min,

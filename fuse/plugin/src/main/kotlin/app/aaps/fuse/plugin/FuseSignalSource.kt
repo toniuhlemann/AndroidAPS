@@ -160,7 +160,14 @@ class FuseSignalSource(
 
         // Ein Sample je Rohpunkt im 18-min-Fenster. q1 wird KAUSAL je Punkt
         // gerechnet: jeder Punkt sieht nur seine eigene Vergangenheit.
-        val windowStart = sourceTs - BgiAdjustedSeries.WINDOW_MS
+        // Audit R95 NEU-03: die r-Reihe beginnt im juengsten LUECKENFREIEN
+        // Segment (dt > 3 min = Bruch) - vorher ueberspannte der Theil-Sen
+        // CGM-Luecken und war eine Minute nach der Luecke wieder dosierfaehig.
+        // q1/UKF bleiben unbeschnitten (eigene, dt-bewusste Filterung); nur r
+        // faellt bis zur Segmentreife benannt aus ("drive not estimable").
+        val windowStart = BgiAdjustedSeries.segmentStart(
+            series.map { it.tsMs }, sourceTs - BgiAdjustedSeries.WINDOW_MS
+        )
         val samples = ArrayList<BgiAdjustedSeries.Sample>()
         for ((index, point) in series.withIndex()) {
             if (point.tsMs < windowStart) continue

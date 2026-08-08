@@ -84,6 +84,7 @@ class FusePlugin @Inject constructor(
     private val constraintsChecker: ConstraintsChecker,
     private val commandQueue: CommandQueue,
     private val persistenceLayer: PersistenceLayer,
+    private val processedTbrEbData: app.aaps.core.interfaces.db.ProcessedTbrEbData,
     private val dateUtil: DateUtil,
     private val hardLimits: HardLimits,
     private val apsResultProvider: Provider<APSResult>,
@@ -120,6 +121,15 @@ class FusePlugin @Inject constructor(
     private val exporter = FuseStateExporter()
     private var cycleCounter = 0L
     private var prevWrite: FuseStateJson.PrevWrite? = null
+
+    /** Commitment-Ledger (Audit R95, Fix 3): EINE Instanz je Prozess. Geladen
+     *  VOR dem ersten Zyklus, nach jedem Zyklus synchron persistiert - die
+     *  Episodenbudgets und offenen Commitments ueberleben damit Neustarts. */
+    private val ledgerAdapter = app.aaps.fuse.plugin.ledger.FuseLedgerAdapter()
+
+    /** Dasselbe Verzeichnis wie der Trail - die Android-Aufloesung passiert
+     *  ausschliesslich hier, Store und Adapter bleiben ohne Geraet pruefbar. */
+    private fun ledgerDir() = File(Environment.getExternalStorageDirectory(), "Documents/aapsLogs")
 
     /** Was der letzte Zyklus gesehen hat — Grundlage des spaeteren
      *  Zustandsexports und der Fragment-Anzeige. */
@@ -262,7 +272,12 @@ class FusePlugin @Inject constructor(
 
     override fun specialEnableCondition(): Boolean =
         try {
-            activePlugin.activePump.pumpDescription.isTempBasalCapable
+            // Audit R95 F-P0-09: STARTVERWEIGERUNG statt nur Per-Zyklus-Riegel.
+            // FUSE laesst sich mit realer Pumpe gar nicht erst als APS
+            // aktivieren - das TOCTOU-Fenster des Gates setzt sonst voraus,
+            // dass die Kombination ueberhaupt konfigurierbar ist.
+            val pump = activePlugin.activePump
+            pump.pumpDescription.isTempBasalCapable && FusePumpGate.evaluate(pump).allowed
         } catch (_: Exception) {
             // Kann waehrend der Initialisierung fehlschlagen, bevor ein
             // Pumpenplugin steht.
@@ -272,6 +287,12 @@ class FusePlugin @Inject constructor(
     override fun invoke(initiator: String, tempBasalFallback: Boolean) {
         aapsLogger.debug(LTag.APS, "invoke from $initiator tempBasalFallback: $tempBasalFallback")
         lastAPSResult = null
+
+        // Ledger VOR dem Lauf restaurieren - NICHT wie warmGraphRingOnce nach
+        // dem Lauf: der Zyklus rechnet mit den restaurierten Commitments und
+        // Episodenbudgets, ein nachtraegliches Laden kaeme eine Dosis zu spaet.
+        runCatching { ledgerAdapter.loadOnce(ledgerDir(), sessionId, dateUtil.now()) }
+            .onFailure { aapsLogger.error(LTag.APS, "FUSE ledger load failed", it) }
 
         // `LoopPlugin.invoke` hat try/finally OHNE catch: eine Ausnahme von hier
         // wuerde den gesamten Loop-Durchlauf abbrechen — inklusive der Schritte
@@ -336,12 +357,40 @@ class FusePlugin @Inject constructor(
         }
         outcome?.let { if (it.abortReason != null) rt.reason.append(" | abort=").append(it.abortReason) }
 
+        // Die Cycle-Id ist zugleich die proposalId des Ledgers - sie entsteht
+        // deshalb HIER und nicht erst im Export.
+        val cycleId = sessionId + "#" + (++cycleCounter)
+
+        // Ledger-Verdrahtung (Audit R95, Fix 3): erst der NEUE Vorschlag (nur
+        // wenn das RT wirklich units traegt - das Gate hat sie sonst schon
+        // gefiltert), dann Identitaeten binden, dann die Vollsicht abgleichen,
+        // dann aufraeumen - und SYNCHRON persistieren, bevor der Loop mit dem
+        // RT weiterarbeitet. Ein Kill nach der Rueckkehr findet den Vorschlag
+        // damit in der Datei, nicht nur im Speicher.
+        runCatching {
+            outcome?.let { o ->
+                if (rt.units != null) ledgerAdapter.onPublished(
+                    proposalId = cycleId,
+                    unitsU = rt.units!!,
+                    decisionTs = o.computeTs,
+                    latestBolusTs = o.treatmentView?.latestBolusTs ?: 0L,
+                    bolusStepU = o.state?.pumpIncrementU ?: Double.NaN,
+                )
+                o.treatmentView?.let { v ->
+                    ledgerAdapter.bindIdentities(v.boluses)
+                    ledgerAdapter.onCycleSnapshot(v.facts, v.snapshotHash, o.computeTs)
+                    ledgerAdapter.prune(o.computeTs, v.diaHours)
+                }
+            }
+            ledgerAdapter.persist(ledgerDir())
+        }.onFailure { aapsLogger.error(LTag.APS, "FUSE ledger update failed", it) }
+
         lastAPSResult = apsResultProvider.get().with(rt)
         lastAPSRun = dateUtil.now()
         aapsLogger.debug(LTag.APS, "FUSE result: ${rt.reason}")
         rxBus.send(EventAPSCalculationFinished())
 
-        exportState(outcome, rt)
+        exportState(outcome, rt, cycleId)
     }
 
     /**
@@ -355,11 +404,10 @@ class FusePlugin @Inject constructor(
      * Regler unter keinen Umstaenden anhalten. Selbst ein Fehler im
      * Datensatzbau bleibt hier.
      */
-    private fun exportState(outcome: FuseCycleRunner.Outcome?, rt: RT) {
+    private fun exportState(outcome: FuseCycleRunner.Outcome?, rt: RT, cycleId: String) {
         runCatching {
             val start = System.nanoTime()
             val o = outcome ?: return
-            val cycleId = sessionId + "#" + (++cycleCounter)
             val json = FuseStateJson.record(
                 cycleId = cycleId,
                 outcome = o,
@@ -369,6 +417,9 @@ class FusePlugin @Inject constructor(
                 buildStartNs = start,
                 prev = prevWrite,
                 nowNs = System::nanoTime,
+                // Die Sicht NACH den Buchungen dieses Zyklus - genau der
+                // Zustand, mit dem der naechste Zyklus rechnen wird.
+                ledger = FuseStateJson.LedgerSnapshot(ledgerAdapter.revision, ledgerAdapter.state),
             )
             // Die Android-Aufloesung des Verzeichnisses passiert AUSSCHLIESSLICH
             // hier — der Schreiber selbst kennt kein Environment und bleibt
@@ -399,7 +450,9 @@ class FusePlugin @Inject constructor(
             commandQueue = commandQueue,
             preferences = preferences,
             persistenceLayer = persistenceLayer,
+            processedTbrEbData = processedTbrEbData,
             dateUtil = dateUtil,
+            ledger = ledgerAdapter,
             // Prozessgebundene Kennung: sie trennt die Ereignisse eines Laufs von
             // denen nach einem Neustart. `dateUtil.now()` und nicht ein Zufall,
             // damit sie in einem Export sortierbar bleibt.
