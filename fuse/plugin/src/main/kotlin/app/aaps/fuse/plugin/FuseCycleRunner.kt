@@ -178,6 +178,11 @@ class FuseCycleRunner(
         val calibrationEpoch: Long?,
         val isfMgdlPerU: Double?,
         val iobU: Double?,
+        /** Basiswerte, die auch ein ABBRUCH-Zyklus kennt (Toni 08.08.: iobTH
+         *  nie verstecken) - im Normalzyklus traegt sie der State, hier sind
+         *  sie der Fallback fuer die Anzeige. */
+        val iobThU: Double? = null,
+        val maxIobU: Double? = null,
         /** Warum NICHT gerechnet wurde. `null` heisst: der Zyklus lief durch. */
         val abortReason: String?,
         /** Die Treatment-Vollsicht dieses Zyklus fuer den Ledger-Abgleich.
@@ -231,15 +236,24 @@ class FuseCycleRunner(
             else null to false
         }.getOrElse { null to true }
 
-        fun abort(reason: String, signal: FuseSignalSource.Signal? = null, policy: Config? = null): Outcome {
+        fun abort(reason: String, signal: FuseSignalSource.Signal? = null, policy: Config? = null, step: ObserverStep? = null): Outcome {
             val (cancelTbr, tbrAlarm) = abortTbr()
+            // Auch ein Abbruch kennt die Basiswerte (Toni 08.08.: nie
+            // verstecken) - jede Lesung einzeln tolerant, ein Abbruch darf an
+            // der Anreicherung nicht scheitern.
+            val maxIob = runCatching { constraintsChecker.getMaxIOBAllowed().value() }.getOrNull()
+            val iobTh = if (policy != null && maxIob != null)
+                runCatching { IobThreshold.fromPercent(policy.iobThPercent.toDouble(), maxIob) }.getOrNull() else null
+            val iob = runCatching {
+                profileFunction.getProfile(computeTs)?.let { p -> iobCobCalculator.calculateFromTreatmentsAndTemps(computeTs, p).iob }
+            }.getOrNull()
             return Outcome(
                 decision = FuseController.noInput(reason), tbr = cancelTbr, prediction = null,
-                sourceTs = signal?.sourceTs, computeTs = computeTs, health = null, gate = gate,
+                sourceTs = signal?.sourceTs, computeTs = computeTs, health = step?.health, gate = gate,
                 reason = reason, alarm = tbrAlarm, bgMgdl = signal?.q1, targetMgdl = null, targetSource = null,
-                signal = signal, band = null, discount = null, onset = null, prime = null, candidate = null, candidateGap = null, policy = policy, state = null, step = null,
+                signal = signal, band = null, discount = null, onset = null, prime = null, candidate = null, candidateGap = null, policy = policy, state = null, step = step,
                 sensorEpoch = null, calibrationEpoch = null,
-                isfMgdlPerU = null, iobU = null, computeDurationMs = null, mealStats = null, abortReason = reason,
+                isfMgdlPerU = null, iobU = iob, iobThU = iobTh, maxIobU = maxIob, computeDurationMs = null, mealStats = null, abortReason = reason,
             )
         }
 
@@ -292,19 +306,19 @@ class FuseCycleRunner(
         // (TT-Events, Loop-Swipe, Neustart). Jetzt fail-closed: derselbe
         // sourceTs finanziert nie eine zweite positive Aktuation; der Abort
         // haelt die TBR-Sicherheit aufrecht (abortTbr).
-        if (!step.accepted) return abort("signal duplicate/out-of-order (accepted=false)", signal)
+        if (!step.accepted) return abort("signal duplicate/out-of-order (accepted=false)", signal, step = step)
 
         // ---- 3 Bahn --------------------------------------------------------
         val cfg = when (val c = CoreInputGuard.build { readConfig() }) {
             is CoreInputGuard.Outcome.Built  -> c.value
-            is CoreInputGuard.Outcome.Failed -> return abort("config: ${c.failure.detail}", signal)
+            is CoreInputGuard.Outcome.Failed -> return abort("config: ${c.failure.detail}", signal, step = step)
         }
 
         // Zeitachsen-Tor (Audit R95, F-P0-04): Zukunfts-Anker fail-closed,
         // BEVOR irgendetwas auf sourceTs rechnet. Deckt auch den Kopf-klebt-
         // an-der-Ladefenster-Kappe-Fall ab, in dem STALE nie feuern wuerde.
         app.aaps.fuse.core.signal.SignalTimeGate.futureReason(signal.sourceTs, computeTs)?.let {
-            return abort(it, signal, cfg)
+            return abort(it, signal, cfg, step)
         }
 
         // Mittel- UND Untergrenze aus DEMSELBEN Aufruf. Es darf keinen Zustand
@@ -312,7 +326,7 @@ class FuseCycleRunner(
         // den Null-Abstand ausgerechnet bei der schlechtesten Datenlage still
         // wiederherstellen.
         val band = PairSlopeBand.estimate(signal.adjusted, signal.sourceTs, cfg.driveLowerQuantilePct)
-            ?: return abort("drive not estimable (${signal.samplesUsed} samples)", signal, cfg)
+            ?: return abort("drive not estimable (${signal.samplesUsed} samples)", signal, cfg, step)
 
         // Bolus-Aktivitaet am Anker - Eingang des Deckungs-Abschlags.
         // `calculateIobFromBolus()` rechnet auf `dateUtil.now()`, bis zu ~1 min
@@ -409,13 +423,13 @@ class FuseCycleRunner(
         // Fix 7: der Marker-PRIOR auf der unteren Bahn haengt an den
         // Sonderrechten (markerBoost), nicht am 90-min-Kontextfenster.
         val built = when (val b = CoreInputGuard.build { buildPredictorInput(signal, profile, cfg, band, bolusActivityUPerMin, if (onset.active) onset.driveMgdlPerMin else null, reboundWindow, markerBoost) }) {
-            is CoreInputGuard.Outcome.Built  -> b.value ?: return abort("input incomplete", signal, cfg)
-            is CoreInputGuard.Outcome.Failed -> return abort("input: ${b.failure.detail}", signal, cfg)
+            is CoreInputGuard.Outcome.Built  -> b.value ?: return abort("input incomplete", signal, cfg, step)
+            is CoreInputGuard.Outcome.Failed -> return abort("input: ${b.failure.detail}", signal, cfg, step)
         }
 
         val prediction = when (val p = TrajectoryCore.predict(built.input)) {
             is PredictorOutcome.Ok       -> p.result
-            is PredictorOutcome.Rejected -> return abort("predictor: ${p.reason} ${p.detail}", signal, cfg)
+            is PredictorOutcome.Rejected -> return abort("predictor: ${p.reason} ${p.detail}", signal, cfg, step)
         }
 
         // ZWEITE Bahn aus der schnellen Rate. Sie nutzt DASSELBE IOB-Array und
@@ -444,7 +458,7 @@ class FuseCycleRunner(
         val bolusStep = pumpDescription.bolusStep
         // 0.0 waere GEFAEHRLICHER als ein Block: floor(x/0)*0 ergibt NaN, und
         // NaN < 0.0 ist false — der Zyklus fiele durch statt zu sperren.
-        if (!bolusStep.isFinite() || bolusStep <= 0.0) return abort("bolusStep=$bolusStep", signal, cfg)
+        if (!bolusStep.isFinite() || bolusStep <= 0.0) return abort("bolusStep=$bolusStep", signal, cfg, step)
 
         val maxIobU = constraintsChecker.getMaxIOBAllowed().value()
         val iobTotal = iobCobCalculator.calculateFromTreatmentsAndTemps(computeTs, profile)
@@ -489,7 +503,7 @@ class FuseCycleRunner(
             }
         ) {
             is CoreInputGuard.Outcome.Built  -> s.value
-            is CoreInputGuard.Outcome.Failed -> return abort("state: ${s.failure.detail}", signal, cfg)
+            is CoreInputGuard.Outcome.Failed -> return abort("state: ${s.failure.detail}", signal, cfg, step)
         }
 
         // Schwanzhaftung. `bgAtHorizonLower` ist die BASELINE-Bahn ohne

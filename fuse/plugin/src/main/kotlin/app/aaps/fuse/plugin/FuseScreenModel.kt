@@ -142,6 +142,17 @@ object FuseScreenModel {
         row(b, "Grenze", d.bindingLimit + if (d.restraintBound) "  (gebremst)" else "")
         row(b, "insulinReq", f2(d.insulinReqU) + " U")
         row(b, "IOB", outcome.iobU?.let { f2(it) + " U" } ?: "-")
+        // ABBRUCH-Fallback (Toni 08.08.: iobTH nie verstecken): ohne State
+        // kommen die Basiswerte aus der Abort-Anreicherung, die Ratio-Zeile
+        // zeigt ihre Konfiguration ohne wirksamen Anteil.
+        if (outcome.state == null) {
+            if (outcome.iobThU != null || outcome.maxIobU != null)
+                row(b, "iobTH / maxIOB", "${outcome.iobThU?.let { f2(it) } ?: "-"} / ${outcome.maxIobU?.let { f2(it) } ?: "-"} U")
+            outcome.policy?.let { p ->
+                row(b, "eff. SMB-Ratio", "-  [kein Zyklus]")
+                row(b, "", "Basis ${f2(p.smbRatio)} | Rampe - % -> ${f2(p.smbRatioRise)}")
+            }
+        }
         outcome.state?.let {
             row(b, "iobTH / maxIOB", "${f2(it.iobThU)} / ${f2(it.maxIobU)} U")
             val rampPct = it.rSignedMgdlPerMin?.let { r ->
