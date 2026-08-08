@@ -156,7 +156,10 @@ object FuseScreenModel {
             // Zwei Zeilen statt einer (Toni 08.08.): die Zusammensetzung
             // sprengte das 16er-Label-Raster und brach hart um.
             row(b, "eff. SMB-Ratio", f2(it.effectiveSmbRatio) + "  [$fensterTag]")
-            row(b, "", "Basis ${f2(it.smbRatioCorrection)} | Rampe ${rampPct?.toString() ?: "-"} % -> ${f2(it.smbRatioRise)}")
+            // Unterzeile im Stil von "  UKF-Rate": zwei Leerzeichen, nicht das
+            // 16er-Raster und nicht Spalte 0 - sie gehoert zur Ratio-Zeile,
+            // ist aber kein eigener Parameter (Toni 08.08.).
+            b.append("  Basis ${f2(it.smbRatioCorrection)} | Rampe ${rampPct?.toString() ?: "-"} % -> ${f2(it.smbRatioRise)}").append('\n')
         }
         d.tail?.let {
             row(
