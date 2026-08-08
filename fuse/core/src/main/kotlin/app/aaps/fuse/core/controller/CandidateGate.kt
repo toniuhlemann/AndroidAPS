@@ -17,10 +17,18 @@ package app.aaps.fuse.core.controller
  *    Quantitativ (Audit 07.08.): 0,30 U bei ISF 95 senken die Bahn um
  *    4,3 mg/dl @30 min und 21,6 @120 min - das prueft der Baseline-Guard
  *    strukturell nicht.
- *  - TECHNISCH (Raster, Horizont, Kernel, ISF-Slot, Non-Finite): der PRUEFER
+ *  - TECHNISCH (Raster, Horizont, Kernel, ISF-Slot): der PRUEFER
  *    ist ausgefallen, nicht die Dosis unsicher. Dann gilt die Basis
  *    unveraendert und der Ausfall steht als Luecke im Export. Ein Prüfer-
  *    Ausfall, der Dosen nullt, waere ein neuer Ausfallmodus des Reglers.
+ *
+ * DRITTE KLASSE seit dem Audit R95 (F-P0-05/F-P0-08-Gegenpruefung): KORRUPTE
+ * EINGABEN (LEDGER_HOLD, INVALID_BAND, INVALID_CAPS, NON_FINITE). Das ist
+ * kein Pruefer-Ausfall - die Suche hat erkannt, dass ihre EINGABEN kaputt
+ * sind, und dieselben Eingaben haben auch die Basisdosis gebaut (NaN-Werte
+ * schalten die IOB-Headroom-Gates still aus, Kotlin: NaN <= x ist false).
+ * Eine Basis aus korrupten Eingaben durchzulassen war der fail-open-Pfad
+ * des Audits; diese Kategorien setzen jetzt fail-closed auf null.
  *
  * Die Sofort-Freigabe (PrimeRelease) hebt NACH diesem Gate: sie ist bewusst
  * evidenzfrei und traegt ihre eigene Kandidaten-Naeherung (Clearance-Gate).
@@ -47,7 +55,13 @@ object CandidateGate {
         CandidateSearch.Reject.GUARD_FLOOR,
         CandidateSearch.Reject.BELOW_TARGET_BAND,
         CandidateSearch.Reject.NO_HEADROOM,
-        CandidateSearch.Reject.BELOW_PUMP_INCREMENT -> Kind.ENFORCE
+        CandidateSearch.Reject.BELOW_PUMP_INCREMENT,
+        // Audit R95: korrupte Eingaben/Vertragsbruch sind fail-closed -
+        // dieselben kaputten Werte haben auch die Basisdosis gebaut.
+        CandidateSearch.Reject.LEDGER_HOLD,
+        CandidateSearch.Reject.INVALID_BAND,
+        CandidateSearch.Reject.INVALID_CAPS,
+        CandidateSearch.Reject.NON_FINITE           -> Kind.ENFORCE
         else                                        -> Kind.UNAVAILABLE
     }
 

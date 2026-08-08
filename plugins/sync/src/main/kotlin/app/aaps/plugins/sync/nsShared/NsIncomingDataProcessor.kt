@@ -150,8 +150,17 @@ class NsIncomingDataProcessor @Inject constructor(
 
                 when (treatment) {
                     is NSBolus                  ->
-                        if (preferences.get(BooleanKey.NsClientAcceptInsulin) || config.AAPSCLIENT || doFullSync)
+                        if (preferences.get(BooleanKey.NsClientAcceptInsulin) || config.AAPSCLIENT || doFullSync) {
+                            // Audit R95 F-P0-08: TTs werden unten validiert, Boluse
+                            // wurden es nicht - ein korruptes insulin-Feld (negativ,
+                            // NaN, absurd gross) wirkt sonst ueber die volle DIA in
+                            // jede IOB-Rechnung und blendet die Headroom-Gates.
+                            if (!treatment.insulin.isFinite() || treatment.insulin <= 0.0 || treatment.insulin > 60.0) {
+                                aapsLogger.debug(LTag.NSCLIENT, "Ignored Bolus with implausible insulin=${treatment.insulin} $treatment")
+                                continue
+                            }
                             storeDataForDb.addToBoluses(treatment.toBolus())
+                        }
 
                     is NSCarbs                  ->
                         if (preferences.get(BooleanKey.NsClientAcceptCarbs) || config.AAPSCLIENT || doFullSync)

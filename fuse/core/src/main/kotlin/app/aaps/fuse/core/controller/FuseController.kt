@@ -120,6 +120,28 @@ object FuseController {
          */
         val mealWindow: Boolean = false,
     ) {
+        init {
+            // Audit R95 F-P0-08: NaN im IOB-Snapshot schaltet beide
+            // Headroom-Gates still aus (NaN <= x ist false), korrupt
+            // negatives Bolus-IOB blaeht sie auf. Der State konstruiert im
+            // CoreInputGuard - ein Wurf hier ist ein benannter Abort, keine
+            // stille Fehlregelung. Grenzen bewusst grob: sie sollen KORRUPTE
+            // Werte fangen, nie physiologische (Basal-IOB ist bei Zero-Temps
+            // normal negativ; Bolus-IOB kann es nie sein).
+            require(netIobU.isFinite() && bolusIobU.isFinite() && basalIobU.isFinite()) {
+                "IOB nicht endlich: net=$netIobU bolus=$bolusIobU basal=$basalIobU"
+            }
+            require(bolusIobU >= -0.01) { "Bolus-IOB negativ: $bolusIobU (korrupte Behandlung?)" }
+            require(kotlin.math.abs(netIobU) <= 100.0 && bolusIobU <= 100.0 && kotlin.math.abs(basalIobU) <= 100.0) {
+                "IOB ausserhalb Plausibilitaet: net=$netIobU bolus=$bolusIobU basal=$basalIobU"
+            }
+            require(isfMgdlPerU.isFinite() && isfMgdlPerU > 0.0) { "ISF unplausibel: $isfMgdlPerU" }
+            require(targetMgdl.isFinite() && targetMgdl in 40.0..400.0) { "Ziel unplausibel: $targetMgdl" }
+            require(iobThU.isFinite() && iobThU >= 0.0 && maxIobU.isFinite() && maxIobU >= 0.0) {
+                "iobTH/maxIOB unplausibel: $iobThU/$maxIobU"
+            }
+        }
+
         /** Bindungsgroesse fuer iobTH: zurueckgehaltenes Basal waehrend Zero-TBR
          *  darf KEIN zusaetzliches SMB-Budget erzeugen (Fork-Praxis). */
         val capIobU: Double get() = max(netIobU, bolusIobU)

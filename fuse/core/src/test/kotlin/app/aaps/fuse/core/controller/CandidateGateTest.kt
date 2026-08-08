@@ -37,13 +37,27 @@ class CandidateGateTest {
     fun `technische Ablehnungen lassen die Basis unveraendert`() {
         for (r in listOf(
             CandidateSearch.Reject.GRID_INCONSISTENT, CandidateSearch.Reject.ISF_SLOT_MISSING,
-            CandidateSearch.Reject.MODEL_HORIZON_TOO_SHORT, CandidateSearch.Reject.NON_FINITE,
+            CandidateSearch.Reject.MODEL_HORIZON_TOO_SHORT,
             CandidateSearch.Reject.DELIVERY_AFTER_RELEASE, CandidateSearch.Reject.NO_EFFECT_IN_WINDOW,
-            CandidateSearch.Reject.LEDGER_HOLD, CandidateSearch.Reject.INVALID_BAND,
         )) {
             val d = CandidateGate.apply(base(0.30), result(0.0, r))
             assertEquals(0.30, d.smbU, 0.0) { "genullt trotz technischem Reject $r" }
             assertEquals(CandidateGate.Kind.UNAVAILABLE, CandidateGate.kindOf(r))
+        }
+    }
+
+    /** Audit R95 (F-P0-05/-08): korrupte Eingaben bauten AUCH die Basis -
+     *  sie duerfen nicht durchgereicht werden, fail-closed auf null. */
+    @Test
+    fun `korrupte Eingaben nullen die Basis fail-closed`() {
+        for (r in listOf(
+            CandidateSearch.Reject.LEDGER_HOLD, CandidateSearch.Reject.INVALID_BAND,
+            CandidateSearch.Reject.INVALID_CAPS, CandidateSearch.Reject.NON_FINITE,
+        )) {
+            val d = CandidateGate.apply(base(0.30), result(0.0, r))
+            assertEquals(0.0, d.smbU, 0.0) { "Basis ueberlebt korrupten Reject $r" }
+            assertEquals(CandidateGate.Kind.ENFORCE, CandidateGate.kindOf(r))
+            assertEquals(FuseController.Block.CANDIDATE, d.block)
         }
     }
 
