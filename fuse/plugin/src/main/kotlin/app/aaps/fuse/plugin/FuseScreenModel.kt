@@ -101,6 +101,7 @@ object FuseScreenModel {
             row(b, "seit Mahlzeit", "${f2(ms.totalU)} U  (+30: ${f2(ms.last30U)} / +60: ${f2(ms.last60U)}) nach ${ms.sinceMin} min")
         }
         outcome.prime?.let { pr -> primeText(pr)?.let { row(b, "Freigabe", it) } }
+        sec(b, "Pruefungen")
         outcome.candidate?.let { c ->
             row(
                 b, "Kandidat",
@@ -195,6 +196,14 @@ object FuseScreenModel {
         "CLEARANCE"             -> "zu - Bahn zu nah am Boden"
         "ENVELOPE_SPENT"        -> "zu - Huelle verbraucht"
         else                    -> "zu - ${p.reason}"
+    }
+
+    /** Abschnitts-Kopf im autoISF-Stil (Tonis Lesbarkeits-Wunsch 08.08.). */
+    private fun sec(b: StringBuilder, name: String) {
+        b.append('
+').append("--- ").append(name).append(" ")
+            .append("-".repeat((26 - name.length).coerceAtLeast(2))).append('
+')
     }
 
     private fun row(b: StringBuilder, label: String, value: String) {
