@@ -360,6 +360,168 @@ class LedgerCodecTest {
         assertEquals(flagged, roundTrip(flagged))
     }
 
+    // ---- R4-02: Validator als Zustandsmaschine ----------------------------
+
+    /** DER Codex-Repro (R4-02, Fault-Matrix): PUBLISHED + wirksamer
+     *  queueReject + KEIN Liefersignal. Der Reducer kann das nie schreiben
+     *  (onQueueRejected setzt IMMER phase=TERMINAL) - eine Datei, die es
+     *  traegt, setzt ein offenes Commitment ohne Beweis auf 0
+     *  (debtReleaseEffective). ROT vor dem Fix: der Decode liess sie durch. */
+    @Test
+    fun `PUBLISHED mit queueReject ohne Liefersignal wirft beim Decode`() {
+        val state = LedgerReducer.reduceAll(
+            LedgerState(),
+            listOf(
+                LedgerEvent.Proposed(id, 0.30, t0, t0 - 600_000L),
+                LedgerEvent.AmountObserved(id, AmountStage.RT_PUBLISHED, 0.30),
+            ),
+            cfg,
+        )
+        val o = LedgerCodec.encode(state, EpisodeBudgets(), 1L)
+        o.getJSONObject("state").getJSONArray("entries").getJSONObject(0)
+            .put("queueReject", QueueRejectReason.GATE_BLOCKED.name)
+        assertThrows(IllegalArgumentException::class.java) { LedgerCodec.decode(JSONObject(o.toString())) }
+    }
+
+    /** Zweiter Codex-Repro: PUBLISHED + withdrawnProven. Ein Rueckzug
+     *  existiert nur aus QUEUE_ACCEPTED heraus und endet TERMINAL. */
+    @Test
+    fun `PUBLISHED mit withdrawnProven ohne Liefersignal wirft beim Decode`() {
+        val state = LedgerReducer.reduceAll(
+            LedgerState(),
+            listOf(
+                LedgerEvent.Proposed(id, 0.30, t0, t0 - 600_000L),
+                LedgerEvent.AmountObserved(id, AmountStage.RT_PUBLISHED, 0.30),
+            ),
+            cfg,
+        )
+        val o = LedgerCodec.encode(state, EpisodeBudgets(), 1L)
+        o.getJSONObject("state").getJSONArray("entries").getJSONObject(0)
+            .put("withdrawnProven", true)
+        assertThrows(IllegalArgumentException::class.java) { LedgerCodec.decode(JSONObject(o.toString())) }
+    }
+
+    /** Gegenprobe: der LEGITIME Reject (vor jeder Annahme, Reducer-erzeugt)
+     *  bleibt gueltig, sein Debt-Release bleibt wirksam. */
+    @Test
+    fun `legitimer Reject vor der Annahme bleibt gueltig`() {
+        val s = LedgerReducer.reduceAll(
+            LedgerState(),
+            listOf(
+                LedgerEvent.Proposed(id, 0.30, t0, t0 - 600_000L),
+                LedgerEvent.AmountObserved(id, AmountStage.RT_PUBLISHED, 0.30),
+                LedgerEvent.QueueRejected(id, QueueRejectReason.CONSTRAINT_ZERO),
+            ),
+            cfg,
+        )
+        assertEquals(0.0, s.transportCommitmentU, 1e-12)
+        val back = roundTrip(s)
+        assertEquals(s, back)
+        assertEquals(0.0, back.transportCommitmentU, 1e-12)
+    }
+
+    /** Gegenprobe: der LEGITIME Rueckzug (aus QUEUE_ACCEPTED, Reducer-erzeugt)
+     *  bleibt gueltig - auch mit spaeterem Nullnachweis. */
+    @Test
+    fun `legitimer Rueckzug nach der Annahme bleibt gueltig`() {
+        val s = LedgerReducer.reduceAll(
+            LedgerState(),
+            listOf(
+                LedgerEvent.Proposed(id, 0.30, t0, t0 - 600_000L),
+                LedgerEvent.AmountObserved(id, AmountStage.RT_PUBLISHED, 0.30),
+                LedgerEvent.AmountObserved(id, AmountStage.QUEUE_CONSTRAINED, 0.30),
+                LedgerEvent.QueueAccepted(id),
+                LedgerEvent.QueueWithdrawnProven(id, "cancelAllBoluses vor Start"),
+                LedgerEvent.DeliveryProven(id, 0.0, "pump history: nichts geflossen"),
+            ),
+            cfg,
+        )
+        assertEquals(0.0, s.transportCommitmentU, 1e-12)
+        assertEquals(s, roundTrip(s))
+    }
+
+    /** Timestamps (R4-02 c): decisionTs 0 kann keine eigene Datei tragen
+     *  (Wanduhrzeit der Entscheidung) - ab Schemaversion 2 strikt, als
+     *  Version 1 weiter tolerant (Bestandsdateien bleiben ladbar). */
+    @Test
+    fun `decisionTs 0 wirft ab Schemaversion 2 und passiert als Version 1`() {
+        val state = LedgerReducer.reduceAll(LedgerState(), throughPump(0.30), cfg)
+        val o = LedgerCodec.encode(state, EpisodeBudgets(), 1L)
+        o.getJSONObject("state").getJSONArray("entries").getJSONObject(0).put("decisionTs", 0L)
+        assertThrows(IllegalArgumentException::class.java) { LedgerCodec.decode(JSONObject(o.toString())) }
+
+        val v1 = JSONObject(o.toString()).put("v", 1)
+        LedgerCodec.decode(v1) // Legacy-Toleranz: wirft nicht
+    }
+
+    /** Timestamps (R4-02 c): die gebundene Behandlungszeit liegt nie WEIT vor
+     *  der Entscheidung - die Bindung verlangte timestamp >= decisionTs, und
+     *  die pumpenbestaetigte Korrektur ist durch den Uhrenversatz begrenzt.
+     *  Genau an der Toleranzgrenze bleibt gueltig, dahinter wirft es. */
+    @Test
+    fun `treatmentTimestamp weit vor decisionTs wirft ab Schemaversion 2`() {
+        val s = LedgerReducer.reduceAll(
+            LedgerState(),
+            throughPump(0.30) + listOf(LedgerEvent.PumpIdentityBound(id, null, 4711L, "VIRTUAL", "h", t0)),
+            cfg,
+        )
+        val o = LedgerCodec.encode(s, EpisodeBudgets(), 1L)
+        val tol = LedgerStateValidator.TREATMENT_BEFORE_DECISION_TOLERANCE_MS
+
+        val boundary = JSONObject(o.toString())
+        boundary.getJSONObject("state").getJSONArray("entries").getJSONObject(0)
+            .getJSONObject("identity").put("treatmentTimestamp", t0 - tol)
+        LedgerCodec.decode(boundary) // exakt an der Grenze: gueltig
+
+        val beyond = JSONObject(o.toString())
+        beyond.getJSONObject("state").getJSONArray("entries").getJSONObject(0)
+            .getJSONObject("identity").put("treatmentTimestamp", t0 - tol - 1L)
+        assertThrows(IllegalArgumentException::class.java) { LedgerCodec.decode(beyond) }
+
+        val v1 = JSONObject(beyond.toString()).put("v", 1)
+        LedgerCodec.decode(v1) // Legacy-Toleranz: wirft nicht
+    }
+
+    /** R4-02 (d): failClosed ohne persistierten Befund ist Fremdinhalt - der
+     *  Reducer schreibt den Latch NUR zusammen mit einem aktiven
+     *  Fehlereintrag derselben Zeile. Ab Schemaversion 2 strikt. */
+    @Test
+    fun `failClosed ohne aktiven Fehlereintrag wirft ab Schemaversion 2`() {
+        val state = LedgerReducer.reduceAll(LedgerState(), throughPump(0.30), cfg)
+        val o = LedgerCodec.encode(state, EpisodeBudgets(), 1L)
+        o.getJSONObject("state").getJSONArray("entries").getJSONObject(0).put("failClosed", true)
+        assertThrows(IllegalArgumentException::class.java) { LedgerCodec.decode(JSONObject(o.toString())) }
+
+        val v1 = JSONObject(o.toString()).put("v", 1)
+        LedgerCodec.decode(v1) // Legacy-Toleranz: wirft nicht
+    }
+
+    // ---- Schemaversionierung (R4-02) --------------------------------------
+
+    /** Neue Dateien tragen Version 2; Version 1 (Bestand) bleibt ladbar;
+     *  eine UNBEKANNTE Zukunftsversion wirft weiterhin (Hold statt raten). */
+    @Test
+    fun `Schemaversion 2 wird geschrieben, 1 bleibt ladbar, 3 wirft`() {
+        val o = LedgerCodec.encode(LedgerState(), EpisodeBudgets(), 0L)
+        assertEquals(2, o.getInt("v"))
+
+        LedgerCodec.decode(JSONObject(o.toString()).put("v", 1))
+        assertThrows(IllegalArgumentException::class.java) {
+            LedgerCodec.decode(JSONObject(o.toString()).put("v", 3))
+        }
+    }
+
+    /** Abstimmung mit der parallelen Sitzung: der Schreiber kappt
+     *  mealDeliveries kuenftig auf 400 - die Validator-Grenze bleibt bei
+     *  500. Eine 400er-Datei ist gueltig, 501 wirft (Test oben). */
+    @Test
+    fun `mealDeliveries mit 400 Eintraegen bleibt gueltig`() {
+        val ep = EpisodeBudgets()
+        repeat(400) { ep.mealDeliveries.addLast((t0 + it) to 0.1) }
+        val decoded = LedgerCodec.decode(JSONObject(LedgerCodec.encode(LedgerState(), ep, 0L).toString()))
+        assertEquals(400, decoded.episodes.mealDeliveries.size)
+    }
+
     // ---- Neue persistierte Felder -----------------------------------------
 
     /** lastAcceptedSourceTs (Fix 5, Re-Audit 6.5): Round-Trip plus

@@ -104,7 +104,10 @@ object FuseScreenModel {
             // T0-Anker (Toni 08.08.): Stand nach 30/60 min AB ESSENSBEGINN,
             // waechst bis zur Marke und friert dann ein - rollierende Fenster
             // waren nicht die gewuenschte Groesse.
-            row(b, "seit Mahlzeit", "${f2(ms.totalU)} U nach ${ms.sinceMin} min (T0+30: ${f2(ms.first30U)} / T0+60: ${f2(ms.first60U)})")
+            // "publiziert" statt implizit "geliefert" (Fix-Pass 4 Nr. 18):
+            // gezaehlt wird die gate-wirksam publizierte Menge - die
+            // Lieferbestaetigung ist Sache des Ledgers.
+            row(b, "seit Mahlzeit", "${f2(ms.totalU)} U publiziert nach ${ms.sinceMin} min (T0+30: ${f2(ms.first30U)} / T0+60: ${f2(ms.first60U)})")
         }
         outcome.prime?.let { pr ->
             primeText(pr)?.let { txt ->

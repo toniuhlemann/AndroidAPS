@@ -72,8 +72,38 @@ data class RetiredBoundId(val temporaryId: Long?, val pumpId: Long?)
  * Pinnung konnte ein gleich grosser SMB einer NACH dem Proposal aktivierten
  * anderen Pumpe die alte Zeile binden und ueber deren IOB-Fakt schliessen,
  * obwohl beide Pumpvorgaenge existiert haben koennen.
+ *
+ * DREI Zustaende statt "Pin oder nichts" (Codex R4-03):
+ *  - normale Pinnung: Type/Serial gesetzt, bindet nur die eigene Epoch;
+ *  - [UNPINNED]: die Pumpen-API war bei der Publikation nicht lesbar -
+ *    FAIL-CLOSED, die Zeile bindet NIE (vorher fiel sie still auf das
+ *    Legacy-"bindet alles" zurueck, und ein fremder Kontext konnte sie
+ *    schliessen);
+ *  - [LEGACY_OPEN]: EXPLIZIT migrierter Altbestand (Zeile aus einer
+ *    Schemaversion-1-Datei ohne Pinnung) - nur er behaelt das alte
+ *    Bindungsverhalten. Ab Schemaversion 2 traegt jede Zeile einen dieser
+ *    drei Eintraege; eine Zeile OHNE Eintrag ist Fremdinhalt.
  */
-data class ProposalPumpEpoch(val pumpTypeName: String?, val pumpSerialHash: String?)
+data class ProposalPumpEpoch(
+    val pumpTypeName: String?,
+    val pumpSerialHash: String?,
+    val unpinned: Boolean = false,
+    val legacyOpen: Boolean = false,
+) {
+
+    init {
+        // Ein Marker-Pin traegt nie zusaetzlich Inhalt - er waere doppeldeutig.
+        require(!(unpinned && legacyOpen)) { "pump epoch cannot be unpinned and legacyOpen" }
+        if (unpinned || legacyOpen)
+            require(pumpTypeName == null && pumpSerialHash == null) { "marker pin must not carry content" }
+    }
+
+    companion object {
+
+        val UNPINNED = ProposalPumpEpoch(null, null, unpinned = true)
+        val LEGACY_OPEN = ProposalPumpEpoch(null, null, legacyOpen = true)
+    }
+}
 
 /** Was der Zyklus vom Ledger sieht: Sperre (mit Grund fuer Anzeige/Trail)
  *  und gebundene Transportmenge. */
@@ -353,8 +383,20 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
         // Fix 3: Pumpen-Epoch am Vorschlag pinnen, BEVOR irgendein BS-Fakt
         // binden kann - eine spaeter aktivierte andere Pumpe darf diese
         // Zeile nicht mehr treffen.
-        if (pumpTypeName != null || pumpSerialHash != null)
-            proposalPumpEpochs[proposalId] = ProposalPumpEpoch(pumpTypeName, pumpSerialHash)
+        //
+        // R4-03: schlagen BEIDE API-Lesungen fehl, entsteht ein expliziter
+        // UNPINNED-Pin - die Zeile bindet dann NIE und haelt konservativ ihre
+        // volle Haftung. Der fruehere stille Verzicht auf die Pinnung machte
+        // aus dem API-Fehler Legacy-Verhalten ("bindet alles"), und ein
+        // fremder Pumpenkontext konnte die Zeile schliessen.
+        //
+        // REALPUMP-PUNKT (nicht Teil dieses Fixes): das echte Medtrum-
+        // patchId-Pinning braucht einen Pumpen-Hook - `serialNumber()` ist
+        // dort die Pumpen-SN, `patchId` ein separates Feld. Type+Serial
+        // erkennen einen Patchwechsel derselben Pumpe NICHT (Codex R4-03).
+        proposalPumpEpochs[proposalId] =
+            if (pumpTypeName != null || pumpSerialHash != null) ProposalPumpEpoch(pumpTypeName, pumpSerialHash)
+            else ProposalPumpEpoch.UNPINNED
         reduce(LedgerEvent.Proposed(proposalId, unitsU, decisionTs, latestBolusTs))
         reduce(LedgerEvent.AmountObserved(proposalId, AmountStage.RT_PUBLISHED, unitsU))
     }
@@ -362,14 +404,22 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
     /**
      * Fix 3 (Re-Audit 6.3): passt der BS-Fakt zur gepinnten Pumpen-Epoch?
      *
-     * Null-Toleranz mit RICHTUNG: fehlt die PINNUNG (Altbestand vor dem Fix),
-     * gilt das bisherige Verhalten - fehlt aber die BS-Identitaet, obwohl
-     * gepinnt wurde, ist das KEIN Treffer. Ein Datensatz, der seine Herkunft
-     * nicht nennt, darf eine herkunftsgebundene Zeile nicht schliessen; die
-     * Zeile haelt dann konservativ ihre volle Haftung.
+     * Null-Toleranz mit RICHTUNG: fehlt die PINNUNG (Altbestand aus einer
+     * Schemaversion-1-Datei, in-memory `null` oder expliziter
+     * [ProposalPumpEpoch.LEGACY_OPEN]), gilt das bisherige Verhalten - fehlt
+     * aber die BS-Identitaet, obwohl gepinnt wurde, ist das KEIN Treffer.
+     * Ein Datensatz, der seine Herkunft nicht nennt, darf eine
+     * herkunftsgebundene Zeile nicht schliessen; die Zeile haelt dann
+     * konservativ ihre volle Haftung.
+     *
+     * R4-03: [ProposalPumpEpoch.UNPINNED] (API-Fehler bei der Publikation)
+     * bindet NIE - auch keinen scheinbar passenden Datensatz. Ohne bekannte
+     * Publikations-Epoch ist jeder Treffer eine Vermutung, und eine falsche
+     * Bindung wuerde offene Haftung ueber einen fremden IOB-Fakt loeschen.
      */
     private fun matchesPinnedEpoch(pinned: ProposalPumpEpoch?, b: BS): Boolean {
-        if (pinned == null) return true
+        if (pinned == null || pinned.legacyOpen) return true
+        if (pinned.unpinned) return false
         val typeOk = pinned.pumpTypeName == null || LedgerFacts.pumpTypeName(b) == pinned.pumpTypeName
         val serialOk = pinned.pumpSerialHash == null || LedgerFacts.serialHash(b) == pinned.pumpSerialHash
         return typeOk && serialOk
@@ -508,8 +558,13 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
      * Vorgeschichte verdecken und den naechsten Migrationsversuch dauerhaft
      * blockieren (das Ziel saehe "schon belegt" aus).
      *
-     * Fix 1b: nach jedem Erfolg wird der SENTINEL tolerant nachgezogen -
-     * fehlt er (Altbestand vor dem Fix), traegt ihn der naechste Persist nach.
+     * R4-01 (vorher Fix 1b, tolerant): der SENTINEL ist BESTANDTEIL des
+     * Persist-Erfolgs. Erfolg = writeVerified UND (Marker existiert oder
+     * wurde jetzt verifiziert geschrieben). Ein Persist ohne Verlustmarker
+     * meldete frueher true - ging danach die Generation verloren, sah der
+     * naechste Start einen Erststart statt Datenverlust, und offene Haftung
+     * verschwand still. Der Fehlschlag strippt ueber das Publikations-Gate
+     * den SMB und sperrt sticky wie jeder andere Persist-Fehlschlag.
      */
     fun persistVerified(dir: File): Boolean {
         if (!loaded) {
@@ -521,9 +576,8 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
                 dir,
                 LedgerCodec.encode(state, episodes, revision, retiredBoundIds.toList(), proposalPumpEpochs.toMap()).toString(),
             )
-        }.getOrDefault(false)
+        }.getOrDefault(false) && FuseLedgerStore.writeSentinel(dir)
         persistFailed = !ok
-        if (ok) FuseLedgerStore.writeSentinelTolerant(dir)
         return ok
     }
 

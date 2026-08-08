@@ -393,6 +393,9 @@ object FuseStateJson {
     fun policyValues(p: FuseCycleRunner.Config): JSONObject = JSONObject()
         .put("smbRatioCorrection", fin(p.smbRatio))
         .put("smbRatioRise", fin(p.smbRatioRise))
+        // Fix-Pass 4 Nr. 17: die geteilte maxIOB-Preference gehoert in den
+        // Fingerprint - sie ist therapieaktiv (Constraint-Kette + iobTH-Basis).
+        .put("sharedMaxIobU", fin(p.sharedMaxIobU))
         .put("maxSmbU", fin(p.maxSmbU))
         .put("guardFloorMgdl", fin(p.guardFloorMgdl))
         .put("iobThPercent", p.iobThPercent)

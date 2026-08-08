@@ -360,8 +360,13 @@ class FuseCycleRunner(
         // Marker: Knopf im FUSE-Tab, verfaellt nach MARKER_WINDOW_MIN von
         // selbst. Er ist ZUSTAND und wird je Zyklus frisch gelesen - nie
         // gecached, damit ein Druck sofort im naechsten Zyklus wirkt.
-        val markerTs = preferences.get(FuseLongKey.MealMarkerArmedTs)
-        val markerTier = preferences.get(FuseLongKey.MealMarkerTier).toInt().coerceIn(0, 2)
+        // Fix-Pass 4 Nr. 16: primaer der ATOMARE Stempel (ts*10+Stufe), die
+        // Einzel-Keys nur als Altbestand-Fallback - so sieht ein Zyklus nie
+        // alten Timestamp mit neuer Stufe.
+        val markerStamp = preferences.get(FuseLongKey.MealMarkerStamp)
+        val markerTs = if (markerStamp > 0L) markerStamp / 10L else preferences.get(FuseLongKey.MealMarkerArmedTs)
+        val markerTier = if (markerStamp > 0L) (markerStamp % 10L).toInt().coerceIn(0, 2)
+        else preferences.get(FuseLongKey.MealMarkerTier).toInt().coerceIn(0, 2)
         val tierEnvelopeU = when (markerTier) {
             0    -> cfg.primeEnvelopeSmallU
             2    -> cfg.primeEnvelopeLargeU
@@ -457,10 +462,13 @@ class FuseCycleRunner(
         // eine reine Arithmetikschleife ueber die Punkte, kein zusaetzlicher
         // Datenbankzugriff.
         //
-        // Eine abgelehnte schnelle Bahn ist KEIN Abbruchgrund: sie darf nur
-        // bremsen, also ist ihr Fehlen gleichbedeutend mit "bremst nicht".
+        // FIX-PASS 4 Nr. 14 (Alt-Finding F-P1-01): eine AKTIVIERTE, aber nicht
+        // berechenbare Sicherheitsbremse ist jetzt ein ABBRUCH, kein stilles
+        // "bremst nicht" - sonst koennte schlechtere Signalqualitaet mehr
+        // Insulin erlauben als gute (die Bremse waere weg, die Dosis groesser).
+        // Der Ausfall ist ein Signalqualitaets-Befund und kostet einen Zyklus.
         val restraint = if (!cfg.fastRestraintEnabled) null else
-            fastDrive(signal)?.let { fast ->
+            (fastDrive(signal) ?: return abort("fast restraint enabled but drive not computable", signal, cfg, step)).let { fast ->
                 val fi = built.input.copy(
                     // DERSELBE Abschlag wie auf der Hauptbahn: auch die schnelle
                     // Untergrenze darf den bolusgedeckten Stoerungsanteil nicht
@@ -471,6 +479,7 @@ class FuseCycleRunner(
                     ),
                 )
                 (TrajectoryCore.predict(fi) as? PredictorOutcome.Ok)?.result
+                    ?: return abort("fast restraint enabled but trajectory rejected", signal, cfg, step)
             }
 
         // ---- 4 Menge -------------------------------------------------------
@@ -558,7 +567,9 @@ class FuseCycleRunner(
         // strukturell nicht). Der Ratio-Pfad hat VORGESCHLAGEN; die Suche
         // prueft den Vorschlag MIT seiner Wirkung und darf ihn ueber
         // CandidateGate nur beschneiden. Kernel-/Technik-Ausfaelle lassen die
-        // Basis unveraendert und stehen als candidateGap im Export.
+        // Basis hier zunaechst unveraendert (candidateGap im Export) - die
+        // FINALE Wirkungspruefung nach dem Lift nullt sie dann fail-closed
+        // (Fix-Pass 4 Nr. 4): unverifiziert verlaesst keine Menge den Zyklus.
         var candidateResult: CandidateSearch.Result? = null
         var candidateGap: String? = null
         // FIX 6b (Re-Audit c750169, 6.4): Band und Kernel-Bau stehen VOR der
@@ -660,19 +671,30 @@ class FuseCycleRunner(
             // In-Flight-Mengen doppelt.
             transportCommitmentU = ledgerView.transportCommitmentU,
         )
-        // FIX 6b (Re-Audit c750169, 6.4): hebt die Sofort-Freigabe UEBER die
-        // kandidatengepruefte Menge hinaus, durchlaeuft die ANGEHOBENE Menge
-        // dieselbe harte Wirkungspruefung wie jeder Suchkandidat (Guardbahn
-        // mit Kandidatenwirkung ueber den ganzen Haftungshorizont). Ohne
-        // verfuegbaren Kernel oder bei JEDEM Reject faellt die Anhebung weg
-        // (fail-closed) - die Anhebung ist ein Extra, kein Grundbedarf.
-        val verifiedLift = if (lifted.smbU > vetted.smbU + 1e-9) {
-            val kernel = kernelForVerify ?: (buildKernel() as? KernelOutcome.Ok)?.kernel
-            val veto = if (kernel == null) CandidateSearch.Reject.MODEL_HORIZON_TOO_SHORT
-            else CandidateSearch.verifyGuardFloor(prediction, kernel, built.input.isfSlots, candidateBand, lifted.smbU)
-            if (veto == null) lifted
-            else vetted.copy(bindingLimit = vetted.bindingLimit + "|primeVeto:${veto.name}")
-        } else lifted
+        // FIX-PASS 4 Nr. 4 (Codex R4-04, Control-Audit-Invariante): KEINE
+        // finale positive Dosis ohne erfolgreiche Wirkungspruefung. Das
+        // verallgemeinert Fix 6b: nicht nur die Prime-Anhebung, JEDE finale
+        // Menge > 0 muss verifyGuardFloor bestehen - damit ist auch der alte
+        // Kernel-Ausfall-fail-open-Pfad (Basis passierte unverifiziert) tot.
+        // Transiente Technik-Ausfaelle kosten genau einen 1-min-Zyklus.
+        val kernelFinal = kernelForVerify ?: (buildKernel() as? KernelOutcome.Ok)?.kernel
+        fun finalVeto(u: Double): CandidateSearch.Reject? =
+            if (kernelFinal == null) CandidateSearch.Reject.MODEL_HORIZON_TOO_SHORT
+            else CandidateSearch.verifyGuardFloor(prediction, kernelFinal, built.input.isfSlots, candidateBand, u)
+        val verifiedLift = if (lifted.smbU <= 0.0) lifted else {
+            when {
+                finalVeto(lifted.smbU) == null -> lifted
+                // Anhebung fiel durch: zurueck auf die kleinere Basis, aber
+                // nur, wenn AUCH sie das Zeugnis besteht.
+                lifted.smbU > vetted.smbU + 1e-9 && vetted.smbU > 0.0 && finalVeto(vetted.smbU) == null ->
+                    vetted.copy(bindingLimit = vetted.bindingLimit + "|primeVeto:${finalVeto(lifted.smbU)?.name}")
+                else -> lifted.copy(
+                    smbU = 0.0,
+                    block = FuseController.Block.CANDIDATE,
+                    bindingLimit = "finalVerify:${finalVeto(lifted.smbU)?.name}",
+                )
+            }
+        }
         // HART NACH dem Lift (Audit R95, Fix 3): Ratio-Pfad (Kernel-Ausfall)
         // und Sofort-Freigabe laufen am LEDGER_HOLD-Reject der Suche vorbei -
         // ohne diesen Riegel waere der Hold genau ueber die Pfade umgehbar,
@@ -727,7 +749,15 @@ class FuseCycleRunner(
             }
         }
 
-        if (markerTs > 0 && actuatedU > 0.0) episodes.mealDeliveries.addLast(signal.sourceTs to actuatedU)
+        // FIX-PASS 4 Nr. 19: nur im AKTIVEN Marker-Fenster sammeln (ein
+        // verwaister markerTs sammelte sonst unbegrenzt weiter) und hart bei
+        // 400 kappen - der Lade-Validator lehnt Dateien > 500 ab, der
+        // Schreiber muss strikt darunter bleiben, sonst sperrt FUSE sich
+        // selbst per recoveryHold aus der eigenen Datei aus.
+        if (mealMarkerActive && actuatedU > 0.0) {
+            episodes.mealDeliveries.addLast(signal.sourceTs to actuatedU)
+            while (episodes.mealDeliveries.size > 400) episodes.mealDeliveries.removeFirst()
+        }
         val mealStats = if (markerTs > 0 &&
             computeTs - markerTs <= (OnsetChannel.MARKER_WINDOW_MIN + 120) * 60_000L
         ) MealStats(
@@ -908,6 +938,10 @@ class FuseCycleRunner(
     data class Config(
         val smbRatio: Double,
         val smbRatioRise: Double,
+        /** Geteilte AAPS-Preference ApsSmbMaxIob - Fix-Pass 4 Nr. 17: sie war
+         *  therapieaktiv (Constraint-Kette), stand aber nicht im Policy-Hash;
+         *  zwei Laeufe mit verschiedenem maxIOB bekamen denselben Fingerprint. */
+        val sharedMaxIobU: Double,
         val riseRampLowR: Double,
         val riseRampHighR: Double,
         val maxSmbU: Double,
@@ -939,6 +973,7 @@ class FuseCycleRunner(
     private fun readConfig() = Config(
         smbRatio = preferences.get(FuseDoubleKey.SmbRatio),
         smbRatioRise = preferences.get(FuseDoubleKey.SmbRatioRise),
+        sharedMaxIobU = preferences.get(app.aaps.core.keys.DoubleKey.ApsSmbMaxIob),
         riseRampLowR = preferences.get(FuseDoubleKey.RiseRampLowR),
         riseRampHighR = preferences.get(FuseDoubleKey.RiseRampHighR),
         maxSmbU = preferences.get(FuseDoubleKey.MaxSmbU),

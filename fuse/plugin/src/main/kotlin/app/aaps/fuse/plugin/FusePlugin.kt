@@ -145,24 +145,16 @@ class FusePlugin @Inject constructor(
     @Volatile private var ledgerMigrationDone = false
 
     /**
-     * EINMALIGER Umzug vom alten geteilten Verzeichnis: nur wenn das neue
-     * Verzeichnis noch KEINE Generation traegt und im alten etwas liegt.
-     * Die alten Dateien werden nach `.migrated` umbenannt, nicht geloescht -
-     * ein Rueckbau/Vergleich bleibt moeglich, aber ein zweiter Lauf findet
-     * sie nicht mehr als Kandidaten.
+     * EINMALIGER Umzug vom alten geteilten Verzeichnis - die gesamte Logik
+     * (Fruehausstieg, .migtmp-Kopie mit Rueckleseprobe, Sentinel, .migrated-
+     * Rotation) liegt in [app.aaps.fuse.plugin.ledger.LedgerDirMigration],
+     * damit die Kill-/Fehlerpfade ohne Android testbar sind (Codex R4, N.1).
+     * Hier bleiben nur die Android-Verzeichnisaufloesung und das Prozessflag.
      *
      * FAIL-CLOSED (Fix 1a, Re-Audit c750169 REG-03): das Prozessflag wird
-     * erst NACH verifiziertem Abschluss gesetzt. Vorher stand es VOR dem
-     * fehlbaren mkdirs/copy - ein Wurf dort liess den naechsten loadOnce ein
-     * leeres Privatverzeichnis als echten Erststart lesen, und die offene
-     * Haftung samt Episodenbudgets war weg. Jetzt: jeder Fehlschlag liefert
+     * erst NACH verifiziertem Abschluss gesetzt - jeder Fehlschlag liefert
      * false (der naechste invoke versucht erneut), und der Aufrufer setzt
      * fuer diesen Lauf den Migrations-Hold am Adapter.
-     *
-     * Kopiert wird ueber eine `.migtmp`-Zwischendatei mit Rueckleseprobe und
-     * erst dann umbenannt: ein halb geschriebenes Ziel darf nie wie eine
-     * fertige Generation aussehen - es wuerde den naechsten Versuch als
-     * "schon migriert" blockieren und loadOnce eine kaputte Datei vorsetzen.
      *
      * @return true, wenn die Vorgeschichte sicher uebernommen ist oder es
      * nachweislich nichts zu uebernehmen gibt.
@@ -170,38 +162,12 @@ class FusePlugin @Inject constructor(
     private fun migrateLedgerDirOnce(): Boolean {
         if (ledgerMigrationDone) return true
         val ok = runCatching {
-            val newDir = ledgerDir()
-            val names = listOf(
-                app.aaps.fuse.plugin.ledger.FuseLedgerStore.FILE_NAME,
-                app.aaps.fuse.plugin.ledger.FuseLedgerStore.FILE_NAME + ".bak",
+            app.aaps.fuse.plugin.ledger.LedgerDirMigration.migrate(
+                oldDir = File(Environment.getExternalStorageDirectory(), "Documents/aapsLogs"),
+                newDir = ledgerDir(),
+                logError = { aapsLogger.error(LTag.APS, it) },
+                logDebug = { aapsLogger.debug(LTag.APS, it) },
             )
-            if (names.any { File(newDir, it).exists() }) return@runCatching true
-            val oldDir = File(Environment.getExternalStorageDirectory(), "Documents/aapsLogs")
-            val oldFiles = names.map { File(oldDir, it) }.filter { it.exists() }
-            if (oldFiles.isEmpty()) return@runCatching true
-            if (!newDir.mkdirs() && !newDir.exists()) return@runCatching false
-            for (old in oldFiles) {
-                val content = old.readText(Charsets.UTF_8)
-                val tmp = File(newDir, old.name + ".migtmp")
-                tmp.writeText(content, Charsets.UTF_8)
-                // Rueckleseprobe wie beim Store: "geschrieben" heisst erst
-                // dann etwas, wenn der Inhalt wieder herauskommt.
-                if (tmp.readText(Charsets.UTF_8) != content) return@runCatching false
-                if (!tmp.renameTo(File(newDir, old.name))) return@runCatching false
-            }
-            // Fix 1b: der Sentinel haelt persistent fest, DASS es einen
-            // Ledger gab - faellt das private Verzeichnis spaeter leer aus,
-            // ist das Datenverlust und kein Erststart.
-            app.aaps.fuse.plugin.ledger.FuseLedgerStore.writeSentinelTolerant(newDir)
-            for (old in oldFiles) {
-                // Tolerant: das Ziel traegt die Generation bereits; ein
-                // haengengebliebenes Original wird beim naechsten Lauf durch
-                // den "Ziel existiert schon"-Fruehausstieg ignoriert.
-                if (!old.renameTo(File(oldDir, old.name + ".migrated")))
-                    aapsLogger.error(LTag.APS, "FUSE ledger migration: rename to .migrated failed for ${old.name}")
-            }
-            aapsLogger.debug(LTag.APS, "FUSE ledger migrated to app-private storage (${oldFiles.size} file(s))")
-            true
         }.getOrElse {
             aapsLogger.error(LTag.APS, "FUSE ledger migration failed", it)
             false
@@ -322,10 +288,17 @@ class FusePlugin @Inject constructor(
         val armed = mealMarkerActive(now)
         if (armed) {
             preferences.put(FuseLongKey.MealMarkerArmedTs, 0L)
+            preferences.put(FuseLongKey.MealMarkerStamp, 0L)
             return false
         }
+        // Fix-Pass 4 Nr. 16 (Alt-Finding F-P1-03): Timestamp und Stufe als
+        // EIN atomarer Stempel (ts*10+Stufe) - ein Zyklus kann nie mehr alten
+        // Timestamp mit neuer Stufe mischen. Die Einzel-Keys bleiben fuer
+        // Lesbarkeit/Altbestand erhalten; gelesen wird primaer der Stempel,
+        // der deshalb ZULETZT geschrieben wird.
         preferences.put(FuseLongKey.MealMarkerTier, tier.toLong().coerceIn(0L, 2L))
         preferences.put(FuseLongKey.MealMarkerArmedTs, now)
+        preferences.put(FuseLongKey.MealMarkerStamp, now * 10L + tier.toLong().coerceIn(0L, 2L))
         synchronized(markerPressRing) {
             markerPressRing.addLast(now)
             while (markerPressRing.size > 20) markerPressRing.removeFirst()
@@ -333,9 +306,16 @@ class FusePlugin @Inject constructor(
         return true
     }
 
-    fun mealMarkerTier(): Int = preferences.get(FuseLongKey.MealMarkerTier).toInt().coerceIn(0, 2)
+    fun mealMarkerTier(): Int {
+        val s = preferences.get(FuseLongKey.MealMarkerStamp)
+        return if (s > 0L) (s % 10L).toInt().coerceIn(0, 2)
+        else preferences.get(FuseLongKey.MealMarkerTier).toInt().coerceIn(0, 2)
+    }
 
-    fun mealMarkerArmedTs(): Long = preferences.get(FuseLongKey.MealMarkerArmedTs)
+    fun mealMarkerArmedTs(): Long {
+        val s = preferences.get(FuseLongKey.MealMarkerStamp)
+        return if (s > 0L) s / 10L else preferences.get(FuseLongKey.MealMarkerArmedTs)
+    }
 
     /** Huelle der aktuell gewaehlten Stufe [U] - fuer den Lieferstand im Tab. */
     fun mealMarkerEnvelopeU(): Double = when (mealMarkerTier()) {
@@ -345,14 +325,17 @@ class FusePlugin @Inject constructor(
     }
 
     fun mealMarkerActive(now: Long): Boolean {
-        val ts = preferences.get(FuseLongKey.MealMarkerArmedTs)
+        val ts = mealMarkerArmedTs()
         return ts > 0 && now - ts in 0..(app.aaps.fuse.core.controller.OnsetChannel.MARKER_WINDOW_MIN * 60_000L)
     }
 
-    /** Fix 6-Catch (Re-Audit c750169, 6.6): das letzte ERFOLGREICH gefaellte
-     *  Urteil von [specialEnableCondition]. true als Startwert entspricht dem
-     *  bisherigen Init-Verhalten, BEVOR je eine Pumpe gesehen wurde. */
-    @Volatile private var lastEnableVerdict = true
+    /** Fix-Pass 4 Nr. 5 (Codex R4-05): das letzte ERFOLGREICH gefaellte
+     *  Urteil von [specialEnableCondition]. Startwert FALSE - "noch nie
+     *  geprueft" ist kein Erlaubniszustand. Kostet beim App-Start schlimmsten-
+     *  falls Sekunden bis zur ersten erfolgreichen Pumpen-Lesung (VPUMP
+     *  initialisiert schnell); dafuer kann eine Exception nie Erlaubnis aus
+     *  unbekanntem Zustand erzeugen. */
+    @Volatile private var lastEnableVerdict = false
 
     override fun specialEnableCondition(): Boolean =
         try {

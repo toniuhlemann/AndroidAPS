@@ -278,6 +278,11 @@ enum class FuseLongKey(
     /** Gewaehlte Marker-Stufe (0=klein, 1=normal, 2=gross). Zustand wie der
      *  Marker selbst. */
     MealMarkerTier("fuse_meal_marker_tier", 1, 0, 2, exportable = false),
+
+    /** ATOMARER Marker-Stempel: armedTs*10 + Stufe (Fix-Pass 4 Nr. 16).
+     *  Ein Long, ein Schreib-/Lesevorgang - Timestamp und Stufe koennen nie
+     *  auseinanderlaufen. 0 = kein Marker. */
+    MealMarkerStamp("fuse_meal_marker_stamp", 0, 0, exportable = false),
 }
 
 enum class FuseBooleanKey(

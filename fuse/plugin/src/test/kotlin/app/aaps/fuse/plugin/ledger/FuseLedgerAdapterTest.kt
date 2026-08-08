@@ -33,12 +33,20 @@ class FuseLedgerAdapterTest {
     private fun loadedAdapter(dir: File, session: String = "epoch-a", now: Long = t0): FuseLedgerAdapter =
         FuseLedgerAdapter().also { it.loadOnce(dir, session, now) }
 
+    /** Publikation MIT Pumpen-Info der Testpumpe (GENERIC_AAPS/"vs", passend
+     *  zum [smb]-Helfer). Seit R4-03 bindet eine Publikation OHNE Info einen
+     *  expliziten UNPINNED-Pin und bindet NIE - der Normalfall der
+     *  Bindungstests ist deshalb die gepinnte Publikation, wie im Livepfad
+     *  (FusePlugin liefert die aktive Pumpe mit). */
+    private fun FuseLedgerAdapter.publishVs(id: String, u: Double, ts: Long, latest: Long = 0L) =
+        onPublished(id, u, ts, latest, 0.05, PumpType.GENERIC_AAPS.name, Sha.of("vs"))
+
     // ---- Publizieren, Binden, Schliessen ----------------------------------
 
     @Test
     fun `publizieren bindet die Menge, der Vollsicht-Nachweis loest sie`(@TempDir dir: File) {
         val a = loadedAdapter(dir)
-        a.onPublished("p1", 0.30, decisionTs = t0, latestBolusTs = 0L, bolusStepU = 0.05)
+        a.publishVs("p1", 0.30, ts = t0)
         assertEquals(0.30, a.view().transportCommitmentU, 1e-12)
         assertFalse(a.view().hold)
 
@@ -60,7 +68,7 @@ class FuseLedgerAdapterTest {
     @Test
     fun `mehrdeutige Kandidaten binden nicht`(@TempDir dir: File) {
         val a = loadedAdapter(dir)
-        a.onPublished("p1", 0.30, t0, 0L, 0.05)
+        a.publishVs("p1", 0.30, t0)
         a.bindIdentities(listOf(smb(t0 + 10_000L, 0.30, 1L), smb(t0 + 40_000L, 0.30, 2L)))
         assertNull(a.state.entries.getValue("p1").identity)
         assertEquals(0.30, a.view().transportCommitmentU, 1e-12)
@@ -71,8 +79,8 @@ class FuseLedgerAdapterTest {
     @Test
     fun `disjunkte Fenster ordnen zwei gleiche Mengen richtig zu`(@TempDir dir: File) {
         val a = loadedAdapter(dir)
-        a.onPublished("p1", 0.30, t0, 0L, 0.05)
-        a.onPublished("p2", 0.30, t0 + 60_000L, 0L, 0.05)
+        a.publishVs("p1", 0.30, t0)
+        a.publishVs("p2", 0.30, t0 + 60_000L)
         val b1 = smb(t0 + 5_000L, 0.30, 1L)
         val b2 = smb(t0 + 65_000L, 0.30, 2L)
         a.bindIdentities(listOf(b1, b2))
@@ -85,7 +93,7 @@ class FuseLedgerAdapterTest {
     @Test
     fun `abweichende Menge bindet nicht`(@TempDir dir: File) {
         val a = loadedAdapter(dir)
-        a.onPublished("p1", 0.30, t0, 0L, 0.05)
+        a.publishVs("p1", 0.30, t0)
         a.bindIdentities(listOf(smb(t0 + 5_000L, 0.20, 1L)))
         assertNull(a.state.entries.getValue("p1").identity)
         assertEquals(0.30, a.view().transportCommitmentU, 1e-12)
@@ -102,7 +110,7 @@ class FuseLedgerAdapterTest {
     @Test
     fun `Neustart behaelt Budgets und Commitments`(@TempDir dir: File) {
         val a = loadedAdapter(dir, "epoch-a")
-        a.onPublished("p1", 0.30, t0, 0L, 0.05)
+        a.publishVs("p1", 0.30, t0)
         // Snapshot OHNE unseren Datensatz (noch nicht geliefert) - setzt die
         // Ordnung der Epoche a.
         a.onCycleSnapshot(emptyList(), LedgerFacts.snapshotHash(emptyList()), t0 + 1_000L)
@@ -234,8 +242,8 @@ class FuseLedgerAdapterTest {
     @Test
     fun `Bindungsfenster bleibt hart gekappt trotz spaetem Folgevorschlag`(@TempDir dir: File) {
         val a = loadedAdapter(dir)
-        a.onPublished("p1", 0.30, t0, 0L, 0.05)
-        a.onPublished("p2", 0.15, t0 + 10 * 3600_000L, 0L, 0.05)
+        a.publishVs("p1", 0.30, t0)
+        a.publishVs("p2", 0.15, t0 + 10 * 3600_000L)
         // 20 min nach p1: laege im alten Fenster [t0, p2), aber jenseits der
         // harten Kappe - bindet NICHT.
         a.bindIdentities(listOf(smb(t0 + 20 * 60_000L, 0.30, 1L)))
@@ -251,7 +259,7 @@ class FuseLedgerAdapterTest {
     @Test
     fun `geprunte gebundene Identitaet bleibt dauerhaft ausgeschlossen`(@TempDir dir: File) {
         val a = loadedAdapter(dir)
-        a.onPublished("p1", 0.30, t0, 0L, 0.05)
+        a.publishVs("p1", 0.30, t0)
         val b = smb(t0 + 5_000L, 0.30, pumpId = 77L)
         a.bindIdentities(listOf(b))
         a.onCycleSnapshot(listOf(LedgerFacts.fact(b)), LedgerFacts.snapshotHash(listOf(b)), t0 + 60_000L)
@@ -260,7 +268,7 @@ class FuseLedgerAdapterTest {
 
         // Neue Zeile, deren Fenster den Bolus zeitlich einschliesst: die
         // verbrauchte Identitaet darf NICHT erneut binden.
-        a.onPublished("p2", 0.30, t0 + 1_000L, 0L, 0.05)
+        a.publishVs("p2", 0.30, t0 + 1_000L)
         a.bindIdentities(listOf(b))
         assertNull(a.state.entries.getValue("p2").identity)
 
@@ -315,8 +323,13 @@ class FuseLedgerAdapterTest {
         a.bindIdentities(listOf(smbFrom(t0 + 5_000L, 0.30, 9L, pumpType = null, serial = null)))
         assertNull(a.state.entries.getValue("p1").identity)
 
-        // Altbestand: Zeile OHNE Pinnung nimmt denselben Fakt.
-        a.onPublished("p2", 0.15, t0 + 60_000L, 0L, 0.05)
+        // Altbestand: eine Zeile aus einer Version-1-Datei traegt KEINE
+        // Pinnung - hier simuliert durch Entfernen des Pins nach der
+        // Publikation (seit R4-03 erzeugt eine Publikation ohne Pumpen-Info
+        // UNPINNED und bindet nie; nur der explizit pinlose Altbestand
+        // behaelt das alte Verhalten). Der bindet denselben Fakt wie bisher.
+        a.publishVs("p2", 0.15, t0 + 60_000L)
+        a.proposalPumpEpochs.remove("p2")
         a.bindIdentities(listOf(smbFrom(t0 + 65_000L, 0.15, 10L, pumpType = null, serial = null)))
         assertEquals(10L, a.state.entries.getValue("p2").identity?.pumpId)
     }
@@ -384,13 +397,132 @@ class FuseLedgerAdapterTest {
         assertNull(a.view().holdReason)
     }
 
+    // ---- R4-01: Sentinel als Vertragsbestandteil des Persists -------------
+
+    /** ROT gegen den Altstand (writeSentinelTolerant ohne Erfolgswert):
+     *  kann der Sentinel nicht entstehen, MUSS persistVerified false melden -
+     *  die Publikation strippt dann den SMB. Ein Persist, dessen
+     *  Verlustmarker fehlt, ist kein vollstaendiger Persist. */
+    @Test
+    fun `persistVerified scheitert wenn der Sentinel nicht entstehen kann`(@TempDir dir: File) {
+        val a = loadedAdapter(dir)
+        a.onPublished("p1", 0.30, t0, 0L, 0.05)
+        // Blockade: ein VERZEICHNIS besetzt den Sentinel-Namen - writeText
+        // wirft, und "existiert" darf nicht als Marker durchgehen.
+        assertTrue(File(dir, FuseLedgerStore.SENTINEL_NAME).mkdirs())
+        assertFalse(a.persistVerified(dir))
+        assertTrue(a.persistFailed)
+        assertTrue(a.view().hold)
+        assertEquals(FuseLedgerAdapter.HOLD_REASON_PERSIST_FAILED, a.view().holdReason)
+        // Blockade weg -> der naechste Persist gelingt und loest die Sperre.
+        assertTrue(File(dir, FuseLedgerStore.SENTINEL_NAME).delete())
+        assertTrue(a.persistVerified(dir))
+        assertFalse(a.view().hold)
+        assertTrue(File(dir, FuseLedgerStore.SENTINEL_NAME).isFile)
+    }
+
+    /** Regression (Codex (c), existierte schon): Sentinel vorhanden, aber
+     *  ALLE Generationen ungueltig -> recoveryHold, kein stiller Leerstart. */
+    @Test
+    fun `Sentinel mit nur ungueltigen Generationen haelt an`(@TempDir dir: File) {
+        val a = loadedAdapter(dir)
+        a.onPublished("p1", 0.30, t0, 0L, 0.05)
+        assertTrue(a.persistVerified(dir))
+        assertTrue(File(dir, FuseLedgerStore.SENTINEL_NAME).exists())
+        File(dir, FuseLedgerStore.FILE_NAME).writeText("{kaputt")
+
+        val b = FuseLedgerAdapter().also { it.loadOnce(dir, "epoch-b", t0 + 60_000L) }
+        assertTrue(b.recoveryHold)
+        assertEquals(FuseLedgerAdapter.HOLD_REASON_RECOVERY, b.view().holdReason)
+        assertEquals(0.0, b.view().transportCommitmentU, 1e-12)
+    }
+
+    // ---- R4-03: UNPINNED statt API-Fallback --------------------------------
+
+    /** ROT gegen den Altstand: eine Publikation OHNE Pumpen-Info (beide
+     *  API-Lesungen fehlgeschlagen) durfte bisher wie Altbestand binden.
+     *  Jetzt traegt sie einen expliziten UNPINNED-Pin und bindet NIE -
+     *  weder einen fremden noch einen scheinbar passenden Datensatz. */
+    @Test
+    fun `Publikation ohne Pumpen-Info pinnt UNPINNED und bindet nie`(@TempDir dir: File) {
+        val a = loadedAdapter(dir)
+        a.onPublished("p1", 0.30, t0, 0L, 0.05) // keine Pumpen-Info
+        // Passender Datensatz mit voller Herkunft: bindet NICHT.
+        a.bindIdentities(listOf(smb(t0 + 5_000L, 0.30, 1L)))
+        assertNull(a.state.entries.getValue("p1").identity)
+        // Datensatz ganz ohne Herkunft: bindet ebenfalls NICHT.
+        a.bindIdentities(listOf(smbFrom(t0 + 10_000L, 0.30, 2L, pumpType = null, serial = null)))
+        assertNull(a.state.entries.getValue("p1").identity)
+        // Die Zeile haelt konservativ ihre volle Haftung.
+        assertEquals(0.30, a.view().transportCommitmentU, 1e-12)
+    }
+
+    /** Der UNPINNED-Pin ist persistiert: auch nach Neustart bindet die Zeile
+     *  nicht - sonst waere der Fail-Closed-Pin nur eine Prozesslaune. */
+    @Test
+    fun `UNPINNED ueberlebt Persist und Neustart`(@TempDir dir: File) {
+        val a = loadedAdapter(dir, "epoch-a")
+        a.onPublished("p1", 0.30, t0, 0L, 0.05) // keine Pumpen-Info
+        assertTrue(a.persistVerified(dir))
+
+        val b = loadedAdapter(dir, "epoch-b", t0 + 60_000L)
+        b.bindIdentities(listOf(smb(t0 + 5_000L, 0.30, 1L)))
+        assertNull(b.state.entries.getValue("p1").identity)
+        assertEquals(0.30, b.view().transportCommitmentU, 1e-12)
+    }
+
+    /** Ab Schemaversion 2 MUSS jede Zeile einen Pin-Eintrag tragen (auch
+     *  UNPINNED/legacyOpen). Eine v2-Datei, aus der die Pinnung entfernt
+     *  wurde, ist Fremdinhalt - Hold statt Legacy-Deutung (Codex R4-02:
+     *  "Pin entfernt und als Legacy akzeptiert"). */
+    @Test
+    fun `v2-Datei ohne Pin-Abdeckung haelt an`(@TempDir dir: File) {
+        val a = loadedAdapter(dir)
+        a.onPublished(
+            "p1", 0.30, t0, 0L, 0.05,
+            pumpTypeName = PumpType.GENERIC_AAPS.name, pumpSerialHash = Sha.of("vs"),
+        )
+        assertTrue(a.persistVerified(dir))
+        val target = File(dir, FuseLedgerStore.FILE_NAME)
+        val tampered = org.json.JSONObject(target.readText())
+        tampered.remove("proposalPumpEpochs")
+        target.writeText(tampered.toString())
+
+        val b = FuseLedgerAdapter().also { it.loadOnce(dir, "epoch-b", t0 + 60_000L) }
+        assertTrue(b.recoveryHold)
+        assertTrue(b.view().hold)
+    }
+
+    /** Altdatei (Schemaversion 1) ohne Pins bleibt ladbar und bindet wie
+     *  bisher - die Fail-Closed-Verschaerfung gilt nur fuer NEUE Zeilen
+     *  und fuer v2-Dateien. */
+    @Test
+    fun `Altdatei Version 1 ohne Pins bindet wie bisher`(@TempDir dir: File) {
+        val a = loadedAdapter(dir)
+        a.onPublished(
+            "p1", 0.30, t0, 0L, 0.05,
+            pumpTypeName = PumpType.GENERIC_AAPS.name, pumpSerialHash = Sha.of("vs"),
+        )
+        assertTrue(a.persistVerified(dir))
+        val target = File(dir, FuseLedgerStore.FILE_NAME)
+        val tampered = org.json.JSONObject(target.readText())
+        tampered.put("v", 1)
+        tampered.remove("proposalPumpEpochs")
+        target.writeText(tampered.toString())
+
+        val b = FuseLedgerAdapter().also { it.loadOnce(dir, "epoch-b", t0 + 60_000L) }
+        assertFalse(b.recoveryHold)
+        b.bindIdentities(listOf(smb(t0 + 5_000L, 0.30, 1L)))
+        assertEquals(1L, b.state.entries.getValue("p1").identity?.pumpId)
+    }
+
     // ---- Aufraeumen -------------------------------------------------------
 
     @Test
     fun `prune verwirft nur geschlossene fehlerfreie Zeilen jenseits von DIA plus 2h`(@TempDir dir: File) {
         val a = loadedAdapter(dir)
         // Geschlossene Zeile ...
-        a.onPublished("alt", 0.30, t0, 0L, 0.05)
+        a.publishVs("alt", 0.30, t0)
         val b = smb(t0 + 5_000L, 0.30, 1L)
         a.bindIdentities(listOf(b))
         a.onCycleSnapshot(listOf(LedgerFacts.fact(b)), LedgerFacts.snapshotHash(listOf(b)), t0 + 60_000L)

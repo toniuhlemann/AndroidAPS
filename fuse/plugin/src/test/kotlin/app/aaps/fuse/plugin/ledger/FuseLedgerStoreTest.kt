@@ -75,6 +75,26 @@ class FuseLedgerStoreTest {
         assertFalse(store.writeVerified(File(blockiert, "unter"), json(1)))
     }
 
+    // ---- Sentinel (R4-01): Erfolg heisst existierende Markerdatei ---------
+
+    @Test
+    fun `writeSentinel meldet Erfolg nur bei existierender Markerdatei und ist idempotent`(@TempDir dir: File) {
+        assertTrue(FuseLedgerStore.writeSentinel(dir))
+        assertTrue(FuseLedgerStore.sentinelExists(dir))
+        // Idempotent: ein vorhandener Marker bleibt Erfolg.
+        assertTrue(FuseLedgerStore.writeSentinel(dir))
+    }
+
+    /** Ein VERZEICHNIS unter dem Markernamen ist weder ein Marker noch ein
+     *  gelungener Write - beides false, kein Wurf. Vorher verschluckte
+     *  writeSentinelTolerant genau diesen Fehler. */
+    @Test
+    fun `writeSentinel meldet Blockade als false statt zu werfen`(@TempDir dir: File) {
+        assertTrue(File(dir, FuseLedgerStore.SENTINEL_NAME).mkdirs())
+        assertFalse(FuseLedgerStore.writeSentinel(dir))
+        assertFalse(FuseLedgerStore.sentinelExists(dir))
+    }
+
     // ---- readNewestValid: juengste GUELTIGE Generation --------------------
 
     /** REG-01b: nach Kill zwischen den Renames traegt NUR die tmp die

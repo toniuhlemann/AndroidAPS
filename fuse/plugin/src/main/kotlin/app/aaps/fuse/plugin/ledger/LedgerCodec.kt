@@ -44,7 +44,24 @@ import org.json.JSONObject
  */
 object LedgerCodec {
 
-    const val VERSION = 1
+    /**
+     * SCHEMAVERSION der Datei (R4-02). Version 2 bringt: strikte
+     * Lade-Invarianten (Timestamps, failClosed-Befundpflicht, s.
+     * [LedgerStateValidator]) und die PIN-PFLICHT je Zeile
+     * (proposalPumpEpochs muss jede proposalId abdecken - auch UNPINNED/
+     * legacyOpen sind explizite Eintraege). Dateien MIT `v=1` oder OHNE
+     * Versionsfeld gelten als Legacy und behalten ihre Toleranzen - heutige
+     * Bestandsdateien bleiben dadurch ladbar. Unbekannte ZUKUNFTSVERSIONEN
+     * werfen weiterhin (Hold statt raten).
+     */
+    const val VERSION = 2
+
+    /** Aelteste akzeptierte Version; zugleich der Default fuer Dateien ohne
+     *  Versionsfeld. */
+    const val LEGACY_VERSION = 1
+
+    /** Ab dieser Version gelten die strikten Invarianten + Pin-Pflicht. */
+    const val STRICT_VERSION = 2
 
     /** Obergrenze jeder Einzelmenge [U]. Weit ueber jedem realen SMB/Budget
      *  (maxSmbU-Hardlimit liegt darunter) - der Zweck ist, absurde Werte als
@@ -85,18 +102,36 @@ object LedgerCodec {
         .put("retiredBoundIds", JSONArray(retiredBoundIds.map { encodeRetired(it) }))
         // Fix 3 (Re-Audit 6.3): die je Vorschlag gepinnte Pumpen-Epoch - sie
         // liegt am Adapter, weil der Kern-ProposalEntry kein Feld traegt.
-        .put("proposalPumpEpochs", JSONArray(pumpEpochs.map { (id, ep) -> encodePumpEpoch(id, ep) }))
+        // R4-03: JEDE Zeile bekommt einen Eintrag - Zeilen ohne Pin in der
+        // Map (Altbestand aus einer v1-Datei) werden als EXPLIZITER
+        // legacyOpen-Marker mitgeschrieben, damit die v2-Pin-Pflicht ihr
+        // altes Bindungsverhalten nicht rueckwirkend umdeutet.
+        .put("proposalPumpEpochs", JSONArray(coveredEpochs(state, pumpEpochs).map { (id, ep) -> encodePumpEpoch(id, ep) }))
+
+    private fun coveredEpochs(state: LedgerState, pumpEpochs: Map<String, ProposalPumpEpoch>): Map<String, ProposalPumpEpoch> {
+        val full = LinkedHashMap(pumpEpochs)
+        for (id in state.entries.keys) if (id !in full) full[id] = ProposalPumpEpoch.LEGACY_OPEN
+        return full
+    }
 
     fun decode(o: JSONObject): Decoded {
-        require(o.getInt("v") == VERSION) { "ledger file version ${o.getInt("v")}" }
+        // R4-02: Schemaherkunft explizit - fehlendes Feld heisst Legacy 1.
+        val v = if (o.has("v")) o.getInt("v") else LEGACY_VERSION
+        require(v in LEGACY_VERSION..VERSION) { "ledger file version $v" }
         val revision = o.getLong("revision")
         require(revision >= 0L) { "negative ledger revision $revision" }
+        val state = decodeState(o.getJSONObject("state"), v)
+        val pumpEpochs = decodePumpEpochs(o)
+        // R4-03: ab v2 muss jede Zeile einen Pin-Eintrag tragen - ein
+        // ENTFERNTER Pin wurde vorher still als Legacy gedeutet und band
+        // wieder alles.
+        if (v >= STRICT_VERSION) LedgerStateValidator.requirePinCoverage(state, pumpEpochs.keys)
         return Decoded(
-            state = decodeState(o.getJSONObject("state")),
+            state = state,
             episodes = decodeEpisodes(o.getJSONObject("episodes")),
             revision = revision,
             retiredBoundIds = decodeRetiredList(o),
-            pumpEpochs = decodePumpEpochs(o),
+            pumpEpochs = pumpEpochs,
         )
     }
 
@@ -111,7 +146,7 @@ object LedgerCodec {
         .put("seenEpochs", JSONArray(s.seenEpochs.toList()))
         .putNullable("announcedEpochId", s.announcedEpochId)
 
-    fun decodeState(o: JSONObject): LedgerState {
+    fun decodeState(o: JSONObject, schemaVersion: Int = VERSION): LedgerState {
         val entries = o.getJSONArray("entries").objects().map { decodeEntry(it) }
         // Fix 2 (Re-Audit REG-04): die LISTE pruefen, BEVOR associateBy
         // Duplikate still last-win zusammenfaltet - danach waere der
@@ -127,10 +162,12 @@ object LedgerCodec {
             seenEpochs = (0 until seen.length()).map { seen.getString(it) }.toSet(),
             announcedEpochId = o.strOrNull("announcedEpochId"),
         )
-        // Fix 2 (Re-Audit 6.2): die GANZE Generation gegen die
-        // Zustandsinvarianten pruefen - jeder Verstoss wirft und zaehlt beim
-        // Laden als invalid (readNewestValid-Fallback bzw. recoveryHold).
-        LedgerStateValidator.validate(state)
+        // Fix 2 (Re-Audit 6.2) + R4-02: die GANZE Generation gegen die
+        // Zustandsinvarianten UND die Reducer-Zustandsmaschine pruefen -
+        // jeder Verstoss wirft und zaehlt beim Laden als invalid
+        // (readNewestValid-Fallback bzw. recoveryHold). Die Herkunftsversion
+        // steuert die strikten Zusatzpruefungen.
+        LedgerStateValidator.validate(state, schemaVersion)
         return state
     }
 
@@ -201,20 +238,35 @@ object LedgerCodec {
         .put("proposalId", proposalId)
         .putNullable("pumpType", ep.pumpTypeName)
         .putNullable("pumpSerialHash", ep.pumpSerialHash)
+        // R4-03: die beiden Marker nur schreiben, wenn sie gelten - eine
+        // normale Pinnung bleibt in der Altform lesbar.
+        .also {
+            if (ep.unpinned) it.put("unpinned", true)
+            if (ep.legacyOpen) it.put("legacyOpen", true)
+        }
 
     private fun decodePumpEpochs(o: JSONObject): Map<String, ProposalPumpEpoch> {
         // opt statt get: Dateien vor Fix 3 tragen das Feld nicht - fuer sie
         // ist "keine Pinnung" der ehrliche Zustand (Altbestand bindet wie
-        // bisher), kein Fehler.
+        // bisher), kein Fehler. Ab Schemaversion 2 erzwingt decode() danach
+        // die Abdeckung jeder Zeile (requirePinCoverage).
         val arr = o.optJSONArray("proposalPumpEpochs") ?: return emptyMap()
         val map = LinkedHashMap<String, ProposalPumpEpoch>()
         for (obj in arr.objects()) {
             val id = obj.getString("proposalId")
             require(id.isNotBlank()) { "pump epoch with blank proposalId" }
-            val ep = ProposalPumpEpoch(obj.strOrNull("pumpType"), obj.strOrNull("pumpSerialHash"))
+            val unpinned = obj.optBoolean("unpinned", false)
+            val legacyOpen = obj.optBoolean("legacyOpen", false)
+            // Der ProposalPumpEpoch-init prueft die Markerkonsistenz
+            // (nie beide, Marker nie mit Inhalt) - ein Wurf von dort zaehlt
+            // beim Laden wie jeder andere als invalid.
+            val ep = ProposalPumpEpoch(obj.strOrNull("pumpType"), obj.strOrNull("pumpSerialHash"), unpinned, legacyOpen)
             // Ein Eintrag ohne jede Aussage wird nie geschrieben - er waere
             // eine Pinnung, die nichts pinnt (Fremdinhalt/Korruption).
-            require(ep.pumpTypeName != null || ep.pumpSerialHash != null) { "pump epoch without content for $id" }
+            // UNPINNED/legacyOpen SIND Aussagen (R4-03).
+            require(ep.pumpTypeName != null || ep.pumpSerialHash != null || ep.unpinned || ep.legacyOpen) {
+                "pump epoch without content for $id"
+            }
             require(map.put(id, ep) == null) { "duplicate pump epoch for $id" }
         }
         return map

@@ -41,22 +41,31 @@ class FuseLedgerStore {
          */
         const val SENTINEL_NAME = "fuse_ledger.exists"
 
+        /** isFile statt exists (R4-01): ein VERZEICHNIS unter dem Namen ist
+         *  kein Marker - "existiert irgendwas" darf weder als Verlustbeweis
+         *  noch als erfolgreicher Write durchgehen. */
         fun sentinelExists(dir: File): Boolean =
-            runCatching { File(dir, SENTINEL_NAME).exists() }.getOrDefault(false)
+            runCatching { File(dir, SENTINEL_NAME).isFile }.getOrDefault(false)
 
-        /** TOLERANT (runCatching, nur wenn er fehlt): der Sentinel ist eine
-         *  Zusatzsicherung - sein Schreibfehler darf nie einen Zyklus oder
-         *  einen erfolgreichen Persist entwerten. Fehlt er bei vorhandener
-         *  Generation, holt ihn der naechste erfolgreiche Persist nach. */
-        fun writeSentinelTolerant(dir: File) {
-            runCatching {
-                val f = File(dir, SENTINEL_NAME)
-                if (!f.exists()) {
-                    if (!dir.exists()) dir.mkdirs()
-                    f.writeText("v1", Charsets.UTF_8)
-                }
-            }
-        }
+        /**
+         * VERTRAGSBESTANDTEIL, nicht Zusatzsicherung (Codex R4-01): der
+         * fruehere `writeSentinelTolerant` verschluckte seinen Fehler - damit
+         * konnte ein Persist/eine Migration "fertig" melden, obwohl der
+         * Verlustmarker nie entstand, und ein spaeterer Dateiverlust sah wie
+         * ein Erststart aus (genau der REG-03-Pfad). Jetzt gilt: Erfolg
+         * heisst, der Marker EXISTIERT nach dem Aufruf als Datei - verifiziert
+         * wie beim writeVerified-Rueckleseprinzip, nur dass hier die Existenz
+         * genuegt (der Inhalt traegt keine Semantik). Nie werfend.
+         *
+         * @return true nur, wenn der Marker nach dem Aufruf als DATEI liegt.
+         */
+        fun writeSentinel(dir: File): Boolean = runCatching {
+            val f = File(dir, SENTINEL_NAME)
+            if (f.isFile) return@runCatching true
+            if (!dir.exists()) dir.mkdirs()
+            f.writeText("v1", Charsets.UTF_8)
+            f.isFile
+        }.getOrDefault(false)
     }
 
     /**
