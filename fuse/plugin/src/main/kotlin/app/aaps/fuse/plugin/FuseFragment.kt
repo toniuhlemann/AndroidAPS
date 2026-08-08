@@ -81,6 +81,7 @@ class FuseFragment : DaggerFragment() {
                 armedTs = fusePlugin.mealMarkerArmedTs(),
                 tier = fusePlugin.mealMarkerTier(),
                 windowMin = app.aaps.fuse.core.controller.OnsetChannel.MARKER_WINDOW_MIN,
+                envelopeU = fusePlugin.mealMarkerEnvelopeU(),
             ),
         )
         val armed = fusePlugin.mealMarkerActive(dateUtil.now())

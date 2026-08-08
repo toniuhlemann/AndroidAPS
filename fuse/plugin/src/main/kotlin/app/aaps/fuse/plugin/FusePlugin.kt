@@ -248,6 +248,13 @@ class FusePlugin @Inject constructor(
 
     fun mealMarkerArmedTs(): Long = preferences.get(FuseLongKey.MealMarkerArmedTs)
 
+    /** Huelle der aktuell gewaehlten Stufe [U] - fuer den Lieferstand im Tab. */
+    fun mealMarkerEnvelopeU(): Double = when (mealMarkerTier()) {
+        0    -> preferences.get(FuseDoubleKey.PrimeEnvelopeSmallU)
+        2    -> preferences.get(FuseDoubleKey.PrimeEnvelopeLargeU)
+        else -> preferences.get(FuseDoubleKey.PrimeEnvelopeU)
+    }
+
     fun mealMarkerActive(now: Long): Boolean {
         val ts = preferences.get(FuseLongKey.MealMarkerArmedTs)
         return ts > 0 && now - ts in 0..(app.aaps.fuse.core.controller.OnsetChannel.MARKER_WINDOW_MIN * 60_000L)

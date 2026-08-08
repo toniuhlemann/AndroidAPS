@@ -32,7 +32,7 @@ object FuseScreenModel {
      */
     /** Marker-Zustand fuer Timer-Zeile - kommt vom Fragment (Plugin-Prefs),
      *  nicht aus dem Outcome: der Timer soll auch zwischen Zyklen laufen. */
-    data class MarkerInfo(val armedTs: Long, val tier: Int, val windowMin: Int)
+    data class MarkerInfo(val armedTs: Long, val tier: Int, val windowMin: Int, val envelopeU: Double)
 
     fun render(outcome: FuseCycleRunner.Outcome?, apsResult: APSResult?, nowMs: Long, marker: MarkerInfo? = null): String {
         val b = StringBuilder()
@@ -103,7 +103,13 @@ object FuseScreenModel {
         outcome.mealStats?.let { ms ->
             row(b, "seit Mahlzeit", "${f2(ms.totalU)} U  (+30: ${f2(ms.last30U)} / +60: ${f2(ms.last60U)}) nach ${ms.sinceMin} min")
         }
-        outcome.prime?.let { pr -> primeText(pr)?.let { row(b, "Freigabe", it) } }
+        outcome.prime?.let { pr ->
+            primeText(pr)?.let { txt ->
+                val stand = marker?.takeIf { it.armedTs > 0 && it.envelopeU > 0 }
+                    ?.let { m -> "  [${f2((m.envelopeU - pr.remainingU).coerceAtLeast(0.0))}/${f2(m.envelopeU)} U geliefert]" } ?: ""
+                row(b, "Freigabe", txt + stand)
+            }
+        }
         sec(b, "Pruefungen")
         outcome.candidate?.let { c ->
             row(
