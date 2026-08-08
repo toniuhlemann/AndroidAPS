@@ -200,10 +200,8 @@ object FuseScreenModel {
 
     /** Abschnitts-Kopf im autoISF-Stil (Tonis Lesbarkeits-Wunsch 08.08.). */
     private fun sec(b: StringBuilder, name: String) {
-        b.append('
-').append("--- ").append(name).append(" ")
-            .append("-".repeat((26 - name.length).coerceAtLeast(2))).append('
-')
+        b.append('\n').append("--- ").append(name).append(" ")
+            .append("-".repeat((26 - name.length).coerceAtLeast(2))).append('\n')
     }
 
     private fun row(b: StringBuilder, label: String, value: String) {
