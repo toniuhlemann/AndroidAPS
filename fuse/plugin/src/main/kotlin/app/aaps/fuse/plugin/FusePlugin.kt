@@ -463,24 +463,34 @@ class FusePlugin @Inject constructor(
     }
 
     override fun addPreferenceScreen(preferenceManager: PreferenceManager, parent: PreferenceScreen, context: Context, requiredKey: String?) {
-        // Der Bildschirm wird auch fuer Unterbildschirme aufgerufen; FUSE hat
-        // keine, also nur der Aufbau der obersten Ebene.
-        if (requiredKey != null) return
+        // Overview-Muster: der Aufruf kommt auch fuer Unterbildschirme -
+        // dann bauen wir dieselbe Struktur und das Framework zieht den
+        // passenden Sub-Screen heraus.
+        val subKeys = setOf("fuse_safety", "fuse_control", "fuse_meal", "fuse_tail", "fuse_diag")
+        if (requiredKey != null && requiredKey !in subKeys) return
 
         // GRUPPIERT statt flach (Toni 08.08., GPT-Review bestaetigt): die
         // wichtigste Aenderung ist das GETEILTE ApsSmbMaxIob - FUSE nutzt es
         // seit dem MAX_VALUE-Fund als Deckel, zeigte es aber nirgends. KEIN
         // eigener FUSE-Key: eine Sicherheitsgrenze, eine Zahl.
-        fun cat(titleText: String, block: PreferenceCategory.() -> Unit) {
-            val c = PreferenceCategory(context)
-            parent.addPreference(c)
-            c.apply { title = titleText; block() }
+        // ECHTE Unterbildschirme statt aufgeklappter Kategorien (Toni 08.08.:
+        // 27 Eintraege am Stueck = Scroll-Wueste; die Klappzeile der Lib ist
+        // eine Einbahnstrasse). Oben fuenf Zeilen, "zuklappen" = Zurueck.
+        val root = PreferenceCategory(context)
+        parent.addPreference(root)
+        root.title = rh.gs(R.string.fuse_settings)
+        fun cat(key: String, titleText: String, block: PreferenceScreen.() -> Unit) {
+            root.addPreference(preferenceManager.createPreferenceScreen(context).apply {
+                this.key = key
+                this.title = titleText
+                block()
+            })
         }
-        fun PreferenceCategory.info(t: String, sum: String) {
+        fun PreferenceScreen.info(t: String, sum: String) {
             addPreference(Preference(context).apply { title = t; summary = sum; isSelectable = false; isPersistent = false })
         }
 
-        cat("Allgemeine Sicherheitsgrenzen") {
+        cat("fuse_safety", "Allgemeine Sicherheitsgrenzen") {
             addPreference(
                 AdaptiveDoublePreference(
                     ctx = context, doubleKey = DoubleKey.ApsSmbMaxIob,
@@ -492,7 +502,7 @@ class FusePlugin @Inject constructor(
             addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.GuardFloorMgdl, dialogMessage = R.string.fuse_guard_floor_summary, title = R.string.fuse_guard_floor_title))
         }
 
-        cat("Regelung") {
+        cat("fuse_control", "Regelung") {
             addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.SmbRatio, dialogMessage = R.string.fuse_smb_ratio_summary, title = R.string.fuse_smb_ratio_title))
             addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.SmbRatioRise, dialogMessage = R.string.fuse_smb_ratio_rise_summary, title = R.string.fuse_smb_ratio_rise_title))
             addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.RiseRampLowR, dialogMessage = R.string.fuse_ramp_summary, title = R.string.fuse_ramp_low_title))
@@ -504,7 +514,7 @@ class FusePlugin @Inject constructor(
             addPreference(AdaptiveIntPreference(ctx = context, intKey = FuseIntKey.DriveLowerQuantilePct, dialogMessage = R.string.fuse_drive_quantile_summary, title = R.string.fuse_drive_quantile_title))
         }
 
-        cat("Mahlzeit / Onset") {
+        cat("fuse_meal", "Mahlzeit / Onset") {
             addPreference(AdaptiveSwitchPreference(ctx = context, booleanKey = FuseBooleanKey.OnsetChannelEnabled, summary = R.string.fuse_onset_channel_summary, title = R.string.fuse_onset_channel_title))
             addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.OnsetEnvelopeU, dialogMessage = R.string.fuse_onset_envelope_summary, title = R.string.fuse_onset_envelope_title))
             addPreference(AdaptiveSwitchPreference(ctx = context, booleanKey = FuseBooleanKey.PrimeReleaseEnabled, summary = R.string.fuse_prime_release_summary, title = R.string.fuse_prime_release_title))
@@ -513,14 +523,14 @@ class FusePlugin @Inject constructor(
             addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.PrimeEnvelopeLargeU, dialogMessage = R.string.fuse_prime_large_summary, title = R.string.fuse_prime_large_title))
         }
 
-        cat("Haftung / Schwanz") {
+        cat("fuse_tail", "Haftung / Schwanz") {
             addPreference(AdaptiveSwitchPreference(ctx = context, booleanKey = FuseBooleanKey.TailGuardEnabled, summary = R.string.fuse_tail_guard_summary, title = R.string.fuse_tail_guard_title))
             addPreference(AdaptiveIntPreference(ctx = context, intKey = FuseIntKey.LiabilityHorizonMin, dialogMessage = R.string.fuse_liability_horizon_summary, title = R.string.fuse_liability_horizon_title))
             addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.TailFloorMgdl, dialogMessage = R.string.fuse_tail_floor_summary, title = R.string.fuse_tail_floor_title))
             addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.TailRecoveryU, dialogMessage = R.string.fuse_tail_recovery_summary, title = R.string.fuse_tail_recovery_title))
         }
 
-        cat("Diagnose (fest in Alpha 1)") {
+        cat("fuse_diag", "Diagnose (fest in Alpha 1)") {
             info("Regler-Takt: 1 Minute", "Jeder neue 1-min-CGM-Wert ist ein Zyklus. Fest - kein Legacy-SMB-Intervall.")
             info("Positive TBR: nicht verwendet", "Der schnelle Kanal ist der 1-min-SMB; FUSE setzt nur Null-Temps oder bricht ab. Max-TBR/Basal-Multiplikatoren greifen deshalb nicht.")
             info("ISF: Profil, zeitabhaengig", "Keine Autosens-/DynISF-Modulation. Sensitivitaet ist als eigener langsamer Beobachter geplant (Shadow zuerst).")
