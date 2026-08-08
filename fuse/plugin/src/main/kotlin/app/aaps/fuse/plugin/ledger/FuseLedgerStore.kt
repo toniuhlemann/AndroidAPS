@@ -29,6 +29,34 @@ class FuseLedgerStore {
     companion object {
 
         const val FILE_NAME = "fuse_ledger.json"
+
+        /**
+         * Fix 1b (Re-Audit c750169, 6.1): persistenter "es gab schon einen
+         * Ledger"-Marker. Er wird beim ersten erfolgreichen persistVerified
+         * und beim verifizierten Migrationsabschluss geschrieben und NIE
+         * geloescht. Findet loadOnce den Sentinel, aber keine lesbare
+         * Generation, ist das DATENVERLUST - ohne den Marker waere er vom
+         * echten Erststart nicht unterscheidbar, und verlorene offene
+         * Haftung wuerde still als "nie passiert" verbucht.
+         */
+        const val SENTINEL_NAME = "fuse_ledger.exists"
+
+        fun sentinelExists(dir: File): Boolean =
+            runCatching { File(dir, SENTINEL_NAME).exists() }.getOrDefault(false)
+
+        /** TOLERANT (runCatching, nur wenn er fehlt): der Sentinel ist eine
+         *  Zusatzsicherung - sein Schreibfehler darf nie einen Zyklus oder
+         *  einen erfolgreichen Persist entwerten. Fehlt er bei vorhandener
+         *  Generation, holt ihn der naechste erfolgreiche Persist nach. */
+        fun writeSentinelTolerant(dir: File) {
+            runCatching {
+                val f = File(dir, SENTINEL_NAME)
+                if (!f.exists()) {
+                    if (!dir.exists()) dir.mkdirs()
+                    f.writeText("v1", Charsets.UTF_8)
+                }
+            }
+        }
     }
 
     /**

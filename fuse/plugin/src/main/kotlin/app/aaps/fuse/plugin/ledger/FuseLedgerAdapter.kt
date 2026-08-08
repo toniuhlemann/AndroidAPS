@@ -42,6 +42,16 @@ class EpisodeBudgets {
      *  Feld + Persistenz, damit ein Neustart die schon gesehene Anstiegs-
      *  phase nicht vergisst. */
     var markerRiseSeen: Boolean = false
+
+    /**
+     * Fix 5 (Re-Audit c750169, 6.5): die Dosing-Epoch - sourceTs des zuletzt
+     * AKZEPTIERTEN Glukosepunkts. Genau-einmal je Glukose-Epoch UEBER
+     * Prozessgrenzen: nach einem Neustart darf derselbe Sensoranker keine
+     * zweite positive Entscheidung finanzieren, unabhaengig davon, ob der
+     * erste Betrag inzwischen im IOB sichtbar ist. Lesen/Setzen verdrahtet
+     * der Runner (parallele Sitzung); hier liegen nur Feld + Persistenz.
+     */
+    var lastAcceptedSourceTs: Long = 0L
     val mealDeliveries: ArrayDeque<Pair<Long, Double>> = ArrayDeque()
 }
 
@@ -53,6 +63,17 @@ class EpisodeBudgets {
  * schliessen, ohne dass je Insulin nachgewiesen wurde.
  */
 data class RetiredBoundId(val temporaryId: Long?, val pumpId: Long?)
+
+/**
+ * Fix 3 (Re-Audit c750169, 6.3): die beim PUBLIKATIONSZEITPUNKT aktive
+ * Pumpen-Epoch, je Vorschlag gepinnt. Der Kern ([app.aaps.fuse.core.ledger.ProposalEntry])
+ * traegt bewusst kein Feld dafuer (core/ledger ist heute tabu) - deshalb
+ * fuehrt der Adapter eine persistierte Map proposalId -> Epoch. Ohne die
+ * Pinnung konnte ein gleich grosser SMB einer NACH dem Proposal aktivierten
+ * anderen Pumpe die alte Zeile binden und ueber deren IOB-Fakt schliessen,
+ * obwohl beide Pumpvorgaenge existiert haben koennen.
+ */
+data class ProposalPumpEpoch(val pumpTypeName: String?, val pumpSerialHash: String?)
 
 /** Was der Zyklus vom Ledger sieht: Sperre (mit Grund fuer Anzeige/Trail)
  *  und gebundene Transportmenge. */
@@ -141,6 +162,7 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
         const val HOLD_REASON_PERSIST_FAILED = "LEDGER_PERSIST_FAILED"
         const val HOLD_REASON_RECOVERY = "LEDGER_RECOVERY_HOLD"
         const val HOLD_REASON_STATE = "LEDGER_STATE_HOLD"
+        const val HOLD_REASON_MIGRATION = "LEDGER_MIGRATION_PENDING"
     }
 
     var state: LedgerState = LedgerState()
@@ -158,6 +180,11 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
      *  Zeilen. Persistiert, gekappt auf [MAX_RETIRED_BOUND_IDS] juengste. */
     val retiredBoundIds: ArrayDeque<RetiredBoundId> = ArrayDeque()
 
+    /** Fix 3 (Re-Audit 6.3): je Vorschlag gepinnte Pumpen-Epoch - persistiert
+     *  im Codec, aufgeraeumt mit [prune]. Fehlt ein Eintrag (Altbestand vor
+     *  diesem Fix), bindet die Zeile wie bisher ohne Epoch-Vergleich. */
+    val proposalPumpEpochs: MutableMap<String, ProposalPumpEpoch> = mutableMapOf()
+
     /** REG-01a: der letzte [persistVerified] ist FEHLGESCHLAGEN - sticky bis
      *  zum naechsten Erfolg. Solange gesetzt, sperrt view().hold die
      *  Aktuation: ein Ledger, der nicht auf Platte steht, darf keine neuen
@@ -173,23 +200,51 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
     var recoveryHold: Boolean = false
         private set
 
+    /**
+     * Fix 1a (Re-Audit c750169, REG-03): die Uebernahme der Vorgeschichte aus
+     * dem alten Verzeichnis ist FEHLGESCHLAGEN und steht noch aus. Wirkt wie
+     * [recoveryHold] (kein positiver SMB), solange die Vorgeschichte nicht
+     * sicher uebernommen ist - ein Leerstart waere die Behauptung, es habe
+     * nie ein Commitment gegeben. Zusaetzlich stellt der Zustand [loadOnce]
+     * zurueck und blockiert [persistVerified]: ein Schreiben wuerde die alte
+     * Vorgeschichte mit einem Leerzustand verdecken UND den naechsten
+     * Migrationsversuch blockieren (das Ziel saehe "schon belegt" aus).
+     * Geloescht durch [noteMigrationDone], sobald der Umzug verifiziert ist.
+     */
+    var migrationPending: Boolean = false
+        private set
+
+    fun noteMigrationFailed() {
+        migrationPending = true
+    }
+
+    fun noteMigrationDone() {
+        migrationPending = false
+    }
+
     private var epochId: String = ""
     private var generation: Long = 0L
     private var cfg = LedgerConfig(bolusStepU = 0.05)
     private var loaded = false
 
     /** Sperre = Reducer-Holds ODER fehlgeschlagene Persistenz ODER
-     *  Recovery-Vorbehalt. Der Grund ist fuer Anzeige/Trail; bei mehreren
-     *  gewinnt der Persistenz-/Recovery-Grund, weil er der aktuell
-     *  handlungsleitende ist (Reducer-Holds stehen zusaetzlich im state). */
+     *  Recovery-/Migrations-Vorbehalt. Der Grund ist fuer Anzeige/Trail; bei
+     *  mehreren gewinnt der handlungsleitende: erst die ausstehende
+     *  Migration (ohne sie ist alles Uebrige vorlaeufig), dann Persistenz/
+     *  Recovery (Reducer-Holds stehen zusaetzlich im state). */
     fun view(): LedgerView {
         val reason = when {
+            migrationPending    -> HOLD_REASON_MIGRATION
             persistFailed       -> HOLD_REASON_PERSIST_FAILED
             recoveryHold        -> HOLD_REASON_RECOVERY
             state.holdActuation -> HOLD_REASON_STATE
             else                -> null
         }
-        return LedgerView(state.holdActuation || persistFailed || recoveryHold, state.transportCommitmentU, reason)
+        return LedgerView(
+            state.holdActuation || persistFailed || recoveryHold || migrationPending,
+            state.transportCommitmentU,
+            reason,
+        )
     }
 
     /**
@@ -212,6 +267,12 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
      */
     fun loadOnce(dir: File, sessionId: String, nowTs: Long, log: (String) -> Unit = {}) {
         if (loaded) return
+        // Fix 1a (REG-03): solange die Migration aussteht, wird NICHT geladen
+        // und NICHT als geladen markiert - erst ein spaeterer invoke mit
+        // abgeschlossener Migration darf die (dann vollstaendige)
+        // Vorgeschichte restaurieren. Ein Laden des leeren Zielverzeichnisses
+        // waere genau der "Erststart trotz Vorgeschichte" aus dem Re-Audit.
+        if (migrationPending) return
         loaded = true
         epochId = sessionId
         val read = store.readNewestValid(dir) { text ->
@@ -224,6 +285,10 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
             episodes = decoded.episodes
             retiredBoundIds.clear()
             retiredBoundIds.addAll(decoded.retiredBoundIds)
+            proposalPumpEpochs.clear()
+            // Nur Epochs zu tatsaechlich vorhandenen Zeilen: eine Pinnung ohne
+            // Zeile ist bedeutungslos (geprunte Zeilen sperrt retiredBoundIds).
+            proposalPumpEpochs.putAll(decoded.pumpEpochs.filterKeys { it in decoded.state.entries })
         }
         if (read.anyCandidateExisted && decoded == null) {
             // Vorgeschichte existiert, aber KEINE Generation ist lesbar:
@@ -233,6 +298,17 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
             log(
                 "FUSE ledger RECOVERY_HOLD: Generationen vorhanden, aber keine lesbar/gueltig - " +
                     "Leerstart nur mit Sperre, Aktuation bleibt zu bis zum Neustart nach Klaerung (dir=$dir)"
+            )
+        } else if (!read.anyCandidateExisted && FuseLedgerStore.sentinelExists(dir)) {
+            // Fix 1b (Re-Audit 6.1): der SENTINEL sagt "es gab schon einen
+            // Ledger", aber KEINE Generation liegt mehr da - das ist
+            // DATENVERLUST, kein Erststart. Ohne den Marker waere beides
+            // ununterscheidbar, und verlorene offene Haftung wuerde still
+            // als "nie passiert" verbucht.
+            recoveryHold = true
+            log(
+                "FUSE ledger RECOVERY_HOLD: Sentinel vorhanden, aber keine Generation mehr lesbar - " +
+                    "Datenverlust statt Erststart, Aktuation bleibt zu (dir=$dir)"
             )
         } else if (read.anyCandidateInvalid) {
             // Eine Generation war da, aber unlesbar - stiller
@@ -255,14 +331,48 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
      * Schuld, bis der IOB-Snapshot sie nachweist. Proposed + RT_PUBLISHED in
      * einem Zug: mehr WEISS dieser Prozess nicht (h.7), die weiteren Stufen
      * kommen erst mit AAPS-Hooks.
+     *
+     * [pumpTypeName]/[pumpSerialHash] (Fix 3, Re-Audit 6.3): die beim
+     * Publikationszeitpunkt aktive Pumpe, abgeleitet wie [LedgerFacts] es aus
+     * dem BS-Datensatz tut (PumpType.name / Sha des Serials). Null heisst
+     * "keine Aussage" - dann bindet die Zeile wie vor dem Fix.
      */
-    fun onPublished(proposalId: String, unitsU: Double, decisionTs: Long, latestBolusTs: Long, bolusStepU: Double) {
+    fun onPublished(
+        proposalId: String,
+        unitsU: Double,
+        decisionTs: Long,
+        latestBolusTs: Long,
+        bolusStepU: Double,
+        pumpTypeName: String? = null,
+        pumpSerialHash: String? = null,
+    ) {
         // Die Pumpenstufe wird je Zeile GEPINNT (R93-F1) - deshalb hier
         // aktualisieren, nicht im Konstruktor: die Pumpe steht erst zur
         // Laufzeit fest.
         if (bolusStepU.isFinite() && bolusStepU > 0.0) cfg = LedgerConfig(bolusStepU)
+        // Fix 3: Pumpen-Epoch am Vorschlag pinnen, BEVOR irgendein BS-Fakt
+        // binden kann - eine spaeter aktivierte andere Pumpe darf diese
+        // Zeile nicht mehr treffen.
+        if (pumpTypeName != null || pumpSerialHash != null)
+            proposalPumpEpochs[proposalId] = ProposalPumpEpoch(pumpTypeName, pumpSerialHash)
         reduce(LedgerEvent.Proposed(proposalId, unitsU, decisionTs, latestBolusTs))
         reduce(LedgerEvent.AmountObserved(proposalId, AmountStage.RT_PUBLISHED, unitsU))
+    }
+
+    /**
+     * Fix 3 (Re-Audit 6.3): passt der BS-Fakt zur gepinnten Pumpen-Epoch?
+     *
+     * Null-Toleranz mit RICHTUNG: fehlt die PINNUNG (Altbestand vor dem Fix),
+     * gilt das bisherige Verhalten - fehlt aber die BS-Identitaet, obwohl
+     * gepinnt wurde, ist das KEIN Treffer. Ein Datensatz, der seine Herkunft
+     * nicht nennt, darf eine herkunftsgebundene Zeile nicht schliessen; die
+     * Zeile haelt dann konservativ ihre volle Haftung.
+     */
+    private fun matchesPinnedEpoch(pinned: ProposalPumpEpoch?, b: BS): Boolean {
+        if (pinned == null) return true
+        val typeOk = pinned.pumpTypeName == null || LedgerFacts.pumpTypeName(b) == pinned.pumpTypeName
+        val serialOk = pinned.pumpSerialHash == null || LedgerFacts.serialHash(b) == pinned.pumpSerialHash
+        return typeOk && serialOk
     }
 
     /**
@@ -299,6 +409,9 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
                 decisionTimes.firstOrNull { it > entry.decisionTs } ?: (entry.decisionTs + BIND_WINDOW_MS),
                 entry.decisionTs + BIND_WINDOW_MS,
             )
+            // Fix 3 (Re-Audit 6.3): nur Fakten der beim Proposal gepinnten
+            // Pumpen-Epoch kommen ueberhaupt als Kandidaten in Frage.
+            val pinned = proposalPumpEpochs[entry.proposalId]
             val hits = boluses.filter { b ->
                 b.isValid && b.type == BS.Type.SMB &&
                     (b.ids.pumpId != null || b.ids.temporaryId != null) &&
@@ -306,7 +419,8 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
                     b.timestamp > entry.latestBolusTimestampAtDecision &&
                     abs(b.amount - amountU) <= BIND_AMOUNT_EPS_U &&
                     b.ids.temporaryId?.let { it in boundTemp } != true &&
-                    b.ids.pumpId?.let { it in boundPump } != true
+                    b.ids.pumpId?.let { it in boundPump } != true &&
+                    matchesPinnedEpoch(pinned, b)
             }
             if (hits.size != 1) continue
             val b = hits[0]
@@ -373,6 +487,9 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
                 while (retiredBoundIds.size > MAX_RETIRED_BOUND_IDS) retiredBoundIds.removeFirst()
             }
             state = state.copy(entries = keep)
+            // Fix 3: Epochs geprunter Zeilen mit entsorgen - ihre Bindung
+            // bleibt ueber retiredBoundIds ausgeschlossen.
+            proposalPumpEpochs.keys.retainAll(keep.keys)
             revision += 1
         }
     }
@@ -384,12 +501,29 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
      * [persistFailed] (sticky bis zum naechsten Erfolg) und sperrt damit
      * auch KUENFTIGE Zyklen ueber view().hold, bis der Ledger wieder
      * durabel ist.
+     *
+     * Fix 1 (Re-Audit REG-03): VOR [loadOnce] wird NIE geschrieben - dieser
+     * Prozess darf keine Generation ueberschreiben, die er nie gelesen hat.
+     * Bei ausstehender Migration wuerde ein Leerzustand die alte
+     * Vorgeschichte verdecken und den naechsten Migrationsversuch dauerhaft
+     * blockieren (das Ziel saehe "schon belegt" aus).
+     *
+     * Fix 1b: nach jedem Erfolg wird der SENTINEL tolerant nachgezogen -
+     * fehlt er (Altbestand vor dem Fix), traegt ihn der naechste Persist nach.
      */
     fun persistVerified(dir: File): Boolean {
+        if (!loaded) {
+            persistFailed = true
+            return false
+        }
         val ok = runCatching {
-            store.writeVerified(dir, LedgerCodec.encode(state, episodes, revision, retiredBoundIds.toList()).toString())
+            store.writeVerified(
+                dir,
+                LedgerCodec.encode(state, episodes, revision, retiredBoundIds.toList(), proposalPumpEpochs.toMap()).toString(),
+            )
         }.getOrDefault(false)
         persistFailed = !ok
+        if (ok) FuseLedgerStore.writeSentinelTolerant(dir)
         return ok
     }
 

@@ -65,6 +65,7 @@ object LedgerCodec {
         val episodes: EpisodeBudgets,
         val revision: Long,
         val retiredBoundIds: List<RetiredBoundId> = emptyList(),
+        val pumpEpochs: Map<String, ProposalPumpEpoch> = emptyMap(),
     )
 
     fun encode(
@@ -72,6 +73,7 @@ object LedgerCodec {
         episodes: EpisodeBudgets,
         revision: Long,
         retiredBoundIds: List<RetiredBoundId> = emptyList(),
+        pumpEpochs: Map<String, ProposalPumpEpoch> = emptyMap(),
     ): JSONObject = JSONObject()
         .put("v", VERSION)
         .put("revision", revision)
@@ -81,6 +83,9 @@ object LedgerCodec {
         // persistent "verbraucht" - sonst wuerde ein prune die Bindungs-
         // Ausschlussmenge leeren und ein fremder Bolus koennte neu binden.
         .put("retiredBoundIds", JSONArray(retiredBoundIds.map { encodeRetired(it) }))
+        // Fix 3 (Re-Audit 6.3): die je Vorschlag gepinnte Pumpen-Epoch - sie
+        // liegt am Adapter, weil der Kern-ProposalEntry kein Feld traegt.
+        .put("proposalPumpEpochs", JSONArray(pumpEpochs.map { (id, ep) -> encodePumpEpoch(id, ep) }))
 
     fun decode(o: JSONObject): Decoded {
         require(o.getInt("v") == VERSION) { "ledger file version ${o.getInt("v")}" }
@@ -91,6 +96,7 @@ object LedgerCodec {
             episodes = decodeEpisodes(o.getJSONObject("episodes")),
             revision = revision,
             retiredBoundIds = decodeRetiredList(o),
+            pumpEpochs = decodePumpEpochs(o),
         )
     }
 
@@ -107,8 +113,12 @@ object LedgerCodec {
 
     fun decodeState(o: JSONObject): LedgerState {
         val entries = o.getJSONArray("entries").objects().map { decodeEntry(it) }
+        // Fix 2 (Re-Audit REG-04): die LISTE pruefen, BEVOR associateBy
+        // Duplikate still last-win zusammenfaltet - danach waere der
+        // Verstoss unsichtbar.
+        LedgerStateValidator.requireUniqueIds(entries)
         val seen = o.getJSONArray("seenEpochs")
-        return LedgerState(
+        val state = LedgerState(
             entries = entries.associateBy { it.proposalId },
             errors = o.getJSONArray("errors").objects().map { decodeError(it) },
             lastSnapshotOrder = o.objOrNull("lastSnapshotOrder")?.let { decodeOrder(it) },
@@ -117,6 +127,11 @@ object LedgerCodec {
             seenEpochs = (0 until seen.length()).map { seen.getString(it) }.toSet(),
             announcedEpochId = o.strOrNull("announcedEpochId"),
         )
+        // Fix 2 (Re-Audit 6.2): die GANZE Generation gegen die
+        // Zustandsinvarianten pruefen - jeder Verstoss wirft und zaehlt beim
+        // Laden als invalid (readNewestValid-Fallback bzw. recoveryHold).
+        LedgerStateValidator.validate(state)
+        return state
     }
 
     // ---- Episodenbudgets --------------------------------------------------
@@ -129,6 +144,7 @@ object LedgerCodec {
         .put("mealArmedTs", e.mealArmedTs)
         .put("markerTurnTs", e.markerTurnTs)
         .put("markerRiseSeen", e.markerRiseSeen)
+        .put("lastAcceptedSourceTs", e.lastAcceptedSourceTs)
         .put("mealDeliveries", JSONArray(e.mealDeliveries.map { (ts, u) -> JSONArray(listOf(ts, u)) }))
 
     fun decodeEpisodes(o: JSONObject): EpisodeBudgets {
@@ -144,6 +160,10 @@ object LedgerCodec {
         // optBoolean: Dateien vor diesem Feld lesen sich als "keine
         // Anstiegsphase gesehen" - die konservative Richtung.
         e.markerRiseSeen = o.optBoolean("markerRiseSeen", false)
+        // Fix 5 (Re-Audit 6.5): optLong, Default 0 - Altdateien lesen sich
+        // als "noch kein Punkt akzeptiert", der naechste akzeptierte Punkt
+        // setzt die Epoch neu (konservativ genug: 0 blockiert nie faelschlich).
+        e.lastAcceptedSourceTs = requireTs("lastAcceptedSourceTs", o.optLong("lastAcceptedSourceTs", 0L))
         val md = o.getJSONArray("mealDeliveries")
         require(md.length() <= MAX_MEAL_DELIVERIES) { "mealDeliveries size ${md.length()}" }
         for (i in 0 until md.length()) {
@@ -173,6 +193,31 @@ object LedgerCodec {
         // Defensiv auf die juengsten Eintraege kappen - der Schreiber haelt
         // dieselbe Grenze, eine groessere Datei ist Fremdinhalt.
         return list.takeLast(FuseLedgerAdapter.MAX_RETIRED_BOUND_IDS)
+    }
+
+    // ---- Gepinnte Pumpen-Epochs (Fix 3, Re-Audit 6.3) ---------------------
+
+    private fun encodePumpEpoch(proposalId: String, ep: ProposalPumpEpoch): JSONObject = JSONObject()
+        .put("proposalId", proposalId)
+        .putNullable("pumpType", ep.pumpTypeName)
+        .putNullable("pumpSerialHash", ep.pumpSerialHash)
+
+    private fun decodePumpEpochs(o: JSONObject): Map<String, ProposalPumpEpoch> {
+        // opt statt get: Dateien vor Fix 3 tragen das Feld nicht - fuer sie
+        // ist "keine Pinnung" der ehrliche Zustand (Altbestand bindet wie
+        // bisher), kein Fehler.
+        val arr = o.optJSONArray("proposalPumpEpochs") ?: return emptyMap()
+        val map = LinkedHashMap<String, ProposalPumpEpoch>()
+        for (obj in arr.objects()) {
+            val id = obj.getString("proposalId")
+            require(id.isNotBlank()) { "pump epoch with blank proposalId" }
+            val ep = ProposalPumpEpoch(obj.strOrNull("pumpType"), obj.strOrNull("pumpSerialHash"))
+            // Ein Eintrag ohne jede Aussage wird nie geschrieben - er waere
+            // eine Pinnung, die nichts pinnt (Fremdinhalt/Korruption).
+            require(ep.pumpTypeName != null || ep.pumpSerialHash != null) { "pump epoch without content for $id" }
+            require(map.put(id, ep) == null) { "duplicate pump epoch for $id" }
+        }
+        return map
     }
 
     // ---- Validierungs-Helfer ---------------------------------------------

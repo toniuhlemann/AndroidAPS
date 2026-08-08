@@ -5,6 +5,7 @@ import app.aaps.core.data.model.IDs
 import app.aaps.core.data.pump.defs.PumpType
 import app.aaps.fuse.core.ledger.AccountingState
 import app.aaps.fuse.core.ledger.DeliveryState
+import app.aaps.fuse.core.util.Sha
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNull
@@ -268,6 +269,119 @@ class FuseLedgerAdapterTest {
         val fresh = FuseLedgerAdapter().also { it.loadOnce(dir, "epoch-c", t0 + 13 * 3600_000L) }
         fresh.bindIdentities(listOf(b))
         assertNull(fresh.state.entries.getValue("p2").identity)
+    }
+
+    // ---- Pumpen-Epoch (Fix 3, Re-Audit c750169, 6.3) ----------------------
+
+    private fun smbFrom(ts: Long, amount: Double, pumpId: Long, pumpType: PumpType?, serial: String?) = BS(
+        timestamp = ts,
+        amount = amount,
+        type = BS.Type.SMB,
+        ids = IDs(pumpType = pumpType, pumpSerial = serial, pumpId = pumpId),
+    )
+
+    /** DER Re-Audit-Repro (Fault-Injection I): Pumpenwechsel im
+     *  Bindungsfenster, gleicher Betrag - der Fakt der NEUEN Pumpe darf die
+     *  alte Zeile nicht binden und nicht ueber deren IOB-Fakt schliessen. */
+    @Test
+    fun `gleicher Betrag von anderer Pumpe bindet nicht`(@TempDir dir: File) {
+        val a = loadedAdapter(dir)
+        a.onPublished(
+            "p1", 0.30, t0, 0L, 0.05,
+            pumpTypeName = PumpType.GENERIC_AAPS.name, pumpSerialHash = Sha.of("vs"),
+        )
+        // Andere Pumpe (Typ UND Serial fremd), gleicher Betrag, im Fenster.
+        a.bindIdentities(listOf(smbFrom(t0 + 5_000L, 0.30, 9L, PumpType.DANA_R, "other")))
+        assertNull(a.state.entries.getValue("p1").identity)
+        assertEquals(0.30, a.view().transportCommitmentU, 1e-12)
+        // Gleicher Typ, anderes Geraet (Serial): ebenfalls KEIN Treffer.
+        a.bindIdentities(listOf(smbFrom(t0 + 10_000L, 0.30, 10L, PumpType.GENERIC_AAPS, "other")))
+        assertNull(a.state.entries.getValue("p1").identity)
+        // Die gepinnte Pumpe bindet weiterhin.
+        a.bindIdentities(listOf(smb(t0 + 20_000L, 0.30, 1L)))
+        assertEquals(1L, a.state.entries.getValue("p1").identity?.pumpId)
+    }
+
+    /** Fehlt die BS-Identitaet bei GEPINNTER Zeile: KEIN Match - ein Fakt,
+     *  der seine Herkunft nicht nennt, schliesst keine herkunftsgebundene
+     *  Zeile. Fehlt dagegen die PINNUNG (Altbestand), bindet er wie bisher. */
+    @Test
+    fun `Null-Toleranz der Epoch-Pinnung hat eine Richtung`(@TempDir dir: File) {
+        val a = loadedAdapter(dir)
+        a.onPublished(
+            "p1", 0.30, t0, 0L, 0.05,
+            pumpTypeName = PumpType.GENERIC_AAPS.name, pumpSerialHash = Sha.of("vs"),
+        )
+        a.bindIdentities(listOf(smbFrom(t0 + 5_000L, 0.30, 9L, pumpType = null, serial = null)))
+        assertNull(a.state.entries.getValue("p1").identity)
+
+        // Altbestand: Zeile OHNE Pinnung nimmt denselben Fakt.
+        a.onPublished("p2", 0.15, t0 + 60_000L, 0L, 0.05)
+        a.bindIdentities(listOf(smbFrom(t0 + 65_000L, 0.15, 10L, pumpType = null, serial = null)))
+        assertEquals(10L, a.state.entries.getValue("p2").identity?.pumpId)
+    }
+
+    /** Die Pinnung ueberlebt persist + Neustart - sonst waere genau das
+     *  Neustart-Fenster wieder ungeschuetzt. */
+    @Test
+    fun `Epoch-Pinnung ueberlebt den Neustart`(@TempDir dir: File) {
+        val a = loadedAdapter(dir, "epoch-a")
+        a.onPublished(
+            "p1", 0.30, t0, 0L, 0.05,
+            pumpTypeName = PumpType.GENERIC_AAPS.name, pumpSerialHash = Sha.of("vs"),
+        )
+        assertTrue(a.persistVerified(dir))
+
+        val b = loadedAdapter(dir, "epoch-b", t0 + 60_000L)
+        b.bindIdentities(listOf(smbFrom(t0 + 5_000L, 0.30, 9L, PumpType.DANA_R, "other")))
+        assertNull(b.state.entries.getValue("p1").identity)
+        b.bindIdentities(listOf(smb(t0 + 10_000L, 0.30, 1L)))
+        assertEquals(1L, b.state.entries.getValue("p1").identity?.pumpId)
+    }
+
+    // ---- Sentinel + Migration (Fix 1, Re-Audit c750169, 6.1/REG-03) -------
+
+    /** Der SENTINEL unterscheidet Datenverlust vom Erststart: Generationen
+     *  weg, Marker noch da -> Hold, kein stiller Leerstart. */
+    @Test
+    fun `Sentinel ohne Generation heisst Datenverlust nicht Erststart`(@TempDir dir: File) {
+        val a = loadedAdapter(dir)
+        a.onPublished("p1", 0.30, t0, 0L, 0.05)
+        assertTrue(a.persistVerified(dir))
+        // Der erste erfolgreiche Persist hat den Marker geschrieben.
+        assertTrue(File(dir, FuseLedgerStore.SENTINEL_NAME).exists())
+
+        // Alle Generationen verschwinden (Aufraeumen, Bug, Fremdzugriff) -
+        // der Marker bleibt.
+        assertTrue(File(dir, FuseLedgerStore.FILE_NAME).delete())
+        val b = FuseLedgerAdapter().also { it.loadOnce(dir, "epoch-b", t0 + 60_000L) }
+        assertEquals(0.0, b.view().transportCommitmentU, 1e-12)
+        assertTrue(b.recoveryHold)
+        assertTrue(b.view().hold)
+        assertEquals(FuseLedgerAdapter.HOLD_REASON_RECOVERY, b.view().holdReason)
+    }
+
+    /** Ausstehende Migration (Fix 1a): loadOnce wird zurueckgestellt, der
+     *  Lauf haelt wie unter recoveryHold an, und persistVerified schreibt
+     *  NICHTS - ein Leerzustand wuerde die Vorgeschichte verdecken und den
+     *  naechsten Migrationsversuch als "schon belegt" blockieren. */
+    @Test
+    fun `ausstehende Migration haelt an und persistiert nicht`(@TempDir dir: File) {
+        val a = FuseLedgerAdapter()
+        a.noteMigrationFailed()
+        a.loadOnce(dir, "epoch-a", t0)
+        assertTrue(a.view().hold)
+        assertEquals(FuseLedgerAdapter.HOLD_REASON_MIGRATION, a.view().holdReason)
+        assertFalse(a.persistVerified(dir))
+        assertFalse(File(dir, FuseLedgerStore.FILE_NAME).exists())
+
+        // Naechster invoke: Migration gelungen -> regulaeres Laden, und der
+        // naechste erfolgreiche Persist loescht die sticky Persist-Sperre.
+        a.noteMigrationDone()
+        a.loadOnce(dir, "epoch-a", t0)
+        assertTrue(a.persistVerified(dir))
+        assertFalse(a.view().hold)
+        assertNull(a.view().holdReason)
     }
 
     // ---- Aufraeumen -------------------------------------------------------

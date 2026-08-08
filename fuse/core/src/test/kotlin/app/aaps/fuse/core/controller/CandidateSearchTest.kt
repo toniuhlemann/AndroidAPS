@@ -467,4 +467,45 @@ class CandidateSearchTest {
             CandidateSearch.search(prediction({ 400.0 }, { 400.0 }), kernel(), isfSlots, band, caps(maxSmb = -1.0)).reject
         )
     }
+
+    // ---- FIX 6b: finale Wirkungspruefung der Sofort-Freigabe ---------------
+
+    /** Flache Bahn bei 120, Boden 70, 1 U wirkt 100 mg/dl bis Minute 120:
+     *  0,3 U druecken auf 90 (sicher), 0,6 U auf 60 (Boden gerissen). */
+    @Test
+    fun `verifyGuardFloor laesst sichere Mengen durch und reisst am Boden`() {
+        val p = prediction({ 120.0 }, { 120.0 })
+        assertNull(CandidateSearch.verifyGuardFloor(p, kernel(), isfSlots, band, 0.3))
+        assertEquals(
+            CandidateSearch.Reject.GUARD_FLOOR,
+            CandidateSearch.verifyGuardFloor(p, kernel(), isfSlots, band, 0.6)
+        )
+    }
+
+    /** Technische Ausfaelle sind bei der NACHPRUEFUNG fail-closed - anders
+     *  als beim Suche-Gate gibt es hier keinen fail-open-Basispfad. */
+    @Test
+    fun `verifyGuardFloor lehnt technische Ausfaelle ab`() {
+        val p = prediction({ 120.0 }, { 120.0 })
+        assertEquals(
+            CandidateSearch.Reject.NON_FINITE,
+            CandidateSearch.verifyGuardFloor(p, kernel(), isfSlots, band, Double.NaN)
+        )
+        assertEquals(
+            CandidateSearch.Reject.NON_FINITE,
+            CandidateSearch.verifyGuardFloor(p, kernel(), isfSlots, band, 0.0)
+        )
+        // Lieferung hinter dem Freigabehorizont: Wirkung im Fenster unpruefbar.
+        assertEquals(
+            CandidateSearch.Reject.DELIVERY_AFTER_RELEASE,
+            CandidateSearch.verifyGuardFloor(p, kernel(deliveryTs = anchor + 31 * 60_000L), isfSlots, band, 0.3)
+        )
+        // ISF-Luecke im Haftungsfenster.
+        assertEquals(
+            CandidateSearch.Reject.ISF_SLOT_MISSING,
+            CandidateSearch.verifyGuardFloor(
+                p, kernel(), listOf(IsfSlot(anchor, anchor + 30 * 60_000L, isf)), band, 0.3
+            )
+        )
+    }
 }

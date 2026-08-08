@@ -40,6 +40,7 @@ import app.aaps.fuse.core.controller.CandidateSearch
 import app.aaps.fuse.core.controller.OnsetChannel
 import app.aaps.fuse.core.controller.PrimeRelease
 import app.aaps.fuse.core.insulin.KernelOutcome
+import app.aaps.fuse.core.insulin.UnitInsulinKernel
 import app.aaps.fuse.core.insulin.UnitInsulinKernelBuilder
 import app.aaps.fuse.core.predictor.DriveDiscount
 import app.aaps.fuse.core.predictor.DriveEstimate
@@ -316,6 +317,15 @@ class FuseCycleRunner(
         // haelt die TBR-Sicherheit aufrecht (abortTbr).
         if (!step.accepted) return abort("signal duplicate/out-of-order (accepted=false)", signal, step = step)
 
+        // FIX-PASS 3 Nr. 5 (Re-Audit 6.5): genau-einmal je Glukose-Epoch auch
+        // UEBER Prozessgrenzen - der Observer-Speicher stirbt mit dem Prozess,
+        // die Ledger-Datei nicht. Konsumiert wird beim AKZEPTIERTEN Step,
+        // nicht erst bei der Dosis: auch ein spaeter abgebrochener Zyklus darf
+        // nach Restart nicht erneut dosierfaehig werden.
+        if (signal.sourceTs <= ledger.episodes.lastAcceptedSourceTs)
+            return abort("signal epoch already consumed (restart dedupe)", signal, step = step)
+        ledger.episodes.lastAcceptedSourceTs = signal.sourceTs
+
         // ---- 3 Bahn --------------------------------------------------------
         val cfg = when (val c = CoreInputGuard.build { readConfig() }) {
             is CoreInputGuard.Outcome.Built  -> c.value
@@ -551,9 +561,21 @@ class FuseCycleRunner(
         // Basis unveraendert und stehen als candidateGap im Export.
         var candidateResult: CandidateSearch.Result? = null
         var candidateGap: String? = null
-        val vetted = if (baseDecision.smbU <= 0.0) baseDecision else {
+        // FIX 6b (Re-Audit c750169, 6.4): Band und Kernel-Bau stehen VOR der
+        // Suche, weil auch die Sofort-Freigabe dieselbe Wirkungspruefung
+        // braucht - gerade dann, wenn die Basis NO_DEMAND war und die Suche
+        // deshalb nie lief.
+        val candidateBand = CandidateSearch.Band(
+            releaseTargetLowMgdl = target - CandidateGate.RELEASE_LOW_MARGIN_MGDL,
+            releaseTargetHighMgdl = target,
+            demandDeadbandMgdl = CandidateGate.DEMAND_DEADBAND_MGDL,
+            guardFloorMgdl = cfg.guardFloorMgdl,
+            releaseHorizonMin = cfg.releaseHorizonMin,
+            liabilityHorizonMin = cfg.liabilityHorizonMin,
+        )
+        fun buildKernel(): KernelOutcome {
             val insulin = activePlugin.activeInsulin
-            when (val k = UnitInsulinKernelBuilder.build(
+            return UnitInsulinKernelBuilder.build(
                 sampler = AapsUnitInsulinSampler(insulin, profile.dia, computeTs),
                 deliveryTs = computeTs,
                 model = InsulinModelProvenance(
@@ -563,25 +585,23 @@ class FuseCycleRunner(
                     codeProvenance = "activePlugin.activeInsulin",
                 ),
                 insulinPluginId = insulin.id.name,
-            )) {
+            )
+        }
+        var kernelForVerify: UnitInsulinKernel? = null
+        val vetted = if (baseDecision.smbU <= 0.0) baseDecision else {
+            when (val k = buildKernel()) {
                 is KernelOutcome.Rejected -> {
                     candidateGap = "KERNEL_" + k.reason.name
                     baseDecision
                 }
 
                 is KernelOutcome.Ok       -> {
+                    kernelForVerify = k.kernel
                     candidateResult = CandidateSearch.search(
                         prediction = prediction,
                         kernel = k.kernel,
                         isfSlots = built.input.isfSlots,
-                        band = CandidateSearch.Band(
-                            releaseTargetLowMgdl = target - CandidateGate.RELEASE_LOW_MARGIN_MGDL,
-                            releaseTargetHighMgdl = target,
-                            demandDeadbandMgdl = CandidateGate.DEMAND_DEADBAND_MGDL,
-                            guardFloorMgdl = cfg.guardFloorMgdl,
-                            releaseHorizonMin = cfg.releaseHorizonMin,
-                            liabilityHorizonMin = cfg.liabilityHorizonMin,
-                        ),
+                        band = candidateBand,
                         caps = CandidateSearch.Caps(
                             // Budgetpolicy bis KC2-53 offen: maxSmb als
                             // neutraler Platzhalter, bindet nie unterhalb der
@@ -638,11 +658,24 @@ class FuseCycleRunner(
             // In-Flight-Mengen doppelt.
             transportCommitmentU = ledgerView.transportCommitmentU,
         )
+        // FIX 6b (Re-Audit c750169, 6.4): hebt die Sofort-Freigabe UEBER die
+        // kandidatengepruefte Menge hinaus, durchlaeuft die ANGEHOBENE Menge
+        // dieselbe harte Wirkungspruefung wie jeder Suchkandidat (Guardbahn
+        // mit Kandidatenwirkung ueber den ganzen Haftungshorizont). Ohne
+        // verfuegbaren Kernel oder bei JEDEM Reject faellt die Anhebung weg
+        // (fail-closed) - die Anhebung ist ein Extra, kein Grundbedarf.
+        val verifiedLift = if (lifted.smbU > vetted.smbU + 1e-9) {
+            val kernel = kernelForVerify ?: (buildKernel() as? KernelOutcome.Ok)?.kernel
+            val veto = if (kernel == null) CandidateSearch.Reject.MODEL_HORIZON_TOO_SHORT
+            else CandidateSearch.verifyGuardFloor(prediction, kernel, built.input.isfSlots, candidateBand, lifted.smbU)
+            if (veto == null) lifted
+            else vetted.copy(bindingLimit = vetted.bindingLimit + "|primeVeto:${veto.name}")
+        } else lifted
         // HART NACH dem Lift (Audit R95, Fix 3): Ratio-Pfad (Kernel-Ausfall)
         // und Sofort-Freigabe laufen am LEDGER_HOLD-Reject der Suche vorbei -
         // ohne diesen Riegel waere der Hold genau ueber die Pfade umgehbar,
         // die ohne Wirkungspruefung dosieren.
-        val decision = LedgerHoldGate.apply(lifted, ledgerView.hold)
+        val decision = LedgerHoldGate.apply(verifiedLift, ledgerView.hold)
         val primeWindowOpen = mealMarkerActive && markerTs > 0 &&
             computeTs - markerTs < PrimeRelease.WINDOW_MIN * 60_000L
 

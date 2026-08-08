@@ -150,28 +150,64 @@ class FusePlugin @Inject constructor(
      * Die alten Dateien werden nach `.migrated` umbenannt, nicht geloescht -
      * ein Rueckbau/Vergleich bleibt moeglich, aber ein zweiter Lauf findet
      * sie nicht mehr als Kandidaten.
+     *
+     * FAIL-CLOSED (Fix 1a, Re-Audit c750169 REG-03): das Prozessflag wird
+     * erst NACH verifiziertem Abschluss gesetzt. Vorher stand es VOR dem
+     * fehlbaren mkdirs/copy - ein Wurf dort liess den naechsten loadOnce ein
+     * leeres Privatverzeichnis als echten Erststart lesen, und die offene
+     * Haftung samt Episodenbudgets war weg. Jetzt: jeder Fehlschlag liefert
+     * false (der naechste invoke versucht erneut), und der Aufrufer setzt
+     * fuer diesen Lauf den Migrations-Hold am Adapter.
+     *
+     * Kopiert wird ueber eine `.migtmp`-Zwischendatei mit Rueckleseprobe und
+     * erst dann umbenannt: ein halb geschriebenes Ziel darf nie wie eine
+     * fertige Generation aussehen - es wuerde den naechsten Versuch als
+     * "schon migriert" blockieren und loadOnce eine kaputte Datei vorsetzen.
+     *
+     * @return true, wenn die Vorgeschichte sicher uebernommen ist oder es
+     * nachweislich nichts zu uebernehmen gibt.
      */
-    private fun migrateLedgerDirOnce() {
-        if (ledgerMigrationDone) return
-        ledgerMigrationDone = true
-        runCatching {
+    private fun migrateLedgerDirOnce(): Boolean {
+        if (ledgerMigrationDone) return true
+        val ok = runCatching {
             val newDir = ledgerDir()
             val names = listOf(
                 app.aaps.fuse.plugin.ledger.FuseLedgerStore.FILE_NAME,
                 app.aaps.fuse.plugin.ledger.FuseLedgerStore.FILE_NAME + ".bak",
             )
-            if (names.any { File(newDir, it).exists() }) return@runCatching
+            if (names.any { File(newDir, it).exists() }) return@runCatching true
             val oldDir = File(Environment.getExternalStorageDirectory(), "Documents/aapsLogs")
             val oldFiles = names.map { File(oldDir, it) }.filter { it.exists() }
-            if (oldFiles.isEmpty()) return@runCatching
-            newDir.mkdirs()
+            if (oldFiles.isEmpty()) return@runCatching true
+            if (!newDir.mkdirs() && !newDir.exists()) return@runCatching false
             for (old in oldFiles) {
-                old.copyTo(File(newDir, old.name), overwrite = false)
+                val content = old.readText(Charsets.UTF_8)
+                val tmp = File(newDir, old.name + ".migtmp")
+                tmp.writeText(content, Charsets.UTF_8)
+                // Rueckleseprobe wie beim Store: "geschrieben" heisst erst
+                // dann etwas, wenn der Inhalt wieder herauskommt.
+                if (tmp.readText(Charsets.UTF_8) != content) return@runCatching false
+                if (!tmp.renameTo(File(newDir, old.name))) return@runCatching false
+            }
+            // Fix 1b: der Sentinel haelt persistent fest, DASS es einen
+            // Ledger gab - faellt das private Verzeichnis spaeter leer aus,
+            // ist das Datenverlust und kein Erststart.
+            app.aaps.fuse.plugin.ledger.FuseLedgerStore.writeSentinelTolerant(newDir)
+            for (old in oldFiles) {
+                // Tolerant: das Ziel traegt die Generation bereits; ein
+                // haengengebliebenes Original wird beim naechsten Lauf durch
+                // den "Ziel existiert schon"-Fruehausstieg ignoriert.
                 if (!old.renameTo(File(oldDir, old.name + ".migrated")))
                     aapsLogger.error(LTag.APS, "FUSE ledger migration: rename to .migrated failed for ${old.name}")
             }
             aapsLogger.debug(LTag.APS, "FUSE ledger migrated to app-private storage (${oldFiles.size} file(s))")
-        }.onFailure { aapsLogger.error(LTag.APS, "FUSE ledger migration failed", it) }
+            true
+        }.getOrElse {
+            aapsLogger.error(LTag.APS, "FUSE ledger migration failed", it)
+            false
+        }
+        if (ok) ledgerMigrationDone = true
+        return ok
     }
 
     /** Was der letzte Zyklus gesehen hat — Grundlage des spaeteren
@@ -313,6 +349,11 @@ class FusePlugin @Inject constructor(
         return ts > 0 && now - ts in 0..(app.aaps.fuse.core.controller.OnsetChannel.MARKER_WINDOW_MIN * 60_000L)
     }
 
+    /** Fix 6-Catch (Re-Audit c750169, 6.6): das letzte ERFOLGREICH gefaellte
+     *  Urteil von [specialEnableCondition]. true als Startwert entspricht dem
+     *  bisherigen Init-Verhalten, BEVOR je eine Pumpe gesehen wurde. */
+    @Volatile private var lastEnableVerdict = true
+
     override fun specialEnableCondition(): Boolean =
         try {
             // Audit R95 F-P0-09: STARTVERWEIGERUNG statt nur Per-Zyklus-Riegel.
@@ -320,11 +361,16 @@ class FusePlugin @Inject constructor(
             // aktivieren - das TOCTOU-Fenster des Gates setzt sonst voraus,
             // dass die Kombination ueberhaupt konfigurierbar ist.
             val pump = activePlugin.activePump
-            pump.pumpDescription.isTempBasalCapable && FusePumpGate.evaluate(pump).allowed
+            val verdict = pump.pumpDescription.isTempBasalCapable && FusePumpGate.evaluate(pump).allowed
+            lastEnableVerdict = verdict
+            verdict
         } catch (_: Exception) {
             // Kann waehrend der Initialisierung fehlschlagen, bevor ein
-            // Pumpenplugin steht.
-            true
+            // Pumpenplugin steht. Dann gilt das LETZTE bekannte Urteil statt
+            // pauschal true: ein transienter Init-Fehler darf ein einmal
+            // gefaelltes Realpumpen-NEIN nicht in ein JA verwandeln
+            // (Re-Audit 6.6).
+            lastEnableVerdict
         }
 
     override fun invoke(initiator: String, tempBasalFallback: Boolean) {
@@ -335,9 +381,18 @@ class FusePlugin @Inject constructor(
         // dem Lauf: der Zyklus rechnet mit den restaurierten Commitments und
         // Episodenbudgets, ein nachtraegliches Laden kaeme eine Dosis zu spaet.
         // Davor der einmalige Umzug ins app-private Verzeichnis (Fix 8).
-        migrateLedgerDirOnce()
-        runCatching { ledgerAdapter.loadOnce(ledgerDir(), sessionId, dateUtil.now()) { aapsLogger.error(LTag.APS, it) } }
-            .onFailure { aapsLogger.error(LTag.APS, "FUSE ledger load failed", it) }
+        // FAIL-CLOSED (Fix 1a, REG-03): schlaegt der Umzug fehl, wird NICHT
+        // geladen (loadOnce bliebe sonst auf dem leeren Ziel haengen) und der
+        // Adapter haelt diesen Lauf wie unter recoveryHold an - kein positiver
+        // SMB, solange die Vorgeschichte nicht sicher uebernommen ist. Der
+        // naechste invoke versucht den Umzug erneut.
+        if (migrateLedgerDirOnce()) {
+            ledgerAdapter.noteMigrationDone()
+            runCatching { ledgerAdapter.loadOnce(ledgerDir(), sessionId, dateUtil.now()) { aapsLogger.error(LTag.APS, it) } }
+                .onFailure { aapsLogger.error(LTag.APS, "FUSE ledger load failed", it) }
+        } else {
+            ledgerAdapter.noteMigrationFailed()
+        }
 
         // `LoopPlugin.invoke` hat try/finally OHNE catch: eine Ausnahme von hier
         // wuerde den gesamten Loop-Durchlauf abbrechen — inklusive der Schritte
@@ -422,13 +477,26 @@ class FusePlugin @Inject constructor(
             dir = ledgerDir(),
             events = {
                 outcome?.let { o ->
-                    if (rt.units != null) ledgerAdapter.onPublished(
-                        proposalId = cycleId,
-                        unitsU = rt.units!!,
-                        decisionTs = o.computeTs,
-                        latestBolusTs = o.treatmentView?.latestBolusTs ?: 0L,
-                        bolusStepU = o.state?.pumpIncrementU ?: Double.NaN,
-                    )
+                    if (rt.units != null) {
+                        // Fix 3 (Re-Audit 6.3): die JETZT aktive Pumpe wird an
+                        // den Vorschlag gepinnt - ein spaeter gleich grosser
+                        // SMB einer ANDEREN (z.B. frisch gewechselten) Pumpe
+                        // darf die Zeile nicht binden. Ableitung wie
+                        // LedgerFacts aus dem BS-Datensatz: PumpType.name und
+                        // Sha des Serials. runCatching je Teil: eine zickende
+                        // Pumpen-API degradiert nur zur Alt-Bindung (ohne
+                        // Pinnung), sie wirft den Ledger-Schritt nicht ab.
+                        val pump = runCatching { activePlugin.activePump }.getOrNull()
+                        ledgerAdapter.onPublished(
+                            proposalId = cycleId,
+                            unitsU = rt.units!!,
+                            decisionTs = o.computeTs,
+                            latestBolusTs = o.treatmentView?.latestBolusTs ?: 0L,
+                            bolusStepU = o.state?.pumpIncrementU ?: Double.NaN,
+                            pumpTypeName = pump?.let { runCatching { it.model().name }.getOrNull() },
+                            pumpSerialHash = pump?.let { runCatching { app.aaps.fuse.core.util.Sha.of(it.serialNumber()) }.getOrNull() },
+                        )
+                    }
                     o.treatmentView?.let { v ->
                         ledgerAdapter.bindIdentities(v.boluses)
                         ledgerAdapter.onCycleSnapshot(v.facts, v.snapshotHash, o.computeTs)

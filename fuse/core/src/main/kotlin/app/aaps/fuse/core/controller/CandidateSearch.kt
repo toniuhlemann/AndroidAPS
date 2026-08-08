@@ -105,6 +105,64 @@ object CandidateSearch {
         val candidatesEvaluated: Int,
     )
 
+    /**
+     * FIX 6b (Re-Audit c750169, 6.4): finale WIRKUNGSPRUEFUNG einer bereits
+     * beschlossenen Menge - fuer die Sofort-Freigabe, die eine
+     * kandidatengekappte Basis wieder anheben kann.
+     *
+     * Bewusst OHNE das Eintrittstor der Suche (NO_DEMAND wuerde die
+     * Sofort-Freigabe strukturell toeten - genau deshalb sass sie hinter dem
+     * CandidateGate), aber MIT der harten Sicherheitsachse: die Guardbahn
+     * inklusive der Wirkung dieser Menge darf den Boden ueber den gesamten
+     * Haftungshorizont nicht reissen. Alle technischen Ausfaelle sind hier
+     * FAIL-CLOSED - `null` heisst sicher, JEDER Reject verweigert die
+     * Anhebung. Eine Anhebung ist ein Extra, kein Grundbedarf.
+     *
+     * Die Vorpruefungen und die Wirkungsintegration sind bewusst dieselben
+     * Regeln wie in [search] (rechte Integrationsregel, Anker-Minimum R83-F1,
+     * Lieferintervall-Anteil) - Aenderungen dort muessen hier nachgezogen
+     * werden.
+     */
+    fun verifyGuardFloor(
+        prediction: PredictorResult,
+        kernel: UnitInsulinKernel,
+        isfSlots: List<IsfSlot>,
+        band: Band,
+        candidateU: Double,
+    ): Reject? {
+        if (!candidateU.isFinite() || candidateU <= 0.0) return Reject.NON_FINITE
+        if (band.violation() != null) return Reject.INVALID_BAND
+        val points = prediction.points
+        if (points.isEmpty()) return Reject.HORIZON_MISSING
+        val releaseIdx = points.indexOfFirst { it.offsetMin == band.releaseHorizonMin }
+        val liabilityIdx = points.indexOfFirst { it.offsetMin == band.liabilityHorizonMin }
+        if (releaseIdx < 0 || liabilityIdx < 0) return Reject.HORIZON_MISSING
+        val anchorTs = prediction.predictionAnchorTs
+        if (!prediction.bgAtAnchor.isFinite()) return Reject.GRID_INCONSISTENT
+        for (i in points.indices) {
+            val p = points[i]
+            if (p.offsetMin != i + 1 || p.tsMs != anchorTs + (i + 1) * 60_000L) return Reject.GRID_INCONSISTENT
+        }
+        if (kernel.deliveryTs < anchorTs) return Reject.DELIVERY_BEFORE_ANCHOR
+        if (kernel.deliveryTs >= points[releaseIdx].tsMs) return Reject.DELIVERY_AFTER_RELEASE
+        if (!kernel.covers(points[maxOf(releaseIdx, liabilityIdx)].tsMs)) return Reject.MODEL_HORIZON_TOO_SHORT
+
+        var acc = 0.0
+        var minLower = prediction.bgAtAnchor
+        for (i in 0..liabilityIdx) {
+            val p = points[i]
+            val isf = ProfileSlots.isfAt(isfSlots, p.tsMs) ?: return Reject.ISF_SLOT_MISSING
+            val previousTs = if (i == 0) anchorTs else points[i - 1].tsMs
+            val intervalStart = maxOf(previousTs, kernel.deliveryTs)
+            val overlapMin = if (p.tsMs > intervalStart) (p.tsMs - intervalStart) / 60_000.0 else 0.0
+            if (overlapMin > 0.0) acc += kernel.activityAt(p.tsMs, 1.0) * isf * overlapMin
+            if (!acc.isFinite()) return Reject.NON_FINITE
+            val v = p.lowerBg - candidateU * acc
+            if (v < minLower) minLower = v
+        }
+        return if (minLower < band.guardFloorMgdl) Reject.GUARD_FLOOR else null
+    }
+
     fun search(
         prediction: PredictorResult,
         kernel: UnitInsulinKernel,

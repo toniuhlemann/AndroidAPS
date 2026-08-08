@@ -250,7 +250,154 @@ class LedgerCodecTest {
         assertThrows(IllegalArgumentException::class.java) { LedgerCodec.decode(JSONObject(o.toString())) }
     }
 
+    // ---- Ganzheitlicher State-Validator (Re-Audit c750169, REG-04/6.2) ----
+
+    /** DER Re-Audit-Repro: zwei Eintraege derselben Id - vorher faltete
+     *  associateBy still last-win, und ein spaeterer unbewiesener Eintrag
+     *  konnte einen frueheren offenen ueberschreiben. Jetzt: Wurf (-> beim
+     *  Laden invalid -> Hold statt Uebernahme). */
+    @Test
+    fun `doppelte proposalId wirft beim Decode`() {
+        val state = LedgerReducer.reduceAll(LedgerState(), throughPump(0.30), cfg)
+        val o = LedgerCodec.encode(state, EpisodeBudgets(), 1L)
+        val entries = o.getJSONObject("state").getJSONArray("entries")
+        entries.put(JSONObject(entries.getJSONObject(0).toString()))
+        assertThrows(IllegalArgumentException::class.java) { LedgerCodec.decode(JSONObject(o.toString())) }
+    }
+
+    @Test
+    fun `leere proposalId wirft beim Decode`() {
+        val state = LedgerReducer.reduceAll(LedgerState(), throughPump(0.30), cfg)
+        val o = LedgerCodec.encode(state, EpisodeBudgets(), 1L)
+        o.getJSONObject("state").getJSONArray("entries").getJSONObject(0).put("proposalId", "")
+        assertThrows(IllegalArgumentException::class.java) { LedgerCodec.decode(JSONObject(o.toString())) }
+    }
+
+    /** CONFIRMED_ZERO ohne persistierten Nachweis (provenDeliveredU) kann
+     *  keine eigene Datei tragen - der Reducer setzt den Wert nur in
+     *  onDeliveryProven, und der schreibt IMMER die bewiesene Menge. */
+    @Test
+    fun `CONFIRMED_ZERO ohne Nachweis wirft beim Decode`() {
+        val state = LedgerReducer.reduceAll(LedgerState(), throughPump(0.30), cfg)
+        val o = LedgerCodec.encode(state, EpisodeBudgets(), 1L)
+        o.getJSONObject("state").getJSONArray("entries").getJSONObject(0)
+            .put("delivery", DeliveryState.CONFIRMED_ZERO.name)
+        assertThrows(IllegalArgumentException::class.java) { LedgerCodec.decode(JSONObject(o.toString())) }
+    }
+
+    /** Gegenprobe: ein ECHTER Nullnachweis (DeliveryProven 0.0) ist gueltig
+     *  und ueberlebt den Round-Trip unveraendert. */
+    @Test
+    fun `CONFIRMED_ZERO mit Nachweis passiert unveraendert`() {
+        val s = LedgerReducer.reduceAll(
+            LedgerState(),
+            throughPump(0.30) + listOf(LedgerEvent.DeliveryProven(id, 0.0, "pump history")),
+            cfg,
+        )
+        assertEquals(DeliveryState.CONFIRMED_ZERO, s.entries.getValue(id).delivery)
+        val back = roundTrip(s)
+        assertEquals(s, back)
+        assertEquals(0.0, back.entries.getValue(id).amounts.provenDeliveredU!!, 0.0)
+    }
+
+    /** Die gepinnten Policies muessen STRIKT positiv sein: mit 0 entarten
+     *  Mengenvergleich bzw. Tick-Kanonisierung erst zur Laufzeit. */
+    @Test
+    fun `amountEpsU 0 wirft beim Decode`() {
+        val state = LedgerReducer.reduceAll(LedgerState(), throughPump(0.30), cfg)
+        val o = LedgerCodec.encode(state, EpisodeBudgets(), 1L)
+        o.getJSONObject("state").getJSONArray("entries").getJSONObject(0).put("amountEpsU", 0.0)
+        assertThrows(IllegalArgumentException::class.java) { LedgerCodec.decode(JSONObject(o.toString())) }
+    }
+
+    @Test
+    fun `bolusStepU 0 wirft beim Decode`() {
+        val state = LedgerReducer.reduceAll(LedgerState(), throughPump(0.30), cfg)
+        val o = LedgerCodec.encode(state, EpisodeBudgets(), 1L)
+        o.getJSONObject("state").getJSONArray("entries").getJSONObject(0).put("bolusStepU", 0.0)
+        assertThrows(IllegalArgumentException::class.java) { LedgerCodec.decode(JSONObject(o.toString())) }
+    }
+
+    /** Eine Identitaet, die zu einer ANDEREN Zeile gehoert, ist ein kopierter
+     *  Nachweis - kein Zustand, den dieser Code je schreibt. */
+    @Test
+    fun `fremde identity-proposalId wirft beim Decode`() {
+        val s = LedgerReducer.reduceAll(
+            LedgerState(),
+            throughPump(0.30) + listOf(LedgerEvent.PumpIdentityBound(id, null, 4711L, "VIRTUAL", "h", t0)),
+            cfg,
+        )
+        val o = LedgerCodec.encode(s, EpisodeBudgets(), 1L)
+        o.getJSONObject("state").getJSONArray("entries").getJSONObject(0)
+            .getJSONObject("identity").put("proposalId", "fremd#1")
+        assertThrows(IllegalArgumentException::class.java) { LedgerCodec.decode(JSONObject(o.toString())) }
+    }
+
+    /** Nicht-monotone Mengenachse OHNE den zugehoerigen Befund: Fremdinhalt,
+     *  wirft. MIT Befund (der Reducer persistiert die verletzte Kette als
+     *  failClosed-Beweisstueck) ist sie gueltiger Zustand und ueberlebt. */
+    @Test
+    fun `Kettenverletzung nur mit Befund gueltig`() {
+        // Ohne Befund: rtPublishedU groesser als proposedU hochgetampert.
+        val clean = LedgerReducer.reduceAll(LedgerState(), throughPump(0.30), cfg)
+        val o = LedgerCodec.encode(clean, EpisodeBudgets(), 1L)
+        o.getJSONObject("state").getJSONArray("entries").getJSONObject(0)
+            .getJSONObject("amounts").put("rtPublishedU", 0.40)
+        assertThrows(IllegalArgumentException::class.java) { LedgerCodec.decode(JSONObject(o.toString())) }
+
+        // Mit Befund: der Reducer selbst hat die Verletzung erlebt und als
+        // CONSTRAINT_CHAIN_INVALID an der Zeile festgehalten.
+        val flagged = LedgerReducer.reduceAll(
+            LedgerState(),
+            listOf(
+                LedgerEvent.Proposed(id, 0.30, t0, t0 - 600_000L),
+                LedgerEvent.AmountObserved(id, AmountStage.RT_PUBLISHED, 0.30),
+                LedgerEvent.AmountObserved(id, AmountStage.LOOP_CONSTRAINED, 0.40),
+            ),
+            cfg,
+        )
+        assertTrue(LedgerError.CONSTRAINT_CHAIN_INVALID in flagged.entries.getValue(id).errors)
+        assertEquals(flagged, roundTrip(flagged))
+    }
+
     // ---- Neue persistierte Felder -----------------------------------------
+
+    /** lastAcceptedSourceTs (Fix 5, Re-Audit 6.5): Round-Trip plus
+     *  Altdatei-Toleranz (fehlendes Feld liest sich als 0 - "noch kein
+     *  Punkt akzeptiert"). */
+    @Test
+    fun `lastAcceptedSourceTs ueberlebt den Round-Trip und fehlt tolerant`() {
+        val ep = EpisodeBudgets().apply { lastAcceptedSourceTs = t0 }
+        val decoded = LedgerCodec.decode(JSONObject(LedgerCodec.encode(LedgerState(), ep, 0L).toString()))
+        assertEquals(t0, decoded.episodes.lastAcceptedSourceTs)
+
+        val alt = LedgerCodec.encode(LedgerState(), EpisodeBudgets(), 0L)
+        alt.getJSONObject("episodes").remove("lastAcceptedSourceTs")
+        assertEquals(0L, LedgerCodec.decode(JSONObject(alt.toString())).episodes.lastAcceptedSourceTs)
+    }
+
+    /** proposalPumpEpochs (Fix 3, Re-Audit 6.3): Round-Trip, Altdatei ohne
+     *  Feld liest sich als "keine Pinnung", Duplikate werfen. */
+    @Test
+    fun `proposalPumpEpochs ueberleben den Round-Trip`() {
+        val epochs = mapOf(
+            "p1" to ProposalPumpEpoch("GENERIC_AAPS", "hash1"),
+            "p2" to ProposalPumpEpoch("DANA_R", null),
+        )
+        val decoded = LedgerCodec.decode(
+            JSONObject(LedgerCodec.encode(LedgerState(), EpisodeBudgets(), 0L, emptyList(), epochs).toString())
+        )
+        assertEquals(epochs, decoded.pumpEpochs)
+
+        val alt = LedgerCodec.encode(LedgerState(), EpisodeBudgets(), 0L)
+        alt.remove("proposalPumpEpochs")
+        assertTrue(LedgerCodec.decode(JSONObject(alt.toString())).pumpEpochs.isEmpty())
+
+        val dup = LedgerCodec.encode(LedgerState(), EpisodeBudgets(), 0L, emptyList(), mapOf("p1" to ProposalPumpEpoch("X", null)))
+        val arr = dup.getJSONArray("proposalPumpEpochs")
+        arr.put(JSONObject(arr.getJSONObject(0).toString()))
+        assertThrows(IllegalArgumentException::class.java) { LedgerCodec.decode(JSONObject(dup.toString())) }
+    }
 
     /** markerRiseSeen (Fix-Pass 2 Nr. 4): Round-Trip plus Altdatei-Toleranz
      *  (fehlendes Feld liest sich als false - die konservative Richtung). */
