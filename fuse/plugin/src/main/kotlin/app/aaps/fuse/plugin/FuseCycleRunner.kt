@@ -23,6 +23,7 @@ import app.aaps.fuse.core.adapter.CycleAssembly
 import app.aaps.fuse.core.controller.FuseController
 import app.aaps.fuse.core.controller.LedgerHoldGate
 import app.aaps.fuse.core.controller.MarkerScope
+import app.aaps.fuse.core.controller.SubStepAccumulator
 import app.aaps.fuse.core.ledger.AccountedTreatment
 import app.aaps.fuse.plugin.ledger.FuseLedgerAdapter
 import app.aaps.fuse.plugin.ledger.LedgerFacts
@@ -701,18 +702,68 @@ class FuseCycleRunner(
             else CandidateSearch.verifyGuardFloor(
                 prediction, kernelFinal, built.input.isfSlots, candidateBand, u, restraint = restraint,
             )
-        val verifiedLift = if (lifted.smbU <= 0.0) lifted else {
+        // REST-ZAEHLER (Toni 09.08.): was die Pumpenschritt-Rasterung verwirft,
+        // wird aufgeschoben statt vernichtet - sonst faellt jede Absicht unter
+        // 0,05 U dauerhaft aus (insulinReq 0,24 x Ratio 0,15 = 0,036 U), und
+        // FUSE hat keine positive TBR, die den Rest wie bei autoISF traegt.
+        // Freigegeben wird immer nur EIN ganzer Schritt, und der geht unten
+        // durch dieselbe Wirkungspruefung wie jede andere Menge.
+        // (1) NUR RATIO-RESTE (Tonis Vertrag 09.08.): ein Rest, der aus einer
+        // SICHERHEITSgrenze stammt (iobTH, maxIOB, Schwanz, Onset-Huelle,
+        // Freigabebudget), ist kein aufgeschobener Bedarf, sondern eine
+        // Absage - der darf nie gesammelt werden. Aufgeschoben wird
+        // ausschliesslich, was die Ratio-Teilung selbst abgeschnitten hat.
+        val ratioIsBinding = lifted.bindingLimit == "smbRatio"
+        // (2) DER SCHRITT MUSS IN JEDE GRENZE PASSEN: `raw` lag unter dem
+        // Pumpenschritt, also koennen andere Kappen zwischen `raw` und dem
+        // Schritt liegen. Ein voller Schritt wird nur freigegeben, wenn ALLE
+        // Mengengrenzen ihn tragen - sonst waere der Zaehler ein Weg an
+        // Sicherheitskappen vorbei.
+        val otherCapsU = minOf(
+            cfg.maxSmbU,
+            state.iobThU - state.capIobU - ledgerView.transportCommitmentU,
+            state.maxIobU - state.capIobU - ledgerView.transportCommitmentU,
+            tail?.takeIf { it.usable }?.headroomU ?: Double.MAX_VALUE,
+            if (onset.active) onset.remainingU else Double.MAX_VALUE,
+        )
+        val subStepDiscard = ledgerView.hold || reboundWindow || !ratioIsBinding ||
+            !otherCapsU.isFinite() || otherCapsU + 1e-12 < bolusStep ||
+            (lifted.block != FuseController.Block.NONE && lifted.block != FuseController.Block.BELOW_PUMP_INCREMENT) ||
+            (signal.ukfRatePerMin.isFinite() && signal.ukfRatePerMin < 0.0) ||
+            !signal.ukfRatePerMin.isFinite() ||
+            lifted.insulinReqU <= 0.0
+        val subStep = SubStepAccumulator.step(
+            carriedU = subStepCarryU,
+            desiredU = lifted.desiredBeforeStepU,
+            steppedU = lifted.smbU,
+            pumpIncrementU = bolusStep,
+            discard = subStepDiscard,
+        )
+        subStepCarryU = subStep.carryU
+        val withCarry = if (subStep.releaseU <= 0.0) lifted else lifted.copy(
+            smbU = lifted.smbU + subStep.releaseU,
+            block = FuseController.Block.NONE,
+            bindingLimit = lifted.bindingLimit + "|subStep",
+        )
+
+        val verifiedLift = if (withCarry.smbU <= 0.0) withCarry else {
             when {
-                finalVeto(lifted.smbU) == null -> lifted
+                finalVeto(withCarry.smbU) == null -> withCarry
                 // Anhebung fiel durch: zurueck auf die kleinere Basis, aber
                 // nur, wenn AUCH sie das Zeugnis besteht.
-                lifted.smbU > vetted.smbU + 1e-9 && vetted.smbU > 0.0 && finalVeto(vetted.smbU) == null ->
-                    vetted.copy(bindingLimit = vetted.bindingLimit + "|primeVeto:${finalVeto(lifted.smbU)?.name}")
-                else -> lifted.copy(
-                    smbU = 0.0,
-                    block = FuseController.Block.CANDIDATE,
-                    bindingLimit = "finalVerify:${finalVeto(lifted.smbU)?.name}",
-                )
+                withCarry.smbU > vetted.smbU + 1e-9 && vetted.smbU > 0.0 && finalVeto(vetted.smbU) == null ->
+                    vetted.copy(bindingLimit = vetted.bindingLimit + "|primeVeto:${finalVeto(withCarry.smbU)?.name}")
+                else -> {
+                    // Die Wirkungspruefung hat die Menge verworfen - damit ist
+                    // auch der aufgeschobene Rest nicht mehr gewollt (Tonis
+                    // Vertrag: bei Nichtlieferung KEINE automatische Gutschrift).
+                    subStepCarryU = 0.0
+                    withCarry.copy(
+                        smbU = 0.0,
+                        block = FuseController.Block.CANDIDATE,
+                        bindingLimit = "finalVerify:${finalVeto(withCarry.smbU)?.name}",
+                    )
+                }
             }
         }
         // HART NACH dem Lift (Audit R95, Fix 3): Ratio-Pfad (Kernel-Ausfall)
@@ -878,6 +929,16 @@ class FuseCycleRunner(
      *  Oeffnungsbedingung verlaengert um 10 min; eine nachhaltige Wende
      *  (schnelle Rate <= -Schwelle) schliesst sofort. */
     private var mealWindowHoldUntil = 0L
+
+    /**
+     * Rest-Zaehler gegen die Quantisierungs-Totzone (Toni 09.08.).
+     * BEWUSST PROZESSLOKAL: ein Neustart verwirft ihn - das ist die
+     * konservative Richtung (aufgeschobene Absicht geht verloren, nie Insulin)
+     * und spart eine Persistenz-Kopplung. Sammeln, bei einem vollen
+     * Pumpenschritt freigeben, und dieser Schritt laeuft durch dieselbe
+     * Pruefkette wie jede andere Menge.
+     */
+    private var subStepCarryU = 0.0
 
     data class MealStats(val sinceMin: Int, val totalU: Double, val first30U: Double, val first60U: Double)
 

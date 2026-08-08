@@ -324,6 +324,10 @@ object FuseController {
          *  Export: sonst ist im Nachhinein nicht unterscheidbar, ob eine
          *  Zurueckhaltung aus dem Antrieb oder aus der Bremse kam. */
         val restraintBound: Boolean = false,
+        /** Gewuenschte Menge VOR der Pumpenschritt-Rasterung [U] (Toni 09.08.):
+         *  Eingang des Rest-Zaehlers gegen die Quantisierungs-Totzone. 0 heisst
+         *  "es gab keinen Wunsch", nicht "der Wunsch war klein". */
+        val desiredBeforeStepU: Double = 0.0,
     )
 
     /**
@@ -550,11 +554,13 @@ object FuseController {
             return Decision(
                 0.0, TbrAction.KEEP_CURRENT, Block.BELOW_PUMP_INCREMENT, insulinReq,
                 releaseMean, minLower, binding.first, tail, tailCost, ctx, restraintBound,
+                desiredBeforeStepU = raw,
             )
         }
 
         return Decision(
             smbU = min(deliverable, raw),
+            desiredBeforeStepU = raw,
             tbr = TbrAction.KEEP_CURRENT,
             block = Block.NONE,
             insulinReqU = insulinReq,
