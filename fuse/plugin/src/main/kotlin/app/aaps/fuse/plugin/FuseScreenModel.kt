@@ -66,7 +66,7 @@ object FuseScreenModel {
             row(b, "q1 / roh", "${f1(s.q1)} / ${f1(s.rawBg)} mg/dl" + if (s.q1Outlier) "  AUSREISSER" else "")
             // rSigned NUR von hier. Aus der Bahn rekonstruiert waere es bereits
             // einen Zerfallsschritt gealtert und damit eine falsche Zahl.
-            row(b, "Stoerung r (18min)", s.rSigned?.let { "${f3(it)} mg/dl/min" } ?: "nicht berechenbar")
+            row(b, "Stoerung r", s.rSigned?.let { "${f3(it)} mg/dl/min" } ?: "nicht berechenbar")
             // Danebengestellt, damit die Traegheit des 18-min-Medians am Onset
             // sichtbar ist statt erklaert werden zu muessen.
             row(b, "  UKF-Rate", f3(s.ukfRatePerMin))
