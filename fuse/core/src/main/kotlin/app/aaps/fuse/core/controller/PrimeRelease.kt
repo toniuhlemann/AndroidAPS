@@ -153,8 +153,10 @@ object PrimeRelease {
 
         var caps = min(
             min(state.maxSmbU, p.remainingU),
+            // Tonis IOB-Referenz-Regel: Dosier-Grenzen rechnen mit capIob,
+            // nie mit net - zurueckgehaltenes Basal ist kein SMB-Budget.
             min(
-                state.maxIobU - state.netIobU - transportCommitmentU,
+                state.maxIobU - state.capIobU - transportCommitmentU,
                 state.iobThU - state.capIobU - transportCommitmentU,
             ),
         )

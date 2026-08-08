@@ -156,6 +156,10 @@ object FuseScreenModel {
             }
         }
         outcome.state?.let {
+            // Tonis IOB-Referenz-Regel sichtbar gemacht: net ist die
+            // Prognose-Groesse, cap = max(net, Bolus) die Dosier-Referenz -
+            // bei stark negativem Basal-Delta gehen sie weit auseinander.
+            row(b, "", "Bolus ${f2(it.bolusIobU)} | Basal ${f2(it.basalIobU)} | cap ${f2(it.capIobU)}")
             row(b, "iobTH / maxIOB", "${f2(it.iobThU)} / ${f2(it.maxIobU)} U")
             val rampPct = it.rSignedMgdlPerMin?.let { r ->
                 (((r - it.riseRampLowRPerMin) / (it.riseRampHighRPerMin - it.riseRampLowRPerMin))

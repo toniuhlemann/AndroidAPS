@@ -611,7 +611,9 @@ class FuseCycleRunner(
                             // wie bereits vorhandenes Insulin.
                             remainingReleaseBudgetU = cfg.maxSmbU,
                             effectiveIobThHeadroomU = state.iobThU - state.capIobU - ledgerView.transportCommitmentU,
-                            effectiveMaxIobHeadroomU = state.maxIobU - state.netIobU - ledgerView.transportCommitmentU,
+                            // Tonis IOB-Referenz-Regel: Dosier-Grenzen auf
+                            // capIob - negatives Basal-Delta ist kein Budget.
+                            effectiveMaxIobHeadroomU = state.maxIobU - state.capIobU - ledgerView.transportCommitmentU,
                             pumpIncrementU = bolusStep,
                             maxSmbU = cfg.maxSmbU,
                         ),

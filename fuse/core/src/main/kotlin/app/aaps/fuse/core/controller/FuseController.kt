@@ -464,7 +464,12 @@ object FuseController {
             )
         }
 
-        val maxIobHeadroom = state.maxIobU - state.netIobU
+        // Tonis IOB-Referenz-Regel (08.08. abends): PROGNOSE rechnet mit net
+        // (die Bahn muss die Basal-Referenzbuchung kennen), DOSIER-Grenzen
+        // rechnen mit capIob = max(net, bolus) - stark negatives Basal-IOB
+        // ist keine physische Substanz und darf keinen SMB-Spielraum
+        // erzeugen. iobTH lief schon immer auf capIob; maxIOB zieht nach.
+        val maxIobHeadroom = state.maxIobU - state.capIobU
         if (maxIobHeadroom <= 0.0) {
             return Decision(
                 0.0, TbrAction.NO_NEW_POSITIVE, Block.MAX_IOB_REACHED, insulinReq,
