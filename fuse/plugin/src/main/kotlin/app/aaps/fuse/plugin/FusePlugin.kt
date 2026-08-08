@@ -474,7 +474,7 @@ class FusePlugin @Inject constructor(
         fun cat(titleText: String, block: PreferenceCategory.() -> Unit) {
             val c = PreferenceCategory(context)
             parent.addPreference(c)
-            c.apply { title = titleText; initialExpandedChildrenCount = 0; block() }
+            c.apply { title = titleText; block() }
         }
         fun PreferenceCategory.info(t: String, sum: String) {
             addPreference(Preference(context).apply { title = t; summary = sum; isSelectable = false; isPersistent = false })
