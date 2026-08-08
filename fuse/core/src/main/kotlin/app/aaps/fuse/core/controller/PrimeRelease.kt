@@ -132,15 +132,26 @@ object PrimeRelease {
      * Hebt die Basisentscheidung auf die Mindest-Freigabe an - oder laesst sie
      * unveraendert, wenn sie ohnehin groesser ist oder eine echte Sperre
      * traegt. Kappt zusaetzlich an denselben Deckeln wie der Regler.
+     *
+     * Audit R95 (NEU-04): die Zusage "dieselben Deckel wie der Regler" war
+     * unvollstaendig - tailHeadroom und onsetEnvelope fehlten, ein
+     * tail-gedeckelter Basis-SMB konnte per Lift ueber den Schwanz-Deckel
+     * gehoben werden. Beide sind jetzt Pflicht-Kappen, wenn der Aufrufer sie
+     * kennt (null = Waechter nicht aktiv).
      */
-    fun lift(base: FuseController.Decision, p: Plan, state: FuseController.State): FuseController.Decision {
+    fun lift(
+        base: FuseController.Decision, p: Plan, state: FuseController.State,
+        tailHeadroomU: Double? = null, onsetCapU: Double? = null,
+    ): FuseController.Decision {
         if (!p.active || p.floorU <= 0.0) return base
         if (base.block !in LIFTABLE) return base
 
-        val caps = min(
+        var caps = min(
             min(state.maxSmbU, p.remainingU),
             min(state.maxIobU - state.netIobU, state.iobThU - state.capIobU),
         )
+        tailHeadroomU?.let { caps = min(caps, it) }
+        onsetCapU?.let { caps = min(caps, it) }
         val stepped = floor(min(p.floorU, caps) / state.pumpIncrementU + TICK_EPS) * state.pumpIncrementU
         if (stepped < state.pumpIncrementU || stepped <= base.smbU) return base
 

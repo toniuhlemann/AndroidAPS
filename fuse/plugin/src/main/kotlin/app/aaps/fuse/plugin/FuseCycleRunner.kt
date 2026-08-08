@@ -172,14 +172,33 @@ class FuseCycleRunner(
         val computeTs = dateUtil.now()
         val gate = FusePumpGate.evaluate(runCatching { activePlugin.activePump }.getOrNull())
 
-        fun abort(reason: String, signal: FuseSignalSource.Signal? = null, policy: Config? = null) = Outcome(
-            decision = FuseController.noInput(reason), tbr = null, prediction = null,
-            sourceTs = signal?.sourceTs, computeTs = computeTs, health = null, gate = gate,
-            reason = reason, alarm = false, bgMgdl = signal?.q1, targetMgdl = null, targetSource = null,
-            signal = signal, band = null, discount = null, onset = null, prime = null, candidate = null, candidateGap = null, policy = policy, state = null, step = null,
-            sensorEpoch = null, calibrationEpoch = null,
-            isfMgdlPerU = null, iobU = null, computeDurationMs = null, mealStats = null, abortReason = reason,
-        )
+        // Audit R95 F-P0-07: ein Abort liess eine LAUFENDE POSITIVE TBR bis zu
+        // ihrem Ende weiterlaufen (fail-silent, war nur fuer VPUMP akzeptiert).
+        // Jetzt: Snapshot der aktiven TBR lesen; liegt sie UEBER dem Profil-
+        // basal, wird ein Cancel (rate 0 / duration 0) angefordert. Negative/
+        // Null-TBRs bleiben unangetastet - ein blinder Cancel wuerde sie
+        // beenden und damit MEHR Insulin freigeben. Ist der Snapshot selbst
+        // nicht lesbar oder nicht klassifizierbar (kein Profil), gibt es
+        // keinen blinden Eingriff, aber einen Alarm.
+        fun abortTbr(): Pair<FuseController.TbrRequest?, Boolean> = runCatching {
+            val running = persistenceLayer.getTemporaryBasalActiveAt(computeTs) ?: return@runCatching null to false
+            val prof = profileFunction.getProfile(computeTs) ?: return@runCatching null to true
+            val rate = running.convertedToAbsolute(computeTs, prof)
+            if (rate > prof.getBasal(computeTs) + 1e-9) FuseController.TbrRequest(0.0, 0) to false
+            else null to false
+        }.getOrElse { null to true }
+
+        fun abort(reason: String, signal: FuseSignalSource.Signal? = null, policy: Config? = null): Outcome {
+            val (cancelTbr, tbrAlarm) = abortTbr()
+            return Outcome(
+                decision = FuseController.noInput(reason), tbr = cancelTbr, prediction = null,
+                sourceTs = signal?.sourceTs, computeTs = computeTs, health = null, gate = gate,
+                reason = reason, alarm = tbrAlarm, bgMgdl = signal?.q1, targetMgdl = null, targetSource = null,
+                signal = signal, band = null, discount = null, onset = null, prime = null, candidate = null, candidateGap = null, policy = policy, state = null, step = null,
+                sensorEpoch = null, calibrationEpoch = null,
+                isfMgdlPerU = null, iobU = null, computeDurationMs = null, mealStats = null, abortReason = reason,
+            )
+        }
 
         val profile = profileFunction.getProfile(computeTs) ?: return abort("no profile")
 
@@ -224,10 +243,25 @@ class FuseCycleRunner(
             )
         )
 
+        // Audit R95 F-P0-03: der Observer lehnt Duplikate/out-of-order ab
+        // (accepted=false), der Runner hat das ignoriert und mit demselben
+        // Messpunkt erneut dosiert. Erreichbar ueber Bypass-Invokes
+        // (TT-Events, Loop-Swipe, Neustart). Jetzt fail-closed: derselbe
+        // sourceTs finanziert nie eine zweite positive Aktuation; der Abort
+        // haelt die TBR-Sicherheit aufrecht (abortTbr).
+        if (!step.accepted) return abort("signal duplicate/out-of-order (accepted=false)", signal)
+
         // ---- 3 Bahn --------------------------------------------------------
         val cfg = when (val c = CoreInputGuard.build { readConfig() }) {
             is CoreInputGuard.Outcome.Built  -> c.value
             is CoreInputGuard.Outcome.Failed -> return abort("config: ${c.failure.detail}", signal)
+        }
+
+        // Zeitachsen-Tor (Audit R95, F-P0-04): Zukunfts-Anker fail-closed,
+        // BEVOR irgendetwas auf sourceTs rechnet. Deckt auch den Kopf-klebt-
+        // an-der-Ladefenster-Kappe-Fall ab, in dem STALE nie feuern wuerde.
+        app.aaps.fuse.core.signal.SignalTimeGate.futureReason(signal.sourceTs, computeTs)?.let {
+            return abort(it, signal, cfg)
         }
 
         // Mittel- UND Untergrenze aus DEMSELBEN Aufruf. Es darf keinen Zustand
@@ -489,7 +523,11 @@ class FuseCycleRunner(
                 pumpIncrementU = bolusStep,
             )
         )
-        val decision = PrimeRelease.lift(vetted, primePlan, state)
+        val decision = PrimeRelease.lift(
+            vetted, primePlan, state,
+            tailHeadroomU = tail?.takeIf { it.usable }?.headroomU,
+            onsetCapU = if (onset.active) onset.remainingU else null,
+        )
         val primeWindowOpen = mealMarkerActive && markerTs > 0 &&
             computeTs - markerTs < PrimeRelease.WINDOW_MIN * 60_000L
         if (primeWindowOpen) primeSpentU += decision.smbU
