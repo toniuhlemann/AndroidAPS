@@ -2,6 +2,7 @@ package app.aaps.fuse.plugin
 
 import android.content.Context
 import android.os.Environment
+import androidx.preference.Preference
 import androidx.preference.PreferenceCategory
 import androidx.preference.PreferenceManager
 import androidx.preference.PreferenceScreen
@@ -465,144 +466,65 @@ class FusePlugin @Inject constructor(
         // Der Bildschirm wird auch fuer Unterbildschirme aufgerufen; FUSE hat
         // keine, also nur der Aufbau der obersten Ebene.
         if (requiredKey != null) return
-        val category = PreferenceCategory(context)
-        parent.addPreference(category)
-        category.apply {
-            key = "fuse_settings"
-            title = rh.gs(R.string.fuse_settings)
-            initialExpandedChildrenCount = 0
+
+        // GRUPPIERT statt flach (Toni 08.08., GPT-Review bestaetigt): die
+        // wichtigste Aenderung ist das GETEILTE ApsSmbMaxIob - FUSE nutzt es
+        // seit dem MAX_VALUE-Fund als Deckel, zeigte es aber nirgends. KEIN
+        // eigener FUSE-Key: eine Sicherheitsgrenze, eine Zahl.
+        fun cat(titleText: String, block: PreferenceCategory.() -> Unit) {
+            val c = PreferenceCategory(context)
+            parent.addPreference(c)
+            c.apply { title = titleText; initialExpandedChildrenCount = 0; block() }
+        }
+        fun PreferenceCategory.info(t: String, sum: String) {
+            addPreference(Preference(context).apply { title = t; summary = sum; isSelectable = false; isPersistent = false })
+        }
+
+        cat("Allgemeine Sicherheitsgrenzen") {
             addPreference(
                 AdaptiveDoublePreference(
-                    ctx = context, doubleKey = FuseDoubleKey.SmbRatio,
-                    dialogMessage = R.string.fuse_smb_ratio_summary, title = R.string.fuse_smb_ratio_title
+                    ctx = context, doubleKey = DoubleKey.ApsSmbMaxIob,
+                    dialogMessage = R.string.fuse_max_total_iob_summary, title = R.string.fuse_max_total_iob_title
                 )
             )
-            addPreference(
-                AdaptiveDoublePreference(
-                    ctx = context, doubleKey = FuseDoubleKey.SmbRatioRise,
-                    dialogMessage = R.string.fuse_smb_ratio_rise_summary, title = R.string.fuse_smb_ratio_rise_title
-                )
-            )
-            addPreference(
-                AdaptiveDoublePreference(
-                    ctx = context, doubleKey = FuseDoubleKey.RiseRampLowR,
-                    dialogMessage = R.string.fuse_ramp_summary, title = R.string.fuse_ramp_low_title
-                )
-            )
-            addPreference(
-                AdaptiveDoublePreference(
-                    ctx = context, doubleKey = FuseDoubleKey.RiseRampHighR,
-                    dialogMessage = R.string.fuse_ramp_summary, title = R.string.fuse_ramp_high_title
-                )
-            )
-            addPreference(
-                AdaptiveDoublePreference(
-                    ctx = context, doubleKey = FuseDoubleKey.BolusShareLambda,
-                    dialogMessage = R.string.fuse_bolus_share_lambda_summary, title = R.string.fuse_bolus_share_lambda_title
-                )
-            )
-            addPreference(
-                AdaptiveSwitchPreference(
-                    ctx = context, booleanKey = FuseBooleanKey.OnsetChannelEnabled,
-                    summary = R.string.fuse_onset_channel_summary, title = R.string.fuse_onset_channel_title
-                )
-            )
-            addPreference(
-                AdaptiveDoublePreference(
-                    ctx = context, doubleKey = FuseDoubleKey.OnsetEnvelopeU,
-                    dialogMessage = R.string.fuse_onset_envelope_summary, title = R.string.fuse_onset_envelope_title
-                )
-            )
-            addPreference(
-                AdaptiveSwitchPreference(
-                    ctx = context, booleanKey = FuseBooleanKey.PrimeReleaseEnabled,
-                    summary = R.string.fuse_prime_release_summary, title = R.string.fuse_prime_release_title
-                )
-            )
-            addPreference(
-                AdaptiveDoublePreference(
-                    ctx = context, doubleKey = FuseDoubleKey.PrimeEnvelopeSmallU,
-                    dialogMessage = R.string.fuse_prime_small_summary, title = R.string.fuse_prime_small_title
-                )
-            )
-            addPreference(
-                AdaptiveDoublePreference(
-                    ctx = context, doubleKey = FuseDoubleKey.PrimeEnvelopeU,
-                    dialogMessage = R.string.fuse_prime_envelope_summary, title = R.string.fuse_prime_envelope_title
-                )
-            )
-            addPreference(
-                AdaptiveDoublePreference(
-                    ctx = context, doubleKey = FuseDoubleKey.PrimeEnvelopeLargeU,
-                    dialogMessage = R.string.fuse_prime_large_summary, title = R.string.fuse_prime_large_title
-                )
-            )
-            addPreference(
-                AdaptiveDoublePreference(
-                    ctx = context, doubleKey = FuseDoubleKey.MaxSmbU,
-                    dialogMessage = R.string.fuse_max_smb_u_summary, title = R.string.fuse_max_smb_u_title
-                )
-            )
-            addPreference(
-                AdaptiveDoublePreference(
-                    ctx = context, doubleKey = FuseDoubleKey.GuardFloorMgdl,
-                    dialogMessage = R.string.fuse_guard_floor_summary, title = R.string.fuse_guard_floor_title
-                )
-            )
-            addPreference(
-                AdaptiveIntPreference(
-                    ctx = context, intKey = FuseIntKey.IobThPercent,
-                    dialogMessage = R.string.fuse_iob_th_percent_summary, title = R.string.fuse_iob_th_percent_title
-                )
-            )
-            addPreference(
-                AdaptiveIntPreference(
-                    ctx = context, intKey = FuseIntKey.ReleaseHorizonMin,
-                    dialogMessage = R.string.fuse_release_horizon_summary, title = R.string.fuse_release_horizon_title
-                )
-            )
-            addPreference(
-                AdaptiveIntPreference(
-                    ctx = context, intKey = FuseIntKey.LiabilityHorizonMin,
-                    dialogMessage = R.string.fuse_liability_horizon_summary, title = R.string.fuse_liability_horizon_title
-                )
-            )
-            addPreference(
-                AdaptiveIntPreference(
-                    ctx = context, intKey = FuseIntKey.DriveTauMin,
-                    dialogMessage = R.string.fuse_drive_tau_summary, title = R.string.fuse_drive_tau_title
-                )
-            )
-            addPreference(
-                AdaptiveIntPreference(
-                    ctx = context, intKey = FuseIntKey.DriveLowerQuantilePct,
-                    dialogMessage = R.string.fuse_drive_quantile_summary, title = R.string.fuse_drive_quantile_title
-                )
-            )
-            addPreference(
-                AdaptiveSwitchPreference(
-                    ctx = context, booleanKey = FuseBooleanKey.TailGuardEnabled,
-                    summary = R.string.fuse_tail_guard_summary, title = R.string.fuse_tail_guard_title
-                )
-            )
-            addPreference(
-                AdaptiveSwitchPreference(
-                    ctx = context, booleanKey = FuseBooleanKey.FastRestraintEnabled,
-                    summary = R.string.fuse_restraint_summary, title = R.string.fuse_restraint_title
-                )
-            )
-            addPreference(
-                AdaptiveDoublePreference(
-                    ctx = context, doubleKey = FuseDoubleKey.TailFloorMgdl,
-                    dialogMessage = R.string.fuse_tail_floor_summary, title = R.string.fuse_tail_floor_title
-                )
-            )
-            addPreference(
-                AdaptiveDoublePreference(
-                    ctx = context, doubleKey = FuseDoubleKey.TailRecoveryU,
-                    dialogMessage = R.string.fuse_tail_recovery_summary, title = R.string.fuse_tail_recovery_title
-                )
-            )
+            addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.MaxSmbU, dialogMessage = R.string.fuse_max_smb_u_summary, title = R.string.fuse_max_smb_u_title))
+            addPreference(AdaptiveIntPreference(ctx = context, intKey = FuseIntKey.IobThPercent, dialogMessage = R.string.fuse_iob_th_percent_summary, title = R.string.fuse_iob_th_percent_title))
+            addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.GuardFloorMgdl, dialogMessage = R.string.fuse_guard_floor_summary, title = R.string.fuse_guard_floor_title))
+        }
+
+        cat("Regelung") {
+            addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.SmbRatio, dialogMessage = R.string.fuse_smb_ratio_summary, title = R.string.fuse_smb_ratio_title))
+            addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.SmbRatioRise, dialogMessage = R.string.fuse_smb_ratio_rise_summary, title = R.string.fuse_smb_ratio_rise_title))
+            addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.RiseRampLowR, dialogMessage = R.string.fuse_ramp_summary, title = R.string.fuse_ramp_low_title))
+            addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.RiseRampHighR, dialogMessage = R.string.fuse_ramp_summary, title = R.string.fuse_ramp_high_title))
+            addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.BolusShareLambda, dialogMessage = R.string.fuse_bolus_share_lambda_summary, title = R.string.fuse_bolus_share_lambda_title))
+            addPreference(AdaptiveSwitchPreference(ctx = context, booleanKey = FuseBooleanKey.FastRestraintEnabled, summary = R.string.fuse_restraint_summary, title = R.string.fuse_restraint_title))
+            addPreference(AdaptiveIntPreference(ctx = context, intKey = FuseIntKey.ReleaseHorizonMin, dialogMessage = R.string.fuse_release_horizon_summary, title = R.string.fuse_release_horizon_title))
+            addPreference(AdaptiveIntPreference(ctx = context, intKey = FuseIntKey.DriveTauMin, dialogMessage = R.string.fuse_drive_tau_summary, title = R.string.fuse_drive_tau_title))
+            addPreference(AdaptiveIntPreference(ctx = context, intKey = FuseIntKey.DriveLowerQuantilePct, dialogMessage = R.string.fuse_drive_quantile_summary, title = R.string.fuse_drive_quantile_title))
+        }
+
+        cat("Mahlzeit / Onset") {
+            addPreference(AdaptiveSwitchPreference(ctx = context, booleanKey = FuseBooleanKey.OnsetChannelEnabled, summary = R.string.fuse_onset_channel_summary, title = R.string.fuse_onset_channel_title))
+            addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.OnsetEnvelopeU, dialogMessage = R.string.fuse_onset_envelope_summary, title = R.string.fuse_onset_envelope_title))
+            addPreference(AdaptiveSwitchPreference(ctx = context, booleanKey = FuseBooleanKey.PrimeReleaseEnabled, summary = R.string.fuse_prime_release_summary, title = R.string.fuse_prime_release_title))
+            addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.PrimeEnvelopeSmallU, dialogMessage = R.string.fuse_prime_small_summary, title = R.string.fuse_prime_small_title))
+            addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.PrimeEnvelopeU, dialogMessage = R.string.fuse_prime_envelope_summary, title = R.string.fuse_prime_envelope_title))
+            addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.PrimeEnvelopeLargeU, dialogMessage = R.string.fuse_prime_large_summary, title = R.string.fuse_prime_large_title))
+        }
+
+        cat("Haftung / Schwanz") {
+            addPreference(AdaptiveSwitchPreference(ctx = context, booleanKey = FuseBooleanKey.TailGuardEnabled, summary = R.string.fuse_tail_guard_summary, title = R.string.fuse_tail_guard_title))
+            addPreference(AdaptiveIntPreference(ctx = context, intKey = FuseIntKey.LiabilityHorizonMin, dialogMessage = R.string.fuse_liability_horizon_summary, title = R.string.fuse_liability_horizon_title))
+            addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.TailFloorMgdl, dialogMessage = R.string.fuse_tail_floor_summary, title = R.string.fuse_tail_floor_title))
+            addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.TailRecoveryU, dialogMessage = R.string.fuse_tail_recovery_summary, title = R.string.fuse_tail_recovery_title))
+        }
+
+        cat("Diagnose (fest in Alpha 1)") {
+            info("Regler-Takt: 1 Minute", "Jeder neue 1-min-CGM-Wert ist ein Zyklus. Fest - kein Legacy-SMB-Intervall.")
+            info("Positive TBR: nicht verwendet", "Der schnelle Kanal ist der 1-min-SMB; FUSE setzt nur Null-Temps oder bricht ab. Max-TBR/Basal-Multiplikatoren greifen deshalb nicht.")
+            info("ISF: Profil, zeitabhaengig", "Keine Autosens-/DynISF-Modulation. Sensitivitaet ist als eigener langsamer Beobachter geplant (Shadow zuerst).")
+            info("COB/UAM: nicht verwendet", "Mahlzeiten erscheinen im insulinbereinigten Stoerungssignal; eigener Onset-Pfad + Marker statt UAM.")
         }
     }
 }

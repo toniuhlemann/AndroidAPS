@@ -72,4 +72,6 @@
     <string name="fuse_marker_s">Mahlzeit S</string>
     <string name="fuse_marker_m">Mahlzeit M</string>
     <string name="fuse_marker_l">Mahlzeit L</string>
+    <string name="fuse_max_total_iob_title">Maximales Gesamt-IOB [U]</string>
+    <string name="fuse_max_total_iob_summary">AAPS-weite Sicherheitsgrenze - DERSELBE Wert wie bei OpenAPS SMB/autoISF (openapsmb_max_iob), kein FUSE-eigener Schluessel. FUSE deckelt hieran seit dem MAX_VALUE-Fund vom 06.08.; ohne sichtbaren Eintrag haette eine frische Installation stillschweigend den 3-U-Default benutzt.</string>
 </resources>
