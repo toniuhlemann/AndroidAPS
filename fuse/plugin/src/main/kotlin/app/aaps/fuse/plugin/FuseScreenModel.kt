@@ -149,8 +149,10 @@ object FuseScreenModel {
             if (outcome.iobThU != null || outcome.maxIobU != null)
                 row(b, "iobTH / maxIOB", "${outcome.iobThU?.let { f2(it) } ?: "-"} / ${outcome.maxIobU?.let { f2(it) } ?: "-"} U")
             outcome.policy?.let { p ->
-                row(b, "eff. SMB-Ratio", "-  [kein Zyklus]")
-                row(b, "", "Basis ${f2(p.smbRatio)} | Rampe - % -> ${f2(p.smbRatioRise)}")
+                sec(b, "SMB-Ratio")
+                row(b, "Rampe", "- % → ${f2(p.smbRatioRise)}")
+                row(b, "Korrektur", f2(p.smbRatio))
+                row(b, "effektiv", "-  (kein Zyklus)")
             }
         }
         outcome.state?.let {
@@ -159,26 +161,29 @@ object FuseScreenModel {
                 (((r - it.riseRampLowRPerMin) / (it.riseRampHighRPerMin - it.riseRampLowRPerMin))
                     .coerceIn(0.0, 1.0) * 100).toInt()
             }
-            val fensterTag = when {
-                it.reboundWindow -> "REBOUND-Deckel"
-                !it.mealWindow   -> "Korrektur-Fenster"
-                else             -> "Mahlzeit-Fenster"
+            // Eigene Mini-Sektion statt Kombizeile (Tonis Layout 08.08.):
+            // Rampe, wirksamer Deckel und Effektivwert je als Label-Wert-Paar.
+            sec(b, "SMB-Ratio")
+            row(b, "Rampe", "${rampPct?.toString() ?: "-"} % → ${f2(it.smbRatioRise)}")
+            when {
+                it.reboundWindow -> row(b, "Rebound-Deckel", f2(it.smbRatioCorrection))
+                !it.mealWindow   -> row(b, "Korrektur", f2(it.smbRatioCorrection))
+                else             -> row(b, "Mahlzeit", "Rampe traegt")
             }
-            // Zwei Zeilen statt einer (Toni 08.08.): die Zusammensetzung
-            // sprengte das 16er-Label-Raster und brach hart um.
-            row(b, "eff. SMB-Ratio", f2(it.effectiveSmbRatio) + "  [$fensterTag]")
-            // An der Wertespalte ausgerichtet (finale Entscheidung Toni 08.08.):
-            // die Fortsetzung steht unter dem Ratio-WERT, nicht unter dem Label.
-            row(b, "", "Basis ${f2(it.smbRatioCorrection)} | Rampe ${rampPct?.toString() ?: "-"} % -> ${f2(it.smbRatioRise)}")
+            row(b, "effektiv", f2(it.effectiveSmbRatio))
         }
         d.tail?.let {
-            row(
-                b, "Schwanz",
-                if (it.usable) "${f2(it.headroomU)} U frei (Budget ${f2(it.budgetU)}, IOB@H ${f2(it.existingU)})"
-                else "unbrauchbar: ${it.invalidReason}"
-            )
-            row(b, "  Vermerk", it.completeness)
-            if (d.tailCostU > 0.0) row(b, "  Kosten", f2(d.tailCostU) + " U")
+            sec(b, "Schwanz")
+            if (it.usable) {
+                row(b, "frei", f2(it.headroomU) + " U")
+                row(b, "Budget @ H", f2(it.budgetU) + " U")
+                row(b, "IOB @ H", f2(it.existingU) + " U")
+            } else {
+                row(b, "frei", "-  (unbrauchbar: ${it.invalidReason})")
+            }
+            if (d.tailCostU > 0.0) row(b, "Kosten", f2(d.tailCostU) + " U")
+            row(b, "Modell", modellText(it.completeness))
+            modellChecks(it.completeness)?.let { line -> row(b, "", line) }
         }
         sec(b, "Ergebnis")
 
@@ -193,6 +198,22 @@ object FuseScreenModel {
             )
         }
         return b.toString()
+    }
+
+    /** "INCOMPLETE(1of3,noLedger,noCandidate)" -> "PARTIAL 1/3"; unbekannte
+     *  Formate unveraendert durchreichen (ehrlicher als raten). */
+    private fun modellText(completeness: String): String {
+        val m = Regex("""\((\d)of(\d)""").find(completeness) ?: return completeness
+        return "PARTIAL ${m.groupValues[1]}/${m.groupValues[2]}"
+    }
+
+    /** Haken-Zeile zum Modellstand: IOB traegt Stufe 1 immer; Transport-
+     *  und Kandidaten-Anteil je nach Vermerk. */
+    private fun modellChecks(completeness: String): String? {
+        if ("of" !in completeness) return null
+        val transport = if ("noLedger" in completeness) "✗" else "✓"
+        val kandidat = if ("noCandidate" in completeness) "✗" else "✓"
+        return "IOB ✓  Transport $transport  Kandidat $kandidat"
     }
 
     /** Bahnwerte unter dem physiologischen Boden sind keine Blutzuckerwerte
