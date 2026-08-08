@@ -102,6 +102,12 @@ object FuseController {
         /** q1 war in den letzten [REBOUND_WINDOW_MIN] min unter
          *  [REBOUND_LOW_MGDL] - die Rampe bleibt auf dem Korrektur-Anteil. */
         val reboundWindow: Boolean = false,
+        /** Rebound-Bedingung lag an, wurde aber durch einen aktiven Marker
+         *  entwaffnet (Gas-vor-Bremse NUR fuer erklaertes Wissen, 08.08.):
+         *  das Fenster schuetzt vor dem Jagen UNANGEKUENDIGTER Hypo-
+         *  Gegenesser; ein gedrueckter Marker ist die Ankuendigung. Reines
+         *  Mess-Flag - der Regler liest es nicht. */
+        val reboundSuppressedByMarker: Boolean = false,
         /**
          * MAHLZEIT-FENSTER (Fenster-Trio, 08.08.): offen durch Marker, offene
          * Onset-Episode ODER kinematische Persistenz - mit 10-min-Gedaechtnis

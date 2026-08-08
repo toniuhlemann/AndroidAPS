@@ -242,7 +242,7 @@ class FuseCycleRunner(
         // neben `sourceTs`. Fuer einen ABSCHLAG (keinen Bahnpunkt) ist der
         // Versatz zweitrangig; die Zahl steht im Export und ist nachpruefbar.
         if (signal.q1 < FuseController.REBOUND_LOW_MGDL) lastLowTs = signal.sourceTs
-        val reboundWindow = lastLowTs > 0 &&
+        val reboundRaw = lastLowTs > 0 &&
             signal.sourceTs - lastLowTs < FuseController.REBOUND_WINDOW_MIN * 60_000L
 
         val bolusActivityUPerMin = iobCobCalculator.calculateIobFromBolus().activity
@@ -275,6 +275,14 @@ class FuseCycleRunner(
         }
         val mealMarkerActive = markerTs > 0 &&
             computeTs - markerTs in 0..(OnsetChannel.MARKER_WINDOW_MIN * 60_000L)
+
+        // GAS-VOR-BREMSE NUR FUER ERKLAERTES WISSEN (08.08., Fruehstueckstest):
+        // das Rebound-Fenster schuetzt vor dem Jagen UNANGEKUENDIGTER Hypo-
+        // Gegenesser. Ein gedrueckter Marker IST die Ankuendigung - er
+        // entwaffnet die Heuristik-Bremse (Ratio-Deckel, Totband, tau-
+        // Kuerzung). Guard-Floor, Freigabe-Tor und Huellen bleiben unberuehrt.
+        val reboundWindow = reboundRaw && !mealMarkerActive
+        val reboundSuppressedByMarker = reboundRaw && mealMarkerActive
 
         val onset = OnsetChannel.evaluate(
             OnsetChannel.Input(
@@ -366,6 +374,7 @@ class FuseCycleRunner(
                     // gehobenen Antrieb - sonst haette der Kanal die Bahn
                     // gehoben, aber die Ratio stuende noch auf Korrektur.
                     reboundWindow = reboundWindow,
+                    reboundSuppressedByMarker = reboundSuppressedByMarker,
                     mealWindow = mealWindow,
                     rSignedMgdlPerMin = onset.driveMgdlPerMin?.takeIf { onset.active }
                         ?.let { d -> maxOf(signal.rSigned ?: d, d) } ?: signal.rSigned,

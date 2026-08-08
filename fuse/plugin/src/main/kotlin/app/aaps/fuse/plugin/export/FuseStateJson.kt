@@ -31,7 +31,9 @@ object FuseStateJson {
      * einen unveraenderten Wert NICHT als Beweis lesen, dass sich die Regeln
      * nicht geaendert haben.
      */
-    const val RULE_SET_VERSION = 5
+    // v6 (08.08. mittags): Marker entwaffnet Rebound-Bremse (Gas-vor-Bremse
+    // nur fuer erklaertes Wissen) + Mess-Flag reboundSuppressedByMarker.
+    const val RULE_SET_VERSION = 6
 
     /** Gruende fuer fehlende Felder. Benannt statt weggelassen. */
     const val GAP_NO_LEDGER = "LEDGER_NOT_WIRED"
@@ -256,6 +258,7 @@ object FuseStateJson {
                 // haengt an der Phase, und im Nachhinein soll niemand die falsche
                 // von zweien lesen. Die Rohwerte stehen ohnehin unter policy.values.
                 .put("reboundWindow", outcome.state?.reboundWindow ?: JSONObject.NULL)
+                .put("reboundSuppressedByMarker", outcome.state?.reboundSuppressedByMarker ?: JSONObject.NULL)
                 .put("mealWindow", outcome.state?.mealWindow ?: JSONObject.NULL)
                 .put("smbRatioEffective", fin(outcome.state?.effectiveSmbRatio))
                 .put("context", outcome.decision.context?.name ?: JSONObject.NULL)
