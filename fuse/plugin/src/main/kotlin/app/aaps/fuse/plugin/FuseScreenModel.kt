@@ -46,7 +46,7 @@ object FuseScreenModel {
         row(b, "Lauf", "vor $alterMin min")
         row(b, "Gate", outcome.gate.reason)
         outcome.abortReason?.let { row(b, "ABBRUCH", it) }
-        b.append('\n')
+        sec(b, "Beobachter")
 
         // ---- Zustand -------------------------------------------------------
         // Phase und Block sind ZWEI Groessen: die Phase kommt vom Observer, der
@@ -58,7 +58,7 @@ object FuseScreenModel {
         outcome.step?.safetyReasons?.takeIf { it.isNotEmpty() }?.let { row(b, "  Safety", it.joinToString(",") { r -> r.name }) }
         outcome.step?.eventId?.let { row(b, "Ereignis", it) }
         outcome.step?.transition?.let { row(b, "Uebergang", "${it.type.name} ${it.from.name}->${it.to.name}") }
-        b.append('\n')
+        sec(b, "Signal")
 
         // ---- Signal --------------------------------------------------------
         val s = outcome.signal
@@ -93,6 +93,9 @@ object FuseScreenModel {
         outcome.onset?.let { o -> row(b, "Onset-Kanal", onsetText(o)) }
         marker?.takeIf { it.armedTs > 0 }?.let { m ->
             val elapsed = ((nowMs - m.armedTs) / 60_000L).toInt()
+            // Nach Fenster + 2 h Nachlauf verschwindet die Zeile - ein
+            // gestriger Marker ist Historie (Trail), kein Zustand (Tab).
+            if (elapsed > m.windowMin + 120) return@let
             val restMin = (m.windowMin - elapsed).coerceAtLeast(0)
             val tierName = when (m.tier) { 0 -> "S"; 2 -> "L"; else -> "M" }
             row(b, "Marker", if (restMin > 0) "AKTIV ($tierName) - Rest $restMin/${m.windowMin} min" else "abgelaufen ($tierName)")
@@ -110,7 +113,7 @@ object FuseScreenModel {
             )
         }
         outcome.candidateGap?.let { row(b, "Kandidat", "Pruefer-Ausfall: $it (Basis galt)") }
-        b.append('\n')
+        sec(b, "Bahn")
 
         // ---- Bahn ----------------------------------------------------------
         val d = outcome.decision
@@ -118,7 +121,7 @@ object FuseScreenModel {
         row(b, "predBG", d.predAtReleaseMgdl?.let { f0(it) + subFloor(it) } ?: "-")
         row(b, "minLower", d.minLowerMgdl?.let { f0(it) + subFloor(it) } ?: "-")
         row(b, "minMean", outcome.prediction?.minMeanBg?.let { f0(it) + subFloor(it) } ?: "-")
-        b.append('\n')
+        sec(b, "Menge")
 
         // ---- Menge ---------------------------------------------------------
         // "Kontext" ist die LAGEBESCHREIBUNG des Beobachters - sie steuert
@@ -156,7 +159,7 @@ object FuseScreenModel {
             row(b, "  Vermerk", it.completeness)
             if (d.tailCostU > 0.0) row(b, "  Kosten", f2(d.tailCostU) + " U")
         }
-        b.append('\n')
+        sec(b, "Ergebnis")
 
         // ---- Was daraus wurde ----------------------------------------------
         row(b, "berechnet", f2(d.smbU) + " U SMB, TBR " + d.tbr.name)

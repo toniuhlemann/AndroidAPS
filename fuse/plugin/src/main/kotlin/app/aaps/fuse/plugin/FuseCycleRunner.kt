@@ -520,7 +520,9 @@ class FuseCycleRunner(
         )
 
         if (markerTs > 0 && decision.smbU > 0.0) mealDeliveries.addLast(signal.sourceTs to decision.smbU)
-        val mealStats = if (markerTs > 0) MealStats(
+        val mealStats = if (markerTs > 0 &&
+            computeTs - markerTs <= (OnsetChannel.MARKER_WINDOW_MIN + 120) * 60_000L
+        ) MealStats(
             sinceMin = ((computeTs - markerTs) / 60_000L).toInt(),
             totalU = mealDeliveries.sumOf { it.second },
             last30U = mealDeliveries.filter { computeTs - it.first <= 30 * 60_000L }.sumOf { it.second },
