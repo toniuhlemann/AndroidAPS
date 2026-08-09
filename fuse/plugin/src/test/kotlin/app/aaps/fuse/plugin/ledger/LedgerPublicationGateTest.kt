@@ -1,4 +1,4 @@
-﻿package app.aaps.fuse.plugin.ledger
+package app.aaps.fuse.plugin.ledger
 
 import app.aaps.core.data.model.BS
 import app.aaps.core.data.model.IDs
@@ -395,5 +395,3 @@ class LedgerPublicationGateTest {
         assertFalse(a.hasOpenProposal("p1"))
     }
 }
-
-
