@@ -227,6 +227,16 @@ open class PointsWithLabelGraphSeries<E : DataPointWithLabelInterface> : BaseSer
                     val py = endY + drawable.intrinsicHeight
                     mPaint.style = Paint.Style.FILL
                     canvas.drawText(value.label, px, py, mPaint)
+                } else if (value.shape == Shape.MEAL_MARKER) {
+                    // Symbol am oberen Rand, waagerecht auf der Linie zentriert.
+                    // Kein Punkt, keine Kreisform: die senkrechte Linie traegt
+                    // schon die Zeit, hier fehlt nur noch die Bedeutung.
+                    mPaint.style = Paint.Style.FILL
+                    mPaint.strokeWidth = 0f
+                    mPaint.textSize = (scaledTextSize * 1.6).toFloat()
+                    mPaint.textAlign = Paint.Align.CENTER
+                    canvas.drawText(value.label, endX, graphTop + mPaint.textSize, mPaint)
+                    mPaint.textAlign = Paint.Align.LEFT
                 } else if (value.shape == Shape.MBG) {
                     mPaint.style = Paint.Style.STROKE
                     mPaint.strokeWidth = 5f

@@ -14,6 +14,7 @@ import app.aaps.core.graph.data.EffectiveProfileSwitchDataPoint
 import app.aaps.core.graph.data.FixedLineGraphSeries
 import app.aaps.core.graph.data.GlucoseValueDataPoint
 import app.aaps.core.graph.data.LineGraphSeries
+import app.aaps.core.graph.data.MealMarkerDataPoint
 import app.aaps.core.graph.data.PointsWithLabelGraphSeries
 import app.aaps.core.graph.data.ScaledDataPoint
 import app.aaps.core.graph.data.TimeAsXAxisLabelFormatter
@@ -126,6 +127,13 @@ class GraphData @Inject constructor(
                 paint.color = android.graphics.Color.WHITE
             })
         })
+
+        // Teller-Symbol am oberen Rand (Tonis Wunsch 09.08.): die Linie sagt
+        // WANN, das Symbol sagt WAS - dieselbe Sprache wie im Viewer. Y = maxY,
+        // damit die Reihe die Skalierung nicht veraendert; gezeichnet wird
+        // ohnehin am Graphenrand (Shape.MEAL_MARKER).
+        val icons = markers.sorted().map { MealMarkerDataPoint(it, maxY) }
+        addSeries(PointsWithLabelGraphSeries(Array<DataPointWithLabelInterface>(icons.size) { i -> icons[i] }))
     }
 
     fun addRunningModes() {

@@ -28,5 +28,14 @@ enum class Shape {
     IOB_PREDICTION,
     BUCKETED_BG,
     HEART_RATE,
-    STEPS
+    STEPS,
+
+    /**
+     * Reines Symbol am OBEREN Graphenrand, ohne Punkt und ohne Verbindung.
+     *
+     * Fuer den FUSE-Essensbeginn-Marker: die senkrechte Linie sagt WANN, das
+     * Symbol sagt WAS. Bewusst am Rand und nicht am Datenpunkt - der Marker
+     * hat keinen Y-Wert, er ist ein Zeitpunkt.
+     */
+    MEAL_MARKER
 }
