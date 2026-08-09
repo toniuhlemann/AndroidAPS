@@ -576,6 +576,7 @@ class FuseCycleRunner(
         if (markerTs != episodes.primeArmedTs) {
             episodes.primeArmedTs = markerTs
             episodes.primeSpentU = 0.0
+            episodes.primeWindowStartTs = 0L
             // Fix 7: neue Marker-Episode -> Wende-Latch der Sonderrechte neu.
             episodes.markerTurnTs = 0L
             episodes.markerRiseSeen = false
@@ -870,6 +871,7 @@ class FuseCycleRunner(
                 enabled = cfg.primeReleaseEnabled,
                 mealMarkerActive = mealMarkerActive,
                 armedTsMs = markerTs,
+                windowStartTsMs = episodes.primeWindowStartTs,
                 nowMs = computeTs,
                 envelopeU = tierEnvelopeU,
                 spentU = episodes.primeSpentU,
@@ -1035,8 +1037,17 @@ class FuseCycleRunner(
         // dort 3/3 statt 1/3. Er ersetzt nur den BERICHT, nie die Menge - die
         // hat der Riegel oben bereits entschieden.
         val decision = tailWith(held.smbU)?.let { held.copy(tail = it) } ?: held
+        // LIEFERBARE Minuten (09.08.): solange nur die Clearance sperrt,
+        // schiebt der Fensterstart nach - eine Freigabe, die nie erteilbar war,
+        // darf nicht verfallen. Absolut gekappt in PrimeRelease selbst.
+        // Nur bei CLEARANCE: DISABLED/NO_MARKER/ENVELOPE_SPENT/NOT_FINITE sind
+        // keine "gesperrt, aber gewollt"-Zustaende, dort waere das Schieben
+        // eine stille Verlaengerung ohne Grund.
+        if (primePlan.reason == "CLEARANCE") episodes.primeWindowStartTs = computeTs
+
         val primeWindowOpen = mealMarkerActive && markerTs > 0 &&
-            computeTs - markerTs < PrimeRelease.WINDOW_MIN * 60_000L
+            computeTs - maxOf(markerTs, episodes.primeWindowStartTs) < PrimeRelease.WINDOW_MIN * 60_000L &&
+            computeTs - markerTs < PrimeRelease.WALL_CEILING_MIN * 60_000L
 
         // ---- 5 Kanal -------------------------------------------------------
         // Audit R95 NEU-05: die PROZESSIERTE Sicht inkl. konvertierter

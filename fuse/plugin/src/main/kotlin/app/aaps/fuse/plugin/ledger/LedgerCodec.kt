@@ -175,6 +175,7 @@ object LedgerCodec {
 
     fun encodeEpisodes(e: EpisodeBudgets): JSONObject = JSONObject()
         .put("primeSpentU", e.primeSpentU)
+        .put("primeWindowStartTs", e.primeWindowStartTs)
         .put("primeArmedTs", e.primeArmedTs)
         .put("onsetSpentU", e.onsetSpentU)
         .put("onsetQuietMin", e.onsetQuietMin)
@@ -189,6 +190,8 @@ object LedgerCodec {
         // Budgets sind VERBRAUCH: negativ hiesse "Huelle groesser als
         // konfiguriert" - genau der Angriffs-/Korruptionspfad aus REG-01d.
         e.primeSpentU = requireAmount("primeSpentU", o.getDouble("primeSpentU"))
+        // optional: aeltere Staende kennen das Feld nicht, 0 = "nie gesperrt".
+        e.primeWindowStartTs = o.optLong("primeWindowStartTs", 0L).coerceAtLeast(0L)
         e.primeArmedTs = requireTs("primeArmedTs", o.getLong("primeArmedTs"))
         e.onsetSpentU = requireAmount("onsetSpentU", o.getDouble("onsetSpentU"))
         e.onsetQuietMin = o.getInt("onsetQuietMin").also { require(it >= 0) { "negative onsetQuietMin $it" } }

@@ -52,6 +52,16 @@ class EpisodeBudgets {
      * der Runner (parallele Sitzung); hier liegen nur Feld + Persistenz.
      */
     var lastAcceptedSourceTs: Long = 0L
+
+    /**
+     * Beginn des LIEFERBAREN Prime-Fensters [ms] - s.
+     * [app.aaps.fuse.core.controller.PrimeRelease.WALL_CEILING_MIN].
+     *
+     * Restartfest, weil sonst ein Neustart mitten in einer gesperrten Phase
+     * das Fenster neu aufziehen wuerde: die Wette liefe dann laenger als der
+     * blinde Kopf der Mahlzeit, gegen den sie bemessen ist.
+     */
+    var primeWindowStartTs: Long = 0L
     val mealDeliveries: ArrayDeque<Pair<Long, Double>> = ArrayDeque()
 }
 

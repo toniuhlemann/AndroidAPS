@@ -25,7 +25,7 @@ class PrimeReleaseTest {
         guardFloor: Double = 70.0,
         isf: Double = 80.0,
         step: Double = 0.05,
-    ) = PrimeRelease.Input(enabled, marker, armedTs, now, envelope, spent, minLower, guardFloor, isf, step)
+    ) = PrimeRelease.Input(enabled, marker, armedTs, 0L, now, envelope, spent, minLower, guardFloor, isf, step)
 
     private fun state(iobTh: Double = 8.0, maxIob: Double = 8.0, netIob: Double = 1.0, maxSmb: Double = 0.3) =
         FuseController.State(

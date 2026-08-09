@@ -52,6 +52,26 @@ object PrimeRelease {
      *  dem CGM-blinden Kopf der Mahlzeit; danach traegt Evidenz oder nichts. */
     const val WINDOW_MIN = 15
 
+    /**
+     * Absolute Wanduhr-Kappe ab Knopfdruck [min].
+     *
+     * GEMESSEN 09.08. (Schoko-Muesli, L-Marker): der Knopfdruck um 10:46 fiel
+     * in ein CLEARANCE-Nein, das 15 Minuten lang stand - danach war das
+     * Fenster VORBEI und die gesamte 2,00-U-Huelle verfallen, ohne dass sie
+     * je erteilbar gewesen waere. Eine Freigabe, die abgelaufen ist, weil sie
+     * nie erteilt werden KONNTE, ist keine Sicherheitsentscheidung, sondern
+     * ein Buchungsfehler.
+     *
+     * Deshalb zaehlt das Fenster LIEFERBARE Minuten: solange die Clearance
+     * sperrt, schiebt der Aufrufer den Fensterstart nach. Ohne eine zweite,
+     * absolute Grenze liefe die Wette aber beliebig lange - und ihre
+     * Begruendung ist ausdruecklich der CGM-BLINDE KOPF der Mahlzeit. Nach
+     * dieser Kappe traegt Evidenz oder nichts, so wie vorher auch.
+     *
+     * 45 min = dieselbe Groesse wie das Marker-Boost-Fenster.
+     */
+    const val WALL_CEILING_MIN = 45
+
     /** Realisierter Wirkanteil einer Dosis nach 60 min bei DIA 9 (~20 %,
      *  aus dem Einheitskern vermessen). Das Clearance-Gate rechnet damit:
      *  minLower - Anteil*restU*ISF >= guardFloor. */
@@ -85,8 +105,17 @@ object PrimeRelease {
     data class Input(
         val enabled: Boolean,
         val mealMarkerActive: Boolean,
-        /** Zeitpunkt des Knopfdrucks [ms] - Fensteranker. */
+        /** Zeitpunkt des Knopfdrucks [ms] - Anker der WANDUHR-Kappe. */
         val armedTsMs: Long,
+        /**
+         * Beginn des LIEFERBAREN Fensters [ms]; `<= armedTsMs` heisst "noch
+         * nie gesperrt gewesen", dann gilt der Knopfdruck.
+         *
+         * Der Aufrufer schiebt diesen Stempel vor, solange die Clearance
+         * sperrt - s. [WALL_CEILING_MIN]. Er darf NIE hinter [armedTsMs]
+         * zurueckfallen und wird durch die Wanduhr-Kappe begrenzt.
+         */
+        val windowStartTsMs: Long,
         val nowMs: Long,
         val envelopeU: Double,
         val spentU: Double,
@@ -124,7 +153,13 @@ object PrimeRelease {
 
         if (!input.enabled) return off("DISABLED")
         if (!input.mealMarkerActive || input.armedTsMs <= 0) return off("NO_MARKER")
-        val ageMin = (input.nowMs - input.armedTsMs) / 60_000.0
+        val wallAgeMin = (input.nowMs - input.armedTsMs) / 60_000.0
+        if (wallAgeMin < 0.0) return off("CLOCK_SKEW")
+        if (wallAgeMin >= WALL_CEILING_MIN) return off("WINDOW_OVER_WALL")
+        // Der spaetere der beiden Anker: ein zurueckgefallener Stempel (Uhr,
+        // beschaedigter Zustand) darf das Fenster nicht verlaengern.
+        val start = max(input.armedTsMs.toDouble(), input.windowStartTsMs.toDouble())
+        val ageMin = (input.nowMs - start) / 60_000.0
         if (ageMin < 0.0) return off("CLOCK_SKEW")
         if (ageMin >= WINDOW_MIN) return off("WINDOW_OVER")
         if (!input.safetyMinLowerMgdl.isFinite() || !input.isfMgdlPerU.isFinite() || input.isfMgdlPerU <= 0.0)
