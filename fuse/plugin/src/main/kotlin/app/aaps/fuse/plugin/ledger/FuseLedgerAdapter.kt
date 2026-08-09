@@ -172,19 +172,45 @@ data class OpenTransportItem(
  *     entscheidbar, bleibt der Posten in voller Hoehe Transport.
  *
  * WARUM DIE REIHENFOLGE DEN NACHWEIS TRAEGT: der Zeuge wird VOR dem ersten
- * `calculateFromTreatmentsAndTemps` gelesen. Die Behandlungstabelle waechst
- * innerhalb eines Zyklus nur (Loeschungen erzeugt der Nutzer, und sie schlagen
- * ueber MISSING_ACCOUNTED_TREATMENT in einen Hold um). Was der Zeuge sah, war
- * also beim Arraybau in der Datenbank. Die Umkehrung wird NICHT behauptet -
- * ein Fakt, den der Zeuge nicht sah, gilt als unentscheidbar, nicht als
- * abwesend.
+ * `calculateFromTreatmentsAndTemps` dieses Zyklus gelesen. Die
+ * Behandlungstabelle waechst innerhalb eines Zyklus nur (Loeschungen erzeugt
+ * der Nutzer, und sie schlagen ueber MISSING_ACCOUNTED_TREATMENT in einen Hold
+ * um). Was der Zeuge sah, war also beim Arraybau in der Datenbank. Die
+ * Umkehrung wird NICHT behauptet - ein Fakt, den der Zeuge nicht sah, gilt als
+ * unentscheidbar, nicht als abwesend.
  *
- * WAS DIESER VERTRAG NICHT LEISTET (ehrlich benannt): er schliesst den
- * AAPS-eigenen `iobTable`-Cache in `IobCobCalculatorPlugin` nicht aus. Fuer
- * Rasterpunkte in der VERGANGENHEIT kann dort eine aeltere Rechnung
- * zurueckkommen. Alle Punkte ab `now` werden frisch gerechnet; der erste
- * Punkt der FUSE-Arrays liegt am sourceTs und kann davon betroffen sein. Das
- * zu schliessen hiesse, in den AAPS-Kern einzugreifen - offener Punkt.
+ * DIESER SATZ WAR BIS 09.08.2026 FALSCH, und zwar als Tatsachenbehauptung:
+ * der Zeuge stand vor dem ARRAYBAU, aber NACH der Signalstufe - und die setzt
+ * je Rohpunkt des Fensters ein `calculateFromTreatmentsAndTemps` ab, das
+ * letzte davon auf `sourceTs`. Damit SCHRIEB sie den iobTable-Eintrag am
+ * Schluessel `roundUpTime(sourceTs)` selbst; genau den liest der Arraybau
+ * spaeter fuer Punkt 0 wieder. Ein Bolus, der dazwischen gebucht wurde, war
+ * fuer den Zeugen sichtbar (Posten faellt auf commitmentU), fuer den bereits
+ * geschriebenen Eintrag aber nicht - die Menge steckte in KEINER Sicht.
+ * Behoben durch Umstellung der Reihenfolge im Runner (Abschnitt "0 Zeuge",
+ * vor "1 Signal"), festgehalten von `WitnessBeforeIobReadTest`. Der Nachweis
+ * haengt seitdem an der Reihenfolge statt an einer Behauptung ueber sie.
+ *
+ * WAS DIESER VERTRAG NICHT LEISTET (ehrlich benannt): der AAPS-`iobTable`
+ * kann am Schluessel `roundUpTime(sourceTs)` einen Eintrag tragen, den ein
+ * FREMDER Schreiber (IobCobOref1Worker, PrepareIobAutosensGraphDataWorker)
+ * vor diesem Zyklus abgelegt hat. Ist er aelter als der Zeuge und laeuft der
+ * Zyklus innerhalb der 5-Sekunden-Entprellung der Entwertung
+ * (IobCobCalculatorPlugin, newHistoryData), fehlt die Menge in Punkt 0.
+ * Betroffen ist dann NUR `activity[0]`, also 2-3 Minutenaequivalente der
+ * Wirkung in den Bahnminuten 1..5 - hoechstens 2,5 % der Menge, bei 0,3 U
+ * rund 0,0075 U gegen 0,05 U Pumpenschritt. Die MENGE selbst tragen die
+ * Punkte i>=1, `iobAtH` und die Kappenlesung; alle drei liegen in der Zukunft
+ * bzw. am `now` und werden immer frisch gerechnet. Vollstaendig schliessen
+ * liesse sich das nur, indem FUSE Punkt 0 selbst cachefrei rechnet - das ist
+ * moeglich (getBolusesFromTimeToTime + BS.iobCalc), aber erst gerechtfertigt,
+ * wenn die Messung es verlangt.
+ *
+ * ZWEITER, DAVON UNABHAENGIGER BEFUND (nicht C3-02, getrennt zu behandeln):
+ * `calculateIobFromBolusToTime` liefert bei fehlendem Profil ein IobTotal mit
+ * iob = 0 und activity = 0 - und dieser Nullwert wird in den Cache
+ * GESCHRIEBEN. Er ist endlich, FUSE nimmt ihn also an. Das waere eine weit
+ * groessere Unterberichtung als das hier gejagte Rennen.
  */
 object TransportInclusion {
 

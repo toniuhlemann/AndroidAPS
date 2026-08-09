@@ -377,6 +377,40 @@ class FuseCycleRunner(
         val sensorEpoch = sensorEpoch()
         val calibrationEpoch = calibrationEpoch()
 
+        // ---- 0 Zeuge -------------------------------------------------------
+        // C3-02 (P0): DER ZEUGE MUSS HIER STEHEN, VOR DER SIGNALSTUFE.
+        //
+        // Der Vertrag in TransportInclusion behauptete, der Zeuge werde vor
+        // dem ERSTEN calculateFromTreatmentsAndTemps gelesen. Das war als
+        // Tatsachenaussage FALSCH: er stand vor dem ARRAYBAU, aber nach rund
+        // 19 IOB-Aufrufen der Signalstufe (FuseSignalSource ruft je Rohpunkt
+        // des Fensters auf). Der LETZTE dieser Aufrufe laeuft auf sourceTs -
+        // und schreibt damit den iobTable-Eintrag am Schluessel
+        // roundUpTime(sourceTs), also genau den, den der Arraybau spaeter
+        // fuer Punkt 0 wieder liest. roundUpTime rundet auf die volle MINUTE
+        // (AutosensDataStoreObject: (t/60000+1)*60000), der Schluessel liegt
+        // also haeufig schon in der Vergangenheit und ist cachefaehig.
+        //
+        // Die schaedliche Folge sah so aus:
+        //   t1  Signalstufe rechnet auf sourceTs und SCHREIBT den Eintrag
+        //   t2  ein Bolus wird gebucht
+        //   t3  der Zeuge sieht ihn -> der Posten faellt auf commitmentU
+        //   t4  der Arraybau liest den Eintrag von t1 - ohne den Bolus
+        // Die Menge verliess die Transport-Modellierung und fehlte zugleich
+        // in Punkt 0.
+        //
+        // Vor der Signalstufe gilt dagegen per Konstruktion:
+        //   Zeugeninhalt <= DB-Stand beim Schreiben des Eintrags.
+        // Der Nachweis haengt jetzt an der REIHENFOLGE statt an einer
+        // Behauptung ueber sie, und die Richtung ist konservativ - ein frueher
+        // gelesener Zeuge sieht WENIGER, also bleiben MEHR Posten Transport.
+        //
+        // Keine zusaetzliche Abfrage: dasselbe Buchungs-Tor wie vorher.
+        val transportItems = ledger.openTransportItems()
+        val iobWitness =
+            if (transportItems.none { it.accountedAmountU > 0.0 }) null
+            else runCatching { iobSnapshotWitness(computeTs, profile.dia) }.getOrNull()
+
         // ---- 1 Signal ------------------------------------------------------
         val signal = when (val s = signalSource.read(sensorEpoch, calibrationEpoch)) {
             is FuseSignalSource.Outcome.Ok          -> s.signal
@@ -523,10 +557,6 @@ class FuseCycleRunner(
         // Der Zeuge wird nur gelesen, wenn ueberhaupt eine Zeile eine Buchung
         // traegt: ohne Buchung gibt es nichts zu entscheiden, und die
         // zusaetzliche Datenbankabfrage entfaellt.
-        val transportItems = ledger.openTransportItems()
-        val iobWitness =
-            if (transportItems.none { it.accountedAmountU > 0.0 }) null
-            else runCatching { iobSnapshotWitness(computeTs, profile.dia) }.getOrNull()
         val transport = transportDoses(transportItems, iobWitness, computeTs)
         // EINE Zahl fuer alle Verbraucher dieses Zyklus (Bahn, Headrooms,
         // Schwanz). Sie ist per Vertrag >= ledgerView.transportCommitmentU -
@@ -1198,7 +1228,9 @@ class FuseCycleRunner(
     /**
      * DER ZEUGE DES INCLUSION-VERTRAGS (C3-02, Codex Fix-Pass-5-Closure G.3).
      *
-     * Er wird gelesen, BEVOR dieser Zyklus seine IOB-/Activity-Arrays baut.
+     * Er wird gelesen, BEVOR dieser Zyklus IRGENDEINE IOB-Lesung macht -
+     * insbesondere vor der Signalstufe, die den Eintrag fuer Punkt 0 selbst
+     * schreibt (C3-02).
      * Genau daran haengt der Nachweis: die Behandlungstabelle waechst
      * innerhalb eines Zyklus nur, also war alles, was der Zeuge sah, beim
      * Arraybau in der Datenbank. Ein Fakt, den er NICHT sah, gilt als
