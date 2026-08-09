@@ -139,6 +139,11 @@ data class SendAttempt(
         require((boundary == AmbiguityBoundary.REFUSED) == (resolvedSource != null)) {
             "only a refusal carries a source, and it must: boundary=$boundary source=$resolvedSource"
         }
+        // Leer ist keine Quelle - dieselbe Regel wie ueberall in diesem
+        // Projekt. Ein Freitextfeld bleibt es nur bis zum Integrationspass;
+        // danach wird daraus ein geschlossenes Enum der real belegbaren
+        // Treiberpfade.
+        require(resolvedSource == null || resolvedSource.isNotBlank()) { "resolvedSource must not be blank" }
         require(attempt >= 1) { "attempt counts from 1, was $attempt" }
         require(startedAtTs > 0L) { "startedAtTs must be a real timestamp" }
         // Zustand und Zeitstempel muessen sich einig sein - eine Entscheidung
@@ -339,6 +344,13 @@ data class DeliveryRequest(
         // die Pumpe erreicht.
         require(!((temporaryId != null || pumpId != null) && terminal?.kind == TerminalKind.PROVEN_NOT_SENT)) {
             "a pump identity and PROVEN_NOT_SENT cannot both hold"
+        }
+        // Und fuer den belastenden BEFUND: die Outcome-Reihenfolge macht die
+        // Kombination heute schon ungefaehrlich (AMBIGUOUS gewinnt), aber sie
+        // waere deserialisierbar - und ein Zustand, den es nicht geben darf,
+        // gehoert konstruktiv verboten, nicht nur folgenlos gemacht.
+        require(!(findings.any { it.incriminating } && terminal?.kind == TerminalKind.PROVEN_NOT_SENT)) {
+            "an incriminating finding and PROVEN_NOT_SENT cannot both hold"
         }
     }
 

@@ -310,7 +310,17 @@ object DeliveryJournal {
             // Zeile traegt danach einen Befund - sonst ginge ein spaeterer
             // Nullbeweis anstandslos durch.
             ?: return Result(
-                put(state, r.copy(findings = r.findings + DeliveryFinding.UNANCHORED_WRITE_ACCEPTED)).state,
+                put(
+                    state,
+                    // Der Nullbeweis faellt mit: eine Schreibquittung ist
+                    // belastend, auch wenn sie keinem Versuch zuzuordnen ist.
+                    // Ohne dieses Mitfallen waere der Zustand konstruktiv
+                    // ungueltig und der Befund ginge als INVALID_STATE verloren.
+                    r.copy(
+                        terminal = if (r.terminal?.kind == TerminalKind.PROVEN_NOT_SENT) null else r.terminal,
+                        findings = r.findings + DeliveryFinding.UNANCHORED_WRITE_ACCEPTED,
+                    )
+                ).state,
                 Rejection.UNKNOWN_ATTEMPT,
             )
         if (a.boundary == AmbiguityBoundary.OS_WRITE_ACCEPTED) {
@@ -492,8 +502,11 @@ object DeliveryJournal {
         // Ohne gepinnte Pumpen-Epoch weiss niemand, WOHIN gesendet wird.
         if (r.pumpEpoch.isNullOrBlank()) return Denial.NO_PUMP_EPOCH
         if (r.terminal != null) return Denial.ALREADY_TERMINAL
-        // Ein offener Widerspruch ist keine Grundlage fuer eine Abgabe.
-        if (r.findings.isNotEmpty()) return Denial.UNRESOLVED_FINDING
+        // Ein offener BELASTENDER Widerspruch ist keine Grundlage fuer eine
+        // Abgabe. Heute sind alle Befunde belastend, aber die Sperre haengt an
+        // der Eigenschaft und nicht an der blossen Existenz - sonst wuerde ein
+        // kuenftiger harmloser Befund still mitsperren.
+        if (r.findings.any { it.incriminating }) return Denial.UNRESOLVED_FINDING
         // Der EIGENE unbekannte Ausgang sperrt - Hauptinvariante. Das gilt
         // auch fuer einen gebuchten, noch unquittierten Versuch: die Buchung
         // steht unmittelbar vor dem Schreibaufruf (F2).

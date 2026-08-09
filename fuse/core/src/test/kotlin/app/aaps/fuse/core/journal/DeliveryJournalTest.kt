@@ -725,6 +725,47 @@ class DeliveryJournalTest {
         assertEquals(DeliveryJournal.Denial.OTHER_REQUEST_AMBIGUOUS, DeliveryJournal.mayAttempt(s, "neu"))
     }
 
+    /** Eine leere Quelle ist keine Quelle. */
+    @Test
+    fun `eine leere Verweigerungsquelle ist ungueltig`() {
+        assertThrows(IllegalArgumentException::class.java) {
+            SendAttempt(1, t0, boundary = AmbiguityBoundary.REFUSED, resolvedAtTs = t0, resolvedSource = "  ")
+        }
+    }
+
+    /** Nullbeweis und belastender Befund sind konstruktiv unvertraeglich -
+     *  auch wenn die Outcome-Reihenfolge sie heute schon ungefaehrlich macht. */
+    @Test
+    fun `Nullbeweis und belastender Befund lassen sich nicht konstruieren`() {
+        assertThrows(IllegalArgumentException::class.java) {
+            DeliveryRequest(
+                requestId = "r1", proposalId = "p1", requestedU = 0.30, createdAtTs = t0, pumpEpoch = "e",
+                terminal = TerminalFact(TerminalKind.PROVEN_NOT_SENT, t0, "reject"),
+                findings = setOf(DeliveryFinding.UNANCHORED_WRITE_ACCEPTED),
+            )
+        }
+    }
+
+    /** ... und der Reducer laeuft nicht in genau diese Invariante: eine
+     *  unverankerte Quittung auf einer Nullbeweis-Zeile laesst den Nullbeweis
+     *  MITFALLEN, statt den Befund als INVALID_STATE zu verlieren. */
+    @Test
+    fun `eine unverankerte Quittung hebt auch einen bestehenden Nullbeweis auf`() {
+        val s = angelegt()
+            .dann(
+                DeliveryJournal.Event.SendAttemptStarted("r1", 1, t0),
+                DeliveryJournal.Event.WriteRefused("r1", 1, t0 + 1, "gate reject"),
+                DeliveryJournal.Event.ProvenNotSent("r1", t0 + 2, "reject"),
+            ).state
+        assertEquals(DeliveryOutcome.PROVEN_NOT_SENT, s.r().outcome)
+
+        val danach = DeliveryJournal.reduce(s, DeliveryJournal.Event.WriteAccepted("r1", 9, t0 + 5))
+        assertEquals(DeliveryJournal.Rejection.UNKNOWN_ATTEMPT, danach.rejection)
+        assertNull(danach.state.r().terminal)
+        assertTrue(danach.state.r().findings.contains(DeliveryFinding.UNANCHORED_WRITE_ACCEPTED))
+        assertEquals(DeliveryOutcome.AMBIGUOUS, danach.state.r().outcome)
+    }
+
     /** Die Quelle der Verweigerung bleibt erhalten und wird streng replayt -
      *  eine anonyme Entlastung waere das teuerste Datum des Moduls. */
     @Test
