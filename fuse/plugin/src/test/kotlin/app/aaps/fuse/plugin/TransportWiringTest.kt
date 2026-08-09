@@ -94,8 +94,23 @@ class TransportWiringTest : TestBaseWithProfile() {
     /** Hoehe der flachen Rohreihe - niedrig heisst "kein Bedarf". */
     private var flach = 180.0
 
-    /** Zeitstempel eines Mahlzeiten-Markers, 0 = keiner. */
+    /**
+     * Zeitstempel eines Mahlzeiten-Markers, 0 = keiner.
+     *
+     * WICHTIG - hier lag der Fehler des ersten Prime-Anlaufs: der Runner liest
+     * `markerTs = if (MealMarkerStamp > 0) MealMarkerStamp / 10 else
+     * MealMarkerArmedTs`. Der Stamp ist also KODIERT (Zehntel). Setzt man
+     * beide Schluessel auf dieselbe Zeit, gewinnt der Stamp-Zweig und teilt
+     * durch 10 - das Mahlzeitenfenster liegt dann Jahrzehnte in der
+     * Vergangenheit und ist nie aktiv. Deshalb: Stamp auf 0, Zeit ueber
+     * ArmedTs.
+     */
     private var markerAt = 0L
+
+    /** iobTH in Prozent von maxIob. Bei 100 sind beide Grenzen IDENTISCH -
+     *  dann deckt ein Test die zwei Abzuege nur gemeinsam. 50 laesst iobTH
+     *  allein binden, 200 den maxIob. */
+    private var iobThPct = 100
 
     private fun series(untilTs: Long): List<GV> =
         generateSequence(start) { it + 60_000L }
@@ -155,6 +170,12 @@ class TransportWiringTest : TestBaseWithProfile() {
     }
 
     private fun stubPolicy() {
+        // AUFFANG ZUERST. Mockito laesst den ZULETZT passenden Stub gewinnen -
+        // stand er am Ende, ueberschrieb er jeden spezifischen FuseBooleanKey
+        // und lieferte still `false`. Genau daran scheiterte der Prime-Pfad:
+        // PrimeReleaseEnabled war trotz ausdruecklicher Stubbung aus
+        // ("prime=DISABLED"), ohne dass irgendetwas rot wurde.
+        whenever(preferences.get(anyOrNull<BooleanKey>())).thenReturn(false)
         whenever(preferences.get(FuseDoubleKey.SmbRatio)).thenReturn(0.15)
         whenever(preferences.get(FuseDoubleKey.SmbRatioRise)).thenReturn(0.35)
         whenever(preferences.get(DoubleKey.ApsSmbMaxIob)).thenAnswer { maxIobU }
@@ -162,7 +183,7 @@ class TransportWiringTest : TestBaseWithProfile() {
         whenever(preferences.get(FuseDoubleKey.RiseRampHighR)).thenReturn(2.0)
         whenever(preferences.get(FuseDoubleKey.MaxSmbU)).thenReturn(0.3)
         whenever(preferences.get(FuseDoubleKey.GuardFloorMgdl)).thenReturn(70.0)
-        whenever(preferences.get(FuseIntKey.IobThPercent)).thenReturn(100)
+        whenever(preferences.get(FuseIntKey.IobThPercent)).thenAnswer { iobThPct }
         whenever(preferences.get(FuseIntKey.ReleaseHorizonMin)).thenReturn(60)
         whenever(preferences.get(FuseIntKey.LiabilityHorizonMin)).thenReturn(120)
         whenever(preferences.get(FuseIntKey.DriveTauMin)).thenReturn(60)
@@ -187,9 +208,8 @@ class TransportWiringTest : TestBaseWithProfile() {
         whenever(preferences.get(FuseDoubleKey.PrimeEnvelopeSmallU)).thenReturn(0.8)
         whenever(preferences.get(FuseDoubleKey.PrimeEnvelopeLargeU)).thenReturn(2.0)
         whenever(preferences.get(LongKey.FslCalibrationStart)).thenReturn(-1L)
-        whenever(preferences.get(FuseLongKey.MealMarkerStamp)).thenAnswer { markerAt }
+        whenever(preferences.get(FuseLongKey.MealMarkerStamp)).thenReturn(0L)
         whenever(preferences.get(FuseLongKey.MealMarkerArmedTs)).thenAnswer { markerAt }
-        whenever(preferences.get(anyOrNull<BooleanKey>())).thenReturn(false)
     }
 
     private fun cycle(): FuseCycleRunner.Outcome {
@@ -207,14 +227,63 @@ class TransportWiringTest : TestBaseWithProfile() {
         throw AssertionError("keine positive Dosis in $maxCycles Zyklen")
     }
 
-    /** Eine offene Transportzeile anlegen - so, wie sie der Publikationspfad
-     *  anlegen wuerde, aber ohne den Umweg ueber das Gate. */
-    private fun offenePosten(u: Double, dir: File? = null) {
-        val l = FuseLedgerAdapter()
-        dir?.let { l.loadOnce(it, "test-epoch", start) } ?: l.loadOnce(File("."), "test-epoch", start)
-        neuerRunner(l)
-        l.onPublished("vorlauf", u, start, 0L, 0.05, PumpType.GENERIC_AAPS.name, Sha.of("vs"))
+
+    /**
+     * DER PRIME-LIFT EINZELN (Codex-Re-Review, Verbraucher 3, Zeile 959).
+     *
+     * `PrimeRelease.lift` ist der dritte Verbraucher der offenen Haftung und
+     * der einzige, der auch OHNE rechnerischen Bedarf dosiert: bei aktivem
+     * Mahlzeiten-Marker gibt er eine Anschubmenge frei. Genau deshalb braucht
+     * er die Ledger-Korrektur - sonst finanziert der Marker eine Menge, die
+     * bereits unterwegs ist, ein zweites Mal.
+     *
+     * ZWEI Stolpersteine lagen davor, beide im TEST und nicht im Code:
+     *
+     * 1. Der Marker wird kodiert gelesen (`Stamp / 10`), s. [markerAt]. Wer
+     *    beide Schluessel setzt, landet Jahrzehnte in der Vergangenheit.
+     * 2. Der `anyOrNull<BooleanKey>()`-Auffangstub stand am ENDE von
+     *    [stubPolicy] und ueberschrieb `PrimeReleaseEnabled` still auf false -
+     *    der Pfad war schlicht aus ("prime=DISABLED"), ohne dass etwas rot
+     *    wurde.
+     *
+     * Gemessen (Rig, flach 100 mg/dl, Marker vor 5 min):
+     *   ohne Haftung -> 0,30 U, Grenze "primeRelease", prime=PRIME
+     *   0,50 U offen -> 0,05 U, Grenze "primeRelease", prime=PRIME
+     *
+     * Der Prime-Plan bleibt in BEIDEN Faellen aktiv - es ist also wirklich der
+     * Lift, der kappt, und nicht schon die Clearance, die sperrt.
+     */
+    @Test
+    fun `der Prime-Lift finanziert unterwegs befindliches Insulin nicht erneut`(@TempDir dir: File) {
+        flach = 100.0
+        markerAt = start + 5 * 60_000L
+        // Schwanzkanal aus, sonst kappt er mit und der Lift-Parameter waere
+        // nicht der entscheidende Term (gemessen: sonst bleibt die isolierte
+        // Mutation an Zeile 959 gruen).
+        tailGuard = false
+
+        fun lauf(u: Double, unter: File): FuseCycleRunner.Outcome {
+            val l = FuseLedgerAdapter().also { it.loadOnce(unter.also(File::mkdirs), "test-epoch", start) }
+            if (u > 0.0) l.onPublished("vorlauf", u, start, 0L, 0.05, PumpType.GENERIC_AAPS.name, Sha.of("vs"))
+            neuerRunner(l)
+            clock = start
+            var best: FuseCycleRunner.Outcome? = null
+            repeat(90) { val o = cycle(); if (o.decision.smbU > (best?.decision?.smbU ?: 0.0)) best = o }
+            return checkNotNull(best) { "kein Zyklus mit positiver Dosis" }
+        }
+
+        // KONTROLLE: der Lift ist wirklich der dosierende Pfad.
+        val ohne = lauf(0.0, File(dir, "ohne"))
+        assertThat(ohne.decision.bindingLimit).isEqualTo("primeRelease")
+        assertThat(ohne.prime?.active).isTrue()
+
+        // BEHANDLUNG: dieselbe Lage, aber 0,50 U haengen als offene Haftung.
+        val mit = lauf(0.5, File(dir, "mit"))
+        assertThat(mit.prime?.active).isTrue()   // der Plan ist AKTIV - der Lift kappt, nicht die Clearance
+        assertThat(mit.decision.bindingLimit).isEqualTo("primeRelease")
+        assertThat(mit.decision.smbU).isLessThan(ohne.decision.smbU)
     }
+
 
     // ---- Der Kern: die Verdrahtung ist lebendig --------------------------
 
