@@ -78,4 +78,16 @@
     <string name="fuse_absorption_credit_summary">ERKLAERTER KREDIT: ueber dieses Fenster wird die Stufen-Huelle als erwarteter Anstieg auf die MITTELBAHN gelegt - der Marker erzeugt damit Bedarf ab Knopfdruck, ohne auf den Anstieg zu warten (im FCL ist Warten strukturell zu spaet). KUERZER = frueher scharf. Die Guardbahn bleibt unberuehrt: bei vollem Insulinbuch gibt es trotz Ankuendigung nichts. Der Kredit rechnet mit dem REST der Huelle - was die Episode schon geliefert hat, zieht ihn herunter.</string>
     <string name="fuse_marker_boost_title">Marker-Sonderrechte [min]</string>
     <string name="fuse_marker_boost_summary">Wie lange ab Knopfdruck der erklaerte Kredit gilt und die Rebound-Bremsen entwaffnet sind. Endet frueher, sobald nach einem Anstieg eine Wende erkannt wurde. 0 = keine Sonderrechte (Marker bleibt Huelle/Anzeige/Onset-Evidenz).</string>
+    <string name="fuse_night_deadband_enabled_title">Nacht-Totband aktiv</string>
+    <string name="fuse_night_deadband_enabled_summary">Sperrt im Nachtfenster jede SMB-Abgabe, solange der gemessene BG unter Ziel + Nacht-Totband liegt. Grund (gemessen 09.08.): zwischen 05:25 und 06:24 gab FUSE 1,10 U bei BG 89-116 mit r um null - der Bedarf kam nicht von einer Stoerung, sondern aus zurueckgehaltenem Basal. Nachts ist niemand wach, der das korrigiert.</string>
+    <string name="fuse_night_deadband_title">Nacht-Totband [mg/dl ueber Ziel]</string>
+    <string name="fuse_night_deadband_summary">Bei Ziel 98 und 45 sind SMBs erst ab 143 moeglich. Ein ERKLAERTER Mahlzeit-Marker hebt das Nacht-Totband auf (spaetes Essen bekommt die normale Regelung); ein unangekuendigter Anstieg bleibt gesperrt, bis er die Schwelle wirklich ueberschreitet.</string>
+    <string name="fuse_night_start_title">Nacht Beginn [min ab Mitternacht]</string>
+    <string name="fuse_night_start_summary">1380 = 23:00. Das Fenster darf Mitternacht ueberschreiten. Beginn = Ende schaltet das Nachtfenster aus.</string>
+    <string name="fuse_night_end_title">Nacht Ende [min ab Mitternacht]</string>
+    <string name="fuse_night_end_summary">420 = 07:00.</string>
+    <string name="fuse_rebound_deadband_enabled_title">Rebound-Totband aktiv</string>
+    <string name="fuse_rebound_deadband_enabled_summary">Nach einem Tief (q1 unter 75 in den letzten 45 min) kein SMB, solange der BG unter Ziel + Rebound-Totband liegt - die Erholung ist das ZIEL der Gegenmassnahme, keine Stoerung.</string>
+    <string name="fuse_rebound_deadband_title">Rebound-Totband [mg/dl ueber Ziel]</string>
+    <string name="fuse_rebound_deadband_summary">War bis 09.08. fest auf 25. Haette in der Nacht 07./08.08. alle 20 Rebound-Dosen genullt (BG lief 65 auf 121 bei Ziel 97).</string>
 </resources>

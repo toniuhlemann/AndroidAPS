@@ -678,6 +678,12 @@ class FusePlugin @Inject constructor(
             addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.MaxSmbU, dialogMessage = R.string.fuse_max_smb_u_summary, title = R.string.fuse_max_smb_u_title))
             addPreference(AdaptiveIntPreference(ctx = context, intKey = FuseIntKey.IobThPercent, dialogMessage = R.string.fuse_iob_th_percent_summary, title = R.string.fuse_iob_th_percent_title))
             addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.GuardFloorMgdl, dialogMessage = R.string.fuse_guard_floor_summary, title = R.string.fuse_guard_floor_title))
+            addPreference(AdaptiveSwitchPreference(ctx = context, booleanKey = FuseBooleanKey.NightDeadbandEnabled, summary = R.string.fuse_night_deadband_enabled_summary, title = R.string.fuse_night_deadband_enabled_title))
+            addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.NightDeadbandMgdl, dialogMessage = R.string.fuse_night_deadband_summary, title = R.string.fuse_night_deadband_title))
+            addPreference(AdaptiveIntPreference(ctx = context, intKey = FuseIntKey.NightStartMin, dialogMessage = R.string.fuse_night_start_summary, title = R.string.fuse_night_start_title))
+            addPreference(AdaptiveIntPreference(ctx = context, intKey = FuseIntKey.NightEndMin, dialogMessage = R.string.fuse_night_end_summary, title = R.string.fuse_night_end_title))
+            addPreference(AdaptiveSwitchPreference(ctx = context, booleanKey = FuseBooleanKey.ReboundDeadbandEnabled, summary = R.string.fuse_rebound_deadband_enabled_summary, title = R.string.fuse_rebound_deadband_enabled_title))
+            addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.ReboundDeadbandMgdl, dialogMessage = R.string.fuse_rebound_deadband_summary, title = R.string.fuse_rebound_deadband_title))
         }
 
         cat("fuse_control", "Regelung") {

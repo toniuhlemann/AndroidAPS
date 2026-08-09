@@ -23,6 +23,7 @@ import app.aaps.fuse.core.adapter.CycleAssembly
 import app.aaps.fuse.core.controller.FuseController
 import app.aaps.fuse.core.controller.LedgerHoldGate
 import app.aaps.fuse.core.controller.MarkerScope
+import app.aaps.fuse.core.controller.NightWindow
 import app.aaps.fuse.core.controller.SubStepAccumulator
 import app.aaps.fuse.core.ledger.AccountedTreatment
 import app.aaps.fuse.plugin.ledger.FuseLedgerAdapter
@@ -622,6 +623,12 @@ class FuseCycleRunner(
                     // gehobenen Antrieb - sonst haette der Kanal die Bahn
                     // gehoben, aber die Ratio stuende noch auf Korrektur.
                     reboundWindow = reboundWindow,
+                    reboundDeadbandMgdl = if (cfg.reboundDeadbandEnabled) cfg.reboundDeadbandMgdl else 0.0,
+                    nightWindow = cfg.nightDeadbandEnabled && NightWindow.isNight(
+                        MidnightUtils.secondsFromMidnight(signal.sourceTs), cfg.nightStartMin, cfg.nightEndMin
+                    ),
+                    nightDeadbandMgdl = if (cfg.nightDeadbandEnabled) cfg.nightDeadbandMgdl else 0.0,
+                    markerBoost = markerBoost,
                     reboundSuppressedByMarker = reboundSuppressedByMarker,
                     mealWindow = mealWindow,
                     rSignedMgdlPerMin = onset.driveMgdlPerMin?.takeIf { onset.active }
@@ -1170,6 +1177,13 @@ class FuseCycleRunner(
         val absorptionCreditWindowMin: Int,
         /** Dauer der Marker-Sonderrechte ab Druck [min]; 0 = aus. */
         val markerBoostMaxMin: Int,
+        /** Nachtfenster [min ab Mitternacht] + Totband; Schalter getrennt. */
+        val nightStartMin: Int,
+        val nightEndMin: Int,
+        val nightDeadbandMgdl: Double,
+        val nightDeadbandEnabled: Boolean,
+        val reboundDeadbandMgdl: Double,
+        val reboundDeadbandEnabled: Boolean,
         val driveLowerQuantilePct: Int,
         val tailGuardEnabled: Boolean,
         val tailFloorMgdl: Double,
@@ -1204,6 +1218,12 @@ class FuseCycleRunner(
         driveTauMin = preferences.get(FuseIntKey.DriveTauMin),
         absorptionCreditWindowMin = preferences.get(FuseIntKey.AbsorptionCreditWindowMin),
         markerBoostMaxMin = preferences.get(FuseIntKey.MarkerBoostMaxMin),
+        nightStartMin = preferences.get(FuseIntKey.NightStartMin),
+        nightEndMin = preferences.get(FuseIntKey.NightEndMin),
+        nightDeadbandMgdl = preferences.get(FuseDoubleKey.NightDeadbandMgdl),
+        nightDeadbandEnabled = preferences.get(FuseBooleanKey.NightDeadbandEnabled),
+        reboundDeadbandMgdl = preferences.get(FuseDoubleKey.ReboundDeadbandMgdl),
+        reboundDeadbandEnabled = preferences.get(FuseBooleanKey.ReboundDeadbandEnabled),
         driveLowerQuantilePct = preferences.get(FuseIntKey.DriveLowerQuantilePct),
         tailGuardEnabled = preferences.get(FuseBooleanKey.TailGuardEnabled),
         tailFloorMgdl = preferences.get(FuseDoubleKey.TailFloorMgdl),
@@ -1236,6 +1256,9 @@ class FuseCycleRunner(
         require(it.driveTauMin in 10..240) { "driveTau=${it.driveTauMin}" }
         require(it.absorptionCreditWindowMin in 20..180) { "absorptionCreditWindow=${it.absorptionCreditWindowMin}" }
         require(it.markerBoostMaxMin in 0..90) { "markerBoostMax=${it.markerBoostMaxMin}" }
+        require(it.nightStartMin in 0..1439 && it.nightEndMin in 0..1439) { "nightWindow=${it.nightStartMin}..${it.nightEndMin}" }
+        require(it.nightDeadbandMgdl.isFinite() && it.nightDeadbandMgdl in 0.0..100.0) { "nightDeadband=${it.nightDeadbandMgdl}" }
+        require(it.reboundDeadbandMgdl.isFinite() && it.reboundDeadbandMgdl in 0.0..100.0) { "reboundDeadband=${it.reboundDeadbandMgdl}" }
         require(it.driveLowerQuantilePct in PairSlopeBand.MIN_PCT..PairSlopeBand.MAX_PCT) {
             "driveLowerQuantile=${it.driveLowerQuantilePct}"
         }

@@ -152,6 +152,14 @@ enum class FuseDoubleKey(
      */
     GuardFloorMgdl("fuse_guard_floor_mgdl", 70.0, 40.0, 120.0),
 
+    /** Totband der NACHT [mg/dl ueber Ziel]: darunter kein SMB im Nachtfenster.
+     *  0 = aus. Ein erklaerter Marker hebt es auf (Toni 09.08.). */
+    NightDeadbandMgdl("fuse_night_deadband_mgdl", 45.0, 0.0, 100.0),
+
+    /** Totband nach einem Tief [mg/dl ueber Ziel] - war bis 09.08. die feste
+     *  Konstante 25. */
+    ReboundDeadbandMgdl("fuse_rebound_deadband_mgdl", 25.0, 0.0, 100.0),
+
     /**
      * Untergrenze fuer das SCHWANZFENSTER hinter dem Haftungshorizont [mg/dl].
      * Getrennt von [GuardFloorMgdl], weil die beiden verschiedene Zeitraeume
@@ -234,6 +242,13 @@ enum class FuseIntKey(
      *  frueher, sobald nach einem Anstieg eine Wende gelatcht wurde. 0 = keine
      *  Sonderrechte (Marker bleibt Kontext/Anzeige). */
     MarkerBoostMaxMin("fuse_marker_boost_max_min", 45, 0, 90),
+
+    /** Beginn des Nachtfensters [min ab Mitternacht]. 23:00 = 1380. */
+    NightStartMin("fuse_night_start_min", 1380, 0, 1439),
+
+    /** Ende des Nachtfensters [min ab Mitternacht]. 07:00 = 420. Gleich dem
+     *  Start heisst: Nachtfenster AUS. */
+    NightEndMin("fuse_night_end_min", 420, 0, 1439),
 
     /**
      * Rangstelle in der Verteilung der paarweisen Steigungen, aus der die
@@ -336,6 +351,15 @@ enum class FuseBooleanKey(
      * tail=-Abschnitt. Wer messen will, schaltet ihn ein.
      */
     TailGuardEnabled("fuse_tail_guard_enabled", false),
+
+    /** NACHT-TOTBAND aktiv (Toni 09.08.): im Nachtfenster kein SMB unterhalb
+     *  Ziel + Nacht-Totband. Schalter getrennt vom Wert, damit ein Abschalten
+     *  die eingestellte Schwelle nicht verliert. */
+    NightDeadbandEnabled("fuse_night_deadband_enabled", true),
+
+    /** REBOUND-TOTBAND aktiv: nach einem Tief kein SMB unterhalb
+     *  Ziel + Rebound-Totband. War bis 09.08. fest eingebaut. */
+    ReboundDeadbandEnabled("fuse_rebound_deadband_enabled", true),
 
     /**
      * Zweite Bahn aus der SCHNELLEN Rate, die ausschliesslich BREMSEN darf.

@@ -103,6 +103,16 @@ object FuseController {
         /** q1 war in den letzten [REBOUND_WINDOW_MIN] min unter
          *  [REBOUND_LOW_MGDL] - die Rampe bleibt auf dem Korrektur-Anteil. */
         val reboundWindow: Boolean = false,
+        /** Wirksames Rebound-Totband [mg/dl] - Einstellung statt Konstante
+         *  (Toni 09.08.); [REBOUND_DEADBAND_MGDL] ist nur noch der Default. */
+        val reboundDeadbandMgdl: Double = REBOUND_DEADBAND_MGDL,
+        /** Anker liegt im konfigurierten NACHTFENSTER. */
+        val nightWindow: Boolean = false,
+        /** Totband der Nacht [mg/dl]; 0 = aus. Ein erklaerter Marker hebt es
+         *  auf, das Rebound-Totband dagegen nicht - s. NightWindow. */
+        val nightDeadbandMgdl: Double = 0.0,
+        /** Marker-Sonderrechte aktiv (hebt NUR das Nacht-Totband auf). */
+        val markerBoost: Boolean = false,
         /** Rebound-Bedingung lag an, wurde aber durch einen aktiven Marker
          *  entwaffnet (Gas-vor-Bremse NUR fuer erklaertes Wissen, 08.08.):
          *  das Fenster schuetzt vor dem Jagen UNANGEKUENDIGTER Hypo-
@@ -467,10 +477,24 @@ object FuseController {
         // ueber das Ziel das ZIEL der Traubenzucker-Aktion, keine Stoerung.
         // Der Anker (nicht die Bahn) entscheidet - die Bahn ist im Rebound
         // vom aufgeblaehten r verzerrt, genau deshalb existiert das Fenster.
-        if (state.reboundWindow && prediction.bgAtAnchor < state.targetMgdl + REBOUND_DEADBAND_MGDL) {
+        // NACHT-TOTBAND (Toni 09.08.) laeuft ueber DENSELBEN Riegel: der
+        // groessere der beiden Gruende gilt, zwei Schutzgruende duerfen sich
+        // nie gegenseitig aufweichen. Gemessener Anlass: 05:25-06:24 am
+        // 09.08. - 1,10 U bei BG 89-116, r um null, Bedarf allein aus
+        // negativem Basal-IOB.
+        val deadbandMgdl = NightWindow.effectiveDeadbandMgdl(
+            reboundWindow = state.reboundWindow,
+            reboundDeadbandMgdl = state.reboundDeadbandMgdl,
+            isNight = state.nightWindow,
+            nightDeadbandMgdl = state.nightDeadbandMgdl,
+            markerBoost = state.markerBoost,
+        )
+        if (deadbandMgdl > 0.0 && prediction.bgAtAnchor < state.targetMgdl + deadbandMgdl) {
             return Decision(
                 0.0, TbrAction.NO_NEW_POSITIVE, Block.NO_DEMAND, insulinReq,
-                releaseMean, minLower, "reboundDeadband", tail, context = ctx, restraintBound = restraintBound,
+                releaseMean, minLower,
+                if (state.reboundWindow && deadbandMgdl == state.reboundDeadbandMgdl) "reboundDeadband" else "nightDeadband",
+                tail, context = ctx, restraintBound = restraintBound,
             )
         }
 
