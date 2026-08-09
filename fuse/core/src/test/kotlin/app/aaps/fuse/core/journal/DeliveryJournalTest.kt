@@ -5,6 +5,7 @@ import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertSame
+import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
@@ -34,14 +35,33 @@ class DeliveryJournalTest {
     // ---- Anlegen ----------------------------------------------------------
 
     @Test
-    fun `ein frisch angelegter Auftrag haftet, obwohl noch nichts passiert ist`() {
+    fun `ein frisch angelegter Auftrag bleibt offen, obwohl noch nichts passiert ist`() {
         val s = angelegt()
         assertEquals(DeliveryOutcome.CREATED, s.r().outcome)
-        // Eine beabsichtigte Menge ist eine Menge. Sie faellt erst, wenn ein
-        // Abbruch sie beweisbar beendet - nicht dadurch, dass noch nichts
-        // geschehen ist.
-        assertTrue(s.r().liable)
-        assertEquals(0.30, s.liableU, 1e-12)
+        // Eine beabsichtigte Abgabe ist offen. Sie schliesst erst durch einen
+        // Beweis - nicht dadurch, dass noch nichts geschehen ist.
+        assertTrue(s.r().open)
+    }
+
+    /**
+     * DER ZUSTAENDIGKEITSVERTRAG als Test (Codex-Gegenpruefung P1).
+     *
+     * Das Journal darf keine Mengensumme anbieten. Der bestehende Ledger
+     * fuehrt dieselbe Menge bereits als Haftung; eine zweite Summe hier waere
+     * die Einladung, beide zu addieren und dieselbe Menge doppelt zu belegen.
+     * Das Journal beantwortet eine JA/NEIN-Frage, keine Menge.
+     */
+    @Test
+    fun `das Journal bietet keine Mengensumme an - die Menge fuehrt der Ledger`() {
+        // Java-Reflexion, nicht kotlin-reflect: das laeuft ohne zusaetzliche
+        // Abhaengigkeit im Testpfad.
+        val methoden = DeliveryJournalState::class.java.methods.map { it.name }
+        assertTrue(methoden.none { it.contains("liable", ignoreCase = true) }) {
+            "eine Mengensumme im Journal waere die Einladung zur Doppelzaehlung mit dem Ledger"
+        }
+        // Was es GIBT, ist die Liste der offenen Ausgaenge - eine Anzahl,
+        // keine Menge.
+        assertTrue(methoden.any { it == "getAmbiguous" })
     }
 
     @Test
@@ -106,7 +126,7 @@ class DeliveryJournalTest {
         val nachher = vorher.dann(DeliveryJournal.Event.WriteAccepted("r1", 1, t0 + 10)).state
         assertTrue(nachher.r().boundaryCrossed)
         assertEquals(DeliveryOutcome.AMBIGUOUS, nachher.r().outcome)
-        assertTrue(nachher.r().liable)
+        assertTrue(nachher.r().open)
     }
 
     /**
@@ -128,7 +148,24 @@ class DeliveryJournalTest {
         assertFalse(versuch.applied)
         assertEquals(DeliveryJournal.Rejection.NOT_SENT_AFTER_BOUNDARY, versuch.rejection)
         assertEquals(DeliveryOutcome.AMBIGUOUS, versuch.state.r().outcome)
-        assertTrue(versuch.state.r().liable)
+        assertTrue(versuch.state.r().open)
+    }
+
+    /**
+     * Der zweite Versuch NACH der Grenze wird gebucht - er ist eine Tatsache -,
+     * aber er ist ein BEFUND. Verschweigen waere schlimmer als melden.
+     */
+    @Test
+    fun `ein Versuch nach der Grenze wird gebucht und als Befund markiert`() {
+        val s = angelegt()
+            .dann(
+                DeliveryJournal.Event.SendAttemptStarted("r1", 1, t0),
+                DeliveryJournal.Event.WriteAccepted("r1", 1, t0 + 10),
+                DeliveryJournal.Event.SendAttemptStarted("r1", 2, t0 + 20),
+            ).state
+        assertEquals(2, s.r().attempts.size)
+        assertTrue(s.r().findings.contains(DeliveryFinding.ATTEMPT_AFTER_BOUNDARY))
+        assertEquals(1, s.withFindings.size)
     }
 
     /** Die Umkehrung MUSS gelten, sonst staut sich mit jedem abgelehnten
@@ -141,16 +178,71 @@ class DeliveryJournalTest {
                 DeliveryJournal.Event.ProvenNotSent("r1", t0 + 5, "pre-send gate reject"),
             ).state
         assertEquals(DeliveryOutcome.PROVEN_NOT_SENT, s.r().outcome)
-        assertFalse(s.r().liable)
-        assertEquals(0.0, s.liableU, 1e-12)
+        assertFalse(s.r().open)
+    }
+
+    /**
+     * ASYMMETRISCHE RANGFOLGE (Codex-Gegenpruefung, P0). Ein frueherer
+     * "nicht gesendet" kann falsch gewesen sein - die Pumpenhistorie kann
+     * Insulin nachweisen, das ein Vor-Send-Abbruch fuer unmoeglich hielt.
+     * Dann gewinnt die Abgabe, weil nur diese Richtung konservativ ist. Der
+     * Widerspruch bleibt als Befund stehen und sperrt.
+     */
+    @Test
+    fun `eine bestaetigte Abgabe schlaegt den frueheren Nullbeweis`() {
+        val s = angelegt().dann(DeliveryJournal.Event.ProvenNotSent("r1", t0, "reject")).state
+        assertEquals(DeliveryOutcome.PROVEN_NOT_SENT, s.r().outcome)
+
+        val danach = DeliveryJournal.reduce(s, DeliveryJournal.Event.DeliveryConfirmed("r1", t0 + 1, "pump history"))
+        assertTrue(danach.applied)
+        assertEquals(DeliveryOutcome.CONFIRMED, danach.state.r().outcome)
+        assertTrue(danach.state.r().open)
+        assertTrue(danach.state.r().findings.contains(DeliveryFinding.CONFIRMED_AFTER_PROVEN_NOT_SENT)) {
+            "der Widerspruch darf nicht geglaettet werden"
+        }
+    }
+
+    /** Der umgekehrte Weg bleibt verboten: eine bestaetigte Abgabe wird nie
+     *  durch einen Nullbeweis ersetzt. */
+    @Test
+    fun `ein Nullbeweis ueberschreibt eine bestaetigte Abgabe nicht`() {
+        val s = angelegt().dann(DeliveryJournal.Event.DeliveryConfirmed("r1", t0, "history")).state
+        val zurueck = DeliveryJournal.reduce(s, DeliveryJournal.Event.ProvenNotSent("r1", t0 + 1, "reject"))
+        assertFalse(zurueck.applied)
+        assertEquals(DeliveryJournal.Rejection.TERMINAL_CONFLICT, zurueck.rejection)
+        assertEquals(DeliveryOutcome.CONFIRMED, zurueck.state.r().outcome)
+    }
+
+    /** Derselbe Terminaltyp mit ANDEREM Zeitstempel ist ein zweites Ereignis,
+     *  kein Wiederholungsversuch - und wird nicht still geschluckt. */
+    @Test
+    fun `zwei Beweise desselben Typs mit verschiedenen Zeiten widersprechen sich`() {
+        val s = angelegt().dann(DeliveryJournal.Event.DeliveryConfirmed("r1", t0, "history")).state
+        val zweiter = DeliveryJournal.reduce(s, DeliveryJournal.Event.DeliveryConfirmed("r1", t0 + 5, "history"))
+        assertEquals(DeliveryJournal.Rejection.TERMINAL_CONFLICT, zweiter.rejection)
+    }
+
+    // ---- Uebergabe an den Ledger -----------------------------------------
+
+    /**
+     * Ohne diesen Uebergang bliebe eine bestaetigte Abgabe unbegrenzt offen -
+     * neben derselben Menge im Ledger. Erst die Uebernahme schliesst sie.
+     */
+    @Test
+    fun `erst die Uebernahme durch den Ledger schliesst eine bestaetigte Abgabe`() {
+        val s = angelegt().dann(DeliveryJournal.Event.DeliveryConfirmed("r1", t0, "history")).state
+        assertTrue(s.r().open)
+
+        val fertig = s.dann(DeliveryJournal.Event.LiabilityAccounted("r1", t0 + 60_000L, "ledger")).state
+        assertEquals(DeliveryOutcome.ACCOUNTED, fertig.r().outcome)
+        assertFalse(fertig.r().open)
     }
 
     @Test
-    fun `ein Terminalfakt widerspricht dem anderen und wird nicht still ueberschrieben`() {
-        val s = angelegt().dann(DeliveryJournal.Event.ProvenNotSent("r1", t0, "reject")).state
-        val widerspruch = DeliveryJournal.reduce(s, DeliveryJournal.Event.DeliveryConfirmed("r1", t0 + 1, "history"))
-        assertEquals(DeliveryJournal.Rejection.TERMINAL_CONFLICT, widerspruch.rejection)
-        assertEquals(DeliveryOutcome.PROVEN_NOT_SENT, widerspruch.state.r().outcome)
+    fun `ohne nachgewiesene Abgabe gibt es keine Uebernahme`() {
+        val s = angelegt()
+        val r = DeliveryJournal.reduce(s, DeliveryJournal.Event.LiabilityAccounted("r1", t0, "ledger"))
+        assertEquals(DeliveryJournal.Rejection.ACCOUNTED_WITHOUT_DELIVERY, r.rejection)
     }
 
     // ---- zweiphasige Identitaet -------------------------------------------
@@ -225,21 +317,110 @@ class DeliveryJournalTest {
 
         assertEquals(1, s.ambiguous.size)
         assertEquals(DeliveryJournal.Denial.OTHER_REQUEST_AMBIGUOUS, DeliveryJournal.mayAttempt(s, "neu"))
-        // Beide haften - die alte, weil ihr Ausgang unbekannt ist, die neue,
-        // weil sie beabsichtigt ist.
-        assertEquals(0.45, s.liableU, 1e-12)
+        // Beide Zeilen sind offen - die alte, weil ihr Ausgang unbekannt ist,
+        // die neue, weil sie beabsichtigt ist. Eine MENGE steht hier bewusst
+        // nicht; die fuehrt der Ledger.
+        assertTrue(s.requests.values.all { it.open })
     }
 
+    /**
+     * DIE HAUPTINVARIANTE GILT AUCH FUER DEN EIGENEN AUFTRAG (Codex-
+     * Gegenpruefung, P0). Der erste Entwurf liess den eigenen Retry zu und
+     * verwechselte dabei BUCHEN mit ERLAUBEN. Beim Medtrum kann ein Retry
+     * nach einem `onCharacteristicWrite`-Fehler laufen, obwohl
+     * `writeCharacteristic()` zuvor true geliefert hat - mit neuer BLE-Sequenz
+     * und ohne idempotente Kennung im Payload. Eine Doppelabgabe ist damit
+     * nicht ausgeschlossen.
+     */
     @Test
-    fun `der eigene unbekannte Ausgang sperrt den eigenen Retry nicht`() {
-        // Sonst koennte der Treiber seine eigene Wiederholung nicht buchen -
-        // und genau die soll gebucht werden.
+    fun `nach ueberschrittener Grenze ist auch der eigene Retry gesperrt`() {
         val s = angelegt()
             .dann(
                 DeliveryJournal.Event.SendAttemptStarted("r1", 1, t0),
                 DeliveryJournal.Event.WriteAccepted("r1", 1, t0 + 10),
             ).state
+        assertEquals(DeliveryJournal.Denial.SELF_AMBIGUOUS, DeliveryJournal.mayAttempt(s, "r1"))
+    }
+
+    /** Vor der Grenze bleibt der Retry moeglich - sonst waere ein sauber
+     *  abgewiesener Versuch das Ende jeder Wiederholung. */
+    @Test
+    fun `nach einem sicheren Vor-Send-Abbruch ist der Retry weiter moeglich`() {
+        val s = angelegt().dann(DeliveryJournal.Event.SendAttemptStarted("r1", 1, t0)).state
+        assertFalse(s.r().boundaryCrossed)
         assertNull(DeliveryJournal.mayAttempt(s, "r1"))
+    }
+
+    @Test
+    fun `ein offener Widerspruch sperrt die Zeile`() {
+        val s = angelegt()
+            .dann(
+                DeliveryJournal.Event.ProvenNotSent("r1", t0, "reject"),
+                DeliveryJournal.Event.DeliveryConfirmed("r1", t0 + 1, "history"),
+            ).state
+        assertTrue(s.r().findings.isNotEmpty())
+        // ALREADY_TERMINAL greift hier zuerst - beide sperren, und das ist der
+        // Punkt: eine widerspruechliche Zeile autorisiert nichts.
+        assertNotNull(DeliveryJournal.mayAttempt(s, "r1"))
+    }
+
+    // ---- Schema-Haertung --------------------------------------------------
+
+    @Test
+    fun `eine leere Epoch sperrt wie eine fehlende`() {
+        val s = angelegt(epoch = "   ")
+        assertNull(s.r().pumpEpoch) { "leer wird beim Anlegen zu null normalisiert" }
+        assertEquals(DeliveryJournal.Denial.NO_PUMP_EPOCH, DeliveryJournal.mayAttempt(s, "r1"))
+    }
+
+    /**
+     * Ein deserialisierter Zustand, dessen Versuche mit 2 beginnen, behauptet,
+     * Versuch 1 habe es nie gegeben. Der Unterschied zwischen "wir kennen alle
+     * Versuche" und "wir kennen die, die uebrig blieben" ist genau der, an dem
+     * dieses Journal haengt.
+     */
+    @Test
+    fun `eine Zeile die mit Versuch zwei beginnt ist ungueltig`() {
+        val fehler = assertThrows(IllegalArgumentException::class.java) {
+            DeliveryRequest(
+                requestId = "r1", proposalId = "p1", requestedU = 0.30, createdAtTs = t0,
+                pumpEpoch = "e", attempts = listOf(SendAttempt(attempt = 2, startedAtTs = t0)),
+            )
+        }
+        assertTrue(fehler.message!!.contains("exactly 1..n"))
+    }
+
+    @Test
+    fun `eine Grenzueberschreitung ohne Zeitstempel ist ein halber Beweis`() {
+        assertThrows(IllegalArgumentException::class.java) {
+            SendAttempt(1, t0, boundary = AmbiguityBoundary.OS_WRITE_ACCEPTED, acceptedAtTs = null)
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            SendAttempt(1, t0, boundary = AmbiguityBoundary.NOT_REACHED, acceptedAtTs = t0)
+        }
+    }
+
+    @Test
+    fun `der Zeitpunkt der Grenzueberschreitung wird gespeichert und beim Replay geprueft`() {
+        val s = angelegt()
+            .dann(
+                DeliveryJournal.Event.SendAttemptStarted("r1", 1, t0),
+                DeliveryJournal.Event.WriteAccepted("r1", 1, t0 + 10),
+            ).state
+        assertEquals(t0 + 10, s.r().attempts.first().acceptedAtTs)
+        // Derselbe Beweis nochmal: idempotent. Ein anderer Zeitpunkt: Widerspruch.
+        assertTrue(DeliveryJournal.reduce(s, DeliveryJournal.Event.WriteAccepted("r1", 1, t0 + 10)).applied)
+        assertEquals(
+            DeliveryJournal.Rejection.TERMINAL_CONFLICT,
+            DeliveryJournal.reduce(s, DeliveryJournal.Event.WriteAccepted("r1", 1, t0 + 99)).rejection,
+        )
+    }
+
+    @Test
+    fun `nach einem Terminalzustand gibt es keine neuen Versuche`() {
+        val s = angelegt().dann(DeliveryJournal.Event.ProvenNotSent("r1", t0, "reject")).state
+        val r = DeliveryJournal.reduce(s, DeliveryJournal.Event.SendAttemptStarted("r1", 1, t0 + 5))
+        assertEquals(DeliveryJournal.Rejection.ATTEMPT_AFTER_TERMINAL, r.rejection)
     }
 
     // ---- Wiederaufnahme ---------------------------------------------------

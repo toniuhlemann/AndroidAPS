@@ -9,9 +9,22 @@ package app.aaps.fuse.core.journal
  * Prozessende ist nicht sicher entscheidbar, ob ein Ereignis noch geschrieben
  * wurde, und der Wiederholungsversuch darf keinen Schaden anrichten.
  *
- * Ereignisse, die einer bestehenden Tatsache WIDERSPRECHEN, werden nicht still
- * verworfen und nicht still angewandt - sie sind ein [Rejection]. Der Aufrufer
- * entscheidet, was er damit tut; das Journal erfindet nichts.
+ * "Idempotent" heisst hier STRENG: dasselbe Ereignis mit demselben Inhalt.
+ * Ein Ereignis desselben Typs mit ANDEREM Zeitstempel oder anderer Quelle ist
+ * ein zweites Ereignis und damit ein Widerspruch - es still zu schlucken hiesse,
+ * zwei verschiedene Beweise als einen zu fuehren.
+ *
+ * ZWEI DINGE, DIE HIER STRENG GETRENNT SIND und deren Vermischung der teuerste
+ * Fehler des ersten Entwurfs war:
+ *
+ *   BUCHEN  ([reduce]) haelt fest, was GESCHEHEN ist. Auch ein Sendeversuch,
+ *           den niemand autorisiert hat, muss gebucht werden - der Treiber
+ *           wiederholt automatisch, und ein Journal, das diese Wiederholung
+ *           nicht kennt, ist fuer genau den gefaehrlichsten Fall blind.
+ *
+ *   ERLAUBEN ([mayAttempt]) beantwortet, ob JETZT gesendet werden DARF. Hier
+ *           gilt die Hauptinvariante ohne Ausnahme - auch fuer den eigenen
+ *           Retry.
  */
 object DeliveryJournal {
 
@@ -56,6 +69,16 @@ object DeliveryJournal {
 
         /** Abgabe nachgewiesen. */
         data class DeliveryConfirmed(val requestId: String, val atTs: Long, val source: String) : Event
+
+        /**
+         * Der Ledger/IOB hat die Menge uebernommen - das Journal ist mit dieser
+         * Zeile fertig.
+         *
+         * Ohne dieses Ereignis bliebe eine bestaetigte Abgabe unbegrenzt offen
+         * und wuerde neben derselben Menge im Ledger stehen. Genau das ist der
+         * Uebergang, den der Zustaendigkeitsvertrag verlangt.
+         */
+        data class LiabilityAccounted(val requestId: String, val atTs: Long, val source: String) : Event
     }
 
     /** Warum ein Ereignis NICHT angewandt wurde. */
@@ -70,6 +93,9 @@ object DeliveryJournal {
          *  dass ein Versuch nicht gebucht wurde. */
         ATTEMPT_OUT_OF_ORDER,
 
+        /** Nach einem Terminalzustand gibt es keine neuen Versuche mehr. */
+        ATTEMPT_AFTER_TERMINAL,
+
         /** Eine Grenzueberschreitung fuer einen Versuch, den es nicht gibt. */
         UNKNOWN_ATTEMPT,
 
@@ -81,6 +107,9 @@ object DeliveryJournal {
 
         /** Eine Identitaet widerspricht der bereits gebundenen. */
         IDENTITY_CONFLICT,
+
+        /** Uebernahme ohne nachgewiesene Abgabe. */
+        ACCOUNTED_WITHOUT_DELIVERY,
     }
 
     data class Result(val state: DeliveryJournalState, val rejection: Rejection? = null) {
@@ -99,25 +128,28 @@ object DeliveryJournal {
         is Event.PumpIdObserved      -> onPumpId(state, event)
         is Event.ProvenNotSent       -> onProvenNotSent(state, event)
         is Event.DeliveryConfirmed   -> onConfirmed(state, event)
+        is Event.LiabilityAccounted  -> onAccounted(state, event)
     }
 
     // ---- einzelne Ereignisse ---------------------------------------------
 
     private fun onCreated(state: DeliveryJournalState, e: Event.Created): Result {
+        // Leer ist keine Epoch - hier normalisiert, damit sie gar nicht erst
+        // in den Zustand kommt.
+        val epoch = e.pumpEpoch?.takeIf { it.isNotBlank() }
         val vorhanden = state.requests[e.requestId]
         if (vorhanden != null) {
-            // Idempotenz: derselbe Auftrag nochmal ist kein Fehler.
             val gleich = vorhanden.proposalId == e.proposalId &&
                 vorhanden.requestedU == e.requestedU &&
                 vorhanden.createdAtTs == e.atTs &&
-                vorhanden.pumpEpoch == e.pumpEpoch
+                vorhanden.pumpEpoch == epoch
             return if (gleich) Result(state) else Result(state, Rejection.DUPLICATE_REQUEST_CONFLICT)
         }
         return put(
             state,
             DeliveryRequest(
                 requestId = e.requestId, proposalId = e.proposalId, requestedU = e.requestedU,
-                createdAtTs = e.atTs, pumpEpoch = e.pumpEpoch,
+                createdAtTs = e.atTs, pumpEpoch = epoch,
             )
         )
     }
@@ -125,27 +157,41 @@ object DeliveryJournal {
     private fun onAttempt(state: DeliveryJournalState, e: Event.SendAttemptStarted): Result {
         val r = state.requests[e.requestId] ?: return Result(state, Rejection.UNKNOWN_REQUEST)
         r.attempts.firstOrNull { it.attempt == e.attempt }?.let { vorhanden ->
-            // Idempotenz: derselbe Versuch nochmal gebucht.
             val gleich = vorhanden.startedAtTs == e.atTs && vorhanden.transportSequence == e.transportSequence
             return if (gleich) Result(state) else Result(state, Rejection.ATTEMPT_OUT_OF_ORDER)
         }
-        // Lueckenlos ab 1: eine Luecke hiesse, dass ein Versuch stattfand, ohne
-        // gebucht zu sein - genau der Zustand, den das Journal ausschliessen soll.
+        // Nach einem Terminalzustand ist ein neuer Versuch ein Widerspruch -
+        // die Zeile ist abgeschlossen.
+        if (r.terminal != null) return Result(state, Rejection.ATTEMPT_AFTER_TERMINAL)
         if (e.attempt != r.nextAttemptNumber) return Result(state, Rejection.ATTEMPT_OUT_OF_ORDER)
+        // GEBUCHT WIRD AUCH DER UNAUTORISIERTE VERSUCH. Der Treiber wiederholt
+        // von sich aus; diese Wiederholung ist eine Tatsache und gehoert ins
+        // Journal - sie wird als BEFUND markiert, nicht verschwiegen.
+        val befunde =
+            if (r.boundaryCrossed) r.findings + DeliveryFinding.ATTEMPT_AFTER_BOUNDARY else r.findings
         return put(
             state,
-            r.copy(attempts = r.attempts + SendAttempt(e.attempt, e.atTs, e.transportSequence))
+            r.copy(
+                attempts = r.attempts + SendAttempt(e.attempt, e.atTs, e.transportSequence),
+                findings = befunde,
+            )
         )
     }
 
     private fun onWriteAccepted(state: DeliveryJournalState, e: Event.WriteAccepted): Result {
         val r = state.requests[e.requestId] ?: return Result(state, Rejection.UNKNOWN_REQUEST)
         val a = r.attempts.firstOrNull { it.attempt == e.attempt } ?: return Result(state, Rejection.UNKNOWN_ATTEMPT)
-        if (a.boundary == AmbiguityBoundary.OS_WRITE_ACCEPTED) return Result(state)   // idempotent
+        if (a.boundary == AmbiguityBoundary.OS_WRITE_ACCEPTED) {
+            // Streng idempotent: derselbe Beweis ja, ein zweiter mit anderem
+            // Zeitpunkt waere ein zweites Ereignis.
+            return if (a.acceptedAtTs == e.atTs) Result(state) else Result(state, Rejection.TERMINAL_CONFLICT)
+        }
         return put(
             state,
             r.copy(attempts = r.attempts.map {
-                if (it.attempt == e.attempt) it.copy(boundary = AmbiguityBoundary.OS_WRITE_ACCEPTED) else it
+                if (it.attempt == e.attempt)
+                    it.copy(boundary = AmbiguityBoundary.OS_WRITE_ACCEPTED, acceptedAtTs = e.atTs)
+                else it
             })
         )
     }
@@ -169,24 +215,54 @@ object DeliveryJournal {
      * keine Information, sondern eine Behauptung - und die teuerste, die es
      * hier gibt: sie wuerde eine moeglicherweise abgegebene Menge aus der
      * Haftung nehmen.
+     *
+     * Ebenso darf er eine BESTAETIGTE Abgabe nie ueberschreiben. Die Rangfolge
+     * ist asymmetrisch, und zwar in die konservative Richtung.
      */
     private fun onProvenNotSent(state: DeliveryJournalState, e: Event.ProvenNotSent): Result {
         val r = state.requests[e.requestId] ?: return Result(state, Rejection.UNKNOWN_REQUEST)
         if (r.boundaryCrossed) return Result(state, Rejection.NOT_SENT_AFTER_BOUNDARY)
         r.terminal?.let {
-            return if (it.kind == TerminalKind.PROVEN_NOT_SENT) Result(state)
+            if (it.kind != TerminalKind.PROVEN_NOT_SENT) return Result(state, Rejection.TERMINAL_CONFLICT)
+            return if (it.atTs == e.atTs && it.source == e.source) Result(state)
             else Result(state, Rejection.TERMINAL_CONFLICT)
         }
         return put(state, r.copy(terminal = TerminalFact(TerminalKind.PROVEN_NOT_SENT, e.atTs, e.source)))
     }
 
+    /**
+     * BESTAETIGTE ABGABE SCHLAEGT IMMER DEN NULLBEWEIS (Codex-Gegenpruefung,
+     * P0). Ein frueherer "nicht gesendet" kann falsch gewesen sein - die
+     * Pumpenhistorie kann Insulin nachweisen, das ein Vor-Send-Abbruch fuer
+     * unmoeglich hielt. Dann gewinnt die Abgabe, weil nur diese Richtung
+     * konservativ ist.
+     *
+     * Der Widerspruch wird NICHT geglaettet: er bleibt als
+     * [DeliveryFinding.CONFIRMED_AFTER_PROVEN_NOT_SENT] stehen und sperrt die
+     * Zeile, bis ihn jemand ausdruecklich aufloest.
+     */
     private fun onConfirmed(state: DeliveryJournalState, e: Event.DeliveryConfirmed): Result {
         val r = state.requests[e.requestId] ?: return Result(state, Rejection.UNKNOWN_REQUEST)
-        r.terminal?.let {
-            return if (it.kind == TerminalKind.DELIVERY_CONFIRMED) Result(state)
+        val t = r.terminal
+        if (t?.kind == TerminalKind.DELIVERY_CONFIRMED) {
+            return if (t.atTs == e.atTs && t.source == e.source) Result(state)
             else Result(state, Rejection.TERMINAL_CONFLICT)
         }
-        return put(state, r.copy(terminal = TerminalFact(TerminalKind.DELIVERY_CONFIRMED, e.atTs, e.source)))
+        val befunde =
+            if (t?.kind == TerminalKind.PROVEN_NOT_SENT) r.findings + DeliveryFinding.CONFIRMED_AFTER_PROVEN_NOT_SENT
+            else r.findings
+        return put(
+            state,
+            r.copy(terminal = TerminalFact(TerminalKind.DELIVERY_CONFIRMED, e.atTs, e.source), findings = befunde)
+        )
+    }
+
+    private fun onAccounted(state: DeliveryJournalState, e: Event.LiabilityAccounted): Result {
+        val r = state.requests[e.requestId] ?: return Result(state, Rejection.UNKNOWN_REQUEST)
+        if (r.terminal?.kind != TerminalKind.DELIVERY_CONFIRMED)
+            return Result(state, Rejection.ACCOUNTED_WITHOUT_DELIVERY)
+        r.accountedAtTs?.let { return if (it == e.atTs) Result(state) else Result(state, Rejection.TERMINAL_CONFLICT) }
+        return put(state, r.copy(accountedAtTs = e.atTs))
     }
 
     private fun put(state: DeliveryJournalState, r: DeliveryRequest) =
@@ -198,17 +274,31 @@ object DeliveryJournal {
      * Darf fuer diesen Auftrag JETZT ein Sendeversuch beginnen?
      *
      * `null` = ja. Sonst der Grund, und der ist immer eine Sperre, nie ein
-     * Hinweis. Die Regel ist bewusst eng: sie fragt nur nach dem, was VOR dem
-     * Senden durabel bekannt sein MUSS.
+     * Hinweis.
+     *
+     * DIE HAUPTINVARIANTE GILT AUCH FUER DEN EIGENEN AUFTRAG (Codex-
+     * Gegenpruefung, P0). Der erste Entwurf liess den eigenen Retry trotz
+     * ueberschrittener Grenze zu - mit der Begruendung, der Treiber muesse
+     * seine Wiederholung buchen koennen. Das verwechselte BUCHEN mit ERLAUBEN:
+     * die Wiederholung wird weiterhin gebucht (s. [onAttempt]), aber sie wird
+     * hier nie autorisiert. Beim Medtrum kann ein Retry nach einem
+     * `onCharacteristicWrite`-Fehler laufen, obwohl `writeCharacteristic()`
+     * zuvor `true` geliefert hat; der neue Versuch bekommt eine neue
+     * BLE-Sequenz, und der Bolus-Payload traegt keine idempotente Kennung.
+     * Eine Doppelabgabe ist damit nicht ausgeschlossen.
      */
     fun mayAttempt(state: DeliveryJournalState, requestId: String): Denial? {
         val r = state.requests[requestId] ?: return Denial.NOT_JOURNALED
         // Ohne gepinnte Pumpen-Epoch weiss niemand, WOHIN gesendet wird.
-        if (r.pumpEpoch == null) return Denial.NO_PUMP_EPOCH
+        if (r.pumpEpoch.isNullOrBlank()) return Denial.NO_PUMP_EPOCH
         if (r.terminal != null) return Denial.ALREADY_TERMINAL
-        // Ein ANDERER Auftrag mit unbekanntem Ausgang blockiert: solange
-        // irgendwo Insulin unterwegs sein koennte, wird nichts Neues
-        // hinterhergeschickt (persistenter Ambiguity-Hold).
+        // Ein offener Widerspruch ist keine Grundlage fuer eine Abgabe.
+        if (r.findings.isNotEmpty()) return Denial.UNRESOLVED_FINDING
+        // Der EIGENE unbekannte Ausgang sperrt - Hauptinvariante.
+        if (r.boundaryCrossed) return Denial.SELF_AMBIGUOUS
+        // Und ein FREMDER ebenso: solange irgendwo Insulin unterwegs sein
+        // koennte, wird nichts Neues hinterhergeschickt. Weil das aus dem
+        // durablen Zustand faellt, ueberlebt es Prozessende und neuen Worker.
         if (state.ambiguous.any { it.requestId != requestId }) return Denial.OTHER_REQUEST_AMBIGUOUS
         return null
     }
@@ -220,6 +310,10 @@ object DeliveryJournal {
         NOT_JOURNALED,
         NO_PUMP_EPOCH,
         ALREADY_TERMINAL,
+        UNRESOLVED_FINDING,
+
+        /** Der eigene Auftrag hat die Grenze schon ueberschritten. */
+        SELF_AMBIGUOUS,
         OTHER_REQUEST_AMBIGUOUS,
     }
 }

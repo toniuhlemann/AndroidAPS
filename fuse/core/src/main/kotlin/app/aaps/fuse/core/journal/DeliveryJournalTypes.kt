@@ -8,13 +8,32 @@ package app.aaps.fuse.core.journal
  * sind zwei verschiedene Fragen, und die zweite ist die, an der jede
  * Wiederaufnahme nach einem Prozessende haengt.
  *
- * WARUM NICHT DIE BESTEHENDE LEDGER-ZEILE. Der Ledger fuehrt Buch ueber
- * Vorschlaege und ihre Mengen. Ein Vorschlag kann aber MEHRERE physische
- * Sendeversuche nach sich ziehen - der Medtrum-Treiber wiederholt ein
- * fehlgeschlagenes Paket bis zu dreimal, jeweils mit neuer BLE-Sequenz und
- * ohne idempotente Kennung im Nutzdatenteil. Ein Feld je Vorschlag koennte
- * das nicht abbilden, und genau diese Wiederholungen sind der gefaehrlichste
- * Teil: sie umgehen jede Pruefung, die nur am ersten Sendeaufruf haengt.
+ * ==========================================================================
+ * DER ZUSTAENDIGKEITSVERTRAG - hier steht er einmal, und er ist bindend
+ * ==========================================================================
+ *
+ *   Der bestehende FUSE-Ledger ist die EINZIGE Quelle der Insulinmenge.
+ *   Das Journal liefert Zustands- und Transportbeweise, KEINE Menge.
+ *   Die beiden Betraege duerfen NIEMALS addiert werden.
+ *
+ * Deshalb gibt es in diesem Modul bewusst KEINE Summe ueber [DeliveryRequest.requestedU].
+ * Eine solche Summe waere die Einladung, sie neben die Ledger-Haftung zu
+ * stellen - und dieselbe Menge zweimal zu belegen. `requestedU` steht in der
+ * Zeile, damit ein Trail-Eintrag ohne Ledger lesbar bleibt; als Rechengroesse
+ * ist er hier tabu.
+ *
+ * Was das Journal STATTDESSEN beantwortet: [DeliveryJournalState.ambiguous] -
+ * kann gerade etwas unterwegs sein? Das ist eine Ja/Nein-Frage, keine Menge,
+ * und genau die braucht der Ambiguity-Hold.
+ *
+ * ==========================================================================
+ *
+ * WARUM NICHT DIE BESTEHENDE LEDGER-ZEILE. Ein Vorschlag kann MEHRERE
+ * physische Sendeversuche nach sich ziehen - der Medtrum-Treiber wiederholt
+ * ein fehlgeschlagenes Paket bis zu dreimal, jeweils mit neuer BLE-Sequenz und
+ * ohne idempotente Kennung im Nutzdatenteil. Ein Feld je Vorschlag koennte das
+ * nicht abbilden, und genau diese Wiederholungen sind der gefaehrlichste Teil:
+ * sie umgehen jede Pruefung, die nur am ersten Sendeaufruf haengt.
  *
  * DIE EINE INVARIANTE, die dieses Modul traegt:
  *
@@ -60,8 +79,7 @@ enum class AmbiguityBoundary {
  *
  * [attempt] zaehlt ab 1 und deckt ausdruecklich auch die automatischen
  * Wiederholungen des Treibers ab - jede von ihnen ist ein eigener Versuch mit
- * eigener Transportsequenz, und jede muss vor ihrer Ausfuehrung durabel
- * gebucht sein.
+ * eigener Transportsequenz.
  */
 data class SendAttempt(
     val attempt: Int,
@@ -71,11 +89,22 @@ data class SendAttempt(
      *  und kein Grund, den Versuch nicht zu buchen. */
     val transportSequence: Long? = null,
     val boundary: AmbiguityBoundary = AmbiguityBoundary.NOT_REACHED,
+    /** WANN die Grenze ueberschritten wurde. Ohne diesen Zeitstempel liesse
+     *  sich beim Replay nicht pruefen, ob zwei Beweise dasselbe Ereignis
+     *  meinen oder zwei verschiedene. */
+    val acceptedAtTs: Long? = null,
 ) {
 
     init {
         require(attempt >= 1) { "attempt counts from 1, was $attempt" }
         require(startedAtTs > 0L) { "startedAtTs must be a real timestamp" }
+        // Grenze und Zeitstempel muessen sich einig sein - eine Ueberschreitung
+        // ohne Zeitpunkt waere ein halber Beweis, ein Zeitpunkt ohne
+        // Ueberschreitung eine Behauptung ueber ein Ereignis, das nicht
+        // verbucht ist.
+        require((boundary == AmbiguityBoundary.OS_WRITE_ACCEPTED) == (acceptedAtTs != null)) {
+            "boundary=$boundary and acceptedAtTs=$acceptedAtTs disagree"
+        }
     }
 }
 
@@ -104,6 +133,26 @@ data class TerminalFact(
     val source: String,
 )
 
+/**
+ * Ein WIDERSPRUCH in der Beweislage, der nicht verschwinden darf.
+ *
+ * Ein Befund loest den Zustand nicht auf - er haelt fest, dass die Fakten
+ * einander widersprochen haben. Solange einer offen ist, wird fuer diese
+ * Zeile nichts mehr autorisiert; die Aufloesung gehoert an einen
+ * Reparatur-Workflow und nicht in eine stille Regel.
+ */
+enum class DeliveryFinding {
+
+    /** Erst "nicht gesendet" bewiesen, dann doch eine Abgabe nachgewiesen.
+     *  Die Abgabe gewinnt (konservativ), der Widerspruch bleibt sichtbar. */
+    CONFIRMED_AFTER_PROVEN_NOT_SENT,
+
+    /** Ein Sendeversuch wurde NACH ueberschrittener Grenze gebucht - der
+     *  Treiber hat also wiederholt, obwohl schon etwas unterwegs sein konnte.
+     *  Die Buchung ist richtig (es ist eine Tatsache), die Lage ist es nicht. */
+    ATTEMPT_AFTER_BOUNDARY,
+}
+
 /** Die abgeleitete Gesamtlage eines Auftrags. Nie gespeichert, immer gerechnet
  *  - ein gespeicherter Zustand koennte von seinen Fakten abweichen. */
 enum class DeliveryOutcome {
@@ -121,22 +170,28 @@ enum class DeliveryOutcome {
     /** Beweisbar nichts abgegeben. Haftet NICHT. */
     PROVEN_NOT_SENT,
 
-    /** Abgabe nachgewiesen. Haftet, bis der IOB-Abgleich sie uebernimmt. */
+    /** Abgabe nachgewiesen, aber vom Ledger noch nicht uebernommen. */
     CONFIRMED,
+
+    /** Die Menge ist im Ledger/IOB angekommen - das Journal ist fertig damit.
+     *  ERST hier endet die Zustaendigkeit, und erst hier faellt die Sperre. */
+    ACCOUNTED,
 }
 
 /**
  * Die durable Zeile eines Sendeauftrags.
  *
- * [pumpEpoch] wird beim ANLEGEN gepinnt und nie nachgetragen. `null` heisst
- * "war nicht ermittelbar" - und ein Auftrag ohne Epoch darf nicht gesendet
- * werden (s. [DeliveryJournal.mayAttempt]). Ein spaeteres Nachtragen waere
- * genau die Etikettierung mit der DANN aktuellen Epoch, die
- * [[medtrum-lifecycle-messdaten]] verbietet.
+ * [pumpEpoch] wird beim ANLEGEN gepinnt und nie nachgetragen. `null` oder leer
+ * heisst "war nicht ermittelbar" - und ein Auftrag ohne Epoch darf nicht
+ * gesendet werden (s. [DeliveryJournal.mayAttempt]). Ein spaeteres Nachtragen
+ * waere genau die Etikettierung mit der DANN aktuellen Epoch, die ein
+ * Treatment nie erfahren darf.
  */
 data class DeliveryRequest(
     val requestId: String,
     val proposalId: String,
+    /** NUR fuer den Trail. Als Rechengroesse tabu - s. Zustaendigkeitsvertrag
+     *  im Kopf dieser Datei. */
     val requestedU: Double,
     val createdAtTs: Long,
     val pumpEpoch: String? = null,
@@ -146,15 +201,26 @@ data class DeliveryRequest(
     /** Zweite Phase - ein UPDATE derselben Lieferung, keine zweite. */
     val pumpId: Long? = null,
     val terminal: TerminalFact? = null,
+    val accountedAtTs: Long? = null,
+    val findings: Set<DeliveryFinding> = emptySet(),
 ) {
 
     init {
         require(requestId.isNotBlank()) { "requestId must not be blank" }
         require(proposalId.isNotBlank()) { "proposalId must not be blank" }
         require(requestedU.isFinite() && requestedU > 0.0) { "requestedU=$requestedU" }
-        val nummern = attempts.map { it.attempt }
-        require(nummern == nummern.sorted() && nummern.distinct() == nummern) {
-            "attempts must be strictly increasing and unique, was $nummern"
+        // Leer ist keine Epoch. Wer sie so speichert, haette eine Identitaet
+        // behauptet, die keine ist - dieselbe Fehlerklasse wie Sha("").
+        require(pumpEpoch == null || pumpEpoch.isNotBlank()) { "pumpEpoch must be null or non-blank" }
+        // GENAU 1..n, nicht nur aufsteigend: eine Zeile, die mit Versuch 2
+        // beginnt, behauptet, Versuch 1 habe es nie gegeben. Nach einer
+        // Deserialisierung ist das der Unterschied zwischen "wir kennen alle
+        // Versuche" und "wir kennen die, die uebrig blieben".
+        attempts.forEachIndexed { i, a ->
+            require(a.attempt == i + 1) { "attempts must be exactly 1..n, was ${attempts.map { it.attempt }}" }
+        }
+        require(accountedAtTs == null || terminal?.kind == TerminalKind.DELIVERY_CONFIRMED) {
+            "only a confirmed delivery can be accounted"
         }
     }
 
@@ -163,10 +229,11 @@ data class DeliveryRequest(
     val boundaryCrossed: Boolean
         get() = attempts.any { it.boundary == AmbiguityBoundary.OS_WRITE_ACCEPTED }
 
-    val nextAttemptNumber: Int get() = (attempts.maxOfOrNull { it.attempt } ?: 0) + 1
+    val nextAttemptNumber: Int get() = attempts.size + 1
 
     val outcome: DeliveryOutcome
         get() = when {
+            accountedAtTs != null                             -> DeliveryOutcome.ACCOUNTED
             terminal?.kind == TerminalKind.DELIVERY_CONFIRMED -> DeliveryOutcome.CONFIRMED
             terminal?.kind == TerminalKind.PROVEN_NOT_SENT    -> DeliveryOutcome.PROVEN_NOT_SENT
             boundaryCrossed                                   -> DeliveryOutcome.AMBIGUOUS
@@ -175,14 +242,14 @@ data class DeliveryRequest(
         }
 
     /**
-     * Haftet dieser Auftrag noch?
+     * Ist der Zustand dieser Zeile noch OFFEN?
      *
-     * Alles ausser dem bewiesenen Nullfall haftet - einschliesslich CREATED und
-     * ATTEMPTED. Ein angelegter, aber noch nicht ausgefuehrter Auftrag ist eine
-     * BEABSICHTIGTE Menge; sie faellt erst, wenn ein Abbruch sie beweisbar
-     * beendet, nicht schon dadurch, dass noch nichts passiert ist.
+     * BEWUSST KEINE MENGE. Die Menge fuehrt der Ledger; hier steht nur, ob das
+     * Journal die Zeile noch als unerledigt fuehrt. Offen sind alle Zustaende
+     * ausser dem bewiesenen Nullfall und der abgeschlossenen Uebernahme.
      */
-    val liable: Boolean get() = outcome != DeliveryOutcome.PROVEN_NOT_SENT
+    val open: Boolean
+        get() = outcome != DeliveryOutcome.PROVEN_NOT_SENT && outcome != DeliveryOutcome.ACCOUNTED
 }
 
 /** Der durable Gesamtzustand: Auftraege nach requestId. */
@@ -192,11 +259,16 @@ data class DeliveryJournalState(
     val revision: Long = 0L,
 ) {
 
-    /** Alle Auftraege, die noch haften. Das ist die Zahl, die eine neue Dosis
-     *  gegen sich gelten lassen muss. */
-    val liableU: Double get() = requests.values.filter { it.liable }.sumOf { it.requestedU }
-
-    /** Gibt es einen Auftrag mit unbekanntem Ausgang? Solange ja, darf nichts
-     *  Neues gesendet werden (der persistente Ambiguity-Hold aus B1.6). */
+    /**
+     * Auftraege mit UNBEKANNTEM Ausgang - die Grundlage des Ambiguity-Holds.
+     *
+     * Das ist die einzige Aggregation, die dieses Modul anbietet, und sie ist
+     * eine ANZAHL, keine Menge. Eine Summe ueber `requestedU` gibt es hier
+     * absichtlich nicht (s. Zustaendigkeitsvertrag im Kopf der Datei).
+     */
     val ambiguous: List<DeliveryRequest> get() = requests.values.filter { it.outcome == DeliveryOutcome.AMBIGUOUS }
+
+    /** Zeilen mit offenem Widerspruch. Sie sperren und brauchen eine
+     *  ausdrueckliche Aufloesung. */
+    val withFindings: List<DeliveryRequest> get() = requests.values.filter { it.findings.isNotEmpty() }
 }
