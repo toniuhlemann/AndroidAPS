@@ -553,39 +553,94 @@ class TransportWiringTest : TestBaseWithProfile() {
     // ---- L5: die TBR-Quelle im NORMALEN Runner-Pfad ----------------------
 
     /**
-     * L5, Regel 1 im Runner: die laufende TBR kommt aus dem gelesenen
-     * AAPS-Zustand ([ProcessedTbrEbData]), nicht aus einer gemerkten eigenen
-     * Anforderung.
+     * Der erste VOLLSTAENDIG gerechnete Zyklus - also einer ohne Abbruch.
      *
-     * Die reine Regel und die lesende Fassung sind in [FuseAbortTbrTest] und
-     * [TbrSourceContractTest] gedeckt. Hier geht es um den NORMALEN Pfad
-     * (`FuseCycleRunner:1140-1150`), den bis jetzt kein Test beruehrt hat:
-     * ersetzte jemand `getTempBasalIncludingConvertedExtended(..)` durch eine
-     * eigene Notiz, waere nichts rot geworden.
+     * In der Aufwaermphase traegt  noch den Abbruchgrund ("drive not
+     * estimable"), nicht die TBR-Aussage. Wer darauf zusichert, prueft den
+     * Vorlauf statt den Vertrag.
+     */
+    private fun ersterTbrZyklus(max: Int = 60): FuseCycleRunner.Outcome {
+        repeat(max) {
+            val o = cycle()
+            if (o.abortReason == null && !o.reason.isNullOrBlank()) return o
+        }
+        throw AssertionError("kein vollstaendig gerechneter Zyklus")
+    }
+
+    private fun quelleMeldet(tb: TB?) =
+        whenever(processedTbrEbData.getTempBasalIncludingConvertedExtended(any())) doReturn tb
+
+    private fun laufendeTbr(rate: Double, typ: TB.Type = TB.Type.NORMAL) = TB(
+        timestamp = start, duration = 30 * 60_000L,
+        rate = rate, isAbsolute = true, type = typ,
+    )
+
+    /**
+     * L5, Regel 1 im NORMALEN Pfad (`FuseCycleRunner:1140-1150`).
+     *
+     * EINE VORFASSUNG DIESES TESTS WAR WIRKUNGSLOS, und das ist der Grund fuer
+     * die Ausfuehrlichkeit hier: sie hielt den Zyklus in einer Variablen fest,
+     * die nie geprueft wurde, benutzte `return@repeat` als vermeintlichen
+     * Abbruch (es ist ein `continue`) und sicherte am Ende nur
+     * `abortReason == null` zu. Damit waere sie auch dann gruen geblieben,
+     * wenn der Runner die Quelle zwar AUFRUFT, ihren Rueckgabewert aber
+     * ignoriert - also genau im Fehlerfall, gegen den sie steht.
+     *
+     * Jetzt wird das BEOBACHTBARE Ergebnis zugesichert: reason und
+     * TBR-Anforderung.
      */
     @Test
-    fun `der Runner liest die laufende TBR aus dem AAPS-Zustand`(@TempDir dir: File) {
-        val l = FuseLedgerAdapter().also { it.loadOnce(dir, "test-epoch", start) }
-        neuerRunner(l)
-
-        // Die Quelle meldet eine laufende, deutlich POSITIVE TBR.
-        val laufend = TB(
-            timestamp = start, duration = 30 * 60_000L,
-            rate = 2.50, isAbsolute = true, type = TB.Type.NORMAL,
-        )
-        whenever(processedTbrEbData.getTempBasalIncludingConvertedExtended(any())) doReturn laufend
-
+    fun `der Runner entscheidet aus dem gelesenen TBR-Zustand`(@TempDir dir: File) {
+        neuerRunner(FuseLedgerAdapter().also { it.loadOnce(dir, "test-epoch", start) })
         clock = start
-        var gesehen: FuseCycleRunner.Outcome? = null
-        repeat(30) { val o = cycle(); if (o.tbr != null) { gesehen = o; return@repeat } }
 
-        // Der Runner hat die Quelle ueberhaupt befragt - andernfalls kaeme er
-        // nie zu einer TBR-Aussage ueber eine laufende Abgabe.
-        verify(processedTbrEbData, atLeastOnce()).getTempBasalIncludingConvertedExtended(any())
+        // (1) Reale positive TBR ueber Profilbasal.
+        quelleMeldet(laufendeTbr(2.50))
+        val ersterLauf = ersterTbrZyklus()
+        val reason1 = ersterLauf.reason
+        assertThat(reason1).isNotEmpty()
 
-        // Und die Gegenprobe: ohne laufende TBR in der Quelle sieht er keine.
-        whenever(processedTbrEbData.getTempBasalIncludingConvertedExtended(any())) doReturn null
-        val ohne = cycle()
-        assertThat(ohne.abortReason).isNull()
+        // (2) Quelle UNVERAENDERT -> dieselbe Aussage entsteht erneut. Ein
+        //     gemerkter "habe ich schon"-Zustand wuerde hier abweichen.
+        val zweiterLauf = ersterTbrZyklus()
+        assertThat(zweiterLauf.reason).isEqualTo(reason1)
+
+        // (3) Quelle LEER -> die Aussage aendert sich. Sie haengt also am
+        //     gelesenen Zustand und nicht an der eigenen Vorgeschichte.
+        quelleMeldet(null)
+        val dritterLauf = ersterTbrZyklus()
+        assertThat(dritterLauf.reason).isNotEqualTo(reason1)
+    }
+
+    /**
+     * L5, Regel 5: FAKE_EXTENDED ist eine laufende, NICHT abbrechbare Abgabe.
+     * FUSE greift nicht ein, sagt es aber - und gibt gleichzeitig kein
+     * zusaetzliches Insulin.
+     *
+     * Der zweite Teil ist der eigentliche Vertrag: der Zustand darf NICHT
+     * gespeichert bleiben. Verschwindet die Abgabe aus der Quelle, ist der
+     * Read-Only-Hold weg.
+     */
+    @Test
+    fun `FAKE_EXTENDED sperrt lesend und bleibt nicht gespeichert`(@TempDir dir: File) {
+        neuerRunner(FuseLedgerAdapter().also { it.loadOnce(dir, "test-epoch", start) })
+        clock = start
+
+        quelleMeldet(laufendeTbr(2.50, TB.Type.FAKE_EXTENDED))
+        val gesperrt = ersterTbrZyklus()
+        assertThat(gesperrt.reason).contains("FAKE_EXTENDED_READ_ONLY")
+        // KEIN Eingriff in die laufende Abgabe - das ist der Vertrag.
+        assertThat(gesperrt.tbr).isNull()
+        // Die SMB-Sperre haengt NICHT am FAKE_EXTENDED allein, sondern an
+        // `unsafe`: sie greift, wenn FUSE senken WOLLTE und nicht kann
+        // (TbrPolicy: "Kann FUSE die laufende Abgabe nicht stoppen, darf es
+        // nicht gleichzeitig zusaetzliches Insulin geben"). In dieser Lage
+        // will FUSE erhoehen, also wird nicht gesperrt - gemessen 0,15 U.
+        // Eine pauschale Zusicherung `smbU == 0` waere hier schlicht falsch.
+
+        // Quelle leer - der Zustand von eben war KEIN Gedaechtnis.
+        quelleMeldet(null)
+        val danach = ersterTbrZyklus()
+        assertThat(danach.reason).doesNotContain("FAKE_EXTENDED_READ_ONLY")
     }
 }
