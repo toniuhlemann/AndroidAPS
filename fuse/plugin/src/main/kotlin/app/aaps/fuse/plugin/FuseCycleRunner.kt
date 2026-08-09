@@ -288,6 +288,16 @@ class FuseCycleRunner(
          *  sie der Fallback fuer die Anzeige. */
         val iobThU: Double? = null,
         val maxIobU: Double? = null,
+        /**
+         * WELCHE Insulinkurve diese Zahlen erzeugt hat (Kontroll-Audit 09.08.).
+         *
+         * Ohne sie ist im Nachhinein nicht entscheidbar, ob zwei Zyklen
+         * ueberhaupt vergleichbar sind: DIA und peak sind Profil-Eigenschaften
+         * und koennen sich zwischen zwei Zeilen des Trails aendern, ohne dass
+         * irgendetwas im Export das anzeigt. `null` auf Abbruchpfaden - dort
+         * wurde keine Bahn gerechnet.
+         */
+        val insulinModel: app.aaps.fuse.core.predictor.InsulinModelProvenance? = null,
         /** Warum NICHT gerechnet wurde. `null` heisst: der Zyklus lief durch. */
         val abortReason: String?,
         /** Die Treatment-Vollsicht dieses Zyklus fuer den Ledger-Abgleich.
@@ -1121,6 +1131,7 @@ class FuseCycleRunner(
         return Outcome(
             computeDurationMs = computeDurationMs,
             mealStats = mealStats,
+            insulinModel = built.input.trajectory.model,
             decision = combined.decision,
             tbr = combined.request,
             prediction = prediction,

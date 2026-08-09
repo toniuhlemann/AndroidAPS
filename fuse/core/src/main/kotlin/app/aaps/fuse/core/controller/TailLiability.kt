@@ -289,6 +289,21 @@ object TailLiability {
         val transportLiabilityU: Double = 0.0,
         /** Term 3: Restwirkung der beschlossenen Menge am Horizont [U] (C4b). */
         val candidateLiabilityU: Double = 0.0,
+        /**
+         * Die BEIDEN Faktoren des Budgets, durchgereicht (Kontroll-Audit
+         * 09.08.).
+         *
+         * `budgetU = (lowerBgAtH - tailFloor) / isfTail + tailRecoveryU` -
+         * ohne diese zwei Zahlen ist das Ergebnis nicht in seine Ursachen
+         * zerlegbar. Genau daran ist die Analyse vom 09.08. gescheitert: ob
+         * eine Sperre von der BAHN kam oder vom ISF-NENNER, musste aus dem
+         * Profil zurueckgerechnet werden statt abgelesen zu werden. Der
+         * Nenner ist bewusst das MAXIMUM der beruehrten ISF-Bloecke (jede
+         * Einheit richtet bei hoeherem ISF mehr aus); der Preis dieser
+         * Einseitigkeit ist damit erstmals messbar statt behauptet.
+         */
+        val lowerBgAtHMgdl: Double = Double.NaN,
+        val isfTailMgdlPerU: Double = Double.NaN,
     ) {
 
         val usable: Boolean get() = invalidReason == null
@@ -342,6 +357,8 @@ object TailLiability {
             existingIobAtHU = input.existingIobAtH,
             transportLiabilityU = transport,
             candidateLiabilityU = candidate,
+            lowerBgAtHMgdl = input.lowerBgAtH,
+            isfTailMgdlPerU = input.isfTailMgdlPerU,
         )
     }
 }

@@ -299,7 +299,27 @@ object FuseStateJson {
                 .put("costU", fin(d.tailCostU))
                 .put("completeness", t.completeness)
                 .put("lowerBgAtHSource", t.lowerBgAtHSource)
+                // Die beiden Faktoren des Budgets - ohne sie ist eine Sperre
+                // nicht in "Bahn zu tief" gegen "ISF-Nenner zu hoch"
+                // zerlegbar (Kontroll-Audit 09.08.).
+                .put("lowerBgAtHMgdl", fin(t.lowerBgAtHMgdl))
+                .put("isfTailMgdlPerU", fin(t.isfTailMgdlPerU))
                 .put("invalidReason", t.invalidReason ?: JSONObject.NULL)
+        )
+
+        // ---- Insulinmodell: WELCHE Kurve diese Zahlen erzeugt hat -----------
+        // DIA und peak sind Profil-Eigenschaften und koennen sich zwischen zwei
+        // Zeilen des Trails aendern, ohne dass sonst irgendetwas es anzeigt.
+        // Ohne diesen Block ist nicht entscheidbar, ob zwei Zyklen vergleichbar
+        // sind (Kontroll-Audit 09.08.).
+        val im = outcome.insulinModel
+        if (im == null) o.put("insulinModel", JSONObject.NULL)
+        else o.put(
+            "insulinModel", JSONObject()
+                .put("insulinType", im.insulinType)
+                .put("diaHours", fin(im.diaHours))
+                .put("peakMin", im.peakMin)
+                .put("codeProvenance", im.codeProvenance)
         )
 
         // ---- Ledger (R89 §360-361, verdrahtet seit v7) ----------------------
