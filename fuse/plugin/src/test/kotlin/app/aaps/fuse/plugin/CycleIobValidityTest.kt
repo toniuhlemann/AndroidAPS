@@ -146,6 +146,13 @@ class CycleIobValidityTest : TestBaseWithProfile() {
     /** Die Politik des Test-Rigs vom 09.08. - bewusst die LIVE-Werte, damit
      *  der Beweis an derselben Konfiguration haengt wie die Messung. */
     private fun stubPolicy() {
+        // AUFFANG ZUERST (Codex-Re-Review 10.08.). Mockito laesst den ZULETZT
+        // passenden Stub gewinnen. Am Ende stehend ueberschrieb dieser Aufruf
+        // JEDEN spezifischen FuseBooleanKey mit `false` - Tail-, Restraint-,
+        // Onset- und Prime-Flag waren also aus, obwohl sie unten ausdruecklich
+        // auf true gesetzt werden. Das Rig lief damit nicht in der
+        // Konfiguration, die es zu fahren behauptet.
+        whenever(preferences.get(anyOrNull<BooleanKey>())).thenReturn(false)
         whenever(preferences.get(FuseDoubleKey.SmbRatio)).thenReturn(0.15)
         whenever(preferences.get(FuseDoubleKey.SmbRatioRise)).thenReturn(0.35)
         whenever(preferences.get(DoubleKey.ApsSmbMaxIob)).thenReturn(8.0)
@@ -180,7 +187,6 @@ class CycleIobValidityTest : TestBaseWithProfile() {
         whenever(preferences.get(LongKey.FslCalibrationStart)).thenReturn(-1L)
         whenever(preferences.get(FuseLongKey.MealMarkerStamp)).thenReturn(0L)
         whenever(preferences.get(FuseLongKey.MealMarkerArmedTs)).thenReturn(0L)
-        whenever(preferences.get(anyOrNull<BooleanKey>())).thenReturn(false)
     }
 
     /** Einen Zyklus fahren: Uhr eine Minute weiter, dann rechnen. */

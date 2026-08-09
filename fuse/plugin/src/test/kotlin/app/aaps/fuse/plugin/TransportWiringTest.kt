@@ -229,60 +229,61 @@ class TransportWiringTest : TestBaseWithProfile() {
 
 
     /**
-     * DER PRIME-LIFT EINZELN (Codex-Re-Review, Verbraucher 3, Zeile 959).
+     * DER PRIME-LIFT EINZELN (Codex-Vorgabe 10.08., Verbraucher 3, Zeile 959).
      *
-     * `PrimeRelease.lift` ist der dritte Verbraucher der offenen Haftung und
-     * der einzige, der auch OHNE rechnerischen Bedarf dosiert: bei aktivem
-     * Mahlzeiten-Marker gibt er eine Anschubmenge frei. Genau deshalb braucht
-     * er die Ledger-Korrektur - sonst finanziert der Marker eine Menge, die
-     * bereits unterwegs ist, ein zweites Mal.
+     * ZWEI FEHLER DER VORFASSUNG, beide im Test:
      *
-     * ZWEI Stolpersteine lagen davor, beide im TEST und nicht im Code:
+     * 1. Sie nahm das MAXIMUM ueber 90 Zyklen, ohne die berechneten Dosen zu
+     *    verbuchen. Die Prime-Huelle blieb dadurch scheinbar unverbraucht und
+     *    der Floor stieg gegen Fensterende bis 0,30 U - ein Testartefakt, kein
+     *    realistischer Prime-Verlauf. Jetzt zaehlt der ERSTE aktive
+     *    Prime-Zyklus.
+     * 2. Sie lief mit maxIob 8,0 U. Bei einem Prime-Floor von hoechstens
+     *    0,30 U kann ein Transportterm dort niemals binden - deshalb blieb die
+     *    isolierte Mutation gruen. Die Huelle zu VERKLEINERN haette es noch
+     *    unwahrscheinlicher gemacht; richtig ist, das BUDGET zu verengen.
      *
-     * 1. Der Marker wird kodiert gelesen (`Stamp / 10`), s. [markerAt]. Wer
-     *    beide Schluessel setzt, landet Jahrzehnte in der Vergangenheit.
-     * 2. Der `anyOrNull<BooleanKey>()`-Auffangstub stand am ENDE von
-     *    [stubPolicy] und ueberschrieb `PrimeReleaseEnabled` still auf false -
-     *    der Pfad war schlicht aus ("prime=DISABLED"), ohne dass etwas rot
-     *    wurde.
-     *
-     * Gemessen (Rig, flach 100 mg/dl, Marker vor 5 min):
-     *   ohne Haftung -> 0,30 U, Grenze "primeRelease", prime=PRIME
-     *   0,50 U offen -> 0,05 U, Grenze "primeRelease", prime=PRIME
-     *
-     * Der Prime-Plan bleibt in BEIDEN Faellen aktiv - es ist also wirklich der
-     * Lift, der kappt, und nicht schon die Clearance, die sperrt.
+     * Die Rechnung, an der dieser Test haengt:
+     *   maxIob 0,10 U, iobTH 200 % = 0,20 U (also nicht bindend)
+     *   ohne Haftung: Spielraum 0,10 U -> Prime-Floor 0,05 U geht hinaus
+     *   0,06 U offen: Rest 0,04 U      -> kein Prime-Lift mehr
      */
     @Test
     fun `der Prime-Lift finanziert unterwegs befindliches Insulin nicht erneut`(@TempDir dir: File) {
         flach = 100.0
         markerAt = start + 5 * 60_000L
-        // Schwanzkanal aus, sonst kappt er mit und der Lift-Parameter waere
-        // nicht der entscheidende Term (gemessen: sonst bleibt die isolierte
-        // Mutation an Zeile 959 gruen).
         tailGuard = false
+        maxIobU = 0.10
+        iobThPct = 200
 
-        fun lauf(u: Double, unter: File): FuseCycleRunner.Outcome {
+        /** Der ERSTE Zyklus mit aktivem Prime-Plan - nicht das Maximum. */
+        fun ersterPrimeZyklus(u: Double, unter: File): FuseCycleRunner.Outcome {
             val l = FuseLedgerAdapter().also { it.loadOnce(unter.also(File::mkdirs), "test-epoch", start) }
             if (u > 0.0) l.onPublished("vorlauf", u, start, 0L, 0.05, PumpType.GENERIC_AAPS.name, Sha.of("vs"))
             neuerRunner(l)
             clock = start
-            var best: FuseCycleRunner.Outcome? = null
-            repeat(90) { val o = cycle(); if (o.decision.smbU > (best?.decision?.smbU ?: 0.0)) best = o }
-            return checkNotNull(best) { "kein Zyklus mit positiver Dosis" }
+            repeat(90) {
+                val o = cycle()
+                if (o.prime?.active == true) return o
+            }
+            throw AssertionError("kein Zyklus mit aktivem Prime-Plan")
         }
 
-        // KONTROLLE: der Lift ist wirklich der dosierende Pfad.
-        val ohne = lauf(0.0, File(dir, "ohne"))
-        assertThat(ohne.decision.bindingLimit).isEqualTo("primeRelease")
+        // KONTROLLE: der Lift ist wirklich der dosierende Pfad, und er dosiert
+        // OHNE rechnerischen Bedarf - genau dafuer gibt es ihn.
+        val ohne = ersterPrimeZyklus(0.0, File(dir, "ohne"))
         assertThat(ohne.prime?.active).isTrue()
+        assertThat(ohne.decision.smbU).isGreaterThan(0.0)
 
-        // BEHANDLUNG: dieselbe Lage, aber 0,50 U haengen als offene Haftung.
-        val mit = lauf(0.5, File(dir, "mit"))
-        assertThat(mit.prime?.active).isTrue()   // der Plan ist AKTIV - der Lift kappt, nicht die Clearance
-        assertThat(mit.decision.bindingLimit).isEqualTo("primeRelease")
+        // BEHANDLUNG: 0,06 U offene Haftung lassen 0,04 U Rest - der Floor von
+        // 0,05 U passt nicht mehr hinein.
+        val mit = ersterPrimeZyklus(0.06, File(dir, "mit"))
+        // Der Plan ist AKTIV: es kappt der Lift, nicht schon die Clearance.
+        assertThat(mit.prime?.active).isTrue()
         assertThat(mit.decision.smbU).isLessThan(ohne.decision.smbU)
+        assertThat(mit.decision.smbU).isAtMost(maxIobU - 0.06 + 1e-9)
     }
+
 
 
     // ---- Der Kern: die Verdrahtung ist lebendig --------------------------
@@ -468,5 +469,66 @@ class TransportWiringTest : TestBaseWithProfile() {
         var maxDose = 0.0
         repeat(60) { maxDose = maxOf(maxDose, cycle().decision.smbU) }
         assertThat(maxDose).isEqualTo(0.0)
+    }
+
+    // ---- iobTH und maxIOB EINZELN (Codex-Vorgabe 10.08.) -----------------
+
+    /**
+     * Bei `iobTH = 100 %` sind `iobThU` und `maxIobU` IDENTISCH
+     * (`IobThreshold.fromPercent(pct, maxIob)`). Ein Test deckt die beiden
+     * Abzuege dann nur GEMEINSAM: entfernt man einen, haelt der andere die
+     * Grenze und der Test bleibt gruen.
+     *
+     * Die zulaessige Spanne bis 300 % trennt sie sauber:
+     *   maxIob 0,50 / iobTH  50 % = 0,25  ->  iobTH bindet allein
+     *   maxIob 0,25 / iobTH 200 % = 0,50  ->  maxIOB bindet allein
+     *
+     * In beiden Faellen ist die wirksame Kappe 0,25 U. Mit 0,08 U offener
+     * Haftung bleiben 0,17 U: die Basis von 0,15 U passt, der zusaetzliche
+     * Pumpenschritt von 0,05 U nicht mehr.
+     */
+    private fun grenzeAllein(dir: File, maxIob: Double, pct: Int, name: String): Pair<FuseCycleRunner.Outcome, FuseCycleRunner.Outcome> {
+        tailGuard = false
+        maxIobU = maxIob
+        iobThPct = pct
+
+        fun lauf(u: Double, unter: File): FuseCycleRunner.Outcome {
+            val l = FuseLedgerAdapter().also { it.loadOnce(unter.also(File::mkdirs), "test-epoch", start) }
+            if (u > 0.0) l.onPublished("vorlauf", u, start, 0L, 0.05, PumpType.GENERIC_AAPS.name, Sha.of("vs"))
+            neuerRunner(l)
+            clock = start
+            var best: FuseCycleRunner.Outcome? = null
+            repeat(60) { val o = cycle(); if (o.decision.smbU > (best?.decision?.smbU ?: 0.0)) best = o }
+            return checkNotNull(best) { "$name: kein Zyklus mit positiver Dosis" }
+        }
+        return lauf(0.0, File(dir, "$name-ohne")) to lauf(0.08, File(dir, "$name-mit"))
+    }
+
+    @Test
+    fun `Candidate - iobTH bindet allein`(@TempDir dir: File) {
+        val (ohne, mit) = grenzeAllein(dir, maxIob = 0.50, pct = 50, name = "c-iobth")
+        assertThat(ohne.decision.smbU).isGreaterThan(0.0)
+        assertThat(mit.decision.smbU).isAtMost(0.25 - 0.08 + 1e-9)
+    }
+
+    @Test
+    fun `Candidate - maxIOB bindet allein`(@TempDir dir: File) {
+        val (ohne, mit) = grenzeAllein(dir, maxIob = 0.25, pct = 200, name = "c-maxiob")
+        assertThat(ohne.decision.smbU).isGreaterThan(0.0)
+        assertThat(mit.decision.smbU).isAtMost(0.25 - 0.08 + 1e-9)
+    }
+
+    @Test
+    fun `Sub-Step - iobTH bindet allein`(@TempDir dir: File) {
+        val (ohne, mit) = grenzeAllein(dir, maxIob = 0.50, pct = 50, name = "s-iobth")
+        assertThat(ohne.decision.bindingLimit).contains("subStep")
+        assertThat(mit.decision.bindingLimit).doesNotContain("subStep")
+    }
+
+    @Test
+    fun `Sub-Step - maxIOB bindet allein`(@TempDir dir: File) {
+        val (ohne, mit) = grenzeAllein(dir, maxIob = 0.25, pct = 200, name = "s-maxiob")
+        assertThat(ohne.decision.bindingLimit).contains("subStep")
+        assertThat(mit.decision.bindingLimit).doesNotContain("subStep")
     }
 }
