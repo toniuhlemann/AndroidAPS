@@ -494,7 +494,7 @@ class FusePlugin @Inject constructor(
             proposalId = cycleId,
         )
 
-        val publishRt = app.aaps.fuse.plugin.ledger.LedgerPublicationGate.publish(
+        val publication = app.aaps.fuse.plugin.ledger.LedgerPublicationGate.publish(
             rt = rt,
             adapter = ledgerAdapter,
             dir = ledgerDir(),
@@ -560,15 +560,27 @@ class FusePlugin @Inject constructor(
             },
             onError = { aapsLogger.error(LTag.APS, "FUSE ledger update failed", it) },
         )
-        if (publishRt.units == null && rt.units != null)
-            aapsLogger.error(LTag.APS, "FUSE ledger not durable - SMB stripped from published RT")
+        val publishRt = publication.rt
+        if (!publication.allowed && rt.units != null)
+            aapsLogger.error(LTag.APS, "FUSE SMB stripped from published RT: ${publication.reason}")
 
         lastAPSResult = apsResultProvider.get().with(publishRt)
         lastAPSRun = dateUtil.now()
         aapsLogger.debug(LTag.APS, "FUSE result: ${publishRt.reason}")
         rxBus.send(EventAPSCalculationFinished())
 
-        exportState(outcome, publishRt, cycleId)
+        exportState(
+            outcome, publishRt, cycleId,
+            // B0c: der Befund des Gates als DATEN in den Trail, nicht als Text
+            // im Grund. `treatmentViewPresent` kommt vom Zyklus selbst - das
+            // Gate erfaehrt es nur mittelbar ueber den Commitment, und eine
+            // zweite Ableitung waere eine zweite Wahrheit.
+            FuseStateJson.PublicationGate(
+                allowed = publication.allowed,
+                reason = publication.reason,
+                treatmentViewPresent = outcome?.treatmentView != null,
+            ),
+        )
     }
 
     /**
@@ -582,7 +594,12 @@ class FusePlugin @Inject constructor(
      * Regler unter keinen Umstaenden anhalten. Selbst ein Fehler im
      * Datensatzbau bleibt hier.
      */
-    private fun exportState(outcome: FuseCycleRunner.Outcome?, rt: RT, cycleId: String) {
+    private fun exportState(
+        outcome: FuseCycleRunner.Outcome?,
+        rt: RT,
+        cycleId: String,
+        publicationGate: FuseStateJson.PublicationGate,
+    ) {
         runCatching {
             val start = System.nanoTime()
             val o = outcome ?: return
@@ -598,6 +615,7 @@ class FusePlugin @Inject constructor(
                 // Die Sicht NACH den Buchungen dieses Zyklus - genau der
                 // Zustand, mit dem der naechste Zyklus rechnen wird.
                 ledger = FuseStateJson.LedgerSnapshot(ledgerAdapter.revision, ledgerAdapter.state),
+                publicationGate = publicationGate,
             )
             // Die Android-Aufloesung des Verzeichnisses passiert AUSSCHLIESSLICH
             // hier — der Schreiber selbst kennt kein Environment und bleibt

@@ -111,6 +111,26 @@ object LedgerPublicationGate {
         else Commitment.Proposal(proposalId)
 
     /**
+     * DAS ERGEBNIS DES GATES ALS DATEN (B0c).
+     *
+     * Vorher gab `publish` nur das RT zurueck, und der Grund einer
+     * Zurueckhaltung stand ausschliesslich als angehaengter Text im
+     * `rt.reason`-StringBuilder. Der Trail konnte ihn nicht sehen, ohne den
+     * Grundtext nachtraeglich zu zerlegen - und ein Text, den eine Auswertung
+     * parsen muss, ist kein Zustand, sondern eine Vermutung ueber einen.
+     *
+     * @param allowed hat das RT das Gate UNVERAENDERT verlassen? Bei einem RT
+     *   ohne units ist das trivialerweise true - es gab nichts zu schuetzen;
+     *   [reason] unterscheidet die beiden Faelle.
+     * @param reason `null`, wenn nichts entfernt wurde.
+     */
+    data class Outcome(val rt: RT, val allowed: Boolean, val reason: String?)
+
+    private fun passed(rt: RT) = Outcome(rt, allowed = true, reason = null)
+
+    private fun stripped(rt: RT, reason: String) = Outcome(strip(rt, reason), allowed = false, reason = reason)
+
+    /**
      * @param expected was dieser Zyklus zu buchen behauptet. Traegt das RT
      *   positive units, MUSS es [Commitment.Proposal] sein - und die Zeile muss
      *   danach wirklich offen im Ledger stehen.
@@ -122,7 +142,7 @@ object LedgerPublicationGate {
         expected: Commitment,
         events: () -> Unit,
         onError: (Throwable) -> Unit = {},
-    ): RT {
+    ): Outcome {
         val eventsOk = try {
             events()
             true
@@ -134,27 +154,35 @@ object LedgerPublicationGate {
         // die Reconciliation dieses Zyklus gehoert auf Platte, und ein
         // Fehlschlag muss ueber persistFailed sticky werden.
         val persisted = adapter.persistVerified(dir)
-        if (rt.units == null) return rt
+        if (rt.units == null) return passed(rt)
 
         // Ab hier traegt das RT eine Menge - jeder Ausgang ausser dem letzten
         // entfernt sie.
+        //
+        // REIHENFOLGE IST DIAGNOSE (B0c): der Persist-Fehlschlag steht VOR dem
+        // fehlenden Commitment. Beide Wege entfernen dieselbe Menge, die
+        // Dosierung ist also unberuehrt - aber ein nicht durabler Ledger ist
+        // der schwerwiegendere und laenger wirkende Befund (er sperrt ueber
+        // `persistFailed` auch die FOLGEZYKLEN), waehrend eine fehlende
+        // Vollsicht nur diesen einen Zyklus betrifft. Stuende sie vorn, truege
+        // der Trail bei gleichzeitigem Auftreten den harmloseren Grund.
+        if (!eventsOk || !persisted) return stripped(rt, FuseLedgerAdapter.HOLD_REASON_PERSIST_FAILED)
         val proposalId = when (expected) {
-            is Commitment.None     -> return strip(rt, expected.reason)
+            is Commitment.None     -> return stripped(rt, expected.reason)
             is Commitment.Proposal -> expected.proposalId
         }
-        if (!eventsOk || !persisted) return strip(rt, FuseLedgerAdapter.HOLD_REASON_PERSIST_FAILED)
         // B0a: erst JETZT ist belegt, dass die Haftung nicht nur beabsichtigt,
         // sondern gebucht UND durabel ist - der Persist oben lief nach den
         // Ereignissen, die Zeile war also in der geschriebenen Generation.
-        if (!adapter.hasOpenProposal(proposalId)) return strip(rt, "$REASON_PROPOSAL_MISSING:$proposalId")
+        if (!adapter.hasOpenProposal(proposalId)) return stripped(rt, "$REASON_PROPOSAL_MISSING:$proposalId")
         // G2 (Codex-Adjudication bae885f1): FRISCHE Hold-Pruefung NACH der
         // Reconciliation. Vorher kam das positive RT unveraendert zurueck,
         // sobald Events und Persist gelungen waren - ein waehrend der
         // Ereignisse entdeckter Hold (z.B. MISSING_ACCOUNTED_TREATMENT)
         // griff erst im NAECHSTEN Zyklus, also eine Dosis zu spaet.
         val view = adapter.view()
-        if (!view.hold) return rt
-        return strip(rt, REASON_LATE_HOLD + (view.holdReason?.let { ":$it" } ?: ""))
+        if (!view.hold) return passed(rt)
+        return stripped(rt, REASON_LATE_HOLD + (view.holdReason?.let { ":$it" } ?: ""))
     }
 
     /** Der SMB faellt weg, die TBR-Felder bleiben - die Safety-TBR (Null-Temp)

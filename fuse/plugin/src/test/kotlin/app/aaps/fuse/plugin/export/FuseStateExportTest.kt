@@ -81,8 +81,59 @@ class FuseStateExportTest {
         rate = null, duration = null, units = units, deliverAt = units?.let { 1_700_000_030_000L },
     )
 
-    private fun record(o: FuseCycleRunner.Outcome = outcome(), r: RT = rt()) =
-        FuseStateJson.record("s#1", o, r, o.policy, BUILD, 0L, null) { 5_000_000L }
+    private fun record(
+        o: FuseCycleRunner.Outcome = outcome(),
+        r: RT = rt(),
+        gate: FuseStateJson.PublicationGate? = null,
+    ) = FuseStateJson.record("s#1", o, r, o.policy, BUILD, 0L, null, publicationGate = gate) { 5_000_000L }
+
+    // ---- B0c: das Publikationsgate im Trail ------------------------------
+
+    /**
+     * Der Befund des Publikationsgates muss als DATEN im Datensatz stehen.
+     * Vorher lebte der Grund einer Zurueckhaltung nur im `rt.reason`-Text, den
+     * der Export gar nicht ausgibt: ein Zyklus, in dem eine gerechnete Menge
+     * NICHT hinausging, sah aus wie einer, der keine gerechnet hat.
+     */
+    @Test
+    fun `der Befund des Publikationsgates steht im Datensatz`() {
+        val j = record(
+            r = rt(units = null),
+            gate = FuseStateJson.PublicationGate(
+                allowed = false,
+                reason = app.aaps.fuse.plugin.ledger.LedgerPublicationGate.REASON_TREATMENT_VIEW_UNAVAILABLE,
+                treatmentViewPresent = false,
+            ),
+        )
+        val g = j.getJSONObject("publicationGate")
+        assertFalse(g.getBoolean("allowed"))
+        assertEquals(
+            app.aaps.fuse.plugin.ledger.LedgerPublicationGate.REASON_TREATMENT_VIEW_UNAVAILABLE,
+            g.getString("reason"),
+        )
+        assertFalse(g.getBoolean("treatmentViewPresent"))
+    }
+
+    /** Der Regelfall: freigegeben, kein Grund, Vollsicht vorhanden. */
+    @Test
+    fun `ein freigegebener Zyklus nennt keinen Grund und hat die Vollsicht`() {
+        val j = record(gate = FuseStateJson.PublicationGate(allowed = true, reason = null, treatmentViewPresent = true))
+        val g = j.getJSONObject("publicationGate")
+        assertTrue(g.getBoolean("allowed"))
+        assertEquals(JSONObject.NULL, g.get("reason"))
+        assertTrue(g.getBoolean("treatmentViewPresent"))
+    }
+
+    /** Und wer den Befund nicht meldet, bekommt eine Luecke - keine erfundene
+     *  Freigabe. */
+    @Test
+    fun `ohne gemeldetes Publikationsgate steht eine Luecke im Datensatz`() {
+        val j = record()
+        assertFalse(j.has("publicationGate"))
+        val gaps = j.getJSONArray("gaps")
+        val fields = (0 until gaps.length()).map { gaps.getJSONObject(it).getString("field") }
+        assertTrue(fields.contains("publicationGate"))
+    }
 
     // ---- Der wichtigste Test: nichts wird vorgetaeuscht -------------------
 

@@ -62,6 +62,27 @@ object FuseStateJson {
      *  monotone Aenderungszaehlung des Adapters (R89 §360). */
     data class LedgerSnapshot(val revision: Long, val state: app.aaps.fuse.core.ledger.LedgerState)
 
+    /**
+     * Was das PUBLIKATIONSGATE mit diesem Zyklus gemacht hat (B0c).
+     *
+     * Der Grund einer Zurueckhaltung stand bisher ausschliesslich als
+     * angehaengter Text im `rt.reason`; der Trail exportiert nur die vier
+     * Aktuatorfelder, also war er dort unsichtbar. Ein Zyklus, in dem eine
+     * gerechnete Menge NICHT hinausging, sah im Trail aus wie einer, der
+     * keine gerechnet hat - und die Unterscheidung ist genau das, was eine
+     * Auswertung braucht.
+     *
+     * Die Werte kommen als DATEN aus [app.aaps.fuse.plugin.ledger.LedgerPublicationGate.Outcome],
+     * nicht aus einer nachtraeglichen Zerlegung des Grundtextes.
+     *
+     * @param allowed hat das RT das Gate unveraendert verlassen? Ohne units
+     *   trivialerweise true - [reason] unterscheidet die Faelle.
+     * @param reason `null`, wenn nichts entfernt wurde.
+     * @param treatmentViewPresent hatte der Zyklus eine Behandlungs-Vollsicht?
+     *   Vom Zyklus selbst, nicht vom Gate abgeleitet.
+     */
+    data class PublicationGate(val allowed: Boolean, val reason: String?, val treatmentViewPresent: Boolean)
+
     fun record(
         cycleId: String,
         outcome: FuseCycleRunner.Outcome,
@@ -73,6 +94,7 @@ object FuseStateJson {
         // VOR nowNs, damit bestehende Aufrufe mit Trailing-Lambda den neuen
         // Parameter per Default ueberspringen koennen.
         ledger: LedgerSnapshot? = null,
+        publicationGate: PublicationGate? = null,
         nowNs: () -> Long,
     ): JSONObject {
         val gaps = JSONArray()
@@ -132,6 +154,19 @@ object FuseStateJson {
                 .put("allowed", outcome.gate.allowed)
                 .put("pumpClass", outcome.gate.pumpDescription)
                 .put("reason", outcome.gate.reason)
+        )
+
+        // ---- Publikationsgate (B0c) ----------------------------------------
+        // NICHT dasselbe wie `gate`: jenes ist der harte VirtualPump-Riegel,
+        // dieses die Ledger-Freigabe des Zyklus. Beide koennen unabhaengig
+        // voneinander eine Menge zurueckhalten, und im Trail muss unterscheidbar
+        // bleiben, welches es war.
+        if (publicationGate == null) gap("publicationGate", "NOT_REPORTED")
+        else o.put(
+            "publicationGate", JSONObject()
+                .put("allowed", publicationGate.allowed)
+                .put("reason", publicationGate.reason ?: JSONObject.NULL)
+                .put("treatmentViewPresent", publicationGate.treatmentViewPresent)
         )
 
         // ---- Signal --------------------------------------------------------
