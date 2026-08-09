@@ -1002,6 +1002,21 @@ class FuseCycleRunner(
             (signal.ukfRatePerMin.isFinite() && signal.ukfRatePerMin < 0.0) ||
             !signal.ukfRatePerMin.isFinite() ||
             lifted.insulinReqU <= 0.0
+        // SUB-02 Rest (Codex Re-Review 603a15a): der Uebertrag braucht eine
+        // HERKUNFT. Er ist eine Zusage, die unter BESTIMMTEN Bedingungen
+        // entstanden ist - Ziel, Profil-ISF, Pumpenschritt, Mahlzeitenfenster,
+        // Ratio. Aendert sich eine davon, war die Zusage fuer eine andere Lage
+        // gedacht und darf die neue nicht mitfinanzieren. Ein Profilwechsel
+        // mitten in der Nacht ist genau der Fall, in dem ein stehengebliebener
+        // Rest still zu einem zusaetzlichen Schritt wird.
+        val subStepContext = listOf(
+            state.targetMgdl, state.isfMgdlPerU, bolusStep,
+            cfg.smbRatio, cfg.smbRatioRise, cfg.maxSmbU,
+            if (mealMarkerActive) 1.0 else 0.0,
+        ).joinToString("|") { "%.6f".format(java.util.Locale.ROOT, it) }
+        if (subStepCarryContext != null && subStepCarryContext != subStepContext) subStepCarryU = 0.0
+        subStepCarryContext = subStepContext
+
         val subStep = SubStepAccumulator.step(
             carriedU = subStepCarryU,
             desiredU = lifted.desiredBeforeStepU,
@@ -1255,6 +1270,10 @@ class FuseCycleRunner(
      */
     private var subStepCarryU = 0.0
 
+    /** Unter WELCHEN Bedingungen der Uebertrag entstanden ist - s. Aufrufstelle.
+     *  `null` heisst: es gibt keinen Uebertrag, der eine Herkunft haette. */
+    private var subStepCarryContext: String? = null
+
     /**
      * Den Puls-Uebertrag von AUSSEN verwerfen.
      *
@@ -1267,6 +1286,7 @@ class FuseCycleRunner(
      */
     fun discardSubStepCarry() {
         subStepCarryU = 0.0
+        subStepCarryContext = null
     }
 
     data class MealStats(val sinceMin: Int, val totalU: Double, val first30U: Double, val first60U: Double)
