@@ -485,13 +485,21 @@ class FusePlugin @Inject constructor(
                         // Pumpen-API degradiert nur zur Alt-Bindung (ohne
                         // Pinnung), sie wirft den Ledger-Schritt nicht ab.
                         val pump = runCatching { activePlugin.activePump }.getOrNull()
+                        // EINMAL gelesen und an BEIDE Stellen gegeben: die
+                        // kanonische Serialform haengt seit der Codex-
+                        // Gegenpruefung (F7) vom Pumpentyp ab. Zwei getrennte
+                        // Lesungen koennten einen Typ mit einem Serial aus
+                        // einem anderen Moment paaren.
+                        val pumpTypeName = pump
+                            ?.let { runCatching { it.model().name }.getOrNull() }
+                            ?.takeIf { it.isNotBlank() }
                         ledgerAdapter.onPublished(
                             proposalId = cycleId,
                             unitsU = rt.units!!,
                             decisionTs = o.computeTs,
                             latestBolusTs = o.treatmentView?.latestBolusTs ?: 0L,
                             bolusStepU = o.state?.pumpIncrementU ?: Double.NaN,
-                            pumpTypeName = pump?.let { runCatching { it.model().name }.getOrNull()?.takeIf { n -> n.isNotBlank() } },
+                            pumpTypeName = pumpTypeName,
                             // LEER IST NICHT "EIN ANDERES GERAET" (Live-Befund
                             // 09.08., s. LedgerFacts.serialHashOf): direkt nach
                             // einem Prozessstart liefert serialNumber() den
@@ -502,7 +510,9 @@ class FusePlugin @Inject constructor(
                             // Serial gebuchte Bolus passt nie mehr auf die
                             // eigene Zeile.
                             pumpSerialHash = pump?.let {
-                                runCatching { app.aaps.fuse.plugin.ledger.LedgerFacts.serialHashOf(it.serialNumber()) }.getOrNull()
+                                runCatching {
+                                    app.aaps.fuse.plugin.ledger.LedgerFacts.serialHashOf(it.serialNumber(), pumpTypeName)
+                                }.getOrNull()
                             },
                         )
                     }

@@ -1,6 +1,7 @@
 package app.aaps.fuse.plugin.ledger
 
 import app.aaps.core.data.model.BS
+import app.aaps.core.data.pump.defs.PumpType
 import app.aaps.fuse.core.ledger.AccountedTreatment
 import app.aaps.fuse.core.ledger.AmountStage
 import app.aaps.fuse.core.ledger.IobAccountingSnapshot
@@ -309,30 +310,40 @@ object LedgerFacts {
      * ---
      *
      * ZWEITE AUSPRAEGUNG DERSELBEN FEHLERKLASSE: DIE SCHREIBWEISE
-     * (Phase-A-Kartierung 09.08., an Tonis Produktivsystem gemessen).
+     * (Phase-A-Kartierung 09.08., am Produktivsystem gemessen).
      *
      * Derselbe Zahlenwert erreicht die beiden Vergleichsseiten in
      * VERSCHIEDENER Schreibweise, weil zwei Stellen des Medtrum-Treibers
      * denselben Long unterschiedlich formatieren:
      *
-     *     Preference "9C1DE26D"
-     *       -> pumpSNFromSP = "9C1DE26D".toLong(radix = 16)   MedtrumPump.kt:251
+     *     Preference <hex mit Buchstaben>
+     *       -> pumpSNFromSP = ....toLong(radix = 16)          MedtrumPump.kt:251
      *       -> serialNumber() = ...toString(16).uppercase()   MedtrumPlugin.kt:406
-     *          = "9C1DE26D"                                   <- FUSE pinnt Sha(dieses)
+     *          = GROSS-Hex                                    <- FUSE pinnt Sha(dieses)
      *       -> BS.pumpSerial  = pumpSN.toString(16)           MedtrumService.kt:383
-     *          = "9c1de26d"                                   <- Ledger vergleicht Sha(dieses)
+     *          = klein-Hex                                    <- Ledger vergleicht Sha(dieses)
      *
-     * Tonis realer Serial traegt mit C, D und E gleich drei Hexziffern, deren
+     * Der reale Serial des Produktivsystems traegt drei Hexziffern, deren
      * Schreibweise sich unterscheidet (belegt aus dem Einstellungsbildschirm
-     * UND aus den Bolus-Datensaetzen im Log). An einer echten Medtrum wuerde
-     * damit KEINE EINZIGE Zeile je binden - dauerhaft, nicht nur in einem
-     * Startfenster. Wieder unsichtbar fuer jede Wertpruefung: auf beiden
-     * Seiten steht ein gueltiger 64-Zeichen-Hash.
+     * UND aus den Bolus-Datensaetzen im Log; der Wert selbst gehoert nicht in
+     * den Quelltext - das Repository ist oeffentlich). An einer echten
+     * Medtrum wuerde damit KEINE EINZIGE Zeile je binden - dauerhaft, nicht
+     * nur in einem Startfenster. Wieder unsichtbar fuer jede Wertpruefung:
+     * auf beiden Seiten steht ein gueltiger 64-Zeichen-Hash.
+     *
+     * WARUM PUMPENTYPABHAENGIG (Codex-Gegenpruefung F7): der Grund fuer die
+     * Faltung ist eine MEDTRUM-Eigenschaft - dieser eine Treiber formatiert
+     * denselben Long zweimal verschieden. Fuer andere Pumpen ist der
+     * Identitaetsvertrag ihrer Seriennummer NICHT belegt; sie global
+     * case-insensitiv zu behandeln wuerde zwei Geraete, die sich nur in der
+     * Schreibweise unterscheiden, auf denselben Hash werfen. Eine unbelegte
+     * Verallgemeinerung waere derselbe Fehler in neuer Richtung. Deshalb
+     * faltet nur die Medtrum-Familie; alle anderen bleiben zeichengetreu.
      *
      * `lowercase()` ohne Argument ist bewusst gewaehlt - es ist die
      * locale-INVARIANTE Variante. `toLowerCase()` haette in einer
-     * tuerkischen Locale aus "I" ein "ı" gemacht und denselben Bruch nur
-     * verschoben.
+     * tuerkischen Locale aus "I" ein "i-ohne-Punkt" gemacht und denselben
+     * Bruch nur verschoben.
      *
      * KOSTEN DER UMSTELLUNG, ehrlich benannt: eine Zeile, die VOR dieser
      * Aenderung mit gemischter Schreibweise gepinnt wurde und erst DANACH
@@ -342,12 +353,27 @@ object LedgerFacts {
      * fail-closed (die Zeile haelt ihre Haftung und laeuft ueber die
      * Phantom-Abschreibung aus), nie eine Fehlbindung.
      */
-    fun serialHashOf(serial: String?): String? =
-        serial?.trim()?.takeIf { it.isNotEmpty() }?.lowercase()?.let { Sha.of(it) }
+    fun serialHashOf(serial: String?, pumpTypeName: String?): String? {
+        val trimmed = serial?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+        return Sha.of(if (pumpTypeName in CASE_FOLDING_PUMP_TYPES) trimmed.lowercase() else trimmed)
+    }
+
+    /**
+     * Pumpentypen, bei denen die SCHREIBWEISE der Seriennummer keine Aussage
+     * ist - heute genau die Medtrum-Familie (s. [serialHashOf]).
+     *
+     * Aus dem Enum abgeleitet statt als Textliste gepflegt: eine handgefuehrte
+     * Liste waere beim naechsten Medtrum-Modell still unvollstaendig, und
+     * genau solche stillen Luecken sucht dieser Ledger. Die Tests in
+     * `BlankSerialBindingTest` halten dagegen, dass die Ableitung wirklich
+     * jeden Medtrum-Wert trifft und keinen fremden.
+     */
+    val CASE_FOLDING_PUMP_TYPES: Set<String> =
+        PumpType.entries.asSequence().map { it.name }.filter { it.startsWith("MEDTRUM") }.toSet()
 
     fun pumpTypeName(b: BS): String? = b.ids.pumpType?.name
 
-    fun serialHash(b: BS): String? = serialHashOf(b.ids.pumpSerial)
+    fun serialHash(b: BS): String? = serialHashOf(b.ids.pumpSerial, pumpTypeName(b))
 
     fun fact(b: BS): AccountedTreatment =
         AccountedTreatment(b.ids.temporaryId, b.ids.pumpId, b.amount, pumpTypeName(b), serialHash(b))
