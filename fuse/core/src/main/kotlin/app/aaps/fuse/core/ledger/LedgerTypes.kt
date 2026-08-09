@@ -387,7 +387,31 @@ data class ProposalEntry(
     /** Die zuletzt gegen diese Zeile abgeglichene Vollsicht (R91-F5). Nur DIESE
      *  traegt die aktuelle Mitgliedschaftsaussage. */
     val lastReconciledViewHash: String?,
+    /**
+     * WANN zuletzt abgeglichen wurde - reine AUDITZEIT.
+     *
+     * Sie sagt "es wurde hingesehen", nicht "es war etwas da". Deshalb darf an
+     * ihr KEINE Wirkfrist haengen: sonst verlaengert das blosse Hinsehen die
+     * Haftung, und der wiederholte Blick auf eine leere Sicht haelt genau die
+     * Zeile am Leben, die verfallen muesste. Fuer die Frist gibt es
+     * [lastPositiveFactTs].
+     */
     val lastReconciledAtTs: Long?,
+    /**
+     * WANN diese Zeile zuletzt einen POSITIVEN, haftungsrelevanten Fakt hatte.
+     *
+     * Der Unterschied zu [lastReconciledAtTs] ist der ganze Punkt: hier steht
+     * nur dann etwas, wenn in der Vollsicht wirklich eine Menge gegen diese
+     * Identitaet stand. Eine bestaetigte ABWESENHEIT laesst das Feld
+     * unberuehrt - eine Feststellung ueber einen Fakt ist nicht der Fakt.
+     *
+     * Fuer die Wirkfrist (`prune`) zaehlt `max(decisionTs, lastPositiveFactTs)`.
+     * `decisionTs` ist der frueheste Zeitpunkt, an dem die Menge in den Koerper
+     * gelangt sein kann; ein positiver Fakt kann spaeter liegen (die Pumpenuhr
+     * schreibt Zeitstempel um, gemessen bis 6,3 s) und verschiebt die Frist
+     * dann konservativ nach hinten.
+     */
+    val lastPositiveFactTs: Long?,
     val terminalSeen: Boolean,
     val failClosed: Boolean,
     val corrections: Int,

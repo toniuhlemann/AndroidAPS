@@ -169,6 +169,36 @@ class LedgerReducerTest {
         assertSame(s, same)
     }
 
+    /**
+     * B2 (Gegenproben-Audit 09.08.2026): DER WIDERSPRUCH DARF DIE SCHULD NICHT
+     * SENKEN.
+     *
+     * Der Fall oben meldet eine KLEINERE Zweitmenge - da faellt nicht auf, dass
+     * der neue Wert ersatzlos verworfen wurde. Kommt der Widerspruch andersherum,
+     * gewann vorher der kleinere Wert, und genau das ist in diesem Modul die
+     * falsche Richtung. Die beiden Schwesterpfade (Phasenverletzung,
+     * Korrekturbuchung) nehmen seit jeher `maxOf`; hier fehlte es.
+     *
+     * Heute ist der Pfad nicht erreichbar - je Vorschlag kommt genau ein
+     * AmountObserved je Stufe. Er wird es in dem Moment, in dem
+     * Queue-Stufen verdrahtet werden, und dann ist er scharf.
+     */
+    @Test
+    fun `dieselbe Stufe mit groesserer Menge haelt an und behaelt die groessere Menge`() {
+        val s = run(
+            proposed(0.30),
+            amount(AmountStage.LOOP_CONSTRAINED, 0.20),
+            amount(AmountStage.LOOP_CONSTRAINED, 0.25),
+        )
+        assertTrue(entry(s).errors.contains(LedgerError.CONFLICTING_STAGE_AMOUNT)) {
+            "der Widerspruch bleibt sichtbar"
+        }
+        assertTrue(s.holdActuation) { "und fail-closed" }
+        assertEquals(0.25, entry(s).conservativeFloorU) {
+            "die groessere der beiden Mengen bleibt Untergrenze der Haftung"
+        }
+    }
+
     // ---- Queue -----------------------------------------------------------
 
     @Test

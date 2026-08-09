@@ -1247,7 +1247,11 @@ class FuseCycleRunner(
      *  Datenbankabfrage. */
     private fun treatmentWindowStart(computeTs: Long, diaHours: Double): Long {
         val windowStart = computeTs - (diaHours * 3600_000.0).toLong() - IOB_MARGIN_MIN * 60_000L
-        return minOf(windowStart, (ledger.oldestOpenTs() ?: Long.MAX_VALUE - 60_000L) - 60_000L)
+        // L2: `oldestReconcilableTs`, NICHT `oldestOpenTs` - jede noch nicht
+        // geprunte Zeile wird weiter abgeglichen und muss deshalb im Fenster
+        // bleiben, auch eine bereits eingeloeste. Sonst meldet der Reducer den
+        // Fakt als verschwunden, den nur die Abfrage nicht mehr liefert.
+        return minOf(windowStart, (ledger.oldestReconcilableTs() ?: Long.MAX_VALUE - 60_000L) - 60_000L)
     }
 
     /**

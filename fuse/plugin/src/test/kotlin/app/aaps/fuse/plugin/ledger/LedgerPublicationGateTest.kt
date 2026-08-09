@@ -67,6 +67,43 @@ class LedgerPublicationGateTest {
         assertFalse(a.view().hold)
     }
 
+    /**
+     * L3 (Gegenproben-Audit 09.08.2026): PERSIST-VOR-PUBLIKATION IST EIN
+     * DATEIVERTRAG, KEINE DATEIEXISTENZ.
+     *
+     * Vorher pruefte jeder Test dieser Klasse nur `File(...).exists()`. Die
+     * Datei existiert aber schon, wenn irgendein frueherer Zyklus geschrieben
+     * hat - sie beweist nicht, dass DIESER Vorschlag mit DIESER Menge drin
+     * steht. Zoege ein Refactoring den Persist vor den Events-Block, wuerde
+     * eine Generation OHNE die frische Zeile geschrieben, ein Prozesstod
+     * danach startete formal sauber ohne Hold, und derselbe Betrag wuerde
+     * erneut finanziert - genau der Pfad, gegen den dieses Gate gebaut ist.
+     *
+     * Dieser Test liest die Datei zurueck und faellt bei vertauschter
+     * Reihenfolge, weil die Zeile dann fehlt.
+     */
+    @Test
+    fun `nach der Publikation steht die Zeile mit ihrer Menge in der Datei`(@TempDir dir: File) {
+        val a = loadedAdapter(dir)
+        val out = LedgerPublicationGate.publish(rtWithSmb(), a, dir, bucht, events = {
+            a.onPublished("p1", 0.30, t0, 0L, 0.05)
+        })
+        assertEquals(0.30, out.rt.units!!, 1e-12) { "Ausgangslage: die Menge ging hinaus" }
+
+        val roh = File(dir, FuseLedgerStore.FILE_NAME).readText()
+        val decoded = LedgerCodec.decode(org.json.JSONObject(roh))
+
+        val zeile = decoded.state.entries["p1"]
+        assertNotNull(zeile) {
+            "die publizierte Zeile MUSS in der geschriebenen Generation stehen - " +
+                "sonst wurde persistiert, bevor sie gebucht war"
+        }
+        assertEquals(0.30, zeile!!.grossLiabilityU, 1e-12) {
+            "und zwar mit ihrer Menge, nicht nur als leere Huelle"
+        }
+        assertTrue(decoded.revision > 0L) { "die Generation muss mitgeschrieben sein" }
+    }
+
     @Test
     fun `Persist-Fehlschlag entfernt units und deliverAt, TBR und Grund bleiben`(@TempDir dir: File) {
         val a = loadedAdapter(dir)

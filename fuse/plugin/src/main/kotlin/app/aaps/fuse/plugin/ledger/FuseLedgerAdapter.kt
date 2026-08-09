@@ -904,6 +904,26 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
         .minOfOrNull { it.identity?.treatmentTimestamp ?: it.decisionTs }
 
     /**
+     * Fensteranfang fuer die BEHANDLUNGSSICHT - und zwar ohne `closed`-Filter.
+     *
+     * L2 (Gegenproben-Audit 09.08.): [oldestOpenTs] filtert `!closed`, eine
+     * eingeloeste Zeile ist aber `closed`. Damit fiel sie aus der
+     * Fensterverlaengerung, obwohl der Reducer sie JEDEN Zyklus weiter gegen
+     * die Vollsicht abgleicht - solange sie nicht geprunt ist, ist sie
+     * abgleichsrelevant. Zwischen DIA+30 min (Regelfenster) und DIA+2 h
+     * (Prune-Schnitt) fehlte ihr Fakt in der Sicht, der Reducer las das als
+     * "Buchung verschwunden" und setzte MISSING_ACCOUNTED_TREATMENT auf eine
+     * voellig korrekt gebuchte Zeile. Bei DIA 9 h ist das rund 9,5 h nach dem
+     * ersten SMB - also an jedem normalen Tag.
+     *
+     * Massgeblich ist deshalb JEDE noch vorhandene Zeile. Was nicht mehr
+     * abgeglichen werden muss, entfernt `prune` - und nur der eine Schnitt
+     * entscheidet, nicht zwei verschiedene Begriffe von "fertig".
+     */
+    fun oldestReconcilableTs(): Long? = state.entries.values
+        .minOfOrNull { it.identity?.treatmentTimestamp ?: it.decisionTs }
+
+    /**
      * JEDER Posten einzeln - Menge, eigener Zeitstempel, Buchungsstand
      * (C3-01/C3-02, Codex Fix-Pass-5-Closure G.2/G.3).
      *
@@ -955,10 +975,19 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
         //
         // Es wird NICHT behauptet, sie seien geliefert worden - nur, dass sie
         // nicht mehr WIRKEN koennen (s. ProposalEntry.expiredBeyondAction).
-        // Das Alter zaehlt ab dem LETZTEN Lebenszeichen, nicht ab der
-        // Entscheidung: ein spaeter Abgleich haelt die Zeile lebendig.
+        //
+        // B1 (Gegenproben-Audit 09.08.): das Alter zaehlt ab der ENTSCHEIDUNG
+        // oder ab einem POSITIVEN Fakt - NICHT ab dem letzten Abgleich.
+        // Vorher stand hier `lastReconciledAtTs`, und der Reducer schreibt den
+        // auch dann, wenn der Abgleich die ABWESENHEIT des Fakts feststellt.
+        // Damit hielt genau das die Zeile am Leben, was sie verfallen lassen
+        // muesste: ab dem zweiten Zyklus lief der Fall durch den stillen
+        // seen-Zweig, erneuerte jede Minute das Lebenszeichen, `expired` fiel
+        // nie - und weil unten nur fehlerfreie Zeilen entfernt werden, blieb
+        // eine fehlertragende Zeile fuer immer stehen. Ein Zustand, den FUSE
+        // nur durch Loeschen einer Datei verlassen konnte.
         val expired = state.entries.mapValues { (_, e) ->
-            val lastSign = maxOf(e.decisionTs, e.lastReconciledAtTs ?: e.decisionTs)
+            val lastSign = maxOf(e.decisionTs, e.lastPositiveFactTs ?: e.decisionTs)
             if (e.expiredBeyondAction || e.closed || lastSign >= cutoff) e
             else e.copy(
                 expiredBeyondAction = true,

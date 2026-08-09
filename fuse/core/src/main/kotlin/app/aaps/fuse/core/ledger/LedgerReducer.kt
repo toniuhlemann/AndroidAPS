@@ -197,6 +197,7 @@ object LedgerReducer {
             firstAccountedSnapshotHash = null,
             lastReconciledViewHash = null,
             lastReconciledAtTs = null,
+            lastPositiveFactTs = null,
         )
         return state.copy(entries = state.entries + (e.proposalId to entry))
     }
@@ -255,9 +256,26 @@ object LedgerReducer {
         val known = entry.amounts.stage(e.stage)
         if (known != null) {
             if (LedgerRules.sameAmount(known, e.amountU, entry.amountEpsU)) return state
+            // B2 (Gegenproben-Audit 09.08.): der widersprechende Betrag wurde
+            // vorher ERSATZLOS verworfen - auch der GROESSERE. Damit gewann bei
+            // einem Widerspruch der kleinere Wert, und das ist in diesem Modul
+            // genau die falsche Richtung: BELASTEND SCHLAEGT ENTLASTEND.
+            //
+            // Die beiden Schwesterpfade machen es seit jeher richtig (s. die
+            // Phasenverletzung oben und die Korrekturbuchung weiter unten) und
+            // sagen auch warum: "eine widersprechende KLEINERE Stufe darf die
+            // Schuld nicht senken". Es fehlte nur hier.
+            //
+            // Der Befund bleibt sichtbar und fail-closed - die Untergrenze ist
+            // Schadensbegrenzung, keine Aufloesung des Widerspruchs.
             return put(
                 fail(state, entry.proposalId, LedgerError.CONFLICTING_STAGE_AMOUNT, "${e.stage}: $known -> ${e.amountU}"),
-                entry.failed(LedgerError.CONFLICTING_STAGE_AMOUNT)
+                entry.copy(
+                    conservativeFloorU = maxOf(
+                        entry.conservativeFloorU ?: 0.0,
+                        maxOf(known, e.amountU).takeIf { it.isFinite() } ?: (entry.conservativeFloorU ?: 0.0),
+                    ),
+                ).failed(LedgerError.CONFLICTING_STAGE_AMOUNT)
             )
         }
         val axis = entry.amounts.withStage(e.stage, e.amountU)
@@ -715,6 +733,11 @@ object LedgerReducer {
                     if (positiveFact) entry.firstAccountedSnapshotHash ?: viewHash else entry.firstAccountedSnapshotHash,
                 lastReconciledViewHash = viewHash,
                 lastReconciledAtTs = e.snapshot.calculatedAt,
+                // NUR der positive Fakt bewegt die Wirkfrist. Ein Fakt mit
+                // Menge 0 ist so wenig ein Lebenszeichen wie gar kein Fakt -
+                // beide sagen "hier wirkt nichts", und genau das soll die Zeile
+                // verfallen lassen und nicht am Leben halten.
+                lastPositiveFactTs = if (positiveFact) e.snapshot.calculatedAt else entry.lastPositiveFactTs,
                 amounts = if (entry.amounts.dbAccountedU == null && positiveFact)
                     entry.amounts.copy(dbAccountedU = hit.amountU) else entry.amounts,
                 corrections = if (entry.accountedAmountU != null && !sameAmount) entry.corrections + 1

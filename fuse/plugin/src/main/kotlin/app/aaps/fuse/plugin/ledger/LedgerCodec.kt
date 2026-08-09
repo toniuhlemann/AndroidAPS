@@ -308,6 +308,7 @@ object LedgerCodec {
         .putNullable("firstAccountedSnapshotHash", e.firstAccountedSnapshotHash)
         .putNullable("lastReconciledViewHash", e.lastReconciledViewHash)
         .putNullable("lastReconciledAtTs", e.lastReconciledAtTs)
+        .putNullable("lastPositiveFactTs", e.lastPositiveFactTs)
         .put("terminalSeen", e.terminalSeen)
         .put("failClosed", e.failClosed)
         .put("corrections", e.corrections)
@@ -335,6 +336,12 @@ object LedgerCodec {
             firstAccountedSnapshotHash = o.strOrNull("firstAccountedSnapshotHash"),
             lastReconciledViewHash = o.strOrNull("lastReconciledViewHash"),
             lastReconciledAtTs = o.lngOrNull("lastReconciledAtTs"),
+            // Fehlt das Feld, ist die Antwort NICHT "es gab nie einen Fakt" -
+            // sie ist "wir wissen es nicht". Beide sehen als `null` gleich aus,
+            // deshalb faengt der Versionsvertrag den Fall: eine Datei unter
+            // RECONCILIATION_VERSION geht in den Migrations-Hold und wird gar
+            // nicht erst als Laufzeitzustand uebernommen (s. decode).
+            lastPositiveFactTs = o.lngOrNull("lastPositiveFactTs"),
             terminalSeen = o.getBoolean("terminalSeen"),
             failClosed = o.getBoolean("failClosed"),
             corrections = o.getInt("corrections"),
