@@ -93,6 +93,24 @@ object LedgerPublicationGate {
     }
 
     /**
+     * Die Buchungsentscheidung EINES Zyklus - als eine pruefbare Funktion
+     * statt als Bedingung mitten in `invoke()` (B0a).
+     *
+     * Sie steht hier und nicht im Plugin, weil sie mit [Commitment] dieselbe
+     * Vokabel spricht und weil der Aufrufer den events-Block DARAUS ableiten
+     * soll: zwei unabhaengig formulierte Bedingungen ("darf publizieren" und
+     * "soll buchen") koennen abdriften, und beide Driftrichtungen sind
+     * schaedlich - die eine publiziert ohne Haftung, die andere bucht eine
+     * Haftung fuer eine Menge, die nie hinausgeht (Phantom-Commitment).
+     *
+     * @param units die Menge des RT, `null` = keine.
+     * @param treatmentViewPresent traegt der Zyklus eine Behandlungs-Vollsicht?
+     */
+    fun commitmentOf(units: Double?, treatmentViewPresent: Boolean, proposalId: String): Commitment =
+        if (units != null && !treatmentViewPresent) Commitment.None(REASON_TREATMENT_VIEW_UNAVAILABLE)
+        else Commitment.Proposal(proposalId)
+
+    /**
      * @param expected was dieser Zyklus zu buchen behauptet. Traegt das RT
      *   positive units, MUSS es [Commitment.Proposal] sein - und die Zeile muss
      *   danach wirklich offen im Ledger stehen.

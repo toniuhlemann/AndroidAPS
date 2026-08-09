@@ -469,14 +469,46 @@ class FusePlugin @Inject constructor(
         // nicht auf Platte steht, existiert nach einem Kill nicht mehr, und
         // die Huelle stuende ein zweites Mal zur Verfuegung. persistFailed
         // haelt zusaetzlich kuenftige Zyklen ueber view().hold zu.
+        // B0a (Codex-Gegenpruefung F3): OHNE Behandlungs-Vollsicht wird nicht
+        // dosiert - und dann auch nicht gebucht.
+        //
+        // `FuseCycleRunner` liefert `treatmentView = runCatching{…}.getOrNull()`;
+        // eine scheiternde Datenbankabfrage soll den Zyklus nicht kosten. Fuer
+        // eine MENGE reicht das aber nicht: ohne Vollsicht laufen Bindung,
+        // Reconciliation und prune nicht, und der C5-Anker des Vorschlags
+        // (`latestBolusTs`) waere unbekannt. Der bisherige Code hat an dieser
+        // Stelle `?: 0L` eingesetzt - eine 0 ist aber kein unbekannter
+        // Zeitstempel, sondern der aelteste denkbare, und sie hat den C5-Guard
+        // der spaeteren Bindung fuer genau diese Zeile entwertet.
+        //
+        // WARUM NICHT EINFACH `onPublished` UNTER `treatmentView?.let`
+        // VERSCHIEBEN: dann entstuende keine Zeile, das Gate sah aber weiterhin
+        // fehlerfreie Ereignisse und einen gelungenen Persist - und haette die
+        // Menge publiziert. Genau deshalb traegt das Gate seit dem Vorcommit
+        // einen expliziten Commitment: hier wird ausgesprochen, dass NICHTS
+        // gebucht wird, und das Gate entfernt daraufhin units und deliverAt.
+        // Die Safety-TBR bleibt.
+        val expected = app.aaps.fuse.plugin.ledger.LedgerPublicationGate.commitmentOf(
+            units = rt.units,
+            treatmentViewPresent = outcome?.treatmentView != null,
+            proposalId = cycleId,
+        )
+
         val publishRt = app.aaps.fuse.plugin.ledger.LedgerPublicationGate.publish(
             rt = rt,
             adapter = ledgerAdapter,
             dir = ledgerDir(),
-            expected = app.aaps.fuse.plugin.ledger.LedgerPublicationGate.Commitment.Proposal(cycleId),
+            expected = expected,
             events = {
                 outcome?.let { o ->
-                    if (rt.units != null) {
+                    // Gebucht wird NUR, wenn das Gate diese Zeile auch
+                    // ERWARTET - sonst entstuende eine Haftung fuer eine Menge,
+                    // die nie hinausgeht (Phantom-Commitment). Die Bedingung
+                    // wird deshalb aus `expected` abgeleitet und nicht ein
+                    // zweites Mal unabhaengig formuliert.
+                    if (expected is app.aaps.fuse.plugin.ledger.LedgerPublicationGate.Commitment.Proposal &&
+                        rt.units != null && o.treatmentView != null
+                    ) {
                         // Fix 3 (Re-Audit 6.3): die JETZT aktive Pumpe wird an
                         // den Vorschlag gepinnt - ein spaeter gleich grosser
                         // SMB einer ANDEREN (z.B. frisch gewechselten) Pumpe
@@ -498,7 +530,9 @@ class FusePlugin @Inject constructor(
                             proposalId = cycleId,
                             unitsU = rt.units!!,
                             decisionTs = o.computeTs,
-                            latestBolusTs = o.treatmentView?.latestBolusTs ?: 0L,
+                            // Kein `?: 0L` mehr: gebucht wird nur MIT
+                            // Vollsicht, der C5-Anker ist also immer echt.
+                            latestBolusTs = o.treatmentView.latestBolusTs,
                             bolusStepU = o.state?.pumpIncrementU ?: Double.NaN,
                             pumpTypeName = pumpTypeName,
                             // LEER IST NICHT "EIN ANDERES GERAET" (Live-Befund

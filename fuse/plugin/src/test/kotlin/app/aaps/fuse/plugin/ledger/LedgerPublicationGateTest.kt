@@ -231,6 +231,77 @@ class LedgerPublicationGateTest {
         assertTrue(File(dir, FuseLedgerStore.FILE_NAME).exists())
     }
 
+    // ---- die Buchungsentscheidung des Zyklus (B0a) ------------------------
+
+    /**
+     * Die vier Kombinationen aus "Menge da?" und "Vollsicht da?".
+     *
+     * Nur EINE davon darf dosieren, und genau eine darf nicht buchen. Der
+     * Livepfad leitet den events-Block aus demselben Ergebnis ab, damit die
+     * beiden Bedingungen nicht auseinanderlaufen koennen.
+     */
+    @Test
+    fun `ohne Vollsicht wird eine Menge nicht gebucht - mit Vollsicht schon`() {
+        val mitMenge = 0.30
+        assertEquals(
+            LedgerPublicationGate.Commitment.Proposal("c1"),
+            LedgerPublicationGate.commitmentOf(mitMenge, treatmentViewPresent = true, proposalId = "c1"),
+        )
+        assertEquals(
+            LedgerPublicationGate.Commitment.None(LedgerPublicationGate.REASON_TREATMENT_VIEW_UNAVAILABLE),
+            LedgerPublicationGate.commitmentOf(mitMenge, treatmentViewPresent = false, proposalId = "c1"),
+        )
+        // Ohne Menge ist die Vollsicht fuer die PUBLIKATION belanglos - es gibt
+        // nichts zu schuetzen, und der Zyklus soll seine Reconciliation
+        // trotzdem fahren duerfen.
+        assertEquals(
+            LedgerPublicationGate.Commitment.Proposal("c1"),
+            LedgerPublicationGate.commitmentOf(null, treatmentViewPresent = true, proposalId = "c1"),
+        )
+        assertEquals(
+            LedgerPublicationGate.Commitment.Proposal("c1"),
+            LedgerPublicationGate.commitmentOf(null, treatmentViewPresent = false, proposalId = "c1"),
+        )
+    }
+
+    /** Der Live-Fall end-to-end durch das Gate: Menge gerechnet, Vollsicht
+     *  fehlt, nichts gebucht - keine Dosis, keine Haftung, TBR bleibt. */
+    @Test
+    fun `fehlende Vollsicht - Menge gerechnet, nichts publiziert, nichts gebucht`(@TempDir dir: File) {
+        val a = loadedAdapter(dir)
+        val rt = rtWithSmb()
+        val expected = LedgerPublicationGate.commitmentOf(rt.units, treatmentViewPresent = false, proposalId = "p1")
+        val out = LedgerPublicationGate.publish(rt, a, dir, expected, events = {
+            // Der Livepfad bucht in diesem Fall NICHT - abgeleitet aus `expected`.
+            if (expected is LedgerPublicationGate.Commitment.Proposal) a.onPublished("p1", 0.30, t0, 0L, 0.05)
+        })
+
+        assertNull(out.units)
+        assertNull(out.deliverAt)
+        assertEquals(0.0, out.rate!!, 1e-12)
+        assertEquals(30, out.duration)
+        assertTrue(out.reason.endsWith(" | " + LedgerPublicationGate.REASON_TREATMENT_VIEW_UNAVAILABLE))
+        assertEquals(0.0, a.view().transportCommitmentU, 1e-12)
+        assertFalse(a.hasOpenProposal("p1"), "es darf keine Zeile entstanden sein")
+        assertFalse(a.view().hold, "eine fehlende Vollsicht ist kein Hold - der naechste Zyklus darf wieder")
+    }
+
+    /** Und die Gegenprobe mit Vollsicht: derselbe Aufbau dosiert. */
+    @Test
+    fun `vorhandene Vollsicht - dieselbe Menge geht hinaus und ist gebucht`(@TempDir dir: File) {
+        val a = loadedAdapter(dir)
+        val rt = rtWithSmb()
+        val expected = LedgerPublicationGate.commitmentOf(rt.units, treatmentViewPresent = true, proposalId = "p1")
+        val out = LedgerPublicationGate.publish(rt, a, dir, expected, events = {
+            if (expected is LedgerPublicationGate.Commitment.Proposal) a.onPublished("p1", 0.30, t0, 0L, 0.05)
+        })
+
+        assertEquals(0.30, out.units!!, 1e-12)
+        assertEquals(t0, out.deliverAt)
+        assertTrue(a.hasOpenProposal("p1"))
+        assertEquals(0.30, a.view().transportCommitmentU, 1e-12)
+    }
+
     @Test
     fun `hasOpenProposal kennt nur offene Zeilen`(@TempDir dir: File) {
         val a = loadedAdapter(dir)
