@@ -274,6 +274,17 @@ class TransportWiringTest : TestBaseWithProfile() {
         val ohne = ersterPrimeZyklus(0.0, File(dir, "ohne"))
         assertThat(ohne.prime?.active).isTrue()
         assertThat(ohne.decision.smbU).isGreaterThan(0.0)
+        // AUSDRUECKLICH statt behauptet: der Lift ist der bindende Pfad.
+        //
+        // NACHGEPRUEFT UND KORRIGIERT: eine Vorfassung behauptete hier
+        // zusaetzlich `candidate.reject == NO_DEMAND`. Gemessen ist
+        // `reject == null` - der Kandidat lehnt in dieser Lage NICHT ab,
+        // sondern liefert ein Ergebnis, das der Lift anschliessend anhebt.
+        // Auch mit tieferer Reihe (95 mg/dl) bleibt es dabei. Die Behauptung
+        // steht deshalb nicht mehr im Test; entscheidend fuer den Term an
+        // Zeile 959 ist ohnehin, DASS der Lift die bindende Grenze ist - und
+        // das steht hier.
+        assertThat(ohne.decision.bindingLimit).isEqualTo("primeRelease")
 
         // BEHANDLUNG: 0,06 U offene Haftung lassen 0,04 U Rest - der Floor von
         // 0,05 U passt nicht mehr hinein.
@@ -281,6 +292,8 @@ class TransportWiringTest : TestBaseWithProfile() {
         // Der Plan ist AKTIV: es kappt der Lift, nicht schon die Clearance.
         assertThat(mit.prime?.active).isTrue()
         assertThat(mit.decision.smbU).isLessThan(ohne.decision.smbU)
+        // Der Floor von 0,05 U passt nicht mehr in den Rest von 0,04 U.
+        assertThat(mit.decision.smbU).isLessThan(0.05)
         assertThat(mit.decision.smbU).isAtMost(maxIobU - 0.06 + 1e-9)
     }
 
