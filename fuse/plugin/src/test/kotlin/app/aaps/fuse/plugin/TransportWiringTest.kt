@@ -1,6 +1,7 @@
 package app.aaps.fuse.plugin
 
 import app.aaps.core.data.model.GV
+import app.aaps.core.data.model.TB
 import app.aaps.core.data.model.SourceSensor
 import app.aaps.core.data.model.TrendArrow
 import app.aaps.core.data.pump.defs.PumpType
@@ -27,6 +28,9 @@ import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
 import org.mockito.Mock
 import org.mockito.kotlin.any
+import org.mockito.kotlin.atLeastOnce
+import org.mockito.kotlin.doReturn
+import org.mockito.kotlin.verify
 import org.mockito.kotlin.anyOrNull
 import org.mockito.kotlin.whenever
 import java.io.File
@@ -270,7 +274,8 @@ class TransportWiringTest : TestBaseWithProfile() {
         }
 
         // KONTROLLE: der Lift ist wirklich der dosierende Pfad, und er dosiert
-        // OHNE rechnerischen Bedarf - genau dafuer gibt es ihn.
+        // Der Prime-Lift ist die bindende Endgrenze. Die Kandidatensuche
+        // liefert hier ein Ergebnis; NO_DEMAND wird NICHT behauptet.
         val ohne = ersterPrimeZyklus(0.0, File(dir, "ohne"))
         assertThat(ohne.prime?.active).isTrue()
         assertThat(ohne.decision.smbU).isGreaterThan(0.0)
@@ -543,5 +548,44 @@ class TransportWiringTest : TestBaseWithProfile() {
         val (ohne, mit) = grenzeAllein(dir, maxIob = 0.25, pct = 200, name = "s-maxiob")
         assertThat(ohne.decision.bindingLimit).contains("subStep")
         assertThat(mit.decision.bindingLimit).doesNotContain("subStep")
+    }
+
+    // ---- L5: die TBR-Quelle im NORMALEN Runner-Pfad ----------------------
+
+    /**
+     * L5, Regel 1 im Runner: die laufende TBR kommt aus dem gelesenen
+     * AAPS-Zustand ([ProcessedTbrEbData]), nicht aus einer gemerkten eigenen
+     * Anforderung.
+     *
+     * Die reine Regel und die lesende Fassung sind in [FuseAbortTbrTest] und
+     * [TbrSourceContractTest] gedeckt. Hier geht es um den NORMALEN Pfad
+     * (`FuseCycleRunner:1140-1150`), den bis jetzt kein Test beruehrt hat:
+     * ersetzte jemand `getTempBasalIncludingConvertedExtended(..)` durch eine
+     * eigene Notiz, waere nichts rot geworden.
+     */
+    @Test
+    fun `der Runner liest die laufende TBR aus dem AAPS-Zustand`(@TempDir dir: File) {
+        val l = FuseLedgerAdapter().also { it.loadOnce(dir, "test-epoch", start) }
+        neuerRunner(l)
+
+        // Die Quelle meldet eine laufende, deutlich POSITIVE TBR.
+        val laufend = TB(
+            timestamp = start, duration = 30 * 60_000L,
+            rate = 2.50, isAbsolute = true, type = TB.Type.NORMAL,
+        )
+        whenever(processedTbrEbData.getTempBasalIncludingConvertedExtended(any())) doReturn laufend
+
+        clock = start
+        var gesehen: FuseCycleRunner.Outcome? = null
+        repeat(30) { val o = cycle(); if (o.tbr != null) { gesehen = o; return@repeat } }
+
+        // Der Runner hat die Quelle ueberhaupt befragt - andernfalls kaeme er
+        // nie zu einer TBR-Aussage ueber eine laufende Abgabe.
+        verify(processedTbrEbData, atLeastOnce()).getTempBasalIncludingConvertedExtended(any())
+
+        // Und die Gegenprobe: ohne laufende TBR in der Quelle sieht er keine.
+        whenever(processedTbrEbData.getTempBasalIncludingConvertedExtended(any())) doReturn null
+        val ohne = cycle()
+        assertThat(ohne.abortReason).isNull()
     }
 }
