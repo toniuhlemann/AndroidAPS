@@ -126,6 +126,42 @@ object TailLiability {
     }
 
     /**
+     * MEHRERE OFFENE POSTEN ZU EINEM TRANSPORT-TERM (C3-01, Codex
+     * Fix-Pass-5-Closure Abschnitt G.2/K).
+     *
+     * Vorher wurden alle offenen Betraege im Runner summiert und am AELTESTEN
+     * offenen Zeitstempel als EINE Dosis modelliert. Das ist fuer die
+     * Resthaftung nicht konservativ: bei jeder fallenden Restwirkungsfunktion
+     * gilt `residual(H + altes_Alter) < residual(H + junges_Alter)` - die
+     * juengeren Dosen haften also MEHR, als die Aggregation zugibt. Codex'
+     * Gegenprobe mit dem linearen 240-min-Testkernel bei H = 60 min:
+     *
+     *     P1 = 0,10 U (12 min alt), P2 = 0,30 U (2 min alt)
+     *     getrennt   = 0,10*(1-72/240) + 0,30*(1-62/240) = 0,2925 U
+     *     aggregiert = 0,40*(1-72/240)                   = 0,2800 U
+     *
+     * Die geforderte Eigenschaft lautet "never less conservative than modelling
+     * both separately". Sie gilt hier PER KONSTRUKTION: die Haftung ist die
+     * Summe der EINZELN gerechneten [Dose.liabilityAtHU].
+     *
+     * DER VERMERK BLEIBT EHRLICH: hat auch nur EIN Posten keine gerechnete
+     * Restwirkung, ist das Ergebnis `bounded` (residualAtHU = null) und rechnet
+     * mit der GESAMTMENGE. Ein gemischtes "teils gerechnet, teils geschaetzt"
+     * gaebe es sonst als Vermerk nicht - und die Gesamtmenge ist nie kleiner
+     * als die Summe der Einzelhaftungen, weil eine Restwirkung nie groesser
+     * als ihre Menge sein kann.
+     *
+     * Leere Liste = GERECHNETE Null ("nichts unterwegs"), ausdruecklich nicht
+     * "unbekannt": sonst wuerde jeder ruhige Zyklus `transportBounded` melden.
+     */
+    fun sumOf(doses: List<Dose>): Dose {
+        if (doses.isEmpty()) return Dose(0.0, 0.0)
+        val amountU = doses.sumOf { it.amountU }
+        if (doses.all { it.modelled }) return Dose(amountU, doses.sumOf { it.liabilityAtHU })
+        return Dose(amountU, null)
+    }
+
+    /**
      * Der Vermerk entsteht aus den TATSAECHLICH uebergebenen Termen - er wird
      * nicht gepflegt, sondern abgeleitet. Damit kann Anzeige und Export nie
      * etwas anderes behaupten als die Rechnung.
@@ -193,6 +229,18 @@ object TailLiability {
          * [lowerBgAtH] um ihre Wirkung VOR dem Horizont. Das ist kein doppelter
          * Ansatz, sondern die Aufteilung derselben Dosis: was bis H gewirkt hat,
          * steckt in der Bahn; was danach noch kommt, steht hier.
+         *
+         * C3-01: bei MEHREREN offenen Posten ist das die ueber [sumOf]
+         * gebildete Summe der EINZELN gerechneten Restwirkungen - nicht eine
+         * Sammelmenge an einem gemeinsamen Anker.
+         *
+         * BEWUSST NICHT DERSELBE ANKER wie in der Bahn (Codex G.1): fuer die
+         * Bahn ist der FRUEHESTE plausible Lieferzeitpunkt konservativ (mehr
+         * Wirkung faellt ins Fenster, die Bahn sinkt), fuer diese Restgroesse
+         * der SPAETESTE (weniger ist verbraucht, mehr bleibt uebrig). Beide
+         * Enden derselben plausiblen Lieferspanne, jedes an der Stelle, an der
+         * es pessimistisch ist - zusammen eine punktweise Worst-Case-Huelle,
+         * die in keiner Richtung eine Dosis vergroessern kann.
          */
         val transport: Dose? = null,
         /**

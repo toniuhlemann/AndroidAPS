@@ -39,8 +39,20 @@ enum class PredictorReason {
  * bitgleich die alte. Ein zweiter Merker waere ein zweiter Zustand, der
  * auseinanderlaufen kann.
  *
- * [deliveryTs] ist der FRUEHESTE plausible Lieferzeitpunkt - konservativ ist
- * frueh, weil damit mehr Wirkung ins Bewertungsfenster faellt.
+ * EIN OBJEKT IST EIN POSTEN, NICHT DIE SUMME (C3-01, Codex Fix-Pass-5-Closure
+ * G.2). Bis Fix-Pass 5 wurden alle offenen Betraege addiert und am AELTESTEN
+ * Zeitstempel als eine Dosis modelliert. Fuer die Bahn ist das noch tragbar,
+ * fuer die RESTHAFTUNG am Horizont nicht: von einer aelteren Dosis ist mehr
+ * Wirkung verbraucht, es bleibt WENIGER uebrig. Deshalb traegt
+ * [PredictorInput.pending] eine LISTE, und jeder Posten bringt seinen eigenen
+ * Anker mit.
+ *
+ * [deliveryTs] ist der FRUEHESTE plausible Lieferzeitpunkt DIESES Postens -
+ * fuer die BAHN ist frueh konservativ, weil damit mehr Wirkung ins
+ * Bewertungsfenster faellt und die Bahn tiefer laeuft. Fuer die Resthaftung am
+ * Horizont gilt das GEGENTEIL; sie wird deshalb nicht aus diesem Objekt
+ * abgeleitet, sondern vom Aufrufer ueber den SPAETESTEN plausiblen Anker
+ * gerechnet (s. FuseCycleRunner.tailTransportDose).
  */
 interface PendingInsulinEffect {
 
@@ -257,15 +269,22 @@ data class PredictorInput(
      */
     val decayNegativeDrive: DriveDecayModel? = null,
     /**
-     * TRANSPORTMENGE ALS SYNTHETISCHE DOSIS (C3). `null` = nichts publiziert,
+     * TRANSPORTMENGE ALS SYNTHETISCHE DOSEN (C3). Leer = nichts publiziert,
      * das nicht schon im IOB-Array steckt.
      *
-     * Sie senkt mean, lower UND die prior-freie Bahn - senken ist in BEIDE
-     * Richtungen konservativ: der Guard sperrt eher, und der Bedarf auf der
-     * Mittelbahn sinkt. Eine Erhoehung ist strukturell ausgeschlossen, weil
+     * EINE LISTE, KEINE EINZELDOSIS (C3-01, Codex Fix-Pass-5-Closure G.2):
+     * mehrere offene Commitments haben verschiedene Lieferzeiten. Sie am
+     * aeltesten Zeitstempel zu summieren war fuer die Resthaftung der
+     * juengeren Dosen NICHT konservativ - Codex' Gegenprobe mit dem linearen
+     * 240-min-Kernel bei H=60: 0,10 U (12 min) + 0,30 U (2 min) haften
+     * getrennt 0,2925 U, aggregiert am aeltesten Anker nur 0,2800 U.
+     *
+     * Jeder Posten senkt mean, lower UND die prior-freie Bahn - senken ist in
+     * BEIDE Richtungen konservativ: der Guard sperrt eher, und der Bedarf auf
+     * der Mittelbahn sinkt. Eine Erhoehung ist strukturell ausgeschlossen, weil
      * [TrajectoryCore] eine anhebende (negative) Aktivitaet ablehnt.
      */
-    val pending: PendingInsulinEffect? = null,
+    val pending: List<PendingInsulinEffect> = emptyList(),
 )
 
 /** Ein Minutenpunkt beider Bahnen. */
@@ -336,7 +355,8 @@ data class PredictorResult(
      *  Schwanz-Guards. `null` wie oben. */
     val bgAtHorizonLowerPriorFree: Double? = null,
     /**
-     * Die eingerechnete Transportmenge [U] (C3). 0 = nichts unterwegs.
+     * Die eingerechnete Transportmenge [U] (C3) - SUMME ueber alle Posten.
+     * 0 = nichts unterwegs.
      *
      * Steht im Ergebnis, weil eine Bahn, die um eine unsichtbare Menge gesenkt
      * wurde, das SAGEN muss - sonst sucht spaeter jemand den Fehler im

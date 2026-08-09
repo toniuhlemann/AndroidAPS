@@ -152,11 +152,28 @@ class FuseSignalSource(
         // werden: jedes Praefix ist ein Suffix der aufsteigenden Reihe, also gilt
         //   praefix(beschnitten) = praefix(voll) geschnitten mit {ts >= fromTs}.
         val window = SignalWindow.of(sourceTs, sensorStartTs, calibrationStartTs)
-        val series = readings.filter { it.tsMs >= window.fromTs }
-        if (series.isEmpty()) return Outcome.Unavailable("window empty after ${window.label} @${window.fromTs}")
+        val epochTrimmed = readings.filter { it.tsMs >= window.fromTs }
+        if (epochTrimmed.isEmpty()) return Outcome.Unavailable("window empty after ${window.label} @${window.fromTs}")
+
+        // C9-01 (Codex Fix-Pass-5-Closure): der Sprungzaun gilt fuer die GANZE
+        // Reihe, nicht nur fuer die Zustandsmaschine. Auf der bereits an
+        // Sensor-/Kalibrierepoche beschnittenen Reihe gesucht - was eine
+        // gemeldete Epoche erklaert, ist hier schon weg und wird nicht ein
+        // zweites Mal als "unklassifiziert" gezaehlt.
+        //
+        // Der Schnitt sitzt VOR q1: haenge ich ihn nur an das r-Fenster, sieht
+        // der UKF den Sprung weiterhin, zieht sein gelerntes R hoch und liefert
+        // ein langsam nachgefuehrtes q1 - aus dem dann jedes spaetere r gebaut
+        // wird. Kuerzere Reihe heisst hier: q1 faellt bis zur Reife benannt aus
+        // (fail-closed), statt eine erfundene Steigung zu tragen.
+        val stepTs = SignalWindow.stepBoundaryTs(epochTrimmed)
+        val series = if (stepTs != null) epochTrimmed.filter { it.tsMs >= stepTs } else epochTrimmed
+        val bound = if (stepTs != null) SignalWindow.Bound.INPUT_STEP else window.bound
+        val boundLabel = bound.name
+        if (series.isEmpty()) return Outcome.Unavailable("window empty after $boundLabel @${stepTs ?: window.fromTs}")
 
         val leading = UkfQ1.leadingEdge(series.takeLast(UkfQ1.WINDOW_SAMPLES))
-            ?: return Outcome.Unavailable("q1 not computable from ${series.size} points (${window.label})")
+            ?: return Outcome.Unavailable("q1 not computable from ${series.size} points ($boundLabel)")
 
         // Ein Sample je Rohpunkt im 18-min-Fenster. q1 wird KAUSAL je Punkt
         // gerechnet: jeder Punkt sieht nur seine eigene Vergangenheit.
@@ -184,7 +201,7 @@ class FuseSignalSource(
             if (!activity.isFinite()) return Outcome.Unavailable("activity not finite at ${point.tsMs}")
             samples.add(BgiAdjustedSeries.Sample(point.tsMs, q1, activity, isf))
         }
-        if (samples.isEmpty()) return Outcome.Unavailable("no samples in window (${window.label})")
+        if (samples.isEmpty()) return Outcome.Unavailable("no samples in window ($boundLabel)")
 
         val adjusted = BgiAdjustedSeries.adjust(samples)
         val rSigned = BgiAdjustedSeries.theilSen(adjusted, sourceTs)
@@ -213,7 +230,7 @@ class FuseSignalSource(
                 samplesUsed = samples.size,
                 rawSeriesSize = series.size,
                 q1Outlier = leading.outlier,
-                boundedBy = window.bound,
+                boundedBy = bound,
                 windowFromTs = window.fromTs,
             )
         )

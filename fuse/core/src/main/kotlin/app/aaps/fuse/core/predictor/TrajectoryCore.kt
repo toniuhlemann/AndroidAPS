@@ -25,12 +25,18 @@ import kotlin.math.abs
  * Kosten: zwei zusaetzliche Additionen je Minute, kein zusaetzlicher
  * Datenbank- oder Interpolationszugriff.
  *
- * SEIT C3 (Codex-Adjudication, K4 Punkt 17) kann die Bahn zusaetzlich eine
- * SYNTHETISCHE DOSIS tragen: die publizierte, im IOB noch nicht sichtbare
+ * SEIT C3 (Codex-Adjudication, K4 Punkt 17) kann die Bahn zusaetzlich
+ * SYNTHETISCHE DOSEN tragen: die publizierte, im IOB noch nicht sichtbare
  * Transportmenge ([PredictorInput.pending]). Sie wirkt auf ALLE DREI Bahnen -
  * senken ist in beide Richtungen konservativ (der Guard sperrt eher, der Bedarf
  * sinkt) - und verschwindet atomar mit derselben Zahl, mit der der Ledger sie
  * freigibt.
+ *
+ * SEIT C3-01 (Codex Fix-Pass-5-Closure G.2) ist das eine LISTE: jeder offene
+ * Posten hat eigene Menge und eigenen Lieferanker. Die Summe der Wirkungen
+ * mehrerer Anker ist NICHT die Wirkung der Summe an einem Anker - und der
+ * aelteste Anker war ausgerechnet fuer die Resthaftung am Horizont die
+ * unterschaetzende Wahl.
  *
  * Die oeffentliche API liefert bewusst KEINE Dosis, keine Rate und keine Dauer.
  */
@@ -103,7 +109,11 @@ object TrajectoryCore {
         // der Integration - eine Menge, deren Modell das Fenster nicht deckt,
         // wuerde sonst ab dem Traegerende still mit 0 weiterrechnen, und genau
         // diese stille Null waere die optimistische Lesart (Codex Abschnitt 10).
-        input.pending?.let { p ->
+        //
+        // C3-01 (Codex Fix-Pass-5-Closure G.2): JEDER POSTEN WIRD EINZELN
+        // GEPRUEFT. Ein einziger zu kurzer Traeger kippt die ganze Bahn - eine
+        // stille Teil-Null waere dieselbe optimistische Lesart, nur kleiner.
+        for (p in input.pending) {
             if (!p.amountU.isFinite() || p.amountU < 0.0)
                 return PredictorOutcome.Rejected(PredictorReason.NON_FINITE_INPUT, "pending amount=${p.amountU}")
             if (p.amountU > 0.0 && !p.covers(lastQueryTs))
@@ -114,7 +124,7 @@ object TrajectoryCore {
         }
         // Menge 0 ist KEINE Dosis: dann rechnet die Bahn bitgleich wie ohne
         // Transportmenge weiter. Genau daran haengt die Doppelzaehlungs-Sperre.
-        val pendingDose = input.pending?.takeIf { it.amountU > 0.0 }
+        val pendingDoses = input.pending.filter { it.amountU > 0.0 }
 
         input.bounds.maxAbsDriveMgdlPerMin?.let { lim ->
             // Die prior-freie Untergrenze zaehlt mit: sie ist per Vertrag <= lower
@@ -249,15 +259,21 @@ object TrajectoryCore {
             // tiefer). Die anteilige Rechnung von [CandidateSearch] waere hier
             // die OPTIMISTISCHERE, und bei den echten Insulinmodellen ist die
             // Aktivitaet zum Lieferzeitpunkt ohnehin 0.
+            //
+            // C3-01: die Posten werden EINZELN ausgewertet und erst danach
+            // addiert. Jeder bringt seinen eigenen Lieferanker mit; die Summe
+            // der Wirkungen ist etwas anderes als die Wirkung der Summe an
+            // EINEM Anker (genau das war die Untererfassung aus G.2).
             var pendingBgi = 0.0
-            if (pendingDose != null) {
-                pendingBgi = -pendingDose.activityAt(ts) * isf
-                if (!pendingBgi.isFinite() || pendingBgi > 0.0)
+            for (d in pendingDoses) {
+                val bgi = -d.activityAt(ts) * isf
+                if (!bgi.isFinite() || bgi > 0.0)
                     return PredictorOutcome.Rejected(
-                        PredictorReason.NON_FINITE_INPUT, "pending activity at $ts -> bgi=$pendingBgi",
+                        PredictorReason.NON_FINITE_INPUT, "pending activity at $ts -> bgi=$bgi",
                     )
-                pendingDrop -= pendingBgi
+                pendingBgi += bgi
             }
+            pendingDrop -= pendingBgi
 
             // RECHTE Regel: der Wert bei ts gilt fuer das Intervall (ts-1min, ts].
             // Dieselbe Konvention wie cumulativeBgi in K1 — eine zweite waere eine
@@ -296,7 +312,7 @@ object TrajectoryCore {
                 inputSkewMs = t.firstTs - anchor,
                 // C3: was eingerechnet wurde, steht im Ergebnis - 0 heisst
                 // "nichts unterwegs", nicht "nicht betrachtet".
-                pendingTransportU = pendingDose?.amountU ?: 0.0,
+                pendingTransportU = pendingDoses.sumOf { it.amountU },
                 pendingDropAtHorizonMgdl = pendingDrop,
             )
         )

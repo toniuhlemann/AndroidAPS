@@ -128,7 +128,10 @@ data class ObserverParams(
     val turnDropMgdl: Double = 10.0,
     val turnExitMin: Double = 5.0,
     val sensorEmbargoMin: Double = 30.0,
-    val inputStepMgdl: Double = 20.0,
+    // C9-01: EINE Zahl fuer den Sprungzaun - hier und in der Signalkette
+    // (Reihenbeschnitt) muss dieselbe Grenze gelten, sonst haelt der eine an,
+    // waehrend der andere weiterrechnet.
+    val inputStepMgdl: Double = app.aaps.fuse.core.signal.SignalWindow.INPUT_STEP_MGDL,
     val calibBlindMin: Double = 10.0,
     val lowEnterMgdl: Double = 75.0,
     val lowExitMgdl: Double = 80.0,

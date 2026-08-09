@@ -52,7 +52,7 @@ class PendingTransportTrajectoryTest {
         t0, InsulinModelProvenance("rapid", 9.0, 75, "test"), "iobcalc1",
     )
 
-    private fun input(pending: PendingInsulinEffect?, horizon: Int = 120) = PredictorInput(
+    private fun input(pending: List<PendingInsulinEffect>, horizon: Int = 120) = PredictorInput(
         predictionAnchorTs = t0,
         bgAtAnchor = 150.0,
         // Prior-Hub im Spiel: die synthetische Dosis muss ALLE DREI Bahnen
@@ -65,7 +65,13 @@ class PendingTransportTrajectoryTest {
         pending = pending,
     )
 
+    private fun input(pending: PendingInsulinEffect?, horizon: Int = 120) =
+        input(listOfNotNull(pending), horizon)
+
     private fun ok(pending: PendingInsulinEffect?, horizon: Int = 120): PredictorResult =
+        (TrajectoryCore.predict(input(pending, horizon)) as PredictorOutcome.Ok).result
+
+    private fun ok(pending: List<PendingInsulinEffect>, horizon: Int = 120): PredictorResult =
         (TrajectoryCore.predict(input(pending, horizon)) as PredictorOutcome.Ok).result
 
     // ---- Die Wirkung steht in der Bahn -----------------------------------
@@ -157,6 +163,85 @@ class PendingTransportTrajectoryTest {
         for (bad in listOf(Double.NaN, Double.POSITIVE_INFINITY, -0.5)) {
             val r = TrajectoryCore.predict(input(FlatPending(bad, t0)))
             assertTrue(r is PredictorOutcome.Rejected) { "amount=$bad wurde angenommen" }
+        }
+    }
+
+    // ---- C3-01: MEHRERE Posten, jeder mit eigenem Anker -------------------
+
+    /**
+     * C3-01 (P0, Codex Fix-Pass-5-Closure G.2): zwei offene Commitments sind
+     * ZWEI synthetische Dosen mit EIGENEM Lieferzeitpunkt - nicht eine Summe am
+     * aeltesten Anker. Die Bahn muss beide Wirkungen tragen.
+     */
+    @Test
+    fun `zwei Posten wirken einzeln und addieren sich in der Bahn`() {
+        val p1 = FlatPending(0.10, t0 - 12 * 60_000L)
+        val p2 = FlatPending(0.30, t0 - 2 * 60_000L)
+        val ohne = ok(emptyList())
+        val nurP1 = ok(listOf(p1))
+        val nurP2 = ok(listOf(p2))
+        val beide = ok(listOf(p1, p2))
+
+        val hubP1 = ohne.bgAtHorizonMean - nurP1.bgAtHorizonMean
+        val hubP2 = ohne.bgAtHorizonMean - nurP2.bgAtHorizonMean
+        val hubBeide = ohne.bgAtHorizonMean - beide.bgAtHorizonMean
+        assertEquals(hubP1 + hubP2, hubBeide, 1e-9) { "die Posten wirken nicht additiv" }
+        assertEquals(0.40, beide.pendingTransportU, 1e-12)
+        assertEquals(hubBeide, beide.pendingDropAtHorizonMgdl, 1e-9)
+    }
+
+    /** Die AELTERE Dosis hat bis zum Anker schon Wirkung verloren - genau
+     *  deshalb ist "alles am aeltesten Zeitstempel" fuer die Bahn zwar
+     *  konservativ, fuer die Resthaftung aber nicht (s. TailLiability). Hier
+     *  wird nur geprueft, dass die Anker wirklich EINZELN gelten. */
+    @Test
+    fun `jeder Posten haengt an seinem eigenen Anker`() {
+        val frueh = FlatPending(0.20, t0 - 30 * 60_000L)
+        val spaet = FlatPending(0.20, t0 + 30 * 60_000L)
+        val ohne = ok(emptyList())
+        // Die spaete Dosis liefert erst in Minute 30 - bis dahin ist die Bahn
+        // unveraendert, die fruehe wirkt ab der ersten Minute.
+        val mitSpaet = ok(listOf(spaet))
+        for (i in 0 until 29) assertEquals(ohne.points[i].meanBg, mitSpaet.points[i].meanBg, 1e-12)
+        val mitFrueh = ok(listOf(frueh))
+        assertTrue(mitFrueh.points[0].meanBg < ohne.points[0].meanBg)
+    }
+
+    /** Eine leere Liste ist bitgleich "nichts unterwegs" - daran haengt die
+     *  Doppelzaehlungs-Sperre genauso wie am alten `null`. */
+    @Test
+    fun `eine leere Liste ergibt bitgleich die alte Bahn`() {
+        val ohne = ok(null as PendingInsulinEffect?)
+        val leer = ok(emptyList())
+        for (i in ohne.points.indices) {
+            assertEquals(ohne.points[i].meanBg, leer.points[i].meanBg, 0.0)
+            assertEquals(ohne.points[i].safetyLowerBg, leer.points[i].safetyLowerBg, 0.0)
+        }
+        assertEquals(0.0, leer.pendingTransportU, 0.0)
+    }
+
+    /** Ein einziger Posten mit zu kurzem Traeger kippt die GANZE Bahn - eine
+     *  stille Teil-Null waere die optimistische Lesart. */
+    @Test
+    fun `ein einziger zu kurzer Posten lehnt die ganze Bahn ab`() {
+        val gut = FlatPending(0.10, t0)
+        val kurz = FlatPending(0.10, t0, supportMin = 60)
+        val r = TrajectoryCore.predict(input(listOf(gut, kurz)))
+        assertTrue(r is PredictorOutcome.Rejected)
+        assertEquals(PredictorReason.PENDING_MODEL_TOO_SHORT, (r as PredictorOutcome.Rejected).reason)
+    }
+
+    /** EINSEITIGKEIT ueber die Liste: jeder zusaetzliche Posten kann die
+     *  Sicherheitsbahn nur senken. */
+    @Test
+    fun `jeder zusaetzliche Posten senkt die Sicherheitsbahn`() {
+        val posten = mutableListOf<PendingInsulinEffect>()
+        var vorher = ok(emptyList()).minSafetyLowerBg
+        for ((i, u) in listOf(0.05, 0.10, 0.20, 0.30).withIndex()) {
+            posten += FlatPending(u, t0 - i * 60_000L)
+            val jetzt = ok(posten.toList()).minSafetyLowerBg
+            assertTrue(jetzt <= vorher + 1e-12) { "Posten $i hob die Sicherheitsbahn" }
+            vorher = jetzt
         }
     }
 }

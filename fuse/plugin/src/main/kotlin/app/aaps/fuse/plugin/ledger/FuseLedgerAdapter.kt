@@ -110,6 +110,130 @@ data class ProposalPumpEpoch(
 data class LedgerView(val hold: Boolean, val transportCommitmentU: Double, val holdReason: String? = null)
 
 /**
+ * EIN offener Transport-Posten - Menge UND eigener Zeitstempel (C3-01, Codex
+ * Fix-Pass-5-Closure G.2).
+ *
+ * Bis Fix-Pass 5 kannte der Runner nur zwei Zahlen: `transportCommitmentU`
+ * (Summe) und `oldestOpenTs()` (aeltester Anker). Damit modellierte er
+ * mehrere Dosen verschiedener Lieferzeit als EINE Dosis am aeltesten Anker -
+ * und unterschlug die Resthaftung der juengeren. Diese Sicht gibt jede Zeile
+ * EINZELN heraus; `oldestOpenTs()` bleibt daneben bestehen, es hat mit dem
+ * Fensteranfang der Vollsicht einen anderen Zweck.
+ *
+ * REIN LESEND. Die Zahlen stammen unveraendert aus
+ * [app.aaps.fuse.core.ledger.ProposalEntry]; hier wird nichts neu bewertet.
+ */
+data class OpenTransportItem(
+    val proposalId: String,
+    /** Was der Ledger fuer diese Zeile noch als offen fuehrt [U]. */
+    val commitmentU: Double,
+    /** Die konservativ moegliche Gesamtmenge der Zeile [U]. Sie gilt, solange
+     *  die Zugehoerigkeit zum IOB-Snapshot NICHT entscheidbar ist (C3-02). */
+    val grossLiabilityU: Double,
+    /** Was der Ledger als im IOB nachgewiesen gebucht hat [U]. 0 = nichts. */
+    val accountedAmountU: Double,
+    /** Bester bekannter Zeitstempel: die Treatment-Zeit der gebundenen
+     *  Identitaet, sonst der Entscheidungszeitpunkt. */
+    val bestKnownTs: Long,
+    val temporaryId: Long?,
+    val pumpId: Long?,
+    /** Beweisbar floss nichts (bestaetigte Null bzw. unbestrittener Rueckzug).
+     *  Dann haftet die Zeile in KEINER Sicht. */
+    val settledZero: Boolean,
+)
+
+/**
+ * DER INCLUSION-VERTRAG DES UEBERGANGS TRANSPORT -> IOB (C3-02, P0, Codex
+ * Fix-Pass-5-Closure Abschnitt G.3/K).
+ *
+ * PROBLEM. Der Runner liest die Ledgersicht, baut danach die IOB-Arrays, und
+ * die Reconciliation laeuft erst NACH dem Zyklus. Der gefaehrliche Fall ist
+ * nicht die Doppelzaehlung - die ist konservativ -, sondern die LUECKE: eine
+ * Behandlung ist fuer die Reconciliation sichtbar (Commitment faellt auf 0),
+ * das IOB-Array stammt aber noch aus einer Lesung OHNE sie. Dann steckt die
+ * Menge in KEINER Sicht, und der Guard rechnet, als gaebe es sie nicht.
+ *
+ * INVARIANTE, die hier hergestellt wird:
+ *
+ *     Eine Menge verlaesst die Transport-Modellierung NUR dann, wenn ihr
+ *     Behandlungsfakt NACHWEISLICH in der Bolus-Lesung stand, die dem Bau der
+ *     IOB-Arrays dieses Zyklus VORAUSGING. Ist die Zugehoerigkeit nicht
+ *     entscheidbar, bleibt der Posten in voller Hoehe Transport.
+ *
+ * WARUM DIE REIHENFOLGE DEN NACHWEIS TRAEGT: der Zeuge wird VOR dem ersten
+ * `calculateFromTreatmentsAndTemps` gelesen. Die Behandlungstabelle waechst
+ * innerhalb eines Zyklus nur (Loeschungen erzeugt der Nutzer, und sie schlagen
+ * ueber MISSING_ACCOUNTED_TREATMENT in einen Hold um). Was der Zeuge sah, war
+ * also beim Arraybau in der Datenbank. Die Umkehrung wird NICHT behauptet -
+ * ein Fakt, den der Zeuge nicht sah, gilt als unentscheidbar, nicht als
+ * abwesend.
+ *
+ * WAS DIESER VERTRAG NICHT LEISTET (ehrlich benannt): er schliesst den
+ * AAPS-eigenen `iobTable`-Cache in `IobCobCalculatorPlugin` nicht aus. Fuer
+ * Rasterpunkte in der VERGANGENHEIT kann dort eine aeltere Rechnung
+ * zurueckkommen. Alle Punkte ab `now` werden frisch gerechnet; der erste
+ * Punkt der FUSE-Arrays liegt am sourceTs und kann davon betroffen sein. Das
+ * zu schliessen hiesse, in den AAPS-Kern einzugreifen - offener Punkt.
+ */
+object TransportInclusion {
+
+    /**
+     * Was die Bolus-Lesung sah, die dem IOB-Arraybau VORAUSGING.
+     *
+     * [fromTs] ist der Fensteranfang genau dieser Abfrage - ein Fakt DAVOR ist
+     * nicht "unbekannt", sondern aelter als das IOB-Fenster: seine Wirkung ist
+     * in beiden Sichten ausgelaufen. Ohne diese Unterscheidung wuerde jede
+     * zwischen DIA und DIA+2 h geschlossene Zeile bis zum Pruning erneut als
+     * Transportmenge auftauchen.
+     */
+    data class IobSnapshotWitness(
+        val fromTs: Long,
+        val readAtTs: Long,
+        val temporaryIds: Set<Long>,
+        val pumpIds: Set<Long>,
+    )
+
+    fun witnessOf(facts: List<AccountedTreatment>, fromTs: Long, readAtTs: Long) = IobSnapshotWitness(
+        fromTs = fromTs,
+        readAtTs = readAtTs,
+        temporaryIds = facts.mapNotNull { it.temporaryId }.toSet(),
+        pumpIds = facts.mapNotNull { it.pumpId }.toSet(),
+    )
+
+    /** Steckt der Fakt dieses Postens NACHWEISLICH in der Lesung? Ein `false`
+     *  heisst "nicht entscheidbar", nicht "nicht vorhanden". */
+    fun inSnapshot(item: OpenTransportItem, witness: IobSnapshotWitness?): Boolean {
+        if (witness == null) return false
+        if (item.bestKnownTs < witness.fromTs || item.bestKnownTs > witness.readAtTs) return false
+        val tempHit = item.temporaryId != null && item.temporaryId in witness.temporaryIds
+        val pumpHit = item.pumpId != null && item.pumpId in witness.pumpIds
+        return tempHit || pumpHit
+    }
+
+    /**
+     * Die Menge, die dieser Posten in diesem Zyklus als Transport traegt [U].
+     *
+     * Ergebnis liegt IMMER in `[commitmentU, grossLiabilityU]` - die
+     * Modellierung kann also nie unter den Ledgerwert fallen (kein Weg an
+     * Haftung vorbei) und nie ueber die konservativ moegliche Gesamtmenge
+     * steigen (keine erfundene Haftung).
+     */
+    fun modelledU(item: OpenTransportItem, witness: IobSnapshotWitness?): Double = when {
+        // Es floss beweisbar nichts - dann haftet auch nichts.
+        item.settledZero                                    -> 0.0
+        // Nichts gebucht: der Ledgerwert IST die volle Haftung, es gibt gar
+        // keine Menge, die in die IOB-Sicht abgewandert sein koennte.
+        item.accountedAmountU <= 0.0                        -> item.commitmentU
+        // Aelter als das IOB-Fenster: in beiden Sichten ausgelaufen.
+        witness != null && item.bestKnownTs < witness.fromTs -> item.commitmentU
+        // Nachweis vorhanden - die Buchung darf zaehlen.
+        inSnapshot(item, witness)                           -> item.commitmentU
+        // Nicht entscheidbar: konservativ doppelt statt unsichtbar.
+        else                                                -> item.grossLiabilityU
+    }
+}
+
+/**
  * EINE Stelle fuer die Abbildung BS -> Ledger-Fakt. Identitaetsbindung und
  * Vollsicht muessen aus DERSELBEN Ableitung kommen - zwei getrennte
  * Abbildungen koennten denselben Datensatz als Konflikt lesen (R83-F3:
@@ -619,6 +743,39 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
     fun oldestOpenTs(): Long? = state.entries.values
         .filter { !it.closed }
         .minOfOrNull { it.identity?.treatmentTimestamp ?: it.decisionTs }
+
+    /**
+     * JEDER Posten einzeln - Menge, eigener Zeitstempel, Buchungsstand
+     * (C3-01/C3-02, Codex Fix-Pass-5-Closure G.2/G.3).
+     *
+     * ADDITIV: [oldestOpenTs] und [view] bleiben unveraendert. Diese Liste ist
+     * die Grundlage der Transport-Modellierung im Runner, weil ein einziger
+     * Sammelbetrag an einem einzigen Anker die Resthaftung der juengeren Dosen
+     * unterschlaegt.
+     *
+     * GESCHLOSSENE ZEILEN BLEIBEN DRIN, solange sie eine Bruttohaftung tragen:
+     * genau sie sind der Fall, dessen Snapshot-Zugehoerigkeit der Runner
+     * pruefen muss (C3-02). Waeren sie hier schon herausgefiltert, koennte er
+     * die Luecke gar nicht mehr sehen. Zeilen mit bewiesener Nullabgabe
+     * ([OpenTransportItem.settledZero]) und Zeilen ohne jede Haftung fallen
+     * weg - sie haetten in keiner Rechnung einen Beitrag.
+     *
+     * INVARIANTE: `sumOf { commitmentU } == view().transportCommitmentU`.
+     */
+    fun openTransportItems(): List<OpenTransportItem> = state.entries.values
+        .map { e ->
+            OpenTransportItem(
+                proposalId = e.proposalId,
+                commitmentU = e.commitmentU,
+                grossLiabilityU = e.grossLiabilityU,
+                accountedAmountU = e.accountedAmountU ?: 0.0,
+                bestKnownTs = e.identity?.treatmentTimestamp ?: e.decisionTs,
+                temporaryId = e.identity?.temporaryId,
+                pumpId = e.identity?.pumpId,
+                settledZero = e.confirmedZeroEffective || e.debtReleaseEffective,
+            )
+        }
+        .filter { it.grossLiabilityU > 0.0 && !it.settledZero }
 
     /**
      * Aufraeumregel (Pflichtenheft h.8): verworfen wird eine Zeile erst,

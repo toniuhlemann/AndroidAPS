@@ -51,7 +51,7 @@ object SignalWindow {
      * es nicht gibt — die Fensterkappe ist proben-, nicht zeitbasiert und sitzt
      * je Praefix.
      */
-    enum class Bound { NONE, SENSOR_CHANGE, CALIBRATION_START }
+    enum class Bound { NONE, SENSOR_CHANGE, CALIBRATION_START, INPUT_STEP }
 
     data class Result(val fromTs: Long, val bound: Bound) {
 
@@ -79,5 +79,56 @@ object SignalWindow {
             else                       -> Bound.CALIBRATION_START
         }
         return Result(effective, bound)
+    }
+
+    // ---- C9-01: der UNKLASSIFIZIERTE Sprung als Regimegrenze ---------------
+
+    /**
+     * Sprunghoehe, ab der ein Punktpaar als REGIMEWECHSEL gilt [mg/dl].
+     *
+     * Hier steht die Zahl EINMAL. [app.aaps.fuse.core.observer.ObserverParams]
+     * leitet ihren Vorgabewert von hier ab - genau das war der Befund C9-01:
+     * der Zaun existierte nur in der Beobachter-Zustandsmaschine, waehrend
+     * Q1 und rSigned aus derselben, ueber den Sprung hinweg gemischten Reihe
+     * weitergerechnet wurden. Der Beobachter hielt also die Dosis an, das
+     * Signal blieb kontaminiert - und schon das naechste Normalsample loeste
+     * den Hold, mit unveraendert gemischter Reihe darunter.
+     *
+     * 20 mg/dl in bis zu 3 min sind 6,7 mg/dl je Minute. Ein physiologischer
+     * Anstieg erreicht das nicht dauerhaft; was das ueberschreitet, ist mit
+     * grosser Mehrheit Kalibrierung ohne gemeldete Epoche, Sensorartefakt
+     * oder Kompression. Ein Fehlalarm kostet nur Reifezeit (fail-closed),
+     * ein uebersehener Sprung kostet eine erfundene Steigung.
+     */
+    const val INPUT_STEP_MGDL = 20.0
+
+    /**
+     * Bis zu welchem Abstand ein Sprung als Sprung zaehlt.
+     *
+     * Darueber bricht das Segment ohnehin ([BgiAdjustedSeries.SEGMENT_BREAK_MS]),
+     * dort braucht es die Pruefung nicht - dieselbe Grenze, damit zwischen
+     * beiden Regeln kein ungedecktes Band bleibt (der Fehler, den C9 in der
+     * Zustandsmaschine hatte).
+     */
+    const val STEP_MAX_GAP_MS = BgiAdjustedSeries.SEGMENT_BREAK_MS
+
+    /**
+     * Der Beginn des juengsten Abschnitts OHNE Sprung.
+     *
+     * Rueckwaerts, damit der JUENGSTE Sprung gewinnt: liegen zwei in der Reihe,
+     * ist nur der letzte die aktuelle Regimegrenze.
+     *
+     * @param ascending aufsteigend nach Zeit, Rohpunkte.
+     * @return Zeitstempel des ersten Punkts NACH dem letzten Sprung, oder
+     *   `null`, wenn die Reihe keinen enthaelt.
+     */
+    fun stepBoundaryTs(ascending: List<UkfQ1.Point>): Long? {
+        for (i in ascending.size - 1 downTo 1) {
+            val dt = ascending[i].tsMs - ascending[i - 1].tsMs
+            if (dt <= 0L || dt > STEP_MAX_GAP_MS) continue
+            val jump = ascending[i].value - ascending[i - 1].value
+            if (jump >= INPUT_STEP_MGDL || jump <= -INPUT_STEP_MGDL) return ascending[i].tsMs
+        }
+        return null
     }
 }

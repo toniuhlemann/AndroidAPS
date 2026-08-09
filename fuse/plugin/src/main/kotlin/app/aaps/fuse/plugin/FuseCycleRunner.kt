@@ -28,6 +28,8 @@ import app.aaps.fuse.core.controller.SubStepAccumulator
 import app.aaps.fuse.core.ledger.AccountedTreatment
 import app.aaps.fuse.plugin.ledger.FuseLedgerAdapter
 import app.aaps.fuse.plugin.ledger.LedgerFacts
+import app.aaps.fuse.plugin.ledger.OpenTransportItem
+import app.aaps.fuse.plugin.ledger.TransportInclusion
 import app.aaps.fuse.core.controller.IobThreshold
 import app.aaps.fuse.core.controller.TailLiability
 import app.aaps.fuse.core.controller.TbrPolicy
@@ -145,6 +147,72 @@ class FuseCycleRunner(
          *  Menge gerade erst publiziert worden. */
         internal fun transportAnchorTs(oldestOpenTs: Long?, computeTs: Long): Long =
             oldestOpenTs?.coerceIn(computeTs - TRANSPORT_ANCHOR_MAX_AGE_MIN * 60_000L, computeTs) ?: computeTs
+
+        /**
+         * DER SPAETESTE plausible Lieferzeitpunkt eines Postens (C3-01/G.1).
+         *
+         * Die reale Lieferzeit ist unbekannt; bekannt ist die SPANNE. Ihr
+         * rechtes Ende ist `computeTs`: die Menge wurde kommandiert, und die
+         * gemessene Sichtbarkeits-Latenz (765 Medtrum-SMBs: p99 175 s, MAX
+         * 854 s) laeuft der Lieferung NACH, nicht voraus - eine Lieferung in
+         * der Zukunft anzunehmen waere Spekulation, keine Konservativitaet.
+         *
+         * Fuer die RESTHAFTUNG am Horizont ist dieses Ende die pessimistische
+         * Wahl: je spaeter geliefert, desto weniger Wirkung ist bis H
+         * verbraucht, desto mehr haftet danach. Der FRUEHESTE Anker
+         * ([transportAnchorTs]) bleibt der der BAHN - dort ist frueh
+         * pessimistisch. Zwei Zwecke, zwei Enden derselben Spanne.
+         */
+        internal fun transportAnchorLatestTs(earliestTs: Long, computeTs: Long): Long =
+            maxOf(earliestTs, computeTs)
+
+        /**
+         * Die Posten dieses Zyklus als EINZELNE Dosen (C3-01 + C3-02).
+         *
+         * Menge je Posten kommt aus dem Inclusion-Vertrag
+         * ([TransportInclusion.modelledU]) und ist damit NIE kleiner als der
+         * Ledgerwert; die beiden Anker spannen die plausible Lieferzeit auf.
+         * Posten ohne Menge fallen weg - eine 0-U-Dosis in der Bahn haette
+         * keine Wirkung, wuerde aber den Schwanz-Vermerk unnoetig auf
+         * `transportBounded` ziehen.
+         */
+        internal fun transportDoses(
+            items: List<OpenTransportItem>,
+            witness: TransportInclusion.IobSnapshotWitness?,
+            computeTs: Long,
+        ): List<TransportDose> = items.mapNotNull { item ->
+            val u = TransportInclusion.modelledU(item, witness)
+            if (!(u > 0.0)) null else {
+                val earliest = transportAnchorTs(item.bestKnownTs, computeTs)
+                TransportDose(item.proposalId, u, earliest, transportAnchorLatestTs(earliest, computeTs))
+            }
+        }
+
+        /**
+         * Die Restwirkung EINES Postens am Haftungshorizont (C4a je Posten).
+         *
+         * Genommen wird der Anker mit der GROESSEREN Restwirkung. Bei jedem
+         * fallenden Modell ist das der spaete; die Maximumbildung steht
+         * trotzdem da, weil die Aussage dann an der RECHNUNG haengt und nicht
+         * an der Annahme, das Modell sei monoton.
+         *
+         * Ohne Einheitskern ist die Restwirkung UNBEKANNT (`null`), nicht 0 -
+         * dann rechnet [TailLiability.Dose] mit der vollen Menge und der
+         * Vermerk sagt `transportBounded`.
+         */
+        internal fun tailTransportDose(
+            dose: TransportDose,
+            kernel: UnitInsulinKernel?,
+            liabilityHorizonTs: Long,
+        ): TailLiability.Dose = TailLiability.Dose(
+            amountU = dose.amountU,
+            residualAtHU = kernel?.let { k ->
+                maxOf(
+                    KernelPendingInsulin(k, dose.amountU, dose.earliestTs).iobAt(liabilityHorizonTs),
+                    KernelPendingInsulin(k, dose.amountU, dose.latestTs).iobAt(liabilityHorizonTs),
+                )
+            },
+        )
     }
 
     data class Outcome(
@@ -264,6 +332,13 @@ class FuseCycleRunner(
             FuseAbortTbr.evaluate(processedTbrEbData, profileFunction, computeTs).let { it.request to it.alarm }
 
         fun abort(reason: String, signal: FuseSignalSource.Signal? = null, policy: Config? = null, step: ObserverStep? = null): Outcome {
+            // SUB-02 (Codex Fix-Pass-5-Closure): der Rest-Zaehler ist
+            // aufgeschobene ABSICHT, kein Guthaben. Jeder Abbruch - Signal,
+            // Profil, Config, Epoch, Kernel, Zeitachse - beendet den Kontext,
+            // in dem die Absicht entstand. abort() ist der EINE Ausgang, an
+            // dem alle diese Pfade vorbeikommen; hier zu verwerfen, deckt sie
+            // alle ab, statt sie einzeln nachzupflegen.
+            subStepCarryU = 0.0
             val (cancelTbr, tbrAlarm) = abortTbr()
             // Auch ein Abbruch kennt die Basiswerte (Toni 08.08.: nie
             // verstecken) - jede Lesung einzeln tolerant, ein Abbruch darf an
@@ -420,10 +495,39 @@ class FuseCycleRunner(
         // positive Menge den Zyklus verlaesst (finalVeto -> MODEL_HORIZON_TOO_
         // SHORT); der Schwanz rechnet in diesem Fall mit der vollen Menge
         // (TailLiability.Dose ohne Restwirkung), statt sie zu vergessen.
-        val pendingU = ledgerView.transportCommitmentU
-        val pending = if (!(pendingU > 0.0)) null else kernel()?.let { k ->
-            KernelPendingInsulin(k, pendingU, transportAnchorTs(ledger.oldestOpenTs(), computeTs))
-        }
+        //
+        // C3-01 (P0, Codex Fix-Pass-5-Closure G.2): JEDER OFFENE POSTEN
+        // EINZELN. Vorher stand hier die SUMME am AELTESTEN offenen
+        // Zeitstempel - fuer die Resthaftung am Horizont die unterschaetzende
+        // Wahl (Codex' Gegenprobe: 0,2925 U getrennt gegen 0,2800 U
+        // aggregiert). Menge und Anker kommen jetzt je Zeile aus dem Ledger.
+        //
+        // C3-02 (P0, G.3): und die Menge je Posten entscheidet der
+        // INCLUSION-VERTRAG, nicht der Ledgerwert allein. Der Zeuge ist eine
+        // Bolus-Lesung, die dem Bau der IOB-Arrays VORAUSGEHT (die Arrays
+        // entstehen erst in buildPredictorInput weiter unten). Was der Zeuge
+        // sah, war beim Arraybau in der Datenbank; was er nicht sah, ist
+        // UNENTSCHEIDBAR und bleibt deshalb voll als Transport modelliert -
+        // konservativ doppelt statt in keiner der beiden Sichten.
+        //
+        // Der Zeuge wird nur gelesen, wenn ueberhaupt eine Zeile eine Buchung
+        // traegt: ohne Buchung gibt es nichts zu entscheiden, und die
+        // zusaetzliche Datenbankabfrage entfaellt.
+        val transportItems = ledger.openTransportItems()
+        val iobWitness =
+            if (transportItems.none { it.accountedAmountU > 0.0 }) null
+            else runCatching { iobSnapshotWitness(computeTs, profile.dia) }.getOrNull()
+        val transport = transportDoses(transportItems, iobWitness, computeTs)
+        // EINE Zahl fuer alle Verbraucher dieses Zyklus (Bahn, Headrooms,
+        // Schwanz). Sie ist per Vertrag >= ledgerView.transportCommitmentU -
+        // die Kappen koennen dadurch nur enger werden, nie weiter.
+        val transportModelledU = transport.sumOf { it.amountU }
+        // Der Kern wird weiterhin TRAEGE gebaut: ohne Posten faellt der Aufwand
+        // (~540 Modellabfragen) ganz weg.
+        val pending: List<PendingInsulinEffect> =
+            if (transport.isEmpty()) emptyList()
+            else kernel()?.let { k -> transport.map { KernelPendingInsulin(k, it.amountU, it.earliestTs) } }
+                ?: emptyList()
 
         // Mittel- UND Untergrenze aus DEMSELBEN Aufruf. Es darf keinen Zustand
         // "Mittel da, Band fehlt" geben: ein Rueckfall auf lower = mean wuerde
@@ -584,7 +688,10 @@ class FuseCycleRunner(
                     // als gesichert fortschreiben.
                     drive = DriveEstimate(
                         fast, fast - built.discount.termMgdlPerMin, null,
-                        DriveDiscount.methodId("UKF_RATE_RESTRAINT_V1", cfg.bolusShareLambda),
+                        // Das WIRKSAME Lambda, nicht das Grund-Lambda: sonst
+                        // truege die Methodenkennung im Mahlzeitenfenster eine
+                        // Zahl, die nicht gerechnet wurde.
+                        DriveDiscount.methodId("UKF_RATE_RESTRAINT_V1", built.discount.lambda),
                     ),
                 )
                 (TrajectoryCore.predict(fi) as? PredictorOutcome.Ok)?.result
@@ -660,6 +767,13 @@ class FuseCycleRunner(
         // unbekannt - dann rechnet TailLiability mit der VOLLEN Menge statt mit
         // 0. Ist nichts unterwegs, ist der Term exakt 0 und der Vermerk sagt
         // "gerechnet", nicht "geschaetzt".
+        //
+        // C3-01: die Restwirkungen werden JE POSTEN gerechnet und erst dann
+        // summiert (TailLiability.sumOf). Und je Posten gilt der SPAETESTE
+        // plausible Anker, wo er die groessere Restwirkung ergibt - fuer die
+        // Haftung NACH H ist spaet die pessimistische Seite, waehrend die BAHN
+        // oben am fruehesten Anker haengt. Zwei Enden derselben plausiblen
+        // Lieferspanne, jedes dort, wo es sperrt (s. tailTransportDose).
         val liabilityHorizonTs = signal.sourceTs + cfg.liabilityHorizonMin * 60_000L
         val tailBase = TailLiability.Input(
             lowerBgAtH = minSafetyHorizonLowerOf(prediction, restraint),
@@ -667,9 +781,8 @@ class FuseCycleRunner(
             isfTailMgdlPerU = built.isfTail,
             tailFloorMgdl = cfg.tailFloorMgdl,
             tailRecoveryU = cfg.tailRecoveryU,
-            transport = TailLiability.Dose(
-                amountU = pendingU,
-                residualAtHU = if (pendingU > 0.0) pending?.iobAt(liabilityHorizonTs) else 0.0,
+            transport = TailLiability.sumOf(
+                transport.map { tailTransportDose(it, kernel(), liabilityHorizonTs) }
             ),
         )
         // Der KAPPEN-Bericht: ohne Kandidat, denn der ist genau die Groesse, die
@@ -728,10 +841,13 @@ class FuseCycleRunner(
                         // nicht im IOB nachgewiesene Transportmenge zaehlt
                         // wie bereits vorhandenes Insulin.
                         remainingReleaseBudgetU = cfg.maxSmbU,
-                        effectiveIobThHeadroomU = state.iobThU - state.capIobU - ledgerView.transportCommitmentU,
+                        // C3-02: die MODELLIERTE Transportmenge, nicht der
+                        // Ledgerwert - sie ist per Vertrag nie kleiner, die
+                        // Headrooms koennen dadurch nur enger werden.
+                        effectiveIobThHeadroomU = state.iobThU - state.capIobU - transportModelledU,
                         // Tonis IOB-Referenz-Regel: Dosier-Grenzen auf
                         // capIob - negatives Basal-Delta ist kein Budget.
-                        effectiveMaxIobHeadroomU = state.maxIobU - state.capIobU - ledgerView.transportCommitmentU,
+                        effectiveMaxIobHeadroomU = state.maxIobU - state.capIobU - transportModelledU,
                         pumpIncrementU = bolusStep,
                         maxSmbU = cfg.maxSmbU,
                     ),
@@ -778,7 +894,7 @@ class FuseCycleRunner(
             // Fix-Pass 2 Nr. 2: dieselbe Ledger-Korrektur wie in den
             // Such-Headrooms - sonst finanziert der NO_DEMAND->Lift-Pfad
             // In-Flight-Mengen doppelt.
-            transportCommitmentU = ledgerView.transportCommitmentU,
+            transportCommitmentU = transportModelledU,
         )
         // FIX-PASS 4 Nr. 4 (Codex R4-04, Control-Audit-Invariante): KEINE
         // finale positive Dosis ohne erfolgreiche Wirkungspruefung. Das
@@ -857,13 +973,19 @@ class FuseCycleRunner(
         // Sicherheitskappen vorbei.
         val otherCapsU = minOf(
             cfg.maxSmbU,
-            state.iobThU - state.capIobU - ledgerView.transportCommitmentU,
-            state.maxIobU - state.capIobU - ledgerView.transportCommitmentU,
+            state.iobThU - state.capIobU - transportModelledU,
+            state.maxIobU - state.capIobU - transportModelledU,
             tail?.takeIf { it.usable }?.headroomU ?: Double.MAX_VALUE,
             if (onset.active) onset.remainingU else Double.MAX_VALUE,
         )
+        // SUB-01 (P0, Codex Fix-Pass-5-Closure): die Kappen muessen die
+        // ENDSUMME tragen, nicht den Zusatzschritt allein. Vorher galt
+        // "ein Schritt passt" - danach wurde aber lifted.smbU + Schritt
+        // ausgegeben: bei Basis 0,05, Kappe 0,06 und Schritt 0,05 waren das
+        // 0,10 U gegen eine 0,06er Kappe. finalVeto prueft nur die Bahn,
+        // nicht die Mengenkappen - der Riegel muss hier sitzen.
         val subStepDiscard = ledgerView.hold || reboundWindow || !ratioIsBinding ||
-            !otherCapsU.isFinite() || otherCapsU + 1e-12 < bolusStep ||
+            !otherCapsU.isFinite() || lifted.smbU + bolusStep > otherCapsU + 1e-12 ||
             (lifted.block != FuseController.Block.NONE && lifted.block != FuseController.Block.BELOW_PUMP_INCREMENT) ||
             (signal.ukfRatePerMin.isFinite() && signal.ukfRatePerMin < 0.0) ||
             !signal.ukfRatePerMin.isFinite() ||
@@ -1022,12 +1144,41 @@ class FuseCycleRunner(
         )
     }
 
-    /** Die Treatment-Vollsicht fuer den Ledger-Abgleich - s. [TreatmentView].
-     *  Fensteranfang: DIA + Marge zurueck, zusaetzlich verlaengert bis vor den
-     *  aeltesten Fakt einer noch offenen Ledger-Zeile. */
-    private fun buildTreatmentView(computeTs: Long, diaHours: Double): TreatmentView {
+    /** Fensteranfang der Behandlungssicht: DIA + Marge zurueck, zusaetzlich
+     *  verlaengert bis vor den aeltesten Fakt einer noch offenen Ledger-Zeile.
+     *  EINE Definition fuer Vollsicht UND Snapshot-Zeuge - zwei verschiedene
+     *  Fensteranfaenge waeren zwei verschiedene Aussagen ueber dieselbe
+     *  Datenbankabfrage. */
+    private fun treatmentWindowStart(computeTs: Long, diaHours: Double): Long {
         val windowStart = computeTs - (diaHours * 3600_000.0).toLong() - IOB_MARGIN_MIN * 60_000L
-        val from = minOf(windowStart, (ledger.oldestOpenTs() ?: Long.MAX_VALUE - 60_000L) - 60_000L)
+        return minOf(windowStart, (ledger.oldestOpenTs() ?: Long.MAX_VALUE - 60_000L) - 60_000L)
+    }
+
+    /**
+     * DER ZEUGE DES INCLUSION-VERTRAGS (C3-02, Codex Fix-Pass-5-Closure G.3).
+     *
+     * Er wird gelesen, BEVOR dieser Zyklus seine IOB-/Activity-Arrays baut.
+     * Genau daran haengt der Nachweis: die Behandlungstabelle waechst
+     * innerhalb eines Zyklus nur, also war alles, was der Zeuge sah, beim
+     * Arraybau in der Datenbank. Ein Fakt, den er NICHT sah, gilt als
+     * unentscheidbar - und ein unentscheidbarer Posten bleibt in voller Hoehe
+     * Transport, statt aus beiden Sichten zu verschwinden.
+     *
+     * BEWUSST EINE ZWEITE LESUNG statt der spaeteren [buildTreatmentView]:
+     * jene traegt mit `latestBolusTs` den C5-Guard der Identitaetsbindung, und
+     * ein frueher gelesener Wert wuerde diesen Guard aufweichen. Die Abfrage
+     * laeuft nur, wenn ueberhaupt ein Posten eine Buchung traegt.
+     */
+    private fun iobSnapshotWitness(computeTs: Long, diaHours: Double): TransportInclusion.IobSnapshotWitness {
+        val from = treatmentWindowStart(computeTs, diaHours)
+        val boluses = persistenceLayer.getBolusesFromTimeToTime(from, computeTs, true)
+            .filter { it.isValid && it.type != BS.Type.PRIMING }
+        return TransportInclusion.witnessOf(boluses.map { LedgerFacts.fact(it) }, fromTs = from, readAtTs = computeTs)
+    }
+
+    /** Die Treatment-Vollsicht fuer den Ledger-Abgleich - s. [TreatmentView]. */
+    private fun buildTreatmentView(computeTs: Long, diaHours: Double): TreatmentView {
+        val from = treatmentWindowStart(computeTs, diaHours)
         val boluses = persistenceLayer.getBolusesFromTimeToTime(from, computeTs, true)
             .filter { it.isValid && it.type != BS.Type.PRIMING }
         return TreatmentView(
@@ -1190,6 +1341,7 @@ class FuseCycleRunner(
         val tailRecoveryU: Double,
         val fastRestraintEnabled: Boolean,
         val bolusShareLambda: Double,
+        val bolusShareLambdaMeal: Double,
         val onsetChannelEnabled: Boolean,
         val onsetEnvelopeU: Double,
         val primeReleaseEnabled: Boolean,
@@ -1230,6 +1382,7 @@ class FuseCycleRunner(
         tailRecoveryU = preferences.get(FuseDoubleKey.TailRecoveryU),
         fastRestraintEnabled = preferences.get(FuseBooleanKey.FastRestraintEnabled),
         bolusShareLambda = preferences.get(FuseDoubleKey.BolusShareLambda),
+        bolusShareLambdaMeal = preferences.get(FuseDoubleKey.BolusShareLambdaMeal),
         onsetChannelEnabled = preferences.get(FuseBooleanKey.OnsetChannelEnabled),
         onsetEnvelopeU = preferences.get(FuseDoubleKey.OnsetEnvelopeU),
         primeReleaseEnabled = preferences.get(FuseBooleanKey.PrimeReleaseEnabled),
@@ -1265,6 +1418,7 @@ class FuseCycleRunner(
         require(it.tailFloorMgdl.isFinite() && it.tailFloorMgdl in 40.0..120.0) { "tailFloor=${it.tailFloorMgdl}" }
         require(it.tailRecoveryU.isFinite() && it.tailRecoveryU in 0.0..5.0) { "tailRecovery=${it.tailRecoveryU}" }
         require(it.bolusShareLambda.isFinite() && it.bolusShareLambda in 0.0..2.0) { "bolusShareLambda=${it.bolusShareLambda}" }
+        require(it.bolusShareLambdaMeal.isFinite() && it.bolusShareLambdaMeal in 0.0..2.0) { "bolusShareLambdaMeal=${it.bolusShareLambdaMeal}" }
         require(it.onsetEnvelopeU.isFinite() && it.onsetEnvelopeU in 0.0..5.0) { "onsetEnvelope=${it.onsetEnvelopeU}" }
         require(it.primeEnvelopeU.isFinite() && it.primeEnvelopeU in 0.0..2.0) { "primeEnvelope=${it.primeEnvelopeU}" }
         require(it.primeEnvelopeSmallU.isFinite() && it.primeEnvelopeSmallU in 0.0..1.2) { "primeSmall=${it.primeEnvelopeSmallU}" }
@@ -1298,9 +1452,10 @@ class FuseCycleRunner(
          *  Marker-Stufe [mg/dl/min], 0 wenn kein Kredit gilt. Wirkt NUR auf
          *  der Mittelbahn - s. MarkerScope.declaredAbsorptionDriveMgdlPerMin. */
         declaredDriveMgdlPerMin: Double = 0.0,
-        /** C3: publizierte, im IOB noch nicht sichtbare Menge als synthetische
-         *  Dosis. `null` = nichts unterwegs (oder kein Einheitskern). */
-        pending: PendingInsulinEffect? = null,
+        /** C3/C3-01: publizierte, im IOB noch nicht sichtbare Mengen als
+         *  synthetische Dosen - EINE JE OFFENEM POSTEN, mit eigenem Anker.
+         *  Leer = nichts unterwegs (oder kein Einheitskern). */
+        pending: List<PendingInsulinEffect> = emptyList(),
     ): Built? {
         val liabilityHorizonMin = cfg.liabilityHorizonMin
         val anchor = signal.sourceTs
@@ -1337,7 +1492,16 @@ class FuseCycleRunner(
         // Der Index des Haftungshorizonts im 5-min-Raster; ab dort beginnt das
         // Schwanzfenster.
         val hIndex = (liabilityHorizonMin * 60_000L / IOB_GRID_MS).toInt().coerceIn(0, steps)
-        val iobAtH = iob[hIndex]
+        // C4-01 (P0, Codex Fix-Pass-5-Closure): die Schwanz-HAFTUNG ist die
+        // UNVERMEIDBARE Wirkung am Horizont - und die haengt am Bolusanteil,
+        // nicht am Netto. Zurueckgehaltenes Basal ist eine Referenzbuchung:
+        // es kann die Wirkung eines bereits abgegebenen Bolus nicht
+        // rueckgaengig machen. Beispiel: Bolus +0,40, Basal -0,30, netto
+        // +0,10 - die Formel zaehlte 0,10 als Haftung und gab 0,30 U
+        // Spielraum frei, die es physisch nicht gibt (bei ISF 90 bis zu
+        // 27 mg/dl unberuecksichtigt). Dieselbe max(net, bolus)-Regel, die
+        // fuer die aktuellen Mengenkappen schon gilt (Tonis IOB-Referenz).
+        val iobAtH = maxOf(iob[hIndex], iob[hIndex] - basalIob[hIndex])
         // MAXIMUM der beruehrten ISF-Bloecke: ein hoeherer ISF macht das
         // Schwanzbudget KLEINER, ist also die konservative Wahl.
         var isfTail = isfValues[hIndex]
@@ -1366,7 +1530,15 @@ class FuseCycleRunner(
             bandLowerMgdlPerMin = band.lower,
             bolusActivityUPerMin = bolusActivityUPerMin,
             isfMgdlPerU = signal.isfAtAnchor,
-            lambda = cfg.bolusShareLambda,
+            // MAHLZEITEN-LAMBDA (09.08.): waehrend eines angesagten Markers
+            // gilt der eigene Wert. Der Abschlag ist ein Mittel gegen die
+            // naechtliche Selbstverstaerkung - "die Stoerung koennte mein
+            // eigenes Insulin sein". Bei erklaerten Kohlenhydraten ist die
+            // Ursache bekannt, die Praemisse also unzutreffend, und der
+            // Abschlag blockiert nur noch. Kein Boden wird angehoben: die
+            // Zertifikate rechnen unveraendert prior-frei, sie bekommen
+            // lediglich keinen kuenstlich verdoppelten Sturz mehr vorgesetzt.
+            lambda = if (mealMarkerActive) cfg.bolusShareLambdaMeal else cfg.bolusShareLambda,
         )
 
         return Built(
@@ -1406,7 +1578,7 @@ class FuseCycleRunner(
                     minOf(band.mean, discount.lowerAfterMgdlPerMin + PrimeRelease.MARKER_PRIOR_MGDL_PER_MIN)
                 else discount.lowerAfterMgdlPerMin,
                 null,
-                DriveDiscount.methodId(PairSlopeBand.methodId(cfg.driveLowerQuantilePct), cfg.bolusShareLambda) +
+                DriveDiscount.methodId(PairSlopeBand.methodId(cfg.driveLowerQuantilePct), discount.lambda) +
                     if (onsetDriveMgdlPerMin != null && onsetDriveMgdlPerMin > band.mean) "+ONSET" else "",
                 // C2 (Codex H2): DERSELBE untere Antrieb ohne den Prior. Aus ihm
                 // rechnet TrajectoryCore die prior-freie Zwillingsbahn, gegen die
@@ -1443,8 +1615,37 @@ class FuseCycleRunner(
 }
 
 /**
- * Die synthetische Dosis der Transportmenge (C3) - DERSELBE Einheitskern wie in
- * der Kandidatensuche, nur auf einen frueheren Lieferzeitpunkt verschoben.
+ * EIN modellierter Transportposten dieses Zyklus (C3-01, Codex
+ * Fix-Pass-5-Closure G.1/G.2).
+ *
+ * Er traegt seine EIGENE Menge und BEIDE Enden seiner plausiblen Lieferspanne.
+ * Das ist kein Luxus, sondern der Kern des Fixes:
+ *
+ *  - [earliestTs] geht in die BAHN. Frueh ist dort pessimistisch: mehr Wirkung
+ *    faellt ins Bewertungsfenster, die Bahn laeuft tiefer, der Guard sperrt
+ *    eher UND der Bedarf auf der Mittelbahn sinkt.
+ *  - [latestTs] geht in die RESTHAFTUNG am Horizont. Dort ist SPAET
+ *    pessimistisch: je spaeter geliefert, desto weniger Wirkung ist bis H
+ *    verbraucht, desto mehr haftet danach.
+ *
+ * Ein einziger Anker kann nicht beides sein - genau das war der Fehler aus
+ * Abschnitt G.1 ("aelter ist hier nicht pauschal konservativ"). Zwei Enden
+ * derselben Spanne, jedes dort eingesetzt, wo es sperrt, ergeben eine
+ * punktweise Worst-Case-Huelle, die in KEINER Richtung eine Dosis vergroessern
+ * kann.
+ */
+internal data class TransportDose(
+    val proposalId: String,
+    val amountU: Double,
+    /** Fruehester plausibler Lieferzeitpunkt - Anker der Bahn. */
+    val earliestTs: Long,
+    /** Spaetester plausibler Lieferzeitpunkt - Anker der Resthaftung. */
+    val latestTs: Long,
+)
+
+/**
+ * Die synthetische Dosis EINES Transportpostens (C3) - DERSELBE Einheitskern
+ * wie in der Kandidatensuche, nur auf einen anderen Lieferzeitpunkt verschoben.
  *
  * WARUM VERSCHIEBEN STATT NEU SAMPELN: die Stuetzstellen des Kerns sind Offsets
  * AB DER LIEFERUNG - eine Verschiebung ist damit reine Zeitrechnung an der
