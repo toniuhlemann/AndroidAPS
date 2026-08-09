@@ -701,6 +701,49 @@ class DeliveryJournalTest {
         assertNotEquals(DeliveryOutcome.PROVEN_NOT_SENT, r.state.r().outcome)
     }
 
+    /**
+     * PFLICHTTEST der Gegenpruefung: eine unverankerte Quittung sperrte nur
+     * IHREN eigenen Auftrag.
+     *
+     * Ursache war, dass es drei Schreibweisen desselben Gedankens gab -
+     * mayHaveReachedPump, ein Findings-Test im Nullbeweis und
+     * findings.isNotEmpty() in der Eigensperre - und die Fremdsperre nur die
+     * erste benutzte. Ein Hinweis auf einen nicht zugeordneten Schreibauftrag
+     * muss GLOBAL wirken; jetzt fragen alle vier Verwender dasselbe Praedikat.
+     */
+    @Test
+    fun `eine unverankerte Quittung sperrt auch einen neuen Auftrag`() {
+        var s = angelegt(id = "alt")
+        s = DeliveryJournal.reduce(s, DeliveryJournal.Event.WriteAccepted("alt", 7, t0 + 10)).state
+        assertTrue(s.r("alt").findings.contains(DeliveryFinding.UNANCHORED_WRITE_ACCEPTED))
+        assertFalse(s.r("alt").mayHaveReachedPump) { "kein zugeordneter Versuch - genau das war die Luecke" }
+        assertTrue(s.r("alt").hasUnresolvedPossibleDelivery)
+
+        s = DeliveryJournal.reduce(
+            s, DeliveryJournal.Event.Created("neu", "p2", 0.15, t0 + 120, "MEDTRUM_NANO/patch-7")
+        ).state
+        assertEquals(DeliveryJournal.Denial.OTHER_REQUEST_AMBIGUOUS, DeliveryJournal.mayAttempt(s, "neu"))
+    }
+
+    /** Die Quelle der Verweigerung bleibt erhalten und wird streng replayt -
+     *  eine anonyme Entlastung waere das teuerste Datum des Moduls. */
+    @Test
+    fun `die Quelle einer Verweigerung ist persistent und replayfest`() {
+        val s = angelegt()
+            .dann(
+                DeliveryJournal.Event.SendAttemptStarted("r1", 1, t0),
+                DeliveryJournal.Event.WriteRefused("r1", 1, t0 + 2, "BLEComm returned false"),
+            ).state
+        assertEquals("BLEComm returned false", s.r().attempts.first().resolvedSource)
+        assertTrue(
+            DeliveryJournal.reduce(s, DeliveryJournal.Event.WriteRefused("r1", 1, t0 + 2, "BLEComm returned false")).applied
+        )
+        assertEquals(
+            DeliveryJournal.Rejection.TERMINAL_CONFLICT,
+            DeliveryJournal.reduce(s, DeliveryJournal.Event.WriteRefused("r1", 1, t0 + 2, "woanders her")).rejection,
+        )
+    }
+
     /** F5: eine Invariantenverletzung wird als Ablehnung gemeldet, nicht
      *  geworfen - sonst nimmt sie den ganzen Strom mit. */
     @Test

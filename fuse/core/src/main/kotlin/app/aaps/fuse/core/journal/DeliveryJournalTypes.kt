@@ -119,9 +119,26 @@ data class SendAttempt(
      *  Ohne diesen Zeitstempel liesse sich beim Replay nicht pruefen, ob zwei
      *  Beweise dasselbe Ereignis meinen oder zwei verschiedene. */
     val resolvedAtTs: Long? = null,
+    /**
+     * WER die Entscheidung autorisiert hat - nur beim entlastenden Fall
+     * [AmbiguityBoundary.REFUSED] gesetzt.
+     *
+     * Fuer den EINZIGEN entlastenden Transportbeweis des Moduls muss spaeter
+     * nachweisbar sein, welcher Treiberpfad die Aussage "nicht geschrieben"
+     * verantwortet hat. Ohne die Quelle waere die Entlastung anonym - und eine
+     * anonyme Entlastung ist in diesem Modul das teuerste Datum ueberhaupt.
+     *
+     * Die Annahme ([AmbiguityBoundary.OS_WRITE_ACCEPTED]) traegt bewusst keine
+     * Quelle: sie kommt vom Betriebssystem, das keine nennt - und sie ist
+     * belastend, also die unkritische Richtung.
+     */
+    val resolvedSource: String? = null,
 ) {
 
     init {
+        require((boundary == AmbiguityBoundary.REFUSED) == (resolvedSource != null)) {
+            "only a refusal carries a source, and it must: boundary=$boundary source=$resolvedSource"
+        }
         require(attempt >= 1) { "attempt counts from 1, was $attempt" }
         require(startedAtTs > 0L) { "startedAtTs must be a real timestamp" }
         // Zustand und Zeitstempel muessen sich einig sein - eine Entscheidung
@@ -174,16 +191,27 @@ data class TerminalFact(
  * Zeile nichts mehr autorisiert; die Aufloesung gehoert an einen
  * Reparatur-Workflow und nicht in eine stille Regel.
  */
-enum class DeliveryFinding {
+enum class DeliveryFinding(
+    /**
+     * Ist dieser Befund BELASTEND - also ein Hinweis darauf, dass eine Abgabe
+     * stattgefunden haben koennte, ohne sauber zugeordnet zu sein?
+     *
+     * Die Eigenschaft steht ausdruecklich an jedem Wert und nicht als
+     * Sammelregel ("alle Befunde sperren"), damit ein kuenftiger, wirklich
+     * harmloser Befund eine ENTSCHEIDUNG erzwingt statt stillschweigend in die
+     * eine oder andere Menge zu rutschen. Heute sind alle belastend.
+     */
+    val incriminating: Boolean,
+) {
 
     /** Erst "nicht gesendet" bewiesen, dann doch eine Abgabe nachgewiesen.
      *  Die Abgabe gewinnt (konservativ), der Widerspruch bleibt sichtbar. */
-    CONFIRMED_AFTER_PROVEN_NOT_SENT,
+    CONFIRMED_AFTER_PROVEN_NOT_SENT(incriminating = true),
 
     /** Ein Sendeversuch wurde NACH ueberschrittener Grenze gebucht - der
      *  Treiber hat also wiederholt, obwohl schon etwas unterwegs sein konnte.
      *  Die Buchung ist richtig (es ist eine Tatsache), die Lage ist es nicht. */
-    ATTEMPT_AFTER_BOUNDARY,
+    ATTEMPT_AFTER_BOUNDARY(incriminating = true),
 
     /**
      * Der Beweis "nicht gesendet" war VERFRUEHT: eine verspaetete Rueckmeldung
@@ -194,22 +222,22 @@ enum class DeliveryFinding {
      * Fenster gebucht worden sein. Der Nullbeweis wird dann AUFGEHOBEN, die
      * Zeile geht nach AMBIGUOUS zurueck, und der Widerspruch bleibt sichtbar.
      */
-    WRITE_ACCEPTED_AFTER_PROVEN_NOT_SENT,
+    WRITE_ACCEPTED_AFTER_PROVEN_NOT_SENT(incriminating = true),
 
     /** Ein Identitaetsfakt der Pumpe (temporaryId/pumpId) traf eine Zeile, die
      *  als "nicht gesendet" galt. Eine Pumpen-Identitaet ist ein STAERKERER
      *  Beleg als eine OS-Quittung - der Nullbeweis war falsch. */
-    IDENTITY_AFTER_PROVEN_NOT_SENT,
+    IDENTITY_AFTER_PROVEN_NOT_SENT(incriminating = true),
 
     /** Zwei verschiedene Pumpen-Identitaeten fuer denselben Auftrag. Der
      *  direkteste denkbare Hinweis auf ZWEI Lieferungen; die Ablehnung allein
      *  wuerde ihn nur im fluechtigen Ergebnis hinterlassen. */
-    IDENTITY_CONFLICT_SEEN,
+    IDENTITY_CONFLICT_SEEN(incriminating = true),
 
     /** Eine Grenzueberschreitung wurde gemeldet, konnte aber keinem gebuchten
      *  Versuch zugeordnet werden. Der belastende Fakt darf nicht mit der
      *  Ablehnung verschwinden. */
-    UNANCHORED_WRITE_ACCEPTED,
+    UNANCHORED_WRITE_ACCEPTED(incriminating = true),
 }
 
 /**
@@ -324,6 +352,27 @@ data class DeliveryRequest(
     val mayHaveReachedPump: Boolean
         get() = attempts.any { it.boundary.mayHaveReachedPump } || temporaryId != null || pumpId != null
 
+    /**
+     * DAS PRAEDIKAT. Kann fuer diese Zeile eine Abgabe unterwegs ODER ungeklaert
+     * sein?
+     *
+     * Es gibt genau EINE Stelle, an der diese Frage beantwortet wird, und alle
+     * Verwender benutzen sie: Eigensperre, Fremdsperre, Nullbeweis und
+     * [outcome]. Vorher gab es drei Schreibweisen desselben Gedankens -
+     * `mayHaveReachedPump`, ein Findings-Test im Nullbeweis und
+     * `findings.isNotEmpty()` in der Eigensperre - und sie sind
+     * auseinandergelaufen: eine unverankerte Schreibquittung sperrte ihren
+     * eigenen Auftrag, aber keinen neuen (Codex-Gegenpruefung).
+     *
+     * Der Unterschied zu [mayHaveReachedPump] ist genau dieser Fall: ein
+     * BELASTENDER BEFUND ohne zugeordneten Versuch. Er ist ein Hinweis auf
+     * einen Schreibauftrag, den dieses Journal nicht sauber kennt - und
+     * Unwissen ueber einen moeglichen Schreibauftrag wiegt hier schwerer als
+     * Wissen ueber einen bekannten.
+     */
+    val hasUnresolvedPossibleDelivery: Boolean
+        get() = mayHaveReachedPump || findings.any { it.incriminating }
+
     val nextAttemptNumber: Int get() = attempts.size + 1
 
     /**
@@ -338,7 +387,7 @@ data class DeliveryRequest(
         get() = when {
             accounting != null                                -> DeliveryOutcome.ACCOUNTED
             terminal?.kind == TerminalKind.DELIVERY_CONFIRMED -> DeliveryOutcome.CONFIRMED
-            mayHaveReachedPump                                -> DeliveryOutcome.AMBIGUOUS
+            hasUnresolvedPossibleDelivery                     -> DeliveryOutcome.AMBIGUOUS
             terminal?.kind == TerminalKind.PROVEN_NOT_SENT    -> DeliveryOutcome.PROVEN_NOT_SENT
             attempts.isNotEmpty()                             -> DeliveryOutcome.ATTEMPTED
             else                                              -> DeliveryOutcome.CREATED

@@ -269,14 +269,17 @@ object DeliveryJournal {
         val r = state.requests[e.requestId] ?: return Result(state, Rejection.UNKNOWN_REQUEST)
         val a = r.attempts.firstOrNull { it.attempt == e.attempt } ?: return Result(state, Rejection.UNKNOWN_ATTEMPT)
         if (a.boundary == AmbiguityBoundary.REFUSED)
-            return if (a.resolvedAtTs == e.atTs) Result(state) else Result(state, Rejection.TERMINAL_CONFLICT)
+            return if (a.resolvedAtTs == e.atTs && a.resolvedSource == e.source) Result(state)
+            else Result(state, Rejection.TERMINAL_CONFLICT)
         // Eine schon angenommene Quittung kann nicht nachtraeglich verweigert
         // werden - das waere die Entlastung nach der Belastung.
         if (a.boundary == AmbiguityBoundary.OS_WRITE_ACCEPTED) return Result(state, Rejection.TERMINAL_CONFLICT)
         return put(
             state,
             r.copy(attempts = r.attempts.map {
-                if (it.attempt == e.attempt) it.copy(boundary = AmbiguityBoundary.REFUSED, resolvedAtTs = e.atTs) else it
+                if (it.attempt == e.attempt)
+                    it.copy(boundary = AmbiguityBoundary.REFUSED, resolvedAtTs = e.atTs, resolvedSource = e.source)
+                else it
             })
         )
     }
@@ -335,7 +338,12 @@ object DeliveryJournal {
             r.copy(
                 attempts = r.attempts.map {
                     if (it.attempt == e.attempt)
-                        it.copy(boundary = AmbiguityBoundary.OS_WRITE_ACCEPTED, resolvedAtTs = e.atTs)
+                        it.copy(
+                            boundary = AmbiguityBoundary.OS_WRITE_ACCEPTED, resolvedAtTs = e.atTs,
+                            // Die Quelle gehoerte zur Verweigerung, die sich
+                            // gerade als falsch erwiesen hat.
+                            resolvedSource = null,
+                        )
                     else it
                 },
                 // Ein bestaetigter Terminalzustand bleibt - eine Abgabe SETZT
@@ -406,13 +414,7 @@ object DeliveryJournal {
         // Jeder Versuch, dessen Ausgang nicht ausdruecklich verweigert wurde,
         // kann die Pumpe erreicht haben - einschliesslich des frisch gebuchten,
         // noch unquittierten. Das war die Luecke F2.
-        if (r.mayHaveReachedPump) return Result(state, Rejection.NOT_SENT_WHILE_ATTEMPT_UNRESOLVED)
-        // Auch ein BEFUND kann belastend sein: eine Quittung, die keinem
-        // gebuchten Versuch zuzuordnen war, ist ein Hinweis auf einen
-        // Schreibauftrag, den dieses Journal nicht sauber kennt. Ihn hier zu
-        // ignorieren hiesse, die Ablehnung von F7 wirkungslos zu machen.
-        if (r.findings.contains(DeliveryFinding.UNANCHORED_WRITE_ACCEPTED))
-            return Result(state, Rejection.NOT_SENT_WHILE_ATTEMPT_UNRESOLVED)
+        if (r.hasUnresolvedPossibleDelivery) return Result(state, Rejection.NOT_SENT_WHILE_ATTEMPT_UNRESOLVED)
         r.terminal?.let {
             if (it.kind != TerminalKind.PROVEN_NOT_SENT) return Result(state, Rejection.TERMINAL_CONFLICT)
             return if (it.atTs == e.atTs && it.source == e.source) Result(state)
@@ -495,7 +497,7 @@ object DeliveryJournal {
         // Der EIGENE unbekannte Ausgang sperrt - Hauptinvariante. Das gilt
         // auch fuer einen gebuchten, noch unquittierten Versuch: die Buchung
         // steht unmittelbar vor dem Schreibaufruf (F2).
-        if (r.mayHaveReachedPump) return Denial.SELF_AMBIGUOUS
+        if (r.hasUnresolvedPossibleDelivery) return Denial.SELF_AMBIGUOUS
         // Und ein FREMDER ebenso: solange irgendwo Insulin unterwegs sein
         // koennte, wird nichts Neues hinterhergeschickt. Weil das aus dem
         // durablen Zustand faellt, ueberlebt es Prozessende und neuen Worker.
@@ -503,8 +505,15 @@ object DeliveryJournal {
         // unquittiertem Versuch war vorher nur ATTEMPTED und sperrte nicht -
         // obwohl fuer sie etwas unterwegs sein kann. Verglichen wird ueber den
         // Map-SCHLUESSEL, nicht ueber das Feld (F9).
-        if (state.requests.any { (key, other) -> key != requestId && other.open && other.mayHaveReachedPump })
-            return Denial.OTHER_REQUEST_AMBIGUOUS
+        // DASSELBE Praedikat wie bei der Eigensperre. Vorher stand hier
+        // `mayHaveReachedPump`, und damit sperrte eine unverankerte
+        // Schreibquittung zwar ihren eigenen Auftrag, aber keinen neuen -
+        // obwohl ein Hinweis auf einen nicht zugeordneten Schreibauftrag
+        // GLOBAL wirken muss (Codex-Gegenpruefung).
+        if (state.requests.any { (key, other) ->
+                key != requestId && other.open && other.hasUnresolvedPossibleDelivery
+            }
+        ) return Denial.OTHER_REQUEST_AMBIGUOUS
         return null
     }
 
