@@ -89,7 +89,14 @@ class SubStepContextTest {
         target: Double = 98.0, isf: Double = 90.0, step: Double = 0.05,
         ratio: Double = 0.15, ratioRise: Double = 0.35, maxSmb: Double = 0.3,
         meal: Boolean = false,
-    ) = SubStepAccumulator.context(target, isf, step, ratio, ratioRise, maxSmb, meal)
+        // D5-Nachruestung (Codex Combined Closure b6dbb490). Defaults wie im
+        // Livepfad, damit die alten Faelle unveraendert bleiben.
+        maxIob: Double = 8.0, iobTh: Double = 8.0,
+        markerTs: Long = 0L, markerTier: String = "0", profil: String = "A",
+    ) = SubStepAccumulator.context(
+        target, isf, step, ratio, ratioRise, maxSmb, meal,
+        maxIob, iobTh, markerTs, markerTier, profil
+    )
 
     @Test
     fun `gleiche Lage - gleicher Abdruck`() {
@@ -106,6 +113,46 @@ class SubStepContextTest {
         assertNotEquals(basis, ctx(ratioRise = 0.4)) { "Anstiegs-Ratio" }
         assertNotEquals(basis, ctx(maxSmb = 0.4)) { "maxSmb" }
         assertNotEquals(basis, ctx(meal = true)) { "Mahlzeitenfenster" }
+    }
+
+    /** Codex Re-Audit 3b5cadbf, F4: die fuenf mit D5 NACHGERUESTETEN Groessen
+     *  standen bis hier nur im Quelltext. Ein Feld in den Abdruck aufzunehmen
+     *  und es nie zu variieren ist die teuerste Art, sich sicher zu fuehlen -
+     *  der Abdruck sieht vollstaendig aus, und ein Fehler in der Verkettung
+     *  faellt nie auf. */
+    @Test
+    fun `jede der fuenf nachgeruesteten Groessen aendert den Abdruck`() {
+        val basis = ctx()
+        assertNotEquals(basis, ctx(maxIob = 7.0)) { "maxIOB" }
+        assertNotEquals(basis, ctx(iobTh = 5.0)) { "iobTH" }
+        assertNotEquals(basis, ctx(markerTs = 1_700_000_000_000L)) { "Markerzeitpunkt" }
+        assertNotEquals(basis, ctx(markerTier = "2")) { "Marker-Stufe" }
+        assertNotEquals(basis, ctx(profil = "B")) { "Profilname" }
+    }
+
+    @Test
+    fun `ein NEUER Marker bei durchgehend offenem Fenster ist eine andere Lage`() {
+        // Der Fall aus der D5-Begruendung: `meal` bleibt wahr, es ist aber eine
+        // andere Mahlzeit. Vorher unterschied nichts die beiden Lagen.
+        assertNotEquals(
+            ctx(meal = true, markerTs = 1_700_000_000_000L),
+            ctx(meal = true, markerTs = 1_700_003_600_000L)
+        )
+    }
+
+    @Test
+    fun `ein Profilwechsel mit identischen Zahlen wird erkannt`() {
+        // Der zweite Fall aus der Begruendung - gleiches Ziel, gleicher ISF,
+        // gleiche Ratios, nur ein anderes Profil.
+        assertNotEquals(ctx(profil = "Nacht"), ctx(profil = "Tag"))
+    }
+
+    @Test
+    fun `angrenzende Textfelder koennen sich nicht gegenseitig aufheben`() {
+        // Trennzeichen-Probe: markerTier und profileName grenzen aneinander.
+        // Ohne Trenner waere ("12","B") von ("1","2B") ununterscheidbar - eine
+        // stille Kollision ausgerechnet im Sicherheitsvergleich.
+        assertNotEquals(ctx(markerTier = "12", profil = "B"), ctx(markerTier = "1", profil = "2B"))
     }
 
     @Test
