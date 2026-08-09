@@ -142,40 +142,74 @@ class QueueWorker internal constructor(
                     // Pickup 1st command and set performing variable
                     if (queue.size() > 0) {
                         queue.pickup()
-                        val cont = queue.performing()?.let {
-                            aapsLogger.debug(LTag.PUMPQUEUE, "performing " + it.log())
+                        val command = queue.performing()
+                        if (command != null) {
+                            aapsLogger.debug(LTag.PUMPQUEUE, "performing " + command.log())
                             rxBus.send(EventQueueChanged())
-                            rxBus.send(EventPumpStatusChanged(it.status()))
-                            // Eine Ausnahme aus execute() darf die Queue nicht
-                            // stilllegen. Vorher stand resetPerforming() DAHINTER
-                            // und wurde bei einem Wurf uebersprungen: `performing`
-                            // blieb fuer immer gesetzt, bolusInQueue() meldete
-                            // dauerhaft true, jeder weitere SMB wurde abgelehnt
-                            // und der Callback feuerte nie - heilbar nur durch
-                            // einen Prozessneustart. Weder QueueWorker noch
-                            // LoggingWorker fangen etwas ab.
+                            rxBus.send(EventPumpStatusChanged(command.status()))
+                            // EINE AUSNAHME AUS execute() BEENDET DEN DRAIN.
                             //
-                            // KEIN ERGEBNIS IST NICHT "NICHT GESENDET": nach
-                            // einem Wurf ist der Ausgang UNBEKANNT - das Kommando
-                            // kann die Pumpe schon erreicht haben. Deshalb wird
-                            // hier bewusst NICHT cancel() gerufen (das meldete
-                            // success=false) und kein Callback erfunden, und es
-                            // wird nichts gebucht. Aufraeumen und schweigen; die
-                            // Bewertung gehoert an die Stelle, die den
-                            // Lieferzustand wirklich kennt.
+                            // Zwei getrennte Gefahren, beide belegt:
+                            //  1. Vorher stand resetPerforming() HINTER execute()
+                            //     und wurde bei einem Wurf uebersprungen:
+                            //     `performing` blieb fuer immer gesetzt,
+                            //     bolusInQueue() meldete dauerhaft true, jeder
+                            //     weitere SMB wurde abgelehnt, der Callback feuerte
+                            //     nie - heilbar nur durch einen Prozessneustart.
+                            //     Weder QueueWorker noch LoggingWorker fangen etwas.
+                            //  2. Ein blosses Weiterlaufen nach dem Aufraeumen ist
+                            //     aber genauso falsch (Codex-Gegenpruefung B0b, P0):
+                            //     der Ausgang des geworfenen Kommandos ist UNBEKANNT,
+                            //     es kann die Pumpe schon erreicht haben. Wer danach
+                            //     das naechste Kommando faehrt oder ueber
+                            //     `performedAnyCommand` einen Loop-Retry ausloest,
+                            //     kann auf einen moeglicherweise abgegebenen SMB
+                            //     einen zweiten setzen.
+                            //
+                            // KEIN ERGEBNIS IST NICHT "NICHT GESENDET": fuer das
+                            // aufgenommene Kommando wird deshalb NICHT cancel()
+                            // gerufen (das meldete success=false) und kein Callback
+                            // erfunden - es bleibt UNKNOWN. Fuer die noch NICHT
+                            // aufgenommenen Kommandos ist "nicht gesendet" dagegen
+                            // korrekt; sie bekommen ueber queue.clear() ihren
+                            // regulaeren Cancel-Callback.
+                            var failed = false
                             try {
-                                it.execute()
+                                command.execute()
                             } catch (e: CancellationException) {
-                                // Abbruch ist kein Fehler: nach dem Aufraeumen
-                                // im finally weiterwerfen, sonst gilt ein
-                                // abgebrochener Worker als regulaer beendet.
+                                // Abbruch ist kein Fehler: nach dem Aufraeumen im
+                                // finally unveraendert weiterwerfen, sonst gilt ein
+                                // abgebrochener Worker als regulaer beendet. Die
+                                // Queue wird dabei NICHT geleert - der Abbruch sagt
+                                // nichts ueber die wartenden Kommandos aus.
                                 throw e
-                            } catch (e: Throwable) {
-                                aapsLogger.error(LTag.PUMPQUEUE, "command ${it.commandType} threw - delivery outcome UNKNOWN", e)
+                            } catch (e: Exception) {
+                                // Bewusst Exception und nicht Throwable: VM- und
+                                // Linkage-Fehler gehoeren nicht abgefangen und
+                                // weitergearbeitet.
+                                aapsLogger.error(
+                                    LTag.PUMPQUEUE,
+                                    "command ${command.commandType} threw - delivery outcome UNKNOWN, stopping drain", e
+                                )
+                                failed = true
                             } finally {
                                 queue.resetPerforming()
                             }
                             rxBus.send(EventQueueChanged())
+                            if (failed) {
+                                // Weder performedAnyCommand noch lastCommandTime:
+                                // dieser Durchlauf hat nichts nachweislich
+                                // durchgebracht, und der Idle-Zweig mit dem
+                                // EventQueueIdleRetryLoop wird gar nicht erst
+                                // erreicht.
+                                queue.clear()
+                                rxBus.send(EventQueueChanged())
+                                rxBus.send(EventPumpStatusChanged(EventPumpStatusChanged.Status.DISCONNECTING))
+                                pump.disconnect("Command failed - delivery outcome unknown")
+                                rxBus.send(EventPumpStatusChanged(EventPumpStatusChanged.Status.DISCONNECTED))
+                                // KEIN Success: der Drain war nicht erfolgreich.
+                                return Result.failure()
+                            }
                             lastCommandTime = System.currentTimeMillis()
                             performedAnyCommand = true   // 0055: this drain enacted a command
                             // 0055 v3 (Codex round 2): a new command opens a NEW busy/idle epoch,
@@ -183,9 +217,6 @@ class QueueWorker internal constructor(
                             // still get its retry when the queue drains again.
                             retrySignalSent = false
                             SystemClock.sleep(100)
-                            true
-                        } == true
-                        if (cont) {
                             continue
                         }
                     }
