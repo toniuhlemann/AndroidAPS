@@ -5,6 +5,7 @@ import app.aaps.fuse.core.ledger.AccountedTreatment
 import app.aaps.fuse.core.ledger.AmountStage
 import app.aaps.fuse.core.ledger.IobAccountingSnapshot
 import app.aaps.fuse.core.ledger.LedgerConfig
+import app.aaps.fuse.core.ledger.LedgerError
 import app.aaps.fuse.core.ledger.LedgerEvent
 import app.aaps.fuse.core.ledger.LedgerReducer
 import app.aaps.fuse.core.ledger.LedgerState
@@ -750,6 +751,16 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
     /** Fensteranfang der Vollsicht: der aelteste Fakt, der an eine OFFENE
      *  Zeile gebunden ist (Vollsicht-Vertrag R93-F3 - er darf nicht aus dem
      *  Fenster herausaltern, solange die Zeile offen ist). */
+    /**
+     * Wieviele Zeilen als wirkungslos abgeschrieben wurden (Phantomhaftung).
+     *
+     * LESEND, nicht sperrend. Sie gehoert in den Export: eine Zeile, die nach
+     * DIA plus Spanne nie abgeglichen wurde, ist ein Befund ueber die
+     * Abgleichung - auch wenn ihre Menge nicht mehr haftet.
+     */
+    fun unresolvedBeyondActionCount(): Int =
+        state.entries.values.count { it.expiredBeyondAction }
+
     fun oldestOpenTs(): Long? = state.entries.values
         .filter { !it.closed }
         .minOfOrNull { it.identity?.treatmentTimestamp ?: it.decisionTs }
@@ -796,6 +807,34 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
     fun prune(nowTs: Long, diaHours: Double) {
         if (!diaHours.isFinite() || diaHours <= 0.0) return
         val cutoff = nowTs - (diaHours * 3600_000.0).toLong() - 2L * 3600_000L
+
+        // PHANTOMHAFTUNG (Kontroll-Audit 09.08.): eine Zeile, die nach DIA plus
+        // Spanne IMMER NOCH offen ist, band bisher unbegrenzt weiter Spielraum.
+        // Am 09.08. waren das 0,35 U aus drei Posten vom Vorabend - 19 Stunden
+        // alt, ueber `transportAnchorTs` auf 30 min zurueckgeklemmt und
+        // behandelt, als koennten sie jetzt noch liefern; 0,086 U davon landeten
+        // im Schwanz, das Siebenfache des damals verbliebenen Headrooms.
+        //
+        // Es wird NICHT behauptet, sie seien geliefert worden - nur, dass sie
+        // nicht mehr WIRKEN koennen (s. ProposalEntry.expiredBeyondAction).
+        // Das Alter zaehlt ab dem LETZTEN Lebenszeichen, nicht ab der
+        // Entscheidung: ein spaeter Abgleich haelt die Zeile lebendig.
+        val expired = state.entries.mapValues { (_, e) ->
+            val lastSign = maxOf(e.decisionTs, e.lastReconciledAtTs ?: e.decisionTs)
+            if (e.expiredBeyondAction || e.closed || lastSign >= cutoff) e
+            else e.copy(
+                expiredBeyondAction = true,
+                // Sichtbar, aber NICHT sperrend - eine 19 h alte Leiche darf
+                // den Regler nicht stilllegen. Der Befund gehoert in den
+                // Export, damit ein kaputter Abgleich auffaellt.
+                errors = e.errors + LedgerError.UNRESOLVED_BEYOND_ACTION,
+            )
+        }
+        if (expired != state.entries) {
+            state = state.copy(entries = expired)
+            revision += 1
+        }
+
         val keep = state.entries.filterValues { !(it.closed && it.errors.isEmpty() && it.decisionTs < cutoff) }
         if (keep.size != state.entries.size) {
             // Fix 6 (NEU-BS-02): getragene Identitaeten der entfernten Zeilen

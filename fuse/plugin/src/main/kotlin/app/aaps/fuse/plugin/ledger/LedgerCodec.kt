@@ -312,6 +312,7 @@ object LedgerCodec {
         .put("failClosed", e.failClosed)
         .put("corrections", e.corrections)
         .put("decisionTs", e.decisionTs)
+        .put("expiredBeyondAction", e.expiredBeyondAction)
         .put("latestBolusTimestampAtDecision", e.latestBolusTimestampAtDecision)
         .put("errors", JSONArray(e.errors.map { it.name }))
 
@@ -337,6 +338,8 @@ object LedgerCodec {
             terminalSeen = o.getBoolean("terminalSeen"),
             failClosed = o.getBoolean("failClosed"),
             corrections = o.getInt("corrections"),
+            // optional: aeltere Staende kennen das Feld nicht.
+            expiredBeyondAction = o.optBoolean("expiredBeyondAction", false),
             decisionTs = o.getLong("decisionTs"),
             latestBolusTimestampAtDecision = o.getLong("latestBolusTimestampAtDecision"),
             errors = (0 until errs.length()).map { LedgerError.valueOf(errs.getString(it)) },

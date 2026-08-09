@@ -325,6 +325,12 @@ object FuseStateJson {
                     .put("grossLiabilityU", fin(open.sumOf { it.grossLiabilityU }))
                     .put("accountedU", fin(open.sumOf { it.accountedAmountU ?: 0.0 }))
                     .put("residualU", fin(ls.transportCommitmentU))
+                    // PHANTOMHAFTUNG (09.08.): Zeilen, die nach DIA plus
+                    // Spanne nie abgeglichen waren und deshalb als wirkungslos
+                    // abgeschrieben wurden. Ihre Menge haftet nicht mehr - der
+                    // GRUND bleibt ein Befund ueber die Abgleichung, und ohne
+                    // diese Zahl faellt er niemandem auf.
+                    .put("unresolvedBeyondAction", ls.entries.values.count { it.expiredBeyondAction })
                     .put("openEntries", JSONArray(open.map { e ->
                         JSONObject()
                             .put("proposalId", e.proposalId)

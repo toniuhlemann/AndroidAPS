@@ -66,6 +66,7 @@ enum class LedgerError {
      *  dieselbe Menge auf BEIDEN Seiten: nicht mehr im Bestands-IOB, wegen der
      *  veralteten Buchung aber auch nicht mehr im Transportrest. */
     MISSING_ACCOUNTED_TREATMENT,
+    UNRESOLVED_BEYOND_ACTION,  // nach DIA+Spanne immer noch offen - Abgleich nie abgeschlossen
     /** R91-F2: mehrere passende Fakten fuer dieselbe gebundene Identitaet.
      *  Welcher gilt, darf NIE die Listenreihenfolge entscheiden. */
     AMBIGUOUS_TREATMENT_IDENTITY,
@@ -391,6 +392,26 @@ data class ProposalEntry(
     val failClosed: Boolean,
     val corrections: Int,
     val decisionTs: Long,
+    /**
+     * Die Menge kann PHYSISCH nicht mehr wirken - gesetzt von
+     * [LedgerState] ueber `prune`, dem einzigen Ort, der Zeit und DIA kennt.
+     *
+     * ABGRENZUNG zum ausdruecklichen Vorsatz von [commitmentU] ("Zeitablauf
+     * ist KEIN Beweis"): hier wird NICHT behauptet, die Dosis sei geliefert
+     * worden. Behauptet wird nur, dass sie - geliefert oder nicht - keine
+     * Wirkung mehr entfalten kann, weil seit dem letzten Lebenszeichen mehr
+     * als DIA plus Sicherheitsspanne vergangen ist. In BEIDEN Faellen ist die
+     * Haftung null: war sie geliefert, ist ihr Insulin verbraucht; war sie es
+     * nie, gab es nie etwas zu haften. Der v0.1-Fehler war ein anderer - er
+     * gab nach 20 Minuten frei, also mitten in der Wirkzeit.
+     *
+     * Der GRUND, warum es dazu kam, bleibt ein Befund: eine Zeile, die nach
+     * DIA immer noch offen ist, hat ihre Abgleichung nie abgeschlossen.
+     * Deshalb setzt `prune` zusaetzlich [LedgerError.UNRESOLVED_BEYOND_ACTION]
+     * - sichtbar, aber NICHT sperrend: eine 19 h alte Leiche darf den Regler
+     * nicht stilllegen.
+     */
+    val expiredBeyondAction: Boolean = false,
     val latestBolusTimestampAtDecision: Long,
     val errors: List<LedgerError>,
 
@@ -509,6 +530,9 @@ data class ProposalEntry(
      */
     val commitmentU: Double
         get() = when {
+            // Kann nicht mehr wirken -> kann nicht mehr haften. S. Feld-KDoc:
+            // das ist eine Aussage ueber WIRKUNG, nicht ueber Lieferung.
+            expiredBeyondAction    -> 0.0
             // G3: NUR die unbestrittene Null befreit - einem widersprochenen
             // Nachweis darf die Menge nicht folgen.
             confirmedZeroEffective -> 0.0
