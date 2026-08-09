@@ -167,18 +167,35 @@ object PrimeRelease {
         if (input.pumpIncrementU <= 0.0 || !input.pumpIncrementU.isFinite()) return off("NO_PUMP_STEP")
         if (remaining < input.pumpIncrementU) return off("ENVELOPE_SPENT")
 
-        // Clearance: die 60-min-Wirkung des RESTES darf die Guardbahn nicht
-        // unter den Boden druecken. Konservativ gegen den Rest, nicht gegen
-        // die Einzeldosis - die Wette wird als Ganzes bewertet.
-        val clearance = CLEARANCE_60MIN_FRACTION * remaining * input.isfMgdlPerU
-        if (input.safetyMinLowerMgdl - clearance < input.guardFloorMgdl) return off("CLEARANCE")
-
         // Gleichmaessig ueber das Restfenster; mindestens ein Pumpenschritt,
         // sonst schoebe die Rundung alles ans Fensterende.
         val minutesLeft = max(1.0, WINDOW_MIN - ageMin)
         val target = remaining / minutesLeft
         val stepped = floor(target / input.pumpIncrementU + TICK_EPS) * input.pumpIncrementU
         val floorU = min(remaining, max(input.pumpIncrementU, stepped))
+
+        // CLEARANCE gegen den ZYKLUS-ANTEIL, nicht gegen die ganze Huelle
+        // (Tonis Entscheidung 09.08. nach dem gemessenen Fall).
+        //
+        // WAS SCHIEF WAR: das Tor verlangte Reserve fuer die gesamte
+        // Resthuelle. Bei der L-Stufe sind das 0,2 x 2,0 x 90 = 36 mg/dl, also
+        // minLower >= 106 bei einem BG von 141 - die SCHNELLSTE Mahlzeit bekam
+        // damit den SCHWERSTEN Start, obwohl sie den Vorschuss am dringendsten
+        // braucht. Am 09.08. fehlten so 4 mg/dl und die komplette Huelle
+        // verfiel ungenutzt.
+        //
+        // WAS DIE AUSSAGE JETZT IST, ehrlich benannt: gedeckt ist die Dosis
+        // DIESES Zyklus, nicht mehr die Wette als Ganzes. Das ist schwaecher.
+        // Was es traegt: die Pruefung laeuft JEDE Minute neu und gegen die
+        // dann aktuelle Bahn - in der die vorherigen Teildosen bereits als IOB
+        // stecken. Die Huelle wird also nicht auf einmal riskiert, sondern
+        // Schritt fuer Schritt gegen eine jedesmal neu gemessene Lage; sobald
+        // die Bahn faellt, endet die Serie sofort. Zusaetzlich bleiben
+        // Wanduhr-Kappe, Huelle, maxSmb, iobTH und maxIOB unveraendert
+        // (s. [lift]), und der Schwanz-Waechter kappt weiterhin unabhaengig.
+        val clearance = CLEARANCE_60MIN_FRACTION * floorU * input.isfMgdlPerU
+        if (input.safetyMinLowerMgdl - clearance < input.guardFloorMgdl) return off("CLEARANCE")
+
         return Plan(true, floorU, remaining, "PRIME")
     }
 

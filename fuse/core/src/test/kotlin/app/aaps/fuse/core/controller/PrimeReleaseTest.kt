@@ -92,8 +92,13 @@ class PrimeReleaseTest {
      *  offen; bei Bahn 88 ist 88 - 19,2 < 70 -> gesperrt. */
     @Test
     fun `nahe am Boden bleibt die Freigabe zu`() {
-        assertEquals("CLEARANCE", PrimeRelease.plan(input(minLower = 88.0)).reason)
-        assertTrue(PrimeRelease.plan(input(minLower = 90.0)).active)
+        // Seit 09.08. rechnet die Clearance gegen den ZYKLUS-ANTEIL
+        // (Tonis Entscheidung): Huelle 1,2 / 15 min -> 0,05 U je Zyklus,
+        // Bedarf 0,2 * 0,05 * 80 = 0,8 mg/dl. Die ABSICHT des Tests bleibt -
+        // dicht am Boden ist zu, darueber offen -, nur die Kante liegt jetzt
+        // dort, wo sie hingehoert: knapp ueber dem Boden statt 18 mg/dl daneben.
+        assertEquals("CLEARANCE", PrimeRelease.plan(input(minLower = 70.5)).reason)
+        assertTrue(PrimeRelease.plan(input(minLower = 71.0)).active)
     }
 
     /** Das Gate rechnet gegen den REST: spaet im Fenster, wenig Rest, darf
@@ -195,9 +200,14 @@ class PrimeReleaseTest {
         // Bremse abgeschaltet = null aendert nichts (Einseitigkeit).
         assertEquals(95.0, minSafetyLowerOf(main, null), 1e-12)
 
+        // Die WEITERGABE ist der Punkt dieses Tests, nicht die Kantenhoehe:
+        // dieselbe Eingabe muss je nach gewaehlter Bahn anders entscheiden.
+        // Die Bremse steht deshalb knapp UNTER der Clearance-Kante (Boden 70 +
+        // 0,8 mg/dl fuer den Zyklus-Anteil), die Hauptbahn deutlich darueber.
+        val brakeTight = traj(70.5)
         assertTrue(PrimeRelease.plan(input(minLower = minSafetyLowerOf(main))).active)
-        assertEquals("CLEARANCE", PrimeRelease.plan(input(minLower = minSafetyLowerOf(main, brake))).reason)
-        assertEquals("CLEARANCE", PrimeRelease.plan(input(minLower = minSafetyLowerOf(liftedByPrior))).reason)
+        assertEquals("CLEARANCE", PrimeRelease.plan(input(minLower = minSafetyLowerOf(main, brakeTight))).reason)
+        assertEquals("CLEARANCE", PrimeRelease.plan(input(minLower = minSafetyLowerOf(traj(95.0, priorFree = 70.5)))).reason)
     }
 
     /** Ohne jede Bahn gibt es keinen Ersatzwert: NaN -> NOT_FINITE, nicht
