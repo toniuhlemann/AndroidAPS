@@ -473,6 +473,7 @@ class FusePlugin @Inject constructor(
             rt = rt,
             adapter = ledgerAdapter,
             dir = ledgerDir(),
+            expected = app.aaps.fuse.plugin.ledger.LedgerPublicationGate.Commitment.Proposal(cycleId),
             events = {
                 outcome?.let { o ->
                     if (rt.units != null) {

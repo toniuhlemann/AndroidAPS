@@ -49,11 +49,14 @@ class LedgerPublicationGateTest {
         return File(blockiert, "unter")
     }
 
+    /** Der Regelfall: dieser Zyklus bucht "p1". */
+    private val bucht = LedgerPublicationGate.Commitment.Proposal("p1")
+
     @Test
     fun `erfolgreicher Persist publiziert die units unveraendert`(@TempDir dir: File) {
         val a = loadedAdapter(dir)
         val rt = rtWithSmb()
-        val out = LedgerPublicationGate.publish(rt, a, dir, events = {
+        val out = LedgerPublicationGate.publish(rt, a, dir, bucht, events = {
             a.onPublished("p1", 0.30, t0, 0L, 0.05)
         })
         assertEquals(0.30, out.units!!, 1e-12)
@@ -67,7 +70,7 @@ class LedgerPublicationGateTest {
     @Test
     fun `Persist-Fehlschlag entfernt units und deliverAt, TBR und Grund bleiben`(@TempDir dir: File) {
         val a = loadedAdapter(dir)
-        val out = LedgerPublicationGate.publish(rtWithSmb(), a, unwritableDir(dir), events = {
+        val out = LedgerPublicationGate.publish(rtWithSmb(), a, unwritableDir(dir), bucht, events = {
             a.onPublished("p1", 0.30, t0, 0L, 0.05)
         })
         assertNull(out.units)
@@ -90,7 +93,7 @@ class LedgerPublicationGateTest {
         val a = loadedAdapter(dir)
         var gesehen: Throwable? = null
         val out = LedgerPublicationGate.publish(
-            rtWithSmb(), a, dir,
+            rtWithSmb(), a, dir, bucht,
             events = { error("ledger step explodiert") },
             onError = { gesehen = it },
         )
@@ -124,7 +127,7 @@ class LedgerPublicationGateTest {
     fun `G2 ein waehrend der Events entdeckter Hold strippt den SMB im selben Zyklus`(@TempDir dir: File) {
         val a = loadedAdapter(dir)
         val b = smb(t0 + 5_000L, 0.30, pumpId = 4711L)
-        val out = LedgerPublicationGate.publish(rtWithSmb(), a, dir, events = {
+        val out = LedgerPublicationGate.publish(rtWithSmb(), a, dir, bucht, events = {
             a.onPublished("p1", 0.30, t0, 0L, 0.05, PumpType.GENERIC_AAPS.name, Sha.of("vs"))
             a.bindIdentities(listOf(b))
             // Erst nachgewiesen ...
@@ -153,12 +156,94 @@ class LedgerPublicationGateTest {
             rate = 0.0,
             duration = 30,
         )
-        val out = LedgerPublicationGate.publish(rt, a, unwritableDir(dir), events = {})
+        // Ohne units zieht das Gate den Commitment gar nicht heran.
+        val out = LedgerPublicationGate.publish(rt, a, unwritableDir(dir), bucht, events = {})
         // Nichts zu entfernen - dasselbe Objekt kommt zurueck ...
         assertSame(rt, out)
         assertEquals(0.0, out.rate!!, 1e-12)
         // ... aber der naechste Zyklus ist ueber den Hold gedeckelt.
         assertTrue(a.view().hold)
         assertEquals(FuseLedgerAdapter.HOLD_REASON_PERSIST_FAILED, a.view().holdReason)
+    }
+
+    // ---- B0a: die Haftung muss ENTSTANDEN sein, nicht nur beabsichtigt ----
+
+    /**
+     * DER KERN VON B0a. Ereignisse und Persist laufen fehlerfrei - es entsteht
+     * nur keine Zeile. Vorher schloss das Gate aus "kein Fehler" auf "Haftung
+     * gebucht" und gab die Menge frei. Ein SMB waere hinausgegangen, dessen
+     * Verbindlichkeit in keinem Buch steht.
+     */
+    @Test
+    fun `ohne gebuchtes Proposal gehen keine units hinaus`(@TempDir dir: File) {
+        val a = loadedAdapter(dir)
+        val out = LedgerPublicationGate.publish(rtWithSmb(), a, dir, bucht, events = { /* nichts gebucht */ })
+
+        assertNull(out.units, "units ohne jede gebuchte Haftung publiziert")
+        assertNull(out.deliverAt)
+        // Safety-TBR bleibt - wie bei jedem anderen Strip-Pfad.
+        assertEquals(0.0, out.rate!!, 1e-12)
+        assertEquals(30, out.duration)
+        assertTrue(out.reason.contains(LedgerPublicationGate.REASON_PROPOSAL_MISSING), "reason=${out.reason}")
+        // Und es darf auch kein Phantom-Commitment entstanden sein.
+        assertEquals(0.0, a.view().transportCommitmentU, 1e-12)
+        assertFalse(a.view().hold, "ein fehlender Vorschlag ist kein Ledger-Hold")
+    }
+
+    /** Die Gegenprobe: eine ANDERE als die erwartete Zeile zaehlt nicht. */
+    @Test
+    fun `eine fremde gebuchte Zeile ersetzt die erwartete nicht`(@TempDir dir: File) {
+        val a = loadedAdapter(dir)
+        val out = LedgerPublicationGate.publish(rtWithSmb(), a, dir, bucht, events = {
+            a.onPublished("EIN-ANDERER", 0.30, t0, 0L, 0.05)
+        })
+        assertNull(out.units)
+        assertTrue(out.reason.contains(LedgerPublicationGate.REASON_PROPOSAL_MISSING))
+        // Die fremde Zeile haftet weiter - sie ist ja gebucht.
+        assertEquals(0.30, a.view().transportCommitmentU, 1e-12)
+    }
+
+    /**
+     * `Commitment.None`: der Aufrufer weiss selbst, dass er nichts buchen
+     * kann (B0a: fehlende Behandlungs-Vollsicht). Dann darf keine Menge
+     * hinausgehen, und der Grund muss der seine sein.
+     */
+    @Test
+    fun `ein Zyklus ohne Buchungsabsicht publiziert keine units`(@TempDir dir: File) {
+        val a = loadedAdapter(dir)
+        val out = LedgerPublicationGate.publish(
+            rtWithSmb(), a, dir,
+            LedgerPublicationGate.Commitment.None(LedgerPublicationGate.REASON_TREATMENT_VIEW_UNAVAILABLE),
+            events = { /* bewusst kein onPublished */ },
+        )
+        assertNull(out.units)
+        assertNull(out.deliverAt)
+        assertEquals(0.0, out.rate!!, 1e-12)
+        assertEquals(30, out.duration)
+        assertTrue(
+            out.reason.endsWith(" | " + LedgerPublicationGate.REASON_TREATMENT_VIEW_UNAVAILABLE),
+            "reason=${out.reason}",
+        )
+        assertEquals(0.0, a.view().transportCommitmentU, 1e-12)
+        assertFalse(a.view().hold)
+        // Der Persist lief trotzdem - die Reconciliation dieses Zyklus gehoert
+        // auf Platte, auch wenn nicht dosiert wird.
+        assertTrue(File(dir, FuseLedgerStore.FILE_NAME).exists())
+    }
+
+    @Test
+    fun `hasOpenProposal kennt nur offene Zeilen`(@TempDir dir: File) {
+        val a = loadedAdapter(dir)
+        assertFalse(a.hasOpenProposal("p1"))
+        a.onPublished("p1", 0.30, t0, 0L, 0.05, PumpType.GENERIC_AAPS.name, Sha.of("vs"))
+        assertTrue(a.hasOpenProposal("p1"))
+
+        // Nachgewiesen und geschlossen -> keine Haftung mehr, also auch kein
+        // Freibrief fuer eine neue Menge.
+        val b = smb(t0 + 5_000L, 0.30, pumpId = 4711L)
+        a.bindIdentities(listOf(b))
+        a.onCycleSnapshot(listOf(LedgerFacts.fact(b)), LedgerFacts.snapshotHash(listOf(b)), t0 + 60_000L)
+        assertTrue(a.state.entries.getValue("p1").closed, "Testaufbau: die Zeile sollte geschlossen sein")
+        assertFalse(a.hasOpenProposal("p1"))
     }
 }

@@ -880,6 +880,25 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
     fun unresolvedBeyondActionCount(): Int =
         state.entries.values.count { it.expiredBeyondAction }
 
+    /**
+     * Traegt der Ledger fuer diese proposalId eine OFFENE Zeile?
+     *
+     * Fuer das Publikationsgate (B0a): bevor positive units hinausgehen,
+     * muss die Haftung wirklich gebucht sein - nicht nur beabsichtigt. Der
+     * Weg dorthin hat mehrere stille Ausgaenge: [onPublished] wird gar nicht
+     * erst gerufen (kein Vorschlag), oder `onProposed` weist ihn ab und legt
+     * KEINE Zeile an (nicht-endliche Menge, unbrauchbare Policy - s.
+     * [app.aaps.fuse.core.ledger.LedgerReducer]). In beiden Faellen meldete
+     * das Gate bisher Erfolg, weil Ereignisse und Persist fehlerfrei liefen -
+     * es hat nie gefragt, ob dabei etwas ENTSTANDEN ist.
+     *
+     * `!closed` gehoert dazu: eine bereits geschlossene Zeile bucht keine
+     * Haftung mehr. Fuer einen soeben publizierten Vorschlag waere das ein
+     * Widerspruch, und Widerspruch heisst hier nicht dosieren.
+     */
+    fun hasOpenProposal(proposalId: String): Boolean =
+        state.entries[proposalId]?.closed == false
+
     fun oldestOpenTs(): Long? = state.entries.values
         .filter { !it.closed }
         .minOfOrNull { it.identity?.treatmentTimestamp ?: it.decisionTs }
