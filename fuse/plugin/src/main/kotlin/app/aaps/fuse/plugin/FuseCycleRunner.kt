@@ -653,6 +653,17 @@ class FuseCycleRunner(
         // der Stufen-Huelle - was die Episode schon geliefert hat (Sofort-
         // Freigabe ODER Rampe), zieht ihn herunter: EINE Huelle fuer beide
         // Pfade, die Erklaerung verbraucht sich selbst.
+        // GEMESSEN 09.08. 11:32: das Mahlzeiten-Lambda hing am markerBoost und
+        // dessen 45-min-Kappe. Bei BG 202 und r 3,6 - also mitten im Anstieg,
+        // ohne jede Wende - sprang der Abschlag zurueck auf 1,0, das
+        // Schwanzbudget kippte auf -0,16 und der Block wurde GUARD_FLOOR.
+        // Eine Stoppuhr ist das falsche Kriterium: die Praemisse des Abschlags
+        // ("die Stoerung koennte mein eigenes Insulin sein") kehrt nicht nach
+        // 45 Minuten zurueck, sondern wenn der Zucker WENDET. Bis dahin ist die
+        // erklaerte Mahlzeit die Ursache. Danach gilt wieder voller Zweifel -
+        // und genau dort beginnt das Nachlauf-Risiko, gegen das er gebaut ist.
+        val mealDiscountRelief = mealMarkerActive && episodes.markerTurnTs == 0L
+
         val mealDeliveredU = if (markerTs > 0) episodes.mealDeliveries.sumOf { it.second } else 0.0
         val declaredDrive = if (markerBoost) MarkerScope.declaredAbsorptionDriveMgdlPerMin(
             envelopeU = tierEnvelopeU,
@@ -661,7 +672,7 @@ class FuseCycleRunner(
             windowMin = cfg.absorptionCreditWindowMin.toDouble(),
         ) else 0.0
 
-        val built = when (val b = CoreInputGuard.build { buildPredictorInput(signal, profile, cfg, band, bolusActivityUPerMin, if (onset.active) onset.driveMgdlPerMin else null, reboundWindow, markerBoost, declaredDrive, pending) }) {
+        val built = when (val b = CoreInputGuard.build { buildPredictorInput(signal, profile, cfg, band, bolusActivityUPerMin, if (onset.active) onset.driveMgdlPerMin else null, reboundWindow, markerBoost, mealDiscountRelief, declaredDrive, pending) }) {
             is CoreInputGuard.Outcome.Built  -> b.value ?: return abort("input incomplete", signal, cfg, step)
             is CoreInputGuard.Outcome.Failed -> return abort("input: ${b.failure.detail}", signal, cfg, step)
         }
@@ -1459,6 +1470,10 @@ class FuseCycleRunner(
         onsetDriveMgdlPerMin: Double?,
         reboundWindow: Boolean,
         mealMarkerActive: Boolean,
+        /** Nur fuer den Bolus-Abschlag: angesagte Mahlzeit OHNE Wende. Bewusst
+         *  getrennt von [mealMarkerActive] (= markerBoost, 45-min-Kappe), damit
+         *  der Abschlag nicht an einer Stoppuhr endet - s. Aufrufstelle. */
+        mealDiscountRelief: Boolean,
         /** ERKLAERTE ABSORPTION (Toni 09.08.): erwarteter Anstieg aus der
          *  Marker-Stufe [mg/dl/min], 0 wenn kein Kredit gilt. Wirkt NUR auf
          *  der Mittelbahn - s. MarkerScope.declaredAbsorptionDriveMgdlPerMin. */
@@ -1549,7 +1564,7 @@ class FuseCycleRunner(
             // Abschlag blockiert nur noch. Kein Boden wird angehoben: die
             // Zertifikate rechnen unveraendert prior-frei, sie bekommen
             // lediglich keinen kuenstlich verdoppelten Sturz mehr vorgesetzt.
-            lambda = if (mealMarkerActive) cfg.bolusShareLambdaMeal else cfg.bolusShareLambda,
+            lambda = if (mealDiscountRelief) cfg.bolusShareLambdaMeal else cfg.bolusShareLambda,
         )
 
         return Built(
