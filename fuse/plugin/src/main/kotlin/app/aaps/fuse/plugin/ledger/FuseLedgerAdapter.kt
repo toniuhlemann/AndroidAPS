@@ -715,7 +715,15 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
                 .put("quarantined", org.json.JSONArray(quarantined))
                 // Die letzte LESBARE offene Haftung - fehlt sie (nichts
                 // dekodierbar), bleibt das Feld weg: unbekannt ist nicht 0.
-                .putOpt("transportCommitmentU", decoded?.state?.transportCommitmentU)
+                //
+                // `readable`, NICHT `decoded`. Die beiden sind seit dem
+                // Migrations-Hold verschiedene Dinge: `decoded` heisst
+                // "uebernehmbar", `readable` heisst "lesbar". Genau im
+                // Migrationsfall ist `decoded` absichtlich null, waehrend die
+                // Menge sehr wohl bekannt ist - der Marker haette dann
+                // ausgerechnet dort keine Haftungsmenge getragen, wo er sie am
+                // dringendsten braucht.
+                .putOpt("transportCommitmentU", readable?.state?.transportCommitmentU)
                 .toString()
             if (!FuseLedgerStore.writeHoldVerified(dir, marker)) {
                 pendingHoldMarker = marker

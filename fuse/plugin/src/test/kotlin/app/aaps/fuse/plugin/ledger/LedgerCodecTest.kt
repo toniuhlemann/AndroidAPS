@@ -547,6 +547,48 @@ class LedgerCodecTest {
         }
     }
 
+    /**
+     * V3 IST NICHT TOLERANT (Codex-Re-Review 09.08., Finding 2).
+     *
+     * Der Migrations-Hold griff nur fuer `v < 3`. Fehlte ein Pflichtfeld in
+     * einer Datei, die sich als v3 ausgibt, wurde es weiterhin still als
+     * "kein Wert" gelesen - also derselbe Fehler wie beim Altbestand, nur ohne
+     * dessen Entschuldigung.
+     *
+     * Der Encoder schreibt alle drei Felder IMMER, notfalls als
+     * `JSONObject.NULL`. Ihr Fehlen ist deshalb kein legitimer Zustand,
+     * sondern eine beschaedigte oder fremde Generation - und muss werfen,
+     * damit der Adapter in den Recovery-Hold geht statt zu raten.
+     */
+    @Test
+    fun `eine v3-Datei ohne Pflichtfelder wirft`() {
+        val mitZeile = LedgerReducer.reduceAll(
+            LedgerState(),
+            listOf(LedgerEvent.Proposed("p1", 0.30, decisionTs = t0, latestBolusTimestamp = t0)),
+            LedgerConfig(bolusStepU = 0.05),
+        )
+        val voll = LedgerCodec.encode(mitZeile, EpisodeBudgets(), 1L)
+        // Ausgangslage: vollstaendig laedt sie.
+        LedgerCodec.decode(JSONObject(voll.toString()))
+
+        // 1) lastPositiveFactTs aus der Zeile entfernen
+        val ohneFakt = JSONObject(voll.toString())
+        ohneFakt.getJSONObject("state").getJSONArray("entries").getJSONObject(0).remove("lastPositiveFactTs")
+        assertThrows(IllegalArgumentException::class.java) { LedgerCodec.decode(ohneFakt) }
+
+        // 2) retiredBoundIds entfernen - die leere Menge waere hier die
+        //    gefaehrliche Deutung: eine verbrauchte Identitaet duerfte wieder
+        //    binden.
+        val ohneRetired = JSONObject(voll.toString()).also { it.remove("retiredBoundIds") }
+        assertThrows(IllegalArgumentException::class.java) { LedgerCodec.decode(ohneRetired) }
+
+        // 3) lastAcceptedSourceTs entfernen - 0L waere "noch kein Punkt
+        //    akzeptiert" und entschaerft den Restart-Dedupe lautlos.
+        val ohneCursor = JSONObject(voll.toString())
+        ohneCursor.getJSONObject("episodes").remove("lastAcceptedSourceTs")
+        assertThrows(IllegalArgumentException::class.java) { LedgerCodec.decode(ohneCursor) }
+    }
+
     /** Abstimmung mit der parallelen Sitzung: der Schreiber kappt
      *  mealDeliveries kuenftig auf 400 - die Validator-Grenze bleibt bei
      *  500. Eine 400er-Datei ist gueltig, 501 wirft (Test oben). */
@@ -560,18 +602,27 @@ class LedgerCodecTest {
 
     // ---- Neue persistierte Felder -----------------------------------------
 
-    /** lastAcceptedSourceTs (Fix 5, Re-Audit 6.5): Round-Trip plus
-     *  Altdatei-Toleranz (fehlendes Feld liest sich als 0 - "noch kein
-     *  Punkt akzeptiert"). */
+    /**
+     * lastAcceptedSourceTs: Round-Trip, und ab v3 PRAESENZPFLICHTIG.
+     *
+     * UMGEKEHRT gegenueber Fix 5 (Codex-Re-Review Finding 2). Die alte
+     * Toleranz las ein fehlendes Feld als 0 - "noch kein Punkt akzeptiert" -
+     * und entschaerfte damit den Restart-Dedupe lautlos. In einer v3-Datei
+     * kann das Feld nicht fehlen, der Encoder schreibt es immer; sein Fehlen
+     * ist Korruption. Fuer echten Altbestand greift der Migrations-Hold.
+     */
     @Test
-    fun `lastAcceptedSourceTs ueberlebt den Round-Trip und fehlt tolerant`() {
+    fun `lastAcceptedSourceTs ueberlebt den Round-Trip und ist ab v3 pflicht`() {
         val ep = EpisodeBudgets().apply { lastAcceptedSourceTs = t0 }
         val decoded = LedgerCodec.decode(JSONObject(LedgerCodec.encode(LedgerState(), ep, 0L).toString()))
         assertEquals(t0, decoded.episodes.lastAcceptedSourceTs)
 
         val alt = LedgerCodec.encode(LedgerState(), EpisodeBudgets(), 0L)
         alt.getJSONObject("episodes").remove("lastAcceptedSourceTs")
-        assertEquals(0L, LedgerCodec.decode(JSONObject(alt.toString())).episodes.lastAcceptedSourceTs)
+        assertThrows(IllegalArgumentException::class.java) { LedgerCodec.decode(JSONObject(alt.toString())) }
+
+        // Als v1 gelesen gilt die alte Toleranz weiter.
+        assertEquals(0L, LedgerCodec.decode(JSONObject(alt.toString()).put("v", 1)).episodes.lastAcceptedSourceTs)
     }
 
     /** proposalPumpEpochs (Fix 3, Re-Audit 6.3): Round-Trip, Altdatei ohne
@@ -624,8 +675,19 @@ class LedgerCodecTest {
         assertEquals(350L, decoded.retiredBoundIds.last().temporaryId)
         assertEquals(1350L, decoded.retiredBoundIds.last().pumpId)
 
+        // UMGEKEHRT (Codex-Re-Review Finding 2). Vorher stand hier die
+        // Altdatei-Toleranz "fehlendes Feld liest sich als leere Menge". Ab v3
+        // ist das Feld praesenzpflichtig: die leere Menge ist hier die
+        // GEFAEHRLICHE Deutung, weil eine verbrauchte Bindungsidentitaet damit
+        // wieder binden duerfte. Fuer echten Altbestand greift stattdessen der
+        // Migrations-Hold - der laesst die Datei gar nicht erst herein.
         val alt = LedgerCodec.encode(LedgerState(), EpisodeBudgets(), 0L)
         alt.remove("retiredBoundIds")
-        assertTrue(LedgerCodec.decode(JSONObject(alt.toString())).retiredBoundIds.isEmpty())
+        assertThrows(IllegalArgumentException::class.java) { LedgerCodec.decode(JSONObject(alt.toString())) }
+
+        // Als v1 gelesen bleibt die alte Toleranz gueltig - dort ist das Feld
+        // wirklich nie geschrieben worden.
+        val alsV1 = JSONObject(alt.toString()).put("v", 1)
+        assertTrue(LedgerCodec.decode(alsV1).retiredBoundIds.isEmpty())
     }
 }

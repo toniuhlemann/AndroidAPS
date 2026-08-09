@@ -171,9 +171,9 @@ object LedgerCodec {
             else null
         return Decoded(
             state = state,
-            episodes = decodeEpisodes(o.getJSONObject("episodes")),
+            episodes = decodeEpisodes(o.getJSONObject("episodes"), v),
             revision = revision,
-            retiredBoundIds = decodeRetiredList(o),
+            retiredBoundIds = decodeRetiredList(o, v),
             pumpEpochs = pumpEpochs,
             migrationRequired = migration,
         )
@@ -191,7 +191,7 @@ object LedgerCodec {
         .putNullable("announcedEpochId", s.announcedEpochId)
 
     fun decodeState(o: JSONObject, schemaVersion: Int = VERSION): LedgerState {
-        val entries = o.getJSONArray("entries").objects().map { decodeEntry(it) }
+        val entries = o.getJSONArray("entries").objects().map { decodeEntry(it, schemaVersion) }
         // Fix 2 (Re-Audit REG-04): die LISTE pruefen, BEVOR associateBy
         // Duplikate still last-win zusammenfaltet - danach waere der
         // Verstoss unsichtbar.
@@ -229,7 +229,9 @@ object LedgerCodec {
         .put("lastAcceptedSourceTs", e.lastAcceptedSourceTs)
         .put("mealDeliveries", JSONArray(e.mealDeliveries.map { (ts, u) -> JSONArray(listOf(ts, u)) }))
 
-    fun decodeEpisodes(o: JSONObject): EpisodeBudgets {
+    fun decodeEpisodes(o: JSONObject, schemaVersion: Int = VERSION): EpisodeBudgets {
+        if (schemaVersion >= RECONCILIATION_VERSION)
+            require(o.has("lastAcceptedSourceTs")) { "v$schemaVersion episodes without lastAcceptedSourceTs" }
         val e = EpisodeBudgets()
         // Budgets sind VERBRAUCH: negativ hiesse "Huelle groesser als
         // konfiguriert" - genau der Angriffs-/Korruptionspfad aus REG-01d.
@@ -266,7 +268,14 @@ object LedgerCodec {
         .putNullable("temporaryId", r.temporaryId)
         .putNullable("pumpId", r.pumpId)
 
-    private fun decodeRetiredList(o: JSONObject): List<RetiredBoundId> {
+    private fun decodeRetiredList(o: JSONObject, schemaVersion: Int = VERSION): List<RetiredBoundId> {
+        // Ab v3 PRAESENZPFLICHTIG: der Encoder schreibt die Liste immer, notfalls
+        // leer. Fehlt sie in einer v3-Datei, ist das keine "leere Menge", sondern
+        // eine beschaedigte Generation - und die leere Menge waere hier die
+        // gefaehrliche Deutung: eine verbrauchte Bindungsidentitaet duerfte
+        // wieder binden.
+        if (schemaVersion >= RECONCILIATION_VERSION)
+            require(o.has("retiredBoundIds")) { "v$schemaVersion file without retiredBoundIds" }
         // opt statt get: Dateien vor Fix 6 tragen das Feld nicht - fuer sie
         // ist die leere Menge der ehrliche Zustand, kein Fehler.
         val arr = o.optJSONArray("retiredBoundIds") ?: return emptyList()
@@ -361,7 +370,20 @@ object LedgerCodec {
         .put("latestBolusTimestampAtDecision", e.latestBolusTimestampAtDecision)
         .put("errors", JSONArray(e.errors.map { it.name }))
 
-    private fun decodeEntry(o: JSONObject): ProposalEntry {
+    /**
+     * Ab [RECONCILIATION_VERSION] sind die Pflichtfelder PRAESENZPFLICHTIG.
+     *
+     * Der Encoder schreibt sie immer - auch als `JSONObject.NULL`. Fehlt der
+     * SCHLUESSEL in einer Datei, die sich als v3 ausgibt, ist das kein
+     * Altbestand, sondern eine beschaedigte oder fremde Generation. Sie still
+     * als "kein Wert" zu lesen waere derselbe Fehler wie beim Altbestand, nur
+     * ohne die Entschuldigung des Alters.
+     */
+    private fun decodeEntry(o: JSONObject, schemaVersion: Int = VERSION): ProposalEntry {
+        if (schemaVersion >= RECONCILIATION_VERSION)
+            require(o.has("lastPositiveFactTs")) {
+                "v$schemaVersion entry ${o.optString("proposalId")} without lastPositiveFactTs"
+            }
         val errs = o.getJSONArray("errors")
         return ProposalEntry(
             proposalId = o.getString("proposalId"),
