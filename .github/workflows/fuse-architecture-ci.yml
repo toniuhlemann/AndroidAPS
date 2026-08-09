@@ -1,0 +1,53 @@
+name: FUSE Architecture Guard
+
+# Laeuft automatisch, nicht auf Zuruf. Eine Regel, an die man sich erinnern
+# muss, ist keine Regel - und diese hier faellt bei einem Review nicht auf,
+# weil eine Treiberaenderung an der richtigen Stelle richtig aussieht.
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  pump-isolation:
+    name: Kein FUSE-Commit aendert pump/
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Die Pruefung braucht die Historie ab dem ersten FUSE-Commit. Ein
+          # flacher Klon hat sie nicht und wuerde die Pruefung still leer
+          # laufen lassen - also die falsche Sorte gruen.
+          fetch-depth: 0
+
+      - name: pump/ ist unberuehrt
+        run: |
+          chmod +x tools/check_fuse_pump_isolation.sh
+          tools/check_fuse_pump_isolation.sh
+
+  fuse-tests:
+    name: FUSE-Tests und die vier Kernaenderungen
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      # Genau die vier Module aus der Portierungsmatrix. :implementation und
+      # :plugins:main stehen NICHT aus Gewohnheit dabei: dort liegen die
+      # Kernaenderungen ohne FUSE im Namen (QueueWorker, IobTotal.valid,
+      # IobCobCalculator), die eine Textsuche beim Merge nicht findet.
+      - name: Unit tests
+        run: >
+          ./gradlew
+          :implementation:testFullDebugUnitTest
+          :fuse:core:test
+          :fuse:plugin:testFullDebugUnitTest
+          :plugins:main:testFullDebugUnitTest
+          --no-daemon --console=plain
