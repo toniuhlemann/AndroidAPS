@@ -28,6 +28,7 @@ import app.aaps.core.ui.R
 import app.aaps.core.ui.toast.ToastUtils
 import app.aaps.core.utils.extensions.safeDisable
 import app.aaps.core.utils.extensions.safeEnable
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import javax.inject.Inject
 
@@ -145,8 +146,35 @@ class QueueWorker internal constructor(
                             aapsLogger.debug(LTag.PUMPQUEUE, "performing " + it.log())
                             rxBus.send(EventQueueChanged())
                             rxBus.send(EventPumpStatusChanged(it.status()))
-                            it.execute()
-                            queue.resetPerforming()
+                            // Eine Ausnahme aus execute() darf die Queue nicht
+                            // stilllegen. Vorher stand resetPerforming() DAHINTER
+                            // und wurde bei einem Wurf uebersprungen: `performing`
+                            // blieb fuer immer gesetzt, bolusInQueue() meldete
+                            // dauerhaft true, jeder weitere SMB wurde abgelehnt
+                            // und der Callback feuerte nie - heilbar nur durch
+                            // einen Prozessneustart. Weder QueueWorker noch
+                            // LoggingWorker fangen etwas ab.
+                            //
+                            // KEIN ERGEBNIS IST NICHT "NICHT GESENDET": nach
+                            // einem Wurf ist der Ausgang UNBEKANNT - das Kommando
+                            // kann die Pumpe schon erreicht haben. Deshalb wird
+                            // hier bewusst NICHT cancel() gerufen (das meldete
+                            // success=false) und kein Callback erfunden, und es
+                            // wird nichts gebucht. Aufraeumen und schweigen; die
+                            // Bewertung gehoert an die Stelle, die den
+                            // Lieferzustand wirklich kennt.
+                            try {
+                                it.execute()
+                            } catch (e: CancellationException) {
+                                // Abbruch ist kein Fehler: nach dem Aufraeumen
+                                // im finally weiterwerfen, sonst gilt ein
+                                // abgebrochener Worker als regulaer beendet.
+                                throw e
+                            } catch (e: Throwable) {
+                                aapsLogger.error(LTag.PUMPQUEUE, "command ${it.commandType} threw - delivery outcome UNKNOWN", e)
+                            } finally {
+                                queue.resetPerforming()
+                            }
                             rxBus.send(EventQueueChanged())
                             lastCommandTime = System.currentTimeMillis()
                             performedAnyCommand = true   // 0055: this drain enacted a command
