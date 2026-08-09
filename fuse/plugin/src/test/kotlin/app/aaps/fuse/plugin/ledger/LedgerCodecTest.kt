@@ -573,6 +573,53 @@ class LedgerCodecTest {
         assertEquals(m2, LedgerCodec.migrateToCurrent(m2, jetzt + 3600_000L))
     }
 
+    /**
+     * DER P0-FALL (Codex-Re-Review 10.08.): der Fakt WAR da und ist wieder
+     * verschwunden.
+     *
+     * Der Reducer nimmt die Buchung zurueck, wenn ein zuvor nachgewiesener
+     * Fakt aus der Vollsicht faellt (R91-F1) - `accountedAmountU` steht dann
+     * auf 0. Die HISTORISCHE Provenienz (`firstAccountedSnapshotHash`) bleibt
+     * aber stehen, und genau sie ist der Beweis, dass es ihn gab.
+     *
+     * Der erste Migrationsanlauf las den aktuellen Stand und haette dieser
+     * Zeile `null` gegeben - ihre Wirkfrist waere ab `decisionTs` gelaufen und
+     * moeglicherweise zu frueh abgelaufen.
+     */
+    @Test
+    fun `ein verschwundener Fakt zaehlt bei der Migration weiter`() {
+        val jetzt = t0 + 5 * 3600_000L
+        val gebucht = LedgerReducer.reduceAll(
+            LedgerState(),
+            throughPump(0.30) + listOf(
+                LedgerEvent.PumpIdentityBound(id, null, 4711L, "VIRTUAL", "h", t0),
+                LedgerEvent.IobSnapshotObserved(
+                    IobAccountingSnapshot(
+                        "h1", "c", t0, 1L,
+                        listOf(AccountedTreatment(null, 4711L, 0.30, treatmentTs = t0)),
+                        sourceEpochId = "epoch-test",
+                    )
+                ),
+                // ... und im naechsten Zyklus ist er WEG.
+                LedgerEvent.IobSnapshotObserved(
+                    IobAccountingSnapshot("h2", "c", t0 + 60_000L, 2L, emptyList(), sourceEpochId = "epoch-test")
+                ),
+            ),
+            cfg,
+        )
+        val e = gebucht.entries.getValue(id)
+        assertEquals(0.0, e.accountedAmountU!!, 1e-12) { "Ausgangslage: die Buchung ist zurueckgenommen" }
+        assertNotNull(e.firstAccountedSnapshotHash) { "aber die Provenienz steht" }
+
+        // So saehe die Zeile aus einer v2-Datei aus.
+        val alsAlt = gebucht.copy(
+            entries = gebucht.entries.mapValues { (_, x) -> x.copy(lastPositiveFactTs = null) }
+        )
+        assertEquals(jetzt, LedgerCodec.migrateToCurrent(alsAlt, jetzt).entries.getValue(id).lastPositiveFactTs) {
+            "der Fakt EXISTIERTE - die Migration muss konservativ datieren, nicht auf null lassen"
+        }
+    }
+
     /** Die Haftung darf durch die Migration NIE kleiner werden - das ist die
      *  Eigenschaft, wegen der es den Hold ueberhaupt gab. */
     @Test

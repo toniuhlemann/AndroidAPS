@@ -115,26 +115,49 @@ object LedgerCodec {
     /**
      * MIGRATION nach [RECONCILIATION_VERSION] - konservativ und beweisbar.
      *
-     * Zu fuellen ist genau ein Feld: `lastPositiveFactTs`. Was laesst sich
-     * ueber eine Altzeile BEWEISEN?
+     * Zu fuellen ist genau ein Feld: `lastPositiveFactTs`. Die Frage ist, ob
+     * es JEMALS einen positiven Fakt gab - nicht, ob gerade einer da ist.
      *
-     *  - Traegt sie eine Buchung (`accountedAmountU > eps`), dann hat es einen
-     *    positiven Fakt gegeben - nur nicht, WANN. Der spaetestmoegliche
-     *    Zeitpunkt ist jetzt. Ihn zu waehlen verlaengert die Wirkfrist
-     *    maximal und ist damit die konservative Richtung: die Haftung wird
-     *    durch die Migration nie kleiner.
-     *  - Traegt sie keine, gab es nie einen positiven Fakt. `null` ist dann
-     *    die WAHRE Aussage, und die Frist laeuft ab `decisionTs` - genau wie
-     *    ohne Migration.
+     * DIESE UNTERSCHEIDUNG WAR IM ERSTEN ANLAUF FALSCH (Codex-Re-Review
+     * 10.08., P0). Sie las `accountedAmountU`, also den AKTUELLEN Stand. Der
+     * Reducer setzt den aber auf 0 zurueck, sobald ein zuvor nachgewiesener
+     * Fakt aus der Vollsicht verschwindet (R91-F1). Eine solche Zeile HATTE
+     * einen Fakt und haette bei der Migration trotzdem `null` bekommen - ihre
+     * Wirkfrist waere ab `decisionTs` gelaufen und damit moeglicherweise zu
+     * frueh abgelaufen. Genau die Richtung, gegen die die ganze B1-Arbeit
+     * steht.
      *
-     * Damit ist die Migration eine reine Funktion des Altzustands; sie raet
-     * nichts und verliert nichts. Sie darf beliebig oft laufen: auf einer
-     * bereits migrierten Generation ist sie die Identitaet.
+     * Massgeblich sind deshalb die HISTORISCHEN Spuren, die der Reducer
+     * ausdruecklich stehen laesst:
+     *
+     *  - `firstAccountedSnapshotHash` - der ERSTE Nachweis, reine Provenienz;
+     *    er ueberlebt das Zuruecknehmen der Buchung.
+     *  - `accountedAmountU` - der aktuelle Stand.
+     *  - `amounts.dbAccountedU` - die einmal im Datensatz gesehene Menge.
+     *
+     * Eine davon genuegt: der Fakt existierte, unbekannt ist nur WANN. Der
+     * spaetestmoegliche Zeitpunkt ist jetzt; ihn zu waehlen verlaengert die
+     * Wirkfrist maximal und macht die Haftung nie kleiner.
+     *
+     * Fehlen alle drei, gab es nie einen positiven Fakt. `null` ist dann die
+     * WAHRE Aussage und die Frist laeuft ab `decisionTs` - wie ohne Migration.
+     *
+     * IDEMPOTENZ, genau: auf einer bereits MIGRIERTEN Generation ist die
+     * Funktion die Identitaet (das Feld ist gesetzt und wird nicht angefasst).
+     * Zweimal auf DERSELBEN ALTEN Generation mit verschiedenem `nowTs`
+     * ausgefuehrt liefert sie dagegen verschiedene Zeitstempel - das ist kein
+     * Widerspruch, sondern die Folge davon, dass "jetzt" der einzige
+     * konservative Ersatz fuer eine unbekannte Zeit ist. In der Praxis kann
+     * das nicht auftreten: nach dem ersten gelungenen Lauf liegt die
+     * migrierte Generation auf Platte.
      */
     fun migrateToCurrent(state: LedgerState, nowTs: Long): LedgerState = state.copy(
         entries = state.entries.mapValues { (_, e) ->
+            val gabEsJeEinenFakt = e.firstAccountedSnapshotHash != null ||
+                (e.accountedAmountU ?: 0.0) > e.amountEpsU ||
+                (e.amounts.dbAccountedU ?: 0.0) > e.amountEpsU
             if (e.lastPositiveFactTs != null) e
-            else if ((e.accountedAmountU ?: 0.0) > e.amountEpsU) e.copy(lastPositiveFactTs = nowTs)
+            else if (gabEsJeEinenFakt) e.copy(lastPositiveFactTs = nowTs)
             else e
         }
     )

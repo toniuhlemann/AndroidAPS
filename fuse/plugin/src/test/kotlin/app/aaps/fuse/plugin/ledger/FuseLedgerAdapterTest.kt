@@ -668,6 +668,69 @@ class FuseLedgerAdapterTest {
         ) { "die Datei auf Platte ist danach wirklich v3" }
     }
 
+    /**
+     * ABGESCHRIEBENE ZEILEN durch die Migration: Flag und Befund bleiben,
+     * Haftung bleibt null, und sie verankert kein Abfragefenster.
+     *
+     * Sie sind der Fall, der NIE verschwindet (prune behaelt fehlertragende
+     * Zeilen absichtlich). Genau deshalb muessen sie migrierbar sein - sonst
+     * waere der Hold fuer jeden, der je eine Phantomzeile hatte, dauerhaft.
+     */
+    @Test
+    fun `abgeschriebene Zeilen ueberstehen die Migration und blockieren nicht`(@TempDir dir: File) {
+        val a = loadedAdapter(dir)
+        a.publishVs("leiche", 0.20, ts = t0 - 19 * 3600_000L)
+        a.prune(t0, 9.0)
+        assertEquals(1, a.unresolvedBeyondActionCount()) { "Ausgangslage: abgeschrieben mit Befund" }
+        assertTrue(a.persistVerified(dir))
+
+        val target = File(dir, FuseLedgerStore.FILE_NAME)
+        val tampered = org.json.JSONObject(target.readText())
+        tampered.put("v", 1)
+        tampered.remove("proposalPumpEpochs")
+        target.writeText(tampered.toString())
+
+        val b = FuseLedgerAdapter().also { it.loadOnce(dir, "epoch-b", t0 + 60_000L) }
+
+        assertFalse(b.recoveryHold) { "eine abgeschriebene Zeile darf den Betrieb nicht dauerhaft sperren" }
+        assertEquals(1, b.unresolvedBeyondActionCount()) { "der Befund bleibt erhalten" }
+        assertTrue(b.state.entries.getValue("leiche").expiredBeyondAction) { "und das Flag auch" }
+        assertEquals(0.0, b.view().transportCommitmentU, 1e-9) { "die Haftung bleibt null" }
+        assertNull(b.oldestReconcilableTs()) { "und sie verankert kein Abfragefenster" }
+    }
+
+    /**
+     * CRASH-MATRIX der Dateirotation. Alle drei Kombinationen tragen dieselbe
+     * REVISION - die Auswahl darf also nicht darauf hereinfallen, sondern muss
+     * die v3-Generation waehlen und darf keinen dauerhaften Hold erzeugen.
+     */
+    @Test
+    fun `die Crash-Matrix waehlt die v3-Generation`(@TempDir dir: File) {
+        // Eine gueltige v3-Generation und ihr v1-Zwilling mit gleicher Revision.
+        val a = loadedAdapter(dir)
+        a.publishVs("p1", 0.30, t0)
+        assertTrue(a.persistVerified(dir))
+        val v3 = File(dir, FuseLedgerStore.FILE_NAME).readText()
+        val v1 = org.json.JSONObject(v3).also { it.put("v", 1); it.remove("proposalPumpEpochs") }.toString()
+
+        fun lage(name: String, haupt: String?, tmp: String?, bak: String?) {
+            val d = File(dir, name).also(File::mkdirs)
+            haupt?.let { File(d, FuseLedgerStore.FILE_NAME).writeText(it) }
+            tmp?.let { File(d, "${FuseLedgerStore.FILE_NAME}.tmp").writeText(it) }
+            bak?.let { File(d, "${FuseLedgerStore.FILE_NAME}.bak").writeText(it) }
+            val l = FuseLedgerAdapter().also { it.loadOnce(d, "epoch-x", t0 + 60_000L) }
+            assertFalse(l.recoveryHold) { "$name: kein dauerhafter Hold" }
+            assertEquals(0.30, l.view().transportCommitmentU, 1e-9) { "$name: Haftung erhalten" }
+        }
+
+        // Absturz NACH dem tmp-Schreiben, VOR dem Austausch.
+        lage("tmp-neu-haupt-alt", haupt = v1, tmp = v3, bak = null)
+        // Absturz mitten in der Rotation - nur tmp neu, bak alt.
+        lage("tmp-neu-bak-alt", haupt = null, tmp = v3, bak = v1)
+        // Absturz NACH dem Austausch, bak noch alt.
+        lage("haupt-neu-bak-alt", haupt = v3, tmp = null, bak = v1)
+    }
+
     /** WIEDERHOLBAR: ein zweiter Start auf der migrierten Generation findet
      *  nichts mehr zu tun. Eine Migration, die beim zweiten Lauf etwas anderes
      *  tut, waere keine. */
