@@ -385,6 +385,10 @@ class FusePlugin @Inject constructor(
             cycleRunner().run(tempBasalFallback)
         } catch (e: Exception) {
             aapsLogger.error(LTag.APS, "FUSE cycle failed", e)
+            // SUB-02 Rest (Codex Re-Review 603a15a): eine Ausnahme umgeht das
+            // interne abort() und liesse den Puls-Uebertrag stehen - eine
+            // Zusage aus einem Zyklus, der nie zu Ende gerechnet wurde.
+            runCatching { cycleRunner().discardSubStepCarry() }
             null
         }
         warmGraphRingOnce()
@@ -607,7 +611,6 @@ class FusePlugin @Inject constructor(
             .put(FuseDoubleKey.TailFloorMgdl, preferences)
             .put(FuseDoubleKey.TailRecoveryU, preferences)
             .put(FuseDoubleKey.BolusShareLambda, preferences)
-            .put(FuseDoubleKey.BolusShareLambdaMeal, preferences)
             .put(FuseDoubleKey.OnsetEnvelopeU, preferences)
             .put(FuseBooleanKey.OnsetChannelEnabled, preferences)
             .put(FuseBooleanKey.PrimeReleaseEnabled, preferences)
@@ -633,7 +636,6 @@ class FusePlugin @Inject constructor(
             .store(FuseDoubleKey.TailFloorMgdl, preferences)
             .store(FuseDoubleKey.TailRecoveryU, preferences)
             .store(FuseDoubleKey.BolusShareLambda, preferences)
-            .store(FuseDoubleKey.BolusShareLambdaMeal, preferences)
             .store(FuseDoubleKey.OnsetEnvelopeU, preferences)
             .store(FuseBooleanKey.OnsetChannelEnabled, preferences)
             .store(FuseBooleanKey.PrimeReleaseEnabled, preferences)
@@ -729,7 +731,6 @@ class FusePlugin @Inject constructor(
             addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.RiseRampLowR, dialogMessage = R.string.fuse_ramp_summary, title = R.string.fuse_ramp_low_title))
             addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.RiseRampHighR, dialogMessage = R.string.fuse_ramp_summary, title = R.string.fuse_ramp_high_title))
             addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.BolusShareLambda, dialogMessage = R.string.fuse_bolus_share_lambda_summary, title = R.string.fuse_bolus_share_lambda_title))
-            addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.BolusShareLambdaMeal, dialogMessage = R.string.fuse_bolus_share_lambda_meal_summary, title = R.string.fuse_bolus_share_lambda_meal_title))
             addPreference(AdaptiveSwitchPreference(ctx = context, booleanKey = FuseBooleanKey.FastRestraintEnabled, summary = R.string.fuse_restraint_summary, title = R.string.fuse_restraint_title))
             addPreference(AdaptiveIntPreference(ctx = context, intKey = FuseIntKey.ReleaseHorizonMin, dialogMessage = R.string.fuse_release_horizon_summary, title = R.string.fuse_release_horizon_title))
             addPreference(AdaptiveIntPreference(ctx = context, intKey = FuseIntKey.DriveTauMin, dialogMessage = R.string.fuse_drive_tau_summary, title = R.string.fuse_drive_tau_title))

@@ -653,17 +653,6 @@ class FuseCycleRunner(
         // der Stufen-Huelle - was die Episode schon geliefert hat (Sofort-
         // Freigabe ODER Rampe), zieht ihn herunter: EINE Huelle fuer beide
         // Pfade, die Erklaerung verbraucht sich selbst.
-        // GEMESSEN 09.08. 11:32: das Mahlzeiten-Lambda hing am markerBoost und
-        // dessen 45-min-Kappe. Bei BG 202 und r 3,6 - also mitten im Anstieg,
-        // ohne jede Wende - sprang der Abschlag zurueck auf 1,0, das
-        // Schwanzbudget kippte auf -0,16 und der Block wurde GUARD_FLOOR.
-        // Eine Stoppuhr ist das falsche Kriterium: die Praemisse des Abschlags
-        // ("die Stoerung koennte mein eigenes Insulin sein") kehrt nicht nach
-        // 45 Minuten zurueck, sondern wenn der Zucker WENDET. Bis dahin ist die
-        // erklaerte Mahlzeit die Ursache. Danach gilt wieder voller Zweifel -
-        // und genau dort beginnt das Nachlauf-Risiko, gegen das er gebaut ist.
-        val mealDiscountRelief = mealMarkerActive && episodes.markerTurnTs == 0L
-
         val mealDeliveredU = if (markerTs > 0) episodes.mealDeliveries.sumOf { it.second } else 0.0
         val declaredDrive = if (markerBoost) MarkerScope.declaredAbsorptionDriveMgdlPerMin(
             envelopeU = tierEnvelopeU,
@@ -672,7 +661,7 @@ class FuseCycleRunner(
             windowMin = cfg.absorptionCreditWindowMin.toDouble(),
         ) else 0.0
 
-        val built = when (val b = CoreInputGuard.build { buildPredictorInput(signal, profile, cfg, band, bolusActivityUPerMin, if (onset.active) onset.driveMgdlPerMin else null, reboundWindow, markerBoost, mealDiscountRelief, declaredDrive, pending) }) {
+        val built = when (val b = CoreInputGuard.build { buildPredictorInput(signal, profile, cfg, band, bolusActivityUPerMin, if (onset.active) onset.driveMgdlPerMin else null, reboundWindow, markerBoost, declaredDrive, pending) }) {
             is CoreInputGuard.Outcome.Built  -> b.value ?: return abort("input incomplete", signal, cfg, step)
             is CoreInputGuard.Outcome.Failed -> return abort("input: ${b.failure.detail}", signal, cfg, step)
         }
@@ -1255,6 +1244,20 @@ class FuseCycleRunner(
      */
     private var subStepCarryU = 0.0
 
+    /**
+     * Den Puls-Uebertrag von AUSSEN verwerfen.
+     *
+     * SUB-02 Rest (Codex Re-Review 603a15a): `abort()` deckt jeden Ausgang
+     * INNERHALB von [run] ab - eine Ausnahme, die bis zum Plugin
+     * durchschlaegt, umgeht ihn aber. Der Uebertrag ist eine Zusage an einen
+     * Zyklus, der nicht zu Ende gerechnet wurde; er darf den naechsten nicht
+     * finanzieren. Idempotent, damit der Aufrufer nicht wissen muss, ob
+     * `abort()` schon gegriffen hat.
+     */
+    fun discardSubStepCarry() {
+        subStepCarryU = 0.0
+    }
+
     data class MealStats(val sinceMin: Int, val totalU: Double, val first30U: Double, val first60U: Double)
 
     private fun fastDrive(signal: FuseSignalSource.Signal): Double? {
@@ -1363,7 +1366,6 @@ class FuseCycleRunner(
         val tailRecoveryU: Double,
         val fastRestraintEnabled: Boolean,
         val bolusShareLambda: Double,
-        val bolusShareLambdaMeal: Double,
         val onsetChannelEnabled: Boolean,
         val onsetEnvelopeU: Double,
         val primeReleaseEnabled: Boolean,
@@ -1404,7 +1406,6 @@ class FuseCycleRunner(
         tailRecoveryU = preferences.get(FuseDoubleKey.TailRecoveryU),
         fastRestraintEnabled = preferences.get(FuseBooleanKey.FastRestraintEnabled),
         bolusShareLambda = preferences.get(FuseDoubleKey.BolusShareLambda),
-        bolusShareLambdaMeal = preferences.get(FuseDoubleKey.BolusShareLambdaMeal),
         onsetChannelEnabled = preferences.get(FuseBooleanKey.OnsetChannelEnabled),
         onsetEnvelopeU = preferences.get(FuseDoubleKey.OnsetEnvelopeU),
         primeReleaseEnabled = preferences.get(FuseBooleanKey.PrimeReleaseEnabled),
@@ -1440,7 +1441,6 @@ class FuseCycleRunner(
         require(it.tailFloorMgdl.isFinite() && it.tailFloorMgdl in 40.0..120.0) { "tailFloor=${it.tailFloorMgdl}" }
         require(it.tailRecoveryU.isFinite() && it.tailRecoveryU in 0.0..5.0) { "tailRecovery=${it.tailRecoveryU}" }
         require(it.bolusShareLambda.isFinite() && it.bolusShareLambda in 0.0..2.0) { "bolusShareLambda=${it.bolusShareLambda}" }
-        require(it.bolusShareLambdaMeal.isFinite() && it.bolusShareLambdaMeal in 0.0..2.0) { "bolusShareLambdaMeal=${it.bolusShareLambdaMeal}" }
         require(it.onsetEnvelopeU.isFinite() && it.onsetEnvelopeU in 0.0..5.0) { "onsetEnvelope=${it.onsetEnvelopeU}" }
         require(it.primeEnvelopeU.isFinite() && it.primeEnvelopeU in 0.0..2.0) { "primeEnvelope=${it.primeEnvelopeU}" }
         require(it.primeEnvelopeSmallU.isFinite() && it.primeEnvelopeSmallU in 0.0..1.2) { "primeSmall=${it.primeEnvelopeSmallU}" }
@@ -1470,10 +1470,6 @@ class FuseCycleRunner(
         onsetDriveMgdlPerMin: Double?,
         reboundWindow: Boolean,
         mealMarkerActive: Boolean,
-        /** Nur fuer den Bolus-Abschlag: angesagte Mahlzeit OHNE Wende. Bewusst
-         *  getrennt von [mealMarkerActive] (= markerBoost, 45-min-Kappe), damit
-         *  der Abschlag nicht an einer Stoppuhr endet - s. Aufrufstelle. */
-        mealDiscountRelief: Boolean,
         /** ERKLAERTE ABSORPTION (Toni 09.08.): erwarteter Anstieg aus der
          *  Marker-Stufe [mg/dl/min], 0 wenn kein Kredit gilt. Wirkt NUR auf
          *  der Mittelbahn - s. MarkerScope.declaredAbsorptionDriveMgdlPerMin. */
@@ -1556,15 +1552,24 @@ class FuseCycleRunner(
             bandLowerMgdlPerMin = band.lower,
             bolusActivityUPerMin = bolusActivityUPerMin,
             isfMgdlPerU = signal.isfAtAnchor,
-            // MAHLZEITEN-LAMBDA (09.08.): waehrend eines angesagten Markers
-            // gilt der eigene Wert. Der Abschlag ist ein Mittel gegen die
-            // naechtliche Selbstverstaerkung - "die Stoerung koennte mein
-            // eigenes Insulin sein". Bei erklaerten Kohlenhydraten ist die
-            // Ursache bekannt, die Praemisse also unzutreffend, und der
-            // Abschlag blockiert nur noch. Kein Boden wird angehoben: die
-            // Zertifikate rechnen unveraendert prior-frei, sie bekommen
-            // lediglich keinen kuenstlich verdoppelten Sturz mehr vorgesetzt.
-            lambda = if (mealDiscountRelief) cfg.bolusShareLambdaMeal else cfg.bolusShareLambda,
+            // ZURUECKGENOMMEN 09.08. (Codex Re-Review 603a15a, P0 Nr. 4).
+            // Ich hatte hier ein eigenes Mahlzeiten-Lambda verdrahtet mit der
+            // Begruendung, der Abschlag sei eine MODELLANNAHME und der Marker
+            // korrigiere sie. Das war falsch: der Abschlag wirkt
+            // ausschliesslich auf die UNTERE Bahn, und die hat genau einen
+            // Verbraucher - den Hypo-Guard (s. KDoc unten). Es gibt also gar
+            // keinen Bedarfsanteil, den ein Mahlzeiten-Lambda korrigieren
+            // koennte; seine gesamte Wirkung waere das Anheben der
+            // PRIOR-FREIEN Sicherheitsbahn per Knopfdruck. Genau das verbietet
+            // H2 ("a marker may create demand evidence, not protection").
+            //
+            // Der gemessene Anlass (09.08. 10:46, Guard sperrte die angesagte
+            // Mahlzeit um 0,9 mg/dl) bleibt gueltig - aber seine Ursache ist
+            // die COB-BLINDHEIT, nicht der Abschlag. Der Abschlag rechnet
+            // korrekt: er kreditiert nur die Basal-Aktivitaet und laesst die
+            // Bolus-Wirkung als real stehen. Das ist fuer einen Regler ohne
+            // Kohlenhydrat-Wissen der ehrliche schlechteste Fall.
+            lambda = cfg.bolusShareLambda,
         )
 
         return Built(

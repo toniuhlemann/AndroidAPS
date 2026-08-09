@@ -103,14 +103,30 @@ object SignalWindow {
     const val INPUT_STEP_MGDL = 20.0
 
     /**
-     * Bis zu welchem Abstand ein Sprung als Sprung zaehlt.
+     * Bis zu welchem Abstand ueberhaupt gesucht wird.
      *
-     * Darueber bricht das Segment ohnehin ([BgiAdjustedSeries.SEGMENT_BREAK_MS]),
-     * dort braucht es die Pruefung nicht - dieselbe Grenze, damit zwischen
-     * beiden Regeln kein ungedecktes Band bleibt (der Fehler, den C9 in der
-     * Zustandsmaschine hatte).
+     * Grosszuegig: der Ausschluss kommt jetzt ueber die RATE, nicht ueber eine
+     * harte Zeitkante. Jenseits davon ist die Reihe so lueckenhaft, dass der
+     * Begriff "Sprung" nichts mehr traegt.
      */
-    const val STEP_MAX_GAP_MS = BgiAdjustedSeries.SEGMENT_BREAK_MS
+    const val STEP_MAX_GAP_MS = 20 * 60_000L
+
+    /**
+     * Ab welcher Rate ein Unterschied kein Zucker mehr sein kann [mg/dl/min].
+     *
+     * WARUM NICHT MEHR DIE 3-MINUTEN-KANTE (Codex Re-Review 603a15a, C9-01
+     * Rest): die alte Regel liess bei dt = 3,1 min die Pruefung aus - der
+     * Abstand lag knapp ueber der Segmentgrenze, also griff weder die
+     * Sprungerkennung noch (fuer Q1) der Segmentbruch, und Q1 rechnete ueber
+     * den Sprung hinweg. Eine harte Zeitkante hat immer so ein Band; eine
+     * RATE hat keins.
+     *
+     * 5 mg/dl/min: ein anhaltender physiologischer Anstieg erreicht das nicht
+     * (typisch bis 4). 20 mg/dl in 3,1 min sind 6,45 - Sprung. 20 mg/dl in
+     * 5 min sind 4,0 - eine schnelle, aber moegliche Mahlzeit, kein Sprung.
+     * Beide Bedingungen muessen gelten: absolute Hoehe UND Rate.
+     */
+    const val STEP_MIN_RATE_MGDL_PER_MIN = 5.0
 
     /**
      * Der Beginn des juengsten Abschnitts OHNE Sprung.
@@ -127,7 +143,9 @@ object SignalWindow {
             val dt = ascending[i].tsMs - ascending[i - 1].tsMs
             if (dt <= 0L || dt > STEP_MAX_GAP_MS) continue
             val jump = ascending[i].value - ascending[i - 1].value
-            if (jump >= INPUT_STEP_MGDL || jump <= -INPUT_STEP_MGDL) return ascending[i].tsMs
+            val abs = if (jump < 0.0) -jump else jump
+            val dtMin = dt / 60_000.0
+            if (abs >= INPUT_STEP_MGDL && abs / dtMin >= STEP_MIN_RATE_MGDL_PER_MIN) return ascending[i].tsMs
         }
         return null
     }

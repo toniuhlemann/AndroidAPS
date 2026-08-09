@@ -102,26 +102,6 @@ enum class FuseDoubleKey(
      */
     BolusShareLambda("fuse_bolus_share_lambda", 1.0, 0.0, 2.0),
 
-    /**
-     * Derselbe Abschlag WAEHREND einer angesagten Mahlzeit.
-     *
-     * GEMESSEN 09.08. 10:46-11:03 (Schoko-Muesli, L-Marker): r fiel auf
-     * -0,695, der Abschlag zog mit lambda 1,0 weitere -0,664 ab und
-     * VERDOPPELTE damit den modellierten Sturz. minLower stuerzte auf 20
-     * gegen Boden 70 - ohne den Abschlag haette die Bahn bei rund 93
-     * gelegen und der Guard waere offen gewesen. Die Mahlzeit bekam nichts.
-     *
-     * Warum das kein Aufweichen der Sicherheit ist: der Abschlag stellt die
-     * Frage "was, wenn die Stoerung nur mein eigenes Insulin war?" - eine
-     * Frage gegen die naechtliche SELBSTVERSTAERKUNG (s. [DriveDiscount],
-     * Nacht 06./07.08.). Bei einer ANGESAGTEN Mahlzeit hat die Stoerung eine
-     * erklaerte physische Ursache; die Praemisse trifft nicht zu. Der Marker
-     * hebt hier keinen Boden an, er berichtigt einen bekannt falschen
-     * EINGANG des Guards.
-     *
-     * AUS-Stellung: denselben Wert wie [BolusShareLambda] eintragen.
-     */
-    BolusShareLambdaMeal("fuse_bolus_share_lambda_meal", 0.0, 0.0, 2.0),
 
     /**
      * Haftungshuelle des Onset-Kanals [U]: hoechstens so viel darf der

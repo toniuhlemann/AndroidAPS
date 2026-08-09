@@ -429,7 +429,6 @@ object FuseStateJson {
         .put("riseRampLowR", fin(p.riseRampLowR))
         .put("riseRampHighR", fin(p.riseRampHighR))
         .put("bolusShareLambda", fin(p.bolusShareLambda))
-        .put("bolusShareLambdaMeal", fin(p.bolusShareLambdaMeal))
         .put("onsetChannelEnabled", p.onsetChannelEnabled)
         .put("onsetEnvelopeU", fin(p.onsetEnvelopeU))
         .put("primeReleaseEnabled", p.primeReleaseEnabled)
@@ -449,9 +448,6 @@ object FuseStateJson {
             // Rampe + Abschlag: fehlten bis v1 - zwei Laeufe mit verschiedenen
             // Rampen bekamen denselben Hash (Audit 07.08.). Version 1->2.
             p.riseRampLowR, p.riseRampHighR, p.bolusShareLambda, p.onsetEnvelopeU, p.primeEnvelopeU,
-            // Mahlzeiten-Lambda (09.08.): ohne ihn haetten zwei Laeufe mit
-            // verschiedenem Mahlzeitenverhalten denselben Hash.
-            p.bolusShareLambdaMeal,
             p.primeEnvelopeSmallU, p.primeEnvelopeLargeU,
         )
         if (doubles.any { !it.isFinite() }) return null
