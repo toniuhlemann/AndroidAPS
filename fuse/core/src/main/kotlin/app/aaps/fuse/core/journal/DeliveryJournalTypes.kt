@@ -113,6 +113,18 @@ enum class AmbiguityBoundary {
  * Deshalb ist diese Liste kurz UND soll kurz bleiben: ein neuer Wert ist die
  * Behauptung, einen weiteren beweisbaren Pfad gefunden zu haben, und gehoert
  * mit Fundstelle belegt.
+ *
+ * NICHT ENDGUELTIG. Die beiden Werte beschreiben den Treiber, wie er HEUTE
+ * ist. Zwei Konstruktionsfehler des Sendewegs verlangen einen eigenen
+ * Veto-Punkt vor dem Write - der verzoegerte Write kann eine
+ * Verbindungsgrenze ueberschreiten (es gibt kein removeCallbacks), und ein
+ * verspaeteter Fehler-Callback kann aus einem frischen IdleState heraus den
+ * alten Bolus wiederholen. Ein Veto, das FUSE SELBST ausuebt, ist der am
+ * besten belegbare Nullbeweis ueberhaupt: wir haben den Write verhindert und
+ * wissen es. Mindestens ein dritter Wert entsteht also noch.
+ *
+ * Bewusst NICHT vorweggenommen: ein Wert ohne den Code, der ihn erzeugt, waere
+ * genau das, wogegen die geschlossene Liste gebaut ist.
  */
 enum class RefusalSource {
 
