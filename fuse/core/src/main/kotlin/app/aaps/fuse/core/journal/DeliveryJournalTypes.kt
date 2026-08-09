@@ -101,6 +101,45 @@ enum class AmbiguityBoundary {
 }
 
 /**
+ * WER die Aussage "nicht geschrieben" verantwortet.
+ *
+ * GESCHLOSSEN, und zwar aus einem Grund: je ein Wert je Treiberpfad, an dem
+ * das Ausbleiben des Schreibvorgangs BELEGBAR ist. Der Integrationspass B1.1
+ * hat den Medtrum-Sendeweg dafuer vollstaendig ausgelesen und genau zwei
+ * solche Pfade gefunden. Ein Freitextfeld haette jederzeit einen dritten
+ * erlaubt, den niemand am Code geprueft hat - und eine unbelegte Entlastung
+ * nimmt Insulin aus der Haftung.
+ *
+ * Deshalb ist diese Liste kurz UND soll kurz bleiben: ein neuer Wert ist die
+ * Behauptung, einen weiteren beweisbaren Pfad gefunden zu haben, und gehoert
+ * mit Fundstelle belegt.
+ */
+enum class RefusalSource {
+
+    /**
+     * `BLEComm.kt:430-431`: Adapter oder Gatt-Objekt war beim Ausfuehren des
+     * Write-Runnables null, also lief `handleNotInitialized()`.
+     *
+     * Beweisbar, weil der einzige Aufruf an das Betriebssystem (`:436`) im
+     * else-Zweig desselben `if` steht. Der Zweig schliesst ihn strukturell
+     * aus - kein Byte verlaesst den Prozess.
+     */
+    GATT_NOT_INITIALIZED_BEFORE_CALL,
+
+    /**
+     * `BLEComm.kt:436`: der Safe-Call `mBluetoothGatt?.writeCharacteristic(..)`
+     * lieferte `null`, das Gatt-Objekt wurde also zwischen der Pruefung (`:430`)
+     * und dem Aufruf (`:436`) von `close()` genullt.
+     *
+     * Beweisbar aus einer SPRACHGARANTIE, nicht aus einer Plattformzusage: bei
+     * null-Empfaenger wird die Methode nicht betreten. Genau deshalb steht der
+     * Fall `false` NICHT in dieser Liste - der waere ein Versprechen von AOSP,
+     * und ein Versprechen ist kein Beweis.
+     */
+    GATT_HANDLE_NULL_AT_CALL,
+}
+
+/**
  * EIN physischer Sendeversuch.
  *
  * [attempt] zaehlt ab 1 und deckt ausdruecklich auch die automatischen
@@ -132,18 +171,18 @@ data class SendAttempt(
      * Quelle: sie kommt vom Betriebssystem, das keine nennt - und sie ist
      * belastend, also die unkritische Richtung.
      */
-    val resolvedSource: String? = null,
+    val resolvedSource: RefusalSource? = null,
 ) {
 
     init {
         require((boundary == AmbiguityBoundary.REFUSED) == (resolvedSource != null)) {
             "only a refusal carries a source, and it must: boundary=$boundary source=$resolvedSource"
         }
-        // Leer ist keine Quelle - dieselbe Regel wie ueberall in diesem
-        // Projekt. Ein Freitextfeld bleibt es nur bis zum Integrationspass;
-        // danach wird daraus ein geschlossenes Enum der real belegbaren
-        // Treiberpfade.
-        require(resolvedSource == null || resolvedSource.isNotBlank()) { "resolvedSource must not be blank" }
+        // Eine Blank-Pruefung braucht es hier nicht mehr: seit dem
+        // Integrationspass ist die Quelle ein geschlossenes Enum, und ein
+        // unbelegter Wert laesst sich gar nicht mehr hinschreiben. Das ist der
+        // Unterschied zwischen "wir pruefen den Wert" und "der falsche Wert
+        // existiert nicht" - dieselbe Lehre wie beim leeren Serial.
         require(attempt >= 1) { "attempt counts from 1, was $attempt" }
         require(startedAtTs > 0L) { "startedAtTs must be a real timestamp" }
         // Zustand und Zeitstempel muessen sich einig sein - eine Entscheidung

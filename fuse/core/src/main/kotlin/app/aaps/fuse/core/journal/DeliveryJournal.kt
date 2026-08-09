@@ -65,7 +65,7 @@ object DeliveryJournal {
          * nie von selbst - weder durch Vorbelegung noch durch Zeitablauf.
          * Wer dieses Ereignis bucht, behauptet Wissen und muss es haben.
          */
-        data class WriteRefused(val requestId: String, val attempt: Int, val atTs: Long, val source: String) : Event
+        data class WriteRefused(val requestId: String, val attempt: Int, val atTs: Long, val source: RefusalSource) : Event
 
         /** Erste Phase der Identitaet. */
         data class TemporaryIdObserved(val requestId: String, val temporaryId: Long) : Event

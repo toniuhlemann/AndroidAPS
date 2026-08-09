@@ -145,7 +145,7 @@ class DeliveryJournalTest {
         val s = angelegt()
             .dann(
                 DeliveryJournal.Event.SendAttemptStarted("r1", 1, t0),
-                DeliveryJournal.Event.WriteRefused("r1", 1, t0 + 2, "gate reject before write"),
+                DeliveryJournal.Event.WriteRefused("r1", 1, t0 + 2, RefusalSource.GATT_NOT_INITIALIZED_BEFORE_CALL),
             ).state
         assertFalse(s.r().mayHaveReachedPump)
         assertEquals(DeliveryOutcome.ATTEMPTED, s.r().outcome)
@@ -159,7 +159,7 @@ class DeliveryJournalTest {
         val s = angelegt()
             .dann(
                 DeliveryJournal.Event.SendAttemptStarted("r1", 1, t0),
-                DeliveryJournal.Event.WriteRefused("r1", 1, t0 + 2, "driver said false"),
+                DeliveryJournal.Event.WriteRefused("r1", 1, t0 + 2, RefusalSource.GATT_HANDLE_NULL_AT_CALL),
                 DeliveryJournal.Event.WriteAccepted("r1", 1, t0 + 3),
             ).state
         assertTrue(s.r().mayHaveReachedPump)
@@ -182,7 +182,10 @@ class DeliveryJournalTest {
                 DeliveryJournal.Event.SendAttemptStarted("r1", 2, t0 + 20),
             ).state
 
-        val versuch = DeliveryJournal.reduce(s, DeliveryJournal.Event.ProvenNotSent("r1", t0 + 30, "gate reject"))
+        // ProvenNotSent traegt bewusst NOCH eine freie Quelle: das ist die
+        // Auftrags-Achse, ihre Pfade liegen groesstenteils oberhalb des
+        // Treibers und sind noch nicht abschliessend ausgelesen.
+        val versuch = DeliveryJournal.reduce(s, DeliveryJournal.Event.ProvenNotSent("r1", t0 + 30, "loop gab den Auftrag auf"))
         assertFalse(versuch.applied)
         assertEquals(DeliveryJournal.Rejection.NOT_SENT_WHILE_ATTEMPT_UNRESOLVED, versuch.rejection)
         assertEquals(DeliveryOutcome.AMBIGUOUS, versuch.state.r().outcome)
@@ -213,7 +216,7 @@ class DeliveryJournalTest {
         val s = angelegt()
             .dann(
                 DeliveryJournal.Event.SendAttemptStarted("r1", 1, t0),
-                DeliveryJournal.Event.WriteRefused("r1", 1, t0 + 3, "gate reject before write"),
+                DeliveryJournal.Event.WriteRefused("r1", 1, t0 + 3, RefusalSource.GATT_NOT_INITIALIZED_BEFORE_CALL),
                 DeliveryJournal.Event.ProvenNotSent("r1", t0 + 5, "pre-send gate reject"),
             ).state
         assertEquals(DeliveryOutcome.PROVEN_NOT_SENT, s.r().outcome)
@@ -392,7 +395,7 @@ class DeliveryJournalTest {
         val s = angelegt()
             .dann(
                 DeliveryJournal.Event.SendAttemptStarted("r1", 1, t0),
-                DeliveryJournal.Event.WriteRefused("r1", 1, t0 + 1, "gate reject before write"),
+                DeliveryJournal.Event.WriteRefused("r1", 1, t0 + 1, RefusalSource.GATT_NOT_INITIALIZED_BEFORE_CALL),
             ).state
         assertFalse(s.r().mayHaveReachedPump)
         assertNull(DeliveryJournal.mayAttempt(s, "r1"))
@@ -486,7 +489,7 @@ class DeliveryJournalTest {
         val s = angelegt()
             .dann(
                 DeliveryJournal.Event.SendAttemptStarted("r1", 1, t0),
-                DeliveryJournal.Event.WriteRefused("r1", 1, t0 + 1, "driver said false"),
+                DeliveryJournal.Event.WriteRefused("r1", 1, t0 + 1, RefusalSource.GATT_HANDLE_NULL_AT_CALL),
                 DeliveryJournal.Event.ProvenNotSent("r1", t0 + 2, "reject"),
             ).state
         assertEquals(DeliveryOutcome.PROVEN_NOT_SENT, s.r().outcome)
@@ -514,7 +517,7 @@ class DeliveryJournalTest {
         val s = angelegt()
             .dann(
                 DeliveryJournal.Event.SendAttemptStarted("r1", 1, t0),
-                DeliveryJournal.Event.WriteRefused("r1", 1, t0 + 3, "driver said false"),
+                DeliveryJournal.Event.WriteRefused("r1", 1, t0 + 3, RefusalSource.GATT_HANDLE_NULL_AT_CALL),
                 DeliveryJournal.Event.ProvenNotSent("r1", t0 + 5, "pre-send gate reject"),
             ).state
         assertEquals(DeliveryOutcome.PROVEN_NOT_SENT, s.r().outcome)
@@ -652,7 +655,7 @@ class DeliveryJournalTest {
         val s = angelegt()
             .dann(
                 DeliveryJournal.Event.SendAttemptStarted("r1", 1, t0),
-                DeliveryJournal.Event.WriteRefused("r1", 1, t0 + 1, "gate reject"),
+                DeliveryJournal.Event.WriteRefused("r1", 1, t0 + 1, RefusalSource.GATT_NOT_INITIALIZED_BEFORE_CALL),
                 DeliveryJournal.Event.ProvenNotSent("r1", t0 + 2, "pre-send gate reject"),
             ).state
         assertEquals(DeliveryOutcome.PROVEN_NOT_SENT, s.r().outcome)
@@ -725,11 +728,32 @@ class DeliveryJournalTest {
         assertEquals(DeliveryJournal.Denial.OTHER_REQUEST_AMBIGUOUS, DeliveryJournal.mayAttempt(s, "neu"))
     }
 
-    /** Eine leere Quelle ist keine Quelle. */
+    /**
+     * Die Quelle der Entlastung ist GESCHLOSSEN.
+     *
+     * Vorher stand hier eine Pruefung auf die leere Zeichenkette. Die ist seit
+     * dem Integrationspass gegenstandslos: eine unbelegte Quelle laesst sich
+     * nicht mehr hinschreiben, weil es sie als Wert nicht gibt. Der Test haelt
+     * jetzt das fest, was daraus geworden ist - die Liste ist genau so lang wie
+     * die Zahl der am Treiber belegten Pfade. Waechst sie, muss jemand die
+     * Fundstelle mitliefern.
+     */
     @Test
-    fun `eine leere Verweigerungsquelle ist ungueltig`() {
+    fun `die Verweigerungsquelle ist ein geschlossenes Enum der belegten Treiberpfade`() {
+        assertEquals(
+            listOf(RefusalSource.GATT_NOT_INITIALIZED_BEFORE_CALL, RefusalSource.GATT_HANDLE_NULL_AT_CALL),
+            RefusalSource.entries.toList(),
+        )
+    }
+
+    /** Ohne Verweigerung keine Quelle - und umgekehrt. */
+    @Test
+    fun `eine Quelle ohne Verweigerung ist ungueltig`() {
         assertThrows(IllegalArgumentException::class.java) {
-            SendAttempt(1, t0, boundary = AmbiguityBoundary.REFUSED, resolvedAtTs = t0, resolvedSource = "  ")
+            SendAttempt(1, t0, boundary = AmbiguityBoundary.ISSUED, resolvedSource = RefusalSource.GATT_HANDLE_NULL_AT_CALL)
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            SendAttempt(1, t0, boundary = AmbiguityBoundary.REFUSED, resolvedAtTs = t0, resolvedSource = null)
         }
     }
 
@@ -754,7 +778,7 @@ class DeliveryJournalTest {
         val s = angelegt()
             .dann(
                 DeliveryJournal.Event.SendAttemptStarted("r1", 1, t0),
-                DeliveryJournal.Event.WriteRefused("r1", 1, t0 + 1, "gate reject"),
+                DeliveryJournal.Event.WriteRefused("r1", 1, t0 + 1, RefusalSource.GATT_NOT_INITIALIZED_BEFORE_CALL),
                 DeliveryJournal.Event.ProvenNotSent("r1", t0 + 2, "reject"),
             ).state
         assertEquals(DeliveryOutcome.PROVEN_NOT_SENT, s.r().outcome)
@@ -773,15 +797,15 @@ class DeliveryJournalTest {
         val s = angelegt()
             .dann(
                 DeliveryJournal.Event.SendAttemptStarted("r1", 1, t0),
-                DeliveryJournal.Event.WriteRefused("r1", 1, t0 + 2, "BLEComm returned false"),
+                DeliveryJournal.Event.WriteRefused("r1", 1, t0 + 2, RefusalSource.GATT_HANDLE_NULL_AT_CALL),
             ).state
-        assertEquals("BLEComm returned false", s.r().attempts.first().resolvedSource)
+        assertEquals(RefusalSource.GATT_HANDLE_NULL_AT_CALL, s.r().attempts.first().resolvedSource)
         assertTrue(
-            DeliveryJournal.reduce(s, DeliveryJournal.Event.WriteRefused("r1", 1, t0 + 2, "BLEComm returned false")).applied
+            DeliveryJournal.reduce(s, DeliveryJournal.Event.WriteRefused("r1", 1, t0 + 2, RefusalSource.GATT_HANDLE_NULL_AT_CALL)).applied
         )
         assertEquals(
             DeliveryJournal.Rejection.TERMINAL_CONFLICT,
-            DeliveryJournal.reduce(s, DeliveryJournal.Event.WriteRefused("r1", 1, t0 + 2, "woanders her")).rejection,
+            DeliveryJournal.reduce(s, DeliveryJournal.Event.WriteRefused("r1", 1, t0 + 2, RefusalSource.GATT_NOT_INITIALIZED_BEFORE_CALL)).rejection,
         )
     }
 
