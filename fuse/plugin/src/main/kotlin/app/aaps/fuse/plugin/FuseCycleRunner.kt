@@ -1009,11 +1009,15 @@ class FuseCycleRunner(
         // gedacht und darf die neue nicht mitfinanzieren. Ein Profilwechsel
         // mitten in der Nacht ist genau der Fall, in dem ein stehengebliebener
         // Rest still zu einem zusaetzlichen Schritt wird.
-        val subStepContext = listOf(
-            state.targetMgdl, state.isfMgdlPerU, bolusStep,
-            cfg.smbRatio, cfg.smbRatioRise, cfg.maxSmbU,
-            if (mealMarkerActive) 1.0 else 0.0,
-        ).joinToString("|") { "%.6f".format(java.util.Locale.ROOT, it) }
+        val subStepContext = SubStepAccumulator.context(
+            targetMgdl = state.targetMgdl,
+            isfMgdlPerU = state.isfMgdlPerU,
+            pumpIncrementU = bolusStep,
+            smbRatio = cfg.smbRatio,
+            smbRatioRise = cfg.smbRatioRise,
+            maxSmbU = cfg.maxSmbU,
+            mealWindow = mealMarkerActive,
+        )
         if (subStepCarryContext != null && subStepCarryContext != subStepContext) subStepCarryU = 0.0
         subStepCarryContext = subStepContext
 

@@ -1,6 +1,7 @@
 package app.aaps.fuse.core.controller
 
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertNotEquals
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
@@ -77,5 +78,40 @@ class SubStepAccumulatorTest {
             total += r.releaseU
         }
         assertTrue(total in 0.5..0.6) { "Summe $total weicht von der Absicht 0,6 ab" }
+    }
+}
+
+/** SUB-02 Rest: der Uebertrag darf keine Entscheidung aus einer anderen Lage
+ *  mitfinanzieren. */
+class SubStepContextTest {
+
+    private fun ctx(
+        target: Double = 98.0, isf: Double = 90.0, step: Double = 0.05,
+        ratio: Double = 0.15, ratioRise: Double = 0.35, maxSmb: Double = 0.3,
+        meal: Boolean = false,
+    ) = SubStepAccumulator.context(target, isf, step, ratio, ratioRise, maxSmb, meal)
+
+    @Test
+    fun `gleiche Lage - gleicher Abdruck`() {
+        assertEquals(ctx(), ctx())
+    }
+
+    @Test
+    fun `jede der sieben Groessen aendert den Abdruck`() {
+        val basis = ctx()
+        assertNotEquals(basis, ctx(target = 100.0)) { "Zielwechsel" }
+        assertNotEquals(basis, ctx(isf = 95.0)) { "Profil-ISF" }
+        assertNotEquals(basis, ctx(step = 0.1)) { "Pumpenschritt" }
+        assertNotEquals(basis, ctx(ratio = 0.2)) { "Korrektur-Ratio" }
+        assertNotEquals(basis, ctx(ratioRise = 0.4)) { "Anstiegs-Ratio" }
+        assertNotEquals(basis, ctx(maxSmb = 0.4)) { "maxSmb" }
+        assertNotEquals(basis, ctx(meal = true)) { "Mahlzeitenfenster" }
+    }
+
+    @Test
+    fun `winzige Aenderungen bleiben unterscheidbar - keine stille Kollision`() {
+        // Sechs Nachkommastellen: ein Ziel von 98,0 gegen 98,000001 ist ein
+        // anderer Abdruck. Lieber einmal zu oft verwerfen als einmal zu wenig.
+        assertNotEquals(ctx(target = 98.0), ctx(target = 98.000001))
     }
 }

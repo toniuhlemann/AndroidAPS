@@ -58,4 +58,32 @@ object SubStepAccumulator {
     }
 
     data class Result(val releaseU: Double, val carryU: Double)
+
+    /**
+     * Unter WELCHEN Bedingungen ein Uebertrag entstanden ist (SUB-02 Rest,
+     * Codex Re-Review 603a15a).
+     *
+     * Der Uebertrag ist eine ZUSAGE: "diesen Rest gebe ich, sobald ein ganzer
+     * Pumpenschritt zusammenkommt". Sie gilt fuer die Lage, in der sie
+     * entstanden ist. Aendert sich das Ziel, der Profil-ISF, der
+     * Pumpenschritt, eine der Ratios oder der Mahlzeiten-Zustand, dann wuerde
+     * ein stehengebliebener Rest eine ANDERE Entscheidung mitfinanzieren, als
+     * die, aus der er stammt - ein Profilwechsel mitten in der Nacht ist genau
+     * der Fall.
+     *
+     * Bewusst eine Zeichenkette und kein Hash: sie steht so im Vergleich, ist
+     * im Fehlerfall lesbar, und eine Kollision waere hier ein stiller
+     * Sicherheitsverlust.
+     */
+    fun context(
+        targetMgdl: Double,
+        isfMgdlPerU: Double,
+        pumpIncrementU: Double,
+        smbRatio: Double,
+        smbRatioRise: Double,
+        maxSmbU: Double,
+        mealWindow: Boolean,
+    ): String = listOf(targetMgdl, isfMgdlPerU, pumpIncrementU, smbRatio, smbRatioRise, maxSmbU)
+        .joinToString("|") { String.format(java.util.Locale.ROOT, "%.6f", it) } +
+        if (mealWindow) "|meal" else "|-"
 }
