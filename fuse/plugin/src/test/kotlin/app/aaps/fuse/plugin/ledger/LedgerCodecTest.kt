@@ -517,6 +517,77 @@ class LedgerCodecTest {
     }
 
     /**
+     * PUNKT 9: die MIGRATION ist konservativ und beweisbar.
+     *
+     * Zu fuellen ist genau `lastPositiveFactTs`, und die Regel folgt der
+     * Beweislage der Altzeile:
+     *
+     *  - GEBUCHTE Zeile: einen positiven Fakt hat es gegeben, nur ist unbekannt
+     *    wann. Der spaetestmoegliche Zeitpunkt ist jetzt - das verlaengert die
+     *    Wirkfrist maximal und macht die Haftung nie kleiner.
+     *  - UNGEBUCHTE Zeile: es gab nie einen positiven Fakt. `null` ist die
+     *    WAHRE Aussage; die Frist laeuft ab `decisionTs`, wie ohne Migration.
+     *
+     * Beides ist eine reine Funktion des Altzustands - es wird nichts geraten.
+     */
+    @Test
+    fun `die Migration fuellt nur, was die Altzeile belegt`() {
+        val jetzt = t0 + 5 * 3600_000L
+
+        // (1) Ungebuchte Zeile: bleibt null - es gab nie einen positiven Fakt.
+        val offen = LedgerReducer.reduceAll(
+            LedgerState(),
+            listOf(LedgerEvent.Proposed("p1", 0.30, decisionTs = t0, latestBolusTimestamp = t0)),
+            cfg,
+        )
+        val m1 = LedgerCodec.migrateToCurrent(offen, jetzt)
+        assertNull(m1.entries.getValue("p1").lastPositiveFactTs) {
+            "ohne Buchung gab es nie einen positiven Fakt - null ist die wahre Aussage"
+        }
+
+        // (2) Gebuchte Zeile: bekommt den spaetestmoeglichen Zeitpunkt.
+        val gebucht = LedgerReducer.reduceAll(
+            LedgerState(),
+            throughPump(0.30) + listOf(
+                LedgerEvent.PumpIdentityBound(id, null, 4711L, "VIRTUAL", "h", t0),
+                LedgerEvent.IobSnapshotObserved(
+                    IobAccountingSnapshot(
+                        "h1", "c", t0, 1L,
+                        listOf(AccountedTreatment(null, 4711L, 0.30, treatmentTs = t0)),
+                        sourceEpochId = "epoch-test",
+                    )
+                ),
+            ),
+            cfg,
+        )
+        // Feld kuenstlich leeren - so saehe die Zeile aus einer v2-Datei aus.
+        val alsAlt = gebucht.copy(
+            entries = gebucht.entries.mapValues { (_, e) -> e.copy(lastPositiveFactTs = null) }
+        )
+        val m2 = LedgerCodec.migrateToCurrent(alsAlt, jetzt)
+        assertEquals(jetzt, m2.entries.getValue(id).lastPositiveFactTs) {
+            "der Fakt existierte - unbekannt ist nur wann; spaetestmoeglich ist konservativ"
+        }
+
+        // (3) IDEMPOTENT: ein zweiter Lauf aendert nichts mehr.
+        assertEquals(m2, LedgerCodec.migrateToCurrent(m2, jetzt + 3600_000L))
+    }
+
+    /** Die Haftung darf durch die Migration NIE kleiner werden - das ist die
+     *  Eigenschaft, wegen der es den Hold ueberhaupt gab. */
+    @Test
+    fun `die Migration senkt die offene Haftung nicht`() {
+        val offen = LedgerReducer.reduceAll(
+            LedgerState(),
+            listOf(LedgerEvent.Proposed("p1", 0.30, decisionTs = t0, latestBolusTimestamp = t0)),
+            cfg,
+        )
+        val vorher = offen.transportCommitmentU
+        val nachher = LedgerCodec.migrateToCurrent(offen, t0 + 3600_000L).transportCommitmentU
+        assertTrue(nachher >= vorher) { "vorher=$vorher nachher=$nachher" }
+    }
+
+    /**
      * P0-B (Codex-Re-Review 09.08.): eine aeltere Generation MIT Zeilen ist
      * lesbar, aber nicht uebernehmbar.
      *

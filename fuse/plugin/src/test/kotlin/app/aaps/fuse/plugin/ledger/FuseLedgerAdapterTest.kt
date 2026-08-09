@@ -628,7 +628,7 @@ class FuseLedgerAdapterTest {
      *  bisher - die Fail-Closed-Verschaerfung gilt nur fuer NEUE Zeilen
      *  und fuer v2-Dateien. */
     @Test
-    fun `Altdatei Version 1 mit Zeilen geht in den Migrations-Hold`(@TempDir dir: File) {
+    fun `Altdatei Version 1 mit Zeilen wird migriert, nicht gesperrt`(@TempDir dir: File) {
         val a = loadedAdapter(dir)
         a.onPublished(
             "p1", 0.30, t0, 0L, 0.05,
@@ -650,8 +650,49 @@ class FuseLedgerAdapterTest {
         // liefe dann ab decisionTs statt ab einer moeglicherweise spaeteren
         // Lieferzeit, die Haftung also ZU FRUEH aus. Deshalb wird die
         // Generation gar nicht erst uebernommen.
-        assertTrue(b.recoveryHold) { "eine v1-Generation mit offenen Zeilen wird nicht still uebernommen" }
-        assertTrue(b.state.entries.isEmpty()) { "und ihr Zustand gelangt nicht in die Laufzeit" }
+        // ZWEIMAL UMGEKEHRT, beide Male absichtlich:
+        //  - urspruenglich band diese Datei "wie bisher" weiter. Falsch, seit
+        //    v3 `lastPositiveFactTs` traegt.
+        //  - dann ging sie in den Migrations-Hold. Richtig, solange es keine
+        //    Migration gab - als Dauerzustand aber eine Sackgasse.
+        //  - jetzt wird sie MIGRIERT: gelesen, konservativ ergaenzt, atomar
+        //    geschrieben, zurueckgelesen, validiert. Erst danach faellt der Hold.
+        assertFalse(b.recoveryHold) { "eine migrierbare Altgeneration wird migriert, nicht gesperrt" }
+        assertTrue(b.state.entries.containsKey("p1")) { "und ihr Zustand steht danach zur Verfuegung" }
+        assertEquals(0.30, b.view().transportCommitmentU, 1e-9) {
+            "die offene Haftung ueberlebt die Migration unveraendert"
+        }
+        assertEquals(
+            LedgerCodec.VERSION,
+            org.json.JSONObject(File(dir, FuseLedgerStore.FILE_NAME).readText()).getInt("v"),
+        ) { "die Datei auf Platte ist danach wirklich v3" }
+    }
+
+    /** WIEDERHOLBAR: ein zweiter Start auf der migrierten Generation findet
+     *  nichts mehr zu tun. Eine Migration, die beim zweiten Lauf etwas anderes
+     *  tut, waere keine. */
+    @Test
+    fun `die Migration ist wiederholbar und beim zweiten Start gegenstandslos`(@TempDir dir: File) {
+        val a = loadedAdapter(dir)
+        a.onPublished(
+            "p1", 0.30, t0, 0L, 0.05,
+            pumpTypeName = PumpType.GENERIC_AAPS.name, pumpSerialHash = Sha.of("vs"),
+        )
+        assertTrue(a.persistVerified(dir))
+        val target = File(dir, FuseLedgerStore.FILE_NAME)
+        val tampered = org.json.JSONObject(target.readText())
+        tampered.put("v", 1)
+        tampered.remove("proposalPumpEpochs")
+        target.writeText(tampered.toString())
+
+        val erster = FuseLedgerAdapter().also { it.loadOnce(dir, "epoch-b", t0 + 60_000L) }
+        assertFalse(erster.recoveryHold)
+        val nachErstem = target.readText()
+
+        val zweiter = FuseLedgerAdapter().also { it.loadOnce(dir, "epoch-c", t0 + 120_000L) }
+        assertFalse(zweiter.recoveryHold)
+        assertEquals(0.30, zweiter.view().transportCommitmentU, 1e-9)
+        assertEquals(nachErstem, target.readText()) { "der zweite Start schreibt die Generation nicht neu" }
     }
 
     /**

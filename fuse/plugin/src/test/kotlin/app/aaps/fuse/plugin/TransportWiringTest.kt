@@ -614,8 +614,8 @@ class TransportWiringTest : TestBaseWithProfile() {
 
     /**
      * L5, Regel 5: FAKE_EXTENDED ist eine laufende, NICHT abbrechbare Abgabe.
-     * FUSE greift nicht ein, sagt es aber - und gibt gleichzeitig kein
-     * zusaetzliches Insulin.
+     * FUSE greift nicht ein, sagt es aber. Ob zusaetzlich der SMB gesperrt
+     * wird, haengt an `unsafe` - Naeheres weiter unten am Test.
      *
      * Der zweite Teil ist der eigentliche Vertrag: der Zustand darf NICHT
      * gespeichert bleiben. Verschwindet die Abgabe aus der Quelle, ist der

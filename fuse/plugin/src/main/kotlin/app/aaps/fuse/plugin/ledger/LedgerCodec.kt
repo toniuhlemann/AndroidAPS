@@ -112,6 +112,33 @@ object LedgerCodec {
         val migrationRequired: String? = null,
     )
 
+    /**
+     * MIGRATION nach [RECONCILIATION_VERSION] - konservativ und beweisbar.
+     *
+     * Zu fuellen ist genau ein Feld: `lastPositiveFactTs`. Was laesst sich
+     * ueber eine Altzeile BEWEISEN?
+     *
+     *  - Traegt sie eine Buchung (`accountedAmountU > eps`), dann hat es einen
+     *    positiven Fakt gegeben - nur nicht, WANN. Der spaetestmoegliche
+     *    Zeitpunkt ist jetzt. Ihn zu waehlen verlaengert die Wirkfrist
+     *    maximal und ist damit die konservative Richtung: die Haftung wird
+     *    durch die Migration nie kleiner.
+     *  - Traegt sie keine, gab es nie einen positiven Fakt. `null` ist dann
+     *    die WAHRE Aussage, und die Frist laeuft ab `decisionTs` - genau wie
+     *    ohne Migration.
+     *
+     * Damit ist die Migration eine reine Funktion des Altzustands; sie raet
+     * nichts und verliert nichts. Sie darf beliebig oft laufen: auf einer
+     * bereits migrierten Generation ist sie die Identitaet.
+     */
+    fun migrateToCurrent(state: LedgerState, nowTs: Long): LedgerState = state.copy(
+        entries = state.entries.mapValues { (_, e) ->
+            if (e.lastPositiveFactTs != null) e
+            else if ((e.accountedAmountU ?: 0.0) > e.amountEpsU) e.copy(lastPositiveFactTs = nowTs)
+            else e
+        }
+    )
+
     fun encode(
         state: LedgerState,
         episodes: EpisodeBudgets,

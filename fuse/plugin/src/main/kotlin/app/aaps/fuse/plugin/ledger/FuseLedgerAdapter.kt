@@ -624,7 +624,16 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
         // nicht uebernehmbar - sie darf nicht als schwaecherer Laufzeitzustand
         // durchrutschen. Sie wird hier ausdruecklich NICHT angewandt; der Hold
         // unten nennt den Grund.
-        val decoded = readable?.takeIf { it.migrationRequired == null }
+        //
+        // PUNKT 9: der Migrationsversuch. Er laeuft VOR der Uebernahme und
+        // aendert am gelesenen Zustand nichts, was er nicht beweisen kann
+        // (s. LedgerCodec.migrateToCurrent). Gelingt er nachweislich, gibt es
+        // keinen Grund mehr fuer den Hold; misslingt er in irgendeinem
+        // Schritt, bleibt alles wie es war und der Hold greift.
+        val migriert = readable?.takeIf { it.migrationRequired != null }?.let { alt ->
+            migriere(alt, dir, nowTs, log)
+        }
+        val decoded = migriert ?: readable?.takeIf { it.migrationRequired == null }
         if (decoded != null) {
             state = decoded.state
             revision = decoded.revision
@@ -648,6 +657,8 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
             )
         }
         val cause = when {
+            migriert != null -> null   // nachweislich migriert - kein Grund mehr
+
             readable?.migrationRequired != null -> {
                 // Eigener Grund, NICHT "alle Generationen ungueltig": die Datei
                 // ist in Ordnung, nur zu alt. Wer den falschen Grund liest,
@@ -1084,6 +1095,65 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
      * verschwand still. Der Fehlschlag strippt ueber das Publikations-Gate
      * den SMB und sperrt sticky wie jeder andere Persist-Fehlschlag.
      */
+    /**
+     * DIE MIGRATION (Punkt 9). Gibt den uebernehmbaren Zustand zurueck - oder
+     * `null`, und dann bleibt es beim Hold.
+     *
+     * Die Reihenfolge ist der ganze Schutz:
+     *
+     *  1. migrieren (rein, beweisbar, s. [LedgerCodec.migrateToCurrent])
+     *  2. pruefen, dass die offene Haftung dabei NICHT kleiner geworden ist
+     *  3. atomar schreiben (tmp -> target, derselbe Weg wie jeder Persist)
+     *  4. die geschriebene Datei ERNEUT LESEN und validieren
+     *  5. erst wenn die zurueckgelesene Generation v3-vollstaendig ist UND
+     *     dieselbe Haftung traegt, gilt die Migration als gelungen
+     *
+     * CRASH-VERHALTEN: vor dem Austausch liegt weiter die Altgeneration -
+     * beim naechsten Start wird erneut migriert. Nach dem Austausch liegt eine
+     * gueltige v3-Generation - dann faellt gar keine Migration mehr an. Beide
+     * Faelle sind wiederholbar, keiner braucht ein Loeschen von Hand.
+     *
+     * ABGESCHRIEBENE ZEILEN bleiben unangetastet erhalten: sie tragen ihren
+     * Befund weiter, blockieren aber nach gelungener Migration nichts mehr -
+     * der Hold haengt an der Migration, nicht an ihrer Existenz.
+     */
+    private fun migriere(alt: LedgerCodec.Decoded, dir: File, nowTs: Long, log: (String) -> Unit): LedgerCodec.Decoded? {
+        val vorher = alt.state.transportCommitmentU
+        val neu = runCatching { LedgerCodec.migrateToCurrent(alt.state, nowTs) }.getOrNull() ?: return null
+        // Die Migration darf Haftung nur ERHALTEN oder verlaengern, nie senken.
+        if (!(neu.transportCommitmentU >= vorher - 1e-9)) {
+            log("FUSE ledger MIGRATION abgebrochen: Haftung waere von $vorher auf ${neu.transportCommitmentU} gefallen")
+            return null
+        }
+        val text = runCatching {
+            LedgerCodec.encode(neu, alt.episodes, alt.revision, alt.retiredBoundIds, alt.pumpEpochs).toString()
+        }.getOrNull() ?: return null
+        if (!store.writeVerified(dir, text)) {
+            log("FUSE ledger MIGRATION abgebrochen: die neue Generation liess sich nicht durabel schreiben (dir=$dir)")
+            return null
+        }
+        // ZURUECKLESEN. Erst was von der Platte kommt und sich sauber
+        // validieren laesst, zaehlt - der Zustand im Speicher beweist nichts
+        // ueber die Datei.
+        val zurueck = runCatching {
+            val gelesen = store.readNewestValid(dir) { t -> runCatching { LedgerCodec.decode(JSONObject(t)).revision }.getOrNull() }
+            gelesen.content?.let { LedgerCodec.decode(JSONObject(it)) }
+        }.getOrNull()
+        if (zurueck == null || zurueck.migrationRequired != null) {
+            log("FUSE ledger MIGRATION abgebrochen: die zurueckgelesene Generation ist nicht v3-vollstaendig (dir=$dir)")
+            return null
+        }
+        if (zurueck.state.transportCommitmentU < vorher - 1e-9) {
+            log("FUSE ledger MIGRATION abgebrochen: zurueckgelesene Haftung ${zurueck.state.transportCommitmentU} < $vorher")
+            return null
+        }
+        log(
+            "FUSE ledger MIGRATION gelungen: ${alt.state.entries.size} Zeilen nach v${LedgerCodec.VERSION}, " +
+                "Haftung $vorher unveraendert uebernommen (dir=$dir)"
+        )
+        return zurueck
+    }
+
     fun persistVerified(dir: File): Boolean {
         if (!loaded) {
             persistFailed = true
