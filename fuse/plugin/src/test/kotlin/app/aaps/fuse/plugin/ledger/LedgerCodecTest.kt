@@ -14,6 +14,7 @@ import org.json.JSONObject
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNotNull
+import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
@@ -501,13 +502,48 @@ class LedgerCodecTest {
     /** Neue Dateien tragen Version 2; Version 1 (Bestand) bleibt ladbar;
      *  eine UNBEKANNTE Zukunftsversion wirft weiterhin (Hold statt raten). */
     @Test
-    fun `Schemaversion 2 wird geschrieben, 1 bleibt ladbar, 3 wirft`() {
+    fun `Schemaversion 3 wird geschrieben, aeltere bleiben lesbar, 4 wirft`() {
         val o = LedgerCodec.encode(LedgerState(), EpisodeBudgets(), 0L)
-        assertEquals(2, o.getInt("v"))
+        assertEquals(3, o.getInt("v"))
 
+        // Alte Versionen bleiben LESBAR. Ob ihr Inhalt uebernommen werden darf,
+        // entscheidet `migrationRequired` - Lesbarkeit und Uebernehmbarkeit
+        // sind seit v3 zwei verschiedene Fragen.
         LedgerCodec.decode(JSONObject(o.toString()).put("v", 1))
+        LedgerCodec.decode(JSONObject(o.toString()).put("v", 2))
         assertThrows(IllegalArgumentException::class.java) {
-            LedgerCodec.decode(JSONObject(o.toString()).put("v", 3))
+            LedgerCodec.decode(JSONObject(o.toString()).put("v", 4))
+        }
+    }
+
+    /**
+     * P0-B (Codex-Re-Review 09.08.): eine aeltere Generation MIT Zeilen ist
+     * lesbar, aber nicht uebernehmbar.
+     *
+     * Unter v3 fehlt `lastPositiveFactTs`, und sein Fehlen sieht beim Lesen
+     * genauso aus wie ein gueltiges `null` - waehrend beides das Gegenteil
+     * bedeutet. Der erste Anlauf hatte diesen Schutz nur im Kommentar
+     * behauptet; jetzt gibt es ihn.
+     */
+    @Test
+    fun `eine aeltere Generation mit Zeilen verlangt eine Migration`() {
+        val mitZeile = LedgerReducer.reduceAll(
+            LedgerState(),
+            listOf(LedgerEvent.Proposed("p1", 0.30, decisionTs = t0, latestBolusTimestamp = t0)),
+            LedgerConfig(bolusStepU = 0.05),
+        )
+        val v3 = LedgerCodec.encode(mitZeile, EpisodeBudgets(), 1L)
+
+        assertNull(LedgerCodec.decode(JSONObject(v3.toString())).migrationRequired) {
+            "die frisch geschriebene v3-Generation ist uebernehmbar"
+        }
+        assertNotNull(LedgerCodec.decode(JSONObject(v3.toString()).put("v", 2)).migrationRequired) {
+            "dieselbe Generation als v2 gilt als migrationsbeduerftig"
+        }
+
+        val leerAlt = JSONObject(LedgerCodec.encode(LedgerState(), EpisodeBudgets(), 0L).toString()).put("v", 2)
+        assertNull(LedgerCodec.decode(leerAlt).migrationRequired) {
+            "eine LEERE Altgeneration hat nichts zu verlieren und migriert still"
         }
     }
 

@@ -295,6 +295,21 @@ data class AccountedTreatment(
     val amountU: Double,
     val pumpType: String? = null,
     val pumpSerialHash: String? = null,
+    /**
+     * Der Zeitstempel des Behandlungsdatensatzes - WANN geliefert wurde, nicht
+     * wann wir hingesehen haben.
+     *
+     * Er ist der einzige zulaessige Anker fuer [ProposalEntry.lastPositiveFactTs].
+     * Die Beobachtungszeit (`IobAccountingSnapshot.calculatedAt`) taugt dafuer
+     * NICHT: derselbe historische Fakt steht jede Minute erneut in der
+     * Vollsicht, und ein Anker auf der Beobachtungszeit wuerde einen offenen
+     * Rest dadurch minuetlich verjuengen - dieselbe Falle wie bei der
+     * bestaetigten Abwesenheit, nur mit einem echten Fakt als Traeger.
+     *
+     * `null` heisst "nicht ermittelbar" und wird ausdruecklich NICHT durch die
+     * Beobachtungszeit ersetzt; dann bleibt es bei der Entscheidungszeit.
+     */
+    val treatmentTs: Long? = null,
 )
 
 data class IobAccountingSnapshot(

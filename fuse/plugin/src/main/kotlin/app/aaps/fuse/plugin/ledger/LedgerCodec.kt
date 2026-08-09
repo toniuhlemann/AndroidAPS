@@ -54,7 +54,7 @@ object LedgerCodec {
      * Bestandsdateien bleiben dadurch ladbar. Unbekannte ZUKUNFTSVERSIONEN
      * werfen weiterhin (Hold statt raten).
      */
-    const val VERSION = 2
+    const val VERSION = 3
 
     /** Aelteste akzeptierte Version; zugleich der Default fuer Dateien ohne
      *  Versionsfeld. */
@@ -62,6 +62,23 @@ object LedgerCodec {
 
     /** Ab dieser Version gelten die strikten Invarianten + Pin-Pflicht. */
     const val STRICT_VERSION = 2
+
+    /**
+     * Ab dieser Version traegt jede Zeile `lastPositiveFactTs`.
+     *
+     * Warum das eine eigene Version braucht und nicht `optLong(..., null)`:
+     * ein FEHLENDES Feld und "es gab nie einen positiven Fakt" sehen beide als
+     * `null` aus - und sie bedeuten das Gegenteil voneinander. Beim Fehlen
+     * wuerde die Wirkfrist ab `decisionTs` laufen, obwohl vielleicht ein
+     * spaeterer Fakt existierte; die Haftung liefe dann ZU FRUEH aus, und das
+     * ist die einzige Richtung, die dieses Modul nicht raten darf.
+     *
+     * Deshalb wird eine aeltere Generation NICHT stillschweigend uebernommen,
+     * sondern loest einen Migrations-Hold aus (s. [Decoded.migrationRequired]).
+     * Genau dieser Schutz wurde beim ersten Anlauf nur im Kommentar behauptet
+     * und nicht gebaut.
+     */
+    const val RECONCILIATION_VERSION = 3
 
     /** Obergrenze jeder Einzelmenge [U]. Weit ueber jedem realen SMB/Budget
      *  (maxSmbU-Hardlimit liegt darunter) - der Zweck ist, absurde Werte als
@@ -83,6 +100,16 @@ object LedgerCodec {
         val revision: Long,
         val retiredBoundIds: List<RetiredBoundId> = emptyList(),
         val pumpEpochs: Map<String, ProposalPumpEpoch> = emptyMap(),
+        /**
+         * Nicht-null heisst: diese Generation ist LESBAR, darf aber NICHT als
+         * Laufzeitzustand uebernommen werden.
+         *
+         * Sie stammt aus einem aelteren Schema, dem ein Feld fehlt, dessen
+         * Fehlen sich nicht von einem gueltigen Wert unterscheiden laesst. Der
+         * Aufrufer haelt an, statt zu raten - und der Text sagt, WAS fehlt,
+         * damit der Hold auflösbar ist und nicht nur ein Symptom meldet.
+         */
+        val migrationRequired: String? = null,
     )
 
     fun encode(
@@ -126,12 +153,29 @@ object LedgerCodec {
         // ENTFERNTER Pin wurde vorher still als Legacy gedeutet und band
         // wieder alles.
         if (v >= STRICT_VERSION) LedgerStateValidator.requirePinCoverage(state, pumpEpochs.keys)
+        // MIGRATIONS-HOLD statt stiller Uebernahme (P0-B).
+        //
+        // Unter v3 fehlt `lastPositiveFactTs`. Beim Lesen ist das `null` - und
+        // `null` heisst dort "es gab nie einen positiven Fakt". Das ist eine
+        // ANDERE Aussage als "wir wissen es nicht", und sie ist die
+        // gefaehrliche Richtung: die Wirkfrist liefe ab `decisionTs` statt ab
+        // einer moeglicherweise spaeteren Lieferzeit, die Haftung also ZU
+        // FRUEH aus.
+        //
+        // Eine Generation OHNE Zeilen hat nichts zu verlieren und migriert
+        // still - genau so kann vor einem Realpump-Lauf eine frische, belegte
+        // Generation starten, ohne dass jemand eine Datei loeschen muss.
+        val migration =
+            if (v < RECONCILIATION_VERSION && state.entries.isNotEmpty())
+                "SCHEMA_v${v}_WITHOUT_lastPositiveFactTs (${state.entries.size} offene Zeilen)"
+            else null
         return Decoded(
             state = state,
             episodes = decodeEpisodes(o.getJSONObject("episodes")),
             revision = revision,
             retiredBoundIds = decodeRetiredList(o),
             pumpEpochs = pumpEpochs,
+            migrationRequired = migration,
         )
     }
 

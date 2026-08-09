@@ -628,7 +628,7 @@ class FuseLedgerAdapterTest {
      *  bisher - die Fail-Closed-Verschaerfung gilt nur fuer NEUE Zeilen
      *  und fuer v2-Dateien. */
     @Test
-    fun `Altdatei Version 1 ohne Pins bindet wie bisher`(@TempDir dir: File) {
+    fun `Altdatei Version 1 mit Zeilen geht in den Migrations-Hold`(@TempDir dir: File) {
         val a = loadedAdapter(dir)
         a.onPublished(
             "p1", 0.30, t0, 0L, 0.05,
@@ -642,9 +642,37 @@ class FuseLedgerAdapterTest {
         target.writeText(tampered.toString())
 
         val b = FuseLedgerAdapter().also { it.loadOnce(dir, "epoch-b", t0 + 60_000L) }
-        assertFalse(b.recoveryHold)
-        b.bindIdentities(listOf(smb(t0 + 5_000L, 0.30, 1L)))
-        assertEquals(1L, b.state.entries.getValue("p1").identity?.pumpId)
+
+        // UMGEKEHRT gegenueber dem frueheren Stand (Codex-Re-Review P0-B).
+        // Vorher band diese Datei "wie bisher" weiter. Seit Schema v3 traegt
+        // jede Zeile `lastPositiveFactTs`, und sein FEHLEN laesst sich nicht
+        // von "es gab nie einen positiven Fakt" unterscheiden - die Wirkfrist
+        // liefe dann ab decisionTs statt ab einer moeglicherweise spaeteren
+        // Lieferzeit, die Haftung also ZU FRUEH aus. Deshalb wird die
+        // Generation gar nicht erst uebernommen.
+        assertTrue(b.recoveryHold) { "eine v1-Generation mit offenen Zeilen wird nicht still uebernommen" }
+        assertTrue(b.state.entries.isEmpty()) { "und ihr Zustand gelangt nicht in die Laufzeit" }
+    }
+
+    /**
+     * Die Gegenprobe zum Migrations-Hold: eine LEERE Altgeneration hat nichts
+     * zu verlieren und migriert still. Genau so kann vor einem Realpump-Lauf
+     * eine frische, belegte Generation starten, ohne dass jemand eine Datei
+     * loeschen muss - ein Migrations-Hold ohne Ausweg waere kein Schutz,
+     * sondern eine Sackgasse.
+     */
+    @Test
+    fun `eine leere Altdatei migriert ohne Hold`(@TempDir dir: File) {
+        val a = loadedAdapter(dir)
+        assertTrue(a.persistVerified(dir))
+        val target = File(dir, FuseLedgerStore.FILE_NAME)
+        val tampered = org.json.JSONObject(target.readText())
+        tampered.put("v", 1)
+        tampered.remove("proposalPumpEpochs")
+        target.writeText(tampered.toString())
+
+        val b = FuseLedgerAdapter().also { it.loadOnce(dir, "epoch-b", t0 + 60_000L) }
+        assertFalse(b.recoveryHold) { "ohne offene Zeilen ist nichts zu retten - also kein Hold" }
     }
 
     // ---- Aufraeumen -------------------------------------------------------

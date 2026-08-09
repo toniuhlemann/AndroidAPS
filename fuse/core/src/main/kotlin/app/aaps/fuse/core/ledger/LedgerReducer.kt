@@ -663,6 +663,13 @@ object LedgerReducer {
         }
 
         val next = s0.entries.mapValues { (_, entry) ->
+            // L10: eine als wirkungslos abgeschriebene Zeile wird nicht mehr
+            // abgeglichen. Sie bleibt als Befund erhalten (`prune` entfernt
+            // fehlertragende Zeilen bewusst nicht), aber ihre Menge haftet
+            // nicht mehr - ein weiterer Abgleich koennte sie nur noch mit
+            // MISSING_ACCOUNTED_TREATMENT belasten, sobald ihr Fakt aus dem
+            // Fenster gealtert ist. Aufbewahren ist nicht weiter beobachten.
+            if (entry.expiredBeyondAction) return@mapValues entry
             val id = entry.identity ?: return@mapValues entry
 
             val compat = e.snapshot.containedTreatments.map { it to id.compatibility(it) }
@@ -733,11 +740,29 @@ object LedgerReducer {
                     if (positiveFact) entry.firstAccountedSnapshotHash ?: viewHash else entry.firstAccountedSnapshotHash,
                 lastReconciledViewHash = viewHash,
                 lastReconciledAtTs = e.snapshot.calculatedAt,
-                // NUR der positive Fakt bewegt die Wirkfrist. Ein Fakt mit
-                // Menge 0 ist so wenig ein Lebenszeichen wie gar kein Fakt -
-                // beide sagen "hier wirkt nichts", und genau das soll die Zeile
-                // verfallen lassen und nicht am Leben halten.
-                lastPositiveFactTs = if (positiveFact) e.snapshot.calculatedAt else entry.lastPositiveFactTs,
+                // NUR der positive Fakt bewegt die Wirkfrist, und NUR mit
+                // seiner eigenen LIEFERZEIT.
+                //
+                // Hier stand zuerst `snapshot.calculatedAt` - die
+                // BEOBACHTUNGSZEIT. Das war B1 in neuer Kleidung: derselbe
+                // historische Fakt steht jede Minute erneut in der Vollsicht,
+                // also verjuengte er die Frist minuetlich. Sichtbar wird das
+                // erst bei einer TEILBUCHUNG (0,20 U Fakt gegen 0,30 U
+                // Bruttohaftung): die Zeile bleibt offen, der Fakt bleibt in
+                // der Sicht, und der 0,10-U-Rest waere nie ausgelaufen.
+                //
+                // `maxOf` haelt die Frist monoton: eine spaeter korrigierte
+                // Lieferzeit (PumpSync schreibt Zeitstempel um, gemessen bis
+                // 6,3 s) verschiebt konservativ nach hinten, eine frueher
+                // korrigierte verkuerzt die Haftung nicht.
+                //
+                // Ist die Lieferzeit unbekannt, bleibt das Feld leer - dann
+                // zaehlt die Entscheidungszeit. Die Beobachtungszeit als
+                // Ersatz waere genau der Fehler, der hier behoben wird.
+                lastPositiveFactTs =
+                    if (positiveFact && hit.treatmentTs != null)
+                        maxOf(entry.lastPositiveFactTs ?: hit.treatmentTs, hit.treatmentTs)
+                    else entry.lastPositiveFactTs,
                 amounts = if (entry.amounts.dbAccountedU == null && positiveFact)
                     entry.amounts.copy(dbAccountedU = hit.amountU) else entry.amounts,
                 corrections = if (entry.accountedAmountU != null && !sameAmount) entry.corrections + 1

@@ -376,7 +376,7 @@ object LedgerFacts {
     fun serialHash(b: BS): String? = serialHashOf(b.ids.pumpSerial, pumpTypeName(b))
 
     fun fact(b: BS): AccountedTreatment =
-        AccountedTreatment(b.ids.temporaryId, b.ids.pumpId, b.amount, pumpTypeName(b), serialHash(b))
+        AccountedTreatment(b.ids.temporaryId, b.ids.pumpId, b.amount, pumpTypeName(b), serialHash(b), b.timestamp)
 
     /** Kanonischer Hash der Vollsicht: deterministisch sortiert, verlustfreie
      *  Mengenform - zwei inhaltsgleiche Sichten bekommen denselben Hash,
@@ -619,7 +619,12 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
         val read = store.readNewestValid(dir) { text ->
             runCatching { LedgerCodec.decode(JSONObject(text)).revision }.getOrNull()
         }
-        val decoded = read.content?.let { runCatching { LedgerCodec.decode(JSONObject(it)) }.getOrNull() }
+        val readable = read.content?.let { runCatching { LedgerCodec.decode(JSONObject(it)) }.getOrNull() }
+        // P0-B: eine Generation aus einem aelteren Schema ist LESBAR, aber
+        // nicht uebernehmbar - sie darf nicht als schwaecherer Laufzeitzustand
+        // durchrutschen. Sie wird hier ausdruecklich NICHT angewandt; der Hold
+        // unten nennt den Grund.
+        val decoded = readable?.takeIf { it.migrationRequired == null }
         if (decoded != null) {
             state = decoded.state
             revision = decoded.revision
@@ -643,6 +648,18 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
             )
         }
         val cause = when {
+            readable?.migrationRequired != null -> {
+                // Eigener Grund, NICHT "alle Generationen ungueltig": die Datei
+                // ist in Ordnung, nur zu alt. Wer den falschen Grund liest,
+                // sucht einen Defekt, wo eine Migration faellig ist.
+                log(
+                    "FUSE ledger MIGRATION_HOLD: ${readable.migrationRequired} - die Generation ist lesbar, " +
+                        "wird aber nicht uebernommen; ein fehlendes Feld liesse sich nicht von einem " +
+                        "gueltigen Wert unterscheiden. Aktuation bleibt zu (dir=$dir)"
+                )
+                "SCHEMA_MIGRATION_REQUIRED"
+            }
+
             read.anyCandidateExisted && decoded == null -> {
                 // Vorgeschichte existiert, aber KEINE Generation ist lesbar:
                 // Leerstart NUR unter Recovery-Hold - moeglicherweise abgegebenes
@@ -916,11 +933,22 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
      * voellig korrekt gebuchte Zeile. Bei DIA 9 h ist das rund 9,5 h nach dem
      * ersten SMB - also an jedem normalen Tag.
      *
-     * Massgeblich ist deshalb JEDE noch vorhandene Zeile. Was nicht mehr
-     * abgeglichen werden muss, entfernt `prune` - und nur der eine Schnitt
-     * entscheidet, nicht zwei verschiedene Begriffe von "fertig".
+     * Massgeblich ist deshalb JEDE noch vorhandene Zeile - MIT EINER
+     * AUSNAHME.
+     *
+     * L10: `prune` behaelt fehlertragende Zeilen ABSICHTLICH, auch die als
+     * wirkungslos abgeschriebenen ([ProposalEntry.expiredBeyondAction]). Sie
+     * sind Befund und gehoeren in den Export. Aber sie sind fertig: ihre Menge
+     * haftet nicht mehr, sie werden nicht mehr abgeglichen, und sie duerfen
+     * deshalb auch das Abfragefenster nicht mehr verankern. Sonst waechst das
+     * Fenster linear mit der Laufzeit - eine einzige alte Leiche wuerde die
+     * Bolusabfrage dauerhaft an ihrem `decisionTs` festnageln.
+     *
+     * Der Unterschied in einem Satz: aufbewahren ist nicht dasselbe wie
+     * weiter beobachten.
      */
     fun oldestReconcilableTs(): Long? = state.entries.values
+        .filter { !it.expiredBeyondAction }
         .minOfOrNull { it.identity?.treatmentTimestamp ?: it.decisionTs }
 
     /**

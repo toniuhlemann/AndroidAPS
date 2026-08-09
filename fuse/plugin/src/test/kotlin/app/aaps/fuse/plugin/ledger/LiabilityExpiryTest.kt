@@ -51,9 +51,15 @@ class LiabilityExpiryTest {
     private fun FuseLedgerAdapter.leereSicht(at: Long, hash: String) =
         onCycleSnapshot(emptyList(), hash, at)
 
-    /** Eine Vollsicht MIT positivem Fakt fuer diese Identitaet. */
-    private fun FuseLedgerAdapter.sichtMitFakt(at: Long, hash: String, tempId: Long, u: Double) =
-        onCycleSnapshot(listOf(AccountedTreatment(tempId, null, u, typ, serial)), hash, at)
+    /**
+     * Eine Vollsicht MIT positivem Fakt fuer diese Identitaet.
+     *
+     * `at` ist die BEOBACHTUNGSZEIT (wann gelesen wurde), `ts` die LIEFERZEIT
+     * des Datensatzes. Die Tests trennen beide bewusst - ihre Verwechslung war
+     * der Fehler.
+     */
+    private fun FuseLedgerAdapter.sichtMitFakt(at: Long, hash: String, tempId: Long, u: Double, ts: Long = at) =
+        onCycleSnapshot(listOf(AccountedTreatment(tempId, null, u, typ, serial, ts)), hash, at)
 
     // ---- Toni-Vorgabe 1: nie gebundener Vorschlag laeuft aus --------------
 
@@ -159,6 +165,85 @@ class LiabilityExpiryTest {
         }
     }
 
+    // ---- P0-A: die Frist haengt an der LIEFERZEIT, nicht am Hinsehen -----
+
+    /**
+     * B1 IN NEUER KLEIDUNG (Codex-Re-Review 09.08.).
+     *
+     * Der erste Anlauf setzte `lastPositiveFactTs` auf die BEOBACHTUNGSZEIT
+     * des Snapshots. Bei einer Zeile, die durch den Fakt vollstaendig
+     * geschlossen wird, faellt das nicht auf. Bei einer TEILBUCHUNG schon:
+     * dort bleibt die Zeile offen, der historische Fakt steht jede Minute
+     * erneut in der Vollsicht - und verjuengte damit den offenen Rest
+     * minuetlich. Derselbe Verjuengungsdefekt wie bei der bestaetigten
+     * Abwesenheit, nur mit einem echten Fakt als Traeger.
+     */
+    @Test
+    fun `derselbe historische Fakt verjuengt die Frist nicht`(@TempDir dir: File) {
+        val a = adapter(dir)
+        val geliefert = t0 - 20 * 3600_000L
+        a.publish("teil", 0.30, geliefert)
+        // Gebunden wird ueber die MENGE - also mit der vollen Dosis. Die
+        // Teilbuchung entsteht erst im Snapshot: die Pumpe hat weniger
+        // abgegeben, als kommandiert wurde.
+        a.bindIdentities(listOf(bolus(tempId = 4711L, u = 0.30, ts = geliefert)))
+
+        // Derselbe Fakt, zwanzig Mal gelesen - zuletzt 20 h nach der Lieferung.
+        for (i in 1..20) a.sichtMitFakt(geliefert + i * 3600_000L, "s-$i", 4711L, 0.20, ts = geliefert)
+
+        assertEquals(geliefert, a.entryForTest("teil").lastPositiveFactTs) {
+            "die Frist haengt an der Lieferzeit des Fakts, nicht daran, wie oft er gelesen wurde"
+        }
+    }
+
+    /**
+     * Und die Folge davon, die Codex ausdruecklich verlangt: der offene Rest
+     * einer Teilbuchung laeuft nach Faktzeit + DIA + 2 h aus.
+     */
+    @Test
+    fun `der Rest einer Teilbuchung laeuft nach Faktzeit plus DIA plus 2h aus`(@TempDir dir: File) {
+        val a = adapter(dir)
+        val geliefert = t0 - cutoffMs - 3600_000L
+        a.publish("teil", 0.30, geliefert)
+        // Gebunden wird ueber die MENGE - also mit der vollen Dosis. Die
+        // Teilbuchung entsteht erst im Snapshot: die Pumpe hat weniger
+        // abgegeben, als kommandiert wurde.
+        a.bindIdentities(listOf(bolus(tempId = 4711L, u = 0.30, ts = geliefert)))
+        // 0,20 U gebucht gegen 0,30 U Haftung -> 0,10 U bleiben offen.
+        a.sichtMitFakt(t0, "jetzt-gelesen", 4711L, 0.20, ts = geliefert)
+
+        assertEquals(0.10, a.view().transportCommitmentU, 1e-9) { "Ausgangslage: 0,10 U Rest" }
+
+        a.prune(t0, dia)
+
+        assertEquals(0.0, a.view().transportCommitmentU, 1e-9) {
+            "der Rest laeuft ab der LIEFERZEIT aus - sonst nie, weil der Fakt jede Minute neu gelesen wird"
+        }
+    }
+
+    /** Die Gegenrichtung: eine tatsaechlich spaetere Lieferzeit verschiebt die
+     *  Frist konservativ nach hinten. PumpSync schreibt Zeitstempel um. */
+    @Test
+    fun `eine spaetere Lieferzeit verschiebt die Frist nach hinten`(@TempDir dir: File) {
+        val a = adapter(dir)
+        val entschieden = t0 - 3600_000L
+        a.publish("spaet", 0.30, entschieden)
+        a.bindIdentities(listOf(bolus(tempId = 4711L, u = 0.30, ts = entschieden)))
+        a.sichtMitFakt(t0, "s1", 4711L, 0.20, ts = entschieden)
+        // Korrigierter, SPAETERER Zeitstempel derselben Lieferung.
+        a.sichtMitFakt(t0, "s2", 4711L, 0.20, ts = entschieden + 6_300L)
+
+        assertEquals(entschieden + 6_300L, a.entryForTest("spaet").lastPositiveFactTs) {
+            "eine spaetere Lieferzeit darf die Haftung verlaengern"
+        }
+
+        // ...und eine frueher korrigierte verkuerzt sie nicht.
+        a.sichtMitFakt(t0, "s3", 4711L, 0.20, ts = entschieden - 60_000L)
+        assertEquals(entschieden + 6_300L, a.entryForTest("spaet").lastPositiveFactTs) {
+            "die Frist ist monoton - eine rueckwaerts korrigierte Zeit verkuerzt die Haftung nicht"
+        }
+    }
+
     // ---- L2: das Band zwischen DIA+30min und DIA+2h ----------------------
 
     /**
@@ -206,12 +291,49 @@ class LiabilityExpiryTest {
         val alt = t0 - cutoffMs - 60_000L
         a.publish("alt", 0.20, alt)
         a.bindIdentities(listOf(bolus(tempId = 4711L, u = 0.20, ts = alt)))
-        a.sichtMitFakt(alt + 60_000L, "mit-fakt", tempId = 4711L, u = 0.20)
+        a.sichtMitFakt(alt + 60_000L, "mit-fakt", tempId = 4711L, u = 0.20, ts = alt)
 
         a.prune(t0, dia)
 
         assertEquals(null, a.oldestReconcilableTs()) {
             "was geprunt ist, wird nicht mehr abgeglichen und darf das Fenster nicht mehr aufspannen"
+        }
+    }
+
+    /**
+     * L10 (Codex-Re-Review 09.08.): DIE ABGESCHRIEBENE FEHLERZEILE.
+     *
+     * `prune` behaelt fehlertragende Zeilen ABSICHTLICH - sie sind Befund.
+     * Der erste L2-Fix nahm sie deshalb aber auch wieder ins Abfragefenster
+     * auf, und das ist der Fall, den der vorhandene Test nicht traf: er prueft
+     * eine FEHLERFREIE geschlossene Zeile, die regulaer verschwindet.
+     *
+     * Eine abgeschriebene Leiche verschwindet nie. Verankerte sie das Fenster,
+     * wuechse die Bolusabfrage linear mit der Laufzeit - und der Reducer
+     * belastete sie bei jedem Zyklus erneut, sobald ihr Fakt aus dem Fenster
+     * gealtert ist. Aufbewahren ist nicht dasselbe wie weiter beobachten.
+     */
+    @Test
+    fun `eine abgeschriebene Fehlerzeile bleibt im Audit, verankert aber nichts`(@TempDir dir: File) {
+        val a = adapter(dir)
+        // Nie gebunden, uralt -> wird als wirkungslos abgeschrieben und traegt
+        // damit UNRESOLVED_BEYOND_ACTION. prune entfernt sie deshalb NICHT.
+        a.publish("leiche", 0.20, t0 - 19 * 3600_000L)
+        a.prune(t0, dia)
+
+        assertEquals(1, a.unresolvedBeyondActionCount()) { "der Befund bleibt erhalten" }
+        assertTrue(a.state.entries.containsKey("leiche")) { "und die Zeile auch - sie ist Audit" }
+
+        assertEquals(null, a.oldestReconcilableTs()) {
+            "aber sie verankert das Abfragefenster nicht - sonst waechst es linear mit der Laufzeit"
+        }
+
+        // Und sie wird nicht weiter abgeglichen: eine leere Sicht darf ihr
+        // keinen neuen Befund mehr anhaengen.
+        val vorher = a.entryForTest("leiche")
+        a.leereSicht(t0 + 60_000L, "danach")
+        assertEquals(vorher, a.entryForTest("leiche")) {
+            "eine abgeschriebene Zeile wird nicht mehr angefasst"
         }
     }
 
