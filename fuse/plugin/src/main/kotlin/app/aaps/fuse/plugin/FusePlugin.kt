@@ -491,8 +491,19 @@ class FusePlugin @Inject constructor(
                             decisionTs = o.computeTs,
                             latestBolusTs = o.treatmentView?.latestBolusTs ?: 0L,
                             bolusStepU = o.state?.pumpIncrementU ?: Double.NaN,
-                            pumpTypeName = pump?.let { runCatching { it.model().name }.getOrNull() },
-                            pumpSerialHash = pump?.let { runCatching { app.aaps.fuse.core.util.Sha.of(it.serialNumber()) }.getOrNull() },
+                            pumpTypeName = pump?.let { runCatching { it.model().name }.getOrNull()?.takeIf { n -> n.isNotBlank() } },
+                            // LEER IST NICHT "EIN ANDERES GERAET" (Live-Befund
+                            // 09.08., s. LedgerFacts.serialHashOf): direkt nach
+                            // einem Prozessstart liefert serialNumber() den
+                            // leeren String, weil InstanceId auf die
+                            // asynchrone Firebase-Antwort wartet. Ohne diese
+                            // Regel wird der leere Serial als Identitaet
+                            // gepinnt, und der Sekunden spaeter mit dem echten
+                            // Serial gebuchte Bolus passt nie mehr auf die
+                            // eigene Zeile.
+                            pumpSerialHash = pump?.let {
+                                runCatching { app.aaps.fuse.plugin.ledger.LedgerFacts.serialHashOf(it.serialNumber()) }.getOrNull()
+                            },
                         )
                     }
                     o.treatmentView?.let { v ->

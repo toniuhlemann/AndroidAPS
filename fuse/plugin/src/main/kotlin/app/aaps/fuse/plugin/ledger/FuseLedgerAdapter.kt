@@ -278,9 +278,39 @@ object TransportInclusion {
  */
 object LedgerFacts {
 
+    /**
+     * EIN LEERER SERIAL IST KEINE AUSSAGE UEBER DAS GERAET (Live-Befund 09.08.).
+     *
+     * `Sha.of("")` ist ein voellig normal aussehender Hash - und genau daran
+     * ist die Reconciliation drei Tage lang blind vorbeigelaufen: es gab keinen
+     * Zustand "Serial unbekannt", nur "Serial ist der Hash des leeren Strings".
+     *
+     * WOHER DER LEERE SERIAL KOMMT: `VirtualPumpPlugin.serialNumber()` gibt
+     * `InstanceId.instanceId` zurueck, und das Feld ist nach jedem Prozessstart
+     * `""`, bis die ASYNCHRONE Firebase-Antwort eintrifft
+     * (`InstanceId.kt`: `FirebaseInstallations.getInstance().id.addOnCompleteListener`).
+     * In diesem Fenster wird die Pumpen-Epoch eines Vorschlags mit `Sha("")`
+     * gepinnt; der Bolus wird Sekunden spaeter mit dem inzwischen aufgeloesten
+     * echten Serial in die Datenbank geschrieben. `matchesPinnedEpoch`
+     * vergleicht dann `Sha(echt)` gegen `Sha("")`, findet NIE einen Treffer,
+     * und die Zeile bindet nie - sie haelt ihre volle Haftung, bis die
+     * Phantom-Abschreibung sie nach DIA plus Spanne als wirkungslos ausbucht.
+     * Gemessen am Testgeraet: 6 von 169 Vorschlaegen, und JEDER davon war der
+     * erste publizierte Vorschlag seiner Sitzung.
+     *
+     * Die Richtung des Fixes ist NICHT "weniger streng". Ein unbekannter Serial
+     * ist kein ANDERER Serial - ihn als solchen zu behandeln ist keine
+     * Vorsicht, sondern eine falsche Tatsachenbehauptung. Sie kostet in beide
+     * Richtungen: hier eine Zeile, die nie abgeglichen wird, und in
+     * [app.aaps.fuse.core.ledger.PumpTreatmentIdentity.compatibility] ein
+     * `deviceConflict` gegen den eigenen Datensatz - also ein fail-closed Hold.
+     * Der Pumpentyp pinnt weiter; er ist im leeren Fenster verfuegbar.
+     */
+    fun serialHashOf(serial: String?): String? = serial?.takeIf { it.isNotBlank() }?.let { Sha.of(it) }
+
     fun pumpTypeName(b: BS): String? = b.ids.pumpType?.name
 
-    fun serialHash(b: BS): String? = b.ids.pumpSerial?.let { Sha.of(it) }
+    fun serialHash(b: BS): String? = serialHashOf(b.ids.pumpSerial)
 
     fun fact(b: BS): AccountedTreatment =
         AccountedTreatment(b.ids.temporaryId, b.ids.pumpId, b.amount, pumpTypeName(b), serialHash(b))
