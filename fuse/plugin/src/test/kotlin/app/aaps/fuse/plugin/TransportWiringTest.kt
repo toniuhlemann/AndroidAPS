@@ -91,12 +91,18 @@ class TransportWiringTest : TestBaseWithProfile() {
      */
     private var maxIobU = 8.0
 
+    /** Hoehe der flachen Rohreihe - niedrig heisst "kein Bedarf". */
+    private var flach = 180.0
+
+    /** Zeitstempel eines Mahlzeiten-Markers, 0 = keiner. */
+    private var markerAt = 0L
+
     private fun series(untilTs: Long): List<GV> =
         generateSequence(start) { it + 60_000L }
             .takeWhile { it <= untilTs }
             .map { ts ->
                 GV(
-                    timestamp = ts, value = 180.0, raw = 180.0, noise = 0.0,
+                    timestamp = ts, value = flach, raw = flach, noise = 0.0,
                     sourceSensor = SourceSensor.UNKNOWN, trendArrow = TrendArrow.FLAT
                 )
             }
@@ -181,8 +187,8 @@ class TransportWiringTest : TestBaseWithProfile() {
         whenever(preferences.get(FuseDoubleKey.PrimeEnvelopeSmallU)).thenReturn(0.8)
         whenever(preferences.get(FuseDoubleKey.PrimeEnvelopeLargeU)).thenReturn(2.0)
         whenever(preferences.get(LongKey.FslCalibrationStart)).thenReturn(-1L)
-        whenever(preferences.get(FuseLongKey.MealMarkerStamp)).thenReturn(0L)
-        whenever(preferences.get(FuseLongKey.MealMarkerArmedTs)).thenReturn(0L)
+        whenever(preferences.get(FuseLongKey.MealMarkerStamp)).thenAnswer { markerAt }
+        whenever(preferences.get(FuseLongKey.MealMarkerArmedTs)).thenAnswer { markerAt }
         whenever(preferences.get(anyOrNull<BooleanKey>())).thenReturn(false)
     }
 
@@ -222,10 +228,17 @@ class TransportWiringTest : TestBaseWithProfile() {
      * Verdrahtung lebt. Das ist korrektes Verhalten, kein Befund.
      *
      * Der Sweep umgeht die Frage, ab welchem Wert der Term bindet: er
-     * verlangt nur, dass die Dosis NIE STEIGT und irgendwo ECHT FAELLT. Beides
-     * zusammen ist genau dann wahr, wenn die offene Haftung in die Grenzen
-     * eingeht - und beides waere falsch, wenn man die fuenf
-     * `- transportModelledU` entfernte.
+     * verlangt nur, dass die Dosis NIE STEIGT und irgendwo ECHT FAELLT.
+     *
+     * WAS DIESER TEST NICHT LEISTET - ausdruecklich, weil gemessen: er bleibt
+     * GRUEN, wenn man die fuenf `- transportModelledU` entfernt. Die offene
+     * Menge erreicht die Entscheidung ueber drei Kanaele (Headroom, Schwanz,
+     * Prognose), und Schwanz plus Prognose allein genuegen fuer "faellt". Er
+     * ist damit der GESAMTVERTRAG - dass die Haftung ueberhaupt wirkt -, nicht
+     * der Nachweis fuer die Headroom-Terme. Den fuehrt der Test darunter.
+     *
+     * Eine fruehere Fassung dieses Kommentars behauptete das Gegenteil. Sie
+     * war durch den eigenen Rot-Versuch bereits widerlegt.
      */
     @Test
     fun `die Dosis faellt monoton mit der offenen Haftung`(@TempDir dir: File) {
@@ -298,6 +311,55 @@ class TransportWiringTest : TestBaseWithProfile() {
 
         val mit = laufMit(haftung, File(dir, "mit"))
         assertThat(mit).isAtMost(maxIobU - haftung + 1e-9)
+    }
+
+
+
+    /**
+     * DIE SUB-STEP-KAPPE EINZELN (Codex-Re-Review, Verbraucher 4 und 5).
+     *
+     * Der Test oben schuetzt den Candidate-Pfad. Die Sub-Step-Freigabe ist ein
+     * ZWEITER Verbraucher derselben Groesse und liegt hinter einem eigenen
+     * Riegel: ein angesammelter Ratio-Rest darf nur dann als voller
+     * Pumpenschritt hinausgehen, wenn die ENDSUMME in alle Mengengrenzen
+     * passt - und in diese Grenzen geht die offene Haftung ein.
+     *
+     * Die Schwelle ist gemessen, nicht geschaetzt (Diagnoselauf 09.08., Rig mit
+     * maxIob 0,25 und Basis 0,15):
+     *
+     *   haftung 0,00..0,05 -> Dosis 0,20, Grenze "smbRatio|subStep"  (freigegeben)
+     *   haftung 0,08       -> Dosis 0,15, Grenze "smbRatio"          (verworfen)
+     *
+     * Genau dazwischen kippt `lifted.smbU + bolusStep > otherCapsU`:
+     * 0,15 + 0,05 gegen 0,25 - 0,08 = 0,17. Ohne die beiden Sub-Step-Abzuege
+     * waere `otherCapsU` = 0,25, der Schritt ginge hinaus, und die Dosis
+     * betruege 0,20 - also eine Refinanzierung von bereits unterwegs
+     * befindlichem Insulin.
+     */
+    @Test
+    fun `die Sub-Step-Freigabe faellt weg, wenn die Haftung den Schritt nicht mehr traegt`(@TempDir dir: File) {
+        tailGuard = false
+        maxIobU = 0.25
+
+        fun lauf(u: Double, unter: File): FuseCycleRunner.Outcome? {
+            val l = FuseLedgerAdapter().also { it.loadOnce(unter.also(File::mkdirs), "test-epoch", start) }
+            if (u > 0.0) l.onPublished("vorlauf", u, start, 0L, 0.05, PumpType.GENERIC_AAPS.name, Sha.of("vs"))
+            neuerRunner(l)
+            clock = start
+            var best: FuseCycleRunner.Outcome? = null
+            repeat(60) { val o = cycle(); if (o.decision.smbU > (best?.decision?.smbU ?: 0.0)) best = o }
+            return best
+        }
+
+        // KONTROLLE: ohne Haftung wird der Sub-Step wirklich freigegeben -
+        // sonst pruefte der Test unten gar nichts.
+        val ohne = lauf(0.0, File(dir, "ohne"))!!
+        assertThat(ohne.decision.bindingLimit).contains("subStep")
+
+        // BEHANDLUNG: 0,08 U offene Haftung - der Schritt passt nicht mehr.
+        val mit = lauf(0.08, File(dir, "mit"))!!
+        assertThat(mit.decision.bindingLimit).doesNotContain("subStep")
+        assertThat(mit.decision.smbU).isAtMost(maxIobU - 0.08 + 1e-9)
     }
 
     /**
