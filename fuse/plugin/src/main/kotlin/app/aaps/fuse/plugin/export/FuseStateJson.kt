@@ -304,6 +304,7 @@ object FuseStateJson {
                 // zerlegbar (Kontroll-Audit 09.08.).
                 .put("lowerBgAtHMgdl", fin(t.lowerBgAtHMgdl))
                 .put("isfTailMgdlPerU", fin(t.isfTailMgdlPerU))
+                .put("negativeLiabilityClamped", t.negativeLiabilityClamped)
                 .put("invalidReason", t.invalidReason ?: JSONObject.NULL)
         )
 

@@ -304,6 +304,10 @@ object TailLiability {
          */
         val lowerBgAtHMgdl: Double = Double.NaN,
         val isfTailMgdlPerU: Double = Double.NaN,
+        /** Eine der drei Haftungen war negativ und wurde auf null geklammert.
+         *  Physisch unmoeglich, also ein BEFUND ueber die Eingabe - er gehoert
+         *  in den Export, damit die widerspruechliche Zerlegung auffaellt. */
+        val negativeLiabilityClamped: Boolean = false,
     ) {
 
         val usable: Boolean get() = invalidReason == null
@@ -331,7 +335,26 @@ object TailLiability {
         // volle Menge (s. [Dose.liabilityAtHU]), nie 0.
         val transport = input.transport?.liabilityAtHU ?: 0.0
         val candidate = input.candidate?.liabilityAtHU ?: 0.0
-        val existing = input.existingIobAtH + transport + candidate
+        // KEINE NEGATIVE HAFTUNG (Codex Combined Closure b6dbb490, D6).
+        //
+        // `headroom = budget - existing` heisst: eine negative Haftung
+        // VERGROESSERT den Spielraum. Physisch gibt es das nicht - eine
+        // abgegebene Dosis kann nicht "negativ nachwirken". Entstehen kann es
+        // nur aus einer widerspruechlichen Zerlegung: `max(netto, bolus)` mit
+        // BEIDEN Werten negativ liefert den groesseren, also immer noch
+        // negativen (max(-0,2; -0,1) = -0,1) - und die Endlichkeitspruefung
+        // sieht daran nichts.
+        //
+        // Geklammert statt verworfen: null ist die konservative Lesart
+        // ("mindestens keine Haftung"), waehrend ein Abbruch den Zyklus fuer
+        // einen Zustand kostet, der sich von selbst wieder einrenkt. Der
+        // Klammerfall ist im Bericht sichtbar.
+        val clampedIob = if (input.existingIobAtH > 0.0) input.existingIobAtH else 0.0
+        val clampedTransport = if (transport > 0.0) transport else 0.0
+        val clampedCandidate = if (candidate > 0.0) candidate else 0.0
+        val clamped = clampedIob != input.existingIobAtH ||
+            clampedTransport != transport || clampedCandidate != candidate
+        val existing = clampedIob + clampedTransport + clampedCandidate
         // Eine Bahn unter dem physiologischen Boden ist kein Messwert mehr.
         // Sie SPERRT weiterhin - das ist unstrittig richtig -, aber sie liefert
         // keine Budgetzahl, die irgendjemand auswerten duerfte.
@@ -342,9 +365,10 @@ object TailLiability {
                 completeness = completeness, lowerBgAtHSource = source,
                 invalidReason = null,
                 unphysiological = true,
-                existingIobAtHU = input.existingIobAtH,
-                transportLiabilityU = transport,
-                candidateLiabilityU = candidate,
+                existingIobAtHU = clampedIob,
+                transportLiabilityU = clampedTransport,
+                candidateLiabilityU = clampedCandidate,
+                negativeLiabilityClamped = clamped,
             )
         }
         val budget = (input.lowerBgAtH - input.tailFloorMgdl) / input.isfTailMgdlPerU + input.tailRecoveryU
@@ -354,9 +378,10 @@ object TailLiability {
             headroomU = budget - existing,
             completeness = completeness,
             lowerBgAtHSource = source,
-            existingIobAtHU = input.existingIobAtH,
-            transportLiabilityU = transport,
-            candidateLiabilityU = candidate,
+            existingIobAtHU = clampedIob,
+            transportLiabilityU = clampedTransport,
+            candidateLiabilityU = clampedCandidate,
+            negativeLiabilityClamped = clamped,
             lowerBgAtHMgdl = input.lowerBgAtH,
             isfTailMgdlPerU = input.isfTailMgdlPerU,
         )

@@ -83,7 +83,21 @@ object SubStepAccumulator {
         smbRatioRise: Double,
         maxSmbU: Double,
         mealWindow: Boolean,
-    ): String = listOf(targetMgdl, isfMgdlPerU, pumpIncrementU, smbRatio, smbRatioRise, maxSmbU)
+        // ERGAENZT nach Codex Combined Closure b6dbb490 (D5): der Abdruck
+        // deckte nur Zahlen ab, die sich SELTEN aendern. Ein Profilwechsel mit
+        // gleichem ISF und Ziel, ein neuer Marker bei laufendem Fenster, eine
+        // andere Mahlzeitenstufe oder ein geaendertes iobTH liessen den
+        // Uebertrag stehen - obwohl er aus einer anderen Lage stammte.
+        maxIobU: Double = Double.NaN,
+        iobThU: Double = Double.NaN,
+        /** Zeitpunkt des Markerdrucks - ein NEUER Marker ist eine neue Lage,
+         *  auch wenn "Marker aktiv" durchgehend wahr blieb. */
+        markerTs: Long = 0L,
+        /** S/M/L: eine andere Mahlzeitengroesse ist eine andere Erwartung. */
+        markerTier: String = "",
+        /** Die Identitaet des Profils, nicht nur seine Zahlen. */
+        profileName: String = "",
+    ): String = listOf(targetMgdl, isfMgdlPerU, pumpIncrementU, smbRatio, smbRatioRise, maxSmbU, maxIobU, iobThU)
         .joinToString("|") { String.format(java.util.Locale.ROOT, "%.6f", it) } +
-        if (mealWindow) "|meal" else "|-"
+        (if (mealWindow) "|meal" else "|-") + "|" + markerTs + "|" + markerTier + "|" + profileName
 }

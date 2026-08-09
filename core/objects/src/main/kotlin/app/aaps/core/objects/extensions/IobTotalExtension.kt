@@ -100,6 +100,9 @@ fun IobTotal.Companion.combine(bolusIOB: IobTotal, basalIob: IobTotal): IobTotal
     result.extendedBolusInsulin = basalIob.extendedBolusInsulin + bolusIOB.extendedBolusInsulin
     result.lastBolusTime = bolusIOB.lastBolusTime
     result.iobWithZeroTemp = basalIob.iobWithZeroTemp
+    // Ungueltigkeit ist ansteckend: eine Summe aus einer nicht durchfuehrbaren
+    // Teilrechnung ist selbst keine Aussage.
+    result.valid = bolusIOB.valid && basalIob.valid
     return result
 }
 

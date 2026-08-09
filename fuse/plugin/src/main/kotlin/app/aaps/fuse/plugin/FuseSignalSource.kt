@@ -197,7 +197,15 @@ class FuseSignalSource(
             // NUR lesen: der Rueckgabewert kann eine Cache-REFERENZ sein
             // (IobTotal ist eine data class mit var-Feldern). Wer daran
             // schreibt, veraendert den Cache der ganzen App.
-            val activity = iobCobCalculator.calculateFromTreatmentsAndTemps(point.tsMs, profile).activity
+            val iobAt = iobCobCalculator.calculateFromTreatmentsAndTemps(point.tsMs, profile)
+            // UNBEKANNT IST NICHT NULL (Codex Combined Closure b6dbb490, P0):
+            // ohne aktuelles Profil liefert der Rechner ein genulltes, aber
+            // ENDLICHES Objekt. Eine erfundene Aktivitaet von 0 macht die
+            // BGI-Bereinigung falsch - und zwar in beide Richtungen, je
+            // nachdem ob Bolus- oder Basalanteil fehlt. Der Wert selbst
+            // verraet das nie; nur das Gueltigkeitsmerkmal tut es.
+            if (!iobAt.valid) return Outcome.Unavailable("iob unknown at ${point.tsMs} (no profile)")
+            val activity = iobAt.activity
             if (!activity.isFinite()) return Outcome.Unavailable("activity not finite at ${point.tsMs}")
             samples.add(BgiAdjustedSeries.Sample(point.tsMs, q1, activity, isf))
         }

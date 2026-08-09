@@ -284,7 +284,11 @@ class IobCobCalculatorPlugin @Inject constructor(
         }
         basalIob.iobWithZeroTemp = IobTotal.combine(bolusIob, basalIobWithZeroTemp).round()
         val iobTotal = IobTotal.combine(bolusIob, basalIob).round()
-        if (time < System.currentTimeMillis()) {
+        // NUR GUELTIGE ERGEBNISSE IN DEN CACHE. Ein ungueltiges Ergebnis dort
+        // abzulegen wuerde den Zustand "unbekannt" ueber das Ereignis hinaus
+        // konservieren, das ihn ausgeloest hat - und die Entwertung
+        // (newHistoryData) kennt keinen Anlass, es je wieder zu entfernen.
+        if (time < System.currentTimeMillis() && iobTotal.valid) {
             synchronized(dataLock) {
                 iobTable.put(time, iobTotal)
             }
@@ -541,7 +545,17 @@ class IobCobCalculatorPlugin @Inject constructor(
      */
     private fun calculateIobFromBolusToTime(toTime: Long): IobTotal {
         val total = IobTotal(toTime)
-        val profile = profileFunction.getProfile() ?: return total
+        // OHNE PROFIL IST DAS ERGEBNIS UNBEKANNT, NICHT NULL.
+        //
+        // Bisher kam hier ein vollstaendig genulltes, ENDLICHES IobTotal
+        // zurueck - und der Aufrufer legte es im iobTable ab. Damit wurde aus
+        // "ich kann es nicht rechnen" ein dauerhaft zwischengespeichertes
+        // "es ist kein Insulin an Bord". Ein Verbraucher kann das nicht
+        // unterscheiden: jede Pruefung auf dem WERT scheitert prinzipiell.
+        // Ein Profil fehlt beim Start, waehrend eines Profilwechsels, im
+        // Import und in Client-Luecken - also genau dann, wenn nebenher noch
+        // Insulin wirkt.
+        val profile = profileFunction.getProfile() ?: return total.also { it.valid = false }
         val dia = profile.dia
         val divisor = preferences.get(DoubleKey.ApsAmaBolusSnoozeDivisor)
         assert(divisor > 0)

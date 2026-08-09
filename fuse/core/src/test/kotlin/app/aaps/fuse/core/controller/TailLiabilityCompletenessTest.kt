@@ -170,3 +170,35 @@ class TailLiabilityCompletenessTest {
         )
     }
 }
+
+/** D6 (Codex Combined Closure b6dbb490): eine negative Haftung darf den
+ *  Spielraum nicht vergroessern - physisch gibt es sie nicht. */
+class TailNegativeLiabilityTest {
+
+    private fun input(existing: Double) = TailLiability.Input(
+        lowerBgAtH = 120.0,
+        existingIobAtH = existing,
+        isfTailMgdlPerU = 90.0,
+        tailFloorMgdl = 70.0,
+        tailRecoveryU = 0.0,
+    )
+
+    @Test
+    fun `beide Anteile negativ - die alte Formel vergroesserte den Spielraum`() {
+        // budget = (120-70)/90 = 0,5556
+        val neutral = TailLiability.evaluate(input(0.0))
+        val negativ = TailLiability.evaluate(input(-0.1))
+        assertEquals(neutral.headroomU, negativ.headroomU, 1e-12) {
+            "eine negative Haftung darf NICHT mehr Spielraum geben als gar keine"
+        }
+        assertEquals(0.0, negativ.existingIobAtHU, 1e-12)
+        assertTrue(negativ.negativeLiabilityClamped) { "der Befund muss sichtbar bleiben" }
+    }
+
+    @Test
+    fun `positive Haftung bleibt unveraendert und wird nicht als Befund gemeldet`() {
+        val r = TailLiability.evaluate(input(0.2))
+        assertEquals(0.2, r.existingIobAtHU, 1e-12)
+        assertFalse(r.negativeLiabilityClamped)
+    }
+}

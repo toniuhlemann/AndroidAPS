@@ -357,7 +357,11 @@ class FuseCycleRunner(
             val iobTh = if (policy != null && maxIob != null)
                 runCatching { IobThreshold.fromPercent(policy.iobThPercent.toDouble(), maxIob) }.getOrNull() else null
             val iob = runCatching {
-                profileFunction.getProfile(computeTs)?.let { p -> iobCobCalculator.calculateFromTreatmentsAndTemps(computeTs, p).iob }
+                // Auch die reine ANZEIGE im Abbruchbericht darf keine
+                // erfundene Null zeigen - null heisst hier "nicht bekannt".
+                profileFunction.getProfile(computeTs)
+                    ?.let { p -> iobCobCalculator.calculateFromTreatmentsAndTemps(computeTs, p) }
+                    ?.takeIf { it.valid }?.iob
             }.getOrNull()
             return Outcome(
                 decision = FuseController.noInput(reason), tbr = cancelTbr, prediction = null,
@@ -748,6 +752,11 @@ class FuseCycleRunner(
 
         val maxIobU = constraintsChecker.getMaxIOBAllowed().value()
         val iobTotal = iobCobCalculator.calculateFromTreatmentsAndTemps(computeTs, profile)
+        // UNBEKANNT IST NICHT NULL (Codex Combined Closure b6dbb490, P0). Aus
+        // dieser Lesung kommen capIob, netIob und der Bolusanteil - also die
+        // Groessen, an denen JEDE Mengenkappe haengt. Eine erfundene Null
+        // macht hier aus "8 U Spielraum belegt" ein "8 U frei".
+        if (!iobTotal.valid) return abort("iob unknown (no profile)", signal, cfg, step)
         val isf = profile.getIsfMgdlTimeFromMidnight(MidnightUtils.secondsFromMidnight(signal.sourceTs))
         val (target, targetSource) = activeTarget(profile, computeTs)
 
@@ -1047,6 +1056,11 @@ class FuseCycleRunner(
             smbRatioRise = cfg.smbRatioRise,
             maxSmbU = cfg.maxSmbU,
             mealWindow = mealMarkerActive,
+            maxIobU = state.maxIobU,
+            iobThU = state.iobThU,
+            markerTs = markerTs,
+            markerTier = markerTier.toString(),
+            profileName = runCatching { profileFunction.getProfileName() }.getOrDefault("?"),
         )
         if (subStepCarryContext != null && subStepCarryContext != subStepContext) subStepCarryU = 0.0
         subStepCarryContext = subStepContext
@@ -1563,6 +1577,11 @@ class FuseCycleRunner(
             // Switch im Horizont ablaeuft.
             val slotProfile = profileFunction.getProfile(t) ?: return null
             val v = iobCobCalculator.calculateFromTreatmentsAndTemps(t, slotProfile)
+            // UNBEKANNT IST NICHT NULL: ein genullter Punkt im Array traegt
+            // weder IOB noch Aktivitaet und macht die Bahn optimistischer,
+            // ohne dass irgendeine Endlichkeitspruefung anschlaegt. Der Bau
+            // schlaegt fehl, der Zyklus bricht benannt ab.
+            if (!v.valid) return null
             times[i] = v.time
             iob[i] = v.iob
             activity[i] = v.activity
