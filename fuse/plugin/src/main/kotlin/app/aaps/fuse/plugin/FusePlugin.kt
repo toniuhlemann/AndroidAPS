@@ -668,6 +668,41 @@ class FusePlugin @Inject constructor(
             addPreference(Preference(context).apply { title = t; summary = sum; isSelectable = false; isPersistent = false })
         }
 
+        /**
+         * UHRZEIT statt Minuten-ab-Mitternacht (Toni 09.08.: "1380 - was ist
+         * das denn?"). Gespeichert werden weiter MINUTEN - das ist die Groesse,
+         * mit der der Regler rechnet, und sie bleibt exportierbar wie jeder
+         * andere Int-Key. Nur die ANZEIGE ist menschenlesbar: die Zeile zeigt
+         * "23:00" und oeffnet beim Antippen die Uhrzeit-Auswahl.
+         *
+         * Eigener Helfer statt AdaptiveListIntPreference: die Listen-Variante
+         * legt ihren Wert als TEXT ab (sie erbt von ListPreference) - der
+         * Int-Key des Reglers wuerde ihn beim Lesen nicht wiedererkennen.
+         */
+        fun PreferenceScreen.timeOfDay(intKey: FuseIntKey, titleText: String, sum: String) {
+            addPreference(Preference(context).apply {
+                key = intKey.key
+                title = titleText
+                fun show(v: Int) { summary = "%02d:%02d  -  %s".format(v / 60, v % 60, sum) }
+                show(preferences.get(intKey))
+                setOnPreferenceClickListener {
+                    val cur = preferences.get(intKey)
+                    runCatching {
+                        android.app.TimePickerDialog(
+                            context,
+                            { _, h, m ->
+                                val v = (h * 60 + m).coerceIn(intKey.min, intKey.max)
+                                preferences.put(intKey, v)
+                                show(v)
+                            },
+                            cur / 60, cur % 60, true,
+                        ).show()
+                    }
+                    true
+                }
+            })
+        }
+
         cat("fuse_safety", "Allgemeine Sicherheitsgrenzen") {
             addPreference(
                 AdaptiveDoublePreference(
@@ -680,8 +715,8 @@ class FusePlugin @Inject constructor(
             addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.GuardFloorMgdl, dialogMessage = R.string.fuse_guard_floor_summary, title = R.string.fuse_guard_floor_title))
             addPreference(AdaptiveSwitchPreference(ctx = context, booleanKey = FuseBooleanKey.NightDeadbandEnabled, summary = R.string.fuse_night_deadband_enabled_summary, title = R.string.fuse_night_deadband_enabled_title))
             addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.NightDeadbandMgdl, dialogMessage = R.string.fuse_night_deadband_summary, title = R.string.fuse_night_deadband_title))
-            addPreference(AdaptiveIntPreference(ctx = context, intKey = FuseIntKey.NightStartMin, dialogMessage = R.string.fuse_night_start_summary, title = R.string.fuse_night_start_title))
-            addPreference(AdaptiveIntPreference(ctx = context, intKey = FuseIntKey.NightEndMin, dialogMessage = R.string.fuse_night_end_summary, title = R.string.fuse_night_end_title))
+            timeOfDay(FuseIntKey.NightStartMin, "Nacht Beginn", "Beginn des Nachtfensters; gleich dem Ende schaltet es aus")
+            timeOfDay(FuseIntKey.NightEndMin, "Nacht Ende", "Ende des Nachtfensters (darf ueber Mitternacht gehen)")
             addPreference(AdaptiveSwitchPreference(ctx = context, booleanKey = FuseBooleanKey.ReboundDeadbandEnabled, summary = R.string.fuse_rebound_deadband_enabled_summary, title = R.string.fuse_rebound_deadband_enabled_title))
             addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.ReboundDeadbandMgdl, dialogMessage = R.string.fuse_rebound_deadband_summary, title = R.string.fuse_rebound_deadband_title))
         }
