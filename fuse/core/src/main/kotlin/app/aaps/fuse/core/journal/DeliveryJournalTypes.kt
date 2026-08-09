@@ -63,15 +63,41 @@ package app.aaps.fuse.core.journal
  */
 enum class AmbiguityBoundary {
 
-    /** Der Versuch wurde vorbereitet, aber der Schreibauftrag ist NICHT
-     *  abgesetzt worden - z.B. weil ein Gate davor abgelehnt hat. Nur in
-     *  diesem Zustand ist "nicht gesendet" beweisbar. */
-    NOT_REACHED,
+    /**
+     * GEBUCHT, AUSGANG UNBEKANNT - der Vorgabewert.
+     *
+     * Ein Versuch wird UNMITTELBAR VOR dem Schreibaufruf gebucht. In dem
+     * Moment, in dem diese Zeile entsteht, ist der Aufruf also unmittelbar
+     * bevorstehend oder laeuft schon. Nichts an diesem Zustand beweist, dass
+     * nichts geschrieben wurde.
+     *
+     * DAS WAR DER FEHLER DER ERSTEN FASSUNG (adversariale Runde, F2): dort
+     * hiess der Vorgabewert NOT_REACHED und war zugleich als "nur hier ist
+     * nicht-gesendet beweisbar" definiert. Damit behauptete JEDER frisch
+     * gebuchte Versuch seine eigene Ungefaehrlichkeit - und ein Prozessende
+     * zwischen Buchung und Quittung hinterliess einen Zustand, der
+     * autorisierte und einen Nullbeweis annahm.
+     */
+    ISSUED,
 
     /** Der Schreibauftrag wurde abgesetzt und vom Betriebssystem angenommen.
-     *  Ab hier ist der Ausgang UNBEKANNT und bleibt es, bis ein Fakt von der
-     *  Pumpe ihn aufloest. */
+     *  Der Ausgang ist unbekannt - staerker belastend als [ISSUED], aber in
+     *  der Wirkung dieselbe Klasse. */
     OS_WRITE_ACCEPTED,
+
+    /**
+     * BEWIESEN NICHT GESCHRIEBEN - der einzige entlastende Zustand.
+     *
+     * Er entsteht NUR durch ein ausdrueckliches Ereignis
+     * ([DeliveryJournal.Event.WriteRefused]), nie durch Vorbelegung und nie
+     * durch Zeitablauf. Wer ihn setzt, behauptet Wissen und muss es haben.
+     */
+    REFUSED,
+    ;
+
+    /** Kann dieser Versuch die Pumpe erreicht haben? Die Frage, an der jede
+     *  Sicherheitsentscheidung des Moduls haengt. */
+    val mayHaveReachedPump: Boolean get() = this == ISSUED || this == OS_WRITE_ACCEPTED
 }
 
 /**
@@ -88,22 +114,29 @@ data class SendAttempt(
      *  `null` = nicht ermittelbar - das ist eine Luecke in der Beweiskette
      *  und kein Grund, den Versuch nicht zu buchen. */
     val transportSequence: Long? = null,
-    val boundary: AmbiguityBoundary = AmbiguityBoundary.NOT_REACHED,
-    /** WANN die Grenze ueberschritten wurde. Ohne diesen Zeitstempel liesse
-     *  sich beim Replay nicht pruefen, ob zwei Beweise dasselbe Ereignis
-     *  meinen oder zwei verschiedene. */
-    val acceptedAtTs: Long? = null,
+    val boundary: AmbiguityBoundary = AmbiguityBoundary.ISSUED,
+    /** WANN der Zustand sich entschieden hat (Annahme oder Verweigerung).
+     *  Ohne diesen Zeitstempel liesse sich beim Replay nicht pruefen, ob zwei
+     *  Beweise dasselbe Ereignis meinen oder zwei verschiedene. */
+    val resolvedAtTs: Long? = null,
 ) {
 
     init {
         require(attempt >= 1) { "attempt counts from 1, was $attempt" }
         require(startedAtTs > 0L) { "startedAtTs must be a real timestamp" }
-        // Grenze und Zeitstempel muessen sich einig sein - eine Ueberschreitung
+        // Zustand und Zeitstempel muessen sich einig sein - eine Entscheidung
         // ohne Zeitpunkt waere ein halber Beweis, ein Zeitpunkt ohne
-        // Ueberschreitung eine Behauptung ueber ein Ereignis, das nicht
-        // verbucht ist.
-        require((boundary == AmbiguityBoundary.OS_WRITE_ACCEPTED) == (acceptedAtTs != null)) {
-            "boundary=$boundary and acceptedAtTs=$acceptedAtTs disagree"
+        // Entscheidung eine Behauptung ueber ein Ereignis, das nicht verbucht
+        // ist.
+        require((boundary != AmbiguityBoundary.ISSUED) == (resolvedAtTs != null)) {
+            "boundary=$boundary and resolvedAtTs=$resolvedAtTs disagree"
+        }
+        // Nichts kann sich vor seinem eigenen Versuch entschieden haben. Eine
+        // solche Zeile waere nicht "unwahrscheinlich", sondern unmoeglich -
+        // und beim Replay ein stiller Hinweis darauf, dass zwei Versuche
+        // vermischt wurden.
+        require(resolvedAtTs == null || resolvedAtTs >= startedAtTs) {
+            "resolvedAtTs=$resolvedAtTs before startedAtTs=$startedAtTs"
         }
     }
 }
@@ -151,7 +184,42 @@ enum class DeliveryFinding {
      *  Treiber hat also wiederholt, obwohl schon etwas unterwegs sein konnte.
      *  Die Buchung ist richtig (es ist eine Tatsache), die Lage ist es nicht. */
     ATTEMPT_AFTER_BOUNDARY,
+
+    /**
+     * Der Beweis "nicht gesendet" war VERFRUEHT: eine verspaetete Rueckmeldung
+     * hat danach die Ambiguitaetsgrenze belegt.
+     *
+     * Der Ablauf ist real und nicht konstruiert - der Schreibauftrag wird
+     * asynchron quittiert, und ein Vor-Send-Abbruch kann in genau diesem
+     * Fenster gebucht worden sein. Der Nullbeweis wird dann AUFGEHOBEN, die
+     * Zeile geht nach AMBIGUOUS zurueck, und der Widerspruch bleibt sichtbar.
+     */
+    WRITE_ACCEPTED_AFTER_PROVEN_NOT_SENT,
+
+    /** Ein Identitaetsfakt der Pumpe (temporaryId/pumpId) traf eine Zeile, die
+     *  als "nicht gesendet" galt. Eine Pumpen-Identitaet ist ein STAERKERER
+     *  Beleg als eine OS-Quittung - der Nullbeweis war falsch. */
+    IDENTITY_AFTER_PROVEN_NOT_SENT,
+
+    /** Zwei verschiedene Pumpen-Identitaeten fuer denselben Auftrag. Der
+     *  direkteste denkbare Hinweis auf ZWEI Lieferungen; die Ablehnung allein
+     *  wuerde ihn nur im fluechtigen Ergebnis hinterlassen. */
+    IDENTITY_CONFLICT_SEEN,
+
+    /** Eine Grenzueberschreitung wurde gemeldet, konnte aber keinem gebuchten
+     *  Versuch zugeordnet werden. Der belastende Fakt darf nicht mit der
+     *  Ablehnung verschwinden. */
+    UNANCHORED_WRITE_ACCEPTED,
 }
+
+/**
+ * Die Uebergabe an den Ledger als FAKT, nicht als blosser Zeitstempel.
+ *
+ * Ohne die Quelle liesse sich beim Replay nicht unterscheiden, ob zwei
+ * Uebernahmen dasselbe Ereignis meinen oder zwei verschiedene - und eine
+ * Uebernahme ist der Punkt, an dem eine Menge die Zustaendigkeit wechselt.
+ */
+data class AccountingFact(val atTs: Long, val source: String)
 
 /** Die abgeleitete Gesamtlage eines Auftrags. Nie gespeichert, immer gerechnet
  *  - ein gespeicherter Zustand koennte von seinen Fakten abweichen. */
@@ -201,7 +269,7 @@ data class DeliveryRequest(
     /** Zweite Phase - ein UPDATE derselben Lieferung, keine zweite. */
     val pumpId: Long? = null,
     val terminal: TerminalFact? = null,
-    val accountedAtTs: Long? = null,
+    val accounting: AccountingFact? = null,
     val findings: Set<DeliveryFinding> = emptySet(),
 ) {
 
@@ -219,24 +287,59 @@ data class DeliveryRequest(
         attempts.forEachIndexed { i, a ->
             require(a.attempt == i + 1) { "attempts must be exactly 1..n, was ${attempts.map { it.attempt }}" }
         }
-        require(accountedAtTs == null || terminal?.kind == TerminalKind.DELIVERY_CONFIRMED) {
+        // Versuche laufen vorwaerts. Eine ruecklaeufige Startzeit hiesse, dass
+        // die Reihenfolge nicht die ist, die die Nummern behaupten.
+        attempts.zipWithNext().forEach { (a, b) ->
+            require(b.startedAtTs >= a.startedAtTs) {
+                "attempt timestamps must not go backwards: ${a.attempt}@${a.startedAtTs} -> ${b.attempt}@${b.startedAtTs}"
+            }
+        }
+        require(accounting == null || terminal?.kind == TerminalKind.DELIVERY_CONFIRMED) {
             "only a confirmed delivery can be accounted"
+        }
+        // DER VERBOTENE ZUSTAND, konstruktiv ausgeschlossen: ein Versuch, der
+        // die Pumpe erreicht haben kann, UND ein Nullbeweis koennen nicht
+        // beide wahr sein. Waere diese Kombination deserialisierbar, truege
+        // eine moeglicherweise abgegebene Menge das Etikett "nicht gesendet" -
+        // und `open` waere false. Genau der Zustand, den das ganze Modul
+        // ausschliessen soll.
+        require(!(attempts.any { it.boundary.mayHaveReachedPump } &&
+            terminal?.kind == TerminalKind.PROVEN_NOT_SENT)) {
+            "an attempt that may have reached the pump and PROVEN_NOT_SENT cannot both hold"
+        }
+        // Dieselbe Regel fuer die Identitaet: wer eine Pumpen-Id traegt, hat
+        // die Pumpe erreicht.
+        require(!((temporaryId != null || pumpId != null) && terminal?.kind == TerminalKind.PROVEN_NOT_SENT)) {
+            "a pump identity and PROVEN_NOT_SENT cannot both hold"
         }
     }
 
-    /** Hat IRGENDEIN Versuch die Ambiguitaetsgrenze ueberschritten? Die
-     *  tragende Frage des ganzen Moduls. */
-    val boundaryCrossed: Boolean
-        get() = attempts.any { it.boundary == AmbiguityBoundary.OS_WRITE_ACCEPTED }
+    /**
+     * KANN fuer diesen Auftrag etwas bei der Pumpe angekommen sein?
+     *
+     * Die tragende Frage des ganzen Moduls - und bewusst NICHT "wurde
+     * geschrieben". Ein gebuchter, noch unquittierter Versuch zaehlt dazu:
+     * die Buchung steht unmittelbar vor dem Schreibaufruf.
+     */
+    val mayHaveReachedPump: Boolean
+        get() = attempts.any { it.boundary.mayHaveReachedPump } || temporaryId != null || pumpId != null
 
     val nextAttemptNumber: Int get() = attempts.size + 1
 
+    /**
+     * Die Reihenfolge der Zweige ist Sicherheitslogik, keine Kosmetik.
+     *
+     * [mayHaveReachedPump] steht VOR dem Nullbeweis - ein moeglicher Kontakt
+     * mit der Pumpe schlaegt ihn immer. Die Kombination ist zwar konstruktiv
+     * ausgeschlossen (s. init), aber die Reihenfolge macht die Absicht auch
+     * dann eindeutig, wenn jemand die Invariante spaeter lockert.
+     */
     val outcome: DeliveryOutcome
         get() = when {
-            accountedAtTs != null                             -> DeliveryOutcome.ACCOUNTED
+            accounting != null                                -> DeliveryOutcome.ACCOUNTED
             terminal?.kind == TerminalKind.DELIVERY_CONFIRMED -> DeliveryOutcome.CONFIRMED
+            mayHaveReachedPump                                -> DeliveryOutcome.AMBIGUOUS
             terminal?.kind == TerminalKind.PROVEN_NOT_SENT    -> DeliveryOutcome.PROVEN_NOT_SENT
-            boundaryCrossed                                   -> DeliveryOutcome.AMBIGUOUS
             attempts.isNotEmpty()                             -> DeliveryOutcome.ATTEMPTED
             else                                              -> DeliveryOutcome.CREATED
         }
@@ -258,6 +361,16 @@ data class DeliveryJournalState(
     /** Monoton je Aenderung - dieselbe Rolle wie die Ledger-Revision. */
     val revision: Long = 0L,
 ) {
+
+    init {
+        // Zweite Verteidigungslinie gegen eine halb geschriebene oder
+        // manipulierte Datei: der Schluessel MUSS die Zeile sein, die er
+        // benennt. Sonst koennte die Fremdsperre die eigene Zeile ueber das
+        // Feld ausschliessen und dabei eine andere meinen.
+        requests.forEach { (key, r) ->
+            require(key == r.requestId) { "journal key '$key' does not match requestId '${r.requestId}'" }
+        }
+    }
 
     /**
      * Auftraege mit UNBEKANNTEM Ausgang - die Grundlage des Ambiguity-Holds.
