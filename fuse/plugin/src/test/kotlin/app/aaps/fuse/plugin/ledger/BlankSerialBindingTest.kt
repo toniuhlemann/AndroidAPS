@@ -7,6 +7,7 @@ import app.aaps.fuse.core.ledger.AccountingState
 import app.aaps.fuse.core.util.Sha
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
+import org.junit.jupiter.api.Assertions.assertNotEquals
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
@@ -59,9 +60,74 @@ class BlankSerialBindingTest {
         assertNull(LedgerFacts.serialHashOf(""))
         assertNull(LedgerFacts.serialHashOf("   "))
         assertNull(LedgerFacts.serialHashOf(null))
-        assertEquals(Sha.of(echterSerial), LedgerFacts.serialHashOf(echterSerial))
+        assertEquals(Sha.of(echterSerial.lowercase()), LedgerFacts.serialHashOf(echterSerial))
         // Die Falle in einer Zeile: vor dem Fix war DAS hier der gepinnte Wert.
         assertTrue(Sha.of("").length == 64)
+    }
+
+    /**
+     * DIE SCHREIBWEISE - zweite Auspraegung derselben Fehlerklasse
+     * (Phase-A-Kartierung 09.08., an der Produktivpumpe gemessen).
+     *
+     * Derselbe Zahlenwert erreicht die beiden Vergleichsseiten unterschiedlich
+     * formatiert: `MedtrumPlugin.serialNumber()` haengt `.uppercase()` an
+     * (`MedtrumPlugin.kt:406`), waehrend der Bolus-Datensatz mit
+     * `pumpSN.toString(radix = 16)` geschrieben wird (`MedtrumService.kt:383`).
+     * Tonis realer Serial `9C1DE26D` traegt drei betroffene Hexziffern.
+     *
+     * Die Werte hier sind die ECHTEN aus dem Produktivsystem, damit der Test
+     * den gemessenen Fall prueft und nicht einen ausgedachten. Der Test haengt
+     * bewusst NICHT vom Medtrum-Modul ab - fuse/plugin darf kein Pumpenmodul
+     * importieren.
+     */
+    @Test
+    fun `dieselbe Seriennummer in zwei Schreibweisen ist dieselbe Identitaet`() {
+        val wieDerTreiberSieMeldet = "9C1DE26D"   // MedtrumPlugin.serialNumber()
+        val wieSieInDerZeileSteht = "9c1de26d"    // BS.ids.pumpSerial
+
+        assertEquals(
+            LedgerFacts.serialHashOf(wieDerTreiberSieMeldet),
+            LedgerFacts.serialHashOf(wieSieInDerZeileSteht),
+        ) { "Gross- und Kleinschreibung derselben Hex-Seriennummer muessen denselben Hash ergeben" }
+
+        // Und die Falle in einer Zeile: ohne Normalisierung sind es zwei
+        // voellig gueltig aussehende, aber verschiedene Hashes.
+        assertNotEquals(Sha.of(wieDerTreiberSieMeldet), Sha.of(wieSieInDerZeileSteht))
+    }
+
+    /** Umschliessende Leerzeichen sind ebenfalls keine Identitaetsaussage. */
+    @Test
+    fun `fuehrende und nachlaufende Leerzeichen aendern die Identitaet nicht`() {
+        assertEquals(LedgerFacts.serialHashOf(echterSerial), LedgerFacts.serialHashOf("  $echterSerial  "))
+    }
+
+    /** GEGENPROBE: die Normalisierung darf nur die Schreibweise einebnen,
+     *  nicht zwei verschiedene Seriennummern verschmelzen. */
+    @Test
+    fun `verschiedene Seriennummern bleiben verschieden`() {
+        assertNotEquals(LedgerFacts.serialHashOf("9c1de26d"), LedgerFacts.serialHashOf("9c1de26e"))
+        assertNotEquals(LedgerFacts.serialHashOf("9c1de26d"), LedgerFacts.serialHashOf("9c1de26d0"))
+    }
+
+    /** DER LIVE-FALL AN DER REALPUMPE: gepinnt in der Schreibweise des
+     *  Treibers, gebucht in der Schreibweise der Datenbank - muss binden. */
+    @Test
+    fun `Pinnung GROSS und Datensatz klein binden zusammen`(@TempDir dir: File) {
+        val a = adapter(dir)
+        a.onPublished(
+            proposalId = "p1", unitsU = 0.15, decisionTs = t0, latestBolusTs = t0 - 60_000L, bolusStepU = 0.05,
+            pumpTypeName = PumpType.MEDTRUM_NANO.name,
+            pumpSerialHash = LedgerFacts.serialHashOf("9C1DE26D"),
+        )
+        val b = smb(t0 + 1_200L, 0.15, pumpId = 4711L, serial = "9c1de26d")
+        a.bindIdentities(listOf(b))
+        a.onCycleSnapshot(listOf(LedgerFacts.fact(b)), LedgerFacts.snapshotHash(listOf(b)), t0 + 60_000L)
+
+        assertEquals(AccountingState.IOB_ACCOUNTED, a.state.entries.getValue("p1").accounting) {
+            "an einer echten Medtrum haette hier vor dem Fix NIE eine Zeile gebunden"
+        }
+        assertEquals(0.0, a.view().transportCommitmentU, 1e-12)
+        assertFalse(a.view().hold)
     }
 
     /** DER LIVE-FALL. Publikation im leeren Fenster, Bolus danach mit echtem

@@ -305,8 +305,45 @@ object LedgerFacts {
      * [app.aaps.fuse.core.ledger.PumpTreatmentIdentity.compatibility] ein
      * `deviceConflict` gegen den eigenen Datensatz - also ein fail-closed Hold.
      * Der Pumpentyp pinnt weiter; er ist im leeren Fenster verfuegbar.
+     *
+     * ---
+     *
+     * ZWEITE AUSPRAEGUNG DERSELBEN FEHLERKLASSE: DIE SCHREIBWEISE
+     * (Phase-A-Kartierung 09.08., an Tonis Produktivsystem gemessen).
+     *
+     * Derselbe Zahlenwert erreicht die beiden Vergleichsseiten in
+     * VERSCHIEDENER Schreibweise, weil zwei Stellen des Medtrum-Treibers
+     * denselben Long unterschiedlich formatieren:
+     *
+     *     Preference "9C1DE26D"
+     *       -> pumpSNFromSP = "9C1DE26D".toLong(radix = 16)   MedtrumPump.kt:251
+     *       -> serialNumber() = ...toString(16).uppercase()   MedtrumPlugin.kt:406
+     *          = "9C1DE26D"                                   <- FUSE pinnt Sha(dieses)
+     *       -> BS.pumpSerial  = pumpSN.toString(16)           MedtrumService.kt:383
+     *          = "9c1de26d"                                   <- Ledger vergleicht Sha(dieses)
+     *
+     * Tonis realer Serial traegt mit C, D und E gleich drei Hexziffern, deren
+     * Schreibweise sich unterscheidet (belegt aus dem Einstellungsbildschirm
+     * UND aus den Bolus-Datensaetzen im Log). An einer echten Medtrum wuerde
+     * damit KEINE EINZIGE Zeile je binden - dauerhaft, nicht nur in einem
+     * Startfenster. Wieder unsichtbar fuer jede Wertpruefung: auf beiden
+     * Seiten steht ein gueltiger 64-Zeichen-Hash.
+     *
+     * `lowercase()` ohne Argument ist bewusst gewaehlt - es ist die
+     * locale-INVARIANTE Variante. `toLowerCase()` haette in einer
+     * tuerkischen Locale aus "I" ein "ı" gemacht und denselben Bruch nur
+     * verschoben.
+     *
+     * KOSTEN DER UMSTELLUNG, ehrlich benannt: eine Zeile, die VOR dieser
+     * Aenderung mit gemischter Schreibweise gepinnt wurde und erst DANACH
+     * binden soll, findet ihren Fakt nicht mehr - der persistierte Pin ist
+     * ein Hash und laesst sich nicht nachtraeglich normalisieren. Betroffen
+     * ist hoechstens die beim Flash gerade offene Zeile. Die Richtung ist
+     * fail-closed (die Zeile haelt ihre Haftung und laeuft ueber die
+     * Phantom-Abschreibung aus), nie eine Fehlbindung.
      */
-    fun serialHashOf(serial: String?): String? = serial?.takeIf { it.isNotBlank() }?.let { Sha.of(it) }
+    fun serialHashOf(serial: String?): String? =
+        serial?.trim()?.takeIf { it.isNotEmpty() }?.lowercase()?.let { Sha.of(it) }
 
     fun pumpTypeName(b: BS): String? = b.ids.pumpType?.name
 
