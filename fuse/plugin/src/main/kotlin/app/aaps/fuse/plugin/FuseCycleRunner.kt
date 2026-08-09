@@ -588,7 +588,18 @@ class FuseCycleRunner(
         val reboundRaw = lastLowTs > 0 &&
             signal.sourceTs - lastLowTs < FuseController.REBOUND_WINDOW_MIN * 60_000L
 
-        val bolusActivityUPerMin = iobCobCalculator.calculateIobFromBolus().activity
+        // UNBEKANNT IST NICHT NULL (Codex Re-Audit 3b5cadbf, F1 - P0). Auch
+        // diese Lesung laeuft ueber `calculateIobFromBolusToTime` und liefert
+        // ohne aktuelles Profil ein genulltes, aber ENDLICHES Objekt. Die
+        // spaetere Kappenlesung (Z. 759) faengt den Dauerfall, NICHT aber das
+        // TOCTOU-Fenster: Profil hier kurz weg, bei der Kappenlesung wieder da
+        // -> der Zyklus liefe mit einer erfundenen Bolusaktivitaet von 0
+        // weiter. Diese Zahl speist den Deckungs-Abschlag; eine Null darin
+        // laesst den Drive zu negativ erscheinen und ERHOEHT den Bedarf.
+        // Richtung also nicht konservativ - deshalb fail-closed statt Fallback.
+        val bolusIob = iobCobCalculator.calculateIobFromBolus()
+        if (!bolusIob.valid) return abort("bolus iob unknown (no profile)", signal, cfg, step)
+        val bolusActivityUPerMin = bolusIob.activity
 
         // Onset-Kanal: Ring pflegen (gleicher sourceTs ersetzt statt doppelt),
         // dann bewerten. Der Antrieb des Kanals ist der BGI-bereinigte
