@@ -7,6 +7,7 @@ import androidx.work.WorkManager
 import androidx.work.testing.TestListenableWorkerBuilder
 import app.aaps.core.data.pump.defs.PumpDescription
 import app.aaps.core.interfaces.androidPermissions.AndroidPermission
+import app.aaps.core.interfaces.aps.Loop
 import app.aaps.core.interfaces.constraints.ConstraintsChecker
 import app.aaps.core.interfaces.db.PersistenceLayer
 import app.aaps.core.interfaces.pump.PumpSync
@@ -34,6 +35,7 @@ class QueueWorkerTest : TestBaseWithProfile() {
     @Mock lateinit var persistenceLayer: PersistenceLayer
     @Mock lateinit var jobName: CommandQueueName
     @Mock lateinit var workManager: WorkManager
+    @Mock lateinit var loop: Loop
 
     init {
         addInjector {
@@ -52,6 +54,12 @@ class QueueWorkerTest : TestBaseWithProfile() {
                 it.preferences = preferences
                 it.androidPermission = androidPermission
                 it.config = config
+                // Fehlte seit 1f8fb62d93 (Fork-Patch 0055 hat `loop`
+                // eingefuehrt, die Testverdrahtung aber nicht nachgezogen).
+                // Der Worker liest das Feld im Leerlaufzweig, `commandIsPickedUp`
+                // lief seither in eine UninitializedPropertyAccessException -
+                // unbemerkt, weil dieses Modul nicht mitlief.
+                it.loop = loop
             }
         }
     }
