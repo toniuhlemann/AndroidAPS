@@ -73,6 +73,17 @@ object FuseLedgerRepair {
         val activeErrors: Map<String, Int>,
     )
 
+    /**
+     * EIN VORGEMERKTER AUFTRAG - unveraenderlich, traegt Ausloeser und Grund
+     * bis zur Ausfuehrung.
+     *
+     * Ein blosses Boolean-Flag reichte nicht: der Grund entsteht beim Bediener
+     * (im Dialog, aus der damaligen Lage) und wird erst eine Runde spaeter
+     * gebraucht. Ihn zur Ausfuehrungszeit neu zu bilden hiesse, eine andere
+     * Lage zu protokollieren als die, der zugestimmt wurde.
+     */
+    data class RepairRequest(val by: String, val reason: String)
+
     /** Ein protokollierter Reparaturvorgang, so wie er im Export erscheint. */
     data class ResetRecord(
         val ts: Long,

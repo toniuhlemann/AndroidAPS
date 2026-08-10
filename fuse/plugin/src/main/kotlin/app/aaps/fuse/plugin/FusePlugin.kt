@@ -151,16 +151,15 @@ class FusePlugin @Inject constructor(
     private var reparaturGelesen = false
 
     /**
-     * Eine Reparatur hat auf der Platte stattgefunden; der Speicher zieht zum
-     * naechsten Zyklusanfang nach.
+     * Der vorgemerkte Reparaturauftrag.
      *
-     * `@Volatile`, weil geschrieben wird auf dem UI-Thread (Dialog) und gelesen
-     * auf dem Zyklus-Thread. Der TAUSCH selbst gehoert an den Zyklusanfang -
-     * mitten im Lauf haette die erste Haelfte auf den alten Ledger gebucht und
-     * die zweite auf den neuen.
+     * NICHT nur der Objekttausch gehoert an die Zyklusgrenze, sondern auch die
+     * DATEIREPARATUR - sonst schreibt ein gleichzeitig laufender Zyklus seinen
+     * alten Ledger ueber die frisch reparierten Dateien zurueck und belebt
+     * genau die Fehlerzeilen wieder, die den Hold ausgeloest haben
+     * (s. [app.aaps.fuse.plugin.ledger.FuseRepairScheduler]).
      */
-    @Volatile
-    private var reparaturAusstehend = false
+    private val reparaturAuftrag = app.aaps.fuse.plugin.ledger.FuseRepairScheduler()
 
     /**
      * Fix 8 (Audit 2d273cb, NEU-BS-07): der Ledger ist ZUSTAND, kein Export -
@@ -411,23 +410,6 @@ class FusePlugin @Inject constructor(
         val pumpe = runCatching { activePlugin.activePump }.getOrNull()
         val aktivePumpe = FuseActivePump.of(pumpe)
 
-        // ---- Eine Reparatur uebernehmen, BEVOR irgendetwas rechnet ---------
-        //
-        // NEUBAU statt Ausraeumen: ein frisches Objekt hat jedes Feld auf
-        // seinem Anfangswert, per Konstruktion. Ein Hand-Reset waere die Sorte
-        // Aufzaehlung, bei der ein Feld vergessen wird - und das vergessene
-        // waere hier der gehaltene Zustand, der die Reparatur still ueberlebt.
-        //
-        // Der Runner faellt mit, weil er den Adapter bei seiner Konstruktion
-        // eingefangen hat; ein alter Runner haette weiter auf den alten Ledger
-        // gebucht.
-        if (reparaturAusstehend) {
-            reparaturAusstehend = false
-            ledgerAdapter = app.aaps.fuse.plugin.ledger.FuseLedgerAdapter()
-            runner = null
-            gemeldeteHoldGeneration = null
-            aapsLogger.warn(LTag.APS, "FUSE: reparierten Ledger uebernommen - dieser Zyklus rechnet frisch")
-        }
 
         // Ledger VOR dem Lauf restaurieren - NICHT wie warmGraphRingOnce nach
         // dem Lauf: der Zyklus rechnet mit den restaurierten Commitments und
@@ -439,6 +421,18 @@ class FusePlugin @Inject constructor(
         // SMB, solange die Vorgeschichte nicht sicher uebernommen ist. Der
         // naechste invoke versucht den Umzug erneut.
         if (migrateLedgerDirOnce()) {
+            // ---- REPARATUR: hier und NUR hier ------------------------------
+            //
+            // Die Stelle ist genau gewaehlt. Davor steht die Verzeichnis-
+            // umstellung, damit die Reparatur nicht in ein Verzeichnis greift,
+            // das gleich noch Dateien bekommt. Danach kommt `loadOnce` - der
+            // frische Adapter laedt also im SELBEN Zyklus die reparierte
+            // (leere) Generation, ohne Zwischenzustand.
+            //
+            // Und vor allem: hier hat noch kein Zyklus dieses Prozesses
+            // gerechnet oder geschrieben. Genau daran scheiterte der erste
+            // Entwurf, der die Dateien vom UI-Thread aus umraeumte.
+            fuehreReparaturAus()
             ledgerAdapter.noteMigrationDone()
             // B3: der PUMPENKONTEXT gehoert zum Laden. Die Migration braucht
             // ihn, weil eine v1-Zeile gar keinen Pin hat - ob sie gefahrlos
@@ -837,6 +831,66 @@ class FusePlugin @Inject constructor(
         aapsLogger.warn(LTag.APS, "FUSE LEDGER HOLD Gen ${s.holdGeneration}: $fehler - keine Abgabe")
     }
 
+    /**
+     * Einen vorgemerkten Reparaturauftrag ausfuehren - am Zyklusanfang.
+     *
+     * Der Adapter wird NUR nach [FuseLedgerRepair.Result.Done] ersetzt. Nach
+     * einer Verweigerung bleibt alles wie es war, inklusive Hold: die Lage
+     * kann sich zwischen Zustimmung und Ausfuehrung geaendert haben, und dann
+     * ist "nichts tun" die richtige Antwort, nicht "trotzdem tauschen".
+     */
+    private fun fuehreReparaturAus() {
+        val r = runCatching { reparaturAuftrag.runIfDue(ledgerDir(), dateUtil.now()) }
+            .getOrElse {
+                aapsLogger.error(LTag.APS, "FUSE Reparatur warf - Hold bleibt", it)
+                null
+            } ?: return
+        when (r) {
+            is app.aaps.fuse.plugin.ledger.FuseLedgerRepair.Result.Done   -> {
+                // NEUBAU statt Ausraeumen: ein frisches Objekt hat jedes Feld
+                // auf seinem Anfangswert, per Konstruktion. Ein Hand-Reset
+                // waere die Sorte Aufzaehlung, bei der ein Feld vergessen wird
+                // - und das vergessene waere hier der gehaltene Zustand.
+                //
+                // Der Runner faellt mit, weil er den Adapter bei seiner
+                // Konstruktion eingefangen hat; ein alter Runner haette weiter
+                // auf den alten Ledger gebucht.
+                ledgerAdapter = app.aaps.fuse.plugin.ledger.FuseLedgerAdapter()
+                runner = null
+                gemeldeteHoldGeneration = null
+                reparaturGelesen = false
+                aapsLogger.warn(
+                    LTag.APS,
+                    "FUSE LEDGER REPARIERT (${r.record.reason}): verworfen " +
+                        "${r.record.discarded.grossLiabilityU} U brutto / " +
+                        "${r.record.discarded.openEntries} offene Zeilen, " +
+                        "Quarantaene ${r.quarantined.joinToString()}, " +
+                        "frische Generation=${r.freshLedgerWritten}"
+                )
+                // Bei `false` liegt keine lesbare Generation mehr - der
+                // Sentinel macht daraus gleich einen Verlust-Hold. Das ist
+                // fail-closed und richtig, muss aber im Log stehen, sonst
+                // wundert sich jemand ueber einen Hold direkt nach der
+                // Reparatur.
+                if (!r.freshLedgerWritten) aapsLogger.error(
+                    LTag.APS,
+                    "FUSE: leere Nachfolgegeneration NICHT geschrieben - der naechste Start haelt wieder"
+                )
+            }
+
+            is app.aaps.fuse.plugin.ledger.FuseLedgerRepair.Result.Refused -> {
+                aapsLogger.warn(LTag.APS, "FUSE Reparatur abgelehnt: ${r.why} - Zustand unveraendert")
+                runCatching {
+                    uiInteraction.addNotification(
+                        id = Notification.FUSE_LEDGER_HOLD,
+                        text = "FUSE-Reparatur nicht ausgefuehrt: ${r.why}. Der bisherige Zustand bleibt unveraendert.",
+                        level = Notification.NORMAL,
+                    )
+                }
+            }
+        }
+    }
+
     private fun letzteReparatur(): app.aaps.fuse.plugin.ledger.FuseLedgerRepair.ResetRecord? {
         if (!reparaturGelesen) {
             reparaturCache = runCatching {
@@ -896,46 +950,36 @@ class FusePlugin @Inject constructor(
                     "NUR ausfuehren, wenn die offene Haftung nachweislich gegenstandslos ist."
             )
             .setNegativeButton("Abbrechen", null)
-            .setPositiveButton("Reparieren") { _, _ ->
-                val r = runCatching {
-                    repair.perform(dir, dateUtil.now(), by = "Bediener (FUSE-Einstellungen)", reason = lage.why)
-                }.getOrElse { app.aaps.fuse.plugin.ledger.FuseLedgerRepair.Result.Refused("Ausnahme: ${it.message}") }
-                val text = when (r) {
-                    is app.aaps.fuse.plugin.ledger.FuseLedgerRepair.Result.Refused ->
-                        "Nicht ausgefuehrt: ${r.why}"
-
-                    is app.aaps.fuse.plugin.ledger.FuseLedgerRepair.Result.Done   -> {
-                        // NICHT HIER TAUSCHEN, sondern zum Zyklusanfang.
-                        //
-                        // Dieser Zweig laeuft auf dem UI-Thread, waehrend ein
-                        // Zyklus rechnen kann. Ein sofortiger Tausch haette
-                        // dessen erste Haelfte auf den ALTEN Ledger buchen
-                        // lassen (onPublished) und die zweite auf den NEUEN
-                        // (bindIdentities, prune) - ein in sich
-                        // widerspruechlicher Zyklus im Dosierpfad.
-                        //
-                        // Das Fenster ist klein (ein Zyklus rechnet
-                        // Millisekunden, der Bediener tippt selten), aber
-                        // "unwahrscheinlich" ist hier kein Argument: der
-                        // Tausch kostet nichts, wenn er eine Runde wartet.
-                        reparaturAusstehend = true
-                        reparaturGelesen = false
-                        aapsLogger.warn(
-                            LTag.APS,
-                            "FUSE LEDGER REPARIERT: ${r.record.reason} - verworfen " +
-                                "${r.record.discarded.grossLiabilityU} U brutto, " +
-                                "${r.record.discarded.openEntries} offene Zeilen, " +
-                                "Quarantaene: ${r.quarantined.joinToString()}"
-                        )
-                        "Repariert. In Quarantaene: ${r.quarantined.joinToString().ifBlank { "nichts" }}.\n\n" +
-                            if (r.freshLedgerWritten)
-                                "Der NAECHSTE Zyklus uebernimmt den leeren Ledger (bis zu einer Minute) - " +
-                                    "solange zeigt der Tab noch den Hold. Das ist Absicht: mitten in einem " +
-                                    "laufenden Zyklus zu tauschen waere gefaehrlicher als eine Minute zu warten."
-                            else "ACHTUNG: die leere Nachfolgegeneration liess sich NICHT schreiben. " +
-                                "Der naechste Start wird das als Verlust werten und wieder halten."
-                    }
-                }
+            .setPositiveButton("Vormerken") { _, _ ->
+                // HIER WIRD NICHTS AUSGEFUEHRT - nur vorgemerkt.
+                //
+                // Dieser Zweig laeuft auf dem UI-Thread, waehrend ein Zyklus
+                // rechnen kann. Wuerde hier `perform()` laufen, raeumte es die
+                // DATEIEN um (Hold-Marker, Quarantaene, neue Generation) -
+                // und der laufende Zyklus schriebe danach seinen alten
+                // In-Memory-Ledger mit `persistVerified()` genau dorthin
+                // zurueck. Die Reparatur waere ueberschrieben und die
+                // Fehlerzeilen WIEDERBELEBT; der naechste Zyklus haelt erneut.
+                //
+                // Es genuegt also nicht, den Objekttausch zu verzoegern: die
+                // Dateireparatur gehoert an dieselbe Grenze.
+                //
+                // Der GRUND wandert im Auftrag mit. Ihn spaeter neu zu bilden
+                // waere ein anderes Protokoll als die erteilte Zustimmung.
+                val angenommen = reparaturAuftrag.request(
+                    app.aaps.fuse.plugin.ledger.FuseLedgerRepair.RepairRequest(
+                        by = "Bediener (FUSE-Einstellungen)",
+                        reason = lage.why,
+                    )
+                )
+                val text =
+                    if (!angenommen) "Es steht bereits eine Reparatur aus - sie wird beim naechsten Zyklus ausgefuehrt."
+                    else "Vorgemerkt. Ausgefuehrt wird sie zu Beginn des NAECHSTEN Zyklus (bis zu eine Minute) - " +
+                        "bis dahin zeigt der Tab noch den Hold.\n\n" +
+                        "Das ist Absicht: mitten in einem laufenden Zyklus an den Ledgerdateien zu " +
+                        "arbeiten koennte den alten Zustand wieder herstellen.\n\n" +
+                        "Die Lage wird vor der Ausfuehrung ERNEUT geprueft; hat sie sich inzwischen " +
+                        "geaendert, passiert nichts."
                 android.app.AlertDialog.Builder(context)
                     .setTitle("Ledger-Reparatur").setMessage(text).setPositiveButton("OK", null).show()
             }
