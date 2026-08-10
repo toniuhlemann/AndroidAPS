@@ -45,7 +45,8 @@ class FusePatchEpochTest {
         ids = IDs(pumpType = pumpType, pumpSerial = pumpSerial, pumpId = pumpId),
     )
 
-    private fun of(e: TE?) = FusePatchEpoch.of(e, typ.name, hashOf(serial, typ.name), hashOf)
+    private fun of(e: TE?, now: Long = t0 + 3600_000L) =
+        FusePatchEpoch.of(e, typ.name, hashOf(serial, typ.name), now, hashOf)
 
     /**
      * DIE ECHTE FORM, wie der Medtrum-Treiber sie erzeugt
@@ -84,7 +85,7 @@ class FusePatchEpochTest {
     fun `der ECHTE Medtrum-Wechsel definiert die Epoche`() {
         val r = of(echterMedtrumWechsel())
         assertEquals(t0, r.epochTs) { "ohne diesen Fall waere die Epoche im Feld nie bekannt" }
-        assertEquals(FusePatchEpoch.Reason.PUMP_ORIGIN, r.reason)
+        assertEquals(FusePatchEpoch.Reason.MATCHING_PUMP_IDENTITY, r.reason)
     }
 
     // ---- Wann ist eine Epoche bekannt? -----------------------------------
@@ -93,7 +94,7 @@ class FusePatchEpochTest {
     fun `ein pumpeneigener Wechsel der aktiven Pumpe definiert die Epoche`() {
         val r = of(wechsel())
         assertEquals(t0, r.epochTs)
-        assertEquals(FusePatchEpoch.Reason.PUMP_ORIGIN, r.reason)
+        assertEquals(FusePatchEpoch.Reason.MATCHING_PUMP_IDENTITY, r.reason)
         assertTrue(r.known)
     }
 
@@ -141,8 +142,8 @@ class FusePatchEpochTest {
     @Test
     fun `unbekannte aktive Pumpe ist ein eigener Befund`() {
         for (r in listOf(
-            FusePatchEpoch.of(wechsel(), null, hashOf(serial, typ.name), hashOf),
-            FusePatchEpoch.of(wechsel(), typ.name, null, hashOf),
+            FusePatchEpoch.of(wechsel(), null, hashOf(serial, typ.name), t0 + 3600_000L, hashOf),
+            FusePatchEpoch.of(wechsel(), typ.name, null, t0 + 3600_000L, hashOf),
         )) {
             assertFalse(r.known)
             assertEquals(FusePatchEpoch.Reason.ACTIVE_PUMP_UNKNOWN, r.reason) {
@@ -156,6 +157,29 @@ class FusePatchEpochTest {
         assertEquals(FusePatchEpoch.Reason.NO_EVENT, of(null).reason)
         assertEquals(FusePatchEpoch.Reason.INVALID, of(wechsel(gueltig = false)).reason)
         assertEquals(FusePatchEpoch.Reason.INVALID, of(wechsel(ts = 0L)).reason)
+        // Ein Wechsel aus der ZUKUNFT ist kein Wechsel. Die DB-Abfrage filtert
+        // das zwar schon, aber die Grenze prueft es selbst.
+        assertEquals(FusePatchEpoch.Reason.INVALID, of(wechsel(ts = t0 + 7200_000L), now = t0).reason)
+    }
+
+    /**
+     * KEIN RUECKFALL AUF EINEN AELTEREN DATENSATZ (Codex-Auflage 10.08.).
+     *
+     * `getLastTherapyRecordUpToNow` liefert den NEUESTEN gueltigen Wechsel.
+     * Ist der von Hand eingetragen oder fremd, bleibt die Epoche unbekannt -
+     * es wird NICHT auf einen aelteren passenden zurueckgegriffen. Das waere
+     * die Behauptung, seither sei nichts geschehen, und genau das ist
+     * unbekannt. Die Folge ist die Publikationssperre, nicht eine geratene
+     * Epoche.
+     */
+    @Test
+    fun `ein neuerer fremder Wechsel macht die Epoche unbekannt`() {
+        // Der neueste Datensatz ist ein Handeintrag - der aeltere passende
+        // wird gar nicht erst befragt, weil er nie hereingereicht wird.
+        val handeintrag = wechsel(ts = t0 + 60_000L, pumpType = null, pumpSerial = null, pumpId = null)
+        val r = of(handeintrag)
+        assertFalse(r.known) { "unbekannt heisst unbekannt - kein Rueckfall auf frueher" }
+        assertEquals(FusePatchEpoch.Reason.NOT_PUMP_ORIGIN, r.reason)
     }
 
     // ---- Die Trennlinie --------------------------------------------------
