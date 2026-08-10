@@ -361,34 +361,34 @@ class FusePlugin @Inject constructor(
         return ts > 0 && now - ts in 0..(app.aaps.fuse.core.controller.OnsetChannel.MARKER_WINDOW_MIN * 60_000L)
     }
 
-    /** Fix-Pass 4 Nr. 5 (Codex R4-05): das letzte ERFOLGREICH gefaellte
-     *  Urteil von [specialEnableCondition]. Startwert FALSE - "noch nie
-     *  geprueft" ist kein Erlaubniszustand. Kostet beim App-Start schlimmsten-
-     *  falls Sekunden bis zur ersten erfolgreichen Pumpen-Lesung (VPUMP
-     *  initialisiert schnell); dafuer kann eine Exception nie Erlaubnis aus
-     *  unbekanntem Zustand erzeugen. */
-    @Volatile private var lastEnableVerdict = false
-
-    override fun specialEnableCondition(): Boolean =
-        try {
-            // Audit R95 F-P0-09: STARTVERWEIGERUNG statt nur Per-Zyklus-Riegel.
-            // FUSE laesst sich mit einer NICHT ERLAUBTEN Pumpe gar nicht erst
-            // als APS aktivieren - das TOCTOU-Fenster des Gates setzt sonst
-            // voraus, dass die Kombination ueberhaupt konfigurierbar ist.
-            // Erlaubt sind VirtualPump und der belegte Medtrum Nano; die
-            // Liste fuehrt ausschliesslich [FusePumpGate].
-            val pump = activePlugin.activePump
-            val verdict = pump.pumpDescription.isTempBasalCapable && FusePumpGate.evaluate(pump).allowed
-            lastEnableVerdict = verdict
-            verdict
-        } catch (_: Exception) {
-            // Kann waehrend der Initialisierung fehlschlagen, bevor ein
-            // Pumpenplugin steht. Dann gilt das LETZTE bekannte Urteil statt
-            // pauschal true: ein transienter Init-Fehler darf ein einmal
-            // gefaelltes Realpumpen-NEIN nicht in ein JA verwandeln
-            // (Re-Audit 6.6).
-            lastEnableVerdict
-        }
+    /**
+     * KEINE PUMPENABHAENGIGE STARTVERWEIGERUNG MEHR (Auditbefund 10.08.2026).
+     *
+     * Hier stand ein `specialEnableCondition`-Override, das den Pumpen-Riegel
+     * zur Aktivierungsbedingung machte: mit einer nicht erlaubten Pumpe liess
+     * FUSE sich gar nicht erst als APS aktivieren. Das klingt sicherer, als es
+     * ist - AAPS behandelt "Plugin nicht verfuegbar" naemlich mit einem
+     * FALLBACK:
+     *
+     *   PluginStore.getTheOneEnabledInArray findet kein aktives APS
+     *     -> getDefaultPlugin(APS) = OpenAPSSMBPlugin wird eingeschaltet
+     *     -> ab da regelt OpenAPS SMB die ECHTE Pumpe, still
+     *   und der naechste ConfigBuilder-Vorgang schreibt FUSE dauerhaft als
+     *   deaktiviert fort (savePref ueber isEnabled()).
+     *
+     * Ausloeser genuegte ein Startzustand, in dem der Medtrum-Treiber sein
+     * Modell noch nicht geladen hat (deviceType 0 -> MEDTRUM_UNTESTED, ueber
+     * eine Coroutine nachgeladen). Aus einer voruebergehenden Unbekanntheit
+     * wurde so ein dauerhafter Reglerwechsel, den niemand angeordnet hat.
+     *
+     * Deshalb: FUSE bleibt AUSGEWAEHLT, und die Pumpenfreigabe liegt
+     * ausschliesslich im Laufzeit-Riegel. Bei geschlossenem Riegel gibt FUSE
+     * keine positive Aktuation ab (FuseRtBuilder), sagt es im Tab und meldet
+     * es mit eigener Dringlichkeit. Ein spaeter doch erkannter Nano wird im
+     * naechsten Zyklus von selbst freigegeben - ohne Bedienhandlung.
+     *
+     * Das Override entfaellt ersatzlos; die Basisklasse liefert `true`.
+     */
 
     override fun invoke(initiator: String, tempBasalFallback: Boolean) {
         aapsLogger.debug(LTag.APS, "invoke from $initiator tempBasalFallback: $tempBasalFallback")
@@ -431,7 +431,7 @@ class FusePlugin @Inject constructor(
             // Und vor allem: hier hat noch kein Zyklus dieses Prozesses
             // gerechnet oder geschrieben. Genau daran scheiterte der erste
             // Entwurf, der die Dateien vom UI-Thread aus umraeumte.
-            fuehreReparaturAus()
+            fuehreReparaturAus(roherSnapshot)
             ledgerAdapter.noteMigrationDone()
             // B3: der PUMPENKONTEXT gehoert zum Laden. Die Migration braucht
             // ihn, weil eine v1-Zeile gar keinen Pin hat - ob sie gefahrlos
@@ -703,6 +703,7 @@ class FusePlugin @Inject constructor(
         // NACH den Buchungen dieses Zyklus - der Hold kann genau hier entstanden
         // sein. Davor gemeldet, waere die Meldung eine Generation zu spaet.
         meldeLedgerHold()
+        meldePumpenRiegel(aktivePumpe)
 
         exportState(
             outcome, publishRt, cycleId,
@@ -837,6 +838,52 @@ class FusePlugin @Inject constructor(
      */
     private val holdAlarm = FuseHoldAlarm.Zustand()
 
+    /**
+     * Der Riegel-Alarm - eigener Kanal, eigener Zustand.
+     *
+     * Seit die pumpenabhaengige Startverweigerung entfallen ist, bleibt FUSE
+     * bei unzulaessiger Pumpe ausgewaehlt und regelt einfach nicht. Ohne
+     * Meldung waere das von "FUSE haelt gerade nichts fuer noetig" nicht zu
+     * unterscheiden.
+     */
+    private val gateAlarm = FuseHoldAlarm.Zustand()
+
+    /**
+     * DER GESCHLOSSENE RIEGEL MUSS SICH MELDEN.
+     *
+     * Frueher konnte FUSE mit unzulaessiger Pumpe gar nicht erst aktiviert
+     * werden - dafuer wechselte AAPS still auf OpenAPS SMB. Jetzt bleibt FUSE
+     * ausgewaehlt und gibt nichts ab; das ist die richtige Richtung, aber nur
+     * mit Ansage.
+     *
+     * Der Schluessel ist der GRUND, nicht eine Generation: derselbe
+     * Zustandsautomat wie beim Ledger-Hold, damit ein wechselnder Befund
+     * (unbekanntes Modell -> Fremdpumpe) erneut meldet und eine Aufloesung die
+     * Meldung zurueckzieht.
+     */
+    private fun meldePumpenRiegel(pumpe: FuseActivePump) {
+        gateAlarm.verarbeite(
+            hold = !pumpe.gate.allowed,
+            kennung = FuseHoldAlarm.Kennung(0L, pumpe.gate.verdict.name),
+            ursachen = emptyMap(),
+            textBauer = { _, _ ->
+                "FUSE regelt nicht: ${pumpe.gate.reason}. FUSE bleibt ausgewaehlt und gibt " +
+                    "keine positive Aktuation ab, bis eine erlaubte Pumpe aktiv ist."
+            },
+            melden = { text ->
+                runCatching {
+                    uiInteraction.replaceNotification(
+                        id = Notification.FUSE_PUMP_GATE_BLOCKED, text = text, level = Notification.URGENT,
+                    )
+                }.onFailure { aapsLogger.error(LTag.APS, "FUSE Riegel-Meldung fehlgeschlagen", it) }.isSuccess
+            },
+            zuruecknehmen = {
+                runCatching { uiInteraction.dismissNotification(Notification.FUSE_PUMP_GATE_BLOCKED) }
+                aapsLogger.info(LTag.APS, "FUSE Pumpen-Riegel wieder offen - Meldung zurueckgenommen")
+            },
+        )
+    }
+
     private fun meldeLedgerHold() {
         val s = ledgerAdapter.state
         // `view()` und nicht `state`: die Sperre ist zusammengesetzt (S1).
@@ -879,8 +926,8 @@ class FusePlugin @Inject constructor(
      * kann sich zwischen Zustimmung und Ausfuehrung geaendert haben, und dann
      * ist "nichts tun" die richtige Antwort, nicht "trotzdem tauschen".
      */
-    private fun fuehreReparaturAus() {
-        val r = runCatching { reparaturAuftrag.runIfDue(ledgerDir(), dateUtil.now()) }
+    private fun fuehreReparaturAus(pumpe: FuseActivePump) {
+        val r = runCatching { reparaturAuftrag.runIfDue(ledgerDir(), dateUtil.now(), pumpe.realPump) }
             .getOrElse {
                 aapsLogger.error(LTag.APS, "FUSE Reparatur warf - Hold bleibt", it)
                 null

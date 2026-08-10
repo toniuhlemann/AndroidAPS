@@ -167,6 +167,17 @@ open class Notification {
          */
         const val FUSE_REPAIR_REFUSED = 97
 
+        /**
+         * FUSE: der Pumpen-Riegel ist zu - keine positive Aktuation.
+         *
+         * Seit die pumpenabhaengige Startverweigerung entfallen ist, bleibt
+         * FUSE bei unzulaessiger Pumpe AUSGEWAEHLT und regelt einfach nicht.
+         * Ohne diese Meldung waere das von 'FUSE haelt gerade nichts fuer
+         * noetig' nicht zu unterscheiden - und genau diese Verwechslung ist
+         * die gefaehrlichste, weil nichts passiert.
+         */
+        const val FUSE_PUMP_GATE_BLOCKED = 98
+
         const val USER_MESSAGE = 1000
 
         const val IMPORTANCE_HIGH = 2

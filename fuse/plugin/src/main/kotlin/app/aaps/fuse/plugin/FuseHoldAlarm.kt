@@ -63,11 +63,12 @@ object FuseHoldAlarm {
         kennung: Kennung,
         ursachen: Map<String, Int>,
         zuletzt: Kennung?,
+        textBauer: (Kennung, Map<String, Int>) -> String = ::text,
     ): Aktion = when {
         !hold && zuletzt == null -> Aktion.Nichts
         !hold                    -> Aktion.Zuruecknehmen
         kennung == zuletzt       -> Aktion.Nichts
-        else                     -> Aktion.Melden(kennung, text(kennung, ursachen))
+        else                     -> Aktion.Melden(kennung, textBauer(kennung, ursachen))
     }
 
     /**
@@ -100,8 +101,13 @@ object FuseHoldAlarm {
             ursachen: Map<String, Int>,
             melden: (String) -> Boolean,
             zuruecknehmen: () -> Unit,
+            textBauer: (Kennung, Map<String, Int>) -> String = ::text,
         ): Aktion {
-            val a = naechste(hold, kennung, ursachen, gemeldet)
+            // Der Text kommt vom Aufrufer, damit DERSELBE Zustandsautomat
+            // beide Meldekanaele traegt (Ledger-Hold und Pumpen-Riegel).
+            // Eine zweite, leicht abweichende Kopie waere die naechste
+            // Stelle, an der ein Alarm still verstummt.
+            val a = naechste(hold, kennung, ursachen, gemeldet, textBauer)
             when (a) {
                 is Aktion.Nichts        -> Unit
                 is Aktion.Zuruecknehmen -> {

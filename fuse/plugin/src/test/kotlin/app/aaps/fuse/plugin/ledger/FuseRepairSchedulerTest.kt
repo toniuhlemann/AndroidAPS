@@ -109,7 +109,7 @@ class FuseRepairSchedulerTest {
         assertTrue(nachAltemPersist.contains("p2")) { "der alte Zyklus hat wirklich geschrieben" }
 
         // 5. Zyklusgrenze.
-        val r = s.runIfDue(dir, t0 + 2_000L)
+        val r = s.runIfDue(dir, t0 + 2_000L, realPump = false)
         assertTrue(r is FuseLedgerRepair.Result.Done)
         assertTrue((r as FuseLedgerRepair.Result.Done).freshLedgerWritten)
 
@@ -123,6 +123,46 @@ class FuseRepairSchedulerTest {
         assertTrue(quarantaene.any { it.readText() == nachAltemPersist }) {
             "genau der Stand, den der alte Zyklus zuletzt geschrieben hat, muss in Quarantaene liegen"
         }
+    }
+
+    /**
+     * AN EINER ECHTEN PUMPE WIRD VERWEIGERT - und zwar bei der AUSFUEHRUNG.
+     *
+     * Zwischen Zustimmung und Ausfuehrung liegt ein Zyklus. Wer nur beim
+     * Oeffnen des Dialogs prueft, laesst genau den Fall durch, in dem der
+     * Bediener dazwischen die Pumpe wechselt.
+     *
+     * Die Reparatur verwirft offene Haftung, die Mahlzeiten-Huelle und beide
+     * Stufen des Genau-einmal-Riegels. An der VirtualPump ist das folgenlos,
+     * an einer echten Pumpe waere es eine zweite Dosis auf dieselbe Wette.
+     */
+    @Test
+    fun `an einer echten Pumpe wird die Reparatur bei der Ausfuehrung verweigert`(@TempDir dir: File) {
+        gehaltenerLedger(dir)
+        val vorher = zustand(dir)
+
+        val s = FuseRepairScheduler()
+        assertTrue(s.request(auftrag()))
+
+        // Der Bediener hat unter der Emulation zugestimmt - inzwischen laeuft
+        // die echte Pumpe.
+        val r = s.runIfDue(dir, t0 + 1_000L, realPump = true)
+
+        assertTrue(r is FuseLedgerRepair.Result.Refused)
+        assertEquals(vorher, zustand(dir)) { "keine Datei darf angefasst worden sein" }
+        assertTrue(FuseLedgerStore.holdExists(dir)) { "und der Hold bleibt stehen" }
+        assertFalse(s.isPending) { "der Auftrag ist verbraucht - er soll nicht spaeter doch noch zuschlagen" }
+    }
+
+    /** Unter der Emulation laeuft sie unveraendert - die Sperre ist eine
+     *  Unterscheidung, keine pauschale Abschaltung. */
+    @Test
+    fun `unter der Emulation laeuft die Reparatur weiter`(@TempDir dir: File) {
+        gehaltenerLedger(dir)
+        val s = FuseRepairScheduler()
+        s.request(auftrag())
+        assertTrue(s.runIfDue(dir, t0 + 1_000L, realPump = false) is FuseLedgerRepair.Result.Done)
+        assertFalse(FuseLedgerStore.holdExists(dir))
     }
 
     // ---- Der Auftrag ------------------------------------------------------
@@ -166,7 +206,7 @@ class FuseRepairSchedulerTest {
         val s = FuseRepairScheduler()
         s.request(FuseLedgerRepair.RepairRequest("Bediener X", "Grund Y"))
 
-        val r = s.runIfDue(dir, t0 + 1_000L) as FuseLedgerRepair.Result.Done
+        val r = s.runIfDue(dir, t0 + 1_000L, realPump = false) as FuseLedgerRepair.Result.Done
         assertEquals("Bediener X", r.record.by)
         assertEquals("Grund Y", r.record.reason)
         assertEquals("Grund Y", FuseLedgerRepair.lastReset(dir)!!.reason)
@@ -178,7 +218,7 @@ class FuseRepairSchedulerTest {
     fun `ohne Auftrag tut die Zyklusgrenze nichts`(@TempDir dir: File) {
         gehaltenerLedger(dir)
         val vorher = zustand(dir)
-        assertNull(FuseRepairScheduler().runIfDue(dir, t0 + 1_000L))
+        assertNull(FuseRepairScheduler().runIfDue(dir, t0 + 1_000L, realPump = false))
         assertEquals(vorher, zustand(dir))
     }
 
@@ -200,7 +240,7 @@ class FuseRepairSchedulerTest {
         assertTrue(FuseLedgerStore.clearHoldVerified(dir))
         assertTrue(frisch.persistVerified(dir))
 
-        val r = s.runIfDue(dir, t0 + 1_000L)
+        val r = s.runIfDue(dir, t0 + 1_000L, realPump = false)
         assertTrue(r is FuseLedgerRepair.Result.Refused) { "kein Hold, kein Verlust - also nichts zu tun" }
         assertNotNull(File(dir, FuseLedgerStore.FILE_NAME).takeIf { it.isFile })
         assertNull(FuseLedgerRepair.lastReset(dir)) { "und kein Protokolleintrag fuer einen Vorgang ohne Vorgang" }
@@ -212,8 +252,8 @@ class FuseRepairSchedulerTest {
         gehaltenerLedger(dir)
         val s = FuseRepairScheduler()
         s.request(auftrag())
-        assertTrue(s.runIfDue(dir, t0 + 1_000L) is FuseLedgerRepair.Result.Done)
+        assertTrue(s.runIfDue(dir, t0 + 1_000L, realPump = false) is FuseLedgerRepair.Result.Done)
         assertFalse(s.isPending)
-        assertNull(s.runIfDue(dir, t0 + 2_000L))
+        assertNull(s.runIfDue(dir, t0 + 2_000L, realPump = false))
     }
 }

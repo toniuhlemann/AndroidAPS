@@ -68,7 +68,36 @@ class FuseRepairScheduler {
         return perform(auftrag)
     }
 
-    /** Bequemlichkeit fuer den Regelfall. */
-    fun runIfDue(dir: File, nowTs: Long): FuseLedgerRepair.Result? =
-        runIfDue { FuseLedgerRepair.perform(dir, nowTs, it.by, it.reason) }
+    /**
+     * Bequemlichkeit fuer den Regelfall - MIT der Realpump-Sperre.
+     *
+     * ## Warum die Reparatur an einer echten Pumpe (noch) nicht laufen darf
+     *
+     * `FuseLedgerRepair.perform` schreibt eine vollstaendig frische Generation.
+     * Damit verschwinden GLEICHZEITIG: die offene Haftung, die Prime-/Onset-
+     * Budgets, die Mahlzeitenhistorie, die Wende-Latches und
+     * `lastAcceptedSourceTs`. An der VirtualPump ist das folgenlos. An einer
+     * echten Pumpe heisst es:
+     *
+     *  - Haftung fuer Insulin, das gerade abgegeben, in der Behandlungstabelle
+     *    aber noch nicht sichtbar ist, wird verworfen (gemessene Sichtbarkeit
+     *    p90 56 s, max 854 s) - der naechste Zyklus dosiert obendrauf;
+     *  - die Prime-Huelle derselben Mahlzeit oeffnet ein zweites Mal;
+     *  - beide Stufen des "genau einmal je Glukose-Epoch"-Riegels fallen weg.
+     *
+     * Bis ein zustandserhaltender Weg steht, wird deshalb VERWEIGERT. Geprueft
+     * wird AM AUSFUEHRUNGSPUNKT und nicht beim Oeffnen des Dialogs: zwischen
+     * Zustimmung und Ausfuehrung liegt ein Zyklus, in dem der Bediener die
+     * Pumpe wechseln kann.
+     *
+     * @param realPump ist JETZT eine echte Pumpe aktiv? Aus dem Zyklus-Snapshot.
+     */
+    fun runIfDue(dir: File, nowTs: Long, realPump: Boolean): FuseLedgerRepair.Result? =
+        runIfDue {
+            if (realPump) FuseLedgerRepair.Result.Refused(
+                "an einer ECHTEN Pumpe gesperrt - die Reparatur verwirft Haftung, " +
+                    "Mahlzeiten-Huelle und den Genau-einmal-Riegel; ein zustandserhaltender Weg fehlt noch"
+            )
+            else FuseLedgerRepair.perform(dir, nowTs, it.by, it.reason)
+        }
 }

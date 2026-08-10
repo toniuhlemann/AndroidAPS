@@ -86,6 +86,39 @@ class FuseHoldAlarmTest {
         }
     }
 
+    /**
+     * DERSELBE ZUSTANDSAUTOMAT TRAEGT BEIDE MELDEKANAELE.
+     *
+     * Der Pumpen-Riegel meldet ueber denselben Automaten wie der Ledger-Hold,
+     * nur mit eigenem Text. Eine zweite, leicht abweichende Kopie waere die
+     * naechste Stelle, an der ein Alarm still verstummt - genau das ist mit
+     * dem Hold-Alarm heute schon passiert.
+     */
+    @Test
+    fun `der Aufrufer kann den Meldungstext bestimmen`() {
+        val z = FuseHoldAlarm.Zustand()
+        var gemeldet: String? = null
+        val riegel = FuseHoldAlarm.Kennung(0L, "BLOCKED_REAL_PUMP")
+
+        z.verarbeite(
+            hold = true, kennung = riegel, ursachen = leer,
+            melden = { gemeldet = it; true }, zuruecknehmen = {},
+            textBauer = { k, _ -> "FUSE regelt nicht: ${k.reason}" },
+        )
+        assertEquals("FUSE regelt nicht: BLOCKED_REAL_PUMP", gemeldet) {
+            "der Riegel-Kanal braucht seinen eigenen Text, nicht den des Ledger-Holds"
+        }
+
+        // Und die Zustandsfuehrung gilt unveraendert: derselbe Befund schweigt.
+        gemeldet = null
+        z.verarbeite(
+            hold = true, kennung = riegel, ursachen = leer,
+            melden = { gemeldet = it; true }, zuruecknehmen = {},
+            textBauer = { k, _ -> "FUSE regelt nicht: ${k.reason}" },
+        )
+        assertEquals(null, gemeldet)
+    }
+
     // ---- S1: die Quelle gehoert in den Text ------------------------------
 
     /**
