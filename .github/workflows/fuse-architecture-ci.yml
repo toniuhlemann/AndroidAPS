@@ -26,6 +26,19 @@ jobs:
           chmod +x tools/check_fuse_pump_isolation.sh
           tools/check_fuse_pump_isolation.sh
 
+  ui-idiome:
+    name: Die Oberflaeche benutzt die Hausmittel der App
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Diese Pruefung braucht KEINE Historie - sie liest den Baum. Deshalb
+      # auch kein fetch-depth: 0.
+      - name: Keine Plattform-Dialoge in FUSE
+        run: |
+          chmod +x tools/check_fuse_ui_idioms.sh
+          tools/check_fuse_ui_idioms.sh
+
   fuse-tests:
     name: FUSE-Tests und die vier Kernaenderungen
     runs-on: ubuntu-latest

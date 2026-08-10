@@ -57,6 +57,29 @@ class FuseScreenModelTest {
         assertFalse(t.contains("GIBT NICHTS AB"))
     }
 
+    /**
+     * EIN HOLD OHNE BENANNTEN FEHLER BLEIBT SICHTBAR.
+     *
+     * `holdActuation` ist wahr, sobald IRGENDEINE Zeile `failClosed` ist -
+     * dafuer braucht es keinen globalen Fehlereintrag. Die Ursachenzeile waere
+     * dann leer, und eine Anzeige, die nur bei bekannter Ursache warnt, waere
+     * genau in dem Fall stumm, in dem am wenigsten klar ist, was los ist.
+     */
+    @Test
+    fun `ein Hold ohne benannte Ursache meldet sich trotzdem`() {
+        val t = FuseScreenModel.render(
+            outcome(), null, now, null,
+            FuseScreenModel.LedgerInfo(
+                hold = true, holdGeneration = 3L, activeErrors = emptyMap(),
+                openEntries = 0, grossLiabilityU = 0.0, lastRepairTs = null,
+            ),
+        )
+        assertTrue(t.contains("HOLD - FUSE GIBT NICHTS AB")) {
+            "ohne Ursache ist die Warnung noetiger, nicht entbehrlicher"
+        }
+        assertTrue(t.contains("keine benannt")) { "und die fehlende Ursache wird als solche gesagt" }
+    }
+
     /** Ohne Angabe gar keine Zeile - lieber nichts als eine erfundene
      *  Freimeldung. */
     @Test
