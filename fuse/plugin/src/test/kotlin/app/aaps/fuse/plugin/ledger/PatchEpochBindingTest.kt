@@ -198,6 +198,36 @@ class PatchEpochBindingTest {
         }
     }
 
+    /**
+     * DIE FEINERE VARIANTE DERSELBEN FALLE (Codex 10.08.): Feld VORHANDEN,
+     * aber `false`.
+     *
+     * Eine reine Anwesenheitspruefung laesst das durch; danach wird der Pin
+     * als "nicht anwendbar" dekodiert und umgeht die Patchpruefung erneut.
+     * Der Schreiber setzt an einem Patchpumpen-Pin IMMER `true` - alles
+     * andere ist Korruption.
+     */
+    @Test
+    fun `eine v3-Patchpinnung mit applicable=false ist Korruption`(@TempDir dir: File) {
+        val a = adapter(dir, t0 - 3600_000L)
+        a.publish("p1", 0.30, t0)
+        assertTrue(a.persistVerified(dir))
+
+        val target = File(dir, FuseLedgerStore.FILE_NAME)
+        val o = org.json.JSONObject(target.readText())
+        val pins = o.getJSONArray("proposalPumpEpochs")
+        for (i in 0 until pins.length()) {
+            pins.getJSONObject(i).put("patchEpochApplicable", false)
+            pins.getJSONObject(i).put("patchEpochTs", 123L)
+        }
+        target.writeText(o.toString())
+
+        val b = FuseLedgerAdapter().also { it.loadOnce(dir, "epoch-b", t0 + 60_000L, medtrum.name) }
+        assertTrue(b.recoveryHold) {
+            "Praesenz genuegt nicht - der Wert muss stimmen, sonst ist die Pruefung wieder aus"
+        }
+    }
+
     /** Die Gegenprobe: eine NICHT-Patch-Pinnung traegt die Felder nie und
      *  bleibt gueltig - sonst haette die Pflicht die VirtualPump erschlagen. */
     @Test

@@ -106,9 +106,39 @@ object LedgerPublicationGate {
      * @param units die Menge des RT, `null` = keine.
      * @param treatmentViewPresent traegt der Zyklus eine Behandlungs-Vollsicht?
      */
-    fun commitmentOf(units: Double?, treatmentViewPresent: Boolean, proposalId: String): Commitment =
-        if (units != null && !treatmentViewPresent) Commitment.None(REASON_TREATMENT_VIEW_UNAVAILABLE)
-        else Commitment.Proposal(proposalId)
+    /**
+     * B3: bei einer REALEN Pumpe mit unbekannter Patch-Epoche wird kein
+     * positiver SMB publiziert.
+     *
+     * Ohne bekannte Epoche liesse sich der Bolus hinterher keiner Zeile
+     * zuordnen - er wuerde also weder gebunden noch ausgebucht und bliebe als
+     * Haftung stehen, waehrend sein Insulin wirkt. Publizieren waere hier
+     * dosieren ohne Buchfuehrung.
+     *
+     * NUR DER SMB. Der Weg laeuft ueber [Commitment.None] und damit ueber
+     * `strip`, das ausdruecklich nur `units`/`deliverAt` entfernt und die
+     * TBR-Felder stehen laesst: eine Schutz-Null darf nicht wegen eines
+     * BOLUS-Provenienzproblems verschwinden. Das ist dieselbe Trennung wie
+     * beim fehlenden Vollsicht-Fall.
+     */
+    const val REASON_REAL_PUMP_EPOCH_UNKNOWN = "REAL_PUMP_EPOCH_UNKNOWN"
+
+    fun commitmentOf(
+        units: Double?,
+        treatmentViewPresent: Boolean,
+        proposalId: String,
+        realPumpEpochUnknown: Boolean = false,
+    ): Commitment = when {
+        units == null                  -> Commitment.Proposal(proposalId)
+        // REIHENFOLGE IST DIAGNOSE, wie schon bei PERSIST_FAILED: der laenger
+        // wirkende Befund zuerst. Eine unbekannte Patch-Epoche bleibt ueber
+        // Zyklen bestehen, bis ein Wechsel gelesen wird; eine fehlende
+        // Vollsicht betrifft nur diesen einen. Stuende sie vorn, truege der
+        // Trail bei gleichzeitigem Auftreten den kurzlebigeren Grund.
+        realPumpEpochUnknown           -> Commitment.None(REASON_REAL_PUMP_EPOCH_UNKNOWN)
+        !treatmentViewPresent          -> Commitment.None(REASON_TREATMENT_VIEW_UNAVAILABLE)
+        else                           -> Commitment.Proposal(proposalId)
+    }
 
     /**
      * DAS ERGEBNIS DES GATES ALS DATEN (B0c).

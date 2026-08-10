@@ -15,7 +15,11 @@ import app.aaps.core.interfaces.configuration.Config
 import app.aaps.core.interfaces.constraints.Constraint
 import app.aaps.core.interfaces.constraints.ConstraintsChecker
 import app.aaps.core.interfaces.constraints.PluginConstraints
+import app.aaps.core.data.model.TE
 import app.aaps.core.interfaces.db.PersistenceLayer
+import app.aaps.fuse.plugin.ledger.FusePatchEpoch
+import app.aaps.fuse.plugin.ledger.LedgerFacts
+import app.aaps.fuse.plugin.ledger.ProposalPumpEpoch
 import app.aaps.core.interfaces.iob.IobCobCalculator
 import app.aaps.core.interfaces.logging.AAPSLogger
 import app.aaps.core.interfaces.logging.LTag
@@ -371,8 +375,18 @@ class FusePlugin @Inject constructor(
         // naechste invoke versucht den Umzug erneut.
         if (migrateLedgerDirOnce()) {
             ledgerAdapter.noteMigrationDone()
-            runCatching { ledgerAdapter.loadOnce(ledgerDir(), sessionId, dateUtil.now()) { aapsLogger.error(LTag.APS, it) } }
-                .onFailure { aapsLogger.error(LTag.APS, "FUSE ledger load failed", it) }
+            // B3: der PUMPENKONTEXT gehoert zum Laden. Die Migration braucht
+            // ihn, weil eine v1-Zeile gar keinen Pin hat - ob sie gefahrlos
+            // als Altbestand weiterbinden darf, haengt daran, welche Pumpe
+            // heute laeuft. Ohne ihn kaeme immer `null` an, also "unbekannt",
+            // und jede offene Altzeile ginge auch auf der VirtualPump in den
+            // Hold: fail-closed, aber unnoetig blockierend.
+            val aktiverTyp = runCatching { activePlugin.activePump.model().name }.getOrNull()
+            runCatching {
+                ledgerAdapter.loadOnce(ledgerDir(), sessionId, dateUtil.now(), aktiverTyp) {
+                    aapsLogger.error(LTag.APS, it)
+                }
+            }.onFailure { aapsLogger.error(LTag.APS, "FUSE ledger load failed", it) }
         } else {
             ledgerAdapter.noteMigrationFailed()
         }
@@ -381,6 +395,36 @@ class FusePlugin @Inject constructor(
         // wuerde den gesamten Loop-Durchlauf abbrechen — inklusive der Schritte
         // nach dem APS-Aufruf. Deshalb faengt FUSE selbst und liefert ein
         // Ergebnis, das nichts anfordert, aber den Grund traegt.
+        // B3: die aktuelle PATCH-EPOCHE fuer diesen Zyklus bestimmen, BEVOR
+        // gebunden oder publiziert wird.
+        //
+        // GENAU EINE Abfrage, und KEIN Rueckfall auf einen aelteren
+        // Datensatz: `getLastTherapyRecordUpToNow` liefert den neuesten
+        // gueltigen Wechsel. Passt der nicht zur aktiven Pumpe, ist die Epoche
+        // unbekannt - auf einen aelteren passenden auszuweichen waere die
+        // Behauptung, seither sei nichts geschehen, und genau das ist
+        // unbekannt.
+        val aktiverPumpentyp = runCatching { activePlugin.activePump.model().name }.getOrNull()
+        val patchEpoch = run {
+            val pumpe = runCatching { activePlugin.activePump }.getOrNull()
+            FusePatchEpoch.of(
+                // GENAU EINE Abfrage. Liefert sie einen unpassenden Wechsel,
+                // ist die Epoche unbekannt - hier wird NICHT nach einem
+                // aelteren passenden weitergesucht.
+                event = runCatching {
+                    persistenceLayer.getLastTherapyRecordUpToNow(TE.Type.CANNULA_CHANGE)
+                }.getOrNull(),
+                activePumpTypeName = aktiverPumpentyp,
+                activeSerialHash = LedgerFacts.serialHashOf(
+                    runCatching { pumpe?.serialNumber() }.getOrNull(),
+                    aktiverPumpentyp,
+                ),
+                nowTs = dateUtil.now(),
+                serialHashOf = LedgerFacts::serialHashOf,
+            )
+        }
+        ledgerAdapter.observePatchEpoch(patchEpoch.epochTs)
+
         val outcome = try {
             cycleRunner().run(tempBasalFallback)
         } catch (e: Exception) {
@@ -492,6 +536,19 @@ class FusePlugin @Inject constructor(
             units = rt.units,
             treatmentViewPresent = outcome?.treatmentView != null,
             proposalId = cycleId,
+            // B3: nur bei einer PATCHPUMPE, nicht bei "realer Pumpe".
+            //
+            // Das ist die praezisere Bedingung UND die richtige Schichtung:
+            // die Epoche ist eine Eigenschaft von Patchpumpen, nicht von
+            // Realpumpen. Auf `FusePumpGate` abzustellen haette B3 zusaetzlich
+            // an den Realpump-Riegel gekoppelt, der noch gar nicht committet
+            // ist - eine Sicherheitsregel darf nicht von einer offenen
+            // Aenderung abhaengen.
+            //
+            // Gegen die VirtualPump gibt es keine Patches; dort waere die
+            // Epoche immer unbekannt und die Sperre haette den
+            // Entwicklungspfad stillgelegt.
+            realPumpEpochUnknown = ProposalPumpEpoch.appliesTo(aktiverPumpentyp) && !patchEpoch.known,
         )
 
         val publication = app.aaps.fuse.plugin.ledger.LedgerPublicationGate.publish(

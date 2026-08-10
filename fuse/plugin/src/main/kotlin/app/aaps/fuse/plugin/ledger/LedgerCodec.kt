@@ -450,6 +450,15 @@ object LedgerCodec {
             ) {
                 require(obj.has("patchEpochApplicable")) { "v$schemaVersion patch pin $id without patchEpochApplicable" }
                 require(obj.has("patchEpochTs")) { "v$schemaVersion patch pin $id without patchEpochTs" }
+                // ...und der WERT muss stimmen. Die blosse Praesenz genuegt
+                // nicht: `"patchEpochApplicable": false` an einem Medtrum-Pin
+                // passiert jede Anwesenheitspruefung, wird danach als "nicht
+                // anwendbar" dekodiert und umgeht die Patchpruefung erneut.
+                // Der Schreiber setzt an einem Patchpumpen-Pin IMMER true -
+                // alles andere ist Korruption.
+                require(obj.getBoolean("patchEpochApplicable")) {
+                    "v$schemaVersion patch pin $id declares patchEpochApplicable=false"
+                }
             }
             val anwendbar = obj.optBoolean("patchEpochApplicable", false)
             val ep = ProposalPumpEpoch(
