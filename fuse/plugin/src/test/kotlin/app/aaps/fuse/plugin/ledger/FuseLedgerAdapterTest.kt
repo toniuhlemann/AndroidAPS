@@ -30,8 +30,16 @@ class FuseLedgerAdapterTest {
         ids = IDs(pumpType = PumpType.GENERIC_AAPS, pumpSerial = "vs", pumpId = pumpId),
     )
 
+    /**
+     * B3: der Pumpenkontext gehoert zum Laden.
+     *
+     * Die Migration braucht ihn, weil eine v1-Zeile GAR KEINEN Pin hat: ob sie
+     * gefahrlos als Altbestand weiterbinden darf, haengt daran, welche Pumpe
+     * heute laeuft. `null` gilt als unbekannt und damit als Hold - hier laeuft
+     * die Testpumpe GENERIC_AAPS, also eine Nicht-Patch-Pumpe.
+     */
     private fun loadedAdapter(dir: File, session: String = "epoch-a", now: Long = t0): FuseLedgerAdapter =
-        FuseLedgerAdapter().also { it.loadOnce(dir, session, now) }
+        FuseLedgerAdapter().also { it.loadOnce(dir, session, now, PumpType.GENERIC_AAPS.name) }
 
     /** Publikation MIT Pumpen-Info der Testpumpe (GENERIC_AAPS/"vs", passend
      *  zum [smb]-Helfer). Seit R4-03 bindet eine Publikation OHNE Info einen
@@ -148,7 +156,7 @@ class FuseLedgerAdapterTest {
         val a = loadedAdapter(dir)
         a.onPublished("p1", 0.30, t0, 0L, 0.05)
         val rev = a.revision
-        a.loadOnce(dir, "epoch-x", t0 + 1L)
+        a.loadOnce(dir, "epoch-x", t0 + 1L, PumpType.GENERIC_AAPS.name)
         assertEquals(rev, a.revision)
         assertEquals(0.30, a.view().transportCommitmentU, 1e-12)
     }
@@ -176,7 +184,7 @@ class FuseLedgerAdapterTest {
         val tampered = org.json.JSONObject(target.readText())
         tampered.getJSONObject("episodes").put("primeSpentU", -1.0)
         target.writeText(tampered.toString())
-        val b = FuseLedgerAdapter().also { it.loadOnce(dir, "epoch-x", t0) }
+        val b = FuseLedgerAdapter().also { it.loadOnce(dir, "epoch-x", t0, PumpType.GENERIC_AAPS.name) }
         assertEquals(0.0, b.episodes.primeSpentU, 0.0)
         assertTrue(b.recoveryHold)
         assertTrue(b.view().hold)
@@ -194,7 +202,7 @@ class FuseLedgerAdapterTest {
         assertTrue(a.persistVerified(dir)) // dreht p1-Stand nach bak
         File(dir, FuseLedgerStore.FILE_NAME).writeText("{kaputt")
 
-        val b = FuseLedgerAdapter().also { it.loadOnce(dir, "epoch-b", t0 + 120_000L) }
+        val b = FuseLedgerAdapter().also { it.loadOnce(dir, "epoch-b", t0 + 120_000L, PumpType.GENERIC_AAPS.name) }
         // Die bak-Generation traegt p1, p2 ist verloren gegangen ...
         assertTrue("p1" in b.state.entries)
         assertFalse("p2" in b.state.entries)
@@ -274,7 +282,7 @@ class FuseLedgerAdapterTest {
 
         // ... und die Ausschlussmenge ueberlebt den Neustart.
         assertTrue(a.persistVerified(dir))
-        val fresh = FuseLedgerAdapter().also { it.loadOnce(dir, "epoch-c", t0 + 13 * 3600_000L) }
+        val fresh = FuseLedgerAdapter().also { it.loadOnce(dir, "epoch-c", t0 + 13 * 3600_000L, PumpType.GENERIC_AAPS.name) }
         fresh.bindIdentities(listOf(b))
         assertNull(fresh.state.entries.getValue("p2").identity)
     }
@@ -367,7 +375,7 @@ class FuseLedgerAdapterTest {
         // Alle Generationen verschwinden (Aufraeumen, Bug, Fremdzugriff) -
         // der Marker bleibt.
         assertTrue(File(dir, FuseLedgerStore.FILE_NAME).delete())
-        val b = FuseLedgerAdapter().also { it.loadOnce(dir, "epoch-b", t0 + 60_000L) }
+        val b = FuseLedgerAdapter().also { it.loadOnce(dir, "epoch-b", t0 + 60_000L, PumpType.GENERIC_AAPS.name) }
         assertEquals(0.0, b.view().transportCommitmentU, 1e-12)
         assertTrue(b.recoveryHold)
         assertTrue(b.view().hold)
@@ -382,7 +390,7 @@ class FuseLedgerAdapterTest {
     fun `ausstehende Migration haelt an und persistiert nicht`(@TempDir dir: File) {
         val a = FuseLedgerAdapter()
         a.noteMigrationFailed()
-        a.loadOnce(dir, "epoch-a", t0)
+        a.loadOnce(dir, "epoch-a", t0, PumpType.GENERIC_AAPS.name)
         assertTrue(a.view().hold)
         assertEquals(FuseLedgerAdapter.HOLD_REASON_MIGRATION, a.view().holdReason)
         assertFalse(a.persistVerified(dir))
@@ -391,7 +399,7 @@ class FuseLedgerAdapterTest {
         // Naechster invoke: Migration gelungen -> regulaeres Laden, und der
         // naechste erfolgreiche Persist loescht die sticky Persist-Sperre.
         a.noteMigrationDone()
-        a.loadOnce(dir, "epoch-a", t0)
+        a.loadOnce(dir, "epoch-a", t0, PumpType.GENERIC_AAPS.name)
         assertTrue(a.persistVerified(dir))
         assertFalse(a.view().hold)
         assertNull(a.view().holdReason)
@@ -431,7 +439,7 @@ class FuseLedgerAdapterTest {
         assertTrue(File(dir, FuseLedgerStore.SENTINEL_NAME).exists())
         File(dir, FuseLedgerStore.FILE_NAME).writeText("{kaputt")
 
-        val b = FuseLedgerAdapter().also { it.loadOnce(dir, "epoch-b", t0 + 60_000L) }
+        val b = FuseLedgerAdapter().also { it.loadOnce(dir, "epoch-b", t0 + 60_000L, PumpType.GENERIC_AAPS.name) }
         assertTrue(b.recoveryHold)
         assertEquals(FuseLedgerAdapter.HOLD_REASON_RECOVERY, b.view().holdReason)
         assertEquals(0.0, b.view().transportCommitmentU, 1e-12)
@@ -464,12 +472,12 @@ class FuseLedgerAdapterTest {
     fun `C8d der Recovery-Hold ueberlebt zwei gehaltene Zyklen und den Neustart`(@TempDir dir: File) {
         korrupteVorgeschichte(dir)
 
-        val b = FuseLedgerAdapter().also { it.loadOnce(dir, "epoch-b", t0 + 120_000L) }
+        val b = FuseLedgerAdapter().also { it.loadOnce(dir, "epoch-b", t0 + 120_000L, PumpType.GENERIC_AAPS.name) }
         assertTrue(b.recoveryHold)
         assertTrue(b.persistVerified(dir))
         assertTrue(b.persistVerified(dir))
 
-        val c = FuseLedgerAdapter().also { it.loadOnce(dir, "epoch-c", t0 + 180_000L) }
+        val c = FuseLedgerAdapter().also { it.loadOnce(dir, "epoch-c", t0 + 180_000L, PumpType.GENERIC_AAPS.name) }
         assertTrue(c.recoveryHold, "Recovery-Hold nach zwei gehaltenen Zyklen verloren")
         assertTrue(c.view().hold)
         assertEquals(FuseLedgerAdapter.HOLD_REASON_RECOVERY, c.view().holdReason)
@@ -482,7 +490,7 @@ class FuseLedgerAdapterTest {
     fun `C8d die korrupten Generationen bleiben als Beweis erhalten`(@TempDir dir: File) {
         korrupteVorgeschichte(dir)
 
-        val b = FuseLedgerAdapter().also { it.loadOnce(dir, "epoch-b", t0 + 120_000L) }
+        val b = FuseLedgerAdapter().also { it.loadOnce(dir, "epoch-b", t0 + 120_000L, PumpType.GENERIC_AAPS.name) }
         assertTrue(b.persistVerified(dir))
         assertTrue(b.persistVerified(dir))
 
@@ -507,7 +515,7 @@ class FuseLedgerAdapterTest {
         assertTrue(a.persistVerified(dir))
         assertTrue(FuseLedgerStore.writeHoldVerified(dir, """{"reason":"TEST","ts":1}"""))
 
-        val b = FuseLedgerAdapter().also { it.loadOnce(dir, "epoch-b", t0 + 60_000L) }
+        val b = FuseLedgerAdapter().also { it.loadOnce(dir, "epoch-b", t0 + 60_000L, PumpType.GENERIC_AAPS.name) }
         // Der Zustand laedt vollstaendig ...
         assertEquals(0.30, b.view().transportCommitmentU, 1e-12)
         // ... und ist trotzdem gesperrt.
@@ -527,7 +535,7 @@ class FuseLedgerAdapterTest {
         File(dir, FuseLedgerStore.FILE_NAME).writeText("{kaputt")
         assertTrue(File(dir, FuseLedgerStore.HOLD_NAME).mkdirs())
 
-        val a = FuseLedgerAdapter().also { it.loadOnce(dir, "epoch-a", t0) }
+        val a = FuseLedgerAdapter().also { it.loadOnce(dir, "epoch-a", t0, PumpType.GENERIC_AAPS.name) }
         assertTrue(a.recoveryHold)
         assertFalse(a.persistVerified(dir))
         assertTrue(a.persistFailed)
@@ -619,7 +627,7 @@ class FuseLedgerAdapterTest {
         tampered.remove("proposalPumpEpochs")
         target.writeText(tampered.toString())
 
-        val b = FuseLedgerAdapter().also { it.loadOnce(dir, "epoch-b", t0 + 60_000L) }
+        val b = FuseLedgerAdapter().also { it.loadOnce(dir, "epoch-b", t0 + 60_000L, PumpType.GENERIC_AAPS.name) }
         assertTrue(b.recoveryHold)
         assertTrue(b.view().hold)
     }
@@ -641,7 +649,7 @@ class FuseLedgerAdapterTest {
         tampered.remove("proposalPumpEpochs")
         target.writeText(tampered.toString())
 
-        val b = FuseLedgerAdapter().also { it.loadOnce(dir, "epoch-b", t0 + 60_000L) }
+        val b = FuseLedgerAdapter().also { it.loadOnce(dir, "epoch-b", t0 + 60_000L, PumpType.GENERIC_AAPS.name) }
 
         // UMGEKEHRT gegenueber dem frueheren Stand (Codex-Re-Review P0-B).
         // Vorher band diese Datei "wie bisher" weiter. Seit Schema v3 traegt
@@ -690,7 +698,7 @@ class FuseLedgerAdapterTest {
         tampered.remove("proposalPumpEpochs")
         target.writeText(tampered.toString())
 
-        val b = FuseLedgerAdapter().also { it.loadOnce(dir, "epoch-b", t0 + 60_000L) }
+        val b = FuseLedgerAdapter().also { it.loadOnce(dir, "epoch-b", t0 + 60_000L, PumpType.GENERIC_AAPS.name) }
 
         assertFalse(b.recoveryHold) { "eine abgeschriebene Zeile darf den Betrieb nicht dauerhaft sperren" }
         assertEquals(1, b.unresolvedBeyondActionCount()) { "der Befund bleibt erhalten" }
@@ -718,7 +726,7 @@ class FuseLedgerAdapterTest {
             haupt?.let { File(d, FuseLedgerStore.FILE_NAME).writeText(it) }
             tmp?.let { File(d, "${FuseLedgerStore.FILE_NAME}.tmp").writeText(it) }
             bak?.let { File(d, "${FuseLedgerStore.FILE_NAME}.bak").writeText(it) }
-            val l = FuseLedgerAdapter().also { it.loadOnce(d, "epoch-x", t0 + 60_000L) }
+            val l = FuseLedgerAdapter().also { it.loadOnce(d, "epoch-x", t0 + 60_000L, PumpType.GENERIC_AAPS.name) }
             assertFalse(l.recoveryHold) { "$name: kein dauerhafter Hold" }
             assertEquals(0.30, l.view().transportCommitmentU, 1e-9) { "$name: Haftung erhalten" }
         }
@@ -748,11 +756,11 @@ class FuseLedgerAdapterTest {
         tampered.remove("proposalPumpEpochs")
         target.writeText(tampered.toString())
 
-        val erster = FuseLedgerAdapter().also { it.loadOnce(dir, "epoch-b", t0 + 60_000L) }
+        val erster = FuseLedgerAdapter().also { it.loadOnce(dir, "epoch-b", t0 + 60_000L, PumpType.GENERIC_AAPS.name) }
         assertFalse(erster.recoveryHold)
         val nachErstem = target.readText()
 
-        val zweiter = FuseLedgerAdapter().also { it.loadOnce(dir, "epoch-c", t0 + 120_000L) }
+        val zweiter = FuseLedgerAdapter().also { it.loadOnce(dir, "epoch-c", t0 + 120_000L, PumpType.GENERIC_AAPS.name) }
         assertFalse(zweiter.recoveryHold)
         assertEquals(0.30, zweiter.view().transportCommitmentU, 1e-9)
         assertEquals(nachErstem, target.readText()) { "der zweite Start schreibt die Generation nicht neu" }
@@ -775,7 +783,7 @@ class FuseLedgerAdapterTest {
         tampered.remove("proposalPumpEpochs")
         target.writeText(tampered.toString())
 
-        val b = FuseLedgerAdapter().also { it.loadOnce(dir, "epoch-b", t0 + 60_000L) }
+        val b = FuseLedgerAdapter().also { it.loadOnce(dir, "epoch-b", t0 + 60_000L, PumpType.GENERIC_AAPS.name) }
         assertFalse(b.recoveryHold) { "ohne offene Zeilen ist nichts zu retten - also kein Hold" }
     }
 

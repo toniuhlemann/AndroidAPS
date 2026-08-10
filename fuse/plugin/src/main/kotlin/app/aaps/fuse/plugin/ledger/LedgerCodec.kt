@@ -173,11 +173,36 @@ object LedgerCodec {
     fun unmigratablePatchRows(
         state: LedgerState,
         pumpEpochs: Map<String, ProposalPumpEpoch>,
+        activePumpTypeName: String?,
     ): List<String> = state.entries.keys.filter { id ->
-        val ep = pumpEpochs[id] ?: return@filter false
+        val ep = pumpEpochs[id]
+        if (ep == null) {
+            // GAR KEIN PIN - eine v1-Zeile. Sie wuerde spaeter ueber
+            // `coveredEpochs` zu LEGACY_OPEN und danach OHNE Typ-, Serial- und
+            // Patchpruefung binden. Auf einer echten Patchpumpe ist das genau
+            // das Loch, gegen das B3 gebaut ist.
+            //
+            // Ob sie gefahrlos weiterbinden darf, haengt daran, WELCHE Pumpe
+            // heute laeuft:
+            //   - Patchpumpe  -> nein, Hold.
+            //   - Nicht-Patch -> ja, unveraendertes Altbestandsverhalten.
+            //   - UNBEKANNT   -> Hold. Eine VirtualPump anzunehmen waere
+            //     geraten, und zwar in die gefaehrliche Richtung.
+            //
+            // Eine bereits GESCHLOSSENE Zeile bindet nichts mehr - sie ist
+            // kein Grund anzuhalten.
+            val offen = state.entries[id]?.closed == false
+            return@filter offen && (activePumpTypeName == null || ProposalPumpEpoch.appliesTo(activePumpTypeName))
+        }
         // Marker-Pins tragen keinen Typ - sie binden ohnehin nie (UNPINNED)
         // oder sind ausdruecklicher Altbestand (LEGACY_OPEN).
-        if (ep.unpinned || ep.legacyOpen) return@filter false
+        if (ep.unpinned) return@filter false
+        if (ep.legacyOpen) {
+            // Ausdruecklicher Altbestand bindet "wie bisher" - dieselbe Frage
+            // wie beim fehlenden Pin, also dieselbe Antwort.
+            val offen = state.entries[id]?.closed == false
+            return@filter offen && (activePumpTypeName == null || ProposalPumpEpoch.appliesTo(activePumpTypeName))
+        }
         // Eine Patchpumpe OHNE anwendbare, gesetzte Epoche ist der Fall.
         ProposalPumpEpoch.appliesTo(ep.pumpTypeName) && ep.patchEpochTs == null
     }
@@ -229,7 +254,7 @@ object LedgerCodec {
         val revision = o.getLong("revision")
         require(revision >= 0L) { "negative ledger revision $revision" }
         val state = decodeState(o.getJSONObject("state"), v)
-        val pumpEpochs = decodePumpEpochs(o)
+        val pumpEpochs = decodePumpEpochs(o, v)
         // R4-03: ab v2 muss jede Zeile einen Pin-Eintrag tragen - ein
         // ENTFERNTER Pin wurde vorher still als Legacy gedeutet und band
         // wieder alles.
@@ -389,7 +414,7 @@ object LedgerCodec {
             }
         }
 
-    private fun decodePumpEpochs(o: JSONObject): Map<String, ProposalPumpEpoch> {
+    private fun decodePumpEpochs(o: JSONObject, schemaVersion: Int = VERSION): Map<String, ProposalPumpEpoch> {
         // opt statt get: Dateien vor Fix 3 tragen das Feld nicht - fuer sie
         // ist "keine Pinnung" der ehrliche Zustand (Altbestand bindet wie
         // bisher), kein Fehler. Ab Schemaversion 2 erzwingt decode() danach
@@ -409,6 +434,23 @@ object LedgerCodec {
             // Pumpe oder aus einer Generation VOR B3 - beides wird hier
             // gleich gelesen (nicht anwendbar) und erst von der Migration
             // auseinandergehalten, die als einzige den Pumpentyp kennt.
+            // P0 (Codex 10.08.): eine BESCHAEDIGTE v3-Pinnung einer Patchpumpe
+            // ohne diese Felder wuerde als "nicht anwendbar" gelesen - und
+            // damit uebersaehe matchesPinnedEpoch die Patchpruefung
+            // VOLLSTAENDIG. Das ist dieselbe Falle wie ueberall in diesem
+            // Projekt: ein fehlendes Feld sieht aus wie eine gueltige Aussage.
+            //
+            // v3 ist nie ohne sie ausgeliefert worden (Deployment-Annahme,
+            // geraeteseitig bestaetigt), also sind sie ab v3 fuer
+            // Patchpumpen-Pins PFLICHT. Nicht-Patch-Pins tragen sie
+            // weiterhin nicht - fuer sie gibt es die Kategorie nicht.
+            val pinTyp = obj.strOrNull("pumpType")
+            if (schemaVersion >= RECONCILIATION_VERSION && !unpinned && !legacyOpen &&
+                ProposalPumpEpoch.appliesTo(pinTyp)
+            ) {
+                require(obj.has("patchEpochApplicable")) { "v$schemaVersion patch pin $id without patchEpochApplicable" }
+                require(obj.has("patchEpochTs")) { "v$schemaVersion patch pin $id without patchEpochTs" }
+            }
             val anwendbar = obj.optBoolean("patchEpochApplicable", false)
             val ep = ProposalPumpEpoch(
                 obj.strOrNull("pumpType"), obj.strOrNull("pumpSerialHash"), unpinned, legacyOpen,

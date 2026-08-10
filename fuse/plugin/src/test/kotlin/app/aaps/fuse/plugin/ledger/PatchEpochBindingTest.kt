@@ -168,6 +168,118 @@ class PatchEpochBindingTest {
     }
 
     /**
+     * P0 (Codex 10.08.): EINE BESCHAEDIGTE v3-PATCHPINNUNG DARF NICHT ALS
+     * "NICHT ANWENDBAR" DURCHGEHEN.
+     *
+     * Fehlten die Felder, las der Decoder `patchEpochApplicable = false` - und
+     * `matchesPinnedEpoch` uebersprang die Patchpruefung VOLLSTAENDIG. Wieder
+     * dieselbe Falle: ein fehlendes Feld sieht aus wie eine gueltige Aussage,
+     * und zwar die harmloseste.
+     *
+     * v3 ist nie ohne sie ausgeliefert worden, also ist ihr Fehlen Korruption
+     * und kein Altbestand.
+     */
+    @Test
+    fun `eine v3-Patchpinnung ohne ihre Felder ist Korruption`(@TempDir dir: File) {
+        for (feld in listOf("patchEpochApplicable", "patchEpochTs")) {
+            val unter = File(dir, "ohne-$feld").also(File::mkdirs)
+            val a = adapter(unter, t0 - 3600_000L)
+            a.publish("p1", 0.30, t0)
+            assertTrue(a.persistVerified(unter))
+
+            val target = File(unter, FuseLedgerStore.FILE_NAME)
+            val o = org.json.JSONObject(target.readText())
+            val pins = o.getJSONArray("proposalPumpEpochs")
+            for (i in 0 until pins.length()) pins.getJSONObject(i).remove(feld)
+            target.writeText(o.toString())
+
+            val b = FuseLedgerAdapter().also { it.loadOnce(unter, "epoch-b", t0 + 60_000L, medtrum.name) }
+            assertTrue(b.recoveryHold) { "$feld fehlt in einer v3-Patchpinnung - das ist Korruption, kein Altbestand" }
+        }
+    }
+
+    /** Die Gegenprobe: eine NICHT-Patch-Pinnung traegt die Felder nie und
+     *  bleibt gueltig - sonst haette die Pflicht die VirtualPump erschlagen. */
+    @Test
+    fun `eine v3-Pinnung ohne Patchbezug bleibt ohne diese Felder gueltig`(@TempDir dir: File) {
+        val vp = PumpType.GENERIC_AAPS
+        val a = adapter(dir, null)
+        a.onPublished("p1", 0.30, t0, 0L, 0.05, vp.name, LedgerFacts.serialHashOf("vs", vp.name))
+        assertTrue(a.persistVerified(dir))
+        val roh = File(dir, FuseLedgerStore.FILE_NAME).readText()
+        assertFalse(roh.contains("patchEpochApplicable")) { "fuer eine Nicht-Patch-Pumpe gibt es die Kategorie nicht" }
+
+        val b = FuseLedgerAdapter().also { it.loadOnce(dir, "epoch-b", t0 + 60_000L, vp.name) }
+        assertFalse(b.recoveryHold)
+    }
+
+    // ---- P0: die pinlose v1-Zeile ----------------------------------------
+
+    /**
+     * P0 (Codex 10.08.): EINE v1-ZEILE HAT GAR KEINEN PIN.
+     *
+     * `unmigratablePatchRows` uebersprang sie deshalb, und `coveredEpochs`
+     * machte spaeter LEGACY_OPEN daraus - also "bindet wie bisher", ganz ohne
+     * Typ-, Serial- und Patchpruefung. Auf einer echten Medtrum ist das exakt
+     * das Loch, gegen das B3 gebaut ist.
+     *
+     * Ob sie gefahrlos weiterbinden darf, haengt daran, WELCHE Pumpe heute
+     * laeuft - deshalb braucht die Migration den Pumpenkontext.
+     */
+    @Test
+    fun `eine pinlose v1-Zeile haelt an, wenn heute eine Medtrum laeuft`(@TempDir dir: File) {
+        val a = adapter(dir, t0 - 3600_000L)
+        a.publish("alt", 0.30, t0)
+        assertTrue(a.persistVerified(dir))
+
+        val target = File(dir, FuseLedgerStore.FILE_NAME)
+        val o = org.json.JSONObject(target.readText()).put("v", 1)
+        o.remove("proposalPumpEpochs")   // v1 kannte die Pinnung noch nicht
+        target.writeText(o.toString())
+
+        val b = FuseLedgerAdapter().also { it.loadOnce(dir, "epoch-b", t0 + 60_000L, medtrum.name) }
+        assertTrue(b.recoveryHold) {
+            "ohne Pin und mit aktiver Patchpumpe wuerde die Zeile ungeprueft binden - Hold"
+        }
+    }
+
+    /** Dieselbe Datei, aber heute laeuft eine Nicht-Patch-Pumpe: dann ist das
+     *  alte Bindungsverhalten unbedenklich und die Migration laeuft durch. */
+    @Test
+    fun `dieselbe pinlose Zeile migriert unter einer Nicht-Patch-Pumpe`(@TempDir dir: File) {
+        val vp = PumpType.GENERIC_AAPS
+        val a = adapter(dir, null)
+        a.onPublished("alt", 0.30, t0, 0L, 0.05, vp.name, LedgerFacts.serialHashOf("vs", vp.name))
+        assertTrue(a.persistVerified(dir))
+
+        val target = File(dir, FuseLedgerStore.FILE_NAME)
+        val o = org.json.JSONObject(target.readText()).put("v", 1)
+        o.remove("proposalPumpEpochs")
+        target.writeText(o.toString())
+
+        val b = FuseLedgerAdapter().also { it.loadOnce(dir, "epoch-b", t0 + 60_000L, vp.name) }
+        assertFalse(b.recoveryHold)
+    }
+
+    /** UNBEKANNTE aktive Pumpe: Hold. Eine VirtualPump anzunehmen waere
+     *  geraten, und zwar in die gefaehrliche Richtung. */
+    @Test
+    fun `bei unbekannter aktiver Pumpe haelt die pinlose Zeile an`(@TempDir dir: File) {
+        val vp = PumpType.GENERIC_AAPS
+        val a = adapter(dir, null)
+        a.onPublished("alt", 0.30, t0, 0L, 0.05, vp.name, LedgerFacts.serialHashOf("vs", vp.name))
+        assertTrue(a.persistVerified(dir))
+
+        val target = File(dir, FuseLedgerStore.FILE_NAME)
+        val o = org.json.JSONObject(target.readText()).put("v", 1)
+        o.remove("proposalPumpEpochs")
+        target.writeText(o.toString())
+
+        val b = FuseLedgerAdapter().also { it.loadOnce(dir, "epoch-b", t0 + 60_000L, null) }
+        assertTrue(b.recoveryHold) { "unbekannt ist nicht VirtualPump" }
+    }
+
+    /**
      * MIGRATION ERFINDET KEINE EPOCHE.
      *
      * Eine Altgeneration (v1/v2) traegt fuer ihre Medtrum-Zeilen keine

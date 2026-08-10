@@ -654,7 +654,20 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
      * RestartObserved: was offen und unbewiesen ist, gilt konservativ als
      * abgegeben - nicht als geloescht.
      */
-    fun loadOnce(dir: File, sessionId: String, nowTs: Long, log: (String) -> Unit = {}) {
+    /**
+     * @param activePumpTypeName der AKTIV eingestellte Pumpentyp, `null` =
+     *   nicht ermittelbar. Die Migration braucht ihn: eine v1-Zeile hat gar
+     *   keinen Pin, und ob sie gefahrlos als Altbestand weiterbinden darf,
+     *   haengt daran, WELCHE Pumpe heute laeuft. `null` gilt als unbekannt und
+     *   damit als Hold - eine VirtualPump anzunehmen waere geraten.
+     */
+    fun loadOnce(
+        dir: File,
+        sessionId: String,
+        nowTs: Long,
+        activePumpTypeName: String? = null,
+        log: (String) -> Unit = {},
+    ) {
         if (loaded) return
         // Fix 1a (REG-03): solange die Migration aussteht, wird NICHT geladen
         // und NICHT als geladen markiert - erst ein spaeterer invoke mit
@@ -679,7 +692,7 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
         // keinen Grund mehr fuer den Hold; misslingt er in irgendeinem
         // Schritt, bleibt alles wie es war und der Hold greift.
         val migriert = readable?.takeIf { it.migrationRequired != null }?.let { alt ->
-            migriere(alt, dir, nowTs, log)
+            migriere(alt, dir, nowTs, activePumpTypeName, log)
         }
         val decoded = migriert ?: readable?.takeIf { it.migrationRequired == null }
         if (decoded != null) {
@@ -1204,12 +1217,18 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
      * Befund weiter, blockieren aber nach gelungener Migration nichts mehr -
      * der Hold haengt an der Migration, nicht an ihrer Existenz.
      */
-    private fun migriere(alt: LedgerCodec.Decoded, dir: File, nowTs: Long, log: (String) -> Unit): LedgerCodec.Decoded? {
+    private fun migriere(
+        alt: LedgerCodec.Decoded,
+        dir: File,
+        nowTs: Long,
+        activePumpTypeName: String?,
+        log: (String) -> Unit,
+    ): LedgerCodec.Decoded? {
         val vorher = alt.state.transportCommitmentU
         // B3: Zeilen einer PATCHPUMPE ohne persistierte Patch-Epoche sind
         // nicht migrierbar. Die aktuelle rueckwirkend anzuheften waere die
         // Behauptung, seither sei kein Patch gewechselt worden - unbekannt.
-        val unmigrierbar = LedgerCodec.unmigratablePatchRows(alt.state, alt.pumpEpochs)
+        val unmigrierbar = LedgerCodec.unmigratablePatchRows(alt.state, alt.pumpEpochs, activePumpTypeName)
         if (unmigrierbar.isNotEmpty()) {
             log(
                 "FUSE ledger MIGRATION abgebrochen: ${unmigrierbar.size} Zeile(n) einer Patchpumpe ohne " +
