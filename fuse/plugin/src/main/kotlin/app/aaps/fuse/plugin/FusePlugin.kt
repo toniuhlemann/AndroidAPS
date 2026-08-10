@@ -151,6 +151,18 @@ class FusePlugin @Inject constructor(
     private var reparaturGelesen = false
 
     /**
+     * Eine Reparatur hat auf der Platte stattgefunden; der Speicher zieht zum
+     * naechsten Zyklusanfang nach.
+     *
+     * `@Volatile`, weil geschrieben wird auf dem UI-Thread (Dialog) und gelesen
+     * auf dem Zyklus-Thread. Der TAUSCH selbst gehoert an den Zyklusanfang -
+     * mitten im Lauf haette die erste Haelfte auf den alten Ledger gebucht und
+     * die zweite auf den neuen.
+     */
+    @Volatile
+    private var reparaturAusstehend = false
+
+    /**
      * Fix 8 (Audit 2d273cb, NEU-BS-07): der Ledger ist ZUSTAND, kein Export -
      * er liegt deshalb APP-PRIVAT (filesDir), nicht mehr im geteilten
      * Documents/aapsLogs. Auf dem geteilten Speicher kann jede App mit
@@ -398,6 +410,24 @@ class FusePlugin @Inject constructor(
         // moeglich gelesen - naemlich erst beim Pinnen.
         val pumpe = runCatching { activePlugin.activePump }.getOrNull()
         val aktivePumpe = FuseActivePump.of(pumpe)
+
+        // ---- Eine Reparatur uebernehmen, BEVOR irgendetwas rechnet ---------
+        //
+        // NEUBAU statt Ausraeumen: ein frisches Objekt hat jedes Feld auf
+        // seinem Anfangswert, per Konstruktion. Ein Hand-Reset waere die Sorte
+        // Aufzaehlung, bei der ein Feld vergessen wird - und das vergessene
+        // waere hier der gehaltene Zustand, der die Reparatur still ueberlebt.
+        //
+        // Der Runner faellt mit, weil er den Adapter bei seiner Konstruktion
+        // eingefangen hat; ein alter Runner haette weiter auf den alten Ledger
+        // gebucht.
+        if (reparaturAusstehend) {
+            reparaturAusstehend = false
+            ledgerAdapter = app.aaps.fuse.plugin.ledger.FuseLedgerAdapter()
+            runner = null
+            gemeldeteHoldGeneration = null
+            aapsLogger.warn(LTag.APS, "FUSE: reparierten Ledger uebernommen - dieser Zyklus rechnet frisch")
+        }
 
         // Ledger VOR dem Lauf restaurieren - NICHT wie warmGraphRingOnce nach
         // dem Lauf: der Zyklus rechnet mit den restaurierten Commitments und
@@ -875,9 +905,20 @@ class FusePlugin @Inject constructor(
                         "Nicht ausgefuehrt: ${r.why}"
 
                     is app.aaps.fuse.plugin.ledger.FuseLedgerRepair.Result.Done   -> {
-                        // NEUBAU statt Ausraeumen - s. Kommentar am Feld.
-                        ledgerAdapter = app.aaps.fuse.plugin.ledger.FuseLedgerAdapter()
-                        runner = null
+                        // NICHT HIER TAUSCHEN, sondern zum Zyklusanfang.
+                        //
+                        // Dieser Zweig laeuft auf dem UI-Thread, waehrend ein
+                        // Zyklus rechnen kann. Ein sofortiger Tausch haette
+                        // dessen erste Haelfte auf den ALTEN Ledger buchen
+                        // lassen (onPublished) und die zweite auf den NEUEN
+                        // (bindIdentities, prune) - ein in sich
+                        // widerspruechlicher Zyklus im Dosierpfad.
+                        //
+                        // Das Fenster ist klein (ein Zyklus rechnet
+                        // Millisekunden, der Bediener tippt selten), aber
+                        // "unwahrscheinlich" ist hier kein Argument: der
+                        // Tausch kostet nichts, wenn er eine Runde wartet.
+                        reparaturAusstehend = true
                         reparaturGelesen = false
                         aapsLogger.warn(
                             LTag.APS,
@@ -887,7 +928,10 @@ class FusePlugin @Inject constructor(
                                 "Quarantaene: ${r.quarantined.joinToString()}"
                         )
                         "Repariert. In Quarantaene: ${r.quarantined.joinToString().ifBlank { "nichts" }}.\n\n" +
-                            if (r.freshLedgerWritten) "Der naechste Zyklus startet mit einem leeren Ledger."
+                            if (r.freshLedgerWritten)
+                                "Der NAECHSTE Zyklus uebernimmt den leeren Ledger (bis zu einer Minute) - " +
+                                    "solange zeigt der Tab noch den Hold. Das ist Absicht: mitten in einem " +
+                                    "laufenden Zyklus zu tauschen waere gefaehrlicher als eine Minute zu warten."
                             else "ACHTUNG: die leere Nachfolgegeneration liess sich NICHT schreiben. " +
                                 "Der naechste Start wird das als Verlust werten und wieder halten."
                     }
