@@ -113,6 +113,20 @@ data class FuseActivePump(
             else                                       -> !virtualPump
         }
 
+    /**
+     * Darf die DESTRUKTIVE Ledger-Reparatur laufen?
+     *
+     * NUR bei nachgewiesener Emulation - und ausdruecklich NICHT `!realPump`.
+     * Der Unterschied ist der P0 vom 10.08.: `realPump` ist auch false bei
+     * unbekannter Pumpe, bei MEDTRUM_UNTESTED und bei einer fremden physischen
+     * Pumpe. In allen dreien haette die Reparatur laufen duerfen.
+     *
+     * Die Eigenschaft hat einen NAMEN, damit sie geprueft werden kann. Als
+     * Ausdruck an der Aufrufstelle waere sie nur ueber den ganzen Zyklusaufbau
+     * erreichbar - dieselbe ungepruefte Ecke, aus der heute vier Fehler kamen.
+     */
+    val repairAllowed: Boolean get() = virtualPump == true
+
     /** Aktuiert dieser Zyklus gegen ECHTES Insulin? */
     val realPump: Boolean get() = virtualPump != true && gate.realPump
 

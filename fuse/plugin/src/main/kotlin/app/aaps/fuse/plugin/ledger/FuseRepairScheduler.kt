@@ -90,13 +90,30 @@ class FuseRepairScheduler {
      * Zustimmung und Ausfuehrung liegt ein Zyklus, in dem der Bediener die
      * Pumpe wechseln kann.
      *
-     * @param realPump ist JETZT eine echte Pumpe aktiv? Aus dem Zyklus-Snapshot.
+     * ## Warum NACHWEIS und nicht "nicht real" (P0, Codex 10.08.)
+     *
+     * Die erste Fassung fragte `realPump` und erlaubte bei `false`. Aber
+     * `realPump` ist `virtualPump != true && gate.realPump` - also `false`
+     * auch bei:
+     *
+     *   - noch unbekannter aktiver Pumpe,
+     *   - Medtrum, deren Modell beim Start noch MEDTRUM_UNTESTED ist,
+     *   - fremder physischer Pumpe,
+     *   - fehlgeschlagener Pumpenabfrage.
+     *
+     * In allen vier Faellen haette die destruktive Reparatur laufen duerfen.
+     * Dieselbe Fehlerklasse wie ueberall in diesem Projekt: die Abwesenheit
+     * eines Nachweises ist kein Nachweis des Gegenteils. Erlaubt ist die
+     * Reparatur deshalb NUR bei positiv nachgewiesener VirtualPump.
+     *
+     * @param provenVirtualPump `virtualPump == true` aus dem Zyklus-Snapshot -
+     *   nicht "nicht echt", sondern "nachweislich emuliert".
      */
-    fun runIfDue(dir: File, nowTs: Long, realPump: Boolean): FuseLedgerRepair.Result? =
+    fun runIfDue(dir: File, nowTs: Long, provenVirtualPump: Boolean): FuseLedgerRepair.Result? =
         runIfDue {
-            if (realPump) FuseLedgerRepair.Result.Refused(
-                "an einer ECHTEN Pumpe gesperrt - die Reparatur verwirft Haftung, " +
-                    "Mahlzeiten-Huelle und den Genau-einmal-Riegel; ein zustandserhaltender Weg fehlt noch"
+            if (!provenVirtualPump) FuseLedgerRepair.Result.Refused(
+                "nur bei nachgewiesener VirtualPump erlaubt - die Reparatur verwirft Haftung, " +
+                    "Mahlzeiten-Huelle und den Genau-einmal-Riegel"
             )
             else FuseLedgerRepair.perform(dir, nowTs, it.by, it.reason)
         }

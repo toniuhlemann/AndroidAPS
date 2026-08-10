@@ -867,8 +867,9 @@ class FusePlugin @Inject constructor(
             kennung = FuseHoldAlarm.Kennung(0L, pumpe.gate.verdict.name),
             ursachen = emptyMap(),
             textBauer = { _, _ ->
-                "FUSE regelt nicht: ${pumpe.gate.reason}. FUSE bleibt ausgewaehlt und gibt " +
-                    "keine positive Aktuation ab, bis eine erlaubte Pumpe aktiv ist."
+                "FUSE gibt keine Pumpenanforderung aus - weder SMB noch TBR: " +
+                    "${pumpe.gate.reason}. FUSE bleibt ausgewaehlt; sobald eine erlaubte " +
+                    "Pumpe aktiv ist, regelt es von selbst weiter."
             },
             melden = { text ->
                 runCatching {
@@ -927,7 +928,13 @@ class FusePlugin @Inject constructor(
      * ist "nichts tun" die richtige Antwort, nicht "trotzdem tauschen".
      */
     private fun fuehreReparaturAus(pumpe: FuseActivePump) {
-        val r = runCatching { reparaturAuftrag.runIfDue(ledgerDir(), dateUtil.now(), pumpe.realPump) }
+        val r = runCatching { reparaturAuftrag.runIfDue(
+                ledgerDir(), dateUtil.now(),
+                // NACHWEIS, nicht Abwesenheit des Gegenteils: `realPump`
+                // ist auch bei unbekannter, untested- und Fremdpumpe false
+                // und haette die Reparatur dort erlaubt (P0).
+                provenVirtualPump = pumpe.repairAllowed,
+            ) }
             .getOrElse {
                 aapsLogger.error(LTag.APS, "FUSE Reparatur warf - Hold bleibt", it)
                 null

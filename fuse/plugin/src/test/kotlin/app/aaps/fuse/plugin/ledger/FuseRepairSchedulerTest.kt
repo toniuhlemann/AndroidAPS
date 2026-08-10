@@ -109,7 +109,7 @@ class FuseRepairSchedulerTest {
         assertTrue(nachAltemPersist.contains("p2")) { "der alte Zyklus hat wirklich geschrieben" }
 
         // 5. Zyklusgrenze.
-        val r = s.runIfDue(dir, t0 + 2_000L, realPump = false)
+        val r = s.runIfDue(dir, t0 + 2_000L, provenVirtualPump = true)
         assertTrue(r is FuseLedgerRepair.Result.Done)
         assertTrue((r as FuseLedgerRepair.Result.Done).freshLedgerWritten)
 
@@ -126,43 +126,61 @@ class FuseRepairSchedulerTest {
     }
 
     /**
-     * AN EINER ECHTEN PUMPE WIRD VERWEIGERT - und zwar bei der AUSFUEHRUNG.
+     * P0 (Codex 10.08.): NUR BEI NACHGEWIESENER VIRTUALPUMP.
      *
-     * Zwischen Zustimmung und Ausfuehrung liegt ein Zyklus. Wer nur beim
-     * Oeffnen des Dialogs prueft, laesst genau den Fall durch, in dem der
-     * Bediener dazwischen die Pumpe wechselt.
+     * Die erste Fassung fragte `realPump` und erlaubte bei `false`. Aber
+     * `realPump` ist auch `false` bei unbekannter Pumpe, bei einer Medtrum mit
+     * noch nicht geladenem Modell (MEDTRUM_UNTESTED), bei einer fremden
+     * physischen Pumpe und bei fehlgeschlagener Pumpenabfrage. In allen vier
+     * Faellen haette die destruktive Reparatur laufen duerfen.
      *
-     * Die Reparatur verwirft offene Haftung, die Mahlzeiten-Huelle und beide
-     * Stufen des Genau-einmal-Riegels. An der VirtualPump ist das folgenlos,
-     * an einer echten Pumpe waere es eine zweite Dosis auf dieselbe Wette.
+     * Geprueft wird deshalb der NACHWEIS - und zwar bei der AUSFUEHRUNG:
+     * zwischen Zustimmung und Ausfuehrung liegt ein Zyklus, in dem die Pumpe
+     * wechseln kann.
+     *
+     * Die Faelle stammen aus ECHTEN Snapshots, nicht aus einem handgesetzten
+     * Flag: sonst pruefte der Test meine Annahme darueber, was `of()` liefert,
+     * statt das, was es liefert.
      */
     @Test
-    fun `an einer echten Pumpe wird die Reparatur bei der Ausfuehrung verweigert`(@TempDir dir: File) {
-        gehaltenerLedger(dir)
-        val vorher = zustand(dir)
+    fun `nur eine nachgewiesene VirtualPump erlaubt die Reparatur`(@TempDir dir: File) {
+        data class Fall(val name: String, val snapshot: FuseActivePump, val erlaubt: Boolean)
 
-        val s = FuseRepairScheduler()
-        assertTrue(s.request(auftrag()))
+        val faelle = listOf(
+            Fall("nachgewiesene Emulation", FuseActivePump(medtrum.name, virtualPump = true), true),
+            Fall("echte Medtrum", FuseActivePump(medtrum.name, virtualPump = false), false),
+            Fall("Pumpe unbekannt", FuseActivePump.UNKNOWN, false),
+            Fall("Modell noch nicht geladen", FuseActivePump(PumpType.MEDTRUM_UNTESTED.name, virtualPump = false), false),
+            Fall("fremde physische Pumpe", FuseActivePump(PumpType.DANA_RS.name, virtualPump = false), false),
+        )
 
-        // Der Bediener hat unter der Emulation zugestimmt - inzwischen laeuft
-        // die echte Pumpe.
-        val r = s.runIfDue(dir, t0 + 1_000L, realPump = true)
+        for (f in faelle) {
+            val unter = File(dir, f.name.replace(" ", "_")).also(File::mkdirs)
+            gehaltenerLedger(unter)
+            val vorher = zustand(unter)
+            val s = FuseRepairScheduler()
+            assertTrue(s.request(auftrag()))
 
-        assertTrue(r is FuseLedgerRepair.Result.Refused)
-        assertEquals(vorher, zustand(dir)) { "keine Datei darf angefasst worden sein" }
-        assertTrue(FuseLedgerStore.holdExists(dir)) { "und der Hold bleibt stehen" }
-        assertFalse(s.isPending) { "der Auftrag ist verbraucht - er soll nicht spaeter doch noch zuschlagen" }
-    }
+            val r = s.runIfDue(unter, t0 + 1_000L, provenVirtualPump = f.snapshot.repairAllowed)
 
-    /** Unter der Emulation laeuft sie unveraendert - die Sperre ist eine
-     *  Unterscheidung, keine pauschale Abschaltung. */
-    @Test
-    fun `unter der Emulation laeuft die Reparatur weiter`(@TempDir dir: File) {
-        gehaltenerLedger(dir)
-        val s = FuseRepairScheduler()
-        s.request(auftrag())
-        assertTrue(s.runIfDue(dir, t0 + 1_000L, realPump = false) is FuseLedgerRepair.Result.Done)
-        assertFalse(FuseLedgerStore.holdExists(dir))
+            if (f.erlaubt) {
+                assertTrue(r is FuseLedgerRepair.Result.Done) { "${f.name}: haette laufen muessen" }
+                assertFalse(FuseLedgerStore.holdExists(unter)) { "${f.name}: Hold sollte offen sein" }
+            } else {
+                assertTrue(r is FuseLedgerRepair.Result.Refused) { "${f.name}: haette verweigert werden muessen" }
+                assertEquals(vorher, zustand(unter)) { "${f.name}: keine Datei darf angefasst worden sein" }
+                assertTrue(FuseLedgerStore.holdExists(unter)) { "${f.name}: der Hold muss stehen bleiben" }
+            }
+            assertFalse(s.isPending) { "${f.name}: der Auftrag ist verbraucht" }
+        }
+
+        // UND der Unterschied zur alten, falschen Bedingung wird
+        // ausdruecklich festgehalten: waere `repairAllowed` wieder als
+        // `!realPump` definiert, faellt genau das hier auf.
+        for (f in faelle.filter { !it.erlaubt && !it.snapshot.realPump }) {
+            assertFalse(f.snapshot.repairAllowed) { "${f.name}: kein Nachweis" }
+            assertFalse(f.snapshot.realPump) { "${f.name}: und auch nicht 'real' - genau hier lag der P0" }
+        }
     }
 
     // ---- Der Auftrag ------------------------------------------------------
@@ -206,7 +224,7 @@ class FuseRepairSchedulerTest {
         val s = FuseRepairScheduler()
         s.request(FuseLedgerRepair.RepairRequest("Bediener X", "Grund Y"))
 
-        val r = s.runIfDue(dir, t0 + 1_000L, realPump = false) as FuseLedgerRepair.Result.Done
+        val r = s.runIfDue(dir, t0 + 1_000L, provenVirtualPump = true) as FuseLedgerRepair.Result.Done
         assertEquals("Bediener X", r.record.by)
         assertEquals("Grund Y", r.record.reason)
         assertEquals("Grund Y", FuseLedgerRepair.lastReset(dir)!!.reason)
@@ -218,7 +236,7 @@ class FuseRepairSchedulerTest {
     fun `ohne Auftrag tut die Zyklusgrenze nichts`(@TempDir dir: File) {
         gehaltenerLedger(dir)
         val vorher = zustand(dir)
-        assertNull(FuseRepairScheduler().runIfDue(dir, t0 + 1_000L, realPump = false))
+        assertNull(FuseRepairScheduler().runIfDue(dir, t0 + 1_000L, provenVirtualPump = true))
         assertEquals(vorher, zustand(dir))
     }
 
@@ -240,7 +258,7 @@ class FuseRepairSchedulerTest {
         assertTrue(FuseLedgerStore.clearHoldVerified(dir))
         assertTrue(frisch.persistVerified(dir))
 
-        val r = s.runIfDue(dir, t0 + 1_000L, realPump = false)
+        val r = s.runIfDue(dir, t0 + 1_000L, provenVirtualPump = true)
         assertTrue(r is FuseLedgerRepair.Result.Refused) { "kein Hold, kein Verlust - also nichts zu tun" }
         assertNotNull(File(dir, FuseLedgerStore.FILE_NAME).takeIf { it.isFile })
         assertNull(FuseLedgerRepair.lastReset(dir)) { "und kein Protokolleintrag fuer einen Vorgang ohne Vorgang" }
@@ -252,8 +270,8 @@ class FuseRepairSchedulerTest {
         gehaltenerLedger(dir)
         val s = FuseRepairScheduler()
         s.request(auftrag())
-        assertTrue(s.runIfDue(dir, t0 + 1_000L, realPump = false) is FuseLedgerRepair.Result.Done)
+        assertTrue(s.runIfDue(dir, t0 + 1_000L, provenVirtualPump = true) is FuseLedgerRepair.Result.Done)
         assertFalse(s.isPending)
-        assertNull(s.runIfDue(dir, t0 + 2_000L, realPump = false))
+        assertNull(s.runIfDue(dir, t0 + 2_000L, provenVirtualPump = true))
     }
 }
