@@ -17,9 +17,19 @@ import org.junit.jupiter.api.Test
  * Medtrum-Seriennummer ist die der BASIS und ueberlebt ihn. Gehalten hat das
  * bisher nur Wahrscheinlichkeit (5-min-Fenster + exakte Mengengleichheit).
  *
- * Die Epoche kommt deshalb aus dem neuesten gueltigen, PUMPENEIGENEN
- * CANNULA_CHANGE - nicht aus `patchId`, das im Treiber liegt und eine
- * FUSE-Invariante an eine private Stelle haengen wuerde.
+ * Die Epoche kommt deshalb aus dem neuesten gueltigen CANNULA_CHANGE, dessen
+ * Typ und normalisierte Seriennummer zur AKTIVEN Pumpe PASSEN - nicht aus
+ * `patchId`, das im Treiber liegt und eine FUSE-Invariante an eine private
+ * Stelle haengen wuerde.
+ *
+ * "Passende Identitaet" ist ausdruecklich WENIGER als "pumpeneigen": ohne
+ * pumpId, das der Treiber beim Wechsel nicht setzt, ist die Herkunft nicht
+ * beweisbar. Der Ergebnisgrund heisst deshalb MATCHING_PUMP_IDENTITY.
+ *
+ * WAS DIESE KLASSE NICHT BEWEIST: dass der Aufrufer nicht doch nach einem
+ * aelteren passenden Ereignis sucht. Sie sieht immer nur das EINE, das man ihr
+ * gibt. Den Nicht-Rueckfall kann erst ein Integrationstest am Persistence-
+ * Aufruf zeigen.
  */
 class FusePatchEpochTest {
 
@@ -174,6 +184,10 @@ class FusePatchEpochTest {
      */
     @Test
     fun `ein neuerer fremder Wechsel macht die Epoche unbekannt`() {
+        // NUR die Regel: bekommt sie einen unpassenden Datensatz, ist das
+        // Ergebnis unbekannt. Dass der AUFRUFER daraufhin nicht nach einem
+        // aelteren passenden sucht, beweist dieser Test NICHT - das kann nur
+        // ein Integrationstest am Persistence-Aufruf.
         // Der neueste Datensatz ist ein Handeintrag - der aeltere passende
         // wird gar nicht erst befragt, weil er nie hereingereicht wird.
         val handeintrag = wechsel(ts = t0 + 60_000L, pumpType = null, pumpSerial = null, pumpId = null)
