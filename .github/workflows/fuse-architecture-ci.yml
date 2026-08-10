@@ -48,7 +48,15 @@ jobs:
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '17'
+          # 21, NICHT 17 (gefunden 10.08.2026). Das Projekt setzt
+          # Versions.javaVersion = VERSION_21 (buildSrc/Versions.kt:17); mit 17
+          # bricht schon :core:graphview mit 'invalid source release: 21' ab.
+          #
+          # Der Testjob ist deshalb seit seiner Einfuehrung NIE gelaufen -
+          # die beiden Waechter-Jobs waren gruen, und der rote dritte fiel
+          # nicht auf. Ein Sicherheitsnetz, das nie gehalten hat, ist
+          # schlimmer als keines: es erzeugt Vertrauen ohne Deckung.
+          java-version: '21'
 
       - uses: gradle/actions/setup-gradle@v4
 
