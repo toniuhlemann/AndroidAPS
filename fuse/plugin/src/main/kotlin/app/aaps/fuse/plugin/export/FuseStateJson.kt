@@ -148,16 +148,23 @@ object FuseStateJson {
         // `allowed`, nicht `mayActuate` — letzteres ist eine lokale Variable im
         // RT-Bauer. Und `pumpClass` ist bei fehlender Pumpe der Sentinel "none",
         // kein Klassenname; wer danach sucht, sucht vergeblich.
+        //
+        // `realPump` ist der Unterschied, auf den es bei der Auswertung
+        // ankommt: eine erlaubte VirtualPump und eine erlaubte Medtrum sind
+        // beide `allowed`, aber nur bei einer davon war echtes Insulin im
+        // Spiel. Ohne dieses Feld liesse sich das im Nachhinein nur noch am
+        // Namen des Verdikts ablesen — und Namen aendern sich.
         o.put(
             "gate", JSONObject()
                 .put("verdict", outcome.gate.verdict.name)
                 .put("allowed", outcome.gate.allowed)
+                .put("realPump", outcome.gate.realPump)
                 .put("pumpClass", outcome.gate.pumpDescription)
                 .put("reason", outcome.gate.reason)
         )
 
         // ---- Publikationsgate (B0c) ----------------------------------------
-        // NICHT dasselbe wie `gate`: jenes ist der harte VirtualPump-Riegel,
+        // NICHT dasselbe wie `gate`: jenes ist der harte Pumpenriegel,
         // dieses die Ledger-Freigabe des Zyklus. Beide koennen unabhaengig
         // voneinander eine Menge zurueckhalten, und im Trail muss unterscheidbar
         // bleiben, welches es war.

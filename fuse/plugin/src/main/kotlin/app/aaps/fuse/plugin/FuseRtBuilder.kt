@@ -96,7 +96,8 @@ object FuseRtBuilder {
         // R74-F1: Der Riegel sperrt ALLE Aktuatoren gemeinsam, nicht nur den SMB.
         // Die erste Fassung filterte units/deliverAt und liess rate/duration
         // ungehindert durch — die dokumentierte Invariante "FUSE aktuiert nur
-        // gegen VirtualPump" war damit nur zur Haelfte umgesetzt, und der Test
+        // nur gegen erlaubte Pumpen" war damit nur zur Haelfte umgesetzt,
+        // und der Test
         // dazu prueft genau diese Haelfte. Deshalb wird hier EIN Schalter fuer
         // alles verwendet, statt die Bedingung je Feld zu wiederholen.
         val mayActuate = gate.allowed

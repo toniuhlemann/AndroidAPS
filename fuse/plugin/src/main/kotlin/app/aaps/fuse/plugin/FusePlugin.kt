@@ -54,8 +54,8 @@ import javax.inject.Singleton
  *
  * Es ist ein VOLLWERTIGES APS, kein Beobachter: was hier installiert wird,
  * verhaelt sich genauso wie auf dem Produktivgeraet. Die einzige Grenze ist
- * [FusePumpGate] — und die ist eine Startverweigerung gegen echte Pumpen, kein
- * Schalter.
+ * [FusePumpGate] — eine Startverweigerung gegen JEDE Pumpe ausser der
+ * VirtualPump und dem belegten Medtrum Nano, kein Schalter.
  *
  * Was dieses Plugin NICHT tut:
  *
@@ -345,9 +345,11 @@ class FusePlugin @Inject constructor(
     override fun specialEnableCondition(): Boolean =
         try {
             // Audit R95 F-P0-09: STARTVERWEIGERUNG statt nur Per-Zyklus-Riegel.
-            // FUSE laesst sich mit realer Pumpe gar nicht erst als APS
-            // aktivieren - das TOCTOU-Fenster des Gates setzt sonst voraus,
-            // dass die Kombination ueberhaupt konfigurierbar ist.
+            // FUSE laesst sich mit einer NICHT ERLAUBTEN Pumpe gar nicht erst
+            // als APS aktivieren - das TOCTOU-Fenster des Gates setzt sonst
+            // voraus, dass die Kombination ueberhaupt konfigurierbar ist.
+            // Erlaubt sind VirtualPump und der belegte Medtrum Nano; die
+            // Liste fuehrt ausschliesslich [FusePumpGate].
             val pump = activePlugin.activePump
             val verdict = pump.pumpDescription.isTempBasalCapable && FusePumpGate.evaluate(pump).allowed
             lastEnableVerdict = verdict
@@ -527,11 +529,13 @@ class FusePlugin @Inject constructor(
             // B3: nur bei einer PATCHPUMPE, nicht bei "realer Pumpe".
             //
             // Das ist die praezisere Bedingung UND die richtige Schichtung:
-            // die Epoche ist eine Eigenschaft von Patchpumpen, nicht von
-            // Realpumpen. Auf `FusePumpGate` abzustellen haette B3 zusaetzlich
-            // an den Realpump-Riegel gekoppelt, der noch gar nicht committet
-            // ist - eine Sicherheitsregel darf nicht von einer offenen
-            // Aenderung abhaengen.
+            // die Epoche ist eine Eigenschaft von PATCHPUMPEN, nicht von
+            // realen Pumpen. Auf `FusePumpGate` abzustellen wuerde B3 an den
+            // Pumpenriegel koppeln, obwohl beide verschiedene Fragen
+            // beantworten - der Riegel sagt, WOGEGEN aktuiert werden darf, die
+            // Epoche, OB ein Bolus derselben Patchgeneration angehoert. Eine
+            // kuenftige nicht-Patch-Realpumpe braucht keine Epoche, und eine
+            // Patchpumpe braucht sie auch dann, wenn der Riegel sich aendert.
             //
             // Gegen die VirtualPump gibt es keine Patches; dort waere die
             // Epoche immer unbekannt und die Sperre haette den

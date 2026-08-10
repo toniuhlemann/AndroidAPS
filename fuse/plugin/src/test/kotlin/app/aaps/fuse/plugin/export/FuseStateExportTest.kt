@@ -243,6 +243,24 @@ class FuseStateExportTest {
         assertEquals("VirtualPumpPlugin", g.getString("pumpClass"))
     }
 
+    /**
+     * `allowed` und `realPump` sind die Felder, an denen sich ein Auswerter
+     * festmachen soll - nicht am Namen des Verdikts.
+     *
+     * Das ist kein Stilhinweis, sondern eine Lehre aus diesem Wechsel: der
+     * frueher einzige Wert "ALLOWED" heisst jetzt "ALLOWED", weil eine
+     * zweite Erlaubnis dazugekommen ist. Jeder Leser, der auf die Zeichenkette
+     * geprueft hat, war in dem Moment still falsch. Die booleschen Felder
+     * ueberstehen solche Erweiterungen.
+     */
+    @Test
+    fun `Auswerter koennen sich auf allowed und realPump stuetzen`() {
+        val g = record().getJSONObject("gate")
+        assertTrue(g.has("allowed"))
+        assertTrue(g.has("realPump"))
+        assertFalse(g.getBoolean("realPump"))
+    }
+
     /** Fehlt die Pumpe, ist `pumpClass` der Sentinel "none" und KEIN
      *  Klassenname — wer danach sucht, sucht sonst vergeblich. */
     @Test

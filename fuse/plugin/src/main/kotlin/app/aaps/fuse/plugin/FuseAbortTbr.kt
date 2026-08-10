@@ -98,8 +98,10 @@ object FuseAbortTbr {
      * einer Ausnahme anfordert.
      *
      * Es traegt KEINE Menge (`noInput`) und genau die TBR-Anforderung aus
-     * [evaluate]. Der Pumpen-Riegel bleibt davor: gegen eine reale Pumpe
-     * filtert [FuseRtBuilder] auch diesen Abbruch heraus.
+     * [evaluate]. Der Pumpen-Riegel bleibt davor: gegen eine NICHT ERLAUBTE
+     * Pumpe filtert [FuseRtBuilder] auch diesen Abbruch heraus. Gegen eine
+     * erlaubte - VirtualPump oder den belegten Medtrum Nano - geht er durch;
+     * genau dafuer ist er da.
      */
     fun abortRt(nowMs: Long, gate: FusePumpGate.Result, outcome: Outcome): RT =
         FuseRtBuilder.build(
