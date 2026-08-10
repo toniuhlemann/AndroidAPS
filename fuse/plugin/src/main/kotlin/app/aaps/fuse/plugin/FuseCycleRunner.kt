@@ -108,6 +108,63 @@ class FuseCycleRunner(
 
     companion object {
 
+        /**
+         * Die Laufzeitpruefung der Konfiguration - EIGENE Funktion, damit sie
+         * pruefbar ist.
+         *
+         * Sie stand als `.also { … }` in `readConfig()` und war damit nur ueber
+         * einen vollstaendig gemockten Preference-Baum erreichbar. Ergebnis: sie
+         * war ungetestet, und am 11.08. lief sie eine Stunde lang mit einer
+         * Schranke, die legale Einstellungen abgewiesen haette (s. u.).
+         */
+        internal fun validate(it: Config) {
+            // Die Preference-Grenzen gelten nur im Einstellungsdialog. Ein Wert aus
+            // einem alten Import geht daran vorbei — deshalb hier nochmal, und zwar
+            // werfend, damit der Guard daraus einen benannten Abbruch macht.
+            require(it.smbRatio.isFinite() && it.smbRatio in FuseDoubleKey.SmbRatio.min..FuseDoubleKey.SmbRatio.max) { "smbRatio=${it.smbRatio}" }
+            require(it.smbRatioRise.isFinite() && it.smbRatioRise in FuseDoubleKey.SmbRatioRise.min..FuseDoubleKey.SmbRatioRise.max) { "smbRatioRise=${it.smbRatioRise}" }
+            // Audit R95 F-P1-05: der Zyklus prueft NOCHMAL, weil Import und
+            // Migration am Einstellungsdialog vorbeikommen.
+            //
+            // ABER: die Schranke wird aus dem KEY abgeleitet, nicht danebengeschrieben.
+            // Am 11.08. stand hier `primeEnvelopeU in 0.0..2.0` als Literal, waehrend
+            // der Key auf 0.0..3.0 angehoben wurde. Folge: wer im Dialog 2,5 einstellt -
+            // also genau das, wofuer die Anhebung gemacht war -, laesst `readConfig()`
+            // in JEDEM Zyklus werfen. Der Guard macht daraus `abort("config: ...")`,
+            // und FUSE gibt gar nichts mehr ab. Nicht nur keinen Prime: den ganzen
+            // Regler, dauerhaft, ohne Dialogfehler und ohne Alarm - der einzige Hinweis
+            // steht als `abortReason` im Trail.
+            //
+            // Eine Laufzeitgrenze, die STRENGER ist als der Dialog, verbietet legale
+            // Einstellungen. Deshalb: wo ein Key die Grenze kennt, kommt sie von dort.
+            require(it.riseRampLowR.isFinite() && it.riseRampLowR in FuseDoubleKey.RiseRampLowR.min..FuseDoubleKey.RiseRampLowR.max) { "riseRampLowR=${it.riseRampLowR}" }
+            require(it.riseRampHighR.isFinite() && it.riseRampHighR in FuseDoubleKey.RiseRampHighR.min..FuseDoubleKey.RiseRampHighR.max) { "riseRampHighR=${it.riseRampHighR}" }
+            require(it.riseRampHighR > it.riseRampLowR) { "riseRamp ${it.riseRampLowR}..${it.riseRampHighR} invertiert" }
+            require(it.maxSmbU.isFinite() && it.maxSmbU in FuseDoubleKey.MaxSmbU.min..FuseDoubleKey.MaxSmbU.max) { "maxSmbU=${it.maxSmbU}" }
+            require(it.guardFloorMgdl.isFinite() && it.guardFloorMgdl in FuseDoubleKey.GuardFloorMgdl.min..FuseDoubleKey.GuardFloorMgdl.max) { "guardFloorMgdl=${it.guardFloorMgdl}" }
+            require(it.iobThPercent in FuseIntKey.IobThPercent.min..FuseIntKey.IobThPercent.max) { "iobThPercent=${it.iobThPercent}" }
+            require(it.releaseHorizonMin in FuseIntKey.ReleaseHorizonMin.min..FuseIntKey.ReleaseHorizonMin.max) { "releaseHorizonMin=${it.releaseHorizonMin}" }
+            // Gleiche Grenzen wie DriveDecayModel.ExponentialDecay - sonst wirft der
+            // Kern bei einem Wert, den der Einstellungsdialog erlaubt hat.
+            require(it.driveTauMin in FuseIntKey.DriveTauMin.min..FuseIntKey.DriveTauMin.max) { "driveTauMin=${it.driveTauMin}" }
+            require(it.absorptionCreditWindowMin in FuseIntKey.AbsorptionCreditWindowMin.min..FuseIntKey.AbsorptionCreditWindowMin.max) { "absorptionCreditWindowMin=${it.absorptionCreditWindowMin}" }
+            require(it.markerBoostMaxMin in FuseIntKey.MarkerBoostMaxMin.min..FuseIntKey.MarkerBoostMaxMin.max) { "markerBoostMaxMin=${it.markerBoostMaxMin}" }
+            require(it.nightStartMin in 0..1439 && it.nightEndMin in 0..1439) { "nightWindow=${it.nightStartMin}..${it.nightEndMin}" }
+            require(it.nightDeadbandMgdl.isFinite() && it.nightDeadbandMgdl in FuseDoubleKey.NightDeadbandMgdl.min..FuseDoubleKey.NightDeadbandMgdl.max) { "nightDeadbandMgdl=${it.nightDeadbandMgdl}" }
+            require(it.reboundDeadbandMgdl.isFinite() && it.reboundDeadbandMgdl in FuseDoubleKey.ReboundDeadbandMgdl.min..FuseDoubleKey.ReboundDeadbandMgdl.max) { "reboundDeadbandMgdl=${it.reboundDeadbandMgdl}" }
+            require(it.driveLowerQuantilePct in PairSlopeBand.MIN_PCT..PairSlopeBand.MAX_PCT) {
+                "driveLowerQuantile=${it.driveLowerQuantilePct}"
+            }
+            require(it.tailFloorMgdl.isFinite() && it.tailFloorMgdl in FuseDoubleKey.TailFloorMgdl.min..FuseDoubleKey.TailFloorMgdl.max) { "tailFloorMgdl=${it.tailFloorMgdl}" }
+            require(it.tailRecoveryU.isFinite() && it.tailRecoveryU in FuseDoubleKey.TailRecoveryU.min..FuseDoubleKey.TailRecoveryU.max) { "tailRecoveryU=${it.tailRecoveryU}" }
+            require(it.bolusShareLambda.isFinite() && it.bolusShareLambda in FuseDoubleKey.BolusShareLambda.min..FuseDoubleKey.BolusShareLambda.max) { "bolusShareLambda=${it.bolusShareLambda}" }
+            require(it.onsetEnvelopeU.isFinite() && it.onsetEnvelopeU in FuseDoubleKey.OnsetEnvelopeU.min..FuseDoubleKey.OnsetEnvelopeU.max) { "onsetEnvelopeU=${it.onsetEnvelopeU}" }
+            require(it.primeEnvelopeU.isFinite() && it.primeEnvelopeU in FuseDoubleKey.PrimeEnvelopeU.min..FuseDoubleKey.PrimeEnvelopeU.max) { "primeEnvelopeU=${it.primeEnvelopeU}" }
+            require(it.liabilityHorizonMin >= 30 && it.liabilityHorizonMin >= it.releaseHorizonMin && it.liabilityHorizonMin <= 360) {
+                "liabilityHorizon=${it.liabilityHorizonMin} (releaseHorizon=${it.releaseHorizonMin}, UI 30..360)"
+            }
+        }
+
         /** Raster des selbst gebauten IOB-Arrays. 5 min wie in AAPS — feiner
          *  waere teurer, ohne dass der Predictor davon profitiert. */
         const val IOB_GRID_MS = 5 * 60_000L
@@ -1537,41 +1594,7 @@ class FuseCycleRunner(
         onsetEnvelopeU = preferences.get(FuseDoubleKey.OnsetEnvelopeU),
         primeReleaseEnabled = preferences.get(FuseBooleanKey.PrimeReleaseEnabled),
         primeEnvelopeU = preferences.get(FuseDoubleKey.PrimeEnvelopeU),
-    ).also {
-        // Die Preference-Grenzen gelten nur im Einstellungsdialog. Ein Wert aus
-        // einem alten Import geht daran vorbei — deshalb hier nochmal, und zwar
-        // werfend, damit der Guard daraus einen benannten Abbruch macht.
-        require(it.smbRatio.isFinite() && it.smbRatio in 0.0..1.0) { "smbRatio=${it.smbRatio}" }
-        require(it.smbRatioRise.isFinite() && it.smbRatioRise in 0.0..1.0) { "smbRatioRise=${it.smbRatioRise}" }
-        // Audit R95 F-P1-05: Runtime mindestens so streng wie die UI-Grenzen
-        // der Keys - Import/Migration umgeht den Einstellungsdialog.
-        require(it.riseRampLowR.isFinite() && it.riseRampLowR in 0.0..5.0) { "riseRampLow=${it.riseRampLowR}" }
-        require(it.riseRampHighR.isFinite() && it.riseRampHighR in 0.1..10.0) { "riseRampHigh=${it.riseRampHighR}" }
-        require(it.riseRampHighR > it.riseRampLowR) { "riseRamp ${it.riseRampLowR}..${it.riseRampHighR} invertiert" }
-        require(it.maxSmbU.isFinite() && it.maxSmbU in 0.0..5.0) { "maxSmb=${it.maxSmbU}" }
-        require(it.guardFloorMgdl.isFinite() && it.guardFloorMgdl in 40.0..120.0) { "guardFloor=${it.guardFloorMgdl}" }
-        require(it.iobThPercent in 0..300) { "iobThPercent=${it.iobThPercent}" }
-        require(it.releaseHorizonMin in 5..120) { "releaseHorizon=${it.releaseHorizonMin}" }
-        // Gleiche Grenzen wie DriveDecayModel.ExponentialDecay - sonst wirft der
-        // Kern bei einem Wert, den der Einstellungsdialog erlaubt hat.
-        require(it.driveTauMin in 10..240) { "driveTau=${it.driveTauMin}" }
-        require(it.absorptionCreditWindowMin in 20..180) { "absorptionCreditWindow=${it.absorptionCreditWindowMin}" }
-        require(it.markerBoostMaxMin in 0..90) { "markerBoostMax=${it.markerBoostMaxMin}" }
-        require(it.nightStartMin in 0..1439 && it.nightEndMin in 0..1439) { "nightWindow=${it.nightStartMin}..${it.nightEndMin}" }
-        require(it.nightDeadbandMgdl.isFinite() && it.nightDeadbandMgdl in 0.0..100.0) { "nightDeadband=${it.nightDeadbandMgdl}" }
-        require(it.reboundDeadbandMgdl.isFinite() && it.reboundDeadbandMgdl in 0.0..100.0) { "reboundDeadband=${it.reboundDeadbandMgdl}" }
-        require(it.driveLowerQuantilePct in PairSlopeBand.MIN_PCT..PairSlopeBand.MAX_PCT) {
-            "driveLowerQuantile=${it.driveLowerQuantilePct}"
-        }
-        require(it.tailFloorMgdl.isFinite() && it.tailFloorMgdl in 40.0..120.0) { "tailFloor=${it.tailFloorMgdl}" }
-        require(it.tailRecoveryU.isFinite() && it.tailRecoveryU in 0.0..5.0) { "tailRecovery=${it.tailRecoveryU}" }
-        require(it.bolusShareLambda.isFinite() && it.bolusShareLambda in 0.0..2.0) { "bolusShareLambda=${it.bolusShareLambda}" }
-        require(it.onsetEnvelopeU.isFinite() && it.onsetEnvelopeU in 0.0..5.0) { "onsetEnvelope=${it.onsetEnvelopeU}" }
-        require(it.primeEnvelopeU.isFinite() && it.primeEnvelopeU in 0.0..2.0) { "primeEnvelope=${it.primeEnvelopeU}" }
-        require(it.liabilityHorizonMin >= 30 && it.liabilityHorizonMin >= it.releaseHorizonMin && it.liabilityHorizonMin <= 360) {
-            "liabilityHorizon=${it.liabilityHorizonMin} (releaseHorizon=${it.releaseHorizonMin}, UI 30..360)"
-        }
-    }
+    ).also { validate(it) }
 
     /**
      * Baut die Predictor-Eingabe. Die beiden Zeitachsen-Gates sind hier
