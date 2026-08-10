@@ -63,7 +63,19 @@ class BlankSerialBindingTest {
         ids = IDs(pumpType = type, pumpSerial = serial, pumpId = pumpId),
     )
 
-    private fun adapter(dir: File) = FuseLedgerAdapter().also { it.loadOnce(dir, "epoch-a", t0) }
+    /**
+     * B3: der Adapter bekommt eine BEKANNTE Patch-Epoche.
+     *
+     * Seit B3 bindet eine MEDTRUM-Zeile nur innerhalb ihrer Patch-Epoche -
+     * Type und Serial reichen dort nicht, weil die Seriennummer der Basis
+     * gehoert und den Wechsel ueberlebt. Ohne diesen Aufruf waere die Epoche
+     * unbekannt und KEINE dieser Zeilen wuerde binden; die Tests hier
+     * untersuchen aber die Serial-Faltung, nicht die Epoche.
+     */
+    private fun adapter(dir: File) = FuseLedgerAdapter().also {
+        it.loadOnce(dir, "epoch-a", t0)
+        it.observePatchEpoch(t0 - 3600_000L)
+    }
 
     private fun FuseLedgerAdapter.publish(serialHash: String?, typeName: String? = medtrum) =
         onPublished(

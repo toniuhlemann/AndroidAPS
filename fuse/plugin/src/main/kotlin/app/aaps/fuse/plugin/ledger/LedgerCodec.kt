@@ -151,6 +151,37 @@ object LedgerCodec {
      * das nicht auftreten: nach dem ersten gelungenen Lauf liegt die
      * migrierte Generation auf Platte.
      */
+    /**
+     * B3: darf der Altbestand seine PATCH-Epoche nachtragen? NEIN.
+     *
+     * Fuer eine Zeile aus v1/v2 ist die damalige Patch-Epoche schlicht nicht
+     * mehr feststellbar. Die AKTUELL gelesene rueckwirkend anzuheften waere
+     * die Behauptung, seit der Entscheidung sei kein Patch gewechselt worden -
+     * und genau das ist unbekannt. Eine so migrierte Zeile duerfte einen
+     * Bolus des NEUEN Patches binden, also exakt das, wogegen B3 gebaut ist.
+     *
+     * Deshalb gibt es hier keine Nachfuellung, sondern eine ENTSCHEIDUNG:
+     *
+     *  - Zeile einer NICHT-Patch-Pumpe (VirtualPump): die Kategorie gilt fuer
+     *    sie nicht. Sie bindet unveraendert weiter - nichts zu migrieren.
+     *  - Zeile einer PATCHPUMPE ohne persistierte Epoche: nicht migrierbar.
+     *    Der Aufrufer haelt an (Hold), statt zu raten.
+     *
+     * Rueckgabe: die proposalIds, die NICHT migrierbar sind. Leer heisst
+     * migrierbar.
+     */
+    fun unmigratablePatchRows(
+        state: LedgerState,
+        pumpEpochs: Map<String, ProposalPumpEpoch>,
+    ): List<String> = state.entries.keys.filter { id ->
+        val ep = pumpEpochs[id] ?: return@filter false
+        // Marker-Pins tragen keinen Typ - sie binden ohnehin nie (UNPINNED)
+        // oder sind ausdruecklicher Altbestand (LEGACY_OPEN).
+        if (ep.unpinned || ep.legacyOpen) return@filter false
+        // Eine Patchpumpe OHNE anwendbare, gesetzte Epoche ist der Fall.
+        ProposalPumpEpoch.appliesTo(ep.pumpTypeName) && ep.patchEpochTs == null
+    }
+
     fun migrateToCurrent(state: LedgerState, nowTs: Long): LedgerState = state.copy(
         entries = state.entries.mapValues { (_, e) ->
             val gabEsJeEinenFakt = e.firstAccountedSnapshotHash != null ||
@@ -349,6 +380,13 @@ object LedgerCodec {
         .also {
             if (ep.unpinned) it.put("unpinned", true)
             if (ep.legacyOpen) it.put("legacyOpen", true)
+            // B3: nur bei ANWENDBARKEIT schreiben. Bei einer Nicht-Patch-Pumpe
+            // gibt es die Kategorie nicht - ein Feld dafuer waere eine Aussage
+            // ueber etwas, das es nicht gibt.
+            if (ep.patchEpochApplicable) {
+                it.put("patchEpochApplicable", true)
+                it.putNullable("patchEpochTs", ep.patchEpochTs)
+            }
         }
 
     private fun decodePumpEpochs(o: JSONObject): Map<String, ProposalPumpEpoch> {
@@ -366,7 +404,17 @@ object LedgerCodec {
             // Der ProposalPumpEpoch-init prueft die Markerkonsistenz
             // (nie beide, Marker nie mit Inhalt) - ein Wurf von dort zaehlt
             // beim Laden wie jeder andere als invalid.
-            val ep = ProposalPumpEpoch(obj.strOrNull("pumpType"), obj.strOrNull("pumpSerialHash"), unpinned, legacyOpen)
+            // B3: `patchEpochApplicable` sagt, ob die Kategorie ueberhaupt
+            // gilt. Fehlt sie, ist die Zeile entweder von einer Nicht-Patch-
+            // Pumpe oder aus einer Generation VOR B3 - beides wird hier
+            // gleich gelesen (nicht anwendbar) und erst von der Migration
+            // auseinandergehalten, die als einzige den Pumpentyp kennt.
+            val anwendbar = obj.optBoolean("patchEpochApplicable", false)
+            val ep = ProposalPumpEpoch(
+                obj.strOrNull("pumpType"), obj.strOrNull("pumpSerialHash"), unpinned, legacyOpen,
+                patchEpochTs = if (anwendbar) obj.lngOrNull("patchEpochTs") else null,
+                patchEpochApplicable = anwendbar,
+            )
             // Ein Eintrag ohne jede Aussage wird nie geschrieben - er waere
             // eine Pinnung, die nichts pinnt (Fremdinhalt/Korruption).
             // UNPINNED/legacyOpen SIND Aussagen (R4-03).

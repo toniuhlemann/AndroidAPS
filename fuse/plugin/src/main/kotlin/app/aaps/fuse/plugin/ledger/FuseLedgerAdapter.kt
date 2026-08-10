@@ -101,6 +101,27 @@ data class ProposalPumpEpoch(
     val pumpSerialHash: String?,
     val unpinned: Boolean = false,
     val legacyOpen: Boolean = false,
+    /**
+     * B3: die PATCH-Epoche zum Zeitpunkt der Publikation.
+     *
+     * Type und Serial erkennen einen Patchwechsel DERSELBEN Pumpe nicht - die
+     * Medtrum-Seriennummer ist die der Basis und ueberlebt ihn. Dieses Feld
+     * traegt deshalb zusaetzlich den Zeitpunkt des zugehoerigen
+     * CANNULA_CHANGE (s. [FusePatchEpoch]).
+     *
+     * `null` heisst je nach Pumpe ZWEIERLEI, und der Unterschied ist der
+     * Grund, warum daneben [patchEpochApplicable] steht:
+     *  - bei einer Nicht-Patch-Pumpe (VirtualPump): NICHT ANWENDBAR. Es gibt
+     *    keine Patches, also auch keine Epoche - die Zeile bindet wie bisher.
+     *  - bei einer Patchpumpe: UNBEKANNT. Dann bindet sie nicht, und eine
+     *    positive Dosis wird gar nicht erst publiziert.
+     *
+     * Ohne diese Trennung wuerde B3 den Entwicklungspfad gegen die
+     * VirtualPump still mitsperren.
+     */
+    val patchEpochTs: Long? = null,
+    /** Ist die Patch-Epoche fuer DIESE Pumpe ueberhaupt eine Kategorie? */
+    val patchEpochApplicable: Boolean = false,
 ) {
 
     init {
@@ -108,12 +129,39 @@ data class ProposalPumpEpoch(
         require(!(unpinned && legacyOpen)) { "pump epoch cannot be unpinned and legacyOpen" }
         if (unpinned || legacyOpen)
             require(pumpTypeName == null && pumpSerialHash == null) { "marker pin must not carry content" }
+        // Eine Epoche ohne Zustaendigkeit waere ein Wert ohne Bedeutung.
+        require(!(patchEpochTs != null && !patchEpochApplicable)) {
+            "patchEpochTs without applicability: $patchEpochTs"
+        }
     }
 
     companion object {
 
         val UNPINNED = ProposalPumpEpoch(null, null, unpinned = true)
         val LEGACY_OPEN = ProposalPumpEpoch(null, null, legacyOpen = true)
+
+        /**
+         * Fuer welche Pumpentypen ist eine Patch-Epoche ueberhaupt eine
+         * Kategorie?
+         *
+         * `PumpType.isPatchPump` waere die richtige Quelle - das Feld ist aber
+         * PRIVAT und von aussen nicht lesbar. Es oeffentlich zu machen waere
+         * eine Kernaenderung fuer eine Zeile Bequemlichkeit; die Auflage
+         * verlangt, Kernaenderungen auf das Noetige zu begrenzen.
+         *
+         * Deshalb ueber den Namen, genau wie [FusePumpGate] und die
+         * Serial-Faltung in [LedgerFacts] es bereits tun. Das ist derselbe
+         * Praezedenzfall und bleibt bei einem Merge stabil.
+         *
+         * TRAGWEITE: eine kuenftige, hier nicht gefuehrte Patchpumpe gilt als
+         * NICHT anwendbar - die Patch-Pruefung entfiele fuer sie still. Das
+         * ist vertretbar, weil [FusePumpGate] ohnehin nur die belegte
+         * Medtrum-Familie durchlaesst: eine unbekannte Pumpe kommt gar nicht
+         * bis hierher. Wer den Gate-Riegel erweitert, muss diese Liste
+         * mitnehmen - der Test darunter haelt beides zusammen.
+         */
+        fun appliesTo(pumpTypeName: String?): Boolean =
+            pumpTypeName != null && pumpTypeName.startsWith("MEDTRUM")
     }
 }
 
@@ -789,8 +837,19 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
         // dort die Pumpen-SN, `patchId` ein separates Feld. Type+Serial
         // erkennen einen Patchwechsel derselben Pumpe NICHT (Codex R4-03).
         proposalPumpEpochs[proposalId] =
-            if (pumpTypeName != null || pumpSerialHash != null) ProposalPumpEpoch(pumpTypeName, pumpSerialHash)
-            else ProposalPumpEpoch.UNPINNED
+            if (pumpTypeName != null || pumpSerialHash != null) {
+                // B3: die Patch-Epoche wird MITGEPINNT, nicht spaeter
+                // nachgeschlagen. Sie ist der Zustand ZUM ZEITPUNKT DER
+                // ENTSCHEIDUNG; ein spaeterer Nachschlag wuerde nach einem
+                // Wechsel die neue Epoche an eine alte Zeile heften und die
+                // Trennlinie genau dort aufheben, wo sie gebraucht wird.
+                val anwendbar = ProposalPumpEpoch.appliesTo(pumpTypeName)
+                ProposalPumpEpoch(
+                    pumpTypeName, pumpSerialHash,
+                    patchEpochTs = if (anwendbar) currentPatchEpochTs else null,
+                    patchEpochApplicable = anwendbar,
+                )
+            } else ProposalPumpEpoch.UNPINNED
         reduce(LedgerEvent.Proposed(proposalId, unitsU, decisionTs, latestBolusTs))
         reduce(LedgerEvent.AmountObserved(proposalId, AmountStage.RT_PUBLISHED, unitsU))
     }
@@ -816,7 +875,35 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
         if (pinned.unpinned) return false
         val typeOk = pinned.pumpTypeName == null || LedgerFacts.pumpTypeName(b) == pinned.pumpTypeName
         val serialOk = pinned.pumpSerialHash == null || LedgerFacts.serialHash(b) == pinned.pumpSerialHash
-        return typeOk && serialOk
+        if (!typeOk || !serialOk) return false
+        // B3: bei PATCHPUMPEN zusaetzlich die Patch-Epoche. Type und Serial
+        // sind dort nicht unterscheidungskraeftig genug - die Seriennummer
+        // gehoert der Basis und ueberlebt den Wechsel.
+        //
+        // Bei allen anderen Pumpen bleibt es beim bisherigen Verhalten. Ohne
+        // diese Einschraenkung wuerde B3 den Entwicklungspfad gegen die
+        // VirtualPump still mitsperren, denn dort gibt es weder Patches noch
+        // CANNULA_CHANGE - die Epoche waere immer unbekannt.
+        if (!pinned.patchEpochApplicable) return true
+        return FusePatchEpoch.sameEpoch(pinned.patchEpochTs, currentPatchEpochTs, b.timestamp)
+    }
+
+    /**
+     * Die AKTUELLE Patch-Epoche, vom Aufrufer je Zyklus gesetzt.
+     *
+     * Sie liegt am Adapter und nicht am Pin, weil sie sich aendert, waehrend
+     * die Pins stehenbleiben - genau daran haengt die Trennlinie: nach einem
+     * Wechsel unterscheidet sich die aktuelle von der gepinnten, und die alte
+     * Zeile bindet nichts Neues mehr.
+     *
+     * `null` heisst UNBEKANNT und sperrt die Bindung fuer Patchpumpen.
+     */
+    var currentPatchEpochTs: Long? = null
+        private set
+
+    /** Vom Zyklus gesetzt, BEVOR gebunden wird. */
+    fun observePatchEpoch(epochTs: Long?) {
+        currentPatchEpochTs = epochTs
     }
 
     /**
@@ -1119,6 +1206,18 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
      */
     private fun migriere(alt: LedgerCodec.Decoded, dir: File, nowTs: Long, log: (String) -> Unit): LedgerCodec.Decoded? {
         val vorher = alt.state.transportCommitmentU
+        // B3: Zeilen einer PATCHPUMPE ohne persistierte Patch-Epoche sind
+        // nicht migrierbar. Die aktuelle rueckwirkend anzuheften waere die
+        // Behauptung, seither sei kein Patch gewechselt worden - unbekannt.
+        val unmigrierbar = LedgerCodec.unmigratablePatchRows(alt.state, alt.pumpEpochs)
+        if (unmigrierbar.isNotEmpty()) {
+            log(
+                "FUSE ledger MIGRATION abgebrochen: ${unmigrierbar.size} Zeile(n) einer Patchpumpe ohne " +
+                    "persistierte Patch-Epoche (${unmigrierbar.take(3).joinToString()}). Die aktuelle Epoche " +
+                    "rueckwirkend anzuheften waere geraten - Hold statt Rateschluss (dir=$dir)"
+            )
+            return null
+        }
         val neu = runCatching { LedgerCodec.migrateToCurrent(alt.state, nowTs) }.getOrNull() ?: return null
         // Die Migration darf Haftung nur ERHALTEN oder verlaengern, nie senken.
         if (!(neu.transportCommitmentU >= vorher - 1e-9)) {
