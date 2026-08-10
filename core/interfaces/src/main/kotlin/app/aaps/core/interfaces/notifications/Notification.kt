@@ -156,6 +156,17 @@ open class Notification {
          */
         const val FUSE_LEDGER_HOLD = 96
 
+        /**
+         * FUSE: eine angeforderte Ledger-Reparatur wurde NICHT ausgefuehrt.
+         *
+         * EIGENE Kennung, nicht die des Holds. `NotificationStore.add` ersetzt
+         * bei gleicher Kennung weder Text noch Stufe - eine
+         * NORMAL-Ablehnungsmeldung im Hold-Slot haette die naechste
+         * URGENT-Warnung verschluckt, und der Hold selbst waere unsichtbar
+         * geworden. Zwei Aussagen, zwei Plaetze.
+         */
+        const val FUSE_REPAIR_REFUSED = 97
+
         const val USER_MESSAGE = 1000
 
         const val IMPORTANCE_HIGH = 2

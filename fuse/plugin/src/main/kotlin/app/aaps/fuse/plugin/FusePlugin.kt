@@ -18,6 +18,7 @@ import app.aaps.core.interfaces.constraints.PluginConstraints
 import app.aaps.core.data.model.TE
 import app.aaps.core.interfaces.db.PersistenceLayer
 import app.aaps.core.interfaces.notifications.Notification
+import app.aaps.core.interfaces.rx.events.EventDismissNotification
 import app.aaps.fuse.plugin.ledger.FuseActivePump
 import app.aaps.fuse.plugin.ledger.FusePatchEpoch
 import app.aaps.fuse.plugin.ledger.LedgerFacts
@@ -777,12 +778,24 @@ class FusePlugin @Inject constructor(
         }.onFailure { aapsLogger.error(LTag.APS, "FUSE state export threw", it) }
     }
 
-    /** Der Ledger-Zustand fuer den Schirm - eine eigene Groesse neben Health. */
+    /**
+     * Der Ledger-Zustand fuer den Schirm - eine eigene Groesse neben Health.
+     *
+     * LIEST `view()`, NICHT `state` (Audit-Befund S1, 10.08.2026). Gesperrt
+     * wird ueber `LedgerView.hold`, und das ist eine ODER-Verknuepfung aus vier
+     * Quellen. `state.holdActuation` ist nur EINE davon; die anderen drei -
+     * `persistFailed`, `recoveryHold`, `migrationPending` - stoppten die Abgabe
+     * lautlos, waehrend hier "Ledger frei" stand. Ausgerechnet `recoveryHold`
+     * ueberlebt einen Neustart und ist der Zustand, fuer den es den
+     * Reparaturweg ueberhaupt gibt.
+     */
     fun ledgerInfo(): FuseScreenModel.LedgerInfo {
         val s = ledgerAdapter.state
+        val v = ledgerAdapter.view()
         val offen = s.openEntries
         return FuseScreenModel.LedgerInfo(
-            hold = s.holdActuation,
+            hold = v.hold,
+            holdReason = v.holdReason,
             holdGeneration = s.holdGeneration,
             activeErrors = s.errors.filter { it.active }.groupingBy { it.error.name }.eachCount(),
             openEntries = offen.size,
@@ -801,34 +814,46 @@ class FusePlugin @Inject constructor(
      * dosieren, ist die gefaehrlichste Sorte Fehler, weil nichts passiert -
      * und genau deshalb faellt er ohne Alarm tagelang nicht auf.
      *
-     * EINMAL je Hold-Generation, nicht je Zyklus: eine Meldung pro Minute
-     * waere nach einer Stunde Tapete, und Tapete liest niemand. Eine NEUE
-     * Generation ist ein NEUER Befund und meldet sich wieder.
+     * EINMAL je Befund, nicht je Zyklus: eine Meldung pro Minute waere nach
+     * einer Stunde Tapete, und Tapete liest niemand. Die REGEL dazu steht in
+     * [FuseHoldAlarm], wo sie pruefbar ist - beide Fehler, die der Audit hier
+     * gefunden hat, lagen genau in dieser ungepruften Ecke.
      */
-    private var gemeldeteHoldGeneration: Long? = null
+    private var gemeldeterHold: FuseHoldAlarm.Kennung? = null
 
     private fun meldeLedgerHold() {
         val s = ledgerAdapter.state
-        if (!s.holdActuation) {
-            // Aufgeloest - die naechste Generation darf wieder melden.
-            gemeldeteHoldGeneration = null
-            return
+        // `view()` und nicht `state`: die Sperre ist zusammengesetzt (S1).
+        val v = ledgerAdapter.view()
+        val ursachen = s.errors.filter { it.active }.groupingBy { it.error.name }.eachCount()
+        val kennung = FuseHoldAlarm.Kennung(s.holdGeneration, v.holdReason)
+        when (val a = FuseHoldAlarm.naechste(v.hold, kennung, ursachen, gemeldeterHold)) {
+            is FuseHoldAlarm.Aktion.Nichts          -> Unit
+
+            is FuseHoldAlarm.Aktion.Zuruecknehmen   -> {
+                gemeldeterHold = null
+                // OHNE dies bliebe die Meldung stehen und belegte die Kennung;
+                // der naechste Hold faende sie besetzt und schwiege (S2).
+                runCatching { rxBus.send(EventDismissNotification(Notification.FUSE_LEDGER_HOLD)) }
+                aapsLogger.info(LTag.APS, "FUSE Ledger-Hold aufgeloest - Meldung zurueckgenommen")
+            }
+
+            is FuseHoldAlarm.Aktion.Melden          -> {
+                gemeldeterHold = a.kennung
+                runCatching {
+                    // ERST zuruecknehmen, DANN melden. `NotificationStore.add`
+                    // frischt bei belegter Kennung nur das Datum auf - ohne das
+                    // Zuruecknehmen blieben Text, Stufe und Ton die alten.
+                    rxBus.send(EventDismissNotification(Notification.FUSE_LEDGER_HOLD))
+                    uiInteraction.addNotification(
+                        id = Notification.FUSE_LEDGER_HOLD,
+                        text = a.text,
+                        level = Notification.URGENT,
+                    )
+                }.onFailure { aapsLogger.error(LTag.APS, "FUSE Hold-Meldung fehlgeschlagen", it) }
+                aapsLogger.warn(LTag.APS, "FUSE LEDGER HOLD ${a.kennung}: ${a.text}")
+            }
         }
-        if (gemeldeteHoldGeneration == s.holdGeneration) return
-        gemeldeteHoldGeneration = s.holdGeneration
-        val fehler = s.errors.filter { it.active }.groupingBy { it.error.name }.eachCount()
-            .entries.sortedByDescending { it.value }
-            .joinToString(", ") { "${it.key} x${it.value}" }
-            .ifBlank { "kein Fehler benannt" }
-        runCatching {
-            uiInteraction.addNotification(
-                id = Notification.FUSE_LEDGER_HOLD,
-                text = "FUSE gibt nichts ab: Ledger-Hold ($fehler). " +
-                    "Ausweg: Einstellungen -> FUSE -> Reparatur.",
-                level = Notification.URGENT,
-            )
-        }.onFailure { aapsLogger.error(LTag.APS, "FUSE Hold-Meldung fehlgeschlagen", it) }
-        aapsLogger.warn(LTag.APS, "FUSE LEDGER HOLD Gen ${s.holdGeneration}: $fehler - keine Abgabe")
     }
 
     /**
@@ -857,7 +882,10 @@ class FusePlugin @Inject constructor(
                 // auf den alten Ledger gebucht.
                 ledgerAdapter = app.aaps.fuse.plugin.ledger.FuseLedgerAdapter()
                 runner = null
-                gemeldeteHoldGeneration = null
+                // Der Befund ist weg - die alte Meldung darf nicht stehen
+                // bleiben und die Kennung belegen (S2).
+                gemeldeterHold = null
+                runCatching { rxBus.send(EventDismissNotification(Notification.FUSE_LEDGER_HOLD)) }
                 reparaturGelesen = false
                 aapsLogger.warn(
                     LTag.APS,
@@ -882,7 +910,10 @@ class FusePlugin @Inject constructor(
                 aapsLogger.warn(LTag.APS, "FUSE Reparatur abgelehnt: ${r.why} - Zustand unveraendert")
                 runCatching {
                     uiInteraction.addNotification(
-                        id = Notification.FUSE_LEDGER_HOLD,
+                        // EIGENE Kennung: im Hold-Slot haette diese
+                        // NORMAL-Meldung die naechste URGENT-Warnung
+                        // verschluckt und den Hold unsichtbar gemacht (S2).
+                        id = Notification.FUSE_REPAIR_REFUSED,
                         text = "FUSE-Reparatur nicht ausgefuehrt: ${r.why}. Der bisherige Zustand bleibt unveraendert.",
                         level = Notification.NORMAL,
                     )

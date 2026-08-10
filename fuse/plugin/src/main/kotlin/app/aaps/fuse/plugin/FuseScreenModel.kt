@@ -48,7 +48,16 @@ object FuseScreenModel {
      * Groessen"). Also eine zweite Zeile, und die schreit.
      */
     data class LedgerInfo(
+        /**
+         * Der ZUSAMMENGESETZTE Wert aus `LedgerView.hold`, nicht
+         * `state.holdActuation` (Audit-Befund S1): gesperrt wird ueber vier
+         * Quellen, und drei davon stoppten die Abgabe lautlos, waehrend hier
+         * "frei" stand.
+         */
         val hold: Boolean,
+        /** Welche der vier Quellen - ohne sie ist ein Hold nicht
+         *  einzuordnen, und drei von ihnen haben gar keine Fehlerliste. */
+        val holdReason: String?,
         val holdGeneration: Long,
         val activeErrors: Map<String, Int>,
         val openEntries: Int,
@@ -87,6 +96,7 @@ object FuseScreenModel {
         ledger?.let { l ->
             if (l.hold) {
                 row(b, "!! LEDGER", "HOLD - FUSE GIBT NICHTS AB")
+                row(b, "  Quelle", l.holdReason ?: "unbekannt")
                 val fehler = if (l.activeErrors.isEmpty()) "keine benannt"
                 else l.activeErrors.entries.sortedByDescending { it.value }
                     .joinToString(", ") { "${it.key} x${it.value}" }

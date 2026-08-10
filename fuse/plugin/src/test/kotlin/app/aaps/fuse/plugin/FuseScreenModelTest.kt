@@ -17,7 +17,7 @@ class FuseScreenModelTest {
 
     private fun ledger(hold: Boolean, fehler: Map<String, Int> = mapOf("IDENTITY_CONFLICT" to 47)) =
         FuseScreenModel.LedgerInfo(
-            hold = hold, holdGeneration = if (hold) 47L else 0L,
+            hold = hold, holdReason = if (hold) "LEDGER_GLOBAL_HOLD" else null, holdGeneration = if (hold) 47L else 0L,
             activeErrors = if (hold) fehler else emptyMap(),
             openEntries = 6, grossLiabilityU = 0.85, lastRepairTs = null,
         )
@@ -70,7 +70,7 @@ class FuseScreenModelTest {
         val t = FuseScreenModel.render(
             outcome(), null, now, null,
             FuseScreenModel.LedgerInfo(
-                hold = true, holdGeneration = 3L, activeErrors = emptyMap(),
+                hold = true, holdReason = "LEDGER_STATE_HOLD", holdGeneration = 3L, activeErrors = emptyMap(),
                 openEntries = 0, grossLiabilityU = 0.0, lastRepairTs = null,
             ),
         )
