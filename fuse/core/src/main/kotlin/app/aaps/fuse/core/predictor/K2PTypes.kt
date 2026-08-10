@@ -310,6 +310,58 @@ data class TrajectoryPoint(
 }
 
 /**
+ * ZERLEGUNG DES BAHNHUBS ueber die gelaufenen Minuten (S0-Telemetrie).
+ *
+ * Auditbefund E.6/M: der bindende Term einer Sperre ist heute nicht
+ * rekonstruierbar - `minLowerMgdl` ist ein Minimum ueber zwei Bahnen mit
+ * eingerechnetem Abschlag, und aus dem Trail ist nicht zu sagen, WELCHER
+ * Summand die Bahn gesenkt hat. Diese Zerlegung beantwortet genau das.
+ *
+ * Die drei Bahnen teilen sich [bgiMgdl] und [transportMgdl] Punkt fuer Punkt
+ * (TrajectoryCore addiert beide identisch auf alle drei) - deshalb steht jeder
+ * nur EINMAL hier und nicht dreimal.
+ *
+ * IDENTITAET, aber nur bis ~1e-9: die Integrationsschleife addiert GRUPPIERT
+ * (`meanBg += (dMean + bgiRate + pendingBgi)`), diese Summen getrennt. Der
+ * Rest ist Gleitkomma-Assoziativitaet und kein Fehler.
+ *
+ *     bgAtHorizonMean ~= bgAtAnchor + driveMeanMgdl + bgiMgdl + transportMgdl
+ *
+ * NICHTS hiervon wird gelesen. Die Groessen entstehen im Kern und gehen in den
+ * Export - kein Zweig, keine Grenze, keine Entscheidung haengt daran.
+ */
+data class TrajectoryHub(
+    val driveMeanMgdl: Double,
+    val driveLowerMgdl: Double,
+    val driveSafetyLowerMgdl: Double,
+    val bgiMgdl: Double,
+    /** <= 0: was die synthetische Transportdosis der Bahn genommen hat (C3). */
+    val transportMgdl: Double,
+    /** Summe der Zerfallsfaktoren f(i) ueber die gelaufenen Minuten. */
+    val decayWeightSumPositive: Double,
+    /** Dasselbe mit dem LANGSAMEREN Faktor fuer negative Anteile (C10). */
+    val decayWeightSumNegative: Double,
+) {
+
+    /**
+     * Hub eines KONSTANTEN Antriebs ueber dieselbe Strecke.
+     *
+     * Exakt, weil der Zerfall in `drive` linear ist und das Vorzeichen ueber
+     * alle Minuten konstant bleibt. DASSELBE Praedikat `< 0.0` wie
+     * `TrajectoryCore.decayed` - eine Abweichung waere ein zweites Modell
+     * derselben Regel.
+     *
+     * Damit rechnet der Auswerter den ABSCHLAG-Hub, ohne dass der Kern den
+     * Abschlag kennen muss:
+     *
+     *     discountHub = hubOfConstantDrive(lowerBeforeMgdlPerMin)
+     *                 - hubOfConstantDrive(lowerAfterMgdlPerMin)
+     */
+    fun hubOfConstantDrive(driveMgdlPerMin: Double): Double =
+        driveMgdlPerMin * (if (driveMgdlPerMin < 0.0) decayWeightSumNegative else decayWeightSumPositive)
+}
+
+/**
  * Ergebnis. Heisst `meanTrajectory`/`lowerTrajectory` und NICHT "guard" —
  * eine Sicherheitsbezeichnung ohne Sicherheitsband waere irrefuehrend
  * (R69-F8). Der spaetere Guard in K2-C verwendet `lowerTrajectory`.
@@ -367,6 +419,23 @@ data class PredictorResult(
     val pendingTransportU: Double = 0.0,
     /** Wieviel mg/dl diese Menge die Bahn AM HORIZONT gesenkt hat (C3), >= 0. */
     val pendingDropAtHorizonMgdl: Double = 0.0,
+    /**
+     * WIE BALD das Minimum der PRIOR-FREIEN Bahn liegt [min ab Anker]
+     * (S0-Telemetrie, Invariante I16).
+     *
+     * [timeToMinLowerMin] fuehrt den Index der ANZEIGE-Bahn; gegen entschieden
+     * wird aber die prior-freie. Auditbefund E.8: in 68 % der Faelle liegt das
+     * Minimum am Haftungshorizont - der als "Nahzonen-Guard" bezeichnete Test
+     * ist ueberwiegend ein Fernhorizont-Test, und ohne Zeitindex war das nicht
+     * zu sehen. 0 heisst "der Anker selbst ist das Minimum", wie bisher.
+     */
+    val timeToMinLowerPriorFreeMin: Int? = null,
+    /** Bahnhub-Zerlegung AM HORIZONT (S0). `null` = dieser Bauzustand hat nicht
+     *  zerlegt; 0.0 waere ein GUELTIGER Hub und darf das nicht bedeuten. */
+    val hubAtHorizon: TrajectoryHub? = null,
+    /** Bahnhub-Zerlegung AM MINIMUM der prior-freien Bahn - der Ort, an dem der
+     *  Guard entscheidet. Der Horizont-Hub erklaert nur den Schwanz. */
+    val hubAtMinSafetyLower: TrajectoryHub? = null,
 ) {
 
     /**
@@ -381,6 +450,11 @@ data class PredictorResult(
 
     /** Prior-freie Untergrenze am Horizont — s. [minSafetyLowerBg]. */
     val bgAtHorizonSafetyLower: Double get() = bgAtHorizonLowerPriorFree ?: bgAtHorizonLower
+
+    /** Zeitindex des Minimums der SICHERHEITSbahn — Gegenstueck zu
+     *  [minSafetyLowerBg]. Faellt auf die Anzeigebahn zurueck, solange ein
+     *  Bauzustand den eigenen Index nicht fuehrt. */
+    val timeToMinSafetyLowerMin: Int get() = timeToMinLowerPriorFreeMin ?: timeToMinLowerMin
 
     companion object {
         /** Rueckkehr zum GEPLANTEN PROFILBASAL, nicht Pumpenstopp: AAPS rechnet

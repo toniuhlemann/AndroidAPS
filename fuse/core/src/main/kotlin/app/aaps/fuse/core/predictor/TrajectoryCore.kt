@@ -148,6 +148,29 @@ object TrajectoryCore {
         // C3: was die synthetische Dosis der Bahn bis zum Horizont genommen hat.
         var pendingDrop = 0.0
 
+        // --- S0-Telemetrie: Bahnhub-Zerlegung -------------------------------
+        // Sieben Summen in DERSELBEN Schleife. Sie werden nur gerechnet und
+        // weitergereicht - keine Entscheidung liest sie (Auditbefund E.6/M).
+        var timeToMinLowerPriorFree = 0
+        var hubDriveMean = 0.0
+        var hubDriveLower = 0.0
+        var hubDriveSafety = 0.0
+        var hubBgi = 0.0
+        var hubTransport = 0.0
+        var sumFPositive = 0.0
+        var sumFNegative = 0.0
+        var hubAtMin: TrajectoryHub? = null
+
+        fun hubNow() = TrajectoryHub(
+            driveMeanMgdl = hubDriveMean,
+            driveLowerMgdl = hubDriveLower,
+            driveSafetyLowerMgdl = hubDriveSafety,
+            bgiMgdl = hubBgi,
+            transportMgdl = hubTransport,
+            decayWeightSumPositive = sumFPositive,
+            decayWeightSumNegative = sumFNegative,
+        )
+
         for (i in 1..input.horizonMin) {
             val ts = anchor + i * STEP_MS
             val sMin = i.toDouble()
@@ -282,9 +305,24 @@ object TrajectoryCore {
             lowerBg += (dLower + bgiRate + pendingBgi)
             lowerBgPriorFree += (dLowerPriorFree + bgiRate + pendingBgi)
 
+            // S0: dieselben Summanden, nur getrennt gefuehrt. Rein additiv -
+            // die drei Zeilen darueber bleiben unberuehrt.
+            hubDriveMean += dMean
+            hubDriveLower += dLower
+            hubDriveSafety += dLowerPriorFree
+            hubBgi += bgiRate
+            hubTransport += pendingBgi
+            sumFPositive += f
+            sumFNegative += fNegative
+
             if (meanBg < minMean) minMean = meanBg
             if (lowerBg < minLower) { minLower = lowerBg; timeToMinLower = i }
-            if (lowerBgPriorFree < minLowerPriorFree) minLowerPriorFree = lowerBgPriorFree
+            if (lowerBgPriorFree < minLowerPriorFree) {
+                minLowerPriorFree = lowerBgPriorFree
+                // S0: WIE BALD (I16) und die Zerlegung AM ORT der Entscheidung.
+                timeToMinLowerPriorFree = i
+                hubAtMin = hubNow()
+            }
 
             pts.add(TrajectoryPoint(i, ts, meanBg, lowerBg, bgiRate, dMean, dLower, lowerBgPriorFree))
         }
@@ -314,6 +352,13 @@ object TrajectoryCore {
                 // "nichts unterwegs", nicht "nicht betrachtet".
                 pendingTransportU = pendingDoses.sumOf { it.amountU },
                 pendingDropAtHorizonMgdl = pendingDrop,
+                // S0-Telemetrie. `hubAtMin` ist nicht-null, sobald die Schleife
+                // mindestens einmal lief; bei horizonMin >= 1 ist das immer der
+                // Fall, weil am Anker alle drei Bahnen gleich sind und der
+                // erste Punkt das Minimum setzt oder nicht.
+                timeToMinLowerPriorFreeMin = timeToMinLowerPriorFree,
+                hubAtHorizon = hubNow(),
+                hubAtMinSafetyLower = hubAtMin ?: hubNow(),
             )
         )
     }

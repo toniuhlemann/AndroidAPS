@@ -55,13 +55,37 @@ object PairSlopeBand {
         val mean: Double,
         val lower: Double,
         val pairCount: Int,
+        /** Das ANGEFORDERTE Quantil. Steht hier und nicht nur in der Policy,
+         *  damit ein Auswerter die Bandlage aus DEMSELBEN Objekt liest, aus dem
+         *  die Zahlen stammen (S0). */
+        val quantilePct: Int = MAX_PCT,
     ) {
 
         /** Wie weit die Guardbahn unter der Mittelbahn ansetzt [mg/dl/min].
          *  Die Groesse, an der man nach dem ersten Lauf ablesen kann, ob das
          *  Quantil brauchbar gewaehlt war. */
         val spread: Double get() = mean - lower
+
+        /**
+         * Ist das Band ueberhaupt wirksam? (S0-Telemetrie, Audit E.5)
+         *
+         * Aus [bandApplies] abgeleitet und NICHT danebengeschrieben: Flag und
+         * Zweig koennen so nicht auseinanderlaufen. Der Auditbefund war, dass
+         * `spread == 0` der einzige Hinweis auf ein abgeschaltetes Band war -
+         * und der ist mehrdeutig, weil auch ein aktives Band bei entarteter
+         * Paarverteilung 0 liefern kann.
+         */
+        val bandActive: Boolean get() = bandApplies(quantilePct)
     }
+
+    /**
+     * Wirkt das Quantil als Band, oder ist es der Median selbst?
+     *
+     * Genau EIN Ort fuer diese Bedingung - [quantile] und [Estimate.bandActive]
+     * lesen dieselbe Funktion. Fuer Int ist `!bandApplies(q)` zeichengleich zum
+     * frueheren `q >= MAX_PCT`; die Auswertung bleibt bitgleich.
+     */
+    fun bandApplies(quantilePct: Int): Boolean = quantilePct < MAX_PCT
 
     /** Zulaessiger Bereich des Quantils in Prozent. Ueber 50 waere es keine
      *  Untergrenze mehr, sondern eine Anhebung der Guardbahn. */
@@ -88,7 +112,7 @@ object PairSlopeBand {
     fun estimate(points: List<BgiAdjustedSeries.AdjustedPoint>, nowTs: Long, quantilePct: Int): Estimate? {
         val slopes = BgiAdjustedSeries.pairSlopes(points, nowTs) ?: return null
         val mean = BgiAdjustedSeries.median(slopes)
-        return Estimate(mean, quantile(slopes, mean, quantilePct), slopes.size)
+        return Estimate(mean, quantile(slopes, mean, quantilePct), slopes.size, quantilePct)
     }
 
     /**
@@ -118,7 +142,7 @@ object PairSlopeBand {
      * bewusst NICHT an dieser Verteilung.
      */
     internal fun quantile(sorted: List<Double>, mean: Double, quantilePct: Int): Double {
-        if (quantilePct >= MAX_PCT) return mean
+        if (!bandApplies(quantilePct)) return mean
         val p = quantilePct.coerceAtLeast(0) / 100.0
         val idx = floor(p * (sorted.size - 1)).toInt().coerceIn(0, sorted.size - 1)
         return sorted[idx]
