@@ -218,7 +218,7 @@ class TransportWiringTest : TestBaseWithProfile() {
 
     private fun cycle(): FuseCycleRunner.Outcome {
         clock += 60_000L
-        return runner.run(false)
+        return runner.run(false, FuseActivePump("GENERIC_AAPS", virtualPump = true, bolusStepU = 0.05, basalStepUPerH = 0.05))
     }
 
     /** Bis zur ersten positiven Dosis fahren - der Observer braucht Vorlauf. */

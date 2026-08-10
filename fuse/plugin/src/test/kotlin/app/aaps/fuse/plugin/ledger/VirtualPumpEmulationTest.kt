@@ -12,6 +12,7 @@ import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
 import java.io.File
+import app.aaps.fuse.plugin.FuseActivePump
 
 /**
  * DIE EMULIERTE PUMPE IST KEINE PATCHPUMPE.
@@ -54,6 +55,11 @@ class VirtualPumpEmulationTest {
     /** Die EMULATION: Medtrum-Typname, aber VirtualPump-Klasse. */
     private val emuliert = FuseActivePump(medtrum.name, virtualPump = true)
 
+    /** Eine BEKANNTE Patch-Epoche - fuer die Gegenprobe zur Sperre. */
+    private val bekannteEpoche = FusePatchEpoch.Result(
+        epochTs = t0, reason = FusePatchEpoch.Reason.MATCHING_PUMP_IDENTITY,
+    )
+
     /** Das ECHTE Geraet. */
     private val echt = FuseActivePump(medtrum.name, virtualPump = false)
 
@@ -90,13 +96,13 @@ class VirtualPumpEmulationTest {
     /** Und die Sperre der Publikation greift dort ebenfalls nicht. */
     @Test
     fun `die Emulation loest keine Epochensperre aus`() {
-        assertFalse(emuliert.realPumpEpochUnknown(epochKnown = false)) {
+        assertFalse(emuliert.realPumpEpochUnknown) {
             "auf der Emulation ist eine unbekannte Epoche der Normalzustand, kein Sperrgrund"
         }
-        assertTrue(echt.realPumpEpochUnknown(epochKnown = false)) {
+        assertTrue(echt.realPumpEpochUnknown) {
             "am ECHTEN Geraet bleibt sie die Sperre, sonst waere B3 wirkungslos"
         }
-        assertFalse(echt.realPumpEpochUnknown(epochKnown = true))
+        assertFalse(echt.copy(patchEpoch = bekannteEpoche).realPumpEpochUnknown)
     }
 
     /** Die Gegenprobe zur Fehlerklasse: der Typname allein traegt die

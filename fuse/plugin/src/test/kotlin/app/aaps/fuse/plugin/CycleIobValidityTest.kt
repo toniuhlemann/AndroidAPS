@@ -192,7 +192,7 @@ class CycleIobValidityTest : TestBaseWithProfile() {
     /** Einen Zyklus fahren: Uhr eine Minute weiter, dann rechnen. */
     private fun cycle(): FuseCycleRunner.Outcome {
         clock += 60_000L
-        return runner.run(false)
+        return runner.run(false, FuseActivePump("GENERIC_AAPS", virtualPump = true, bolusStepU = 0.05, basalStepUPerH = 0.05))
     }
 
     /** Bis zur ersten positiven Dosis fahren. Der Observer braucht

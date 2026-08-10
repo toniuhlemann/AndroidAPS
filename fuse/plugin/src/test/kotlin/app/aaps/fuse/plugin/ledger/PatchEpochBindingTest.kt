@@ -12,6 +12,7 @@ import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
 import java.io.File
+import app.aaps.fuse.plugin.FuseActivePump
 
 /**
  * B3 VERDRAHTET: die Patch-Epoche in der Bindung.

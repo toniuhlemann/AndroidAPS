@@ -12,6 +12,7 @@ import java.io.File
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
+import app.aaps.fuse.plugin.FuseActivePump
 
 /**
  * P0 (10.08.2026): DIE DATEIREPARATUR GEHOERT AN DIE ZYKLUSGRENZE, NICHT NUR

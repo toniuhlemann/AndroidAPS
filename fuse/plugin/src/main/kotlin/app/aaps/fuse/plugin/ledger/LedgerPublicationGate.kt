@@ -123,11 +123,29 @@ object LedgerPublicationGate {
      */
     const val REASON_REAL_PUMP_EPOCH_UNKNOWN = "REAL_PUMP_EPOCH_UNKNOWN"
 
+    /**
+     * ECHTE, ERLAUBTE PUMPE - ABER OHNE IDENTITAET.
+     *
+     * Ohne Serial entsteht ein Pin ohne Identitaet, und den behandelt
+     * `matchesPinnedEpoch` als WILDCARD: die Zeile bindet jeden typgleichen
+     * Bolus. An der VirtualPump ist das noetig (der leere Serial nach dem
+     * Prozessstart), an einer echten Pumpe ist es ein Freibrief - eine
+     * Haftung koennte ueber einen fremden Fakt ausgebucht werden.
+     *
+     * EIGENER Grund neben der unbekannten Epoche: im Trail muss
+     * unterscheidbar bleiben, ob die IDENTITAET oder die EPOCHE fehlt - das
+     * sind zwei verschiedene Ursachen mit zwei verschiedenen Massnahmen.
+     * Wie dort bleiben die TBR-Felder stehen: ein Provenienzproblem des
+     * BOLUS darf keine Schutz-Null verhindern.
+     */
+    const val REASON_REAL_PUMP_IDENTITY_UNKNOWN = "REAL_PUMP_IDENTITY_UNKNOWN"
+
     fun commitmentOf(
         units: Double?,
         treatmentViewPresent: Boolean,
         proposalId: String,
         realPumpEpochUnknown: Boolean = false,
+        realPumpIdentityUnknown: Boolean = false,
     ): Commitment = when {
         units == null                  -> Commitment.Proposal(proposalId)
         // REIHENFOLGE IST DIAGNOSE, wie schon bei PERSIST_FAILED: der laenger
@@ -135,6 +153,12 @@ object LedgerPublicationGate {
         // Zyklen bestehen, bis ein Wechsel gelesen wird; eine fehlende
         // Vollsicht betrifft nur diesen einen. Stuende sie vorn, truege der
         // Trail bei gleichzeitigem Auftreten den kurzlebigeren Grund.
+        // Die IDENTITAET zuerst: ohne sie ist die Epochenfrage gar nicht
+        // zu stellen - eine Epoche gehoert immer zu einem bestimmten
+        // Geraet. Stuende die Epoche vorn, truege der Trail bei
+        // gleichzeitigem Auftreten den abgeleiteten statt des
+        // urspruenglichen Grundes.
+        realPumpIdentityUnknown        -> Commitment.None(REASON_REAL_PUMP_IDENTITY_UNKNOWN)
         realPumpEpochUnknown           -> Commitment.None(REASON_REAL_PUMP_EPOCH_UNKNOWN)
         !treatmentViewPresent          -> Commitment.None(REASON_TREATMENT_VIEW_UNAVAILABLE)
         else                           -> Commitment.Proposal(proposalId)

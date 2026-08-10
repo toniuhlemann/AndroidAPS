@@ -326,9 +326,19 @@ class FuseCycleRunner(
         val diaHours: Double,
     )
 
-    fun run(tempBasalFallback: Boolean): Outcome {
+    /**
+     * @param pumpe der EINMAL je Zyklus erhobene Pumpensnapshot.
+     *
+     * Der Runner liest die Pumpe NICHT mehr selbst. Vorher tat er es an
+     * zwei Stellen (Riegel und Bolusschritt), zusaetzlich zum Plugin - drei
+     * Lesungen je Zyklus, obwohl ein Kommentar ausdruecklich EINE behauptete.
+     * Wechselt die Pumpe dazwischen, kann der Riegel eine ECHTE Medtrum
+     * durchlassen, waehrend die Ledgerzeile als emuliert gepinnt wird - und
+     * damit ohne Patchpruefung bindet (Auditbefund 10.08.2026).
+     */
+    fun run(tempBasalFallback: Boolean, pumpe: FuseActivePump): Outcome {
         val computeTs = dateUtil.now()
-        val gate = FusePumpGate.evaluate(runCatching { activePlugin.activePump }.getOrNull())
+        val gate = pumpe.gate
 
         // Audit R95 F-P0-07: ein Abort liess eine LAUFENDE POSITIVE TBR bis zu
         // ihrem Ende weiterlaufen (fail-silent, war nur fuer VPUMP akzeptiert).
@@ -755,8 +765,9 @@ class FuseCycleRunner(
             }
 
         // ---- 4 Menge -------------------------------------------------------
-        val pumpDescription = activePlugin.activePump.pumpDescription
-        val bolusStep = pumpDescription.bolusStep
+        // Aus dem Zyklus-Snapshot, nicht aus einer zweiten Lesung: sonst
+        // koennte der Schritt einer ANDEREN Pumpe stammen als der Riegel.
+        val bolusStep = pumpe.bolusStepU
         // 0.0 waere GEFAEHRLICHER als ein Block: floor(x/0)*0 ergibt NaN, und
         // NaN < 0.0 ist false — der Zyklus fiele durch statt zu sperren.
         if (!bolusStep.isFinite() || bolusStep <= 0.0) return abort("bolusStep=$bolusStep", signal, cfg, step)
@@ -1152,7 +1163,7 @@ class FuseCycleRunner(
             decision = decision,
             current = current,
             scheduledBasalUPerH = profile.getBasal(computeTs),
-            cfg = TbrPolicy.Config(basalStepUPerH = pumpDescription.basalStep),
+            cfg = TbrPolicy.Config(basalStepUPerH = pumpe.basalStepUPerH),
             fault = if (tempBasalFallback) TbrPolicy.FaultCode.TEMP_BASAL_FALLBACK else TbrPolicy.FaultCode.NONE,
             pumpBusy = pumpBusy(),
         )

@@ -13,6 +13,7 @@ import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
 import java.io.File
+import app.aaps.fuse.plugin.FuseActivePump
 
 /**
  * Die Aufrufstelle des Ledgers im Livepfad (Audit R95, Fix 3): Publizieren,

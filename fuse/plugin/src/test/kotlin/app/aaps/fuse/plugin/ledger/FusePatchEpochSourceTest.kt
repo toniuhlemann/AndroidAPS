@@ -16,6 +16,7 @@ import org.mockito.kotlin.never
 import org.mockito.kotlin.times
 import org.mockito.kotlin.verify
 import org.mockito.kotlin.whenever
+import app.aaps.fuse.plugin.FuseActivePump
 
 /**
  * B3, die LESENDE Seite: GENAU EINE ABFRAGE, KEIN RUECKFALL.
@@ -53,7 +54,7 @@ class FusePatchEpochSourceTest {
      * also gilt hier ueberall "echte Pumpe".
      */
     private fun aktuell(p: Pump?, nowTs: Long = jetzt) =
-        FusePatchEpochSource.current(persistence, p, FuseActivePump.of(p), nowTs)
+        FusePatchEpochSource.current(persistence, FuseActivePump.of(p), nowTs)
 
     /** Die ECHTE Form: kein pumpId, Serial klein. */
     private fun echterWechsel(ts: Long = t0) = TE(

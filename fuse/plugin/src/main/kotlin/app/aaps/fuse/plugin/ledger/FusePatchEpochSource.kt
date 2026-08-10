@@ -2,7 +2,7 @@ package app.aaps.fuse.plugin.ledger
 
 import app.aaps.core.data.model.TE
 import app.aaps.core.interfaces.db.PersistenceLayer
-import app.aaps.core.interfaces.pump.Pump
+import app.aaps.fuse.plugin.FuseActivePump
 
 /**
  * Die LESENDE Seite der Patch-Epoche (B3).
@@ -41,15 +41,15 @@ import app.aaps.core.interfaces.pump.Pump
 object FusePatchEpochSource {
 
     /**
-     * @param pump dieselbe Pumpeninstanz, aus der [activePump] abgeleitet
-     *   wurde. Sie wird hier NUR noch fuer die Seriennummer gebraucht - der
-     *   Typ kommt aus [activePump], damit er nicht ein zweites Mal und
-     *   moeglicherweise aus einem anderen Moment gelesen wird.
-     * @param activePump der einmal je Zyklus erhobene Pumpenzustand.
+     * @param activePump der EINMAL je Zyklus erhobene Pumpensnapshot. Weder
+     *   `model()` noch `serialNumber()` werden hier erneut gelesen: beide
+     *   stammen aus DEMSELBEN Augenblick wie Riegel und Pinnung. Ein zweites
+     *   Lesen koennte nach einem Pumpenwechsel mitten im Zyklus einen Typ mit
+     *   dem Serial eines anderen Moments paaren - und genau daraus entstuende
+     *   eine Zeile, die ohne Patchpruefung bindet.
      */
     fun current(
         persistenceLayer: PersistenceLayer,
-        pump: Pump?,
         activePump: FuseActivePump,
         nowTs: Long,
     ): FusePatchEpoch.Result {
@@ -65,11 +65,10 @@ object FusePatchEpochSource {
         // fuehren - das entscheidet der Aufrufer ueber `realPumpEpochUnknown`,
         // nicht diese Quelle. Die Trennung ist gewollt: hier steht, WAS in der
         // Datenbank steht, dort, WAS daraus folgt.
-        val typ = activePump.pumpTypeName
         return FusePatchEpoch.of(
             event = letzterWechsel,
-            activePumpTypeName = typ,
-            activeSerialHash = LedgerFacts.serialHashOf(runCatching { pump?.serialNumber() }.getOrNull(), typ),
+            activePumpTypeName = activePump.pumpTypeName,
+            activeSerialHash = activePump.serialHash,
             nowTs = nowTs,
             serialHashOf = LedgerFacts::serialHashOf,
         )

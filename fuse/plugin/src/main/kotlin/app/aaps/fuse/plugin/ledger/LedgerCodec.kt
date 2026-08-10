@@ -13,6 +13,7 @@ import app.aaps.fuse.core.ledger.QueueRejectReason
 import app.aaps.fuse.core.ledger.SnapshotOrder
 import org.json.JSONArray
 import org.json.JSONObject
+import app.aaps.fuse.plugin.FuseActivePump
 
 /**
  * [LedgerState] <-> JSON, VERLUSTFREI (Audit R95, Fix 3).

@@ -18,7 +18,6 @@ import app.aaps.core.interfaces.constraints.PluginConstraints
 import app.aaps.core.data.model.TE
 import app.aaps.core.interfaces.db.PersistenceLayer
 import app.aaps.core.interfaces.notifications.Notification
-import app.aaps.fuse.plugin.ledger.FuseActivePump
 import app.aaps.fuse.plugin.ledger.FusePatchEpoch
 import app.aaps.fuse.plugin.ledger.LedgerFacts
 import app.aaps.fuse.plugin.ledger.FusePatchEpochSource
@@ -408,7 +407,7 @@ class FusePlugin @Inject constructor(
         // nach einem Prozessstart asynchron nachgeladen und darum so SPAET wie
         // moeglich gelesen - naemlich erst beim Pinnen.
         val pumpe = runCatching { activePlugin.activePump }.getOrNull()
-        val aktivePumpe = FuseActivePump.of(pumpe)
+        val roherSnapshot = FuseActivePump.of(pumpe)
 
 
         // Ledger VOR dem Lauf restaurieren - NICHT wie warmGraphRingOnce nach
@@ -441,7 +440,7 @@ class FusePlugin @Inject constructor(
             // offene Altzeile ginge auch auf der VirtualPump in den Hold:
             // fail-closed, aber unnoetig blockierend.
             runCatching {
-                ledgerAdapter.loadOnce(ledgerDir(), sessionId, dateUtil.now(), aktivePumpe) {
+                ledgerAdapter.loadOnce(ledgerDir(), sessionId, dateUtil.now(), roherSnapshot) {
                     aapsLogger.error(LTag.APS, it)
                 }
             }.onFailure { aapsLogger.error(LTag.APS, "FUSE ledger load failed", it) }
@@ -462,16 +461,21 @@ class FusePlugin @Inject constructor(
         // unbekannt - auf einen aelteren passenden auszuweichen waere die
         // Behauptung, seither sei nichts geschehen, und genau das ist
         // unbekannt.
-        val patchEpoch = FusePatchEpochSource.current(
-            persistenceLayer,
-            pumpe,
-            aktivePumpe,
-            dateUtil.now(),
+        // Die Epoche geht IN den Snapshot, statt daneben zu leben: danach
+        // gibt es genau EINE Groesse, die den Pumpenzustand dieses Zyklus
+        // beschreibt, und niemand kann versehentlich zwei Teile aus
+        // verschiedenen Momenten paaren.
+        val aktivePumpe = roherSnapshot.withPatchEpoch(
+            FusePatchEpochSource.current(persistenceLayer, roherSnapshot, dateUtil.now())
         )
+        val patchEpoch = aktivePumpe.patchEpoch!!
         ledgerAdapter.observePatchEpoch(patchEpoch.epochTs)
+        // Aus DEMSELBEN Snapshot: der Wildcard-Riegel und die
+        // Epochenpruefung duerfen nicht aus verschiedenen Momenten stammen.
+        ledgerAdapter.observeRealPump(aktivePumpe.realPump)
 
         val outcome = try {
-            cycleRunner().run(tempBasalFallback)
+            cycleRunner().run(tempBasalFallback, aktivePumpe)
         } catch (e: Exception) {
             aapsLogger.error(LTag.APS, "FUSE cycle failed", e)
             // SUB-02 Rest (Codex Re-Review 603a15a): eine Ausnahme umgeht das
@@ -518,7 +522,7 @@ class FusePlugin @Inject constructor(
                 aapsLogger.error(LTag.APS, "FUSE exception path: running TBR not classifiable - no intervention")
             FuseAbortTbr.abortRt(
                 nowMs = abortTs,
-                gate = FusePumpGate.evaluate(pumpe),
+                gate = aktivePumpe.gate,
                 outcome = abortTbr,
             )
         } else {
@@ -601,7 +605,12 @@ class FusePlugin @Inject constructor(
             // (s. [FuseActivePump]). Deshalb steht das Klassenmerkmal in der
             // Bedingung VOR der Typpruefung - und die Bedingung selbst steht
             // drueben am Zustand, wo sie einzeln pruefbar ist.
-            realPumpEpochUnknown = aktivePumpe.realPumpEpochUnknown(patchEpoch.known),
+            realPumpEpochUnknown = aktivePumpe.realPumpEpochUnknown,
+            // Ohne Identitaet entstuende ein Pin, der als Wildcard jeden
+            // typgleichen Bolus bindet. An der VirtualPump ist das noetig
+            // (leerer Serial nach dem Prozessstart), an einer echten Pumpe
+            // ein Freibrief.
+            realPumpIdentityUnknown = aktivePumpe.realPumpIdentityUnknown,
         )
 
         val publication = app.aaps.fuse.plugin.ledger.LedgerPublicationGate.publish(

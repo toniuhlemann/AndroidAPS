@@ -14,6 +14,7 @@ import app.aaps.fuse.core.util.Sha
 import org.json.JSONObject
 import java.io.File
 import kotlin.math.abs
+import app.aaps.fuse.plugin.FuseActivePump
 
 /**
  * Episodenbudgets der Mahlzeit-Kanaele - RESTARTFEST (Audit R95, Fix 3).
@@ -942,6 +943,21 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
         if (pinned == null || pinned.legacyOpen) return true
         if (pinned.unpinned) return false
         val typeOk = pinned.pumpTypeName == null || LedgerFacts.pumpTypeName(b) == pinned.pumpTypeName
+        // WILDCARD NUR AUSSERHALB DER ECHTEN PUMPE.
+        //
+        // `pumpSerialHash == null` heisst "Identitaet war beim Pinnen nicht
+        // bekannt" - typisch der leere Serial direkt nach einem
+        // Prozessstart (InstanceId laedt asynchron nach). An der
+        // VirtualPump muss so eine Zeile weiter binden koennen, sonst
+        // haelt sie ihre Haftung bis zur Phantom-Abschreibung.
+        //
+        // An einer ECHTEN Pumpe ist derselbe Pin ein Freibrief: er bindet
+        // jeden typgleichen Bolus, und eine Haftung koennte ueber einen
+        // fremden Fakt ausgebucht werden. Neue Zeilen entstehen dort gar
+        // nicht mehr (REAL_PUMP_IDENTITY_UNKNOWN sperrt die Publikation) -
+        // ALTE aber schon, etwa aus der Emulationszeit desselben Geraets.
+        // Deshalb entscheidet hier die JETZT aktive Pumpe.
+        if (pinned.pumpSerialHash == null && currentRealPump) return false
         val serialOk = pinned.pumpSerialHash == null || LedgerFacts.serialHash(b) == pinned.pumpSerialHash
         if (!typeOk || !serialOk) return false
         // B3: bei PATCHPUMPEN zusaetzlich die Patch-Epoche. Type und Serial
@@ -969,9 +985,26 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
     var currentPatchEpochTs: Long? = null
         private set
 
+    /**
+     * Laeuft JETZT eine echte, erlaubte Pumpe? Vom Zyklus gesetzt.
+     *
+     * Nur fuer den Wildcard-Riegel in [matchesPinnedEpoch]. Vorgabe `false`
+     * ist hier NICHT die unvorsichtige Seite: ohne gesetzten Wert laeuft
+     * kein Realpumpen-Zyklus (der Setzer steht im selben Pfad), und im
+     * Test ist die VirtualPump der Normalfall.
+     */
+    var currentRealPump: Boolean = false
+        private set
+
     /** Vom Zyklus gesetzt, BEVOR gebunden wird. */
     fun observePatchEpoch(epochTs: Long?) {
         currentPatchEpochTs = epochTs
+    }
+
+    /** Vom Zyklus gesetzt, BEVOR gebunden wird - zusammen mit der Epoche.
+     *  Beide stammen aus demselben Pumpensnapshot. */
+    fun observeRealPump(realPump: Boolean) {
+        currentRealPump = realPump
     }
 
     /**
