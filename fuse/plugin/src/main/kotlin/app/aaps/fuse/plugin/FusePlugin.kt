@@ -6,6 +6,7 @@ import androidx.preference.Preference
 import androidx.preference.PreferenceCategory
 import androidx.preference.PreferenceManager
 import androidx.preference.PreferenceScreen
+import app.aaps.fuse.core.controller.MarkerTimeline
 import app.aaps.core.data.plugin.PluginType
 import app.aaps.core.interfaces.aps.APS
 import app.aaps.core.interfaces.aps.APSResult
@@ -224,11 +225,15 @@ class FusePlugin @Inject constructor(
 
     @Volatile private var graphRingWarmed = false
 
-    override fun fuseMealMarkerTimes(fromTime: Long, endTime: Long): List<Long> {
-        val fromPref = mealMarkerArmedTs()
-        val all = synchronized(markerPressRing) { markerPressRing.toList() } + listOf(fromPref).filter { it > 0 }
-        return all.distinct().filter { it in fromTime..endTime }.sorted()
-    }
+    /** Delegiert an [MarkerTimeline] - die Regel steht dort und ist dort
+     *  auch geprueft; diese Kette war bis 11.08. an keiner Stelle getestet. */
+    override fun fuseMealMarkerTimes(fromTime: Long, endTime: Long): List<Long> =
+        MarkerTimeline.visible(
+            pressRing = synchronized(markerPressRing) { markerPressRing.toList() },
+            armedTs = mealMarkerArmedTs(),
+            fromTime = fromTime,
+            endTime = endTime,
+        )
 
     /**
      * RING-WARMSTART (08.08.): die F.DRV/F.GRD-Linien leben im Prozess und
@@ -248,11 +253,26 @@ class FusePlugin @Inject constructor(
             if (!f.exists()) return
             val cutoff = System.currentTimeMillis() - 25L * 3600_000L
             val pts = ArrayList<app.aaps.core.interfaces.overview.FuseOverviewSource.Point>()
+            // MARKERDRUCKE aus dem Trail (11.08.). Der Ring lebt im Prozess -
+            // nach jedem Flash blieb genau EIN Marker uebrig, der aus der
+            // Preference. Bei vier Flashes an einem Abend heisst das: der
+            // Graph zerfaellt in Stuecke, obwohl der Trail alles weiss.
+            //
+            // Moeglich ist das erst, seit `state.markerArmedTs` im Datensatz
+            // steht; vorher stand dort nur ein Boolean "Marker aktiv", und aus
+            // dem laesst sich kein Zeitpunkt gewinnen.
+            //
+            // Zurueckgenommene Marker kommen dabei mit - genau wie beim Ring,
+            // und aus demselben Grund: der Graph ist ein Protokoll, kein
+            // Zustandsanzeiger (s. MarkerTimeline).
+            val marks = LinkedHashSet<Long>()
             f.bufferedReader().useLines { lines ->
                 for (line in lines) {
                     val j = runCatching { org.json.JSONObject(line) }.getOrNull() ?: continue
                     val ts = j.optLong("sourceTs", 0L)
                     if (ts < cutoff) continue
+                    j.optJSONObject("state")?.optLong("markerArmedTs", 0L)
+                        ?.takeIf { it > 0L && it >= cutoff }?.let { marks.add(it) }
                     val sig = j.optJSONObject("signal") ?: continue
                     val dec = j.optJSONObject("decision")
                     val pol = j.optJSONObject("policy")?.optJSONObject("values")
@@ -277,6 +297,11 @@ class FusePlugin @Inject constructor(
                 if (graphRing.isEmpty()) {
                     graphRing.addAll(pts.takeLast(1_500))
                 }
+            }
+            // Nur nachfuellen, nie ueberschreiben: ein Druck, der seit dem
+            // Start passiert ist, steht schon drin und ist der aktuellere.
+            synchronized(markerPressRing) {
+                for (m in marks.sorted()) MarkerTimeline.add(markerPressRing, m)
             }
         }
     }
@@ -335,10 +360,7 @@ class FusePlugin @Inject constructor(
             return false
         }
         preferences.put(FuseLongKey.MealMarkerArmedTs, now)
-        synchronized(markerPressRing) {
-            markerPressRing.addLast(now)
-            while (markerPressRing.size > 20) markerPressRing.removeFirst()
-        }
+        synchronized(markerPressRing) { MarkerTimeline.add(markerPressRing, now) }
         return true
     }
 
