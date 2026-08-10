@@ -114,6 +114,16 @@ object FuseController {
         val nightDeadbandMgdl: Double = 0.0,
         /** Marker-Sonderrechte aktiv (hebt NUR das Nacht-Totband auf). */
         val markerBoost: Boolean = false,
+        /**
+         * Zeitpunkt des Knopfdrucks, 0 = kein Marker. REINES MESSFELD - der
+         * Regler liest es nicht, und er darf es nicht: eine Entscheidung, die
+         * am Alter des Markers haengt, gehoert in die Fenster-Logik des
+         * Aufrufers, nicht hierher.
+         *
+         * Es steht trotzdem im State, weil ohne t0 die wichtigste Groesse im
+         * FCL nicht messbar ist: die LATENZ vom Druck bis zur ersten Freigabe.
+         */
+        val markerArmedTs: Long = 0L,
         /** Rebound-Bedingung lag an, wurde aber durch einen aktiven Marker
          *  entwaffnet (Gas-vor-Bremse NUR fuer erklaertes Wissen, 08.08.):
          *  das Fenster schuetzt vor dem Jagen UNANGEKUENDIGTER Hypo-

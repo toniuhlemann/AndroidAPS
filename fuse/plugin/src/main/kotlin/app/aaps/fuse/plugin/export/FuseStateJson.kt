@@ -482,6 +482,17 @@ object FuseStateJson {
                 // von zweien lesen. Die Rohwerte stehen ohnehin unter policy.values.
                 .put("reboundWindow", outcome.state?.reboundWindow ?: JSONObject.NULL)
                 .put("reboundSuppressedByMarker", outcome.state?.reboundSuppressedByMarker ?: JSONObject.NULL)
+                // DER DRUCKZEITPUNKT, nicht nur "Marker aktiv".
+                //
+                // Bisher stand im Trail ausschliesslich das Boolean
+                // `drive.onset.mealMarker`. Damit ist die wichtigste Groesse im
+                // FCL gar nicht messbar: die LATENZ vom Knopfdruck bis zur
+                // ersten Freigabe. Ob nach 2 oder nach 25 Minuten das erste
+                // Insulin kommt, entscheidet ueber Peak oder kein Peak - und
+                // ohne t0 laesst sich das im Nachhinein nicht ausrechnen.
+                // 0 = kein Marker.
+                .put("markerArmedTs", outcome.state?.markerArmedTs ?: JSONObject.NULL)
+                .put("markerBoost", outcome.state?.markerBoost ?: JSONObject.NULL)
                 .put("mealWindow", outcome.state?.mealWindow ?: JSONObject.NULL)
                 .put("smbRatioEffective", fin(outcome.state?.effectiveSmbRatio))
                 // S0: der EINGANG der Rampe, nicht das Signal. Beide sind

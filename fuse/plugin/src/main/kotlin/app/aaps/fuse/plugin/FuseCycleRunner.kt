@@ -824,6 +824,7 @@ class FuseCycleRunner(
                     ),
                     nightDeadbandMgdl = if (cfg.nightDeadbandEnabled) cfg.nightDeadbandMgdl else 0.0,
                     markerBoost = markerBoost,
+                    markerArmedTs = markerTs,
                     reboundSuppressedByMarker = reboundSuppressedByMarker,
                     mealWindow = mealWindow,
                     rSignedMgdlPerMin = onset.driveMgdlPerMin?.takeIf { onset.active }
