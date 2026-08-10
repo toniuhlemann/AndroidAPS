@@ -918,15 +918,12 @@ class FusePlugin @Inject constructor(
         val dir = ledgerDir()
         val lage = runCatching { repair.inspect(dir) }.getOrNull()
         if (lage == null || !lage.repairable) {
-            android.app.AlertDialog.Builder(context)
-                .setTitle("Ledger-Reparatur")
-                .setMessage(
-                    "Nicht noetig: ${lage?.why ?: "Lage nicht feststellbar"}.\n\n" +
-                        "Dieser Weg ist kein 'Ledger leeren' fuer den Alltag - er oeffnet nur einen " +
-                        "Hold, aus dem es sonst keinen Ausgang gibt."
-                )
-                .setPositiveButton("Verstanden", null)
-                .show()
+            hinweis(
+                context, "Ledger-Reparatur",
+                "Nicht noetig: ${lage?.why ?: "Lage nicht feststellbar"}.\n\n" +
+                    "Dieser Weg ist kein 'Ledger leeren' fuer den Alltag - er oeffnet nur einen " +
+                    "Hold, aus dem es sonst keinen Ausgang gibt."
+            )
             return
         }
         val d = lage.discarded
@@ -940,8 +937,8 @@ class FusePlugin @Inject constructor(
             append("  aktive Fehler      ")
             append(if (d.activeErrors.isEmpty()) "keine" else d.activeErrors.entries.joinToString { "${it.key}x${it.value}" })
         }
-        android.app.AlertDialog.Builder(context)
-            .setTitle("Ledger reparieren?")
+        app.aaps.core.ui.dialogs.AlertDialogHelper.Builder(context)
+            .setCustomTitle(app.aaps.core.ui.dialogs.AlertDialogHelper.buildCustomTitle(context, "Ledger reparieren?"))
             .setMessage(
                 "Grund: ${lage.why}\n\n$was\n\n" +
                     "Der bisherige Ledger wird NICHT geloescht, sondern in Quarantaene gelegt " +
@@ -980,9 +977,28 @@ class FusePlugin @Inject constructor(
                         "arbeiten koennte den alten Zustand wieder herstellen.\n\n" +
                         "Die Lage wird vor der Ausfuehrung ERNEUT geprueft; hat sie sich inzwischen " +
                         "geaendert, passiert nichts."
-                android.app.AlertDialog.Builder(context)
-                    .setTitle("Ledger-Reparatur").setMessage(text).setPositiveButton("OK", null).show()
+                hinweis(context, "Ledger-Reparatur", text)
             }
+            .show()
+    }
+
+    /**
+     * Ein Hinweisfenster im APP-THEMA.
+     *
+     * NICHT `android.app.AlertDialog`: der Plattform-Dialog erbt das Thema des
+     * uebergebenen Contexts nicht so, wie man erwartet - im dunklen
+     * AAPS-Einstellungsbildschirm kam ein WEISSES Fenster mit weisser Schrift
+     * heraus, also ein leerer Kasten (Toni, 10.08. am Geraet). Der Dialog war
+     * da, man konnte ihn nur nicht lesen.
+     *
+     * [AlertDialogHelper] legt genau dafuer einen `ContextThemeWrapper` unter
+     * den Material-Builder; den benutzt AAPS ueberall sonst auch.
+     */
+    private fun hinweis(context: Context, titel: String, text: String) {
+        app.aaps.core.ui.dialogs.AlertDialogHelper.Builder(context)
+            .setCustomTitle(app.aaps.core.ui.dialogs.AlertDialogHelper.buildCustomTitle(context, titel))
+            .setMessage(text)
+            .setPositiveButton(android.R.string.ok, null)
             .show()
     }
 
