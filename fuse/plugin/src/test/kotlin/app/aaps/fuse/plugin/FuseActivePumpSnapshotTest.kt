@@ -7,6 +7,7 @@ import app.aaps.fuse.plugin.ledger.FuseLedgerAdapter
 import app.aaps.fuse.plugin.ledger.FusePatchEpoch
 import app.aaps.fuse.plugin.ledger.LedgerFacts
 import app.aaps.fuse.plugin.ledger.LedgerPublicationGate
+import app.aaps.fuse.plugin.ledger.LedgerPumpBindingContext
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNotNull
@@ -44,6 +45,62 @@ class FuseActivePumpSnapshotTest {
             tempBasalCapable = true, bolusStepU = 0.05, basalStepUPerH = 0.05,
             serialHash = serialHash,
         )
+
+    /** Der Bindungskontext einer NACHGEWIESENEN Emulation. */
+    private fun ctxEmulation(epoche: Long? = null) =
+        LedgerPumpBindingContext(true, medtrum.name, LedgerFacts.serialHashOf("vs", medtrum.name), epoche)
+
+    /** Der Bindungskontext einer ECHTEN Pumpe. */
+    private fun ctxEcht(epoche: Long? = null) =
+        LedgerPumpBindingContext(false, medtrum.name, LedgerFacts.serialHashOf(serial, medtrum.name), epoche)
+
+    // ---- Genau eine Lesung je Quelle -------------------------------------
+
+    /**
+     * JEDE TREIBERQUELLE GENAU EINMAL.
+     *
+     * Der Snapshot existiert, damit alle Merkmale aus DEMSELBEN Augenblick
+     * stammen. Wird eine Quelle zweimal gefragt, koennen zwei verschiedene
+     * Antworten in denselben Snapshot geraten - und genau das war der Befund:
+     * `model()` wurde fuer den Typnamen UND noch einmal im Riegel gelesen,
+     * `pumpDescription` dreimal, und der Serial spaeter im Ledger-Pin ein
+     * weiteres Mal.
+     *
+     * Die zweite Antwort ist hier absichtlich eine ANDERE. Wuerde irgendwo
+     * erneut gefragt, traegt der Snapshot einen Wert, den es zum
+     * Erfassungszeitpunkt nicht gab - der Test faellt dann ueber die Zaehlung
+     * UND ueber den Inhalt.
+     */
+    @Test
+    fun `jede Treiberquelle wird genau einmal gelesen`() {
+        val p = org.mockito.Mockito.mock(app.aaps.core.interfaces.pump.Pump::class.java)
+        var serialAufrufe = 0
+        var modelAufrufe = 0
+        var beschreibungAufrufe = 0
+        val beschreibung = app.aaps.core.data.pump.defs.PumpDescription().apply {
+            bolusStep = 0.05; basalStep = 0.05; isTempBasalCapable = true
+        }
+        org.mockito.kotlin.whenever(p.serialNumber()).thenAnswer {
+            serialAufrufe++; if (serialAufrufe == 1) serial else "GANZ_ANDERE_SERIAL"
+        }
+        org.mockito.kotlin.whenever(p.model()).thenAnswer {
+            modelAufrufe++; if (modelAufrufe == 1) medtrum else PumpType.GENERIC_AAPS
+        }
+        org.mockito.kotlin.whenever(p.pumpDescription).thenAnswer {
+            beschreibungAufrufe++; beschreibung
+        }
+
+        val s = FuseActivePump.of(p)
+
+        assertEquals(1, serialAufrufe) { "serialNumber() darf genau einmal gefragt werden" }
+        assertEquals(1, modelAufrufe) { "model() ebenfalls - der Riegel bekommt den Typ gereicht" }
+        assertEquals(1, beschreibungAufrufe) { "pumpDescription ebenfalls" }
+
+        // Und der Snapshot traegt durchgehend die ERSTE Antwort.
+        assertEquals(medtrum.name, s.pumpTypeName)
+        assertEquals(LedgerFacts.serialHashOf(serial, medtrum.name), s.serialHash)
+        assertEquals(FusePumpGate.Verdict.ALLOWED_REAL_MEDTRUM, s.gate.verdict)
+    }
 
     // ---- Die Identitaetssperre -------------------------------------------
 
@@ -123,13 +180,13 @@ class FuseActivePumpSnapshotTest {
     fun `ein Pin ohne Serial ist an der echten Pumpe kein Wildcard`(@TempDir dir: File) {
         val a = FuseLedgerAdapter().also {
             it.loadOnce(dir, "s-a", t0, emuliert())
-            it.observePatchEpoch(null)
+            it.observeBindingContext(ctxEmulation())
         }
         // Gepinnt OHNE Serial - so entsteht die Zeile im leeren InstanceId-Fenster.
         a.onPublished("p1", 0.30, t0, 0L, 0.05, medtrum.name, null, virtualPump = true)
 
         // Jetzt laeuft eine ECHTE Pumpe.
-        a.observeRealPump(true)
+        a.observeBindingContext(ctxEcht())
         a.bindIdentities(listOf(bolus(t0 + 5_000L, 0.30, serial)))
 
         assertNull(a.state.entries.getValue("p1").identity) {
@@ -146,12 +203,119 @@ class FuseActivePumpSnapshotTest {
     fun `derselbe Pin bindet an der Emulation weiter`(@TempDir dir: File) {
         val a = FuseLedgerAdapter().also {
             it.loadOnce(dir, "s-a", t0, emuliert())
-            it.observePatchEpoch(null)
+            it.observeBindingContext(ctxEmulation())
         }
         a.onPublished("p1", 0.30, t0, 0L, 0.05, medtrum.name, null, virtualPump = true)
-        a.observeRealPump(false)
         a.bindIdentities(listOf(bolus(t0 + 5_000L, 0.30, "vs")))
 
+        assertNotNull(a.state.entries.getValue("p1").identity)
+    }
+
+    /**
+     * "NICHT REAL" IST KEIN NACHWEIS FUER "EMULATION".
+     *
+     * Die erste Fassung fragte `currentRealPump` - und das ist auch bei einer
+     * UNBEKANNTEN und bei einer gesperrten Fremdpumpe false. Ausgerechnet der
+     * unbekannte Kontext haette das Wildcard-Tor wieder geoeffnet. Es zaehlt
+     * der NACHWEIS, nicht die Abwesenheit des Gegenteils.
+     */
+    @Test
+    fun `ein unbekannter Pumpenkontext erlaubt kein Wildcard`(@TempDir dir: File) {
+        // ISOLIERT: der Pin traegt virtualPump=FALSE, damit der Emulations-
+        // Riegel gar nicht erst greift. Sonst besteht dieser Test aus dem
+        // falschen Grund - zwei Kanaele in dieselbe Richtung, und die Mutation
+        // der Wildcard-Regel bliebe unbemerkt (genau so aufgefallen).
+        val fremd = PumpType.GENERIC_AAPS
+        val a = FuseLedgerAdapter().also {
+            it.loadOnce(dir, "s-a", t0, emuliert())
+            it.observeBindingContext(ctxEmulation())
+        }
+        a.onPublished("p1", 0.30, t0, 0L, 0.05, fremd.name, null, virtualPump = false)
+
+        // Pumpe nicht mehr lesbar - weder Emulation noch echt nachgewiesen.
+        a.observeBindingContext(LedgerPumpBindingContext.UNKNOWN)
+        a.bindIdentities(
+            listOf(
+                BS(
+                    timestamp = t0 + 5_000L, amount = 0.30, type = BS.Type.SMB,
+                    ids = IDs(pumpType = fremd, pumpSerial = "irgendwas", pumpId = 4711L),
+                )
+            )
+        )
+
+        assertNull(a.state.entries.getValue("p1").identity) {
+            "unbekannt ist kein Nachweis - die Wildcard bleibt zu"
+        }
+    }
+
+    /** Und die Gegenrichtung: derselbe seriallose Pin bindet bei
+     *  NACHGEWIESENER Emulation sehr wohl - sonst waere die Regel eine
+     *  pauschale Sperre statt einer Unterscheidung. */
+    @Test
+    fun `derselbe seriallose Pin bindet bei nachgewiesener Emulation`(@TempDir dir: File) {
+        val fremd = PumpType.GENERIC_AAPS
+        val a = FuseLedgerAdapter().also {
+            it.loadOnce(dir, "s-a", t0, emuliert())
+            it.observeBindingContext(ctxEmulation())
+        }
+        a.onPublished("p1", 0.30, t0, 0L, 0.05, fremd.name, null, virtualPump = false)
+        a.bindIdentities(
+            listOf(
+                BS(
+                    timestamp = t0 + 5_000L, amount = 0.30, type = BS.Type.SMB,
+                    ids = IDs(pumpType = fremd, pumpSerial = "irgendwas", pumpId = 4711L),
+                )
+            )
+        )
+        assertNotNull(a.state.entries.getValue("p1").identity)
+    }
+
+    /**
+     * EINE EMULATIONSZEILE BINDET KEINEN ECHTEN FAKT.
+     *
+     * `virtualPump` wird seit B3 am Pin persistiert, wurde in
+     * `matchesPinnedEpoch` aber nie gelesen. Eine Zeile aus der Emulationszeit
+     * konnte damit einen echten Bolus binden und sich ueber dessen IOB-Fakt
+     * schliessen - obwohl sie nie physisches Insulin betraf.
+     */
+    @Test
+    fun `eine Emulationszeile bindet nicht, sobald die echte Pumpe laeuft`(@TempDir dir: File) {
+        val vSerial = LedgerFacts.serialHashOf("vs", medtrum.name)
+        val a = FuseLedgerAdapter().also {
+            it.loadOnce(dir, "s-a", t0, emuliert())
+            it.observeBindingContext(ctxEmulation(t0 - 3600_000L))
+        }
+        // MIT Serial gepinnt - die Wildcard-Regel greift hier also nicht.
+        a.onPublished("p1", 0.30, t0, 0L, 0.05, medtrum.name, vSerial, virtualPump = true)
+
+        // Jetzt die echte Pumpe; der Bolus traegt zufaellig dieselbe Serial.
+        a.observeBindingContext(LedgerPumpBindingContext(false, medtrum.name, vSerial, t0 - 3600_000L))
+        a.bindIdentities(listOf(bolus(t0 + 5_000L, 0.30, "vs")))
+
+        assertNull(a.state.entries.getValue("p1").identity) {
+            "eine Zeile aus der Emulation darf keinen echten Fakt verbrauchen"
+        }
+    }
+
+    /** Die Gegenrichtung bleibt offen: eine ALTZEILE ohne das Feld
+     *  (v1/v2, virtualPump=false) darf unter der Emulation weiter binden -
+     *  eine strenge Gleichheit haette den ganzen Altbestand gesperrt. */
+    @Test
+    fun `eine Altzeile ohne Emulationsflag bindet unter der Emulation weiter`(@TempDir dir: File) {
+        val vSerial = LedgerFacts.serialHashOf("vs", PumpType.GENERIC_AAPS.name)
+        val a = FuseLedgerAdapter().also {
+            it.loadOnce(dir, "s-a", t0, emuliert())
+            it.observeBindingContext(ctxEmulation())
+        }
+        a.onPublished("p1", 0.30, t0, 0L, 0.05, PumpType.GENERIC_AAPS.name, vSerial, virtualPump = false)
+        a.bindIdentities(
+            listOf(
+                BS(
+                    timestamp = t0 + 5_000L, amount = 0.30, type = BS.Type.SMB,
+                    ids = IDs(pumpType = PumpType.GENERIC_AAPS, pumpSerial = "vs", pumpId = 4711L),
+                )
+            )
+        )
         assertNotNull(a.state.entries.getValue("p1").identity)
     }
 
@@ -165,7 +329,7 @@ class FuseActivePumpSnapshotTest {
     fun `der Wildcard-Riegel wirkt auch nach einem Neustart`(@TempDir dir: File) {
         val a = FuseLedgerAdapter().also {
             it.loadOnce(dir, "s-a", t0, emuliert())
-            it.observePatchEpoch(null)
+            it.observeBindingContext(ctxEmulation())
         }
         a.onPublished("p1", 0.30, t0, 0L, 0.05, medtrum.name, null, virtualPump = true)
         assertTrue(a.persistVerified(dir))
@@ -173,8 +337,7 @@ class FuseActivePumpSnapshotTest {
         // Neustart, und jetzt haengt die echte Pumpe dran.
         val b = FuseLedgerAdapter().also {
             it.loadOnce(dir, "s-b", t0 + 60_000L, echt())
-            it.observePatchEpoch(t0 - 3600_000L)
-            it.observeRealPump(true)
+            it.observeBindingContext(ctxEcht(t0 - 3600_000L))
         }
         b.bindIdentities(listOf(bolus(t0 + 120_000L, 0.30, serial)))
         assertNull(b.state.entries.getValue("p1").identity) {

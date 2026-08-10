@@ -176,17 +176,26 @@ data class FuseActivePump(
          */
         fun of(pump: Pump?): FuseActivePump {
             if (pump == null) return UNKNOWN
-            val typ = runCatching { pump.model().name }.getOrNull()?.takeIf { it.isNotBlank() }
+            // JEDE Quelle GENAU EINMAL. `model()` und `pumpDescription` sind
+            // Treiberabfragen; sie zweimal zu stellen hiesse, zwei moeglicherweise
+            // verschiedene Antworten in denselben Snapshot zu schreiben - und
+            // genau das sollte der Snapshot beenden.
+            val virtuell = pump is VirtualPump
+            val typ = runCatching { pump.model() }.getOrNull()
+            val beschreibung = runCatching { pump.pumpDescription }.getOrNull()
+            val typName = typ?.name?.takeIf { it.isNotBlank() }
             return FuseActivePump(
-                pumpTypeName = typ,
-                virtualPump = pump is VirtualPump,
-                gate = FusePumpGate.evaluate(pump),
-                tempBasalCapable = runCatching { pump.pumpDescription.isTempBasalCapable }.getOrDefault(false),
-                bolusStepU = runCatching { pump.pumpDescription.bolusStep }.getOrDefault(Double.NaN),
-                basalStepUPerH = runCatching { pump.pumpDescription.basalStep }.getOrDefault(Double.NaN),
+                pumpTypeName = typName,
+                virtualPump = virtuell,
+                // decide() statt evaluate(): sonst laese der Riegel model() ein
+                // zweites Mal.
+                gate = FusePumpGate.decide(virtuell, typ, pump.javaClass.simpleName),
+                tempBasalCapable = beschreibung?.isTempBasalCapable ?: false,
+                bolusStepU = beschreibung?.bolusStep ?: Double.NaN,
+                basalStepUPerH = beschreibung?.basalStep ?: Double.NaN,
                 // Die kanonische Serialform haengt vom Pumpentyp ab (F7) -
                 // deshalb beides aus DERSELBEN Lesung.
-                serialHash = runCatching { LedgerFacts.serialHashOf(pump.serialNumber(), typ) }.getOrNull(),
+                serialHash = runCatching { LedgerFacts.serialHashOf(pump.serialNumber(), typName) }.getOrNull(),
             )
         }
     }

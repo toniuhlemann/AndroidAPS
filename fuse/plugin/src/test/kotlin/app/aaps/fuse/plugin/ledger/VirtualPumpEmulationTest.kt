@@ -83,7 +83,7 @@ class VirtualPumpEmulationTest {
     fun `die emulierte Medtrum bindet ohne Patch-Epoche`(@TempDir dir: File) {
         val a = FuseLedgerAdapter().also {
             it.loadOnce(dir, "e-a", t0, emuliert)
-            it.observePatchEpoch(null)
+            it.observeBindingContext(LedgerPumpBindingContext.emulation(null))
         }
         a.publishEmuliert("p1", 0.30, t0)
         a.bindIdentities(listOf(bolus(t0 + 5_000L, 0.30)))
@@ -131,7 +131,7 @@ class VirtualPumpEmulationTest {
     fun `das Emulationsflag ueberlebt den Neustart`(@TempDir dir: File) {
         val a = FuseLedgerAdapter().also {
             it.loadOnce(dir, "e-a", t0, emuliert)
-            it.observePatchEpoch(null)
+            it.observeBindingContext(LedgerPumpBindingContext.emulation(null))
         }
         a.publishEmuliert("p1", 0.30, t0)
         assertTrue(a.persistVerified(dir))
@@ -146,7 +146,7 @@ class VirtualPumpEmulationTest {
 
         val b = FuseLedgerAdapter().also {
             it.loadOnce(dir, "e-b", t0 + 60_000L, emuliert)
-            it.observePatchEpoch(null)
+            it.observeBindingContext(LedgerPumpBindingContext.emulation(null))
         }
         assertFalse(b.recoveryHold)
         b.bindIdentities(listOf(bolus(t0 + 120_000L, 0.30)))
@@ -164,7 +164,7 @@ class VirtualPumpEmulationTest {
     fun `eine v3-Pinnung ohne virtualPump ist Korruption`(@TempDir dir: File) {
         val a = FuseLedgerAdapter().also {
             it.loadOnce(dir, "e-a", t0, emuliert)
-            it.observePatchEpoch(null)
+            it.observeBindingContext(LedgerPumpBindingContext.emulation(null))
         }
         a.publishEmuliert("p1", 0.30, t0)
         assertTrue(a.persistVerified(dir))
@@ -224,7 +224,7 @@ class VirtualPumpEmulationTest {
     fun `eine UNPINNED-Zeile bleibt auch unter der Emulation unbindbar`(@TempDir dir: File) {
         val a = FuseLedgerAdapter().also {
             it.loadOnce(dir, "e-a", t0, emuliert)
-            it.observePatchEpoch(null)
+            it.observeBindingContext(LedgerPumpBindingContext.emulation(null))
         }
         // Weder Typ noch Serial lesbar -> UNPINNED, trotz laufender Emulation.
         a.onPublished("p1", 0.30, t0, 0L, 0.05, null, null, virtualPump = true)
@@ -300,7 +300,7 @@ class VirtualPumpEmulationTest {
     private fun schreibeV2Altbestand(dir: File) {
         val a = FuseLedgerAdapter().also {
             it.loadOnce(dir, "e-a", t0, emuliert)
-            it.observePatchEpoch(null)
+            it.observeBindingContext(LedgerPumpBindingContext.emulation(null))
         }
         a.publishEmuliert("alt", 0.30, t0)
         assertTrue(a.persistVerified(dir))

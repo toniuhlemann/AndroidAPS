@@ -200,6 +200,41 @@ data class ProposalPumpEpoch(
     }
 }
 
+/**
+ * DER PUMPENKONTEXT DER BINDUNG - aus dem Zyklus-Snapshot, in EINEM Stueck.
+ *
+ * Vorher standen Epoche und Realpump-Merkmal als zwei getrennte Felder im
+ * Adapter, jedes mit eigenem Setzer. Zwei Setzer sind zwei Gelegenheiten, sie
+ * auseinanderlaufen zu lassen - und beide entscheiden ueber dieselbe Frage:
+ * darf dieser Fakt diese Zeile schliessen.
+ *
+ * [virtualPump] ist DREIWERTIG und das ist der Kern der Sache. "Keine echte
+ * Pumpe" ist NICHT dasselbe wie "nachgewiesene Emulation": zu ersterem
+ * gehoeren auch die unbekannte und die gesperrte Fremdpumpe. Ein serialloser
+ * Pin darf nur bei NACHGEWIESENER Emulation als Wildcard gelten - sonst
+ * oeffnet ausgerechnet der unbekannte Kontext das Tor.
+ */
+data class LedgerPumpBindingContext(
+    val virtualPump: Boolean?,
+    val pumpTypeName: String?,
+    val serialHash: String?,
+    val patchEpochTs: Long?,
+) {
+
+    /** Nur bei NACHGEWIESENER Emulation - `null` (unbekannt) genuegt nicht. */
+    val serialWildcardAllowed: Boolean get() = virtualPump == true
+
+    companion object {
+
+        /** Vorgabe: nichts bekannt. Kein Wildcard, keine Epoche. */
+        val UNKNOWN = LedgerPumpBindingContext(null, null, null, null)
+
+        /** Fuer Tests und den Entwicklungspfad: nachgewiesene Emulation. */
+        fun emulation(patchEpochTs: Long? = null) =
+            LedgerPumpBindingContext(true, null, null, patchEpochTs)
+    }
+}
+
 /** Was der Zyklus vom Ledger sieht: Sperre (mit Grund fuer Anzeige/Trail)
  *  und gebundene Transportmenge. */
 data class LedgerView(val hold: Boolean, val transportCommitmentU: Double, val holdReason: String? = null)
@@ -957,7 +992,28 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
         // nicht mehr (REAL_PUMP_IDENTITY_UNKNOWN sperrt die Publikation) -
         // ALTE aber schon, etwa aus der Emulationszeit desselben Geraets.
         // Deshalb entscheidet hier die JETZT aktive Pumpe.
-        if (pinned.pumpSerialHash == null && currentRealPump) return false
+        // WILDCARD NUR BEI NACHGEWIESENER EMULATION.
+        //
+        // `pumpSerialHash == null` heisst "Identitaet war beim Pinnen nicht
+        // bekannt" - typisch der leere Serial direkt nach einem Prozessstart
+        // (InstanceId laedt asynchron nach). An der VirtualPump muss so eine
+        // Zeile weiter binden koennen, sonst haelt sie ihre Haftung bis zur
+        // Phantom-Abschreibung.
+        //
+        // Frueher stand hier "nicht reale Pumpe" - das umfasste aber auch die
+        // UNBEKANNTE und die gesperrte Fremdpumpe, und ausgerechnet der
+        // unbekannte Kontext haette das Tor geoeffnet. Es zaehlt der NACHWEIS.
+        if (pinned.pumpSerialHash == null && !bindingContext.serialWildcardAllowed) return false
+        // EINE EMULATIONSZEILE BINDET KEINEN ECHTEN FAKT.
+        //
+        // Das Feld wird seit B3 persistiert, aber bisher nirgends gelesen. Die
+        // Richtung ist asymmetrisch und das ist Absicht: ein Pin AUS der
+        // Emulation darf nichts binden, sobald die Emulation nicht mehr laeuft.
+        // Der umgekehrte Fall (echter Pin, Emulation aktiv) faellt schon ueber
+        // den Serialvergleich - der emulierte Bolus traegt die Serial der
+        // VirtualPump. Eine strenge Gleichheit wuerde dagegen jede Altzeile
+        // ohne das Feld (v1/v2, virtualPump=false) unter der Emulation sperren.
+        if (pinned.virtualPump && bindingContext.virtualPump != true) return false
         val serialOk = pinned.pumpSerialHash == null || LedgerFacts.serialHash(b) == pinned.pumpSerialHash
         if (!typeOk || !serialOk) return false
         // B3: bei PATCHPUMPEN zusaetzlich die Patch-Epoche. Type und Serial
@@ -982,29 +1038,23 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
      *
      * `null` heisst UNBEKANNT und sperrt die Bindung fuer Patchpumpen.
      */
-    var currentPatchEpochTs: Long? = null
+    /**
+     * Der Pumpenkontext dieses Zyklus - EINE Groesse, vom Aufrufer gesetzt,
+     * bevor gebunden wird.
+     *
+     * Vorgabe [LedgerPumpBindingContext.UNKNOWN]: ohne gesetzten Kontext gibt
+     * es keine Epoche und kein Wildcard. Das ist die vorsichtige Seite.
+     */
+    var bindingContext: LedgerPumpBindingContext = LedgerPumpBindingContext.UNKNOWN
         private set
 
-    /**
-     * Laeuft JETZT eine echte, erlaubte Pumpe? Vom Zyklus gesetzt.
-     *
-     * Nur fuer den Wildcard-Riegel in [matchesPinnedEpoch]. Vorgabe `false`
-     * ist hier NICHT die unvorsichtige Seite: ohne gesetzten Wert laeuft
-     * kein Realpumpen-Zyklus (der Setzer steht im selben Pfad), und im
-     * Test ist die VirtualPump der Normalfall.
-     */
-    var currentRealPump: Boolean = false
-        private set
+    /** Die AKTUELLE Patch-Epoche. `null` heisst UNBEKANNT und sperrt die
+     *  Bindung fuer Patchpumpen. */
+    val currentPatchEpochTs: Long? get() = bindingContext.patchEpochTs
 
     /** Vom Zyklus gesetzt, BEVOR gebunden wird. */
-    fun observePatchEpoch(epochTs: Long?) {
-        currentPatchEpochTs = epochTs
-    }
-
-    /** Vom Zyklus gesetzt, BEVOR gebunden wird - zusammen mit der Epoche.
-     *  Beide stammen aus demselben Pumpensnapshot. */
-    fun observeRealPump(realPump: Boolean) {
-        currentRealPump = realPump
+    fun observeBindingContext(ctx: LedgerPumpBindingContext) {
+        bindingContext = ctx
     }
 
     /**

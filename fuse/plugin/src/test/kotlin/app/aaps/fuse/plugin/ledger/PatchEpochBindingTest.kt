@@ -38,7 +38,7 @@ class PatchEpochBindingTest {
 
     private fun adapter(dir: File, epoche: Long?) = FuseLedgerAdapter().also {
         it.loadOnce(dir, "epoch-a", t0)
-        it.observePatchEpoch(epoche)
+        it.observeBindingContext(LedgerPumpBindingContext.emulation(epoche))
     }
 
     /** Eine ECHTE Pumpe dieses Typs - nicht die Emulation. */
@@ -65,7 +65,7 @@ class PatchEpochBindingTest {
 
         // PATCHWECHSEL: neue Epoche.
         val epocheB = t0 + 60_000L
-        a.observePatchEpoch(epocheB)
+        a.observeBindingContext(LedgerPumpBindingContext.emulation(epocheB))
 
         // Ein Bolus des NEUEN Patches - gleiche Menge, gleiche Basis-Serial.
         a.bindIdentities(listOf(bolus(t0 + 120_000L, 0.30, pumpId = 4711L)))
@@ -162,7 +162,7 @@ class PatchEpochBindingTest {
         // Neustart, und inzwischen wurde der Patch gewechselt.
         val b = FuseLedgerAdapter().also {
             it.loadOnce(dir, "epoch-b", t0 + 120_000L)
-            it.observePatchEpoch(t0 + 60_000L)
+            it.observeBindingContext(LedgerPumpBindingContext.emulation(t0 + 60_000L))
         }
         assertFalse(b.recoveryHold)
         b.bindIdentities(listOf(bolus(t0 + 180_000L, 0.30, pumpId = 4711L)))

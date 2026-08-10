@@ -469,10 +469,16 @@ class FusePlugin @Inject constructor(
             FusePatchEpochSource.current(persistenceLayer, roherSnapshot, dateUtil.now())
         )
         val patchEpoch = aktivePumpe.patchEpoch!!
-        ledgerAdapter.observePatchEpoch(patchEpoch.epochTs)
-        // Aus DEMSELBEN Snapshot: der Wildcard-Riegel und die
-        // Epochenpruefung duerfen nicht aus verschiedenen Momenten stammen.
-        ledgerAdapter.observeRealPump(aktivePumpe.realPump)
+        // EIN Kontext aus EINEM Snapshot: Epoche, Emulationsnachweis und
+        // Identitaet koennen so gar nicht mehr auseinanderlaufen.
+        ledgerAdapter.observeBindingContext(
+            app.aaps.fuse.plugin.ledger.LedgerPumpBindingContext(
+                virtualPump = aktivePumpe.virtualPump,
+                pumpTypeName = aktivePumpe.pumpTypeName,
+                serialHash = aktivePumpe.serialHash,
+                patchEpochTs = patchEpoch.epochTs,
+            )
+        )
 
         val outcome = try {
             cycleRunner().run(tempBasalFallback, aktivePumpe)
@@ -662,11 +668,13 @@ class FusePlugin @Inject constructor(
                             // gepinnt, und der Sekunden spaeter mit dem echten
                             // Serial gebuchte Bolus passt nie mehr auf die
                             // eigene Zeile.
-                            pumpSerialHash = pumpe?.let {
-                                runCatching {
-                                    app.aaps.fuse.plugin.ledger.LedgerFacts.serialHashOf(it.serialNumber(), pumpTypeName)
-                                }.getOrNull()
-                            },
+                            // AUS DEM SNAPSHOT, nicht aus einer zweiten Lesung
+                            // (P0, Codex 10.08.): sonst koennten
+                            // Publikationspruefung und Pin verschiedene
+                            // Identitaeten verwenden - Snapshot sagt "Serial
+                            // bekannt, SMB erlaubt", und der Pin bekommt
+                            // Sekunden spaeter einen leeren oder anderen.
+                            pumpSerialHash = aktivePumpe.serialHash,
                             // Die EMULATION wird mitgepinnt, nicht spaeter aus
                             // dem Typnamen rekonstruiert: eine umgestellte
                             // VirtualPump-Preference wuerde sonst alte Zeilen

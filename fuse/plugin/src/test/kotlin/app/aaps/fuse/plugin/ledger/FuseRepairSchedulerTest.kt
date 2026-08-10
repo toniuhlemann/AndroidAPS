@@ -40,7 +40,7 @@ class FuseRepairSchedulerTest {
     private fun gehaltenerLedger(dir: File): FuseLedgerAdapter {
         val a = FuseLedgerAdapter().also {
             it.loadOnce(dir, "s-a", t0, emuliert)
-            it.observePatchEpoch(null)
+            it.observeBindingContext(LedgerPumpBindingContext.emulation(null))
         }
         a.onPublished(
             "p1", 0.30, t0, 0L, 0.05,

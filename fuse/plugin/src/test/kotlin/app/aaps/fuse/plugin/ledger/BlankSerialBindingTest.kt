@@ -74,7 +74,7 @@ class BlankSerialBindingTest {
      */
     private fun adapter(dir: File) = FuseLedgerAdapter().also {
         it.loadOnce(dir, "epoch-a", t0)
-        it.observePatchEpoch(t0 - 3600_000L)
+        it.observeBindingContext(LedgerPumpBindingContext.emulation(t0 - 3600_000L))
     }
 
     private fun FuseLedgerAdapter.publish(serialHash: String?, typeName: String? = medtrum) =

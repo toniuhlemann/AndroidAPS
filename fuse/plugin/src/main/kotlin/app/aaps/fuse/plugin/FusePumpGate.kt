@@ -109,16 +109,38 @@ object FusePumpGate {
             }
     }
 
+    /**
+     * Die LESENDE Fassung. Sie fragt `model()` genau einmal und reicht das
+     * Ergebnis an [decide] weiter.
+     *
+     * Wer den Typ ohnehin schon hat - etwa [FuseActivePump.of] beim Bauen
+     * des Zyklus-Snapshots - ruft [decide] direkt auf. Sonst laese derselbe
+     * Zyklus die Pumpe zweimal, und genau daran krankte der Zyklus vor dem
+     * Snapshot-Umbau.
+     */
     fun evaluate(pump: Pump?): Result {
         if (pump == null) return Result(Verdict.BLOCKED_UNKNOWN_PUMP, "none")
-        if (pump is VirtualPump) return Result(Verdict.ALLOWED, pump.javaClass.simpleName)
+        return decide(
+            virtualPump = pump is VirtualPump,
+            // model() ist eine Treiberabfrage und kann werfen oder null
+            // liefern, wenn noch keine Verbindung stand.
+            type = runCatching { pump.model() }.getOrNull(),
+            pumpClass = pump.javaClass.simpleName,
+        )
+    }
 
-        // model() ist eine Treiberabfrage und kann werfen oder null liefern,
-        // wenn noch keine Verbindung stand. Beides ist "unbekannt" - und
-        // unbekannt ist gesperrt, nicht durchgelassen.
-        val type = runCatching { pump.model() }.getOrNull()
-            ?: return Result(Verdict.BLOCKED_UNKNOWN_PUMP, pump.javaClass.simpleName)
-
+    /**
+     * Die REINE Entscheidung - ohne Treiberabfrage, damit sie ohne Geraet
+     * pruefbar ist und ohne zweite Lesung auskommt.
+     *
+     * [virtualPump] steht VOR dem Typ, weil die Klassenzugehoerigkeit die
+     * Eigenschaft ist und der Typname bei der Emulation nur eine
+     * Einstellung. `type == null` heisst unbekannt - und unbekannt ist
+     * gesperrt, nicht durchgelassen.
+     */
+    fun decide(virtualPump: Boolean, type: PumpType?, pumpClass: String): Result {
+        if (virtualPump) return Result(Verdict.ALLOWED, pumpClass)
+        if (type == null) return Result(Verdict.BLOCKED_UNKNOWN_PUMP, pumpClass)
         return when {
             type in PROVEN_MEDTRUM   -> Result(Verdict.ALLOWED_REAL_MEDTRUM, type.name)
             // Eine Medtrum ohne erkanntes Modell wird ausdruecklich anders
