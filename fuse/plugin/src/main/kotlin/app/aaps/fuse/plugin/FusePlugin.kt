@@ -864,11 +864,44 @@ class FusePlugin @Inject constructor(
     private fun meldePumpenRiegel(pumpe: FuseActivePump) {
         gateAlarm.verarbeite(
             hold = !pumpe.gate.allowed,
-            kennung = FuseHoldAlarm.Kennung(0L, pumpe.gate.verdict.name),
+            // Die laufende TBR gehoert in den SCHLUESSEL: faengt waehrend
+            // eines geschlossenen Riegels eine fremde TBR an zu laufen, ist das
+            // ein NEUER Befund und muss sich erneut melden.
+            kennung = FuseHoldAlarm.Kennung(
+                if (runCatching {
+                        FuseAbortTbr.evaluate(processedTbrEbData, profileFunction, dateUtil.now()).request
+                    }.getOrNull() != null) 1L else 0L,
+                pumpe.gate.verdict.name,
+            ),
             ursachen = emptyMap(),
             textBauer = { _, _ ->
+                // DIE LAUFENDE TBR GEHOERT IN DIE MELDUNG (Auditbefund 10.08.2026).
+                //
+                // Bei geschlossenem Riegel filtert FuseRtBuilder ALLE VIER
+                // Aktuatorfelder - auch einen Abbruch. Laeuft in dem Moment eine
+                // FREMDE positive TBR (Automation, Handeintrag), liefert sie bis
+                // zu ihrem Ende weiter Insulin, und FUSE kann sie nicht mehr
+                // beenden. "FUSE gibt nichts aus" liest sich dann wie "es
+                // passiert nichts" - waehrend zusaetzliches Insulin laeuft.
+                //
+                // GEGEN eine unbewiesene Pumpe zu aktuieren waere der schlechtere
+                // Tausch: das ist genau die Pumpe, der der Riegel nicht traut.
+                // Also bleibt die Sperre, und die Meldung sagt, was sie kostet.
+                val laufende = runCatching {
+                    FuseAbortTbr.evaluate(processedTbrEbData, profileFunction, dateUtil.now())
+                }.getOrNull()
+                val zusatz = when {
+                    laufende?.request != null ->
+                        " ACHTUNG: eine laufende erhoehte TBR kann NICHT mehr abgebrochen werden " +
+                            "und laeuft bis zu ihrem Ende weiter."
+
+                    laufende?.alarm == true   ->
+                        " ACHTUNG: eine laufende Abgabe ist nicht klassifizierbar und wird nicht angetastet."
+
+                    else                      -> ""
+                }
                 "FUSE gibt keine Pumpenanforderung aus - weder SMB noch TBR: " +
-                    "${pumpe.gate.reason}. FUSE bleibt ausgewaehlt; sobald eine erlaubte " +
+                    "${pumpe.gate.reason}.$zusatz FUSE bleibt ausgewaehlt; sobald eine erlaubte " +
                     "Pumpe aktiv ist, regelt es von selbst weiter."
             },
             melden = { text ->

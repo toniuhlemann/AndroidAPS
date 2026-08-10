@@ -33,6 +33,55 @@ class LedgerDirMigrationTest {
         return old to neu
     }
 
+    private fun tmp(dir: File) = File(dir, FuseLedgerStore.FILE_NAME + ".tmp")
+
+    // ---- Die dritte Generation (Auditbefund 10.08.2026) --------------------
+
+    /**
+     * `.tmp` IST EINE VOLLWERTIGE GENERATION - und war von der Migration
+     * ausgenommen.
+     *
+     * Nach einem Kill zwischen `target->bak` und `tmp->target` liegt die
+     * NEUESTE Generation ausschliesslich als `.tmp` vor; genau deshalb
+     * bewertet [FuseLedgerStore.readNewestValid] sie als Kandidaten (REG-01b).
+     * Die Verzeichnismigration kannte aber nur zwei Namen.
+     *
+     * Die Richtung ist die schlimmstmoegliche: im Ziel laege danach eine
+     * LESBARE, gueltige (aber AELTERE) Generation, also greift keine der vier
+     * Hold-Quellen. Die juengste Zeile - typisch der zuletzt publizierte,
+     * moeglicherweise schon abgegebene SMB - verschwaende still aus Haftung,
+     * Headroom und Schwanz. Doppelfinanzierung ohne jede Meldung.
+     */
+    @Test
+    fun `die tmp-Generation wandert mit`(@TempDir root: File) {
+        val (old, neu) = dirs(root)
+        // Der Kill-Zustand: KEIN target, nur die aeltere .bak und die juengere .tmp.
+        bak(old).writeText("""{"revision":7}""")
+        tmp(old).writeText("""{"revision":8}""")
+
+        assertTrue(LedgerDirMigration.migrate(old, neu))
+
+        assertTrue(tmp(neu).isFile) { "die juengste Generation darf nicht zurueckbleiben" }
+        assertEquals("""{"revision":8}""", tmp(neu).readText())
+        assertTrue(bak(neu).isFile)
+        assertTrue(sentinel(neu).isFile)
+        // Und im alten Verzeichnis ist sie aus dem Weg geraeumt.
+        assertFalse(tmp(old).isFile) { "sonst wandert sie beim naechsten Lauf ein zweites Mal" }
+    }
+
+    /** Liegt NUR die .tmp vor, ist das kein Erststart - der Sentinel muss
+     *  gesetzt werden, sonst saehe ein spaeterer Verlust wie ein Erststart aus. */
+    @Test
+    fun `auch eine alleinstehende tmp-Generation gilt als Vorgeschichte`(@TempDir root: File) {
+        val (old, neu) = dirs(root)
+        tmp(old).writeText("""{"revision":9}""")
+
+        assertTrue(LedgerDirMigration.migrate(old, neu))
+
+        assertTrue(tmp(neu).isFile)
+        assertTrue(sentinel(neu).isFile) { "Vorgeschichte vorhanden - der Marker gehoert gesetzt" }
+    }
+
     // ---- Normalpfad (Regression) ------------------------------------------
 
     @Test

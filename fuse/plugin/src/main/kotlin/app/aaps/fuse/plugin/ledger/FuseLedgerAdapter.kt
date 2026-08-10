@@ -975,23 +975,25 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
      * Bindung wuerde offene Haftung ueber einen fremden IOB-Fakt loeschen.
      */
     private fun matchesPinnedEpoch(pinned: ProposalPumpEpoch?, b: BS): Boolean {
-        if (pinned == null || pinned.legacyOpen) return true
+        // KEINE IDENTITAET, KEINE BINDUNG AN EINER ECHTEN PUMPE
+        // (Auditbefund 10.08.2026).
+        //
+        // `null` (v1-Zeile ohne Pin) und `legacyOpen` (ausdruecklicher
+        // Altbestand) tragen WEDER Typ NOCH Serial NOCH Epoche. Frueher
+        // gaben beide bedingungslos `true` - eine solche Zeile band an
+        // einer echten Medtrum jeden mengengleichen SMB im Zeitfenster
+        // und buchte ihre Haftung ueber einen fremden physischen Fakt
+        // aus. Derselbe Freibrief, gegen den REAL_PUMP_IDENTITY_UNKNOWN
+        // und der Wildcard-Riegel gebaut wurden, nur eine Ebene darueber.
+        //
+        // Dieselbe Regel wie beim seriallosen Pin: ohne Identitaet bindet
+        // nur, wenn die Emulation NACHGEWIESEN ist. An einer echten Pumpe
+        // haelt die Zeile konservativ ihre Haftung bis zur
+        // Phantom-Abschreibung - das ist der Preis dafuer, dass sie nie
+        // eine Identitaet bekommen hat.
+        if (pinned == null || pinned.legacyOpen) return bindingContext.serialWildcardAllowed
         if (pinned.unpinned) return false
         val typeOk = pinned.pumpTypeName == null || LedgerFacts.pumpTypeName(b) == pinned.pumpTypeName
-        // WILDCARD NUR AUSSERHALB DER ECHTEN PUMPE.
-        //
-        // `pumpSerialHash == null` heisst "Identitaet war beim Pinnen nicht
-        // bekannt" - typisch der leere Serial direkt nach einem
-        // Prozessstart (InstanceId laedt asynchron nach). An der
-        // VirtualPump muss so eine Zeile weiter binden koennen, sonst
-        // haelt sie ihre Haftung bis zur Phantom-Abschreibung.
-        //
-        // An einer ECHTEN Pumpe ist derselbe Pin ein Freibrief: er bindet
-        // jeden typgleichen Bolus, und eine Haftung koennte ueber einen
-        // fremden Fakt ausgebucht werden. Neue Zeilen entstehen dort gar
-        // nicht mehr (REAL_PUMP_IDENTITY_UNKNOWN sperrt die Publikation) -
-        // ALTE aber schon, etwa aus der Emulationszeit desselben Geraets.
-        // Deshalb entscheidet hier die JETZT aktive Pumpe.
         // WILDCARD NUR BEI NACHGEWIESENER EMULATION.
         //
         // `pumpSerialHash == null` heisst "Identitaet war beim Pinnen nicht

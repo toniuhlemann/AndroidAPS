@@ -35,9 +35,27 @@ object LedgerDirMigration {
         logError: (String) -> Unit = {},
         logDebug: (String) -> Unit = {},
     ): Boolean = runCatching {
+        // ALLE DREI Generationen, nicht zwei (Auditbefund 10.08.2026).
+        //
+        // `.tmp` ist laut [FuseLedgerStore.readNewestValid] (REG-01b) der
+        // Traeger der NEUESTEN Generation nach einem Kill zwischen
+        // `target->bak` und `tmp->target`. Stand im alten Verzeichnis nur
+        // `.bak` + `.tmp`, wanderte bisher ausschliesslich die AELTERE
+        // `.bak` mit - und die Migration meldete Erfolg.
+        //
+        // Das ist die schlimmste Richtung: im Ziel liegt dann eine LESBARE,
+        // gueltige Generation, also greift keine der vier Hold-Quellen. Die
+        // juengste Zeile - typisch der zuletzt publizierte, moeglicherweise
+        // schon abgegebene SMB - verschwindet still aus Haftung, Headroom
+        // und Schwanz. Die Abwesenheit der Datei im Ziel wird als Nachweis
+        // gelesen, dass es sie nie gab.
+        //
+        // Der Reparaturweg quarantaeniert laengst alle drei Namen; nur
+        // diese Stelle kannte zwei.
         val names = listOf(
             FuseLedgerStore.FILE_NAME,
             FuseLedgerStore.FILE_NAME + ".bak",
+            FuseLedgerStore.FILE_NAME + ".tmp",
         )
         if (names.any { File(newDir, it).exists() }) {
             // R4-01 (b/d): der Fruehausstieg "Ziel traegt schon eine

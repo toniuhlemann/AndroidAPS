@@ -319,9 +319,16 @@ class FuseLedgerAdapterTest {
         assertEquals(1L, a.state.entries.getValue("p1").identity?.pumpId)
     }
 
-    /** Fehlt die BS-Identitaet bei GEPINNTER Zeile: KEIN Match - ein Fakt,
-     *  der seine Herkunft nicht nennt, schliesst keine herkunftsgebundene
-     *  Zeile. Fehlt dagegen die PINNUNG (Altbestand), bindet er wie bisher. */
+    /**
+     * Fehlt die BS-Identitaet bei GEPINNTER Zeile: KEIN Match - ein Fakt, der
+     * seine Herkunft nicht nennt, schliesst keine herkunftsgebundene Zeile.
+     *
+     * Fehlt dagegen die PINNUNG (Altbestand), bindet er - ABER NUR BEI
+     * NACHGEWIESENER EMULATION (Auditbefund 10.08.2026). Frueher band eine
+     * pinlose Zeile bedingungslos; an einer echten Medtrum haette sie damit
+     * jeden mengengleichen SMB im Zeitfenster gebunden und ihre Haftung ueber
+     * einen fremden physischen Fakt ausgebucht.
+     */
     @Test
     fun `Null-Toleranz der Epoch-Pinnung hat eine Richtung`(@TempDir dir: File) {
         val a = loadedAdapter(dir)
@@ -339,8 +346,82 @@ class FuseLedgerAdapterTest {
         // behaelt das alte Verhalten). Der bindet denselben Fakt wie bisher.
         a.publishVs("p2", 0.15, t0 + 60_000L)
         a.proposalPumpEpochs.remove("p2")
+
+        // OHNE nachgewiesene Emulation bindet sie NICHT - der Vorgabekontext
+        // ist "unbekannt", und unbekannt ist kein Nachweis.
+        a.bindIdentities(listOf(smbFrom(t0 + 65_000L, 0.15, 10L, pumpType = null, serial = null)))
+        assertNull(a.state.entries.getValue("p2").identity) {
+            "ohne Nachweis der Emulation darf eine pinlose Zeile nichts binden"
+        }
+
+        // MIT Nachweis bindet sie wie eh und je - die Regel ist eine
+        // Unterscheidung, keine pauschale Sperre.
+        a.observeBindingContext(LedgerPumpBindingContext.emulation(null))
         a.bindIdentities(listOf(smbFrom(t0 + 65_000L, 0.15, 10L, pumpType = null, serial = null)))
         assertEquals(10L, a.state.entries.getValue("p2").identity?.pumpId)
+    }
+
+    /**
+     * DASSELBE FUER DEN AUSDRUECKLICHEN ALTBESTANDS-MARKER.
+     *
+     * `legacyOpen` ist der Marker, den `coveredEpochs` fuer pinlose Zeilen
+     * setzt - er traegt per Konstruktion WEDER Typ NOCH Serial NOCH Epoche.
+     * Er gab in matchesPinnedEpoch bedingungslos `true` zurueck, genau wie der
+     * fehlende Pin. Zwei Wege in dasselbe Loch, und der Test deckte nur einen.
+     */
+    @Test
+    fun `eine legacyOpen-Zeile bindet an einer echten Pumpe nicht`(@TempDir dir: File) {
+        val a = loadedAdapter(dir)
+        a.publishVs("alt", 0.15, t0)
+        a.proposalPumpEpochs["alt"] = ProposalPumpEpoch.LEGACY_OPEN
+
+        a.observeBindingContext(
+            LedgerPumpBindingContext(
+                virtualPump = false, pumpTypeName = PumpType.MEDTRUM_NANO.name,
+                serialHash = Sha.of("9c1de26d"), patchEpochTs = t0 - 3600_000L,
+            )
+        )
+        a.bindIdentities(listOf(smbFrom(t0 + 5_000L, 0.15, 78L, PumpType.MEDTRUM_NANO, "9c1de26d")))
+        assertNull(a.state.entries.getValue("alt").identity) {
+            "der Altbestands-Marker traegt keine Identitaet - er darf keinen echten Fakt verbrauchen"
+        }
+
+        // Unter nachgewiesener Emulation bindet er weiter.
+        a.observeBindingContext(LedgerPumpBindingContext.emulation(null))
+        a.bindIdentities(listOf(smbFrom(t0 + 6_000L, 0.15, 79L, PumpType.MEDTRUM_NANO, "9c1de26d")))
+        assertEquals(79L, a.state.entries.getValue("alt").identity?.pumpId)
+    }
+
+    /**
+     * DIE GEGENPROBE ZUM ALTBESTAND: an einer ECHTEN Pumpe bindet eine
+     * pinlose Zeile nicht - auch nicht, wenn Menge und Zeitfenster passen.
+     *
+     * Das war das Loch: eine v1-Zeile ohne Pin gab in matchesPinnedEpoch
+     * bedingungslos `true` zurueck, ganz ohne Typ-, Serial- oder
+     * Epochenpruefung. Der reale Fakt waere danach ueber boundPump verbraucht
+     * gewesen und haette seiner EIGENEN Zeile nicht mehr zur Verfuegung
+     * gestanden.
+     */
+    @Test
+    fun `eine pinlose Altzeile bindet an einer echten Pumpe nicht`(@TempDir dir: File) {
+        val a = loadedAdapter(dir)
+        a.publishVs("alt", 0.15, t0)
+        a.proposalPumpEpochs.remove("alt")
+
+        a.observeBindingContext(
+            LedgerPumpBindingContext(
+                virtualPump = false, pumpTypeName = PumpType.MEDTRUM_NANO.name,
+                serialHash = Sha.of("9c1de26d"), patchEpochTs = t0 - 3600_000L,
+            )
+        )
+        a.bindIdentities(listOf(smbFrom(t0 + 5_000L, 0.15, 77L, PumpType.MEDTRUM_NANO, "9c1de26d")))
+
+        assertNull(a.state.entries.getValue("alt").identity) {
+            "ohne Identitaet darf die Altzeile keinen echten Fakt verbrauchen"
+        }
+        assertEquals(0.15, a.view().transportCommitmentU, 1e-12) {
+            "und sie haelt konservativ ihre volle Haftung"
+        }
     }
 
     /** Die Pinnung ueberlebt persist + Neustart - sonst waere genau das
