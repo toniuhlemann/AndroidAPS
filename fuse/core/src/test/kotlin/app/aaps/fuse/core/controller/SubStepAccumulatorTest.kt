@@ -92,10 +92,10 @@ class SubStepContextTest {
         // D5-Nachruestung (Codex Combined Closure b6dbb490). Defaults wie im
         // Livepfad, damit die alten Faelle unveraendert bleiben.
         maxIob: Double = 8.0, iobTh: Double = 8.0,
-        markerTs: Long = 0L, markerTier: String = "0", profil: String = "A",
+        markerTs: Long = 0L, profil: String = "A",
     ) = SubStepAccumulator.context(
         target, isf, step, ratio, ratioRise, maxSmb, meal,
-        maxIob, iobTh, markerTs, markerTier, profil
+        maxIob, iobTh, markerTs, profil
     )
 
     @Test
@@ -121,12 +121,11 @@ class SubStepContextTest {
      *  der Abdruck sieht vollstaendig aus, und ein Fehler in der Verkettung
      *  faellt nie auf. */
     @Test
-    fun `jede der fuenf nachgeruesteten Groessen aendert den Abdruck`() {
+    fun `jede der vier nachgeruesteten Groessen aendert den Abdruck`() {
         val basis = ctx()
         assertNotEquals(basis, ctx(maxIob = 7.0)) { "maxIOB" }
         assertNotEquals(basis, ctx(iobTh = 5.0)) { "iobTH" }
         assertNotEquals(basis, ctx(markerTs = 1_700_000_000_000L)) { "Markerzeitpunkt" }
-        assertNotEquals(basis, ctx(markerTier = "2")) { "Marker-Stufe" }
         assertNotEquals(basis, ctx(profil = "B")) { "Profilname" }
     }
 
@@ -149,10 +148,11 @@ class SubStepContextTest {
 
     @Test
     fun `angrenzende Textfelder koennen sich nicht gegenseitig aufheben`() {
-        // Trennzeichen-Probe: markerTier und profileName grenzen aneinander.
-        // Ohne Trenner waere ("12","B") von ("1","2B") ununterscheidbar - eine
-        // stille Kollision ausgerechnet im Sicherheitsvergleich.
-        assertNotEquals(ctx(markerTier = "12", profil = "B"), ctx(markerTier = "1", profil = "2B"))
+        // Trennzeichen-Probe: seit dem Wegfall der Marker-Stufe grenzen
+        // markerTs und profileName aneinander. Ohne Trenner waere (12,"B")
+        // von (1,"2B") ununterscheidbar - eine stille Kollision ausgerechnet
+        // im Sicherheitsvergleich.
+        assertNotEquals(ctx(markerTs = 12L, profil = "B"), ctx(markerTs = 1L, profil = "2B"))
     }
 
     @Test

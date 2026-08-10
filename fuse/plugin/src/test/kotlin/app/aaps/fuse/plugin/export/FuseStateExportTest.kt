@@ -25,7 +25,7 @@ class FuseStateExportTest {
     private val BUILD = FuseStateJson.Build("3.4.2.5+fuse0.1.0-toni", "abc1234", true)
 
     private val cfg = FuseCycleRunner.Config(
-        smbRatio = 0.2, smbRatioRise = 0.35, sharedMaxIobU = 7.0, riseRampLowR = 0.5, riseRampHighR = 2.0, bolusShareLambda = 1.0, onsetChannelEnabled = true, onsetEnvelopeU = 1.5, primeReleaseEnabled = true, primeEnvelopeU = 1.2, primeEnvelopeSmallU = 0.8, primeEnvelopeLargeU = 2.0, maxSmbU = 0.3, guardFloorMgdl = 70.0, iobThPercent = 100,
+        smbRatio = 0.2, smbRatioRise = 0.35, sharedMaxIobU = 7.0, riseRampLowR = 0.5, riseRampHighR = 2.0, bolusShareLambda = 1.0, onsetChannelEnabled = true, onsetEnvelopeU = 1.5, primeReleaseEnabled = true, primeEnvelopeU = 1.2, maxSmbU = 0.3, guardFloorMgdl = 70.0, iobThPercent = 100,
         releaseHorizonMin = 30, liabilityHorizonMin = 120, driveTauMin = 60, absorptionCreditWindowMin = 60, markerBoostMaxMin = 45, nightStartMin = 1380, nightEndMin = 420, nightDeadbandMgdl = 45.0, nightDeadbandEnabled = true, reboundDeadbandMgdl = 25.0, reboundDeadbandEnabled = true,
         driveLowerQuantilePct = 50, tailGuardEnabled = false, tailFloorMgdl = 70.0, tailRecoveryU = 0.0, fastRestraintEnabled = true,
     )
@@ -361,8 +361,6 @@ class FuseStateExportTest {
         assertTrue(FuseStateJson.hashOf(cfg.copy(onsetChannelEnabled = false)) != h)
         assertTrue(FuseStateJson.hashOf(cfg.copy(primeEnvelopeU = 0.8)) != h)
         assertTrue(FuseStateJson.hashOf(cfg.copy(primeReleaseEnabled = false)) != h)
-        assertTrue(FuseStateJson.hashOf(cfg.copy(primeEnvelopeSmallU = 0.5)) != h)
-        assertTrue(FuseStateJson.hashOf(cfg.copy(primeEnvelopeLargeU = 2.5)) != h)
     }
 
     /** `Sha.lossless` WIRFT bei NaN. Der Wurf laege im runCatching des Exports

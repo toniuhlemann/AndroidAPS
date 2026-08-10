@@ -32,7 +32,7 @@ object FuseScreenModel {
      */
     /** Marker-Zustand fuer Timer-Zeile - kommt vom Fragment (Plugin-Prefs),
      *  nicht aus dem Outcome: der Timer soll auch zwischen Zyklen laufen. */
-    data class MarkerInfo(val armedTs: Long, val tier: Int, val windowMin: Int, val envelopeU: Double)
+    data class MarkerInfo(val armedTs: Long, val windowMin: Int, val envelopeU: Double)
 
     /**
      * Der LEDGER-Zustand - eine EIGENE Groesse, nicht Teil von "Health".
@@ -160,8 +160,7 @@ object FuseScreenModel {
             // gestriger Marker ist Historie (Trail), kein Zustand (Tab).
             if (elapsed > m.windowMin + 120) return@let
             val restMin = (m.windowMin - elapsed).coerceAtLeast(0)
-            val tierName = when (m.tier) { 0 -> "S"; 2 -> "L"; else -> "M" }
-            row(b, "Marker", if (restMin > 0) "AKTIV ($tierName) - Rest $restMin/${m.windowMin} min" else "abgelaufen ($tierName)")
+            row(b, "Marker", if (restMin > 0) "AKTIV - Rest $restMin/${m.windowMin} min" else "abgelaufen")
         }
         outcome.mealStats?.let { ms ->
             // T0-Anker (Toni 08.08.): Stand nach 30/60 min AB ESSENSBEGINN,

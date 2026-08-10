@@ -41,7 +41,9 @@ object FuseStateJson {
     // holdGeneration/aktive Fehler), Transportmenge geht von den Headrooms
     // der Kandidatensuche ab, Hold nullt nach dem Lift, Episodenbudgets
     // restartfest, Huellen-Belastung auf gate-wirksame Menge umgestellt.
-    const val RULE_SET_VERSION = 8
+    // v9 (11.08.): EIN Mahlzeitenmarker - S/M/L und die zwei Stufenhuellen
+    // sind weg, es gilt nur noch primeEnvelopeU.
+    const val RULE_SET_VERSION = 9
 
     /** Schema des Trail-Datensatzes - s. die Notiz an der Schreibstelle. */
     const val SCHEMA_VERSION = 3
@@ -681,8 +683,6 @@ object FuseStateJson {
         .put("onsetEnvelopeU", fin(p.onsetEnvelopeU))
         .put("primeReleaseEnabled", p.primeReleaseEnabled)
         .put("primeEnvelopeU", fin(p.primeEnvelopeU))
-        .put("primeEnvelopeSmallU", fin(p.primeEnvelopeSmallU))
-        .put("primeEnvelopeLargeU", fin(p.primeEnvelopeLargeU))
 
     /**
      * `null` bei nicht-endlichen Eingaben. [Sha.lossless] WIRFT bei NaN/Inf,
@@ -696,7 +696,6 @@ object FuseStateJson {
             // Rampe + Abschlag: fehlten bis v1 - zwei Laeufe mit verschiedenen
             // Rampen bekamen denselben Hash (Audit 07.08.). Version 1->2.
             p.riseRampLowR, p.riseRampHighR, p.bolusShareLambda, p.onsetEnvelopeU, p.primeEnvelopeU,
-            p.primeEnvelopeSmallU, p.primeEnvelopeLargeU,
         )
         if (doubles.any { !it.isFinite() }) return null
         val parts = listOf("fuse-policy-v$RULE_SET_VERSION") +

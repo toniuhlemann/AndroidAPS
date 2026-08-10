@@ -311,26 +311,30 @@ class FusePlugin @Inject constructor(
      * Evidenzschwelle des OnsetChannel und erzeugt selbst keine Dosis.
      * Zweiter Druck nimmt ihn zurueck; nach MARKER_WINDOW_MIN verfaellt er.
      */
-    fun toggleMealMarker(now: Long): Boolean = toggleMealMarker(now, 1)
-
-    /** Armen mit Stufe (0=S,1=M,2=L); erneuter Druck derselben ODER anderer
-     *  Stufe bei aktivem Marker nimmt ihn zurueck bzw. wechselt die Stufe
-     *  NICHT stillschweigend - Zuruecknehmen ist immer explizit. */
-    fun toggleMealMarker(now: Long, tier: Int): Boolean {
+    /**
+     * EIN Marker, keine Stufen mehr (11.08.).
+     *
+     * S/M/L waren eine Ankuendigung der MENGE. Genau die kann der Nutzer im
+     * Moment des Knopfdrucks nicht verlaesslich abschaetzen - und FUSE soll
+     * die Mahlzeit ohne Kohlenhydratangabe bedienen; eine dreistufige
+     * Mengenschaetzung ist eine Kohlenhydratangabe mit anderem Namen. Der
+     * Knopf sagt nur noch WANN, und das ist die Information, die der Nutzer
+     * wirklich hat.
+     *
+     * Damit faellt auch der atomare Stempel weg: er band Zeitpunkt und Stufe
+     * aneinander, und ohne Stufe gibt es nur noch einen Wert.
+     */
+    fun toggleMealMarker(now: Long): Boolean {
         val armed = mealMarkerActive(now)
         if (armed) {
             preferences.put(FuseLongKey.MealMarkerArmedTs, 0L)
+            // Der Altbestand-Stempel wird mitgeloescht: bliebe er stehen,
+            // liesse der Lese-Ruecktausch unten einen zurueckgenommenen
+            // Marker wieder auferstehen.
             preferences.put(FuseLongKey.MealMarkerStamp, 0L)
             return false
         }
-        // Fix-Pass 4 Nr. 16 (Alt-Finding F-P1-03): Timestamp und Stufe als
-        // EIN atomarer Stempel (ts*10+Stufe) - ein Zyklus kann nie mehr alten
-        // Timestamp mit neuer Stufe mischen. Die Einzel-Keys bleiben fuer
-        // Lesbarkeit/Altbestand erhalten; gelesen wird primaer der Stempel,
-        // der deshalb ZULETZT geschrieben wird.
-        preferences.put(FuseLongKey.MealMarkerTier, tier.toLong().coerceIn(0L, 2L))
         preferences.put(FuseLongKey.MealMarkerArmedTs, now)
-        preferences.put(FuseLongKey.MealMarkerStamp, now * 10L + tier.toLong().coerceIn(0L, 2L))
         synchronized(markerPressRing) {
             markerPressRing.addLast(now)
             while (markerPressRing.size > 20) markerPressRing.removeFirst()
@@ -338,23 +342,23 @@ class FusePlugin @Inject constructor(
         return true
     }
 
-    fun mealMarkerTier(): Int {
-        val s = preferences.get(FuseLongKey.MealMarkerStamp)
-        return if (s > 0L) (s % 10L).toInt().coerceIn(0, 2)
-        else preferences.get(FuseLongKey.MealMarkerTier).toInt().coerceIn(0, 2)
-    }
-
+    /**
+     * Zeitpunkt des Knopfdrucks, 0 = kein Marker.
+     *
+     * `armedTs` ist die Quelle. Der ALTBESTAND-Stempel wird nur noch
+     * herangezogen, wenn `armedTs` leer ist - der Fall tritt genau einmal
+     * auf: ein Marker, der beim Update dieser Version gerade lief.
+     * `stamp / 10` liefert den Zeitpunkt fuer jede der drei alten Stufen.
+     */
     fun mealMarkerArmedTs(): Long {
-        val s = preferences.get(FuseLongKey.MealMarkerStamp)
-        return if (s > 0L) s / 10L else preferences.get(FuseLongKey.MealMarkerArmedTs)
+        val ts = preferences.get(FuseLongKey.MealMarkerArmedTs)
+        if (ts > 0L) return ts
+        val legacy = preferences.get(FuseLongKey.MealMarkerStamp)
+        return if (legacy > 0L) legacy / 10L else 0L
     }
 
-    /** Huelle der aktuell gewaehlten Stufe [U] - fuer den Lieferstand im Tab. */
-    fun mealMarkerEnvelopeU(): Double = when (mealMarkerTier()) {
-        0    -> preferences.get(FuseDoubleKey.PrimeEnvelopeSmallU)
-        2    -> preferences.get(FuseDoubleKey.PrimeEnvelopeLargeU)
-        else -> preferences.get(FuseDoubleKey.PrimeEnvelopeU)
-    }
+    /** Die EINE Huelle [U] - fuer den Lieferstand im Tab. S. [toggleMealMarker]. */
+    fun mealMarkerEnvelopeU(): Double = preferences.get(FuseDoubleKey.PrimeEnvelopeU)
 
     fun mealMarkerActive(now: Long): Boolean {
         val ts = mealMarkerArmedTs()
@@ -1187,8 +1191,6 @@ class FusePlugin @Inject constructor(
             .put(FuseBooleanKey.OnsetChannelEnabled, preferences)
             .put(FuseBooleanKey.PrimeReleaseEnabled, preferences)
             .put(FuseDoubleKey.PrimeEnvelopeU, preferences)
-            .put(FuseDoubleKey.PrimeEnvelopeSmallU, preferences)
-            .put(FuseDoubleKey.PrimeEnvelopeLargeU, preferences)
 
     override fun applyConfiguration(configuration: JSONObject) {
         configuration
@@ -1212,8 +1214,6 @@ class FusePlugin @Inject constructor(
             .store(FuseBooleanKey.OnsetChannelEnabled, preferences)
             .store(FuseBooleanKey.PrimeReleaseEnabled, preferences)
             .store(FuseDoubleKey.PrimeEnvelopeU, preferences)
-            .store(FuseDoubleKey.PrimeEnvelopeSmallU, preferences)
-            .store(FuseDoubleKey.PrimeEnvelopeLargeU, preferences)
     }
 
     override fun addPreferenceScreen(preferenceManager: PreferenceManager, parent: PreferenceScreen, context: Context, requiredKey: String?) {
@@ -1318,9 +1318,7 @@ class FusePlugin @Inject constructor(
             addPreference(AdaptiveSwitchPreference(ctx = context, booleanKey = FuseBooleanKey.OnsetChannelEnabled, summary = R.string.fuse_onset_channel_summary, title = R.string.fuse_onset_channel_title))
             addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.OnsetEnvelopeU, dialogMessage = R.string.fuse_onset_envelope_summary, title = R.string.fuse_onset_envelope_title))
             addPreference(AdaptiveSwitchPreference(ctx = context, booleanKey = FuseBooleanKey.PrimeReleaseEnabled, summary = R.string.fuse_prime_release_summary, title = R.string.fuse_prime_release_title))
-            addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.PrimeEnvelopeSmallU, dialogMessage = R.string.fuse_prime_small_summary, title = R.string.fuse_prime_small_title))
             addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.PrimeEnvelopeU, dialogMessage = R.string.fuse_prime_envelope_summary, title = R.string.fuse_prime_envelope_title))
-            addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.PrimeEnvelopeLargeU, dialogMessage = R.string.fuse_prime_large_summary, title = R.string.fuse_prime_large_title))
             addPreference(AdaptiveIntPreference(ctx = context, intKey = FuseIntKey.AbsorptionCreditWindowMin, dialogMessage = R.string.fuse_absorption_credit_summary, title = R.string.fuse_absorption_credit_title))
             addPreference(AdaptiveIntPreference(ctx = context, intKey = FuseIntKey.MarkerBoostMaxMin, dialogMessage = R.string.fuse_marker_boost_summary, title = R.string.fuse_marker_boost_title))
         }

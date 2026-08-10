@@ -644,18 +644,12 @@ class FuseCycleRunner(
         // Marker: Knopf im FUSE-Tab, verfaellt nach MARKER_WINDOW_MIN von
         // selbst. Er ist ZUSTAND und wird je Zyklus frisch gelesen - nie
         // gecached, damit ein Druck sofort im naechsten Zyklus wirkt.
-        // Fix-Pass 4 Nr. 16: primaer der ATOMARE Stempel (ts*10+Stufe), die
-        // Einzel-Keys nur als Altbestand-Fallback - so sieht ein Zyklus nie
-        // alten Timestamp mit neuer Stufe.
-        val markerStamp = preferences.get(FuseLongKey.MealMarkerStamp)
-        val markerTs = if (markerStamp > 0L) markerStamp / 10L else preferences.get(FuseLongKey.MealMarkerArmedTs)
-        val markerTier = if (markerStamp > 0L) (markerStamp % 10L).toInt().coerceIn(0, 2)
-        else preferences.get(FuseLongKey.MealMarkerTier).toInt().coerceIn(0, 2)
-        val tierEnvelopeU = when (markerTier) {
-            0    -> cfg.primeEnvelopeSmallU
-            2    -> cfg.primeEnvelopeLargeU
-            else -> cfg.primeEnvelopeU
-        }
+        // EIN Marker, EINE Huelle (11.08.): der Knopf sagt WANN, nicht wieviel.
+        // Der Altbestand-Stempel wird nur noch gelesen, falls `armedTs` leer
+        // ist - der Fall tritt genau einmal auf, bei einem Marker, der beim
+        // Update dieser Version gerade lief.
+        val markerTs = preferences.get(FuseLongKey.MealMarkerArmedTs).takeIf { it > 0L }
+            ?: (preferences.get(FuseLongKey.MealMarkerStamp).takeIf { it > 0L }?.div(10L) ?: 0L)
         // Episodenbudgets leben im Ledger-Adapter und ueberleben Neustarts
         // (Audit R95, Fix 3) - nur der Reset-ANLASS steht hier: ein neuer
         // armedTs ist eine neue Episode mit voller Huelle.
@@ -742,7 +736,7 @@ class FuseCycleRunner(
         // Pfade, die Erklaerung verbraucht sich selbst.
         val mealDeliveredU = if (markerTs > 0) episodes.mealDeliveries.sumOf { it.second } else 0.0
         val declaredDrive = if (markerBoost) MarkerScope.declaredAbsorptionDriveMgdlPerMin(
-            envelopeU = tierEnvelopeU,
+            envelopeU = cfg.primeEnvelopeU,
             deliveredU = mealDeliveredU,
             isfMgdlPerU = profile.getIsfMgdlTimeFromMidnight(MidnightUtils.secondsFromMidnight(signal.sourceTs)),
             windowMin = cfg.absorptionCreditWindowMin.toDouble(),
@@ -966,7 +960,7 @@ class FuseCycleRunner(
                 armedTsMs = markerTs,
                 windowStartTsMs = episodes.primeWindowStartTs,
                 nowMs = computeTs,
-                envelopeU = tierEnvelopeU,
+                envelopeU = cfg.primeEnvelopeU,
                 spentU = episodes.primeSpentU,
                 // C1 + C2 (Codex H1/H2, K2 Punkte 6/8) ERSETZEN die frueher hier
                 // stehende analytische Entzirkularisierung: statt den Prior-Hub
@@ -1103,7 +1097,6 @@ class FuseCycleRunner(
             maxIobU = state.maxIobU,
             iobThU = state.iobThU,
             markerTs = markerTs,
-            markerTier = markerTier.toString(),
             profileName = runCatching { profileFunction.getProfileName() }.getOrDefault("?"),
         )
         if (subStepCarryContext != null && subStepCarryContext != subStepContext) subStepCarryU = 0.0
@@ -1505,8 +1498,6 @@ class FuseCycleRunner(
         val onsetEnvelopeU: Double,
         val primeReleaseEnabled: Boolean,
         val primeEnvelopeU: Double,
-        val primeEnvelopeSmallU: Double,
-        val primeEnvelopeLargeU: Double,
     )
 
     /**
@@ -1545,8 +1536,6 @@ class FuseCycleRunner(
         onsetEnvelopeU = preferences.get(FuseDoubleKey.OnsetEnvelopeU),
         primeReleaseEnabled = preferences.get(FuseBooleanKey.PrimeReleaseEnabled),
         primeEnvelopeU = preferences.get(FuseDoubleKey.PrimeEnvelopeU),
-        primeEnvelopeSmallU = preferences.get(FuseDoubleKey.PrimeEnvelopeSmallU),
-        primeEnvelopeLargeU = preferences.get(FuseDoubleKey.PrimeEnvelopeLargeU),
     ).also {
         // Die Preference-Grenzen gelten nur im Einstellungsdialog. Ein Wert aus
         // einem alten Import geht daran vorbei — deshalb hier nochmal, und zwar
@@ -1578,8 +1567,6 @@ class FuseCycleRunner(
         require(it.bolusShareLambda.isFinite() && it.bolusShareLambda in 0.0..2.0) { "bolusShareLambda=${it.bolusShareLambda}" }
         require(it.onsetEnvelopeU.isFinite() && it.onsetEnvelopeU in 0.0..5.0) { "onsetEnvelope=${it.onsetEnvelopeU}" }
         require(it.primeEnvelopeU.isFinite() && it.primeEnvelopeU in 0.0..2.0) { "primeEnvelope=${it.primeEnvelopeU}" }
-        require(it.primeEnvelopeSmallU.isFinite() && it.primeEnvelopeSmallU in 0.0..1.2) { "primeSmall=${it.primeEnvelopeSmallU}" }
-        require(it.primeEnvelopeLargeU.isFinite() && it.primeEnvelopeLargeU in 0.0..3.0) { "primeLarge=${it.primeEnvelopeLargeU}" }
         require(it.liabilityHorizonMin >= 30 && it.liabilityHorizonMin >= it.releaseHorizonMin && it.liabilityHorizonMin <= 360) {
             "liabilityHorizon=${it.liabilityHorizonMin} (releaseHorizon=${it.releaseHorizonMin}, UI 30..360)"
         }

@@ -182,8 +182,6 @@ class CycleIobValidityTest : TestBaseWithProfile() {
         whenever(preferences.get(FuseDoubleKey.OnsetEnvelopeU)).thenReturn(1.5)
         whenever(preferences.get(FuseBooleanKey.PrimeReleaseEnabled)).thenReturn(true)
         whenever(preferences.get(FuseDoubleKey.PrimeEnvelopeU)).thenReturn(1.2)
-        whenever(preferences.get(FuseDoubleKey.PrimeEnvelopeSmallU)).thenReturn(0.8)
-        whenever(preferences.get(FuseDoubleKey.PrimeEnvelopeLargeU)).thenReturn(2.0)
         whenever(preferences.get(LongKey.FslCalibrationStart)).thenReturn(-1L)
         whenever(preferences.get(FuseLongKey.MealMarkerStamp)).thenReturn(0L)
         whenever(preferences.get(FuseLongKey.MealMarkerArmedTs)).thenReturn(0L)
