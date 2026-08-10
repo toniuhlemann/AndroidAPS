@@ -472,20 +472,26 @@ object LedgerCodec {
             // (nie beide, Marker nie mit Inhalt) - ein Wurf von dort zaehlt
             // beim Laden wie jeder andere als invalid.
             // B3: `patchEpochApplicable` sagt, ob die Kategorie ueberhaupt
-            // gilt. Fehlt sie, ist die Zeile entweder von einer Nicht-Patch-
-            // Pumpe oder aus einer Generation VOR B3 - beides wird hier
-            // gleich gelesen (nicht anwendbar) und erst von der Migration
-            // auseinandergehalten, die als einzige den Pumpentyp kennt.
-            // P0 (Codex 10.08.): eine BESCHAEDIGTE v3-Pinnung einer Patchpumpe
-            // ohne diese Felder wuerde als "nicht anwendbar" gelesen - und
-            // damit uebersaehe matchesPinnedEpoch die Patchpruefung
-            // VOLLSTAENDIG. Das ist dieselbe Falle wie ueberall in diesem
-            // Projekt: ein fehlendes Feld sieht aus wie eine gueltige Aussage.
+            // gilt. Ein FEHLENDES Feld heisst je nach Schemaversion etwas
+            // anderes, und diese drei Faelle muessen auseinandergehalten
+            // werden:
             //
-            // v3 ist nie ohne sie ausgeliefert worden (Deployment-Annahme,
-            // geraeteseitig bestaetigt), also sind sie ab v3 fuer
-            // Patchpumpen-Pins PFLICHT. Nicht-Patch-Pins tragen sie
-            // weiterhin nicht - fuer sie gibt es die Kategorie nicht.
+            //  - ab v3, Nicht-Patch-Pin: es gibt die Kategorie nicht. Richtig
+            //    so, nichts zu tun.
+            //  - ab v3, Patchpumpen-Pin: KORRUPTION. v3 ist nie ohne die
+            //    Felder ausgeliefert worden (nichts installiert), der
+            //    Schreiber setzt sie dort immer.
+            //  - VOR v3: UNBEKANNT. Das Feld gab es damals nicht. Fuer einen
+            //    Patchpumpen-NAMEN wird deshalb weiter unten die strengere
+            //    Lesart genommen (anwendbar, Epoche unbekannt); ueber die
+            //    Migration entscheidet dann die AKTIVE Pumpe.
+            //
+            // P0 (Codex 10.08.) betrifft den zweiten Fall: eine BESCHAEDIGTE
+            // v3-Pinnung einer Patchpumpe wuerde sonst als "nicht anwendbar"
+            // gelesen, und `matchesPinnedEpoch` uebersaehe die Patchpruefung
+            // VOLLSTAENDIG. Dieselbe Falle wie ueberall in diesem Projekt: ein
+            // fehlendes Feld sieht aus wie eine gueltige Aussage, und zwar wie
+            // die harmloseste.
             val pinTyp = obj.strOrNull("pumpType")
             // Das Emulationsflag ZUERST, denn es entscheidet, ob die
             // Patch-Pflicht darunter ueberhaupt gilt.

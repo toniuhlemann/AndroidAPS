@@ -269,6 +269,35 @@ class FuseStateExportTest {
         assertEquals(1_700_000_000_000L, bekannt.getJSONObject("patchEpoch").getLong("epochTs"))
     }
 
+    /**
+     * OHNE `applicable` IST DER DATENSATZ IRREFUEHREND.
+     *
+     * An der VirtualPump steht dort `known=false, reason=NO_EVENT` - und das
+     * SIEHT aus wie eine fehlende Epoche, obwohl es dort gar keine geben kann
+     * (kein CANNULA_CHANGE, keine Patches). Wer den Trail liest, wuerde einen
+     * Defekt suchen, den es nicht gibt; schlimmer noch, er koennte die Sperre
+     * fuer wirksam halten, wo sie gar nicht greift.
+     *
+     * Der unbekannte Fall bekommt ausdruecklich `null` und nicht "weggelassen":
+     * "aktive Pumpe nicht lesbar" ist eine Aussage und muss von "dieser Build
+     * kennt das Feld noch nicht" unterscheidbar bleiben.
+     */
+    @Test
+    fun `die Zustaendigkeit der Epoche steht im Datensatz`() {
+        fun feld(applicable: Boolean?) = FuseStateJson.record(
+            "s#1", outcome(), rt(), cfg, BUILD, 0L, null,
+            patchEpoch = FuseStateJson.PatchEpoch(null, false, "NO_EVENT", applicable),
+        ) { 5_000_000L }.getJSONObject("patchEpoch")
+
+        assertEquals(false, feld(false).getBoolean("applicable")) {
+            "auf der Emulation ist die Epoche keine Kategorie - genau das muss dastehen"
+        }
+        assertEquals(true, feld(true).getBoolean("applicable"))
+        val unbekannt = feld(null)
+        assertTrue(unbekannt.has("applicable")) { "unbekannt ist eine Aussage, kein fehlendes Feld" }
+        assertTrue(unbekannt.isNull("applicable"))
+    }
+
     /** Wer sie nicht meldet, bekommt eine LUECKE - keine erfundene Epoche. */
     @Test
     fun `ohne gemeldete Patch-Epoche steht eine Luecke im Datensatz`() {
