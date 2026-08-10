@@ -47,6 +47,46 @@ class FusePatchEpochTest {
 
     private fun of(e: TE?) = FusePatchEpoch.of(e, typ.name, hashOf(serial, typ.name), hashOf)
 
+    /**
+     * DIE ECHTE FORM, wie der Medtrum-Treiber sie erzeugt
+     * (`MedtrumPump.handleNewPatch`):
+     *
+     *     pumpSync.insertTherapyEventIfNewWithTimestamp(
+     *         timestamp = newStartTime,
+     *         type      = TE.Type.CANNULA_CHANGE,
+     *         pumpType  = pumpType(),
+     *         pumpSerial = pumpSN.toString(radix = 16),
+     *     )
+     *
+     * KEIN `pumpId`. Und der Serial ist KLEINBUCHSTABEN-Hex - dieselbe
+     * Faltungsfalle wie im Ledger, deshalb laeuft der Vergleich ueber
+     * `LedgerFacts.serialHashOf`.
+     */
+    private fun echterMedtrumWechsel(ts: Long = t0) = TE(
+        timestamp = ts,
+        type = TE.Type.CANNULA_CHANGE,
+        glucoseUnit = GlucoseUnit.MGDL,
+        ids = IDs(pumpType = typ, pumpSerial = serial.lowercase(), pumpId = null),
+    )
+
+    /**
+     * DER PFLICHTTEST (Codex-Re-Review 10.08., P0).
+     *
+     * Der erste Anlauf verlangte `IDs.isPumpHistory()`, also
+     * `pumpSerial != null && pumpId != null`. Der Treiber setzt aber KEIN
+     * `pumpId` - im Feld waere die Epoche damit IMMER unbekannt gewesen, und
+     * die Publikationssperre aus Schritt 2 haette SMBs dauerhaft blockiert.
+     *
+     * Mein Test hatte das nicht gezeigt, weil er `pumpId = 4711` erfunden hat:
+     * er prueft dann eine Form, die real nicht vorkommt.
+     */
+    @Test
+    fun `der ECHTE Medtrum-Wechsel definiert die Epoche`() {
+        val r = of(echterMedtrumWechsel())
+        assertEquals(t0, r.epochTs) { "ohne diesen Fall waere die Epoche im Feld nie bekannt" }
+        assertEquals(FusePatchEpoch.Reason.PUMP_ORIGIN, r.reason)
+    }
+
     // ---- Wann ist eine Epoche bekannt? -----------------------------------
 
     @Test
@@ -65,16 +105,29 @@ class FusePatchEpochTest {
      * fremde Eintragung die Bindung eigener Zeilen umdeuten.
      */
     @Test
-    fun `ein Eintrag ohne Pumpenhistorie definiert keine Epoche`() {
-        for (e in listOf(
-            wechsel(pumpId = null),
-            wechsel(pumpSerial = null),
-            wechsel(pumpId = null, pumpSerial = null),
-        )) {
-            val r = of(e)
-            assertNull(r.epochTs)
-            assertEquals(FusePatchEpoch.Reason.NOT_PUMP_ORIGIN, r.reason)
-        }
+    fun `ein Handeintrag ohne jede Pumpenkennung definiert keine Epoche`() {
+        val r = of(wechsel(pumpType = null, pumpSerial = null, pumpId = null))
+        assertNull(r.epochTs)
+        assertEquals(FusePatchEpoch.Reason.NOT_PUMP_ORIGIN, r.reason)
+    }
+
+    /** Halbe Kennung ist ein EIGENER Befund - nicht "fremd", sondern
+     *  unvollstaendig. Wer den falschen Grund liest, sucht am falschen Ort. */
+    @Test
+    fun `eine halbe Pumpenkennung ist unvollstaendig, nicht fremd`() {
+        assertEquals(FusePatchEpoch.Reason.EVENT_IDENTITY_INCOMPLETE, of(wechsel(pumpSerial = null)).reason)
+        assertEquals(FusePatchEpoch.Reason.EVENT_IDENTITY_INCOMPLETE, of(wechsel(pumpType = null)).reason)
+    }
+
+    /** Ein anderer Ereignistyp definiert keine Patch-Epoche - auch nicht der
+     *  INSULIN_CHANGE, den derselbe Treiberaufruf gleich mit erzeugt. */
+    @Test
+    fun `ein anderer Ereignistyp definiert keine Epoche`() {
+        val insulin = TE(
+            timestamp = t0, type = TE.Type.INSULIN_CHANGE, glucoseUnit = GlucoseUnit.MGDL,
+            ids = IDs(pumpType = typ, pumpSerial = serial.lowercase()),
+        )
+        assertEquals(FusePatchEpoch.Reason.WRONG_TYPE, of(insulin).reason)
     }
 
     @Test
@@ -86,9 +139,16 @@ class FusePatchEpochTest {
     /** Unbekannt auf EINER Seite genuegt - ein fehlender Wert darf nicht als
      *  "passt schon" durchgehen. */
     @Test
-    fun `unbekannte aktive Pumpe laesst die Epoche unbekannt`() {
-        assertFalse(FusePatchEpoch.of(wechsel(), null, hashOf(serial, typ.name), hashOf).known)
-        assertFalse(FusePatchEpoch.of(wechsel(), typ.name, null, hashOf).known)
+    fun `unbekannte aktive Pumpe ist ein eigener Befund`() {
+        for (r in listOf(
+            FusePatchEpoch.of(wechsel(), null, hashOf(serial, typ.name), hashOf),
+            FusePatchEpoch.of(wechsel(), typ.name, null, hashOf),
+        )) {
+            assertFalse(r.known)
+            assertEquals(FusePatchEpoch.Reason.ACTIVE_PUMP_UNKNOWN, r.reason) {
+                "das liegt NICHT am Datensatz - der Grund muss das sagen"
+            }
+        }
     }
 
     @Test

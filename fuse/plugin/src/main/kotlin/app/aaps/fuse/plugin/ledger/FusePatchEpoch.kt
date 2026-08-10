@@ -47,13 +47,22 @@ object FusePatchEpoch {
         /** Gar kein Datensatz vorhanden. */
         NO_EVENT,
 
-        /** Vorhanden, aber ohne Pumpenhistorie (Hand-/Nightscout-Eintrag). */
+        /** Falscher Ereignistyp - kein CANNULA_CHANGE. */
+        WRONG_TYPE,
+
+        /** Vorhanden, aber ohne Pumpenkennung (Handeintrag). */
         NOT_PUMP_ORIGIN,
 
-        /** Vorhanden und pumpeneigen, aber von einer ANDEREN Pumpe. */
+        /** Der Datensatz nennt Typ oder Serial nicht vollstaendig. */
+        EVENT_IDENTITY_INCOMPLETE,
+
+        /** Die AKTIVE Pumpe ist nicht bestimmbar - liegt nicht am Datensatz. */
+        ACTIVE_PUMP_UNKNOWN,
+
+        /** Vollstaendig auf beiden Seiten, aber eine ANDERE Pumpe. */
         FOREIGN_PUMP,
 
-        /** Als ungueltig markiert. */
+        /** Als ungueltig markiert oder mit unbrauchbarem Zeitstempel. */
         INVALID,
     }
 
@@ -72,18 +81,43 @@ object FusePatchEpoch {
         serialHashOf: (String?, String?) -> String?,
     ): Result {
         if (event == null) return Result(null, Reason.NO_EVENT)
+        // Der Typ wird HIER geprueft, nicht nur beim Aufrufer. Eine
+        // Sicherheitsgrenze, die auf einer Vorbedingung des Anrufers beruht,
+        // ist keine.
+        if (event.type != TE.Type.CANNULA_CHANGE) return Result(null, Reason.WRONG_TYPE)
         if (!event.isValid) return Result(null, Reason.INVALID)
-        // Pumpeneigen heisst: die Pumpe hat den Datensatz erzeugt und traegt
-        // ihn in ihrer Historie. Alles andere ist eine Behauptung von aussen.
-        if (!event.ids.isPumpHistory()) return Result(null, Reason.NOT_PUMP_ORIGIN)
 
         val evTyp = event.ids.pumpType?.name
         val evSerial = serialHashOf(event.ids.pumpSerial, evTyp)
-        // Unbekannte Seite -> unbekannt. Ein fehlender Wert darf nicht als
-        // "passt schon" durchgehen; das ist in diesem Projekt die
-        // wiederkehrende Falle.
-        if (evTyp == null || evSerial == null || activePumpTypeName == null || activeSerialHash == null)
-            return Result(null, Reason.FOREIGN_PUMP)
+        // HERKUNFT: Typ UND Serial muessen am Datensatz stehen.
+        //
+        // BEWUSST SCHWAECHER ALS `IDs.isPumpHistory()`, und zwar aus einem
+        // belegten Grund: jenes verlangt zusaetzlich `pumpId != null`, der
+        // Medtrum-Treiber setzt beim Wechsel aber KEINE
+        // (`MedtrumPump.handleNewPatch` ruft
+        // `insertTherapyEventIfNewWithTimestamp(timestamp, type, pumpType,
+        // pumpSerial)` - vier Argumente, kein pumpId). Mit `isPumpHistory()`
+        // waere die Epoche im Feld IMMER unbekannt gewesen und die
+        // Publikationssperre haette SMBs dauerhaft blockiert.
+        //
+        // Den Treiber zu ergaenzen waere der staerkere Weg - er faellt aber
+        // unter die Mergefaehigkeits-Auflage (keine Aenderung in `pump/**`).
+        //
+        // WAS DIESE SCHWAECHUNG KOSTET, ausdruecklich: ein Datensatz, der
+        // Typ und Serial der aktiven Pumpe traegt, aber nicht von ihr erzeugt
+        // wurde - etwa aus Nightscout von einer zweiten AAPS-Instanz am
+        // SELBEN Geraet - wird angenommen. Bei gleicher Seriennummer ist das
+        // sachlich meist auch dieselbe Pumpe. Ein HANDEINTRAG traegt keine
+        // Pumpenkennung und bleibt abgewiesen; das war der eigentliche Zweck.
+        if (evTyp == null || evSerial == null) {
+            // Gar keine Kennung = Handeintrag; halbe Kennung = unvollstaendig.
+            val garNichts = event.ids.pumpType == null && event.ids.pumpSerial == null
+            return Result(null, if (garNichts) Reason.NOT_PUMP_ORIGIN else Reason.EVENT_IDENTITY_INCOMPLETE)
+        }
+        // Die AKTIVE Pumpe nicht bestimmen zu koennen ist ein ANDERER Befund
+        // als ein fremder Datensatz - er liegt nicht am Ereignis.
+        if (activePumpTypeName == null || activeSerialHash == null)
+            return Result(null, Reason.ACTIVE_PUMP_UNKNOWN)
         if (evTyp != activePumpTypeName || evSerial != activeSerialHash)
             return Result(null, Reason.FOREIGN_PUMP)
         if (event.timestamp <= 0L) return Result(null, Reason.INVALID)
