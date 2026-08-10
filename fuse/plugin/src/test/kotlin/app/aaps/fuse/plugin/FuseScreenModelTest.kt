@@ -15,6 +15,57 @@ class FuseScreenModelTest {
 
     private val now = 1_700_000_090_000L
 
+    private fun ledger(hold: Boolean, fehler: Map<String, Int> = mapOf("IDENTITY_CONFLICT" to 47)) =
+        FuseScreenModel.LedgerInfo(
+            hold = hold, holdGeneration = if (hold) 47L else 0L,
+            activeErrors = if (hold) fehler else emptyMap(),
+            openEntries = 6, grossLiabilityU = 0.85, lastRepairTs = null,
+        )
+
+    /**
+     * DER SCHIRM MUSS DEM KOPF WIDERSPRECHEN, WENN DER LEDGER HAELT.
+     *
+     * Am 10.08.2026 stand oben `Health READY` und zwanzig Zeilen tiefer
+     * `Kandidat LEDGER_HOLD - erlaubt 0.00 U`. Health ist der Zustand des
+     * BEOBACHTERS und war korrekt - nur liest niemand einen Schirm so. Wer
+     * oben READY sieht, sucht den Fehler nicht weiter unten.
+     *
+     * Geprueft wird deshalb nicht "irgendwo steht Hold", sondern dass die
+     * Meldung VOR dem Beobachterblock steht: die Reihenfolge IST hier die
+     * Aussage.
+     */
+    @Test
+    fun `ein gehaltener Ledger meldet sich vor dem Beobachter`() {
+        val t = FuseScreenModel.render(outcome(), null, now, null, ledger(hold = true))
+        assertTrue(t.contains("HOLD - FUSE GIBT NICHTS AB")) { "der Hold muss beim Namen genannt werden" }
+        assertTrue(t.contains("IDENTITY_CONFLICT x47")) { "und mit Ursache, sonst weiss niemand wohin" }
+        assertTrue(t.contains("Reparatur")) { "ein Ausweg gehoert dazu" }
+
+        val holdPos = t.indexOf("LEDGER")
+        val healthPos = t.indexOf("Health")
+        assertTrue(holdPos in 0 until healthPos) {
+            "die Sperre muss VOR 'Health READY' stehen - sonst widerspricht der Kopf ihr weiterhin"
+        }
+    }
+
+    /** Ohne Hold bleibt die Zeile stehen, nur leise - "keine Zeile" waere von
+     *  "noch nie geschaut" nicht zu unterscheiden. */
+    @Test
+    fun `ohne Hold meldet der Ledger sich leise`() {
+        val t = FuseScreenModel.render(outcome(), null, now, null, ledger(hold = false))
+        assertTrue(t.contains("Ledger")) { "auch der freie Zustand ist eine Aussage" }
+        assertFalse(t.contains("GIBT NICHTS AB"))
+    }
+
+    /** Ohne Angabe gar keine Zeile - lieber nichts als eine erfundene
+     *  Freimeldung. */
+    @Test
+    fun `ohne Ledger-Angabe wird nichts behauptet`() {
+        val t = FuseScreenModel.render(outcome(), null, now)
+        assertFalse(t.contains("GIBT NICHTS AB"))
+        assertFalse(t.contains("Ledger  "))
+    }
+
     private fun signal(rSigned: Double? = 0.8, bound: SignalWindow.Bound = SignalWindow.Bound.NONE) =
         FuseSignalSource.Signal(
             sourceTs = 1_700_000_000_000L, rawBg = 132.0, q1 = 130.0, rSigned = rSigned,

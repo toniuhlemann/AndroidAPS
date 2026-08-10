@@ -17,6 +17,7 @@ import app.aaps.core.interfaces.constraints.ConstraintsChecker
 import app.aaps.core.interfaces.constraints.PluginConstraints
 import app.aaps.core.data.model.TE
 import app.aaps.core.interfaces.db.PersistenceLayer
+import app.aaps.core.interfaces.notifications.Notification
 import app.aaps.fuse.plugin.ledger.FuseActivePump
 import app.aaps.fuse.plugin.ledger.FusePatchEpoch
 import app.aaps.fuse.plugin.ledger.LedgerFacts
@@ -94,6 +95,7 @@ class FusePlugin @Inject constructor(
     private val dateUtil: DateUtil,
     private val hardLimits: HardLimits,
     private val apsResultProvider: Provider<APSResult>,
+    private val uiInteraction: app.aaps.core.interfaces.ui.UiInteraction,
 ) : PluginBaseWithPreferences(
     PluginDescription()
         .mainType(PluginType.APS)
@@ -131,7 +133,22 @@ class FusePlugin @Inject constructor(
     /** Commitment-Ledger (Audit R95, Fix 3): EINE Instanz je Prozess. Geladen
      *  VOR dem ersten Zyklus, nach jedem Zyklus synchron persistiert - die
      *  Episodenbudgets und offenen Commitments ueberleben damit Neustarts. */
-    private val ledgerAdapter = app.aaps.fuse.plugin.ledger.FuseLedgerAdapter()
+    /**
+     * `var`, damit die Reparatur ihn ERSETZEN kann statt ihn auszuraeumen.
+     *
+     * Ein frisch gebautes Objekt hat jedes Feld auf seinem Anfangswert - per
+     * Konstruktion, ohne dass jemand eine Liste pflegt. Ein Hand-Reset
+     * (`loaded = false; state = ...; recoveryHold = false; ...`) waere genau
+     * die Sorte Aufzaehlung, bei der ein Feld vergessen wird - und das
+     * vergessene waere hier ein gehaltener Zustand, der die Reparatur still
+     * ueberlebt.
+     */
+    private var ledgerAdapter = app.aaps.fuse.plugin.ledger.FuseLedgerAdapter()
+
+    /** Die letzte Ledger-Reparatur, einmal gelesen und danach im Speicher
+     *  gehalten - der Export haengt sie an jeden Zyklus. */
+    private var reparaturCache: app.aaps.fuse.plugin.ledger.FuseLedgerRepair.ResetRecord? = null
+    private var reparaturGelesen = false
 
     /**
      * Fix 8 (Audit 2d273cb, NEU-BS-07): der Ledger ist ZUSTAND, kein Export -
@@ -642,6 +659,10 @@ class FusePlugin @Inject constructor(
         aapsLogger.debug(LTag.APS, "FUSE result: ${publishRt.reason}")
         rxBus.send(EventAPSCalculationFinished())
 
+        // NACH den Buchungen dieses Zyklus - der Hold kann genau hier entstanden
+        // sein. Davor gemeldet, waere die Meldung eine Generation zu spaet.
+        meldeLedgerHold()
+
         exportState(
             outcome, publishRt, cycleId,
             // B0c: der Befund des Gates als DATEN in den Trail, nicht als Text
@@ -705,6 +726,12 @@ class FusePlugin @Inject constructor(
                 // B3: die Diagnose neben dem Sperrgrund. Der Grund steht im
                 // Publikationsgate, das WARUM steht hier.
                 patchEpoch = patchEpoch,
+                // Einmal von der Platte, danach aus dem Speicher: ein
+                // Dateizugriff je Zyklus fuer eine Zeile, die sich fast nie
+                // aendert, waere Verschwendung - aber weglassen darf man sie
+                // nicht, sonst sieht ein reparierter Ledger wie ein
+                // unbenutzter aus.
+                ledgerReset = letzteReparatur(),
             )
             // Die Android-Aufloesung des Verzeichnisses passiert AUSSCHLIESSLICH
             // hier — der Schreiber selbst kennt kein Environment und bleibt
@@ -724,6 +751,151 @@ class FusePlugin @Inject constructor(
                 }
             }
         }.onFailure { aapsLogger.error(LTag.APS, "FUSE state export threw", it) }
+    }
+
+    /** Der Ledger-Zustand fuer den Schirm - eine eigene Groesse neben Health. */
+    fun ledgerInfo(): FuseScreenModel.LedgerInfo {
+        val s = ledgerAdapter.state
+        val offen = s.openEntries
+        return FuseScreenModel.LedgerInfo(
+            hold = s.holdActuation,
+            holdGeneration = s.holdGeneration,
+            activeErrors = s.errors.filter { it.active }.groupingBy { it.error.name }.eachCount(),
+            openEntries = offen.size,
+            grossLiabilityU = offen.sumOf { it.grossLiabilityU },
+            lastRepairTs = letzteReparatur()?.ts,
+        )
+    }
+
+    /**
+     * DER LEDGER-HOLD MUSS SICH MELDEN.
+     *
+     * Er kappt den Kandidaten auf 0,00 U - FUSE rechnet weiter, zeigt
+     * insulinReq und Bahn, und gibt nichts ab. Auf dem Schirm stand das bis zum
+     * 10.08.2026 nur zwanzig Zeilen tief als `candidate:LEDGER_HOLD`, waehrend
+     * die Kopfzeile `Health READY` sagte. Ein Regler, der still aufhoert zu
+     * dosieren, ist die gefaehrlichste Sorte Fehler, weil nichts passiert -
+     * und genau deshalb faellt er ohne Alarm tagelang nicht auf.
+     *
+     * EINMAL je Hold-Generation, nicht je Zyklus: eine Meldung pro Minute
+     * waere nach einer Stunde Tapete, und Tapete liest niemand. Eine NEUE
+     * Generation ist ein NEUER Befund und meldet sich wieder.
+     */
+    private var gemeldeteHoldGeneration: Long? = null
+
+    private fun meldeLedgerHold() {
+        val s = ledgerAdapter.state
+        if (!s.holdActuation) {
+            // Aufgeloest - die naechste Generation darf wieder melden.
+            gemeldeteHoldGeneration = null
+            return
+        }
+        if (gemeldeteHoldGeneration == s.holdGeneration) return
+        gemeldeteHoldGeneration = s.holdGeneration
+        val fehler = s.errors.filter { it.active }.groupingBy { it.error.name }.eachCount()
+            .entries.sortedByDescending { it.value }
+            .joinToString(", ") { "${it.key} x${it.value}" }
+            .ifBlank { "kein Fehler benannt" }
+        runCatching {
+            uiInteraction.addNotification(
+                id = Notification.FUSE_LEDGER_HOLD,
+                text = "FUSE gibt nichts ab: Ledger-Hold ($fehler). " +
+                    "Ausweg: Einstellungen -> FUSE -> Reparatur.",
+                level = Notification.URGENT,
+            )
+        }.onFailure { aapsLogger.error(LTag.APS, "FUSE Hold-Meldung fehlgeschlagen", it) }
+        aapsLogger.warn(LTag.APS, "FUSE LEDGER HOLD Gen ${s.holdGeneration}: $fehler - keine Abgabe")
+    }
+
+    private fun letzteReparatur(): app.aaps.fuse.plugin.ledger.FuseLedgerRepair.ResetRecord? {
+        if (!reparaturGelesen) {
+            reparaturCache = runCatching {
+                app.aaps.fuse.plugin.ledger.FuseLedgerRepair.lastReset(ledgerDir())
+            }.getOrNull()
+            reparaturGelesen = true
+        }
+        return reparaturCache
+    }
+
+    /**
+     * DIE REPARATUR-BEDIENHANDLUNG.
+     *
+     * Sie steht hier und nicht im Reparaturweg selbst, weil nur das Plugin die
+     * beiden Dinge tun kann, die danach noetig sind: den Adapter ERSETZEN und
+     * den zwischengespeicherten Zyklus-Runner fallenlassen. Beides durch
+     * Neubau, nicht durch Ausraeumen - ein neues Objekt hat jedes Feld auf
+     * seinem Anfangswert, und niemand muss eine Liste pflegen.
+     *
+     * Der Dialog zeigt VORHER, was verworfen wird. "Wirklich?" allein waere
+     * keine Zustimmung zu einer Menge Haftung.
+     */
+    private fun ledgerReparaturDialog(context: Context) {
+        val repair = app.aaps.fuse.plugin.ledger.FuseLedgerRepair
+        val dir = ledgerDir()
+        val lage = runCatching { repair.inspect(dir) }.getOrNull()
+        if (lage == null || !lage.repairable) {
+            android.app.AlertDialog.Builder(context)
+                .setTitle("Ledger-Reparatur")
+                .setMessage(
+                    "Nicht noetig: ${lage?.why ?: "Lage nicht feststellbar"}.\n\n" +
+                        "Dieser Weg ist kein 'Ledger leeren' fuer den Alltag - er oeffnet nur einen " +
+                        "Hold, aus dem es sonst keinen Ausgang gibt."
+                )
+                .setPositiveButton("Verstanden", null)
+                .show()
+            return
+        }
+        val d = lage.discarded
+        fun u(v: Double?) = v?.let { "%.2f U".format(it) } ?: "unbekannt"
+        val was = if (!d.stateReadable) "Der bisherige Ledger ist NICHT LESBAR - was offen war, laesst sich nicht beziffern."
+        else buildString {
+            append("Verworfen wird:\n")
+            append("  offene Zeilen      ${d.openEntries ?: "unbekannt"}\n")
+            append("  Bruttohaftung      ${u(d.grossLiabilityU)}\n")
+            append("  Transportmenge     ${u(d.transportCommitmentU)}\n")
+            append("  aktive Fehler      ")
+            append(if (d.activeErrors.isEmpty()) "keine" else d.activeErrors.entries.joinToString { "${it.key}x${it.value}" })
+        }
+        android.app.AlertDialog.Builder(context)
+            .setTitle("Ledger reparieren?")
+            .setMessage(
+                "Grund: ${lage.why}\n\n$was\n\n" +
+                    "Der bisherige Ledger wird NICHT geloescht, sondern in Quarantaene gelegt " +
+                    "(.reset.<Zeitstempel>). Die Reparatur wird dauerhaft protokolliert und erscheint " +
+                    "danach in jedem Export.\n\n" +
+                    "NUR ausfuehren, wenn die offene Haftung nachweislich gegenstandslos ist."
+            )
+            .setNegativeButton("Abbrechen", null)
+            .setPositiveButton("Reparieren") { _, _ ->
+                val r = runCatching {
+                    repair.perform(dir, dateUtil.now(), by = "Bediener (FUSE-Einstellungen)", reason = lage.why)
+                }.getOrElse { app.aaps.fuse.plugin.ledger.FuseLedgerRepair.Result.Refused("Ausnahme: ${it.message}") }
+                val text = when (r) {
+                    is app.aaps.fuse.plugin.ledger.FuseLedgerRepair.Result.Refused ->
+                        "Nicht ausgefuehrt: ${r.why}"
+
+                    is app.aaps.fuse.plugin.ledger.FuseLedgerRepair.Result.Done   -> {
+                        // NEUBAU statt Ausraeumen - s. Kommentar am Feld.
+                        ledgerAdapter = app.aaps.fuse.plugin.ledger.FuseLedgerAdapter()
+                        runner = null
+                        reparaturGelesen = false
+                        aapsLogger.warn(
+                            LTag.APS,
+                            "FUSE LEDGER REPARIERT: ${r.record.reason} - verworfen " +
+                                "${r.record.discarded.grossLiabilityU} U brutto, " +
+                                "${r.record.discarded.openEntries} offene Zeilen, " +
+                                "Quarantaene: ${r.quarantined.joinToString()}"
+                        )
+                        "Repariert. In Quarantaene: ${r.quarantined.joinToString().ifBlank { "nichts" }}.\n\n" +
+                            if (r.freshLedgerWritten) "Der naechste Zyklus startet mit einem leeren Ledger."
+                            else "ACHTUNG: die leere Nachfolgegeneration liess sich NICHT schreiben. " +
+                                "Der naechste Start wird das als Verlust werten und wieder halten."
+                    }
+                }
+                android.app.AlertDialog.Builder(context)
+                    .setTitle("Ledger-Reparatur").setMessage(text).setPositiveButton("OK", null).show()
+            }
+            .show()
     }
 
     private fun cycleRunner(): FuseCycleRunner =
@@ -916,6 +1088,31 @@ class FusePlugin @Inject constructor(
             addPreference(AdaptiveIntPreference(ctx = context, intKey = FuseIntKey.LiabilityHorizonMin, dialogMessage = R.string.fuse_liability_horizon_summary, title = R.string.fuse_liability_horizon_title))
             addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.TailFloorMgdl, dialogMessage = R.string.fuse_tail_floor_summary, title = R.string.fuse_tail_floor_title))
             addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.TailRecoveryU, dialogMessage = R.string.fuse_tail_recovery_summary, title = R.string.fuse_tail_recovery_title))
+        }
+
+        /**
+         * GANZ UNTEN und mit eigener Ueberschrift: das hier ist kein
+         * Einstellwert, sondern ein Eingriff. Er steht bewusst nicht zwischen
+         * den Reglern, wo man ihn im Vorbeiscrollen antippt.
+         */
+        cat("fuse_repair", "Reparatur") {
+            addPreference(Preference(context).apply {
+                title = "Ledger reparieren"
+                summary =
+                    "Oeffnet einen dauerhaften Hold, aus dem es sonst keinen Ausgang gibt " +
+                        "(nicht quittierbare Fehler). Der bisherige Ledger wird nicht geloescht, " +
+                        "sondern in Quarantaene gelegt und protokolliert. Kein 'Ledger leeren'."
+                isPersistent = false
+                setOnPreferenceClickListener { runCatching { ledgerReparaturDialog(context) }; true }
+            })
+            addPreference(Preference(context).apply {
+                title = "Letzte Reparatur"
+                summary = letzteReparatur()?.let {
+                    "%s - %s".format(dateUtil.dateAndTimeString(it.ts), it.reason)
+                } ?: "keine"
+                isSelectable = false
+                isPersistent = false
+            })
         }
 
         cat("fuse_diag", "Diagnose (fest in Alpha 1)") {

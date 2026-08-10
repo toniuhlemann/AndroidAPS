@@ -34,7 +34,35 @@ object FuseScreenModel {
      *  nicht aus dem Outcome: der Timer soll auch zwischen Zyklen laufen. */
     data class MarkerInfo(val armedTs: Long, val tier: Int, val windowMin: Int, val envelopeU: Double)
 
-    fun render(outcome: FuseCycleRunner.Outcome?, apsResult: APSResult?, nowMs: Long, marker: MarkerInfo? = null): String {
+    /**
+     * Der LEDGER-Zustand - eine EIGENE Groesse, nicht Teil von "Health".
+     *
+     * Health ist der Zustand des BEOBACHTERS. Der kann tadellos READY sein,
+     * waehrend der Ledger die Aktuation haelt und FUSE nichts mehr abgibt -
+     * genau so stand es am 10.08.2026 auf dem Schirm: `Health READY` oben,
+     * `Kandidat LEDGER_HOLD - erlaubt 0.00 U` zwanzig Zeilen tiefer, und
+     * dazwischen nichts, was die Kopfzeile widerlegt haette.
+     *
+     * Beides unter einer Ueberschrift zu fuehren waere aber genau der Fehler,
+     * vor dem die alte RT-Beschriftung warnt (s. "Phase und Block sind ZWEI
+     * Groessen"). Also eine zweite Zeile, und die schreit.
+     */
+    data class LedgerInfo(
+        val hold: Boolean,
+        val holdGeneration: Long,
+        val activeErrors: Map<String, Int>,
+        val openEntries: Int,
+        val grossLiabilityU: Double,
+        val lastRepairTs: Long?,
+    )
+
+    fun render(
+        outcome: FuseCycleRunner.Outcome?,
+        apsResult: APSResult?,
+        nowMs: Long,
+        marker: MarkerInfo? = null,
+        ledger: LedgerInfo? = null,
+    ): String {
         val b = StringBuilder()
         if (outcome == null) {
             // Genau EINE Zeile. Kein Geruest mit Nullen, das wie ein Ergebnis
@@ -46,6 +74,31 @@ object FuseScreenModel {
         row(b, "Lauf", "vor $alterMin min")
         row(b, "Gate", outcome.gate.reason)
         outcome.abortReason?.let { row(b, "ABBRUCH", it) }
+
+        // ---- LEDGER: ganz oben, weil er die Abgabe ganz zumachen kann -------
+        //
+        // Im Hold ist das die wichtigste Zeile des Schirms: FUSE rechnet
+        // weiter, zeigt insulinReq, Bahn und Ratio - und gibt NICHTS ab. Ohne
+        // diese Zeile liest sich der Schirm wie ein gesunder Regler, der
+        // gerade nichts fuer noetig haelt.
+        //
+        // Ausserhalb des Holds bleibt sie trotzdem stehen, nur leise: "keine
+        // Zeile" waere von "noch nie geschaut" nicht zu unterscheiden.
+        ledger?.let { l ->
+            if (l.hold) {
+                row(b, "!! LEDGER", "HOLD - FUSE GIBT NICHTS AB")
+                val fehler = if (l.activeErrors.isEmpty()) "keine benannt"
+                else l.activeErrors.entries.sortedByDescending { it.value }
+                    .joinToString(", ") { "${it.key} x${it.value}" }
+                row(b, "  Ursache", fehler)
+                row(b, "  Generation", l.holdGeneration.toString())
+                row(b, "  offen", "${l.openEntries} Zeilen, ${f2(l.grossLiabilityU)} U Haftung")
+                row(b, "  Ausweg", "Einstellungen -> FUSE -> Reparatur")
+            } else {
+                row(b, "Ledger", "frei - ${l.openEntries} offen, ${f2(l.grossLiabilityU)} U")
+            }
+            l.lastRepairTs?.let { row(b, "  repariert", "vor ${(nowMs - it) / 60_000} min") }
+        }
         sec(b, "Beobachter")
 
         // ---- Zustand -------------------------------------------------------

@@ -88,9 +88,11 @@ class FuseLedgerStore {
          * der rotierenden Generationen und wird von keinem normalen Persist
          * angefasst.
          *
-         * Es gibt bewusst noch KEINEN Aufloesungsweg (fail-closed): das
-         * Loeschen ist Teil eines eigenen, noch nicht gebauten
-         * Reparatur-Workflows (Adjudication K1.1/G4).
+         * Der Aufloesungsweg ist AUSSCHLIESSLICH [FuseLedgerRepair] - eine
+         * ausdrueckliche Bedienhandlung mit benanntem Grund, die den
+         * bisherigen Ledger nicht loescht, sondern in Quarantaene legt und
+         * den Befund dauerhaft protokolliert. Kein automatischer Pfad raeumt
+         * diesen Marker weg (Adjudication K1.1/G4).
          */
         const val HOLD_NAME = "fuse_ledger.hold"
 
@@ -130,19 +132,49 @@ class FuseLedgerStore {
          * nicht ueberschreiben. Nie werfend; zurueck kommen nur die
          * TATSAECHLICH umbenannten Dateien.
          */
-        fun quarantineInvalid(files: List<File>, nowTs: Long): List<String> = files.mapNotNull { f ->
+        fun quarantineInvalid(files: List<File>, nowTs: Long): List<String> =
+            quarantine(files, nowTs, CORRUPT_SUFFIX)
+
+        /**
+         * Dieselbe Mechanik mit frei gewaehltem Suffix - der Reparaturweg
+         * ([FuseLedgerRepair]) legt seine Generationen unter `.reset.` ab.
+         *
+         * Der Suffix ist ABSICHTLICH ein Parameter und kein zweites,
+         * kopiertes Verfahren: Kollisionsfreiheit, "umbenennen statt
+         * loeschen" und "nie werfend" sind die Eigenschaften, auf die es
+         * ankommt, und die duerfen nicht an zwei Stellen getrennt gepflegt
+         * werden.
+         */
+        fun quarantine(files: List<File>, nowTs: Long, suffix: String): List<String> = files.mapNotNull { f ->
             runCatching {
                 if (!f.isFile) return@runCatching null
                 val dir = f.parentFile ?: return@runCatching null
-                var target = File(dir, "${f.name}$CORRUPT_SUFFIX$nowTs")
+                var target = File(dir, "${f.name}$suffix$nowTs")
                 var n = 1
                 while (target.exists() && n <= 1_000) {
-                    target = File(dir, "${f.name}$CORRUPT_SUFFIX$nowTs-$n")
+                    target = File(dir, "${f.name}$suffix$nowTs-$n")
                     n++
                 }
                 if (!target.exists() && f.renameTo(target)) target.name else null
             }.getOrNull()
         }
+
+        /**
+         * Den Hold-Marker ENTFERNEN - der einzige Weg dorthin fuehrt ueber
+         * [FuseLedgerRepair].
+         *
+         * Verifiziert wie alles andere hier: Erfolg heisst, die Datei liegt
+         * danach NICHT mehr. Ein "delete() sagte true, die Datei ist aber noch
+         * da" darf nicht als geloester Hold durchgehen - der naechste
+         * Prozessstart wuerde ihn sonst kommentarlos wieder aufziehen und der
+         * Bediener saehe eine Reparatur, die nichts bewirkt hat.
+         */
+        fun clearHoldVerified(dir: File): Boolean = runCatching {
+            val f = File(dir, HOLD_NAME)
+            if (!f.exists()) return@runCatching true
+            f.delete()
+            !f.exists()
+        }.getOrDefault(false)
     }
 
     /**

@@ -129,6 +129,15 @@ object FuseStateJson {
         ledger: LedgerSnapshot? = null,
         publicationGate: PublicationGate? = null,
         patchEpoch: PatchEpoch? = null,
+        /**
+         * Die LETZTE Ledger-Reparatur, falls es je eine gab.
+         *
+         * Sie steht in JEDEM Zyklus danach, nicht nur in dem, in dem sie
+         * passiert ist. Ein frisch zurueckgesetzter Ledger sieht sonst exakt
+         * aus wie ein unbenutzter, und "keine Haftung" waere von "hier wurde
+         * Haftung verworfen" nicht zu unterscheiden.
+         */
+        ledgerReset: app.aaps.fuse.plugin.ledger.FuseLedgerRepair.ResetRecord? = null,
         nowNs: () -> Long,
     ): JSONObject {
         val gaps = JSONArray()
@@ -215,6 +224,11 @@ object FuseStateJson {
                 // bleiben.
                 .put("applicable", patchEpoch.applicable ?: JSONObject.NULL)
         )
+
+        // KEINE Luecke, wenn nichts dasteht: "nie repariert" ist der Normalfall
+        // und keine fehlende Angabe. Eine Luecke hier wuerde die echten
+        // Luecken im Rauschen ertraenken.
+        ledgerReset?.let { o.put("ledgerReset", app.aaps.fuse.plugin.ledger.FuseLedgerRepair.encode(it)) }
 
         if (publicationGate == null) gap("publicationGate", "NOT_REPORTED")
         else o.put(

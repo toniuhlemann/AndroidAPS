@@ -83,6 +83,9 @@ class FuseFragment : DaggerFragment() {
                 windowMin = app.aaps.fuse.core.controller.OnsetChannel.MARKER_WINDOW_MIN,
                 envelopeU = fusePlugin.mealMarkerEnvelopeU(),
             ),
+            // Eigene Groesse neben Health: der Ledger kann die Abgabe ganz
+            // zumachen, waehrend der Beobachter tadellos READY meldet.
+            fusePlugin.ledgerInfo(),
         )
         val armed = fusePlugin.mealMarkerActive(dateUtil.now())
         val tier = fusePlugin.mealMarkerTier()

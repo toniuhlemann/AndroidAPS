@@ -161,6 +161,7 @@ gefährlich: eine Textsuche nach „fuse" findet sie nicht.
 | `app/.../MainApp.kt:262-267` | Ruft den Collector im Minutentakt | B | — | drei Zeilen wiederherstellen |
 | `plugins/aps/.../OpenAPSAutoISFPlugin.kt` | Anbindung des Collectors | B | — | Block wiederherstellen |
 | `database/.../AppRepository.kt`, `daos/BolusDao.kt` | Abfrage für den Collector | B | — | wiederherstellen |
+| `core/interfaces/.../notifications/Notification.kt` | **Eigene Kennung `FUSE_LEDGER_HOLD = 96`.** Rein additiv (eine Konstante). Ein geteilter Slot wäre hier der Fehler, nicht die Sparsamkeit: eine Meldung, die sich den Platz teilt, wird von der nächsten überschrieben — so ging der Wirkungs-Wächter im Juli unter. Der Hold ist der Fall, in dem FUSE **nichts mehr abgibt** | B | `FuseScreenModelTest.kt` *(Anzeige; die Meldung selbst ist ungedeckt, s. §7)* | Konstante wiederherstellen. Beim Merge auf **ID-Kollision** achten: Upstream vergibt hier fortlaufend, 96 kann belegt sein — dann eine freie nehmen, der Wert selbst trägt keine Bedeutung |
 
 ---
 

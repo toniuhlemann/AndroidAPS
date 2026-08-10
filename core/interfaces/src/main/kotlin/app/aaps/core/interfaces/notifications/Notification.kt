@@ -145,6 +145,17 @@ open class Notification {
         const val EQUIL_ALARM_INSULIN = 94
         const val PERMISSION_STEPS = 95
 
+        /**
+         * FUSE: der Commitment-Ledger haelt die Aktuation.
+         *
+         * EIGENE Kennung und kein geteilter Slot. Eine Meldung, die sich den
+         * Platz mit anderen teilt, wird von der naechsten ueberschrieben - so
+         * ist der Wirkungs-Waechter im Juli untergegangen, obwohl er richtig
+         * lag. Der Hold ist der Fall, in dem FUSE NICHTS mehr abgibt; das darf
+         * nicht von einer Pumpenwarnung verdraengt werden.
+         */
+        const val FUSE_LEDGER_HOLD = 96
+
         const val USER_MESSAGE = 1000
 
         const val IMPORTANCE_HIGH = 2
