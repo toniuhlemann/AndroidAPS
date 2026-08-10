@@ -983,8 +983,23 @@ class FusePlugin @Inject constructor(
         // Overview-Muster: der Aufruf kommt auch fuer Unterbildschirme -
         // dann bauen wir dieselbe Struktur und das Framework zieht den
         // passenden Sub-Screen heraus.
-        val subKeys = setOf("fuse_safety", "fuse_control", "fuse_meal", "fuse_tail", "fuse_diag")
-        if (requiredKey != null && requiredKey !in subKeys) return
+        //
+        // DIE SCHLUESSELMENGE WIRD ABGELEITET, NICHT GEPFLEGT.
+        //
+        // Hier stand eine handgeschriebene Liste neben den `cat()`-Aufrufen.
+        // Beim Ergaenzen der Reparatur-Kategorie habe ich sie nicht mitgezogen:
+        // die Wache brach fuer `fuse_repair` ab, es wurde nichts gebaut, und
+        // der Unterbildschirm kam SCHWARZ (Toni, 10.08. am Geraet). Kein
+        // Absturz, keine Meldung - genau die Sorte Fehler, die zwei Listen
+        // erzeugen, sobald eine von beiden vergessen wird.
+        //
+        // Deshalb registrieren die Abschnitte sich jetzt selbst, und die Wache
+        // fragt DIESE Registrierung. Der naechste Abschnitt kann nicht mehr
+        // vergessen werden, weil es nichts mehr zu vergessen gibt.
+        val abschnitte = LinkedHashMap<String, Pair<String, PreferenceScreen.() -> Unit>>()
+        fun cat(key: String, titleText: String, block: PreferenceScreen.() -> Unit) {
+            require(abschnitte.put(key, titleText to block) == null) { "doppelter Abschnitt: $key" }
+        }
 
         // GRUPPIERT statt flach (Toni 08.08., GPT-Review bestaetigt): die
         // wichtigste Aenderung ist das GETEILTE ApsSmbMaxIob - FUSE nutzt es
@@ -993,16 +1008,6 @@ class FusePlugin @Inject constructor(
         // ECHTE Unterbildschirme statt aufgeklappter Kategorien (Toni 08.08.:
         // 27 Eintraege am Stueck = Scroll-Wueste; die Klappzeile der Lib ist
         // eine Einbahnstrasse). Oben fuenf Zeilen, "zuklappen" = Zurueck.
-        val root = PreferenceCategory(context)
-        parent.addPreference(root)
-        root.title = rh.gs(R.string.fuse_settings)
-        fun cat(key: String, titleText: String, block: PreferenceScreen.() -> Unit) {
-            root.addPreference(preferenceManager.createPreferenceScreen(context).apply {
-                this.key = key
-                this.title = titleText
-                block()
-            })
-        }
         fun PreferenceScreen.info(t: String, sum: String) {
             addPreference(Preference(context).apply { title = t; summary = sum; isSelectable = false; isPersistent = false })
         }
@@ -1120,6 +1125,22 @@ class FusePlugin @Inject constructor(
             info("Positive TBR: nicht verwendet", "Der schnelle Kanal ist der 1-min-SMB; FUSE setzt nur Null-Temps oder bricht ab. Max-TBR/Basal-Multiplikatoren greifen deshalb nicht.")
             info("ISF: Profil, zeitabhaengig", "Keine Autosens-/DynISF-Modulation. Sensitivitaet ist als eigener langsamer Beobachter geplant (Shadow zuerst).")
             info("COB/UAM: nicht verwendet", "Mahlzeiten erscheinen im insulinbereinigten Stoerungssignal; eigener Onset-Pfad + Marker statt UAM.")
+        }
+
+        // ---- Erst JETZT die Wache, gegen die ECHTE Abschnittsmenge ---------
+        if (requiredKey != null && requiredKey !in abschnitte.keys) return
+
+        // ---- und erst jetzt bauen ------------------------------------------
+        val root = PreferenceCategory(context)
+        parent.addPreference(root)
+        root.title = rh.gs(R.string.fuse_settings)
+        for ((key, eintrag) in abschnitte) {
+            val (titleText, block) = eintrag
+            root.addPreference(preferenceManager.createPreferenceScreen(context).apply {
+                this.key = key
+                this.title = titleText
+                block()
+            })
         }
     }
 }
