@@ -8,6 +8,7 @@ import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Assertions.assertNull
+import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
@@ -361,6 +362,92 @@ class DecisionTelemetryTest {
             assertTrue(d.restraintBoundGuard, "$erwartet fuehrt das Bremsbit nicht mit")
             assertNotNull(d.minLowerMainMgdl, "$erwartet fuehrt minLowerMain nicht mit")
             assertEquals(0.0, d.floorDeficitMgdl, "$erwartet: keine dieser Bahnen reisst den Boden")
+        }
+    }
+
+    // ---- Die Kappenliste darf ihre Stufe nicht ueberleben ----------------
+
+    /**
+     * DER WIDERSPRUCH, GEGEN DEN DIE LISTE UEBERHAUPT GEBAUT WURDE.
+     *
+     * `caps` ueberlebte jedes nachgelagerte `.copy()`, waehrend `smbU` und
+     * `bindingLimit` neu geschrieben wurden. Ein Datensatz konnte damit eine
+     * Menge zeigen, die GROESSER ist als die Kappe, die er als bindend
+     * markiert. Schlimmer: `CandidateSearch` fuehrt dieselben NAMEN mit
+     * ledgerkorrigierten WERTEN - gleiche Beschriftung, andere Zahl, kein
+     * sichtbarer Unterschied.
+     */
+    @Test
+    fun `die Kandidatenstufe ersetzt die Kappenliste der Basis`() {
+        val base = FuseController.decide(state(), flat(bg = 300.0))
+        assertEquals(FuseController.STAGE_BASE, base.capsStage)
+        assertTrue(base.caps.isNotEmpty())
+
+        val result = CandidateSearch.Result(
+            smbU = base.smbU / 2.0, reject = null, bindingLimit = "iobThHeadroom",
+            baselineMeanAtReleaseMgdl = 300.0, meanWithCandidateMgdl = 280.0,
+            minLowerWithCandidateMgdl = 120.0, effectPerUAtReleaseMgdl = 40.0,
+            candidatesEvaluated = 3,
+            // DIESELBEN Namen, ANDERE Werte - der ledgerkorrigierte Satz.
+            limits = listOf("iobThHeadroom" to 0.40, "maxIobHeadroom" to 0.90),
+        )
+        val gated = CandidateGate.apply(base, result, 0.05)
+
+        assertEquals(FuseController.STAGE_CANDIDATE, gated.capsStage)
+        assertEquals(setOf("iobThHeadroom", "maxIobHeadroom"), gated.caps.map { it.name }.toSet())
+        // 0,40 statt der 3,0 aus der Basisliste: gleicher Name, andere Zahl -
+        // das ist die Verwechslung, die ohne Stufenwechsel unbemerkt bliebe.
+        assertEquals(0.40, gated.caps.single { it.name == "iobThHeadroom" }.valueU)
+        assertEquals(3.0, base.caps.single { it.name == "iobThHeadroom" }.valueU)
+        // Und die Kernaussage: keine markierte Kappe ist kleiner als die
+        // gelieferte Menge.
+        val bindend = gated.caps.filter { it.active }.minOf { it.valueU }
+        assertTrue(gated.smbU <= bindend + 1e-9, "smbU=${gated.smbU} > bindende Kappe $bindend")
+    }
+
+    /** Wo die Grenzen nicht aufzaehlbar sind, steht die Stufe - und die Liste
+     *  ist leer. Das ist eine Aussage, kein Fehlen. */
+    @Test
+    fun `eine leere Liste traegt trotzdem ihre Stufe`() {
+        val d = FuseController.decide(state(), flat())
+            .copy(caps = emptyList(), capsStage = FuseController.STAGE_PRIME)
+        assertTrue(d.caps.isEmpty())
+        assertEquals(FuseController.STAGE_PRIME, d.capsStage)
+    }
+
+    // ---- NaN: lieber keine Markierung als eine falsche -------------------
+
+    /**
+     * Die beiden Reduktionen sind NICHT dieselbe: `minOfOrNull` propagiert NaN,
+     * `minByOrNull` (Dosispfad) sortiert NaN ans Ende. Ohne Riegel waere die
+     * Markierung exakt invertiert - die entscheidende Kappe inaktiv, die
+     * unbrauchbare aktiv.
+     */
+    @Test
+    fun `eine NaN-Kappe markiert nichts statt das Falsche`() {
+        val caps = FuseController.capsOf(0.05, "a" to 1.0, "b" to Double.NaN)
+        assertTrue(caps.none { it.active }, "keine Markierung ist richtig, eine falsche nicht: $caps")
+        // Gegenprobe: der Dosispfad haette "a" gewaehlt.
+        assertEquals("a", listOf("a" to 1.0, "b" to Double.NaN).minByOrNull { it.second }!!.first)
+    }
+
+    /** Unter null ist nichts lieferbar - dort trennt die Tickzahl Groessen,
+     *  die alle dasselbe bedeuten. */
+    @Test
+    fun `bei erschoepftem Spielraum sind alle nichtpositiven Kappen aktiv`() {
+        val caps = FuseController.capsOf(0.05, "maxIobHeadroom" to -0.1, "iobThHeadroom" to -3.1)
+        assertTrue(caps.all { it.active }, "beide sind erschoepft, beide haben gebunden: $caps")
+    }
+
+    /** Der Divisor der Rasterung wird geprueft wie alles andere - sonst
+     *  verliesse eine NaN-Dosis den Regler. */
+    @Test
+    fun `ein unbrauchbarer Pumpenschritt wird im State abgewiesen`() {
+        for (bad in listOf(0.0, -0.05, Double.NaN)) {
+            val e = assertThrows(IllegalArgumentException::class.java) {
+                state().copy(pumpIncrementU = bad)
+            }
+            assertTrue(e.message!!.contains("Pumpenschritt"), e.message!!)
         }
     }
 }

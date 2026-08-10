@@ -165,7 +165,13 @@ object PrimeRelease {
         if (!input.safetyMinLowerMgdl.isFinite() || !input.isfMgdlPerU.isFinite() || input.isfMgdlPerU <= 0.0)
             return off("NOT_FINITE")
         if (input.pumpIncrementU <= 0.0 || !input.pumpIncrementU.isFinite()) return off("NO_PUMP_STEP")
-        if (remaining < input.pumpIncrementU) return off("ENVELOPE_SPENT")
+        // TICKZAHL statt `<`: `remaining` ist eine Differenz aufsummierter
+        // Tickvielfacher, und die trifft die Huelle nicht exakt. Gemessen bei
+        // Huelle 0,8: spent 0,7500000000000001, remaining 0,04999999999999993 -
+        // ein voller Schritt, der als "verbraucht" durchfiel. Die Richtung war
+        // konservativ (es wurde zurueckgehalten), aber es war ein stiller
+        // Dosisverlust, keine Telemetriefrage.
+        if (FuseController.ticksOf(remaining, input.pumpIncrementU) < 1) return off("ENVELOPE_SPENT")
 
         // Gleichmaessig ueber das Restfenster; mindestens ein Pumpenschritt,
         // sonst schoebe die Rundung alles ans Fensterende.
@@ -248,6 +254,11 @@ object PrimeRelease {
             smbU = stepped,
             block = FuseController.Block.NONE,
             bindingLimit = "primeRelease",
+            // S0: die Basiskappen haben diese Menge nicht bestimmt. Leere
+            // Liste mit eigener Stufe sagt das - eine stehengebliebene
+            // Basisliste behauptete das Gegenteil.
+            caps = emptyList(),
+            capsStage = FuseController.STAGE_PRIME,
         )
     }
 }

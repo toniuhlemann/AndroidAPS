@@ -70,7 +70,7 @@ object CandidateGate {
      *  Vorschlag > 0, Suche nicht gerechnet) und UNAVAILABLE lassen die Basis
      *  unveraendert - der Aufrufer exportiert den Ausfall als Luecke.
      */
-    fun apply(base: FuseController.Decision, result: CandidateSearch.Result?): FuseController.Decision {
+    fun apply(base: FuseController.Decision, result: CandidateSearch.Result?, pumpIncrementU: Double): FuseController.Decision {
         if (result == null) return base
         if (kindOf(result.reject) == Kind.UNAVAILABLE) return base
         if (result.smbU >= base.smbU - 1e-9) return base
@@ -78,6 +78,13 @@ object CandidateGate {
             smbU = result.smbU,
             block = if (result.smbU <= 0.0) FuseController.Block.CANDIDATE else base.block,
             bindingLimit = "candidate:" + (result.reject?.name ?: result.bindingLimit),
+            // S0: die Menge stammt jetzt aus DIESER Suche, also auch die
+            // Kappenliste. Wuerde die Basisliste stehenbleiben, zeigte der
+            // Datensatz eine Grenze, die diese Menge nicht bestimmt hat -
+            // bei gleichen Namen und ledgerkorrigierten Werten sogar
+            // unbemerkt.
+            caps = FuseController.capsOf(pumpIncrementU, *result.limits.toTypedArray()),
+            capsStage = FuseController.STAGE_CANDIDATE,
         )
     }
 }

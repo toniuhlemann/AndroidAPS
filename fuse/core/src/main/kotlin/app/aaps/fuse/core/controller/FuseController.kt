@@ -148,6 +148,13 @@ object FuseController {
                 "IOB ausserhalb Plausibilitaet: net=$netIobU bolus=$bolusIobU basal=$basalIobU"
             }
             require(isfMgdlPerU.isFinite() && isfMgdlPerU > 0.0) { "ISF unplausibel: $isfMgdlPerU" }
+            // DER DIVISOR DER RASTERUNG, bisher ungeprueft, obwohl der Block
+            // ISF, Ziel, iobTH, maxIOB und alle drei IOB-Felder prueft. Bei 0.0
+            // liefert `floor(x/0)*0` NaN, `NaN < 0.0` ist false, das
+            // BELOW_PUMP_INCREMENT-Tor feuert nicht - und eine NaN-Dosis
+            // verliesse den Regler. Davor stand bisher nur der Runner.
+            require(pumpIncrementU.isFinite() && pumpIncrementU > 0.0) { "Pumpenschritt unplausibel: $pumpIncrementU" }
+            require(maxSmbU.isFinite() && maxSmbU >= 0.0) { "maxSMB unplausibel: $maxSmbU" }
             require(targetMgdl.isFinite() && targetMgdl in 40.0..400.0) { "Ziel unplausibel: $targetMgdl" }
             require(iobThU.isFinite() && iobThU >= 0.0 && maxIobU.isFinite() && maxIobU >= 0.0) {
                 "iobTH/maxIOB unplausibel: $iobThU/$maxIobU"
@@ -388,6 +395,23 @@ object FuseController {
          * Leer, wenn der Zyklus die Mengenrechnung nie erreicht hat.
          */
         val caps: List<Cap> = emptyList(),
+        /**
+         * ZU WELCHER STUFE die Kappenliste gehoert (S0).
+         *
+         * Die Entscheidung wird nach dem Regler noch mehrfach umgeschrieben -
+         * CandidateGate, PrimeRelease, SubStep -, und dabei aenderten sich
+         * `smbU` und `bindingLimit`, waehrend `caps` aus der Basisstufe
+         * stehenblieb. Schlimmer noch: `CandidateSearch` fuehrt DIESELBEN
+         * NAMEN mit ledgerkorrigierten Werten. Ein Datensatz konnte damit
+         * eine gelieferte Menge zeigen, die GROESSER ist als die Kappe, die
+         * er als bindend markiert - genau der Widerspruch, gegen den die
+         * Liste ueberhaupt gebaut wurde.
+         *
+         * Leere Liste bei einer Stufe != [STAGE_BASE] heisst: die Grenzen
+         * dieser Stufe sind nicht aufzaehlbar. Das ist eine Aussage, kein
+         * Fehlen.
+         */
+        val capsStage: String = STAGE_BASE,
         /** Gewuenschte Menge VOR der Pumpenschritt-Rasterung [U] (Toni 09.08.):
          *  Eingang des Rest-Zaehlers gegen die Quantisierungs-Totzone. 0 heisst
          *  "es gab keinen Wunsch", nicht "der Wunsch war klein". */
@@ -408,10 +432,11 @@ object FuseController {
      * Eine Mengengrenze mit ihrem Wert (S0-Telemetrie, K2).
      *
      * [active] heisst "fuer die Dosis von der bindenden Grenze nicht zu
-     * unterscheiden", und die Toleranz ist deshalb EIN PUMPENSCHRITT und keine
-     * Rechengenauigkeit: zwei Kappen, die naeher beieinander liegen, ergeben
-     * dieselbe abgebbare Menge. Eine Einstufung, die an 1e-12 haengt, waere
-     * eine Zufallsentscheidung.
+     * unterscheiden", und das ist GLEICHE TICKZAHL - NICHT "innerhalb eines
+     * Pumpenschritts". Ein ganzer Schritt Abstand ist bereits eine andere
+     * lieferbare Menge. Die Regel steht in [capsOf] und nur dort; dieser
+     * Absatz hat sie einmal falsch wiederholt und die Korrektur nicht
+     * mitbekommen.
      *
      * KEINE Einstufung in hart/weich hier. Welche Grenze ein spaeteres
      * Privileg erweitern darf, ist eine Regel des Privilegs — der Regler
@@ -696,7 +721,11 @@ object FuseController {
         // unten. Gefunden hat es der Kontext-Test: erwartet 0,60, geliefert
         // 0,55. `CandidateSearch` hatte dieselbe Stelle von Anfang an mit
         // Epsilon.
-        val deliverable = floor(raw / state.pumpIncrementU + TICK_EPS) * state.pumpIncrementU
+        // UEBER `ticksOf`, nicht als zweite Abschrift. Dessen KDoc begruendet,
+        // dass eine zweite Fassung dieser Rundung der eigentliche Hazard ist -
+        // und liess die zweite Fassung dann hier stehen. Jetzt gilt "die Kappen
+        // rastern wie die Dosis" per Konstruktion statt per Augenschein.
+        val deliverable = ticksOf(raw, state.pumpIncrementU) * state.pumpIncrementU
         if (deliverable < state.pumpIncrementU) {
             return Decision(
                 0.0, TbrAction.KEEP_CURRENT, Block.BELOW_PUMP_INCREMENT, insulinReq,
@@ -754,10 +783,31 @@ object FuseController {
      */
     internal fun capsOf(pumpIncrementU: Double, vararg caps: Pair<String, Double>): List<Cap> {
         val min = caps.minOfOrNull { it.second } ?: return emptyList()
+        // NAN-RIEGEL. Er ist noetig, weil die beiden Reduktionen NICHT
+        // dieselbe sind: `minOfOrNull` faltet mit Math.min und PROPAGIERT
+        // NaN, waehrend der Dosispfad mit `minByOrNull` ueber die
+        // Totalordnung vergleicht und NaN ans ENDE sortiert. Mit einer
+        // NaN-Kappe waere die Markierung exakt INVERTIERT - die Kappe, die
+        // entschieden hat, stuende inaktiv da und die unbrauchbare aktiv.
+        // Lieber gar keine Markierung als eine falsche.
+        if (!min.isFinite()) return caps.map { Cap(it.first, it.second, false) }
         val usable = pumpIncrementU.isFinite() && pumpIncrementU > 0.0
         val minTicks = ticksOf(min, pumpIncrementU)
         return caps.map { (name, v) ->
-            Cap(name, v, if (usable) ticksOf(v, pumpIncrementU) == minTicks else v == min)
+            val active =
+                if (!v.isFinite()) false
+                // Bei erschoepftem Spielraum trennt die Tickzahl Groessen,
+                // die alle dasselbe bedeuten: nichts ist lieferbar.
+                else if (min <= 0.0) v <= 0.0
+                else if (usable) ticksOf(v, pumpIncrementU) == minTicks
+                else v == min
+            Cap(name, v, active)
         }
     }
+
+    /** Stufe, aus der eine Kappenliste stammt - s. [Decision.capsStage]. */
+    const val STAGE_BASE = "base"
+    const val STAGE_CANDIDATE = "candidate"
+    const val STAGE_PRIME = "prime"
+    const val STAGE_SUBSTEP = "subStep"
 }

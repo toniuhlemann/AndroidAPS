@@ -15,9 +15,9 @@ class CandidateGateTest {
     @Test
     fun `die Suche kann nur beschneiden - nie erhoehen`() {
         // Suche wuerde 0,60 erlauben, Vorschlag ist 0,30 -> 0,30 bleibt.
-        assertEquals(0.30, CandidateGate.apply(base(0.30), result(0.60)).smbU, 0.0)
+        assertEquals(0.30, CandidateGate.apply(base(0.30), result(0.60), 0.05).smbU, 0.0)
         // Suche erlaubt nur 0,15 -> beschnitten, Herkunft benannt.
-        val d = CandidateGate.apply(base(0.30), result(0.15))
+        val d = CandidateGate.apply(base(0.30), result(0.15), 0.05)
         assertEquals(0.15, d.smbU, 0.0)
         assertEquals("candidate:guardFloor", d.bindingLimit)
         assertEquals(FuseController.Block.NONE, d.block) // Rest > 0: kein Block
@@ -25,7 +25,7 @@ class CandidateGateTest {
 
     @Test
     fun `inhaltliche Ablehnung setzt auf null und benennt den Grund`() {
-        val d = CandidateGate.apply(base(0.30), result(0.0, CandidateSearch.Reject.GUARD_FLOOR))
+        val d = CandidateGate.apply(base(0.30), result(0.0, CandidateSearch.Reject.GUARD_FLOOR), 0.05)
         assertEquals(0.0, d.smbU, 0.0)
         assertEquals(FuseController.Block.CANDIDATE, d.block)
         assertEquals("candidate:GUARD_FLOOR", d.bindingLimit)
@@ -40,7 +40,7 @@ class CandidateGateTest {
             CandidateSearch.Reject.MODEL_HORIZON_TOO_SHORT,
             CandidateSearch.Reject.DELIVERY_AFTER_RELEASE, CandidateSearch.Reject.NO_EFFECT_IN_WINDOW,
         )) {
-            val d = CandidateGate.apply(base(0.30), result(0.0, r))
+            val d = CandidateGate.apply(base(0.30), result(0.0, r), 0.05)
             assertEquals(0.30, d.smbU, 0.0) { "genullt trotz technischem Reject $r" }
             assertEquals(CandidateGate.Kind.UNAVAILABLE, CandidateGate.kindOf(r))
         }
@@ -54,7 +54,7 @@ class CandidateGateTest {
             CandidateSearch.Reject.LEDGER_HOLD, CandidateSearch.Reject.INVALID_BAND,
             CandidateSearch.Reject.INVALID_CAPS, CandidateSearch.Reject.NON_FINITE,
         )) {
-            val d = CandidateGate.apply(base(0.30), result(0.0, r))
+            val d = CandidateGate.apply(base(0.30), result(0.0, r), 0.05)
             assertEquals(0.0, d.smbU, 0.0) { "Basis ueberlebt korrupten Reject $r" }
             assertEquals(CandidateGate.Kind.ENFORCE, CandidateGate.kindOf(r))
             assertEquals(FuseController.Block.CANDIDATE, d.block)
@@ -63,7 +63,7 @@ class CandidateGateTest {
 
     @Test
     fun `ohne Suchergebnis bleibt alles wie es war`() {
-        val d = CandidateGate.apply(base(0.30), null)
+        val d = CandidateGate.apply(base(0.30), null, 0.05)
         assertEquals(0.30, d.smbU, 0.0)
         assertEquals("smbRatio", d.bindingLimit)
     }
@@ -75,7 +75,7 @@ class CandidateGateTest {
         for (b in listOf(0.05, 0.15, 0.30, 0.75))
             for (c in listOf(0.0, 0.05, 0.10, 0.30, 0.60, 1.0))
                 for (r in listOf(null, CandidateSearch.Reject.GUARD_FLOOR, CandidateSearch.Reject.GRID_INCONSISTENT)) {
-                    val d = CandidateGate.apply(base(b), result(c, r))
+                    val d = CandidateGate.apply(base(b), result(c, r), 0.05)
                     assertTrue(d.smbU <= b + 1e-12 && d.smbU >= 0.0)
                     n++
                 }

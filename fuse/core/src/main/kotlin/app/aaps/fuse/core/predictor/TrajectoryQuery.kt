@@ -68,17 +68,38 @@ object TrajectoryQuery {
     }
 
     /**
-     * WIE BALD ueber mehrere Bahnen: die erste Minute, in der das PUNKTWEISE
-     * Minimum den Boden unterschreitet.
+     * Das punktweise Minimum ueber mehrere Bahnen, MINUTE FUER MINUTE.
      *
-     * Punktweise und nicht "die frueheste der einzelnen Unterschreitungen" —
-     * das waere dasselbe Ergebnis, aber nur zufaellig; die punktweise Form ist
-     * die, die [app.aaps.fuse.core.controller.CandidateSearch] auch fuer den
-     * Guard bildet.
+     * ZUSAMMENGEFUEHRT WIRD UEBER `offsetMin`, NICHT UEBER DEN LISTENINDEX.
+     * Die erste Fassung lief ueber `points[i]` der ersten Bahn und griff mit
+     * demselben i in die anderen. Das ist nur richtig, solange alle Bahnen
+     * exakt dasselbe Minutenraster fuehren - heute tun sie das, weil beide aus
+     * einem kopierten Eingang durch dieselbe Schleife entstehen. Aber das ist
+     * eine ANNAHME ueber fremden Code, keine Eigenschaft dieser Funktion, und
+     * sie stand nirgends geschrieben. Ueber `offsetMin` zusammengefuehrt ist
+     * das Ergebnis unabhaengig davon richtig, und bei gleichen Rastern - also
+     * heute immer - kommt exakt dieselbe Folge heraus.
      *
-     * Fehlt einer Bahn ein Index, zaehlt sie dort nicht mit (`getOrNull`), statt
-     * den Zyklus an einer Telemetriezeile abstuerzen zu lassen.
+     * Minuten, die nur EINE Bahn kennt, gehen mit deren Wert ein: eine
+     * fehlende Minute ist keine Entwarnung.
+     *
+     * Der ANKER ist als Minute 0 enthalten, mit dem kleinsten der Ankerwerte -
+     * ohne ihn waere das Ergebnis nicht mit [minSafetyLowerOf] konsistent, das
+     * ihn ueber `minSafetyLowerBg` mitfuehrt.
      */
+    internal fun pointwiseSafetyLower(trajectories: List<PredictorResult>): List<Pair<Int, Double>> {
+        if (trajectories.isEmpty()) return emptyList()
+        val byMinute = sortedMapOf<Int, Double>()
+        byMinute[0] = trajectories.minOf { it.bgAtAnchor }
+        for (t in trajectories) for (p in t.points) {
+            val v = p.safetyLowerBg
+            if (!v.isFinite()) continue
+            val cur = byMinute[p.offsetMin]
+            if (cur == null || v < cur) byMinute[p.offsetMin] = v
+        }
+        return byMinute.entries.map { it.key to it.value }
+    }
+
     /**
      * WANN das Minimum liegt, gegen das der Regler ENTSCHEIDET (S0, I16).
      *
@@ -93,42 +114,37 @@ object TrajectoryQuery {
      * der Bremsbahn. Beide Zahlen stimmten - nebeneinander gelesen ergaben sie
      * eine unmoegliche Bahn.
      *
-     * 0 heisst "der Anker ist das Minimum", wie ueberall sonst. Das Ergebnis
-     * ist per Konstruktion mit [minSafetyLowerOf] konsistent: das punktweise
-     * Minimum ueber die Bahnen und dann ueber die Zeit laeuft ueber dieselbe
-     * Menge von Werten wie das Minimum der Bahnminima.
+     * 0 heisst "der Anker ist das Minimum". Bei Gleichstand gewinnt die
+     * FRUEHERE Minute (striktes `<`) - dieselbe Regel wie in `TrajectoryCore`.
      */
     fun timeToMinSafetyLowerOf(vararg trajectories: PredictorResult?): Int? {
-        val present = trajectories.filterNotNull()
-        val lead = present.firstOrNull() ?: return null
-        var best = present.minOf { it.bgAtAnchor }
+        val series = pointwiseSafetyLower(trajectories.filterNotNull())
+        if (series.isEmpty()) return null
+        var best = Double.MAX_VALUE
         var at = 0
-        for ((i, p) in lead.points.withIndex()) {
-            var m = Double.MAX_VALUE
-            for (t in present) {
-                val v = t.points.getOrNull(i)?.safetyLowerBg ?: continue
-                if (v < m) m = v
-            }
-            if (m.isFinite() && m < best) {
-                best = m
-                at = p.offsetMin
-            }
-        }
+        for ((minute, v) in series) if (v < best) { best = v; at = minute }
         return at
     }
 
+    /**
+     * WIE BALD ueber mehrere Bahnen: die erste Minute, in der das punktweise
+     * Minimum den Boden unterschreitet.
+     *
+     * Der ANKER zaehlt hier ABSICHTLICH NICHT mit (`minute > 0`): er ist eine
+     * Messung, keine Prognose, und ein Boden-Unterschreiten dort ist ein
+     * anderer Befund mit einem anderen Zustaendigen - dieselbe Grenze wie in
+     * [timeToFloorMin].
+     *
+     * ACHTUNG, ASYMMETRIE: [floorDeficitOf] laeuft ueber [minSafetyLowerOf] und
+     * SCHLIESST den Anker ein. Ein aktuell tiefer BG erzeugt dort also ein
+     * Defizit, waehrend hier `null` steht. Das ist gewollt - "wie tief" fragt
+     * nach dem schlimmsten Punkt, "wie bald" nach der Prognose -, aber es muss
+     * dastehen, sonst liest jemand das Paar als Widerspruch.
+     */
     fun timeToFloorOf(floorMgdl: Double, vararg trajectories: PredictorResult?): Int? {
         if (!floorMgdl.isFinite()) return null
-        val present = trajectories.filterNotNull()
-        val lead = present.firstOrNull() ?: return null
-        for ((i, p) in lead.points.withIndex()) {
-            var m = Double.MAX_VALUE
-            for (t in present) {
-                val v = t.points.getOrNull(i)?.safetyLowerBg ?: continue
-                if (v < m) m = v
-            }
-            if (m.isFinite() && m < floorMgdl) return p.offsetMin
-        }
+        for ((minute, v) in pointwiseSafetyLower(trajectories.filterNotNull()))
+            if (minute > 0 && v < floorMgdl) return minute
         return null
     }
 }

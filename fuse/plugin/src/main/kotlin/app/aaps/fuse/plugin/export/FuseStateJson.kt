@@ -43,6 +43,9 @@ object FuseStateJson {
     // restartfest, Huellen-Belastung auf gate-wirksame Menge umgestellt.
     const val RULE_SET_VERSION = 8
 
+    /** Schema des Trail-Datensatzes - s. die Notiz an der Schreibstelle. */
+    const val SCHEMA_VERSION = 3
+
     /** Gruende fuer fehlende Felder. Benannt statt weggelassen. */
     const val GAP_NO_LEDGER = "LEDGER_NOT_WIRED"
     const val GAP_POLICY_NOT_READ = "POLICY_NOT_READ_THIS_CYCLE"
@@ -166,7 +169,16 @@ object FuseStateJson {
                 .put("insulinReqU", fin(d.insulinReqU))
                 .put("predAtReleaseMgdl", fin(d.predAtReleaseMgdl))
                 .put("minLowerMgdl", fin(d.minLowerMgdl))
-                .put("minMeanMgdl", fin(outcome.prediction?.minMeanBg))
+                // S0: main/combined getrennt wie bei der unteren Familie drei
+                // Zeilen tiefer. `predAtReleaseMgdl` und `minLowerMgdl` sind
+                // ueber BEIDE Bahnen minimiert, `minMeanMgdl` war es nie - als
+                // unqualifizierter Nachbar zweier kombinierter Felder gelesen,
+                // ergab das wieder eine Bahn, die es nicht gibt.
+                .put("minMeanMainMgdl", fin(outcome.prediction?.minMeanBg))
+                .put(
+                    "minMeanCombinedMgdl",
+                    fin(listOfNotNull(outcome.prediction?.minMeanBg, outcome.restraint?.minMeanBg).minOrNull())
+                )
                 // Hat die SCHNELLE Bahn gebremst? Ohne dieses Feld ist im
                 // Nachhinein nicht unterscheidbar, ob eine Zurueckhaltung aus
                 // dem traegen Antrieb kam oder aus der Bremse.
@@ -201,6 +213,10 @@ object FuseStateJson {
                 // `bindingLimit` nennt bei Gleichstand die erste der Liste -
                 // und mit IobThPercent = 100 sind iobTh- und maxIob-Spielraum
                 // bitgenau gleich, der Gleichstand ist also der Normalfall.
+                // Die Stufe, zu der die Liste gehoert. Ohne sie konnte eine
+                // Basisliste neben einer Menge stehen, die eine SPAETERE Stufe
+                // bestimmt hat - bei gleichen Namen unbemerkt.
+                .put("capsStage", d.capsStage)
                 .put("caps", JSONArray().apply {
                     d.caps.forEach {
                         put(
@@ -340,7 +356,10 @@ object FuseStateJson {
                     .put("timeToMinSafetyLowerMin", it.timeToMinSafetyLowerMin)
             } ?: JSONObject.NULL
 
-        o.put(
+        // Benannt statt weggelassen (Kopfregel dieser Datei): ein blankes
+        // `null` verwechselt "Abbruch vor der Bahn" mit "Bahn vorhanden".
+        if (outcome.prediction == null) gap("hub", "NO_TRAJECTORY_THIS_CYCLE")
+        else o.put(
             "hub", JSONObject()
                 .put("main", hubsOf(outcome.prediction))
                 .put("restraint", hubsOf(outcome.restraint))
@@ -610,6 +629,13 @@ object FuseStateJson {
         // Der Kopf sagt in EINEM Feld, ob dieser Datensatz die R89-Bedingung
         // erfuellt - und das haengt an der TATSAECHLICH uebergebenen
         // Ledger-Sicht, nicht an der Codeversion.
+        // SCHEMAVERSION. Sie kommt, weil in dieser Serie wirklich ein
+        // Schluessel umbenannt wurde (`timeToMinSafetyLowerMin` ->
+        // `...MainMin`): EINE Trail-Datei traegt beide Schreibweisen, und
+        // ohne Marke ist einer Zeile nicht anzusehen, welche gilt.
+        //  2 = S0-A/B/C (10.08.), Schluessel `timeToMinSafetyLowerMin`
+        //  3 = ab 11.08.: MainMin/CombinedMin, minMean* getrennt, capsStage
+        o.put("schemaVersion", SCHEMA_VERSION)
         o.put("r89Complete", ledger != null)
         return o
     }

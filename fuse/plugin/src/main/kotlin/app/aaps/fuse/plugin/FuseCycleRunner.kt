@@ -361,7 +361,19 @@ class FuseCycleRunner(
         fun abortTbr(): Pair<FuseController.TbrRequest?, Boolean> =
             FuseAbortTbr.evaluate(processedTbrEbData, profileFunction, computeTs).let { it.request to it.alarm }
 
-        fun abort(reason: String, signal: FuseSignalSource.Signal? = null, policy: Config? = null, step: ObserverStep? = null): Outcome {
+        // `prediction`/`restraint` mit Default null: drei Abbruchstellen liegen
+        // NACH dem Bahnbau (bolusStep, iob unknown, state-Guard). Ohne sie
+        // schrieb der Trail dort `hub: {main: null, restraint: null}`, obwohl
+        // BEIDE Bahnen gerechnet waren - ein Verlust, der wie ein Nichtvorhandensein
+        // aussieht.
+        fun abort(
+            reason: String,
+            signal: FuseSignalSource.Signal? = null,
+            policy: Config? = null,
+            step: ObserverStep? = null,
+            prediction: PredictorResult? = null,
+            restraint: PredictorResult? = null,
+        ): Outcome {
             // SUB-02 (Codex Fix-Pass-5-Closure): der Rest-Zaehler ist
             // aufgeschobene ABSICHT, kein Guthaben. Jeder Abbruch - Signal,
             // Profil, Config, Epoch, Kernel, Zeitachse - beendet den Kontext,
@@ -384,7 +396,7 @@ class FuseCycleRunner(
                     ?.takeIf { it.valid }?.iob
             }.getOrNull()
             return Outcome(
-                decision = FuseController.noInput(reason), tbr = cancelTbr, prediction = null,
+                decision = FuseController.noInput(reason), tbr = cancelTbr, prediction = prediction, restraint = restraint,
                 sourceTs = signal?.sourceTs, computeTs = computeTs, health = step?.health, gate = gate,
                 reason = reason, alarm = tbrAlarm, bgMgdl = signal?.q1, targetMgdl = null, targetSource = null,
                 signal = signal, band = null, discount = null, onset = null, prime = null, candidate = null, candidateGap = null, policy = policy, state = null, step = step,
@@ -780,7 +792,7 @@ class FuseCycleRunner(
         val bolusStep = pumpe.bolusStepU
         // 0.0 waere GEFAEHRLICHER als ein Block: floor(x/0)*0 ergibt NaN, und
         // NaN < 0.0 ist false — der Zyklus fiele durch statt zu sperren.
-        if (!bolusStep.isFinite() || bolusStep <= 0.0) return abort("bolusStep=$bolusStep", signal, cfg, step)
+        if (!bolusStep.isFinite() || bolusStep <= 0.0) return abort("bolusStep=$bolusStep", signal, cfg, step, prediction, restraint)
 
         val maxIobU = constraintsChecker.getMaxIOBAllowed().value()
         val iobTotal = iobCobCalculator.calculateFromTreatmentsAndTemps(computeTs, profile)
@@ -788,7 +800,7 @@ class FuseCycleRunner(
         // dieser Lesung kommen capIob, netIob und der Bolusanteil - also die
         // Groessen, an denen JEDE Mengenkappe haengt. Eine erfundene Null
         // macht hier aus "8 U Spielraum belegt" ein "8 U frei".
-        if (!iobTotal.valid) return abort("iob unknown (no profile)", signal, cfg, step)
+        if (!iobTotal.valid) return abort("iob unknown (no profile)", signal, cfg, step, prediction, restraint)
         val isf = profile.getIsfMgdlTimeFromMidnight(MidnightUtils.secondsFromMidnight(signal.sourceTs))
         val (target, targetSource) = activeTarget(profile, computeTs)
 
@@ -836,7 +848,7 @@ class FuseCycleRunner(
             }
         ) {
             is CoreInputGuard.Outcome.Built  -> s.value
-            is CoreInputGuard.Outcome.Failed -> return abort("state: ${s.failure.detail}", signal, cfg, step)
+            is CoreInputGuard.Outcome.Failed -> return abort("state: ${s.failure.detail}", signal, cfg, step, prediction, restraint)
         }
 
         // Schwanzhaftung. C1/C2: pessimistisch ueber Haupt- UND Bremsbahn und
@@ -940,7 +952,7 @@ class FuseCycleRunner(
                     // Bremsbahn-lower 74 / Wirkung -5 / Boden 70 passierte.
                     restraint = restraint,
                 )
-                CandidateGate.apply(baseDecision, candidateResult)
+                CandidateGate.apply(baseDecision, candidateResult, bolusStep)
             }
         }
 
@@ -1109,6 +1121,11 @@ class FuseCycleRunner(
             smbU = lifted.smbU + subStep.releaseU,
             block = FuseController.Block.NONE,
             bindingLimit = lifted.bindingLimit + "|subStep",
+            // S0: der Rest-Zaehler HEBT die Menge ueber die Kappe, die sie
+            // gerastert hat - eine mitgefuehrte Kappenliste behauptete hier
+            // eine Grenze, die gerade ueberschritten wurde.
+            caps = emptyList(),
+            capsStage = FuseController.STAGE_SUBSTEP,
         )
 
         val verifiedLift = if (withCarry.smbU <= 0.0) withCarry else {

@@ -122,6 +122,18 @@ object CandidateSearch {
         val minLowerWithCandidateMgdl: Double?,
         val effectPerUAtReleaseMgdl: Double?,
         val candidatesEvaluated: Int,
+        /**
+         * Die Mengengrenzen DIESER Suche (S0, Stufe "candidate").
+         *
+         * Sie tragen dieselben NAMEN wie die des Reglers, aber andere
+         * WERTE: hier sind sie ledgerkorrigiert (`effectiveIobThHeadroomU`
+         * usw.). Ohne diese Liste uebernaehme der Export die Basisliste des
+         * Reglers zu einer Menge, die aus dieser Suche stammt - gleiche
+         * Namen, falsche Zahlen, und niemand saehe den Unterschied.
+         *
+         * Leer, wenn die Suche vor dem Mengenraum abgebrochen ist.
+         */
+        val limits: List<Pair<String, Double>> = emptyList(),
     )
 
     /**
@@ -339,11 +351,13 @@ object CandidateSearch {
             "maxSmb" to caps.maxSmbU,
         )
         val binding = limits.minByOrNull { it.second }!!
+        // S0: ab hier traegt jede Rueckgabe die Grenzen, die sie gerechnet hat.
+        val capLimits = limits
         if (binding.second <= 0.0)
-            return Result(0.0, Reject.NO_HEADROOM, binding.first, baselineMean, null, null, effectPerU[releaseIdx], 0)
+            return Result(0.0, Reject.NO_HEADROOM, binding.first, baselineMean, null, null, effectPerU[releaseIdx], 0, capLimits)
         val maxTicks = floor(binding.second / caps.pumpIncrementU + 1e-9).toInt()
         if (maxTicks < 1)
-            return Result(0.0, Reject.BELOW_PUMP_INCREMENT, binding.first, baselineMean, null, null, effectPerU[releaseIdx], 0)
+            return Result(0.0, Reject.BELOW_PUMP_INCREMENT, binding.first, baselineMean, null, null, effectPerU[releaseIdx], 0, capLimits)
 
         // 3. Groesster Kandidat, der BEIDE Bedingungen besteht. Absteigend, weil
         //    die zulaessige Menge nach oben begrenzt ist: mehr Insulin senkt
@@ -390,13 +404,13 @@ object CandidateSearch {
                     val next = (ticks + 1) * caps.pumpIncrementU
                     if (minLowerWith(next) < band.guardFloorMgdl) "guardFloor" else "releaseTargetLow"
                 }
-                return Result(u, null, reason, baselineMean, meanWith, minLower, effectPerU[releaseIdx], evaluated)
+                return Result(u, null, reason, baselineMean, meanWith, minLower, effectPerU[releaseIdx], evaluated, capLimits)
             }
             if (ticks == 1) guardFailedAtSmallest = !guardOk
         }
 
         val reject = if (guardFailedAtSmallest) Reject.GUARD_FLOOR else Reject.BELOW_TARGET_BAND
-        return Result(0.0, reject, binding.first, baselineMean, null, null, effectPerU[releaseIdx], evaluated)
+        return Result(0.0, reject, binding.first, baselineMean, null, null, effectPerU[releaseIdx], evaluated, capLimits)
     }
 
     private fun no(reject: Reject, detail: String) =
