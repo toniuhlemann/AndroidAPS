@@ -629,6 +629,15 @@ class FusePlugin @Inject constructor(
                 reason = publication.reason,
                 treatmentViewPresent = outcome?.treatmentView != null,
             ),
+            // B3: die Diagnose neben dem Sperrgrund. Der Grund steht im
+            // Publikationsgate, das WARUM steht hier - kein Datensatz,
+            // Handeintrag, fremde Pumpe und unlesbare aktive Pumpe sind vier
+            // Ursachen mit vier verschiedenen Massnahmen.
+            FuseStateJson.PatchEpoch(
+                epochTs = patchEpoch.epochTs,
+                known = patchEpoch.known,
+                reason = patchEpoch.reason.name,
+            ),
         )
     }
 
@@ -648,6 +657,7 @@ class FusePlugin @Inject constructor(
         rt: RT,
         cycleId: String,
         publicationGate: FuseStateJson.PublicationGate,
+        patchEpoch: FuseStateJson.PatchEpoch,
     ) {
         runCatching {
             val start = System.nanoTime()
@@ -665,6 +675,9 @@ class FusePlugin @Inject constructor(
                 // Zustand, mit dem der naechste Zyklus rechnen wird.
                 ledger = FuseStateJson.LedgerSnapshot(ledgerAdapter.revision, ledgerAdapter.state),
                 publicationGate = publicationGate,
+                // B3: die Diagnose neben dem Sperrgrund. Der Grund steht im
+                // Publikationsgate, das WARUM steht hier.
+                patchEpoch = patchEpoch,
             )
             // Die Android-Aufloesung des Verzeichnisses passiert AUSSCHLIESSLICH
             // hier — der Schreiber selbst kennt kein Environment und bleibt

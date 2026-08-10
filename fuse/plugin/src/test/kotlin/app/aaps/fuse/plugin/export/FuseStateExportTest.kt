@@ -244,6 +244,42 @@ class FuseStateExportTest {
     }
 
     /**
+     * B3: die DIAGNOSE der Patch-Epoche steht neben dem Sperrgrund.
+     *
+     * Der Sperrgrund allein (`REAL_PUMP_EPOCH_UNKNOWN` im publicationGate)
+     * sagt nur DASS gesperrt wurde. Warum die Epoche fehlt - kein Datensatz,
+     * Handeintrag, fremde Pumpe, aktive Pumpe unlesbar - sind vier Ursachen
+     * mit vier verschiedenen Massnahmen.
+     */
+    @Test
+    fun `die Patch-Epoche steht mit Grund im Datensatz`() {
+        val j = FuseStateJson.record(
+            "s#1", outcome(), rt(), cfg, BUILD, 0L, null,
+            patchEpoch = FuseStateJson.PatchEpoch(epochTs = null, known = false, reason = "NO_EVENT"),
+        ) { 5_000_000L }
+        val p = j.getJSONObject("patchEpoch")
+        assertFalse(p.getBoolean("known"))
+        assertEquals("NO_EVENT", p.getString("reason"))
+        assertFalse(p.has("epochTs")) { "unbekannt heisst KEIN Zeitstempel, nicht 0" }
+
+        val bekannt = FuseStateJson.record(
+            "s#2", outcome(), rt(), cfg, BUILD, 0L, null,
+            patchEpoch = FuseStateJson.PatchEpoch(1_700_000_000_000L, true, "MATCHING_PUMP_IDENTITY"),
+        ) { 5_000_000L }
+        assertEquals(1_700_000_000_000L, bekannt.getJSONObject("patchEpoch").getLong("epochTs"))
+    }
+
+    /** Wer sie nicht meldet, bekommt eine LUECKE - keine erfundene Epoche. */
+    @Test
+    fun `ohne gemeldete Patch-Epoche steht eine Luecke im Datensatz`() {
+        val j = record()
+        assertFalse(j.has("patchEpoch"))
+        val gaps = j.getJSONArray("gaps")
+        val fields = (0 until gaps.length()).map { gaps.getJSONObject(it).getString("field") }
+        assertTrue(fields.contains("patchEpoch"))
+    }
+
+    /**
      * `allowed` und `realPump` sind die Felder, an denen sich ein Auswerter
      * festmachen soll - nicht am Namen des Verdikts.
      *

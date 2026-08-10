@@ -83,6 +83,25 @@ object FuseStateJson {
      */
     data class PublicationGate(val allowed: Boolean, val reason: String?, val treatmentViewPresent: Boolean)
 
+    /**
+     * B3: die PATCH-EPOCHE dieses Zyklus.
+     *
+     * Der SPERRGRUND steht schon im Publikationsgate
+     * (`REAL_PUMP_EPOCH_UNKNOWN`) - was dort fehlt, ist die DIAGNOSE: WARUM
+     * ist die Epoche unbekannt? Ohne sie sieht man im Trail, dass gesperrt
+     * wurde, aber nicht, ob es an einem fehlenden Datensatz, einem
+     * Handeintrag, einer fremden Pumpe oder einer nicht lesbaren aktiven
+     * Pumpe lag. Das sind vier verschiedene Ursachen mit vier verschiedenen
+     * Massnahmen.
+     *
+     * @param epochTs `null` heisst UNBEKANNT, nicht "keine Epoche" - siehe
+     *   [reason].
+     * @param reason der Name aus `FusePatchEpoch.Reason`. Er sagt bewusst
+     *   MATCHING_PUMP_IDENTITY und nicht "PUMP_ORIGIN": bewiesen ist eine
+     *   passende Identitaet, nicht die Herkunft.
+     */
+    data class PatchEpoch(val epochTs: Long?, val known: Boolean, val reason: String)
+
     fun record(
         cycleId: String,
         outcome: FuseCycleRunner.Outcome,
@@ -95,6 +114,7 @@ object FuseStateJson {
         // Parameter per Default ueberspringen koennen.
         ledger: LedgerSnapshot? = null,
         publicationGate: PublicationGate? = null,
+        patchEpoch: PatchEpoch? = null,
         nowNs: () -> Long,
     ): JSONObject {
         val gaps = JSONArray()
@@ -168,6 +188,15 @@ object FuseStateJson {
         // dieses die Ledger-Freigabe des Zyklus. Beide koennen unabhaengig
         // voneinander eine Menge zurueckhalten, und im Trail muss unterscheidbar
         // bleiben, welches es war.
+        // ---- Patch-Epoche (B3) ---------------------------------------------
+        if (patchEpoch == null) gap("patchEpoch", "NOT_REPORTED")
+        else o.put(
+            "patchEpoch", JSONObject()
+                .put("known", patchEpoch.known)
+                .put("reason", patchEpoch.reason)
+                .putOpt("epochTs", patchEpoch.epochTs)
+        )
+
         if (publicationGate == null) gap("publicationGate", "NOT_REPORTED")
         else o.put(
             "publicationGate", JSONObject()
