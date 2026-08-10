@@ -113,13 +113,34 @@ enum class FuseDoubleKey(
     OnsetEnvelopeU("fuse_onset_envelope_u", 1.5, 0.0, 5.0),
 
     /**
-     * Huelle der Sofort-Freigabe am Mahlzeiten-Marker [U]. Default 1,2 =
-     * das gemessene Reversibilitaetsmass KC2-53 (per Basal-Null in 120 min
-     * rueckholbar: 0,9-1,4 U). Obergrenze 2,0 liegt bereits JENSEITS der
-     * gemessenen Rueckholkapazitaet - wer sie ausreizt, gibt die
-     * Rueckholbarkeits-Garantie auf.
+     * Die Marker-Huelle [U] - und sie ist ZWEI Dinge, was man wissen muss:
+     *
+     *  1. Obergrenze der Sofort-Freigabe je Episode.
+     *  2. ZAEHLER des erklaerten Absorptionsantriebs
+     *     (`(Huelle - geliefert) * ISF / Absorptionsfenster`). Sie bestimmt
+     *     also nicht nur, wieviel hoechstens kommt, sondern auch, wie
+     *     STARK gedrueckt wird.
+     *
+     * Default 1,2 = das gemessene Reversibilitaetsmass KC2-53 (per
+     * Basal-Null in 120 min rueckholbar: 0,9-1,4 U).
+     *
+     * OBERGRENZE 3,0 (11.08., Tonis Entscheidung). Sie liegt WEIT jenseits
+     * der Rueckholkapazitaet von ~0,5 U/h - eine Menge in dieser Groesse ist
+     * in der Zeit, in der sie entsteht, nicht mehr einzufangen.
+     *
+     * Das ist bewusst so und kein Versehen: die Menge ist eine ERKLAERUNG
+     * des Nutzers ueber das, was er gerade isst, und diese Information hat
+     * das Geraet nicht. Was hier NICHT unsicher ist, ist die Menge; unsicher
+     * bleibt allein der ZEITPUNKT der Absorption - dieselbe Unsicherheit,
+     * die auch einen korrekt gerechneten HCL-Bolus bei einer fetten
+     * Mahlzeit trifft.
+     *
+     * Daraus folgt die Aufgabenteilung, die in Scheibe 1 gebaut wird: die
+     * Waechter duerfen die ERSTE Freigabe nicht verhindern (dort wissen sie
+     * nichts, was der Nutzer nicht weiss), aber sie halten das NACHLEGEN an,
+     * wenn die angekuendigte Absorption ausbleibt.
      */
-    PrimeEnvelopeU("fuse_prime_envelope_u", 1.2, 0.0, 2.0),
+    PrimeEnvelopeU("fuse_prime_envelope_u", 1.2, 0.0, 3.0),
 
 
     /**

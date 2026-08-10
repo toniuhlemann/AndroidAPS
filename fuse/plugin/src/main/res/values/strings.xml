@@ -64,7 +64,7 @@
     <string name="fuse_prime_release_title">Sofort-Freigabe am Marker</string>
     <string name="fuse_prime_release_summary">Ab deinem Mahlzeit-Marker beginnt FUSE SOFORT mit kleinen Portionen - noch bevor der Sensor etwas sieht (der hinkt dem Essen ~20 Minuten hinterher). Nur mit gesetztem Marker, nur 15 Minuten, und alle Waechter behalten Vorrang.</string>
     <string name="fuse_prime_envelope_title">Freigabe-Huelle [U]</string>
-    <string name="fuse_prime_envelope_summary">Hoechstmenge je Marker-Episode. 1,2 U ist nicht gewuerfelt: genau so viel kann FUSE per Basal-Stopp in 2 Stunden wieder einfangen, falls du den Marker setzt und doch nichts isst - ein Irrtum kostet nichts Bleibendes. Groessere Werte geben diese Garantie auf.</string>
+    <string name="fuse_prime_envelope_summary">Wieviel Insulin dein Markerdruck wert ist. Wirkt DOPPELT: Hoechstmenge je Episode UND Staerke des Antriebs - eine groessere Huelle liefert also nicht nur mehr, sondern auch frueher. 1,2 U ist die Menge, die FUSE per Basal-Stopp in 2 Stunden wieder einfangen kann. Darueber ist ein Irrtum nicht mehr in der Zeit korrigierbar, in der er entsteht - was du hier eintraegst, ist deine Entscheidung ueber die Mahlzeit, nicht eine Schaetzung des Geraets.</string>
     <string name="fuse_marker_m">Mahlzeit</string>
     <string name="fuse_max_total_iob_title">Maximales Gesamt-IOB [U]</string>
     <string name="fuse_max_total_iob_summary">AAPS-weite Sicherheitsgrenze - DERSELBE Wert wie bei OpenAPS SMB/autoISF (openapsmb_max_iob), kein FUSE-eigener Schluessel. FUSE deckelt hieran seit dem MAX_VALUE-Fund vom 06.08.; ohne sichtbaren Eintrag haette eine frische Installation stillschweigend den 3-U-Default benutzt.</string>
