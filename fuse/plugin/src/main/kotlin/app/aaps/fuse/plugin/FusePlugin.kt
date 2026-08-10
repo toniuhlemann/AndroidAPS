@@ -19,6 +19,7 @@ import app.aaps.core.data.model.TE
 import app.aaps.core.interfaces.db.PersistenceLayer
 import app.aaps.fuse.plugin.ledger.FusePatchEpoch
 import app.aaps.fuse.plugin.ledger.LedgerFacts
+import app.aaps.fuse.plugin.ledger.FusePatchEpochSource
 import app.aaps.fuse.plugin.ledger.ProposalPumpEpoch
 import app.aaps.core.interfaces.iob.IobCobCalculator
 import app.aaps.core.interfaces.logging.AAPSLogger
@@ -405,24 +406,11 @@ class FusePlugin @Inject constructor(
         // Behauptung, seither sei nichts geschehen, und genau das ist
         // unbekannt.
         val aktiverPumpentyp = runCatching { activePlugin.activePump.model().name }.getOrNull()
-        val patchEpoch = run {
-            val pumpe = runCatching { activePlugin.activePump }.getOrNull()
-            FusePatchEpoch.of(
-                // GENAU EINE Abfrage. Liefert sie einen unpassenden Wechsel,
-                // ist die Epoche unbekannt - hier wird NICHT nach einem
-                // aelteren passenden weitergesucht.
-                event = runCatching {
-                    persistenceLayer.getLastTherapyRecordUpToNow(TE.Type.CANNULA_CHANGE)
-                }.getOrNull(),
-                activePumpTypeName = aktiverPumpentyp,
-                activeSerialHash = LedgerFacts.serialHashOf(
-                    runCatching { pumpe?.serialNumber() }.getOrNull(),
-                    aktiverPumpentyp,
-                ),
-                nowTs = dateUtil.now(),
-                serialHashOf = LedgerFacts::serialHashOf,
-            )
-        }
+        val patchEpoch = FusePatchEpochSource.current(
+            persistenceLayer,
+            runCatching { activePlugin.activePump }.getOrNull(),
+            dateUtil.now(),
+        )
         ledgerAdapter.observePatchEpoch(patchEpoch.epochTs)
 
         val outcome = try {
