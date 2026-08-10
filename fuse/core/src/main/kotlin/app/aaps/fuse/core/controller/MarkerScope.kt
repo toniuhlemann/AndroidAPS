@@ -7,7 +7,7 @@ import kotlin.math.exp
  * Tonis Entscheid 08.08. nachmittags: "bis zur Wende, max 45 min").
  *
  * Der Marker traegt zwei getrennte Dinge:
- *  1. KONTEXT (Anzeige, Stufen-Huelle des Prime-Fensters, Onset-Evidenz):
+ *  1. KONTEXT (Anzeige, Freigabe-Huelle des Prime-Fensters, Onset-Evidenz):
  *     gilt weiter fuer das volle MARKER_WINDOW von 90 min.
  *  2. SONDERRECHTE (Rebound-Entwaffnung, Marker-Prior auf der unteren Bahn,
  *     Marker-Zweig des Mahlzeit-Fensters): die decken sonst nachweislich die
@@ -81,12 +81,12 @@ object MarkerScope {
      * Insulinbuch bleibt die Freigabe zu, genau wie am Abend des 08.08.
      *
      * SELBSTBEGRENZUNG (loest zugleich das Audit-Finding "keine Episoden-
-     * Gesamthuelle"): der Kredit rechnet mit dem REST der Stufen-Huelle. Was
+     * Gesamthuelle"): der Kredit rechnet mit dem REST der Freigabe-Huelle. Was
      * die Episode schon geliefert hat - egal ob ueber die Sofort-Freigabe
      * oder ueber die Rampe -, zieht den Kredit herunter. Beide Pfade teilen
      * sich damit EINE Huelle, und die Erklaerung verbraucht sich selbst.
      *
-     * @param envelopeU Huelle der gewaehlten Stufe [U]
+     * @param envelopeU Die Freigabe-Huelle [U] - EINE, seit dem Wegfall von S/M/L.
      * @param deliveredU in dieser Episode bereits gate-wirksam abgegeben [U]
      * @param isfMgdlPerU Profil-ISF am Anker
      * @return erwarteter Anstieg [mg/dl/min], 0 wenn die Huelle aufgebraucht

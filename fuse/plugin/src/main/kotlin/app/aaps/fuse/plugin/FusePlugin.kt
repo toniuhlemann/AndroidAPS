@@ -244,13 +244,22 @@ class FusePlugin @Inject constructor(
      */
     private fun warmGraphRingOnce() {
         if (graphRingWarmed) return
+        val f = java.io.File(
+            android.os.Environment.getExternalStorageDirectory(),
+            "Documents/aapsLogs/fuse_state_history.jsonl"
+        )
+        // DAS FLAG ERST, WENN ES ETWAS ZU LESEN GAB (Sweep 11.08.).
+        //
+        // Vorher stand `graphRingWarmed = true` VOR der Arbeit, und der
+        // Ausstieg bei fehlender Datei war ein nichtlokales `return` aus dem
+        // `runCatching`. Beim allerersten Start - Neuinstallation, oder wenn
+        // der erste Zyklus vor dem ersten Trail-Schreibvorgang laeuft - war
+        // der Warmstart damit fuer die gesamte Prozesslebenszeit verbraucht,
+        // ohne je eine Zeile gelesen zu haben. Ein `exists()` je Zyklus
+        // kostet nichts gegen einen dauerhaft leeren Graphen.
+        if (!f.exists()) return
         graphRingWarmed = true
         runCatching {
-            val f = java.io.File(
-                android.os.Environment.getExternalStorageDirectory(),
-                "Documents/aapsLogs/fuse_state_history.jsonl"
-            )
-            if (!f.exists()) return
             val cutoff = System.currentTimeMillis() - 25L * 3600_000L
             val pts = ArrayList<app.aaps.core.interfaces.overview.FuseOverviewSource.Point>()
             // MARKERDRUCKE aus dem Trail (11.08.). Der Ring lebt im Prozess -
@@ -360,6 +369,13 @@ class FusePlugin @Inject constructor(
             return false
         }
         preferences.put(FuseLongKey.MealMarkerArmedTs, now)
+        // Auch beim ARMEN raeumen (Sweep 11.08.): bisher tat das nur der
+        // Ruecknahme-Zweig. Ein Stempel aus der Zeit vor dem Umbau ueberlebte
+        // damit beliebig lange und blieb als latenter Ruecktausch liegen -
+        // wirkungslos, solange `armedTs` gesetzt ist, aber scharf in genau
+        // dem Moment, in dem es das nicht ist. Nach dem ersten Druck auf
+        // dieser Version ist der Schluessel endgueltig leer.
+        preferences.put(FuseLongKey.MealMarkerStamp, 0L)
         synchronized(markerPressRing) { MarkerTimeline.add(markerPressRing, now) }
         return true
     }

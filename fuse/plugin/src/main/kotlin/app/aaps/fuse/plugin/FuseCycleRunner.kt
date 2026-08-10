@@ -735,7 +735,7 @@ class FuseCycleRunner(
         // 45 min"): die Marker-SONDERRECHTE (Rebound-Entwaffnung, Prior,
         // Marker-Zweig des Fensters) enden mit der nachhaltigen Wende oder
         // nach MarkerScope.BOOST_MAX_MIN - der Fruehstueckssturz vom 08.08.
-        // fiel sonst noch in die entwaffnete Zone. KONTEXT (Stufen-Huelle,
+        // fiel sonst noch in die entwaffnete Zone. KONTEXT (Freigabe-Huelle,
         // Onset-Evidenz, Anzeige) behaelt die vollen 90 min.
         // Fix-Pass 2 Nr. 4 (NEU-BS-05): eine Wende zaehlt erst NACH einer
         // Anstiegsphase. Sonst verriegelte der Marker-Druck IM FALL (Essen
@@ -788,7 +788,7 @@ class FuseCycleRunner(
         // ist Warten strukturell zu spaet (Insulin ~20 min Anlauf, Carbs nicht).
         // Das Guard-Veto der prior-freien Bahn bleibt: bei vollem Insulinbuch
         // gibt es trotz Ankuendigung nichts. Der Kredit rechnet mit dem REST
-        // der Stufen-Huelle - was die Episode schon geliefert hat (Sofort-
+        // der Freigabe-Huelle - was die Episode schon geliefert hat (Sofort-
         // Freigabe ODER Rampe), zieht ihn herunter: EINE Huelle fuer beide
         // Pfade, die Erklaerung verbraucht sich selbst.
         val mealDeliveredU = if (markerTs > 0) episodes.mealDeliveries.sumOf { it.second } else 0.0
@@ -1617,7 +1617,7 @@ class FuseCycleRunner(
         reboundWindow: Boolean,
         mealMarkerActive: Boolean,
         /** ERKLAERTE ABSORPTION (Toni 09.08.): erwarteter Anstieg aus der
-         *  Marker-Stufe [mg/dl/min], 0 wenn kein Kredit gilt. Wirkt NUR auf
+         *  Freigabe-Huelle [mg/dl/min], 0 wenn kein Kredit gilt. Wirkt NUR auf
          *  der Mittelbahn - s. MarkerScope.declaredAbsorptionDriveMgdlPerMin. */
         declaredDriveMgdlPerMin: Double = 0.0,
         /** C3/C3-01: publizierte, im IOB noch nicht sichtbare Mengen als

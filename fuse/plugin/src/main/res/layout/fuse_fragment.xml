@@ -13,9 +13,11 @@
         android:layout_height="wrap_content"
         android:orientation="vertical">
 
-    <!-- Die Marker-Stufen S/M/L. Sie dosieren nichts und rechnen nichts -
-         sie setzen Zeitstempel+Stufe, die der naechste Zyklus liest. Ein
-         Druck bei aktivem Marker nimmt ihn zurueck (jeder der drei). -->
+    <!-- DER Mahlzeiten-Marker. Er dosiert nichts und rechnet nichts - er
+         setzt einen Zeitstempel, den der naechste Zyklus liest. Ein Druck bei
+         aktivem Marker nimmt ihn zurueck. Seit 11.08. genau EINER: die Stufen
+         S/M/L waren eine Mengenschaetzung, und die Menge steht in der
+         Freigabe-Huelle, nicht im Knopf. -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"

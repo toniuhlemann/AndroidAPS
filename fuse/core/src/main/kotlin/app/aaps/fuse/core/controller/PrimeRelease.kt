@@ -184,7 +184,7 @@ object PrimeRelease {
         // (Tonis Entscheidung 09.08. nach dem gemessenen Fall).
         //
         // WAS SCHIEF WAR: das Tor verlangte Reserve fuer die gesamte
-        // Resthuelle. Bei der L-Stufe sind das 0,2 x 2,0 x 90 = 36 mg/dl, also
+        // Resthuelle. Bei einer Huelle von 2,0 U sind das 0,2 x 2,0 x 90 = 36 mg/dl, also
         // minLower >= 106 bei einem BG von 141 - die SCHNELLSTE Mahlzeit bekam
         // damit den SCHWERSTEN Start, obwohl sie den Vorschuss am dringendsten
         // braucht. Am 09.08. fehlten so 4 mg/dl und die komplette Huelle

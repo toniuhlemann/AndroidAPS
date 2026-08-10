@@ -242,7 +242,7 @@ enum class FuseIntKey(
     DriveTauMin("fuse_drive_tau_min", 60, 10, 240),
 
     /** Absorptions-Fenster des ERKLAERTEN Kredits (Toni 09.08.): ueber diese
-     *  Zeit wird die Stufen-Huelle als erwarteter Anstieg auf die Mittelbahn
+     *  Zeit wird die Freigabe-Huelle als erwarteter Anstieg auf die Mittelbahn
      *  gelegt. KUERZER = mehr erwarteter Anstieg je Minute = frueher scharf.
      *  Der eigentliche Aggressivitaets-Regler des Markers; bewusst als
      *  Einstellung, weil das Feintuning im laufenden Betrieb passiert. */

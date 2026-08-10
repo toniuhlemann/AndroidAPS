@@ -101,13 +101,19 @@ class TransportWiringTest : TestBaseWithProfile() {
     /**
      * Zeitstempel eines Mahlzeiten-Markers, 0 = keiner.
      *
-     * WICHTIG - hier lag der Fehler des ersten Prime-Anlaufs: der Runner liest
-     * `markerTs = if (MealMarkerStamp > 0) MealMarkerStamp / 10 else
-     * MealMarkerArmedTs`. Der Stamp ist also KODIERT (Zehntel). Setzt man
-     * beide Schluessel auf dieselbe Zeit, gewinnt der Stamp-Zweig und teilt
-     * durch 10 - das Mahlzeitenfenster liegt dann Jahrzehnte in der
-     * Vergangenheit und ist nie aktiv. Deshalb: Stamp auf 0, Zeit ueber
-     * ArmedTs.
+     * DIE REIHENFOLGE HAT SICH AM 11.08. UMGEDREHT, und der Hinweis hier war
+     * bis dahin richtig, ist es jetzt aber nicht mehr:
+     *
+     *   frueher:  MealMarkerStamp (kodiert, ts*10+Stufe) hatte VORRANG
+     *   heute:    MealMarkerArmedTs hat Vorrang, der Stamp ist nur noch
+     *             Altbestand-Ruecktausch fuer armedTs == 0
+     *
+     * Der alte Fehler des ersten Prime-Anlaufs - beide Schluessel auf dieselbe
+     * Zeit setzen, der Stamp-Zweig gewinnt und teilt durch 10, das
+     * Mahlzeitenfenster liegt Jahrzehnte zurueck - kann so nicht mehr
+     * auftreten. Der neue Stolperstein ist der umgekehrte: wer NUR den Stamp
+     * setzt und armedTs stehen laesst, prueft nichts, weil der Stamp-Zweig nie
+     * genommen wird. Deshalb weiterhin: Zeit ueber ArmedTs, Stamp auf 0.
      */
     private var markerAt = 0L
 
