@@ -51,4 +51,46 @@ object TrajectoryQuery {
         }
         return null
     }
+
+    /**
+     * Dasselbe Defizit ueber MEHRERE Bahnen — die Form, die der Regler braucht.
+     *
+     * Der Guard entscheidet gegen `minSafetyLowerOf(prediction, restraint)`,
+     * nicht gegen eine einzelne Bahn. Diese Funktion ruft GENAU DIESE Funktion
+     * auf, statt das Minimum ein zweites Mal zu bilden: sonst koennten
+     * Telemetrie und Entscheidung auseinanderlaufen, und die Zahl im Export
+     * beschriebe eine Bahn, gegen die niemand entschieden hat.
+     */
+    fun floorDeficitOf(floorMgdl: Double, vararg trajectories: PredictorResult?): Double {
+        val min = minSafetyLowerOf(*trajectories)
+        if (!min.isFinite() || !floorMgdl.isFinite()) return 0.0
+        return (floorMgdl - min).coerceAtLeast(0.0)
+    }
+
+    /**
+     * WIE BALD ueber mehrere Bahnen: die erste Minute, in der das PUNKTWEISE
+     * Minimum den Boden unterschreitet.
+     *
+     * Punktweise und nicht "die frueheste der einzelnen Unterschreitungen" —
+     * das waere dasselbe Ergebnis, aber nur zufaellig; die punktweise Form ist
+     * die, die [app.aaps.fuse.core.controller.CandidateSearch] auch fuer den
+     * Guard bildet.
+     *
+     * Fehlt einer Bahn ein Index, zaehlt sie dort nicht mit (`getOrNull`), statt
+     * den Zyklus an einer Telemetriezeile abstuerzen zu lassen.
+     */
+    fun timeToFloorOf(floorMgdl: Double, vararg trajectories: PredictorResult?): Int? {
+        if (!floorMgdl.isFinite()) return null
+        val present = trajectories.filterNotNull()
+        val lead = present.firstOrNull() ?: return null
+        for ((i, p) in lead.points.withIndex()) {
+            var m = Double.MAX_VALUE
+            for (t in present) {
+                val v = t.points.getOrNull(i)?.safetyLowerBg ?: continue
+                if (v < m) m = v
+            }
+            if (m.isFinite() && m < floorMgdl) return p.offsetMin
+        }
+        return null
+    }
 }

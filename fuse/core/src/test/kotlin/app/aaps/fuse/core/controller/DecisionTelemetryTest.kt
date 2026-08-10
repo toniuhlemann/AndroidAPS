@@ -1,0 +1,264 @@
+package app.aaps.fuse.core.controller
+
+import app.aaps.fuse.core.observer.Health
+import app.aaps.fuse.core.observer.Phase
+import app.aaps.fuse.core.predictor.PredictorResult
+import app.aaps.fuse.core.predictor.TrajectoryPoint
+import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
+import org.junit.jupiter.api.Assertions.assertNotNull
+import org.junit.jupiter.api.Assertions.assertNull
+import org.junit.jupiter.api.Assertions.assertTrue
+import org.junit.jupiter.api.Test
+
+/**
+ * S0-Telemetrie des Reglers (Gruppe B).
+ *
+ * Wieder keine Regeln, sondern ZUSAMMENHAENGE: dass die Telemetrie dieselbe
+ * Groesse beschreibt wie die Entscheidung, und dass sie ueberhaupt an jeder
+ * Rueckgabestelle ankommt. Der zweite Punkt ist der wichtigere - ein
+ * Telemetriefeld, das an einem von acht Ausgaengen fehlt, sieht im Export nicht
+ * wie eine Luecke aus, sondern wie ein Messwert (0, `false`, leere Liste).
+ */
+class DecisionTelemetryTest {
+
+    /** Bahn mit einer FALLENDEN unteren Kante, damit `timeToFloor` etwas zu
+     *  finden hat. `lowerAt(i)` bestimmt die Sicherheitsbahn Punkt fuer Punkt. */
+    private fun pred(
+        bg: Double = 160.0,
+        anchor: Double = bg,
+        lowerAt: (Int) -> Double,
+    ): PredictorResult {
+        val pts = (1..60).map { TrajectoryPoint(it, it * 60_000L, bg, lowerAt(it), 0.0, 0.0, 0.0) }
+        val minLower = minOf(anchor, (1..60).minOf(lowerAt))
+        return PredictorResult(
+            points = pts, predictionAnchorTs = 0L, bgAtAnchor = anchor,
+            minMeanBg = bg, minLowerBg = minLower,
+            timeToMinLowerMin = (1..60).minByOrNull(lowerAt) ?: 60,
+            bgAtHorizonMean = bg, bgAtHorizonLower = lowerAt(60),
+            lineageKind = "ACTUAL", trajectoryContentHash = "h",
+            iobArraySpanMin = 235.0, iobArrayGridMin = 5.0,
+            modelTailBeyondArrayMin = 0.0, inputSkewMs = 0L,
+        )
+    }
+
+    private fun flat(bg: Double = 160.0, lower: Double = 120.0) = pred(bg) { lower }
+
+    private fun state(
+        iobTh: Double = 4.0,
+        maxIob: Double = 8.0,
+        netIob: Double = 1.0,
+        maxSmb: Double = 0.75,
+        smbRatio: Double = 0.5,
+    ) = FuseController.State(
+        health = Health.READY, safetyHold = false, phase = Phase.REARMING,
+        netIobU = netIob, bolusIobU = netIob, basalIobU = 0.0,
+        iobThU = iobTh, maxIobU = maxIob, targetMgdl = 100.0, isfMgdlPerU = 50.0,
+        smbRatioCorrection = smbRatio, smbRatioRise = smbRatio,
+        rSignedMgdlPerMin = null, riseRampLowRPerMin = 0.5, riseRampHighRPerMin = 2.0,
+        pumpIncrementU = 0.05, maxSmbU = maxSmb, pumpBusy = false,
+    )
+
+    // ---- K2: die vollstaendige Kappenliste --------------------------------
+
+    /**
+     * DER FALL, DER K2 AUSGELOEST HAT - und er ist auf diesem Geraet der
+     * Normalzustand, nicht der Randfall.
+     *
+     * `iobThU = percent/100 * maxIobU`; bei `IobThPercent = 100` sind beide
+     * Spielraeume BITGENAU gleich. `minByOrNull` nennt dann die erste der
+     * Liste, also `iobThHeadroom` - und ein Privileg, das iobTH als erweiterbar
+     * liest, wuerde damit den harten maxIOB erweitern, ohne dass es irgendwo
+     * sichtbar waere.
+     *
+     * Der Test friert deshalb NICHT ein, welche Kappe genannt wird (das ist
+     * heute Listenreihenfolge), sondern dass die Liste BEIDE als aktiv fuehrt.
+     */
+    @Test
+    fun `bei gleichem iobTH und maxIOB fuehrt die Kappenliste beide als aktiv`() {
+        // iobTh == maxIob: genau die Live-Einstellung IobThPercent = 100.
+        val d = FuseController.decide(state(iobTh = 2.0, maxIob = 2.0, netIob = 1.9), flat())
+
+        val byName = d.caps.associateBy { it.name }
+        val iobTh = byName.getValue("iobThHeadroom")
+        val maxIob = byName.getValue("maxIobHeadroom")
+        assertEquals(iobTh.valueU, maxIob.valueU, 0.0, "die beiden Spielraeume sind hier identisch")
+        assertTrue(iobTh.active && maxIob.active, "beide muessen als aktiv gefuehrt sein: ${d.caps}")
+
+        // Und genau hier taeuscht `bindingLimit`: er nennt nur eine von beiden.
+        assertEquals("iobThHeadroom", d.bindingLimit)
+    }
+
+    /** Die Liste ist VOLLSTAENDIG, nicht nur die bindende plus Nachbarn. */
+    @Test
+    fun `die Kappenliste enthaelt jede geprueften Grenze`() {
+        val d = FuseController.decide(state(), flat())
+        val names = d.caps.map { it.name }.toSet()
+        assertEquals(setOf("smbRatio", "iobThHeadroom", "maxIobHeadroom", "maxSmb"), names)
+        // Die kleinste ist immer aktiv - sonst waere die Markierung sinnlos.
+        val min = d.caps.minOf { it.valueU }
+        assertTrue(d.caps.single { it.valueU == min }.active)
+    }
+
+    /**
+     * Die Aktiv-Toleranz ist EIN PUMPENSCHRITT und keine Rechengenauigkeit.
+     *
+     * Zwei Kappen, die naeher beieinander liegen, ergeben dieselbe abgebbare
+     * Menge; eine Einstufung, die an 1e-12 haengt, waere eine Zufallsentscheidung
+     * mit sicherheitsrelevantem Ausgang.
+     */
+    @Test
+    fun `die Aktiv-Toleranz ist ein Pumpenschritt`() {
+        val caps = FuseController.capsOf(
+            0.05,
+            "a" to 1.00,
+            "b" to 1.04,   // innerhalb eines Schritts
+            "c" to 1.06,   // darueber
+        )
+        assertTrue(caps.single { it.name == "a" }.active)
+        assertTrue(caps.single { it.name == "b" }.active)
+        assertFalse(caps.single { it.name == "c" }.active)
+    }
+
+    /**
+     * Auch der ERSCHOEPFTE Fall berichtet beide IOB-Grenzen.
+     *
+     * Die Testreihenfolge im Regler (maxIOB vor iobTH) ist richtig herum und
+     * bleibt so - aber ohne die Liste waere im Trail nicht zu sehen, dass die
+     * jeweils andere genauso erschoepft war.
+     */
+    @Test
+    fun `der erschoepfte IOB-Fall berichtet beide Grenzen`() {
+        val d = FuseController.decide(state(iobTh = 1.0, maxIob = 1.0, netIob = 2.0), flat())
+        assertEquals(FuseController.Block.MAX_IOB_REACHED, d.block)
+        assertEquals(setOf("maxIobHeadroom", "iobThHeadroom"), d.caps.map { it.name }.toSet())
+        assertTrue(d.caps.all { it.valueU < 0.0 })
+    }
+
+    // ---- Die gebremste Bahn, aufgeteilt -----------------------------------
+
+    /**
+     * Die Bremse kann zwei verschiedene Dinge tun, und bis S0 war beides ein
+     * Bit. Hier senkt sie NUR die Sicherheitsbahn (Guard), nicht den Bedarf.
+     */
+    @Test
+    fun `eine Bremse die nur den Guard senkt setzt nur das Guard-Bit`() {
+        val main = flat(bg = 160.0, lower = 120.0)
+        // Gleicher Mittelwert (Bedarf unveraendert), tiefere untere Kante.
+        val brake = flat(bg = 160.0, lower = 95.0)
+        val d = FuseController.decide(state(), main, restraint = brake)
+
+        assertTrue(d.restraintBoundGuard)
+        assertFalse(d.restraintBoundDemand)
+        assertTrue(d.restraintBound, "das abgeleitete Bit muss weiter stimmen")
+        // Und das AUSMASS ist ablesbar, nicht nur das Vorhandensein.
+        assertEquals(120.0, d.minLowerMainMgdl)
+        assertEquals(95.0, d.minLowerMgdl)
+    }
+
+    /** Umgekehrt: dieselbe untere Kante, aber ein niedrigerer Mittelwert. */
+    @Test
+    fun `eine Bremse die nur den Bedarf senkt setzt nur das Bedarfs-Bit`() {
+        val main = flat(bg = 200.0, lower = 120.0)
+        val brake = flat(bg = 150.0, lower = 120.0)
+        val d = FuseController.decide(state(), main, restraint = brake)
+
+        assertFalse(d.restraintBoundGuard)
+        assertTrue(d.restraintBoundDemand)
+        assertEquals(120.0, d.minLowerMainMgdl)
+        assertEquals(120.0, d.minLowerMgdl)
+    }
+
+    /** Ohne Bremse ist beides falsch - und `minLowerMain` trotzdem gesetzt. */
+    @Test
+    fun `ohne Bremse bleiben beide Bits falsch`() {
+        val d = FuseController.decide(state(), flat())
+        assertFalse(d.restraintBoundGuard)
+        assertFalse(d.restraintBoundDemand)
+        assertFalse(d.restraintBound)
+        assertEquals(120.0, d.minLowerMainMgdl)
+    }
+
+    // ---- I16: WIE TIEF und WIE BALD ---------------------------------------
+
+    /**
+     * Der Guard ist ein Schwellentest - eine Bahn bei 69 war von einer bei
+     * -382 nicht zu unterscheiden. Die beiden Zahlen machen den Unterschied
+     * sichtbar, und sie muessen zur ENTSCHIEDENEN Bahn passen: das Defizit ist
+     * exakt `guardFloor - minLowerMgdl`.
+     */
+    @Test
+    fun `das Bodendefizit passt zur entschiedenen Bahn`() {
+        val limits = FuseController.Limits(guardFloorMgdl = 80.0)
+        // Faellt ab Minute 30 unter 80.
+        val p = pred(bg = 160.0, anchor = 160.0) { i -> if (i < 30) 100.0 else 61.0 }
+        val d = FuseController.decide(state(), p, limits)
+
+        assertEquals(FuseController.Block.GUARD_FLOOR, d.block)
+        assertEquals(61.0, d.minLowerMgdl)
+        assertEquals(19.0, d.floorDeficitMgdl, 1e-12)
+        assertEquals(30, d.timeToFloorMin)
+    }
+
+    /** Haelt die Bahn den Boden, ist das Defizit 0 und die Zeit `null` -
+     *  "nie im Fenster" und ausdruecklich nicht "sofort". */
+    @Test
+    fun `eine sichere Bahn meldet kein Defizit und keine Zeit`() {
+        val d = FuseController.decide(state(), flat(), FuseController.Limits(guardFloorMgdl = 80.0))
+        assertEquals(0.0, d.floorDeficitMgdl)
+        assertNull(d.timeToFloorMin)
+    }
+
+    /** Der Boden wird ueber BEIDE Bahnen geprueft, so wie der Guard selbst. */
+    @Test
+    fun `auch die Bremsbahn kann den Boden reissen`() {
+        val limits = FuseController.Limits(guardFloorMgdl = 80.0)
+        val main = flat(bg = 160.0, lower = 120.0)
+        val brake = pred(bg = 160.0, anchor = 160.0) { i -> if (i < 10) 120.0 else 70.0 }
+        val d = FuseController.decide(state(), main, limits, restraint = brake)
+
+        assertEquals(10.0, d.floorDeficitMgdl, 1e-12)
+        assertEquals(10, d.timeToFloorMin)
+    }
+
+    // ---- Der Punkt, an dem Telemetrie sonst still verschwindet -------------
+
+    /**
+     * JEDE Rueckgabestelle traegt die Telemetrie.
+     *
+     * Der Regler hat acht Ausgaenge. Ein Feld, das an einem davon fehlt, faellt
+     * nicht auf: es sieht im Export aus wie "nicht gebremst" oder "kein
+     * Defizit". Deshalb faehrt dieser Test die erreichbaren Bloecke ab und
+     * prueft an jedem dieselbe, unabhaengig bekannte Zahl.
+     */
+    @Test
+    fun `jeder Ausgang traegt dieselbe Telemetrie`() {
+        val limits = FuseController.Limits(guardFloorMgdl = 80.0)
+        val main = flat(bg = 200.0, lower = 120.0)
+        val brake = flat(bg = 200.0, lower = 110.0)   // senkt nur den Guard
+
+        val faelle = listOf(
+            // Anker bewusst HOCH: `minSafetyLowerBg` schliesst den Anker ein,
+            // ein Anker auf Hoehe der unteren Kante wuerde beide Bahnen auf
+            // denselben Wert ziehen und das Bremsbit unbeabsichtigt loeschen.
+            FuseController.Block.NO_DEMAND to FuseController.decide(
+                state(), pred(bg = 90.0, anchor = 160.0) { 110.0 }, limits,
+                restraint = pred(bg = 90.0, anchor = 160.0) { 100.0 }
+            ),
+            FuseController.Block.MAX_IOB_REACHED to FuseController.decide(
+                state(iobTh = 1.0, maxIob = 1.0, netIob = 2.0), main, limits, restraint = brake
+            ),
+            FuseController.Block.IOB_TH_REACHED to FuseController.decide(
+                state(iobTh = 1.0, maxIob = 8.0, netIob = 2.0), main, limits, restraint = brake
+            ),
+            FuseController.Block.NONE to FuseController.decide(state(), main, limits, restraint = brake),
+        )
+
+        for ((erwartet, d) in faelle) {
+            assertEquals(erwartet, d.block, "falscher Ausgang getroffen")
+            assertTrue(d.restraintBoundGuard, "$erwartet fuehrt das Bremsbit nicht mit")
+            assertNotNull(d.minLowerMainMgdl, "$erwartet fuehrt minLowerMain nicht mit")
+            assertEquals(0.0, d.floorDeficitMgdl, "$erwartet: keine dieser Bahnen reisst den Boden")
+        }
+    }
+}

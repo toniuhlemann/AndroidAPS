@@ -3,6 +3,7 @@ package app.aaps.fuse.core.controller
 import app.aaps.fuse.core.observer.Health
 import app.aaps.fuse.core.observer.Phase
 import app.aaps.fuse.core.predictor.PredictorResult
+import app.aaps.fuse.core.predictor.TrajectoryQuery
 import app.aaps.fuse.core.predictor.minSafetyLowerOf
 import kotlin.math.floor
 import kotlin.math.max
@@ -330,15 +331,82 @@ object FuseController {
          *  Schirm: dieselbe Zahl bedeutet in RISE etwas anderes als in
          *  CORRECTION. */
         val context: Context? = null,
-        /** Hat die SCHNELLE Bahn die Entscheidung gebremst? Gehoert in den
-         *  Export: sonst ist im Nachhinein nicht unterscheidbar, ob eine
-         *  Zurueckhaltung aus dem Antrieb oder aus der Bremse kam. */
-        val restraintBound: Boolean = false,
+        /**
+         * Hat die schnelle Bahn den GUARD gesenkt? (S0)
+         *
+         * Getrennt vom Bedarf gefuehrt, weil es zwei verschiedene Dinge sind:
+         * hier verschiebt die Bremse die Sicherheitsbahn und kann damit
+         * BLOCKIEREN, unten kuerzt sie die ANFORDERUNG. Bis S0 war beides ein
+         * Bit, und "gebremst" liess offen, welches von beiden passiert ist.
+         */
+        val restraintBoundGuard: Boolean = false,
+        /** Hat die schnelle Bahn den BEDARF gesenkt? (S0) — s.
+         *  [restraintBoundGuard]. */
+        val restraintBoundDemand: Boolean = false,
+        /**
+         * Das Minimum der HAUPTbahn allein [mg/dl] (S0).
+         *
+         * [minLowerMgdl] ist ueber beide Bahnen minimiert; ohne diese Zahl ist
+         * das AUSMASS der Bremswirkung nicht rekonstruierbar, nur ihr
+         * Vorhandensein. `null` = keine Bahn.
+         */
+        val minLowerMainMgdl: Double? = null,
+        /**
+         * Wie weit die Sicherheitsbahn unter den Guard-Boden faellt [mg/dl],
+         * sonst 0 (S0, Invariante I16).
+         *
+         * Der Guard ist ein reiner Schwellentest — eine Bahn bei 69 war im
+         * Export von einer bei -382 nicht zu unterscheiden. Diese Zahl und
+         * [timeToFloorMin] machen den Unterschied sichtbar. Sie ENTSCHEIDEN
+         * nichts.
+         */
+        val floorDeficitMgdl: Double = 0.0,
+        /** Nach wievielen Minuten die Sicherheitsbahn den Boden erstmals
+         *  unterschreitet; `null` = nie im Fenster (S0). */
+        val timeToFloorMin: Int? = null,
+        /**
+         * ALLE Mengengrenzen dieses Zyklus, nicht nur die bindende (S0, K2).
+         *
+         * `bindingLimit` nennt genau eine, und bei Gleichstand entscheidet die
+         * Listenreihenfolge. Auf diesem Geraet ist das kein Randfall: mit
+         * `IobThPercent = 100` ist `iobThU == maxIobU` bitgenau, also sind
+         * `iobThHeadroom` und `maxIobHeadroom` IMMER gleich, und genannt wird
+         * immer der erste — iobTH. Wer spaeter fragt "war maxIOB mit aktiv?",
+         * kann das ohne diese Liste nicht beantworten.
+         *
+         * Leer, wenn der Zyklus die Mengenrechnung nie erreicht hat.
+         */
+        val caps: List<Cap> = emptyList(),
         /** Gewuenschte Menge VOR der Pumpenschritt-Rasterung [U] (Toni 09.08.):
          *  Eingang des Rest-Zaehlers gegen die Quantisierungs-Totzone. 0 heisst
          *  "es gab keinen Wunsch", nicht "der Wunsch war klein". */
         val desiredBeforeStepU: Double = 0.0,
-    )
+    ) {
+
+        /**
+         * Hat die schnelle Bahn ueberhaupt gebremst?
+         *
+         * ABGELEITET und nicht mitgefuehrt: so kann das Bit nicht behaupten,
+         * was die beiden Ursachen nicht hergeben. Fuer alle bisherigen Leser
+         * bedeutungsgleich zum frueheren Feld.
+         */
+        val restraintBound: Boolean get() = restraintBoundGuard || restraintBoundDemand
+    }
+
+    /**
+     * Eine Mengengrenze mit ihrem Wert (S0-Telemetrie, K2).
+     *
+     * [active] heisst "fuer die Dosis von der bindenden Grenze nicht zu
+     * unterscheiden", und die Toleranz ist deshalb EIN PUMPENSCHRITT und keine
+     * Rechengenauigkeit: zwei Kappen, die naeher beieinander liegen, ergeben
+     * dieselbe abgebbare Menge. Eine Einstufung, die an 1e-12 haengt, waere
+     * eine Zufallsentscheidung.
+     *
+     * KEINE Einstufung in hart/weich hier. Welche Grenze ein spaeteres
+     * Privileg erweitern darf, ist eine Regel des Privilegs — der Regler
+     * liefert die Tatsachen.
+     */
+    data class Cap(val name: String, val valueU: Double, val active: Boolean)
 
     /**
      * Die fail-closed Entscheidung fuer einen Zyklus, der den Regler nie
@@ -441,16 +509,40 @@ object FuseController {
         // Guard kann dadurch nur haeufiger greifen, nie seltener.
         val minLower = minSafetyLowerOf(prediction, restraint)
         val releaseMean = minOf(release.meanBg, restraintRelease?.meanBg ?: Double.MAX_VALUE)
-        val restraintBound = restraint != null &&
-            (minLower < prediction.minSafetyLowerBg || releaseMean < release.meanBg)
+        // S0: die beiden Ursachen GETRENNT. "Gebremst" war bisher ein Bit ueber
+        // zwei verschiedene Wirkungen - die Bremse kann die Sicherheitsbahn
+        // senken (und damit blockieren) ODER den Bedarf kuerzen. Wer eine
+        // Zurueckhaltung nachvollziehen will, braucht die Unterscheidung.
+        val restraintGuard = restraint != null && minLower < prediction.minSafetyLowerBg
+        val restraintDemand = restraint != null && releaseMean < release.meanBg
+
+        // S0 (I16): WIE TIEF und WIE BALD unter dem Boden. Ueber DIESELBEN
+        // Bahnen wie der Guard - der Boden kommt aus den Limits, die Bahnen aus
+        // dem Zyklus, und die Zahlen entscheiden nichts.
+        val floorDeficit = TrajectoryQuery.floorDeficitOf(limits.guardFloorMgdl, prediction, restraint)
+        val timeToFloor = TrajectoryQuery.timeToFloorOf(limits.guardFloorMgdl, prediction, restraint)
+
+        // Alle Rueckgaben dieses Laufs teilen dieselbe S0-Telemetrie. Sie EINMAL
+        // anzuhaengen ist nicht Bequemlichkeit: acht Rueckgabestellen, die je
+        // fuenf Felder von Hand mitfuehren, sind acht Gelegenheiten, eines zu
+        // vergessen - und ein fehlendes Telemetriefeld sieht im Export aus wie
+        // ein Messwert (0 bzw. "nicht gebremst"), nicht wie eine Luecke.
+        fun Decision.tele(caps: List<Cap> = emptyList()) = copy(
+            restraintBoundGuard = restraintGuard,
+            restraintBoundDemand = restraintDemand,
+            minLowerMainMgdl = prediction.minSafetyLowerBg,
+            floorDeficitMgdl = floorDeficit,
+            timeToFloorMin = timeToFloor,
+            caps = caps,
+        )
 
         // Guard: bewertet wird das MINIMUM der pessimistischen Bahn, nicht ihr
         // Endwert — eine Bahn kann harmlos enden und zwischendurch tief gehen.
         if (minLower < limits.guardFloorMgdl) {
             return Decision(
                 0.0, TbrAction.ZERO_TEMP, Block.GUARD_FLOOR, 0.0,
-                releaseMean, minLower, "guardFloor=${limits.guardFloorMgdl}", context = ctx, restraintBound = restraintBound,
-            )
+                releaseMean, minLower, "guardFloor=${limits.guardFloorMgdl}", context = ctx,
+            ).tele()
         }
 
         // SCHWANZ-GUARD. Er sitzt NACH dem Nahzonen-Guard und VOR der
@@ -466,8 +558,8 @@ object FuseController {
         if (tail != null && tail.usable && tail.headroomU <= 0.0) {
             return Decision(
                 0.0, TbrAction.NO_NEW_POSITIVE, Block.TAIL, 0.0,
-                releaseMean, minLower, "tailHeadroom=${tail.headroomU}", tail, context = ctx, restraintBound = restraintBound,
-            )
+                releaseMean, minLower, "tailHeadroom=${tail.headroomU}", tail, context = ctx,
+            ).tele()
         }
 
         // Kein zweites "- iob": die IOB-Wirkung ist in predBG bereits enthalten.
@@ -494,8 +586,8 @@ object FuseController {
                 0.0, TbrAction.NO_NEW_POSITIVE, Block.NO_DEMAND, insulinReq,
                 releaseMean, minLower,
                 if (state.reboundWindow && deadbandMgdl == state.reboundDeadbandMgdl) "reboundDeadband" else "nightDeadband",
-                tail, context = ctx, restraintBound = restraintBound,
-            )
+                tail, context = ctx,
+            ).tele()
         }
 
         if (insulinReq <= 0.0) {
@@ -515,8 +607,8 @@ object FuseController {
             // Argument fuer das Band, nicht fuer ein pauschales Basal-Aus.
             return Decision(
                 0.0, TbrAction.NO_NEW_POSITIVE, Block.NO_DEMAND, insulinReq,
-                releaseMean, minLower, "insulinReq<=0", context = ctx, restraintBound = restraintBound,
-            )
+                releaseMean, minLower, "insulinReq<=0", context = ctx,
+            ).tele()
         }
 
         // Tonis IOB-Referenz-Regel (08.08. abends): PROGNOSE rechnet mit net
@@ -525,21 +617,35 @@ object FuseController {
         // ist keine physische Substanz und darf keinen SMB-Spielraum
         // erzeugen. iobTH lief schon immer auf capIob; maxIOB zieht nach.
         val maxIobHeadroom = state.maxIobU - state.capIobU
+        val fastHeadroom = state.iobThU - state.capIobU
+
+        // S0 (K2): DIE BEIDEN IOB-GRENZEN WERDEN ZUSAMMEN BERICHTET, auch wenn
+        // nur eine den Ausschlag gibt. Auf diesem Geraet ist
+        // `iobThU = percent/100 * maxIobU` mit percent = 100, also sind beide
+        // Spielraeume BITGENAU gleich - "welche hat gebunden" ist dann keine
+        // Messung mehr, sondern die Reihenfolge einer Liste. Die
+        // Reihenfolge der beiden Tests unten ist trotzdem richtig herum
+        // (maxIOB zuerst) und bleibt unveraendert.
+        val iobCaps = capsOf(
+            state.pumpIncrementU,
+            "maxIobHeadroom" to maxIobHeadroom,
+            "iobThHeadroom" to fastHeadroom,
+        )
+
         if (maxIobHeadroom <= 0.0) {
             return Decision(
                 0.0, TbrAction.NO_NEW_POSITIVE, Block.MAX_IOB_REACHED, insulinReq,
-                releaseMean, minLower, "maxIOB=${state.maxIobU}", context = ctx, restraintBound = restraintBound,
-            )
+                releaseMean, minLower, "maxIOB=${state.maxIobU}", context = ctx,
+            ).tele(iobCaps)
         }
 
         // iobTH ist die Grenze zwischen schnellem und langsamem Kanal — NICHT
         // der Gesamtdeckel. Oberhalb laeuft nur noch Basal weiter.
-        val fastHeadroom = state.iobThU - state.capIobU
         if (fastHeadroom <= 0.0) {
             return Decision(
                 0.0, TbrAction.NO_NEW_POSITIVE, Block.IOB_TH_REACHED, insulinReq,
-                releaseMean, minLower, "iobTH=${state.iobThU}", context = ctx, restraintBound = restraintBound,
-            )
+                releaseMean, minLower, "iobTH=${state.iobThU}", context = ctx,
+            ).tele(iobCaps)
         }
 
         val baseCandidates = listOf(
@@ -560,6 +666,10 @@ object FuseController {
         val binding = candidates.minByOrNull { it.second }!!
         val raw = binding.second
         val tailCost = (withoutTail - raw).coerceAtLeast(0.0)
+        // S0 (K2): die VOLLSTAENDIGE Kappenliste, nicht nur die bindende.
+        // `minByOrNull` nennt bei Gleichstand die erste - und Gleichstand ist
+        // hier der Normalfall, nicht der Randfall.
+        val capList = capsOf(state.pumpIncrementU, *candidates.toTypedArray())
 
         // AUSSCHLIESSLICH abwaerts runden: eine Freigabe darf durch Rundung nie
         // groesser werden. Unter dem Pumpeninkrement gibt es keinen SMB — es
@@ -577,9 +687,9 @@ object FuseController {
         if (deliverable < state.pumpIncrementU) {
             return Decision(
                 0.0, TbrAction.KEEP_CURRENT, Block.BELOW_PUMP_INCREMENT, insulinReq,
-                releaseMean, minLower, binding.first, tail, tailCost, ctx, restraintBound,
+                releaseMean, minLower, binding.first, tail, tailCost, ctx,
                 desiredBeforeStepU = raw,
-            )
+            ).tele(capList)
         }
 
         return Decision(
@@ -594,7 +704,22 @@ object FuseController {
             tail = tail,
             tailCostU = tailCost,
             context = ctx,
-            restraintBound = restraintBound,
-        )
+        ).tele(capList)
+    }
+
+    /**
+     * Baut die Kappenliste und markiert, welche Grenzen die Menge
+     * TATSAECHLICH bestimmt haben (S0, K2).
+     *
+     * Aktiv heisst: hoechstens einen Pumpenschritt ueber der kleinsten. Die
+     * Toleranz ist physisch und nicht numerisch - naeher beieinander
+     * liegende Kappen ergeben dieselbe abgebbare Menge, und welche von
+     * ihnen `minByOrNull` nennt, ist dann eine Eigenschaft der
+     * Listenreihenfolge und keine Messung.
+     */
+    internal fun capsOf(pumpIncrementU: Double, vararg caps: Pair<String, Double>): List<Cap> {
+        val min = caps.minOfOrNull { it.second } ?: return emptyList()
+        val tol = if (pumpIncrementU.isFinite() && pumpIncrementU > 0.0) pumpIncrementU else 0.0
+        return caps.map { (name, v) -> Cap(name, v, v <= min + tol) }
     }
 }

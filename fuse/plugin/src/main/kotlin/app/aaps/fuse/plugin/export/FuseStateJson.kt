@@ -171,6 +171,40 @@ object FuseStateJson {
                 // Nachhinein nicht unterscheidbar, ob eine Zurueckhaltung aus
                 // dem traegen Antrieb kam oder aus der Bremse.
                 .put("restraintBound", d.restraintBound)
+                // S0: und WELCHE der beiden Wirkungen es war. Die Bremse kann
+                // die Sicherheitsbahn senken (blockieren) oder den Bedarf
+                // kuerzen - bis hierher war beides dasselbe Bit.
+                .put("restraintBoundGuard", d.restraintBoundGuard)
+                .put("restraintBoundDemand", d.restraintBoundDemand)
+                // Das Minimum der HAUPTbahn allein: erst zusammen mit
+                // `minLowerMgdl` ist das AUSMASS der Bremswirkung ablesbar,
+                // nicht nur ihr Vorhandensein.
+                .put("minLowerMainMgdl", fin(d.minLowerMainMgdl))
+                // S0 (I16): WIE TIEF und WIE BALD unter dem Guard-Boden. Der
+                // Guard ist ein Schwellentest - eine Bahn bei 69 war im Trail
+                // von einer bei -382 nicht zu unterscheiden.
+                .put("floorDeficitMgdl", fin(d.floorDeficitMgdl))
+                .put("timeToFloorMin", d.timeToFloorMin ?: JSONObject.NULL)
+                // S0 (I16): der Zeitindex der SICHERHEITSbahn. `timeToMinLower`
+                // gehoert der Anzeigebahn, entschieden wird gegen die
+                // prior-freie - in 68 % der Faelle liegt deren Minimum am
+                // Haftungshorizont, der "Nahzonen-Guard" ist also ueberwiegend
+                // ein Fernhorizont-Test.
+                .put("timeToMinSafetyLowerMin", outcome.prediction?.timeToMinSafetyLowerMin ?: JSONObject.NULL)
+                // S0 (K2): ALLE Mengengrenzen, nicht nur die bindende.
+                // `bindingLimit` nennt bei Gleichstand die erste der Liste -
+                // und mit IobThPercent = 100 sind iobTh- und maxIob-Spielraum
+                // bitgenau gleich, der Gleichstand ist also der Normalfall.
+                .put("caps", JSONArray().apply {
+                    d.caps.forEach {
+                        put(
+                            JSONObject()
+                                .put("name", it.name)
+                                .put("valueU", fin(it.valueU))
+                                .put("active", it.active)
+                        )
+                    }
+                })
                 // FEHLTE bis 08.08. - der Schirm zeigte die Schwanz-Kosten,
                 // der Trail nicht (18 bindende Zyklen der Nacht alle "0").
                 .put("tailCostU", fin(d.tailCostU))
@@ -380,6 +414,14 @@ object FuseStateJson {
                 .put("reboundSuppressedByMarker", outcome.state?.reboundSuppressedByMarker ?: JSONObject.NULL)
                 .put("mealWindow", outcome.state?.mealWindow ?: JSONObject.NULL)
                 .put("smbRatioEffective", fin(outcome.state?.effectiveSmbRatio))
+                // S0: der EINGANG der Rampe, nicht das Signal. Beide sind
+                // meistens dieselbe Zahl - aber wenn der OnsetChannel aktiv
+                // ist, gilt `max(rSigned, onsetDrive)`, und dann war der
+                // Rampeneingang ein anderer als das exportierte `signal.rSigned`.
+                // Ohne dieses Feld ist der wirksame Anteil im Nachhinein nicht
+                // herleitbar; die Differenz zu `signal.rSigned` ist genau der
+                // Beitrag des Onset-Kanals.
+                .put("rampInputMgdlPerMin", fin(outcome.state?.rSignedMgdlPerMin))
                 .put("context", outcome.decision.context?.name ?: JSONObject.NULL)
         )
 
