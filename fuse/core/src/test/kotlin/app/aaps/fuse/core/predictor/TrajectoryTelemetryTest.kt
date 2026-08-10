@@ -132,6 +132,41 @@ class TrajectoryTelemetryTest {
         assertNotNull(r.hubAtMinSafetyLower)
     }
 
+    /**
+     * PFLICHTTEST zum Anker-Hub (Review 10.08.).
+     *
+     * Auf einer STEIGENDEN Bahn unterschreitet keine Zukunftsminute den Anker,
+     * das Minimum liegt also bei Minute 0. Der frueher hier stehende Rueckfall
+     * `hubAtMin ?: hubNow()` hat in genau diesem Fall den HORIZONT-Hub als "Hub
+     * am Minimum" ausgegeben - stillschweigend die Zerlegung des entferntesten
+     * Punktes an der Stelle des naechsten.
+     *
+     * Der Test prueft deshalb nicht nur "nicht null", sondern dass ALLE sieben
+     * Komponenten dort 0 sind, UND dass der Horizont-Hub im selben Lauf
+     * ausdruecklich von null verschieden ist - sonst waere die Zusicherung auch
+     * mit dem alten Rueckfall erfuellbar.
+     */
+    @Test
+    fun `liegt das Minimum am Anker ist der Hub dort null`() {
+        val r = predict(drive = 3.0)
+        assertEquals(0, r.timeToMinSafetyLowerMin, "Minimum sollte am Anker liegen")
+        assertEquals(r.bgAtAnchor, r.minSafetyLowerBg, 1e-12)
+
+        val h = r.hubAtMinSafetyLower ?: fail("kein Hub am Minimum")
+        assertEquals(0.0, h.driveMeanMgdl)
+        assertEquals(0.0, h.driveLowerMgdl)
+        assertEquals(0.0, h.driveSafetyLowerMgdl)
+        assertEquals(0.0, h.bgiMgdl)
+        assertEquals(0.0, h.transportMgdl)
+        assertEquals(0.0, h.decayWeightSumPositive)
+        assertEquals(0.0, h.decayWeightSumNegative)
+
+        // Gegenprobe: der Horizont-Hub im SELBEN Lauf ist deutlich != 0. Ohne
+        // sie waere der Test auch dann gruen, wenn gar nichts akkumuliert wird.
+        val hh = r.hubAtHorizon ?: fail("kein Hub am Horizont")
+        assertTrue(hh.driveMeanMgdl > 1.0, "Horizont-Hub war ${hh.driveMeanMgdl}")
+    }
+
     /** WIE TIEF und WIE BALD - und `null` heisst "nie", nicht "sofort". */
     @Test
     fun `Bodenabfragen liefern Defizit und Zeitpunkt`() {

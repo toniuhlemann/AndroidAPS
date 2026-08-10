@@ -159,7 +159,6 @@ object TrajectoryCore {
         var hubTransport = 0.0
         var sumFPositive = 0.0
         var sumFNegative = 0.0
-        var hubAtMin: TrajectoryHub? = null
 
         fun hubNow() = TrajectoryHub(
             driveMeanMgdl = hubDriveMean,
@@ -170,6 +169,22 @@ object TrajectoryCore {
             decayWeightSumPositive = sumFPositive,
             decayWeightSumNegative = sumFNegative,
         )
+
+        // DER ANKER IST EIN GUELTIGER ORT FUER DAS MINIMUM, und deshalb ist der
+        // Startwert der Null-Hub und nicht `null`.
+        //
+        // `minLowerPriorFree` ist mit dem ANKER initialisiert. Auf einer
+        // steigenden Bahn unterschreitet ihn keine Zukunftsminute, der Zweig
+        // unten laeuft nie, und ein Rueckfall `hubAtMin ?: hubNow()` haette
+        // still den HORIZONT-Hub als "Hub am Minimum" ausgegeben - also die
+        // Zerlegung des am weitesten entfernten Punktes als die des naechsten.
+        // Das ist genau der Fehler, gegen den `hubAtHorizon` nullable ist:
+        // 0.0 ist ein gueltiger Hub und darf nicht "fehlt" bedeuten.
+        //
+        // Am Anker ist noch nichts aufgelaufen, alle sieben Summen sind 0 -
+        // `hubNow()` LIEFERT den Null-Hub hier, statt ihn zu wiederholen. Eine
+        // handgeschriebene Nullkonstante wuerde beim naechsten Feld veralten.
+        var hubAtMin = hubNow()
 
         for (i in 1..input.horizonMin) {
             val ts = anchor + i * STEP_MS
@@ -352,13 +367,13 @@ object TrajectoryCore {
                 // "nichts unterwegs", nicht "nicht betrachtet".
                 pendingTransportU = pendingDoses.sumOf { it.amountU },
                 pendingDropAtHorizonMgdl = pendingDrop,
-                // S0-Telemetrie. `hubAtMin` ist nicht-null, sobald die Schleife
-                // mindestens einmal lief; bei horizonMin >= 1 ist das immer der
-                // Fall, weil am Anker alle drei Bahnen gleich sind und der
-                // erste Punkt das Minimum setzt oder nicht.
+                // S0-Telemetrie. `hubAtMin` traegt den Anker-Nullhub, solange
+                // keine Zukunftsminute ihn unterschreitet - passend zu
+                // `timeToMinLowerPriorFree = 0`. Kein Elvis-Rueckfall: er wuerde
+                // die Zerlegung des Horizonts an den Ort des Minimums schreiben.
                 timeToMinLowerPriorFreeMin = timeToMinLowerPriorFree,
                 hubAtHorizon = hubNow(),
-                hubAtMinSafetyLower = hubAtMin ?: hubNow(),
+                hubAtMinSafetyLower = hubAtMin,
             )
         )
     }
