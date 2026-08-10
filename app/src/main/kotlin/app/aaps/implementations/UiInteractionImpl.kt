@@ -15,6 +15,7 @@ import app.aaps.core.interfaces.nsclient.NSAlarm
 import app.aaps.core.interfaces.rx.bus.RxBus
 import app.aaps.core.interfaces.rx.events.EventDismissNotification
 import app.aaps.core.interfaces.rx.events.EventNewNotification
+import app.aaps.core.interfaces.rx.events.EventReplaceNotification
 import app.aaps.core.interfaces.ui.UiInteraction
 import app.aaps.core.ui.dialogs.OKDialog
 import app.aaps.core.ui.toast.ToastUtils
@@ -187,6 +188,10 @@ class UiInteractionImpl @Inject constructor(
 
     override fun addNotification(id: Int, text: String, level: Int) {
         rxBus.send(EventNewNotification(Notification(id, text, level)))
+    }
+
+    override fun replaceNotification(id: Int, text: String, level: Int) {
+        rxBus.send(EventReplaceNotification(Notification(id, text, level)))
     }
 
     override fun addNotificationValidFor(id: Int, text: String, level: Int, validMinutes: Int) {

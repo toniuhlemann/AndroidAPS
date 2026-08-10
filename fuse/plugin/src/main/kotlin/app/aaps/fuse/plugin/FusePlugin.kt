@@ -18,7 +18,6 @@ import app.aaps.core.interfaces.constraints.PluginConstraints
 import app.aaps.core.data.model.TE
 import app.aaps.core.interfaces.db.PersistenceLayer
 import app.aaps.core.interfaces.notifications.Notification
-import app.aaps.core.interfaces.rx.events.EventDismissNotification
 import app.aaps.fuse.plugin.ledger.FuseActivePump
 import app.aaps.fuse.plugin.ledger.FusePatchEpoch
 import app.aaps.fuse.plugin.ledger.LedgerFacts
@@ -819,41 +818,40 @@ class FusePlugin @Inject constructor(
      * [FuseHoldAlarm], wo sie pruefbar ist - beide Fehler, die der Audit hier
      * gefunden hat, lagen genau in dieser ungepruften Ecke.
      */
-    private var gemeldeterHold: FuseHoldAlarm.Kennung? = null
+    private val holdAlarm = FuseHoldAlarm.Zustand()
 
     private fun meldeLedgerHold() {
         val s = ledgerAdapter.state
         // `view()` und nicht `state`: die Sperre ist zusammengesetzt (S1).
         val v = ledgerAdapter.view()
         val ursachen = s.errors.filter { it.active }.groupingBy { it.error.name }.eachCount()
-        val kennung = FuseHoldAlarm.Kennung(s.holdGeneration, v.holdReason)
-        when (val a = FuseHoldAlarm.naechste(v.hold, kennung, ursachen, gemeldeterHold)) {
-            is FuseHoldAlarm.Aktion.Nichts          -> Unit
-
-            is FuseHoldAlarm.Aktion.Zuruecknehmen   -> {
-                gemeldeterHold = null
-                // OHNE dies bliebe die Meldung stehen und belegte die Kennung;
-                // der naechste Hold faende sie besetzt und schwiege (S2).
-                runCatching { rxBus.send(EventDismissNotification(Notification.FUSE_LEDGER_HOLD)) }
-                aapsLogger.info(LTag.APS, "FUSE Ledger-Hold aufgeloest - Meldung zurueckgenommen")
-            }
-
-            is FuseHoldAlarm.Aktion.Melden          -> {
-                gemeldeterHold = a.kennung
+        val a = holdAlarm.verarbeite(
+            hold = v.hold,
+            kennung = FuseHoldAlarm.Kennung(s.holdGeneration, v.holdReason),
+            ursachen = ursachen,
+            melden = { text ->
+                // ATOMAR ersetzen statt Zuruecknehmen + Melden: die beiden
+                // Einzelereignisse laufen ueber ZWEI Rx-Streams ohne
+                // Reihenfolgegarantie. Wird das Melden zuerst verarbeitet,
+                // scheitert es an der belegten Kennung, und das spaetere
+                // Zuruecknehmen raeumt die alte Meldung weg - uebrig bleibt
+                // GAR KEINE Warnung.
                 runCatching {
-                    // ERST zuruecknehmen, DANN melden. `NotificationStore.add`
-                    // frischt bei belegter Kennung nur das Datum auf - ohne das
-                    // Zuruecknehmen blieben Text, Stufe und Ton die alten.
-                    rxBus.send(EventDismissNotification(Notification.FUSE_LEDGER_HOLD))
-                    uiInteraction.addNotification(
-                        id = Notification.FUSE_LEDGER_HOLD,
-                        text = a.text,
-                        level = Notification.URGENT,
+                    uiInteraction.replaceNotification(
+                        id = Notification.FUSE_LEDGER_HOLD, text = text, level = Notification.URGENT,
                     )
-                }.onFailure { aapsLogger.error(LTag.APS, "FUSE Hold-Meldung fehlgeschlagen", it) }
-                aapsLogger.warn(LTag.APS, "FUSE LEDGER HOLD ${a.kennung}: ${a.text}")
-            }
-        }
+                }.onFailure { aapsLogger.error(LTag.APS, "FUSE Hold-Meldung fehlgeschlagen", it) }.isSuccess
+            },
+            zuruecknehmen = {
+                // Reines Entfernen - hier ist nichts zu ordnen, es folgt kein
+                // Hinzufuegen. Ohne dies bliebe die Meldung stehen und belegte
+                // die Kennung; der naechste Hold faende sie besetzt (S2).
+                runCatching { uiInteraction.dismissNotification(Notification.FUSE_LEDGER_HOLD) }
+                aapsLogger.info(LTag.APS, "FUSE Ledger-Hold aufgeloest - Meldung zurueckgenommen")
+            },
+        )
+        if (a is FuseHoldAlarm.Aktion.Melden)
+            aapsLogger.warn(LTag.APS, "FUSE LEDGER HOLD ${a.kennung}: ${a.text}")
     }
 
     /**
@@ -884,8 +882,8 @@ class FusePlugin @Inject constructor(
                 runner = null
                 // Der Befund ist weg - die alte Meldung darf nicht stehen
                 // bleiben und die Kennung belegen (S2).
-                gemeldeterHold = null
-                runCatching { rxBus.send(EventDismissNotification(Notification.FUSE_LEDGER_HOLD)) }
+                holdAlarm.vergessen()
+                runCatching { uiInteraction.dismissNotification(Notification.FUSE_LEDGER_HOLD) }
                 reparaturGelesen = false
                 aapsLogger.warn(
                     LTag.APS,

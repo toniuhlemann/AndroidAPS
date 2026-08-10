@@ -76,6 +76,29 @@ class NotificationStore @Inject constructor(
         return true
     }
 
+    /**
+     * Eine Meldung ATOMAR ersetzen: erst entfernen, dann hinzufuegen - in
+     * EINEM Aufruf.
+     *
+     * WARUM DAS NICHT DER AUFRUFER MACHEN KANN. `EventDismissNotification` und
+     * `EventNewNotification` laufen ueber ZWEI getrennte Rx-Streams, jeder mit
+     * eigenem `observeOn(io)` (OverviewPlugin.onStart). Zwischen ihnen gibt es
+     * keine Reihenfolgegarantie. Sendet ein Aufrufer erst Dismiss und dann Add,
+     * kann Add ZUERST verarbeitet werden: [add] findet die Kennung belegt,
+     * verwirft die neue Meldung - und danach entfernt Dismiss die alte. Uebrig
+     * bleibt GAR KEINE Meldung, also schlechter als ohne den Versuch.
+     *
+     * Gefunden am 10.08.2026 an der FUSE-Hold-Warnung: die soll melden, dass
+     * der Regler nichts mehr abgibt, und waere in genau dem Moment verstummt.
+     *
+     * @return true, wenn danach die NEUE Meldung im Speicher steht.
+     */
+    @Synchronized
+    fun replace(n: Notification): Boolean {
+        remove(n.id)
+        return add(n)
+    }
+
     @Synchronized
     fun remove(id: Int): Boolean {
         for (i in store.indices) {

@@ -107,6 +107,66 @@ class FuseHoldAlarmTest {
         ) { "haeufigste Ursache zuerst" }
     }
 
+    // ---- Der Vertrag ans Absetzen ----------------------------------------
+
+    /**
+     * SCHEITERT DAS ABSETZEN, GILT DER BEFUND NICHT ALS GEMELDET.
+     *
+     * Diesen Test gibt es, weil die Mutationsprobe ihn eingefordert hat: die
+     * Eigenschaft lag im Plugin, und dort kommt kein Test hin - die Mutation
+     * "Kennung schon vor dem Absetzen merken" blieb gruen. Eine Eigenschaft,
+     * die eine Mutation ueberlebt, ist keine.
+     *
+     * Sie ist nicht kosmetisch: gilt ein fehlgeschlagener Versuch als erfolgt,
+     * meldet sich GENAU DIESER Befund nie wieder - der Regler steht still und
+     * der Kanal schweigt.
+     */
+    @Test
+    fun `ein fehlgeschlagenes Absetzen wird im naechsten Zyklus wiederholt`() {
+        val z = FuseHoldAlarm.Zustand()
+        var versuche = 0
+
+        z.verarbeite(true, global, leer, melden = { versuche++; false }, zuruecknehmen = {})
+        assertEquals(1, versuche)
+        assertEquals(null, z.gemeldet) { "misslungen heisst nicht gemeldet" }
+
+        // Naechster Zyklus, gleiche Lage: es wird ERNEUT versucht.
+        z.verarbeite(true, global, leer, melden = { versuche++; true }, zuruecknehmen = {})
+        assertEquals(2, versuche) { "ohne Wiederholung bliebe der Regler stumm stehen" }
+        assertEquals(global, z.gemeldet)
+
+        // Und danach ist Ruhe - keine Tapete.
+        z.verarbeite(true, global, leer, melden = { versuche++; true }, zuruecknehmen = {})
+        assertEquals(2, versuche)
+    }
+
+    /** Nach einer Reparatur ist der Befund weg - und mit ihm das Gedaechtnis,
+     *  sonst schwiege ein spaeterer gleichartiger Hold. */
+    @Test
+    fun `vergessen laesst denselben Befund wieder melden`() {
+        val z = FuseHoldAlarm.Zustand()
+        var gemeldet = 0
+        z.verarbeite(true, global, leer, melden = { gemeldet++; true }, zuruecknehmen = {})
+        assertEquals(1, gemeldet)
+
+        z.vergessen()
+
+        z.verarbeite(true, global, leer, melden = { gemeldet++; true }, zuruecknehmen = {})
+        assertEquals(2, gemeldet)
+    }
+
+    /** Die Aufloesung nimmt zurueck und leert das Gedaechtnis in EINEM Schritt -
+     *  sonst haette der naechste Hold einen belegten Platz vorgefunden. */
+    @Test
+    fun `die Aufloesung nimmt zurueck und vergisst`() {
+        val z = FuseHoldAlarm.Zustand()
+        var zurueck = 0
+        z.verarbeite(true, global, leer, melden = { true }, zuruecknehmen = {})
+        z.verarbeite(false, FuseHoldAlarm.Kennung(0L, null), leer, melden = { true }, zuruecknehmen = { zurueck++ })
+        assertEquals(1, zurueck)
+        assertEquals(null, z.gemeldet)
+    }
+
     /** Ein Hold ohne benannten Grund bleibt eine Meldung - unbekannt ist der
      *  Fall, in dem am wenigsten klar ist, was los ist. */
     @Test

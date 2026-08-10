@@ -71,6 +71,57 @@ object FuseHoldAlarm {
     }
 
     /**
+     * Die Regel MIT ihrem Gedaechtnis - und mit dem Vertrag ans Absetzen.
+     *
+     * Warum das hier steht und nicht als Feld im Plugin: die Eigenschaft
+     * "die Kennung wird ERST nach gelungenem Absetzen gemerkt" lag dort, wo
+     * kein Test hinkommt. Die Mutationsprobe hat das aufgedeckt - sie blieb
+     * gruen, als die Kennung wieder vorab gesetzt wurde. Eine Eigenschaft, die
+     * eine Mutation ueberlebt, ist keine.
+     *
+     * Sie ist nicht kosmetisch: scheitert das Absetzen (Ausnahme aus der
+     * UI-Schicht) und gilt die Meldung trotzdem als erfolgt, meldet sich
+     * GENAU DIESER Befund nie wieder - der Regler steht still und der Kanal
+     * schweigt. Dieselbe Familie wie der Fehler, gegen den der Kanal gebaut ist.
+     */
+    class Zustand {
+
+        var gemeldet: Kennung? = null
+            private set
+
+        /**
+         * @param melden setzt die Meldung ab und sagt, OB es gelungen ist.
+         *   Nur dann gilt der Befund als gemeldet.
+         * @param zuruecknehmen entfernt eine stehende Meldung.
+         */
+        fun verarbeite(
+            hold: Boolean,
+            kennung: Kennung,
+            ursachen: Map<String, Int>,
+            melden: (String) -> Boolean,
+            zuruecknehmen: () -> Unit,
+        ): Aktion {
+            val a = naechste(hold, kennung, ursachen, gemeldet)
+            when (a) {
+                is Aktion.Nichts        -> Unit
+                is Aktion.Zuruecknehmen -> {
+                    gemeldet = null
+                    zuruecknehmen()
+                }
+
+                is Aktion.Melden        -> if (melden(a.text)) gemeldet = a.kennung
+            }
+            return a
+        }
+
+        /** Nach einer Ledger-Reparatur: der Befund ist weg, das Gedaechtnis
+         *  auch - sonst schwiege ein spaeterer gleichartiger Hold. */
+        fun vergessen() {
+            gemeldet = null
+        }
+    }
+
+    /**
      * Der Grund steht VOR den Einzelfehlern: bei `recoveryHold` und
      * `persistFailed` gibt es gar keine Fehlerliste, und "kein Fehler benannt"
      * allein waere dort irrefuehrend - es gibt sehr wohl einen Grund.

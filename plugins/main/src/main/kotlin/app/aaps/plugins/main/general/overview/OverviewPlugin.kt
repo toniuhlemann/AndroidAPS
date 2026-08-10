@@ -28,6 +28,7 @@ import app.aaps.core.interfaces.rx.events.EventDismissNotification
 import app.aaps.core.interfaces.rx.events.EventIobCalculationProgress
 import app.aaps.core.interfaces.rx.events.EventNewHistoryData
 import app.aaps.core.interfaces.rx.events.EventNewNotification
+import app.aaps.core.interfaces.rx.events.EventReplaceNotification
 import app.aaps.core.interfaces.rx.events.EventPumpStatusChanged
 import app.aaps.core.interfaces.rx.events.EventUpdateOverviewCalcProgress
 import app.aaps.core.interfaces.ui.UiInteraction
@@ -112,6 +113,18 @@ class OverviewPlugin @Inject constructor(
             .subscribe({ n ->
                            if (notificationStore.add(n.notification))
                                overviewBus.send(EventUpdateOverviewNotification("EventNewNotification"))
+                       }, fabricPrivacy::logException)
+        // ATOMAR ersetzen (10.08.2026): Dismiss und New laufen ueber zwei
+        // getrennte Streams ohne Reihenfolgegarantie. Wer beide nacheinander
+        // sendet, riskiert, dass das Hinzufuegen zuerst laeuft, an der belegten
+        // Kennung scheitert - und das spaetere Entfernen die alte Meldung
+        // wegraeumt. Uebrig bleibt gar keine.
+        disposable += rxBus
+            .toObservable(EventReplaceNotification::class.java)
+            .observeOn(aapsSchedulers.io)
+            .subscribe({ n ->
+                           if (notificationStore.replace(n.notification))
+                               overviewBus.send(EventUpdateOverviewNotification("EventReplaceNotification"))
                        }, fabricPrivacy::logException)
         disposable += rxBus
             .toObservable(EventDismissNotification::class.java)

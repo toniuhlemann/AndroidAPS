@@ -94,6 +94,18 @@ interface UiInteraction {
      */
     fun dismissNotification(id: Int)
     fun addNotification(id: Int, text: String, level: Int)
+
+    /**
+     * Wie [addNotification], aber ERSETZT eine schon vorhandene Meldung
+     * derselben Kennung samt Text und Dringlichkeit.
+     *
+     * [addNotification] frischt bei belegter Kennung nur Datum und
+     * Gueltigkeit auf - kein neuer Text, keine neue Stufe, kein Ton. Fuer
+     * eine Warnung, die sich geaendert hat und wieder auffallen soll, ist
+     * das zu wenig. Getrennt Entfernen und Hinzufuegen zu senden waere ein
+     * Rennen (zwei Streams, keine Reihenfolge).
+     */
+    fun replaceNotification(id: Int, text: String, level: Int)
     fun addNotificationValidFor(id: Int, text: String, level: Int, validMinutes: Int)
     fun addNotificationWithSound(id: Int, text: String, level: Int, @RawRes soundId: Int?)
     fun addNotificationValidTo(id: Int, date: Long, text: String, level: Int, validTo: Long)
