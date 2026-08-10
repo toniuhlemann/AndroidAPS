@@ -365,6 +365,17 @@ object FuseController {
          *  unterschreitet; `null` = nie im Fenster (S0). */
         val timeToFloorMin: Int? = null,
         /**
+         * WANN das Minimum liegt, gegen das ENTSCHIEDEN wurde - ueber Haupt-
+         * UND Bremsbahn (S0, I16).
+         *
+         * Gegenstueck zu [minLowerMgdl]. Der Zeitindex der EINZELNEN Bahn
+         * (`PredictorResult.timeToMinSafetyLowerMin`) beschreibt einen anderen
+         * Zeitpunkt, sobald das Minimum aus der Bremsbahn stammt - live am
+         * 10.08.: minLower 71,17 bei Anker ~90,61 und Index 0. Beide Zahlen
+         * waren richtig, nebeneinander ergaben sie eine unmoegliche Bahn.
+         */
+        val timeToMinCombinedMin: Int? = null,
+        /**
          * ALLE Mengengrenzen dieses Zyklus, nicht nur die bindende (S0, K2).
          *
          * `bindingLimit` nennt genau eine, und bei Gleichstand entscheidet die
@@ -521,6 +532,7 @@ object FuseController {
         // dem Zyklus, und die Zahlen entscheiden nichts.
         val floorDeficit = TrajectoryQuery.floorDeficitOf(limits.guardFloorMgdl, prediction, restraint)
         val timeToFloor = TrajectoryQuery.timeToFloorOf(limits.guardFloorMgdl, prediction, restraint)
+        val timeToMinCombined = TrajectoryQuery.timeToMinSafetyLowerOf(prediction, restraint)
 
         // Alle Rueckgaben dieses Laufs teilen dieselbe S0-Telemetrie. Sie EINMAL
         // anzuhaengen ist nicht Bequemlichkeit: acht Rueckgabestellen, die je
@@ -533,6 +545,7 @@ object FuseController {
             minLowerMainMgdl = prediction.minSafetyLowerBg,
             floorDeficitMgdl = floorDeficit,
             timeToFloorMin = timeToFloor,
+            timeToMinCombinedMin = timeToMinCombined,
             caps = caps,
         )
 
@@ -708,18 +721,43 @@ object FuseController {
     }
 
     /**
+     * Wieviele ganze Pumpenschritte in [u] passen - DIESELBE Rechnung, mit der
+     * die Freigabe unten gerastert wird (`floor(raw / inc + TICK_EPS)`).
+     *
+     * Sie steht als eigene Funktion da, weil eine zweite Fassung derselben
+     * Rundung genau an den exakten Vielfachen auseinanderliefe: 0,15 U sind als
+     * Double 0,1499999999999999944…, ohne Epsilon wird daraus ein Schritt
+     * weniger. Wer die Kappen anders rastert als die Dosis, stuft die Grenzen
+     * nach einer Arithmetik ein, die nicht entschieden hat.
+     */
+    internal fun ticksOf(u: Double, pumpIncrementU: Double): Long {
+        if (!u.isFinite() || !pumpIncrementU.isFinite() || pumpIncrementU <= 0.0) return Long.MIN_VALUE
+        return floor(u / pumpIncrementU + TICK_EPS).toLong()
+    }
+
+    /**
      * Baut die Kappenliste und markiert, welche Grenzen die Menge
      * TATSAECHLICH bestimmt haben (S0, K2).
      *
-     * Aktiv heisst: hoechstens einen Pumpenschritt ueber der kleinsten. Die
-     * Toleranz ist physisch und nicht numerisch - naeher beieinander
-     * liegende Kappen ergeben dieselbe abgebbare Menge, und welche von
-     * ihnen `minByOrNull` nennt, ist dann eine Eigenschaft der
-     * Listenreihenfolge und keine Messung.
+     * AKTIV HEISST: GLEICHE TICKZAHL wie die kleinste Kappe - nicht "innerhalb
+     * eines Pumpenschritts".
+     *
+     * Die erste Fassung prueft `v <= min + inc` und hat damit ihre eigene
+     * Begruendung verfehlt: bei 1,00 und 1,05 U mit 0,05er Schritt sind das
+     * 20 gegen 21 Ticks, also VERSCHIEDENE lieferbare Mengen - die zweite
+     * Kappe hat nichts begrenzt und wurde trotzdem als mitbindend gefuehrt.
+     * Gedacht war "ununterscheidbar fuer die Dosis"; das ist genau die
+     * Tickgleichheit und sonst nichts.
+     *
+     * Ohne brauchbaren Pumpenschritt bleibt nur die exakte Gleichheit - eine
+     * ehrliche Entartung statt einer erfundenen Toleranz.
      */
     internal fun capsOf(pumpIncrementU: Double, vararg caps: Pair<String, Double>): List<Cap> {
         val min = caps.minOfOrNull { it.second } ?: return emptyList()
-        val tol = if (pumpIncrementU.isFinite() && pumpIncrementU > 0.0) pumpIncrementU else 0.0
-        return caps.map { (name, v) -> Cap(name, v, v <= min + tol) }
+        val usable = pumpIncrementU.isFinite() && pumpIncrementU > 0.0
+        val minTicks = ticksOf(min, pumpIncrementU)
+        return caps.map { (name, v) ->
+            Cap(name, v, if (usable) ticksOf(v, pumpIncrementU) == minTicks else v == min)
+        }
     }
 }

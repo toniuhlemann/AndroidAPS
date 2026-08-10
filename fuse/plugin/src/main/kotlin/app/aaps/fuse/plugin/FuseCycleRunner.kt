@@ -219,6 +219,16 @@ class FuseCycleRunner(
         val decision: FuseController.Decision,
         val tbr: FuseController.TbrRequest?,
         val prediction: PredictorResult?,
+        /**
+         * Die BREMSBAHN, sofern gerechnet (S0).
+         *
+         * Sie steht hier, weil der Guard gegen das Minimum ueber BEIDE Bahnen
+         * entscheidet: stammt das Minimum aus der Bremse, erklaert die
+         * Hub-Zerlegung der Hauptbahn den falschen Ort. Ohne dieses Feld
+         * wuerde der Export genau den Fehler wiederholen, den die getrennten
+         * Zeitindizes gerade beheben.
+         */
+        val restraint: PredictorResult? = null,
         val sourceTs: Long?,
         val computeTs: Long,
         val health: Health?,
@@ -1220,6 +1230,7 @@ class FuseCycleRunner(
             decision = combined.decision,
             tbr = combined.request,
             prediction = prediction,
+            restraint = restraint,
             sourceTs = signal.sourceTs,
             computeTs = computeTs,
             health = step.health,

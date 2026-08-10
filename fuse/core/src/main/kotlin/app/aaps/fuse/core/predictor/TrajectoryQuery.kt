@@ -79,6 +79,44 @@ object TrajectoryQuery {
      * Fehlt einer Bahn ein Index, zaehlt sie dort nicht mit (`getOrNull`), statt
      * den Zyklus an einer Telemetriezeile abstuerzen zu lassen.
      */
+    /**
+     * WANN das Minimum liegt, gegen das der Regler ENTSCHEIDET (S0, I16).
+     *
+     * [PredictorResult.timeToMinSafetyLowerMin] gehoert einer EINZELNEN Bahn.
+     * Der Guard rechnet aber gegen `minSafetyLowerOf(prediction, restraint)` -
+     * und wenn das Minimum aus der Bremsbahn stammt, beschreibt der Index der
+     * Hauptbahn einen anderen Zeitpunkt. Live gesehen am 10.08.:
+     *
+     *     minLower = 71,17    Anker ~ 90,61    timeToMin(Hauptbahn) = 0
+     *
+     * Die Hauptbahn hatte ihr Minimum wirklich am Anker; die 71,17 kamen aus
+     * der Bremsbahn. Beide Zahlen stimmten - nebeneinander gelesen ergaben sie
+     * eine unmoegliche Bahn.
+     *
+     * 0 heisst "der Anker ist das Minimum", wie ueberall sonst. Das Ergebnis
+     * ist per Konstruktion mit [minSafetyLowerOf] konsistent: das punktweise
+     * Minimum ueber die Bahnen und dann ueber die Zeit laeuft ueber dieselbe
+     * Menge von Werten wie das Minimum der Bahnminima.
+     */
+    fun timeToMinSafetyLowerOf(vararg trajectories: PredictorResult?): Int? {
+        val present = trajectories.filterNotNull()
+        val lead = present.firstOrNull() ?: return null
+        var best = present.minOf { it.bgAtAnchor }
+        var at = 0
+        for ((i, p) in lead.points.withIndex()) {
+            var m = Double.MAX_VALUE
+            for (t in present) {
+                val v = t.points.getOrNull(i)?.safetyLowerBg ?: continue
+                if (v < m) m = v
+            }
+            if (m.isFinite() && m < best) {
+                best = m
+                at = p.offsetMin
+            }
+        }
+        return at
+    }
+
     fun timeToFloorOf(floorMgdl: Double, vararg trajectories: PredictorResult?): Int? {
         if (!floorMgdl.isFinite()) return null
         val present = trajectories.filterNotNull()

@@ -30,11 +30,18 @@ class DecisionTelemetryTest {
         lowerAt: (Int) -> Double,
     ): PredictorResult {
         val pts = (1..60).map { TrajectoryPoint(it, it * 60_000L, bg, lowerAt(it), 0.0, 0.0, 0.0) }
-        val minLower = minOf(anchor, (1..60).minOf(lowerAt))
+        // Minimum UND Index genau wie `TrajectoryCore`: der Lauf startet AM
+        // ANKER (Index 0) und uebernimmt nur bei STRIKTER Unterschreitung. Eine
+        // Nachbildung, die bei Minute 1 anfaengt, meldet auf einer steigenden
+        // Bahn faelschlich Index 1 - und pruefte dann eine Bahn, die es nicht
+        // gibt.
+        var minLower = anchor
+        var minAt = 0
+        for (i in 1..60) if (lowerAt(i) < minLower) { minLower = lowerAt(i); minAt = i }
         return PredictorResult(
             points = pts, predictionAnchorTs = 0L, bgAtAnchor = anchor,
             minMeanBg = bg, minLowerBg = minLower,
-            timeToMinLowerMin = (1..60).minByOrNull(lowerAt) ?: 60,
+            timeToMinLowerMin = minAt,
             bgAtHorizonMean = bg, bgAtHorizonLower = lowerAt(60),
             lineageKind = "ACTUAL", trajectoryContentHash = "h",
             iobArraySpanMin = 235.0, iobArrayGridMin = 5.0,
@@ -101,20 +108,60 @@ class DecisionTelemetryTest {
     }
 
     /**
-     * Die Aktiv-Toleranz ist EIN PUMPENSCHRITT und keine Rechengenauigkeit.
+     * AKTIV HEISST GLEICHE TICKZAHL, nicht "innerhalb eines Pumpenschritts".
      *
-     * Zwei Kappen, die naeher beieinander liegen, ergeben dieselbe abgebbare
-     * Menge; eine Einstufung, die an 1e-12 haengt, waere eine Zufallsentscheidung
-     * mit sicherheitsrelevantem Ausgang.
+     * Die erste Fassung prueft `v <= min + inc` und verfehlte damit ihre eigene
+     * Begruendung: 1,00 und 1,05 U sind bei 0,05er Schritt 20 gegen 21 Ticks,
+     * also VERSCHIEDENE lieferbare Mengen. Die zweite Kappe hat nichts begrenzt
+     * und waere trotzdem als mitbindend gefuehrt worden - genau die Klasse von
+     * stillem Fehler, gegen die die Liste ueberhaupt gebaut wurde.
      */
     @Test
-    fun `die Aktiv-Toleranz ist ein Pumpenschritt`() {
+    fun `aktiv heisst gleiche Tickzahl und nicht ein Schritt Abstand`() {
         val caps = FuseController.capsOf(
             0.05,
-            "a" to 1.00,
-            "b" to 1.04,   // innerhalb eines Schritts
-            "c" to 1.06,   // darueber
+            "a" to 1.00,   // 20 Ticks - die kleinste
+            "b" to 1.04,   // 20 Ticks: liefert dieselbe Menge
+            "c" to 1.05,   // 21 Ticks: GENAU ein Schritt mehr, liefert mehr
+            "d" to 1.06,   // 21 Ticks
         )
+        assertTrue(caps.single { it.name == "a" }.active)
+        assertTrue(caps.single { it.name == "b" }.active, "gleiche Tickzahl")
+        assertFalse(caps.single { it.name == "c" }.active, "ein ganzer Schritt ist ein Unterschied")
+        assertFalse(caps.single { it.name == "d" }.active)
+    }
+
+    /**
+     * Die Tickrechnung der Kappen ist DIESELBE wie die der Dosis - samt
+     * Epsilon.
+     *
+     * Ohne das Epsilon verliert `floor` an exakten Vielfachen einen ganzen
+     * Schritt (0,15 U sind als Double 0,1499999999999999944…). Eine
+     * Kappeneinstufung mit anderer Rundung als die Freigabe wuerde die Grenzen
+     * nach einer Arithmetik einteilen, die nicht entschieden hat.
+     */
+    @Test
+    fun `die Kappen rastern wie die Dosis - auch an exakten Vielfachen`() {
+        for (mult in 1..40) {
+            val exact = mult * 0.05
+            assertEquals(
+                mult.toLong(), FuseController.ticksOf(exact, 0.05),
+                "exaktes Vielfaches $mult verliert einen Schritt"
+            )
+        }
+        // Und die Einstufung folgt daraus: 0,15 und 0,15 sind gleich, 0,15 und
+        // 0,20 nicht - trotz nur eines Schritts Abstand.
+        val caps = FuseController.capsOf(0.05, "x" to 0.15, "y" to 0.15, "z" to 0.20)
+        assertTrue(caps.single { it.name == "x" }.active)
+        assertTrue(caps.single { it.name == "y" }.active)
+        assertFalse(caps.single { it.name == "z" }.active)
+    }
+
+    /** Ohne brauchbaren Pumpenschritt bleibt nur exakte Gleichheit - eine
+     *  ehrliche Entartung statt einer erfundenen Toleranz. */
+    @Test
+    fun `ohne Pumpenschritt gilt exakte Gleichheit`() {
+        val caps = FuseController.capsOf(0.0, "a" to 1.0, "b" to 1.0, "c" to 1.0000001)
         assertTrue(caps.single { it.name == "a" }.active)
         assertTrue(caps.single { it.name == "b" }.active)
         assertFalse(caps.single { it.name == "c" }.active)
@@ -219,6 +266,61 @@ class DecisionTelemetryTest {
 
         assertEquals(10.0, d.floorDeficitMgdl, 1e-12)
         assertEquals(10, d.timeToFloorMin)
+    }
+
+    // ---- I16: der Zeitindex gehoert zur ENTSCHIEDENEN Bahn ----------------
+
+    /**
+     * DER LIVE-WIDERSPRUCH VOM 10.08., als Test festgehalten.
+     *
+     * Im Trail stand `minLower = 71,17` bei Anker ~90,61 und Zeitindex 0.
+     * Beide Zahlen waren richtig - die HAUPTbahn hatte ihr Minimum wirklich am
+     * Anker, die 71,17 kamen aus der BREMSbahn -, aber nebeneinander gelesen
+     * beschrieben sie eine unmoegliche Bahn.
+     *
+     * Hier derselbe Aufbau: Hauptbahn steigt (Minimum am Anker), Bremsbahn
+     * faellt spaeter tiefer. Der kombinierte Index muss die Bremse zeigen.
+     */
+    @Test
+    fun `der kombinierte Zeitindex zeigt die Bahn die das Minimum haelt`() {
+        val main = pred(bg = 160.0, anchor = 90.61) { 120.0 }            // steigt: Min am Anker
+        val brake = pred(bg = 160.0, anchor = 90.61) { i -> if (i < 40) 120.0 else 71.17 }
+        val d = FuseController.decide(state(), main, restraint = brake)
+
+        // Die Hauptbahn sagt weiterhin "Anker" - und das stimmt fuer SIE.
+        assertEquals(0, main.timeToMinSafetyLowerMin)
+        // Entschieden wurde aber gegen 71,17, und der gehoert Minute 40.
+        assertEquals(71.17, d.minLowerMgdl)
+        assertEquals(40, d.timeToMinCombinedMin)
+    }
+
+    /**
+     * Der kombinierte Index und das kombinierte Minimum muessen ZUSAMMEN
+     * passen - sonst ist der Widerspruch nur verschoben.
+     */
+    @Test
+    fun `am kombinierten Index steht wirklich das kombinierte Minimum`() {
+        val main = pred(bg = 160.0, anchor = 150.0) { i -> if (i < 20) 130.0 else 108.0 }
+        val brake = pred(bg = 160.0, anchor = 150.0) { i -> if (i < 50) 140.0 else 99.0 }
+        val d = FuseController.decide(state(), main, restraint = brake)
+
+        val at = d.timeToMinCombinedMin!!
+        val amIndex = minOf(
+            main.points.single { it.offsetMin == at }.safetyLowerBg,
+            brake.points.single { it.offsetMin == at }.safetyLowerBg,
+        )
+        assertEquals(d.minLowerMgdl, amIndex)
+    }
+
+    /** Ohne Bremse ist der kombinierte Index der der Hauptbahn - und 0 heisst
+     *  weiterhin "der Anker ist das Minimum". */
+    @Test
+    fun `ohne Bremse folgt der kombinierte Index der Hauptbahn`() {
+        val steigend = pred(bg = 160.0, anchor = 100.0) { 120.0 }
+        assertEquals(0, FuseController.decide(state(), steigend).timeToMinCombinedMin)
+
+        val fallend = pred(bg = 160.0, anchor = 150.0) { i -> if (i < 25) 140.0 else 110.0 }
+        assertEquals(25, FuseController.decide(state(), fallend).timeToMinCombinedMin)
     }
 
     // ---- Der Punkt, an dem Telemetrie sonst still verschwindet -------------

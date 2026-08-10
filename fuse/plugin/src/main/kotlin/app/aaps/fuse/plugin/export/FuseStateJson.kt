@@ -185,12 +185,18 @@ object FuseStateJson {
                 // von einer bei -382 nicht zu unterscheiden.
                 .put("floorDeficitMgdl", fin(d.floorDeficitMgdl))
                 .put("timeToFloorMin", d.timeToFloorMin ?: JSONObject.NULL)
-                // S0 (I16): der Zeitindex der SICHERHEITSbahn. `timeToMinLower`
-                // gehoert der Anzeigebahn, entschieden wird gegen die
-                // prior-freie - in 68 % der Faelle liegt deren Minimum am
-                // Haftungshorizont, der "Nahzonen-Guard" ist also ueberwiegend
-                // ein Fernhorizont-Test.
-                .put("timeToMinSafetyLowerMin", outcome.prediction?.timeToMinSafetyLowerMin ?: JSONObject.NULL)
+                // S0 (I16): ZWEI Zeitindizes, und sie gehoeren zu verschiedenen
+                // Bahnen. `...Main` ist der der Hauptbahn, `...Combined` der
+                // der Bahn, gegen die der Regler ENTSCHEIDET (Haupt UND Bremse)
+                // - also der Partner von `minLowerMgdl`.
+                //
+                // Ein einzelnes Feld war widerspruechlich: am 10.08. stand live
+                // minLower 71,17 bei Anker ~90,61 und Index 0. Beide Zahlen
+                // waren richtig - die Hauptbahn hatte ihr Minimum wirklich am
+                // Anker, die 71,17 kamen aus der Bremsbahn -, aber nebeneinander
+                // ergaben sie eine unmoegliche Bahn.
+                .put("timeToMinSafetyLowerMainMin", outcome.prediction?.timeToMinSafetyLowerMin ?: JSONObject.NULL)
+                .put("timeToMinSafetyLowerCombinedMin", d.timeToMinCombinedMin ?: JSONObject.NULL)
                 // S0 (K2): ALLE Mengengrenzen, nicht nur die bindende.
                 // `bindingLimit` nennt bei Gleichstand die erste der Liste -
                 // und mit IobThPercent = 100 sind iobTh- und maxIob-Spielraum
@@ -303,6 +309,43 @@ object FuseStateJson {
                 .put("windowFromTs", s.windowFromTs)
         )
 
+        // ---- S0: die Bahnhub-Zerlegung -------------------------------------
+        // WARUM BEIDE BAHNEN: der Guard entscheidet gegen das Minimum ueber
+        // Haupt- UND Bremsbahn. Stammt es aus der Bremse, erklaert der Hub der
+        // Hauptbahn den falschen Ort - derselbe Fehler, den die getrennten
+        // Zeitindizes oben gerade beheben. Ein Hub allein waere hier also nicht
+        // "die Haelfte", sondern irrefuehrend.
+        //
+        // NICHTS hiervon wird gelesen: keine Grenze, kein Zweig, keine Dosis.
+        fun hub(h: app.aaps.fuse.core.predictor.TrajectoryHub?): Any =
+            h?.let {
+                JSONObject()
+                    .put("driveMeanMgdl", fin(it.driveMeanMgdl))
+                    .put("driveLowerMgdl", fin(it.driveLowerMgdl))
+                    .put("driveSafetyLowerMgdl", fin(it.driveSafetyLowerMgdl))
+                    .put("bgiMgdl", fin(it.bgiMgdl))
+                    .put("transportMgdl", fin(it.transportMgdl))
+                    // Die beiden Gewichtssummen sind der Schluessel: mit ihnen
+                    // rechnet ein Auswerter den Hub eines GEDACHTEN Antriebs
+                    // nach, ohne den Zerfall nachbauen zu muessen.
+                    .put("decayWeightSumPositive", fin(it.decayWeightSumPositive))
+                    .put("decayWeightSumNegative", fin(it.decayWeightSumNegative))
+            } ?: JSONObject.NULL
+
+        fun hubsOf(p: app.aaps.fuse.core.predictor.PredictorResult?): Any =
+            p?.let {
+                JSONObject()
+                    .put("atHorizon", hub(it.hubAtHorizon))
+                    .put("atMinSafetyLower", hub(it.hubAtMinSafetyLower))
+                    .put("timeToMinSafetyLowerMin", it.timeToMinSafetyLowerMin)
+            } ?: JSONObject.NULL
+
+        o.put(
+            "hub", JSONObject()
+                .put("main", hubsOf(outcome.prediction))
+                .put("restraint", hubsOf(outcome.restraint))
+        )
+
         val b = outcome.band
         if (b == null) gap("drive", "NO_BAND_THIS_CYCLE")
         else o.put(
@@ -311,6 +354,12 @@ object FuseStateJson {
                 .put("lower", fin(b.lower))
                 .put("spread", fin(b.spread))
                 .put("pairCount", b.pairCount)
+                // S0: WIRKT das Band ueberhaupt? `spread == 0` war der einzige
+                // Hinweis auf ein abgeschaltetes Band und ist mehrdeutig - auch
+                // ein aktives Band liefert bei entarteter Paarverteilung 0.
+                // Das Flag kommt aus DEMSELBEN Praedikat wie der Zweig.
+                .put("quantilePct", b.quantilePct)
+                .put("bandActive", b.bandActive)
                 .put("methodId", policy?.let { app.aaps.fuse.core.signal.PairSlopeBand.methodId(it.driveLowerQuantilePct) } ?: JSONObject.NULL)
                 .put("candidate", outcome.candidate?.let { c ->
                     JSONObject()
