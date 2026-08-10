@@ -99,8 +99,22 @@ object FuseStateJson {
      * @param reason der Name aus `FusePatchEpoch.Reason`. Er sagt bewusst
      *   MATCHING_PUMP_IDENTITY und nicht "PUMP_ORIGIN": bewiesen ist eine
      *   passende Identitaet, nicht die Herkunft.
+     * @param applicable ist die Patch-Epoche fuer die AKTIVE Pumpe ueberhaupt
+     *   eine Kategorie? `null` heisst "aktive Pumpe nicht lesbar".
+     *
+     *   OHNE dieses Feld ist der Export irrefuehrend: an der VirtualPump steht
+     *   dort `known=false, reason=NO_EVENT`, und das SIEHT aus wie eine
+     *   fehlende Epoche, obwohl es dort gar keine geben kann. Wer den Trail
+     *   liest, wuerde einen Defekt suchen, den es nicht gibt - und schlimmer,
+     *   er koennte den umgekehrten Schluss ziehen und die Sperre fuer wirksam
+     *   halten, wo sie gar nicht greift.
      */
-    data class PatchEpoch(val epochTs: Long?, val known: Boolean, val reason: String)
+    data class PatchEpoch(
+        val epochTs: Long?,
+        val known: Boolean,
+        val reason: String,
+        val applicable: Boolean? = null,
+    )
 
     fun record(
         cycleId: String,
@@ -195,6 +209,11 @@ object FuseStateJson {
                 .put("known", patchEpoch.known)
                 .put("reason", patchEpoch.reason)
                 .putOpt("epochTs", patchEpoch.epochTs)
+                // Ausdruecklich `JSONObject.NULL` statt Weglassen: "aktive
+                // Pumpe nicht lesbar" ist eine Aussage und muss im Trail von
+                // "Feld gibt es in diesem Build noch nicht" unterscheidbar
+                // bleiben.
+                .put("applicable", patchEpoch.applicable ?: JSONObject.NULL)
         )
 
         if (publicationGate == null) gap("publicationGate", "NOT_REPORTED")

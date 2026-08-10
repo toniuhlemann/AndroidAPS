@@ -47,6 +47,14 @@ class FusePatchEpochSourceTest {
             whenever(it.serialNumber()) doReturn (s ?: "")
         }
 
+    /**
+     * Der Zustand wird aus DERSELBEN Instanz abgeleitet, die auch uebergeben
+     * wird - genau so macht es der Zyklus. Ein Mock ist keine VirtualPump,
+     * also gilt hier ueberall "echte Pumpe".
+     */
+    private fun aktuell(p: Pump?, nowTs: Long = jetzt) =
+        FusePatchEpochSource.current(persistence, p, FuseActivePump.of(p), nowTs)
+
     /** Die ECHTE Form: kein pumpId, Serial klein. */
     private fun echterWechsel(ts: Long = t0) = TE(
         timestamp = ts, type = TE.Type.CANNULA_CHANGE, glucoseUnit = GlucoseUnit.MGDL,
@@ -62,7 +70,7 @@ class FusePatchEpochSourceTest {
     @Test
     fun `der echte Geraetedatensatz definiert die Epoche`() {
         whenever(persistence.getLastTherapyRecordUpToNow(any())) doReturn echterWechsel()
-        val r = FusePatchEpochSource.current(persistence, pumpe(), jetzt)
+        val r = aktuell(pumpe())
         assertEquals(t0, r.epochTs)
         assertEquals(FusePatchEpoch.Reason.MATCHING_PUMP_IDENTITY, r.reason)
     }
@@ -76,7 +84,7 @@ class FusePatchEpochSourceTest {
     @Test
     fun `es wird genau einmal gefragt`() {
         whenever(persistence.getLastTherapyRecordUpToNow(any())) doReturn echterWechsel()
-        FusePatchEpochSource.current(persistence, pumpe(), jetzt)
+        aktuell(pumpe())
         verify(persistence, times(1)).getLastTherapyRecordUpToNow(TE.Type.CANNULA_CHANGE)
         verify(persistence, never()).getTherapyEventDataFromTime(any(), any())
         verify(persistence, never()).getTherapyEventDataFromToTime(any(), any())
@@ -91,7 +99,7 @@ class FusePatchEpochSourceTest {
     fun `ein neuerer Handeintrag laesst die Epoche unbekannt und loest keine zweite Suche aus`() {
         whenever(persistence.getLastTherapyRecordUpToNow(any())) doReturn handeintrag(t0 + 60_000L)
 
-        val r = FusePatchEpochSource.current(persistence, pumpe(), jetzt)
+        val r = aktuell(pumpe())
 
         assertFalse(r.known) { "unbekannt heisst unbekannt - nicht 'suche weiter'" }
         assertEquals(FusePatchEpoch.Reason.NOT_PUMP_ORIGIN, r.reason)
@@ -106,7 +114,7 @@ class FusePatchEpochSourceTest {
     fun `eine werfende Abfrage ergibt unbekannt ohne zweiten Versuch`() {
         whenever(persistence.getLastTherapyRecordUpToNow(any()))
             .thenThrow(IllegalStateException("db weg"))
-        val r = FusePatchEpochSource.current(persistence, pumpe(), jetzt)
+        val r = aktuell(pumpe())
         assertFalse(r.known)
         verify(persistence, times(1)).getLastTherapyRecordUpToNow(any())
     }
@@ -116,7 +124,7 @@ class FusePatchEpochSourceTest {
     @Test
     fun `ohne Pumpe bleibt die Epoche unbekannt`() {
         whenever(persistence.getLastTherapyRecordUpToNow(any())) doReturn echterWechsel()
-        val r = FusePatchEpochSource.current(persistence, null, jetzt)
+        val r = aktuell(null)
         assertFalse(r.known)
         verify(persistence, times(1)).getLastTherapyRecordUpToNow(any())
     }

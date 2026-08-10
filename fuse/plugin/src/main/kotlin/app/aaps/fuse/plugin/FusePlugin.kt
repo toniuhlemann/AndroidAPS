@@ -17,10 +17,10 @@ import app.aaps.core.interfaces.constraints.ConstraintsChecker
 import app.aaps.core.interfaces.constraints.PluginConstraints
 import app.aaps.core.data.model.TE
 import app.aaps.core.interfaces.db.PersistenceLayer
+import app.aaps.fuse.plugin.ledger.FuseActivePump
 import app.aaps.fuse.plugin.ledger.FusePatchEpoch
 import app.aaps.fuse.plugin.ledger.LedgerFacts
 import app.aaps.fuse.plugin.ledger.FusePatchEpochSource
-import app.aaps.fuse.plugin.ledger.ProposalPumpEpoch
 import app.aaps.core.interfaces.iob.IobCobCalculator
 import app.aaps.core.interfaces.logging.AAPSLogger
 import app.aaps.core.interfaces.logging.LTag
@@ -367,6 +367,21 @@ class FusePlugin @Inject constructor(
         aapsLogger.debug(LTag.APS, "invoke from $initiator tempBasalFallback: $tempBasalFallback")
         lastAPSResult = null
 
+        // ---- EIN Lesen der aktiven Pumpe je Zyklus --------------------------
+        //
+        // Alles Weitere wird HIERAUS abgeleitet: Typ, Emulationsflag,
+        // Epochenauswertung, Pinnung, Riegel. Frueher standen dafuer mehrere
+        // getrennte `activePlugin.activePump`-Zugriffe im Zyklus, und die
+        // koennten - bei einem Pumpenwechsel mitten im Durchlauf - Merkmale aus
+        // verschiedenen Momenten paaren. Genau diese Falle ist beim Serial
+        // schon einmal aufgetreten.
+        //
+        // Der SERIAL bleibt bewusst draussen (s. [FuseActivePump]): er wird
+        // nach einem Prozessstart asynchron nachgeladen und darum so SPAET wie
+        // moeglich gelesen - naemlich erst beim Pinnen.
+        val pumpe = runCatching { activePlugin.activePump }.getOrNull()
+        val aktivePumpe = FuseActivePump.of(pumpe)
+
         // Ledger VOR dem Lauf restaurieren - NICHT wie warmGraphRingOnce nach
         // dem Lauf: der Zyklus rechnet mit den restaurierten Commitments und
         // Episodenbudgets, ein nachtraegliches Laden kaeme eine Dosis zu spaet.
@@ -381,12 +396,11 @@ class FusePlugin @Inject constructor(
             // B3: der PUMPENKONTEXT gehoert zum Laden. Die Migration braucht
             // ihn, weil eine v1-Zeile gar keinen Pin hat - ob sie gefahrlos
             // als Altbestand weiterbinden darf, haengt daran, welche Pumpe
-            // heute laeuft. Ohne ihn kaeme immer `null` an, also "unbekannt",
-            // und jede offene Altzeile ginge auch auf der VirtualPump in den
-            // Hold: fail-closed, aber unnoetig blockierend.
-            val aktiverTyp = runCatching { activePlugin.activePump.model().name }.getOrNull()
+            // heute laeuft. Ohne ihn kaeme immer "unbekannt" an, und jede
+            // offene Altzeile ginge auch auf der VirtualPump in den Hold:
+            // fail-closed, aber unnoetig blockierend.
             runCatching {
-                ledgerAdapter.loadOnce(ledgerDir(), sessionId, dateUtil.now(), aktiverTyp) {
+                ledgerAdapter.loadOnce(ledgerDir(), sessionId, dateUtil.now(), aktivePumpe) {
                     aapsLogger.error(LTag.APS, it)
                 }
             }.onFailure { aapsLogger.error(LTag.APS, "FUSE ledger load failed", it) }
@@ -407,10 +421,10 @@ class FusePlugin @Inject constructor(
         // unbekannt - auf einen aelteren passenden auszuweichen waere die
         // Behauptung, seither sei nichts geschehen, und genau das ist
         // unbekannt.
-        val aktiverPumpentyp = runCatching { activePlugin.activePump.model().name }.getOrNull()
         val patchEpoch = FusePatchEpochSource.current(
             persistenceLayer,
-            runCatching { activePlugin.activePump }.getOrNull(),
+            pumpe,
+            aktivePumpe,
             dateUtil.now(),
         )
         ledgerAdapter.observePatchEpoch(patchEpoch.epochTs)
@@ -463,7 +477,7 @@ class FusePlugin @Inject constructor(
                 aapsLogger.error(LTag.APS, "FUSE exception path: running TBR not classifiable - no intervention")
             FuseAbortTbr.abortRt(
                 nowMs = abortTs,
-                gate = FusePumpGate.evaluate(runCatching { activePlugin.activePump }.getOrNull()),
+                gate = FusePumpGate.evaluate(pumpe),
                 outcome = abortTbr,
             )
         } else {
@@ -540,7 +554,13 @@ class FusePlugin @Inject constructor(
             // Gegen die VirtualPump gibt es keine Patches; dort waere die
             // Epoche immer unbekannt und die Sperre haette den
             // Entwicklungspfad stillgelegt.
-            realPumpEpochUnknown = ProposalPumpEpoch.appliesTo(aktiverPumpentyp) && !patchEpoch.known,
+            //
+            // Und "VirtualPump" ist NICHT am Typnamen zu erkennen: dort ist er
+            // eine Preference und steht auf dem Testgeraet auf MEDTRUM_NANO
+            // (s. [FuseActivePump]). Deshalb steht das Klassenmerkmal in der
+            // Bedingung VOR der Typpruefung - und die Bedingung selbst steht
+            // drueben am Zustand, wo sie einzeln pruefbar ist.
+            realPumpEpochUnknown = aktivePumpe.realPumpEpochUnknown(patchEpoch.known),
         )
 
         val publication = app.aaps.fuse.plugin.ledger.LedgerPublicationGate.publish(
@@ -566,15 +586,14 @@ class FusePlugin @Inject constructor(
                         // Sha des Serials. runCatching je Teil: eine zickende
                         // Pumpen-API degradiert nur zur Alt-Bindung (ohne
                         // Pinnung), sie wirft den Ledger-Schritt nicht ab.
-                        val pump = runCatching { activePlugin.activePump }.getOrNull()
                         // EINMAL gelesen und an BEIDE Stellen gegeben: die
                         // kanonische Serialform haengt seit der Codex-
                         // Gegenpruefung (F7) vom Pumpentyp ab. Zwei getrennte
                         // Lesungen koennten einen Typ mit einem Serial aus
-                        // einem anderen Moment paaren.
-                        val pumpTypeName = pump
-                            ?.let { runCatching { it.model().name }.getOrNull() }
-                            ?.takeIf { it.isNotBlank() }
+                        // einem anderen Moment paaren. Typ und Klassenmerkmal
+                        // stammen jetzt aus dem Zyklusanfang - derselbe
+                        // Lesevorgang, der auch die Epoche bestimmt hat.
+                        val pumpTypeName = aktivePumpe.pumpTypeName
                         ledgerAdapter.onPublished(
                             proposalId = cycleId,
                             unitsU = rt.units!!,
@@ -593,11 +612,16 @@ class FusePlugin @Inject constructor(
                             // gepinnt, und der Sekunden spaeter mit dem echten
                             // Serial gebuchte Bolus passt nie mehr auf die
                             // eigene Zeile.
-                            pumpSerialHash = pump?.let {
+                            pumpSerialHash = pumpe?.let {
                                 runCatching {
                                     app.aaps.fuse.plugin.ledger.LedgerFacts.serialHashOf(it.serialNumber(), pumpTypeName)
                                 }.getOrNull()
                             },
+                            // Die EMULATION wird mitgepinnt, nicht spaeter aus
+                            // dem Typnamen rekonstruiert: eine umgestellte
+                            // VirtualPump-Preference wuerde sonst alte Zeilen
+                            // rueckwirkend umdeuten.
+                            virtualPump = aktivePumpe.virtualPump,
                         )
                     }
                     o.treatmentView?.let { v ->
@@ -637,6 +661,9 @@ class FusePlugin @Inject constructor(
                 epochTs = patchEpoch.epochTs,
                 known = patchEpoch.known,
                 reason = patchEpoch.reason.name,
+                // Ohne diese Angabe liest sich `known=false / NO_EVENT` an der
+                // VirtualPump wie ein Defekt - dort ist es der Normalzustand.
+                applicable = aktivePumpe.realPatchPump,
             ),
         )
     }

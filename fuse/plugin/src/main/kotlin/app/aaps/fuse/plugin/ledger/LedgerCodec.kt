@@ -173,38 +173,73 @@ object LedgerCodec {
     fun unmigratablePatchRows(
         state: LedgerState,
         pumpEpochs: Map<String, ProposalPumpEpoch>,
-        activePumpTypeName: String?,
-    ): List<String> = state.entries.keys.filter { id ->
-        val ep = pumpEpochs[id]
-        if (ep == null) {
-            // GAR KEIN PIN - eine v1-Zeile. Sie wuerde spaeter ueber
-            // `coveredEpochs` zu LEGACY_OPEN und danach OHNE Typ-, Serial- und
-            // Patchpruefung binden. Auf einer echten Patchpumpe ist das genau
-            // das Loch, gegen das B3 gebaut ist.
+        activePump: FuseActivePump,
+    ): List<String> {
+        // EINMAL ausgewertet, nicht je Zeile: der Dreiwert ist eine Eigenschaft
+        // des Zyklus, nicht der Zeile.
+        //   true  -> echte Patchpumpe laeuft
+        //   false -> keine Patchpumpe ODER Emulation
+        //   null  -> unbekannt, und unbekannt haelt an
+        val echtePatchpumpe = activePump.realPatchPump
+        // "Nicht nachweislich harmlos" - `null` faellt bewusst auf dieselbe
+        // Seite wie `true`. Eine VirtualPump anzunehmen waere geraten, und zwar
+        // in die gefaehrliche Richtung.
+        val altbestandGefaehrlich = echtePatchpumpe != false
+        return state.entries.keys.filter { id ->
+            val ep = pumpEpochs[id]
+            if (ep == null) {
+                // GAR KEIN PIN - eine v1-Zeile. Sie wuerde spaeter ueber
+                // `coveredEpochs` zu LEGACY_OPEN und danach OHNE Typ-, Serial-
+                // und Patchpruefung binden. Auf einer echten Patchpumpe ist das
+                // genau das Loch, gegen das B3 gebaut ist.
+                //
+                // Ob sie gefahrlos weiterbinden darf, haengt daran, WELCHE
+                // Pumpe heute laeuft:
+                //   - Patchpumpe  -> nein, Hold.
+                //   - Nicht-Patch -> ja, unveraendertes Altbestandsverhalten.
+                //   - Emulation   -> ja. Sie fuehrt zwar einen Patchpumpen-
+                //     NAMEN, hat aber keine Patches; das entscheidet
+                //     [FuseActivePump.realPatchPump], nicht der Name.
+                //   - UNBEKANNT   -> Hold.
+                //
+                // Eine bereits GESCHLOSSENE Zeile bindet nichts mehr - sie ist
+                // kein Grund anzuhalten.
+                val offen = state.entries[id]?.closed == false
+                return@filter offen && altbestandGefaehrlich
+            }
+            // Marker-Pins tragen keinen Typ - sie binden ohnehin nie (UNPINNED)
+            // oder sind ausdruecklicher Altbestand (LEGACY_OPEN).
+            if (ep.unpinned) return@filter false
+            if (ep.legacyOpen) {
+                // Ausdruecklicher Altbestand bindet "wie bisher" - dieselbe
+                // Frage wie beim fehlenden Pin, also dieselbe Antwort.
+                val offen = state.entries[id]?.closed == false
+                return@filter offen && altbestandGefaehrlich
+            }
+            // Eine Patchpumpe OHNE gesetzte Epoche ist der Fall - und die Frage
+            // "ist das eine Patchpumpe?" beantwortet das GEPINNTE
+            // `patchEpochApplicable`, NICHT der Typname.
             //
-            // Ob sie gefahrlos weiterbinden darf, haengt daran, WELCHE Pumpe
-            // heute laeuft:
-            //   - Patchpumpe  -> nein, Hold.
-            //   - Nicht-Patch -> ja, unveraendertes Altbestandsverhalten.
-            //   - UNBEKANNT   -> Hold. Eine VirtualPump anzunehmen waere
-            //     geraten, und zwar in die gefaehrliche Richtung.
+            // Der Unterschied ist genau die Emulation: ein `MEDTRUM_NANO`-Pin
+            // der VirtualPump traegt keine Epoche und wuerde ueber den Typnamen
+            // hier ewig haengen bleiben. Ueber die Anwendbarkeit faellt er
+            // heraus, denn der Konstruktor garantiert BEIDE Richtungen -
+            // Emulation impliziert "nicht anwendbar", echte Patchpumpe
+            // impliziert "anwendbar".
             //
-            // Eine bereits GESCHLOSSENE Zeile bindet nichts mehr - sie ist
-            // kein Grund anzuhalten.
-            val offen = state.entries[id]?.closed == false
-            return@filter offen && (activePumpTypeName == null || ProposalPumpEpoch.appliesTo(activePumpTypeName))
+            // Und auch hier entscheidet am Ende die AKTIVE Pumpe mit. Ein
+            // Altbestands-Pin traegt einen Patchpumpen-NAMEN, aber keine
+            // Aussage darueber, ob er von einem physischen Geraet stammte -
+            // vor B3 gab es das Feld nicht. Laeuft heute die Emulation, kam er
+            // von ihr, und die Zeile darf migrieren; laeuft eine echte
+            // Patchpumpe oder ist die Lage unklar, bleibt es beim Hold.
+            //
+            // Der Zaun dahinter haelt trotzdem: eine so migrierte Zeile traegt
+            // `patchEpochTs = null`, und eine UNBEKANNTE gepinnte Epoche
+            // bindet nie (s. `FusePatchEpoch.sameEpoch`). Die Migration
+            // entscheidet ueber den Hold, nicht ueber die Bindung.
+            ep.patchEpochApplicable && ep.patchEpochTs == null && altbestandGefaehrlich
         }
-        // Marker-Pins tragen keinen Typ - sie binden ohnehin nie (UNPINNED)
-        // oder sind ausdruecklicher Altbestand (LEGACY_OPEN).
-        if (ep.unpinned) return@filter false
-        if (ep.legacyOpen) {
-            // Ausdruecklicher Altbestand bindet "wie bisher" - dieselbe Frage
-            // wie beim fehlenden Pin, also dieselbe Antwort.
-            val offen = state.entries[id]?.closed == false
-            return@filter offen && (activePumpTypeName == null || ProposalPumpEpoch.appliesTo(activePumpTypeName))
-        }
-        // Eine Patchpumpe OHNE anwendbare, gesetzte Epoche ist der Fall.
-        ProposalPumpEpoch.appliesTo(ep.pumpTypeName) && ep.patchEpochTs == null
     }
 
     fun migrateToCurrent(state: LedgerState, nowTs: Long): LedgerState = state.copy(
@@ -405,6 +440,13 @@ object LedgerCodec {
         .also {
             if (ep.unpinned) it.put("unpinned", true)
             if (ep.legacyOpen) it.put("legacyOpen", true)
+            // Emulationsflag an JEDER normalen Pinnung, auch wenn es `false`
+            // ist. Anders als `patchEpochApplicable` ist das KEIN Feld, das
+            // man weglassen darf, wenn es nicht zutrifft: gerade die Aussage
+            // "das war eine ECHTE Pumpe" muss geschrieben dastehen, sonst ist
+            // sie beim Lesen nicht von einem verlorenen Feld zu unterscheiden.
+            // Marker tragen es nicht - sie tragen ueberhaupt keinen Inhalt.
+            if (!ep.unpinned && !ep.legacyOpen) it.put("virtualPump", ep.virtualPump)
             // B3: nur bei ANWENDBARKEIT schreiben. Bei einer Nicht-Patch-Pumpe
             // gibt es die Kategorie nicht - ein Feld dafuer waere eine Aussage
             // ueber etwas, das es nicht gibt.
@@ -445,7 +487,25 @@ object LedgerCodec {
             // Patchpumpen-Pins PFLICHT. Nicht-Patch-Pins tragen sie
             // weiterhin nicht - fuer sie gibt es die Kategorie nicht.
             val pinTyp = obj.strOrNull("pumpType")
-            if (schemaVersion >= RECONCILIATION_VERSION && !unpinned && !legacyOpen &&
+            // Das Emulationsflag ZUERST, denn es entscheidet, ob die
+            // Patch-Pflicht darunter ueberhaupt gilt.
+            //
+            // Ab v3 ist es an jeder normalen Pinnung PFLICHT - nicht nur an
+            // Medtrum-Pins. Ein fehlendes Feld darf nicht still als "war eine
+            // echte Pumpe" gelten, und die Praesenzpflicht unbedingt zu
+            // stellen erspart eine zweite Bedingung, die man beim naechsten
+            // Pumpentyp wieder nachziehen muesste. v3 ist nie ohne dieses Feld
+            // ausgeliefert worden (nichts installiert), also kann die Regel
+            // hart sein.
+            val normalerPin = !unpinned && !legacyOpen
+            if (schemaVersion >= RECONCILIATION_VERSION && normalerPin) {
+                require(obj.has("virtualPump")) { "v$schemaVersion pin $id without virtualPump" }
+            }
+            val emuliert = obj.optBoolean("virtualPump", false)
+            // Gegen die EMULIERTE Pumpe gibt es keine Patch-Epoche - dort ist
+            // ihr Fehlen der richtige Zustand und keine Korruption. Nur fuer
+            // eine als ECHT gepinnte Patchpumpe bleibt die Pflicht bestehen.
+            if (schemaVersion >= RECONCILIATION_VERSION && normalerPin && !emuliert &&
                 ProposalPumpEpoch.appliesTo(pinTyp)
             ) {
                 require(obj.has("patchEpochApplicable")) { "v$schemaVersion patch pin $id without patchEpochApplicable" }
@@ -460,11 +520,29 @@ object LedgerCodec {
                     "v$schemaVersion patch pin $id declares patchEpochApplicable=false"
                 }
             }
-            val anwendbar = obj.optBoolean("patchEpochApplicable", false)
+            // ALTBESTAND: eine Pinnung aus einer Generation VOR B3 kennt das
+            // Feld gar nicht. Fuer einen Patchpumpen-NAMEN heisst sein Fehlen
+            // dort nicht "nicht anwendbar", sondern UNBEKANNT - und unbekannt
+            // wird als die STRENGERE Lesart genommen: anwendbar, Epoche
+            // unbekannt. Ob die Zeile trotzdem migrieren darf, entscheidet
+            // danach die AKTIVE Pumpe (s. [unmigratablePatchRows]).
+            //
+            // Ohne diese Zeile waere so ein Pin unlesbar: der Konstruktor
+            // verlangt von einer nicht-emulierten Patchpumpe die
+            // Anwendbarkeit, die Datei traegt sie nicht, `decode` wuerde
+            // werfen - und eine bestehende v2-Datei waere dauerhaft weder
+            // lesbar noch migrierbar.
+            val anwendbar = obj.optBoolean("patchEpochApplicable", false) ||
+                (schemaVersion < RECONCILIATION_VERSION && normalerPin && ProposalPumpEpoch.appliesTo(pinTyp))
+            // Die Invarianten stehen im Konstruktor, nicht hier: eine Datei
+            // mit `virtualPump: true` UND `patchEpochApplicable: true` ist
+            // widerspruechlich, und ein Wurf von dort zaehlt beim Laden wie
+            // jede andere Korruption.
             val ep = ProposalPumpEpoch(
                 obj.strOrNull("pumpType"), obj.strOrNull("pumpSerialHash"), unpinned, legacyOpen,
                 patchEpochTs = if (anwendbar) obj.lngOrNull("patchEpochTs") else null,
                 patchEpochApplicable = anwendbar,
+                virtualPump = emuliert,
             )
             // Ein Eintrag ohne jede Aussage wird nie geschrieben - er waere
             // eine Pinnung, die nichts pinnt (Fremdinhalt/Korruption).

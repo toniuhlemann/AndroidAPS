@@ -40,6 +40,9 @@ class PatchEpochBindingTest {
         it.observePatchEpoch(epoche)
     }
 
+    /** Eine ECHTE Pumpe dieses Typs - nicht die Emulation. */
+    private fun echt(typ: PumpType) = FuseActivePump(typ.name, virtualPump = false)
+
     private fun FuseLedgerAdapter.publish(id: String, u: Double, ts: Long, typ: PumpType = medtrum) =
         onPublished(id, u, ts, 0L, 0.05, typ.name, LedgerFacts.serialHashOf(serial, typ.name))
 
@@ -193,7 +196,7 @@ class PatchEpochBindingTest {
             for (i in 0 until pins.length()) pins.getJSONObject(i).remove(feld)
             target.writeText(o.toString())
 
-            val b = FuseLedgerAdapter().also { it.loadOnce(unter, "epoch-b", t0 + 60_000L, medtrum.name) }
+            val b = FuseLedgerAdapter().also { it.loadOnce(unter, "epoch-b", t0 + 60_000L, echt(medtrum)) }
             assertTrue(b.recoveryHold) { "$feld fehlt in einer v3-Patchpinnung - das ist Korruption, kein Altbestand" }
         }
     }
@@ -222,7 +225,7 @@ class PatchEpochBindingTest {
         }
         target.writeText(o.toString())
 
-        val b = FuseLedgerAdapter().also { it.loadOnce(dir, "epoch-b", t0 + 60_000L, medtrum.name) }
+        val b = FuseLedgerAdapter().also { it.loadOnce(dir, "epoch-b", t0 + 60_000L, echt(medtrum)) }
         assertTrue(b.recoveryHold) {
             "Praesenz genuegt nicht - der Wert muss stimmen, sonst ist die Pruefung wieder aus"
         }
@@ -239,7 +242,7 @@ class PatchEpochBindingTest {
         val roh = File(dir, FuseLedgerStore.FILE_NAME).readText()
         assertFalse(roh.contains("patchEpochApplicable")) { "fuer eine Nicht-Patch-Pumpe gibt es die Kategorie nicht" }
 
-        val b = FuseLedgerAdapter().also { it.loadOnce(dir, "epoch-b", t0 + 60_000L, vp.name) }
+        val b = FuseLedgerAdapter().also { it.loadOnce(dir, "epoch-b", t0 + 60_000L, echt(vp)) }
         assertFalse(b.recoveryHold)
     }
 
@@ -267,7 +270,7 @@ class PatchEpochBindingTest {
         o.remove("proposalPumpEpochs")   // v1 kannte die Pinnung noch nicht
         target.writeText(o.toString())
 
-        val b = FuseLedgerAdapter().also { it.loadOnce(dir, "epoch-b", t0 + 60_000L, medtrum.name) }
+        val b = FuseLedgerAdapter().also { it.loadOnce(dir, "epoch-b", t0 + 60_000L, echt(medtrum)) }
         assertTrue(b.recoveryHold) {
             "ohne Pin und mit aktiver Patchpumpe wuerde die Zeile ungeprueft binden - Hold"
         }
@@ -287,7 +290,7 @@ class PatchEpochBindingTest {
         o.remove("proposalPumpEpochs")
         target.writeText(o.toString())
 
-        val b = FuseLedgerAdapter().also { it.loadOnce(dir, "epoch-b", t0 + 60_000L, vp.name) }
+        val b = FuseLedgerAdapter().also { it.loadOnce(dir, "epoch-b", t0 + 60_000L, echt(vp)) }
         assertFalse(b.recoveryHold)
     }
 
@@ -305,7 +308,7 @@ class PatchEpochBindingTest {
         o.remove("proposalPumpEpochs")
         target.writeText(o.toString())
 
-        val b = FuseLedgerAdapter().also { it.loadOnce(dir, "epoch-b", t0 + 60_000L, null) }
+        val b = FuseLedgerAdapter().also { it.loadOnce(dir, "epoch-b", t0 + 60_000L, FuseActivePump.UNKNOWN) }
         assertTrue(b.recoveryHold) { "unbekannt ist nicht VirtualPump" }
     }
 

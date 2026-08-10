@@ -40,9 +40,17 @@ import app.aaps.core.interfaces.pump.Pump
  */
 object FusePatchEpochSource {
 
+    /**
+     * @param pump dieselbe Pumpeninstanz, aus der [activePump] abgeleitet
+     *   wurde. Sie wird hier NUR noch fuer die Seriennummer gebraucht - der
+     *   Typ kommt aus [activePump], damit er nicht ein zweites Mal und
+     *   moeglicherweise aus einem anderen Moment gelesen wird.
+     * @param activePump der einmal je Zyklus erhobene Pumpenzustand.
+     */
     fun current(
         persistenceLayer: PersistenceLayer,
         pump: Pump?,
+        activePump: FuseActivePump,
         nowTs: Long,
     ): FusePatchEpoch.Result {
         // GENAU EINE Abfrage. Kein zweiter Aufruf, keine Schleife, kein
@@ -51,7 +59,13 @@ object FusePatchEpochSource {
             persistenceLayer.getLastTherapyRecordUpToNow(TE.Type.CANNULA_CHANGE)
         }.getOrNull()
 
-        val typ = runCatching { pump?.model()?.name }.getOrNull()
+        // GEGEN DIE EMULIERTE PUMPE WIRD TROTZDEM AUSGEWERTET, und das ist
+        // Absicht: das Ergebnis ist dann `known=false / NO_EVENT`, und genau
+        // dieser Befund gehoert in den Export. Er darf nur NICHT zur Sperre
+        // fuehren - das entscheidet der Aufrufer ueber `realPumpEpochUnknown`,
+        // nicht diese Quelle. Die Trennung ist gewollt: hier steht, WAS in der
+        // Datenbank steht, dort, WAS daraus folgt.
+        val typ = activePump.pumpTypeName
         return FusePatchEpoch.of(
             event = letzterWechsel,
             activePumpTypeName = typ,

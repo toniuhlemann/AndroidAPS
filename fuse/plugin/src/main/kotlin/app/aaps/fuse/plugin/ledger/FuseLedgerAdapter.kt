@@ -122,6 +122,23 @@ data class ProposalPumpEpoch(
     val patchEpochTs: Long? = null,
     /** Ist die Patch-Epoche fuer DIESE Pumpe ueberhaupt eine Kategorie? */
     val patchEpochApplicable: Boolean = false,
+    /**
+     * War die Pumpe zum Publikationszeitpunkt die EMULIERTE (VirtualPump)?
+     *
+     * Ohne dieses Feld waere `patchEpochApplicable = false` an einem
+     * MEDTRUM-Pin doppeldeutig: **Emulation** oder **Korruption**. Die
+     * Korruptionsdeutung ist die sicherheitsrelevante (eine beschaedigte
+     * Pinnung darf die Patchpruefung nicht umgehen), also muss die Emulation
+     * ihren EIGENEN Zustand bekommen - dieselbe Lehre wie an jeder anderen
+     * Stelle dieses Projekts.
+     *
+     * PERSISTIERT, und das ist die eigentliche Anforderung: nach einem Restart
+     * darf es NICHT erneut aus [pumpTypeName] geraten werden. Der Typname sagt
+     * bei der VirtualPump nichts ueber die Emulation aus (s. [FuseActivePump]),
+     * und eine spaeter umgestellte Preference wuerde alte Zeilen rueckwirkend
+     * umdeuten.
+     */
+    val virtualPump: Boolean = false,
 ) {
 
     init {
@@ -132,6 +149,23 @@ data class ProposalPumpEpoch(
         // Eine Epoche ohne Zustaendigkeit waere ein Wert ohne Bedeutung.
         require(!(patchEpochTs != null && !patchEpochApplicable)) {
             "patchEpochTs without applicability: $patchEpochTs"
+        }
+        // Marker tragen auch dieses Feld nicht - sie sind die ABWESENHEIT einer
+        // Aussage. Niemand liest es an ihnen (UNPINNED bindet nie, LEGACY_OPEN
+        // entscheidet ueber die AKTIVE Pumpe), und ein gesetztes Flag waere der
+        // Anfang einer zweiten Bedeutung.
+        if (unpinned || legacyOpen) require(!virtualPump) { "marker pin must not carry virtualPump" }
+        // Gegen die Emulation gibt es keine Patches - also auch keine Kategorie
+        // und erst recht keinen Zeitstempel. Beides einzeln geprueft, damit die
+        // Fehlermeldung sagt, WELCHE Haelfte gebrochen ist.
+        require(!(virtualPump && patchEpochApplicable)) { "virtual pump cannot have an applicable patch epoch" }
+        require(!(virtualPump && patchEpochTs != null)) { "virtual pump cannot carry a patch epoch: $patchEpochTs" }
+        // DIE KORRUPTIONSGEGENPROBE: ein Patchpumpen-Pin, der NICHT emuliert
+        // ist, MUSS die Kategorie fuehren. Genau diese Kombination -
+        // `MEDTRUM_NANO + virtualPump=false + patchEpochApplicable=false` -
+        // waere sonst der Weg, an der Patchpruefung vorbeizukommen.
+        if (!virtualPump && appliesTo(pumpTypeName)) require(patchEpochApplicable) {
+            "real patch pump pin without applicability: $pumpTypeName"
         }
     }
 
@@ -655,17 +689,21 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
      * abgegeben - nicht als geloescht.
      */
     /**
-     * @param activePumpTypeName der AKTIV eingestellte Pumpentyp, `null` =
-     *   nicht ermittelbar. Die Migration braucht ihn: eine v1-Zeile hat gar
-     *   keinen Pin, und ob sie gefahrlos als Altbestand weiterbinden darf,
-     *   haengt daran, WELCHE Pumpe heute laeuft. `null` gilt als unbekannt und
-     *   damit als Hold - eine VirtualPump anzunehmen waere geraten.
+     * @param activePump die JETZT aktive Pumpe. Die Migration braucht sie: eine
+     *   v1-Zeile hat gar keinen Pin, und ob sie gefahrlos als Altbestand
+     *   weiterbinden darf, haengt daran, WELCHE Pumpe heute laeuft.
+     *
+     *   Es ist ausdruecklich nicht nur der TYPNAME. Der beantwortet die Frage
+     *   "haengt hier physisches Insulin dran?" nicht: an der VirtualPump ist er
+     *   eine Preference (s. [FuseActivePump]). Der Vorgabewert
+     *   [FuseActivePump.UNKNOWN] gilt als unbekannt und damit als Hold - eine
+     *   VirtualPump anzunehmen waere geraten.
      */
     fun loadOnce(
         dir: File,
         sessionId: String,
         nowTs: Long,
-        activePumpTypeName: String? = null,
+        activePump: FuseActivePump = FuseActivePump.UNKNOWN,
         log: (String) -> Unit = {},
     ) {
         if (loaded) return
@@ -692,7 +730,7 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
         // keinen Grund mehr fuer den Hold; misslingt er in irgendeinem
         // Schritt, bleibt alles wie es war und der Hold greift.
         val migriert = readable?.takeIf { it.migrationRequired != null }?.let { alt ->
-            migriere(alt, dir, nowTs, activePumpTypeName, log)
+            migriere(alt, dir, nowTs, activePump, log)
         }
         val decoded = migriert ?: readable?.takeIf { it.migrationRequired == null }
         if (decoded != null) {
@@ -830,6 +868,7 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
         bolusStepU: Double,
         pumpTypeName: String? = null,
         pumpSerialHash: String? = null,
+        virtualPump: Boolean? = null,
     ) {
         // Die Pumpenstufe wird je Zeile GEPINNT (R93-F1) - deshalb hier
         // aktualisieren, nicht im Konstruktor: die Pumpe steht erst zur
@@ -856,11 +895,27 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
                 // ENTSCHEIDUNG; ein spaeterer Nachschlag wuerde nach einem
                 // Wechsel die neue Epoche an eine alte Zeile heften und die
                 // Trennlinie genau dort aufheben, wo sie gebraucht wird.
-                val anwendbar = ProposalPumpEpoch.appliesTo(pumpTypeName)
+                //
+                // [virtualPump] entscheidet MIT: `MEDTRUM_NANO` an der
+                // VirtualPump ist eine Preference, keine Patchpumpe (s.
+                // [FuseActivePump]). Ohne diese Unterscheidung verlangte die
+                // Emulation eine Epoche, faende nie eine und bliebe ewig
+                // ungebunden.
+                //
+                // UNBEKANNT (`null`) gilt hier als NICHT emuliert. Das ist die
+                // vorsichtige Richtung und NICHT die uebliche Falle: die Zeile
+                // bekommt dadurch eine STRENGERE Pruefung (Epoche noetig), sie
+                // erschleicht sich keine Erlaubnis. Praktisch tritt der Fall
+                // ohnehin kaum auf - ist die Pumpe lesbar, ist auch ihre
+                // Klasse eindeutig; ist sie es nicht, gibt es gar keinen Typ
+                // und die Zeile wird UNPINNED.
+                val emuliert = virtualPump == true
+                val anwendbar = !emuliert && ProposalPumpEpoch.appliesTo(pumpTypeName)
                 ProposalPumpEpoch(
                     pumpTypeName, pumpSerialHash,
                     patchEpochTs = if (anwendbar) currentPatchEpochTs else null,
                     patchEpochApplicable = anwendbar,
+                    virtualPump = emuliert,
                 )
             } else ProposalPumpEpoch.UNPINNED
         reduce(LedgerEvent.Proposed(proposalId, unitsU, decisionTs, latestBolusTs))
@@ -1221,14 +1276,14 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
         alt: LedgerCodec.Decoded,
         dir: File,
         nowTs: Long,
-        activePumpTypeName: String?,
+        activePump: FuseActivePump,
         log: (String) -> Unit,
     ): LedgerCodec.Decoded? {
         val vorher = alt.state.transportCommitmentU
         // B3: Zeilen einer PATCHPUMPE ohne persistierte Patch-Epoche sind
         // nicht migrierbar. Die aktuelle rueckwirkend anzuheften waere die
         // Behauptung, seither sei kein Patch gewechselt worden - unbekannt.
-        val unmigrierbar = LedgerCodec.unmigratablePatchRows(alt.state, alt.pumpEpochs, activePumpTypeName)
+        val unmigrierbar = LedgerCodec.unmigratablePatchRows(alt.state, alt.pumpEpochs, activePump)
         if (unmigrierbar.isNotEmpty()) {
             log(
                 "FUSE ledger MIGRATION abgebrochen: ${unmigrierbar.size} Zeile(n) einer Patchpumpe ohne " +
