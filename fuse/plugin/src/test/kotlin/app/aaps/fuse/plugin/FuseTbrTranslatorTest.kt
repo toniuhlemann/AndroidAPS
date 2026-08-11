@@ -242,6 +242,46 @@ class FuseTbrTranslatorTest {
     }
 
     /**
+     * DER PROVENIENZ-RANDFALL, ganz durch (Toni 11.08.).
+     *
+     * Ueberlebt eine groessere Basis das Veto, laesst MarkerFloor Dosis und
+     * Grund unangetastet - stempelte aber lange nicht. Kam die Menge aus dem
+     * Rueckfall auf `vetted`, trug sie keine Provenienz, und HIER nullte der
+     * Schutz-Nullstrom dann die GANZE Menge: der Markerboden verschwand trotz
+     * ausreichender Basis.
+     *
+     * Die Kette in einem Test, weil der Fehler GENAU zwischen den beiden
+     * Stellen sass und keine von ihnen ihn allein zeigt.
+     */
+    @Test
+    fun `eine gestempelte groessere Basis behaelt bei SAFETY_ZERO den autorisierten Anteil`() {
+        // Wie aus dem Rueckfall auf `vetted`: 0,30 U, KEINE Provenienz.
+        val ausRueckfall = decision(0.30, FuseController.TbrAction.ZERO_TEMP)
+        assertEquals(0.0, ausRueckfall.markerAuthorizedU, 1e-12, "der Rueckfall traegt keine Provenienz")
+
+        val gestempelt = app.aaps.fuse.core.controller.MarkerFloor.apply(
+            verified = ausRueckfall, authCapU = 0.05, kernelValid = true,
+        )
+        assertEquals(0.30, gestempelt.smbU, 1e-12, "die Dosis bleibt unangetastet")
+
+        val r = FuseTbrTranslator.combine(gestempelt, null, scheduled, cfg)
+        assertEquals(
+            0.05, r.decision.smbU, 1e-12,
+            "der autorisierte Anteil muss den Schutz-Nullstrom ueberleben",
+        )
+        assertEquals(FuseController.TbrRequest(0.0, 30), r.request, "und die Null laeuft daneben weiter")
+    }
+
+    /** OHNE den Stempel bleibt es bei 0 - das ist der Fehler, den es gab. */
+    @Test
+    fun `ohne Stempel nullt SAFETY_ZERO die ganze Basis`() {
+        val r = FuseTbrTranslator.combine(
+            decision(0.30, FuseController.TbrAction.ZERO_TEMP), null, scheduled, cfg,
+        )
+        assertEquals(0.0, r.decision.smbU, 1e-12)
+    }
+
+    /**
      * Die Ursachen sind VOLLSTAENDIG aufgezaehlt, und das abgeleitete Bit
      * kann nicht auseinanderlaufen.
      *

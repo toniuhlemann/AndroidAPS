@@ -46,7 +46,23 @@ object MarkerFloor {
         kernelValid: Boolean,
     ): FuseController.Decision {
         if (!kernelValid || authCapU <= 0.0) return verified
-        if (verified.smbU >= authCapU) return verified
+
+        // DIE PROVENIENZ UEBERLEBT AUCH OHNE ANHEBUNG (Toni 11.08.).
+        //
+        // Reicht die verifizierte Menge ohnehin, bleiben Dosis und Grund
+        // unangetastet - der Boden ist ein Boden, keine Kappe und kein Stempel
+        // fuer fremde Mengen. Die AUTORISIERUNGSGRENZE muss aber trotzdem
+        // mitfahren, sonst geht sie eine Stufe spaeter verloren:
+        //
+        // `verified` kann aus dem Rueckfall auf `vetted` stammen - der
+        // kleineren Basis, die das Veto ueberlebt hat. Die traegt keine
+        // Provenienz. FuseTbrTranslator sieht dann bei SAFETY_ZERO keine
+        // Autorisierung und nullt die GANZE Menge, obwohl der Markerdruck
+        // mindestens authCapU deckt. Genau die Verwechslung, gegen die die
+        // typisierte Herkunft ueberhaupt eingefuehrt wurde.
+        if (verified.smbU >= authCapU)
+            return if (verified.markerAuthorizedU >= authCapU) verified
+            else verified.copy(markerAuthorizedU = authCapU)
         return verified.copy(
             smbU = authCapU,
             block = FuseController.Block.NONE,

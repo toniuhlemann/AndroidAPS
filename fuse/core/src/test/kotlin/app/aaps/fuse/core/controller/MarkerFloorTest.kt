@@ -74,21 +74,49 @@ class MarkerFloorTest {
     }
 
     /**
-     * ER SENKT NIE. Ist die ueberlebende Menge schon groesser als der
-     * autorisierte Anteil, bleibt sie unangetastet - der Boden ist ein Boden,
-     * keine Kappe.
+     * ER SENKT NIE - ABER DIE PROVENIENZ FAEHRT MIT.
+     *
+     * DIESER TEST HAT DEN FEHLER FESTGESCHRIEBEN, den er finden sollte: mit
+     * einem vollstaendigen `assertEquals` verlangte er, dass NICHTS sich
+     * aendert - also auch, dass `markerAuthorizedU` 0 bleibt.
+     *
+     * `verified` kann aus dem Rueckfall auf `vetted` stammen, der kleineren
+     * Basis, die das Veto ueberlebt hat; die traegt keine Provenienz. Ohne den
+     * Stempel sieht FuseTbrTranslator bei SAFETY_ZERO keine Autorisierung und
+     * nullt die GANZE Menge - der Markerboden verschwindet also trotz
+     * ausreichender Basis. Die Fortsetzung dieses Falls bis zur genullten
+     * Menge steht in FuseTbrTranslatorTest.
      */
     @Test
-    fun `eine groessere ueberlebende Menge wird nicht gesenkt`() {
+    fun `eine groessere ueberlebende Menge wird nicht gesenkt aber gestempelt`() {
         val v = entscheidung(0.30, FuseController.Block.NONE, "smbRatio")
+        val d = MarkerFloor.apply(v, authCapU = 0.05, kernelValid = true)
+
+        assertEquals(0.30, d.smbU, 1e-9, "die Dosis bleibt unangetastet")
+        assertEquals("smbRatio", d.bindingLimit, "und der Grund auch - hier hat nichts ueberstimmt")
+        assertEquals(FuseController.Block.NONE, d.block)
+        assertEquals(
+            0.05, d.markerAuthorizedU, 1e-9,
+            "aber die Autorisierungsgrenze muss mitfahren, sonst nullt der Translator alles",
+        )
+    }
+
+    /** Eine BEREITS groessere Provenienz wird nicht heruntergesetzt. */
+    @Test
+    fun `eine groessere bestehende Grenze bleibt stehen`() {
+        val v = entscheidung(0.30, FuseController.Block.NONE, "primeRelease")
+            .copy(markerAuthorizedU = 0.20)
         assertEquals(v, MarkerFloor.apply(v, authCapU = 0.05, kernelValid = true))
     }
 
-    /** Gleichstand aendert nichts - und erzeugt insbesondere keinen
-     *  irrefuehrenden `markerAuth|`-Grund fuer eine Menge, die ohnehin stand. */
+    /** Gleichstand erzeugt keinen irrefuehrenden `markerAuth|`-Grund fuer eine
+     *  Menge, die ohnehin stand - die Grenze fährt aber auch hier mit. */
     @Test
     fun `bei Gleichstand bleibt der Grund unveraendert`() {
         val v = entscheidung(0.05, FuseController.Block.NONE, "primeRelease")
-        assertEquals(v, MarkerFloor.apply(v, authCapU = 0.05, kernelValid = true))
+        val d = MarkerFloor.apply(v, authCapU = 0.05, kernelValid = true)
+        assertEquals(0.05, d.smbU, 1e-9)
+        assertEquals("primeRelease", d.bindingLimit, "hier hat nichts ueberstimmt")
+        assertEquals(0.05, d.markerAuthorizedU, 1e-9)
     }
 }
