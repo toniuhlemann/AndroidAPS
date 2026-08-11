@@ -254,4 +254,58 @@ class FuseLedgerStoreTest {
         assertFalse(r.anyCandidateExisted)
         assertFalse(r.anyCandidateInvalid)
     }
+
+    // ---- Durabilitaet (12.08.) --------------------------------------------
+
+    /**
+     * EIN FSYNC-FEHLER IST EIN SCHREIBFEHLER.
+     *
+     * Bis zum 12.08. schrieb der Store mit `writeText` - Bytes in den Page
+     * Cache, kein fsync. Gegen Prozesstod traegt das, gegen Stromausfall oder
+     * Kernel-Panik nicht. Und die Rueckleseprobe merkte NICHTS davon: sie
+     * liest denselben Cache und meldete Erfolg fuer eine Datei, die auf der
+     * Platte leer oder halb gewesen waere.
+     *
+     * Der Fehler wird eingespeist statt ein Dateisystem zu manipulieren -
+     * anders ist er nicht reproduzierbar herstellbar.
+     */
+    @Test
+    fun `ein fehlgeschlagener fsync macht den Persist ungueltig`(@TempDir dir: File) {
+        val store = FuseLedgerStore()
+        assertTrue(
+            !store.writeVerified(dir, "inhalt") { throw java.io.SyncFailedException("Platte weg") },
+            "ein Sync-Fehler muss als Fehlschlag durchschlagen",
+        )
+    }
+
+    /** Und mit funktionierendem Sync liegt der Inhalt wirklich da - sonst
+     *  waere die Zusicherung oben nur "es schlaegt immer fehl". */
+    @Test
+    fun `mit funktionierendem Sync steht der Inhalt in der Zieldatei`(@TempDir dir: File) {
+        val store = FuseLedgerStore()
+        assertTrue(store.writeVerified(dir, "inhalt"))
+        assertEquals("inhalt", File(dir, FuseLedgerStore.FILE_NAME).readText())
+    }
+
+    /**
+     * DIE REIHENFOLGE: fsync VOR dem Rename.
+     *
+     * Bricht der Sync ab, darf die Rotation noch nicht gelaufen sein - sonst
+     * zeigte der Zielname auf einen Inhalt, den es nach einem Stromverlust
+     * nicht gibt, waehrend die letzte gute Generation schon nach `.bak`
+     * gedreht wurde. Hier steht eine gueltige Vorgeneration; nach dem
+     * gescheiterten Schreiben muss sie UNVERAENDERT dort stehen.
+     */
+    @Test
+    fun `ein Sync-Fehler laesst die alte Generation unangetastet`(@TempDir dir: File) {
+        val store = FuseLedgerStore()
+        assertTrue(store.writeVerified(dir, "alt"))
+
+        store.writeVerified(dir, "neu") { throw java.io.SyncFailedException("Platte weg") }
+
+        assertEquals(
+            "alt", File(dir, FuseLedgerStore.FILE_NAME).readText(),
+            "die alte Generation darf durch einen gescheiterten Schreibversuch nicht verschwinden",
+        )
+    }
 }

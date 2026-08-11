@@ -1,6 +1,8 @@
 package app.aaps.fuse.plugin.ledger
 
 import java.io.File
+import java.io.FileDescriptor
+import java.io.FileOutputStream
 
 /**
  * Persistenz des Commitment-Ledgers: EINE Datei, atomar ersetzt, eine
@@ -199,19 +201,78 @@ class FuseLedgerStore {
 
     /** @return true, wenn die Hauptdatei nach dem Aufruf den neuen Inhalt
      *  traegt. false heisst: alte Generation steht unveraendert. */
-    fun write(dir: File, content: String): Boolean = runCatching {
+    /**
+     * @param syncer die Durabilitaets-Zusicherung. Default ist
+     *   [FileDescriptor.sync]; ein Test kann hier einen Fehlschlag
+     *   einspeisen, ohne ein Dateisystem zu manipulieren.
+     */
+    fun write(
+        dir: File,
+        content: String,
+        syncer: (FileDescriptor) -> Unit = { it.sync() },
+    ): Boolean = runCatching {
         if (!dir.exists() && !dir.mkdirs() && !dir.exists()) return@runCatching false
         val target = File(dir, FILE_NAME)
         val tmp = File(dir, "$FILE_NAME.tmp")
         val bak = File(dir, "$FILE_NAME.bak")
-        tmp.writeText(content, Charsets.UTF_8)
+
+        // BYTES, FLUSH, FSYNC - UND ERST DANN DER RENAME.
+        //
+        // `writeText` allein legt die Bytes in den Page Cache. Gegen
+        // Prozesstod traegt das; gegen Stromausfall oder Kernel-Panik nicht.
+        // Die Rueckleseprobe in [writeVerified] merkt davon NICHTS - sie
+        // liest denselben Cache und meldet Erfolg fuer eine Datei, die auf
+        // der Platte leer oder halb ist. Genau diese Luecke hat der Ledger
+        // seit jeher getragen (Befund 12.08.).
+        //
+        // Ein Rename VOR dem fsync waere die schlimmste Reihenfolge: dann
+        // zeigt der Zielname auf einen Inhalt, den es nach einem Stromverlust
+        // nicht gibt, und die Rotation hat die letzte gute Generation schon
+        // nach .bak gedreht.
+        FileOutputStream(tmp).use { out ->
+            out.write(content.toByteArray(Charsets.UTF_8))
+            out.flush()
+            syncer(out.fd)
+        }
+
         if (target.exists()) {
             // Genau EINE Vorgenerationen-Kopie: die letzte vollstaendige.
             bak.delete()
             if (!target.renameTo(bak)) return@runCatching false
         }
-        tmp.renameTo(target)
+        if (!tmp.renameTo(target)) return@runCatching false
+
+        // DAS VERZEICHNIS, best effort und ausdruecklich als solches.
+        //
+        // Nach dem Rename ist der INHALT durabel, der Verzeichniseintrag
+        // aber noch nicht zwingend. Portabel geht das in Java nicht - ein
+        // FileInputStream auf ein Verzeichnis scheitert unter Linux mit
+        // EISDIR. Auf Android gibt es `android.system.Os.open/fsync`; im
+        // JVM-Testpfad gibt es das nicht, deshalb reflektiv und
+        // FEHLERTOLERANT.
+        //
+        // Bewusst NICHT fail-closed: waere es das, wuerde jeder Persist im
+        // Unit-Test fehlschlagen und der Ledger auf der JVM als kaputt
+        // gelten. Die Datei-Durabilitaet oben ist die harte Zusicherung,
+        // diese hier die zusaetzliche.
+        syncDirectoryBestEffort(dir)
+        true
     }.getOrDefault(false)
+
+    private fun syncDirectoryBestEffort(dir: File) {
+        runCatching {
+            val os = Class.forName("android.system.Os")
+            val osConstants = Class.forName("android.system.OsConstants")
+            val rdonly = osConstants.getField("O_RDONLY").getInt(null)
+            val open = os.getMethod("open", String::class.java, Int::class.java, Int::class.java)
+            val fd = open.invoke(null, dir.absolutePath, rdonly, 0)
+            try {
+                os.getMethod("fsync", FileDescriptor::class.java).invoke(null, fd)
+            } finally {
+                runCatching { os.getMethod("close", FileDescriptor::class.java).invoke(null, fd) }
+            }
+        }
+    }
 
     /**
      * [write] plus RUECKLESEPROBE (Audit 2d273cb, 6.1): Erfolg heisst, das
@@ -219,9 +280,19 @@ class FuseLedgerStore {
      * Dateisystem, das den Rename meldet, aber den Inhalt verliert, faellt
      * damit als Fehlschlag auf - und der Aufrufer publiziert nicht. Nie
      * werfend.
+     *
+     * WAS SIE ALLEIN NICHT BEWEIST, und das war bis zum 12.08. nicht
+     * aufgeschrieben: sie liest denselben Page Cache, in den geschrieben
+     * wurde. Ohne den fsync in [write] meldet sie Erfolg fuer eine Datei,
+     * die nach einem Stromverlust leer oder halb waere. Die Probe belegt den
+     * RENAME und den INHALT - die DURABILITAET belegt der fsync.
      */
-    fun writeVerified(dir: File, content: String): Boolean = runCatching {
-        if (!write(dir, content)) return@runCatching false
+    fun writeVerified(
+        dir: File,
+        content: String,
+        syncer: (FileDescriptor) -> Unit = { it.sync() },
+    ): Boolean = runCatching {
+        if (!write(dir, content, syncer)) return@runCatching false
         val target = File(dir, FILE_NAME)
         target.exists() && target.readText(Charsets.UTF_8) == content
     }.getOrDefault(false)
