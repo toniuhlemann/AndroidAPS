@@ -44,6 +44,7 @@ import app.aaps.fuse.core.predictor.DriveDecayModel
 import app.aaps.fuse.core.controller.CandidateGate
 import app.aaps.fuse.core.controller.CandidateSearch
 import app.aaps.fuse.core.controller.MarkerFallback
+import app.aaps.fuse.core.controller.MarkerFloor
 import app.aaps.fuse.core.controller.OnsetChannel
 import app.aaps.fuse.core.controller.PrimeRelease
 import app.aaps.fuse.core.insulin.KernelOutcome
@@ -1089,6 +1090,22 @@ class FuseCycleRunner(
             // waere im Log ein nicht angebotener Pfad von einem abgelehnten
             // nicht zu unterscheiden.
             if (denial != null) return abort("$warum | noFallback=$denial", signal, cfg, step)
+
+            // DER EINHEITSKERN MUSS TROTZDEM STEHEN (P0, 11.08.).
+            //
+            // Der Boden im Hauptpfad haengt an `kernelFinal != null` - aber
+            // dieser Zweig kehrt VORHER zurueck und hatte `kernel()` nie
+            // aufgerufen. Bei ARRAY_TOO_SHORT oder PENDING_MODEL_TOO_SHORT
+            // haette der Marker also dosiert, ohne dass je geprueft wurde, ob
+            // das aktive Insulinmodell ueberhaupt gueltig ist.
+            //
+            // Genau der Unterschied, auf dem der ganze Pfad beruht, war damit
+            // unbewiesen: "die BAHN fehlt, das MODELL ist aber gueltig". Die
+            // beiden ueberstimmbaren Gruende sagen etwas ueber die Reichweite
+            // der Rechnung - nichts darueber, ob das Insulinmodell endliche,
+            // lineare Werte liefert.
+            if (kernel() == null)
+                return abort("$warum | noFallback=${kernelReject ?: "KERNEL_UNAVAILABLE"}", signal, cfg, step)
             return markerFallbackCycle(
                 rejected, warum, signal, step, cfg, state, profile, pumpe, tempBasalFallback,
                 computeTs, markerTs, mealMarkerActive, measuredLow, isf, target, targetSource, iobTotal,
@@ -1498,7 +1515,10 @@ class FuseCycleRunner(
         // unmittelbar danach, das Pumpen-Gate spaeter, und der Translator
         // laesst ihn nur bei SAFETY_ZERO durch. Ein Transportfehler nullt
         // weiterhin.
-        // KEIN BODEN OHNE EINHEITSKERN (Toni 11.08., Randfall 2).
+        // KEIN BODEN OHNE EINHEITSKERN (Toni 11.08., Randfall 2). Die
+        // Rechnung steht als reine Funktion in [MarkerFloor] - der
+        // schwer konstruierbare Fall "Basis groesser, danach Veto" ist dort
+        // in einer Zeile pruefbar, statt im Runner gejagt zu werden.
         //
         // `finalVeto` gibt bei fehlendem Kern MODEL_HORIZON_TOO_SHORT zurueck,
         // und der Boden haette das ueberstimmt. Ein verworfener Kern ist aber
@@ -1512,22 +1532,11 @@ class FuseCycleRunner(
         //
         // Der predictorfreie Markerpfad ist etwas anderes und bleibt: dort
         // fehlt die BAHN aus zwei Reichweiten-Gruenden, nicht das Modell.
-        val authCapU = if (kernelFinal == null) 0.0 else lifted.markerAuthorizedU
-        val autorisiert =
-            if (authCapU > 0.0 && verifiedLift.smbU < authCapU)
-                lifted.copy(
-                    // AUSDRUECKLICH authCapU, NICHT lifted.smbU: seit der Lift
-                    // auch dann stempelt, wenn die Basis schon groesser war,
-                    // sind die beiden nicht mehr dasselbe. `lifted.smbU`
-                    // wuerde in genau dem Fall die groessere, vom Veto
-                    // verworfene Basisdosis wiederherstellen.
-                    smbU = authCapU,
-                    block = FuseController.Block.NONE,
-                    bindingLimit = "markerAuth|" + verifiedLift.bindingLimit,
-                    caps = emptyList(),
-                    capsStage = FuseController.STAGE_PRIME,
-                )
-            else verifiedLift
+        val autorisiert = MarkerFloor.apply(
+            verified = verifiedLift,
+            authCapU = lifted.markerAuthorizedU,
+            kernelValid = kernelFinal != null,
+        )
 
         // HART NACH dem Lift (Audit R95, Fix 3): Ratio-Pfad (Kernel-Ausfall)
         // und Sofort-Freigabe laufen am LEDGER_HOLD-Reject der Suche vorbei -

@@ -216,7 +216,7 @@ object PrimeRelease {
         if (ageMin >= WINDOW_MIN) return off("WINDOW_OVER")
         if (!input.isfMgdlPerU.isFinite() || input.isfMgdlPerU <= 0.0) return off("NOT_FINITE")
         // OHNE BAHN gibt es keine Freigangsprobe. Das ist nur dann kein
-        // Mangel, wenn der Marker das Tief ausdruecklich autorisiert - denn
+        // Mangel, wenn der bewusste Markerdruck autorisiert - denn
         // dann waere die Probe ohnehin uebersprungen worden. Ohne
         // Autorisierung ist eine fehlende Bahn ein Nein, und zwar unter
         // eigenem Namen: NO_TRAJECTORY sagt "es gab nichts zu pruefen",
@@ -265,12 +265,11 @@ object PrimeRelease {
         // OHNE Autorisierung. Mit ihr ist er in [lift] ausdruecklich
         // uebersprungen - er ist eine Prognose ueber H, und Prognosen duerfen
         // den markerfinanzierten Anteil nicht nullen.
-        // Die Freigangsprobe gegen den Guard-Boden. Sie ENTFAELLT, wenn der
-        // Marker das Tief ausdruecklich autorisiert - sonst waere die
-        // Freigabe dort schon hier tot, und die Lockerung der beiden Bloecke
-        // oben bliebe wirkungslos. Genau diese Falle (ein Tor geoeffnet, das
-        // naechste uebernimmt) ist in dieser Reihe schon zweimal
-        // zugeschnappt.
+        // Die Freigangsprobe gegen den Guard-Boden. Sie ENTFAELLT bei
+        // ausdruecklicher manueller Autorisierung - sonst waere die Freigabe
+        // dort schon hier tot, und die Lockerung der Bloecke oben bliebe
+        // wirkungslos. Genau diese Falle (ein Tor geoeffnet, das naechste
+        // uebernimmt) ist in dieser Reihe schon zweimal zugeschnappt.
         val clearance = CLEARANCE_60MIN_FRACTION * floorU * input.isfMgdlPerU
         // minLower ist hier nicht-null, wenn die Probe ueberhaupt laeuft:
         // ohne Autorisierung hat der NO_TRAJECTORY-Ausstieg oben schon
@@ -300,15 +299,20 @@ object PrimeRelease {
      * es ein MODELL-Block ist wie GUARD_FLOOR, nicht weil es vorliegen
      * muesste.
      *
-     * Nur diese beiden, und beide nur wegen des TIEFS: `SAFETY_HOLD` traegt
-     * heute ausschliesslich `SafetyReason.LOW`, und `GUARD_FLOOR` ist
-     * derselbe Befund eine Ebene tiefer. Alles Uebrige - Signalfehler,
-     * unbekanntes IOB, Ledger-Hold, Pumpe, Schwanz - bleibt hart und steht
-     * bewusst NICHT hier.
+     * Nur diese beiden, und beide, weil sie MODELLURTEILE sind: `SAFETY_HOLD`
+     * traegt heute ausschliesslich `SafetyReason.LOW`, `GUARD_FLOOR` ist
+     * derselbe Befund eine Ebene tiefer, und beide sagen etwas ueber eine
+     * PROGNOSE. Alles Uebrige - Signalfehler, unbekanntes IOB, Ledger-Hold,
+     * Pumpe - bleibt hart und steht bewusst NICHT hier.
      *
-     * Der Aufrufer muss zusaetzlich pruefen, dass der Hold wirklich aus dem
-     * TIEF stammt: kaeme je ein zweiter `SafetyReason` dazu, wuerde er sonst
-     * stillschweigend miterlaubt.
+     * DER SCHWANZ IST KEINE AUSNAHME MEHR, und das stand hier noch anders: er
+     * ist eine Haftungsprognose ueber H und wird bei Autorisierung in [lift]
+     * ausdruecklich uebersprungen. Er taucht nicht in dieser Liste auf, weil
+     * er kein Basis-BLOCK ist, sondern eine Kappe - nicht, weil er hart
+     * bliebe.
+     *
+     * Kaeme je ein zweiter `SafetyReason` dazu, waere `SAFETY_HOLD` hier zu
+     * grob und muesste aufgeteilt werden.
      */
     private val LIFTABLE_ON_MARKER = LIFTABLE + setOf(
         FuseController.Block.SAFETY_HOLD,

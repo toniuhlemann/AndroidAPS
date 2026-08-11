@@ -1263,6 +1263,77 @@ class TransportWiringTest : TestBaseWithProfile() {
     }
 
     /**
+     * DER P0 VOM 11.08.: der Fallback kehrte VOR `kernel()` zurueck.
+     *
+     * Der Boden im Hauptpfad haengt an einem gueltigen Einheitskern - dieser
+     * Zweig aber lief daran vorbei und haette bei ARRAY_TOO_SHORT oder
+     * PENDING_MODEL_TOO_SHORT dosiert, ohne je zu pruefen, ob das aktive
+     * Insulinmodell gueltig ist.
+     *
+     * Damit war genau die Behauptung unbewiesen, auf der der ganze Pfad
+     * beruht: "die BAHN fehlt, das MODELL ist aber gueltig". Die beiden
+     * ueberstimmbaren Gruende sagen etwas ueber die REICHWEITE der Rechnung -
+     * nichts darueber, ob das Modell endliche, lineare Werte liefert.
+     */
+    @Test
+    fun `der Fallback dosiert nicht mit kaputtem Einheitskern`() {
+        tailGuard = false
+        flach = 105.0
+        steigungProMin = -0.9
+        markerAt = start + 2 * 60_000L
+        markerAuthorized = true
+
+        clock = start
+        repeat(6) { cycle() }
+
+        // ERLAUBTER Ablehnungsgrund UND kaputtes Insulinmodell zugleich.
+        predictReject = PredictorReason.PENDING_MODEL_TOO_SHORT
+        val kaputt = org.mockito.kotlin.mock<Insulin>()
+        whenever(kaputt.id).thenReturn(insulin.id)
+        whenever(kaputt.peak).thenReturn(45)
+        whenever(kaputt.iobCalcForTreatment(any(), any(), any()))
+            .thenAnswer { app.aaps.core.data.iob.Iob().apply { iobContrib = Double.NaN } }
+        whenever(activePlugin.activeInsulin).thenReturn(kaputt)
+
+        var grund: String? = null
+        repeat(12) { i ->
+            val o = cycle()
+            if (o.abortReason?.contains("noFallback=KERNEL") == true) grund = o.abortReason
+            assertEquals(
+                0.0, o.decision.smbU, 1e-9,
+                "ein kaputtes Insulinmodell darf der Fallback nicht ueberstimmen (Zyklus $i)",
+            )
+        }
+        val r = grund ?: throw AssertionError("der Kernel-Grund muss im Abbruch stehen")
+        assertTrue(r.contains("PENDING_MODEL_TOO_SHORT"), "und der urspruengliche Grund auch: $r")
+    }
+
+    /**
+     * DIE GEGENRICHTUNG, ohne die der Test darueber wertlos waere: derselbe
+     * erlaubte Ablehnungsgrund MIT gueltigem Kern gibt weiterhin frei. Sonst
+     * koennte der Kernel-Riegel den Fallback komplett totgelegt haben, ohne
+     * dass es auffaellt.
+     */
+    @Test
+    fun `derselbe Fallback mit gueltigem Kern gibt weiterhin frei`() {
+        tailGuard = false
+        flach = 105.0
+        steigungProMin = -0.9
+        markerAt = start + 2 * 60_000L
+        markerAuthorized = true
+
+        clock = start
+        repeat(6) { cycle() }
+        predictReject = PredictorReason.PENDING_MODEL_TOO_SHORT
+
+        var frei: FuseCycleRunner.Outcome? = null
+        repeat(10) { if (frei == null) cycle().let { o -> if (o.decision.smbU > 0.0) frei = o } }
+        val o = frei ?: throw AssertionError("mit gueltigem Kern muss der Fallback tragen")
+        assertTrue(o.markerFallbackUsed)
+        assertEquals(o.decision.markerAuthorizedU, o.decision.smbU, 1e-9)
+    }
+
+    /**
      * DIE BUCHFUEHRUNG IST DIESELBE, und das war bis zum 11.08. eine
      * Behauptung: der Fallback hatte eine KOPIE, der der Onset-Ablauf fehlte
      * (onsetQuietMin hochzaehlen und nach REARM_QUIET_MIN neu bewaffnen).
