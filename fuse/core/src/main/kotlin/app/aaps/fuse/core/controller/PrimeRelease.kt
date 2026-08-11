@@ -179,9 +179,15 @@ object PrimeRelease {
         val guardFloorMgdl: Double,
         val isfMgdlPerU: Double,
         val pumpIncrementU: Double,
-        /** Der Marker autorisiert Insulin trotz gemessenem Tief - dann
-         *  entfaellt die Freigangsprobe gegen den Guard-Boden. Der Aufrufer
-         *  hat geprueft, dass der Hold aus dem TIEF stammt. */
+        /**
+         * Der bewusste Markerdruck autorisiert Insulin - dann entfaellt die
+         * Freigangsprobe gegen den Guard-Boden.
+         *
+         * Der Aufrufer hat geprueft, dass die Einstellung an ist UND ein Marker
+         * laeuft. NICHT, dass ein Tief vorliegt: hier stand "trotz gemessenem
+         * Tief", und diese Verschraenkung war der Fehler, den ein Livefall am
+         * 11.08. aufgedeckt hat (BG 105 fallend, alle Tore frei, 0 U).
+         */
         val markerAuthorized: Boolean = false,
     )
 
@@ -285,9 +291,14 @@ object PrimeRelease {
     )
 
     /**
-     * Zusaetzlich hebbar, wenn der Marker Insulin bei gemessenem Tief
-     * autorisiert (Tonis Entscheidung 11.08., Einstellung
-     * `MarkerAuthorisesRelease`).
+     * Zusaetzlich hebbar, wenn der bewusste Markerdruck Insulin autorisiert
+     * (Tonis Entscheidung 11.08., Einstellung `MarkerAuthorisesRelease`).
+     *
+     * NICHT "bei gemessenem Tief" - das stand hier und war der Fehler, den
+     * ein Livefall am 11.08. aufgedeckt hat. Das gemessene Tief war der
+     * Anlass, nicht die Bedingung; SAFETY_HOLD steht in dieser Liste, weil
+     * es ein MODELL-Block ist wie GUARD_FLOOR, nicht weil es vorliegen
+     * muesste.
      *
      * Nur diese beiden, und beide nur wegen des TIEFS: `SAFETY_HOLD` traegt
      * heute ausschliesslich `SafetyReason.LOW`, und `GUARD_FLOOR` ist
@@ -317,8 +328,8 @@ object PrimeRelease {
      */
     fun lift(
         base: FuseController.Decision, p: Plan, state: FuseController.State,
-        /** s. [LIFTABLE_ON_MARKER]. Der Aufrufer hat bereits geprueft, dass der
-         *  Hold aus dem TIEF stammt. */
+        /** s. [LIFTABLE_ON_MARKER]. Der Aufrufer hat geprueft, dass die
+         *  Einstellung an ist UND ein Marker laeuft - mehr nicht. */
         markerAuthorized: Boolean = false,
         tailHeadroomU: Double? = null, onsetCapU: Double? = null,
         // Fix-Pass 2 Nr. 2 (NEU-BS-01, doppelt unabhaengig gefunden): die
@@ -356,7 +367,19 @@ object PrimeRelease {
         if (!markerAuthorized) tailHeadroomU?.let { caps = min(caps, it) }
         onsetCapU?.let { caps = min(caps, it) }
         val stepped = floor(min(p.floorU, caps) / state.pumpIncrementU + TICK_EPS) * state.pumpIncrementU
-        if (stepped < state.pumpIncrementU || stepped <= base.smbU) return base
+        // DIE AUTORISIERUNGSGRENZE ENTSTEHT AUCH OHNE ANHEBUNG (Toni 11.08.,
+        // Randfall 1). Sie ist eine Aussage darueber, WIEVIEL der Knopfdruck
+        // deckt - nicht darueber, ob dieser Aufruf die Menge erhoeht hat.
+        //
+        // WAS SONST PASSIERTE: Basis 0,25 U, Markerboden 0,20 U. Der Lift
+        // sah "Basis ist schon groesser" und ging unveraendert zurueck, ohne
+        // zu stempeln. Verwarf das finale Veto danach die 0,25 U, war
+        // authCap 0 - und es blieben 0 U statt der autorisierten 0,20 U. Der
+        // Markerdruck verlor also gerade dadurch seine Wirkung, dass FUSE
+        // ohnehin dosieren wollte.
+        val authorized = if (markerAuthorized && stepped >= state.pumpIncrementU) stepped else 0.0
+        if (stepped < state.pumpIncrementU || stepped <= base.smbU)
+            return if (authorized > 0.0) base.copy(markerAuthorizedU = authorized) else base
 
         return base.copy(
             smbU = stepped,
@@ -367,12 +390,11 @@ object PrimeRelease {
             // Basisliste behauptete das Gegenteil.
             caps = emptyList(),
             capsStage = FuseController.STAGE_PRIME,
-            // Die Herkunft, nicht der Betrag: nur wenn der Aufrufer ein
-            // GEMESSENES Tief festgestellt und die Einstellung sie autorisiert
-            // hat, traegt diese Menge eine manuelle Autorisierung. Sonst 0 -
-            // ein gewoehnlicher Prime-Release bleibt von jedem Schutz-Null
-            // vollstaendig gedeckelt.
-            markerAuthorizedU = if (markerAuthorized) stepped else 0.0,
+            // Die Herkunft, nicht der Betrag: nur wenn der bewusste
+            // Markerdruck sie deckt, traegt diese Menge eine manuelle
+            // Autorisierung. Sonst 0 - ein gewoehnlicher Prime-Release bleibt
+            // von jedem Schutz-Null vollstaendig gedeckelt.
+            markerAuthorizedU = authorized,
         )
     }
 }

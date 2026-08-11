@@ -810,6 +810,88 @@ class TransportWiringTest : TestBaseWithProfile() {
         }
     }
 
+    // ---- DIE ZWEI RANDFAELLE ----------------------------------------------
+
+    /**
+     * RANDFALL 1, VERDRAHTET - die Haelfte, die kaputt war.
+     *
+     * Ist die Basisdosis groesser als der Markerboden, gibt der Lift
+     * unveraendert zurueck (richtig, er soll nicht senken) - stempelte aber
+     * auch nicht. Damit war `authCapU` null, und ein spaeteres Veto haette
+     * BEIDES verworfen: Basis und Markerboden. Der Knopfdruck verlor seine
+     * Wirkung gerade dadurch, dass FUSE ohnehin dosieren wollte.
+     *
+     * Hier im echten Zyklus: SMB 0,30 aus der Basis, daneben eine
+     * Autorisierungsgrenze aus der Huelle. Vor dem Fix stand dort 0,0.
+     *
+     * WAS DIESER TEST NICHT ABDECKT, und das gehoert hierher statt in eine
+     * Zusage: die zweite Haelfte - Veto verwirft die groessere Basis, der
+     * Boden stellt GENAU `authCapU` her - ist im Rig nicht herstellbar. Beides
+     * zugleich verlangt eine Bahn, die abtaucht (fuer das Veto) UND Bedarf
+     * (fuer die groessere Basis); die Kandidatensuche prueft aber denselben
+     * Guard und nullt die Basis dann schon vorher. Gemessen: bei BG 250
+     * steigend liegt der Schwanz-Headroom bei +2,4 U, ein Veto entsteht nicht.
+     * In Produktion bleibt der Fall ueber den Rest-Zaehler erreichbar.
+     */
+    @Test
+    fun `bei groesserer Basis entsteht die Autorisierungsgrenze trotzdem`() {
+        flach = 250.0
+        steigungProMin = 2.0
+        tailGuard = true
+        markerAt = start + 2 * 60_000L
+        markerAuthorized = true
+
+        clock = start
+        var treffer: FuseCycleRunner.Outcome? = null
+        repeat(20) {
+            val o = cycle()
+            if (treffer == null && o.decision.smbU > 0.0 && o.decision.markerAuthorizedU > 0.0)
+                treffer = o
+        }
+        val o = treffer ?: throw AssertionError(
+            "der Aufbau muss eine Basisdosis MIT Autorisierungsgrenze erzeugen"
+        )
+        assertTrue(
+            o.decision.smbU > o.decision.markerAuthorizedU + 1e-9,
+            "der Aufbau braucht eine Basis GROESSER als den Markerboden: " +
+                "${o.decision.smbU} vs ${o.decision.markerAuthorizedU}",
+        )
+        assertTrue(o.decision.markerAuthorizedU > 0.0, "und die Grenze muss trotzdem stehen")
+    }
+    /**
+     * RANDFALL 2: ein verworfener EINHEITSKERN ist kein Guard-Urteil, sondern
+     * ein Integritaetsbefund ueber das Insulinmodell - NON_FINITE_SAMPLE,
+     * NON_LINEAR_MODEL, negative Aktivitaet, IOB ausserhalb des gueltigen
+     * Bereichs. Der Einstellungstext sagt zu, dass unglaubwuerdige Messwerte
+     * NICHT ueberstimmt werden; hier steht, dass der Code es auch tut.
+     *
+     * Der Hebel ist ein Insulinmodell, das NaN liefert - genau der Fall, den
+     * UnitInsulinKernelBuilder mit NON_FINITE_SAMPLE ablehnt.
+     */
+    @Test
+    fun `ein verworfener Einheitskern wird vom Marker nicht ueberstimmt`() {
+        tailGuard = false
+        flach = 105.0
+        steigungProMin = -0.9
+        markerAt = start + 2 * 60_000L
+        markerAuthorized = true
+
+        val kaputt = org.mockito.kotlin.mock<Insulin>()
+        whenever(kaputt.id).thenReturn(insulin.id)
+        whenever(kaputt.peak).thenReturn(45)
+        whenever(kaputt.iobCalcForTreatment(any(), any(), any()))
+            .thenAnswer { app.aaps.core.data.iob.Iob().apply { iobContrib = Double.NaN } }
+        whenever(activePlugin.activeInsulin).thenReturn(kaputt)
+
+        clock = start
+        repeat(14) { i ->
+            assertEquals(
+                0.0, cycle().decision.smbU, 1e-9,
+                "ein kaputtes Insulinmodell darf der Marker nicht ueberstimmen (Zyklus $i)",
+            )
+        }
+    }
+
     // ---- DER LIVEFALL VOM 11.08., im RUNNER --------------------------------
 
     /**

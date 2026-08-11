@@ -1498,10 +1498,35 @@ class FuseCycleRunner(
         // unmittelbar danach, das Pumpen-Gate spaeter, und der Translator
         // laesst ihn nur bei SAFETY_ZERO durch. Ein Transportfehler nullt
         // weiterhin.
-        val authCapU = lifted.markerAuthorizedU
+        // KEIN BODEN OHNE EINHEITSKERN (Toni 11.08., Randfall 2).
+        //
+        // `finalVeto` gibt bei fehlendem Kern MODEL_HORIZON_TOO_SHORT zurueck,
+        // und der Boden haette das ueberstimmt. Ein verworfener Kern ist aber
+        // kein Guard-Urteil ueber die Zukunft, sondern ein
+        // INTEGRITAETSbefund ueber das Insulinmodell selbst:
+        // NON_FINITE_SAMPLE, NON_LINEAR_MODEL, negative Aktivitaet, IOB
+        // ausserhalb des gueltigen Bereichs, nicht ausgelaufener
+        // Modellschwanz. Der Einstellungstext sagt ausdruecklich, dass
+        // unglaubwuerdige Messwerte NICHT ueberstimmt werden - dann muss der
+        // Code es auch tun.
+        //
+        // Der predictorfreie Markerpfad ist etwas anderes und bleibt: dort
+        // fehlt die BAHN aus zwei Reichweiten-Gruenden, nicht das Modell.
+        val authCapU = if (kernelFinal == null) 0.0 else lifted.markerAuthorizedU
         val autorisiert =
             if (authCapU > 0.0 && verifiedLift.smbU < authCapU)
-                lifted.copy(bindingLimit = "markerAuth|" + verifiedLift.bindingLimit)
+                lifted.copy(
+                    // AUSDRUECKLICH authCapU, NICHT lifted.smbU: seit der Lift
+                    // auch dann stempelt, wenn die Basis schon groesser war,
+                    // sind die beiden nicht mehr dasselbe. `lifted.smbU`
+                    // wuerde in genau dem Fall die groessere, vom Veto
+                    // verworfene Basisdosis wiederherstellen.
+                    smbU = authCapU,
+                    block = FuseController.Block.NONE,
+                    bindingLimit = "markerAuth|" + verifiedLift.bindingLimit,
+                    caps = emptyList(),
+                    capsStage = FuseController.STAGE_PRIME,
+                )
             else verifiedLift
 
         // HART NACH dem Lift (Audit R95, Fix 3): Ratio-Pfad (Kernel-Ausfall)

@@ -225,6 +225,47 @@ class MarkerAuthorizationTest {
         assertEquals(0.0, d.smbU, 1e-9, "ohne Autorisierung bleibt der Schwanz bindend")
     }
 
+    // ---- DIE GRENZE ENTSTEHT AUCH OHNE ANHEBUNG ---------------------------
+
+    /**
+     * RANDFALL 1 (Toni 11.08.): die Basisdosis ist bereits GROESSER als der
+     * Markerboden.
+     *
+     * Der Lift gibt dann unveraendert zurueck - richtig, er soll nicht
+     * senken. Er stempelte aber auch nicht, und damit war `authCapU` null.
+     * Verwarf das finale Veto danach die groessere Basisdosis, blieben 0 U
+     * statt der autorisierten 0,20 U: der Markerdruck verlor seine Wirkung
+     * gerade dadurch, dass FUSE ohnehin dosieren wollte.
+     *
+     * Die Grenze sagt, WIEVIEL der Knopfdruck deckt - nicht, ob dieser
+     * Aufruf die Menge erhoeht hat.
+     */
+    @Test
+    fun `die Autorisierungsgrenze entsteht auch wenn die Basis groesser ist`() {
+        val p = planImTief(markerAuthorized = true)
+        // Basis deutlich ueber dem Plan-Boden.
+        val basis = blockiert(FuseController.Block.NONE).copy(smbU = p.floorU + 0.15)
+        val d = PrimeRelease.lift(basis, p, state(), markerAuthorized = true)
+
+        assertEquals(basis.smbU, d.smbU, 1e-9, "der Lift darf die groessere Basis nicht senken")
+        assertTrue(
+            d.markerAuthorizedU > 0.0,
+            "die Grenze muss trotzdem entstehen - sonst ist sie beim naechsten Veto weg",
+        )
+        assertTrue(
+            d.markerAuthorizedU <= p.floorU + 1e-9,
+            "und sie ist der Markerboden, nicht die Basis: ${d.markerAuthorizedU}",
+        )
+    }
+
+    /** OHNE Autorisierung entsteht auch auf diesem Weg keine Grenze. */
+    @Test
+    fun `ohne Autorisierung entsteht auch bei groesserer Basis keine Grenze`() {
+        val p = planImTief(markerAuthorized = true)
+        val basis = blockiert(FuseController.Block.NONE).copy(smbU = p.floorU + 0.15)
+        assertEquals(0.0, PrimeRelease.lift(basis, p, state()).markerAuthorizedU, 1e-9)
+    }
+
     // ---- DIE TRANSPORT-KOPPLUNG -------------------------------------------
 
     /**
