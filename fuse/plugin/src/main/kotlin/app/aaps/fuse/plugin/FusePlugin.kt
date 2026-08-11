@@ -85,6 +85,14 @@ class FusePlugin @Inject constructor(
     private val context: Context,
     private val config: Config,
     private val rxBus: RxBus,
+    /**
+     * NUR ZUM MESSEN (Scheibe 1, 11.08.): was AAPS mit dem publizierten SMB
+     * gemacht hat. `Lazy`, weil FUSE das aktive APS IST und LoopPlugin dieses
+     * ueber `activePlugin` zur Laufzeit sucht - eine direkte Injektion waere
+     * heute zwar zyklenfrei, aber die Richtung der Abhaengigkeit ist die
+     * ungewoehnliche, und ein Dagger-Zyklus faellt erst beim App-Start auf.
+     */
+    private val loop: dagger.Lazy<app.aaps.core.interfaces.aps.Loop>,
     private val profileFunction: ProfileFunction,
     private val activePlugin: ActivePlugin,
     private val iobCobCalculator: IobCobCalculator,
@@ -235,6 +243,71 @@ class FusePlugin @Inject constructor(
      * neu zu lesen waere teurer als der Nutzen. Fuenf Versuche decken die
      * ersten Minuten nach einer Installation ab.
      */
+    /**
+     * SCHEIBE 1 - NUR MESSEN. Was AAPS mit dem SMB des VORIGEN Zyklus gemacht
+     * hat. Keine Zeile davon aendert eine Dosis oder ein Budget.
+     *
+     * WARUM ES DEN VORIGEN ZYKLUS BETRIFFT: FUSEs `invoke()` kehrt bei
+     * LoopPlugin.kt:484 zurueck, die Constraints laufen bei 504-524, und
+     * `lastRun` wird erst bei 526-537 geschrieben. Waehrend des eigenen Zyklus
+     * beschreibt `lastRun` also noch den Lauf davor. Das ist deterministisch
+     * und keine Zufallsfrage - aber es MUSS im Export dranstehen, sonst liest
+     * jemand die Zahlen als die dieses Zyklus.
+     */
+    @Volatile private var publishedRt: RT? = null
+    @Volatile private var publishedTs: Long = 0L
+    @Volatile private var priorActuation: PriorActuation? = null
+
+    /**
+     * Die drei Werte der beobachtbaren Stufe, plus die Herkunft.
+     *
+     * DIE ACHSE IST FUENFTEILIG, nicht vierteilig (Review 11.08.):
+     *
+     *   certifiedU -> fusePublishedU -> aapsConstrainedU -> queueRequestedU -> enactedU
+     *
+     * `constraintsProcessed` wird gespeichert, BEVOR Suspend-, Loop- und
+     * Queue-Pruefungen, die TBR-Ausfuehrung, `applySMBRequest`, das ZWEITE
+     * Intervalltor und `CommandSMBBolus` gelaufen sind. Es ist damit
+     * `aapsConstrainedU` und ausdruecklich NICHT "an die Queue uebergeben".
+     * `queueRequestedU` ist heute nicht beobachtbar.
+     */
+    class PriorActuation(
+        /** `computeTs` des Zyklus, den diese Zahlen beschreiben. */
+        val ofComputeTs: Long,
+        /** Identitaetsprobe bestanden? Bei `false` sind die Zahlen null - ein
+         *  fremder oder veralteter `lastRun` liefert lieber nichts als
+         *  irgendetwas. */
+        val correlated: Boolean,
+        val fusePublishedU: Double?,
+        /** Nach `applyBolusConstraints`, VOR dem ersten Intervalltor. */
+        val afterBolusConstraintsU: Double?,
+        /** Nach dem ersten Intervalltor - dieses nullt, die beiden spaeteren
+         *  Tore lassen die Menge stehen und verweigern nur die Ausfuehrung. */
+        val aapsConstrainedU: Double?,
+    )
+
+    /**
+     * Liest den Ausgang des VORIGEN Zyklus. Am Anfang des Zyklus, bevor der
+     * eigene Lauf `publishedRt` ueberschreibt.
+     *
+     * Verglichen wird die identitaet der `RT`-INSTANZ aus `lastRun.request`,
+     * nicht die der APSResult-Huelle: `newAndClone()` erzeugt eine neue Huelle,
+     * haelt aber dieselbe `RT`. Ein Zyklus, den LoopPlugin nie verarbeitet hat
+     * (z.B. ein Aufruf ausserhalb), faellt damit sofort durch die Probe.
+     */
+    private fun leseVorigenAusgang() {
+        val erwartet = publishedRt ?: return
+        val lr = runCatching { loop.get().lastRun }.getOrNull()
+        val trifft = lr?.request?.rawData() === erwartet
+        priorActuation = PriorActuation(
+            ofComputeTs = publishedTs,
+            correlated = trifft,
+            fusePublishedU = if (trifft) lr?.request?.smb else null,
+            afterBolusConstraintsU = if (trifft) lr?.constraintsProcessed?.smbConstraint?.value() else null,
+            aapsConstrainedU = if (trifft) lr?.constraintsProcessed?.smb else null,
+        )
+    }
+
     @Volatile private var graphRingAttempts = 0
 
     private val GRAPH_RING_MAX_ATTEMPTS = 5
@@ -460,6 +533,9 @@ class FusePlugin @Inject constructor(
     override fun invoke(initiator: String, tempBasalFallback: Boolean) {
         aapsLogger.debug(LTag.APS, "invoke from $initiator tempBasalFallback: $tempBasalFallback")
         lastAPSResult = null
+        // Scheibe 1: den Ausgang des VORIGEN Zyklus lesen, BEVOR dieser Lauf
+        // `publishedRt` ueberschreibt. Reine Messung.
+        leseVorigenAusgang()
 
         // ---- EIN Lesen der aktiven Pumpe je Zyklus --------------------------
         //
@@ -772,6 +848,11 @@ class FusePlugin @Inject constructor(
         // die Belastung stehen - der gewollte UNKNOWN-Ausgang.
         outcome?.let { o -> ledgerAdapter.resolveReservation(o.computeTs, publishRt.units ?: 0.0) }
 
+        // Fuer die Messung im NAECHSTEN Zyklus merken: die RT-Instanz selbst,
+        // nicht ihre Zahlen - sie ist der Identitaetsschluessel.
+        publishedRt = publishRt
+        publishedTs = outcome?.computeTs ?: 0L
+
         // MEALSTATS NACH der Aufloesung neu rechnen (Review 11.08.). Der Runner
         // hat sie VOR dem Publikationsgate gebildet; wurde die Reservierung
         // gerade zurueckgedreht, zeigte der eingefrorene Stand eine Menge, die
@@ -871,7 +952,8 @@ class FusePlugin @Inject constructor(
                 // aendert, waere Verschwendung - aber weglassen darf man sie
                 // nicht, sonst sieht ein reparierter Ledger wie ein
                 // unbenutzter aus.
-                ledgerReset = letzteReparatur(),
+                ledgerReset = letzteReparatur(),
+            priorActuation = priorActuation,
             )
             // Die Android-Aufloesung des Verzeichnisses passiert AUSSCHLIESSLICH
             // hier — der Schreiber selbst kennt kein Environment und bleibt

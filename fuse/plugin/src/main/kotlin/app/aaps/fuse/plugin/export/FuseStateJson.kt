@@ -46,7 +46,7 @@ object FuseStateJson {
     const val RULE_SET_VERSION = 9
 
     /** Schema des Trail-Datensatzes - s. die Notiz an der Schreibstelle. */
-    const val SCHEMA_VERSION = 3
+    const val SCHEMA_VERSION = 4
 
     /** Gruende fuer fehlende Felder. Benannt statt weggelassen. */
     const val GAP_NO_LEDGER = "LEDGER_NOT_WIRED"
@@ -143,6 +143,11 @@ object FuseStateJson {
          * Haftung verworfen" nicht zu unterscheiden.
          */
         ledgerReset: app.aaps.fuse.plugin.ledger.FuseLedgerRepair.ResetRecord? = null,
+        /**
+         * Was AAPS mit dem SMB des VORIGEN Zyklus gemacht hat (Scheibe 1).
+         * Reine Messung - keine Zahl davon wird gelesen.
+         */
+        priorActuation: app.aaps.fuse.plugin.FusePlugin.PriorActuation? = null,
         nowNs: () -> Long,
     ): JSONObject {
         val gaps = JSONArray()
@@ -667,7 +672,35 @@ object FuseStateJson {
         // ohne Marke ist einer Zeile nicht anzusehen, welche gilt.
         //  2 = S0-A/B/C (10.08.), Schluessel `timeToMinSafetyLowerMin`
         //  3 = ab 11.08.: MainMin/CombinedMin, minMean* getrennt, capsStage
+        //  4 = ab 11.08.: priorActuation (fusePublished/afterBolusConstraints/
+        //      aapsConstrained des VORIGEN Zyklus) + Post-Gap-Felder
         o.put("schemaVersion", SCHEMA_VERSION)
+        // SCHEIBE 1: der Ausgang des VORIGEN Zyklus.
+        //
+        // `ofComputeTs` steht ganz vorn und ist nicht optional: diese Zahlen
+        // beschreiben NICHT diesen Datensatz. FUSEs invoke kehrt zurueck, bevor
+        // AAPS seine Constraints anwendet - lesbar ist der eigene Ausgang
+        // deshalb erst einen Zyklus spaeter. Ohne die Herkunft daneben waere
+        // das genau die Fehlbenennung, gegen die die ganze Mengenachse gebaut
+        // wird.
+        //
+        // DIE ACHSE IST FUENFTEILIG:
+        //   certified -> fusePublished -> aapsConstrained -> queueRequested -> enacted
+        // Hier sind die ersten drei. `queueRequestedU` ist heute NICHT
+        // beobachtbar: `constraintsProcessed` entsteht VOR Suspend-, Loop- und
+        // Queue-Pruefungen, TBR-Ausfuehrung, applySMBRequest, dem zweiten
+        // Intervalltor und CommandSMBBolus.
+        o.put("priorActuation", priorActuation?.let { p ->
+            JSONObject()
+                .put("ofComputeTs", p.ofComputeTs)
+                // Identitaet der RT-INSTANZ, nicht der APSResult-Huelle.
+                // false heisst: fremder oder veralteter lastRun, die Zahlen
+                // sind dann bewusst null statt irgendetwas.
+                .put("correlated", p.correlated)
+                .put("fusePublishedU", fin(p.fusePublishedU))
+                .put("afterBolusConstraintsU", fin(p.afterBolusConstraintsU))
+                .put("aapsConstrainedU", fin(p.aapsConstrainedU))
+        } ?: JSONObject.NULL)
         o.put("r89Complete", ledger != null)
         return o
     }
