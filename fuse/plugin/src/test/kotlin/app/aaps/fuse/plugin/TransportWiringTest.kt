@@ -24,6 +24,7 @@ import app.aaps.plugins.insulin.InsulinLyumjevPlugin
 import app.aaps.shared.tests.TestBaseWithProfile
 import com.google.common.truth.Truth.assertThat
 import org.junit.jupiter.api.BeforeEach
+import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
 import org.mockito.Mock
@@ -98,6 +99,26 @@ class TransportWiringTest : TestBaseWithProfile() {
     /** Hoehe der flachen Rohreihe - niedrig heisst "kein Bedarf". */
     private var flach = 180.0
 
+    /** Steigung der Rohreihe [mg/dl je Minute]. 0 = flach wie bisher. Fuer den
+     *  Mahlzeitenfall braucht es einen echten Anstieg, sonst gibt es keinen
+     *  Antrieb und die Bremsbahn wird nie die bindende. */
+    private var steigungProMin = 0.0
+
+    /** Bedingte Bahn im Schwanz. Der Auffang-Stub liefert fuer alle
+     *  BooleanKeys `false` - ohne eigenen Schalter waere sie in JEDEM Test
+     *  dieser Datei aus, auch in dem, der sie pruefen soll. */
+    private var conditionalTail = false
+
+    /** Quantil der Antriebs-Untergrenze. 50 = Band AUS (dann ist die untere
+     *  Bahn die Mittelbahn, und es gibt keinen Zwischenraum, in den eine
+     *  Hebung passt). */
+    private var quantilePct = 50
+
+    /** Insulinaktivitaet je Punkt. 0 heisst: der Bolus-Deckungs-Abschlag ist
+     *  null, und damit ist die Bremsbahn-Untergrenze IHR EIGENES Mittel -
+     *  auch dort passt dann keine Hebung hinein. */
+    private var aktivitaet = 0.0
+
     /**
      * Zeitstempel eines Mahlzeiten-Markers, 0 = keiner.
      *
@@ -126,15 +147,16 @@ class TransportWiringTest : TestBaseWithProfile() {
         generateSequence(start) { it + 60_000L }
             .takeWhile { it <= untilTs }
             .map { ts ->
+                val v = flach + steigungProMin * ((ts - start) / 60_000.0)
                 GV(
-                    timestamp = ts, value = flach, raw = flach, noise = 0.0,
+                    timestamp = ts, value = v, raw = v, noise = 0.0,
                     sourceSensor = SourceSensor.UNKNOWN, trendArrow = TrendArrow.FLAT
                 )
             }
             .toList()
 
     private fun iob(atTs: Long) = IobTotal(roundUp(atTs)).also {
-        it.iob = 0.0; it.basaliob = 0.0; it.activity = 0.0; it.valid = true
+        it.iob = 0.0; it.basaliob = 0.0; it.activity = aktivitaet; it.valid = true
     }
 
     private fun roundUp(t: Long) = if (t % 60_000L == 0L) t else (t / 60_000L + 1) * 60_000L
@@ -205,8 +227,9 @@ class TransportWiringTest : TestBaseWithProfile() {
         whenever(preferences.get(FuseBooleanKey.NightDeadbandEnabled)).thenReturn(false)
         whenever(preferences.get(FuseDoubleKey.ReboundDeadbandMgdl)).thenReturn(25.0)
         whenever(preferences.get(FuseBooleanKey.ReboundDeadbandEnabled)).thenReturn(true)
-        whenever(preferences.get(FuseIntKey.DriveLowerQuantilePct)).thenReturn(50)
+        whenever(preferences.get(FuseIntKey.DriveLowerQuantilePct)).thenAnswer { quantilePct }
         whenever(preferences.get(FuseBooleanKey.TailGuardEnabled)).thenAnswer { tailGuard }
+        whenever(preferences.get(FuseBooleanKey.ConditionalTailEnabled)).thenAnswer { conditionalTail }
         whenever(preferences.get(FuseDoubleKey.TailFloorMgdl)).thenReturn(70.0)
         whenever(preferences.get(FuseDoubleKey.TailRecoveryU)).thenReturn(0.0)
         whenever(preferences.get(FuseBooleanKey.FastRestraintEnabled)).thenReturn(true)
@@ -646,5 +669,99 @@ class TransportWiringTest : TestBaseWithProfile() {
         quelleMeldet(null)
         val danach = ersterTbrZyklus()
         assertThat(danach.reason).doesNotContain("FAKE_EXTENDED_READ_ONLY")
+    }
+
+    // ---- INTEGRATION: die bedingte Bahn im GANZEN Zyklus ----------------
+
+    /**
+     * WARUM DIESER TEST EXISTIERT, obwohl `ConditionalDriveTest` gruen ist.
+     *
+     * Jener prueft die erzeugten Antriebsobjekte. Der Fehler sass beide Male
+     * eine Ebene darueber - in der ZUSAMMENSETZUNG: der Schwanz rechnet gegen
+     * `minSafetyHorizonLowerOf(haupt, bremse)`, und gehoben war nur eine der
+     * beiden. Fuenf gruene Einheitentests standen neben einem wirkungslosen
+     * Feature, und gefunden hat es eine laufende Mahlzeit.
+     *
+     * Hier laeuft deshalb der VOLLE Zyklus: Signal, Predictor, beide Bahnen,
+     * Minimum, `tailLowerConditional`. Gefordert ist nicht "eine Bahn ist
+     * hoeher", sondern "die KOMBINIERTE Kante steigt wirklich".
+     */
+    @Test
+    fun `bedingte Bahn hebt die kombinierte Schwanzkante im ganzen Zyklus`() {
+        flach = 110.0
+        steigungProMin = 2.5          // echter Mahlzeitenanstieg
+        markerAt = start + 2 * 60_000L
+        conditionalTail = true
+        // BEIDE BAHNEN BRAUCHEN SPIELRAUM, sonst prueft der Fall nichts -
+        // und das ist keine Testkosmetik, sondern eine Bedingung der Sache:
+        //
+        //  Band AUS (q50)  -> untere Bahn IST die Mittelbahn, kein Zwischenraum
+        //  Abschlag 0      -> Bremsbahn-Untergrenze IST ihr eigenes Mittel
+        //
+        // In beiden Faellen kann kein Kredit hineinpassen, und die bedingte
+        // Bahn entsteht gar nicht erst. Der erste Anlauf dieses Tests lief
+        // genau hinein und meldete "kein Kredit", obwohl der Kredit lief.
+        quantilePct = 25
+        aktivitaet = 0.004
+
+        var mitHebung: FuseCycleRunner.Outcome? = null
+        clock = start
+        repeat(40) {
+            val o = cycle()
+            if (o.tailLowerConditionalMgdl != null) { mitHebung = o; return@repeat }
+        }
+        val o = mitHebung ?: throw AssertionError(
+            "in 40 Zyklen wurde keine bedingte Bahn gebaut - lief kein Kredit?"
+        )
+
+        val u = o.tailLowerUnconditionalMgdl!!
+        val c = o.tailLowerConditionalMgdl!!
+        assertTrue(c > u, "die KOMBINIERTE Kante muss steigen: $u -> $c")
+
+        // Und die Gegenprobe zum ersten Fehlschlag: es reicht NICHT, dass die
+        // Hauptbahn gestiegen ist. Wenn die Bremsbahn die bindende ist, muss
+        // AUCH sie gehoben worden sein - sonst haette sich am Minimum nichts
+        // geaendert und `c > u` waere gar nicht erst wahr.
+        val bremseUnbedingt = o.tailLowerRestraintUncondMgdl
+        if (bremseUnbedingt != null && bremseUnbedingt <= o.tailLowerMainUncondMgdl!!) {
+            assertTrue(
+                o.tailLowerRestraintCondMgdl != null,
+                "die Bremsbahn war die bindende und wurde nicht gehoben"
+            )
+        }
+    }
+
+    /** Ohne Kredit gibt es keine bedingte Bahn - und damit exakt das
+     *  Verhalten von vorher. Ohne diesen Fall koennte die Hebung immer
+     *  laufen und der Test oben trotzdem gruen sein. */
+    @Test
+    fun `ohne Marker bleibt die Schwanzkante unbedingt`() {
+        flach = 110.0
+        steigungProMin = 2.5
+        markerAt = 0L                 // kein Marker
+        conditionalTail = true
+
+        clock = start
+        repeat(25) {
+            val o = cycle()
+            assertTrue(
+                o.tailLowerConditionalMgdl == null,
+                "ohne Marker darf keine bedingte Bahn entstehen"
+            )
+        }
+    }
+
+    /** Und mit ausgeschaltetem Schalter ebenso - der Schalter muss wirken. */
+    @Test
+    fun `ausgeschaltet bleibt die Schwanzkante unbedingt`() {
+        flach = 110.0
+        steigungProMin = 2.5
+        markerAt = start + 2 * 60_000L
+        conditionalTail = false
+
+        clock = start
+        repeat(25) {
+            assertTrue(cycle().tailLowerConditionalMgdl == null, "der Schalter wirkt nicht")
+        }
     }
 }
