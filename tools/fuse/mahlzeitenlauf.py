@@ -196,6 +196,52 @@ def auswerten(saetze: list[dict], marker: int) -> None:
         print(f'   LUECKE: {len(erste_nach)} Zyklen nach dem Prime-Ende ohne jede Abgabe.')
 
 
+def endebedingung(saetze: list[dict], marker: int, ruhe_min: int = 30) -> None:
+    """IST DER LAUF VORBEI? Tonis Kriterium, damit es nicht nach Gefuehl geht:
+
+    die zweite Welle muss eindeutig gedreht haben UND danach mindestens
+    [ruhe_min] Minuten ohne neuen Antrieb und ohne neue FUSE-Anforderung
+    vergangen sein.
+
+    "Gedreht" heisst hier: r faellt unter die untere Rampenkante. Das ist
+    bewusst NICHT "BG faellt" - r haengt an einem 18-min-Theil-Sen und bleibt
+    nach einer Wende im Median 10 min positiv (ueber 160 Wenden gemessen).
+    Wer auf den BG-Scheitel schaut, beendet den Lauf zu frueh."""
+    fenster = [d for d in saetze if (d.get('computeTs') or 0) >= marker]
+    if not fenster:
+        return
+    letzte = fenster[-1]
+    jetzt = letzte['computeTs']
+    schwelle = ((letzte.get('policy') or {}).get('values') or {}).get('riseRampLowR') or 0.5
+
+    letzter_antrieb = None
+    letzte_abgabe = None
+    for d in fenster:
+        r = (d.get('signal') or {}).get('rSigned')
+        if r is not None and r >= schwelle:
+            letzter_antrieb = d['computeTs']
+        if ((d.get('rt') or {}).get('units') or 0) > 0:
+            letzte_abgabe = d['computeTs']
+
+    print('ENDEBEDINGUNG')
+    for name, ts in (('letzter Antrieb (r >= %.2f)' % schwelle, letzter_antrieb),
+                     ('letzte Abgabe', letzte_abgabe)):
+        if ts is None:
+            print(f'   {name}: nie')
+        else:
+            print(f'   {name}: T+{(ts - marker) / MIN:.0f} min, '
+                  f'also vor {(jetzt - ts) / MIN:.0f} min')
+    ruhe = min((jetzt - t) / MIN for t in (letzter_antrieb, letzte_abgabe) if t is not None) \
+        if (letzter_antrieb or letzte_abgabe) else None
+    if ruhe is None:
+        print('   -> keine Aussage moeglich')
+    elif ruhe >= ruhe_min:
+        print(f'   -> ERFUELLT: {ruhe:.0f} min ruhig (>= {ruhe_min}).')
+    else:
+        print(f'   -> NOCH NICHT: erst {ruhe:.0f} von {ruhe_min} min ruhig.')
+    print()
+
+
 def main() -> int:
     if len(sys.argv) < 2:
         print(__doc__)
@@ -217,6 +263,7 @@ def main() -> int:
             print('Andere per --marker <epoch_ms>:', episoden)
             print()
         marker = episoden[-1]
+    endebedingung(saetze, marker)
     auswerten(saetze, marker)
     return 0
 
