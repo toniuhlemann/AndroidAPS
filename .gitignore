@@ -39,3 +39,12 @@ wear/pumpcontrol/*
 
 # IOB Action local signing (secrets)
 keystore.properties
+
+# GESUNDHEITSDATEN GEHOEREN NICHT INS REPO.
+# Trails, Ledger und Behandlungssichten tragen BG-, Insulin- und Zeitdaten
+# einer realen Person. Am 11.08.2026 ist ein gepackter Trail versehentlich
+# committet UND gepusht worden; er wurde aus der Historie entfernt. Diese
+# Zeilen sollen den zweiten Versuch verhindern.
+messungen/**/*.jsonl
+messungen/**/*.jsonl.gz
+messungen/**/*.json

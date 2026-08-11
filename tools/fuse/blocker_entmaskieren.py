@@ -51,6 +51,7 @@ import time
 from collections import Counter
 
 MIN = 60_000
+FENSTER_MIN = int(__import__('os').environ.get('FUSE_FENSTER_MIN','95'))
 
 
 def lade(pfad):
@@ -92,7 +93,7 @@ def hat_defizit(d):
 
 
 def auswerten(saetze, marker):
-    fenster = [d for d in saetze if marker <= (d.get('computeTs') or 0) <= marker + 95 * MIN]
+    fenster = [d for d in saetze if marker <= (d.get('computeTs') or 0) <= marker + FENSTER_MIN * MIN]
     if not fenster:
         print('keine Zyklen im Fenster')
         return

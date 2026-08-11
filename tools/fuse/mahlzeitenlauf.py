@@ -34,6 +34,7 @@ import sys
 from collections import Counter
 
 MIN = 60_000
+FENSTER_MIN = int(__import__('os').environ.get('FUSE_FENSTER_MIN','95'))
 
 
 def lade(pfad: str) -> list[dict]:
@@ -67,12 +68,12 @@ def f(x, n=2):
 
 
 def auswerten(saetze: list[dict], marker: int) -> None:
-    fenster = [d for d in saetze if marker <= (d.get('computeTs') or 0) <= marker + 95 * MIN]
+    fenster = [d for d in saetze if marker <= (d.get('computeTs') or 0) <= marker + FENSTER_MIN * MIN]
     if not fenster:
         print('keine Zyklen im Fenster - falscher Marker oder Trail zu kurz')
         return
 
-    print(f'MARKER {marker}  ({len(fenster)} Zyklen bis T+95)')
+    print(f'MARKER {marker}  ({len(fenster)} Zyklen bis T+{FENSTER_MIN})')
     # DER WAECHTER GEGEN EINEN UNSAUBEREN LAUF. `build.head` ist die
     # git-describe-Kennung des laufenden Standes - genau das, was sich beim
     # Flashen mitten im Fenster aendert. Ohne diese Zeile misst man eine
