@@ -1,5 +1,7 @@
 # FUSE — Upstream-Portierungsmatrix
 
+Navigation: [README](README.md) · [Architektur](FUSE_ARCHITECTURE.md)
+
 **Zweck.** FUSE muss auf neue `nightscout/AndroidAPS`-Masterstände portierbar bleiben.
 Diese Datei sagt, **welche Stellen ausserhalb von `fuse/` der Fork anfasst**, warum, welcher
 Konflikt beim Merge zu erwarten ist, welcher Test die Stelle hält, und was beim nächsten
