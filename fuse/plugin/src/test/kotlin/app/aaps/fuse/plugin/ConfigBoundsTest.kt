@@ -40,7 +40,7 @@ class ConfigBoundsTest {
         nightStartMin = 1380, nightEndMin = 420,
         nightDeadbandMgdl = 45.0, nightDeadbandEnabled = true,
         reboundDeadbandMgdl = 25.0, reboundDeadbandEnabled = true,
-        driveLowerQuantilePct = 50, tailGuardEnabled = false,
+        driveLowerQuantilePct = 50, tailGuardEnabled = false, conditionalTailEnabled = true,
         tailFloorMgdl = 70.0, tailRecoveryU = 0.0, fastRestraintEnabled = true,
     )
 

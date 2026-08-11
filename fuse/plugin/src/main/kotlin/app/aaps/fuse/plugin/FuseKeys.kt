@@ -367,6 +367,31 @@ enum class FuseBooleanKey(
      * wird der Schwanz gar nicht erst bewertet - im Grund steht dann auch kein
      * tail=-Abschnitt. Wer messen will, schaltet ihn ein.
      */
+    /**
+     * BEDINGTE BAHN im Schwanz-Guard (11.08.).
+     *
+     * Der Schwanz rechnet sein Budget aus der PRIOR-FREIEN Bahn - also aus
+     * einem Verlauf OHNE Kohlenhydrate. Auf flacher Kurve mit Insulin an Bord
+     * ist sie niedrig, das Budget klein, der Spielraum negativ: er sperrt.
+     * Gemessen am 10.08.: 25 Minuten am Stueck, waehrend der BG stieg.
+     *
+     * Das ist ein Zirkelschluss - er widerlegt die Ankuendigung mit einem
+     * Modell, das die Ankuendigung nicht kennt. Mit dieser Einstellung darf
+     * der ERKLAERTE Antrieb auch auf die Sicherheitskante wirken, solange ein
+     * Markerkredit laeuft.
+     *
+     * SCHRANKE UND WIDERRUF GIBT ES BEREITS und sie sind nicht neu erfunden:
+     * der Kredit ist `(Huelle - geliefert) * ISF / Absorptionsfenster`, er
+     * schrumpft mit jeder Lieferung, endet mit den Sonderrechten und frueher
+     * bei erkannter Wende. Zusaetzlich deckelt die Invariante
+     * `priorFree <= lower` die Hebung auf die ANZEIGEBAHN - hoeher kommt die
+     * Sicherheitskante nie.
+     *
+     * AUS heisst: exakt das Verhalten von vorher. Der Schalter ist da, damit
+     * man ihn umlegen kann, nicht damit die Bahn spaeter wirkt.
+     */
+    ConditionalTailEnabled("fuse_conditional_tail_enabled", true),
+
     TailGuardEnabled("fuse_tail_guard_enabled", false),
 
     /** NACHT-TOTBAND aktiv (Toni 09.08.): im Nachtfenster kein SMB unterhalb

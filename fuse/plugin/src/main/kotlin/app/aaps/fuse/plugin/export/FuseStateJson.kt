@@ -531,6 +531,22 @@ object FuseStateJson {
         )
 
         // ---- Schwanz -------------------------------------------------------
+        // DIE KOSTEN DER ZIRKULARITAET, beziffert (11.08.).
+        //
+        // `unconditional` ist die Kante ohne Kohlenhydrate - gegen sie hat der
+        // Schwanz bisher immer gerechnet und am 10.08. 25 Minuten am Stueck
+        // gesperrt. `conditional` ist dieselbe Kante MIT der Ankuendigung.
+        // Ihre Differenz geteilt durch den Schwanz-ISF ist das Budget, das die
+        // Ankuendigung verschafft - die Zahl, an der sich die bedingte Bahn
+        // messen lassen muss.
+        //
+        // `conditional` null heisst: kein Kredit lief oder der Schalter ist aus.
+        o.put(
+            "tailLower", JSONObject()
+                .put("unconditionalMgdl", fin(outcome.tailLowerUnconditionalMgdl))
+                .put("conditionalMgdl", fin(outcome.tailLowerConditionalMgdl))
+        )
+
         val t = d.tail
         if (t == null) o.put("tail", JSONObject.NULL)
         else o.put(

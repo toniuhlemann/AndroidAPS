@@ -316,6 +316,16 @@ class FuseCycleRunner(
          * Zeitindizes gerade beheben.
          */
         val restraint: PredictorResult? = null,
+        /**
+         * Die SICHERHEITSKANTE am Haftungshorizont, aus der der Schwanz sein
+         * Budget rechnet - EINMAL ohne und einmal mit der Ankuendigung.
+         *
+         * Beide nebeneinander, weil ihre DIFFERENZ die Groesse ist, um die es
+         * geht: sie beziffert, was die Zirkularitaet kostet. `conditional`
+         * ist null, wenn kein Kredit lief oder der Schalter aus ist.
+         */
+        val tailLowerUnconditionalMgdl: Double? = null,
+        val tailLowerConditionalMgdl: Double? = null,
         val sourceTs: Long?,
         val computeTs: Long,
         val health: Health?,
@@ -951,8 +961,45 @@ class FuseCycleRunner(
         // oben am fruehesten Anker haengt. Zwei Enden derselben plausiblen
         // Lieferspanne, jedes dort, wo es sperrt (s. tailTransportDose).
         val liabilityHorizonTs = signal.sourceTs + cfg.liabilityHorizonMin * 60_000L
+
+        // ---- DIE BEDINGTE BAHN (11.08.) --------------------------------
+        //
+        // Der Schwanz rechnet sein Budget aus der PRIOR-FREIEN Bahn, also aus
+        // einem Verlauf ohne Kohlenhydrate. Er verbietet damit genau das
+        // Insulin, das die angekuendigte Mahlzeit rechtfertigt - ein
+        // Zirkelschluss, gemessen am 10.08. als 25 Minuten Sperre bei
+        // steigendem BG.
+        //
+        // Die bedingte Bahn ist DIESELBE Rechnung mit EINER Aenderung: der
+        // bereits vorhandene erklaerte Antrieb wirkt auch auf die
+        // Sicherheitskante. Nichts sonst - Mittel- und Anzeigebahn bleiben
+        // Punkt fuer Punkt unberuehrt (goldene Vektoren).
+        //
+        // DREI SCHRANKEN, alle schon da:
+        //  1. der Kredit selbst schrumpft mit jeder Lieferung und ist bei
+        //     voller Huelle null,
+        //  2. er endet mit den Sonderrechten und frueher bei einer Wende,
+        //  3. `priorFree <= lower` deckelt die Hebung auf die ANZEIGEBAHN -
+        //     hoeher kommt die Sicherheitskante nie.
+        //
+        // Die UNBEDINGTE Bahn laeuft unveraendert weiter und bleibt die
+        // Widerlegung: bleibt der Anstieg aus, faellt der Kredit, und der
+        // Schwanz rechnet wieder gegen sie.
+        val conditional = if (!cfg.conditionalTailEnabled || declaredDrive <= 0.0) null else {
+            val d = built.input.drive
+            val gehoben = minOf(d.lowerMgdlPerMin, d.safetyLowerMgdlPerMin + declaredDrive)
+            if (gehoben <= d.safetyLowerMgdlPerMin) null
+            else (TrajectoryCore.predict(
+                built.input.copy(drive = d.copy(lowerPriorFreeMgdlPerMin = gehoben))
+            ) as? PredictorOutcome.Ok)?.result
+        }
+        val tailLowerUnconditional = minSafetyHorizonLowerOf(prediction, restraint)
+        val tailLowerConditional = conditional?.let {
+            minSafetyHorizonLowerOf(it, restraint)
+        }
+
         val tailBase = TailLiability.Input(
-            lowerBgAtH = minSafetyHorizonLowerOf(prediction, restraint),
+            lowerBgAtH = tailLowerConditional ?: tailLowerUnconditional,
             existingIobAtH = built.iobAtH,
             isfTailMgdlPerU = built.isfTail,
             tailFloorMgdl = cfg.tailFloorMgdl,
@@ -1337,6 +1384,8 @@ class FuseCycleRunner(
             tbr = combined.request,
             prediction = prediction,
             restraint = restraint,
+            tailLowerUnconditionalMgdl = tailLowerUnconditional,
+            tailLowerConditionalMgdl = tailLowerConditional,
             sourceTs = signal.sourceTs,
             computeTs = computeTs,
             health = step.health,
@@ -1586,6 +1635,7 @@ class FuseCycleRunner(
         val reboundDeadbandEnabled: Boolean,
         val driveLowerQuantilePct: Int,
         val tailGuardEnabled: Boolean,
+        val conditionalTailEnabled: Boolean,
         val tailFloorMgdl: Double,
         val tailRecoveryU: Double,
         val fastRestraintEnabled: Boolean,
@@ -1624,6 +1674,7 @@ class FuseCycleRunner(
         reboundDeadbandEnabled = preferences.get(FuseBooleanKey.ReboundDeadbandEnabled),
         driveLowerQuantilePct = preferences.get(FuseIntKey.DriveLowerQuantilePct),
         tailGuardEnabled = preferences.get(FuseBooleanKey.TailGuardEnabled),
+        conditionalTailEnabled = preferences.get(FuseBooleanKey.ConditionalTailEnabled),
         tailFloorMgdl = preferences.get(FuseDoubleKey.TailFloorMgdl),
         tailRecoveryU = preferences.get(FuseDoubleKey.TailRecoveryU),
         fastRestraintEnabled = preferences.get(FuseBooleanKey.FastRestraintEnabled),
