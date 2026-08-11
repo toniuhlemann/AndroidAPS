@@ -24,6 +24,7 @@ import app.aaps.plugins.insulin.InsulinLyumjevPlugin
 import app.aaps.shared.tests.TestBaseWithProfile
 import com.google.common.truth.Truth.assertThat
 import org.junit.jupiter.api.BeforeEach
+import app.aaps.fuse.core.controller.FuseController
 import app.aaps.fuse.core.controller.OnsetChannel
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertTrue
@@ -774,35 +775,71 @@ class TransportWiringTest : TestBaseWithProfile() {
     // ---- Das LOW-Praedikat, im RUNNER ------------------------------------
 
     /**
-     * DER P0 VOM 11.08., als Gegenprobe.
+     * DER P0 VOM 11.08. - und diesmal so, dass die Mutation ihn faellt.
      *
-     * Das Praedikat stand als `step.safetyReasons.all { it == LOW }` da - und
-     * `all` ist auf der LEEREN Menge wahr. Ein `GUARD_FLOOR` aus einer bloss
-     * VORHERGESAGTEN Unterschreitung (aktueller BG in Ordnung, Bahn faellt)
-     * haette den Override damit ausgeloest, obwohl gar kein Tief gemessen ist.
+     * Das Praedikat stand als `safetyReasons.all { it == LOW }` da, und `all`
+     * ist auf der LEEREN Menge wahr. Ein `GUARD_FLOOR` aus einer bloss
+     * VORHERGESAGTEN Unterschreitung - aktueller BG voellig in Ordnung, nur
+     * die Bahn faellt - haette den Override damit ausgeloest.
      *
-     * Autorisiert ist aber nur der gemessene Tiefstand, nicht die Prognose.
+     * DER ERSTE ANLAUF DIESES TESTS BEWIES DAS NICHT: er pruefte nur, dass bei
+     * BG 200 kein Hold entsteht - das waere mit dem Fehler genauso gruen
+     * gewesen. Der Aufbau muss die Lage HERSTELLEN, in der sich richtig und
+     * falsch unterscheiden: hoher BG (kein gemessenes Tief, leere
+     * `safetyReasons`) UND eine abtauchende Bahn (also GUARD_FLOOR).
      *
-     * Diesen Fall koennen die Core-Tests nicht sehen: das Praedikat lebt im
-     * Runner, und `safetyReasons` kommt aus dem Observer.
+     * WAS DIESER TEST HEUTE BEWEIST - UND WAS NICHT.
+     *
+     * Die Mutationsprobe (`== setOf(LOW)` zurueck auf `all { it == LOW }`)
+     * laesst ihn GRUEN. Er ist damit KEIN Nachweis des Praedikats, und das
+     * steht hier, damit ihn niemand dafuer haelt.
+     *
+     * Der Grund ist ein FUENFTES Tor, das die Messung freigelegt hat:
+     * `GUARD_FLOOR` und `SAFETY_HOLD` fordern ZERO_TEMP, `TbrPolicy.safetyZero`
+     * setzt in JEDEM Zweig `smbBlocked = true`, und FuseTbrTranslator.kt:69
+     * nullt daraufhin die Menge. Der Lift findet statt - im Diagnoselauf
+     * stand `bindingLimit = primeRelease` bei `smbU = 0,0` -, aber danach
+     * bleibt nichts uebrig. Solange das so ist, kann sich richtig von falsch
+     * gar nicht unterscheiden.
+     *
+     * Der Test dokumentiert deshalb vorerst die LAGE (GUARD_FLOOR ohne
+     * gemessenes Tief gibt nichts frei) und wird erst zum Nachweis, wenn das
+     * fuenfte Tor behandelt ist. Dann muss die Mutation ihn rot machen.
      */
     @Test
-    fun `ohne gemessenes Tief bleibt der LOW-Override aus`() {
-        // Hoher, flacher BG: der Observer meldet KEIN LOW, safetyReasons ist
-        // leer. Ein Guard-Floor-Block kann hier nur aus der Prognose kommen.
+    fun `GUARD_FLOOR ohne gemessenes Tief loest den Override NICHT aus`() {
+        // BG hoch und flach: der Observer meldet KEIN LOW.
         flach = 200.0
         steigungProMin = 0.0
+        // Kraeftige Insulinwirkung: die Bahn taucht unter den Guard-Boden,
+        // obwohl der aktuelle Wert weit darueber liegt. Genau die Lage, in der
+        // `safetyReasons` LEER ist und trotzdem GUARD_FLOOR sperrt.
+        aktivitaet = 0.02
         markerAt = start + 2 * 60_000L
         markerAuthorisesLow = true
+        // SCHWANZ AUS, und das ist der Kern dieses Tests, nicht Bequemlichkeit:
+        // bei einer abtauchenden Bahn vetot der Schwanz-Guard JEDE Menge -
+        // unabhaengig vom LOW-Praedikat. Mit eingeschaltetem Schwanz kommt in
+        // BEIDEN Varianten nichts durch, die Mutation bleibt gruen, und der
+        // Test misst nur, dass nichts passiert. Genau daran ist der zweite
+        // Anlauf gescheitert.
+        tailGuard = false
 
         clock = start
-        repeat(25) {
+        var sahGuardFloor = false
+        repeat(30) {
             val o = cycle()
+            if (o.decision.block == FuseController.Block.GUARD_FLOOR) sahGuardFloor = true
             assertTrue(
                 o.state == null || !o.state!!.safetyHold,
-                "der Aufbau soll KEIN gemessenes Tief erzeugen"
+                "der Aufbau darf KEIN gemessenes Tief erzeugen"
+            )
+            assertEquals(
+                0.0, o.decision.smbU, 1e-9,
+                "ohne gemessenes Tief darf der Marker nichts freigeben (Zyklus $it)"
             )
         }
+        assertTrue(sahGuardFloor, "der Aufbau muss GUARD_FLOOR erzeugen, sonst prueft er nichts")
     }
 
     /**
@@ -812,16 +849,76 @@ class TransportWiringTest : TestBaseWithProfile() {
      */
     @Test
     fun `bei gemessenem Tief meldet der Observer den Hold`() {
-        flach = 62.0                  // unter der LOW-Schwelle von 75
+        flach = 62.0
         steigungProMin = 0.0
         markerAt = start + 2 * 60_000L
 
         clock = start
         var sah = false
-        repeat(25) {
-            val o = cycle()
-            if (o.state?.safetyHold == true) sah = true
-        }
+        repeat(25) { if (cycle().state?.safetyHold == true) sah = true }
         assertTrue(sah, "bei BG 62 muss der Tiefschutz greifen")
+    }
+
+    // ---- Die Ruecknahme, VERDRAHTET --------------------------------------
+
+    /**
+     * `MarkerEpisodeTest` beweist die REGEL, nicht ihre Verdrahtung.
+     *
+     * Hier wird der Verbrauch VORGELADEN, der Marker zurueckgenommen und
+     * erneut gesetzt - und geprueft, dass die Buchung stehenbleibt. Dafuer
+     * muss das Pumpengate nichts erlauben: der Verbrauch kommt aus dem
+     * vorgeladenen Zustand, nicht aus einer Abgabe. Genau daran war der erste
+     * Anlauf gescheitert, der ihn ueber echte Abgaben erzeugen wollte - im Rig
+     * ist das Gate zu, `actuatedU` bleibt 0 und es wird nie etwas gebucht.
+     */
+    @Test
+    fun `Ruecknahme und erneutes Armen erhalten den Verbrauch`(@TempDir dir: File) {
+        flach = 140.0
+        steigungProMin = 0.0
+
+        val l = FuseLedgerAdapter().also { it.loadOnce(dir.also(File::mkdirs), "test-epoch", start) }
+        neuerRunner(l)
+
+        markerAt = start + 2 * 60_000L
+        clock = start
+        repeat(6) { cycle() }
+
+        l.episodes.primeSpentU = 0.20
+        assertTrue(l.episodes.primeArmedTs > 0L, "die Episode muss stehen")
+
+        markerAt = 0L
+        repeat(3) { cycle() }
+        assertEquals(0.20, l.episodes.primeSpentU, 1e-9, "die Ruecknahme allein darf nichts loeschen")
+
+        markerAt = clock + 60_000L
+        repeat(3) { cycle() }
+        assertEquals(
+            0.20, l.episodes.primeSpentU, 1e-9,
+            "erneutes Armen im Fenster gibt die Huelle nicht zurueck",
+        )
+    }
+
+    /** Und nach Ablauf des 90-min-Fensters ist es wirklich eine neue Mahlzeit. */
+    @Test
+    fun `nach Ablauf des Markerfensters beginnt die Buchung neu`(@TempDir dir: File) {
+        flach = 140.0
+        steigungProMin = 0.0
+
+        val l = FuseLedgerAdapter().also { it.loadOnce(dir.also(File::mkdirs), "test-epoch", start) }
+        neuerRunner(l)
+
+        markerAt = start + 2 * 60_000L
+        clock = start
+        repeat(6) { cycle() }
+        l.episodes.primeSpentU = 0.20
+
+        clock += (OnsetChannel.MARKER_WINDOW_MIN + 10) * 60_000L
+        markerAt = clock + 60_000L
+        repeat(3) { cycle() }
+
+        assertEquals(
+            0.0, l.episodes.primeSpentU, 1e-9,
+            "eine wirklich neue Mahlzeit bekommt ihre volle Huelle",
+        )
     }
 }
