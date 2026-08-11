@@ -225,6 +225,122 @@ class MarkerAuthorisesLowTest {
         assertEquals(0.0, d.smbU, 1e-9, "ohne Autorisierung bleibt der Schwanz bindend")
     }
 
+    // ---- DIE TRANSPORT-KOPPLUNG -------------------------------------------
+
+    /**
+     * DER TEST, AN DEM TONIS AUFLAGE ZU PENDING_MODEL_TOO_SHORT HAENGT.
+     *
+     * Die Freigabe bei diesem Ablehnungsgrund ist NUR zulaessig, solange die
+     * offene Transportmenge - publiziertes, im IOB noch nicht sichtbares
+     * Insulin - von BEIDEN Spielraeumen abgezogen wird. Sonst wird sie ein
+     * zweites Mal finanziert: der Grund sagt ja gerade, dass ihre Bahnwirkung
+     * unbekannt ist.
+     *
+     * KEINE SIGNATUR KANN DAS HALTEN, und deshalb steht es hier. Der Runner
+     * reicht dieselbe Zahl an Politik und Lift - das verhindert VERSCHIEDENE
+     * Zahlen, nicht einen fehlenden Abzug. Ein Boolean `transportAccounted`
+     * war noch schwaecher: "endlich" gilt auch fuer 0,0.
+     *
+     * DER AUFBAU ist so gewaehlt, dass der Abzug ALLEIN entscheidet:
+     *   capIob 0,50, iobTH = maxIOB = 0,60  ->  Spielraum 0,10 = zwei Schritte
+     *   Transportmenge 0,05                 ->  Spielraum 0,05 = ein Schritt
+     *   Transportmenge 0,10                 ->  Spielraum 0,00 = nichts
+     * Die MITTLERE Zeile ist die wichtige: sie zeigt, dass der Abzug der Menge
+     * nach wirkt und nicht als An-/Aus-Schalter. Ein Test mit nur den beiden
+     * Endpunkten waere auch mit einem groben `if (transport > 0) caps = 0` gruen.
+     *
+     * MUTATIONSPROBE, nachgemessen: entfernt man `- transportCommitmentU` aus
+     * dem iobTH-Term ODER aus dem maxIOB-Term in PrimeRelease.lift, liefert
+     * dieser Test 0,05 U statt 0,0 und wird rot. Beide einzeln geprueft.
+     */
+    @Test
+    fun `die Transportmenge kappt den autorisierten Anteil ueber BEIDE Spielraeume`() {
+        val p = planImTief(markerAuthorisesLow = true)
+        val eng = FuseController.State(
+            health = Health.READY, safetyHold = true, phase = Phase.REARMING,
+            netIobU = 0.5, bolusIobU = 0.5, basalIobU = 0.0,
+            iobThU = 0.6, maxIobU = 0.6, targetMgdl = 100.0, isfMgdlPerU = 55.0,
+            smbRatioCorrection = 0.15, smbRatioRise = 0.35,
+            rSignedMgdlPerMin = 2.0, riseRampLowRPerMin = 0.5, riseRampHighRPerMin = 2.0,
+            pumpIncrementU = step, maxSmbU = 0.3, pumpBusy = false,
+        )
+
+        // ZUERST der Gegenbeleg: OHNE Transportmenge reicht der Spielraum. Ohne
+        // ihn koennte der Test auch dann gruen sein, wenn er aus einem ganz
+        // anderen Grund nichts freigibt.
+        val ohne = PrimeRelease.lift(
+            blockiert(FuseController.Block.SAFETY_HOLD), p, eng,
+            markerAuthorisesLow = true, transportCommitmentU = 0.0,
+        )
+        assertEquals(
+            2 * step, ohne.smbU, 1e-9,
+            "der Aufbau muss ohne Transportmenge zwei Schritte hergeben",
+        )
+
+        // DIE MITTLERE STUFE: der Abzug wirkt der MENGE NACH.
+        assertEquals(
+            step,
+            PrimeRelease.lift(
+                blockiert(FuseController.Block.SAFETY_HOLD), p, eng,
+                markerAuthorisesLow = true, transportCommitmentU = 0.05,
+            ).smbU, 1e-9,
+            "die halbe Transportmenge muss den halben Spielraum kosten",
+        )
+
+        // UND JETZT mit unterwegs befindlichem Insulin: nichts mehr.
+        val mit = PrimeRelease.lift(
+            blockiert(FuseController.Block.SAFETY_HOLD), p, eng,
+            markerAuthorisesLow = true, transportCommitmentU = 0.10,
+        )
+        assertEquals(
+            0.0, mit.smbU, 1e-9,
+            "unterwegs befindliches Insulin darf nicht ein zweites Mal finanziert werden",
+        )
+        assertEquals(
+            0.0, mit.markerLowAuthorizedU, 1e-9,
+            "und es entsteht auch keine Autorisierungsgrenze, die ein Boden spaeter hebt",
+        )
+    }
+
+    /**
+     * BEIDE Spielraeume EINZELN. Der Test oben laesst iobTH und maxIOB gleich
+     * gross - dort deckt eine Mutation beide auf einmal ab. Hier bindet
+     * jeweils nur EINER, damit ein entfernter Abzug im ANDEREN nicht
+     * unbemerkt bleibt.
+     */
+    @Test
+    fun `die Transportmenge kappt auch wenn nur eine der beiden Grenzen bindet`() {
+        val p = planImTief(markerAuthorisesLow = true)
+        fun eng(iobTh: Double, maxIob: Double) = FuseController.State(
+            health = Health.READY, safetyHold = true, phase = Phase.REARMING,
+            netIobU = 0.5, bolusIobU = 0.5, basalIobU = 0.0,
+            iobThU = iobTh, maxIobU = maxIob, targetMgdl = 100.0, isfMgdlPerU = 55.0,
+            smbRatioCorrection = 0.15, smbRatioRise = 0.35,
+            rSignedMgdlPerMin = 2.0, riseRampLowRPerMin = 0.5, riseRampHighRPerMin = 2.0,
+            pumpIncrementU = step, maxSmbU = 0.3, pumpBusy = false,
+        )
+        // capIob 0,50; die jeweils ANDERE Grenze ist weit offen.
+        for ((name, st) in listOf(
+            "nur iobTH bindet" to eng(iobTh = 0.6, maxIob = 8.0),
+            "nur maxIOB bindet" to eng(iobTh = 8.0, maxIob = 0.6),
+        )) {
+            assertEquals(
+                2 * step,
+                PrimeRelease.lift(
+                    blockiert(FuseController.Block.SAFETY_HOLD), p, st,
+                    markerAuthorisesLow = true, transportCommitmentU = 0.0,
+                ).smbU, 1e-9, "$name: ohne Transportmenge zwei Schritte",
+            )
+            assertEquals(
+                0.0,
+                PrimeRelease.lift(
+                    blockiert(FuseController.Block.SAFETY_HOLD), p, st,
+                    markerAuthorisesLow = true, transportCommitmentU = 0.10,
+                ).smbU, 1e-9, "$name: mit Transportmenge nichts",
+            )
+        }
+    }
+
     // ---- OHNE BAHN (predictorfreier Markerpfad) ---------------------------
 
     /**

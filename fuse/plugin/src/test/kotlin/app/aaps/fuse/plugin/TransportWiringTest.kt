@@ -25,6 +25,9 @@ import app.aaps.shared.tests.TestBaseWithProfile
 import com.google.common.truth.Truth.assertThat
 import org.junit.jupiter.api.BeforeEach
 import app.aaps.fuse.core.controller.FuseController
+import app.aaps.fuse.core.predictor.PredictorReason
+import app.aaps.fuse.core.predictor.PredictorOutcome
+import app.aaps.fuse.core.predictor.TrajectoryCore
 import app.aaps.fuse.core.controller.OnsetChannel
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertTrue
@@ -144,6 +147,19 @@ class TransportWiringTest : TestBaseWithProfile() {
      */
     private var markerAt = 0L
 
+    /**
+     * ERZWUNGENE PREDICTOR-ABLEHNUNG, `null` = echter Predictor.
+     *
+     * Der einzige Weg, die POSITIVE Seite des predictorfreien Markerpfades
+     * zu pruefen. Aus diesem Rig ist keine der zehn Ablehnungen organisch
+     * ausloesbar: der Signal-Waechter faengt nicht-endliche Werte frueher,
+     * die Aktivitaets- und Antriebsgrenzen sind in Produktion gar nicht
+     * gesetzt, und das IOB-Array deckt den Horizont per Konstruktion.
+     * Auf ein seltenes Live-Ereignis zu warten ist bei einem Insulinpfad
+     * keine Testmethode.
+     */
+    private var predictReject: PredictorReason? = null
+
     /** iobTH in Prozent von maxIob. Bei 100 sind beide Grenzen IDENTISCH -
      *  dann deckt ein Test die zwei Abzuege nur gemeinsam. 50 laesst iobTH
      *  allein binden, 200 den maxIob. */
@@ -203,7 +219,12 @@ class TransportWiringTest : TestBaseWithProfile() {
         ledger = l
         runner = FuseCycleRunner(
             iobCobCalculator, profileFunction, activePlugin, constraintsChecker, commandQueue,
-            preferences, persistenceLayer, processedTbrEbData, dateUtil, ledger, "test-epoch"
+            preferences, persistenceLayer, processedTbrEbData, dateUtil, ledger, "test-epoch",
+            predict = { input ->
+                predictReject
+                    ?.let { PredictorOutcome.Rejected(it, "erzwungen") }
+                    ?: TrajectoryCore.predict(input)
+            },
         )
     }
 
@@ -252,8 +273,25 @@ class TransportWiringTest : TestBaseWithProfile() {
 
     private fun cycle(): FuseCycleRunner.Outcome {
         clock += 60_000L
-        return runner.run(false, FuseActivePump("GENERIC_AAPS", virtualPump = true, bolusStepU = 0.05, basalStepUPerH = 0.05))
+        return runner.run(false, testPumpe())
     }
+
+    /**
+     * DIE TESTPUMPE MIT OFFENEM GATE.
+     *
+     * `FuseActivePump.gate` hat den Default BLOCKED_UNKNOWN_PUMP - ohne
+     * ausdrueckliches Gate ist im Rig also `actuatedU` immer 0, und KEINE
+     * Buchung findet statt. Genau daran ist der erste Anlauf des
+     * Fallback-Tests gescheitert (und ein frueherer Ruecknahme-Test hatte
+     * denselben Stolperstein bereits umgangen, statt ihn zu beheben).
+     *
+     * ALLOWED ist hier korrekt und kein Trick: virtualPump = true ergibt in
+     * FusePumpGate.decide genau dieses Verdikt.
+     */
+    private fun testPumpe() = FuseActivePump(
+        "GENERIC_AAPS", virtualPump = true, bolusStepU = 0.05, basalStepUPerH = 0.05,
+        gate = FusePumpGate.Result(FusePumpGate.Verdict.ALLOWED, "TestPump"),
+    )
 
     /** Bis zur ersten positiven Dosis fahren - der Observer braucht Vorlauf. */
     private fun driveUntilDose(maxCycles: Int = 60): FuseCycleRunner.Outcome {
@@ -876,18 +914,30 @@ class TransportWiringTest : TestBaseWithProfile() {
         clock = start
         repeat(6) { cycle() }
 
+        // MONOTONIE STATT EINER ZAHL, und der Grund ist ein echter Vertrag:
+        // gebucht wird JEDE im Marker-Fenster gelieferte Einheit, nicht nur die
+        // aus dem Prime-Kanal (eine Huelle fuer beide Pfade). Seit das
+        // Pumpen-Gate im Rig offen ist, waechst der Verbrauch also weiter - ein
+        // fester Erwartungswert wuerde nur noch messen, wie viel nebenher
+        // dosiert wurde. Die Behauptung dieses Tests ist eine andere: die
+        // Ruecknahme gibt NICHTS ZURUECK, der Wert darf also nie SINKEN.
         l.episodes.primeSpentU = 0.20
         assertTrue(l.episodes.primeArmedTs > 0L, "die Episode muss stehen")
 
         markerAt = 0L
         repeat(3) { cycle() }
-        assertEquals(0.20, l.episodes.primeSpentU, 1e-9, "die Ruecknahme allein darf nichts loeschen")
+        val nachRuecknahme = l.episodes.primeSpentU
+        assertTrue(
+            nachRuecknahme >= 0.20 - 1e-9,
+            "die Ruecknahme allein darf nichts loeschen: $nachRuecknahme",
+        )
 
         markerAt = clock + 60_000L
         repeat(3) { cycle() }
-        assertEquals(
-            0.20, l.episodes.primeSpentU, 1e-9,
-            "erneutes Armen im Fenster gibt die Huelle nicht zurueck",
+        assertTrue(
+            l.episodes.primeSpentU >= nachRuecknahme - 1e-9,
+            "erneutes Armen im Fenster gibt die Huelle nicht zurueck: " +
+                "$nachRuecknahme -> ${l.episodes.primeSpentU}",
         )
     }
 
@@ -903,15 +953,18 @@ class TransportWiringTest : TestBaseWithProfile() {
         markerAt = start + 2 * 60_000L
         clock = start
         repeat(6) { cycle() }
-        l.episodes.primeSpentU = 0.20
+        l.episodes.primeSpentU = 1.20      // erschoepft, s. Test darueber
 
         clock += (OnsetChannel.MARKER_WINDOW_MIN + 10) * 60_000L
         markerAt = clock + 60_000L
-        repeat(3) { cycle() }
+        // EIN Zyklus: die Ruecksetzung und hoechstens EINE frische Dosis. Mehr
+        // Zyklen wuerden die Aussage verwaessern, weniger gaebe es nicht.
+        cycle()
 
-        assertEquals(
-            0.0, l.episodes.primeSpentU, 1e-9,
-            "eine wirklich neue Mahlzeit bekommt ihre volle Huelle",
+        assertTrue(
+            l.episodes.primeSpentU < 0.5,
+            "eine wirklich neue Mahlzeit bekommt ihre volle Huelle, " +
+                "hoechstens um eine frische Dosis vermindert: ${l.episodes.primeSpentU}",
         )
     }
 
@@ -960,6 +1013,105 @@ class TransportWiringTest : TestBaseWithProfile() {
             "der Grund muss den verweigerten Fallback benennen: $r",
         )
         assertTrue(r.contains("predictor:"), "und die urspruengliche Ursache: $r")
+    }
+
+    /**
+     * DIE POSITIVE SEITE, im ECHTEN Runner - und sie verlangt SIEBEN Dinge
+     * gleichzeitig.
+     *
+     * `MarkerFallbackTest` beweist die POLITIK, der Test darueber den
+     * VERWEIGERTEN Fall. Dass `markerFallbackCycle` bei einem erlaubten
+     * Grund wirklich Menge, TBR, Autorisierungsgrenze, Buchung und Export
+     * zusammenfuehrt, beweist keiner von beiden - und genau diese Luecke
+     * ("Regel bewiesen, Verdrahtung nicht") ist in dieser Reihe schon
+     * zweimal aufgefallen.
+     *
+     * PENDING_MODEL_TOO_SHORT ist der Grund, der am Geraet ueberhaupt
+     * vorkommen kann: ARRAY_TOO_SHORT sieht strukturell unerreichbar aus,
+     * weil das IOB-Array mit Horizont + 30 min Marge gebaut wird.
+     */
+    @Test
+    fun `der predictorfreie Markerpfad traegt einen Zyklus`(@TempDir dir: File) {
+        tailGuard = false
+        flach = 62.0
+        steigungProMin = 0.0
+        markerAt = start + 2 * 60_000L
+        markerAuthorisesLow = true
+
+        val l = FuseLedgerAdapter().also { it.loadOnce(dir.also(File::mkdirs), "test-epoch", start) }
+        neuerRunner(l)
+
+        // Erst ein paar Zyklen MIT Bahn, damit der Observer sein Tief
+        // ueberhaupt feststellt (Health READY braucht Vorlauf).
+        clock = start
+        repeat(6) { cycle() }
+
+        predictReject = PredictorReason.PENDING_MODEL_TOO_SHORT
+        var frei: FuseCycleRunner.Outcome? = null
+        repeat(10) { if (frei == null) cycle().let { o -> if (o.decision.smbU > 0.0) frei = o } }
+        val o = frei ?: throw AssertionError("der predictorfreie Pfad hat nichts getragen")
+
+        // (1) Es gab wirklich keine Bahn - sonst prueft der Test den Hauptpfad.
+        assertTrue(o.predictorRejected, "der Zyklus muss ohne Bahn gelaufen sein")
+        assertEquals("PENDING_MODEL_TOO_SHORT", o.predictorReason)
+        assertTrue(o.markerFallbackUsed, "und ueber den Markerpfad")
+        assertEquals(null, o.prediction, "keine Bahn im Export, auch keine leere")
+
+        // (2) Menge, (3) Herkunft, (4) Deckel
+        assertTrue(o.decision.smbU > 0.0, "es muss etwas herauskommen")
+        assertTrue(o.decision.markerLowAuthorizedU > 0.0, "typisierte Herkunft")
+        assertTrue(
+            o.decision.smbU <= o.decision.markerLowAuthorizedU + 1e-9,
+            "nur der autorisierte Anteil: ${o.decision.smbU}",
+        )
+
+        // (5) Der Schutz laeuft daneben weiter.
+        assertEquals(FuseController.TbrAction.ZERO_TEMP, o.decision.tbr)
+        assertTrue(o.reason.contains("SAFETY_ZERO"), "die Basalabsenkung muss laufen: ${o.reason}")
+        assertTrue(o.reason.contains("MARKER_FALLBACK"), "und der Grund muss den Pfad nennen: ${o.reason}")
+
+        // (6) Die Huelle ist BELASTET. Ohne das waere der Pfad ein zweiter
+        // Geldbeutel fuer dieselbe Mahlzeit.
+        assertTrue(l.episodes.primeSpentU > 0.0, "die Freigabe-Huelle muss belastet sein")
+
+        // (7) Und die Belastung ist RESERVIERT, nicht endgueltig - das
+        // Publikations-Gate im Plugin kann die Menge noch entfernen.
+        val r = l.episodes.pendingReservation
+            ?: throw AssertionError("ohne Reservierung kann das Publikations-Gate nichts zurueckgeben")
+        assertEquals(o.decision.smbU, r.amountU, 1e-9, "die Reservierung muss die abgegebene Menge tragen")
+        assertTrue(r.prime, "sie gehoert ins Marker-Fenster")
+    }
+
+    /**
+     * DIE BUCHFUEHRUNG IST DIESELBE, und das war bis zum 11.08. eine
+     * Behauptung: der Fallback hatte eine KOPIE, der der Onset-Ablauf fehlte
+     * (onsetQuietMin hochzaehlen und nach REARM_QUIET_MIN neu bewaffnen).
+     * Hier laeuft ein vorgeladenes Onset-Budget ueber den Fallbackpfad ab.
+     */
+    @Test
+    fun `auch der Fallbackpfad laesst ein Onset-Budget ablaufen`(@TempDir dir: File) {
+        tailGuard = false
+        flach = 62.0
+        steigungProMin = 0.0
+        // OHNE Marker gaebe es keinen Fallback (Denial NO_MARKER), der Zyklus
+        // braeche ab, und auf einem Abbruchpfad bucht auch der Hauptpfad nicht.
+        markerAt = start + 2 * 60_000L
+        markerAuthorisesLow = true
+
+        val l = FuseLedgerAdapter().also { it.loadOnce(dir.also(File::mkdirs), "test-epoch", start) }
+        neuerRunner(l)
+        clock = start
+        repeat(6) { cycle() }
+
+        l.episodes.onsetSpentU = 0.40
+        l.episodes.onsetQuietMin = 0
+        predictReject = PredictorReason.PENDING_MODEL_TOO_SHORT
+        repeat(OnsetChannel.REARM_QUIET_MIN + 2) { cycle() }
+
+        assertEquals(
+            0.0, l.episodes.onsetSpentU, 1e-9,
+            "nach REARM_QUIET_MIN stillen Minuten muss die Huelle auch hier neu bewaffnet sein",
+        )
     }
 
     // ---- DIE MANUELLE AUTORISIERUNG, ganz durch ---------------------------
@@ -1148,10 +1300,7 @@ class TransportWiringTest : TestBaseWithProfile() {
         clock = start
         repeat(12) {
             clock += 60_000L
-            val o = runner.run(
-                true,
-                FuseActivePump("GENERIC_AAPS", virtualPump = true, bolusStepU = 0.05, basalStepUPerH = 0.05),
-            )
+            val o = runner.run(true, testPumpe())
             assertEquals(0.0, o.decision.smbU, 1e-9, "Fault: nichts geht hinaus")
         }
 

@@ -105,6 +105,23 @@ class FuseCycleRunner(
      *  persistiert wird er im Plugin - der Runner LIEST und BELASTET nur. */
     private val ledger: FuseLedgerAdapter,
     sessionId: String,
+    /**
+     * DER PREDICTOR ALS PARAMETER - default die echte Funktion.
+     *
+     * Nicht fuer Bequemlichkeit: die Ablehnungen von [TrajectoryCore] sind aus
+     * dem Testaufbau praktisch nicht ausloesbar. Ein unendlicher Wert wird vom
+     * SIGNAL-Waechter frueher gefangen, die Aktivitaets- und Antriebsgrenzen
+     * sind in Produktion gar nicht gesetzt (PredictorBounds-Defaults null), und
+     * das IOB-Array deckt den Horizont per Konstruktion (Spanne = Horizont plus
+     * 30 min Marge).
+     *
+     * Der predictorfreie Markerpfad haette damit nur seine VERWEIGERTE Seite
+     * belegen koennen - und "auf ein seltenes Live-Ereignis warten" ist bei
+     * einem Insulinpfad keine Testmethode. Ein Parameter mit echtem Default ist
+     * der kleinste Eingriff, der die positive Seite pruefbar macht; im Betrieb
+     * ist er bitgleich zu vorher.
+     */
+    private val predict: (PredictorInput) -> PredictorOutcome = TrajectoryCore::predict,
 ) {
 
     private val observer = ObserverStateMachine(sessionId = sessionId)
@@ -905,7 +922,7 @@ class FuseCycleRunner(
         //
         // EIN Aufruf, zwei Sichten darauf: ein zweiter predict() waere eine
         // zweite Wahrheit ueber dieselbe Eingabe.
-        val predicted = TrajectoryCore.predict(built.input)
+        val predicted = predict(built.input)
         val rejected = predicted as? PredictorOutcome.Rejected
         val predictionOrNull = (predicted as? PredictorOutcome.Ok)?.result
 
@@ -938,7 +955,7 @@ class FuseCycleRunner(
                         DriveDiscount.methodId("UKF_RATE_RESTRAINT_V1", built.discount.lambda),
                     ),
                 )
-                (TrajectoryCore.predict(fi) as? PredictorOutcome.Ok)?.result
+                (predict(fi) as? PredictorOutcome.Ok)?.result
                     ?: return abort("fast restraint enabled but trajectory rejected", signal, cfg, step)
             }
 
@@ -1031,7 +1048,11 @@ class FuseCycleRunner(
                 mealMarkerActive = mealMarkerActive && markerTs > 0,
                 safetyReasons = step.safetyReasons,
                 health = step.health,
-                transportAccounted = transportModelledU.isFinite(),
+                // DIE ZAHL, nicht ein Praedikat darueber. `isFinite()` stand hier
+                // und war KEIN Beweis: 0,0 ist auch endlich, und ueber den Abzug
+                // sagte es ohnehin nichts. Jetzt bekommt die Politik den Wert,
+                // den auch der Lift bekommt - beide aus demselben Argument.
+                transportCommitmentU = transportModelledU,
             )
             val warum = "predictor: ${rejected.reason} ${rejected.detail}"
             // Der Abbruch NENNT den verweigerten Fallback. Ohne diesen Zusatz
@@ -1524,32 +1545,9 @@ class FuseCycleRunner(
         // Zyklus belastete die Huelle, ohne dass eine Einheit floss
         // (Zaehlfalle rowId, 06.08.).
         val actuatedU = if (gate.allowed) combined.decision.smbU else 0.0
-        if (primeWindowOpen) episodes.primeSpentU += actuatedU
-
-        // Huellen-Buchfuehrung: verbraucht wird nur, was der offene Kanal
-        // freigegeben hat; nach REARM_QUIET_MIN geschlossenen Minuten wird die
-        // Huelle neu bewaffnet.
-        if (onset.active) {
-            episodes.onsetSpentU += actuatedU
-            episodes.onsetQuietMin = 0
-        } else if (episodes.onsetSpentU > 0.0) {
-            episodes.onsetQuietMin += 1
-            if (episodes.onsetQuietMin >= OnsetChannel.REARM_QUIET_MIN) {
-                episodes.onsetSpentU = 0.0
-                episodes.onsetQuietMin = 0
-            }
-        }
-
-        // FIX-PASS 4 Nr. 19: nur im AKTIVEN Marker-Fenster sammeln (ein
-        // verwaister markerTs sammelte sonst unbegrenzt weiter) und hart bei
-        // 400 kappen - der Lade-Validator lehnt Dateien > 500 ab, der
-        // Schreiber muss strikt darunter bleiben, sonst sperrt FUSE sich
-        // selbst per recoveryHold aus der eigenen Datei aus.
-        val mealGebucht = mealMarkerActive && actuatedU > 0.0
-        if (mealGebucht) {
-            episodes.mealDeliveries.addLast(signal.sourceTs to actuatedU)
-            while (episodes.mealDeliveries.size > 400) episodes.mealDeliveries.removeFirst()
-        }
+        val mealGebucht = buche(
+            episodes, actuatedU, primeWindowOpen, onset.active, mealMarkerActive, signal.sourceTs,
+        )
 
         // RESERVIERT, NICHT ENDGUELTIG (11.08.). Oben ist gegen das PUMPEN-Gate
         // gebucht - das PUBLIKATIONS-Gate laeuft erst im Plugin und kann die
@@ -1616,6 +1614,50 @@ class FuseCycleRunner(
         )
     }
 
+    /**
+     * DIE EPISODEN-BUCHFUEHRUNG, fuer BEIDE Pfade.
+     *
+     * Sie stand zweimal da - einmal im Hauptpfad, einmal im predictorfreien
+     * Markerpfad - und die zweite Fassung war schon unvollstaendig, keinen Tag
+     * alt: ihr fehlte der Onset-ABLAUF. Deshalb hier einmal, mit einem Namen.
+     *
+     * @return ob eine Mahlzeitenlieferung gebucht wurde.
+     */
+    private fun buche(
+        episodes: app.aaps.fuse.plugin.ledger.EpisodeBudgets,
+        actuatedU: Double,
+        primeWindowOpen: Boolean,
+        onsetActive: Boolean,
+        mealMarkerActive: Boolean,
+        sourceTs: Long,
+    ): Boolean {
+        if (primeWindowOpen) episodes.primeSpentU += actuatedU
+
+        // Verbraucht wird nur, was der offene Kanal freigegeben hat; nach
+        // REARM_QUIET_MIN geschlossenen Minuten wird die Huelle neu bewaffnet.
+        if (onsetActive) {
+            episodes.onsetSpentU += actuatedU
+            episodes.onsetQuietMin = 0
+        } else if (episodes.onsetSpentU > 0.0) {
+            episodes.onsetQuietMin += 1
+            if (episodes.onsetQuietMin >= OnsetChannel.REARM_QUIET_MIN) {
+                episodes.onsetSpentU = 0.0
+                episodes.onsetQuietMin = 0
+            }
+        }
+
+        // FIX-PASS 4 Nr. 19: nur im AKTIVEN Marker-Fenster sammeln (ein
+        // verwaister markerTs sammelte sonst unbegrenzt weiter) und hart bei
+        // 400 kappen - der Lade-Validator lehnt Dateien > 500 ab, der
+        // Schreiber muss strikt darunter bleiben, sonst sperrt FUSE sich
+        // selbst per recoveryHold aus der eigenen Datei aus.
+        val mealGebucht = mealMarkerActive && actuatedU > 0.0
+        if (mealGebucht) {
+            episodes.mealDeliveries.addLast(sourceTs to actuatedU)
+            while (episodes.mealDeliveries.size > 400) episodes.mealDeliveries.removeFirst()
+        }
+        return mealGebucht
+    }
     /**
      * DER PREDICTORFREIE MARKERPFAD.
      *
@@ -1743,23 +1785,19 @@ class FuseCycleRunner(
             pumpBusy = pumpBusy(),
         )
 
-        // DIESELBE BUCHFUEHRUNG wie im Hauptpfad, und das ist keine Formsache:
-        // wuerde der Fallback die Huelle nicht belasten, waere er ein zweiter
-        // Geldbeutel fuer dieselbe Mahlzeit.
+        // DIESELBE Buchfuehrung wie im Hauptpfad - und seit dem 11.08. ist das
+        // keine Behauptung mehr, sondern DERSELBE Aufruf. Vorher stand hier eine
+        // Kopie, der der Onset-ABLAUF fehlte (onsetQuietMin hochzaehlen und nach
+        // REARM_QUIET_MIN neu bewaffnen). Die Fehlrichtung war konservativ - ein
+        // Onset-Budget blieb laenger verbraucht -, aber "dieselbe Buchfuehrung"
+        // war schlicht falsch, und genau so laufen zwei Pfade auseinander.
         val actuatedU = if (gate.allowed) combined.decision.smbU else 0.0
         val primeWindowOpen = mealMarkerActive && markerTs > 0 &&
             computeTs - maxOf(markerTs, episodes.primeWindowStartTs) < PrimeRelease.WINDOW_MIN * 60_000L &&
             computeTs - markerTs < PrimeRelease.WALL_CEILING_MIN * 60_000L
-        if (primeWindowOpen) episodes.primeSpentU += actuatedU
-        if (onset.active) {
-            episodes.onsetSpentU += actuatedU
-            episodes.onsetQuietMin = 0
-        }
-        val mealGebucht = mealMarkerActive && actuatedU > 0.0
-        if (mealGebucht) {
-            episodes.mealDeliveries.addLast(signal.sourceTs to actuatedU)
-            while (episodes.mealDeliveries.size > 400) episodes.mealDeliveries.removeFirst()
-        }
+        val mealGebucht = buche(
+            episodes, actuatedU, primeWindowOpen, onset.active, mealMarkerActive, signal.sourceTs,
+        )
         episodes.pendingReservation =
             if (actuatedU > 0.0) app.aaps.fuse.plugin.ledger.EpisodeBudgets.Reservation(
                 computeTs = computeTs,

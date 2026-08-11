@@ -28,9 +28,9 @@ class MarkerFallbackTest {
         mealMarkerActive: Boolean = true,
         safetyReasons: Set<SafetyReason> = setOf(SafetyReason.LOW),
         health: Health = Health.READY,
-        transportAccounted: Boolean = true,
+        transportCommitmentU: Double = 0.0,
     ) = MarkerFallback.denial(
-        reason, markerAuthorisesLow, mealMarkerActive, safetyReasons, health, transportAccounted
+        reason, markerAuthorisesLow, mealMarkerActive, safetyReasons, health, transportCommitmentU
     )
 
     // ---- Die zwei offenen ---------------------------------------------------
@@ -53,10 +53,10 @@ class MarkerFallbackTest {
      * zweites Mal finanziert werden, und dann ist der Grund nicht ueberstimmbar.
      */
     @Test
-    fun `PENDING_MODEL_TOO_SHORT faellt ohne verbuchte Transportmenge zu`() =
+    fun `PENDING_MODEL_TOO_SHORT faellt bei unbekannter Transportmenge zu`() =
         assertEquals(
             MarkerFallback.Denial.TRANSPORT_NOT_ACCOUNTED,
-            denial(PredictorReason.PENDING_MODEL_TOO_SHORT, transportAccounted = false),
+            denial(PredictorReason.PENDING_MODEL_TOO_SHORT, transportCommitmentU = Double.NaN),
         )
 
     /** ARRAY_TOO_SHORT haengt NICHT daran - dort fehlt das IOB-Array, nicht der
@@ -64,7 +64,18 @@ class MarkerFallbackTest {
      *  eng oder zufaellig richtig. */
     @Test
     fun `ARRAY_TOO_SHORT haengt nicht an der Transportmenge`() =
-        assertNull(denial(PredictorReason.ARRAY_TOO_SHORT, transportAccounted = false))
+        assertNull(denial(PredictorReason.ARRAY_TOO_SHORT, transportCommitmentU = Double.NaN))
+
+    /**
+     * NULL IST EIN GUELTIGER WERT, kein fehlender. Ist nichts unterwegs, ist
+     * die Transportmenge 0,0 - und die Freigabe bleibt zulaessig. Ein Boolean
+     * `transportAccounted` haette hier zwar dasselbe gesagt, aber aus dem
+     * falschen Grund: er war fuer 0,0 ebenso wahr wie fuer eine ordentlich
+     * abgezogene Menge, ohne beide unterscheiden zu koennen.
+     */
+    @Test
+    fun `eine Transportmenge von null ist kein Hinderungsgrund`() =
+        assertNull(denial(PredictorReason.PENDING_MODEL_TOO_SHORT, transportCommitmentU = 0.0))
 
     // ---- Die acht geschlossenen, einzeln ------------------------------------
 

@@ -66,8 +66,18 @@ object MarkerFallback {
     }
 
     /**
-     * @param transportAccounted ob die offene Transportmenge in DIESEM Zyklus
-     *   von BEIDEN Headrooms (iobTH und maxIOB) abgezogen wird.
+     * @param transportCommitmentU die offene Transportmenge DIESES Zyklus - die
+     *   ZAHL, nicht ein Praedikat darueber.
+     *
+     *   Der Aufrufer reicht denselben Wert an [PrimeRelease.lift] weiter, wo er
+     *   von BEIDEN Spielraeumen (iobTH und maxIOB) abgezogen wird. Zuerst stand
+     *   hier ein Boolean, und der war kein Beweis: "endlich" gilt auch fuer 0,0,
+     *   und ueber den Abzug sagte es nichts.
+     *
+     *   EHRLICH, was diese Signatur leistet und was nicht: sie verhindert, dass
+     *   Freigabegrund und Abzug VERSCHIEDENE Zahlen benutzen. Dass der Abzug
+     *   ueberhaupt stattfindet, haelt allein ein Test auf [PrimeRelease.lift] -
+     *   entfernt man ihn aus einem der beiden Spielraeume, muss er rot werden.
      *
      *   Tonis ausdrueckliche Auflage vom 11.08., und sie haengt genau an
      *   [PredictorReason.PENDING_MODEL_TOO_SHORT]: dieser Grund sagt, dass der
@@ -88,11 +98,11 @@ object MarkerFallback {
         mealMarkerActive: Boolean,
         safetyReasons: Set<SafetyReason>,
         health: Health,
-        transportAccounted: Boolean,
+        transportCommitmentU: Double,
     ): Denial? = when {
         reason !in OVERRIDABLE                                  -> Denial.REASON_NOT_OVERRIDABLE
         reason == PredictorReason.PENDING_MODEL_TOO_SHORT &&
-            !transportAccounted                                 -> Denial.TRANSPORT_NOT_ACCOUNTED
+            !transportCommitmentU.isFinite()                    -> Denial.TRANSPORT_NOT_ACCOUNTED
 
         !markerAuthorisesLow                                    -> Denial.SETTING_OFF
         !mealMarkerActive                                       -> Denial.NO_MARKER
