@@ -26,7 +26,13 @@ import java.io.FileOutputStream
  * VERZEICHNIS wird hereingereicht - im Unit-Test gibt es kein Android, und
  * ein relativer Pfad liefe am Testverzeichnis vorbei.
  */
-class FuseLedgerStore {
+/**
+ * @param durability der Durabilitaets-Nachweis. Default ist die
+ *   Android-Fassung; JVM-Tests speisen einen Fake ein. Ein Default, der
+ *   Fehler schluckt, waere die bequeme und falsche Loesung gewesen -
+ *   Produktion faellt dann still auf "best effort" zurueck.
+ */
+class FuseLedgerStore(private val durability: Durability = Durability.ANDROID) {
 
     companion object {
 
@@ -202,14 +208,48 @@ class FuseLedgerStore {
     /** @return true, wenn die Hauptdatei nach dem Aufruf den neuen Inhalt
      *  traegt. false heisst: alte Generation steht unveraendert. */
     /**
-     * @param syncer die Durabilitaets-Zusicherung. Default ist
-     *   [FileDescriptor.sync]; ein Test kann hier einen Fehlschlag
-     *   einspeisen, ohne ein Dateisystem zu manipulieren.
+     * Was der letzte [write] gekostet hat - fuer den Test-Build.
+     *
+     * KEINE GESUNDHEITSDATEN und kein privater Pfad: nur Bytes, Dauern und
+     * das Sync-Ergebnis. Damit ist die Frage "wie teuer sind zwei fsyncs pro
+     * Minute auf diesem Geraet" beantwortbar, ohne an die Ledger-Datei selbst
+     * heranzukommen - die liegt im App-privaten Speicher und ist ohne
+     * debuggable-Build nicht lesbar.
      */
-    fun write(
+    data class PersistStats(
+        val bytes: Int,
+        val totalMs: Long,
+        val fileSyncMs: Long,
+        val dirSyncMs: Long,
+        val ok: Boolean,
+    )
+
+    @Volatile
+    var lastPersistStats: PersistStats? = null
+        private set
+
+    fun write(dir: File, content: String): Boolean {
+        val t0 = System.nanoTime()
+        var fileSyncNs = 0L
+        var dirSyncNs = 0L
+        val ok = schreibe(dir, content,
+            { fd -> val a = System.nanoTime(); durability.syncFile(fd); fileSyncNs = System.nanoTime() - a },
+            { d -> val a = System.nanoTime(); durability.syncDirectory(d); dirSyncNs = System.nanoTime() - a })
+        lastPersistStats = PersistStats(
+            bytes = content.toByteArray(Charsets.UTF_8).size,
+            totalMs = (System.nanoTime() - t0) / 1_000_000,
+            fileSyncMs = fileSyncNs / 1_000_000,
+            dirSyncMs = dirSyncNs / 1_000_000,
+            ok = ok,
+        )
+        return ok
+    }
+
+    private fun schreibe(
         dir: File,
         content: String,
-        syncer: (FileDescriptor) -> Unit = { it.sync() },
+        syncFile: (FileDescriptor) -> Unit,
+        syncDir: (File) -> Unit,
     ): Boolean = runCatching {
         if (!dir.exists() && !dir.mkdirs() && !dir.exists()) return@runCatching false
         val target = File(dir, FILE_NAME)
@@ -232,7 +272,7 @@ class FuseLedgerStore {
         FileOutputStream(tmp).use { out ->
             out.write(content.toByteArray(Charsets.UTF_8))
             out.flush()
-            syncer(out.fd)
+            syncFile(out.fd)
         }
 
         if (target.exists()) {
@@ -242,37 +282,19 @@ class FuseLedgerStore {
         }
         if (!tmp.renameTo(target)) return@runCatching false
 
-        // DAS VERZEICHNIS, best effort und ausdruecklich als solches.
+        // DAS VERZEICHNIS, HART. Nach dem Rename ist der INHALT durabel, der
+        // Verzeichniseintrag noch nicht zwingend - ein Stromverlust dazwischen
+        // kann eine Datei hinterlassen, deren Bytes stehen und deren Name
+        // nicht.
         //
-        // Nach dem Rename ist der INHALT durabel, der Verzeichniseintrag
-        // aber noch nicht zwingend. Portabel geht das in Java nicht - ein
-        // FileInputStream auf ein Verzeichnis scheitert unter Linux mit
-        // EISDIR. Auf Android gibt es `android.system.Os.open/fsync`; im
-        // JVM-Testpfad gibt es das nicht, deshalb reflektiv und
-        // FEHLERTOLERANT.
-        //
-        // Bewusst NICHT fail-closed: waere es das, wuerde jeder Persist im
-        // Unit-Test fehlschlagen und der Ledger auf der JVM als kaputt
-        // gelten. Die Datei-Durabilitaet oben ist die harte Zusicherung,
-        // diese hier die zusaetzliche.
-        syncDirectoryBestEffort(dir)
+        // Fail-closed ist hier vertretbar, obwohl der Rename schon gelaufen
+        // ist: es kostet hoechstens eine unterlassene Dosis. Die
+        // Revisionsauswahl beim naechsten Start rettet weiterhin aus target,
+        // .tmp oder .bak - es geht keine Generation verloren, nur dieser eine
+        // Zyklus publiziert nicht.
+        syncDir(dir)
         true
     }.getOrDefault(false)
-
-    private fun syncDirectoryBestEffort(dir: File) {
-        runCatching {
-            val os = Class.forName("android.system.Os")
-            val osConstants = Class.forName("android.system.OsConstants")
-            val rdonly = osConstants.getField("O_RDONLY").getInt(null)
-            val open = os.getMethod("open", String::class.java, Int::class.java, Int::class.java)
-            val fd = open.invoke(null, dir.absolutePath, rdonly, 0)
-            try {
-                os.getMethod("fsync", FileDescriptor::class.java).invoke(null, fd)
-            } finally {
-                runCatching { os.getMethod("close", FileDescriptor::class.java).invoke(null, fd) }
-            }
-        }
-    }
 
     /**
      * [write] plus RUECKLESEPROBE (Audit 2d273cb, 6.1): Erfolg heisst, das
@@ -287,12 +309,8 @@ class FuseLedgerStore {
      * die nach einem Stromverlust leer oder halb waere. Die Probe belegt den
      * RENAME und den INHALT - die DURABILITAET belegt der fsync.
      */
-    fun writeVerified(
-        dir: File,
-        content: String,
-        syncer: (FileDescriptor) -> Unit = { it.sync() },
-    ): Boolean = runCatching {
-        if (!write(dir, content, syncer)) return@runCatching false
+    fun writeVerified(dir: File, content: String): Boolean = runCatching {
+        if (!write(dir, content)) return@runCatching false
         val target = File(dir, FILE_NAME)
         target.exists() && target.readText(Charsets.UTF_8) == content
     }.getOrDefault(false)

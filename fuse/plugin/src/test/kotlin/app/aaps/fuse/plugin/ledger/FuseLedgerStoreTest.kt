@@ -271,9 +271,9 @@ class FuseLedgerStoreTest {
      */
     @Test
     fun `ein fehlgeschlagener fsync macht den Persist ungueltig`(@TempDir dir: File) {
-        val store = FuseLedgerStore()
+        val store = FuseLedgerStore(FakeDurability(fileFails = true))
         assertTrue(
-            !store.writeVerified(dir, "inhalt") { throw java.io.SyncFailedException("Platte weg") },
+            !store.writeVerified(dir, "inhalt"),
             "ein Sync-Fehler muss als Fehlschlag durchschlagen",
         )
     }
@@ -282,7 +282,7 @@ class FuseLedgerStoreTest {
      *  waere die Zusicherung oben nur "es schlaegt immer fehl". */
     @Test
     fun `mit funktionierendem Sync steht der Inhalt in der Zieldatei`(@TempDir dir: File) {
-        val store = FuseLedgerStore()
+        val store = FuseLedgerStore(FakeDurability())
         assertTrue(store.writeVerified(dir, "inhalt"))
         assertEquals("inhalt", File(dir, FuseLedgerStore.FILE_NAME).readText())
     }
@@ -298,14 +298,40 @@ class FuseLedgerStoreTest {
      */
     @Test
     fun `ein Sync-Fehler laesst die alte Generation unangetastet`(@TempDir dir: File) {
-        val store = FuseLedgerStore()
-        assertTrue(store.writeVerified(dir, "alt"))
+        FuseLedgerStore(FakeDurability()).also { assertTrue(it.writeVerified(dir, "alt")) }
 
-        store.writeVerified(dir, "neu") { throw java.io.SyncFailedException("Platte weg") }
+        FuseLedgerStore(FakeDurability(fileFails = true)).writeVerified(dir, "neu")
 
         assertEquals(
             "alt", File(dir, FuseLedgerStore.FILE_NAME).readText(),
             "die alte Generation darf durch einen gescheiterten Schreibversuch nicht verschwinden",
         )
+    }
+
+    /**
+     * EIN VERZEICHNIS-SYNC-FEHLER IST EBENFALLS EIN SCHREIBFEHLER.
+     *
+     * Frueher war dieser Sync reflektiv und fehlertolerant - das machte die
+     * Tests gruen und liess PRODUKTION still auf "best effort" zurueckfallen.
+     * Ein Nachweis, der im Fehlerfall schweigt, ist keiner.
+     *
+     * Fail-closed ist vertretbar, obwohl der Rename da schon gelaufen ist: es
+     * kostet hoechstens eine unterlassene Dosis, und die Revisionsauswahl
+     * beim naechsten Start rettet weiterhin aus target, .tmp oder .bak.
+     */
+    @Test
+    fun `ein fehlgeschlagener Verzeichnis-Sync macht den Persist ungueltig`(@TempDir dir: File) {
+        val store = FuseLedgerStore(FakeDurability(dirFails = true))
+        assertTrue(!store.writeVerified(dir, "inhalt"))
+    }
+
+    /** BEIDE Syncs laufen wirklich - sonst koennte einer fehlen, ohne dass
+     *  ein Test es merkt. */
+    @Test
+    fun `ein Persist synct Datei UND Verzeichnis`(@TempDir dir: File) {
+        val d = FakeDurability()
+        assertTrue(FuseLedgerStore(d).writeVerified(dir, "inhalt"))
+        assertEquals(1, d.fileSyncs, "Datei-Sync")
+        assertEquals(1, d.dirSyncs, "Verzeichnis-Sync")
     }
 }
