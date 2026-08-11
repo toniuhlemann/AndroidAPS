@@ -23,8 +23,9 @@ class EvidenceStockTest {
         committedU: Double = 0.0,
         healthReady: Boolean = true,
         measuredLow: Boolean = false,
-        episodeActive: Boolean = true,
+        episodeId: Long = 1L,
         segmentStartTs: Long = T0,
+        persistedStateKnown: Boolean = true,
     ) = EvidenceStock.Input(
         nowMs = T0 + minute * 60_000L,
         sourceTs = T0 + minute * 60_000L,
@@ -33,9 +34,10 @@ class EvidenceStockTest {
         driveLowerMgdlPerMin = driveLower,
         healthReady = healthReady,
         measuredLow = measuredLow,
-        episodeActive = episodeActive,
-        committedU = committedU,
+        episodeId = episodeId,
+        episodeCommittedU = committedU,
         isfMgdlPerU = ISF,
+        persistedStateKnown = persistedStateKnown,
     )
 
     /** Erster Zyklus: es gibt keinen Bezugspunkt, also keinen Zufluss. Der
@@ -175,7 +177,7 @@ class EvidenceStockTest {
      *  nicht an jede steigende Kurve. */
     @Test
     fun `ohne Episode entsteht kein Bestand`() {
-        val r = EvidenceStock.step(EvidenceStock.State(), eingabe(0, 100.0, episodeActive = false))
+        val r = EvidenceStock.step(EvidenceStock.State(), eingabe(0, 100.0, episodeId = 0L))
         assertEquals(EvidenceStock.NoInflow.NO_EPISODE, r.noInflow)
         assertEquals(0.0, r.state.stockMgdl, 1e-9)
     }
@@ -207,5 +209,122 @@ class EvidenceStockTest {
         // Flache Reihe ueber den halben Verfallszeitraum.
         s = EvidenceStock.step(s, eingabe(1 + EvidenceStock.Config().decayMin / 2, 140.0)).state
         assertTrue(s.stockMgdl < vorher * 0.75, "$vorher -> ${s.stockMgdl}")
+    }
+
+    // ---- Die drei strukturell erzwungenen Vertraege -----------------------
+
+    /**
+     * DER ABZUG IST DER ZUWACHS, NICHT DER STAND.
+     *
+     * `episodeCommittedU` ist kumulativ. Bleibt er zwischen zwei Zyklen
+     * gleich, darf NICHTS abgezogen werden - ein Aufrufer, der den
+     * Episodenstand durchreicht, wuerde sonst dieselbe Dosis jede Minute
+     * erneut verbuchen und den Bestand in Sekunden leerraeumen.
+     */
+    @Test
+    fun `ein unveraenderter Abgabestand wird nicht erneut abgezogen`() {
+        var s = EvidenceStock.step(EvidenceStock.State(), eingabe(0, 100.0)).state
+        s = EvidenceStock.step(s, eingabe(1, 160.0)).state
+        s = EvidenceStock.step(s, eingabe(2, 160.0, committedU = 0.20)).state
+        val nachAbzug = s.stockMgdl
+        // Derselbe kumulative Stand, drei Zyklen lang.
+        repeat(3) { i -> s = EvidenceStock.step(s, eingabe(3 + i, 160.0, committedU = 0.20)).state }
+        // Nur Verfall darf gewirkt haben, kein weiterer Abzug von 18 mg/dl.
+        assertTrue(
+            s.stockMgdl > nachAbzug - 18.0,
+            "der Abzug wurde wiederholt: $nachAbzug -> ${s.stockMgdl}",
+        )
+    }
+
+    /** Und ein WACHSENDER Stand zieht die Differenz ab - sonst waere die
+     *  Zusicherung oben nur "es wird nie abgezogen". */
+    @Test
+    fun `ein wachsender Abgabestand zieht die Differenz ab`() {
+        var s = EvidenceStock.step(EvidenceStock.State(), eingabe(0, 100.0)).state
+        s = EvidenceStock.step(s, eingabe(1, 200.0)).state
+        s = EvidenceStock.step(s, eingabe(2, 200.0, committedU = 0.20)).state
+        val vorher = s.stockMgdl
+        val r = EvidenceStock.step(s, eingabe(3, 200.0, committedU = 0.40))
+        assertTrue(
+            r.state.stockMgdl < vorher - 15.0,
+            "die zweiten 0,20 U muessen 18 mg/dl kosten: $vorher -> ${r.state.stockMgdl}",
+        )
+    }
+
+    /**
+     * DER DECKEL LAEUFT AB DEM URSPRUNG - eine zweite Welle startet ihn nicht
+     * neu.
+     *
+     * Deshalb traegt die Eingabe eine Episoden-IDENTITAET und kein Bit
+     * "aktiv": ein Wellental wuerde ein Bit auf false setzen, und die
+     * naechste Welle begaenne als neue Episode mit frischen vier Stunden.
+     * Der gemessene Lauf vom 11.08. hatte genau so ein Tal bei T+105.
+     */
+    @Test
+    fun `eine zweite Welle startet den Episodendeckel nicht neu`() {
+        var s = EvidenceStock.step(EvidenceStock.State(), eingabe(0, 100.0)).state
+        s = EvidenceStock.step(s, eingabe(1, 120.0)).state
+        // Tal: dieselbe Episode, aber lange nichts.
+        s = EvidenceStock.step(s, eingabe(100, 120.0)).state
+        // Zweite Welle, dieselbe episodeId - kurz VOR dem Deckel.
+        val vorDeckel = EvidenceStock.step(s, eingabe(230, 140.0))
+        assertTrue(vorDeckel.noInflow != EvidenceStock.NoInflow.EPISODE_EXPIRED)
+        // Und kurz danach ist Schluss, gerechnet ab MINUTE 0, nicht ab 100.
+        val nachDeckel = EvidenceStock.step(vorDeckel.state, eingabe(245, 160.0))
+        assertEquals(EvidenceStock.NoInflow.EPISODE_EXPIRED, nachDeckel.noInflow)
+    }
+
+    /** Eine ANDERE Episode erbt nichts - weder Bestand noch Uhr noch
+     *  Abgabestand. */
+    @Test
+    fun `eine neue Episode erbt nichts`() {
+        var s = EvidenceStock.step(EvidenceStock.State(), eingabe(0, 100.0)).state
+        s = EvidenceStock.step(s, eingabe(1, 200.0)).state
+        assertTrue(s.stockMgdl > 0.0)
+        val r = EvidenceStock.step(s, eingabe(2, 200.0, episodeId = 2L))
+        assertEquals(0.0, r.state.stockMgdl, 1e-9)
+        assertEquals(2L, r.state.episodeId)
+    }
+
+    /**
+     * BEI EINER LUECKE LAEUFT DIE WANDUHR WEITER.
+     *
+     * Der Bestand wird nicht eingefroren und kehrt nicht unveraendert
+     * zurueck - er baut waehrend der Luecke ab, waehrend Zufluss UND Ausgabe
+     * gesperrt sind. Das neue Segment setzt nur die Messbasis.
+     */
+    @Test
+    fun `ein Segmentbruch friert den Bestand nicht ein`() {
+        var s = EvidenceStock.step(EvidenceStock.State(), eingabe(0, 100.0)).state
+        s = EvidenceStock.step(s, eingabe(1, 200.0)).state
+        val vorLuecke = s.stockMgdl
+        // 6 Minuten Luecke, danach neues Segment.
+        val r = EvidenceStock.step(s, eingabe(7, 300.0, segmentStartTs = T0 + 7 * 60_000L))
+        assertEquals(EvidenceStock.NoInflow.SEGMENT_BREAK, r.noInflow)
+        assertEquals(0.0, r.inflowMgdl, 1e-9, "ueber die Luecke keine Differenz")
+        assertEquals(0.0, r.creditMgdlPerMin, 1e-9, "Ausgabe waehrend des Bruchs gesperrt")
+        assertTrue(
+            r.state.stockMgdl < vorLuecke * 0.4,
+            "der Bestand muss waehrend der Luecke abgebaut haben: $vorLuecke -> ${r.state.stockMgdl}",
+        )
+        assertEquals(300.0, r.state.lastAdjusted, 1e-9, "nur die Messbasis wird neu gesetzt")
+    }
+
+    /**
+     * UNKLARER RESTART-ZUSTAND: kein Kredit, mit eigenem Grund.
+     *
+     * Fail-closed ist hier richtig, weil der Bestand ausschliesslich eine
+     * ZUSAETZLICHE Erlaubnis ist - der gewoehnliche Korrekturpfad laeuft
+     * unveraendert weiter. Der eigene Grund ist wichtig, damit ein spaeteres
+     * Nullfenster nicht faelschlich dem Guard zugeschrieben wird.
+     */
+    @Test
+    fun `ein unklarer Restart-Zustand gibt keinen Kredit`() {
+        var s = EvidenceStock.step(EvidenceStock.State(), eingabe(0, 100.0)).state
+        s = EvidenceStock.step(s, eingabe(1, 200.0)).state
+        val r = EvidenceStock.step(s, eingabe(2, 220.0, persistedStateKnown = false))
+        assertEquals(EvidenceStock.NoInflow.EVIDENCE_STATE_UNKNOWN, r.noInflow)
+        assertEquals(0.0, r.creditMgdlPerMin, 1e-9)
+        assertEquals(0.0, r.state.stockMgdl, 1e-9)
     }
 }
