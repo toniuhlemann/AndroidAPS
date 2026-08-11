@@ -702,11 +702,17 @@ class OverviewFragment : DaggerFragment(), View.OnClickListener, OnLongClickList
                 // EINE Farbe fuer Text UND Symbol. Getrennt gesetzt liefen sie
                 // auseinander - das Symbol blieb grau, weil ein ?attr/... im
                 // fillColor eines Vektors nicht aufgeloest wird.
-                val farbe = rh.gac(
-                    ctx,
-                    if (markerAn) app.aaps.core.ui.R.attr.ribbonWarningColor
-                    else app.aaps.core.ui.R.attr.icFuseMealColor,
-                )
+                // DIREKTE FARBE, KEIN THEME-ATTRIBUT. Ein eigenes ?attr/... hat
+                // die App beim Aufblasen des Knopfes zum Absturz gebracht: das
+                // tatsaechlich benutzte AppTheme erbt nicht von dem Style-Block,
+                // in dem ich es definiert hatte, und ein nicht aufloesbares
+                // Attribut ist in einem Layout ein harter Fehler. Fuer eine
+                // einzelne Literalfarbe war das Attribut ohnehin Vorbau.
+                val farbe =
+                    if (markerAn) rh.gac(ctx, app.aaps.core.ui.R.attr.ribbonWarningColor)
+                    else androidx.core.content.ContextCompat.getColor(
+                        ctx, app.aaps.core.ui.R.color.colorFuseMealButton,
+                    )
                 binding.buttonsLayout.fuseMealButton.setTextColor(farbe)
                 androidx.core.widget.TextViewCompat.setCompoundDrawableTintList(
                     binding.buttonsLayout.fuseMealButton,

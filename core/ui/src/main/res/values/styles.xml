@@ -159,7 +159,6 @@
         <!-- Overview Buttons -->
         <item name="icBolusColor">@color/bolus</item>
         <item name="icBolusCarbsColor">@color/colorCarbsButton</item>
-        <item name="icFuseMealColor">@color/colorFuseMealButton</item>
         <item name="icCalculatorColor">@color/colorCalculatorButton</item>
         <item name="icQuickWizardColor">@color/colorQuickWizardButton</item>
         <item name="icCalibrationColor">@color/colorCalibrationButton</item>
