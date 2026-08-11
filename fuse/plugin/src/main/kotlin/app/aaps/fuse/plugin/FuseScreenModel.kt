@@ -240,7 +240,7 @@ object FuseScreenModel {
             when {
                 it.reboundWindow -> row(b, "Rebound-Deckel", f2(it.smbRatioCorrection))
                 !it.mealWindow   -> row(b, "Korrektur", f2(it.smbRatioCorrection))
-                else             -> row(b, "Mahlzeit", "Rampe traegt")
+                else             -> row(b, "Anstiegsfenster", "Rampe aktiv")
             }
             row(b, "effektiv", f2(it.effectiveSmbRatio))
         }

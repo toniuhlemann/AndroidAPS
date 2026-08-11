@@ -21,13 +21,25 @@ object FuseDashboardModel {
 
     data class ProfileInfo(val scheduledBasalUPerH: Double?)
 
+    data class InsulinView(
+        val netIob: String,
+        val bolusIob: String,
+        val basalIob: String,
+        val capIob: String,
+        val transport: String,
+        val iobTh: String,
+        val maxIob: String,
+        val headroom: String,
+    )
+
     data class View(
         val status: String,
         val statusDetail: String,
+        val controlSignal: String,
         val action: String,
         val decisionReason: String,
         val marker: String,
-        val limits: String,
+        val insulin: InsulinView,
         val profile: String,
         val hardStops: String,
     )
@@ -43,10 +55,11 @@ object FuseDashboardModel {
         if (outcome == null) return View(
             status = "WARTET AUF ERSTEN ZYKLUS",
             statusDetail = "Noch kein FUSE-Ergebnis in diesem Prozess",
+            controlSignal = "Störung r -\nModus -  |  Rampe -  |  SMB-Anteil -",
             action = "Keine aktuelle Entscheidung",
             decisionReason = "-",
             marker = markerText(null, nowMs, marker),
-            limits = "IOB und Spielraeume noch unbekannt",
+            insulin = unknownInsulin(),
             profile = profileText(null, profile),
             hardStops = "Pumpengate und Ledger noch nicht bewertet",
         )
@@ -73,7 +86,7 @@ object FuseDashboardModel {
             outcome.tbr != null                     -> "TBR ${f2(outcome.tbr.rateUPerH)} U/h fuer ${outcome.tbr.durationMin} min berechnet"
             else                                    -> "keine neue TBR"
         }
-        val action = "$smb  |  $tbr"
+        val action = "$smb\n$tbr"
 
         val d = outcome.decision
         val decisionReason = when {
@@ -96,13 +109,38 @@ object FuseDashboardModel {
         return View(
             status = status,
             statusDetail = statusDetail,
+            controlSignal = controlSignalText(outcome),
             action = action,
             decisionReason = decisionReason,
             marker = markerText(outcome, nowMs, marker),
-            limits = limitsText(outcome, ledger),
+            insulin = insulinView(outcome, ledger),
             profile = profileText(outcome, profile),
             hardStops = hardStops,
         )
+    }
+
+    private fun controlSignalText(outcome: FuseCycleRunner.Outcome): String {
+        val state = outcome.state
+        val r = outcome.signal?.rSigned ?: state?.rSignedMgdlPerMin
+        val rText = r?.takeIf { it.isFinite() }?.let { signed3(it) } ?: "-"
+        if (state == null) return "Störung r $rText mg/dl/min\nModus -  |  Rampe -  |  SMB-Anteil -"
+
+        val rampPct = state.rSignedMgdlPerMin?.takeIf { it.isFinite() }
+            ?.takeIf { state.riseRampHighRPerMin > state.riseRampLowRPerMin }
+            ?.let { value ->
+                (((value - state.riseRampLowRPerMin) /
+                    (state.riseRampHighRPerMin - state.riseRampLowRPerMin))
+                    .coerceIn(0.0, 1.0) * 100).toInt()
+            }
+        val mode = when {
+            state.reboundWindow -> "Rebound-Deckel"
+            state.mealWindow    -> "Anstiegsfenster"
+            else                -> "Korrektur"
+        }
+        val ramp = rampPct?.let {
+            "Rampe $it % (${f2(state.smbRatioCorrection)} -> ${f2(state.smbRatioRise)})"
+        } ?: "Rampe -"
+        return "Störung r $rText mg/dl/min\n$mode  |  $ramp  |  SMB-Anteil ${f2(state.effectiveSmbRatio)}"
     }
 
     private fun markerText(outcome: FuseCycleRunner.Outcome?, nowMs: Long, marker: FuseScreenModel.MarkerInfo?): String {
@@ -123,22 +161,36 @@ object FuseDashboardModel {
         return "AKTIV seit $elapsed min  |  $amount\n$release  |  $wall  |  $context"
     }
 
-    private fun limitsText(outcome: FuseCycleRunner.Outcome, ledger: FuseScreenModel.LedgerInfo?): String {
+    private fun insulinView(outcome: FuseCycleRunner.Outcome, ledger: FuseScreenModel.LedgerInfo?): InsulinView {
         val state = outcome.state
         val iob = outcome.iobU
         val iobTh = state?.iobThU ?: outcome.iobThU
         val maxIob = state?.maxIobU ?: outcome.maxIobU
         val capIob = state?.capIobU
         val transport = ledger?.transportCommitmentU ?: 0.0
-        val iobText = iob?.let { "IOB ${u(it)}" } ?: "IOB -"
-        if (iobTh == null && maxIob == null) return "$iobText  |  Spielraeume unbekannt"
-        if (capIob == null) return "$iobText  |  iobTH ${iobTh?.let(::u) ?: "-"}  |  maxIOB ${maxIob?.let(::u) ?: "-"}"
-        val fastRest = iobTh?.minus(capIob)?.minus(transport)
-        val maxRest = maxIob?.minus(capIob)?.minus(transport)
-        return "$iobText  |  cap ${u(capIob)}  |  Transport ${u(transport)}\n" +
-            "iobTH ${iobTh?.let(::u) ?: "-"} (Rest ${fastRest?.let(::u) ?: "-"})  |  " +
-            "maxIOB ${maxIob?.let(::u) ?: "-"} (Rest ${maxRest?.let(::u) ?: "-"})"
+        val fastRest = capIob?.let { cap -> iobTh?.minus(cap)?.minus(transport) }
+        val maxRest = capIob?.let { cap -> maxIob?.minus(cap)?.minus(transport) }
+        val headroom = when {
+            fastRest != null && maxRest != null && kotlin.math.abs(fastRest - maxRest) < 0.005 ->
+                "${u(minOf(fastRest, maxRest))} (beide Grenzen)"
+            fastRest != null && maxRest != null -> "iobTH ${u(fastRest)}  |  maxIOB ${u(maxRest)}"
+            fastRest != null -> "iobTH ${u(fastRest)}"
+            maxRest != null -> "maxIOB ${u(maxRest)}"
+            else -> "-"
+        }
+        return InsulinView(
+            netIob = iob?.let(::u) ?: "-",
+            bolusIob = state?.bolusIobU?.let(::u) ?: "-",
+            basalIob = state?.basalIobU?.let(::u) ?: "-",
+            capIob = capIob?.let(::u) ?: "-",
+            transport = u(transport),
+            iobTh = iobTh?.let(::u) ?: "-",
+            maxIob = maxIob?.let(::u) ?: "-",
+            headroom = headroom,
+        )
     }
+
+    private fun unknownInsulin() = InsulinView("-", "-", "-", "-", "-", "-", "-", "-")
 
     private fun profileText(outcome: FuseCycleRunner.Outcome?, profile: ProfileInfo?): String {
         val target = outcome?.targetMgdl?.let { "Ziel ${f0(it)} mg/dl (${outcome.targetSource ?: "?"})" } ?: "Ziel -"
@@ -149,5 +201,6 @@ object FuseDashboardModel {
 
     private fun f0(v: Double): String = String.format(Locale.US, "%.0f", v)
     private fun f2(v: Double): String = String.format(Locale.US, "%.2f", v)
+    private fun signed3(v: Double): String = String.format(Locale.US, "%+.3f", v)
     private fun u(v: Double): String = "${f2(v)} U"
 }

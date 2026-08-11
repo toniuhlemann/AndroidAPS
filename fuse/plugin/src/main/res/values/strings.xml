@@ -8,11 +8,21 @@
     <!-- Kompakte Betriebssicht im FUSE-Reiter. Die technische Vollansicht
          bleibt separat einblendbar und verwendet weiterhin FuseScreenModel. -->
     <string name="fuse_live_status">Betriebszustand</string>
+    <string name="fuse_control_signal">Regelsignal</string>
     <string name="fuse_current_action">Aktuelle Aktion</string>
     <string name="fuse_decision_reason">Entscheidungsgrund</string>
     <string name="fuse_hard_stops">Harte Sperren</string>
     <string name="fuse_marker_and_budget">Mahlzeit und Freigabebudget</string>
-    <string name="fuse_iob_limits">IOB und Insulingrenzen</string>
+    <string name="fuse_iob">IOB</string>
+    <string name="fuse_insulin_limits">Insulingrenzen</string>
+    <string name="fuse_net_iob">Netto-IOB</string>
+    <string name="fuse_bolus_iob">Bolus-IOB</string>
+    <string name="fuse_basal_iob">Basal-IOB</string>
+    <string name="fuse_cap_iob">Kappen-IOB</string>
+    <string name="fuse_transport">Transport</string>
+    <string name="fuse_iob_th_label">iobTH</string>
+    <string name="fuse_max_iob_label">maxIOB</string>
+    <string name="fuse_available">Verfügbar</string>
     <string name="fuse_profile_values">Wirksame Profilwerte</string>
     <string name="fuse_open_settings">Einstellungen</string>
     <string name="fuse_show_details">Technische Details</string>

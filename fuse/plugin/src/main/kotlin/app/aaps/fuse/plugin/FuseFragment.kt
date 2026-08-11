@@ -130,10 +130,18 @@ class FuseFragment : DaggerFragment() {
         )
         binding.fuseOverviewStatus.text = dashboard.status
         binding.fuseOverviewStatusDetail.text = dashboard.statusDetail
+        binding.fuseOverviewControlSignal.text = dashboard.controlSignal
         binding.fuseOverviewAction.text = dashboard.action
         binding.fuseOverviewReason.text = dashboard.decisionReason
         binding.fuseOverviewMarker.text = dashboard.marker
-        binding.fuseOverviewLimits.text = dashboard.limits
+        binding.fuseOverviewNetIob.text = dashboard.insulin.netIob
+        binding.fuseOverviewBolusIob.text = dashboard.insulin.bolusIob
+        binding.fuseOverviewBasalIob.text = dashboard.insulin.basalIob
+        binding.fuseOverviewCapIob.text = dashboard.insulin.capIob
+        binding.fuseOverviewTransport.text = dashboard.insulin.transport
+        binding.fuseOverviewIobTh.text = dashboard.insulin.iobTh
+        binding.fuseOverviewMaxIob.text = dashboard.insulin.maxIob
+        binding.fuseOverviewHeadroom.text = dashboard.insulin.headroom
         binding.fuseOverviewProfile.text = dashboard.profile
         binding.fuseOverviewHardStops.text = dashboard.hardStops
         binding.fuseState.text = FuseScreenModel.render(

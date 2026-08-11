@@ -74,6 +74,21 @@
                 <TextView
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
+                    android:text="@string/fuse_control_signal"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:id="@+id/fuse_overview_control_signal"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="2dp"
+                    android:textColor="?android:attr/textColorPrimary"
+                    tools:text="Störung r +0.547 mg/dl/min&#10;Anstiegsfenster | Rampe 49 % (0.15 -&gt; 0.35) | SMB-Anteil 0.25" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
                     android:text="@string/fuse_current_action"
                     android:textStyle="bold" />
 
@@ -153,16 +168,157 @@
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
                     android:layout_marginTop="10dp"
-                    android:text="@string/fuse_iob_limits"
+                    android:text="@string/fuse_iob"
                     android:textStyle="bold" />
 
-                <TextView
-                    android:id="@+id/fuse_overview_limits"
+                <TableLayout
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:layout_marginTop="2dp"
-                    android:textColor="?android:attr/textColorPrimary"
-                    tools:text="IOB 0.58 U | cap 1.18 U | iobTH 8.00 U (Rest 6.82 U)" />
+                    android:stretchColumns="0">
+
+                    <TableRow
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content">
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="@string/fuse_net_iob" />
+                        <TextView
+                            android:id="@+id/fuse_overview_net_iob"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:gravity="end"
+                            android:textColor="?android:attr/textColorPrimary"
+                            tools:text="0.47 U" />
+                    </TableRow>
+
+                    <TableRow
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content">
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="@string/fuse_bolus_iob" />
+                        <TextView
+                            android:id="@+id/fuse_overview_bolus_iob"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:gravity="end"
+                            android:textColor="?android:attr/textColorPrimary"
+                            tools:text="0.98 U" />
+                    </TableRow>
+
+                    <TableRow
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content">
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="@string/fuse_basal_iob" />
+                        <TextView
+                            android:id="@+id/fuse_overview_basal_iob"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:gravity="end"
+                            android:textColor="?android:attr/textColorPrimary"
+                            tools:text="-0.52 U" />
+                    </TableRow>
+
+                    <TableRow
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content">
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="@string/fuse_cap_iob" />
+                        <TextView
+                            android:id="@+id/fuse_overview_cap_iob"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:gravity="end"
+                            android:textColor="?android:attr/textColorPrimary"
+                            tools:text="0.99 U" />
+                    </TableRow>
+
+                    <TableRow
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content">
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="@string/fuse_transport" />
+                        <TextView
+                            android:id="@+id/fuse_overview_transport"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:gravity="end"
+                            android:textColor="?android:attr/textColorPrimary"
+                            tools:text="0.00 U" />
+                    </TableRow>
+                </TableLayout>
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="10dp"
+                    android:text="@string/fuse_insulin_limits"
+                    android:textStyle="bold" />
+
+                <TableLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="2dp"
+                    android:stretchColumns="0">
+
+                    <TableRow
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content">
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="@string/fuse_iob_th_label" />
+                        <TextView
+                            android:id="@+id/fuse_overview_iob_th"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:gravity="end"
+                            android:textColor="?android:attr/textColorPrimary"
+                            tools:text="8.00 U" />
+                    </TableRow>
+
+                    <TableRow
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content">
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="@string/fuse_max_iob_label" />
+                        <TextView
+                            android:id="@+id/fuse_overview_max_iob"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:gravity="end"
+                            android:textColor="?android:attr/textColorPrimary"
+                            tools:text="8.00 U" />
+                    </TableRow>
+
+                    <TableRow
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content">
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="@string/fuse_available" />
+                        <TextView
+                            android:id="@+id/fuse_overview_headroom"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:gravity="end"
+                            android:textColor="?android:attr/textColorPrimary"
+                            tools:text="7.01 U (beide Grenzen)" />
+                    </TableRow>
+                </TableLayout>
 
                 <TextView
                     android:layout_width="wrap_content"

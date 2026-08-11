@@ -32,6 +32,7 @@ class FuseDashboardModelTest {
         pumpIncrementU = 0.05,
         maxSmbU = 0.3,
         pumpBusy = false,
+        mealWindow = true,
     )
 
     private fun outcome(
@@ -100,7 +101,7 @@ class FuseDashboardModelTest {
         )
         assertTrue(v.status.contains("WARTET"))
         assertTrue(v.action.contains("Keine aktuelle"))
-        assertTrue(v.limits.contains("unbekannt"))
+        assertTrue(v.insulin.netIob == "-")
     }
 
     @Test
@@ -120,6 +121,15 @@ class FuseDashboardModelTest {
         val v = FuseDashboardModel.build(outcome(), aps, now, null, ledger(), null)
         assertTrue(v.action.contains("0.20 U berechnet"))
         assertTrue(v.action.contains("0.15 U angefordert"))
+    }
+
+    @Test
+    fun `Regelsignal nennt Stoerung Anstiegsfenster Rampe und wirksamen Anteil`() {
+        val v = FuseDashboardModel.build(outcome(), null, now, null, ledger(), null)
+        assertTrue(v.controlSignal.contains("Störung r +1.000 mg/dl/min"))
+        assertTrue(v.controlSignal.contains("Anstiegsfenster"))
+        assertTrue(v.controlSignal.contains("Rampe 20 % (0.15 -> 0.35)"))
+        assertTrue(v.controlSignal.contains("SMB-Anteil 0.19"))
     }
 
     @Test
@@ -144,8 +154,22 @@ class FuseDashboardModelTest {
     fun `wirksame IOB Spielraeume ziehen offene Transportmenge ab`() {
         val v = FuseDashboardModel.build(outcome(), null, now, null, ledger(transport = 0.1), null)
         // cap=max(net 0.4, bolus 0.6); iobTH-Rest=2.0-0.6-0.1=1.3
-        assertTrue(v.limits.contains("iobTH 2.00 U (Rest 1.30 U)"))
-        assertTrue(v.limits.contains("maxIOB 4.00 U (Rest 3.30 U)"))
+        assertTrue(v.insulin.netIob == "0.40 U")
+        assertTrue(v.insulin.bolusIob == "0.60 U")
+        assertTrue(v.insulin.basalIob == "-0.20 U")
+        assertTrue(v.insulin.capIob == "0.60 U")
+        assertTrue(v.insulin.transport == "0.10 U")
+        assertTrue(v.insulin.iobTh == "2.00 U")
+        assertTrue(v.insulin.maxIob == "4.00 U")
+        assertTrue(v.insulin.headroom == "iobTH 1.30 U  |  maxIOB 3.30 U")
+    }
+
+    @Test
+    fun `gleiche Spielraeume werden nur einmal angezeigt`() {
+        val equalState = state().copy(iobThU = 4.0, maxIobU = 4.0)
+        val equalOutcome = outcome().copy(state = equalState)
+        val v = FuseDashboardModel.build(equalOutcome, null, now, null, ledger(transport = 0.1), null)
+        assertTrue(v.insulin.headroom == "3.30 U (beide Grenzen)")
     }
 
     @Test
