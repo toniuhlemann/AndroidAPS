@@ -322,6 +322,25 @@ object FuseStateJson {
                 .put("fastDriveAdjusted", fin(s.ukfRatePerMin + s.activityAtAnchor * s.isfAtAnchor))
                 .put("samplesUsed", s.samplesUsed)
                 .put("rawSeriesSize", s.rawSeriesSize)
+                // POST-GAP-TELEMETRIE (11.08.). Sechs Zahlen, die EINE Frage
+                // beantworten, die keine von ihnen allein beantwortet: war der
+                // erste Punkt nach einer Luecke fragwuerdig und wurde er kurz
+                // darauf stark revidiert?
+                //
+                // Am 10.08. stand nach 37 min Luecke eine 90 mit FRISCHEM
+                // Zeitstempel im Datensatz, drei Minuten spaeter 105 - FUSE las
+                // +4,21 mg/dl/min und gab 0,85 U in ein Nicht-Ereignis. Eine
+                // reine Ratenpruefung sieht das nicht: der erste Punkt hat
+                // (90-105)/35 = -0,43, voellig unauffaellig. Erst
+                // `postGapIndex` ZUSAMMEN mit `stepFromLastMgdl` zeigt es.
+                .put("gapBeforeMin", fin(s.gapBeforeMin))
+                .put("stepFromLastMgdl", fin(s.stepFromLastMgdl))
+                .put("stepRateActualMgdlPerMin", fin(s.stepRateActualMgdlPerMin))
+                .put("postGapIndex", s.postGapIndex)
+                // Alter des Rohwerts: trennt "der Wert ist alt" von "der Wert
+                // ist falsch". Aus computeTs - sourceTs, damit die Signalquelle
+                // ohne Uhr auskommt.
+                .put("sourceAgeMin", fin((outcome.computeTs - s.sourceTs) / 60_000.0))
                 .put("q1Outlier", s.q1Outlier)
                 .put("boundedBy", s.boundedBy.name)
                 .put("windowFromTs", s.windowFromTs)

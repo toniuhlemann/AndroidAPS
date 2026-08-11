@@ -258,7 +258,6 @@ class FusePlugin @Inject constructor(
         // ohne je eine Zeile gelesen zu haben. Ein `exists()` je Zyklus
         // kostet nichts gegen einen dauerhaft leeren Graphen.
         if (!f.exists()) return
-        graphRingWarmed = true
         runCatching {
             val cutoff = System.currentTimeMillis() - 25L * 3600_000L
             val pts = ArrayList<app.aaps.core.interfaces.overview.FuseOverviewSource.Point>()
@@ -312,6 +311,13 @@ class FusePlugin @Inject constructor(
             synchronized(markerPressRing) {
                 for (m in marks.sorted()) MarkerTimeline.add(markerPressRing, m)
             }
+            // ERST JETZT verbraucht (Sweep 11.08., zweiter Anlauf). Der erste
+            // Anlauf hat das Flag hinter `exists()` geschoben - das deckt die
+            // fehlende Datei ab, aber nicht die vorhandene, die gerade leer
+            // oder unlesbar ist. Dann blieb der Graph wieder bis zum Neustart
+            // ohne Linien. Das Flag gehoert ans ENDE eines geglueckten Laufs,
+            // nicht an den Anfang eines versuchten.
+            graphRingWarmed = true
         }
     }
 

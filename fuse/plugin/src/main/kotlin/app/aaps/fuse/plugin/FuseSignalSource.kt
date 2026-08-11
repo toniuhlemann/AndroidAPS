@@ -93,6 +93,44 @@ class FuseSignalSource(
         val activity: ActivityValidity,
         val samplesUsed: Int,
         val rawSeriesSize: Int,
+        /**
+         * POST-GAP-TELEMETRIE (11.08.) - sechs Zahlen, die zusammen eine
+         * Frage beantworten, die keine von ihnen allein beantwortet:
+         * "war der erste Punkt nach einer Luecke fragwuerdig, und wurde er
+         * kurz darauf stark revidiert?"
+         *
+         * ANLASS: am 10.08. stand nach einer 37-min-Luecke ein Wert von 90
+         * mit FRISCHEM Zeitstempel im Datensatz, drei Minuten spaeter 105.
+         * FUSE las daraus +4,21 mg/dl/min und gab 0,85 U in ein Ereignis,
+         * das es nicht gab.
+         *
+         * WARUM NICHT EINFACH EINE RATE: der erste Punkt nach der Luecke
+         * hat gar keine auffaellige Rate - (90-105)/35 min = -0,43. Der
+         * SPRUNG kommt drei Minuten spaeter, und dann ist die Luecke schon
+         * nicht mehr frisch. Wer nur Rate ODER Luecke misst, sieht den Fall
+         * nie. Es braucht den ABSTAND zur Luecke (postGapIndex) zusammen
+         * mit dem SCHRITT.
+         *
+         * KEINE REGEL, KEINE SCHWELLE. Tonis eigener Messwert steht dagegen:
+         * 4,85 mg/dl/min im Mahlzeitenkopf - ein Plausibilitaetszaun bei 5
+         * haette keinen Abstand. Ob daraus je etwas wird, entscheiden Daten.
+         */
+        /** Minuten zwischen dem vorletzten und dem letzten Rohwert. 0 = kein
+         *  Abstand messbar (nur ein Punkt). */
+        val gapBeforeMin: Double,
+        /** Absoluter Schritt zum Vorgaenger [mg/dl] - VORZEICHENBEHAFTET, weil
+         *  ein Ruecksprung nach oben etwas anderes ist als einer nach unten. */
+        val stepFromLastMgdl: Double,
+        /** Derselbe Schritt als Rate ueber den TATSAECHLICHEN Zeitabstand.
+         *  Bei einer Luecke ist das etwas ganz anderes als "pro Minute". */
+        val stepRateActualMgdlPerMin: Double,
+        /** Der wievielte Punkt seit dem letzten Segmentbruch. 1 = der erste
+         *  nach der Luecke, also der verdaechtige. */
+        val postGapIndex: Int,
+        // sourceAgeMin gibt es hier NICHT: die Signalquelle hat keine Uhr, und
+        // eine hineinzureichen waere eine Zeitquelle mehr im Kern. Das Alter
+        // rechnet der Export aus `computeTs - sourceTs` - beide stehen schon
+        // in jedem Datensatz.
         val q1Outlier: Boolean,
         /** Was den Reihenanfang gesetzt hat: NONE / SENSOR_CHANGE /
          *  CALIBRATION_START. Gehoert in den Export - ein q1 aus einem frisch
@@ -211,6 +249,21 @@ class FuseSignalSource(
         }
         if (samples.isEmpty()) return Outcome.Unavailable("no samples in window ($boundLabel)")
 
+        // POST-GAP-TELEMETRIE. Gerechnet auf der ROHREIHE (`series`), nicht
+        // auf den Samples: die Samples sind bereits auf das lueckenfreie
+        // Segment beschnitten, und genau der Punkt VOR dem Schnitt ist der,
+        // um den es geht.
+        val letzte = series.takeLast(2)
+        val gapBeforeMin =
+            if (letzte.size == 2) (letzte[1].tsMs - letzte[0].tsMs) / 60_000.0 else 0.0
+        val stepFromLastMgdl =
+            if (letzte.size == 2) letzte[1].value - letzte[0].value else 0.0
+        val stepRateActualMgdlPerMin =
+            if (gapBeforeMin > 0.0) stepFromLastMgdl / gapBeforeMin else 0.0
+        // Wie viele Punkte seit dem Segmentbeginn - 1 ist der erste nach der
+        // Luecke. `windowStart` ist genau die Bruchkante aus `segmentStart`.
+        val postGapIndex = series.count { it.tsMs >= windowStart }
+
         val adjusted = BgiAdjustedSeries.adjust(samples)
         val rSigned = BgiAdjustedSeries.theilSen(adjusted, sourceTs)
 
@@ -237,6 +290,10 @@ class FuseSignalSource(
                 activity = ActivityValidity.VALID,
                 samplesUsed = samples.size,
                 rawSeriesSize = series.size,
+                gapBeforeMin = gapBeforeMin,
+                stepFromLastMgdl = stepFromLastMgdl,
+                stepRateActualMgdlPerMin = stepRateActualMgdlPerMin,
+                postGapIndex = postGapIndex,
                 q1Outlier = leading.outlier,
                 boundedBy = bound,
                 windowFromTs = window.fromTs,

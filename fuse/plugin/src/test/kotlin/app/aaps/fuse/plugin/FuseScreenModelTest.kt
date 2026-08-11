@@ -94,7 +94,7 @@ class FuseScreenModelTest {
             sourceTs = 1_700_000_000_000L, rawBg = 132.0, q1 = 130.0, rSigned = rSigned,
             ukfRatePerMin = 1.1, ukfLearnedR = 2.2, rawSlopePerMin = 1.4, activityAtAnchor = 0.01, isfAtAnchor = 90.0,
             adjusted = emptyList(), activity = ActivityValidity.VALID,
-            samplesUsed = 19, rawSeriesSize = 200, q1Outlier = false,
+            samplesUsed = 19, rawSeriesSize = 200, gapBeforeMin = 1.0, stepFromLastMgdl = -1.0, stepRateActualMgdlPerMin = -1.0, postGapIndex = 18, q1Outlier = false,
             boundedBy = bound, windowFromTs = 1_699_988_120_000L,
         )
 
