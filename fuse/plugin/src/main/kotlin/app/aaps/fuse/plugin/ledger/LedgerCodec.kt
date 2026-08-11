@@ -362,6 +362,8 @@ object LedgerCodec {
     fun encodeEpisodes(e: EpisodeBudgets): JSONObject = JSONObject()
         .put("primeSpentU", e.primeSpentU)
         .put("primeWindowStartTs", e.primeWindowStartTs)
+        .put("evidenceCommittedU", e.evidenceCommittedU)
+        .put("evidenceEpisodeId", e.evidenceEpisodeId)
         .put("primeArmedTs", e.primeArmedTs)
         .put("onsetSpentU", e.onsetSpentU)
         .put("onsetQuietMin", e.onsetQuietMin)
@@ -380,6 +382,12 @@ object LedgerCodec {
         e.primeSpentU = requireAmount("primeSpentU", o.getDouble("primeSpentU"))
         // optional: aeltere Staende kennen das Feld nicht, 0 = "nie gesperrt".
         e.primeWindowStartTs = o.optLong("primeWindowStartTs", 0L).coerceAtLeast(0L)
+        // optional wie die anderen Nachzuegler: eine Altdatei liest sich als
+        // "nichts bezahlt, keine Episode". Das ist die konservative Richtung -
+        // ohne episodeId gibt es keinen Kredit (EvidenceStock.NO_EPISODE),
+        // und der Zaehler startet mit der naechsten Episode bei 0.
+        e.evidenceCommittedU = requireAmount("evidenceCommittedU", o.optDouble("evidenceCommittedU", 0.0))
+        e.evidenceEpisodeId = requireTs("evidenceEpisodeId", o.optLong("evidenceEpisodeId", 0L))
         e.primeArmedTs = requireTs("primeArmedTs", o.getLong("primeArmedTs"))
         e.onsetSpentU = requireAmount("onsetSpentU", o.getDouble("onsetSpentU"))
         e.onsetQuietMin = o.getInt("onsetQuietMin").also { require(it >= 0) { "negative onsetQuietMin $it" } }

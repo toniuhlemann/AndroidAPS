@@ -43,6 +43,7 @@ import app.aaps.fuse.core.predictor.ActualTrajectoryFactory
 import app.aaps.fuse.core.predictor.DriveDecayModel
 import app.aaps.fuse.core.controller.CandidateGate
 import app.aaps.fuse.core.controller.CandidateSearch
+import app.aaps.fuse.core.controller.EvidenceStock
 import app.aaps.fuse.core.controller.MarkerFallback
 import app.aaps.fuse.core.controller.MarkerFloor
 import app.aaps.fuse.core.controller.OnsetChannel
@@ -829,6 +830,25 @@ class FuseCycleRunner(
         val mealMarkerActive = markerTs > 0 &&
             computeTs - markerTs in 0..(OnsetChannel.MARKER_WINDOW_MIN * 60_000L)
 
+        // DIE EPISODEN-IDENTITAET fuer den Stoerungsbestand (Stufe 1).
+        //
+        // Bewusst ENG gefasst: nur ein Markerdruck eroeffnet eine Episode. Ein
+        // Anstieg ohne Ankuendigung bekommt vorerst keinen Bestand - ob er
+        // einen bekommen soll, ist eine eigene Entscheidung und nicht
+        // nebenbei zu treffen.
+        //
+        // LAENGER ALS `mealMarkerActive`: das Fenster der Sonderrechte endet
+        // nach 90 Minuten, die Episode darf bis zum harten Deckel laufen. Der
+        // gemessene Lauf vom 11.08. war nach 205 Minuten noch aktiv, mit einer
+        // zweiten Welle ab T+120 - endete die Identitaet bei 90, begaenne dort
+        // eine neue Episode mit frischem Deckel und frischem Zaehler.
+        //
+        // Es ist eine IDENTITAET, kein Zustand: der Wert bleibt derselbe,
+        // auch wenn dazwischen nichts passiert.
+        val evidenceEpisodeId = markerTs.takeIf {
+            it > 0L && computeTs - it in 0..(EvidenceStock.Config().maxEpisodeMin * 60_000L)
+        } ?: 0L
+
         // GAS-VOR-BREMSE NUR FUER ERKLAERTES WISSEN (08.08., Fruehstueckstest):
         // das Rebound-Fenster schuetzt vor dem Jagen UNANGEKUENDIGTER Hypo-
         // Gegenesser. Ein gedrueckter Marker IST die Ankuendigung - er
@@ -1108,7 +1128,8 @@ class FuseCycleRunner(
                 return abort("$warum | noFallback=${kernelReject ?: "KERNEL_UNAVAILABLE"}", signal, cfg, step)
             return markerFallbackCycle(
                 rejected, warum, signal, step, cfg, state, profile, pumpe, tempBasalFallback,
-                computeTs, markerTs, mealMarkerActive, measuredLow, isf, target, targetSource, iobTotal,
+                computeTs, markerTs, mealMarkerActive, measuredLow, evidenceEpisodeId,
+                isf, target, targetSource, iobTotal,
                 maxIobU, transportModelledU, ledgerView, episodes, onset, band,
                 built.discount, built.input.trajectory.model, sensorEpoch, calibrationEpoch, gate,
             )
@@ -1593,6 +1614,7 @@ class FuseCycleRunner(
         val actuatedU = if (gate.allowed) combined.decision.smbU else 0.0
         val mealGebucht = buche(
             episodes, actuatedU, primeWindowOpen, onset.active, mealMarkerActive, signal.sourceTs,
+            evidenceEpisodeId = evidenceEpisodeId,
         )
 
         // RESERVIERT, NICHT ENDGUELTIG (11.08.). Oben ist gegen das PUMPEN-Gate
@@ -1676,8 +1698,22 @@ class FuseCycleRunner(
         onsetActive: Boolean,
         mealMarkerActive: Boolean,
         sourceTs: Long,
+        /** Identitaet der laufenden Mahlzeitenepisode; 0 = keine. */
+        evidenceEpisodeId: Long,
     ): Boolean {
         if (primeWindowOpen) episodes.primeSpentU += actuatedU
+
+        // DER EVIDENZ-ZAEHLER: kumulativ ueber die GANZE Episode, alle
+        // Kanaele, und bei Episodenwechsel zurueck auf 0. Er ist die
+        // Bezahlseite des Stoerungsbestands - was hier fehlt, laesst dort
+        // Bestand stehen, der schon abgetragen ist.
+        if (evidenceEpisodeId > 0L) {
+            if (episodes.evidenceEpisodeId != evidenceEpisodeId) {
+                episodes.evidenceEpisodeId = evidenceEpisodeId
+                episodes.evidenceCommittedU = 0.0
+            }
+            episodes.evidenceCommittedU += actuatedU
+        }
 
         // Verbraucht wird nur, was der offene Kanal freigegeben hat; nach
         // REARM_QUIET_MIN geschlossenen Minuten wird die Huelle neu bewaffnet.
@@ -1751,6 +1787,8 @@ class FuseCycleRunner(
         /** Nur fuer die parallele Schutz-Null und den Grundtext. Die
          *  Autorisierung haengt NICHT daran. */
         measuredLow: Boolean,
+        /** Identitaet der Mahlzeitenepisode fuer den Evidenz-Zaehler; 0 = keine. */
+        evidenceEpisodeId: Long,
         isf: Double,
         target: Double,
         targetSource: String,
@@ -1851,6 +1889,7 @@ class FuseCycleRunner(
             computeTs - markerTs < PrimeRelease.WALL_CEILING_MIN * 60_000L
         val mealGebucht = buche(
             episodes, actuatedU, primeWindowOpen, onset.active, mealMarkerActive, signal.sourceTs,
+            evidenceEpisodeId = evidenceEpisodeId,
         )
         episodes.pendingReservation =
             if (actuatedU > 0.0) app.aaps.fuse.plugin.ledger.EpisodeBudgets.Reservation(

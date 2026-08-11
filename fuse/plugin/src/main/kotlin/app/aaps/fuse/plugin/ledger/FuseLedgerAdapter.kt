@@ -65,6 +65,30 @@ class EpisodeBudgets {
      * blinde Kopf der Mahlzeit, gegen den sie bemessen ist.
      */
     var primeWindowStartTs: Long = 0L
+
+    /**
+     * KUMULATIV in dieser Episode abgegebenes Insulin [U] - die Bezahlung
+     * des Stoerungsbestands (s. `EvidenceStock`).
+     *
+     * WARUM NICHT `mealDeliveries` summiert, was naheliegend waere: das
+     * sammelt nur, solange der MARKER laeuft (90 min). Eine Episode darf
+     * bis 240 min gehen, und der gemessene Lauf vom 11.08. war nach 205
+     * Minuten noch aktiv - ab Minute 90 waere die Bezahlung stillschweigend
+     * ausgefallen und der Bestand haette weiter lizenziert.
+     *
+     * ALLE Kanaele zahlen darauf ein: Prime, Onset, Rest-Zaehler und die
+     * gewoehnliche Korrektur wirken gegen DIESELBE Stoerung. Keine
+     * Doppelanrechnung - die Huellen begrenzen, WIEVIEL ein Kanal geben
+     * darf, dieser Zaehler misst, WIEVIEL Stoerung schon bezahlt ist.
+     *
+     * Wird wie [primeSpentU] bei einem Gate-Reject zurueckgedreht
+     * ([resolveReservation]) und bei einer neuen Episode auf 0 gesetzt.
+     */
+    var evidenceCommittedU: Double = 0.0
+
+    /** Identitaet der Episode, zu der [evidenceCommittedU] gehoert -
+     *  der Markerzeitpunkt bzw. der Beginn der erkannten Mahlzeit. */
+    var evidenceEpisodeId: Long = 0L
     val mealDeliveries: ArrayDeque<Pair<Long, Double>> = ArrayDeque()
 
     /**
@@ -955,6 +979,12 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
 
         if (r.prime) episodes.primeSpentU = (episodes.primeSpentU - frei).coerceAtLeast(0.0)
         if (r.onset) episodes.onsetSpentU = (episodes.onsetSpentU - frei).coerceAtLeast(0.0)
+        // Der Evidenz-Zaehler wird IMMER zurueckgedreht, ohne Kanal-Bedingung:
+        // er zaehlt jede Abgabe der Episode, also muss er auch jede
+        // abgelehnte zurueckgeben. Bliebe sie stehen, waere der
+        // Stoerungsbestand dauerhaft zu klein - eine nie geflossene Dosis
+        // gaelte als bezahlt.
+        episodes.evidenceCommittedU = (episodes.evidenceCommittedU - frei).coerceAtLeast(0.0)
         if (r.mealTs > 0L) {
             // Den EIGENEN Eintrag zurueckdrehen, nicht den letzten: zwei
             // Zyklen koennen denselben sourceTs tragen, wenn ein Punkt

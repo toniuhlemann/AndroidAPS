@@ -131,4 +131,80 @@ class EpisodeReservationTest {
         a.resolveReservation(ts, publishedU = 0.0)
         assertEquals(0.0, a.episodes.primeSpentU, 1e-12)
     }
+
+    // ---- Der Evidenz-Zaehler (Stufe 1 der Verdrahtung) --------------------
+
+    /**
+     * EINE ABGELEHNTE ABGABE GILT NICHT ALS BEZAHLT.
+     *
+     * Der Evidenz-Zaehler ist die Bezahlseite des Stoerungsbestands. Bliebe er
+     * nach einem Publikations-Reject stehen, waere der Bestand dauerhaft zu
+     * klein - eine nie geflossene Dosis gaelte als Abtrag, und der Empfaenger
+     * wuerde genau um diesen Betrag zu wenig freigeben. Die Fehlerrichtung ist
+     * hier also NICHT die konservative: sie kostet Insulin, das gebraucht wird.
+     */
+    @Test
+    fun `ein Publikations-Reject gibt den Evidenz-Zaehler zurueck`() {
+        val a = adapterMitReservierung()
+        a.episodes.evidenceEpisodeId = ts
+        a.episodes.evidenceCommittedU = 0.30
+
+        a.resolveReservation(ts, publishedU = 0.0)
+
+        assertEquals(0.0, a.episodes.evidenceCommittedU, 1e-9)
+    }
+
+    /** Eine TEILweise publizierte Menge gibt auch nur den Rest zurueck. */
+    @Test
+    fun `eine Teilpublikation gibt nur den Rest zurueck`() {
+        val a = adapterMitReservierung(menge = 0.30)
+        a.episodes.evidenceEpisodeId = ts
+        a.episodes.evidenceCommittedU = 0.30
+
+        a.resolveReservation(ts, publishedU = 0.20)
+
+        assertEquals(0.20, a.episodes.evidenceCommittedU, 1e-9)
+    }
+
+    /** Und eine vollstaendig publizierte Menge bleibt bezahlt - sonst waere
+     *  die Zusicherung oben nur "es wird immer zurueckgegeben". */
+    @Test
+    fun `eine vollstaendige Publikation bleibt gebucht`() {
+        val a = adapterMitReservierung(menge = 0.30)
+        a.episodes.evidenceEpisodeId = ts
+        a.episodes.evidenceCommittedU = 0.30
+
+        a.resolveReservation(ts, publishedU = 0.30)
+
+        assertEquals(0.30, a.episodes.evidenceCommittedU, 1e-9)
+    }
+
+    /**
+     * DER ZAEHLER HAENGT AN KEINEM KANAL. Prime und Onset werden nur
+     * zurueckgedreht, wenn die Reservierung sie trug - der Evidenz-Zaehler
+     * IMMER, weil er jede Abgabe der Episode zaehlt.
+     */
+    @Test
+    fun `der Evidenz-Zaehler wird auch ohne Kanal-Flags zurueckgedreht`() {
+        val a = adapterMitReservierung(prime = false, onset = false, meal = false, menge = 0.15)
+        a.episodes.evidenceEpisodeId = ts
+        a.episodes.evidenceCommittedU = 0.15
+
+        a.resolveReservation(ts, publishedU = 0.0)
+
+        assertEquals(0.0, a.episodes.evidenceCommittedU, 1e-9)
+    }
+
+    /** Er wird nie negativ - eine doppelte Aufloesung darf keinen Kredit
+     *  erzeugen. */
+    @Test
+    fun `der Evidenz-Zaehler wird nicht negativ`() {
+        val a = adapterMitReservierung(menge = 0.30)
+        a.episodes.evidenceEpisodeId = ts
+        a.episodes.evidenceCommittedU = 0.10
+
+        a.resolveReservation(ts, publishedU = 0.0)
+
+        assertEquals(0.0, a.episodes.evidenceCommittedU, 1e-9)
+    }
 }

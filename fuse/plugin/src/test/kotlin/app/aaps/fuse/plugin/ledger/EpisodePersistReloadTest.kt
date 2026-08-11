@@ -127,4 +127,37 @@ class EpisodePersistReloadTest {
         val b = frischerAdapter(dir, "s2")
         assertEquals(0.30, b.episodes.primeSpentU, 1e-12)
     }
+
+    /**
+     * DER EVIDENZ-ZAEHLER UEBERLEBT DEN NEUSTART - mit seiner Episode.
+     *
+     * Ohne Persistenz waere er nach jedem Prozessstart 0, und der
+     * Stoerungsbestand haette bezahlte Stoerung erneut zu finanzieren. Das ist
+     * die teure Fehlerrichtung: sie erzeugt Insulin, nicht Zurueckhaltung.
+     */
+    @Test
+    fun `Evidenz-Zaehler und Episode ueberleben einen Neustart`() {
+        val e = EpisodeBudgets()
+        e.evidenceEpisodeId = 1_786_000_000_000L
+        e.evidenceCommittedU = 1.25
+
+        val zurueck = LedgerCodec.decodeEpisodes(LedgerCodec.encodeEpisodes(e))
+
+        assertEquals(1_786_000_000_000L, zurueck.evidenceEpisodeId)
+        assertEquals(1.25, zurueck.evidenceCommittedU, 1e-9)
+    }
+
+    /** Eine Altdatei ohne die Felder liest sich als "nichts bezahlt, keine
+     *  Episode" - und ohne Episode gibt es keinen Kredit. */
+    @Test
+    fun `eine Altdatei ohne Evidenzfelder liest sich als keine Episode`() {
+        val o = LedgerCodec.encodeEpisodes(EpisodeBudgets())
+        o.remove("evidenceCommittedU")
+        o.remove("evidenceEpisodeId")
+
+        val zurueck = LedgerCodec.decodeEpisodes(o)
+
+        assertEquals(0L, zurueck.evidenceEpisodeId)
+        assertEquals(0.0, zurueck.evidenceCommittedU, 1e-9)
+    }
 }
