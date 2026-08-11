@@ -970,7 +970,16 @@ class TransportWiringTest : TestBaseWithProfile() {
             o.decision.smbU <= o.decision.markerLowAuthorizedU + 1e-9,
             "es darf nur der autorisierte Anteil durchkommen: ${o.decision.smbU}",
         )
-        assertEquals("primeRelease", o.decision.bindingLimit, "die Menge kommt aus der Marker-Huelle")
+        // DIE HERKUNFT, und sie hat ZWEI zulaessige Formen. Ohne Widerspruch
+        // des Modells steht dort `primeRelease`. Widerspricht das Modell und
+        // die Autorisierung traegt sie trotzdem, steht dort
+        // `markerAuth|finalVerify:GUARD_FLOOR` - und das ist kein Makel,
+        // sondern die ehrlichere Zeile: sie sagt, WAS ueberstimmt wurde.
+        assertTrue(
+            o.decision.bindingLimit == "primeRelease" ||
+                o.decision.bindingLimit.startsWith("markerAuth|"),
+            "die Menge muss als markerfinanziert erkennbar sein: ${o.decision.bindingLimit}",
+        )
 
         // (3) DER SCHUTZ BLEIBT. Es wird nicht "LOW abgeschaltet" - die
         // Basalabsenkung laeuft parallel weiter, und der Grund sagt genau das.
@@ -1002,16 +1011,26 @@ class TransportWiringTest : TestBaseWithProfile() {
     }
 
     /**
-     * DER SCHWANZ-WAECHTER IST EINE EIGENE GRENZE und bleibt zu.
+     * DER SCHWANZ-WAECHTER NULLT DEN AUTORISIERTEN ANTEIL NICHT MEHR.
      *
-     * Tonis Entscheidung autorisiert Insulin gegen den TIEFSCHUTZ. Die
-     * Schwanzhaftung ueber H ist etwas anderes - sie fragt, ob die Menge in
-     * zwei Stunden noch getragen wird - und sie war nie Gegenstand der
-     * Freigabe. Dieser Test haelt fest, dass sie unabhaengig weiterwirkt: der
-     * einzige Unterschied zum Test oben ist der eingeschaltete Waechter.
+     * DIESER TEST STAND EINEN COMMIT LANG ANDERSHERUM, und der Grund, warum
+     * er sich gedreht hat, ist eine Entscheidung und kein Fehlerfund: er
+     * hielt fest, dass der Schwanz-Headroom bei BG 62 die autorisierte Menge
+     * unabhaengig nullt. Das war GEMESSEN richtig - aber es hiess, dass die
+     * Einstellung an einem tiefen Punkt weiterhin nichts bewirkt, also genau
+     * dort nicht, wo sie gebraucht wird.
+     *
+     * Tonis Vertrag vom 11.08. zieht die Linie anders: die Schwanzhaftung ist
+     * eine MODELLANNAHME (eine Prognose ueber H), und modellbasierte Annahmen
+     * duerfen den markerfinanzierten Anteil nicht nachtraeglich auf null
+     * setzen. Sie duerfen ihn weiterhin DECKELN, wenn mehr verlangt wird -
+     * nur nicht unter die Autorisierungsgrenze druecken.
+     *
+     * Der einzige Unterschied zum Test darueber ist der eingeschaltete
+     * Waechter; die erwartete Menge ist jetzt dieselbe.
      */
     @Test
-    fun `der Schwanz-Waechter nullt die autorisierte Menge unabhaengig`() {
+    fun `der Schwanz-Waechter nullt den autorisierten Anteil nicht mehr`() {
         tailGuard = true
         flach = 62.0
         steigungProMin = 0.0
@@ -1019,18 +1038,42 @@ class TransportWiringTest : TestBaseWithProfile() {
         markerAuthorisesLow = true
 
         clock = start
-        var sahHold = false
-        repeat(12) { i ->
-            val o = cycle()
-            if (o.state?.safetyHold == true) sahHold = true
-            assertEquals(
-                0.0, o.decision.smbU, 1e-9,
-                "der Schwanz-Headroom bleibt bindend, auch mit Autorisierung (Zyklus $i)",
-            )
-        }
-        assertTrue(sahHold, "der Aufbau muss dieselbe Tieflage erzeugen wie oben, sonst prueft er nichts")
+        var frei: FuseCycleRunner.Outcome? = null
+        repeat(12) { if (frei == null) cycle().let { o -> if (o.decision.smbU > 0.0) frei = o } }
+        val o = frei ?: throw AssertionError("der Schwanz nullt den autorisierten Anteil immer noch")
+
+        assertTrue(o.state?.safetyHold == true, "der Aufbau muss dieselbe Tieflage erzeugen wie oben")
+        assertTrue(o.decision.markerLowAuthorizedU > 0.0, "ohne Autorisierung prueft das nichts")
+        // UND NICHT MEHR ALS DAS. Der Boden hebt auf die Grenze, nicht darueber -
+        // sonst waere aus einem Boden ein Freibrief geworden.
+        assertEquals(
+            o.decision.markerLowAuthorizedU, o.decision.smbU, 1e-9,
+            "genau der autorisierte Anteil, kein Zuschlag",
+        )
+        assertEquals(FuseController.TbrAction.ZERO_TEMP, o.decision.tbr, "der Schutz laeuft weiter")
     }
 
+    /**
+     * UND OHNE AUTORISIERUNG BLEIBT DER SCHWANZ BINDEND. Ohne diesen Fall
+     * koennte der Test darueber auch dann gruen sein, wenn der Waechter
+     * ueberhaupt nicht mehr wirkt.
+     */
+    @Test
+    fun `ohne Autorisierung bleibt der Schwanz-Waechter bindend`() {
+        tailGuard = true
+        flach = 62.0
+        steigungProMin = 0.0
+        markerAt = start + 2 * 60_000L
+        markerAuthorisesLow = false
+
+        clock = start
+        repeat(12) { i ->
+            assertEquals(
+                0.0, cycle().decision.smbU, 1e-9,
+                "ohne Autorisierung nullt der Schwanz weiterhin (Zyklus $i)",
+            )
+        }
+    }
     /**
      * JEDER ANDERE BLOCKGRUND NULLT WEITERHIN - im echten Zyklus, in genau der
      * Lage, die eben noch freigegeben hat.

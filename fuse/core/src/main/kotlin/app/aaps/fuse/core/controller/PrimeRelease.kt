@@ -25,12 +25,33 @@ import kotlin.math.min
  * Freigabe").
  *
  * WAS SIE NICHT DARF, und zwar strukturell statt per Disziplin:
- *  - Sie HEBT nur eine Entscheidung an, deren einzige Schwaeche fehlender
- *    BEDARF war ([FuseController.Block.NONE], NO_DEMAND, BELOW_PUMP_INCREMENT).
- *    Jede echte Sperre - GUARD_FLOOR, TAIL, IOB_TH, MAX_IOB, HEALTH, SAFETY,
- *    PUMP_BUSY, HORIZON_MISSING - gewinnt unveraendert.
+ *  - OHNE ausdrueckliche manuelle Autorisierung hebt sie nur eine
+ *    Entscheidung an, deren einzige Schwaeche fehlender BEDARF war
+ *    ([FuseController.Block.NONE], NO_DEMAND, BELOW_PUMP_INCREMENT). Jede
+ *    echte Sperre gewinnt dann unveraendert.
  *  - Sie respektiert dieselben Mengen-Deckel wie jede andere Freigabe
  *    (maxSmb, iobTH-Spielraum, maxIOB-Spielraum).
+ *
+ * WAS SICH AM 11.08. GEAENDERT HAT, und der Absatz oben behauptete bis dahin
+ * das Gegenteil: mit eingeschalteter Einstellung `MarkerAuthorisesLow` ist der
+ * Knopfdruck eine AUSDRUECKLICHE MANUELLE INSULIN-AUTORISIERUNG. Tonis
+ * Entscheidung dazu ist eindeutig - modellbasierte Annahmen duerfen den
+ * markerfinanzierten Anteil dann nicht nachtraeglich wieder auf null setzen:
+ *
+ *   AUTORISIERT UEBERSTIMMBAR (Modell/Prognose):
+ *     LOW / SAFETY_HOLD, GUARD_FLOOR, CLEARANCE, TAIL
+ *   BLEIBT ZWINGEND GESCHLOSSEN (Wirklichkeit, nicht Modell):
+ *     PUMP_BUSY und jeder Transportfehler, NO_INPUT, HEALTH_NOT_READY,
+ *     fehlender Safety-Snapshot, FAKE_EXTENDED, LEDGER_HOLD,
+ *     und ALLE absoluten Mengengrenzen (maxSmb, iobTH, maxIOB, Restbudget,
+ *     Pumpenschritt)
+ *
+ * Die Trennlinie ist nicht "gefaehrlich vs. harmlos", sondern "wer weiss es
+ * besser": bei unsichtbaren Kohlenhydraten weiss der Mensch, dass gleich
+ * etwas kommt, und das Modell weiss es nicht. Bei einer belegten Pumpe oder
+ * einem fehlenden Messwert weiss der Mensch NICHTS Zusaetzliches - dort
+ * bleibt die Sperre. Die schuetzende Basalabsenkung laeuft in beiden Faellen
+ * unveraendert weiter; ueberstimmt wird die Mengensperre, nicht der Schutz.
  *  - CLEARANCE-Gate: die Guardbahn muss den Boden um die 60-min-Wirkung der
  *    RESTLICHEN Huelle ueberragen (Anteil [CLEARANCE_60MIN_FRACTION] bei
  *    DIA 9). Das ist die ehrliche Ersatzpruefung, solange CandidateSearch
@@ -280,7 +301,21 @@ object PrimeRelease {
                 state.iobThU - state.capIobU - transportCommitmentU,
             ),
         )
-        tailHeadroomU?.let { caps = min(caps, it) }
+        // DER SCHWANZ IST EINE MODELLANNAHME, und ab hier trennen sich die
+        // beiden Faelle (Tonis Vertrag 11.08.):
+        //
+        // OHNE Autorisierung kappt er wie bisher. MIT Autorisierung nicht -
+        // und das ist keine Feinheit, sondern der Unterschied zwischen
+        // wirksam und wirkungslos: GEMESSEN am 11.08. ist der
+        // Schwanz-Headroom bei BG 62 <= 0, der Lift faellt damit auf 0,
+        // und weil der Lift die Autorisierungsgrenze ERZEUGT, gibt es dann
+        // auch weiter unten nichts mehr zu schuetzen. Der Boden im Runner
+        // kann diese Stelle nicht heilen, sie liegt VOR ihm.
+        //
+        // Die Huellen-Restmenge, maxSmb, iobTH, maxIOB und die
+        // Onset-Huelle bleiben unveraendert bindend - das sind
+        // Mengengrenzen, keine Prognosen.
+        if (!markerAuthorisesLow) tailHeadroomU?.let { caps = min(caps, it) }
         onsetCapU?.let { caps = min(caps, it) }
         val stepped = floor(min(p.floorU, caps) / state.pumpIncrementU + TICK_EPS) * state.pumpIncrementU
         if (stepped < state.pumpIncrementU || stepped <= base.smbU) return base

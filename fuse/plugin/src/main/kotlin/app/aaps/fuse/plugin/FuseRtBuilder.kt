@@ -94,8 +94,12 @@ object FuseRtBuilder {
         // war am Geraet nicht zu unterscheiden, ob der Schalter gar nicht
         // gegriffen hat oder ob eine spaetere Grenze die Menge genommen hat -
         // genau diese Verwechslung hat die Fehlersuche zwei Anlaeufe gekostet.
+        //
+        // authCap, NICHT auth: das ist die AUTORISIERUNGSGRENZE, keine abgegebene
+        // Menge. Was wirklich hinausgeht, steht in SMB= - und die beiden koennen
+        // auseinanderfallen, solange noch ein Veto dazwischenliegt.
         if (decision.markerLowAuthorizedU > 0.0)
-            reason.append(" auth=").append(f3(decision.markerLowAuthorizedU))
+            reason.append(" authCap=").append(f3(decision.markerLowAuthorizedU))
         if (decision.smbU > 0.0) reason.append(" | SMB=").append(fmt(decision.smbU))
         tbr?.let { reason.append(" | TBR=").append(fmt(it.rateUPerH)).append("U/h/").append(it.durationMin).append("min") }
 

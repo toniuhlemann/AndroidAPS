@@ -181,6 +181,51 @@ class MarkerAuthorisesLowTest {
     }
 
     /**
+     * DER SCHWANZ-HEADROOM KAPPT DEN AUTORISIERTEN LIFT NICHT MEHR.
+     *
+     * Diese Stelle liegt VOR allem anderen, und deshalb hilft kein Boden
+     * weiter unten: der Lift ERZEUGT die Autorisierungsgrenze. Kappt der
+     * Schwanz ihn hier auf 0, gibt es weiter unten nichts mehr zu schuetzen.
+     * Gemessen am 11.08. ist der Schwanz-Headroom bei BG 62 genau das: <= 0.
+     */
+    @Test
+    fun `der Schwanz-Headroom kappt den autorisierten Anteil nicht`() {
+        val p = planImTief(markerAuthorisesLow = true)
+        val d = PrimeRelease.lift(
+            blockiert(FuseController.Block.SAFETY_HOLD), p, state(),
+            markerAuthorisesLow = true,
+            tailHeadroomU = -5.0,          // der Schwanz sagt: gar nichts
+        )
+        assertTrue(d.smbU > 0.0, "eine Modellannahme darf den autorisierten Anteil nicht nullen")
+        assertEquals(d.smbU, d.markerLowAuthorizedU, 1e-9)
+    }
+
+    /** OHNE Autorisierung kappt derselbe Headroom wie bisher. */
+    @Test
+    fun `ohne Autorisierung kappt der Schwanz-Headroom weiterhin`() {
+        val p = planImTief(markerAuthorisesLow = false, markerActive = true)
+        // Ein Plan, der ohne die Autorisierung steht: hoher BG, kein Tief.
+        val offen = PrimeRelease.plan(
+            PrimeRelease.Input(
+                enabled = true, mealMarkerActive = true,
+                armedTsMs = 1_000_000L, windowStartTsMs = 0L,
+                nowMs = 1_000_000L + 3 * 60_000L,
+                envelopeU = 1.2, spentU = 0.0,
+                safetyMinLowerMgdl = 160.0, guardFloorMgdl = 70.0,
+                isfMgdlPerU = 55.0, pumpIncrementU = step,
+                markerAuthorisesLow = false,
+            )
+        )
+        assertTrue(offen.active, "der Aufbau braucht einen stehenden Plan: ${offen.reason}")
+        assertTrue(!p.active, "und im Tief steht ohne Autorisierung keiner")
+        val d = PrimeRelease.lift(
+            blockiert(FuseController.Block.NONE), offen, state(),
+            tailHeadroomU = -5.0,
+        )
+        assertEquals(0.0, d.smbU, 1e-9, "ohne Autorisierung bleibt der Schwanz bindend")
+    }
+
+    /**
      * DIE HARTEN MENGENDECKEL BLEIBEN. maxIOB und iobTH kappen den Lift auch
      * im autorisierten Fall - sie sind keine Tiefschutz-Tore.
      */

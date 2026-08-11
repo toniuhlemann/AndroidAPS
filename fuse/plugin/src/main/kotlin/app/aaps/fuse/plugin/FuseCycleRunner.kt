@@ -1163,17 +1163,6 @@ class FuseCycleRunner(
             mealMarkerActive &&
             step.safetyReasons == setOf(SafetyReason.LOW)
 
-        // DER GUARD-RIEGEL entfaellt nur bei ERFUELLTEM Punkt 4, und der ist
-        // hier der wichtigste: ohne ihn wuerde der Riegel unten in JEDEM
-        // Zyklus mit aktivem Marker und Tief entfallen - auch fuer eine ganz
-        // normale Korrekturdosis. Bei SAFETY_HOLD/GUARD_FLOOR ist die
-        // Basisdosis dagegen 0, also ist alles, was danach herauskommt, der
-        // Lift aus der Marker-Huelle und nichts sonst.
-        val lowOverrideActive = lowMeasuredAuthorized &&
-            baseDecision.block in setOf(
-                FuseController.Block.SAFETY_HOLD,
-                FuseController.Block.GUARD_FLOOR,
-            )
 
         // DER HERKUNFTS-STEMPEL haengt dagegen NICHT am Basisblock, und genau
         // daran ist die Einstellung am 11.08. gescheitert. Gemessen am Geraet:
@@ -1272,13 +1261,14 @@ class FuseCycleRunner(
         // muss der Schwanz MIT dieser Menge tragen.
         fun finalVeto(u: Double): String? {
             if (kernelFinal == null) return CandidateSearch.Reject.MODEL_HORIZON_TOO_SHORT.name
-            // Der Guard-Riegel entfaellt NUR, wenn der Marker das Tief
-            // ausdruecklich autorisiert - und dann ist die Menge per
-            // Konstruktion der markerfinanzierte Lift, weil die Basis bei
-            // SAFETY_HOLD/GUARD_FLOOR 0 war. Das VIERTE Tor: ohne diese
-            // Zeile waere alles darueber wirkungslos, denn hier kommt keine
-            // positive Menge vorbei.
-            if (!lowOverrideActive) CandidateSearch.verifyGuardFloor(
+            // KEIN SONDERZWEIG MEHR FUER DEN MARKER (11.08.). Der Riegel
+            // prueft jede Menge, auch die autorisierte - geschuetzt wird
+            // sie erst danach, durch den BODEN unten. Der Unterschied ist
+            // nicht kosmetisch: der frueher hier stehende Sonderzweig hob
+            // den Riegel fuer die GANZE Menge auf, also auch fuer den
+            // Teil, der ueber die Autorisierung hinausgeht (Rest-Zaehler).
+            // Autorisiert ist aber nur, was der Marker finanziert hat.
+            CandidateSearch.verifyGuardFloor(
                 prediction, kernelFinal, built.input.isfSlots, candidateBand, u, restraint = restraint,
             )?.let { return it.name }
             tailWith(u)?.takeIf { it.usable && it.headroomU < -TAIL_VETO_EPS_U }?.let { return TAIL_VETO }
@@ -1382,11 +1372,37 @@ class FuseCycleRunner(
                 }
             }
         }
+        // DER BODEN DER MANUELLEN AUTORISIERUNG (Tonis Vertrag 11.08.).
+        //
+        // Modellbasierte Vetos duerfen den markerfinanzierten Anteil senken,
+        // aber nicht unter ihn fallen. Als BODEN und nicht als weitere
+        // uebersprungene Pruefung, und das aus einem gemessenen Grund: bei
+        // uebersprungenen Pruefungen musste jede einzelne Stelle die
+        // Ausnahme kennen - vier Tore waren so geoeffnet und ein fuenftes
+        // nullte die Menge trotzdem. Ein Boden am Ende der Modellkette
+        // kennt keine Stelle, die ihn vergessen koennte.
+        //
+        // WARUM ER NICHTS ERFINDEN KANN: `lifted.smbU` IST
+        // `markerLowAuthorizedU` (beide sind `stepped` aus PrimeRelease.lift),
+        // und diese Menge hat maxSmb, iobTH, maxIOB, Onset- und
+        // Prime-Huelle sowie die Pumpenschritt-Rasterung bereits passiert.
+        // Der Boden stellt also nur wieder her, was das Modell genommen hat.
+        //
+        // WAS ER AUSDRUECKLICH NICHT AUFHEBT: der Ledger-Hold kommt
+        // unmittelbar danach, das Pumpen-Gate spaeter, und der Translator
+        // laesst ihn nur bei SAFETY_ZERO durch. Ein Transportfehler nullt
+        // weiterhin.
+        val authCapU = lifted.markerLowAuthorizedU
+        val autorisiert =
+            if (authCapU > 0.0 && verifiedLift.smbU < authCapU)
+                lifted.copy(bindingLimit = "markerAuth|" + verifiedLift.bindingLimit)
+            else verifiedLift
+
         // HART NACH dem Lift (Audit R95, Fix 3): Ratio-Pfad (Kernel-Ausfall)
         // und Sofort-Freigabe laufen am LEDGER_HOLD-Reject der Suche vorbei -
         // ohne diesen Riegel waere der Hold genau ueber die Pfade umgehbar,
         // die ohne Wirkungspruefung dosieren.
-        val held = LedgerHoldGate.apply(verifiedLift, ledgerView.hold)
+        val held = LedgerHoldGate.apply(autorisiert, ledgerView.hold)
         // C4c: Anzeige, Export und RT-Grund bekommen den FINALEN Schwanzbericht -
         // den mit der Menge, die wirklich hinausgeht. Auch eine beschlossene
         // NULL ist eine Entscheidung und kein fehlender Term; erst damit steht
