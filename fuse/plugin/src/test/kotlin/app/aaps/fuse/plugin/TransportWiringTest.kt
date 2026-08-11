@@ -28,6 +28,7 @@ import app.aaps.fuse.core.controller.FuseController
 import app.aaps.fuse.core.predictor.PredictorReason
 import app.aaps.fuse.core.predictor.PredictorOutcome
 import app.aaps.fuse.core.predictor.TrajectoryCore
+import app.aaps.fuse.core.controller.EvidenceStock
 import app.aaps.fuse.core.controller.OnsetChannel
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertTrue
@@ -1565,5 +1566,75 @@ class TransportWiringTest : TestBaseWithProfile() {
         }
         clock = start
         repeat(12) { assertEquals(0.0, cycle().decision.smbU, 1e-9, "FAKE_EXTENDED: nichts geht hinaus") }
+    }
+
+    // ---- Die Episoden-Identitaet des Evidenz-Zaehlers ----------------------
+
+    /**
+     * RUECKNAHME UND ERNEUTES DRUECKEN ERZEUGEN KEINE NEUE EPISODE.
+     *
+     * Die Ruecknahme beendet die Marker-AUTORISIERUNG, nicht die Episode.
+     * Haenge die Identitaet am aktuellen `markerTs`, saehe der zweite Druck wie
+     * eine neue Mahlzeit aus - mit Zaehler 0, und dieselbe Stoerung waere ein
+     * zweites Mal unbezahlt. Genau die Doppelfinanzierung, gegen die die
+     * Episodenbudgets existieren.
+     */
+    @Test
+    fun `Ruecknahme und erneutes Druecken erhalten Episode und Zaehler`(@TempDir dir: File) {
+        tailGuard = false
+        flach = 62.0
+        steigungProMin = 0.0
+        markerAuthorized = true
+
+        val l = FuseLedgerAdapter().also { it.loadOnce(dir.also(File::mkdirs), "test-epoch", start) }
+        neuerRunner(l)
+
+        markerAt = start + 2 * 60_000L
+        clock = start
+        repeat(8) { cycle() }
+        val anker = l.episodes.evidenceEpisodeId
+        val bezahlt = l.episodes.evidenceCommittedU
+        assertTrue(anker > 0L, "die Episode muss stehen")
+        assertTrue(bezahlt > 0.0, "es muss etwas gebucht sein: $bezahlt")
+
+        // Ruecknahme, ein paar Zyklen, dann NEU druecken.
+        markerAt = 0L
+        repeat(3) { cycle() }
+        markerAt = clock + 60_000L
+        repeat(3) { cycle() }
+
+        assertEquals(anker, l.episodes.evidenceEpisodeId, "derselbe Anker")
+        assertTrue(
+            l.episodes.evidenceCommittedU >= bezahlt - 1e-9,
+            "der Zaehler darf nicht zurueckgesetzt werden: $bezahlt -> ${l.episodes.evidenceCommittedU}",
+        )
+    }
+
+    /** UND NACH DEM DECKEL beginnt wirklich eine neue Episode - sonst waere
+     *  die Zusicherung oben nur "es gibt nie eine neue". */
+    @Test
+    fun `nach dem Episodendeckel beginnt eine neue Episode`(@TempDir dir: File) {
+        tailGuard = false
+        flach = 62.0
+        steigungProMin = 0.0
+        markerAuthorized = true
+
+        val l = FuseLedgerAdapter().also { it.loadOnce(dir.also(File::mkdirs), "test-epoch", start) }
+        neuerRunner(l)
+
+        markerAt = start + 2 * 60_000L
+        clock = start
+        repeat(8) { cycle() }
+        val anker = l.episodes.evidenceEpisodeId
+
+        // Weit hinter den harten Deckel springen und neu druecken.
+        clock += (EvidenceStock.Config().maxEpisodeMin + 10) * 60_000L
+        markerAt = clock + 60_000L
+        repeat(3) { cycle() }
+
+        assertTrue(
+            l.episodes.evidenceEpisodeId != anker,
+            "nach dem Deckel muss eine neue Episode beginnen",
+        )
     }
 }

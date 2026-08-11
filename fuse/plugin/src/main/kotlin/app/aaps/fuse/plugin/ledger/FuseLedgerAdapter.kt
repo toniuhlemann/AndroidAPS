@@ -86,8 +86,21 @@ class EpisodeBudgets {
      */
     var evidenceCommittedU: Double = 0.0
 
-    /** Identitaet der Episode, zu der [evidenceCommittedU] gehoert -
-     *  der Markerzeitpunkt bzw. der Beginn der erkannten Mahlzeit. */
+    /**
+     * Identitaet der Episode, zu der [evidenceCommittedU] gehoert - der
+     * ERSTE Markerdruck dieser Episode.
+     *
+     * DER ANKER LIEGT HIER UND NICHT IM JEWEILS AKTUELLEN MARKER, und das
+     * ist der Unterschied zwischen Buchfuehrung und Doppelfinanzierung:
+     * eine Ruecknahme beendet die Marker-AUTORISIERUNG, nicht die Episode.
+     * Wuerde die Identitaet am aktuellen `markerTs` haengen, erzeugte
+     * Ruecknahme plus erneutes Druecken still eine neue Episode mit
+     * Zaehler 0 - dieselbe Stoerung waere ein zweites Mal unbezahlt.
+     *
+     * Eine NEUE Episode beginnt erst, wenn diese eindeutig zu Ende ist:
+     * nach dem harten Deckel. Bis dahin erbt jeder weitere Druck den
+     * bestehenden Anker und den bestehenden Zaehler.
+     */
     var evidenceEpisodeId: Long = 0L
     val mealDeliveries: ArrayDeque<Pair<Long, Double>> = ArrayDeque()
 
@@ -981,9 +994,14 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
         if (r.onset) episodes.onsetSpentU = (episodes.onsetSpentU - frei).coerceAtLeast(0.0)
         // Der Evidenz-Zaehler wird IMMER zurueckgedreht, ohne Kanal-Bedingung:
         // er zaehlt jede Abgabe der Episode, also muss er auch jede
-        // abgelehnte zurueckgeben. Bliebe sie stehen, waere der
-        // Stoerungsbestand dauerhaft zu klein - eine nie geflossene Dosis
-        // gaelte als bezahlt.
+        // abgelehnte zurueckgeben.
+        //
+        // ZWEI BEGRIFFE, DIE NICHT DASSELBE SIND: bliebe eine nie geflossene
+        // Dosis als bezahlt stehen, waere das SICHERHEITSTECHNISCH
+        // konservativ - der Bestand waere zu klein, es gaebe weniger
+        // zusaetzliche Freigabe. THERAPEUTISCH ist es trotzdem falsch, und
+        // die Bilanz ist verletzt: die Buecher behaupten eine Bezahlung, die
+        // es nicht gab. Konservativ heisst nicht richtig.
         episodes.evidenceCommittedU = (episodes.evidenceCommittedU - frei).coerceAtLeast(0.0)
         if (r.mealTs > 0L) {
             // Den EIGENEN Eintrag zurueckdrehen, nicht den letzten: zwei

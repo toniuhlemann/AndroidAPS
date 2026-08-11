@@ -207,4 +207,25 @@ class EpisodeReservationTest {
 
         assertEquals(0.0, a.episodes.evidenceCommittedU, 1e-9)
     }
+
+    /**
+     * ZWEIMAL ABLEHNEN DREHT NUR EINMAL ZURUECK.
+     *
+     * Die Aufloesung nullt `pendingReservation` als ERSTES; ein zweiter Aufruf
+     * findet nichts mehr. Ohne das wuerde ein wiederholtes REJECTED - Retry,
+     * doppelter Callback, Wiederaufnahme nach Absturz - den Zaehler unter den
+     * wahren Stand druecken und Kredit erzeugen, der nie bezahlt wurde.
+     */
+    @Test
+    fun `eine doppelte Aufloesung dreht nur einmal zurueck`() {
+        val a = adapterMitReservierung(menge = 0.30)
+        a.episodes.evidenceEpisodeId = ts
+        a.episodes.evidenceCommittedU = 0.90        // drei Abgaben in dieser Episode
+
+        a.resolveReservation(ts, publishedU = 0.0)
+        a.resolveReservation(ts, publishedU = 0.0)
+
+        assertEquals(0.60, a.episodes.evidenceCommittedU, 1e-9, "nur EINE Reservierung darf zurueck")
+        assertNull(a.episodes.pendingReservation)
+    }
 }

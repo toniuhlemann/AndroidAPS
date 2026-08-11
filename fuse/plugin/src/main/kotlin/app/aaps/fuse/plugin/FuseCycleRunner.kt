@@ -844,10 +844,22 @@ class FuseCycleRunner(
         // eine neue Episode mit frischem Deckel und frischem Zaehler.
         //
         // Es ist eine IDENTITAET, kein Zustand: der Wert bleibt derselbe,
-        // auch wenn dazwischen nichts passiert.
-        val evidenceEpisodeId = markerTs.takeIf {
-            it > 0L && computeTs - it in 0..(EvidenceStock.Config().maxEpisodeMin * 60_000L)
-        } ?: 0L
+        // auch wenn dazwischen nichts passiert - und auch, wenn der Marker
+        // zwischendurch zurueckgenommen und neu gedrueckt wird.
+        //
+        // DER ANKER KOMMT AUS DEM LEDGER, nicht aus dem aktuellen
+        // Markerzeitpunkt. Haenge er am aktuellen, erzeugte Ruecknahme plus
+        // erneutes Druecken still eine neue Episode mit Zaehler 0, und
+        // dieselbe Stoerung waere ein zweites Mal unbezahlt - genau die
+        // Doppelfinanzierung, gegen die die Episodenbudgets ueberhaupt
+        // existieren.
+        val evidenceCapMs = EvidenceStock.Config().maxEpisodeMin * 60_000L
+        val laufendeEpisode = episodes.evidenceEpisodeId.takeIf {
+            it > 0L && computeTs - it in 0..evidenceCapMs
+        }
+        val evidenceEpisodeId = laufendeEpisode
+            ?: markerTs.takeIf { it > 0L && computeTs - it in 0..evidenceCapMs }
+            ?: 0L
 
         // GAS-VOR-BREMSE NUR FUER ERKLAERTES WISSEN (08.08., Fruehstueckstest):
         // das Rebound-Fenster schuetzt vor dem Jagen UNANGEKUENDIGTER Hypo-
