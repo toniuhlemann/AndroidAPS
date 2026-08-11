@@ -1273,10 +1273,29 @@ class FuseCycleRunner(
         // 400 kappen - der Lade-Validator lehnt Dateien > 500 ab, der
         // Schreiber muss strikt darunter bleiben, sonst sperrt FUSE sich
         // selbst per recoveryHold aus der eigenen Datei aus.
-        if (mealMarkerActive && actuatedU > 0.0) {
+        val mealGebucht = mealMarkerActive && actuatedU > 0.0
+        if (mealGebucht) {
             episodes.mealDeliveries.addLast(signal.sourceTs to actuatedU)
             while (episodes.mealDeliveries.size > 400) episodes.mealDeliveries.removeFirst()
         }
+
+        // RESERVIERT, NICHT ENDGUELTIG (11.08.). Oben ist gegen das PUMPEN-Gate
+        // gebucht - das PUBLIKATIONS-Gate laeuft erst im Plugin und kann die
+        // Menge noch entfernen (fehlende Vollsicht, Persistenzfehler,
+        // Epochensperre). Bis dahin ist diese Belastung eine Reservierung.
+        //
+        // Sofort belasten und danach aufloesen, nicht umgekehrt: ein Absturz
+        // zwischen hier und dem Gate laesst die Belastung stehen (konservativ),
+        // waehrend eine nachgelagerte Buchung dann ganz entfiele - Budget frei,
+        // Insulin draussen.
+        episodes.pendingReservation =
+            if (actuatedU > 0.0) app.aaps.fuse.plugin.ledger.EpisodeBudgets.Reservation(
+                computeTs = computeTs,
+                amountU = actuatedU,
+                prime = primeWindowOpen,
+                onset = onset.active,
+                mealTs = if (mealGebucht) signal.sourceTs else 0L,
+            ) else null
         val mealStats = if (markerTs > 0 &&
             computeTs - markerTs <= (OnsetChannel.MARKER_WINDOW_MIN + 120) * 60_000L
         ) MealStats(

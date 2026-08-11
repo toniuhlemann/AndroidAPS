@@ -66,6 +66,43 @@ class EpisodeBudgets {
      */
     var primeWindowStartTs: Long = 0L
     val mealDeliveries: ArrayDeque<Pair<Long, Double>> = ArrayDeque()
+
+    /**
+     * Die Buchung DIESES Zyklus, solange die Publikation nicht feststeht.
+     *
+     * WARUM RESERVIEREN UND NICHT VERSCHIEBEN: der Runner belastet die
+     * Budgets, bevor das PUBLIKATIONSgate gelaufen ist - das sitzt erst im
+     * Plugin und kann die Menge noch entfernen (fehlende Vollsicht,
+     * Persistenzfehler, Epochensperre). Die Buchung stattdessen nach hinten zu
+     * schieben waere die FALSCHE Richtung: stirbt der Prozess dazwischen,
+     * waere sie nie erfolgt - Budget frei, Insulin draussen.
+     *
+     * Also: sofort belasten, danach aufloesen.
+     *
+     *   RESERVED   hier gebucht, ueberlebt einen Absturz
+     *   REQUESTED  Gate hat die Menge durchgelassen  -> bleibt
+     *   REJECTED   Gate hat sie NACHWEISLICH entfernt -> wird freigegeben
+     *   UNKNOWN    Ausgang offen                      -> bleibt Haftung
+     *
+     * Jede Fehlerrichtung landet damit auf "zu wenig", nie auf "zu viel".
+     *
+     * NICHT PERSISTENT, und das ist Absicht: geht sie beim Neustart verloren,
+     * bleibt die Belastung stehen - genau der konservative Ausgang. Sie zu
+     * persistieren wuerde Codec-Flaeche und Validierung kosten, um einen
+     * bereits sicheren Fall sicherer zu machen.
+     */
+    var pendingReservation: Reservation? = null
+
+    /** @param mealTs 0 = nicht in [mealDeliveries] gebucht. */
+    class Reservation(
+        /** Identitaet ueber `computeTs` - die `cycleId` entsteht erst im
+         *  Plugin, der Runner kennt sie nicht. */
+        val computeTs: Long,
+        val amountU: Double,
+        val prime: Boolean,
+        val onset: Boolean,
+        val mealTs: Long,
+    )
 }
 
 /**
@@ -896,6 +933,42 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
      * dem BS-Datensatz tut (PumpType.name / Sha des Serials). Null heisst
      * "keine Aussage" - dann bindet die Zeile wie vor dem Fix.
      */
+    /**
+     * Loest die Reservierung dieses Zyklus auf, sobald die Publikation
+     * feststeht - s. [EpisodeBudgets.pendingReservation].
+     *
+     * @param publishedU was WIRKLICH hinausgegangen ist. 0 heisst "das Gate
+     *   hat die Menge entfernt", und nur dann wird freigegeben.
+     *
+     * Wird sie NICHT gerufen (Absturz, Ausnahme, fremder Pfad), bleibt die
+     * Belastung stehen. Das ist der gewollte Ausgang fuer UNKNOWN.
+     */
+    fun resolveReservation(computeTs: Long, publishedU: Double) {
+        val r = episodes.pendingReservation ?: return
+        // Fremder Zyklus: nicht anfassen. Ohne diese Pruefung koennte ein
+        // spaeter Aufruf die Reservierung eines ANDEREN Zyklus freigeben.
+        if (r.computeTs != computeTs) return
+        episodes.pendingReservation = null
+
+        val frei = (r.amountU - (if (publishedU.isFinite()) publishedU else r.amountU)).coerceAtLeast(0.0)
+        if (frei <= 0.0) return
+
+        if (r.prime) episodes.primeSpentU = (episodes.primeSpentU - frei).coerceAtLeast(0.0)
+        if (r.onset) episodes.onsetSpentU = (episodes.onsetSpentU - frei).coerceAtLeast(0.0)
+        if (r.mealTs > 0L) {
+            // Den EIGENEN Eintrag zurueckdrehen, nicht den letzten: zwei
+            // Zyklen koennen denselben sourceTs tragen, wenn ein Punkt
+            // wiederholt wird. Gesucht wird deshalb von hinten der Eintrag
+            // mit genau diesem Zeitstempel.
+            val idx = episodes.mealDeliveries.indexOfLast { it.first == r.mealTs }
+            if (idx >= 0) {
+                val rest = episodes.mealDeliveries[idx].second - frei
+                if (rest > 1e-9) episodes.mealDeliveries[idx] = r.mealTs to rest
+                else episodes.mealDeliveries.removeAt(idx)
+            }
+        }
+    }
+
     fun onPublished(
         proposalId: String,
         unitsU: Double,

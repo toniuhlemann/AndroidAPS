@@ -743,6 +743,16 @@ class FusePlugin @Inject constructor(
         if (!publication.allowed && rt.units != null)
             aapsLogger.error(LTag.APS, "FUSE SMB stripped from published RT: ${publication.reason}")
 
+        // DIE RESERVIERUNG AUFLOESEN (11.08.). Der Runner hat die Episodenbudgets
+        // gegen das PUMPEN-Gate belastet, bevor dieses hier gelaufen ist. Erst
+        // jetzt steht fest, was wirklich hinausgeht.
+        //
+        // `publishRt.units` ist die publizierte Menge NACH dem Gate: hat es die
+        // Zeile entfernt, steht dort null, und die Reservierung wird freigegeben.
+        // Wird dieser Punkt nie erreicht (Ausnahme davor, Prozessende), bleibt
+        // die Belastung stehen - der gewollte UNKNOWN-Ausgang.
+        outcome?.let { o -> ledgerAdapter.resolveReservation(o.computeTs, publishRt.units ?: 0.0) }
+
         lastAPSResult = apsResultProvider.get().with(publishRt)
         lastAPSRun = dateUtil.now()
         aapsLogger.debug(LTag.APS, "FUSE result: ${publishRt.reason}")
