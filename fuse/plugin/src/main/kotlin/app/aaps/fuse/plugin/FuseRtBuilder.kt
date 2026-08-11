@@ -90,6 +90,12 @@ object FuseRtBuilder {
             if (decision.tailCostU > 0.0) reason.append(" cost=").append(f3(decision.tailCostU))
         }
         reason.append(" | limit=").append(decision.bindingLimit)
+        // DIE MANUELLE AUTORISIERUNG SICHTBAR MACHEN (11.08.). Ohne diese Zahl
+        // war am Geraet nicht zu unterscheiden, ob der Schalter gar nicht
+        // gegriffen hat oder ob eine spaetere Grenze die Menge genommen hat -
+        // genau diese Verwechslung hat die Fehlersuche zwei Anlaeufe gekostet.
+        if (decision.markerLowAuthorizedU > 0.0)
+            reason.append(" auth=").append(f3(decision.markerLowAuthorizedU))
         if (decision.smbU > 0.0) reason.append(" | SMB=").append(fmt(decision.smbU))
         tbr?.let { reason.append(" | TBR=").append(fmt(it.rateUPerH)).append("U/h/").append(it.durationMin).append("min") }
 
