@@ -705,7 +705,7 @@ class OverviewFragment : DaggerFragment(), View.OnClickListener, OnLongClickList
                 val farbe = rh.gac(
                     ctx,
                     if (markerAn) app.aaps.core.ui.R.attr.ribbonWarningColor
-                    else app.aaps.core.ui.R.attr.icBolusCarbsColor,
+                    else app.aaps.core.ui.R.attr.icFuseMealColor,
                 )
                 binding.buttonsLayout.fuseMealButton.setTextColor(farbe)
                 androidx.core.widget.TextViewCompat.setCompoundDrawableTintList(

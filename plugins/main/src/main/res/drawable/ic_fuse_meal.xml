@@ -1,17 +1,26 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Einfarbig WEISS und zur Laufzeit getoent: ein ?attr/... im fillColor
-     greift hier nicht (das Symbol blieb grau, waehrend der Text orange war).
-     Toenung und Textfarbe kommen jetzt aus DERSELBEN Farbe, damit sie nicht
-     auseinanderlaufen koennen - auch nicht im aktiven Zustand.
-     48dp wie ic_bolus / ic_cp_bolus_carbs / ic_calculator. Die 24dp-Fassung
-     aus core:objects liess Symbol UND Text hoeher sitzen als bei den
-     Nachbarknoepfen - am Geraet sofort sichtbar, im Quelltext nicht. -->
+<!--
+  Einfarbig WEISS und zur Laufzeit getoent: ein ?attr/... im fillColor greift
+  hier nicht (das Symbol blieb grau, waehrend der Text farbig war). Toenung und
+  Textfarbe kommen aus DERSELBEN Farbe, damit sie nicht auseinanderlaufen.
+
+  48dp wie ic_bolus / ic_cp_bolus_carbs / ic_calculator - und der Pfad ist
+  zusaetzlich auf 0,68 herunterskaliert. Ohne die Gruppe fuellt er den ganzen
+  Kasten, waehrend die Nachbarsymbole Luft am Rand lassen; nebeneinander sah er
+  dadurch deutlich groesser aus, obwohl der Kasten gleich gross war.
+-->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="48dp"
     android:height="48dp"
     android:viewportWidth="24"
     android:viewportHeight="24">
-    <path
-        android:fillColor="#FFFFFFFF"
-        android:pathData="M18.06,22.99h1.66c0.84,0 1.53,-0.64 1.63,-1.46L23,5.05h-5L18,1h-1.97v4.05h-4.97l0.3,2.34c1.71,0.47 3.31,1.32 4.27,2.26 1.44,1.42 2.43,2.89 2.43,5.29v8.05zM1,21.99L1,21h15.03v0.99c0,0.55 -0.45,1 -1.01,1L2.01,22.99c-0.56,0 -1.01,-0.45 -1.01,-1zM16.03,14.99c0,-8 -15.03,-8 -15.03,0h15.03zM1.02,17h15v2h-15z" />
+    <group
+        android:pivotX="12"
+        android:pivotY="12"
+        android:scaleX="0.68"
+        android:scaleY="0.68">
+        <path
+            android:fillColor="#FFFFFFFF"
+            android:pathData="M18.06,22.99h1.66c0.84,0 1.53,-0.64 1.63,-1.46L23,5.05h-5L18,1h-1.97v4.05h-4.97l0.3,2.34c1.71,0.47 3.31,1.32 4.27,2.26 1.44,1.42 2.43,2.89 2.43,5.29v8.05zM1,21.99L1,21h15.03v0.99c0,0.55 -0.45,1 -1.01,1L2.01,22.99c-0.56,0 -1.01,-0.45 -1.01,-1zM16.03,14.99c0,-8 -15.03,-8 -15.03,0h15.03zM1.02,17h15v2h-15z" />
+    </group>
 </vector>

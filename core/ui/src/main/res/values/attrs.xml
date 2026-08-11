@@ -136,6 +136,7 @@
     <!-- Overview Buttons -->
     <attr name="icBolusColor" format="reference|color" />
     <attr name="icBolusCarbsColor" format="reference|color" />
+    <attr name="icFuseMealColor" format="reference|color" />
     <attr name="icCalculatorColor" format="reference|color" />
     <attr name="icQuickWizardColor" format="reference|color" />
     <attr name="icCalibrationColor" format="reference|color" />
