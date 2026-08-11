@@ -327,4 +327,62 @@ class EvidenceStockTest {
         assertEquals(0.0, r.creditMgdlPerMin, 1e-9)
         assertEquals(0.0, r.state.stockMgdl, 1e-9)
     }
+
+    // ---- Monotonie des Abgabestands ---------------------------------------
+
+    /** GLEICHER WERT IST IDEMPOTENT - ein Replay oder ein zweiter Zyklus auf
+     *  demselben Stand darf nichts veraendern ausser dem Verfall. */
+    @Test
+    fun `derselbe Abgabestand ist idempotent`() {
+        var s = EvidenceStock.step(EvidenceStock.State(), eingabe(0, 100.0)).state
+        s = EvidenceStock.step(s, eingabe(1, 200.0, committedU = 0.20)).state
+        val r = EvidenceStock.step(s, eingabe(1, 200.0, committedU = 0.20))
+        assertTrue(r.noInflow != EvidenceStock.NoInflow.EVIDENCE_STATE_UNKNOWN)
+        assertEquals(s.stockMgdl, r.state.stockMgdl, 1e-9)
+    }
+
+    /**
+     * EIN KLEINERER STAND IST KEIN NEGATIVER ABZUG, SONDERN EIN UNBEKANNTER
+     * ZUSTAND.
+     *
+     * Er kann nur aus einem verlorenen oder vertauschten Zustand kommen. Ihn
+     * als "kein Abzug" zu schlucken waere die falsche Richtung: dann stuende
+     * Bestand zur Verfuegung, dessen Bezahlung gerade vergessen wurde.
+     */
+    @Test
+    fun `ein kleinerer Abgabestand sperrt den Kredit`() {
+        var s = EvidenceStock.step(EvidenceStock.State(), eingabe(0, 100.0)).state
+        s = EvidenceStock.step(s, eingabe(1, 200.0, committedU = 0.40)).state
+        val r = EvidenceStock.step(s, eingabe(2, 220.0, committedU = 0.20))
+        assertEquals(EvidenceStock.NoInflow.EVIDENCE_STATE_UNKNOWN, r.noInflow)
+        assertEquals(0.0, r.creditMgdlPerMin, 1e-9)
+        assertEquals(0.0, r.state.stockMgdl, 1e-9)
+    }
+
+    /** Eine NEUE Episode startet den Zaehler bei null - dort ist ein
+     *  kleinerer Wert normal und kein Fehler. */
+    @Test
+    fun `eine neue Episode startet den Abgabezaehler neu`() {
+        var s = EvidenceStock.step(EvidenceStock.State(), eingabe(0, 100.0)).state
+        s = EvidenceStock.step(s, eingabe(1, 200.0, committedU = 0.40)).state
+        val r = EvidenceStock.step(s, eingabe(2, 200.0, committedU = 0.05, episodeId = 2L))
+        assertTrue(r.noInflow != EvidenceStock.NoInflow.EVIDENCE_STATE_UNKNOWN)
+        assertEquals(0.05, r.state.lastCommittedU, 1e-9)
+    }
+
+    /**
+     * EINE ALTE EPISODE LEBT NICHT WIEDER AUF. Die Identitaet ist monoton
+     * (in der Praxis der Markerzeitpunkt); springt sie rueckwaerts, ist der
+     * persistierte Zustand nicht der, den wir zu haben glauben - und ein
+     * frischer Vier-Stunden-Deckel auf einer alten Episode waere das
+     * Gegenteil eines Deckels.
+     */
+    @Test
+    fun `eine rueckwaerts springende Episode sperrt den Kredit`() {
+        var s = EvidenceStock.step(EvidenceStock.State(), eingabe(0, 100.0, episodeId = 5L)).state
+        s = EvidenceStock.step(s, eingabe(1, 200.0, episodeId = 5L)).state
+        val r = EvidenceStock.step(s, eingabe(2, 220.0, episodeId = 3L))
+        assertEquals(EvidenceStock.NoInflow.EVIDENCE_STATE_UNKNOWN, r.noInflow)
+        assertEquals(0.0, r.creditMgdlPerMin, 1e-9)
+    }
 }

@@ -223,6 +223,15 @@ object EvidenceStock {
         if (!input.persistedStateKnown)
             return Result(State(), 0.0, 0.0, NoInflow.EVIDENCE_STATE_UNKNOWN)
 
+        // EINE ALTE EPISODE DARF NICHT WIEDERAUFLEBEN. Die Identitaet ist
+        // monoton (in der Praxis der Markerzeitpunkt); ein RUECKWAERTS
+        // springender Wert heisst, dass der persistierte Zustand nicht der
+        // ist, den wir zu haben glauben - und dann waere ein frischer
+        // Vier-Stunden-Deckel auf einer alten Episode das Gegenteil eines
+        // Deckels.
+        if (prev.episodeId > 0L && input.episodeId < prev.episodeId)
+            return Result(prev.copy(stockMgdl = 0.0), 0.0, 0.0, NoInflow.EVIDENCE_STATE_UNKNOWN)
+
         // Ein Episodenwechsel setzt alles zurueck - eine ANDERE Mahlzeit erbt
         // weder Bestand noch Uhr noch Abgabestand.
         val gleiche = prev.episodeId == input.episodeId
@@ -245,6 +254,15 @@ object EvidenceStock {
         val nachVerfall = max(0.0, basis.stockMgdl * (1.0 - dtMin / cfg.decayMin))
 
         // ---- Abzug: kumulativer Zuwachs, also genau einmal -----------------
+        //
+        // MONOTON INNERHALB DER EPISODE. Gleicher Wert ist idempotent (Replay,
+        // zweiter Reglerzyklus auf demselben Stand) - ein KLEINERER ist es
+        // nicht: er kann nur aus einem verlorenen oder vertauschten Zustand
+        // kommen. Ihn als "kein Abzug" zu schlucken waere die falsche
+        // Richtung, denn dann steht Bestand zur Verfuegung, dessen Bezahlung
+        // wir gerade vergessen haben. Fail-closed mit eigenem Grund.
+        if (input.episodeCommittedU < basis.lastCommittedU - 1e-9)
+            return Result(basis.copy(stockMgdl = 0.0), 0.0, 0.0, NoInflow.EVIDENCE_STATE_UNKNOWN)
         val zuwachsU = max(0.0, input.episodeCommittedU - basis.lastCommittedU)
         val abzug = zuwachsU * max(0.0, input.isfMgdlPerU)
 
