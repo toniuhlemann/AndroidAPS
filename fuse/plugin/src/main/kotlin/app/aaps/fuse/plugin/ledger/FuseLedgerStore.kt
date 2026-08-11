@@ -216,85 +216,115 @@ class FuseLedgerStore(private val durability: Durability = Durability.ANDROID) {
      * heranzukommen - die liegt im App-privaten Speicher und ist ohne
      * debuggable-Build nicht lesbar.
      */
+    /**
+     * WO es gescheitert ist, als geschlossene Menge.
+     *
+     * Ein Boolean sagte nur "nicht durabel" - und genau die Unterscheidung
+     * ist die diagnostische: ein Datei-Sync-Fehler ist ein Medium, ein
+     * Rename-Fehler ein Dateisystem oder eine Rechtefrage, ein
+     * Rueckleseversager eine stille Inhaltsvernichtung. Als Enum, weil ein
+     * neuer Fehlerpfad beim Kompilieren auffallen soll.
+     *
+     * Bewusst OHNE Exceptiontext und OHNE Pfad: das hier geht in den Export,
+     * und ein Pfad traegt den Nutzernamen.
+     */
+    enum class PersistOutcome { OK, FILE_SYNC_FAILED, RENAME_FAILED, DIR_SYNC_FAILED, READBACK_FAILED }
+
     data class PersistStats(
+        /** Tatsaechliche UTF-8-Bytezahl des Inhalts. */
         val bytes: Int,
+        /** Alle Dauern aus `System.nanoTime` - MONOTON. Eine Wanduhr kann
+         *  waehrend der Messung springen (NTP, Zeitzone, Nutzer) und liefert
+         *  dann negative oder absurde Latenzen. */
         val totalMs: Long,
         val fileSyncMs: Long,
         val dirSyncMs: Long,
-        val ok: Boolean,
-    )
+        val outcome: PersistOutcome,
+    ) {
+
+        val ok: Boolean get() = outcome == PersistOutcome.OK
+    }
 
     @Volatile
     var lastPersistStats: PersistStats? = null
         private set
 
-    fun write(dir: File, content: String): Boolean {
+    fun write(dir: File, content: String): Boolean = writeWithOutcome(dir, content).ok
+
+    /**
+     * Wie [write], meldet aber WO es gescheitert ist.
+     *
+     * Die Statistik wird IMMER gesetzt, auch im Fehlerfall - sonst haette
+     * ausgerechnet der interessante Fall keine Zahlen, und die Telemetrie
+     * haenge an dem Erfolg, den sie messen soll.
+     */
+    fun writeWithOutcome(dir: File, content: String): PersistStats {
         val t0 = System.nanoTime()
         var fileSyncNs = 0L
         var dirSyncNs = 0L
-        val ok = schreibe(dir, content,
-            { fd -> val a = System.nanoTime(); durability.syncFile(fd); fileSyncNs = System.nanoTime() - a },
-            { d -> val a = System.nanoTime(); durability.syncDirectory(d); dirSyncNs = System.nanoTime() - a })
-        lastPersistStats = PersistStats(
+        var wo = PersistOutcome.OK
+        runCatching {
+            if (!dir.exists() && !dir.mkdirs() && !dir.exists()) {
+                wo = PersistOutcome.RENAME_FAILED
+                return@runCatching
+            }
+            val target = File(dir, FILE_NAME)
+            val tmp = File(dir, "$FILE_NAME.tmp")
+            val bak = File(dir, "$FILE_NAME.bak")
+
+            // BYTES, FLUSH, FSYNC - UND ERST DANN DER RENAME. Ein Rename VOR
+            // dem fsync waere die schlimmste Reihenfolge: dann zeigt der
+            // Zielname auf einen Inhalt, den es nach einem Stromverlust nicht
+            // gibt, und die Rotation hat die letzte gute Generation schon nach
+            // .bak gedreht.
+            try {
+                FileOutputStream(tmp).use { out ->
+                    out.write(content.toByteArray(Charsets.UTF_8))
+                    out.flush()
+                    val a = System.nanoTime()
+                    durability.syncFile(out.fd)
+                    fileSyncNs = System.nanoTime() - a
+                }
+            } catch (e: Exception) {
+                wo = PersistOutcome.FILE_SYNC_FAILED
+                return@runCatching
+            }
+
+            if (target.exists()) {
+                // Genau EINE Vorgenerationen-Kopie: die letzte vollstaendige.
+                bak.delete()
+                if (!target.renameTo(bak)) {
+                    wo = PersistOutcome.RENAME_FAILED
+                    return@runCatching
+                }
+            }
+            if (!tmp.renameTo(target)) {
+                wo = PersistOutcome.RENAME_FAILED
+                return@runCatching
+            }
+
+            // DAS VERZEICHNIS, HART. Nach dem Rename ist der INHALT durabel,
+            // der Verzeichniseintrag noch nicht zwingend. Fail-closed ist hier
+            // vertretbar, obwohl der Rename schon lief: es kostet hoechstens
+            // eine unterlassene Dosis, und die Revisionsauswahl beim naechsten
+            // Start rettet weiterhin aus target, .tmp oder .bak.
+            try {
+                val a = System.nanoTime()
+                durability.syncDirectory(dir)
+                dirSyncNs = System.nanoTime() - a
+            } catch (e: Exception) {
+                wo = PersistOutcome.DIR_SYNC_FAILED
+            }
+        }.onFailure { wo = PersistOutcome.RENAME_FAILED }
+
+        return PersistStats(
             bytes = content.toByteArray(Charsets.UTF_8).size,
             totalMs = (System.nanoTime() - t0) / 1_000_000,
             fileSyncMs = fileSyncNs / 1_000_000,
             dirSyncMs = dirSyncNs / 1_000_000,
-            ok = ok,
-        )
-        return ok
+            outcome = wo,
+        ).also { lastPersistStats = it }
     }
-
-    private fun schreibe(
-        dir: File,
-        content: String,
-        syncFile: (FileDescriptor) -> Unit,
-        syncDir: (File) -> Unit,
-    ): Boolean = runCatching {
-        if (!dir.exists() && !dir.mkdirs() && !dir.exists()) return@runCatching false
-        val target = File(dir, FILE_NAME)
-        val tmp = File(dir, "$FILE_NAME.tmp")
-        val bak = File(dir, "$FILE_NAME.bak")
-
-        // BYTES, FLUSH, FSYNC - UND ERST DANN DER RENAME.
-        //
-        // `writeText` allein legt die Bytes in den Page Cache. Gegen
-        // Prozesstod traegt das; gegen Stromausfall oder Kernel-Panik nicht.
-        // Die Rueckleseprobe in [writeVerified] merkt davon NICHTS - sie
-        // liest denselben Cache und meldet Erfolg fuer eine Datei, die auf
-        // der Platte leer oder halb ist. Genau diese Luecke hat der Ledger
-        // seit jeher getragen (Befund 12.08.).
-        //
-        // Ein Rename VOR dem fsync waere die schlimmste Reihenfolge: dann
-        // zeigt der Zielname auf einen Inhalt, den es nach einem Stromverlust
-        // nicht gibt, und die Rotation hat die letzte gute Generation schon
-        // nach .bak gedreht.
-        FileOutputStream(tmp).use { out ->
-            out.write(content.toByteArray(Charsets.UTF_8))
-            out.flush()
-            syncFile(out.fd)
-        }
-
-        if (target.exists()) {
-            // Genau EINE Vorgenerationen-Kopie: die letzte vollstaendige.
-            bak.delete()
-            if (!target.renameTo(bak)) return@runCatching false
-        }
-        if (!tmp.renameTo(target)) return@runCatching false
-
-        // DAS VERZEICHNIS, HART. Nach dem Rename ist der INHALT durabel, der
-        // Verzeichniseintrag noch nicht zwingend - ein Stromverlust dazwischen
-        // kann eine Datei hinterlassen, deren Bytes stehen und deren Name
-        // nicht.
-        //
-        // Fail-closed ist hier vertretbar, obwohl der Rename schon gelaufen
-        // ist: es kostet hoechstens eine unterlassene Dosis. Die
-        // Revisionsauswahl beim naechsten Start rettet weiterhin aus target,
-        // .tmp oder .bak - es geht keine Generation verloren, nur dieser eine
-        // Zyklus publiziert nicht.
-        syncDir(dir)
-        true
-    }.getOrDefault(false)
 
     /**
      * [write] plus RUECKLESEPROBE (Audit 2d273cb, 6.1): Erfolg heisst, das
@@ -309,11 +339,16 @@ class FuseLedgerStore(private val durability: Durability = Durability.ANDROID) {
      * die nach einem Stromverlust leer oder halb waere. Die Probe belegt den
      * RENAME und den INHALT - die DURABILITAET belegt der fsync.
      */
-    fun writeVerified(dir: File, content: String): Boolean = runCatching {
-        if (!write(dir, content)) return@runCatching false
-        val target = File(dir, FILE_NAME)
-        target.exists() && target.readText(Charsets.UTF_8) == content
-    }.getOrDefault(false)
+    fun writeVerified(dir: File, content: String): Boolean {
+        val stats = writeWithOutcome(dir, content)
+        if (!stats.ok) return false
+        val gelesen = runCatching {
+            val target = File(dir, FILE_NAME)
+            target.exists() && target.readText(Charsets.UTF_8) == content
+        }.getOrDefault(false)
+        if (!gelesen) lastPersistStats = stats.copy(outcome = PersistOutcome.READBACK_FAILED)
+        return gelesen
+    }
 
     /**
      * Juengste GUELTIGE Generation aus allen DREI Kandidaten (`.tmp`,

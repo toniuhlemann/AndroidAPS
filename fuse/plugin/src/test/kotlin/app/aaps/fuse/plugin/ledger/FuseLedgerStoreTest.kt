@@ -334,4 +334,55 @@ class FuseLedgerStoreTest {
         assertEquals(1, d.fileSyncs, "Datei-Sync")
         assertEquals(1, d.dirSyncs, "Verzeichnis-Sync")
     }
+
+    /**
+     * DIE TELEMETRIE HAENGT NICHT AM ERFOLG, den sie messen soll.
+     *
+     * Ausgerechnet der interessante Fall - der gescheiterte Persist - haette
+     * sonst keine Zahlen. Und das Ergebnis muss sagen WO, nicht nur DASS:
+     * ein Datei-Sync-Fehler ist ein Medium, ein Rename-Fehler ein Dateisystem,
+     * ein Rueckleseversager eine stille Inhaltsvernichtung.
+     */
+    @Test
+    fun `auch ein gescheiterter Persist liefert seine Statistik`(@TempDir dir: File) {
+        val store = FuseLedgerStore(FakeDurability(fileFails = true))
+        assertTrue(!store.writeVerified(dir, "inhalt"))
+
+        val st = store.lastPersistStats
+            ?: throw AssertionError("ohne Statistik ist der Fehlerfall nicht auswertbar")
+        assertEquals(FuseLedgerStore.PersistOutcome.FILE_SYNC_FAILED, st.outcome)
+        assertEquals(6, st.bytes, "tatsaechliche UTF-8-Bytes")
+    }
+
+    /** Ein Verzeichnis-Fehler traegt seinen EIGENEN Grund, nicht denselben
+     *  wie ein Datei-Fehler. */
+    @Test
+    fun `ein Verzeichnis-Fehler ist als solcher erkennbar`(@TempDir dir: File) {
+        val store = FuseLedgerStore(FakeDurability(dirFails = true))
+        store.writeVerified(dir, "inhalt")
+        assertEquals(
+            FuseLedgerStore.PersistOutcome.DIR_SYNC_FAILED,
+            store.lastPersistStats?.outcome,
+        )
+    }
+
+    /** Und der gelungene Fall traegt OK samt Bytezahl - sonst waere nicht
+     *  ausgeschlossen, dass immer ein Fehler gemeldet wird. */
+    @Test
+    fun `ein gelungener Persist traegt OK und die Bytezahl`(@TempDir dir: File) {
+        val store = FuseLedgerStore(FakeDurability())
+        assertTrue(store.writeVerified(dir, "abcde"))
+        val st = store.lastPersistStats!!
+        assertEquals(FuseLedgerStore.PersistOutcome.OK, st.outcome)
+        assertEquals(5, st.bytes)
+        assertTrue(st.totalMs >= 0, "monotone Uhr liefert nie negativ")
+    }
+
+    /** UTF-8-Bytes, nicht Zeichen: ein Umlaut zaehlt doppelt. */
+    @Test
+    fun `bytes zaehlt UTF-8 und nicht Zeichen`(@TempDir dir: File) {
+        val store = FuseLedgerStore(FakeDurability())
+        store.writeVerified(dir, "äöü")
+        assertEquals(6, store.lastPersistStats?.bytes)
+    }
 }
