@@ -518,8 +518,15 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
         val huelle = mealMarkerEnvelopeU()
         val letzter = lastOutcome
         val geliefert = letzter?.mealStats?.totalU ?: 0.0
-        val schritt = letzter?.prime?.floorU?.takeIf { it > 0.0 }
+        // MIT maxSmb GEDECKELT (Toni am Geraet): der Plan-Boden allein ignoriert
+        // ihn, und maxSmb ist eine konfigurierbare Zahl - bei kleinem maxSmb und
+        // grosser Huelle haette der Dialog eine Menge versprochen, die der Regler
+        // nie abgeben kann. Weiterhin eine OBERGRENZE: iobTH, maxIOB, die
+        // Onset-Huelle und die Pumpenschrittweite kappen zusaetzlich, aendern
+        // sich aber im Minutentakt und gehoeren nicht in einen Knopfdialog.
+        val zyklus = letzter?.prime?.floorU?.takeIf { it > 0.0 }
             ?: (huelle - geliefert).coerceAtLeast(0.0) / PrimeRelease.WINDOW_MIN
+        val schritt = minOf(zyklus, preferences.get(FuseDoubleKey.MaxSmbU))
         val fakten = MarkerPrompt.Facts(
             firstStepU = schritt,
             envelopeU = huelle,

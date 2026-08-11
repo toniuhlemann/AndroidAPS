@@ -14,15 +14,21 @@ import app.aaps.core.ui.R
  * steht der Text hier und die Regel, OB gefragt wird, in
  * `app.aaps.fuse.core.controller.MarkerPrompt`.
  *
- * WAS DER TEXT NENNEN MUSS, und jedes aus einem Grund:
- *  - den moeglichen ERSTEN Schritt und die GANZE Huelle, damit die
- *    Groessenordnung VOR dem Ja steht und nicht erst im Log,
- *  - ob der Druck die Prognose ueberstimmt (nur wenn die Einstellung an ist -
- *    sonst waere die Warnung eine Uebertreibung),
- *  - ein gemessenes Tief, weil es die Frage dringlicher macht,
- *  - und dass eine Ruecknahme bereits abgegebenes Insulin NICHT zurueckholt.
- *    Das ist der Punkt, den man ohne Hinweis falsch annimmt: der Knopf sieht
- *    aus wie ein Schalter, aber die eine Richtung ist nicht reversibel.
+ * SO KURZ WIE MOEGLICH, und das ist eine Anforderung und keine Nachlaessigkeit:
+ * der Knopf wird mehrmals taeglich gedrueckt. Ein Dialog, den man vier Mal am
+ * Tag wegwischt, wird nicht gelesen - und dann schuetzt er nicht mehr, er
+ * gewoehnt nur ans Wegwischen. Die erste Fassung war ein Aufsatz; Toni hat sie
+ * am Geraet gesehen und gestrichen.
+ *
+ * GEBLIEBEN ist genau das, was sich VON DRUCK ZU DRUCK aendert:
+ *  - die Zahlen (erster Schritt, Rest der Huelle) - die Groessenordnung
+ *    gehoert vor das Ja, nicht ins Log,
+ *  - ein gemessenes Tief, die einzige Lage, die diesen Druck von einem
+ *    gewoehnlichen unterscheidet.
+ *
+ * WEGGEFALLEN ist alles Gleichbleibende - dass der Druck die Prognose
+ * ueberstimmt und dass eine Ruecknahme Abgegebenes nicht zurueckholt. Das
+ * steht jetzt in der Einstellungsbeschreibung, wo man es EINMAL liest.
  */
 object FuseMarkerDialog {
 
@@ -33,17 +39,15 @@ object FuseMarkerDialog {
         onConfirm: Runnable,
     ) {
         val rest = (facts.envelopeU - facts.alreadyDeliveredU).coerceAtLeast(0.0)
+        // EINE Zeile Zahlen. Der Rest steht in der Einstellungsbeschreibung -
+        // dort liest man ihn EINMAL, hier saehe man ihn mehrmals taeglich.
         val text = StringBuilder(
             rh.gs(R.string.overview_fuse_meal_confirm_body, facts.firstStepU, rest)
         )
-        if (facts.authorizesAgainstModel)
-            text.append("\n\n").append(rh.gs(R.string.overview_fuse_meal_confirm_authorized))
+        // Das gemessene Tief ist die einzige Lage, die den Druck von einem
+        // gewoehnlichen unterscheidet - deshalb als einziger Zusatz.
         if (facts.measuredLow)
             text.append("\n\n").append(rh.gs(R.string.overview_fuse_meal_confirm_low))
-        if (facts.alreadyDeliveredU > 0.0)
-            text.append("\n\n")
-                .append(rh.gs(R.string.overview_fuse_meal_confirm_already, facts.alreadyDeliveredU))
-        text.append("\n\n").append(rh.gs(R.string.overview_fuse_meal_confirm_no_undo))
 
         OKDialog.showConfirmation(
             activity,
