@@ -426,6 +426,19 @@ object FuseController {
          *  Eingang des Rest-Zaehlers gegen die Quantisierungs-Totzone. 0 heisst
          *  "es gab keinen Wunsch", nicht "der Wunsch war klein". */
         val desiredBeforeStepU: Double = 0.0,
+        /**
+         * Der Anteil dieser Menge, den eine AUSDRUECKLICHE manuelle
+         * Autorisierung bei gemessenem Tief traegt [U] (Toni 11.08.).
+         *
+         * TYPISIERTE HERKUNFT, und das ist der ganze Punkt. Der Translator
+         * muss eine markerfinanzierte Menge von jeder anderen unterscheiden
+         * koennen, OHNE sie aus `bindingLimit` oder einem Grundtext zu raten -
+         * Texte sind fuer Menschen, an ihnen darf keine Insulinabgabe haengen.
+         *
+         * 0 heisst: nichts an dieser Menge ist manuell autorisiert. Dann nullt
+         * jeder Mengen-Block sie vollstaendig, wie bisher.
+         */
+        val markerLowAuthorizedU: Double = 0.0,
     ) {
 
         /**

@@ -1156,24 +1156,35 @@ class FuseCycleRunner(
         //     aus einem bloss VORHERGESAGTEN Tief (aktueller BG in Ordnung,
         //     Bahn faellt) den Override ausgeloest. Autorisiert ist aber nur
         //     der gemessene Tiefstand, nicht die Prognose.
-        //  4. die Basisentscheidung wurde AUCH von genau diesen beiden
-        //     Bloecken gestoppt.
-        //
-        // Punkt 4 ist der wichtigste und nicht bloss Sorgfalt: ohne ihn wuerde
-        // der Guard-Riegel unten in JEDEM Zyklus mit aktivem Marker entfallen,
-        // auch ohne Tief - und damit fuer eine ganz normale Korrekturdosis.
-        // Freigegeben werden soll aber nur der markerfinanzierte Anteil.
-        //
-        // Dass das reicht, ist strukturell: bei diesen beiden Bloecken ist die
-        // Basisdosis 0, also ist alles, was danach herauskommt, der Lift aus
-        // der Marker-Huelle und nichts sonst.
-        val lowOverrideActive = cfg.markerAuthorisesLow &&
+        // ZWEI Praedikate, nicht eines - und die Trennung ist der Fix vom
+        // 11.08. Beide teilen die Punkte 1-3; nur das zweite verlangt noch,
+        // dass die Basisentscheidung von genau diesen Bloecken gestoppt wurde.
+        val lowMeasuredAuthorized = cfg.markerAuthorisesLow &&
             mealMarkerActive &&
-            step.safetyReasons == setOf(SafetyReason.LOW) &&
+            step.safetyReasons == setOf(SafetyReason.LOW)
+
+        // DER GUARD-RIEGEL entfaellt nur bei ERFUELLTEM Punkt 4, und der ist
+        // hier der wichtigste: ohne ihn wuerde der Riegel unten in JEDEM
+        // Zyklus mit aktivem Marker und Tief entfallen - auch fuer eine ganz
+        // normale Korrekturdosis. Bei SAFETY_HOLD/GUARD_FLOOR ist die
+        // Basisdosis dagegen 0, also ist alles, was danach herauskommt, der
+        // Lift aus der Marker-Huelle und nichts sonst.
+        val lowOverrideActive = lowMeasuredAuthorized &&
             baseDecision.block in setOf(
                 FuseController.Block.SAFETY_HOLD,
                 FuseController.Block.GUARD_FLOOR,
             )
+
+        // DER HERKUNFTS-STEMPEL haengt dagegen NICHT am Basisblock, und genau
+        // daran ist die Einstellung am 11.08. gescheitert. Gemessen am Geraet:
+        // `block=NONE bind=primeRelease prime=true floor=0.10 smb=0.0` - der
+        // Regler hatte gar nicht blockiert, der Prime-Kanal hatte 0,10 U
+        // freigegeben, und die Menge starb erst am Schutz-Nullstrom im
+        // Translator, weil ihr niemand ansah, dass sie autorisiert war.
+        //
+        // Fuer LIFTABLE macht die Weglassung keinen Unterschied: die
+        // erweiterte Menge greift ohnehin nur, WENN der Block einer der
+        // beiden ist. Sie stempelt nur zusaetzlich die Herkunft.
 
         val primePlan = PrimeRelease.plan(
             PrimeRelease.Input(
@@ -1196,12 +1207,12 @@ class FuseCycleRunner(
                 guardFloorMgdl = cfg.guardFloorMgdl,
                 isfMgdlPerU = isf,
                 pumpIncrementU = bolusStep,
-                markerAuthorisesLow = lowOverrideActive,
+                markerAuthorisesLow = lowMeasuredAuthorized,
             )
         )
         val lifted = PrimeRelease.lift(
             vetted, primePlan, state,
-            markerAuthorisesLow = lowOverrideActive,
+            markerAuthorisesLow = lowMeasuredAuthorized,
             tailHeadroomU = tail?.takeIf { it.usable }?.headroomU,
             onsetCapU = if (onset.active) onset.remainingU else null,
             // Fix-Pass 2 Nr. 2: dieselbe Ledger-Korrektur wie in den

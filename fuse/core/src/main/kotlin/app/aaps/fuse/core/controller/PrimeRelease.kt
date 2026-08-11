@@ -294,6 +294,12 @@ object PrimeRelease {
             // Basisliste behauptete das Gegenteil.
             caps = emptyList(),
             capsStage = FuseController.STAGE_PRIME,
+            // Die Herkunft, nicht der Betrag: nur wenn der Aufrufer ein
+            // GEMESSENES Tief festgestellt und die Einstellung sie autorisiert
+            // hat, traegt diese Menge eine manuelle Autorisierung. Sonst 0 -
+            // ein gewoehnlicher Prime-Release bleibt von jedem Schutz-Null
+            // vollstaendig gedeckelt.
+            markerLowAuthorizedU = if (markerAuthorisesLow) stepped else 0.0,
         )
     }
 }

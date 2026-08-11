@@ -1501,6 +1501,20 @@ class FusePlugin @Inject constructor(
             addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.PrimeEnvelopeU, dialogMessage = R.string.fuse_prime_envelope_summary, title = R.string.fuse_prime_envelope_title))
             addPreference(AdaptiveIntPreference(ctx = context, intKey = FuseIntKey.AbsorptionCreditWindowMin, dialogMessage = R.string.fuse_absorption_credit_summary, title = R.string.fuse_absorption_credit_title))
             addPreference(AdaptiveIntPreference(ctx = context, intKey = FuseIntKey.MarkerBoostMaxMin, dialogMessage = R.string.fuse_marker_boost_summary, title = R.string.fuse_marker_boost_title))
+        }
+
+        // EIGENER ABSCHNITT, unmittelbar hinter den Marker-Einstellungen
+        // (Toni 11.08.). Technisch gehoert der Schalter zum Marker - aber er
+        // ist der einzige in FUSE, der eine SCHUTZgrenze aufhebt, und
+        // zwischen Huellengroessen und Boost-Fenstern saehe er aus wie einer
+        // von vielen. Die Ueberschrift sagt, was er wirklich ist.
+        cat("fuse_manual_auth", "Manuelle Insulin-Autorisierung") {
+            info(
+                "Was dieser Abschnitt bedeutet",
+                "Alles hier drin verschiebt Verantwortung von FUSE zu dir. Jede andere " +
+                    "Einstellung sagt FUSE, WIE es entscheiden soll - diese sagen, dass DU " +
+                    "entschieden hast und FUSE sich darauf verlaesst. Im Zweifel aus lassen."
+            )
             addPreference(AdaptiveSwitchPreference(ctx = context, booleanKey = FuseBooleanKey.MarkerAuthorisesLow, summary = R.string.fuse_marker_low_summary, title = R.string.fuse_marker_low_title))
         }
 

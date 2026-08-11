@@ -788,23 +788,16 @@ class TransportWiringTest : TestBaseWithProfile() {
      * falsch unterscheiden: hoher BG (kein gemessenes Tief, leere
      * `safetyReasons`) UND eine abtauchende Bahn (also GUARD_FLOOR).
      *
-     * WAS DIESER TEST HEUTE BEWEIST - UND WAS NICHT.
+     * ZWEI ANLAEUFE LANG WAR ER EIN PLACEBO, und der zweite Grund war nicht
+     * der Test, sondern die Sache selbst: ein FUENFTES Tor nullte die Menge
+     * ohnehin (`TbrPolicy.safetyZero` -> `smbBlocked` -> Translator). Solange
+     * das so war, KONNTE sich richtig von falsch nicht unterscheiden - die
+     * Mutation blieb gruen, weil in beiden Varianten 0 herauskam.
      *
-     * Die Mutationsprobe (`== setOf(LOW)` zurueck auf `all { it == LOW }`)
-     * laesst ihn GRUEN. Er ist damit KEIN Nachweis des Praedikats, und das
-     * steht hier, damit ihn niemand dafuer haelt.
-     *
-     * Der Grund ist ein FUENFTES Tor, das die Messung freigelegt hat:
-     * `GUARD_FLOOR` und `SAFETY_HOLD` fordern ZERO_TEMP, `TbrPolicy.safetyZero`
-     * setzt in JEDEM Zweig `smbBlocked = true`, und FuseTbrTranslator.kt:69
-     * nullt daraufhin die Menge. Der Lift findet statt - im Diagnoselauf
-     * stand `bindingLimit = primeRelease` bei `smbU = 0,0` -, aber danach
-     * bleibt nichts uebrig. Solange das so ist, kann sich richtig von falsch
-     * gar nicht unterscheiden.
-     *
-     * Der Test dokumentiert deshalb vorerst die LAGE (GUARD_FLOOR ohne
-     * gemessenes Tief gibt nichts frei) und wird erst zum Nachweis, wenn das
-     * fuenfte Tor behandelt ist. Dann muss die Mutation ihn rot machen.
+     * Seit der Entkopplung (`SmbBlockCause` + `markerLowAuthorizedU`, 11.08.)
+     * erreicht die autorisierte Menge wirklich den Ausgang. Damit ist die
+     * Probe scharf und nachgemessen: mit `all { it == LOW }` gibt dieser
+     * Aufbau in Zyklus 4 0,10 U frei statt 0 - der Test wird ROT.
      */
     @Test
     fun `GUARD_FLOOR ohne gemessenes Tief loest den Override NICHT aus`() {
@@ -920,5 +913,167 @@ class TransportWiringTest : TestBaseWithProfile() {
             0.0, l.episodes.primeSpentU, 1e-9,
             "eine wirklich neue Mahlzeit bekommt ihre volle Huelle",
         )
+    }
+
+    // ---- DIE MANUELLE AUTORISIERUNG, ganz durch ---------------------------
+
+    /**
+     * DER ENTSCHEIDENDE TEST - und er verlangt FUENF Dinge GLEICHZEITIG.
+     *
+     * Vorgeschichte: `MarkerAuthorisesLow` oeffnete vier Tore und war trotzdem
+     * wirkungslos, weil ein FUENFTES die Menge nullte - der Schutz-Nullstrom im
+     * Translator, der bei Tief zwangslaeufig mitkommt. Gemessen am Geraet:
+     * `block=NONE bind=primeRelease prime=true/PRIME floor=0.10 smb=0.0`.
+     *
+     * Der Vorgaengertest blieb dabei GRUEN, weil er nur EINE Bedingung prueft
+     * (kein Hold bei BG 200) - die war auch mit dem Fehler erfuellt. Deshalb
+     * hier alles auf einmal, im ECHTEN Zyklus:
+     *
+     *  1. es liegt wirklich ein GEMESSENES Tief vor,
+     *  2. das ENDGUELTIGE SMB - nach dem Translator - ist > 0,
+     *  3. der Schutz-Nullstrom laeuft daneben WEITER,
+     *  4. die Menge ist hoechstens der markerfinanzierte Anteil,
+     *  5. und ihre Herkunft ist TYPISIERT, nicht aus `bindingLimit` geraten.
+     *
+     * WARUM DER SCHWANZ-WAECHTER HIER AUS IST, und das ist ein Befund und kein
+     * Testkniff: bei BG 62 ist der Schwanz-Headroom <= 0, und er nullt die
+     * Menge unabhaengig von allem hier. Das ist eine EIGENE Grenze - Haftung
+     * ueber H, nicht Tiefschutz - und Tonis Entscheidung vom 11.08. hat sie
+     * nicht geoeffnet. Sie steht als eigener Test unten.
+     */
+    @Test
+    fun `Marker autorisiert Insulin am gemessenen Tief - ganze Kette`() {
+        tailGuard = false
+        flach = 62.0
+        steigungProMin = 0.0
+        markerAt = start + 2 * 60_000L
+        markerAuthorisesLow = true
+
+        clock = start
+        var frei: FuseCycleRunner.Outcome? = null
+        repeat(12) { if (frei == null) cycle().let { o -> if (o.decision.smbU > 0.0) frei = o } }
+        val o = frei ?: throw AssertionError("keine Freigabe am Tief - die Autorisierung ist wirkungslos")
+
+        // (1) GEMESSENES Tief, nicht bloss ein prognostiziertes.
+        assertTrue(o.state?.safetyHold == true, "ohne gemessenes Tief prueft dieser Test nichts")
+        assertTrue(o.bgMgdl!! < 70.0, "BG muss wirklich tief sein: ${o.bgMgdl}")
+
+        // (2)/(5) die Menge ist da UND ihre Herkunft steht als Zahl im Datensatz.
+        assertTrue(o.decision.smbU > 0.0)
+        assertTrue(
+            o.decision.markerLowAuthorizedU > 0.0,
+            "die Herkunft muss TYPISIERT sein, nicht aus dem Grundtext geraten",
+        )
+
+        // (4) NUR der autorisierte Anteil kommt durch.
+        assertTrue(
+            o.decision.smbU <= o.decision.markerLowAuthorizedU + 1e-9,
+            "es darf nur der autorisierte Anteil durchkommen: ${o.decision.smbU}",
+        )
+        assertEquals("primeRelease", o.decision.bindingLimit, "die Menge kommt aus der Marker-Huelle")
+
+        // (3) DER SCHUTZ BLEIBT. Es wird nicht "LOW abgeschaltet" - die
+        // Basalabsenkung laeuft parallel weiter, und der Grund sagt genau das.
+        // Beides zugleich ist kein Widerspruch: das eine ist die erklaerte
+        // Mahlzeit, das andere der Schutz gegen ihr Ausbleiben.
+        assertEquals(FuseController.TbrAction.ZERO_TEMP, o.decision.tbr, "die Basalabsenkung geht verloren")
+        assertTrue(o.reason.contains("SAFETY_ZERO"), "der Schutz-Nullstrom muss laufen: ${o.reason}")
+    }
+
+    /**
+     * DIE GEGENPROBE ZUM SCHALTER. Dieselbe Lage, Einstellung AUS - und nichts
+     * geht hinaus. Ohne diesen Fall koennte der Test oben auch dann gruen sein,
+     * wenn am Tief GRUNDSAETZLICH etwas freikaeme.
+     */
+    @Test
+    fun `ohne die Einstellung bleibt dieselbe Lage bei null`() {
+        tailGuard = false
+        flach = 62.0
+        steigungProMin = 0.0
+        markerAt = start + 2 * 60_000L
+        markerAuthorisesLow = false
+
+        clock = start
+        repeat(12) { i ->
+            val o = cycle()
+            assertEquals(0.0, o.decision.smbU, 1e-9, "ohne Autorisierung nichts am Tief (Zyklus $i)")
+            assertEquals(0.0, o.decision.markerLowAuthorizedU, 1e-9, "und kein Herkunftsstempel")
+        }
+    }
+
+    /**
+     * DER SCHWANZ-WAECHTER IST EINE EIGENE GRENZE und bleibt zu.
+     *
+     * Tonis Entscheidung autorisiert Insulin gegen den TIEFSCHUTZ. Die
+     * Schwanzhaftung ueber H ist etwas anderes - sie fragt, ob die Menge in
+     * zwei Stunden noch getragen wird - und sie war nie Gegenstand der
+     * Freigabe. Dieser Test haelt fest, dass sie unabhaengig weiterwirkt: der
+     * einzige Unterschied zum Test oben ist der eingeschaltete Waechter.
+     */
+    @Test
+    fun `der Schwanz-Waechter nullt die autorisierte Menge unabhaengig`() {
+        tailGuard = true
+        flach = 62.0
+        steigungProMin = 0.0
+        markerAt = start + 2 * 60_000L
+        markerAuthorisesLow = true
+
+        clock = start
+        var sahHold = false
+        repeat(12) { i ->
+            val o = cycle()
+            if (o.state?.safetyHold == true) sahHold = true
+            assertEquals(
+                0.0, o.decision.smbU, 1e-9,
+                "der Schwanz-Headroom bleibt bindend, auch mit Autorisierung (Zyklus $i)",
+            )
+        }
+        assertTrue(sahHold, "der Aufbau muss dieselbe Tieflage erzeugen wie oben, sonst prueft er nichts")
+    }
+
+    /**
+     * JEDER ANDERE BLOCKGRUND NULLT WEITERHIN - im echten Zyklus, in genau der
+     * Lage, die eben noch freigegeben hat.
+     *
+     * Das ist die Gegenprobe zu `smbBlocked = false`: diese naheliegende
+     * Reparatur haette alle sechs Gruende auf einmal geoeffnet. Nur
+     * `SAFETY_ZERO` darf die Autorisierung ueberstimmen.
+     */
+    @Test
+    fun `belegte Pumpe Fault und FAKE_EXTENDED nullen auch den autorisierten Anteil`() {
+        tailGuard = false
+        flach = 62.0
+        steigungProMin = 0.0
+        markerAt = start + 2 * 60_000L
+        markerAuthorisesLow = true
+
+        // BELEGTE PUMPE.
+        whenever(commandQueue.bolusInQueue()).thenReturn(true)
+        clock = start
+        repeat(12) { assertEquals(0.0, cycle().decision.smbU, 1e-9, "belegte Pumpe: nichts geht hinaus") }
+        whenever(commandQueue.bolusInQueue()).thenReturn(false)
+
+        // FAULT (TEMP_BASAL_FALLBACK) - hier als Parameter von `run`.
+        neuerRunner(FuseLedgerAdapter())
+        clock = start
+        repeat(12) {
+            clock += 60_000L
+            val o = runner.run(
+                true,
+                FuseActivePump("GENERIC_AAPS", virtualPump = true, bolusStepU = 0.05, basalStepUPerH = 0.05),
+            )
+            assertEquals(0.0, o.decision.smbU, 1e-9, "Fault: nichts geht hinaus")
+        }
+
+        // FAKE_EXTENDED: einen fremden Extended darf FUSE nur LESEN.
+        neuerRunner(FuseLedgerAdapter())
+        whenever(processedTbrEbData.getTempBasalIncludingConvertedExtended(any())).thenAnswer {
+            TB(
+                timestamp = start, duration = 30 * 60_000L, rate = 0.0,
+                isAbsolute = true, type = TB.Type.FAKE_EXTENDED,
+            )
+        }
+        clock = start
+        repeat(12) { assertEquals(0.0, cycle().decision.smbU, 1e-9, "FAKE_EXTENDED: nichts geht hinaus") }
     }
 }

@@ -95,14 +95,43 @@ object TbrPolicy {
         data object ReadOnlyHold : Outcome
     }
 
+    /**
+     * WARUM die Menge geblockt wird - typisiert, nicht als Bit (11.08.).
+     *
+     * Das eine Bit `smbBlocked` trug SECHS verschiedene Gruende, und der
+     * Aufrufer konnte sie nicht auseinanderhalten. Fuer die manuelle
+     * Insulin-Autorisierung ist genau das noetig: ein Schutz-Null darf den
+     * markerfinanzierten Anteil durchlassen, eine belegte Pumpe oder ein
+     * Kernfehler NIEMALS. `smbBlocked = false` waere deshalb die falsche
+     * Loesung gewesen - sie haette alle sechs auf einmal geoeffnet.
+     *
+     * Und ausdruecklich NICHT ueber Grundtexte ableitbar: `reason` ist fuer
+     * Menschen, die Herkunft einer Menge muss typisiert sein.
+     */
+    enum class SmbBlockCause {
+        NONE,
+        /** Schutz-Null wegen Tief/Sicherheitsbahn - der EINZIGE Grund, den
+         *  eine ausdrueckliche manuelle Autorisierung ueberstimmen darf. */
+        SAFETY_ZERO,
+        PUMP_BUSY,
+        INVALID_INPUT,
+        SAFETY_SNAPSHOT_MISSING,
+        FAKE_EXTENDED,
+        FAULT,
+    }
+
     data class Decision(
         val outcome: Outcome,
         val reason: String,
         val alarm: Boolean,
         /** v0.3.1 C8: Kann FUSE die laufende Abgabe nicht stoppen, darf es nicht
          *  gleichzeitig zusaetzliches Insulin geben. */
-        val smbBlocked: Boolean,
-    )
+        val smbBlockCause: SmbBlockCause,
+    ) {
+        /** ABGELEITET, damit die bestehenden Leser unveraendert bleiben und
+         *  Bit und Grund nicht auseinanderlaufen koennen. */
+        val smbBlocked: Boolean get() = smbBlockCause != SmbBlockCause.NONE
+    }
 
     /** Vorzeichen gegen das Profilbasal — mit Pumpentoleranz, nie per exaktem
      *  Double-Vergleich. */
@@ -155,7 +184,9 @@ object TbrPolicy {
         return base.copy(
             outcome = if (base.outcome is Outcome.Request) Outcome.NoRequest else base.outcome,
             reason = "PUMP_BUSY|${base.reason}",
-            smbBlocked = true,
+            // Eine belegte Pumpe schlaegt jeden Basisgrund - sie ist nie
+            // ueberstimmbar, auch nicht durch eine manuelle Autorisierung.
+            smbBlockCause = SmbBlockCause.PUMP_BUSY,
         )
     }
 
@@ -171,12 +202,15 @@ object TbrPolicy {
         val invalid = cfg.violation() ?: current?.violation()
             ?: if (!scheduledBasalUPerH.isFinite() || scheduledBasalUPerH < 0.0) "scheduledBasal=$scheduledBasalUPerH" else null
         if (invalid != null)
-            return Decision(Outcome.NoRequest, "INVALID_INPUT|$invalid", alarm = true, smbBlocked = true)
+            return Decision(Outcome.NoRequest, "INVALID_INPUT|$invalid", alarm = true, smbBlockCause = SmbBlockCause.INVALID_INPUT)
 
         // Ohne frischen Safety-Snapshot wird GAR NICHTS angefordert — auch kein
         // Abbruch, dessen Wirkung ohne Zustandskenntnis unbekannt waere.
         if (fault == FaultCode.SAFETY_SNAPSHOT_MISSING)
-            return Decision(Outcome.NoRequest, FaultCode.SAFETY_SNAPSHOT_MISSING.name, alarm = true, smbBlocked = true)
+            return Decision(
+                Outcome.NoRequest, FaultCode.SAFETY_SNAPSHOT_MISSING.name,
+                alarm = true, smbBlockCause = SmbBlockCause.SAFETY_SNAPSHOT_MISSING,
+            )
 
         // Ein Kern-/Eingangsfehler kann keine Kategorie mehr begruenden: es
         // bleibt "nichts Positives" (v0.3 §12).
@@ -195,7 +229,11 @@ object TbrPolicy {
                 alarm = unsafe,
                 // C8: Kann FUSE die laufende Abgabe nicht stoppen, darf es nicht
                 // gleichzeitig zusaetzliches Insulin geben.
-                smbBlocked = unsafe || smbBlockedByFault,
+                smbBlockCause = when {
+                    unsafe            -> SmbBlockCause.FAKE_EXTENDED
+                    smbBlockedByFault -> SmbBlockCause.FAULT
+                    else              -> SmbBlockCause.NONE
+                },
             )
 
         val base = when (effective) {
@@ -204,7 +242,7 @@ object TbrPolicy {
             Intent.KEEP        -> keep(current, scheduledBasalUPerH, cfg)
         }
         return if (fault == FaultCode.NONE) base
-        else base.copy(reason = "${fault.name}|${base.reason}", smbBlocked = true)
+        else base.copy(reason = "${fault.name}|${base.reason}", smbBlockCause = SmbBlockCause.FAULT)
     }
 
     /**
@@ -239,9 +277,9 @@ object TbrPolicy {
      * Zurueckhaltung stehen und der Abbruch entfaellt.
      */
     private fun keep(current: Current?, scheduledBasalUPerH: Double, cfg: Config): Decision {
-        val keep = Decision(Outcome.NoRequest, "KEEP", alarm = false, smbBlocked = false)
+        val keep = Decision(Outcome.NoRequest, "KEEP", alarm = false, smbBlockCause = SmbBlockCause.NONE)
         if (current == null) return keep
-        fun cancel(reason: String) = Decision(Outcome.Request(0.0, 0), reason, alarm = false, smbBlocked = false)
+        fun cancel(reason: String) = Decision(Outcome.Request(0.0, 0), reason, alarm = false, smbBlockCause = SmbBlockCause.NONE)
         if (isZeroRate(current.absoluteRateUPerH, cfg.basalStepUPerH)) return cancel("KEEP_CANCEL_STALE_ZERO")
         // Ueber Profilbasal: derselbe Abbruch wie unter NO_POSITIVE. Waehrend
         // FUSE dosiert, ist eine laufende positive TBR eine zweite, ungeprueft
@@ -253,26 +291,26 @@ object TbrPolicy {
 
     private fun safetyZero(current: Current?, cfg: Config): Decision {
         val zero = Outcome.Request(0.0, cfg.defaultDurationMin)
-        if (current == null) return Decision(zero, "SAFETY_ZERO_NEW", alarm = false, smbBlocked = true)
+        if (current == null) return Decision(zero, "SAFETY_ZERO_NEW", alarm = false, smbBlockCause = SmbBlockCause.SAFETY_ZERO)
         if (isZeroRate(current.absoluteRateUPerH, cfg.basalStepUPerH)) {
             // Eine laufende Null wird nicht minuetlich neu gesetzt — erst wenn
             // sie auszulaufen droht.
             return if (current.remainingMin >= cfg.tbrRenewMinRemainingMin)
-                Decision(Outcome.NoRequest, "SAFETY_ZERO_ALREADY_RUNNING", alarm = false, smbBlocked = true)
-            else Decision(zero, "SAFETY_ZERO_RENEW", alarm = false, smbBlocked = true)
+                Decision(Outcome.NoRequest, "SAFETY_ZERO_ALREADY_RUNNING", alarm = false, smbBlockCause = SmbBlockCause.SAFETY_ZERO)
+            else Decision(zero, "SAFETY_ZERO_RENEW", alarm = false, smbBlockCause = SmbBlockCause.SAFETY_ZERO)
         }
         // Auch eine bereits absenkende, aber nicht nullende Rate wird SOFORT
         // auf 0 gezogen — nicht auslaufen gelassen.
-        return Decision(zero, "SAFETY_ZERO_REPLACE", alarm = false, smbBlocked = true)
+        return Decision(zero, "SAFETY_ZERO_REPLACE", alarm = false, smbBlockCause = SmbBlockCause.SAFETY_ZERO)
     }
 
     private fun noPositive(current: Current?, scheduledBasalUPerH: Double, cfg: Config): Decision {
-        if (current == null) return Decision(Outcome.NoRequest, "NO_POSITIVE_NOTHING_RUNNING", alarm = false, smbBlocked = false)
+        if (current == null) return Decision(Outcome.NoRequest, "NO_POSITIVE_NOTHING_RUNNING", alarm = false, smbBlockCause = SmbBlockCause.NONE)
         val dir = classify(current.absoluteRateUPerH, scheduledBasalUPerH, cfg.basalStepUPerH)
         return if (dir == Direction.POSITIVE)
         // Cancel: rate 0, duration 0 — eindeutig, kein "zurueck auf Profilbasal
         // per absoluter Rate".
-            Decision(Outcome.Request(0.0, 0), "NO_POSITIVE_CANCEL", alarm = false, smbBlocked = false)
-        else Decision(Outcome.NoRequest, "NO_POSITIVE_KEEP_NON_POSITIVE", alarm = false, smbBlocked = false)
+            Decision(Outcome.Request(0.0, 0), "NO_POSITIVE_CANCEL", alarm = false, smbBlockCause = SmbBlockCause.NONE)
+        else Decision(Outcome.NoRequest, "NO_POSITIVE_KEEP_NON_POSITIVE", alarm = false, smbBlockCause = SmbBlockCause.NONE)
     }
 }

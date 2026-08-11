@@ -162,4 +162,100 @@ class FuseTbrTranslatorTest {
         )
         assertEquals(FuseController.TbrRequest(0.0, 30), r.request)
     }
+
+    // ---- Die drei Faelle des fuenften Tors --------------------------------
+
+    /** Wie [decision], aber mit ausdruecklich autorisiertem Anteil. */
+    private fun autorisiert(smb: Double, authU: Double, tbr: FuseController.TbrAction) =
+        decision(smb, tbr).copy(markerLowAuthorizedU = authU)
+
+    /**
+     * FALL 2: Schutz-Null UND autorisierte Menge -> der autorisierte Anteil
+     * geht hinaus, der Nullstrom laeuft daneben weiter.
+     *
+     * Das ist die einzige Stelle, an der eine Blockursache ueberstimmt wird,
+     * und sie steht hier isoliert - im Runner-Test steckt sie in einer ganzen
+     * Zykluskette, hier ist sie eine Zeile.
+     */
+    @Test
+    fun `SAFETY_ZERO laesst den autorisierten Anteil durch`() {
+        val r = FuseTbrTranslator.combine(
+            autorisiert(0.10, 0.10, FuseController.TbrAction.ZERO_TEMP), null, scheduled, cfg
+        )
+        assertEquals(0.10, r.decision.smbU, 1e-12, "der autorisierte Anteil muss durchkommen")
+        assertEquals(FuseController.TbrRequest(0.0, 30), r.request, "und die Null laeuft daneben weiter")
+    }
+
+    /** Und nur BIS ZU dieser Menge: was darueber hinausgeht, ist nicht
+     *  autorisiert und faellt weg. */
+    @Test
+    fun `mehr als der autorisierte Anteil kommt nicht durch`() {
+        val r = FuseTbrTranslator.combine(
+            autorisiert(0.30, 0.10, FuseController.TbrAction.ZERO_TEMP), null, scheduled, cfg
+        )
+        assertEquals(0.10, r.decision.smbU, 1e-12, "gekappt auf den autorisierten Anteil")
+    }
+
+    /**
+     * FALL 3: JEDER ANDERE GRUND NULLT - auch mit Autorisierung.
+     *
+     * Das ist die Gegenprobe zu `smbBlocked = false`. Dieses eine Bit trug
+     * SECHS Ursachen; die naheliegende Reparatur haette alle geoeffnet.
+     */
+    @Test
+    fun `jeder andere Blockgrund nullt auch den autorisierten Anteil`() {
+        val faelle = listOf(
+            "Pumpe beschaeftigt" to FuseTbrTranslator.combine(
+                autorisiert(0.10, 0.10, FuseController.TbrAction.ZERO_TEMP), null, scheduled, cfg,
+                pumpBusy = true
+            ),
+            "Kernfehler" to FuseTbrTranslator.combine(
+                autorisiert(0.10, 0.10, FuseController.TbrAction.ZERO_TEMP), null, scheduled, cfg,
+                fault = TbrPolicy.FaultCode.CORE_INPUT_INVALID
+            ),
+            "kein Safety-Snapshot" to FuseTbrTranslator.combine(
+                autorisiert(0.10, 0.10, FuseController.TbrAction.ZERO_TEMP), null, scheduled, cfg,
+                fault = TbrPolicy.FaultCode.SAFETY_SNAPSHOT_MISSING
+            ),
+            "Temp-Basal-Fallback" to FuseTbrTranslator.combine(
+                autorisiert(0.10, 0.10, FuseController.TbrAction.ZERO_TEMP), null, scheduled, cfg,
+                fault = TbrPolicy.FaultCode.TEMP_BASAL_FALLBACK
+            ),
+            "FAKE_EXTENDED" to FuseTbrTranslator.combine(
+                autorisiert(0.10, 0.10, FuseController.TbrAction.ZERO_TEMP),
+                running(1.20, TbrPolicy.SourceType.FAKE_EXTENDED), scheduled, cfg
+            ),
+        )
+        for ((name, r) in faelle) assertEquals(0.0, r.decision.smbU, 1e-12, name)
+    }
+
+    /**
+     * OHNE Autorisierung bleibt der Schutz-Nullstrom absolut. Sonst waere die
+     * Ausnahme keine Ausnahme, sondern die neue Regel.
+     */
+    @Test
+    fun `ohne Autorisierung nullt SAFETY_ZERO weiterhin vollstaendig`() {
+        val r = FuseTbrTranslator.combine(
+            decision(0.30, FuseController.TbrAction.ZERO_TEMP), null, scheduled, cfg
+        )
+        assertEquals(0.0, r.decision.smbU, 1e-12)
+    }
+
+    /**
+     * Die Ursachen sind VOLLSTAENDIG aufgezaehlt, und das abgeleitete Bit
+     * kann nicht auseinanderlaufen.
+     *
+     * Eine neue Ursache faellt hier auf und zwingt zu einer Entscheidung in
+     * `applyBlock`, statt still in den Sammelzweig zu rutschen.
+     */
+    @Test
+    fun `die Blockursachen sind vollstaendig aufgezaehlt`() {
+        assertEquals(7, TbrPolicy.SmbBlockCause.entries.size)
+        for (c in TbrPolicy.SmbBlockCause.entries)
+            assertEquals(
+                c != TbrPolicy.SmbBlockCause.NONE,
+                TbrPolicy.Decision(TbrPolicy.Outcome.NoRequest, c.name, false, c).smbBlocked,
+                c.name,
+            )
+    }
 }

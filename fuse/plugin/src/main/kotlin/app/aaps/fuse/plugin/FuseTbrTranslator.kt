@@ -2,6 +2,7 @@ package app.aaps.fuse.plugin
 
 import app.aaps.fuse.core.controller.FuseController
 import app.aaps.fuse.core.controller.TbrPolicy
+import kotlin.math.min
 
 /**
  * EIN TBR-Pfad, nicht zwei.
@@ -54,6 +55,40 @@ object FuseTbrTranslator {
     )
 
     /**
+     * DAS FUENFTE TOR - und der Grund, warum es einen Grund braucht.
+     *
+     * Bis zum 11.08. stand hier `if (tbr.smbBlocked) smbU = 0.0`, und das eine
+     * Bit trug SECHS verschiedene Ursachen. `MarkerAuthorisesLow` oeffnete
+     * darueber vier Tore im Regler - und diese Zeile nullte die Menge trotzdem,
+     * weil der Schutz-Nullstrom bei Tief zwangslaeufig mitkommt. Die Einstellung
+     * war wirkungslos, gemessen am Geraet: `block=NONE bind=primeRelease
+     * floor=0.10 smb=0.0`.
+     *
+     * `smbBlocked = false` waere die falsche Reparatur gewesen: dasselbe Bit
+     * schuetzt bei belegter Pumpe, fehlendem Sicherheits-Schnappschuss,
+     * Kern-/Eingangsfehlern und `FAKE_EXTENDED`. Also drei Faelle statt zwei:
+     *
+     * 1. KEIN Block -> die ganze zertifizierte Menge.
+     * 2. Block AUSSCHLIESSLICH wegen `SAFETY_ZERO`, und die Menge traegt eine
+     *    ausdrueckliche manuelle Autorisierung -> nur DEREN Anteil.
+     * 3. Jeder andere Grund -> 0 U. Ohne Ausnahme, auch mit Marker.
+     *
+     * Die Herkunft kommt aus [FuseController.Decision.markerLowAuthorizedU],
+     * nicht aus `bindingLimit` und nicht aus einem Grundtext.
+     */
+    private fun applyBlock(
+        decision: FuseController.Decision,
+        cause: TbrPolicy.SmbBlockCause,
+    ): FuseController.Decision = when {
+        cause == TbrPolicy.SmbBlockCause.NONE                                    -> decision
+        cause == TbrPolicy.SmbBlockCause.SAFETY_ZERO &&
+            decision.markerLowAuthorizedU > 0.0                                  ->
+            decision.copy(smbU = min(decision.smbU, decision.markerLowAuthorizedU))
+
+        else                                                                     -> decision.copy(smbU = 0.0)
+    }
+
+    /**
      * Fuehrt beide Achsen zusammen: die Mengenentscheidung des Reglers und die
      * TBR-Entscheidung der Tabelle.
      */
@@ -66,7 +101,7 @@ object FuseTbrTranslator {
         pumpBusy: Boolean = false,
     ): Result {
         val tbr = TbrPolicy.decide(intentOf(decision.tbr), current, scheduledBasalUPerH, cfg, fault, pumpBusy)
-        val effective = if (tbr.smbBlocked) decision.copy(smbU = 0.0) else decision
+        val effective = applyBlock(decision, tbr.smbBlockCause)
         // C7a — GEMEINSAMES ZERTIFIKAT (Codex-Adjudication H3, D-Tabelle C7).
         val jointVeto = effective.smbU > 0.0 && endsWithholding(tbr.outcome, current, scheduledBasalUPerH, cfg)
         return Result(
