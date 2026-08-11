@@ -166,7 +166,7 @@ class EvidenceStockTest {
     fun `nach dem Maximalende gibt es keinen Bestand mehr`() {
         var s = EvidenceStock.step(EvidenceStock.State(), eingabe(0, 100.0)).state
         s = EvidenceStock.step(s, eingabe(1, 140.0)).state
-        val r = EvidenceStock.step(s, eingabe(EvidenceStock.MAX_EPISODE_MIN + 1, 200.0))
+        val r = EvidenceStock.step(s, eingabe(EvidenceStock.Config().maxEpisodeMin + 1, 200.0))
         assertEquals(0.0, r.state.stockMgdl, 1e-9)
         assertEquals(EvidenceStock.NoInflow.EPISODE_EXPIRED, r.noInflow)
     }
@@ -205,7 +205,7 @@ class EvidenceStockTest {
         s = EvidenceStock.step(s, eingabe(1, 140.0)).state
         val vorher = s.stockMgdl
         // Flache Reihe ueber den halben Verfallszeitraum.
-        s = EvidenceStock.step(s, eingabe(1 + EvidenceStock.DECAY_MIN / 2, 140.0)).state
+        s = EvidenceStock.step(s, eingabe(1 + EvidenceStock.Config().decayMin / 2, 140.0)).state
         assertTrue(s.stockMgdl < vorher * 0.75, "$vorher -> ${s.stockMgdl}")
     }
 }

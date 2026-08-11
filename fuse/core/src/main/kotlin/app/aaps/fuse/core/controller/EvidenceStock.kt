@@ -52,34 +52,56 @@ import kotlin.math.min
 object EvidenceStock {
 
     /**
-     * HARTES MAXIMALENDE der Episode [min].
+     * DIE VIER STELLSCHRAUBEN - benannt und einzeln uebergebbar, damit ein
+     * Replay sie durchfahren kann. Als `const` waeren sie unpruefbar gewesen
+     * und haetten wie Herleitungen ausgesehen; drei von ihnen sind das nicht.
      *
-     * Der Bestand ersetzt den Timer NICHT, er ergaenzt ihn - Tonis Auflage,
-     * und sie ist noetig: ein Bestand, der sich aus `Δadjusted` speist, kann
-     * bei dauerhaft steigender Bahn unbegrenzt nachwachsen. Gegenregulation,
-     * Sensordrift, eine schlechte Infusionsstelle - alles drei sieht wie
-     * Stoerung aus und ist keine Mahlzeit. Der Deckel ist der Notaus, nicht
-     * die Regel.
-     *
-     * 4 Stunden, weil der gemessene Lauf vom 11.08. nach 205 Minuten noch
-     * lief. Kuerzer waere gegen die Messung, laenger ohne Beleg.
+     * ALPHA-HYPOTHESEN, ausdruecklich: die Defaults sind plausibel begruendet,
+     * aber nicht optimiert. Sie gehoeren in einen Sweep, bevor sie in einem
+     * geschlossenen Kreis laufen.
      */
-    const val MAX_EPISODE_MIN = 240
-
-    /**
-     * Verfall des Bestands [min] - die "begrenzte zeitliche Nachwirkung".
-     *
-     * KUERZER ALS DER SCHAETZERVERZUG, und das ist kein Zufall: bliebe ein
-     * Bestand laenger stehen als die 10 Minuten, die `r` nach einer Wende
-     * nachlaeuft, waere er keine Begrenzung, sondern eine Verlaengerung genau
-     * der Phase, in der die Absorption schon vorbei ist.
-     */
-    const val DECAY_MIN = 8
-
-    /** Ueber welchen Horizont der Restbestand als Antrieb ausgeschuettet wird
-     *  [min]. Dieselbe Form wie [MarkerScope.declaredAbsorptionDriveMgdlPerMin]
-     *  - Bestand in mg/dl geteilt durch ein Fenster ergibt mg/dl/min. */
-    const val RELEASE_WINDOW_MIN = 30
+    data class Config(
+        /**
+         * HARTER SICHERHEITSDECKEL der Episode [min] - ausdruecklich KEIN
+         * Modell einer typischen Mahlzeitendauer.
+         *
+         * Der Bestand ersetzt den Timer nicht, er ergaenzt ihn: ein Bestand,
+         * der sich aus `Δadjusted` speist, kann bei dauerhaft steigender Bahn
+         * unbegrenzt nachwachsen. Gegenregulation, Sensordrift, eine schlechte
+         * Infusionsstelle - alles drei sieht wie Stoerung aus und ist keine
+         * Mahlzeit. Der Deckel ist der Notaus.
+         *
+         * 240 als Startwert, weil EIN gemessener Lauf (11.08.) nach 205
+         * Minuten noch lief. Aus einer Mahlzeit laesst sich keine Dauer
+         * verallgemeinern - der Wert sagt "so lange darf es hoechstens
+         * gehen", nicht "so lange dauert eine Mahlzeit".
+         */
+        val maxEpisodeMin: Int = 240,
+        /**
+         * Verfall des Bestands [min] - die begrenzte zeitliche Nachwirkung.
+         *
+         * KUERZER ALS DER SCHAETZERVERZUG, und das ist die einzige der vier
+         * Zahlen mit einer echten Herleitung: `r` bleibt nach einer Wende im
+         * Median 10 Minuten positiv (160 Wenden im Trail). Ein laenger
+         * stehender Bestand waere keine Begrenzung, sondern eine
+         * Verlaengerung genau der Phase, in der die Absorption vorbei ist.
+         */
+        val decayMin: Int = 8,
+        /** Ueber welchen Horizont der Restbestand als Antrieb ausgeschuettet
+         *  wird [min]. Bestand in mg/dl geteilt durch ein Fenster ergibt
+         *  mg/dl/min - dieselbe Form wie die erklaerte Absorption. */
+        val releaseWindowMin: Int = 30,
+        /**
+         * Wie stark ein Rueckgang der bereinigten Reihe den Bestand abraeumt.
+         *
+         * GESETZT, NICHT HERGELEITET. Die Richtung ist begruendet - faellt die
+         * Reihe, war die Stoerung kleiner als angenommen, und nur nicht weiter
+         * zu fuellen genuegt dann nicht; zu viel Bestand kostet Insulin, zu
+         * wenig kostet Wartezeit. Der BETRAG 2,0 ist eine Alpha-Hypothese und
+         * gehoert in den Sweep.
+         */
+        val declineFactor: Double = 2.0,
+    )
 
     /** Ein Segmentbruch macht die Differenz zweier bereinigter Punkte
      *  bedeutungslos: `cumulativeBgi` startet je Segment neu bei 0. Der
@@ -139,6 +161,14 @@ object EvidenceStock {
          * Sofort abgezogen: ein Abzug, der auf die Sichtbarkeit wartet,
          * finanziert in der Zwischenzeit dieselbe Stoerung weiter (gemessene
          * Sichtbarkeitslatenz p90 56 s, max 854 s).
+         *
+         * JEDE FUSE-DOSIS DER EPISODE, nicht nur die aus diesem Kanal. Prime,
+         * Onset, Rest-Zaehler und die gewoehnliche Korrektur wirken alle gegen
+         * DIESELBE Stoerung - eine, die den Bestand nicht mindert, laesst ihn
+         * stehen, obwohl sie ihn gerade abgetragen hat. Das ist keine
+         * Doppelanrechnung: die Huellen begrenzen, WIEVIEL ein Kanal geben
+         * darf, der Bestand misst, WIEVIEL Stoerung noch unbezahlt ist. Zwei
+         * verschiedene Buecher ueber dieselbe Dosis.
          */
         val committedU: Double,
         val isfMgdlPerU: Double,
@@ -154,7 +184,7 @@ object EvidenceStock {
         val noInflow: NoInflow?,
     )
 
-    fun step(prev: State, input: Input): Result {
+    fun step(prev: State, input: Input, cfg: Config = Config()): Result {
         val isf = input.isfMgdlPerU
 
         // ---- Episode: Ende bedeutet Bestand WEG, nicht eingefroren --------
@@ -162,7 +192,7 @@ object EvidenceStock {
             return Result(State(), 0.0, 0.0, NoInflow.NO_EPISODE)
 
         val start = if (prev.episodeStartTs > 0L) prev.episodeStartTs else input.nowMs
-        if ((input.nowMs - start) / 60_000L >= MAX_EPISODE_MIN)
+        if ((input.nowMs - start) / 60_000L >= cfg.maxEpisodeMin)
             return Result(State(), 0.0, 0.0, NoInflow.EPISODE_EXPIRED)
 
         // ---- Widerruf VOR allem anderen ------------------------------------
@@ -178,7 +208,7 @@ object EvidenceStock {
         // ---- Verfall auf dem Bestand des letzten Zyklus --------------------
         val dtMin = if (prev.lastAcceptedTs > 0L)
             max(0.0, (input.sourceTs - prev.lastAcceptedTs) / 60_000.0) else 0.0
-        val nachVerfall = max(0.0, prev.stockMgdl - prev.stockMgdl * (dtMin / DECAY_MIN))
+        val nachVerfall = max(0.0, prev.stockMgdl - prev.stockMgdl * (dtMin / cfg.decayMin))
 
         // ---- Zufluss: NUR neue, nicht ueberlappende Messinformation --------
         val neuesSegment = prev.segmentStartTs != input.segmentStartTs
@@ -200,11 +230,10 @@ object EvidenceStock {
         // EIN NEGATIVER SCHRITT NIMMT SCHNELLER WEG, ALS EIN POSITIVER GIBT.
         // Die bereinigte Reihe faellt, wenn die Stoerung kleiner ist als
         // angenommen - dann war der Bestand zu hoch, und ihn nur nicht weiter
-        // zu fuellen genuegt nicht. Faktor 2, weil die Fehlerrichtung
-        // eindeutig ist: zu viel Bestand kostet Insulin, zu wenig kostet
-        // Wartezeit.
+        // zu fuellen genuegt nicht. Der FAKTOR ist gesetzt und nicht
+        // hergeleitet - s. Config.declineFactor.
         val rueckgang = if (grund == NoInflow.NO_RISE)
-            2.0 * (prev.lastAdjusted - input.adjusted) else 0.0
+            cfg.declineFactor * (prev.lastAdjusted - input.adjusted) else 0.0
 
         // ---- Abzug: zugesagtes Insulin, sofort ------------------------------
         val abzug = max(0.0, input.committedU) * max(0.0, isf)
@@ -223,7 +252,7 @@ object EvidenceStock {
             // Der Restbestand wird ueber ein begrenztes Fenster ausgeschuettet -
             // nicht auf einmal. Sonst waere ein Bestand von 30 mg/dl ein
             // Antrieb von 30 mg/dl/min, also physiologisch absurd.
-            creditMgdlPerMin = if (neu <= 0.0) 0.0 else min(neu / RELEASE_WINDOW_MIN, neu),
+            creditMgdlPerMin = if (neu <= 0.0) 0.0 else min(neu / cfg.releaseWindowMin, neu),
             inflowMgdl = zufluss,
             noInflow = grund,
         )
