@@ -33,4 +33,35 @@ interface FuseOverviewSource {
     /** Marker-Druck-Zeitpunkte im Fenster - je einer wird als senkrechte
      *  Linie in die FUSE-Untergraphen gezeichnet (Essensbeginn sichtbar). */
     fun fuseMealMarkerTimes(fromTime: Long, endTime: Long): List<Long>
+
+    // ---- Der Mahlzeiten-Knopf auf dem Uebersichtsschirm -------------------
+    //
+    // Der Knopf gehoert dorthin, weil man ihn beim ESSEN drueckt und nicht in
+    // einem Unter-Tab. Durchgereicht wird genau das, was das
+    // Overview-Fragment braucht - keine FUSE-Interna. Insbesondere faellt die
+    // Entscheidung, OB gefragt wird, in FUSE (MarkerPrompt) und nicht im
+    // Fragment: sonst haetten Uebersichtsknopf und FUSE-Tab zwei
+    // Sicherheitsniveaus fuer denselben Knopf.
+
+    /** Die Zahlen, die in der Rueckfrage stehen muessen. */
+    data class MarkerPromptFacts(
+        /** Was der erste Zyklus hoechstens freigeben kann [U]. */
+        val firstStepU: Double,
+        /** Die ganze Huelle ueber das Fenster [U]. */
+        val envelopeU: Double,
+        /** Was diese Episode schon geliefert hat [U]. */
+        val alreadyDeliveredU: Double,
+        /** Ob der Druck Modell-Einwaende ueberstimmt (Einstellung an). */
+        val authorizesAgainstModel: Boolean,
+        /** Ob JETZT ein gemessenes Tief vorliegt. */
+        val measuredLow: Boolean,
+    )
+
+    fun fuseMarkerArmed(now: Long): Boolean
+
+    /** `null` = ohne Rueckfrage ausfuehren (Ruecknahme). */
+    fun fuseMarkerPrompt(now: Long): MarkerPromptFacts?
+
+    /** Schaltet um. @return ob der Marker DANACH laeuft. */
+    fun fuseMarkerToggle(now: Long): Boolean
 }

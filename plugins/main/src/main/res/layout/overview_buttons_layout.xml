@@ -77,6 +77,25 @@
             android:textColor="?attr/icBolusCarbsColor"
             app:iconPadding="-4dp" />
 
+        <!-- FUSE-Mahlzeitenknopf: gehoert hierher, weil man ihn BEIM ESSEN
+             drueckt und nicht in einem Unter-Tab. Standardmaessig
+             unsichtbar - er erscheint nur, wenn FUSE der aktive APS ist
+             und die Einstellung ihn zeigt. -->
+        <app.aaps.core.ui.elements.SingleClickButton
+            android:id="@+id/fuse_meal_button"
+            style="@style/ButtonSmallFontStyle"
+            android:layout_width="0px"
+            android:layout_height="fill_parent"
+            android:layout_marginEnd="@dimen/gray_material_button_margin_horizontal"
+            android:layout_weight="0.5"
+            android:drawableTop="@drawable/ic_cp_bolus_carbs"
+            android:ellipsize="end"
+            android:singleLine="true"
+            android:text="@string/overview_fuse_meal_label"
+            android:textColor="?attr/icBolusCarbsColor"
+            android:visibility="gone"
+            app:iconPadding="-4dp" />
+
         <app.aaps.core.ui.elements.SingleClickButton
             android:id="@+id/wizard_button"
             style="@style/ButtonSmallFontStyle"

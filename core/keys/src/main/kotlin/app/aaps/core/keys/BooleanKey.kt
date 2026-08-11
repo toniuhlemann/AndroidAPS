@@ -24,6 +24,16 @@ enum class BooleanKey(
     OverviewShowWizardButton("show_wizard_button", true, defaultedBySM = true),
     OverviewShowInsulinButton("show_insulin_button", true, defaultedBySM = true),
     OverviewShowCarbsButton("show_carbs_button", true, defaultedBySM = true),
+
+    /**
+     * Der FUSE-Mahlzeitenknopf.
+     *
+     * Default AN, aber das kostet niemanden etwas: der Knopf ist ohnehin nur
+     * sichtbar, wenn FUSE der AKTIVE Algorithmus ist. Ein zweites Tor, das auf
+     * AUS steht, haette nur bedeutet, dass man eine Einstellung suchen muss, um
+     * einen Knopf zu bekommen, den man gerade angefordert hat.
+     */
+    OverviewShowFuseMealButton("show_fuse_meal_button", true, defaultedBySM = true),
     OverviewShowCgmButton("show_cgm_button", false, defaultedBySM = true, showInNsClientMode = false),
     OverviewShowCalibrationButton("show_calibration_button", false, defaultedBySM = true, showInNsClientMode = false),
     OverviewShortTabTitles("short_tabtitles", false, defaultedBySM = true),

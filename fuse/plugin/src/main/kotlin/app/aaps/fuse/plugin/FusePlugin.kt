@@ -6,9 +6,12 @@ import androidx.preference.Preference
 import androidx.preference.PreferenceCategory
 import androidx.preference.PreferenceManager
 import androidx.preference.PreferenceScreen
+import app.aaps.fuse.core.controller.MarkerPrompt
 import app.aaps.fuse.core.controller.MarkerTimeline
+import app.aaps.fuse.core.controller.PrimeRelease
 import app.aaps.core.data.plugin.PluginType
 import app.aaps.core.interfaces.aps.APS
+import app.aaps.core.interfaces.overview.FuseOverviewSource
 import app.aaps.core.interfaces.aps.APSResult
 import app.aaps.core.interfaces.aps.GlucoseStatus
 import app.aaps.core.interfaces.aps.RT
@@ -495,6 +498,47 @@ class FusePlugin @Inject constructor(
 
     /** Die EINE Huelle [U] - fuer den Lieferstand im Tab. S. [toggleMealMarker]. */
     fun mealMarkerEnvelopeU(): Double = preferences.get(FuseDoubleKey.PrimeEnvelopeU)
+
+    // ---- Der Knopf auf dem Uebersichtsschirm ------------------------------
+
+override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
+
+    /**
+     * Die Zahlen fuer die Rueckfrage - aus dem LETZTEN Zyklus, nicht neu
+     * gerechnet. Ein zweiter Rechenweg fuer dieselbe Groesse waere eine zweite
+     * Wahrheit, und der Dialog wuerde Zahlen zeigen, die der Regler so nie
+     * gesehen hat.
+     *
+     * `firstStepU` ist deshalb der Plan-Boden des letzten Zyklus, wenn es ihn
+     * gibt; sonst der rechnerische Zyklusanteil der ganzen Huelle. Beides ist
+     * eine OBERGRENZE - was wirklich herauskommt, kappen maxSmb, iobTH, maxIOB
+     * und die Pumpenschrittweite.
+     */
+    override fun fuseMarkerPrompt(now: Long): FuseOverviewSource.MarkerPromptFacts? {
+        val huelle = mealMarkerEnvelopeU()
+        val letzter = lastOutcome
+        val geliefert = letzter?.mealStats?.totalU ?: 0.0
+        val schritt = letzter?.prime?.floorU?.takeIf { it > 0.0 }
+            ?: (huelle - geliefert).coerceAtLeast(0.0) / PrimeRelease.WINDOW_MIN
+        val fakten = MarkerPrompt.Facts(
+            firstStepU = schritt,
+            envelopeU = huelle,
+            alreadyDeliveredU = geliefert,
+            authorizesAgainstModel = preferences.get(FuseBooleanKey.MarkerAuthorisesRelease),
+            measuredLow = letzter?.state?.safetyHold == true,
+        )
+        return MarkerPrompt.required(armed = mealMarkerActive(now), facts = fakten)?.let {
+            FuseOverviewSource.MarkerPromptFacts(
+                firstStepU = it.firstStepU,
+                envelopeU = it.envelopeU,
+                alreadyDeliveredU = it.alreadyDeliveredU,
+                authorizesAgainstModel = it.authorizesAgainstModel,
+                measuredLow = it.measuredLow,
+            )
+        }
+    }
+
+    override fun fuseMarkerToggle(now: Long): Boolean = toggleMealMarker(now)
 
     fun mealMarkerActive(now: Long): Boolean {
         val ts = mealMarkerArmedTs()

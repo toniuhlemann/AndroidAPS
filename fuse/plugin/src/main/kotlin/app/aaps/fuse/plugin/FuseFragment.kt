@@ -36,6 +36,7 @@ class FuseFragment : DaggerFragment() {
     @Inject lateinit var aapsSchedulers: AapsSchedulers
     @Inject lateinit var fabricPrivacy: FabricPrivacy
     @Inject lateinit var dateUtil: DateUtil
+    @Inject lateinit var rh: app.aaps.core.interfaces.resources.ResourceHelper
     @Inject lateinit var fusePlugin: FusePlugin
 
     private val disposable = CompositeDisposable()
@@ -47,7 +48,19 @@ class FuseFragment : DaggerFragment() {
 
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
-        binding.fuseMealMarker.setOnClickListener { fusePlugin.toggleMealMarker(dateUtil.now()); update() }
+        // DIESELBE RUECKFRAGE WIE AUF DEM UEBERSICHTSSCHIRM. Der Knopf hier
+        // schaltete bisher ohne jede Nachfrage um - solange er nur die
+        // Evidenzschwelle senkte, war das vertretbar. Seit dem 11.08. ist er
+        // eine Insulin-Autorisierung, und dann darf die Sicherheit nicht davon
+        // abhaengen, welchen der beiden Knoepfe man erwischt.
+        binding.fuseMealMarker.setOnClickListener {
+            val now = dateUtil.now()
+            val umschalten = Runnable { fusePlugin.toggleMealMarker(now); update() }
+            val fakten = fusePlugin.fuseMarkerPrompt(now)
+            val act = activity
+            if (fakten == null || act == null) umschalten.run()
+            else app.aaps.core.ui.dialogs.FuseMarkerDialog.show(act, rh, fakten, umschalten)
+        }
     }
 
     override fun onResume() {

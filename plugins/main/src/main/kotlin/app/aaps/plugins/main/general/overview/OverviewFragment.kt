@@ -138,6 +138,7 @@ class OverviewFragment : DaggerFragment(), View.OnClickListener, OnLongClickList
     @Inject lateinit var nsSettingsStatus: NSSettingsStatus
     @Inject lateinit var loop: Loop
     @Inject lateinit var activePlugin: ActivePlugin
+    @Inject lateinit var fuseOverviewSource: app.aaps.core.interfaces.overview.FuseOverviewSource
     @Inject lateinit var iobCobCalculator: IobCobCalculator
     @Inject lateinit var dexcomBoyda: DexcomBoyda
     @Inject lateinit var xDripSource: XDripSource
@@ -257,6 +258,7 @@ class OverviewFragment : DaggerFragment(), View.OnClickListener, OnLongClickList
         binding.buttonsLayout.cgmButton.setOnClickListener(this)
         binding.buttonsLayout.insulinButton.setOnClickListener(this)
         binding.buttonsLayout.carbsButton.setOnClickListener(this)
+        binding.buttonsLayout.fuseMealButton.setOnClickListener(this)
         binding.buttonsLayout.quickWizardButton.setOnClickListener(this)
         binding.buttonsLayout.quickWizardButton.setOnLongClickListener(this)
         binding.infoLayout.apsMode.setOnClickListener(this)
@@ -446,6 +448,37 @@ class OverviewFragment : DaggerFragment(), View.OnClickListener, OnLongClickList
         handler.looper.quitSafely()
     }
 
+    /**
+     * DER MAHLZEITEN-KNOPF, mit Rueckfrage.
+     *
+     * OB gefragt wird, entscheidet FUSE (MarkerPrompt) und nicht dieses
+     * Fragment - sonst haetten Uebersichtsknopf und FUSE-Tab zwei
+     * Sicherheitsniveaus fuer denselben Knopf. Hier steht nur, WIE die Frage
+     * aussieht.
+     *
+     * Der Text nennt drei Dinge, und jedes aus einem Grund: den moeglichen
+     * ERSTEN Schritt und die GANZE Huelle, damit die Groessenordnung vor dem
+     * Ja steht - und dass eine Ruecknahme bereits Abgegebenes NICHT
+     * zurueckholt, weil man genau das ohne Hinweis falsch annimmt.
+     */
+    private fun onFuseMealButton(activity: androidx.fragment.app.FragmentActivity) {
+        val now = dateUtil.now()
+        val fakten = fuseOverviewSource.fuseMarkerPrompt(now)
+        val umschalten = Runnable {
+            fuseOverviewSource.fuseMarkerToggle(now)
+            processButtonsVisibility()
+        }
+        // null heisst: ohne Rueckfrage - das ist die RUECKNAHME, und die kann
+        // nur Insulin sparen.
+        if (fakten == null) {
+            umschalten.run()
+            return
+        }
+        // DER TEXT STEHT IN core:ui, nicht hier: derselbe Dialog erscheint im
+        // FUSE-Tab, und zwei Fassungen waeren zwei Sicherheitsniveaus.
+        app.aaps.core.ui.dialogs.FuseMarkerDialog.show(activity, rh, fakten, umschalten)
+    }
+
     override fun onClick(v: View) {
         // try to fix  https://fabric.io/nightscout3/android/apps/info.nightscout.androidaps/issues/5aca7a1536c7b23527eb4be7?time=last-seven-days
         // https://stackoverflow.com/questions/14860239/checking-if-state-is-saved-before-committing-a-fragmenttransaction
@@ -468,6 +501,8 @@ class OverviewFragment : DaggerFragment(), View.OnClickListener, OnLongClickList
                     UIRunnable { if (isAdded) uiInteraction.runInsulinDialog(childFragmentManager) })
 
                 R.id.quick_wizard_button -> protectionCheck.queryProtection(activity, ProtectionCheck.Protection.BOLUS, UIRunnable { if (isAdded) onClickQuickWizard() })
+                R.id.fuse_meal_button    -> onFuseMealButton(activity)
+
                 R.id.carbs_button        -> protectionCheck.queryProtection(
                     activity,
                     ProtectionCheck.Protection.BOLUS,
@@ -642,6 +677,36 @@ class OverviewFragment : DaggerFragment(), View.OnClickListener, OnLongClickList
             // **** Various treatment buttons ****
             binding.buttonsLayout.carbsButton.visibility =
                 (profile != null && preferences.get(BooleanKey.OverviewShowCarbsButton)).toVisibility()
+            // Der FUSE-Knopf erscheint NUR, wenn FUSE auch rechnet. Ein Knopf,
+            // der auf einen inaktiven Algorithmus drueckt, waere schlimmer als
+            // keiner: er sieht aus, als haette er etwas getan. Das Interface ist
+            // immer gebunden (an FusePlugin), deshalb entscheidet der AKTIVE
+            // Algorithmus und nicht die Existenz der Bindung.
+            binding.buttonsLayout.fuseMealButton.visibility = (
+                preferences.get(BooleanKey.OverviewShowFuseMealButton) &&
+                    activePlugin.activeAPS.algorithm == app.aaps.core.interfaces.aps.APSResult.Algorithm.FUSE
+                ).toVisibility()
+            // DER ZUSTAND MUSS AM KNOPF ABLESBAR SEIN, wie im FUSE-Tab. Zwei
+            // Signale statt einem: Text UND Farbe. Ein reiner Textwechsel geht
+            // in einer Knopfreihe unter, und "habe ich schon gedrueckt?" ist
+            // genau die Frage, die zum Doppeldruck fuehrt.
+            //
+            // refreshAll() ruft processButtonsVisibility() mit, also faellt der
+            // Zustand auch beim Ablauf des Markers von selbst zurueck.
+            val markerAn = fuseOverviewSource.fuseMarkerArmed(dateUtil.now())
+            binding.buttonsLayout.fuseMealButton.text = rh.gs(
+                if (markerAn) app.aaps.core.ui.R.string.overview_fuse_meal_active_label
+                else app.aaps.core.ui.R.string.overview_fuse_meal_label
+            )
+            context?.let { ctx ->
+                binding.buttonsLayout.fuseMealButton.setTextColor(
+                    rh.gac(
+                        ctx,
+                        if (markerAn) app.aaps.core.ui.R.attr.ribbonWarningColor
+                        else app.aaps.core.ui.R.attr.icBolusCarbsColor,
+                    )
+                )
+            }
             binding.buttonsLayout.treatmentButton.visibility = (loop.runningMode != RM.Mode.DISCONNECTED_PUMP && !pump.isSuspended() && pump.isInitialized() && profile != null
                 && preferences.get(BooleanKey.OverviewShowTreatmentButton)).toVisibility()
             binding.buttonsLayout.wizardButton.visibility = (loop.runningMode != RM.Mode.DISCONNECTED_PUMP && !pump.isSuspended() && pump.isInitialized() && profile != null

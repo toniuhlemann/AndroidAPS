@@ -160,6 +160,19 @@
     <string name="prime_fill">Prime/Fill</string>
     <string name="site_rotation">Site Rotation</string>
     <string name="overview_insulin_label">Insulin</string>
+    <string name="overview_fuse_meal_label">Mahlzeit</string>
+    <string name="overview_fuse_meal_active_label">◉ Mahlzeit</string>
+    <string name="overview_fuse_meal_confirm_title">Mahlzeit ankuendigen?</string>
+    <string name="overview_fuse_meal_confirm_body">FUSE gibt daraufhin ab sofort Insulin ab, ohne auf einen Anstieg im CGM zu warten.
+
+Erster Schritt: bis zu %1$.2f U
+Insgesamt: bis zu %2$.2f U ueber 15 Minuten</string>
+    <string name="overview_fuse_meal_confirm_authorized">ACHTUNG: Der Knopf ueberstimmt derzeit die Prognose von FUSE (Einstellung \"Mahlzeiten-Knopf gibt Insulin frei\"). Es wird auch dann abgegeben, wenn FUSE einen fallenden Zucker erwartet.</string>
+    <string name="overview_fuse_meal_confirm_low">Der Zucker ist gerade TIEF. Nur druecken, wenn die Kohlenhydrate wirklich kommen.</string>
+    <string name="overview_fuse_meal_confirm_already">Diese Mahlzeit hat bereits %1$.2f U bekommen - so viel weniger steht noch zur Verfuegung.</string>
+    <string name="overview_fuse_meal_confirm_no_undo">Zuruecknehmen stoppt weitere Abgaben, holt aber bereits abgegebenes Insulin NICHT zurueck.</string>
+    <string name="overview_show_fuse_meal_button">Mahlzeiten-Knopf (FUSE)</string>
+    <string name="overview_show_fuse_meal_button_summary">Zeigt den FUSE-Mahlzeitenknopf auf dem Uebersichtsschirm. Er erscheint nur, wenn FUSE der aktive Algorithmus ist.</string>
     <string name="stoptemptarget">Stop temp target</string>
     <string name="closedloop">Closed Loop</string>
     <string name="openloop">Open Loop</string>
