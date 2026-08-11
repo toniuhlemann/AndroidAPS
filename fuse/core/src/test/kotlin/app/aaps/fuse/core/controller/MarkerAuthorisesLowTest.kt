@@ -225,6 +225,61 @@ class MarkerAuthorisesLowTest {
         assertEquals(0.0, d.smbU, 1e-9, "ohne Autorisierung bleibt der Schwanz bindend")
     }
 
+    // ---- OHNE BAHN (predictorfreier Markerpfad) ---------------------------
+
+    /**
+     * DIE DOSIERLOGIK DES PREDICTORFREIEN PFADES, in derselben
+     * Zusammensetzung, die `markerFallbackCycle` baut: plan(null) + lift ohne
+     * Schwanz-Headroom. Wird die Bahn verworfen, ist das hier die GANZE
+     * Rechnung - es gibt keine Kandidatensuche, keinen Guard, keinen Schwanz.
+     */
+    @Test
+    fun `ohne Bahn entsteht mit Autorisierung eine Menge`() {
+        val p = PrimeRelease.plan(ohneBahn(markerAuthorisesLow = true))
+        assertTrue(p.active, "der Plan muss ohne Bahn stehen koennen: ${p.reason}")
+        assertEquals("PRIME", p.reason)
+        val d = PrimeRelease.lift(
+            blockiert(FuseController.Block.SAFETY_HOLD), p, state(),
+            markerAuthorisesLow = true,
+            tailHeadroomU = null,          // ohne Bahn gibt es keinen
+        )
+        assertTrue(d.smbU > 0.0, "ohne Bahn und mit Autorisierung muss etwas herauskommen")
+        assertEquals(d.smbU, d.markerLowAuthorizedU, 1e-9, "und alles davon ist autorisiert")
+    }
+
+    /**
+     * OHNE AUTORISIERUNG IST DIE FEHLENDE BAHN EIN NEIN, und zwar unter
+     * eigenem Namen. NO_TRAJECTORY heisst "es gab nichts zu pruefen",
+     * NOT_FINITE hiesse "die Zahl war kaputt" - zwei verschiedene Lagen, die
+     * unter einem Grund im Export nicht mehr aufloesbar waeren. Genau
+     * deshalb ist das Feld nullbar und nicht NaN.
+     */
+    @Test
+    fun `ohne Bahn und ohne Autorisierung sperrt der Plan`() {
+        val p = PrimeRelease.plan(ohneBahn(markerAuthorisesLow = false))
+        assertTrue(!p.active)
+        assertEquals("NO_TRAJECTORY", p.reason)
+    }
+
+    /** Eine KAPUTTE Bahn bleibt NOT_FINITE - die beiden duerfen nicht
+     *  zusammenfallen, sonst hat die Nullbarkeit nichts gebracht. */
+    @Test
+    fun `eine nicht endliche Bahn bleibt NOT_FINITE`() {
+        val p = PrimeRelease.plan(ohneBahn(markerAuthorisesLow = true).copy(safetyMinLowerMgdl = Double.NaN))
+        assertTrue(!p.active)
+        assertEquals("NOT_FINITE", p.reason)
+    }
+
+    private fun ohneBahn(markerAuthorisesLow: Boolean) = PrimeRelease.Input(
+        enabled = true, mealMarkerActive = true,
+        armedTsMs = 1_000_000L, windowStartTsMs = 0L,
+        nowMs = 1_000_000L + 3 * 60_000L,
+        envelopeU = 1.2, spentU = 0.0,
+        safetyMinLowerMgdl = null,
+        guardFloorMgdl = 70.0, isfMgdlPerU = 55.0, pumpIncrementU = step,
+        markerAuthorisesLow = markerAuthorisesLow,
+    )
+
     /**
      * DIE HARTEN MENGENDECKEL BLEIBEN. maxIOB und iobTH kappen den Lift auch
      * im autorisierten Fall - sie sind keine Tiefschutz-Tore.

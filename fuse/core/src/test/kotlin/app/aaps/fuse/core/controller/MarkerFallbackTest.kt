@@ -1,0 +1,159 @@
+package app.aaps.fuse.core.controller
+
+import app.aaps.fuse.core.observer.Health
+import app.aaps.fuse.core.observer.SafetyReason
+import app.aaps.fuse.core.predictor.PredictorReason
+import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertNull
+import org.junit.jupiter.api.Test
+
+/**
+ * WELCHE PREDICTOR-ABLEHNUNG UEBERSTIMMBAR IST - und vor allem: welche nicht.
+ *
+ * Die Liste ist die eigentliche Sicherheitsaussage dieses Pfades, deshalb steht
+ * hier JEDER der zehn Gruende einzeln. Eine Schleife ueber `entries` mit einer
+ * Ausnahmeliste haette denselben Denkfehler wiederholt, den sie pruefen soll.
+ *
+ * Vorgeschichte, ehrlich: mein erster Vorschlag nannte sechs Gruende als
+ * "modellhaft" und hatte DRIVE_OUT_OF_BOUNDS darunter - Toni hat das korrigiert.
+ * Ein Antrieb ausserhalb der Policy-Grenzen ist kein pessimistisches Modell,
+ * sondern eine unglaubwuerdige EINGABE. Der Marker bestaetigt Kohlenhydrate,
+ * nicht die Integritaet der Eingaben.
+ */
+class MarkerFallbackTest {
+
+    private fun denial(
+        reason: PredictorReason,
+        markerAuthorisesLow: Boolean = true,
+        mealMarkerActive: Boolean = true,
+        safetyReasons: Set<SafetyReason> = setOf(SafetyReason.LOW),
+        health: Health = Health.READY,
+        transportAccounted: Boolean = true,
+    ) = MarkerFallback.denial(
+        reason, markerAuthorisesLow, mealMarkerActive, safetyReasons, health, transportAccounted
+    )
+
+    // ---- Die zwei offenen ---------------------------------------------------
+
+    /** Beide sagen dasselbe: "die Reichweite meiner Rechnung endet vor dem
+     *  Horizont". Eine Aussage ueber das WERKZEUG, nicht ueber die Daten. */
+    @Test
+    fun `ARRAY_TOO_SHORT ist ueberstimmbar`() =
+        assertNull(denial(PredictorReason.ARRAY_TOO_SHORT))
+
+    @Test
+    fun `PENDING_MODEL_TOO_SHORT ist ueberstimmbar`() =
+        assertNull(denial(PredictorReason.PENDING_MODEL_TOO_SHORT))
+
+    /**
+     * TONIS AUFLAGE, und sie gilt NUR fuer diesen einen Grund: er sagt, dass der
+     * Kern der bereits publizierten, im IOB noch nicht sichtbaren Menge das
+     * Fenster nicht deckt. Ihre BAHNwirkung ist damit unbekannt - ihre MENGE
+     * nicht. Wird sie nicht mehr von beiden Spielraeumen abgezogen, kann sie ein
+     * zweites Mal finanziert werden, und dann ist der Grund nicht ueberstimmbar.
+     */
+    @Test
+    fun `PENDING_MODEL_TOO_SHORT faellt ohne verbuchte Transportmenge zu`() =
+        assertEquals(
+            MarkerFallback.Denial.TRANSPORT_NOT_ACCOUNTED,
+            denial(PredictorReason.PENDING_MODEL_TOO_SHORT, transportAccounted = false),
+        )
+
+    /** ARRAY_TOO_SHORT haengt NICHT daran - dort fehlt das IOB-Array, nicht der
+     *  Kern der Transportmenge. Ohne diesen Fall waere die Auflage entweder zu
+     *  eng oder zufaellig richtig. */
+    @Test
+    fun `ARRAY_TOO_SHORT haengt nicht an der Transportmenge`() =
+        assertNull(denial(PredictorReason.ARRAY_TOO_SHORT, transportAccounted = false))
+
+    // ---- Die acht geschlossenen, einzeln ------------------------------------
+
+    @Test
+    fun `NON_FINITE_INPUT bleibt zu`() = zu(PredictorReason.NON_FINITE_INPUT)
+
+    @Test
+    fun `NON_MONOTONIC_TIMESTAMPS bleibt zu`() = zu(PredictorReason.NON_MONOTONIC_TIMESTAMPS)
+
+    @Test
+    fun `GRID_MISMATCH bleibt zu`() = zu(PredictorReason.GRID_MISMATCH)
+
+    @Test
+    fun `SKEW_BEFORE_ARRAY_START bleibt zu`() = zu(PredictorReason.SKEW_BEFORE_ARRAY_START)
+
+    @Test
+    fun `ISF_OUT_OF_BOUNDS bleibt zu`() = zu(PredictorReason.ISF_OUT_OF_BOUNDS)
+
+    @Test
+    fun `MISSING_ISF_SLOT bleibt zu`() = zu(PredictorReason.MISSING_ISF_SLOT)
+
+    @Test
+    fun `ACTIVITY_OUT_OF_BOUNDS bleibt zu`() = zu(PredictorReason.ACTIVITY_OUT_OF_BOUNDS)
+
+    /** Der verfuehrerischste von allen: er sieht aus wie eine pessimistische
+     *  Prognose. Er ist eine unglaubwuerdige Eingabe - und dann ist auch die
+     *  ISF unglaubwuerdig, mit der die Freigabe gerechnet wuerde. */
+    @Test
+    fun `DRIVE_OUT_OF_BOUNDS bleibt zu`() = zu(PredictorReason.DRIVE_OUT_OF_BOUNDS)
+
+    private fun zu(r: PredictorReason) =
+        assertEquals(MarkerFallback.Denial.REASON_NOT_OVERRIDABLE, denial(r), r.name)
+
+    /** VOLLSTAENDIGKEIT: genau zwei von zehn. Ein neuer Grund faellt hier auf
+     *  und landet per Mengendefinition auf der geschlossenen Seite. */
+    @Test
+    fun `genau zwei von zehn Gruenden sind offen`() {
+        assertEquals(10, PredictorReason.entries.size)
+        assertEquals(2, MarkerFallback.OVERRIDABLE.size)
+        assertEquals(
+            8, PredictorReason.entries.count { denial(it) == MarkerFallback.Denial.REASON_NOT_OVERRIDABLE }
+        )
+    }
+
+    // ---- Die uebrigen Vorbedingungen ---------------------------------------
+
+    @Test
+    fun `ohne Einstellung kein Fallback`() = assertEquals(
+        MarkerFallback.Denial.SETTING_OFF,
+        denial(PredictorReason.ARRAY_TOO_SHORT, markerAuthorisesLow = false),
+    )
+
+    @Test
+    fun `ohne laufenden Marker kein Fallback`() = assertEquals(
+        MarkerFallback.Denial.NO_MARKER,
+        denial(PredictorReason.ARRAY_TOO_SHORT, mealMarkerActive = false),
+    )
+
+    /** Die LEERE Menge ist KEIN gemessenes Tief. Derselbe P0 wie am 11.08. im
+     *  Runner: `all { it == LOW }` ist auf der leeren Menge wahr. */
+    @Test
+    fun `ohne gemessenes Tief kein Fallback`() {
+        assertEquals(
+            MarkerFallback.Denial.NO_MEASURED_LOW,
+            denial(PredictorReason.ARRAY_TOO_SHORT, safetyReasons = emptySet()),
+        )
+    }
+
+    /** READY deckt frisches Signal, monotone Zeitachse, gueltige ISF und
+     *  Aktivitaet in EINER bereits gepflegten Aussage. */
+    @Test
+    fun `ohne READY kein Fallback`() {
+        for (h in listOf(Health.WARMUP, Health.DEGRADED))
+            assertEquals(
+                MarkerFallback.Denial.HEALTH_NOT_READY,
+                denial(PredictorReason.ARRAY_TOO_SHORT, health = h), h.name,
+            )
+    }
+
+    /** REIHENFOLGE: der Grund schlaegt alles andere. Sonst stuende im Export
+     *  bei einem Datenfehler "kein Marker" und die eigentliche Ursache waere
+     *  verdeckt. */
+    @Test
+    fun `der nicht ueberstimmbare Grund wird zuerst genannt`() = assertEquals(
+        MarkerFallback.Denial.REASON_NOT_OVERRIDABLE,
+        denial(
+            PredictorReason.NON_FINITE_INPUT,
+            markerAuthorisesLow = false, mealMarkerActive = false,
+            safetyReasons = emptySet(), health = Health.WARMUP,
+        ),
+    )
+}

@@ -915,6 +915,53 @@ class TransportWiringTest : TestBaseWithProfile() {
         )
     }
 
+    // ---- DER PREDICTORFREIE MARKERPFAD, verdrahtet ------------------------
+
+    /**
+     * EINE NICHT UEBERSTIMMBARE ABLEHNUNG BEENDET DEN ZYKLUS - und sagt im
+     * Grund, dass ein Fallback geprueft und verweigert wurde.
+     *
+     * WAS DIESER TEST WIRKLICH BEWEIST, und das ist mehr als es aussieht: der
+     * Abbruch bei verworfener Bahn ist seit dem 11.08. AUFGESCHOBEN. Steht
+     * `noFallback=REASON_NOT_OVERRIDABLE` im Grund, dann ist der Zyklus bis
+     * hinter den Zustandsbau gelaufen, MarkerFallback wurde befragt, und erst
+     * seine Antwort hat abgebrochen. Ein stehengebliebener alter Pfad haette
+     * den Zusatz nicht.
+     *
+     * DER HEBEL, und er hat drei Anlaeufe gebraucht: aus diesem Rig ist fast
+     * keine Predictor-Ablehnung erreichbar. Eine unendliche Aktivitaet faengt
+     * der SIGNAL-Waechter frueher ab ("signal: activity not finite"), und die
+     * Aktivitaets- und Antriebsgrenzen sind in Produktion gar nicht gesetzt
+     * (PredictorBounds-Defaults sind null) - beide Gruende sind also weder hier
+     * noch am Geraet ausloesbar. Uebrig bleibt eine absurde ISF: 5000 mg/dl/U
+     * liegt ueber HardLimits.MAX_ISF und ergibt ISF_OUT_OF_BOUNDS.
+     */
+    @Test
+    fun `eine nicht ueberstimmbare Ablehnung nennt den verweigerten Fallback`() {
+        flach = 62.0
+        steigungProMin = 0.0
+        val kaputt = org.mockito.kotlin.spy(validProfile)
+        org.mockito.kotlin.doReturn(5000.0).whenever(kaputt).getIsfMgdlTimeFromMidnight(org.mockito.kotlin.any())
+        whenever(profileFunction.getProfile()).thenReturn(kaputt)
+        whenever(profileFunction.getProfile(any())).thenReturn(kaputt)
+        markerAt = start + 2 * 60_000L
+        markerAuthorisesLow = true
+
+        clock = start
+        var gesehen: String? = null
+        repeat(12) {
+            val o = cycle()
+            if (o.abortReason?.contains("noFallback=") == true) gesehen = o.abortReason
+            assertEquals(0.0, o.decision.smbU, 1e-9, "ein geschlossener Grund gibt nichts frei")
+        }
+        val r = gesehen ?: throw AssertionError("der aufgeschobene Abbruch wurde nie erreicht")
+        assertTrue(
+            r.contains("noFallback=REASON_NOT_OVERRIDABLE"),
+            "der Grund muss den verweigerten Fallback benennen: $r",
+        )
+        assertTrue(r.contains("predictor:"), "und die urspruengliche Ursache: $r")
+    }
+
     // ---- DIE MANUELLE AUTORISIERUNG, ganz durch ---------------------------
 
     /**

@@ -52,6 +52,12 @@ import kotlin.math.min
  * einem fehlenden Messwert weiss der Mensch NICHTS Zusaetzliches - dort
  * bleibt die Sperre. Die schuetzende Basalabsenkung laeuft in beiden Faellen
  * unveraendert weiter; ueberstimmt wird die Mengensperre, nicht der Schutz.
+ *
+ * WAS DAS FUER DIE PUNKTE UNTEN HEISST: sie beschreiben den Fall OHNE
+ * Autorisierung. Mit Autorisierung entfaellt die Freigangsprobe, der
+ * Schwanz-Deckel in [lift] entfaellt ebenfalls, und die Bahn darf sogar
+ * ganz fehlen (s. [Input.safetyMinLowerMgdl] und [MarkerFallback]).
+ *
  *  - CLEARANCE-Gate: die Guardbahn muss den Boden um die 60-min-Wirkung der
  *    RESTLICHEN Huelle ueberragen (Anteil [CLEARANCE_60MIN_FRACTION] bei
  *    DIA 9). Das ist die ehrliche Ersatzpruefung, solange CandidateSearch
@@ -154,7 +160,22 @@ object PrimeRelease {
          * Die Minimierung steht bewusst beim Aufrufer und nicht hier: nur er
          * weiss, welche Bahnen dieser Zyklus ueberhaupt hat.
          */
-        val safetyMinLowerMgdl: Double,
+        /**
+         * Die pessimistischste Sicherheitsbahn ueber Haupt- UND Bremsbahn,
+         * prior-frei. `null` heisst AUSDRUECKLICH "es gibt keine Bahn" -
+         * der predictorfreie Markerpfad (s. [MarkerFallback]) hat keine.
+         *
+         * Nullbar statt NaN, und das ist keine Stilfrage: NaN waere hier
+         * durch die Finitheitspruefung gefallen und haette denselben
+         * off("NOT_FINITE") ausgeloest wie eine kaputte Bahn. Zwei
+         * verschiedene Lagen unter einem Grund - genau die Verwechslung,
+         * die im Export nicht mehr aufloesbar gewesen waere.
+         *
+         * Ohne Bahn ist NUR die Freigangsprobe unmoeglich, und die
+         * entfaellt bei [markerAuthorisesLow] ohnehin. Ohne diese
+         * Autorisierung ist `null` deshalb ein Nein.
+         */
+        val safetyMinLowerMgdl: Double?,
         val guardFloorMgdl: Double,
         val isfMgdlPerU: Double,
         val pumpIncrementU: Double,
@@ -187,8 +208,16 @@ object PrimeRelease {
         val ageMin = (input.nowMs - start) / 60_000.0
         if (ageMin < 0.0) return off("CLOCK_SKEW")
         if (ageMin >= WINDOW_MIN) return off("WINDOW_OVER")
-        if (!input.safetyMinLowerMgdl.isFinite() || !input.isfMgdlPerU.isFinite() || input.isfMgdlPerU <= 0.0)
-            return off("NOT_FINITE")
+        if (!input.isfMgdlPerU.isFinite() || input.isfMgdlPerU <= 0.0) return off("NOT_FINITE")
+        // OHNE BAHN gibt es keine Freigangsprobe. Das ist nur dann kein
+        // Mangel, wenn der Marker das Tief ausdruecklich autorisiert - denn
+        // dann waere die Probe ohnehin uebersprungen worden. Ohne
+        // Autorisierung ist eine fehlende Bahn ein Nein, und zwar unter
+        // eigenem Namen: NO_TRAJECTORY sagt "es gab nichts zu pruefen",
+        // NOT_FINITE sagt "die Zahl war kaputt".
+        val minLower = input.safetyMinLowerMgdl
+        if (minLower == null && !input.markerAuthorisesLow) return off("NO_TRAJECTORY")
+        if (minLower != null && !minLower.isFinite()) return off("NOT_FINITE")
         if (input.pumpIncrementU <= 0.0 || !input.pumpIncrementU.isFinite()) return off("NO_PUMP_STEP")
         // TICKZAHL statt `<`: `remaining` ist eine Differenz aufsummierter
         // Tickvielfacher, und die trifft die Huelle nicht exakt. Gemessen bei
@@ -223,7 +252,13 @@ object PrimeRelease {
         // Schritt fuer Schritt gegen eine jedesmal neu gemessene Lage; sobald
         // die Bahn faellt, endet die Serie sofort. Zusaetzlich bleiben
         // Wanduhr-Kappe, Huelle, maxSmb, iobTH und maxIOB unveraendert
-        // (s. [lift]), und der Schwanz-Waechter kappt weiterhin unabhaengig.
+        // (s. [lift]).
+        //
+        // NICHT MEHR WAHR seit dem 11.08., und der Satz stand hier noch:
+        // "der Schwanz-Waechter kappt weiterhin unabhaengig". Er tut es nur
+        // OHNE Autorisierung. Mit ihr ist er in [lift] ausdruecklich
+        // uebersprungen - er ist eine Prognose ueber H, und Prognosen duerfen
+        // den markerfinanzierten Anteil nicht nullen.
         // Die Freigangsprobe gegen den Guard-Boden. Sie ENTFAELLT, wenn der
         // Marker das Tief ausdruecklich autorisiert - sonst waere die
         // Freigabe dort schon hier tot, und die Lockerung der beiden Bloecke
@@ -231,8 +266,11 @@ object PrimeRelease {
         // naechste uebernimmt) ist in dieser Reihe schon zweimal
         // zugeschnappt.
         val clearance = CLEARANCE_60MIN_FRACTION * floorU * input.isfMgdlPerU
+        // minLower ist hier nicht-null, wenn die Probe ueberhaupt laeuft:
+        // ohne Autorisierung hat der NO_TRAJECTORY-Ausstieg oben schon
+        // gesperrt, mit Autorisierung faellt die Probe weg.
         if (!input.markerAuthorisesLow &&
-            input.safetyMinLowerMgdl - clearance < input.guardFloorMgdl
+            minLower!! - clearance < input.guardFloorMgdl
         ) return off("CLEARANCE")
 
         return Plan(true, floorU, remaining, "PRIME")

@@ -50,6 +50,13 @@ object FuseRtBuilder {
          *  vom Band kommt oder von der Lage — und genau diese Unterscheidung
          *  ist der Zweck des ersten Laufs. */
         minMeanMgdl: Double? = null,
+        /** Die Bahn wurde verworfen - und der Zyklus lief trotzdem. Beide
+         *  Zahlen gehoeren in JEDE Zeile, in der das passiert ist: ohne sie
+         *  saehe ein predictorfreier Markerpfad im Log aus wie ein ganz
+         *  gewoehnlicher Zyklus mit auffallend wenig Information. */
+        predictorRejected: Boolean = false,
+        predictorReason: String? = null,
+        markerFallbackUsed: Boolean = false,
     ): RT {
         val reason = StringBuilder()
         reason.append("FUSE ").append(gate.reason)
@@ -88,6 +95,10 @@ object FuseRtBuilder {
             // und "so weit geprueft, wie es heute geht".
             reason.append(' ').append(it.completeness).append(' ').append(it.lowerBgAtHSource)
             if (decision.tailCostU > 0.0) reason.append(" cost=").append(f3(decision.tailCostU))
+        }
+        if (predictorRejected) {
+            reason.append(" | predictorRejected=").append(predictorReason ?: "?")
+            if (markerFallbackUsed) reason.append(" markerFallback=USED")
         }
         reason.append(" | limit=").append(decision.bindingLimit)
         // DIE MANUELLE AUTORISIERUNG SICHTBAR MACHEN (11.08.). Ohne diese Zahl

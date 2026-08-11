@@ -43,6 +43,7 @@ import app.aaps.fuse.core.predictor.ActualTrajectoryFactory
 import app.aaps.fuse.core.predictor.DriveDecayModel
 import app.aaps.fuse.core.controller.CandidateGate
 import app.aaps.fuse.core.controller.CandidateSearch
+import app.aaps.fuse.core.controller.MarkerFallback
 import app.aaps.fuse.core.controller.OnsetChannel
 import app.aaps.fuse.core.controller.PrimeRelease
 import app.aaps.fuse.core.insulin.KernelOutcome
@@ -418,6 +419,15 @@ class FuseCycleRunner(
         val insulinModel: app.aaps.fuse.core.predictor.InsulinModelProvenance? = null,
         /** Warum NICHT gerechnet wurde. `null` heisst: der Zyklus lief durch. */
         val abortReason: String?,
+        /** Die Bahn wurde verworfen. GETRENNT von [abortReason] gefuehrt, weil
+         *  der Zyklus deswegen seit dem 11.08. nicht mehr zwingend endet. */
+        val predictorRejected: Boolean = false,
+        /** Welcher PredictorReason, als Name. Nicht als Bit: ARRAY_TOO_SHORT
+         *  und MISSING_ISF_SLOT sind zwei sehr verschiedene Lagen, und nur
+         *  eine davon ist ueberstimmbar. */
+        val predictorReason: String? = null,
+        /** Ob der predictorfreie Markerpfad diesen Zyklus getragen hat. */
+        val markerFallbackUsed: Boolean = false,
         /** Die Treatment-Vollsicht dieses Zyklus fuer den Ledger-Abgleich.
          *  `null` auf Abbruchpfaden UND wenn die Datenbankabfrage scheitert -
          *  dann gibt es diesen Zyklus keinen Abgleich, und offene Commitments
@@ -879,10 +889,25 @@ class FuseCycleRunner(
             is CoreInputGuard.Outcome.Failed -> return abort("input: ${b.failure.detail}", signal, cfg, step)
         }
 
-        val prediction = when (val p = TrajectoryCore.predict(built.input)) {
-            is PredictorOutcome.Ok       -> p.result
-            is PredictorOutcome.Rejected -> return abort("predictor: ${p.reason} ${p.detail}", signal, cfg, step)
-        }
+        // DER ABBRUCH IST AUFGESCHOBEN, NICHT AUFGEHOBEN (Tonis Auflage
+        // 11.08.). Eine verworfene Trajektorie beendete den Zyklus hier -
+        // also BEVOR `markerLowAuthorizedU` entstehen kann, und damit
+        // ausserhalb der Reichweite des Bodens weiter unten. Dieselbe
+        // Fehlerklasse wie der frueher bedingungslose Schwanz-Deckel, nur
+        // eine Stufe frueher.
+        //
+        // KEIN pauschales Ueberspringen: die Ablehnung wird gemerkt, der
+        // Zyklus laeuft bis hinter den Zustandsbau weiter (dort steht alles,
+        // was ein Markerpfad braucht - Profil, ISF, IOB, Pumpenschritt,
+        // Budgets), und DORT entscheidet [MarkerFallback], ob es einen
+        // predictorfreien Pfad gibt. Gibt es keinen, wird derselbe Abbruch
+        // nachgeholt.
+        //
+        // EIN Aufruf, zwei Sichten darauf: ein zweiter predict() waere eine
+        // zweite Wahrheit ueber dieselbe Eingabe.
+        val predicted = TrajectoryCore.predict(built.input)
+        val rejected = predicted as? PredictorOutcome.Rejected
+        val predictionOrNull = (predicted as? PredictorOutcome.Ok)?.result
 
         // ZWEITE Bahn aus der schnellen Rate. Sie nutzt DASSELBE IOB-Array und
         // dieselben ISF-Slots — nur der Antrieb ist ein anderer. Der Aufwand ist
@@ -894,7 +919,12 @@ class FuseCycleRunner(
         // "bremst nicht" - sonst koennte schlechtere Signalqualitaet mehr
         // Insulin erlauben als gute (die Bremse waere weg, die Dosis groesser).
         // Der Ausfall ist ein Signalqualitaets-Befund und kostet einen Zyklus.
-        val restraint = if (!cfg.fastRestraintEnabled) null else
+        // Ohne Hauptbahn keine Bremsbahn: sie ist DIESELBE Rechnung mit
+        // einem anderen Antrieb und faellt aus demselben Grund. Ohne diese
+        // Bedingung wuerde ihr eigener Abbruch-Zweig den aufgeschobenen
+        // Markerpfad ueberholen und den Zyklus mit einem Grund beenden, der
+        // die eigentliche Ursache verdeckt.
+        val restraint = if (rejected != null || !cfg.fastRestraintEnabled) null else
             (fastDrive(signal) ?: return abort("fast restraint enabled but drive not computable", signal, cfg, step)).let { fast ->
                 val fi = built.input.copy(
                     // DERSELBE Abschlag wie auf der Hauptbahn: auch die schnelle
@@ -918,7 +948,7 @@ class FuseCycleRunner(
         val bolusStep = pumpe.bolusStepU
         // 0.0 waere GEFAEHRLICHER als ein Block: floor(x/0)*0 ergibt NaN, und
         // NaN < 0.0 ist false — der Zyklus fiele durch statt zu sperren.
-        if (!bolusStep.isFinite() || bolusStep <= 0.0) return abort("bolusStep=$bolusStep", signal, cfg, step, prediction, restraint)
+        if (!bolusStep.isFinite() || bolusStep <= 0.0) return abort("bolusStep=$bolusStep", signal, cfg, step, predictionOrNull, restraint)
 
         val maxIobU = constraintsChecker.getMaxIOBAllowed().value()
         val iobTotal = iobCobCalculator.calculateFromTreatmentsAndTemps(computeTs, profile)
@@ -926,7 +956,7 @@ class FuseCycleRunner(
         // dieser Lesung kommen capIob, netIob und der Bolusanteil - also die
         // Groessen, an denen JEDE Mengenkappe haengt. Eine erfundene Null
         // macht hier aus "8 U Spielraum belegt" ein "8 U frei".
-        if (!iobTotal.valid) return abort("iob unknown (no profile)", signal, cfg, step, prediction, restraint)
+        if (!iobTotal.valid) return abort("iob unknown (no profile)", signal, cfg, step, predictionOrNull, restraint)
         val isf = profile.getIsfMgdlTimeFromMidnight(MidnightUtils.secondsFromMidnight(signal.sourceTs))
         val (target, targetSource) = activeTarget(profile, computeTs)
 
@@ -975,8 +1005,51 @@ class FuseCycleRunner(
             }
         ) {
             is CoreInputGuard.Outcome.Built  -> s.value
-            is CoreInputGuard.Outcome.Failed -> return abort("state: ${s.failure.detail}", signal, cfg, step, prediction, restraint)
+            is CoreInputGuard.Outcome.Failed -> return abort("state: ${s.failure.detail}", signal, cfg, step, predictionOrNull, restraint)
         }
+
+        // ---- DER PREDICTORFREIE MARKERPFAD (Toni 11.08.) -------------------
+        //
+        // Er steht GENAU HIER und keine Zeile frueher: alles, was er verlangt,
+        // ist an dieser Stelle bereits geprueft und in Reichweite -
+        //
+        //   Signal frisch und monoton   Health.READY (in MarkerFallback)
+        //   gemessenes Tief             step.safetyReasons == {LOW}
+        //   gueltiges Profil            oben, sonst waere abgebrochen
+        //   gueltige ISF und IOB        iobTotal.valid + CoreInputGuard
+        //   gueltiger Pumpenschritt     bolusStep-Pruefung oben
+        //   Transportmenge verbucht     transportModelledU, s. MarkerFallback
+        //
+        // Was DANACH kommt, kommt weiterhin: Huellen- und IOB-Deckel in
+        // PrimeRelease.lift, Episodenbudget in plan, LedgerHoldGate, die
+        // TBR-Tabelle, das Pumpen-Gate hier und das Publikations-Gate im
+        // Plugin. Der Pfad ueberspringt die BAHN, keine Grenze.
+        if (rejected != null) {
+            val denial = MarkerFallback.denial(
+                reason = rejected.reason,
+                markerAuthorisesLow = cfg.markerAuthorisesLow,
+                mealMarkerActive = mealMarkerActive && markerTs > 0,
+                safetyReasons = step.safetyReasons,
+                health = step.health,
+                transportAccounted = transportModelledU.isFinite(),
+            )
+            val warum = "predictor: ${rejected.reason} ${rejected.detail}"
+            // Der Abbruch NENNT den verweigerten Fallback. Ohne diesen Zusatz
+            // waere im Log ein nicht angebotener Pfad von einem abgelehnten
+            // nicht zu unterscheiden.
+            if (denial != null) return abort("$warum | noFallback=$denial", signal, cfg, step)
+            return markerFallbackCycle(
+                rejected, warum, signal, step, cfg, state, profile, pumpe, tempBasalFallback,
+                computeTs, markerTs, mealMarkerActive, isf, target, targetSource, iobTotal,
+                maxIobU, transportModelledU, ledgerView, episodes, onset, band,
+                built.discount, built.input.trajectory.model, sensorEpoch, calibrationEpoch, gate,
+            )
+        }
+        // AB HIER ist die Bahn vorhanden. Einmal ausgepackt statt an dreissig
+        // Stellen `!!` - der Zweig oben endet in einem return, aber das traegt
+        // der Kompiler nicht durch eine so lange Funktion.
+        val prediction = predictionOrNull
+            ?: return abort("internal: prediction lost", signal, cfg, step)
 
         // Schwanzhaftung. C1/C2: pessimistisch ueber Haupt- UND Bremsbahn und
         // PRIOR-FREI - ein Marker-Prior darf kein Schwanzbudget erzeugen
@@ -1543,6 +1616,201 @@ class FuseCycleRunner(
         )
     }
 
+    /**
+     * DER PREDICTORFREIE MARKERPFAD.
+     *
+     * Er entsteht nur, wenn [MarkerFallback] ihn erlaubt - also bei genau zwei
+     * Reichweiten-Gruenden, mit lebender Autorisierung, gemessenem Tief und
+     * READY-Signal. Was er tut, ist bewusst wenig:
+     *
+     *   Plan (Huelle, Fenster, Pumpenschritt)  ->  PrimeRelease.plan
+     *   Menge (maxSmb, iobTH, maxIOB, Onset,
+     *          Transportmenge, Rasterung)      ->  PrimeRelease.lift
+     *   Ledger-Hold                            ->  LedgerHoldGate
+     *   TBR und SMB-Sperren                    ->  FuseTbrTranslator
+     *   Pumpen-Gate                            ->  gate.allowed
+     *   Publikations-Gate und AAPS-Constraints ->  spaeter, im Plugin
+     *
+     * ALLES DAVON SIND DIESELBEN AUFRUFE wie im Hauptpfad. Der Pfad
+     * dupliziert keine einzige Mengenentscheidung - er laesst die Bahn weg
+     * und nichts sonst. Das ist Absicht: eine zweite, eigene Rechnung waere
+     * genau die Art von Parallelspur, die hier schon zweimal auseinander
+     * gelaufen ist.
+     *
+     * WAS ER NICHT HAT und auch nicht haben darf: Kandidatensuche,
+     * Guard-Riegel, Schwanzhaftung, Rest-Zaehler. Alle vier brauchen eine
+     * Bahn. Sie fehlen hier nicht aus Bequemlichkeit, sondern weil es sie in
+     * dieser Lage nicht gibt - und ein geschaetzter Ersatz waere eine
+     * Behauptung ueber eine Zukunft, die FUSE gerade nicht berechnen kann.
+     *
+     * Der Rest-Zaehler wird dabei VERWORFEN, nicht mitgenommen: aufgeschobene
+     * Absicht gehoert zu dem Kontext, in dem sie entstand.
+     */
+    @Suppress("LongParameterList")
+    private fun markerFallbackCycle(
+        rejected: PredictorOutcome.Rejected,
+        warum: String,
+        signal: FuseSignalSource.Signal,
+        step: ObserverStep,
+        cfg: Config,
+        state: FuseController.State,
+        profile: Profile,
+        pumpe: FuseActivePump,
+        tempBasalFallback: Boolean,
+        computeTs: Long,
+        markerTs: Long,
+        mealMarkerActive: Boolean,
+        isf: Double,
+        target: Double,
+        targetSource: String,
+        iobTotal: app.aaps.core.interfaces.aps.IobTotal,
+        maxIobU: Double,
+        transportModelledU: Double,
+        ledgerView: app.aaps.fuse.plugin.ledger.LedgerView,
+        episodes: app.aaps.fuse.plugin.ledger.EpisodeBudgets,
+        onset: OnsetChannel.Result,
+        band: PairSlopeBand.Estimate?,
+        discount: DriveDiscount.Applied?,
+        insulinModel: InsulinModelProvenance,
+        sensorEpoch: Long?,
+        calibrationEpoch: Long?,
+        gate: FusePumpGate.Result,
+    ): Outcome {
+        subStepCarryU = 0.0
+
+        val primePlan = PrimeRelease.plan(
+            PrimeRelease.Input(
+                enabled = cfg.primeReleaseEnabled,
+                mealMarkerActive = mealMarkerActive,
+                armedTsMs = markerTs,
+                windowStartTsMs = episodes.primeWindowStartTs,
+                nowMs = computeTs,
+                envelopeU = cfg.primeEnvelopeU,
+                spentU = episodes.primeSpentU,
+                // KEINE BAHN, und das steht als `null` da statt als Zahl. Die
+                // Freigangsprobe entfaellt hier ohnehin (markerAuthorisesLow),
+                // sie haette also nichts zu pruefen gehabt.
+                safetyMinLowerMgdl = null,
+                guardFloorMgdl = cfg.guardFloorMgdl,
+                isfMgdlPerU = isf,
+                pumpIncrementU = pumpe.bolusStepU,
+                markerAuthorisesLow = true,
+            )
+        )
+
+        // DIE BASIS IST EIN GEMESSENES TIEF, ehrlich benannt: SAFETY_HOLD mit
+        // Menge 0 und ZERO_TEMP. Die Basalabsenkung ist kein Beiwerk - sie ist
+        // der Schutz, der neben der erklaerten Mahlzeit weiterlaeuft.
+        // predAtRelease und minLower bleiben null: es gibt keine Bahn, und eine
+        // erfundene Zahl waere im Export von einer gerechneten nicht mehr zu
+        // unterscheiden.
+        val basis = FuseController.Decision(
+            smbU = 0.0,
+            tbr = FuseController.TbrAction.ZERO_TEMP,
+            block = FuseController.Block.SAFETY_HOLD,
+            insulinReqU = 0.0,
+            predAtReleaseMgdl = null,
+            minLowerMgdl = null,
+            bindingLimit = "markerFallback",
+        )
+        val lifted = PrimeRelease.lift(
+            basis, primePlan, state,
+            markerAuthorisesLow = true,
+            // Kein Schwanz-Headroom: es gibt keine Bahn, aus der einer
+            // entstehen koennte. Der Onset-Deckel und die Transportmenge sind
+            // dagegen Mengen und gelten unveraendert - letztere ist Tonis
+            // ausdrueckliche Auflage zu PENDING_MODEL_TOO_SHORT.
+            tailHeadroomU = null,
+            onsetCapU = if (onset.active) onset.remainingU else null,
+            transportCommitmentU = transportModelledU,
+        )
+        val held = LedgerHoldGate.apply(lifted, ledgerView.hold)
+
+        val runningTbr = processedTbrEbData.getTempBasalIncludingConvertedExtended(computeTs)
+        val combined = FuseTbrTranslator.combine(
+            decision = held,
+            current = runningTbr?.let {
+                TbrPolicy.Current(
+                    absoluteRateUPerH = it.convertedToAbsolute(computeTs, profile),
+                    remainingMin = it.plannedRemainingMinutes,
+                    sourceType = if (it.type == app.aaps.core.data.model.TB.Type.FAKE_EXTENDED) TbrPolicy.SourceType.FAKE_EXTENDED
+                    else TbrPolicy.SourceType.TEMP_BASAL,
+                )
+            },
+            scheduledBasalUPerH = profile.getBasal(computeTs),
+            cfg = TbrPolicy.Config(basalStepUPerH = pumpe.basalStepUPerH),
+            fault = if (tempBasalFallback) TbrPolicy.FaultCode.TEMP_BASAL_FALLBACK else TbrPolicy.FaultCode.NONE,
+            pumpBusy = pumpBusy(),
+        )
+
+        // DIESELBE BUCHFUEHRUNG wie im Hauptpfad, und das ist keine Formsache:
+        // wuerde der Fallback die Huelle nicht belasten, waere er ein zweiter
+        // Geldbeutel fuer dieselbe Mahlzeit.
+        val actuatedU = if (gate.allowed) combined.decision.smbU else 0.0
+        val primeWindowOpen = mealMarkerActive && markerTs > 0 &&
+            computeTs - maxOf(markerTs, episodes.primeWindowStartTs) < PrimeRelease.WINDOW_MIN * 60_000L &&
+            computeTs - markerTs < PrimeRelease.WALL_CEILING_MIN * 60_000L
+        if (primeWindowOpen) episodes.primeSpentU += actuatedU
+        if (onset.active) {
+            episodes.onsetSpentU += actuatedU
+            episodes.onsetQuietMin = 0
+        }
+        val mealGebucht = mealMarkerActive && actuatedU > 0.0
+        if (mealGebucht) {
+            episodes.mealDeliveries.addLast(signal.sourceTs to actuatedU)
+            while (episodes.mealDeliveries.size > 400) episodes.mealDeliveries.removeFirst()
+        }
+        episodes.pendingReservation =
+            if (actuatedU > 0.0) app.aaps.fuse.plugin.ledger.EpisodeBudgets.Reservation(
+                computeTs = computeTs,
+                amountU = actuatedU,
+                prime = primeWindowOpen,
+                onset = onset.active,
+                mealTs = if (mealGebucht) signal.sourceTs else 0L,
+            ) else null
+
+        return Outcome(
+            decision = combined.decision,
+            tbr = combined.request,
+            // KEINE BAHN im Export, auch keine leere: null heisst hier
+            // "es gab keine", und genau das soll dort stehen.
+            prediction = null,
+            restraint = null,
+            sourceTs = signal.sourceTs,
+            computeTs = computeTs,
+            health = step.health,
+            gate = gate,
+            reason = "$warum | MARKER_FALLBACK|${combined.reason}",
+            alarm = combined.alarm,
+            bgMgdl = signal.q1,
+            targetMgdl = target,
+            targetSource = targetSource,
+            signal = signal,
+            band = band,
+            discount = discount,
+            onset = onset,
+            prime = primePlan,
+            candidate = null,
+            candidateGap = null,
+            policy = cfg,
+            state = state,
+            step = step,
+            sensorEpoch = sensorEpoch,
+            calibrationEpoch = calibrationEpoch,
+            isfMgdlPerU = isf,
+            iobU = iobTotal.iob,
+            iobThU = state.iobThU,
+            maxIobU = maxIobU,
+            computeDurationMs = dateUtil.now() - computeTs,
+            mealStats = mealStatsOf(episodes, markerTs, computeTs),
+            insulinModel = insulinModel,
+            abortReason = null,
+            predictorRejected = true,
+            predictorReason = rejected.reason.name,
+            markerFallbackUsed = true,
+            treatmentView = runCatching { buildTreatmentView(computeTs, profile.dia) }.getOrNull(),
+        )
+    }
     /** Fensteranfang der Behandlungssicht: DIA + Marge zurueck, zusaetzlich
      *  verlaengert bis vor den aeltesten Fakt einer noch offenen Ledger-Zeile.
      *  EINE Definition fuer Vollsicht UND Snapshot-Zeuge - zwei verschiedene

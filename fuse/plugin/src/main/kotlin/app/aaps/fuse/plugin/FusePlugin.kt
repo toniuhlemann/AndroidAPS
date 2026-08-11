@@ -693,6 +693,9 @@ class FusePlugin @Inject constructor(
                 band = outcome.band,
                 methodId = outcome.band?.let { app.aaps.fuse.core.signal.PairSlopeBand.methodId(preferences.get(FuseIntKey.DriveLowerQuantilePct)) },
                 minMeanMgdl = outcome.prediction?.minMeanBg,
+                predictorRejected = outcome.predictorRejected,
+                predictorReason = outcome.predictorReason,
+                markerFallbackUsed = outcome.markerFallbackUsed,
             )
         }
         outcome?.let { if (it.abortReason != null) rt.reason.append(" | abort=").append(it.abortReason) }
