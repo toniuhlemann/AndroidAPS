@@ -31,6 +31,7 @@ import app.aaps.fuse.plugin.ledger.LedgerFacts
 import app.aaps.fuse.plugin.ledger.OpenTransportItem
 import app.aaps.fuse.plugin.ledger.TransportInclusion
 import app.aaps.fuse.core.controller.IobThreshold
+import app.aaps.fuse.core.controller.MarkerEpisode
 import app.aaps.fuse.core.controller.TailLiability
 import app.aaps.fuse.core.controller.TbrPolicy
 import app.aaps.fuse.core.observer.SafetyReason
@@ -761,7 +762,31 @@ class FuseCycleRunner(
         // (Audit R95, Fix 3) - nur der Reset-ANLASS steht hier: ein neuer
         // armedTs ist eine neue Episode mit voller Huelle.
         val episodes = ledger.episodes
-        if (markerTs != episodes.primeArmedTs) {
+        // AKTIVITAET UND BUDGET SIND ZWEI DINGE (11.08.).
+        //
+        // Vorher war die Episode am `markerTs` festgemacht: eine Ruecknahme
+        // nullte ihn, der naechste Druck erzeugte einen neuen - und damit eine
+        // NEUE Episode mit voller Huelle. "Versehentlich druecken,
+        // zuruecknehmen, richtig druecken" gab die ganze Huelle ein zweites
+        // Mal, obendrauf auf das bereits Abgegebene. Genau die
+        // Doppelfinanzierung, gegen die die Episodenbudgets existieren - und
+        // sie wiegt schwer, seit der Marker bei gemessenem Tief dosieren darf.
+        //
+        // Jetzt laeuft die EPISODE weiter, solange das Fenster der letzten
+        // Armierung nicht abgelaufen ist - unabhaengig davon, ob der Marker
+        // gerade aktiv ist. Die Ruecknahme beendet die Aktivitaet, nicht die
+        // Buchfuehrung.
+        //
+        // `primeArmedTs` ist persistent, die Regel ueberlebt also einen
+        // Neustart.
+        val neueEpisode = MarkerEpisode.startsNewEpisode(
+            armedTs = markerTs,
+            episodeTs = episodes.primeArmedTs,
+            nowMs = computeTs,
+            windowMin = OnsetChannel.MARKER_WINDOW_MIN,
+        )
+        if (neueEpisode) {
+            // Wirklich eine neue Episode: die vorige ist abgelaufen.
             episodes.primeArmedTs = markerTs
             episodes.primeSpentU = 0.0
             episodes.primeWindowStartTs = 0L
@@ -769,7 +794,7 @@ class FuseCycleRunner(
             episodes.markerTurnTs = 0L
             episodes.markerRiseSeen = false
         }
-        if (markerTs != episodes.mealArmedTs) {
+        if (neueEpisode) {
             episodes.mealArmedTs = markerTs
             episodes.mealDeliveries.clear()
         }
