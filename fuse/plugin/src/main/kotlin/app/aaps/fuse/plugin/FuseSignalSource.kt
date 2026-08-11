@@ -253,16 +253,14 @@ class FuseSignalSource(
         // auf den Samples: die Samples sind bereits auf das lueckenfreie
         // Segment beschnitten, und genau der Punkt VOR dem Schnitt ist der,
         // um den es geht.
-        val letzte = series.takeLast(2)
-        val gapBeforeMin =
-            if (letzte.size == 2) (letzte[1].tsMs - letzte[0].tsMs) / 60_000.0 else 0.0
-        val stepFromLastMgdl =
-            if (letzte.size == 2) letzte[1].value - letzte[0].value else 0.0
-        val stepRateActualMgdlPerMin =
-            if (gapBeforeMin > 0.0) stepFromLastMgdl / gapBeforeMin else 0.0
-        // Wie viele Punkte seit dem Segmentbeginn - 1 ist der erste nach der
-        // Luecke. `windowStart` ist genau die Bruchkante aus `segmentStart`.
-        val postGapIndex = series.count { it.tsMs >= windowStart }
+        // Die Rechnung liegt in `PostGapMetrics` - hier ist sie an
+        // profileFunction/iobCobCalculator gefesselt und praktisch nicht
+        // pruefbar, dort braucht sie nichts als Zeitstempel und Werte.
+        val postGap = app.aaps.fuse.core.signal.PostGapMetrics.of(
+            ts = series.map { it.tsMs },
+            values = series.map { it.value },
+            segmentStartTs = windowStart,
+        )
 
         val adjusted = BgiAdjustedSeries.adjust(samples)
         val rSigned = BgiAdjustedSeries.theilSen(adjusted, sourceTs)
@@ -290,10 +288,10 @@ class FuseSignalSource(
                 activity = ActivityValidity.VALID,
                 samplesUsed = samples.size,
                 rawSeriesSize = series.size,
-                gapBeforeMin = gapBeforeMin,
-                stepFromLastMgdl = stepFromLastMgdl,
-                stepRateActualMgdlPerMin = stepRateActualMgdlPerMin,
-                postGapIndex = postGapIndex,
+                gapBeforeMin = postGap.gapBeforeMin,
+                stepFromLastMgdl = postGap.stepFromLastMgdl,
+                stepRateActualMgdlPerMin = postGap.stepRateActualMgdlPerMin,
+                postGapIndex = postGap.postGapIndex,
                 q1Outlier = leading.outlier,
                 boundedBy = bound,
                 windowFromTs = window.fromTs,

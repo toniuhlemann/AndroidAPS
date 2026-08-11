@@ -223,7 +223,21 @@ class FusePlugin @Inject constructor(
      *  Neustarts via Preference). */
     private val markerPressRing = ArrayDeque<Long>()
 
-    @Volatile private var graphRingWarmed = false
+    /**
+     * Versuche des Warmstarts. NICHT nur ein Bit, und der Grund ist der Fall,
+     * den die beiden vorigen Anlaeufe uebrig gelassen haben: eine Trail-Datei,
+     * die EXISTIERT, aber noch leer ist - direkt nach einer Neuinstallation,
+     * bevor der erste Zyklus geschrieben hat. Der Lauf gelingt dann formal und
+     * liest nichts, und mit einem Bit waere der Warmstart fuer die ganze
+     * Prozesslebenszeit verbraucht.
+     *
+     * Begrenzt, weil die Datei bis zu 32 MB gross wird: sie in jedem Zyklus
+     * neu zu lesen waere teurer als der Nutzen. Fuenf Versuche decken die
+     * ersten Minuten nach einer Installation ab.
+     */
+    @Volatile private var graphRingAttempts = 0
+
+    private val GRAPH_RING_MAX_ATTEMPTS = 5
 
     /** Delegiert an [MarkerTimeline] - die Regel steht dort und ist dort
      *  auch geprueft; diese Kette war bis 11.08. an keiner Stelle getestet. */
@@ -243,7 +257,8 @@ class FusePlugin @Inject constructor(
      * Warmstart darf keinen Zyklus kosten.
      */
     private fun warmGraphRingOnce() {
-        if (graphRingWarmed) return
+        if (graphRingAttempts >= GRAPH_RING_MAX_ATTEMPTS) return
+        graphRingAttempts++
         val f = java.io.File(
             android.os.Environment.getExternalStorageDirectory(),
             "Documents/aapsLogs/fuse_state_history.jsonl"
@@ -311,13 +326,17 @@ class FusePlugin @Inject constructor(
             synchronized(markerPressRing) {
                 for (m in marks.sorted()) MarkerTimeline.add(markerPressRing, m)
             }
-            // ERST JETZT verbraucht (Sweep 11.08., zweiter Anlauf). Der erste
-            // Anlauf hat das Flag hinter `exists()` geschoben - das deckt die
-            // fehlende Datei ab, aber nicht die vorhandene, die gerade leer
-            // oder unlesbar ist. Dann blieb der Graph wieder bis zum Neustart
-            // ohne Linien. Das Flag gehoert ans ENDE eines geglueckten Laufs,
-            // nicht an den Anfang eines versuchten.
-            graphRingWarmed = true
+            // ERST WENN WIRKLICH ETWAS GELESEN WURDE (dritter Anlauf,
+            // Review 11.08.). Anlauf eins setzte das Flag vor der Arbeit,
+            // Anlauf zwei hinter `exists()` - beide liessen den Fall stehen,
+            // dass die Datei EXISTIERT und leer ist. Der Lauf gelingt dann
+            // formal, liest nichts, und der Warmstart ist verbraucht.
+            //
+            // Ein leerer Trail ist kein Fehler, sondern der Normalzustand in
+            // den ersten Minuten nach einer Installation. Also: Erfolg heisst
+            // "es kamen Punkte an", und sonst wird es erneut versucht - bis zu
+            // GRAPH_RING_MAX_ATTEMPTS mal, denn die Datei wird bis 32 MB gross.
+            if (pts.isNotEmpty()) graphRingAttempts = GRAPH_RING_MAX_ATTEMPTS
         }
     }
 
@@ -753,10 +772,31 @@ class FusePlugin @Inject constructor(
         // die Belastung stehen - der gewollte UNKNOWN-Ausgang.
         outcome?.let { o -> ledgerAdapter.resolveReservation(o.computeTs, publishRt.units ?: 0.0) }
 
+        // MEALSTATS NACH der Aufloesung neu rechnen (Review 11.08.). Der Runner
+        // hat sie VOR dem Publikationsgate gebildet; wurde die Reservierung
+        // gerade zurueckgedreht, zeigte der eingefrorene Stand eine Menge, die
+        // es nicht mehr gibt. Das trifft nicht den naechsten Regelzyklus - der
+        // liest die Budgets ohnehin frisch -, aber Trail und Schirm GENAU
+        // dieses Zyklus, also die Zahlen, an denen die Mahlzeit ausgewertet
+        // wird. Dieselbe Funktion wie im Runner, keine zweite Fassung.
+        val exportOutcome = outcome?.let { o ->
+            o.copy(
+                mealStats = FuseCycleRunner.mealStatsOf(
+                    ledgerAdapter.episodes,
+                    o.state?.markerArmedTs ?: 0L,
+                    o.computeTs,
+                )
+            )
+        }
+
         lastAPSResult = apsResultProvider.get().with(publishRt)
         lastAPSRun = dateUtil.now()
         aapsLogger.debug(LTag.APS, "FUSE result: ${publishRt.reason}")
         rxBus.send(EventAPSCalculationFinished())
+
+        // Auch der Schirm bekommt den korrigierten Stand - er zeigt dieselben
+        // Mahlzeitenzahlen wie der Trail.
+        exportOutcome?.let { lastOutcome = it }
 
         // NACH den Buchungen dieses Zyklus - der Hold kann genau hier entstanden
         // sein. Davor gemeldet, waere die Meldung eine Generation zu spaet.
@@ -764,7 +804,7 @@ class FusePlugin @Inject constructor(
         meldePumpenRiegel(aktivePumpe)
 
         exportState(
-            outcome, publishRt, cycleId,
+            exportOutcome, publishRt, cycleId,
             // B0c: der Befund des Gates als DATEN in den Trail, nicht als Text
             // im Grund. `treatmentViewPresent` kommt vom Zyklus selbst - das
             // Gate erfaehrt es nur mittelbar ueber den Commitment, und eine

@@ -109,6 +109,36 @@ class FuseCycleRunner(
     companion object {
 
         /**
+         * Der Mahlzeitenstand als ABLEITUNG aus den Episodenbudgets.
+         *
+         * Als Funktion und nicht als Schnappschuss im Runner, weil die Zahlen
+         * sich nach dem Runner noch AENDERN koennen: das Publikationsgate
+         * laeuft spaeter und kann die Reservierung dieses Zyklus zurueckdrehen
+         * (s. `EpisodeBudgets.pendingReservation`). Ein im Runner eingefrorener
+         * Stand zeigte dann eine Menge, die es nicht mehr gibt - nicht im
+         * naechsten Regelzyklus, aber im Trail und auf dem Schirm genau dieses
+         * Zyklus. Das Plugin rechnet sie nach der Aufloesung neu, mit
+         * DERSELBEN Funktion.
+         *
+         * T0-ANKER statt rollierender Fenster (Toni 08.08.): interessant ist
+         * "wie viel stand nach 30/60 min ab Essensbeginn", nicht "letzte
+         * 30 min" - die Werte wachsen bis zur Marke und frieren dann von
+         * selbst ein.
+         */
+        fun mealStatsOf(
+            episodes: app.aaps.fuse.plugin.ledger.EpisodeBudgets,
+            markerTs: Long,
+            computeTs: Long,
+        ): MealStats? = if (markerTs > 0 &&
+            computeTs - markerTs <= (OnsetChannel.MARKER_WINDOW_MIN + 120) * 60_000L
+        ) MealStats(
+            sinceMin = ((computeTs - markerTs) / 60_000L).toInt(),
+            totalU = episodes.mealDeliveries.sumOf { it.second },
+            first30U = episodes.mealDeliveries.filter { it.first - markerTs <= 30 * 60_000L }.sumOf { it.second },
+            first60U = episodes.mealDeliveries.filter { it.first - markerTs <= 60 * 60_000L }.sumOf { it.second },
+        ) else null
+
+        /**
          * Die Laufzeitpruefung der Konfiguration - EIGENE Funktion, damit sie
          * pruefbar ist.
          *
@@ -1296,18 +1326,7 @@ class FuseCycleRunner(
                 onset = onset.active,
                 mealTs = if (mealGebucht) signal.sourceTs else 0L,
             ) else null
-        val mealStats = if (markerTs > 0 &&
-            computeTs - markerTs <= (OnsetChannel.MARKER_WINDOW_MIN + 120) * 60_000L
-        ) MealStats(
-            sinceMin = ((computeTs - markerTs) / 60_000L).toInt(),
-            totalU = episodes.mealDeliveries.sumOf { it.second },
-            // T0-ANKER statt rollierender Fenster (Toni 08.08.): interessant
-            // ist "wie viel stand nach 30/60 min ab Essensbeginn", nicht
-            // "letzte 30 min" - die Werte wachsen bis zur Marke und frieren
-            // dann von selbst ein (Filter auf Abgabezeit relativ zum Marker).
-            first30U = episodes.mealDeliveries.filter { it.first - markerTs <= 30 * 60_000L }.sumOf { it.second },
-            first60U = episodes.mealDeliveries.filter { it.first - markerTs <= 60 * 60_000L }.sumOf { it.second },
-        ) else null
+        val mealStats = mealStatsOf(episodes, markerTs, computeTs)
 
         val computeDurationMs = dateUtil.now() - computeTs
         return Outcome(
