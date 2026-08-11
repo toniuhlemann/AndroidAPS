@@ -462,6 +462,13 @@ class FusePlugin @Inject constructor(
     fun toggleMealMarker(now: Long): Boolean {
         val armed = mealMarkerActive(now)
         if (armed) {
+            // DIE LINIE IM GRAPHEN FOLGT DEM INSULIN, nicht der Absicht: blieb
+            // der Druck folgenlos, verschwindet er auch aus dem Graphen. Vorher
+            // stand dort eine Mahlzeitenlinie ohne Mahlzeit und ohne Insulin.
+            val geliefert = lastOutcome?.mealStats?.totalU ?: 0.0
+            synchronized(markerPressRing) {
+                MarkerTimeline.retract(markerPressRing, mealMarkerArmedTs(), geliefert)
+            }
             preferences.put(FuseLongKey.MealMarkerArmedTs, 0L)
             // Der Altbestand-Stempel wird mitgeloescht: bliebe er stehen,
             // liesse der Lese-Ruecktausch unten einen zurueckgenommenen

@@ -699,12 +699,18 @@ class OverviewFragment : DaggerFragment(), View.OnClickListener, OnLongClickList
                 else app.aaps.core.ui.R.string.overview_fuse_meal_label
             )
             context?.let { ctx ->
-                binding.buttonsLayout.fuseMealButton.setTextColor(
-                    rh.gac(
-                        ctx,
-                        if (markerAn) app.aaps.core.ui.R.attr.ribbonWarningColor
-                        else app.aaps.core.ui.R.attr.icBolusCarbsColor,
-                    )
+                // EINE Farbe fuer Text UND Symbol. Getrennt gesetzt liefen sie
+                // auseinander - das Symbol blieb grau, weil ein ?attr/... im
+                // fillColor eines Vektors nicht aufgeloest wird.
+                val farbe = rh.gac(
+                    ctx,
+                    if (markerAn) app.aaps.core.ui.R.attr.ribbonWarningColor
+                    else app.aaps.core.ui.R.attr.icBolusCarbsColor,
+                )
+                binding.buttonsLayout.fuseMealButton.setTextColor(farbe)
+                androidx.core.widget.TextViewCompat.setCompoundDrawableTintList(
+                    binding.buttonsLayout.fuseMealButton,
+                    android.content.res.ColorStateList.valueOf(farbe),
                 )
             }
             binding.buttonsLayout.treatmentButton.visibility = (loop.runningMode != RM.Mode.DISCONNECTED_PUMP && !pump.isSuspended() && pump.isInitialized() && profile != null

@@ -131,4 +131,56 @@ class MarkerTimelineTest {
             MarkerTimeline.visible(nachFlash, min(200), t0, min(300))
         )
     }
+
+    // ---- Die Ruecknahme (11.08.) -----------------------------------------
+
+    /**
+     * EIN FOLGENLOSER DRUCK VERSCHWINDET AUS DEM GRAPHEN.
+     *
+     * Frueher blieb er stehen, mit ausdruecklicher Begruendung ("der Graph ist
+     * ein Protokoll"). Die trug, solange der Knopf nur die Evidenzschwelle
+     * senkte. Seit er Insulin autorisiert, lautet die Frage am Graphen "wann
+     * kam hier Mahlzeiteninsulin?" - und eine Linie ohne Insulin beantwortet
+     * sie falsch.
+     */
+    @Test
+    fun `ein folgenloser Druck wird zurueckgenommen`() {
+        val ring = ArrayDeque<Long>()
+        MarkerTimeline.add(ring, 1_000L)
+        assertTrue(MarkerTimeline.retract(ring, 1_000L, deliveredU = 0.0))
+        assertTrue(ring.isEmpty())
+    }
+
+    /**
+     * MIT ABGEGEBENEM INSULIN BLEIBT ER. Die Ruecknahme stoppt kuenftige
+     * Abgaben, sie macht vergangene nicht ungeschehen - dieses Insulin wirkt
+     * weiter und muss am Graphen zuzuordnen sein. Genau das sagt auch der
+     * Dialog zu.
+     */
+    @Test
+    fun `ein Druck mit abgegebenem Insulin bleibt stehen`() {
+        val ring = ArrayDeque<Long>()
+        MarkerTimeline.add(ring, 1_000L)
+        assertTrue(!MarkerTimeline.retract(ring, 1_000L, deliveredU = 0.05))
+        assertEquals(listOf(1_000L), ring.toList())
+    }
+
+    /** Andere Drucke bleiben unberuehrt - die Ruecknahme gilt EINEM. */
+    @Test
+    fun `die Ruecknahme trifft nur den eigenen Druck`() {
+        val ring = ArrayDeque<Long>()
+        MarkerTimeline.add(ring, 1_000L)
+        MarkerTimeline.add(ring, 2_000L)
+        MarkerTimeline.retract(ring, 2_000L, deliveredU = 0.0)
+        assertEquals(listOf(1_000L), ring.toList())
+    }
+
+    /** Ohne Marker gibt es nichts zurueckzunehmen. */
+    @Test
+    fun `ohne Zeitpunkt passiert nichts`() {
+        val ring = ArrayDeque<Long>()
+        MarkerTimeline.add(ring, 1_000L)
+        assertTrue(!MarkerTimeline.retract(ring, 0L, deliveredU = 0.0))
+        assertEquals(listOf(1_000L), ring.toList())
+    }
 }

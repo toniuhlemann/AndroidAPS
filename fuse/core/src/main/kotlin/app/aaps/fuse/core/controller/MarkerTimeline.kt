@@ -16,13 +16,23 @@ package app.aaps.fuse.core.controller
  *
  * ZWEI ENTSCHEIDUNGEN, DIE MAN KENNEN MUSS:
  *
- * 1. EIN ZURUECKGENOMMENER MARKER BLEIBT SICHTBAR. Der zweite Druck setzt
- *    `armedTs` auf 0, entfernt den Druck aber nicht aus dem Ring - und das ist
- *    Absicht: der Graph ist ein PROTOKOLL dessen, was passiert ist, keine
- *    Anzeige des aktuellen Zustands. Wer um 18:55 gedrueckt und um 18:57
- *    zurueckgenommen hat, hat um 18:55 gedrueckt. Geschichte zu loeschen waere
- *    die schlechtere Fehlerrichtung: eine Auswertung wuerde die Ruecknahme
- *    nicht mehr von "nie gedrueckt" unterscheiden koennen.
+ * 1. DIE LINIE MARKIERT ABGEGEBENES INSULIN, NICHT DIE ABSICHT (11.08.).
+ *
+ *    Frueher stand hier das Gegenteil: ein zurueckgenommener Marker blieb
+ *    sichtbar, weil "der Graph ein Protokoll dessen ist, was passiert ist".
+ *    Das war richtig, solange der Knopf nur die Evidenzschwelle senkte - ein
+ *    Fehldruck hinterliess dann tatsaechlich nichts als den Druck.
+ *
+ *    Seit der Knopf Insulin autorisiert, ist die Frage am Graphen eine
+ *    andere: "wann kam hier Mahlzeiteninsulin?" Eine Linie ohne Insulin
+ *    beantwortet sie falsch, und zwar genau in dem Moment, in dem man den
+ *    Graphen am schnellsten lesen will. Deshalb: wurde bis zur Ruecknahme
+ *    NICHTS geliefert, verschwindet der Druck; war schon etwas draussen,
+ *    bleibt er - dieses Insulin wirkt weiter und muss zuzuordnen sein.
+ *
+ *    Die Auswertung verliert dabei nichts: der Trail
+ *    (fuse_state_history.jsonl) ist das Journal, der Ring nur eine
+ *    Anzeigequelle. Das stand schon vorher an [RING_CAPACITY].
  *
  * 2. DER AKTUELLE MARKER KOMMT AUS DER PREFERENCE, DER REST AUS DEM RING.
  *    Der Ring lebt im Prozess und ist nach jedem Start leer; `armedTs`
@@ -69,5 +79,19 @@ object MarkerTimeline {
         if (ts <= 0L || ring.contains(ts)) return
         ring.addLast(ts)
         while (ring.size > RING_CAPACITY) ring.removeFirst()
+    }
+
+    /**
+     * Nimmt einen Druck ZURUECK - aber nur, wenn er folgenlos blieb.
+     *
+     * @param deliveredU was diese Episode bis jetzt geliefert hat. > 0 heisst:
+     *   die Linie bleibt, denn das Insulin wirkt weiter und muss am Graphen
+     *   zuzuordnen sein. Eine Ruecknahme stoppt kuenftige Abgaben, sie macht
+     *   vergangene nicht ungeschehen - genau das sagt auch der Dialog.
+     * @return ob der Druck entfernt wurde.
+     */
+    fun retract(ring: ArrayDeque<Long>, ts: Long, deliveredU: Double): Boolean {
+        if (ts <= 0L || deliveredU > 0.0) return false
+        return ring.remove(ts)
     }
 }
