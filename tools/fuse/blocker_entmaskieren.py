@@ -28,6 +28,18 @@ Deshalb meldet der Bericht den ERSTEN abweichenden Zyklus als
 Divergenzpunkt und beziffert danach nichts mehr. "Was waere gewesen" ist
 nicht messbar; "welcher Riegel haette an dieser Stelle noch gehalten" schon.
 
+DESHALB HEISST DIE ZAHL "gate-eligible" UND NICHT "dosiert". Sie sagt: in
+diesem AUFGEZEICHNETEN Referenz-Schnappschuss haette dieses Gate nicht
+geblockt. Sie sagt NICHT, dass die Variante so viele Dosen abgegeben haette -
+nach der ersten zusaetzlichen Dosis waeren IOB und Aktivitaet andere, damit
+die BGI-Bereinigung und `r`, damit Guard- und Schwanzbahnen, damit
+Transporthaftung, Kandidaten und Budgets. Alle Schnappschuesse danach
+beschreiben eine Welt, die es in der Variante nicht mehr gaebe.
+
+Und `predAtRelease > target` ist ein BEDARFSINDIKATOR, kein Nachweis, dass
+eine pumpenschrittgrosse Dosis dort sicher gewesen waere. Die Kandidatensuche
+haette weiterhin ihr eigenes Urteil gefaellt.
+
 Aufruf:
     python tools/fuse/blocker_entmaskieren.py <trail.jsonl> [--marker <ms>]
 """
@@ -110,9 +122,15 @@ def auswerten(saetze, marker):
     print('Lockern eines Riegels nichts - unabhaengig davon gemessen, welcher')
     print('Blocker drangestanden hat.')
     print()
+    print('LESEART: "gate-eligible" = dieses Gate haette in DIESEM aufgezeichneten')
+    print('Schnappschuss nicht geblockt. NICHT: so viele Dosen waeren geflossen.')
+    print('Ab dem Divergenzpunkt beschreibt jeder weitere Schnappschuss eine Welt,')
+    print('die es in der Variante nicht mehr gaebe (anderes IOB, anderes r,')
+    print('andere Bahnen). Belastbar ist der Divergenzpunkt, nicht die Summe.')
+    print()
 
     for name, guard_haupt, tail_haupt in varianten:
-        frei = 0
+        gate_eligible = 0
         uebernehmer = Counter()
         divergenz = None
         for d in fenster:
@@ -143,12 +161,12 @@ def auswerten(saetze, marker):
             elif not hat_bedarf:
                 uebernehmer['KEIN_BEDARF'] += 1
             else:
-                frei += 1
+                gate_eligible += 1
                 if divergenz is None and not real_geflossen:
                     divergenz = d
 
         print(f'{name}')
-        print(f'   frei (Bedarf da, kein Riegel): {frei}')
+        print(f'   gate-eligible: {gate_eligible}')
         for k, v in uebernehmer.most_common():
             print(f'   {v:>3}  {k}')
         if divergenz is not None:
