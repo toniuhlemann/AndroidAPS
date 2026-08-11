@@ -32,6 +32,10 @@
     <string name="fuse_drive_quantile_title">Guard-Quantil [%]</string>
     <string name="fuse_drive_quantile_summary">Geplanter Sicherheitsabstand in der Vorhersage. 50 = ausgeschaltet. NICHT absenken: nachgerechnet liefert ein niedrigeres Quantil hier keine Vorsicht, sondern nur AELTERE Messwerte (25 = die Steigung von vor 11,5 Minuten). Bleibt stehen, bis es etwas Besseres gibt.</string>
 
+    <string name="fuse_conditional_tail_title">Mahlzeit im Schwanz-Waechter</string>
+    <string name="fuse_conditional_tail_summary">Der Schwanz-Waechter rechnet sein Budget aus einem Verlauf OHNE Kohlenhydrate - und verbietet damit genau das Insulin, das die angekuendigte Mahlzeit rechtfertigt. Mit dieser Einstellung darf der erklaerte Kredit auch auf die Sicherheitskante wirken, solange ein Marker laeuft. Begrenzt durch die Huelle, endet mit dem Kredit. AUS = Verhalten wie vorher.</string>
+    <string name="fuse_marker_low_title">Marker gibt Insulin auch bei TIEF frei</string>
+    <string name="fuse_marker_low_summary">ACHTUNG - die folgenreichste Einstellung. Normalerweise gibt FUSE unter 75 mg/dl nichts ab, egal was du drueckst. Mit dieser Einstellung wird der Mahlzeiten-Knopf zu einer Freigabe von Insulin AUCH BEI GEMESSENEM TIEF: du erklaerst damit, dass Kohlenhydrate kommen, und uebernimmst die Verantwortung dafuer. Freigegeben wird nur der Anteil aus der Freigabe-Huelle; eine normale Korrekturdosis bleibt gesperrt, die schuetzende Basalabsenkung laeuft weiter, und technische Sperren (Pumpe, Ledger, fehlende Daten) bleiben hart. Ohne gesetzten Marker aendert sich nichts.</string>
     <string name="fuse_tail_guard_title">Schwanz-Guard</string>
     <string name="fuse_tail_guard_summary">Insulin wirkt 6-9 Stunden nach - laenger, als die normale Vorhersage schaut. Dieser Waechter fragt zusaetzlich: vertraegt auch der SPAETE Teil der Wirkung diese Dosis noch, ohne unter die Schwanz-Untergrenze zu fuehren? Wenn nein, wird gedeckelt, auch wenn es jetzt gerade gut aussieht. Rechnet erst einen von drei Termen und traegt deshalb einen Unvollstaendigkeitsvermerk.</string>
 

@@ -1359,6 +1359,8 @@ class FusePlugin @Inject constructor(
             .put(FuseIntKey.DriveTauMin, preferences)
             .put(FuseIntKey.DriveLowerQuantilePct, preferences)
             .put(FuseBooleanKey.TailGuardEnabled, preferences)
+            .put(FuseBooleanKey.ConditionalTailEnabled, preferences)
+            .put(FuseBooleanKey.MarkerAuthorisesLow, preferences)
             .put(FuseBooleanKey.FastRestraintEnabled, preferences)
             .put(FuseDoubleKey.TailFloorMgdl, preferences)
             .put(FuseDoubleKey.TailRecoveryU, preferences)
@@ -1382,6 +1384,8 @@ class FusePlugin @Inject constructor(
             .store(FuseIntKey.DriveTauMin, preferences)
             .store(FuseIntKey.DriveLowerQuantilePct, preferences)
             .store(FuseBooleanKey.TailGuardEnabled, preferences)
+            .store(FuseBooleanKey.ConditionalTailEnabled, preferences)
+            .store(FuseBooleanKey.MarkerAuthorisesLow, preferences)
             .store(FuseBooleanKey.FastRestraintEnabled, preferences)
             .store(FuseDoubleKey.TailFloorMgdl, preferences)
             .store(FuseDoubleKey.TailRecoveryU, preferences)
@@ -1501,6 +1505,8 @@ class FusePlugin @Inject constructor(
 
         cat("fuse_tail", "Haftung / Schwanz") {
             addPreference(AdaptiveSwitchPreference(ctx = context, booleanKey = FuseBooleanKey.TailGuardEnabled, summary = R.string.fuse_tail_guard_summary, title = R.string.fuse_tail_guard_title))
+            addPreference(AdaptiveSwitchPreference(ctx = context, booleanKey = FuseBooleanKey.ConditionalTailEnabled, summary = R.string.fuse_conditional_tail_summary, title = R.string.fuse_conditional_tail_title))
+            addPreference(AdaptiveSwitchPreference(ctx = context, booleanKey = FuseBooleanKey.MarkerAuthorisesLow, summary = R.string.fuse_marker_low_summary, title = R.string.fuse_marker_low_title))
             addPreference(AdaptiveIntPreference(ctx = context, intKey = FuseIntKey.LiabilityHorizonMin, dialogMessage = R.string.fuse_liability_horizon_summary, title = R.string.fuse_liability_horizon_title))
             addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.TailFloorMgdl, dialogMessage = R.string.fuse_tail_floor_summary, title = R.string.fuse_tail_floor_title))
             addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.TailRecoveryU, dialogMessage = R.string.fuse_tail_recovery_summary, title = R.string.fuse_tail_recovery_title))
