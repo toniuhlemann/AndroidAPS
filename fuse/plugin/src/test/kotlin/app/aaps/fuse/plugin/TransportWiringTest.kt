@@ -114,6 +114,9 @@ class TransportWiringTest : TestBaseWithProfile() {
      *  Hebung passt). */
     private var quantilePct = 50
 
+    /** Der Marker autorisiert Insulin bei gemessenem Tief. */
+    private var markerAuthorisesLow = false
+
     /** Insulinaktivitaet je Punkt. 0 heisst: der Bolus-Deckungs-Abschlag ist
      *  null, und damit ist die Bremsbahn-Untergrenze IHR EIGENES Mittel -
      *  auch dort passt dann keine Hebung hinein. */
@@ -230,6 +233,7 @@ class TransportWiringTest : TestBaseWithProfile() {
         whenever(preferences.get(FuseIntKey.DriveLowerQuantilePct)).thenAnswer { quantilePct }
         whenever(preferences.get(FuseBooleanKey.TailGuardEnabled)).thenAnswer { tailGuard }
         whenever(preferences.get(FuseBooleanKey.ConditionalTailEnabled)).thenAnswer { conditionalTail }
+        whenever(preferences.get(FuseBooleanKey.MarkerAuthorisesLow)).thenAnswer { markerAuthorisesLow }
         whenever(preferences.get(FuseDoubleKey.TailFloorMgdl)).thenReturn(70.0)
         whenever(preferences.get(FuseDoubleKey.TailRecoveryU)).thenReturn(0.0)
         whenever(preferences.get(FuseBooleanKey.FastRestraintEnabled)).thenReturn(true)
@@ -763,5 +767,59 @@ class TransportWiringTest : TestBaseWithProfile() {
         repeat(25) {
             assertTrue(cycle().tailLowerConditionalMgdl == null, "der Schalter wirkt nicht")
         }
+    }
+
+    // ---- Das LOW-Praedikat, im RUNNER ------------------------------------
+
+    /**
+     * DER P0 VOM 11.08., als Gegenprobe.
+     *
+     * Das Praedikat stand als `step.safetyReasons.all { it == LOW }` da - und
+     * `all` ist auf der LEEREN Menge wahr. Ein `GUARD_FLOOR` aus einer bloss
+     * VORHERGESAGTEN Unterschreitung (aktueller BG in Ordnung, Bahn faellt)
+     * haette den Override damit ausgeloest, obwohl gar kein Tief gemessen ist.
+     *
+     * Autorisiert ist aber nur der gemessene Tiefstand, nicht die Prognose.
+     *
+     * Diesen Fall koennen die Core-Tests nicht sehen: das Praedikat lebt im
+     * Runner, und `safetyReasons` kommt aus dem Observer.
+     */
+    @Test
+    fun `ohne gemessenes Tief bleibt der LOW-Override aus`() {
+        // Hoher, flacher BG: der Observer meldet KEIN LOW, safetyReasons ist
+        // leer. Ein Guard-Floor-Block kann hier nur aus der Prognose kommen.
+        flach = 200.0
+        steigungProMin = 0.0
+        markerAt = start + 2 * 60_000L
+        markerAuthorisesLow = true
+
+        clock = start
+        repeat(25) {
+            val o = cycle()
+            assertTrue(
+                o.state == null || !o.state!!.safetyHold,
+                "der Aufbau soll KEIN gemessenes Tief erzeugen"
+            )
+        }
+    }
+
+    /**
+     * Und die Gegenrichtung: bei echtem Tief meldet der Observer den Hold.
+     * Ohne diesen Fall koennte der Test oben auch dann gruen sein, wenn der
+     * Aufbau NIE ein Tief erzeugen kann.
+     */
+    @Test
+    fun `bei gemessenem Tief meldet der Observer den Hold`() {
+        flach = 62.0                  // unter der LOW-Schwelle von 75
+        steigungProMin = 0.0
+        markerAt = start + 2 * 60_000L
+
+        clock = start
+        var sah = false
+        repeat(25) {
+            val o = cycle()
+            if (o.state?.safetyHold == true) sah = true
+        }
+        assertTrue(sah, "bei BG 62 muss der Tiefschutz greifen")
     }
 }

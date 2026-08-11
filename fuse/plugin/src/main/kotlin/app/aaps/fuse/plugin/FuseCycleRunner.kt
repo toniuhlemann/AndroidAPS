@@ -1125,8 +1125,12 @@ class FuseCycleRunner(
         //
         //  1. die Einstellung ist an - Default AUS, s. MarkerAuthorisesLow,
         //  2. ein Marker ist bewusst gesetzt und laeuft,
-        //  3. der Hold stammt WIRKLICH aus dem Tief - kaeme je ein zweiter
-        //     SafetyReason dazu, waere er sonst stillschweigend miterlaubt,
+        //  3. es liegt WIRKLICH ein gemessenes Tief vor - und zwar GENAU das
+        //     als einziger Grund. `all { it == LOW }` waere hier falsch: auf
+        //     der LEEREN Menge ist es wahr, und dann haette ein GUARD_FLOOR
+        //     aus einem bloss VORHERGESAGTEN Tief (aktueller BG in Ordnung,
+        //     Bahn faellt) den Override ausgeloest. Autorisiert ist aber nur
+        //     der gemessene Tiefstand, nicht die Prognose.
         //  4. die Basisentscheidung wurde AUCH von genau diesen beiden
         //     Bloecken gestoppt.
         //
@@ -1140,7 +1144,7 @@ class FuseCycleRunner(
         // der Marker-Huelle und nichts sonst.
         val lowOverrideActive = cfg.markerAuthorisesLow &&
             mealMarkerActive &&
-            step.safetyReasons.all { it == SafetyReason.LOW } &&
+            step.safetyReasons == setOf(SafetyReason.LOW) &&
             baseDecision.block in setOf(
                 FuseController.Block.SAFETY_HOLD,
                 FuseController.Block.GUARD_FLOOR,

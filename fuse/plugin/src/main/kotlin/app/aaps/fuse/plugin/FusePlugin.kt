@@ -952,7 +952,7 @@ class FusePlugin @Inject constructor(
                 // aendert, waere Verschwendung - aber weglassen darf man sie
                 // nicht, sonst sieht ein reparierter Ledger wie ein
                 // unbenutzter aus.
-                ledgerReset = letzteReparatur(),
+                ledgerReset = letzteReparatur(),
             priorActuation = priorActuation,
             )
             // Die Android-Aufloesung des Verzeichnisses passiert AUSSCHLIESSLICH

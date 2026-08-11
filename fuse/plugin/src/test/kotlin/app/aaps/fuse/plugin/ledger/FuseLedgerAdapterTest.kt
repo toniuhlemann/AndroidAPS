@@ -392,7 +392,7 @@ class FuseLedgerAdapterTest {
         assertEquals(79L, a.state.entries.getValue("alt").identity?.pumpId)
     }
 
-    /**
+    /**
      * DIE GEGENPROBE ZUM ALTBESTAND: an einer ECHTEN Pumpe bindet eine
      * pinlose Zeile nicht - auch nicht, wenn Menge und Zeitfenster passen.
      *
