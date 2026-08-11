@@ -390,6 +390,34 @@ enum class FuseBooleanKey(
      * AUS heisst: exakt das Verhalten von vorher. Der Schalter ist da, damit
      * man ihn umlegen kann, nicht damit die Bahn spaeter wirkt.
      */
+    /**
+     * DER MARKER AUTORISIERT INSULIN BEI GEMESSENEM TIEF (Tonis Entscheidung,
+     * 11.08.).
+     *
+     * Damit hoert der Mahlzeiten-Knopf auf, ein blosser Kontextmarker zu sein,
+     * und wird zu einer INSULIN-AUTORISIERENDEN Handlung. Das ist die
+     * folgenreichste Einstellung in FUSE.
+     *
+     * WAS SIE FREIGIBT: ausschliesslich den markerfinanzierten Anteil - also
+     * die Sofort-Freigabe aus der Marker-Huelle. Das ist keine zusaetzliche
+     * Regel, sondern strukturell: bei LOW ist die Basisentscheidung IMMER 0,
+     * also ist alles, was danach herauskommt, der Lift und nichts sonst. Eine
+     * normale Korrekturdosis kann diesen Weg nicht nehmen.
+     *
+     * WAS SIE NICHT ANFASST: Signalfehler, unbekanntes IOB, Ledger-Hold,
+     * Pumpen-Gates, Schwanz-Haftung. Und das schuetzende Zero-Temp laeuft
+     * unveraendert weiter - es wird nicht "LOW abgeschaltet", sondern eine
+     * bewusste manuelle Entscheidung praezise umgesetzt.
+     *
+     * DEFAULT AUS, und das gegen die sonstige Praxis in diesem Projekt
+     * (Schalter stehen hier auf AN, damit nichts still spaeter wirkt). Der
+     * Grund ist der einzige Unterschied, der zaehlt: ein versehentliches
+     * Mitwandern auf ein Geraet mit ECHTER Pumpe ist hier qualitativ etwas
+     * anderes als bei jedem anderen Schalter. Einmal umlegen ist genau die
+     * bewusste Handlung, um die es bei diesem Knopf ohnehin geht.
+     */
+    MarkerAuthorisesLow("fuse_marker_authorises_low", false),
+
     ConditionalTailEnabled("fuse_conditional_tail_enabled", true),
 
     TailGuardEnabled("fuse_tail_guard_enabled", false),

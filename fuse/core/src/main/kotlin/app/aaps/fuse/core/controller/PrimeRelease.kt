@@ -137,6 +137,10 @@ object PrimeRelease {
         val guardFloorMgdl: Double,
         val isfMgdlPerU: Double,
         val pumpIncrementU: Double,
+        /** Der Marker autorisiert Insulin trotz gemessenem Tief - dann
+         *  entfaellt die Freigangsprobe gegen den Guard-Boden. Der Aufrufer
+         *  hat geprueft, dass der Hold aus dem TIEF stammt. */
+        val markerAuthorisesLow: Boolean = false,
     )
 
     data class Plan(
@@ -199,8 +203,16 @@ object PrimeRelease {
         // die Bahn faellt, endet die Serie sofort. Zusaetzlich bleiben
         // Wanduhr-Kappe, Huelle, maxSmb, iobTH und maxIOB unveraendert
         // (s. [lift]), und der Schwanz-Waechter kappt weiterhin unabhaengig.
+        // Die Freigangsprobe gegen den Guard-Boden. Sie ENTFAELLT, wenn der
+        // Marker das Tief ausdruecklich autorisiert - sonst waere die
+        // Freigabe dort schon hier tot, und die Lockerung der beiden Bloecke
+        // oben bliebe wirkungslos. Genau diese Falle (ein Tor geoeffnet, das
+        // naechste uebernimmt) ist in dieser Reihe schon zweimal
+        // zugeschnappt.
         val clearance = CLEARANCE_60MIN_FRACTION * floorU * input.isfMgdlPerU
-        if (input.safetyMinLowerMgdl - clearance < input.guardFloorMgdl) return off("CLEARANCE")
+        if (!input.markerAuthorisesLow &&
+            input.safetyMinLowerMgdl - clearance < input.guardFloorMgdl
+        ) return off("CLEARANCE")
 
         return Plan(true, floorU, remaining, "PRIME")
     }
@@ -211,6 +223,26 @@ object PrimeRelease {
         FuseController.Block.NONE,
         FuseController.Block.NO_DEMAND,
         FuseController.Block.BELOW_PUMP_INCREMENT,
+    )
+
+    /**
+     * Zusaetzlich hebbar, wenn der Marker Insulin bei gemessenem Tief
+     * autorisiert (Tonis Entscheidung 11.08., Einstellung
+     * `MarkerAuthorisesLow`).
+     *
+     * Nur diese beiden, und beide nur wegen des TIEFS: `SAFETY_HOLD` traegt
+     * heute ausschliesslich `SafetyReason.LOW`, und `GUARD_FLOOR` ist
+     * derselbe Befund eine Ebene tiefer. Alles Uebrige - Signalfehler,
+     * unbekanntes IOB, Ledger-Hold, Pumpe, Schwanz - bleibt hart und steht
+     * bewusst NICHT hier.
+     *
+     * Der Aufrufer muss zusaetzlich pruefen, dass der Hold wirklich aus dem
+     * TIEF stammt: kaeme je ein zweiter `SafetyReason` dazu, wuerde er sonst
+     * stillschweigend miterlaubt.
+     */
+    private val LIFTABLE_ON_LOW = LIFTABLE + setOf(
+        FuseController.Block.SAFETY_HOLD,
+        FuseController.Block.GUARD_FLOOR,
     )
 
     /**
@@ -226,6 +258,9 @@ object PrimeRelease {
      */
     fun lift(
         base: FuseController.Decision, p: Plan, state: FuseController.State,
+        /** s. [LIFTABLE_ON_LOW]. Der Aufrufer hat bereits geprueft, dass der
+         *  Hold aus dem TIEF stammt. */
+        markerAuthorisesLow: Boolean = false,
         tailHeadroomU: Double? = null, onsetCapU: Double? = null,
         // Fix-Pass 2 Nr. 2 (NEU-BS-01, doppelt unabhaengig gefunden): die
         // Suche kappt an LEDGER-korrigierten Headrooms, der Lift kappte an
@@ -234,7 +269,7 @@ object PrimeRelease {
         transportCommitmentU: Double = 0.0,
     ): FuseController.Decision {
         if (!p.active || p.floorU <= 0.0) return base
-        if (base.block !in LIFTABLE) return base
+        if (base.block !in (if (markerAuthorisesLow) LIFTABLE_ON_LOW else LIFTABLE)) return base
 
         var caps = min(
             min(state.maxSmbU, p.remainingU),

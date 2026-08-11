@@ -33,6 +33,7 @@ import app.aaps.fuse.plugin.ledger.TransportInclusion
 import app.aaps.fuse.core.controller.IobThreshold
 import app.aaps.fuse.core.controller.TailLiability
 import app.aaps.fuse.core.controller.TbrPolicy
+import app.aaps.fuse.core.observer.SafetyReason
 import app.aaps.fuse.core.observer.Health
 import app.aaps.fuse.core.observer.ObserverStateMachine
 import app.aaps.fuse.core.observer.ObserverStep
@@ -1119,6 +1120,32 @@ class FuseCycleRunner(
         // Sofort-Freigabe: Plan aus derselben Momentaufnahme, Anhebung NUR
         // wenn der Basisentscheidung nichts als Bedarf fehlte. Sperren und
         // Deckel gewinnen in PrimeRelease.lift unveraendert.
+        // DER MARKER AUTORISIERT INSULIN TROTZ GEMESSENEM TIEF (Tonis
+        // Entscheidung, 11.08.). Vier Bedingungen, alle noetig:
+        //
+        //  1. die Einstellung ist an - Default AUS, s. MarkerAuthorisesLow,
+        //  2. ein Marker ist bewusst gesetzt und laeuft,
+        //  3. der Hold stammt WIRKLICH aus dem Tief - kaeme je ein zweiter
+        //     SafetyReason dazu, waere er sonst stillschweigend miterlaubt,
+        //  4. die Basisentscheidung wurde AUCH von genau diesen beiden
+        //     Bloecken gestoppt.
+        //
+        // Punkt 4 ist der wichtigste und nicht bloss Sorgfalt: ohne ihn wuerde
+        // der Guard-Riegel unten in JEDEM Zyklus mit aktivem Marker entfallen,
+        // auch ohne Tief - und damit fuer eine ganz normale Korrekturdosis.
+        // Freigegeben werden soll aber nur der markerfinanzierte Anteil.
+        //
+        // Dass das reicht, ist strukturell: bei diesen beiden Bloecken ist die
+        // Basisdosis 0, also ist alles, was danach herauskommt, der Lift aus
+        // der Marker-Huelle und nichts sonst.
+        val lowOverrideActive = cfg.markerAuthorisesLow &&
+            mealMarkerActive &&
+            step.safetyReasons.all { it == SafetyReason.LOW } &&
+            baseDecision.block in setOf(
+                FuseController.Block.SAFETY_HOLD,
+                FuseController.Block.GUARD_FLOOR,
+            )
+
         val primePlan = PrimeRelease.plan(
             PrimeRelease.Input(
                 enabled = cfg.primeReleaseEnabled,
@@ -1140,10 +1167,12 @@ class FuseCycleRunner(
                 guardFloorMgdl = cfg.guardFloorMgdl,
                 isfMgdlPerU = isf,
                 pumpIncrementU = bolusStep,
+                markerAuthorisesLow = lowOverrideActive,
             )
         )
         val lifted = PrimeRelease.lift(
             vetted, primePlan, state,
+            markerAuthorisesLow = lowOverrideActive,
             tailHeadroomU = tail?.takeIf { it.usable }?.headroomU,
             onsetCapU = if (onset.active) onset.remainingU else null,
             // Fix-Pass 2 Nr. 2: dieselbe Ledger-Korrektur wie in den
@@ -1203,7 +1232,13 @@ class FuseCycleRunner(
         // muss der Schwanz MIT dieser Menge tragen.
         fun finalVeto(u: Double): String? {
             if (kernelFinal == null) return CandidateSearch.Reject.MODEL_HORIZON_TOO_SHORT.name
-            CandidateSearch.verifyGuardFloor(
+            // Der Guard-Riegel entfaellt NUR, wenn der Marker das Tief
+            // ausdruecklich autorisiert - und dann ist die Menge per
+            // Konstruktion der markerfinanzierte Lift, weil die Basis bei
+            // SAFETY_HOLD/GUARD_FLOOR 0 war. Das VIERTE Tor: ohne diese
+            // Zeile waere alles darueber wirkungslos, denn hier kommt keine
+            // positive Menge vorbei.
+            if (!lowOverrideActive) CandidateSearch.verifyGuardFloor(
                 prediction, kernelFinal, built.input.isfSlots, candidateBand, u, restraint = restraint,
             )?.let { return it.name }
             tailWith(u)?.takeIf { it.usable && it.headroomU < -TAIL_VETO_EPS_U }?.let { return TAIL_VETO }
@@ -1671,6 +1706,7 @@ class FuseCycleRunner(
         val driveLowerQuantilePct: Int,
         val tailGuardEnabled: Boolean,
         val conditionalTailEnabled: Boolean,
+        val markerAuthorisesLow: Boolean,
         val tailFloorMgdl: Double,
         val tailRecoveryU: Double,
         val fastRestraintEnabled: Boolean,
@@ -1710,6 +1746,7 @@ class FuseCycleRunner(
         driveLowerQuantilePct = preferences.get(FuseIntKey.DriveLowerQuantilePct),
         tailGuardEnabled = preferences.get(FuseBooleanKey.TailGuardEnabled),
         conditionalTailEnabled = preferences.get(FuseBooleanKey.ConditionalTailEnabled),
+        markerAuthorisesLow = preferences.get(FuseBooleanKey.MarkerAuthorisesLow),
         tailFloorMgdl = preferences.get(FuseDoubleKey.TailFloorMgdl),
         tailRecoveryU = preferences.get(FuseDoubleKey.TailRecoveryU),
         fastRestraintEnabled = preferences.get(FuseBooleanKey.FastRestraintEnabled),
