@@ -62,6 +62,9 @@ class CycleIobValidityTest : TestBaseWithProfile() {
     private lateinit var ledger: FuseLedgerAdapter
     private lateinit var runner: FuseCycleRunner
 
+    /** Der in "diesem Prozess" beobachtete Markerdruck - im Rig steuerbar. */
+    private var markerPress = 0L
+
     /** Testschalter: ist die IOB-Lesung dieses Zyklus gueltig? */
     private var iobValid = true
 
@@ -139,7 +142,7 @@ class CycleIobValidityTest : TestBaseWithProfile() {
         ledger = FuseLedgerAdapter()
         runner = FuseCycleRunner(
             iobCobCalculator, profileFunction, activePlugin, constraintsChecker, commandQueue,
-            preferences, persistenceLayer, processedTbrEbData, dateUtil, ledger, "test-epoch"
+            preferences, persistenceLayer, processedTbrEbData, dateUtil, ledger, "test-epoch", { markerPress }
         )
     }
 

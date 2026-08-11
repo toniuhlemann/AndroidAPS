@@ -162,6 +162,11 @@ object FuseStateJson {
                 JSONObject().put("sinceMin", m.sinceMin).put("totalU", fin(m.totalU))
                     .put("first30U", fin(m.first30U)).put("first60U", fin(m.first60U))
             } ?: JSONObject.NULL)
+            // Die Evidenz-Episode: Identitaet UND der Grund, falls keine
+            // eroeffnet wurde. Beides, weil "0 ohne Grund" (kein Marker) etwas
+            // anderes ist als "0 mit Grund" (Druck nicht durabel).
+            .put("evidenceEpisodeId", outcome.evidenceEpisodeId)
+            .put("evidenceEpisodeDenial", outcome.evidenceEpisodeDenial ?: JSONObject.NULL)
         putOrGap(o, "sourceTs", outcome.sourceTs, gaps, "NO_SIGNAL_THIS_CYCLE")
         o.put("abortReason", outcome.abortReason ?: JSONObject.NULL)
 

@@ -164,6 +164,16 @@ object FuseScreenModel {
             if (elapsed > m.windowMin + 120) return@let
             val restMin = (m.windowMin - elapsed).coerceAtLeast(0)
             row(b, "Marker", if (restMin > 0) "AKTIV - Rest $restMin/${m.windowMin} min" else "abgelaufen")
+            // DER FALL, DER SONST UNERKLAERLICH WAERE: nach einem Absturz
+            // zwischen Knopfdruck und Ledger-Persist steht oben "AKTIV", und
+            // es gibt trotzdem keine Episode und keinen Kredit. Der Nutzer
+            // muss dann zweimal druecken (zuruecknehmen, neu armen) - das
+            // sagen wir hier, statt ihn raten zu lassen.
+            outcome.evidenceEpisodeDenial?.let { grund ->
+                row(b, "Evidence-Episode", "NICHT eroeffnet - $grund, zusaetzlicher Kredit 0")
+                if (grund == "MARKER_EVENT_NOT_DURABLE")
+                    row(b, "", "Marker zuruecknehmen und erneut druecken")
+            }
         }
         outcome.mealStats?.let { ms ->
             // T0-Anker (Toni 08.08.): Stand nach 30/60 min AB ESSENSBEGINN,

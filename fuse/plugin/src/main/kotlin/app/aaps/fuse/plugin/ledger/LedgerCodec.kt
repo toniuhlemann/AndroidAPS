@@ -364,6 +364,7 @@ object LedgerCodec {
         .put("primeWindowStartTs", e.primeWindowStartTs)
         .put("evidenceCommittedU", e.evidenceCommittedU)
         .put("evidenceEpisodeId", e.evidenceEpisodeId)
+        .put("lastConsumedMarkerTs", e.lastConsumedMarkerTs)
         .put("primeArmedTs", e.primeArmedTs)
         .put("onsetSpentU", e.onsetSpentU)
         .put("onsetQuietMin", e.onsetQuietMin)
@@ -388,6 +389,13 @@ object LedgerCodec {
         // und der Zaehler startet mit der naechsten Episode bei 0.
         e.evidenceCommittedU = requireAmount("evidenceCommittedU", o.optDouble("evidenceCommittedU", 0.0))
         e.evidenceEpisodeId = requireTs("evidenceEpisodeId", o.optLong("evidenceEpisodeId", 0L))
+        // Der verbrauchte Markeranker: fehlt er (Altdatei), gilt 0 - dann ist
+        // noch nichts verbraucht. Das ist hier die WENIGER konservative
+        // Richtung, aber die einzig moegliche: eine Datei, die den Anker nicht
+        // kennt, kann auch nicht sagen, welcher Druck schon gezaehlt hat. Der
+        // Prozess-Beobachtungspunkt haelt den Fall trotzdem zu - ein Marker
+        // aus der Zeit vor dem Update wurde in DIESEM Prozess nicht gedrueckt.
+        e.lastConsumedMarkerTs = requireTs("lastConsumedMarkerTs", o.optLong("lastConsumedMarkerTs", 0L))
         e.primeArmedTs = requireTs("primeArmedTs", o.getLong("primeArmedTs"))
         e.onsetSpentU = requireAmount("onsetSpentU", o.getDouble("onsetSpentU"))
         e.onsetQuietMin = o.getInt("onsetQuietMin").also { require(it >= 0) { "negative onsetQuietMin $it" } }

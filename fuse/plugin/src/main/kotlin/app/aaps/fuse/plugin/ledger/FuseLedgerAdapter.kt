@@ -102,6 +102,34 @@ class EpisodeBudgets {
      * bestehenden Anker und den bestehenden Zaehler.
      */
     var evidenceEpisodeId: Long = 0L
+
+    /**
+     * Der DAUERHAFT VERBRAUCHTE Markeranker - juengster Knopfdruck, der je
+     * eine Evidenz-Episode eroeffnet hat. 0 = noch keiner.
+     *
+     * WARUM ZUSAETZLICH ZU [evidenceEpisodeId], obwohl der doch dasselbe
+     * Ereignis traegt: der Episodenanker VERFAELLT nach dem 240-Minuten-
+     * Deckel, der Markerzeitpunkt in den Preferences aber NICHT. Danach steht
+     * dort weiterhin dieselbe Zahl, die Episode ist weg, und derselbe
+     * Knopfdruck saehe wieder aus wie ein neuer - eine zweite Episode mit
+     * frischem Deckel und frischem Zaehler fuer dieselbe Mahlzeit.
+     *
+     * Dieses Feld ueberlebt den Deckel UND jede Episodenbereinigung. Es wird
+     * nur vorwaerts geschrieben; ein Ruecksetzen gibt es nicht.
+     *
+     * WARUM EIN SKALAR UND KEINE MENGE, und das ist eine Korrektur meiner
+     * eigenen frueheren Ansage: eine begrenzte "retired"-Menge muesste
+     * irgendwann verdraengen, und genau der verdraengte Eintrag wuerde danach
+     * wieder als neu gelten - die Menge waere also SCHWAECHER als die Schranke.
+     * Monoton "alles bis hierher ist verbraucht" hat keine Verdraengung.
+     *
+     * PREIS, ausdruecklich: springt die Uhr rueckwaerts, liegt ein echter
+     * neuer Druck vor dem Anker und eroeffnet keine Episode
+     * (`MARKER_ALREADY_CONSUMED`). Die Marker-SONDERRECHTE - Prime-Fenster,
+     * Onset, Prior - haengen nicht hieran und laufen weiter; es entfaellt nur
+     * der Evidenz-Kredit, und der Grund steht im Tab.
+     */
+    var lastConsumedMarkerTs: Long = 0L
     val mealDeliveries: ArrayDeque<Pair<Long, Double>> = ArrayDeque()
 
     /**

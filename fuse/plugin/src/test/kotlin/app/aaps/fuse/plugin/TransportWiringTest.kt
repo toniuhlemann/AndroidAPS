@@ -73,6 +73,9 @@ class TransportWiringTest : TestBaseWithProfile() {
     private lateinit var ledger: FuseLedgerAdapter
     private lateinit var runner: FuseCycleRunner
 
+    /** Der in "diesem Prozess" beobachtete Markerdruck - im Rig steuerbar. */
+    private var markerPress = 0L
+
     private var clock = 0L
     private val start = 1_700_000_000_000L / 60_000L * 60_000L
 
@@ -146,7 +149,21 @@ class TransportWiringTest : TestBaseWithProfile() {
      * setzt und armedTs stehen laesst, prueft nichts, weil der Stamp-Zweig nie
      * genommen wird. Deshalb weiterhin: Zeit ueber ArmedTs, Stamp auf 0.
      */
-    private var markerAt = 0L
+    /**
+     * SETZEN IST DRUECKEN - wie in `FusePlugin.toggleMealMarker`: armen setzt
+     * die Prozess-Beobachtung, zuruecknehmen loescht sie. Nur so bildet das
+     * Rig einen echten Knopfdruck ab.
+     *
+     * Wer den Fall "Marker aus einem FRUEHEREN Prozess" braucht, setzt
+     * danach [markerPress] von Hand auf 0.
+     */
+    private var markerAt: Long
+        get() = markerAtIntern
+        set(v) {
+            markerAtIntern = v
+            markerPress = v
+        }
+    private var markerAtIntern = 0L
 
     /**
      * ERZWUNGENE PREDICTOR-ABLEHNUNG, `null` = echter Predictor.
@@ -220,7 +237,7 @@ class TransportWiringTest : TestBaseWithProfile() {
         ledger = l
         runner = FuseCycleRunner(
             iobCobCalculator, profileFunction, activePlugin, constraintsChecker, commandQueue,
-            preferences, persistenceLayer, processedTbrEbData, dateUtil, ledger, "test-epoch",
+            preferences, persistenceLayer, processedTbrEbData, dateUtil, ledger, "test-epoch", { markerPress },
             predict = { input ->
                 predictReject
                     ?.let { PredictorOutcome.Rejected(it, "erzwungen") }
@@ -1636,5 +1653,120 @@ class TransportWiringTest : TestBaseWithProfile() {
             l.episodes.evidenceEpisodeId != anker,
             "nach dem Deckel muss eine neue Episode beginnen",
         )
+    }
+    // ---- DER MARKERANKER: ein Druck eroeffnet hoechstens EINMAL -----------
+
+    /**
+     * DER NEUSTART-FALL.
+     *
+     * Nach einem Prozessstart steht der Markerzeitpunkt weiter in den
+     * Preferences - er ist frisch genug fuer den Deckel und noch nicht
+     * verbraucht. Ohne die Prozess-Beobachtung wuerde er eine zweite Episode
+     * mit frischem Zaehler eroeffnen, obwohl die erste dieselbe Mahlzeit
+     * schon bezahlt hat.
+     *
+     * Hier gebaut wie in echt: derselbe Marker, aber KEIN Druck in diesem
+     * Prozess.
+     */
+    @Test
+    fun `Marker aus einem frueheren Prozess eroeffnet keine Episode`(@TempDir dir: File) {
+        tailGuard = false
+        flach = 62.0
+        steigungProMin = 0.0
+        markerAuthorized = true
+
+        val l = FuseLedgerAdapter().also { it.loadOnce(dir.also(File::mkdirs), "test-epoch", start) }
+        neuerRunner(l)
+
+        markerAt = start + 2 * 60_000L
+        clock = start
+        // Der Warmstart-Zustand: Preference steht, Beobachtung ist leer.
+        markerPress = 0L
+
+        // ACHT ZYKLEN, nicht vier: die ersten Zyklen des Rigs brechen mangels
+        // Signalhistorie ab und erreichen das Episodentor gar nicht. Ein Test
+        // mit zu kurzem Anlauf haette "keine Episode" behauptet und in
+        // Wahrheit "kein Zyklus" gemessen.
+        val o = (1..8).map { cycle() }.last()
+
+        assertEquals(0L, l.episodes.evidenceEpisodeId, "keine Episode")
+        assertEquals(0.0, l.episodes.evidenceCommittedU, 1e-9, "kein Zaehler")
+        assertEquals(0L, l.episodes.lastConsumedMarkerTs, "nichts verbraucht")
+        assertEquals("MARKER_EVENT_NOT_DURABLE", o.evidenceEpisodeDenial, "und der Grund steht da")
+    }
+
+    /**
+     * ABSTURZ ZWISCHEN KNOPFDRUCK UND LEDGER-PERSIST, in drei Schritten -
+     * genau der Ablauf, den der Nutzer am Geraet erlebt.
+     *
+     * Der Marker kann danach weiter als aktiv angezeigt werden; eine Episode
+     * gibt es nicht, und die Ruecknahme aendert daran nichts. Erst das
+     * ERNEUTE Armen ist wieder ein beobachteter Druck - und dann genau
+     * einmal.
+     */
+    @Test
+    fun `verwaister Marker Ruecknahme und erneutes Armen`(@TempDir dir: File) {
+        tailGuard = false
+        flach = 62.0
+        steigungProMin = 0.0
+        markerAuthorized = true
+
+        val l = FuseLedgerAdapter().also { it.loadOnce(dir.also(File::mkdirs), "test-epoch", start) }
+        neuerRunner(l)
+
+        // 1. verwaist: Preference gesetzt, Beobachtung weg.
+        markerAt = start + 2 * 60_000L
+        clock = start
+        markerPress = 0L
+        // Acht, damit der Anlauf durch ist - s. Test darueber.
+        repeat(8) { cycle() }
+        assertEquals(0L, l.episodes.evidenceEpisodeId, "verwaist: keine Episode")
+
+        // 2. Ruecknahme - sie kann nichts oeffnen, was es nicht gibt.
+        markerAt = 0L
+        repeat(2) { cycle() }
+        assertEquals(0L, l.episodes.evidenceEpisodeId, "Ruecknahme oeffnet nichts")
+
+        // 3. erneutes Armen: jetzt IST es ein beobachteter Druck.
+        val zweiter = clock + 60_000L
+        markerAt = zweiter
+        repeat(3) { cycle() }
+        assertEquals(zweiter, l.episodes.evidenceEpisodeId, "genau eine neue Episode")
+        assertEquals(zweiter, l.episodes.lastConsumedMarkerTs, "und sie ist verbraucht")
+    }
+
+    /**
+     * DER ANKER UEBERLEBT DIE EPISODENBEREINIGUNG.
+     *
+     * Ohne ihn waere die ganze Vorkehrung wirkungslos: nach dem Deckel ist
+     * `evidenceEpisodeId` weg, der Preference-Wert steht noch, und derselbe
+     * Druck - in DIESEM Prozess beobachtet, also an der zweiten Bedingung
+     * vorbei - eroeffnete eine zweite Episode.
+     */
+    @Test
+    fun `verbrauchter Marker bleibt nach Episodenbereinigung verbraucht`(@TempDir dir: File) {
+        tailGuard = false
+        flach = 62.0
+        steigungProMin = 0.0
+        markerAuthorized = true
+
+        val l = FuseLedgerAdapter().also { it.loadOnce(dir.also(File::mkdirs), "test-epoch", start) }
+        neuerRunner(l)
+
+        markerAt = start + 2 * 60_000L
+        clock = start
+        repeat(8) { cycle() }
+        val anker = l.episodes.evidenceEpisodeId
+        assertTrue(anker > 0L, "erst mal eine Episode")
+        assertEquals(anker, l.episodes.lastConsumedMarkerTs)
+
+        // Die Bereinigung: Episode weg, Anker bleibt. Der Marker steht
+        // unveraendert und gilt weiterhin als in diesem Prozess gedrueckt.
+        l.episodes.evidenceEpisodeId = 0L
+        l.episodes.evidenceCommittedU = 0.0
+
+        val o = (1..3).map { cycle() }.last()
+        assertEquals(0L, l.episodes.evidenceEpisodeId, "keine zweite Episode fuer denselben Druck")
+        assertEquals("MARKER_ALREADY_CONSUMED", o.evidenceEpisodeDenial)
     }
 }

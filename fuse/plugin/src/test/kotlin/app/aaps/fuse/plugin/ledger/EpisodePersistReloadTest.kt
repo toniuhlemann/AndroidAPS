@@ -160,4 +160,33 @@ class EpisodePersistReloadTest {
         assertEquals(0L, zurueck.evidenceEpisodeId)
         assertEquals(0.0, zurueck.evidenceCommittedU, 1e-9)
     }
+
+    /**
+     * DER VERBRAUCHTE MARKERANKER UEBERLEBT DEN NEUSTART.
+     *
+     * Er ist die einzige Bremse, die noch traegt, wenn die Episode nach dem
+     * Deckel weg ist und der Markerzeitpunkt in den Preferences steht: ginge
+     * er verloren, saehe derselbe Druck nach jedem Neustart wieder aus wie
+     * ein neuer.
+     */
+    @Test
+    fun `der verbrauchte Markeranker ueberlebt einen Neustart`() {
+        val e = EpisodeBudgets()
+        e.lastConsumedMarkerTs = 1_786_000_000_000L
+
+        val zurueck = LedgerCodec.decodeEpisodes(LedgerCodec.encodeEpisodes(e))
+
+        assertEquals(1_786_000_000_000L, zurueck.lastConsumedMarkerTs)
+    }
+
+    /** Eine Altdatei kennt ihn nicht - dann gilt 0. Sie kann nicht wissen,
+     *  welcher Druck schon gezaehlt hat; zugehalten wird der Fall in dieser
+     *  Lage von der Prozess-Beobachtung, nicht vom Anker. */
+    @Test
+    fun `eine Altdatei ohne Markeranker liest sich als nichts verbraucht`() {
+        val o = LedgerCodec.encodeEpisodes(EpisodeBudgets())
+        o.remove("lastConsumedMarkerTs")
+
+        assertEquals(0L, LedgerCodec.decodeEpisodes(o).lastConsumedMarkerTs)
+    }
 }

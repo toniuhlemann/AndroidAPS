@@ -235,6 +235,22 @@ class FusePlugin @Inject constructor(
     private val markerPressRing = ArrayDeque<Long>()
 
     /**
+     * Der in DIESEM Prozess beobachtete Markerdruck, 0 = keiner.
+     *
+     * ER IST BEWUSST NICHT PERSISTENT und darf es auch nicht werden: er ist
+     * genau der Beweis, dass der Druck NACH dem letzten Prozessstart lag. Ein
+     * persistierter Wert waere derselbe Preference-Wert unter anderem Namen
+     * und beantwortete die Frage nicht mehr.
+     *
+     * NICHT AUS [markerPressRing] ableiten - der wird beim Warmstart aus dem
+     * Trail nachgefuellt und kennt Druecke aus frueheren Prozessen.
+     *
+     * `@Volatile`, weil der Knopf im UI-Thread schreibt und der Zyklus in
+     * seinem eigenen liest.
+     */
+    @Volatile private var markerPressObservedTs: Long = 0L
+
+    /**
      * Versuche des Warmstarts. NICHT nur ein Bit, und der Grund ist der Fall,
      * den die beiden vorigen Anlaeufe uebrig gelassen haben: eine Trail-Datei,
      * die EXISTIERT, aber noch leer ist - direkt nach einer Neuinstallation,
@@ -462,6 +478,10 @@ class FusePlugin @Inject constructor(
     fun toggleMealMarker(now: Long): Boolean {
         val armed = mealMarkerActive(now)
         if (armed) {
+            // Die Beobachtung stirbt mit der Ruecknahme. Bliebe sie stehen,
+            // koennte ein spaeter aus den Preferences gelesener Marker sie
+            // erben - und genau diese Erbschaft soll es nicht geben.
+            markerPressObservedTs = 0L
             // DIE LINIE IM GRAPHEN FOLGT DEM INSULIN, nicht der Absicht: blieb
             // der Druck folgenlos, verschwindet er auch aus dem Graphen. Vorher
             // stand dort eine Mahlzeitenlinie ohne Mahlzeit und ohne Insulin.
@@ -477,6 +497,10 @@ class FusePlugin @Inject constructor(
             return false
         }
         preferences.put(FuseLongKey.MealMarkerArmedTs, now)
+        // DER EINZIGE ORT, an dem ein Druck als BEOBACHTET gilt. Er steht
+        // absichtlich hier und nicht beim Nachfuellen des Marker-Rings: der
+        // liest den Trail und kennt Druecke von vor zwei Stunden.
+        markerPressObservedTs = now
         // Auch beim ARMEN raeumen (Sweep 11.08.): bisher tat das nur der
         // Ruecknahme-Zweig. Ein Stempel aus der Zeit vor dem Umbau ueberlebte
         // damit beliebig lange und blieb als latenter Ruecktausch liegen -
@@ -1401,6 +1425,7 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
             // denen nach einem Neustart. `dateUtil.now()` und nicht ein Zufall,
             // damit sie in einem Export sortierbar bleibt.
             sessionId = "fuse-${dateUtil.now()}",
+            markerPressObserved = { markerPressObservedTs },
         ).also { runner = it }
 
     /**

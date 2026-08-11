@@ -32,6 +32,7 @@ import app.aaps.fuse.plugin.ledger.OpenTransportItem
 import app.aaps.fuse.plugin.ledger.TransportInclusion
 import app.aaps.fuse.core.controller.IobThreshold
 import app.aaps.fuse.core.controller.MarkerEpisode
+import app.aaps.fuse.core.controller.MarkerEpisodeGate
 import app.aaps.fuse.core.controller.TailLiability
 import app.aaps.fuse.core.controller.TbrPolicy
 import app.aaps.fuse.core.observer.SafetyReason
@@ -107,6 +108,19 @@ class FuseCycleRunner(
      *  persistiert wird er im Plugin - der Runner LIEST und BELASTET nur. */
     private val ledger: FuseLedgerAdapter,
     sessionId: String,
+    /**
+     * DER IN DIESEM PROZESS BEOBACHTETE MARKERDRUCK, 0 = keiner.
+     *
+     * OHNE DEFAULT, und das ist Absicht: ein Default `{ 0L }` waere zwar
+     * fail-closed, aber er wuerde einen vergessenen Anschluss in Produktion
+     * lautlos in "nie eine Evidenz-Episode" verwandeln. Lieber ein
+     * Kompilierfehler an jeder Konstruktionsstelle.
+     *
+     * NICHT aus dem Marker-Ring lesen: der fuellt sich beim Warmstart aus dem
+     * Trail nach, ein Druck von vor zwei Stunden saehe damit aus wie eben
+     * beobachtet. Einzige zulaessige Quelle ist das Umschalten selbst.
+     */
+    private val markerPressObserved: () -> Long,
     /**
      * DER PREDICTOR ALS PARAMETER - default die echte Funktion.
      *
@@ -447,6 +461,19 @@ class FuseCycleRunner(
         val predictorReason: String? = null,
         /** Ob der predictorfreie Markerpfad diesen Zyklus getragen hat. */
         val markerFallbackUsed: Boolean = false,
+        /** Identitaet der laufenden Evidenz-Episode; 0 = keine. */
+        val evidenceEpisodeId: Long = 0L,
+        /**
+         * WARUM keine eroeffnet wurde, als Name aus
+         * [MarkerEpisodeGate.Denial]; `null` = es gibt eine.
+         *
+         * Er gehoert in den Export UND in den Tab, weil genau EIN Fall sonst
+         * unerklaerlich waere: nach einem Absturz zwischen Knopfdruck und
+         * Ledger-Persist steht der Marker weiter auf "aktiv", und es gibt
+         * trotzdem keinen Kredit. Ohne benannten Grund saehe das aus wie ein
+         * kaputter Kanal.
+         */
+        val evidenceEpisodeDenial: String? = null,
         /** Die Treatment-Vollsicht dieses Zyklus fuer den Ledger-Abgleich.
          *  `null` auf Abbruchpfaden UND wenn die Datenbankabfrage scheitert -
          *  dann gibt es diesen Zyklus keinen Abgleich, und offene Commitments
@@ -853,13 +880,31 @@ class FuseCycleRunner(
         // dieselbe Stoerung waere ein zweites Mal unbezahlt - genau die
         // Doppelfinanzierung, gegen die die Episodenbudgets ueberhaupt
         // existieren.
+        //
+        // EIN MARKERZEITPUNKT ALLEIN EROEFFNET SIE NICHT MEHR (Stufe 2). Er
+        // liegt in den Preferences und ueberlebt Neustarts und den Deckel;
+        // danach saehe derselbe Druck wieder aus wie ein neuer. Es braucht
+        // zusaetzlich den verbrauchten Anker im Ledger UND die Beobachtung des
+        // Drucks in DIESEM Prozess - die Regel steht in [MarkerEpisodeGate].
         val evidenceCapMs = EvidenceStock.Config().maxEpisodeMin * 60_000L
-        val laufendeEpisode = episodes.evidenceEpisodeId.takeIf {
-            it > 0L && computeTs - it in 0..evidenceCapMs
+        val episodeGate = MarkerEpisodeGate.decide(
+            nowMs = computeTs,
+            markerTs = markerTs,
+            ledgerEpisodeId = episodes.evidenceEpisodeId,
+            lastConsumedMarkerTs = episodes.lastConsumedMarkerTs,
+            observedPressTs = markerPressObserved(),
+            capMs = evidenceCapMs,
+        )
+        val evidenceEpisodeId = episodeGate.episodeId
+        if (episodeGate.opened) {
+            // SOFORT VERBRAUCHEN, nicht erst bei der ersten Dosis: sonst
+            // eroeffnete ein Zyklus ohne Abgabe die Episode und ein spaeterer
+            // Neustart faende den Anker unberuehrt vor. Der Persist des
+            // Ledgers zieht das gleich mit.
+            episodes.lastConsumedMarkerTs = maxOf(episodes.lastConsumedMarkerTs, markerTs)
+            episodes.evidenceEpisodeId = evidenceEpisodeId
+            episodes.evidenceCommittedU = 0.0
         }
-        val evidenceEpisodeId = laufendeEpisode
-            ?: markerTs.takeIf { it > 0L && computeTs - it in 0..evidenceCapMs }
-            ?: 0L
 
         // GAS-VOR-BREMSE NUR FUER ERKLAERTES WISSEN (08.08., Fruehstueckstest):
         // das Rebound-Fenster schuetzt vor dem Jagen UNANGEKUENDIGTER Hypo-
@@ -1141,6 +1186,7 @@ class FuseCycleRunner(
             return markerFallbackCycle(
                 rejected, warum, signal, step, cfg, state, profile, pumpe, tempBasalFallback,
                 computeTs, markerTs, mealMarkerActive, measuredLow, evidenceEpisodeId,
+                episodeGate.denial?.name,
                 isf, target, targetSource, iobTotal,
                 maxIobU, transportModelledU, ledgerView, episodes, onset, band,
                 built.discount, built.input.trajectory.model, sensorEpoch, calibrationEpoch, gate,
@@ -1652,6 +1698,8 @@ class FuseCycleRunner(
         return Outcome(
             computeDurationMs = computeDurationMs,
             mealStats = mealStats,
+            evidenceEpisodeId = evidenceEpisodeId,
+            evidenceEpisodeDenial = episodeGate.denial?.name,
             insulinModel = built.input.trajectory.model,
             decision = combined.decision,
             tbr = combined.request,
@@ -1801,6 +1849,8 @@ class FuseCycleRunner(
         measuredLow: Boolean,
         /** Identitaet der Mahlzeitenepisode fuer den Evidenz-Zaehler; 0 = keine. */
         evidenceEpisodeId: Long,
+        /** Warum keine eroeffnet wurde - s. [Outcome.evidenceEpisodeDenial]. */
+        evidenceEpisodeDenial: String?,
         isf: Double,
         target: Double,
         targetSource: String,
@@ -1924,6 +1974,8 @@ class FuseCycleRunner(
             health = step.health,
             gate = gate,
             reason = "$warum | MARKER_FALLBACK|${combined.reason}",
+            evidenceEpisodeId = evidenceEpisodeId,
+            evidenceEpisodeDenial = evidenceEpisodeDenial,
             alarm = combined.alarm,
             bgMgdl = signal.q1,
             targetMgdl = target,
