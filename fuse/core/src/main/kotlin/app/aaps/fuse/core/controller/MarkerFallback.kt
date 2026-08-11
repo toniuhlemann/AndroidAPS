@@ -1,7 +1,6 @@
 package app.aaps.fuse.core.controller
 
 import app.aaps.fuse.core.observer.Health
-import app.aaps.fuse.core.observer.SafetyReason
 import app.aaps.fuse.core.predictor.PredictorReason
 
 /**
@@ -9,7 +8,7 @@ import app.aaps.fuse.core.predictor.PredictorReason
  *
  * DAS PROBLEM, eine Stufe frueher als das bekannte: wird die Trajektorie
  * verworfen, bricht der Zyklus ab, BEVOR eine Menge entstehen kann. Die
- * Autorisierungsgrenze `markerLowAuthorizedU` wird in [PrimeRelease.lift]
+ * Autorisierungsgrenze `markerAuthorizedU` wird in [PrimeRelease.lift]
  * erzeugt - was davor abbricht, kann kein Boden mehr heilen. Dieselbe
  * Fehlerklasse wie der frueher bedingungslose Schwanz-Deckel, nur weiter vorn.
  *
@@ -61,7 +60,6 @@ object MarkerFallback {
         TRANSPORT_NOT_ACCOUNTED,
         SETTING_OFF,
         NO_MARKER,
-        NO_MEASURED_LOW,
         HEALTH_NOT_READY,
     }
 
@@ -88,15 +86,16 @@ object MarkerFallback {
      *   Abzug weg, ist der Grund nicht mehr ueberstimmbar. Bei
      *   [PredictorReason.ARRAY_TOO_SHORT] spielt er keine Rolle - dort fehlt
      *   das IOB-Array, nicht der Kern der Transportmenge.
-     * @param measuredLow die GEMESSENE Tieflage als einziger Sicherheitsgrund.
-     *   Leere Menge heisst "kein Tief", nicht "alles in Ordnung" - s. der P0
-     *   vom 11.08. mit `all { it == LOW }` auf der leeren Menge.
+     *
+     * KEIN gemessenes Tief in dieser Liste, und das ist eine Korrektur vom
+     * 11.08.: es war nie eine Voraussetzung der Autorisierung, sondern nur
+     * der Anlass, an dem sie zuerst auffiel. Ein Marker bei BG 105 mit
+     * fallender Bahn ist der HAUPTFALL einer Mahlzeit.
      */
     fun denial(
         reason: PredictorReason,
-        markerAuthorisesLow: Boolean,
+        markerAuthorized: Boolean,
         mealMarkerActive: Boolean,
-        safetyReasons: Set<SafetyReason>,
         health: Health,
         transportCommitmentU: Double,
     ): Denial? = when {
@@ -104,9 +103,8 @@ object MarkerFallback {
         reason == PredictorReason.PENDING_MODEL_TOO_SHORT &&
             !transportCommitmentU.isFinite()                    -> Denial.TRANSPORT_NOT_ACCOUNTED
 
-        !markerAuthorisesLow                                    -> Denial.SETTING_OFF
+        !markerAuthorized                                    -> Denial.SETTING_OFF
         !mealMarkerActive                                       -> Denial.NO_MARKER
-        safetyReasons != setOf(SafetyReason.LOW)                -> Denial.NO_MEASURED_LOW
         // READY ist die SCHMALSTE verfuegbare Aussage ueber die Signalguete und
         // deckt genau, was Toni verlangt hat: frisch (kein STALE, kein WARMUP),
         // monoton (kein INPUT_STEP_RECOVERY), gueltige ISF und Aktivitaet

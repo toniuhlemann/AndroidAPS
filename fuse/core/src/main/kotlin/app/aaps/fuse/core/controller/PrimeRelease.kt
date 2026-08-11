@@ -33,7 +33,7 @@ import kotlin.math.min
  *    (maxSmb, iobTH-Spielraum, maxIOB-Spielraum).
  *
  * WAS SICH AM 11.08. GEAENDERT HAT, und der Absatz oben behauptete bis dahin
- * das Gegenteil: mit eingeschalteter Einstellung `MarkerAuthorisesLow` ist der
+ * das Gegenteil: mit eingeschalteter Einstellung `MarkerAuthorisesRelease` ist der
  * Knopfdruck eine AUSDRUECKLICHE MANUELLE INSULIN-AUTORISIERUNG. Tonis
  * Entscheidung dazu ist eindeutig - modellbasierte Annahmen duerfen den
  * markerfinanzierten Anteil dann nicht nachtraeglich wieder auf null setzen:
@@ -172,7 +172,7 @@ object PrimeRelease {
          * die im Export nicht mehr aufloesbar gewesen waere.
          *
          * Ohne Bahn ist NUR die Freigangsprobe unmoeglich, und die
-         * entfaellt bei [markerAuthorisesLow] ohnehin. Ohne diese
+         * entfaellt bei [markerAuthorized] ohnehin. Ohne diese
          * Autorisierung ist `null` deshalb ein Nein.
          */
         val safetyMinLowerMgdl: Double?,
@@ -182,7 +182,7 @@ object PrimeRelease {
         /** Der Marker autorisiert Insulin trotz gemessenem Tief - dann
          *  entfaellt die Freigangsprobe gegen den Guard-Boden. Der Aufrufer
          *  hat geprueft, dass der Hold aus dem TIEF stammt. */
-        val markerAuthorisesLow: Boolean = false,
+        val markerAuthorized: Boolean = false,
     )
 
     data class Plan(
@@ -216,7 +216,7 @@ object PrimeRelease {
         // eigenem Namen: NO_TRAJECTORY sagt "es gab nichts zu pruefen",
         // NOT_FINITE sagt "die Zahl war kaputt".
         val minLower = input.safetyMinLowerMgdl
-        if (minLower == null && !input.markerAuthorisesLow) return off("NO_TRAJECTORY")
+        if (minLower == null && !input.markerAuthorized) return off("NO_TRAJECTORY")
         if (minLower != null && !minLower.isFinite()) return off("NOT_FINITE")
         if (input.pumpIncrementU <= 0.0 || !input.pumpIncrementU.isFinite()) return off("NO_PUMP_STEP")
         // TICKZAHL statt `<`: `remaining` ist eine Differenz aufsummierter
@@ -269,7 +269,7 @@ object PrimeRelease {
         // minLower ist hier nicht-null, wenn die Probe ueberhaupt laeuft:
         // ohne Autorisierung hat der NO_TRAJECTORY-Ausstieg oben schon
         // gesperrt, mit Autorisierung faellt die Probe weg.
-        if (!input.markerAuthorisesLow &&
+        if (!input.markerAuthorized &&
             minLower!! - clearance < input.guardFloorMgdl
         ) return off("CLEARANCE")
 
@@ -287,7 +287,7 @@ object PrimeRelease {
     /**
      * Zusaetzlich hebbar, wenn der Marker Insulin bei gemessenem Tief
      * autorisiert (Tonis Entscheidung 11.08., Einstellung
-     * `MarkerAuthorisesLow`).
+     * `MarkerAuthorisesRelease`).
      *
      * Nur diese beiden, und beide nur wegen des TIEFS: `SAFETY_HOLD` traegt
      * heute ausschliesslich `SafetyReason.LOW`, und `GUARD_FLOOR` ist
@@ -299,7 +299,7 @@ object PrimeRelease {
      * TIEF stammt: kaeme je ein zweiter `SafetyReason` dazu, wuerde er sonst
      * stillschweigend miterlaubt.
      */
-    private val LIFTABLE_ON_LOW = LIFTABLE + setOf(
+    private val LIFTABLE_ON_MARKER = LIFTABLE + setOf(
         FuseController.Block.SAFETY_HOLD,
         FuseController.Block.GUARD_FLOOR,
     )
@@ -317,9 +317,9 @@ object PrimeRelease {
      */
     fun lift(
         base: FuseController.Decision, p: Plan, state: FuseController.State,
-        /** s. [LIFTABLE_ON_LOW]. Der Aufrufer hat bereits geprueft, dass der
+        /** s. [LIFTABLE_ON_MARKER]. Der Aufrufer hat bereits geprueft, dass der
          *  Hold aus dem TIEF stammt. */
-        markerAuthorisesLow: Boolean = false,
+        markerAuthorized: Boolean = false,
         tailHeadroomU: Double? = null, onsetCapU: Double? = null,
         // Fix-Pass 2 Nr. 2 (NEU-BS-01, doppelt unabhaengig gefunden): die
         // Suche kappt an LEDGER-korrigierten Headrooms, der Lift kappte an
@@ -328,7 +328,7 @@ object PrimeRelease {
         transportCommitmentU: Double = 0.0,
     ): FuseController.Decision {
         if (!p.active || p.floorU <= 0.0) return base
-        if (base.block !in (if (markerAuthorisesLow) LIFTABLE_ON_LOW else LIFTABLE)) return base
+        if (base.block !in (if (markerAuthorized) LIFTABLE_ON_MARKER else LIFTABLE)) return base
 
         var caps = min(
             min(state.maxSmbU, p.remainingU),
@@ -353,7 +353,7 @@ object PrimeRelease {
         // Die Huellen-Restmenge, maxSmb, iobTH, maxIOB und die
         // Onset-Huelle bleiben unveraendert bindend - das sind
         // Mengengrenzen, keine Prognosen.
-        if (!markerAuthorisesLow) tailHeadroomU?.let { caps = min(caps, it) }
+        if (!markerAuthorized) tailHeadroomU?.let { caps = min(caps, it) }
         onsetCapU?.let { caps = min(caps, it) }
         val stepped = floor(min(p.floorU, caps) / state.pumpIncrementU + TICK_EPS) * state.pumpIncrementU
         if (stepped < state.pumpIncrementU || stepped <= base.smbU) return base
@@ -372,7 +372,7 @@ object PrimeRelease {
             // hat, traegt diese Menge eine manuelle Autorisierung. Sonst 0 -
             // ein gewoehnlicher Prime-Release bleibt von jedem Schutz-Null
             // vollstaendig gedeckelt.
-            markerLowAuthorizedU = if (markerAuthorisesLow) stepped else 0.0,
+            markerAuthorizedU = if (markerAuthorized) stepped else 0.0,
         )
     }
 }

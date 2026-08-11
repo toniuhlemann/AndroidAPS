@@ -58,7 +58,7 @@ object FuseTbrTranslator {
      * DAS FUENFTE TOR - und der Grund, warum es einen Grund braucht.
      *
      * Bis zum 11.08. stand hier `if (tbr.smbBlocked) smbU = 0.0`, und das eine
-     * Bit trug SECHS verschiedene Ursachen. `MarkerAuthorisesLow` oeffnete
+     * Bit trug SECHS verschiedene Ursachen. `MarkerAuthorisesRelease` oeffnete
      * darueber vier Tore im Regler - und diese Zeile nullte die Menge trotzdem,
      * weil der Schutz-Nullstrom bei Tief zwangslaeufig mitkommt. Die Einstellung
      * war wirkungslos, gemessen am Geraet: `block=NONE bind=primeRelease
@@ -73,7 +73,7 @@ object FuseTbrTranslator {
      *    ausdrueckliche manuelle Autorisierung -> nur DEREN Anteil.
      * 3. Jeder andere Grund -> 0 U. Ohne Ausnahme, auch mit Marker.
      *
-     * Die Herkunft kommt aus [FuseController.Decision.markerLowAuthorizedU],
+     * Die Herkunft kommt aus [FuseController.Decision.markerAuthorizedU],
      * nicht aus `bindingLimit` und nicht aus einem Grundtext.
      */
     private fun applyBlock(
@@ -82,8 +82,8 @@ object FuseTbrTranslator {
     ): FuseController.Decision = when {
         cause == TbrPolicy.SmbBlockCause.NONE                                    -> decision
         cause == TbrPolicy.SmbBlockCause.SAFETY_ZERO &&
-            decision.markerLowAuthorizedU > 0.0                                  ->
-            decision.copy(smbU = min(decision.smbU, decision.markerLowAuthorizedU))
+            decision.markerAuthorizedU > 0.0                                  ->
+            decision.copy(smbU = min(decision.smbU, decision.markerAuthorizedU))
 
         else                                                                     -> decision.copy(smbU = 0.0)
     }

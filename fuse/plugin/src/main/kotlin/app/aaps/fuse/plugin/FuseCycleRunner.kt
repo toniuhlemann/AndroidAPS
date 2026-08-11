@@ -908,7 +908,7 @@ class FuseCycleRunner(
 
         // DER ABBRUCH IST AUFGESCHOBEN, NICHT AUFGEHOBEN (Tonis Auflage
         // 11.08.). Eine verworfene Trajektorie beendete den Zyklus hier -
-        // also BEVOR `markerLowAuthorizedU` entstehen kann, und damit
+        // also BEVOR `markerAuthorizedU` entstehen kann, und damit
         // ausserhalb der Reichweite des Bodens weiter unten. Dieselbe
         // Fehlerklasse wie der frueher bedingungslose Schwanz-Deckel, nur
         // eine Stufe frueher.
@@ -1025,6 +1025,33 @@ class FuseCycleRunner(
             is CoreInputGuard.Outcome.Failed -> return abort("state: ${s.failure.detail}", signal, cfg, step, predictionOrNull, restraint)
         }
 
+        // DER BEWUSSTE MARKERDRUCK IST DIE AUTORISIERUNG (Toni 11.08.,
+        // nach einem Livefall). Zwei Groessen, und sie waren bis hierher
+        // FALSCH VERSCHRAENKT:
+        //
+        //   manualMarkerAuthorized  Einstellung an UND Marker laeuft
+        //   measuredLow             es liegt ein GEMESSENES Tief vor
+        //
+        // Ich hatte das gemessene Tief zur VORAUSSETZUNG der Autorisierung
+        // gemacht. Es war aber nur der Anlass, an dem sie zuerst auffiel.
+        // Gemessen am 11.08.: BG 105 fallend, Marker seit 3 min, alle
+        // technischen Tore frei, iobTH/maxIOB je 8 U - und trotzdem 0 U,
+        // weil `safetyReasons` leer war. Das ist der HAUPTFALL einer
+        // Mahlzeit (normaler BG, Bahn faellt), nicht der Randfall.
+        //
+        // WAS DIE MENGE BEGRENZT, ist deshalb nicht mehr das Tief, sondern
+        // die Huelle: der Lift kommt nie ueber `PrimeRelease.Plan.floorU`
+        // hinaus, und der Boden weiter unten hebt nur auf genau diesen
+        // Betrag. Der alte P0 (`all { it == LOW }` auf der leeren Menge)
+        // ist damit gegenstandslos - er war gefaehrlich, WEIL der damalige
+        // Sonderzweig den Guard fuer die GANZE Menge aufhob. Ein
+        // mengenbegrenzter Boden kennt dieses Problem nicht.
+        val manualMarkerAuthorized = cfg.markerAuthorized && mealMarkerActive && markerTs > 0
+
+        // Nur noch fuer die parallele Schutz-Null und den Warntext - NICHT
+        // mehr als Bedingung der Autorisierung.
+        val measuredLow = step.safetyReasons == setOf(SafetyReason.LOW)
+
         // ---- DER PREDICTORFREIE MARKERPFAD (Toni 11.08.) -------------------
         //
         // Er steht GENAU HIER und keine Zeile frueher: alles, was er verlangt,
@@ -1044,9 +1071,12 @@ class FuseCycleRunner(
         if (rejected != null) {
             val denial = MarkerFallback.denial(
                 reason = rejected.reason,
-                markerAuthorisesLow = cfg.markerAuthorisesLow,
+                // BEIDE Bestandteile einzeln, obwohl `manualMarkerAuthorized`
+                // ihr UND ist: die Ablehnungsgruende SETTING_OFF und NO_MARKER
+                // sind im Export verschiedene Lagen, und ein zusammengefasstes
+                // Bit haette sie ununterscheidbar gemacht.
+                markerAuthorized = cfg.markerAuthorized,
                 mealMarkerActive = mealMarkerActive && markerTs > 0,
-                safetyReasons = step.safetyReasons,
                 health = step.health,
                 // DIE ZAHL, nicht ein Praedikat darueber. `isFinite()` stand hier
                 // und war KEIN Beweis: 0,0 ist auch endlich, und ueber den Abzug
@@ -1061,7 +1091,7 @@ class FuseCycleRunner(
             if (denial != null) return abort("$warum | noFallback=$denial", signal, cfg, step)
             return markerFallbackCycle(
                 rejected, warum, signal, step, cfg, state, profile, pumpe, tempBasalFallback,
-                computeTs, markerTs, mealMarkerActive, isf, target, targetSource, iobTotal,
+                computeTs, markerTs, mealMarkerActive, measuredLow, isf, target, targetSource, iobTotal,
                 maxIobU, transportModelledU, ledgerView, episodes, onset, band,
                 built.discount, built.input.trajectory.model, sensorEpoch, calibrationEpoch, gate,
             )
@@ -1239,24 +1269,6 @@ class FuseCycleRunner(
         // Sofort-Freigabe: Plan aus derselben Momentaufnahme, Anhebung NUR
         // wenn der Basisentscheidung nichts als Bedarf fehlte. Sperren und
         // Deckel gewinnen in PrimeRelease.lift unveraendert.
-        // DER MARKER AUTORISIERT INSULIN TROTZ GEMESSENEM TIEF (Tonis
-        // Entscheidung, 11.08.). Vier Bedingungen, alle noetig:
-        //
-        //  1. die Einstellung ist an - Default AUS, s. MarkerAuthorisesLow,
-        //  2. ein Marker ist bewusst gesetzt und laeuft,
-        //  3. es liegt WIRKLICH ein gemessenes Tief vor - und zwar GENAU das
-        //     als einziger Grund. `all { it == LOW }` waere hier falsch: auf
-        //     der LEEREN Menge ist es wahr, und dann haette ein GUARD_FLOOR
-        //     aus einem bloss VORHERGESAGTEN Tief (aktueller BG in Ordnung,
-        //     Bahn faellt) den Override ausgeloest. Autorisiert ist aber nur
-        //     der gemessene Tiefstand, nicht die Prognose.
-        // ZWEI Praedikate, nicht eines - und die Trennung ist der Fix vom
-        // 11.08. Beide teilen die Punkte 1-3; nur das zweite verlangt noch,
-        // dass die Basisentscheidung von genau diesen Bloecken gestoppt wurde.
-        val lowMeasuredAuthorized = cfg.markerAuthorisesLow &&
-            mealMarkerActive &&
-            step.safetyReasons == setOf(SafetyReason.LOW)
-
 
         // DER HERKUNFTS-STEMPEL haengt dagegen NICHT am Basisblock, und genau
         // daran ist die Einstellung am 11.08. gescheitert. Gemessen am Geraet:
@@ -1290,12 +1302,12 @@ class FuseCycleRunner(
                 guardFloorMgdl = cfg.guardFloorMgdl,
                 isfMgdlPerU = isf,
                 pumpIncrementU = bolusStep,
-                markerAuthorisesLow = lowMeasuredAuthorized,
+                markerAuthorized = manualMarkerAuthorized,
             )
         )
         val lifted = PrimeRelease.lift(
             vetted, primePlan, state,
-            markerAuthorisesLow = lowMeasuredAuthorized,
+            markerAuthorized = manualMarkerAuthorized,
             tailHeadroomU = tail?.takeIf { it.usable }?.headroomU,
             onsetCapU = if (onset.active) onset.remainingU else null,
             // Fix-Pass 2 Nr. 2: dieselbe Ledger-Korrektur wie in den
@@ -1477,7 +1489,7 @@ class FuseCycleRunner(
         // kennt keine Stelle, die ihn vergessen koennte.
         //
         // WARUM ER NICHTS ERFINDEN KANN: `lifted.smbU` IST
-        // `markerLowAuthorizedU` (beide sind `stepped` aus PrimeRelease.lift),
+        // `markerAuthorizedU` (beide sind `stepped` aus PrimeRelease.lift),
         // und diese Menge hat maxSmb, iobTH, maxIOB, Onset- und
         // Prime-Huelle sowie die Pumpenschritt-Rasterung bereits passiert.
         // Der Boden stellt also nur wieder her, was das Modell genommen hat.
@@ -1486,7 +1498,7 @@ class FuseCycleRunner(
         // unmittelbar danach, das Pumpen-Gate spaeter, und der Translator
         // laesst ihn nur bei SAFETY_ZERO durch. Ein Transportfehler nullt
         // weiterhin.
-        val authCapU = lifted.markerLowAuthorizedU
+        val authCapU = lifted.markerAuthorizedU
         val autorisiert =
             if (authCapU > 0.0 && verifiedLift.smbU < authCapU)
                 lifted.copy(bindingLimit = "markerAuth|" + verifiedLift.bindingLimit)
@@ -1702,6 +1714,9 @@ class FuseCycleRunner(
         computeTs: Long,
         markerTs: Long,
         mealMarkerActive: Boolean,
+        /** Nur fuer die parallele Schutz-Null und den Grundtext. Die
+         *  Autorisierung haengt NICHT daran. */
+        measuredLow: Boolean,
         isf: Double,
         target: Double,
         targetSource: String,
@@ -1730,26 +1745,31 @@ class FuseCycleRunner(
                 envelopeU = cfg.primeEnvelopeU,
                 spentU = episodes.primeSpentU,
                 // KEINE BAHN, und das steht als `null` da statt als Zahl. Die
-                // Freigangsprobe entfaellt hier ohnehin (markerAuthorisesLow),
+                // Freigangsprobe entfaellt hier ohnehin (markerAuthorized),
                 // sie haette also nichts zu pruefen gehabt.
                 safetyMinLowerMgdl = null,
                 guardFloorMgdl = cfg.guardFloorMgdl,
                 isfMgdlPerU = isf,
                 pumpIncrementU = pumpe.bolusStepU,
-                markerAuthorisesLow = true,
+                markerAuthorized = true,
             )
         )
 
-        // DIE BASIS IST EIN GEMESSENES TIEF, ehrlich benannt: SAFETY_HOLD mit
-        // Menge 0 und ZERO_TEMP. Die Basalabsenkung ist kein Beiwerk - sie ist
-        // der Schutz, der neben der erklaerten Mahlzeit weiterlaeuft.
-        // predAtRelease und minLower bleiben null: es gibt keine Bahn, und eine
-        // erfundene Zahl waere im Export von einer gerechneten nicht mehr zu
-        // unterscheiden.
+        // DIE BASIS SAGT, WAS GEMESSEN IST - und nur das. Liegt ein Tief vor,
+        // ist es SAFETY_HOLD mit ZERO_TEMP: die Basalabsenkung ist kein
+        // Beiwerk, sondern der Schutz, der neben der erklaerten Mahlzeit
+        // weiterlaeuft. Liegt KEINS vor, waere ein Schutz-Null eine
+        // Zurueckhaltung ohne Anlass - dann bleibt die laufende Rate stehen.
+        //
+        // predAtRelease und minLower bleiben in beiden Faellen null: es gibt
+        // keine Bahn, und eine erfundene Zahl waere im Export von einer
+        // gerechneten nicht mehr zu unterscheiden.
         val basis = FuseController.Decision(
             smbU = 0.0,
-            tbr = FuseController.TbrAction.ZERO_TEMP,
-            block = FuseController.Block.SAFETY_HOLD,
+            tbr = if (measuredLow) FuseController.TbrAction.ZERO_TEMP
+            else FuseController.TbrAction.KEEP_CURRENT,
+            block = if (measuredLow) FuseController.Block.SAFETY_HOLD
+            else FuseController.Block.NONE,
             insulinReqU = 0.0,
             predAtReleaseMgdl = null,
             minLowerMgdl = null,
@@ -1757,7 +1777,7 @@ class FuseCycleRunner(
         )
         val lifted = PrimeRelease.lift(
             basis, primePlan, state,
-            markerAuthorisesLow = true,
+            markerAuthorized = true,
             // Kein Schwanz-Headroom: es gibt keine Bahn, aus der einer
             // entstehen koennte. Der Onset-Deckel und die Transportmenge sind
             // dagegen Mengen und gelten unveraendert - letztere ist Tonis
@@ -2068,7 +2088,7 @@ class FuseCycleRunner(
         val driveLowerQuantilePct: Int,
         val tailGuardEnabled: Boolean,
         val conditionalTailEnabled: Boolean,
-        val markerAuthorisesLow: Boolean,
+        val markerAuthorized: Boolean,
         val tailFloorMgdl: Double,
         val tailRecoveryU: Double,
         val fastRestraintEnabled: Boolean,
@@ -2108,7 +2128,7 @@ class FuseCycleRunner(
         driveLowerQuantilePct = preferences.get(FuseIntKey.DriveLowerQuantilePct),
         tailGuardEnabled = preferences.get(FuseBooleanKey.TailGuardEnabled),
         conditionalTailEnabled = preferences.get(FuseBooleanKey.ConditionalTailEnabled),
-        markerAuthorisesLow = preferences.get(FuseBooleanKey.MarkerAuthorisesLow),
+        markerAuthorized = preferences.get(FuseBooleanKey.MarkerAuthorisesRelease),
         tailFloorMgdl = preferences.get(FuseDoubleKey.TailFloorMgdl),
         tailRecoveryU = preferences.get(FuseDoubleKey.TailRecoveryU),
         fastRestraintEnabled = preferences.get(FuseBooleanKey.FastRestraintEnabled),

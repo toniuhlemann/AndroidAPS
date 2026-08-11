@@ -1,7 +1,6 @@
 package app.aaps.fuse.core.controller
 
 import app.aaps.fuse.core.observer.Health
-import app.aaps.fuse.core.observer.SafetyReason
 import app.aaps.fuse.core.predictor.PredictorReason
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNull
@@ -24,13 +23,12 @@ class MarkerFallbackTest {
 
     private fun denial(
         reason: PredictorReason,
-        markerAuthorisesLow: Boolean = true,
+        markerAuthorized: Boolean = true,
         mealMarkerActive: Boolean = true,
-        safetyReasons: Set<SafetyReason> = setOf(SafetyReason.LOW),
         health: Health = Health.READY,
         transportCommitmentU: Double = 0.0,
     ) = MarkerFallback.denial(
-        reason, markerAuthorisesLow, mealMarkerActive, safetyReasons, health, transportCommitmentU
+        reason, markerAuthorized, mealMarkerActive, health, transportCommitmentU
     )
 
     // ---- Die zwei offenen ---------------------------------------------------
@@ -125,7 +123,7 @@ class MarkerFallbackTest {
     @Test
     fun `ohne Einstellung kein Fallback`() = assertEquals(
         MarkerFallback.Denial.SETTING_OFF,
-        denial(PredictorReason.ARRAY_TOO_SHORT, markerAuthorisesLow = false),
+        denial(PredictorReason.ARRAY_TOO_SHORT, markerAuthorized = false),
     )
 
     @Test
@@ -134,15 +132,19 @@ class MarkerFallbackTest {
         denial(PredictorReason.ARRAY_TOO_SHORT, mealMarkerActive = false),
     )
 
-    /** Die LEERE Menge ist KEIN gemessenes Tief. Derselbe P0 wie am 11.08. im
-     *  Runner: `all { it == LOW }` ist auf der leeren Menge wahr. */
+    /**
+     * EIN GEMESSENES TIEF IST KEINE BEDINGUNG MEHR - und dieser Test stand
+     * einen Commit lang andersherum.
+     *
+     * Er verlangte `NO_MEASURED_LOW`, weil ich das Tief zur Voraussetzung der
+     * Autorisierung gemacht hatte. Es war nur der Anlass. Der Livefall vom
+     * 11.08. - BG 105 fallend, Marker seit 3 min, alle technischen Tore frei,
+     * 0 U - ist der HAUPTFALL einer Mahlzeit, und er hatte keine
+     * SafetyReason. Die Menge begrenzt jetzt die Huelle, nicht das Tief.
+     */
     @Test
-    fun `ohne gemessenes Tief kein Fallback`() {
-        assertEquals(
-            MarkerFallback.Denial.NO_MEASURED_LOW,
-            denial(PredictorReason.ARRAY_TOO_SHORT, safetyReasons = emptySet()),
-        )
-    }
+    fun `ein gemessenes Tief ist keine Bedingung`() =
+        assertNull(denial(PredictorReason.ARRAY_TOO_SHORT))
 
     /** READY deckt frisches Signal, monotone Zeitachse, gueltige ISF und
      *  Aktivitaet in EINER bereits gepflegten Aussage. */
@@ -163,8 +165,7 @@ class MarkerFallbackTest {
         MarkerFallback.Denial.REASON_NOT_OVERRIDABLE,
         denial(
             PredictorReason.NON_FINITE_INPUT,
-            markerAuthorisesLow = false, mealMarkerActive = false,
-            safetyReasons = emptySet(), health = Health.WARMUP,
+            markerAuthorized = false, mealMarkerActive = false, health = Health.WARMUP,
         ),
     )
 }

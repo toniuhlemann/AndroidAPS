@@ -109,8 +109,8 @@ object FuseRtBuilder {
         // authCap, NICHT auth: das ist die AUTORISIERUNGSGRENZE, keine abgegebene
         // Menge. Was wirklich hinausgeht, steht in SMB= - und die beiden koennen
         // auseinanderfallen, solange noch ein Veto dazwischenliegt.
-        if (decision.markerLowAuthorizedU > 0.0)
-            reason.append(" authCap=").append(f3(decision.markerLowAuthorizedU))
+        if (decision.markerAuthorizedU > 0.0)
+            reason.append(" authCap=").append(f3(decision.markerAuthorizedU))
         if (decision.smbU > 0.0) reason.append(" | SMB=").append(fmt(decision.smbU))
         tbr?.let { reason.append(" | TBR=").append(fmt(it.rateUPerH)).append("U/h/").append(it.durationMin).append("min") }
 

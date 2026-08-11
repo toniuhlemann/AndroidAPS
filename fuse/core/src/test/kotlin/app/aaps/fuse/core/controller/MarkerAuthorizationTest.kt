@@ -19,7 +19,7 @@ import org.junit.jupiter.api.Test
  * Basisdosis 0, also ist alles, was danach herauskommt, der Lift aus der
  * Marker-Huelle.
  */
-class MarkerAuthorisesLowTest {
+class MarkerAuthorizationTest {
 
     private val step = 0.05
 
@@ -34,7 +34,7 @@ class MarkerAuthorisesLowTest {
 
     /** Eine Lage im TIEF: Sicherheitsbahn deutlich unter dem Guard-Boden. */
     private fun planImTief(
-        markerAuthorisesLow: Boolean,
+        markerAuthorized: Boolean,
         markerActive: Boolean = true,
         spentU: Double = 0.0,
         envelopeU: Double = 1.2,
@@ -51,7 +51,7 @@ class MarkerAuthorisesLowTest {
             guardFloorMgdl = 70.0,
             isfMgdlPerU = 55.0,
             pumpIncrementU = step,
-            markerAuthorisesLow = markerAuthorisesLow,
+            markerAuthorized = markerAuthorized,
         )
     )
 
@@ -66,7 +66,7 @@ class MarkerAuthorisesLowTest {
     /** LOW OHNE MARKER -> 0 U. Der Tiefschutz bleibt absolut. */
     @Test
     fun `LOW ohne Marker gibt nichts frei`() {
-        val p = planImTief(markerAuthorisesLow = false, markerActive = false)
+        val p = planImTief(markerAuthorized = false, markerActive = false)
         assertTrue(!p.active, "ohne Marker darf kein Plan entstehen: ${p.reason}")
         val d = PrimeRelease.lift(blockiert(FuseController.Block.SAFETY_HOLD), p, state())
         assertEquals(0.0, d.smbU, "keine Freigabe ohne Marker")
@@ -78,7 +78,7 @@ class MarkerAuthorisesLowTest {
      */
     @Test
     fun `LOW mit Marker aber ausgeschalteter Einstellung gibt nichts frei`() {
-        val p = planImTief(markerAuthorisesLow = false)
+        val p = planImTief(markerAuthorized = false)
         assertTrue(!p.active, "die Freigangsprobe muss sperren: ${p.reason}")
         assertEquals(
             0.0,
@@ -89,11 +89,11 @@ class MarkerAuthorisesLowTest {
     /** LOW MIT MARKER und Einstellung AN -> begrenzter markerExtra-Anteil. */
     @Test
     fun `LOW mit Marker gibt einen begrenzten Anteil frei`() {
-        val p = planImTief(markerAuthorisesLow = true)
+        val p = planImTief(markerAuthorized = true)
         assertTrue(p.active, "der Plan muss stehen: ${p.reason}")
         val d = PrimeRelease.lift(
             blockiert(FuseController.Block.SAFETY_HOLD), p, state(),
-            markerAuthorisesLow = true,
+            markerAuthorized = true,
         )
         assertTrue(d.smbU > 0.0, "der markerfinanzierte Anteil muss durchkommen")
         assertTrue(d.smbU <= p.floorU + 1e-9, "und nicht mehr als der Plan vorsieht")
@@ -103,10 +103,10 @@ class MarkerAuthorisesLowTest {
     /** Dasselbe fuer den GUARD_FLOOR - das zweite der beiden Tore. */
     @Test
     fun `LOW mit Marker hebt auch den Guard-Floor-Block`() {
-        val p = planImTief(markerAuthorisesLow = true)
+        val p = planImTief(markerAuthorized = true)
         val d = PrimeRelease.lift(
             blockiert(FuseController.Block.GUARD_FLOOR), p, state(),
-            markerAuthorisesLow = true,
+            markerAuthorized = true,
         )
         assertTrue(d.smbU > 0.0)
     }
@@ -118,10 +118,10 @@ class MarkerAuthorisesLowTest {
      */
     @Test
     fun `nur der Marker-Anteil kommt durch, nicht der Korrekturbedarf`() {
-        val p = planImTief(markerAuthorisesLow = true)
+        val p = planImTief(markerAuthorized = true)
         // Eine Basisentscheidung mit GROSSEM Bedarf, aber im Tief blockiert.
         val basis = blockiert(FuseController.Block.SAFETY_HOLD).copy(insulinReqU = 3.0)
-        val d = PrimeRelease.lift(basis, p, state(), markerAuthorisesLow = true)
+        val d = PrimeRelease.lift(basis, p, state(), markerAuthorized = true)
         assertTrue(d.smbU <= p.floorU + 1e-9, "der Bedarf von 3,0 U darf nicht durchschlagen")
         assertTrue(d.smbU < 0.5, "die Menge kommt aus der Huelle, nicht aus insulinReq: ${d.smbU}")
     }
@@ -129,13 +129,13 @@ class MarkerAuthorisesLowTest {
     /** DAS BUDGET WIRD VERBRAUCHT: eine ausgeschoepfte Huelle gibt nichts mehr. */
     @Test
     fun `eine verbrauchte Huelle gibt auch mit Marker nichts frei`() {
-        val p = planImTief(markerAuthorisesLow = true, spentU = 1.2, envelopeU = 1.2)
+        val p = planImTief(markerAuthorized = true, spentU = 1.2, envelopeU = 1.2)
         assertTrue(!p.active, "verbrauchte Huelle: ${p.reason}")
         assertEquals(
             0.0,
             PrimeRelease.lift(
                 blockiert(FuseController.Block.SAFETY_HOLD), p, state(),
-                markerAuthorisesLow = true,
+                markerAuthorized = true,
             ).smbU,
         )
     }
@@ -147,7 +147,7 @@ class MarkerAuthorisesLowTest {
      */
     @Test
     fun `technische Sperren sind nicht uebersteuerbar`() {
-        val p = planImTief(markerAuthorisesLow = true)
+        val p = planImTief(markerAuthorized = true)
         for (b in listOf(
             FuseController.Block.LEDGER_HOLD,
             FuseController.Block.PUMP_BUSY,
@@ -157,7 +157,7 @@ class MarkerAuthorisesLowTest {
             FuseController.Block.MAX_IOB_REACHED,
             FuseController.Block.IOB_TH_REACHED,
         )) {
-            val d = PrimeRelease.lift(blockiert(b), p, state(), markerAuthorisesLow = true)
+            val d = PrimeRelease.lift(blockiert(b), p, state(), markerAuthorized = true)
             assertEquals(0.0, d.smbU, "$b darf NICHT uebersteuerbar sein")
         }
     }
@@ -168,13 +168,13 @@ class MarkerAuthorisesLowTest {
      */
     @Test
     fun `nach Markerablauf sperrt das Tief wieder`() {
-        val p = planImTief(markerAuthorisesLow = true, markerActive = false)
+        val p = planImTief(markerAuthorized = true, markerActive = false)
         assertTrue(!p.active)
         assertEquals(
             0.0,
             PrimeRelease.lift(
                 blockiert(FuseController.Block.SAFETY_HOLD), p, state(),
-                markerAuthorisesLow = true,
+                markerAuthorized = true,
             ).smbU,
             "ohne laufenden Marker ist die Autorisierung erloschen",
         )
@@ -190,20 +190,20 @@ class MarkerAuthorisesLowTest {
      */
     @Test
     fun `der Schwanz-Headroom kappt den autorisierten Anteil nicht`() {
-        val p = planImTief(markerAuthorisesLow = true)
+        val p = planImTief(markerAuthorized = true)
         val d = PrimeRelease.lift(
             blockiert(FuseController.Block.SAFETY_HOLD), p, state(),
-            markerAuthorisesLow = true,
+            markerAuthorized = true,
             tailHeadroomU = -5.0,          // der Schwanz sagt: gar nichts
         )
         assertTrue(d.smbU > 0.0, "eine Modellannahme darf den autorisierten Anteil nicht nullen")
-        assertEquals(d.smbU, d.markerLowAuthorizedU, 1e-9)
+        assertEquals(d.smbU, d.markerAuthorizedU, 1e-9)
     }
 
     /** OHNE Autorisierung kappt derselbe Headroom wie bisher. */
     @Test
     fun `ohne Autorisierung kappt der Schwanz-Headroom weiterhin`() {
-        val p = planImTief(markerAuthorisesLow = false, markerActive = true)
+        val p = planImTief(markerAuthorized = false, markerActive = true)
         // Ein Plan, der ohne die Autorisierung steht: hoher BG, kein Tief.
         val offen = PrimeRelease.plan(
             PrimeRelease.Input(
@@ -213,7 +213,7 @@ class MarkerAuthorisesLowTest {
                 envelopeU = 1.2, spentU = 0.0,
                 safetyMinLowerMgdl = 160.0, guardFloorMgdl = 70.0,
                 isfMgdlPerU = 55.0, pumpIncrementU = step,
-                markerAuthorisesLow = false,
+                markerAuthorized = false,
             )
         )
         assertTrue(offen.active, "der Aufbau braucht einen stehenden Plan: ${offen.reason}")
@@ -255,7 +255,7 @@ class MarkerAuthorisesLowTest {
      */
     @Test
     fun `die Transportmenge kappt den autorisierten Anteil ueber BEIDE Spielraeume`() {
-        val p = planImTief(markerAuthorisesLow = true)
+        val p = planImTief(markerAuthorized = true)
         val eng = FuseController.State(
             health = Health.READY, safetyHold = true, phase = Phase.REARMING,
             netIobU = 0.5, bolusIobU = 0.5, basalIobU = 0.0,
@@ -270,7 +270,7 @@ class MarkerAuthorisesLowTest {
         // anderen Grund nichts freigibt.
         val ohne = PrimeRelease.lift(
             blockiert(FuseController.Block.SAFETY_HOLD), p, eng,
-            markerAuthorisesLow = true, transportCommitmentU = 0.0,
+            markerAuthorized = true, transportCommitmentU = 0.0,
         )
         assertEquals(
             2 * step, ohne.smbU, 1e-9,
@@ -282,7 +282,7 @@ class MarkerAuthorisesLowTest {
             step,
             PrimeRelease.lift(
                 blockiert(FuseController.Block.SAFETY_HOLD), p, eng,
-                markerAuthorisesLow = true, transportCommitmentU = 0.05,
+                markerAuthorized = true, transportCommitmentU = 0.05,
             ).smbU, 1e-9,
             "die halbe Transportmenge muss den halben Spielraum kosten",
         )
@@ -290,14 +290,14 @@ class MarkerAuthorisesLowTest {
         // UND JETZT mit unterwegs befindlichem Insulin: nichts mehr.
         val mit = PrimeRelease.lift(
             blockiert(FuseController.Block.SAFETY_HOLD), p, eng,
-            markerAuthorisesLow = true, transportCommitmentU = 0.10,
+            markerAuthorized = true, transportCommitmentU = 0.10,
         )
         assertEquals(
             0.0, mit.smbU, 1e-9,
             "unterwegs befindliches Insulin darf nicht ein zweites Mal finanziert werden",
         )
         assertEquals(
-            0.0, mit.markerLowAuthorizedU, 1e-9,
+            0.0, mit.markerAuthorizedU, 1e-9,
             "und es entsteht auch keine Autorisierungsgrenze, die ein Boden spaeter hebt",
         )
     }
@@ -310,7 +310,7 @@ class MarkerAuthorisesLowTest {
      */
     @Test
     fun `die Transportmenge kappt auch wenn nur eine der beiden Grenzen bindet`() {
-        val p = planImTief(markerAuthorisesLow = true)
+        val p = planImTief(markerAuthorized = true)
         fun eng(iobTh: Double, maxIob: Double) = FuseController.State(
             health = Health.READY, safetyHold = true, phase = Phase.REARMING,
             netIobU = 0.5, bolusIobU = 0.5, basalIobU = 0.0,
@@ -328,14 +328,14 @@ class MarkerAuthorisesLowTest {
                 2 * step,
                 PrimeRelease.lift(
                     blockiert(FuseController.Block.SAFETY_HOLD), p, st,
-                    markerAuthorisesLow = true, transportCommitmentU = 0.0,
+                    markerAuthorized = true, transportCommitmentU = 0.0,
                 ).smbU, 1e-9, "$name: ohne Transportmenge zwei Schritte",
             )
             assertEquals(
                 0.0,
                 PrimeRelease.lift(
                     blockiert(FuseController.Block.SAFETY_HOLD), p, st,
-                    markerAuthorisesLow = true, transportCommitmentU = 0.10,
+                    markerAuthorized = true, transportCommitmentU = 0.10,
                 ).smbU, 1e-9, "$name: mit Transportmenge nichts",
             )
         }
@@ -351,16 +351,16 @@ class MarkerAuthorisesLowTest {
      */
     @Test
     fun `ohne Bahn entsteht mit Autorisierung eine Menge`() {
-        val p = PrimeRelease.plan(ohneBahn(markerAuthorisesLow = true))
+        val p = PrimeRelease.plan(ohneBahn(markerAuthorized = true))
         assertTrue(p.active, "der Plan muss ohne Bahn stehen koennen: ${p.reason}")
         assertEquals("PRIME", p.reason)
         val d = PrimeRelease.lift(
             blockiert(FuseController.Block.SAFETY_HOLD), p, state(),
-            markerAuthorisesLow = true,
+            markerAuthorized = true,
             tailHeadroomU = null,          // ohne Bahn gibt es keinen
         )
         assertTrue(d.smbU > 0.0, "ohne Bahn und mit Autorisierung muss etwas herauskommen")
-        assertEquals(d.smbU, d.markerLowAuthorizedU, 1e-9, "und alles davon ist autorisiert")
+        assertEquals(d.smbU, d.markerAuthorizedU, 1e-9, "und alles davon ist autorisiert")
     }
 
     /**
@@ -372,7 +372,7 @@ class MarkerAuthorisesLowTest {
      */
     @Test
     fun `ohne Bahn und ohne Autorisierung sperrt der Plan`() {
-        val p = PrimeRelease.plan(ohneBahn(markerAuthorisesLow = false))
+        val p = PrimeRelease.plan(ohneBahn(markerAuthorized = false))
         assertTrue(!p.active)
         assertEquals("NO_TRAJECTORY", p.reason)
     }
@@ -381,19 +381,19 @@ class MarkerAuthorisesLowTest {
      *  zusammenfallen, sonst hat die Nullbarkeit nichts gebracht. */
     @Test
     fun `eine nicht endliche Bahn bleibt NOT_FINITE`() {
-        val p = PrimeRelease.plan(ohneBahn(markerAuthorisesLow = true).copy(safetyMinLowerMgdl = Double.NaN))
+        val p = PrimeRelease.plan(ohneBahn(markerAuthorized = true).copy(safetyMinLowerMgdl = Double.NaN))
         assertTrue(!p.active)
         assertEquals("NOT_FINITE", p.reason)
     }
 
-    private fun ohneBahn(markerAuthorisesLow: Boolean) = PrimeRelease.Input(
+    private fun ohneBahn(markerAuthorized: Boolean) = PrimeRelease.Input(
         enabled = true, mealMarkerActive = true,
         armedTsMs = 1_000_000L, windowStartTsMs = 0L,
         nowMs = 1_000_000L + 3 * 60_000L,
         envelopeU = 1.2, spentU = 0.0,
         safetyMinLowerMgdl = null,
         guardFloorMgdl = 70.0, isfMgdlPerU = 55.0, pumpIncrementU = step,
-        markerAuthorisesLow = markerAuthorisesLow,
+        markerAuthorized = markerAuthorized,
     )
 
     /**
@@ -402,9 +402,9 @@ class MarkerAuthorisesLowTest {
      */
     @Test
     fun `maxIOB kappt auch den autorisierten Anteil`() {
-        val p = planImTief(markerAuthorisesLow = true)
+        val p = planImTief(markerAuthorized = true)
         val eng = state(iobTh = 0.5, maxIob = 0.5)   // capIob 0,5 -> Spielraum 0
-        val d = PrimeRelease.lift(blockiert(FuseController.Block.SAFETY_HOLD), p, eng, markerAuthorisesLow = true)
+        val d = PrimeRelease.lift(blockiert(FuseController.Block.SAFETY_HOLD), p, eng, markerAuthorized = true)
         assertEquals(0.0, d.smbU, "ein erschoepftes IOB-Budget bleibt bindend")
     }
 
@@ -416,10 +416,10 @@ class MarkerAuthorisesLowTest {
      */
     @Test
     fun `das schuetzende Zero-Temp bleibt neben der Freigabe bestehen`() {
-        val p = planImTief(markerAuthorisesLow = true)
+        val p = planImTief(markerAuthorized = true)
         val d = PrimeRelease.lift(
             blockiert(FuseController.Block.SAFETY_HOLD), p, state(),
-            markerAuthorisesLow = true,
+            markerAuthorized = true,
         )
         assertTrue(d.smbU > 0.0)
         assertEquals(FuseController.TbrAction.ZERO_TEMP, d.tbr, "die Basalabsenkung darf nicht verlorengehen")

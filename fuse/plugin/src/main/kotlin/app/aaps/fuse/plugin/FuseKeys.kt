@@ -416,7 +416,7 @@ enum class FuseBooleanKey(
      * anderes als bei jedem anderen Schalter. Einmal umlegen ist genau die
      * bewusste Handlung, um die es bei diesem Knopf ohnehin geht.
      */
-    MarkerAuthorisesLow("fuse_marker_authorises_low", false),
+    MarkerAuthorisesRelease("fuse_marker_authorises_low", false),
 
     ConditionalTailEnabled("fuse_conditional_tail_enabled", true),
 

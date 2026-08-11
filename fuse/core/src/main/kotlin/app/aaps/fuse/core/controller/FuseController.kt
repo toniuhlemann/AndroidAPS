@@ -438,7 +438,7 @@ object FuseController {
          * 0 heisst: nichts an dieser Menge ist manuell autorisiert. Dann nullt
          * jeder Mengen-Block sie vollstaendig, wie bisher.
          */
-        val markerLowAuthorizedU: Double = 0.0,
+        val markerAuthorizedU: Double = 0.0,
     ) {
 
         /**

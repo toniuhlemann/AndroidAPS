@@ -167,7 +167,7 @@ class FuseTbrTranslatorTest {
 
     /** Wie [decision], aber mit ausdruecklich autorisiertem Anteil. */
     private fun autorisiert(smb: Double, authU: Double, tbr: FuseController.TbrAction) =
-        decision(smb, tbr).copy(markerLowAuthorizedU = authU)
+        decision(smb, tbr).copy(markerAuthorizedU = authU)
 
     /**
      * FALL 2: Schutz-Null UND autorisierte Menge -> der autorisierte Anteil

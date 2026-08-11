@@ -1363,7 +1363,7 @@ class FusePlugin @Inject constructor(
             .put(FuseIntKey.DriveLowerQuantilePct, preferences)
             .put(FuseBooleanKey.TailGuardEnabled, preferences)
             .put(FuseBooleanKey.ConditionalTailEnabled, preferences)
-            .put(FuseBooleanKey.MarkerAuthorisesLow, preferences)
+            .put(FuseBooleanKey.MarkerAuthorisesRelease, preferences)
             .put(FuseBooleanKey.FastRestraintEnabled, preferences)
             .put(FuseDoubleKey.TailFloorMgdl, preferences)
             .put(FuseDoubleKey.TailRecoveryU, preferences)
@@ -1388,7 +1388,7 @@ class FusePlugin @Inject constructor(
             .store(FuseIntKey.DriveLowerQuantilePct, preferences)
             .store(FuseBooleanKey.TailGuardEnabled, preferences)
             .store(FuseBooleanKey.ConditionalTailEnabled, preferences)
-            .store(FuseBooleanKey.MarkerAuthorisesLow, preferences)
+            .store(FuseBooleanKey.MarkerAuthorisesRelease, preferences)
             .store(FuseBooleanKey.FastRestraintEnabled, preferences)
             .store(FuseDoubleKey.TailFloorMgdl, preferences)
             .store(FuseDoubleKey.TailRecoveryU, preferences)
@@ -1518,7 +1518,7 @@ class FusePlugin @Inject constructor(
                     "Einstellung sagt FUSE, WIE es entscheiden soll - diese sagen, dass DU " +
                     "entschieden hast und FUSE sich darauf verlaesst. Im Zweifel aus lassen."
             )
-            addPreference(AdaptiveSwitchPreference(ctx = context, booleanKey = FuseBooleanKey.MarkerAuthorisesLow, summary = R.string.fuse_marker_low_summary, title = R.string.fuse_marker_low_title))
+            addPreference(AdaptiveSwitchPreference(ctx = context, booleanKey = FuseBooleanKey.MarkerAuthorisesRelease, summary = R.string.fuse_marker_low_summary, title = R.string.fuse_marker_low_title))
         }
 
         cat("fuse_tail", "Haftung / Schwanz") {
