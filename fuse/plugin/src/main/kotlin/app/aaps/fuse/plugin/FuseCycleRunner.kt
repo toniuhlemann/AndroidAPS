@@ -46,6 +46,7 @@ import app.aaps.fuse.core.controller.PrimeRelease
 import app.aaps.fuse.core.insulin.KernelOutcome
 import app.aaps.fuse.core.insulin.UnitInsulinKernel
 import app.aaps.fuse.core.insulin.UnitInsulinKernelBuilder
+import app.aaps.fuse.core.predictor.ConditionalDrive
 import app.aaps.fuse.core.predictor.DriveDiscount
 import app.aaps.fuse.core.predictor.DriveEstimate
 import app.aaps.fuse.core.predictor.InsulinLineage
@@ -993,57 +994,40 @@ class FuseCycleRunner(
         // Die UNBEDINGTE Bahn laeuft unveraendert weiter und bleibt die
         // Widerlegung: bleibt der Anstieg aus, faellt der Kredit, und der
         // Schwanz rechnet wieder gegen sie.
-        val conditional = if (!cfg.conditionalTailEnabled || declaredDrive <= 0.0) null else {
-            val d = built.input.drive
-            val gehoben = minOf(d.lowerMgdlPerMin, d.safetyLowerMgdlPerMin + declaredDrive)
-            if (gehoben <= d.safetyLowerMgdlPerMin) null
-            else (TrajectoryCore.predict(
-                built.input.copy(drive = d.copy(lowerPriorFreeMgdlPerMin = gehoben))
-            ) as? PredictorOutcome.Ok)?.result
+        // Die Hebung selbst liegt in `ConditionalDrive` - beide Bahnen
+        // UNABHAENGIG, und dort auch begruendet. Zwei Anlaeufe sind hier an
+        // if-Zweigen gescheitert: erst wurde nur die Hauptbahn gehoben (die
+        // Bremse war die bindende, die Hebung verpuffte), dann haing die Bremse
+        // an der Hauptbahn (stand die am Deckel, blieb die Bremse ungehoben).
+        val lift = if (!cfg.conditionalTailEnabled) ConditionalDrive.Lift(null, null)
+        else ConditionalDrive.of(
+            mainDrive = built.input.drive,
+            restraintMean = if (restraint == null) null else fastDrive(signal),
+            restraintLower = if (restraint == null) null else
+                fastDrive(signal)?.minus(built.discount.termMgdlPerMin),
+            restraintMethodId = DriveDiscount.methodId("UKF_RATE_RESTRAINT_V1", built.discount.lambda),
+            declaredDriveMgdlPerMin = declaredDrive,
+        )
+        fun bahn(d: DriveEstimate?): PredictorResult? = d?.let {
+            (TrajectoryCore.predict(built.input.copy(drive = it)) as? PredictorOutcome.Ok)?.result
         }
-        // DIE BREMSBAHN MUSS MIT (Livebefund 11.08., Mahlzeit 10:22).
-        //
-        // Der erste Anlauf hob nur die HAUPTbahn - und die Hebung verpuffte
-        // vollstaendig: der Schwanz rechnet gegen
-        // `minSafetyHorizonLowerOf(prediction, restraint)`, und waehrend der
-        // Mahlzeit war die BREMSbahn die bindende (minLowerMain 114,5 gegen
-        // kombiniert 91,8, `restraintBoundGuard = true`). Das Minimum ueber
-        // beide blieb damit unveraendert, und 14 Minuten TAIL bei BG 139->163
-        // liefen weiter, als haette es die bedingte Bahn nicht gegeben.
-        //
-        // Die Bremsbahn wird mit `lowerPriorFree = null` gebaut - ihre
-        // Sicherheitskante IST ihre untere Kante, es gibt also keinen
-        // Zwischenraum, in den man heben koennte. Der Kredit muss ihre UNTERE
-        // Kante heben, und der Deckel ist ihr eigenes Mittel (die schnelle
-        // Rate): weiter als bis zur eigenen Mittelbahn kommt auch sie nie.
-        //
-        // Symmetrisch und nicht grosszuegig: die Ankuendigung "Kohlenhydrate
-        // kommen" gilt fuer die schnelle Schaetzung genauso wie fuer die
-        // langsame. Was sie NICHT tut, ist die Bremse abschalten - der
-        // Deckel bleibt, und ohne Kredit ist die Bahn bitgleich zu vorher.
-        val conditionalRestraint = if (conditional == null || restraint == null) null else
-            fastDrive(signal)?.let { fast ->
-                val unten = fast - built.discount.termMgdlPerMin
-                val gehoben = minOf(fast, unten + declaredDrive)
-                if (gehoben <= unten) null
-                else (TrajectoryCore.predict(
-                    built.input.copy(
-                        drive = DriveEstimate(
-                            fast, gehoben, null,
-                            DriveDiscount.methodId("UKF_RATE_RESTRAINT_V1", built.discount.lambda) + "+COND",
-                        )
-                    )
-                ) as? PredictorOutcome.Ok)?.result
-            }
+        val conditional = bahn(lift.main)
+        val conditionalRestraint = bahn(lift.restraint)
 
         val tailLowerMainUncond = prediction.bgAtHorizonSafetyLower
         val tailLowerMainCond = conditional?.bgAtHorizonSafetyLower
         val tailLowerRestraintUncond = restraint?.bgAtHorizonSafetyLower
         val tailLowerRestraintCond = conditionalRestraint?.bgAtHorizonSafetyLower
         val tailLowerUnconditional = minSafetyHorizonLowerOf(prediction, restraint)
-        val tailLowerConditional = conditional?.let {
-            minSafetyHorizonLowerOf(it, conditionalRestraint ?: restraint)
-        }
+        // Die kombinierte bedingte Kante gibt es, sobald EINE der beiden
+        // Bahnen gehoben wurde - nicht erst, wenn beide es sind. Jede Bahn,
+        // die nicht gehoben werden konnte, geht unveraendert ein.
+        val tailLowerConditional =
+            if (conditional == null && conditionalRestraint == null) null
+            else minSafetyHorizonLowerOf(
+                conditional ?: prediction,
+                conditionalRestraint ?: restraint,
+            )
 
         val tailBase = TailLiability.Input(
             lowerBgAtH = tailLowerConditional ?: tailLowerUnconditional,
