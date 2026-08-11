@@ -545,6 +545,15 @@ object FuseStateJson {
             "tailLower", JSONObject()
                 .put("unconditionalMgdl", fin(outcome.tailLowerUnconditionalMgdl))
                 .put("conditionalMgdl", fin(outcome.tailLowerConditionalMgdl))
+                // JE BAHN EINZELN (Livebefund 11.08.). Nur die kombinierten
+                // Werte zu zeigen war zu wenig: die Hebung der Hauptbahn wurde
+                // von der unbedingten Bremsbahn kassiert, und im Export sahen
+                // beide Zahlen einfach gleich aus - ohne Hinweis darauf, WO die
+                // Hebung verlorenging.
+                .put("mainUncondMgdl", fin(outcome.tailLowerMainUncondMgdl))
+                .put("mainCondMgdl", fin(outcome.tailLowerMainCondMgdl))
+                .put("restraintUncondMgdl", fin(outcome.tailLowerRestraintUncondMgdl))
+                .put("restraintCondMgdl", fin(outcome.tailLowerRestraintCondMgdl))
         )
 
         val t = d.tail

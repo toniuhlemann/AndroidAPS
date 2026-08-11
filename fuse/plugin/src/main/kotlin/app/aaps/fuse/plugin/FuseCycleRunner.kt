@@ -326,6 +326,14 @@ class FuseCycleRunner(
          */
         val tailLowerUnconditionalMgdl: Double? = null,
         val tailLowerConditionalMgdl: Double? = null,
+        /** Je Bahn EINZELN, bedingt und unbedingt. Ohne sie war am
+         *  11.08. nicht zu sehen, dass die Hebung der Hauptbahn von der
+         *  unbedingten Bremsbahn vollstaendig kassiert wurde - die
+         *  kombinierten Werte sahen schlicht gleich aus. */
+        val tailLowerMainUncondMgdl: Double? = null,
+        val tailLowerMainCondMgdl: Double? = null,
+        val tailLowerRestraintUncondMgdl: Double? = null,
+        val tailLowerRestraintCondMgdl: Double? = null,
         val sourceTs: Long?,
         val computeTs: Long,
         val health: Health?,
@@ -993,9 +1001,48 @@ class FuseCycleRunner(
                 built.input.copy(drive = d.copy(lowerPriorFreeMgdlPerMin = gehoben))
             ) as? PredictorOutcome.Ok)?.result
         }
+        // DIE BREMSBAHN MUSS MIT (Livebefund 11.08., Mahlzeit 10:22).
+        //
+        // Der erste Anlauf hob nur die HAUPTbahn - und die Hebung verpuffte
+        // vollstaendig: der Schwanz rechnet gegen
+        // `minSafetyHorizonLowerOf(prediction, restraint)`, und waehrend der
+        // Mahlzeit war die BREMSbahn die bindende (minLowerMain 114,5 gegen
+        // kombiniert 91,8, `restraintBoundGuard = true`). Das Minimum ueber
+        // beide blieb damit unveraendert, und 14 Minuten TAIL bei BG 139->163
+        // liefen weiter, als haette es die bedingte Bahn nicht gegeben.
+        //
+        // Die Bremsbahn wird mit `lowerPriorFree = null` gebaut - ihre
+        // Sicherheitskante IST ihre untere Kante, es gibt also keinen
+        // Zwischenraum, in den man heben koennte. Der Kredit muss ihre UNTERE
+        // Kante heben, und der Deckel ist ihr eigenes Mittel (die schnelle
+        // Rate): weiter als bis zur eigenen Mittelbahn kommt auch sie nie.
+        //
+        // Symmetrisch und nicht grosszuegig: die Ankuendigung "Kohlenhydrate
+        // kommen" gilt fuer die schnelle Schaetzung genauso wie fuer die
+        // langsame. Was sie NICHT tut, ist die Bremse abschalten - der
+        // Deckel bleibt, und ohne Kredit ist die Bahn bitgleich zu vorher.
+        val conditionalRestraint = if (conditional == null || restraint == null) null else
+            fastDrive(signal)?.let { fast ->
+                val unten = fast - built.discount.termMgdlPerMin
+                val gehoben = minOf(fast, unten + declaredDrive)
+                if (gehoben <= unten) null
+                else (TrajectoryCore.predict(
+                    built.input.copy(
+                        drive = DriveEstimate(
+                            fast, gehoben, null,
+                            DriveDiscount.methodId("UKF_RATE_RESTRAINT_V1", built.discount.lambda) + "+COND",
+                        )
+                    )
+                ) as? PredictorOutcome.Ok)?.result
+            }
+
+        val tailLowerMainUncond = prediction.bgAtHorizonSafetyLower
+        val tailLowerMainCond = conditional?.bgAtHorizonSafetyLower
+        val tailLowerRestraintUncond = restraint?.bgAtHorizonSafetyLower
+        val tailLowerRestraintCond = conditionalRestraint?.bgAtHorizonSafetyLower
         val tailLowerUnconditional = minSafetyHorizonLowerOf(prediction, restraint)
         val tailLowerConditional = conditional?.let {
-            minSafetyHorizonLowerOf(it, restraint)
+            minSafetyHorizonLowerOf(it, conditionalRestraint ?: restraint)
         }
 
         val tailBase = TailLiability.Input(
@@ -1386,6 +1433,10 @@ class FuseCycleRunner(
             restraint = restraint,
             tailLowerUnconditionalMgdl = tailLowerUnconditional,
             tailLowerConditionalMgdl = tailLowerConditional,
+            tailLowerMainUncondMgdl = tailLowerMainUncond,
+            tailLowerMainCondMgdl = tailLowerMainCond,
+            tailLowerRestraintUncondMgdl = tailLowerRestraintUncond,
+            tailLowerRestraintCondMgdl = tailLowerRestraintCond,
             sourceTs = signal.sourceTs,
             computeTs = computeTs,
             health = step.health,
@@ -1705,9 +1756,17 @@ class FuseCycleRunner(
         onsetDriveMgdlPerMin: Double?,
         reboundWindow: Boolean,
         mealMarkerActive: Boolean,
-        /** ERKLAERTE ABSORPTION (Toni 09.08.): erwarteter Anstieg aus der
-         *  Freigabe-Huelle [mg/dl/min], 0 wenn kein Kredit gilt. Wirkt NUR auf
-         *  der Mittelbahn - s. MarkerScope.declaredAbsorptionDriveMgdlPerMin. */
+        /**
+         * ERKLAERTE ABSORPTION (Toni 09.08.): erwarteter Anstieg aus der
+         * Freigabe-Huelle [mg/dl/min], 0 wenn kein Kredit gilt.
+         *
+         * HIER wirkt sie nur auf der Mittelbahn - das bleibt so. Seit dem
+         * 11.08. baut der Aufrufer daraus ZUSAETZLICH die bedingten Bahnen
+         * (Haupt UND Bremse) fuer den Schwanz-Guard; die gehen NICHT ueber
+         * diesen Parameter, sondern ueber eine eigene Kopie des Eingangs.
+         * Der alte Kommentar "wirkt NUR auf der Mittelbahn" las sich sonst
+         * wie eine Zusicherung ueber das Gesamtsystem.
+         */
         declaredDriveMgdlPerMin: Double = 0.0,
         /** C3/C3-01: publizierte, im IOB noch nicht sichtbare Mengen als
          *  synthetische Dosen - EINE JE OFFENEM POSTEN, mit eigenem Anker.
