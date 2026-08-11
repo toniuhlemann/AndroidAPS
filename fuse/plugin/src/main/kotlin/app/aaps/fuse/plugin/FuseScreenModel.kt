@@ -62,6 +62,9 @@ object FuseScreenModel {
         val activeErrors: Map<String, Int>,
         val openEntries: Int,
         val grossLiabilityU: Double,
+        /** Offene, noch nicht im IOB belegte Transportmenge. Sie wird bei
+         *  den wirksamen iobTH-/maxIOB-Spielraeumen ebenfalls abgezogen. */
+        val transportCommitmentU: Double = 0.0,
         val lastRepairTs: Long?,
     )
 

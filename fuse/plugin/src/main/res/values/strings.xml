@@ -5,6 +5,19 @@
 
     <string name="fuse_settings">FUSE</string>
 
+    <!-- Kompakte Betriebssicht im FUSE-Reiter. Die technische Vollansicht
+         bleibt separat einblendbar und verwendet weiterhin FuseScreenModel. -->
+    <string name="fuse_live_status">Betriebszustand</string>
+    <string name="fuse_current_action">Aktuelle Aktion</string>
+    <string name="fuse_decision_reason">Entscheidungsgrund</string>
+    <string name="fuse_hard_stops">Harte Sperren</string>
+    <string name="fuse_marker_and_budget">Mahlzeit und Freigabebudget</string>
+    <string name="fuse_iob_limits">IOB und Insulingrenzen</string>
+    <string name="fuse_profile_values">Wirksame Profilwerte</string>
+    <string name="fuse_open_settings">Einstellungen</string>
+    <string name="fuse_show_details">Technische Details</string>
+    <string name="fuse_hide_details">Details ausblenden</string>
+
     <string name="fuse_smb_ratio_title">SMB-Anteil (Korrektur)</string>
     <string name="fuse_smb_ratio_summary">Wie viel vom rechnerisch fehlenden Insulin FUSE pro Minute gibt, wenn der Zucker NICHT ansteigt, sondern nur zu hoch steht. 0,15 = 15 %%. Bewusst klein: FUSE darf jede Minute neu entscheiden - lieber oft und wenig als einmal zu viel.</string>
 

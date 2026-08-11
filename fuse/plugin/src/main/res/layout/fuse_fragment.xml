@@ -1,47 +1,223 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Bewusst schlicht: EIN Textfeld in Monospace. Der gesamte Inhalt entsteht in
-     FuseScreenModel und ist damit ohne Geraet pruefbar. Eine Zeilenliste aus
-     inflatierten Layouts haette dieselbe Information gekostet, aber die
-     Testflaeche verdoppelt. -->
 <androidx.core.widget.NestedScrollView
     xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    xmlns:tools="http://schemas.android.com/tools"
     android:layout_width="match_parent"
     android:layout_height="match_parent">
 
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:orientation="vertical">
+        android:orientation="vertical"
+        android:paddingBottom="8dp">
 
-    <!-- DER Mahlzeiten-Marker. Er dosiert nichts und rechnet nichts - er
-         setzt einen Zeitstempel, den der naechste Zyklus liest. Ein Druck bei
-         aktivem Marker nimmt ihn zurueck. Seit 11.08. genau EINER: die Stufen
-         S/M/L waren eine Mengenschaetzung, und die Menge steht in der
-         Freigabe-Huelle, nicht im Knopf. -->
-    <LinearLayout
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:orientation="horizontal"
-        android:layout_margin="4dp">
+        <!-- Ein Marker, eine Bedeutung. Der Dialog erklaert die Exposition;
+             die kompakte Karte darunter zeigt den laufenden Verbrauch. -->
         <Button
             android:id="@+id/fuse_meal_marker"
-            android:layout_width="0dp"
-            android:layout_weight="1"
+            android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_margin="4dp"
+            android:layout_marginStart="8dp"
+            android:layout_marginTop="8dp"
+            android:layout_marginEnd="8dp"
             android:text="@string/fuse_marker_m" />
+
+        <com.google.android.material.card.MaterialCardView
+            style="@style/Widget.MaterialComponents.CardView"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="8dp"
+            android:layout_marginTop="8dp"
+            android:layout_marginEnd="8dp"
+            app:cardCornerRadius="6dp"
+            app:cardElevation="2dp"
+            app:cardUseCompatPadding="false">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:padding="12dp">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="@string/fuse_live_status"
+                    android:textAllCaps="true"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:id="@+id/fuse_overview_status"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="2dp"
+                    android:textColor="?android:attr/textColorPrimary"
+                    android:textSize="22sp"
+                    android:textStyle="bold"
+                    tools:text="READY" />
+
+                <TextView
+                    android:id="@+id/fuse_overview_status_detail"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:textColor="?android:attr/textColorSecondary"
+                    tools:text="vor 0 min | Phase ARMED | Health READY" />
+
+                <View
+                    android:layout_width="match_parent"
+                    android:layout_height="1dp"
+                    android:layout_marginTop="10dp"
+                    android:layout_marginBottom="8dp"
+                    android:background="?android:attr/listDivider" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="@string/fuse_current_action"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:id="@+id/fuse_overview_action"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="2dp"
+                    android:textColor="?android:attr/textColorPrimary"
+                    android:textSize="16sp"
+                    tools:text="SMB 0.20 U berechnet / 0.20 U angefordert | keine neue TBR" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:text="@string/fuse_decision_reason"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:id="@+id/fuse_overview_reason"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="2dp"
+                    android:textColor="?android:attr/textColorPrimary"
+                    tools:text="GUARD_FLOOR | guardFloor=70.0" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:text="@string/fuse_hard_stops"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:id="@+id/fuse_overview_hard_stops"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="2dp"
+                    android:textColor="?android:attr/textColorPrimary"
+                    tools:text="Keine harte Systemsperre | Gate VPUMP_ALPHA | Ledger frei" />
+            </LinearLayout>
+        </com.google.android.material.card.MaterialCardView>
+
+        <com.google.android.material.card.MaterialCardView
+            style="@style/Widget.MaterialComponents.CardView"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="8dp"
+            android:layout_marginTop="8dp"
+            android:layout_marginEnd="8dp"
+            app:cardCornerRadius="6dp"
+            app:cardElevation="2dp"
+            app:cardUseCompatPadding="false">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:padding="12dp">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="@string/fuse_marker_and_budget"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:id="@+id/fuse_overview_marker"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="2dp"
+                    android:textColor="?android:attr/textColorPrimary"
+                    tools:text="AKTIV seit 3 min | publiziert 0.20 U | verfuegbar 2.80 U" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="10dp"
+                    android:text="@string/fuse_iob_limits"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:id="@+id/fuse_overview_limits"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="2dp"
+                    android:textColor="?android:attr/textColorPrimary"
+                    tools:text="IOB 0.58 U | cap 1.18 U | iobTH 8.00 U (Rest 6.82 U)" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="10dp"
+                    android:text="@string/fuse_profile_values"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:id="@+id/fuse_overview_profile"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="2dp"
+                    android:textColor="?android:attr/textColorPrimary"
+                    tools:text="Ziel 98 mg/dl (Profil) | ISF 80 mg/dl/U | Basal 0.65 U/h" />
+            </LinearLayout>
+        </com.google.android.material.card.MaterialCardView>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="8dp"
+            android:layout_marginTop="8dp"
+            android:layout_marginEnd="8dp"
+            android:orientation="horizontal">
+
+            <Button
+                android:id="@+id/fuse_open_settings"
+                style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="@string/fuse_open_settings" />
+
+            <Button
+                android:id="@+id/fuse_details_toggle"
+                style="@style/Widget.MaterialComponents.Button.TextButton"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="4dp"
+                android:layout_weight="1"
+                android:text="@string/fuse_show_details" />
+        </LinearLayout>
+
+        <!-- Vollstaendige technische Belegschicht. Sie bleibt absichtlich
+             Monospace und selektierbar, ist aber im Alltag eingeklappt. -->
+        <TextView
+            android:id="@+id/fuse_state"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:fontFamily="monospace"
+            android:padding="8dp"
+            android:textColor="?android:attr/textColorPrimary"
+            android:textIsSelectable="true"
+            android:textSize="13sp"
+            android:visibility="gone" />
     </LinearLayout>
-
-    <TextView
-        android:id="@+id/fuse_state"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:padding="8dp"
-        android:textIsSelectable="true"
-        android:fontFamily="monospace"
-        android:textColor="?android:attr/textColorPrimary"
-        android:textSize="13sp" />
-
-    </LinearLayout>
-
 </androidx.core.widget.NestedScrollView>

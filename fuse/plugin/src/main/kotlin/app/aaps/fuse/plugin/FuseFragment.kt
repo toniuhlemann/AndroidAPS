@@ -1,12 +1,16 @@
 package app.aaps.fuse.plugin
 
+import android.content.Intent
 import android.os.Bundle
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
+import androidx.core.view.isVisible
+import app.aaps.core.interfaces.protection.ProtectionCheck
 import app.aaps.core.interfaces.rx.AapsSchedulers
 import app.aaps.core.interfaces.rx.bus.RxBus
 import app.aaps.core.interfaces.rx.events.EventAPSCalculationFinished
+import app.aaps.core.interfaces.ui.UiInteraction
 import app.aaps.core.interfaces.utils.DateUtil
 import app.aaps.core.interfaces.utils.fabric.FabricPrivacy
 import app.aaps.fuse.plugin.databinding.FuseFragmentBinding
@@ -38,10 +42,13 @@ class FuseFragment : DaggerFragment() {
     @Inject lateinit var dateUtil: DateUtil
     @Inject lateinit var rh: app.aaps.core.interfaces.resources.ResourceHelper
     @Inject lateinit var fusePlugin: FusePlugin
+    @Inject lateinit var uiInteraction: UiInteraction
+    @Inject lateinit var protectionCheck: ProtectionCheck
 
     private val disposable = CompositeDisposable()
     private var _binding: FuseFragmentBinding? = null
     private val binding get() = _binding!!
+    private var detailsExpanded = false
 
     override fun onCreateView(inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?): View =
         FuseFragmentBinding.inflate(inflater, container, false).also { _binding = it }.root
@@ -61,6 +68,24 @@ class FuseFragment : DaggerFragment() {
             if (fakten == null || act == null) umschalten.run()
             else app.aaps.core.ui.dialogs.FuseMarkerDialog.show(act, rh, fakten, umschalten)
         }
+        binding.fuseDetailsToggle.setOnClickListener {
+            detailsExpanded = !detailsExpanded
+            showDetailsState()
+        }
+        binding.fuseOpenSettings.setOnClickListener {
+            val act = activity ?: return@setOnClickListener
+            protectionCheck.queryProtection(
+                act,
+                ProtectionCheck.Protection.PREFERENCES,
+                Runnable {
+                    startActivity(
+                        Intent(act, uiInteraction.preferencesActivity)
+                            .putExtra(UiInteraction.PLUGIN_NAME, FusePlugin::class.java.simpleName)
+                    )
+                },
+            )
+        }
+        showDetailsState()
     }
 
     override fun onResume() {
@@ -86,19 +111,44 @@ class FuseFragment : DaggerFragment() {
         // Nach onDestroyView kann ein Ereignis noch eintreffen — dann gibt es
         // kein Binding mehr, und ein Zugriff waere ein Absturz im Beobachter.
         _binding ?: return
-        binding.fuseState.text = FuseScreenModel.render(
-            fusePlugin.lastOutcome, fusePlugin.lastAPSResult, dateUtil.now(),
-            FuseScreenModel.MarkerInfo(
-                armedTs = fusePlugin.mealMarkerArmedTs(),
-                windowMin = app.aaps.fuse.core.controller.OnsetChannel.MARKER_WINDOW_MIN,
-                envelopeU = fusePlugin.mealMarkerEnvelopeU(),
-            ),
-            // Eigene Groesse neben Health: der Ledger kann die Abgabe ganz
-            // zumachen, waehrend der Beobachter tadellos READY meldet.
-            fusePlugin.ledgerInfo(),
+        val now = dateUtil.now()
+        val marker = FuseScreenModel.MarkerInfo(
+            armedTs = fusePlugin.mealMarkerArmedTs(),
+            windowMin = app.aaps.fuse.core.controller.OnsetChannel.MARKER_WINDOW_MIN,
+            envelopeU = fusePlugin.mealMarkerEnvelopeU(),
         )
-        val armed = fusePlugin.mealMarkerActive(dateUtil.now())
+        // Eigene Groesse neben Health: der Ledger kann die Abgabe ganz
+        // zumachen, waehrend der Beobachter tadellos READY meldet.
+        val ledger = fusePlugin.ledgerInfo()
+        val dashboard = FuseDashboardModel.build(
+            fusePlugin.lastOutcome,
+            fusePlugin.lastAPSResult,
+            now,
+            marker,
+            ledger,
+            fusePlugin.dashboardProfileInfo(now),
+        )
+        binding.fuseOverviewStatus.text = dashboard.status
+        binding.fuseOverviewStatusDetail.text = dashboard.statusDetail
+        binding.fuseOverviewAction.text = dashboard.action
+        binding.fuseOverviewReason.text = dashboard.decisionReason
+        binding.fuseOverviewMarker.text = dashboard.marker
+        binding.fuseOverviewLimits.text = dashboard.limits
+        binding.fuseOverviewProfile.text = dashboard.profile
+        binding.fuseOverviewHardStops.text = dashboard.hardStops
+        binding.fuseState.text = FuseScreenModel.render(
+            fusePlugin.lastOutcome, fusePlugin.lastAPSResult, now, marker, ledger,
+        )
+        val armed = fusePlugin.mealMarkerActive(now)
         binding.fuseMealMarker.text =
             if (armed) "◉ MAHLZEIT AKTIV" else getString(R.string.fuse_marker_m)
+    }
+
+    private fun showDetailsState() {
+        _binding ?: return
+        binding.fuseState.isVisible = detailsExpanded
+        binding.fuseDetailsToggle.text = getString(
+            if (detailsExpanded) R.string.fuse_hide_details else R.string.fuse_show_details
+        )
     }
 }
