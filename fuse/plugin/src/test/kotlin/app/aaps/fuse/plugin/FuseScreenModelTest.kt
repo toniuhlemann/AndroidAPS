@@ -123,6 +123,7 @@ class FuseScreenModelTest {
         state = null, step = null, sensorEpoch = null, calibrationEpoch = null,
         isfMgdlPerU = 85.0, iobU = 1.2, abortReason = abort,
         evidenceEpisodeId = episodeId, evidenceEpisodeDenial = denial, evidenceCreditRevoked = revoked,
+        evidenceEpisodeCapMin = 360,
     )
 
     /** Ohne Zyklus GENAU eine Zeile — kein Geruest aus Nullen, das wie ein

@@ -171,6 +171,21 @@ object EvidenceStock {
         /** Zuletzt gesehener KUMULATIVER Abgabestand der Episode [U]. Die
          *  Differenz ist der Abzug - dadurch genau einmal. */
         val lastCommittedU: Double = 0.0,
+        /**
+         * NACH EINER SPERRE MUSS DIE MESSBASIS NEU GESETZT WERDEN.
+         *
+         * Der Befund (Toni 12.08.): bei Tief, Signalfehler oder Widerruf wurde
+         * zwar der Bestand geloescht, `lastAcceptedTs`/`lastAdjusted` blieben
+         * aber alt. Der erste gesunde Zyklus danach haette die GANZE Differenz
+         * ueber die Sperrzeit als frischen Zufluss verbucht - also genau die
+         * Evidenz nachgeholt, die wir gerade fuer ungueltig erklaert hatten.
+         * Bei einem Tief waere das die teuerste Richtung ueberhaupt.
+         *
+         * Solange dieser Merker steht, setzt der naechste gesunde Messpunkt
+         * ausschliesslich die Basis: kein Zufluss, kein Kredit. Erst der
+         * DARAUFFOLGENDE Punkt erzeugt wieder Evidenz.
+         */
+        val rebaseRequired: Boolean = false,
     )
 
     /** Warum in diesem Zyklus KEIN Zufluss stattfand - fuer den Export, damit
@@ -191,6 +206,12 @@ object EvidenceStock {
         NO_NEW_SAMPLE,
         DRIVE_NOT_POSITIVE,
         NO_RISE,
+        /** Der erste gesunde Punkt nach einer Sperre - er setzt nur die Basis
+         *  (s. [State.rebaseRequired]). */
+        REBASE_AFTER_SUSPEND,
+        /** Der Nutzer hat den Marker zurueckgenommen. Die Episode laeuft
+         *  weiter, der Zusatzkredit ist widerrufen. */
+        CREDIT_REVOKED,
     }
 
     data class Input(
@@ -208,6 +229,16 @@ object EvidenceStock {
          */
         val driveLowerMgdlPerMin: Double?,
         val healthReady: Boolean,
+        /**
+         * Der Zusatzkredit dieser Episode ist AUSDRUECKLICH zurueckgenommen.
+         *
+         * OHNE DEFAULT und als eigener Eingang, weil er sonst gar nicht
+         * ankaeme: `evidenceRevoked` wurde persistiert und exportiert, war
+         * aber kein Eingang des Kerns - bei positivem Bestand haette der
+         * ACTIVE gemeldet und Kredit geliefert, obwohl der Nutzer den Marker
+         * zurueckgenommen hat (Toni 12.08.).
+         */
+        val creditRevoked: Boolean,
         val measuredLow: Boolean,
         /**
          * Identitaet der laufenden Mahlzeitenepisode; 0 = keine.
@@ -319,7 +350,13 @@ object EvidenceStock {
         val phase: Phase,
     )
 
-    fun step(prev: State, input: Input, cfg: Config = Config()): Result {
+    /**
+     * @param cfg OHNE DEFAULT (Toni 12.08.): ein `Config()` an der Signatur
+     *   waere eine zweite, stille Konfiguration neben der des Zyklus. Bei
+     *   einem Replay mit abweichendem Deckel wuerde der Kern dann etwas
+     *   anderes rechnen, als Tor und Export behaupten.
+     */
+    fun step(prev: State, input: Input, cfg: Config): Result {
         if (input.episodeId <= 0L)
             return Result(State(), 0.0, 0.0, NoInflow.NO_EPISODE, Phase.NONE)
         if (!input.persistedStateKnown)
@@ -377,14 +414,41 @@ object EvidenceStock {
             lastCommittedU = max(basis.lastCommittedU, input.episodeCommittedU),
         )
 
+        // DREI SPERREN, EIN VERHALTEN: Bestand auf 0, Verfall und Buchfuehrung
+        // laufen weiter, und die MESSBASIS wird als ungueltig markiert. Ohne
+        // das Letzte holte der erste gesunde Punkt danach die ganze Sperrzeit
+        // als Zufluss nach - bei einem Tief die teuerste Richtung ueberhaupt.
         if (input.measuredLow)
-            return Result(gemerkt.copy(stockMgdl = 0.0), 0.0, 0.0, NoInflow.MEASURED_LOW, Phase.SUSPENDED)
+            return Result(gemerkt.copy(stockMgdl = 0.0, rebaseRequired = true), 0.0, 0.0, NoInflow.MEASURED_LOW, Phase.SUSPENDED)
         if (!input.healthReady)
-            return Result(gemerkt.copy(stockMgdl = 0.0), 0.0, 0.0, NoInflow.HEALTH_NOT_READY, Phase.SUSPENDED)
+            return Result(gemerkt.copy(stockMgdl = 0.0, rebaseRequired = true), 0.0, 0.0, NoInflow.HEALTH_NOT_READY, Phase.SUSPENDED)
+        // WIDERRUF: die Episode bleibt, der Kredit ist weg. Er zaehlt zu den
+        // Sperren und nicht zu DORMANT - DORMANT hiesse "die Mahlzeit ist
+        // durch", hier hat der Nutzer die Erlaubnis entzogen.
+        if (input.creditRevoked)
+            return Result(gemerkt.copy(stockMgdl = 0.0, rebaseRequired = true), 0.0, 0.0, NoInflow.CREDIT_REVOKED, Phase.SUSPENDED)
 
         // ---- Segmentbruch: Ausgabe UND Zufluss gesperrt, Verfall laeuft ----
         // Das neue Segment setzt nur die Messbasis; ueber die Luecke wird
         // keine Differenz gebildet - `cumulativeBgi` startet dort neu bei 0.
+        // ---- Erster gesunder Punkt nach einer Sperre: NUR Basis ----------
+        if (basis.rebaseRequired)
+            return Result(
+                state = gemerkt.copy(
+                    stockMgdl = 0.0,
+                    lastAcceptedTs = input.sourceTs,
+                    lastAdjusted = input.adjusted,
+                    segmentStartTs = input.segmentStartTs,
+                    rebaseRequired = false,
+                ),
+                creditMgdlPerMin = 0.0,
+                inflowMgdl = 0.0,
+                noInflow = NoInflow.REBASE_AFTER_SUSPEND,
+                // Noch nicht DORMANT: es ist kein Urteil ueber die Mahlzeit,
+                // sondern der eine Zyklus, der die Messbasis wiederherstellt.
+                phase = Phase.SUSPENDED,
+            )
+
         if (basis.segmentStartTs != input.segmentStartTs || basis.lastAcceptedTs <= 0L)
             return Result(
                 gemerkt.copy(

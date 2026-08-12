@@ -55,7 +55,7 @@ object LedgerCodec {
      * Bestandsdateien bleiben dadurch ladbar. Unbekannte ZUKUNFTSVERSIONEN
      * werfen weiterhin (Hold statt raten).
      */
-    const val VERSION = 3
+    const val VERSION = 4
 
     /** Aelteste akzeptierte Version; zugleich der Default fuer Dateien ohne
      *  Versionsfeld. */
@@ -80,6 +80,25 @@ object LedgerCodec {
      * und nicht gebaut.
      */
     const val RECONCILIATION_VERSION = 3
+
+    /**
+     * Ab dieser Version traegt jede Datei den PERSISTENTEN EVIDENZBESTAND
+     * (`episodes.evidenceState`).
+     *
+     * WARUM EINE EIGENE VERSION UND KEIN `optJSONObject` (Toni 12.08.):
+     * v3 ist bereits IM FELD. Den Bestand nachtraeglich zum Pflichtbestandteil
+     * von v3 zu erklaeren hiesse, jede bestehende Datei zur korrupten zu
+     * machen; ihn dagegen als optional zu lesen hiesse, ein FEHLENDES Feld
+     * nicht mehr von einem echten Leerbestand unterscheiden zu koennen - und
+     * genau diese Unterscheidung entscheidet, ob nach einem Neustart Kredit
+     * fliessen darf.
+     *
+     * Also: v3 bleibt lesbar und loest eine MIGRATION aus, die den Bestand
+     * ausdruecklich auf null setzt (Anker, `evidenceCommittedU` und Haftung
+     * bleiben erhalten). Eine v4-Datei OHNE das Feld ist dagegen Korruption -
+     * keine zweite Migration.
+     */
+    const val EVIDENCE_VERSION = 4
 
     /** Obergrenze jeder Einzelmenge [U]. Weit ueber jedem realen SMB/Budget
      *  (maxSmbU-Hardlimit liegt darunter) - der Zweck ist, absurde Werte als
@@ -307,10 +326,18 @@ object LedgerCodec {
         // Eine Generation OHNE Zeilen hat nichts zu verlieren und migriert
         // still - genau so kann vor einem Realpump-Lauf eine frische, belegte
         // Generation starten, ohne dass jemand eine Datei loeschen muss.
-        val migration =
-            if (v < RECONCILIATION_VERSION && state.entries.isNotEmpty())
+        val migration = when {
+            v < RECONCILIATION_VERSION && state.entries.isNotEmpty() ->
                 "SCHEMA_v${v}_WITHOUT_lastPositiveFactTs (${state.entries.size} offene Zeilen)"
-            else null
+
+            // Der Evidenzbestand fehlt. ANDERS als oben haengt das NICHT an
+            // offenen Zeilen: der Bestand gehoert zur Episode, nicht zur
+            // Haftung - eine Datei ohne ihn kann auch bei leerem Ledger nicht
+            // sagen, ob er 0 ist oder unbekannt.
+            v < EVIDENCE_VERSION -> "SCHEMA_v${v}_WITHOUT_evidenceState"
+
+            else                 -> null
+        }
         return Decoded(
             state = state,
             episodes = decodeEpisodes(o.getJSONObject("episodes"), v),
@@ -366,6 +393,7 @@ object LedgerCodec {
         .put("evidenceEpisodeId", e.evidenceEpisodeId)
         .put("lastConsumedMarkerTs", e.lastConsumedMarkerTs)
         .put("evidenceRevoked", e.evidenceRevoked)
+        .put("evidenceState", encodeEvidence(e.evidenceState))
         .put("primeArmedTs", e.primeArmedTs)
         .put("onsetSpentU", e.onsetSpentU)
         .put("onsetQuietMin", e.onsetQuietMin)
@@ -374,6 +402,40 @@ object LedgerCodec {
         .put("markerRiseSeen", e.markerRiseSeen)
         .put("lastAcceptedSourceTs", e.lastAcceptedSourceTs)
         .put("mealDeliveries", JSONArray(e.mealDeliveries.map { (ts, u) -> JSONArray(listOf(ts, u)) }))
+
+    /**
+     * Der Evidenzbestand, Feld fuer Feld. KEIN Reflexions- oder
+     * Bequemlichkeitsserialisierer: jedes Feld steht hier namentlich, damit
+     * ein neues Feld beim Kompilieren auffaellt statt still zu verschwinden.
+     */
+    fun encodeEvidence(s: app.aaps.fuse.core.controller.EvidenceStock.State): JSONObject = JSONObject()
+        .put("stockMgdl", s.stockMgdl)
+        .put("episodeId", s.episodeId)
+        .put("episodeStartTs", s.episodeStartTs)
+        .put("lastAcceptedTs", s.lastAcceptedTs)
+        .put("lastAdjusted", s.lastAdjusted)
+        .put("segmentStartTs", s.segmentStartTs)
+        .put("lastDecayTs", s.lastDecayTs)
+        .put("lastCommittedU", s.lastCommittedU)
+        .put("rebaseRequired", s.rebaseRequired)
+
+    fun decodeEvidence(o: JSONObject): app.aaps.fuse.core.controller.EvidenceStock.State {
+        val stock = o.getDouble("stockMgdl")
+        // Ein negativer oder unendlicher Bestand ist kein Zustand, den dieser
+        // Kern je schreibt - also Korruption.
+        require(stock.isFinite() && stock >= 0.0) { "invalid evidence stock $stock" }
+        return app.aaps.fuse.core.controller.EvidenceStock.State(
+            stockMgdl = stock,
+            episodeId = requireTs("evidence.episodeId", o.getLong("episodeId")),
+            episodeStartTs = requireTs("evidence.episodeStartTs", o.getLong("episodeStartTs")),
+            lastAcceptedTs = requireTs("evidence.lastAcceptedTs", o.getLong("lastAcceptedTs")),
+            lastAdjusted = o.getDouble("lastAdjusted").also { require(it.isFinite()) { "lastAdjusted $it" } },
+            segmentStartTs = requireTs("evidence.segmentStartTs", o.getLong("segmentStartTs")),
+            lastDecayTs = requireTs("evidence.lastDecayTs", o.getLong("lastDecayTs")),
+            lastCommittedU = requireAmount("evidence.lastCommittedU", o.getDouble("lastCommittedU")),
+            rebaseRequired = o.getBoolean("rebaseRequired"),
+        )
+    }
 
     fun decodeEpisodes(o: JSONObject, schemaVersion: Int = VERSION): EpisodeBudgets {
         if (schemaVersion >= RECONCILIATION_VERSION)
@@ -400,6 +462,13 @@ object LedgerCodec {
         // Altdatei: nicht widerrufen. Der zustandslose Teil der Regel
         // (Preference auf 0 = zurueckgenommen) traegt den Fall trotzdem.
         e.evidenceRevoked = o.optBoolean("evidenceRevoked", false)
+        // AB v4 PFLICHT. Fehlt das Feld in einer v4-Datei, ist das KORRUPTION
+        // und keine faellige Migration - der Wurf macht die Generation
+        // ungueltig, statt einen Leerbestand zu erfinden.
+        if (schemaVersion >= EVIDENCE_VERSION) {
+            require(o.has("evidenceState")) { "v$schemaVersion episodes without evidenceState" }
+            e.evidenceState = decodeEvidence(o.getJSONObject("evidenceState"))
+        }
         e.primeArmedTs = requireTs("primeArmedTs", o.getLong("primeArmedTs"))
         e.onsetSpentU = requireAmount("onsetSpentU", o.getDouble("onsetSpentU"))
         e.onsetQuietMin = o.getInt("onsetQuietMin").also { require(it >= 0) { "negative onsetQuietMin $it" } }

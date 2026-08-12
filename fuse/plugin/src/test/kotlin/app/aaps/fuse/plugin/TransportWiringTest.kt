@@ -234,11 +234,12 @@ class TransportWiringTest : TestBaseWithProfile() {
         neuerRunner(FuseLedgerAdapter())
     }
 
-    private fun neuerRunner(l: FuseLedgerAdapter) {
+    private fun neuerRunner(l: FuseLedgerAdapter, evidenz: EvidenceStock.Config = EvidenceStock.Config()) {
         ledger = l
         runner = FuseCycleRunner(
             iobCobCalculator, profileFunction, activePlugin, constraintsChecker, commandQueue,
             preferences, persistenceLayer, processedTbrEbData, dateUtil, ledger, "test-epoch", { markerPress },
+            evidenceConfig = evidenz,
             predict = { input ->
                 predictReject
                     ?.let { PredictorOutcome.Rejected(it, "erzwungen") }
@@ -1886,5 +1887,43 @@ class TransportWiringTest : TestBaseWithProfile() {
 
         assertFalse(l.episodes.evidenceRevoked, "abgelaufen ist nicht zurueckgenommen")
         assertFalse(o.evidenceCreditRevoked)
+    }
+    /**
+     * EIN DECKEL, DREI VERBRAUCHER - der Durchstich (Toni 12.08.).
+     *
+     * `EvidenceStock.Config()` wurde an drei Stellen frisch erzeugt: Markertor,
+     * Kern und Export. Solange die Defaults gelten, faellt das nie auf. Genau
+     * deshalb prueft dieser Test mit einem Wert, den kein Default hat: sieht
+     * irgendwo 360 statt 17, ist die Instanz nicht durchgereicht.
+     */
+    @Test
+    fun `ein abweichender Episodendeckel gilt an Tor und Export`(@TempDir dir: File) {
+        tailGuard = false
+        flach = 62.0
+        steigungProMin = 0.0
+        markerAuthorized = true
+
+        val l = FuseLedgerAdapter().also { it.loadOnce(dir.also(File::mkdirs), "test-epoch", start) }
+        neuerRunner(l, EvidenceStock.Config(maxEpisodeMin = 17))
+
+        markerAt = start + 2 * 60_000L
+        clock = start
+        val o = (1..8).map { cycle() }.last()
+
+        // Der EXPORT-Weg: der Deckel des Zyklus, nicht der Default.
+        assertEquals(17, o.evidenceEpisodeCapMin, "der Export bekaeme sonst 360")
+        val anker = l.episodes.evidenceEpisodeId
+        assertTrue(anker > 0L)
+
+        // Der TOR-Weg: 20 Minuten spaeter ist die Episode nach DIESEM Deckel
+        // abgelaufen, und ein neuer Druck eroeffnet eine neue. Mit 360 waere
+        // sie noch dieselbe.
+        clock += 20 * 60_000L
+        markerAt = clock + 60_000L
+        repeat(3) { cycle() }
+        assertTrue(
+            l.episodes.evidenceEpisodeId != anker,
+            "das Markertor rechnet noch mit dem Default-Deckel",
+        )
     }
 }

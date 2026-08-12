@@ -502,18 +502,52 @@ class LedgerCodecTest {
     /** Neue Dateien tragen Version 2; Version 1 (Bestand) bleibt ladbar;
      *  eine UNBEKANNTE Zukunftsversion wirft weiterhin (Hold statt raten). */
     @Test
-    fun `Schemaversion 3 wird geschrieben, aeltere bleiben lesbar, 4 wirft`() {
+    fun `Schemaversion 4 wird geschrieben, aeltere bleiben lesbar, 5 wirft`() {
         val o = LedgerCodec.encode(LedgerState(), EpisodeBudgets(), 0L)
-        assertEquals(3, o.getInt("v"))
+        assertEquals(4, o.getInt("v"))
 
         // Alte Versionen bleiben LESBAR. Ob ihr Inhalt uebernommen werden darf,
         // entscheidet `migrationRequired` - Lesbarkeit und Uebernehmbarkeit
         // sind seit v3 zwei verschiedene Fragen.
         LedgerCodec.decode(JSONObject(o.toString()).put("v", 1))
         LedgerCodec.decode(JSONObject(o.toString()).put("v", 2))
+        LedgerCodec.decode(JSONObject(o.toString()).put("v", 3))
         assertThrows(IllegalArgumentException::class.java) {
-            LedgerCodec.decode(JSONObject(o.toString()).put("v", 4))
+            LedgerCodec.decode(JSONObject(o.toString()).put("v", 5))
         }
+    }
+
+    /**
+     * EINE v4-DATEI OHNE EVIDENZBESTAND IST KORRUPTION, keine zweite
+     * Migration (Toni 12.08.).
+     *
+     * Der Unterschied ist der ganze Zweck der eigenen Version: bei v3 heisst
+     * ein fehlendes Feld "diese Datei kennt den Bestand noch nicht" und loest
+     * eine Migration aus, die ihn auf null setzt. Bei v4 heisst es "hier ist
+     * etwas kaputt" - dann darf nicht noch einmal migriert und schon gar
+     * nicht ein Leerbestand erfunden werden.
+     */
+    @Test
+    fun `eine v4-Generation ohne Evidenzbestand wirft`() {
+        val o = LedgerCodec.encode(LedgerState(), EpisodeBudgets(), 0L)
+        o.getJSONObject("episodes").remove("evidenceState")
+        assertThrows(IllegalArgumentException::class.java) { LedgerCodec.decode(JSONObject(o.toString())) }
+    }
+
+    /** Und der Bestand geht verlustfrei durch die Persistenz - sonst waere er
+     *  nach jedem Neustart 0, und dieselbe bezahlte Stoerung wuerde erneut
+     *  finanziert. */
+    @Test
+    fun `der Evidenzbestand ueberlebt den Rundlauf`() {
+        val e = EpisodeBudgets()
+        e.evidenceState = app.aaps.fuse.core.controller.EvidenceStock.State(
+            stockMgdl = 12.5, episodeId = 1_786_000_000_000L, episodeStartTs = 1_786_000_000_000L,
+            lastAcceptedTs = 1_786_000_060_000L, lastAdjusted = 143.25,
+            segmentStartTs = 1_785_999_000_000L, lastDecayTs = 1_786_000_060_000L,
+            lastCommittedU = 0.85, rebaseRequired = true,
+        )
+        val zurueck = LedgerCodec.decodeEpisodes(LedgerCodec.encodeEpisodes(e))
+        assertEquals(e.evidenceState, zurueck.evidenceState)
     }
 
     /**
@@ -659,9 +693,16 @@ class LedgerCodecTest {
             "dieselbe Generation als v2 gilt als migrationsbeduerftig"
         }
 
+        // SEIT v4 GILT DAS AUCH FUER DIE LEERE ALTGENERATION, und das ist eine
+        // bewusste Verschaerfung: bei `lastPositiveFactTs` haengt die Frage an
+        // OFFENEN ZEILEN - gibt es keine, ist nichts zu verlieren. Der
+        // Evidenzbestand gehoert dagegen zur EPISODE, nicht zur Haftung. Eine
+        // Datei ohne ihn kann auch bei leerem Ledger nicht sagen, ob er 0 ist
+        // oder unbekannt - und diese Unterscheidung entscheidet, ob nach einem
+        // Neustart Kredit fliessen darf.
         val leerAlt = JSONObject(LedgerCodec.encode(LedgerState(), EpisodeBudgets(), 0L).toString()).put("v", 2)
-        assertNull(LedgerCodec.decode(leerAlt).migrationRequired) {
-            "eine LEERE Altgeneration hat nichts zu verlieren und migriert still"
+        assertNotNull(LedgerCodec.decode(leerAlt).migrationRequired) {
+            "auch eine leere Altgeneration kennt den Evidenzbestand nicht"
         }
     }
 
@@ -807,5 +848,52 @@ class LedgerCodecTest {
         // wirklich nie geschrieben worden.
         val alsV1 = JSONObject(alt.toString()).put("v", 1)
         assertTrue(LedgerCodec.decode(alsV1).retiredBoundIds.isEmpty())
+    }
+    /**
+     * DIE v3-MIGRATION IST BEWEISBAR (Toni 12.08., P0 vor Stufe 3).
+     *
+     * Sie darf genau eines tun: den Evidenzbestand auf null setzen. Anker,
+     * kumulative Bezahlung und die uebrige Haftung muessen unangetastet
+     * durchkommen - sonst waere die Migration selbst eine stille
+     * Zustandsaenderung an einer Buchhaltung.
+     */
+    @Test
+    fun `die Migration von v3 nullt nur den Bestand und laesst die Episode`() {
+        val e = EpisodeBudgets()
+        e.evidenceEpisodeId = 1_786_000_000_000L
+        e.lastConsumedMarkerTs = 1_786_000_000_000L
+        e.evidenceCommittedU = 2.35
+        e.evidenceRevoked = true
+        e.primeSpentU = 1.10
+        val v4 = LedgerCodec.encode(LedgerState(), e, 7L)
+
+        // Eine v3-Datei: dieselbe Generation OHNE das Evidenzfeld.
+        val v3 = JSONObject(v4.toString()).put("v", 3)
+        v3.getJSONObject("episodes").remove("evidenceState")
+
+        val gelesen = LedgerCodec.decode(v3)
+        assertNotNull(gelesen.migrationRequired) { "v3 ohne Bestand muss migrieren" }
+
+        // Was der Migrationsweg uebernimmt: die Episodenbudgets unveraendert,
+        // der Bestand als frischer Leerzustand.
+        assertEquals(1_786_000_000_000L, gelesen.episodes.evidenceEpisodeId)
+        assertEquals(1_786_000_000_000L, gelesen.episodes.lastConsumedMarkerTs)
+        assertEquals(2.35, gelesen.episodes.evidenceCommittedU, 1e-9)
+        assertTrue(gelesen.episodes.evidenceRevoked)
+        assertEquals(1.10, gelesen.episodes.primeSpentU, 1e-9)
+        assertEquals(app.aaps.fuse.core.controller.EvidenceStock.State(), gelesen.episodes.evidenceState)
+
+        // Und die neu geschriebene Generation ist uebernehmbar.
+        val neu = LedgerCodec.encode(gelesen.state, gelesen.episodes, gelesen.revision)
+        assertNull(LedgerCodec.decode(JSONObject(neu.toString())).migrationRequired)
+    }
+
+    /** Ein negativer Bestand ist kein Zustand, den dieser Kern je schreibt -
+     *  also Korruption, nicht ein zu korrigierender Wert. */
+    @Test
+    fun `ein negativer Evidenzbestand wirft`() {
+        val o = LedgerCodec.encode(LedgerState(), EpisodeBudgets(), 0L)
+        o.getJSONObject("episodes").getJSONObject("evidenceState").put("stockMgdl", -1.0)
+        assertThrows(IllegalArgumentException::class.java) { LedgerCodec.decode(JSONObject(o.toString())) }
     }
 }

@@ -174,9 +174,12 @@ object FuseStateJson {
             // Die Evidenz-Episode: Identitaet UND der Grund, falls keine
             // eroeffnet wurde. Beides, weil "0 ohne Grund" (kein Marker) etwas
             // anderes ist als "0 mit Grund" (Druck nicht durabel).
-            .put("evidenceEpisodeId", outcome.evidenceEpisodeId)
+            // DER GRUND STEHT AUSSERHALB DES BLOCKS, und das ist kein Versehen:
+            // er erklaert, warum es KEINE Episode gibt - im Block waere er
+            // unerreichbar, weil der dann `null` ist. Id und Widerruf standen
+            // dagegen DOPPELT (Toni 12.08.) und sind hier entfallen: ein Block,
+            // eine Wahrheit.
             .put("evidenceEpisodeDenial", outcome.evidenceEpisodeDenial ?: JSONObject.NULL)
-            .put("evidenceCreditRevoked", outcome.evidenceCreditRevoked)
             // ---- Die Evidenz-Episode als EIN Block ----------------------
             //
             // Vorher standen Menge, Alter und Deckel einzeln nebeneinander -

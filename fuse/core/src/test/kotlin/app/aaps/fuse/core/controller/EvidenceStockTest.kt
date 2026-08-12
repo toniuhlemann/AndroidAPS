@@ -16,6 +16,14 @@ class EvidenceStockTest {
     private val T0 = 1_700_000_000_000L
     private val ISF = 90.0
 
+    /** EINE Konfiguration fuer alle Faelle - dieselbe, die auch der Zyklus
+     *  bekaeme. Seit dem 12.08. hat `step` keinen Default mehr, damit ein
+     *  Replay nicht versehentlich gegen eine andere rechnet. */
+    private val CFG = EvidenceStock.Config()
+
+    private fun schritt(prev: EvidenceStock.State, input: EvidenceStock.Input) =
+        EvidenceStock.step(prev, input, CFG)
+
     private fun eingabe(
         minute: Int,
         adjusted: Double,
@@ -26,6 +34,7 @@ class EvidenceStockTest {
         episodeId: Long = 1L,
         segmentStartTs: Long = T0,
         persistedStateKnown: Boolean = true,
+        creditRevoked: Boolean = false,
     ) = EvidenceStock.Input(
         nowMs = T0 + minute * 60_000L,
         sourceTs = T0 + minute * 60_000L,
@@ -38,13 +47,14 @@ class EvidenceStockTest {
         episodeCommittedU = committedU,
         isfMgdlPerU = ISF,
         persistedStateKnown = persistedStateKnown,
+        creditRevoked = creditRevoked,
     )
 
     /** Erster Zyklus: es gibt keinen Bezugspunkt, also keinen Zufluss. Der
      *  Bestand entsteht frueestens beim ZWEITEN Messpunkt. */
     @Test
     fun `der erste Punkt liefert nur den Bezug, keinen Zufluss`() {
-        val r = EvidenceStock.step(EvidenceStock.State(), eingabe(0, 100.0))
+        val r = schritt(EvidenceStock.State(), eingabe(0, 100.0))
         assertEquals(0.0, r.state.stockMgdl, 1e-9)
         assertEquals(EvidenceStock.NoInflow.SEGMENT_BREAK, r.noInflow)
         assertEquals(T0, r.state.lastAcceptedTs)
@@ -54,8 +64,8 @@ class EvidenceStockTest {
     /** Der Zuwachs der bereinigten Reihe IST die Stoerung - Tonis Herleitung. */
     @Test
     fun `der Zuwachs der bereinigten Reihe wird zum Bestand`() {
-        var s = EvidenceStock.step(EvidenceStock.State(), eingabe(0, 100.0)).state
-        val r = EvidenceStock.step(s, eingabe(1, 103.0))
+        var s = schritt(EvidenceStock.State(), eingabe(0, 100.0)).state
+        val r = schritt(s, eingabe(1, 103.0))
         assertEquals(3.0, r.inflowMgdl, 1e-9)
         assertTrue(r.state.stockMgdl > 0.0)
     }
@@ -69,12 +79,12 @@ class EvidenceStockTest {
      */
     @Test
     fun `derselbe Messpunkt fliesst nur einmal zu`() {
-        var s = EvidenceStock.step(EvidenceStock.State(), eingabe(0, 100.0)).state
-        s = EvidenceStock.step(s, eingabe(1, 103.0)).state
+        var s = schritt(EvidenceStock.State(), eingabe(0, 100.0)).state
+        s = schritt(s, eingabe(1, 103.0)).state
         val vorher = s.stockMgdl
         // Gleicher sourceTs, gleicher Wert - ein zweiter Reglerzyklus auf
         // demselben CGM-Punkt.
-        val r = EvidenceStock.step(s, eingabe(1, 103.0))
+        val r = schritt(s, eingabe(1, 103.0))
         assertEquals(0.0, r.inflowMgdl, 1e-9)
         assertEquals(EvidenceStock.NoInflow.NO_NEW_SAMPLE, r.noInflow)
         assertTrue(r.state.stockMgdl <= vorher + 1e-9, "der Bestand darf nicht wachsen")
@@ -84,10 +94,10 @@ class EvidenceStockTest {
      *  Treatment sichtbar wird (gemessene Latenz p90 56 s, max 854 s). */
     @Test
     fun `zugesagtes Insulin verbraucht den Bestand sofort`() {
-        var s = EvidenceStock.step(EvidenceStock.State(), eingabe(0, 100.0)).state
-        s = EvidenceStock.step(s, eingabe(1, 130.0)).state          // +30 mg/dl
+        var s = schritt(EvidenceStock.State(), eingabe(0, 100.0)).state
+        s = schritt(s, eingabe(1, 130.0)).state          // +30 mg/dl
         val vorher = s.stockMgdl
-        val r = EvidenceStock.step(s, eingabe(2, 130.0, committedU = 0.20))
+        val r = schritt(s, eingabe(2, 130.0, committedU = 0.20))
         // 0,20 U x 90 = 18 mg/dl Abzug
         assertTrue(r.state.stockMgdl < vorher - 15.0, "18 mg/dl muessen abgezogen sein: ${r.state.stockMgdl}")
     }
@@ -96,18 +106,18 @@ class EvidenceStockTest {
      *  verbraucht und koennte wiederholt lizenzieren. */
     @Test
     fun `ohne Abgabe bleibt der Bestand bestehen`() {
-        var s = EvidenceStock.step(EvidenceStock.State(), eingabe(0, 100.0)).state
-        s = EvidenceStock.step(s, eingabe(1, 130.0)).state
-        val r = EvidenceStock.step(s, eingabe(2, 130.0))
+        var s = schritt(EvidenceStock.State(), eingabe(0, 100.0)).state
+        s = schritt(s, eingabe(1, 130.0)).state
+        val r = schritt(s, eingabe(2, 130.0))
         assertTrue(r.state.stockMgdl > 0.0)
     }
 
     /** Ein gemessenes Tief widerruft SOFORT und VOLLSTAENDIG. */
     @Test
     fun `ein gemessenes Tief loescht den Bestand`() {
-        var s = EvidenceStock.step(EvidenceStock.State(), eingabe(0, 100.0)).state
-        s = EvidenceStock.step(s, eingabe(1, 140.0)).state
-        val r = EvidenceStock.step(s, eingabe(2, 140.0, measuredLow = true))
+        var s = schritt(EvidenceStock.State(), eingabe(0, 100.0)).state
+        s = schritt(s, eingabe(1, 140.0)).state
+        val r = schritt(s, eingabe(2, 140.0, measuredLow = true))
         assertEquals(0.0, r.state.stockMgdl, 1e-9)
         assertEquals(0.0, r.creditMgdlPerMin, 1e-9)
     }
@@ -116,17 +126,17 @@ class EvidenceStockTest {
      *  naechsten Minuten, und ohne gesundes Signal traegt sie nicht. */
     @Test
     fun `ein ungesundes Signal loescht den Bestand`() {
-        var s = EvidenceStock.step(EvidenceStock.State(), eingabe(0, 100.0)).state
-        s = EvidenceStock.step(s, eingabe(1, 140.0)).state
-        assertEquals(0.0, EvidenceStock.step(s, eingabe(2, 140.0, healthReady = false)).state.stockMgdl, 1e-9)
+        var s = schritt(EvidenceStock.State(), eingabe(0, 100.0)).state
+        s = schritt(s, eingabe(1, 140.0)).state
+        assertEquals(0.0, schritt(s, eingabe(2, 140.0, healthReady = false)).state.stockMgdl, 1e-9)
     }
 
     /** Ein Segmentbruch macht die Differenz bedeutungslos - `cumulativeBgi`
      *  startet je Segment neu bei 0. Dann wird ausgesetzt, nicht geschaetzt. */
     @Test
     fun `ueber einen Segmentbruch fliesst nichts zu`() {
-        var s = EvidenceStock.step(EvidenceStock.State(), eingabe(0, 100.0)).state
-        val r = EvidenceStock.step(s, eingabe(1, 900.0, segmentStartTs = T0 + 60_000L))
+        var s = schritt(EvidenceStock.State(), eingabe(0, 100.0)).state
+        val r = schritt(s, eingabe(1, 900.0, segmentStartTs = T0 + 60_000L))
         assertEquals(0.0, r.inflowMgdl, 1e-9)
         assertEquals(EvidenceStock.NoInflow.SEGMENT_BREAK, r.noInflow)
     }
@@ -135,8 +145,8 @@ class EvidenceStockTest {
      *  Bestand, auch wenn die Reihe steigt. */
     @Test
     fun `ohne positiven Antrieb entsteht kein Bestand`() {
-        var s = EvidenceStock.step(EvidenceStock.State(), eingabe(0, 100.0)).state
-        val r = EvidenceStock.step(s, eingabe(1, 130.0, driveLower = -0.2))
+        var s = schritt(EvidenceStock.State(), eingabe(0, 100.0)).state
+        val r = schritt(s, eingabe(1, 130.0, driveLower = -0.2))
         assertEquals(0.0, r.inflowMgdl, 1e-9)
         assertEquals(EvidenceStock.NoInflow.DRIVE_NOT_POSITIVE, r.noInflow)
     }
@@ -150,10 +160,10 @@ class EvidenceStockTest {
      */
     @Test
     fun `ein Rueckgang der Reihe raeumt den Bestand ueberproportional ab`() {
-        var s = EvidenceStock.step(EvidenceStock.State(), eingabe(0, 100.0)).state
-        s = EvidenceStock.step(s, eingabe(1, 120.0)).state
+        var s = schritt(EvidenceStock.State(), eingabe(0, 100.0)).state
+        s = schritt(s, eingabe(1, 120.0)).state
         val nachAnstieg = s.stockMgdl
-        val r = EvidenceStock.step(s, eingabe(2, 115.0))     // -5
+        val r = schritt(s, eingabe(2, 115.0))     // -5
         assertEquals(EvidenceStock.NoInflow.NO_RISE, r.noInflow)
         assertTrue(
             r.state.stockMgdl < nachAnstieg - 9.0,
@@ -166,9 +176,9 @@ class EvidenceStockTest {
      *  schlechte Infusionsstelle sehen alle wie Stoerung aus. */
     @Test
     fun `nach dem Maximalende gibt es keinen Bestand mehr`() {
-        var s = EvidenceStock.step(EvidenceStock.State(), eingabe(0, 100.0)).state
-        s = EvidenceStock.step(s, eingabe(1, 140.0)).state
-        val r = EvidenceStock.step(s, eingabe(EvidenceStock.Config().maxEpisodeMin + 1, 200.0))
+        var s = schritt(EvidenceStock.State(), eingabe(0, 100.0)).state
+        s = schritt(s, eingabe(1, 140.0)).state
+        val r = schritt(s, eingabe(EvidenceStock.Config().maxEpisodeMin + 1, 200.0))
         assertEquals(0.0, r.state.stockMgdl, 1e-9)
         assertEquals(EvidenceStock.NoInflow.EPISODE_EXPIRED, r.noInflow)
     }
@@ -177,7 +187,7 @@ class EvidenceStockTest {
      *  nicht an jede steigende Kurve. */
     @Test
     fun `ohne Episode entsteht kein Bestand`() {
-        val r = EvidenceStock.step(EvidenceStock.State(), eingabe(0, 100.0, episodeId = 0L))
+        val r = schritt(EvidenceStock.State(), eingabe(0, 100.0, episodeId = 0L))
         assertEquals(EvidenceStock.NoInflow.NO_EPISODE, r.noInflow)
         assertEquals(0.0, r.state.stockMgdl, 1e-9)
     }
@@ -190,8 +200,8 @@ class EvidenceStockTest {
      */
     @Test
     fun `der Kredit ist der Bestand ueber ein Fenster, nicht der Bestand`() {
-        var s = EvidenceStock.step(EvidenceStock.State(), eingabe(0, 100.0)).state
-        val r = EvidenceStock.step(s, eingabe(1, 130.0))
+        var s = schritt(EvidenceStock.State(), eingabe(0, 100.0)).state
+        val r = schritt(s, eingabe(1, 130.0))
         assertTrue(r.creditMgdlPerMin > 0.0)
         assertTrue(
             r.creditMgdlPerMin < r.state.stockMgdl / 2.0,
@@ -203,11 +213,11 @@ class EvidenceStockTest {
      *  Nachwirkung", kuerzer als der 10-min-Nachlauf von `r`. */
     @Test
     fun `ohne neue Evidenz verfaellt der Bestand`() {
-        var s = EvidenceStock.step(EvidenceStock.State(), eingabe(0, 100.0)).state
-        s = EvidenceStock.step(s, eingabe(1, 140.0)).state
+        var s = schritt(EvidenceStock.State(), eingabe(0, 100.0)).state
+        s = schritt(s, eingabe(1, 140.0)).state
         val vorher = s.stockMgdl
         // Flache Reihe ueber den halben Verfallszeitraum.
-        s = EvidenceStock.step(s, eingabe(1 + EvidenceStock.Config().decayMin / 2, 140.0)).state
+        s = schritt(s, eingabe(1 + EvidenceStock.Config().decayMin / 2, 140.0)).state
         assertTrue(s.stockMgdl < vorher * 0.75, "$vorher -> ${s.stockMgdl}")
     }
 
@@ -223,12 +233,12 @@ class EvidenceStockTest {
      */
     @Test
     fun `ein unveraenderter Abgabestand wird nicht erneut abgezogen`() {
-        var s = EvidenceStock.step(EvidenceStock.State(), eingabe(0, 100.0)).state
-        s = EvidenceStock.step(s, eingabe(1, 160.0)).state
-        s = EvidenceStock.step(s, eingabe(2, 160.0, committedU = 0.20)).state
+        var s = schritt(EvidenceStock.State(), eingabe(0, 100.0)).state
+        s = schritt(s, eingabe(1, 160.0)).state
+        s = schritt(s, eingabe(2, 160.0, committedU = 0.20)).state
         val nachAbzug = s.stockMgdl
         // Derselbe kumulative Stand, drei Zyklen lang.
-        repeat(3) { i -> s = EvidenceStock.step(s, eingabe(3 + i, 160.0, committedU = 0.20)).state }
+        repeat(3) { i -> s = schritt(s, eingabe(3 + i, 160.0, committedU = 0.20)).state }
         // Nur Verfall darf gewirkt haben, kein weiterer Abzug von 18 mg/dl.
         assertTrue(
             s.stockMgdl > nachAbzug - 18.0,
@@ -240,11 +250,11 @@ class EvidenceStockTest {
      *  Zusicherung oben nur "es wird nie abgezogen". */
     @Test
     fun `ein wachsender Abgabestand zieht die Differenz ab`() {
-        var s = EvidenceStock.step(EvidenceStock.State(), eingabe(0, 100.0)).state
-        s = EvidenceStock.step(s, eingabe(1, 200.0)).state
-        s = EvidenceStock.step(s, eingabe(2, 200.0, committedU = 0.20)).state
+        var s = schritt(EvidenceStock.State(), eingabe(0, 100.0)).state
+        s = schritt(s, eingabe(1, 200.0)).state
+        s = schritt(s, eingabe(2, 200.0, committedU = 0.20)).state
         val vorher = s.stockMgdl
-        val r = EvidenceStock.step(s, eingabe(3, 200.0, committedU = 0.40))
+        val r = schritt(s, eingabe(3, 200.0, committedU = 0.40))
         assertTrue(
             r.state.stockMgdl < vorher - 15.0,
             "die zweiten 0,20 U muessen 18 mg/dl kosten: $vorher -> ${r.state.stockMgdl}",
@@ -262,18 +272,18 @@ class EvidenceStockTest {
      */
     @Test
     fun `eine zweite Welle startet den Episodendeckel nicht neu`() {
-        var s = EvidenceStock.step(EvidenceStock.State(), eingabe(0, 100.0)).state
-        s = EvidenceStock.step(s, eingabe(1, 120.0)).state
+        var s = schritt(EvidenceStock.State(), eingabe(0, 100.0)).state
+        s = schritt(s, eingabe(1, 120.0)).state
         // Tal: dieselbe Episode, aber lange nichts.
-        s = EvidenceStock.step(s, eingabe(100, 120.0)).state
+        s = schritt(s, eingabe(100, 120.0)).state
         // Zweite Welle, dieselbe episodeId - kurz VOR dem Deckel. Sie wird
         // wieder ACTIVE, ohne dass Uhr oder Budget neu starten.
         val deckel = EvidenceStock.Config().maxEpisodeMin
-        val vorDeckel = EvidenceStock.step(s, eingabe(deckel - 10, 140.0))
+        val vorDeckel = schritt(s, eingabe(deckel - 10, 140.0))
         assertTrue(vorDeckel.noInflow != EvidenceStock.NoInflow.EPISODE_EXPIRED)
         assertEquals(EvidenceStock.Phase.ACTIVE, vorDeckel.phase, "neue Evidenz weckt dieselbe Episode")
         // Und kurz danach ist Schluss, gerechnet ab MINUTE 0, nicht ab 100.
-        val nachDeckel = EvidenceStock.step(vorDeckel.state, eingabe(deckel + 5, 160.0))
+        val nachDeckel = schritt(vorDeckel.state, eingabe(deckel + 5, 160.0))
         assertEquals(EvidenceStock.NoInflow.EPISODE_EXPIRED, nachDeckel.noInflow)
         assertEquals(EvidenceStock.Phase.EXPIRED, nachDeckel.phase)
     }
@@ -282,10 +292,10 @@ class EvidenceStockTest {
      *  Abgabestand. */
     @Test
     fun `eine neue Episode erbt nichts`() {
-        var s = EvidenceStock.step(EvidenceStock.State(), eingabe(0, 100.0)).state
-        s = EvidenceStock.step(s, eingabe(1, 200.0)).state
+        var s = schritt(EvidenceStock.State(), eingabe(0, 100.0)).state
+        s = schritt(s, eingabe(1, 200.0)).state
         assertTrue(s.stockMgdl > 0.0)
-        val r = EvidenceStock.step(s, eingabe(2, 200.0, episodeId = 2L))
+        val r = schritt(s, eingabe(2, 200.0, episodeId = 2L))
         assertEquals(0.0, r.state.stockMgdl, 1e-9)
         assertEquals(2L, r.state.episodeId)
     }
@@ -299,11 +309,11 @@ class EvidenceStockTest {
      */
     @Test
     fun `ein Segmentbruch friert den Bestand nicht ein`() {
-        var s = EvidenceStock.step(EvidenceStock.State(), eingabe(0, 100.0)).state
-        s = EvidenceStock.step(s, eingabe(1, 200.0)).state
+        var s = schritt(EvidenceStock.State(), eingabe(0, 100.0)).state
+        s = schritt(s, eingabe(1, 200.0)).state
         val vorLuecke = s.stockMgdl
         // 6 Minuten Luecke, danach neues Segment.
-        val r = EvidenceStock.step(s, eingabe(7, 300.0, segmentStartTs = T0 + 7 * 60_000L))
+        val r = schritt(s, eingabe(7, 300.0, segmentStartTs = T0 + 7 * 60_000L))
         assertEquals(EvidenceStock.NoInflow.SEGMENT_BREAK, r.noInflow)
         assertEquals(0.0, r.inflowMgdl, 1e-9, "ueber die Luecke keine Differenz")
         assertEquals(0.0, r.creditMgdlPerMin, 1e-9, "Ausgabe waehrend des Bruchs gesperrt")
@@ -324,9 +334,9 @@ class EvidenceStockTest {
      */
     @Test
     fun `ein unklarer Restart-Zustand gibt keinen Kredit`() {
-        var s = EvidenceStock.step(EvidenceStock.State(), eingabe(0, 100.0)).state
-        s = EvidenceStock.step(s, eingabe(1, 200.0)).state
-        val r = EvidenceStock.step(s, eingabe(2, 220.0, persistedStateKnown = false))
+        var s = schritt(EvidenceStock.State(), eingabe(0, 100.0)).state
+        s = schritt(s, eingabe(1, 200.0)).state
+        val r = schritt(s, eingabe(2, 220.0, persistedStateKnown = false))
         assertEquals(EvidenceStock.NoInflow.EVIDENCE_STATE_UNKNOWN, r.noInflow)
         assertEquals(0.0, r.creditMgdlPerMin, 1e-9)
         assertEquals(0.0, r.state.stockMgdl, 1e-9)
@@ -338,9 +348,9 @@ class EvidenceStockTest {
      *  demselben Stand darf nichts veraendern ausser dem Verfall. */
     @Test
     fun `derselbe Abgabestand ist idempotent`() {
-        var s = EvidenceStock.step(EvidenceStock.State(), eingabe(0, 100.0)).state
-        s = EvidenceStock.step(s, eingabe(1, 200.0, committedU = 0.20)).state
-        val r = EvidenceStock.step(s, eingabe(1, 200.0, committedU = 0.20))
+        var s = schritt(EvidenceStock.State(), eingabe(0, 100.0)).state
+        s = schritt(s, eingabe(1, 200.0, committedU = 0.20)).state
+        val r = schritt(s, eingabe(1, 200.0, committedU = 0.20))
         assertTrue(r.noInflow != EvidenceStock.NoInflow.EVIDENCE_STATE_UNKNOWN)
         assertEquals(s.stockMgdl, r.state.stockMgdl, 1e-9)
     }
@@ -355,9 +365,9 @@ class EvidenceStockTest {
      */
     @Test
     fun `ein kleinerer Abgabestand sperrt den Kredit`() {
-        var s = EvidenceStock.step(EvidenceStock.State(), eingabe(0, 100.0)).state
-        s = EvidenceStock.step(s, eingabe(1, 200.0, committedU = 0.40)).state
-        val r = EvidenceStock.step(s, eingabe(2, 220.0, committedU = 0.20))
+        var s = schritt(EvidenceStock.State(), eingabe(0, 100.0)).state
+        s = schritt(s, eingabe(1, 200.0, committedU = 0.40)).state
+        val r = schritt(s, eingabe(2, 220.0, committedU = 0.20))
         assertEquals(EvidenceStock.NoInflow.EVIDENCE_STATE_UNKNOWN, r.noInflow)
         assertEquals(0.0, r.creditMgdlPerMin, 1e-9)
         assertEquals(0.0, r.state.stockMgdl, 1e-9)
@@ -367,9 +377,9 @@ class EvidenceStockTest {
      *  kleinerer Wert normal und kein Fehler. */
     @Test
     fun `eine neue Episode startet den Abgabezaehler neu`() {
-        var s = EvidenceStock.step(EvidenceStock.State(), eingabe(0, 100.0)).state
-        s = EvidenceStock.step(s, eingabe(1, 200.0, committedU = 0.40)).state
-        val r = EvidenceStock.step(s, eingabe(2, 200.0, committedU = 0.05, episodeId = 2L))
+        var s = schritt(EvidenceStock.State(), eingabe(0, 100.0)).state
+        s = schritt(s, eingabe(1, 200.0, committedU = 0.40)).state
+        val r = schritt(s, eingabe(2, 200.0, committedU = 0.05, episodeId = 2L))
         assertTrue(r.noInflow != EvidenceStock.NoInflow.EVIDENCE_STATE_UNKNOWN)
         assertEquals(0.05, r.state.lastCommittedU, 1e-9)
     }
@@ -383,9 +393,9 @@ class EvidenceStockTest {
      */
     @Test
     fun `eine rueckwaerts springende Episode sperrt den Kredit`() {
-        var s = EvidenceStock.step(EvidenceStock.State(), eingabe(0, 100.0, episodeId = 5L)).state
-        s = EvidenceStock.step(s, eingabe(1, 200.0, episodeId = 5L)).state
-        val r = EvidenceStock.step(s, eingabe(2, 220.0, episodeId = 3L))
+        var s = schritt(EvidenceStock.State(), eingabe(0, 100.0, episodeId = 5L)).state
+        s = schritt(s, eingabe(1, 200.0, episodeId = 5L)).state
+        val r = schritt(s, eingabe(2, 220.0, episodeId = 3L))
         assertEquals(EvidenceStock.NoInflow.EVIDENCE_STATE_UNKNOWN, r.noInflow)
         assertEquals(0.0, r.creditMgdlPerMin, 1e-9)
     }
@@ -402,13 +412,13 @@ class EvidenceStockTest {
      */
     @Test
     fun `ohne Zufluss faellt die Episode von selbst auf DORMANT`() {
-        var r = EvidenceStock.step(EvidenceStock.State(), eingabe(0, 100.0))
-        r = EvidenceStock.step(r.state, eingabe(1, 130.0))
+        var r = schritt(EvidenceStock.State(), eingabe(0, 100.0))
+        r = schritt(r.state, eingabe(1, 130.0))
         assertEquals(EvidenceStock.Phase.ACTIVE, r.phase, "mit Zufluss aktiv")
 
         // Flach weiter - kein Anstieg mehr, nur Verfall.
         var t = 2
-        repeat(30) { r = EvidenceStock.step(r.state, eingabe(t++, 130.0)) }
+        repeat(30) { r = schritt(r.state, eingabe(t++, 130.0)) }
 
         assertEquals(EvidenceStock.Phase.DORMANT, r.phase)
         assertEquals(0.0, r.creditMgdlPerMin, 1e-9, "kein Kredit ohne Bestand")
@@ -425,19 +435,19 @@ class EvidenceStockTest {
      */
     @Test
     fun `neue Evidenz nach einem Tal weckt dieselbe Episode`() {
-        var r = EvidenceStock.step(EvidenceStock.State(), eingabe(0, 100.0))
-        r = EvidenceStock.step(r.state, eingabe(1, 130.0))
+        var r = schritt(EvidenceStock.State(), eingabe(0, 100.0))
+        r = schritt(r.state, eingabe(1, 130.0))
         val start = r.state.episodeStartTs
 
         // Langes Tal, flach - bis der Verfall den Bestand unter die Schwelle
         // getragen hat. 20 Minuten reichen dafuer NICHT (0,875^20 x 30 = 2,1
         // mg/dl); das war der erste Anlauf dieses Tests.
         var t = 2
-        repeat(32) { r = EvidenceStock.step(r.state, eingabe(t++, 130.0)) }
+        repeat(32) { r = schritt(r.state, eingabe(t++, 130.0)) }
         assertEquals(EvidenceStock.Phase.DORMANT, r.phase)
 
         // Stunde vier, neuer Anstieg.
-        r = EvidenceStock.step(r.state, eingabe(220, 145.0))
+        r = schritt(r.state, eingabe(220, 145.0))
 
         assertEquals(EvidenceStock.Phase.ACTIVE, r.phase)
         assertEquals(start, r.state.episodeStartTs, "die Uhr startet NICHT neu")
@@ -452,12 +462,12 @@ class EvidenceStockTest {
      */
     @Test
     fun `dauernder Zufluss verlaengert die Episode nicht ueber den Deckel`() {
-        var r = EvidenceStock.step(EvidenceStock.State(), eingabe(0, 100.0))
+        var r = schritt(EvidenceStock.State(), eingabe(0, 100.0))
         var bg = 100.0
         var t = 1
         val deckel = EvidenceStock.Config().maxEpisodeMin
         // Ununterbrochen steigend bis ueber den Deckel hinaus.
-        while (t <= deckel + 5) { bg += 1.0; r = EvidenceStock.step(r.state, eingabe(t, bg)); t += 5 }
+        while (t <= deckel + 5) { bg += 1.0; r = schritt(r.state, eingabe(t, bg)); t += 5 }
 
         assertEquals(EvidenceStock.Phase.EXPIRED, r.phase)
         assertEquals(0.0, r.creditMgdlPerMin, 1e-9)
@@ -466,12 +476,12 @@ class EvidenceStockTest {
     /** Und EXPIRED bleibt EXPIRED - kein Wiederaufleben durch neue Evidenz. */
     @Test
     fun `eine abgelaufene Episode lebt nicht wieder auf`() {
-        var r = EvidenceStock.step(EvidenceStock.State(), eingabe(0, 100.0))
+        var r = schritt(EvidenceStock.State(), eingabe(0, 100.0))
         val deckel = EvidenceStock.Config().maxEpisodeMin
-        r = EvidenceStock.step(r.state, eingabe(deckel + 1, 200.0))
+        r = schritt(r.state, eingabe(deckel + 1, 200.0))
         assertEquals(EvidenceStock.Phase.EXPIRED, r.phase)
 
-        r = EvidenceStock.step(r.state, eingabe(deckel + 2, 260.0))
+        r = schritt(r.state, eingabe(deckel + 2, 260.0))
         assertEquals(EvidenceStock.Phase.EXPIRED, r.phase, "auch ein steiler Anstieg weckt sie nicht")
         assertEquals(0.0, r.creditMgdlPerMin, 1e-9)
     }
@@ -486,37 +496,37 @@ class EvidenceStockTest {
      */
     @Test
     fun `ohne Episode ist die Phase NONE`() {
-        val r = EvidenceStock.step(EvidenceStock.State(), eingabe(1, 100.0, episodeId = 0L))
+        val r = schritt(EvidenceStock.State(), eingabe(1, 100.0, episodeId = 0L))
         assertEquals(EvidenceStock.Phase.NONE, r.phase)
     }
 
     @Test
     fun `ein gemessenes Tief sperrt statt einzuschlafen`() {
-        var s = EvidenceStock.step(EvidenceStock.State(), eingabe(0, 100.0)).state
-        s = EvidenceStock.step(s, eingabe(1, 140.0)).state
-        val r = EvidenceStock.step(s, eingabe(2, 140.0, measuredLow = true))
+        var s = schritt(EvidenceStock.State(), eingabe(0, 100.0)).state
+        s = schritt(s, eingabe(1, 140.0)).state
+        val r = schritt(s, eingabe(2, 140.0, measuredLow = true))
         assertEquals(EvidenceStock.Phase.SUSPENDED, r.phase)
     }
 
     @Test
     fun `ein ungesundes Signal sperrt statt einzuschlafen`() {
-        var s = EvidenceStock.step(EvidenceStock.State(), eingabe(0, 100.0)).state
-        s = EvidenceStock.step(s, eingabe(1, 140.0)).state
-        val r = EvidenceStock.step(s, eingabe(2, 140.0, healthReady = false))
+        var s = schritt(EvidenceStock.State(), eingabe(0, 100.0)).state
+        s = schritt(s, eingabe(1, 140.0)).state
+        val r = schritt(s, eingabe(2, 140.0, healthReady = false))
         assertEquals(EvidenceStock.Phase.SUSPENDED, r.phase)
     }
 
     @Test
     fun `ein Segmentbruch sperrt statt einzuschlafen`() {
-        val s = EvidenceStock.step(EvidenceStock.State(), eingabe(0, 100.0)).state
-        val r = EvidenceStock.step(s, eingabe(1, 140.0, segmentStartTs = T0 + 60_000L))
+        val s = schritt(EvidenceStock.State(), eingabe(0, 100.0)).state
+        val r = schritt(s, eingabe(1, 140.0, segmentStartTs = T0 + 60_000L))
         assertEquals(EvidenceStock.Phase.SUSPENDED, r.phase)
     }
 
     /** Unklare Buchfuehrung ist etwas anderes als eine beendete Mahlzeit. */
     @Test
     fun `unbekannte Persistenz meldet UNKNOWN`() {
-        val r = EvidenceStock.step(EvidenceStock.State(), eingabe(1, 100.0, persistedStateKnown = false))
+        val r = schritt(EvidenceStock.State(), eingabe(1, 100.0, persistedStateKnown = false))
         assertEquals(EvidenceStock.Phase.UNKNOWN, r.phase)
     }
 
@@ -524,9 +534,103 @@ class EvidenceStockTest {
      *  dass Zustand verlorenging. */
     @Test
     fun `ein sinkender Abgabestand meldet UNKNOWN`() {
-        var s = EvidenceStock.step(EvidenceStock.State(), eingabe(0, 100.0)).state
-        s = EvidenceStock.step(s, eingabe(1, 140.0, committedU = 0.30)).state
-        val r = EvidenceStock.step(s, eingabe(2, 140.0, committedU = 0.10))
+        var s = schritt(EvidenceStock.State(), eingabe(0, 100.0)).state
+        s = schritt(s, eingabe(1, 140.0, committedU = 0.30)).state
+        val r = schritt(s, eingabe(2, 140.0, committedU = 0.10))
         assertEquals(EvidenceStock.Phase.UNKNOWN, r.phase)
+    }
+    // ---- Nach einer Sperre wird NICHTS nachgeholt -------------------------
+
+    /**
+     * DER TEUERSTE FEHLER DIESES KERNS, gefunden von Toni am 12.08.
+     *
+     * Bei Tief oder Signalfehler wurde der Bestand geloescht, `lastAcceptedTs`
+     * und `lastAdjusted` blieben aber stehen. Der erste gesunde Zyklus danach
+     * haette die GANZE Differenz ueber die Sperrzeit als frischen Zufluss
+     * verbucht - also genau die Evidenz nachgeholt, die wir eben fuer
+     * ungueltig erklaert hatten. Nach einem gemessenen Tief ist das die
+     * teuerste Richtung, die es gibt.
+     */
+    @Test
+    fun `nach einem Tief holt der erste gesunde Punkt nichts nach`() {
+        var s = schritt(EvidenceStock.State(), eingabe(0, 100.0)).state
+        s = schritt(s, eingabe(1, 120.0)).state
+        // Tief - und waehrenddessen steigt die bereinigte Reihe kraeftig.
+        s = schritt(s, eingabe(2, 120.0, measuredLow = true)).state
+        assertTrue(s.rebaseRequired, "die Messbasis gilt als ungueltig")
+
+        // Erster gesunder Punkt, 60 mg/dl hoeher als vor der Sperre.
+        val basis = schritt(s, eingabe(20, 180.0))
+        assertEquals(0.0, basis.inflowMgdl, 1e-9, "kein Nachholen")
+        assertEquals(0.0, basis.creditMgdlPerMin, 1e-9)
+        assertEquals(EvidenceStock.NoInflow.REBASE_AFTER_SUSPEND, basis.noInflow)
+        assertEquals(EvidenceStock.Phase.SUSPENDED, basis.phase)
+
+        // Erst der DARAUFFOLGENDE Punkt erzeugt wieder Evidenz - und nur
+        // seinen eigenen Zuwachs.
+        val danach = schritt(basis.state, eingabe(21, 183.0))
+        assertEquals(3.0, danach.inflowMgdl, 1e-9)
+    }
+
+    /** Dasselbe fuer den Signalfehler - eine Sperre ist eine Sperre. */
+    @Test
+    fun `nach einem Signalfehler holt der erste gesunde Punkt nichts nach`() {
+        var s = schritt(EvidenceStock.State(), eingabe(0, 100.0)).state
+        s = schritt(s, eingabe(1, 120.0)).state
+        s = schritt(s, eingabe(2, 120.0, healthReady = false)).state
+        val basis = schritt(s, eingabe(20, 180.0))
+        assertEquals(0.0, basis.inflowMgdl, 1e-9)
+        assertEquals(EvidenceStock.NoInflow.REBASE_AFTER_SUSPEND, basis.noInflow)
+    }
+
+    // ---- Der Widerruf erreicht den Kern ----------------------------------
+
+    /**
+     * WIDERRUF SPERRT DEN KREDIT AUCH BEI VOLLEM BESTAND.
+     *
+     * Er wurde persistiert und exportiert, war aber kein EINGANG des Kerns
+     * (Toni 12.08.). Mit positivem Bestand haette der Kern weiter ACTIVE
+     * gemeldet und Kredit geliefert, obwohl der Nutzer den Marker
+     * zurueckgenommen hat - der Widerrufsvertrag waere genau dort
+     * wirkungslos gewesen, wo er zaehlt.
+     */
+    @Test
+    fun `ein Widerruf sperrt den Kredit trotz Bestand`() {
+        var r = schritt(EvidenceStock.State(), eingabe(0, 100.0))
+        r = schritt(r.state, eingabe(1, 140.0))
+        assertEquals(EvidenceStock.Phase.ACTIVE, r.phase)
+        assertTrue(r.creditMgdlPerMin > 0.0)
+
+        val w = schritt(r.state, eingabe(2, 145.0, creditRevoked = true))
+
+        assertEquals(EvidenceStock.Phase.SUSPENDED, w.phase)
+        assertEquals(EvidenceStock.NoInflow.CREDIT_REVOKED, w.noInflow)
+        assertEquals(0.0, w.creditMgdlPerMin, 1e-9)
+        assertEquals(0.0, w.inflowMgdl, 1e-9)
+    }
+
+    /** Die Buchfuehrung laeuft im Widerruf WEITER - sonst wuerde derselbe
+     *  kumulative Abgabestand danach ein zweites Mal abgezogen. */
+    @Test
+    fun `im Widerruf laeuft die Buchfuehrung weiter`() {
+        var r = schritt(EvidenceStock.State(), eingabe(0, 100.0))
+        r = schritt(r.state, eingabe(1, 140.0))
+        val w = schritt(r.state, eingabe(2, 145.0, creditRevoked = true, committedU = 0.30))
+        assertEquals(0.30, w.state.lastCommittedU, 1e-9)
+        assertEquals(r.state.episodeId, w.state.episodeId, "die Episode bleibt")
+    }
+
+    /** Und beim erneuten Armen wird der Widerrufszeitraum NICHT nachgeholt. */
+    @Test
+    fun `nach dem Widerruf setzt der erste Punkt nur die Basis`() {
+        var r = schritt(EvidenceStock.State(), eingabe(0, 100.0))
+        r = schritt(r.state, eingabe(1, 140.0))
+        r = schritt(r.state, eingabe(2, 145.0, creditRevoked = true))
+        // Waehrend des Widerrufs steigt die Reihe weiter.
+        r = schritt(r.state, eingabe(10, 200.0, creditRevoked = true))
+
+        val wieder = schritt(r.state, eingabe(11, 205.0))
+        assertEquals(0.0, wieder.inflowMgdl, 1e-9, "kein Nachholen des Widerrufszeitraums")
+        assertEquals(EvidenceStock.NoInflow.REBASE_AFTER_SUSPEND, wieder.noInflow)
     }
 }

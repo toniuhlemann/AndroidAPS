@@ -502,7 +502,10 @@ class FuseCycleRunner(
         /** Der Deckel DIESES Zyklus [min] - aus derselben Config-Instanz, die
          *  auch Tor und Kern gespeist hat. Ein zweites `Config()` im Export
          *  koennte bei einem Replay etwas anderes behaupten. */
-        val evidenceEpisodeCapMin: Int = EvidenceStock.Config().maxEpisodeMin,
+        /** OHNE DEFAULT (Toni 12.08.): ein `EvidenceStock.Config()` hier waere
+         *  die zweite versteckte Konstruktion gewesen - der Export haette bei
+         *  einem Replay den Default gezeigt statt des gelaufenen Deckels. */
+        val evidenceEpisodeCapMin: Int,
         /**
          * Phase, Bestand und Grund aus [EvidenceStock] - `null`, solange der
          * Kern nicht im Zyklus rechnet (Stufe 4).

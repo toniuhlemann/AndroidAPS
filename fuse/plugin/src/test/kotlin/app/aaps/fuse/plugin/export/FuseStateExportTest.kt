@@ -65,6 +65,8 @@ class FuseStateExportTest {
         phase: String? = null,
         stockMgdl: Double? = null,
         reason: String? = null,
+        capMin: Int = 360,
+        denial: String? = null,
     ) = FuseCycleRunner.Outcome(
         decision = FuseController.Decision(
             0.15, FuseController.TbrAction.KEEP_CURRENT, FuseController.Block.NONE,
@@ -81,7 +83,9 @@ class FuseStateExportTest {
         state = null, step = step, sensorEpoch = 1_699_000_000_000L, calibrationEpoch = 0L,
         isfMgdlPerU = 85.0, iobU = 1.2, abortReason = abort,
         evidenceEpisodeId = episodeId, evidenceCommittedU = committedU, evidenceEpisodeMin = episodeMin,
+        evidenceEpisodeCapMin = capMin,
         evidencePhase = phase, evidenceStockMgdl = stockMgdl, evidenceReason = reason,
+        evidenceEpisodeDenial = denial,
     )
 
     private fun rt(units: Double? = 0.15) = RT(
@@ -663,5 +667,42 @@ class FuseStateExportTest {
         assertEquals("NO_RISE", e.getString("reason"))
         assertEquals(0.0, e.getDouble("stockMgdl"), 1e-12)
         assertFalse(gapReasons(j).contains(FuseStateJson.GAP_EVIDENCE_NOT_WIRED))
+    }
+    /**
+     * DER DECKEL DES ZYKLUS, NICHT DER DEFAULT.
+     *
+     * Der Export erzeugte ihn frueher selbst ueber `EvidenceStock.Config()`.
+     * Bei einem Replay mit abweichendem Deckel haette der Datensatz 360
+     * behauptet, waehrend 17 gelaufen ist - der Export beschriebe eine andere
+     * Regel als die gepruefte.
+     */
+    @Test
+    fun `der Deckel im Datensatz ist der des Zyklus`() {
+        val j = FuseStateJson.record(
+            "s#1", outcome(episodeId = 1_700_000_000_000L, episodeMin = 3, capMin = 17),
+            rt(), cfg, BUILD, 0L, null,
+        ) { 5_000_000L }
+        assertEquals(17, j.getJSONObject("evidenceEpisode").getInt("capMin"))
+    }
+
+    /** Id und Widerruf stehen NUR im Block - sonst gaebe es zwei Wahrheiten
+     *  ueber dieselbe Episode. */
+    @Test
+    fun `Episodenidentitaet steht nicht mehr doppelt im Datensatz`() {
+        val j = FuseStateJson.record(
+            "s#1", outcome(episodeId = 1_700_000_000_000L, episodeMin = 3), rt(), cfg, BUILD, 0L, null,
+        ) { 5_000_000L }
+        assertFalse(j.has("evidenceEpisodeId")) { "gehoert in den Block" }
+        assertFalse(j.has("evidenceCreditRevoked")) { "gehoert in den Block" }
+        assertTrue(j.getJSONObject("evidenceEpisode").has("creditRevoked"))
+    }
+
+    /** Der GRUND bleibt aussen - im Block waere er unerreichbar, weil es dann
+     *  keine Episode gibt. */
+    @Test
+    fun `der Ablehnungsgrund steht ausserhalb des Blocks`() {
+        val j = FuseStateJson.record("s#1", outcome(denial = "MARKER_STALE"), rt(), cfg, BUILD, 0L, null) { 5_000_000L }
+        assertTrue(j.isNull("evidenceEpisode"))
+        assertEquals("MARKER_STALE", j.getString("evidenceEpisodeDenial"))
     }
 }

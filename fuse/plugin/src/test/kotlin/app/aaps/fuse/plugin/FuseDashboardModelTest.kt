@@ -78,6 +78,7 @@ class FuseDashboardModelTest {
         isfMgdlPerU = 80.0,
         iobU = 0.4,
         abortReason = abort,
+        evidenceEpisodeCapMin = 360,
     )
 
     private fun ledger(hold: Boolean = false, transport: Double = 0.1) = FuseScreenModel.LedgerInfo(

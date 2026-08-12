@@ -144,6 +144,20 @@ class EpisodeBudgets {
      * Neustart, und die wiedergefundene Episode liefert wieder Kredit.
      */
     var evidenceRevoked: Boolean = false
+
+    /**
+     * DER PERSISTENTE STOERUNGSBESTAND dieser Episode (Ledger-v4).
+     *
+     * Er muss den Neustart ueberleben, sonst begaenne der Bestand nach jedem
+     * Prozessstart bei 0 und dieselbe, bereits bezahlte Stoerung wuerde erneut
+     * finanziert - die teure Fehlerrichtung, sie erzeugt Insulin.
+     *
+     * Die Gegenrichtung ist ebenso wichtig und steht in
+     * `EvidenceStock.Input.persistedStateKnown`: ein Bestand, dessen Herkunft
+     * unklar ist, sperrt den Kredit, statt geraten zu werden.
+     */
+    var evidenceState: app.aaps.fuse.core.controller.EvidenceStock.State =
+        app.aaps.fuse.core.controller.EvidenceStock.State()
     val mealDeliveries: ArrayDeque<Pair<Long, Double>> = ArrayDeque()
 
     /**
