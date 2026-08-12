@@ -178,11 +178,28 @@ object LedgerPublicationGate {
      *   [reason] unterscheidet die beiden Faelle.
      * @param reason `null`, wenn nichts entfernt wurde.
      */
-    data class Outcome(val rt: RT, val allowed: Boolean, val reason: String?)
+    data class Outcome(
+        val rt: RT,
+        val allowed: Boolean,
+        val reason: String?,
+        /**
+         * OB DAS VERSIEGELN GELUNGEN IST - unabhaengig davon, ob dieser Zyklus
+         * ueberhaupt etwas publizieren wollte.
+         *
+         * Bisher war das nur mittelbar sichtbar: ohne `units` gab das Gate
+         * `allowed = true` zurueck, auch wenn der Persist gescheitert war. Fuer
+         * die Menge war das richtig - es gab keine. Fuer den ZUSTAND ist es
+         * falsch: der Aufrufer muss den berechneten Folgezustand dann
+         * zurueckrollen, und dazu braucht er die Tatsache und nicht ihren
+         * Nebeneffekt.
+         */
+        val sealed: Boolean,
+    )
 
-    private fun passed(rt: RT) = Outcome(rt, allowed = true, reason = null)
+    private fun passed(rt: RT, sealed: Boolean) = Outcome(rt, allowed = true, reason = null, sealed = sealed)
 
-    private fun stripped(rt: RT, reason: String) = Outcome(strip(rt, reason), allowed = false, reason = reason)
+    private fun stripped(rt: RT, reason: String, sealed: Boolean) =
+        Outcome(strip(rt, reason), allowed = false, reason = reason, sealed = sealed)
 
     /**
      * @param expected was dieser Zyklus zu buchen behauptet. Traegt das RT
@@ -208,7 +225,7 @@ object LedgerPublicationGate {
         // die Reconciliation dieses Zyklus gehoert auf Platte, und ein
         // Fehlschlag muss ueber persistFailed sticky werden.
         val persisted = adapter.persistVerified(dir)
-        if (rt.units == null) return passed(rt)
+        if (rt.units == null) return passed(rt, persisted)
 
         // Ab hier traegt das RT eine Menge - jeder Ausgang ausser dem letzten
         // entfernt sie.
@@ -220,23 +237,23 @@ object LedgerPublicationGate {
         // `persistFailed` auch die FOLGEZYKLEN), waehrend eine fehlende
         // Vollsicht nur diesen einen Zyklus betrifft. Stuende sie vorn, truege
         // der Trail bei gleichzeitigem Auftreten den harmloseren Grund.
-        if (!eventsOk || !persisted) return stripped(rt, FuseLedgerAdapter.HOLD_REASON_PERSIST_FAILED)
+        if (!eventsOk || !persisted) return stripped(rt, FuseLedgerAdapter.HOLD_REASON_PERSIST_FAILED, persisted)
         val proposalId = when (expected) {
-            is Commitment.None     -> return stripped(rt, expected.reason)
+            is Commitment.None     -> return stripped(rt, expected.reason, persisted)
             is Commitment.Proposal -> expected.proposalId
         }
         // B0a: erst JETZT ist belegt, dass die Haftung nicht nur beabsichtigt,
         // sondern gebucht UND durabel ist - der Persist oben lief nach den
         // Ereignissen, die Zeile war also in der geschriebenen Generation.
-        if (!adapter.hasOpenProposal(proposalId)) return stripped(rt, "$REASON_PROPOSAL_MISSING:$proposalId")
+        if (!adapter.hasOpenProposal(proposalId)) return stripped(rt, "$REASON_PROPOSAL_MISSING:$proposalId", persisted)
         // G2 (Codex-Adjudication bae885f1): FRISCHE Hold-Pruefung NACH der
         // Reconciliation. Vorher kam das positive RT unveraendert zurueck,
         // sobald Events und Persist gelungen waren - ein waehrend der
         // Ereignisse entdeckter Hold (z.B. MISSING_ACCOUNTED_TREATMENT)
         // griff erst im NAECHSTEN Zyklus, also eine Dosis zu spaet.
         val view = adapter.view()
-        if (!view.hold) return passed(rt)
-        return stripped(rt, REASON_LATE_HOLD + (view.holdReason?.let { ":$it" } ?: ""))
+        if (!view.hold) return passed(rt, persisted)
+        return stripped(rt, REASON_LATE_HOLD + (view.holdReason?.let { ":$it" } ?: ""), persisted)
     }
 
     /** Der SMB faellt weg, die TBR-Felder bleiben - die Safety-TBR (Null-Temp)

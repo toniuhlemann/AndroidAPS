@@ -1198,6 +1198,58 @@ class FuseCycleRunner(
         // mehr als Bedingung der Autorisierung.
         val measuredLow = step.safetyReasons == setOf(SafetyReason.LOW)
 
+        // ---- STUFE 3: DER EVIDENZBESTAND RECHNET, ABER ZAHLT NOCH NICHT ----
+        //
+        // Der Kern laeuft ab hier in jedem Zyklus mit. Sein Kredit ist
+        // ABSICHTLICH noch an nichts angeschlossen - `ConditionalDrive` bekommt
+        // ihn erst in Stufe 4. Das ist keine stille Parallelspur: Phase,
+        // Bestand und Grund stehen in jedem Datensatz, und der Zustand wird
+        // versiegelt wie jede andere Buchfuehrung.
+        //
+        // Der Zustand wird HIER auf den Folgestand gesetzt, damit ihn der
+        // Persist dieses Zyklus mitnimmt. Scheitert der, rollt das Plugin ihn
+        // zurueck - `LedgerPublicationGate.Outcome.sealed` sagt das aus, und
+        // die Ruecknahme-Adresse liegt im Plugin VOR `run()`, nicht im
+        // Outcome: eine Ausnahme hinter dieser Zeile liefert kein Outcome.
+        //
+        // WAS DIESE STELLE NICHT LEISTET, und das gehoert genannt: ein Zyklus,
+        // der VOR der Signalstufe abbricht (kein Profil, kein Signal, Epoche
+        // verbraucht), erreicht sie gar nicht und versiegelt daher auch keine
+        // neue Messinformation. Das ist vertretbar, aber nicht folgenlos:
+        // - Neue Evidenz gibt es dort ohnehin nicht - ohne Signal kein
+        //   Messpunkt, ohne Messpunkt kein Zufluss.
+        // - Der WANDUHR-VERFALL wird dadurch nicht verloren, sondern nur
+        //   aufgeschoben: er rechnet beim naechsten erreichten Zyklus die
+        //   ganze verstrichene Zeit auf einmal ab (`lastDecayTs`).
+        // Die frueher hier stehende Aussage "jeder Abbruchzyklus versiegelt"
+        // war falsch (Toni 12.08.); richtig ist: jeder Zyklus PERSISTIERT, aber
+        // nur die mit Signal tragen neue Evidenz hinein.
+        val evidenzVorher = episodes.evidenceState
+        val evidenz = signal.adjusted.lastOrNull()?.let { letzter ->
+            EvidenceStock.step(
+                prev = evidenzVorher,
+                input = EvidenceStock.Input(
+                    nowMs = computeTs,
+                    sourceTs = signal.sourceTs,
+                    adjusted = letzter.adjusted,
+                    segmentStartTs = signal.segmentStartTs,
+                    driveLowerMgdlPerMin = band?.lower,
+                    healthReady = step.health == Health.READY,
+                    measuredLow = measuredLow,
+                    creditRevoked = episodeGate.creditRevoked,
+                    episodeId = evidenceEpisodeId,
+                    episodeCommittedU = episodes.evidenceCommittedU,
+                    isfMgdlPerU = isf,
+                    // Der geladene Zustand gilt, solange der Ledger nicht
+                    // haelt. Haelt er, ist die Buchfuehrung fraglich - und ein
+                    // Bestand aus fraglicher Buchfuehrung darf nichts erlauben.
+                    persistedStateKnown = !ledgerView.hold,
+                ),
+                cfg = evidenceConfig,
+            )
+        }
+        evidenz?.let { episodes.evidenceState = it.state }
+
         // ---- DER PREDICTORFREIE MARKERPFAD (Toni 11.08.) -------------------
         //
         // Er steht GENAU HIER und keine Zeile frueher: alles, was er verlangt,
@@ -1772,6 +1824,10 @@ class FuseCycleRunner(
             evidenceCommittedU = episodes.evidenceCommittedU,
             evidenceEpisodeMin = evidenceEpisodeMin,
             evidenceEpisodeCapMin = evidenceConfig.maxEpisodeMin,
+
+            evidencePhase = evidenz?.phase?.name,
+            evidenceStockMgdl = evidenz?.state?.stockMgdl,
+            evidenceReason = evidenz?.noInflow?.name,
             insulinModel = built.input.trajectory.model,
             decision = combined.decision,
             tbr = combined.request,

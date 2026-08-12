@@ -138,6 +138,12 @@ class FuseSignalSource(
          *  Historie, und das darf man hinterher nicht raten muessen. */
         val boundedBy: SignalWindow.Bound,
         val windowFromTs: Long,
+        /** Beginn des juengsten LUECKENFREIEN Segments - Bezugspunkt der
+         *  BGI-Bereinigung. Ueber eine Segmentgrenze hinweg ist jede Differenz
+         *  der bereinigten Reihe wertlos, weil `cumulativeBgi` dort neu bei 0
+         *  beginnt; der Evidenzkern braucht ihn deshalb ausdruecklich und darf
+         *  ihn nicht aus `windowFromTs` raten. */
+        val segmentStartTs: Long,
     )
 
     sealed interface Outcome {
@@ -295,6 +301,7 @@ class FuseSignalSource(
                 q1Outlier = leading.outlier,
                 boundedBy = bound,
                 windowFromTs = window.fromTs,
+                segmentStartTs = windowStart,
             )
         )
     }

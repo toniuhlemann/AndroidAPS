@@ -705,6 +705,19 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
             )
         )
 
+        // DIE VORHER-KOPIE ENTSTEHT HIER, VOR DEM LAUF - nicht im Outcome.
+        //
+        // Der Runner setzt den Evidenzbestand auf den Folgestand, damit der
+        // Persist ihn mitnimmt. Wirft er DANACH, ist `outcome` null: der
+        // veraenderte Zustand steht im Ledger, und die Ruecknahme-Adresse waere
+        // mit dem Outcome verlorengegangen (Toni 12.08.). Genau der Pfad, auf
+        // dem FUSE am wenigsten weiss, haette dann als einziger keine
+        // Ruecknahme gehabt.
+        //
+        // `EvidenceStock.State` ist eine Datenklasse ohne veraenderliche
+        // Felder - die Referenz ist die Kopie.
+        val evidenzVorLauf = ledgerAdapter.episodes.evidenceState
+
         val outcome = try {
             cycleRunner().run(tempBasalFallback, aktivePumpe)
         } catch (e: Exception) {
@@ -919,6 +932,26 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
             },
             onError = { aapsLogger.error(LTag.APS, "FUSE ledger update failed", it) },
         )
+        // ---- SEAL_CYCLE_STATE: der Zustand ist versiegelt - oder nicht ----
+        //
+        // `publish` fuehrt den Persist UNBEDINGT aus, auch ohne Vorschlag,
+        // nach einem Wurf und in jedem Abbruchzyklus. Was bisher fehlte, war
+        // die KONSEQUENZ auf der Zustandsseite: der Runner hat den
+        // Evidenzbestand bereits auf den Folgestand gesetzt, damit der Persist
+        // ihn mitnimmt. Ist der gescheitert, darf dieser Folgestand nicht im
+        // Speicher weiterleben - sonst rechnete der naechste Zyklus auf
+        // Evidenz, die nie auf Platte stand, und der Ein-Zyklus-Verzug waere
+        // ausgerechnet im Fehlerfall wirkungslos.
+        //
+        // Zurueckrollen statt "UNKNOWN markieren": der vorige Stand IST
+        // bekannt und belegt. Ihn zu verwerfen waere strenger als noetig und
+        // wuerde eine gesicherte Episode wegen eines Schreibfehlers verlieren.
+        if (ledgerAdapter.sealCycleState(publication.sealed, evidenzVorLauf))
+            aapsLogger.error(
+                LTag.APS,
+                "FUSE SEAL_CYCLE_STATE fehlgeschlagen - Evidenzbestand auf den versiegelten Stand zurueckgerollt",
+            )
+
         val publishRt = publication.rt
         if (!publication.allowed && rt.units != null)
             aapsLogger.error(LTag.APS, "FUSE SMB stripped from published RT: ${publication.reason}")

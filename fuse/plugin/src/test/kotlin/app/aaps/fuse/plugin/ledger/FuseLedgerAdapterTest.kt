@@ -976,4 +976,144 @@ class FuseLedgerAdapterTest {
         }
         assertTrue(b.recoveryHold) { "korrupt heisst Hold, nicht Migration" }
     }
+    // ---- SEAL_CYCLE_STATE ------------------------------------------------
+
+    private fun bestand(stock: Double) = app.aaps.fuse.core.controller.EvidenceStock.State(
+        stockMgdl = stock, episodeId = t0, episodeStartTs = t0,
+        lastAcceptedTs = t0, lastAdjusted = 130.0, segmentStartTs = t0, lastDecayTs = t0,
+    )
+
+    /**
+     * SCHEITERT DAS VERSIEGELN, DARF DER FOLGESTAND NICHT IM RAM WEITERLEBEN.
+     *
+     * Der Runner hat den Bestand bereits auf den Folgestand gesetzt, damit der
+     * Persist ihn mitnimmt. Bleibt er nach einem Fehlschlag stehen, rechnete
+     * der naechste Zyklus auf Evidenz, die nie auf Platte stand - der
+     * Ein-Zyklus-Verzug waere ausgerechnet im Fehlerfall wirkungslos.
+     */
+    @Test
+    fun `ein gescheitertes Seal rollt den Evidenzbestand zurueck`(@TempDir dir: File) {
+        val a = loadedAdapter(dir)
+        val versiegelt = bestand(10.0)
+        a.episodes.evidenceState = versiegelt
+        // Der Runner schreibt den Folgestand.
+        a.episodes.evidenceState = bestand(35.0)
+
+        assertTrue(a.sealCycleState(sealed = false, before = versiegelt))
+        assertEquals(versiegelt, a.episodes.evidenceState)
+    }
+
+    /** Bei GELUNGENEM Seal bleibt der Folgestand - sonst waere die
+     *  Messinformation jedes Zyklus verloren. */
+    @Test
+    fun `ein gelungenes Seal laesst den Folgestand stehen`(@TempDir dir: File) {
+        val a = loadedAdapter(dir)
+        val versiegelt = bestand(10.0)
+        val folge = bestand(35.0)
+        a.episodes.evidenceState = folge
+
+        assertFalse(a.sealCycleState(sealed = true, before = versiegelt))
+        assertEquals(folge, a.episodes.evidenceState)
+    }
+
+    /**
+     * EIN GATE-REJECT NACH GELUNGENEM SEAL DREHT DIE MESSINFORMATION NICHT
+     * ZURUECK.
+     *
+     * Abgelehnt wurde die INSULINRESERVIERUNG, nicht die Beobachtung. Beides
+     * zusammenzuwerfen hiesse, eine gemessene Stoerung zu vergessen, weil eine
+     * Dosis nicht durchging - und dieselbe Stoerung muesste danach erneut
+     * beobachtet werden, bevor sie wieder zaehlt.
+     */
+    @Test
+    fun `ein Gate-Reject nach gelungenem Seal laesst die Messinformation stehen`(@TempDir dir: File) {
+        val a = loadedAdapter(dir)
+        val folge = bestand(35.0)
+        a.episodes.evidenceState = folge
+        a.episodes.evidenceCommittedU = 0.30
+
+        // Das Gate hat die Menge entfernt - der Zustand war aber versiegelt.
+        assertFalse(a.sealCycleState(sealed = true, before = bestand(10.0)))
+        a.resolveReservation(computeTs = t0, publishedU = 0.0)   // das Gate hat die Menge entfernt
+
+        assertEquals(folge, a.episodes.evidenceState) { "die Beobachtung bleibt" }
+    }
+
+    /** Ohne erreichten Kern gibt es nichts zurueckzurollen - dann hat auch
+     *  niemand etwas veraendert. */
+    @Test
+    fun `ohne vorherigen Stand rollt nichts zurueck`(@TempDir dir: File) {
+        val a = loadedAdapter(dir)
+        val stand = bestand(35.0)
+        a.episodes.evidenceState = stand
+        assertFalse(a.sealCycleState(sealed = false, before = null))
+        assertEquals(stand, a.episodes.evidenceState)
+    }
+    // ---- Der SPAETE Schreibfehler (Toni 12.08., P0) ----------------------
+
+    /**
+     * NACH EINEM SPAETEN FEHLER DARF UNVERSIEGELTE EVIDENZ NICHT WIEDERKEHREN.
+     *
+     * Der Ablauf, den dieser Test nachstellt:
+     *   1. ein neuer Evidenzzustand ist berechnet,
+     *   2. der Persist scheitert NACH dem Rename (DIR_SYNC_FAILED) - der
+     *      Zielname kann also bereits den neuen Inhalt tragen,
+     *   3. der Speicher wird zurueckgerollt,
+     *   4. der Prozess startet neu.
+     *
+     * Ohne dauerhaften Beweis gewaenne beim Neustart der neue Inhalt, und
+     * genau der Bestand, dessen Versiegelung fehlgeschlagen ist, waere wieder
+     * kreditfaehig. `persistFailed` ist nur RAM-sticky und hilft hier nicht.
+     */
+    @Test
+    fun `ein spaeter Persistfehler sperrt den Neustart dauerhaft`(@TempDir dir: File) {
+        val store = FuseLedgerStore(FakeDurability(dirFails = true))
+        val a = FuseLedgerAdapter(store).also {
+            it.loadOnce(dir, "epoch-a", t0, FuseActivePump(PumpType.GENERIC_AAPS.name, false))
+        }
+        a.episodes.evidenceState = bestand(35.0)
+
+        assertFalse(a.persistVerified(dir)) { "der Verzeichnis-Sync scheitert" }
+        assertEquals(
+            FuseLedgerStore.PersistOutcome.DIR_SYNC_FAILED,
+            store.lastPersistStats?.outcome,
+        )
+        // Der Speicher rollt zurueck - das allein reicht aber nicht.
+        assertTrue(a.sealCycleState(sealed = false, before = bestand(10.0)))
+
+        // DER NEUSTART: neuer Adapter, gesunde Durabilitaet.
+        val b = FuseLedgerAdapter().also {
+            it.loadOnce(dir, "epoch-b", t0 + 60_000L, FuseActivePump(PumpType.GENERIC_AAPS.name, false))
+        }
+        assertTrue(b.recoveryHold) { "der spaete Fehler muss den Neustart erreichen" }
+        assertTrue(b.view().hold) { "und die Abgabe zuhalten" }
+    }
+
+    /**
+     * EIN FRUEHER FEHLER BRAUCHT DAS NICHT.
+     *
+     * Scheitert schon der Datei-fsync, zeigt der Zielname noch auf die
+     * Vorgeneration - ein Neustart faende ohnehin den alten Stand. Ihn
+     * trotzdem dauerhaft zu sperren waere eine Sperre ohne Anlass, und die
+     * kostet eine Mahlzeit.
+     */
+    @Test
+    fun `ein frueher Persistfehler sperrt den Neustart nicht`(@TempDir dir: File) {
+        val a = FuseLedgerAdapter().also {
+            it.loadOnce(dir, "epoch-a", t0, FuseActivePump(PumpType.GENERIC_AAPS.name, false))
+        }
+        assertTrue(a.persistVerified(dir)) { "erst eine gesunde Generation" }
+
+        val store = FuseLedgerStore(FakeDurability(fileFails = true))
+        val b = FuseLedgerAdapter(store).also {
+            it.loadOnce(dir, "epoch-b", t0 + 60_000L, FuseActivePump(PumpType.GENERIC_AAPS.name, false))
+        }
+        assertFalse(b.persistVerified(dir))
+        assertEquals(FuseLedgerStore.PersistOutcome.FILE_SYNC_FAILED, store.lastPersistStats?.outcome)
+
+        val c = FuseLedgerAdapter().also {
+            it.loadOnce(dir, "epoch-c", t0 + 120_000L, FuseActivePump(PumpType.GENERIC_AAPS.name, false))
+        }
+        assertFalse(c.recoveryHold) { "ohne Anlass keine dauerhafte Sperre" }
+    }
 }

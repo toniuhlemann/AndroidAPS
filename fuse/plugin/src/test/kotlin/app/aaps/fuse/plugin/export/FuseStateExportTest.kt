@@ -35,7 +35,7 @@ class FuseStateExportTest {
         ukfRatePerMin = 1.1, ukfLearnedR = 2.2, rawSlopePerMin = 1.4, activityAtAnchor = 0.01, isfAtAnchor = 90.0,
         adjusted = emptyList(), activity = ActivityValidity.VALID,
         samplesUsed = 19, rawSeriesSize = 200, gapBeforeMin = 1.0, stepFromLastMgdl = -1.0, stepRateActualMgdlPerMin = -1.0, postGapIndex = 18, q1Outlier = false,
-        boundedBy = SignalWindow.Bound.NONE, windowFromTs = 1_699_988_120_000L,
+        boundedBy = SignalWindow.Bound.NONE, windowFromTs = 1_699_988_120_000L, segmentStartTs = 1_699_988_120_000L,
     )
 
     private fun step() = app.aaps.fuse.core.observer.ObserverStep(

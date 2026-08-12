@@ -201,7 +201,10 @@ class EvidenceStockTest {
     @Test
     fun `der Kredit ist der Bestand ueber ein Fenster, nicht der Bestand`() {
         var s = schritt(EvidenceStock.State(), eingabe(0, 100.0)).state
-        val r = schritt(s, eingabe(1, 130.0))
+        s = schritt(s, eingabe(1, 130.0)).state
+        // EIN ZYKLUS SPAETER: der Zufluss von Minute 1 ist versiegelt und
+        // damit kreditfaehig (Stufe 3, Ein-Zyklus-Verzug).
+        val r = schritt(s, eingabe(2, 130.0))
         assertTrue(r.creditMgdlPerMin > 0.0)
         assertTrue(
             r.creditMgdlPerMin < r.state.stockMgdl / 2.0,
@@ -279,8 +282,9 @@ class EvidenceStockTest {
         // Zweite Welle, dieselbe episodeId - kurz VOR dem Deckel. Sie wird
         // wieder ACTIVE, ohne dass Uhr oder Budget neu starten.
         val deckel = EvidenceStock.Config().maxEpisodeMin
-        val vorDeckel = schritt(s, eingabe(deckel - 10, 140.0))
+        var vorDeckel = schritt(s, eingabe(deckel - 10, 140.0))
         assertTrue(vorDeckel.noInflow != EvidenceStock.NoInflow.EPISODE_EXPIRED)
+        vorDeckel = schritt(vorDeckel.state, eingabe(deckel - 9, 140.0))
         assertEquals(EvidenceStock.Phase.ACTIVE, vorDeckel.phase, "neue Evidenz weckt dieselbe Episode")
         // Und kurz danach ist Schluss, gerechnet ab MINUTE 0, nicht ab 100.
         val nachDeckel = schritt(vorDeckel.state, eingabe(deckel + 5, 160.0))
@@ -414,7 +418,9 @@ class EvidenceStockTest {
     fun `ohne Zufluss faellt die Episode von selbst auf DORMANT`() {
         var r = schritt(EvidenceStock.State(), eingabe(0, 100.0))
         r = schritt(r.state, eingabe(1, 130.0))
-        assertEquals(EvidenceStock.Phase.ACTIVE, r.phase, "mit Zufluss aktiv")
+        assertEquals(EvidenceStock.Phase.PENDING_SEAL, r.phase, "frischer Zufluss ist noch nicht versiegelt")
+        r = schritt(r.state, eingabe(2, 130.0))
+        assertEquals(EvidenceStock.Phase.ACTIVE, r.phase, "einen Zyklus spaeter aktiv")
 
         // Flach weiter - kein Anstieg mehr, nur Verfall.
         var t = 2
@@ -446,8 +452,9 @@ class EvidenceStockTest {
         repeat(32) { r = schritt(r.state, eingabe(t++, 130.0)) }
         assertEquals(EvidenceStock.Phase.DORMANT, r.phase)
 
-        // Stunde vier, neuer Anstieg.
+        // Stunde vier, neuer Anstieg - und ein Zyklus, bis er versiegelt ist.
         r = schritt(r.state, eingabe(220, 145.0))
+        r = schritt(r.state, eingabe(221, 145.0))
 
         assertEquals(EvidenceStock.Phase.ACTIVE, r.phase)
         assertEquals(start, r.state.episodeStartTs, "die Uhr startet NICHT neu")
@@ -598,10 +605,11 @@ class EvidenceStockTest {
     fun `ein Widerruf sperrt den Kredit trotz Bestand`() {
         var r = schritt(EvidenceStock.State(), eingabe(0, 100.0))
         r = schritt(r.state, eingabe(1, 140.0))
+        r = schritt(r.state, eingabe(2, 140.0))
         assertEquals(EvidenceStock.Phase.ACTIVE, r.phase)
         assertTrue(r.creditMgdlPerMin > 0.0)
 
-        val w = schritt(r.state, eingabe(2, 145.0, creditRevoked = true))
+        val w = schritt(r.state, eingabe(3, 145.0, creditRevoked = true))
 
         assertEquals(EvidenceStock.Phase.SUSPENDED, w.phase)
         assertEquals(EvidenceStock.NoInflow.CREDIT_REVOKED, w.noInflow)
@@ -723,5 +731,56 @@ class EvidenceStockTest {
         assertEquals(EvidenceStock.Phase.ACTIVE, r.phase)
         assertTrue(r.creditMgdlPerMin > 0.0)
         assertEquals(3.0, r.inflowMgdl, 1e-9)
+    }
+    // ---- Stufe 3: der Ein-Zyklus-Verzug ----------------------------------
+
+    /**
+     * FRISCHER ZUFLUSS IST NOCH KEIN KREDIT.
+     *
+     * Der Zufluss dieses Zyklus steht noch nicht auf Platte. Ihn sofort
+     * auszuschuetten hiesse, Insulin auf eine Messinformation zu geben, die
+     * ein Stromausfall eine Sekunde spaeter spurlos verschwinden liesse -
+     * danach waere Insulin unterwegs, das keine Buchung mehr hat.
+     */
+    @Test
+    fun `der Zufluss eines Zyklus ist in diesem Zyklus noch kein Kredit`() {
+        val s = schritt(EvidenceStock.State(), eingabe(0, 100.0)).state
+        val r = schritt(s, eingabe(1, 130.0))
+
+        assertEquals(30.0, r.inflowMgdl, 1e-9, "zugeflossen ist er")
+        assertTrue(r.state.stockMgdl > 0.0, "und im Bestand steht er")
+        assertEquals(0.0, r.creditMgdlPerMin, 1e-9, "kreditfaehig ist er noch nicht")
+        assertEquals(EvidenceStock.Phase.PENDING_SEAL, r.phase, "aber auch nicht schlafend")
+    }
+
+    /** Und im naechsten Zyklus IST er es - der Verzug ist eine Minute, kein
+     *  Verlust. */
+    @Test
+    fun `im Folgezyklus ist derselbe Zufluss kreditfaehig`() {
+        var s = schritt(EvidenceStock.State(), eingabe(0, 100.0)).state
+        s = schritt(s, eingabe(1, 130.0)).state
+        val r = schritt(s, eingabe(2, 130.0))
+
+        assertEquals(0.0, r.inflowMgdl, 1e-9, "nichts Neues")
+        assertTrue(r.creditMgdlPerMin > 0.0, "aber der versiegelte Bestand traegt")
+        assertEquals(EvidenceStock.Phase.ACTIVE, r.phase)
+    }
+
+    /**
+     * EIN GELADENER BESTAND IST PER DEFINITION VERSIEGELT.
+     *
+     * Sonst waere nach jedem Neustart eine Minute lang kein Kredit moeglich,
+     * obwohl der Bestand nachweislich auf Platte stand - der Verzug soll
+     * ungesicherte Evidenz aufhalten, nicht gesicherte.
+     */
+    @Test
+    fun `ein geladener Bestand ist sofort kreditfaehig`() {
+        val geladen = EvidenceStock.State(
+            stockMgdl = 20.0, episodeId = 1L, episodeStartTs = T0,
+            lastAcceptedTs = T0, lastAdjusted = 130.0, segmentStartTs = T0, lastDecayTs = T0,
+        )
+        val r = schritt(geladen, eingabe(1, 130.0))
+        assertTrue(r.creditMgdlPerMin > 0.0)
+        assertEquals(EvidenceStock.Phase.ACTIVE, r.phase)
     }
 }

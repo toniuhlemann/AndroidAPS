@@ -1601,6 +1601,30 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
         return zurueck
     }
 
+    /**
+     * SEAL_CYCLE_STATE - was nach dem Versiegelungsversuch mit dem
+     * Evidenzbestand geschieht.
+     *
+     * Der Runner hat ihn bereits auf den Folgestand gesetzt, damit der Persist
+     * ihn mitnimmt. Ist der GESCHEITERT, darf dieser Folgestand nicht im
+     * Speicher weiterleben: der naechste Zyklus rechnete sonst auf Evidenz,
+     * die nie auf Platte stand, und der Ein-Zyklus-Verzug waere ausgerechnet
+     * im Fehlerfall wirkungslos.
+     *
+     * ZURUECKROLLEN STATT "UNKNOWN": der vorige Stand IST bekannt und belegt.
+     * Ihn zu verwerfen waere strenger als noetig und verloere eine gesicherte
+     * Episode wegen eines Schreibfehlers. Fehlt er (`before == null`, der
+     * Zyklus hat den Kern nie erreicht), bleibt alles wie es war - dann hat
+     * auch niemand etwas veraendert.
+     *
+     * @return ob zurueckgerollt wurde.
+     */
+    fun sealCycleState(sealed: Boolean, before: app.aaps.fuse.core.controller.EvidenceStock.State?): Boolean {
+        if (sealed || before == null || episodes.evidenceState == before) return false
+        episodes.evidenceState = before
+        return true
+    }
+
     fun persistVerified(dir: File): Boolean {
         if (!loaded) {
             persistFailed = true
@@ -1618,7 +1642,46 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
             )
         }.getOrDefault(false) && FuseLedgerStore.writeSentinel(dir)
         persistFailed = !ok
+        if (!ok) haltNachSpaetemFehler(dir)
         return ok
+    }
+
+    /**
+     * EIN SPAETER SCHREIBFEHLER BRAUCHT EINEN DAUERHAFTEN BEWEIS.
+     *
+     * `persistVerified == false` heisst NICHT "der neue Inhalt liegt nicht auf
+     * Platte" (Toni 12.08.). Die Fehler zerfallen in zwei Klassen, und nur die
+     * erste ist harmlos:
+     *
+     *   FRUEH - FILE_SYNC_FAILED, RENAME_FAILED: der Zielname zeigt noch auf
+     *     die Vorgeneration. Die Ruecknahme im Speicher genuegt, denn ein
+     *     Neustart faende ohnehin den alten Stand.
+     *
+     *   SPAET - DIR_SYNC_FAILED, READBACK_FAILED: der Rename ist gelaufen, der
+     *     Zielname kann den NEUEN Inhalt tragen. Der Speicher wird auf den
+     *     alten Stand zurueckgerollt - beim naechsten Start koennte aber der
+     *     neue gewinnen, und unversiegelte Evidenz kaeme zurueck. `persistFailed`
+     *     ist nur RAM-sticky und ueberlebt den Neustart nicht.
+     *
+     * Fuer die zweite Klasse also ein HOLD-MARKER auf Platte - derselbe
+     * Mechanismus wie beim Ladeverlust. Ein Boolean traegt die Entscheidung
+     * nicht; sie haengt am [FuseLedgerStore.PersistOutcome].
+     *
+     * WARUM HALTEN UND NICHT ZURUECKSCHREIBEN: die alte Generation
+     * wiederherzustellen hiesse, auf demselben Medium zu schreiben, das eben
+     * gescheitert ist - und der Beweis dafuer laege wieder nur im Speicher.
+     * Der Marker ist die einzige Aussage, die den Neustart sicher erreicht.
+     */
+    private fun haltNachSpaetemFehler(dir: File) {
+        val outcome = store.lastPersistStats?.outcome ?: return
+        val spaet = outcome == FuseLedgerStore.PersistOutcome.DIR_SYNC_FAILED ||
+            outcome == FuseLedgerStore.PersistOutcome.READBACK_FAILED
+        if (!spaet) return
+        val marker = "LATE_PERSIST_FAILURE:${outcome.name} rev=$revision - der Zielname kann bereits die " +
+            "neue, nicht durabel bestaetigte Generation tragen; Uebernahme beim naechsten Start gesperrt"
+        // Gelingt der Marker nicht, bleibt er ausstehend und wird bei JEDEM
+        // weiteren Persist erneut versucht - dieselbe Mechanik wie C8d.
+        if (!FuseLedgerStore.writeHoldVerified(dir, marker)) pendingHoldMarker = marker
     }
 
     /**

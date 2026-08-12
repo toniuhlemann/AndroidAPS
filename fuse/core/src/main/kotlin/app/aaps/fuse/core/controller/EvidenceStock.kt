@@ -154,12 +154,18 @@ object EvidenceStock {
          * ein Wert von 5.000 waere formal gueltig und ergaebe nach dem Neustart
          * sofort einen Kredit von 166 mg/dl/min.
          *
-         * HERGELEITET aus der eigenen Dynamik, nicht geraten: der Bestand
-         * strebt bei konstantem Zufluss gegen `Zuflussrate x decayMin`. Die
-         * hoechste gemessene Stoerung liegt bei rund 5 mg/dl/min (Lauf vom
-         * 11.08.: r bis 3,3), mit decayMin 8 also rund 40 mg/dl. 200 ist das
-         * Fuenffache - hoch genug, dass keine echte Mahlzeit dagegen laeuft,
-         * niedrig genug, dass ein korrupter Wert auffaellt.
+         * EMPIRISCH BEGRUENDETE PLAUSIBILITAETSGRENZE, nicht hergeleitet
+         * (Tonis Praezisierung 12.08. - ich hatte "hergeleitet" geschrieben,
+         * und das stimmt nur fuer einen Teil): HERGELEITET ist allein die
+         * Gleichgewichtsform `Zuflussrate x decayMin`. Die 5 mg/dl/min als
+         * Obergrenze der Stoerung und der Faktor fuenf sind Alpha-Annahmen aus
+         * einem einzigen Lauf (11.08., r bis 3,3).
+         *
+         * Mit decayMin 8 ergibt das rund 40 mg/dl; 200 ist das Fuenffache -
+         * hoch genug, dass keine echte Mahlzeit dagegen laeuft, niedrig genug,
+         * dass ein korrupter Wert auffaellt. Vertretbar ist die Unschaerfe,
+         * weil eine Ueberschreitung fail-closed wirkt: sie fuehrt zu WENIGER
+         * Kredit, nie zu mehr. Gehoert in den Sweep.
          *
          * Ueberschreitung wird NICHT geklemmt, sondern gilt als unmoeglicher
          * Zustand: klemmen hiesse, eine korrupte Datei stillschweigend in eine
@@ -313,9 +319,23 @@ object EvidenceStock {
         /** Es gibt keine Episode. Kein Marker, kein Anker, nichts zu zeigen. */
         NONE,
 
-        /** Bestand vorhanden und alle Tore offen - `ConditionalDrive` darf
-         *  Kredit bekommen. */
+        /** Bestand vorhanden, versiegelt und alle Tore offen -
+         *  `ConditionalDrive` darf Kredit bekommen. */
         ACTIVE,
+
+        /**
+         * EVIDENZ IST DA UND WARTET AUF DIE VERSIEGELUNG.
+         *
+         * Der Zufluss dieses Zyklus steht im Bestand, aber noch nicht auf
+         * Platte; kreditfaehig wird er erst nach erfolgreichem Persist, also
+         * im naechsten Zyklus.
+         *
+         * EIGENER NAME, weil DORMANT hier gelogen haette (Toni 12.08.):
+         * DORMANT heisst "die Mahlzeit ist gerade durch". Genau das Gegenteil
+         * ist der Fall - sie hat eben Evidenz geliefert. Wer im Tab DORMANT
+         * liest, waehrend eine Welle anlaeuft, zieht den falschen Schluss.
+         */
+        PENDING_SEAL,
 
         /**
          * Kein Kredit, aber die Episode bleibt ERINNERBAR: Anker, Uhr und
@@ -529,6 +549,23 @@ object EvidenceStock {
         // nie ein (s. Config.stockFloorMgdl).
         val neu = max(0.0, nachVerfall + zufluss - rueckgang - abzug)
             .let { if (it < cfg.stockFloorMgdl) 0.0 else it }
+
+        // ---- KREDIT NUR AUS DEM VERSIEGELTEN ANTEIL (Stufe 3) --------------
+        //
+        // Der Zufluss DIESES Zyklus steht noch nicht auf Platte. Ihn sofort
+        // auszuschuetten hiesse, Insulin auf eine Messinformation zu geben,
+        // die ein Stromausfall eine Sekunde spaeter spurlos verschwinden
+        // liesse - danach waere Insulin unterwegs, das keine Buchung mehr hat.
+        //
+        // Also: der Kredit dieses Zyklus stammt aus dem Bestand, der bereits
+        // versiegelt WAR - gealtert, um die Abgabe verringert, aber ohne den
+        // frischen Zufluss. Der wird erst kreditfaehig, wenn der Zyklus
+        // erfolgreich versiegelt hat, also im naechsten.
+        //
+        // Der Preis ist EINE Minute Verzug. Er ist gering gegen die
+        // Fehlerrichtung, die er ausschliesst.
+        val versiegelt = max(0.0, neu - zufluss)
+            .let { if (it < cfg.stockFloorMgdl) 0.0 else it }
         return Result(
             state = gemerkt.copy(
                 stockMgdl = neu,
@@ -539,14 +576,25 @@ object EvidenceStock {
             // Der Restbestand wird ueber ein begrenztes Fenster ausgeschuettet,
             // nicht auf einmal: 30 mg/dl Bestand duerfen kein Antrieb von
             // 30 mg/dl/min werden.
-            creditMgdlPerMin = if (neu <= 0.0) 0.0 else min(neu / cfg.releaseWindowMin, neu),
+            creditMgdlPerMin = if (versiegelt <= 0.0) 0.0 else min(versiegelt / cfg.releaseWindowMin, versiegelt),
             inflowMgdl = zufluss,
             noInflow = grund,
-            // ACTIVE HAENGT AM BESTAND, nicht an der Uhr und nicht an `r`.
-            // Ohne Zufluss ist der Bestand nach wenigen Minuten Verfall bei
-            // 0, und die Episode faellt von selbst auf DORMANT - genau das
-            // erledigt den Snack, ohne dass jemand eine Dauer schaetzen muss.
-            phase = if (neu > 0.0) Phase.ACTIVE else Phase.DORMANT,
+            // ACTIVE HEISST "DARF JETZT KREDIT LIEFERN" - haengt also am
+            // VERSIEGELTEN Bestand, nicht am eben zugeflossenen. Der erste
+            // Zyklus einer frischen Welle ist deshalb noch DORMANT, und das
+            // ist keine Ungenauigkeit, sondern genau der Ein-Zyklus-Verzug.
+            //
+            // Weiterhin gilt: kein Bezug zur Uhr und keiner zu `r`. Ohne
+            // Zufluss traegt der Verfall den Bestand in wenigen Minuten auf 0,
+            // und die Episode faellt von selbst auf DORMANT - das erledigt den
+            // Snack, ohne dass jemand eine Dauer schaetzen muss.
+            phase = when {
+                versiegelt > 0.0 -> Phase.ACTIVE
+                // Bestand da, aber noch nicht versiegelt: der Ein-Zyklus-
+                // Verzug, nicht das Ende der Mahlzeit.
+                neu > 0.0        -> Phase.PENDING_SEAL
+                else             -> Phase.DORMANT
+            },
         )
     }
 
