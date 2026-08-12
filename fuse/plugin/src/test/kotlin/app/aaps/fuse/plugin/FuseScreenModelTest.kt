@@ -311,6 +311,6 @@ class FuseScreenModelTest {
     @Test
     fun `ohne Marker steht keine Evidenzzeile`() {
         val t = FuseScreenModel.render(outcome(), null, now)
-        assertFalse(t.contains("Evidence-"))
+        assertFalse(t.contains("Evidenz-"))
     }
 }

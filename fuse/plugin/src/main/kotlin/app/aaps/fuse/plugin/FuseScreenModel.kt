@@ -358,6 +358,16 @@ object FuseScreenModel {
     }
 
     private fun row(b: StringBuilder, label: String, value: String) {
+        // DIE SPALTENBREITE IST EINE ZUSICHERUNG UEBER DIE BESCHRIFTUNGEN,
+        // nicht ueber diese Zeile: `padEnd(16)` liefert bei genau 16 Zeichen
+        // gar keinen Abstand, und am 12.08. stand deshalb
+        // "Evidence-EpisodeNICHT eroeffnet" auf dem Geraet. Kein Test sah es -
+        // alle suchten den WERT, und der stimmte.
+        //
+        // Hier eine Fallunterscheidung einzubauen waere die schlechtere
+        // Loesung gewesen: sie haette die Spalte still verrutschen lassen und
+        // waere zudem unpruefbar, solange keine Beschriftung so lang ist.
+        // Stattdessen haelt FuseScreenModelLabelWidthTest die Laenge fest.
         b.append(label.padEnd(16)).append(value).append('\n')
     }
 
@@ -390,7 +400,7 @@ object FuseScreenModel {
      */
     private fun evidenceZeilen(b: StringBuilder, outcome: FuseCycleRunner.Outcome) {
         outcome.evidenceEpisodeDenial?.let { grund ->
-            row(b, "Evidence-Episode", "NICHT eroeffnet - $grund, zusaetzlicher Kredit 0")
+            row(b, "Evidenz-Episode", "NICHT eroeffnet - $grund, zusaetzlicher Kredit 0")
             // Die Handlungsanweisung haengt am GRUND: gegen einen nicht
             // durablen Druck hilft erneutes Druecken, gegen einen
             // Uhrenruecksprung nicht - dort waere der Rat schlicht falsch.
@@ -401,6 +411,6 @@ object FuseScreenModel {
             }
         }
         if (outcome.evidenceCreditRevoked && outcome.evidenceEpisodeId > 0L)
-            row(b, "Evidence-Kredit", "WIDERRUFEN (Ruecknahme) - Episode und Bezahlung laufen weiter")
+            row(b, "Evidenz-Kredit", "WIDERRUFEN (Ruecknahme) - Episode und Bezahlung laufen weiter")
     }
 }
