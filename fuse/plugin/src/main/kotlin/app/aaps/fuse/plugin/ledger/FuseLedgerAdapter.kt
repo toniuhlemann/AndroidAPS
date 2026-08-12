@@ -654,6 +654,17 @@ object LedgerFacts {
  */
 class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) {
 
+    /**
+     * Die Messwerte des LETZTEN Schreibvorgangs - Ausgang, Bytes, Datei-
+     * und Verzeichnis-fsync in ms. `null` heisst: in diesem Prozess wurde
+     * noch nicht geschrieben.
+     *
+     * Sie standen bis zum 12.08. nur im Store und wurden ausschliesslich
+     * von Tests gelesen - am Geraet waren sie damit unbeobachtbar. Eine
+     * Telemetrie, die niemand sehen kann, ist keine.
+     */
+    val lastPersistStats: FuseLedgerStore.PersistStats? get() = store.lastPersistStats
+
     companion object {
 
         /** Bindungsfenster ohne juengeren Vorschlag [ms]: der Loop liefert

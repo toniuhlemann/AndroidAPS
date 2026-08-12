@@ -527,4 +527,56 @@ class FuseStateExportTest {
         val g = j.getJSONArray("gaps")
         return (0 until g.length()).map { g.getJSONObject(it).getString("reason") }
     }
+    /**
+     * DIE PERSIST-TELEMETRIE MUSS IM TRAIL STEHEN.
+     *
+     * Bis zum 12.08. las sie ausschliesslich der Store-Test - am Geraet war
+     * nicht feststellbar, ob der fsync ueberhaupt laeuft, was er kostet oder
+     * ob ein Schreibvorgang GESCHEITERT ist. Genau der Fehlerfall ist der
+     * teure: der Ledger meldet dann keine Durabilitaet, und niemand sieht es.
+     */
+    @Test
+    fun `die Persist-Telemetrie steht im Ledgerblock`() {
+        val stats = app.aaps.fuse.plugin.ledger.FuseLedgerStore.PersistStats(
+            bytes = 53_676, totalMs = 12, fileSyncMs = 7, dirSyncMs = 3,
+            outcome = app.aaps.fuse.plugin.ledger.FuseLedgerStore.PersistOutcome.OK,
+        )
+        val l = FuseStateJson.record(
+            "s#1", outcome(), rt(), cfg, BUILD, 0L, null,
+            ledger = FuseStateJson.LedgerSnapshot(1L, app.aaps.fuse.core.ledger.LedgerState(), stats),
+        ) { 5_000_000L }.getJSONObject("ledger").getJSONObject("persist")
+
+        assertEquals("OK", l.getString("outcome"))
+        assertEquals(53_676, l.getInt("bytes"))
+        assertEquals(12L, l.getLong("totalMs"))
+        assertEquals(7L, l.getLong("fileSyncMs"))
+        assertEquals(3L, l.getLong("dirSyncMs"))
+    }
+
+    /** Ein GESCHEITERTER Schreibvorgang muss ebenso exportieren - sonst haette
+     *  ausgerechnet der interessante Fall keine Zahlen. */
+    @Test
+    fun `auch ein gescheiterter Persist steht im Trail`() {
+        val stats = app.aaps.fuse.plugin.ledger.FuseLedgerStore.PersistStats(
+            bytes = 100, totalMs = 4, fileSyncMs = 0, dirSyncMs = 0,
+            outcome = app.aaps.fuse.plugin.ledger.FuseLedgerStore.PersistOutcome.DIR_SYNC_FAILED,
+        )
+        val l = FuseStateJson.record(
+            "s#1", outcome(), rt(), cfg, BUILD, 0L, null,
+            ledger = FuseStateJson.LedgerSnapshot(1L, app.aaps.fuse.core.ledger.LedgerState(), stats),
+        ) { 5_000_000L }.getJSONObject("ledger").getJSONObject("persist")
+
+        assertEquals("DIR_SYNC_FAILED", l.getString("outcome"))
+    }
+
+    /** Ohne Schreibvorgang in diesem Prozess: `null`, nicht Nullen. Eine 0 ms
+     *  saehe aus wie ein blitzschneller fsync. */
+    @Test
+    fun `ohne Schreibvorgang steht null statt Nullen`() {
+        val l = FuseStateJson.record(
+            "s#1", outcome(), rt(), cfg, BUILD, 0L, null,
+            ledger = FuseStateJson.LedgerSnapshot(1L, app.aaps.fuse.core.ledger.LedgerState()),
+        ) { 5_000_000L }.getJSONObject("ledger")
+        assertTrue(l.isNull("persist"))
+    }
 }

@@ -1027,7 +1027,7 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
                 nowNs = System::nanoTime,
                 // Die Sicht NACH den Buchungen dieses Zyklus - genau der
                 // Zustand, mit dem der naechste Zyklus rechnen wird.
-                ledger = FuseStateJson.LedgerSnapshot(ledgerAdapter.revision, ledgerAdapter.state),
+                ledger = FuseStateJson.LedgerSnapshot(ledgerAdapter.revision, ledgerAdapter.state, ledgerAdapter.lastPersistStats),
                 publicationGate = publicationGate,
                 // B3: die Diagnose neben dem Sperrgrund. Der Grund steht im
                 // Publikationsgate, das WARUM steht hier.

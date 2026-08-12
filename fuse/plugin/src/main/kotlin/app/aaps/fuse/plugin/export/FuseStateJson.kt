@@ -65,7 +65,13 @@ object FuseStateJson {
 
     /** Die Ledger-Sicht NACH den Buchungen des Zyklus. [revision] ist die
      *  monotone Aenderungszaehlung des Adapters (R89 §360). */
-    data class LedgerSnapshot(val revision: Long, val state: app.aaps.fuse.core.ledger.LedgerState)
+    data class LedgerSnapshot(
+        val revision: Long,
+        val state: app.aaps.fuse.core.ledger.LedgerState,
+        /** Messwerte des letzten Schreibvorgangs; `null` = in diesem
+         *  Prozess noch nicht geschrieben. */
+        val persist: app.aaps.fuse.plugin.ledger.FuseLedgerStore.PersistStats? = null,
+    )
 
     /**
      * Was das PUBLIKATIONSGATE mit diesem Zyklus gemacht hat (B0c).
@@ -642,6 +648,17 @@ object FuseStateJson {
                             .put("delivery", e.delivery.name)
                             .put("commitmentU", fin(e.commitmentU))
                     }))
+                    // DIE DURABILITAET ALS ZAHLEN. Ohne sie ist am Geraet nicht
+                    // zu sehen, ob der fsync ueberhaupt laeuft und was er kostet -
+                    // und ein FEHLGESCHLAGENER Persist waere voellig unsichtbar.
+                    .put("persist", ledger.persist?.let { p ->
+                        JSONObject()
+                            .put("outcome", p.outcome.name)
+                            .put("bytes", p.bytes)
+                            .put("totalMs", p.totalMs)
+                            .put("fileSyncMs", p.fileSyncMs)
+                            .put("dirSyncMs", p.dirSyncMs)
+                    } ?: JSONObject.NULL)
                     .put("activeErrors", JSONArray(ls.errors.filter { it.active }.map { r ->
                         JSONObject()
                             .put("proposalId", r.proposalId ?: JSONObject.NULL)
