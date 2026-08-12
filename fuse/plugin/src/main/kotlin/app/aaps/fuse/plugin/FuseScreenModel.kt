@@ -169,12 +169,13 @@ object FuseScreenModel {
             // es gibt trotzdem keine Episode und keinen Kredit. Der Nutzer
             // muss dann zweimal druecken (zuruecknehmen, neu armen) - das
             // sagen wir hier, statt ihn raten zu lassen.
-            evidenceZeilen(b, outcome)
         }
-        // OHNE Markerzeile ebenfalls: nach einem Neustart mit
-        // zurueckgenommenem Marker gibt es keinen armedTs mehr, und trotzdem
-        // laeuft die Episode noch bis 240 min.
-        if (marker == null || marker.armedTs <= 0L) evidenceZeilen(b, outcome)
+        // IMMER, und ausdruecklich AUSSERHALB des Markerblocks: der hat drei
+        // Ausgaenge, an denen die Zeile sonst verlorenginge - kein Marker,
+        // armedTs 0 nach Ruecknahme, und das `return@let` nach 210 Minuten.
+        // Genau der letzte Fall stand am 12.08. auf dem Testgeraet: Marker von
+        // gestern, Episode abgelehnt, und die Begruendung unsichtbar.
+        evidenceZeilen(b, outcome)
         outcome.mealStats?.let { ms ->
             // T0-Anker (Toni 08.08.): Stand nach 30/60 min AB ESSENSBEGINN,
             // waechst bis zur Marke und friert dann ein - rollierende Fenster

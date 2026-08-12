@@ -104,6 +104,9 @@ class FuseScreenModelTest {
         abort: String? = null,
         signal: FuseSignalSource.Signal? = signal(),
         tail: TailLiability.Report? = null,
+        denial: String? = null,
+        episodeId: Long = 0L,
+        revoked: Boolean = false,
     ) = FuseCycleRunner.Outcome(
         decision = FuseController.Decision(
             smbU, FuseController.TbrAction.KEEP_CURRENT, block, 1.4, 180.0, 95.0, "smbRatio",
@@ -119,6 +122,7 @@ class FuseScreenModelTest {
         candidate = null, candidateGap = null, computeDurationMs = 7L, mealStats = null, policy = null,
         state = null, step = null, sensorEpoch = null, calibrationEpoch = null,
         isfMgdlPerU = 85.0, iobU = 1.2, abortReason = abort,
+        evidenceEpisodeId = episodeId, evidenceEpisodeDenial = denial, evidenceCreditRevoked = revoked,
     )
 
     /** Ohne Zyklus GENAU eine Zeile — kein Geruest aus Nullen, das wie ein
@@ -247,5 +251,66 @@ class FuseScreenModelTest {
     @Test
     fun `das Alter des Laufs wird gezeigt`() {
         assertTrue(FuseScreenModel.render(outcome(), null, now).contains("vor 1 min"))
+    }
+    // ---- Marker- und Episodenzustand auf dem Schirm ------------------------
+
+    /**
+     * DER ABBRUCHZYKLUS MUSS DEN GRUND TRAGEN.
+     *
+     * Nach einem Neustart bricht der Zyklus mangels Signalhistorie erst
+     * einmal ab - und genau dann ist `MARKER_EVENT_NOT_DURABLE` am
+     * wahrscheinlichsten. Stuende dort nur "ABBRUCH", erfuehre der Nutzer
+     * nicht, dass er zweimal druecken muss.
+     */
+    @Test
+    fun `auch ein Abbruch zeigt den Episodenzustand samt Handlungsanweisung`() {
+        val t = FuseScreenModel.render(
+            outcome(abort = "signal: no raw glucose values", signal = null, denial = "MARKER_EVENT_NOT_DURABLE"),
+            null, now,
+        )
+        assertTrue(t.contains("ABBRUCH"))
+        assertTrue(t.contains("MARKER_EVENT_NOT_DURABLE")) { "der Grund muss dastehen" }
+        assertTrue(t.contains("erneut druecken")) { "und was zu tun ist" }
+    }
+
+    /**
+     * EIN ALTER MARKER DARF DIE ZEILE NICHT VERSCHLUCKEN.
+     *
+     * Die Markerzeile verschwindet nach Fenster plus zwei Stunden - der
+     * Ausstieg lag im selben Block wie der Episodenzustand und nahm ihn mit.
+     * Am 12.08. stand genau das auf dem Testgeraet: Marker von gestern,
+     * Episode abgelehnt, Begruendung unsichtbar.
+     */
+    @Test
+    fun `ein 830 Minuten alter Marker verschluckt den Episodenzustand nicht`() {
+        val alt = FuseScreenModel.MarkerInfo(armedTs = now - 830 * 60_000L, windowMin = 90, envelopeU = 3.0)
+        val t = FuseScreenModel.render(outcome(denial = "MARKER_STALE"), null, now, alt)
+        assertTrue(t.contains("MARKER_STALE")) { "die Ablehnung muss sichtbar bleiben: $t" }
+    }
+
+    /** Gegen einen Uhrenruecksprung hilft erneutes Druecken NICHT - der Rat
+     *  waere schlicht falsch. */
+    @Test
+    fun `ein Uhrenruecksprung bekommt die andere Anweisung`() {
+        val t = FuseScreenModel.render(outcome(denial = "MARKER_CLOCK_ROLLBACK"), null, now)
+        assertTrue(t.contains("Uhr ist rueckwaerts gesprungen"))
+        assertFalse(t.contains("erneut druecken")) { "dieser Rat waere wirkungslos" }
+    }
+
+    /** Der Widerruf ist keine beendete Episode - und der Schirm muss beides
+     *  auseinanderhalten. */
+    @Test
+    fun `ein widerrufener Kredit meldet sich bei laufender Episode`() {
+        val t = FuseScreenModel.render(outcome(episodeId = now - 30 * 60_000L, revoked = true), null, now)
+        assertTrue(t.contains("WIDERRUFEN"))
+        assertTrue(t.contains("laufen weiter")) { "Episode und Bezahlung bleiben" }
+    }
+
+    /** Ohne Marker und ohne Episode bleibt der Schirm still - eine Zeile
+     *  "alles in Ordnung" waere Geruest. */
+    @Test
+    fun `ohne Marker steht keine Evidenzzeile`() {
+        val t = FuseScreenModel.render(outcome(), null, now)
+        assertFalse(t.contains("Evidence-"))
     }
 }
