@@ -129,8 +129,22 @@ class FuseLedgerStore(private val durability: Durability = Durability.ANDROID) {
          */
         const val SEAL_PENDING_NAME = "fuse_ledger.sealpending"
 
+        /**
+         * TRANSAKTIONSMARKER DER REPARATUR.
+         *
+         * Getrennt von [SEAL_PENDING_NAME], obwohl beide dasselbe bewirken -
+         * der Grund ist die Diagnose: "ein Versiegelungsvorgang wurde
+         * unterbrochen" und "eine Reparatur wurde unterbrochen" sind zwei
+         * verschiedene Lagen, und wer den falschen Text liest, sucht am
+         * falschen Ort.
+         */
+        const val REPAIR_PENDING_NAME = "fuse_ledger.repairpending"
+
         fun sealPendingExists(dir: File): Boolean =
             runCatching { File(dir, SEAL_PENDING_NAME).isFile }.getOrDefault(false)
+
+        fun repairPendingExists(dir: File): Boolean =
+            runCatching { File(dir, REPAIR_PENDING_NAME).isFile }.getOrDefault(false)
 
         /** NUR FUER TESTS: einen unterbrochenen Persist nachstellen. */
         fun markSealPendingForTest(dir: File): Boolean =
@@ -316,6 +330,40 @@ class FuseLedgerStore(private val durability: Durability = Durability.ANDROID) {
      * Verzeichniseintrag. Ohne beides waere er nach einem Stromausfall
      * moeglicherweise nicht da - und genau dann wird er gebraucht.
      */
+    /**
+     * Den Reparatur-Transaktionsmarker durabel setzen.
+     *
+     * IDEMPOTENT, anders als [markSealPending]: ein vorhandener Marker stammt
+     * aus einer abgebrochenen Reparatur, und die neue ist genau der sanktio-
+     * nierte Weg, sie zu Ende zu bringen. Die Nicht-Ueberschreib-Regel dort
+     * schuetzt gegen SELBSTWAESCHE durch einen normalen Zyklus - hier gibt es
+     * keinen normalen Zyklus, sondern eine ausdrueckliche Bedienhandlung.
+     */
+    /** Den Durabilitaets-Nachweis auch fuer Nachbardateien im selben
+     *  Verzeichnis oeffnen (Reparaturprotokoll) - eine zweite
+     *  Durability-Instanz waere eine zweite Zusicherung. */
+    fun syncFile(fd: java.io.FileDescriptor) = durability.syncFile(fd)
+
+    fun markRepairPending(dir: File, content: String): Boolean = runCatching {
+        if (!dir.exists() && !dir.mkdirs() && !dir.exists()) return@runCatching false
+        val f = File(dir, REPAIR_PENDING_NAME)
+        if (f.isFile) return@runCatching true
+        FileOutputStream(f).use { out ->
+            out.write(content.toByteArray(Charsets.UTF_8))
+            out.flush()
+            durability.syncFile(out.fd)
+        }
+        durability.syncDirectory(dir)
+        f.isFile
+    }.getOrDefault(false)
+
+    fun clearRepairPending(dir: File): Boolean = runCatching {
+        val f = File(dir, REPAIR_PENDING_NAME)
+        if (f.isFile && !f.delete()) return@runCatching false
+        durability.syncDirectory(dir)
+        !f.exists()
+    }.getOrDefault(false)
+
     fun markSealPending(dir: File, content: String): Boolean = runCatching {
         if (!dir.exists() && !dir.mkdirs() && !dir.exists()) return@runCatching false
         val f = File(dir, SEAL_PENDING_NAME)

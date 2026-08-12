@@ -132,6 +132,10 @@ object FuseLedgerRepair {
         // (Toni 12.08.). Ohne diese Zeile waere der Hold dauerhaft, aber nicht
         // bedienbar - ein Ausgang, den man nicht gehen kann, ist keiner.
         val sealPending = FuseLedgerStore.sealPendingExists(dir)
+        // Eine ABGEBROCHENE Reparatur ist selbst ein Reparaturgrund - sonst
+        // waere der eine Weg, der aus dem Hold fuehrt, nach seinem eigenen
+        // Abbruch versperrt.
+        val repairPending = FuseLedgerStore.repairPendingExists(dir)
         val gehalten = decoded?.state?.holdActuation == true
         // Sentinel ohne lesbare Generation = Verlust. Auch das ist ein
         // Reparaturfall, sonst bliebe genau der Zustand ohne Ausgang, fuer den
@@ -163,12 +167,13 @@ object FuseLedgerRepair {
             // wir nur, dass ein Versiegelungsvorgang unterbrochen wurde und
             // eine der drei Generationen einen nicht bestaetigten Stand
             // tragen kann.
+            repairPending -> "eine Reparatur wurde unterbrochen (${FuseLedgerStore.REPAIR_PENDING_NAME})"
             sealPending -> "ein Versiegelungsvorgang wurde unterbrochen (${FuseLedgerStore.SEAL_PENDING_NAME})"
             holdMarker  -> "dauerhafter Hold-Marker liegt vor"
             gehalten    -> "der Zustand haelt die Aktuation (nicht quittierbarer Fehler)"
             else        -> "nichts zu reparieren - kein Hold, kein Verlust"
         }
-        return Inspection(holdMarker || gehalten || verlust || sealPending, why, discarded)
+        return Inspection(holdMarker || gehalten || verlust || sealPending || repairPending, why, discarded)
     }
 
     /**
@@ -191,22 +196,26 @@ object FuseLedgerRepair {
         if (!lage.repairable) return Result.Refused(lage.why)
         val discarded = lage.discarded
 
-        // ERST der Hold-Marker, DANN die Generationen. Bricht das Entfernen
-        // ab, steht der bisherige Ledger noch vollstaendig da und der Hold
-        // ebenfalls - also der Zustand von vorher. Umgekehrt haette ein
-        // Fehlschlag nach der Quarantaene einen leeren Ledger MIT Hold
-        // hinterlassen: nichts repariert und die Vorgeschichte trotzdem weg.
-        if (!FuseLedgerStore.clearHoldVerified(dir))
-            return Result.Refused("Hold-Marker liess sich nicht entfernen - nichts veraendert")
-
-        // Der Write-ahead-Marker ebenso, und aus demselben Grund: bliebe er
-        // liegen, hielte der naechste Start weiter an - die Reparatur haette
-        // die Vorgeschichte in Quarantaene gelegt und den Ausgang trotzdem
-        // nicht geoeffnet. Die Quarantaene unten erfasst alle DREI
-        // Generationskandidaten, also auch das unversiegelte `.tmp`, das den
-        // Marker verursacht hat.
-        if (!store.clearSealPending(dir))
-            return Result.Refused("${FuseLedgerStore.SEAL_PENDING_NAME} liess sich nicht entfernen - nichts veraendert")
+        // ---- DIE REPARATUR IST SELBST EINE TRANSAKTION (Toni 12.08.) -----
+        //
+        // Vorher raeumte sie BEIDE Schutzmarker ab und tat danach das
+        // Riskante. Ein Absturz direkt nach dem Abraeumen liess die
+        // unbestaetigten Generationen ohne jeden Marker zurueck; ein Fehler
+        // beim frischen Schreiben konnte sogar ein neues `.tmp` hinterlassen,
+        // ebenfalls ungeschuetzt. Der eine Weg aus dem Hold heraus war damit
+        // die einzige Stelle ohne Write-ahead-Schutz.
+        //
+        // Reihenfolge jetzt:
+        //   1. Transaktionsmarker durabel setzen
+        //   2. Kandidaten in Quarantaene
+        //   3. frische Generation, Sentinel und Protokoll NACHWEISLICH
+        //   4. Hold-Marker entfernen
+        //   5. ganz zuletzt die Transaktionsmarker
+        //
+        // Bei jedem Fehler bleibt mindestens ein Marker stehen, der Start
+        // haelt weiter an, und eine erneute Reparatur ist moeglich.
+        if (!store.markRepairPending(dir, "REPAIR_PENDING by=$by ts=$nowTs"))
+            return Result.Refused("Transaktionsmarker liess sich nicht setzen - nichts veraendert")
 
         val quarantined = FuseLedgerStore.quarantine(
             listOf(
@@ -220,11 +229,10 @@ object FuseLedgerRepair {
         // EINE LEERE, GUELTIGE NACHFOLGEGENERATION - nicht einfach ein leeres
         // Verzeichnis.
         //
-        // Das ist keine Kosmetik, sondern folgt zwingend aus dem Sentinel: er
-        // bleibt stehen (s. unten), und "Sentinel ohne lesbare Generation" IST
-        // die Verlustdefinition. Ohne diese Zeile haette die Reparatur den
-        // Hold geoeffnet und beim naechsten Start sofort einen neuen
-        // ausgeloest - der Weg haette also nie funktioniert.
+        // Das folgt zwingend aus dem Sentinel: er bleibt stehen, und "Sentinel
+        // ohne lesbare Generation" IST die Verlustdefinition. Ohne diese Zeile
+        // haette die Reparatur den Hold geoeffnet und beim naechsten Start
+        // sofort einen neuen ausgeloest.
         //
         // Die Revision zaehlt weiter statt bei 0 anzufangen: sie ist die
         // Auswahlgroesse zwischen den Generationen, und eine ruecklaufende
@@ -242,14 +250,29 @@ object FuseLedgerRepair {
                 ).toString(),
             )
         }.getOrDefault(false)
+        if (!freshWritten)
+            return Result.Refused("die frische Generation liess sich nicht schreiben - Marker bleibt, Reparatur wiederholbar")
 
-        // Der Ledger HAT existiert - der Marker dafuer bleibt. Fehlte er
-        // (etwa weil die Reparatur einen Verlustfall aufloest), wird er
-        // gesetzt: nach dieser Reparatur ist ein Erststart ausgeschlossen.
-        FuseLedgerStore.writeSentinel(dir)
+        if (!FuseLedgerStore.writeSentinel(dir))
+            return Result.Refused("der Sentinel liess sich nicht setzen - Marker bleibt, Reparatur wiederholbar")
 
+        // DAS PROTOKOLL IST TEIL DER ZUSAGE, nicht Zierrat: es traegt die
+        // Provenienz des Zuruecksetzens. Verschluckte es seinen Fehler, saehe
+        // die Reparatur gelungen aus, waehrend genau das fehlte, was sie
+        // nachvollziehbar macht.
         val record = ResetRecord(nowTs, by, reason, discarded)
-        appendLog(dir, record)
+        if (!appendLog(dir, record, store))
+            return Result.Refused("das Reparaturprotokoll liess sich nicht schreiben - Marker bleibt, Reparatur wiederholbar")
+
+        // ERST JETZT die Schutzmarker - in dieser Reihenfolge, damit ein
+        // Absturz dazwischen den Hold behaelt statt ihn halb zu oeffnen.
+        if (!FuseLedgerStore.clearHoldVerified(dir))
+            return Result.Refused("Hold-Marker liess sich nicht entfernen - Reparatur wiederholbar")
+        if (!store.clearSealPending(dir))
+            return Result.Refused("${FuseLedgerStore.SEAL_PENDING_NAME} liess sich nicht entfernen - Reparatur wiederholbar")
+        if (!store.clearRepairPending(dir))
+            return Result.Refused("${FuseLedgerStore.REPAIR_PENDING_NAME} liess sich nicht entfernen - Reparatur wiederholbar")
+
         return Result.Done(record, quarantined, freshWritten)
     }
 
@@ -304,10 +327,25 @@ object FuseLedgerRepair {
     /** ANHAENGEND. Ein Ueberschreiben wuerde die vorige Reparatur verschwinden
      *  lassen, und mehrere Reparaturen hintereinander sind genau das Muster,
      *  das jemand spaeter sehen muss. */
-    private fun appendLog(dir: File, r: ResetRecord) {
-        runCatching {
-            if (!dir.exists()) dir.mkdirs()
-            File(dir, LOG_NAME).appendText(encode(r).toString() + "\n", Charsets.UTF_8)
+    /**
+     * Das Reparaturprotokoll fortschreiben - DURABEL und mit Rueckmeldung.
+     *
+     * Es verschluckte bis zum 12.08. jeden Fehler und meldete nichts. Damit
+     * konnte die Reparatur gelungen aussehen, waehrend die versprochene
+     * Provenienz fehlte - und niemand haette es gemerkt, denn die einzige
+     * Stelle, die davon erzaehlt, ist genau dieses Protokoll.
+     *
+     * @return ob die Zeile nachweislich auf dem Medium steht.
+     */
+    private fun appendLog(dir: File, r: ResetRecord, store: FuseLedgerStore): Boolean = runCatching {
+        if (!dir.exists() && !dir.mkdirs() && !dir.exists()) return@runCatching false
+        val f = File(dir, LOG_NAME)
+        val zeile = encode(r).toString()
+        java.io.FileOutputStream(f, true).use { out ->
+            out.write((zeile + "\n").toByteArray(Charsets.UTF_8))
+            out.flush()
+            store.syncFile(out.fd)
         }
-    }
+        f.isFile && f.readLines(Charsets.UTF_8).lastOrNull { it.isNotBlank() } == zeile
+    }.getOrDefault(false)
 }

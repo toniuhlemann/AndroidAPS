@@ -263,4 +263,88 @@ class FuseLedgerRepairTest {
         // unversiegelte .tmp, das den Marker verursacht hat.
         assertFalse(File(dir, FuseLedgerStore.FILE_NAME + ".tmp").isFile)
     }
+    /**
+     * DIE REPARATUR BRAUCHT SELBST EINE TRANSAKTION (Toni 12.08.).
+     *
+     * Sie raeumte beide Schutzmarker ab, BEVOR sie das Riskante tat. Ein
+     * Absturz direkt danach liesse die unbestaetigten Generationen ohne jeden
+     * Marker zurueck - und ein Fehler beim Schreiben der frischen Generation
+     * kann sogar ein neues `.tmp` hinterlassen, ebenfalls ungeschuetzt.
+     *
+     * Hier abgebrochen an der teuersten Stelle: die Quarantaene ist gelaufen,
+     * das Schreiben der frischen Generation scheitert. Danach muss der Start
+     * weiter halten UND eine erneute Reparatur moeglich sein.
+     */
+    @Test
+    fun `bricht die Reparatur beim frischen Write ab, bleibt der Hold`(@TempDir dir: File) {
+        val store = FuseLedgerStore()
+        assertTrue(
+            store.writeVerified(dir, LedgerCodec.encode(app.aaps.fuse.core.ledger.LedgerState(), EpisodeBudgets(), 3L).toString())
+        )
+        assertTrue(FuseLedgerStore.writeSentinel(dir))
+        File(dir, FuseLedgerStore.FILE_NAME + ".tmp")
+            .writeText(LedgerCodec.encode(app.aaps.fuse.core.ledger.LedgerState(), EpisodeBudgets(), 9L).toString())
+        assertTrue(FuseLedgerStore.markSealPendingForTest(dir))
+
+        // Das frische Schreiben zum Scheitern bringen - und NUR das: der
+        // erste Datei-fsync (der Transaktionsmarker) muss gelingen, sonst
+        // scheitert die Reparatur schon in Schritt 1 und der interessante
+        // Abbruch nach der Quarantaene waere gar nicht hergestellt. Genau
+        // daran war der erste Anlauf dieses Tests blind.
+        val kaputt = FuseLedgerStore(FakeDurability(fileFailsFrom = 2))
+        val r = FuseLedgerRepair.perform(dir, 1_700_000_000_000L, by = "Test", reason = "Abbruch", store = kaputt)
+        assertTrue(r is FuseLedgerRepair.Result.Refused) { "die Reparatur darf sich nicht als gelungen ausgeben: $r" }
+        // WELCHER Schritt gescheitert ist, gehoert dazu - und zwar nicht als
+        // Kosmetik: ohne diese Zusicherung ist der Test blind dagegen, dass
+        // der frische Write ungeprueft bleibt. Er scheiterte dann eine Stufe
+        // spaeter (am Protokoll), meldete ebenfalls Refused, und die
+        // Mutationsprobe blieb gruen.
+        assertTrue((r as FuseLedgerRepair.Result.Refused).why.contains("frische Generation")) { r.why }
+
+        // DER TRANSAKTIONSMARKER MUSS LIEGENBLEIBEN. Ohne diese Zusicherung
+        // waere der Test blind gegen die eigentliche Gefahr: eine Reparatur,
+        // die den frischen Write nicht prueft, raeumt danach alle Marker ab
+        // und laesst quarantaenisierte Generationen ohne Schutz zurueck.
+        assertTrue(FuseLedgerStore.repairPendingExists(dir)) { "Marker muss bleiben" }
+
+        // DER NEUSTART MUSS WEITER HALTEN.
+        val a = FuseLedgerAdapter().also {
+            it.loadOnce(dir, "epoch-a", 1_700_000_060_000L, FuseActivePump(PumpType.GENERIC_AAPS.name, false))
+        }
+        assertTrue(a.recoveryHold) { "ohne frische Generation darf nichts weiterlaufen" }
+
+        // UND EINE ERNEUTE REPARATUR MUSS GEHEN.
+        assertTrue(FuseLedgerRepair.inspect(dir).repairable) { "sonst gaebe es keinen Ausweg mehr" }
+        val zweite = FuseLedgerRepair.perform(dir, 1_700_000_120_000L, by = "Test", reason = "zweiter Anlauf")
+        assertTrue(zweite is FuseLedgerRepair.Result.Done) { "$zweite" }
+        assertTrue((zweite as FuseLedgerRepair.Result.Done).freshLedgerWritten)
+
+        val b = FuseLedgerAdapter().also {
+            it.loadOnce(dir, "epoch-b", 1_700_000_180_000L, FuseActivePump(PumpType.GENERIC_AAPS.name, false))
+        }
+        assertFalse(b.recoveryHold) { "nach gelungener Reparatur laeuft es" }
+    }
+
+    /** Und das Protokoll ist Teil der Zusage: scheitert es, darf die
+     *  Reparatur nicht als gelungen gelten - sonst fehlt die versprochene
+     *  Provenienz, und niemand merkt es. */
+    @Test
+    fun `ein gescheitertes Protokoll laesst die Reparatur nicht gelingen`(@TempDir dir: File) {
+        val store = FuseLedgerStore()
+        assertTrue(
+            store.writeVerified(dir, LedgerCodec.encode(app.aaps.fuse.core.ledger.LedgerState(), EpisodeBudgets(), 3L).toString())
+        )
+        assertTrue(FuseLedgerStore.writeSentinel(dir))
+        assertTrue(FuseLedgerStore.markSealPendingForTest(dir))
+        // Ein VERZEICHNIS unter dem Protokollnamen - appendText wirft.
+        assertTrue(File(dir, FuseLedgerRepair.LOG_NAME).mkdirs())
+
+        val r = FuseLedgerRepair.perform(dir, 1_700_000_000_000L, by = "Test", reason = "Protokoll blockiert")
+        assertTrue(r is FuseLedgerRepair.Result.Refused) { "ohne Protokoll keine gelungene Reparatur: $r" }
+
+        val a = FuseLedgerAdapter().also {
+            it.loadOnce(dir, "epoch-a", 1_700_000_060_000L, FuseActivePump(PumpType.GENERIC_AAPS.name, false))
+        }
+        assertTrue(a.recoveryHold)
+    }
 }

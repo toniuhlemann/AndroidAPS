@@ -933,6 +933,14 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
         // nicht bestaetigten Verzeichniseintrag oder einen Stromausfall
         // mitten in der Rotation - alle drei sind Gruende, NICHT zu
         // uebernehmen.
+        if (FuseLedgerStore.repairPendingExists(dir)) {
+            recoveryHold = true
+            log(
+                "FUSE ledger RECOVERY_HOLD: ${FuseLedgerStore.REPAIR_PENDING_NAME} vorhanden - eine Reparatur " +
+                    "wurde unterbrochen; die Generationen koennen unvollstaendig sein. Erneute Reparatur " +
+                    "noetig (dir=$dir)"
+            )
+        }
         if (FuseLedgerStore.sealPendingExists(dir)) {
             recoveryHold = true
             log(
@@ -1671,7 +1679,7 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
         // Marker geprueft wird). Ihn jetzt zu schreiben hiesse, genau den
         // unklaren Stand zu beglaubigen. Also: nichts anfassen, weder Marker
         // noch Generationen - die Reparatur braucht die Spur unveraendert.
-        if (FuseLedgerStore.sealPendingExists(dir)) {
+        if (FuseLedgerStore.sealPendingExists(dir) || FuseLedgerStore.repairPendingExists(dir)) {
             persistFailed = true
             return false
         }
