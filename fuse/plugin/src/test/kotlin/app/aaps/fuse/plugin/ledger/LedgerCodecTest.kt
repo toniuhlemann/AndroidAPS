@@ -542,8 +542,7 @@ class LedgerCodecTest {
         val e = EpisodeBudgets()
         e.evidenceState = app.aaps.fuse.core.controller.EvidenceStock.State(
             stockMgdl = 12.5, episodeId = 1_786_000_000_000L, episodeStartTs = 1_786_000_000_000L,
-            lastAcceptedTs = 1_786_000_060_000L, lastAdjusted = 143.25,
-            segmentStartTs = 1_785_999_000_000L, lastDecayTs = 1_786_000_060_000L,
+            lastAcceptedTs = 1_786_000_060_000L, lastDecayTs = 1_786_000_060_000L,
             lastCommittedU = 0.85, rebaseRequired = true,
         )
         val zurueck = LedgerCodec.decodeEpisodes(LedgerCodec.encodeEpisodes(e))

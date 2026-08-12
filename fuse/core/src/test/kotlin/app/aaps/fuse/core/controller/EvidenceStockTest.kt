@@ -21,8 +21,29 @@ class EvidenceStockTest {
      *  Replay nicht versehentlich gegen eine andere rechnet. */
     private val CFG = EvidenceStock.Config()
 
-    private fun schritt(prev: EvidenceStock.State, input: EvidenceStock.Input) =
-        EvidenceStock.step(prev, input, CFG)
+    /**
+     * EINE gemeinsame bereinigte Reihe fuer alle Punkte eines Tests - genau
+     * wie eine `adjust()`-Ausgabe. Das Intervall entsteht daraus, nicht aus
+     * zwei Werten verschiedener Zyklen.
+     */
+    private val reihe = HashMap<Long, Double>()
+
+    /**
+     * EIN SEGMENTBRUCH heisst jetzt: der Anker steht nicht mehr in der
+     * aktuellen `adjust()`-Ausgabe. Genau so sieht ihn der Kern - er kennt
+     * keinen Segmentanker mehr, sondern nur noch ein bildbares oder nicht
+     * bildbares Intervall.
+     */
+    private fun bruch() = reihe.clear()
+
+    private fun schritt(prev: EvidenceStock.State, input: EvidenceStock.Input): EvidenceStock.Result {
+        val anker = reihe[prev.lastAcceptedTs]
+        val jetzt = reihe[input.sourceTs]
+        val iv = if (anker != null && jetzt != null && input.sourceTs > prev.lastAcceptedTs)
+            EvidenceStock.AdjustedInterval(prev.lastAcceptedTs, input.sourceTs, jetzt - anker)
+        else null
+        return EvidenceStock.step(prev, input.copy(interval = iv), CFG)
+    }
 
     private fun eingabe(
         minute: Int,
@@ -32,14 +53,11 @@ class EvidenceStockTest {
         healthReady: Boolean = true,
         measuredLow: Boolean = false,
         episodeId: Long = 1L,
-        segmentStartTs: Long = T0,
         persistedStateKnown: Boolean = true,
         creditRevoked: Boolean = false,
-    ) = EvidenceStock.Input(
+    ) = eintragen(T0 + minute * 60_000L, adjusted).let { EvidenceStock.Input(
         nowMs = T0 + minute * 60_000L,
         sourceTs = T0 + minute * 60_000L,
-        adjusted = adjusted,
-        segmentStartTs = segmentStartTs,
         driveLowerMgdlPerMin = driveLower,
         healthReady = healthReady,
         measuredLow = measuredLow,
@@ -48,7 +66,10 @@ class EvidenceStockTest {
         isfMgdlPerU = ISF,
         persistedStateKnown = persistedStateKnown,
         creditRevoked = creditRevoked,
-    )
+        interval = null,
+    ) }
+
+    private fun eintragen(ts: Long, adjusted: Double) { reihe[ts] = adjusted }
 
     /** Erster Zyklus: es gibt keinen Bezugspunkt, also keinen Zufluss. Der
      *  Bestand entsteht frueestens beim ZWEITEN Messpunkt. */
@@ -58,7 +79,6 @@ class EvidenceStockTest {
         assertEquals(0.0, r.state.stockMgdl, 1e-9)
         assertEquals(EvidenceStock.NoInflow.SEGMENT_BREAK, r.noInflow)
         assertEquals(T0, r.state.lastAcceptedTs)
-        assertEquals(100.0, r.state.lastAdjusted, 1e-9)
     }
 
     /** Der Zuwachs der bereinigten Reihe IST die Stoerung - Tonis Herleitung. */
@@ -135,8 +155,9 @@ class EvidenceStockTest {
      *  startet je Segment neu bei 0. Dann wird ausgesetzt, nicht geschaetzt. */
     @Test
     fun `ueber einen Segmentbruch fliesst nichts zu`() {
-        var s = schritt(EvidenceStock.State(), eingabe(0, 100.0)).state
-        val r = schritt(s, eingabe(1, 900.0, segmentStartTs = T0 + 60_000L))
+        val s = schritt(EvidenceStock.State(), eingabe(0, 100.0)).state
+        bruch()
+        val r = schritt(s, eingabe(1, 900.0))
         assertEquals(0.0, r.inflowMgdl, 1e-9)
         assertEquals(EvidenceStock.NoInflow.SEGMENT_BREAK, r.noInflow)
     }
@@ -317,7 +338,8 @@ class EvidenceStockTest {
         s = schritt(s, eingabe(1, 200.0)).state
         val vorLuecke = s.stockMgdl
         // 6 Minuten Luecke, danach neues Segment.
-        val r = schritt(s, eingabe(7, 300.0, segmentStartTs = T0 + 7 * 60_000L))
+        bruch()
+        val r = schritt(s, eingabe(7, 300.0))
         assertEquals(EvidenceStock.NoInflow.SEGMENT_BREAK, r.noInflow)
         assertEquals(0.0, r.inflowMgdl, 1e-9, "ueber die Luecke keine Differenz")
         assertEquals(0.0, r.creditMgdlPerMin, 1e-9, "Ausgabe waehrend des Bruchs gesperrt")
@@ -325,7 +347,6 @@ class EvidenceStockTest {
             r.state.stockMgdl < vorLuecke * 0.4,
             "der Bestand muss waehrend der Luecke abgebaut haben: $vorLuecke -> ${r.state.stockMgdl}",
         )
-        assertEquals(300.0, r.state.lastAdjusted, 1e-9, "nur die Messbasis wird neu gesetzt")
     }
 
     /**
@@ -526,7 +547,8 @@ class EvidenceStockTest {
     @Test
     fun `ein Segmentbruch sperrt statt einzuschlafen`() {
         val s = schritt(EvidenceStock.State(), eingabe(0, 100.0)).state
-        val r = schritt(s, eingabe(1, 140.0, segmentStartTs = T0 + 60_000L))
+        bruch()
+        val r = schritt(s, eingabe(1, 140.0))
         assertEquals(EvidenceStock.Phase.SUSPENDED, r.phase)
     }
 
@@ -654,7 +676,7 @@ class EvidenceStockTest {
     fun `Bestand ohne Episodenstart gilt als unmoeglich`() {
         val kaputt = EvidenceStock.State(
             stockMgdl = 30.0, episodeId = 1L, episodeStartTs = 0L,
-            lastAcceptedTs = T0, segmentStartTs = T0, lastDecayTs = T0,
+            lastAcceptedTs = T0, lastDecayTs = T0,
         )
         val r = schritt(kaputt, eingabe(1, 130.0))
         assertEquals(EvidenceStock.Phase.UNKNOWN, r.phase)
@@ -669,7 +691,7 @@ class EvidenceStockTest {
     fun `Bestand ohne Messbasis gilt als unmoeglich`() {
         val kaputt = EvidenceStock.State(
             stockMgdl = 30.0, episodeId = 1L, episodeStartTs = T0,
-            lastAcceptedTs = 0L, segmentStartTs = 0L, lastDecayTs = T0,
+            lastAcceptedTs = 0L, lastDecayTs = T0,
         )
         assertEquals(EvidenceStock.Phase.UNKNOWN, schritt(kaputt, eingabe(1, 130.0)).phase)
     }
@@ -684,20 +706,10 @@ class EvidenceStockTest {
     fun `ein Verfallszeitpunkt aus der Zukunft gilt als unmoeglich`() {
         val kaputt = EvidenceStock.State(
             stockMgdl = 30.0, episodeId = 1L, episodeStartTs = T0,
-            lastAcceptedTs = T0, segmentStartTs = T0,
+            lastAcceptedTs = T0,
             lastDecayTs = T0 + 120 * 60_000L,
         )
         assertEquals(EvidenceStock.Phase.UNKNOWN, schritt(kaputt, eingabe(1, 130.0)).phase)
-    }
-
-    /** Segment nach Messpunkt ist in sich widerspruechlich. */
-    @Test
-    fun `eine verdrehte Messbasis gilt als unmoeglich`() {
-        val kaputt = EvidenceStock.State(
-            stockMgdl = 0.0, episodeId = 1L, episodeStartTs = T0,
-            lastAcceptedTs = T0, segmentStartTs = T0 + 60_000L, lastDecayTs = T0,
-        )
-        assertEquals(EvidenceStock.Phase.UNKNOWN, schritt(kaputt, eingabe(2, 130.0)).phase)
     }
 
     /**
@@ -712,7 +724,7 @@ class EvidenceStockTest {
     fun `ein absurd grosser Bestand gilt als unmoeglich`() {
         val kaputt = EvidenceStock.State(
             stockMgdl = CFG.maxStockMgdl + 1.0, episodeId = 1L, episodeStartTs = T0,
-            lastAcceptedTs = T0, segmentStartTs = T0, lastDecayTs = T0,
+            lastAcceptedTs = T0, lastDecayTs = T0,
         )
         val r = schritt(kaputt, eingabe(1, 130.0))
         assertEquals(EvidenceStock.Phase.UNKNOWN, r.phase)
@@ -723,9 +735,12 @@ class EvidenceStockTest {
      *  weiter - sonst waere die Pruefung nur ein Totalausfall. */
     @Test
     fun `ein vollstaendiger persistierter Zustand traegt weiter`() {
+        // Der Anker muss in der Ausgabe stehen - sonst gaebe es kein
+        // Intervall, und der Kern setzte nur die Basis neu.
+        eintragen(T0, 130.0)
         val gut = EvidenceStock.State(
             stockMgdl = 20.0, episodeId = 1L, episodeStartTs = T0,
-            lastAcceptedTs = T0, lastAdjusted = 130.0, segmentStartTs = T0, lastDecayTs = T0,
+            lastAcceptedTs = T0, lastDecayTs = T0,
         )
         val r = schritt(gut, eingabe(1, 133.0))
         assertEquals(EvidenceStock.Phase.ACTIVE, r.phase)
@@ -775,12 +790,124 @@ class EvidenceStockTest {
      */
     @Test
     fun `ein geladener Bestand ist sofort kreditfaehig`() {
+        eintragen(T0, 130.0)
         val geladen = EvidenceStock.State(
             stockMgdl = 20.0, episodeId = 1L, episodeStartTs = T0,
-            lastAcceptedTs = T0, lastAdjusted = 130.0, segmentStartTs = T0, lastDecayTs = T0,
+            lastAcceptedTs = T0, lastDecayTs = T0,
         )
         val r = schritt(geladen, eingabe(1, 130.0))
         assertTrue(r.creditMgdlPerMin > 0.0)
         assertEquals(EvidenceStock.Phase.ACTIVE, r.phase)
+    }
+    // ---- Der Intervallvertrag (Toni 12.08.) ------------------------------
+
+    /**
+     * DERSELBE `sourceTs` FLIESST KEIN ZWEITES MAL ZU.
+     *
+     * Die Exactly-once-Regel ist jetzt im KERN pruefbar statt nur eine
+     * Absprache: nach der Buchung rueckt der Anker auf `toSourceTs`, und
+     * dasselbe Intervall passt danach nicht mehr.
+     */
+    @Test
+    fun `dasselbe Intervall wird nicht zweimal verbucht`() {
+        val basis = schritt(EvidenceStock.State(), eingabe(0, 100.0)).state
+        val erst = schritt(basis, eingabe(1, 130.0))
+        assertEquals(30.0, erst.inflowMgdl, 1e-9)
+
+        // Dasselbe Intervall ein zweites Mal - von Hand, wie es ein
+        // fehlerhafter Aufrufer einreichen wuerde.
+        val nochmal = EvidenceStock.step(
+            erst.state,
+            eingabe(1, 130.0).copy(interval = EvidenceStock.AdjustedInterval(T0, T0 + 60_000L, 30.0)),
+            CFG,
+        )
+        assertEquals(0.0, nochmal.inflowMgdl, 1e-9) { "der Anker passt nicht mehr" }
+    }
+
+    /** MEHRERE neue Punkte auf einmal: EIN gemeinsames Delta, genau einmal -
+     *  nicht je Punkt eines. */
+    @Test
+    fun `mehrere neue Messpunkte fliessen als ein Delta zu`() {
+        val basis = schritt(EvidenceStock.State(), eingabe(0, 100.0)).state
+        eintragen(T0 + 60_000L, 110.0)
+        eintragen(T0 + 120_000L, 125.0)
+        val r = schritt(basis, eingabe(3, 140.0))
+        assertEquals(40.0, r.inflowMgdl, 1e-9) { "100 -> 140 ueber drei Punkte" }
+    }
+
+    /**
+     * EINE KONSTANTE VERSCHIEBUNG DER GANZEN REIHE AENDERT NICHTS.
+     *
+     * Das ist der eigentliche Befund vom 12.08. in Testform: `adjust()` setzt
+     * `cumulativeBgi` am wandernden Fensteranfang auf 0, die Reihe ist also
+     * nur bis auf eine Konstante bestimmt. Ein Zufluss, der sich mit dieser
+     * Konstante aendert, misst den Bezugspunkt statt der Stoerung.
+     */
+    @Test
+    fun `eine konstante Verschiebung der Reihe aendert das Delta nicht`() {
+        fun lauf(offset: Double): Double {
+            reihe.clear()
+            val basis = schritt(EvidenceStock.State(), eingabe(0, 100.0 + offset)).state
+            return schritt(basis, eingabe(1, 130.0 + offset)).inflowMgdl
+        }
+        assertEquals(lauf(0.0), lauf(-5_000.0), 1e-9)
+        assertEquals(lauf(0.0), lauf(+5_000.0), 1e-9)
+        assertEquals(30.0, lauf(0.0), 1e-9)
+    }
+
+    /**
+     * FEHLT DER ANKER, WIRD NICHT NACHGEHOLT.
+     *
+     * Nach einer Luecke steht der alte Anker nicht mehr in der Ausgabe. Die
+     * Differenz ueber die Luecke waere die groesste Zahl des Tages - und
+     * genau die darf nicht als frische Evidenz erscheinen.
+     */
+    @Test
+    fun `nach einer Luecke wird nichts nachgeholt`() {
+        val basis = schritt(EvidenceStock.State(), eingabe(0, 100.0)).state
+        bruch()
+        val r = schritt(basis, eingabe(30, 400.0))
+        assertEquals(0.0, r.inflowMgdl, 1e-9)
+        assertEquals(EvidenceStock.NoInflow.SEGMENT_BREAK, r.noInflow)
+        assertEquals(T0 + 30 * 60_000L, r.state.lastAcceptedTs) { "nur Rebase" }
+    }
+
+    /**
+     * INSULINWIRKUNG OHNE STOERUNG ERZEUGT KEINEN BESTAND.
+     *
+     * Die bereinigte Reihe ist genau dafuer gebaut: `dq1 = Stoerung -
+     * Insulinwirkung`, `dadjusted = dq1 + Insulinwirkung = Stoerung`. Faellt
+     * der Zucker allein durch Insulin, ist die BEREINIGTE Reihe flach - der
+     * Zufluss also 0, obwohl q1 sinkt.
+     *
+     * Hier als Eigenschaft der EINGABE geprueft: eine flache bereinigte Reihe
+     * darf keinen Bestand erzeugen, egal wie stark das Insulin wirkt.
+     */
+    @Test
+    fun `eine flache bereinigte Reihe erzeugt keinen Bestand`() {
+        var r = schritt(EvidenceStock.State(), eingabe(0, 100.0))
+        repeat(5) { i -> r = schritt(r.state, eingabe(i + 1, 100.0, committedU = 0.05 * (i + 1))) }
+        assertEquals(0.0, r.state.stockMgdl, 1e-9)
+        assertEquals(0.0, r.creditMgdlPerMin, 1e-9)
+    }
+
+    /**
+     * STOERUNG PLUS KOMPENSIERENDES INSULIN: das bereinigte Delta ist
+     * weiterhin die STOERUNG.
+     *
+     * Der Zucker steht still - q1 flach -, weil Mahlzeit und Insulin sich
+     * aufheben. Die bereinigte Reihe steigt trotzdem um die Stoerung, und
+     * genau die soll der Bestand sehen. Die Bezahlseite zieht das abgegebene
+     * Insulin danach wieder ab.
+     */
+    @Test
+    fun `Stoerung mit kompensierendem Insulin liefert die Stoerung`() {
+        val basis = schritt(EvidenceStock.State(), eingabe(0, 100.0)).state
+        // 18 mg/dl Stoerung, gleichzeitig 0,20 U abgegeben (= 18 mg/dl bei
+        // ISF 90). q1 stuende still; die BEREINIGTE Reihe steigt um 18.
+        val r = schritt(basis, eingabe(1, 118.0, committedU = 0.20))
+        assertEquals(18.0, r.inflowMgdl, 1e-9) { "die Stoerung, nicht die Netto-Null" }
+        // Und die Bezahlung zieht sie wieder ab - unter die Bodenschwelle.
+        assertEquals(0.0, r.state.stockMgdl, 1e-9) { "18 zugeflossen, 18 bezahlt" }
     }
 }

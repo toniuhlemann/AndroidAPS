@@ -205,6 +205,7 @@ object FuseStateJson {
                     .put("phase", outcome.evidencePhase ?: JSONObject.NULL)
                     .put("stockMgdl", outcome.evidenceStockMgdl?.let { fin(it) } ?: JSONObject.NULL)
                     .put("reason", outcome.evidenceReason ?: JSONObject.NULL)
+                    .put("creditMgdlPerMin", outcome.evidenceCreditMgdlPerMin?.let { fin(it) } ?: JSONObject.NULL)
             } ?: JSONObject.NULL)
         if (outcome.evidenceEpisodeId > 0L && outcome.evidencePhase == null)
             gap("evidenceEpisode.phase", GAP_EVIDENCE_NOT_WIRED)

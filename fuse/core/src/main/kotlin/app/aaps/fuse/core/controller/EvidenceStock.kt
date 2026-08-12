@@ -174,6 +174,32 @@ object EvidenceStock {
         val maxStockMgdl: Double = 200.0,
     )
 
+    /**
+     * EIN ZUWACHS DER BEREINIGTEN REIHE, MIT SEINEM BEWEIS.
+     *
+     * WARUM NICHT EIN NACKTES DELTA (Tonis Vorgabe 12.08.): eine blosse Zahl
+     * traegt nicht, WELCHE Messpunkte sie umfasst. Sie liesse sich versehent-
+     * lich zweimal einreichen - einmal je Reglerzyklus auf demselben CGM-Punkt
+     * -, und die Exactly-once-Regel waere nur noch eine Absprache zwischen
+     * Aufrufer und Kern. Mit den beiden Zeitpunkten kann der Kern sie PRUEFEN.
+     *
+     * BEIDE PUNKTE MUESSEN AUS DERSELBEN `adjust()`-AUSGABE STAMMEN. Das ist
+     * keine Formalie, sondern der Kern des Befunds vom 12.08.: `adjust()`
+     * setzt `cumulativeBgi` am FENSTERANFANG auf 0, und der wandert jede
+     * Minute mit. Zwei Werte aus zwei Zyklen haben verschiedene Nullpunkte;
+     * ihre Differenz ist keine Stoerung, sondern der Unterschied zweier
+     * Bezugssysteme - und sie sieht plausibel aus.
+     *
+     * @param fromSourceTs der Anker: `sourceTs` des zuletzt VERBUCHTEN Punkts.
+     * @param toSourceTs der juengste Punkt derselben Ausgabe.
+     * @param deltaMgdl `adjusted(to) - adjusted(from)`.
+     */
+    data class AdjustedInterval(
+        val fromSourceTs: Long,
+        val toSourceTs: Long,
+        val deltaMgdl: Double,
+    )
+
     data class State(
         /** Verbleibende, noch nicht mit Insulin bezahlte Stoerung [mg/dl]. */
         val stockMgdl: Double = 0.0,
@@ -182,15 +208,18 @@ object EvidenceStock {
         /** Beginn DIESER Episode - Bezug fuer [Config.maxEpisodeMin]. Wird bei
          *  einer zweiten Welle NICHT neu gesetzt. */
         val episodeStartTs: Long = 0L,
-        /** `sourceTs` des zuletzt VERBUCHTEN Messpunkts. */
+        /**
+         * `sourceTs` des zuletzt VERBUCHTEN Messpunkts - der ANKER.
+         *
+         * Er ist der einzige zyklusuebergreifende Bezug, der geblieben ist.
+         * `lastAdjusted` und `segmentStartTs` sind am 12.08. entfallen: der
+         * eine war ein Wert aus einem fremden Bezugssystem, der andere ein
+         * mitwandernder Fensteranfang, der als Segmentanker nichts taugte
+         * (er meldete in JEDEM Zyklus einen Bruch). Die Segmentgrenze wird
+         * jetzt beim BILDEN des Intervalls beachtet und nicht mehr
+         * mitgeschleppt.
+         */
         val lastAcceptedTs: Long = 0L,
-        /** Wert der bereinigten Reihe an [lastAcceptedTs] - Bezug fuer den
-         *  naechsten Zuwachs. */
-        val lastAdjusted: Double = 0.0,
-        /** Segment, in dem [lastAcceptedTs] liegt. Wechselt es, ist die
-         *  Differenz ueber die Grenze hinweg wertlos - `cumulativeBgi` startet
-         *  je Segment neu bei 0. */
-        val segmentStartTs: Long = 0L,
         /** Wanduhr-Bezug des Verfalls. Getrennt von [lastAcceptedTs], damit
          *  eine Signalluecke den Bestand weiter abbaut statt ihn
          *  einzufrieren. */
@@ -244,10 +273,15 @@ object EvidenceStock {
     data class Input(
         val nowMs: Long,
         val sourceTs: Long,
-        /** Wert der BGI-bereinigten Reihe an [sourceTs]. */
-        val adjusted: Double,
-        /** Beginn des juengsten lueckenfreien Segments. */
-        val segmentStartTs: Long,
+        /**
+         * Der Zuwachs seit dem Anker - oder `null`, wenn er nicht bildbar ist
+         * (kein Anker in der aktuellen Ausgabe, Anker vor einem Segmentbruch,
+         * erster Punkt ueberhaupt).
+         *
+         * `null` heisst REBASE, nicht "Zufluss 0 nachholen": eine laengere
+         * Luecke darf nicht rueckwirkend als frische Evidenz erscheinen.
+         */
+        val interval: AdjustedInterval?,
         /**
          * KONSERVATIVE UNTERGRENZE des Antriebs, nicht sein Mittelwert.
          * `DriveEstimate.lowerMgdlPerMin`. Sie ist das EVIDENZ-TOR: darf
@@ -491,17 +525,12 @@ object EvidenceStock {
         if (input.creditRevoked)
             return Result(gemerkt.copy(stockMgdl = 0.0, rebaseRequired = true), 0.0, 0.0, NoInflow.CREDIT_REVOKED, Phase.SUSPENDED)
 
-        // ---- Segmentbruch: Ausgabe UND Zufluss gesperrt, Verfall laeuft ----
-        // Das neue Segment setzt nur die Messbasis; ueber die Luecke wird
-        // keine Differenz gebildet - `cumulativeBgi` startet dort neu bei 0.
         // ---- Erster gesunder Punkt nach einer Sperre: NUR Basis ----------
         if (basis.rebaseRequired)
             return Result(
                 state = gemerkt.copy(
                     stockMgdl = 0.0,
                     lastAcceptedTs = input.sourceTs,
-                    lastAdjusted = input.adjusted,
-                    segmentStartTs = input.segmentStartTs,
                     rebaseRequired = false,
                 ),
                 creditMgdlPerMin = 0.0,
@@ -512,30 +541,53 @@ object EvidenceStock {
                 phase = Phase.SUSPENDED,
             )
 
-        if (basis.segmentStartTs != input.segmentStartTs || basis.lastAcceptedTs <= 0L)
+        // ---- KEIN INTERVALL: REBASE, KEIN NACHHOLEN ------------------------
+        //
+        // Der Anker liegt nicht in der aktuellen `adjust()`-Ausgabe - er ist
+        // aus dem Fenster gelaufen oder liegt vor einem Segmentbruch. Dann
+        // gibt es keine bildbare Differenz, und es DARF auch keine geben:
+        // eine laengere Luecke wuerde sonst rueckwirkend als frische Evidenz
+        // erscheinen. Also nur die Basis auf den juengsten Punkt setzen.
+        val iv = input.interval
+        val ankerPasst = iv != null &&
+            iv.fromSourceTs == basis.lastAcceptedTs &&
+            iv.toSourceTs == input.sourceTs &&
+            iv.toSourceTs > iv.fromSourceTs &&
+            iv.deltaMgdl.isFinite()
+        if (basis.lastAcceptedTs <= 0L || !ankerPasst) {
+            // EIN WIEDERHOLTER ZYKLUS AUF DEMSELBEN PUNKT ist kein Bruch: der
+            // Anker steht dann schon auf `sourceTs`, es gibt schlicht nichts
+            // Neues. Ihn als Segmentbruch zu melden waere eine Fehldiagnose
+            // im Minutentakt.
+            val nurWiederholung = basis.lastAcceptedTs == input.sourceTs
             return Result(
                 gemerkt.copy(
-                    stockMgdl = max(0.0, nachVerfall - abzug),
+                    stockMgdl = max(0.0, nachVerfall - abzug)
+                        .let { if (it < cfg.stockFloorMgdl) 0.0 else it },
                     lastAcceptedTs = input.sourceTs,
-                    lastAdjusted = input.adjusted,
-                    segmentStartTs = input.segmentStartTs,
                 ),
-                creditMgdlPerMin = 0.0,          // gesperrt, nicht bloss leer
+                creditMgdlPerMin = if (nurWiederholung)
+                    max(0.0, nachVerfall - abzug).let { if (it < cfg.stockFloorMgdl) 0.0 else it }
+                        .let { if (it <= 0.0) 0.0 else min(it / cfg.releaseWindowMin, it) }
+                else 0.0,
                 inflowMgdl = 0.0,
-                noInflow = NoInflow.SEGMENT_BREAK,
-                phase = Phase.SUSPENDED,
+                noInflow = if (nurWiederholung) NoInflow.NO_NEW_SAMPLE else NoInflow.SEGMENT_BREAK,
+                phase = when {
+                    nurWiederholung && max(0.0, nachVerfall - abzug) >= cfg.stockFloorMgdl -> Phase.ACTIVE
+                    nurWiederholung -> Phase.DORMANT
+                    else -> Phase.SUSPENDED
+                },
             )
+        }
 
-        // ---- Zufluss: nur NEUE, nicht ueberlappende Messinformation --------
-        val neuerPunkt = input.sourceTs > basis.lastAcceptedTs
+        // ---- Zufluss: das GEPRUEFTE Intervall, genau einmal ----------------
         val torOffen = (input.driveLowerMgdlPerMin ?: 0.0) > 0.0
         var grund: NoInflow? = null
         var zufluss = 0.0
+        val delta = iv!!.deltaMgdl
         when {
-            !neuerPunkt -> grund = NoInflow.NO_NEW_SAMPLE
-            !torOffen   -> grund = NoInflow.DRIVE_NOT_POSITIVE
-            else        -> {
-                val delta = input.adjusted - basis.lastAdjusted
+            !torOffen -> grund = NoInflow.DRIVE_NOT_POSITIVE
+            else      -> {
                 if (delta > 0.0) zufluss = delta else grund = NoInflow.NO_RISE
             }
         }
@@ -543,7 +595,7 @@ object EvidenceStock {
         // Ein negativer Schritt nimmt schneller weg, als ein positiver gibt -
         // der FAKTOR ist gesetzt, nicht hergeleitet (s. Config.declineFactor).
         val rueckgang = if (grund == NoInflow.NO_RISE)
-            cfg.declineFactor * (basis.lastAdjusted - input.adjusted) else 0.0
+            cfg.declineFactor * (-delta) else 0.0
 
         // Unter der Schwelle wird abgeschnitten - sonst schliefe die Episode
         // nie ein (s. Config.stockFloorMgdl).
@@ -569,9 +621,10 @@ object EvidenceStock {
         return Result(
             state = gemerkt.copy(
                 stockMgdl = neu,
-                lastAcceptedTs = if (neuerPunkt) input.sourceTs else basis.lastAcceptedTs,
-                lastAdjusted = if (neuerPunkt) input.adjusted else basis.lastAdjusted,
-                segmentStartTs = input.segmentStartTs,
+                // DER ANKER RUECKT WEITER - damit ist dasselbe Intervall
+                // niemals ein zweites Mal einreichbar: sein `fromSourceTs`
+                // passt danach nicht mehr.
+                lastAcceptedTs = iv.toSourceTs,
             ),
             // Der Restbestand wird ueber ein begrenztes Fenster ausgeschuettet,
             // nicht auf einmal: 30 mg/dl Bestand duerfen kein Antrieb von
@@ -608,13 +661,9 @@ object EvidenceStock {
         // Zeitstempel aus der Zukunft: die Datei ist juenger als die Uhr, oder
         // die Uhr ist gesprungen. Beides macht jede Alterung sinnlos.
         val zukunft = MarkerEpisodeGate.FUTURE_TOLERANCE_MS
-        if (listOf(prev.episodeStartTs, prev.lastAcceptedTs, prev.lastDecayTs, prev.segmentStartTs)
+        if (listOf(prev.episodeStartTs, prev.lastAcceptedTs, prev.lastDecayTs)
                 .any { it > 0L && it - input.nowMs > zukunft }
         ) return true
-
-        // Die Messbasis muss in sich stimmen.
-        if (prev.segmentStartTs > 0L && prev.lastAcceptedTs > 0L && prev.segmentStartTs > prev.lastAcceptedTs)
-            return true
 
         if (prev.stockMgdl <= 0.0) return false
 
@@ -624,7 +673,7 @@ object EvidenceStock {
         // nicht zuordenbar - und ein nicht zuordenbarer Bestand darf kein
         // Insulin freigeben.
         if (prev.episodeId <= 0L || prev.episodeStartTs <= 0L) return true
-        if (prev.lastAcceptedTs <= 0L || prev.segmentStartTs <= 0L) return true
+        if (prev.lastAcceptedTs <= 0L) return true
         if (prev.lastDecayTs <= 0L) return true
         return prev.stockMgdl > cfg.maxStockMgdl
     }

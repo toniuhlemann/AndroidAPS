@@ -995,7 +995,7 @@ class FuseLedgerAdapterTest {
 
     private fun bestand(stock: Double) = app.aaps.fuse.core.controller.EvidenceStock.State(
         stockMgdl = stock, episodeId = t0, episodeStartTs = t0,
-        lastAcceptedTs = t0, lastAdjusted = 130.0, segmentStartTs = t0, lastDecayTs = t0,
+        lastAcceptedTs = t0, lastDecayTs = t0,
     )
 
     /**

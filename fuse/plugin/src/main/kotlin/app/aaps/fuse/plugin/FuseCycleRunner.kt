@@ -517,6 +517,9 @@ class FuseCycleRunner(
         val evidencePhase: String? = null,
         val evidenceStockMgdl: Double? = null,
         val evidenceReason: String? = null,
+        /** Der Kredit, der in DIESEM Zyklus die Sicherheitskante gehoben hat
+         *  [mg/dl/min]. `null` = kein Evidenzkern gelaufen. */
+        val evidenceCreditMgdlPerMin: Double? = null,
         /** Die Treatment-Vollsicht dieses Zyklus fuer den Ledger-Abgleich.
          *  `null` auf Abbruchpfaden UND wenn die Datenbankabfrage scheitert -
          *  dann gibt es diesen Zyklus keinen Abgleich, und offene Commitments
@@ -1225,14 +1228,37 @@ class FuseCycleRunner(
         // war falsch (Toni 12.08.); richtig ist: jeder Zyklus PERSISTIERT, aber
         // nur die mit Signal tragen neue Evidenz hinein.
         val evidenzVorher = episodes.evidenceState
+        // DAS INTERVALL AUS EINER EINZIGEN `adjust()`-AUSGABE.
+        //
+        // Beide Punkte stammen aus derselben Liste und damit aus demselben
+        // Bezugssystem - das ist der ganze Punkt. `cumulativeBgi` startet je
+        // Aufruf am Fensteranfang bei 0, und der wandert jede Minute; zwei
+        // Werte aus zwei Zyklen zu subtrahieren ergab keine Stoerung, sondern
+        // den Unterschied zweier Nullpunkte (Befund 12.08.).
+        //
+        // Fehlt der Anker in dieser Ausgabe - aus dem Fenster gelaufen oder
+        // vor einem Segmentbruch -, entsteht KEIN Intervall, und der Kern
+        // setzt nur die Basis neu. Die Liste ist bereits auf das juengste
+        // lueckenfreie Segment beschnitten (FuseSignalSource: `windowStart`),
+        // die Segmentbedingung ist damit erfuellt, ohne sie mitzuschleppen.
+        val intervall = signal.adjusted.lastOrNull()?.let { letzter ->
+            signal.adjusted.firstOrNull { it.sourceTs == episodes.evidenceState.lastAcceptedTs }
+                ?.takeIf { letzter.sourceTs > it.sourceTs }
+                ?.let { anker ->
+                    EvidenceStock.AdjustedInterval(
+                        fromSourceTs = anker.sourceTs,
+                        toSourceTs = letzter.sourceTs,
+                        deltaMgdl = letzter.adjusted - anker.adjusted,
+                    )
+                }
+        }
         val evidenz = signal.adjusted.lastOrNull()?.let { letzter ->
             EvidenceStock.step(
                 prev = evidenzVorher,
                 input = EvidenceStock.Input(
                     nowMs = computeTs,
                     sourceTs = signal.sourceTs,
-                    adjusted = letzter.adjusted,
-                    segmentStartTs = signal.segmentStartTs,
+                    interval = intervall,
                     driveLowerMgdlPerMin = band?.lower,
                     healthReady = step.health == Health.READY,
                     measuredLow = measuredLow,
@@ -1365,6 +1391,26 @@ class FuseCycleRunner(
         // if-Zweigen gescheitert: erst wurde nur die Hauptbahn gehoben (die
         // Bremse war die bindende, die Hebung verpuffte), dann haing die Bremse
         // an der Hauptbahn (stand die am Deckel, blieb die Bremse ungehoben).
+        // ---- STUFE 4: DER EVIDENZKREDIT SPEIST DIE BAHNANNAHME ------------
+        //
+        // MAXIMUM, NICHT SUMME. Beide Groessen sind Aussagen ueber DIESELBE
+        // Stoerung: die erklaerte Absorption ist die angekuendigte, der
+        // Evidenzbestand die gemessene. Sie zu addieren hiesse, dieselbe
+        // Mahlzeit zweimal zu unterstellen.
+        //
+        // ER GEHT NUR HIER EIN, nicht in `buildPredictorInput`. Dort wuerde er
+        // den Antrieb der UNBEDINGTEN Bahn heben - und die ist die
+        // Widerlegung: bleibt der Anstieg aus, faellt der Kredit, und der
+        // Schwanz rechnet wieder gegen sie. Eine gehobene Widerlegung
+        // widerlegt nichts.
+        //
+        // Was er NICHT tut: eine Dosis erzeugen. Er verschiebt die
+        // Sicherheitskante; maxSMB, iobTH, maxIOB, Transportabzug,
+        // Ledger-Hold, Modell-Health und Pumpengate greifen unveraendert
+        // danach.
+        val evidenzKredit = evidenz?.creditMgdlPerMin?.takeIf { it.isFinite() && it > 0.0 } ?: 0.0
+        val bedingterKredit = maxOf(declaredDrive, evidenzKredit)
+
         val lift = if (!cfg.conditionalTailEnabled) ConditionalDrive.Lift(null, null)
         else ConditionalDrive.of(
             mainDrive = built.input.drive,
@@ -1372,7 +1418,7 @@ class FuseCycleRunner(
             restraintLower = if (restraint == null) null else
                 fastDrive(signal)?.minus(built.discount.termMgdlPerMin),
             restraintMethodId = DriveDiscount.methodId("UKF_RATE_RESTRAINT_V1", built.discount.lambda),
-            declaredDriveMgdlPerMin = declaredDrive,
+            declaredDriveMgdlPerMin = bedingterKredit,
         )
         fun bahn(d: DriveEstimate?): PredictorResult? = d?.let {
             (TrajectoryCore.predict(built.input.copy(drive = it)) as? PredictorOutcome.Ok)?.result
@@ -1828,6 +1874,7 @@ class FuseCycleRunner(
             evidencePhase = evidenz?.phase?.name,
             evidenceStockMgdl = evidenz?.state?.stockMgdl,
             evidenceReason = evidenz?.noInflow?.name,
+            evidenceCreditMgdlPerMin = evidenz?.creditMgdlPerMin,
             insulinModel = built.input.trajectory.model,
             decision = combined.decision,
             tbr = combined.request,

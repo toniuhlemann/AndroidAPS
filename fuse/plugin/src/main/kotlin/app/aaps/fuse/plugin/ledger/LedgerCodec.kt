@@ -413,8 +413,6 @@ object LedgerCodec {
         .put("episodeId", s.episodeId)
         .put("episodeStartTs", s.episodeStartTs)
         .put("lastAcceptedTs", s.lastAcceptedTs)
-        .put("lastAdjusted", s.lastAdjusted)
-        .put("segmentStartTs", s.segmentStartTs)
         .put("lastDecayTs", s.lastDecayTs)
         .put("lastCommittedU", s.lastCommittedU)
         .put("rebaseRequired", s.rebaseRequired)
@@ -429,8 +427,6 @@ object LedgerCodec {
             episodeId = requireTs("evidence.episodeId", o.getLong("episodeId")),
             episodeStartTs = requireTs("evidence.episodeStartTs", o.getLong("episodeStartTs")),
             lastAcceptedTs = requireTs("evidence.lastAcceptedTs", o.getLong("lastAcceptedTs")),
-            lastAdjusted = o.getDouble("lastAdjusted").also { require(it.isFinite()) { "lastAdjusted $it" } },
-            segmentStartTs = requireTs("evidence.segmentStartTs", o.getLong("segmentStartTs")),
             lastDecayTs = requireTs("evidence.lastDecayTs", o.getLong("lastDecayTs")),
             lastCommittedU = requireAmount("evidence.lastCommittedU", o.getDouble("lastCommittedU")),
             rebaseRequired = o.getBoolean("rebaseRequired"),
