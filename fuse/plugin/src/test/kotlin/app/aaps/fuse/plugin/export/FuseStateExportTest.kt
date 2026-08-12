@@ -59,6 +59,9 @@ class FuseStateExportTest {
         signal: FuseSignalSource.Signal? = signal(),
         tail: TailLiability.Report? = null,
         step: app.aaps.fuse.core.observer.ObserverStep? = step(),
+        episodeId: Long = 0L,
+        committedU: Double = 0.0,
+        episodeMin: Int? = null,
     ) = FuseCycleRunner.Outcome(
         decision = FuseController.Decision(
             0.15, FuseController.TbrAction.KEEP_CURRENT, FuseController.Block.NONE,
@@ -74,6 +77,7 @@ class FuseStateExportTest {
         candidate = null, candidateGap = null, computeDurationMs = 7L, mealStats = null, policy = policy,
         state = null, step = step, sensorEpoch = 1_699_000_000_000L, calibrationEpoch = 0L,
         isfMgdlPerU = 85.0, iobU = 1.2, abortReason = abort,
+        evidenceEpisodeId = episodeId, evidenceCommittedU = committedU, evidenceEpisodeMin = episodeMin,
     )
 
     private fun rt(units: Double? = 0.15) = RT(
@@ -578,5 +582,36 @@ class FuseStateExportTest {
             ledger = FuseStateJson.LedgerSnapshot(1L, app.aaps.fuse.core.ledger.LedgerState()),
         ) { 5_000_000L }.getJSONObject("ledger")
         assertTrue(l.isNull("persist"))
+    }
+    /**
+     * DIE EPISODENZAHLEN FUER DEN VIEWER (Toni 12.08.).
+     *
+     * Ohne sie kann der Viewer die Zeile "Episode 287 min - DORMANT - FUSE
+     * gesamt 5,10 U - Deckel 360" nicht bauen, ohne selbst zu rechnen - und
+     * jede zweite Rechnung ueber dieselbe Groesse ist eine zweite Wahrheit.
+     * Der DECKEL wandert deshalb mit: staende er im Viewer, veraltete er dort
+     * beim naechsten Umbau still.
+     */
+    @Test
+    fun `Episodenalter Bezahlung und Deckel stehen im Datensatz`() {
+        val j = FuseStateJson.record(
+            "s#1", outcome(episodeId = 1_700_000_000_000L, committedU = 5.10, episodeMin = 287),
+            rt(), cfg, BUILD, 0L, null,
+        ) { 5_000_000L }
+
+        assertEquals(287, j.getInt("evidenceEpisodeMin"))
+        assertEquals(5.10, j.getDouble("evidenceCommittedU"), 1e-9)
+        assertEquals(
+            app.aaps.fuse.core.controller.EvidenceStock.Config().maxEpisodeMin,
+            j.getInt("evidenceEpisodeCapMin"),
+        )
+    }
+
+    /** Ohne Episode: `null` beim Alter, nicht 0 - null Minuten waeren eine
+     *  gerade begonnene Episode. */
+    @Test
+    fun `ohne Episode ist das Alter null`() {
+        val j = FuseStateJson.record("s#1", outcome(), rt(), cfg, BUILD, 0L, null) { 5_000_000L }
+        assertTrue(j.isNull("evidenceEpisodeMin"))
     }
 }

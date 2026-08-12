@@ -482,6 +482,13 @@ class FuseCycleRunner(
          * halbe Wahrheit und saehe aus wie eine laufende Lizenz.
          */
         val evidenceCreditRevoked: Boolean = false,
+        /** KUMULATIV in dieser Episode publiziertes Insulin [U] - die
+         *  Bezahlseite des Stoerungsbestands. Laeuft bis EXPIRED weiter,
+         *  auch waehrend DORMANT und waehrend eines Widerrufs. */
+        val evidenceCommittedU: Double = 0.0,
+        /** Alter der Episode [min]; `null` = keine. Mit dem Deckel zusammen
+         *  ergibt es die Viewer-Zeile "Episode 287 min, Deckel 360". */
+        val evidenceEpisodeMin: Int? = null,
         /** Die Treatment-Vollsicht dieses Zyklus fuer den Ledger-Abgleich.
          *  `null` auf Abbruchpfaden UND wenn die Datenbankabfrage scheitert -
          *  dann gibt es diesen Zyklus keinen Abgleich, und offene Commitments
@@ -562,6 +569,8 @@ class FuseCycleRunner(
         // ist Stufe 3; bis dahin traegt der zustandslose Teil der Regel den
         // Absturzfall (Preference auf 0 = zurueckgenommen, auch nach Neustart).
         episodes.evidenceRevoked = episodeGate.creditRevoked
+        val evidenceEpisodeMin = evidenceEpisodeId.takeIf { it > 0L }
+            ?.let { ((computeTs - it) / 60_000L).toInt() }
 
         // Audit R95 F-P0-07: ein Abort liess eine LAUFENDE POSITIVE TBR bis zu
         // ihrem Ende weiterlaufen (fail-silent, war nur fuer VPUMP akzeptiert).
@@ -621,6 +630,8 @@ class FuseCycleRunner(
                 evidenceEpisodeId = evidenceEpisodeId,
                 evidenceEpisodeDenial = episodeGate.denial?.name,
                 evidenceCreditRevoked = episodeGate.creditRevoked,
+                evidenceCommittedU = episodes.evidenceCommittedU,
+                evidenceEpisodeMin = evidenceEpisodeMin,
             )
         }
 
@@ -1729,6 +1740,8 @@ class FuseCycleRunner(
             evidenceEpisodeId = evidenceEpisodeId,
             evidenceEpisodeDenial = episodeGate.denial?.name,
             evidenceCreditRevoked = episodeGate.creditRevoked,
+            evidenceCommittedU = episodes.evidenceCommittedU,
+            evidenceEpisodeMin = evidenceEpisodeMin,
             insulinModel = built.input.trajectory.model,
             decision = combined.decision,
             tbr = combined.request,
@@ -2008,6 +2021,8 @@ class FuseCycleRunner(
             evidenceEpisodeId = evidenceEpisodeId,
             evidenceEpisodeDenial = evidenceEpisodeDenial,
             evidenceCreditRevoked = evidenceCreditRevoked,
+            evidenceCommittedU = episodes.evidenceCommittedU,
+            evidenceEpisodeMin = evidenceEpisodeId.takeIf { it > 0L }?.let { ((computeTs - it) / 60_000L).toInt() },
             alarm = combined.alarm,
             bgMgdl = signal.q1,
             targetMgdl = target,

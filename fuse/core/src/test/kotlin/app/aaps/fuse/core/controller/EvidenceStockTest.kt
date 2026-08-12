@@ -266,12 +266,16 @@ class EvidenceStockTest {
         s = EvidenceStock.step(s, eingabe(1, 120.0)).state
         // Tal: dieselbe Episode, aber lange nichts.
         s = EvidenceStock.step(s, eingabe(100, 120.0)).state
-        // Zweite Welle, dieselbe episodeId - kurz VOR dem Deckel.
-        val vorDeckel = EvidenceStock.step(s, eingabe(230, 140.0))
+        // Zweite Welle, dieselbe episodeId - kurz VOR dem Deckel. Sie wird
+        // wieder ACTIVE, ohne dass Uhr oder Budget neu starten.
+        val deckel = EvidenceStock.Config().maxEpisodeMin
+        val vorDeckel = EvidenceStock.step(s, eingabe(deckel - 10, 140.0))
         assertTrue(vorDeckel.noInflow != EvidenceStock.NoInflow.EPISODE_EXPIRED)
+        assertEquals(EvidenceStock.Phase.ACTIVE, vorDeckel.phase, "neue Evidenz weckt dieselbe Episode")
         // Und kurz danach ist Schluss, gerechnet ab MINUTE 0, nicht ab 100.
-        val nachDeckel = EvidenceStock.step(vorDeckel.state, eingabe(245, 160.0))
+        val nachDeckel = EvidenceStock.step(vorDeckel.state, eingabe(deckel + 5, 160.0))
         assertEquals(EvidenceStock.NoInflow.EPISODE_EXPIRED, nachDeckel.noInflow)
+        assertEquals(EvidenceStock.Phase.EXPIRED, nachDeckel.phase)
     }
 
     /** Eine ANDERE Episode erbt nichts - weder Bestand noch Uhr noch
@@ -383,6 +387,92 @@ class EvidenceStockTest {
         s = EvidenceStock.step(s, eingabe(1, 200.0, episodeId = 5L)).state
         val r = EvidenceStock.step(s, eingabe(2, 220.0, episodeId = 3L))
         assertEquals(EvidenceStock.NoInflow.EVIDENCE_STATE_UNKNOWN, r.noInflow)
+        assertEquals(0.0, r.creditMgdlPerMin, 1e-9)
+    }
+    // ---- Die dynamische Laufzeit: ACTIVE / DORMANT / EXPIRED --------------
+
+    /**
+     * DER SNACK ERLEDIGT SICH SELBST.
+     *
+     * Er war der Grund gegen eine feste Laufzeit: nach ein bis zwei Stunden
+     * ist er durch, waehrend die Uhr noch stundenlang weiterlief und
+     * lizenzierte. Ohne Zufluss traegt der Verfall den Bestand in wenigen
+     * Minuten auf 0 - die Episode faellt von allein auf DORMANT, und niemand
+     * muss eine Dauer schaetzen.
+     */
+    @Test
+    fun `ohne Zufluss faellt die Episode von selbst auf DORMANT`() {
+        var r = EvidenceStock.step(EvidenceStock.State(), eingabe(0, 100.0))
+        r = EvidenceStock.step(r.state, eingabe(1, 130.0))
+        assertEquals(EvidenceStock.Phase.ACTIVE, r.phase, "mit Zufluss aktiv")
+
+        // Flach weiter - kein Anstieg mehr, nur Verfall.
+        var t = 2
+        repeat(30) { r = EvidenceStock.step(r.state, eingabe(t++, 130.0)) }
+
+        assertEquals(EvidenceStock.Phase.DORMANT, r.phase)
+        assertEquals(0.0, r.creditMgdlPerMin, 1e-9, "kein Kredit ohne Bestand")
+        assertTrue(r.state.episodeId > 0L, "die Episode bleibt erinnerbar")
+    }
+
+    /**
+     * DIE ZWEITE WELLE IN STUNDE VIER weckt dieselbe Episode wieder.
+     *
+     * Das ist die andere Haelfte des Arguments: eine fett-/proteinreiche
+     * Mahlzeit kann nach einem Tal erneut Bedarf erzeugen. Mit einer festen
+     * Laufzeit waere sie entweder abgeschnitten oder die ganze Zeit ueber
+     * unnoetig lizenziert gewesen.
+     */
+    @Test
+    fun `neue Evidenz nach einem Tal weckt dieselbe Episode`() {
+        var r = EvidenceStock.step(EvidenceStock.State(), eingabe(0, 100.0))
+        r = EvidenceStock.step(r.state, eingabe(1, 130.0))
+        val start = r.state.episodeStartTs
+
+        // Langes Tal, flach - bis der Verfall den Bestand unter die Schwelle
+        // getragen hat. 20 Minuten reichen dafuer NICHT (0,875^20 x 30 = 2,1
+        // mg/dl); das war der erste Anlauf dieses Tests.
+        var t = 2
+        repeat(32) { r = EvidenceStock.step(r.state, eingabe(t++, 130.0)) }
+        assertEquals(EvidenceStock.Phase.DORMANT, r.phase)
+
+        // Stunde vier, neuer Anstieg.
+        r = EvidenceStock.step(r.state, eingabe(220, 145.0))
+
+        assertEquals(EvidenceStock.Phase.ACTIVE, r.phase)
+        assertEquals(start, r.state.episodeStartTs, "die Uhr startet NICHT neu")
+    }
+
+    /**
+     * POSITIVES `r` ALLEIN VERLAENGERT NICHTS - der Deckel ist ein Notaus.
+     *
+     * Eine schlechte Infusionsstelle, Gegenregulation oder Sensordrift sehen
+     * wie Stoerung aus. Duerfte der Zufluss die Laufzeit verlaengern, hielte
+     * jede davon die Mahlzeitenepisode beliebig offen.
+     */
+    @Test
+    fun `dauernder Zufluss verlaengert die Episode nicht ueber den Deckel`() {
+        var r = EvidenceStock.step(EvidenceStock.State(), eingabe(0, 100.0))
+        var bg = 100.0
+        var t = 1
+        val deckel = EvidenceStock.Config().maxEpisodeMin
+        // Ununterbrochen steigend bis ueber den Deckel hinaus.
+        while (t <= deckel + 5) { bg += 1.0; r = EvidenceStock.step(r.state, eingabe(t, bg)); t += 5 }
+
+        assertEquals(EvidenceStock.Phase.EXPIRED, r.phase)
+        assertEquals(0.0, r.creditMgdlPerMin, 1e-9)
+    }
+
+    /** Und EXPIRED bleibt EXPIRED - kein Wiederaufleben durch neue Evidenz. */
+    @Test
+    fun `eine abgelaufene Episode lebt nicht wieder auf`() {
+        var r = EvidenceStock.step(EvidenceStock.State(), eingabe(0, 100.0))
+        val deckel = EvidenceStock.Config().maxEpisodeMin
+        r = EvidenceStock.step(r.state, eingabe(deckel + 1, 200.0))
+        assertEquals(EvidenceStock.Phase.EXPIRED, r.phase)
+
+        r = EvidenceStock.step(r.state, eingabe(deckel + 2, 260.0))
+        assertEquals(EvidenceStock.Phase.EXPIRED, r.phase, "auch ein steiler Anstieg weckt sie nicht")
         assertEquals(0.0, r.creditMgdlPerMin, 1e-9)
     }
 }

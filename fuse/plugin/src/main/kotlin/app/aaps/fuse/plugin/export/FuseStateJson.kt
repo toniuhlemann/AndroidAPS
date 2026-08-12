@@ -174,6 +174,12 @@ object FuseStateJson {
             .put("evidenceEpisodeId", outcome.evidenceEpisodeId)
             .put("evidenceEpisodeDenial", outcome.evidenceEpisodeDenial ?: JSONObject.NULL)
             .put("evidenceCreditRevoked", outcome.evidenceCreditRevoked)
+            // Fuer den Viewer: "Episode 287 min - DORMANT - FUSE gesamt
+            // 5,10 U - Deckel 360". Der Deckel wandert MIT statt im Viewer
+            // ein zweites Mal zu stehen und dort zu veralten.
+            .put("evidenceCommittedU", fin(outcome.evidenceCommittedU))
+            .put("evidenceEpisodeMin", outcome.evidenceEpisodeMin ?: JSONObject.NULL)
+            .put("evidenceEpisodeCapMin", app.aaps.fuse.core.controller.EvidenceStock.Config().maxEpisodeMin)
         putOrGap(o, "sourceTs", outcome.sourceTs, gaps, "NO_SIGNAL_THIS_CYCLE")
         o.put("abortReason", outcome.abortReason ?: JSONObject.NULL)
 

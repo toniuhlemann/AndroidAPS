@@ -74,20 +74,32 @@ object EvidenceStock {
      */
     data class Config(
         /**
-         * HARTER SICHERHEITSDECKEL der Episode [min] - ausdruecklich KEIN
-         * Modell einer typischen Mahlzeitendauer.
+         * ABSOLUTER SICHERHEITSDECKEL der Episode [min] - der NOTAUS, und
+         * ausdruecklich kein Modell einer Mahlzeitendauer.
          *
          * Ein Bestand, der sich aus `Δadjusted` speist, kann bei dauerhaft
          * steigender Bahn unbegrenzt nachwachsen. Gegenregulation,
          * Sensordrift, eine schlechte Infusionsstelle - alles drei sieht wie
-         * Stoerung aus und ist keine Mahlzeit. Der Deckel ist der Notaus.
+         * Stoerung aus und ist keine Mahlzeit.
          *
-         * 240 als Startwert, weil EIN gemessener Lauf (11.08.) nach 205
-         * Minuten noch lief. Aus einer Mahlzeit laesst sich keine Dauer
-         * verallgemeinern - der Wert sagt "so lange darf es hoechstens
-         * gehen", nicht "so lange dauert eine Mahlzeit".
+         * WARUM 360 UND NICHT 240 (Tonis Einwand 12.08.): die 240 trugen
+         * ZWEI Rollen zugleich - Notaus UND faktisches Mahlzeitenende. Als
+         * Ende sind sie falsch in beide Richtungen. Ein Snack ist nach ein
+         * bis zwei Stunden durch und haette bis 240 weiterlizenziert; eine
+         * fett- oder proteinreiche Mahlzeit kann zwischen der dritten und
+         * fuenften Stunde eine zweite Welle tragen, und die faellt aus dem
+         * 240er-Fenster heraus. Die Literatur zu Fett/Protein nennt
+         * zusaetzlichen Bedarf ueber drei bis fuenf Stunden mit
+         * Auslaeufern darueber hinaus, und vor allem: die Streuung zwischen
+         * Personen und Mahlzeiten ist gross. Eine feste Zahl kann das nicht
+         * treffen.
+         *
+         * Die DAUER regelt deshalb nicht dieser Wert, sondern der Bestand
+         * selbst ueber [Phase]: ohne Evidenz faellt die Episode von allein
+         * auf DORMANT und gibt keinen Kredit mehr. Der Deckel sagt nur noch,
+         * wie lange sie ueberhaupt WIEDERERKENNBAR bleiben darf.
          */
-        val maxEpisodeMin: Int = 240,
+        val maxEpisodeMin: Int = 360,
         /**
          * Verfall des Bestands [min] - die begrenzte zeitliche Nachwirkung.
          *
@@ -111,6 +123,26 @@ object EvidenceStock {
          * gehoert in den Sweep.
          */
         val declineFactor: Double = 2.0,
+
+        /**
+         * UNTER DIESEM BESTAND IST DIE EPISODE SCHLAFEND [mg/dl].
+         *
+         * Ohne diese Schwelle gaebe es [Phase.DORMANT] gar nicht: der Verfall
+         * ist MULTIPLIKATIV (`stock * (1 - dt/decayMin)`) und erreicht die
+         * Null nie. Nach einer halben Stunde Flaute blieben rechnerisch 0,5
+         * mg/dl stehen, die Episode hiesse weiter ACTIVE, und der Snack waere
+         * genau nicht erledigt - der Fehler, den die drei Zustaende beheben
+         * sollen, waere in anderer Gestalt zurueck.
+         *
+         * 1,0 mg/dl, weil ein Bestand dieser Groesse ueber das
+         * Ausschuettungsfenster 0,03 mg/dl/min traegt. Das ist ein Zwanzigstel
+         * dessen, was ein einziger Pumpenschritt bei ISF 90 bewegt - eine
+         * Groesse, die keine Entscheidung mehr aendern kann.
+         *
+         * Es ist ein ABSCHNEIDEN, keine Rundung: der Rest wird verworfen, nicht
+         * aufgehoben.
+         */
+        val stockFloorMgdl: Double = 1.0,
     )
 
     data class State(
@@ -207,6 +239,43 @@ object EvidenceStock {
         val persistedStateKnown: Boolean = true,
     )
 
+    /**
+     * WAS DIE EPISODE GERADE DARF - die dynamische Laufzeit (Toni 12.08.).
+     *
+     * Sie ersetzt die Gleichsetzung "Episode laeuft = Episode gibt Kredit".
+     * Eine Mahlzeit ist keine Uhr: der Snack ist nach neunzig Minuten durch,
+     * die Fettmahlzeit kann in der vierten Stunde eine zweite Welle tragen.
+     * Beides mit EINER Laufzeit zu bedienen geht nicht - also entscheidet die
+     * EVIDENZ, und die Uhr ist nur noch der Notaus.
+     *
+     * WICHTIG, und der Grund fuer die Bauform: die Laufzeit darf sich NICHT
+     * selbst durch positives `r` verlaengern. Sonst hielte eine schlechte
+     * Infusionsstelle oder eine Gegenregulation die Mahlzeitenepisode
+     * beliebig offen. Deshalb haengt [ACTIVE] am BESTAND, der Bestand am
+     * Zufluss neuer BGI-bereinigter Messinformation, und der Deckel laeuft
+     * unbeirrt ab dem Ursprung weiter.
+     */
+    enum class Phase {
+        /** Bestand vorhanden und alle Tore offen - `ConditionalDrive` darf
+         *  Kredit bekommen. */
+        ACTIVE,
+
+        /**
+         * Kein Kredit, aber die Episode bleibt ERINNERBAR: Anker, Uhr und
+         * kumulative Bezahlung laufen weiter.
+         *
+         * Das ist der Normalzustand zwischen zwei Wellen. Trifft neue,
+         * einmalig verbuchte Evidenz ein, wird dieselbe `episodeId` wieder
+         * ACTIVE - ohne Uhr oder Budget neu zu starten. Ohne neue Evidenz
+         * bleibt sie identifizierbar und therapeutisch wirkungslos.
+         */
+        DORMANT,
+
+        /** Der Deckel ist erreicht. Kein Wiederaufleben - jeder weitere
+         *  Zyklus faellt erneut hierher. */
+        EXPIRED,
+    }
+
     data class Result(
         val state: State,
         /** Antrieb fuer [ConditionalDrive] [mg/dl/min]. 0 = kein Kredit. */
@@ -215,13 +284,19 @@ object EvidenceStock {
         val inflowMgdl: Double,
         /** Warum nichts zufloss; `null` = es floss etwas zu. */
         val noInflow: NoInflow?,
+        /**
+         * Was die Episode gerade darf. ABGELEITET, kein eigener Zustand -
+         * ein zweiter Zustand koennte von Bestand und Uhr abweichen, und
+         * dann gaebe es zwei Wahrheiten ueber dieselbe Episode.
+         */
+        val phase: Phase,
     )
 
     fun step(prev: State, input: Input, cfg: Config = Config()): Result {
         if (input.episodeId <= 0L)
-            return Result(State(), 0.0, 0.0, NoInflow.NO_EPISODE)
+            return Result(State(), 0.0, 0.0, NoInflow.NO_EPISODE, Phase.DORMANT)
         if (!input.persistedStateKnown)
-            return Result(State(), 0.0, 0.0, NoInflow.EVIDENCE_STATE_UNKNOWN)
+            return Result(State(), 0.0, 0.0, NoInflow.EVIDENCE_STATE_UNKNOWN, Phase.DORMANT)
 
         // EINE ALTE EPISODE DARF NICHT WIEDERAUFLEBEN. Die Identitaet ist
         // monoton (in der Praxis der Markerzeitpunkt); ein RUECKWAERTS
@@ -230,7 +305,7 @@ object EvidenceStock {
         // Vier-Stunden-Deckel auf einer alten Episode das Gegenteil eines
         // Deckels.
         if (prev.episodeId > 0L && input.episodeId < prev.episodeId)
-            return Result(prev.copy(stockMgdl = 0.0), 0.0, 0.0, NoInflow.EVIDENCE_STATE_UNKNOWN)
+            return Result(prev.copy(stockMgdl = 0.0), 0.0, 0.0, NoInflow.EVIDENCE_STATE_UNKNOWN, Phase.DORMANT)
 
         // Ein Episodenwechsel setzt alles zurueck - eine ANDERE Mahlzeit erbt
         // weder Bestand noch Uhr noch Abgabestand.
@@ -243,7 +318,7 @@ object EvidenceStock {
         if ((input.nowMs - start) / 60_000L >= cfg.maxEpisodeMin)
             return Result(
                 State(episodeId = input.episodeId, episodeStartTs = start),
-                0.0, 0.0, NoInflow.EPISODE_EXPIRED,
+                0.0, 0.0, NoInflow.EPISODE_EXPIRED, Phase.EXPIRED,
             )
 
         // ---- Verfall auf der WANDUHR, vor jeder Fallunterscheidung ---------
@@ -262,7 +337,7 @@ object EvidenceStock {
         // Richtung, denn dann steht Bestand zur Verfuegung, dessen Bezahlung
         // wir gerade vergessen haben. Fail-closed mit eigenem Grund.
         if (input.episodeCommittedU < basis.lastCommittedU - 1e-9)
-            return Result(basis.copy(stockMgdl = 0.0), 0.0, 0.0, NoInflow.EVIDENCE_STATE_UNKNOWN)
+            return Result(basis.copy(stockMgdl = 0.0), 0.0, 0.0, NoInflow.EVIDENCE_STATE_UNKNOWN, Phase.DORMANT)
         val zuwachsU = max(0.0, input.episodeCommittedU - basis.lastCommittedU)
         val abzug = zuwachsU * max(0.0, input.isfMgdlPerU)
 
@@ -276,9 +351,9 @@ object EvidenceStock {
         )
 
         if (input.measuredLow)
-            return Result(gemerkt.copy(stockMgdl = 0.0), 0.0, 0.0, NoInflow.MEASURED_LOW)
+            return Result(gemerkt.copy(stockMgdl = 0.0), 0.0, 0.0, NoInflow.MEASURED_LOW, Phase.DORMANT)
         if (!input.healthReady)
-            return Result(gemerkt.copy(stockMgdl = 0.0), 0.0, 0.0, NoInflow.HEALTH_NOT_READY)
+            return Result(gemerkt.copy(stockMgdl = 0.0), 0.0, 0.0, NoInflow.HEALTH_NOT_READY, Phase.DORMANT)
 
         // ---- Segmentbruch: Ausgabe UND Zufluss gesperrt, Verfall laeuft ----
         // Das neue Segment setzt nur die Messbasis; ueber die Luecke wird
@@ -294,6 +369,7 @@ object EvidenceStock {
                 creditMgdlPerMin = 0.0,          // gesperrt, nicht bloss leer
                 inflowMgdl = 0.0,
                 noInflow = NoInflow.SEGMENT_BREAK,
+                phase = Phase.DORMANT,
             )
 
         // ---- Zufluss: nur NEUE, nicht ueberlappende Messinformation --------
@@ -315,7 +391,10 @@ object EvidenceStock {
         val rueckgang = if (grund == NoInflow.NO_RISE)
             cfg.declineFactor * (basis.lastAdjusted - input.adjusted) else 0.0
 
+        // Unter der Schwelle wird abgeschnitten - sonst schliefe die Episode
+        // nie ein (s. Config.stockFloorMgdl).
         val neu = max(0.0, nachVerfall + zufluss - rueckgang - abzug)
+            .let { if (it < cfg.stockFloorMgdl) 0.0 else it }
         return Result(
             state = gemerkt.copy(
                 stockMgdl = neu,
@@ -329,6 +408,11 @@ object EvidenceStock {
             creditMgdlPerMin = if (neu <= 0.0) 0.0 else min(neu / cfg.releaseWindowMin, neu),
             inflowMgdl = zufluss,
             noInflow = grund,
+            // ACTIVE HAENGT AM BESTAND, nicht an der Uhr und nicht an `r`.
+            // Ohne Zufluss ist der Bestand nach wenigen Minuten Verfall bei
+            // 0, und die Episode faellt von selbst auf DORMANT - genau das
+            // erledigt den Snack, ohne dass jemand eine Dauer schaetzen muss.
+            phase = if (neu > 0.0) Phase.ACTIVE else Phase.DORMANT,
         )
     }
 }
