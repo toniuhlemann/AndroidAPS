@@ -134,10 +134,12 @@ object EvidenceStock {
          * genau nicht erledigt - der Fehler, den die drei Zustaende beheben
          * sollen, waere in anderer Gestalt zurueck.
          *
-         * 1,0 mg/dl, weil ein Bestand dieser Groesse ueber das
-         * Ausschuettungsfenster 0,03 mg/dl/min traegt. Das ist ein Zwanzigstel
-         * dessen, was ein einziger Pumpenschritt bei ISF 90 bewegt - eine
-         * Groesse, die keine Entscheidung mehr aendern kann.
+         * 1,0 mg/dl entspricht bei ISF 90 rund 0,011 U - also etwa 22 % eines
+         * 0,05-U-Pumpenschritts. (Tonis Korrektur 12.08.: ich hatte zuvor durch
+         * den Pumpenschritt statt durch ISF geteilt und "ein Zwanzigstel"
+         * geschrieben.) Die Schwelle bleibt damit unter einem Schritt, ist aber
+         * KEINE vernachlaessigbare Groesse - sie ist gewaehlt, damit DORMANT
+         * ueberhaupt erreichbar ist, und gehoert in den Sweep.
          *
          * Es ist ein ABSCHNEIDEN, keine Rundung: der Rest wird verworfen, nicht
          * aufgehoben.
@@ -256,6 +258,9 @@ object EvidenceStock {
      * unbeirrt ab dem Ursprung weiter.
      */
     enum class Phase {
+        /** Es gibt keine Episode. Kein Marker, kein Anker, nichts zu zeigen. */
+        NONE,
+
         /** Bestand vorhanden und alle Tore offen - `ConditionalDrive` darf
          *  Kredit bekommen. */
         ACTIVE,
@@ -270,6 +275,28 @@ object EvidenceStock {
          * bleibt sie identifizierbar und therapeutisch wirkungslos.
          */
         DORMANT,
+
+        /**
+         * Die Episode ist da, der Kredit aber von aussen gesperrt: gemessenes
+         * Tief, ungesundes Signal oder ein Segmentbruch in der Messreihe.
+         *
+         * GETRENNT VON [DORMANT], weil die Anzeige sonst luege (Toni 12.08.):
+         * DORMANT heisst "die Mahlzeit ist gerade durch", SUSPENDED heisst
+         * "wir duerfen bzw. wissen gerade nicht". Wer das erste liest, waehrend
+         * das zweite gilt, zieht den falschen Schluss ueber die Mahlzeit.
+         */
+        SUSPENDED,
+
+        /**
+         * Persistenz oder Bilanz sind unklar - der Bestand gilt als nicht
+         * vertrauenswuerdig und wird auf 0 gesetzt.
+         *
+         * Auch das ist kein DORMANT: hier ist nicht die Mahlzeit vorbei,
+         * sondern die Buchfuehrung fraglich (Neustart ohne gueltigen Zustand,
+         * rueckwaerts springende Episodenidentitaet, sinkender kumulativer
+         * Abgabestand).
+         */
+        UNKNOWN,
 
         /** Der Deckel ist erreicht. Kein Wiederaufleben - jeder weitere
          *  Zyklus faellt erneut hierher. */
@@ -294,9 +321,9 @@ object EvidenceStock {
 
     fun step(prev: State, input: Input, cfg: Config = Config()): Result {
         if (input.episodeId <= 0L)
-            return Result(State(), 0.0, 0.0, NoInflow.NO_EPISODE, Phase.DORMANT)
+            return Result(State(), 0.0, 0.0, NoInflow.NO_EPISODE, Phase.NONE)
         if (!input.persistedStateKnown)
-            return Result(State(), 0.0, 0.0, NoInflow.EVIDENCE_STATE_UNKNOWN, Phase.DORMANT)
+            return Result(State(), 0.0, 0.0, NoInflow.EVIDENCE_STATE_UNKNOWN, Phase.UNKNOWN)
 
         // EINE ALTE EPISODE DARF NICHT WIEDERAUFLEBEN. Die Identitaet ist
         // monoton (in der Praxis der Markerzeitpunkt); ein RUECKWAERTS
@@ -305,7 +332,7 @@ object EvidenceStock {
         // Vier-Stunden-Deckel auf einer alten Episode das Gegenteil eines
         // Deckels.
         if (prev.episodeId > 0L && input.episodeId < prev.episodeId)
-            return Result(prev.copy(stockMgdl = 0.0), 0.0, 0.0, NoInflow.EVIDENCE_STATE_UNKNOWN, Phase.DORMANT)
+            return Result(prev.copy(stockMgdl = 0.0), 0.0, 0.0, NoInflow.EVIDENCE_STATE_UNKNOWN, Phase.UNKNOWN)
 
         // Ein Episodenwechsel setzt alles zurueck - eine ANDERE Mahlzeit erbt
         // weder Bestand noch Uhr noch Abgabestand.
@@ -337,7 +364,7 @@ object EvidenceStock {
         // Richtung, denn dann steht Bestand zur Verfuegung, dessen Bezahlung
         // wir gerade vergessen haben. Fail-closed mit eigenem Grund.
         if (input.episodeCommittedU < basis.lastCommittedU - 1e-9)
-            return Result(basis.copy(stockMgdl = 0.0), 0.0, 0.0, NoInflow.EVIDENCE_STATE_UNKNOWN, Phase.DORMANT)
+            return Result(basis.copy(stockMgdl = 0.0), 0.0, 0.0, NoInflow.EVIDENCE_STATE_UNKNOWN, Phase.UNKNOWN)
         val zuwachsU = max(0.0, input.episodeCommittedU - basis.lastCommittedU)
         val abzug = zuwachsU * max(0.0, input.isfMgdlPerU)
 
@@ -351,9 +378,9 @@ object EvidenceStock {
         )
 
         if (input.measuredLow)
-            return Result(gemerkt.copy(stockMgdl = 0.0), 0.0, 0.0, NoInflow.MEASURED_LOW, Phase.DORMANT)
+            return Result(gemerkt.copy(stockMgdl = 0.0), 0.0, 0.0, NoInflow.MEASURED_LOW, Phase.SUSPENDED)
         if (!input.healthReady)
-            return Result(gemerkt.copy(stockMgdl = 0.0), 0.0, 0.0, NoInflow.HEALTH_NOT_READY, Phase.DORMANT)
+            return Result(gemerkt.copy(stockMgdl = 0.0), 0.0, 0.0, NoInflow.HEALTH_NOT_READY, Phase.SUSPENDED)
 
         // ---- Segmentbruch: Ausgabe UND Zufluss gesperrt, Verfall laeuft ----
         // Das neue Segment setzt nur die Messbasis; ueber die Luecke wird
@@ -369,7 +396,7 @@ object EvidenceStock {
                 creditMgdlPerMin = 0.0,          // gesperrt, nicht bloss leer
                 inflowMgdl = 0.0,
                 noInflow = NoInflow.SEGMENT_BREAK,
-                phase = Phase.DORMANT,
+                phase = Phase.SUSPENDED,
             )
 
         // ---- Zufluss: nur NEUE, nicht ueberlappende Messinformation --------

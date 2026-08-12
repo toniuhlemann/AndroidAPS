@@ -122,6 +122,16 @@ class FuseCycleRunner(
      */
     private val markerPressObserved: () -> Long,
     /**
+     * DIE EINE EVIDENZ-KONFIGURATION DES ZYKLUS.
+     *
+     * Sie wurde bis zum 12.08. an drei Stellen frisch erzeugt - Markertor,
+     * Kern und Export. Solange die Defaults gelten, faellt das nicht auf;
+     * sobald ein Replay einen anderen Deckel einspeist, laufen sie
+     * auseinander, und der Export beschreibt eine andere Regel als die, die
+     * gelaufen ist. Eine Instanz, ein Deckel, drei Verbraucher.
+     */
+    private val evidenceConfig: EvidenceStock.Config = EvidenceStock.Config(),
+    /**
      * DER PREDICTOR ALS PARAMETER - default die echte Funktion.
      *
      * Nicht fuer Bequemlichkeit: die Ablehnungen von [TrajectoryCore] sind aus
@@ -489,6 +499,21 @@ class FuseCycleRunner(
         /** Alter der Episode [min]; `null` = keine. Mit dem Deckel zusammen
          *  ergibt es die Viewer-Zeile "Episode 287 min, Deckel 360". */
         val evidenceEpisodeMin: Int? = null,
+        /** Der Deckel DIESES Zyklus [min] - aus derselben Config-Instanz, die
+         *  auch Tor und Kern gespeist hat. Ein zweites `Config()` im Export
+         *  koennte bei einem Replay etwas anderes behaupten. */
+        val evidenceEpisodeCapMin: Int = EvidenceStock.Config().maxEpisodeMin,
+        /**
+         * Phase, Bestand und Grund aus [EvidenceStock] - `null`, solange der
+         * Kern nicht im Zyklus rechnet (Stufe 4).
+         *
+         * Nullbar statt vorbelegt, und das ist der Punkt: "DORMANT" oder 0,0
+         * einzutragen waere eine Aussage ueber einen Kern, der gar nicht
+         * laeuft - im Export nicht von einer echten Messung unterscheidbar.
+         */
+        val evidencePhase: String? = null,
+        val evidenceStockMgdl: Double? = null,
+        val evidenceReason: String? = null,
         /** Die Treatment-Vollsicht dieses Zyklus fuer den Ledger-Abgleich.
          *  `null` auf Abbruchpfaden UND wenn die Datenbankabfrage scheitert -
          *  dann gibt es diesen Zyklus keinen Abgleich, und offene Commitments
@@ -544,7 +569,7 @@ class FuseCycleRunner(
         val markerTs = preferences.get(FuseLongKey.MealMarkerArmedTs).takeIf { it > 0L }
             ?: (preferences.get(FuseLongKey.MealMarkerStamp).takeIf { it > 0L }?.div(10L) ?: 0L)
         val episodes = ledger.episodes
-        val evidenceCapMs = EvidenceStock.Config().maxEpisodeMin * 60_000L
+        val evidenceCapMs = evidenceConfig.maxEpisodeMin * 60_000L
         val episodeGate = MarkerEpisodeGate.decide(
             nowMs = computeTs,
             markerTs = markerTs,
@@ -632,6 +657,7 @@ class FuseCycleRunner(
                 evidenceCreditRevoked = episodeGate.creditRevoked,
                 evidenceCommittedU = episodes.evidenceCommittedU,
                 evidenceEpisodeMin = evidenceEpisodeMin,
+                evidenceEpisodeCapMin = evidenceConfig.maxEpisodeMin,
             )
         }
 
@@ -1742,6 +1768,7 @@ class FuseCycleRunner(
             evidenceCreditRevoked = episodeGate.creditRevoked,
             evidenceCommittedU = episodes.evidenceCommittedU,
             evidenceEpisodeMin = evidenceEpisodeMin,
+            evidenceEpisodeCapMin = evidenceConfig.maxEpisodeMin,
             insulinModel = built.input.trajectory.model,
             decision = combined.decision,
             tbr = combined.request,
@@ -2023,6 +2050,7 @@ class FuseCycleRunner(
             evidenceCreditRevoked = evidenceCreditRevoked,
             evidenceCommittedU = episodes.evidenceCommittedU,
             evidenceEpisodeMin = evidenceEpisodeId.takeIf { it > 0L }?.let { ((computeTs - it) / 60_000L).toInt() },
+            evidenceEpisodeCapMin = evidenceConfig.maxEpisodeMin,
             alarm = combined.alarm,
             bgMgdl = signal.q1,
             targetMgdl = target,

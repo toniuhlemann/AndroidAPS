@@ -62,6 +62,9 @@ class FuseStateExportTest {
         episodeId: Long = 0L,
         committedU: Double = 0.0,
         episodeMin: Int? = null,
+        phase: String? = null,
+        stockMgdl: Double? = null,
+        reason: String? = null,
     ) = FuseCycleRunner.Outcome(
         decision = FuseController.Decision(
             0.15, FuseController.TbrAction.KEEP_CURRENT, FuseController.Block.NONE,
@@ -78,6 +81,7 @@ class FuseStateExportTest {
         state = null, step = step, sensorEpoch = 1_699_000_000_000L, calibrationEpoch = 0L,
         isfMgdlPerU = 85.0, iobU = 1.2, abortReason = abort,
         evidenceEpisodeId = episodeId, evidenceCommittedU = committedU, evidenceEpisodeMin = episodeMin,
+        evidencePhase = phase, evidenceStockMgdl = stockMgdl, evidenceReason = reason,
     )
 
     private fun rt(units: Double? = 0.15) = RT(
@@ -599,19 +603,65 @@ class FuseStateExportTest {
             rt(), cfg, BUILD, 0L, null,
         ) { 5_000_000L }
 
-        assertEquals(287, j.getInt("evidenceEpisodeMin"))
-        assertEquals(5.10, j.getDouble("evidenceCommittedU"), 1e-9)
+        val e = j.getJSONObject("evidenceEpisode")
+        assertEquals(1_700_000_000_000L, e.getLong("id"))
+        assertEquals(287, e.getInt("ageMin"))
+        assertEquals(5.10, e.getDouble("committedU"), 1e-9)
         assertEquals(
             app.aaps.fuse.core.controller.EvidenceStock.Config().maxEpisodeMin,
-            j.getInt("evidenceEpisodeCapMin"),
+            e.getInt("capMin"),
         )
     }
 
-    /** Ohne Episode: `null` beim Alter, nicht 0 - null Minuten waeren eine
-     *  gerade begonnene Episode. */
+    /**
+     * OHNE EPISODE IST DER BLOCK NULL - nicht eine alte Menge neben einem
+     * fehlenden Anker.
+     *
+     * Genau das stand vorher da: nach dem Ablauf blieb der Ledger-Zaehler
+     * erhalten, waehrend `evidenceEpisodeId=0` und das Alter `null` waren. Wer
+     * nur auf die Menge sieht, liest eine laufende Episode.
+     */
     @Test
-    fun `ohne Episode ist das Alter null`() {
-        val j = FuseStateJson.record("s#1", outcome(), rt(), cfg, BUILD, 0L, null) { 5_000_000L }
-        assertTrue(j.isNull("evidenceEpisodeMin"))
+    fun `ohne Episode ist der Block null`() {
+        val j = FuseStateJson.record("s#1", outcome(committedU = 5.10), rt(), cfg, BUILD, 0L, null) { 5_000_000L }
+        assertTrue(j.isNull("evidenceEpisode")) { "kein Anker, kein Block" }
+    }
+
+    /**
+     * PHASE UND GRUND SIND EINE BENANNTE LUECKE, solange der Kern nicht
+     * rechnet - keine erfundene Angabe. "DORMANT" einzutragen waere im Export
+     * nicht von einer echten Messung unterscheidbar.
+     */
+    @Test
+    fun `ohne laufenden Kern stehen Phase und Grund als Luecke`() {
+        val j = FuseStateJson.record(
+            "s#1", outcome(episodeId = 1_700_000_000_000L, episodeMin = 5), rt(), cfg, BUILD, 0L, null,
+        ) { 5_000_000L }
+
+        val e = j.getJSONObject("evidenceEpisode")
+        assertTrue(e.isNull("phase"))
+        assertTrue(e.isNull("stockMgdl"))
+        assertTrue(gapReasons(j).contains(FuseStateJson.GAP_EVIDENCE_NOT_WIRED)) {
+            "die Luecke muss BENANNT sein, nicht bloss leer"
+        }
+    }
+
+    /** Und mit laufendem Kern steht sie da. */
+    @Test
+    fun `mit Phase steht sie im Block und die Luecke entfaellt`() {
+        val j = FuseStateJson.record(
+            "s#1",
+            outcome(
+                episodeId = 1_700_000_000_000L, episodeMin = 42,
+                phase = "DORMANT", stockMgdl = 0.0, reason = "NO_RISE",
+            ),
+            rt(), cfg, BUILD, 0L, null,
+        ) { 5_000_000L }
+
+        val e = j.getJSONObject("evidenceEpisode")
+        assertEquals("DORMANT", e.getString("phase"))
+        assertEquals("NO_RISE", e.getString("reason"))
+        assertEquals(0.0, e.getDouble("stockMgdl"), 1e-12)
+        assertFalse(gapReasons(j).contains(FuseStateJson.GAP_EVIDENCE_NOT_WIRED))
     }
 }

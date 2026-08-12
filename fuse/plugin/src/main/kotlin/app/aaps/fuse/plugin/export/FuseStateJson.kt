@@ -54,6 +54,9 @@ object FuseStateJson {
     const val GAP_HASH_NOT_FINITE = "HASH_INPUT_NOT_FINITE"
     const val GAP_METRICS_LAG = "EXPORT_METRICS_LAG_BY_ONE"
 
+    /** EvidenceStock rechnet noch nicht im Zyklus (Stufe 4 offen). */
+    const val GAP_EVIDENCE_NOT_WIRED = "EVIDENCE_STOCK_NOT_WIRED"
+
     /** Messwerte des VORIGEN Schreibvorgangs. Sie koennen nicht im eigenen
      *  Datensatz stehen — die Dauer des Schreibens ist erst danach bekannt. */
     data class PrevWrite(val writeMs: Long, val bytes: Int)
@@ -174,12 +177,34 @@ object FuseStateJson {
             .put("evidenceEpisodeId", outcome.evidenceEpisodeId)
             .put("evidenceEpisodeDenial", outcome.evidenceEpisodeDenial ?: JSONObject.NULL)
             .put("evidenceCreditRevoked", outcome.evidenceCreditRevoked)
-            // Fuer den Viewer: "Episode 287 min - DORMANT - FUSE gesamt
-            // 5,10 U - Deckel 360". Der Deckel wandert MIT statt im Viewer
-            // ein zweites Mal zu stehen und dort zu veralten.
-            .put("evidenceCommittedU", fin(outcome.evidenceCommittedU))
-            .put("evidenceEpisodeMin", outcome.evidenceEpisodeMin ?: JSONObject.NULL)
-            .put("evidenceEpisodeCapMin", app.aaps.fuse.core.controller.EvidenceStock.Config().maxEpisodeMin)
+            // ---- Die Evidenz-Episode als EIN Block ----------------------
+            //
+            // Vorher standen Menge, Alter und Deckel einzeln nebeneinander -
+            // mit der Folge, dass nach dem Ablauf eine alte `committedU` neben
+            // einem fehlenden Anker und einem `null`-Alter stand (Toni 12.08.).
+            // Das liest sich wie eine laufende Episode.
+            //
+            // Jetzt: entweder es gibt eine Episode, dann ist der Block
+            // vollstaendig - oder es gibt keine, dann ist er `null`. Kein
+            // Zwischending.
+            //
+            // `phase`, `stockMgdl` und `reason` stehen als benannte LUECKE,
+            // solange EvidenceStock nicht im Zyklus rechnet (Stufe 4). Sie
+            // hier mit 0 oder "DORMANT" zu fuellen waere eine Behauptung ueber
+            // einen Kern, der noch gar nicht laeuft.
+            .put("evidenceEpisode", outcome.evidenceEpisodeId.takeIf { it > 0L }?.let { id ->
+                JSONObject()
+                    .put("id", id)
+                    .put("ageMin", outcome.evidenceEpisodeMin ?: JSONObject.NULL)
+                    .put("capMin", outcome.evidenceEpisodeCapMin)
+                    .put("committedU", fin(outcome.evidenceCommittedU))
+                    .put("creditRevoked", outcome.evidenceCreditRevoked)
+                    .put("phase", outcome.evidencePhase ?: JSONObject.NULL)
+                    .put("stockMgdl", outcome.evidenceStockMgdl?.let { fin(it) } ?: JSONObject.NULL)
+                    .put("reason", outcome.evidenceReason ?: JSONObject.NULL)
+            } ?: JSONObject.NULL)
+        if (outcome.evidenceEpisodeId > 0L && outcome.evidencePhase == null)
+            gap("evidenceEpisode.phase", GAP_EVIDENCE_NOT_WIRED)
         putOrGap(o, "sourceTs", outcome.sourceTs, gaps, "NO_SIGNAL_THIS_CYCLE")
         o.put("abortReason", outcome.abortReason ?: JSONObject.NULL)
 

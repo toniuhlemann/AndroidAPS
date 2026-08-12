@@ -475,4 +475,58 @@ class EvidenceStockTest {
         assertEquals(EvidenceStock.Phase.EXPIRED, r.phase, "auch ein steiler Anstieg weckt sie nicht")
         assertEquals(0.0, r.creditMgdlPerMin, 1e-9)
     }
+    /**
+     * DIE SECHS PHASEN MUESSEN AUSEINANDERGEHALTEN WERDEN (Toni 12.08.).
+     *
+     * Der erste Wurf nannte alles ausser ACTIVE und EXPIRED schlicht DORMANT -
+     * auch fehlende Episode, gemessenes Tief, Signalfehler, Segmentbruch und
+     * unklare Persistenz. Fuer die Anzeige ist das eine Luege: DORMANT heisst
+     * "die Mahlzeit ist gerade durch". Wer das liest, waehrend in Wahrheit das
+     * Signal fehlt, zieht den falschen Schluss.
+     */
+    @Test
+    fun `ohne Episode ist die Phase NONE`() {
+        val r = EvidenceStock.step(EvidenceStock.State(), eingabe(1, 100.0, episodeId = 0L))
+        assertEquals(EvidenceStock.Phase.NONE, r.phase)
+    }
+
+    @Test
+    fun `ein gemessenes Tief sperrt statt einzuschlafen`() {
+        var s = EvidenceStock.step(EvidenceStock.State(), eingabe(0, 100.0)).state
+        s = EvidenceStock.step(s, eingabe(1, 140.0)).state
+        val r = EvidenceStock.step(s, eingabe(2, 140.0, measuredLow = true))
+        assertEquals(EvidenceStock.Phase.SUSPENDED, r.phase)
+    }
+
+    @Test
+    fun `ein ungesundes Signal sperrt statt einzuschlafen`() {
+        var s = EvidenceStock.step(EvidenceStock.State(), eingabe(0, 100.0)).state
+        s = EvidenceStock.step(s, eingabe(1, 140.0)).state
+        val r = EvidenceStock.step(s, eingabe(2, 140.0, healthReady = false))
+        assertEquals(EvidenceStock.Phase.SUSPENDED, r.phase)
+    }
+
+    @Test
+    fun `ein Segmentbruch sperrt statt einzuschlafen`() {
+        val s = EvidenceStock.step(EvidenceStock.State(), eingabe(0, 100.0)).state
+        val r = EvidenceStock.step(s, eingabe(1, 140.0, segmentStartTs = T0 + 60_000L))
+        assertEquals(EvidenceStock.Phase.SUSPENDED, r.phase)
+    }
+
+    /** Unklare Buchfuehrung ist etwas anderes als eine beendete Mahlzeit. */
+    @Test
+    fun `unbekannte Persistenz meldet UNKNOWN`() {
+        val r = EvidenceStock.step(EvidenceStock.State(), eingabe(1, 100.0, persistedStateKnown = false))
+        assertEquals(EvidenceStock.Phase.UNKNOWN, r.phase)
+    }
+
+    /** Ebenso ein sinkender kumulativer Abgabestand - das kann nur heissen,
+     *  dass Zustand verlorenging. */
+    @Test
+    fun `ein sinkender Abgabestand meldet UNKNOWN`() {
+        var s = EvidenceStock.step(EvidenceStock.State(), eingabe(0, 100.0)).state
+        s = EvidenceStock.step(s, eingabe(1, 140.0, committedU = 0.30)).state
+        val r = EvidenceStock.step(s, eingabe(2, 140.0, committedU = 0.10))
+        assertEquals(EvidenceStock.Phase.UNKNOWN, r.phase)
+    }
 }
