@@ -1241,17 +1241,11 @@ class FuseCycleRunner(
         // setzt nur die Basis neu. Die Liste ist bereits auf das juengste
         // lueckenfreie Segment beschnitten (FuseSignalSource: `windowStart`),
         // die Segmentbedingung ist damit erfuellt, ohne sie mitzuschleppen.
-        val intervall = signal.adjusted.lastOrNull()?.let { letzter ->
-            signal.adjusted.firstOrNull { it.sourceTs == episodes.evidenceState.lastAcceptedTs }
-                ?.takeIf { letzter.sourceTs > it.sourceTs }
-                ?.let { anker ->
-                    EvidenceStock.AdjustedInterval(
-                        fromSourceTs = anker.sourceTs,
-                        toSourceTs = letzter.sourceTs,
-                        deltaMgdl = letzter.adjusted - anker.adjusted,
-                    )
-                }
-        }
+        val intervall = EvidenceStock.AdjustedInterval.of(
+            punkte = signal.adjusted,
+            ankerTs = episodes.evidenceState.lastAcceptedTs,
+        )
+
         val evidenz = signal.adjusted.lastOrNull()?.let { letzter ->
             EvidenceStock.step(
                 prev = evidenzVorher,

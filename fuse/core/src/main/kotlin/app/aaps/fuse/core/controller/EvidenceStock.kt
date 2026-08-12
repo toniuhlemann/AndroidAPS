@@ -198,7 +198,44 @@ object EvidenceStock {
         val fromSourceTs: Long,
         val toSourceTs: Long,
         val deltaMgdl: Double,
-    )
+    ) {
+
+        companion object {
+
+            /**
+             * DER EINZIGE WEG, EIN INTERVALL ZU BAUEN.
+             *
+             * Die Zusicherung "beide Punkte aus DERSELBEN `adjust()`-Ausgabe"
+             * hing bis zum 12.08. daran, dass die einzige Produktionsstelle
+             * im Runner es richtig machte (Tonis Punkt 2). Der Typ selbst
+             * liess jede beliebige Kombination zu - und ein zweiter Aufrufer
+             * haette den Fehler wiederholen koennen, ohne dass etwas dagegen
+             * stand.
+             *
+             * Hier ist er strukturell erzwungen: die Funktion bekommt EINE
+             * Liste und sucht beide Punkte darin. Zwei Werte aus zwei
+             * Ausgaben kann man ihr nicht mehr uebergeben.
+             *
+             * @param punkte eine vollstaendige `adjust()`-Ausgabe, aufsteigend,
+             *   bereits auf das juengste lueckenfreie Segment beschnitten.
+             * @param ankerTs `lastAcceptedTs` des Bestands.
+             * @return `null`, wenn der Anker nicht in dieser Ausgabe liegt oder
+             *   kein juengerer Punkt existiert - dann gibt es kein Intervall
+             *   und der Kern setzt nur die Basis neu.
+             */
+            fun of(
+                punkte: List<app.aaps.fuse.core.signal.BgiAdjustedSeries.AdjustedPoint>,
+                ankerTs: Long,
+            ): AdjustedInterval? {
+                val letzter = punkte.lastOrNull() ?: return null
+                val anker = punkte.firstOrNull { it.sourceTs == ankerTs } ?: return null
+                if (letzter.sourceTs <= anker.sourceTs) return null
+                val delta = letzter.adjusted - anker.adjusted
+                if (!delta.isFinite()) return null
+                return AdjustedInterval(anker.sourceTs, letzter.sourceTs, delta)
+            }
+        }
+    }
 
     data class State(
         /** Verbleibende, noch nicht mit Insulin bezahlte Stoerung [mg/dl]. */
