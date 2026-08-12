@@ -174,69 +174,6 @@ object EvidenceStock {
         val maxStockMgdl: Double = 200.0,
     )
 
-    /**
-     * EIN ZUWACHS DER BEREINIGTEN REIHE, MIT SEINEM BEWEIS.
-     *
-     * WARUM NICHT EIN NACKTES DELTA (Tonis Vorgabe 12.08.): eine blosse Zahl
-     * traegt nicht, WELCHE Messpunkte sie umfasst. Sie liesse sich versehent-
-     * lich zweimal einreichen - einmal je Reglerzyklus auf demselben CGM-Punkt
-     * -, und die Exactly-once-Regel waere nur noch eine Absprache zwischen
-     * Aufrufer und Kern. Mit den beiden Zeitpunkten kann der Kern sie PRUEFEN.
-     *
-     * BEIDE PUNKTE MUESSEN AUS DERSELBEN `adjust()`-AUSGABE STAMMEN. Das ist
-     * keine Formalie, sondern der Kern des Befunds vom 12.08.: `adjust()`
-     * setzt `cumulativeBgi` am FENSTERANFANG auf 0, und der wandert jede
-     * Minute mit. Zwei Werte aus zwei Zyklen haben verschiedene Nullpunkte;
-     * ihre Differenz ist keine Stoerung, sondern der Unterschied zweier
-     * Bezugssysteme - und sie sieht plausibel aus.
-     *
-     * @param fromSourceTs der Anker: `sourceTs` des zuletzt VERBUCHTEN Punkts.
-     * @param toSourceTs der juengste Punkt derselben Ausgabe.
-     * @param deltaMgdl `adjusted(to) - adjusted(from)`.
-     */
-    data class AdjustedInterval(
-        val fromSourceTs: Long,
-        val toSourceTs: Long,
-        val deltaMgdl: Double,
-    ) {
-
-        companion object {
-
-            /**
-             * DER EINZIGE WEG, EIN INTERVALL ZU BAUEN.
-             *
-             * Die Zusicherung "beide Punkte aus DERSELBEN `adjust()`-Ausgabe"
-             * hing bis zum 12.08. daran, dass die einzige Produktionsstelle
-             * im Runner es richtig machte (Tonis Punkt 2). Der Typ selbst
-             * liess jede beliebige Kombination zu - und ein zweiter Aufrufer
-             * haette den Fehler wiederholen koennen, ohne dass etwas dagegen
-             * stand.
-             *
-             * Hier ist er strukturell erzwungen: die Funktion bekommt EINE
-             * Liste und sucht beide Punkte darin. Zwei Werte aus zwei
-             * Ausgaben kann man ihr nicht mehr uebergeben.
-             *
-             * @param punkte eine vollstaendige `adjust()`-Ausgabe, aufsteigend,
-             *   bereits auf das juengste lueckenfreie Segment beschnitten.
-             * @param ankerTs `lastAcceptedTs` des Bestands.
-             * @return `null`, wenn der Anker nicht in dieser Ausgabe liegt oder
-             *   kein juengerer Punkt existiert - dann gibt es kein Intervall
-             *   und der Kern setzt nur die Basis neu.
-             */
-            fun of(
-                punkte: List<app.aaps.fuse.core.signal.BgiAdjustedSeries.AdjustedPoint>,
-                ankerTs: Long,
-            ): AdjustedInterval? {
-                val letzter = punkte.lastOrNull() ?: return null
-                val anker = punkte.firstOrNull { it.sourceTs == ankerTs } ?: return null
-                if (letzter.sourceTs <= anker.sourceTs) return null
-                val delta = letzter.adjusted - anker.adjusted
-                if (!delta.isFinite()) return null
-                return AdjustedInterval(anker.sourceTs, letzter.sourceTs, delta)
-            }
-        }
-    }
-
     data class State(
         /** Verbleibende, noch nicht mit Insulin bezahlte Stoerung [mg/dl]. */
         val stockMgdl: Double = 0.0,
@@ -318,7 +255,7 @@ object EvidenceStock {
          * `null` heisst REBASE, nicht "Zufluss 0 nachholen": eine laengere
          * Luecke darf nicht rueckwirkend als frische Evidenz erscheinen.
          */
-        val interval: AdjustedInterval?,
+        val interval: app.aaps.fuse.core.signal.BgiAdjustedSeries.AdjustedInterval?,
         /**
          * KONSERVATIVE UNTERGRENZE des Antriebs, nicht sein Mittelwert.
          * `DriveEstimate.lowerMgdlPerMin`. Sie ist das EVIDENZ-TOR: darf

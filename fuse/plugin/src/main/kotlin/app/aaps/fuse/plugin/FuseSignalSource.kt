@@ -89,7 +89,7 @@ class FuseSignalSource(
          *  der Zyklus die Untergrenze mit dem eingestellten Quantil bilden kann,
          *  OHNE dass die Signalquelle Preferences liest — die Fensterbildung
          *  bleibt so eine Sache, die Bandpolitik eine andere. */
-        val adjusted: List<BgiAdjustedSeries.AdjustedPoint>,
+        val adjusted: BgiAdjustedSeries.AdjustedSeries,
         val activity: ActivityValidity,
         val samplesUsed: Int,
         val rawSeriesSize: Int,
@@ -269,7 +269,7 @@ class FuseSignalSource(
         )
 
         val adjusted = BgiAdjustedSeries.adjust(samples)
-        val rSigned = BgiAdjustedSeries.theilSen(adjusted, sourceTs)
+        val rSigned = BgiAdjustedSeries.theilSen(adjusted.points, sourceTs)
 
         return Outcome.Ok(
             Signal(

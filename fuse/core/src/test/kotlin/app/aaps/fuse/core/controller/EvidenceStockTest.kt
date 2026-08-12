@@ -37,11 +37,17 @@ class EvidenceStockTest {
     private fun bruch() = reihe.clear()
 
     private fun schritt(prev: EvidenceStock.State, input: EvidenceStock.Input): EvidenceStock.Result {
-        val anker = reihe[prev.lastAcceptedTs]
-        val jetzt = reihe[input.sourceTs]
-        val iv = if (anker != null && jetzt != null && input.sourceTs > prev.lastAcceptedTs)
-            EvidenceStock.AdjustedInterval(prev.lastAcceptedTs, input.sourceTs, jetzt - anker)
-        else null
+        // Die Reihe geht durch die ECHTE Bereinigung - Aktivitaet 0, damit
+        // `adjusted == q1` bleibt und die Testzahlen lesbar sind. Der
+        // Intervalltyp ist nicht mehr von aussen baubar, und das ist der
+        // Punkt: auch der Test muss ueber `adjust()` gehen.
+        val serie = app.aaps.fuse.core.signal.BgiAdjustedSeries.adjust(
+            reihe.keys.sorted().map {
+                app.aaps.fuse.core.signal.BgiAdjustedSeries.Sample(it, reihe.getValue(it), 0.0, ISF)
+            }
+        )
+        val iv = app.aaps.fuse.core.signal.BgiAdjustedSeries.AdjustedInterval.of(serie, prev.lastAcceptedTs)
+            ?.takeIf { it.toSourceTs == input.sourceTs }
         return EvidenceStock.step(prev, input.copy(interval = iv), CFG)
     }
 
@@ -814,13 +820,17 @@ class EvidenceStockTest {
         val erst = schritt(basis, eingabe(1, 130.0))
         assertEquals(30.0, erst.inflowMgdl, 1e-9)
 
-        // Dasselbe Intervall ein zweites Mal - von Hand, wie es ein
-        // fehlerhafter Aufrufer einreichen wuerde.
-        val nochmal = EvidenceStock.step(
-            erst.state,
-            eingabe(1, 130.0).copy(interval = EvidenceStock.AdjustedInterval(T0, T0 + 60_000L, 30.0)),
-            CFG,
+        // Dasselbe Intervall ein zweites Mal - so weit ein Aufrufer es
+        // ueberhaupt noch herstellen kann. Der Konstruktor ist privat, also
+        // muss auch dieser Versuch durch die Fabrik: sie baut aus derselben
+        // Reihe dasselbe Intervall (T0 -> T0+1min) noch einmal.
+        val serie = app.aaps.fuse.core.signal.BgiAdjustedSeries.adjust(
+            reihe.keys.sorted().map {
+                app.aaps.fuse.core.signal.BgiAdjustedSeries.Sample(it, reihe.getValue(it), 0.0, ISF)
+            }
         )
+        val altesIntervall = app.aaps.fuse.core.signal.BgiAdjustedSeries.AdjustedInterval.of(serie, T0)
+        val nochmal = EvidenceStock.step(erst.state, eingabe(1, 130.0).copy(interval = altesIntervall), CFG)
         assertEquals(0.0, nochmal.inflowMgdl, 1e-9) { "der Anker passt nicht mehr" }
     }
 

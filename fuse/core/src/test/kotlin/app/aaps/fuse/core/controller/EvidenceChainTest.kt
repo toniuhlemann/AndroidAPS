@@ -50,7 +50,7 @@ class EvidenceChainTest {
             EvidenceStock.Input(
                 nowMs = letzte.sourceTs,
                 sourceTs = letzte.sourceTs,
-                interval = EvidenceStock.AdjustedInterval.of(bereinigt, prev.lastAcceptedTs),
+                interval = BgiAdjustedSeries.AdjustedInterval.of(bereinigt, prev.lastAcceptedTs),
                 driveLowerMgdlPerMin = 1.0,
                 healthReady = true,
                 measuredLow = false,
@@ -83,8 +83,8 @@ class EvidenceChainTest {
 
         // GEGENPROBE ZUERST: die absoluten Werte desselben Punkts SIND
         // verschieden, je nachdem wo das Fenster beginnt.
-        val ausA = BgiAdjustedSeries.adjust(proben.slice(0..5)).last().adjusted
-        val ausB = BgiAdjustedSeries.adjust(proben.slice(2..5)).last().adjusted
+        val ausA = BgiAdjustedSeries.adjust(proben.slice(0..5)).points.last().adjusted
+        val ausB = BgiAdjustedSeries.adjust(proben.slice(2..5)).points.last().adjusted
         assertTrue(kotlin.math.abs(ausA - ausB) > 1.0) {
             "ohne wandernden Nullpunkt prueft dieser Test nichts: $ausA vs $ausB"
         }
@@ -102,8 +102,8 @@ class EvidenceChainTest {
         // konstant, ihre Wirkung wird herausgerechnet. Der SUMMIERTE Zufluss
         // muss der bereinigte Anstieg ueber dieselbe Spanne sein.
         val ganze = BgiAdjustedSeries.adjust(proben)
-        val erwartet = ganze.first { it.sourceTs == T0 + 7 * 60_000L }.adjusted -
-            ganze.first { it.sourceTs == T0 + 3 * 60_000L }.adjusted
+        val erwartet = ganze.points.first { it.sourceTs == T0 + 7 * 60_000L }.adjusted -
+            ganze.points.first { it.sourceTs == T0 + 3 * 60_000L }.adjusted
         assertEquals(erwartet, summe, 1e-9) {
             "der Zufluss haengt am wandernden Fensteranfang"
         }
@@ -164,9 +164,9 @@ class EvidenceChainTest {
     @Test
     fun `ohne Anker in der Ausgabe entsteht kein Intervall`() {
         val bereinigt = BgiAdjustedSeries.adjust((3..6).map { probe(it, 100.0, 0.0) })
-        assertNull(EvidenceStock.AdjustedInterval.of(bereinigt, T0))
-        assertNull(EvidenceStock.AdjustedInterval.of(emptyList(), T0))
+        assertNull(BgiAdjustedSeries.AdjustedInterval.of(bereinigt, T0))
+        assertNull(BgiAdjustedSeries.AdjustedInterval.of(BgiAdjustedSeries.adjust(emptyList()), T0))
         // Anker IST der juengste Punkt: kein Zuwachs, kein Intervall.
-        assertNull(EvidenceStock.AdjustedInterval.of(bereinigt, T0 + 6 * 60_000L))
+        assertNull(BgiAdjustedSeries.AdjustedInterval.of(bereinigt, T0 + 6 * 60_000L))
     }
 }

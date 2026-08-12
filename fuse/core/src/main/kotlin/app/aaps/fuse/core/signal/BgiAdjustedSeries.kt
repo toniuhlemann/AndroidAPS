@@ -36,6 +36,69 @@ object BgiAdjustedSeries {
     /** Punkt der bereinigten Reihe innerhalb EINES R-Segments. */
     data class AdjustedPoint(val sourceTs: Long, val adjusted: Double)
 
+    /**
+     * DIE AUSGABE EINES EINZELNEN [adjust]-AUFRUFS - opak.
+     *
+     * Der Konstruktor ist `internal`; ausserhalb von `fuse:core` kann niemand
+     * eine Instanz bauen, und innerhalb baut sie nur [adjust]. Damit ist die
+     * Zusicherung, auf der der ganze Evidenzbestand ruht, eine
+     * TYPEIGENSCHAFT und keine Konvention mehr (Toni 12.08.):
+     *
+     *   Zwei Punkte, deren Differenz gebildet wird, stammen aus DEMSELBEN
+     *   Aufruf - also aus demselben Bezugssystem.
+     *
+     * WARUM DAS NOETIG IST: [adjust] setzt `cumulativeBgi` am Anfang des
+     * uebergebenen Ausschnitts auf 0, und dieser Anfang wandert mit dem
+     * Fenster. Zwei `adjusted`-Werte aus zwei Aufrufen zu subtrahieren ergibt
+     * keine Stoerung, sondern den Unterschied zweier Nullpunkte - eine Zahl,
+     * die plausibel aussieht und falsch ist. Genau dieser Fehler stand bis zum
+     * 12.08. im Produktionspfad.
+     *
+     * Eine gewoehnliche `List<AdjustedPoint>` konnte man aus zwei Ausgaben
+     * zusammensetzen. Diese Klasse nicht.
+     */
+    class AdjustedSeries internal constructor(val points: List<AdjustedPoint>)
+
+    /**
+     * EIN ZUWACHS DER BEREINIGTEN REIHE, MIT SEINEM BEWEIS.
+     *
+     * Privater Konstruktor: die einzige Quelle ist [of], und die verlangt eine
+     * [AdjustedSeries]. Ein nacktes Delta traegt nicht, WELCHE Messpunkte es
+     * umfasst - es liesse sich versehentlich zweimal einreichen, einmal je
+     * Reglerzyklus auf demselben CGM-Punkt. Mit den beiden Zeitpunkten kann
+     * der Verbraucher die Exactly-once-Regel PRUEFEN.
+     *
+     * KEINE `data class`, und das ist Absicht: deren `copy()` waere trotz
+     * privaten Konstruktors oeffentlich und damit ein zweiter Bauweg.
+     */
+    class AdjustedInterval private constructor(
+        val fromSourceTs: Long,
+        val toSourceTs: Long,
+        val deltaMgdl: Double,
+    ) {
+
+        override fun toString() = "AdjustedInterval($fromSourceTs->$toSourceTs, $deltaMgdl)"
+
+        companion object {
+
+            /**
+             * @param serie die Ausgabe EINES [adjust]-Aufrufs.
+             * @param ankerTs `lastAcceptedTs` des Bestands.
+             * @return `null`, wenn der Anker nicht in dieser Ausgabe liegt oder
+             *   kein juengerer Punkt existiert - dann gibt es kein Intervall,
+             *   und der Verbraucher setzt nur die Basis neu.
+             */
+            fun of(serie: AdjustedSeries, ankerTs: Long): AdjustedInterval? {
+                val letzter = serie.points.lastOrNull() ?: return null
+                val anker = serie.points.firstOrNull { it.sourceTs == ankerTs } ?: return null
+                if (letzter.sourceTs <= anker.sourceTs) return null
+                val delta = letzter.adjusted - anker.adjusted
+                if (!delta.isFinite()) return null
+                return AdjustedInterval(anker.sourceTs, letzter.sourceTs, delta)
+            }
+        }
+    }
+
     /** Kontraktgrenze aus dem KDoc von [adjust]: dt darueber ist ein
      *  Segmentbruch und beendet das R-Segment. */
     const val SEGMENT_BREAK_MS: Long = 3 * 60_000L
@@ -70,8 +133,8 @@ object BgiAdjustedSeries {
      * Integrationsregel (gelockt): bgiIncrement = bgiRate(t) * dtMinutes mit dem
      * RECHTEN Wert; das erste Sample des Segments traegt cumulativeBgi = 0.
      */
-    fun adjust(segment: List<Sample>): List<AdjustedPoint> {
-        if (segment.isEmpty()) return emptyList()
+    fun adjust(segment: List<Sample>): AdjustedSeries {
+        if (segment.isEmpty()) return AdjustedSeries(emptyList())
         val out = ArrayList<AdjustedPoint>(segment.size)
         var cumulativeBgi = 0.0
         var prevTs = segment.first().sourceTs
@@ -83,7 +146,7 @@ object BgiAdjustedSeries {
             out.add(AdjustedPoint(s.sourceTs, s.q1 - cumulativeBgi))
             prevTs = s.sourceTs
         }
-        return out
+        return AdjustedSeries(out)
     }
 
     /**

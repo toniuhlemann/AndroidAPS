@@ -871,7 +871,7 @@ class FuseCycleRunner(
         // "Mittel da, Band fehlt" geben: ein Rueckfall auf lower = mean wuerde
         // den Null-Abstand ausgerechnet bei der schlechtesten Datenlage still
         // wiederherstellen.
-        val band = PairSlopeBand.estimate(signal.adjusted, signal.sourceTs, cfg.driveLowerQuantilePct)
+        val band = PairSlopeBand.estimate(signal.adjusted.points, signal.sourceTs, cfg.driveLowerQuantilePct)
             ?: return abort("drive not estimable (${signal.samplesUsed} samples)", signal, cfg, step)
 
         // Bolus-Aktivitaet am Anker - Eingang des Deckungs-Abschlags.
@@ -1241,12 +1241,12 @@ class FuseCycleRunner(
         // setzt nur die Basis neu. Die Liste ist bereits auf das juengste
         // lueckenfreie Segment beschnitten (FuseSignalSource: `windowStart`),
         // die Segmentbedingung ist damit erfuellt, ohne sie mitzuschleppen.
-        val intervall = EvidenceStock.AdjustedInterval.of(
-            punkte = signal.adjusted,
+        val intervall = app.aaps.fuse.core.signal.BgiAdjustedSeries.AdjustedInterval.of(
+            serie = signal.adjusted,
             ankerTs = episodes.evidenceState.lastAcceptedTs,
         )
 
-        val evidenz = signal.adjusted.lastOrNull()?.let { letzter ->
+        val evidenz = signal.adjusted.points.lastOrNull()?.let { letzter ->
             EvidenceStock.step(
                 prev = evidenzVorher,
                 input = EvidenceStock.Input(

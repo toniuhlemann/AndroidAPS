@@ -119,7 +119,7 @@ class K2PCoreTest {
                 BgiAdjustedSeries.Sample(t0, 100.0, activity, isfV),
                 BgiAdjustedSeries.Sample(t0 + 60_000L, 100.0, activity, isfV),
             )
-        ).let { it[0].adjusted - it[1].adjusted }   // = bgiIncrement ueber 1 min
+        ).let { it.points[0].adjusted - it.points[1].adjusted }   // = bgiIncrement ueber 1 min
         assertEquals(k1, k2p, 1e-9)
     }
 

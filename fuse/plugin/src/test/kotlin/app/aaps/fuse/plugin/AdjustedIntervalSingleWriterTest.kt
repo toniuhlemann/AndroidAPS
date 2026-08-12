@@ -1,6 +1,7 @@
 package app.aaps.fuse.plugin
 
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Assertions.fail
 import org.junit.jupiter.api.Test
@@ -26,6 +27,31 @@ import java.io.File
  * zweiten Weg baut - auch in einer Lage, an die niemand gedacht hat.
  */
 class AdjustedIntervalSingleWriterTest {
+
+    /**
+     * DIE SICHTBARKEITEN SIND DER VERTRAG - nicht dieser Test.
+     *
+     * Seit dem 12.08. traegt ihn der Typ: `AdjustedInterval` hat einen
+     * PRIVATEN Konstruktor, `AdjustedSeries` einen INTERNAL. Ausserhalb von
+     * `fuse:core` kann niemand eine Serie bauen, und niemand ueberhaupt ein
+     * Intervall ausser der Fabrik. Dieser Test bewacht nur, dass die
+     * Sichtbarkeiten nicht wieder aufgeweicht werden - er ersetzt sie nicht.
+     */
+    @Test
+    fun `die Sichtbarkeiten tragen den Vertrag`() {
+        val quelle = kernQuellen().first { it.name == "BgiAdjustedSeries.kt" }
+        val text = quelle.readText()
+        assertTrue(text.contains("class AdjustedInterval private constructor(")) {
+            "der Konstruktor muss privat bleiben - sonst ist die Fabrik nur eine Empfehlung"
+        }
+        assertTrue(text.contains("class AdjustedSeries internal constructor(")) {
+            "die Serie darf ausserhalb des Moduls nicht baubar sein - sonst laesst sie sich " +
+                "aus zwei adjust()-Ausgaben zusammensetzen"
+        }
+        assertFalse(text.contains("data class AdjustedInterval")) {
+            "keine data class: ihr copy() waere ein zweiter Bauweg am privaten Konstruktor vorbei"
+        }
+    }
 
     @Test
     fun `nur die Fabrik baut Intervalle im Produktionscode`() {
@@ -62,6 +88,16 @@ class AdjustedIntervalSingleWriterTest {
         assertEquals(1, treffer.size) { "erwartet: genau der Zyklus. Gefunden: $treffer" }
     }
 
+    private fun kernQuellen(): List<File> {
+        var dir: File? = File(".").absoluteFile
+        while (dir != null && !File(dir, "settings.gradle").exists() && !File(dir, "settings.gradle.kts").exists())
+            dir = dir.parentFile
+        if (dir == null) fail<Unit>("Projektwurzel nicht gefunden")
+        val src = File(dir, "fuse/core/src/main/kotlin")
+        if (!src.isDirectory) fail<Unit>("Quellverzeichnis fehlt: $src")
+        return src.walkTopDown().filter { it.isFile && it.extension == "kt" }.toList()
+    }
+
     private fun mainSources(): List<File> {
         var dir: File? = File(".").absoluteFile
         while (dir != null && !File(dir, "settings.gradle").exists() && !File(dir, "settings.gradle.kts").exists())
@@ -73,7 +109,7 @@ class AdjustedIntervalSingleWriterTest {
                 wurzel.walkTopDown().filter { it.isFile && it.extension == "kt" }.toList()
             }
             // Die Definition selbst enthaelt den Konstruktor naturgemaess.
-            .filterNot { it.name == "EvidenceStock.kt" }
+            .filterNot { it.name == "BgiAdjustedSeries.kt" }
     }
 
     private fun ohneKommentare(src: String): String {

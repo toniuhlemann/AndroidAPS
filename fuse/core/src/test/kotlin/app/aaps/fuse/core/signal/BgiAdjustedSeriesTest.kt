@@ -20,7 +20,7 @@ class BgiAdjustedSeriesTest {
 
     @Test
     fun `erstes Sample traegt cumulativeBgi 0`() {
-        val out = BgiAdjustedSeries.adjust(listOf(s(0, 120.0, act = 0.02)))
+        val out = BgiAdjustedSeries.adjust(listOf(s(0, 120.0, act = 0.02))).points
         assertEquals(120.0, out.single().adjusted, 1e-9)
     }
 
@@ -30,7 +30,7 @@ class BgiAdjustedSeriesTest {
         // RECHTE Regel: Inkrement fuer (t0,t1] = -1.8 * 1 min. adjusted(t1) =
         // q1 - (-1.8) = q1 + 1.8. Die LINKE Regel ergaebe +0.0 — der Test
         // unterscheidet die beiden ausdruecklich.
-        val out = BgiAdjustedSeries.adjust(listOf(s(0, 120.0, act = 0.0), s(1, 120.0, act = 0.02)))
+        val out = BgiAdjustedSeries.adjust(listOf(s(0, 120.0, act = 0.0), s(1, 120.0, act = 0.02))).points
         assertEquals(121.8, out[1].adjusted, 1e-9)
     }
 
@@ -39,7 +39,7 @@ class BgiAdjustedSeriesTest {
         // act 0.01, isf 90 -> bgiRate -0.9/min. Nach 10 min: cumBgi = -9.
         // Fallender q1 (-0.9/min) wird dadurch exakt flach: adjusted konstant.
         val seg = (0..10).map { s(it, 120.0 - 0.9 * it, act = 0.01) }
-        val out = BgiAdjustedSeries.adjust(seg)
+        val out = BgiAdjustedSeries.adjust(seg).points
         out.forEach { assertEquals(120.0, it.adjusted, 1e-9) }
     }
 
