@@ -31,6 +31,7 @@ import app.aaps.fuse.core.predictor.TrajectoryCore
 import app.aaps.fuse.core.controller.EvidenceStock
 import app.aaps.fuse.core.controller.OnsetChannel
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
@@ -1768,5 +1769,122 @@ class TransportWiringTest : TestBaseWithProfile() {
         val o = (1..3).map { cycle() }.last()
         assertEquals(0L, l.episodes.evidenceEpisodeId, "keine zweite Episode fuer denselben Druck")
         assertEquals("MARKER_ALREADY_CONSUMED", o.evidenceEpisodeDenial)
+    }
+    // ---- DER WIDERRUFSVERTRAG am laufenden Zyklus ------------------------
+
+    /**
+     * RUECKNAHME WIDERRUFT DEN KREDIT, ERNEUTES ARMEN GIBT IHN FREI - und
+     * beides steht im Ledger, nicht nur im Ergebnis dieses Zyklus.
+     *
+     * Der Unterschied zaehlt: nur der persistierte Stand ueberlebt den
+     * Neustart, und genau dort lag der teure Fall - Ruecknahme, Neustart, und
+     * die wiedergefundene Episode liefert wieder Kredit.
+     */
+    @Test
+    fun `Ruecknahme widerruft den Kredit im Ledger und erneutes Armen gibt ihn frei`(@TempDir dir: File) {
+        tailGuard = false
+        flach = 62.0
+        steigungProMin = 0.0
+        markerAuthorized = true
+
+        val l = FuseLedgerAdapter().also { it.loadOnce(dir.also(File::mkdirs), "test-epoch", start) }
+        neuerRunner(l)
+
+        markerAt = start + 2 * 60_000L
+        clock = start
+        repeat(8) { cycle() }
+        val anker = l.episodes.evidenceEpisodeId
+        val bezahlt = l.episodes.evidenceCommittedU
+        assertTrue(anker > 0L, "erst mal eine Episode")
+        assertFalse(l.episodes.evidenceRevoked, "und sie ist nicht widerrufen")
+
+        // Ruecknahme: Kredit weg, Buchhaltung bleibt.
+        markerAt = 0L
+        val o = (1..3).map { cycle() }.last()
+        assertTrue(l.episodes.evidenceRevoked, "der Kredit ist widerrufen")
+        assertTrue(o.evidenceCreditRevoked, "und das steht auch im Ergebnis")
+        assertEquals(anker, l.episodes.evidenceEpisodeId, "die Episode bleibt")
+        assertTrue(
+            l.episodes.evidenceCommittedU >= bezahlt - 1e-9,
+            "die Bezahlung bleibt: $bezahlt -> ${l.episodes.evidenceCommittedU}",
+        )
+
+        // Erneutes bewusstes Armen im Deckel: frei, aber kein neues Budget.
+        markerAt = clock + 60_000L
+        repeat(3) { cycle() }
+        assertFalse(l.episodes.evidenceRevoked, "erneutes Armen gibt frei")
+        assertEquals(anker, l.episodes.evidenceEpisodeId, "immer noch dieselbe Episode")
+    }
+
+    /**
+     * NEUSTART NACH RUECKNAHME - der Kredit bleibt gesperrt.
+     *
+     * Zweiter Adapter auf demselben Verzeichnis, also die echte Ladekette.
+     * Ohne den persistierten Stand haette hier ein aus den Preferences
+     * vorgefundener Markerzeitpunkt gereicht, um wieder zu lizenzieren.
+     */
+    @Test
+    fun `Neustart nach Ruecknahme laesst den Kredit gesperrt`(@TempDir dir: File) {
+        tailGuard = false
+        flach = 62.0
+        steigungProMin = 0.0
+        markerAuthorized = true
+        dir.mkdirs()
+
+        val l1 = FuseLedgerAdapter().also { it.loadOnce(dir, "test-epoch", start) }
+        neuerRunner(l1)
+        markerAt = start + 2 * 60_000L
+        clock = start
+        repeat(8) { cycle() }
+        val anker = l1.episodes.evidenceEpisodeId
+
+        markerAt = 0L
+        repeat(3) { cycle() }
+        assertTrue(l1.episodes.evidenceRevoked)
+        assertTrue(l1.persistVerified(dir), "der Ledger muss schreiben")
+
+        // NEUSTART: neuer Adapter, neuer Runner, keine Beobachtung. Der
+        // Markerzeitpunkt taucht wieder auf, ohne dass jemand gedrueckt hat.
+        val l2 = FuseLedgerAdapter().also { it.loadOnce(dir, "test-epoch2", clock) }
+        neuerRunner(l2)
+        assertEquals(anker, l2.episodes.evidenceEpisodeId, "die Episode wurde geladen")
+        assertTrue(l2.episodes.evidenceRevoked, "und der Widerruf mit ihr")
+
+        markerAtIntern = anker
+        markerPress = 0L
+        val o = (1..8).map { cycle() }.last()
+        assertTrue(l2.episodes.evidenceRevoked, "ohne Willenserklaerung bleibt gesperrt")
+        assertTrue(o.evidenceCreditRevoked)
+    }
+
+    /**
+     * DER NATUERLICHE ABLAUF widerruft NICHT.
+     *
+     * Nach 90 Minuten endet das Kontextfenster, die Episode laeuft bis 240
+     * weiter - der gemessene Lauf vom 11.08. war nach 205 Minuten noch aktiv.
+     * Wuerde der Ablauf widerrufen, waere genau die zweite Welle unbedient.
+     */
+    @Test
+    fun `natuerlicher Ablauf des Markerfensters widerruft den Kredit nicht`(@TempDir dir: File) {
+        tailGuard = false
+        flach = 62.0
+        steigungProMin = 0.0
+        markerAuthorized = true
+
+        val l = FuseLedgerAdapter().also { it.loadOnce(dir.also(File::mkdirs), "test-epoch", start) }
+        neuerRunner(l)
+
+        markerAt = start + 2 * 60_000L
+        clock = start
+        repeat(8) { cycle() }
+        assertTrue(l.episodes.evidenceEpisodeId > 0L)
+
+        // Ueber das 90-min-Fenster hinaus, OHNE die Preference zu nullen -
+        // genau der Unterschied zur Ruecknahme.
+        clock += 100 * 60_000L
+        val o = (1..3).map { cycle() }.last()
+
+        assertFalse(l.episodes.evidenceRevoked, "abgelaufen ist nicht zurueckgenommen")
+        assertFalse(o.evidenceCreditRevoked)
     }
 }

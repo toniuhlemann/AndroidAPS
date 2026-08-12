@@ -474,6 +474,14 @@ class FuseCycleRunner(
          * kaputter Kanal.
          */
         val evidenceEpisodeDenial: String? = null,
+        /**
+         * Der Zusatzkredit dieser Episode ist ausdruecklich zurueckgenommen.
+         *
+         * Die Episode LAEUFT dabei weiter - Anker, Deckel und bezahlte Menge
+         * bleiben stehen. Ohne dieses Feld waere "Episode aktiv" im Tab die
+         * halbe Wahrheit und saehe aus wie eine laufende Lizenz.
+         */
+        val evidenceCreditRevoked: Boolean = false,
         /** Die Treatment-Vollsicht dieses Zyklus fuer den Ledger-Abgleich.
          *  `null` auf Abbruchpfaden UND wenn die Datenbankabfrage scheitert -
          *  dann gibt es diesen Zyklus keinen Abgleich, und offene Commitments
@@ -513,6 +521,47 @@ class FuseCycleRunner(
     fun run(tempBasalFallback: Boolean, pumpe: FuseActivePump): Outcome {
         val computeTs = dateUtil.now()
         val gate = pumpe.gate
+
+        // ---- Marker und Evidenz-Episode: GANZ VORNE ------------------------
+        //
+        // Sie standen bis zum 12.08. mitten im Zyklus, hinter Profil, Signal
+        // und Observer. Das war genau an der falschen Stelle: der
+        // wahrscheinlichste Moment fuer `MARKER_EVENT_NOT_DURABLE` ist der
+        // Neustart - und da bricht der Zyklus mangels Signalhistorie erst
+        // einmal ab. Der Nutzer sah "ABBRUCH" und keinen Hinweis darauf, dass
+        // sein Marker keine Episode hat und er zweimal druecken muss.
+        //
+        // Hier braucht es nur Uhr, Preference und Ledger; nichts davon haengt
+        // an Signal oder Profil. Damit tragen ALLE Ausgaenge den Zustand,
+        // auch die Abbrueche.
+        val markerTs = preferences.get(FuseLongKey.MealMarkerArmedTs).takeIf { it > 0L }
+            ?: (preferences.get(FuseLongKey.MealMarkerStamp).takeIf { it > 0L }?.div(10L) ?: 0L)
+        val episodes = ledger.episodes
+        val evidenceCapMs = EvidenceStock.Config().maxEpisodeMin * 60_000L
+        val episodeGate = MarkerEpisodeGate.decide(
+            nowMs = computeTs,
+            markerTs = markerTs,
+            ledgerEpisodeId = episodes.evidenceEpisodeId,
+            lastConsumedMarkerTs = episodes.lastConsumedMarkerTs,
+            observedPressTs = markerPressObserved(),
+            capMs = evidenceCapMs,
+            revokedPersisted = episodes.evidenceRevoked,
+        )
+        val evidenceEpisodeId = episodeGate.episodeId
+        if (episodeGate.opened) {
+            // SOFORT VERBRAUCHEN, nicht erst bei der ersten Dosis: sonst
+            // eroeffnete ein Zyklus ohne Abgabe die Episode und ein spaeterer
+            // Neustart faende den Anker unberuehrt vor.
+            episodes.lastConsumedMarkerTs = maxOf(episodes.lastConsumedMarkerTs, markerTs)
+            episodes.evidenceEpisodeId = evidenceEpisodeId
+            episodes.evidenceCommittedU = 0.0
+        }
+        // WIDERRUF ZUERST FESTSCHREIBEN, dann weiterrechnen. Die Reihenfolge
+        // ist die Zusicherung: der Stand steht im Ledger, bevor irgendein
+        // Kanal dieses Zyklus ihn lesen koennte. Das UNBEDINGTE Versiegeln
+        // ist Stufe 3; bis dahin traegt der zustandslose Teil der Regel den
+        // Absturzfall (Preference auf 0 = zurueckgenommen, auch nach Neustart).
+        episodes.evidenceRevoked = episodeGate.creditRevoked
 
         // Audit R95 F-P0-07: ein Abort liess eine LAUFENDE POSITIVE TBR bis zu
         // ihrem Ende weiterlaufen (fail-silent, war nur fuer VPUMP akzeptiert).
@@ -566,6 +615,12 @@ class FuseCycleRunner(
                 signal = signal, band = null, discount = null, onset = null, prime = null, candidate = null, candidateGap = null, policy = policy, state = null, step = step,
                 sensorEpoch = null, calibrationEpoch = null,
                 isfMgdlPerU = null, iobU = iob, iobThU = iobTh, maxIobU = maxIob, computeDurationMs = null, mealStats = null, abortReason = reason,
+                // AUCH IM ABBRUCH. Nach einem Neustart ist der Abbruch der
+                // WAHRSCHEINLICHE Ausgang, und genau dort muss der Nutzer
+                // erfahren, dass sein Marker keine Episode hat.
+                evidenceEpisodeId = evidenceEpisodeId,
+                evidenceEpisodeDenial = episodeGate.denial?.name,
+                evidenceCreditRevoked = episodeGate.creditRevoked,
             )
         }
 
@@ -812,12 +867,10 @@ class FuseCycleRunner(
         // Der Altbestand-Stempel wird nur noch gelesen, falls `armedTs` leer
         // ist - der Fall tritt genau einmal auf, bei einem Marker, der beim
         // Update dieser Version gerade lief.
-        val markerTs = preferences.get(FuseLongKey.MealMarkerArmedTs).takeIf { it > 0L }
-            ?: (preferences.get(FuseLongKey.MealMarkerStamp).takeIf { it > 0L }?.div(10L) ?: 0L)
-        // Episodenbudgets leben im Ledger-Adapter und ueberleben Neustarts
-        // (Audit R95, Fix 3) - nur der Reset-ANLASS steht hier: ein neuer
-        // armedTs ist eine neue Episode mit voller Huelle.
-        val episodes = ledger.episodes
+        // `markerTs` und `episodes` stehen am Kopf von run() - dort haengt
+        // auch das Evidenz-Episodentor, damit Abbrueche seinen Grund tragen.
+        // Hier steht nur noch der PRIME-Reset: ein neuer armedTs ist eine
+        // neue Episode mit voller Huelle.
         // AKTIVITAET UND BUDGET SIND ZWEI DINGE (11.08.).
         //
         // Vorher war die Episode am `markerTs` festgemacht: eine Ruecknahme
@@ -881,31 +934,6 @@ class FuseCycleRunner(
         // Doppelfinanzierung, gegen die die Episodenbudgets ueberhaupt
         // existieren.
         //
-        // EIN MARKERZEITPUNKT ALLEIN EROEFFNET SIE NICHT MEHR (Stufe 2). Er
-        // liegt in den Preferences und ueberlebt Neustarts und den Deckel;
-        // danach saehe derselbe Druck wieder aus wie ein neuer. Es braucht
-        // zusaetzlich den verbrauchten Anker im Ledger UND die Beobachtung des
-        // Drucks in DIESEM Prozess - die Regel steht in [MarkerEpisodeGate].
-        val evidenceCapMs = EvidenceStock.Config().maxEpisodeMin * 60_000L
-        val episodeGate = MarkerEpisodeGate.decide(
-            nowMs = computeTs,
-            markerTs = markerTs,
-            ledgerEpisodeId = episodes.evidenceEpisodeId,
-            lastConsumedMarkerTs = episodes.lastConsumedMarkerTs,
-            observedPressTs = markerPressObserved(),
-            capMs = evidenceCapMs,
-        )
-        val evidenceEpisodeId = episodeGate.episodeId
-        if (episodeGate.opened) {
-            // SOFORT VERBRAUCHEN, nicht erst bei der ersten Dosis: sonst
-            // eroeffnete ein Zyklus ohne Abgabe die Episode und ein spaeterer
-            // Neustart faende den Anker unberuehrt vor. Der Persist des
-            // Ledgers zieht das gleich mit.
-            episodes.lastConsumedMarkerTs = maxOf(episodes.lastConsumedMarkerTs, markerTs)
-            episodes.evidenceEpisodeId = evidenceEpisodeId
-            episodes.evidenceCommittedU = 0.0
-        }
-
         // GAS-VOR-BREMSE NUR FUER ERKLAERTES WISSEN (08.08., Fruehstueckstest):
         // das Rebound-Fenster schuetzt vor dem Jagen UNANGEKUENDIGTER Hypo-
         // Gegenesser. Ein gedrueckter Marker IST die Ankuendigung - er
@@ -1186,7 +1214,7 @@ class FuseCycleRunner(
             return markerFallbackCycle(
                 rejected, warum, signal, step, cfg, state, profile, pumpe, tempBasalFallback,
                 computeTs, markerTs, mealMarkerActive, measuredLow, evidenceEpisodeId,
-                episodeGate.denial?.name,
+                episodeGate.denial?.name, episodeGate.creditRevoked,
                 isf, target, targetSource, iobTotal,
                 maxIobU, transportModelledU, ledgerView, episodes, onset, band,
                 built.discount, built.input.trajectory.model, sensorEpoch, calibrationEpoch, gate,
@@ -1700,6 +1728,7 @@ class FuseCycleRunner(
             mealStats = mealStats,
             evidenceEpisodeId = evidenceEpisodeId,
             evidenceEpisodeDenial = episodeGate.denial?.name,
+            evidenceCreditRevoked = episodeGate.creditRevoked,
             insulinModel = built.input.trajectory.model,
             decision = combined.decision,
             tbr = combined.request,
@@ -1851,6 +1880,8 @@ class FuseCycleRunner(
         evidenceEpisodeId: Long,
         /** Warum keine eroeffnet wurde - s. [Outcome.evidenceEpisodeDenial]. */
         evidenceEpisodeDenial: String?,
+        /** Zusatzkredit zurueckgenommen - s. [Outcome.evidenceCreditRevoked]. */
+        evidenceCreditRevoked: Boolean,
         isf: Double,
         target: Double,
         targetSource: String,
@@ -1976,6 +2007,7 @@ class FuseCycleRunner(
             reason = "$warum | MARKER_FALLBACK|${combined.reason}",
             evidenceEpisodeId = evidenceEpisodeId,
             evidenceEpisodeDenial = evidenceEpisodeDenial,
+            evidenceCreditRevoked = evidenceCreditRevoked,
             alarm = combined.alarm,
             bgMgdl = signal.q1,
             targetMgdl = target,

@@ -167,6 +167,7 @@ object FuseStateJson {
             // anderes ist als "0 mit Grund" (Druck nicht durabel).
             .put("evidenceEpisodeId", outcome.evidenceEpisodeId)
             .put("evidenceEpisodeDenial", outcome.evidenceEpisodeDenial ?: JSONObject.NULL)
+            .put("evidenceCreditRevoked", outcome.evidenceCreditRevoked)
         putOrGap(o, "sourceTs", outcome.sourceTs, gaps, "NO_SIGNAL_THIS_CYCLE")
         o.put("abortReason", outcome.abortReason ?: JSONObject.NULL)
 

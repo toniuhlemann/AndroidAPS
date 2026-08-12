@@ -365,6 +365,7 @@ object LedgerCodec {
         .put("evidenceCommittedU", e.evidenceCommittedU)
         .put("evidenceEpisodeId", e.evidenceEpisodeId)
         .put("lastConsumedMarkerTs", e.lastConsumedMarkerTs)
+        .put("evidenceRevoked", e.evidenceRevoked)
         .put("primeArmedTs", e.primeArmedTs)
         .put("onsetSpentU", e.onsetSpentU)
         .put("onsetQuietMin", e.onsetQuietMin)
@@ -396,6 +397,9 @@ object LedgerCodec {
         // Prozess-Beobachtungspunkt haelt den Fall trotzdem zu - ein Marker
         // aus der Zeit vor dem Update wurde in DIESEM Prozess nicht gedrueckt.
         e.lastConsumedMarkerTs = requireTs("lastConsumedMarkerTs", o.optLong("lastConsumedMarkerTs", 0L))
+        // Altdatei: nicht widerrufen. Der zustandslose Teil der Regel
+        // (Preference auf 0 = zurueckgenommen) traegt den Fall trotzdem.
+        e.evidenceRevoked = o.optBoolean("evidenceRevoked", false)
         e.primeArmedTs = requireTs("primeArmedTs", o.getLong("primeArmedTs"))
         e.onsetSpentU = requireAmount("onsetSpentU", o.getDouble("onsetSpentU"))
         e.onsetQuietMin = o.getInt("onsetQuietMin").also { require(it >= 0) { "negative onsetQuietMin $it" } }

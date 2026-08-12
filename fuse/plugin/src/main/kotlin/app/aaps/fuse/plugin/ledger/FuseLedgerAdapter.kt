@@ -130,6 +130,20 @@ class EpisodeBudgets {
      * der Evidenz-Kredit, und der Grund steht im Tab.
      */
     var lastConsumedMarkerTs: Long = 0L
+
+    /**
+     * Der ZUSATZKREDIT dieser Episode ist ausdruecklich zurueckgenommen.
+     *
+     * Er ist NICHT dasselbe wie "keine Episode": Anker, kumulative Bezahlung
+     * und Deckel bleiben stehen: die Stoerung ist ja nicht verschwunden, nur
+     * die Erlaubnis, sie mit zusaetzlichem Insulin zu bedienen. Wuerde die
+     * Ruecknahme die Episode loeschen, begaenne die naechste Armierung mit
+     * Zaehler 0 - dieselbe Mahlzeit ein zweites Mal unbezahlt.
+     *
+     * PERSISTENT, weil sonst genau der teure Fall offen bliebe: Ruecknahme,
+     * Neustart, und die wiedergefundene Episode liefert wieder Kredit.
+     */
+    var evidenceRevoked: Boolean = false
     val mealDeliveries: ArrayDeque<Pair<Long, Double>> = ArrayDeque()
 
     /**

@@ -169,12 +169,12 @@ object FuseScreenModel {
             // es gibt trotzdem keine Episode und keinen Kredit. Der Nutzer
             // muss dann zweimal druecken (zuruecknehmen, neu armen) - das
             // sagen wir hier, statt ihn raten zu lassen.
-            outcome.evidenceEpisodeDenial?.let { grund ->
-                row(b, "Evidence-Episode", "NICHT eroeffnet - $grund, zusaetzlicher Kredit 0")
-                if (grund == "MARKER_EVENT_NOT_DURABLE")
-                    row(b, "", "Marker zuruecknehmen und erneut druecken")
-            }
+            evidenceZeilen(b, outcome)
         }
+        // OHNE Markerzeile ebenfalls: nach einem Neustart mit
+        // zurueckgenommenem Marker gibt es keinen armedTs mehr, und trotzdem
+        // laeuft die Episode noch bis 240 min.
+        if (marker == null || marker.armedTs <= 0L) evidenceZeilen(b, outcome)
         outcome.mealStats?.let { ms ->
             // T0-Anker (Toni 08.08.): Stand nach 30/60 min AB ESSENSBEGINN,
             // waechst bis zur Marke und friert dann ein - rollierende Fenster
@@ -378,5 +378,28 @@ object FuseScreenModel {
         d >= ABSURD            -> "unbegrenzt"
         d <= -ABSURD           -> "-unbegrenzt"
         else                   -> String.format(java.util.Locale.ROOT, "%.${n}f", d)
+    }
+
+    /**
+     * DER ZUSTAND DER EVIDENZ-EPISODE, immer wenn er etwas zu sagen hat.
+     *
+     * Drei Lagen, die ohne eigene Zeile nicht auseinanderzuhalten waeren:
+     * keine Episode mit Grund, laufende Episode mit widerrufenem Kredit, und
+     * der stumme Normalfall (dann steht hier nichts).
+     */
+    private fun evidenceZeilen(b: StringBuilder, outcome: FuseCycleRunner.Outcome) {
+        outcome.evidenceEpisodeDenial?.let { grund ->
+            row(b, "Evidence-Episode", "NICHT eroeffnet - $grund, zusaetzlicher Kredit 0")
+            // Die Handlungsanweisung haengt am GRUND: gegen einen nicht
+            // durablen Druck hilft erneutes Druecken, gegen einen
+            // Uhrenruecksprung nicht - dort waere der Rat schlicht falsch.
+            when (grund) {
+                "MARKER_EVENT_NOT_DURABLE" -> row(b, "", "Marker zuruecknehmen und erneut druecken")
+                "MARKER_CLOCK_ROLLBACK"    -> row(b, "", "Uhr ist rueckwaerts gesprungen - erneutes Druecken hilft nicht")
+                else                       -> {}
+            }
+        }
+        if (outcome.evidenceCreditRevoked && outcome.evidenceEpisodeId > 0L)
+            row(b, "Evidence-Kredit", "WIDERRUFEN (Ruecknahme) - Episode und Bezahlung laufen weiter")
     }
 }

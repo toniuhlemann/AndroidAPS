@@ -55,8 +55,22 @@ object MarkerEpisodeGate {
         MARKER_IN_FUTURE,
         /** Aelter als der Episodendeckel. */
         MARKER_STALE,
-        /** Dieser Druck hat schon einmal eine Episode eroeffnet. */
+        /** GENAU dieser Druck hat schon einmal eine Episode eroeffnet.
+         *  Handlungsanweisung: nichts tun, das ist die alte Mahlzeit. */
         MARKER_ALREADY_CONSUMED,
+
+        /**
+         * Der Druck liegt VOR dem verbrauchten Anker - die Uhr ist
+         * rueckwaerts gesprungen oder ein Zustand wurde eingespielt.
+         *
+         * EIGENER GRUND, weil die Handlungsanweisung eine andere ist: gegen
+         * `MARKER_ALREADY_CONSUMED` hilft erneutes Druecken (der neue Druck
+         * ist neuer), gegen einen Uhrenruecksprung hilft es NICHT - jeder
+         * weitere Druck liegt ebenfalls vor dem Anker, bis die Uhr den
+         * Rueckstand aufgeholt hat. Beides unter einem Namen zu fuehren
+         * hiesse, den Nutzer in eine wirkungslose Handlung zu schicken.
+         */
+        MARKER_CLOCK_ROLLBACK,
         /**
          * Der Druck wurde in diesem Prozess nicht beobachtet - er stammt aus
          * einer Preference, die einen Neustart ueberlebt hat.
@@ -76,11 +90,25 @@ object MarkerEpisodeGate {
         val opened: Boolean,
         /** Warum keine Episode entstand; `null` = es gibt eine. */
         val denial: Denial?,
+        /**
+         * Ob der ZUSATZKREDIT dieser Episode widerrufen ist.
+         *
+         * GETRENNT von [episodeId], und das ist der ganze Punkt: die Episode
+         * ist Identitaet und Buchfuehrung, der Kredit ist eine Lizenz. Die
+         * Ruecknahme beendet die Lizenz sofort, laesst Anker und bezahlte
+         * Menge aber stehen - sonst begaenne die naechste Armierung wieder
+         * bei null und dieselbe Stoerung waere ein zweites Mal unbezahlt.
+         */
+        val creditRevoked: Boolean = false,
+        /** Ob sich der Widerrufsstand in DIESEM Zyklus geaendert hat - dann
+         *  muss der Aufrufer ihn festschreiben, bevor er weiterdosiert. */
+        val revocationChanged: Boolean = false,
     )
 
     fun decide(
         nowMs: Long,
-        /** Markerzeitpunkt aus den Preferences; 0 = keiner. */
+        /** Markerzeitpunkt aus den Preferences; 0 = keiner ODER ausdruecklich
+         *  zurueckgenommen - der Unterschied steht unten. */
         markerTs: Long,
         /** Episode im Ledger; 0 = keine. */
         ledgerEpisodeId: Long,
@@ -89,19 +117,56 @@ object MarkerEpisodeGate {
         /** Im AKTUELLEN Prozess beim Umschalten beobachteter Druck; 0 = keiner. */
         observedPressTs: Long,
         capMs: Long,
+        /** Persistierter Widerrufsstand der laufenden Episode. */
+        revokedPersisted: Boolean = false,
     ): Result {
         // EINE LAUFENDE EPISODE BLEIBT, was auch immer der Marker gerade sagt.
         // Ruecknahme beendet die Autorisierung, nicht die Episode - und ein
         // erneuter Druck erbt sie samt Zaehler.
+        //
+        // DER KREDIT IST DAVON UNABHAENGIG und wird hier entschieden, denn
+        // "die Episode bleibt" haette sonst geheissen: der Nutzer nimmt
+        // zurueck und der Zusatzkredit dosiert weiter.
         if (ledgerEpisodeId > 0L && nowMs - ledgerEpisodeId in 0..capMs)
-            return Result(ledgerEpisodeId, opened = false, denial = null)
+            return widerruf(markerTs, observedPressTs, revokedPersisted).let { w ->
+                Result(ledgerEpisodeId, opened = false, denial = null, creditRevoked = w, revocationChanged = w != revokedPersisted)
+            }
 
         if (markerTs <= 0L) return Result(0L, false, Denial.NO_MARKER)
         if (markerTs - nowMs > FUTURE_TOLERANCE_MS) return Result(0L, false, Denial.MARKER_IN_FUTURE)
         if (nowMs - markerTs > capMs) return Result(0L, false, Denial.MARKER_STALE)
-        if (markerTs <= lastConsumedMarkerTs) return Result(0L, false, Denial.MARKER_ALREADY_CONSUMED)
+        if (markerTs < lastConsumedMarkerTs) return Result(0L, false, Denial.MARKER_CLOCK_ROLLBACK)
+        if (markerTs == lastConsumedMarkerTs) return Result(0L, false, Denial.MARKER_ALREADY_CONSUMED)
         if (markerTs != observedPressTs) return Result(0L, false, Denial.MARKER_EVENT_NOT_DURABLE)
 
-        return Result(markerTs, opened = true, denial = null)
+        // Eine frisch eroeffnete Episode ist nie widerrufen - und wenn der
+        // Stand aus einer alten Episode noch `true` sagte, ist das jetzt eine
+        // Aenderung, die festgeschrieben werden muss.
+        return Result(markerTs, opened = true, denial = null, creditRevoked = false, revocationChanged = revokedPersisted)
+    }
+
+    /**
+     * AUSDRUECKLICHE RUECKNAHME GEGEN NATUERLICHEN ABLAUF - der Unterschied
+     * steht im Markerzeitpunkt selbst und braucht keinen zweiten Zustand:
+     *
+     *   Ruecknahme:  `toggleMealMarker` NULLT die Preference. Nur dieser eine
+     *                Ort tut das, und nur, solange der Marker aktiv ist -
+     *                nach Ablauf armt derselbe Knopf naemlich neu.
+     *   Ablauf:      der Zeitpunkt BLEIBT stehen, nur `active` wird mit der
+     *                Zeit falsch. Die Episode laeuft bis 240 min weiter, und
+     *                genau dafuer wurde sie vom 90-Minuten-Fenster geloest.
+     *
+     * Die Regel ist damit zustandslos und heilt sich nach einem Neustart
+     * selbst: steht dort 0, ist zurueckgenommen worden. Der persistierte
+     * Stand traegt den Fall, in dem spaeter wieder ein Zeitpunkt auftaucht,
+     * ohne dass jemand gedrueckt hat.
+     */
+    private fun widerruf(markerTs: Long, observedPressTs: Long, revokedPersisted: Boolean): Boolean = when {
+        markerTs <= 0L                                       -> true
+        // BEWUSSTES ERNEUTES ARMEN gibt frei - aber nur ein in diesem Prozess
+        // beobachteter Druck. Ein aus den Preferences vorgefundener Zeitpunkt
+        // ist keine Willenserklaerung.
+        observedPressTs > 0L && markerTs == observedPressTs  -> false
+        else                                                 -> revokedPersisted
     }
 }
