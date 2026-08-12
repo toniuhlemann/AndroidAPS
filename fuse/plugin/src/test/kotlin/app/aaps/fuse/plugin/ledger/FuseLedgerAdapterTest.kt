@@ -504,11 +504,23 @@ class FuseLedgerAdapterTest {
         assertTrue(a.persistFailed)
         assertTrue(a.view().hold)
         assertEquals(FuseLedgerAdapter.HOLD_REASON_PERSIST_FAILED, a.view().holdReason)
-        // Blockade weg -> der naechste Persist gelingt und loest die Sperre.
+        // Blockade weg - und trotzdem kein Erfolg: der erste Fehlversuch hat
+        // SEAL_PENDING hinterlassen, und der klebt bis zur Reparatur.
         assertTrue(File(dir, FuseLedgerStore.SENTINEL_NAME).delete())
-        assertTrue(a.persistVerified(dir))
-        assertFalse(a.view().hold)
-        assertTrue(File(dir, FuseLedgerStore.SENTINEL_NAME).isFile)
+        assertFalse(a.persistVerified(dir)) { "der vorgefundene Marker sperrt" }
+        assertTrue(FuseLedgerStore.sealPendingExists(dir))
+
+        // ERST DIE REPARATUR oeffnet den Weg - und das ist der Punkt: der
+        // Hold ist dauerhaft UND bedienbar.
+        val r = FuseLedgerRepair.perform(dir, t0 + 60_000L, by = "Test", reason = "Sentinelblockade")
+        assertTrue(r is FuseLedgerRepair.Result.Done) { "Reparatur: $r" }
+        assertFalse(FuseLedgerStore.sealPendingExists(dir))
+
+        val b = FuseLedgerAdapter().also {
+            it.loadOnce(dir, "epoch-nach-reparatur", t0 + 120_000L, FuseActivePump(PumpType.GENERIC_AAPS.name, false))
+        }
+        assertFalse(b.recoveryHold) { "nach der Reparatur laeuft es wieder" }
+        assertTrue(b.persistVerified(dir))
     }
 
     /** Regression (Codex (c), existierte schon): Sentinel vorhanden, aber
@@ -624,13 +636,16 @@ class FuseLedgerAdapterTest {
         // Es wurde auch keine saubere Generation geschrieben.
         assertFalse(File(dir, FuseLedgerStore.FILE_NAME).exists())
 
-        // Blockade weg -> der naechste Persist zieht den Marker nach ...
+        // Blockade weg - der naechste Persist gelingt TROTZDEM NICHT.
+        //
+        // Seit dem Write-ahead-Marker (12.08.) klebt jeder unterbrochene
+        // Vorgang: der erste Fehlversuch hat SEAL_PENDING hinterlassen, und
+        // der darf von keinem normalen Zyklus weggewaschen werden. Der Ausweg
+        // ist der Reparaturweg, nicht der naechste Zyklus.
         assertTrue(File(dir, FuseLedgerStore.HOLD_NAME).delete())
-        assertTrue(a.persistVerified(dir))
-        assertTrue(File(dir, FuseLedgerStore.HOLD_NAME).isFile)
-        // ... und der Hold bleibt trotzdem stehen.
+        assertFalse(a.persistVerified(dir)) { "der vorgefundene Marker sperrt" }
+        assertTrue(FuseLedgerStore.sealPendingExists(dir))
         assertTrue(a.view().hold)
-        assertEquals(FuseLedgerAdapter.HOLD_REASON_RECOVERY, a.view().holdReason)
     }
 
     // ---- G5: globale Hold-Identitaet --------------------------------------
@@ -1235,5 +1250,57 @@ class FuseLedgerAdapterTest {
             it.loadOnce(dir, "epoch-b", t0 + 60_000L, FuseActivePump(PumpType.GENERIC_AAPS.name, false))
         }
         assertFalse(b.recoveryHold)
+    }
+    /**
+     * DER MARKER DARF SICH NICHT SELBST REINWASCHEN (Toni 12.08.).
+     *
+     * Der Ablauf, den diese Gegenprobe verschliesst:
+     *   1. ein unterbrochener Persist hinterlaesst SEAL_PENDING und ein
+     *      neueres, unversiegeltes `.tmp`,
+     *   2. Start B uebernimmt zuerst die HOECHSTE Revision - also die aus
+     *      `.tmp` - und erkennt den Marker erst danach,
+     *   3. der naechste Zyklus persistiert unbedingt weiter,
+     *   4. `markSealPending` ueberschreibt den vorhandenen Marker, schreibt
+     *      den uebernommenen unklaren Zustand und raeumt den Marker ab,
+     *   5. Start C findet nichts mehr - der unversiegelte Zustand gilt als
+     *      sauber.
+     *
+     * Genau deshalb genuegt "Neustart 1 haelt" nicht: die Waesche passiert
+     * erst zwischen Neustart 1 und 2.
+     */
+    @Test
+    fun `ein vorgefundener Marker wird nicht vom naechsten Zyklus weggewaschen`(@TempDir dir: File) {
+        val a = loadedAdapter(dir)
+        a.episodes.evidenceState = bestand(10.0)
+        assertTrue(a.persistVerified(dir))
+        val alt = File(dir, FuseLedgerStore.FILE_NAME).readText()
+
+        // Der unterbrochene Persist: neueres .tmp plus Marker.
+        val neu = org.json.JSONObject(alt)
+        neu.put("revision", neu.getLong("revision") + 5)
+        neu.getJSONObject("episodes").getJSONObject("evidenceState").put("stockMgdl", 99.0)
+        val tmp = File(dir, FuseLedgerStore.FILE_NAME + ".tmp")
+        tmp.writeText(neu.toString())
+        assertTrue(FuseLedgerStore.markSealPendingForTest(dir))
+
+        // START B: haelt.
+        val b = FuseLedgerAdapter().also {
+            it.loadOnce(dir, "epoch-b", t0 + 60_000L, FuseActivePump(PumpType.GENERIC_AAPS.name, false))
+        }
+        assertTrue(b.recoveryHold)
+
+        // DER GEHALTENE ZYKLUS persistiert trotzdem - er darf aber nichts
+        // veraendern und muss scheitern.
+        assertFalse(b.persistVerified(dir)) { "ein fremder Marker sperrt den Persist" }
+        assertTrue(FuseLedgerStore.sealPendingExists(dir)) { "der Marker bleibt" }
+        assertEquals(alt, File(dir, FuseLedgerStore.FILE_NAME).readText()) { "das Ziel bleibt" }
+        assertTrue(tmp.isFile) { "und .tmp auch - die Reparatur braucht die Spur" }
+
+        // START C: weiterhin Hold.
+        val c = FuseLedgerAdapter().also {
+            it.loadOnce(dir, "epoch-c", t0 + 120_000L, FuseActivePump(PumpType.GENERIC_AAPS.name, false))
+        }
+        assertTrue(c.recoveryHold) { "der Hold muss den zweiten Neustart ueberleben" }
+        assertTrue(c.view().hold) { "und kein Kredit" }
     }
 }

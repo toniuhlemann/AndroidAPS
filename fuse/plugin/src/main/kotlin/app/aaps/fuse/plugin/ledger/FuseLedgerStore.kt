@@ -319,6 +319,15 @@ class FuseLedgerStore(private val durability: Durability = Durability.ANDROID) {
     fun markSealPending(dir: File, content: String): Boolean = runCatching {
         if (!dir.exists() && !dir.mkdirs() && !dir.exists()) return@runCatching false
         val f = File(dir, SEAL_PENDING_NAME)
+        // EIN VORHANDENER MARKER GEHOERT NICHT UNS.
+        //
+        // Ihn zu ueberschreiben waere die Selbstwaesche (Toni 12.08.): der
+        // naechste Zyklus nach einem unterbrochenen Persist haette den fremden
+        // Marker ersetzt, den uebernommenen unklaren Zustand geschrieben und
+        // danach abgeraeumt - beim zweiten Neustart saehe alles sauber aus.
+        // Nur der Marker, den GENAU DIESER Aufruf neu anlegt, darf spaeter
+        // wieder entfernt werden.
+        if (f.exists()) return@runCatching false
         FileOutputStream(f).use { out ->
             out.write(content.toByteArray(Charsets.UTF_8))
             out.flush()

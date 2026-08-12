@@ -227,4 +227,40 @@ class FuseLedgerRepairTest {
         assertEquals(vorher, dir.listFiles()!!.map { it.name to it.length() }.sortedBy { it.first })
         assertTrue(FuseLedgerStore.holdExists(dir))
     }
+    /**
+     * DER WRITE-AHEAD-MARKER IST EIN EIGENER REPARATURGRUND.
+     *
+     * Seit er klebt (12.08.), waere der Hold sonst dauerhaft, aber nicht
+     * bedienbar - und ein Ausgang, den man nicht gehen kann, ist keiner.
+     * Geprueft wird beides: dass `inspect` ihn nennt und dass `perform` ihn
+     * samt der unversiegelten `.tmp`-Generation aufloest.
+     */
+    @Test
+    fun `ein unterbrochener Versiegelungsvorgang ist reparabel`(@TempDir dir: File) {
+        val store = FuseLedgerStore()
+        assertTrue(
+            store.writeVerified(
+                dir,
+                LedgerCodec.encode(app.aaps.fuse.core.ledger.LedgerState(), EpisodeBudgets(), 3L).toString(),
+            )
+        )
+        assertTrue(FuseLedgerStore.writeSentinel(dir))
+        // Der unterbrochene Vorgang: unversiegeltes .tmp mit hoeherer Revision
+        // plus Marker.
+        File(dir, FuseLedgerStore.FILE_NAME + ".tmp")
+            .writeText(LedgerCodec.encode(app.aaps.fuse.core.ledger.LedgerState(), EpisodeBudgets(), 9L).toString())
+        assertTrue(FuseLedgerStore.markSealPendingForTest(dir))
+
+        val i = FuseLedgerRepair.inspect(dir)
+        assertTrue(i.repairable) { "sonst gaebe es keinen Ausweg: ${i.why}" }
+        assertTrue(i.why.contains(FuseLedgerStore.SEAL_PENDING_NAME)) { i.why }
+
+        val r = FuseLedgerRepair.perform(dir, 1_700_000_000_000L, by = "Test", reason = "unterbrochener Persist")
+        assertTrue(r is FuseLedgerRepair.Result.Done) { "$r" }
+
+        assertFalse(FuseLedgerStore.sealPendingExists(dir)) { "der Marker muss weg sein" }
+        // Alle DREI Generationskandidaten sind in Quarantaene - auch das
+        // unversiegelte .tmp, das den Marker verursacht hat.
+        assertFalse(File(dir, FuseLedgerStore.FILE_NAME + ".tmp").isFile)
+    }
 }

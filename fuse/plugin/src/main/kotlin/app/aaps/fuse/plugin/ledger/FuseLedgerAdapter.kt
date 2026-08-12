@@ -1663,6 +1663,18 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
         // Laesst er sich nicht durabel setzen, wird gar nicht erst rotiert:
         // ein Persist ohne Beweisspur ist genau der Vorgang, den wir nicht
         // mehr einordnen koennten.
+        // EIN VORGEFUNDENER MARKER SPERRT DEN PERSIST GANZ.
+        //
+        // Er stammt aus einem Vorgang, der nicht sauber geendet hat - und
+        // dieser Zyklus hat den dabei uebernommenen Zustand womoeglich schon
+        // im Speicher (die Revisionsauswahl zieht `.tmp` heran, BEVOR der
+        // Marker geprueft wird). Ihn jetzt zu schreiben hiesse, genau den
+        // unklaren Stand zu beglaubigen. Also: nichts anfassen, weder Marker
+        // noch Generationen - die Reparatur braucht die Spur unveraendert.
+        if (FuseLedgerStore.sealPendingExists(dir)) {
+            persistFailed = true
+            return false
+        }
         if (!store.markSealPending(dir, "SEAL_PENDING rev=$revision")) {
             persistFailed = true
             return false

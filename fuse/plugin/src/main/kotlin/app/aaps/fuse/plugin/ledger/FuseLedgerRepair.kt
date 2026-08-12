@@ -128,6 +128,10 @@ object FuseLedgerRepair {
         val decoded = read?.content?.let { runCatching { LedgerCodec.decode(JSONObject(it)) }.getOrNull() }
 
         val holdMarker = FuseLedgerStore.holdExists(dir)
+        // WRITE-AHEAD-MARKER: seit er klebt, ist er ein eigener Reparaturgrund
+        // (Toni 12.08.). Ohne diese Zeile waere der Hold dauerhaft, aber nicht
+        // bedienbar - ein Ausgang, den man nicht gehen kann, ist keiner.
+        val sealPending = FuseLedgerStore.sealPendingExists(dir)
         val gehalten = decoded?.state?.holdActuation == true
         // Sentinel ohne lesbare Generation = Verlust. Auch das ist ein
         // Reparaturfall, sonst bliebe genau der Zustand ohne Ausgang, fuer den
@@ -154,11 +158,17 @@ object FuseLedgerRepair {
 
         val why = when {
             verlust     -> "Vorgeschichte vorhanden, aber keine lesbare Generation (Verlust)"
+            // VOR dem Hold-Marker genannt: er beschreibt den unklareren
+            // Zustand. Beim Hold wissen wir, WAS verloren ging; hier wissen
+            // wir nur, dass ein Versiegelungsvorgang unterbrochen wurde und
+            // eine der drei Generationen einen nicht bestaetigten Stand
+            // tragen kann.
+            sealPending -> "ein Versiegelungsvorgang wurde unterbrochen (${FuseLedgerStore.SEAL_PENDING_NAME})"
             holdMarker  -> "dauerhafter Hold-Marker liegt vor"
             gehalten    -> "der Zustand haelt die Aktuation (nicht quittierbarer Fehler)"
             else        -> "nichts zu reparieren - kein Hold, kein Verlust"
         }
-        return Inspection(holdMarker || gehalten || verlust, why, discarded)
+        return Inspection(holdMarker || gehalten || verlust || sealPending, why, discarded)
     }
 
     /**
@@ -188,6 +198,15 @@ object FuseLedgerRepair {
         // hinterlassen: nichts repariert und die Vorgeschichte trotzdem weg.
         if (!FuseLedgerStore.clearHoldVerified(dir))
             return Result.Refused("Hold-Marker liess sich nicht entfernen - nichts veraendert")
+
+        // Der Write-ahead-Marker ebenso, und aus demselben Grund: bliebe er
+        // liegen, hielte der naechste Start weiter an - die Reparatur haette
+        // die Vorgeschichte in Quarantaene gelegt und den Ausgang trotzdem
+        // nicht geoeffnet. Die Quarantaene unten erfasst alle DREI
+        // Generationskandidaten, also auch das unversiegelte `.tmp`, das den
+        // Marker verursacht hat.
+        if (!store.clearSealPending(dir))
+            return Result.Refused("${FuseLedgerStore.SEAL_PENDING_NAME} liess sich nicht entfernen - nichts veraendert")
 
         val quarantined = FuseLedgerStore.quarantine(
             listOf(
