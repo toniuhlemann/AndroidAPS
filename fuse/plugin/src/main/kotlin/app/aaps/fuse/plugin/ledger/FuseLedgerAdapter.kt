@@ -924,6 +924,23 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
         // C8d (3): der HOLD-MARKER gilt UNABHAENGIG davon, ob der Zustand
         // sauber laedt. Er ist der einzige Zeuge, der einen Prozesswechsel
         // ueberlebt - genau daran scheiterte der alte RAM-Hold.
+        // WRITE-AHEAD-MARKER: ein Persist, der nicht sauber geendet hat.
+        //
+        // Er steht VOR der Hold-Pruefung, weil er den unklareren Zustand
+        // beschreibt: beim Hold-Marker wissen wir, WAS verloren ging; hier
+        // wissen wir nur, dass der letzte Vorgang unterbrochen wurde. Das
+        // kann ein verwaistes `.tmp` mit hoeherer Revision bedeuten, einen
+        // nicht bestaetigten Verzeichniseintrag oder einen Stromausfall
+        // mitten in der Rotation - alle drei sind Gruende, NICHT zu
+        // uebernehmen.
+        if (FuseLedgerStore.sealPendingExists(dir)) {
+            recoveryHold = true
+            log(
+                "FUSE ledger RECOVERY_HOLD: ${FuseLedgerStore.SEAL_PENDING_NAME} vorhanden - der letzte " +
+                    "Versiegelungsvorgang hat nicht sauber geendet; der Zielname oder .tmp koennen einen " +
+                    "nicht bestaetigten Zustand tragen. Aktuation bleibt zu (dir=$dir)"
+            )
+        }
         if (FuseLedgerStore.holdExists(dir)) {
             recoveryHold = true
             log(
@@ -1012,7 +1029,7 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
                 // dringendsten braucht.
                 .putOpt("transportCommitmentU", readable?.state?.transportCommitmentU)
                 .toString()
-            if (!FuseLedgerStore.writeHoldVerified(dir, marker)) {
+            if (!store.writeHoldDurable(dir, marker)) {
                 pendingHoldMarker = marker
                 log(
                     "FUSE ledger RECOVERY_HOLD: Hold-Marker konnte nicht geschrieben werden - " +
@@ -1635,6 +1652,22 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
         // nicht durabel ist, entsteht auch keine neue saubere Generation:
         // genau diese Kombination (saubere Generationen ohne Verlustbeweis)
         // war der C8d-Pfad, auf dem der Hold verschwand.
+        // WRITE-AHEAD: erst der Marker, dann die Rotation.
+        //
+        // Er ist die einzige Aussage, die JEDEN unklaren Ausgang abdeckt -
+        // gescheiterter zweiter Rename (der neue Stand liegt dann in `.tmp`,
+        // und die Revisionsauswahl zieht `.tmp` heran), spaeter Sync-Fehler,
+        // gescheiterter Sentinel NACH gelungenem Ledger-Persist, und den
+        // Prozess- oder Stromausfall, bei dem gar kein Code mehr laeuft.
+        //
+        // Laesst er sich nicht durabel setzen, wird gar nicht erst rotiert:
+        // ein Persist ohne Beweisspur ist genau der Vorgang, den wir nicht
+        // mehr einordnen koennten.
+        if (!store.markSealPending(dir, "SEAL_PENDING rev=$revision")) {
+            persistFailed = true
+            return false
+        }
+
         val ok = writeHoldMarkerIfPending(dir) && runCatching {
             store.writeVerified(
                 dir,
@@ -1642,62 +1675,27 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
             )
         }.getOrDefault(false) && FuseLedgerStore.writeSentinel(dir)
         persistFailed = !ok
-        if (!ok) haltNachSpaetemFehler(dir)
-        return ok
+
+        // ABRAEUMEN NUR BEI VOLLSTAENDIGEM ERFOLG. Jeder andere Ausgang laesst
+        // ihn stehen, und der naechste Start haelt an - unabhaengig davon, ob
+        // wir den Fehler einordnen konnten.
+        if (ok) {
+            if (!store.clearSealPending(dir)) {
+                // Der Marker liegt noch. Der Zustand ist zwar sauber, aber wir
+                // koennen es nicht belegen - also gilt der Persist als
+                // gescheitert, statt einen Hold beim naechsten Start als
+                // Raetsel zu hinterlassen.
+                persistFailed = true
+                return false
+            }
+            return true
+        }
+        return false
     }
 
-    /**
-     * EIN SPAETER SCHREIBFEHLER BRAUCHT EINEN DAUERHAFTEN BEWEIS.
-     *
-     * `persistVerified == false` heisst NICHT "der neue Inhalt liegt nicht auf
-     * Platte" (Toni 12.08.). Die Fehler zerfallen in zwei Klassen, und nur die
-     * erste ist harmlos:
-     *
-     *   FRUEH - FILE_SYNC_FAILED, RENAME_FAILED: der Zielname zeigt noch auf
-     *     die Vorgeneration. Die Ruecknahme im Speicher genuegt, denn ein
-     *     Neustart faende ohnehin den alten Stand.
-     *
-     *   SPAET - DIR_SYNC_FAILED, READBACK_FAILED: der Rename ist gelaufen, der
-     *     Zielname kann den NEUEN Inhalt tragen. Der Speicher wird auf den
-     *     alten Stand zurueckgerollt - beim naechsten Start koennte aber der
-     *     neue gewinnen, und unversiegelte Evidenz kaeme zurueck. `persistFailed`
-     *     ist nur RAM-sticky und ueberlebt den Neustart nicht.
-     *
-     * Fuer die zweite Klasse also ein HOLD-MARKER auf Platte - derselbe
-     * Mechanismus wie beim Ladeverlust. Ein Boolean traegt die Entscheidung
-     * nicht; sie haengt am [FuseLedgerStore.PersistOutcome].
-     *
-     * WARUM HALTEN UND NICHT ZURUECKSCHREIBEN: die alte Generation
-     * wiederherzustellen hiesse, auf demselben Medium zu schreiben, das eben
-     * gescheitert ist - und der Beweis dafuer laege wieder nur im Speicher.
-     * Der Marker ist die einzige Aussage, die den Neustart sicher erreicht.
-     */
-    private fun haltNachSpaetemFehler(dir: File) {
-        val outcome = store.lastPersistStats?.outcome ?: return
-        val spaet = outcome == FuseLedgerStore.PersistOutcome.DIR_SYNC_FAILED ||
-            outcome == FuseLedgerStore.PersistOutcome.READBACK_FAILED
-        if (!spaet) return
-        val marker = "LATE_PERSIST_FAILURE:${outcome.name} rev=$revision - der Zielname kann bereits die " +
-            "neue, nicht durabel bestaetigte Generation tragen; Uebernahme beim naechsten Start gesperrt"
-        // Gelingt der Marker nicht, bleibt er ausstehend und wird bei JEDEM
-        // weiteren Persist erneut versucht - dieselbe Mechanik wie C8d.
-        if (!FuseLedgerStore.writeHoldVerified(dir, marker)) pendingHoldMarker = marker
-    }
-
-    /**
-     * Den beim Laden entstandenen Hold-Marker nachziehen (C8d).
-     *
-     * Steht nichts aus, ist das Ergebnis true - der Normalfall kostet nichts.
-     * Ein noch ausstehender Marker wird bei JEDEM Persist erneut versucht;
-     * bis er liegt, ist der Persist ungueltig (fail-closed).
-     *
-     * Der Marker wird hier NIE geloescht - auch nicht nach einem gelungenen
-     * Persist. Es gibt bewusst noch keinen Aufloesungsweg; er gehoert in den
-     * eigenen Reparatur-Workflow (Adjudication K1.1/G4).
-     */
     private fun writeHoldMarkerIfPending(dir: File): Boolean {
         val marker = pendingHoldMarker ?: return true
-        val ok = FuseLedgerStore.writeHoldVerified(dir, marker)
+        val ok = store.writeHoldDurable(dir, marker)
         if (ok) pendingHoldMarker = null
         return ok
     }

@@ -17,6 +17,16 @@ import java.io.SyncFailedException
 class FakeDurability(
     private val fileFails: Boolean = false,
     private val dirFails: Boolean = false,
+    /**
+     * Erst AB dem n-ten Aufruf scheitern (1-basiert), davor gelingen.
+     *
+     * Seit dem Write-ahead-Marker braucht ein Zyklus MEHRERE Syncs - erst den
+     * Marker, dann den Zustand. Ein pauschales "scheitert immer" laesst schon
+     * den Marker platzen, und der interessante Fall - Marker liegt, Zustand
+     * scheitert SPAET - waere gar nicht herstellbar.
+     */
+    private val fileFailsFrom: Int = Int.MAX_VALUE,
+    private val dirFailsFrom: Int = Int.MAX_VALUE,
 ) : Durability {
 
     var fileSyncs = 0
@@ -26,11 +36,13 @@ class FakeDurability(
 
     override fun syncFile(fd: FileDescriptor) {
         fileSyncs++
-        if (fileFails) throw SyncFailedException("eingespeist: Datei-Sync fehlgeschlagen")
+        if (fileFails || fileSyncs >= fileFailsFrom)
+            throw SyncFailedException("eingespeist: Datei-Sync fehlgeschlagen (#$fileSyncs)")
     }
 
     override fun syncDirectory(dir: File) {
         dirSyncs++
-        if (dirFails) throw SyncFailedException("eingespeist: Verzeichnis-Sync fehlgeschlagen")
+        if (dirFails || dirSyncs >= dirFailsFrom)
+            throw SyncFailedException("eingespeist: Verzeichnis-Sync fehlgeschlagen (#$dirSyncs)")
     }
 }

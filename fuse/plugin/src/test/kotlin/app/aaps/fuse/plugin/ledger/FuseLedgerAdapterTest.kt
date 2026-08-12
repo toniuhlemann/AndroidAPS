@@ -1049,62 +1049,61 @@ class FuseLedgerAdapterTest {
         assertFalse(a.sealCycleState(sealed = false, before = null))
         assertEquals(stand, a.episodes.evidenceState)
     }
-    // ---- Der SPAETE Schreibfehler (Toni 12.08., P0) ----------------------
+    // ---- Spaeter Schreibfehler unter dem Write-ahead-Marker ---------------
 
     /**
-     * NACH EINEM SPAETEN FEHLER DARF UNVERSIEGELTE EVIDENZ NICHT WIEDERKEHREN.
+     * SPAETER FEHLER: MARKER LIEGT, ZUSTANDS-SYNC SCHEITERT.
      *
-     * Der Ablauf, den dieser Test nachstellt:
-     *   1. ein neuer Evidenzzustand ist berechnet,
-     *   2. der Persist scheitert NACH dem Rename (DIR_SYNC_FAILED) - der
-     *      Zielname kann also bereits den neuen Inhalt tragen,
-     *   3. der Speicher wird zurueckgerollt,
-     *   4. der Prozess startet neu.
-     *
-     * Ohne dauerhaften Beweis gewaenne beim Neustart der neue Inhalt, und
-     * genau der Bestand, dessen Versiegelung fehlgeschlagen ist, waere wieder
-     * kreditfaehig. `persistFailed` ist nur RAM-sticky und hilft hier nicht.
+     * Der gefaehrliche Fall - der Rename ist gelaufen, der Zielname kann den
+     * neuen Inhalt tragen, aber nichts davon ist bestaetigt. Der Speicher
+     * rollt zurueck; ohne durablen Marker gewaenne beim Neustart trotzdem der
+     * neue Zustand, und unversiegelte Evidenz kaeme wieder.
      */
     @Test
     fun `ein spaeter Persistfehler sperrt den Neustart dauerhaft`(@TempDir dir: File) {
-        val store = FuseLedgerStore(FakeDurability(dirFails = true))
+        // Der erste Verzeichnis-Sync (der Marker) gelingt, der zweite (der
+        // Zustand) scheitert.
+        val store = FuseLedgerStore(FakeDurability(dirFailsFrom = 2))
         val a = FuseLedgerAdapter(store).also {
             it.loadOnce(dir, "epoch-a", t0, FuseActivePump(PumpType.GENERIC_AAPS.name, false))
         }
         a.episodes.evidenceState = bestand(35.0)
 
-        assertFalse(a.persistVerified(dir)) { "der Verzeichnis-Sync scheitert" }
-        assertEquals(
-            FuseLedgerStore.PersistOutcome.DIR_SYNC_FAILED,
-            store.lastPersistStats?.outcome,
-        )
-        // Der Speicher rollt zurueck - das allein reicht aber nicht.
+        assertFalse(a.persistVerified(dir)) { "der Verzeichnis-Sync des Zustands scheitert" }
+        assertEquals(FuseLedgerStore.PersistOutcome.DIR_SYNC_FAILED, store.lastPersistStats?.outcome)
+        assertTrue(FuseLedgerStore.sealPendingExists(dir)) { "der Marker muss liegenbleiben" }
         assertTrue(a.sealCycleState(sealed = false, before = bestand(10.0)))
 
-        // DER NEUSTART: neuer Adapter, gesunde Durabilitaet.
         val b = FuseLedgerAdapter().also {
             it.loadOnce(dir, "epoch-b", t0 + 60_000L, FuseActivePump(PumpType.GENERIC_AAPS.name, false))
         }
         assertTrue(b.recoveryHold) { "der spaete Fehler muss den Neustart erreichen" }
-        assertTrue(b.view().hold) { "und die Abgabe zuhalten" }
     }
 
     /**
-     * EIN FRUEHER FEHLER BRAUCHT DAS NICHT.
+     * AUCH DER FRUEHE FEHLER HAELT JETZT AN - und das ist eine bewusste
+     * Verschaerfung gegenueber der ersten Fassung.
      *
-     * Scheitert schon der Datei-fsync, zeigt der Zielname noch auf die
-     * Vorgeneration - ein Neustart faende ohnehin den alten Stand. Ihn
-     * trotzdem dauerhaft zu sperren waere eine Sperre ohne Anlass, und die
-     * kostet eine Mahlzeit.
+     * Dort unterschied ich frueh und spaet: bei einem gescheiterten
+     * Datei-fsync zeigt der Zielname noch auf die Vorgeneration, ein Neustart
+     * faende ohnehin den alten Stand. Die Unterscheidung hat aber DREIMAL
+     * hintereinander einen Fall uebrig gelassen (zweiter Rename, Marker selbst
+     * nicht durabel, Sentinel nach gelungenem Persist). Der Write-ahead-Marker
+     * kennt die Faelle nicht einzeln - er sagt nur, dass der Vorgang nicht
+     * sauber geendet hat.
+     *
+     * PREIS, ausdruecklich: ein harmloser frueher Fehler sperrt jetzt
+     * ebenfalls, und das kostet eine Mahlzeit. Bezahlt wird damit, dass kein
+     * unklarer Ausgang mehr durchrutscht.
      */
     @Test
-    fun `ein frueher Persistfehler sperrt den Neustart nicht`(@TempDir dir: File) {
+    fun `auch ein frueher Persistfehler haelt den Neustart an`(@TempDir dir: File) {
         val a = FuseLedgerAdapter().also {
             it.loadOnce(dir, "epoch-a", t0, FuseActivePump(PumpType.GENERIC_AAPS.name, false))
         }
         assertTrue(a.persistVerified(dir)) { "erst eine gesunde Generation" }
 
-        val store = FuseLedgerStore(FakeDurability(fileFails = true))
+        val store = FuseLedgerStore(FakeDurability(fileFailsFrom = 2))
         val b = FuseLedgerAdapter(store).also {
             it.loadOnce(dir, "epoch-b", t0 + 60_000L, FuseActivePump(PumpType.GENERIC_AAPS.name, false))
         }
@@ -1114,6 +1113,127 @@ class FuseLedgerAdapterTest {
         val c = FuseLedgerAdapter().also {
             it.loadOnce(dir, "epoch-c", t0 + 120_000L, FuseActivePump(PumpType.GENERIC_AAPS.name, false))
         }
-        assertFalse(c.recoveryHold) { "ohne Anlass keine dauerhafte Sperre" }
+        assertTrue(c.recoveryHold) { "unklar ist unklar" }
+    }
+
+    /** Und laesst sich der MARKER nicht durabel setzen, wird gar nicht erst
+     *  rotiert - ein Persist ohne Beweisspur waere der Vorgang, den wir
+     *  hinterher nicht mehr einordnen koennten. */
+    @Test
+    fun `ohne durablen Marker wird nicht rotiert`(@TempDir dir: File) {
+        val a = loadedAdapter(dir)
+        assertTrue(a.persistVerified(dir))
+        val vorher = File(dir, FuseLedgerStore.FILE_NAME).readText()
+
+        val store = FuseLedgerStore(FakeDurability(fileFails = true))
+        val b = FuseLedgerAdapter(store).also {
+            it.loadOnce(dir, "epoch-b", t0 + 60_000L, FuseActivePump(PumpType.GENERIC_AAPS.name, false))
+        }
+        b.episodes.evidenceState = bestand(99.0)
+        assertFalse(b.persistVerified(dir))
+        assertEquals(vorher, File(dir, FuseLedgerStore.FILE_NAME).readText()) { "nichts angefasst" }
+    }
+
+    // ---- Write-ahead: SEAL_PENDING (Toni 12.08., drei P0) ----------------
+
+    /**
+     * GEGENPROBE 1: DER RENAME-ZWISCHENZUSTAND.
+     *
+     * `RENAME_FAILED` fasste zwei verschiedene Fehler zusammen. Scheitert
+     * `target -> bak`, bleibt der Altstand und alles ist gut. Scheitert danach
+     * `tmp -> target`, liegt der NEUE, unversiegelte Zustand weiterhin in
+     * `.tmp` - und die Revisionsauswahl beim Start zieht `.tmp` ausdruecklich
+     * heran. Der unversiegelte Bestand kaeme also zurueck.
+     *
+     * Hier nachgestellt ohne Rename-Fehler: `.tmp` traegt eine hoehere
+     * Revision als das Ziel, so wie nach einem gescheiterten zweiten Rename.
+     */
+    @Test
+    fun `ein unversiegeltes tmp darf beim Start nicht gewinnen`(@TempDir dir: File) {
+        val a = loadedAdapter(dir)
+        a.episodes.evidenceState = bestand(10.0)
+        assertTrue(a.persistVerified(dir))
+        val alt = File(dir, FuseLedgerStore.FILE_NAME).readText()
+
+        // Der Zustand, dessen Versiegelung NICHT abgeschlossen wurde.
+        val neu = org.json.JSONObject(alt)
+        neu.put("revision", neu.getLong("revision") + 5)
+        neu.getJSONObject("episodes").getJSONObject("evidenceState").put("stockMgdl", 99.0)
+        File(dir, FuseLedgerStore.FILE_NAME + ".tmp").writeText(neu.toString())
+        // Und der Write-ahead-Marker, den ein unterbrochener Persist stehen
+        // laesst.
+        FuseLedgerStore.markSealPendingForTest(dir)
+
+        val b = FuseLedgerAdapter().also {
+            it.loadOnce(dir, "epoch-b", t0 + 60_000L, FuseActivePump(PumpType.GENERIC_AAPS.name, false))
+        }
+        assertTrue(b.recoveryHold) { "ein unterbrochener Persist muss den Start anhalten" }
+    }
+
+    /**
+     * GEGENPROBE 2: DER MARKER MUSS SELBST DURABEL SEIN.
+     *
+     * Er wurde mit `writeText` geschrieben und aus demselben Page Cache
+     * zurueckgelesen - ohne Datei- und ohne Verzeichnis-fsync. Nach einem
+     * Stromausfall waere ausgerechnet der Beweis weg, der den Neustart
+     * anhalten soll.
+     */
+    @Test
+    fun `der Write-ahead-Marker wird durabel geschrieben`(@TempDir dir: File) {
+        val fake = FakeDurability()
+        val store = FuseLedgerStore(fake)
+        val a = FuseLedgerAdapter(store).also {
+            it.loadOnce(dir, "epoch-a", t0, FuseActivePump(PumpType.GENERIC_AAPS.name, false))
+        }
+        val vorher = fake.fileSyncs to fake.dirSyncs
+
+        a.persistVerified(dir)
+
+        assertTrue(fake.fileSyncs > vorher.first + 1) { "Marker UND Zustand brauchen je einen Datei-fsync" }
+        assertTrue(fake.dirSyncs > vorher.second + 1) { "und je einen Verzeichnis-fsync" }
+    }
+
+    /**
+     * GEGENPROBE 3: DER SENTINEL SCHEITERT NACH GELUNGENEM LEDGER-PERSIST.
+     *
+     * Dann ist `ok = false`, waehrend `lastPersistStats.outcome` OK meldet -
+     * die Fallunterscheidung nach Fehlerklasse greift also nicht, und es
+     * entstuende kein Hold. Der Speicher rollt zurueck, beim Neustart gewinnt
+     * trotzdem der neue Zustand.
+     *
+     * Der Sentinel wird hier durch ein VERZEICHNIS gleichen Namens am
+     * Schreiben gehindert - ein echter Dateisystemfehler, kein Mock.
+     */
+    @Test
+    fun `ein Sentinelfehler nach gelungenem Persist haelt den Neustart an`(@TempDir dir: File) {
+        val a = loadedAdapter(dir)
+        assertTrue(a.persistVerified(dir))
+        File(dir, FuseLedgerStore.SENTINEL_NAME).delete()
+        assertTrue(File(dir, FuseLedgerStore.SENTINEL_NAME).mkdirs()) { "Sentinel blockieren" }
+
+        a.episodes.evidenceState = bestand(35.0)
+        assertFalse(a.persistVerified(dir)) { "der Sentinel scheitert" }
+        assertEquals(FuseLedgerStore.PersistOutcome.OK, a.lastPersistStats?.outcome) {
+            "und der Ledger-Persist selbst meldet OK - genau die Luecke"
+        }
+
+        val b = FuseLedgerAdapter().also {
+            it.loadOnce(dir, "epoch-b", t0 + 60_000L, FuseActivePump(PumpType.GENERIC_AAPS.name, false))
+        }
+        assertTrue(b.recoveryHold) { "ein unvollstaendiger Persist muss den Start anhalten" }
+    }
+
+    /** GEGENPROBE 4: nach einem VOLLSTAENDIGEN Persist ist der Marker weg -
+     *  sonst hielte FUSE nach jedem gesunden Zyklus an. */
+    @Test
+    fun `ein vollstaendiger Persist raeumt den Marker ab`(@TempDir dir: File) {
+        val a = loadedAdapter(dir)
+        assertTrue(a.persistVerified(dir))
+        assertFalse(FuseLedgerStore.sealPendingExists(dir)) { "kein Rueckstand nach gesundem Zyklus" }
+
+        val b = FuseLedgerAdapter().also {
+            it.loadOnce(dir, "epoch-b", t0 + 60_000L, FuseActivePump(PumpType.GENERIC_AAPS.name, false))
+        }
+        assertFalse(b.recoveryHold)
     }
 }

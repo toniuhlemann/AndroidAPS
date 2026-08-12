@@ -104,6 +104,38 @@ class FuseLedgerStore(private val durability: Durability = Durability.ANDROID) {
          */
         const val HOLD_NAME = "fuse_ledger.hold"
 
+        /**
+         * WRITE-AHEAD-MARKER: "hier laeuft gerade eine Versiegelung".
+         *
+         * Er wird VOR der Rotation durabel geschrieben und erst nach einem
+         * VOLLSTAENDIG gelungenen Persist wieder entfernt. Bleibt er liegen,
+         * war der Vorgang an irgendeiner Stelle unklar - und der naechste
+         * Start haelt konservativ an.
+         *
+         * WARUM EIN MARKER UND NICHT DREI FALLUNTERSCHEIDUNGEN (Toni 12.08.):
+         * die Fehlerklassen einzeln zu behandeln hat dreimal hintereinander
+         * einen Fall uebrig gelassen -
+         *
+         *   `tmp -> target` gescheitert: der neue Stand liegt in `.tmp`, und
+         *     die Revisionsauswahl zieht `.tmp` heran.
+         *   Marker selbst nicht durabel: nach Stromausfall ist ausgerechnet
+         *     der Beweis weg.
+         *   Sentinel nach gelungenem Ledger-Persist gescheitert: `ok = false`
+         *     bei `outcome = OK` - keine Fehlerklasse passt.
+         *
+         * Der Marker kennt diese Faelle nicht einzeln. Er sagt nur: der
+         * Vorgang hat nicht sauber geendet. Das deckt zusaetzlich den
+         * Prozess- und Stromausfall ab, bei dem gar kein Code mehr laeuft.
+         */
+        const val SEAL_PENDING_NAME = "fuse_ledger.sealpending"
+
+        fun sealPendingExists(dir: File): Boolean =
+            runCatching { File(dir, SEAL_PENDING_NAME).isFile }.getOrDefault(false)
+
+        /** NUR FUER TESTS: einen unterbrochenen Persist nachstellen. */
+        fun markSealPendingForTest(dir: File): Boolean =
+            runCatching { File(dir, SEAL_PENDING_NAME).also { it.writeText("test") }.isFile }.getOrDefault(false)
+
         /** isFile wie beim Sentinel: ein VERZEICHNIS unter dem Namen ist kein
          *  Marker (und [writeHoldVerified] meldet dann false). */
         fun holdExists(dir: File): Boolean =
@@ -118,6 +150,14 @@ class FuseLedgerStore(private val durability: Durability = Durability.ANDROID) {
          * Marker bleibt unveraendert stehen und gilt als Erfolg - der
          * AELTESTE Befund ist der, der den Hold ausgeloest hat, und der darf
          * von einem spaeteren Vorfall nicht ueberschrieben werden.
+         */
+        /**
+         * NUR FUER TESTAUFBAU UND REPARATURWERKZEUGE - NICHT im Zyklus.
+         *
+         * Sie schreibt ohne fsync und liest aus demselben Page Cache zurueck.
+         * Genau das war bis zum 12.08. der Produktionsweg: ausgerechnet der
+         * Marker, der einen Neustart anhalten soll, war die unsicherste Datei
+         * im Verzeichnis. Der Zyklus benutzt seither [writeHoldDurable].
          */
         fun writeHoldVerified(dir: File, content: String): Boolean = runCatching {
             val f = File(dir, HOLD_NAME)
@@ -228,7 +268,29 @@ class FuseLedgerStore(private val durability: Durability = Durability.ANDROID) {
      * Bewusst OHNE Exceptiontext und OHNE Pfad: das hier geht in den Export,
      * und ein Pfad traegt den Nutzernamen.
      */
-    enum class PersistOutcome { OK, FILE_SYNC_FAILED, RENAME_FAILED, DIR_SYNC_FAILED, READBACK_FAILED }
+    enum class PersistOutcome {
+        OK,
+        FILE_SYNC_FAILED,
+
+        /**
+         * `target -> bak` ist gescheitert - HARMLOS in der Wirkung: der
+         * Zielname traegt weiter den Altstand, `.tmp` ist verwaist.
+         */
+        BACKUP_RENAME_FAILED,
+
+        /**
+         * `tmp -> target` ist gescheitert - das ist die GEFAEHRLICHE Haelfte
+         * (Toni 12.08.): der neue, nicht bestaetigte Zustand liegt weiterhin
+         * in `.tmp`, und die Revisionsauswahl beim Start zieht `.tmp`
+         * ausdruecklich heran. Beide unter einem Namen zu fuehren hiess, den
+         * einen Fall am anderen vorbei zu behandeln.
+         */
+        TARGET_RENAME_FAILED,
+        DIR_SYNC_FAILED,
+        READBACK_FAILED,
+        /** Verzeichnis nicht anlegbar - nichts wurde geschrieben. */
+        DIR_UNAVAILABLE,
+    }
 
     data class PersistStats(
         /** Tatsaechliche UTF-8-Bytezahl des Inhalts. */
@@ -249,6 +311,64 @@ class FuseLedgerStore(private val durability: Durability = Durability.ANDROID) {
     var lastPersistStats: PersistStats? = null
         private set
 
+    /**
+     * Den Write-ahead-Marker DURABEL setzen: Inhalt auf das Medium, dann den
+     * Verzeichniseintrag. Ohne beides waere er nach einem Stromausfall
+     * moeglicherweise nicht da - und genau dann wird er gebraucht.
+     */
+    fun markSealPending(dir: File, content: String): Boolean = runCatching {
+        if (!dir.exists() && !dir.mkdirs() && !dir.exists()) return@runCatching false
+        val f = File(dir, SEAL_PENDING_NAME)
+        FileOutputStream(f).use { out ->
+            out.write(content.toByteArray(Charsets.UTF_8))
+            out.flush()
+            durability.syncFile(out.fd)
+        }
+        durability.syncDirectory(dir)
+        f.isFile
+    }.getOrDefault(false)
+
+    /**
+     * Den Marker abraeumen - und den Verzeichniseintrag erneut synchronisieren.
+     *
+     * OHNE den zweiten Verzeichnis-Sync waere das Loeschen selbst nicht
+     * durabel: nach einem Stromausfall koennte der Marker wieder auftauchen
+     * und einen gesunden Ledger anhalten. Fail-closed ist hier die falsche
+     * Richtung - ein Hold ohne Anlass kostet eine Mahlzeit -, deshalb ist der
+     * Rueckgabewert ehrlich und der Aufrufer entscheidet.
+     */
+    fun clearSealPending(dir: File): Boolean = runCatching {
+        val f = File(dir, SEAL_PENDING_NAME)
+        if (f.isFile && !f.delete()) return@runCatching false
+        durability.syncDirectory(dir)
+        !f.exists()
+    }.getOrDefault(false)
+
+    /**
+     * Den Hold-Marker VERIFIZIERT UND DURABEL schreiben.
+     *
+     * War bis zum 12.08. ein `writeText` mit Rueckleseprobe aus demselben
+     * Page Cache - also genau die Luecke, die [writeVerified] fuer den Zustand
+     * schon geschlossen hatte: nach einem Stromausfall waere der Beweis weg,
+     * der den Neustart anhalten soll. Ausgerechnet der Marker war die
+     * unsicherste Datei im Verzeichnis.
+     *
+     * IDEMPOTENT und NICHT ueberschreibend: ein vorhandener Marker bleibt -
+     * der AELTESTE Befund hat den Hold ausgeloest.
+     */
+    fun writeHoldDurable(dir: File, content: String): Boolean = runCatching {
+        val f = File(dir, HOLD_NAME)
+        if (f.isFile) return@runCatching true
+        if (!dir.exists() && !dir.mkdirs() && !dir.exists()) return@runCatching false
+        FileOutputStream(f).use { out ->
+            out.write(content.toByteArray(Charsets.UTF_8))
+            out.flush()
+            durability.syncFile(out.fd)
+        }
+        durability.syncDirectory(dir)
+        f.isFile && f.readText(Charsets.UTF_8) == content
+    }.getOrDefault(false)
+
     fun write(dir: File, content: String): Boolean = writeWithOutcome(dir, content).ok
 
     /**
@@ -265,7 +385,7 @@ class FuseLedgerStore(private val durability: Durability = Durability.ANDROID) {
         var wo = PersistOutcome.OK
         runCatching {
             if (!dir.exists() && !dir.mkdirs() && !dir.exists()) {
-                wo = PersistOutcome.RENAME_FAILED
+                wo = PersistOutcome.DIR_UNAVAILABLE
                 return@runCatching
             }
             val target = File(dir, FILE_NAME)
@@ -294,12 +414,12 @@ class FuseLedgerStore(private val durability: Durability = Durability.ANDROID) {
                 // Genau EINE Vorgenerationen-Kopie: die letzte vollstaendige.
                 bak.delete()
                 if (!target.renameTo(bak)) {
-                    wo = PersistOutcome.RENAME_FAILED
+                    wo = PersistOutcome.BACKUP_RENAME_FAILED
                     return@runCatching
                 }
             }
             if (!tmp.renameTo(target)) {
-                wo = PersistOutcome.RENAME_FAILED
+                wo = PersistOutcome.TARGET_RENAME_FAILED
                 return@runCatching
             }
 
@@ -315,7 +435,7 @@ class FuseLedgerStore(private val durability: Durability = Durability.ANDROID) {
             } catch (e: Exception) {
                 wo = PersistOutcome.DIR_SYNC_FAILED
             }
-        }.onFailure { wo = PersistOutcome.RENAME_FAILED }
+        }.onFailure { wo = PersistOutcome.TARGET_RENAME_FAILED }
 
         return PersistStats(
             bytes = content.toByteArray(Charsets.UTF_8).size,
