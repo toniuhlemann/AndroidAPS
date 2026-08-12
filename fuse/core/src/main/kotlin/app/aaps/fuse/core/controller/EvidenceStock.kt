@@ -145,6 +145,27 @@ object EvidenceStock {
          * aufgehoben.
          */
         val stockFloorMgdl: Double = 1.0,
+
+        /**
+         * HARTE PLAUSIBILITAETSGRENZE des persistierten Bestands [mg/dl].
+         *
+         * "endlich und >= 0" genuegt nicht, seit der Bestand PERSISTENT ist und
+         * damit eine Insulinfreigabe ueber Prozessgrenzen traegt (Toni 12.08.):
+         * ein Wert von 5.000 waere formal gueltig und ergaebe nach dem Neustart
+         * sofort einen Kredit von 166 mg/dl/min.
+         *
+         * HERGELEITET aus der eigenen Dynamik, nicht geraten: der Bestand
+         * strebt bei konstantem Zufluss gegen `Zuflussrate x decayMin`. Die
+         * hoechste gemessene Stoerung liegt bei rund 5 mg/dl/min (Lauf vom
+         * 11.08.: r bis 3,3), mit decayMin 8 also rund 40 mg/dl. 200 ist das
+         * Fuenffache - hoch genug, dass keine echte Mahlzeit dagegen laeuft,
+         * niedrig genug, dass ein korrupter Wert auffaellt.
+         *
+         * Ueberschreitung wird NICHT geklemmt, sondern gilt als unmoeglicher
+         * Zustand: klemmen hiesse, eine korrupte Datei stillschweigend in eine
+         * gueltige Freigabe zu verwandeln.
+         */
+        val maxStockMgdl: Double = 200.0,
     )
 
     data class State(
@@ -371,6 +392,28 @@ object EvidenceStock {
         if (prev.episodeId > 0L && input.episodeId < prev.episodeId)
             return Result(prev.copy(stockMgdl = 0.0), 0.0, 0.0, NoInflow.EVIDENCE_STATE_UNKNOWN, Phase.UNKNOWN)
 
+        // ---- SEMANTISCH UNMOEGLICHE ZUSTAENDE (Toni 12.08.) ---------------
+        //
+        // Der Codec prueft Felder EINZELN - endlich, nicht negativ. Das laesst
+        // Kombinationen durch, die dieser Kern nie schreibt und die nach einem
+        // Neustart teuer werden:
+        //
+        //   Bestand > 0 ohne Episodenstart -> der Start wird unten auf `now`
+        //     gesetzt, und ein alter Bestand bekaeme einen frischen
+        //     Sicherheitsdeckel geschenkt.
+        //   lastDecayTs in der Zukunft -> `dtMin` klemmt auf 0, der Bestand
+        //     verfaellt bis dahin nicht.
+        //   Bestand > 0 ohne Messbasis -> er erzeugt sofort Kredit, ohne dass
+        //     je ein Punkt verbucht wurde.
+        //
+        // Fail-closed und mit eigenem Grund: nicht reparieren, nicht klemmen -
+        // ein unmoeglicher Zustand ist keine Zahl, die man zurechtbiegt.
+        if (unmoeglich(prev, input, cfg))
+            return Result(
+                State(episodeId = input.episodeId, rebaseRequired = true),
+                0.0, 0.0, NoInflow.EVIDENCE_STATE_UNKNOWN, Phase.UNKNOWN,
+            )
+
         // Ein Episodenwechsel setzt alles zurueck - eine ANDERE Mahlzeit erbt
         // weder Bestand noch Uhr noch Abgabestand.
         val gleiche = prev.episodeId == input.episodeId
@@ -505,5 +548,36 @@ object EvidenceStock {
             // erledigt den Snack, ohne dass jemand eine Dauer schaetzen muss.
             phase = if (neu > 0.0) Phase.ACTIVE else Phase.DORMANT,
         )
+    }
+
+    /**
+     * KANN DIESER ZUSTAND SO ENTSTANDEN SEIN?
+     *
+     * Nur Kombinationen, die dieser Kern NIE schreibt - keine Heuristik. Jede
+     * einzelne davon waere nach einem Neustart eine unverdiente Freigabe.
+     */
+    private fun unmoeglich(prev: State, input: Input, cfg: Config): Boolean {
+        // Zeitstempel aus der Zukunft: die Datei ist juenger als die Uhr, oder
+        // die Uhr ist gesprungen. Beides macht jede Alterung sinnlos.
+        val zukunft = MarkerEpisodeGate.FUTURE_TOLERANCE_MS
+        if (listOf(prev.episodeStartTs, prev.lastAcceptedTs, prev.lastDecayTs, prev.segmentStartTs)
+                .any { it > 0L && it - input.nowMs > zukunft }
+        ) return true
+
+        // Die Messbasis muss in sich stimmen.
+        if (prev.segmentStartTs > 0L && prev.lastAcceptedTs > 0L && prev.segmentStartTs > prev.lastAcceptedTs)
+            return true
+
+        if (prev.stockMgdl <= 0.0) return false
+
+        // Ein POSITIVER Bestand verlangt die vollstaendige Herkunft: zu welcher
+        // Episode er gehoert, seit wann sie laeuft, auf welchem Messpunkt er
+        // beruht und wann er zuletzt gealtert ist. Fehlt eines davon, ist er
+        // nicht zuordenbar - und ein nicht zuordenbarer Bestand darf kein
+        // Insulin freigeben.
+        if (prev.episodeId <= 0L || prev.episodeStartTs <= 0L) return true
+        if (prev.lastAcceptedTs <= 0L || prev.segmentStartTs <= 0L) return true
+        if (prev.lastDecayTs <= 0L) return true
+        return prev.stockMgdl > cfg.maxStockMgdl
     }
 }

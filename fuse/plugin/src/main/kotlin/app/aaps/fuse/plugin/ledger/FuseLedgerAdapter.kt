@@ -1533,8 +1533,9 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
      *  2. pruefen, dass die offene Haftung dabei NICHT kleiner geworden ist
      *  3. atomar schreiben (tmp -> target, derselbe Weg wie jeder Persist)
      *  4. die geschriebene Datei ERNEUT LESEN und validieren
-     *  5. erst wenn die zurueckgelesene Generation v3-vollstaendig ist UND
-     *     dieselbe Haftung traegt, gilt die Migration als gelungen
+     *  5. erst wenn die zurueckgelesene Generation im AKTUELLEN Schema
+     *     vollstaendig ist und dieselbe Haftung traegt, gilt die Migration
+     *     als gelungen
      *
      * CRASH-VERHALTEN: vor dem Austausch liegt weiter die Altgeneration -
      * beim naechsten Start wird erneut migriert. Nach dem Austausch liegt eine
@@ -1586,7 +1587,7 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
             gelesen.content?.let { LedgerCodec.decode(JSONObject(it)) }
         }.getOrNull()
         if (zurueck == null || zurueck.migrationRequired != null) {
-            log("FUSE ledger MIGRATION abgebrochen: die zurueckgelesene Generation ist nicht v3-vollstaendig (dir=$dir)")
+            log("FUSE ledger MIGRATION abgebrochen: die zurueckgelesene Generation ist nicht v${LedgerCodec.VERSION}-vollstaendig (dir=$dir)")
             return null
         }
         if (zurueck.state.transportCommitmentU < vorher - 1e-9) {

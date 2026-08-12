@@ -891,4 +891,89 @@ class FuseLedgerAdapterTest {
         a.prune(now + 48 * 3600_000L, diaHours = 9.0)
         assertTrue("offen" in a.state.entries)
     }
+    // ---- v3 -> v4: der ganze Weg, nicht nur der Codec --------------------
+
+    /**
+     * DER MIGRATIONSPFAD, WIE ER BEIM NAECHSTEN FLASH LAEUFT (Toni 12.08.).
+     *
+     * Der Codectest prueft Decode und Re-Encode. Was beim ersten Start auf dem
+     * Geraet wirklich passiert, ist eine Kette: `loadOnce` -> Migration ->
+     * durabler Schreibvorgang -> Rueckleseprobe -> kein Hold. Genau die war
+     * ungeprueft, und der erste Flash sollte die Migration BESTAETIGEN, nicht
+     * ihr erster vollstaendiger Test sein.
+     *
+     * Der Pflichtfall: eine v3-Datei mit laufendem Episodenanker und
+     * kumulativer Bezahlung.
+     */
+    @Test
+    fun `eine v3-Generation migriert beim Laden vollstaendig auf v4`(@TempDir dir: File) {
+        // 1. Eine echte v3-Datei bauen: aktuelle Generation schreiben, dann
+        //    Version zuruecksetzen und das Evidenzfeld entfernen.
+        val a = loadedAdapter(dir)
+        a.episodes.evidenceEpisodeId = t0
+        a.episodes.lastConsumedMarkerTs = t0
+        a.episodes.evidenceCommittedU = 2.35
+        a.episodes.evidenceRevoked = true
+        a.episodes.primeSpentU = 1.10
+        assertTrue(a.persistVerified(dir))
+
+        val target = File(dir, FuseLedgerStore.FILE_NAME)
+        val v3 = org.json.JSONObject(target.readText())
+        v3.put("v", 3)
+        v3.getJSONObject("episodes").remove("evidenceState")
+        target.writeText(v3.toString())
+        // Die .bak-Generation ebenfalls, sonst gewinnt sie beim Laden.
+        File(dir, FuseLedgerStore.FILE_NAME + ".bak").let { if (it.exists()) it.writeText(v3.toString()) }
+
+        // 2. Laden.
+        val b = FuseLedgerAdapter().also {
+            it.loadOnce(dir, "epoch-migration", t0 + 60_000L, FuseActivePump(PumpType.GENERIC_AAPS.name, false))
+        }
+
+        // 3. KEIN Hold - die Migration ist gelungen.
+        assertFalse(b.recoveryHold) { "die Migration haette den Ledger nicht sperren duerfen" }
+        assertFalse(b.view().hold)
+
+        // 4. Auf der Platte liegt v4.
+        assertEquals(LedgerCodec.VERSION, org.json.JSONObject(target.readText()).getInt("v"))
+
+        // 5. Anker, Zaehler und Widerruf unveraendert, Bestand null.
+        assertEquals(t0, b.episodes.evidenceEpisodeId)
+        assertEquals(t0, b.episodes.lastConsumedMarkerTs)
+        assertEquals(2.35, b.episodes.evidenceCommittedU, 1e-9)
+        assertTrue(b.episodes.evidenceRevoked)
+        assertEquals(1.10, b.episodes.primeSpentU, 1e-9)
+        assertEquals(app.aaps.fuse.core.controller.EvidenceStock.State(), b.episodes.evidenceState)
+
+        // 6. Der ZWEITE Start ist migrationsfrei und liefert dasselbe.
+        val c = FuseLedgerAdapter().also {
+            it.loadOnce(dir, "epoch-danach", t0 + 120_000L, FuseActivePump(PumpType.GENERIC_AAPS.name, false))
+        }
+        assertFalse(c.recoveryHold)
+        assertEquals(b.episodes.evidenceEpisodeId, c.episodes.evidenceEpisodeId)
+        assertEquals(b.episodes.evidenceCommittedU, c.episodes.evidenceCommittedU, 1e-9)
+        assertEquals(b.episodes.evidenceState, c.episodes.evidenceState)
+    }
+
+    /**
+     * UND EINE v4-DATEI OHNE BESTAND WIRD NICHT NOCH EINMAL MIGRIERT.
+     *
+     * Sie ist korrupt, nicht alt. Wuerde der Adapter hier migrieren, machte er
+     * aus einer beschaedigten Buchhaltung stillschweigend eine gueltige.
+     */
+    @Test
+    fun `eine v4-Datei ohne Evidenzbestand haelt an statt zu migrieren`(@TempDir dir: File) {
+        val a = loadedAdapter(dir)
+        assertTrue(a.persistVerified(dir))
+        val target = File(dir, FuseLedgerStore.FILE_NAME)
+        val kaputt = org.json.JSONObject(target.readText())
+        kaputt.getJSONObject("episodes").remove("evidenceState")
+        target.writeText(kaputt.toString())
+        File(dir, FuseLedgerStore.FILE_NAME + ".bak").let { if (it.exists()) it.writeText(kaputt.toString()) }
+
+        val b = FuseLedgerAdapter().also {
+            it.loadOnce(dir, "epoch-x", t0, FuseActivePump(PumpType.GENERIC_AAPS.name, false))
+        }
+        assertTrue(b.recoveryHold) { "korrupt heisst Hold, nicht Migration" }
+    }
 }

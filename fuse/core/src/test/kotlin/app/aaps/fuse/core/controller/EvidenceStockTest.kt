@@ -633,4 +633,95 @@ class EvidenceStockTest {
         assertEquals(0.0, wieder.inflowMgdl, 1e-9, "kein Nachholen des Widerrufszeitraums")
         assertEquals(EvidenceStock.NoInflow.REBASE_AFTER_SUSPEND, wieder.noInflow)
     }
+    // ---- Unmoegliche persistierte Zustaende (Toni 12.08.) ----------------
+
+    /**
+     * BESTAND OHNE EPISODENSTART SCHENKT EINEN FRISCHEN DECKEL.
+     *
+     * Der Kern setzt den Start sonst auf `now` - ein Bestand aus einer sechs
+     * Stunden alten Episode bekaeme damit den vollen Sicherheitsdeckel neu.
+     * Der Codec sieht das nicht: beide Felder sind fuer sich gueltig.
+     */
+    @Test
+    fun `Bestand ohne Episodenstart gilt als unmoeglich`() {
+        val kaputt = EvidenceStock.State(
+            stockMgdl = 30.0, episodeId = 1L, episodeStartTs = 0L,
+            lastAcceptedTs = T0, segmentStartTs = T0, lastDecayTs = T0,
+        )
+        val r = schritt(kaputt, eingabe(1, 130.0))
+        assertEquals(EvidenceStock.Phase.UNKNOWN, r.phase)
+        assertEquals(0.0, r.state.stockMgdl, 1e-9)
+        assertEquals(0.0, r.creditMgdlPerMin, 1e-9)
+        assertTrue(r.state.rebaseRequired, "und die Messbasis gilt als ungueltig")
+    }
+
+    /** Ohne Messbasis kann ein Bestand nicht entstanden sein - er wuerde
+     *  sofort Kredit erzeugen, ohne dass je ein Punkt verbucht wurde. */
+    @Test
+    fun `Bestand ohne Messbasis gilt als unmoeglich`() {
+        val kaputt = EvidenceStock.State(
+            stockMgdl = 30.0, episodeId = 1L, episodeStartTs = T0,
+            lastAcceptedTs = 0L, segmentStartTs = 0L, lastDecayTs = T0,
+        )
+        assertEquals(EvidenceStock.Phase.UNKNOWN, schritt(kaputt, eingabe(1, 130.0)).phase)
+    }
+
+    /**
+     * EIN ZEITSTEMPEL AUS DER ZUKUNFT FRIERT DEN VERFALL EIN.
+     *
+     * `dtMin` klemmt auf 0, der Bestand altert bis dahin nicht - eine
+     * Behauptung, die sich selbst am Leben haelt.
+     */
+    @Test
+    fun `ein Verfallszeitpunkt aus der Zukunft gilt als unmoeglich`() {
+        val kaputt = EvidenceStock.State(
+            stockMgdl = 30.0, episodeId = 1L, episodeStartTs = T0,
+            lastAcceptedTs = T0, segmentStartTs = T0,
+            lastDecayTs = T0 + 120 * 60_000L,
+        )
+        assertEquals(EvidenceStock.Phase.UNKNOWN, schritt(kaputt, eingabe(1, 130.0)).phase)
+    }
+
+    /** Segment nach Messpunkt ist in sich widerspruechlich. */
+    @Test
+    fun `eine verdrehte Messbasis gilt als unmoeglich`() {
+        val kaputt = EvidenceStock.State(
+            stockMgdl = 0.0, episodeId = 1L, episodeStartTs = T0,
+            lastAcceptedTs = T0, segmentStartTs = T0 + 60_000L, lastDecayTs = T0,
+        )
+        assertEquals(EvidenceStock.Phase.UNKNOWN, schritt(kaputt, eingabe(2, 130.0)).phase)
+    }
+
+    /**
+     * DIE HARTE PLAUSIBILITAETSGRENZE.
+     *
+     * "endlich und >= 0" laesst 5.000 mg/dl durch - nach dem Neustart waere
+     * das sofort ein Kredit von 166 mg/dl/min. Der Bestand strebt bei
+     * konstantem Zufluss gegen Zuflussrate x decayMin, also rund 40 mg/dl bei
+     * der hoechsten je gemessenen Stoerung.
+     */
+    @Test
+    fun `ein absurd grosser Bestand gilt als unmoeglich`() {
+        val kaputt = EvidenceStock.State(
+            stockMgdl = CFG.maxStockMgdl + 1.0, episodeId = 1L, episodeStartTs = T0,
+            lastAcceptedTs = T0, segmentStartTs = T0, lastDecayTs = T0,
+        )
+        val r = schritt(kaputt, eingabe(1, 130.0))
+        assertEquals(EvidenceStock.Phase.UNKNOWN, r.phase)
+        assertEquals(0.0, r.creditMgdlPerMin, 1e-9, "nicht geklemmt, sondern verworfen")
+    }
+
+    /** GEGENPROBE: ein vollstaendiger, plausibler Zustand laeuft normal
+     *  weiter - sonst waere die Pruefung nur ein Totalausfall. */
+    @Test
+    fun `ein vollstaendiger persistierter Zustand traegt weiter`() {
+        val gut = EvidenceStock.State(
+            stockMgdl = 20.0, episodeId = 1L, episodeStartTs = T0,
+            lastAcceptedTs = T0, lastAdjusted = 130.0, segmentStartTs = T0, lastDecayTs = T0,
+        )
+        val r = schritt(gut, eingabe(1, 133.0))
+        assertEquals(EvidenceStock.Phase.ACTIVE, r.phase)
+        assertTrue(r.creditMgdlPerMin > 0.0)
+        assertEquals(3.0, r.inflowMgdl, 1e-9)
+    }
 }
