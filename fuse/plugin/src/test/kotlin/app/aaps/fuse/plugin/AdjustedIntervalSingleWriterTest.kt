@@ -17,9 +17,9 @@ import java.io.File
  * den Unterschied zweier Nullpunkte. Genau dieser Fehler steckte bis zum
  * 12.08. im Produktionspfad, und er sah plausibel aus.
  *
- * `AdjustedInterval.of(punkte, ankerTs)` macht ihn strukturell unmoeglich: sie
- * bekommt EINE Liste und sucht beide Punkte darin. Der KONSTRUKTOR kann das
- * nicht - er nimmt drei lose Zahlen.
+ * `AdjustedInterval.of(serie, ankerTs)` macht ihn strukturell unmoeglich: die
+ * Serie kann nur `adjust()` erzeugen, und die Fabrik sucht beide Punkte darin.
+ * Der Intervall-KONSTRUKTOR kann das nicht - er nimmt drei lose Zahlen.
  *
  * WARUM ALS QUELLTEXT-WAECHTER: die Zusicherung gilt fuer JEDEN kuenftigen
  * Aufrufer, nicht nur fuer den heutigen. Ein Laufzeittest kann nur pruefen,
@@ -32,8 +32,8 @@ class AdjustedIntervalSingleWriterTest {
      * DIE SICHTBARKEITEN SIND DER VERTRAG - nicht dieser Test.
      *
      * Seit dem 12.08. traegt ihn der Typ: `AdjustedInterval` hat einen
-     * PRIVATEN Konstruktor, `AdjustedSeries` einen INTERNAL. Ausserhalb von
-     * `fuse:core` kann niemand eine Serie bauen, und niemand ueberhaupt ein
+     * PRIVATEN Konstruktor, `AdjustedSeries` ebenfalls einen PRIVATEN. Nur
+     * `BgiAdjustedSeries.adjust()` kann eine Serie bauen, und niemand ein
      * Intervall ausser der Fabrik. Dieser Test bewacht nur, dass die
      * Sichtbarkeiten nicht wieder aufgeweicht werden - er ersetzt sie nicht.
      */
@@ -44,8 +44,8 @@ class AdjustedIntervalSingleWriterTest {
         assertTrue(text.contains("class AdjustedInterval private constructor(")) {
             "der Konstruktor muss privat bleiben - sonst ist die Fabrik nur eine Empfehlung"
         }
-        assertTrue(text.contains("class AdjustedSeries internal constructor(")) {
-            "die Serie darf ausserhalb des Moduls nicht baubar sein - sonst laesst sie sich " +
+        assertTrue(text.contains("class AdjustedSeries private constructor(")) {
+            "die Serie darf nur in BgiAdjustedSeries.adjust baubar sein - sonst laesst sie sich " +
                 "aus zwei adjust()-Ausgaben zusammensetzen"
         }
         assertFalse(text.contains("data class AdjustedInterval")) {

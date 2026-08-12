@@ -632,12 +632,13 @@ class FuseStateExportTest {
     }
 
     /**
-     * PHASE UND GRUND SIND EINE BENANNTE LUECKE, solange der Kern nicht
-     * rechnet - keine erfundene Angabe. "DORMANT" einzutragen waere im Export
-     * nicht von einer echten Messung unterscheidbar.
+     * PHASE UND GRUND SIND EINE BENANNTE LUECKE, wenn ein frueher Abbruch den
+     * verdrahteten Kern in diesem Zyklus nicht erreicht - keine erfundene
+     * Angabe. "DORMANT" einzutragen waere im Export nicht von einer echten
+     * Messung unterscheidbar.
      */
     @Test
-    fun `ohne laufenden Kern stehen Phase und Grund als Luecke`() {
+    fun `ohne Auswertung in diesem Zyklus stehen Phase und Grund als Luecke`() {
         val j = FuseStateJson.record(
             "s#1", outcome(episodeId = 1_700_000_000_000L, episodeMin = 5), rt(), cfg, BUILD, 0L, null,
         ) { 5_000_000L }
@@ -645,7 +646,7 @@ class FuseStateExportTest {
         val e = j.getJSONObject("evidenceEpisode")
         assertTrue(e.isNull("phase"))
         assertTrue(e.isNull("stockMgdl"))
-        assertTrue(gapReasons(j).contains(FuseStateJson.GAP_EVIDENCE_NOT_WIRED)) {
+        assertTrue(gapReasons(j).contains(FuseStateJson.GAP_EVIDENCE_NOT_EVALUATED)) {
             "die Luecke muss BENANNT sein, nicht bloss leer"
         }
     }
@@ -666,7 +667,7 @@ class FuseStateExportTest {
         assertEquals("DORMANT", e.getString("phase"))
         assertEquals("NO_RISE", e.getString("reason"))
         assertEquals(0.0, e.getDouble("stockMgdl"), 1e-12)
-        assertFalse(gapReasons(j).contains(FuseStateJson.GAP_EVIDENCE_NOT_WIRED))
+        assertFalse(gapReasons(j).contains(FuseStateJson.GAP_EVIDENCE_NOT_EVALUATED))
     }
     /**
      * DER DECKEL DES ZYKLUS, NICHT DER DEFAULT.

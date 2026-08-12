@@ -54,8 +54,9 @@ object FuseStateJson {
     const val GAP_HASH_NOT_FINITE = "HASH_INPUT_NOT_FINITE"
     const val GAP_METRICS_LAG = "EXPORT_METRICS_LAG_BY_ONE"
 
-    /** EvidenceStock rechnet noch nicht im Zyklus (Stufe 4 offen). */
-    const val GAP_EVIDENCE_NOT_WIRED = "EVIDENCE_STOCK_NOT_WIRED"
+    /** Der Kern ist verdrahtet, wurde in diesem fruehen Abbruchzyklus aber
+     *  mangels auswertbarem Signal nicht erreicht. */
+    const val GAP_EVIDENCE_NOT_EVALUATED = "EVIDENCE_NOT_EVALUATED_THIS_CYCLE"
 
     /** Messwerte des VORIGEN Schreibvorgangs. Sie koennen nicht im eigenen
      *  Datensatz stehen — die Dauer des Schreibens ist erst danach bekannt. */
@@ -192,9 +193,9 @@ object FuseStateJson {
             // Zwischending.
             //
             // `phase`, `stockMgdl` und `reason` stehen als benannte LUECKE,
-            // solange EvidenceStock nicht im Zyklus rechnet (Stufe 4). Sie
-            // hier mit 0 oder "DORMANT" zu fuellen waere eine Behauptung ueber
-            // einen Kern, der noch gar nicht laeuft.
+            // wenn ein frueher Abbruch den verdrahteten EvidenceStock in
+            // diesem Zyklus nicht erreicht hat. Sie hier mit 0 oder
+            // "DORMANT" zu fuellen waere eine erfundene Auswertung.
             .put("evidenceEpisode", outcome.evidenceEpisodeId.takeIf { it > 0L }?.let { id ->
                 JSONObject()
                     .put("id", id)
@@ -208,7 +209,7 @@ object FuseStateJson {
                     .put("creditMgdlPerMin", outcome.evidenceCreditMgdlPerMin?.let { fin(it) } ?: JSONObject.NULL)
             } ?: JSONObject.NULL)
         if (outcome.evidenceEpisodeId > 0L && outcome.evidencePhase == null)
-            gap("evidenceEpisode.phase", GAP_EVIDENCE_NOT_WIRED)
+            gap("evidenceEpisode.phase", GAP_EVIDENCE_NOT_EVALUATED)
         putOrGap(o, "sourceTs", outcome.sourceTs, gaps, "NO_SIGNAL_THIS_CYCLE")
         o.put("abortReason", outcome.abortReason ?: JSONObject.NULL)
 

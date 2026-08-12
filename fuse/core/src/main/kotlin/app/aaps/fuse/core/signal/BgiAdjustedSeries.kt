@@ -39,8 +39,8 @@ object BgiAdjustedSeries {
     /**
      * DIE AUSGABE EINES EINZELNEN [adjust]-AUFRUFS - opak.
      *
-     * Der Konstruktor ist `internal`; ausserhalb von `fuse:core` kann niemand
-     * eine Instanz bauen, und innerhalb baut sie nur [adjust]. Damit ist die
+     * Der Konstruktor ist `private`; eine Instanz entsteht nur aus rohen
+     * [Sample]s ueber [adjust]. Damit ist die
      * Zusicherung, auf der der ganze Evidenzbestand ruht, eine
      * TYPEIGENSCHAFT und keine Konvention mehr (Toni 12.08.):
      *
@@ -57,7 +57,30 @@ object BgiAdjustedSeries {
      * Eine gewoehnliche `List<AdjustedPoint>` konnte man aus zwei Ausgaben
      * zusammensetzen. Diese Klasse nicht.
      */
-    class AdjustedSeries internal constructor(val points: List<AdjustedPoint>)
+    class AdjustedSeries private constructor(val points: List<AdjustedPoint>) {
+
+        companion object {
+
+            /** Einziger Bauweg: berechnet die ganze Reihe aus EINEM Segment.
+             * Eine bereits berechnete Punktliste kann hier nicht eingeschleust
+             * oder aus zwei `adjust()`-Ausgaben zusammengesetzt werden. */
+            internal fun fromSegment(segment: List<Sample>): AdjustedSeries {
+                if (segment.isEmpty()) return AdjustedSeries(emptyList())
+                val out = ArrayList<AdjustedPoint>(segment.size)
+                var cumulativeBgi = 0.0
+                var prevTs = segment.first().sourceTs
+                for (s in segment) {
+                    val dtMin = (s.sourceTs - prevTs) / 60_000.0
+                    require(dtMin >= 0.0) { "segment not ascending at ${s.sourceTs}" }
+                    val bgiRate = -s.activity * s.profileIsf
+                    cumulativeBgi += bgiRate * dtMin
+                    out.add(AdjustedPoint(s.sourceTs, s.q1 - cumulativeBgi))
+                    prevTs = s.sourceTs
+                }
+                return AdjustedSeries(out)
+            }
+        }
+    }
 
     /**
      * EIN ZUWACHS DER BEREINIGTEN REIHE, MIT SEINEM BEWEIS.
@@ -133,21 +156,7 @@ object BgiAdjustedSeries {
      * Integrationsregel (gelockt): bgiIncrement = bgiRate(t) * dtMinutes mit dem
      * RECHTEN Wert; das erste Sample des Segments traegt cumulativeBgi = 0.
      */
-    fun adjust(segment: List<Sample>): AdjustedSeries {
-        if (segment.isEmpty()) return AdjustedSeries(emptyList())
-        val out = ArrayList<AdjustedPoint>(segment.size)
-        var cumulativeBgi = 0.0
-        var prevTs = segment.first().sourceTs
-        for (s in segment) {
-            val dtMin = (s.sourceTs - prevTs) / 60_000.0
-            require(dtMin >= 0.0) { "segment not ascending at ${s.sourceTs}" }
-            val bgiRate = -s.activity * s.profileIsf
-            cumulativeBgi += bgiRate * dtMin
-            out.add(AdjustedPoint(s.sourceTs, s.q1 - cumulativeBgi))
-            prevTs = s.sourceTs
-        }
-        return AdjustedSeries(out)
-    }
+    fun adjust(segment: List<Sample>): AdjustedSeries = AdjustedSeries.fromSegment(segment)
 
     /**
      * Theil-Sen-Steigung [mg/dl/min] ueber die letzten [WINDOW_MS] der Reihe,

@@ -107,6 +107,11 @@ class TransportWiringTest : TestBaseWithProfile() {
      */
     private var maxIobU = 8.0
 
+    /** Pro Zyklus veraenderbar, damit ein Evidenzbestand zuerst ohne
+     * Aktuation versiegelt und anschliessend gegen eine echte Mengengrenze
+     * geprueft werden kann. */
+    private var maxSmbU = 0.3
+
     /** Hoehe der flachen Rohreihe - niedrig heisst "kein Bedarf". */
     private var flach = 180.0
 
@@ -260,7 +265,7 @@ class TransportWiringTest : TestBaseWithProfile() {
         whenever(preferences.get(DoubleKey.ApsSmbMaxIob)).thenAnswer { maxIobU }
         whenever(preferences.get(FuseDoubleKey.RiseRampLowR)).thenReturn(0.5)
         whenever(preferences.get(FuseDoubleKey.RiseRampHighR)).thenReturn(2.0)
-        whenever(preferences.get(FuseDoubleKey.MaxSmbU)).thenReturn(0.3)
+        whenever(preferences.get(FuseDoubleKey.MaxSmbU)).thenAnswer { maxSmbU }
         whenever(preferences.get(FuseDoubleKey.GuardFloorMgdl)).thenReturn(70.0)
         whenever(preferences.get(FuseIntKey.IobThPercent)).thenAnswer { iobThPct }
         whenever(preferences.get(FuseIntKey.ReleaseHorizonMin)).thenReturn(60)
@@ -1925,5 +1930,99 @@ class TransportWiringTest : TestBaseWithProfile() {
             l.episodes.evidenceEpisodeId != anker,
             "das Markertor rechnet noch mit dem Default-Deckel",
         )
+    }
+
+    /**
+     * STUFE 4, NICHT-LEERES GATE-ATTEST.
+     *
+     * Eine fruehere Fassung der Stufe-4-Tests war gruen, obwohl ueberhaupt
+     * kein Evidenzkredit entstand. Deshalb stehen die drei Vorbedingungen
+     * VOR der Kappenzusicherung: Kredit positiv, bedingte Kante wirklich
+     * hoeher und der ungerasterte Wunsch groesser als die gepruefte Grenze.
+     * Erst dann ist `final == maxSMB` eine Aussage ueber die Reihenfolge der
+     * Architektur und kein zufaelliges Nullergebnis.
+     */
+    @Test
+    fun `positiver Evidenzkredit bleibt hinter maxSMB und dem Publikationsgate`(@TempDir dir: File) {
+        flach = 115.0
+        steigungProMin = 3.0
+        markerAt = start + 2 * 60_000L
+        conditionalTail = true
+        quantilePct = 25
+        aktivitaet = 0.004
+        tailGuard = false
+
+        val l = FuseLedgerAdapter().also { it.loadOnce(dir.also(File::mkdirs), "test-epoch", start) }
+        neuerRunner(l)
+        clock = start
+
+        // Zuerst Messinformation aufbauen und versiegeln, ohne dass der
+        // normale Pfad sie im VirtualPump-Rig sofort als bezahlt abbucht.
+        maxSmbU = 0.0
+        var kreditZyklus: FuseCycleRunner.Outcome? = null
+        repeat(80) {
+            val o = cycle()
+            if (
+                (o.evidenceCreditMgdlPerMin ?: 0.0) > 0.0 &&
+                o.tailLowerConditionalMgdl != null &&
+                o.tailLowerUnconditionalMgdl != null &&
+                o.tailLowerConditionalMgdl!! > o.tailLowerUnconditionalMgdl!!
+            ) kreditZyklus = o
+        }
+        val kredit = kreditZyklus ?: throw AssertionError("kein wirkender Evidenzkredit in 80 Zyklen")
+        assertTrue((kredit.evidenceCreditMgdlPerMin ?: 0.0) > 0.0, "Kredit muss positiv sein")
+        assertTrue(
+            kredit.tailLowerConditionalMgdl!! > kredit.tailLowerUnconditionalMgdl!!,
+            "die bedingte Kante muss wirklich steigen",
+        )
+
+        // Nun dieselbe laufende Episode gegen eine enge reale Kappe rechnen.
+        maxSmbU = 0.05
+        val gekappt = cycle()
+        val maxSmb = gekappt.decision.caps.single { it.name == "maxSmb" }
+        val ungekappterKandidat = gekappt.decision.caps.single { it.name == "smbRatio" }.valueU
+        assertTrue(
+            ungekappterKandidat > maxSmb.valueU,
+            "der ungekappte Kandidat muss die Kappe uebersteigen: candidate=$ungekappterKandidat, " +
+                "cap=${maxSmb.valueU}, decision=${gekappt.decision}",
+        )
+        assertTrue(maxSmb.active, "maxSMB muss wirklich binden")
+        assertEquals(0.05, gekappt.decision.smbU, 1e-9, "finale Menge bleibt auf maxSMB")
+
+        // Der Translator lief bereits im Runner. Jetzt auch das letzte Gate:
+        // ohne dauerhaft gebuchte Vorschlagszeile darf der positive Betrag
+        // trotz Kredits nicht publiziert werden.
+        val rt = FuseRtBuilder.build(
+            nowMs = gekappt.computeTs,
+            bgMgdl = gekappt.signal?.q1,
+            targetMgdl = 98.0,
+            iobU = 0.0,
+            decision = gekappt.decision,
+            tbr = gekappt.tbr,
+            gate = testPumpe().gate,
+            profileIsfMgdlPerU = 90.0,
+        )
+        assertEquals(0.05, rt.units!!, 1e-9, "Ausgangslage: Translator und Pumpengate lassen die Kappe durch")
+
+        val pumpGesperrt = FuseRtBuilder.build(
+            nowMs = gekappt.computeTs,
+            bgMgdl = gekappt.signal?.q1,
+            targetMgdl = 98.0,
+            iobU = 0.0,
+            decision = gekappt.decision,
+            tbr = gekappt.tbr,
+            gate = FusePumpGate.Result(FusePumpGate.Verdict.BLOCKED_REAL_PUMP, "nicht freigegeben"),
+            profileIsfMgdlPerU = 90.0,
+        )
+        assertEquals(null, pumpGesperrt.units, "Pumpengate bleibt auch mit Evidenzkredit hart")
+
+        val publiziert = app.aaps.fuse.plugin.ledger.LedgerPublicationGate.publish(
+            rt = rt,
+            adapter = l,
+            dir = dir,
+            expected = app.aaps.fuse.plugin.ledger.LedgerPublicationGate.Commitment.Proposal("evidence-cap"),
+            events = { /* absichtlich keine Zeile: Publikationsgate muss sperren */ },
+        )
+        assertEquals(null, publiziert.rt.units, "Publikationsgate bleibt auch mit Evidenzkredit hart")
     }
 }
