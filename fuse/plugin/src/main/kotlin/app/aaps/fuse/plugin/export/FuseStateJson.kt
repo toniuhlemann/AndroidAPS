@@ -556,6 +556,13 @@ object FuseStateJson {
                 // haengt an der Phase, und im Nachhinein soll niemand die falsche
                 // von zweien lesen. Die Rohwerte stehen ohnehin unter policy.values.
                 .put("reboundWindow", outcome.state?.reboundWindow ?: JSONObject.NULL)
+                // NACHTFENSTER, bisher unsichtbar (Toni 15.08. 23:14): der
+                // Runner setzt es korrekt, aber im Trail stand es nirgends -
+                // ob das Nacht-Totband scharf war, liess sich nur aus der Uhr
+                // und der Konfiguration herleiten. Genau diese Herleitung will
+                // niemand nachts machen. Die uebrigen Fenster (rebound,
+                // marker, meal) stehen laengst da; dieses fehlte als einziges.
+                .put("nightWindow", outcome.state?.nightWindow ?: JSONObject.NULL)
                 .put("reboundSuppressedByMarker", outcome.state?.reboundSuppressedByMarker ?: JSONObject.NULL)
                 // DER DRUCKZEITPUNKT, nicht nur "Marker aktiv".
                 //
