@@ -259,12 +259,6 @@ class MainApp : DaggerApplication() {
                 // Config snapshot (filtered prefs + profile + automations) for the IOB Action
                 // viewer — change-triggered inside, so most heartbeats are a cheap hash check.
                 app.aaps.plugins.aps.openAPSAutoISF.IobActionConfigExporter.snapshot(sp, profileFunction, dateUtil)
-                // FUSE P-1.0: bolus-row TRANSITION collector (temporaryId->pumpId resolution,
-                // partial deliveries, retroactive edits) — append-only JSONL for the offline
-                // ledger audit. Same isolation pattern as the core exporter above: bounded
-                // Room READ + file append on THIS heartbeat thread, runCatching inside,
-                // never touches dosing. See FuseTreatmentTransitionCollector header.
-                app.aaps.plugins.aps.openAPSAutoISF.FuseTreatmentTransitionCollector.tick(persistenceLayer, dateUtil.now())
                 // AUTOSTATE-Wachposten auf DIESEM Herzschlag (Re-Review B1/B2). Zuvor hing er im
                 // APS-Lauf: dort koppelte er den Dosier-Thread an den Lock des AutoState-
                 // Koordinators, den der Binder-Thread ueber eine ganze Room-Transaktion haelt —
