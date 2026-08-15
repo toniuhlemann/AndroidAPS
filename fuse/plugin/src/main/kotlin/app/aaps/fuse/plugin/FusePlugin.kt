@@ -278,6 +278,21 @@ class FusePlugin @Inject constructor(
     @Volatile private var priorActuation: PriorActuation? = null
 
     /**
+     * DIE BRUECKE zwischen dem Zyklus, der eine Menge gebucht hat, und dem
+     * naechsten, der prueft, ob sie je hinausging (s. [NotSentProof]).
+     * Zusammen mit [publishedRt] gelesen und gesetzt - vier Felder, ein
+     * Moment.
+     */
+    @Volatile private var publishedProposalId: String? = null
+    @Volatile private var publishedGateStripped = false
+    @Volatile private var publishedGateSealed = false
+    @Volatile private var publishedGatePersistFailed = false
+
+    /** Der im laufenden Zyklus gebildete Entlastungs-Beleg, gebucht im
+     *  events-Block des Publikationsgates. */
+    @Volatile private var notSentClaim: Pair<String, app.aaps.fuse.core.ledger.QueueRejectReason>? = null
+
+    /**
      * Die drei Werte der beobachtbaren Stufe, plus die Herkunft.
      *
      * DIE ACHSE IST FUENFTEILIG, nicht vierteilig (Review 11.08.):
@@ -303,6 +318,13 @@ class FusePlugin @Inject constructor(
         /** Nach dem ersten Intervalltor - dieses nullt, die beiden spaeteren
          *  Tore lassen die Menge stehen und verweigern nur die Ausfuehrung. */
         val aapsConstrainedU: Double?,
+        /**
+         * Hat AAPS im Apply-Block seinen Platzhalter gesetzt? `false` heisst:
+         * der Block wurde nie betreten, also ging kein Bolus-Kommando hinaus
+         * (s. [app.aaps.fuse.core.ledger.NotSentProof]). `null` = die
+         * Identitaetsprobe ist durchgefallen, dann gilt nichts als bekannt.
+         */
+        val smbSetByPumpPresent: Boolean?,
     )
 
     /**
@@ -324,6 +346,10 @@ class FusePlugin @Inject constructor(
             fusePublishedU = if (trifft) lr?.request?.smb else null,
             afterBolusConstraintsU = if (trifft) lr?.constraintsProcessed?.smbConstraint?.value() else null,
             aapsConstrainedU = if (trifft) lr?.constraintsProcessed?.smb else null,
+            // AUS DERSELBEN LESUNG wie die uebrigen Felder - zwei Lesungen
+            // koennten Zahlen aus verschiedenen Momenten paaren, dieselbe
+            // Falle wie beim Pumpen-Serial.
+            smbSetByPumpPresent = if (trifft) (lr?.smbSetByPump != null) else null,
         )
     }
 
@@ -660,6 +686,25 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
         // Scheibe 1: den Ausgang des VORIGEN Zyklus lesen, BEVOR dieser Lauf
         // `publishedRt` ueberschreibt. Reine Messung.
         leseVorigenAusgang()
+        // DEN ENTLASTUNGS-BELEG BILDEN, solange die published*-Felder noch den
+        // VORIGEN Zyklus beschreiben (gesetzt werden sie erst nach publish).
+        // Reine Messung - gebucht wird erst im events-Block, also VOR dem
+        // verifizierten Persist: eine Freigabe wirkt nie, bevor sie durabel ist.
+        notSentClaim = publishedProposalId
+            ?.takeIf { ledgerAdapter.hasOpenProposal(it) }
+            ?.let { id ->
+                app.aaps.fuse.core.ledger.NotSentProof.reasonFor(
+                    app.aaps.fuse.core.ledger.NotSentProof.Observation(
+                        correlated = priorActuation?.correlated == true,
+                        ledgerPublishedU = ledgerAdapter.publishedAmountOf(id),
+                        gateStripped = publishedGateStripped,
+                        gateSealed = publishedGateSealed,
+                        gatePersistFailed = publishedGatePersistFailed,
+                        aapsConstrainedU = priorActuation?.aapsConstrainedU,
+                        smbSetByPumpPresent = priorActuation?.smbSetByPumpPresent,
+                    )
+                )?.let { grund -> id to grund }
+            }
 
         // ---- EIN Lesen der aktiven Pumpe je Zyklus --------------------------
         //
@@ -929,6 +974,14 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
             dir = ledgerDir(),
             expected = expected,
             events = {
+                // ZUERST die Vorgaengerzeile entlasten (s. NotSentProof): auch
+                // ein Abbruchzyklus ohne eigenen Vorschlag muss das koennen,
+                // deshalb bewusst AUSSERHALB von outcome?.let und VOR der
+                // Buchung der neuen Menge.
+                notSentClaim?.let { (id, grund) ->
+                    if (ledgerAdapter.hasOpenProposal(id)) ledgerAdapter.onProvenNotSent(id, grund)
+                }
+                notSentClaim = null
                 outcome?.let { o ->
                     // Gebucht wird NUR, wenn das Gate diese Zeile auch
                     // ERWARTET - sonst entstuende eine Haftung fuer eine Menge,
@@ -1034,6 +1087,13 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
         // nicht ihre Zahlen - sie ist der Identitaetsschluessel.
         publishedRt = publishRt
         publishedTs = outcome?.computeTs ?: 0L
+        // Im selben Atemzug: der Zustand, den der NAECHSTE Zyklus als Beleg
+        // liest. `stripped` heisst, das Gate hat eine vorhandene Menge
+        // entfernt; ohne Siegel gilt der Beschluss als nicht festgeschrieben.
+        publishedProposalId = cycleId.takeIf { ledgerAdapter.hasOpenProposal(it) }
+        publishedGateStripped = !publication.allowed && rt.units != null
+        publishedGateSealed = publication.sealed
+        publishedGatePersistFailed = !publication.sealed
 
         // MEALSTATS NACH der Aufloesung neu rechnen (Review 11.08.). Der Runner
         // hat sie VOR dem Publikationsgate gebildet; wurde die Reservierung

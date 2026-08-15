@@ -687,7 +687,14 @@ object FuseStateJson {
                             .put("accounting", e.accounting.name)
                             .put("delivery", e.delivery.name)
                             .put("commitmentU", fin(e.commitmentU))
+                            // WARUM eine Zeile entlastet wurde - ohne diese
+                            // Angabe waere der Entlastungsweg am Geraet
+                            // unsichtbar, und ein falsch feuernder Beleg
+                            // fiele erst an der Dosis auf (s. NotSentProof).
+                            .put("queueReject", e.queueReject?.name ?: JSONObject.NULL)
                     }))
+                    // Wieviele Zeilen OHNE IOB-Nachweis freigegeben wurden.
+                    .put("provenNotSentCount", ls.entries.values.count { it.debtFreeingReject })
                     // DIE DURABILITAET ALS ZAHLEN. Ohne sie ist am Geraet nicht
                     // zu sehen, ob der fsync ueberhaupt laeuft und was er kostet -
                     // und ein FEHLGESCHLAGENER Persist waere voellig unsichtbar.

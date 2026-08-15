@@ -7,6 +7,7 @@ import app.aaps.fuse.core.ledger.AmountStage
 import app.aaps.fuse.core.ledger.IobAccountingSnapshot
 import app.aaps.fuse.core.ledger.LedgerConfig
 import app.aaps.fuse.core.ledger.LedgerError
+import app.aaps.fuse.core.ledger.QueueRejectReason
 import app.aaps.fuse.core.ledger.LedgerEvent
 import app.aaps.fuse.core.ledger.LedgerReducer
 import app.aaps.fuse.core.ledger.LedgerState
@@ -1387,6 +1388,22 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
      */
     fun hasOpenProposal(proposalId: String): Boolean =
         state.entries[proposalId]?.closed == false
+
+    /** Die publizierte Menge einer Zeile - Eingabe fuer [NotSentProof]. */
+    fun publishedAmountOf(proposalId: String): Double? =
+        state.entries[proposalId]?.amounts?.rtPublishedU
+
+    /**
+     * DER EINZIGE WEG, auf dem eine Zeile OHNE IOB-Nachweis frei wird.
+     *
+     * Aufrufer-Pflicht: [hasOpenProposal] muss zutreffen und der Grund muss
+     * aus einem POSITIVEN Beleg stammen (s. [NotSentProof]) - nie aus einem
+     * Zeitablauf und nie aus einer Abwesenheit. Die gesamte Strenge der
+     * Zustandsfuehrung liegt danach im Reducer.
+     */
+    fun onProvenNotSent(proposalId: String, reason: QueueRejectReason) {
+        reduce(LedgerEvent.QueueRejected(proposalId, reason))
+    }
 
     fun oldestOpenTs(): Long? = state.entries.values
         .filter { !it.closed }
