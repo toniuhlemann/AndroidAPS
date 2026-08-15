@@ -43,7 +43,10 @@ object FuseStateJson {
     // restartfest, Huellen-Belastung auf gate-wirksame Menge umgestellt.
     // v9 (11.08.): EIN Mahlzeitenmarker - S/M/L und die zwei Stufenhuellen
     // sind weg, es gilt nur noch primeEnvelopeU.
-    const val RULE_SET_VERSION = 9
+    // v10 (15.08.): eine laufende Schutz-Null endet, sobald ihr Grund weg ist
+    // (endZeroWhenReasonGone). Aendert die Aktuation auf der TBR-Achse - ein
+    // Lauf davor und danach ist NICHT vergleichbar, deshalb eigene Version.
+    const val RULE_SET_VERSION = 10
 
     /** Schema des Trail-Datensatzes - s. die Notiz an der Schreibstelle. */
     const val SCHEMA_VERSION = 4
@@ -830,6 +833,11 @@ object FuseStateJson {
         .put("onsetEnvelopeU", fin(p.onsetEnvelopeU))
         .put("primeReleaseEnabled", p.primeReleaseEnabled)
         .put("primeEnvelopeU", fin(p.primeEnvelopeU))
+        // Ohne diese Zeile waere hinterher nicht belegbar, OB der Schalter in
+        // einem Lauf an war - genau die Luecke, die heute schon zweimal
+        // aufgefallen ist (basalIobU, MarkerAuthorisesRelease). Ein Schalter,
+        // der das Aktuationsverhalten aendert, gehoert in den Trail.
+        .put("endZeroWhenReasonGone", p.endZeroWhenReasonGone)
 
     /**
      * `null` bei nicht-endlichen Eingaben. [Sha.lossless] WIRFT bei NaN/Inf,
@@ -850,6 +858,10 @@ object FuseStateJson {
             listOf(
                 p.iobThPercent, p.releaseHorizonMin, p.liabilityHorizonMin,
                 p.driveTauMin, p.driveLowerQuantilePct, p.tailGuardEnabled, p.fastRestraintEnabled, p.onsetChannelEnabled, p.primeReleaseEnabled,
+                // v3: der Null-Ausgang aendert das Aktuationsverhalten - zwei
+                // Laeufe mit verschiedener Stellung duerfen nicht denselben
+                // Hash tragen.
+                p.endZeroWhenReasonGone,
             ).map { it.toString() }
         return Sha.of(parts.joinToString("|"))
     }
