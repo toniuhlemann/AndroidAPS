@@ -1844,10 +1844,39 @@ class FuseCycleRunner(
             decision = decision,
             current = current,
             scheduledBasalUPerH = profile.getBasal(computeTs),
-            cfg = TbrPolicy.Config(basalStepUPerH = pumpe.basalStepUPerH),
+            cfg = TbrPolicy.Config(
+                basalStepUPerH = pumpe.basalStepUPerH,
+                // Toni 15.08.: die Null sofort verlassen, sobald ihr Grund weg
+                // ist - sonst baut sich zuviel negatives Basal auf, und das
+                // finanziert ueber die Bedarfsseite die Morgen-SMBs.
+                endZeroWhenReasonGone = cfg.endZeroWhenReasonGone,
+            ),
             fault = if (tempBasalFallback) TbrPolicy.FaultCode.TEMP_BASAL_FALLBACK else TbrPolicy.FaultCode.NONE,
             pumpBusy = pumpBusy(),
+            // Der Nachweis wird HIER gefuehrt, weil nur hier alles drei
+            // bekannt ist: der Block dieses Zyklus, der Ledger-Hold (den der
+            // Block nicht mittraegt) und das Rebound-Fenster.
+            protectionCleared = FuseTbrTranslator.reasonGone(decision, ledgerView.hold, state.reboundWindow),
+            endZeroAttempts = endZeroFehlversuche,
         )
+
+        // BACKOFF FORTSCHREIBEN (Medtrum-Auflage). Der Erfolg eines Abbruchs
+        // ist erst im NAECHSTEN Zyklus sichtbar - er steht in `current`, also
+        // in der laufenden TBR, die AAPS uns liefert. Deshalb hier:
+        //
+        //  laeuft keine Null mehr  -> der Abbruch hat gewirkt, Zaehler zurueck
+        //  Abbruch angefordert     -> hochzaehlen; wirkt er, faellt der
+        //                             Zaehler im naechsten Zyklus von selbst
+        //  sonst                   -> zuruecksetzen (die Lage hat sich
+        //                             geaendert, ein alter Fehlversuch soll
+        //                             den naechsten echten Anlauf nicht
+        //                             blockieren)
+        val laeuftNull = current?.let { TbrPolicy.isZeroRate(it.absoluteRateUPerH, pumpe.basalStepUPerH) } == true
+        endZeroFehlversuche = when {
+            !laeuftNull                                         -> 0
+            combined.reason.contains(TbrPolicy.END_ZERO_REASON) -> endZeroFehlversuche + 1
+            else                                                -> 0
+        }
 
         // GATE-WIRKSAME Menge (Audit R95, Fix 3): Huellen und Bilanz belasten
         // nur, was nach TBR-Tabelle (smbBlocked) UND Pumpen-Gate wirklich
@@ -2135,6 +2164,9 @@ class FuseCycleRunner(
                 )
             },
             scheduledBasalUPerH = profile.getBasal(computeTs),
+            // KEIN Nachweis auf dem predictorfreien Markerpfad, und das ist
+            // keine Vergesslichkeit: ohne Bahn ist "der Schutzgrund ist
+            // nachweislich weg" nicht nachweisbar - er bliebe eine Behauptung.
             cfg = TbrPolicy.Config(basalStepUPerH = pumpe.basalStepUPerH),
             fault = if (tempBasalFallback) TbrPolicy.FaultCode.TEMP_BASAL_FALLBACK else TbrPolicy.FaultCode.NONE,
             pumpBusy = pumpBusy(),
@@ -2308,6 +2340,22 @@ class FuseCycleRunner(
      * Pumpenschritt freigeben, und dieser Schritt laeuft durch dieselbe
      * Pruefkette wie jede andere Menge.
      */
+    /**
+     * MEDTRUM-BACKOFF (Auflage aus dem V4b-Replay): wieviele Abbruchversuche
+     * in Folge die Null NICHT beendet haben.
+     *
+     * Der Fall ist real, nicht theoretisch: scheitert das Pumpenkommando,
+     * fordert FUSE es sonst in JEDEM Folgezyklus erneut an - im Rig 26 Mal in
+     * 30 Minuten. Auf einer echten Medtrum ist das neuer Funkverkehr genau
+     * dann, wenn die Pumpe ohnehin zickt. Nach `endZeroMaxAttempts` bleibt die
+     * Null stehen und laeuft ab; die Fehlerrichtung ist damit die ALTE (zu
+     * wenig Basal), nicht eine neue.
+     *
+     * PROZESSLOKAL wie der Sub-Step-Uebertrag: ein Neustart setzt zurueck, und
+     * das ist die konservative Richtung (der naechste Versuch darf wieder).
+     */
+    private var endZeroFehlversuche = 0
+
     private var subStepCarryU = 0.0
 
     /** Unter WELCHEN Bedingungen der Uebertrag entstanden ist - s. Aufrufstelle.
@@ -2443,6 +2491,8 @@ class FuseCycleRunner(
         val onsetEnvelopeU: Double,
         val primeReleaseEnabled: Boolean,
         val primeEnvelopeU: Double,
+        /** Die Null sofort verlassen, sobald ihr Schutzgrund weg ist. */
+        val endZeroWhenReasonGone: Boolean,
     )
 
     /**
@@ -2483,6 +2533,7 @@ class FuseCycleRunner(
         onsetEnvelopeU = preferences.get(FuseDoubleKey.OnsetEnvelopeU),
         primeReleaseEnabled = preferences.get(FuseBooleanKey.PrimeReleaseEnabled),
         primeEnvelopeU = preferences.get(FuseDoubleKey.PrimeEnvelopeU),
+        endZeroWhenReasonGone = preferences.get(FuseBooleanKey.TbrEndZeroWhenReasonGone),
     ).also { validate(it) }
 
     /**

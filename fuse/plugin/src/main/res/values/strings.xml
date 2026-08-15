@@ -64,6 +64,8 @@
     <string name="fuse_ramp_high_title">Rampe oben [mg/dl/min]</string>
     <string name="fuse_ramp_summary">Der gleitende Uebergang zwischen Korrektur- und Anstiegs-Anteil, gesteuert von der insulinbereinigten Stoerungsrate r (kann positiv sein, waehrend BG faellt!): unterhalb der unteren Kante gilt der Korrekturanteil, oberhalb der oberen der volle Anstiegsanteil, dazwischen wird ueberblendet - kein harter Schalter. Zur Einordnung: flacher Drift 0,5-0,8, echter Mahlzeitenbeginn 3-5 mg/dl/min.</string>
 
+    <string name="fuse_end_zero_title">Null-Basal sofort beenden</string>
+    <string name="fuse_end_zero_summary">Setzt FUSE das Basal wegen einer unsicheren Bahn auf null, laeuft diese Null bisher bis zu 30 Minuten weiter - auch wenn ihr Grund schon nach zwei Minuten weg ist. Gemessen: rund 100 Minuten je Nacht. Das zurueckgehaltene Basal baut negatives Basal-IOB auf, das am Morgen als scheinbarer Korrekturbedarf per SMB zurueckgezahlt wird. Mit dieser Einstellung kehrt FUSE sofort auf das Profilbasal zurueck, sobald Guard, Schwanz, Signal und Ledger im selben Zyklus wieder frei sind. Es entsteht dabei NIE mehr als Profilbasal - eine positive TBR kennt FUSE nicht. Im Rebound-Fenster nach einem Tief bleibt die Null bewusst stehen.</string>
     <string name="fuse_restraint_title">Schnelle Bremsbahn</string>
     <string name="fuse_restraint_summary">FUSE hat zwei Blicke auf den Zucker: einen gruendlichen (verlaesslich, aber ~15 min traege) und einen schnellen (sieht Wenden frueher). Diese Bremse heisst: sieht der schnelle Blick Gefahr, darf er jederzeit bremsen - Gas geben darf er hierueber nie. Kann eine Dosis nur verkleinern.</string>
     <string name="fuse_bolus_share_lambda_title">Bolus-Deckungs-Abschlag (Lambda)</string>

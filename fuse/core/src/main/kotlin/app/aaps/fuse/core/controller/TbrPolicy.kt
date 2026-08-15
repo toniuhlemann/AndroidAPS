@@ -72,6 +72,19 @@ object TbrPolicy {
         val basalStepUPerH: Double,
         val tbrRenewMinRemainingMin: Int = 10,
         val defaultDurationMin: Int = 30,
+        /**
+         * Darf eine laufende Null enden, sobald ihr SCHUTZGRUND im aktuellen
+         * Zyklus nachweislich weg ist? Default AUS = Verhalten wie vor dem
+         * 15.08., bitgleich (s. TbrPolicyV4bParityTest). Der Runner setzt ihn
+         * aus der Preference.
+         */
+        val endZeroWhenReasonGone: Boolean = false,
+        /**
+         * Wieviele erfolglose Abbruchversuche in Folge, bevor die Null stehen
+         * bleibt. Medtrum-Auflage: ohne Deckel wiederholt FUSE das Kommando
+         * minuetlich, solange die Pumpe es nicht annimmt.
+         */
+        val endZeroMaxAttempts: Int = 3,
     ) {
 
         fun violation(): String? = when {
@@ -175,8 +188,17 @@ object TbrPolicy {
         cfg: Config,
         fault: FaultCode = FaultCode.NONE,
         pumpBusy: Boolean = false,
+        /**
+         * Ist der SCHUTZGRUND einer laufenden Null in DIESEM Zyklus
+         * nachweislich weg? Die Tabelle kann das nicht selbst wissen - sie
+         * sieht weder Bahn noch Guardboden noch Ledger. Der Nachweis wird vom
+         * Aufrufer gefuehrt (s. FuseTbrTranslator.reasonGone).
+         */
+        protectionCleared: Boolean = false,
+        /** Bisher erfolglose Abbruchversuche in Folge (Backoff). */
+        endZeroAttempts: Int = 0,
     ): Decision {
-        val base = decideIgnoringPump(intent, current, scheduledBasalUPerH, cfg, fault)
+        val base = decideIgnoringPump(intent, current, scheduledBasalUPerH, cfg, fault, protectionCleared, endZeroAttempts)
         if (!pumpBusy) return base
         // Eine arbeitende Pumpe bekommt keine zweite Anweisung — aber der
         // Safety-Grund und sein Alarm bleiben erhalten. Unterdrueckt wird die
@@ -196,6 +218,8 @@ object TbrPolicy {
         scheduledBasalUPerH: Double,
         cfg: Config,
         fault: FaultCode,
+        protectionCleared: Boolean = false,
+        endZeroAttempts: Int = 0,
     ): Decision {
         // Ungueltige Eingaben werden nicht geworfen, sondern fail-closed
         // beantwortet: eine Ausnahme aus dem Regelpfad landet sonst im Loop.
@@ -238,7 +262,16 @@ object TbrPolicy {
 
         val base = when (effective) {
             Intent.SAFETY_ZERO -> safetyZero(current, cfg)
-            Intent.NO_POSITIVE -> noPositive(current, scheduledBasalUPerH, cfg)
+            // Nur auf FEHLERFREIEM Pfad: CORE_INPUT_INVALID erzeugt
+            // NO_POSITIVE aus einem FEHLER heraus, TEMP_BASAL_FALLBACK
+            // heisst, die laufende TBR kam aus einer Ersatzquelle - in
+            // beiden Faellen ist "der Grund ist nachweislich weg" gerade
+            // NICHT nachgewiesen.
+            Intent.NO_POSITIVE -> noPositive(
+                current, scheduledBasalUPerH, cfg,
+                protectionCleared = protectionCleared && fault == FaultCode.NONE,
+                endZeroAttempts = endZeroAttempts,
+            )
             Intent.KEEP        -> keep(current, scheduledBasalUPerH, cfg)
         }
         return if (fault == FaultCode.NONE) base
@@ -280,7 +313,7 @@ object TbrPolicy {
         val keep = Decision(Outcome.NoRequest, "KEEP", alarm = false, smbBlockCause = SmbBlockCause.NONE)
         if (current == null) return keep
         fun cancel(reason: String) = Decision(Outcome.Request(0.0, 0), reason, alarm = false, smbBlockCause = SmbBlockCause.NONE)
-        if (isZeroRate(current.absoluteRateUPerH, cfg.basalStepUPerH)) return cancel("KEEP_CANCEL_STALE_ZERO")
+        if (isZeroRate(current.absoluteRateUPerH, cfg.basalStepUPerH)) return cancel(KEEP_CANCEL_STALE_ZERO_REASON)
         // Ueber Profilbasal: derselbe Abbruch wie unter NO_POSITIVE. Waehrend
         // FUSE dosiert, ist eine laufende positive TBR eine zweite, ungeprueft
         // mitlaufende Insulinquelle (H3: die Aktion ist SMB PLUS TBR).
@@ -304,13 +337,73 @@ object TbrPolicy {
         return Decision(zero, "SAFETY_ZERO_REPLACE", alarm = false, smbBlockCause = SmbBlockCause.SAFETY_ZERO)
     }
 
-    private fun noPositive(current: Current?, scheduledBasalUPerH: Double, cfg: Config): Decision {
+    /**
+     * DER GRUND IST WEG - Trail-Kennung, nach der man suchen kann. Sie muss
+     * sich vom Ablauf einer Null (gar keine Zeile) und vom KEEP-Pfad
+     * ([KEEP_CANCEL_STALE_ZERO_REASON]) unterscheiden.
+     */
+    const val END_ZERO_REASON = "NO_POSITIVE_END_ZERO_REASON_GONE"
+
+    const val KEEP_CANCEL_STALE_ZERO_REASON = "KEEP_CANCEL_STALE_ZERO"
+
+    /** Der Cancel wurde unterdrueckt, weil er in diesem Fenster schon zu oft
+     *  scheiterte - s. [Config.endZeroMaxAttempts]. */
+    const val END_ZERO_BACKOFF_REASON = "NO_POSITIVE_END_ZERO_BACKOFF"
+
+    private fun noPositive(
+        current: Current?,
+        scheduledBasalUPerH: Double,
+        cfg: Config,
+        protectionCleared: Boolean = false,
+        endZeroAttempts: Int = 0,
+    ): Decision {
         if (current == null) return Decision(Outcome.NoRequest, "NO_POSITIVE_NOTHING_RUNNING", alarm = false, smbBlockCause = SmbBlockCause.NONE)
         val dir = classify(current.absoluteRateUPerH, scheduledBasalUPerH, cfg.basalStepUPerH)
-        return if (dir == Direction.POSITIVE)
+        if (dir == Direction.POSITIVE)
         // Cancel: rate 0, duration 0 — eindeutig, kein "zurueck auf Profilbasal
         // per absoluter Rate".
-            Decision(Outcome.Request(0.0, 0), "NO_POSITIVE_CANCEL", alarm = false, smbBlockCause = SmbBlockCause.NONE)
-        else Decision(Outcome.NoRequest, "NO_POSITIVE_KEEP_NON_POSITIVE", alarm = false, smbBlockCause = SmbBlockCause.NONE)
+            return Decision(Outcome.Request(0.0, 0), "NO_POSITIVE_CANCEL", alarm = false, smbBlockCause = SmbBlockCause.NONE)
+
+        // ---- DIE NULL VERLASSEN, SOBALD IHR GRUND WEG IST (Toni 15.08.) ----
+        //
+        // Der Anlass ist gemessen, nicht theoretisch: eine Schutz-Null
+        // ueberdauerte ihren Grund im 4-Tage-Trail rund 100 Minuten je Nacht.
+        // Der einzige aktive Ausgang war bis dahin KEEP_CANCEL_STALE_ZERO, und
+        // der braucht Intent.KEEP - also einen Zyklus, der bis
+        // BELOW_PUMP_INCREMENT durchlaeuft. Hinter Guard, Schwanz oder Totband
+        // entsteht der nie: 497 gesetzte Nullen standen 43 Abbruechen
+        // gegenueber, nachts 147 zu 6. Das zurueckgehaltene Basal finanziert
+        // dann ueber die Bedarfsseite die Morgen-SMBs (Brief D.1/D.4).
+        //
+        // DREI UND-BEDINGUNGEN, keine weglassbar:
+        //  1. der Schalter ist an,
+        //  2. der Aufrufer hat den Wegfall des Schutzgrundes fuer DIESEN
+        //     Zyklus nachgewiesen (Guard ueber Boden, kein SafetyHold, kein
+        //     Tail-Block, Health READY, kein Ledger-Hold, kein Fehlerpfad,
+        //     kein Rebound-Fenster - s. FuseTbrTranslator.reasonGone),
+        //  3. es laeuft eine ECHTE Null (harte Toleranz, [isZeroRate]) -
+        //     NICHT irgendeine Absenkung. Das ist derselbe C7b-Vertrag wie im
+        //     KEEP-Pfad: eine FREMDE Absenkung wirkt in die sichere Richtung,
+        //     und sie abzubrechen waere eine Insulin-ERHOEHUNG durch Nichtstun.
+        //
+        // WAS HIER NICHT ENTSTEHEN KANN: eine positive Rate. Der einzige
+        // Ausgang ist Request(0.0, 0) - Abbruch, also Rueckfall auf
+        // Profilbasal. Mehr als Profilbasal gibt dieser Pfad nie frei.
+        if (cfg.endZeroWhenReasonGone && protectionCleared &&
+            isZeroRate(current.absoluteRateUPerH, cfg.basalStepUPerH)
+        ) {
+            // MEDTRUM-AUFLAGE (Replay 15.08.): scheitert das Kommando, wuerde
+            // FUSE es sonst in JEDEM Folgezyklus wiederholen - im Rig 26 Mal
+            // in 30 Minuten, auf einer echten Pumpe neuer Funkverkehr genau
+            // dann, wenn sie ohnehin zickt. Nach [Config.endZeroMaxAttempts]
+            // erfolglosen Versuchen bleibt die Null stehen und laeuft ab; die
+            // Fehlerrichtung ist damit die alte (zu wenig Basal), nicht eine
+            // neue.
+            if (endZeroAttempts >= cfg.endZeroMaxAttempts)
+                return Decision(Outcome.NoRequest, END_ZERO_BACKOFF_REASON, alarm = false, smbBlockCause = SmbBlockCause.NONE)
+            return Decision(Outcome.Request(0.0, 0), END_ZERO_REASON, alarm = false, smbBlockCause = SmbBlockCause.NONE)
+        }
+
+        return Decision(Outcome.NoRequest, "NO_POSITIVE_KEEP_NON_POSITIVE", alarm = false, smbBlockCause = SmbBlockCause.NONE)
     }
 }

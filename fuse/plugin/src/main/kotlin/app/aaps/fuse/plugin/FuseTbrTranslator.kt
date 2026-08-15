@@ -92,6 +92,48 @@ object FuseTbrTranslator {
      * Fuehrt beide Achsen zusammen: die Mengenentscheidung des Reglers und die
      * TBR-Entscheidung der Tabelle.
      */
+    /**
+     * DER NACHWEIS, dass der SCHUTZGRUND einer laufenden Null in DIESEM Zyklus
+     * weg ist. Als reine Funktion, weil er sonst an zwei Aufrufstellen im
+     * Runner auseinanderliefe.
+     *
+     * KEIN Kommentarbeweis, sondern ein STRUKTURARGUMENT ueber
+     * [FuseController.decide]: die drei Bloecke unten sind ausschliesslich
+     * UNTERHALB der Schutzpruefungen erreichbar - Health, SafetyHold,
+     * PumpBusy, fehlende Bahn, Guard-Boden und Schwanz kehren alle VORHER
+     * zurueck. Wer einen dieser drei Bloecke traegt, hat sie in DIESEM Zyklus
+     * alle bestanden.
+     *
+     * DREI DINGE STEHEN BEWUSST NICHT IM NACHWEIS:
+     *
+     *  - der LEDGER-HOLD ist aus dem Block nicht ablesbar (LedgerHoldGate
+     *    ueberschreibt ihn bei smbU <= 0 nicht) und kommt deshalb getrennt
+     *    herein.
+     *  - das REBOUND-FENSTER (Auflage aus dem Replay 15.08.): dort ist der
+     *    Guard formal frei, inhaltlich aber nicht - das aufgeblaehte r nach
+     *    einem Tief ist genau der Grund, warum das Fenster existiert. Ein
+     *    Abbruch faellt sonst in den ersten Zyklus nach dem SafetyHold,
+     *    waehrend das Rebound-Totband noch jede Menge blockt.
+     *  - `Block.NONE` (dosierender Zyklus - dort gilt der KEEP-Pfad und
+     *    darueber C7a), CANDIDATE, BELOW_PUMP_INCREMENT, LEDGER_HOLD,
+     *    NO_INPUT, HORIZON_MISSING.
+     *
+     * Das NACHT-Totband ist ausdruecklich NICHT ausgeschlossen: es traegt
+     * NO_DEMAND, und genau dieser Fall ist der gemessene Anlass (Null
+     * ueberdauert ihren Grund ~100 min je Nacht).
+     */
+    fun reasonGone(
+        decision: FuseController.Decision,
+        ledgerHold: Boolean,
+        reboundWindow: Boolean,
+    ): Boolean = !ledgerHold && !reboundWindow && decision.block in GUARD_CHAIN_PASSED
+
+    private val GUARD_CHAIN_PASSED = setOf(
+        FuseController.Block.NO_DEMAND,
+        FuseController.Block.MAX_IOB_REACHED,
+        FuseController.Block.IOB_TH_REACHED,
+    )
+
     fun combine(
         decision: FuseController.Decision,
         current: TbrPolicy.Current?,
@@ -99,8 +141,16 @@ object FuseTbrTranslator {
         cfg: TbrPolicy.Config,
         fault: TbrPolicy.FaultCode = TbrPolicy.FaultCode.NONE,
         pumpBusy: Boolean = false,
+        /** s. [reasonGone]. Default false = Verhalten wie vor dem 15.08. */
+        protectionCleared: Boolean = false,
+        /** Bisher erfolglose Abbruchversuche in Folge (Medtrum-Backoff). */
+        endZeroAttempts: Int = 0,
     ): Result {
-        val tbr = TbrPolicy.decide(intentOf(decision.tbr), current, scheduledBasalUPerH, cfg, fault, pumpBusy)
+        val tbr = TbrPolicy.decide(
+            intentOf(decision.tbr), current, scheduledBasalUPerH, cfg, fault, pumpBusy,
+            protectionCleared = protectionCleared,
+            endZeroAttempts = endZeroAttempts,
+        )
         val effective = applyBlock(decision, tbr.smbBlockCause)
         // C7a — GEMEINSAMES ZERTIFIKAT (Codex-Adjudication H3, D-Tabelle C7).
         val jointVeto = effective.smbU > 0.0 && endsWithholding(tbr.outcome, current, scheduledBasalUPerH, cfg)

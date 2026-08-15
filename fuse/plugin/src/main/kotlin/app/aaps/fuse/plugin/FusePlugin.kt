@@ -1671,6 +1671,7 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
             addPreference(AdaptiveIntPreference(ctx = context, intKey = FuseIntKey.ReleaseHorizonMin, dialogMessage = R.string.fuse_release_horizon_summary, title = R.string.fuse_release_horizon_title))
             addPreference(AdaptiveIntPreference(ctx = context, intKey = FuseIntKey.DriveTauMin, dialogMessage = R.string.fuse_drive_tau_summary, title = R.string.fuse_drive_tau_title))
             addPreference(AdaptiveIntPreference(ctx = context, intKey = FuseIntKey.DriveLowerQuantilePct, dialogMessage = R.string.fuse_drive_quantile_summary, title = R.string.fuse_drive_quantile_title))
+            addPreference(AdaptiveSwitchPreference(ctx = context, booleanKey = FuseBooleanKey.TbrEndZeroWhenReasonGone, summary = R.string.fuse_end_zero_summary, title = R.string.fuse_end_zero_title))
             info(
                 "Schwanz - die spaete Wirkung",
                 "Haftung fuer Insulin, das erst hinter dem Freigabe-Horizont wirkt."

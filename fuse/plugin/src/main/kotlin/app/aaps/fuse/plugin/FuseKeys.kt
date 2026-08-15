@@ -460,4 +460,22 @@ enum class FuseBooleanKey(
      * Deckel gewinnen. Huelle: PrimeEnvelopeU.
      */
     PrimeReleaseEnabled("fuse_prime_release_enabled", true),
+
+    /**
+     * Eine laufende Schutz-Null endet, sobald ihr Grund im aktuellen Zyklus
+     * nachweislich weg ist - Rueckfall auf Profilbasal per Abbruch, NIE eine
+     * positive Rate.
+     *
+     * DEFAULT AN (Toni 15.08.), und der Anlass ist gemessen: der einzige
+     * aktive Ausgang war bis dahin KEEP_CANCEL_STALE_ZERO, und der verlangt
+     * einen Zyklus, der bis BELOW_PUMP_INCREMENT durchlaeuft - hinter Guard,
+     * Schwanz oder Totband entsteht der nie. Im 4-Tage-Trail standen 497
+     * gesetzten Nullen 43 Abbrueche gegenueber (nachts 147 zu 6); die Null
+     * ueberdauerte ihren Grund rund 100 Minuten je Nacht. Das zurueckgehaltene
+     * Basal finanziert ueber die Bedarfsseite die Morgen-SMBs.
+     *
+     * AUS = Verhalten wie vor dem 15.08., bitgleich. Der Schalter bleibt, weil
+     * er der Rueckweg ist: die Wirkung ist am Geraet noch ungemessen.
+     */
+    TbrEndZeroWhenReasonGone("fuse_tbr_end_zero_when_reason_gone", true),
 }

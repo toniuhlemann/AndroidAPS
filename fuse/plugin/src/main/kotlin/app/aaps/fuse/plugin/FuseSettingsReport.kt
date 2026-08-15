@@ -46,6 +46,7 @@ internal val fuseEinstellbareKeys: Set<String> = setOf(
     FuseBooleanKey.ConditionalTailEnabled.key,
     FuseBooleanKey.NightDeadbandEnabled.key,
     FuseBooleanKey.ReboundDeadbandEnabled.key,
+    FuseBooleanKey.TbrEndZeroWhenReasonGone.key,
 )
 
 /**
@@ -128,6 +129,7 @@ object FuseSettingsReport {
                     ganz(FuseIntKey.ReleaseHorizonMin, "Horizont", "min"),
                     ganz(FuseIntKey.DriveTauMin, "Tau", "min"),
                     ganz(FuseIntKey.DriveLowerQuantilePct, "Guard-Quantil", "%"),
+                    schalter(FuseBooleanKey.TbrEndZeroWhenReasonGone, "Null sofort beenden"),
                     schalter(FuseBooleanKey.TailGuardEnabled, "Schwanz-Guard"),
                     schalter(FuseBooleanKey.ConditionalTailEnabled, "Mahlzeit im Schwanz"),
                     ganz(FuseIntKey.LiabilityHorizonMin, "Haftung", "min"),
