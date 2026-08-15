@@ -67,4 +67,15 @@ class FuseSettingsReportTest {
         assertEquals("23:00", rows.single { it.key == FuseIntKey.NightStartMin.key }.value)
         assertEquals("07:00", rows.single { it.key == FuseIntKey.NightEndMin.key }.value)
     }
+    /** Der Geraetefund vom 15.08.: die Preference kam mit winzigem
+     *  Konvertierungsrest zurueck und "0.15 [Standard 0.15]" stand auf dem
+     *  Schirm. Rundungsrauschen ist KEINE Abweichung. */
+    @Test
+    fun `Rundungsrauschen zaehlt nicht als Abweichung`() {
+        val p = standardPreferences()
+        whenever(p.get(FuseDoubleKey.SmbRatio)).thenReturn(FuseDoubleKey.SmbRatio.defaultValue + 1e-9)
+        val row = FuseSettingsReport.build(p).gruppen.flatMap { it.second }
+            .single { it.key == FuseDoubleKey.SmbRatio.key }
+        assertEquals(null, row.standard) { "Rundungsrest als Abweichung markiert" }
+    }
 }

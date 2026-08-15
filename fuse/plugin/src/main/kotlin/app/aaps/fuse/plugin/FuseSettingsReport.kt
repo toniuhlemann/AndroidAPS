@@ -67,9 +67,16 @@ object FuseSettingsReport {
         fun f2(v: Double) = String.format(Locale.US, "%.2f", v)
         fun uhr(v: Int) = String.format(Locale.US, "%02d:%02d", v / 60, v % 60)
 
+        // TOLERANZ statt ==: Double-Preferences kommen ueber eine
+        // String-/Float-Konvertierung zurueck, und am Geraet stand "0.15
+        // [Standard 0.15]" - dieselbe Zahl, faelschlich als Abweichung
+        // markiert (gesehen 15.08. auf raven). Eine Marke, die auf
+        // Gleichem feuert, entwertet alle echten Marken.
+        fun abweicht(wert: Double, standard: Double) = kotlin.math.abs(wert - standard) > 1e-6
+
         fun zahl(k: FuseDoubleKey, label: String, einheit: String) = FuseScreenModel.SettingRow(
             key = k.key, label = label, value = "${f2(preferences.get(k))} $einheit".trim(),
-            standard = f2(k.defaultValue).takeIf { preferences.get(k) != k.defaultValue }?.let { "$it $einheit".trim() },
+            standard = f2(k.defaultValue).takeIf { abweicht(preferences.get(k), k.defaultValue) }?.let { "$it $einheit".trim() },
         )
 
         fun ganz(k: FuseIntKey, label: String, einheit: String) = FuseScreenModel.SettingRow(
@@ -91,7 +98,7 @@ object FuseSettingsReport {
             key = DoubleKey.ApsSmbMaxIob.key, label = "max Gesamt-IOB [U]",
             value = f2(preferences.get(DoubleKey.ApsSmbMaxIob)),
             standard = f2(DoubleKey.ApsSmbMaxIob.defaultValue)
-                .takeIf { preferences.get(DoubleKey.ApsSmbMaxIob) != DoubleKey.ApsSmbMaxIob.defaultValue },
+                .takeIf { abweicht(preferences.get(DoubleKey.ApsSmbMaxIob), DoubleKey.ApsSmbMaxIob.defaultValue) },
         )
 
         return FuseScreenModel.SettingsReport(
