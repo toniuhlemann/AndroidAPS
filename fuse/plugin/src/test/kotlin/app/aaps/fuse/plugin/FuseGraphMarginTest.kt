@@ -54,6 +54,20 @@ class FuseGraphMarginTest {
         assertNull(FuseGraphMargin.tailMarginMgdl(0.5, 80.0, "NO_ISF"))
     }
 
+    /**
+     * DER GERAETEFEHLER VOM 15.08., als Test festgehalten: Androids
+     * `optString` gibt fuer ein JSON-null den String "null" zurueck (die JVM
+     * gibt den Default) - der Warmstart hielt damit JEDE Trail-Zeile fuer
+     * ungueltig, und die halbe Linie fehlte. Der Parser prueft jetzt mit
+     * `isNull()`; diese Zusicherung ist der zweite Riegel darunter.
+     */
+    @Test
+    fun `der String null gilt nicht als Ungueltigkeitsgrund`() {
+        assertEquals(-40.0, FuseGraphMargin.tailMarginMgdl(-0.5, 80.0, "null"))
+        assertEquals(-40.0, FuseGraphMargin.tailMarginMgdl(-0.5, 80.0, ""))
+        assertEquals(-40.0, FuseGraphMargin.tailMarginMgdl(-0.5, 80.0, "  "))
+    }
+
     @Test
     fun `fehlende oder unbrauchbare Zahlen ergeben eine Luecke`() {
         assertNull(FuseGraphMargin.tailMarginMgdl(null, 80.0, null))

@@ -403,7 +403,13 @@ class FusePlugin @Inject constructor(
                         FuseGraphMargin.tailMarginMgdl(
                             headroomU = it.optDouble("headroomU", Double.NaN),
                             isfTailMgdlPerU = it.optDouble("isfTailMgdlPerU", Double.NaN),
-                            invalidReason = it.optString("invalidReason", "").takeIf { r -> r.isNotEmpty() },
+                            // isNull() IST HIER PFLICHT: Androids optString gibt
+                            // fuer ein JSON-null den String "null" zurueck, nicht
+                            // den Default (JVM-org.json tut das Gegenteil - ein
+                            // Unit-Test haette den Fehler nie gezeigt, das Geraet
+                            // schon: die ganze Warmstart-Linie war weg).
+                            invalidReason = if (it.isNull("invalidReason")) null
+                            else it.optString("invalidReason", "").takeIf { r -> r.isNotEmpty() },
                         )
                     }
                     pts.add(

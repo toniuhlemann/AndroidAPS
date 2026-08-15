@@ -35,8 +35,16 @@ internal object FuseGraphMargin {
     const val LOWER_MGDL = -50.0
     const val UPPER_MGDL = 150.0
 
+    /**
+     * ZWEITER RIEGEL gegen die Android-optString-Falle (Geraetebefund 15.08.):
+     * `optString` liefert dort fuer ein JSON-null den String "null", waehrend
+     * dieselbe API auf der JVM den Default liefert. Ein Aufrufer, der das
+     * uebersieht, wuerde jede Zeile fuer ungueltig halten - deshalb gelten
+     * hier auch "null" und Leerstring als KEIN Grund.
+     */
     fun tailMarginMgdl(headroomU: Double?, isfTailMgdlPerU: Double?, invalidReason: String?): Double? {
-        if (invalidReason != null) return null
+        val grund = invalidReason?.trim()?.takeIf { it.isNotEmpty() && it != "null" }
+        if (grund != null) return null
         val h = headroomU ?: return null
         if (!h.isFinite()) return null
         val isf = isfTailMgdlPerU
