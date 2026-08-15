@@ -525,10 +525,16 @@ object FuseController {
          * Fliesst in diesem Zyklus Kredit aus dem versiegelten Evidenzbestand?
          *
          * Entwaffnet die Totbaender (s. [NightWindow.effectiveDeadbandMgdl]).
-         * Default `false` = Totbaender scharf - die fail-closed Richtung fuer
-         * alle Aufrufer ohne Evidenzpfad (Basisfall-Tests).
+         *
+         * OHNE DEFAULT, nach derselben Regel wie dort - und aus gemessenem
+         * Anlass: die erste Fassung trug `= false`, der einzige
+         * Produktionsaufrufer vergass den Anschluss, und der Default hielt
+         * die Totbaender kompilierfehlerfrei still scharf (Abschluss-Audit
+         * 15.08.: 81 Kreditzyklen im 2-Tage-Trail geblockt, waehrend die
+         * Commit-Botschaft die Verdrahtung behauptete). Ein Kompilierfehler
+         * je Aufrufstelle ist billiger als genau dieser stille Ausfall.
          */
-        evidenceCreditActive: Boolean = false,
+        evidenceCreditActive: Boolean,
         /** Rest der Onset-Haftungshuelle [U]. Nicht-null NUR, wenn der
          *  OnsetChannel in diesem Zyklus die Mittelbahn gehoben hat - dann
          *  kappt er die Menge, die auf seiner eigenen Hebung beruht. */

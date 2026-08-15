@@ -1474,6 +1474,12 @@ class FuseCycleRunner(
             FuseController.Limits(guardFloorMgdl = cfg.guardFloorMgdl, releaseHorizonMin = cfg.releaseHorizonMin),
             tail,
             restraint,
+            // Fliessender Kredit entwaffnet die Totbaender - eine
+            // markereroeffnete Episode mit versiegelter unbezahlter Stoerung
+            // ist keine unangekuendigte Abweichung. Abschluss-Audit 15.08.:
+            // diese Zeile FEHLTE, der Default false verdeckte das - 81
+            // Zyklen im 2-Tage-Trail blieben trotz Kredit im Totband.
+            evidenceCreditActive = evidenzKredit > 0.0,
             onsetCapU = if (onset.active) onset.remainingU else null,
         )
 

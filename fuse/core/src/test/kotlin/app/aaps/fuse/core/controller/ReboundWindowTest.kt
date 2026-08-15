@@ -72,7 +72,7 @@ class ReboundWindowTest {
      */
     @Test
     fun `im Rebound-Fenster nullt das Totband unterhalb von Ziel plus 25`() {
-        val d = FuseController.decide(state(rebound = true, r = 3.32), pred(anchor = 107.0, mean = 180.0))
+        val d = FuseController.decide(state(rebound = true, r = 3.32), pred(anchor = 107.0, mean = 180.0), evidenceCreditActive = false)
         assertEquals(0.0, d.smbU, 0.0)
         assertEquals("reboundDeadband", d.bindingLimit)
         assertEquals(FuseController.Block.NO_DEMAND, d.block)
@@ -82,8 +82,37 @@ class ReboundWindowTest {
      *  den Korrektur-Anteil, aber nicht tot. */
     @Test
     fun `oberhalb des Totbands dosiert das Fenster gedeckelt weiter`() {
-        val d = FuseController.decide(state(rebound = true, r = 3.32), pred(anchor = 130.0, mean = 180.0))
+        val d = FuseController.decide(state(rebound = true, r = 3.32), pred(anchor = 130.0, mean = 180.0), evidenceCreditActive = false)
         assertTrue(d.smbU > 0.0)
         assertEquals(0.15, state(rebound = true, r = 3.32).effectiveSmbRatio, 0.0)
+    }
+
+    // ---- Evidenzkredit entwaffnet die Totbaender AUF DECIDE-EBENE ---------
+    //
+    // Das Abschluss-Audit 15.08. fand die Luecke eine Ebene tiefer verdeckt:
+    // NightWindowTest prueft die Formel, der Rig-Test den Runner - aber
+    // decide() selbst konnte den Parameter verlieren (Default false), ohne
+    // dass ein Test es sah. Dieses Paar macht die MITTLERE Schicht
+    // mutationsfest.
+
+    /** Identische Lage wie der 00:26-Fall oben - nur fliesst jetzt Kredit:
+     *  das Totband ist entwaffnet und die Dosis kommt. */
+    @Test
+    fun `mit Evidenzkredit ist das Rebound-Totband entwaffnet`() {
+        val d = FuseController.decide(state(rebound = true, r = 3.32), pred(anchor = 107.0, mean = 180.0), evidenceCreditActive = true)
+        assertTrue(d.bindingLimit != "reboundDeadband") { "Totband blockt trotz Kredit: ${d.bindingLimit}" }
+        assertTrue(d.smbU > 0.0) { "und dosiert werden muss auch: ${d.block}/${d.bindingLimit}" }
+    }
+
+    /** Dasselbe fuer das NACHT-Totband - beide laufen ueber denselben
+     *  Riegel, aber ein Test je Grund haelt jede Teilmutation rot. */
+    @Test
+    fun `mit Evidenzkredit ist das Nacht-Totband entwaffnet`() {
+        val nacht = state(rebound = false, r = 0.2).copy(nightWindow = true, nightDeadbandMgdl = 45.0)
+        val ohne = FuseController.decide(nacht, pred(anchor = 107.0, mean = 180.0), evidenceCreditActive = false)
+        assertEquals("nightDeadband", ohne.bindingLimit, "ohne Kredit muss das Totband greifen - sonst prueft der Test nichts")
+        val mit = FuseController.decide(nacht, pred(anchor = 107.0, mean = 180.0), evidenceCreditActive = true)
+        assertTrue(mit.bindingLimit != "nightDeadband") { "Totband blockt trotz Kredit: ${mit.bindingLimit}" }
+        assertTrue(mit.smbU > 0.0)
     }
 }

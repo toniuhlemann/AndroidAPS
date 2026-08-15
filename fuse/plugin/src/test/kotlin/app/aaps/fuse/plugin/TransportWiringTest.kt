@@ -2052,6 +2052,13 @@ class TransportWiringTest : TestBaseWithProfile() {
      * aktivem Evidenzkredit muss es entwaffnet sein - die Totbaender
      * schuetzen vor unangekuendigten Abweichungen, und eine markereroeffnete
      * Episode mit versiegelter unbezahlter Stoerung ist das Gegenteil davon.
+     *
+     * BOOST-FENSTER AUS (Abschluss-Audit 15.08.): die erste Fassung liess
+     * den Rig-Boost 45 Minuten laufen, und ALLE geprueften Zyklen lagen
+     * darin - `markerBoost` entwaffnete die Totbaender kreditunabhaengig,
+     * und der Test war gruen, obwohl der Kreditpfad im Runner gar nicht
+     * verdrahtet war. Mit Boostfenster 0 prueft er den KREDIT, nicht die
+     * Sonderrechte.
      */
     @Test
     fun `das Nacht-Totband sperrt das Mahlzeitenfenster nicht`(@TempDir dir: File) {
@@ -2061,6 +2068,9 @@ class TransportWiringTest : TestBaseWithProfile() {
         nightDeadband = true
         whenever(preferences.get(FuseIntKey.NightStartMin)).thenReturn(0)
         whenever(preferences.get(FuseIntKey.NightEndMin)).thenReturn(1439)
+        // Boost aus - sonst prueft der Test die Marker-Sonderrechte statt
+        // des Kredits (s. KDoc).
+        whenever(preferences.get(FuseIntKey.MarkerBoostMaxMin)).thenReturn(0)
         // Flacher Anstieg, damit der ERSTE Kreditzyklus sicher unter der
         // Totbandschwelle 98 + 45 = 143 liegt.
         flach = 100.0
@@ -2216,6 +2226,13 @@ class TransportWiringTest : TestBaseWithProfile() {
      * GATE-ATTEST MODELL (binaer): faellt der Predictor im Zyklus NACH dem
      * Kreditaufbau aus, verlaesst trotz stehendem Bestand keine Menge den
      * Zyklus - unverifiziert wird nicht dosiert.
+     *
+     * DREI ZUSICHERUNGEN gegen Leer-Gruen (Abschluss-Audit 15.08.): die
+     * erste Fassung prueft nur `smbU == 0` am Ausfallzyklus. Sie waere auch
+     * gruen, wenn (a) das Rig ohne Ausfall gar nicht dosierte oder (b) der
+     * Kredit am Ausfallzyklus laengst versiegt waere - beides prueft jetzt
+     * je eine eigene Assertion, und der Abbruchgrund muss den verweigerten
+     * Fallback benennen.
      */
     @Test
     fun `positiver Evidenzkredit dringt nicht durch einen Modellausfall`(@TempDir dir: File) {
@@ -2236,12 +2253,24 @@ class TransportWiringTest : TestBaseWithProfile() {
         repeat(80) { if ((cycle().evidenceCreditMgdlPerMin ?: 0.0) > 0.0) kreditGesehen = true }
         assertTrue(kreditGesehen) { "kein Evidenzkredit in 80 Zyklen" }
 
+        // KONTROLLZYKLUS: ohne Ausfall dosiert das Rig - sonst bewiese der
+        // Ausfallzyklus nur, dass ohnehin nichts kam. Die Abbuchung
+        // (0,3 U x ISF 90 = 27 mg/dl) vertraegt der Bestand.
         maxSmbU = 0.3
+        val kontrolle = cycle()
+        assertTrue(kontrolle.decision.smbU > 0.0) { "der Kontrollzyklus muss dosieren: ${kontrolle.decision}" }
+
         predictReject = app.aaps.fuse.core.predictor.PredictorReason.MISSING_ISF_SLOT
         val ausfall = cycle()
         predictReject = null
 
+        assertTrue((ausfall.evidenceCreditMgdlPerMin ?: 0.0) > 0.0) {
+            "der Kredit muss AM Ausfallzyklus fliessen - sonst prueft der Test nichts"
+        }
         assertEquals(0.0, ausfall.decision.smbU, 1e-9) { "Modellausfall dosiert nicht: ${ausfall.decision}" }
+        assertTrue(ausfall.abortReason?.contains("noFallback=REASON_NOT_OVERRIDABLE") == true) {
+            "der Grund muss den verweigerten Fallback benennen: ${ausfall.abortReason}"
+        }
     }
     /**
      * OPTION A AM TRAIL-FALL (13.08.): Druck 14:59 waehrend laufender
@@ -2378,5 +2407,48 @@ class TransportWiringTest : TestBaseWithProfile() {
         assertEquals(0.70, mit.decision.smbU, 1e-9) {
             "B: Transportabzug muss die finale Menge um 0,10 verengen: ${mit.decision}"
         }
+    }
+    /**
+     * DIE ZYKLUSFREIE STRECKE (Abschluss-Audit 15.08., Fensterregel): wie
+     * der Trail-Fall oben, aber zwischen dem zweiten Druck und dem
+     * Deckelende laeuft KEIN Zyklus - der Erben-Zweig hat den Druck nie
+     * gesehen (realer Ausloeser: CGM-Ausfall, der Loop wird von BG-Werten
+     * getrieben). Ohne die Fensterregel eroeffnete der erste Zyklus nach
+     * dem Deckelende daraus eine Folgeepisode mit frischem 360-Deckel.
+     */
+    @Test
+    fun `ein Druck vor einer Zyklusluecke eroeffnet nach dem Deckelende keine Folgeepisode`(@TempDir dir: File) {
+        tailGuard = false
+        flach = 62.0
+        steigungProMin = 0.0
+        markerAuthorized = true
+
+        val l = FuseLedgerAdapter().also { it.loadOnce(dir.also(File::mkdirs), "test-epoch", start) }
+        neuerRunner(l)
+
+        markerAt = start + 2 * 60_000L
+        clock = start
+        repeat(8) { cycle() }
+        val anker = l.episodes.evidenceEpisodeId
+        assertTrue(anker > 0L, "Episode steht")
+
+        // Zweiter Druck IM Fenster - aber danach kommt KEIN Zyklus mehr,
+        // bis der Vorgaenger am Deckel raus ist.
+        val zweiterDruck = clock + 20 * 60_000L
+        markerAt = zweiterDruck
+        clock = anker + (EvidenceStock.Config().maxEpisodeMin + 5) * 60_000L
+        val o = (1..3).map { cycle() }.last()
+
+        assertTrue(l.episodes.evidenceEpisodeId == anker || l.episodes.evidenceEpisodeId == 0L) {
+            "keine Folgeepisode aus dem ungesehenen Druck: ${l.episodes.evidenceEpisodeId}"
+        }
+        assertEquals("MARKER_ALREADY_CONSUMED", o.evidenceEpisodeDenial)
+        assertEquals(zweiterDruck, l.episodes.lastConsumedMarkerTs, "der Druck ist verbraucht, nicht vergessen")
+
+        // Ein NEUER bewusster Druck (nach dem Deckelende) eroeffnet weiter.
+        val dritterDruck = clock + 60_000L
+        markerAt = dritterDruck
+        repeat(3) { cycle() }
+        assertEquals(dritterDruck, l.episodes.evidenceEpisodeId, "neuer Druck, neue Episode")
     }
 }

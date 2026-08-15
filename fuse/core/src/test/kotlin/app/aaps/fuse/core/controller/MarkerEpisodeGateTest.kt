@@ -60,7 +60,10 @@ class MarkerEpisodeGateTest {
     /** Und nach dem Deckel ist es wirklich eine neue Mahlzeit. */
     @Test
     fun `nach dem Deckel eroeffnet ein neuer Druck`() {
-        val alt = now - cap - 60_000L
+        // Der Druck liegt STRIKT hinter dem Vorgaengerfenster [id, id+cap].
+        // Die Kante selbst (markerTs - id == cap) gehoert dem Vorgaenger:
+        // der Erben-Zweig rechnet inklusiv, die Fensterregel zieht gleich.
+        val alt = now - cap - 120_000L
         val neu = now - 60_000L
         val r = entscheide(markerTs = neu, ledgerEpisodeId = alt, lastConsumed = alt, observed = neu)
         assertEquals(neu, r.episodeId)
@@ -330,5 +333,36 @@ class MarkerEpisodeGateTest {
         )
         assertEquals(alt, r.episodeId)
         assertFalse(r.creditRevoked, "erneutes Armen gibt frei - Verbrauch hin oder her")
+    }
+    // ---- Fensterregel (Abschluss-Audit 15.08.) ----------------------------
+
+    /**
+     * DIE ZYKLUSFREIE STRECKE: Druck waehrend der Episode, danach laeuft bis
+     * zum Deckelende KEIN Zyklus (CGM-Ausfall - der Loop wird von BG-Werten
+     * getrieben). Der Erben-Zweig hat den Druck also nie gesehen. Der erste
+     * Zyklus NACH dem Deckelende darf daraus trotzdem keine Folgeepisode
+     * machen: der Druck faellt in das Fenster des Vorgaengers, er wird
+     * verbraucht.
+     */
+    @Test
+    fun `ein Druck im Fenster des abgelaufenen Vorgaengers eroeffnet nichts und wird verbraucht`() {
+        val alt = now - cap - 30 * 60_000L      // Vorgaenger seit 30 min am Deckel raus
+        val druck = alt + 60 * 60_000L          // Druck bei Minute 60 des Vorgaengers
+        val r = entscheide(markerTs = druck, ledgerEpisodeId = alt, lastConsumed = alt, observed = druck)
+        assertEquals(0L, r.episodeId)
+        assertEquals(Denial.MARKER_ALREADY_CONSUMED, r.denial)
+        assertEquals(druck, r.consumeInheritedPressTs, "und der Druck ist damit verbraucht")
+    }
+
+    /** GEGENPROBE: ein Druck NACH dem Deckelende des Vorgaengers eroeffnet
+     *  weiterhin - auch wenn sein erster Zyklus verspaetet kommt. Sonst
+     *  waere die Fensterregel eine Meldesperre fuer echte neue Mahlzeiten. */
+    @Test
+    fun `ein Druck nach dem Vorgaengerfenster eroeffnet auch bei spaetem Zyklus`() {
+        val alt = now - cap - 30 * 60_000L
+        val druck = alt + cap + 60_000L         // 1 min NACH dem Deckelende, Zyklus kommt 29 min spaeter
+        val r = entscheide(markerTs = druck, ledgerEpisodeId = alt, lastConsumed = alt, observed = druck)
+        assertEquals(druck, r.episodeId)
+        assertTrue(r.opened)
     }
 }

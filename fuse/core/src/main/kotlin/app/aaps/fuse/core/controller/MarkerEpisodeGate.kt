@@ -175,6 +175,26 @@ object MarkerEpisodeGate {
         if (markerTs == lastConsumedMarkerTs) return Result(0L, false, Denial.MARKER_ALREADY_CONSUMED)
         if (markerTs != observedPressTs) return Result(0L, false, Denial.MARKER_EVENT_NOT_DURABLE)
 
+        // OPTION A, GESCHLOSSENES FENSTER (Abschluss-Audit 15.08.): ein
+        // Druck, der in das FENSTER des inzwischen abgelaufenen Vorgaengers
+        // faellt, gehoert dem Vorgaenger. Der Zweig oben konsumiert ihn nur,
+        // wenn zwischen Druck und Deckelende ein Zyklus LAEUFT - eine
+        // zyklusfreie Strecke (CGM-Ausfall, Sensorwechsel: der Loop wird von
+        // BG-Werten getrieben) truege ihn sonst unverbraucht ueber das
+        // Deckelende, und er eroeffnete dort eine Folgeepisode mit frischem
+        // Deckel, Stunden nach dem Druck. Stattdessen: verbrauchen, nicht
+        // eroeffnen. Ein Druck NACH dem Deckelende eroeffnet weiter, auch
+        // wenn sein Zyklus verspaetet kommt.
+        //
+        // `markerTs` ist hier belegt nicht-zukuenftig und > lastConsumed
+        // (die Pruefungen oben) - der Verbrauch kann den monotonen Anker
+        // nicht vergiften.
+        if (ledgerEpisodeId > 0L && markerTs - ledgerEpisodeId in 0..capMs)
+            return Result(
+                0L, false, Denial.MARKER_ALREADY_CONSUMED,
+                consumeInheritedPressTs = markerTs,
+            )
+
         // Eine frisch eroeffnete Episode ist nie widerrufen - und wenn der
         // Stand aus einer alten Episode noch `true` sagte, ist das jetzt eine
         // Aenderung, die festgeschrieben werden muss.
@@ -189,8 +209,9 @@ object MarkerEpisodeGate {
      *                Ort tut das, und nur, solange der Marker aktiv ist -
      *                nach Ablauf armt derselbe Knopf naemlich neu.
      *   Ablauf:      der Zeitpunkt BLEIBT stehen, nur `active` wird mit der
-     *                Zeit falsch. Die Episode laeuft bis 240 min weiter, und
-     *                genau dafuer wurde sie vom 90-Minuten-Fenster geloest.
+     *                Zeit falsch. Die Episode laeuft bis zu ihrem Deckel
+     *                (capMs) weiter, und genau dafuer wurde sie vom
+     *                90-Minuten-Fenster geloest.
      *
      * Die Regel ist damit zustandslos und heilt sich nach einem Neustart
      * selbst: steht dort 0, ist zurueckgenommen worden. Der persistierte

@@ -101,7 +101,7 @@ class TailLiabilityTest {
     @Test
     fun `erschoepfter Schwanz blockt - aber ohne Zero-Temp`() {
         val tail = TailLiability.evaluate(input(lowerBgAtH = 120.0, existingIob = 2.0))
-        val d = FuseController.decide(state(), pred(250.0), tail = tail)
+        val d = FuseController.decide(state(), pred(250.0), tail = tail, evidenceCreditActive = false)
         assertEquals(0.0, d.smbU)
         assertEquals(FuseController.Block.TAIL, d.block)
         // NICHT ZERO_TEMP: ein Zero-Temp kann die bereits gelieferte Wirkung,
@@ -114,7 +114,7 @@ class TailLiabilityTest {
         // Budget 1.0, IOB 0.9 -> Spielraum 0.1 U. Ohne Schwanz waere maxSmb 0.75
         // die bindende Grenze.
         val tail = TailLiability.evaluate(input(existingIob = 0.9))
-        val d = FuseController.decide(state(), pred(400.0), tail = tail)
+        val d = FuseController.decide(state(), pred(400.0), tail = tail, evidenceCreditActive = false)
         assertEquals("tailHeadroom", d.bindingLimit)
         assertTrue(d.smbU <= 0.1 + 1e-9)
         assertTrue(d.tailCostU > 0.0) { "der Onset-Verlust muss beziffert sein" }
@@ -125,7 +125,7 @@ class TailLiabilityTest {
     @Test
     fun `ein unbrauchbarer Bericht greift nicht in die Entscheidung ein`() {
         val kaputt = TailLiability.evaluate(input(isfTail = 0.0))
-        val d = FuseController.decide(state(), pred(400.0), tail = kaputt)
+        val d = FuseController.decide(state(), pred(400.0), tail = kaputt, evidenceCreditActive = false)
         assertEquals(FuseController.Block.NONE, d.block)
         assertTrue(d.smbU > 0.0)
         assertEquals(0.0, d.tailCostU, 0.0)
@@ -135,7 +135,7 @@ class TailLiabilityTest {
      *  Ergebnis, der eine Bewertung vortaeuschen wuerde. */
     @Test
     fun `ohne Schwanz-Guard bleibt die Entscheidung unveraendert`() {
-        val mit = FuseController.decide(state(), pred(400.0), tail = null)
+        val mit = FuseController.decide(state(), pred(400.0), tail = null, evidenceCreditActive = false)
         assertNull(mit.tail)
         assertEquals(0.0, mit.tailCostU, 0.0)
         assertTrue(mit.smbU > 0.0)
@@ -146,7 +146,7 @@ class TailLiabilityTest {
     @Test
     fun `der Nahzonen-Guard hat Vorrang vor dem Schwanz`() {
         val tail = TailLiability.evaluate(input(existingIob = 99.0))
-        val d = FuseController.decide(state(), pred(250.0, minLower = 60.0), tail = tail)
+        val d = FuseController.decide(state(), pred(250.0, minLower = 60.0), tail = tail, evidenceCreditActive = false)
         assertEquals(FuseController.Block.GUARD_FLOOR, d.block)
         assertEquals(FuseController.TbrAction.ZERO_TEMP, d.tbr)
     }
