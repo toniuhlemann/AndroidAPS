@@ -110,9 +110,9 @@ object FuseDashboardModel {
         val decisionReason = when {
             outcome.abortReason != null -> "Abbruch: ${outcome.abortReason}"
             ledger?.hold == true        -> "Ledger-Hold: ${ledger.holdReason ?: "unbekannt"}"
-            d.block != FuseController.Block.NONE -> "${blockLabel(d.block)}  (${d.bindingLimit})"
+            d.block != FuseController.Block.NONE -> "${blockLabel(d.block)}  (${kurz(d.bindingLimit)})"
             berechnet > 0.0             -> "freigegeben  |  Grenze ${limitLabel(d.bindingLimit)}"
-            else                        -> "kein zusaetzlicher Bedarf  (${d.bindingLimit})"
+            else                        -> "kein zusaetzlicher Bedarf  (${kurz(d.bindingLimit)})"
         }
 
         val hard = mutableListOf<String>()
@@ -317,6 +317,14 @@ object FuseDashboardModel {
         "MARKER_EVENT_NOT_DURABLE" -> "Druck nicht beobachtet (Neustart?)"
         else                       -> denial
     }
+
+    /** Rohe Grenz-Tokens tragen volle Double-Praezision
+     *  ("tailHeadroom=-0.4432277446939927", Geraetefund 15.08.) - fuer die
+     *  Karte auf 2 Nachkommastellen kuerzen, das Token selbst bleibt. */
+    private fun kurz(t: String): String =
+        t.replace(Regex("""-?\d+\.\d{3,}""")) { m ->
+            m.value.toDoubleOrNull()?.let { String.format(Locale.US, "%.2f", it) } ?: m.value
+        }
 
     private fun f0(v: Double): String = String.format(Locale.US, "%.0f", v)
     private fun f2(v: Double): String = String.format(Locale.US, "%.2f", v)

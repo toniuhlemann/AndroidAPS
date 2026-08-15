@@ -251,4 +251,15 @@ class FuseDashboardModelTest {
         val v = FuseDashboardModel.build(outcome(), null, now, null, ledger(), null)
         assertNull(v.windows)
     }
+    /** Geraetefund 15.08.: "tailHeadroom=-0.4432277446939927" auf der
+     *  Karte. Das Token bleibt, die Zahl wird lesbar. */
+    @Test
+    fun `lange Dezimalzahlen im Grund-Token werden gekuerzt`() {
+        val o = outcome(block = FuseController.Block.TAIL).let {
+            it.copy(decision = it.decision.copy(bindingLimit = "tailHeadroom=-0.4432277446939927"))
+        }
+        val v = FuseDashboardModel.build(o, null, now, null, ledger(), null)
+        assertTrue(v.decisionReason.contains("tailHeadroom=-0.44")) { v.decisionReason }
+        assertTrue(!v.decisionReason.contains("0.4432277446939927")) { v.decisionReason }
+    }
 }
