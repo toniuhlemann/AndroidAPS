@@ -398,12 +398,17 @@ class FusePlugin @Inject constructor(
                     val fast = if (ukf.isFinite() && act.isFinite() && isf.isFinite()) ukf + act * isf else Double.NaN
                     val ml = dec?.optDouble("minLowerMgdl", Double.NaN) ?: Double.NaN
                     val gf = pol?.optDouble("guardFloorMgdl", 70.0) ?: 70.0
+                    val tl = j.optJSONObject("tail")
+                    val tailMargin = if (tl != null)
+                        tl.optDouble("headroomU", Double.NaN) * tl.optDouble("isfTailMgdlPerU", Double.NaN)
+                    else Double.NaN
                     pts.add(
                         app.aaps.core.interfaces.overview.FuseOverviewSource.Point(
                             timestamp = ts,
                             driveMgdlPerMin = r.takeIf { it.isFinite() },
                             fastDriveMgdlPerMin = fast.takeIf { it.isFinite() },
                             guardMarginMgdl = (ml - gf).takeIf { it.isFinite() }?.coerceIn(-50.0, 150.0),
+                            tailMarginMgdl = tailMargin.takeIf { it.isFinite() }?.coerceIn(-50.0, 150.0),
                         )
                     )
                 }
@@ -751,6 +756,12 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
                             guardMarginMgdl = o.decision.minLowerMgdl
                                 ?.let { ml -> ml - (o.policy?.guardFloorMgdl ?: 70.0) }
                                 ?.takeIf { it.isFinite() }?.coerceIn(-50.0, 150.0),
+                            // Schwanz-Kante in mg/dl: headroomU x isfTail. Bei den
+                            // fruehen Report-Ausgaengen (invalid/unphysiological)
+                            // ist isfTail NaN -> Luecke statt Phantomwert.
+                            tailMarginMgdl = o.decision.tail
+                                ?.let { t -> (t.headroomU * t.isfTailMgdlPerU).takeIf { v -> v.isFinite() } }
+                                ?.coerceIn(-50.0, 150.0),
                         )
                     )
                     while (graphRing.size > 1_500) graphRing.removeFirst()

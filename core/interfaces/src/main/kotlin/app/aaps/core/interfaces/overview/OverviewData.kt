@@ -136,6 +136,9 @@ interface OverviewData {
     var fuseRampHighSeries: SeriesData
     var fuseDriveMarkerSeries: SeriesData
     var fuseGuardMarkerSeries: SeriesData
+    /** Schwanz-Spielraum (gestrichelt) im selben Untergraphen - s.
+     *  FuseOverviewSource.Point.tailMarginMgdl. */
+    var fuseTailSeries: SeriesData
     var maxFuseGuardValueFound: Double
     val fuseGuardScale: Scale
     var fuseGuardSeries: SeriesData

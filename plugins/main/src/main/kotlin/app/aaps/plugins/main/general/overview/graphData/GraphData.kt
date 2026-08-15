@@ -214,8 +214,10 @@ class GraphData @Inject constructor(
         addSeries(overviewData.fuseDriveMarkerSeries as LineGraphSeries<ScaledDataPoint>)
     }
 
-    /** Guard-Abstand minLower - guardFloor: ueber Null offen, unter Null
-     *  sperrt der Guard. An der Quelle auf -50..150 geklippt. */
+    /** SPERR-ABSTAND, beide Kanten: Guard (minLower - guardFloor, durchgezogen)
+     *  und Schwanz (headroomU x isfTail, gestrichelt). Ueber Null offen, unter
+     *  Null gesperrt - welche Linie zuerst die Null reisst, ist die bindende
+     *  Kante. An der Quelle auf -50..150 geklippt. */
     fun addFuseGuard(useForScale: Boolean, scale: Double) {
         if (useForScale) {
             maxY = max(10.0, overviewData.maxFuseGuardValueFound)
@@ -223,6 +225,7 @@ class GraphData @Inject constructor(
         }
         overviewData.fuseGuardScale.multiplier = maxY * scale / max(10.0, overviewData.maxFuseGuardValueFound)
         addSeries(overviewData.fuseGuardSeries as LineGraphSeries<ScaledDataPoint>)
+        addSeries(overviewData.fuseTailSeries as LineGraphSeries<ScaledDataPoint>)
         addSeries(overviewData.fuseGuardMarkerSeries as LineGraphSeries<ScaledDataPoint>)
     }
 

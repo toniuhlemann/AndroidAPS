@@ -22,6 +22,17 @@ interface FuseOverviewSource {
          *  interessant ist der Nulldurchgang, nicht die Tiefe einer
          *  unphysiologischen Bahn. */
         val guardMarginMgdl: Double?,
+        /**
+         * Schwanz-Spielraum in mg/dl (headroomU x isfTail), gleiche Klippung
+         * und gleiche Nulldurchgangs-Semantik wie der Guard-Abstand.
+         *
+         * NACHGEZOGEN 15.08.: die Messung des Tages hat gezeigt, dass der
+         * Schwanz OEFTER bindet als der Guard (88x gegen 70x im 4-Tage-Trail;
+         * im ersten Produktiv-Fall war tailHeadroom die tatsaechliche Kante).
+         * Ein Guard-Abstand allein zeigte "offen", waehrend FUSE vom Schwanz
+         * gesperrt war - genau irrefuehrend fuer die Nachvollziehung.
+         */
+        val tailMarginMgdl: Double? = null,
     )
 
     fun fuseGraphPoints(fromTime: Long, endTime: Long): List<Point>

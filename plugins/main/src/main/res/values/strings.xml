@@ -292,7 +292,7 @@
     <string name="overview_show_iob">Insulin On Board</string>
     <string name="overview_show_iobTH">IOB threshold</string>
     <string name="overview_show_fuse_drive">FUSE Antrieb (r + schnell)</string>
-    <string name="overview_show_fuse_guard">FUSE Guard-Abstand</string>
+    <string name="overview_show_fuse_guard">FUSE Sperr-Abstand (Guard + Schwanz)</string>
     <string name="overview_show_basals">Basals</string>
     <string name="overview_show_abs_insulin">Absolute insulin</string>
     <string name="overview_show_variable_sens">Variable sensitivity</string>

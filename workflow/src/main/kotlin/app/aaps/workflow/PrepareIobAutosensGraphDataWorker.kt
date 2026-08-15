@@ -255,6 +255,8 @@ class PrepareIobAutosensGraphDataWorker(
 
             val guardArr: MutableList<ScaledDataPoint> = ArrayList()
 
+            val tailArr: MutableList<ScaledDataPoint> = ArrayList()
+
             data.overviewData.maxFuseDriveValueFound = Double.MIN_VALUE
 
             data.overviewData.maxFuseGuardValueFound = Double.MIN_VALUE
@@ -283,6 +285,16 @@ class PrepareIobAutosensGraphDataWorker(
 
                     data.overviewData.maxFuseGuardValueFound = max(data.overviewData.maxFuseGuardValueFound, kotlin.math.abs(v))
 
+                }
+
+                // SCHWANZ-KANTE (Messung 15.08.): der Schwanz bindet OEFTER als
+                // der Guard (88x gegen 70x im 4-Tage-Trail). Ein Guard-Abstand
+                // allein zeigte "offen", waehrend FUSE laengst vom Schwanz
+                // gesperrt war - beide Kanten gehoeren in denselben Untergraphen,
+                // mit derselben Nulldurchgangs-Semantik.
+                pnt.tailMarginMgdl?.let { v ->
+                    tailArr.add(ScaledDataPoint(pnt.timestamp, v, data.overviewData.fuseGuardScale))
+                    data.overviewData.maxFuseGuardValueFound = max(data.overviewData.maxFuseGuardValueFound, kotlin.math.abs(v))
                 }
 
             }
@@ -373,6 +385,14 @@ class PrepareIobAutosensGraphDataWorker(
 
                 })
 
+            }
+            data.overviewData.fuseTailSeries = LineGraphSeries(Array(tailArr.size) { i -> tailArr[i] }).also {
+                it.setCustomPaint(Paint().also { paint ->
+                    paint.style = Paint.Style.STROKE
+                    paint.strokeWidth = 2f
+                    paint.pathEffect = DashPathEffect(floatArrayOf(4f, 4f), 0f)
+                    paint.color = rh.gac(ctx, app.aaps.core.ui.R.attr.fuseGuardColor)
+                })
             }
 
         }
