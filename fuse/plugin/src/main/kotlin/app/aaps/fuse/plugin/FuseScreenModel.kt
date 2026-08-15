@@ -32,7 +32,7 @@ object FuseScreenModel {
      */
     /** Marker-Zustand fuer Timer-Zeile - kommt vom Fragment (Plugin-Prefs),
      *  nicht aus dem Outcome: der Timer soll auch zwischen Zyklen laufen. */
-    data class MarkerInfo(val armedTs: Long, val windowMin: Int, val envelopeU: Double)
+    data class MarkerInfo(val armedTs: Long, val windowMin: Int, val envelopeU: Double, val noPrime: Boolean = false)
 
     /**
      * Der LEDGER-Zustand - eine EIGENE Groesse, nicht Teil von "Health".
@@ -204,8 +204,15 @@ object FuseScreenModel {
         }
         outcome.prime?.let { pr ->
             primeText(pr)?.let { txt ->
-                val stand = marker?.takeIf { it.armedTs > 0 && it.envelopeU > 0 }
-                    ?.let { m -> "  [${f2((m.envelopeU - pr.remainingU).coerceAtLeast(0.0))}/${f2(m.envelopeU)} U geliefert]" } ?: ""
+                // Die Episoden-Wahl gehoert VOR den Lieferstand: ein
+                // "0,00/3,00 U geliefert" saehe aus wie eine Stoerung, dabei
+                // ist es die Wahl des Drucks.
+                val stand = when {
+                    marker?.takeIf { it.armedTs > 0 }?.noPrime == true -> "  [ohne Vorschuss - Wahl beim Druck]"
+                    marker != null && marker.armedTs > 0 && marker.envelopeU > 0 ->
+                        "  [${f2((marker.envelopeU - pr.remainingU).coerceAtLeast(0.0))}/${f2(marker.envelopeU)} U geliefert]"
+                    else -> ""
+                }
                 row(b, "Freigabe", txt + stand)
             }
         }

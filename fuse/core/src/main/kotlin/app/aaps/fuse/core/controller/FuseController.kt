@@ -124,6 +124,9 @@ object FuseController {
          * FCL nicht messbar ist: die LATENZ vom Druck bis zur ersten Freigabe.
          */
         val markerArmedTs: Long = 0L,
+        /** Episoden-Wahl "ohne Vorschuss" aus dem Marker-Dialog: die
+         *  Freigabe-Huelle und der Erklaerungs-Kredit dieser Episode sind 0. */
+        val markerNoPrime: Boolean = false,
         /** Rebound-Bedingung lag an, wurde aber durch einen aktiven Marker
          *  entwaffnet (Gas-vor-Bremse NUR fuer erklaertes Wissen, 08.08.):
          *  das Fenster schuetzt vor dem Jagen UNANGEKUENDIGTER Hypo-

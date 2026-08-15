@@ -216,4 +216,24 @@ class PrimeReleaseTest {
     fun `C1 ohne Bahn faellt die Clearance geschlossen aus`() {
         assertEquals("NOT_FINITE", PrimeRelease.plan(input(minLower = minSafetyLowerOf())).reason)
     }
+
+    /**
+     * DIE EPISODEN-WAHL AUS DEM MARKER-DIALOG (Toni 15.08.): "es gibt
+     * Situationen, wo 3 Einheiten jetzt zuviel waeren". Abgewaehlt heisst
+     * USER_NO_PRIME - nicht ENVELOPE_SPENT, die Huelle ist ja nicht weg -
+     * und es gilt auch im markerautorisierten Pfad: die Autorisierung
+     * entsteht aus der Deckung durch den Druck, und dieser Druck hat die
+     * Deckung ausdruecklich nicht erteilt.
+     */
+    @Test
+    fun `die Wahl ohne Vorschuss schaltet die Freigabe dieser Episode ab`() {
+        val an = input()
+        check(PrimeRelease.plan(an).active) { "Vorbedingung: ohne Wahl ist die Freigabe aktiv" }
+        val abgewaehlt = PrimeRelease.plan(an.copy(declinedByUser = true))
+        org.junit.jupiter.api.Assertions.assertFalse(abgewaehlt.active)
+        org.junit.jupiter.api.Assertions.assertEquals(0.0, abgewaehlt.floorU)
+        org.junit.jupiter.api.Assertions.assertEquals("USER_NO_PRIME", abgewaehlt.reason)
+        val autorisiert = PrimeRelease.plan(an.copy(declinedByUser = true, markerAuthorized = true, safetyMinLowerMgdl = null))
+        org.junit.jupiter.api.Assertions.assertEquals("USER_NO_PRIME", autorisiert.reason)
+    }
 }

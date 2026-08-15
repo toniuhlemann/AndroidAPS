@@ -476,7 +476,13 @@ class OverviewFragment : DaggerFragment(), View.OnClickListener, OnLongClickList
         }
         // DER TEXT STEHT IN core:ui, nicht hier: derselbe Dialog erscheint im
         // FUSE-Tab, und zwei Fassungen waeren zwei Sicherheitsniveaus.
-        app.aaps.core.ui.dialogs.FuseMarkerDialog.show(activity, rh, fakten, umschalten)
+        app.aaps.core.ui.dialogs.FuseMarkerDialog.show(
+            activity, rh, fakten, umschalten,
+            Runnable {
+                fuseOverviewSource.fuseMarkerToggle(now, ohneVorschuss = true)
+                processButtonsVisibility()
+            },
+        )
     }
 
     override fun onClick(v: View) {

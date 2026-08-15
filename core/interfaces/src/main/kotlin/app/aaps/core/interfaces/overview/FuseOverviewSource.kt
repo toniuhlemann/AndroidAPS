@@ -74,5 +74,13 @@ interface FuseOverviewSource {
     fun fuseMarkerPrompt(now: Long): MarkerPromptFacts?
 
     /** Schaltet um. @return ob der Marker DANACH laeuft. */
-    fun fuseMarkerToggle(now: Long): Boolean
+    /**
+     * @param ohneVorschuss true = Mahlzeit nur ERKLAEREN: Fensterregeln,
+     * Rampen und Totband-Oeffnung wie immer, aber die Freigabe-Huelle dieser
+     * Episode ist 0 - kein markerfinanziertes Insulin. Die Wahl faellt im
+     * Dialog des Knopfdrucks (Toni 15.08.: "es gibt Situationen, wo 3
+     * Einheiten jetzt zuviel waeren" - z.B. reichlich aktiver Bolus vor der
+     * Mahlzeit), nicht in den Einstellungen.
+     */
+    fun fuseMarkerToggle(now: Long, ohneVorschuss: Boolean = false): Boolean
 }

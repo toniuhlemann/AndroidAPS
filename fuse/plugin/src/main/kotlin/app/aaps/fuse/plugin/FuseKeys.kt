@@ -313,6 +313,12 @@ enum class FuseLongKey(
     /** exportable = false: der Marker ist ZUSTAND - ein Settings-Import darf
      *  keinen alten Mahlzeiten-Marker wiederbeleben. */
     MealMarkerArmedTs("fuse_meal_marker_armed_ts", 0, 0, exportable = false),
+    /** EPISODENZUSTAND, kein Setting: die im Marker-Dialog getroffene Wahl
+     *  "ohne Vorschuss" (Huelle 0 fuer DIESE Episode). Lebt und stirbt mit
+     *  [MealMarkerArmedTs] - beim Armen gesetzt, bei der Ruecknahme geloescht.
+     *  Als Long statt Boolean, damit er im selben Enum wohnt wie der Anker
+     *  und nicht im Einstellungs-Vertrag (fuseEinstellbareKeys) auftaucht. */
+    MealMarkerNoPrime("fuse_meal_marker_no_prime", 0, 0, exportable = false),
 
     /**
      * ALTBESTAND, nur noch LESEND: `armedTs*10 + Stufe`.

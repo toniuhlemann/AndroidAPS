@@ -189,6 +189,12 @@ object PrimeRelease {
          * 11.08. aufgedeckt hat (BG 105 fallend, alle Tore frei, 0 U).
          */
         val markerAuthorized: Boolean = false,
+        /** Die Episoden-Wahl "ohne Vorschuss" aus dem Marker-Dialog (Toni
+         *  15.08.). Ein eigenes Feld statt envelopeU=0, damit die Telemetrie
+         *  ABGEWAEHLT von VERBRAUCHT unterscheidet - ENVELOPE_SPENT hiesse
+         *  "die Huelle ist weg", und das waere hier schlicht falsch. AM ENDE,
+         *  weil die Tests Input positionsbasiert bauen. */
+        val declinedByUser: Boolean = false,
     )
 
     data class Plan(
@@ -204,6 +210,7 @@ object PrimeRelease {
         fun off(reason: String) = Plan(false, 0.0, remaining, reason)
 
         if (!input.enabled) return off("DISABLED")
+        if (input.declinedByUser) return off("USER_NO_PRIME")
         if (!input.mealMarkerActive || input.armedTsMs <= 0) return off("NO_MARKER")
         val wallAgeMin = (input.nowMs - input.armedTsMs) / 60_000.0
         if (wallAgeMin < 0.0) return off("CLOCK_SKEW")

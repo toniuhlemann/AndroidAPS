@@ -1,9 +1,12 @@
 package app.aaps.core.ui.dialogs
 
+import android.content.DialogInterface
+import android.os.SystemClock
 import androidx.fragment.app.FragmentActivity
 import app.aaps.core.interfaces.overview.FuseOverviewSource
 import app.aaps.core.interfaces.resources.ResourceHelper
 import app.aaps.core.ui.R
+import com.google.android.material.dialog.MaterialAlertDialogBuilder
 
 /**
  * DIE RUECKFRAGE ZUM MAHLZEITEN-KNOPF - einmal, fuer beide Knoepfe.
@@ -32,11 +35,25 @@ import app.aaps.core.ui.R
  */
 object FuseMarkerDialog {
 
+    /**
+     * DREI AUSGAENGE seit dem 15.08. (Tonis Fall: "es gibt Situationen, wo 3
+     * Einheiten jetzt zuviel waeren" - etwa reichlich aktiver Bolus vor der
+     * Mahlzeit): JA mit Vorschuss (wie immer, der Normalfall bleibt zwei
+     * Beruehrungen), OHNE VORSCHUSS (Mahlzeit nur erklaeren, Huelle 0 fuer
+     * diese Episode), Abbrechen. Die Wahl faellt IM MOMENT des Drucks -
+     * eine Einstellung, die man je Lage umschalten muesste, wuerde nicht
+     * umgeschaltet.
+     *
+     * Nicht OKDialog: der kennt nur zwei Knoepfe. Entprellung und
+     * runOnUiThread sind von dort uebernommen - gleiche Handlung, gleiches
+     * Sicherheitsniveau.
+     */
     fun show(
         activity: FragmentActivity,
         rh: ResourceHelper,
         facts: FuseOverviewSource.MarkerPromptFacts,
         onConfirm: Runnable,
+        onConfirmNoPrime: Runnable? = null,
     ) {
         val rest = (facts.envelopeU - facts.alreadyDeliveredU).coerceAtLeast(0.0)
         // EINE Zeile Zahlen. Der Rest steht in der Einstellungsbeschreibung -
@@ -49,11 +66,32 @@ object FuseMarkerDialog {
         if (facts.measuredLow)
             text.append("\n\n").append(rh.gs(R.string.overview_fuse_meal_confirm_low))
 
-        OKDialog.showConfirmation(
-            activity,
-            rh.gs(R.string.overview_fuse_meal_confirm_title),
-            text.toString(),
-            onConfirm,
-        )
+        if (onConfirmNoPrime == null) {
+            OKDialog.showConfirmation(
+                activity,
+                rh.gs(R.string.overview_fuse_meal_confirm_title),
+                text.toString(),
+                onConfirm,
+            )
+            return
+        }
+        var gewaehlt = false
+        fun waehle(dialog: DialogInterface, aktion: Runnable) {
+            if (gewaehlt) return
+            gewaehlt = true
+            dialog.dismiss()
+            SystemClock.sleep(100)
+            activity.runOnUiThread(aktion)
+        }
+        MaterialAlertDialogBuilder(activity, R.style.DialogTheme)
+            .setMessage(text.toString())
+            .setCustomTitle(AlertDialogHelper.buildCustomTitle(activity, rh.gs(R.string.overview_fuse_meal_confirm_title)))
+            .setPositiveButton(android.R.string.ok) { d: DialogInterface, _: Int -> waehle(d, onConfirm) }
+            .setNeutralButton(R.string.fuse_meal_confirm_no_prime) { d: DialogInterface, _: Int -> waehle(d, onConfirmNoPrime) }
+            .setNegativeButton(android.R.string.cancel) { d: DialogInterface, _: Int ->
+                if (!gewaehlt) { gewaehlt = true; d.dismiss() }
+            }
+            .show()
+            .setCanceledOnTouchOutside(false)
     }
 }

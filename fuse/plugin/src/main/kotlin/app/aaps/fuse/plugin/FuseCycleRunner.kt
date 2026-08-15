@@ -574,6 +574,12 @@ class FuseCycleRunner(
         // auch die Abbrueche.
         val markerTs = preferences.get(FuseLongKey.MealMarkerArmedTs).takeIf { it > 0L }
             ?: (preferences.get(FuseLongKey.MealMarkerStamp).takeIf { it > 0L }?.div(10L) ?: 0L)
+        // Die Episoden-Wahl "ohne Vorschuss" (s. FuseOverviewSource.fuseMarkerToggle):
+        // sie unterdrueckt NUR das markerfinanzierte Insulin (Sofort-Freigabe
+        // und Erklaerungs-Kredit). Fenster, Rampen, Onset-Kanal und die
+        // Totband-Oeffnung bleiben - die Mahlzeit ist ja erklaert. Ein
+        // Altbestand-Stempel kennt die Wahl nicht und laeuft mit voller Huelle.
+        val markerNoPrime = markerTs > 0L && preferences.get(FuseLongKey.MealMarkerNoPrime) != 0L
         val episodes = ledger.episodes
         val evidenceCapMs = evidenceConfig.maxEpisodeMin * 60_000L
         val episodeGate = MarkerEpisodeGate.decide(
@@ -1063,7 +1069,10 @@ class FuseCycleRunner(
         // Pfade, die Erklaerung verbraucht sich selbst.
         val mealDeliveredU = if (markerTs > 0) episodes.mealDeliveries.sumOf { it.second } else 0.0
         val declaredDrive = if (markerBoost) MarkerScope.declaredAbsorptionDriveMgdlPerMin(
-            envelopeU = cfg.primeEnvelopeU,
+            // "Ohne Vorschuss" heisst auch: kein Erklaerungs-Kredit. Der Kredit
+            // unterstellt kommende Absorption in Huellenhoehe - genau die
+            // Unterstellung, die der Druck abgewaehlt hat.
+            envelopeU = if (markerNoPrime) 0.0 else cfg.primeEnvelopeU,
             deliveredU = mealDeliveredU,
             isfMgdlPerU = profile.getIsfMgdlTimeFromMidnight(MidnightUtils.secondsFromMidnight(signal.sourceTs)),
             windowMin = cfg.absorptionCreditWindowMin.toDouble(),
@@ -1172,6 +1181,7 @@ class FuseCycleRunner(
                     nightDeadbandMgdl = if (cfg.nightDeadbandEnabled) cfg.nightDeadbandMgdl else 0.0,
                     markerBoost = markerBoost,
                     markerArmedTs = markerTs,
+                    markerNoPrime = markerNoPrime,
                     reboundSuppressedByMarker = reboundSuppressedByMarker,
                     mealWindow = mealWindow,
                     rSignedMgdlPerMin = onset.driveMgdlPerMin?.takeIf { onset.active }
@@ -1565,6 +1575,7 @@ class FuseCycleRunner(
         val primePlan = PrimeRelease.plan(
             PrimeRelease.Input(
                 enabled = cfg.primeReleaseEnabled,
+                declinedByUser = markerNoPrime,
                 mealMarkerActive = mealMarkerActive,
                 armedTsMs = markerTs,
                 windowStartTsMs = episodes.primeWindowStartTs,
@@ -2099,9 +2110,14 @@ class FuseCycleRunner(
     ): Outcome {
         subStepCarryU = 0.0
 
+        // Dieselbe Episoden-Wahl wie im Hauptpfad - hier lokal gelesen, weil
+        // dieser Pfad seine Eingaben als Parameter bekommt.
+        val markerNoPrime = mealMarkerActive && preferences.get(FuseLongKey.MealMarkerNoPrime) != 0L
+
         val primePlan = PrimeRelease.plan(
             PrimeRelease.Input(
                 enabled = cfg.primeReleaseEnabled,
+                declinedByUser = markerNoPrime,
                 mealMarkerActive = mealMarkerActive,
                 armedTsMs = markerTs,
                 windowStartTsMs = episodes.primeWindowStartTs,

@@ -509,7 +509,7 @@ class FusePlugin @Inject constructor(
      * Damit faellt auch der atomare Stempel weg: er band Zeitpunkt und Stufe
      * aneinander, und ohne Stufe gibt es nur noch einen Wert.
      */
-    fun toggleMealMarker(now: Long): Boolean {
+    fun toggleMealMarker(now: Long, ohneVorschuss: Boolean = false): Boolean {
         val armed = mealMarkerActive(now)
         if (armed) {
             // Die Beobachtung stirbt mit der Ruecknahme. Bliebe sie stehen,
@@ -524,6 +524,9 @@ class FusePlugin @Inject constructor(
                 MarkerTimeline.retract(markerPressRing, mealMarkerArmedTs(), geliefert)
             }
             preferences.put(FuseLongKey.MealMarkerArmedTs, 0L)
+            // Die Episoden-Wahl stirbt mit dem Marker - ein spaeterer Druck
+            // beginnt immer bei der vollen Huelle.
+            preferences.put(FuseLongKey.MealMarkerNoPrime, 0L)
             // Der Altbestand-Stempel wird mitgeloescht: bliebe er stehen,
             // liesse der Lese-Ruecktausch unten einen zurueckgenommenen
             // Marker wieder auferstehen.
@@ -531,6 +534,7 @@ class FusePlugin @Inject constructor(
             return false
         }
         preferences.put(FuseLongKey.MealMarkerArmedTs, now)
+        preferences.put(FuseLongKey.MealMarkerNoPrime, if (ohneVorschuss) 1L else 0L)
         // DER EINZIGE ORT, an dem ein Druck als BEOBACHTET gilt. Er steht
         // absichtlich hier und nicht beim Nachfuellen des Marker-Rings: der
         // liest den Trail und kennt Druecke von vor zwei Stunden.
@@ -610,7 +614,11 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
         }
     }
 
-    override fun fuseMarkerToggle(now: Long): Boolean = toggleMealMarker(now)
+    override fun fuseMarkerToggle(now: Long, ohneVorschuss: Boolean): Boolean = toggleMealMarker(now, ohneVorschuss)
+
+    /** Die im Dialog getroffene Episoden-Wahl - nur mit stehendem Marker wahr. */
+    fun mealMarkerNoPrime(now: Long): Boolean =
+        mealMarkerActive(now) && preferences.get(FuseLongKey.MealMarkerNoPrime) != 0L
 
     fun mealMarkerActive(now: Long): Boolean {
         val ts = mealMarkerArmedTs()

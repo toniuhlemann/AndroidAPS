@@ -567,6 +567,7 @@ object FuseStateJson {
                 // ohne t0 laesst sich das im Nachhinein nicht ausrechnen.
                 // 0 = kein Marker.
                 .put("markerArmedTs", outcome.state?.markerArmedTs ?: JSONObject.NULL)
+                .put("markerNoPrime", outcome.state?.markerNoPrime ?: JSONObject.NULL)
                 .put("markerBoost", outcome.state?.markerBoost ?: JSONObject.NULL)
                 .put("mealWindow", outcome.state?.mealWindow ?: JSONObject.NULL)
                 .put("smbRatioEffective", fin(outcome.state?.effectiveSmbRatio))

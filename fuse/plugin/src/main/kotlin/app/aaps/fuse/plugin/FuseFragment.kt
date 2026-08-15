@@ -66,7 +66,10 @@ class FuseFragment : DaggerFragment() {
             val fakten = fusePlugin.fuseMarkerPrompt(now)
             val act = activity
             if (fakten == null || act == null) umschalten.run()
-            else app.aaps.core.ui.dialogs.FuseMarkerDialog.show(act, rh, fakten, umschalten)
+            else app.aaps.core.ui.dialogs.FuseMarkerDialog.show(
+                act, rh, fakten, umschalten,
+                Runnable { fusePlugin.toggleMealMarker(now, ohneVorschuss = true); update() },
+            )
         }
         binding.fuseDetailsToggle.setOnClickListener {
             detailsExpanded = !detailsExpanded
@@ -116,6 +119,7 @@ class FuseFragment : DaggerFragment() {
             armedTs = fusePlugin.mealMarkerArmedTs(),
             windowMin = app.aaps.fuse.core.controller.OnsetChannel.MARKER_WINDOW_MIN,
             envelopeU = fusePlugin.mealMarkerEnvelopeU(),
+            noPrime = fusePlugin.mealMarkerNoPrime(now),
         )
         // Eigene Groesse neben Health: der Ledger kann die Abgabe ganz
         // zumachen, waehrend der Beobachter tadellos READY meldet.

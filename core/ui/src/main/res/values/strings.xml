@@ -162,6 +162,7 @@
     <string name="overview_insulin_label">Insulin</string>
     <string name="overview_fuse_meal_label">Mahlzeit</string>
     <string name="overview_fuse_meal_active_label">◉ Mahlzeit</string>
+    <string name="fuse_meal_confirm_no_prime">Ohne Vorschuss</string>
     <string name="overview_fuse_meal_confirm_title">Mahlzeit ankuendigen?</string>
     <!-- EINE Zeile. Der Knopf wird mehrmals taeglich gedrueckt; alles, was man
          nur EINMAL lesen muss, steht in der Einstellungsbeschreibung. -->
