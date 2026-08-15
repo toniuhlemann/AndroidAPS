@@ -5,25 +5,11 @@
 
     <string name="fuse_settings">FUSE</string>
 
-    <!-- Kompakte Betriebssicht im FUSE-Reiter. Die technische Vollansicht
+    <!-- Kompakte Betriebssicht im FUSE-Reiter (Umbau 15.08.: drei schlanke
+         Karten, Zwischentitel nur je Karte). Die technische Vollansicht
          bleibt separat einblendbar und verwendet weiterhin FuseScreenModel. -->
-    <string name="fuse_live_status">Betriebszustand</string>
-    <string name="fuse_control_signal">Regelsignal</string>
-    <string name="fuse_current_action">Aktuelle Aktion</string>
-    <string name="fuse_decision_reason">Entscheidungsgrund</string>
-    <string name="fuse_hard_stops">Harte Sperren</string>
-    <string name="fuse_marker_and_budget">Mahlzeit und Freigabebudget</string>
-    <string name="fuse_iob">IOB</string>
-    <string name="fuse_insulin_limits">Insulingrenzen</string>
-    <string name="fuse_net_iob">Netto-IOB</string>
-    <string name="fuse_bolus_iob">Bolus-IOB</string>
-    <string name="fuse_basal_iob">Basal-IOB</string>
-    <string name="fuse_cap_iob">Kappen-IOB</string>
-    <string name="fuse_transport">Transport</string>
-    <string name="fuse_iob_th_label">iobTH</string>
-    <string name="fuse_max_iob_label">maxIOB</string>
-    <string name="fuse_available">Verfügbar</string>
-    <string name="fuse_profile_values">Wirksame Profilwerte</string>
+    <string name="fuse_meal_evidence">Mahlzeit und Evidenz</string>
+    <string name="fuse_budget_profile">Budget und Profil</string>
     <string name="fuse_open_settings">Einstellungen</string>
     <string name="fuse_show_details">Technische Details</string>
     <string name="fuse_hide_details">Details ausblenden</string>
@@ -86,8 +72,6 @@
     <string name="fuse_onset_channel_summary">Der gruendliche Blick braucht ~15 Minuten, bis er einen Mahlzeitenbeginn glaubt. Dieser Kanal erlaubt einen frueheren Start, wenn der schnelle Blick 3 Minuten hintereinander einen ECHTEN Anstieg sieht - begrenzt durch die Onset-Haftungshuelle, bis die Bestaetigung da ist. Ein Vorschuss, kein Freifahrtschein.</string>
     <string name="fuse_onset_envelope_title">Onset-Haftungshuelle [U]</string>
     <string name="fuse_onset_envelope_summary">Hoechstmenge, die der Onset-Kanal je Episode auf UNBESTAETIGTER Evidenz freigeben darf. Eine bezifferte Wette - zum Massstab: per Basal-Stopp sind in 30 Minuten nur 0,2-0,35 U wieder einfangbar.</string>
-    <string name="fuse_meal_marker_button">Mahlzeit-Marker setzen</string>
-    <string name="fuse_meal_marker_button_armed">Mahlzeit-Marker AKTIV - tippen zum Zuruecknehmen</string>
     <string name="fuse_prime_release_title">Sofort-Freigabe am Marker</string>
     <string name="fuse_prime_release_summary">Ab deinem Mahlzeit-Marker beginnt FUSE SOFORT mit kleinen Portionen - noch bevor der Sensor etwas sieht (der hinkt dem Essen ~20 Minuten hinterher). Nur mit gesetztem Marker, nur 15 Minuten, und alle Waechter behalten Vorrang.</string>
     <string name="fuse_prime_envelope_title">Freigabe-Huelle [U]</string>

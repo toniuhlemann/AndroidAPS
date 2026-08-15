@@ -68,12 +68,29 @@ object FuseScreenModel {
         val lastRepairTs: Long?,
     )
 
+    /** Eine Zeile des Einstellungs-Berichts. `key` wird nicht gerendert -
+     *  er traegt den Vollstaendigkeits-Vertrag (`fuseEinstellbareKeys`). */
+    data class SettingRow(
+        val key: String,
+        val label: String,
+        val value: String,
+        /** Standardwert, WENN der aktuelle davon abweicht - sonst null.
+         *  Abweichungen sind die Zeilen, um die es geht. */
+        val standard: String?,
+    )
+
+    data class SettingsReport(val gruppen: List<Pair<String, List<SettingRow>>>)
+
     fun render(
         outcome: FuseCycleRunner.Outcome?,
         apsResult: APSResult?,
         nowMs: Long,
         marker: MarkerInfo? = null,
         ledger: LedgerInfo? = null,
+        /** Anzeige-Zusatz, kein Sicherheitsparameter - der Default ist hier
+         *  vertretbar (ohne Bericht fehlt eine Sektion, es wird nichts still
+         *  scharf oder stumpf). */
+        settings: SettingsReport? = null,
     ): String {
         val b = StringBuilder()
         if (outcome == null) {
@@ -284,6 +301,26 @@ object FuseScreenModel {
                 if (apsResult.isTempBasalRequested) "${f2(apsResult.rate)} U/h fuer ${apsResult.duration} min"
                 else "keine Anforderung"
             )
+        }
+
+        // ---- EINSTELLUNGEN, ganz unten (Toni 15.08.) -----------------------
+        //
+        // Der Bericht ist die Landkarte des Einstellungsbildschirms: dieselben
+        // fuenf Gruppen, jede Zeile mit aktuellem Wert. Zeilen, die vom
+        // Standard abweichen, tragen ein `*` und den Standardwert - DAS sind
+        // die Zeilen, die ins Auge fallen sollen (ein nach einem Testlauf
+        // stehen gebliebenes maxSmb 0,55 zum Beispiel).
+        settings?.let { s ->
+            sec(b, "Einstellungen")
+            for ((gruppe, zeilen) in s.gruppen) {
+                b.append(gruppe).append('\n')
+                for (z in zeilen) {
+                    val marke = if (z.standard != null) "* " else "  "
+                    b.append(marke).append(z.label.padEnd(21)).append(z.value)
+                    z.standard?.let { b.append("  [Standard ").append(it).append(']') }
+                    b.append('\n')
+                }
+            }
         }
         return b.toString()
     }

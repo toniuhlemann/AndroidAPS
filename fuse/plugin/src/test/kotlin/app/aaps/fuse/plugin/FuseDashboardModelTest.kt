@@ -4,6 +4,8 @@ import app.aaps.core.interfaces.aps.APSResult
 import app.aaps.fuse.core.controller.FuseController
 import app.aaps.fuse.core.controller.PrimeRelease
 import app.aaps.fuse.core.observer.Health
+import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import org.mockito.kotlin.doReturn
@@ -102,7 +104,9 @@ class FuseDashboardModelTest {
         )
         assertTrue(v.status.contains("WARTET"))
         assertTrue(v.action.contains("Keine aktuelle"))
-        assertTrue(v.insulin.netIob == "-")
+        assertEquals("IOB -", v.iobLine)
+        assertNull(v.transport)
+        assertNull(v.windows)
     }
 
     @Test
@@ -110,7 +114,7 @@ class FuseDashboardModelTest {
         val v = FuseDashboardModel.build(outcome(), null, now, null, ledger(hold = true), null)
         assertTrue(v.status == "HOLD")
         assertTrue(v.decisionReason.contains("LEDGER_GLOBAL_HOLD"))
-        assertTrue(v.hardStops.contains("Ledger"))
+        assertTrue(v.gate.contains("Ledger"))
     }
 
     @Test
@@ -120,21 +124,19 @@ class FuseDashboardModelTest {
             on { isTempBasalRequested } doReturn false
         }
         val v = FuseDashboardModel.build(outcome(), aps, now, null, ledger(), null)
-        assertTrue(v.action.contains("0.20 U berechnet"))
-        assertTrue(v.action.contains("0.15 U angefordert"))
+        assertTrue(v.action.contains("SMB 0.20 U -> 0.15 U")) { v.action }
     }
 
     @Test
-    fun `Regelsignal nennt Stoerung Anstiegsfenster Rampe und wirksamen Anteil`() {
+    fun `Signalzeile nennt Stoerung Modus und wirksamen Anteil`() {
         val v = FuseDashboardModel.build(outcome(), null, now, null, ledger(), null)
-        assertTrue(v.controlSignal.contains("Störung r +1.000 mg/dl/min"))
-        assertTrue(v.controlSignal.contains("Anstiegsfenster"))
-        assertTrue(v.controlSignal.contains("Rampe 20 % (0.15 -> 0.35)"))
-        assertTrue(v.controlSignal.contains("SMB-Anteil 0.19"))
+        assertTrue(v.signal.contains("Störung r +1.00 mg/dl/min")) { v.signal }
+        assertTrue(v.signal.contains("Anstieg"))
+        assertTrue(v.signal.contains("SMB-Anteil 0.19"))
     }
 
     @Test
-    fun `Marker zeigt konfiguriert verbraucht verfuegbar und beide Fenster`() {
+    fun `Marker zeigt konfiguriert verbraucht verfuegbar und das Freigabefenster`() {
         val markerTs = now - 3 * 60_000L
         val v = FuseDashboardModel.build(
             outcome(prime = PrimeRelease.Plan(true, 0.2, 2.4, "PRIME")),
@@ -144,25 +146,30 @@ class FuseDashboardModelTest {
             ledger(),
             null,
         )
+        assertTrue(v.marker.contains("AKTIV seit 3/90 min")) { v.marker }
         assertTrue(v.marker.contains("publiziert 0.60 U"))
         assertTrue(v.marker.contains("verfuegbar 2.40 U"))
         assertTrue(v.marker.contains("3/15 min Freigabe"))
-        assertTrue(v.marker.contains("3/45 min Wandzeit"))
-        assertTrue(v.marker.contains("3/90 min Kontext"))
     }
 
     @Test
     fun `wirksame IOB Spielraeume ziehen offene Transportmenge ab`() {
         val v = FuseDashboardModel.build(outcome(), null, now, null, ledger(transport = 0.1), null)
         // cap=max(net 0.4, bolus 0.6); iobTH-Rest=2.0-0.6-0.1=1.3
-        assertTrue(v.insulin.netIob == "0.40 U")
-        assertTrue(v.insulin.bolusIob == "0.60 U")
-        assertTrue(v.insulin.basalIob == "-0.20 U")
-        assertTrue(v.insulin.capIob == "0.60 U")
-        assertTrue(v.insulin.transport == "0.10 U")
-        assertTrue(v.insulin.iobTh == "2.00 U")
-        assertTrue(v.insulin.maxIob == "4.00 U")
-        assertTrue(v.insulin.headroom == "iobTH 1.30 U  |  maxIOB 3.30 U")
+        assertTrue(v.iobLine.contains("IOB 0.40 U")) { v.iobLine }
+        assertTrue(v.iobLine.contains("Bolus 0.60"))
+        assertTrue(v.iobLine.contains("Basal -0.20"))
+        assertTrue(v.limits.contains("iobTH 1.30 U")) { v.limits }
+        assertTrue(v.limits.contains("maxIOB 3.30 U"))
+        // Die offene Transportmenge bekommt ihre EIGENE Zeile - sie ist die
+        // Erklaerung des verengten Spielraums.
+        assertTrue(v.transport?.contains("0.10 U") == true) { v.transport ?: "null" }
+    }
+
+    @Test
+    fun `ohne offene Transportmenge verschwindet die Transportzeile`() {
+        val v = FuseDashboardModel.build(outcome(), null, now, null, ledger(transport = 0.0), null)
+        assertNull(v.transport)
     }
 
     @Test
@@ -170,7 +177,7 @@ class FuseDashboardModelTest {
         val equalState = state().copy(iobThU = 4.0, maxIobU = 4.0)
         val equalOutcome = outcome().copy(state = equalState)
         val v = FuseDashboardModel.build(equalOutcome, null, now, null, ledger(transport = 0.1), null)
-        assertTrue(v.insulin.headroom == "3.30 U (beide Grenzen)")
+        assertTrue(v.limits.contains("3.30 U (beide Grenzen)")) { v.limits }
     }
 
     @Test
@@ -181,5 +188,67 @@ class FuseDashboardModelTest {
         assertTrue(v.profile.contains("Ziel 98 mg/dl (profile)"))
         assertTrue(v.profile.contains("ISF 80 mg/dl/U"))
         assertTrue(v.profile.contains("Basal 0.65 U/h"))
+    }
+
+    // ---- Neu 15.08.: Evidenz- und Fensterzeile ----------------------------
+
+    @Test
+    fun `Evidenzzeile zeigt Phase Alter verbucht Bestand und Kredit`() {
+        val o = outcome().copy(
+            evidenceEpisodeId = now - 124 * 60_000L,
+            evidenceEpisodeMin = 124,
+            evidencePhase = "ACTIVE",
+            evidenceCommittedU = 2.1,
+            evidenceStockMgdl = 12.0,
+            evidenceCreditMgdlPerMin = 0.4,
+        )
+        val v = FuseDashboardModel.build(o, null, now, null, ledger(), null)
+        assertTrue(v.evidence.contains("Episode AKTIV")) { v.evidence }
+        assertTrue(v.evidence.contains("124/360 min"))
+        assertTrue(v.evidence.contains("verbucht 2.10 U"))
+        assertTrue(v.evidence.contains("Bestand 12 mg/dl"))
+        assertTrue(v.evidence.contains("Kredit +0.40/min"))
+    }
+
+    @Test
+    fun `Evidenzzeile nennt den Denial-Grund menschenlesbar`() {
+        val o = outcome().copy(evidenceEpisodeDenial = "MARKER_STALE")
+        val v = FuseDashboardModel.build(o, null, now, null, ledger(), null)
+        assertTrue(v.evidence.contains("keine Episode")) { v.evidence }
+        assertTrue(v.evidence.contains("Marker zu alt"))
+    }
+
+    /**
+     * DIE ANZEIGE RECHNET UEBER DIESELBE FUNKTION WIE DER REGLER
+     * (NightWindow.effectiveDeadbandMgdl). Der 15.08. hat gezeigt, was eine
+     * zweite "aehnliche" Formel wert waere: die Verdrahtung fehlte, und eine
+     * eigene Anzeige-Formel haette "entwaffnet" gezeigt, waehrend das
+     * Totband scharf war.
+     */
+    @Test
+    fun `Totbandzeile scharf ohne Kredit und entwaffnet mit Kredit`() {
+        val nacht = state().copy(nightWindow = true, nightDeadbandMgdl = 45.0)
+        val scharf = FuseDashboardModel.build(
+            outcome().copy(state = nacht), null, now, null, ledger(), null
+        )
+        assertTrue(scharf.windows?.contains("Nacht-Totband scharf bis 143") == true) { scharf.windows ?: "null" }
+
+        val mitKredit = FuseDashboardModel.build(
+            outcome().copy(
+                state = nacht,
+                evidenceEpisodeId = 1L,
+                evidenceEpisodeMin = 10,
+                evidencePhase = "ACTIVE",
+                evidenceCreditMgdlPerMin = 0.4,
+            ),
+            null, now, null, ledger(), null
+        )
+        assertTrue(mitKredit.windows?.contains("Nacht-Totband entwaffnet (Kredit)") == true) { mitKredit.windows ?: "null" }
+    }
+
+    @Test
+    fun `ohne aktives Fenster gibt es keine Fensterzeile`() {
+        val v = FuseDashboardModel.build(outcome(), null, now, null, ledger(), null)
+        assertNull(v.windows)
     }
 }

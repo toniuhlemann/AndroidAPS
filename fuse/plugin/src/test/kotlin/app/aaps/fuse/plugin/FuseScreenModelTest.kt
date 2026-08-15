@@ -315,4 +315,38 @@ class FuseScreenModelTest {
         val t = FuseScreenModel.render(outcome(), null, now)
         assertFalse(t.contains("Evidenz-"))
     }
+    // ---- Einstellungs-Bericht (Umbau 15.08.) ------------------------------
+
+    /** Ganz unten, gruppiert wie der Einstellungsbildschirm; Abweichungen
+     *  vom Standard tragen `*` und den Standardwert. */
+    @Test
+    fun `der Einstellungs-Bericht steht unten und markiert Abweichungen`() {
+        val report = FuseScreenModel.SettingsReport(
+            gruppen = listOf(
+                "Dosierung und Grenzen" to listOf(
+                    FuseScreenModel.SettingRow("k1", "max Einzel-SMB", "0.55 U", "0.30 U"),
+                    FuseScreenModel.SettingRow("k2", "Anteil Korrektur", "0.15", null),
+                ),
+            ),
+        )
+        val t = FuseScreenModel.render(outcome(), null, now, settings = report)
+        assertTrue(t.contains("--- Einstellungen")) { t }
+        assertTrue(t.indexOf("--- Einstellungen") > t.indexOf("--- Ergebnis")) { "die Sektion gehoert ans Ende" }
+        assertTrue(t.contains("* max Einzel-SMB")) { t }
+        assertTrue(t.contains("[Standard 0.30 U]")) { t }
+        val korrektur = t.lines().single { it.contains("Anteil Korrektur") }
+        assertTrue(!korrektur.contains("*") && !korrektur.contains("Standard")) { korrektur }
+    }
+
+    /** Ohne Bericht keine Sektion - und ohne Zyklus weiterhin nur die eine
+     *  Zeile, auch wenn ein Bericht mitkommt. */
+    @Test
+    fun `ohne Zyklus verdraengt der Bericht die Eine-Zeile-Regel nicht`() {
+        val report = FuseScreenModel.SettingsReport(gruppen = emptyList())
+        assertEquals(
+            "FUSE hat in diesem Prozess noch nicht gerechnet.",
+            FuseScreenModel.render(null, null, now, settings = report),
+        )
+        assertTrue(!FuseScreenModel.render(outcome(), null, now).contains("--- Einstellungen"))
+    }
 }

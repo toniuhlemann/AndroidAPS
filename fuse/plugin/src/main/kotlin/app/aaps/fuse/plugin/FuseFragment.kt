@@ -130,22 +130,24 @@ class FuseFragment : DaggerFragment() {
         )
         binding.fuseOverviewStatus.text = dashboard.status
         binding.fuseOverviewStatusDetail.text = dashboard.statusDetail
-        binding.fuseOverviewControlSignal.text = dashboard.controlSignal
+        binding.fuseOverviewSignal.text = dashboard.signal
         binding.fuseOverviewAction.text = dashboard.action
         binding.fuseOverviewReason.text = dashboard.decisionReason
+        binding.fuseOverviewGate.text = dashboard.gate
         binding.fuseOverviewMarker.text = dashboard.marker
-        binding.fuseOverviewNetIob.text = dashboard.insulin.netIob
-        binding.fuseOverviewBolusIob.text = dashboard.insulin.bolusIob
-        binding.fuseOverviewBasalIob.text = dashboard.insulin.basalIob
-        binding.fuseOverviewCapIob.text = dashboard.insulin.capIob
-        binding.fuseOverviewTransport.text = dashboard.insulin.transport
-        binding.fuseOverviewIobTh.text = dashboard.insulin.iobTh
-        binding.fuseOverviewMaxIob.text = dashboard.insulin.maxIob
-        binding.fuseOverviewHeadroom.text = dashboard.insulin.headroom
+        binding.fuseOverviewEvidence.text = dashboard.evidence
+        // Null-Info verstecken: die Fenster- und die Transportzeile gibt es
+        // nur, wenn sie etwas zu sagen haben.
+        binding.fuseOverviewWindows.isVisible = dashboard.windows != null
+        binding.fuseOverviewWindows.text = dashboard.windows ?: ""
+        binding.fuseOverviewTransport.isVisible = dashboard.transport != null
+        binding.fuseOverviewTransport.text = dashboard.transport ?: ""
+        binding.fuseOverviewIobLine.text = dashboard.iobLine
+        binding.fuseOverviewLimits.text = dashboard.limits
         binding.fuseOverviewProfile.text = dashboard.profile
-        binding.fuseOverviewHardStops.text = dashboard.hardStops
         binding.fuseState.text = FuseScreenModel.render(
             fusePlugin.lastOutcome, fusePlugin.lastAPSResult, now, marker, ledger,
+            settings = FuseSettingsReport.build(fusePlugin.preferences),
         )
         val armed = fusePlugin.mealMarkerActive(now)
         binding.fuseMealMarker.text =

@@ -1613,9 +1613,41 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
             })
         }
 
-        cat("fuse_insulin_limits", "Insulingrenzen") {
+        // FUENF EINSTIEGSPUNKTE statt elf (Toni 15.08.: "unuebersichtlich und
+        // ueberfuellt ... max 4-5"). Die Buendel folgen der Frage, mit der man
+        // den Schirm betritt: "Mahlzeit einstellen", "wie scharf dosiert es",
+        // "was schuetzt mich", "was gilt nachts", "was ist das System".
+        // INNERHALB einer Kategorie trennen info()-Zeilen die Sinnabschnitte -
+        // eine Zwischenueberschrift kostet keine Navigationsebene.
+        cat("fuse_meal", "Mahlzeit und Marker") {
+            addPreference(AdaptiveSwitchPreference(ctx = context, booleanKey = FuseBooleanKey.OnsetChannelEnabled, summary = R.string.fuse_onset_channel_summary, title = R.string.fuse_onset_channel_title))
+            addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.OnsetEnvelopeU, dialogMessage = R.string.fuse_onset_envelope_summary, title = R.string.fuse_onset_envelope_title))
+            addPreference(AdaptiveSwitchPreference(ctx = context, booleanKey = FuseBooleanKey.PrimeReleaseEnabled, summary = R.string.fuse_prime_release_summary, title = R.string.fuse_prime_release_title))
+            addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.PrimeEnvelopeU, dialogMessage = R.string.fuse_prime_envelope_summary, title = R.string.fuse_prime_envelope_title))
+            addPreference(AdaptiveIntPreference(ctx = context, intKey = FuseIntKey.AbsorptionCreditWindowMin, dialogMessage = R.string.fuse_absorption_credit_summary, title = R.string.fuse_absorption_credit_title))
+            addPreference(AdaptiveIntPreference(ctx = context, intKey = FuseIntKey.MarkerBoostMaxMin, dialogMessage = R.string.fuse_marker_boost_summary, title = R.string.fuse_marker_boost_title))
+            // Die manuelle Autorisierung bleibt VOM REST ABGESETZT (Toni
+            // 11.08.: der einzige Schalter, der eine SCHUTZgrenze aufhebt,
+            // darf nicht wie einer von vielen aussehen). Frueher war das ein
+            // eigener Einstiegspunkt; seit der Buendelung traegt die
+            // info()-Zeile die Warnung an derselben Stelle.
             info(
-                "Konfiguriert und wirksam",
+                "Manuelle Insulin-Autorisierung",
+                "Der folgende Schalter verschiebt Verantwortung von FUSE zu dir. Jede andere " +
+                    "Einstellung sagt FUSE, WIE es entscheiden soll - dieser sagt, dass DU " +
+                    "entschieden hast und FUSE sich darauf verlaesst. Im Zweifel aus lassen."
+            )
+            addPreference(AdaptiveSwitchPreference(ctx = context, booleanKey = FuseBooleanKey.MarkerAuthorisesRelease, summary = R.string.fuse_marker_low_summary, title = R.string.fuse_marker_low_title))
+        }
+
+        cat("fuse_dosing", "Dosierung und Grenzen") {
+            addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.SmbRatio, dialogMessage = R.string.fuse_smb_ratio_summary, title = R.string.fuse_smb_ratio_title))
+            addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.SmbRatioRise, dialogMessage = R.string.fuse_smb_ratio_rise_summary, title = R.string.fuse_smb_ratio_rise_title))
+            addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.MaxSmbU, dialogMessage = R.string.fuse_max_smb_u_summary, title = R.string.fuse_max_smb_u_title))
+            addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.RiseRampLowR, dialogMessage = R.string.fuse_ramp_summary, title = R.string.fuse_ramp_low_title))
+            addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.RiseRampHighR, dialogMessage = R.string.fuse_ramp_summary, title = R.string.fuse_ramp_high_title))
+            info(
+                "Insulingrenzen",
                 "Der FUSE-Reiter zeigt zu diesen Grenzen den aktuell verbleibenden Spielraum. " +
                     "Beide Werte begrenzen dieselbe Endsumme; iobTH ist der schnelle Reserve-Anker."
             )
@@ -1628,48 +1660,21 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
             addPreference(AdaptiveIntPreference(ctx = context, intKey = FuseIntKey.IobThPercent, dialogMessage = R.string.fuse_iob_th_percent_summary, title = R.string.fuse_iob_th_percent_title))
         }
 
-        cat("fuse_dosing", "Dosierung und Korrektur") {
-            addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.SmbRatio, dialogMessage = R.string.fuse_smb_ratio_summary, title = R.string.fuse_smb_ratio_title))
-            addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.SmbRatioRise, dialogMessage = R.string.fuse_smb_ratio_rise_summary, title = R.string.fuse_smb_ratio_rise_title))
-            addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.MaxSmbU, dialogMessage = R.string.fuse_max_smb_u_summary, title = R.string.fuse_max_smb_u_title))
-            addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.RiseRampLowR, dialogMessage = R.string.fuse_ramp_summary, title = R.string.fuse_ramp_low_title))
-            addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.RiseRampHighR, dialogMessage = R.string.fuse_ramp_summary, title = R.string.fuse_ramp_high_title))
-        }
-
-        cat("fuse_guard", "Guard und Prognose") {
+        cat("fuse_guard", "Schutz und Prognose") {
+            info(
+                "Guard - die Nahzone",
+                "Sperrt Dosen, deren Bahn in den naechsten Minuten unter den Boden liefe."
+            )
             addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.GuardFloorMgdl, dialogMessage = R.string.fuse_guard_floor_summary, title = R.string.fuse_guard_floor_title))
-            addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.BolusShareLambda, dialogMessage = R.string.fuse_bolus_share_lambda_summary, title = R.string.fuse_bolus_share_lambda_title))
             addPreference(AdaptiveSwitchPreference(ctx = context, booleanKey = FuseBooleanKey.FastRestraintEnabled, summary = R.string.fuse_restraint_summary, title = R.string.fuse_restraint_title))
+            addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.BolusShareLambda, dialogMessage = R.string.fuse_bolus_share_lambda_summary, title = R.string.fuse_bolus_share_lambda_title))
             addPreference(AdaptiveIntPreference(ctx = context, intKey = FuseIntKey.ReleaseHorizonMin, dialogMessage = R.string.fuse_release_horizon_summary, title = R.string.fuse_release_horizon_title))
             addPreference(AdaptiveIntPreference(ctx = context, intKey = FuseIntKey.DriveTauMin, dialogMessage = R.string.fuse_drive_tau_summary, title = R.string.fuse_drive_tau_title))
             addPreference(AdaptiveIntPreference(ctx = context, intKey = FuseIntKey.DriveLowerQuantilePct, dialogMessage = R.string.fuse_drive_quantile_summary, title = R.string.fuse_drive_quantile_title))
-        }
-
-        cat("fuse_meal", "Mahlzeit / Onset") {
-            addPreference(AdaptiveSwitchPreference(ctx = context, booleanKey = FuseBooleanKey.OnsetChannelEnabled, summary = R.string.fuse_onset_channel_summary, title = R.string.fuse_onset_channel_title))
-            addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.OnsetEnvelopeU, dialogMessage = R.string.fuse_onset_envelope_summary, title = R.string.fuse_onset_envelope_title))
-            addPreference(AdaptiveSwitchPreference(ctx = context, booleanKey = FuseBooleanKey.PrimeReleaseEnabled, summary = R.string.fuse_prime_release_summary, title = R.string.fuse_prime_release_title))
-            addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.PrimeEnvelopeU, dialogMessage = R.string.fuse_prime_envelope_summary, title = R.string.fuse_prime_envelope_title))
-            addPreference(AdaptiveIntPreference(ctx = context, intKey = FuseIntKey.AbsorptionCreditWindowMin, dialogMessage = R.string.fuse_absorption_credit_summary, title = R.string.fuse_absorption_credit_title))
-            addPreference(AdaptiveIntPreference(ctx = context, intKey = FuseIntKey.MarkerBoostMaxMin, dialogMessage = R.string.fuse_marker_boost_summary, title = R.string.fuse_marker_boost_title))
-        }
-
-        // EIGENER ABSCHNITT, unmittelbar hinter den Marker-Einstellungen
-        // (Toni 11.08.). Technisch gehoert der Schalter zum Marker - aber er
-        // ist der einzige in FUSE, der eine SCHUTZgrenze aufhebt, und
-        // zwischen Huellengroessen und Boost-Fenstern saehe er aus wie einer
-        // von vielen. Die Ueberschrift sagt, was er wirklich ist.
-        cat("fuse_manual_auth", "Manuelle Insulin-Autorisierung") {
             info(
-                "Was dieser Abschnitt bedeutet",
-                "Alles hier drin verschiebt Verantwortung von FUSE zu dir. Jede andere " +
-                    "Einstellung sagt FUSE, WIE es entscheiden soll - diese sagen, dass DU " +
-                    "entschieden hast und FUSE sich darauf verlaesst. Im Zweifel aus lassen."
+                "Schwanz - die spaete Wirkung",
+                "Haftung fuer Insulin, das erst hinter dem Freigabe-Horizont wirkt."
             )
-            addPreference(AdaptiveSwitchPreference(ctx = context, booleanKey = FuseBooleanKey.MarkerAuthorisesRelease, summary = R.string.fuse_marker_low_summary, title = R.string.fuse_marker_low_title))
-        }
-
-        cat("fuse_tail", "Haftung / Schwanz") {
             addPreference(AdaptiveSwitchPreference(ctx = context, booleanKey = FuseBooleanKey.TailGuardEnabled, summary = R.string.fuse_tail_guard_summary, title = R.string.fuse_tail_guard_title))
             addPreference(AdaptiveSwitchPreference(ctx = context, booleanKey = FuseBooleanKey.ConditionalTailEnabled, summary = R.string.fuse_conditional_tail_summary, title = R.string.fuse_conditional_tail_title))
             addPreference(AdaptiveIntPreference(ctx = context, intKey = FuseIntKey.LiabilityHorizonMin, dialogMessage = R.string.fuse_liability_horizon_summary, title = R.string.fuse_liability_horizon_title))
@@ -1691,24 +1696,18 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
             addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.ReboundDeadbandMgdl, dialogMessage = R.string.fuse_rebound_deadband_summary, title = R.string.fuse_rebound_deadband_title))
         }
 
-        cat("fuse_signal", "Signal und Beobachter") {
-            info("Q1 und RAW", "Der Reiter zeigt geglaetteten Q1-Wert und Rohwert nebeneinander; geregelt wird mit der insulinbereinigten Stoerungsrate r.")
-            info("Beobachter", "Phase und Health sind Zustandsdiagnose. Der Entscheidungsblock des Reglers bleibt eine getrennte Groesse und steht oben im FUSE-Reiter.")
-            info("Fenster und Qualitaet", "Drive-Fenster, Rohhistorie, Steigungspaare, Spreizung und Segmentgrenzen stehen in den technischen Details.")
-        }
-
-        cat("fuse_pump", "Pumpe und Aktuation") {
+        // System-Wissen und der Reparatur-Eingriff teilen sich den letzten
+        // Einstiegspunkt: beides braucht man selten, beides gehoert ans Ende
+        // des Nutzerwegs. Die Reparatur bleibt GANZ unten - sie ist kein
+        // Einstellwert, sondern ein Eingriff, und steht bewusst nicht
+        // zwischen Zeilen, die man im Vorbeiscrollen antippt.
+        cat("fuse_system", "System und Reparatur") {
+            info("Regler-Takt: 1 Minute", "Jeder neue 1-min-CGM-Wert ist ein Zyklus. Fest - kein Legacy-SMB-Intervall. Geregelt wird mit der insulinbereinigten Stoerungsrate r; Q1 und Rohwert stehen im Reiter nebeneinander.")
+            info("Positive TBR: nicht verwendet", "Der schnelle Kanal ist der 1-min-SMB; FUSE setzt nur Null-Temps oder bricht ab. Max-TBR/Basal-Multiplikatoren greifen deshalb nicht.")
+            info("ISF: Profil, zeitabhaengig", "Keine Autosens-/DynISF-Modulation. Sensitivitaet ist als eigener langsamer Beobachter geplant (Shadow zuerst).")
+            info("COB/UAM: nicht verwendet", "Mahlzeiten erscheinen im insulinbereinigten Stoerungssignal; eigener Onset-Pfad + Marker statt UAM.")
             info("Pumpen-Gate", "Aktuation ist nur fuer die VirtualPump und den belegten Medtrum Nano freigegeben. Der aktuelle Gate-Grund steht oben im FUSE-Reiter.")
-            info("SMB und TBR", "FUSE fordert SMBs und Schutz-/Null-TBR an. Positive TBR ist derzeit nicht Teil des Reglers.")
             info("Ledger", "Offene Transporthaftung wird von iobTH- und maxIOB-Spielraum abgezogen. Hold, offene Zeilen und Haftung stehen im Reiter.")
-        }
-
-        /**
-         * GANZ UNTEN und mit eigener Ueberschrift: das hier ist kein
-         * Einstellwert, sondern ein Eingriff. Er steht bewusst nicht zwischen
-         * den Reglern, wo man ihn im Vorbeiscrollen antippt.
-         */
-        cat("fuse_repair", "Reparatur") {
             addPreference(Preference(context).apply {
                 title = "Ledger reparieren"
                 summary =
@@ -1728,23 +1727,13 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
             })
         }
 
-        cat("fuse_diag", "Diagnose und Architektur") {
-            info("Regler-Takt: 1 Minute", "Jeder neue 1-min-CGM-Wert ist ein Zyklus. Fest - kein Legacy-SMB-Intervall.")
-            info("Positive TBR: nicht verwendet", "Der schnelle Kanal ist der 1-min-SMB; FUSE setzt nur Null-Temps oder bricht ab. Max-TBR/Basal-Multiplikatoren greifen deshalb nicht.")
-            info("ISF: Profil, zeitabhaengig", "Keine Autosens-/DynISF-Modulation. Sensitivitaet ist als eigener langsamer Beobachter geplant (Shadow zuerst).")
-            info("COB/UAM: nicht verwendet", "Mahlzeiten erscheinen im insulinbereinigten Stoerungssignal; eigener Onset-Pfad + Marker statt UAM.")
-        }
-
         // ---- Erst JETZT die Wache, gegen die ECHTE Abschnittsmenge ---------
         if (requiredKey != null && requiredKey !in abschnitte.keys) return
 
-        // Die Registrierungsreihenfolge im Code folgt den fachlichen
-        // Abhaengigkeiten. Die sichtbare Reihenfolge folgt dem Nutzerweg:
-        // Mahlzeit zuerst, Reparatur ganz zuletzt.
+        // Die sichtbare Reihenfolge folgt dem Nutzerweg: Mahlzeit zuerst,
+        // System/Reparatur ganz zuletzt.
         val reihenfolge = listOf(
-            "fuse_meal", "fuse_manual_auth", "fuse_dosing", "fuse_insulin_limits",
-            "fuse_guard", "fuse_tail", "fuse_night_rebound", "fuse_signal",
-            "fuse_pump", "fuse_diag", "fuse_repair",
+            "fuse_meal", "fuse_dosing", "fuse_guard", "fuse_night_rebound", "fuse_system",
         )
         require(reihenfolge.toSet() == abschnitte.keys) {
             "FUSE-Einstellungsabschnitte und sichtbare Reihenfolge sind auseinandergelaufen"
@@ -1752,40 +1741,10 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
 
         // Vollstaendigkeitsvertrag: jeder vom Nutzer einstellbare FUSE-Wert
         // erscheint GENAU EINMAL. Interne Marker-/Ledger-Schluessel gehoeren
-        // ausdruecklich nicht hierher.
-        val erwarteteKeys = setOf(
-            DoubleKey.ApsSmbMaxIob.key,
-            FuseDoubleKey.MaxSmbU.key,
-            FuseDoubleKey.SmbRatio.key,
-            FuseDoubleKey.SmbRatioRise.key,
-            FuseDoubleKey.RiseRampLowR.key,
-            FuseDoubleKey.RiseRampHighR.key,
-            FuseDoubleKey.GuardFloorMgdl.key,
-            FuseDoubleKey.BolusShareLambda.key,
-            FuseDoubleKey.OnsetEnvelopeU.key,
-            FuseDoubleKey.PrimeEnvelopeU.key,
-            FuseDoubleKey.TailFloorMgdl.key,
-            FuseDoubleKey.TailRecoveryU.key,
-            FuseDoubleKey.NightDeadbandMgdl.key,
-            FuseDoubleKey.ReboundDeadbandMgdl.key,
-            FuseIntKey.IobThPercent.key,
-            FuseIntKey.ReleaseHorizonMin.key,
-            FuseIntKey.DriveTauMin.key,
-            FuseIntKey.DriveLowerQuantilePct.key,
-            FuseIntKey.AbsorptionCreditWindowMin.key,
-            FuseIntKey.MarkerBoostMaxMin.key,
-            FuseIntKey.LiabilityHorizonMin.key,
-            FuseIntKey.NightStartMin.key,
-            FuseIntKey.NightEndMin.key,
-            FuseBooleanKey.FastRestraintEnabled.key,
-            FuseBooleanKey.OnsetChannelEnabled.key,
-            FuseBooleanKey.PrimeReleaseEnabled.key,
-            FuseBooleanKey.MarkerAuthorisesRelease.key,
-            FuseBooleanKey.TailGuardEnabled.key,
-            FuseBooleanKey.ConditionalTailEnabled.key,
-            FuseBooleanKey.NightDeadbandEnabled.key,
-            FuseBooleanKey.ReboundDeadbandEnabled.key,
-        )
+        // ausdruecklich nicht hierher. Die Menge lebt auf Dateiebene, weil
+        // der Settings-Bericht des Reiters DENSELBEN Vertrag erfuellen muss -
+        // zwei Listen waeren wieder die Schwarzer-Bildschirm-Falle.
+        val erwarteteKeys = fuseEinstellbareKeys
 
         // ---- und erst jetzt bauen ------------------------------------------
         val root = PreferenceCategory(context)
