@@ -348,6 +348,25 @@ class FusePlugin @Inject constructor(
      * einzige Wahrheit, keine DB. Fehler sind still-tolerant: ein kaputter
      * Warmstart darf keinen Zyklus kosten.
      */
+    /** Einmal je Prozess: juengstes Tief aus dem Trail in den Runner. */
+    private fun warmLastLowOnce() {
+        if (lastLowWarmed) return
+        val f = java.io.File(
+            android.os.Environment.getExternalStorageDirectory(),
+            "Documents/aapsLogs/fuse_state_history.jsonl"
+        )
+        if (!f.exists()) return          // s. warmGraphRingOnce: Flag erst bei Arbeit
+        lastLowWarmed = true
+        runCatching {
+            val ts = f.bufferedReader().useLines { lines ->
+                FuseLowMemory.lastLowTsFromTrail(lines, System.currentTimeMillis())
+            }
+            if (ts > 0L) cycleRunner().primeLastLowTs(ts)
+        }
+    }
+
+    private var lastLowWarmed = false
+
     private fun warmGraphRingOnce() {
         if (graphRingAttempts >= GRAPH_RING_MAX_ATTEMPTS) return
         graphRingAttempts++
@@ -659,6 +678,13 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
         // Adapter haelt diesen Lauf wie unter recoveryHold an - kein positiver
         // SMB, solange die Vorgeschichte nicht sicher uebernommen ist. Der
         // naechste invoke versucht den Umzug erneut.
+        // TIEF-GEDAECHTNIS VOR DEM LAUF (Vorfall 15.08., s. FuseLowMemory).
+        // Hier und nicht bei warmGraphRingOnce: das laeuft NACH dem Zyklus,
+        // und der erste Zyklus nach einem Flash ist genau der, in dem der
+        // Rebound-Schutz fehlte. Ein Lesefehler bleibt folgenlos - dann gilt
+        // wieder der alte Zustand, nie ein erfundener.
+        warmLastLowOnce()
+
         if (migrateLedgerDirOnce()) {
             // ---- REPARATUR: hier und NUR hier ------------------------------
             //

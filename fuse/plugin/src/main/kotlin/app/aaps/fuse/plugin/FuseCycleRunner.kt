@@ -2322,10 +2322,24 @@ class FuseCycleRunner(
     // Audit R95 Fix 3 HIER als Prozessfelder - jetzt restartfest im
     // Ledger-Adapter (s. EpisodeBudgets).
 
-    /** Letztes q1 < REBOUND_LOW_MGDL. Im Prozess: nach Neustart fehlt bis zu
-     *  45 min Tief-Gedaechtnis (fail-open, dokumentiert) - die uebrigen
-     *  Wachen (Guard, Abschlag, Clearance) stehen davon unberuehrt. */
+    /** Letztes q1 < REBOUND_LOW_MGDL. Wird nach einem Neustart aus dem Trail
+     *  zurueckgeholt (s. [primeLastLowTs]) - der Verlust hat am 15.08. real
+     *  zugeschlagen und den Rebound-Schutz elf Minuten nach einem Tief von 70
+     *  geoeffnet. */
     private var lastLowTs = 0L
+
+    /**
+     * Das Tief-Gedaechtnis aus dem Trail uebernehmen - nur nach oben, nur
+     * einmal wirksam.
+     *
+     * NUR NACH OBEN: ein rekonstruierter Zeitpunkt darf ein juengeres Tief aus
+     * dem laufenden Prozess niemals ueberschreiben; das wuerde den Schutz
+     * verkuerzen statt ihn zu retten. Ein aelterer Wert ist damit folgenlos,
+     * und ein doppelter Aufruf ebenso.
+     */
+    fun primeLastLowTs(ts: Long) {
+        if (ts > lastLowTs) lastLowTs = ts
+    }
 
     /** Mahlzeit-Fenster-Gedaechtnis (Fenster-Trio): jede erfuellte
      *  Oeffnungsbedingung verlaengert um 10 min; eine nachhaltige Wende
