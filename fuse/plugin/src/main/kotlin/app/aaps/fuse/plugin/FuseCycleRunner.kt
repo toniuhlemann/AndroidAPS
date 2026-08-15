@@ -586,6 +586,13 @@ class FuseCycleRunner(
             revokedPersisted = episodes.evidenceRevoked,
         )
         val evidenceEpisodeId = episodeGate.episodeId
+        // OPTION A (Toni 15.08.): ein waehrend der laufenden Episode
+        // gedrueckter Marker wird sofort verbraucht - er darf nach dem
+        // Deckelende des Vorgaengers keine stille Folgeepisode mehr
+        // eroeffnen. Der 360-Deckel ist damit hart.
+        episodeGate.consumeInheritedPressTs?.let {
+            episodes.lastConsumedMarkerTs = maxOf(episodes.lastConsumedMarkerTs, it)
+        }
         if (episodeGate.opened) {
             // SOFORT VERBRAUCHEN, nicht erst bei der ersten Dosis: sonst
             // eroeffnete ein Zyklus ohne Abgabe die Episode und ein spaeterer

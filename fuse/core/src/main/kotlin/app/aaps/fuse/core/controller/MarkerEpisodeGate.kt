@@ -103,6 +103,27 @@ object MarkerEpisodeGate {
         /** Ob sich der Widerrufsstand in DIESEM Zyklus geaendert hat - dann
          *  muss der Aufrufer ihn festschreiben, bevor er weiterdosiert. */
         val revocationChanged: Boolean = false,
+        /**
+         * OPTION A (Tonis Entscheid 15.08.): ein waehrend der laufenden
+         * Episode gedrueckter Marker wird SOFORT verbraucht - der Aufrufer
+         * schreibt `lastConsumedMarkerTs` auf diesen Wert fort.
+         *
+         * Ohne das war der 360-Minuten-NOTAUS weich: der geerbte, nie
+         * konsumierte Druck eroeffnete nach Deckelende des Vorgaengers
+         * automatisch eine NEUE Episode - Stunden nach dem Druck, ohne
+         * bewusste Handlung in dem Moment (2-Tage-Lauf: dreimal, ageMin
+         * sprang 359->124/20/161, Kredit lebte 3 Minuten nach dem Notaus
+         * wieder auf). Jetzt endet die Mahlzeitenunterstuetzung hart am
+         * Deckel; eine neue Episode verlangt einen NEUEN bewussten Druck.
+         *
+         * Was der verbrauchte Druck WEITER darf: den Widerruf aufheben
+         * (erneutes Armen gibt den Kredit frei, [widerruf] prueft die
+         * Beobachtung, nicht den Verbrauch) und Prime-/Onset-Fenster sowie
+         * den Viewer-Mahlzeitenzaehler neu verankern - die zweite Mahlzeit
+         * wird also weiter bedient, nur eben INNERHALB der laufenden Episode
+         * und ohne stillen neuen Deckel.
+         */
+        val consumeInheritedPressTs: Long? = null,
     )
 
     fun decide(
@@ -129,7 +150,17 @@ object MarkerEpisodeGate {
         // zurueck und der Zusatzkredit dosiert weiter.
         if (ledgerEpisodeId > 0L && nowMs - ledgerEpisodeId in 0..capMs)
             return widerruf(markerTs, observedPressTs, revokedPersisted).let { w ->
-                Result(ledgerEpisodeId, opened = false, denial = null, creditRevoked = w, revocationChanged = w != revokedPersisted)
+                Result(
+                    ledgerEpisodeId, opened = false, denial = null,
+                    creditRevoked = w, revocationChanged = w != revokedPersisted,
+                    // Option A: der geerbte Druck ist mit dem Erben verbraucht.
+                    // NICHT bei einem Zukunfts-Zeitstempel: der wuerde den
+                    // monotonen Anker vergiften und JEDEN weiteren Druck bis
+                    // zum Aufholen der Uhr als MARKER_CLOCK_ROLLBACK sperren.
+                    consumeInheritedPressTs = markerTs.takeIf {
+                        it > lastConsumedMarkerTs && it - nowMs <= FUTURE_TOLERANCE_MS
+                    },
+                )
             }
 
         if (markerTs <= 0L) return Result(0L, false, Denial.NO_MARKER)

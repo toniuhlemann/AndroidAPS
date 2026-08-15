@@ -2243,4 +2243,140 @@ class TransportWiringTest : TestBaseWithProfile() {
 
         assertEquals(0.0, ausfall.decision.smbU, 1e-9) { "Modellausfall dosiert nicht: ${ausfall.decision}" }
     }
+    /**
+     * OPTION A AM TRAIL-FALL (13.08.): Druck 14:59 waehrend laufender
+     * Episode (09:19), Vorgaenger laeuft an den Deckel - frueher eroeffnete
+     * der geerbte Druck um 15:19 still eine neue Episode mit frischem
+     * Deckel. Jetzt ist er verbraucht: nach dem Deckelende gibt es KEINE
+     * Folgeepisode, der Notaus ist hart. Ein NEUER bewusster Druck danach
+     * eroeffnet weiterhin.
+     */
+    @Test
+    fun `ein geerbter Druck eroeffnet nach dem Deckelende keine Folgeepisode`(@TempDir dir: File) {
+        tailGuard = false
+        flach = 62.0
+        steigungProMin = 0.0
+        markerAuthorized = true
+
+        val l = FuseLedgerAdapter().also { it.loadOnce(dir.also(File::mkdirs), "test-epoch", start) }
+        neuerRunner(l)
+
+        markerAt = start + 2 * 60_000L
+        clock = start
+        repeat(8) { cycle() }
+        val anker = l.episodes.evidenceEpisodeId
+        assertTrue(anker > 0L, "Episode steht")
+
+        // Zweiter Druck WAEHREND der laufenden Episode (der 14:59-Fall).
+        clock += 30 * 60_000L
+        val zweiterDruck = clock + 60_000L
+        markerAt = zweiterDruck
+        repeat(3) { cycle() }
+        assertEquals(anker, l.episodes.evidenceEpisodeId, "geerbt, keine neue Episode")
+        assertEquals(zweiterDruck, l.episodes.lastConsumedMarkerTs, "und sofort verbraucht (Option A)")
+
+        // Vorgaenger laeuft an den Deckel - der geerbte Druck darf danach
+        // NICHTS mehr eroeffnen.
+        clock = anker + (EvidenceStock.Config().maxEpisodeMin + 5) * 60_000L
+        val o = (1..3).map { cycle() }.last()
+        assertEquals(0L, l.episodes.evidenceEpisodeId.takeIf { it != anker } ?: 0L, "keine Folgeepisode")
+        assertEquals("MARKER_ALREADY_CONSUMED", o.evidenceEpisodeDenial)
+
+        // Ein NEUER bewusster Druck eroeffnet weiterhin.
+        markerAt = clock + 60_000L
+        repeat(3) { cycle() }
+        assertEquals(markerAtIntern, l.episodes.evidenceEpisodeId, "neuer Druck, neue Episode")
+    }
+    /**
+     * GATE-ATTEST maxIOB: quantitativ, mit Kredit-Vorbedingung am Kapp-Zyklus.
+     *
+     * iobTH auf 200% (= 2 x maxIOB) nimmt die schnelle Grenze aus dem Spiel -
+     * bindet der Spielraum, ist es der maxIOB-Spielraum.
+     */
+    @Test
+    fun `positiver Evidenzkredit bleibt hinter maxIOB`(@TempDir dir: File) {
+        flach = 115.0
+        steigungProMin = 3.0
+        markerAt = start + 2 * 60_000L
+        conditionalTail = true
+        quantilePct = 25
+        aktivitaet = 0.004
+        tailGuard = false
+
+        val l = FuseLedgerAdapter().also { it.loadOnce(dir.also(File::mkdirs), "test-epoch", start) }
+        neuerRunner(l)
+        clock = start
+
+        maxSmbU = 0.0
+        var kreditGesehen = false
+        repeat(80) { if ((cycle().evidenceCreditMgdlPerMin ?: 0.0) > 0.0) kreditGesehen = true }
+        assertTrue(kreditGesehen) { "kein Evidenzkredit in 80 Zyklen" }
+
+        maxSmbU = 5.0
+        iobThPct = 200          // iobTH = 1,6 > maxIOB-Spielraum -> maxIOB bindet
+        maxIobU = 0.8
+        val gekappt = cycle()
+        assertTrue((gekappt.evidenceCreditMgdlPerMin ?: 0.0) > 0.0) { "Kredit muss IM Kapp-Zyklus fliessen" }
+        val cap = gekappt.decision.caps.single { it.name == "maxIobHeadroom" }
+        val kandidat = gekappt.decision.caps.single { it.name == "smbRatio" }.valueU
+        assertTrue(kandidat > cap.valueU) { "der ungekappte Kandidat muss die Grenze uebersteigen: $kandidat vs ${cap.valueU}" }
+        assertTrue(cap.active) { "maxIOB muss binden: ${gekappt.decision.caps}" }
+        val erwartet = kotlin.math.floor(cap.valueU / 0.05) * 0.05
+        assertEquals(erwartet, gekappt.decision.smbU, 1e-9)
+    }
+
+    /**
+     * GATE-ATTEST TRANSPORT: eine offene, noch nicht im IOB sichtbare
+     * Transportmenge verengt die FINALE Menge quantitativ um genau ihren
+     * Betrag - auch mit fliessendem Kredit.
+     *
+     * Der Abzug wirkt ueber die Kandidatensuche (effectiveIobThHeadroomU =
+     * iobTH - capIob - transport), nicht ueber die Basis-Kappenliste -
+     * messbar ist er deshalb nur an der finalen Menge. Und weil jede Abgabe
+     * den Bestand BEZAHLT (0,8 U = 72 mg/dl), braucht es zwischen den beiden
+     * Messzyklen eine Erholungsphase, in der der Kredit neu entsteht.
+     */
+    @Test
+    fun `positiver Evidenzkredit bleibt hinter dem Transportabzug`(@TempDir dir: File) {
+        flach = 115.0
+        steigungProMin = 3.0
+        markerAt = start + 2 * 60_000L
+        conditionalTail = true
+        quantilePct = 25
+        aktivitaet = 0.004
+        tailGuard = false
+
+        val l = FuseLedgerAdapter().also { it.loadOnce(dir.also(File::mkdirs), "test-epoch", start) }
+        neuerRunner(l)
+        clock = start
+
+        maxSmbU = 0.0
+        var kreditGesehen = false
+        repeat(80) { if ((cycle().evidenceCreditMgdlPerMin ?: 0.0) > 0.0) kreditGesehen = true }
+        assertTrue(kreditGesehen) { "kein Evidenzkredit in 80 Zyklen" }
+
+        // MESSZYKLUS A: ohne Transportzeile bindet der iobTH-Spielraum.
+        maxSmbU = 5.0
+        iobThPct = 10
+        val ohne = cycle()
+        assertTrue((ohne.evidenceCreditMgdlPerMin ?: 0.0) > 0.0) { "Kredit muss in A fliessen" }
+        assertEquals(0.80, ohne.decision.smbU, 1e-9) { "A: voller iobTH-Spielraum: ${ohne.decision}" }
+
+        // ERHOLUNG: die Abgabe aus A hat den Bestand bezahlt (72 mg/dl) -
+        // ohne weitere Abgaben baut der Zufluss ihn wieder auf.
+        maxSmbU = 0.0
+        var wieder = false
+        repeat(20) { if ((cycle().evidenceCreditMgdlPerMin ?: 0.0) > 0.0) wieder = true }
+        assertTrue(wieder) { "Kredit muss sich erholen" }
+
+        // MESSZYKLUS B: offene Transportzeile 0,10 U - die finale Menge muss
+        // um exakt diesen Betrag kleiner sein.
+        l.onPublished("transport-attest", 0.10, clock, 0L, 0.05, PumpType.GENERIC_AAPS.name, Sha.of("vs"))
+        maxSmbU = 5.0
+        val mit = cycle()
+        assertTrue((mit.evidenceCreditMgdlPerMin ?: 0.0) > 0.0) { "Kredit muss in B fliessen: ${mit.evidencePhase}/${mit.evidenceReason}" }
+        assertEquals(0.70, mit.decision.smbU, 1e-9) {
+            "B: Transportabzug muss die finale Menge um 0,10 verengen: ${mit.decision}"
+        }
+    }
 }

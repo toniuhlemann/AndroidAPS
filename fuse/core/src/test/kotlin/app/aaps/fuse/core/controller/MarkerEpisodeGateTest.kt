@@ -275,4 +275,60 @@ class MarkerEpisodeGateTest {
         assertFalse(r.creditRevoked)
         assertTrue(r.revocationChanged, "der alte Stand muss ueberschrieben werden")
     }
+    // ---- Option A: harter Markerverbrauch (Tonis Entscheid 15.08.) --------
+
+    /**
+     * EIN WAEHREND DER LAUFENDEN EPISODE GEDRUECKTER MARKER IST SOFORT
+     * VERBRAUCHT.
+     *
+     * Der 2-Tage-Lauf hat gezeigt, was sonst passiert: der geerbte, nie
+     * konsumierte Druck eroeffnete nach dem Deckelende des Vorgaengers
+     * automatisch eine NEUE Episode - Stunden nach dem Druck, mit frischem
+     * 360-Minuten-Deckel. Der NOTAUS war damit weich.
+     */
+    @Test
+    fun `ein geerbter Druck wird sofort verbraucht`() {
+        val alt = now - 30 * 60_000L
+        val neu = now - 60_000L
+        val r = entscheide(markerTs = neu, ledgerEpisodeId = alt, lastConsumed = alt, observed = neu)
+        assertEquals(alt, r.episodeId, "die Episode bleibt die alte")
+        assertEquals(neu, r.consumeInheritedPressTs, "und der neue Druck ist verbraucht")
+    }
+
+    /** Die Folge: nach dem Deckelende eroeffnet der geerbte Druck KEINE
+     *  Episode mehr - der Notaus ist hart. */
+    @Test
+    fun `nach dem Deckel eroeffnet ein verbrauchter geerbter Druck nichts mehr`() {
+        val alt = now - cap - 60_000L        // Vorgaenger ist am Deckel raus
+        val geerbt = now - 120 * 60_000L     // der Druck von vor 2 Stunden...
+        // ...wurde beim Erben verbraucht (lastConsumed steht auf ihm):
+        val r = entscheide(markerTs = geerbt, ledgerEpisodeId = alt, lastConsumed = geerbt, observed = geerbt)
+        assertEquals(0L, r.episodeId)
+        assertEquals(Denial.MARKER_ALREADY_CONSUMED, r.denial)
+    }
+
+    /** Ein ZUKUNFTS-Zeitstempel wird NICHT verbraucht - er wuerde den
+     *  monotonen Anker vergiften und jeden weiteren Druck bis zum Aufholen
+     *  der Uhr als Rollback sperren. */
+    @Test
+    fun `ein Zukunftsdruck wird nicht verbraucht`() {
+        val alt = now - 30 * 60_000L
+        val zukunft = now + 10 * 60_000L
+        val r = entscheide(markerTs = zukunft, ledgerEpisodeId = alt, lastConsumed = alt, observed = zukunft)
+        assertEquals(null, r.consumeInheritedPressTs)
+    }
+
+    /** Und der Verbrauch nimmt dem Druck NICHT die Widerrufs-Aufhebung: ein
+     *  erneutes bewusstes Armen gibt den Kredit weiterhin frei. */
+    @Test
+    fun `ein verbrauchter geerbter Druck hebt den Widerruf weiter auf`() {
+        val alt = now - 30 * 60_000L
+        val neu = now - 60_000L
+        val r = entscheide(
+            markerTs = neu, ledgerEpisodeId = alt, lastConsumed = neu,   // schon verbraucht
+            observed = neu, revokedPersisted = true,
+        )
+        assertEquals(alt, r.episodeId)
+        assertFalse(r.creditRevoked, "erneutes Armen gibt frei - Verbrauch hin oder her")
+    }
 }
