@@ -4,7 +4,9 @@ package app.aaps.fuse.core.controller
  * WANN EIN KNOPFDRUCK EINE EVIDENZ-EPISODE EROEFFNET.
  *
  * Die Episode ist der Anker fuer den Stoerungsbestand: sie traegt den
- * Verbrauchszaehler und den harten 240-Minuten-Deckel. Sie zweimal fuer
+ * Verbrauchszaehler und den harten Sicherheitsdeckel (capMs - aktuell 360
+ * Minuten aus EvidenceStock.Config.maxEpisodeMin; die Zahl lebt DORT, nicht
+ * hier - dieser Kommentar nannte sie frueher fest und veraltete prompt). Sie zweimal fuer
  * dieselbe Mahlzeit zu eroeffnen heisst, dieselbe Stoerung zweimal unbezahlt
  * zu haben - genau die Doppelfinanzierung, gegen die die Episodenbudgets
  * existieren.
@@ -154,9 +156,12 @@ object MarkerEpisodeGate {
                     ledgerEpisodeId, opened = false, denial = null,
                     creditRevoked = w, revocationChanged = w != revokedPersisted,
                     // Option A: der geerbte Druck ist mit dem Erben verbraucht.
-                    // NICHT bei einem Zukunfts-Zeitstempel: der wuerde den
-                    // monotonen Anker vergiften und JEDEN weiteren Druck bis
-                    // zum Aufholen der Uhr als MARKER_CLOCK_ROLLBACK sperren.
+                    // GENAU: bis FUTURE_TOLERANCE_MS (60 s) Zukunft wird noch
+                    // verbraucht - dieselbe Uhrentoleranz wie beim Eroeffnen.
+                    // Erst DARUEBER gilt der Stempel als Uhrensprung und wird
+                    // nicht verbraucht: er wuerde den monotonen Anker
+                    // vergiften und jeden weiteren Druck bis zum Aufholen der
+                    // Uhr als MARKER_CLOCK_ROLLBACK sperren.
                     consumeInheritedPressTs = markerTs.takeIf {
                         it > lastConsumedMarkerTs && it - nowMs <= FUTURE_TOLERANCE_MS
                     },
