@@ -323,7 +323,7 @@ class PrepareIobAutosensGraphDataWorker(
 
                     paint.pathEffect = DashPathEffect(floatArrayOf(4f, 4f), 0f)
 
-                    paint.color = rh.gac(ctx, app.aaps.core.ui.R.attr.fuseDriveColor)
+                    paint.color = rh.gac(ctx, app.aaps.core.ui.R.attr.fuseFastDriveColor)
 
                 })
 
@@ -391,7 +391,7 @@ class PrepareIobAutosensGraphDataWorker(
                     paint.style = Paint.Style.STROKE
                     paint.strokeWidth = 2f
                     paint.pathEffect = DashPathEffect(floatArrayOf(4f, 4f), 0f)
-                    paint.color = rh.gac(ctx, app.aaps.core.ui.R.attr.fuseGuardColor)
+                    paint.color = rh.gac(ctx, app.aaps.core.ui.R.attr.fuseTailColor)
                 })
             }
 

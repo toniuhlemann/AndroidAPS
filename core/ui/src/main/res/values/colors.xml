@@ -110,6 +110,8 @@
     <color name="iobThColor">#00FFFF</color>
     <color name="fuseDriveColor">#FFA726</color>
     <color name="fuseGuardColor">#66BB6A</color>
+    <color name="fuseFastDriveColor">#4FC3F7</color>
+    <color name="fuseTailColor">#CE93D8</color>
 
     <color name="ribbonDefault">#8C8C8C</color>
     <color name="daySelected">#D000FF00</color>

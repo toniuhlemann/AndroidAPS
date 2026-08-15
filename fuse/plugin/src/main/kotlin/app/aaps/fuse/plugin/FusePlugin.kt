@@ -399,16 +399,20 @@ class FusePlugin @Inject constructor(
                     val ml = dec?.optDouble("minLowerMgdl", Double.NaN) ?: Double.NaN
                     val gf = pol?.optDouble("guardFloorMgdl", 70.0) ?: 70.0
                     val tl = j.optJSONObject("tail")
-                    val tailMargin = if (tl != null)
-                        tl.optDouble("headroomU", Double.NaN) * tl.optDouble("isfTailMgdlPerU", Double.NaN)
-                    else Double.NaN
+                    val tailMargin = tl?.let {
+                        FuseGraphMargin.tailMarginMgdl(
+                            headroomU = it.optDouble("headroomU", Double.NaN),
+                            isfTailMgdlPerU = it.optDouble("isfTailMgdlPerU", Double.NaN),
+                            invalidReason = if (it.isNull("invalidReason")) null else it.optString("invalidReason", null),
+                        )
+                    }
                     pts.add(
                         app.aaps.core.interfaces.overview.FuseOverviewSource.Point(
                             timestamp = ts,
                             driveMgdlPerMin = r.takeIf { it.isFinite() },
                             fastDriveMgdlPerMin = fast.takeIf { it.isFinite() },
                             guardMarginMgdl = (ml - gf).takeIf { it.isFinite() }?.coerceIn(-50.0, 150.0),
-                            tailMarginMgdl = tailMargin.takeIf { it.isFinite() }?.coerceIn(-50.0, 150.0),
+                            tailMarginMgdl = tailMargin,
                         )
                     )
                 }
@@ -756,12 +760,12 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
                             guardMarginMgdl = o.decision.minLowerMgdl
                                 ?.let { ml -> ml - (o.policy?.guardFloorMgdl ?: 70.0) }
                                 ?.takeIf { it.isFinite() }?.coerceIn(-50.0, 150.0),
-                            // Schwanz-Kante in mg/dl: headroomU x isfTail. Bei den
-                            // fruehen Report-Ausgaengen (invalid/unphysiological)
-                            // ist isfTail NaN -> Luecke statt Phantomwert.
-                            tailMarginMgdl = o.decision.tail
-                                ?.let { t -> (t.headroomU * t.isfTailMgdlPerU).takeIf { v -> v.isFinite() } }
-                                ?.coerceIn(-50.0, 150.0),
+                            // Schwanz-Kante in mg/dl - Regeln s. FuseGraphMargin
+                            // (der unphysiologische Ausgang hat KEINEN ISF-Nenner,
+                            // sperrt aber; er gehoert auf den unteren Anschlag).
+                            tailMarginMgdl = o.decision.tail?.let { t ->
+                                FuseGraphMargin.tailMarginMgdl(t.headroomU, t.isfTailMgdlPerU, t.invalidReason)
+                            },
                         )
                     )
                     while (graphRing.size > 1_500) graphRing.removeFirst()

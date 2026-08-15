@@ -243,6 +243,8 @@
         <item name="finalIsfColor">@color/finalIsfColor</item>
         <item name="iobThColor">@color/iobThColor</item>
         <item name="fuseDriveColor">@color/fuseDriveColor</item>
+        <item name="fuseFastDriveColor">@color/fuseFastDriveColor</item>
+        <item name="fuseTailColor">@color/fuseTailColor</item>
         <item name="fuseGuardColor">@color/fuseGuardColor</item>
         <!---Popupmenu TextColor -->
         <item name="menuTextColor">@color/black</item>

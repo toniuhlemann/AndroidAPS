@@ -201,6 +201,12 @@
     <attr name="iobThColor" format="reference|color"/>
     <attr name="fuseDriveColor" format="reference|color"/>
     <attr name="fuseGuardColor" format="reference|color"/>
+    <!-- Die ZWEITEN Linien der beiden FUSE-Untergraphen. Eigene Farbtoene,
+         nicht nur ein Strichmuster: bei vier Linien in zwei Farben war auf
+         dem Geraet nicht mehr abzulesen, welche Kante gerade bindet
+         (Tonis Befund 15.08.). -->
+    <attr name="fuseFastDriveColor" format="reference|color"/>
+    <attr name="fuseTailColor" format="reference|color"/>
     <!-- Graph specific colors  -->
     <attr name="graphHorizontalLabelText" format="reference|color" />
     <attr name="graphVerticalLabelText" format="reference|color" />

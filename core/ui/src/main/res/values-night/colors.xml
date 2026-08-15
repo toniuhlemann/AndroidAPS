@@ -107,6 +107,8 @@
     <color name="finalIsfColor">#00FFFF</color>
     <color name="iobThColor">#BBFFFF</color>
     <color name="fuseDriveColor">#FFB74D</color>
+    <color name="fuseFastDriveColor">#81D4FA</color>
+    <color name="fuseTailColor">#E1BEE7</color>
     <color name="fuseGuardColor">#81C784</color>
 
     <color name="ribbonDefault">#5a595b</color>
