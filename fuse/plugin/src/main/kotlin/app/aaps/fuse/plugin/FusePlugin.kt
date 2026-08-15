@@ -403,7 +403,7 @@ class FusePlugin @Inject constructor(
                         FuseGraphMargin.tailMarginMgdl(
                             headroomU = it.optDouble("headroomU", Double.NaN),
                             isfTailMgdlPerU = it.optDouble("isfTailMgdlPerU", Double.NaN),
-                            invalidReason = if (it.isNull("invalidReason")) null else it.optString("invalidReason", null),
+                            invalidReason = it.optString("invalidReason", "").takeIf { r -> r.isNotEmpty() },
                         )
                     }
                     pts.add(
