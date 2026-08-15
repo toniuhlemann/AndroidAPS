@@ -361,6 +361,6 @@ CI runs the FUSE modules plus the AAPS modules containing unavoidable core chang
 
 ## 18. Branch discipline
 
-`fuse-dev` is the moving integration branch. During the current alpha, `3.4.2.5+fuse0.1.0-toni` is kept synchronized as the test line. Neither is immutable. Only a Git tag identifies a frozen source commit, and a valid run additionally requires one exported `build.head` with `build.committed = true` for the entire measurement window.
+`fuse-dev` is the moving integration branch. During the current alpha, `3.4.2.5+fuse1.0.0-toni` is kept synchronized as the test line (cut 15.08.2026 from `0.1.0`). Neither is immutable. Only a Git tag identifies a frozen source commit, and a valid run additionally requires one exported `build.head` with `build.committed = true` for the entire measurement window.
 
 Documentation-only commits move the repository head but do not change an already installed APK. They must not be mistaken for a new device build.

@@ -13,7 +13,7 @@ zu analysieren oder zu portieren**.
 
 **Stand:** 2026-08-09 · Basis des FUSE-Zweigs: `9e7658cd76` (erster `fuse/`-Commit) ·
 Upstream-Basis des Forks: **`3.4.2.5`** (`buildSrc/.../Versions.kt`:
-`3.4.2.5+fuse0.1.0-toni`; `aaps-ci.yml` fährt `3.4.2.5-dev`). Der Tag `3.4.2.4` auf
+`3.4.2.5+fuse1.0.0-toni`; `aaps-ci.yml` fährt `3.4.2.5-dev`). Der Tag `3.4.2.4` auf
 `origin/master` ist ein älterer Stand des gespiegelten Upstream-Zweigs und **nicht** die
 Basis dieses Forks.
 
@@ -86,7 +86,7 @@ Ohne diese Zeilen existiert FUSE nicht. Sie sind mechanisch und risikolos.
 |---|---|---|---|---|
 | `settings.gradle` | `include ':fuse:core'`, `':fuse:plugin'` | L | Build | beide Zeilen wiederherstellen |
 | `app/build.gradle.kts:195` | `implementation(project(":fuse:plugin"))` | L | Build | Zeile wiederherstellen |
-| `buildSrc/.../Versions.kt` | `appVersion = "3.4.2.5+fuse0.1.0-toni"` | V | — | **immer Upstream-Version + eigenes Suffix**, nie die Fork-Zeile blind behalten |
+| `buildSrc/.../Versions.kt` | `appVersion = "3.4.2.5+fuse1.0.0-toni"` | V | — | **immer Upstream-Version + eigenes Suffix**, nie die Fork-Zeile blind behalten |
 | `app/.../di/PluginsListModule.kt` | `FusePlugin` unter `@APS`, `FuseOverviewSource`, `FuseFragment` | L | Build/DI | drei Bindungen wiederherstellen; **`@APS`, nicht `@AllConfigs`** |
 | `core/interfaces/.../aps/APSResult.kt:66` | `Algorithm.FUSE` | L | Build | Enum-Wert ergänzen |
 | `database/.../entities/APSResult.kt:67` | `Algorithm.FUSE` in der DB-Entität | L | Persistenz | Enum-Wert ergänzen — **sonst fliegt der erste FUSE-Lauf beim Schreiben** |

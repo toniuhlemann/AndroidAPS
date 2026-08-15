@@ -133,7 +133,7 @@ This table describes the architectural intent; it is **not** a claim of proven c
 ## Branch and version model
 
 - `fuse-dev` is the moving integration branch.
-- `3.4.2.5+fuse0.1.0-toni` is the synchronized alpha test line used for the current APK series.
+- `3.4.2.5+fuse1.0.0-toni` is the version line cut for the first production installation (15.08.2026); `3.4.2.5+fuse0.1.0-toni` remains the frozen alpha line.
 - Only Git tags are immutable evidence points. A branch name that looks like a version is still a moving branch.
 - An APK test data set is identified by `versionName`, Git `HEAD`, and the exported `build.committed` flag—not by the branch name alone.
 - Future public milestones should use immutable version tags; `1.0.0` would mean the explicitly defined production criteria have been met, not merely that the project builds.

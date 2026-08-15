@@ -22,7 +22,7 @@ import java.io.File
 
 class FuseStateExportTest {
 
-    private val BUILD = FuseStateJson.Build("3.4.2.5+fuse0.1.0-toni", "abc1234", true)
+    private val BUILD = FuseStateJson.Build("3.4.2.5+fuse1.0.0-toni", "abc1234", true)
 
     private val cfg = FuseCycleRunner.Config(
         smbRatio = 0.2, smbRatioRise = 0.35, sharedMaxIobU = 7.0, riseRampLowR = 0.5, riseRampHighR = 2.0, bolusShareLambda = 1.0, onsetChannelEnabled = true, onsetEnvelopeU = 1.5, primeReleaseEnabled = true, primeEnvelopeU = 1.2, maxSmbU = 0.3, guardFloorMgdl = 70.0, iobThPercent = 100,
@@ -530,7 +530,7 @@ class FuseStateExportTest {
     @Test
     fun `der Build steht mit Hash und Sauberkeitsflag im Datensatz`() {
         val b = record().getJSONObject("build")
-        assertEquals("3.4.2.5+fuse0.1.0-toni", b.getString("versionName"))
+        assertEquals("3.4.2.5+fuse1.0.0-toni", b.getString("versionName"))
         assertEquals("abc1234", b.getString("head"))
         assertTrue(b.getBoolean("committed"))
     }

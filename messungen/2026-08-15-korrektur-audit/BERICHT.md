@@ -12,7 +12,12 @@ abgeschwaecht, unten eingearbeitet).
 
 ## 1. Tonis Kernfrage: reicht Stoerung r - oder bremst sie?
 
-**r allein reicht nicht, und sie bremst an zwei belegten Stellen.**
+**Praezise (Toni-Korrektur 15.08.): "r bremst am Onset" waere zu
+pauschal.** Richtig ist: der autonome ONSET-PFAD ist langsam, r traegt
+dazu bei, aber rund 19 der 40 Minuten stammen aus Ziel-/Totbandpolitik.
+Am TURN kompensiert die schnelle Spur die Traegheit von r vollstaendig.
+Und FUSE hat primaer **kein Turn-Problem, sondern ein autonomes
+Onset- und Basalschuld-Problem**.
 
 Der Schaetzer selbst ist wie dokumentiert gebaut (Theil-Sen, 18-min-
 Fenster, 2-min-Paarabstand, null statt erfundener Null - alle
@@ -36,12 +41,41 @@ mit zwei Loechern:
    nach **median 40 min** - davon ~12 min bis BG>=Ziel und ~19 min
    Ziel-/Totband-POLITIK, nicht Schaetzerlag. Der Marker-Kanal liefert
    am selben Ereignistyp nach 1 min.
-2. **NEU - der UEBERGABE-DIP:** am R_CONFIRMED-Punkt (r erreicht 0,5)
-   schlaeft der OnsetChannel, die Rampe faellt von f=1 auf ~0 und der
-   Mittelbahn-Antrieb von der Kanalhebung auf ~0,5 - FUSE sagt fuer
-   ~4-6 Minuten NACH bestaetigtem Anstieg weniger zu als in den
-   Kanal-Minuten davor. (Mengenwirkung im Trail noch unbeziffert -
-   OFFEN, Telemetrie-Stufe.)
+2. ~~NEU - der UEBERGABE-DIP~~ **WIDERLEGT durch Messung, s. Abschnitt
+   1a.** Die statische Code-Lesart (Kanalhebung faellt weg, Antrieb
+   faellt auf r) trifft in den Daten nicht zu.
+
+### 1a. Telemetrie-Stufe: der Uebergabe-Dip existiert nicht (Messung 15.08.)
+
+Der Trail exportiert alle noetigen Groessen bereits (`drive.onset`,
+`drive.mean`, `state.smbRatioEffective`, `decision.insulinReqU`,
+`rt.units`) - die Telemetrie-Stufe brauchte KEINEN Code. Gemessen an
+**18 lueckenfreien R_CONFIRMED-Uebergaengen** (je 5 Minuten davor/danach,
+30 Uebergaenge gesamt, davon 18 ohne Datenluecke):
+
+| Groesse | 5 min VOR der Uebergabe | 5 min DANACH |
+|---|---|---|
+| Antrieb `drive.mean` | -0,32 .. +0,58 | **+0,54 .. +1,91** (steigt IMMER) |
+| Ratio | 0,15-0,18 | 0,15-0,31 (steigt meist) |
+| Bedarf `insulinReq` | Summe niedriger | hoeher in 14/18 |
+| **publizierte Menge** | **1,20 U** | **4,30 U** |
+
+**Delta +3,10 U, also +0,172 U je Uebergang - die Uebergabe ist
+nahtlos bis ueberschiessend, nicht eingebrochen.** In 16 von 18 Faellen
+ist das Delta >= 0; die zwei negativen Faelle (-0,25 / -0,10 U) sind
+durch FALLENDEN Bedarf erklaert (req 0,28->0,02 bzw. 0,15->0,06), nicht
+durch einen Antriebseinbruch.
+
+Die Ursache des Fehlschlusses ist lehrreich: der Kanal schlaeft
+DEFINITIONSGEMAESS erst, wenn r ihn bestaetigt hat - und r liegt zu
+diesem Zeitpunkt bereits deutlich ueber dem, was die Kanalhebung
+lieferte (Median-Antrieb danach ~1,0 statt der befuerchteten ~0,5).
+Ein statisch plausibler Code-Pfad, den die Daten nicht hergeben.
+
+**Folge fuer den Stufenplan: V2 ("Reparatur des Uebergabe-Dips")
+entfaellt.** Der verbleibende Onset-Hebel ist NICHT der Schaetzer und
+NICHT die Uebergabe, sondern die Ziel-/Totbandpolitik (~19 der 40
+Minuten) - eine eigene, bewusst gesetzte Politik, kein Defekt.
 
 **Auf der Turn-Seite bremst r dagegen NICHT** - weil die Aktuation gar
 nicht an ihr haengt: Turns erkennt der schnelle Kanal in 3-6 min
@@ -153,13 +187,19 @@ Andockpunkte fuer einen gemeinsamen Haushalt existieren
 3. **Sub-Step-Rest: lohnt nicht** (max. 0,05 U je Ereignis).
 4. **Bestaetigter Bedarf: SMB bleibt** (unstrittig).
 
-Empfehlung fuer Phase 3 (Replay): V4 (Basalschuld nicht per SMB,
-d.h. Bedarfsseite bei negativem Basal-IOB in Zielnaehe daempfen +
-Zero-Temp-Fruehende) und V2 (abgestufte schnelle Bremse ist
-WEITGEHEND GEBAUT - pruefen, ob der Uebergabe-Dip sie ergaenzt)
-zuerst; V3 (positive TBR) nur fuer Rolle 2 und nur, wenn V4 die
-Faelle nicht schon abraeumt; V1 (hartes Fast-Turn-Veto) ist nach der
-Turn-Latenz-Messung UNNOETIG (Stopp ist heute schon schnell).
+Reihenfolge nach Tonis Vorgabe 15.08. (Ein-Variablen-Disziplin -
+V4 wird AUFGETEILT, weil es zwei verschiedene Eingriffe enthaelt):
+
+- **V4a**: negatives Basal-IOB erzeugt in Zielnaehe keinen
+  zusaetzlichen SMB-Bedarf.
+- **V4b**: Zero-Temp endet, sobald ihr Schutzgrund verschwunden ist
+  (Rueckfall auf Profilbasal, KEINE positive TBR).
+- Erst einzeln, danach kombiniert.
+- **V2 entfaellt** (Uebergabe-Dip widerlegt, s. 1a).
+- **V3 (positive TBR) nur bedingt**: falls V4b nicht genuegt, und nur
+  fuer langsame/unsichere Korrekturen - nicht fuer die blosse
+  Basalwiederherstellung.
+- **V1 (hartes Fast-Turn-Veto) unnoetig** (Stopp median +4 min).
 
 ## 6. Verdikt je Kontext (Brief 11.1)
 
@@ -174,13 +214,15 @@ Turn-Latenz-Messung UNNOETIG (Stopp ist heute schon schnell).
 
 ## 7. Stufenplan (GO/NO-GO je Stufe)
 
-1. **Telemetrie (GO):** R_CONFIRMED-Uebergaenge + Uebergabe-Dip-Groesse
-   exportieren/beziffern; Onset-Politik-Anteil (Ziel- vs
-   Totband-Minuten) je Onset ausweisen. Kein Regler-Eingriff.
-2. **Counterfactual Replay (GO, nach dem Mahlzeitenblock):** V4, V2,
-   dann V3-Rolle-2 gegen identische Eingaben mit gemeinsamer
-   Insulinhistorie; Brief-Gegenproben 1-14 als Pflichtmatrix.
-3. **VirtualPump-Umsetzung (NO-GO bis Replay-Ergebnis).**
+1. **Telemetrie: ERLEDIGT 15.08.** - ohne Code, aus dem vorhandenen
+   Export gemessen; Ergebnis: Uebergabe-Dip widerlegt (1a).
+2. **Counterfactual Replay (GO, gelaufen 15.08.):** V4a und V4b
+   getrennt in isolierten Worktrees, jede Variante als Schalter mit
+   Default = heutiges Verhalten, Brief-Gegenproben 1-7 als
+   Pflichtmatrix. Ergebnis s. Abschnitt 8.
+3. **VirtualPump-Umsetzung (NO-GO bis Toni entscheidet).** Der Replay
+   liefert Erkenntnis, kein Bau-GO - der Produktivstand bleibt heute
+   das ungeaenderte Verhalten.
 4. **Produktivnachweis (NO-GO; gesondertes GO laut Brief).**
 
 ## Offene Punkte / Einschraenkungen
@@ -196,3 +238,93 @@ Turn-Latenz-Messung UNNOETIG (Stopp ist heute schon schnell).
   aisf-Ruhemetrik asymmetrisch (nur SMB-Zeitpunkte).
 - Rohdaten und Auswerteskripte lokal im Sitzungs-Scratchpad
   (Gesundheitsdaten, nicht im Repo).
+## 8. Replay-Ergebnisse V4a und V4b (15.08., getrennte Worktrees)
+
+Beide Varianten als schaltbarer Kern-Parameter mit **Default = heutiges
+Verhalten** gebaut; Bitgleichheit je Variante bewiesen (V4a: zeichengenauer
+Kennzahlenvergleich ueber 8 Lagen gegen einen VOR der Aenderung
+aufgenommenen Abzug; V4b: SHA-256 ueber die vollstaendige
+1872-Zellen-Entscheidungsmatrix, auf HEAD e393bdc110 abgenommen).
+**Die Varianten liegen NICHT im Hauptbaum** - sie bleiben in den
+Worktrees, der Produktivstand ist der ungeaenderte Regler.
+
+### V4a - negatives Basal-IOB erzeugt in Zielnaehe keinen SMB-Bedarf
+
+| Lage | ohne V4a | mit V4a |
+|---|---|---|
+| **S3 Zielnaehe nach Zero-Temp (Kernfall)** | 41 Dosen / 3,15 U | **28 / 1,70 U (-46 %)** |
+| **S4 Nacht-Totband endet (Morgenfall)** | 31 / 2,45 U | **25 / 1,65 U (-33 %)** |
+| S1 hoher BG fallend | 7,50 U | 7,50 U (0) |
+| S5 Rebound | 0 U | 0 U (0) |
+| S6 Mahlzeit mit Marker | 12,30 U | 12,30 U (0) |
+| S7 Korrektur r>1 | 11,85 U | 11,85 U (0) |
+
+Kein Szenario wird groesser - die Einseitigkeit haelt ueber die volle
+Kette. Die Zone endet von selbst, sobald der Anker sie verlaesst.
+
+**AUFLAGE (echter Befund, kein Detail):** in S2 (Zielnaehe fallend,
+hohes Bolus-IOB, laufende Zero-TBR) verschwinden **18 von 19
+Abbruch-Anforderungen fuer die laufende Null**. Die Daempfung frisst
+den kleinen Restbedarf auf, der Zyklus faellt von
+`BELOW_PUMP_INCREMENT` (-> KEEP -> `KEEP_CANCEL_STALE_ZERO`) auf
+`NO_DEMAND` (-> NO_POSITIVE -> Null bleibt stehen). FUSE verliert
+ausgerechnet in der Lage, die V4a adressiert, sein einziges Mittel,
+die Zero-TBR zu beenden: **man tauscht SMB-Nachholen gegen
+Basal-Aushungern.** Grenze exakt `insulinReq > 0` gegen `<= 0`.
+Auflage bei Weiterverfolgung: Abzug strikt UNTER insulinReq deckeln.
+
+### V4b - Zero-Temp endet, sobald der Schutzgrund weg ist
+
+Engste Stelle: der nicht-positive Zweig von `noPositive`, mit drei
+Und-Bedingungen (Schalter, Nachweis der bestandenen Guard-Kette im
+aktuellen Zyklus, echte Null nach `isZeroRate`). Einziger neuer
+Ausgang ist `Request(0,0)` - **nie eine positive Rate**. C7a bleibt
+gewahrt (Abbruch im Dosier-Zyklus weiterhin unterdrueckt, im Test
+vorgefuehrt). Menge, Abgabenzahl und bindende Kappe sind in ALLEN
+8 Lagen bitgleich; geaendert wird ausschliesslich die TBR-Achse.
+
+| Lage | ohne V4b | mit V4b |
+|---|---|---|
+| **S3 Kernfall** | Null lebt 30 min | **Null endet nach 5 min = +0,42 U Basal** |
+| **S4 Morgenfall** | Null lebt 30 min | **endet nach 5 min = +0,42 U Basal** |
+| S1/S2/S6/S7 | - | kein Unterschied |
+
+**DREI AUFLAGEN:**
+1. **Rebound (S5): V4b feuert dort** - im ersten Zyklus nach dem
+   SAFETY_HOLD, waehrend das Rebound-Totband noch jede Menge blockt.
+   Der Guard ist formal frei, inhaltlich nicht (aufgeblaehtes r ist
+   genau der Grund fuer das Fenster). Der Nachweis muesste um eine
+   Bedingung erweitert werden.
+2. **Scheiterndes Pumpenkommando: 26 Cancel-Kommandos in 30 Zyklen**
+   (kein Backoff, kein Deckel, kein Alarm) - auf dem Medtrum Nano
+   neuer Funkverkehr genau dann, wenn die Pumpe ohnehin zickt.
+3. **Fremde echte Nullen** werden ebenso abgebrochen. Das vergroessert
+   das bestehende Fenster von `KEEP_CANCEL_STALE_ZERO` auf alle
+   NO_DEMAND-/iobTH-/maxIOB-Zyklen und beruehrt damit die Grundregel
+   "manuell Gesetztes ist unantastbar". (Fremde ABSENKUNGEN bleiben
+   unangetastet - `isZeroRate` prueft hart auf 0.)
+
+### Der wichtigste Befund aus der Trennung
+
+**V4as Nebenwirkung ist genau der Mechanismus, den V4b repariert.**
+V4a nimmt FUSE die Faehigkeit, die Zero-TBR zu beenden (weil der
+Restbedarf wegfaellt); V4b gibt sie unabhaengig vom Restbedarf zurueck.
+Das ist eine **Hypothese, keine Messung** - der kombinierte Lauf steht
+aus und ist jetzt der naechste sinnvolle Schritt (Tonis "danach
+kombiniert"). Haette man V4 als EINEN Eingriff gemessen, waere weder
+die Nebenwirkung noch ihre mutmassliche Heilung sichtbar geworden.
+
+**Kein Bau-GO.** Beide Schalter sind Messwerkzeuge: sie stehen in
+keinem Einstellungsbildschirm, in keinem Export und in keinem
+Settings-Bericht - was nicht gemessen ist, gehoert nicht auf ein
+Geraet mit echter Pumpe.
+
+### Offen nach dem Replay
+
+- **Kombinierter Lauf V4a+V4b** (Hypothese oben pruefen).
+- V4a: Deckelung des Abzugs unter insulinReq.
+- V4b: Rebound-Ausschluss, Wiederholungspolitik bei Cancel-Fehlern,
+  Umgang mit fremden Nullen, Grund-Token im Viewer.
+- **Lage 1 bleibt von BEIDEN ungeloest**: dort ueberlebt die Null ihren
+  Grund die vollen 30 min, waehrend 7,80 U dosiert werden - das ist
+  C7a-Gebiet (Abbruch im Dosierzyklus unterdrueckt), nicht V4a/V4b.
