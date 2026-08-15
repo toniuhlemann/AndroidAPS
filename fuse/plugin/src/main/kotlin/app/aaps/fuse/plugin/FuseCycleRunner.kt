@@ -626,6 +626,14 @@ class FuseCycleRunner(
             step: ObserverStep? = null,
             prediction: PredictorResult? = null,
             restraint: PredictorResult? = null,
+            /**
+             * Das EvidenceStock-Ergebnis, falls der Kern VOR diesem Abbruch
+             * schon gerechnet hat. Ohne es behauptete der Trail auf den drei
+             * Post-step-Abbruechen EVIDENCE_NOT_EVALUATED_THIS_CYCLE, obwohl
+             * ausgewertet UND versiegelt wurde - und kontaminierte damit
+             * genau die Zyklen, die eine Auswertung braucht (Befund 15.08.).
+             */
+            evidenz: EvidenceStock.Result? = null,
         ): Outcome {
             // SUB-02 (Codex Fix-Pass-5-Closure): der Rest-Zaehler ist
             // aufgeschobene ABSICHT, kein Guthaben. Jeder Abbruch - Signal,
@@ -664,6 +672,10 @@ class FuseCycleRunner(
                 evidenceCommittedU = episodes.evidenceCommittedU,
                 evidenceEpisodeMin = evidenceEpisodeMin,
                 evidenceEpisodeCapMin = evidenceConfig.maxEpisodeMin,
+                evidencePhase = evidenz?.phase?.name,
+                evidenceStockMgdl = evidenz?.state?.stockMgdl,
+                evidenceReason = evidenz?.noInflow?.name,
+                evidenceCreditMgdlPerMin = evidenz?.creditMgdlPerMin,
             )
         }
 
@@ -1306,7 +1318,7 @@ class FuseCycleRunner(
             // Der Abbruch NENNT den verweigerten Fallback. Ohne diesen Zusatz
             // waere im Log ein nicht angebotener Pfad von einem abgelehnten
             // nicht zu unterscheiden.
-            if (denial != null) return abort("$warum | noFallback=$denial", signal, cfg, step)
+            if (denial != null) return abort("$warum | noFallback=$denial", signal, cfg, step, evidenz = evidenz)
 
             // DER EINHEITSKERN MUSS TROTZDEM STEHEN (P0, 11.08.).
             //
@@ -1322,11 +1334,11 @@ class FuseCycleRunner(
             // der Rechnung - nichts darueber, ob das Insulinmodell endliche,
             // lineare Werte liefert.
             if (kernel() == null)
-                return abort("$warum | noFallback=${kernelReject ?: "KERNEL_UNAVAILABLE"}", signal, cfg, step)
+                return abort("$warum | noFallback=${kernelReject ?: "KERNEL_UNAVAILABLE"}", signal, cfg, step, evidenz = evidenz)
             return markerFallbackCycle(
                 rejected, warum, signal, step, cfg, state, profile, pumpe, tempBasalFallback,
                 computeTs, markerTs, mealMarkerActive, measuredLow, evidenceEpisodeId,
-                episodeGate.denial?.name, episodeGate.creditRevoked,
+                episodeGate.denial?.name, episodeGate.creditRevoked, evidenz,
                 isf, target, targetSource, iobTotal,
                 maxIobU, transportModelledU, ledgerView, episodes, onset, band,
                 built.discount, built.input.trajectory.model, sensorEpoch, calibrationEpoch, gate,
@@ -1336,7 +1348,7 @@ class FuseCycleRunner(
         // Stellen `!!` - der Zweig oben endet in einem return, aber das traegt
         // der Kompiler nicht durch eine so lange Funktion.
         val prediction = predictionOrNull
-            ?: return abort("internal: prediction lost", signal, cfg, step)
+            ?: return abort("internal: prediction lost", signal, cfg, step, evidenz = evidenz)
 
         // Schwanzhaftung. C1/C2: pessimistisch ueber Haupt- UND Bremsbahn und
         // PRIOR-FREI - ein Marker-Prior darf kein Schwanzbudget erzeugen
@@ -2022,6 +2034,11 @@ class FuseCycleRunner(
         evidenceEpisodeDenial: String?,
         /** Zusatzkredit zurueckgenommen - s. [Outcome.evidenceCreditRevoked]. */
         evidenceCreditRevoked: Boolean,
+        /** Das fertige EvidenceStock-Ergebnis dieses Zyklus - der Kern ist an
+         *  der Aufrufstelle bereits gelaufen und versiegelt worden. Ohne die
+         *  Felder log der Trail: er behauptete NICHT_AUSGEWERTET genau in den
+         *  Fallback-DOSIER-Zyklen (Befund 15.08.). */
+        evidenz: EvidenceStock.Result?,
         isf: Double,
         target: Double,
         targetSource: String,
@@ -2151,6 +2168,10 @@ class FuseCycleRunner(
             evidenceCommittedU = episodes.evidenceCommittedU,
             evidenceEpisodeMin = evidenceEpisodeId.takeIf { it > 0L }?.let { ((computeTs - it) / 60_000L).toInt() },
             evidenceEpisodeCapMin = evidenceConfig.maxEpisodeMin,
+            evidencePhase = evidenz?.phase?.name,
+            evidenceStockMgdl = evidenz?.state?.stockMgdl,
+            evidenceReason = evidenz?.noInflow?.name,
+            evidenceCreditMgdlPerMin = evidenz?.creditMgdlPerMin,
             alarm = combined.alarm,
             bgMgdl = signal.q1,
             targetMgdl = target,

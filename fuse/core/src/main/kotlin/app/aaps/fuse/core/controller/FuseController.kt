@@ -521,6 +521,14 @@ object FuseController {
          * behandelt.
          */
         restraint: PredictorResult? = null,
+        /**
+         * Fliesst in diesem Zyklus Kredit aus dem versiegelten Evidenzbestand?
+         *
+         * Entwaffnet die Totbaender (s. [NightWindow.effectiveDeadbandMgdl]).
+         * Default `false` = Totbaender scharf - die fail-closed Richtung fuer
+         * alle Aufrufer ohne Evidenzpfad (Basisfall-Tests).
+         */
+        evidenceCreditActive: Boolean = false,
         /** Rest der Onset-Haftungshuelle [U]. Nicht-null NUR, wenn der
          *  OnsetChannel in diesem Zyklus die Mittelbahn gehoben hat - dann
          *  kappt er die Menge, die auf seiner eigenen Hebung beruht. */
@@ -641,6 +649,7 @@ object FuseController {
             isNight = state.nightWindow,
             nightDeadbandMgdl = state.nightDeadbandMgdl,
             markerBoost = state.markerBoost,
+            evidenceCreditActive = evidenceCreditActive,
         )
         if (deadbandMgdl > 0.0 && prediction.bgAtAnchor < state.targetMgdl + deadbandMgdl) {
             return Decision(

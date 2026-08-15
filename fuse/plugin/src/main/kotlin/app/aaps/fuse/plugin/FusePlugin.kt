@@ -717,6 +717,14 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
         // `EvidenceStock.State` ist eine Datenklasse ohne veraenderliche
         // Felder - die Referenz ist die Kopie.
         val evidenzVorLauf = ledgerAdapter.episodes.evidenceState
+        // Bis das Publikationsgate den Persist bestaetigt hat, gilt der im
+        // Runner geschriebene Folgestand als UNVERSIEGELT. Wirft irgendetwas
+        // zwischen run() und sealCycleState (GraphRing, RT-Bau, commitmentOf),
+        // liefe der naechste Zyklus sonst auf Evidenz, die nie auf Platte
+        // stand - genau das Loch, das der Ein-Zyklus-Verzug schliessen soll
+        // (Audit 15.08., P2). Das finally unten rollt dann zurueck.
+        var sealEntschieden = false
+        try {
 
         val outcome = try {
             cycleRunner().run(tempBasalFallback, aktivePumpe)
@@ -946,6 +954,7 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
         // Zurueckrollen statt "UNKNOWN markieren": der vorige Stand IST
         // bekannt und belegt. Ihn zu verwerfen waere strenger als noetig und
         // wuerde eine gesicherte Episode wegen eines Schreibfehlers verlieren.
+        sealEntschieden = true
         if (ledgerAdapter.sealCycleState(publication.sealed, evidenzVorLauf))
             aapsLogger.error(
                 LTag.APS,
@@ -1026,6 +1035,18 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
                 applicable = aktivePumpe.realPatchPump,
             ),
         )
+        } finally {
+            // Der EINE Ausgang fuer jeden Wurf zwischen run() und dem
+            // Publikationsgate: der Folgestand des Evidenzbestands hat den
+            // Persist nie erreicht und darf im Speicher nicht weiterleben.
+            // sealCycleState(false, ...) ist idempotent - im Normalfall ist
+            // `sealEntschieden` laengst true und hier passiert nichts.
+            if (!sealEntschieden && ledgerAdapter.sealCycleState(sealed = false, before = evidenzVorLauf))
+                aapsLogger.error(
+                    LTag.APS,
+                    "FUSE: Ausnahme vor dem Versiegeln - Evidenzbestand auf den versiegelten Stand zurueckgerollt",
+                )
+        }
     }
 
     /**

@@ -45,6 +45,24 @@ object NightWindow {
      * die normale Regelung bekommen; ein UNANGEKUENDIGTER Anstieg bleibt
      * nachts gesperrt, bis er die Schwelle wirklich ueberschreitet - dort ist
      * Dawn/Rebound die haeufigere Erklaerung als eine heimliche Mahlzeit.
+     *
+     * AUSNAHME EVIDENZKREDIT (Toni 15.08.: "Rebound-Totfenster darf das
+     * Mahlzeitenfenster niemals blocken"): fliesst in diesem Zyklus Kredit
+     * aus dem VERSIEGELTEN Evidenzbestand, sind BEIDE Totbaender entwaffnet.
+     *
+     * Der 2-Tage-Lauf hat die Luecke belegt: die Marker-Sonderrechte enden
+     * nach 45/90 Minuten, die Evidenz-Episode laeuft bis 360 - dazwischen
+     * blockten Nacht- und Rebound-Totband Zyklen, in denen die Episode ACTIVE
+     * war und gemessene, unbezahlte Stoerung auswies (81 Live-Zyklen).
+     *
+     * Warum das die Begruendung der Totbaender nicht aushoehlt: beide
+     * schuetzen vor dem Jagen UNANGEKUENDIGTER kleiner Abweichungen (Dawn,
+     * Hypo-Gegenesser). Der Evidenzkredit existiert nur in einer Episode, die
+     * ein MARKERDRUCK eroeffnet hat - die Mahlzeit IST angekuendigt - und nur
+     * fuer Stoerung, die als BGI-bereinigter Anstieg gemessen, versiegelt und
+     * noch nicht mit Insulin bezahlt ist. Beides zusammen ist das Gegenteil
+     * der Lage, fuer die die Totbaender gebaut wurden. Ohne Kredit (DORMANT,
+     * SUSPENDED, PENDING_SEAL, Widerruf, Hold) gelten sie unveraendert.
      */
     fun effectiveDeadbandMgdl(
         reboundWindow: Boolean,
@@ -52,9 +70,14 @@ object NightWindow {
         isNight: Boolean,
         nightDeadbandMgdl: Double,
         markerBoost: Boolean,
+        /** OHNE DEFAULT: ein Default `false` waere hier zwar fail-closed,
+         *  aber ein vergessener Anschluss hielte die Totbaender still im
+         *  Mahlzeitenfenster scharf - genau der Fehler, der zwei Tage lang
+         *  auf dem Geraet lief. Lieber ein Kompilierfehler je Aufrufstelle. */
+        evidenceCreditActive: Boolean,
     ): Double {
-        val rebound = if (reboundWindow) reboundDeadbandMgdl else 0.0
-        val night = if (isNight && !markerBoost) nightDeadbandMgdl.coerceAtLeast(0.0) else 0.0
+        val rebound = if (reboundWindow && !evidenceCreditActive) reboundDeadbandMgdl else 0.0
+        val night = if (isNight && !(markerBoost || evidenceCreditActive)) nightDeadbandMgdl.coerceAtLeast(0.0) else 0.0
         return maxOf(rebound, night)
     }
 }

@@ -171,6 +171,10 @@ class TransportWiringTest : TestBaseWithProfile() {
         }
     private var markerAtIntern = 0L
 
+    /** Nacht-Totband des Rigs - default aus wie bisher; die Totband-Tests
+     *  schalten es scharf. */
+    private var nightDeadband = false
+
     /**
      * ERZWUNGENE PREDICTOR-ABLEHNUNG, `null` = echter Predictor.
      *
@@ -276,7 +280,7 @@ class TransportWiringTest : TestBaseWithProfile() {
         whenever(preferences.get(FuseIntKey.NightStartMin)).thenReturn(1380)
         whenever(preferences.get(FuseIntKey.NightEndMin)).thenReturn(480)
         whenever(preferences.get(FuseDoubleKey.NightDeadbandMgdl)).thenReturn(45.0)
-        whenever(preferences.get(FuseBooleanKey.NightDeadbandEnabled)).thenReturn(false)
+        whenever(preferences.get(FuseBooleanKey.NightDeadbandEnabled)).thenAnswer { nightDeadband }
         whenever(preferences.get(FuseDoubleKey.ReboundDeadbandMgdl)).thenReturn(25.0)
         whenever(preferences.get(FuseBooleanKey.ReboundDeadbandEnabled)).thenReturn(true)
         whenever(preferences.get(FuseIntKey.DriveLowerQuantilePct)).thenAnswer { quantilePct }
@@ -1979,6 +1983,17 @@ class TransportWiringTest : TestBaseWithProfile() {
         // Nun dieselbe laufende Episode gegen eine enge reale Kappe rechnen.
         maxSmbU = 0.05
         val gekappt = cycle()
+        // DIE VORBEDINGUNG GILT AM KAPP-ZYKLUS SELBST (Audit 15.08.): der
+        // Kredit kann zwischen zwei Zyklen erloeschen (Verfall, Rebase,
+        // Seal-Rollback) - eine Vorbedingung am Zyklus n beweist nichts
+        // ueber Zyklus n+1, und die Kappenzusicherung waere leer gruen.
+        assertTrue((gekappt.evidenceCreditMgdlPerMin ?: 0.0) > 0.0) {
+            "der Kredit muss IM Kapp-Zyklus fliessen: ${gekappt.evidencePhase}/${gekappt.evidenceReason}"
+        }
+        assertTrue(
+            gekappt.tailLowerConditionalMgdl != null && gekappt.tailLowerUnconditionalMgdl != null &&
+                gekappt.tailLowerConditionalMgdl!! > gekappt.tailLowerUnconditionalMgdl!!,
+        ) { "und die bedingte Kante muss IM Kapp-Zyklus gehoben sein" }
         val maxSmb = gekappt.decision.caps.single { it.name == "maxSmb" }
         val ungekappterKandidat = gekappt.decision.caps.single { it.name == "smbRatio" }.valueU
         assertTrue(
@@ -2024,5 +2039,208 @@ class TransportWiringTest : TestBaseWithProfile() {
             events = { /* absichtlich keine Zeile: Publikationsgate muss sperren */ },
         )
         assertEquals(null, publiziert.rt.units, "Publikationsgate bleibt auch mit Evidenzkredit hart")
+    }
+    // ---- Totbaender gegen das Mahlzeitenfenster (Toni 15.08.) -------------
+
+    /**
+     * DER 2-TAGE-BEFUND ALS TEST: nach Ablauf der Marker-Sonderrechte
+     * blockte das Nacht-Totband Zyklen, in denen die Evidenz-Episode ACTIVE
+     * war und Kredit auswies (81 Live-Zyklen im Trail, z.B. 13.08. 22:40).
+     *
+     * Aufbau: Nachtfenster deckt die Rig-Uhr ab, Totband 45 mg/dl, BG unter
+     * Ziel+45. OHNE Kredit muss das Totband sperren (Gegenprobe), MIT
+     * aktivem Evidenzkredit muss es entwaffnet sein - die Totbaender
+     * schuetzen vor unangekuendigten Abweichungen, und eine markereroeffnete
+     * Episode mit versiegelter unbezahlter Stoerung ist das Gegenteil davon.
+     */
+    @Test
+    fun `das Nacht-Totband sperrt das Mahlzeitenfenster nicht`(@TempDir dir: File) {
+        tailGuard = false
+        conditionalTail = true
+        markerAuthorized = true
+        nightDeadband = true
+        whenever(preferences.get(FuseIntKey.NightStartMin)).thenReturn(0)
+        whenever(preferences.get(FuseIntKey.NightEndMin)).thenReturn(1439)
+        // Flacher Anstieg, damit der ERSTE Kreditzyklus sicher unter der
+        // Totbandschwelle 98 + 45 = 143 liegt.
+        flach = 100.0
+        steigungProMin = 2.0
+
+        val l = FuseLedgerAdapter().also { it.loadOnce(dir.also(File::mkdirs), "test-epoch", start) }
+        neuerRunner(l)
+        markerAt = start + 2 * 60_000L
+        clock = start
+
+        // AUFBAU wie im maxSMB-Attest: erst Messinformation ansammeln und
+        // versiegeln, ohne dass der Rig-Pfad sie sofort als bezahlt abbucht -
+        // die Abgaben (0,2 U x ISF 90 = 18 mg/dl je Zyklus) wuerden den
+        // Bestand sonst schneller abraeumen, als der Zufluss ihn fuellt.
+        maxSmbU = 0.0
+        var kreditZyklus: FuseCycleRunner.Outcome? = null
+        for (i in 1..60) {
+            val o = cycle()
+            // Der ERSTE Kreditzyklus - dort ist der BG noch tief im Totband.
+            if ((o.evidenceCreditMgdlPerMin ?: 0.0) > 0.0) { kreditZyklus = o; break }
+        }
+        val kredit = kreditZyklus ?: throw AssertionError("kein Evidenzkredit in 60 Zyklen")
+
+        // VORBEDINGUNG am Kreditzyklus selbst: BG liegt UNTER Ziel+Totband,
+        // das Totband griffe also ohne Kredit - sonst prueft der Test nichts.
+        assertTrue(kredit.signal!!.q1 < 98.0 + 45.0) { "BG ${kredit.signal!!.q1} muss im Totbandbereich liegen" }
+        assertTrue(
+            kredit.decision.bindingLimit != "nightDeadband" && kredit.decision.bindingLimit != "reboundDeadband",
+        ) { "Totband blockt trotz Kredit: ${kredit.decision.bindingLimit}" }
+
+        // KERN: Kappe oeffnen - im naechsten Kreditzyklus muss dosiert werden,
+        // das Totband darf nicht binden.
+        maxSmbU = 0.3
+        val dosier = (1..5).map { cycle() }.filter { (it.evidenceCreditMgdlPerMin ?: 0.0) > 0.0 }
+        assertTrue(dosier.isNotEmpty()) { "Kredit muss weiterfliessen" }
+        assertTrue(dosier.none { it.decision.bindingLimit == "nightDeadband" || it.decision.bindingLimit == "reboundDeadband" }) {
+            "Totband blockt trotz Kredit: " + dosier.map { it.decision.bindingLimit }
+        }
+        assertTrue(dosier.any { it.decision.smbU > 0.0 }) {
+            "und dosiert werden muss auch: " + dosier.map { "${it.decision.block}/${it.decision.bindingLimit}" }
+        }
+    }
+
+    /** GEGENPROBE: ohne Marker (kein Kredit) sperrt dasselbe Totband - sonst
+     *  haette der Test oben nur bewiesen, dass das Totband gar nicht greift. */
+    @Test
+    fun `ohne Kredit sperrt das Nacht-Totband weiterhin`(@TempDir dir: File) {
+        tailGuard = false
+        conditionalTail = true
+        nightDeadband = true
+        whenever(preferences.get(FuseIntKey.NightStartMin)).thenReturn(0)
+        whenever(preferences.get(FuseIntKey.NightEndMin)).thenReturn(1439)
+        flach = 100.0
+        steigungProMin = 2.0
+
+        val l = FuseLedgerAdapter().also { it.loadOnce(dir.also(File::mkdirs), "test-epoch", start) }
+        neuerRunner(l)
+        markerAt = 0L
+        clock = start
+        val laeufe = (1..15).map { cycle() }
+
+        val gesperrt = laeufe.filter { it.decision.bindingLimit == "nightDeadband" }
+        assertTrue(gesperrt.isNotEmpty()) { "das Totband muss ohne Kredit greifen: " + laeufe.map { it.decision.bindingLimit } }
+        assertTrue(laeufe.all { it.decision.smbU == 0.0 }) { "und nichts dosieren" }
+    }
+    /**
+     * GATE-ATTEST iobTH: der Kredit hebt die Bahn - die iobTH-Grenze bindet
+     * trotzdem quantitativ.
+     *
+     * Aufbau wie beim maxSMB-Attest: Kredit ohne Abgabe ansammeln, dann die
+     * Grenze scharf schalten. Vorbedingung am Kapp-Zyklus selbst.
+     */
+    @Test
+    fun `positiver Evidenzkredit bleibt hinter iobTH`(@TempDir dir: File) {
+        flach = 115.0
+        steigungProMin = 3.0
+        markerAt = start + 2 * 60_000L
+        conditionalTail = true
+        quantilePct = 25
+        aktivitaet = 0.004
+        tailGuard = false
+
+        val l = FuseLedgerAdapter().also { it.loadOnce(dir.also(File::mkdirs), "test-epoch", start) }
+        neuerRunner(l)
+        clock = start
+
+        maxSmbU = 0.0
+        var kreditGesehen = false
+        repeat(80) { if ((cycle().evidenceCreditMgdlPerMin ?: 0.0) > 0.0) kreditGesehen = true }
+        assertTrue(kreditGesehen) { "kein Evidenzkredit in 80 Zyklen" }
+
+        // iobTH eng: 10% von maxIOB 8 = 0,8 U - bei iob ~0 bindet der
+        // verbleibende Spielraum die Menge auf 0,8, pumpenschrittgerecht.
+        maxSmbU = 5.0
+        iobThPct = 10
+        val gekappt = cycle()
+        assertTrue((gekappt.evidenceCreditMgdlPerMin ?: 0.0) > 0.0) { "Kredit muss IM Kapp-Zyklus fliessen" }
+        val cap = gekappt.decision.caps.single { it.name == "iobThHeadroom" }
+        val kandidat = gekappt.decision.caps.single { it.name == "smbRatio" }.valueU
+        assertTrue(kandidat > cap.valueU) { "der ungekappte Kandidat muss die Grenze uebersteigen: $kandidat vs ${cap.valueU}" }
+        assertTrue(cap.active) { "iobTH muss binden: ${gekappt.decision.caps}" }
+        // Pumpenschrittgerecht abgerundete Grenze.
+        val erwartet = kotlin.math.floor(cap.valueU / 0.05) * 0.05
+        assertEquals(erwartet, gekappt.decision.smbU, 1e-9)
+    }
+
+    /**
+     * GATE-ATTEST LEDGER-HOLD (binaer): trotz nachweislich positivem Kredit
+     * und positivem Kandidaten bleibt die PUBLIZIERTE Menge 0, wenn der
+     * Ledger haelt - geprueft NACH Translator und Publikationsgate.
+     */
+    @Test
+    fun `positiver Evidenzkredit dringt nicht durch einen Ledger-Hold`(@TempDir dir: File) {
+        flach = 115.0
+        steigungProMin = 3.0
+        markerAt = start + 2 * 60_000L
+        conditionalTail = true
+        quantilePct = 25
+        aktivitaet = 0.004
+        tailGuard = false
+
+        val l = FuseLedgerAdapter().also { it.loadOnce(dir.also(File::mkdirs), "test-epoch", start) }
+        neuerRunner(l)
+        clock = start
+
+        maxSmbU = 0.0
+        repeat(80) { cycle() }
+        maxSmbU = 0.3
+        val mitKredit = cycle()
+        assertTrue((mitKredit.evidenceCreditMgdlPerMin ?: 0.0) > 0.0) { "Kredit muss fliessen" }
+        assertTrue(mitKredit.decision.smbU > 0.0) { "und ein Kandidat muss stehen: ${mitKredit.decision}" }
+
+        // ECHTER Hold: der Sentinel-Name wird von einem Verzeichnis besetzt,
+        // der Persist scheitert nachweislich - kein Mock.
+        File(dir, app.aaps.fuse.plugin.ledger.FuseLedgerStore.SENTINEL_NAME).delete()
+        assertTrue(File(dir, app.aaps.fuse.plugin.ledger.FuseLedgerStore.SENTINEL_NAME).mkdirs())
+        assertFalse(l.persistVerified(dir))
+        assertTrue(l.view().hold)
+
+        val imHold = cycle()
+        // Der Kredit selbst ist im Hold null (persistedStateKnown=false) UND
+        // die Menge bleibt null - beides gehoert zum Attest.
+        assertEquals(0.0, imHold.evidenceCreditMgdlPerMin ?: 0.0, 1e-9) { "im Hold darf kein Kredit entstehen" }
+        assertEquals(0.0, imHold.decision.smbU, 1e-9)
+        val rt = FuseRtBuilder.build(
+            nowMs = imHold.computeTs, bgMgdl = imHold.signal?.q1, targetMgdl = 98.0, iobU = 0.0,
+            decision = imHold.decision, tbr = imHold.tbr, gate = testPumpe().gate, profileIsfMgdlPerU = 90.0,
+        )
+        assertEquals(null, rt.units) { "publiziert werden darf nichts" }
+    }
+
+    /**
+     * GATE-ATTEST MODELL (binaer): faellt der Predictor im Zyklus NACH dem
+     * Kreditaufbau aus, verlaesst trotz stehendem Bestand keine Menge den
+     * Zyklus - unverifiziert wird nicht dosiert.
+     */
+    @Test
+    fun `positiver Evidenzkredit dringt nicht durch einen Modellausfall`(@TempDir dir: File) {
+        flach = 115.0
+        steigungProMin = 3.0
+        markerAt = start + 2 * 60_000L
+        conditionalTail = true
+        quantilePct = 25
+        aktivitaet = 0.004
+        tailGuard = false
+
+        val l = FuseLedgerAdapter().also { it.loadOnce(dir.also(File::mkdirs), "test-epoch", start) }
+        neuerRunner(l)
+        clock = start
+
+        maxSmbU = 0.0
+        var kreditGesehen = false
+        repeat(80) { if ((cycle().evidenceCreditMgdlPerMin ?: 0.0) > 0.0) kreditGesehen = true }
+        assertTrue(kreditGesehen) { "kein Evidenzkredit in 80 Zyklen" }
+
+        maxSmbU = 0.3
+        predictReject = app.aaps.fuse.core.predictor.PredictorReason.MISSING_ISF_SLOT
+        val ausfall = cycle()
+        predictReject = null
+
+        assertEquals(0.0, ausfall.decision.smbU, 1e-9) { "Modellausfall dosiert nicht: ${ausfall.decision}" }
     }
 }

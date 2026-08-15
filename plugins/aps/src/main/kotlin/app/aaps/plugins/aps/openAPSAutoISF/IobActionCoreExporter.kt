@@ -146,6 +146,32 @@ object IobActionCoreExporter {
                         })
                     }
                 }
+                // PUMP-TRUTH-SMB-LISTE der letzten 6 h (Toni 15.08.).
+                //
+                // Der Viewer summiert die Mahlzeitenzeile ("seit Markerdruck
+                // geliefert") AUSSCHLIESSLICH aus dieser Liste - bewusst
+                // Pump-Truth aus der Treatments-DB, nie aus Request-Daten.
+                // Ihre bisherige einzige Quelle war die state.json des
+                // determineBasal-Hooks im AutoISF-Plugin; unter aktivem FUSE
+                // laeuft der nie, und die Summe stand zwei Tage auf "Σ—".
+                //
+                // ROH (ts + units), OHNE Faktor-Stempel: die Anreicherung mit
+                // autoISF-Faktoren bleibt Sache des determine-Hooks bzw. der
+                // Read-only-Seitendatei - dieser 60s-Heartbeat darf die
+                // Stempel-Logik nie anfassen, sonst friert er frisch
+                // gelieferte SMBs mit Null-Faktoren ein (Farbverlust der
+                // SMB-Balken auf dem Prod-Handy).
+                runCatching {
+                    val smbs = persistenceLayer
+                        .getBolusesFromTimeToTime(now - 6 * 3600_000L, now, true)
+                        .filter { it.isValid && it.type == app.aaps.core.data.model.BS.Type.SMB && it.amount > 0.0 }
+                    put("smbHistory", org.json.JSONArray().apply {
+                        for (b in smbs) put(JSONObject().apply {
+                            put("ts", b.timestamp)
+                            put("units", b.amount)
+                        })
+                    })
+                }
             }
             IobActionExporter.writeCore(json)
         }
