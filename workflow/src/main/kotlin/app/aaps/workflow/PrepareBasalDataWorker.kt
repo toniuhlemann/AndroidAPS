@@ -52,11 +52,49 @@ class PrepareBasalDataWorker(
         val endTime = data.overviewData.endTime
         val fromTime = data.overviewData.fromTime
         var time = fromTime
+        // AUSHUNGERN VERHINDERN (gemessen 16.08., Toni): dieser Worker lief
+        // eingeschwungen 33-60 s, waehrend jede BG-Minute ueber
+        // EventNewHistoryData ein REPLACE der ganzen Kette ausloest. Er wurde
+        // dadurch fast immer abgeschossen - und weil `.then()` eine harte
+        // Abhaengigkeit ist, starben die NEUN Folgeglieder gleich mit, die
+        // zusammen nur ~2 s brauchen. Sichtbar war das als dauerhaft leere
+        // Untergraphen (IOB, DEV, FUSE-Serien), waehrend der BG-Graph stand.
+        //
+        // Zwei Kosten pro Minutenschritt waren dafuer verantwortlich, beide
+        // hier behoben, ohne die Kette oder fremde Schnittstellen anzufassen:
+        //
+        // (1) EIN EVENT JE SCHRITT. Der Fortschritt wurde bei 6 h Anzeige
+        //     360 mal, bei 24 h 1440 mal gesendet - fuer 100 unterscheidbare
+        //     Prozentwerte. Jeder Send laeuft ueber den RxBus in die UI.
+        //     Jetzt nur noch, wenn sich der ganzzahlige Prozentwert aendert.
+        //
+        // (2) EIN PROFILAUFRUF JE SCHRITT. profileFunction.getProfile(time)
+        //     liefert innerhalb eines Profilblocks immer dasselbe Objekt; die
+        //     Blockgrenzen liegen bei vollen (halben) Stunden, nie im
+        //     Minutenraster. Gemerkt wird deshalb der letzte Aufruf und nur
+        //     bei Blockwechsel neu geholt.
+        //
+        // Was BEWUSST bleibt: die Schrittweite von einer Minute (die
+        // Stufenkanten des Basalgraphen sollen minutengenau bleiben) und die
+        // isStopped-Pruefung (ein laufender Abbruch muss weiter sofort
+        // greifen).
+        var lastProgress = -1
+        var cachedProfile: app.aaps.core.interfaces.profile.Profile? = null
+        var cachedProfileUntil = Long.MIN_VALUE
         while (time < endTime) {
             if (isStopped) return Result.failure(workDataOf("Error" to "stopped"))
-            val progress = (time - fromTime).toDouble() / (endTime - fromTime) * 100.0
-            rxBus.send(EventIobCalculationProgress(CalculationWorkflow.ProgressData.PREPARE_BASAL_DATA, progress.toInt(), null))
-            val profile = profileFunction.getProfile(time)
+            val progress = ((time - fromTime).toDouble() / (endTime - fromTime) * 100.0).toInt()
+            if (progress != lastProgress) {
+                lastProgress = progress
+                rxBus.send(EventIobCalculationProgress(CalculationWorkflow.ProgressData.PREPARE_BASAL_DATA, progress, null))
+            }
+            if (time >= cachedProfileUntil) {
+                cachedProfile = profileFunction.getProfile(time)
+                // Bis zur naechsten halben Stunde gilt derselbe Profilblock;
+                // die halbe Stunde ist die feinste Slotbreite, die AAPS kennt.
+                cachedProfileUntil = (time / 1_800_000L + 1) * 1_800_000L
+            }
+            val profile = cachedProfile
             if (profile == null) {
                 time += 60 * 1000L
                 continue
