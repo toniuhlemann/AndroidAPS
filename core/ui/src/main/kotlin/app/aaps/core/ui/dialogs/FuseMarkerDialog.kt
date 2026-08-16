@@ -61,10 +61,25 @@ object FuseMarkerDialog {
         val text = StringBuilder(
             rh.gs(R.string.overview_fuse_meal_confirm_body, facts.firstStepU, rest)
         )
-        // Das gemessene Tief ist die einzige Lage, die den Druck von einem
-        // gewoehnlichen unterscheidet - deshalb als einziger Zusatz.
+        // Das gemessene Tief ist die dringlichste Lage, die den Druck von einem
+        // gewoehnlichen unterscheidet - deshalb zuerst.
         if (facts.measuredLow)
             text.append("\n\n").append(rh.gs(R.string.overview_fuse_meal_confirm_low))
+
+        // FREMDES INSULIN (Auditbefund P0-2). Die Huelle wird davon NICHT
+        // gekuerzt - das ist Tonis ausdrueckliche Entscheidung vom 16.08. Der
+        // Dialog beziffert es, damit die Wahl beim Menschen liegt statt still
+        // zu unterbleiben. `null` heisst unbekannt und schweigt; nur ein
+        // wirklich vorhandener Bolus erzeugt die Zeile.
+        facts.foreignBolusU?.takeIf { it > 0.0 }?.let {
+            text.append("\n\n").append(rh.gs(R.string.overview_fuse_meal_confirm_foreign, it))
+        }
+
+        // Laeuft die Evidenzuhr ab, bekommt diese Mahlzeit kein Privileg mehr.
+        // Das gehoert in den Moment der Entscheidung.
+        facts.episodeRestMin?.let {
+            text.append("\n\n").append(rh.gs(R.string.overview_fuse_meal_confirm_episode, it))
+        }
 
         if (onConfirmNoPrime == null) {
             OKDialog.showConfirmation(

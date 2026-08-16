@@ -66,6 +66,15 @@ interface FuseOverviewSource {
         val authorizesAgainstModel: Boolean,
         /** Ob JETZT ein gemessenes Tief vorliegt. */
         val measuredLow: Boolean,
+        /**
+         * MANUELLES Insulin der letzten Stunde [U], `null` = nicht ermittelbar.
+         * Die Huelle wird davon NICHT gekuerzt (Tonis Entscheidung 16.08.) -
+         * der Dialog beziffert es, damit die Wahl beim Menschen liegt.
+         */
+        val foreignBolusU: Double? = null,
+        /** Rest der laufenden Evidenz-Episode [min]; `null` = keine, unbekannt
+         *  oder noch reichlich Zeit. */
+        val episodeRestMin: Int? = null,
     )
 
     fun fuseMarkerArmed(now: Long): Boolean

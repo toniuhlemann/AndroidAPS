@@ -1292,6 +1292,107 @@ class TransportWiringTest : TestBaseWithProfile() {
     }
 
     /**
+     * DER LEDGER-HOLD IM HAUPTPFAD - Auditbefund P0-3 (16.08.2026).
+     *
+     * Das Gesamtaudit hat per ausgefuehrter Mutationsprobe belegt, dass
+     * `LedgerHoldGate.apply` aus dem Hauptpfad (FuseCycleRunner.kt:1822)
+     * ersatzlos entfernt werden kann, ohne dass EINER von 1322 Tests rot wird.
+     * Der Mechanismus, der FUSE stoppt, wenn seine Buchfuehrung blind ist, war
+     * auf Unit-Ebene geprueft (`LedgerHoldGateTest`) und auf Verdrahtungsebene
+     * ungeprueft - genau die Fehlerklasse, die am 15.08. schon einmal
+     * zugeschlagen hat (`evidenceCreditActive` war 81 Zyklen nicht verdrahtet).
+     *
+     * WARUM DIESER TEST MIT MARKER LAEUFT, der vorhandene Hold-Test dagegen
+     * nicht scharf ist: jener erzeugt den Hold in einer Kreditlage. Im Hold
+     * ist der Kredit selbst null (`persistedStateKnown=false`), also waere die
+     * Menge dort AUCH OHNE das Gate null - die zu pruefende Bedingung entsteht
+     * im Aufbau nie. Mit aktivem Marker hebt `MarkerFloor` die Menge auf den
+     * autorisierten Anteil, und nur das Gate kann sie danach noch nullen.
+     * Schritt (1) unten haelt genau das fest.
+     */
+    @Test
+    fun `ein haltender Ledger nullt die Menge im Hauptpfad`(@TempDir dir: File) {
+        tailGuard = false
+        flach = 62.0
+        steigungProMin = 0.0
+        markerAt = start + 2 * 60_000L
+        markerAuthorized = true
+
+        val l = FuseLedgerAdapter().also { it.loadOnce(dir.also(File::mkdirs), "test-epoch", start) }
+        neuerRunner(l)
+        clock = start
+
+        // (1) POSITIVKONTROLLE: ohne Hold traegt der Pfad wirklich etwas.
+        //     Ohne diesen Schritt pruefte der Test eine Null, die schon vorher
+        //     eine war.
+        var ohneHold: FuseCycleRunner.Outcome? = null
+        repeat(16) { if (ohneHold == null) cycle().let { o -> if (o.decision.smbU > 0.0) ohneHold = o } }
+        val frei = ohneHold ?: throw AssertionError("Aufbau traegt nichts - der Test wuerde nichts pruefen")
+        assertFalse(frei.predictorRejected, "dieser Test gehoert dem HAUPTpfad")
+        assertTrue(frei.decision.markerAuthorizedU > 0.0, "die Menge muss markerfinanziert sein")
+
+        // (2) ECHTER Hold - kein Mock: der Sentinel-Name wird von einem
+        //     Verzeichnis besetzt, der Persist scheitert nachweislich.
+        File(dir, app.aaps.fuse.plugin.ledger.FuseLedgerStore.SENTINEL_NAME).delete()
+        assertTrue(File(dir, app.aaps.fuse.plugin.ledger.FuseLedgerStore.SENTINEL_NAME).mkdirs())
+        assertFalse(l.persistVerified(dir))
+        assertTrue(l.view().hold, "Vorbedingung: der Ledger muss halten")
+
+        // (3) DIE ZUSICHERUNG. Der Marker autorisiert weiter - das Gate sitzt
+        //     danach und nullt trotzdem.
+        val imHold = cycle()
+        assertEquals(0.0, imHold.decision.smbU, 1e-9, "im Hold darf nichts fliessen: ${imHold.decision}")
+        assertEquals(FuseController.Block.LEDGER_HOLD, imHold.decision.block, "und der Grund muss der Hold sein")
+        assertEquals("ledgerHold", imHold.decision.bindingLimit)
+    }
+
+    /**
+     * DERSELBE HOLD IM FALLBACKPFAD (FuseCycleRunner.kt:2172) - die zweite
+     * gruen gebliebene Mutationsprobe des Audits.
+     *
+     * Der predictorfreie Markerpfad ist die Stelle, an der FUSE OHNE Bahn
+     * dosiert. Dass ausgerechnet dort der Hold ungeprueft war, ist die
+     * unangenehmere Haelfte von P0-3: hier gibt es keine Sicherheitsbahn, die
+     * ersatzweise bremsen koennte.
+     */
+    @Test
+    fun `ein haltender Ledger nullt die Menge auch im Fallbackpfad`(@TempDir dir: File) {
+        tailGuard = false
+        flach = 62.0
+        steigungProMin = 0.0
+        markerAt = start + 2 * 60_000L
+        markerAuthorized = true
+
+        val l = FuseLedgerAdapter().also { it.loadOnce(dir.also(File::mkdirs), "test-epoch", start) }
+        neuerRunner(l)
+        clock = start
+        repeat(6) { cycle() }
+
+        // Ab hier laeuft der Zyklus ohne Bahn - der Fallbackpfad.
+        predictReject = PredictorReason.PENDING_MODEL_TOO_SHORT
+
+        // (1) POSITIVKONTROLLE auf DIESEM Pfad.
+        var ohneHold: FuseCycleRunner.Outcome? = null
+        repeat(10) { if (ohneHold == null) cycle().let { o -> if (o.decision.smbU > 0.0) ohneHold = o } }
+        val frei = ohneHold ?: throw AssertionError("der Fallbackpfad traegt nichts - der Test pruefte nichts")
+        assertTrue(frei.predictorRejected, "der Zyklus muss ohne Bahn gelaufen sein")
+        assertTrue(frei.markerFallbackUsed, "und ueber den Markerpfad")
+
+        // (2) ECHTER Hold.
+        File(dir, app.aaps.fuse.plugin.ledger.FuseLedgerStore.SENTINEL_NAME).delete()
+        assertTrue(File(dir, app.aaps.fuse.plugin.ledger.FuseLedgerStore.SENTINEL_NAME).mkdirs())
+        assertFalse(l.persistVerified(dir))
+        assertTrue(l.view().hold, "Vorbedingung: der Ledger muss halten")
+
+        // (3) DIE ZUSICHERUNG - auch ohne Bahn.
+        val imHold = cycle()
+        assertTrue(imHold.markerFallbackUsed, "der Test muss weiter auf dem Fallbackpfad laufen")
+        assertEquals(0.0, imHold.decision.smbU, 1e-9, "im Hold darf auch ohne Bahn nichts fliessen")
+        assertEquals(FuseController.Block.LEDGER_HOLD, imHold.decision.block)
+        assertEquals("ledgerHold", imHold.decision.bindingLimit)
+    }
+
+    /**
      * DER P0 VOM 11.08.: der Fallback kehrte VOR `kernel()` zurueck.
      *
      * Der Boden im Hauptpfad haengt an einem gueltigen Einheitskern - dieser

@@ -168,6 +168,8 @@
          nur EINMAL lesen muss, steht in der Einstellungsbeschreibung. -->
     <string name="overview_fuse_meal_confirm_body">%1$.2f U sofort, bis %2$.2f U in 15 min</string>
     <string name="overview_fuse_meal_confirm_low">Zucker ist TIEF.</string>
+    <string name="overview_fuse_meal_confirm_foreign">Achtung: %1$.2f U manueller Bolus in der letzten Stunde. Die Hülle wird davon NICHT gekürzt — beides zusammen wirkt.</string>
+    <string name="overview_fuse_meal_confirm_episode">Evidenz-Fenster läuft in %1$d min ab — danach ohne Mahlzeiten-Kredit.</string>
     <string name="overview_show_fuse_meal_button">Mahlzeiten-Knopf (FUSE)</string>
     <string name="overview_show_fuse_meal_button_summary">Zeigt den FUSE-Mahlzeitenknopf auf dem Uebersichtsschirm. Er erscheint nur, wenn FUSE der aktive Algorithmus ist.
 

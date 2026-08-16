@@ -20,6 +20,7 @@ import app.aaps.core.interfaces.constraints.Constraint
 import app.aaps.core.interfaces.constraints.ConstraintsChecker
 import app.aaps.core.interfaces.constraints.PluginConstraints
 import app.aaps.core.data.model.TE
+import app.aaps.core.data.model.BS
 import app.aaps.core.interfaces.db.PersistenceLayer
 import app.aaps.core.interfaces.notifications.Notification
 import app.aaps.fuse.plugin.ledger.FusePatchEpoch
@@ -622,12 +623,38 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
         val zyklus = letzter?.prime?.floorU?.takeIf { it > 0.0 }
             ?: (huelle - geliefert).coerceAtLeast(0.0) / PrimeRelease.WINDOW_MIN
         val schritt = minOf(zyklus, preferences.get(FuseDoubleKey.MaxSmbU))
+        // FREMDES INSULIN - eigene Abfrage, und das ist hier KEIN Bruch der
+        // Regel oben. Jene verbietet einen zweiten Rechenweg fuer eine
+        // Groesse, die der Regler bereits fuehrt. Manuelles Insulin fuehrt er
+        // gerade NICHT (Auditbefund P0-2) - es gibt keine erste Wahrheit, an
+        // der sich eine zweite reiben koennte.
+        //
+        // Nur `Type.NORMAL`: SMB ist FUSEs eigener Kanal und steckt schon in
+        // `geliefert`, PRIMING ist Schlauchfuellung und trifft keinen Koerper.
+        // Fehlschlaegt die Abfrage, bleibt der Wert null = UNBEKANNT und der
+        // Dialog behauptet nichts, statt 0,00 U zu zeigen.
+        val fremd = runCatching {
+            persistenceLayer.getBolusesFromTimeToTime(
+                now - MarkerPrompt.FOREIGN_WINDOW_MIN * 60_000L, now, true
+            ).filter { it.isValid && it.type == BS.Type.NORMAL }.sumOf { it.amount }
+        }.getOrNull()
+
         val fakten = MarkerPrompt.Facts(
             firstStepU = schritt,
             envelopeU = huelle,
             alreadyDeliveredU = geliefert,
             authorizesAgainstModel = preferences.get(FuseBooleanKey.MarkerAuthorisesRelease),
             measuredLow = letzter?.state?.safetyHold == true,
+            foreignBolusU = fremd,
+            // Aus DEMSELBEN Zyklus wie die uebrigen Zahlen - kein zweiter
+            // Rechenweg. Nur wenn die Uhr wirklich knapp wird (Fall 1 des
+            // Audit-Nachtrags: die zweite Mahlzeit erbte den Topf der ersten
+            // und verlor ihn 55 Minuten spaeter mitten im Anstieg).
+            episodeRestMin = letzter?.let { o ->
+                val alter = o.evidenceEpisodeMin ?: return@let null
+                val deckel = o.evidenceEpisodeCapMin
+                (deckel - alter).takeIf { it in 0..MarkerPrompt.EPISODE_WARN_MIN }
+            },
         )
         return MarkerPrompt.required(armed = mealMarkerActive(now), facts = fakten)?.let {
             FuseOverviewSource.MarkerPromptFacts(
@@ -636,6 +663,8 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
                 alreadyDeliveredU = it.alreadyDeliveredU,
                 authorizesAgainstModel = it.authorizesAgainstModel,
                 measuredLow = it.measuredLow,
+                foreignBolusU = it.foreignBolusU,
+                episodeRestMin = it.episodeRestMin,
             )
         }
     }
