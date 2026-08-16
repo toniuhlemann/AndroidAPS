@@ -1633,6 +1633,7 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
             .put(FuseBooleanKey.OnsetChannelEnabled, preferences)
             .put(FuseBooleanKey.PrimeReleaseEnabled, preferences)
             .put(FuseDoubleKey.PrimeEnvelopeU, preferences)
+            .put(FuseIntKey.PrimeWindowMin, preferences)
 
     override fun applyConfiguration(configuration: JSONObject) {
         configuration
@@ -1658,6 +1659,7 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
             .store(FuseBooleanKey.OnsetChannelEnabled, preferences)
             .store(FuseBooleanKey.PrimeReleaseEnabled, preferences)
             .store(FuseDoubleKey.PrimeEnvelopeU, preferences)
+            .store(FuseIntKey.PrimeWindowMin, preferences)
     }
 
     override fun addPreferenceScreen(preferenceManager: PreferenceManager, parent: PreferenceScreen, context: Context, requiredKey: String?) {

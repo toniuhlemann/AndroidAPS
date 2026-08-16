@@ -33,7 +33,7 @@ class ConfigBoundsTest {
         smbRatio = 0.2, smbRatioRise = 0.35, sharedMaxIobU = 7.0,
         riseRampLowR = 0.5, riseRampHighR = 2.0, bolusShareLambda = 1.0,
         onsetChannelEnabled = true, onsetEnvelopeU = 1.5,
-        primeReleaseEnabled = true, primeEnvelopeU = 1.2,
+        primeReleaseEnabled = true, primeWindowMin = 15, primeEnvelopeU = 1.2,
         maxSmbU = 0.3, guardFloorMgdl = 70.0, iobThPercent = 100,
         releaseHorizonMin = 30, liabilityHorizonMin = 120, driveTauMin = 60,
         absorptionCreditWindowMin = 60, markerBoostMaxMin = 45,
@@ -62,8 +62,8 @@ class ConfigBoundsTest {
     @Test
     fun `die Marker-Huelle am oberen Rand des Dialogs geht durch`() {
         assertTrue(FuseDoubleKey.PrimeEnvelopeU.max >= 3.0, "der Bereich wurde zurueckgedreht?")
-        ok(mitte().copy(primeEnvelopeU = FuseDoubleKey.PrimeEnvelopeU.max), "primeEnvelopeU am Maximum")
-        ok(mitte().copy(primeEnvelopeU = FuseDoubleKey.PrimeEnvelopeU.min), "primeEnvelopeU am Minimum")
+        ok(mitte().copy(primeWindowMin = 15, primeEnvelopeU = FuseDoubleKey.PrimeEnvelopeU.max), "primeEnvelopeU am Maximum")
+        ok(mitte().copy(primeWindowMin = 15, primeEnvelopeU = FuseDoubleKey.PrimeEnvelopeU.min), "primeEnvelopeU am Minimum")
     }
 
     /**
@@ -87,7 +87,7 @@ class ConfigBoundsTest {
             Feld("tailRecoveryU", FuseDoubleKey.TailRecoveryU) { c, v -> c.copy(tailRecoveryU = v) },
             Feld("bolusShareLambda", FuseDoubleKey.BolusShareLambda) { c, v -> c.copy(bolusShareLambda = v) },
             Feld("onsetEnvelopeU", FuseDoubleKey.OnsetEnvelopeU) { c, v -> c.copy(onsetEnvelopeU = v) },
-            Feld("primeEnvelopeU", FuseDoubleKey.PrimeEnvelopeU) { c, v -> c.copy(primeEnvelopeU = v) },
+            Feld("primeEnvelopeU", FuseDoubleKey.PrimeEnvelopeU) { c, v -> c.copy(primeWindowMin = 15, primeEnvelopeU = v) },
         )
         for (f in felder) {
             ok(f.setze(mitte(), f.key.max), "${f.name} = ${f.key.max} (Dialog-Maximum)")
@@ -127,7 +127,7 @@ class ConfigBoundsTest {
     @Test
     fun `Werte jenseits des Dialogs werden abgewiesen`() {
         assertThrows(IllegalArgumentException::class.java) {
-            FuseCycleRunner.validate(mitte().copy(primeEnvelopeU = FuseDoubleKey.PrimeEnvelopeU.max + 0.5))
+            FuseCycleRunner.validate(mitte().copy(primeWindowMin = 15, primeEnvelopeU = FuseDoubleKey.PrimeEnvelopeU.max + 0.5))
         }
         assertThrows(IllegalArgumentException::class.java) {
             FuseCycleRunner.validate(mitte().copy(guardFloorMgdl = Double.NaN))

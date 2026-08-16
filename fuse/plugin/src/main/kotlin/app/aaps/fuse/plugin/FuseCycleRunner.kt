@@ -237,6 +237,7 @@ class FuseCycleRunner(
             require(it.bolusShareLambda.isFinite() && it.bolusShareLambda in FuseDoubleKey.BolusShareLambda.min..FuseDoubleKey.BolusShareLambda.max) { "bolusShareLambda=${it.bolusShareLambda}" }
             require(it.onsetEnvelopeU.isFinite() && it.onsetEnvelopeU in FuseDoubleKey.OnsetEnvelopeU.min..FuseDoubleKey.OnsetEnvelopeU.max) { "onsetEnvelopeU=${it.onsetEnvelopeU}" }
             require(it.primeEnvelopeU.isFinite() && it.primeEnvelopeU in FuseDoubleKey.PrimeEnvelopeU.min..FuseDoubleKey.PrimeEnvelopeU.max) { "primeEnvelopeU=${it.primeEnvelopeU}" }
+            require(it.primeWindowMin in FuseIntKey.PrimeWindowMin.min..FuseIntKey.PrimeWindowMin.max) { "primeWindowMin=${it.primeWindowMin}" }
             require(it.liabilityHorizonMin >= 30 && it.liabilityHorizonMin >= it.releaseHorizonMin && it.liabilityHorizonMin <= 360) {
                 "liabilityHorizon=${it.liabilityHorizonMin} (releaseHorizon=${it.releaseHorizonMin}, UI 30..360)"
             }
@@ -1575,6 +1576,7 @@ class FuseCycleRunner(
         val primePlan = PrimeRelease.plan(
             PrimeRelease.Input(
                 enabled = cfg.primeReleaseEnabled,
+                windowMin = cfg.primeWindowMin,
                 declinedByUser = markerNoPrime,
                 mealMarkerActive = mealMarkerActive,
                 armedTsMs = markerTs,
@@ -1833,7 +1835,7 @@ class FuseCycleRunner(
         if (primePlan.reason == "CLEARANCE") episodes.primeWindowStartTs = computeTs
 
         val primeWindowOpen = mealMarkerActive && markerTs > 0 &&
-            computeTs - maxOf(markerTs, episodes.primeWindowStartTs) < PrimeRelease.WINDOW_MIN * 60_000L &&
+            computeTs - maxOf(markerTs, episodes.primeWindowStartTs) < cfg.primeWindowMin * 60_000L &&
             computeTs - markerTs < PrimeRelease.WALL_CEILING_MIN * 60_000L
 
         // ---- 5 Kanal -------------------------------------------------------
@@ -2117,6 +2119,7 @@ class FuseCycleRunner(
         val primePlan = PrimeRelease.plan(
             PrimeRelease.Input(
                 enabled = cfg.primeReleaseEnabled,
+                windowMin = cfg.primeWindowMin,
                 declinedByUser = markerNoPrime,
                 mealMarkerActive = mealMarkerActive,
                 armedTsMs = markerTs,
@@ -2196,7 +2199,7 @@ class FuseCycleRunner(
         // war schlicht falsch, und genau so laufen zwei Pfade auseinander.
         val actuatedU = if (gate.allowed) combined.decision.smbU else 0.0
         val primeWindowOpen = mealMarkerActive && markerTs > 0 &&
-            computeTs - maxOf(markerTs, episodes.primeWindowStartTs) < PrimeRelease.WINDOW_MIN * 60_000L &&
+            computeTs - maxOf(markerTs, episodes.primeWindowStartTs) < cfg.primeWindowMin * 60_000L &&
             computeTs - markerTs < PrimeRelease.WALL_CEILING_MIN * 60_000L
         val mealGebucht = buche(
             episodes, actuatedU, primeWindowOpen, onset.active, mealMarkerActive, signal.sourceTs,
@@ -2521,6 +2524,7 @@ class FuseCycleRunner(
         val onsetEnvelopeU: Double,
         val primeReleaseEnabled: Boolean,
         val primeEnvelopeU: Double,
+        val primeWindowMin: Int,
         /** Die Null sofort verlassen, sobald ihr Schutzgrund weg ist. */
         val endZeroWhenReasonGone: Boolean,
     )
@@ -2563,6 +2567,11 @@ class FuseCycleRunner(
         onsetEnvelopeU = preferences.get(FuseDoubleKey.OnsetEnvelopeU),
         primeReleaseEnabled = preferences.get(FuseBooleanKey.PrimeReleaseEnabled),
         primeEnvelopeU = preferences.get(FuseDoubleKey.PrimeEnvelopeU),
+        // Ein ungesetzter Wert (0) ist kein Konfigurationsfehler, sondern ein
+        // Speicher, der den Schluessel noch nicht kennt - dann gilt die
+        // Vorgabe. Echte Fehlwerte faengt die Bereichspruefung darunter.
+        primeWindowMin = preferences.get(FuseIntKey.PrimeWindowMin).takeIf { it > 0 }
+            ?: PrimeRelease.WINDOW_MIN,
         endZeroWhenReasonGone = preferences.get(FuseBooleanKey.TbrEndZeroWhenReasonGone),
     ).also { validate(it) }
 

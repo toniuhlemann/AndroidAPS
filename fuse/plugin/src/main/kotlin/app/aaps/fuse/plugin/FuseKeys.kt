@@ -140,7 +140,7 @@ enum class FuseDoubleKey(
      * nichts, was der Nutzer nicht weiss), aber sie halten das NACHLEGEN an,
      * wenn die angekuendigte Absorption ausbleibt.
      */
-    PrimeEnvelopeU("fuse_prime_envelope_u", 1.2, 0.0, 3.0),
+    PrimeEnvelopeU("fuse_prime_envelope_u", 1.2, 0.0, 4.0),
 
 
     /**
@@ -247,6 +247,21 @@ enum class FuseIntKey(
      *  Der eigentliche Aggressivitaets-Regler des Markers; bewusst als
      *  Einstellung, weil das Feintuning im laufenden Betrieb passiert. */
     AbsorptionCreditWindowMin("fuse_absorption_credit_window_min", 60, 20, 180),
+    /**
+     * Ueber wieviele Minuten die Freigabe-Huelle verteilt wird.
+     *
+     * ZWEITER REGLER NEBEN DER MENGE (Toni 16.08.): "also zusaetzlich zur
+     * Huellengroesse, das Fenster ueber welches das Insulin abgegeben werden
+     * soll - so waere man flexibel". Anlass war das Haferflocken-Fruehstueck:
+     * die vollen 3,0 U flossen in ZEHN Minuten ab, danach sperrte der Guard
+     * bei IOB 3,70 zwei Stunden - genau als die Resorption lief. Dieselbe
+     * Menge ueber 25 Minuten haette denselben Vorlauf bei kleinerer
+     * IOB-Spitze zum Resorptionszeitpunkt.
+     *
+     * Obergrenze ist die Wanduhr-Kappe des Markers (45 min); darueber hinaus
+     * gaebe es nichts mehr zu verteilen.
+     */
+    PrimeWindowMin("fuse_prime_window_min", 15, 5, 45),
 
     /** Dauer der Marker-SONDERRECHTE ab Druck (erklaerter Kredit + Entwaffnung
      *  der Rebound-Bremsen + Marker-Zweig des Mahlzeit-Fensters). Endet

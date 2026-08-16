@@ -848,6 +848,7 @@ object FuseStateJson {
         .put("onsetEnvelopeU", fin(p.onsetEnvelopeU))
         .put("primeReleaseEnabled", p.primeReleaseEnabled)
         .put("primeEnvelopeU", fin(p.primeEnvelopeU))
+        .put("primeWindowMin", p.primeWindowMin)
         // Ohne diese Zeile waere hinterher nicht belegbar, OB der Schalter in
         // einem Lauf an war - genau die Luecke, die heute schon zweimal
         // aufgefallen ist (basalIobU, MarkerAuthorisesRelease). Ein Schalter,
@@ -871,7 +872,7 @@ object FuseStateJson {
         val parts = listOf("fuse-policy-v$RULE_SET_VERSION") +
             doubles.map { Sha.lossless(it) } +
             listOf(
-                p.iobThPercent, p.releaseHorizonMin, p.liabilityHorizonMin,
+                p.iobThPercent, p.releaseHorizonMin, p.liabilityHorizonMin, p.primeWindowMin,
                 p.driveTauMin, p.driveLowerQuantilePct, p.tailGuardEnabled, p.fastRestraintEnabled, p.onsetChannelEnabled, p.primeReleaseEnabled,
                 // v3: der Null-Ausgang aendert das Aktuationsverhalten - zwei
                 // Laeufe mit verschiedener Stellung duerfen nicht denselben

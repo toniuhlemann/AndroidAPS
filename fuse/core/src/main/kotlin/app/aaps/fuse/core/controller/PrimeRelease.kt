@@ -77,6 +77,7 @@ object PrimeRelease {
 
     /** Abgabefenster ab Knopfdruck [min]. 15 statt laenger: die Wette gilt
      *  dem CGM-blinden Kopf der Mahlzeit; danach traegt Evidenz oder nichts. */
+    /** Vorgabe, wenn der Aufrufer nichts anderes sagt. */
     const val WINDOW_MIN = 15
 
     /**
@@ -195,6 +196,20 @@ object PrimeRelease {
          *  "die Huelle ist weg", und das waere hier schlicht falsch. AM ENDE,
          *  weil die Tests Input positionsbasiert bauen. */
         val declinedByUser: Boolean = false,
+        /**
+         * Ueber wieviele Minuten die Huelle verteilt wird (Toni 16.08.).
+         *
+         * WARUM EINSTELLBAR: dieselbe Menge wirkt anders, je nachdem wie
+         * schnell sie kommt. Beim Haferflocken-Fruehstueck floss die volle
+         * Huelle in zehn Minuten ab; danach sperrte der Guard bei IOB 3,70
+         * zwei Stunden, genau als die Resorption lief. Ueber 25 Minuten
+         * verteilt haette derselbe Vorlauf eine kleinere IOB-Spitze zum
+         * Resorptionszeitpunkt - gleiche Menge, andere Kante.
+         *
+         * Die Wanduhr-Kappe [WALL_CEILING_MIN] bleibt die harte Grenze; ein
+         * groesseres Fenster kann sie nicht ueberschreiten.
+         */
+        val windowMin: Int = WINDOW_MIN,
     )
 
     data class Plan(
@@ -220,7 +235,8 @@ object PrimeRelease {
         val start = max(input.armedTsMs.toDouble(), input.windowStartTsMs.toDouble())
         val ageMin = (input.nowMs - start) / 60_000.0
         if (ageMin < 0.0) return off("CLOCK_SKEW")
-        if (ageMin >= WINDOW_MIN) return off("WINDOW_OVER")
+        val fenster = input.windowMin.coerceIn(5, WALL_CEILING_MIN).toDouble()
+        if (ageMin >= fenster) return off("WINDOW_OVER")
         if (!input.isfMgdlPerU.isFinite() || input.isfMgdlPerU <= 0.0) return off("NOT_FINITE")
         // OHNE BAHN gibt es keine Freigangsprobe. Das ist nur dann kein
         // Mangel, wenn der bewusste Markerdruck autorisiert - denn
@@ -242,7 +258,7 @@ object PrimeRelease {
 
         // Gleichmaessig ueber das Restfenster; mindestens ein Pumpenschritt,
         // sonst schoebe die Rundung alles ans Fensterende.
-        val minutesLeft = max(1.0, WINDOW_MIN - ageMin)
+        val minutesLeft = max(1.0, fenster - ageMin)
         val target = remaining / minutesLeft
         val stepped = floor(target / input.pumpIncrementU + TICK_EPS) * input.pumpIncrementU
         val floorU = min(remaining, max(input.pumpIncrementU, stepped))
