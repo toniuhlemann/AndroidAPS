@@ -30,12 +30,33 @@ object MarkerScope {
      * @param markerTs Zeitpunkt des Marker-Drucks (0 = kein Marker)
      * @param nowTs aktueller Anker
      * @param turnLatchedTs Zeitpunkt der ersten nachhaltigen Wende NACH dem
-     *  Druck (0 = noch keine); der Aufrufer latcht ihn je Marker-Episode.
+     *  Druck (0 = noch keine); der Aufrufer latcht ihn je Marker-Episode und
+     *  setzt ihn bei einer NEUEN Episode wieder auf 0.
      */
     fun boostActive(markerTs: Long, nowTs: Long, turnLatchedTs: Long, boostMaxMin: Int = BOOST_MAX_MIN): Boolean {
         if (markerTs <= 0L || nowTs < markerTs) return false
         if (boostMaxMin <= 0) return false
-        if (turnLatchedTs in 1..nowTs) return false
+        // EINWEG-FLAG, KEIN ZEITVERGLEICH (Auditbefund P1-5, Invariante 16).
+        //
+        // Hier stand `turnLatchedTs in 1..nowTs`. Springt die Systemuhr
+        // zurueck - eine NTP-Korrektur um wenige Minuten genuegt -, liegt der
+        // gelatchte Zeitpunkt plotzlich in der "Zukunft", die Bedingung wird
+        // falsch, und die Sonderrechte LEBEN WIEDER AUF. Sie entwaffnen dann
+        // Rebound- UND Nacht-Totband, und zwar ausgerechnet in der fallenden
+        // Phase nach dem Gipfel - genau der Lage, fuer die dieser Latch am
+        // 08.08. ueberhaupt gebaut wurde (Fruehstueckssturz auf 117 bei
+        // 1,6 U IOB, alle drei Nachtbremsen entwaffnet).
+        //
+        // Eine Wende, die einmal stattgefunden hat, findet nicht dadurch nicht
+        // mehr statt, dass die Uhr korrigiert wird. Der Latch ist eine
+        // TATSACHE ueber die Episode, keine Zeitspanne - deshalb reicht
+        // "gesetzt oder nicht". Beendet wird er ausschliesslich vom Aufrufer,
+        // indem er bei einer neuen Episode auf 0 zuruecksetzt.
+        //
+        // Fehlerrichtung: ein faelschlich gesetzter Latch (etwa aus einem
+        // Vorwaertssprung beim Setzen) schaltet die Sonderrechte ZU FRUEH ab -
+        // weniger Insulin, die sichere Seite.
+        if (turnLatchedTs > 0L) return false
         return nowTs - markerTs <= boostMaxMin * 60_000L
     }
 
