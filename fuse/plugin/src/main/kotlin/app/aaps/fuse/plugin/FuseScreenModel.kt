@@ -243,7 +243,7 @@ object FuseScreenModel {
         row(b, "Kontext", (d.context?.name ?: "-") + "  (Lage, steuert nicht)")
         row(b, "Block", d.block.name)
         row(b, "Grenze", d.bindingLimit + if (d.restraintBound) "  (gebremst)" else "")
-        row(b, "insulinReq", f2(d.insulinReqU) + " U")
+        row(b, "insulinReq", d.insulinReqU?.let { f2(it) + " U" } ?: "nicht gerechnet")
         row(b, "IOB", outcome.iobU?.let { f2(it) + " U" } ?: "-")
         // ABBRUCH-Fallback (Toni 08.08.: iobTH nie verstecken): ohne State
         // kommen die Basiswerte aus der Abort-Anreicherung, die Ratio-Zeile

@@ -338,7 +338,23 @@ object FuseController {
         val smbU: Double,
         val tbr: TbrAction,
         val block: Block,
-        val insulinReqU: Double,
+        /**
+         * Der gerechnete Bedarf [U] - `null` heisst NICHT GERECHNET.
+         *
+         * Auditbefund P1-4 (16.08.2026): hier stand ein nicht-nullbarer
+         * `Double`, und die Frueh-Ausstiege (NO_INPUT, none(), GUARD_FLOOR,
+         * TAIL) uebergaben ein hartkodiertes `0.0`. Der Bedarf wird aber erst
+         * NACH diesen Ausstiegen gerechnet - ein geblockter Zyklus war im
+         * Trail damit von echtem Nullbedarf nicht unterscheidbar.
+         *
+         * Das ist keine Kosmetik: der Fehler hat im Audit ZWEI unabhaengige
+         * Pruefer zu derselben falschen Aussage verleitet ("der Regler wies
+         * null Bedarf aus"), und bei der Plateau-Analyse am selben Tag noch
+         * einen dritten. Er verletzt die Projektregel "fehlende Daten heissen
+         * UNKNOWN, niemals 0" an genau der Stelle, an der man sie am
+         * dringendsten braucht - beim Deuten eines blockierten Zyklus.
+         */
+        val insulinReqU: Double?,
         val predAtReleaseMgdl: Double?,
         /**
          * Die SICHERHEITSBAHN, gegen die der Guard entschieden hat: prior-frei
@@ -497,7 +513,7 @@ object FuseController {
      * umgekehrtem Vorzeichen.
      */
     fun noInput(reason: String): Decision =
-        Decision(0.0, TbrAction.NO_NEW_POSITIVE, Block.NO_INPUT, 0.0, null, null, reason)
+        Decision(0.0, TbrAction.NO_NEW_POSITIVE, Block.NO_INPUT, null, null, null, reason)
 
     fun decide(
         state: State,
@@ -564,7 +580,7 @@ object FuseController {
         val ctx = contextOf(state.phase)
 
         fun none(block: Block, tbr: TbrAction = TbrAction.NO_NEW_POSITIVE) =
-            Decision(0.0, tbr, block, 0.0, null, null, block.name, context = ctx)
+            Decision(0.0, tbr, block, null, null, null, block.name, context = ctx)
 
         // Reihenfolge ist Absicht: Zustand vor Zahlen. Eine Dosis aus einer
         // Trajektorie, die gar nicht gelten darf, waere der teuerste Fehler.
@@ -633,7 +649,7 @@ object FuseController {
         // Endwert — eine Bahn kann harmlos enden und zwischendurch tief gehen.
         if (minLower < limits.guardFloorMgdl) {
             return Decision(
-                0.0, TbrAction.ZERO_TEMP, Block.GUARD_FLOOR, 0.0,
+                0.0, TbrAction.ZERO_TEMP, Block.GUARD_FLOOR, null,
                 releaseMean, minLower, "guardFloor=${limits.guardFloorMgdl}", context = ctx,
             ).tele()
         }
@@ -650,7 +666,7 @@ object FuseController {
         // Ein Schwanzbefund ist kein Sicherheitsbefund der Nahzone.
         if (tail != null && tail.usable && tail.headroomU <= 0.0) {
             return Decision(
-                0.0, TbrAction.NO_NEW_POSITIVE, Block.TAIL, 0.0,
+                0.0, TbrAction.NO_NEW_POSITIVE, Block.TAIL, null,
                 releaseMean, minLower, "tailHeadroom=${tail.headroomU}", tail, context = ctx,
             ).tele()
         }

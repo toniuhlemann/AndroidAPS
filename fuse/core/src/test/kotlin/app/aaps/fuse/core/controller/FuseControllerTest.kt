@@ -206,14 +206,51 @@ class FuseControllerTest {
         assertEquals(FuseController.TbrAction.ZERO_TEMP, d.tbr)
     }
 
+    /**
+     * NICHT GERECHNET IST NICHT NULL - Auditbefund P1-4 (16.08.2026).
+     *
+     * Der Bedarf wird erst NACH den Guard-Ausstiegen gerechnet. Vorher stand
+     * dort ein hartkodiertes `0.0`, und ein geblockter Zyklus war im Trail von
+     * echtem Nullbedarf nicht unterscheidbar. Der Fehler hat im Gesamtaudit
+     * zwei unabhaengige Pruefer zu derselben falschen Aussage verleitet ("der
+     * Regler wies null Bedarf aus") und bei der Plateau-Analyse desselben Tages
+     * noch einen dritten.
+     *
+     * Dieser Test haelt BEIDE Seiten fest - eine Behauptung ueber `null` allein
+     * traegt nichts, wenn nicht auch belegt ist, dass es den anderen Fall
+     * wirklich gibt.
+     */
+    @Test
+    fun `ein geblockter Zyklus ist von echtem Nullbedarf unterscheidbar`() {
+        // (a) Guard bricht VOR der Bedarfsrechnung ab -> nicht gerechnet.
+        val geblockt = FuseController.decide(state(), pred(bgAt30 = 90.0, minLower = 60.0), evidenceCreditActive = false)
+        assertEquals(FuseController.Block.GUARD_FLOOR, geblockt.block)
+        assertEquals(null, geblockt.insulinReqU) { "ein Guard-Ausstieg darf keinen Bedarf behaupten" }
+
+        // (b) Bahn ist sicher, der Bedarf wird gerechnet und ist nicht positiv
+        //     -> echter Nullbedarf, und der traegt eine ZAHL.
+        val ohneBedarf = FuseController.decide(state(), pred(bgAt30 = 90.0, minLower = 90.0), evidenceCreditActive = false)
+        assertEquals(FuseController.Block.NO_DEMAND, ohneBedarf.block)
+        val req = ohneBedarf.insulinReqU
+        assertTrue(req != null) { "ein gerechneter Nullbedarf muss eine Zahl tragen, kein null" }
+        assertTrue(req!! <= 0.0) { "und sie muss den Ausstiegsgrund tragen: $req" }
+
+        // (c) Die beiden Faelle sind damit im Export unterscheidbar - genau das
+        //     war vorher nicht der Fall.
+        assertTrue(geblockt.insulinReqU != ohneBedarf.insulinReqU)
+    }
+
     /** Kein zweiter IOB-Abzug: insulinReq folgt allein aus predBG und Ziel,
      *  weil die IOB-Wirkung bereits in der Bahn steckt. */
     @Test
     fun `insulinReq zieht IOB nicht ein zweites Mal ab`() {
         val a = FuseController.decide(state(netIob = 0.5, bolusIob = 0.5), pred(200.0), evidenceCreditActive = false)
         val b = FuseController.decide(state(netIob = 3.0, bolusIob = 3.0), pred(200.0), evidenceCreditActive = false)
-        assertEquals(a.insulinReqU, b.insulinReqU, 1e-12)   // (200-100)/50 = 2.0
-        assertEquals(2.0, a.insulinReqU, 1e-12)
+        // `!!` ist hier Absicht: der Test BEHAUPTET, dass auf diesem Pfad
+        // gerechnet wurde. Waere der Wert null, ist das ein Befund - der Test
+        // soll daran scheitern, statt ihn mit `?: 0.0` zu verstecken.
+        assertEquals(a.insulinReqU!!, b.insulinReqU!!, 1e-12)   // (200-100)/50 = 2.0
+        assertEquals(2.0, a.insulinReqU!!, 1e-12)
     }
 
     // ---- Kanalgrenze und Deckel ------------------------------------------

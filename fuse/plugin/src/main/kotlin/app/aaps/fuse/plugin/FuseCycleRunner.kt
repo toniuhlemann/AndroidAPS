@@ -1719,7 +1719,13 @@ class FuseCycleRunner(
             (lifted.block != FuseController.Block.NONE && lifted.block != FuseController.Block.BELOW_PUMP_INCREMENT) ||
             (signal.ukfRatePerMin.isFinite() && signal.ukfRatePerMin < 0.0) ||
             !signal.ukfRatePerMin.isFinite() ||
-            lifted.insulinReqU <= 0.0
+            // `null` = nicht gerechnet (Frueh-Ausstieg, P1-4). Es wird wie 0
+            // behandelt, also VERWORFEN - verhaltensgleich zum Zustand vor der
+            // Nullbarkeit, und die konservative Richtung: ohne gerechneten
+            // Bedarf gibt es keinen Grund, einen Rest weiterzutragen. Der Fall
+            // ist ohnehin fast immer schon durch die Blockpruefung oben
+            // erfasst; die Zeile bleibt als eigenstaendiger Riegel stehen.
+            (lifted.insulinReqU ?: 0.0) <= 0.0
         // SUB-02 Rest (Codex Re-Review 603a15a): der Uebertrag braucht eine
         // HERKUNFT. Er ist eine Zusage, die unter BESTIMMTEN Bedingungen
         // entstanden ist - Ziel, Profil-ISF, Pumpenschritt, Mahlzeitenfenster,

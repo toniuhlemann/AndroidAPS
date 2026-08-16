@@ -76,7 +76,9 @@ object FuseRtBuilder {
             if (it.q1Outlier) reason.append(" OUTLIER")
         }
         targetMgdl?.let { reason.append(" | target=").append(fmt(it)).append('(').append(targetSource ?: "?").append(')') }
-        reason.append(" | insulinReq=").append(fmt(decision.insulinReqU))
+        // `null` = nicht gerechnet (Frueh-Ausstieg, P1-4). Im Grund steht
+        // dann ausdruecklich "n/a" statt einer 0, die wie ein Messwert aussaehe.
+        reason.append(" | insulinReq=").append(decision.insulinReqU?.let { fmt(it) } ?: "n/a")
         decision.predAtReleaseMgdl?.let { reason.append(" | predRelease=").append(fmt(it)) }
         decision.minLowerMgdl?.let { reason.append(" | minLower=").append(fmt(it)) }
         minMeanMgdl?.let { reason.append(" minMean=").append(fmt(it)) }
@@ -130,7 +132,10 @@ object FuseRtBuilder {
             timestamp = nowMs,
             bg = bgMgdl,
             targetBG = targetMgdl,
-            insulinReq = decision.insulinReqU,
+            // AAPS' APSResult kennt kein "nicht gerechnet" - an dieser
+            // Systemgrenze muss eine Zahl stehen. 0.0 ist verhaltensgleich zum
+            // Zustand vor P1-4; die ehrliche Unterscheidung traegt der Trail.
+            insulinReq = decision.insulinReqU ?: 0.0,
             eventualBG = decision.predAtReleaseMgdl,
             IOB = iobU,
             reason = reason,
