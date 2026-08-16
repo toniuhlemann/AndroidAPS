@@ -7,6 +7,7 @@ import androidx.work.WorkerParameters
 import androidx.work.workDataOf
 import app.aaps.core.graph.data.LineGraphSeries
 import app.aaps.core.graph.data.ScaledDataPoint
+import app.aaps.core.interfaces.db.ProcessedTbrEbData
 import app.aaps.core.interfaces.iob.IobCobCalculator
 import app.aaps.core.interfaces.overview.OverviewData
 import app.aaps.core.interfaces.profile.ProfileFunction
@@ -14,6 +15,7 @@ import app.aaps.core.interfaces.resources.ResourceHelper
 import app.aaps.core.interfaces.rx.bus.RxBus
 import app.aaps.core.interfaces.rx.events.EventIobCalculationProgress
 import app.aaps.core.interfaces.workflow.CalculationWorkflow
+import app.aaps.core.objects.extensions.convertedToAbsolute
 import app.aaps.core.objects.workflow.LoggingWorker
 import app.aaps.core.utils.receivers.DataWorkerStorage
 import kotlinx.coroutines.Dispatchers
@@ -26,6 +28,7 @@ class PrepareBasalDataWorker(
 
     @Inject lateinit var dataWorkerStorage: DataWorkerStorage
     @Inject lateinit var profileFunction: ProfileFunction
+    @Inject lateinit var processedTbrEbData: ProcessedTbrEbData
     @Inject lateinit var rh: ResourceHelper
     @Inject lateinit var rxBus: RxBus
     private var ctx: Context = rh.getThemedCtx(context)
@@ -52,51 +55,93 @@ class PrepareBasalDataWorker(
         val endTime = data.overviewData.endTime
         val fromTime = data.overviewData.fromTime
         var time = fromTime
-        // AUSHUNGERN VERHINDERN (gemessen 16.08., Toni): dieser Worker lief
-        // eingeschwungen 33-60 s, waehrend jede BG-Minute ueber
-        // EventNewHistoryData ein REPLACE der ganzen Kette ausloest. Er wurde
-        // dadurch fast immer abgeschossen - und weil `.then()` eine harte
-        // Abhaengigkeit ist, starben die NEUN Folgeglieder gleich mit, die
-        // zusammen nur ~2 s brauchen. Sichtbar war das als dauerhaft leere
-        // Untergraphen (IOB, DEV, FUSE-Serien), waehrend der BG-Graph stand.
+        // GEMESSEN, NICHT GERATEN (16.08., komodo). Der eingebaute Zaehler hat
+        // die Ursache dieses Workers eindeutig festgenagelt:
         //
-        // Zwei Kosten pro Minutenschritt waren dafuer verantwortlich, beide
-        // hier behoben, ohne die Kette oder fremde Schnittstellen anzufassen:
+        //   gesamt=16608ms schritte=360 rechenzeit=16586ms
+        //   davon getBasalData=16584ms getProfile=0ms
         //
-        // (1) EIN EVENT JE SCHRITT. Der Fortschritt wurde bei 6 h Anzeige
-        //     360 mal, bei 24 h 1440 mal gesendet - fuer 100 unterscheidbare
-        //     Prozentwerte. Jeder Send laeuft ueber den RxBus in die UI.
-        //     Jetzt nur noch, wenn sich der ganzzahlige Prozentwert aendert.
+        // Der Worker WARTET also nicht auf einen belegten Thread-Pool, er
+        // RECHNET - und 99,9 % davon stecken in einem einzigen Aufruf:
+        // 46 ms je Minutenschritt fuer getBasalData. Der Profilaufruf, den ich
+        // im ersten Anlauf gecacht hatte, kostete gemessene 0 ms; jener Fix war
+        // wirkungslos, genau wie die Pruefung vorhergesagt hatte.
         //
-        // (2) EIN PROFILAUFRUF JE SCHRITT. profileFunction.getProfile(time)
-        //     liefert innerhalb eines Profilblocks immer dasselbe Objekt; die
-        //     Blockgrenzen liegen bei vollen (halben) Stunden, nie im
-        //     Minutenraster. Gemerkt wird deshalb der letzte Aufruf und nur
-        //     bei Blockwechsel neu geholt.
+        // WARUM 46 ms: getBasalData ruft je Schritt
+        // getTempBasalIncludingConvertedExtended(t) und das geht jedes Mal an
+        // die Datenbank. Der interne basalDataTable-Cache faengt das nicht ab,
+        // weil LoadBgDataWorker zu Beginn jedes Zyklus clearCache() ruft - bei
+        // 1-Minuten-CGM also jede Minute. Nicht die MENGE der Eintraege ist das
+        // Problem (Toni hat zu Recht eingewandt, dass FUSE nur ~6 TBRs je
+        // Stunde schreibt), sondern die ANZAHL DER ABFRAGEN.
+        //
+        // DER FIX: eine Abfrage fuer das ganze Fenster statt 360 einzelne.
+        // getTempBasalIncludingConvertedExtendedForRange existiert dafuer
+        // bereits im Bestand, holt mit EINEM getTemporaryBasalsActiveBetween-
+        // TimeAndTime alle Eintraege und schneidet die Schritte im Speicher.
+        // Die Semantik je Schritt ist unveraendert - was hier steht, ist Zeile
+        // fuer Zeile dasselbe wie in getBasalData, nur ohne den DB-Weg.
+        //
+        // WAS DAS ANSTOESST: solange dieser Worker 33-60 s lief, wurde er von
+        // der naechsten BG-Minute fast immer abgeschossen, und weil `.then()`
+        // eine harte Abhaengigkeit ist, starben die NEUN Folgeglieder gleich
+        // mit, die zusammen nur ~2 s brauchen. Sichtbar war das als dauerhaft
+        // leere Untergraphen (IOB, DEV, FUSE-Serien) bei stehendem BG-Graphen.
+        //
+        // NACHGEPRUEFT, WEIL DIE BATCH-VARIANTE BISHER NIRGENDS BENUTZT WURDE
+        // (sie lag unverdrahtet im Bestand, war also nicht erprobt):
+        //   - Die Filter beider Abfragen sind identisch (referenceId IS NULL,
+        //     isValid = 1).
+        //   - Die Einzelabfrage nimmt bei Ueberlappung ORDER BY timestamp DESC
+        //     LIMIT 1; die Range-Abfrage liefert ebenfalls timestamp DESC, und
+        //     firstOrNull darauf ist genau dasselbe Element.
+        //   - Die Treffermenge deckt jeden Rasterpunkt ab: wer bei t aktiv ist,
+        //     erfuellt auch timestamp <= to AND timestamp + duration > from.
+        //   - roundUpTime ist reines Minutenraster, also gilt
+        //     roundUpTime(x + 60s) = roundUpTime(x) + 60s. Karte und Schleife
+        //     treffen sich daher exakt; `rueckfaelle` im Log muss 0 bleiben.
+        //
+        // WO DER FIX NICHT GREIFT: getConvertedExtended() laeuft weiterhin je
+        // Schritt. Es kehrt aber sofort zurueck, solange die Pumpe keine Temps
+        // ueber Extended-Boli faelscht - Medtrum, Dana RS, Omnipod, Combo und
+        // Medtronic stehen alle auf false. Nur bei einer Pumpe mit true bliebe
+        // dieser Zweig teuer.
+        //
+        // SICHERHEITSNETZ: fehlt ein Schluessel in der Karte (ein Raster, das
+        // nicht zu roundUpTime passt), faellt der Schritt auf den alten
+        // getBasalData-Weg zurueck. Schlimmstenfalls ist er dann so langsam wie
+        // vorher - ein FALSCHER Graph kann daraus nicht entstehen.
+        //
+        // ZWEITE, KLEINERE KOSTENSTELLE, die schon vorher weg ist: der
+        // Fortschritt wurde je Schritt gesendet - bei 6 h Anzeige 360 mal, bei
+        // 24 h 1440 mal, fuer 100 unterscheidbare Prozentwerte, jedes Mal ueber
+        // den RxBus in die UI. Jetzt nur noch bei Aenderung des ganzzahligen
+        // Prozentwerts.
         //
         // Was BEWUSST bleibt: die Schrittweite von einer Minute (die
-        // Stufenkanten des Basalgraphen sollen minutengenau bleiben) und die
-        // isStopped-Pruefung (ein laufender Abbruch muss weiter sofort
-        // greifen).
-        // MESSUNG STATT VERMUTUNG (16.08.). Warum dieser Worker die
-        // 60-s-Taktgrenze reisst, ist bisher INFERIERT: die Datenbankthese
-        // faellt, seit gezaehlt ist, dass FUSE nur ~6 TBRs je Stunde schreibt
-        // (36 Zeilen im 6-h-Fenster), und die Graph-Komplexitaet faellt, weil
-        // autoISF mit mehr Serien durchlief. 92-166 ms je Schritt sind fuer
-        // die drei sichtbaren Operationen um Groessenordnungen zu viel.
-        //
-        // Diese Zeilen trennen die beiden verbliebenen Moeglichkeiten:
-        // RECHNET der Worker (Summe der Schrittzeiten ~ Gesamtdauer) oder
-        // WARTET er, weil der Thread-Pool belegt ist (Summe << Gesamtdauer)?
-        // Ohne diese Unterscheidung ist jeder weitere Fix geraten.
+        // Stufenkanten des Basalgraphen sollen minutengenau bleiben), die
+        // isStopped-Pruefung (ein laufender Abbruch muss weiter sofort greifen)
+        // und der Profilaufruf je Schritt. Letzteren hatte ich zwischenzeitlich
+        // gecacht; die Messung weist ihm 0 ms zu, und ein Profilwechsel liegt
+        // nicht zwingend auf einer halben Stunde - der Cache brachte also
+        // nichts und konnte einen Wechsel verschlucken.
         val tStart = System.currentTimeMillis()
         var stepNanos = 0L
         var profileNanos = 0L
         var basalNanos = 0L
         var steps = 0
+        var rueckfaelle = 0
         var lastProgress = -1
-        var cachedProfile: app.aaps.core.interfaces.profile.Profile? = null
-        var cachedProfileUntil = Long.MIN_VALUE
+        val ads = data.iobCobCalculator.ads
+        val tBatch = System.nanoTime()
+        // Ein Aufruf fuer das ganze Fenster. Das Raster muss exakt das sein,
+        // das die Schleife nachher nachschlaegt: roundUpTime(fromTime) plus
+        // Vielfache einer Minute. Das obere Ende bekommt eine Minute Zugabe,
+        // weil die Karte bis ausschliesslich endTime laeuft.
+        val tempBasals = processedTbrEbData.getTempBasalIncludingConvertedExtendedForRange(
+            ads.roundUpTime(fromTime), ads.roundUpTime(endTime) + 60_000L, 60_000L
+        )
+        val batchNanos = System.nanoTime() - tBatch
         while (time < endTime) {
             if (isStopped) return Result.failure(workDataOf("Error" to "stopped"))
             val progress = ((time - fromTime).toDouble() / (endTime - fromTime) * 100.0).toInt()
@@ -106,28 +151,40 @@ class PrepareBasalDataWorker(
             }
             val tStep = System.nanoTime()
             steps++
-            if (time >= cachedProfileUntil) {
-                val tP = System.nanoTime()
-                cachedProfile = profileFunction.getProfile(time)
-                profileNanos += System.nanoTime() - tP
-                // Bis zur naechsten halben Stunde gilt derselbe Profilblock;
-                // die halbe Stunde ist die feinste Slotbreite, die AAPS kennt.
-                cachedProfileUntil = (time / 1_800_000L + 1) * 1_800_000L
-            }
-            val profile = cachedProfile
+            val tP = System.nanoTime()
+            val profile = profileFunction.getProfile(time)
+            profileNanos += System.nanoTime() - tP
             if (profile == null) {
                 time += 60 * 1000L
                 continue
             }
+            // Derselbe Rasterpunkt, den getBasalData intern benutzt.
+            val t = ads.roundUpTime(time)
             val tB = System.nanoTime()
-            val basalData = data.iobCobCalculator.getBasalData(profile, time)
+            val baseBasalValue: Double
+            val isTempBasalRunning: Boolean
+            val tempBasalAbsolute: Double
+            if (tempBasals.containsKey(t)) {
+                // containsKey statt Nullpruefung: ein FEHLENDER Schluessel und
+                // ein Schluessel MIT Wert null sehen beim Lesen gleich aus, und
+                // "kein Temp-Basal" ist genau der zweite Fall.
+                val tb = tempBasals[t]
+                baseBasalValue = profile.getBasal(t)
+                isTempBasalRunning = tb != null
+                tempBasalAbsolute = tb?.convertedToAbsolute(t, profile) ?: baseBasalValue
+            } else {
+                rueckfaelle++
+                val basalData = data.iobCobCalculator.getBasalData(profile, time)
+                baseBasalValue = basalData.basal
+                isTempBasalRunning = basalData.isTempBasalRunning
+                tempBasalAbsolute = basalData.tempBasalAbsolute
+            }
             basalNanos += System.nanoTime() - tB
-            val baseBasalValue = basalData.basal
             var absoluteLineValue = baseBasalValue
             var tempBasalValue = 0.0
             var basal = 0.0
-            if (basalData.isTempBasalRunning) {
-                tempBasalValue = basalData.tempBasalAbsolute
+            if (isTempBasalRunning) {
+                tempBasalValue = tempBasalAbsolute
                 absoluteLineValue = tempBasalValue
                 if (tempBasalValue != lastTempBasal) {
                     tempBasalArray.add(ScaledDataPoint(time, lastTempBasal, data.overviewData.basalScale))
@@ -167,7 +224,8 @@ class PrepareBasalDataWorker(
             app.aaps.core.interfaces.logging.LTag.CORE,
             "PrepareBasalData MESSUNG: gesamt=${System.currentTimeMillis() - tStart}ms " +
                 "schritte=$steps rechenzeit=${stepNanos / 1_000_000}ms " +
-                "davon getBasalData=${basalNanos / 1_000_000}ms getProfile=${profileNanos / 1_000_000}ms"
+                "davon basal=${basalNanos / 1_000_000}ms getProfile=${profileNanos / 1_000_000}ms " +
+                "batch=${batchNanos / 1_000_000}ms/${tempBasals.size}eintraege rueckfaelle=$rueckfaelle"
         )
 
         // final points
