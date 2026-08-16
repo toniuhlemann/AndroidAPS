@@ -41,28 +41,22 @@ class LoopPluginAnnahmeWaechterTest {
 
     @Test
     fun `der Platzhalter wird vor jedem Bolusaufruf gesetzt`() {
-        val quelle = loopPluginQuelle()
-        val zeilen = quelle.lines()
+        val code = ohneKommentare()
 
-        val platzhalter = zeilen.indexOfFirst {
-            it.contains("lastRun.smbSetByPump =") && !it.contains("null")
-        }
+        val platzhalter = PLATZHALTER.find(code)?.range?.first ?: -1
         assertTrue(platzhalter >= 0) {
             "Die Zuweisung eines NICHT-null-Platzhalters an lastRun.smbSetByPump fehlt. " +
                 "NotSentProof Regel C (BOLUS_IN_QUEUE) haengt daran - bitte Regel C pruefen."
         }
 
-        val bolusAufrufe = zeilen.mapIndexedNotNull { i, z ->
-            i.takeIf { z.contains("commandQueue.bolus(") }
-        }
+        val bolusAufrufe = BOLUS.findAll(code).map { it.range.first }.toList()
         assertTrue(bolusAufrufe.size == 1) {
-            "Erwartet genau EIN commandQueue.bolus() in LoopPlugin, gefunden ${bolusAufrufe.size} " +
-                "(Zeilen ${bolusAufrufe.map { it + 1 }}). Ein zweiter Bolusweg koennte den " +
-                "Platzhalter umgehen und NotSentProof Regel C still entwerten."
+            "Erwartet genau EIN commandQueue.bolus() in LoopPlugin, gefunden ${bolusAufrufe.size}. " +
+                "Ein zweiter Bolusweg koennte den Platzhalter umgehen und NotSentProof Regel C " +
+                "still entwerten."
         }
         assertTrue(platzhalter < bolusAufrufe.first()) {
-            "Der Platzhalter (Zeile ${platzhalter + 1}) liegt NICHT vor dem Bolusaufruf " +
-                "(Zeile ${bolusAufrufe.first() + 1}) - NotSentProof Regel C traegt nicht mehr."
+            "Der Platzhalter liegt NICHT vor dem Bolusaufruf - NotSentProof Regel C traegt nicht mehr."
         }
     }
 
@@ -75,20 +69,80 @@ class LoopPluginAnnahmeWaechterTest {
      */
     @Test
     fun `der Platzhalter haengt an der Bolusanforderung`() {
-        val quelle = loopPluginQuelle()
-        // Das ERSTE Vorkommen ist die null-Ruecksetzung - gesucht ist die
-        // Zuweisung des Platzhalters, also die erste NICHT-null-Stelle.
-        val zeilen = quelle.lines()
-        val treffer = zeilen.indexOfFirst {
-            it.contains("lastRun.smbSetByPump =") && !it.contains("null")
-        }
+        val code = ohneKommentare()
+        val treffer = PLATZHALTER.find(code)?.range?.first ?: -1
         assertTrue(treffer >= 0) { "Platzhalter-Zuweisung nicht gefunden" }
-        // Die Bedingung steht im Bestand in DERSELBEN Zeile wie die Zuweisung,
-        // deshalb die Trefferzeile einschliessen.
-        val davor = zeilen.subList(maxOf(0, treffer - 8), treffer + 1).joinToString(" ")
+        // Zeichenfenster statt Zeilenfenster: die Bedingung darf ueber mehrere
+        // Zeilen vor der Zuweisung stehen, ohne dass der Waechter sie verliert.
+        val davor = code.substring(maxOf(0, treffer - 400), minOf(code.length, treffer + 120))
         assertTrue(davor.contains("isBolusRequested")) {
             "Die Platzhalter-Zuweisung steht nicht mehr im isBolusRequested-Zweig - " +
                 "die Grundlage von NotSentProof Regel C hat sich geaendert."
         }
+    }
+
+    /**
+     * SELBSTPRUEFUNG DES WAECHTERS. Ein statischer Test, dessen Muster ins
+     * Leere greift, meldet fuer immer gruen - das ist schlimmer als kein Test.
+     * Beide Anker muessen im fremden Quelltext wirklich vorkommen.
+     */
+    @Test
+    fun `der Waechter greift ueberhaupt`() {
+        val code = ohneKommentare()
+        assertTrue(PLATZHALTER.containsMatchIn(code)) { "Platzhalter-Muster findet nichts" }
+        assertTrue(BOLUS.containsMatchIn(code)) { "Bolus-Muster findet nichts" }
+        assertTrue(code.contains("lastRun")) { "liest der Test ueberhaupt LoopPlugin?" }
+    }
+
+    /**
+     * Kommentare raus, bevor gesucht wird - sonst zaehlt ein Kommentar, der
+     * `commandQueue.bolus(` bloss ERWAEHNT, als zweiter Bolusweg.
+     */
+    private fun ohneKommentare(): String =
+        loopPluginQuelle()
+            .replace(Regex("""/\*.*?\*/""", RegexOption.DOT_MATCHES_ALL), " ")
+            .lines().joinToString("\n") { it.substringBefore("//") }
+
+    private companion object {
+
+        /**
+         * WHITESPACE- UND ZEILENTOLERANT - Auditbefund P1-6 (16.08.2026).
+         *
+         * Die erste Fassung suchte zeilenweise mit `contains("commandQueue.bolus(")`.
+         * Eine ausgefuehrte Mutationsprobe des Gesamtaudits hat das als blind
+         * nachgewiesen: ein ZWEITER Bolusweg, ueber zwei Zeilen geschrieben,
+         * wurde nicht mitgezaehlt - der Waechter blieb gruen, obwohl genau der
+         * Fall eingetreten war, gegen den er gebaut wurde (ein Bolusweg, der
+         * den Platzhalter umgeht und NotSentProof Regel C entwertet).
+         *
+         * Deshalb jetzt Regex ueber den ganzen Quelltext, mit `\s*` an jeder
+         * Fuge, und Positionsvergleich ueber ZEICHEN statt Zeilennummern.
+         */
+        val BOLUS = Regex("""commandQueue\s*\.\s*bolus\s*\(""")
+
+        /**
+         * Die Zuweisung eines NICHT-null-Platzhalters, GEKOPPELT an
+         * `isBolusRequested`.
+         *
+         * Die Kopplung ist nicht Kosmetik, sondern traegt die Aussage. Im
+         * Bestand gibt es VIER Zuweisungen an `smbSetByPump`: zwei
+         * Ruecksetzungen auf null, den Platzhalter im isBolusRequested-Zweig
+         * und eine im Erfolgs-Callback. Nur der Platzhalter beweist "ein Bolus
+         * wurde angefordert, bevor das Kommando hinausging" - genau darauf
+         * ruht NotSentProof Regel C.
+         *
+         * Ohne die Kopplung wuerde der Waechter die Callback-Zuweisung als
+         * Platzhalter durchgehen lassen: entwertet jemand die echte Stelle,
+         * faende der Test die spaetere und bliebe gruen, obwohl `null` dann
+         * nicht mehr "nichts angefordert" heisst, sondern nur noch "der
+         * Callback kam noch nicht" - und das ist die gefaehrliche Richtung
+         * (FUSE entlastet eine Menge, die doch geflossen ist).
+         *
+         * `(?!\s*null\b)` schliesst die Ruecksetzungen aus, `\s*` an jeder
+         * Fuge macht es zeilentolerant.
+         */
+        val PLATZHALTER = Regex(
+            """isBolusRequested\s*\)\s*lastRun\s*\.\s*smbSetByPump\s*=\s*(?!\s*null\b)"""
+        )
     }
 }

@@ -76,8 +76,36 @@ class FuseScreenInventarWaechterTest {
         else             -> null
     }
 
-    private val muster =
-        Regex("""\b(FuseIntKey|FuseDoubleKey|FuseBooleanKey|IntKey|DoubleKey|BooleanKey)\.(\w+)""")
+    /**
+     * TYPGEBUNDEN, nicht bloss namenssuchend - Auditbefund P1-6 (16.08.2026).
+     *
+     * Die erste Fassung suchte nur nach dem Vorkommen eines Schluesselnamens
+     * im Bauabschnitt. Eine ausgefuehrte Mutationsprobe des Gesamtaudits hat
+     * das als blind nachgewiesen: ersetzt man eine Preference-Zeile durch eine
+     * `info()`-Zeile, die denselben Schluessel nennt, bleibt der Waechter
+     * gruen - obwohl der Wert dann NICHT MEHR BEDIENBAR ist. Genau die Klasse
+     * des Absturzes vom 16.08., nur umgekehrt.
+     *
+     * Deshalb wird jetzt die BAUFORM verlangt: der Schluessel muss als
+     * `intKey =` / `doubleKey =` / `booleanKey =` an einer Adaptive-Preference
+     * haengen oder ueber die Hilfsfunktion `timeOfDay(...)` gebaut werden.
+     * Eine `info()`-Zeile erfuellt das nicht - sie baut ein
+     * `Preference(context)` mit `isPersistent = false`.
+     *
+     * WHITESPACE- UND ZEILENTOLERANT (dieselbe Lehre): `intKey=X` und
+     * `intKey  =  X` sind dieselbe Bauform, und der Schluessel darf in einer
+     * anderen Zeile stehen als der Aufruf. Der Bauabschnitt wird deshalb vor
+     * der Suche zu einer Zeile normalisiert.
+     *
+     * FEHLERRICHTUNG: kommt eine NEUE Hilfsfunktion dazu, die hier nicht
+     * steht, meldet der Waechter den Schluessel faelschlich als fehlend. Das
+     * ist die sichere Richtung - ein Fehlalarm kostet eine Minute, ein blinder
+     * Waechter kostet einen Absturz am Geraet.
+     */
+    private val muster = Regex(
+        """(?:intKey|doubleKey|booleanKey)\s*=\s*(FuseIntKey|FuseDoubleKey|FuseBooleanKey|IntKey|DoubleKey|BooleanKey)\s*\.\s*(\w+)""" +
+            """|timeOfDay\s*\(\s*(FuseIntKey|IntKey)\s*\.\s*(\w+)"""
+    )
 
     /**
      * Die Schluessel, die der Bildschirm laut Quelltext tatsaechlich baut.
@@ -94,13 +122,22 @@ class FuseScreenInventarWaechterTest {
      * Kommentare werden vorher entfernt, weil dort Schluessel erklaert und
      * nicht gebaut werden.
      */
-    private fun gebauteKeys(): Set<String> =
-        bildschirmBlock().lines()
+    private fun gebauteKeys(): Set<String> {
+        // Kommentare raus, dann zu EINER Zeile - so treffen die Muster auch
+        // mehrzeilige Aufrufe (ApsSmbMaxIob wird ueber vier Zeilen gebaut).
+        val block = bildschirmBlock().lines()
             .map { it.substringBefore("//").trim() }
             .filterNot { it.startsWith("*") || it.startsWith("/*") }
-            .flatMap { zeile -> muster.findAll(zeile).map { it.groupValues[1] to it.groupValues[2] }.toList() }
-            .mapNotNull { (typ, name) -> aufloesen(typ, name) }
+            .joinToString(" ")
+        return muster.findAll(block)
+            .mapNotNull { m ->
+                // Gruppe 1/2 = benannte Argumentform, Gruppe 3/4 = timeOfDay.
+                val typ = m.groupValues[1].ifEmpty { m.groupValues[3] }
+                val name = m.groupValues[2].ifEmpty { m.groupValues[4] }
+                if (typ.isEmpty() || name.isEmpty()) null else aufloesen(typ, name)
+            }
             .toSet()
+    }
 
     /**
      * DER FALL VOM 16.08. Ein Key im Vertrag ohne Zeile im Bildschirm laesst
