@@ -1,6 +1,7 @@
 package app.aaps.fuse.plugin
 
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
@@ -131,7 +132,22 @@ class FuseHoldAlarmTest {
     fun `der Grund steht im Meldungstext, auch ohne Fehlerliste`() {
         val t = FuseHoldAlarm.text(recovery, leer)
         assertTrue(t.contains("LEDGER_RECOVERY_HOLD")) { "die Quelle muss dastehen" }
-        assertTrue(t.contains("Reparatur")) { "ein Ausweg gehoert dazu" }
+
+        // DER PAUSCHALE WEGWEISER IST WEG (Auditbefund P0-1, 16.08.2026).
+        //
+        // Hier stand `assertTrue(t.contains("Reparatur"))` - und genau das war
+        // der Fehler: an einer echten Pumpe verweigert die Reparatur
+        // (`FuseRepairScheduler`, nur bei nachgewiesener VirtualPump). Der
+        // Text schickte Toni also in eine Sackgasse, waehrend FUSE nichts
+        // abgab. Welcher Ausweg gilt, weiss nur der Aufrufer: er kennt die
+        // anliegenden Fehler und die Pumpe. Der Zustandsautomat liefert
+        // deshalb nur noch den Befund.
+        assertFalse(t.contains("Reparatur")) {
+            "der Grundtext darf keinen Weg nennen, den er nicht pruefen kann: '$t'"
+        }
+        assertTrue(FuseHoldAlarm.rumpf(recovery, leer).contains("LEDGER_RECOVERY_HOLD")) {
+            "der Rumpf traegt den Grund - er ist die Grundlage jedes Wegweisers"
+        }
 
         val mitFehlern = FuseHoldAlarm.text(global, mapOf("IDENTITY_CONFLICT" to 47, "PHASE_VIOLATION" to 1))
         assertTrue(mitFehlern.contains("IDENTITY_CONFLICT x47"))

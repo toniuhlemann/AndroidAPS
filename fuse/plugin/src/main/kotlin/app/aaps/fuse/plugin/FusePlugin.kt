@@ -172,6 +172,7 @@ class FusePlugin @Inject constructor(
      * (s. [app.aaps.fuse.plugin.ledger.FuseRepairScheduler]).
      */
     private val reparaturAuftrag = app.aaps.fuse.plugin.ledger.FuseRepairScheduler()
+    private val holdQuittung = app.aaps.fuse.plugin.ledger.FuseHoldQuittungScheduler()
 
     /**
      * Fix 8 (Audit 2d273cb, NEU-BS-07): der Ledger ist ZUSTAND, kein Export -
@@ -792,6 +793,18 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
                     aapsLogger.error(LTag.APS, it)
                 }
             }.onFailure { aapsLogger.error(LTag.APS, "FUSE ledger load failed", it) }
+            // ---- HOLD-QUITTUNG: hier und NUR hier ---------------------------
+            //
+            // NACH `loadOnce`, anders als die Reparatur eine Handvoll Zeilen
+            // weiter oben. Der Unterschied ist nicht Geschmack: die Reparatur
+            // arbeitet auf DATEIEN und muss vor dem Laden laufen, die Quittung
+            // arbeitet auf dem GELADENEN Zustand. Liefe sie davor, traefe sie
+            // im ersten Zyklus eines Prozesses einen leeren Zustand, wuerde
+            // mangels Zeile mit einem NEUEN `UNKNOWN_PROPOSAL` abgewiesen und
+            // von `loadOnce` anschliessend ueberschrieben. Und das ist nicht
+            // der Randfall: ein Hold ueberlebt den Neustart, die Quittung wird
+            // also typischerweise NACH einem Neustart erteilt.
+            fuehreHoldQuittungAus()
         } else {
             ledgerAdapter.noteMigrationFailed()
         }
@@ -1152,7 +1165,7 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
 
         // NACH den Buchungen dieses Zyklus - der Hold kann genau hier entstanden
         // sein. Davor gemeldet, waere die Meldung eine Generation zu spaet.
-        meldeLedgerHold()
+        meldeLedgerHold(aktivePumpe)
         meldePumpenRiegel(aktivePumpe)
 
         exportState(
@@ -1390,15 +1403,67 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
         )
     }
 
-    private fun meldeLedgerHold() {
+    /**
+     * Eine vorgemerkte Hold-Quittung ausfuehren - NACH `loadOnce`.
+     *
+     * Das Gedaechtnis der Meldung wird nur vergessen, wenn der Hold
+     * TATSAECHLICH gefallen ist. Eine Quittung kann abgewiesen werden (veraltete
+     * Generation) oder nur einen von mehreren Fehlern loesen; und `view().hold`
+     * ist zusammengesetzt - `persistFailed`, `recoveryHold` und
+     * `migrationPending` sperren weiter, ganz ohne Fehlerzeile. Wer hier
+     * blind vergaesse, naehme eine URGENT-Warnung zurueck, waehrend FUSE
+     * weiterhin nichts abgibt.
+     */
+    private fun fuehreHoldQuittungAus() {
+        val ergebnis = runCatching {
+            holdQuittung.runIfDue { auftrag ->
+                ledgerAdapter.quittiereHold(
+                    proposalId = auftrag.proposalId,
+                    by = auftrag.by,
+                    reason = auftrag.reason,
+                    errors = auftrag.errors,
+                    expectedHoldGeneration = auftrag.expectedHoldGeneration,
+                )
+            }
+        }.onFailure { aapsLogger.error(LTag.APS, "FUSE Hold-Quittung fehlgeschlagen", it) }.getOrNull()
+        if (ergebnis == null) return
+        val nochGesperrt = runCatching { ledgerAdapter.view().hold }.getOrDefault(true)
+        aapsLogger.warn(
+            LTag.APS,
+            "FUSE Hold-Quittung ausgefuehrt: Zeile frei=$ergebnis, Sperre steht noch=$nochGesperrt",
+        )
+        if (!nochGesperrt) holdAlarm.vergessen()
+    }
+
+    /**
+     * @param pumpe der Zyklus-Snapshot - KEINE zweite Pumpenlesung. Der
+     *   Wegweiser im Meldungstext haengt daran, ob die Reparatur an dieser
+     *   Pumpe ueberhaupt zulaessig waere.
+     */
+    private fun meldeLedgerHold(pumpe: FuseActivePump) {
         val s = ledgerAdapter.state
         // `view()` und nicht `state`: die Sperre ist zusammengesetzt (S1).
         val v = ledgerAdapter.view()
         val ursachen = s.errors.filter { it.active }.groupingBy { it.error.name }.eachCount()
+        // DER WEGWEISER MUSS STIMMEN. Bis 16.08. nannte der Text pauschal die
+        // Reparatur - die auf einer echten Pumpe verweigert wird. Hier ist der
+        // einzige Ort, an dem beides bekannt ist: die anliegenden Fehler und
+        // (ueber den Zyklus-Snapshot) die Pumpe.
+        val quittierbar = runCatching { ledgerAdapter.quittierbareHoldFehler() }.getOrNull().orEmpty()
+        val darfReparieren = pumpe.repairAllowed == true
+        val ausweg = when {
+            quittierbar.isNotEmpty() -> " Ausweg: Einstellungen -> FUSE -> Hold quittieren."
+            darfReparieren           -> " Ausweg: Einstellungen -> FUSE -> Ledger reparieren."
+            // KEIN Weg im Programm - und das gehoert gesagt statt verschwiegen.
+            else                     ->
+                " Kein Ausweg ueber die Bedienoberflaeche: die Fehler sind nicht quittierbar und die " +
+                    "Reparatur ist an dieser Pumpe gesperrt."
+        }
         val a = holdAlarm.verarbeite(
             hold = v.hold,
             kennung = FuseHoldAlarm.Kennung(s.holdGeneration, v.holdReason),
             ursachen = ursachen,
+            textBauer = { k, u -> FuseHoldAlarm.rumpf(k, u) + ausweg },
             melden = { text ->
                 // ATOMAR ersetzen statt Zuruecknehmen + Melden: die beiden
                 // Einzelereignisse laufen ueber ZWEI Rx-Streams ohne
@@ -1583,6 +1648,88 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
                         "Die Lage wird vor der Ausfuehrung ERNEUT geprueft; hat sie sich inzwischen " +
                         "geaendert, passiert nichts."
                 hinweis(context, "Ledger-Reparatur", text)
+            }
+            .show()
+    }
+
+    /**
+     * DIE HOLD-QUITTUNG - der zweite Ausgang, neben der Reparatur.
+     *
+     * Er ist der SANFTE: er nimmt einer benannten Zeile ihre Fehler, statt eine
+     * frische Generation zu schreiben. Haftung, Prime-Huelle, Mahlzeitenhistorie
+     * und der Genau-einmal-Riegel bleiben unangetastet - genau die Dinge, die
+     * die Reparatur verwirft und derentwegen sie an einer echten Pumpe
+     * verweigert wird. Deshalb darf die Quittung dort laufen.
+     *
+     * ANGEBOTEN WIRD NUR, WAS WIRKLICH QUITTIERBAR IST (s.
+     * [app.aaps.fuse.plugin.ledger.FuseLedgerAdapter.quittierbareHoldFehler]).
+     * Eine Quittung auf eine Zeile, die es nicht gibt, erzeugt einen NEUEN
+     * fail-closed-Fehler und erhoeht die Generation - der Bedienfehler machte
+     * die Lage schlechter statt besser.
+     */
+    private fun holdQuittungDialog(context: Context) {
+        val v = runCatching { ledgerAdapter.view() }.getOrNull()
+        val offen = runCatching { ledgerAdapter.quittierbareHoldFehler() }.getOrNull().orEmpty()
+        if (v?.hold != true) {
+            hinweis(context, "Hold quittieren", "Es steht kein Ledger-Hold an - nichts zu quittieren.")
+            return
+        }
+        if (offen.isEmpty()) {
+            // WICHTIG ehrlich zu sein: die Sperre kann aus Gruenden kommen, die
+            // gar keine Fehlerzeile haben (persistFailed, recoveryHold,
+            // migrationPending) - dann ist die Quittung strukturell kein Weg.
+            hinweis(
+                context, "Hold quittieren",
+                "Grund: ${v.holdReason ?: "unbekannt"}\n\n" +
+                    "Zu diesem Hold gibt es KEINEN quittierbaren Fehler. Entweder sperrt ein " +
+                    "Grund ohne Fehlerzeile (Persistenz, Wiederherstellung, Migration), oder die " +
+                    "aktiven Fehler sind harte Widersprueche - die brauchen eine Reparatur, " +
+                    "keine Unterschrift."
+            )
+            return
+        }
+        // Alle quittierbaren Fehler EINER Zeile: der Reducer loest den Latch
+        // nur, wenn danach kein aktiver Fehler dieser Zeile mehr steht - eine
+        // Teilquittung sieht aus wie Wirkungslosigkeit.
+        val zeile = offen.first().proposalId!!
+        val fehlerDerZeile = offen.filter { it.proposalId == zeile }
+        val arten = fehlerDerZeile.map { it.error }.toSet()
+        val gen = runCatching { ledgerAdapter.holdGeneration }.getOrDefault(-1L)
+        val liste = fehlerDerZeile.joinToString("\n") { "  ${it.error.name}: ${it.lastDetail} (${it.occurrences}x)" }
+        app.aaps.core.ui.dialogs.AlertDialogHelper.Builder(context)
+            .setCustomTitle(app.aaps.core.ui.dialogs.AlertDialogHelper.buildCustomTitle(context, "Hold quittieren?"))
+            .setMessage(
+                "Grund der Sperre: ${v.holdReason ?: "unbekannt"}\n\n" +
+                    "Quittiert werden diese Fehler der Zeile $zeile:\n$liste\n\n" +
+                    "Die Quittung nimmt der Zeile ihre Fehler. Haftung, Mahlzeiten-Huelle und der " +
+                    "Genau-einmal-Riegel bleiben erhalten - anders als bei der Reparatur.\n\n" +
+                    "Sie wird dauerhaft protokolliert (mit Grund) und erscheint in jedem Export.\n\n" +
+                    "NUR quittieren, wenn der Fehler nachweislich gegenstandslos ist - etwa weil " +
+                    "eine geloeschte Behandlung ihn ausgeloest hat."
+            )
+            .setNegativeButton("Abbrechen", null)
+            .setPositiveButton("Vormerken") { _, _ ->
+                val angenommen = holdQuittung.request(
+                    app.aaps.fuse.plugin.ledger.FuseHoldQuittungScheduler.Auftrag(
+                        proposalId = zeile,
+                        by = "Bediener (FUSE-Einstellungen)",
+                        reason = v.holdReason ?: "quittiert",
+                        errors = arten,
+                        // Der Stand JETZT - hat er sich bis zur Ausfuehrung
+                        // geaendert, weist der Reducer die Quittung ab. Der
+                        // Bediener hat dann eine andere Lage gesehen als die,
+                        // die gilt.
+                        expectedHoldGeneration = gen,
+                    )
+                )
+                hinweis(
+                    context, "Hold quittieren",
+                    if (!angenommen) "Es steht bereits eine Quittung aus - sie wird beim naechsten Zyklus ausgefuehrt."
+                    else "Vorgemerkt. Ausgefuehrt wird sie zu Beginn des NAECHSTEN Zyklus (bis zu eine Minute).\n\n" +
+                        "Das ist Absicht: mitten in einem laufenden Zyklus am Ledger zu arbeiten wuerde " +
+                        "die Quittung spurlos verlieren.\n\n" +
+                        "Aendert sich die Lage bis dahin, wird sie abgewiesen und der Hold bleibt."
+                )
             }
             .show()
     }
@@ -1858,6 +2005,15 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
             info("COB/UAM: nicht verwendet", "Mahlzeiten erscheinen im insulinbereinigten Stoerungssignal; eigener Onset-Pfad + Marker statt UAM.")
             info("Pumpen-Gate", "Aktuation ist nur fuer die VirtualPump und den belegten Medtrum Nano freigegeben. Der aktuelle Gate-Grund steht oben im FUSE-Reiter.")
             info("Ledger", "Offene Transporthaftung wird von iobTH- und maxIOB-Spielraum abgezogen. Hold, offene Zeilen und Haftung stehen im Reiter.")
+            addPreference(Preference(context).apply {
+                title = "Hold quittieren"
+                summary =
+                    "Der SANFTE Ausgang aus einem Ledger-Hold: nimmt einer benannten Zeile ihre " +
+                        "Fehler, laesst Haftung, Mahlzeiten-Huelle und den Genau-einmal-Riegel " +
+                        "stehen. Anders als die Reparatur auch an einer echten Pumpe zulaessig."
+                isPersistent = false
+                setOnPreferenceClickListener { runCatching { holdQuittungDialog(context) }; true }
+            })
             addPreference(Preference(context).apply {
                 title = "Ledger reparieren"
                 summary =

@@ -7,6 +7,7 @@ import app.aaps.fuse.core.ledger.AmountStage
 import app.aaps.fuse.core.ledger.IobAccountingSnapshot
 import app.aaps.fuse.core.ledger.LedgerConfig
 import app.aaps.fuse.core.ledger.LedgerError
+import app.aaps.fuse.core.ledger.LedgerErrorRecord
 import app.aaps.fuse.core.ledger.QueueRejectReason
 import app.aaps.fuse.core.ledger.LedgerEvent
 import app.aaps.fuse.core.ledger.LedgerReducer
@@ -1403,6 +1404,84 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
      */
     fun onProvenNotSent(proposalId: String, reason: QueueRejectReason) {
         reduce(LedgerEvent.QueueRejected(proposalId, reason))
+    }
+
+    /**
+     * WAS SICH HEUTE QUITTIEREN LIESSE - und nur das.
+     *
+     * Die Menge ist ENGER als [LedgerState.RECOVERABLE_ERRORS], und das ist
+     * kein Vorsichtsaufschlag, sondern eine Mechanik: die Quittung ist ein
+     * `OfProposal`-Ereignis, und der Dispatch weist jedes Ereignis ohne
+     * zugehoerige Zeile mit einem NEUEN fail-closed `UNKNOWN_PROPOSAL` ab
+     * (`LedgerReducer.kt:147-151`). Eine angebotene Quittung auf einen Fehler
+     * ohne Zeile wuerde die Lage also VERSCHLECHTERN: ein zusaetzlicher
+     * Sperrgrund, eine erhoehte `holdGeneration` - und damit auch jede parallel
+     * vorbereitete Quittung ungueltig.
+     *
+     * Betroffen sind genau die Fehler, die VOR oder OHNE Zeile entstehen:
+     * `UNKNOWN_PROPOSAL` selbst (nur bei `entry == null` erhoben) und
+     * `NON_FINITE_AMOUNT` aus `onProposed` (`LedgerReducer.kt:157-165`, bevor
+     * die Zeile existiert), sowie jeder global erhobene Fehler ohne
+     * `proposalId` - `SNAPSHOT_ORDER_CONFLICT` wird ausschliesslich so erhoben.
+     *
+     * DESHALB WIRD HIER GEFILTERT UND NICHT DIE DEKLARATION GEAENDERT. Die
+     * Fehler AUS `RECOVERABLE_ERRORS` zu streichen waere eine Semantikaenderung
+     * am Kern fuer ein Problem der Bedienoberflaeche; und sie bleiben zu Recht
+     * "quittierbar, sobald es eine Zeile gibt" - dieselbe Fehlerart kann mit
+     * Zeile auftreten.
+     */
+    fun quittierbareHoldFehler(): List<LedgerErrorRecord> =
+        HoldQuittungAuswahl.quittierbar(state.errors) { state.entries[it] != null }
+
+    /**
+     * Die Generation, gegen die eine Quittung ausgestellt werden muss.
+     *
+     * Der Reducer prueft sie (`LedgerReducer.kt:370-371`): steigt sie zwischen
+     * Anzeige und Ausfuehrung, ist die Zustimmung veraltet und wird abgewiesen.
+     * Das ist gewollt - der Bediener hat dann etwas anderes gesehen als das,
+     * was jetzt gilt.
+     */
+    val holdGeneration: Long get() = state.holdGeneration
+
+    /**
+     * DIE QUITTUNG - der zweite Weg aus einem Ledger-Hold, neben der
+     * Reparatur.
+     *
+     * Der ganze Pfad dahinter war fertig gebaut, geprueft und ueber
+     * [LedgerCodec] sogar neustartfest - es fehlte ausschliesslich ein
+     * Erzeuger. `reduce` ist privat, also konnte keine Oberflaeche das
+     * Ereignis einspeisen (Auditbefund P0-1, 16.08.2026). Genau diese Methode
+     * ist der fehlende oeffentliche Einstieg.
+     *
+     * NICHT AM UI-THREAD AUFRUFEN. `state` und `revision` sind gewoehnliche
+     * `var` ohne Sperre, und [reduce] ist lesen-aendern-schreiben: ein
+     * gleichzeitig rechnender Zyklus liest den Zustand, die Quittung aendert
+     * ihn, der Zyklus schreibt sein Ergebnis darueber - die Quittung waere
+     * spurlos weg. Der Aufruf gehoert deshalb an die Zyklusgrenze, siehe
+     * [app.aaps.fuse.plugin.ledger.FuseHoldQuittungScheduler].
+     *
+     * @return true, wenn danach KEIN aktiver Fehler der genannten Zeilen mehr
+     *   steht. false heisst: abgewiesen oder nur teilweise gewirkt - der
+     *   Reducer legt in beiden Faellen einen unsichtbaren `HOLD_ACKNOWLEDGED`-
+     *   Beleg an, der Hold bleibt.
+     */
+    fun quittiereHold(
+        proposalId: String,
+        by: String,
+        reason: String,
+        errors: Set<LedgerError>,
+        expectedHoldGeneration: Long,
+    ): Boolean {
+        reduce(
+            LedgerEvent.HoldAcknowledged(
+                proposalId = proposalId,
+                acknowledgedBy = by,
+                reason = reason,
+                acknowledgedErrors = errors,
+                expectedHoldGeneration = expectedHoldGeneration,
+            )
+        )
+        return state.errors.none { it.active && it.proposalId == proposalId }
     }
 
     fun oldestOpenTs(): Long? = state.entries.values

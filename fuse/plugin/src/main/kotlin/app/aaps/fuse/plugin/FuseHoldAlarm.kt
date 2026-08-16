@@ -132,11 +132,26 @@ object FuseHoldAlarm {
      * `persistFailed` gibt es gar keine Fehlerliste, und "kein Fehler benannt"
      * allein waere dort irrefuehrend - es gibt sehr wohl einen Grund.
      */
-    fun text(kennung: Kennung, ursachen: Map<String, Int>): String {
+    fun text(kennung: Kennung, ursachen: Map<String, Int>): String =
+        rumpf(kennung, ursachen) + " Ausweg: siehe FUSE-Reiter."
+
+    /**
+     * Der Befund OHNE Wegweiser.
+     *
+     * Getrennt, weil der Ausweg von Dingen abhaengt, die dieser Zustandsautomat
+     * nicht kennt: welche Fehler anliegen und welche Pumpe laeuft. Bis
+     * 16.08.2026 stand hier fest "Ausweg: Einstellungen -> FUSE -> Reparatur" -
+     * und das war auf Tonis Medtrum nachweislich falsch: die Reparatur
+     * verweigert ohne nachgewiesene VirtualPump (`FuseRepairScheduler`), der
+     * genannte Weg endet dort in einer Absage. Ein Wegweiser, der ins Leere
+     * zeigt, ist schlimmer als keiner - er kostet Zeit in genau der Lage, in
+     * der FUSE nichts abgibt (Auditbefund P0-1).
+     */
+    fun rumpf(kennung: Kennung, ursachen: Map<String, Int>): String {
         val grund = kennung.reason ?: "Grund unbekannt"
         val details = if (ursachen.isEmpty()) ""
         else " (" + ursachen.entries.sortedByDescending { it.value }
             .joinToString(", ") { "${it.key} x${it.value}" } + ")"
-        return "FUSE gibt nichts ab: $grund$details. Ausweg: Einstellungen -> FUSE -> Reparatur."
+        return "FUSE gibt nichts ab: $grund$details."
     }
 }
