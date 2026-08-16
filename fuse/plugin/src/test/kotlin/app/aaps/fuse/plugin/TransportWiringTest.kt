@@ -1393,6 +1393,74 @@ class TransportWiringTest : TestBaseWithProfile() {
     }
 
     /**
+     * DER TRANSPORTABZUG AUF DEM FALLBACKPFAD - dritte gruen gebliebene
+     * Mutationsprobe des Gesamtaudits (16.08.2026): der Fallback-Lift laesst
+     * sich mit `transportCommitmentU = 0.0` aufrufen, ohne dass ein Test
+     * rot wird.
+     *
+     * Die Haftung im HAUPTpfad ist bereits scharf abgedeckt (die fuenf
+     * `- transportModelledU`, samt dokumentiertem Rot-Nachweis weiter oben).
+     * Der Fallback-Lift ist die SECHSTE Stelle und war nicht dabei.
+     *
+     * HIER IST DER KANAL SOGAR ISOLIERT, und das macht den Test schaerfer als
+     * seine Geschwister: der Fallback laeuft ohne Bahn, also gibt es weder
+     * Schwanz noch Prognose, ueber die die offene Menge sonst zusaetzlich
+     * wirkt (`tailHeadroomU = null`, FuseCycleRunner.kt:2179). Faellt die
+     * Dosis hier, kann es nur am Headroom-Term liegen.
+     *
+     * Gemessen wird gegen den identischen Lauf OHNE Haftung - sonst waere
+     * unklar, ob die kleinere Menge nicht schon aus dem Aufbau folgt.
+     */
+    @Test
+    fun `die offene Transporthaftung kappt auch den Fallbackpfad`(@TempDir dir: File) {
+        fun laufMit(haftungU: Double, unterordner: String): Double {
+            tailGuard = false
+            flach = 62.0
+            steigungProMin = 0.0
+            markerAt = start + 2 * 60_000L
+            markerAuthorized = true
+            predictReject = null
+
+            val l = FuseLedgerAdapter().also {
+                it.loadOnce(File(dir, unterordner).also(File::mkdirs), "test-epoch", start)
+            }
+            if (haftungU > 0.0) {
+                l.onPublished("vorlauf", haftungU, start, 0L, 0.05, PumpType.GENERIC_AAPS.name, Sha.of("vs"))
+                assertTrue(l.view().transportCommitmentU > 0.0, "Vorbedingung: die Haftung muss stehen")
+            }
+            neuerRunner(l)
+            clock = start
+            repeat(6) { cycle() }
+
+            // Ab hier ohne Bahn - der Fallbackpfad.
+            predictReject = PredictorReason.PENDING_MODEL_TOO_SHORT
+            var beste = 0.0
+            var aufFallback = false
+            repeat(12) {
+                val o = cycle()
+                if (o.markerFallbackUsed) aufFallback = true
+                beste = maxOf(beste, o.decision.smbU)
+            }
+            assertTrue(aufFallback, "der Lauf muss den Fallbackpfad benutzt haben")
+            return beste
+        }
+
+        // (1) POSITIVKONTROLLE: ohne Haftung traegt der Pfad wirklich etwas.
+        val ohne = laufMit(0.0, "ohne")
+        assertTrue(ohne > 0.0, "ohne Haftung muss etwas herauskommen - sonst prueft der Test nichts")
+
+        // (2) DIE ZUSICHERUNG: dieselbe Lage mit voll ausgeschoepfter Haftung
+        //     gibt nichts mehr frei. 8,0 U entspricht maxIOB/iobTH des Rigs -
+        //     der Headroom-Term wird damit sicher bindend, unabhaengig vom
+        //     genauen capIob des Zyklus.
+        val mit = laufMit(8.0, "mit")
+        assertTrue(
+            mit < ohne,
+            "die offene Haftung muss den Fallbackpfad kappen: ohne=$ohne mit=$mit",
+        )
+    }
+
+    /**
      * DER P0 VOM 11.08.: der Fallback kehrte VOR `kernel()` zurueck.
      *
      * Der Boden im Hauptpfad haengt an einem gueltigen Einheitskern - dieser
