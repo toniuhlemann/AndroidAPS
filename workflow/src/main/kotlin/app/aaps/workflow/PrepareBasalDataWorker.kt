@@ -78,6 +78,22 @@ class PrepareBasalDataWorker(
         // Stufenkanten des Basalgraphen sollen minutengenau bleiben) und die
         // isStopped-Pruefung (ein laufender Abbruch muss weiter sofort
         // greifen).
+        // MESSUNG STATT VERMUTUNG (16.08.). Warum dieser Worker die
+        // 60-s-Taktgrenze reisst, ist bisher INFERIERT: die Datenbankthese
+        // faellt, seit gezaehlt ist, dass FUSE nur ~6 TBRs je Stunde schreibt
+        // (36 Zeilen im 6-h-Fenster), und die Graph-Komplexitaet faellt, weil
+        // autoISF mit mehr Serien durchlief. 92-166 ms je Schritt sind fuer
+        // die drei sichtbaren Operationen um Groessenordnungen zu viel.
+        //
+        // Diese Zeilen trennen die beiden verbliebenen Moeglichkeiten:
+        // RECHNET der Worker (Summe der Schrittzeiten ~ Gesamtdauer) oder
+        // WARTET er, weil der Thread-Pool belegt ist (Summe << Gesamtdauer)?
+        // Ohne diese Unterscheidung ist jeder weitere Fix geraten.
+        val tStart = System.currentTimeMillis()
+        var stepNanos = 0L
+        var profileNanos = 0L
+        var basalNanos = 0L
+        var steps = 0
         var lastProgress = -1
         var cachedProfile: app.aaps.core.interfaces.profile.Profile? = null
         var cachedProfileUntil = Long.MIN_VALUE
@@ -88,8 +104,12 @@ class PrepareBasalDataWorker(
                 lastProgress = progress
                 rxBus.send(EventIobCalculationProgress(CalculationWorkflow.ProgressData.PREPARE_BASAL_DATA, progress, null))
             }
+            val tStep = System.nanoTime()
+            steps++
             if (time >= cachedProfileUntil) {
+                val tP = System.nanoTime()
                 cachedProfile = profileFunction.getProfile(time)
+                profileNanos += System.nanoTime() - tP
                 // Bis zur naechsten halben Stunde gilt derselbe Profilblock;
                 // die halbe Stunde ist die feinste Slotbreite, die AAPS kennt.
                 cachedProfileUntil = (time / 1_800_000L + 1) * 1_800_000L
@@ -99,7 +119,9 @@ class PrepareBasalDataWorker(
                 time += 60 * 1000L
                 continue
             }
+            val tB = System.nanoTime()
             val basalData = data.iobCobCalculator.getBasalData(profile, time)
+            basalNanos += System.nanoTime() - tB
             val baseBasalValue = basalData.basal
             var absoluteLineValue = baseBasalValue
             var tempBasalValue = 0.0
@@ -139,7 +161,14 @@ class PrepareBasalDataWorker(
             lastLineBasal = baseBasalValue
             lastTempBasal = tempBasalValue
             time += 60 * 1000L
+            stepNanos += System.nanoTime() - tStep
         }
+        aapsLogger.debug(
+            app.aaps.core.interfaces.logging.LTag.CORE,
+            "PrepareBasalData MESSUNG: gesamt=${System.currentTimeMillis() - tStart}ms " +
+                "schritte=$steps rechenzeit=${stepNanos / 1_000_000}ms " +
+                "davon getBasalData=${basalNanos / 1_000_000}ms getProfile=${profileNanos / 1_000_000}ms"
+        )
 
         // final points
         basalLineArray.add(ScaledDataPoint(endTime, lastLineBasal, data.overviewData.basalScale))
