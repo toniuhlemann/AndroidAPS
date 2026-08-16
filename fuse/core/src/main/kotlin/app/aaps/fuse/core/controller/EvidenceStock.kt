@@ -248,6 +248,16 @@ object EvidenceStock {
         val nowMs: Long,
         val sourceTs: Long,
         /**
+         * Wirksamer Episodendeckel [ms] ab Episodenbeginn; `null` = der
+         * Basiswert aus der Config gilt.
+         *
+         * Traegt die Marker-Verlaengerung aus [EpisodeDeadline]. Sie steht hier
+         * und nicht in der Config, weil sie sich JE ZYKLUS aendert - ein neuer
+         * Markerdruck schiebt sie -, waehrend die Config die festen Groessen
+         * haelt.
+         */
+        val capMsOverride: Long? = null,
+        /**
          * Der Zuwachs seit dem Anker - oder `null`, wenn er nicht bildbar ist
          * (kein Anker in der aktuellen Ausgabe, Anker vor einem Segmentbruch,
          * erster Punkt ueberhaupt).
@@ -450,7 +460,14 @@ object EvidenceStock {
 
         // DER DECKEL LAEUFT AB DEM URSPRUNG. Eine zweite oder dritte Welle
         // reaktiviert die Episode, sie startet die Uhr nicht neu.
-        if ((input.nowMs - start) / 60_000L >= cfg.maxEpisodeMin)
+        //
+        // SEIT 16.08. KANN EIN FRISCHER MARKER IHN VERLAENGERN
+        // ([EpisodeDeadline]). Tonis zweite Mahlzeit erbte den Topf der ersten
+        // und verlor ihn 55 Minuten nach dem Druck - kurz vor der Staerkewelle
+        // der Nudeln. `capMsOverride` traegt den wirksamen Deckel; fehlt er,
+        // gilt unveraendert der Basiswert aus der Config.
+        val deckelMs = input.capMsOverride ?: (cfg.maxEpisodeMin * 60_000L)
+        if (input.nowMs - start >= deckelMs)
             return Result(
                 State(episodeId = input.episodeId, episodeStartTs = start),
                 0.0, 0.0, NoInflow.EPISODE_EXPIRED, Phase.EXPIRED,

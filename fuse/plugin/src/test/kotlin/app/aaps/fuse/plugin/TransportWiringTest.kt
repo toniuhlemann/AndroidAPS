@@ -2106,6 +2106,75 @@ class TransportWiringTest : TestBaseWithProfile() {
     }
 
     /**
+     * TONIS FALL VOM 16.08. - die Marker-Verlaengerung des Episodendeckels.
+     *
+     * Fruehstuecks-Marker 09:33 eroeffnete die Episode; der Marker um 14:38
+     * fuer eine ECHTE zweite Mahlzeit lag 305 Minuten spaeter, also INNERHALB
+     * des 360-Minuten-Deckels, und erbte den alten Topf samt Uhr. Um 15:33
+     * lief er ab - mitten in der zweiten Mahlzeit, T+55 min, kurz vor der
+     * Staerkewelle der Nudeln.
+     *
+     * [EpisodeDeadline] traegt die Episode jetzt weiter, solange der Druck
+     * innerhalb des Basisdeckels lag. Dieser Test prueft die VERDRAHTUNG, nicht
+     * die Rechenregel - die hat ihre eigenen Unit-Tests. Ohne ihn bliebe eine
+     * Mutation, die `EpisodeDeadline.effectiveCapMs` durch den Basisdeckel
+     * ersetzt, unentdeckt (nachgemessen: sie blieb gruen).
+     *
+     * Der kleine Deckel (17 min) macht den Lauf kurz; die Verlaengerung von
+     * 180 min ist dieselbe wie produktiv.
+     */
+    @Test
+    fun `ein frischer Marker traegt die Episode ueber den Deckel`(@TempDir dir: File) {
+        tailGuard = false
+        flach = 62.0
+        steigungProMin = 0.0
+        markerAuthorized = true
+
+        val l = FuseLedgerAdapter().also { it.loadOnce(dir.also(File::mkdirs), "test-epoch", start) }
+        neuerRunner(l, EvidenceStock.Config(maxEpisodeMin = 17))
+
+        markerAt = start + 2 * 60_000L
+        clock = start
+        repeat(8) { cycle() }
+        val anker = l.episodes.evidenceEpisodeId
+        assertTrue(anker > 0L, "Vorbedingung: eine Episode muss laufen")
+
+        // Zweiter Druck INNERHALB des Deckels (bei 12 von 17 min) - er erbt
+        // die Episode und verlaengert sie.
+        clock = start + 12 * 60_000L
+        markerAt = clock + 60_000L
+        repeat(3) { cycle() }
+        assertEquals(anker, l.episodes.evidenceEpisodeId, "der Druck im Fenster muss erben, nicht eroeffnen")
+
+        // JETZT der entscheidende Sprung: hinter den BASISDECKEL (17 min),
+        // aber innerhalb der Verlaengerung (12 + 180). Dort wird erneut
+        // gedrueckt.
+        //
+        // GEMESSEN WIRD AM VERHALTEN DES TORS, nicht an Outcome-Feldern: ein
+        // Druck auf eine LEBENDE Episode erbt sie (dieselbe Id), ein Druck
+        // nach ihrem Ende eroeffnet eine neue. Genau dieselbe Zusicherung wie
+        // im Test darueber, nur mit umgekehrtem Vorzeichen - und sie ist
+        // unabhaengig davon, welcher Zyklus zuletzt welchen Exportpfad nahm.
+        clock = start + 25 * 60_000L
+        val o = (1..3).map { cycle() }.last()
+
+        // KEIN weiterer Druck: er wuerde die Verlaengerung selbst aufheben
+        // (ein Druck nach dem Basisdeckel eroeffnet neu, statt zu verlaengern).
+        // Gemessen wird deshalb am EXPORTIERTEN Deckel - er traegt den
+        // wirksamen Wert und ist damit der direkte Beleg der Verdrahtung.
+        assertEquals(anker, l.episodes.evidenceEpisodeId, "dieselbe Episode")
+        assertTrue(
+            (o.evidenceEpisodeCapMin ?: 0) > 17,
+            "der wirksame Deckel muss ueber dem Basiswert liegen - sonst wirkt " +
+                "die Verlaengerung nicht: ${o.evidenceEpisodeCapMin}",
+        )
+        assertTrue(
+            o.evidencePhase != "EXPIRED",
+            "und die Episode darf nicht abgelaufen sein: ${o.evidencePhase}",
+        )
+    }
+
+    /**
      * STUFE 4, NICHT-LEERES GATE-ATTEST.
      *
      * Eine fruehere Fassung der Stufe-4-Tests war gruen, obwohl ueberhaupt

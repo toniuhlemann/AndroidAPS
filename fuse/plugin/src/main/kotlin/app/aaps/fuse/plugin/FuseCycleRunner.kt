@@ -20,6 +20,7 @@ import app.aaps.core.utils.MidnightUtils
 import app.aaps.core.data.model.BS
 import app.aaps.fuse.core.adapter.CoreInputGuard
 import app.aaps.fuse.core.adapter.CycleAssembly
+import app.aaps.fuse.core.controller.EpisodeDeadline
 import app.aaps.fuse.core.controller.FuseController
 import app.aaps.fuse.core.controller.LedgerHoldGate
 import app.aaps.fuse.core.controller.MarkerScope
@@ -582,7 +583,22 @@ class FuseCycleRunner(
         // Altbestand-Stempel kennt die Wahl nicht und laeuft mit voller Huelle.
         val markerNoPrime = markerTs > 0L && preferences.get(FuseLongKey.MealMarkerNoPrime) != 0L
         val episodes = ledger.episodes
-        val evidenceCapMs = evidenceConfig.maxEpisodeMin * 60_000L
+        // DER WIRKSAME EPISODENDECKEL (Toni 16.08., Fall 1 des Audit-Nachtrags).
+        //
+        // Ein frischer Markerdruck haelt die laufende Episode am Leben, statt
+        // sie mitten in der zweiten Mahlzeit ablaufen zu lassen. BEIDE
+        // Deckelpruefungen benutzen denselben Wert - das Tor unten (erben vs.
+        // eroeffnen) und der Bestand in EvidenceStock. Zwei Deckel, die
+        // auseinanderdriften, waeren die naechste Falle dieser Art.
+        //
+        // `episodes.evidenceEpisodeId` IST der Episodenbeginn (der Anker ist
+        // der eroeffnende Markerzeitpunkt), deshalb geht er hier als
+        // episodeStartTs hinein.
+        val evidenceCapMs = EpisodeDeadline.effectiveCapMs(
+            baseCapMs = evidenceConfig.maxEpisodeMin * 60_000L,
+            episodeStartTs = episodes.evidenceEpisodeId,
+            lastMarkerTs = markerTs,
+        )
         val episodeGate = MarkerEpisodeGate.decide(
             nowMs = computeTs,
             markerTs = markerTs,
@@ -685,7 +701,7 @@ class FuseCycleRunner(
                 evidenceCreditRevoked = episodeGate.creditRevoked,
                 evidenceCommittedU = episodes.evidenceCommittedU,
                 evidenceEpisodeMin = evidenceEpisodeMin,
-                evidenceEpisodeCapMin = evidenceConfig.maxEpisodeMin,
+                evidenceEpisodeCapMin = (evidenceCapMs / 60_000L).toInt(),
                 evidencePhase = evidenz?.phase?.name,
                 evidenceStockMgdl = evidenz?.state?.stockMgdl,
                 evidenceReason = evidenz?.noInflow?.name,
@@ -1292,6 +1308,9 @@ class FuseCycleRunner(
                 input = EvidenceStock.Input(
                     nowMs = computeTs,
                     sourceTs = signal.sourceTs,
+                    // DERSELBE Deckel wie im Episodentor oben - nicht neu
+                    // gerechnet, sondern derselbe Wert weitergereicht.
+                    capMsOverride = evidenceCapMs,
                     interval = intervall,
                     driveLowerMgdlPerMin = band?.lower,
                     healthReady = step.health == Health.READY,
@@ -1946,7 +1965,7 @@ class FuseCycleRunner(
             evidenceCreditRevoked = episodeGate.creditRevoked,
             evidenceCommittedU = episodes.evidenceCommittedU,
             evidenceEpisodeMin = evidenceEpisodeMin,
-            evidenceEpisodeCapMin = evidenceConfig.maxEpisodeMin,
+            evidenceEpisodeCapMin = (evidenceCapMs / 60_000L).toInt(),
 
             evidencePhase = evidenz?.phase?.name,
             evidenceStockMgdl = evidenz?.state?.stockMgdl,
