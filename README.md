@@ -249,7 +249,8 @@ This table describes **architectural intent**. It is not a claim of proven clini
 ## Branch and version model
 
 - `fuse-dev` is the moving integration branch.
-- `3.4.2.5+fuse1.0.0-toni` is the branch on which the author's production line is maintained; `3.4.2.5+fuse0.1.0-toni` remains the frozen earlier line.
+- `3.4.2.5+fuse1.0.0-toni` is the production line: it is what loops on the real pump. `3.4.2.5+fuse0.1.0-toni` remains the frozen earlier line.
+- **A branch name is not a version.** Neither moving branch is immutable, and the name in the branch says nothing about what is built: the repository currently produces `3.4.2.5+fuse1.0.2-toni`. Only a Git tag identifies a frozen source commit, and any run used as evidence additionally needs an exported `build.head` with `build.committed = true` across the whole measurement window.
 - **`1.0.x` means "the author's production line", not "release criteria met".** The built `versionName` moves independently of the branch name — at the time of writing it is `3.4.2.5+fuse1.0.2-toni`. Do not read a version number here as a maturity statement; there are no defined public release criteria yet, and none have been met.
 - Only Git tags are immutable evidence points. A branch name that looks like a version is still a moving branch.
 - A test data set is identified by `versionName`, Git `HEAD`, the exported `build.committed` flag, and the exported rule-set version — not by a branch name. The rule-set number is maintained **by hand** and says so in the export (`ruleSetVersionIsManual`), so an evaluation must not trust it blindly.
