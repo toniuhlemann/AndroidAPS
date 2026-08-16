@@ -224,4 +224,52 @@ class FusePatchEpochTest {
         assertFalse(FusePatchEpoch.sameEpoch(t0, null, t0 + 1))
         assertFalse(FusePatchEpoch.sameEpoch(null, null, t0 + 1))
     }
+
+    /**
+     * DER AUDITBEFUND P1-9a - DIE EPOCHE IST EIN INTERVALL, KEIN ZEITPUNKT.
+     *
+     * Genau dieser Fall - pinned != current UND das Treatment DAZWISCHEN -
+     * war von keinem der zehn vorhandenen Tests abgedeckt; deshalb ist der
+     * Fehler durchgerutscht.
+     *
+     * Vorher scheiterte hier der Gleichheitsvergleich, und die Zeile konnte
+     * ihren EIGENEN, vor dem Wechsel geflossenen Bolus nicht mehr binden. Ihre
+     * Haftung stand dann bis zur Abschreibung nach DIA + 2 h und verkleinerte
+     * beide Headrooms, WAEHREND derselbe Bolus schon im AAPS-IOB steckte -
+     * dieselbe Menge begrenzte zweimal.
+     */
+    @Test
+    fun `eine alte Zeile bindet ihren eigenen Bolus von vor dem Wechsel`() {
+        val alt = t0
+        val neu = t0 + 6 * 3600_000L
+        // Der Bolus liegt zwischen beiden Wechseln - er gehoert zur alten Epoche.
+        assertTrue(FusePatchEpoch.sameEpoch(pinnedEpochTs = alt, currentEpochTs = neu, treatmentTs = alt + 60_000L))
+        assertTrue(FusePatchEpoch.sameEpoch(pinnedEpochTs = alt, currentEpochTs = neu, treatmentTs = neu - 1L))
+    }
+
+    /**
+     * DIE GEGENPROBE, ohne die der Test oben wertlos waere: die Trennlinie
+     * selbst muss halten. Genau AUF dem neuen Wechsel gehoert der Datensatz
+     * bereits zur neuen Epoche.
+     */
+    @Test
+    fun `die Trennlinie liegt exakt auf dem neuen Wechsel`() {
+        val alt = t0
+        val neu = t0 + 6 * 3600_000L
+        assertFalse(FusePatchEpoch.sameEpoch(pinnedEpochTs = alt, currentEpochTs = neu, treatmentTs = neu))
+        assertFalse(FusePatchEpoch.sameEpoch(pinnedEpochTs = alt, currentEpochTs = neu, treatmentTs = neu + 1L))
+    }
+
+    /**
+     * EIN VORSCHLAG AUS DER NEUEN EPOCHE gegen eine aeltere aktuelle Epoche -
+     * das darf es nicht geben (die aktuelle ist immer die juengste), und wenn
+     * doch, wird nicht gebunden ausser der Datensatz liegt nach dem Pin.
+     */
+    @Test
+    fun `ein Pin aus der Zukunft bindet nur nach sich selbst`() {
+        val alt = t0
+        val neu = t0 + 6 * 3600_000L
+        assertFalse(FusePatchEpoch.sameEpoch(pinnedEpochTs = neu, currentEpochTs = alt, treatmentTs = alt + 60_000L))
+        assertTrue(FusePatchEpoch.sameEpoch(pinnedEpochTs = neu, currentEpochTs = alt, treatmentTs = neu + 60_000L))
+    }
 }

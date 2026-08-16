@@ -163,7 +163,37 @@ object FusePatchEpoch {
      */
     fun sameEpoch(pinnedEpochTs: Long?, currentEpochTs: Long?, treatmentTs: Long): Boolean {
         if (pinnedEpochTs == null || currentEpochTs == null) return false
-        if (pinnedEpochTs != currentEpochTs) return false
-        return treatmentTs >= pinnedEpochTs
+        // Ein Datensatz VOR dem Wechsel gehoert nie zu einem Vorschlag DANACH.
+        if (treatmentTs < pinnedEpochTs) return false
+        // INTERVALL STATT GLEICHHEIT (Auditbefund P1-9a, 16.08.2026).
+        //
+        // Hier stand `if (pinnedEpochTs != currentEpochTs) return false`. Nach
+        // einem Patchwechsel konnte eine VOR dem Wechsel publizierte Zeile
+        // damit ihren EIGENEN, ebenfalls vor dem Wechsel geflossenen Bolus
+        // nicht mehr binden - obwohl beide zweifelsfrei zur selben Epoche
+        // gehoeren. Die Zeile blieb ungebunden, ihre Haftung stand bis zur
+        // Abschreibung nach DIA + 2 h (bei DIA 9 also 11 h) und verkleinerte
+        // die ganze Zeit beide Headrooms, WAEHREND derselbe Bolus schon im
+        // AAPS-IOB steckte: dieselbe Menge begrenzte zweimal.
+        //
+        // Die Epoche ist ein INTERVALL, kein Zeitpunkt. Ein Treatment gehoert
+        // zur gepinnten Epoche, wenn es nach deren Beginn UND vor dem naechsten
+        // Wechsel liegt.
+        //
+        // WARUM DAS NICHT AUFWEICHT: die Bindung laesst ohnehin nur
+        // mengengleiche Fakten zu (Toleranz 1e-4 U), und das Bindungsfenster
+        // ist auf fuenf Minuten ab der Entscheidung gekappt. Ein fremder Bolus
+        // muesste also in denselben fuenf Minuten und auf 0,0001 U genau
+        // gefallen sein. Aus demselben Grund traegt die Mehrdeutigkeit bei
+        // MEHREREN Wechseln nicht: zwei Patchwechsel innerhalb eines
+        // Fuenf-Minuten-Fensters gibt es praktisch nicht, und der Code kennt
+        // ohnehin nur den neuesten.
+        //
+        // Fehlerrichtung: heute bleibt Haftung stehen (weniger Insulin), nach
+        // der Reparatur loest sie sich korrekt auf. Ein faelschlich gebundener
+        // FREMDER Bolus waere die Gegenrichtung (mehr Insulin) - dagegen
+        // stehen die beiden Schranken oben.
+        if (currentEpochTs > pinnedEpochTs && treatmentTs >= currentEpochTs) return false
+        return true
     }
 }
