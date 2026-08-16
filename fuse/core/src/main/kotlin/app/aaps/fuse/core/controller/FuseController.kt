@@ -104,6 +104,21 @@ object FuseController {
         /** q1 war in den letzten [REBOUND_WINDOW_MIN] min unter
          *  [REBOUND_LOW_MGDL] - die Rampe bleibt auf dem Korrektur-Anteil. */
         val reboundWindow: Boolean = false,
+        /**
+         * REST DES REBOUND-FENSTERS [min], `null` = unbekannt oder kein Fenster.
+         *
+         * Reine ANZEIGEGROESSE - sie geht in keine Entscheidung ein. Sie steht
+         * hier, weil der Regler sonst nur `reboundWindow` true/false nach aussen
+         * gibt und die Frage "wie lange noch?" am Geraet unbeantwortbar bleibt
+         * (Toni 16.08.: "totband restzeit waere auch so ein wert").
+         *
+         * WARUM DIE ZAHL HIER GERECHNET WIRD UND NICHT IM VIEWER: die Restzeit
+         * folgt aus `lastLowTs` und [REBOUND_WINDOW_MIN]. Beides im Viewer
+         * nachzubilden hiesse, eine Konstante des Reglers zu duplizieren und
+         * denselben Zustand aus zwei Quellen zu fuehren - genau die
+         * Fehlerklasse, die dieses Projekt schon einmal teuer bezahlt hat.
+         */
+        val reboundRestMin: Int? = null,
         /** Wirksames Rebound-Totband [mg/dl] - Einstellung statt Konstante
          *  (Toni 09.08.); [REBOUND_DEADBAND_MGDL] ist nur noch der Default. */
         val reboundDeadbandMgdl: Double = REBOUND_DEADBAND_MGDL,

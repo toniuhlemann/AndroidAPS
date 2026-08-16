@@ -1175,6 +1175,16 @@ class FuseCycleRunner(
                     // gehobenen Antrieb - sonst haette der Kanal die Bahn
                     // gehoben, aber die Ratio stuende noch auf Korrektur.
                     reboundWindow = reboundWindow,
+                    // Rest des Fensters - reine Anzeigegroesse, siehe State.
+                    // Sie haengt an `reboundRaw`, NICHT an `reboundWindow`: ein
+                    // Marker entwaffnet die Bremse, laesst die Uhr aber laufen.
+                    // Waere sie an `reboundWindow` gebunden, verschwaende die
+                    // Restzeit beim Markerdruck und taeuschte ein beendetes
+                    // Fenster vor.
+                    reboundRestMin = if (reboundRaw)
+                        ((lastLowTs + FuseController.REBOUND_WINDOW_MIN * 60_000L - signal.sourceTs) / 60_000L)
+                            .toInt().coerceAtLeast(0)
+                    else null,
                     reboundDeadbandMgdl = if (cfg.reboundDeadbandEnabled) cfg.reboundDeadbandMgdl else 0.0,
                     nightWindow = cfg.nightDeadbandEnabled && NightWindow.isNight(
                         MidnightUtils.secondsFromMidnight(signal.sourceTs), cfg.nightStartMin, cfg.nightEndMin
