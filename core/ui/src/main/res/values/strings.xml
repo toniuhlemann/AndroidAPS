@@ -166,7 +166,9 @@
     <string name="overview_fuse_meal_confirm_title">Mahlzeit ankuendigen?</string>
     <!-- EINE Zeile. Der Knopf wird mehrmals taeglich gedrueckt; alles, was man
          nur EINMAL lesen muss, steht in der Einstellungsbeschreibung. -->
-    <string name="overview_fuse_meal_confirm_body">%1$.2f U sofort, bis %2$.2f U in 15 min</string>
+    <string name="overview_fuse_meal_confirm_body">%1$.2f U sofort, bis %2$.2f U in %3$d min</string>
+    <!-- Ohne bekanntes Fenster wird KEINE Dauer genannt statt einer falschen. -->
+    <string name="overview_fuse_meal_confirm_body_no_window">%1$.2f U sofort, bis %2$.2f U im Freigabe-Fenster</string>
     <string name="overview_fuse_meal_confirm_low">Zucker ist TIEF.</string>
     <string name="overview_fuse_meal_confirm_foreign">Achtung: %1$.2f U manueller Bolus in der letzten Stunde. Die Hülle wird davon NICHT gekürzt — beides zusammen wirkt.</string>
     <string name="overview_fuse_meal_confirm_episode">Evidenz-Fenster läuft in %1$d min ab — danach ohne Mahlzeiten-Kredit.</string>

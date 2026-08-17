@@ -75,6 +75,18 @@ object MarkerPrompt {
          * Entscheidung, nicht in die nachtraegliche Auswertung.
          */
         val episodeRestMin: Int? = null,
+        /**
+         * Laenge des Freigabe-Fensters [min] - die EINGESTELLTE, nicht die
+         * einmal voreingestellte.
+         *
+         * Der Dialogtext trug sie bis 17.08.2026 als feste "15 min" im
+         * Ressourcen-String, waehrend die Einstellung auf 25 stand (Toni am
+         * Geraet: "Die Dauer ist nicht dynamisch entsprechend dem gewaehlten
+         * setting"). Der Satz nennt eine Menge UND eine Zeit; stimmt die Zeit
+         * nicht, ist die genannte Menge im falschen Zeitraum gedacht - und
+         * genau darauf gruendet der Nutzer seine Zustimmung.
+         */
+        val windowMin: Int? = null,
     )
 
     /** Fenster, in dem ein manueller Bolus als "zu dieser Mahlzeit" gilt. */

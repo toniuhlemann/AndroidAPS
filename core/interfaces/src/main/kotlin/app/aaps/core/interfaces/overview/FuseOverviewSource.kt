@@ -75,6 +75,9 @@ interface FuseOverviewSource {
         /** Rest der laufenden Evidenz-Episode [min]; `null` = keine, unbekannt
          *  oder noch reichlich Zeit. */
         val episodeRestMin: Int? = null,
+        /** Laenge des Freigabe-Fensters [min] aus der EINSTELLUNG; `null` =
+         *  unbekannt, dann nennt der Dialog keine Dauer statt einer falschen. */
+        val windowMin: Int? = null,
     )
 
     fun fuseMarkerArmed(now: Long): Boolean

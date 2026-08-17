@@ -58,8 +58,18 @@ object FuseMarkerDialog {
         val rest = (facts.envelopeU - facts.alreadyDeliveredU).coerceAtLeast(0.0)
         // EINE Zeile Zahlen. Der Rest steht in der Einstellungsbeschreibung -
         // dort liest man ihn EINMAL, hier saehe man ihn mehrmals taeglich.
+        // DIE DAUER KOMMT AUS DER EINSTELLUNG (Geraetefund Toni 17.08.2026).
+        //
+        // Hier stand "in 15 min" fest im Ressourcen-String, waehrend das
+        // Freigabe-Fenster auf 25 Minuten eingestellt war. Der Satz nennt eine
+        // MENGE und eine ZEIT; stimmt die Zeit nicht, ist die genannte Menge im
+        // falschen Zeitraum gedacht - und genau darauf gruendet der Nutzer
+        // seine Zustimmung. Ist das Fenster unbekannt, wird GAR KEINE Dauer
+        // genannt statt einer erfundenen.
         val text = StringBuilder(
-            rh.gs(R.string.overview_fuse_meal_confirm_body, facts.firstStepU, rest)
+            facts.windowMin?.let {
+                rh.gs(R.string.overview_fuse_meal_confirm_body, facts.firstStepU, rest, it)
+            } ?: rh.gs(R.string.overview_fuse_meal_confirm_body_no_window, facts.firstStepU, rest)
         )
         // Das gemessene Tief ist die dringlichste Lage, die den Druck von einem
         // gewoehnlichen unterscheidet - deshalb zuerst.

@@ -647,6 +647,11 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
             authorizesAgainstModel = preferences.get(FuseBooleanKey.MarkerAuthorisesRelease),
             measuredLow = letzter?.state?.safetyHold == true,
             foreignBolusU = fremd,
+            // DIESELBE Einstellung, die der Regler liest (FuseCycleRunner
+            // holt sie ueber denselben Schluessel) - keine zweite Quelle fuer
+            // dieselbe Zahl, sonst laufen Text und Verhalten wieder
+            // auseinander.
+            windowMin = preferences.get(FuseIntKey.PrimeWindowMin).takeIf { it > 0 },
             // Aus DEMSELBEN Zyklus wie die uebrigen Zahlen - kein zweiter
             // Rechenweg. Nur wenn die Uhr wirklich knapp wird (Fall 1 des
             // Audit-Nachtrags: die zweite Mahlzeit erbte den Topf der ersten
@@ -666,6 +671,7 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
                 measuredLow = it.measuredLow,
                 foreignBolusU = it.foreignBolusU,
                 episodeRestMin = it.episodeRestMin,
+                windowMin = it.windowMin,
             )
         }
     }
