@@ -151,7 +151,24 @@ object MealBasalGuard {
             // neue modellbasierte Zero-TBR". NUR bei kontrollierbarer
             // TBR-Achse: unter FAKE_EXTENDED muss die Null-Absicht stehen
             // bleiben, damit die C8-SMB-Sperre greift.
-            modellNull && !input.segmentMature && input.tbrControllable -> decision.copy(
+            //
+            // UND NUR OHNE WIRKLICHKEIT - das fehlte im ersten Wurf und war
+            // ein Fehler in der gefaehrlichen Richtung (Reset-Analyse
+            // 17.08., P0): Zweig 1 hat die Ausnahme, Zweig 2 hatte sie nicht.
+            // Bei realem Nah-Tief oder gemessenem Tief haette die Unreife
+            // eine Null UNTERDRUECKT, die vor diesem Patch gelaufen waere -
+            // also die Umkehrung des eigenen Vertrags "das Modell ist
+            // ueberstimmbar, die Wirklichkeit nicht". Die Unreife entwertet
+            // die gerechnete TIEFE, nicht den gemessenen Zustand.
+            //
+            // Gemessen dazu (53 h Trail): als BINAERER Detektor ist die
+            // unreife Bahn nicht schlechter als die reife (46,3 % vs 46,8 %
+            // realer BG < 80 in 120 min) - schlecht ist sie nur als Schaetzer
+            // der Tiefe (Median minLower -50,7 unreif gegen +9,7 reif).
+            // Deshalb trennt diese Sperre Aktion von Tiefe und schaltet den
+            // Schutz nicht pauschal ab.
+            modellNull && !input.segmentMature && input.tbrControllable &&
+                !input.nearLowFalling && !input.measuredLow -> decision.copy(
                 tbr = FuseController.TbrAction.NO_NEW_POSITIVE,
                 zeroTempModelOnly = false,
                 bindingLimit = IMMATURE_MARK + decision.bindingLimit,

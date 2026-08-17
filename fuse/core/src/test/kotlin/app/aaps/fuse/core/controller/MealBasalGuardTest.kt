@@ -121,6 +121,34 @@ class MealBasalGuardTest {
     }
 
     /**
+     * DIE LUECKE AUS DER RESET-ANALYSE (P0, 17.08. nachgezogen).
+     *
+     * Der erste Wurf gab die Wirklichkeits-Ausnahme nur Zweig 1. Bei realem
+     * Nah-Tief ODER gemessenem Tief auf unreifer Reihe unterdrueckte Zweig 2
+     * damit eine Null, die vor dem ganzen Patch gelaufen waere - die
+     * Umkehrung des eigenen Vertrags, und zwar in der gefaehrlichen Richtung.
+     *
+     * Die Unreife entwertet die gerechnete TIEFE, nicht den gemessenen
+     * Zustand: als binaerer Detektor ist die unreife Bahn gemessen genauso
+     * gut wie die reife (46,3 % vs 46,8 % realer BG < 80 in 120 min).
+     */
+    @Test
+    fun `die Unreife-Sperre weicht der Wirklichkeit`() {
+        for (l in listOf(
+            lage(schutz = false, reif = false, nahTief = true),
+            lage(schutz = false, reif = false, tief = true),
+            lage(schutz = true, reif = false, nahTief = true),
+        )) {
+            val d = MealBasalGuard.apply(modellNull(), l)
+            assertEquals(
+                FuseController.TbrAction.ZERO_TEMP, d.tbr,
+                "eine gemessene Tiefgefahr darf die Unreife-Sperre nicht entwaffnen: $l",
+            )
+            assertTrue(!d.bindingLimit.contains(MealBasalGuard.IMMATURE_MARK), d.bindingLimit)
+        }
+    }
+
+    /**
      * DER STEMPEL OHNE NULL: auch ein Zyklus, der selbst keine Null
      * entschieden hat (KEEP/NO_NEW_POSITIVE), traegt die Lage zum Translator -
      * sonst hinge der Abbruch einer LAUFENDEN Null aus dem Vorzyklus am
