@@ -1009,8 +1009,27 @@ class TransportWiringTest : TestBaseWithProfile() {
             "SMB muss genau die Autorisierungsgrenze sein, kein Zuschlag",
         )
 
-        // (4) Der Schutz laeuft daneben weiter.
-        assertEquals(FuseController.TbrAction.ZERO_TEMP, o.decision.tbr, "die Absenkung darf nicht wegfallen")
+        // (4) VERTRAGSAENDERUNG (Toni 17.08.): bis dahin verlangte dieser
+        // Punkt ZERO_TEMP ("Der Schutz laeuft daneben weiter"). Am Geraet
+        // hiess das: die Huelle gab vorne 0,15 U je Minute, die Null nahm
+        // hinten 0,35 U Basal weg - netto 3,10 statt der autorisierten 3,5 U,
+        // und das fehlende Insulin fehlte zeitversetzt im Resorptionsfenster.
+        // Toni: "hier arbeiten 2 prinzipien gegeneinander."
+        //
+        // Der Aufbau hier ist ausdruecklich KEIN gemessenes Tief (Punkt 2
+        // prueft das) - die Null stammt allein aus der kohlenhydratfrei
+        // gerechneten Bahn, und die ist unter der Autorisierung ueberstimmbar.
+        // Ein gemessenes Tief traegt das Modell-Bit nicht und behaelt seine
+        // Null; dieser Fall steht in MealBasalGuardTest.
+        assertEquals(
+            FuseController.TbrAction.KEEP_CURRENT, o.decision.tbr,
+            "das Profilbasal ist die autorisierte Grundlinie - die Modell-Null muss weichen",
+        )
+        assertTrue(
+            o.decision.bindingLimit.contains(app.aaps.fuse.core.controller.MealBasalGuard.TBR_LIFTED_MARK),
+            "die Hebung muss im Trail nachweisbar sein: ${o.decision.bindingLimit}",
+        )
+        assertTrue(o.decision.mealBasalProtected, "und der Stempel muss den Translator erreichen (C7c)")
     }
 
     /** OHNE MARKER bleibt dieselbe Lage bei null - sonst wuerde der Test

@@ -473,6 +473,56 @@ object FuseController {
          * jeder Mengen-Block sie vollstaendig, wie bisher.
          */
         val markerAuthorizedU: Double = 0.0,
+        /**
+         * Ob diese [TbrAction.ZERO_TEMP] AUSSCHLIESSLICH aus einer gerechneten
+         * Bahn stammt und nicht aus einem gemessenen Tief (Toni 17.08.).
+         *
+         * DER ANLASS, gemessen am Geraet: Mahlzeitenmarker um 18:56, Huelle
+         * 3,5 U auf 25 min. Ab 19:05 gab FUSE jede Minute 0,15 U aus der
+         * autorisierten Huelle UND hielt gleichzeitig das Profilbasal per
+         * Null-TBR zurueck - 0,35 U ueber 30 min, die netto wieder fehlten.
+         * Ausgeloest hatte das nicht ein Tief, sondern [minLowerMgdl] = 69,4
+         * bei einem Boden von 70, also 0,6 mg/dl, mit `timeToFloorMin` = 118.
+         * Der reale BG stand bei 105 und stieg.
+         *
+         * WARUM DIE BAHN DAS TUN MUSSTE: sie rechnet kohlenhydratfrei. Das
+         * Prime-Insulin geht als reine Absenkung ein, die Mahlzeit, die es
+         * autorisiert hat, nicht. minLower faellt damit ZWANGSLAEUFIG, solange
+         * die Huelle liefert - gemessen 76,5 -> 69,4 -> 62,7 und weiter bis
+         * -61,1. Die Bahn ist nicht falsch, sie beantwortet nur eine andere
+         * Frage als die, die hier gestellt wird.
+         *
+         * WARUM EIN EIGENES FELD UND NICHT `block == GUARD_FLOOR`: der Block
+         * ist an der Stelle, an der die Frage gestellt wird ([MarkerFloor]),
+         * laengst ueberschrieben - `finalVeto` setzt CANDIDATE, der Boden
+         * setzt NONE. Im Trail ueberlebt der Guard-Grund nur als TEXT in
+         * `bindingLimit` ("markerAuth|finalVerify:GUARD_FLOOR"), und an einem
+         * Grundtext darf keine Insulinabgabe haengen - dieselbe Regel, aus der
+         * schon [markerAuthorizedU] eine typisierte Herkunft bekommen hat.
+         *
+         * FAIL-CLOSED: der Vorgabewert ist `false`, also "nicht hebbar". Eine
+         * Null unbekannter Herkunft bleibt scharf. Gesetzt wird das Bit an
+         * genau EINER Stelle - dem Guard-Riegel gegen die gerechnete Bahn.
+         * `state.safetyHold` (gemessenes Tief) und der Markerfallback bei
+         * `measuredLow` tragen es ausdruecklich NICHT.
+         */
+        val zeroTempModelOnly: Boolean = false,
+        /**
+         * Ob fuer diesen Zyklus die Basal-Grundregel der Mahlzeit wirksam ist
+         * (Toni 17.08.): Marker-Freigabe aktiv oder Evidenzphase
+         * ACTIVE/PENDING_SEAL, KEIN gemessenes Tief, KEIN nahes fallendes
+         * Tief, TBR-Achse kontrollierbar. Gesetzt von [MealBasalGuard] im
+         * Runner - der Regler kennt die Episodenphase nicht.
+         *
+         * GETRAGEN WIRD DAMIT ZWEIERLEI: die Hebung einer modellbedingten
+         * Null in DIESEM Zyklus (steht dann schon in `tbr`), und die
+         * C7c-Freigabe im Translator, eine LAUFENDE Null aus einem
+         * Vorzyklus neben einem SMB zu beenden - sonst hielte das C7a-Veto
+         * sie, solange die Mahlzeit dosiert, was am 17.08. exakt passiert
+         * ist (Null lief die vollen 30 min, Tonis manueller Abbruch wurde
+         * im Folgezyklus ueberschrieben).
+         */
+        val mealBasalProtected: Boolean = false,
     ) {
 
         /**
@@ -651,6 +701,14 @@ object FuseController {
             return Decision(
                 0.0, TbrAction.ZERO_TEMP, Block.GUARD_FLOOR, null,
                 releaseMean, minLower, "guardFloor=${limits.guardFloorMgdl}", context = ctx,
+                // DIE EINZIGE STELLE, die diese Null als modellbedingt
+                // ausweist. `minLower` ist eine gerechnete Bahn, kein Messwert -
+                // und weil sie kohlenhydratfrei rechnet, faellt sie waehrend
+                // einer autorisierten Mahlzeit zwangslaeufig unter den Boden.
+                // Das Bit erlaubt [MarkerFloor], die Basalrueckhaltung dort
+                // aufzuheben; es aendert an dieser Zahl NICHTS und unterdrueckt
+                // die Null auch nirgends von selbst.
+                zeroTempModelOnly = true,
             ).tele()
         }
 

@@ -151,6 +151,81 @@ class FuseTbrTranslatorTest {
         assertFalse(r.reason.startsWith(FuseTbrTranslator.C7A_REASON), r.reason)
     }
 
+    // ---- C7c: die Autorisierung zertifiziert beide gemeinsam (17.08.) -----
+
+    /**
+     * DER ANLASSFALL VOM 17.08.: Mahlzeitenmarker aktiv, Huelle liefert
+     * 0,15 U je Minute, eine modellbedingte Null laeuft aus dem Vorzyklus.
+     * C7a hielt die Null in JEDEM Zyklus, weil immer ein SMB fiel - der
+     * Abbruch kam nie zur Ausfuehrung, selbst Tonis manueller TBR-Abbruch am
+     * Geraet wurde im Folgezyklus wieder ueberschrieben.
+     *
+     * Unter der Autorisierung ist das Profilbasal die vertragliche
+     * Grundlinie: Abbruch und SMB verlassen den Zyklus als EINE gemeinsam
+     * autorisierte Entscheidung.
+     */
+    @Test
+    fun `C7c unter Marker-Autorisierung endet die Null neben dem SMB`() {
+        val r = FuseTbrTranslator.combine(
+            decision(0.20, FuseController.TbrAction.KEEP_CURRENT)
+                .copy(markerAuthorizedU = 0.20),
+            running(0.0), scheduled, cfg,
+        )
+        assertEquals(FuseController.TbrRequest(0.0, 0), r.request, "der Abbruch muss ausgefuehrt werden")
+        assertEquals(0.20, r.decision.smbU, 1e-12, "und der SMB laeuft daneben")
+        assertTrue(r.reason.startsWith(FuseTbrTranslator.C7C_REASON), r.reason)
+        // Der ausgefuehrte Abbruch bleibt im Grund lesbar.
+        assertTrue(r.reason.contains("KEEP_CANCEL_STALE_ZERO"), r.reason)
+    }
+
+    /** Die Provenienz ist TYPISIERT: ohne `markerAuthorizedU` und ohne den
+     *  Grundregel-Stempel bleibt das C7a-Veto vollstaendig bestehen - sonst
+     *  wuerde jeder dosierende Zyklus die konservative Regel aushebeln. */
+    @Test
+    fun `C7c ohne Autorisierung gilt weiterhin das C7a-Veto`() {
+        val r = FuseTbrTranslator.combine(
+            decision(0.20, FuseController.TbrAction.KEEP_CURRENT),
+            running(0.0), scheduled, cfg,
+        )
+        assertNull(r.request)
+        assertTrue(r.reason.startsWith(FuseTbrTranslator.C7A_REASON), r.reason)
+    }
+
+    /**
+     * DER ZWEITE TRAEGER: die Basal-Grundregel der Mahlzeit
+     * (`mealBasalProtected`, gestempelt vom MealBasalGuard). Sie deckt die
+     * Absorptionsphase NACH dem Prime-Fenster - am 17.08. war die Huelle um
+     * 19:21 leer, `markerAuthorizedU` damit 0, die Evidenzepisode lief aber
+     * noch, und um 19:30 wurde die Null aus einer unreifen Reihe erneuert.
+     */
+    @Test
+    fun `C7c auch die Basal-Grundregel gibt den Abbruch frei`() {
+        val r = FuseTbrTranslator.combine(
+            decision(0.20, FuseController.TbrAction.KEEP_CURRENT)
+                .copy(mealBasalProtected = true),
+            running(0.0), scheduled, cfg,
+        )
+        assertEquals(FuseController.TbrRequest(0.0, 0), r.request)
+        assertTrue(r.reason.startsWith(FuseTbrTranslator.C7C_REASON), r.reason)
+    }
+
+    /**
+     * STRUKTURPROBE ZUM GEMESSENEN TIEF: ein gemessenes Tief traegt ZERO_TEMP
+     * und laeuft als SAFETY_ZERO - dort entsteht nie ein Abbruch, den C7c
+     * freigeben koennte. Die Autorisierung darf an der laufenden Null dieses
+     * Pfads NICHTS aendern, auch nicht mit Stempel.
+     */
+    @Test
+    fun `C7c beruehrt den SAFETY_ZERO-Pfad nicht`() {
+        val r = FuseTbrTranslator.combine(
+            decision(0.20, FuseController.TbrAction.ZERO_TEMP)
+                .copy(markerAuthorizedU = 0.20),
+            running(0.0), scheduled, cfg,
+        )
+        assertNull(r.request, "die laufende Null bleibt - kein Abbruch, keine Erneuerung noetig")
+        assertFalse(r.reason.startsWith(FuseTbrTranslator.C7C_REASON), r.reason)
+    }
+
     /** Auch die ERNEUERUNG einer auslaufenden Null ist kein Ende der
      *  Zurueckhaltung - sie darf nicht am C7a-Veto haengenbleiben. Der SMB ist
      *  auf diesem Pfad ohnehin gesperrt; geprueft wird die Anforderung. */

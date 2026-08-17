@@ -99,6 +99,26 @@ class FuseStateExportTest {
         gate: FuseStateJson.PublicationGate? = null,
     ) = FuseStateJson.record("s#1", o, r, o.policy, BUILD, 0L, null, publicationGate = gate) { 5_000_000L }
 
+    /**
+     * IOBTH NIE VERSTECKEN - AUCH IM ABBRUCHZYKLUS (Toni 17.08.).
+     *
+     * abort() setzt `state = null`, kennt die beiden Grenzen aber und legt
+     * sie in outcome.iobThU/maxIobU. Der AAPS-Tab hatte den Rueckfall
+     * (FuseDashboardModel), der Export nicht - am Geraet standen die Grenzen,
+     * in der Datei, die der Viewer liest, fehlten sie. Der uebrige Testaufbau
+     * verdeckte das strukturell: er baut state=null MIT gesetztem
+     * isfMgdlPerU, eine Kombination, die abort() nie erzeugt, und prueft die
+     * Grenzen nicht.
+     */
+    @Test
+    fun `die IOB-Grenzen ueberleben den Abbruchzyklus im Export`() {
+        val o = outcome(abort = "drive not estimable (1 samples)")
+            .copy(iobThU = 8.0, maxIobU = 8.0)
+        val state = record(o).getJSONObject("state")
+        assertEquals(8.0, state.getDouble("iobThU"), 1e-9, "iobTH nie verstecken - auch nicht im Export")
+        assertEquals(8.0, state.getDouble("maxIobU"), 1e-9)
+    }
+
     // ---- B0c: das Publikationsgate im Trail ------------------------------
 
     /**

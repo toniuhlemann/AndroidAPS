@@ -48,6 +48,7 @@ import app.aaps.fuse.core.controller.CandidateSearch
 import app.aaps.fuse.core.controller.EvidenceStock
 import app.aaps.fuse.core.controller.MarkerFallback
 import app.aaps.fuse.core.controller.MarkerFloor
+import app.aaps.fuse.core.controller.MealBasalGuard
 import app.aaps.fuse.core.controller.OnsetChannel
 import app.aaps.fuse.core.controller.PrimeRelease
 import app.aaps.fuse.core.insulin.KernelOutcome
@@ -1850,11 +1851,46 @@ class FuseCycleRunner(
             kernelValid = kernelFinal != null,
         )
 
+        // DIE PROZESSIERTE TBR-SICHT, VOR der Grundregel gelesen: sie braucht
+        // die FAKE_EXTENDED-Erkennung, und der Translator unten dieselbe
+        // Sicht - ZWEI Lesevorgaenge koennten sich mitten im Zyklus
+        // widersprechen.
+        val runningTbr = processedTbrEbData.getTempBasalIncludingConvertedExtended(computeTs)
+        val currentTbr = runningTbr?.let {
+            TbrPolicy.Current(
+                // Prozent-TBR wird HIER absolut gemacht — der Kern sieht nie
+                // beides in derselben Zahl.
+                absoluteRateUPerH = it.convertedToAbsolute(computeTs, profile),
+                remainingMin = it.plannedRemainingMinutes,
+                sourceType = if (it.type == app.aaps.core.data.model.TB.Type.FAKE_EXTENDED) TbrPolicy.SourceType.FAKE_EXTENDED
+                else TbrPolicy.SourceType.TEMP_BASAL,
+            )
+        }
+
+        // DIE BASAL-GRUNDREGEL DER MAHLZEIT (Toni 17.08.): waehrend einer
+        // aktiven Mahlzeiten-/Absorptionslage ist Profilbasal die Untergrenze;
+        // eine rein modellbedingte Prognose setzt und erneuert keine Null.
+        // Die Regel selbst ist eine reine Funktion - HIER stehen nur die
+        // Zustaende, die der Kern nicht kennt.
+        val basalLage = MealBasalGuard.Input(
+            protectionActive = autorisiert.markerAuthorizedU > 0.0 ||
+                evidenz?.phase == EvidenceStock.Phase.ACTIVE ||
+                evidenz?.phase == EvidenceStock.Phase.PENDING_SEAL,
+            measuredLow = measuredLow,
+            // MESSGROESSEN, keine Bahnen: q1-Anker und UKF-Rate. Bewusst
+            // nicht `r` - BGI-bereinigt und 18-min-Fenster sind fuer einen
+            // Low-Suspend zu verzoegert (Toni).
+            nearLowFalling = MealBasalGuard.nearLowFalling(signal.q1, signal.ukfRatePerMin),
+            tbrControllable = currentTbr?.sourceType != TbrPolicy.SourceType.FAKE_EXTENDED,
+            segmentMature = signal.samplesUsed >= MealBasalGuard.SEGMENT_MATURE_MIN_SAMPLES,
+        )
+        val basalGeschuetzt = MealBasalGuard.apply(autorisiert, basalLage)
+
         // HART NACH dem Lift (Audit R95, Fix 3): Ratio-Pfad (Kernel-Ausfall)
         // und Sofort-Freigabe laufen am LEDGER_HOLD-Reject der Suche vorbei -
         // ohne diesen Riegel waere der Hold genau ueber die Pfade umgehbar,
         // die ohne Wirkungspruefung dosieren.
-        val held = LedgerHoldGate.apply(autorisiert, ledgerView.hold)
+        val held = LedgerHoldGate.apply(basalGeschuetzt, ledgerView.hold)
         // C4c: Anzeige, Export und RT-Grund bekommen den FINALEN Schwanzbericht -
         // den mit der Menge, die wirklich hinausgeht. Auch eine beschlossene
         // NULL ist eine Entscheidung und kein fehlender Term; erst damit steht
@@ -1877,20 +1913,11 @@ class FuseCycleRunner(
         // Audit R95 NEU-05: die PROZESSIERTE Sicht inkl. konvertierter
         // Extended-Boli - erst damit ist der FAKE_EXTENDED-Vertrag der
         // TbrPolicy (nur lesen, nie ersetzen; C8-SMB-Sperre) erreichbar.
-        val runningTbr = processedTbrEbData.getTempBasalIncludingConvertedExtended(computeTs)
-        val current = runningTbr?.let {
-            TbrPolicy.Current(
-                // Prozent-TBR wird HIER absolut gemacht — der Kern sieht nie
-                // beides in derselben Zahl.
-                absoluteRateUPerH = it.convertedToAbsolute(computeTs, profile),
-                remainingMin = it.plannedRemainingMinutes,
-                sourceType = if (it.type == app.aaps.core.data.model.TB.Type.FAKE_EXTENDED) TbrPolicy.SourceType.FAKE_EXTENDED
-                else TbrPolicy.SourceType.TEMP_BASAL,
-            )
-        }
+        // Gelesen wird sie OBEN vor der Basal-Grundregel - eine Sicht, ein
+        // Zyklus.
         val combined = FuseTbrTranslator.combine(
             decision = decision,
-            current = current,
+            current = currentTbr,
             scheduledBasalUPerH = profile.getBasal(computeTs),
             cfg = TbrPolicy.Config(
                 basalStepUPerH = pumpe.basalStepUPerH,
@@ -1919,7 +1946,7 @@ class FuseCycleRunner(
         //                             geaendert, ein alter Fehlversuch soll
         //                             den naechsten echten Anlauf nicht
         //                             blockieren)
-        val laeuftNull = current?.let { TbrPolicy.isZeroRate(it.absoluteRateUPerH, pumpe.basalStepUPerH) } == true
+        val laeuftNull = currentTbr?.let { TbrPolicy.isZeroRate(it.absoluteRateUPerH, pumpe.basalStepUPerH) } == true
         endZeroFehlversuche = when {
             !laeuftNull                                         -> 0
             combined.reason.contains(TbrPolicy.END_ZERO_REASON) -> endZeroFehlversuche + 1

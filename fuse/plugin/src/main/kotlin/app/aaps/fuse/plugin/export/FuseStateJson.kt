@@ -550,8 +550,14 @@ object FuseStateJson {
                 .put("targetMgdl", fin(outcome.targetMgdl))
                 .put("targetSource", outcome.targetSource ?: JSONObject.NULL)
                 .put("isfMgdlPerU", fin(outcome.isfMgdlPerU))
-                .put("iobThU", fin(outcome.state?.iobThU))
-                .put("maxIobU", fin(outcome.state?.maxIobU))
+                // RUECKFALL AUF DIE OUTCOME-FELDER (Toni 17.08.): im
+                // Abbruchzyklus ist `state` null, aber abort() kennt beide
+                // Grenzen und legt sie in outcome.iobThU/maxIobU - der
+                // AAPS-Tab faellt darauf zurueck (FuseDashboardModel), der
+                // Export tat es nicht. Damit galt "iobTH nie verstecken" am
+                // Geraet, aber nicht in der Datei, die der Viewer liest.
+                .put("iobThU", fin(outcome.state?.iobThU ?: outcome.iobThU))
+                .put("maxIobU", fin(outcome.state?.maxIobU ?: outcome.maxIobU))
                 // Der WIRKSAME Anteil, nicht beide Rohwerte: welche Zahl gegolten hat,
                 // haengt an der Phase, und im Nachhinein soll niemand die falsche
                 // von zweien lesen. Die Rohwerte stehen ohnehin unter policy.values.

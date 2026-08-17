@@ -182,6 +182,37 @@ class FuseControllerTest {
         assertTrue(d.smbU > 0.0)
     }
 
+    /**
+     * DIE HERKUNFT DER NULL, an beiden Quellen (Toni 17.08.).
+     *
+     * Am Geraet hielt eine Guard-Null das Profilbasal zurueck, waehrend die
+     * autorisierte Mahlzeiten-Huelle lief - minLower war unter den Boden
+     * gerechnet worden, weil die Bahn das eigene Prime-Insulin ohne die
+     * zugehoerige Mahlzeit sieht. [MarkerFloor] darf NUR diese Null heben.
+     * Die Unterscheidung haengt an genau einem Bit, und dieses Bit darf
+     * ausschliesslich die MODELL-Quelle setzen:
+     *
+     *   Guard (gerechnete Bahn)   -> zeroTempModelOnly = true
+     *   safetyHold (gemessen)     -> zeroTempModelOnly = false
+     *
+     * Waeren beide true, hoebe der Marker auch die Null eines ECHTEN Tiefs -
+     * die Umkehrung des Vertrags "das Modell ist ueberstimmbar, die
+     * Wirklichkeit nicht".
+     */
+    @Test
+    fun `nur die Guard-Null ist als modellbedingt ausgewiesen`() {
+        val modell = FuseController.decide(state(), pred(bgAt30 = 250.0, minLower = 65.0), evidenceCreditActive = false)
+        assertEquals(FuseController.Block.GUARD_FLOOR, modell.block)
+        assertTrue(modell.zeroTempModelOnly, "die Guard-Null stammt aus einer gerechneten Bahn")
+
+        val gemessen = FuseController.decide(state(hold = true), pred(bgAt30 = 250.0), evidenceCreditActive = false)
+        assertEquals(FuseController.TbrAction.ZERO_TEMP, gemessen.tbr)
+        assertEquals(
+            false, gemessen.zeroTempModelOnly,
+            "die Null eines gemessenen Tiefs darf NIE als modellbedingt gelten",
+        )
+    }
+
     // ---- Bedarf ----------------------------------------------------------
 
     // VERTRAGSAENDERUNG: bis dahin erwartete dieser Test ZERO_TEMP. Das

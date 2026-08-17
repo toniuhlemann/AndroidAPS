@@ -153,11 +153,42 @@ object FuseTbrTranslator {
         )
         val effective = applyBlock(decision, tbr.smbBlockCause)
         // C7a — GEMEINSAMES ZERTIFIKAT (Codex-Adjudication H3, D-Tabelle C7).
-        val jointVeto = effective.smbU > 0.0 && endsWithholding(tbr.outcome, current, scheduledBasalUPerH, cfg)
+        val ends = effective.smbU > 0.0 && endsWithholding(tbr.outcome, current, scheduledBasalUPerH, cfg)
+        // C7c — DIE AUTORISIERUNG ZERTIFIZIERT BEIDE GEMEINSAM (Toni 17.08.).
+        //
+        // C7a hielt die laufende Null mit dem Argument, das Freigeben von
+        // Basal sei "in keiner Pruefung enthalten". Unter einer aktiven
+        // Mahlzeiten-/Absorptionslage kehrt sich das um: das Profilbasal IST
+        // die autorisierte Grundlinie des Vertrags ("Profilbasal bleibt
+        // erhalten"), und die Huelle wurde unter der Annahme bemessen, dass es
+        // laeuft. Gemessen am 17.08.: 3,45 U Huelle geliefert, 0,35 U Basal
+        // per Null einbehalten - vorne Gas, hinten Bremse, netto 3,10 U.
+        //
+        // Abbruch der Null und SMB verlassen den Zyklus deshalb als EINE
+        // gemeinsam autorisierte Entscheidung. Der Traeger ist TYPISIERT -
+        // die Marker-Menge ([FuseController.Decision.markerAuthorizedU] > 0)
+        // oder die Basal-Grundregel ([FuseController.Decision
+        // .mealBasalProtected], gestempelt vom MealBasalGuard, der Nah-Tief,
+        // gemessenes Tief und FAKE_EXTENDED bereits ausgeschlossen hat) -
+        // nie ein Grundtext.
+        //
+        // WARUM DAS KEIN GEMESSENES TIEF beruehren kann, als
+        // Strukturargument: einen Abbruch (Dauer 0) erzeugt die TBR-Tabelle
+        // nur unter KEEP oder NO_POSITIVE - ein gemessenes Tief traegt
+        // ZERO_TEMP, laeuft als SAFETY_ZERO und stellt nie einen Abbruch.
+        // `endsWithholding` schuetzt zudem nur ZURUECKHALTUNGEN; fremde
+        // Absenkungen bleiben unangetastet wie bisher (C7b).
+        val authorized = effective.markerAuthorizedU > 0.0 || effective.mealBasalProtected
+        val jointVeto = ends && !authorized
+        val markerRelease = ends && authorized
         return Result(
             request = if (jointVeto) null else requestOf(tbr.outcome),
             decision = effective,
-            reason = if (jointVeto) "$C7A_REASON|${tbr.reason}" else tbr.reason,
+            reason = when {
+                jointVeto     -> "$C7A_REASON|${tbr.reason}"
+                markerRelease -> "$C7C_REASON|${tbr.reason}"
+                else          -> tbr.reason
+            },
             alarm = tbr.alarm,
         )
     }
@@ -165,6 +196,11 @@ object FuseTbrTranslator {
     /** Grund-Praefix des C7a-Vetos. Als Konstante, weil er im Trail gesucht
      *  wird: ohne ihn saehe der unterdrueckte Abbruch aus wie "es lief nichts". */
     const val C7A_REASON = "C7A_SMB_KEEPS_WITHHOLD"
+
+    /** Grund-Praefix der marker-autorisierten gemeinsamen Freigabe: die Null
+     *  endet UND der SMB laeuft, beides unter derselben Autorisierung. Im
+     *  Trail unterscheidbar von einem Abbruch ohne parallelen SMB. */
+    const val C7C_REASON = "C7C_MARKER_JOINT_RELEASE"
 
     /**
      * Wuerde diese TBR-Anforderung eine laufende ZURUECKHALTUNG beenden?
