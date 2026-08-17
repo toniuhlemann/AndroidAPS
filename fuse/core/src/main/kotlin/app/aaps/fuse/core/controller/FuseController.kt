@@ -511,7 +511,7 @@ object FuseController {
          * Ob fuer diesen Zyklus die Basal-Grundregel der Mahlzeit wirksam ist
          * (Toni 17.08.): Marker-Freigabe aktiv oder Evidenzphase
          * ACTIVE/PENDING_SEAL, KEIN gemessenes Tief, KEIN nahes fallendes
-         * Tief, TBR-Achse kontrollierbar. Gesetzt von [MealBasalGuard] im
+         * Tief, TBR-Achse kontrollierbar. Gesetzt von [BasalFloorGuard] im
          * Runner - der Regler kennt die Episodenphase nicht.
          *
          * GETRAGEN WIRD DAMIT ZWEIERLEI: die Hebung einer modellbedingten
@@ -522,7 +522,7 @@ object FuseController {
          * ist (Null lief die vollen 30 min, Tonis manueller Abbruch wurde
          * im Folgezyklus ueberschrieben).
          */
-        val mealBasalProtected: Boolean = false,
+        val basalFloorProtected: Boolean = false,
     ) {
 
         /**

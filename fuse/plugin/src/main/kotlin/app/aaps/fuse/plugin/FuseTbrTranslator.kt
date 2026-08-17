@@ -168,7 +168,7 @@ object FuseTbrTranslator {
         // gemeinsam autorisierte Entscheidung. Der Traeger ist TYPISIERT -
         // die Marker-Menge ([FuseController.Decision.markerAuthorizedU] > 0)
         // oder die Basal-Grundregel ([FuseController.Decision
-        // .mealBasalProtected], gestempelt vom MealBasalGuard, der Nah-Tief,
+        // .basalFloorProtected], gestempelt vom BasalFloorGuard, der Nah-Tief,
         // gemessenes Tief und FAKE_EXTENDED bereits ausgeschlossen hat) -
         // nie ein Grundtext.
         //
@@ -178,7 +178,7 @@ object FuseTbrTranslator {
         // ZERO_TEMP, laeuft als SAFETY_ZERO und stellt nie einen Abbruch.
         // `endsWithholding` schuetzt zudem nur ZURUECKHALTUNGEN; fremde
         // Absenkungen bleiben unangetastet wie bisher (C7b).
-        val authorized = effective.markerAuthorizedU > 0.0 || effective.mealBasalProtected
+        val authorized = effective.markerAuthorizedU > 0.0 || effective.basalFloorProtected
         val jointVeto = ends && !authorized
         val markerRelease = ends && authorized
         return Result(

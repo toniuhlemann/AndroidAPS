@@ -193,7 +193,7 @@ class FuseTbrTranslatorTest {
 
     /**
      * DER ZWEITE TRAEGER: die Basal-Grundregel der Mahlzeit
-     * (`mealBasalProtected`, gestempelt vom MealBasalGuard). Sie deckt die
+     * (`basalFloorProtected`, gestempelt vom BasalFloorGuard). Sie deckt die
      * Absorptionsphase NACH dem Prime-Fenster - am 17.08. war die Huelle um
      * 19:21 leer, `markerAuthorizedU` damit 0, die Evidenzepisode lief aber
      * noch, und um 19:30 wurde die Null aus einer unreifen Reihe erneuert.
@@ -202,7 +202,7 @@ class FuseTbrTranslatorTest {
     fun `C7c auch die Basal-Grundregel gibt den Abbruch frei`() {
         val r = FuseTbrTranslator.combine(
             decision(0.20, FuseController.TbrAction.KEEP_CURRENT)
-                .copy(mealBasalProtected = true),
+                .copy(basalFloorProtected = true),
             running(0.0), scheduled, cfg,
         )
         assertEquals(FuseController.TbrRequest(0.0, 0), r.request)

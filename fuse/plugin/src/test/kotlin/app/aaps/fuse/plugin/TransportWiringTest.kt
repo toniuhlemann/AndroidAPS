@@ -1020,16 +1020,16 @@ class TransportWiringTest : TestBaseWithProfile() {
         // prueft das) - die Null stammt allein aus der kohlenhydratfrei
         // gerechneten Bahn, und die ist unter der Autorisierung ueberstimmbar.
         // Ein gemessenes Tief traegt das Modell-Bit nicht und behaelt seine
-        // Null; dieser Fall steht in MealBasalGuardTest.
+        // Null; dieser Fall steht in BasalFloorGuardTest.
         assertEquals(
             FuseController.TbrAction.KEEP_CURRENT, o.decision.tbr,
             "das Profilbasal ist die autorisierte Grundlinie - die Modell-Null muss weichen",
         )
         assertTrue(
-            o.decision.bindingLimit.contains(app.aaps.fuse.core.controller.MealBasalGuard.TBR_LIFTED_MARK),
+            o.decision.bindingLimit.contains(app.aaps.fuse.core.controller.BasalFloorGuard.TBR_LIFTED_MARK),
             "die Hebung muss im Trail nachweisbar sein: ${o.decision.bindingLimit}",
         )
-        assertTrue(o.decision.mealBasalProtected, "und der Stempel muss den Translator erreichen (C7c)")
+        assertTrue(o.decision.basalFloorProtected, "und der Stempel muss den Translator erreichen (C7c)")
     }
 
     /** OHNE MARKER bleibt dieselbe Lage bei null - sonst wuerde der Test

@@ -1,11 +1,13 @@
 package app.aaps.fuse.core.controller
 
 /**
- * DIE BASAL-GRUNDREGEL DER MAHLZEIT (Tonis Vertrag, 17.08.2026).
+ * DAS FUNDAMENT (Tonis Vertrag, 17.08.2026).
  *
- * "Waehrend einer aktiven Mahlzeiten-/Absorptionslage gilt Profilbasal als
- *  Untergrenze. Eine rein modellbedingte Prognose darf keine Zero-TBR setzen
- *  oder erneuern."
+ * "Aufgabe des Basals ist es die Basis stabil zu halten ... das Fundament."
+ *
+ * Daraus die Regel: PROFILBASAL IST DIE UNTERGRENZE. Eine rein modellbedingte
+ * Prognose darf keine Zero-TBR setzen oder erneuern - eine GEMESSENE
+ * Tiefgefahr darf es weiterhin.
  *
  * DER ANLASS, gemessen am Geraet: Marker 18:56, Huelle 3,5 U auf 25 min. Ab
  * 19:05 gab FUSE jede Minute 0,15 U aus der autorisierten Huelle UND hielt
@@ -14,17 +16,34 @@ package app.aaps.fuse.core.controller
  * gerechnete Bahn: das Prime-Insulin geht als reine Absenkung ein, die
  * Mahlzeit, die es autorisiert hat, nicht. Quantifiziert aus dem Trail:
  * 7,13 mg/dl Bahnabsenkung je 0,15-U-SMB bei ISF 63, gemessene minLower-
- * Schritte -7,09 und -6,73 - die Null hat sich selbst ausgeloest. Und um
- * 19:30 wurde sie aus einer 6-Punkte-Reihe nach CGM-Luecke ERNEUERT
- * (minLower 8,8 bei BG 127 steigend). Tonis manueller TBR-Abbruch wurde im
- * Folgezyklus wieder ueberschrieben.
+ * Schritte -7,09 und -6,73 - die Null hat sich selbst ausgeloest.
  *
- * WARUM ZUSTANDSBASIERT UND NICHT "3-4 STUNDEN" (Toni): die Episode kann
- * zwischendurch DORMANT sein oder nach fuenf Stunden eine neue Welle zeigen.
- * Geschuetzt ist die LAGE, nicht die Uhr:
+ * WARUM DIE REGEL AM 17.08. VOM MAHLZEITENFENSTER AUF IMMER ERWEITERT WURDE.
+ * Der erste Wurf schuetzte nur die Absorptionslage. Die Tagesmessung zeigte
+ * dann das Ausmass: an 677 von 1129 Zyklen lief eine Null - 60 % des Tages
+ * ohne Fundament, bei einem BG zwischen 53 und 270. Toni: "eigentlich fast
+ * der komplette tag 0 tbr ... aufgabe des basals ist es die basis stabil zu
+ * halten." Die Mahlzeit war nie das Besondere an dem Fall; sie war nur die
+ * Stelle, an der es zuerst auffiel.
  *
- *     mealBasalProtected = Marker-Freigabe aktiv
- *                          ODER Evidenzphase ACTIVE/PENDING_SEAL
+ * UND DAS ARGUMENT STEHT IM FORK BEREITS - beim SCHWANZ-Guard, wo es von
+ * Anfang an richtig entschieden wurde: "Die Kategorie ist NO_NEW_POSITIVE und
+ * ausdruecklich NICHT ZERO_TEMP ... ein blindes Zero-Temp bei sicherer
+ * Nahbahn waere eine eigene Fehldosis mit umgekehrtem Vorzeichen." Der
+ * Nahzonen-Guard zwoelf Zeilen darueber griff trotzdem zum Basal. Diese
+ * Klasse zieht ihn nach.
+ *
+ * DIE ASYMMETRIE, die das Instrument disqualifiziert: als BREMSE ist die
+ * Null schwach (Rueckhaltekapazitaet ~0,6 U/h, ein SMB am Deckel ist das
+ * 0,9-1,3-fache davon und nicht rueckholbar), als STOERUNG des Fundaments
+ * ist sie stark (60 % der Zeit). Schwach da, wo sie wirken soll, stark da,
+ * wo sie schaden kann.
+ *
+ * WARUM KEEP_CURRENT UND NICHT NO_NEW_POSITIVE (Toni hatte letzteres
+ * vorgeschlagen): NO_NEW_POSITIVE verhindert nur eine NEUE Null, laesst eine
+ * LAUFENDE aber bis zum Ablauf stehen (TbrPolicy.noPositive behaelt eine
+ * nicht-positive TBR absichtlich). KEEP_CURRENT bricht sie ab - erst damit
+ * kehrt das Fundament SOFORT zurueck statt nach bis zu 30 min.
  *
  * WAS DIE REGEL AUSDRUECKLICH NICHT UEBERSTIMMT (die Wirklichkeit):
  *
@@ -48,7 +67,7 @@ package app.aaps.fuse.core.controller
  * diagnostisch nuetzlich. Sie duerfen ... nur nicht mehr allein die
  * Basalversorgung abschalten.").
  */
-object MealBasalGuard {
+object BasalFloorGuard {
 
     /**
      * Kennung im `bindingLimit`, wenn die modellbedingte Null unter der
@@ -83,10 +102,12 @@ object MealBasalGuard {
     const val SEGMENT_MATURE_MIN_SAMPLES = 15
 
     /**
-     * @param protectionActive die Mahlzeiten-/Absorptionslage: Marker-Freigabe
-     *   aktiv ODER Evidenzphase ACTIVE/PENDING_SEAL. DORMANT, SUSPENDED,
-     *   UNKNOWN, EXPIRED und NONE schuetzen NICHT - dort gilt der normale
-     *   TBR-Vertrag.
+     * @param mealContext ob eine Mahlzeiten-/Absorptionslage vorliegt
+     *   (Marker-Freigabe aktiv ODER Evidenzphase ACTIVE/PENDING_SEAL). REINES
+     *   MESSFELD seit dem 17.08. - der Schutz haengt NICHT mehr daran, s.
+     *   Klassenkopf. Es steht hier, weil man sonst im Trail nicht mehr trennen
+     *   kann, welche Hebungen im Mahlzeitenfenster passierten und welche
+     *   ausserhalb; genau diese Aufteilung ist die Messgroesse der Umstellung.
      * @param measuredLow es liegt JETZT ein gemessenes Tief vor.
      * @param nearLowFalling s. [nearLowFalling].
      * @param tbrControllable false, wenn eine FAKE_EXTENDED-Rate laeuft.
@@ -94,7 +115,7 @@ object MealBasalGuard {
      *   erreicht.
      */
     data class Input(
-        val protectionActive: Boolean,
+        val mealContext: Boolean,
         val measuredLow: Boolean,
         val nearLowFalling: Boolean,
         val tbrControllable: Boolean,
@@ -124,7 +145,7 @@ object MealBasalGuard {
      *    oder erneuerte Null aus einer Reihe, die das Fenster noch nicht
      *    fuellt. Eine LAUFENDE Null laeuft aus; sie wird hier weder erneuert
      *    noch blind beendet.
-     * 3. STEMPEL: [FuseController.Decision.mealBasalProtected] traegt die
+     * 3. STEMPEL: [FuseController.Decision.basalFloorProtected] traegt die
      *    wirksame Schutzlage in den Translator - dort gibt C7c den Abbruch
      *    einer LAUFENDEN Null neben einem SMB frei, der sonst am C7a-Veto
      *    hinge.
@@ -133,7 +154,7 @@ object MealBasalGuard {
      * seine Null traegt das Bit ohnehin nicht und bleibt unangetastet.
      */
     fun apply(decision: FuseController.Decision, input: Input): FuseController.Decision {
-        val geschuetzt = input.protectionActive && input.tbrControllable &&
+        val geschuetzt = input.tbrControllable &&
             !input.measuredLow && !input.nearLowFalling
         val modellNull = decision.zeroTempModelOnly &&
             decision.tbr == FuseController.TbrAction.ZERO_TEMP
@@ -145,7 +166,7 @@ object MealBasalGuard {
                 // mehr gibt.
                 zeroTempModelOnly = false,
                 bindingLimit = TBR_LIFTED_MARK + decision.bindingLimit,
-                mealBasalProtected = true,
+                basalFloorProtected = true,
             )
             // Zeile 3 der Vertragstabelle: "Signal unbekannt/unreif -> keine
             // neue modellbasierte Zero-TBR". NUR bei kontrollierbarer
@@ -172,10 +193,10 @@ object MealBasalGuard {
                 tbr = FuseController.TbrAction.NO_NEW_POSITIVE,
                 zeroTempModelOnly = false,
                 bindingLimit = IMMATURE_MARK + decision.bindingLimit,
-                mealBasalProtected = geschuetzt,
+                basalFloorProtected = geschuetzt,
             )
-            else -> if (decision.mealBasalProtected == geschuetzt) decision
-            else decision.copy(mealBasalProtected = geschuetzt)
+            else -> if (decision.basalFloorProtected == geschuetzt) decision
+            else decision.copy(basalFloorProtected = geschuetzt)
         }
     }
 }

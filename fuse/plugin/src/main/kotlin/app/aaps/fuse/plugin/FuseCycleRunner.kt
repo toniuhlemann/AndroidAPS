@@ -48,7 +48,7 @@ import app.aaps.fuse.core.controller.CandidateSearch
 import app.aaps.fuse.core.controller.EvidenceStock
 import app.aaps.fuse.core.controller.MarkerFallback
 import app.aaps.fuse.core.controller.MarkerFloor
-import app.aaps.fuse.core.controller.MealBasalGuard
+import app.aaps.fuse.core.controller.BasalFloorGuard
 import app.aaps.fuse.core.controller.OnsetChannel
 import app.aaps.fuse.core.controller.PrimeRelease
 import app.aaps.fuse.core.insulin.KernelOutcome
@@ -1872,19 +1872,23 @@ class FuseCycleRunner(
         // eine rein modellbedingte Prognose setzt und erneuert keine Null.
         // Die Regel selbst ist eine reine Funktion - HIER stehen nur die
         // Zustaende, die der Kern nicht kennt.
-        val basalLage = MealBasalGuard.Input(
-            protectionActive = autorisiert.markerAuthorizedU > 0.0 ||
+        val basalLage = BasalFloorGuard.Input(
+            // REINES MESSFELD seit dem 17.08. - der Schutz haengt nicht mehr
+            // daran. Es trennt im Trail die Hebungen im Mahlzeitenfenster von
+            // denen ausserhalb; ohne diese Aufteilung waere die Wirkung der
+            // Erweiterung hinterher nicht mehr zu belegen.
+            mealContext = autorisiert.markerAuthorizedU > 0.0 ||
                 evidenz?.phase == EvidenceStock.Phase.ACTIVE ||
                 evidenz?.phase == EvidenceStock.Phase.PENDING_SEAL,
             measuredLow = measuredLow,
             // MESSGROESSEN, keine Bahnen: q1-Anker und UKF-Rate. Bewusst
             // nicht `r` - BGI-bereinigt und 18-min-Fenster sind fuer einen
             // Low-Suspend zu verzoegert (Toni).
-            nearLowFalling = MealBasalGuard.nearLowFalling(signal.q1, signal.ukfRatePerMin),
+            nearLowFalling = BasalFloorGuard.nearLowFalling(signal.q1, signal.ukfRatePerMin),
             tbrControllable = currentTbr?.sourceType != TbrPolicy.SourceType.FAKE_EXTENDED,
-            segmentMature = signal.samplesUsed >= MealBasalGuard.SEGMENT_MATURE_MIN_SAMPLES,
+            segmentMature = signal.samplesUsed >= BasalFloorGuard.SEGMENT_MATURE_MIN_SAMPLES,
         )
-        val basalGeschuetzt = MealBasalGuard.apply(autorisiert, basalLage)
+        val basalGeschuetzt = BasalFloorGuard.apply(autorisiert, basalLage)
 
         // HART NACH dem Lift (Audit R95, Fix 3): Ratio-Pfad (Kernel-Ausfall)
         // und Sofort-Freigabe laufen am LEDGER_HOLD-Reject der Suche vorbei -
