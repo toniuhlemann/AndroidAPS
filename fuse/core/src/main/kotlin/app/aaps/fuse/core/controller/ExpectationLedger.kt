@@ -1,74 +1,110 @@
 package app.aaps.fuse.core.controller
 
+import kotlin.math.abs
+
 /**
  * WAS FUSE VERSPROCHEN HAT, UND WAS DAVON EINGETROFFEN IST.
  *
  * Erster Baustein des Sackgassenwaechters (Tonis Vertrag 17.08. nachts).
  * DIESE KLASSE ENTSCHEIDET NICHTS - sie misst nur. Die spaetere
  * lambda-Adaption haengt an ihr, aber sie selbst kann keine Dosis aendern.
- * Das ist Absicht: der Messteil muss laufen und Daten sammeln, bevor
- * irgendetwas am Hypo-Schutz haengt.
  *
  * DER ANLASS: FUSE stand am 17.08. 89 Zyklen lang bei 0,00 U und BG 169-216.
  * Ursache ist keine falsche Arithmetik, sondern eine pessimistische ANNAHME
  * ohne Korrekturschleife - `r` ist bereits BGI-bereinigt (r = D), der
  * Bolus-Deckungs-Abschlag zieht die Insulinwirkung mit lambda = 1 ein
- * zweites Mal ab, die Bahn ein drittes Mal. Ergebnis D - 2I statt D - I.
- * Bei einer FRISCHEN Stoerung ist das richtig: der insulinverdeckte Anteil
- * koennte im naechsten Moment verschwinden. Bei einem seit Stunden
- * bestaetigten Plateau ist es hundertfach widerlegt - und FUSE trifft die
- * Annahme trotzdem jede Minute neu.
+ * zweites Mal ab, die Bahn ein drittes Mal. Bei FRISCHER Stoerung richtig,
+ * bei einem seit Stunden bestaetigten Plateau hundertfach widerlegt - und
+ * FUSE trifft die Annahme trotzdem jede Minute neu.
  *
- * Toni: "nicht unbedingt dreimal arithmetisch abgezogen, sondern eine
- * pessimistische Annahme, die trotz wiederholter Gegenbeobachtung niemals
- * korrigiert wird."
+ * DREI FEHLER DES ERSTEN WURFS, alle von Toni gefunden, bevor der Baustein
+ * einen Aufrufer hatte:
  *
- * UM DIESE ANNAHME ZU WIDERLEGEN, braucht es einen NACHWEIS, und der
- * verlangt zwei Zeitpunkte: was wurde wann versprochen, und was ist zu
- * diesem Zeitpunkt tatsaechlich eingetreten. Ein Momentanwert kann das
- * nicht - "BG ist hoch" und "r ist positiv" sind ausdruecklich KEIN
- * Nachweis (Tonis Abnahmekriterium 3).
+ * (1) ZEITLICHE ZUORDNUNG. `settle` bewertete ALLE ueberfaelligen Prognosen
+ *     gegen den AKTUELLEN Messwert. Nach einer 20-min-Luecke waeren mehrere
+ *     verschiedene Faelligkeiten gegen denselben spaeteren Wert geprueft
+ *     worden - und der Test "mehrere Faelligkeiten gemeinsam abrechnen"
+ *     schrieb dieses falsche Verhalten sogar fest. Jetzt braucht jede
+ *     Faelligkeit einen Messwert NAHE ihrem eigenen `dueTs`; fehlt er, ist
+ *     sie UNVERIFIABLE. Ein spaeterer Wert wird NIE rueckwirkend fuer
+ *     mehrere Faelligkeiten verwendet.
  *
- * WARUM NUR SENKUNGEN EINGEREIHT WERDEN: eine Prognose, die gar keine
- * Absenkung behauptet, kann auch nicht ausbleiben. Nur wo FUSE gesagt hat
- * "es geht runter", ist ein Ausbleiben eine Aussage ueber das Modell.
+ * (2) WELCHE BAHN. `predictedMgdl` sagte nicht, was gemeint ist - und der
+ *     Unterschied ist der ganze Punkt: die MITTELBAHN ist eine Erwartung,
+ *     die eintreten soll. Die SICHERHEITSUNTERGRENZE ist ein pessimistisches
+ *     Risikoszenario, das gerade NICHT eintreten soll. Sagt die Untergrenze
+ *     70 und der reale BG bleibt bei 180, ist kein Versprechen ausgeblieben -
+ *     ein Risiko hat sich nicht realisiert. Der Nachweis fuer die
+ *     lambda-Adaption laeuft deshalb ausschliesslich ueber die Mittelbahn;
+ *     die Untergrenze faehrt als Kontext mit.
+ *
+ * (3) UNABHAENGIGKEIT. Bei einer Prognose je Minute und 30 min Horizont
+ *     beschreiben 30 aufeinanderfolgende MISSED weitgehend DASSELBE Plateau -
+ *     das sind keine 30 unabhaengigen Widerlegungen. Gemessen wird deshalb
+ *     die DAUER der ununterbrochenen Ausbleib-Strecke, nicht ihre Anzahl.
+ *     Und eine Signalluecke darf die Strecke nicht ueberbruecken: nach einem
+ *     Segmentbruch beginnt der aktive Nachweis neu, auch wenn das Archiv die
+ *     alten Ergebnisse behaelt.
  */
 object ExpectationLedger {
 
     /**
      * Eine abgegebene Prognose, die spaeter geprueft werden kann.
      *
-     * @param issuedTs wann sie abgegeben wurde.
-     * @param dueTs wann sie faellig ist (issuedTs + Freigabehorizont).
+     * @param sourceTs der Messzeitpunkt, auf dem die Prognose beruht (NICHT
+     *   der Rechenzeitpunkt - die Faelligkeit haengt an der Messuhr).
+     * @param dueTs wann sie faellig ist.
+     * @param segmentId die Signalsegment-Kennung bei Abgabe. Wechselt sie,
+     *   liegt ein Bruch dazwischen und die Strecke beginnt neu.
      * @param anchorMgdl der BG, von dem aus prognostiziert wurde.
-     * @param predictedMgdl der prognostizierte Wert zum Faelligkeitszeitpunkt.
+     * @param meanPredictedMgdl die MITTELBAHN - die Erwartung, die eintreten
+     *   soll. Nur sie taugt als Versprechen.
+     * @param safetyLowerPredictedMgdl die Sicherheitsuntergrenze zum selben
+     *   Zeitpunkt. REINER KONTEXT: ein Risikoszenario, das nicht eintreten
+     *   soll, ist kein Versprechen und geht nie in ein MET/MISSED ein.
+     * @param lambda der wirksame Bolus-Deckungs-Abschlag bei Abgabe - die
+     *   Groesse, um die es spaeter geht.
+     * @param discountMgdl / bgiMgdl die beiden Terme der Bahn bei Abgabe.
+     *   Ohne sie ist hinterher nicht rekonstruierbar, WARUM die Bahn lag,
+     *   wo sie lag.
+     * @param configGeneration Kennung der Regelwerks-/Konfigurationsstand.
+     *   Aendert sich etwas an Modell oder Einstellungen, sind aeltere
+     *   Eintraege nicht mehr mit neueren vergleichbar.
      */
     data class Entry(
-        val issuedTs: Long,
+        val sourceTs: Long,
         val dueTs: Long,
+        val segmentId: Long,
         val anchorMgdl: Double,
-        val predictedMgdl: Double,
+        val meanPredictedMgdl: Double,
+        val safetyLowerPredictedMgdl: Double? = null,
+        val lambda: Double? = null,
+        val discountMgdl: Double? = null,
+        val bgiMgdl: Double? = null,
+        val configGeneration: String? = null,
     ) {
 
-        /** Die BEHAUPTETE Senkung [mg/dl], immer positiv (sonst gaebe es den
-         *  Eintrag nicht). */
-        val promisedDropMgdl: Double get() = anchorMgdl - predictedMgdl
+        /** Die behauptete Senkung der MITTELBAHN [mg/dl], immer positiv. */
+        val promisedDropMgdl: Double get() = anchorMgdl - meanPredictedMgdl
     }
 
     /** Wie eine faellige Prognose ausgegangen ist. */
     enum class Verdict {
-        /** Der BG ist mindestens so weit gefallen wie versprochen. */
+        /** Die Mittelbahn ist mindestens so weit gefallen wie versprochen. */
         MET,
 
-        /** Die Senkung ist ausgeblieben - der gemessene Wert liegt ueber der
-         *  Prognose. Das ist der Fall, der den Sackgassenwaechter naehrt. */
+        /** Die versprochene Senkung ist ausgeblieben. Der Fall, der den
+         *  Sackgassenwaechter naehrt. */
         MISSED,
 
         /**
-         * Nicht bewertbar: zum Faelligkeitszeitpunkt fehlte ein brauchbarer
-         * Messwert oder die Signalgesundheit. AUSDRUECKLICH KEIN "MET" - ein
-         * unbeobachteter Zeitpunkt ist kein eingehaltenes Versprechen, und
-         * ihn als solches zu zaehlen wuerde den Nachweis verwaessern.
+         * Nicht bewertbar - KEIN halbes MET und kein halbes MISSED.
+         *
+         * Zwei Ursachen, beide gleich behandelt: zum Faelligkeitszeitpunkt
+         * fehlte ein Messwert IN DER NAEHE (s. (1) im Klassenkopf), oder die
+         * Signalgesundheit fehlte. Als MET zu zaehlen verwaessert den
+         * Nachweis; als MISSED zu zaehlen macht aus einem Sensorausfall einen
+         * Freibrief fuer mehr Insulin.
          */
         UNVERIFIABLE,
     }
@@ -77,106 +113,156 @@ object ExpectationLedger {
     data class Outcome(
         val entry: Entry,
         val verdict: Verdict,
-        /** Der gemessene Wert bei Faelligkeit; `null` bei UNVERIFIABLE. */
+        /** Zeitpunkt des verwendeten Messwerts; `null` bei UNVERIFIABLE.
+         *  Steht getrennt von `dueTs`, damit die Zuordnung pruefbar ist. */
+        val actualTs: Long? = null,
         val actualMgdl: Double? = null,
     ) {
 
         /**
-         * Um wieviel die Senkung hinter dem Versprechen zurueckblieb [mg/dl].
-         * Positiv = ausgeblieben. `null`, wenn nicht bewertbar.
+         * Abweichung von der MITTELBAHN [mg/dl]. Positiv = die Senkung blieb
+         * aus. `null`, wenn nicht bewertbar.
          */
-        val shortfallMgdl: Double?
-            get() = actualMgdl?.let { it - entry.predictedMgdl }
+        val meanErrorMgdl: Double?
+            get() = actualMgdl?.let { it - entry.meanPredictedMgdl }
+
+        /**
+         * Abstand des gemessenen Werts zur damaligen SICHERHEITSUNTERGRENZE
+         * [mg/dl]. Positiv = darueber geblieben. REINE DIAGNOSE - hieraus
+         * wird kein Urteil abgeleitet, s. (2) im Klassenkopf.
+         */
+        val distanceFromSafetyLowerMgdl: Double?
+            get() = entry.safetyLowerPredictedMgdl?.let { sl -> actualMgdl?.let { it - sl } }
     }
 
     /**
      * Eine Prognose einreihen - oder `null`, wenn sie nichts behauptet, das
      * spaeter widerlegbar waere.
-     *
-     * @param minDropMgdl Mindesthoehe der behaupteten Senkung. Darunter ist
-     *   der Unterschied zwischen Prognose und Messrauschen nicht mehr
-     *   feststellbar, und ein "ausgeblieben" waere nicht belastbar.
      */
     fun issue(
-        issuedTs: Long,
+        sourceTs: Long,
+        segmentId: Long,
         anchorMgdl: Double?,
-        predictedMgdl: Double?,
+        meanPredictedMgdl: Double?,
         horizonMin: Int,
+        safetyLowerPredictedMgdl: Double? = null,
+        lambda: Double? = null,
+        discountMgdl: Double? = null,
+        bgiMgdl: Double? = null,
+        configGeneration: String? = null,
         minDropMgdl: Double = MIN_PROMISED_DROP_MGDL,
     ): Entry? {
         if (anchorMgdl == null || !anchorMgdl.isFinite()) return null
-        if (predictedMgdl == null || !predictedMgdl.isFinite()) return null
+        if (meanPredictedMgdl == null || !meanPredictedMgdl.isFinite()) return null
         if (horizonMin <= 0) return null
-        // NUR SENKUNGEN: eine Prognose "es bleibt gleich" oder "es steigt"
-        // kann nicht ausbleiben.
-        if (anchorMgdl - predictedMgdl < minDropMgdl) return null
+        // NUR SENKUNGEN DER MITTELBAHN: eine Prognose "bleibt gleich" oder
+        // "steigt" kann nicht ausbleiben.
+        if (anchorMgdl - meanPredictedMgdl < minDropMgdl) return null
         return Entry(
-            issuedTs = issuedTs,
-            dueTs = issuedTs + horizonMin * 60_000L,
+            sourceTs = sourceTs,
+            dueTs = sourceTs + horizonMin * 60_000L,
+            segmentId = segmentId,
             anchorMgdl = anchorMgdl,
-            predictedMgdl = predictedMgdl,
+            meanPredictedMgdl = meanPredictedMgdl,
+            safetyLowerPredictedMgdl = safetyLowerPredictedMgdl?.takeIf { it.isFinite() },
+            lambda = lambda?.takeIf { it.isFinite() },
+            discountMgdl = discountMgdl?.takeIf { it.isFinite() },
+            bgiMgdl = bgiMgdl?.takeIf { it.isFinite() },
+            configGeneration = configGeneration,
         )
     }
 
+    /** Ein Messwert mit seinem Zeitpunkt - die Reihe, gegen die abgerechnet wird. */
+    data class Sample(val ts: Long, val mgdl: Double)
+
     /**
-     * Faellige Prognosen abrechnen.
+     * Faellige Prognosen abrechnen - JEDE gegen einen Messwert in der Naehe
+     * IHRER EIGENEN Faelligkeit.
      *
-     * @return die abgerechneten Ergebnisse und die verbleibenden, noch nicht
-     *   faelligen Eintraege. Der Aufrufer haelt Letztere weiter vor.
+     * @param samples die verfuegbaren Messwerte. Es wird der zeitlich
+     *   naechste zu `dueTs` gesucht; liegt er weiter als [matchToleranceMs]
+     *   entfernt, ist die Prognose UNVERIFIABLE.
+     * @param signalHealthy Gesundheit ZUM ABRECHNUNGSZEITPUNKT.
+     * @return die abgerechneten Ergebnisse und die verbleibenden Eintraege.
+     *   Ueberalterte Eintraege (s. [MAX_AGE_MIN]) verfallen dabei als
+     *   UNVERIFIABLE, statt die Liste unbegrenzt wachsen zu lassen.
      */
     fun settle(
         entries: List<Entry>,
         nowTs: Long,
-        actualMgdl: Double?,
+        samples: List<Sample>,
         signalHealthy: Boolean,
         toleranceMgdl: Double = SETTLE_TOLERANCE_MGDL,
+        matchToleranceMs: Long = MATCH_TOLERANCE_MS,
     ): Pair<List<Outcome>, List<Entry>> {
         val faellig = entries.filter { it.dueTs <= nowTs }
         if (faellig.isEmpty()) return emptyList<Outcome>() to entries
         val offen = entries.filter { it.dueTs > nowTs }
-        val brauchbar = signalHealthy && actualMgdl != null && actualMgdl.isFinite()
         val abgerechnet = faellig.map { e ->
-            if (!brauchbar) Outcome(e, Verdict.UNVERIFIABLE)
-            // Die Toleranz sitzt auf der Seite des MODELLS: erst wenn der
-            // gemessene Wert die Prognose um mehr als das Messrauschen
-            // ueberschreitet, gilt die Senkung als ausgeblieben. Ein
-            // knappes Verfehlen ist kein Nachweis.
-            else if (actualMgdl!! > e.predictedMgdl + toleranceMgdl) Outcome(e, Verdict.MISSED, actualMgdl)
-            else Outcome(e, Verdict.MET, actualMgdl)
+            // DER MESSWERT MUSS ZUR FAELLIGKEIT PASSEN, nicht zur Gegenwart.
+            // Ohne diese Zuordnung wuerden nach einer Luecke mehrere
+            // Faelligkeiten gegen denselben spaeten Wert geprueft.
+            val treffer = samples
+                .filter { abs(it.ts - e.dueTs) <= matchToleranceMs && it.mgdl.isFinite() }
+                .minByOrNull { abs(it.ts - e.dueTs) }
+            when {
+                !signalHealthy || treffer == null                            -> Outcome(e, Verdict.UNVERIFIABLE)
+                // Die Toleranz sitzt auf der Seite des MODELLS: erst wenn der
+                // gemessene Wert die Mittelbahn um mehr als das Messrauschen
+                // ueberschreitet, gilt die Senkung als ausgeblieben.
+                treffer.mgdl > e.meanPredictedMgdl + toleranceMgdl           ->
+                    Outcome(e, Verdict.MISSED, treffer.ts, treffer.mgdl)
+
+                else                                                         ->
+                    Outcome(e, Verdict.MET, treffer.ts, treffer.mgdl)
+            }
         }
         return abgerechnet to offen
     }
 
     /**
-     * WIE VIELE FAELLIGE PROGNOSEN IN FOLGE ZULETZT AUSGEBLIEBEN SIND.
+     * WIE LANGE die versprochene Senkung ununterbrochen ausbleibt [min].
      *
-     * IN FOLGE, und das ist der Punkt: ein einzelnes MET beendet die Serie.
-     * Wirkt das Insulin auch nur einmal wie versprochen, ist die
-     * pessimistische Annahme in diesem Zyklus nicht widerlegt, und der
-     * Nachweis beginnt von vorn. Tonis Abnahmekriterium 5 ("Richtungswende
-     * setzt den Discount sofort zurueck") faengt den akuten Fall ab; diese
-     * Serie ist das langsamere Gegenstueck.
+     * DAUER STATT ANZAHL, und das ist Tonis dritter Befund: bei einer
+     * Prognose je Minute und 30 min Horizont beschreiben 30 aufeinander-
+     * folgende MISSED weitgehend dasselbe Plateau. Sie zu zaehlen erzeugt
+     * einen Nachweis, den es nicht gibt; ihre zeitliche Ausdehnung zu messen
+     * beschreibt genau das, was gemeint ist.
      *
-     * UNVERIFIABLE zaehlt WEDER mit NOCH bricht es die Serie: ein
-     * unbeobachteter Zeitpunkt ist kein Gegenbeweis, aber auch kein Beleg.
-     * Er darf den Nachweis weder tragen noch zerstoeren.
+     * EIN SEGMENTBRUCH BEENDET DIE STRECKE. Ueber eine Signalluecke hinweg
+     * gibt es keinen zusammenhaengenden Nachweis - das Archiv behaelt die
+     * alten Ergebnisse, der aktive Nachweis beginnt neu.
+     *
+     * Ein MET beendet sie ebenfalls: wirkt das Insulin auch nur einmal wie
+     * versprochen, ist die pessimistische Annahme nicht widerlegt.
+     * UNVERIFIABLE zaehlt weder mit noch bricht es - solange das Segment
+     * dasselbe bleibt.
+     *
+     * @param currentSegmentId das Segment, in dem JETZT gerechnet wird.
      */
-    fun consecutiveMissed(outcomes: List<Outcome>): Int {
-        var n = 0
-        for (o in outcomes.sortedByDescending { it.entry.dueTs }) {
+    fun missedStreakMin(outcomes: List<Outcome>, currentSegmentId: Long): Int {
+        val sortiert = outcomes.sortedByDescending { it.entry.dueTs }
+        var juengste: Long? = null
+        var aelteste: Long? = null
+        for (o in sortiert) {
+            if (o.entry.segmentId != currentSegmentId) break
             when (o.verdict) {
-                Verdict.MISSED       -> n++
-                Verdict.MET          -> return n
+                Verdict.MET          -> break
+                Verdict.MISSED       -> {
+                    if (juengste == null) juengste = o.entry.dueTs
+                    aelteste = o.entry.dueTs
+                }
+
                 Verdict.UNVERIFIABLE -> Unit
             }
         }
-        return n
+        if (juengste == null || aelteste == null) return 0
+        return ((juengste - aelteste) / 60_000L).toInt()
     }
 
     /**
      * Mindesthoehe einer behaupteten Senkung [mg/dl], damit sie ueberhaupt
-     * eingereiht wird. In der Groessenordnung des Sensorrauschens - darunter
-     * ist "ausgeblieben" nicht von Messrauschen zu unterscheiden.
+     * eingereiht wird - in der Groessenordnung des Sensorrauschens.
      */
     const val MIN_PROMISED_DROP_MGDL = 10.0
 
@@ -184,9 +270,12 @@ object ExpectationLedger {
     const val SETTLE_TOLERANCE_MGDL = 5.0
 
     /**
-     * Wie lange ein Eintrag hoechstens vorgehalten wird [min], bevor er ohne
-     * Abrechnung verfaellt. Schuetzt die Datei gegen unbegrenztes Wachsen,
-     * wenn Faelligkeiten wegen Ausfaellen nie erreicht werden.
+     * Wie nah ein Messwert an der Faelligkeit liegen muss [ms]. Bei
+     * 1-min-CGM ist das der uebernaechste Punkt - genug gegen einzelne
+     * Aussetzer, zu wenig fuer eine echte Luecke.
      */
+    const val MATCH_TOLERANCE_MS = 150_000L
+
+    /** Nach dieser Zeit verfaellt ein nicht abgerechneter Eintrag [min]. */
     const val MAX_AGE_MIN = 240
 }
