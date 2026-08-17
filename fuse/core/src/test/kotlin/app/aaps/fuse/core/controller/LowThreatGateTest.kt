@@ -1,6 +1,7 @@
 package app.aaps.fuse.core.controller
 
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import kotlin.math.exp
@@ -44,6 +45,18 @@ class LowThreatGateTest {
         measuredLow = measuredLow, signalHealthy = healthy, bgMgdl = bg,
         fallRatePerMin = rate, bolusIobU = bolus, isfMgdlPerU = isf,
         guardFloorMgdl = boden, scheduledBasalUPerH = basal, remainingEffect = wirkung,
+    ).verdict
+
+    /** Die volle Rechenspur - fuer die Telemetriepruefungen. */
+    private fun spur(
+        bg: Double? = 130.0,
+        rate: Double? = -1.0,
+        bolus: Double? = 2.0,
+        healthy: Boolean = true,
+    ) = LowThreatGate.evaluate(
+        measuredLow = false, signalHealthy = healthy, bgMgdl = bg,
+        fallRatePerMin = rate, bolusIobU = bolus, isfMgdlPerU = 63.0,
+        guardFloorMgdl = 70.0, scheduledBasalUPerH = 0.60, remainingEffect = wirkung,
     )
 
     // ---- Die Wirklichkeit zuerst -----------------------------------------
@@ -190,7 +203,59 @@ class LowThreatGateTest {
             fallRatePerMin = -0.6, bolusIobU = 2.0, isfMgdlPerU = 63.0,
             guardFloorMgdl = 70.0, scheduledBasalUPerH = 0.60, remainingEffect = { 0.0 },
         )
-        assertEquals(LowThreatGate.Verdict.NONE, d)
+        assertEquals(LowThreatGate.Verdict.NONE, d.verdict)
+        assertEquals(LowThreatGate.DENY_NO_BENEFIT, d.denial)
+    }
+
+    // ---- Die Rechenspur (Tonis Auflage vor dem Produktiv-Flash) -----------
+
+    /**
+     * "Ohne diese Telemetrie waeren die neuen proaktiven Zero-TBRs spaeter
+     * nicht nachvollziehbar" (Toni 17.08.).
+     *
+     * Bei OFFENEM Tor muss jede Zahl dastehen, die zur Null gefuehrt hat -
+     * sonst ist die Entscheidung im Nachhinein nicht pruefbar.
+     */
+    @Test
+    fun `ein offenes Tor exportiert seine vollstaendige Rechnung`() {
+        val r = spur(bg = 130.0, rate = -0.6)
+        assertEquals(LowThreatGate.Verdict.FALLING_WITH_BOLUS_OVERCOVERAGE, r.verdict)
+        assertNull(r.denial, "ein offenes Tor hat keinen Ablehnungsgrund")
+        assertEquals(-0.6, r.fallRatePerMin!!, 1e-9)
+        assertEquals(2.0, r.bolusIobU!!, 1e-9)
+        assertEquals(60.0, r.distanceToFloorMgdl!!, 1e-9)
+        assertEquals(100.0, r.minutesToFloor!!, 1e-9)
+        assertTrue(r.benefitMgdl!! >= LowThreatGate.MIN_BENEFIT_MGDL, "Nutzen: ${r.benefitMgdl}")
+    }
+
+    /**
+     * UND BEI ABGELEHNTEM TOR ERST RECHT - das ist der eigentliche Zweck.
+     * Eine Null, die NICHT kam, ist im Trail sonst von einem Zyklus ohne
+     * Befund nicht zu unterscheiden. Jeder Ablehnungsgrund muss seine eigene
+     * Kennung tragen, und die bis dahin gerechneten Zahlen muessen dastehen.
+     */
+    @Test
+    fun `jede Ablehnung nennt ihren Grund und die gerechneten Zahlen`() {
+        val steigend = spur(rate = 0.5)
+        assertEquals(LowThreatGate.DENY_NOT_FALLING, steigend.denial)
+        assertEquals(60.0, steigend.distanceToFloorMgdl!!, 1e-9, "die Strecke ist schon gerechnet")
+        assertNull(steigend.minutesToFloor, "die Zeit aber noch nicht - null heisst 'nicht gerechnet'")
+
+        val ohneDeckung = spur(bolus = 0.5)
+        assertEquals(LowThreatGate.DENY_NO_OVERCOVERAGE, ohneDeckung.denial)
+        assertEquals(0.5, ohneDeckung.bolusIobU!!, 1e-9)
+
+        val zuWeit = spur(rate = -0.1)
+        assertEquals(LowThreatGate.DENY_TOO_FAR, zuWeit.denial)
+        assertEquals(600.0, zuWeit.minutesToFloor!!, 1e-6, "auch der abgelehnte Wert steht da")
+
+        val zuSpaet = spur(rate = -3.0)
+        assertEquals(LowThreatGate.DENY_NO_BENEFIT, zuSpaet.denial)
+        assertTrue(zuSpaet.benefitMgdl!! < LowThreatGate.MIN_BENEFIT_MGDL, "${zuSpaet.benefitMgdl}")
+        assertEquals(20.0, zuSpaet.minutesToFloor!!, 1e-9)
+
+        assertEquals(LowThreatGate.DENY_UNHEALTHY, spur(healthy = false).denial)
+        assertEquals(LowThreatGate.DENY_INPUT, spur(bg = Double.NaN).denial)
     }
 
     /** Unbrauchbare Eingaben ergeben NIE eine Null - fail-closed heisst hier

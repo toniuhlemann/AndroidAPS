@@ -488,6 +488,15 @@ class FuseCycleRunner(
          */
         val evidenceEpisodeDenial: String? = null,
         /**
+         * DIE RECHENSPUR DES LOW-TORS (Toni 17.08., Auflage vor dem
+         * Produktiv-Flash). `null` = in diesem Zyklus nicht ausgewertet
+         * (Abbruchpfad); [LowThreatGate.Verdict.NONE] mit `denial` = geprueft
+         * und abgelehnt. Die beiden auseinanderhalten zu koennen ist der
+         * ganze Zweck: eine Null, die NICHT kam, sieht sonst aus wie ein
+         * Zyklus ohne Befund.
+         */
+        val lowThreat: LowThreatGate.Result? = null,
+        /**
          * Der Zusatzkredit dieser Episode ist ausdruecklich zurueckgenommen.
          *
          * Die Episode LAEUFT dabei weiter - Anker, Deckel und bezahlte Menge
@@ -1510,6 +1519,38 @@ class FuseCycleRunner(
         // unten (C4b).
         val tail = if (!cfg.tailGuardEnabled) null else TailLiability.evaluate(tailBase)
 
+        // DAS LOW-TOR, VOR der Entscheidung ausgewertet - damit die volle
+        // Rechenspur auch dann im Trail steht, wenn das Tor ZU bleibt.
+        val lowThreatResult = LowThreatGate.evaluate(
+            measuredLow = measuredLow,
+            // Ohne brauchbare Reihe gibt es keinen positiven Nachweis - und
+            // ohne Nachweis keine Null. Das gemessene Tief laeuft ueber
+            // `measuredLow` daran vorbei.
+            signalHealthy = step.health == Health.READY,
+            bgMgdl = signal.q1,
+            // GEMESSEN, nicht gerechnet: der UKF-Zustand. Nicht `r` -
+            // BGI-bereinigt, 18-min-Fenster, haengt an jedem Wendepunkt rund
+            // sechs Minuten nach.
+            fallRatePerMin = signal.ukfRatePerMin,
+            // NUR der Bolusanteil. Das Netto-IOB traegt einen negativen
+            // Basalanteil aus vorheriger Zurueckhaltung, und der wuerde die
+            // Ueberdeckung genau dann verdecken, wenn ohnehin schon zu wenig
+            // Basal lief - die Rueckkopplung, die dieses Tor beenden soll.
+            bolusIobU = (iobTotal.iob - iobTotal.basaliob).takeIf { iobTotal.valid },
+            isfMgdlPerU = isf,
+            guardFloorMgdl = cfg.guardFloorMgdl,
+            scheduledBasalUPerH = profile.getBasal(computeTs),
+            // Der Wirkungsanteil kommt aus DEM Einheitskern dieses Zyklus,
+            // nicht aus einer nachgebauten Formel - sonst driften die beiden
+            // auseinander, sobald jemand das Insulinmodell wechselt. Ohne Kern
+            // gibt es keine Nutzenrechnung und damit kein Tor.
+            remainingEffect = kernel()?.let { k ->
+                { min: Double -> 1.0 - k.iobAt(k.deliveryTs + (min * 60_000).toLong(), 1.0) }
+            } ?: { 0.0 },
+            minBenefitMgdl = cfg.lowGateMinBenefitMgdl,
+            horizonMin = cfg.lowGateHorizonMin,
+        )
+
         val baseDecision = FuseController.decide(
             state, prediction,
             FuseController.Limits(guardFloorMgdl = cfg.guardFloorMgdl, releaseHorizonMin = cfg.releaseHorizonMin),
@@ -1523,37 +1564,11 @@ class FuseCycleRunner(
             evidenceCreditActive = evidenzKredit > 0.0,
             // DAS LOW-TOR (Toni 17.08.): der einzige Weg zu einer Zero-TBR.
             // Ohne positiven Low-Nachweis sperrt der Guard die MENGE, nicht
-            // die Basisversorgung.
-            lowThreat = LowThreatGate.evaluate(
-                measuredLow = measuredLow,
-                // Ohne brauchbare Reihe gibt es keinen positiven Nachweis -
-                // und ohne Nachweis keine Null. Das gemessene Tief laeuft
-                // ueber `measuredLow` daran vorbei.
-                signalHealthy = step.health == Health.READY,
-                bgMgdl = signal.q1,
-                // GEMESSEN, nicht gerechnet: der UKF-Zustand. Nicht `r` -
-                // BGI-bereinigt, 18-min-Fenster, haengt an jedem Wendepunkt
-                // rund sechs Minuten nach.
-                fallRatePerMin = signal.ukfRatePerMin,
-                // NUR der Bolusanteil. Das Netto-IOB traegt einen negativen
-                // Basalanteil aus vorheriger Zurueckhaltung, und der wuerde
-                // die Ueberdeckung genau dann verdecken, wenn ohnehin schon
-                // zu wenig Basal lief - die Rueckkopplung, die dieses Tor
-                // beenden soll.
-                bolusIobU = (iobTotal.iob - iobTotal.basaliob).takeIf { iobTotal.valid },
-                isfMgdlPerU = isf,
-                guardFloorMgdl = cfg.guardFloorMgdl,
-                scheduledBasalUPerH = profile.getBasal(computeTs),
-                // Der Wirkungsanteil kommt aus DEM Einheitskern dieses Zyklus,
-                // nicht aus einer nachgebauten Formel - sonst driften die
-                // beiden auseinander, sobald jemand das Insulinmodell wechselt.
-                // Ohne Kern gibt es keine Nutzenrechnung und damit kein Tor.
-                remainingEffect = kernel()?.let { k ->
-                    { min: Double -> 1.0 - k.iobAt(k.deliveryTs + (min * 60_000).toLong(), 1.0) }
-                } ?: { 0.0 },
-                minBenefitMgdl = cfg.lowGateMinBenefitMgdl,
-                horizonMin = cfg.lowGateHorizonMin,
-            ),
+            // die Basisversorgung. Die volle Rechenspur steht in
+            // `lowThreatResult` und geht in den Trail - eine Null, die NICHT
+            // kam, waere sonst von einem Zyklus ohne Befund nicht zu
+            // unterscheiden (Tonis Auflage vor dem Produktiv-Flash).
+            lowThreat = lowThreatResult.verdict,
             onsetCapU = if (onset.active) onset.remainingU else null,
         )
 
@@ -2008,6 +2023,7 @@ class FuseCycleRunner(
         return Outcome(
             computeDurationMs = computeDurationMs,
             mealStats = mealStats,
+            lowThreat = lowThreatResult,
             evidenceEpisodeId = evidenceEpisodeId,
             evidenceEpisodeDenial = episodeGate.denial?.name,
             evidenceCreditRevoked = episodeGate.creditRevoked,

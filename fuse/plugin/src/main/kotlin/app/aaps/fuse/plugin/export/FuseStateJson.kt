@@ -288,9 +288,39 @@ object FuseStateJson {
                 // FEHLTE bis 08.08. - der Schirm zeigte die Schwanz-Kosten,
                 // der Trail nicht (18 bindende Zyklen der Nacht alle "0").
                 .put("tailCostU", fin(d.tailCostU))
+                // `reason` traegt die TBR-AKTION im Klartext - SAFETY_ZERO_NEW,
+                // SAFETY_ZERO_RENEW, SAFETY_ZERO_ALREADY_RUNNING,
+                // KEEP_CANCEL_STALE_ZERO, NO_POSITIVE_KEEP_NON_POSITIVE. Ohne
+                // sie waere "neu, erneuert, behalten oder beendet" im Trail
+                // nicht unterscheidbar (Tonis Auflage 17.08.).
                 .put("reason", outcome.reason)
                 .put("alarm", outcome.alarm)
         )
+
+        // ---- DAS LOW-TOR, mit voller Rechenspur (Toni 17.08.) ---------------
+        //
+        // Seit dem 17.08. ist dies der EINZIGE Weg zu einer Zero-TBR. Der Block
+        // steht auch bei ABGELEHNTEM Tor da, und das ist sein Zweck: eine Null,
+        // die nicht kam, ist sonst von einem Zyklus ohne Befund nicht zu
+        // unterscheiden. Fehlt der Block ganz, wurde das Tor in diesem Zyklus
+        // nicht ausgewertet (Abbruchpfad) - auch das ist eine Aussage.
+        outcome.lowThreat?.let { lt ->
+            o.put(
+                "lowThreat", JSONObject()
+                    .put("verdict", lt.verdict.name)
+                    .put("denial", lt.denial ?: JSONObject.NULL)
+                    .put("fallRatePerMin", fin(lt.fallRatePerMin))
+                    // AUSDRUECKLICH der Bolusanteil - das Netto-IOB steht
+                    // unter state.iobU und ist eine andere Groesse.
+                    .put("bolusIobU", fin(lt.bolusIobU))
+                    .put("distanceToFloorMgdl", fin(lt.distanceToFloorMgdl))
+                    .put("minutesToFloor", fin(lt.minutesToFloor))
+                    // Was eine ab jetzt laufende Null bis zum Bodenkontakt
+                    // verhindert haette. Unter der Schwelle ist sie keine
+                    // Massnahme, sondern nur ein Basalverlust.
+                    .put("benefitMgdl", fin(lt.benefitMgdl)),
+            )
+        }
         // Genau die vier Felder, ueber die AAPS aktuiert. null heisst hier
         // AUSDRUECKLICH "nichts angefordert" und nicht "unbekannt".
         o.put(

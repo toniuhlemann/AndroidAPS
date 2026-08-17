@@ -70,6 +70,41 @@ object LowThreatGate {
         FALLING_WITH_BOLUS_OVERCOVERAGE,
     }
 
+    /**
+     * DIE VOLLSTAENDIGE RECHENSPUR des Tores (Tonis Auflage 17.08. vor dem
+     * Produktiv-Flash: "Ohne diese Telemetrie waeren die neuen proaktiven
+     * Zero-TBRs spaeter nicht nachvollziehbar").
+     *
+     * Jede Zahl, die in die Entscheidung eingeht, steht hier - auch bei den
+     * ABGELEHNTEN Faellen, und gerade die sind die interessanten: eine Null,
+     * die NICHT kam, ist im Trail sonst von einem Zyklus ohne Befund nicht zu
+     * unterscheiden. `null` heisst "bis dahin gar nicht gerechnet", nicht
+     * "der Wert war 0".
+     */
+    data class Result(
+        val verdict: Verdict,
+        /** Die GEMESSENE Rate, gegen die entschieden wurde [mg/dl/min]. */
+        val fallRatePerMin: Double? = null,
+        /** Der verwendete BOLUS-Anteil [U] - nie das Netto-IOB. */
+        val bolusIobU: Double? = null,
+        /** Abstand des Ankers zum Boden [mg/dl]. */
+        val distanceToFloorMgdl: Double? = null,
+        /** Bodenkontakt bei linearer Fortschreibung der gemessenen Rate [min]. */
+        val minutesToFloor: Double? = null,
+        /** Was eine ab jetzt laufende Null bis dahin verhindert [mg/dl]. */
+        val benefitMgdl: Double? = null,
+        /** WORAN es gescheitert ist; `null` bei offenem Tor. */
+        val denial: String? = null,
+    )
+
+    /** Ablehnungsgruende - als Konstanten, weil im Trail danach gesucht wird. */
+    const val DENY_UNHEALTHY = "SIGNAL_UNHEALTHY"
+    const val DENY_INPUT = "INPUT_UNUSABLE"
+    const val DENY_NOT_FALLING = "NOT_FALLING"
+    const val DENY_NO_OVERCOVERAGE = "NO_BOLUS_OVERCOVERAGE"
+    const val DENY_TOO_FAR = "FLOOR_BEYOND_HORIZON"
+    const val DENY_NO_BENEFIT = "BENEFIT_BELOW_THRESHOLD"
+
     /** Mindestwirkung, ab der eine Null als nuetzlich gilt [mg/dl]. Unterhalb
      *  des Sensorrauschens (~5 mg/dl) waere die Wirkung nicht einmal messbar -
      *  eine Massnahme, deren Erfolg man nicht sehen kann, ist keine. */
@@ -115,40 +150,56 @@ object LowThreatGate {
         remainingEffect: (Double) -> Double,
         minBenefitMgdl: Double = MIN_BENEFIT_MGDL,
         horizonMin: Double = NEAR_TERM_HORIZON_MIN.toDouble(),
-    ): Verdict {
+    ): Result {
         // Die Wirklichkeit zuerst und ohne jede Rechnung.
-        if (measuredLow) return Verdict.MEASURED_LOW
-        if (!signalHealthy) return Verdict.NONE
-        if (bgMgdl == null || !bgMgdl.isFinite()) return Verdict.NONE
-        if (fallRatePerMin == null || !fallRatePerMin.isFinite()) return Verdict.NONE
-        if (isfMgdlPerU == null || !isfMgdlPerU.isFinite() || isfMgdlPerU <= 0.0) return Verdict.NONE
-        if (!scheduledBasalUPerH.isFinite() || scheduledBasalUPerH <= 0.0) return Verdict.NONE
+        if (measuredLow) return Result(Verdict.MEASURED_LOW, fallRatePerMin, bolusIobU)
+        if (!signalHealthy) return Result(Verdict.NONE, fallRatePerMin, bolusIobU, denial = DENY_UNHEALTHY)
+        if (bgMgdl == null || !bgMgdl.isFinite() ||
+            fallRatePerMin == null || !fallRatePerMin.isFinite() ||
+            isfMgdlPerU == null || !isfMgdlPerU.isFinite() || isfMgdlPerU <= 0.0 ||
+            !scheduledBasalUPerH.isFinite() || scheduledBasalUPerH <= 0.0
+        ) return Result(Verdict.NONE, fallRatePerMin, bolusIobU, denial = DENY_INPUT)
+
+        val strecke = bgMgdl - guardFloorMgdl
 
         // (1) FAELLT ES GEMESSEN? Ein flacher oder steigender Verlauf traegt
         //     keine Zero-TBR, egal was eine Bahn behauptet.
-        if (fallRatePerMin >= 0.0) return Verdict.NONE
+        if (fallRatePerMin >= 0.0)
+            return Result(Verdict.NONE, fallRatePerMin, bolusIobU, strecke, denial = DENY_NOT_FALLING)
 
         // (2) DECKT DER BOLUS MEHR ALS DIE STRECKE ZUM BODEN?
         //     Nur der Bolusanteil - s. KDoc zu [bolusIobU]. `null` heisst
         //     unbekannt und ist kein Nachweis.
-        val bolus = bolusIobU?.takeIf { it.isFinite() } ?: return Verdict.NONE
-        val strecke = bgMgdl - guardFloorMgdl
-        if (bolus * isfMgdlPerU <= strecke) return Verdict.NONE
+        val bolus = bolusIobU?.takeIf { it.isFinite() }
+            ?: return Result(Verdict.NONE, fallRatePerMin, null, strecke, denial = DENY_NO_OVERCOVERAGE)
+        if (bolus * isfMgdlPerU <= strecke)
+            return Result(Verdict.NONE, fallRatePerMin, bolus, strecke, denial = DENY_NO_OVERCOVERAGE)
 
         // (3) FUEHRT DER GEMESSENE TREND KURZFRISTIG ZUM BODEN?
         //     Lineare Fortschreibung der GEMESSENEN Rate - keine Modellbahn,
         //     kein Antriebszerfall, keine Verstaerkung. Liegt der Bodenkontakt
         //     jenseits des Fensters, ist es keine nahe Gefahr.
         val minutenBisBoden = strecke / abs(fallRatePerMin)
-        if (!minutenBisBoden.isFinite() || minutenBisBoden > horizonMin) return Verdict.NONE
+        if (!minutenBisBoden.isFinite() || minutenBisBoden > horizonMin)
+            return Result(
+                Verdict.NONE, fallRatePerMin, bolus, strecke,
+                minutenBisBoden.takeIf { it.isFinite() }, denial = DENY_TOO_FAR,
+            )
 
         // (4) BRINGT DIE NULL BIS DAHIN UEBERHAUPT ETWAS?
         //     Jede zurueckgehaltene Minute wirkt erst ab ihrem eigenen
         //     Zeitpunkt - deshalb integriert und nicht "Rate mal Zeit".
-        if (nutzenMgdl(minutenBisBoden, scheduledBasalUPerH, isfMgdlPerU, remainingEffect) < minBenefitMgdl)
-            return Verdict.NONE
+        val nutzen = nutzenMgdl(minutenBisBoden, scheduledBasalUPerH, isfMgdlPerU, remainingEffect)
+        if (nutzen < minBenefitMgdl)
+            return Result(
+                Verdict.NONE, fallRatePerMin, bolus, strecke, minutenBisBoden, nutzen,
+                denial = DENY_NO_BENEFIT,
+            )
 
-        return Verdict.FALLING_WITH_BOLUS_OVERCOVERAGE
+        return Result(
+            Verdict.FALLING_WITH_BOLUS_OVERCOVERAGE,
+            fallRatePerMin, bolus, strecke, minutenBisBoden, nutzen,
+        )
     }
 
     /**
