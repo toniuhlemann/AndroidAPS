@@ -1016,19 +1016,16 @@ class TransportWiringTest : TestBaseWithProfile() {
         // und das fehlende Insulin fehlte zeitversetzt im Resorptionsfenster.
         // Toni: "hier arbeiten 2 prinzipien gegeneinander."
         //
-        // Der Aufbau hier ist ausdruecklich KEIN gemessenes Tief (Punkt 2
-        // prueft das) - die Null stammt allein aus der kohlenhydratfrei
-        // gerechneten Bahn, und die ist unter der Autorisierung ueberstimmbar.
-        // Ein gemessenes Tief traegt das Modell-Bit nicht und behaelt seine
-        // Null; dieser Fall steht in BasalFloorGuardTest.
+        // Am selben Abend erweitert auf JEDE Lage: die Tagesmessung ergab 677
+        // von 1129 Zyklen mit laufender Null. Seither entsteht eine Null nur
+        // noch aus dem LowThreatGate; hier ist es zu (kein gemessenes Tief -
+        // Punkt 2 prueft das, und der Verlauf faellt zu schnell, als dass ein
+        // Basalstopp noch etwas ausrichten koennte).
         assertEquals(
             FuseController.TbrAction.KEEP_CURRENT, o.decision.tbr,
-            "das Profilbasal ist die autorisierte Grundlinie - die Modell-Null muss weichen",
+            "Profilbasal ist das Fundament - die Modell-Null entsteht gar nicht erst",
         )
-        assertTrue(
-            o.decision.bindingLimit.contains(app.aaps.fuse.core.controller.BasalFloorGuard.TBR_LIFTED_MARK),
-            "die Hebung muss im Trail nachweisbar sein: ${o.decision.bindingLimit}",
-        )
+        assertTrue(o.decision.unsafeSituation, "die Lage bleibt als unsicher gemeldet (C8)")
         assertTrue(o.decision.basalFloorProtected, "und der Stempel muss den Translator erreichen (C7c)")
     }
 

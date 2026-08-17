@@ -23,6 +23,7 @@ import app.aaps.fuse.core.adapter.CycleAssembly
 import app.aaps.fuse.core.controller.EpisodeDeadline
 import app.aaps.fuse.core.controller.FuseController
 import app.aaps.fuse.core.controller.LedgerHoldGate
+import app.aaps.fuse.core.controller.LowThreatGate
 import app.aaps.fuse.core.controller.MarkerScope
 import app.aaps.fuse.core.controller.NightWindow
 import app.aaps.fuse.core.controller.SubStepAccumulator
@@ -48,7 +49,6 @@ import app.aaps.fuse.core.controller.CandidateSearch
 import app.aaps.fuse.core.controller.EvidenceStock
 import app.aaps.fuse.core.controller.MarkerFallback
 import app.aaps.fuse.core.controller.MarkerFloor
-import app.aaps.fuse.core.controller.BasalFloorGuard
 import app.aaps.fuse.core.controller.OnsetChannel
 import app.aaps.fuse.core.controller.PrimeRelease
 import app.aaps.fuse.core.insulin.KernelOutcome
@@ -1521,6 +1521,39 @@ class FuseCycleRunner(
             // diese Zeile FEHLTE, der Default false verdeckte das - 81
             // Zyklen im 2-Tage-Trail blieben trotz Kredit im Totband.
             evidenceCreditActive = evidenzKredit > 0.0,
+            // DAS LOW-TOR (Toni 17.08.): der einzige Weg zu einer Zero-TBR.
+            // Ohne positiven Low-Nachweis sperrt der Guard die MENGE, nicht
+            // die Basisversorgung.
+            lowThreat = LowThreatGate.evaluate(
+                measuredLow = measuredLow,
+                // Ohne brauchbare Reihe gibt es keinen positiven Nachweis -
+                // und ohne Nachweis keine Null. Das gemessene Tief laeuft
+                // ueber `measuredLow` daran vorbei.
+                signalHealthy = step.health == Health.READY,
+                bgMgdl = signal.q1,
+                // GEMESSEN, nicht gerechnet: der UKF-Zustand. Nicht `r` -
+                // BGI-bereinigt, 18-min-Fenster, haengt an jedem Wendepunkt
+                // rund sechs Minuten nach.
+                fallRatePerMin = signal.ukfRatePerMin,
+                // NUR der Bolusanteil. Das Netto-IOB traegt einen negativen
+                // Basalanteil aus vorheriger Zurueckhaltung, und der wuerde
+                // die Ueberdeckung genau dann verdecken, wenn ohnehin schon
+                // zu wenig Basal lief - die Rueckkopplung, die dieses Tor
+                // beenden soll.
+                bolusIobU = (iobTotal.iob - iobTotal.basaliob).takeIf { iobTotal.valid },
+                isfMgdlPerU = isf,
+                guardFloorMgdl = cfg.guardFloorMgdl,
+                scheduledBasalUPerH = profile.getBasal(computeTs),
+                // Der Wirkungsanteil kommt aus DEM Einheitskern dieses Zyklus,
+                // nicht aus einer nachgebauten Formel - sonst driften die
+                // beiden auseinander, sobald jemand das Insulinmodell wechselt.
+                // Ohne Kern gibt es keine Nutzenrechnung und damit kein Tor.
+                remainingEffect = kernel()?.let { k ->
+                    { min: Double -> 1.0 - k.iobAt(k.deliveryTs + (min * 60_000).toLong(), 1.0) }
+                } ?: { 0.0 },
+                minBenefitMgdl = cfg.lowGateMinBenefitMgdl,
+                horizonMin = cfg.lowGateHorizonMin,
+            ),
             onsetCapU = if (onset.active) onset.remainingU else null,
         )
 
@@ -1867,34 +1900,18 @@ class FuseCycleRunner(
             )
         }
 
-        // DIE BASAL-GRUNDREGEL DER MAHLZEIT (Toni 17.08.): waehrend einer
-        // aktiven Mahlzeiten-/Absorptionslage ist Profilbasal die Untergrenze;
-        // eine rein modellbedingte Prognose setzt und erneuert keine Null.
-        // Die Regel selbst ist eine reine Funktion - HIER stehen nur die
-        // Zustaende, die der Kern nicht kennt.
-        val basalLage = BasalFloorGuard.Input(
-            // REINES MESSFELD seit dem 17.08. - der Schutz haengt nicht mehr
-            // daran. Es trennt im Trail die Hebungen im Mahlzeitenfenster von
-            // denen ausserhalb; ohne diese Aufteilung waere die Wirkung der
-            // Erweiterung hinterher nicht mehr zu belegen.
-            mealContext = autorisiert.markerAuthorizedU > 0.0 ||
-                evidenz?.phase == EvidenceStock.Phase.ACTIVE ||
-                evidenz?.phase == EvidenceStock.Phase.PENDING_SEAL,
-            measuredLow = measuredLow,
-            // MESSGROESSEN, keine Bahnen: q1-Anker und UKF-Rate. Bewusst
-            // nicht `r` - BGI-bereinigt und 18-min-Fenster sind fuer einen
-            // Low-Suspend zu verzoegert (Toni).
-            nearLowFalling = BasalFloorGuard.nearLowFalling(signal.q1, signal.ukfRatePerMin),
-            tbrControllable = currentTbr?.sourceType != TbrPolicy.SourceType.FAKE_EXTENDED,
-            segmentMature = signal.samplesUsed >= BasalFloorGuard.SEGMENT_MATURE_MIN_SAMPLES,
-        )
-        val basalGeschuetzt = BasalFloorGuard.apply(autorisiert, basalLage)
+        // DIE BASAL-GRUNDREGEL SITZT SEIT DEM 17.08. IM REGELKERN, nicht mehr
+        // hier: [LowThreatGate] entscheidet VOR der Kategorie, ob eine
+        // Zero-TBR ueberhaupt zulaessig ist, statt eine gesetzte Null
+        // nachtraeglich zu heben. Der frueher hier stehende BasalFloorGuard
+        // ist damit ersatzlos entfallen - er hob eine Null, die gar nicht
+        // mehr entsteht.
 
         // HART NACH dem Lift (Audit R95, Fix 3): Ratio-Pfad (Kernel-Ausfall)
         // und Sofort-Freigabe laufen am LEDGER_HOLD-Reject der Suche vorbei -
         // ohne diesen Riegel waere der Hold genau ueber die Pfade umgehbar,
         // die ohne Wirkungspruefung dosieren.
-        val held = LedgerHoldGate.apply(basalGeschuetzt, ledgerView.hold)
+        val held = LedgerHoldGate.apply(autorisiert, ledgerView.hold)
         // C4c: Anzeige, Export und RT-Grund bekommen den FINALEN Schwanzbericht -
         // den mit der Menge, die wirklich hinausgeht. Auch eine beschlossene
         // NULL ist eine Entscheidung und kein fehlender Term; erst damit steht
@@ -2563,6 +2580,10 @@ class FuseCycleRunner(
         val riseRampHighR: Double,
         val maxSmbU: Double,
         val guardFloorMgdl: Double,
+        /** Zulassungsschwelle des Low-Tors [mg/dl] - s. [FuseDoubleKey.LowGateMinBenefitMgdl]. */
+        val lowGateMinBenefitMgdl: Double,
+        /** Kurzfristfenster der Richtungsprobe [min] - s. [FuseDoubleKey.LowGateHorizonMin]. */
+        val lowGateHorizonMin: Double,
         val iobThPercent: Int,
         val releaseHorizonMin: Int,
         val liabilityHorizonMin: Int,
@@ -2609,6 +2630,8 @@ class FuseCycleRunner(
         riseRampHighR = preferences.get(FuseDoubleKey.RiseRampHighR),
         maxSmbU = preferences.get(FuseDoubleKey.MaxSmbU),
         guardFloorMgdl = preferences.get(FuseDoubleKey.GuardFloorMgdl),
+        lowGateMinBenefitMgdl = preferences.get(FuseDoubleKey.LowGateMinBenefitMgdl),
+        lowGateHorizonMin = preferences.get(FuseDoubleKey.LowGateHorizonMin),
         iobThPercent = preferences.get(FuseIntKey.IobThPercent),
         releaseHorizonMin = preferences.get(FuseIntKey.ReleaseHorizonMin),
         liabilityHorizonMin = preferences.get(FuseIntKey.LiabilityHorizonMin),

@@ -134,6 +134,7 @@ object FuseTbrTranslator {
         FuseController.Block.IOB_TH_REACHED,
     )
 
+
     fun combine(
         decision: FuseController.Decision,
         current: TbrPolicy.Current?,
@@ -150,6 +151,16 @@ object FuseTbrTranslator {
             intentOf(decision.tbr), current, scheduledBasalUPerH, cfg, fault, pumpBusy,
             protectionCleared = protectionCleared,
             endZeroAttempts = endZeroAttempts,
+            // C8 UNABHAENGIG VOM INTENT (Toni 17.08.): seit das Fundament auch
+            // in unsicherer Lage stehen bleibt, traegt der Intent die
+            // Unsicherheit nicht mehr. Ohne diese Zeile gab ein Guard-Zyklus
+            // unter FAKE_EXTENDED wieder Insulin frei (gemessen: 0,1 U statt 0).
+            //
+            // Gelesen wird das TYPISIERTE Feld, nicht `decision.block`: der
+            // Block ist hier laengst ueberschrieben - `finalVeto` setzt
+            // CANDIDATE, MarkerFloor setzt NONE. Genau daran ist der erste
+            // Anlauf dieses Fixes gescheitert.
+            unsafeSituation = decision.unsafeSituation,
         )
         val effective = applyBlock(decision, tbr.smbBlockCause)
         // C7a — GEMEINSAMES ZERTIFIKAT (Codex-Adjudication H3, D-Tabelle C7).

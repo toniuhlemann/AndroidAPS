@@ -163,6 +163,43 @@ enum class FuseDoubleKey(
      */
     GuardFloorMgdl("fuse_guard_floor_mgdl", 70.0, 40.0, 120.0),
 
+    /**
+     * MINDESTNUTZEN einer Zero-TBR [mg/dl] - die Zulassungsschwelle des
+     * Low-Tors (Toni 17.08.: "0 tbr muss auch einen messbaren nutzen haben
+     * und eine sich anbahnende hypo tatsaechlich rechnerisch ausbremsen
+     * koennen").
+     *
+     * Gerechnet wird, was eine ab jetzt laufende Null bis zum erwarteten
+     * Bodenkontakt an Absenkung VERHINDERT - integriert ueber die Wirkkurve,
+     * nicht "Rate mal Zeit". An Tonis Profil (0,60 U/h, ISF 63, Lyumjev
+     * peak 45 / DIA 9 h):
+     *
+     *     Vorlauf   20 min   30 min   60 min   90 min   120 min
+     *     Wirkung    0,4      1,1      6,2     15,8      28,7  mg/dl
+     *
+     * Der Default 5 liegt an der Messbarkeitsgrenze: darunter ist der Effekt
+     * kleiner als das Sensorrauschen, und eine Massnahme, deren Erfolg man
+     * nicht sehen kann, ist keine. Praktisch heisst das rund 55 Minuten
+     * Vorlauf - Tonis Schaetzung "mindestens 1 Stunde" lag richtig.
+     *
+     * GROESSER = SELTENER. Bei 0 ist die Nutzenprobe faktisch aus und das
+     * Tor haengt nur noch an Fall und Ueberdeckung; die Obergrenze 40
+     * verlangt schon rund zweieinhalb Stunden Vorlauf.
+     */
+    LowGateMinBenefitMgdl("fuse_low_gate_min_benefit_mgdl", 5.0, 0.0, 40.0),
+
+    /**
+     * KURZFRISTFENSTER der Richtungsprobe [min]: liegt der Bodenkontakt bei
+     * linearer Fortschreibung der GEMESSENEN Rate weiter weg, ist es keine
+     * nahe Gefahr und das Tor bleibt zu.
+     *
+     * Bewusst eine lineare Fortschreibung des Messwerts und NICHT das Minimum
+     * der 120-min-Bahn: jene rechnet kohlenhydratfrei, mit Antriebszerfall
+     * und rund 51-facher Horizontverstaerkung - genau die Groesse, die den
+     * 60-%-Nullzustand erzeugt hat.
+     */
+    LowGateHorizonMin("fuse_low_gate_horizon_min", 120.0, 30.0, 240.0),
+
     /** Totband der NACHT [mg/dl ueber Ziel]: darunter kein SMB im Nachtfenster.
      *  0 = aus. Ein erklaerter Marker hebt es auf (Toni 09.08.). */
     NightDeadbandMgdl("fuse_night_deadband_mgdl", 45.0, 0.0, 100.0),

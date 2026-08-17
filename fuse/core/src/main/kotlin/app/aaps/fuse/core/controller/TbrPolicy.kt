@@ -197,8 +197,23 @@ object TbrPolicy {
         protectionCleared: Boolean = false,
         /** Bisher erfolglose Abbruchversuche in Folge (Backoff). */
         endZeroAttempts: Int = 0,
+        /**
+         * IST DIE LAGE UNSICHER, unabhaengig vom [Intent]?
+         *
+         * Bis zum 17.08. trug [Intent.SAFETY_ZERO] beides zugleich: "die Lage
+         * ist unsicher" UND "deshalb wird das Basal genullt". Seit das
+         * Fundament auch in unsicherer Lage stehen bleibt (LowThreatGate),
+         * sind das zwei verschiedene Aussagen - und die C8-Sperre haengt an
+         * der ERSTEN. Ohne diesen Parameter gab ein Guard-Zyklus unter
+         * FAKE_EXTENDED wieder Insulin frei (im Verdrahtungstest gemessen:
+         * 0,1 U statt 0), weil der Intent nicht mehr SAFETY_ZERO hiess.
+         *
+         * C8: kann FUSE die laufende Abgabe nicht stoppen, darf es nicht
+         * gleichzeitig zusaetzliches Insulin geben.
+         */
+        unsafeSituation: Boolean = false,
     ): Decision {
-        val base = decideIgnoringPump(intent, current, scheduledBasalUPerH, cfg, fault, protectionCleared, endZeroAttempts)
+        val base = decideIgnoringPump(intent, current, scheduledBasalUPerH, cfg, fault, protectionCleared, endZeroAttempts, unsafeSituation)
         if (!pumpBusy) return base
         // Eine arbeitende Pumpe bekommt keine zweite Anweisung — aber der
         // Safety-Grund und sein Alarm bleiben erhalten. Unterdrueckt wird die
@@ -220,6 +235,7 @@ object TbrPolicy {
         fault: FaultCode,
         protectionCleared: Boolean = false,
         endZeroAttempts: Int = 0,
+        unsafeSituation: Boolean = false,
     ): Decision {
         // Ungueltige Eingaben werden nicht geworfen, sondern fail-closed
         // beantwortet: eine Ausnahme aus dem Regelpfad landet sonst im Loop.
@@ -239,7 +255,11 @@ object TbrPolicy {
         // Ein Kern-/Eingangsfehler kann keine Kategorie mehr begruenden: es
         // bleibt "nichts Positives" (v0.3 §12).
         val effective = if (fault == FaultCode.CORE_INPUT_INVALID) Intent.NO_POSITIVE else intent
-        val unsafe = effective == Intent.SAFETY_ZERO
+        // Die Unsicherheit kommt aus ZWEI Quellen: der eigenen Absicht
+        // (Schutz-Null) und dem Befund des Aufrufers - Guard und Schwanz
+        // lassen seit dem 17.08. das Basal stehen und beschreiben trotzdem
+        // eine unsichere Lage.
+        val unsafe = effective == Intent.SAFETY_ZERO || unsafeSituation
         val smbBlockedByFault = fault != FaultCode.NONE
 
         if (current?.sourceType == SourceType.FAKE_EXTENDED)

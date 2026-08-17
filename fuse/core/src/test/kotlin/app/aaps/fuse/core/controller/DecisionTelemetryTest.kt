@@ -85,7 +85,7 @@ class DecisionTelemetryTest {
     @Test
     fun `bei gleichem iobTH und maxIOB fuehrt die Kappenliste beide als aktiv`() {
         // iobTh == maxIob: genau die Live-Einstellung IobThPercent = 100.
-        val d = FuseController.decide(state(iobTh = 2.0, maxIob = 2.0, netIob = 1.9), flat(), evidenceCreditActive = false)
+        val d = FuseController.decide(state(iobTh = 2.0, maxIob = 2.0, netIob = 1.9), flat(), evidenceCreditActive = false, lowThreat = LowThreatGate.Verdict.NONE)
 
         val byName = d.caps.associateBy { it.name }
         val iobTh = byName.getValue("iobThHeadroom")
@@ -100,7 +100,7 @@ class DecisionTelemetryTest {
     /** Die Liste ist VOLLSTAENDIG, nicht nur die bindende plus Nachbarn. */
     @Test
     fun `die Kappenliste enthaelt jede geprueften Grenze`() {
-        val d = FuseController.decide(state(), flat(), evidenceCreditActive = false)
+        val d = FuseController.decide(state(), flat(), evidenceCreditActive = false, lowThreat = LowThreatGate.Verdict.NONE)
         val names = d.caps.map { it.name }.toSet()
         assertEquals(setOf("smbRatio", "iobThHeadroom", "maxIobHeadroom", "maxSmb"), names)
         // Die kleinste ist immer aktiv - sonst waere die Markierung sinnlos.
@@ -177,7 +177,7 @@ class DecisionTelemetryTest {
      */
     @Test
     fun `der erschoepfte IOB-Fall berichtet beide Grenzen`() {
-        val d = FuseController.decide(state(iobTh = 1.0, maxIob = 1.0, netIob = 2.0), flat(), evidenceCreditActive = false)
+        val d = FuseController.decide(state(iobTh = 1.0, maxIob = 1.0, netIob = 2.0), flat(), evidenceCreditActive = false, lowThreat = LowThreatGate.Verdict.NONE)
         assertEquals(FuseController.Block.MAX_IOB_REACHED, d.block)
         assertEquals(setOf("maxIobHeadroom", "iobThHeadroom"), d.caps.map { it.name }.toSet())
         assertTrue(d.caps.all { it.valueU < 0.0 })
@@ -194,7 +194,7 @@ class DecisionTelemetryTest {
         val main = flat(bg = 160.0, lower = 120.0)
         // Gleicher Mittelwert (Bedarf unveraendert), tiefere untere Kante.
         val brake = flat(bg = 160.0, lower = 95.0)
-        val d = FuseController.decide(state(), main, restraint = brake, evidenceCreditActive = false)
+        val d = FuseController.decide(state(), main, restraint = brake, evidenceCreditActive = false, lowThreat = LowThreatGate.Verdict.NONE)
 
         assertTrue(d.restraintBoundGuard)
         assertFalse(d.restraintBoundDemand)
@@ -209,7 +209,7 @@ class DecisionTelemetryTest {
     fun `eine Bremse die nur den Bedarf senkt setzt nur das Bedarfs-Bit`() {
         val main = flat(bg = 200.0, lower = 120.0)
         val brake = flat(bg = 150.0, lower = 120.0)
-        val d = FuseController.decide(state(), main, restraint = brake, evidenceCreditActive = false)
+        val d = FuseController.decide(state(), main, restraint = brake, evidenceCreditActive = false, lowThreat = LowThreatGate.Verdict.NONE)
 
         assertFalse(d.restraintBoundGuard)
         assertTrue(d.restraintBoundDemand)
@@ -220,7 +220,7 @@ class DecisionTelemetryTest {
     /** Ohne Bremse ist beides falsch - und `minLowerMain` trotzdem gesetzt. */
     @Test
     fun `ohne Bremse bleiben beide Bits falsch`() {
-        val d = FuseController.decide(state(), flat(), evidenceCreditActive = false)
+        val d = FuseController.decide(state(), flat(), evidenceCreditActive = false, lowThreat = LowThreatGate.Verdict.NONE)
         assertFalse(d.restraintBoundGuard)
         assertFalse(d.restraintBoundDemand)
         assertFalse(d.restraintBound)
@@ -240,7 +240,7 @@ class DecisionTelemetryTest {
         val limits = FuseController.Limits(guardFloorMgdl = 80.0)
         // Faellt ab Minute 30 unter 80.
         val p = pred(bg = 160.0, anchor = 160.0) { i -> if (i < 30) 100.0 else 61.0 }
-        val d = FuseController.decide(state(), p, limits, evidenceCreditActive = false)
+        val d = FuseController.decide(state(), p, limits, evidenceCreditActive = false, lowThreat = LowThreatGate.Verdict.NONE)
 
         assertEquals(FuseController.Block.GUARD_FLOOR, d.block)
         assertEquals(61.0, d.minLowerMgdl)
@@ -252,7 +252,7 @@ class DecisionTelemetryTest {
      *  "nie im Fenster" und ausdruecklich nicht "sofort". */
     @Test
     fun `eine sichere Bahn meldet kein Defizit und keine Zeit`() {
-        val d = FuseController.decide(state(), flat(), FuseController.Limits(guardFloorMgdl = 80.0), evidenceCreditActive = false)
+        val d = FuseController.decide(state(), flat(), FuseController.Limits(guardFloorMgdl = 80.0), evidenceCreditActive = false, lowThreat = LowThreatGate.Verdict.NONE)
         assertEquals(0.0, d.floorDeficitMgdl)
         assertNull(d.timeToFloorMin)
     }
@@ -263,7 +263,7 @@ class DecisionTelemetryTest {
         val limits = FuseController.Limits(guardFloorMgdl = 80.0)
         val main = flat(bg = 160.0, lower = 120.0)
         val brake = pred(bg = 160.0, anchor = 160.0) { i -> if (i < 10) 120.0 else 70.0 }
-        val d = FuseController.decide(state(), main, limits, restraint = brake, evidenceCreditActive = false)
+        val d = FuseController.decide(state(), main, limits, restraint = brake, evidenceCreditActive = false, lowThreat = LowThreatGate.Verdict.NONE)
 
         assertEquals(10.0, d.floorDeficitMgdl, 1e-12)
         assertEquals(10, d.timeToFloorMin)
@@ -286,7 +286,7 @@ class DecisionTelemetryTest {
     fun `der kombinierte Zeitindex zeigt die Bahn die das Minimum haelt`() {
         val main = pred(bg = 160.0, anchor = 90.61) { 120.0 }            // steigt: Min am Anker
         val brake = pred(bg = 160.0, anchor = 90.61) { i -> if (i < 40) 120.0 else 71.17 }
-        val d = FuseController.decide(state(), main, restraint = brake, evidenceCreditActive = false)
+        val d = FuseController.decide(state(), main, restraint = brake, evidenceCreditActive = false, lowThreat = LowThreatGate.Verdict.NONE)
 
         // Die Hauptbahn sagt weiterhin "Anker" - und das stimmt fuer SIE.
         assertEquals(0, main.timeToMinSafetyLowerMin)
@@ -303,7 +303,7 @@ class DecisionTelemetryTest {
     fun `am kombinierten Index steht wirklich das kombinierte Minimum`() {
         val main = pred(bg = 160.0, anchor = 150.0) { i -> if (i < 20) 130.0 else 108.0 }
         val brake = pred(bg = 160.0, anchor = 150.0) { i -> if (i < 50) 140.0 else 99.0 }
-        val d = FuseController.decide(state(), main, restraint = brake, evidenceCreditActive = false)
+        val d = FuseController.decide(state(), main, restraint = brake, evidenceCreditActive = false, lowThreat = LowThreatGate.Verdict.NONE)
 
         val at = d.timeToMinCombinedMin!!
         val amIndex = minOf(
@@ -318,10 +318,10 @@ class DecisionTelemetryTest {
     @Test
     fun `ohne Bremse folgt der kombinierte Index der Hauptbahn`() {
         val steigend = pred(bg = 160.0, anchor = 100.0) { 120.0 }
-        assertEquals(0, FuseController.decide(state(), steigend, evidenceCreditActive = false).timeToMinCombinedMin)
+        assertEquals(0, FuseController.decide(state(), steigend, evidenceCreditActive = false, lowThreat = LowThreatGate.Verdict.NONE).timeToMinCombinedMin)
 
         val fallend = pred(bg = 160.0, anchor = 150.0) { i -> if (i < 25) 140.0 else 110.0 }
-        assertEquals(25, FuseController.decide(state(), fallend, evidenceCreditActive = false).timeToMinCombinedMin)
+        assertEquals(25, FuseController.decide(state(), fallend, evidenceCreditActive = false, lowThreat = LowThreatGate.Verdict.NONE).timeToMinCombinedMin)
     }
 
     // ---- Der Punkt, an dem Telemetrie sonst still verschwindet -------------
@@ -346,15 +346,15 @@ class DecisionTelemetryTest {
             // denselben Wert ziehen und das Bremsbit unbeabsichtigt loeschen.
             FuseController.Block.NO_DEMAND to FuseController.decide(
                 state(), pred(bg = 90.0, anchor = 160.0) { 110.0 }, limits,
-                restraint = pred(bg = 90.0, anchor = 160.0) { 100.0 }, evidenceCreditActive = false
+                restraint = pred(bg = 90.0, anchor = 160.0) { 100.0 }, evidenceCreditActive = false, lowThreat = LowThreatGate.Verdict.NONE
             ),
             FuseController.Block.MAX_IOB_REACHED to FuseController.decide(
-                state(iobTh = 1.0, maxIob = 1.0, netIob = 2.0), main, limits, restraint = brake, evidenceCreditActive = false
+                state(iobTh = 1.0, maxIob = 1.0, netIob = 2.0), main, limits, restraint = brake, evidenceCreditActive = false, lowThreat = LowThreatGate.Verdict.NONE
             ),
             FuseController.Block.IOB_TH_REACHED to FuseController.decide(
-                state(iobTh = 1.0, maxIob = 8.0, netIob = 2.0), main, limits, restraint = brake, evidenceCreditActive = false
+                state(iobTh = 1.0, maxIob = 8.0, netIob = 2.0), main, limits, restraint = brake, evidenceCreditActive = false, lowThreat = LowThreatGate.Verdict.NONE
             ),
-            FuseController.Block.NONE to FuseController.decide(state(), main, limits, restraint = brake, evidenceCreditActive = false),
+            FuseController.Block.NONE to FuseController.decide(state(), main, limits, restraint = brake, evidenceCreditActive = false, lowThreat = LowThreatGate.Verdict.NONE),
         )
 
         for ((erwartet, d) in faelle) {
@@ -379,7 +379,7 @@ class DecisionTelemetryTest {
      */
     @Test
     fun `die Kandidatenstufe ersetzt die Kappenliste der Basis`() {
-        val base = FuseController.decide(state(), flat(bg = 300.0), evidenceCreditActive = false)
+        val base = FuseController.decide(state(), flat(bg = 300.0), evidenceCreditActive = false, lowThreat = LowThreatGate.Verdict.NONE)
         assertEquals(FuseController.STAGE_BASE, base.capsStage)
         assertTrue(base.caps.isNotEmpty())
 
@@ -409,7 +409,7 @@ class DecisionTelemetryTest {
      *  ist leer. Das ist eine Aussage, kein Fehlen. */
     @Test
     fun `eine leere Liste traegt trotzdem ihre Stufe`() {
-        val d = FuseController.decide(state(), flat(), evidenceCreditActive = false)
+        val d = FuseController.decide(state(), flat(), evidenceCreditActive = false, lowThreat = LowThreatGate.Verdict.NONE)
             .copy(caps = emptyList(), capsStage = FuseController.STAGE_PRIME)
         assertTrue(d.caps.isEmpty())
         assertEquals(FuseController.STAGE_PRIME, d.capsStage)

@@ -29,6 +29,28 @@ object FuseController {
     private const val TICK_EPS = 1e-9
 
     /**
+     * Bloecke, die eine UNSICHERE LAGE beschreiben - unabhaengig davon, was
+     * mit dem Basal geschieht (Toni 17.08.).
+     *
+     * Sie sind der Ersatz fuer das, was frueher [TbrAction.ZERO_TEMP] allein
+     * getragen hat, und tragen jetzt [Decision.unsafeSituation].
+     *
+     * NICHT dabei sind die MENGEN-Bloecke (NO_DEMAND, MAX_IOB_REACHED,
+     * IOB_TH_REACHED, CANDIDATE, BELOW_PUMP_INCREMENT, LEDGER_HOLD): sie
+     * sagen "nicht mehr noetig" oder "nicht lieferbar", nicht "gefaehrlich".
+     * PUMP_BUSY ebenfalls nicht - dort ist die Lage nicht unsicher, nur der
+     * Kanal belegt, und die Sperre kommt ohnehin ueber SmbBlockCause.
+     */
+    private val UNSAFE_BLOCKS = setOf(
+        Block.GUARD_FLOOR,
+        Block.TAIL,
+        Block.SAFETY_HOLD,
+        Block.HEALTH_NOT_READY,
+        Block.HORIZON_MISSING,
+        Block.NO_INPUT,
+    )
+
+    /**
      * REBOUND-FENSTER NACH TIEF (4x gemessen am 07.08.: 07:09, 15:0x, 16:28,
      * ~17:3x): nach einem Tief liest der 18-min-Median die Erholungssteigung
      * als grosse Stoerung (16:28: r 3,3 elf Minuten nach q1<75 -> 1,65 U in
@@ -474,39 +496,34 @@ object FuseController {
          */
         val markerAuthorizedU: Double = 0.0,
         /**
-         * Ob diese [TbrAction.ZERO_TEMP] AUSSCHLIESSLICH aus einer gerechneten
-         * Bahn stammt und nicht aus einem gemessenen Tief (Toni 17.08.).
+         * BESCHREIBT DIESER ZYKLUS EINE UNSICHERE LAGE? (Toni 17.08.)
          *
-         * DER ANLASS, gemessen am Geraet: Mahlzeitenmarker um 18:56, Huelle
-         * 3,5 U auf 25 min. Ab 19:05 gab FUSE jede Minute 0,15 U aus der
-         * autorisierten Huelle UND hielt gleichzeitig das Profilbasal per
-         * Null-TBR zurueck - 0,35 U ueber 30 min, die netto wieder fehlten.
-         * Ausgeloest hatte das nicht ein Tief, sondern [minLowerMgdl] = 69,4
-         * bei einem Boden von 70, also 0,6 mg/dl, mit `timeToFloorMin` = 118.
-         * Der reale BG stand bei 105 und stieg.
+         * Getrennt von der Frage, was mit dem Basal geschieht - und genau das
+         * ist der Punkt. Bis zum 17.08. trug [TbrAction.ZERO_TEMP] beides
+         * zugleich: "die Lage ist unsicher" UND "deshalb wird genullt". Seit
+         * das Fundament auch in unsicherer Lage stehen bleibt
+         * ([LowThreatGate]), sind das zwei verschiedene Aussagen.
          *
-         * WARUM DIE BAHN DAS TUN MUSSTE: sie rechnet kohlenhydratfrei. Das
-         * Prime-Insulin geht als reine Absenkung ein, die Mahlzeit, die es
-         * autorisiert hat, nicht. minLower faellt damit ZWANGSLAEUFIG, solange
-         * die Huelle liefert - gemessen 76,5 -> 69,4 -> 62,7 und weiter bis
-         * -61,1. Die Bahn ist nicht falsch, sie beantwortet nur eine andere
-         * Frage als die, die hier gestellt wird.
+         * WORAN ES HAENGT: die C8-Sperre ("kann FUSE die laufende Abgabe nicht
+         * stoppen, darf es nicht gleichzeitig zusaetzliches Insulin geben").
+         * Ohne dieses Feld gab ein Guard-Zyklus unter FAKE_EXTENDED wieder
+         * Insulin frei - im Verdrahtungstest gemessen: 0,1 U statt 0.
          *
-         * WARUM EIN EIGENES FELD UND NICHT `block == GUARD_FLOOR`: der Block
-         * ist an der Stelle, an der die Frage gestellt wird ([MarkerFloor]),
-         * laengst ueberschrieben - `finalVeto` setzt CANDIDATE, der Boden
-         * setzt NONE. Im Trail ueberlebt der Guard-Grund nur als TEXT in
-         * `bindingLimit` ("markerAuth|finalVerify:GUARD_FLOOR"), und an einem
-         * Grundtext darf keine Insulinabgabe haengen - dieselbe Regel, aus der
-         * schon [markerAuthorizedU] eine typisierte Herkunft bekommen hat.
+         * WARUM EIN FELD UND NICHT `block in {...}`: der Block ist an der
+         * Stelle, an der die Frage gestellt wird (FuseTbrTranslator), laengst
+         * ueberschrieben - `finalVeto` setzt CANDIDATE, [MarkerFloor] setzt
+         * NONE. Der Guard-Grund ueberlebt dort nur als TEXT im
+         * `bindingLimit`, und an einem Grundtext darf keine Insulinabgabe
+         * haengen. Dieselbe Regel, aus der schon [markerAuthorizedU] eine
+         * typisierte Herkunft bekommen hat.
          *
-         * FAIL-CLOSED: der Vorgabewert ist `false`, also "nicht hebbar". Eine
-         * Null unbekannter Herkunft bleibt scharf. Gesetzt wird das Bit an
-         * genau EINER Stelle - dem Guard-Riegel gegen die gerechnete Bahn.
-         * `state.safetyHold` (gemessenes Tief) und der Markerfallback bei
-         * `measuredLow` tragen es ausdruecklich NICHT.
+         * FAIL-CLOSED ist hier `true`-lastig: gesetzt wird es an JEDEM
+         * Sicherheitsausgang (Health, SafetyHold, fehlende Bahn, Guard-Boden,
+         * Schwanz). Ein vergessener Ausgang meldet faelschlich "sicher" - das
+         * ist die gefaehrliche Richtung, deshalb setzt der Helfer `none()` es
+         * zentral statt jede Rueckgabe einzeln.
          */
-        val zeroTempModelOnly: Boolean = false,
+        val unsafeSituation: Boolean = false,
         /**
          * Ob fuer diesen Zyklus die Basal-Grundregel der Mahlzeit wirksam ist
          * (Toni 17.08.): Marker-Freigabe aktiv oder Evidenzphase
@@ -565,7 +582,38 @@ object FuseController {
     fun noInput(reason: String): Decision =
         Decision(0.0, TbrAction.NO_NEW_POSITIVE, Block.NO_INPUT, null, null, null, reason)
 
+    /**
+     * DER STEMPEL, DEN KEIN RUECKGABEPFAD VERGESSEN KANN (Toni 17.08.).
+     *
+     * [Decision.basalFloorProtected] muss an JEDEM Ausgang stimmen - der
+     * Translator entscheidet daran, ob eine laufende Null neben einem SMB
+     * beendet werden darf (C7c). `decide` hat ein Dutzend Rueckgabepunkte;
+     * jeden einzeln zu stempeln waere ein Dutzend Gelegenheiten, es zu
+     * vergessen, und ein vergessener Stempel sieht aus wie eine bewusste
+     * Entscheidung ("die Null darf bleiben").
+     *
+     * Dieselbe Lehre wie bei der S0-Telemetrie eine Ebene tiefer: einmal
+     * zentral anhaengen statt achtmal von Hand.
+     */
     fun decide(
+        state: State,
+        prediction: PredictorResult?,
+        limits: Limits = Limits(),
+        tail: TailLiability.Report? = null,
+        restraint: PredictorResult? = null,
+        evidenceCreditActive: Boolean,
+        lowThreat: LowThreatGate.Verdict,
+        onsetCapU: Double? = null,
+    ): Decision {
+        val d = decideInner(
+            state, prediction, limits, tail, restraint,
+            evidenceCreditActive, lowThreat, onsetCapU,
+        )
+        val geschuetzt = lowThreat == LowThreatGate.Verdict.NONE
+        return if (d.basalFloorProtected == geschuetzt) d else d.copy(basalFloorProtected = geschuetzt)
+    }
+
+    private fun decideInner(
         state: State,
         prediction: PredictorResult?,
         limits: Limits = Limits(),
@@ -619,6 +667,20 @@ object FuseController {
          * je Aufrufstelle ist billiger als genau dieser stille Ausfall.
          */
         evidenceCreditActive: Boolean,
+        /**
+         * DAS LOW-TOR - der einzige Weg zu einer Zero-TBR (Toni 17.08.).
+         *
+         * Ohne einen positiven Low-Nachweis bleibt das Profilbasal stehen,
+         * auch wenn Bahn, Schwanz oder Marker etwas anderes nahelegen. Der
+         * Guard sperrt dann die MENGE, nicht die Basisversorgung.
+         *
+         * OHNE DEFAULT, aus demselben Grund wie [evidenceCreditActive] eine
+         * Zeile darueber: ein `= Verdict.NONE` waere hier die gefaehrlichere
+         * Richtung - es wuerde jede vergessene Aufrufstelle still den
+         * Low-Schutz abschalten, und der Ausfall faellt erst am Menschen auf.
+         * Ein Kompilierfehler je Aufrufstelle ist billiger.
+         */
+        lowThreat: LowThreatGate.Verdict,
         /** Rest der Onset-Haftungshuelle [U]. Nicht-null NUR, wenn der
          *  OnsetChannel in diesem Zyklus die Mittelbahn gehoben hat - dann
          *  kappt er die Menge, die auf seiner eigenen Hebung beruht. */
@@ -629,8 +691,14 @@ object FuseController {
         // Mahlzeiten- oder die Korrekturlage" die erste, die man stellt.
         val ctx = contextOf(state.phase)
 
+        // ZENTRAL statt an jeder Rueckgabe: `unsafeSituation` an einem
+        // Sicherheitsausgang zu VERGESSEN meldet faelschlich "sicher", und
+        // daran haengt die C8-Sperre. Ein Helfer kann das nicht vergessen.
         fun none(block: Block, tbr: TbrAction = TbrAction.NO_NEW_POSITIVE) =
-            Decision(0.0, tbr, block, null, null, null, block.name, context = ctx)
+            Decision(
+                0.0, tbr, block, null, null, null, block.name, context = ctx,
+                unsafeSituation = block in UNSAFE_BLOCKS,
+            )
 
         // Reihenfolge ist Absicht: Zustand vor Zahlen. Eine Dosis aus einer
         // Trajektorie, die gar nicht gelten darf, waere der teuerste Fehler.
@@ -699,16 +767,44 @@ object FuseController {
         // Endwert — eine Bahn kann harmlos enden und zwischendurch tief gehen.
         if (minLower < limits.guardFloorMgdl) {
             return Decision(
-                0.0, TbrAction.ZERO_TEMP, Block.GUARD_FLOOR, null,
-                releaseMean, minLower, "guardFloor=${limits.guardFloorMgdl}", context = ctx,
-                // DIE EINZIGE STELLE, die diese Null als modellbedingt
-                // ausweist. `minLower` ist eine gerechnete Bahn, kein Messwert -
-                // und weil sie kohlenhydratfrei rechnet, faellt sie waehrend
-                // einer autorisierten Mahlzeit zwangslaeufig unter den Boden.
-                // Das Bit erlaubt [MarkerFloor], die Basalrueckhaltung dort
-                // aufzuheben; es aendert an dieser Zahl NICHTS und unterdrueckt
-                // die Null auch nirgends von selbst.
-                zeroTempModelOnly = true,
+                0.0,
+                // DER GUARD SPERRT DIE MENGE, NICHT DAS FUNDAMENT (Toni 17.08.).
+                //
+                // Bis hierher stand an dieser Stelle bedingungslos ZERO_TEMP,
+                // und genau daraus entstand der gemessene Betriebszustand: an
+                // einem vollen Tag lief die Null 677 von 1129 Zyklen - 60 %
+                // der Zeit ohne Grundversorgung, bei einem BG zwischen 53 und
+                // 270. Eine langfristige, KOHLENHYDRATFREI gerechnete Bahn
+                // durfte die Basis vollstaendig entfernen; das Muster danach
+                // war immer dasselbe - Basal fehlt, BG hebt ab, FUSE laeuft
+                // mit SMBs hinterher.
+                //
+                // Der Schwanz-Guard zwoelf Zeilen weiter unten hat es von
+                // Anfang an richtig gemacht ("Die Kategorie ist
+                // NO_NEW_POSITIVE und ausdruecklich NICHT ZERO_TEMP ... ein
+                // blindes Zero-Temp bei sicherer Nahbahn waere eine eigene
+                // Fehldosis mit umgekehrtem Vorzeichen"). Diese Zeile zieht
+                // den Nahzonen-Guard nach.
+                //
+                // KEEP_CURRENT und nicht NO_NEW_POSITIVE: letzteres verhindert
+                // nur eine NEUE Null und liesse eine LAUFENDE bis zu 30 min
+                // stehen (TbrPolicy.noPositive behaelt eine nicht-positive TBR
+                // absichtlich). KEEP_CURRENT beendet sie - Tonis Auflage "eine
+                // bestehende, von FUSE gesetzte Zero-TBR muss sofort beendet
+                // werden, sobald das Low-Tor nicht mehr erfuellt ist". Fremde
+                // Absenkungen bleiben davon unberuehrt (C7b in TbrPolicy.keep).
+                //
+                // Die MENGE bleibt gesperrt: smbU ist 0, der Block heisst
+                // weiterhin GUARD_FLOOR. Nur die Basisversorgung laeuft weiter.
+                if (lowThreat == LowThreatGate.Verdict.NONE) TbrAction.KEEP_CURRENT else TbrAction.ZERO_TEMP,
+                Block.GUARD_FLOOR, null,
+                releaseMean, minLower,
+                "guardFloor=${limits.guardFloorMgdl}" +
+                    if (lowThreat != LowThreatGate.Verdict.NONE) "|${lowThreat.name}" else "",
+                context = ctx,
+                // Die Lage IST unsicher - nur das Fundament bleibt stehen.
+                // Daran haengt die C8-Sperre.
+                unsafeSituation = true,
             ).tele()
         }
 
@@ -726,6 +822,10 @@ object FuseController {
             return Decision(
                 0.0, TbrAction.NO_NEW_POSITIVE, Block.TAIL, null,
                 releaseMean, minLower, "tailHeadroom=${tail.headroomU}", tail, context = ctx,
+                // Auch der Schwanz beschreibt eine unsichere Lage - er hat das
+                // Basal nur nie angetastet (s. Begruendung oben). Fuer die
+                // C8-Sperre zaehlt der Befund, nicht die TBR-Kategorie.
+                unsafeSituation = true,
             ).tele()
         }
 
