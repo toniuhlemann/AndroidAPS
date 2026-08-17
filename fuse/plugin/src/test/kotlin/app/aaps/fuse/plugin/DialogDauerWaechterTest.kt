@@ -70,6 +70,40 @@ class DialogDauerWaechterTest {
     }
 
     /**
+     * KEINE ANZEIGE DARF GEGEN DIE VORGABE-KONSTANTE RECHNEN.
+     *
+     * Zweiter Geraetefund am selben Tag: der FUSE-Reiter zeigte "15/15 min
+     * Freigabe" bei eingestelltem 25-Minuten-Fenster - und darunter in
+     * derselben Karte "Prime 1,15 U offen". Die Zeile widersprach sich selbst,
+     * weil sie `PrimeRelease.WINDOW_MIN` (die VORGABE) las, waehrend der
+     * Regler die EINSTELLUNG benutzt.
+     *
+     * `PrimeRelease.WINDOW_MIN` ist als Vorgabe voellig richtig - aber nur
+     * dort, wo eine Einstellung FEHLT (der Rueckfall in `FuseCycleRunner`).
+     * In einer Anzeige ist sie immer falsch, sobald der Nutzer etwas anderes
+     * eingestellt hat.
+     */
+    @Test
+    fun `die Anzeige rechnet nicht gegen die Vorgabe-Konstante`() {
+        val src = datei(
+            "src/main/kotlin/app/aaps/fuse/plugin/FuseDashboardModel.kt",
+            "fuse/plugin/src/main/kotlin/app/aaps/fuse/plugin/FuseDashboardModel.kt",
+        ).readText()
+        // KOMMENTARE RAUS, bevor gesucht wird: die Begruendung der Aenderung
+        // nennt den alten Namen zwangslaeufig, und ein Waechter, der an der
+        // Dokumentation seines eigenen Anlasses scheitert, ist unbrauchbar.
+        val code = src.lines()
+            .filterNot { it.trimStart().startsWith("//") || it.trimStart().startsWith("*") }
+            .joinToString(" ")
+        assertFalse(Regex("""PrimeRelease\.WINDOW_MIN""").containsMatchIn(code)) {
+            "FuseDashboardModel rechnet gegen die Vorgabe statt gegen die Einstellung"
+        }
+        assertTrue(src.contains("primeWindowMin")) {
+            "die eingestellte Fensterdauer wird nicht gelesen"
+        }
+    }
+
+    /**
      * Die Beschreibung der Freigabe-Einstellung darf ihre eigene Fensterdauer
      * nicht als Zahl behaupten - sie ist ein statischer Text ohne Parameter und
      * kann der Einstellung darunter nie folgen.

@@ -120,6 +120,9 @@ class FuseFragment : DaggerFragment() {
             windowMin = app.aaps.fuse.core.controller.OnsetChannel.MARKER_WINDOW_MIN,
             envelopeU = fusePlugin.mealMarkerEnvelopeU(),
             noPrime = fusePlugin.mealMarkerNoPrime(now),
+            // Die Freigabe hat ihre EIGENE Uhr, und sie steht in den
+            // Einstellungen - nicht in der Vorgabe-Konstante.
+            primeWindowMin = fusePlugin.primeWindowMin(),
         )
         // Eigene Groesse neben Health: der Ledger kann die Abgabe ganz
         // zumachen, waehrend der Beobachter tadellos READY meldet.

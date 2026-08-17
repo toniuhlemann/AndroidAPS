@@ -5,6 +5,7 @@ import app.aaps.fuse.core.controller.FuseController
 import app.aaps.fuse.core.controller.PrimeRelease
 import app.aaps.fuse.core.observer.Health
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
@@ -142,14 +143,34 @@ class FuseDashboardModelTest {
             outcome(prime = PrimeRelease.Plan(true, 0.2, 2.4, "PRIME")),
             null,
             now,
-            FuseScreenModel.MarkerInfo(markerTs, 90, 3.0),
+            // Zwei UHREN: 90 min Marker, 25 min Freigabe. Die Anzeige hat sie
+            // bis 17.08.2026 vermischt und die Freigabe gegen die
+            // Vorgabe-Konstante gerechnet - bei Tonis 25-min-Fenster stand
+            // deshalb "15/15 min Freigabe" (abgelaufen) ueber "Prime 1,15 U
+            // offen". Der Test fuehrt die beiden jetzt ausdruecklich getrennt.
+            FuseScreenModel.MarkerInfo(markerTs, 90, 3.0, primeWindowMin = 25),
             ledger(),
             null,
         )
         assertTrue(v.marker.contains("AKTIV seit 3/90 min")) { v.marker }
         assertTrue(v.marker.contains("publiziert 0.60 U"))
         assertTrue(v.marker.contains("verfuegbar 2.40 U"))
-        assertTrue(v.marker.contains("3/15 min Freigabe"))
+        assertTrue(v.marker.contains("3/25 min Freigabe")) { v.marker }
+    }
+
+    /** Ohne bekannte Einstellung wird KEINE Dauer genannt - eine erfundene
+     *  waere schlimmer als keine, und genau daran ist die alte Fassung
+     *  gescheitert. */
+    @Test
+    fun `ohne bekanntes Freigabefenster nennt die Zeile keine Dauer`() {
+        val v = FuseDashboardModel.build(
+            outcome(prime = PrimeRelease.Plan(true, 0.2, 2.4, "PRIME")),
+            null, now,
+            FuseScreenModel.MarkerInfo(now - 3 * 60_000L, 90, 3.0, primeWindowMin = null),
+            ledger(), null,
+        )
+        assertTrue(v.marker.contains("Freigabe-Fenster unbekannt")) { v.marker }
+        assertFalse(Regex("""\d+/\d+ min Freigabe""").containsMatchIn(v.marker)) { v.marker }
     }
 
     @Test

@@ -596,6 +596,15 @@ class FusePlugin @Inject constructor(
     /** Die EINE Huelle [U] - fuer den Lieferstand im Tab. S. [toggleMealMarker]. */
     fun mealMarkerEnvelopeU(): Double = preferences.get(FuseDoubleKey.PrimeEnvelopeU)
 
+    /**
+     * Lebensdauer der FREIGABE [min] - DIESELBE Einstellung, die der Regler
+     * liest (`FuseCycleRunner` holt sie ueber denselben Schluessel).
+     *
+     * Nicht zu verwechseln mit der Lebensdauer des MARKERS (90 min): das sind
+     * zwei Uhren, und die Anzeige hat sie bis 17.08.2026 vermischt.
+     */
+    fun primeWindowMin(): Int? = preferences.get(FuseIntKey.PrimeWindowMin).takeIf { it > 0 }
+
     // ---- Der Knopf auf dem Uebersichtsschirm ------------------------------
 
 override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)

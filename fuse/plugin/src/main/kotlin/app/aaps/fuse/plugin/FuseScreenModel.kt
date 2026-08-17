@@ -32,7 +32,23 @@ object FuseScreenModel {
      */
     /** Marker-Zustand fuer Timer-Zeile - kommt vom Fragment (Plugin-Prefs),
      *  nicht aus dem Outcome: der Timer soll auch zwischen Zyklen laufen. */
-    data class MarkerInfo(val armedTs: Long, val windowMin: Int, val envelopeU: Double, val noPrime: Boolean = false)
+    /**
+     * @param windowMin Lebensdauer des MARKERS [min] (90).
+     * @param primeWindowMin Lebensdauer der FREIGABE [min] aus der
+     *   EINSTELLUNG. Zwei verschiedene Uhren, und die Anzeige hat sie bis
+     *   17.08.2026 vermischt: sie zeigte die Freigabe gegen die KONSTANTE
+     *   `PrimeRelease.WINDOW_MIN` (15) statt gegen den eingestellten Wert.
+     *   Bei Tonis 25-Minuten-Fenster stand deshalb "15/15 min Freigabe" -
+     *   also abgelaufen - waehrend darunter "Prime 1,15 U offen" zu lesen war.
+     *   `null` = unbekannt, dann nennt die Zeile keine Dauer.
+     */
+    data class MarkerInfo(
+        val armedTs: Long,
+        val windowMin: Int,
+        val envelopeU: Double,
+        val noPrime: Boolean = false,
+        val primeWindowMin: Int? = null,
+    )
 
     /**
      * Der LEDGER-Zustand - eine EIGENE Groesse, nicht Teil von "Health".

@@ -231,7 +231,14 @@ object FuseDashboardModel {
         val available = published?.let { (marker.envelopeU - it).coerceAtLeast(0.0) }
         val amount = if (published == null || available == null) "Huelle ${u(marker.envelopeU)}"
         else "Huelle ${u(marker.envelopeU)}  |  publiziert ${u(published)}  |  verfuegbar ${u(available)}"
-        val release = "${elapsed.coerceAtMost(PrimeRelease.WINDOW_MIN)}/${PrimeRelease.WINDOW_MIN} min Freigabe"
+        // GEGEN DIE EINSTELLUNG, nicht gegen die Vorgabe-Konstante. Hier stand
+        // `PrimeRelease.WINDOW_MIN` (15); bei Tonis 25-Minuten-Fenster ergab
+        // das "15/15 min Freigabe" - abgelaufen - direkt ueber der Zeile
+        // "Prime 1,15 U offen". Die Anzeige widersprach sich selbst, weil sie
+        // eine andere Uhr las als der Regler.
+        val release = marker.primeWindowMin?.let { w ->
+            "${elapsed.coerceAtMost(w)}/$w min Freigabe"
+        } ?: "Freigabe-Fenster unbekannt"
         return "AKTIV seit $elapsed/${marker.windowMin} min  |  $amount\n$release"
     }
 
