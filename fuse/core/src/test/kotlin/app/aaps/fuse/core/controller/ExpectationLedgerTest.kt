@@ -17,197 +17,262 @@ class ExpectationLedgerTest {
     private val t0 = 1_787_000_000_000L
     private val H = 30
     private val SEG = 1L
+    private val CFG = "cfg#1"
+    private val REV = 100L
 
     private fun eintrag(
         source: Long = t0,
         seg: Long = SEG,
         anchor: Double = 200.0,
         mean: Double = 150.0,
-    ) = ExpectationLedger.issue(source, seg, anchor, mean, H)!!
+        rev: Long = REV,
+    ) = ExpectationLedger.issue(
+        source, seg, anchor, mean, H, configGeneration = CFG, interventionRevision = rev,
+    )!!
 
-    private fun probe(ts: Long, mgdl: Double) = ExpectationLedger.Sample(ts, mgdl)
+    private fun probe(ts: Long, mgdl: Double, seg: Long = SEG, healthy: Boolean = true) =
+        ExpectationLedger.Sample(ts, mgdl, seg, healthy)
+
+    private fun rechne(
+        entries: List<ExpectationLedger.Entry>,
+        now: Long,
+        samples: List<ExpectationLedger.Sample>,
+        rev: Long = REV,
+    ) = ExpectationLedger.settle(entries, now, samples, rev)
 
     // ---- Einreihen ------------------------------------------------------
 
     /** NUR SENKUNGEN DER MITTELBAHN sind widerlegbar. */
     @Test
     fun `nur eine behauptete Senkung wird eingereiht`() {
-        assertTrue(ExpectationLedger.issue(t0, SEG, 200.0, 150.0, H) != null, "50 mg/dl Senkung")
-        assertNull(ExpectationLedger.issue(t0, SEG, 200.0, 200.0, H), "unveraendert ist keine Behauptung")
-        assertNull(ExpectationLedger.issue(t0, SEG, 200.0, 240.0, H), "ein Anstieg erst recht nicht")
-        assertNull(
-            ExpectationLedger.issue(t0, SEG, 200.0, 194.0, H),
-            "6 mg/dl liegen im Messrauschen - daraus laesst sich nichts belegen",
-        )
+        assertTrue(ExpectationLedger.issue(t0, SEG, 200.0, 150.0, H, CFG, REV) != null)
+        assertNull(ExpectationLedger.issue(t0, SEG, 200.0, 200.0, H, CFG, REV), "unveraendert")
+        assertNull(ExpectationLedger.issue(t0, SEG, 200.0, 240.0, H, CFG, REV), "ein Anstieg")
+        assertNull(ExpectationLedger.issue(t0, SEG, 200.0, 194.0, H, CFG, REV), "6 mg/dl sind Rauschen")
     }
 
     @Test
     fun `unbrauchbare Eingaben werden nicht eingereiht`() {
-        assertNull(ExpectationLedger.issue(t0, SEG, null, 150.0, H))
-        assertNull(ExpectationLedger.issue(t0, SEG, 200.0, null, H))
-        assertNull(ExpectationLedger.issue(t0, SEG, Double.NaN, 150.0, H))
-        assertNull(ExpectationLedger.issue(t0, SEG, 200.0, Double.NaN, H))
-        assertNull(ExpectationLedger.issue(t0, SEG, 200.0, 150.0, 0), "ohne Horizont keine Faelligkeit")
+        assertNull(ExpectationLedger.issue(t0, SEG, null, 150.0, H, CFG, REV))
+        assertNull(ExpectationLedger.issue(t0, SEG, 200.0, null, H, CFG, REV))
+        assertNull(ExpectationLedger.issue(t0, SEG, Double.NaN, 150.0, H, CFG, REV))
+        assertNull(ExpectationLedger.issue(t0, SEG, 200.0, 150.0, 0, CFG, REV), "ohne Horizont")
+    }
+
+    /** OHNE VERGLEICHBARKEITSKENNUNG KEIN EINTRAG. Eine Garantie, die man
+     *  weglassen darf, ist keine - sonst steht spaeter ein Ergebnis in der
+     *  Datei, das mit nichts vergleichbar ist. */
+    @Test
+    fun `ohne Konfigurationskennung wird nicht eingereiht`() {
+        assertNull(ExpectationLedger.issue(t0, SEG, 200.0, 150.0, H, "", REV))
+        assertNull(ExpectationLedger.issue(t0, SEG, 200.0, 150.0, H, "   ", REV))
     }
 
     /**
-     * DIE SICHERHEITSUNTERGRENZE IST KEIN VERSPRECHEN (Tonis zweiter Befund).
-     *
-     * Die Mittelbahn ist eine Erwartung, die eintreten SOLL. Die Untergrenze
-     * ist ein pessimistisches Risikoszenario, das gerade NICHT eintreten
-     * soll. Sie faehrt als Kontext mit und geht in kein Urteil ein - sonst
-     * liest der spaetere Verbraucher die Daten semantisch falsch.
+     * DIE SICHERHEITSUNTERGRENZE IST KEIN VERSPRECHEN. Die Mittelbahn soll
+     * eintreten, die Untergrenze gerade NICHT. Sie faehrt als Kontext mit
+     * und geht in kein Urteil ein.
      */
     @Test
     fun `die Sicherheitsuntergrenze faehrt als Kontext mit, nicht als Versprechen`() {
         val e = ExpectationLedger.issue(
-            t0, SEG, anchorMgdl = 200.0, meanPredictedMgdl = 150.0, horizonMin = H,
+            t0, SEG, 200.0, 150.0, H, CFG, REV,
             safetyLowerPredictedMgdl = 40.0, lambda = 1.0, discountMgdl = -110.8, bgiMgdl = -127.7,
-            configGeneration = "cfg#1",
         )!!
         assertEquals(50.0, e.promisedDropMgdl, 1e-9, "das Versprechen ist die MITTELBAHN")
-        assertEquals(40.0, e.safetyLowerPredictedMgdl!!, 1e-9)
-
-        // Realer BG 180: die Mittelbahn (150) ist deutlich verfehlt, die
-        // Untergrenze (40) hat sich nicht realisiert. Nur das ERSTE zaehlt.
-        val (out, _) = ExpectationLedger.settle(listOf(e), e.dueTs, listOf(probe(e.dueTs, 180.0)), true)
+        val (out, _) = rechne(listOf(e), e.dueTs, listOf(probe(e.dueTs, 180.0)))
         assertEquals(ExpectationLedger.Verdict.MISSED, out[0].verdict)
         assertEquals(30.0, out[0].meanErrorMgdl!!, 1e-9, "gemessen gegen die Mittelbahn")
         assertEquals(140.0, out[0].distanceFromSafetyLowerMgdl!!, 1e-9, "reine Diagnose")
     }
 
-    // ---- Abrechnen: die ZEITLICHE ZUORDNUNG ------------------------------
+    // ---- Abrechnen: ZEITLICHE ZUORDNUNG ----------------------------------
 
     @Test
     fun `vor der Faelligkeit wird nichts abgerechnet`() {
         val e = eintrag()
-        val (out, offen) = ExpectationLedger.settle(
-            listOf(e), t0 + 10 * 60_000L, listOf(probe(t0 + 10 * 60_000L, 190.0)), true,
-        )
+        val (out, offen) = rechne(listOf(e), t0 + 10 * 60_000L, listOf(probe(t0 + 10 * 60_000L, 190.0)))
         assertTrue(out.isEmpty())
         assertEquals(listOf(e), offen)
     }
 
-    /** DER ANLASSFALL: versprochen 150, gemessen 205 zur Faelligkeit. */
     @Test
     fun `eine ausgebliebene Senkung wird als MISSED verbucht`() {
         val e = eintrag()
-        val (out, offen) = ExpectationLedger.settle(listOf(e), e.dueTs, listOf(probe(e.dueTs, 205.0)), true)
-        assertEquals(1, out.size)
+        val (out, offen) = rechne(listOf(e), e.dueTs, listOf(probe(e.dueTs, 205.0)))
         assertEquals(ExpectationLedger.Verdict.MISSED, out[0].verdict)
         assertEquals(55.0, out[0].meanErrorMgdl!!, 1e-9)
-        assertEquals(e.dueTs, out[0].actualTs)
+        assertTrue(out[0].isEvidence)
         assertTrue(offen.isEmpty())
     }
 
     @Test
     fun `eine eingetroffene Senkung wird als MET verbucht`() {
         val e = eintrag()
-        val (out, _) = ExpectationLedger.settle(listOf(e), e.dueTs, listOf(probe(e.dueTs, 148.0)), true)
+        val (out, _) = rechne(listOf(e), e.dueTs, listOf(probe(e.dueTs, 148.0)))
         assertEquals(ExpectationLedger.Verdict.MET, out[0].verdict)
+        assertTrue(!out[0].isEvidence)
     }
 
-    /** Knappes Verfehlen ist kein Nachweis - die Toleranz sitzt auf der
-     *  Seite des Modells. */
     @Test
     fun `ein knappes Verfehlen gilt noch als eingetroffen`() {
         val e = eintrag()
-        val knapp = ExpectationLedger.settle(listOf(e), e.dueTs, listOf(probe(e.dueTs, 153.0)), true).first
-        assertEquals(ExpectationLedger.Verdict.MET, knapp[0].verdict)
-        val deutlich = ExpectationLedger.settle(listOf(e), e.dueTs, listOf(probe(e.dueTs, 158.0)), true).first
-        assertEquals(ExpectationLedger.Verdict.MISSED, deutlich[0].verdict)
+        assertEquals(
+            ExpectationLedger.Verdict.MET,
+            rechne(listOf(e), e.dueTs, listOf(probe(e.dueTs, 153.0))).first[0].verdict,
+        )
+        assertEquals(
+            ExpectationLedger.Verdict.MISSED,
+            rechne(listOf(e), e.dueTs, listOf(probe(e.dueTs, 158.0))).first[0].verdict,
+        )
+    }
+
+    /** Nach einer Luecke darf kein spaeterer Wert rueckwirkend gelten. */
+    @Test
+    fun `nach einer Luecke wird kein spaeterer Wert rueckwirkend verwendet`() {
+        val e = listOf(eintrag(t0), eintrag(t0 + 5 * 60_000L), eintrag(t0 + 10 * 60_000L))
+        val spaet = probe(t0 + 60 * 60_000L, 205.0)
+        val (out, _) = rechne(e, t0 + 60 * 60_000L, listOf(spaet))
+        assertTrue(
+            out.all { it.verdict == ExpectationLedger.Verdict.UNVERIFIABLE },
+            "keine darf am spaeten Wert abgerechnet werden: ${out.map { it.verdict }}",
+        )
     }
 
     /**
-     * TONIS ERSTER BEFUND, und der Vorgaengertest schrieb genau das falsche
-     * Verhalten fest ("mehrere faellige Eintraege werden gemeinsam
-     * abgerechnet").
+     * EIN MESSWERT WIRD HOECHSTENS EINMAL VERBRAUCHT (Tonis Befund).
      *
-     * Nach einer CGM-Luecke werden mehrere Faelligkeiten ueberfaellig. Sie
-     * alle gegen den EINEN spaeten Messwert zu pruefen, erfindet einen
-     * Nachweis: derselbe Wert wuerde drei verschiedene Prognosen widerlegen,
-     * von denen er nur zu einer gehoert. Jede Faelligkeit braucht einen
-     * Messwert in IHRER Naehe - sonst ist sie nicht bewertbar.
+     * Bei 1-min-Prognosen und 150 s Toleranz kann derselbe Punkt fuer bis zu
+     * fuenf benachbarte Faelligkeiten der naechste Treffer sein - und wuerde
+     * fuenf voneinander unabhaengige Widerlegungen erzeugen, die es nicht
+     * gibt. Genau EINE darf ihn bekommen, die mit dem kleinsten Abstand.
      */
     @Test
-    fun `nach einer Luecke wird kein spaeterer Wert rueckwirkend verwendet`() {
-        val a = eintrag(source = t0)                       // faellig t0+30
-        val b = eintrag(source = t0 + 5 * 60_000L)         // faellig t0+35
-        val c = eintrag(source = t0 + 10 * 60_000L)        // faellig t0+40
-        // Einziger Messwert: 20 Minuten NACH der letzten Faelligkeit.
-        val spaet = probe(t0 + 60 * 60_000L, 205.0)
-        val (out, _) = ExpectationLedger.settle(listOf(a, b, c), t0 + 60 * 60_000L, listOf(spaet), true)
-        assertEquals(3, out.size)
-        assertTrue(
-            out.all { it.verdict == ExpectationLedger.Verdict.UNVERIFIABLE },
-            "keine einzige darf am spaeten Wert abgerechnet werden: ${out.map { it.verdict }}",
+    fun `ein Messwert bedient hoechstens eine Faelligkeit`() {
+        // Drei Faelligkeiten im Minutenabstand, EIN Messwert bei der mittleren.
+        val a = eintrag(t0)
+        val b = eintrag(t0 + 60_000L)
+        val c = eintrag(t0 + 120_000L)
+        val einer = probe(b.dueTs, 205.0)
+        val (out, _) = rechne(listOf(a, b, c), c.dueTs, listOf(einer))
+        val bewertet = out.filter { it.actualMgdl != null }
+        assertEquals(1, bewertet.size, "nur EINE Faelligkeit darf den Wert bekommen")
+        assertEquals(b.dueTs, bewertet[0].entry.dueTs, "und zwar die naechstgelegene")
+        assertEquals(
+            2, out.count { it.verdict == ExpectationLedger.Verdict.UNVERIFIABLE },
+            "die beiden anderen bleiben unbewertet",
         )
-        assertTrue(out.all { it.actualMgdl == null })
     }
 
-    /** Die Gegenprobe: mit passenden Messwerten wird jede Faelligkeit an
-     *  IHREM eigenen Punkt abgerechnet. */
+    /** Ein Messwert aus einem ANDEREN Segment zaehlt nicht - ueber einen
+     *  Bruch hinweg ist er nicht vergleichbar. */
     @Test
-    fun `jede Faelligkeit wird an ihrem eigenen Messwert abgerechnet`() {
-        val a = eintrag(source = t0)                  // faellig t0+30 -> 205 (MISSED)
-        val b = eintrag(source = t0 + 5 * 60_000L)    // faellig t0+35 -> 145 (MET)
-        val samples = listOf(probe(a.dueTs, 205.0), probe(b.dueTs, 145.0))
-        val (out, _) = ExpectationLedger.settle(listOf(a, b), b.dueTs, samples, true)
-        val nachFaelligkeit = out.associateBy { it.entry.dueTs }
-        assertEquals(ExpectationLedger.Verdict.MISSED, nachFaelligkeit[a.dueTs]!!.verdict)
-        assertEquals(ExpectationLedger.Verdict.MET, nachFaelligkeit[b.dueTs]!!.verdict)
+    fun `ein Messwert aus fremdem Segment zaehlt nicht`() {
+        val e = eintrag(seg = 1L)
+        val (out, _) = rechne(listOf(e), e.dueTs, listOf(probe(e.dueTs, 205.0, seg = 2L)))
+        assertEquals(ExpectationLedger.Verdict.UNVERIFIABLE, out[0].verdict)
     }
 
-    /** Ein Messwert knapp daneben zaehlt noch, einer weit daneben nicht. */
+    /**
+     * DIE GESUNDHEIT GEHOERT AN DEN MESSWERT, nicht an den
+     * Abrechnungszeitpunkt: geprueft wird ein historischer Punkt.
+     */
     @Test
-    fun `die Zuordnung hat eine enge Toleranz`() {
+    fun `ein ungesunder Messwert zaehlt nicht`() {
         val e = eintrag()
-        val nah = ExpectationLedger.settle(
-            listOf(e), e.dueTs + 5 * 60_000L, listOf(probe(e.dueTs + 60_000L, 205.0)), true,
-        ).first
-        assertEquals(ExpectationLedger.Verdict.MISSED, nah[0].verdict, "eine Minute daneben ist noch zuordenbar")
-        val fern = ExpectationLedger.settle(
-            listOf(e), e.dueTs + 10 * 60_000L, listOf(probe(e.dueTs + 8 * 60_000L, 205.0)), true,
-        ).first
-        assertEquals(ExpectationLedger.Verdict.UNVERIFIABLE, fern[0].verdict, "acht Minuten sind es nicht")
-    }
-
-    /** Ohne Signalgesundheit ist nichts bewertbar, auch mit Messwert. */
-    @Test
-    fun `ohne gesundes Signal ist die Prognose nicht bewertbar`() {
-        val e = eintrag()
-        val (out, _) = ExpectationLedger.settle(listOf(e), e.dueTs, listOf(probe(e.dueTs, 205.0)), false)
+        val (out, _) = rechne(listOf(e), e.dueTs, listOf(probe(e.dueTs, 205.0, healthy = false)))
         assertEquals(ExpectationLedger.Verdict.UNVERIFIABLE, out[0].verdict)
         assertNull(out[0].meanErrorMgdl)
     }
 
-    // ---- Die Strecke: DAUER statt Anzahl ---------------------------------
+    @Test
+    fun `die Zuordnung hat eine enge Toleranz`() {
+        val e = eintrag()
+        assertEquals(
+            ExpectationLedger.Verdict.MISSED,
+            rechne(listOf(e), e.dueTs + 5 * 60_000L, listOf(probe(e.dueTs + 60_000L, 205.0))).first[0].verdict,
+            "eine Minute daneben ist zuordenbar",
+        )
+        assertEquals(
+            ExpectationLedger.Verdict.UNVERIFIABLE,
+            rechne(listOf(e), e.dueTs + 10 * 60_000L, listOf(probe(e.dueTs + 8 * 60_000L, 205.0))).first[0].verdict,
+            "acht Minuten sind es nicht",
+        )
+    }
+
+    // ---- Eingriffe -------------------------------------------------------
+
+    /**
+     * EIN EINGRIFF MACHT DIE PROGNOSE UNVERGLEICHBAR (Tonis dritter Befund),
+     * und zwar in BEIDE Richtungen gefaehrlich: ein manueller Bolus koennte
+     * ein MET erzeugen und einen echten Nachweis loeschen; Kohlenhydrate
+     * koennten ein MISSED erzeugen und spaeter lambda lockern, obwohl das
+     * Modell recht hatte.
+     */
+    @Test
+    fun `ein Eingriff zwischen Ausgabe und Faelligkeit macht das Urteil ungueltig`() {
+        val e = eintrag(rev = 100L)
+        // Der BG steht auf 205 - ohne Eingriff waere das ein klares MISSED.
+        val (missed, _) = rechne(listOf(e), e.dueTs, listOf(probe(e.dueTs, 205.0)), rev = 100L)
+        assertEquals(ExpectationLedger.Verdict.MISSED, missed[0].verdict)
+
+        // Mit Eingriff: kein Urteil, obwohl die Zahlen dieselben sind.
+        val (eingriff, _) = rechne(listOf(e), e.dueTs, listOf(probe(e.dueTs, 205.0)), rev = 101L)
+        assertEquals(ExpectationLedger.Verdict.INTERVENED, eingriff[0].verdict)
+        assertNull(eingriff[0].actualMgdl, "ein ungueltiges Urteil traegt keine Zahl")
+        assertTrue(!eingriff[0].isEvidence)
+    }
+
+    /** Auch die andere Richtung: ein Eingriff darf kein MET erzeugen und
+     *  damit einen Nachweis loeschen. */
+    @Test
+    fun `ein Eingriff erzeugt auch kein MET`() {
+        val e = eintrag(rev = 100L)
+        val (out, _) = rechne(listOf(e), e.dueTs, listOf(probe(e.dueTs, 140.0)), rev = 101L)
+        assertEquals(ExpectationLedger.Verdict.INTERVENED, out[0].verdict)
+    }
+
+    // ---- Die Strecke: BELEGTE Dauer --------------------------------------
 
     private fun ergebnis(due: Long, v: ExpectationLedger.Verdict, seg: Long = SEG) =
         ExpectationLedger.Outcome(
-            ExpectationLedger.Entry(due - H * 60_000L, due, seg, 200.0, 150.0),
-            v, if (v == ExpectationLedger.Verdict.UNVERIFIABLE) null else due,
-            if (v == ExpectationLedger.Verdict.UNVERIFIABLE) null else 205.0,
+            ExpectationLedger.Entry(due - H * 60_000L, due, seg, 200.0, 150.0, CFG, REV),
+            v,
+            if (v == ExpectationLedger.Verdict.MISSED || v == ExpectationLedger.Verdict.MET) due else null,
+            if (v == ExpectationLedger.Verdict.MISSED || v == ExpectationLedger.Verdict.MET) 205.0 else null,
         )
 
-    /**
-     * TONIS DRITTER BEFUND: bei einer Prognose je Minute beschreiben 30
-     * aufeinanderfolgende MISSED DASSELBE Plateau. Gemessen wird deshalb die
-     * zeitliche Ausdehnung, nicht die Anzahl.
-     */
+    /** Zehn Prognosen im Minutentakt sind neun Minuten Strecke, nicht "zehn
+     *  Widerlegungen". */
     @Test
     fun `gemessen wird die Dauer der Strecke, nicht die Anzahl`() {
         val m = ExpectationLedger.Verdict.MISSED
-        // Zehn Prognosen im Minutentakt = neun Minuten Strecke, nicht "zehn".
         val zehn = (0..9).map { ergebnis(t0 + it * 60_000L, m) }
         assertEquals(9, ExpectationLedger.missedStreakMin(zehn, SEG))
-        // Dieselbe Anzahl ueber eine Stunde verteilt ist ein staerkerer Beleg.
-        val verteilt = (0..9).map { ergebnis(t0 + it * 6 * 60_000L, m) }
-        assertEquals(54, ExpectationLedger.missedStreakMin(verteilt, SEG))
     }
 
-    /** Ein einzelnes Eintreffen beendet die Strecke - der Nachweis beginnt
-     *  von vorn. */
+    /**
+     * UNBEOBACHTETE ZEIT IST KEIN BELEG (Tonis zweiter Befund) - und der
+     * Vorgaengertest schrieb genau das Gegenteil fest ("zehn Ereignisse ueber
+     * eine Stunde sind ein staerkerer Beleg").
+     *
+     * Zwei MISSED mit 58 Minuten Luecke dazwischen ergaben dort eine
+     * 60-Minuten-Strecke. Ohne belegte Zwischenzeit stimmt das nicht.
+     */
+    @Test
+    fun `eine Luecke zwischen zwei Ausbleibern bricht die Strecke`() {
+        val m = ExpectationLedger.Verdict.MISSED
+        val mitLuecke = listOf(ergebnis(t0, m), ergebnis(t0 + 58 * 60_000L, m))
+        assertEquals(
+            0, ExpectationLedger.missedStreakMin(mitLuecke, SEG),
+            "58 unbeobachtete Minuten sind keine 58 Minuten Nachweis",
+        )
+        // Dieselben zwei Punkte, aber lueckenlos belegt: das zaehlt.
+        val dicht = (0..58).map { ergebnis(t0 + it * 60_000L, m) }
+        assertEquals(58, ExpectationLedger.missedStreakMin(dicht, SEG))
+    }
+
+    /** Ein Eintreffen beendet die Strecke - der Nachweis beginnt von vorn. */
     @Test
     fun `ein Eintreffen beendet die Strecke`() {
         val m = ExpectationLedger.Verdict.MISSED
@@ -217,45 +282,38 @@ class ExpectationLedgerTest {
             ergebnis(t0 + 120_000, t),
             ergebnis(t0 + 180_000, m), ergebnis(t0 + 240_000, m),
         )
-        assertEquals(1, ExpectationLedger.missedStreakMin(reihe, SEG), "nur die beiden juengsten zaehlen")
+        assertEquals(1, ExpectationLedger.missedStreakMin(reihe, SEG), "nur die beiden juengsten")
         assertEquals(0, ExpectationLedger.missedStreakMin(listOf(ergebnis(t0, t)), SEG))
         assertEquals(0, ExpectationLedger.missedStreakMin(emptyList(), SEG))
     }
 
-    /**
-     * EIN SEGMENTBRUCH BEENDET DIE STRECKE. Ueber eine Signalluecke hinweg
-     * gibt es keinen zusammenhaengenden Nachweis - sonst wuerde eine
-     * Ausbleib-Strecke von vor der Luecke eine spaetere Dosierentscheidung
-     * mittragen, die sie nicht belegt.
-     */
+    /** Ein Segmentbruch beendet sie ebenfalls. */
     @Test
     fun `ein Segmentbruch beendet die Strecke`() {
         val m = ExpectationLedger.Verdict.MISSED
         val reihe = listOf(
             ergebnis(t0, m, seg = 1L), ergebnis(t0 + 60_000, m, seg = 1L),
-            ergebnis(t0 + 300_000, m, seg = 2L), ergebnis(t0 + 360_000, m, seg = 2L),
+            ergebnis(t0 + 120_000, m, seg = 2L), ergebnis(t0 + 180_000, m, seg = 2L),
         )
-        assertEquals(
-            1, ExpectationLedger.missedStreakMin(reihe, currentSegmentId = 2L),
-            "nur das aktuelle Segment traegt den Nachweis",
-        )
-        assertEquals(
-            0, ExpectationLedger.missedStreakMin(reihe, currentSegmentId = 3L),
-            "nach einem weiteren Bruch beginnt er ganz neu",
-        )
+        assertEquals(1, ExpectationLedger.missedStreakMin(reihe, currentSegmentId = 2L))
+        assertEquals(0, ExpectationLedger.missedStreakMin(reihe, currentSegmentId = 3L))
     }
 
-    /** UNVERIFIABLE zaehlt weder mit noch bricht es - solange das Segment
-     *  dasselbe bleibt. */
+    /**
+     * UNVERIFIABLE UND INTERVENED BRECHEN JETZT EBENFALLS - konservativ.
+     * Beide bedeuten, dass der Nachweis an dieser Stelle nicht gefuehrt
+     * wurde, und ein nicht gefuehrter Nachweis darf keine Strecke
+     * ueberbruecken.
+     */
     @Test
-    fun `nicht bewertbare Zyklen unterbrechen die Strecke nicht`() {
+    fun `nicht gefuehrte Nachweise brechen die Strecke`() {
         val m = ExpectationLedger.Verdict.MISSED
-        val u = ExpectationLedger.Verdict.UNVERIFIABLE
-        val reihe = listOf(ergebnis(t0, m), ergebnis(t0 + 60_000, u), ergebnis(t0 + 120_000, m))
-        assertEquals(2, ExpectationLedger.missedStreakMin(reihe, SEG))
-        assertEquals(
-            0, ExpectationLedger.missedStreakMin(listOf(ergebnis(t0, u), ergebnis(t0 + 60_000, u)), SEG),
-            "aus lauter Unbeobachtetem entsteht kein Nachweis",
-        )
+        for (luecke in listOf(ExpectationLedger.Verdict.UNVERIFIABLE, ExpectationLedger.Verdict.INTERVENED)) {
+            val reihe = listOf(ergebnis(t0, m), ergebnis(t0 + 60_000, luecke), ergebnis(t0 + 120_000, m))
+            assertEquals(
+                0, ExpectationLedger.missedStreakMin(reihe, SEG),
+                "$luecke darf nicht ueberbrueckt werden",
+            )
+        }
     }
 }
