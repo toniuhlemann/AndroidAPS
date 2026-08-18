@@ -592,24 +592,100 @@ class MarkerAuthorizationTest {
     }
 
     /**
-     * DIE HARTEN BLOECKE, einzeln aufgezaehlt statt "alles andere".
+     * DIE HARTEN BLOECKE, EINZELN AUFGEZAEHLT.
      *
-     * Eine Politik, die nur sagt, was hebbar IST, laesst bei jedem neuen
-     * Block-Wert offen, auf welcher Seite er landet. Diese Liste zwingt die
-     * Entscheidung beim Hinzufuegen - und ein neuer Wert faellt ohne Eintrag
-     * automatisch auf die harte Seite.
+     * DIESER TEST WAR VORHER WIRKUNGSLOS (Toni 18.08., P1). Er verglich
+     * `lifts(block)` gegen `block in setOf(...hebbare...)` und behauptete im
+     * Kommentar, damit jeden neuen Enumwert zu einer Entscheidung zu zwingen.
+     * Tatsaechlich ergab ein neuer Wert auf BEIDEN Seiten `false` - der Test
+     * blieb gruen, und die Zusicherung stand nur im Kommentar.
+     *
+     * Der eigentliche Riegel sitzt jetzt im Compiler: [MarkerAuthorization.lifts]
+     * ist ein `when` ohne `else`, ein neuer Enumwert laesst das Modul nicht
+     * mehr uebersetzen. Beim ersten Uebersetzen hat er prompt `NO_INPUT`
+     * eingefordert - einen Wert, der in keiner der beiden frueheren Mengen
+     * stand.
+     *
+     * Dieser Test haelt zusaetzlich die AUFTEILUNG fest, und zwar so, dass
+     * ein Vergessen auffliegt:
+     *
+     *   beide Mengen einzeln aufgezaehlt, hebbar UND hart;
+     *   ihre VEREINIGUNG muss alle Enumwerte ergeben;
+     *   ihr SCHNITT muss leer sein.
      */
     @Test
-    fun `harte Bloecke bleiben in Phase B unhebbar`() {
+    fun `die Aufteilung deckt jeden Block genau einmal ab`() {
+        val hebbar = setOf(
+            FuseController.Block.NONE,
+            FuseController.Block.NO_DEMAND,
+            FuseController.Block.BELOW_PUMP_INCREMENT,
+            FuseController.Block.GUARD_FLOOR,
+        )
+        val hart = setOf(
+            FuseController.Block.SAFETY_HOLD,
+            FuseController.Block.HEALTH_NOT_READY,
+            FuseController.Block.HORIZON_MISSING,
+            FuseController.Block.NO_INPUT,
+            FuseController.Block.IOB_TH_REACHED,
+            FuseController.Block.MAX_IOB_REACHED,
+            FuseController.Block.LEDGER_HOLD,
+            FuseController.Block.PUMP_BUSY,
+            FuseController.Block.TAIL,
+            FuseController.Block.CANDIDATE,
+        )
+
+        assertEquals(
+            FuseController.Block.entries.toSet(), hebbar + hart,
+            "die Vereinigung MUSS alle Blockwerte ergeben - ein neuer Wert faellt hier auf",
+        )
+        assertTrue(
+            (hebbar intersect hart).isEmpty(),
+            "kein Block darf auf beiden Seiten stehen: ${hebbar intersect hart}",
+        )
+
+        for (block in hebbar) assertTrue(
+            MarkerAuthorization.lifts(block), "$block MUSS hebbar sein",
+        )
+        for (block in hart) assertTrue(
+            !MarkerAuthorization.lifts(block), "$block MUSS hart bleiben",
+        )
+    }
+
+    /**
+     * OHNE Autorisierung ist NUR der Bedarfsteil hebbar - `GUARD_FLOOR` nicht.
+     *
+     * Das ist der Unterschied, den der Markerdruck ueberhaupt macht. Ohne
+     * diesen Test waere eine Politik moeglich, die den Guard-Boden IMMER
+     * hebt, und die Autorisierung waere folgenlos.
+     */
+    @Test
+    fun `ohne Autorisierung ist der Guard-Boden nicht hebbar`() {
+        assertTrue(
+            !MarkerAuthorization.lifts(FuseController.Block.GUARD_FLOOR, authorized = false),
+            "ohne Autorisierung bleibt der Guard-Boden stehen",
+        )
+        for (block in listOf(
+            FuseController.Block.NONE,
+            FuseController.Block.NO_DEMAND,
+            FuseController.Block.BELOW_PUMP_INCREMENT,
+        )) assertTrue(
+            MarkerAuthorization.lifts(block, authorized = false),
+            "$block braucht keine Autorisierung - hier fehlte nur Bedarf",
+        )
+    }
+
+    /** Und die abgeleiteten Mengen stimmen mit der Funktion ueberein. */
+    @Test
+    fun `die abgeleiteten Mengen folgen der Funktion`() {
         for (block in FuseController.Block.entries) {
-            val hebbar = MarkerAuthorization.lifts(block)
-            val erwartet = block in setOf(
-                FuseController.Block.NONE,
-                FuseController.Block.NO_DEMAND,
-                FuseController.Block.BELOW_PUMP_INCREMENT,
-                FuseController.Block.GUARD_FLOOR,
+            assertEquals(
+                MarkerAuthorization.lifts(block, authorized = true),
+                block in MarkerAuthorization.LIFTABLE_ON_AUTHORIZATION, "$block mit Autorisierung",
             )
-            assertEquals(erwartet, hebbar, "$block")
+            assertEquals(
+                MarkerAuthorization.lifts(block, authorized = false),
+                block in MarkerAuthorization.LIFTABLE_WITHOUT_AUTHORIZATION, "$block ohne",
+            )
         }
     }
 }

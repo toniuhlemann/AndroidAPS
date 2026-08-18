@@ -45,49 +45,95 @@ package app.aaps.fuse.core.controller
 object MarkerAuthorization {
 
     /**
-     * OHNE Autorisierung hebbar: hier fehlte nur BEDARF, keine Sicherheit.
+     * DIE EINE ENTSCHEIDUNGSSTELLE - ein exhaustives `when` OHNE `else`.
      *
-     * Diese drei sagen nichts ueber Gefahr aus - sie sagen, dass der normale
-     * Pfad in diesem Zyklus nichts zu tun sah.
+     * WARUM NICHT ZWEI MENGEN, wie es hier zuerst stand (Toni 18.08., P1).
+     * Der zugehoerige Test behauptete, jeder neue `Block`-Wert erzwinge eine
+     * bewusste Einordnung. Er tat es nicht: ein neuer Wert war weder in der
+     * Lift-Liste noch in der erwarteten Lift-Liste, beide Seiten ergaben
+     * `false`, und der Test blieb GRUEN. Die Zusicherung stand nur im
+     * Kommentar.
+     *
+     * Ein `when` ohne `else` verlagert den Riegel vom Test in den COMPILER:
+     * ein neuer Enumwert laesst dieses Modul nicht mehr uebersetzen, bis
+     * jemand ihn eingeordnet hat. Das ist die staerkere Bauform - ein Test
+     * kann uebersehen werden, ein Uebersetzungsfehler nicht.
+     *
+     * @param authorized hat ein bewusster Markerdruck Insulin autorisiert?
      */
-    val LIFTABLE_WITHOUT_AUTHORIZATION: Set<FuseController.Block> = setOf(
-        FuseController.Block.NONE,
-        FuseController.Block.NO_DEMAND,
-        FuseController.Block.BELOW_PUMP_INCREMENT,
-    )
+    fun lifts(block: FuseController.Block, authorized: Boolean = true): Boolean =
+        when (block) {
+            // ---- Hier fehlte nur BEDARF, keine Sicherheit ----------------
+            // Diese drei sagen nichts ueber Gefahr aus: der normale Pfad sah
+            // in diesem Zyklus nichts zu tun. Sie sind auch OHNE
+            // Autorisierung hebbar.
+            FuseController.Block.NONE                 -> true
+            FuseController.Block.NO_DEMAND            -> true
+            FuseController.Block.BELOW_PUMP_INCREMENT -> true
+
+            // ---- Das MODELLURTEIL, nur mit Autorisierung ------------------
+            // GUARD_FLOOR vergleicht die PROGNOSTIZIERTE Unterkante gegen den
+            // Boden. Genau diese Unterkante wird nach einer Prime-Abgabe vom
+            // eigenen Insulin nach unten gerechnet - der Guard sperrt dann
+            // die Nachversorgung mit der Wirkung der eigenen Phase A.
+            FuseController.Block.GUARD_FLOOR          -> authorized
+
+            // ---- WIRKLICHKEIT: nie hebbar ---------------------------------
+            // SAFETY_HOLD traegt SafetyReason.LOW und der entsteht aus
+            // `bg < lowEnterMgdl` mit signalInputBg = signal.rawBg - dem
+            // ROHEN Messwert. Keine Autorisierung macht einen gemessenen
+            // Wert ungeschehen.
+            FuseController.Block.SAFETY_HOLD          -> false
+
+            // Signal- und Zustandsfehler: der Zyklus weiss nicht, wo er steht.
+            FuseController.Block.HEALTH_NOT_READY     -> false
+            FuseController.Block.HORIZON_MISSING      -> false
+            // NO_INPUT hat der Compiler beim ersten Uebersetzen dieses `when`
+            // eingefordert - er stand in keiner der beiden frueheren Mengen und
+            // waere dort stillschweigend auf "hart" gefallen. Zufaellig
+            // richtig, aber unbemerkt: genau der Fall, gegen den diese Bauform
+            // gebaut ist.
+            FuseController.Block.NO_INPUT             -> false
+
+            // Harte Mengengrenzen - sie begrenzen, WIEVIEL insgesamt an Bord
+            // sein darf, und stehen ueber jeder einzelnen Autorisierung.
+            FuseController.Block.IOB_TH_REACHED       -> false
+            FuseController.Block.MAX_IOB_REACHED      -> false
+
+            // Buchfuehrung und Transport.
+            FuseController.Block.LEDGER_HOLD          -> false
+            FuseController.Block.PUMP_BUSY            -> false
+
+            // TAIL als BLOCK bleibt hart. Die Schwanz-KAPPE fuer den
+            // autorisierten Anteil wird davon nicht beruehrt - sie ist keine
+            // Blockade, sondern eine Mengengrenze, und wird an der Stelle
+            // uebersprungen, an der sie greift (PrimeRelease.lift).
+            FuseController.Block.TAIL                 -> false
+
+            // Die Kandidatensuche hat den Vorschlag inhaltlich genullt -
+            // Guard risse MIT der Dosis. Das ist dieselbe Bahn wie
+            // GUARD_FLOOR, aber bereits MIT der geplanten Menge gerechnet,
+            // also die schaerfere Aussage. Wer sie hebt, hebt eine Prognose,
+            // die den eigenen Beitrag schon kennt - und dann ist der
+            // Guard-Boden als Riegel wertlos.
+            FuseController.Block.CANDIDATE            -> false
+        }
 
     /**
-     * MIT Autorisierung zusaetzlich hebbar.
-     *
-     * Nur `GUARD_FLOOR`, und nur weil er echt eine Prognose ist: er
-     * vergleicht die prognostizierte Unterkante `minLower` gegen den Boden.
-     * Genau diese Unterkante wird nach einer Prime-Abgabe vom eigenen Insulin
-     * nach unten gerechnet - der Guard sperrt dann die Nachversorgung mit der
-     * Wirkung der eigenen Phase A.
-     *
-     * DIE SCHWANZKAPPE gehoert der Sache nach hierher, taucht aber nicht auf:
-     * sie ist kein Basis-BLOCK, sondern eine Mengenkappe, und wird an der
-     * Stelle uebersprungen, an der sie greift. Sie ist ebenfalls eine
-     * Haftungsprognose - ueber einen 120-Minuten-Horizont sogar eine mit
-     * wachsendem Fehler.
+     * OHNE Autorisierung hebbar - abgeleitet, nicht zweitgefuehrt.
+     */
+    val LIFTABLE_WITHOUT_AUTHORIZATION: Set<FuseController.Block> =
+        FuseController.Block.entries.filter { lifts(it, authorized = false) }.toSet()
+
+    /**
+     * MIT Autorisierung hebbar - ebenfalls abgeleitet. Beide Mengen stammen
+     * aus [lifts]; eine eigene Aufzaehlung waere die zweite Wahrheit, die
+     * dieser Umbau gerade beseitigt hat.
      */
     val LIFTABLE_ON_AUTHORIZATION: Set<FuseController.Block> =
-        LIFTABLE_WITHOUT_AUTHORIZATION + setOf(FuseController.Block.GUARD_FLOOR)
+        FuseController.Block.entries.filter { lifts(it, authorized = true) }.toSet()
 
-    /**
-     * Darf eine autorisierte Menge diesen Block ueberstimmen?
-     *
-     * FAIL-CLOSED DURCH BAUART: die Antwort ist eine Mitgliedschaft in einer
-     * AUFZAEHLUNG, kein Ausschluss. Ein neu hinzugefuegter Block-Wert landet
-     * damit automatisch auf der harten Seite - wer ihn heben will, muss ihn
-     * eintragen und sich dabei erklaeren. Andersherum waere jeder neue Wert
-     * stillschweigend ueberstimmbar.
-     */
-    fun lifts(block: FuseController.Block): Boolean = block in LIFTABLE_ON_AUTHORIZATION
-
-    /**
-     * Und ohne Autorisierung - fuer den Vergleich an einer Stelle.
-     */
+    /** Fuer den Vergleich an einer Stelle. */
     fun liftsWithoutAuthorization(block: FuseController.Block): Boolean =
-        block in LIFTABLE_WITHOUT_AUTHORIZATION
+        lifts(block, authorized = false)
 }
