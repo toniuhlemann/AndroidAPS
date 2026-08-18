@@ -20,6 +20,7 @@ import app.aaps.core.utils.MidnightUtils
 import app.aaps.core.data.model.BS
 import app.aaps.fuse.core.adapter.CoreInputGuard
 import app.aaps.fuse.core.adapter.CycleAssembly
+import app.aaps.fuse.core.controller.TbrActuation
 import app.aaps.fuse.core.controller.EpisodeDeadline
 import app.aaps.fuse.core.controller.FuseController
 import app.aaps.fuse.core.controller.LedgerHoldGate
@@ -355,6 +356,16 @@ class FuseCycleRunner(
     data class Outcome(
         val decision: FuseController.Decision,
         val tbr: FuseController.TbrRequest?,
+        /**
+         * FAEHRT DIE PUMPE DANACH ANDERS ALS VORHER? `null` = nicht
+         * beurteilbar; der Eingriffsstempel wertet das als Eingriff.
+         *
+         * Hier und nicht im Plugin gerechnet, weil hier BEIDES vorliegt: die
+         * laufende Sicht (`currentTbr`) und die neue Anforderung. Ein zweiter
+         * Lesevorgang im Plugin koennte sich mitten im Zyklus widersprechen -
+         * davor warnt schon der Kommentar an `processedTbrEbData`.
+         */
+        val tbrChanged: Boolean?,
         val prediction: PredictorResult?,
         /**
          * Die BREMSBAHN, sofern gerechnet (S0).
@@ -697,7 +708,13 @@ class FuseCycleRunner(
                     ?.takeIf { it.valid }?.iob
             }.getOrNull()
             return Outcome(
-                decision = FuseController.noInput(reason), tbr = cancelTbr, prediction = prediction, restraint = restraint,
+                decision = FuseController.noInput(reason), tbr = cancelTbr,
+                // Der Abbruchpfad hat keinen Regellauf, aber sehr wohl eine
+                // TBR-Wirkung (FuseAbortTbr). Sie muss gestempelt werden wie
+                // jede andere - sonst waere ausgerechnet der Notausgang der
+                // ungezaehlte Eingriff.
+                tbrChanged = tbrAktuation(cancelTbr, computeTs, profileFunction.getProfile(computeTs), null, pumpe.basalStepUPerH),
+                prediction = prediction, restraint = restraint,
                 sourceTs = signal?.sourceTs, computeTs = computeTs, health = step?.health, gate = gate,
                 reason = reason, alarm = tbrAlarm, bgMgdl = signal?.q1, targetMgdl = null, targetSource = null,
                 signal = signal, band = null, discount = null, onset = null, prime = null, candidate = null, candidateGap = null, policy = policy, state = null, step = step,
@@ -2021,6 +2038,7 @@ class FuseCycleRunner(
 
         val computeDurationMs = dateUtil.now() - computeTs
         return Outcome(
+            tbrChanged = tbrAktuation(combined.request, computeTs, profile, currentTbr, pumpe.basalStepUPerH),
             computeDurationMs = computeDurationMs,
             mealStats = mealStats,
             lowThreat = lowThreatResult,
@@ -2086,6 +2104,46 @@ class FuseCycleRunner(
      *
      * @return ob eine Mahlzeitenlieferung gebucht wurde.
      */
+    /**
+     * OB DIESER ZYKLUS DIE PUMPE ANDERS FAHREN LAESST - fuer den
+     * Eingriffsstempel.
+     *
+     * @param bereitsGelesen die Sicht, die dieser Pfad schon fuer die
+     *   ENTSCHEIDUNG benutzt hat. Sie wird durchgereicht statt neu gelesen:
+     *   zwei Lesevorgaenge koennten sich mitten im Zyklus widersprechen (s.
+     *   den Hinweis an `processedTbrEbData`). Pfade ohne eigene Sicht -
+     *   Abbruch und Marker-Rueckfall - uebergeben `null` und lesen hier
+     *   ihren einzigen.
+     */
+    private fun tbrAktuation(
+        request: FuseController.TbrRequest?,
+        computeTs: Long,
+        profile: app.aaps.core.interfaces.profile.Profile?,
+        bereitsGelesen: TbrPolicy.Current?,
+        basalStepUPerH: Double,
+    ): Boolean? {
+        // Ohne Profil ist der Bezugspunkt unbekannt - `null` heisst hier
+        // "nicht beurteilbar", und der Stempel wertet das als Eingriff.
+        if (profile == null) return null
+        val laufend = bereitsGelesen ?: processedTbrEbData
+            .getTempBasalIncludingConvertedExtended(computeTs)
+            ?.let {
+                TbrPolicy.Current(
+                    absoluteRateUPerH = it.convertedToAbsolute(computeTs, profile),
+                    remainingMin = it.plannedRemainingMinutes,
+                    sourceType = if (it.type == app.aaps.core.data.model.TB.Type.FAKE_EXTENDED)
+                        TbrPolicy.SourceType.FAKE_EXTENDED else TbrPolicy.SourceType.TEMP_BASAL,
+                )
+            }
+        return TbrActuation.changed(
+            current = laufend?.let { TbrActuation.Current(it.absoluteRateUPerH, it.remainingMin) },
+            requestRateUPerH = request?.rateUPerH,
+            requestDurationMin = request?.durationMin,
+            profileBasalUPerH = profile.getBasal(computeTs),
+            basalStepUPerH = basalStepUPerH,
+        )
+    }
+
     private fun buche(
         episodes: app.aaps.fuse.plugin.ledger.EpisodeBudgets,
         actuatedU: Double,
@@ -2316,6 +2374,11 @@ class FuseCycleRunner(
         return Outcome(
             decision = combined.decision,
             tbr = combined.request,
+            tbrChanged = tbrAktuation(
+                // Der Marker-Rueckfall hat keine eigene TBR-Sicht gelesen -
+                // hier faellt der einzige Lesevorgang dieses Pfades an.
+                combined.request, computeTs, profile, null, pumpe.basalStepUPerH,
+            ),
             // KEINE BAHN im Export, auch keine leere: null heisst hier
             // "es gab keine", und genau das soll dort stehen.
             prediction = null,

@@ -1,5 +1,6 @@
 package app.aaps.fuse.plugin.ledger
 
+import app.aaps.fuse.core.controller.InterventionStamp
 import app.aaps.fuse.core.ledger.AccountedTreatment
 import app.aaps.fuse.core.ledger.AmountStage
 import app.aaps.fuse.core.ledger.DeliveryState
@@ -203,7 +204,7 @@ class LedgerCodecTest {
             mealDeliveries.addLast(t0 + 60_000L to 0.15)
             mealDeliveries.addLast(t0 + 120_000L to 0.30)
         }
-        val decoded = LedgerCodec.decode(JSONObject(LedgerCodec.encode(state, ep, 42L).toString()))
+        val decoded = LedgerCodec.decode(JSONObject(LedgerCodec.encode(state, ep, 42L, InterventionStamp("test-epoche", 42L)).toString()))
         assertEquals(state, decoded.state)
         assertEquals(42L, decoded.revision)
         assertEquals(0.45, decoded.episodes.primeSpentU, 0.0)
@@ -221,7 +222,7 @@ class LedgerCodecTest {
      *  Uebernahme). */
     @Test
     fun `negatives primeSpentU wirft beim Decode`() {
-        val o = LedgerCodec.encode(LedgerState(), EpisodeBudgets(), 0L)
+        val o = LedgerCodec.encode(LedgerState(), EpisodeBudgets(), 0L, InterventionStamp("test-epoche", 42L))
         o.getJSONObject("episodes").put("primeSpentU", -1.0)
         assertThrows(IllegalArgumentException::class.java) { LedgerCodec.decode(JSONObject(o.toString())) }
     }
@@ -231,7 +232,7 @@ class LedgerCodecTest {
     @Test
     fun `Menge 99 in der Mengenachse wirft beim Decode`() {
         val state = LedgerReducer.reduceAll(LedgerState(), throughPump(0.30), cfg)
-        val o = LedgerCodec.encode(state, EpisodeBudgets(), 1L)
+        val o = LedgerCodec.encode(state, EpisodeBudgets(), 1L, InterventionStamp("test-epoche", 42L))
         o.getJSONObject("state").getJSONArray("entries").getJSONObject(0)
             .getJSONObject("amounts").put("proposedU", 99.0)
         assertThrows(IllegalArgumentException::class.java) { LedgerCodec.decode(JSONObject(o.toString())) }
@@ -241,13 +242,13 @@ class LedgerCodecTest {
     fun `mealDeliveries mit 501 Eintraegen wirft beim Decode`() {
         val ep = EpisodeBudgets()
         repeat(501) { ep.mealDeliveries.addLast((t0 + it) to 0.1) }
-        val o = LedgerCodec.encode(LedgerState(), ep, 0L)
+        val o = LedgerCodec.encode(LedgerState(), ep, 0L, InterventionStamp("test-epoche", 42L))
         assertThrows(IllegalArgumentException::class.java) { LedgerCodec.decode(JSONObject(o.toString())) }
     }
 
     @Test
     fun `negative revision wirft beim Decode`() {
-        val o = LedgerCodec.encode(LedgerState(), EpisodeBudgets(), 0L).put("revision", -1L)
+        val o = LedgerCodec.encode(LedgerState(), EpisodeBudgets(), 0L, InterventionStamp("test-epoche", 42L)).put("revision", -1L)
         assertThrows(IllegalArgumentException::class.java) { LedgerCodec.decode(JSONObject(o.toString())) }
     }
 
@@ -260,7 +261,7 @@ class LedgerCodecTest {
     @Test
     fun `doppelte proposalId wirft beim Decode`() {
         val state = LedgerReducer.reduceAll(LedgerState(), throughPump(0.30), cfg)
-        val o = LedgerCodec.encode(state, EpisodeBudgets(), 1L)
+        val o = LedgerCodec.encode(state, EpisodeBudgets(), 1L, InterventionStamp("test-epoche", 42L))
         val entries = o.getJSONObject("state").getJSONArray("entries")
         entries.put(JSONObject(entries.getJSONObject(0).toString()))
         assertThrows(IllegalArgumentException::class.java) { LedgerCodec.decode(JSONObject(o.toString())) }
@@ -269,7 +270,7 @@ class LedgerCodecTest {
     @Test
     fun `leere proposalId wirft beim Decode`() {
         val state = LedgerReducer.reduceAll(LedgerState(), throughPump(0.30), cfg)
-        val o = LedgerCodec.encode(state, EpisodeBudgets(), 1L)
+        val o = LedgerCodec.encode(state, EpisodeBudgets(), 1L, InterventionStamp("test-epoche", 42L))
         o.getJSONObject("state").getJSONArray("entries").getJSONObject(0).put("proposalId", "")
         assertThrows(IllegalArgumentException::class.java) { LedgerCodec.decode(JSONObject(o.toString())) }
     }
@@ -280,7 +281,7 @@ class LedgerCodecTest {
     @Test
     fun `CONFIRMED_ZERO ohne Nachweis wirft beim Decode`() {
         val state = LedgerReducer.reduceAll(LedgerState(), throughPump(0.30), cfg)
-        val o = LedgerCodec.encode(state, EpisodeBudgets(), 1L)
+        val o = LedgerCodec.encode(state, EpisodeBudgets(), 1L, InterventionStamp("test-epoche", 42L))
         o.getJSONObject("state").getJSONArray("entries").getJSONObject(0)
             .put("delivery", DeliveryState.CONFIRMED_ZERO.name)
         assertThrows(IllegalArgumentException::class.java) { LedgerCodec.decode(JSONObject(o.toString())) }
@@ -306,7 +307,7 @@ class LedgerCodecTest {
     @Test
     fun `amountEpsU 0 wirft beim Decode`() {
         val state = LedgerReducer.reduceAll(LedgerState(), throughPump(0.30), cfg)
-        val o = LedgerCodec.encode(state, EpisodeBudgets(), 1L)
+        val o = LedgerCodec.encode(state, EpisodeBudgets(), 1L, InterventionStamp("test-epoche", 42L))
         o.getJSONObject("state").getJSONArray("entries").getJSONObject(0).put("amountEpsU", 0.0)
         assertThrows(IllegalArgumentException::class.java) { LedgerCodec.decode(JSONObject(o.toString())) }
     }
@@ -314,7 +315,7 @@ class LedgerCodecTest {
     @Test
     fun `bolusStepU 0 wirft beim Decode`() {
         val state = LedgerReducer.reduceAll(LedgerState(), throughPump(0.30), cfg)
-        val o = LedgerCodec.encode(state, EpisodeBudgets(), 1L)
+        val o = LedgerCodec.encode(state, EpisodeBudgets(), 1L, InterventionStamp("test-epoche", 42L))
         o.getJSONObject("state").getJSONArray("entries").getJSONObject(0).put("bolusStepU", 0.0)
         assertThrows(IllegalArgumentException::class.java) { LedgerCodec.decode(JSONObject(o.toString())) }
     }
@@ -328,7 +329,7 @@ class LedgerCodecTest {
             throughPump(0.30) + listOf(LedgerEvent.PumpIdentityBound(id, null, 4711L, "VIRTUAL", "h", t0)),
             cfg,
         )
-        val o = LedgerCodec.encode(s, EpisodeBudgets(), 1L)
+        val o = LedgerCodec.encode(s, EpisodeBudgets(), 1L, InterventionStamp("test-epoche", 42L))
         o.getJSONObject("state").getJSONArray("entries").getJSONObject(0)
             .getJSONObject("identity").put("proposalId", "fremd#1")
         assertThrows(IllegalArgumentException::class.java) { LedgerCodec.decode(JSONObject(o.toString())) }
@@ -341,7 +342,7 @@ class LedgerCodecTest {
     fun `Kettenverletzung nur mit Befund gueltig`() {
         // Ohne Befund: rtPublishedU groesser als proposedU hochgetampert.
         val clean = LedgerReducer.reduceAll(LedgerState(), throughPump(0.30), cfg)
-        val o = LedgerCodec.encode(clean, EpisodeBudgets(), 1L)
+        val o = LedgerCodec.encode(clean, EpisodeBudgets(), 1L, InterventionStamp("test-epoche", 42L))
         o.getJSONObject("state").getJSONArray("entries").getJSONObject(0)
             .getJSONObject("amounts").put("rtPublishedU", 0.40)
         assertThrows(IllegalArgumentException::class.java) { LedgerCodec.decode(JSONObject(o.toString())) }
@@ -378,7 +379,7 @@ class LedgerCodecTest {
             ),
             cfg,
         )
-        val o = LedgerCodec.encode(state, EpisodeBudgets(), 1L)
+        val o = LedgerCodec.encode(state, EpisodeBudgets(), 1L, InterventionStamp("test-epoche", 42L))
         o.getJSONObject("state").getJSONArray("entries").getJSONObject(0)
             .put("queueReject", QueueRejectReason.GATE_BLOCKED.name)
         assertThrows(IllegalArgumentException::class.java) { LedgerCodec.decode(JSONObject(o.toString())) }
@@ -396,7 +397,7 @@ class LedgerCodecTest {
             ),
             cfg,
         )
-        val o = LedgerCodec.encode(state, EpisodeBudgets(), 1L)
+        val o = LedgerCodec.encode(state, EpisodeBudgets(), 1L, InterventionStamp("test-epoche", 42L))
         o.getJSONObject("state").getJSONArray("entries").getJSONObject(0)
             .put("withdrawnProven", true)
         assertThrows(IllegalArgumentException::class.java) { LedgerCodec.decode(JSONObject(o.toString())) }
@@ -447,7 +448,7 @@ class LedgerCodecTest {
     @Test
     fun `decisionTs 0 wirft ab Schemaversion 2 und passiert als Version 1`() {
         val state = LedgerReducer.reduceAll(LedgerState(), throughPump(0.30), cfg)
-        val o = LedgerCodec.encode(state, EpisodeBudgets(), 1L)
+        val o = LedgerCodec.encode(state, EpisodeBudgets(), 1L, InterventionStamp("test-epoche", 42L))
         o.getJSONObject("state").getJSONArray("entries").getJSONObject(0).put("decisionTs", 0L)
         assertThrows(IllegalArgumentException::class.java) { LedgerCodec.decode(JSONObject(o.toString())) }
 
@@ -466,7 +467,7 @@ class LedgerCodecTest {
             throughPump(0.30) + listOf(LedgerEvent.PumpIdentityBound(id, null, 4711L, "VIRTUAL", "h", t0)),
             cfg,
         )
-        val o = LedgerCodec.encode(s, EpisodeBudgets(), 1L)
+        val o = LedgerCodec.encode(s, EpisodeBudgets(), 1L, InterventionStamp("test-epoche", 42L))
         val tol = LedgerStateValidator.TREATMENT_BEFORE_DECISION_TOLERANCE_MS
 
         val boundary = JSONObject(o.toString())
@@ -489,7 +490,7 @@ class LedgerCodecTest {
     @Test
     fun `failClosed ohne aktiven Fehlereintrag wirft ab Schemaversion 2`() {
         val state = LedgerReducer.reduceAll(LedgerState(), throughPump(0.30), cfg)
-        val o = LedgerCodec.encode(state, EpisodeBudgets(), 1L)
+        val o = LedgerCodec.encode(state, EpisodeBudgets(), 1L, InterventionStamp("test-epoche", 42L))
         o.getJSONObject("state").getJSONArray("entries").getJSONObject(0).put("failClosed", true)
         assertThrows(IllegalArgumentException::class.java) { LedgerCodec.decode(JSONObject(o.toString())) }
 
@@ -503,7 +504,7 @@ class LedgerCodecTest {
      *  eine UNBEKANNTE Zukunftsversion wirft weiterhin (Hold statt raten). */
     @Test
     fun `Schemaversion 4 wird geschrieben, aeltere bleiben lesbar, 5 wirft`() {
-        val o = LedgerCodec.encode(LedgerState(), EpisodeBudgets(), 0L)
+        val o = LedgerCodec.encode(LedgerState(), EpisodeBudgets(), 0L, InterventionStamp("test-epoche", 42L))
         assertEquals(4, o.getInt("v"))
 
         // Alte Versionen bleiben LESBAR. Ob ihr Inhalt uebernommen werden darf,
@@ -529,7 +530,7 @@ class LedgerCodecTest {
      */
     @Test
     fun `eine v4-Generation ohne Evidenzbestand wirft`() {
-        val o = LedgerCodec.encode(LedgerState(), EpisodeBudgets(), 0L)
+        val o = LedgerCodec.encode(LedgerState(), EpisodeBudgets(), 0L, InterventionStamp("test-epoche", 42L))
         o.getJSONObject("episodes").remove("evidenceState")
         assertThrows(IllegalArgumentException::class.java) { LedgerCodec.decode(JSONObject(o.toString())) }
     }
@@ -683,7 +684,7 @@ class LedgerCodecTest {
             listOf(LedgerEvent.Proposed("p1", 0.30, decisionTs = t0, latestBolusTimestamp = t0)),
             LedgerConfig(bolusStepU = 0.05),
         )
-        val v3 = LedgerCodec.encode(mitZeile, EpisodeBudgets(), 1L)
+        val v3 = LedgerCodec.encode(mitZeile, EpisodeBudgets(), 1L, InterventionStamp("test-epoche", 42L))
 
         assertNull(LedgerCodec.decode(JSONObject(v3.toString())).migrationRequired) {
             "die frisch geschriebene v3-Generation ist uebernehmbar"
@@ -699,7 +700,7 @@ class LedgerCodecTest {
         // Datei ohne ihn kann auch bei leerem Ledger nicht sagen, ob er 0 ist
         // oder unbekannt - und diese Unterscheidung entscheidet, ob nach einem
         // Neustart Kredit fliessen darf.
-        val leerAlt = JSONObject(LedgerCodec.encode(LedgerState(), EpisodeBudgets(), 0L).toString()).put("v", 2)
+        val leerAlt = JSONObject(LedgerCodec.encode(LedgerState(), EpisodeBudgets(), 0L, InterventionStamp("test-epoche", 42L)).toString()).put("v", 2)
         assertNotNull(LedgerCodec.decode(leerAlt).migrationRequired) {
             "auch eine leere Altgeneration kennt den Evidenzbestand nicht"
         }
@@ -725,7 +726,7 @@ class LedgerCodecTest {
             listOf(LedgerEvent.Proposed("p1", 0.30, decisionTs = t0, latestBolusTimestamp = t0)),
             LedgerConfig(bolusStepU = 0.05),
         )
-        val voll = LedgerCodec.encode(mitZeile, EpisodeBudgets(), 1L)
+        val voll = LedgerCodec.encode(mitZeile, EpisodeBudgets(), 1L, InterventionStamp("test-epoche", 42L))
         // Ausgangslage: vollstaendig laedt sie.
         LedgerCodec.decode(JSONObject(voll.toString()))
 
@@ -754,7 +755,7 @@ class LedgerCodecTest {
     fun `mealDeliveries mit 400 Eintraegen bleibt gueltig`() {
         val ep = EpisodeBudgets()
         repeat(400) { ep.mealDeliveries.addLast((t0 + it) to 0.1) }
-        val decoded = LedgerCodec.decode(JSONObject(LedgerCodec.encode(LedgerState(), ep, 0L).toString()))
+        val decoded = LedgerCodec.decode(JSONObject(LedgerCodec.encode(LedgerState(), ep, 0L, InterventionStamp("test-epoche", 42L)).toString()))
         assertEquals(400, decoded.episodes.mealDeliveries.size)
     }
 
@@ -772,10 +773,10 @@ class LedgerCodecTest {
     @Test
     fun `lastAcceptedSourceTs ueberlebt den Round-Trip und ist ab v3 pflicht`() {
         val ep = EpisodeBudgets().apply { lastAcceptedSourceTs = t0 }
-        val decoded = LedgerCodec.decode(JSONObject(LedgerCodec.encode(LedgerState(), ep, 0L).toString()))
+        val decoded = LedgerCodec.decode(JSONObject(LedgerCodec.encode(LedgerState(), ep, 0L, InterventionStamp("test-epoche", 42L)).toString()))
         assertEquals(t0, decoded.episodes.lastAcceptedSourceTs)
 
-        val alt = LedgerCodec.encode(LedgerState(), EpisodeBudgets(), 0L)
+        val alt = LedgerCodec.encode(LedgerState(), EpisodeBudgets(), 0L, InterventionStamp("test-epoche", 42L))
         alt.getJSONObject("episodes").remove("lastAcceptedSourceTs")
         assertThrows(IllegalArgumentException::class.java) { LedgerCodec.decode(JSONObject(alt.toString())) }
 
@@ -792,15 +793,15 @@ class LedgerCodecTest {
             "p2" to ProposalPumpEpoch("DANA_R", null),
         )
         val decoded = LedgerCodec.decode(
-            JSONObject(LedgerCodec.encode(LedgerState(), EpisodeBudgets(), 0L, emptyList(), epochs).toString())
+            JSONObject(LedgerCodec.encode(LedgerState(), EpisodeBudgets(), 0L, InterventionStamp("test-epoche", 42L), emptyList(), epochs).toString())
         )
         assertEquals(epochs, decoded.pumpEpochs)
 
-        val alt = LedgerCodec.encode(LedgerState(), EpisodeBudgets(), 0L)
+        val alt = LedgerCodec.encode(LedgerState(), EpisodeBudgets(), 0L, InterventionStamp("test-epoche", 42L))
         alt.remove("proposalPumpEpochs")
         assertTrue(LedgerCodec.decode(JSONObject(alt.toString())).pumpEpochs.isEmpty())
 
-        val dup = LedgerCodec.encode(LedgerState(), EpisodeBudgets(), 0L, emptyList(), mapOf("p1" to ProposalPumpEpoch("X", null)))
+        val dup = LedgerCodec.encode(LedgerState(), EpisodeBudgets(), 0L, InterventionStamp("test-epoche", 42L), emptyList(), mapOf("p1" to ProposalPumpEpoch("X", null)))
         val arr = dup.getJSONArray("proposalPumpEpochs")
         arr.put(JSONObject(arr.getJSONObject(0).toString()))
         assertThrows(IllegalArgumentException::class.java) { LedgerCodec.decode(JSONObject(dup.toString())) }
@@ -811,10 +812,10 @@ class LedgerCodecTest {
     @Test
     fun `markerRiseSeen ueberlebt den Round-Trip und fehlt tolerant`() {
         val ep = EpisodeBudgets().apply { markerRiseSeen = true }
-        val decoded = LedgerCodec.decode(JSONObject(LedgerCodec.encode(LedgerState(), ep, 0L).toString()))
+        val decoded = LedgerCodec.decode(JSONObject(LedgerCodec.encode(LedgerState(), ep, 0L, InterventionStamp("test-epoche", 42L)).toString()))
         assertTrue(decoded.episodes.markerRiseSeen)
 
-        val alt = LedgerCodec.encode(LedgerState(), EpisodeBudgets(), 0L)
+        val alt = LedgerCodec.encode(LedgerState(), EpisodeBudgets(), 0L, InterventionStamp("test-epoche", 42L))
         alt.getJSONObject("episodes").remove("markerRiseSeen")
         assertFalse(LedgerCodec.decode(JSONObject(alt.toString())).episodes.markerRiseSeen)
     }
@@ -825,7 +826,7 @@ class LedgerCodecTest {
     fun `retiredBoundIds ueberleben den Round-Trip gekappt auf 300`() {
         val retired = (1..350).map { RetiredBoundId(temporaryId = it.toLong(), pumpId = 1000L + it) }
         val decoded = LedgerCodec.decode(
-            JSONObject(LedgerCodec.encode(LedgerState(), EpisodeBudgets(), 0L, retired).toString())
+            JSONObject(LedgerCodec.encode(LedgerState(), EpisodeBudgets(), 0L, InterventionStamp("test-epoche", 42L), retired).toString())
         )
         assertEquals(300, decoded.retiredBoundIds.size)
         // Die JUENGSTEN 300 bleiben: 51..350.
@@ -839,7 +840,7 @@ class LedgerCodecTest {
         // GEFAEHRLICHE Deutung, weil eine verbrauchte Bindungsidentitaet damit
         // wieder binden duerfte. Fuer echten Altbestand greift stattdessen der
         // Migrations-Hold - der laesst die Datei gar nicht erst herein.
-        val alt = LedgerCodec.encode(LedgerState(), EpisodeBudgets(), 0L)
+        val alt = LedgerCodec.encode(LedgerState(), EpisodeBudgets(), 0L, InterventionStamp("test-epoche", 42L))
         alt.remove("retiredBoundIds")
         assertThrows(IllegalArgumentException::class.java) { LedgerCodec.decode(JSONObject(alt.toString())) }
 
@@ -864,7 +865,7 @@ class LedgerCodecTest {
         e.evidenceCommittedU = 2.35
         e.evidenceRevoked = true
         e.primeSpentU = 1.10
-        val v4 = LedgerCodec.encode(LedgerState(), e, 7L)
+        val v4 = LedgerCodec.encode(LedgerState(), e, 7L, InterventionStamp("test-epoche", 42L))
 
         // Eine v3-Datei: dieselbe Generation OHNE das Evidenzfeld.
         val v3 = JSONObject(v4.toString()).put("v", 3)
@@ -883,7 +884,7 @@ class LedgerCodecTest {
         assertEquals(app.aaps.fuse.core.controller.EvidenceStock.State(), gelesen.episodes.evidenceState)
 
         // Und die neu geschriebene Generation ist uebernehmbar.
-        val neu = LedgerCodec.encode(gelesen.state, gelesen.episodes, gelesen.revision)
+        val neu = LedgerCodec.encode(gelesen.state, gelesen.episodes, gelesen.revision, InterventionStamp("test-epoche", 42L))
         assertNull(LedgerCodec.decode(JSONObject(neu.toString())).migrationRequired)
     }
 
@@ -891,7 +892,7 @@ class LedgerCodecTest {
      *  also Korruption, nicht ein zu korrigierender Wert. */
     @Test
     fun `ein negativer Evidenzbestand wirft`() {
-        val o = LedgerCodec.encode(LedgerState(), EpisodeBudgets(), 0L)
+        val o = LedgerCodec.encode(LedgerState(), EpisodeBudgets(), 0L, InterventionStamp("test-epoche", 42L))
         o.getJSONObject("episodes").getJSONObject("evidenceState").put("stockMgdl", -1.0)
         assertThrows(IllegalArgumentException::class.java) { LedgerCodec.decode(JSONObject(o.toString())) }
     }

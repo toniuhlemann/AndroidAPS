@@ -1,5 +1,6 @@
 package app.aaps.fuse.plugin
 
+import app.aaps.fuse.core.controller.InterventionStamp
 import app.aaps.core.data.model.GV
 import app.aaps.core.data.model.TB
 import app.aaps.core.data.model.SourceSensor
@@ -2290,6 +2291,7 @@ class TransportWiringTest : TestBaseWithProfile() {
             adapter = l,
             dir = dir,
             expected = app.aaps.fuse.plugin.ledger.LedgerPublicationGate.Commitment.Proposal("evidence-cap"),
+            published = InterventionStamp.Published(smbU = null, tbrChanged = false),
             events = { /* absichtlich keine Zeile: Publikationsgate muss sperren */ },
         )
         assertEquals(null, publiziert.rt.units, "Publikationsgate bleibt auch mit Evidenzkredit hart")

@@ -226,7 +226,7 @@ object ExpectationLedger {
          * `settle`), machte damit eine zum Faelligkeitszeitpunkt saubere
          * Prognose faelschlich zu INTERVENED.
          */
-        val interventionRevision: Long,
+        val interventionStamp: InterventionStamp,
         /** Der Konfigurationsstand zu diesem Zeitpunkt - aus demselben Grund. */
         val configGeneration: String,
     ) {
@@ -263,7 +263,7 @@ object ExpectationLedger {
         val anchorMgdl: Double,
         val meanPredictedMgdl: Double,
         val configGeneration: String,
-        val interventionRevision: Long,
+        val interventionStamp: InterventionStamp,
         val context: ExpectationContext,
         val contextReason: ContextReason,
         val safetyLowerPredictedMgdl: Double? = null,
@@ -374,7 +374,7 @@ object ExpectationLedger {
         meanPredictedMgdl: Double?,
         horizonMin: Int,
         configGeneration: String,
-        interventionRevision: Long,
+        interventionStamp: InterventionStamp,
         classification: Classification,
         safetyLowerPredictedMgdl: Double? = null,
         lambda: Double? = null,
@@ -397,7 +397,7 @@ object ExpectationLedger {
             anchorMgdl = anchorMgdl,
             meanPredictedMgdl = meanPredictedMgdl,
             configGeneration = configGeneration,
-            interventionRevision = interventionRevision,
+            interventionStamp = interventionStamp,
             context = classification.context,
             contextReason = classification.reason,
             safetyLowerPredictedMgdl = safetyLowerPredictedMgdl?.takeIf { it.isFinite() },
@@ -499,7 +499,11 @@ object ExpectationLedger {
             val treffer = zuteilung[e.id]
                 ?: return@map Outcome(e, Verdict.UNVERIFIABLE)
             // DER EINGRIFFSSTAND AM MESSWERT entscheidet, nicht der heutige.
-            if (treffer.interventionRevision != e.interventionRevision ||
+            // BEIDE FELDER ODER NICHTS. Eine gleiche Sequenz aus einer
+            // ANDEREN Epoche ist kein Beleg dafuer, dass nichts dazwischen
+            // lag - im Gegenteil, der Epochenwechsel IST der Beleg, dass der
+            // Persistenzpfad abgerissen ist. Deshalb `same` und nicht `==`.
+            if (!InterventionStamp.same(treffer.interventionStamp, e.interventionStamp) ||
                 treffer.configGeneration != e.configGeneration
             ) return@map Outcome(e, Verdict.INTERVENED)
             // Die Toleranz sitzt auf der Seite des MODELLS.
@@ -787,13 +791,21 @@ object ExpectationLedger {
         entries: List<Entry>,
         consumed: Set<SampleId>,
         outcomes: List<Outcome>,
-        interventionRevision: Long,
+        kopfstand: InterventionStamp,
         matchToleranceMs: Long = MATCH_TOLERANCE_MS,
         minDropMgdl: Double = MIN_PROMISED_DROP_MGDL,
     ): Restored {
         fun pruefeEintrag(e: Entry, wo: String): String? = when {
             !e.anchorMgdl.isFinite() || !e.meanPredictedMgdl.isFinite() -> "$wo: Zahl nicht endlich"
             e.configGeneration.isBlank()                                -> "$wo: leere Konfigurationskennung"
+            // OHNE GUELTIGE HERKUNFT IST EIN EINTRAG UNBRAUCHBAR. Ein leerer
+            // Epochenname waere eine Wildcard, die auf jede fremde Epoche
+            // passt - genau der Freibrief, den der Ledger schon einmal beim
+            // leeren Pumpen-Serial hatte (Live-Befund 09.08.). Die Pruefung
+            // steht HIER und nicht im Codec, weil `restore` mehr als einen
+            // Aufrufer hat.
+            !e.interventionStamp.valid                                  ->
+                "$wo: ungueltiger Eingriffsstempel ${e.interventionStamp}"
             e.dueTs <= e.sourceTs                                       -> "$wo: dueTs <= sourceTs"
             e.promisedDropMgdl < minDropMgdl                            ->
                 "$wo: behauptete Senkung ${e.promisedDropMgdl} unter $minDropMgdl"
@@ -803,21 +815,32 @@ object ExpectationLedger {
             else                                                        -> null
         }
 
-        // KEINE BEHAUPTUNG AUS DER ZUKUNFT.
+        // KEINE BEHAUPTUNG AUS DER ZUKUNFT - aber NUR innerhalb der Epoche.
         //
-        // Jeder Eintrag traegt die Interventionsrevision, unter der er
-        // behauptet wurde. Ist sie HOEHER als der wiederhergestellte Stand,
-        // sind Kopf und Eintraege auseinandergelaufen - und zwar in die
-        // gefaehrliche Richtung: der Vergleich bei der Abrechnung saehe dann
-        // "gleich geblieben" fuer eine Strecke, in der sehr wohl eingegriffen
-        // wurde, und machte daraus lambda-Evidenz. Die ganze Generation ist
-        // damit unbrauchbar; sie zu retten hiesse, den Widerspruch zu
-        // behalten und ihn nur nicht mehr zu sehen.
-        if (interventionRevision < 0L) return Restored.Invalid("negative Interventionsrevision $interventionRevision")
-        (entries.map { it.interventionRevision } + outcomes.map { it.entry.interventionRevision })
-            .maxOrNull()?.let { hoechste ->
-                if (hoechste > interventionRevision) return Restored.Invalid(
-                    "Eintrag mit Interventionsrevision $hoechste ueber dem Stand $interventionRevision",
+        // Ein Eintrag mit einer hoeheren Sequenz als der Kopfstand DERSELBEN
+        // Epoche ist ein Widerspruch: Kopf und Eintraege sind auseinander-
+        // gelaufen, und zwar in die gefaehrliche Richtung (der Vergleich bei
+        // der Abrechnung saehe "gleich geblieben" fuer eine Strecke, in der
+        // eingegriffen wurde).
+        //
+        // Eintraege einer ANDEREN Epoche sind dagegen KEIN Widerspruch,
+        // sondern der Normalfall nach Reparatur, Quarantaene oder Rollback -
+        // und sie brauchen keinen Riegel, weil `settle` sie ohnehin als
+        // INTERVENED abrechnet (s. InterventionStamp.same). Sie zu verwerfen
+        // wuerde den gesamten `consumed`-Bestand mitreissen und damit
+        // Nachweis kosten, den niemand gewinnt.
+        // KEIN NULLABLE KOPFSTAND. Faende sich beim Laden keiner, muesste
+        // die Persistenzschicht eine FRISCHE Epoche eroeffnen - das ist die
+        // sichere Aussage ("wir wissen nicht, was seither geschah"). Ein
+        // schweigender Riegel waere die unsichere.
+        if (!kopfstand.valid) return Restored.Invalid("ungueltiger Kopfstempel $kopfstand")
+        (entries.map { it.interventionStamp } + outcomes.map { it.entry.interventionStamp })
+            .filter { it.epochId == kopfstand.epochId }
+            .maxOfOrNull { it.sequence }
+            ?.let { hoechste ->
+                if (hoechste > kopfstand.sequence) return Restored.Invalid(
+                    "Eintrag mit Sequenz $hoechste ueber dem Kopfstand ${kopfstand.sequence} " +
+                        "in Epoche ${kopfstand.epochId}",
                 )
             }
 

@@ -1,5 +1,6 @@
 package app.aaps.fuse.plugin.ledger
 
+import app.aaps.fuse.core.controller.InterventionStamp
 import app.aaps.fuse.core.ledger.AccountingState
 import app.aaps.fuse.core.ledger.AmountAxis
 import app.aaps.fuse.core.ledger.DeliveryState
@@ -120,6 +121,22 @@ object LedgerCodec {
         val revision: Long,
         val retiredBoundIds: List<RetiredBoundId> = emptyList(),
         val pumpEpochs: Map<String, ProposalPumpEpoch> = emptyMap(),
+        /**
+         * DER EINGRIFFSSTEMPEL DIESER GENERATION - `null` heisst "diese Datei
+         * kennt ihn nicht".
+         *
+         * BEWUSST OHNE VERSIONSSPRUNG eingefuehrt (Toni 18.08.): ein Bump auf
+         * v5 wuerde `require(v in LEGACY_VERSION..VERSION)` in einer aelteren
+         * APK werfen - nach zwei Zyklen sind Ziel UND Sicherung v5, und ein
+         * Rollback endete im dauerhaften Hold auf einem produktiven Loop. Als
+         * optionales Feld ignoriert die alte APK ihn einfach.
+         *
+         * Der Preis: schreibt die alte APK zwischendurch eine Generation, ist
+         * das Feld danach weg. Genau dann eroeffnet die neue APK beim
+         * naechsten Start eine NEUE Epoche - die sichere Aussage, weil
+         * niemand mehr weiss, was in der Zwischenzeit dosiert wurde.
+         */
+        val interventionStamp: InterventionStamp? = null,
         /**
          * Nicht-null heisst: diese Generation ist LESBAR, darf aber NICHT als
          * Laufzeitzustand uebernommen werden.
@@ -277,11 +294,19 @@ object LedgerCodec {
         state: LedgerState,
         episodes: EpisodeBudgets,
         revision: Long,
+        // OHNE DEFAULT, und ABSICHTLICH vor den beiden Defaultparametern:
+        // `encode` hat bereits zwei: ein dritter Default liesse alle drei
+        // Aufrufstellen unveraendert durchkompilieren und schriebe still
+        // einen erfundenen Stempel. So bricht der Compiler an jeder Stelle,
+        // die sich nicht erklaert hat.
+        interventionStamp: InterventionStamp,
         retiredBoundIds: List<RetiredBoundId> = emptyList(),
         pumpEpochs: Map<String, ProposalPumpEpoch> = emptyMap(),
     ): JSONObject = JSONObject()
         .put("v", VERSION)
         .put("revision", revision)
+        .put("interventionEpoch", interventionStamp.epochId)
+        .put("interventionSequence", interventionStamp.sequence)
         .put("state", encodeState(state))
         .put("episodes", encodeEpisodes(episodes))
         // Fix 6 (NEU-BS-02): Identitaeten geprunter gebundener Zeilen bleiben
@@ -300,6 +325,25 @@ object LedgerCodec {
         val full = LinkedHashMap(pumpEpochs)
         for (id in state.entries.keys) if (id !in full) full[id] = ProposalPumpEpoch.LEGACY_OPEN
         return full
+    }
+
+    /**
+     * Der Stempel aus der Datei - `null`, sobald irgendetwas daran fehlt.
+     *
+     * KEIN DEFAULT AUF SEQUENZ 0. Eine erfundene Null saehe aus wie ein
+     * echter Anfang und wuerde spaeter gegen Eintraege verglichen, die einen
+     * echten Stand tragen. `null` dagegen zwingt den Aufrufer, eine frische
+     * Epoche zu eroeffnen.
+     */
+    private fun decodeStamp(o: JSONObject): InterventionStamp? {
+        if (!o.has("interventionEpoch") || !o.has("interventionSequence")) return null
+        // optString liefert auf Android bei JSON-null den String "null"
+        // (Live-Befund, s. android-json-optstring-falle) - deshalb getString
+        // im runCatching und eine ausdrueckliche Gueltigkeitsprobe.
+        val stamp = runCatching {
+            InterventionStamp(o.getString("interventionEpoch"), o.getLong("interventionSequence"))
+        }.getOrNull() ?: return null
+        return stamp.takeIf { it.valid }
     }
 
     fun decode(o: JSONObject): Decoded {

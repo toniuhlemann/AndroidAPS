@@ -109,6 +109,7 @@ class FuseScreenModelTest {
         episodeId: Long = 0L,
         revoked: Boolean = false,
     ) = FuseCycleRunner.Outcome(
+        tbrChanged = false,
         decision = FuseController.Decision(
             smbU, FuseController.TbrAction.KEEP_CURRENT, block, 1.4, 180.0, 95.0, "smbRatio",
             tail, if (tail != null) 0.05 else 0.0,

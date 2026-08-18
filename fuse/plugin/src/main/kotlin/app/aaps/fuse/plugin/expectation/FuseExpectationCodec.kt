@@ -1,6 +1,7 @@
 package app.aaps.fuse.plugin.expectation
 
 import app.aaps.fuse.core.controller.ExpectationLedger
+import app.aaps.fuse.core.controller.InterventionStamp
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -26,7 +27,13 @@ object FuseExpectationCodec {
 
     /** Schemastand. Aendert er sich, ist eine aeltere Datei nicht lesbar -
      *  und `decode` liefert den leeren Zustand statt zu raten. */
-    const val SCHEMA = 1
+    /**
+     * Schemastand 2: der Eingriffsstempel loeste die blosse Zahl ab (Toni
+     * 18.08.). Eine v1-Datei hat es nie gegeben - dieser Baustein hatte
+     * damals noch keinen Aufrufer -, der Bump ist also gefahrlos und dient
+     * nur der Klarheit im Trail.
+     */
+    const val SCHEMA = 2
 
     /**
      * @param revision die MONOTONE Generationsnummer. Sie entscheidet beim
@@ -34,26 +41,16 @@ object FuseExpectationCodec {
      *   ist - ohne sie waere nach einem Absturz zwischen den beiden Renames
      *   nicht feststellbar, welche Datei die neuere Wahrheit traegt.
      */
-    fun encode(state: ExpectationLedger.State, revision: Long, interventionRevision: Long): String =
+    fun encode(state: ExpectationLedger.State, revision: Long): String =
         JSONObject()
             .put("schema", SCHEMA)
             .put("revision", revision)
-            // ZWEI ZAEHLER MIT VERSCHIEDENER BEDEUTUNG, bewusst nicht
-            // zusammengelegt: `revision` sagt, welche DATEI die juengere ist;
-            // `interv` sagt, wie oft FUSE seit Beginn eine Menge publiziert
-            // hat. Die Datei wird jeden Zyklus geschrieben, publiziert wird
-            // nur manchmal - eine Zahl fuer beides waere in dem Moment falsch,
-            // in dem sie gebraucht wird.
-            //
-            // WARUM SIE MIT IN DIE DATEI MUSS: die Eintraege tragen die
-            // Revision, unter der sie behauptet wurden. Ueberlebten sie einen
-            // Neustart, waehrend der Zaehler bei 0 neu begaenne, verglichen
-            // sie gegen einen kleineren Stand - und ein Eingriff waere
-            // unsichtbar. Beide stehen deshalb in DERSELBEN Datei: geht sie
-            // verloren, gehen beide verloren, und der leere Zustand ist
-            // stimmig.
-            .put("interv", interventionRevision)
-            .put("entries", JSONArray().apply { state.entries.forEach { put(entryJson(it)) } })
+            // KEIN EIGENER KOPFSTAND MEHR (Toni 18.08.): "Der Expectation-Store
+            // speichert die Revision an seinen Eintraegen; die aktuelle
+            // Autoritaet kommt aus dem Publikationsledger." Zwei Dateien mit
+            // je eigenem Anspruch auf denselben Stand koennen auseinander-
+            // laufen, und keine von beiden koennte sagen, welche recht hat.
+.put("entries", JSONArray().apply { state.entries.forEach { put(entryJson(it)) } })
             .put(
                 "consumed",
                 JSONArray().apply {
@@ -76,11 +73,7 @@ object FuseExpectationCodec {
      */
     sealed interface Decoded {
 
-        data class Valid(
-            val state: ExpectationLedger.State,
-            val revision: Long,
-            val interventionRevision: Long,
-        ) : Decoded
+        data class Valid(val state: ExpectationLedger.State, val revision: Long) : Decoded
 
         /** Nichts da - beim Erststart der Normalfall. */
         data object Missing : Decoded
@@ -91,7 +84,13 @@ object FuseExpectationCodec {
         data class Invalid(val reason: String) : Decoded
     }
 
-    fun decode(text: String?): Decoded {
+    /**
+     * @param kopfstand der AKTUELLE Eingriffsstempel aus dem
+     *   Publikationsledger. Pflicht und nicht nullbar: faende sich dort
+     *   keiner, muss der Aufrufer eine FRISCHE Epoche eroeffnet haben, bevor
+     *   er hier hereinkommt - das ist die sichere Aussage.
+     */
+    fun decode(text: String?, kopfstand: InterventionStamp): Decoded {
         // NUR `null` HEISST "DATEI FEHLT" (Toni, P1). Eine VORHANDENE Datei
         // aus Whitespace oder Null-Bytes ist beschaedigt - sie als Missing zu
         // melden liesse den Store leer weiterlaufen, statt die
@@ -107,11 +106,8 @@ object FuseExpectationCodec {
             // Eine negative Generation kann nicht aus einem Schreibvorgang
             // stammen - sie waere ein Rueckwaertssprung in der Reihenfolge.
             require(revision >= 0L) { "negative Revision $revision" }
-            val interv = o.getLong("interv")
-            require(interv >= 0L) { "negative Interventionsrevision $interv" }
             Roh(
                 revision,
-                interv,
                 o.getJSONArray("entries").let { a -> (0 until a.length()).map { entryOf(a.getJSONObject(it)) } },
                 o.getJSONArray("consumed").let { a ->
                     (0 until a.length()).map {
@@ -129,10 +125,10 @@ object FuseExpectationCodec {
         return when (
             val r = ExpectationLedger.restore(
                 roh.entries, roh.consumed, roh.outcomes,
-                interventionRevision = roh.interv,
+                kopfstand = kopfstand,
             )
         ) {
-            is ExpectationLedger.Restored.Valid   -> Decoded.Valid(r.state, roh.revision, roh.interv)
+            is ExpectationLedger.Restored.Valid   -> Decoded.Valid(r.state, roh.revision)
             is ExpectationLedger.Restored.Invalid -> Decoded.Invalid(r.reason)
         }
     }
@@ -141,7 +137,6 @@ object FuseExpectationCodec {
      *  ZWEI Long-Feldern an der Aufrufstelle vertauschbar waere. */
     private data class Roh(
         val revision: Long,
-        val interv: Long,
         val entries: List<ExpectationLedger.Entry>,
         val consumed: Set<ExpectationLedger.SampleId>,
         val outcomes: List<ExpectationLedger.Outcome>,
@@ -156,7 +151,8 @@ object FuseExpectationCodec {
         .put("anchor", e.anchorMgdl)
         .put("mean", e.meanPredictedMgdl)
         .put("cfg", e.configGeneration)
-        .put("rev", e.interventionRevision)
+        .put("epo", e.interventionStamp.epochId)
+        .put("seq", e.interventionStamp.sequence)
         .put("ctx", e.context.name)
         .put("ctxReason", e.contextReason.name)
         .putOpt("safetyLower", e.safetyLowerPredictedMgdl)
@@ -173,7 +169,7 @@ object FuseExpectationCodec {
         anchorMgdl = endlich(o.getDouble("anchor")),
         meanPredictedMgdl = endlich(o.getDouble("mean")),
         configGeneration = o.getString("cfg").also { require(it.isNotBlank()) },
-        interventionRevision = o.getLong("rev"),
+        interventionStamp = InterventionStamp(o.getString("epo"), o.getLong("seq")),
         // PFLICHTFELD. `getString` wirft bei Fehlen, `valueOf` bei einem
         // unbekannten Namen - beides verwirft die ganze Generation. Ein
         // Rueckfall auf CORRECTION waere die gefaehrliche Richtung: er

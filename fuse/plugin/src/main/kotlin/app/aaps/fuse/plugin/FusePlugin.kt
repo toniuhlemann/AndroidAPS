@@ -6,6 +6,7 @@ import androidx.preference.Preference
 import androidx.preference.PreferenceCategory
 import androidx.preference.PreferenceManager
 import androidx.preference.PreferenceScreen
+import app.aaps.fuse.core.controller.InterventionStamp
 import app.aaps.fuse.core.controller.MarkerPrompt
 import app.aaps.fuse.core.controller.MarkerTimeline
 import app.aaps.fuse.core.controller.PrimeRelease
@@ -1030,6 +1031,18 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
             adapter = ledgerAdapter,
             dir = ledgerDir(),
             expected = expected,
+            // WAS DIESER ZYKLUS TATSAECHLICH HINAUSGIBT.
+            //
+            // Die Menge aus dem RT (nicht aus der Entscheidung): das Gate
+            // stempelt, was PUBLIZIERT wird. Und `tbrChanged` aus dem Runner,
+            // der als einziger beides kennt - die laufende Sicht und die neue
+            // Anforderung. Fehlt ein Outcome (Abbruch vor dem Lauf), ist
+            // beides unbekannt und der Stempel zaehlt es als Eingriff; das
+            // ist die konservative Richtung.
+            published = InterventionStamp.Published(
+                smbU = rt.units,
+                tbrChanged = outcome?.tbrChanged,
+            ),
             events = {
                 // ZUERST die Vorgaengerzeile entlasten (s. NotSentProof): auch
                 // ein Abbruchzyklus ohne eigenen Vorschlag muss das koennen,

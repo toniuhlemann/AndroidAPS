@@ -1,6 +1,7 @@
 package app.aaps.fuse.plugin.expectation
 
 import app.aaps.fuse.core.controller.ExpectationLedger
+import app.aaps.fuse.core.controller.InterventionStamp
 import app.aaps.fuse.plugin.ledger.Durability
 import java.io.File
 import java.io.FileOutputStream
@@ -62,11 +63,7 @@ class FuseExpectationStore(private val durability: Durability = Durability.ANDRO
     /** Was beim Laden vorgefunden wurde. */
     sealed interface Loaded {
 
-        data class Ok(
-            val state: ExpectationLedger.State,
-            val revision: Long,
-            val interventionRevision: Long,
-        ) : Loaded
+        data class Ok(val state: ExpectationLedger.State, val revision: Long) : Loaded
 
         /** Nichts da - beim Erststart der Normalfall, leer weiterlaufen. */
         data object Fresh : Loaded
@@ -87,7 +84,11 @@ class FuseExpectationStore(private val durability: Durability = Durability.ANDRO
      * nicht nach Dateizeit - Zeitstempel koennen bei Zeitzonen- oder
      * Uhrensprung luegen, eine monoton gezaehlte Generation nicht.
      */
-    fun load(dir: File): Loaded {
+    /**
+     * @param kopfstand der aktuelle Eingriffsstempel aus dem
+     *   Publikationsledger - die Autoritaet liegt dort, nicht hier.
+     */
+    fun load(dir: File, kopfstand: InterventionStamp): Loaded {
         val kandidaten = listOf(
             File(dir, FILE_NAME + ".tmp"),
             File(dir, FILE_NAME),
@@ -96,24 +97,22 @@ class FuseExpectationStore(private val durability: Durability = Durability.ANDRO
         var gabEs = false
         var besteState: ExpectationLedger.State? = null
         var besteRevision = Long.MIN_VALUE
-        var besteInterv = 0L
         val gruende = mutableListOf<String>()
         for (f in kandidaten) {
             val text = runCatching { if (f.isFile) f.readText(Charsets.UTF_8) else null }.getOrNull() ?: continue
             gabEs = true
-            when (val d = FuseExpectationCodec.decode(text)) {
+            when (val d = FuseExpectationCodec.decode(text, kopfstand)) {
                 is FuseExpectationCodec.Decoded.Valid   ->
                     if (d.revision > besteRevision) {
                         besteState = d.state
                         besteRevision = d.revision
-                        besteInterv = d.interventionRevision
                     }
 
                 is FuseExpectationCodec.Decoded.Invalid -> gruende += f.name + ": " + d.reason
                 FuseExpectationCodec.Decoded.Missing    -> Unit
             }
         }
-        besteState?.let { return Loaded.Ok(it, besteRevision, besteInterv) }
+        besteState?.let { return Loaded.Ok(it, besteRevision) }
         return if (gabEs) Loaded.Corrupt(gruende.joinToString("; ").ifBlank { "keine lesbare Generation" })
         else Loaded.Fresh
     }
@@ -131,9 +130,9 @@ class FuseExpectationStore(private val durability: Durability = Durability.ANDRO
         dir: File,
         state: ExpectationLedger.State,
         revision: Long,
-        interventionRevision: Long,
+        kopfstand: InterventionStamp,
     ): Boolean = runCatching {
-        val inhalt = FuseExpectationCodec.encode(kappen(state, interventionRevision), revision, interventionRevision)
+        val inhalt = FuseExpectationCodec.encode(kappen(state, kopfstand), revision)
         val tmp = File(dir, FILE_NAME + ".tmp")
         val ziel = File(dir, FILE_NAME)
         val bak = File(dir, FILE_NAME + ".bak")
@@ -171,7 +170,7 @@ class FuseExpectationStore(private val durability: Durability = Durability.ANDRO
      * geschrieben worden waere. Ein stilles Kuerzen im Schreibpfad waere
      * genau die Art Datenverlust, die man erst Wochen spaeter bemerkt.
      */
-    internal fun kappen(state: ExpectationLedger.State, interventionRevision: Long): ExpectationLedger.State {
+    internal fun kappen(state: ExpectationLedger.State, kopfstand: InterventionStamp): ExpectationLedger.State {
         if (state.entries.size <= MAX_ENTRIES &&
             state.outcomes.size <= MAX_OUTCOMES &&
             state.consumed.size <= MAX_CONSUMED
@@ -184,7 +183,7 @@ class FuseExpectationStore(private val durability: Durability = Durability.ANDRO
         // Zustand, den das Laden anschliessend verwirft.
         return when (
             val r = ExpectationLedger.restore(
-                entries, consumed, outcomes, interventionRevision = interventionRevision,
+                entries, consumed, outcomes, kopfstand = kopfstand,
             )
         ) {
             is ExpectationLedger.Restored.Valid   -> r.state

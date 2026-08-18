@@ -1,5 +1,6 @@
 package app.aaps.fuse.plugin.expectation
 
+import app.aaps.fuse.core.controller.InterventionStamp
 import app.aaps.fuse.core.controller.ExpectationLedger
 import app.aaps.fuse.plugin.ledger.Durability
 import org.junit.jupiter.api.Assertions.assertEquals
@@ -41,7 +42,7 @@ class FuseExpectationStoreTest {
     private fun eintrag(source: Long = t0, seg: Long = 1L) = ExpectationLedger.Entry(
         sourceTs = source, dueTs = source + 30 * 60_000L, segmentId = seg,
         anchorMgdl = 200.0, meanPredictedMgdl = 150.0,
-        configGeneration = "cfg#1", interventionRevision = 42L,
+        configGeneration = "cfg#1", interventionStamp = InterventionStamp("test-epoche", 42L),
         context = ExpectationLedger.ExpectationContext.CORRECTION,
         contextReason = ExpectationLedger.ContextReason.PURE_CORRECTION,
         safetyLowerPredictedMgdl = 40.0,
@@ -56,7 +57,7 @@ class FuseExpectationStoreTest {
                     eintrag(), ExpectationLedger.Verdict.MISSED, t0 + 30 * 60_000L, 205.0,
                 ),
             ),
-            interventionRevision = 99L,
+            kopfstand = InterventionStamp("test-epoche", 42L),
         ) as ExpectationLedger.Restored.Valid
         ).state
 
@@ -65,8 +66,8 @@ class FuseExpectationStoreTest {
     @Test
     fun `eine geschriebene Generation wird unveraendert geladen`(@TempDir dir: File) {
         val store = FuseExpectationStore(FakeDurability())
-        assertTrue(store.save(dir, zustand(), revision = 7L, interventionRevision = 99L))
-        val geladen = store.load(dir)
+        assertTrue(store.save(dir, zustand(), revision = 7L, kopfstand = InterventionStamp("test-epoche", 42L)))
+        val geladen = store.load(dir, InterventionStamp("test-epoche", 42L))
         assertTrue(geladen is FuseExpectationStore.Loaded.Ok, "war $geladen")
         geladen as FuseExpectationStore.Loaded.Ok
         assertEquals(7L, geladen.revision)
@@ -78,7 +79,7 @@ class FuseExpectationStoreTest {
     /** Ein leeres Verzeichnis ist ein Erststart, kein Datenverlust. */
     @Test
     fun `ohne Datei ist es ein Erststart`(@TempDir dir: File) {
-        assertTrue(FuseExpectationStore(FakeDurability()).load(dir) is FuseExpectationStore.Loaded.Fresh)
+        assertTrue(FuseExpectationStore(FakeDurability()).load(dir, InterventionStamp("test-epoche", 42L)) is FuseExpectationStore.Loaded.Fresh)
     }
 
     /** BEIDE Syncs muessen laufen - Datei UND Verzeichnis. Ohne den zweiten
@@ -87,7 +88,7 @@ class FuseExpectationStoreTest {
     @Test
     fun `Datei und Verzeichnis werden gesynct`(@TempDir dir: File) {
         val d = FakeDurability()
-        FuseExpectationStore(d).save(dir, zustand(), 1L, interventionRevision = 99L)
+        FuseExpectationStore(d).save(dir, zustand(), 1L, kopfstand = InterventionStamp("test-epoche", 42L))
         assertEquals(1, d.dateiSyncs, "fsync auf die Datei")
         assertEquals(1, d.verzeichnisSyncs, "fsync auf das Verzeichnis")
     }
@@ -96,7 +97,7 @@ class FuseExpectationStoreTest {
      *  geschrieben - auch wenn die Bytes schon am Ziel liegen. */
     @Test
     fun `ein fehlgeschlagener Verzeichnis-Sync meldet Misserfolg`(@TempDir dir: File) {
-        assertTrue(!FuseExpectationStore(FakeDurability(fehlerBeimVerzeichnis = true)).save(dir, zustand(), 1L, interventionRevision = 99L))
+        assertTrue(!FuseExpectationStore(FakeDurability(fehlerBeimVerzeichnis = true)).save(dir, zustand(), 1L, kopfstand = InterventionStamp("test-epoche", 42L)))
     }
 
     // ---- Absturz zwischen den Schritten -----------------------------------
@@ -111,12 +112,12 @@ class FuseExpectationStoreTest {
     @Test
     fun `Absturz vor der Umbenennung - die neuere Zwischendatei gewinnt`(@TempDir dir: File) {
         val store = FuseExpectationStore(FakeDurability())
-        store.save(dir, zustand(1), revision = 3L, interventionRevision = 99L)
+        store.save(dir, zustand(1), revision = 3L, kopfstand = InterventionStamp("test-epoche", 42L))
         // Die naechste Generation bleibt als .tmp liegen.
         File(dir, FuseExpectationStore.FILE_NAME + ".tmp")
-            .writeText(FuseExpectationCodec.encode(zustand(2), 4L, interventionRevision = 99L), Charsets.UTF_8)
+            .writeText(FuseExpectationCodec.encode(zustand(2), 4L), Charsets.UTF_8)
 
-        val geladen = store.load(dir) as FuseExpectationStore.Loaded.Ok
+        val geladen = store.load(dir, InterventionStamp("test-epoche", 42L)) as FuseExpectationStore.Loaded.Ok
         assertEquals(4L, geladen.revision, "die vollstaendige neuere Generation gewinnt")
         assertEquals(2, geladen.state.entries.size)
     }
@@ -131,15 +132,15 @@ class FuseExpectationStoreTest {
     @Test
     fun `Absturz zwischen den Umbenennungen - kein Ziel, aber Sicherung und Zwischendatei`(@TempDir dir: File) {
         val store = FuseExpectationStore(FakeDurability())
-        store.save(dir, zustand(1), revision = 5L, interventionRevision = 99L)
+        store.save(dir, zustand(1), revision = 5L, kopfstand = InterventionStamp("test-epoche", 42L))
         // Zustand nach Schritt 2, vor Schritt 3.
         File(dir, FuseExpectationStore.FILE_NAME)
             .renameTo(File(dir, FuseExpectationStore.FILE_NAME + ".bak"))
         File(dir, FuseExpectationStore.FILE_NAME + ".tmp")
-            .writeText(FuseExpectationCodec.encode(zustand(3), 6L, interventionRevision = 99L), Charsets.UTF_8)
+            .writeText(FuseExpectationCodec.encode(zustand(3), 6L), Charsets.UTF_8)
         assertTrue(!File(dir, FuseExpectationStore.FILE_NAME).exists(), "der Aufbau muss stimmen")
 
-        val geladen = store.load(dir) as FuseExpectationStore.Loaded.Ok
+        val geladen = store.load(dir, InterventionStamp("test-epoche", 42L)) as FuseExpectationStore.Loaded.Ok
         assertEquals(6L, geladen.revision)
         assertEquals(3, geladen.state.entries.size)
     }
@@ -154,11 +155,11 @@ class FuseExpectationStoreTest {
     @Test
     fun `eine halbe Zwischendatei verdraengt die intakte Generation nicht`(@TempDir dir: File) {
         val store = FuseExpectationStore(FakeDurability())
-        store.save(dir, zustand(2), revision = 8L, interventionRevision = 99L)
+        store.save(dir, zustand(2), revision = 8L, kopfstand = InterventionStamp("test-epoche", 42L))
         File(dir, FuseExpectationStore.FILE_NAME + ".tmp")
             .writeText("""{"schema":1,"revision":9,"entr""", Charsets.UTF_8)
 
-        val geladen = store.load(dir) as FuseExpectationStore.Loaded.Ok
+        val geladen = store.load(dir, InterventionStamp("test-epoche", 42L)) as FuseExpectationStore.Loaded.Ok
         assertEquals(8L, geladen.revision, "die intakte alte Generation bleibt gueltig")
     }
 
@@ -167,10 +168,10 @@ class FuseExpectationStoreTest {
     @Test
     fun `eine Null-Byte-Datei verdraengt die intakte Generation nicht`(@TempDir dir: File) {
         val store = FuseExpectationStore(FakeDurability())
-        store.save(dir, zustand(2), revision = 8L, interventionRevision = 99L)
+        store.save(dir, zustand(2), revision = 8L, kopfstand = InterventionStamp("test-epoche", 42L))
         File(dir, FuseExpectationStore.FILE_NAME + ".tmp").writeBytes(ByteArray(64))
 
-        assertEquals(8L, (store.load(dir) as FuseExpectationStore.Loaded.Ok).revision)
+        assertEquals(8L, (store.load(dir, InterventionStamp("test-epoche", 42L)) as FuseExpectationStore.Loaded.Ok).revision)
     }
 
     /**
@@ -188,7 +189,7 @@ class FuseExpectationStoreTest {
             FuseExpectationStore.FILE_NAME + ".bak",
         )) File(dir, name).writeText("kaputt", Charsets.UTF_8)
 
-        val geladen = FuseExpectationStore(FakeDurability()).load(dir)
+        val geladen = FuseExpectationStore(FakeDurability()).load(dir, InterventionStamp("test-epoche", 42L))
         assertTrue(geladen is FuseExpectationStore.Loaded.Corrupt, "war $geladen")
         assertTrue((geladen as FuseExpectationStore.Loaded.Corrupt).reason.isNotBlank(), "mit Grund")
     }
@@ -203,7 +204,7 @@ class FuseExpectationStoreTest {
                  "cfg":"cfg#1","rev":42},"verdict":"MISSED"}]}""",
             Charsets.UTF_8,
         )
-        assertTrue(FuseExpectationStore(FakeDurability()).load(dir) is FuseExpectationStore.Loaded.Corrupt)
+        assertTrue(FuseExpectationStore(FakeDurability()).load(dir, InterventionStamp("test-epoche", 42L)) is FuseExpectationStore.Loaded.Corrupt)
     }
 
     // ---- Monotone Revision -------------------------------------------------
@@ -213,14 +214,14 @@ class FuseExpectationStoreTest {
     @Test
     fun `die hoechste Revision gewinnt, unabhaengig von der Dateizeit`(@TempDir dir: File) {
         File(dir, FuseExpectationStore.FILE_NAME)
-            .writeText(FuseExpectationCodec.encode(zustand(1), 100L, interventionRevision = 99L), Charsets.UTF_8)
+            .writeText(FuseExpectationCodec.encode(zustand(1), 100L), Charsets.UTF_8)
         // Die Sicherung ist NEUER auf der Platte, traegt aber die kleinere
         // Generation - sie darf nicht gewinnen.
         val bak = File(dir, FuseExpectationStore.FILE_NAME + ".bak")
-        bak.writeText(FuseExpectationCodec.encode(zustand(3), 99L, interventionRevision = 99L), Charsets.UTF_8)
+        bak.writeText(FuseExpectationCodec.encode(zustand(3), 99L), Charsets.UTF_8)
         bak.setLastModified(System.currentTimeMillis() + 60_000L)
 
-        val geladen = FuseExpectationStore(FakeDurability()).load(dir) as FuseExpectationStore.Loaded.Ok
+        val geladen = FuseExpectationStore(FakeDurability()).load(dir, InterventionStamp("test-epoche", 42L)) as FuseExpectationStore.Loaded.Ok
         assertEquals(100L, geladen.revision)
         assertEquals(1, geladen.state.entries.size)
     }
@@ -237,11 +238,11 @@ class FuseExpectationStoreTest {
     @Test
     fun `ein frueher geprueftes, aber aelteres Ergebnis gewinnt nicht`(@TempDir dir: File) {
         File(dir, FuseExpectationStore.FILE_NAME + ".tmp")
-            .writeText(FuseExpectationCodec.encode(zustand(1), 5L, interventionRevision = 99L), Charsets.UTF_8)
+            .writeText(FuseExpectationCodec.encode(zustand(1), 5L), Charsets.UTF_8)
         File(dir, FuseExpectationStore.FILE_NAME)
-            .writeText(FuseExpectationCodec.encode(zustand(4), 10L, interventionRevision = 99L), Charsets.UTF_8)
+            .writeText(FuseExpectationCodec.encode(zustand(4), 10L), Charsets.UTF_8)
 
-        val geladen = FuseExpectationStore(FakeDurability()).load(dir) as FuseExpectationStore.Loaded.Ok
+        val geladen = FuseExpectationStore(FakeDurability()).load(dir, InterventionStamp("test-epoche", 42L)) as FuseExpectationStore.Loaded.Ok
         assertEquals(10L, geladen.revision, "die hoehere Generation gewinnt, nicht die zuerst geprueft")
         assertEquals(4, geladen.state.entries.size)
     }
@@ -265,7 +266,7 @@ class FuseExpectationStoreTest {
             }
         }
         assertTrue(
-            !FuseExpectationStore(saboteur).save(dir, zustand(), 1L, interventionRevision = 99L),
+            !FuseExpectationStore(saboteur).save(dir, zustand(), 1L, kopfstand = InterventionStamp("test-epoche", 42L)),
             "der Inhalt stimmt nicht mehr - das darf nicht als Erfolg gelten",
         )
     }
@@ -277,7 +278,7 @@ class FuseExpectationStoreTest {
             """{"schema":1,"revision":-1,"entries":[],"consumed":[],"outcomes":[]}""",
             Charsets.UTF_8,
         )
-        assertTrue(FuseExpectationStore(FakeDurability()).load(dir) is FuseExpectationStore.Loaded.Corrupt)
+        assertTrue(FuseExpectationStore(FakeDurability()).load(dir, InterventionStamp("test-epoche", 42L)) is FuseExpectationStore.Loaded.Corrupt)
     }
 
     // ---- Begrenztes Wachstum ----------------------------------------------
@@ -294,10 +295,10 @@ class FuseExpectationStoreTest {
         val vieleEintraege = (1..FuseExpectationStore.MAX_ENTRIES + 50)
             .map { eintrag(source = t0 + it * 60_000L) }
         val gross = (
-            ExpectationLedger.restore(vieleEintraege, emptySet(), emptyList(), interventionRevision = 99L)
+            ExpectationLedger.restore(vieleEintraege, emptySet(), emptyList(), kopfstand = InterventionStamp("test-epoche", 42L))
                 as ExpectationLedger.Restored.Valid
             ).state
-        val gekappt = store.kappen(gross, interventionRevision = 99L)
+        val gekappt = store.kappen(gross, kopfstand = InterventionStamp("test-epoche", 42L))
         assertEquals(FuseExpectationStore.MAX_ENTRIES, gekappt.entries.size)
         // Die JUENGSTEN bleiben - der Nachweis lebt von der juengsten Strecke.
         assertEquals(
@@ -305,8 +306,8 @@ class FuseExpectationStoreTest {
             gekappt.entries.map { it.id },
         )
         // Und was geschrieben wird, ist auch wieder ladbar.
-        assertTrue(store.save(dir, gross, 1L, interventionRevision = 99L))
-        val geladen = store.load(dir) as FuseExpectationStore.Loaded.Ok
+        assertTrue(store.save(dir, gross, 1L, kopfstand = InterventionStamp("test-epoche", 42L)))
+        val geladen = store.load(dir, InterventionStamp("test-epoche", 42L)) as FuseExpectationStore.Loaded.Ok
         assertEquals(FuseExpectationStore.MAX_ENTRIES, geladen.state.entries.size)
     }
 
@@ -315,6 +316,6 @@ class FuseExpectationStoreTest {
     @Test
     fun `unterhalb der Grenzen bleibt alles erhalten`() {
         val s = zustand(5)
-        assertEquals(s.entries.size, FuseExpectationStore(FakeDurability()).kappen(s, interventionRevision = 99L).entries.size)
+        assertEquals(s.entries.size, FuseExpectationStore(FakeDurability()).kappen(s, kopfstand = InterventionStamp("test-epoche", 42L)).entries.size)
     }
 }

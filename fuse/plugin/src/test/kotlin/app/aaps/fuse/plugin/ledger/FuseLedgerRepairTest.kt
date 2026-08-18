@@ -1,5 +1,6 @@
 package app.aaps.fuse.plugin.ledger
 
+import app.aaps.fuse.core.controller.InterventionStamp
 import app.aaps.core.data.pump.defs.PumpType
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
@@ -241,14 +242,14 @@ class FuseLedgerRepairTest {
         assertTrue(
             store.writeVerified(
                 dir,
-                LedgerCodec.encode(app.aaps.fuse.core.ledger.LedgerState(), EpisodeBudgets(), 3L).toString(),
+                LedgerCodec.encode(app.aaps.fuse.core.ledger.LedgerState(), EpisodeBudgets(), 3L, InterventionStamp("test-epoche", 42L)).toString(),
             )
         )
         assertTrue(FuseLedgerStore.writeSentinel(dir))
         // Der unterbrochene Vorgang: unversiegeltes .tmp mit hoeherer Revision
         // plus Marker.
         File(dir, FuseLedgerStore.FILE_NAME + ".tmp")
-            .writeText(LedgerCodec.encode(app.aaps.fuse.core.ledger.LedgerState(), EpisodeBudgets(), 9L).toString())
+            .writeText(LedgerCodec.encode(app.aaps.fuse.core.ledger.LedgerState(), EpisodeBudgets(), 9L, InterventionStamp("test-epoche", 42L)).toString())
         assertTrue(FuseLedgerStore.markSealPendingForTest(dir))
 
         val i = FuseLedgerRepair.inspect(dir)
@@ -279,11 +280,11 @@ class FuseLedgerRepairTest {
     fun `bricht die Reparatur beim frischen Write ab, bleibt der Hold`(@TempDir dir: File) {
         val store = FuseLedgerStore()
         assertTrue(
-            store.writeVerified(dir, LedgerCodec.encode(app.aaps.fuse.core.ledger.LedgerState(), EpisodeBudgets(), 3L).toString())
+            store.writeVerified(dir, LedgerCodec.encode(app.aaps.fuse.core.ledger.LedgerState(), EpisodeBudgets(), 3L, InterventionStamp("test-epoche", 42L)).toString())
         )
         assertTrue(FuseLedgerStore.writeSentinel(dir))
         File(dir, FuseLedgerStore.FILE_NAME + ".tmp")
-            .writeText(LedgerCodec.encode(app.aaps.fuse.core.ledger.LedgerState(), EpisodeBudgets(), 9L).toString())
+            .writeText(LedgerCodec.encode(app.aaps.fuse.core.ledger.LedgerState(), EpisodeBudgets(), 9L, InterventionStamp("test-epoche", 42L)).toString())
         assertTrue(FuseLedgerStore.markSealPendingForTest(dir))
 
         // Das frische Schreiben zum Scheitern bringen - und NUR das: der
@@ -332,7 +333,7 @@ class FuseLedgerRepairTest {
     fun `ein gescheitertes Protokoll laesst die Reparatur nicht gelingen`(@TempDir dir: File) {
         val store = FuseLedgerStore()
         assertTrue(
-            store.writeVerified(dir, LedgerCodec.encode(app.aaps.fuse.core.ledger.LedgerState(), EpisodeBudgets(), 3L).toString())
+            store.writeVerified(dir, LedgerCodec.encode(app.aaps.fuse.core.ledger.LedgerState(), EpisodeBudgets(), 3L, InterventionStamp("test-epoche", 42L)).toString())
         )
         assertTrue(FuseLedgerStore.writeSentinel(dir))
         assertTrue(FuseLedgerStore.markSealPendingForTest(dir))

@@ -1,5 +1,6 @@
 package app.aaps.fuse.plugin.ledger
 
+import app.aaps.fuse.core.controller.InterventionStamp
 import app.aaps.core.data.model.BS
 import app.aaps.core.data.model.IDs
 import app.aaps.core.data.pump.defs.PumpType
@@ -56,7 +57,7 @@ class LedgerPublicationGateTest {
     fun `erfolgreicher Persist publiziert die units unveraendert`(@TempDir dir: File) {
         val a = loadedAdapter(dir)
         val rt = rtWithSmb()
-        val out = LedgerPublicationGate.publish(rt, a, dir, bucht, events = {
+        val out = LedgerPublicationGate.publish(rt, a, dir, bucht, published = InterventionStamp.Published(smbU = null, tbrChanged = false), events = {
             a.onPublished("p1", 0.30, t0, 0L, 0.05)
         })
         assertEquals(0.30, out.rt.units!!, 1e-12)
@@ -85,7 +86,7 @@ class LedgerPublicationGateTest {
     @Test
     fun `nach der Publikation steht die Zeile mit ihrer Menge in der Datei`(@TempDir dir: File) {
         val a = loadedAdapter(dir)
-        val out = LedgerPublicationGate.publish(rtWithSmb(), a, dir, bucht, events = {
+        val out = LedgerPublicationGate.publish(rtWithSmb(), a, dir, bucht, published = InterventionStamp.Published(smbU = null, tbrChanged = false), events = {
             a.onPublished("p1", 0.30, t0, 0L, 0.05)
         })
         assertEquals(0.30, out.rt.units!!, 1e-12) { "Ausgangslage: die Menge ging hinaus" }
@@ -107,7 +108,7 @@ class LedgerPublicationGateTest {
     @Test
     fun `Persist-Fehlschlag entfernt units und deliverAt, TBR und Grund bleiben`(@TempDir dir: File) {
         val a = loadedAdapter(dir)
-        val out = LedgerPublicationGate.publish(rtWithSmb(), a, unwritableDir(dir), bucht, events = {
+        val out = LedgerPublicationGate.publish(rtWithSmb(), a, unwritableDir(dir), bucht, published = InterventionStamp.Published(smbU = null, tbrChanged = false), events = {
             a.onPublished("p1", 0.30, t0, 0L, 0.05)
         })
         assertNull(out.rt.units)
@@ -131,6 +132,7 @@ class LedgerPublicationGateTest {
         var gesehen: Throwable? = null
         val out = LedgerPublicationGate.publish(
             rtWithSmb(), a, dir, bucht,
+            published = InterventionStamp.Published(smbU = null, tbrChanged = false),
             events = { error("ledger step explodiert") },
             onError = { gesehen = it },
         )
@@ -164,7 +166,7 @@ class LedgerPublicationGateTest {
     fun `G2 ein waehrend der Events entdeckter Hold strippt den SMB im selben Zyklus`(@TempDir dir: File) {
         val a = loadedAdapter(dir)
         val b = smb(t0 + 5_000L, 0.30, pumpId = 4711L)
-        val out = LedgerPublicationGate.publish(rtWithSmb(), a, dir, bucht, events = {
+        val out = LedgerPublicationGate.publish(rtWithSmb(), a, dir, bucht, published = InterventionStamp.Published(smbU = null, tbrChanged = false), events = {
             a.onPublished("p1", 0.30, t0, 0L, 0.05, PumpType.GENERIC_AAPS.name, Sha.of("vs"))
             a.bindIdentities(listOf(b))
             // Erst nachgewiesen ...
@@ -194,7 +196,7 @@ class LedgerPublicationGateTest {
             duration = 30,
         )
         // Ohne units zieht das Gate den Commitment gar nicht heran.
-        val out = LedgerPublicationGate.publish(rt, a, unwritableDir(dir), bucht, events = {})
+        val out = LedgerPublicationGate.publish(rt, a, unwritableDir(dir), bucht, published = InterventionStamp.Published(smbU = null, tbrChanged = false), events = {})
         // Nichts zu entfernen - dasselbe Objekt kommt zurueck ...
         assertSame(rt, out.rt)
         assertEquals(0.0, out.rt.rate!!, 1e-12)
@@ -214,7 +216,7 @@ class LedgerPublicationGateTest {
     @Test
     fun `ohne gebuchtes Proposal gehen keine units hinaus`(@TempDir dir: File) {
         val a = loadedAdapter(dir)
-        val out = LedgerPublicationGate.publish(rtWithSmb(), a, dir, bucht, events = { /* nichts gebucht */ })
+        val out = LedgerPublicationGate.publish(rtWithSmb(), a, dir, bucht, published = InterventionStamp.Published(smbU = null, tbrChanged = false), events = { /* nichts gebucht */ })
 
         assertNull(out.rt.units, "units ohne jede gebuchte Haftung publiziert")
         assertNull(out.rt.deliverAt)
@@ -231,7 +233,7 @@ class LedgerPublicationGateTest {
     @Test
     fun `eine fremde gebuchte Zeile ersetzt die erwartete nicht`(@TempDir dir: File) {
         val a = loadedAdapter(dir)
-        val out = LedgerPublicationGate.publish(rtWithSmb(), a, dir, bucht, events = {
+        val out = LedgerPublicationGate.publish(rtWithSmb(), a, dir, bucht, published = InterventionStamp.Published(smbU = null, tbrChanged = false), events = {
             a.onPublished("EIN-ANDERER", 0.30, t0, 0L, 0.05)
         })
         assertNull(out.rt.units)
@@ -251,6 +253,7 @@ class LedgerPublicationGateTest {
         val out = LedgerPublicationGate.publish(
             rtWithSmb(), a, dir,
             LedgerPublicationGate.Commitment.None(LedgerPublicationGate.REASON_TREATMENT_VIEW_UNAVAILABLE),
+            published = InterventionStamp.Published(smbU = null, tbrChanged = false),
             events = { /* bewusst kein onPublished */ },
         )
         assertNull(out.rt.units)
@@ -308,7 +311,7 @@ class LedgerPublicationGateTest {
         val a = loadedAdapter(dir)
         val rt = rtWithSmb()
         val expected = LedgerPublicationGate.commitmentOf(rt.units, treatmentViewPresent = false, proposalId = "p1")
-        val out = LedgerPublicationGate.publish(rt, a, dir, expected, events = {
+        val out = LedgerPublicationGate.publish(rt, a, dir, expected, published = InterventionStamp.Published(smbU = null, tbrChanged = false), events = {
             // Der Livepfad bucht in diesem Fall NICHT - abgeleitet aus `expected`.
             if (expected is LedgerPublicationGate.Commitment.Proposal) a.onPublished("p1", 0.30, t0, 0L, 0.05)
         })
@@ -329,7 +332,7 @@ class LedgerPublicationGateTest {
         val a = loadedAdapter(dir)
         val rt = rtWithSmb()
         val expected = LedgerPublicationGate.commitmentOf(rt.units, treatmentViewPresent = true, proposalId = "p1")
-        val out = LedgerPublicationGate.publish(rt, a, dir, expected, events = {
+        val out = LedgerPublicationGate.publish(rt, a, dir, expected, published = InterventionStamp.Published(smbU = null, tbrChanged = false), events = {
             if (expected is LedgerPublicationGate.Commitment.Proposal) a.onPublished("p1", 0.30, t0, 0L, 0.05)
         })
 
@@ -349,7 +352,7 @@ class LedgerPublicationGateTest {
     @Test
     fun `das Gate liefert Freigabe und Grund als Daten`(@TempDir dir: File) {
         val a = loadedAdapter(dir)
-        val durch = LedgerPublicationGate.publish(rtWithSmb(), a, dir, bucht, events = {
+        val durch = LedgerPublicationGate.publish(rtWithSmb(), a, dir, bucht, published = InterventionStamp.Published(smbU = null, tbrChanged = false), events = {
             a.onPublished("p1", 0.30, t0, 0L, 0.05)
         })
         assertTrue(durch.allowed)
@@ -359,7 +362,8 @@ class LedgerPublicationGateTest {
         // zweiter auf demselben Verzeichnis wuerde sie mitladen - der Test
         // waere dann aus dem falschen Grund gruen.
         val gestrippt = LedgerPublicationGate.publish(
-            rtWithSmb(), a, dir, LedgerPublicationGate.Commitment.Proposal("nie-gebucht"), events = { },
+            rtWithSmb(), a, dir, LedgerPublicationGate.Commitment.Proposal("nie-gebucht"),
+            published = InterventionStamp.Published(smbU = null, tbrChanged = false), events = { },
         )
         assertFalse(gestrippt.allowed)
         assertTrue(gestrippt.reason!!.startsWith(LedgerPublicationGate.REASON_PROPOSAL_MISSING))
@@ -373,7 +377,7 @@ class LedgerPublicationGateTest {
             algorithm = APSResult.Algorithm.FUSE, timestamp = t0,
             reason = StringBuilder("FUSE test"), rate = 0.0, duration = 30,
         )
-        val out = LedgerPublicationGate.publish(rt, a, dir, bucht, events = {})
+        val out = LedgerPublicationGate.publish(rt, a, dir, bucht, published = InterventionStamp.Published(smbU = null, tbrChanged = false), events = {})
         assertTrue(out.allowed)
         assertNull(out.reason)
     }
@@ -394,7 +398,7 @@ class LedgerPublicationGateTest {
         val ohneVollsicht = LedgerPublicationGate.Commitment.None(
             LedgerPublicationGate.REASON_TREATMENT_VIEW_UNAVAILABLE
         )
-        val out = LedgerPublicationGate.publish(rtWithSmb(), a, unwritableDir(dir), ohneVollsicht, events = {})
+        val out = LedgerPublicationGate.publish(rtWithSmb(), a, unwritableDir(dir), ohneVollsicht, published = InterventionStamp.Published(smbU = null, tbrChanged = false), events = {})
 
         assertFalse(out.allowed)
         assertEquals(FuseLedgerAdapter.HOLD_REASON_PERSIST_FAILED, out.reason)
@@ -410,6 +414,7 @@ class LedgerPublicationGateTest {
         val out = LedgerPublicationGate.publish(
             rtWithSmb(), a, dir,
             LedgerPublicationGate.Commitment.None(LedgerPublicationGate.REASON_TREATMENT_VIEW_UNAVAILABLE),
+            published = InterventionStamp.Published(smbU = null, tbrChanged = false),
             events = {},
         )
         assertFalse(out.allowed)

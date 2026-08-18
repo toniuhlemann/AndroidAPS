@@ -18,7 +18,9 @@ class ExpectationLedgerTest {
     private val H = 30
     private val SEG = 1L
     private val CFG = "cfg#1"
-    private val REV = 100L
+    private val EPO = "epoche-A"
+    private fun st(seq: Long, epo: String = EPO) = InterventionStamp(epo, seq)
+    private val REV = st(100L)
     private val KORR = ExpectationLedger.Classification(
         ExpectationLedger.ExpectationContext.CORRECTION,
         ExpectationLedger.ContextReason.PURE_CORRECTION,
@@ -35,10 +37,10 @@ class ExpectationLedgerTest {
         seg: Long = SEG,
         anchor: Double = 200.0,
         mean: Double = 150.0,
-        rev: Long = REV,
+        rev: InterventionStamp = REV,
         kontext: ExpectationLedger.Classification = KORR,
     ) = ExpectationLedger.issue(
-        source, seg, anchor, mean, H, configGeneration = CFG, interventionRevision = rev,
+        source, seg, anchor, mean, H, configGeneration = CFG, interventionStamp = rev,
         classification = kontext,
     )!!
 
@@ -47,7 +49,7 @@ class ExpectationLedgerTest {
         mgdl: Double,
         seg: Long = SEG,
         healthy: Boolean = true,
-        rev: Long = REV,
+        rev: InterventionStamp = REV,
         cfg: String = CFG,
     ) = ExpectationLedger.Sample(ts, mgdl, seg, healthy, rev, cfg)
 
@@ -227,13 +229,13 @@ class ExpectationLedgerTest {
      */
     @Test
     fun `ein Eingriff zwischen Ausgabe und Faelligkeit macht das Urteil ungueltig`() {
-        val e = eintrag(rev = 100L)
+        val e = eintrag(rev = st(100L))
         // Der BG steht auf 205 - ohne Eingriff waere das ein klares MISSED.
-        val (missed, _) = rechne(listOf(e), e.dueTs, listOf(probe(e.dueTs, 205.0, rev = 100L)))
+        val (missed, _) = rechne(listOf(e), e.dueTs, listOf(probe(e.dueTs, 205.0, rev = st(100L))))
         assertEquals(ExpectationLedger.Verdict.MISSED, missed[0].verdict)
 
         // Mit Eingriff: kein Urteil, obwohl die Zahlen dieselben sind.
-        val (eingriff, _) = rechne(listOf(e), e.dueTs, listOf(probe(e.dueTs, 205.0, rev = 101L)))
+        val (eingriff, _) = rechne(listOf(e), e.dueTs, listOf(probe(e.dueTs, 205.0, rev = st(101L))))
         assertEquals(ExpectationLedger.Verdict.INTERVENED, eingriff[0].verdict)
         assertNull(eingriff[0].actualMgdl, "ein ungueltiges Urteil traegt keine Zahl")
         assertTrue(!eingriff[0].isLambdaEvidence(MARGE))
@@ -243,8 +245,8 @@ class ExpectationLedgerTest {
      *  damit einen Nachweis loeschen. */
     @Test
     fun `ein Eingriff erzeugt auch kein MET`() {
-        val e = eintrag(rev = 100L)
-        val (out, _, _) = rechne(listOf(e), e.dueTs, listOf(probe(e.dueTs, 140.0, rev = 101L)))
+        val e = eintrag(rev = st(100L))
+        val (out, _, _) = rechne(listOf(e), e.dueTs, listOf(probe(e.dueTs, 140.0, rev = st(101L))))
         assertEquals(ExpectationLedger.Verdict.INTERVENED, out[0].verdict)
     }
 
@@ -286,10 +288,10 @@ class ExpectationLedgerTest {
      */
     @Test
     fun `ein Eingriff nach der Faelligkeit entwertet die Prognose nicht`() {
-        val e = eintrag(rev = 100L)
+        val e = eintrag(rev = st(100L))
         // Der Messwert zur Faelligkeit traegt noch den alten Stand; erst
         // danach wurde eingegriffen, und `settle` laeuft verspaetet.
-        val sauber = probe(e.dueTs, 205.0, rev = 100L)
+        val sauber = probe(e.dueTs, 205.0, rev = st(100L))
         val (out, _, _) = rechne(listOf(e), e.dueTs + 30 * 60_000L, listOf(sauber))
         assertEquals(
             ExpectationLedger.Verdict.MISSED, out[0].verdict,
@@ -336,15 +338,15 @@ class ExpectationLedgerTest {
      */
     @Test
     fun `bei neuem Eingriffsstand wird der Eintrag ersetzt`() {
-        val alt = eintrag(rev = 100L)
+        val alt = eintrag(rev = st(100L))
         val liste = ExpectationLedger.add(emptyList(), alt)
-        val neu = eintrag(rev = 101L)
+        val neu = eintrag(rev = st(101L))
         val ersetzt = ExpectationLedger.add(liste, neu)
         assertEquals(1, ersetzt.size, "die Kennung ist dieselbe - kein zweiter Eintrag")
-        assertEquals(101L, ersetzt[0].interventionRevision, "aber der NEUE Stand muss gewinnen")
+        assertEquals(st(101L), ersetzt[0].interventionStamp, "aber der NEUE Stand muss gewinnen")
         // Dasselbe fuer die Konfiguration.
         val andereCfg = ExpectationLedger.issue(
-            t0, SEG, 200.0, 150.0, H, configGeneration = "cfg#2", interventionRevision = 101L,
+            t0, SEG, 200.0, 150.0, H, configGeneration = "cfg#2", interventionStamp = st(101L),
             classification = KORR,
         )!!
         val ersetzt2 = ExpectationLedger.add(ersetzt, andereCfg)
@@ -499,7 +501,7 @@ class ExpectationLedgerTest {
         for (gegenstueck in listOf(
             probe(e.dueTs, 140.0, healthy = false),          // ungesund
             probe(e.dueTs, Double.NaN),                       // nicht endlich
-            probe(e.dueTs, 140.0, rev = 999L),                // anderer Stand
+            probe(e.dueTs, 140.0, rev = st(999L)),                // anderer Stand
         )) {
             val gesund = probe(e.dueTs, 205.0)
             val (out, _, _) = rechne(listOf(e), e.dueTs, listOf(gesund, gegenstueck))
@@ -807,8 +809,8 @@ class ExpectationLedgerTest {
 
     // ---- Die Interventionsrevision beim Wiederherstellen ----------------
 
-    private fun eintragMitRevision(rev: Long) = ExpectationLedger.Entry(
-        t0, t0 + H * 60_000L, SEG, 200.0, 150.0, CFG, rev, KTX, KGRUND,
+    private fun eintragMitStempel(stamp: InterventionStamp) = ExpectationLedger.Entry(
+        t0, t0 + H * 60_000L, SEG, 200.0, 150.0, CFG, stamp, KTX, KGRUND,
         safetyLowerPredictedMgdl = 40.0,
     )
 
@@ -823,7 +825,7 @@ class ExpectationLedgerTest {
     @Test
     fun `ein Eintrag ueber dem Interventionsstand macht den Zustand ungueltig`() {
         val r = ExpectationLedger.restore(
-            listOf(eintragMitRevision(50L)), emptySet(), emptyList(), interventionRevision = 49L,
+            listOf(eintragMitStempel(st(50L))), emptySet(), emptyList(), kopfstand = st(49L),
         )
         assertTrue(r is ExpectationLedger.Restored.Invalid, "$r")
     }
@@ -831,24 +833,83 @@ class ExpectationLedgerTest {
     @Test
     fun `auch ein Ergebnis ueber dem Interventionsstand macht den Zustand ungueltig`() {
         val erg = ExpectationLedger.Outcome(
-            eintragMitRevision(50L), ExpectationLedger.Verdict.MISSED, t0 + H * 60_000L, 205.0,
+            eintragMitStempel(st(50L)), ExpectationLedger.Verdict.MISSED, t0 + H * 60_000L, 205.0,
         )
-        val r = ExpectationLedger.restore(emptyList(), emptySet(), listOf(erg), interventionRevision = 49L)
+        val r = ExpectationLedger.restore(emptyList(), emptySet(), listOf(erg), kopfstand = st(49L))
         assertTrue(r is ExpectationLedger.Restored.Invalid, "$r")
     }
 
     @Test
     fun `gleichstand ist zulaessig - der Eintrag stammt aus genau diesem Stand`() {
         val r = ExpectationLedger.restore(
-            listOf(eintragMitRevision(50L)), emptySet(), emptyList(), interventionRevision = 50L,
+            listOf(eintragMitStempel(st(50L))), emptySet(), emptyList(), kopfstand = st(50L),
         )
         assertTrue(r is ExpectationLedger.Restored.Valid, "$r")
     }
 
     @Test
     fun `eine negative Interventionsrevision macht den Zustand ungueltig`() {
-        val r = ExpectationLedger.restore(emptyList(), emptySet(), emptyList(), interventionRevision = -1L)
+        val r = ExpectationLedger.restore(emptyList(), emptySet(), emptyList(), kopfstand = InterventionStamp("", 0L))
         assertTrue(r is ExpectationLedger.Restored.Invalid, "$r")
+    }
+
+    /**
+     * DER EPOCHENWECHSEL ALLEIN MACHT INTERVENED - bei IDENTISCHER Sequenz.
+     *
+     * Das ist der Fall, fuer den die ganze Bauform da ist (Toni 18.08.). Nach
+     * Reparatur, Quarantaene oder Rollback beginnt die Sequenz neu und
+     * durchlaeuft ihre alten Werte ein zweites Mal. Wuerde nur sie verglichen,
+     * traefe ein Eintrag der Stand 5 auf einen Messwert Stand 5 aus einem
+     * ANDEREN Lauf - und aus einer Strecke mit Insulin entstuende
+     * lambda-Evidenz.
+     */
+    @Test
+    fun `gleiche Sequenz aus anderer Epoche wird INTERVENED`() {
+        val e = eintrag(rev = st(5L, "vor-reparatur"))
+        val erg = rechne(
+            listOf(e), e.dueTs + 1000L,
+            listOf(probe(e.dueTs, 205.0, rev = st(5L, "nach-reparatur"))),
+        )
+        assertEquals(
+            ExpectationLedger.Verdict.INTERVENED, erg.outcomes.single().verdict,
+            "dieselbe Zahl aus einem anderen Lauf ist kein Beleg",
+        )
+    }
+
+    /** Und die Gegenprobe: dieselbe Epoche, dieselbe Sequenz - dann zaehlt
+     *  die Messung wirklich. Ohne sie koennte der Test oben auch dadurch
+     *  gruen sein, dass NIE etwas abgerechnet wird. */
+    @Test
+    fun `gleiche Epoche und Sequenz wird abgerechnet`() {
+        val e = eintrag(rev = st(5L, "lauf-A"))
+        val erg = rechne(
+            listOf(e), e.dueTs + 1000L,
+            listOf(probe(e.dueTs, 205.0, rev = st(5L, "lauf-A"))),
+        )
+        assertEquals(ExpectationLedger.Verdict.MISSED, erg.outcomes.single().verdict)
+    }
+
+    /**
+     * EINTRAEGE EINER FREMDEN EPOCHE WERDEN NICHT VERWORFEN.
+     *
+     * Der erste Wurf des Riegels hat die ganze Generation fuer ungueltig
+     * erklaert, sobald ein Eintrag ueber dem Kopfstand lag. Nach einer
+     * Reparatur waere das JEDER Eintrag - und mit ihnen faellt der
+     * `consumed`-Bestand, also die Zusicherung, dass kein Messwert zweimal
+     * abgerechnet wird. Da fremde Epochen ohnehin INTERVENED ergeben, ist das
+     * Verwerfen reiner Verlust.
+     */
+    @Test
+    fun `Eintraege einer fremden Epoche ueberleben das Wiederherstellen`() {
+        val alt = eintragMitStempel(st(9_999L, "alte-epoche"))
+        val r = ExpectationLedger.restore(
+            listOf(alt), setOf(ExpectationLedger.SampleId(SEG, t0)), emptyList(),
+            kopfstand = st(0L, "frische-epoche"),
+        )
+        assertTrue(r is ExpectationLedger.Restored.Valid, "$r")
+        val zustand = (r as ExpectationLedger.Restored.Valid).state
+        assertEquals(1, zustand.entries.size, "der Eintrag bleibt")
+        assertEquals(1, zustand.consumed.size, "und der Verbrauchsbestand mit ihm")
     }
 
     // ---- Der Klassifikator: drei Toepfe, jeder mit Begruendung ----------

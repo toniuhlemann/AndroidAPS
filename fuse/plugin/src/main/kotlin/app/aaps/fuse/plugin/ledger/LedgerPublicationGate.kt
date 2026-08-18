@@ -1,6 +1,7 @@
 package app.aaps.fuse.plugin.ledger
 
 import app.aaps.core.interfaces.aps.RT
+import app.aaps.fuse.core.controller.InterventionStamp
 import java.io.File
 
 /**
@@ -206,11 +207,17 @@ object LedgerPublicationGate {
      *   positive units, MUSS es [Commitment.Proposal] sein - und die Zeile muss
      *   danach wirklich offen im Ledger stehen.
      */
+    /**
+     * @param published was dieser Zyklus tatsaechlich hinausgibt - Bolusmenge
+     *   und ob die Pumpe danach ANDERS faehrt als zuvor. Ohne Default: eine
+     *   vergessene Angabe waere ein stiller Nachweisfehler.
+     */
     fun publish(
         rt: RT,
         adapter: FuseLedgerAdapter,
         dir: File,
         expected: Commitment,
+        published: InterventionStamp.Published,
         events: () -> Unit,
         onError: (Throwable) -> Unit = {},
     ): Outcome {
@@ -221,6 +228,49 @@ object LedgerPublicationGate {
             onError(e)
             false
         }
+
+        // DAS VORAB-URTEIL (Toni 18.08., Punkt 4 des Publikationsvertrags).
+        //
+        // Drei der vier Gruende, aus denen die Menge spaeter wegfaellt, stehen
+        // schon JETZT fest - vor dem Versiegeln. Sie hier zu bilden kostet
+        // nichts und erspart es, den Eingriffsstempel fuer Zyklen
+        // fortzuschreiben, in denen nachweislich nichts hinausgeht. Jeder
+        // solche Schritt kostet lambda-Nachweis, und bei einem laenger
+        // stehenden Hold waere das jeder Zyklus.
+        //
+        // Der vierte Grund - der Persist selbst - laesst sich nicht vorab
+        // wissen. Dort wird ueberzaehlt, und genau dann ist der Schritt
+        // ohnehin nicht durabel: die Fehlerrichtung faellt mit sich selbst
+        // zusammen.
+        val vorabVeto: String? = when {
+            !eventsOk                                                   -> null // erst nach dem Persist einordnen
+            expected is Commitment.None                                 -> expected.reason
+            expected is Commitment.Proposal &&
+                !adapter.hasOpenProposal(expected.proposalId)            -> "$REASON_PROPOSAL_MISSING:${expected.proposalId}"
+            else                                                        -> adapter.view()
+                .takeIf { it.hold }
+                ?.let { REASON_LATE_HOLD + (it.holdReason?.let { r -> ":$r" } ?: "") }
+        }
+        // GEHT ETWAS HINAUS, WIRD VORHER GESTEMPELT. Die Reihenfolge ist der
+        // ganze Punkt: erst der neue Stand, dann das Siegel, dann das RT.
+        // Ein Bolus, dessen Stempel nur im Speicher stand, waere nach einem
+        // Prozesstod ein Eingriff, den niemand mehr sieht - und die offene
+        // Prognose wuerde als MISSED abgerechnet, obwohl Insulin lief.
+        //
+        // ZWEI ACHSEN, GETRENNT BEURTEILT. Der SMB faellt bei jedem Veto weg;
+        // die TBR ueberlebt JEDEN Strip-Pfad (`strip` entfernt ausdruecklich
+        // nur units/deliverAt, damit eine Schutz-Null nicht an einem
+        // Buchungsproblem verlorengeht). Also zaehlt die TBR immer, sobald
+        // sie sich wirklich aendert - auch nach einem Wurf in `events`, denn
+        // die Pumpe faehrt danach trotzdem anders.
+        val smbGehtHinaus = eventsOk && vorabVeto == null && rt.units != null
+        adapter.merkeIntervention(
+            InterventionStamp.Published(
+                smbU = if (smbGehtHinaus) published.smbU else 0.0,
+                tbrChanged = published.tbrChanged,
+            ),
+        )
+
         // Der Persist laeuft IMMER, auch ohne Vorschlag und nach einem Wurf:
         // die Reconciliation dieses Zyklus gehoert auf Platte, und ein
         // Fehlschlag muss ueber persistFailed sticky werden.
@@ -238,22 +288,12 @@ object LedgerPublicationGate {
         // Vollsicht nur diesen einen Zyklus betrifft. Stuende sie vorn, truege
         // der Trail bei gleichzeitigem Auftreten den harmloseren Grund.
         if (!eventsOk || !persisted) return stripped(rt, FuseLedgerAdapter.HOLD_REASON_PERSIST_FAILED, persisted)
-        val proposalId = when (expected) {
-            is Commitment.None     -> return stripped(rt, expected.reason, persisted)
-            is Commitment.Proposal -> expected.proposalId
-        }
-        // B0a: erst JETZT ist belegt, dass die Haftung nicht nur beabsichtigt,
-        // sondern gebucht UND durabel ist - der Persist oben lief nach den
-        // Ereignissen, die Zeile war also in der geschriebenen Generation.
-        if (!adapter.hasOpenProposal(proposalId)) return stripped(rt, "$REASON_PROPOSAL_MISSING:$proposalId", persisted)
-        // G2 (Codex-Adjudication bae885f1): FRISCHE Hold-Pruefung NACH der
-        // Reconciliation. Vorher kam das positive RT unveraendert zurueck,
-        // sobald Events und Persist gelungen waren - ein waehrend der
-        // Ereignisse entdeckter Hold (z.B. MISSING_ACCOUNTED_TREATMENT)
-        // griff erst im NAECHSTEN Zyklus, also eine Dosis zu spaet.
-        val view = adapter.view()
-        if (!view.hold) return passed(rt, persisted)
-        return stripped(rt, REASON_LATE_HOLD + (view.holdReason?.let { ":$it" } ?: ""), persisted)
+        // AB HIER NUR NOCH DAS VORAB-URTEIL. Die Bedingungen zweimal zu
+        // formulieren waere genau die Drift, vor der `commitmentOf` schon
+        // einmal gewarnt hat: zwei Stellen mit eigener Vorstellung davon, was
+        // hinausgehen darf, laufen mit dem naechsten Feld auseinander.
+        vorabVeto?.let { return stripped(rt, it, persisted) }
+        return passed(rt, persisted)
     }
 
     /** Der SMB faellt weg, die TBR-Felder bleiben - die Safety-TBR (Null-Temp)

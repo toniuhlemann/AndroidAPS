@@ -44,6 +44,7 @@ class FuseDashboardModelTest {
         abort: String? = null,
         prime: PrimeRelease.Plan? = null,
     ) = FuseCycleRunner.Outcome(
+        tbrChanged = false,
         decision = FuseController.Decision(
             smbU = 0.2,
             tbr = FuseController.TbrAction.KEEP_CURRENT,

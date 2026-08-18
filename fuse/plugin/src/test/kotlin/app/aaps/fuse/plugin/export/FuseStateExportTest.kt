@@ -68,6 +68,7 @@ class FuseStateExportTest {
         capMin: Int = 360,
         denial: String? = null,
     ) = FuseCycleRunner.Outcome(
+        tbrChanged = false,
         decision = FuseController.Decision(
             0.15, FuseController.TbrAction.KEEP_CURRENT, FuseController.Block.NONE,
             1.4, 180.0, 95.0, "smbRatio", tail, if (tail != null) 0.05 else 0.0,

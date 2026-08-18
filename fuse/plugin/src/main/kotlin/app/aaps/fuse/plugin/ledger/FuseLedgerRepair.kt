@@ -1,5 +1,6 @@
 package app.aaps.fuse.plugin.ledger
 
+import app.aaps.fuse.core.controller.InterventionStamp
 import org.json.JSONObject
 import java.io.File
 
@@ -245,6 +246,19 @@ object FuseLedgerRepair {
                     app.aaps.fuse.core.ledger.LedgerState(),
                     EpisodeBudgets(),
                     (discarded.revision ?: 0L) + 1L,
+                    // EINE REPARATUR EROEFFNET IMMER EINE NEUE EPOCHE (Toni
+                    // 18.08.). Anders als die `revision`, die als
+                    // Auswahlgroesse zwischen den Generationen weiterzaehlen
+                    // MUSS, waere ein fortgeschriebener Eingriffsstempel hier
+                    // eine Luege: die verworfene Generation kann Eingriffe
+                    // getragen haben, die nie gezaehlt wurden. Der frische
+                    // Epochenname macht jeden Eintrag von davor automatisch
+                    // INTERVENED - ohne dass die Erwartungsdatei angefasst
+                    // werden muesste.
+                    InterventionStamp(
+                        "repair-$nowTs-" + java.util.UUID.randomUUID().toString().take(8),
+                        0L,
+                    ),
                     emptyList(),
                     emptyMap(),
                 ).toString(),

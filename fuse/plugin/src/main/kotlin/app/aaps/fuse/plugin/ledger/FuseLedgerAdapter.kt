@@ -1,5 +1,6 @@
 package app.aaps.fuse.plugin.ledger
 
+import app.aaps.fuse.core.controller.InterventionStamp
 import app.aaps.core.data.model.BS
 import app.aaps.core.data.pump.defs.PumpType
 import app.aaps.fuse.core.ledger.AccountedTreatment
@@ -735,6 +736,62 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
     var episodes: EpisodeBudgets = EpisodeBudgets()
         private set
 
+    /**
+     * DER EINGRIFFSSTEMPEL - Epoche und Folgenummer, persistiert in DERSELBEN
+     * Generation wie die Ledgerzeilen (Toni 18.08.).
+     *
+     * Bewusst hier und nicht in [EpisodeBudgets]: [FuseLedgerRepair] baut
+     * dort ein frisches Objekt und traegt ausdruecklich nur die `revision`
+     * fort - ein Feld daneben fiele bei jeder Reparatur lautlos auf seinen
+     * Default. Und bewusst nicht in [LedgerState]: dessen Revision steigt nur
+     * bei ZUSTANDSAENDERUNG, ein Zyklus mit reiner TBR-Aenderung loest das
+     * nicht aus.
+     *
+     * Der Startwert ist eine LEERE Epoche und damit ungueltig - er zwingt
+     * [oeffneEpoche] vor dem ersten Gebrauch. Ein gueltig aussehender
+     * Anfangswert waere die gefaehrliche Richtung: er saehe aus wie ein
+     * bekannter Lauf.
+     */
+    var interventionStamp: InterventionStamp = InterventionStamp("", 0L)
+        private set
+
+    /**
+     * EINE NEUE EPOCHE EROEFFNEN - immer dann, wenn der Lauf abgerissen ist.
+     *
+     * Ausloeser (Toni 18.08.): fehlendes Feld in der geladenen Generation,
+     * alte APK dazwischen, Reparatur, Quarantaene, unklarer Persistausgang.
+     * Alle Eintraege der bisherigen Epoche werden dadurch bei der Abrechnung
+     * automatisch INTERVENED - ohne dass irgendetwas verworfen werden muss.
+     *
+     * Die Kennung muss ueber Neustarts hinweg EINDEUTIG sein; zwei Laeufe mit
+     * demselben Namen waeren genau die Wildcard, die der Stempel verhindern
+     * soll. Deshalb Zeit UND Zufall: die Uhr allein kann nach einem
+     * Zeitsprung zurueckspringen, der Zufall allein sagt nichts ueber die
+     * Reihenfolge.
+     */
+    fun oeffneEpoche(nowTs: Long, grund: String) {
+        interventionStamp = neueEpoche(nowTs)
+        interventionEpochReason = grund
+    }
+
+    /** Rein, ohne Seiteneffekt - die Migration braucht eine Epoche, BEVOR
+     *  irgendein Zustand uebernommen wurde. */
+    private fun neueEpoche(nowTs: Long) =
+        InterventionStamp("$nowTs-" + java.util.UUID.randomUUID().toString().take(8), 0L)
+
+    /** Warum die laufende Epoche eroeffnet wurde - fuer Trail und Diagnose. */
+    var interventionEpochReason: String = "INIT"
+        private set
+
+    /**
+     * Den Stempel um EINEN Schritt fortschreiben, wenn dieser Zyklus etwas
+     * publiziert. Wird VOR dem Versiegeln gerufen - das ist der ganze Punkt
+     * des Vertrags.
+     */
+    fun merkeIntervention(published: InterventionStamp.Published) {
+        interventionStamp = InterventionStamp.next(interventionStamp, published)
+    }
+
     /** Fix 6 (NEU-BS-02): verbrauchte Bindungs-Identitaeten geprunter
      *  Zeilen. Persistiert, gekappt auf [MAX_RETIRED_BOUND_IDS] juengste. */
     val retiredBoundIds: ArrayDeque<RetiredBoundId> = ArrayDeque()
@@ -915,6 +972,15 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
         if (decoded != null) {
             state = decoded.state
             revision = decoded.revision
+            // FEHLENDER STEMPEL HEISST NEUE EPOCHE, nicht Sequenz 0. Die
+            // Generation kann von einer aelteren APK geschrieben worden sein,
+            // die das Feld nicht kennt; was in der Zwischenzeit dosiert wurde,
+            // weiss dann niemand. Ein frischer Epochenname sagt genau das.
+            val geladen = decoded.interventionStamp
+            if (geladen != null && geladen.valid) {
+                interventionStamp = geladen
+                interventionEpochReason = "LOADED"
+            } else oeffneEpoche(nowTs, "STAMP_MISSING_IN_GENERATION")
             episodes = decoded.episodes
             retiredBoundIds.clear()
             retiredBoundIds.addAll(decoded.retiredBoundIds)
@@ -1693,8 +1759,15 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
             log("FUSE ledger MIGRATION abgebrochen: Haftung waere von $vorher auf ${neu.transportCommitmentU} gefallen")
             return null
         }
+        // DIE MIGRATION IST KEIN BRUCH: sie liest die alte Generation
+        // vollstaendig und schreibt sie um, es geht nichts verloren. Traegt
+        // die alte Datei einen gueltigen Stempel, laeuft die Epoche also
+        // weiter. Traegt sie keinen - weil sie aus einer APK stammt, die ihn
+        // nicht kannte -, beginnt hier eine neue, und alle Eintraege von
+        // davor werden dadurch INTERVENED.
+        val stempel = alt.interventionStamp?.takeIf { it.valid } ?: neueEpoche(nowTs)
         val text = runCatching {
-            LedgerCodec.encode(neu, alt.episodes, alt.revision, alt.retiredBoundIds, alt.pumpEpochs).toString()
+            LedgerCodec.encode(neu, alt.episodes, alt.revision, stempel, alt.retiredBoundIds, alt.pumpEpochs).toString()
         }.getOrNull() ?: return null
         if (!store.writeVerified(dir, text)) {
             log("FUSE ledger MIGRATION abgebrochen: die neue Generation liess sich nicht durabel schreiben (dir=$dir)")
@@ -1787,7 +1860,7 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
         val ok = writeHoldMarkerIfPending(dir) && runCatching {
             store.writeVerified(
                 dir,
-                LedgerCodec.encode(state, episodes, revision, retiredBoundIds.toList(), proposalPumpEpochs.toMap()).toString(),
+                LedgerCodec.encode(state, episodes, revision, interventionStamp, retiredBoundIds.toList(), proposalPumpEpochs.toMap()).toString(),
             )
         }.getOrDefault(false) && FuseLedgerStore.writeSentinel(dir)
         persistFailed = !ok
