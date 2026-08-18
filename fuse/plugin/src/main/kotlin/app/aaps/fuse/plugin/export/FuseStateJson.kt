@@ -346,6 +346,8 @@ object FuseStateJson {
                     .put("queueDepth", e.queueDepth)
                     .put("droppedCycles", e.droppedCycles)
                     .put("asOfTs", e.asOfTs)
+                    .put("historyTruncated", e.historyTruncated)
+                    .put("oldestRetainedDueTs", e.oldestRetainedDueTs)
                     .put(
                         "samples", JSONArray().apply {
                             e.samples.forEach { sm ->
@@ -1022,6 +1024,10 @@ object FuseStateJson {
         val droppedCycles: Long,
         /** Stand des ausgewerteten, nachweislich geschriebenen Zustands. */
         val asOfTs: Long,
+        /** Der Speicher ist voll - die Strecke ist MINDESTENS so lang. */
+        val historyTruncated: Boolean,
+        /** Aeltestes noch gehaltenes Ergebnis - davor ist nichts mehr da. */
+        val oldestRetainedDueTs: Long,
     )
 
     /**

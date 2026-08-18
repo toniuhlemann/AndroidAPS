@@ -209,6 +209,10 @@ class FuseExpectationRecorderTest {
             verworfen.toLong(), r.telemetry.dropped,
             "und jeder verworfene Zyklus wird gezaehlt - sonst waere die Luecke unsichtbar",
         )
+        // Den Worker austrudeln lassen, BEVOR JUnit das Verzeichnis abraeumt -
+        // sonst schreibt er noch hinein, waehrend geloescht wird. Im Betrieb
+        // wartet hier niemand; das ist reine Testhygiene.
+        r.awaitIdleForTest()
     }
 
     /**
@@ -418,5 +422,133 @@ class FuseExpectationRecorderTest {
             val lage = korrektur().copy(evidencePhase = phase)
             assertEquals(erwartet, ExpectationLedger.classify(lage).context, "$phase")
         }
+    }
+
+    // ---- Tonis vier Gegenproben (18.08.) --------------------------------
+
+    /**
+     * PFLICHTPROBE 1: Write N scheitert, N+1 gelingt -> Daten aus N erscheinen
+     * NIEMALS spaeter.
+     *
+     * Der erste Wurf hielt einen `workerState`, der vor dem Schreiben
+     * fortgeschrieben wurde. Ein gescheiterter Persist liess ihn stehen, und
+     * beim naechsten Erfolg landete er doch auf Platte - ein nie
+     * nachgewiesenes Ergebnis waere nachtraeglich Teil einer Nachweisstrecke
+     * geworden.
+     */
+    @Test
+    fun `ein gescheiterter Schreibvorgang erscheint auch spaeter nicht`(@TempDir parent: File) {
+        val gut = File(parent, "gut").also { it.mkdirs() }
+        val blockiert = File(parent, "sperre").also { it.writeText("x") }
+        val schlecht = File(blockiert, "unter")
+        val r = recorder()
+
+        // Zyklus N: laesst sich nicht schreiben.
+        r.buche(schlecht, nowTs = t0, sourceTs = t0)
+        assertTrue(r.persistedState.isEmpty, "nichts nachgewiesen")
+
+        // Zyklus N+1: schreibt in ein gutes Verzeichnis.
+        r.buche(gut, nowTs = t0 + 60_000L, sourceTs = t0 + 60_000L)
+        assertEquals(
+            1, r.persistedState.entries.size,
+            "NUR der Eintrag aus N+1 - der aus N ist endgueltig verloren",
+        )
+        assertEquals(
+            t0 + 60_000L, r.persistedState.entries.single().sourceTs,
+            "und zwar nachweislich der spaetere",
+        )
+    }
+
+    /**
+     * PFLICHTPROBE 2: ein Queue-Drop zwischen zwei sonst gueltigen Strecken
+     * macht die aktuelle Evidenz unzulaessig.
+     *
+     * Der Kern des Problems: eine fehlende Minute laesst zwischen zwei
+     * Ergebnissen nur ZWEI Minuten Abstand - erlaubt sind fuenf. Die
+     * Abstandspruefung merkt davon nichts. Ohne eigene Marke liefe die
+     * Strecke ueber eine Minute weiter, die niemand gesehen hat.
+     */
+    @Test
+    fun `ein verworfener Zyklus bricht die aktuelle Strecke`(@TempDir dir: File) {
+        // Kapazitaet 1, damit sich ein Drop erzwingen laesst.
+        val r = FuseExpectationRecorder(FuseExpectationStore(FakeDurability()), queueCapacity = 1)
+        fun schnapp(i: Int) = FuseExpectationRecorder.Snapshot(
+            dir = dir, nowTs = t0 + i * 60_000L, situation = korrektur(), stamp = STAMP,
+            configGeneration = CFG, segmentId = SEG, sourceTs = t0 + i * 60_000L,
+            anchorMgdl = 200.0, meanPredictedMgdl = 150.0, horizonMin = H,
+            safetyLowerPredictedMgdl = 40.0, lambda = null, samples = emptyList(),
+        )
+        // Erst sauber laufen lassen.
+        r.submit(schnapp(0)); r.awaitIdleForTest()
+        // Dann einen Drop erzwingen. Zwei Uebergaben genuegen NICHT: der
+        // Worker nimmt die erste sofort aus der Schlange, und die zweite passt
+        // wieder hinein. Erst eine Serie fuellt schneller, als er abarbeitet.
+        repeat(30) { i -> r.submit(schnapp(i + 1)) }
+        r.awaitIdleForTest()
+        assertTrue(r.telemetry.dropped > 0, "es muss ein Zyklus verworfen worden sein")
+
+        // Die Marke liegt jetzt in der Zukunft aller frueheren Ergebnisse -
+        // eine Strecke von davor kann nicht mehr aktuell sein.
+        // GEPRUEFT WIRD DER GRUND, nicht nur `eligible`. Bei durcheinander-
+        // gewuerfeltem Zustand waere `eligible` ohnehin false (es gibt keine
+        // Strecke), und der Test bliebe gruen, auch wenn die Luecke gar nicht
+        // markiert wuerde. Dieselbe Stumpfheit hatte schon der Test auf die
+        // fehlende Lage.
+        assertTrue(r.telemetry.dropped > 0)
+        val marke = r.lastObservationGapTsForTest
+        assertTrue(marke > 0L, "die Luecke MUSS markiert sein, nicht nur gezaehlt")
+        val e = r.currentEvidence(t0 + 32 * 60_000L, STAMP, CFG, SEG, korrektur(), MARGE)
+        assertFalse(e.eligible, "$e")
+    }
+
+    /**
+     * PFLICHTPROBE 3: vorhandene Datei, erster Schnappschuss mit ungueltigem
+     * Stempel, danach gueltig -> der vorhandene Zustand wird GELADEN, nicht
+     * ueberschrieben.
+     *
+     * Der erste Wurf setzte `geladen = true`, bevor das Ladeergebnis feststand.
+     * Ein unbrauchbarer erster Schnappschuss liess den Worker damit fuer den
+     * Rest des Prozesses mit leerem Zustand weiterlaufen - und die naechste
+     * Generation ueberschrieb die vorhandene.
+     */
+    @Test
+    fun `ein ungueltiger erster Stempel verhindert das Laden nicht`(@TempDir dir: File) {
+        // Vorlauf: ein echter Bestand auf Platte.
+        val vorlauf = recorder()
+        vorlauf.buche(dir, nowTs = t0, sourceTs = t0)
+        assertEquals(1, vorlauf.persistedState.entries.size)
+
+        // Neuer Prozess: erster Schnappschuss unbrauchbar, zweiter gueltig.
+        val r = recorder()
+        r.buche(dir, nowTs = t0 + 60_000L, sourceTs = t0 + 60_000L, stamp = InterventionStamp("", 0L))
+        r.buche(dir, nowTs = t0 + 120_000L, sourceTs = t0 + 120_000L)
+        assertEquals(
+            2, r.persistedState.entries.size,
+            "der vorhandene Eintrag muss geladen worden sein, nicht ueberschrieben",
+        )
+    }
+
+    /**
+     * PFLICHTPROBE 4: eine beschaedigte Generation sperrt jeden weiteren
+     * Schreibvorgang, bis ausdruecklich repariert wurde.
+     *
+     * Sonst schriebe der naechste Zyklus ueber die beschaedigte Datei, und der
+     * Datenverlust waere danach nicht mehr nachweisbar.
+     */
+    @Test
+    fun `eine beschaedigte Generation sperrt klebend`(@TempDir dir: File) {
+        File(dir, FuseExpectationStore.FILE_NAME).writeText("{kaputt")
+        val r = recorder()
+        r.buche(dir, nowTs = t0, sourceTs = t0)
+        assertTrue(r.telemetry.lastResult.startsWith("BLOCKED"), r.telemetry.lastResult)
+
+        // Auch der naechste, voellig gesunde Zyklus schreibt nicht.
+        r.buche(dir, nowTs = t0 + 60_000L, sourceTs = t0 + 60_000L)
+        assertTrue(r.telemetry.lastResult.startsWith("BLOCKED"), r.telemetry.lastResult)
+        assertTrue(r.persistedState.isEmpty, "und nichts wird auswertbar")
+        assertEquals(
+            "{kaputt", File(dir, FuseExpectationStore.FILE_NAME).readText(),
+            "die beschaedigte Datei bleibt unangetastet - sonst waere der Verlust unbeweisbar",
+        )
     }
 }

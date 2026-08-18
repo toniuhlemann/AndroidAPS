@@ -922,7 +922,8 @@ class ExpectationLedgerTest {
         stamp: InterventionStamp = REV,
         cfg: String = CFG,
         lage: ExpectationLedger.Classification = KORR,
-    ) = ExpectationLedger.currentLambdaEvidence(outcomes, nowTs, stamp, cfg, SEG, lage, MARGE)
+        gapTs: Long = 0L,
+    ) = ExpectationLedger.currentLambdaEvidence(outcomes, nowTs, stamp, cfg, SEG, lage, MARGE, gapTs)
 
     @Test
     fun `eine frische lueckenlose Strecke zaehlt`() {
@@ -1077,7 +1078,7 @@ class ExpectationLedgerTest {
     fun `ein ungueltiger Kopfstand ergibt keinen Nachweis`() {
         val bis = t0 + 100 * 60_000L
         val e = ExpectationLedger.currentLambdaEvidence(
-            folge(10, bis), bis + 60_000L, InterventionStamp("", 5L), CFG, SEG, KORR, MARGE,
+            folge(10, bis), bis + 60_000L, InterventionStamp("", 5L), CFG, SEG, KORR, MARGE, 0L,
         )
         assertFalse(e.eligible)
         assertEquals(ExpectationLedger.Denial.STAMP_INVALID, e.denialReason)
@@ -1093,6 +1094,35 @@ class ExpectationLedgerTest {
         val e = aktuell(mitLuecke, bis + 60_000L)
         assertTrue(e.eligible)
         assertEquals(2, e.minutes, "nur die drei nach der Luecke")
+    }
+
+    /**
+     * EINE UNBEOBACHTETE MINUTE BRICHT DIE STRECKE (Toni 18.08., P0-2).
+     *
+     * Sie faellt der Abstandspruefung NICHT auf: eine fehlende Minute laesst
+     * zwischen zwei Ergebnissen zwei Minuten Abstand, erlaubt sind fuenf. Ohne
+     * eigene Marke liefe die Strecke ueber eine Minute weiter, die niemand
+     * gesehen hat.
+     */
+    @Test
+    fun `eine Beobachtungsluecke schneidet die Strecke ab`() {
+        val bis = t0 + 100 * 60_000L
+        // Ohne Marke traegt die volle Strecke.
+        assertEquals(9, aktuell(folge(10, bis), bis + 60_000L).minutes)
+        // Mit einer Marke mitten drin bleibt nur der Teil danach.
+        val marke = bis - 4 * 60_000L
+        val e = aktuell(folge(10, bis), bis + 60_000L, gapTs = marke)
+        assertEquals(4, e.minutes, "nur die Ergebnisse NACH der Luecke")
+        assertTrue(e.eligible, "der frische Teil bleibt zulaessig: $e")
+    }
+
+    /** Liegt die Luecke hinter der ganzen Strecke, bleibt gar nichts. */
+    @Test
+    fun `eine Luecke nach der ganzen Strecke macht sie unzulaessig`() {
+        val bis = t0 + 100 * 60_000L
+        val e = aktuell(folge(10, bis), bis + 60_000L, gapTs = bis + 30_000L)
+        assertFalse(e.eligible)
+        assertEquals(ExpectationLedger.Denial.OBSERVATION_GAP, e.denialReason)
     }
 
     // ---- Die Interventionsrevision beim Wiederherstellen ----------------

@@ -92,14 +92,33 @@ class FuseExpectationStore(private val durability: Durability = Durability.ANDRO
          * lebt von der juengsten zusammenhaengenden Strecke.
          */
         const val MAX_ENTRIES = 200
-        const val MAX_OUTCOMES = 500
+        /**
+         * 240 statt 500 (Toni 18.08.).
+         *
+         * TECHNISCHE SPEICHERGRENZE, KEINE THERAPEUTISCHE ZEITGRENZE. Bei
+         * hoechstens einem Ergebnis je Minute deckt sie eine durchgehende
+         * vierstuendige Korrektur-Sackgasse ab und liegt damit ueber den
+         * bisher beobachteten dreistuendigen Plateaus. Der Store ist ein
+         * ARBEITSZUSTAND, kein Archiv - das Archiv ist der Zyklustrail, in
+         * dem die Rohgroessen ohnehin landen.
+         *
+         * Senkt die groesste Datei von rund 208 KB auf 85-100 KB. Eine
+         * gekappte Strecke muss im Export als "mindestens N Minuten"
+         * erscheinen, nie als exakte Laenge - dafuer traegt der Export
+         * `historyTruncated` und `oldestRetainedDueTs`.
+         */
+        const val MAX_OUTCOMES = 240
         const val MAX_CONSUMED = 500
     }
 
     /** Was beim Laden vorgefunden wurde. */
     sealed interface Loaded {
 
-        data class Ok(val state: ExpectationLedger.State, val revision: Long) : Loaded
+        data class Ok(
+            val state: ExpectationLedger.State,
+            val revision: Long,
+            val lastObservationGapTs: Long,
+        ) : Loaded
 
         /** Nichts da - beim Erststart der Normalfall, leer weiterlaufen. */
         data object Fresh : Loaded
@@ -133,6 +152,7 @@ class FuseExpectationStore(private val durability: Durability = Durability.ANDRO
         var gabEs = false
         var besteState: ExpectationLedger.State? = null
         var besteRevision = Long.MIN_VALUE
+        var besteGapTs = 0L
         val gruende = mutableListOf<String>()
         for (f in kandidaten) {
             val text = runCatching { if (f.isFile) f.readText(Charsets.UTF_8) else null }.getOrNull() ?: continue
@@ -142,13 +162,14 @@ class FuseExpectationStore(private val durability: Durability = Durability.ANDRO
                     if (d.revision > besteRevision) {
                         besteState = d.state
                         besteRevision = d.revision
+                        besteGapTs = d.lastObservationGapTs
                     }
 
                 is FuseExpectationCodec.Decoded.Invalid -> gruende += f.name + ": " + d.reason
                 FuseExpectationCodec.Decoded.Missing    -> Unit
             }
         }
-        besteState?.let { return Loaded.Ok(it, besteRevision) }
+        besteState?.let { return Loaded.Ok(it, besteRevision, besteGapTs) }
         if (gabEs) return Loaded.Corrupt(gruende.joinToString("; ").ifBlank { "keine lesbare Generation" })
         // NICHTS GEFUNDEN - aber gab es hier schon einmal etwas? Der Zeuge
         // entscheidet. Ohne ihn liefe ein Datenverlust als Erststart durch.
@@ -180,17 +201,19 @@ class FuseExpectationStore(private val durability: Durability = Durability.ANDRO
         state: ExpectationLedger.State,
         revision: Long,
         kopfstand: InterventionStamp,
-    ): Boolean = saveWithStats(dir, state, revision, kopfstand).ok
+        lastObservationGapTs: Long = 0L,
+    ): Boolean = saveWithStats(dir, state, revision, kopfstand, lastObservationGapTs).ok
 
     fun saveWithStats(
         dir: File,
         state: ExpectationLedger.State,
         revision: Long,
         kopfstand: InterventionStamp,
+        lastObservationGapTs: Long = 0L,
     ): WriteStats {
         val start = System.nanoTime()
         var groesse = 0
-        val ok = saveInner(dir, state, revision, kopfstand) { groesse = it }
+        val ok = saveInner(dir, state, revision, kopfstand, lastObservationGapTs) { groesse = it }
         return WriteStats(ok, groesse, (System.nanoTime() - start) / 1_000_000L)
     }
 
@@ -199,9 +222,10 @@ class FuseExpectationStore(private val durability: Durability = Durability.ANDRO
         state: ExpectationLedger.State,
         revision: Long,
         kopfstand: InterventionStamp,
+        lastObservationGapTs: Long,
         bytes: (Int) -> Unit,
     ): Boolean = runCatching {
-        val inhalt = FuseExpectationCodec.encode(kappen(state, kopfstand), revision)
+        val inhalt = FuseExpectationCodec.encode(kappen(state, kopfstand), revision, lastObservationGapTs)
         bytes(inhalt.toByteArray(Charsets.UTF_8).size)
         val tmp = File(dir, FILE_NAME + ".tmp")
         val ziel = File(dir, FILE_NAME)

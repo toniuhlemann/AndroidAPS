@@ -114,10 +114,10 @@ class FuseExpectationLoadTest {
         val zustand = maximalerZustand()
         // Zwei Aufwaermrunden, damit die JIT-Kompilierung nicht als Kosten
         // erscheint.
-        repeat(2) { FuseExpectationCodec.encode(zustand, 1L) }
+        repeat(2) { FuseExpectationCodec.encode(zustand, 1L, lastObservationGapTs = 0L) }
         val start = System.nanoTime()
         val runden = 20
-        repeat(runden) { FuseExpectationCodec.encode(zustand, 1L) }
+        repeat(runden) { FuseExpectationCodec.encode(zustand, 1L, lastObservationGapTs = 0L) }
         val jeRundeMs = (System.nanoTime() - start) / 1_000_000.0 / runden
         println("FUSE expectation encode: %.2f ms je Runde (JVM)".format(jeRundeMs))
         assertTrue(

@@ -41,10 +41,14 @@ object FuseExpectationCodec {
      *   ist - ohne sie waere nach einem Absturz zwischen den beiden Renames
      *   nicht feststellbar, welche Datei die neuere Wahrheit traegt.
      */
-    fun encode(state: ExpectationLedger.State, revision: Long): String =
+    fun encode(state: ExpectationLedger.State, revision: Long, lastObservationGapTs: Long): String =
         JSONObject()
             .put("schema", SCHEMA)
             .put("revision", revision)
+            // DIE LUECKENMARKE MUSS UEBERLEBEN (P0-2). Ohne sie waere nach
+            // einem Neustart nicht mehr erkennbar, dass zwischen den
+            // gespeicherten Ergebnissen eine unbeobachtete Minute lag.
+            .put("gapTs", lastObservationGapTs)
             // KEIN EIGENER KOPFSTAND MEHR (Toni 18.08.): "Der Expectation-Store
             // speichert die Revision an seinen Eintraegen; die aktuelle
             // Autoritaet kommt aus dem Publikationsledger." Zwei Dateien mit
@@ -73,7 +77,11 @@ object FuseExpectationCodec {
      */
     sealed interface Decoded {
 
-        data class Valid(val state: ExpectationLedger.State, val revision: Long) : Decoded
+        data class Valid(
+            val state: ExpectationLedger.State,
+            val revision: Long,
+            val lastObservationGapTs: Long,
+        ) : Decoded
 
         /** Nichts da - beim Erststart der Normalfall. */
         data object Missing : Decoded
@@ -108,6 +116,7 @@ object FuseExpectationCodec {
             require(revision >= 0L) { "negative Revision $revision" }
             Roh(
                 revision,
+                o.optLong("gapTs", 0L),
                 o.getJSONArray("entries").let { a -> (0 until a.length()).map { entryOf(a.getJSONObject(it)) } },
                 o.getJSONArray("consumed").let { a ->
                     (0 until a.length()).map {
@@ -128,7 +137,7 @@ object FuseExpectationCodec {
                 kopfstand = kopfstand,
             )
         ) {
-            is ExpectationLedger.Restored.Valid   -> Decoded.Valid(r.state, roh.revision)
+            is ExpectationLedger.Restored.Valid   -> Decoded.Valid(r.state, roh.revision, roh.gapTs)
             is ExpectationLedger.Restored.Invalid -> Decoded.Invalid(r.reason)
         }
     }
@@ -137,6 +146,7 @@ object FuseExpectationCodec {
      *  ZWEI Long-Feldern an der Aufrufstelle vertauschbar waere. */
     private data class Roh(
         val revision: Long,
+        val gapTs: Long,
         val entries: List<ExpectationLedger.Entry>,
         val consumed: Set<ExpectationLedger.SampleId>,
         val outcomes: List<ExpectationLedger.Outcome>,

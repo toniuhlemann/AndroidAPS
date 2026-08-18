@@ -843,6 +843,19 @@ object ExpectationLedger {
         currentSegmentId: Long,
         currentClassification: Classification,
         minSafetyMarginMgdl: Double,
+        /**
+         * WANN ZULETZT EINE BEOBACHTUNG AUSFIEL (Toni 18.08., P0-2).
+         *
+         * Ein verworfener Zyklus hinterlaesst zwischen zwei Ergebnissen nur
+         * zwei Minuten Abstand - erlaubt sind fuenf. Die Luecke faellt der
+         * Abstandspruefung also gar nicht auf, und die Strecke liefe ueber
+         * eine Minute weiter, die niemand gesehen hat. Diese Marke schneidet
+         * sie ab: kein Ergebnis von VOR der Luecke gehoert noch zur aktuellen
+         * Strecke.
+         *
+         * 0 heisst "seit Prozessbeginn keine Luecke".
+         */
+        lastObservationGapTs: Long,
         maxGapMs: Long = MAX_EVIDENCE_GAP_MS,
     ): LambdaEvidence {
         if (!currentStamp.valid) return LambdaEvidence.denied(Denial.STAMP_INVALID)
@@ -874,6 +887,7 @@ object ExpectationLedger {
                 !InterventionStamp.same(o.entry.interventionStamp, currentStamp) -> Denial.INTERVENED_SINCE
                 o.entry.configGeneration != currentConfigGeneration        -> Denial.CONFIG_CHANGED
                 !o.isLambdaEvidence(minSafetyMarginMgdl)                   -> Denial.NOT_LAMBDA_EVIDENCE
+                o.entry.dueTs < lastObservationGapTs                        -> Denial.OBSERVATION_GAP
                 juengste != null && letzte!! - o.entry.dueTs > maxGapMs    -> Denial.GAP_IN_STREAK
                 else                                                       -> null
             }
@@ -923,6 +937,14 @@ object ExpectationLedger {
         SEGMENT_CHANGED,
         NOT_LAMBDA_EVIDENCE,
         GAP_IN_STREAK,
+
+        /**
+         * Ein Zyklus wurde gar nicht beobachtet - die Buchfuehrung hatte
+         * Rueckstau und hat ihn verworfen. Anders als [GAP_IN_STREAK] faellt
+         * das der Abstandspruefung NICHT auf: eine fehlende Minute laesst nur
+         * zwei Minuten Abstand statt einer.
+         */
+        OBSERVATION_GAP,
 
         /**
          * DIE LAGE JETZT ist keine reine Korrektur mehr - Marker,

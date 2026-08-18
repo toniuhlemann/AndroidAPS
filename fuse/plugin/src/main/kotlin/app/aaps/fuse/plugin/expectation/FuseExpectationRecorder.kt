@@ -97,10 +97,50 @@ class FuseExpectationRecorder(
     var telemetry: Telemetry = Telemetry()
         private set
 
-    /** Nur vom Worker beruehrt - kein anderer Thread liest oder schreibt sie. */
-    private var workerState: ExpectationLedger.State = ExpectationLedger.State.empty()
+    /**
+     * ES GIBT KEINEN ZWISCHENSTAND MEHR (Toni 18.08., P0-1).
+     *
+     * Der erste Wurf hielt einen `workerState`, der VOR dem Schreiben
+     * fortgeschrieben wurde. Scheiterte der Persist, blieb dieser
+     * unbestaetigte Stand im Worker - und landete beim naechsten
+     * erfolgreichen Zyklus doch auf Platte. Ein Ergebnis, das nie
+     * nachgewiesen geschrieben wurde, waere so nachtraeglich Teil einer
+     * Nachweisstrecke geworden.
+     *
+     * Jetzt ist [persistedState] die EINZIGE Basis: jeder Kandidat entsteht
+     * daraus, und nur ein nachgewiesener Schreibvorgang ersetzt sie. Ein
+     * gescheiterter Zyklus ist damit vollstaendig folgenlos - er hinterlaesst
+     * keine Spur, die spaeter wiederauflebt.
+     */
     private var revision: Long = 0L
     private var geladen = false
+
+    /**
+     * KLEBENDE SPERRE nach einer beschaedigten Generation (Toni 18.08., P0-3).
+     *
+     * Ohne sie liefe der Worker mit leerem Zustand weiter und schriebe die
+     * naechste Generation ueber die beschaedigte - der Datenverlust waere
+     * danach nicht mehr nachweisbar. Aufgehoben wird sie nur durch eine
+     * ausdrueckliche Reparatur (heute: Loeschen der Datei), nicht durch
+     * Zeitablauf und nicht durch einen Neustart.
+     */
+    private var blockiert: String? = null
+
+    /**
+     * WANN ZULETZT EIN ZYKLUS UNBEOBACHTET BLIEB (P0-2).
+     *
+     * Wird beim Verwerfen gesetzt und mit dem naechsten erfolgreichen
+     * Schreibvorgang persistiert. Ergebnisse von VOR dieser Marke gehoeren
+     * nicht mehr zur aktuellen Strecke - eine fehlende Minute faellt der
+     * Abstandspruefung sonst gar nicht auf (zwei statt einer Minute Abstand,
+     * erlaubt sind fuenf).
+     */
+    @Volatile
+    private var lastObservationGapTs: Long = 0L
+
+    /** Nur fuer Tests: die Luecke muss NACHWEISBAR markiert sein, nicht nur
+     *  gezaehlt - sonst laeuft die Strecke ueber sie hinweg. */
+    internal val lastObservationGapTsForTest: Long get() = lastObservationGapTs
 
     private val queue = ArrayBlockingQueue<Snapshot>(queueCapacity)
     private val verworfen = AtomicLong(0)
@@ -118,7 +158,15 @@ class FuseExpectationRecorder(
     fun submit(snapshot: Snapshot): Boolean {
         starteWorker()
         val angenommen = queue.offer(snapshot)
-        if (angenommen) angenommenZaehler.incrementAndGet() else verworfen.incrementAndGet()
+        if (angenommen) {
+            angenommenZaehler.incrementAndGet()
+        } else {
+            verworfen.incrementAndGet()
+            // DIE LUECKE MARKIEREN, nicht nur zaehlen. Der Zeitpunkt dieses
+            // Zyklus ist der spaeteste, ab dem wieder lueckenlos beobachtet
+            // wurde.
+            lastObservationGapTs = maxOf(lastObservationGapTs, snapshot.nowTs)
+        }
         telemetry = telemetry.copy(queueDepth = queue.size, dropped = verworfen.get())
         return angenommen
     }
@@ -153,12 +201,21 @@ class FuseExpectationRecorder(
 
     /** Laeuft AUSSCHLIESSLICH im Worker-Thread. */
     private fun verarbeite(s: Snapshot) {
+        // OHNE GUELTIGEN KOPFSTAND WIRD NICHT GELADEN (P0-3). `geladen` darf
+        // hier NICHT gesetzt werden - sonst laeuft der Worker fuer den Rest
+        // des Prozesses mit leerem Zustand weiter und ueberschreibt eine
+        // vorhandene Generation, nur weil der erste Schnappschuss unbrauchbar
+        // war.
+        if (!s.stamp.valid || s.configGeneration.isBlank()) {
+            melde("SKIPPED:keine gueltige Herkunft", 0, 0L)
+            return
+        }
         if (!geladen) {
             geladen = true
             ladeVonPlatte(s.dir, s.stamp)
         }
-        if (!s.stamp.valid || s.configGeneration.isBlank()) {
-            melde("SKIPPED:keine gueltige Herkunft", 0, 0L)
+        blockiert?.let {
+            melde("BLOCKED:$it", 0, 0L)
             return
         }
         // OHNE LAGE WIRD NICHTS EINGEREIHT. `null` heisst nicht "egal",
@@ -173,13 +230,16 @@ class FuseExpectationRecorder(
             classification = klasse, safetyLowerPredictedMgdl = s.safetyLowerPredictedMgdl,
             lambda = s.lambda,
         )
-        val vorher = workerState.outcomes.size
-        workerState = ExpectationLedger.advance(workerState, s.nowTs, neu, s.samples)
-        val abgerechnet = (workerState.outcomes.size - vorher).coerceAtLeast(0)
-        val stats = store.saveWithStats(s.dir, workerState, ++revision, s.stamp)
+        // DER KANDIDAT ENTSTEHT AUS DEM PERSISTIERTEN STAND, nie aus einem
+        // Zwischenstand. Scheitert der Schreibvorgang, wird er verworfen.
+        val basis = persistedState
+        val kandidat = ExpectationLedger.advance(basis, s.nowTs, neu, s.samples)
+        val abgerechnet = (kandidat.outcomes.size - basis.outcomes.size).coerceAtLeast(0)
+        val stats = store.saveWithStats(s.dir, kandidat, ++revision, s.stamp, lastObservationGapTs)
         if (stats.ok) {
-            // ERST JETZT ist der Stand auswertbar.
-            persistedState = workerState
+            // ERST JETZT ist der Stand auswertbar UND die Basis des naechsten
+            // Zyklus.
+            persistedState = kandidat
             telemetry = telemetry.copy(asOfTs = s.nowTs)
         }
         melde(
@@ -195,20 +255,29 @@ class FuseExpectationRecorder(
         }
         when (val g = runCatching { store.load(dir, kopfstand) }.getOrNull()) {
             is FuseExpectationStore.Loaded.Ok      -> {
-                workerState = g.state
                 persistedState = g.state
                 revision = g.revision
+                // Die Marke ueberlebt den Neustart - sonst waere nach einem
+                // Prozesswechsel nicht mehr erkennbar, dass zwischen den
+                // gespeicherten Ergebnissen eine unbeobachtete Minute lag.
+                lastObservationGapTs = maxOf(lastObservationGapTs, g.lastObservationGapTs)
             }
 
             FuseExpectationStore.Loaded.Fresh      -> Unit
 
-            is FuseExpectationStore.Loaded.Corrupt ->
-                // LEER WEITERLAUFEN, ABER NICHT SCHWEIGEN. Der Streak beginnt
-                // neu; unbemerkt zu bleiben waere schlimmer, denn dann saehe
-                // eine kurze Strecke spaeter aus wie eine ehrliche.
-                melde("FAILED:Generation beschaedigt", 0, 0L)
+            is FuseExpectationStore.Loaded.Corrupt -> {
+                // NICHT LEER WEITERLAUFEN (P0-3). Der erste Wurf tat das - und
+                // schrieb die naechste Generation ueber die beschaedigte,
+                // womit der Datenverlust unbeweisbar wurde. Jetzt klebt die
+                // Sperre, bis jemand ausdruecklich repariert.
+                blockiert = "Generation beschaedigt: ${g.reason}"
+                melde("BLOCKED:$blockiert", 0, 0L)
+            }
 
-            null                                   -> melde("FAILED:Laden warf", 0, 0L)
+            null                                   -> {
+                blockiert = "Laden warf"
+                melde("BLOCKED:Laden warf", 0, 0L)
+            }
         }
     }
 
@@ -236,7 +305,8 @@ class FuseExpectationRecorder(
                 ExpectationLedger.Denial.CONTEXT_NOT_CORRECTION,
             )
         return ExpectationLedger.currentLambdaEvidence(
-            persistedState.outcomes, nowTs, stamp, configGeneration, segmentId, klasse, minSafetyMarginMgdl,
+            persistedState.outcomes, nowTs, stamp, configGeneration, segmentId, klasse,
+            minSafetyMarginMgdl, lastObservationGapTs,
         )
     }
 
@@ -287,6 +357,11 @@ class FuseExpectationRecorder(
             },
             writeBytes = t.bytes,
             writeDurationMs = t.durationMs,
+            // TRUNKIERUNG SICHTBAR MACHEN (Toni 18.08.). Eine gekappte
+            // Strecke darf nie wie eine vollstaendig beobachtete aussehen -
+            // sie ist "mindestens so lang", nicht "genau so lang".
+            historyTruncated = z.outcomes.size >= FuseExpectationStore.MAX_OUTCOMES,
+            oldestRetainedDueTs = z.outcomes.minOfOrNull { it.entry.dueTs } ?: 0L,
             queueDepth = t.queueDepth,
             droppedCycles = t.dropped,
             // WIE ALT DER AUSGEWERTETE STAND IST. Ohne diese Zahl saehe ein
