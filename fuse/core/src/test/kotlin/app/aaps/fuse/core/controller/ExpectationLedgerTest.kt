@@ -19,6 +19,7 @@ class ExpectationLedgerTest {
     private val SEG = 1L
     private val CFG = "cfg#1"
     private val REV = 100L
+    private val KORR = ExpectationLedger.ExpectationContext.CORRECTION
 
     private fun eintrag(
         source: Long = t0,
@@ -26,8 +27,10 @@ class ExpectationLedgerTest {
         anchor: Double = 200.0,
         mean: Double = 150.0,
         rev: Long = REV,
+        kontext: ExpectationLedger.ExpectationContext = ExpectationLedger.ExpectationContext.CORRECTION,
     ) = ExpectationLedger.issue(
         source, seg, anchor, mean, H, configGeneration = CFG, interventionRevision = rev,
+        context = kontext,
     )!!
 
     private fun probe(
@@ -51,18 +54,18 @@ class ExpectationLedgerTest {
     /** NUR SENKUNGEN DER MITTELBAHN sind widerlegbar. */
     @Test
     fun `nur eine behauptete Senkung wird eingereiht`() {
-        assertTrue(ExpectationLedger.issue(t0, SEG, 200.0, 150.0, H, CFG, REV) != null)
-        assertNull(ExpectationLedger.issue(t0, SEG, 200.0, 200.0, H, CFG, REV), "unveraendert")
-        assertNull(ExpectationLedger.issue(t0, SEG, 200.0, 240.0, H, CFG, REV), "ein Anstieg")
-        assertNull(ExpectationLedger.issue(t0, SEG, 200.0, 194.0, H, CFG, REV), "6 mg/dl sind Rauschen")
+        assertTrue(ExpectationLedger.issue(t0, SEG, 200.0, 150.0, H, CFG, REV, KORR) != null)
+        assertNull(ExpectationLedger.issue(t0, SEG, 200.0, 200.0, H, CFG, REV, KORR), "unveraendert")
+        assertNull(ExpectationLedger.issue(t0, SEG, 200.0, 240.0, H, CFG, REV, KORR), "ein Anstieg")
+        assertNull(ExpectationLedger.issue(t0, SEG, 200.0, 194.0, H, CFG, REV, KORR), "6 mg/dl sind Rauschen")
     }
 
     @Test
     fun `unbrauchbare Eingaben werden nicht eingereiht`() {
-        assertNull(ExpectationLedger.issue(t0, SEG, null, 150.0, H, CFG, REV))
-        assertNull(ExpectationLedger.issue(t0, SEG, 200.0, null, H, CFG, REV))
-        assertNull(ExpectationLedger.issue(t0, SEG, Double.NaN, 150.0, H, CFG, REV))
-        assertNull(ExpectationLedger.issue(t0, SEG, 200.0, 150.0, 0, CFG, REV), "ohne Horizont")
+        assertNull(ExpectationLedger.issue(t0, SEG, null, 150.0, H, CFG, REV, KORR))
+        assertNull(ExpectationLedger.issue(t0, SEG, 200.0, null, H, CFG, REV, KORR))
+        assertNull(ExpectationLedger.issue(t0, SEG, Double.NaN, 150.0, H, CFG, REV, KORR))
+        assertNull(ExpectationLedger.issue(t0, SEG, 200.0, 150.0, 0, CFG, REV, KORR), "ohne Horizont")
     }
 
     /** OHNE VERGLEICHBARKEITSKENNUNG KEIN EINTRAG. Eine Garantie, die man
@@ -70,8 +73,8 @@ class ExpectationLedgerTest {
      *  Datei, das mit nichts vergleichbar ist. */
     @Test
     fun `ohne Konfigurationskennung wird nicht eingereiht`() {
-        assertNull(ExpectationLedger.issue(t0, SEG, 200.0, 150.0, H, "", REV))
-        assertNull(ExpectationLedger.issue(t0, SEG, 200.0, 150.0, H, "   ", REV))
+        assertNull(ExpectationLedger.issue(t0, SEG, 200.0, 150.0, H, "", REV, KORR))
+        assertNull(ExpectationLedger.issue(t0, SEG, 200.0, 150.0, H, "   ", REV, KORR))
     }
 
     /**
@@ -82,7 +85,7 @@ class ExpectationLedgerTest {
     @Test
     fun `die Sicherheitsuntergrenze faehrt als Kontext mit, nicht als Versprechen`() {
         val e = ExpectationLedger.issue(
-            t0, SEG, 200.0, 150.0, H, CFG, REV,
+            t0, SEG, 200.0, 150.0, H, CFG, REV, KORR,
             safetyLowerPredictedMgdl = 40.0, lambda = 1.0, discountMgdl = -110.8, bgiMgdl = -127.7,
         )!!
         assertEquals(50.0, e.promisedDropMgdl, 1e-9, "das Versprechen ist die MITTELBAHN")
@@ -333,6 +336,7 @@ class ExpectationLedgerTest {
         // Dasselbe fuer die Konfiguration.
         val andereCfg = ExpectationLedger.issue(
             t0, SEG, 200.0, 150.0, H, configGeneration = "cfg#2", interventionRevision = 101L,
+            context = KORR,
         )!!
         val ersetzt2 = ExpectationLedger.add(ersetzt, andereCfg)
         assertEquals(1, ersetzt2.size)
@@ -350,13 +354,13 @@ class ExpectationLedgerTest {
     @Test
     fun `bei geaenderter Prognose wird der Eintrag ersetzt`() {
         val alt = ExpectationLedger.issue(
-            t0, SEG, 200.0, 150.0, H, CFG, REV, safetyLowerPredictedMgdl = 40.0, lambda = 1.0,
+            t0, SEG, 200.0, 150.0, H, CFG, REV, KORR, safetyLowerPredictedMgdl = 40.0, lambda = 1.0,
         )!!
         val liste = ExpectationLedger.add(emptyList(), alt)
 
         // Gleiche Kennung, gleicher Stand - nur die Mittelbahn ist eine andere.
         val andereMittelbahn = ExpectationLedger.issue(
-            t0, SEG, 200.0, 120.0, H, CFG, REV, safetyLowerPredictedMgdl = 40.0, lambda = 1.0,
+            t0, SEG, 200.0, 120.0, H, CFG, REV, KORR, safetyLowerPredictedMgdl = 40.0, lambda = 1.0,
         )!!
         val r1 = ExpectationLedger.add(liste, andereMittelbahn)
         assertEquals(1, r1.size)
@@ -364,7 +368,7 @@ class ExpectationLedgerTest {
 
         // Dasselbe fuer lambda - die Groesse, um die es spaeter geht.
         val anderesLambda = ExpectationLedger.issue(
-            t0, SEG, 200.0, 120.0, H, CFG, REV, safetyLowerPredictedMgdl = 40.0, lambda = 0.5,
+            t0, SEG, 200.0, 120.0, H, CFG, REV, KORR, safetyLowerPredictedMgdl = 40.0, lambda = 0.5,
         )!!
         val r2 = ExpectationLedger.add(r1, anderesLambda)
         assertEquals(1, r2.size)
@@ -542,7 +546,7 @@ class ExpectationLedgerTest {
     @Test
     fun `nur ein MISSED mit Abstand zur Untergrenze ist lambda-Evidenz`() {
         val e = ExpectationLedger.issue(
-            t0, SEG, 200.0, 150.0, H, CFG, REV, safetyLowerPredictedMgdl = 190.0,
+            t0, SEG, 200.0, 150.0, H, CFG, REV, KORR, safetyLowerPredictedMgdl = 190.0,
         )!!
         // Gemessen 205: MISSED, aber nur 15 mg/dl ueber der Untergrenze.
         val (out, _, _) = rechne(listOf(e), e.dueTs, listOf(probe(e.dueTs, 205.0)))
@@ -582,7 +586,7 @@ class ExpectationLedgerTest {
     private fun ergebnis(due: Long, v: ExpectationLedger.Verdict, seg: Long = SEG) =
         ExpectationLedger.Outcome(
             ExpectationLedger.Entry(
-                due - H * 60_000L, due, seg, 200.0, 150.0, CFG, REV,
+                due - H * 60_000L, due, seg, 200.0, 150.0, CFG, REV, KORR,
                 safetyLowerPredictedMgdl = 40.0,
             ),
             v,
@@ -713,5 +717,81 @@ class ExpectationLedgerTest {
         val neu = eintrag(source = t0 + 10 * 60_000L)
         val nachZwei = ExpectationLedger.advance(nachEins, e.dueTs + 60_000L, neu, emptyList())
         assertTrue(nachZwei.entries.any { it.id == neu.id }, "die neue muss offen sein")
+    }
+
+    // ---- Kontext: nur CORRECTION traegt lambda ---------------------------
+
+    /**
+     * TONIS PFLICHTTEST (18.08.): dieselbe MISSED-Folge, einmal als
+     * Korrektur und einmal als Mahlzeit.
+     *
+     * In einer Mahlzeitenepisode ist eine ausbleibende Senkung der
+     * NORMALFALL - Kohlenhydrate laufen gegen das Insulin. Solche Eintraege
+     * in die lambda-Strecke zu zaehlen hiesse, den Abschlag ausgerechnet
+     * dann zu lockern, wenn das Modell recht hatte.
+     */
+    @Test
+    fun `dieselbe Folge traegt lambda nur im Korrekturbetrieb`() {
+        fun folge(kontext: ExpectationLedger.ExpectationContext) = (0..9).map { i ->
+            val due = t0 + i * 60_000L
+            ExpectationLedger.Outcome(
+                ExpectationLedger.Entry(
+                    due - H * 60_000L, due, SEG, 200.0, 150.0, CFG, REV, kontext,
+                    safetyLowerPredictedMgdl = 40.0,
+                ),
+                ExpectationLedger.Verdict.MISSED, due, 205.0,
+            )
+        }
+        assertEquals(
+            9, ExpectationLedger.lambdaEvidenceStreakMin(folge(KORR), SEG, MARGE),
+            "der Korrekturbetrieb traegt den Nachweis",
+        )
+        assertEquals(
+            0,
+            ExpectationLedger.lambdaEvidenceStreakMin(
+                folge(ExpectationLedger.ExpectationContext.MEAL), SEG, MARGE,
+            ),
+            "dieselbe Folge als Mahlzeit traegt ihn NICHT",
+        )
+    }
+
+    /** Und einzeln: ein MEAL-Ergebnis ist nie lambda-Evidenz, egal wie gross
+     *  der Abstand zur Untergrenze ist. */
+    @Test
+    fun `ein Mahlzeiten-Ergebnis ist nie lambda-Evidenz`() {
+        val meal = ExpectationLedger.Outcome(
+            ExpectationLedger.Entry(
+                t0, t0 + H * 60_000L, SEG, 200.0, 150.0, CFG, REV,
+                ExpectationLedger.ExpectationContext.MEAL,
+                safetyLowerPredictedMgdl = 40.0,
+            ),
+            ExpectationLedger.Verdict.MISSED, t0 + H * 60_000L, 205.0,
+        )
+        assertEquals(ExpectationLedger.Verdict.MISSED, meal.verdict, "auswertbar bleibt es")
+        assertEquals(165.0, meal.distanceFromSafetyLowerMgdl!!, 1e-9, "und die Diagnose steht")
+        assertTrue(!meal.isLambdaEvidence(1.0), "aber kein Beleg gegen lambda")
+    }
+
+    /** Eine MEAL-Strecke unterbricht eine laufende CORRECTION-Strecke -
+     *  konservativ, wie jedes andere Nicht-Ereignis auch. */
+    @Test
+    fun `ein Mahlzeiten-Ergebnis unterbricht die Korrekturstrecke`() {
+        fun erg(due: Long, kontext: ExpectationLedger.ExpectationContext) =
+            ExpectationLedger.Outcome(
+                ExpectationLedger.Entry(
+                    due - H * 60_000L, due, SEG, 200.0, 150.0, CFG, REV, kontext,
+                    safetyLowerPredictedMgdl = 40.0,
+                ),
+                ExpectationLedger.Verdict.MISSED, due, 205.0,
+            )
+        val reihe = listOf(
+            erg(t0, KORR),
+            erg(t0 + 60_000L, ExpectationLedger.ExpectationContext.MEAL),
+            erg(t0 + 120_000L, KORR),
+        )
+        assertEquals(
+            0, ExpectationLedger.lambdaEvidenceStreakMin(reihe, SEG, MARGE),
+            "die Mahlzeit in der Mitte darf nicht ueberbrueckt werden",
+        )
     }
 }

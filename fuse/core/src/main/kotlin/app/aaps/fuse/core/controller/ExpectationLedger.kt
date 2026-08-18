@@ -27,6 +27,35 @@ import kotlin.math.abs
 object ExpectationLedger {
 
     /**
+     * WOFUER eine Prognose abgegeben wurde - und ob sie den lambda-Nachweis
+     * tragen darf (Toni 18.08., vor der Runner-Anbindung).
+     *
+     * Der Erwartungs-Ledger dient dem HOCHPLATEAU-/lambda-Nachweis. Das
+     * geplante Mahlzeitenfundament ist eine eigene Regelungsschicht mit
+     * eigener Physik: dort ist eine ausbleibende Senkung der Normalfall,
+     * weil Kohlenhydrate gegen das Insulin laufen. Solche Eintraege in
+     * dieselbe Strecke zu zaehlen hiesse, den lambda-Nachweis mit
+     * Mahlzeitenverlaeufen zu fuellen - und lambda wuerde ausgerechnet dann
+     * gelockert, wenn das Modell recht hatte.
+     *
+     * Als PFLICHTFELD und nicht als Vorgabewert: ein Default waere die
+     * bequeme Loesung und wuerde jede vergessene Aufrufstelle still zu
+     * CORRECTION machen - also zur lambda-tauglichen Sorte.
+     */
+    enum class ExpectationContext {
+
+        /** Gewoehnlicher Korrekturbetrieb - die einzige Sorte, die
+         *  lambda-Evidenz tragen darf. */
+        CORRECTION,
+
+        /**
+         * Marker-, Fundament- oder Evidenzepisode ist massgeblich.
+         * Auswertbar und exportiert, aber NIE Teil der lambda-Strecke.
+         */
+        MEAL,
+    }
+
+    /**
      * Kennung eines VERBRAUCHTEN Messwerts - Teil des persistierbaren
      * Zustands.
      *
@@ -113,6 +142,7 @@ object ExpectationLedger {
         val meanPredictedMgdl: Double,
         val configGeneration: String,
         val interventionRevision: Long,
+        val context: ExpectationContext,
         val safetyLowerPredictedMgdl: Double? = null,
         val lambda: Double? = null,
         val discountMgdl: Double? = null,
@@ -199,6 +229,11 @@ object ExpectationLedger {
             // als Beleg fuer "mehr Insulin" durchgingen - die Umkehrung des
             // Begriffs. Nicht-endlich ebenso: fail-closed statt NaN-Vergleich.
             if (!minSafetyMarginMgdl.isFinite() || minSafetyMarginMgdl <= 0.0) return false
+            // NUR DER KORREKTURBETRIEB TRAEGT DEN lambda-NACHWEIS. In einer
+            // Mahlzeitenepisode ist eine ausbleibende Senkung der Normalfall -
+            // sie mitzuzaehlen hiesse, lambda ausgerechnet dann zu lockern,
+            // wenn das Modell recht hatte.
+            if (entry.context != ExpectationContext.CORRECTION) return false
             if (verdict != Verdict.MISSED) return false
             val abstand = distanceFromSafetyLowerMgdl ?: return false
             return abstand >= minSafetyMarginMgdl
@@ -217,6 +252,7 @@ object ExpectationLedger {
         horizonMin: Int,
         configGeneration: String,
         interventionRevision: Long,
+        context: ExpectationContext,
         safetyLowerPredictedMgdl: Double? = null,
         lambda: Double? = null,
         discountMgdl: Double? = null,
@@ -239,6 +275,7 @@ object ExpectationLedger {
             meanPredictedMgdl = meanPredictedMgdl,
             configGeneration = configGeneration,
             interventionRevision = interventionRevision,
+            context = context,
             safetyLowerPredictedMgdl = safetyLowerPredictedMgdl?.takeIf { it.isFinite() },
             lambda = lambda?.takeIf { it.isFinite() },
             discountMgdl = discountMgdl?.takeIf { it.isFinite() },

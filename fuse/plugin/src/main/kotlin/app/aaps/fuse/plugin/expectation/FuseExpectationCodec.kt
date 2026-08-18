@@ -129,6 +129,7 @@ object FuseExpectationCodec {
         .put("mean", e.meanPredictedMgdl)
         .put("cfg", e.configGeneration)
         .put("rev", e.interventionRevision)
+        .put("ctx", e.context.name)
         .putOpt("safetyLower", e.safetyLowerPredictedMgdl)
         .putOpt("lambda", e.lambda)
         .putOpt("discount", e.discountMgdl)
@@ -144,6 +145,11 @@ object FuseExpectationCodec {
         meanPredictedMgdl = endlich(o.getDouble("mean")),
         configGeneration = o.getString("cfg").also { require(it.isNotBlank()) },
         interventionRevision = o.getLong("rev"),
+        // PFLICHTFELD. `getString` wirft bei Fehlen, `valueOf` bei einem
+        // unbekannten Namen - beides verwirft die ganze Generation. Ein
+        // Rueckfall auf CORRECTION waere die gefaehrliche Richtung: er
+        // machte jeden unlesbaren Eintrag lambda-tauglich.
+        context = ExpectationLedger.ExpectationContext.valueOf(o.getString("ctx")),
         safetyLowerPredictedMgdl = optEndlich(o, "safetyLower"),
         lambda = optEndlich(o, "lambda"),
         discountMgdl = optEndlich(o, "discount"),

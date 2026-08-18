@@ -42,6 +42,7 @@ class FuseExpectationStoreTest {
         sourceTs = source, dueTs = source + 30 * 60_000L, segmentId = seg,
         anchorMgdl = 200.0, meanPredictedMgdl = 150.0,
         configGeneration = "cfg#1", interventionRevision = 42L,
+        context = ExpectationLedger.ExpectationContext.CORRECTION,
         safetyLowerPredictedMgdl = 40.0,
     )
 
