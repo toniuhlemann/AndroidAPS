@@ -487,11 +487,9 @@ class MealFoundationTest {
         anteil: Double = A_SHARE,
         an: Boolean = true,
         ende: Int = B_BIS,
-        primeStart: Long = 0L,
     ) = MealFoundation.arm(
         markerTs = t0, foundationEnabled = an, totalBudgetU = budget, phaseAShare = anteil,
-        primeWindowStartTs = primeStart, primeWindowMin = A_BIS, wallCeilingMin = 45,
-        phaseBUntilMin = ende,
+        primeWindowMin = A_BIS, wallCeilingMin = 45, phaseBUntilMin = ende,
     )
 
     @Test
@@ -501,76 +499,65 @@ class MealFoundationTest {
         assertEquals(BUDGET, a.totalBudgetU, 1e-9)
         assertEquals(2.25, a.phaseABudgetU, 1e-9)
         assertEquals(0.75, a.phaseBBudgetU, 1e-9)
-        assertEquals(t0 + A_BIS * 60_000L, a.handoverTs)
         assertEquals(t0 + B_BIS * 60_000L, a.endTs)
+        assertEquals(0L, a.latchedHandoverTs, "die Uebergabe ist noch NICHT festgeschrieben")
+    }
+
+    /**
+     * DIE TEILBUDGETS SIND ABGELEITET, NICHT GESPEICHERT (Toni 18.08., P0-1).
+     *
+     * Der erste Wurf war eine data class mit gespeicherten Teilbudgets. copy()
+     * konnte damit ein A von 3,00 neben einem B von 0,75 erzeugen, obwohl das
+     * Gesamt 3,00 war - und es galt als gueltig. Da primeBudgetU() das
+     * gespeicherte A las und planFrom() das B neu rechnete, haetten Prime und
+     * Fundament zusammen 3,75 U aus einer 3-U-Autorisierung gesehen.
+     */
+    @Test
+    fun `Phase A und B ergeben in jeder Stellung exakt das Gesamtbudget`() {
+        for (anteil in listOf(0.0, 0.33, 0.5, 0.67, 0.75, 0.8, 1.0)) {
+            val a = armiere(anteil = anteil)
+            assertEquals(
+                a.totalBudgetU, a.phaseABudgetU + a.phaseBBudgetU, 1e-12,
+                "Anteil $anteil - die Summe MUSS exakt aufgehen",
+            )
+        }
     }
 
     /**
      * EINE SPAETERE AENDERUNG ERREICHT DIE LAUFENDE MAHLZEIT NICHT.
      *
-     * Das ist der Kern des Pinnings (Toni 18.08.): "konfigurierbar heisst
-     * beim naechsten Markerdruck waehlbar, nicht eine laufende
-     * Insulinautorisierung nachtraeglich veraenderbar". Wuerde
-     * PrimeEnvelopeU bei T+40 erhoeht, entstuende zusaetzliches "bereits
-     * autorisiertes" Insulin, das niemand autorisiert hat.
+     * "Konfigurierbar heisst beim naechsten Markerdruck waehlbar, nicht eine
+     * laufende Insulinautorisierung nachtraeglich veraenderbar."
      */
     @Test
     fun `eine spaetere Budgetaenderung veraendert die laufende Autorisierung nicht`() {
         val a = armiere(budget = 3.0)
-        // Der Nutzer stellt bei T+40 auf 4,0 U - der Plan liest weiter 3,0 U.
-        val p = MealFoundation.planFrom(a, t0 + 40 * 60_000L, 2.25, 0.0, STEP)
+        val p = MealFoundation.planFrom(a, t0 + 40 * 60_000L, 0L, 2.25, 0.0, STEP)
         assertEquals(
-            0.75 - 0.0, p.remainingInWindowU, 1e-9,
+            0.75, p.remainingInWindowU, 1e-9,
             "das Phase-B-Budget bleibt die Momentaufnahme von 3,0 U",
         )
-        assertTrue(p.remainingInWindowU < 1.0, "und nicht das aus 4,0 U abgeleitete")
     }
 
-    /** Auch eine Anteilsaenderung oeffnet kein neues Phase-B-Budget. */
-    @Test
-    fun `eine spaetere Anteilsaenderung oeffnet kein neues Budget`() {
-        val a = armiere(anteil = 0.75)
-        val p = MealFoundation.planFrom(a, t0 + 60 * 60_000L, 2.25, 0.75, STEP)
-        assertEquals(0.0, p.remainingInWindowU, 1e-9, "0,75 U vergeben, nichts offen")
-        assertEquals(0.0, p.dueU, 1e-9)
-    }
-
-    /** Und eine spaetere Endzeit verlaengert die laufende Phase nicht. */
     @Test
     fun `eine spaetere Endzeit verlaengert die laufende Phase nicht`() {
         val a = armiere(ende = 60)
-        // Selbst bei T+80 ist das gepinnte Ende T+60 massgeblich.
-        val p = MealFoundation.planFrom(a, t0 + 80 * 60_000L, 2.25, 0.0, STEP)
+        val p = MealFoundation.planFrom(a, t0 + 80 * 60_000L, 0L, 2.25, 0.0, STEP)
         assertEquals(MealFoundation.Binding.AFTER_WINDOW, p.binding)
         assertEquals(0.0, p.dueU, 1e-9)
     }
 
-    /**
-     * DER SCHALTER MITTEN IN EINER EPISODE ARMIERT NICHTS.
-     *
-     * Ohne diesen Riegel saehe ein Schalterdruck bei T+40 sofort ein Soll von
-     * zwei Dritteln des Phase-B-Budgets - der Ein-Schritt-Riegel wuerde es
-     * ueber Minuten nachliefern statt in einem Zug, aber liefern wuerde er es.
-     * Armiert wird erst das naechste bewusst eroeffnete Markerbudget.
-     */
     @Test
     fun `bei ausgeschaltetem Fundament entsteht keine Momentaufnahme`() {
         val a = armiere(an = false)
         assertFalse(a.valid, "keine Autorisierung")
         assertEquals(
             MealFoundation.Binding.UNUSABLE_INPUT,
-            MealFoundation.planFrom(a, t0 + 40 * 60_000L, 2.25, 0.0, STEP).binding,
+            MealFoundation.planFrom(a, t0 + 40 * 60_000L, 0L, 2.25, 0.0, STEP).binding,
             "und damit auch kein rueckwirkender Rueckstand",
         )
     }
 
-    /**
-     * PRIME UND FUNDAMENT LESEN DIESELBE AUTORISIERUNG.
-     *
-     * Sonst rechnete die Huelle live mit einem geaenderten PrimeEnvelopeU,
-     * waehrend Phase B den alten Gesamtbetrag verwendet - und die Summe waere
-     * weder das eine noch das andere.
-     */
     @Test
     fun `Prime liest bei aktivem Fundament das gepinnte Phase-A-Budget`() {
         val a = armiere(budget = 3.0, anteil = 0.75)
@@ -578,29 +565,104 @@ class MealFoundationTest {
             2.25, MealFoundation.primeBudgetU(a, liveTotalBudgetU = 4.0), 1e-9,
             "die spaetere Erhoehung auf 4,0 U erreicht Prime nicht",
         )
-        assertEquals(
-            a.phaseABudgetU + a.phaseBBudgetU, a.totalBudgetU, 1e-9,
-            "und beide Teile ergeben zusammen genau die Autorisierung",
-        )
     }
 
-    /** Ohne Autorisierung gilt unveraendert das Live-Budget - der heutige
-     *  Stand muss bitgleich bleiben. */
     @Test
     fun `ohne Autorisierung liest Prime unveraendert das Live-Budget`() {
+        assertEquals(4.0, MealFoundation.primeBudgetU(MealFoundation.Authorization.none(), 4.0), 1e-9)
+    }
+
+    // ---- Die Uebergabe folgt der Laufzeit bis zum Latch (P0-2) -----------
+
+    /**
+     * EINE CLEARANCE NACH DEM ARMEN VERSCHIEBT BEIDE PHASEN GEMEINSAM.
+     *
+     * Der erste Wurf fror die Uebergabe schon beim Markerdruck ein - zu einem
+     * Zeitpunkt, an dem spaetere Verschiebungen noch gar nicht bekannt sein
+     * KOENNEN. Damit war die gerade beseitigte Ueberlappung wieder da: Prime
+     * gibt bis T+25 frei, das Fundament zaehlt ab T+15. Der damalige Test
+     * "spaetere Clearance verschiebt sie nicht mehr" hat den Fehler
+     * festgeschrieben - er ist durch diesen hier ersetzt.
+     */
+    @Test
+    fun `eine Clearance nach dem Armen verschiebt die Uebergabe mit`() {
+        val a = armiere()
+        val clearanceBei = t0 + 10 * 60_000L
         assertEquals(
-            4.0, MealFoundation.primeBudgetU(MealFoundation.Authorization.none(), 4.0), 1e-9,
+            clearanceBei + A_BIS * 60_000L, a.effectiveHandoverTs(clearanceBei),
+            "die Uebergabe folgt dem verschobenen Prime-Fenster",
+        )
+        // Und bei T+20 - vor der verschobenen Uebergabe - entsteht nichts.
+        val p = MealFoundation.planFrom(a, t0 + 20 * 60_000L, clearanceBei, 2.25, 0.0, STEP)
+        assertEquals(0.0, p.dueU, 1e-9)
+        assertEquals(
+            MealFoundation.Binding.BEFORE_WINDOW, p.binding,
+            "waehrend Prime noch freigibt, schweigt das Fundament",
         )
     }
 
-    /** Die Uebergabe wird beim Armen festgeschrieben - eine spaetere
-     *  Clearance verschiebt sie nicht mehr. */
+    /** Nach dem Latch steht die Uebergabe fest und wandert nicht mehr. */
     @Test
-    fun `die Uebergabe wird beim Armen festgeschrieben`() {
-        val mitClearance = armiere(primeStart = t0 + 10 * 60_000L)
+    fun `nach dem Latch verschiebt keine Clearance mehr`() {
+        val gelatcht = armiere().latched(t0 + A_BIS * 60_000L)
         assertEquals(
-            t0 + 25 * 60_000L, mitClearance.handoverTs,
-            "beim Armen galt die verschobene Grenze - und sie bleibt",
+            t0 + A_BIS * 60_000L, gelatcht.effectiveHandoverTs(t0 + 30 * 60_000L),
+            "eine spaete Clearance hat keine rueckwirkende Kraft mehr",
+        )
+    }
+
+    /** Ein zweiter Latch veraendert nichts - sonst haette ein spaeter Zyklus
+     *  die Wirkung einer Clearance nachtraeglich. */
+    @Test
+    fun `ein zweiter Latch ist wirkungslos`() {
+        val einmal = armiere().latched(t0 + 15 * 60_000L)
+        val zweimal = einmal.latched(t0 + 40 * 60_000L)
+        assertEquals(einmal.latchedHandoverTs, zweimal.latchedHandoverTs)
+    }
+
+    // ---- Wiederherstellen ist fail-closed --------------------------------
+
+    /**
+     * WIDERSPRUECHLICHE DATEN ERGEBEN KEINE AUTORISIERUNG.
+     *
+     * Ein halb gelesenes Budget waere eine Insulinfreigabe, die niemand
+     * erteilt hat.
+     */
+    @Test
+    fun `eine widerspruechliche Generation wird beim Restore abgelehnt`() {
+        val faelle = mapOf(
+            "kein Marker" to MealFoundation.Authorization.restore(0L, BUDGET, A_SHARE, A_BIS, 45, t0 + 3_600_000L, 0L),
+            "Budget NaN" to MealFoundation.Authorization.restore(t0, Double.NaN, A_SHARE, A_BIS, 45, t0 + 3_600_000L, 0L),
+            "Budget 0" to MealFoundation.Authorization.restore(t0, 0.0, A_SHARE, A_BIS, 45, t0 + 3_600_000L, 0L),
+            "Anteil ueber 1" to MealFoundation.Authorization.restore(t0, BUDGET, 1.5, A_BIS, 45, t0 + 3_600_000L, 0L),
+            "Ende vor Marker" to MealFoundation.Authorization.restore(t0, BUDGET, A_SHARE, A_BIS, 45, t0 - 1000L, 0L),
+            "Latch vor Marker" to MealFoundation.Authorization.restore(t0, BUDGET, A_SHARE, A_BIS, 45, t0 + 3_600_000L, t0 - 1000L),
+            "negatives Fenster" to MealFoundation.Authorization.restore(t0, BUDGET, A_SHARE, -1, 45, t0 + 3_600_000L, 0L),
+        )
+        for ((name, a) in faelle) {
+            assertFalse(a.valid, name)
+            // UND ES KOMMT WIRKLICH `none()` ZURUECK, nicht die kaputte
+            // Instanz mit gesetztem `valid=false`. Sonst koennte ein Aufrufer
+            // `phaseABudgetU` lesen und einen Unsinnswert bekommen - die
+            // Pruefung waere dann nur eine Empfehlung.
+            assertEquals(0L, a.armedTs, "$name: genullt")
+            assertEquals(0.0, a.totalBudgetU, 1e-12, "$name: genullt")
+            assertEquals(0.0, a.phaseABudgetU, 1e-12, "$name: kein Teilbudget")
+        }
+    }
+
+    /** Eine stimmige Generation kommt vollstaendig zurueck - auch der Latch. */
+    @Test
+    fun `eine stimmige Generation ueberlebt den Restore`() {
+        val a = MealFoundation.Authorization.restore(
+            t0, BUDGET, A_SHARE, A_BIS, 45, t0 + B_BIS * 60_000L, t0 + 20 * 60_000L,
+        )
+        assertTrue(a.valid)
+        assertEquals(2.25, a.phaseABudgetU, 1e-9)
+        assertEquals(t0 + 20 * 60_000L, a.latchedHandoverTs)
+        assertEquals(
+            t0 + 20 * 60_000L, a.effectiveHandoverTs(t0 + 40 * 60_000L),
+            "der gelatchte Anker gilt weiter, egal was Prime inzwischen meldet",
         )
     }
 

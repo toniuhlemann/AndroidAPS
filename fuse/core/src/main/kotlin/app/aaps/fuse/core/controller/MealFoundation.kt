@@ -40,78 +40,155 @@ import kotlin.math.min
 object MealFoundation {
 
     /**
-     * DIE BEIM ARMEN EINGEFRORENE AUTORISIERUNG (Toni 18.08.).
+     * DIE BEIM ARMEN EINGEFRORENEN REGELPARAMETER (Toni 18.08.).
      *
      * WARUM NICHT JEDEN ZYKLUS NEU LESEN. Alle Werte sind einstellbar - und
      * genau deshalb duerfen sie eine LAUFENDE Mahlzeit nicht mehr veraendern.
-     * Wuerde `PrimeEnvelopeU` bei T+40 erhoeht, entstuende zusaetzliches
-     * "bereits autorisiertes" Insulin, das niemand autorisiert hat; wuerde es
-     * gesenkt, oeffnete sich verbrauchtes Budget wieder. Beides waere eine
-     * nachtraegliche Aenderung an einer Insulinfreigabe, die der Nutzer
-     * einmal und bewusst erteilt hat.
+     * Wuerde das Budget bei T+40 erhoeht, entstuende zusaetzliches "bereits
+     * autorisiertes" Insulin, das niemand autorisiert hat; wuerde es gesenkt,
+     * oeffnete sich verbrauchtes Budget wieder.
      *
      * Konfigurierbar heisst: BEIM NAECHSTEN MARKERDRUCK waehlbar. Nicht:
      * waehrend der Wirkung nachjustierbar.
      *
-     * DIE TEILBUDGETS SIND MOMENTAUFNAHMEN, keine abgeleiteten Groessen mehr.
-     * Sie stehen hier ausgerechnet, weil sie sonst aus dem gepinnten Gesamt
-     * und einem SPAETER gelesenen Anteil entstuenden - wieder zwei Wahrheiten.
+     * KEINE data class UND KEIN OEFFENTLICHER KONSTRUKTOR (Toni 18.08., P0-1).
+     * Der erste Wurf war eine data class mit GESPEICHERTEN Teilbudgets - copy()
+     * konnte damit einen Zustand erzeugen, in dem das A-Budget 3,00 und das
+     * B-Budget 0,75 betrug, obwohl das Gesamtbudget 3,00 war. Er galt sogar als
+     * gueltig, weil nur auf Endlichkeit geprueft wurde. Da primeBudgetU() das
+     * gespeicherte A las, planFrom() das B aber neu rechnete, haetten Prime und
+     * Fundament zusammen 3,75 U aus einer 3-U-Autorisierung gesehen.
      *
-     * SOLANGE DAS FUNDAMENT AKTIV IST, MUSS AUCH PRIME HIERAUS LESEN. Sonst
-     * rechnete die Huelle live mit einem geaenderten Budget, waehrend Phase B
-     * den alten Gesamtbetrag verwendet - zwei Wahrheiten ueber dieselbe
-     * Autorisierung, und die Summe waere weder das eine noch das andere.
+     * Die Teilbudgets sind deshalb ABGELEITET, nicht gespeichert. Meine
+     * Begruendung dagegen war falsch: sind Gesamt UND Anteil gepinnt, wird
+     * nirgends ein spaeterer Live-Anteil gelesen - die Ableitung IST die eine
+     * Wahrheit.
+     *
+     * DIE UEBERGABE GEHOERT NICHT HIERHER (P0-2). Sie steht beim Markerdruck
+     * noch gar nicht fest: eine spaetere CLEARANCE verschiebt das
+     * Prime-Fenster, und ein zu frueh eingefrorener Anker braechte genau die
+     * Ueberlappung zurueck, die er verhindern soll. Gepinnt werden die
+     * REGELPARAMETER; der Zeitpunkt folgt der Laufzeit, bis er beim
+     * tatsaechlichen Uebergang gelatcht wird.
      */
-    data class Authorization(
+    class Authorization private constructor(
         /** Wann diese Autorisierung entstand - der Markerdruck. */
         val armedTs: Long,
         val totalBudgetU: Double,
         val phaseAShare: Double,
-        /** Momentaufnahme: totalBudgetU * phaseAShare. */
-        val phaseABudgetU: Double,
-        /** Momentaufnahme: totalBudgetU * (1 - phaseAShare). */
-        val phaseBBudgetU: Double,
-        /** Der festgeschriebene Uebergabeanker - restartfest. */
-        val handoverTs: Long,
-        /** Das festgeschriebene Fensterende - eine spaetere Aenderung der
-         *  Endzeit verlaengert die laufende Phase nicht. */
+        /** Das beim Armen gueltige Prime-Fenster [min] - gepinnt, damit eine
+         *  spaetere Aenderung die laufende Uebergabe nicht verschiebt. */
+        val pinnedPrimeWindowMin: Int,
+        /** Die beim Armen gueltige Wanduhr-Decke [min]. */
+        val pinnedWallCeilingMin: Int,
+        /** Das festgeschriebene Fensterende. */
         val endTs: Long,
+        /**
+         * DER ENDGUELTIG GELATCHTE UEBERGABEANKER. 0 heisst "noch nicht
+         * uebergeben" - dann folgt der Anker weiter der Prime-Laufzeit.
+         */
+        val latchedHandoverTs: Long,
     ) {
 
-        /** Traegt sie eine brauchbare Autorisierung? */
+        /** ABGELEITET, nicht gespeichert - es gibt nur eine Wahrheit. */
+        val phaseABudgetU: Double get() = totalBudgetU * phaseAShare
+
+        /** Exakt komplementaer, damit A + B ohne Rundungsrest das Gesamt
+         *  ergibt. Ein zweites Produkt waere es nicht. */
+        val phaseBBudgetU: Double get() = totalBudgetU - phaseABudgetU
+
         val valid: Boolean
             get() = armedTs > 0L && totalBudgetU.isFinite() && totalBudgetU > 0.0 &&
                 phaseAShare.isFinite() && phaseAShare in 0.0..1.0 &&
-                phaseABudgetU.isFinite() && phaseBBudgetU.isFinite() &&
-                phaseABudgetU >= 0.0 && phaseBBudgetU >= 0.0 &&
-                handoverTs >= armedTs && endTs > armedTs
+                pinnedPrimeWindowMin >= 0 && pinnedWallCeilingMin >= 0 &&
+                endTs > armedTs && latchedHandoverTs >= 0L &&
+                (latchedHandoverTs == 0L || latchedHandoverTs >= armedTs)
+
+        /**
+         * DER AKTUELL GELTENDE UEBERGABEZEITPUNKT.
+         *
+         * Vor dem Latch folgt er der Prime-Laufzeit: eine CLEARANCE verschiebt
+         * Prime UND Fundament gemeinsam, sonst begaenne Phase B, waehrend die
+         * Huelle noch freigibt. Nach dem Latch steht er fest und wandert nicht
+         * mehr.
+         */
+        fun effectiveHandoverTs(primeWindowStartTs: Long): Long =
+            if (latchedHandoverTs > 0L) latchedHandoverTs
+            else handoverTs(armedTs, primeWindowStartTs, pinnedPrimeWindowMin, pinnedWallCeilingMin)
+
+        /**
+         * DEN UEBERGANG FESTSCHREIBEN - einmal, beim tatsaechlichen Uebergang.
+         *
+         * Ist er schon gelatcht, bleibt es dabei: ein zweiter Aufruf darf ihn
+         * nicht verschieben, sonst haette eine spaete Clearance nachtraeglich
+         * doch noch Wirkung.
+         */
+        fun latched(handoverTs: Long): Authorization =
+            if (latchedHandoverTs > 0L || handoverTs <= 0L) this
+            else Authorization(
+                armedTs, totalBudgetU, phaseAShare, pinnedPrimeWindowMin,
+                pinnedWallCeilingMin, endTs, handoverTs,
+            )
 
         companion object {
 
             /** Keine laufende Autorisierung - das Fundament ist nicht armiert. */
-            fun none() = Authorization(0L, 0.0, 0.0, 0.0, 0.0, 0L, 0L)
+            fun none() = Authorization(0L, 0.0, 0.0, 0, 0, 0L, 0L)
+
+            /**
+             * AUS DER PERSISTENZ WIEDERHERSTELLEN - mit Pruefung.
+             *
+             * Fail-closed: eine widerspruechliche Generation ergibt KEINE
+             * Autorisierung, nicht eine halbe. Ein halb gelesenes Budget waere
+             * eine Insulinfreigabe, die niemand erteilt hat.
+             */
+            fun restore(
+                armedTs: Long,
+                totalBudgetU: Double,
+                phaseAShare: Double,
+                pinnedPrimeWindowMin: Int,
+                pinnedWallCeilingMin: Int,
+                endTs: Long,
+                latchedHandoverTs: Long,
+            ): Authorization {
+                val a = Authorization(
+                    armedTs, totalBudgetU, phaseAShare, pinnedPrimeWindowMin,
+                    pinnedWallCeilingMin, endTs, latchedHandoverTs,
+                )
+                return if (a.valid) a else none()
+            }
+
+            internal fun create(
+                armedTs: Long,
+                totalBudgetU: Double,
+                phaseAShare: Double,
+                pinnedPrimeWindowMin: Int,
+                pinnedWallCeilingMin: Int,
+                endTs: Long,
+            ) = Authorization(
+                armedTs, totalBudgetU, phaseAShare, pinnedPrimeWindowMin,
+                pinnedWallCeilingMin, endTs, 0L,
+            )
         }
     }
 
     /**
      * EINE NEUE AUTORISIERUNG ARMIEREN - nur beim bewussten Markerdruck.
      *
-     * @param foundationEnabled ist das Fundament eingeschaltet? Wenn nicht,
-     *   entsteht KEINE Momentaufnahme (Toni 18.08.): das heutige
-     *   Prime-Verhalten bleibt unveraendert, und es gibt nichts, was spaeter
-     *   ein Fundament rechtfertigen koennte.
+     * Gepinnt werden die REGELPARAMETER, nicht der Uebergabezeitpunkt: der
+     * steht hier noch nicht fest (s. [Authorization]).
      *
-     *   Damit ist auch der Fall abgedeckt, dass jemand den Schalter MITTEN in
-     *   einer laufenden Episode umlegt: es gibt dann keine Autorisierung, also
-     *   kein rueckwirkendes Soll und keinen Aufholstrom. Armiert wird erst das
-     *   naechste bewusst eroeffnete Markerbudget.
+     * @param foundationEnabled ist das Fundament eingeschaltet? Wenn nicht,
+     *   entsteht KEINE Momentaufnahme: das heutige Prime-Verhalten bleibt
+     *   unveraendert. Damit ist auch der Fall abgedeckt, dass jemand den
+     *   Schalter MITTEN in einer laufenden Episode umlegt - es gibt dann keine
+     *   Autorisierung, also kein rueckwirkendes Soll und keinen Aufholstrom.
      */
     fun arm(
         markerTs: Long,
         foundationEnabled: Boolean,
         totalBudgetU: Double,
         phaseAShare: Double,
-        primeWindowStartTs: Long,
         primeWindowMin: Int,
         wallCeilingMin: Int,
         phaseBUntilMin: Int,
@@ -119,17 +196,13 @@ object MealFoundation {
         if (!foundationEnabled || markerTs <= 0L) return Authorization.none()
         if (!totalBudgetU.isFinite() || totalBudgetU <= 0.0) return Authorization.none()
         if (!phaseAShare.isFinite() || phaseAShare !in 0.0..1.0) return Authorization.none()
-        if (phaseBUntilMin <= 0) return Authorization.none()
-        val uebergabe = handoverTs(markerTs, primeWindowStartTs, primeWindowMin, wallCeilingMin)
-        if (uebergabe <= 0L) return Authorization.none()
-        return Authorization(
+        if (phaseBUntilMin <= 0 || primeWindowMin < 0 || wallCeilingMin < 0) return Authorization.none()
+        return Authorization.create(
             armedTs = markerTs,
             totalBudgetU = totalBudgetU,
             phaseAShare = phaseAShare,
-            // AUSGERECHNET UND EINGEFROREN, nicht spaeter abgeleitet.
-            phaseABudgetU = totalBudgetU * phaseAShare,
-            phaseBBudgetU = totalBudgetU * (1.0 - phaseAShare),
-            handoverTs = uebergabe,
+            pinnedPrimeWindowMin = primeWindowMin,
+            pinnedWallCeilingMin = wallCeilingMin,
             endTs = markerTs + phaseBUntilMin * 60_000L,
         )
     }
@@ -383,6 +456,15 @@ object MealFoundation {
     fun planFrom(
         auth: Authorization,
         nowTs: Long,
+        /**
+         * DER LAUFENDE PRIME-FENSTERSTART (Toni 18.08., P0-2).
+         *
+         * Vor dem Latch folgt die Uebergabe ihm: eine CLEARANCE verschiebt
+         * Prime UND Fundament gemeinsam. Nach dem Latch ist er ohne Wirkung -
+         * [Authorization.effectiveHandoverTs] gibt dann den festgeschriebenen
+         * Anker zurueck.
+         */
+        primeWindowStartTs: Long,
         deliveredFromBudgetU: Double,
         deliveredSinceHandoverU: Double,
         bolusStepU: Double,
@@ -391,7 +473,7 @@ object MealFoundation {
         return plan(
             markerTs = auth.armedTs,
             nowTs = nowTs,
-            handoverTs = auth.handoverTs,
+            handoverTs = auth.effectiveHandoverTs(primeWindowStartTs),
             totalBudgetU = auth.totalBudgetU,
             phaseAShare = auth.phaseAShare,
             // Aus der Momentaufnahme zurueckgerechnet, damit die Rohfassung
