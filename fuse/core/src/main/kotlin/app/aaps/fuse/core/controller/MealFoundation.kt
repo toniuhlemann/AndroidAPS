@@ -40,6 +40,101 @@ import kotlin.math.min
 object MealFoundation {
 
     /**
+     * DIE BEIM ARMEN EINGEFRORENE AUTORISIERUNG (Toni 18.08.).
+     *
+     * WARUM NICHT JEDEN ZYKLUS NEU LESEN. Alle Werte sind einstellbar - und
+     * genau deshalb duerfen sie eine LAUFENDE Mahlzeit nicht mehr veraendern.
+     * Wuerde `PrimeEnvelopeU` bei T+40 erhoeht, entstuende zusaetzliches
+     * "bereits autorisiertes" Insulin, das niemand autorisiert hat; wuerde es
+     * gesenkt, oeffnete sich verbrauchtes Budget wieder. Beides waere eine
+     * nachtraegliche Aenderung an einer Insulinfreigabe, die der Nutzer
+     * einmal und bewusst erteilt hat.
+     *
+     * Konfigurierbar heisst: BEIM NAECHSTEN MARKERDRUCK waehlbar. Nicht:
+     * waehrend der Wirkung nachjustierbar.
+     *
+     * DIE TEILBUDGETS SIND MOMENTAUFNAHMEN, keine abgeleiteten Groessen mehr.
+     * Sie stehen hier ausgerechnet, weil sie sonst aus dem gepinnten Gesamt
+     * und einem SPAETER gelesenen Anteil entstuenden - wieder zwei Wahrheiten.
+     *
+     * SOLANGE DAS FUNDAMENT AKTIV IST, MUSS AUCH PRIME HIERAUS LESEN. Sonst
+     * rechnete die Huelle live mit einem geaenderten Budget, waehrend Phase B
+     * den alten Gesamtbetrag verwendet - zwei Wahrheiten ueber dieselbe
+     * Autorisierung, und die Summe waere weder das eine noch das andere.
+     */
+    data class Authorization(
+        /** Wann diese Autorisierung entstand - der Markerdruck. */
+        val armedTs: Long,
+        val totalBudgetU: Double,
+        val phaseAShare: Double,
+        /** Momentaufnahme: totalBudgetU * phaseAShare. */
+        val phaseABudgetU: Double,
+        /** Momentaufnahme: totalBudgetU * (1 - phaseAShare). */
+        val phaseBBudgetU: Double,
+        /** Der festgeschriebene Uebergabeanker - restartfest. */
+        val handoverTs: Long,
+        /** Das festgeschriebene Fensterende - eine spaetere Aenderung der
+         *  Endzeit verlaengert die laufende Phase nicht. */
+        val endTs: Long,
+    ) {
+
+        /** Traegt sie eine brauchbare Autorisierung? */
+        val valid: Boolean
+            get() = armedTs > 0L && totalBudgetU.isFinite() && totalBudgetU > 0.0 &&
+                phaseAShare.isFinite() && phaseAShare in 0.0..1.0 &&
+                phaseABudgetU.isFinite() && phaseBBudgetU.isFinite() &&
+                phaseABudgetU >= 0.0 && phaseBBudgetU >= 0.0 &&
+                handoverTs >= armedTs && endTs > armedTs
+
+        companion object {
+
+            /** Keine laufende Autorisierung - das Fundament ist nicht armiert. */
+            fun none() = Authorization(0L, 0.0, 0.0, 0.0, 0.0, 0L, 0L)
+        }
+    }
+
+    /**
+     * EINE NEUE AUTORISIERUNG ARMIEREN - nur beim bewussten Markerdruck.
+     *
+     * @param foundationEnabled ist das Fundament eingeschaltet? Wenn nicht,
+     *   entsteht KEINE Momentaufnahme (Toni 18.08.): das heutige
+     *   Prime-Verhalten bleibt unveraendert, und es gibt nichts, was spaeter
+     *   ein Fundament rechtfertigen koennte.
+     *
+     *   Damit ist auch der Fall abgedeckt, dass jemand den Schalter MITTEN in
+     *   einer laufenden Episode umlegt: es gibt dann keine Autorisierung, also
+     *   kein rueckwirkendes Soll und keinen Aufholstrom. Armiert wird erst das
+     *   naechste bewusst eroeffnete Markerbudget.
+     */
+    fun arm(
+        markerTs: Long,
+        foundationEnabled: Boolean,
+        totalBudgetU: Double,
+        phaseAShare: Double,
+        primeWindowStartTs: Long,
+        primeWindowMin: Int,
+        wallCeilingMin: Int,
+        phaseBUntilMin: Int,
+    ): Authorization {
+        if (!foundationEnabled || markerTs <= 0L) return Authorization.none()
+        if (!totalBudgetU.isFinite() || totalBudgetU <= 0.0) return Authorization.none()
+        if (!phaseAShare.isFinite() || phaseAShare !in 0.0..1.0) return Authorization.none()
+        if (phaseBUntilMin <= 0) return Authorization.none()
+        val uebergabe = handoverTs(markerTs, primeWindowStartTs, primeWindowMin, wallCeilingMin)
+        if (uebergabe <= 0L) return Authorization.none()
+        return Authorization(
+            armedTs = markerTs,
+            totalBudgetU = totalBudgetU,
+            phaseAShare = phaseAShare,
+            // AUSGERECHNET UND EINGEFROREN, nicht spaeter abgeleitet.
+            phaseABudgetU = totalBudgetU * phaseAShare,
+            phaseBBudgetU = totalBudgetU * (1.0 - phaseAShare),
+            handoverTs = uebergabe,
+            endTs = markerTs + phaseBUntilMin * 60_000L,
+        )
+    }
+
+    /**
      * Was Phase B zu diesem Zeitpunkt freigeben duerfte.
      *
      * @param dueU der Betrag, den dieser Zyklus vorschlagen darf - schon auf
@@ -55,6 +150,19 @@ object MealFoundation {
         val plannedTotalU: Double,
         val remainingInWindowU: Double,
         val binding: Binding?,
+        /**
+         * WIE LANG DAS FENSTER TATSAECHLICH IST [min].
+         *
+         * Eine verschobene Uebergabe komprimiert das GANZE Phase-B-Budget in
+         * die verbleibende Zeit (Toni 18.08.): aus 0,05 U etwa alle drei
+         * Minuten koennen 0,05 U je Minute werden. Das ist heute bewusst so
+         * gelassen - aber es MUSS sichtbar sein, sonst faellt im Replay eine
+         * Verdreifachung der Rate niemandem auf.
+         */
+        val effectiveWindowMin: Int = 0,
+        /** Die daraus folgende Sollrate [U/min] - dieselbe Groesse, in der
+         *  Form, in der sie im Replay verglichen wird. */
+        val effectiveRateUPerMin: Double = 0.0,
     )
 
     /**
@@ -99,6 +207,17 @@ object MealFoundation {
 
         /** Ein Pumpenschritt je Zyklus, nicht mehr - kein Aufhol-Burst. */
         ONE_STEP_PER_CYCLE,
+
+        /**
+         * DIE UEBERGABE LIEGT AUF ODER HINTER DEM FENSTERENDE.
+         *
+         * Eine GUELTIGE Lage, kein Eingabefehler (Toni 18.08.): eine Kette von
+         * Clearances hat das Prime-Fenster so weit geschoben, dass fuer Phase B
+         * nichts mehr uebrig bleibt. Das ist eine Aussage ueber diese
+         * Mahlzeit, keine ueber die Eingaben - und im Export etwas anderes
+         * wert als "unbrauchbar".
+         */
+        NO_WINDOW_AFTER_HANDOVER,
 
         /** Eingaben unbrauchbar. Fail-closed: es wird nichts vorgeschlagen. */
         UNUSABLE_INPUT,
@@ -165,16 +284,23 @@ object MealFoundation {
         // DAS FENSTER MUSS NOCH EXISTIEREN. Hat eine CLEARANCE die Uebergabe
         // hinter das Ende geschoben, gibt es kein Phase-B-Fenster mehr - kein
         // Fehler, aber auch keine Versorgung.
+        if (phaseBUntilMin < 0) return unusable()
         val fensterEndeTs = markerTs + phaseBUntilMin * 60_000L
-        if (phaseBUntilMin < 0 || fensterEndeTs <= handoverTs) return unusable()
+        // KEIN EINGABEFEHLER, sondern eine gueltige Lage ohne Fenster.
+        if (fensterEndeTs <= handoverTs)
+            return Plan(0.0, 0.0, 0.0, Binding.NO_WINDOW_AFTER_HANDOVER, effectiveWindowMin = 0)
         if (!deliveredFromBudgetU.isFinite() || deliveredFromBudgetU < 0.0) return unusable()
         if (!deliveredSinceHandoverU.isFinite() || deliveredSinceHandoverU < 0.0) return unusable()
         if (!bolusStepU.isFinite() || bolusStepU <= 0.0) return unusable()
 
         val phaseBBudgetU = totalBudgetU * (1.0 - phaseAShare)
 
+        val fensterMin = ((fensterEndeTs - handoverTs) / 60_000L).toInt()
+        val rateUProMin = if (fensterMin > 0) phaseBBudgetU / fensterMin else 0.0
+
         // VOR DEM FENSTER: Phase A ist zustaendig, nicht das Fundament.
-        if (nowTs < handoverTs) return Plan(0.0, 0.0, phaseBBudgetU, Binding.BEFORE_WINDOW)
+        if (nowTs < handoverTs)
+            return Plan(0.0, 0.0, phaseBBudgetU, Binding.BEFORE_WINDOW, fensterMin, rateUProMin)
 
         // DAS SOLL BIS JETZT - linear ueber das Fenster.
         //
@@ -182,8 +308,7 @@ object MealFoundation {
         // eine Annahme mehr, die spaeter als Erklaerung fuer alles herhaelt.
         // Die Verteilung ist ohnehin eine Replay-Hypothese; sie soll einfach
         // genug sein, um sie zu widerlegen.
-        val fensterMs = (fensterEndeTs - handoverTs).toDouble()
-        val fortschritt = min(1.0, (nowTs - handoverTs) / fensterMs)
+        val fortschritt = min(1.0, (nowTs - handoverTs).toDouble() / (fensterEndeTs - handoverTs))
         val sollU = phaseBBudgetU * fortschritt
 
         // ZWEI GRENZEN, DIE BEIDE GELTEN:
@@ -206,11 +331,11 @@ object MealFoundation {
         // NACH DEM FENSTER VERFAELLT DER REST (Tonis Auflage). Kein Nachliefern
         // Stunden spaeter - was dann noch offen ist, war offenbar nicht noetig.
         if (nowTs > fensterEndeTs)
-            return Plan(0.0, phaseBBudgetU, offenImFenster, Binding.AFTER_WINDOW)
+            return Plan(0.0, phaseBBudgetU, offenImFenster, Binding.AFTER_WINDOW, fensterMin, rateUProMin)
 
         // DAS GEMEINSAME BUDGET IST DIE HARTE GRENZE.
         if (deliveredFromBudgetU >= totalBudgetU - 1e-9)
-            return Plan(0.0, sollU, 0.0, Binding.BUDGET_EXHAUSTED)
+            return Plan(0.0, sollU, 0.0, Binding.BUDGET_EXHAUSTED, fensterMin, rateUProMin)
 
         val rueckstandU = min(sollU - ausPhaseBGeflossen, offenImFenster)
         if (rueckstandU < bolusStepU - 1e-9) return Plan(
@@ -220,6 +345,7 @@ object MealFoundation {
             // liegt es nur an der Zeit, ist der Plan erfuellt.
             if (ausPhaseBGeflossen >= sollU - 1e-9 && ausPhaseBGeflossen > 0.0)
                 Binding.COVERED_BY_DELIVERY else Binding.ON_SCHEDULE,
+            fensterMin, rateUProMin,
         )
 
         // EIN SCHRITT JE ZYKLUS - kein Aufhol-Burst (Tonis Auflage).
@@ -236,8 +362,62 @@ object MealFoundation {
             plannedTotalU = sollU,
             remainingInWindowU = offenImFenster,
             binding = if (schritte > 1.0) Binding.ONE_STEP_PER_CYCLE else null,
+            effectiveWindowMin = fensterMin,
+            effectiveRateUPerMin = rateUProMin,
         )
     }
+
+    /**
+     * DER PLAN AUS DER GEPINNTEN AUTORISIERUNG - der Weg, den der Zyklus geht.
+     *
+     * Er nimmt KEINE Live-Einstellungen entgegen. Das ist der ganze Zweck:
+     * eine Aenderung an PrimeEnvelopeU, Anteil oder Endzeit kann diesen Aufruf
+     * gar nicht mehr erreichen. Wer die Rohfassung mit Einzelwerten benutzt,
+     * muss sich erklaeren - sie bleibt fuer Tests und Replay.
+     *
+     * @param deliveredFromBudgetU alles, was aus DIESEM Budget geflossen ist.
+     * @param deliveredSinceHandoverU alles seit der Uebergabe - die
+     *   Mindestversorgung zaehlt jede publizierte Menge, gleich welcher
+     *   Herkunft.
+     */
+    fun planFrom(
+        auth: Authorization,
+        nowTs: Long,
+        deliveredFromBudgetU: Double,
+        deliveredSinceHandoverU: Double,
+        bolusStepU: Double,
+    ): Plan {
+        if (!auth.valid) return unusable()
+        return plan(
+            markerTs = auth.armedTs,
+            nowTs = nowTs,
+            handoverTs = auth.handoverTs,
+            totalBudgetU = auth.totalBudgetU,
+            phaseAShare = auth.phaseAShare,
+            // Aus der Momentaufnahme zurueckgerechnet, damit die Rohfassung
+            // eine Signatur behaelt: endTs ist gepinnt, die Minuten sind es
+            // damit auch.
+            phaseBUntilMin = ((auth.endTs - auth.armedTs) / 60_000L).toInt(),
+            deliveredFromBudgetU = deliveredFromBudgetU,
+            deliveredSinceHandoverU = deliveredSinceHandoverU,
+            bolusStepU = bolusStepU,
+        )
+    }
+
+    /**
+     * WAS PRIME FREIGEBEN DARF - aus derselben Quelle wie Phase B.
+     *
+     * Solange eine Autorisierung laeuft, liest Prime ihr gepinntes
+     * Phase-A-Budget. Sonst rechnete die Huelle live mit einem geaenderten
+     * PrimeEnvelopeU, waehrend Phase B den alten Gesamtbetrag verwendet - zwei
+     * Wahrheiten ueber dieselbe Autorisierung.
+     *
+     * Ohne laufende Autorisierung (Fundament aus oder nicht armiert) gilt
+     * unveraendert das Live-Budget: das ist der heutige Stand, und er muss
+     * bitgleich bleiben.
+     */
+    fun primeBudgetU(auth: Authorization, liveTotalBudgetU: Double): Double =
+        if (auth.valid) auth.phaseABudgetU else liveTotalBudgetU
 
     private fun unusable() = Plan(0.0, 0.0, 0.0, Binding.UNUSABLE_INPUT)
 

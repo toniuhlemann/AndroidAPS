@@ -1,5 +1,6 @@
 package app.aaps.fuse.core.controller
 
+import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
@@ -244,7 +245,6 @@ class MealFoundationTest {
             "Budget 0" to p(budget = 0.0),
             "Anteil ueber 1" to p(anteil = 1.5),
             "Anteil NaN" to p(anteil = Double.NaN),
-            "Fenster hinter der Uebergabe" to p(uebergabe = t0 + 90 * 60_000L),
             "Schritt 0" to p(step = 0.0),
             "Schritt NaN" to p(step = Double.NaN),
             "geflossen negativ" to p(geflossen = -1.0),
@@ -462,17 +462,6 @@ class MealFoundationTest {
         )
     }
 
-    /** Liegt die Uebergabe hinter dem Fensterende, gibt es kein Fundament. */
-    @Test
-    fun `eine Uebergabe hinter dem Fensterende ergibt keinen Plan`() {
-        val p = MealFoundation.plan(
-            markerTs = t0, nowTs = t0 + 70 * 60_000L, handoverTs = t0 + 90 * 60_000L,
-            totalBudgetU = BUDGET, phaseAShare = A_SHARE, phaseBUntilMin = B_BIS,
-            deliveredFromBudgetU = 2.25, deliveredSinceHandoverU = 0.0, bolusStepU = STEP,
-        )
-        assertEquals(0.0, p.dueU, 1e-9)
-        assertEquals(MealFoundation.Binding.UNUSABLE_INPUT, p.binding)
-    }
 
     /**
      * DER GRUND HEISST NICHT MEHR "NORMALER PFAD".
@@ -488,6 +477,169 @@ class MealFoundationTest {
         assertEquals(
             MealFoundation.Binding.COVERED_BY_DELIVERY, p.binding,
             "der Grund benennt die MENGE, nicht ihre Herkunft",
+        )
+    }
+
+    // ---- Pinning der autorisierten Konfiguration (Toni 18.08.) -----------
+
+    private fun armiere(
+        budget: Double = BUDGET,
+        anteil: Double = A_SHARE,
+        an: Boolean = true,
+        ende: Int = B_BIS,
+        primeStart: Long = 0L,
+    ) = MealFoundation.arm(
+        markerTs = t0, foundationEnabled = an, totalBudgetU = budget, phaseAShare = anteil,
+        primeWindowStartTs = primeStart, primeWindowMin = A_BIS, wallCeilingMin = 45,
+        phaseBUntilMin = ende,
+    )
+
+    @Test
+    fun `das Armen friert Budget, Anteil und Zeiten ein`() {
+        val a = armiere()
+        assertTrue(a.valid)
+        assertEquals(BUDGET, a.totalBudgetU, 1e-9)
+        assertEquals(2.25, a.phaseABudgetU, 1e-9)
+        assertEquals(0.75, a.phaseBBudgetU, 1e-9)
+        assertEquals(t0 + A_BIS * 60_000L, a.handoverTs)
+        assertEquals(t0 + B_BIS * 60_000L, a.endTs)
+    }
+
+    /**
+     * EINE SPAETERE AENDERUNG ERREICHT DIE LAUFENDE MAHLZEIT NICHT.
+     *
+     * Das ist der Kern des Pinnings (Toni 18.08.): "konfigurierbar heisst
+     * beim naechsten Markerdruck waehlbar, nicht eine laufende
+     * Insulinautorisierung nachtraeglich veraenderbar". Wuerde
+     * PrimeEnvelopeU bei T+40 erhoeht, entstuende zusaetzliches "bereits
+     * autorisiertes" Insulin, das niemand autorisiert hat.
+     */
+    @Test
+    fun `eine spaetere Budgetaenderung veraendert die laufende Autorisierung nicht`() {
+        val a = armiere(budget = 3.0)
+        // Der Nutzer stellt bei T+40 auf 4,0 U - der Plan liest weiter 3,0 U.
+        val p = MealFoundation.planFrom(a, t0 + 40 * 60_000L, 2.25, 0.0, STEP)
+        assertEquals(
+            0.75 - 0.0, p.remainingInWindowU, 1e-9,
+            "das Phase-B-Budget bleibt die Momentaufnahme von 3,0 U",
+        )
+        assertTrue(p.remainingInWindowU < 1.0, "und nicht das aus 4,0 U abgeleitete")
+    }
+
+    /** Auch eine Anteilsaenderung oeffnet kein neues Phase-B-Budget. */
+    @Test
+    fun `eine spaetere Anteilsaenderung oeffnet kein neues Budget`() {
+        val a = armiere(anteil = 0.75)
+        val p = MealFoundation.planFrom(a, t0 + 60 * 60_000L, 2.25, 0.75, STEP)
+        assertEquals(0.0, p.remainingInWindowU, 1e-9, "0,75 U vergeben, nichts offen")
+        assertEquals(0.0, p.dueU, 1e-9)
+    }
+
+    /** Und eine spaetere Endzeit verlaengert die laufende Phase nicht. */
+    @Test
+    fun `eine spaetere Endzeit verlaengert die laufende Phase nicht`() {
+        val a = armiere(ende = 60)
+        // Selbst bei T+80 ist das gepinnte Ende T+60 massgeblich.
+        val p = MealFoundation.planFrom(a, t0 + 80 * 60_000L, 2.25, 0.0, STEP)
+        assertEquals(MealFoundation.Binding.AFTER_WINDOW, p.binding)
+        assertEquals(0.0, p.dueU, 1e-9)
+    }
+
+    /**
+     * DER SCHALTER MITTEN IN EINER EPISODE ARMIERT NICHTS.
+     *
+     * Ohne diesen Riegel saehe ein Schalterdruck bei T+40 sofort ein Soll von
+     * zwei Dritteln des Phase-B-Budgets - der Ein-Schritt-Riegel wuerde es
+     * ueber Minuten nachliefern statt in einem Zug, aber liefern wuerde er es.
+     * Armiert wird erst das naechste bewusst eroeffnete Markerbudget.
+     */
+    @Test
+    fun `bei ausgeschaltetem Fundament entsteht keine Momentaufnahme`() {
+        val a = armiere(an = false)
+        assertFalse(a.valid, "keine Autorisierung")
+        assertEquals(
+            MealFoundation.Binding.UNUSABLE_INPUT,
+            MealFoundation.planFrom(a, t0 + 40 * 60_000L, 2.25, 0.0, STEP).binding,
+            "und damit auch kein rueckwirkender Rueckstand",
+        )
+    }
+
+    /**
+     * PRIME UND FUNDAMENT LESEN DIESELBE AUTORISIERUNG.
+     *
+     * Sonst rechnete die Huelle live mit einem geaenderten PrimeEnvelopeU,
+     * waehrend Phase B den alten Gesamtbetrag verwendet - und die Summe waere
+     * weder das eine noch das andere.
+     */
+    @Test
+    fun `Prime liest bei aktivem Fundament das gepinnte Phase-A-Budget`() {
+        val a = armiere(budget = 3.0, anteil = 0.75)
+        assertEquals(
+            2.25, MealFoundation.primeBudgetU(a, liveTotalBudgetU = 4.0), 1e-9,
+            "die spaetere Erhoehung auf 4,0 U erreicht Prime nicht",
+        )
+        assertEquals(
+            a.phaseABudgetU + a.phaseBBudgetU, a.totalBudgetU, 1e-9,
+            "und beide Teile ergeben zusammen genau die Autorisierung",
+        )
+    }
+
+    /** Ohne Autorisierung gilt unveraendert das Live-Budget - der heutige
+     *  Stand muss bitgleich bleiben. */
+    @Test
+    fun `ohne Autorisierung liest Prime unveraendert das Live-Budget`() {
+        assertEquals(
+            4.0, MealFoundation.primeBudgetU(MealFoundation.Authorization.none(), 4.0), 1e-9,
+        )
+    }
+
+    /** Die Uebergabe wird beim Armen festgeschrieben - eine spaetere
+     *  Clearance verschiebt sie nicht mehr. */
+    @Test
+    fun `die Uebergabe wird beim Armen festgeschrieben`() {
+        val mitClearance = armiere(primeStart = t0 + 10 * 60_000L)
+        assertEquals(
+            t0 + 25 * 60_000L, mitClearance.handoverTs,
+            "beim Armen galt die verschobene Grenze - und sie bleibt",
+        )
+    }
+
+    /** Liegt die Uebergabe hinter dem Fensterende, ist das eine gueltige Lage
+     *  ohne Fenster - kein Eingabefehler. */
+    @Test
+    fun `keine Zeit nach der Uebergabe ist eine gueltige Lage`() {
+        val p = MealFoundation.plan(
+            markerTs = t0, nowTs = t0 + 70 * 60_000L, handoverTs = t0 + 90 * 60_000L,
+            totalBudgetU = BUDGET, phaseAShare = A_SHARE, phaseBUntilMin = B_BIS,
+            deliveredFromBudgetU = 2.25, deliveredSinceHandoverU = 0.0, bolusStepU = STEP,
+        )
+        assertEquals(MealFoundation.Binding.NO_WINDOW_AFTER_HANDOVER, p.binding)
+        assertEquals(0, p.effectiveWindowMin)
+    }
+
+    /**
+     * DIE KOMPRESSION IST SICHTBAR.
+     *
+     * Eine verschobene Uebergabe presst das ganze Phase-B-Budget in die
+     * Restzeit: aus 0,05 U je drei Minuten koennen 0,05 U je Minute werden.
+     * Das bleibt heute so - aber es MUSS im Export stehen, sonst faellt eine
+     * Verdreifachung der Rate im Replay niemandem auf.
+     */
+    @Test
+    fun `eine verschobene Uebergabe macht die Kompression sichtbar`() {
+        val normal = plan(minuten = 20.0, geflossenU = 2.25)
+        assertEquals(45, normal.effectiveWindowMin, "45 min Fenster")
+        assertEquals(0.75 / 45.0, normal.effectiveRateUPerMin, 1e-9)
+
+        val spaet = MealFoundation.plan(
+            markerTs = t0, nowTs = t0 + 50 * 60_000L, handoverTs = t0 + 45 * 60_000L,
+            totalBudgetU = BUDGET, phaseAShare = A_SHARE, phaseBUntilMin = B_BIS,
+            deliveredFromBudgetU = 2.25, deliveredSinceHandoverU = 0.0, bolusStepU = STEP,
+        )
+        assertEquals(15, spaet.effectiveWindowMin, "nur noch 15 min")
+        assertEquals(
+            0.75 / 15.0, spaet.effectiveRateUPerMin, 1e-9,
+            "dreifache Sollrate - sichtbar, nicht versteckt",
         )
     }
 }
