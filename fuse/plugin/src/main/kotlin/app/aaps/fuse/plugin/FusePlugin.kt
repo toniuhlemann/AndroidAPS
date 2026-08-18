@@ -1235,20 +1235,6 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
         // die Belastung stehen - der gewollte UNKNOWN-Ausgang.
         outcome?.let { o -> ledgerAdapter.resolveReservation(o.computeTs, publishRt.units ?: 0.0) }
 
-        // DER ERWARTUNGS-LEDGER - REIN BEOBACHTEND (Toni 18.08., Punkt 3).
-        //
-        // HIER und nicht frueher: erst nach dem Gate steht der
-        // Eingriffsstempel fest, unter dem die Prognose dieses Zyklus gilt
-        // UND unter dem seine Messwerte gesehen wurden. Vor dem Gate
-        // gebucht, truege die Erwartung einen Stand, den die eigene
-        // Publikation gleich darauf ueberholt - jede Prognose waere sofort
-        // INTERVENED.
-        //
-        // Der Aufruf kann die Dosierung nicht beruehren: er liegt hinter
-        // jeder Publikation, sein Rueckgabewert wird von keinem Regelpfad
-        // gelesen, und der Baustein faengt intern alles ab. Ein Fehler kostet
-        // die Messung dieses Zyklus, nicht mehr.
-        buchereWartung(outcome, publication.sealed)
 
         // Fuer die Messung im NAECHSTEN Zyklus merken: die RT-Instanz selbst,
         // nicht ihre Zahlen - sie ist der Identitaetsschluessel.
@@ -1283,6 +1269,29 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
         lastAPSRun = dateUtil.now()
         aapsLogger.debug(LTag.APS, "FUSE result: ${publishRt.reason}")
         rxBus.send(EventAPSCalculationFinished())
+
+        // DER ERWARTUNGS-LEDGER - REIN BEOBACHTEND, UND ERST JETZT.
+        //
+        // Er stand zunaechst VOR dieser Uebergabe (Toni 18.08.: "Die
+        // SMB-Abgabezeit wird davon nicht negativ beeinflusst?"). Das war
+        // falsch: er kann die Menge zwar nicht mehr aendern, haette ihre
+        // ABGABE aber um die Dauer eines vollstaendigen Schreibvorgangs mit
+        // fsync verzoegert - auf Android realistisch 100-300 ms. Ein
+        // Beobachter darf nicht zwischen der Entscheidung und ihrer
+        // Ausfuehrung stehen.
+        //
+        // HIER ist er gefahrlos: `lastAPSResult` steht, das Ereignis ist
+        // gesendet, AAPS kann aktuieren. Der Erwartungs-Ledger ist vom
+        // Publikationsvertrag unabhaengig - den Eingriffsstempel hat das Gate
+        // laengst versiegelt, hier werden nur die eigenen Erwartungen
+        // fortgeschrieben. Stirbt der Prozess dazwischen, fehlt EINE Messung;
+        // kein Nachweis wird falsch, weil die Erwartung dann gar nicht erst
+        // existiert.
+        //
+        // WARUM ER TROTZDEM NACH dem Publikations-Gate stehen muss: erst dort
+        // steht der Stempel fest, unter dem die Prognose dieses Zyklus gilt.
+        // Beide Bedingungen zusammen ergeben genau dieses Fenster.
+        buchereWartung(outcome, publication.sealed)
 
         // Auch der Schirm bekommt den korrigierten Stand - er zeigt dieselben
         // Mahlzeitenzahlen wie der Trail.
