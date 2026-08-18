@@ -27,6 +27,20 @@ import kotlin.math.abs
 object ExpectationLedger {
 
     /**
+     * Stabile, eindeutige Kennung eines Eintrags.
+     *
+     * WARUM NICHT `dueTs` (Tonis Befund): die Zuordnung war danach indiziert,
+     * und zwei Eintraege mit demselben `dueTs` haetten beim Auslesen BEIDE
+     * denselben Messwert bekommen, obwohl er nur einmal als verbraucht galt.
+     * Wiederholte Zyklen mit gleichem `sourceTs` koennen genau das erzeugen.
+     *
+     * Aus Quelle, Faelligkeit und Segment - drei Groessen, die einen Eintrag
+     * zusammen eindeutig machen und ueber einen Neustart hinweg gleich
+     * bleiben. Ein Zaehler waere nach dem Wiederanlauf nicht mehr derselbe.
+     */
+    data class EntryId(val sourceTs: Long, val dueTs: Long, val segmentId: Long)
+
+    /**
      * Ein Messwert mit Zeitpunkt, Segment und Gesundheit.
      *
      * SEGMENT UND GESUNDHEIT GEHOEREN AN DEN MESSWERT, nicht an den
@@ -39,6 +53,18 @@ object ExpectationLedger {
         val mgdl: Double,
         val segmentId: Long,
         val healthy: Boolean,
+        /**
+         * Der Eingriffsstand ZU DIESEM Zeitpunkt - nicht der heutige.
+         *
+         * Dieselbe Verwechslung wie bei [healthy], eine Zeile weiter: der
+         * erste Wurf verglich gegen die GEGENWART. Ein Eingriff, der erst
+         * NACH der Faelligkeit erfolgte (aber vor einem verspaeteten
+         * `settle`), machte damit eine zum Faelligkeitszeitpunkt saubere
+         * Prognose faelschlich zu INTERVENED.
+         */
+        val interventionRevision: Long,
+        /** Der Konfigurationsstand zu diesem Zeitpunkt - aus demselben Grund. */
+        val configGeneration: String,
     )
 
     /**
@@ -76,6 +102,10 @@ object ExpectationLedger {
         val discountMgdl: Double? = null,
         val bgiMgdl: Double? = null,
     ) {
+
+        /** s. [EntryId] - stabil ueber Neustarts, eindeutig auch bei
+         *  gleichem `dueTs`. */
+        val id: EntryId get() = EntryId(sourceTs, dueTs, segmentId)
 
         /** Die behauptete Senkung der MITTELBAHN [mg/dl], immer positiv. */
         val promisedDropMgdl: Double get() = anchorMgdl - meanPredictedMgdl
@@ -178,67 +208,158 @@ object ExpectationLedger {
     }
 
     /**
+     * Einen Eintrag in die Liste aufnehmen - DUPLIKATE WERDEN VERWORFEN.
+     *
+     * Toni: "Duplikate bereits beim Einreihen verhindern". Zwei Eintraege
+     * mit derselben [EntryId] beschreiben dieselbe Prognose; sie doppelt zu
+     * fuehren hiesse, denselben Nachweis zweimal zu zaehlen. Der spaetere
+     * Aufrufer ruft das je Zyklus, auch nach einem Wiederanlauf mit
+     * geladener Liste.
+     */
+    fun add(entries: List<Entry>, neu: Entry?): List<Entry> {
+        if (neu == null) return entries
+        if (entries.any { it.id == neu.id }) return entries
+        return entries + neu
+    }
+
+    /**
      * Faellige Prognosen abrechnen - JEDE gegen einen EIGENEN Messwert.
      *
-     * EIN MESSWERT WIRD HOECHSTENS EINMAL VERBRAUCHT. Ohne diese Regel kann
-     * derselbe Punkt fuer mehrere benachbarte Faelligkeiten der naechste
-     * Treffer sein (bei 1-min-Prognosen und 150 s Toleranz bis zu fuenfmal) -
-     * ein einziger Messwert wuerde fuenf voneinander unabhaengige
-     * Widerlegungen erzeugen, die es nicht gibt.
+     * ZWEI REGELN, beide aus Tonis Durchsichten:
      *
-     * @param currentIntervention der aktuelle Eingriffsstand. Weicht er vom
-     *   Stand bei Abgabe ab, ist das Ergebnis [Verdict.INTERVENED].
+     * EINS ZU EINS. Ein Messwert wird hoechstens einmal verbraucht - sonst
+     * erzeugt ein einziger Punkt bei 1-min-Prognosen bis zu fuenf
+     * "unabhaengige" Widerlegungen, die es nicht gibt.
+     *
+     * UND ZWAR OPTIMAL. Der zweite Wurf vergab gierig das kuerzeste Paar
+     * zuerst und verlor dabei verwertbare Zuordnungen. Tonis Gegenbeispiel,
+     * nachgerechnet: Faelligkeiten 0 und 4, Messwerte 3 und 7, Toleranz 4.
+     * Gierig gewinnt 4->3 (Abstand 1), danach findet 0 nichts mehr - EINE
+     * Zuordnung statt zweier. Richtig ist 0->3 und 4->7.
+     *
+     * Beide Reihen sind zeitlich geordnet, also ist die beste Zuordnung
+     * MONOTON (sie kreuzt sich nicht). Das erlaubt eine exakte Loesung per
+     * Dynamischer Programmierung ueber O(n*m) statt einer Naeherung: erst
+     * die ANZAHL gueltiger Paarungen maximieren, bei Gleichstand den
+     * Gesamtabstand minimieren.
+     *
+     * VERGLICHEN WIRD GEGEN DEN MESSWERT, NICHT GEGEN DIE GEGENWART. Ein
+     * Eingriff nach der Faelligkeit, aber vor einem verspaeteten `settle`,
+     * darf eine damals saubere Prognose nicht nachtraeglich entwerten -
+     * dasselbe gilt fuer den Konfigurationsstand.
      */
     fun settle(
         entries: List<Entry>,
         nowTs: Long,
         samples: List<Sample>,
-        currentIntervention: Long,
         toleranceMgdl: Double = SETTLE_TOLERANCE_MGDL,
         matchToleranceMs: Long = MATCH_TOLERANCE_MS,
     ): Pair<List<Outcome>, List<Entry>> {
         val faellig = entries.filter { it.dueTs <= nowTs }.sortedBy { it.dueTs }
         if (faellig.isEmpty()) return emptyList<Outcome>() to entries
         val offen = entries.filter { it.dueTs > nowTs }
+        val brauchbar = samples
+            .filter { it.healthy && it.mgdl.isFinite() }
+            .sortedBy { it.ts }
 
-        // (1) EIN EINGRIFF SCHLAEGT ALLES: ohne unveraenderte Ausgangslage ist
-        //     das Ergebnis kein Urteil ueber das Modell. Diese Faelligkeiten
-        //     nehmen auch an der Zuordnung nicht teil - sie duerfen keinem
-        //     bewertbaren Fall den Messwert wegnehmen.
-        val (bewertbar, eingegriffen) = faellig.partition { it.interventionRevision == currentIntervention }
-
-        // (2) ZUORDNUNG NACH ABSTAND, nicht nach Reihenfolge. Der erste Wurf
-        //     ging die Faelligkeiten chronologisch durch - dabei griff sich
-        //     die FRUEHESTE den Wert, auch wenn eine spaetere ihn exakt
-        //     getroffen haette. Jetzt werden alle zulaessigen Paare nach
-        //     Abstand sortiert und gierig vergeben: das beste Paar zuerst,
-        //     und jeder Messwert wie jede Faelligkeit nur EINMAL.
-        val paare = bewertbar.flatMap { e ->
-            samples
-                .filter {
-                    it.healthy && it.mgdl.isFinite() && it.segmentId == e.segmentId &&
-                        abs(it.ts - e.dueTs) <= matchToleranceMs
-                }
-                .map { s -> Triple(abs(s.ts - e.dueTs), e, s) }
-        }.sortedWith(compareBy({ it.first }, { it.second.dueTs }, { it.third.ts }))
-
-        val zuteilung = HashMap<Long, Sample>()
-        val verbraucht = HashSet<Long>()
-        for ((_, e, s) in paare) {
-            if (e.dueTs in zuteilung || s.ts in verbraucht) continue
-            zuteilung[e.dueTs] = s
-            verbraucht += s.ts
-        }
+        val zuteilung = matchOneToOne(faellig, brauchbar, matchToleranceMs)
 
         val abgerechnet = faellig.map { e ->
-            if (e in eingegriffen) return@map Outcome(e, Verdict.INTERVENED)
-            val treffer = zuteilung[e.dueTs] ?: return@map Outcome(e, Verdict.UNVERIFIABLE)
-            // (3) Die Toleranz sitzt auf der Seite des MODELLS.
+            val treffer = zuteilung[e.id]
+                ?: return@map Outcome(e, Verdict.UNVERIFIABLE)
+            // DER EINGRIFFSSTAND AM MESSWERT entscheidet, nicht der heutige.
+            if (treffer.interventionRevision != e.interventionRevision ||
+                treffer.configGeneration != e.configGeneration
+            ) return@map Outcome(e, Verdict.INTERVENED)
+            // Die Toleranz sitzt auf der Seite des MODELLS.
             if (treffer.mgdl > e.meanPredictedMgdl + toleranceMgdl)
                 Outcome(e, Verdict.MISSED, treffer.ts, treffer.mgdl)
             else Outcome(e, Verdict.MET, treffer.ts, treffer.mgdl)
         }
         return abgerechnet to offen
+    }
+
+    /**
+     * Die monotone Eins-zu-eins-Zuordnung, exakt geloest.
+     *
+     * Zielfunktion in dieser Reihenfolge: (1) moeglichst VIELE Paarungen,
+     * (2) bei Gleichstand moeglichst KLEINER Gesamtabstand. Die erste Stufe
+     * ist die wichtigere - eine verlorene Zuordnung ist ein verlorener
+     * Nachweis, ein paar Sekunden mehr Abstand sind es nicht.
+     *
+     * Zulaessig ist ein Paar nur bei gleichem Segment und innerhalb der
+     * Toleranz; ueber einen Segmentbruch hinweg sind Werte nicht
+     * vergleichbar.
+     */
+    private fun matchOneToOne(
+        faellig: List<Entry>,
+        samples: List<Sample>,
+        matchToleranceMs: Long,
+    ): Map<EntryId, Sample> {
+        val n = faellig.size
+        val m = samples.size
+        if (n == 0 || m == 0) return emptyMap()
+
+        fun zulaessig(i: Int, j: Int): Boolean {
+            val e = faellig[i]
+            val s = samples[j]
+            return s.segmentId == e.segmentId && abs(s.ts - e.dueTs) <= matchToleranceMs
+        }
+
+        // dp[i][j] = beste Loesung fuer Faelligkeiten ab i und Messwerte ab j,
+        // kodiert als (Anzahl, Gesamtabstand). Mehr Paare schlaegt kleineren
+        // Abstand - deshalb zwei getrennte Tafeln statt einer gewichteten Summe,
+        // die die Rangfolge bei grossen Abstaenden kippen koennte.
+        val anzahl = Array(n + 1) { IntArray(m + 1) }
+        val kosten = Array(n + 1) { LongArray(m + 1) }
+        for (i in n - 1 downTo 0) {
+            for (j in m - 1 downTo 0) {
+                // Ohne Paarung an dieser Stelle: den jeweils besseren Zweig.
+                var bestA = anzahl[i + 1][j]
+                var bestK = kosten[i + 1][j]
+                if (anzahl[i][j + 1] > bestA ||
+                    (anzahl[i][j + 1] == bestA && kosten[i][j + 1] < bestK)
+                ) {
+                    bestA = anzahl[i][j + 1]
+                    bestK = kosten[i][j + 1]
+                }
+                if (zulaessig(i, j)) {
+                    val a = anzahl[i + 1][j + 1] + 1
+                    val k = kosten[i + 1][j + 1] + abs(samples[j].ts - faellig[i].dueTs)
+                    if (a > bestA || (a == bestA && k < bestK)) {
+                        bestA = a
+                        bestK = k
+                    }
+                }
+                anzahl[i][j] = bestA
+                kosten[i][j] = bestK
+            }
+        }
+
+        // Rueckwaerts denselben Pfad ablaufen und die Paare einsammeln.
+        val out = HashMap<EntryId, Sample>()
+        var i = 0
+        var j = 0
+        while (i < n && j < m) {
+            val ohneI = anzahl[i + 1][j] to kosten[i + 1][j]
+            val ohneJ = anzahl[i][j + 1] to kosten[i][j + 1]
+            val mitPaar = if (zulaessig(i, j))
+                (anzahl[i + 1][j + 1] + 1) to (kosten[i + 1][j + 1] + abs(samples[j].ts - faellig[i].dueTs))
+            else null
+            val besser = { a: Pair<Int, Long>, b: Pair<Int, Long> ->
+                a.first > b.first || (a.first == b.first && a.second < b.second)
+            }
+            var wahl = ohneI
+            var art = 0
+            if (besser(ohneJ, wahl)) { wahl = ohneJ; art = 1 }
+            if (mitPaar != null && besser(mitPaar, wahl)) { wahl = mitPaar; art = 2 }
+            when (art) {
+                0    -> i++
+                1    -> j++
+                else -> { out[faellig[i].id] = samples[j]; i++; j++ }
+            }
+        }
+        return out
     }
 
     /**

@@ -30,15 +30,20 @@ class ExpectationLedgerTest {
         source, seg, anchor, mean, H, configGeneration = CFG, interventionRevision = rev,
     )!!
 
-    private fun probe(ts: Long, mgdl: Double, seg: Long = SEG, healthy: Boolean = true) =
-        ExpectationLedger.Sample(ts, mgdl, seg, healthy)
+    private fun probe(
+        ts: Long,
+        mgdl: Double,
+        seg: Long = SEG,
+        healthy: Boolean = true,
+        rev: Long = REV,
+        cfg: String = CFG,
+    ) = ExpectationLedger.Sample(ts, mgdl, seg, healthy, rev, cfg)
 
     private fun rechne(
         entries: List<ExpectationLedger.Entry>,
         now: Long,
         samples: List<ExpectationLedger.Sample>,
-        rev: Long = REV,
-    ) = ExpectationLedger.settle(entries, now, samples, rev)
+    ) = ExpectationLedger.settle(entries, now, samples)
 
     // ---- Einreihen ------------------------------------------------------
 
@@ -213,11 +218,11 @@ class ExpectationLedgerTest {
     fun `ein Eingriff zwischen Ausgabe und Faelligkeit macht das Urteil ungueltig`() {
         val e = eintrag(rev = 100L)
         // Der BG steht auf 205 - ohne Eingriff waere das ein klares MISSED.
-        val (missed, _) = rechne(listOf(e), e.dueTs, listOf(probe(e.dueTs, 205.0)), rev = 100L)
+        val (missed, _) = rechne(listOf(e), e.dueTs, listOf(probe(e.dueTs, 205.0, rev = 100L)))
         assertEquals(ExpectationLedger.Verdict.MISSED, missed[0].verdict)
 
         // Mit Eingriff: kein Urteil, obwohl die Zahlen dieselben sind.
-        val (eingriff, _) = rechne(listOf(e), e.dueTs, listOf(probe(e.dueTs, 205.0)), rev = 101L)
+        val (eingriff, _) = rechne(listOf(e), e.dueTs, listOf(probe(e.dueTs, 205.0, rev = 101L)))
         assertEquals(ExpectationLedger.Verdict.INTERVENED, eingriff[0].verdict)
         assertNull(eingriff[0].actualMgdl, "ein ungueltiges Urteil traegt keine Zahl")
         assertTrue(!eingriff[0].isEvidence)
@@ -228,8 +233,94 @@ class ExpectationLedgerTest {
     @Test
     fun `ein Eingriff erzeugt auch kein MET`() {
         val e = eintrag(rev = 100L)
-        val (out, _) = rechne(listOf(e), e.dueTs, listOf(probe(e.dueTs, 140.0)), rev = 101L)
+        val (out, _) = rechne(listOf(e), e.dueTs, listOf(probe(e.dueTs, 140.0, rev = 101L)))
         assertEquals(ExpectationLedger.Verdict.INTERVENED, out[0].verdict)
+    }
+
+    /**
+     * TONIS GEGENBEISPIEL, nachgerechnet und als Test festgehalten.
+     *
+     * Faelligkeiten 0 und 4, Messwerte 3 und 7, Toleranz 4. Der gierige
+     * Ansatz nimmt zuerst das kuerzeste Paar 4->3 (Abstand 1) und laesst
+     * damit die Faelligkeit 0 leer ausgehen - EINE Zuordnung statt zweier.
+     * Richtig ist 0->3 und 4->7.
+     *
+     * Ein verlorener Nachweis ist teurer als ein paar Sekunden Abstand.
+     */
+    @Test
+    fun `die Zuordnung maximiert die Anzahl, nicht die Naehe des ersten Paars`() {
+        // Zahlen innerhalb der echten Toleranz (150 s), Tonis Struktur:
+        //   Faelligkeiten 0 / 120 s, Messwerte 90 / 210 s
+        //   zulaessig: b-s1 (30 s), a-s1 (90 s), b-s2 (90 s)
+        //   gierig nimmt b-s1 zuerst -> a geht leer aus (a-s2 = 210 s > 150)
+        val a = eintrag(source = t0)                        // faellig t0+30 min
+        val b = eintrag(source = t0 + 120_000L)             // faellig +120 s
+        val s1 = probe(a.dueTs + 90_000L, 205.0)
+        val s2 = probe(a.dueTs + 210_000L, 205.0)
+        val (out, _) = rechne(listOf(a, b), b.dueTs + 10 * 60_000L, listOf(s1, s2))
+        val zugeordnet = out.filter { it.actualTs != null }
+        assertEquals(2, zugeordnet.size, "beide Faelligkeiten muessen einen Wert bekommen")
+        val nach = out.associateBy { it.entry.dueTs }
+        assertEquals(s1.ts, nach[a.dueTs]!!.actualTs, "die fruehere bekommt den frueheren Wert")
+        assertEquals(s2.ts, nach[b.dueTs]!!.actualTs, "die spaetere den spaeteren")
+    }
+
+    /**
+     * DER EINGRIFFSSTAND AM MESSWERT ENTSCHEIDET, nicht der heutige.
+     *
+     * Ein Eingriff NACH der Faelligkeit, aber vor einem verspaeteten
+     * `settle`, darf eine damals saubere Prognose nicht nachtraeglich
+     * entwerten - der erste Wurf verglich gegen die Gegenwart und tat genau
+     * das.
+     */
+    @Test
+    fun `ein Eingriff nach der Faelligkeit entwertet die Prognose nicht`() {
+        val e = eintrag(rev = 100L)
+        // Der Messwert zur Faelligkeit traegt noch den alten Stand; erst
+        // danach wurde eingegriffen, und `settle` laeuft verspaetet.
+        val sauber = probe(e.dueTs, 205.0, rev = 100L)
+        val (out, _) = rechne(listOf(e), e.dueTs + 30 * 60_000L, listOf(sauber))
+        assertEquals(
+            ExpectationLedger.Verdict.MISSED, out[0].verdict,
+            "zum Faelligkeitszeitpunkt war die Lage sauber - das Urteil gilt",
+        )
+    }
+
+    /** Auch ein Konfigurationswechsel wird am Messwert geprueft. */
+    @Test
+    fun `ein Konfigurationswechsel macht das Urteil ungueltig`() {
+        val e = eintrag()
+        val (out, _) = rechne(listOf(e), e.dueTs, listOf(probe(e.dueTs, 205.0, cfg = "cfg#2")))
+        assertEquals(ExpectationLedger.Verdict.INTERVENED, out[0].verdict)
+    }
+
+    // ---- Duplikate -------------------------------------------------------
+
+    /**
+     * DIESELBE PROGNOSE DARF NICHT ZWEIMAL IN DER LISTE STEHEN. Sie doppelt
+     * zu fuehren hiesse, denselben Nachweis zweimal zu zaehlen - und die
+     * frueher nach `dueTs` indizierte Zuordnung haette beiden denselben
+     * Messwert gegeben, obwohl er nur einmal als verbraucht galt.
+     */
+    @Test
+    fun `ein Duplikat wird beim Einreihen verworfen`() {
+        val e = eintrag()
+        val einmal = ExpectationLedger.add(emptyList(), e)
+        val zweimal = ExpectationLedger.add(einmal, eintrag())
+        assertEquals(1, zweimal.size, "dieselbe EntryId nur einmal")
+        // Ein Eintrag mit anderer Quelle ist ein anderer Eintrag.
+        val anders = ExpectationLedger.add(zweimal, eintrag(source = t0 + 60_000L))
+        assertEquals(2, anders.size)
+        assertEquals(zweimal, ExpectationLedger.add(zweimal, null), "null aendert nichts")
+    }
+
+    /** Die Kennung ist stabil - sie haengt nur an Quelle, Faelligkeit und
+     *  Segment, nicht an einem Zaehler, der nach einem Neustart neu begaenne. */
+    @Test
+    fun `die Kennung ist stabil und unterscheidet gleiche Faelligkeiten`() {
+        assertEquals(eintrag().id, eintrag().id)
+        assertTrue(eintrag(seg = 1L).id != eintrag(seg = 2L).id, "anderes Segment, andere Kennung")
+        assertTrue(eintrag(source = t0).id != eintrag(source = t0 + 60_000L).id)
     }
 
     // ---- Die Strecke: BELEGTE Dauer --------------------------------------
