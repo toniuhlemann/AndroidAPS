@@ -515,6 +515,63 @@ object ExpectationLedger {
     }
 
     /**
+     * DER GESAMTE ZUSTAND ALS EINE GENERATION (Tonis Persistenzauflage).
+     *
+     * Die drei Teile gehoeren zusammen und duerfen NIE einzeln geschrieben
+     * oder geladen werden: `entries` sagt, was noch offen ist, `consumed`,
+     * welche Messwerte schon vergeben sind, und `outcomes`, was der Streak
+     * bisher belegt. Eine halb geladene Generation koennte offene Prognosen
+     * gegen bereits verbrauchte Messwerte pruefen oder eine Strecke
+     * fortschreiben, deren Anfang fehlt - in beiden Faellen entstuende ein
+     * Nachweis, den es nie gab.
+     *
+     * FAIL-CLOSED HEISST HIER: LEER. Bei Schema- oder Ladefehlern ist der
+     * richtige Ersatz der leere Zustand, nicht ein teilweise gelesener. Ein
+     * leerer Zustand verzoegert den Nachweis; ein halber erfindet ihn.
+     */
+    data class State(
+        val entries: List<Entry> = emptyList(),
+        val consumed: Set<SampleId> = emptySet(),
+        val outcomes: List<Outcome> = emptyList(),
+    ) {
+
+        val isEmpty: Boolean get() = entries.isEmpty() && consumed.isEmpty() && outcomes.isEmpty()
+    }
+
+    /**
+     * Einen Zyklus auf dem Gesamtzustand abrechnen.
+     *
+     * Die Klammer um [add] und [settle], damit der Aufrufer die drei Teile
+     * nicht von Hand zusammenhalten muss - genau dabei entstuende die
+     * halbe Generation, gegen die die Persistenz gebaut ist.
+     *
+     * Die Ergebnisliste wird auf [OUTCOME_RETENTION_MS] beschnitten: laenger
+     * zurueck braucht der Streak nichts, weil ihn jedes MET und jeder
+     * Segmentwechsel ohnehin beendet. Ohne Grenze waechst die Datei
+     * unbegrenzt - hier ist eine Altersgrenze wirksam, anders als beim
+     * frueher entfernten MAX_AGE_MIN.
+     */
+    fun advance(
+        state: State,
+        nowTs: Long,
+        neu: Entry?,
+        samples: List<Sample>,
+        toleranceMgdl: Double = SETTLE_TOLERANCE_MGDL,
+        matchToleranceMs: Long = MATCH_TOLERANCE_MS,
+    ): State {
+        val mitNeuem = add(state.entries, neu)
+        val abrechnung = settle(mitNeuem, nowTs, samples, state.consumed, toleranceMgdl, matchToleranceMs)
+        val alle = (state.outcomes + abrechnung.outcomes)
+            .filter { nowTs - it.entry.dueTs <= OUTCOME_RETENTION_MS }
+            .sortedBy { it.entry.dueTs }
+        return State(abrechnung.remaining, abrechnung.consumed, alle)
+    }
+
+    /** Wie weit die Ergebnisliste zurueckreicht [ms]. Vier Stunden - deutlich
+     *  mehr als jede Strecke, die ein MET oder Segmentwechsel ueberlebt. */
+    const val OUTCOME_RETENTION_MS = 4L * 60 * 60 * 1000
+
+    /**
      * Mindesthoehe einer behaupteten Senkung [mg/dl], damit sie ueberhaupt
      * eingereiht wird - in der Groessenordnung des Sensorrauschens.
      */
