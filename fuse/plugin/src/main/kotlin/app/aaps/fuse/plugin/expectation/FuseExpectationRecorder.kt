@@ -110,19 +110,38 @@ class FuseExpectationRecorder(
      * gemischte Momentaufnahme, aber kein verlorener Wert.
      */
     val telemetry: Telemetry
-        get() = Telemetry(
-            queueDepth = queue.size,
-            dropped = verworfen.get(),
-            asOfTs = asOfTsAtomic.get(),
-            bytes = bytesAtomic.get(),
-            durationMs = durationMsAtomic.get(),
-            lastResult = lastResultAtomic.get(),
-        )
+        get() = schreibsicht.get().let { w ->
+            Telemetry(
+                queueDepth = queue.size,
+                dropped = verworfen.get(),
+                asOfTs = w.asOfTs,
+                bytes = w.bytes,
+                durationMs = w.durationMs,
+                lastResult = w.lastResult,
+            )
+        }
 
-    private val asOfTsAtomic = AtomicLong(0L)
-    private val bytesAtomic = java.util.concurrent.atomic.AtomicInteger(0)
-    private val durationMsAtomic = AtomicLong(0L)
-    private val lastResultAtomic = java.util.concurrent.atomic.AtomicReference("NOT_LOADED")
+    /**
+     * DIE VIER GROESSEN EINES SCHREIBVORGANGS ALS EINE EINHEIT (Toni 18.08.,
+     * P2).
+     *
+     * Einzelne atomare Felder verlieren zwar keine Werte mehr, ergeben aber
+     * noch keine kohaerente Momentaufnahme: `asOfTs` konnte aus einem anderen
+     * Schreibvorgang stammen als `durationMs`. Fuer eine LASTMESSUNG ist das
+     * genau die falsche Eigenschaft - man will wissen, wie lange DIESER
+     * Vorgang mit DIESER Groesse gedauert hat.
+     *
+     * Queue-Tiefe und Verwerfungen bleiben getrennt: sie gehoeren nicht zu
+     * einem einzelnen Schreibvorgang, sondern zum Zustand der Schlange.
+     */
+    private data class WriteTelemetry(
+        val asOfTs: Long = 0L,
+        val bytes: Int = 0,
+        val durationMs: Long = 0L,
+        val lastResult: String = "NOT_LOADED",
+    )
+
+    private val schreibsicht = java.util.concurrent.atomic.AtomicReference(WriteTelemetry())
 
     /**
      * ES GIBT KEINEN ZWISCHENSTAND MEHR (Toni 18.08., P0-1).
@@ -290,7 +309,7 @@ class FuseExpectationRecorder(
             // Ergebnisse auszuwerten, die nie versiegelt wurden.
             persistedState = geschrieben
             entfernteErgebnisse.set(stats.droppedOutcomesTotal)
-            asOfTsAtomic.set(s.nowTs)
+            schreibsicht.updateAndGet { it.copy(asOfTs = s.nowTs) }
         }
         melde(
             "RECORDED:issued=${neu != null},settled=$abgerechnet,persisted=${stats.ok}",
@@ -345,9 +364,13 @@ class FuseExpectationRecorder(
     }
 
     private fun melde(ergebnis: String, bytes: Int, dauerMs: Long) {
-        bytesAtomic.set(bytes)
-        durationMsAtomic.set(dauerMs)
-        lastResultAtomic.set(ergebnis)
+        // EIN Austausch fuer alle drei - sonst koennte ein Leser die Groesse
+        // des einen mit der Dauer des naechsten Vorgangs sehen. `asOfTs`
+        // bleibt stehen: es gehoert zum letzten ERFOLGREICHEN Schreibvorgang,
+        // nicht zum letzten Versuch.
+        schreibsicht.updateAndGet {
+            it.copy(bytes = bytes, durationMs = dauerMs, lastResult = ergebnis)
+        }
     }
 
     /**

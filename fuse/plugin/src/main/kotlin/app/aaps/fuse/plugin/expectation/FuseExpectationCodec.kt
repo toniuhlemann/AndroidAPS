@@ -28,12 +28,24 @@ object FuseExpectationCodec {
     /** Schemastand. Aendert er sich, ist eine aeltere Datei nicht lesbar -
      *  und `decode` liefert den leeren Zustand statt zu raten. */
     /**
-     * Schemastand 2: der Eingriffsstempel loeste die blosse Zahl ab (Toni
-     * 18.08.). Eine v1-Datei hat es nie gegeben - dieser Baustein hatte
-     * damals noch keinen Aufrufer -, der Bump ist also gefahrlos und dient
-     * nur der Klarheit im Trail.
+     * Schemastand 3.
+     *
+     * 2: der Eingriffsstempel loeste die blosse Zahl ab.
+     * 3: `gapTs` und `droppedTotal` sind PFLICHT (Toni 18.08.).
+     *
+     * WARUM DER BUMP UND NICHT `optLong(..., 0)`: eine Generation ohne diese
+     * Felder galt sonst als gueltig und BEHAUPTETE "keine Luecke, nie
+     * gekappt". Fuer `gapTs` waere das vor einer spaeteren lambda-Aktivierung
+     * eine wieder freigegebene alte Evidenzstrecke - also genau der Nachweis,
+     * den die Marke verhindern soll. Ein fehlendes Feld darf nie die
+     * guenstigste Annahme bedeuten.
+     *
+     * Der Bump ist HIER gefahrlos, anders als beim Insulin-Ledger: diese
+     * Datei existiert auf keinem Geraet, der Recorder hatte nie einen
+     * eingeschalteten Lauf. Es gibt nichts zu migrieren und nichts zu
+     * verlieren.
      */
-    const val SCHEMA = 2
+    const val SCHEMA = 3
 
     /**
      * @param revision die MONOTONE Generationsnummer. Sie entscheidet beim
@@ -129,8 +141,11 @@ object FuseExpectationCodec {
             require(revision >= 0L) { "negative Revision $revision" }
             Roh(
                 revision,
-                o.optLong("gapTs", 0L),
-                o.optLong("droppedTotal", 0L),
+                // PFLICHT, nicht optional: ein fehlendes Feld ist keine
+                // Aussage ueber die Vergangenheit, sondern eine unlesbare
+                // Generation.
+                o.getLong("gapTs").also { require(it >= 0L) { "negative Lueckenmarke $it" } },
+                o.getLong("droppedTotal").also { require(it >= 0L) { "negativer Trunkierungsstand $it" } },
                 o.getJSONArray("entries").let { a -> (0 until a.length()).map { entryOf(a.getJSONObject(it)) } },
                 o.getJSONArray("consumed").let { a ->
                     (0 until a.length()).map {
