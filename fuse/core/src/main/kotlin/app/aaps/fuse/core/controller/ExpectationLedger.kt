@@ -49,11 +49,59 @@ object ExpectationLedger {
         CORRECTION,
 
         /**
-         * Marker-, Fundament- oder Evidenzepisode ist massgeblich.
-         * Auswertbar und exportiert, aber NIE Teil der lambda-Strecke.
+         * Marker, Onset, laufende Evidenzepisode oder Mahlzeitenfenster ist
+         * massgeblich. Auswertbar und exportiert - Grundlage der spaeteren
+         * Mahlzeitenanalyse -, aber NIE Teil der lambda-Strecke.
          */
         MEAL,
+
+        /**
+         * WEDER KORREKTUR NOCH MAHLZEIT - fuer keine Analyse brauchbar
+         * (Toni 18.08.).
+         *
+         * Der erste Wurf kannte nur zwei Werte und liess Rebound,
+         * Signalfehler und unbekannte Eingaben als MEAL enden. Die
+         * Dosierseite war damit sicher (nicht lambda-tauglich), aber die
+         * spaetere Mahlzeitenanalyse haette Nicht-Mahlzeiten als Mahlzeiten
+         * gezaehlt - ein stiller Fehler, der erst beim Auswerten auffiele
+         * und dann nicht mehr trennbar waere.
+         */
+        EXCLUDED,
     }
+
+    /**
+     * WARUM diese Einordnung - typisiert, nicht als Text.
+     *
+     * Ohne ihn zeigte der Export spaeter nur, DASS etwas ausgeschlossen
+     * wurde, nicht weshalb. Und an einem Grundtext darf keine Auswertung
+     * haengen; dieselbe Regel, aus der schon `markerAuthorizedU` und
+     * `unsafeSituation` typisierte Herkunft bekommen haben.
+     */
+    enum class ContextReason {
+
+        /** Alle Lage-Groessen ausdruecklich belegt, keine greift. */
+        PURE_CORRECTION,
+
+        // ---- MEAL --------------------------------------------------------
+        MARKER_ACTIVE,
+        EVIDENCE_EPISODE_ACTIVE,
+        ONSET_ACTIVE,
+        MEAL_WINDOW_OPEN,
+
+        // ---- EXCLUDED ----------------------------------------------------
+        /** Erholung nach einem Tief - die Steigung ist kein Korrekturbefund
+         *  und die Lage keine Mahlzeit. */
+        REBOUND,
+
+        /** Ohne brauchbares Signal ist gar keine Lage belegt. */
+        SIGNAL_UNHEALTHY,
+
+        /** Mindestens eine Lage-Groesse war unbekannt. */
+        UNKNOWN_INPUT,
+    }
+
+    /** Einordnung mit Begruendung. */
+    data class Classification(val context: ExpectationContext, val reason: ContextReason)
 
     /**
      * DIE LAGE, aus der sich der [ExpectationContext] ergibt.
@@ -105,15 +153,28 @@ object ExpectationLedger {
      * einziges `null` - ergibt MEAL. Ein vergessenes Merkmal kann damit
      * hoechstens Nachweis KOSTEN, nie welchen erfinden.
      */
-    fun classify(situation: Situation): ExpectationContext {
+    fun classify(situation: Situation): Classification {
         val s = situation
-        val reineKorrektur = s.signalHealthy == true &&
-            s.mealMarkerActive == false &&
-            s.evidenceEpisodeActive == false &&
-            s.onsetActive == false &&
-            s.mealWindow == false &&
-            s.reboundWindow == false
-        return if (reineKorrektur) ExpectationContext.CORRECTION else ExpectationContext.MEAL
+        // REIHENFOLGE IST BEDEUTUNG. Die Ausschlussgruende kommen ZUERST:
+        // ein Rebound oder ein ungesundes Signal macht die Lage auch als
+        // MAHLZEIT unbrauchbar, nicht nur als Korrektur. Stuende die
+        // Mahlzeitenpruefung davor, landete ein Rebound waehrend eines
+        // Markers in der Mahlzeitenanalyse.
+        if (s.mealMarkerActive == null || s.evidenceEpisodeActive == null ||
+            s.onsetActive == null || s.mealWindow == null ||
+            s.reboundWindow == null || s.signalHealthy == null
+        ) return Classification(ExpectationContext.EXCLUDED, ContextReason.UNKNOWN_INPUT)
+        if (!s.signalHealthy) return Classification(ExpectationContext.EXCLUDED, ContextReason.SIGNAL_UNHEALTHY)
+        if (s.reboundWindow) return Classification(ExpectationContext.EXCLUDED, ContextReason.REBOUND)
+
+        // Dann die Mahlzeitengruende - der erste zutreffende benennt sie.
+        if (s.mealMarkerActive) return Classification(ExpectationContext.MEAL, ContextReason.MARKER_ACTIVE)
+        if (s.evidenceEpisodeActive)
+            return Classification(ExpectationContext.MEAL, ContextReason.EVIDENCE_EPISODE_ACTIVE)
+        if (s.onsetActive) return Classification(ExpectationContext.MEAL, ContextReason.ONSET_ACTIVE)
+        if (s.mealWindow) return Classification(ExpectationContext.MEAL, ContextReason.MEAL_WINDOW_OPEN)
+
+        return Classification(ExpectationContext.CORRECTION, ContextReason.PURE_CORRECTION)
     }
 
     /**
@@ -204,6 +265,7 @@ object ExpectationLedger {
         val configGeneration: String,
         val interventionRevision: Long,
         val context: ExpectationContext,
+        val contextReason: ContextReason,
         val safetyLowerPredictedMgdl: Double? = null,
         val lambda: Double? = null,
         val discountMgdl: Double? = null,
@@ -313,7 +375,7 @@ object ExpectationLedger {
         horizonMin: Int,
         configGeneration: String,
         interventionRevision: Long,
-        context: ExpectationContext,
+        classification: Classification,
         safetyLowerPredictedMgdl: Double? = null,
         lambda: Double? = null,
         discountMgdl: Double? = null,
@@ -336,7 +398,8 @@ object ExpectationLedger {
             meanPredictedMgdl = meanPredictedMgdl,
             configGeneration = configGeneration,
             interventionRevision = interventionRevision,
-            context = context,
+            context = classification.context,
+            contextReason = classification.reason,
             safetyLowerPredictedMgdl = safetyLowerPredictedMgdl?.takeIf { it.isFinite() },
             lambda = lambda?.takeIf { it.isFinite() },
             discountMgdl = discountMgdl?.takeIf { it.isFinite() },

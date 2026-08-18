@@ -130,6 +130,7 @@ object FuseExpectationCodec {
         .put("cfg", e.configGeneration)
         .put("rev", e.interventionRevision)
         .put("ctx", e.context.name)
+        .put("ctxReason", e.contextReason.name)
         .putOpt("safetyLower", e.safetyLowerPredictedMgdl)
         .putOpt("lambda", e.lambda)
         .putOpt("discount", e.discountMgdl)
@@ -150,6 +151,9 @@ object FuseExpectationCodec {
         // Rueckfall auf CORRECTION waere die gefaehrliche Richtung: er
         // machte jeden unlesbaren Eintrag lambda-tauglich.
         context = ExpectationLedger.ExpectationContext.valueOf(o.getString("ctx")),
+        // Der GRUND ebenso Pflicht: ohne ihn zeigt der Export nur, DASS
+        // etwas ausgeschlossen wurde, nicht weshalb.
+        contextReason = ExpectationLedger.ContextReason.valueOf(o.getString("ctxReason")),
         safetyLowerPredictedMgdl = optEndlich(o, "safetyLower"),
         lambda = optEndlich(o, "lambda"),
         discountMgdl = optEndlich(o, "discount"),

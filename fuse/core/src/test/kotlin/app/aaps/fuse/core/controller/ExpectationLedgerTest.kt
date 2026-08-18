@@ -19,7 +19,16 @@ class ExpectationLedgerTest {
     private val SEG = 1L
     private val CFG = "cfg#1"
     private val REV = 100L
-    private val KORR = ExpectationLedger.ExpectationContext.CORRECTION
+    private val KORR = ExpectationLedger.Classification(
+        ExpectationLedger.ExpectationContext.CORRECTION,
+        ExpectationLedger.ContextReason.PURE_CORRECTION,
+    )
+    private val MAHL = ExpectationLedger.Classification(
+        ExpectationLedger.ExpectationContext.MEAL,
+        ExpectationLedger.ContextReason.MARKER_ACTIVE,
+    )
+    private val KTX = ExpectationLedger.ExpectationContext.CORRECTION
+    private val KGRUND = ExpectationLedger.ContextReason.PURE_CORRECTION
 
     private fun eintrag(
         source: Long = t0,
@@ -27,10 +36,10 @@ class ExpectationLedgerTest {
         anchor: Double = 200.0,
         mean: Double = 150.0,
         rev: Long = REV,
-        kontext: ExpectationLedger.ExpectationContext = ExpectationLedger.ExpectationContext.CORRECTION,
+        kontext: ExpectationLedger.Classification = KORR,
     ) = ExpectationLedger.issue(
         source, seg, anchor, mean, H, configGeneration = CFG, interventionRevision = rev,
-        context = kontext,
+        classification = kontext,
     )!!
 
     private fun probe(
@@ -336,7 +345,7 @@ class ExpectationLedgerTest {
         // Dasselbe fuer die Konfiguration.
         val andereCfg = ExpectationLedger.issue(
             t0, SEG, 200.0, 150.0, H, configGeneration = "cfg#2", interventionRevision = 101L,
-            context = KORR,
+            classification = KORR,
         )!!
         val ersetzt2 = ExpectationLedger.add(ersetzt, andereCfg)
         assertEquals(1, ersetzt2.size)
@@ -586,7 +595,7 @@ class ExpectationLedgerTest {
     private fun ergebnis(due: Long, v: ExpectationLedger.Verdict, seg: Long = SEG) =
         ExpectationLedger.Outcome(
             ExpectationLedger.Entry(
-                due - H * 60_000L, due, seg, 200.0, 150.0, CFG, REV, KORR,
+                due - H * 60_000L, due, seg, 200.0, 150.0, CFG, REV, KTX, KGRUND,
                 safetyLowerPredictedMgdl = 40.0,
             ),
             v,
@@ -732,11 +741,11 @@ class ExpectationLedgerTest {
      */
     @Test
     fun `dieselbe Folge traegt lambda nur im Korrekturbetrieb`() {
-        fun folge(kontext: ExpectationLedger.ExpectationContext) = (0..9).map { i ->
+        fun folge(kontext: ExpectationLedger.Classification) = (0..9).map { i ->
             val due = t0 + i * 60_000L
             ExpectationLedger.Outcome(
                 ExpectationLedger.Entry(
-                    due - H * 60_000L, due, SEG, 200.0, 150.0, CFG, REV, kontext,
+                    due - H * 60_000L, due, SEG, 200.0, 150.0, CFG, REV, kontext.context, kontext.reason,
                     safetyLowerPredictedMgdl = 40.0,
                 ),
                 ExpectationLedger.Verdict.MISSED, due, 205.0,
@@ -749,7 +758,7 @@ class ExpectationLedgerTest {
         assertEquals(
             0,
             ExpectationLedger.lambdaEvidenceStreakMin(
-                folge(ExpectationLedger.ExpectationContext.MEAL), SEG, MARGE,
+                folge(MAHL), SEG, MARGE,
             ),
             "dieselbe Folge als Mahlzeit traegt ihn NICHT",
         )
@@ -763,6 +772,7 @@ class ExpectationLedgerTest {
             ExpectationLedger.Entry(
                 t0, t0 + H * 60_000L, SEG, 200.0, 150.0, CFG, REV,
                 ExpectationLedger.ExpectationContext.MEAL,
+                ExpectationLedger.ContextReason.MARKER_ACTIVE,
                 safetyLowerPredictedMgdl = 40.0,
             ),
             ExpectationLedger.Verdict.MISSED, t0 + H * 60_000L, 205.0,
@@ -776,17 +786,17 @@ class ExpectationLedgerTest {
      *  konservativ, wie jedes andere Nicht-Ereignis auch. */
     @Test
     fun `ein Mahlzeiten-Ergebnis unterbricht die Korrekturstrecke`() {
-        fun erg(due: Long, kontext: ExpectationLedger.ExpectationContext) =
+        fun erg(due: Long, kontext: ExpectationLedger.Classification) =
             ExpectationLedger.Outcome(
                 ExpectationLedger.Entry(
-                    due - H * 60_000L, due, SEG, 200.0, 150.0, CFG, REV, kontext,
+                    due - H * 60_000L, due, SEG, 200.0, 150.0, CFG, REV, kontext.context, kontext.reason,
                     safetyLowerPredictedMgdl = 40.0,
                 ),
                 ExpectationLedger.Verdict.MISSED, due, 205.0,
             )
         val reihe = listOf(
             erg(t0, KORR),
-            erg(t0 + 60_000L, ExpectationLedger.ExpectationContext.MEAL),
+            erg(t0 + 60_000L, MAHL),
             erg(t0 + 120_000L, KORR),
         )
         assertEquals(
@@ -795,7 +805,7 @@ class ExpectationLedgerTest {
         )
     }
 
-    // ---- Der Klassifikator: CORRECTION ist der schwere Fall --------------
+    // ---- Der Klassifikator: drei Toepfe, jeder mit Begruendung ----------
 
     /** Reine Korrekturlage - ALLES ausdruecklich belegt. */
     private fun reineKorrektur() = ExpectationLedger.Situation(
@@ -810,31 +820,92 @@ class ExpectationLedgerTest {
     @Test
     fun `nur eine vollstaendig belegte Korrekturlage ergibt CORRECTION`() {
         assertEquals(
-            ExpectationLedger.ExpectationContext.CORRECTION,
+            ExpectationLedger.Classification(
+                ExpectationLedger.ExpectationContext.CORRECTION,
+                ExpectationLedger.ContextReason.PURE_CORRECTION,
+            ),
             ExpectationLedger.classify(reineKorrektur()),
         )
     }
 
     /**
-     * JEDE EINZELNE LAGE-GROESSE KIPPT AUF MEAL - adversariell durchgespielt.
+     * MAHLZEITENLAGEN LANDEN IN MEAL - mit dem Grund, der sie ausmacht.
      *
-     * Tonis Grenze: "Marker, Onset, laufende Evidenzepisode,
-     * Mahlzeitenfenster, Rebound oder unklare Lage -> keine
-     * CORRECTION-lambda-Evidenz."
+     * Ausgewertet wird spaeter der Grund, nicht nur der Topf: eine Analyse,
+     * die MARKER_ACTIVE und MEAL_WINDOW_OPEN nicht trennen kann, kann die
+     * Freigabekurve nicht beurteilen.
      */
     @Test
-    fun `jede Mahlzeiten- oder Reboundlage kippt auf MEAL`() {
+    fun `jede ausdrueckliche Mahlzeitenlage ergibt MEAL mit ihrem Grund`() {
         val faelle = mapOf(
-            "Marker aktiv" to reineKorrektur().copy(mealMarkerActive = true),
-            "Evidenzepisode laeuft" to reineKorrektur().copy(evidenceEpisodeActive = true),
-            "Onset aktiv" to reineKorrektur().copy(onsetActive = true),
-            "Mahlzeitenfenster offen" to reineKorrektur().copy(mealWindow = true),
-            "Rebound-Fenster" to reineKorrektur().copy(reboundWindow = true),
-            "Signal ungesund" to reineKorrektur().copy(signalHealthy = false),
+            reineKorrektur().copy(mealMarkerActive = true) to ExpectationLedger.ContextReason.MARKER_ACTIVE,
+            reineKorrektur().copy(evidenceEpisodeActive = true) to
+                ExpectationLedger.ContextReason.EVIDENCE_EPISODE_ACTIVE,
+            reineKorrektur().copy(onsetActive = true) to ExpectationLedger.ContextReason.ONSET_ACTIVE,
+            reineKorrektur().copy(mealWindow = true) to ExpectationLedger.ContextReason.MEAL_WINDOW_OPEN,
         )
-        for ((name, lage) in faelle) assertEquals(
-            ExpectationLedger.ExpectationContext.MEAL,
-            ExpectationLedger.classify(lage), name,
+        for ((lage, grund) in faelle) assertEquals(
+            ExpectationLedger.Classification(ExpectationLedger.ExpectationContext.MEAL, grund),
+            ExpectationLedger.classify(lage), "$lage",
+        )
+    }
+
+    /**
+     * WEDER KORREKTUR NOCH MAHLZEIT (Tonis Verfeinerung 18.08.).
+     *
+     * Der erste Wurf warf diese drei mit echten Mahlzeiten in denselben Topf.
+     * Dosierseitig war das sicher - lambda-Evidenz entstand nicht -, aber die
+     * spaetere Analyse haette einen Rebound als Mahlzeit gezaehlt. Der
+     * Ausschluss ist deshalb ein eigener Topf, kein Anhaengsel von MEAL.
+     */
+    @Test
+    fun `Rebound, Signalfehler und unbekannte Eingabe ergeben EXCLUDED`() {
+        val faelle = mapOf(
+            reineKorrektur().copy(reboundWindow = true) to ExpectationLedger.ContextReason.REBOUND,
+            reineKorrektur().copy(signalHealthy = false) to ExpectationLedger.ContextReason.SIGNAL_UNHEALTHY,
+            reineKorrektur().copy(mealMarkerActive = null) to ExpectationLedger.ContextReason.UNKNOWN_INPUT,
+            reineKorrektur().copy(evidenceEpisodeActive = null) to ExpectationLedger.ContextReason.UNKNOWN_INPUT,
+            reineKorrektur().copy(onsetActive = null) to ExpectationLedger.ContextReason.UNKNOWN_INPUT,
+            reineKorrektur().copy(mealWindow = null) to ExpectationLedger.ContextReason.UNKNOWN_INPUT,
+            reineKorrektur().copy(reboundWindow = null) to ExpectationLedger.ContextReason.UNKNOWN_INPUT,
+            reineKorrektur().copy(signalHealthy = null) to ExpectationLedger.ContextReason.UNKNOWN_INPUT,
+        )
+        for ((lage, grund) in faelle) assertEquals(
+            ExpectationLedger.Classification(ExpectationLedger.ExpectationContext.EXCLUDED, grund),
+            ExpectationLedger.classify(lage), "$lage",
+        )
+    }
+
+    /**
+     * DIE REIHENFOLGE IST BEDEUTUNG: Ausschluss schlaegt Mahlzeit.
+     *
+     * Ein Rebound waehrend eines laufenden Markers ist auch als MAHLZEIT
+     * unbrauchbar - die Steigung kommt aus der Gegenregulation, nicht aus der
+     * Absorption. Stuende die Mahlzeitenpruefung vorn, wanderte genau dieser
+     * Fall in die Mahlzeitenanalyse und verzerrte sie.
+     */
+    @Test
+    fun `Ausschlussgruende schlagen die Mahlzeitenlage`() {
+        assertEquals(
+            ExpectationLedger.ContextReason.REBOUND,
+            ExpectationLedger.classify(
+                reineKorrektur().copy(mealMarkerActive = true, reboundWindow = true),
+            ).reason,
+            "Rebound trotz Marker",
+        )
+        assertEquals(
+            ExpectationLedger.ContextReason.SIGNAL_UNHEALTHY,
+            ExpectationLedger.classify(
+                reineKorrektur().copy(onsetActive = true, signalHealthy = false),
+            ).reason,
+            "ohne Signal ist auch der Onset nicht belegt",
+        )
+        assertEquals(
+            ExpectationLedger.ContextReason.UNKNOWN_INPUT,
+            ExpectationLedger.classify(
+                reineKorrektur().copy(mealMarkerActive = true, mealWindow = null),
+            ).reason,
+            "eine Luecke bleibt eine Luecke, auch neben einem Marker",
         )
     }
 
@@ -844,8 +915,7 @@ class ExpectationLedgerTest {
      *
      * Nur `mealMarkerActive` zu pruefen wuerde die Nachlaufphase einer
      * Mahlzeit als reine Korrektur verbuchen - und genau dort ist eine
-     * ausbleibende Senkung der Normalfall. Die laufende Evidenzepisode muss
-     * den Kontext weiter auf MEAL halten.
+     * ausbleibende Senkung der Normalfall.
      */
     @Test
     fun `der beendete Marker allein macht noch keine Korrekturlage`() {
@@ -854,28 +924,31 @@ class ExpectationLedgerTest {
             evidenceEpisodeActive = true,  // die Absorption laeuft weiter
         )
         assertEquals(
-            ExpectationLedger.ExpectationContext.MEAL,
+            ExpectationLedger.Classification(
+                ExpectationLedger.ExpectationContext.MEAL,
+                ExpectationLedger.ContextReason.EVIDENCE_EPISODE_ACTIVE,
+            ),
             ExpectationLedger.classify(nachlauf),
             "die Nachlaufphase ist keine Korrektur",
         )
     }
 
-    /** UNBEKANNT IST NICHT "NEIN". Ein einziges `null` genuegt fuer MEAL -
-     *  ein vergessenes Merkmal darf hoechstens Nachweis kosten, nie welchen
-     *  erfinden. */
+    /** NUR CORRECTION TRAEGT LAMBDA - die beiden anderen Toepfe nicht. */
     @Test
-    fun `eine unklare Lage ergibt nie CORRECTION`() {
-        val unbekannt = listOf(
-            reineKorrektur().copy(mealMarkerActive = null),
-            reineKorrektur().copy(evidenceEpisodeActive = null),
-            reineKorrektur().copy(onsetActive = null),
-            reineKorrektur().copy(mealWindow = null),
-            reineKorrektur().copy(reboundWindow = null),
-            reineKorrektur().copy(signalHealthy = null),
-        )
-        for (lage in unbekannt) assertEquals(
-            ExpectationLedger.ExpectationContext.MEAL,
-            ExpectationLedger.classify(lage), "$lage",
-        )
+    fun `weder MEAL noch EXCLUDED koennen lambda-Evidenz werden`() {
+        for (ktx in ExpectationLedger.ExpectationContext.entries) {
+            val erg = ExpectationLedger.Outcome(
+                ExpectationLedger.Entry(
+                    t0, t0 + H * 60_000L, SEG, 200.0, 150.0, CFG, REV, ktx,
+                    ExpectationLedger.ContextReason.PURE_CORRECTION,
+                    safetyLowerPredictedMgdl = 40.0,
+                ),
+                ExpectationLedger.Verdict.MISSED, t0 + H * 60_000L, 205.0,
+            )
+            assertEquals(
+                ktx == ExpectationLedger.ExpectationContext.CORRECTION,
+                erg.isLambdaEvidence(MARGE), "$ktx",
+            )
+        }
     }
 }

@@ -43,6 +43,7 @@ class FuseExpectationStoreTest {
         anchorMgdl = 200.0, meanPredictedMgdl = 150.0,
         configGeneration = "cfg#1", interventionRevision = 42L,
         context = ExpectationLedger.ExpectationContext.CORRECTION,
+        contextReason = ExpectationLedger.ContextReason.PURE_CORRECTION,
         safetyLowerPredictedMgdl = 40.0,
     )
 
