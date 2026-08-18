@@ -794,4 +794,88 @@ class ExpectationLedgerTest {
             "die Mahlzeit in der Mitte darf nicht ueberbrueckt werden",
         )
     }
+
+    // ---- Der Klassifikator: CORRECTION ist der schwere Fall --------------
+
+    /** Reine Korrekturlage - ALLES ausdruecklich belegt. */
+    private fun reineKorrektur() = ExpectationLedger.Situation(
+        mealMarkerActive = false,
+        evidenceEpisodeActive = false,
+        onsetActive = false,
+        mealWindow = false,
+        reboundWindow = false,
+        signalHealthy = true,
+    )
+
+    @Test
+    fun `nur eine vollstaendig belegte Korrekturlage ergibt CORRECTION`() {
+        assertEquals(
+            ExpectationLedger.ExpectationContext.CORRECTION,
+            ExpectationLedger.classify(reineKorrektur()),
+        )
+    }
+
+    /**
+     * JEDE EINZELNE LAGE-GROESSE KIPPT AUF MEAL - adversariell durchgespielt.
+     *
+     * Tonis Grenze: "Marker, Onset, laufende Evidenzepisode,
+     * Mahlzeitenfenster, Rebound oder unklare Lage -> keine
+     * CORRECTION-lambda-Evidenz."
+     */
+    @Test
+    fun `jede Mahlzeiten- oder Reboundlage kippt auf MEAL`() {
+        val faelle = mapOf(
+            "Marker aktiv" to reineKorrektur().copy(mealMarkerActive = true),
+            "Evidenzepisode laeuft" to reineKorrektur().copy(evidenceEpisodeActive = true),
+            "Onset aktiv" to reineKorrektur().copy(onsetActive = true),
+            "Mahlzeitenfenster offen" to reineKorrektur().copy(mealWindow = true),
+            "Rebound-Fenster" to reineKorrektur().copy(reboundWindow = true),
+            "Signal ungesund" to reineKorrektur().copy(signalHealthy = false),
+        )
+        for ((name, lage) in faelle) assertEquals(
+            ExpectationLedger.ExpectationContext.MEAL,
+            ExpectationLedger.classify(lage), name,
+        )
+    }
+
+    /**
+     * DER WICHTIGSTE GRENZFALL (Toni 18.08.): der MARKER endet frueher als
+     * eine langsame Absorption.
+     *
+     * Nur `mealMarkerActive` zu pruefen wuerde die Nachlaufphase einer
+     * Mahlzeit als reine Korrektur verbuchen - und genau dort ist eine
+     * ausbleibende Senkung der Normalfall. Die laufende Evidenzepisode muss
+     * den Kontext weiter auf MEAL halten.
+     */
+    @Test
+    fun `der beendete Marker allein macht noch keine Korrekturlage`() {
+        val nachlauf = reineKorrektur().copy(
+            mealMarkerActive = false,      // der Marker ist abgelaufen
+            evidenceEpisodeActive = true,  // die Absorption laeuft weiter
+        )
+        assertEquals(
+            ExpectationLedger.ExpectationContext.MEAL,
+            ExpectationLedger.classify(nachlauf),
+            "die Nachlaufphase ist keine Korrektur",
+        )
+    }
+
+    /** UNBEKANNT IST NICHT "NEIN". Ein einziges `null` genuegt fuer MEAL -
+     *  ein vergessenes Merkmal darf hoechstens Nachweis kosten, nie welchen
+     *  erfinden. */
+    @Test
+    fun `eine unklare Lage ergibt nie CORRECTION`() {
+        val unbekannt = listOf(
+            reineKorrektur().copy(mealMarkerActive = null),
+            reineKorrektur().copy(evidenceEpisodeActive = null),
+            reineKorrektur().copy(onsetActive = null),
+            reineKorrektur().copy(mealWindow = null),
+            reineKorrektur().copy(reboundWindow = null),
+            reineKorrektur().copy(signalHealthy = null),
+        )
+        for (lage in unbekannt) assertEquals(
+            ExpectationLedger.ExpectationContext.MEAL,
+            ExpectationLedger.classify(lage), "$lage",
+        )
+    }
 }

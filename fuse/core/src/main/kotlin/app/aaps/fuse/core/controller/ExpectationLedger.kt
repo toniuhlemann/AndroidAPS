@@ -56,6 +56,67 @@ object ExpectationLedger {
     }
 
     /**
+     * DIE LAGE, aus der sich der [ExpectationContext] ergibt.
+     *
+     * Als eigener Typ und nicht als Parameterliste: der Klassifikator
+     * bekommt damit ein VOLLSTAENDIGES Bild, und eine spaeter ergaenzte
+     * Lage-Groesse faellt beim Kompilieren auf, statt still zu fehlen.
+     *
+     * `null` heisst ueberall UNBEKANNT und fuehrt zu MEAL - nicht zu
+     * CORRECTION. Eine Lage, die man nicht kennt, ist keine belegte reine
+     * Korrekturlage.
+     */
+    data class Situation(
+        /** Marker-Freigabe laeuft. */
+        val mealMarkerActive: Boolean?,
+        /**
+         * Eine Evidenzepisode ist noch massgeblich (ACTIVE, PENDING_SEAL
+         * oder ein Bestand > 0).
+         *
+         * DER WICHTIGSTE EINZELNE PUNKT (Toni 18.08.): der MARKER endet
+         * frueher als eine langsame Absorption. Nur `mealMarkerActive` zu
+         * pruefen wuerde die Nachlaufphase einer Mahlzeit als reine
+         * Korrektur verbuchen - und genau dort ist eine ausbleibende Senkung
+         * der Normalfall.
+         */
+        val evidenceEpisodeActive: Boolean?,
+        /** Der Onset-Kanal hat die Mittelbahn gehoben. */
+        val onsetActive: Boolean?,
+        /** Das Mahlzeitenfenster (Marker, Onset oder kinematische Persistenz). */
+        val mealWindow: Boolean?,
+        /** Das Rebound-Fenster nach einem Tief - dort ist die Erholungs-
+         *  steigung kein Korrekturbefund. */
+        val reboundWindow: Boolean?,
+        /** Signalgesundheit. Ohne sie ist gar keine Lage belegt. */
+        val signalHealthy: Boolean?,
+    )
+
+    /**
+     * WELCHE SORTE PROGNOSE IST DAS?
+     *
+     * Tonis Grenze, woertlich: "CORRECTION nur, wenn ausdruecklich reine
+     * Korrekturlage belegt ist. Marker, Onset, laufende Evidenzepisode,
+     * Mahlzeitenfenster, Rebound oder unklare Lage -> keine
+     * CORRECTION-lambda-Evidenz."
+     *
+     * Die Funktion ist bewusst so gebaut, dass CORRECTION der SCHWERE Fall
+     * ist: jede einzelne Bedingung muss ausdruecklich mit `false` belegt
+     * sein, die Gesundheit ausdruecklich mit `true`. Alles andere - auch ein
+     * einziges `null` - ergibt MEAL. Ein vergessenes Merkmal kann damit
+     * hoechstens Nachweis KOSTEN, nie welchen erfinden.
+     */
+    fun classify(situation: Situation): ExpectationContext {
+        val s = situation
+        val reineKorrektur = s.signalHealthy == true &&
+            s.mealMarkerActive == false &&
+            s.evidenceEpisodeActive == false &&
+            s.onsetActive == false &&
+            s.mealWindow == false &&
+            s.reboundWindow == false
+        return if (reineKorrektur) ExpectationContext.CORRECTION else ExpectationContext.MEAL
+    }
+
+    /**
      * Kennung eines VERBRAUCHTEN Messwerts - Teil des persistierbaren
      * Zustands.
      *
