@@ -1,5 +1,7 @@
 package app.aaps.fuse.plugin.expectation
 
+import org.junit.jupiter.api.Assertions.assertFalse
+import app.aaps.fuse.plugin.ledger.FuseLedgerStore
 import app.aaps.fuse.core.controller.InterventionStamp
 import app.aaps.fuse.core.controller.ExpectationLedger
 import app.aaps.fuse.plugin.ledger.Durability
@@ -88,9 +90,20 @@ class FuseExpectationStoreTest {
     @Test
     fun `Datei und Verzeichnis werden gesynct`(@TempDir dir: File) {
         val d = FakeDurability()
-        FuseExpectationStore(d).save(dir, zustand(), 1L, kopfstand = InterventionStamp("test-epoche", 42L))
+        val store = FuseExpectationStore(d)
+        val stamp = InterventionStamp("test-epoche", 42L)
+        store.save(dir, zustand(), 1L, kopfstand = stamp)
         assertEquals(1, d.dateiSyncs, "fsync auf die Datei")
-        assertEquals(1, d.verzeichnisSyncs, "fsync auf das Verzeichnis")
+        // ZWEI Verzeichnis-Syncs beim ERSTEN Mal: einer fuer die Rotation der
+        // Generation, einer fuer den neu angelegten Zeugen. Der Zeuge braucht
+        // seinen eigenen - verschwaende er nach einem Stromausfall, liefe ein
+        // Datenverlust spaeter als Erststart durch, und genau das soll er
+        // verhindern.
+        assertEquals(2, d.verzeichnisSyncs, "Generation und Zeuge")
+
+        // Ab dem zweiten Mal steht der Zeuge schon - dann bleibt es bei einem.
+        store.save(dir, zustand(), 2L, kopfstand = stamp)
+        assertEquals(3, d.verzeichnisSyncs, "kein weiterer Zeugen-Sync")
     }
 
     /** Schlaegt der Verzeichnis-Sync fehl, gilt die Generation als NICHT
@@ -317,5 +330,62 @@ class FuseExpectationStoreTest {
     fun `unterhalb der Grenzen bleibt alles erhalten`() {
         val s = zustand(5)
         assertEquals(s.entries.size, FuseExpectationStore(FakeDurability()).kappen(s, kopfstand = InterventionStamp("test-epoche", 42L)).entries.size)
+    }
+
+    // ---- Ablage und Zeuge -----------------------------------------------
+
+    /**
+     * DIE ABLAGE IST APP-INTERN UND GETRENNT (Toni 18.08.).
+     *
+     * Nicht im externen Exportverzeichnis - dort ist die Datei faelschbar, und
+     * alle Semantikpruefungen dieses Bausteins sind von Hand erfuellbar. Und
+     * nicht in der Reparaturdomaene des Insulinledgers.
+     */
+    @Test
+    fun `die Ablage liegt in einem eigenen Unterverzeichnis`(@TempDir filesDir: File) {
+        val dir = FuseExpectationStore.dirIn(filesDir)
+        assertEquals(FuseExpectationStore.DIR_NAME, dir.name)
+        assertEquals(filesDir, dir.parentFile)
+        assertFalse(dir.path.contains("fuse_ledger"), "nicht in der Ledger-Domaene")
+        assertFalse(
+            FuseExpectationStore.SENTINEL_NAME == FuseLedgerStore.SENTINEL_NAME,
+            "und ein eigener Zeuge - sonst liest einer den des anderen",
+        )
+    }
+
+    /**
+     * EINE VERSCHWUNDENE GENERATION IST KEIN ERSTSTART.
+     *
+     * Beide zeigen ein leeres Verzeichnis. Ohne den Zeugen begaenne der
+     * Streak still neu und niemand wuesste, dass Nachweis verlorenging.
+     */
+    @Test
+    fun `eine geloeschte Generation wird als Verlust gemeldet, nicht als Erststart`(@TempDir dir: File) {
+        assertTrue(FuseExpectationStore(FakeDurability()).save(dir, zustand(), revision = 1L, kopfstand = InterventionStamp("test-epoche", 42L)))
+        // Alles weg - nur der Zeuge bleibt.
+        dir.listFiles()!!.filter { FuseExpectationStore.SENTINEL_NAME !in it.name }.forEach { it.delete() }
+
+        val geladen = FuseExpectationStore(FakeDurability()).load(dir, InterventionStamp("test-epoche", 42L))
+        assertTrue(geladen is FuseExpectationStore.Loaded.Corrupt, "$geladen")
+    }
+
+    /** Und der echte Erststart bleibt ein Erststart. */
+    @Test
+    fun `ein leeres Verzeichnis ohne Zeugen ist ein Erststart`(@TempDir dir: File) {
+        assertTrue(FuseExpectationStore(FakeDurability()).load(dir, InterventionStamp("test-epoche", 42L)) is FuseExpectationStore.Loaded.Fresh)
+    }
+
+    /**
+     * DER ZEUGE ENTSTEHT ERST NACH DEM NACHWEIS.
+     *
+     * Stuende er davor, machte ein gescheiterter erster Schreibversuch jeden
+     * kuenftigen Erststart zu einem gemeldeten Datenverlust.
+     */
+    @Test
+    fun `ein gescheiterter Schreibversuch hinterlaesst keinen Zeugen`(@TempDir parent: File) {
+        val blockiert = File(parent, "datei-statt-verzeichnis").also { it.writeText("x") }
+        val dir = File(blockiert, "unter")
+        assertFalse(FuseExpectationStore(FakeDurability()).save(dir, zustand(), revision = 1L, kopfstand = InterventionStamp("test-epoche", 42L)))
+        assertFalse(FuseExpectationStore(FakeDurability()).sentinelExists(dir))
     }
 }

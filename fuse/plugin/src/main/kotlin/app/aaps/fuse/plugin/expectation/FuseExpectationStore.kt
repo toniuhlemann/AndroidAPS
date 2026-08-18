@@ -39,7 +39,43 @@ class FuseExpectationStore(private val durability: Durability = Durability.ANDRO
 
     companion object {
 
+        /**
+         * EIGENES, APP-INTERNES VERZEICHNIS (Toni 18.08.).
+         *
+         * Nicht im externen Exportverzeichnis: dort lesen und schreiben
+         * fremde Prozesse mit, und die Semantikpruefungen dieses Bausteins
+         * sind von Hand erfuellbar - 30 erfundene MISSED-Ergebnisse ergaeben
+         * sofort eine lange Nachweisstrecke.
+         *
+         * Und nicht im Verzeichnis des Insulinledgers: [FuseLedgerRepair]
+         * arbeitet dort auf einer festen Namensliste und wuerde diese Datei
+         * heute zwar in Ruhe lassen - aber eine Reparaturdomaene, die nur
+         * deshalb nicht zugreift, weil ein Name gerade nicht in einer Liste
+         * steht, ist keine Trennung. Getrennte Verzeichnisse sind eine.
+         *
+         * Geteilt wird ausschliesslich [Durability]; Generationen, Marker und
+         * Reparatur bleiben je Baustein fuer sich.
+         */
+        const val DIR_NAME = "fuse_expectation"
+
+        /** Das Ablageverzeichnis unter dem app-internen `filesDir`. */
+        fun dirIn(filesDir: File): File = File(filesDir, DIR_NAME)
+
         const val FILE_NAME = "fuse_expectation.json"
+
+        /**
+         * DER ZEUGE, DASS ES HIER SCHON EINMAL ETWAS GAB.
+         *
+         * Ohne ihn ist eine VERSCHWUNDENE Generation von einem Erststart
+         * nicht zu unterscheiden - beide zeigen ein leeres Verzeichnis. Das
+         * ist genau der Datenverlust, den [Loaded.Corrupt] melden soll:
+         * beginnt der Streak still neu, merkt es niemand.
+         *
+         * Eigener Name neben dem des Insulinledgers (`fuse_ledger.exists`),
+         * damit auch bei einer versehentlich gemeinsamen Ablage keiner den
+         * Zeugen des anderen liest.
+         */
+        const val SENTINEL_NAME = "fuse_expectation.exists"
 
         /**
          * HARTE OBERGRENZEN, damit die Datei unter keinen Umstaenden
@@ -113,7 +149,10 @@ class FuseExpectationStore(private val durability: Durability = Durability.ANDRO
             }
         }
         besteState?.let { return Loaded.Ok(it, besteRevision) }
-        return if (gabEs) Loaded.Corrupt(gruende.joinToString("; ").ifBlank { "keine lesbare Generation" })
+        if (gabEs) return Loaded.Corrupt(gruende.joinToString("; ").ifBlank { "keine lesbare Generation" })
+        // NICHTS GEFUNDEN - aber gab es hier schon einmal etwas? Der Zeuge
+        // entscheidet. Ohne ihn liefe ein Datenverlust als Erststart durch.
+        return if (sentinelExists(dir)) Loaded.Corrupt("alle Generationen fehlen, obwohl hier schon geschrieben wurde")
         else Loaded.Fresh
     }
 
@@ -160,8 +199,32 @@ class FuseExpectationStore(private val durability: Durability = Durability.ANDRO
         durability.syncDirectory(dir)
         // 5. Zuruecklesen. Alles davor ist Absicht - das hier ist der
         //    einzige Nachweis.
-        ziel.isFile && ziel.readText(Charsets.UTF_8) == inhalt
+        val geschrieben = ziel.isFile && ziel.readText(Charsets.UTF_8) == inhalt
+        // 6. Den Zeugen setzen - NACH dem Nachweis, nie davor. Ein Zeuge fuer
+        //    eine Generation, die es nicht gibt, machte jeden kuenftigen
+        //    Erststart zu einem gemeldeten Datenverlust.
+        //
+        //    DIESE BEDINGUNG IST HEUTE DEFENSIV, NICHT WIRKSAM - und das steht
+        //    hier, damit niemand sie fuer geprueft haelt. Jeder erreichbare
+        //    Fehlerpfad kehrt vorher zurueck (Wurf oder `return@runCatching
+        //    false`); ein abweichender Rueckleseinhalt OHNE Wurf laesst sich
+        //    ohne Fake-Dateisystem nicht erzeugen. Eine Mutationsprobe auf
+        //    `if (true)` bleibt deshalb gruen. Die Zeile bleibt trotzdem: sie
+        //    kostet nichts und haelt die Reihenfolge fest, falls spaeter ein
+        //    Pfad dazukommt, der hier mit `false` ankommt.
+        if (geschrieben) runCatching {
+            val zeuge = File(dir, SENTINEL_NAME)
+            if (!zeuge.isFile) {
+                zeuge.writeText("1")
+                durability.syncDirectory(dir)
+            }
+        }
+        geschrieben
     }.getOrDefault(false)
+
+    /** Ob hier schon einmal eine Generation stand. */
+    fun sentinelExists(dir: File): Boolean =
+        runCatching { File(dir, SENTINEL_NAME).isFile }.getOrDefault(false)
 
     /**
      * Die harten Obergrenzen anwenden - die AELTESTEN fallen weg.

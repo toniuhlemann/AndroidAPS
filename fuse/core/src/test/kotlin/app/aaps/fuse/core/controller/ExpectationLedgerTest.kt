@@ -1,6 +1,7 @@
 package app.aaps.fuse.core.controller
 
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
@@ -611,7 +612,7 @@ class ExpectationLedgerTest {
     fun `gemessen wird die Dauer der Strecke, nicht die Anzahl`() {
         val m = ExpectationLedger.Verdict.MISSED
         val zehn = (0..9).map { ergebnis(t0 + it * 60_000L, m) }
-        assertEquals(9, ExpectationLedger.lambdaEvidenceStreakMin(zehn, SEG, MARGE))
+        assertEquals(9, ExpectationLedger.historicalLambdaStreakMin(zehn, SEG, MARGE))
     }
 
     /**
@@ -627,12 +628,12 @@ class ExpectationLedgerTest {
         val m = ExpectationLedger.Verdict.MISSED
         val mitLuecke = listOf(ergebnis(t0, m), ergebnis(t0 + 58 * 60_000L, m))
         assertEquals(
-            0, ExpectationLedger.lambdaEvidenceStreakMin(mitLuecke, SEG, MARGE),
+            0, ExpectationLedger.historicalLambdaStreakMin(mitLuecke, SEG, MARGE),
             "58 unbeobachtete Minuten sind keine 58 Minuten Nachweis",
         )
         // Dieselben zwei Punkte, aber lueckenlos belegt: das zaehlt.
         val dicht = (0..58).map { ergebnis(t0 + it * 60_000L, m) }
-        assertEquals(58, ExpectationLedger.lambdaEvidenceStreakMin(dicht, SEG, MARGE))
+        assertEquals(58, ExpectationLedger.historicalLambdaStreakMin(dicht, SEG, MARGE))
     }
 
     /** Ein Eintreffen beendet die Strecke - der Nachweis beginnt von vorn. */
@@ -645,9 +646,9 @@ class ExpectationLedgerTest {
             ergebnis(t0 + 120_000, t),
             ergebnis(t0 + 180_000, m), ergebnis(t0 + 240_000, m),
         )
-        assertEquals(1, ExpectationLedger.lambdaEvidenceStreakMin(reihe, SEG, MARGE), "nur die beiden juengsten")
-        assertEquals(0, ExpectationLedger.lambdaEvidenceStreakMin(listOf(ergebnis(t0, t)), SEG, MARGE))
-        assertEquals(0, ExpectationLedger.lambdaEvidenceStreakMin(emptyList(), SEG, MARGE))
+        assertEquals(1, ExpectationLedger.historicalLambdaStreakMin(reihe, SEG, MARGE), "nur die beiden juengsten")
+        assertEquals(0, ExpectationLedger.historicalLambdaStreakMin(listOf(ergebnis(t0, t)), SEG, MARGE))
+        assertEquals(0, ExpectationLedger.historicalLambdaStreakMin(emptyList(), SEG, MARGE))
     }
 
     /** Ein Segmentbruch beendet sie ebenfalls. */
@@ -658,8 +659,8 @@ class ExpectationLedgerTest {
             ergebnis(t0, m, seg = 1L), ergebnis(t0 + 60_000, m, seg = 1L),
             ergebnis(t0 + 120_000, m, seg = 2L), ergebnis(t0 + 180_000, m, seg = 2L),
         )
-        assertEquals(1, ExpectationLedger.lambdaEvidenceStreakMin(reihe, currentSegmentId = 2L, minSafetyMarginMgdl = MARGE))
-        assertEquals(0, ExpectationLedger.lambdaEvidenceStreakMin(reihe, currentSegmentId = 3L, minSafetyMarginMgdl = MARGE))
+        assertEquals(1, ExpectationLedger.historicalLambdaStreakMin(reihe, currentSegmentId = 2L, minSafetyMarginMgdl = MARGE))
+        assertEquals(0, ExpectationLedger.historicalLambdaStreakMin(reihe, currentSegmentId = 3L, minSafetyMarginMgdl = MARGE))
     }
 
     /**
@@ -674,7 +675,7 @@ class ExpectationLedgerTest {
         for (luecke in listOf(ExpectationLedger.Verdict.UNVERIFIABLE, ExpectationLedger.Verdict.INTERVENED)) {
             val reihe = listOf(ergebnis(t0, m), ergebnis(t0 + 60_000, luecke), ergebnis(t0 + 120_000, m))
             assertEquals(
-                0, ExpectationLedger.lambdaEvidenceStreakMin(reihe, SEG, MARGE),
+                0, ExpectationLedger.historicalLambdaStreakMin(reihe, SEG, MARGE),
                 "$luecke darf nicht ueberbrueckt werden",
             )
         }
@@ -754,12 +755,12 @@ class ExpectationLedgerTest {
             )
         }
         assertEquals(
-            9, ExpectationLedger.lambdaEvidenceStreakMin(folge(KORR), SEG, MARGE),
+            9, ExpectationLedger.historicalLambdaStreakMin(folge(KORR), SEG, MARGE),
             "der Korrekturbetrieb traegt den Nachweis",
         )
         assertEquals(
             0,
-            ExpectationLedger.lambdaEvidenceStreakMin(
+            ExpectationLedger.historicalLambdaStreakMin(
                 folge(MAHL), SEG, MARGE,
             ),
             "dieselbe Folge als Mahlzeit traegt ihn NICHT",
@@ -802,9 +803,149 @@ class ExpectationLedgerTest {
             erg(t0 + 120_000L, KORR),
         )
         assertEquals(
-            0, ExpectationLedger.lambdaEvidenceStreakMin(reihe, SEG, MARGE),
+            0, ExpectationLedger.historicalLambdaStreakMin(reihe, SEG, MARGE),
             "die Mahlzeit in der Mitte darf nicht ueberbrueckt werden",
         )
+    }
+
+    // ---- Die AKTUELLE lambda-Strecke ------------------------------------
+
+    /** Eine Folge belegter Ausbleiber im Minutenraster, alle unter [stamp]. */
+    private fun folge(anzahl: Int, bisTs: Long, stamp: InterventionStamp = REV) =
+        (0 until anzahl).map { i ->
+            val due = bisTs - i * 60_000L
+            ExpectationLedger.Outcome(
+                ExpectationLedger.Entry(
+                    due - H * 60_000L, due, SEG, 200.0, 150.0, CFG, stamp, KTX, KGRUND,
+                    safetyLowerPredictedMgdl = 40.0,
+                ),
+                ExpectationLedger.Verdict.MISSED, due, 205.0,
+            )
+        }
+
+    private fun aktuell(
+        outcomes: List<ExpectationLedger.Outcome>,
+        nowTs: Long,
+        stamp: InterventionStamp = REV,
+        cfg: String = CFG,
+    ) = ExpectationLedger.currentLambdaEvidence(outcomes, nowTs, stamp, cfg, SEG, MARGE)
+
+    @Test
+    fun `eine frische lueckenlose Strecke zaehlt`() {
+        val bis = t0 + 100 * 60_000L
+        val e = aktuell(folge(10, bis), bis + 60_000L)
+        assertTrue(e.eligible)
+        assertEquals(9, e.minutes, "zehn Ereignisse spannen neun Minuten")
+        assertEquals(bis, e.freshThroughTs)
+        assertNull(e.denialReason)
+    }
+
+    /**
+     * TONIS ERSTER PFLICHTFALL: 9-min-Strecke, danach 25 min nichts.
+     *
+     * Die Strecke war einmal belegt - aber seither ist eine halbe Stunde
+     * unbeobachtet vergangen. Sie jetzt als Nachweis zu lesen hiesse, eine
+     * Aussage ueber eine Zeit zu treffen, in der niemand hingesehen hat.
+     */
+    @Test
+    fun `nach 25 Minuten ohne Ergebnis ist die aktuelle Strecke null`() {
+        val bis = t0 + 100 * 60_000L
+        val e = aktuell(folge(10, bis), bis + 25 * 60_000L)
+        assertEquals(0, e.minutes)
+        assertFalse(e.eligible)
+        assertEquals(ExpectationLedger.Denial.STALE, e.denialReason)
+        assertEquals(bis, e.freshThroughTs, "wann sie ENDETE, bleibt sichtbar")
+    }
+
+    /**
+     * TONIS ZWEITER PFLICHTFALL: 9-min-Strecke, danach neuer Stamp.
+     *
+     * Der haeufigste Fall im Betrieb - jeder SMB, jede echte TBR-Aenderung.
+     * Ausdruecklich kein Fehler: in einer veraenderten Insulinlage laesst sich
+     * die Wirkung der alten Prognose nicht mehr isoliert beweisen.
+     */
+    @Test
+    fun `ein neuer Stamp setzt die aktuelle Strecke sofort auf null`() {
+        val bis = t0 + 100 * 60_000L
+        val nachEingriff = InterventionStamp.next(
+            REV, InterventionStamp.Published(smbU = 0.3, tbrChanged = false),
+        )
+        val e = aktuell(folge(10, bis), bis + 60_000L, stamp = nachEingriff)
+        assertEquals(0, e.minutes)
+        assertFalse(e.eligible)
+        assertEquals(ExpectationLedger.Denial.INTERVENED_SINCE, e.denialReason)
+    }
+
+    /**
+     * TONIS DRITTER PFLICHTFALL: danach waechst eine frische Folge unter dem
+     * neuen Stamp wieder.
+     *
+     * Ohne diesen Test koennte die Sperre auch dauerhaft sein - und ein
+     * Nachweis, der nach dem ersten Eingriff nie wiederkommt, waere wertlos.
+     */
+    @Test
+    fun `unter dem neuen Stamp waechst die Strecke wieder`() {
+        val bis = t0 + 100 * 60_000L
+        val neuerStamp = InterventionStamp.next(
+            REV, InterventionStamp.Published(smbU = 0.3, tbrChanged = false),
+        )
+        val gemischt = folge(10, bis) + folge(5, bis + 10 * 60_000L, stamp = neuerStamp)
+        val e = aktuell(gemischt, bis + 11 * 60_000L, stamp = neuerStamp)
+        assertTrue(e.eligible, "die neue Folge traegt: $e")
+        assertEquals(4, e.minutes, "nur die fuenf NEUEN Ereignisse")
+    }
+
+    /**
+     * TONIS VIERTER PFLICHTFALL: der historische Export behaelt die alten
+     * neun Minuten.
+     *
+     * Die beiden Zahlen sind verschieden und muessen es sein. Deshalb heisst
+     * die alte Funktion jetzt `historicalLambdaStreakMin` - der Name allein
+     * verhindert, dass jemand sie als aktuellen Dosiernachweis liest.
+     */
+    @Test
+    fun `die historische Strecke bleibt erhalten, wenn die aktuelle null ist`() {
+        val bis = t0 + 100 * 60_000L
+        val outcomes = folge(10, bis)
+        assertEquals(0, aktuell(outcomes, bis + 25 * 60_000L).minutes, "aktuell: nichts")
+        assertEquals(
+            9, ExpectationLedger.historicalLambdaStreakMin(outcomes, SEG, MARGE),
+            "historisch: die neun Minuten von damals",
+        )
+    }
+
+    /** Eine andere Konfigurationsgeneration bricht ebenso - mit eigenem
+     *  Grund, damit der Export die Ursachen trennen kann. */
+    @Test
+    fun `eine geaenderte Konfiguration bricht die aktuelle Strecke`() {
+        val bis = t0 + 100 * 60_000L
+        val e = aktuell(folge(10, bis), bis + 60_000L, cfg = "cfg#2")
+        assertFalse(e.eligible)
+        assertEquals(ExpectationLedger.Denial.CONFIG_CHANGED, e.denialReason)
+    }
+
+    /** Ein unbrauchbarer Kopfstand liefert nie einen Nachweis - fail-closed,
+     *  und mit eigenem Grund statt stiller Null. */
+    @Test
+    fun `ein ungueltiger Kopfstand ergibt keinen Nachweis`() {
+        val bis = t0 + 100 * 60_000L
+        val e = ExpectationLedger.currentLambdaEvidence(
+            folge(10, bis), bis + 60_000L, InterventionStamp("", 5L), CFG, SEG, MARGE,
+        )
+        assertFalse(e.eligible)
+        assertEquals(ExpectationLedger.Denial.STAMP_INVALID, e.denialReason)
+        assertNull(e.freshThroughTs)
+    }
+
+    /** Eine Luecke MITTEN in der Strecke kuerzt sie auf den frischen Teil. */
+    @Test
+    fun `eine Luecke kuerzt die Strecke auf den frischen Teil`() {
+        val bis = t0 + 100 * 60_000L
+        // Drei frische, dann 20 Minuten Luecke, dann aeltere.
+        val mitLuecke = folge(3, bis) + folge(5, bis - 22 * 60_000L)
+        val e = aktuell(mitLuecke, bis + 60_000L)
+        assertTrue(e.eligible)
+        assertEquals(2, e.minutes, "nur die drei nach der Luecke")
     }
 
     // ---- Die Interventionsrevision beim Wiederherstellen ----------------

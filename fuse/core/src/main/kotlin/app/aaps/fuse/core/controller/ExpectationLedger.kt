@@ -659,6 +659,136 @@ object ExpectationLedger {
     }
 
     /**
+     * DIE AKTUELLE lambda-STRECKE - zeit- und herkunftsgebunden.
+     *
+     * Toni 18.08.: "Dann kann spaeter niemand eine alte Zahl als aktuellen
+     * Dosiernachweis lesen." [historicalLambdaStreakMin] beantwortet, was
+     * IRGENDWANN belegt war; diese Funktion beantwortet, was JETZT noch gilt.
+     * Beides ist verschieden, sobald zwischendurch etwas geschehen ist - und
+     * genau das ist der Normalfall.
+     *
+     * FUENF BEDINGUNGEN, jede fuer sich hinreichend zum Abbruch:
+     *  - Kontext CORRECTION (ueber [Outcome.isLambdaEvidence]),
+     *  - der Eingriffsstempel des Eintrags ist der AKTUELLE Kopfstand,
+     *  - dieselbe Konfigurationsgeneration,
+     *  - dasselbe Signalsegment,
+     *  - das juengste Ergebnis ist frisch und die Strecke luekenlos.
+     *
+     * DIE FRISCHEGRENZE IST KEINE NEUE ZAHL. Sie ist [MAX_EVIDENCE_GAP_MS] -
+     * derselbe Abstand, ab dem zwei Ergebnisse als unbeobachtet
+     * auseinanderliegen, trennt auch das letzte Ergebnis von der Gegenwart.
+     * Eine eigene Therapiezahl waere ein zweiter Knopf fuer dieselbe Frage.
+     *
+     * WARUM HAEUFIGES ZURUECKSETZEN RICHTIG IST (Toni 18.08.): jede
+     * publizierte Menge wechselt den Kopfstand und setzt die aktuelle Strecke
+     * auf null. In einer staendig veraenderten Insulinlage laesst sich die
+     * Wirkung einer alten Prognose gerade nicht isoliert beweisen. Der Ledger
+     * soll die wirklichen Sackgassen messen - Phasen, in denen NICHTS mehr
+     * hilft und trotzdem nichts passiert -, nicht jede laufende Regelbewegung.
+     */
+    fun currentLambdaEvidence(
+        outcomes: List<Outcome>,
+        nowTs: Long,
+        currentStamp: InterventionStamp,
+        currentConfigGeneration: String,
+        currentSegmentId: Long,
+        minSafetyMarginMgdl: Double,
+        maxGapMs: Long = MAX_EVIDENCE_GAP_MS,
+    ): LambdaEvidence {
+        if (!currentStamp.valid) return LambdaEvidence.denied(Denial.STAMP_INVALID)
+        if (currentConfigGeneration.isBlank()) return LambdaEvidence.denied(Denial.CONFIG_UNKNOWN)
+
+        val sortiert = outcomes.sortedByDescending { it.entry.dueTs }
+        var juengste: Long? = null
+        var letzte: Long? = null
+        // Der Grund des ERSTEN Abbruchs ist der aussagekraeftige: er sagt,
+        // warum die Strecke nicht laenger reicht. Spaetere Abbrueche liegen
+        // ohnehin dahinter.
+        var grund: Denial? = null
+        for (o in sortiert) {
+            val abbruch = when {
+                o.entry.segmentId != currentSegmentId                      -> Denial.SEGMENT_CHANGED
+                !InterventionStamp.same(o.entry.interventionStamp, currentStamp) -> Denial.INTERVENED_SINCE
+                o.entry.configGeneration != currentConfigGeneration        -> Denial.CONFIG_CHANGED
+                !o.isLambdaEvidence(minSafetyMarginMgdl)                   -> Denial.NOT_LAMBDA_EVIDENCE
+                juengste != null && letzte!! - o.entry.dueTs > maxGapMs    -> Denial.GAP_IN_STREAK
+                else                                                       -> null
+            }
+            if (abbruch != null) {
+                if (grund == null) grund = abbruch
+                break
+            }
+            if (juengste == null) juengste = o.entry.dueTs
+            letzte = o.entry.dueTs
+        }
+        if (juengste == null || letzte == null) return LambdaEvidence.denied(grund ?: Denial.NO_EVIDENCE)
+
+        // DIE UNBEOBACHTETE ZEIT BIS JETZT. Ohne sie liesse sich eine vor
+        // Stunden geendete Strecke als aktueller Nachweis lesen - der Fall,
+        // den Toni ausdruecklich benannt hat.
+        if (nowTs - juengste > maxGapMs) return LambdaEvidence(
+            minutes = 0, freshThroughTs = juengste, eligible = false, denialReason = Denial.STALE,
+        )
+        return LambdaEvidence(
+            minutes = ((juengste - letzte) / 60_000L).toInt(),
+            freshThroughTs = juengste,
+            eligible = true,
+            denialReason = null,
+        )
+    }
+
+    /**
+     * Warum die aktuelle Strecke nicht taugt - typisiert, nicht als Text.
+     *
+     * Der Grund gehoert in den Export: eine Null ohne Begruendung liesse
+     * spaeter nicht unterscheiden, ob nie etwas belegt war, ob eingegriffen
+     * wurde oder ob nur die Uhr weitergelaufen ist.
+     */
+    enum class Denial {
+
+        /** Gar keine passenden Ergebnisse. */
+        NO_EVIDENCE,
+
+        /** Das juengste Ergebnis liegt zu weit zurueck. */
+        STALE,
+
+        /** Seit der Strecke wurde publiziert - der haeufigste Fall, und
+         *  ausdruecklich KEIN Fehler. */
+        INTERVENED_SINCE,
+
+        CONFIG_CHANGED,
+        SEGMENT_CHANGED,
+        NOT_LAMBDA_EVIDENCE,
+        GAP_IN_STREAK,
+
+        /** Der uebergebene Kopfstand selbst taugt nicht. */
+        STAMP_INVALID,
+        CONFIG_UNKNOWN,
+    }
+
+    /**
+     * Das Ergebnis der aktuellen Abfrage - vier Groessen statt einer Zahl.
+     *
+     * @param minutes Laenge der aktuellen, lueckenlos belegten Strecke.
+     * @param freshThroughTs bis wann sie belegt ist. `null`, wenn es gar keine
+     *   gibt - unterscheidbar von "belegt, aber veraltet".
+     * @param eligible ob sie als Nachweis taugt. NUR dieses Feld darf eine
+     *   Adaption tragen.
+     */
+    data class LambdaEvidence(
+        val minutes: Int,
+        val freshThroughTs: Long?,
+        val eligible: Boolean,
+        val denialReason: Denial?,
+    ) {
+
+        companion object {
+
+            fun denied(reason: Denial) = LambdaEvidence(0, null, false, reason)
+        }
+    }
+
+    /**
      * Wie lange die versprochene Senkung ununterbrochen und BELEGT ausbleibt
      * [min] - und zwar als BELEG GEGEN LAMBDA, nicht als blosse
      * MISSED-Strecke.
@@ -685,7 +815,7 @@ object ExpectationLedger {
      *
      * @param currentSegmentId das Segment, in dem JETZT gerechnet wird.
      */
-    fun lambdaEvidenceStreakMin(
+    fun historicalLambdaStreakMin(
         outcomes: List<Outcome>,
         currentSegmentId: Long,
         minSafetyMarginMgdl: Double,
