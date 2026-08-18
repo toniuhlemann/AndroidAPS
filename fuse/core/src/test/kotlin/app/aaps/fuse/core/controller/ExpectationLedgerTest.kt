@@ -224,7 +224,7 @@ class ExpectationLedgerTest {
         val (eingriff, _) = rechne(listOf(e), e.dueTs, listOf(probe(e.dueTs, 205.0, rev = 101L)))
         assertEquals(ExpectationLedger.Verdict.INTERVENED, eingriff[0].verdict)
         assertNull(eingriff[0].actualMgdl, "ein ungueltiges Urteil traegt keine Zahl")
-        assertTrue(!eingriff[0].isLambdaEvidence(0.0))
+        assertTrue(!eingriff[0].isLambdaEvidence(MARGE))
     }
 
     /** Auch die andere Richtung: ein Eingriff darf kein MET erzeugen und
@@ -339,6 +339,41 @@ class ExpectationLedgerTest {
         assertEquals("cfg#2", ersetzt2[0].configGeneration)
     }
 
+    /**
+     * UND AUCH BEI GEAENDERTER PROGNOSE (Tonis eigentlicher Punkt).
+     *
+     * Der erste Anlauf verglich nur Revision und Konfiguration. Aendert sich
+     * bei wiederholtem `sourceTs` die PROGNOSE selbst - Mittelbahn,
+     * Untergrenze, lambda -, blieb der alte Eintrag stehen, und der Nachweis
+     * liefe gegen eine ueberholte Behauptung.
+     */
+    @Test
+    fun `bei geaenderter Prognose wird der Eintrag ersetzt`() {
+        val alt = ExpectationLedger.issue(
+            t0, SEG, 200.0, 150.0, H, CFG, REV, safetyLowerPredictedMgdl = 40.0, lambda = 1.0,
+        )!!
+        val liste = ExpectationLedger.add(emptyList(), alt)
+
+        // Gleiche Kennung, gleicher Stand - nur die Mittelbahn ist eine andere.
+        val andereMittelbahn = ExpectationLedger.issue(
+            t0, SEG, 200.0, 120.0, H, CFG, REV, safetyLowerPredictedMgdl = 40.0, lambda = 1.0,
+        )!!
+        val r1 = ExpectationLedger.add(liste, andereMittelbahn)
+        assertEquals(1, r1.size)
+        assertEquals(120.0, r1[0].meanPredictedMgdl, 1e-9, "die neue Mittelbahn muss gewinnen")
+
+        // Dasselbe fuer lambda - die Groesse, um die es spaeter geht.
+        val anderesLambda = ExpectationLedger.issue(
+            t0, SEG, 200.0, 120.0, H, CFG, REV, safetyLowerPredictedMgdl = 40.0, lambda = 0.5,
+        )!!
+        val r2 = ExpectationLedger.add(r1, anderesLambda)
+        assertEquals(1, r2.size)
+        assertEquals(0.5, r2[0].lambda!!, 1e-9)
+
+        // Ein in JEDEM Feld gleicher Eintrag bleibt ein echtes Duplikat.
+        assertEquals(r2, ExpectationLedger.add(r2, anderesLambda))
+    }
+
     /** Die Kennung ist stabil - sie haengt nur an Quelle, Faelligkeit und
      *  Segment, nicht an einem Zaehler, der nach einem Neustart neu begaenne. */
     @Test
@@ -397,6 +432,58 @@ class ExpectationLedgerTest {
         assertTrue(alt !in z.consumed, "der uralte Verbrauch ist nicht mehr noetig")
     }
 
+    /**
+     * IDENTISCHE DUPLIKATE FALLEN ZUSAMMEN, schon vor der Zuordnung
+     * (Toni, P0).
+     *
+     * Zwei gleiche Exportzeilen sind zwei Listenpositionen und koennten
+     * zwei Faelligkeiten bedienen. Dass `consumed` sie hinterher zu einer
+     * Kennung zusammenzieht, kommt zu spaet - der doppelte Nachweis waere
+     * dann schon entstanden.
+     */
+    @Test
+    fun `zwei identische Exportzeilen bedienen nur eine Faelligkeit`() {
+        val a = eintrag(source = t0)
+        val b = eintrag(source = t0 + 60_000L)
+        val doppelt = probe(a.dueTs, 205.0)
+        val (out, _, _) = rechne(listOf(a, b), b.dueTs, listOf(doppelt, doppelt))
+        assertEquals(
+            1, out.count { it.actualMgdl != null },
+            "dieselbe Zeile zweimal ist derselbe Messwert, nicht zwei",
+        )
+    }
+
+    /**
+     * WIDERSPRUECHLICHE Duplikate fallen RAUS, nicht auf einen davon
+     * zurueck. Welcher der richtige waere, ist nicht entscheidbar - und an
+     * einer Beweisgrundlage wird nicht geraten.
+     */
+    @Test
+    fun `widerspruechliche Duplikate machen den Zeitpunkt unbewertbar`() {
+        val e = eintrag()
+        val einer = probe(e.dueTs, 205.0)
+        val anderer = probe(e.dueTs, 140.0)   // gleiche Kennung, anderer Wert
+        val (out, _, _) = rechne(listOf(e), e.dueTs, listOf(einer, anderer))
+        assertEquals(
+            ExpectationLedger.Verdict.UNVERIFIABLE, out[0].verdict,
+            "bei Widerspruch wird nicht geraten",
+        )
+    }
+
+    /**
+     * EINE UNBRAUCHBARE MARGE IST KEIN FREIBRIEF. Negativ hiesse, dass sogar
+     * Werte UNTERHALB der damaligen Sicherheitsuntergrenze als Beleg fuer
+     * mehr Insulin durchgingen - die Umkehrung des Begriffs.
+     */
+    @Test
+    fun `eine unbrauchbare Marge ergibt nie lambda-Evidenz`() {
+        val treffer = ergebnis(t0, ExpectationLedger.Verdict.MISSED)
+        assertTrue(treffer.isLambdaEvidence(20.0), "eine brauchbare Marge greift")
+        for (schlecht in listOf(0.0, -1.0, -1000.0, Double.NaN, Double.NEGATIVE_INFINITY)) {
+            assertTrue(!treffer.isLambdaEvidence(schlecht), "Marge $schlecht")
+        }
+    }
+
     // ---- Der lambda-Begriff ----------------------------------------------
 
     /**
@@ -426,7 +513,7 @@ class ExpectationLedgerTest {
         val e = eintrag()   // ohne safetyLowerPredictedMgdl
         val (out, _, _) = rechne(listOf(e), e.dueTs, listOf(probe(e.dueTs, 205.0)))
         assertEquals(ExpectationLedger.Verdict.MISSED, out[0].verdict)
-        assertTrue(!out[0].isLambdaEvidence(0.0), "auch bei Marge 0 nicht")
+        assertTrue(!out[0].isLambdaEvidence(MARGE), "auch bei Marge 0 nicht")
     }
 
     /** MET und INTERVENED sind nie Evidenz, egal wie gross der Abstand. */
@@ -436,7 +523,7 @@ class ExpectationLedgerTest {
             ExpectationLedger.Verdict.MET,
             ExpectationLedger.Verdict.INTERVENED,
             ExpectationLedger.Verdict.UNVERIFIABLE,
-        )) assertTrue(!ergebnis(t0, v).isLambdaEvidence(0.0), "$v")
+        )) assertTrue(!ergebnis(t0, v).isLambdaEvidence(MARGE), "$v")
         assertTrue(ergebnis(t0, ExpectationLedger.Verdict.MISSED).isLambdaEvidence(MARGE))
     }
 

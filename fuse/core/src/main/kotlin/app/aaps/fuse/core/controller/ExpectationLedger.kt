@@ -194,6 +194,11 @@ object ExpectationLedger {
          * das kein Beleg - `null` heisst nicht "war weit genug weg".
          */
         fun isLambdaEvidence(minSafetyMarginMgdl: Double): Boolean {
+            // EINE UNBRAUCHBARE MARGE IST KEIN FREIBRIEF. Negativ hiesse,
+            // dass sogar Werte UNTERHALB der damaligen Sicherheitsuntergrenze
+            // als Beleg fuer "mehr Insulin" durchgingen - die Umkehrung des
+            // Begriffs. Nicht-endlich ebenso: fail-closed statt NaN-Vergleich.
+            if (!minSafetyMarginMgdl.isFinite() || minSafetyMarginMgdl <= 0.0) return false
             if (verdict != Verdict.MISSED) return false
             val abstand = distanceFromSafetyLowerMgdl ?: return false
             return abstand >= minSafetyMarginMgdl
@@ -259,9 +264,12 @@ object ExpectationLedger {
         // Ausgangsannahme zu pruefen. Die Kennung allein kann das nicht
         // unterscheiden - sie soll ueber Neustarts stabil bleiben und darf
         // deshalb Revision und Konfiguration gerade NICHT enthalten.
-        if (vorhanden.interventionRevision != neu.interventionRevision ||
-            vorhanden.configGeneration != neu.configGeneration
-        ) return entries.filter { it.id != neu.id } + neu
+        // Aendert sich bei wiederholtem `sourceTs` die PROGNOSE selbst -
+        // Mittelbahn, Untergrenze, lambda -, blieb der alte Eintrag im ersten
+        // Anlauf stehen, und der Nachweis liefe gegen eine ueberholte
+        // Behauptung. Jetzt entscheidet die vollstaendige Gleichheit: nur ein
+        // in JEDEM Feld identischer Eintrag ist ein echtes Duplikat.
+        if (vorhanden != neu) return entries.filter { it.id != neu.id } + neu
         return entries
     }
 
@@ -307,6 +315,12 @@ object ExpectationLedger {
             // frueheren Aufrufen. Ohne diese Zeile bedient ein Punkt bei
             // 1-min-Zyklen bis zu fuenf Faelligkeiten nacheinander.
             .filter { it.id !in consumed && it.healthy && it.mgdl.isFinite() }
+            // UND JEDE KENNUNG NUR EINMAL, schon VOR der Zuordnung. Zwei
+            // identische Exportzeilen sind zwei Listenpositionen und koennten
+            // zwei Faelligkeiten bedienen; dass `consumed` sie hinterher zu
+            // einer zusammenzieht, kommt zu spaet - der doppelte Nachweis
+            // waere dann schon entstanden.
+            .let(::dedupe)
             .sortedBy { it.ts }
 
         val zuteilung = matchOneToOne(faellig, brauchbar, matchToleranceMs)
@@ -342,6 +356,24 @@ object ExpectationLedger {
         val remaining: List<Entry>,
         val consumed: Set<SampleId>,
     )
+
+    /**
+     * Messwerte mit gleicher [SampleId] zusammenfassen.
+     *
+     * IDENTISCHE Duplikate fallen zu einem zusammen - dieselbe Zeile zweimal
+     * exportiert ist derselbe Messwert, nicht zwei.
+     *
+     * WIDERSPRUECHLICHE Duplikate (gleiche Kennung, anderer Inhalt) fallen
+     * RAUS, nicht auf einen davon zurueck. Welcher der richtige waere, ist
+     * nicht entscheidbar; eine Auswahl zu treffen hiesse raten, und geraten
+     * wird an einer Beweisgrundlage nicht. Fail-closed heisst hier: der
+     * Zeitpunkt bleibt unbewertet.
+     */
+    private fun dedupe(samples: List<Sample>): List<Sample> =
+        samples.groupBy { it.id }.values.mapNotNull { gruppe ->
+            val erste = gruppe.first()
+            if (gruppe.all { it == erste }) erste else null
+        }
 
     /**
      * Die monotone Eins-zu-eins-Zuordnung, exakt geloest.
