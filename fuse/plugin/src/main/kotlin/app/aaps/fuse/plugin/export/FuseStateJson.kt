@@ -334,7 +334,27 @@ object FuseStateJson {
                             .put("currentContextReason", e.current.currentContextReason?.name ?: JSONObject.NULL),
                     )
                     .put("epoch", e.stampEpochId)
-                    .put("sequence", e.stampSequence),
+                    .put("sequence", e.stampSequence)
+                    // LASTMESSUNG vor dem ersten Feldlauf: der Recorder
+                    // schreibt in jedem Zyklus, bei Ein-Minuten-Takt 1440 mal
+                    // am Tag.
+                    .put("writeBytes", e.writeBytes)
+                    .put("writeMs", e.writeDurationMs)
+                    .put(
+                        "samples", JSONArray().apply {
+                            e.samples.forEach { sm ->
+                                put(
+                                    JSONObject()
+                                        .put("dueTs", sm.dueTs)
+                                        .put("ctx", sm.context)
+                                        .put("verdict", sm.verdict)
+                                        .put("meanErrorMgdl", fin(sm.meanErrorMgdl))
+                                        .put("distSafetyLowerMgdl", fin(sm.distanceFromSafetyLowerMgdl))
+                                        .put("lambda", fin(sm.lambda)),
+                                )
+                            }
+                        },
+                    ),
             )
         }
         outcome.lowThreat?.let { lt ->
@@ -985,5 +1005,27 @@ object FuseStateJson {
         val current: app.aaps.fuse.core.controller.ExpectationLedger.LambdaEvidence,
         val stampEpochId: String,
         val stampSequence: Long,
+        /** Rohergebnisse - schwellenfrei, damit ein spaeterer Sweep nicht
+         *  gegen die heute geratene Marge laeuft. */
+        val samples: List<ExpectationSample>,
+        val writeBytes: Int,
+        val writeDurationMs: Long,
+    )
+
+    /**
+     * EIN ROHERGEBNIS - ohne jede Schwelle.
+     *
+     * `meanErrorMgdl` und `distanceFromSafetyLowerMgdl` sind die beiden
+     * Groessen, aus denen sich jede spaetere Nachweisregel rechnen laesst.
+     * Nur das Urteil daraus zu exportieren hiesse, die heutige - vorlaeufige -
+     * Marge in die Daten einzubacken.
+     */
+    data class ExpectationSample(
+        val dueTs: Long,
+        val context: String,
+        val verdict: String,
+        val meanErrorMgdl: Double?,
+        val distanceFromSafetyLowerMgdl: Double?,
+        val lambda: Double?,
     )
 }

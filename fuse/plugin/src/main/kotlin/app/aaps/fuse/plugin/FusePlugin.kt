@@ -232,6 +232,14 @@ class FusePlugin @Inject constructor(
                             healthy = o.health == app.aaps.fuse.core.observer.Health.READY,
                             interventionStamp = stempel,
                             configGeneration = o.configGeneration,
+                            // DIE LAGE ZU DIESEM MESSPUNKT. Sie entscheidet
+                            // spaeter mit, ob die Beobachtung ueberhaupt zaehlt -
+                            // eine Mahlzeit, die zwischen Ausgabe und
+                            // Faelligkeit beginnt, faellt sonst durch jedes
+                            // Raster (der Stempel bleibt ja unveraendert,
+                            // solange nichts publiziert wurde).
+                            context = lage?.let { ExpectationLedger.classify(it).context }
+                                ?: ExpectationLedger.ExpectationContext.EXCLUDED,
                         ),
                     )
                 }

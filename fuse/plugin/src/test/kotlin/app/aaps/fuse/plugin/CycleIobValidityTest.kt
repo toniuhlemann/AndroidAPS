@@ -1,5 +1,7 @@
 package app.aaps.fuse.plugin
 
+import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertNotNull
 import app.aaps.core.data.model.GV
 import app.aaps.core.data.model.SourceSensor
 import app.aaps.core.data.model.TrendArrow
@@ -258,5 +260,48 @@ class CycleIobValidityTest : TestBaseWithProfile() {
         val o = cycle()
         assertThat(o.abortReason).contains("iob")
         assertThat(o.decision.smbU).isEqualTo(0.0)
+    }
+
+    /**
+     * DIE LAGE FUER DEN ERWARTUNGS-LEDGER KOMMT AUS DER PHASE, nicht aus der
+     * Episoden-ID (Toni 18.08.).
+     *
+     * Die Verdrahtung im Runner war bis hierher nur durch das Kompilieren
+     * gedeckt: eine Mutationsprobe, die wieder `episodeId > 0` einsetzt,
+     * blieb gruen. Ein Feld, das der Compiler prueft und sonst niemand, ist
+     * genau die Art Verdrahtung, die in dieser Sitzung schon zweimal nur
+     * scheinbar da war (decodeStamp, MAX_AGE_MIN).
+     *
+     * GEPRUEFT WIRD DIESELBE QUELLE, nicht ein erwarteter Wert: die Lage muss
+     * exakt die Phase tragen, die derselbe Zyklus in den Export schreibt.
+     * Damit bricht der Test bei JEDER zweiten Herleitung - unabhaengig davon,
+     * welche Phase im Testszenario gerade gilt.
+     *
+     * Gefahren wird bis zur ersten Dosis: nur ein VOLLSTAENDIG gerechneter
+     * Zyklus traegt eine Lage. Abbruchpfade und der Marker-Rueckfall lassen
+     * sie ausdruecklich offen - ohne Regellauf gibt es keine belastbare
+     * Aussage ueber die Lage, und `null` ergibt beim Klassifizieren EXCLUDED.
+     *
+     * GRENZE DIESES TESTS, ausdruecklich benannt: im ruhigen Szenario ohne
+     * Marker liefern BEIDE Herleitungen - die richtige (`evidenz?.phase`) und
+     * die falsche (`episodeId > 0`) - denselben Wert NONE. Eine
+     * Mutationsprobe auf die Episoden-ID bleibt hier deshalb gruen. Der Test
+     * deckt die Verdrahtung, nicht ihre Unterscheidbarkeit; unterscheidbar
+     * wird sie erst bei einer OFFENEN Episode in DORMANT, und dafuer braeuchte
+     * es hier ein vollstaendiges Mahlzeitenszenario (Marker, Evidenzzufluss,
+     * Abklingen bis DORMANT).
+     *
+     * Die REGEL selbst ist gedeckt: FuseExpectationRecorderTest spielt alle
+     * sieben Phasen durch, und die Proben darauf beissen.
+     */
+    @Test
+    fun `der Zyklus liefert die typisierte Evidenzphase an den Erwartungs-Ledger`() {
+        val o = driveUntilDose()
+        val lage = o.expectationSituation
+        assertNotNull(lage, "ein vollstaendig gerechneter Zyklus traegt eine Lage")
+        assertEquals(
+            o.evidencePhase, lage!!.evidencePhase?.name,
+            "die Lage und der Export muessen DIESELBE Phase zeigen",
+        )
     }
 }

@@ -84,9 +84,15 @@ object ExpectationLedger {
 
         // ---- MEAL --------------------------------------------------------
         MARKER_ACTIVE,
-        EVIDENCE_EPISODE_ACTIVE,
         ONSET_ACTIVE,
         MEAL_WINDOW_OPEN,
+
+        /** Eben eingetroffene, noch nicht versiegelte Evidenz - eine
+         *  anlaufende Welle. */
+        EVIDENCE_PENDING_SEAL,
+
+        /** Versiegelter, kreditfaehiger Evidenzbestand. */
+        EVIDENCE_ACTIVE,
 
         // ---- EXCLUDED ----------------------------------------------------
         /** Erholung nach einem Tief - die Steigung ist kein Korrekturbefund
@@ -95,6 +101,15 @@ object ExpectationLedger {
 
         /** Ohne brauchbares Signal ist gar keine Lage belegt. */
         SIGNAL_UNHEALTHY,
+
+        /** Der Evidenzkredit ist von aussen gesperrt - gemessenes Tief,
+         *  ungesundes Signal oder Segmentbruch. Weder Mahlzeit noch
+         *  Korrektur, sondern "wir duerfen gerade nicht". */
+        EVIDENCE_SUSPENDED,
+
+        /** Die Evidenz-Buchfuehrung ist fraglich (Neustart ohne gueltigen
+         *  Zustand, rueckwaerts springende Identitaet). */
+        EVIDENCE_UNKNOWN,
 
         /** Mindestens eine Lage-Groesse war unbekannt. */
         UNKNOWN_INPUT,
@@ -143,7 +158,20 @@ object ExpectationLedger {
          * Korrektur verbuchen - und genau dort ist eine ausbleibende Senkung
          * der Normalfall.
          */
-        val evidenceEpisodeActive: Boolean?,
+        /**
+         * DIE TYPISIERTE PHASE, nicht "es gibt eine Episode" (Toni 18.08.).
+         *
+         * Der erste Wurf nahm `episodes.evidenceEpisodeId > 0L`. Damit blieb
+         * eine offene Episode bis zum 360-Minuten-Deckel MEAL - auch in
+         * DORMANT, also genau in der Ruhephase zwischen zwei Wellen, in der
+         * Korrekturbetrieb herrscht. Sechs Stunden Mahlzeit aus einer
+         * Buchhaltungsidentitaet abzuleiten hiesse, den haeufigsten
+         * Korrekturzustand ueberhaupt nie zu messen.
+         *
+         * Die Episode entscheidet ueber IDENTITAET und Buchhaltung, die Phase
+         * ueber die LAGE dieses Zyklus. Das sind zwei Fragen.
+         */
+        val evidencePhase: EvidenceStock.Phase?,
         /** Der Onset-Kanal hat die Mittelbahn gehoben. */
         val onsetActive: Boolean?,
         /** Das Mahlzeitenfenster (Marker, Onset oder kinematische Persistenz). */
@@ -182,7 +210,7 @@ object ExpectationLedger {
         // MAHLZEIT unbrauchbar, nicht nur als Korrektur. Stuende die
         // Mahlzeitenpruefung davor, landete ein Rebound waehrend eines
         // Markers in der Mahlzeitenanalyse.
-        if (s.mealMarkerActive == null || s.evidenceEpisodeActive == null ||
+        if (s.mealMarkerActive == null || s.evidencePhase == null ||
             s.onsetActive == null || s.mealWindow == null ||
             s.reboundWindow == null || s.signalHealthy == null || s.ledgerSealed == null
         ) return Classification(ExpectationContext.EXCLUDED, ContextReason.UNKNOWN_INPUT)
@@ -192,13 +220,40 @@ object ExpectationLedger {
         if (!s.ledgerSealed) return Classification(ExpectationContext.EXCLUDED, ContextReason.LEDGER_UNSEALED)
         if (!s.signalHealthy) return Classification(ExpectationContext.EXCLUDED, ContextReason.SIGNAL_UNHEALTHY)
         if (s.reboundWindow) return Classification(ExpectationContext.EXCLUDED, ContextReason.REBOUND)
+        // ZWEI PHASEN SIND SELBST EIN AUSSCHLUSS. SUSPENDED heisst "wir
+        // duerfen bzw. wissen gerade nicht" (gemessenes Tief, ungesundes
+        // Signal, Segmentbruch), UNKNOWN heisst "die Buchfuehrung ist
+        // fraglich". Beides ist weder Mahlzeit noch Korrektur - und beides
+        // waere als Korrektur gelesen ein erfundener Nachweis.
+        when (s.evidencePhase) {
+            EvidenceStock.Phase.SUSPENDED ->
+                return Classification(ExpectationContext.EXCLUDED, ContextReason.EVIDENCE_SUSPENDED)
+
+            EvidenceStock.Phase.UNKNOWN   ->
+                return Classification(ExpectationContext.EXCLUDED, ContextReason.EVIDENCE_UNKNOWN)
+
+            else                          -> Unit
+        }
 
         // Dann die Mahlzeitengruende - der erste zutreffende benennt sie.
         if (s.mealMarkerActive) return Classification(ExpectationContext.MEAL, ContextReason.MARKER_ACTIVE)
-        if (s.evidenceEpisodeActive)
-            return Classification(ExpectationContext.MEAL, ContextReason.EVIDENCE_EPISODE_ACTIVE)
         if (s.onsetActive) return Classification(ExpectationContext.MEAL, ContextReason.ONSET_ACTIVE)
         if (s.mealWindow) return Classification(ExpectationContext.MEAL, ContextReason.MEAL_WINDOW_OPEN)
+        // NUR ZWEI PHASEN MACHEN MAHLZEIT. PENDING_SEAL heisst "eben ist
+        // Evidenz eingetroffen, noch nicht versiegelt" - eine anlaufende
+        // Welle, also gerade KEINE Korrektur. ACTIVE heisst versiegelter,
+        // kreditfaehiger Bestand.
+        //
+        // DORMANT, NONE und EXPIRED machen ausdruecklich KEINE Mahlzeit: das
+        // ist Tonis Kernpunkt vom 18.08. DORMANT ist der Normalzustand
+        // ZWISCHEN zwei Wellen, und genau dort laeuft Korrekturbetrieb, den
+        // der Ledger messen soll. Trifft neue Evidenz ein, steht hier wieder
+        // PENDING_SEAL und der Kontext kippt im selben Zyklus zurueck auf
+        // MEAL - ohne dass eine neue Episode noetig waere.
+        if (s.evidencePhase == EvidenceStock.Phase.PENDING_SEAL)
+            return Classification(ExpectationContext.MEAL, ContextReason.EVIDENCE_PENDING_SEAL)
+        if (s.evidencePhase == EvidenceStock.Phase.ACTIVE)
+            return Classification(ExpectationContext.MEAL, ContextReason.EVIDENCE_ACTIVE)
 
         return Classification(ExpectationContext.CORRECTION, ContextReason.PURE_CORRECTION)
     }
@@ -255,6 +310,20 @@ object ExpectationLedger {
         val interventionStamp: InterventionStamp,
         /** Der Konfigurationsstand zu diesem Zeitpunkt - aus demselben Grund. */
         val configGeneration: String,
+        /**
+         * DIE LAGE ZUM ZEITPUNKT DIESER MESSUNG (Toni 18.08.).
+         *
+         * Ohne sie bliebe ein Loch, das der Interventionsstempel nicht
+         * schliesst: beginnt zwischen Ausgabe einer Korrekturerwartung und
+         * ihrer Faelligkeit eine Mahlzeit, ist der Stempel unveraendert,
+         * solange noch nichts publiziert wurde - der ausgebliebene Rueckgang
+         * ginge als MISSED durch und damit als Beleg gegen das Modell,
+         * obwohl in Wahrheit Kohlenhydrate wirkten.
+         *
+         * Der Stempel deckt EINGRIFFE ab, dieses Feld die LAGE. Das sind zwei
+         * verschiedene Arten, eine Beobachtung zu entwerten.
+         */
+        val context: ExpectationContext,
     ) {
 
         val id: SampleId get() = SampleId(segmentId, ts)
@@ -327,6 +396,21 @@ object ExpectationLedger {
          * lockern, obwohl das Modell recht hatte.
          */
         INTERVENED,
+
+        /**
+         * DIE LAGE HAT SICH GEAENDERT, nicht der Insulinstand (Toni 18.08.).
+         *
+         * Zwischen Ausgabe und Faelligkeit hat eine Mahlzeit begonnen, ein
+         * Rebound eingesetzt oder das Signal ausgesetzt. Der
+         * Interventionsstempel faengt das NICHT: solange nichts publiziert
+         * wurde, ist er unveraendert - und ein ausgebliebener Rueckgang unter
+         * wirkenden Kohlenhydraten saehe aus wie eine Modellwiderlegung.
+         *
+         * Eigener Wert neben [INTERVENED] und [UNVERIFIABLE], weil es eine
+         * dritte Ursache ist: dort wurde eingegriffen, dort fehlte ein
+         * Messwert - hier war die Welt eine andere.
+         */
+        CONTEXT_CHANGED,
 
         /**
          * Nicht bewertbar - KEIN halbes MET und kein halbes MISSED. Zum
@@ -532,6 +616,13 @@ object ExpectationLedger {
             if (!InterventionStamp.same(treffer.interventionStamp, e.interventionStamp) ||
                 treffer.configGeneration != e.configGeneration
             ) return@map Outcome(e, Verdict.INTERVENED)
+            // DIE LAGE MUSS DIESELBE GEBLIEBEN SEIN. Eine als CORRECTION
+            // ausgegebene Erwartung, deren Messpunkt in MEAL oder EXCLUDED
+            // liegt, ist kein Beleg - weder dafuer noch dagegen. Eigener
+            // Urteilswert statt UNVERIFIABLE: dort steht "kein passender
+            // Messwert gefunden", hier "der Messwert passt zeitlich, aber
+            // die Welt war eine andere". Zwei Ursachen, zwei Namen.
+            if (treffer.context != e.context) return@map Outcome(e, Verdict.CONTEXT_CHANGED)
             // Die Toleranz sitzt auf der Seite des MODELLS.
             if (treffer.mgdl > e.meanPredictedMgdl + toleranceMgdl)
                 Outcome(e, Verdict.MISSED, treffer.ts, treffer.mgdl)

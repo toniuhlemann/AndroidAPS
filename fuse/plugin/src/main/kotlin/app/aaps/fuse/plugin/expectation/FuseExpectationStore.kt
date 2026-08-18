@@ -165,13 +165,44 @@ class FuseExpectationStore(private val durability: Durability = Durability.ANDRO
      *   koennen - eine still nicht geschriebene Generation faellt sonst erst
      *   beim naechsten Neustart auf.
      */
+    /**
+     * WAS EIN SCHREIBVORGANG GEKOSTET HAT - fuer die Lastmessung vor dem
+     * ersten Feldlauf (Toni 18.08.).
+     *
+     * Der Recorder schreibt in JEDEM Zyklus, bei Ein-Minuten-Takt also 1440
+     * mal am Tag. Ob das die Zykluszeit belastet, laesst sich nur messen -
+     * und zwar bevor es auf dem produktiven Geraet laeuft, nicht danach.
+     */
+    data class WriteStats(val ok: Boolean, val bytes: Int, val durationMs: Long)
+
     fun save(
         dir: File,
         state: ExpectationLedger.State,
         revision: Long,
         kopfstand: InterventionStamp,
+    ): Boolean = saveWithStats(dir, state, revision, kopfstand).ok
+
+    fun saveWithStats(
+        dir: File,
+        state: ExpectationLedger.State,
+        revision: Long,
+        kopfstand: InterventionStamp,
+    ): WriteStats {
+        val start = System.nanoTime()
+        var groesse = 0
+        val ok = saveInner(dir, state, revision, kopfstand) { groesse = it }
+        return WriteStats(ok, groesse, (System.nanoTime() - start) / 1_000_000L)
+    }
+
+    private inline fun saveInner(
+        dir: File,
+        state: ExpectationLedger.State,
+        revision: Long,
+        kopfstand: InterventionStamp,
+        bytes: (Int) -> Unit,
     ): Boolean = runCatching {
         val inhalt = FuseExpectationCodec.encode(kappen(state, kopfstand), revision)
+        bytes(inhalt.toByteArray(Charsets.UTF_8).size)
         val tmp = File(dir, FILE_NAME + ".tmp")
         val ziel = File(dir, FILE_NAME)
         val bak = File(dir, FILE_NAME + ".bak")

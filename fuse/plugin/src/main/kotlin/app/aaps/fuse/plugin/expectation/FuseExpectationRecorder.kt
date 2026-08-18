@@ -52,7 +52,15 @@ class FuseExpectationRecorder(
 
         /** Dieser Zyklus hat gebucht. [issued] = eine neue Erwartung wurde
          *  eingereiht, [settled] = so viele wurden abgerechnet. */
-        data class Recorded(val issued: Boolean, val settled: Int, val persisted: Boolean) : Result
+        data class Recorded(
+            val issued: Boolean,
+            val settled: Int,
+            val persisted: Boolean,
+            /** Groesse der geschriebenen Generation [Bytes] - Lastmessung. */
+            val bytes: Int = 0,
+            /** Dauer des gesamten Schreibvorgangs inkl. Rueckleseprobe [ms]. */
+            val durationMs: Long = 0L,
+        ) : Result
 
         /** Bewusst uebersprungen - mit Grund. */
         data class Skipped(val reason: String) : Result
@@ -154,8 +162,11 @@ class FuseExpectationRecorder(
             val vorher = state.outcomes.size
             state = ExpectationLedger.advance(state, nowTs, neu, samples)
             val abgerechnet = (state.outcomes.size - vorher).coerceAtLeast(0)
-            val geschrieben = store.save(dir, state, ++revision, stamp)
-            Result.Recorded(issued = neu != null, settled = abgerechnet, persisted = geschrieben)
+            val stats = store.saveWithStats(dir, state, ++revision, stamp)
+            Result.Recorded(
+                issued = neu != null, settled = abgerechnet, persisted = stats.ok,
+                bytes = stats.bytes, durationMs = stats.durationMs,
+            )
         }.getOrElse { Result.Failed("record warf: ${it.javaClass.simpleName} ${it.message.orEmpty()}") }
         lastResult = ergebnis
         return ergebnis
@@ -210,5 +221,34 @@ class FuseExpectationRecorder(
         current = currentEvidence(nowTs, stamp, configGeneration, segmentId, situation, minSafetyMarginMgdl),
         stampEpochId = stamp.epochId,
         stampSequence = stamp.sequence,
+        // ROHGROESSEN, unbeeinflusst von EXPORT_SAFETY_MARGIN_MGDL (Toni
+        // 18.08.): "sonst praegt diese vorlaeufige Marge bereits die
+        // Datenauswertung". Ein spaeterer Sweep ueber verschiedene Margen
+        // braucht die Abstaende selbst, nicht das Ergebnis einer Schwelle,
+        // die zum Zeitpunkt der Messung geraten war.
+        samples = state.outcomes.takeLast(RAW_EXPORT_LIMIT).map { o ->
+            app.aaps.fuse.plugin.export.FuseStateJson.ExpectationSample(
+                dueTs = o.entry.dueTs,
+                context = o.entry.context.name,
+                verdict = o.verdict.name,
+                meanErrorMgdl = o.meanErrorMgdl,
+                distanceFromSafetyLowerMgdl = o.distanceFromSafetyLowerMgdl,
+                lambda = o.entry.lambda,
+            )
+        },
+        writeBytes = (lastResult as? Result.Recorded)?.bytes ?: 0,
+        writeDurationMs = (lastResult as? Result.Recorded)?.durationMs ?: 0L,
     )
+
+    companion object {
+
+        /**
+         * Wie viele Rohergebnisse in den Export gehen.
+         *
+         * Genug fuer eine Nachtstrecke, wenig genug, dass der Zyklusexport
+         * nicht aufgeblaeht wird - er wird jede Minute geschrieben. Die
+         * vollstaendige Reihe steht ohnehin in der Ledgerdatei.
+         */
+        const val RAW_EXPORT_LIMIT = 60
+    }
 }

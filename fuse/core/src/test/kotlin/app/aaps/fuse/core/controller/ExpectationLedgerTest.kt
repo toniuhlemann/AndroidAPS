@@ -1,5 +1,6 @@
 package app.aaps.fuse.core.controller
 
+import app.aaps.fuse.core.controller.EvidenceStock
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNull
@@ -52,7 +53,8 @@ class ExpectationLedgerTest {
         healthy: Boolean = true,
         rev: InterventionStamp = REV,
         cfg: String = CFG,
-    ) = ExpectationLedger.Sample(ts, mgdl, seg, healthy, rev, cfg)
+        ktx: ExpectationLedger.ExpectationContext = ExpectationLedger.ExpectationContext.CORRECTION,
+    ) = ExpectationLedger.Sample(ts, mgdl, seg, healthy, rev, cfg, ktx)
 
     private fun rechne(
         entries: List<ExpectationLedger.Entry>,
@@ -1112,7 +1114,7 @@ class ExpectationLedgerTest {
     /** Reine Korrekturlage - ALLES ausdruecklich belegt. */
     private fun reineKorrektur() = ExpectationLedger.Situation(
         mealMarkerActive = false,
-        evidenceEpisodeActive = false,
+        evidencePhase = EvidenceStock.Phase.DORMANT,
         onsetActive = false,
         mealWindow = false,
         reboundWindow = false,
@@ -1142,8 +1144,8 @@ class ExpectationLedgerTest {
     fun `jede ausdrueckliche Mahlzeitenlage ergibt MEAL mit ihrem Grund`() {
         val faelle = mapOf(
             reineKorrektur().copy(mealMarkerActive = true) to ExpectationLedger.ContextReason.MARKER_ACTIVE,
-            reineKorrektur().copy(evidenceEpisodeActive = true) to
-                ExpectationLedger.ContextReason.EVIDENCE_EPISODE_ACTIVE,
+            reineKorrektur().copy(evidencePhase = EvidenceStock.Phase.ACTIVE) to
+                ExpectationLedger.ContextReason.EVIDENCE_ACTIVE,
             reineKorrektur().copy(onsetActive = true) to ExpectationLedger.ContextReason.ONSET_ACTIVE,
             reineKorrektur().copy(mealWindow = true) to ExpectationLedger.ContextReason.MEAL_WINDOW_OPEN,
         )
@@ -1167,7 +1169,7 @@ class ExpectationLedgerTest {
             reineKorrektur().copy(reboundWindow = true) to ExpectationLedger.ContextReason.REBOUND,
             reineKorrektur().copy(signalHealthy = false) to ExpectationLedger.ContextReason.SIGNAL_UNHEALTHY,
             reineKorrektur().copy(mealMarkerActive = null) to ExpectationLedger.ContextReason.UNKNOWN_INPUT,
-            reineKorrektur().copy(evidenceEpisodeActive = null) to ExpectationLedger.ContextReason.UNKNOWN_INPUT,
+            reineKorrektur().copy(evidencePhase = null) to ExpectationLedger.ContextReason.UNKNOWN_INPUT,
             reineKorrektur().copy(onsetActive = null) to ExpectationLedger.ContextReason.UNKNOWN_INPUT,
             reineKorrektur().copy(mealWindow = null) to ExpectationLedger.ContextReason.UNKNOWN_INPUT,
             reineKorrektur().copy(reboundWindow = null) to ExpectationLedger.ContextReason.UNKNOWN_INPUT,
@@ -1259,12 +1261,12 @@ class ExpectationLedgerTest {
     fun `der beendete Marker allein macht noch keine Korrekturlage`() {
         val nachlauf = reineKorrektur().copy(
             mealMarkerActive = false,      // der Marker ist abgelaufen
-            evidenceEpisodeActive = true,  // die Absorption laeuft weiter
+            evidencePhase = EvidenceStock.Phase.ACTIVE,  // die Absorption laeuft weiter
         )
         assertEquals(
             ExpectationLedger.Classification(
                 ExpectationLedger.ExpectationContext.MEAL,
-                ExpectationLedger.ContextReason.EVIDENCE_EPISODE_ACTIVE,
+                ExpectationLedger.ContextReason.EVIDENCE_ACTIVE,
             ),
             ExpectationLedger.classify(nachlauf),
             "die Nachlaufphase ist keine Korrektur",

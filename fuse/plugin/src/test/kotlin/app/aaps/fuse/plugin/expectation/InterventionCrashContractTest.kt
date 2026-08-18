@@ -66,7 +66,7 @@ class InterventionCrashContractTest {
     )!!
 
     private fun messwert(ts: Long, mgdl: Double, stamp: InterventionStamp) =
-        ExpectationLedger.Sample(ts, mgdl, 1L, healthy = true, interventionStamp = stamp, configGeneration = CFG)
+        ExpectationLedger.Sample(ts, mgdl, 1L, healthy = true, interventionStamp = stamp, configGeneration = CFG, context = ExpectationLedger.ExpectationContext.CORRECTION)
 
     private fun zustandMit(stamp: InterventionStamp) = (
         ExpectationLedger.restore(listOf(erwartung(stamp)), emptySet(), emptyList(), kopfstand = stamp)

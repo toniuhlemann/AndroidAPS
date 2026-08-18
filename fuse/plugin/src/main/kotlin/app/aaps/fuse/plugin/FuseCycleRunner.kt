@@ -2069,7 +2069,11 @@ class FuseCycleRunner(
             configGeneration = app.aaps.fuse.plugin.export.FuseStateJson.hashOf(cfg).orEmpty(),
             expectationSituation = ExpectationLedger.Situation(
                 mealMarkerActive = mealMarkerActive,
-                evidenceEpisodeActive = episodes.evidenceEpisodeId > 0L,
+                // DIE PHASE, nicht die Episoden-ID (Toni 18.08.): eine offene
+                // Episode in DORMANT ist Korrekturbetrieb, keine Mahlzeit.
+                // `null` heisst "dieser Zyklus hat keine Phase gerechnet" und
+                // ergibt EXCLUDED - die sichere Richtung.
+                evidencePhase = evidenz?.phase,
                 onsetActive = onset.active,
                 mealWindow = mealWindow,
                 reboundWindow = reboundWindow,

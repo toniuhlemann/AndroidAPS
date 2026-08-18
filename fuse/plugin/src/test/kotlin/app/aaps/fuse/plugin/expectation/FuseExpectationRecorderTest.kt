@@ -1,5 +1,6 @@
 package app.aaps.fuse.plugin.expectation
 
+import app.aaps.fuse.core.controller.EvidenceStock
 import app.aaps.fuse.core.controller.ExpectationLedger
 import app.aaps.fuse.core.controller.InterventionStamp
 import app.aaps.fuse.plugin.ledger.Durability
@@ -37,12 +38,19 @@ class FuseExpectationRecorderTest {
 
     /** Reine Korrekturlage - alles ausdruecklich belegt. */
     private fun korrektur(sealed: Boolean = true) = ExpectationLedger.Situation(
-        mealMarkerActive = false, evidenceEpisodeActive = false, onsetActive = false,
+        mealMarkerActive = false, evidencePhase = EvidenceStock.Phase.DORMANT, onsetActive = false,
         mealWindow = false, reboundWindow = false, signalHealthy = true, ledgerSealed = sealed,
     )
 
-    private fun probe(ts: Long, mgdl: Double, stamp: InterventionStamp = STAMP) =
-        ExpectationLedger.Sample(ts, mgdl, SEG, healthy = true, interventionStamp = stamp, configGeneration = CFG)
+    private fun probe(
+        ts: Long,
+        mgdl: Double,
+        stamp: InterventionStamp = STAMP,
+        ktx: ExpectationLedger.ExpectationContext = ExpectationLedger.ExpectationContext.CORRECTION,
+    ) = ExpectationLedger.Sample(
+        ts, mgdl, SEG, healthy = true, interventionStamp = stamp,
+        configGeneration = CFG, context = ktx,
+    )
 
     private fun FuseExpectationRecorder.buche(
         dir: File,
@@ -182,16 +190,25 @@ class FuseExpectationRecorderTest {
     fun `der Schnappschuss zaehlt nach Kontext getrennt`(@TempDir dir: File) {
         val r = recorder()
         r.loadOnce(dir, STAMP)
-        // Eine Korrektur- und eine Mahlzeitenerwartung, beide faellig.
+        // Eine Korrektur- und eine Mahlzeitenerwartung.
         r.buche(dir, nowTs = t0, sourceTs = t0)
         r.buche(
             dir, nowTs = t0 + 60_000L, sourceTs = t0 + 60_000L,
             situation = korrektur().copy(mealMarkerActive = true),
         )
+        // JEDE wird gegen einen Messpunkt IHRER Lage abgerechnet. Zwei
+        // Zyklen, weil in EINEM Zyklus nur EINE Lage gelten kann - genau
+        // deshalb traegt der Messpunkt jetzt seinen eigenen Kontext.
         val faellig = t0 + H * 60_000L
         r.buche(
+            dir, nowTs = faellig + 1_000L, sourceTs = faellig, mean = null,
+            samples = listOf(probe(faellig, 205.0)),
+        )
+        r.buche(
             dir, nowTs = faellig + 61_000L, sourceTs = faellig + 60_000L, mean = null,
-            samples = listOf(probe(faellig, 205.0), probe(faellig + 60_000L, 206.0)),
+            samples = listOf(
+                probe(faellig + 60_000L, 206.0, ktx = ExpectationLedger.ExpectationContext.MEAL),
+            ),
         )
 
         val snap = r.exportSnapshot(faellig + 61_000L, STAMP, CFG, SEG, korrektur(), MARGE)
@@ -236,5 +253,90 @@ class FuseExpectationRecorderTest {
             ExpectationLedger.Denial.CONTEXT_NOT_CORRECTION, current.denialReason,
             "die unbekannte Lage ist der Grund - nicht das Fehlen von Ergebnissen",
         )
+    }
+
+    // ---- Kontextwechsel zwischen Ausgabe und Faelligkeit -----------------
+
+    /**
+     * DAS LOCH, DAS DER STEMPEL NICHT SCHLIESST (Toni 18.08.).
+     *
+     * Beginnt zwischen einer Korrekturprognose und ihrer Faelligkeit eine
+     * Mahlzeit, ist der Interventionsstempel unveraendert - solange nichts
+     * publiziert wurde. Ohne den Kontext am Messpunkt ginge der ausgebliebene
+     * Rueckgang als MISSED durch und spaeter als Beleg gegen das Modell,
+     * obwohl in Wahrheit Kohlenhydrate wirkten.
+     */
+    @Test
+    fun `eine Mahlzeit zwischen Ausgabe und Faelligkeit erzeugt keinen MISSED`(@TempDir dir: File) {
+        val r = recorder()
+        r.loadOnce(dir, STAMP)
+        r.buche(dir, nowTs = t0, sourceTs = t0)
+        val faellig = t0 + H * 60_000L
+        r.buche(
+            dir, nowTs = faellig + 1000L, sourceTs = faellig, mean = null,
+            // DERSELBE Stempel - es wurde nichts publiziert. Nur die Lage ist
+            // eine andere.
+            samples = listOf(probe(faellig, 205.0, ktx = ExpectationLedger.ExpectationContext.MEAL)),
+        )
+        assertEquals(
+            ExpectationLedger.Verdict.CONTEXT_CHANGED, r.state.outcomes.single().verdict,
+            "kein Beleg - weder dafuer noch dagegen",
+        )
+    }
+
+    /** Und dasselbe fuer eine ausgeschlossene Lage am Messpunkt. */
+    @Test
+    fun `ein Signalbruch zwischen Ausgabe und Faelligkeit erzeugt keinen MISSED`(@TempDir dir: File) {
+        val r = recorder()
+        r.loadOnce(dir, STAMP)
+        r.buche(dir, nowTs = t0, sourceTs = t0)
+        val faellig = t0 + H * 60_000L
+        r.buche(
+            dir, nowTs = faellig + 1000L, sourceTs = faellig, mean = null,
+            samples = listOf(probe(faellig, 205.0, ktx = ExpectationLedger.ExpectationContext.EXCLUDED)),
+        )
+        assertEquals(ExpectationLedger.Verdict.CONTEXT_CHANGED, r.state.outcomes.single().verdict)
+    }
+
+    // ---- Die Evidenzphase entscheidet, nicht die Episode -----------------
+
+    /**
+     * EINE OFFENE EPISODE IN DORMANT IST KORREKTURBETRIEB (Toni 18.08.).
+     *
+     * Das ist der Kernbefund der Spezifikation: DORMANT ist der Normalzustand
+     * ZWISCHEN zwei Wellen. Aus der blossen Episodenidentitaet sechs Stunden
+     * Mahlzeit abzuleiten hiesse, genau den haeufigsten Korrekturzustand nie
+     * zu messen.
+     */
+    @Test
+    fun `DORMANT bei offener Episode ergibt CORRECTION`(@TempDir dir: File) {
+        val r = recorder()
+        r.loadOnce(dir, STAMP)
+        r.buche(
+            dir, nowTs = t0, sourceTs = t0,
+            situation = korrektur().copy(evidencePhase = EvidenceStock.Phase.DORMANT),
+        )
+        assertEquals(
+            ExpectationLedger.ExpectationContext.CORRECTION, r.state.entries.single().context,
+        )
+    }
+
+    /** Die zweite Welle kippt im SELBEN Zyklus zurueck auf MEAL - ohne neue
+     *  Episode und ohne neues Budget. */
+    @Test
+    fun `neue Evidenz kippt DORMANT sofort zurueck auf MEAL`(@TempDir dir: File) {
+        val r = recorder()
+        r.loadOnce(dir, STAMP)
+        for ((phase, erwartet) in listOf(
+            EvidenceStock.Phase.PENDING_SEAL to ExpectationLedger.ExpectationContext.MEAL,
+            EvidenceStock.Phase.ACTIVE to ExpectationLedger.ExpectationContext.MEAL,
+            EvidenceStock.Phase.NONE to ExpectationLedger.ExpectationContext.CORRECTION,
+            EvidenceStock.Phase.EXPIRED to ExpectationLedger.ExpectationContext.CORRECTION,
+            EvidenceStock.Phase.SUSPENDED to ExpectationLedger.ExpectationContext.EXCLUDED,
+            EvidenceStock.Phase.UNKNOWN to ExpectationLedger.ExpectationContext.EXCLUDED,
+        )) {
+            val lage = korrektur().copy(evidencePhase = phase)
+            assertEquals(erwartet, ExpectationLedger.classify(lage).context, "$phase")
+        }
     }
 }
