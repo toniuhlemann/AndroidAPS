@@ -104,18 +104,47 @@ object MarkerAuthorization {
             FuseController.Block.LEDGER_HOLD          -> false
             FuseController.Block.PUMP_BUSY            -> false
 
-            // TAIL als BLOCK bleibt hart. Die Schwanz-KAPPE fuer den
-            // autorisierten Anteil wird davon nicht beruehrt - sie ist keine
-            // Blockade, sondern eine Mengengrenze, und wird an der Stelle
-            // uebersprungen, an der sie greift (PrimeRelease.lift).
-            FuseController.Block.TAIL                 -> false
+            // ---- Der Schwanz, in BEIDEN Formen ---------------------------
+            //
+            // TAIL STAND HIER ZUERST AUF "hart", UND DAS WAR FALSCH (Toni
+            // 18.08.). Der Schwanz erscheint im Controller in zwei Gestalten,
+            // und sie haengen an einem Vorzeichen:
+            //
+            //   headroomU <= 0  -> frueher Return mit Block.TAIL
+            //                      (FuseController: "if (tail != null &&
+            //                      tail.usable && tail.headroomU <= 0.0)")
+            //   headroomU >  0  -> der Fluss erreicht die Kappenliste, wo
+            //                      "tailHeadroom" eine Kappe unter anderen ist
+            //
+            // Waere der Block hart und nur die Kappe hebbar, entstuende am
+            // Nullpunkt eine unlogische Kante: bei +0,001 U kaeme das
+            // Fundament durch, bei -0,001 U waere es tot. Und genau die
+            // negative Seite ist nach Phase A der Normalfall - das gerade
+            // abgegebene Prime-Insulin steht auf der Haftungsseite, waehrend
+            // die Kohlenhydrate, die es finanziert haben, nirgends stehen.
+            // Phase B waere damit wieder wirkungslos.
+            //
+            // Beide Gestalten sind DIESELBE Haftungsprognose ueber H - eine
+            // Modellaussage, und zwar eine mit wachsendem Fehler, weil der
+            // Horizont 120 Minuten weit reicht. Also beide hebbar.
+            //
+            // DAS AENDERT AUCH PRIME, und das ist Absicht: dieselbe Kante
+            // existierte dort. Ein Prime mit Headroom -0,001 starb am Block,
+            // mit +0,001 nicht.
+            FuseController.Block.TAIL                 -> authorized
 
-            // Die Kandidatensuche hat den Vorschlag inhaltlich genullt -
-            // Guard risse MIT der Dosis. Das ist dieselbe Bahn wie
-            // GUARD_FLOOR, aber bereits MIT der geplanten Menge gerechnet,
-            // also die schaerfere Aussage. Wer sie hebt, hebt eine Prognose,
-            // die den eigenen Beitrag schon kennt - und dann ist der
-            // Guard-Boden als Riegel wertlos.
+            // CANDIDATE bleibt hart, und der Grund ist ein anderer als bei
+            // TAIL (Toni 18.08.): der Block ist ein SAMMELBEGRIFF. Die
+            // Kandidatensuche lehnt sowohl aus modellbasierten Gruenden ab
+            // (Guard risse MIT der Dosis) als auch aus technischen oder
+            // korrupten. Ihn pauschal zu heben waere fail-open - man wuesste
+            // nicht, was man hebt.
+            //
+            // WENN DER REPLAY ZEIGT, dass Phase B haeufig an einem CANDIDATE
+            // mit Ursache GUARD_FLOOR stirbt, ist die Antwort NICHT, diesen
+            // Sammelblock freizugeben, sondern den zugrunde liegenden
+            // `CandidateSearch.Reject` TYPISIERT weiterzureichen. Dann laesst
+            // sich die modellbasierte Teilmenge heben und der Rest nicht.
             FuseController.Block.CANDIDATE            -> false
         }
 

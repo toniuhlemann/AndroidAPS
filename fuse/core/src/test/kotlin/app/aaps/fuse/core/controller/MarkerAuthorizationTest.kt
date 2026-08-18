@@ -202,25 +202,63 @@ class MarkerAuthorizationTest {
     }
 
     /**
-     * TECHNISCHE SPERREN BLEIBEN HART. Sie stehen bewusst NICHT in der
-     * erweiterten Liste - kein Marker der Welt hebt einen Ledger-Hold, eine
-     * belegte Pumpe oder eine fehlende Eingabe auf.
+     * TECHNISCHE SPERREN UND HARTE MENGENGRENZEN BLEIBEN HART. Kein Marker
+     * der Welt hebt einen Ledger-Hold, eine belegte Pumpe, eine fehlende
+     * Eingabe oder eine IOB-Obergrenze auf.
+     *
+     * TAIL STAND HIER UND IST AM 18.08. HERAUSGENOMMEN WORDEN - er gehoerte
+     * nie in diese Liste. Er ist keine technische Sperre, sondern eine
+     * Haftungsprognose ueber 120 Minuten, also dieselbe Sorte Modellaussage
+     * wie GUARD_FLOOR. Dass er hier stand, erzeugte am Nullpunkt eine
+     * Kante: Headroom +0,001 U war ueber die Kappe hebbar, -0,001 U ueber
+     * den Block nicht. Er steht jetzt in `die Aufteilung deckt jeden Block
+     * genau einmal ab` auf der hebbaren Seite.
      */
     @Test
-    fun `technische Sperren sind nicht uebersteuerbar`() {
+    fun `technische Sperren und Mengengrenzen sind nicht uebersteuerbar`() {
         val p = planUnterBoden(markerAuthorized = true)
         for (b in listOf(
             FuseController.Block.LEDGER_HOLD,
             FuseController.Block.PUMP_BUSY,
             FuseController.Block.HEALTH_NOT_READY,
             FuseController.Block.NO_INPUT,
-            FuseController.Block.TAIL,
+            FuseController.Block.HORIZON_MISSING,
+            FuseController.Block.CANDIDATE,
             FuseController.Block.MAX_IOB_REACHED,
             FuseController.Block.IOB_TH_REACHED,
         )) {
             val d = PrimeRelease.lift(blockiert(b), p, state(), markerAuthorized = true)
             assertEquals(0.0, d.smbU, "$b darf NICHT uebersteuerbar sein")
         }
+    }
+
+    /**
+     * DIE KANTE AM NULLPUNKT, ausdruecklich als Zusicherung (Toni 18.08.).
+     *
+     * Beide Vorzeichen des Schwanz-Headrooms muessen DASSELBE ergeben. Waere
+     * nur die Kappe hebbar, haette ein Unterschied von 0,002 U ueber das
+     * ganze Fundament entschieden - und die negative Seite ist nach Phase A
+     * der Normalfall, nicht der Randfall.
+     */
+    @Test
+    fun `beide Vorzeichen des Schwanz-Headrooms geben dasselbe frei`() {
+        val p = planUnterBoden(markerAuthorized = true)
+        // Der BLOCK entsteht bei headroom <= 0 - hier vertreten durch
+        // Block.TAIL, den der Controller in genau dieser Lage setzt.
+        val negativ = PrimeRelease.lift(
+            blockiert(FuseController.Block.TAIL), p, state(), markerAuthorized = true,
+        )
+        // Bei headroom > 0 erreicht der Fluss die Kappenliste; der Block ist
+        // dann NONE und die Kappe wird bei Autorisierung uebersprungen.
+        val positiv = PrimeRelease.lift(
+            blockiert(FuseController.Block.NONE), p, state(),
+            markerAuthorized = true, tailHeadroomU = 0.01,
+        )
+        assertTrue(negativ.smbU > 0.0, "negativer Headroom darf das Fundament nicht toeten")
+        assertEquals(
+            positiv.smbU, negativ.smbU, 1e-9,
+            "beide Vorzeichen MUESSEN dasselbe ergeben - sonst bleibt die Kante",
+        )
     }
 
     /**
@@ -620,6 +658,12 @@ class MarkerAuthorizationTest {
             FuseController.Block.NO_DEMAND,
             FuseController.Block.BELOW_PUMP_INCREMENT,
             FuseController.Block.GUARD_FLOOR,
+            // TAIL in BEIDEN Gestalten: der fruehe Block bei headroom <= 0
+            // und die spaetere Kappe bei headroom > 0 sind dieselbe
+            // Haftungsprognose. Nur die Kappe zu heben ergaebe am Nullpunkt
+            // eine Kante, und die negative Seite ist nach Phase A der
+            // Normalfall (Toni 18.08.).
+            FuseController.Block.TAIL,
         )
         val hart = setOf(
             FuseController.Block.SAFETY_HOLD,
@@ -630,7 +674,8 @@ class MarkerAuthorizationTest {
             FuseController.Block.MAX_IOB_REACHED,
             FuseController.Block.LEDGER_HOLD,
             FuseController.Block.PUMP_BUSY,
-            FuseController.Block.TAIL,
+            // CANDIDATE bleibt hart: ein SAMMELBLOCK aus modellbasierten UND
+            // technischen Ablehnungen. Pauschal zu heben waere fail-open.
             FuseController.Block.CANDIDATE,
         )
 
