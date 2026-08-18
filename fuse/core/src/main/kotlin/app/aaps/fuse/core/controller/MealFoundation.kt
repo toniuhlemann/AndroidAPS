@@ -545,8 +545,32 @@ object MealFoundation {
         /** Vor der Uebergabe: Prime finanziert, das Fundament schweigt. */
         PHASE_A,
 
-        /** Ab der Uebergabe EINSCHLIESSLICH. */
+        /** Ab der Uebergabe EINSCHLIESSLICH bis zum Fensterende
+         *  EINSCHLIESSLICH - die einzige Phase, die den Zaehler bewegt. */
         PHASE_B,
+
+        /**
+         * HINTER DEM FENSTERENDE - das Fundament ist fertig (Toni 18.08., P0).
+         *
+         * OHNE DIESE PHASE BLIEB ES UNBEGRENZT BEI [PHASE_B]. `phaseOf`
+         * kannte das Fensterende nicht, also galt jeder Zyklus nach der
+         * Uebergabe als Phase B - auch Stunden und Tage spaeter. Zwei Folgen,
+         * beide echt:
+         *
+         *   der EXPORT log: jeder Korrektur-SMB der naechsten Nacht lief in
+         *   `deliveredSinceHandoverU` und sah nach Mahlzeitenbezahlung aus;
+         *
+         *   der PERSISTIERTE BETRAG wuchs ohne Obergrenze weiter, bis er
+         *   irgendwann an der Codec-Schranke haengt - und dann ist die
+         *   Generation unlesbar, nicht nur ungenau.
+         *
+         * Diese Phase belastet und entlastet den Zaehler NICHT. Sie ist
+         * ausdruecklich nicht [NONE]: die Autorisierung existiert noch (ihr
+         * Ende steht ja gerade fest), sie hat nur nichts mehr zu verteilen.
+         * Der Unterschied ist fuer den Export das, was er fuer [PHASE_A] auch
+         * ist - "lief und war fertig" ist keine Aussage ueber "lief nie".
+         */
+        AFTER_WINDOW,
     }
 
     /**
@@ -560,6 +584,12 @@ object MealFoundation {
      * ein Zyklus, der exakt auf den Anker faellt, in keiner der beiden Phasen
      * statt - seine Abgabe zaehlte dann nirgends, und Phase B hielte sich fuer
      * unversorgt.
+     *
+     * DAS FENSTERENDE BEGRENZT SIE NACH HINTEN (Toni 18.08., P0). Ohne diese
+     * Grenze blieb die Phase nach der Uebergabe unbegrenzt `PHASE_B`: der
+     * Zaehler sammelte jeden spaeteren Korrektur-SMB ein und wuchs auf einem
+     * persistierten Feld ohne Obergrenze weiter. `nowTs == endTs` gehoert
+     * noch dazu, `nowTs > endTs` nicht mehr.
      */
     fun phaseOf(auth: Authorization, nowTs: Long, primeWindowStartTs: Long): Phase {
         if (!auth.valid) return Phase.NONE
@@ -567,7 +597,14 @@ object MealFoundation {
         // Ein unbestimmbarer Anker ist keine Phase-B-Lage: fail-closed heisst
         // hier "das Fundament schweigt", nicht "es zahlt".
         if (uebergabe <= 0L) return Phase.NONE
-        return if (nowTs >= uebergabe) Phase.PHASE_B else Phase.PHASE_A
+        if (nowTs < uebergabe) return Phase.PHASE_A
+        // BEIDE Grenzen einschliessend: der Uebergabezeitpunkt ist der erste
+        // Moment von Phase B, das Fensterende der letzte. Mit einem strikten
+        // Vergleich an einer der beiden Kanten faende der Zyklus, der exakt
+        // darauf faellt, in keiner Phase statt - unter Minutentakt ist das je
+        // ein Zyklus pro Mahlzeit, kein Randfall.
+        if (nowTs > auth.endTs) return Phase.AFTER_WINDOW
+        return Phase.PHASE_B
     }
 
     /**

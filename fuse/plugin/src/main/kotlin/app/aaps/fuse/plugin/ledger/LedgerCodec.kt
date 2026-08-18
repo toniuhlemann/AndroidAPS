@@ -589,13 +589,27 @@ object LedgerCodec {
     }
 
     /**
-     * Die Autorisierung zurueckholen - FAIL-CLOSED ueber [restore].
+     * Die Autorisierung zurueckholen - die Generation faellt, wenn sie kaputt
+     * ist.
      *
-     * Die Pflichtfelder werfen bei Abwesenheit (s. [encodeFoundation]); die
-     * BEZIEHUNGEN zwischen ihnen prueft `restore`, das bei jedem Widerspruch
-     * `none()` liefert. Eine widerspruechliche Generation ergibt damit KEINE
-     * Autorisierung, nicht eine halbe - und ohne Autorisierung faellt der
-     * Zaehler mit, weil er allein nichts bedeutet.
+     * FEHLEN UND KAPUTT SIND NICHT DASSELBE (Toni 18.08., P0). Der erste Wurf
+     * stufte eine vorhandene, aber widerspruechliche Autorisierung still auf
+     * `none()` herab - also auf genau die Lesart, die fuer eine ALTDATEI
+     * richtig ist. Drei Dinge liefen damit schief:
+     *
+     *   Prime fiel auf das aktuelle volle LIVE-Budget zurueck, statt auf das
+     *   gepinnte Teilbudget - mehr Insulin, nicht weniger;
+     *
+     *   der Decoder meldete keinen Fehler, also durfte die BESCHAEDIGTE
+     *   neuere Generation gegen eine intakte aeltere gewinnen;
+     *
+     *   und der Ausfall war unsichtbar: kein Hold, kein Log, nichts, was
+     *   spaeter erklaert haette, warum das Fundament ploetzlich schwieg.
+     *
+     * Ist das Objekt DA, ist ein Widerspruch darin Korruption. Der Wurf macht
+     * die Generation ungueltig; die Wahl faellt dann auf eine aeltere oder in
+     * den Repair-Hold - beides sichtbar. Nur das FEHLENDE Objekt heisst
+     * "Legacy / kein Fundament" (s. [decodeEpisodes]).
      */
     fun decodeFoundation(o: JSONObject, e: EpisodeBudgets) {
         val a = app.aaps.fuse.core.controller.MealFoundation.Authorization.restore(
@@ -608,7 +622,10 @@ object LedgerCodec {
             latchedHandoverTs = requireTs("foundation.latchedHandoverTs", o.getLong("latchedHandoverTs")),
         )
         val bezahlt = requireAmount("foundation.deliveredSinceHandoverU", o.getDouble("deliveredSinceHandoverU"))
-        if (!a.valid) return
+        // KEIN stilles none(): s. den Blockkommentar. Die Felder waren alle da
+        // und einzeln plausibel - erst ihre Beziehung ist kaputt, und das kann
+        // keine faellige Migration sein.
+        require(a.valid) { "corrupt foundation authorization" }
         e.foundation = a
         e.deliveredSinceHandoverU = bezahlt
     }

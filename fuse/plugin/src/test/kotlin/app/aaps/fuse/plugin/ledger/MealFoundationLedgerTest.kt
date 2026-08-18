@@ -114,52 +114,64 @@ class MealFoundationLedgerTest {
     }
 
     /**
-     * EINE WIDERSPRUECHLICHE GENERATION ERGIBT KEINE AUTORISIERUNG.
+     * EINE WIDERSPRUECHLICHE GENERATION IST KORRUPTION - SIE FAELLT.
      *
-     * Die Felder sind da und einzeln plausibel - erst ihre BEZIEHUNG ist
-     * kaputt. Genau dafuer ist restore die eine pruefende Stelle; eine
-     * feldweise Pruefung saehe hier nichts.
+     * DIESER TEST HAT DEN FEHLER ZUERST FESTGESCHRIEBEN (Toni 18.08., P0).
+     * Er akzeptierte "Wurf ODER none()" als gleichermassen fail-closed. Das
+     * ist es nicht: `none()` ist die Lesart fuer eine ALTDATEI, und wer sie
+     * einer beschaedigten Datei gibt, laesst
+     *
+     *   Prime auf das aktuelle volle LIVE-Budget zurueckfallen statt auf das
+     *   gepinnte Teilbudget - also MEHR Insulin;
+     *
+     *   und die beschaedigte NEUERE Generation gegen eine intakte aeltere
+     *   gewinnen, weil kein Fehler gemeldet wurde.
+     *
+     * Die Felder sind hier alle da und einzeln plausibel - erst ihre
+     * BEZIEHUNG ist kaputt. Genau dafuer ist `restore` die eine pruefende
+     * Stelle; eine feldweise Pruefung saehe nichts.
      */
     @Test
-    fun `widerspruechliche Felder ergeben keine Autorisierung`() {
+    fun `widerspruechliche Felder machen die Generation ungueltig`() {
         val faelle = listOf<Triple<String, String, Any>>(
             Triple("Ende vor Marker", "endTs", t0 - 1000L),
             Triple("Latch vor Marker", "latchedHandoverTs", t0 - 1000L),
             Triple("Anteil ueber 1", "phaseAShare", 1.5),
+            Triple("Anteil negativ", "phaseAShare", -0.1),
             Triple("Budget 0", "totalBudgetU", 0.0),
+            Triple("Marker 0", "armedTs", 0L),
+            Triple("negatives Prime-Fenster", "pinnedPrimeWindowMin", -1),
+            Triple("negative Decke", "pinnedWallCeilingMin", -1),
         )
         for ((name, feld, wert) in faelle) {
             val o = LedgerCodec.encodeEpisodes(adapter(bezahlt = 0.4).episodes)
             o.getJSONObject("foundation").put(feld, wert)
-            val zurueck = runCatching { LedgerCodec.decodeEpisodes(JSONObject(o.toString())) }.getOrNull()
-            // Entweder der Wurf (Zeitstempel-Pruefung) oder none() - beides
-            // ist fail-closed. Was NICHT passieren darf: eine halbe
-            // Autorisierung mit uebernommener Bezahlung.
-            if (zurueck != null) {
-                assertFalse(zurueck.foundation.valid, name)
-                assertEquals(
-                    0.0, zurueck.deliveredSinceHandoverU, 1e-9,
-                    "$name - ohne Autorisierung faellt die Bezahlung mit",
-                )
-            }
+            assertThrows(
+                Exception::class.java,
+                { LedgerCodec.decodeEpisodes(JSONObject(o.toString())) },
+                "$name - eine vorhandene kaputte Autorisierung MUSS die Generation fallen lassen",
+            )
         }
     }
 
     /**
-     * OHNE AUTORISIERUNG KEINE BEZAHLUNG - die beiden koennen nicht
-     * auseinanderlaufen.
+     * DER UNTERSCHIED, UM DEN ES GEHT: fehlend gegen kaputt.
      *
-     * Bliebe der Zaehler stehen, waehrend die Autorisierung wegfaellt, wuerde
-     * die NAECHSTE Mahlzeit gegen eine fremde Bezahlung rechnen und ihr
-     * Teilbudget still verlieren.
+     * Dieselbe Datei, einmal ohne das Objekt und einmal mit einem
+     * beschaedigten. Das eine ist Legacy und laedt, das andere ist Korruption
+     * und faellt. Wer beide gleich behandelt, hat kein fail-closed, sondern
+     * eine stille Herabstufung.
      */
     @Test
-    fun `eine ungueltige Autorisierung nimmt die Bezahlung mit`() {
-        val o = LedgerCodec.encodeEpisodes(adapter(bezahlt = 0.4).episodes)
-        o.getJSONObject("foundation").put("phaseAShare", 2.0)
-        val zurueck = LedgerCodec.decodeEpisodes(JSONObject(o.toString()))
-        assertFalse(zurueck.foundation.valid)
-        assertEquals(0.0, zurueck.deliveredSinceHandoverU, 1e-9)
+    fun `fehlend laedt, kaputt faellt`() {
+        val ohne = LedgerCodec.encodeEpisodes(adapter(bezahlt = 0.4).episodes)
+        ohne.remove("foundation")
+        val gelesen = LedgerCodec.decodeEpisodes(JSONObject(ohne.toString()))
+        assertFalse(gelesen.foundation.valid, "fehlend = kein Fundament, kein Fehler")
+
+        val kaputt = LedgerCodec.encodeEpisodes(adapter(bezahlt = 0.4).episodes)
+        kaputt.getJSONObject("foundation").put("phaseAShare", 2.0)
+        assertThrows(Exception::class.java, { LedgerCodec.decodeEpisodes(JSONObject(kaputt.toString())) })
     }
 
     // ---- Buchfuehrung -----------------------------------------------------
@@ -253,14 +265,33 @@ class MealFoundationLedgerTest {
         assertEquals(0.45, a.episodes.deliveredSinceHandoverU, 1e-9)
     }
 
-    /** Dasselbe ohne laufendes Fundament. */
+    /**
+     * NUR ECHTES PHASE_B BEWEGT DEN ZAEHLER - keine der anderen drei Phasen.
+     *
+     * Wuerde eine von ihnen ihn beim Ablehnen senken, entstuende dort ein
+     * Rueckstand, den niemand hat, und Phase B gaebe zu VIEL. AFTER_WINDOW ist
+     * dabei der juengste der drei Faelle (Toni 18.08., P0): vorher blieb die
+     * Phase nach der Uebergabe unbegrenzt PHASE_B, es gab diese Lage also gar
+     * nicht.
+     */
     @Test
-    fun `eine abgelehnte Menge ohne Fundament laesst den Zaehler unberuehrt`() {
-        val a = mitReservierung(
-            menge = 0.30, phase = MealFoundation.Phase.NONE, schonBezahlt = 0.45,
-        )
-        a.resolveReservation(t0, publishedU = 0.0)
-        assertEquals(0.45, a.episodes.deliveredSinceHandoverU, 1e-9)
+    fun `nur Phase B bewegt den Zaehler`() {
+        for (phase in listOf(
+            MealFoundation.Phase.NONE,
+            MealFoundation.Phase.PHASE_A,
+            MealFoundation.Phase.AFTER_WINDOW,
+        )) {
+            val a = mitReservierung(menge = 0.30, phase = phase, schonBezahlt = 0.45)
+            assertEquals(
+                0.45, a.episodes.deliveredSinceHandoverU, 1e-9,
+                "$phase belastet nicht",
+            )
+            a.resolveReservation(t0, publishedU = 0.0)
+            assertEquals(
+                0.45, a.episodes.deliveredSinceHandoverU, 1e-9,
+                "$phase entlastet auch nicht",
+            )
+        }
     }
 
     /**

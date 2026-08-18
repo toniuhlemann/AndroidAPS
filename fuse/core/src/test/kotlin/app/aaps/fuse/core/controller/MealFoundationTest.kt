@@ -583,6 +583,80 @@ class MealFoundationTest {
         )
     }
 
+    /**
+     * DAS FENSTERENDE BEENDET PHASE B (Toni 18.08., P0).
+     *
+     * Ohne diese Grenze blieb die Phase nach der Uebergabe unbegrenzt
+     * PHASE_B. Der Zaehler `deliveredSinceHandoverU` haette dann jeden
+     * spaeteren Korrektur-SMB eingesammelt - Stunden und Tage nach der
+     * Mahlzeit -, und zwar auf einem PERSISTIERTEN Feld: er waere ohne
+     * Obergrenze weitergewachsen, bis er an der Codec-Schranke haengt. Dann
+     * ist die Generation unlesbar, nicht nur ungenau.
+     */
+    @Test
+    fun `das Fensterende beendet Phase B`() {
+        assertEquals(MealFoundation.Phase.PHASE_B, phase(B_BIS - 1.0))
+        assertEquals(
+            MealFoundation.Phase.PHASE_B, phase(B_BIS.toDouble()),
+            "das Fensterende gehoert noch dazu - beide Kanten einschliessend",
+        )
+        assertEquals(MealFoundation.Phase.AFTER_WINDOW, phase(B_BIS + 1.0))
+        assertEquals(
+            MealFoundation.Phase.AFTER_WINDOW, phase(B_BIS + 24 * 60.0),
+            "auch einen Tag spaeter - und NICHT wieder PHASE_B",
+        )
+    }
+
+    /**
+     * FERTIG IST NICHT DASSELBE WIE NIE GELAUFEN.
+     *
+     * AFTER_WINDOW ist ausdruecklich nicht NONE: die Autorisierung existiert
+     * noch, sie hat nur nichts mehr zu verteilen. Fuer den Export ist das
+     * derselbe Unterschied wie zwischen PHASE_A und NONE.
+     */
+    @Test
+    fun `nach dem Fenster ist die Autorisierung nicht verschwunden`() {
+        assertEquals(
+            MealFoundation.Phase.NONE,
+            phase(B_BIS + 10.0, auth = MealFoundation.Authorization.none()),
+            "OHNE Autorisierung ist es NONE",
+        )
+        assertEquals(
+            MealFoundation.Phase.AFTER_WINDOW, phase(B_BIS + 10.0),
+            "MIT abgelaufener Autorisierung ist es AFTER_WINDOW",
+        )
+    }
+
+    /**
+     * DIE UEBERGABE KANN HINTER DEM FENSTERENDE LIEGEN - dann gibt es Phase B
+     * nie.
+     *
+     * Eine Kette von Clearances schiebt den Anker bis an die Wanduhr-Decke.
+     * Liegt die hinter dem Fensterende, springt die Lage von PHASE_A direkt
+     * auf AFTER_WINDOW. Das ist die richtige Antwort und kein Widerspruch:
+     * plan() meldet fuer genau diese Lage NO_WINDOW_AFTER_HANDOVER.
+     */
+    @Test
+    fun `liegt die Uebergabe hinter dem Ende, gibt es kein Phase B`() {
+        val kurz = MealFoundation.arm(
+            markerTs = t0, foundationEnabled = true, totalBudgetU = BUDGET, phaseAShare = A_SHARE,
+            primeWindowMin = A_BIS, wallCeilingMin = 45, phaseBUntilMin = 20,
+        )
+        // Clearance bei T+30 schiebt die Uebergabe auf T+45 (Decke), das
+        // Fenster endet aber schon bei T+20.
+        val clearance = t0 + 30 * 60_000L
+        assertEquals(
+            MealFoundation.Phase.PHASE_A,
+            MealFoundation.phaseOf(kurz, t0 + 25 * 60_000L, clearance),
+            "vor der verschobenen Uebergabe - Prime finanziert noch",
+        )
+        assertEquals(
+            MealFoundation.Phase.AFTER_WINDOW,
+            MealFoundation.phaseOf(kurz, t0 + 50 * 60_000L, clearance),
+            "danach ist das Fenster laengst vorbei - nie PHASE_B",
+        )
+    }
+
     // ---- Pinning der autorisierten Konfiguration (Toni 18.08.) -----------
 
     private fun armiere(
