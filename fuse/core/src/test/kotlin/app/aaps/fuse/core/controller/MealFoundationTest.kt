@@ -2,6 +2,7 @@ package app.aaps.fuse.core.controller
 
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertNotEquals
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
@@ -518,6 +519,50 @@ class MealFoundationTest {
             t0 + 20 * 60_000L,
             MealFoundation.handoverTs(t0, t0 + 30 * 60_000L, primeWindowMin = 45, wallCeilingMin = 20),
             "eine Clearance bei T+30 darf die Uebergabe nicht ueber die Decke schieben",
+        )
+    }
+
+    /**
+     * DIE GEGENPROBE ZUM TEILBUDGET-RIEGEL: gleich gross ist ZULAESSIG.
+     *
+     * Die ablehnende Seite steht in der Tabelle oben ("Teilbudget ueber
+     * Gesamt"). Ohne diese Gegenprobe bliebe ein ZU STRENGER Riegel
+     * unentdeckt: mit `>=` statt `> + 1e-9` waere Anteil 0 - ein ganzes
+     * Budget in Phase B - faelschlich unbrauchbar, und das Fundament gaebe
+     * bei dieser Einstellung stillschweigend gar nichts.
+     *
+     * Die heutigen Einstellgrenzen (Anteil 0,5..1,0) lassen den Fall nicht
+     * zu. Genau darauf soll sich der Riegel aber nicht verlassen - plan() ist
+     * eine oeffentliche Kernfunktion, und arm() nimmt 0,0..1,0 entgegen.
+     */
+    @Test
+    fun `ein Teilbudget in Hoehe des Gesamtbudgets ist zulaessig`() {
+        val p = MealFoundation.plan(
+            markerTs = t0, nowTs = t0 + 30 * 60_000L, handoverTs = t0 + A_BIS * 60_000L,
+            totalBudgetU = BUDGET, phaseBBudgetU = BUDGET, phaseBUntilMin = B_BIS,
+            deliveredFromBudgetU = 0.0, deliveredSinceHandoverU = 0.0, bolusStepU = STEP,
+        )
+        assertNotEquals(
+            MealFoundation.Binding.UNUSABLE_INPUT, p.binding,
+            "Anteil 0 ist eine gueltige Einstellung, auch wenn sie heute niemand waehlt",
+        )
+        assertEquals(BUDGET, p.remainingInWindowU, 1e-9)
+    }
+
+    /** Und die Autorisierung fuehrt denselben Fall widerspruchsfrei. */
+    @Test
+    fun `Anteil null ergibt ein vollstaendiges Phase-B-Budget`() {
+        val a = MealFoundation.arm(
+            markerTs = t0, foundationEnabled = true, totalBudgetU = BUDGET, phaseAShare = 0.0,
+            primeWindowMin = A_BIS, wallCeilingMin = 45, phaseBUntilMin = B_BIS,
+        )
+        assertTrue(a.valid)
+        assertEquals(0.0, a.phaseABudgetU, 1e-9)
+        assertEquals(BUDGET, a.phaseBBudgetU, 1e-9)
+        assertNotEquals(
+            MealFoundation.Binding.UNUSABLE_INPUT,
+            MealFoundation.planFrom(a, t0 + 30 * 60_000L, 0L, 0.0, 0.0, STEP).binding,
+            "der Riegel darf die eigene Autorisierung nicht abweisen",
         )
     }
 
