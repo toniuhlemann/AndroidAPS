@@ -521,6 +521,68 @@ class MealFoundationTest {
         )
     }
 
+    // ---- Die Phase eines Zyklus (Punkt 7) --------------------------------
+
+    private fun phase(minuten: Double, clearance: Long = 0L, auth: MealFoundation.Authorization? = null) =
+        MealFoundation.phaseOf(
+            auth ?: MealFoundation.arm(
+                markerTs = t0, foundationEnabled = true, totalBudgetU = BUDGET, phaseAShare = A_SHARE,
+                primeWindowMin = A_BIS, wallCeilingMin = 45, phaseBUntilMin = B_BIS,
+            ),
+            t0 + (minuten * 60_000).toLong(), clearance,
+        )
+
+    /**
+     * DER UEBERGABEZEITPUNKT GEHOERT SCHON ZU PHASE B.
+     *
+     * Mit `>` statt `>=` faende ein Zyklus, der exakt auf den Anker faellt, in
+     * KEINER der beiden Phasen statt: Prime hat geschlossen, das Fundament
+     * zaehlt ihn noch nicht. Seine Abgabe zaehlte dann nirgends, und Phase B
+     * hielte sich fuer unversorgt - sie gaebe genau diese Menge ein zweites
+     * Mal. Unter einem Minutentakt ist das kein Randfall, sondern ein Zyklus
+     * je Mahlzeit.
+     */
+    @Test
+    fun `genau auf dem Uebergabeanker gilt schon Phase B`() {
+        assertEquals(MealFoundation.Phase.PHASE_A, phase(A_BIS - 1.0))
+        assertEquals(MealFoundation.Phase.PHASE_B, phase(A_BIS.toDouble()), "die Grenze ist einschliessend")
+        assertEquals(MealFoundation.Phase.PHASE_B, phase(A_BIS + 1.0))
+    }
+
+    /** Ohne gueltige Autorisierung gibt es keine Phase. */
+    @Test
+    fun `ohne Autorisierung gibt es keine Phase`() {
+        assertEquals(
+            MealFoundation.Phase.NONE,
+            phase(30.0, auth = MealFoundation.Authorization.none()),
+        )
+    }
+
+    /** Die Phase folgt der verschobenen Uebergabe, nicht dem Marker. */
+    @Test
+    fun `eine Clearance verschiebt auch die Phasengrenze`() {
+        val clearance = t0 + 10 * 60_000L
+        assertEquals(
+            MealFoundation.Phase.PHASE_A, phase(20.0, clearance = clearance),
+            "die Uebergabe liegt jetzt bei T+25 - bei T+20 ist noch Phase A",
+        )
+        assertEquals(MealFoundation.Phase.PHASE_B, phase(25.0, clearance = clearance))
+    }
+
+    /** Nach dem Latch bleibt die Grenze stehen, auch bei spaeter Clearance. */
+    @Test
+    fun `nach dem Latch bleibt die Phasengrenze stehen`() {
+        val gelatcht = MealFoundation.arm(
+            markerTs = t0, foundationEnabled = true, totalBudgetU = BUDGET, phaseAShare = A_SHARE,
+            primeWindowMin = A_BIS, wallCeilingMin = 45, phaseBUntilMin = B_BIS,
+        ).latchIfDue(t0 + A_BIS * 60_000L, 0L)
+        assertEquals(
+            MealFoundation.Phase.PHASE_B,
+            MealFoundation.phaseOf(gelatcht, t0 + 20 * 60_000L, t0 + 30 * 60_000L),
+            "eine Clearance bei T+30 darf einen bereits gebuchten Zyklus nicht nach Phase A zurueckholen",
+        )
+    }
+
     // ---- Pinning der autorisierten Konfiguration (Toni 18.08.) -----------
 
     private fun armiere(

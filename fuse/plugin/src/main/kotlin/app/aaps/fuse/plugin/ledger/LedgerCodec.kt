@@ -451,6 +451,49 @@ object LedgerCodec {
         .put("markerRiseSeen", e.markerRiseSeen)
         .put("lastAcceptedSourceTs", e.lastAcceptedSourceTs)
         .put("mealDeliveries", JSONArray(e.mealDeliveries.map { (ts, u) -> JSONArray(listOf(ts, u)) }))
+        .apply { encodeFoundation(e)?.let { put("foundation", it) } }
+
+    /**
+     * DIE MAHLZEITEN-AUTORISIERUNG UND IHRE BEZAHLUNG - ein Objekt, nicht
+     * neun Felder nebeneinander (Punkt 7, Toni 18.08.).
+     *
+     * ZUSAMMEN ODER GAR NICHT. Der Zaehler `deliveredSinceHandoverU` ist ohne
+     * die Autorisierung bedeutungslos, und die Autorisierung ohne Zaehler
+     * gefaehrlich: Phase B faende dann eine unbezahlte Mahlzeit vor und
+     * lieferte ihr Budget ein zweites Mal. Sie stehen deshalb in EINEM
+     * Unterobjekt, das nur ganz oder gar nicht gelesen wird.
+     *
+     * OHNE VERSIONSSPRUNG, und das ist eine bewusste Abweichung von "neues
+     * Schema" - aus demselben Grund wie beim Interventionsstempel: ein Bump
+     * auf v5 laesst `require(v in LEGACY_VERSION..VERSION)` in einer AELTEREN
+     * Fassung werfen. Ein Rollback nach einem Feldlauf faende die Datei dann
+     * unlesbar und ginge in den Repair-Hold - schlimmer als das, was ohne
+     * Bump passiert.
+     *
+     * Ohne Bump liest eine aeltere Fassung das Feld schlicht nicht. Sie kennt
+     * kein Fundament, gibt also das volle Budget wie heute frei: das ist
+     * exakt die Verhaltensparitaet von "Schalter aus", nicht mehr Insulin.
+     *
+     * STRIKT NACH INNEN: ist das Objekt DA, sind alle Felder Pflicht
+     * (`getLong`/`getDouble`, kein `opt`). Eine halb geschriebene
+     * Autorisierung ist Korruption und keine faellige Migration.
+     *
+     * `null` heisst "keine laufende Autorisierung" - dann steht das Feld gar
+     * nicht in der Datei, statt als Leerobjekt Platz zu belegen.
+     */
+    fun encodeFoundation(e: EpisodeBudgets): JSONObject? {
+        val a = e.foundation
+        if (!a.valid) return null
+        return JSONObject()
+            .put("armedTs", a.armedTs)
+            .put("totalBudgetU", a.totalBudgetU)
+            .put("phaseAShare", a.phaseAShare)
+            .put("pinnedPrimeWindowMin", a.pinnedPrimeWindowMin)
+            .put("pinnedWallCeilingMin", a.pinnedWallCeilingMin)
+            .put("endTs", a.endTs)
+            .put("latchedHandoverTs", a.latchedHandoverTs)
+            .put("deliveredSinceHandoverU", e.deliveredSinceHandoverU)
+    }
 
     /**
      * Der Evidenzbestand, Feld fuer Feld. KEIN Reflexions- oder
@@ -526,6 +569,13 @@ object LedgerCodec {
         // als "noch kein Punkt akzeptiert", der naechste akzeptierte Punkt
         // setzt die Epoch neu (konservativ genug: 0 blockiert nie faelschlich).
         e.lastAcceptedSourceTs = requireTs("lastAcceptedSourceTs", o.optLong("lastAcceptedSourceTs", 0L))
+        // KEINE MIGRATION, die ein Fundament ERFINDET: fehlt das Objekt, gibt
+        // es keine laufende Autorisierung. Eine Altdatei mitten in einer
+        // Mahlzeit liest sich damit als "kein Fundament" - Prime finanziert
+        // wie bisher weiter, also heutiges Verhalten. Wuerde hier stattdessen
+        // aus Budget und Anteil eine Autorisierung nachgebildet, entstuende
+        // eine Insulinfreigabe, die niemand erteilt hat.
+        if (o.has("foundation")) decodeFoundation(o.getJSONObject("foundation"), e)
         val md = o.getJSONArray("mealDeliveries")
         require(md.length() <= MAX_MEAL_DELIVERIES) { "mealDeliveries size ${md.length()}" }
         for (i in 0 until md.length()) {
@@ -536,6 +586,31 @@ object LedgerCodec {
             e.mealDeliveries.addLast(ts to u)
         }
         return e
+    }
+
+    /**
+     * Die Autorisierung zurueckholen - FAIL-CLOSED ueber [restore].
+     *
+     * Die Pflichtfelder werfen bei Abwesenheit (s. [encodeFoundation]); die
+     * BEZIEHUNGEN zwischen ihnen prueft `restore`, das bei jedem Widerspruch
+     * `none()` liefert. Eine widerspruechliche Generation ergibt damit KEINE
+     * Autorisierung, nicht eine halbe - und ohne Autorisierung faellt der
+     * Zaehler mit, weil er allein nichts bedeutet.
+     */
+    fun decodeFoundation(o: JSONObject, e: EpisodeBudgets) {
+        val a = app.aaps.fuse.core.controller.MealFoundation.Authorization.restore(
+            armedTs = requireTs("foundation.armedTs", o.getLong("armedTs")),
+            totalBudgetU = requireAmount("foundation.totalBudgetU", o.getDouble("totalBudgetU")),
+            phaseAShare = o.getDouble("phaseAShare"),
+            pinnedPrimeWindowMin = o.getInt("pinnedPrimeWindowMin"),
+            pinnedWallCeilingMin = o.getInt("pinnedWallCeilingMin"),
+            endTs = requireTs("foundation.endTs", o.getLong("endTs")),
+            latchedHandoverTs = requireTs("foundation.latchedHandoverTs", o.getLong("latchedHandoverTs")),
+        )
+        val bezahlt = requireAmount("foundation.deliveredSinceHandoverU", o.getDouble("deliveredSinceHandoverU"))
+        if (!a.valid) return
+        e.foundation = a
+        e.deliveredSinceHandoverU = bezahlt
     }
 
     // ---- Verbrauchte Bindungs-Identitaeten (Fix 6, NEU-BS-02) -------------

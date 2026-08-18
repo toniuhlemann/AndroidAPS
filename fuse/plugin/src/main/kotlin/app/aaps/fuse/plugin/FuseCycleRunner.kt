@@ -50,6 +50,7 @@ import app.aaps.fuse.core.controller.CandidateGate
 import app.aaps.fuse.core.controller.CandidateSearch
 import app.aaps.fuse.core.controller.EvidenceStock
 import app.aaps.fuse.core.controller.MarkerFallback
+import app.aaps.fuse.core.controller.MealFoundation
 import app.aaps.fuse.core.controller.MarkerFloor
 import app.aaps.fuse.core.controller.OnsetChannel
 import app.aaps.fuse.core.controller.PrimeRelease
@@ -2040,9 +2041,9 @@ class FuseCycleRunner(
         // Zyklus belastete die Huelle, ohne dass eine Einheit floss
         // (Zaehlfalle rowId, 06.08.).
         val actuatedU = if (gate.allowed) combined.decision.smbU else 0.0
-        val mealGebucht = buche(
+        val buchung = buche(
             episodes, actuatedU, primeWindowOpen, onset.active, mealMarkerActive, signal.sourceTs,
-            evidenceEpisodeId = evidenceEpisodeId,
+            evidenceEpisodeId = evidenceEpisodeId, computeTs = computeTs,
         )
 
         // RESERVIERT, NICHT ENDGUELTIG (11.08.). Oben ist gegen das PUMPEN-Gate
@@ -2060,7 +2061,8 @@ class FuseCycleRunner(
                 amountU = actuatedU,
                 prime = primeWindowOpen,
                 onset = onset.active,
-                mealTs = if (mealGebucht) signal.sourceTs else 0L,
+                mealTs = if (buchung.mealGebucht) signal.sourceTs else 0L,
+                foundationPhase = buchung.phase,
             ) else null
         val mealStats = mealStatsOf(episodes, markerTs, computeTs)
 
@@ -2197,8 +2199,27 @@ class FuseCycleRunner(
         sourceTs: Long,
         /** Identitaet der laufenden Mahlzeitenepisode; 0 = keine. */
         evidenceEpisodeId: Long,
-    ): Boolean {
+        /** Der Zyklus - entscheidet ueber die Fundament-Phase. */
+        computeTs: Long,
+    ): Buchung {
         if (primeWindowOpen) episodes.primeSpentU += actuatedU
+
+        // ---- Mahlzeitenfundament (Punkt 7) -------------------------------
+        //
+        // ZUERST LATCHEN, DANN EINORDNEN. Ist der Uebergabezeitpunkt erreicht,
+        // wird er JETZT festgeschrieben - eine spaetere CLEARANCE darf ihn
+        // nicht mehr verschieben, sonst wanderte er hinter bereits als Phase B
+        // gebuchte Mengen zurueck.
+        episodes.foundation = episodes.foundation.latchIfDue(computeTs, episodes.primeWindowStartTs)
+        val phase = MealFoundation.phaseOf(
+            episodes.foundation, computeTs, episodes.primeWindowStartTs,
+        )
+        // MINDESTVERSORGUNG: hier zaehlt ALLES, was seit der Uebergabe floss -
+        // auch eine gewoehnliche Korrektur. Phase B legt nichts obendrauf, sie
+        // fuellt nur auf. Wuerde hier nur das Fundament selbst gezaehlt,
+        // entstuende genau der additive Bolus, den dieser Baustein vermeidet.
+        if (phase == MealFoundation.Phase.PHASE_B)
+            episodes.deliveredSinceHandoverU += actuatedU
 
         // DER EVIDENZ-ZAEHLER: kumulativ ueber die GANZE Episode, alle
         // Kanaele, und bei Episodenwechsel zurueck auf 0. Er ist die
@@ -2235,8 +2256,22 @@ class FuseCycleRunner(
             episodes.mealDeliveries.addLast(sourceTs to actuatedU)
             while (episodes.mealDeliveries.size > 400) episodes.mealDeliveries.removeFirst()
         }
-        return mealGebucht
+        return Buchung(mealGebucht, phase)
     }
+
+    /**
+     * Was die Buchung dieses Zyklus festgehalten hat.
+     *
+     * Die Phase geht MIT in die Reservierung, statt beim Aufloesen neu
+     * abgeleitet zu werden: der Uebergabeanker kann sich dazwischen bewegt
+     * haben (eine CLEARANCE verschiebt ihn, bis er gelatcht ist), und eine
+     * Neuableitung drehte dann womoeglich einen anderen Zaehler zurueck als
+     * den belasteten.
+     */
+    private data class Buchung(
+        val mealGebucht: Boolean,
+        val phase: MealFoundation.Phase,
+    )
     /**
      * DER PREDICTORFREIE MARKERPFAD.
      *
@@ -2402,9 +2437,9 @@ class FuseCycleRunner(
         val primeWindowOpen = mealMarkerActive && markerTs > 0 &&
             computeTs - maxOf(markerTs, episodes.primeWindowStartTs) < cfg.primeWindowMin * 60_000L &&
             computeTs - markerTs < PrimeRelease.WALL_CEILING_MIN * 60_000L
-        val mealGebucht = buche(
+        val buchung = buche(
             episodes, actuatedU, primeWindowOpen, onset.active, mealMarkerActive, signal.sourceTs,
-            evidenceEpisodeId = evidenceEpisodeId,
+            evidenceEpisodeId = evidenceEpisodeId, computeTs = computeTs,
         )
         episodes.pendingReservation =
             if (actuatedU > 0.0) app.aaps.fuse.plugin.ledger.EpisodeBudgets.Reservation(
@@ -2412,7 +2447,8 @@ class FuseCycleRunner(
                 amountU = actuatedU,
                 prime = primeWindowOpen,
                 onset = onset.active,
-                mealTs = if (mealGebucht) signal.sourceTs else 0L,
+                mealTs = if (buchung.mealGebucht) signal.sourceTs else 0L,
+                foundationPhase = buchung.phase,
             ) else null
 
         return Outcome(

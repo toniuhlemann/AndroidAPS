@@ -529,6 +529,48 @@ object MealFoundation {
     private fun unusable() = Plan(0.0, 0.0, 0.0, Binding.UNUSABLE_INPUT)
 
     /**
+     * IN WELCHER PHASE DES FUNDAMENTS EIN ZYKLUS LIEGT.
+     *
+     * EIN ENUM UND KEIN BOOLEAN, obwohl nur Phase B einen Zaehler fuehrt: bei
+     * `afterHandover = false` waere nicht unterscheidbar, ob der Zyklus in
+     * Phase A fiel oder ob gar kein Fundament lief. Fuers Zurueckdrehen ist
+     * das egal, fuer den Export nicht - und eine Groesse, die zwei Lagen in
+     * denselben Wert wirft, laedt genau die Fehlableitung ein, die dieses
+     * Fundament schon einmal 2,15 U statt 0,75 U rechnen liess.
+     */
+    enum class Phase {
+        /** Keine gueltige Autorisierung - das Fundament laeuft nicht. */
+        NONE,
+
+        /** Vor der Uebergabe: Prime finanziert, das Fundament schweigt. */
+        PHASE_A,
+
+        /** Ab der Uebergabe EINSCHLIESSLICH. */
+        PHASE_B,
+    }
+
+    /**
+     * Die Phase dieses Zyklus - im KERN, damit sie pruefbar ist.
+     *
+     * Sie stand zuerst in einer privaten Runner-Funktion; genau der Grenzfall
+     * `nowTs == handoverTs` war damit von keinem Test erreichbar.
+     *
+     * DIE GRENZE IST EINSCHLIESSLICH (`>=`): der Uebergabezeitpunkt ist der
+     * ERSTE Moment von Phase B, nicht der letzte von Phase A. Mit `>` faende
+     * ein Zyklus, der exakt auf den Anker faellt, in keiner der beiden Phasen
+     * statt - seine Abgabe zaehlte dann nirgends, und Phase B hielte sich fuer
+     * unversorgt.
+     */
+    fun phaseOf(auth: Authorization, nowTs: Long, primeWindowStartTs: Long): Phase {
+        if (!auth.valid) return Phase.NONE
+        val uebergabe = auth.effectiveHandoverTs(primeWindowStartTs)
+        // Ein unbestimmbarer Anker ist keine Phase-B-Lage: fail-closed heisst
+        // hier "das Fundament schweigt", nicht "es zahlt".
+        if (uebergabe <= 0L) return Phase.NONE
+        return if (nowTs >= uebergabe) Phase.PHASE_B else Phase.PHASE_A
+    }
+
+    /**
      * DER GEMEINSAME UEBERGABEANKER - eine Funktion fuer Prime UND Fundament
      * (Toni 18.08.).
      *

@@ -164,6 +164,44 @@ class EpisodeBudgets {
     val mealDeliveries: ArrayDeque<Pair<Long, Double>> = ArrayDeque()
 
     /**
+     * DIE LAUFENDE MAHLZEITEN-AUTORISIERUNG (Punkt 7, Toni 18.08.).
+     *
+     * WARUM DAS GANZE OBJEKT UND NICHT SIEBEN FELDER. Die sieben gepinnten
+     * Werte sind nur GEMEINSAM eine Autorisierung; einzeln sind sie Zahlen.
+     * Liegt hier das Objekt, ist [MealFoundation.Authorization.restore] die
+     * eine Stelle, die ueber Gueltigkeit entscheidet - und `valid` prueft die
+     * Beziehungen ZWISCHEN den Feldern (Ende nach Marker, Latch nicht vor
+     * Marker, Anteil in 0..1), die eine feldweise Pruefung nicht sieht.
+     *
+     * RESTARTFEST, weil die Alternative eine zweite Autorisierung waere: ohne
+     * Persistenz saehe ein Neustart mitten in der Mahlzeit keine laufende
+     * Autorisierung, das Fundament faende sich unarmiert und Prime gaebe das
+     * VOLLE Budget erneut frei - dieselbe Mahlzeit ein zweites Mal.
+     */
+    var foundation: app.aaps.fuse.core.controller.MealFoundation.Authorization =
+        app.aaps.fuse.core.controller.MealFoundation.Authorization.none()
+
+    /**
+     * Was seit dem Uebergabezeitpunkt geflossen ist [U] - die Bezahlung, gegen
+     * die Phase B ihr Soll rechnet.
+     *
+     * WARUM EIN EIGENER ZAEHLER UND NICHT `evidenceCommittedU - phaseABudget`.
+     * Die Ableitung stimmt NUR, wenn Phase A restlos ausgeschoepft wurde. Ein
+     * gemessener Fall: 1,40 U in Phase A geflossen statt der erlaubten 2,25;
+     * die Ableitung meldete danach einen Rueckstand von 2,15 U statt 0,75 -
+     * fast das Dreifache, weil sie den nicht abgerufenen Rest von Phase A
+     * dem Fundament als Schuld anlastete. Ein Test hat das gefunden.
+     *
+     * MINDESTVERSORGUNG, NICHT ADDITIV: hier zaehlt ALLES, was seit der
+     * Uebergabe floss - auch Korrektur-SMB. Phase B legt nichts obendrauf,
+     * sie fuellt nur auf.
+     *
+     * Wird wie [primeSpentU] bei einem Gate-Reject zurueckgedreht
+     * ([resolveReservation]) und mit einer neuen Autorisierung auf 0 gesetzt.
+     */
+    var deliveredSinceHandoverU: Double = 0.0
+
+    /**
      * Die Buchung DIESES Zyklus, solange die Publikation nicht feststeht.
      *
      * WARUM RESERVIEREN UND NICHT VERSCHIEBEN: der Runner belastet die
@@ -198,6 +236,15 @@ class EpisodeBudgets {
         val prime: Boolean,
         val onset: Boolean,
         val mealTs: Long,
+        /**
+         * EINMAL BESTIMMT, NICHT BEIM AUFLOESEN GERATEN. Die Phase haengt am
+         * Uebergabeanker, und der kann sich zwischen Buchung und Aufloesung
+         * bewegen (eine CLEARANCE verschiebt ihn, bis er gelatcht ist). Wuerde
+         * `resolveReservation` sie neu ableiten, drehte es womoeglich einen
+         * anderen Zaehler zurueck als den belasteten.
+         */
+        val foundationPhase: app.aaps.fuse.core.controller.MealFoundation.Phase =
+            app.aaps.fuse.core.controller.MealFoundation.Phase.NONE,
     )
 }
 
@@ -1180,6 +1227,14 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
         // die Bilanz ist verletzt: die Buecher behaupten eine Bezahlung, die
         // es nicht gab. Konservativ heisst nicht richtig.
         episodes.evidenceCommittedU = (episodes.evidenceCommittedU - frei).coerceAtLeast(0.0)
+        // Phase B nur, wenn die Menge dort gebucht WURDE - nach der beim
+        // Buchen festgehaltenen Phase, nicht nach einer neu abgeleiteten.
+        // Zwischen Buchung und Aufloesung kann eine CLEARANCE den
+        // Uebergabeanker verschoben haben; eine Neuableitung drehte dann
+        // womoeglich einen anderen Zaehler zurueck als den belasteten.
+        if (r.foundationPhase == app.aaps.fuse.core.controller.MealFoundation.Phase.PHASE_B)
+            episodes.deliveredSinceHandoverU =
+                (episodes.deliveredSinceHandoverU - frei).coerceAtLeast(0.0)
         if (r.mealTs > 0L) {
             // Den EIGENEN Eintrag zurueckdrehen, nicht den letzten: zwei
             // Zyklen koennen denselben sourceTs tragen, wenn ein Punkt
