@@ -36,9 +36,9 @@ class MealFoundationTest {
     ) = MealFoundation.plan(
         markerTs = t0,
         nowTs = t0 + (minuten * 60_000).toLong(),
+        handoverTs = t0 + A_BIS * 60_000L,
         totalBudgetU = BUDGET,
         phaseAShare = A_SHARE,
-        phaseAUntilMin = A_BIS,
         phaseBUntilMin = B_BIS,
         deliveredFromBudgetU = geflossenU,
         deliveredSinceHandoverU = seitUebergabeU,
@@ -229,18 +229,26 @@ class MealFoundationTest {
      */
     @Test
     fun `unbrauchbare Eingaben ergeben keinen Vorschlag`() {
+        val H = t0 + A_BIS * 60_000L
+        fun p(
+            marker: Long = t0, jetzt: Long = t0 + 30 * 60_000L, uebergabe: Long = H,
+            budget: Double = BUDGET, anteil: Double = A_SHARE, ende: Int = B_BIS,
+            geflossen: Double = 0.0, seitUebergabe: Double = 0.0, step: Double = STEP,
+        ) = MealFoundation.plan(marker, jetzt, uebergabe, budget, anteil, ende, geflossen, seitUebergabe, step)
+
         val faelle = listOf(
-            "kein Marker" to MealFoundation.plan(0L, t0, BUDGET, A_SHARE, A_BIS, B_BIS, 0.0, 0.0, STEP),
-            "jetzt vor Marker" to MealFoundation.plan(t0, t0 - 1000L, BUDGET, A_SHARE, A_BIS, B_BIS, 0.0, 0.0, STEP),
-            "Budget NaN" to MealFoundation.plan(t0, t0, Double.NaN, A_SHARE, A_BIS, B_BIS, 0.0, 0.0, STEP),
-            "Budget 0" to MealFoundation.plan(t0, t0, 0.0, A_SHARE, A_BIS, B_BIS, 0.0, 0.0, STEP),
-            "Anteil ueber 1" to MealFoundation.plan(t0, t0, BUDGET, 1.5, A_BIS, B_BIS, 0.0, 0.0, STEP),
-            "Anteil NaN" to MealFoundation.plan(t0, t0, BUDGET, Double.NaN, A_BIS, B_BIS, 0.0, 0.0, STEP),
-            "Fenster verdreht" to MealFoundation.plan(t0, t0, BUDGET, A_SHARE, 60, 15, 0.0, 0.0, STEP),
-            "Schritt 0" to MealFoundation.plan(t0, t0, BUDGET, A_SHARE, A_BIS, B_BIS, 0.0, 0.0, 0.0),
-            "Schritt NaN" to MealFoundation.plan(t0, t0, BUDGET, A_SHARE, A_BIS, B_BIS, 0.0, 0.0, Double.NaN),
-            "geflossen negativ" to MealFoundation.plan(t0, t0, BUDGET, A_SHARE, A_BIS, B_BIS, -1.0, 0.0, STEP),
-            "seit Uebergabe negativ" to MealFoundation.plan(t0, t0, BUDGET, A_SHARE, A_BIS, B_BIS, 0.0, -1.0, STEP),
+            "kein Marker" to p(marker = 0L),
+            "jetzt vor Marker" to p(jetzt = t0 - 1000L),
+            "Uebergabe vor Marker" to p(uebergabe = t0 - 1000L),
+            "Budget NaN" to p(budget = Double.NaN),
+            "Budget 0" to p(budget = 0.0),
+            "Anteil ueber 1" to p(anteil = 1.5),
+            "Anteil NaN" to p(anteil = Double.NaN),
+            "Fenster hinter der Uebergabe" to p(uebergabe = t0 + 90 * 60_000L),
+            "Schritt 0" to p(step = 0.0),
+            "Schritt NaN" to p(step = Double.NaN),
+            "geflossen negativ" to p(geflossen = -1.0),
+            "seit Uebergabe negativ" to p(seitUebergabe = -1.0),
         )
         for ((name, p) in faelle) {
             assertEquals(0.0, p.dueU, 1e-9, name)
@@ -259,8 +267,8 @@ class MealFoundationTest {
     fun `bei Anteil eins gibt es keine Phase B`() {
         for (m in listOf(0.0, 15.0, 30.0, 60.0, 90.0)) {
             val p = MealFoundation.plan(
-                t0, t0 + (m * 60_000).toLong(), BUDGET,
-                phaseAShare = 1.0, phaseAUntilMin = A_BIS, phaseBUntilMin = B_BIS,
+                t0, t0 + (m * 60_000).toLong(), t0 + A_BIS * 60_000L, BUDGET,
+                phaseAShare = 1.0, phaseBUntilMin = B_BIS,
                 deliveredFromBudgetU = 3.0, deliveredSinceHandoverU = 0.0, bolusStepU = STEP,
             )
             assertEquals(0.0, p.dueU, 1e-9, "bei T+$m")
@@ -296,11 +304,11 @@ class MealFoundationTest {
      * zeitlich verschoben.
      */
     @Test
-    fun `ein normaler SMB bedient das Fundament-Soll`() {
+    fun `eine bereits geflossene Menge bedient das Soll`() {
         // T+50: Soll = 0,583 U. Der normale Pfad hat schon 0,60 U geliefert.
         val p = plan(minuten = 50.0, geflossenU = 2.85, seitUebergabeU = 0.60)
         assertEquals(0.0, p.dueU, 1e-9, "kein zusaetzlicher Schritt")
-        assertEquals(MealFoundation.Binding.COVERED_BY_NORMAL_PATH, p.binding)
+        assertEquals(MealFoundation.Binding.COVERED_BY_DELIVERY, p.binding)
     }
 
     /** Und die Gegenprobe: liefert der normale Pfad zu wenig, hebt das
@@ -317,14 +325,14 @@ class MealFoundationTest {
      * Schluessen beim Auswerten des Replays.
      */
     @Test
-    fun `ON_SCHEDULE und COVERED_BY_NORMAL_PATH sind unterscheidbar`() {
+    fun `ON_SCHEDULE und COVERED_BY_DELIVERY sind unterscheidbar`() {
         assertEquals(
             MealFoundation.Binding.ON_SCHEDULE,
             plan(minuten = 16.0, geflossenU = 2.25, seitUebergabeU = 0.0).binding,
             "kurz nach der Uebergabe ist einfach noch nichts faellig",
         )
         assertEquals(
-            MealFoundation.Binding.COVERED_BY_NORMAL_PATH,
+            MealFoundation.Binding.COVERED_BY_DELIVERY,
             plan(minuten = 30.0, geflossenU = 2.65, seitUebergabeU = 0.40).binding,
             "hier laeuft die Versorgung ohnehin",
         )
@@ -377,5 +385,109 @@ class MealFoundationTest {
         assertEquals(BUDGET, MealFoundation.phaseABudgetU(BUDGET, Double.NaN, true), 1e-9)
         assertEquals(BUDGET, MealFoundation.phaseABudgetU(BUDGET, 1.5, true), 1e-9)
         assertEquals(BUDGET, MealFoundation.phaseABudgetU(BUDGET, -0.1, true), 1e-9)
+    }
+
+    // ---- Der gemeinsame Uebergabeanker (Toni 18.08.) ---------------------
+
+    /** Ohne Verschiebung ist der Anker schlicht Marker plus Prime-Fenster. */
+    @Test
+    fun `ohne Verschiebung liegt die Uebergabe bei Marker plus Prime-Fenster`() {
+        assertEquals(
+            t0 + 15 * 60_000L,
+            MealFoundation.handoverTs(t0, primeWindowStartTs = 0L, primeWindowMin = 15, wallCeilingMin = 45),
+        )
+    }
+
+    /**
+     * EINE CLEARANCE VERSCHIEBT DIE UEBERGABE MIT.
+     *
+     * Prime rechnet ab `maxOf(markerTs, primeWindowStartTs)` und setzt
+     * `primeWindowStartTs` bei einer CLEARANCE auf den aktuellen Zyklus. Ohne
+     * denselben Anker liefe das Fundament ab T+15 weiter, waehrend die Huelle
+     * noch bis T+25 freigibt - beide zugleich, aus einem Budget.
+     */
+    @Test
+    fun `eine Clearance verschiebt die Uebergabe fuer beide`() {
+        val clearanceBei = t0 + 10 * 60_000L
+        assertEquals(
+            clearanceBei + 15 * 60_000L,
+            MealFoundation.handoverTs(t0, clearanceBei, primeWindowMin = 15, wallCeilingMin = 45),
+            "die Uebergabe wandert mit dem Prime-Fenster",
+        )
+    }
+
+    /**
+     * DIE WANDUHR-DECKE BEGRENZT DIE VERSCHIEBUNG.
+     *
+     * Ohne sie koennte eine Kette von Freigaben das Fundament bis hinter sein
+     * eigenes Fensterende schieben - es kaeme nie zum Zug, und niemand saehe
+     * warum.
+     */
+    @Test
+    fun `die Wanduhr-Decke begrenzt die Verschiebung`() {
+        val spaeteClearance = t0 + 120 * 60_000L
+        assertEquals(
+            t0 + 45 * 60_000L,
+            MealFoundation.handoverTs(t0, spaeteClearance, primeWindowMin = 15, wallCeilingMin = 45),
+            "hoechstens Marker plus Decke",
+        )
+    }
+
+    /** Ohne Marker gibt es keinen Anker - und damit kein Fundament. */
+    @Test
+    fun `ohne Marker gibt es keinen Uebergabeanker`() {
+        assertEquals(0L, MealFoundation.handoverTs(0L, 0L, 15, 45))
+        assertEquals(0L, MealFoundation.handoverTs(t0, 0L, -1, 45), "unbrauchbare Minuten ebenso")
+    }
+
+    /**
+     * DAS FENSTERENDE BLEIBT AM MARKER - die Verschiebung KUERZT das Fenster,
+     * sie verlaengert es nicht.
+     *
+     * Sonst wuerde aus "bis T+60" eine Versorgung ohne Ende, sobald genug
+     * Clearances aufeinanderfolgen.
+     */
+    @Test
+    fun `eine verschobene Uebergabe verkuerzt das Fenster`() {
+        val spaet = t0 + 30 * 60_000L
+        // Uebergabe bei T+30, Ende weiterhin bei T+60: halbes Fenster.
+        val p = MealFoundation.plan(
+            markerTs = t0, nowTs = t0 + 45 * 60_000L, handoverTs = spaet,
+            totalBudgetU = BUDGET, phaseAShare = A_SHARE, phaseBUntilMin = B_BIS,
+            deliveredFromBudgetU = 2.25, deliveredSinceHandoverU = 0.0, bolusStepU = STEP,
+        )
+        assertEquals(
+            B_BUDGET / 2.0, p.plannedTotalU, 1e-9,
+            "bei T+45 ist die Haelfte des verkuerzten Fensters vorbei",
+        )
+    }
+
+    /** Liegt die Uebergabe hinter dem Fensterende, gibt es kein Fundament. */
+    @Test
+    fun `eine Uebergabe hinter dem Fensterende ergibt keinen Plan`() {
+        val p = MealFoundation.plan(
+            markerTs = t0, nowTs = t0 + 70 * 60_000L, handoverTs = t0 + 90 * 60_000L,
+            totalBudgetU = BUDGET, phaseAShare = A_SHARE, phaseBUntilMin = B_BIS,
+            deliveredFromBudgetU = 2.25, deliveredSinceHandoverU = 0.0, bolusStepU = STEP,
+        )
+        assertEquals(0.0, p.dueU, 1e-9)
+        assertEquals(MealFoundation.Binding.UNUSABLE_INPUT, p.binding)
+    }
+
+    /**
+     * DER GRUND HEISST NICHT MEHR "NORMALER PFAD".
+     *
+     * `deliveredSinceHandoverU` enthaelt ALLE Mengen, auch frueher freigegebene
+     * Fundamentschritte. Der Kern kann also gar nicht wissen, wer geliefert
+     * hat - und darf es deshalb nicht behaupten.
+     */
+    @Test
+    fun `auch ein frueherer Fundamentschritt deckt das Soll`() {
+        // Die 0,40 U koennen ebenso gut aus dem Fundament stammen.
+        val p = plan(minuten = 30.0, geflossenU = 2.65, seitUebergabeU = 0.40)
+        assertEquals(
+            MealFoundation.Binding.COVERED_BY_DELIVERY, p.binding,
+            "der Grund benennt die MENGE, nicht ihre Herkunft",
+        )
     }
 }

@@ -79,15 +79,23 @@ object MealFoundation {
         ON_SCHEDULE,
 
         /**
-         * DER NORMALE PFAD HAT SCHON GENUG GEGEBEN (Toni 18.08., Punkt 5).
+         * ES IST SCHON GENUG GEFLOSSEN, um das Soll zu decken.
          *
          * Das Fundament ist eine Mindestversorgung: es hebt nur eine fehlende
-         * Menge an. Laeuft die Versorgung ohnehin, schweigt es - eigener
-         * Grund, weil das im Export etwas voellig anderes bedeutet als
-         * [ON_SCHEDULE]. Dort ist die Zeit noch nicht reif, hier hat jemand
-         * anders geliefert.
+         * Menge an. Ist die Versorgung ohnehin da, schweigt es - eigener
+         * Grund, weil das im Export etwas anderes bedeutet als [ON_SCHEDULE].
+         * Dort ist die Zeit noch nicht reif, hier ist die Menge schon da.
+         *
+         * DER NAME SAGT BEWUSST NICHT, WER GELIEFERT HAT (Toni 18.08.). Er
+         * hiess zunaechst COVERED_BY_NORMAL_PATH, und das war eine Behauptung,
+         * die dieser Baustein gar nicht aufstellen kann:
+         * `deliveredSinceHandoverU` enthaelt ausdruecklich ALLE Mengen -
+         * normale FUSE-SMBs UND frueher freigegebene Fundamentschritte. Ein
+         * eigener Fundamentschritt haette also "der normale Pfad war es"
+         * gemeldet. Eine Unterscheidung nach Herkunft gehoert in den Export,
+         * und nur dann, wenn es dafuer eine belastbare Provenienz gibt.
          */
-        COVERED_BY_NORMAL_PATH,
+        COVERED_BY_DELIVERY,
 
         /** Ein Pumpenschritt je Zyklus, nicht mehr - kein Aufhol-Burst. */
         ONE_STEP_PER_CYCLE,
@@ -101,11 +109,17 @@ object MealFoundation {
      * @param nowTs jetzt.
      * @param totalBudgetU das GEMEINSAME autorisierte Budget (Phase A + B).
      * @param phaseAShare Anteil von Phase A am Budget, z.B. 0.75.
-     * @param phaseAUntilMin bis wann Phase A laeuft - und damit ab wann Phase
-     *   B laeuft. EINE Grenze, nicht zwei (Toni 18.08., Punkt 6): der Aufrufer
-     *   gibt hier `PrimeWindowMin` herein. Zwei unabhaengige Werte koennten
-     *   sich ueberlappen oder eine Versorgungsluecke lassen.
-     * @param phaseBUntilMin bis wann Phase B laeuft (T+60).
+     * @param handoverTs der GEMEINSAME Uebergabeanker aus [handoverTs] - der
+     *   Zeitpunkt, an dem Phase A endet und Phase B beginnt. Er wird nicht
+     *   hier gerechnet, weil Prime ihn verschieben kann (CLEARANCE) und beide
+     *   dieselbe Zahl brauchen.
+     * @param phaseBUntilMin bis wann Phase B laeuft, gerechnet AB MARKER.
+     *
+     *   Das Ende bleibt am Marker verankert, nicht am Uebergabeanker: sonst
+     *   koennte eine Kette von CLEARANCE-Freigaben das Fenster immer weiter
+     *   nach hinten schieben, und aus "bis T+60" wuerde eine Versorgung ohne
+     *   Ende. Verschiebt sich die Uebergabe, wird das Fenster KUERZER - das
+     *   ist die konservative Richtung.
      * @param deliveredFromBudgetU was aus DIESEM Budget schon geflossen ist -
      *   Phase A UND Phase B zusammen. Ohne diese Zahl entstuende genau die
      *   Doppelfinanzierung, die Spezifikation 3.1 verbietet.
@@ -133,9 +147,9 @@ object MealFoundation {
     fun plan(
         markerTs: Long,
         nowTs: Long,
+        handoverTs: Long,
         totalBudgetU: Double,
         phaseAShare: Double,
-        phaseAUntilMin: Int,
         phaseBUntilMin: Int,
         deliveredFromBudgetU: Double,
         deliveredSinceHandoverU: Double,
@@ -145,19 +159,22 @@ object MealFoundation {
         // NaN oder einer unsinnigen Fensterreihenfolge etwas vorschlaegt, waere
         // gefaehrlicher als eines, das schweigt.
         if (markerTs <= 0L || nowTs < markerTs) return unusable()
+        if (handoverTs < markerTs) return unusable()
         if (!totalBudgetU.isFinite() || totalBudgetU <= 0.0) return unusable()
         if (!phaseAShare.isFinite() || phaseAShare < 0.0 || phaseAShare > 1.0) return unusable()
-        if (phaseAUntilMin < 0 || phaseBUntilMin <= phaseAUntilMin) return unusable()
+        // DAS FENSTER MUSS NOCH EXISTIEREN. Hat eine CLEARANCE die Uebergabe
+        // hinter das Ende geschoben, gibt es kein Phase-B-Fenster mehr - kein
+        // Fehler, aber auch keine Versorgung.
+        val fensterEndeTs = markerTs + phaseBUntilMin * 60_000L
+        if (phaseBUntilMin < 0 || fensterEndeTs <= handoverTs) return unusable()
         if (!deliveredFromBudgetU.isFinite() || deliveredFromBudgetU < 0.0) return unusable()
         if (!deliveredSinceHandoverU.isFinite() || deliveredSinceHandoverU < 0.0) return unusable()
         if (!bolusStepU.isFinite() || bolusStepU <= 0.0) return unusable()
 
         val phaseBBudgetU = totalBudgetU * (1.0 - phaseAShare)
-        val minutenSeitMarker = (nowTs - markerTs) / 60_000.0
 
         // VOR DEM FENSTER: Phase A ist zustaendig, nicht das Fundament.
-        if (minutenSeitMarker < phaseAUntilMin)
-            return Plan(0.0, 0.0, phaseBBudgetU, Binding.BEFORE_WINDOW)
+        if (nowTs < handoverTs) return Plan(0.0, 0.0, phaseBBudgetU, Binding.BEFORE_WINDOW)
 
         // DAS SOLL BIS JETZT - linear ueber das Fenster.
         //
@@ -165,9 +182,8 @@ object MealFoundation {
         // eine Annahme mehr, die spaeter als Erklaerung fuer alles herhaelt.
         // Die Verteilung ist ohnehin eine Replay-Hypothese; sie soll einfach
         // genug sein, um sie zu widerlegen.
-        val fensterMin = (phaseBUntilMin - phaseAUntilMin).toDouble()
-        val imFensterMin = minutenSeitMarker - phaseAUntilMin
-        val fortschritt = min(1.0, imFensterMin / fensterMin)
+        val fensterMs = (fensterEndeTs - handoverTs).toDouble()
+        val fortschritt = min(1.0, (nowTs - handoverTs) / fensterMs)
         val sollU = phaseBBudgetU * fortschritt
 
         // ZWEI GRENZEN, DIE BEIDE GELTEN:
@@ -189,7 +205,7 @@ object MealFoundation {
 
         // NACH DEM FENSTER VERFAELLT DER REST (Tonis Auflage). Kein Nachliefern
         // Stunden spaeter - was dann noch offen ist, war offenbar nicht noetig.
-        if (minutenSeitMarker > phaseBUntilMin)
+        if (nowTs > fensterEndeTs)
             return Plan(0.0, phaseBBudgetU, offenImFenster, Binding.AFTER_WINDOW)
 
         // DAS GEMEINSAME BUDGET IST DIE HARTE GRENZE.
@@ -203,7 +219,7 @@ object MealFoundation {
             // mehr geflossen als das Soll, hat der normale Pfad geliefert;
             // liegt es nur an der Zeit, ist der Plan erfuellt.
             if (ausPhaseBGeflossen >= sollU - 1e-9 && ausPhaseBGeflossen > 0.0)
-                Binding.COVERED_BY_NORMAL_PATH else Binding.ON_SCHEDULE,
+                Binding.COVERED_BY_DELIVERY else Binding.ON_SCHEDULE,
         )
 
         // EIN SCHRITT JE ZYKLUS - kein Aufhol-Burst (Tonis Auflage).
@@ -224,6 +240,48 @@ object MealFoundation {
     }
 
     private fun unusable() = Plan(0.0, 0.0, 0.0, Binding.UNUSABLE_INPUT)
+
+    /**
+     * DER GEMEINSAME UEBERGABEANKER - eine Funktion fuer Prime UND Fundament
+     * (Toni 18.08.).
+     *
+     * WARUM EIN SETTING NICHT GENUEGT HAT. `MealFoundation` rechnete starr ab
+     * `markerTs + PrimeWindowMin`. Prime selbst rechnet aber ab
+     * `maxOf(markerTs, episodes.primeWindowStartTs)` - und verschiebt
+     * `primeWindowStartTs` bei einer CLEARANCE auf den aktuellen Zyklus
+     * (FuseCycleRunner: `if (primePlan.reason == "CLEARANCE")
+     * episodes.primeWindowStartTs = computeTs`). Trotz nur EINES Settings
+     * konnten Phase A und B damit ueberlappen: die Huelle laeuft ab dem
+     * verschobenen Start weiter, waehrend das Fundament laengst zaehlt.
+     *
+     * Erschwerend steht die Prime-Rechnung ZWEIMAL im Runner - im Hauptpfad
+     * und im markerFallback. Genau deshalb ist das hier eine Funktion und
+     * keine Formel an drei Stellen.
+     *
+     * DIE WANDUHR-DECKE begrenzt, wie weit eine CLEARANCE die Uebergabe
+     * schieben darf. Ohne sie koennte eine Kette von Freigaben das Fundament
+     * bis hinter sein eigenes Fensterende verschieben - es kaeme dann nie zum
+     * Zug, und niemand saehe warum.
+     *
+     * @param primeWindowStartTs der von Prime gefuehrte Fensterstart. 0 heisst
+     *   "unverschoben", dann gilt der Marker.
+     * @param wallCeilingMin die Decke ab MARKER, nicht ab dem verschobenen
+     *   Start. Ohne Default: der Aufrufer muss sich erklaeren.
+     * @return der Zeitpunkt, an dem Phase A endet und Phase B beginnt. 0L,
+     *   wenn kein Marker vorliegt - dann gibt es kein Fundament.
+     */
+    fun handoverTs(
+        markerTs: Long,
+        primeWindowStartTs: Long,
+        primeWindowMin: Int,
+        wallCeilingMin: Int,
+    ): Long {
+        if (markerTs <= 0L) return 0L
+        if (primeWindowMin < 0 || wallCeilingMin < 0) return 0L
+        val ausPrime = max(markerTs, primeWindowStartTs) + primeWindowMin * 60_000L
+        val decke = markerTs + wallCeilingMin * 60_000L
+        return min(ausPrime, decke)
+    }
 
     /**
      * WAS PHASE A - also die bestehende Huelle - freigeben darf.
