@@ -851,4 +851,3 @@ class FuseStateExportTest {
         assertEquals("COVERED_BY_DELIVERY", o.getString("binding"))
     }
 }
-

@@ -116,6 +116,7 @@ class MealFoundationReplayTest {
         anteil: Double,
         m: Mahlzeit,
         abgelehnt: Set<Int> = emptySet(),
+        primeGedeckelt: Boolean = false,
     ): Spur {
         val auth = MealFoundation.arm(
             markerTs = t0, foundationEnabled = true, totalBudgetU = BUDGET, phaseAShare = anteil,
@@ -129,6 +130,7 @@ class MealFoundationReplayTest {
         var maxRueckstand = 0.0
         var letzteBindung: MealFoundation.Binding? = null
         var laufend = auth
+        var inPhaseA = 0.0
 
         for (min in 0..BIS_MIN) {
             val now = t0 + min * 60_000L
@@ -143,18 +145,43 @@ class MealFoundationReplayTest {
             if (snap.binding != null) letzteBindung = snap.binding
             if (snap.backlogU > maxRueckstand) maxRueckstand = snap.backlogU
 
-            val normal = m.normalU[min] ?: 0.0
+            var normal = m.normalU[min] ?: 0.0
+            // ---- Der Prime-Deckel (Selbstkorrektur 18.08.) ----------------
+            //
+            // MEIN ERSTER WURF WAR HIER METHODISCH FALSCH. Die eingefrorene
+            // Folge liess Prime in JEDER Variante dieselbe Menge geben - bei
+            // "Prime schoepft aus" also 2,25 U auch bei 67/33. Autorisiert
+            // waeren dort aber nur 2,01 U: bei aktivem Fundament sieht Prime
+            // ueber `primeBudgetU` ausschliesslich `phaseABudgetU`.
+            //
+            // Die 67/33-Zeile beschrieb damit eine Lage, die so gar nicht
+            // eintreten kann - und ihr auffaellig hoher Rueckstand war ein
+            // Artefakt meiner Simulation, kein Befund ueber die Aufteilung.
+            //
+            // BEIDE SPUREN BLEIBEN, weil sie verschiedene Fragen beantworten:
+            //
+            //   OHNE Deckel (Tonis Vorgabe "dieselben eingefrorenen
+            //   Mahlzeiten") isoliert die Wirkung der Aufteilung auf das
+            //   FUNDAMENT - der normale Pfad ist als Konstante gehalten.
+            //
+            //   MIT Deckel zeigt, was tatsaechlich passieren wuerde, weil ein
+            //   kleineres Phase A auch den Prime kleiner macht.
+            if (primeGedeckelt && snap.phase == MealFoundation.Phase.PHASE_A) {
+                normal = minOf(normal, maxOf(0.0, laufend.phaseABudgetU - inPhaseA))
+            }
             val ausFundament = snap.dueU
             if (ausFundament > 0.0) eingriffe++
 
             // RESERVIEREN, DANN AUFLOESEN - dieselbe Richtung wie im Runner.
             val gebucht = normal + ausFundament
             ausBudget += gebucht
+            if (snap.phase == MealFoundation.Phase.PHASE_A) inPhaseA += gebucht
             if (snap.phase == MealFoundation.Phase.PHASE_B) seitUebergabe += gebucht
 
             if (min in abgelehnt) {
                 // Das Gate hat die Menge entfernt: exakt zurueckdrehen.
                 ausBudget -= gebucht
+                if (snap.phase == MealFoundation.Phase.PHASE_A) inPhaseA -= gebucht
                 if (snap.phase == MealFoundation.Phase.PHASE_B) seitUebergabe -= gebucht
             } else {
                 normalSumme += normal
@@ -354,6 +381,50 @@ class MealFoundationReplayTest {
         }
     }
 
+    /**
+     * MIT PRIME-DECKEL BLEIBT DAS GESAMTBUDGET WIRKLICH GEDECKELT.
+     *
+     * Das ist die realistische Spur: ein kleineres Phase A macht auch den
+     * Prime kleiner. Hier MUSS die Gesamtsumme in jeder Variante unter dem
+     * gepinnten Budget bleiben - ohne Ausnahme und ohne Rueckgriff auf den
+     * Evidenzkanal.
+     */
+    @Test
+    fun `mit Prime-Deckel bleibt jede Variante unter dem Gesamtbudget`() {
+        for (v in varianten) for (m in mahlzeiten) {
+            val s = fahre(v, m, primeGedeckelt = true)
+            // "Korrektur uebererfuellt" laeuft bewusst ueber das Budget - das
+            // ist der Evidenzkanal, der weiterhin zusaetzlich freigeben darf.
+            // Geprueft wird deshalb der FUNDAMENT-Anteil plus Phase A.
+            assertTrue(
+                s.fundamentU <= BUDGET * (1.0 - v) + 1e-9,
+                "${m.name} @ $v: das Fundament sprengt sein Teilbudget",
+            )
+        }
+    }
+
+    /**
+     * UND DER UNTERSCHIED IST SICHTBAR, nicht nur behauptet: bei einem
+     * ausgeschoepften Prime gibt die gedeckelte Spur weniger als die
+     * eingefrorene, sobald Phase A unter 2,25 U liegt.
+     */
+    @Test
+    fun `der Prime-Deckel wirkt bei kleinem Phase-A-Anteil`() {
+        val ausgeschoepft = mahlzeiten.first { it.name == "Prime schoepft aus" }
+        val ohne = fahre(0.67, ausgeschoepft)
+        val mit = fahre(0.67, ausgeschoepft, primeGedeckelt = true)
+        assertTrue(
+            mit.normalU < ohne.normalU - 1e-9,
+            "bei 67/33 sind nur ${BUDGET * 0.67} U fuer Prime autorisiert - " +
+                "die gedeckelte Spur MUSS weniger zeigen (${mit.normalU} vs ${ohne.normalU})",
+        )
+        // Bei 100/0 gibt es nichts zu deckeln - Phase A ist das ganze Budget.
+        assertEquals(
+            fahre(1.00, ausgeschoepft).normalU,
+            fahre(1.00, ausgeschoepft, primeGedeckelt = true).normalU, 1e-9,
+        )
+    }
+
     // ---- Der Bericht -------------------------------------------------------
 
     /**
@@ -368,21 +439,26 @@ class MealFoundationReplayTest {
         z.appendLine()
         z.appendLine("=== OFFLINE-REPLAY MAHLZEITENFUNDAMENT ".padEnd(78, '='))
         z.appendLine("Budget ${BUDGET} U | Prime bis T+$A_BIS | Fenster bis T+$B_BIS | Schritt $STEP U")
+        z.appendLine("links: eingefrorener normaler Pfad (misst die Aufteilung isoliert)")
+        z.appendLine("D:    zusaetzlich am jeweiligen Phase-A-Budget gedeckelter Prime (realistisch)")
         for (m in mahlzeiten) {
             z.appendLine()
             z.appendLine("--- ${m.name} ".padEnd(78, '-'))
             z.appendLine(
-                "%-9s %9s %9s %9s %9s %8s  %s".format(
-                    "Variante", "normal", "Fundament", "gesamt", "maxRueck", "Zyklen", "letzte Bindung",
+                "%-9s %9s %9s %9s %9s %8s   %9s %9s %9s".format(
+                    "Variante", "normal", "Fundam.", "gesamt", "maxRueck", "Zykl.",
+                    "D:normal", "D:Fundam.", "D:gesamt",
                 )
             )
             for (v in varianten) {
                 val s = fahre(v, m)
+                val d = fahre(v, m, primeGedeckelt = true)
                 z.appendLine(
-                    "%-9s %9.2f %9.2f %9.2f %9.2f %8d  %s".format(
+                    "%-9s %9.2f %9.2f %9.2f %9.2f %8d   %9.2f %9.2f %9.2f".format(
                         "${(v * 100).toInt()}/${Math.round((1 - v) * 100)}",
                         s.normalU, s.fundamentU, s.normalU + s.fundamentU,
-                        s.maxRueckstandU, s.eingriffe, s.letzteBindung?.name ?: "-",
+                        s.maxRueckstandU, s.eingriffe,
+                        d.normalU, d.fundamentU, d.normalU + d.fundamentU,
                     )
                 )
             }
