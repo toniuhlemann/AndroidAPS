@@ -1100,6 +1100,26 @@ object ExpectationLedger {
      */
     const val MAX_EVIDENCE_GAP_MS = 300_000L
 
+    /**
+     * Abstand zur damaligen Sicherheitsuntergrenze, ab dem ein ausgebliebener
+     * Rueckgang ueberhaupt als Beleg taugt [mg/dl] - NUR FUER DIE ANZEIGE.
+     *
+     * ES IST KEINE THERAPIEZAHL UND DARF KEINE WERDEN. Welcher Abstand fuer
+     * eine lambda-Adaption verlangt wird, ist eine Entscheidung ueber
+     * Insulinabgabe und gehoert Toni; sie ist bewusst noch nicht getroffen.
+     * Bis dahin braucht der Export trotzdem einen Wert, sonst kann er die
+     * Strecken gar nicht zeigen - und ohne sichtbare Strecken gibt es keine
+     * Felddaten, auf denen sich die Entscheidung treffen liesse.
+     *
+     * ABGELEITET STATT GEGRIFFEN: das Doppelte der Messtoleranz
+     * [SETTLE_TOLERANCE_MGDL]. Was innerhalb einer Toleranz liegt, ist kein
+     * Befund; das Doppelte ist der kleinste Abstand, der sicher ausserhalb
+     * liegt. Wer den Wert spaeter fuer eine Adaption braucht, soll ihn
+     * ausdruecklich als Parameter setzen - dieser Default steht im
+     * Aufrufpfad des Exports und nirgends sonst.
+     */
+    const val EXPORT_SAFETY_MARGIN_MGDL = SETTLE_TOLERANCE_MGDL * 2.0
+
     // KEINE ALTERSGRENZE HIER, und das ist ein Befund aus der eigenen
     // Mutationsprobe: der erste Wurf trug ein MAX_AGE_MIN = 240, das nie
     // greifen konnte. Die Filterung sass auf den NICHT faelligen Eintraegen,

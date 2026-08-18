@@ -1,5 +1,8 @@
 package app.aaps.fuse.plugin
 
+import app.aaps.fuse.plugin.expectation.FuseExpectationStore
+import app.aaps.fuse.plugin.expectation.FuseExpectationRecorder
+import app.aaps.fuse.core.controller.ExpectationLedger
 import android.content.Context
 import android.os.Environment
 import androidx.preference.Preference
@@ -188,6 +191,68 @@ class FusePlugin @Inject constructor(
      * Schreiben bzw. [migrateLedgerDirOnce] beim Umzug.
      */
     private fun ledgerDir() = File(context.filesDir, "fuse_ledger")
+
+    /** Eigenes Verzeichnis, getrennt von der Reparaturdomaene des
+     *  Insulinledgers (s. FuseExpectationStore.DIR_NAME). */
+    private fun expectationDir() = FuseExpectationStore.dirIn(context.filesDir)
+
+    /** Der Erwartungs-Ledger. REIN BEOBACHTEND - kein Regelpfad liest ihn. */
+    private val expectationRecorder = FuseExpectationRecorder()
+
+    /**
+     * DEN ZYKLUS IN DEN ERWARTUNGS-LEDGER BUCHEN.
+     *
+     * Alles hier drin ist gekapselt und folgenlos fuer die Dosierung: der
+     * Aufrufer prueft keinen Rueckgabewert, und jeder Fehler bleibt im
+     * [FuseExpectationRecorder] stehen. Ein Messbaustein darf einen
+     * Regelzyklus nicht kosten.
+     */
+    private fun buchereWartung(outcome: FuseCycleRunner.Outcome?, sealed: Boolean) {
+        runCatching {
+            val stempel = ledgerAdapter.interventionStamp
+            val dir = expectationDir()
+            if (!dir.isDirectory) dir.mkdirs()
+            if (!expectationRecorder.loadOnce(dir, stempel)) {
+                aapsLogger.debug(LTag.APS, "FUSE expectation: ${expectationRecorder.lastResult}")
+            }
+            val o = outcome ?: return@runCatching
+            val bahn = o.prediction
+            // DIE LAGE mit dem Siegel vervollstaendigen. Liess sich die
+            // Generation nicht versiegeln, ist der Stempel dieses Zyklus nur
+            // im Speicher - dann entsteht ueber classify() gar keine
+            // Erwartung (ContextReason.LEDGER_UNSEALED).
+            val lage = o.expectationSituation?.copy(ledgerSealed = sealed)
+            // Der Messpunkt DIESES Zyklus, gestempelt mit dem Stand, der JETZT
+            // gilt - also nach dem Gate.
+            val proben = o.signal?.let { sig ->
+                o.bgMgdl?.let { bg ->
+                    listOf(
+                        ExpectationLedger.Sample(
+                            ts = sig.sourceTs, mgdl = bg, segmentId = sig.segmentStartTs,
+                            healthy = o.health == app.aaps.fuse.core.observer.Health.READY,
+                            interventionStamp = stempel,
+                            configGeneration = o.configGeneration,
+                        ),
+                    )
+                }
+            } ?: emptyList()
+            expectationRecorder.record(
+                dir = dir,
+                nowTs = o.computeTs,
+                situation = lage,
+                stamp = stempel,
+                configGeneration = o.configGeneration,
+                segmentId = o.signal?.segmentStartTs ?: 0L,
+                sourceTs = o.signal?.sourceTs ?: o.computeTs,
+                anchorMgdl = bahn?.bgAtAnchor,
+                meanPredictedMgdl = bahn?.bgAtHorizonMean,
+                horizonMin = o.policy?.liabilityHorizonMin ?: 0,
+                safetyLowerPredictedMgdl = bahn?.bgAtHorizonLower,
+                lambda = null,
+                samples = proben,
+            )
+        }
+    }
 
     @Volatile private var ledgerMigrationDone = false
 
@@ -1153,6 +1218,21 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
         // die Belastung stehen - der gewollte UNKNOWN-Ausgang.
         outcome?.let { o -> ledgerAdapter.resolveReservation(o.computeTs, publishRt.units ?: 0.0) }
 
+        // DER ERWARTUNGS-LEDGER - REIN BEOBACHTEND (Toni 18.08., Punkt 3).
+        //
+        // HIER und nicht frueher: erst nach dem Gate steht der
+        // Eingriffsstempel fest, unter dem die Prognose dieses Zyklus gilt
+        // UND unter dem seine Messwerte gesehen wurden. Vor dem Gate
+        // gebucht, truege die Erwartung einen Stand, den die eigene
+        // Publikation gleich darauf ueberholt - jede Prognose waere sofort
+        // INTERVENED.
+        //
+        // Der Aufruf kann die Dosierung nicht beruehren: er liegt hinter
+        // jeder Publikation, sein Rueckgabewert wird von keinem Regelpfad
+        // gelesen, und der Baustein faengt intern alles ab. Ein Fehler kostet
+        // die Messung dieses Zyklus, nicht mehr.
+        buchereWartung(outcome, publication.sealed)
+
         // Fuer die Messung im NAECHSTEN Zyklus merken: die RT-Instanz selbst,
         // nicht ihre Zahlen - sie ist der Identitaetsschluessel.
         publishedRt = publishRt
@@ -1278,6 +1358,19 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
                 // unbenutzter aus.
                 ledgerReset = letzteReparatur(),
             priorActuation = priorActuation,
+            // Der Erwartungs-Ledger. `runCatching`, weil ein Messbaustein den
+            // Export eines Regelzyklus nicht kosten darf - fehlt der Block,
+            // sagt das genau so viel wie eine Zahl darin.
+            expectation = runCatching {
+                expectationRecorder.exportSnapshot(
+                    nowTs = outcome.computeTs,
+                    stamp = ledgerAdapter.interventionStamp,
+                    configGeneration = outcome.configGeneration,
+                    segmentId = outcome.signal?.segmentStartTs ?: 0L,
+                    situation = outcome.expectationSituation?.copy(ledgerSealed = publishedGateSealed),
+                    minSafetyMarginMgdl = ExpectationLedger.EXPORT_SAFETY_MARGIN_MGDL,
+                )
+            }.getOrNull(),
             )
             // Die Android-Aufloesung des Verzeichnisses passiert AUSSCHLIESSLICH
             // hier — der Schreiber selbst kennt kein Environment und bleibt

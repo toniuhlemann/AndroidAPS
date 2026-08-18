@@ -20,6 +20,7 @@ import app.aaps.core.utils.MidnightUtils
 import app.aaps.core.data.model.BS
 import app.aaps.fuse.core.adapter.CoreInputGuard
 import app.aaps.fuse.core.adapter.CycleAssembly
+import app.aaps.fuse.core.controller.ExpectationLedger
 import app.aaps.fuse.core.controller.TbrActuation
 import app.aaps.fuse.core.controller.EpisodeDeadline
 import app.aaps.fuse.core.controller.FuseController
@@ -366,6 +367,33 @@ class FuseCycleRunner(
          * davor warnt schon der Kommentar an `processedTbrEbData`.
          */
         val tbrChanged: Boolean?,
+        /**
+         * DIE LAGE DIESES ZYKLUS fuer den Erwartungs-Ledger.
+         *
+         * Hier gebildet und nicht im Plugin nachgebaut: alle sechs Groessen
+         * entstehen waehrend des Laufs, und eine zweite Herleitung aus
+         * Teilinformationen waere eine driftende Wahrheit. `ledgerSealed`
+         * bleibt offen - ob sich die Generation versiegeln liess, weiss erst
+         * das Plugin nach dem Publikations-Gate.
+         *
+         * `null` heisst "dieser Pfad hat keine gebildet" und ergibt beim
+         * Klassifizieren EXCLUDED - die sichere Richtung.
+         */
+        val expectationSituation: ExpectationLedger.Situation? = null,
+        /**
+         * KENNUNG DES REGELWERKS fuer den Erwartungs-Ledger.
+         *
+         * Bewusst DIESELBE, die der Export schon fuehrt
+         * ([FuseStateJson.hashOf]) - versioniert ueber RULE_SET_VERSION und
+         * seit Monaten gepflegt. Ein zweiter, eigener Hash waere eine zweite
+         * Wahrheit ueber dieselbe Frage; die beiden liefen mit dem naechsten
+         * Parameter auseinander, und niemand saehe welcher recht hat.
+         *
+         * Leer heisst "nicht bestimmbar" (nicht-endliche Werte in der
+         * Konfiguration). Dann reiht der Recorder nichts ein - eine
+         * Behauptung ohne bekanntes Regelwerk ist spaeter nicht vergleichbar.
+         */
+        val configGeneration: String = "",
         val prediction: PredictorResult?,
         /**
          * Die BREMSBAHN, sofern gerechnet (S0).
@@ -2038,6 +2066,17 @@ class FuseCycleRunner(
 
         val computeDurationMs = dateUtil.now() - computeTs
         return Outcome(
+            configGeneration = app.aaps.fuse.plugin.export.FuseStateJson.hashOf(cfg).orEmpty(),
+            expectationSituation = ExpectationLedger.Situation(
+                mealMarkerActive = mealMarkerActive,
+                evidenceEpisodeActive = episodes.evidenceEpisodeId > 0L,
+                onsetActive = onset.active,
+                mealWindow = mealWindow,
+                reboundWindow = reboundWindow,
+                signalHealthy = step.health == Health.READY,
+                // Das Siegel kennt erst das Plugin - nach dem Gate.
+                ledgerSealed = null,
+            ),
             tbrChanged = tbrAktuation(combined.request, computeTs, profile, currentTbr, pumpe.basalStepUPerH),
             computeDurationMs = computeDurationMs,
             mealStats = mealStats,

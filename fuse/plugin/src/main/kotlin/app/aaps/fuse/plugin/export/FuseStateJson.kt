@@ -161,6 +161,11 @@ object FuseStateJson {
          * Reine Messung - keine Zahl davon wird gelesen.
          */
         priorActuation: app.aaps.fuse.plugin.FusePlugin.PriorActuation? = null,
+        /**
+         * DER ERWARTUNGS-LEDGER - reine Beobachtung, keine Zahl davon wird
+         * gelesen.
+         */
+        expectation: Expectation? = null,
         nowNs: () -> Long,
     ): JSONObject {
         val gaps = JSONArray()
@@ -304,6 +309,34 @@ object FuseStateJson {
         // die nicht kam, ist sonst von einem Zyklus ohne Befund nicht zu
         // unterscheiden. Fehlt der Block ganz, wurde das Tor in diesem Zyklus
         // nicht ausgewertet (Abbruchpfad) - auch das ist eine Aussage.
+        // ---- DER ERWARTUNGS-LEDGER (Toni 18.08., Punkt 4) -------------------
+        //
+        // Getrennt nach den drei Kontexten, und die AKTUELLE Strecke getrennt
+        // von der historischen. Nur `current.eligible` duerfte je eine
+        // Adaption tragen - deshalb steht der Ablehnungsgrund daneben und
+        // nicht bloss eine Null: eine 0 ohne Begruendung liesse spaeter nicht
+        // unterscheiden, ob nie etwas belegt war, ob eingegriffen wurde oder
+        // ob nur die Uhr weiterlief.
+        expectation?.let { e ->
+            o.put(
+                "expectation", JSONObject()
+                    .put("result", e.lastResult)
+                    .put("open", e.openEntries)
+                    .put("byContext", JSONObject().apply { e.byContext.forEach { (k, v) -> put(k, v) } })
+                    .put("byVerdict", JSONObject().apply { e.byVerdict.forEach { (k, v) -> put(k, v) } })
+                    .put("historicalStreakMin", e.historicalStreakMin)
+                    .put(
+                        "current", JSONObject()
+                            .put("minutes", e.current.minutes)
+                            .put("eligible", e.current.eligible)
+                            .put("freshThroughTs", e.current.freshThroughTs ?: JSONObject.NULL)
+                            .put("denial", e.current.denialReason?.name ?: JSONObject.NULL)
+                            .put("currentContextReason", e.current.currentContextReason?.name ?: JSONObject.NULL),
+                    )
+                    .put("epoch", e.stampEpochId)
+                    .put("sequence", e.stampSequence),
+            )
+        }
         outcome.lowThreat?.let { lt ->
             o.put(
                 "lowThreat", JSONObject()
@@ -930,4 +963,27 @@ object FuseStateJson {
             gaps.put(JSONObject().put("field", key).put("reason", reason))
         } else o.put(key, v)
     }
+
+    /**
+     * WAS VOM ERWARTUNGS-LEDGER IN DEN EXPORT GEHT.
+     *
+     * Als eigene Struktur statt vieler Einzelparameter, damit der Aufrufer
+     * sie an EINER Stelle baut und nicht Zahl fuer Zahl durchreicht - dabei
+     * gehen erfahrungsgemaess einzelne verloren, und ein fehlendes Feld sieht
+     * im Export aus wie eine Aussage.
+     */
+    data class Expectation(
+        val lastResult: String,
+        val openEntries: Int,
+        /** Wie viele abgerechnete Ergebnisse je Kontext - CORRECTION, MEAL,
+         *  EXCLUDED. Die Trennung ist der ganze Zweck des Kontexts. */
+        val byContext: Map<String, Int>,
+        val byVerdict: Map<String, Int>,
+        /** Was IRGENDWANN belegt war. NIE als Dosiernachweis lesen. */
+        val historicalStreakMin: Int,
+        /** Was JETZT gilt - das einzige, was je eine Adaption tragen duerfte. */
+        val current: app.aaps.fuse.core.controller.ExpectationLedger.LambdaEvidence,
+        val stampEpochId: String,
+        val stampSequence: Long,
+    )
 }
