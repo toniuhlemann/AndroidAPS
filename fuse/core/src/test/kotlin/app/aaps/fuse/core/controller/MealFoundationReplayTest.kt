@@ -4,42 +4,49 @@ import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import kotlin.math.abs
+import kotlin.math.max
 
 /**
  * OFFLINE-REPLAY DES MAHLZEITENFUNDAMENTS (Punkt 12, Toni 18.08.).
  *
- * Vier Aufteilungen - 100/0, 80/20, 75/25, 67/33 - gegen DIESELBEN
+ * Vier Aufteilungen - 100/0, 80/20, 75/25, 67/33 - gegen dieselben
  * eingefrorenen Mahlzeiten. 100/0 ist der heutige Stand und damit die
  * Vergleichsspur: bei ihr muss das Fundament nachweislich nichts tun.
  *
- * WAS HIER SIMULIERT WIRD UND WAS NICHT. Simuliert wird der Zeitverlauf der
- * Abgaben und die Buchfuehrung, die der Runner darum baut. NICHT simuliert
- * werden Regelentscheidungen: was der normale Pfad (Prime, Onset, Korrektur,
- * Evidenz) abgibt, ist EINGEFROREN und je Variante identisch. Genau das
- * macht den Vergleich aussagekraeftig - der einzige Unterschied zwischen den
- * Spuren ist die Aufteilung.
+ * ZWEI FEHLER DES ERSTEN WURFS, beide von Toni gefunden, beide hier
+ * korrigiert - sie sind der Grund, warum diese Datei so ausfuehrlich
+ * kommentiert ist:
  *
- * Die Mahlzeitenformen sind aus den eigenen Geraetelaeufen abgeleitet (die
- * ROHDATEN gehoeren nicht ins Repository): der ausgeschoepfte Prime, der
- * zurueckgebliebene Prime mit 1,40 U statt 2,25 U vom 06.08., und die Faelle
- * mit nachlaufender gewoehnlicher Korrektur.
+ *   (1) FALSCHE ZYKLUSREIHENFOLGE UND ADDITION. Das Replay bildete
+ *       `normal + dueU` - genau den additiven Bolus, den die
+ *       Mindestversorgung verbietet. Richtig ist der BODEN:
+ *       `final = max(normal, dueU)`, siehe [MealFoundation.contribute].
+ *       Danach laufen die gemeinsamen Gates GENAU EINMAL, und gebucht wird
+ *       nur die publizierte Menge.
  *
- * DIE GRENZE DIESER SIMULATION, ausdruecklich, damit niemand die Zahlen
- * staerker liest als sie sind:
+ *   (2) DER DECKEL TRAF DAS FALSCHE. Gekappt wurde die gesamte normale
+ *       Spur am Phase-A-Budget. Gedeckelt gehoert aber NUR Prime - der
+ *       sieht bei aktivem Fundament ueber `primeBudgetU` ausschliesslich
+ *       `phaseABudgetU`. Korrektur- und Evidenzinsulin darf weiterhin
+ *       ZUSAETZLICH zu den 3 U entstehen; alles andere widerspraeche dem
+ *       bestaetigten Vertrag. Die Spuren sind deshalb getrennt.
  *
- *   `dueU` ist eine FORDERUNG, keine garantierte Abgabe. Zwischen ihr und
- *   der Pumpe liegen unveraendert alle nachgelagerten Gates - Guards,
- *   iobTH, maxIOB, Publikations- und Pumpengate. Das Replay sagt, was das
- *   Fundament VERLANGT, nicht was fliesst.
+ * WAS SIMULIERT WIRD UND WAS NICHT. Simuliert werden Zeitverlauf und
+ * Buchfuehrung. NICHT simuliert werden Regelentscheidungen und Gates: was
+ * Prime und der Evidenzkanal abgeben, ist EINGEFROREN. Genau das macht den
+ * Vergleich aussagekraeftig - der einzige Unterschied zwischen den Spuren
+ * ist die Aufteilung.
  *
- *   Am deutlichsten wird das in der Zeile "nichts laeuft": dort gibt der
- *   normale Pfad nichts, weil in der Wirklichkeit etwas blockiert haette -
- *   und dieselbe Blockade traefe die Forderung des Fundaments genauso. Die
- *   dort ausgewiesenen 0,60 bis 0,95 U sind eine OBERGRENZE dessen, was das
- *   Fundament beitragen wollte, keine Prognose.
+ * DIE GRENZE, ausdruecklich: `dueU` ist eine FORDERUNG, keine garantierte
+ * Abgabe. Zwischen ihr und der Pumpe liegen unveraendert alle nachgelagerten
+ * Gates - Signalqualitaet, gemessenes Tief, maxSMB, iobTH, maxIOB,
+ * Transport, Ledger und Pumpengate. Das Replay sagt, was das Fundament
+ * VERLANGT. Ob es fliesst, entscheidet ein vollstaendiger Runner-Replay,
+ * der noch aussteht. Aussagen ueber Blutzuckerverlaeufe stehen hier
+ * nirgends - die waeren geraten, nicht gemessen.
  *
- * Genau deshalb steht in den Abnahmen nirgends eine Aussage ueber
- * Blutzuckerverlaeufe: die waere nicht messbar, sondern geraten.
+ * Die Mahlzeitenformen sind aus den eigenen Geraetelaeufen ABGELEITET (die
+ * Rohdaten gehoeren nicht ins Repository).
  */
 class MealFoundationReplayTest {
 
@@ -48,43 +55,49 @@ class MealFoundationReplayTest {
     private val A_BIS = 15
     private val B_BIS = 60
     private val STEP = 0.05
-
-    /** Bis wohin gefahren wird - deutlich ueber das Fensterende hinaus,
-     *  damit auch AFTER_WINDOW im Bild ist. */
     private val BIS_MIN = 90
 
     // ---- Die eingefrorenen Mahlzeiten -------------------------------------
 
     /**
-     * @param normalU was der NORMALE Pfad in Minute i abgegeben hat. Diese
-     *   Folge ist je Variante identisch - sie ist die Messung, nicht das
-     *   Ergebnis.
+     * ZWEI GETRENNTE SPUREN, und die Trennung ist der ganze Punkt:
+     *
+     * @param primeU was PRIME in Minute i abgeben wollte. Diese Spur wird am
+     *   jeweiligen Phase-A-Budget gedeckelt - bei aktivem Fundament sieht
+     *   Prime ueber [MealFoundation.primeBudgetU] nur `phaseABudgetU`. Ein
+     *   kleineres Phase A macht also auch den Prime kleiner.
+     *
+     * @param evidenzU was der EVIDENZ-/KORREKTURKANAL abgab. Diese Spur ist
+     *   in allen Varianten identisch und wird NICHT gedeckelt: sie finanziert
+     *   eine gemessene Stoerung, nicht die Mahlzeitenwette, und darf
+     *   ausdruecklich ueber das gepinnte Budget hinausgehen.
      */
-    private class Mahlzeit(val name: String, val normalU: Map<Int, Double>)
+    private class Mahlzeit(
+        val name: String,
+        val primeU: Map<Int, Double> = emptyMap(),
+        val evidenzU: Map<Int, Double> = emptyMap(),
+    )
 
     private fun gleichmaessig(von: Int, bis: Int, proMinuteU: Double): Map<Int, Double> =
         (von until bis).associateWith { proMinuteU }
 
     private val mahlzeiten = listOf(
-        // Prime ruft sein Teilbudget voll ab: 2,25 U in 15 Minuten.
-        Mahlzeit("Prime schoepft aus", gleichmaessig(0, 15, 0.15)),
-        // DER GEMESSENE FALL vom 06.08.: Prime bleibt bei 1,40 U stehen.
-        // Genau hier hat die falsche Ableitung "geflossen - phaseABudget"
-        // einst 2,15 U Rueckstand statt 0,75 U gerechnet.
-        Mahlzeit("Prime bleibt zurueck", gleichmaessig(0, 14, 0.10)),
-        // Prime zurueck, danach traegt eine gewoehnliche Korrektur.
+        Mahlzeit("Prime schoepft aus", primeU = gleichmaessig(0, 15, 0.15)),
+        // DER GEMESSENE FALL vom 06.08.: Prime bleibt bei 1,40 U stehen -
+        // unter jedem Phase-A-Budget, also von der Deckelung unberuehrt. Das
+        // macht ihn zur saubersten Vergleichsmahlzeit.
+        Mahlzeit("Prime bleibt zurueck", primeU = gleichmaessig(0, 14, 0.10)),
         Mahlzeit(
             "Korrektur traegt nach",
-            gleichmaessig(0, 14, 0.10) + gleichmaessig(20, 60, 0.02),
+            primeU = gleichmaessig(0, 14, 0.10),
+            evidenzU = gleichmaessig(20, 60, 0.02),
         ),
-        // Prime voll UND kraeftige Korrektur danach - der Fall, in dem das
-        // Fundament NICHTS mehr beitragen darf.
         Mahlzeit(
             "Korrektur uebererfuellt",
-            gleichmaessig(0, 15, 0.15) + gleichmaessig(16, 40, 0.05),
+            primeU = gleichmaessig(0, 15, 0.15),
+            evidenzU = gleichmaessig(16, 40, 0.05),
         ),
-        // Gar nichts laeuft - die Huelle bleibt unabgerufen.
-        Mahlzeit("nichts laeuft", emptyMap()),
+        Mahlzeit("nichts laeuft"),
     )
 
     private val varianten = listOf(1.00, 0.80, 0.75, 0.67)
@@ -92,171 +105,198 @@ class MealFoundationReplayTest {
     // ---- Der Replay-Lauf ---------------------------------------------------
 
     private class Spur(
-        val variante: Double,
-        val mahlzeit: String,
-        /** Was das FUNDAMENT zusaetzlich freigegeben hat. */
+        val primeU: Double,
+        val evidenzU: Double,
+        /** Was das FUNDAMENT ueber den normalen Vorschlag hinaus beisteuerte. */
         val fundamentU: Double,
-        /** Was insgesamt aus dem gemeinsamen Budget floss. */
-        val ausBudgetU: Double,
-        /** Was der normale Pfad allein gegeben haette. */
-        val normalU: Double,
+        /** Was insgesamt publiziert wurde. */
+        val publiziertU: Double,
         val letzteBindung: MealFoundation.Binding?,
-        val restU: Double,
         val maxRueckstandU: Double,
-        /** Zyklen, in denen das Fundament etwas gefordert hat. */
         val eingriffe: Int,
+        /** Der gebuchte Stand je Minute - fuer die Reject-Probe. */
+        val stand: List<Double>,
     )
 
     /**
-     * Ein Durchlauf. [abgelehnt] listet Minuten, in denen das Publikationsgate
-     * die Menge NACHWEISLICH entfernt - sie werden exakt zurueckgebucht, wie
-     * `resolveReservation` es tut.
+     * Ein Durchlauf in der REIHENFOLGE DES RUNNERS.
+     *
+     *   1. latchen (wie `buche` es zuerst tut)
+     *   2. den Plan holen - VOR der Entscheidung, denn seine Forderung geht
+     *      ja in sie ein
+     *   3. `contribute`: der Boden, keine Addition
+     *   4. Gates (hier nicht simuliert) - EINMAL ueber den finalen Kandidaten
+     *   5. buchen, was publiziert wurde
+     *
+     * Schritt 2 und der Export-Snapshot sind ZWEI Auswertungen desselben
+     * Zustands zu verschiedenen Zeitpunkten im Zyklus. Der Runner erzeugt
+     * heute nur die fuer den Export (nach `buche`); die Verdrahtung braucht
+     * zusaetzlich die fuer die Entscheidung (davor). Das ist eine Auflage an
+     * die Verdrahtung, kein Mangel des Replays.
+     *
+     * @param abgelehnt Minuten, in denen das Publikationsgate die Menge
+     *   NACHWEISLICH entfernt - dann wird nichts gebucht.
      */
-    private fun fahre(
-        anteil: Double,
-        m: Mahlzeit,
-        abgelehnt: Set<Int> = emptySet(),
-        primeGedeckelt: Boolean = false,
-    ): Spur {
+    private fun fahre(anteil: Double, m: Mahlzeit, abgelehnt: Set<Int> = emptySet()): Spur {
         val auth = MealFoundation.arm(
             markerTs = t0, foundationEnabled = true, totalBudgetU = BUDGET, phaseAShare = anteil,
             primeWindowMin = A_BIS, wallCeilingMin = 45, phaseBUntilMin = B_BIS,
         )
         var ausBudget = 0.0
         var seitUebergabe = 0.0
-        var fundament = 0.0
-        var normalSumme = 0.0
+        var primeVerbraucht = 0.0
+        var primeSumme = 0.0
+        var evidenzSumme = 0.0
+        var fundamentSumme = 0.0
+        var publiziertSumme = 0.0
         var eingriffe = 0
         var maxRueckstand = 0.0
         var letzteBindung: MealFoundation.Binding? = null
         var laufend = auth
-        var inPhaseA = 0.0
+        val stand = mutableListOf<Double>()
 
         for (min in 0..BIS_MIN) {
             val now = t0 + min * 60_000L
-            // Wie im Runner: erst latchen, dann einordnen.
             laufend = laufend.latchIfDue(now, 0L)
-            val snap = MealFoundation.snapshot(
+
+            // (2) Die Forderung - VOR der Entscheidung.
+            val vorher = MealFoundation.snapshot(
                 laufend, now, 0L,
                 deliveredFromBudgetU = ausBudget,
                 deliveredSinceHandoverU = seitUebergabe,
                 bolusStepU = STEP,
             )
-            if (snap.binding != null) letzteBindung = snap.binding
-            if (snap.backlogU > maxRueckstand) maxRueckstand = snap.backlogU
 
-            var normal = m.normalU[min] ?: 0.0
-            // ---- Der Prime-Deckel (Selbstkorrektur 18.08.) ----------------
-            //
-            // MEIN ERSTER WURF WAR HIER METHODISCH FALSCH. Die eingefrorene
-            // Folge liess Prime in JEDER Variante dieselbe Menge geben - bei
-            // "Prime schoepft aus" also 2,25 U auch bei 67/33. Autorisiert
-            // waeren dort aber nur 2,01 U: bei aktivem Fundament sieht Prime
-            // ueber `primeBudgetU` ausschliesslich `phaseABudgetU`.
-            //
-            // Die 67/33-Zeile beschrieb damit eine Lage, die so gar nicht
-            // eintreten kann - und ihr auffaellig hoher Rueckstand war ein
-            // Artefakt meiner Simulation, kein Befund ueber die Aufteilung.
-            //
-            // BEIDE SPUREN BLEIBEN, weil sie verschiedene Fragen beantworten:
-            //
-            //   OHNE Deckel (Tonis Vorgabe "dieselben eingefrorenen
-            //   Mahlzeiten") isoliert die Wirkung der Aufteilung auf das
-            //   FUNDAMENT - der normale Pfad ist als Konstante gehalten.
-            //
-            //   MIT Deckel zeigt, was tatsaechlich passieren wuerde, weil ein
-            //   kleineres Phase A auch den Prime kleiner macht.
-            if (primeGedeckelt && snap.phase == MealFoundation.Phase.PHASE_A) {
-                normal = minOf(normal, maxOf(0.0, laufend.phaseABudgetU - inPhaseA))
-            }
-            val ausFundament = snap.dueU
-            if (ausFundament > 0.0) eingriffe++
+            // PRIME wird am gepinnten Phase-A-Budget gedeckelt - das ist die
+            // Wirklichkeit, nicht eine Variante: primeBudgetU() gibt ihm bei
+            // aktivem Fundament genau phaseABudgetU.
+            val primeWunsch = m.primeU[min] ?: 0.0
+            val prime = minOf(primeWunsch, max(0.0, laufend.phaseABudgetU - primeVerbraucht))
+            // EVIDENZ bleibt ungedeckelt - sie finanziert eine gemessene
+            // Stoerung und darf ueber das gepinnte Budget hinaus.
+            val evidenz = m.evidenzU[min] ?: 0.0
+            val normalerKandidat = prime + evidenz
 
-            // RESERVIEREN, DANN AUFLOESEN - dieselbe Richtung wie im Runner.
-            val gebucht = normal + ausFundament
-            ausBudget += gebucht
-            if (snap.phase == MealFoundation.Phase.PHASE_A) inPhaseA += gebucht
-            if (snap.phase == MealFoundation.Phase.PHASE_B) seitUebergabe += gebucht
+            // (3) DER BODEN, KEINE ADDITION.
+            val beitrag = MealFoundation.contribute(normalerKandidat, vorher.dueU)
+            if (vorher.backlogU > maxRueckstand) maxRueckstand = vorher.backlogU
+            if (vorher.binding != null) letzteBindung = vorher.binding
 
+            // (4) Gates liefen hier - genau einmal ueber den finalen
+            // Kandidaten. (5) Gebucht wird nur, was publiziert wurde.
             if (min in abgelehnt) {
-                // Das Gate hat die Menge entfernt: exakt zurueckdrehen.
-                ausBudget -= gebucht
-                if (snap.phase == MealFoundation.Phase.PHASE_A) inPhaseA -= gebucht
-                if (snap.phase == MealFoundation.Phase.PHASE_B) seitUebergabe -= gebucht
-            } else {
-                normalSumme += normal
-                fundament += ausFundament
+                stand.add(ausBudget)
+                continue
             }
+            if (beitrag.foundationU > 0.0) eingriffe++
+            val publiziert = beitrag.finalCandidateU
+            ausBudget += publiziert
+            primeVerbraucht += prime
+            if (vorher.phase == MealFoundation.Phase.PHASE_B) seitUebergabe += publiziert
+            primeSumme += prime
+            evidenzSumme += evidenz
+            fundamentSumme += beitrag.foundationU
+            publiziertSumme += publiziert
+            stand.add(ausBudget)
         }
-        val ende = MealFoundation.snapshot(
-            laufend, t0 + BIS_MIN * 60_000L, 0L, ausBudget, seitUebergabe, STEP,
-        )
         return Spur(
-            anteil, m.name, fundament, ausBudget, normalSumme, letzteBindung,
-            ende.remainingInWindowU, maxRueckstand, eingriffe,
+            primeSumme, evidenzSumme, fundamentSumme, publiziertSumme,
+            letzteBindung, maxRueckstand, eingriffe, stand,
         )
     }
 
-    // ---- Harte Abnahme 1: das gemeinsame Budget wird nie ueberschritten ----
+    // ---- Abnahme 1: kein additiver Bolus ------------------------------------
 
     /**
-     * DAS FUNDAMENT DARF DAS GEPINNTE BUDGET NIE SPRENGEN.
+     * DER FEHLER, DEN TONI GEFUNDEN HAT - jetzt als Zusicherung.
      *
-     * Zwei getrennte Aussagen, beide noetig:
-     *
-     *   was das Fundament beisteuert, bleibt in seinem TEILBUDGET;
-     *   und es fordert NICHTS mehr, sobald das GESAMTBUDGET erschoepft ist -
-     *   auch dann nicht, wenn sein eigenes Teilbudget noch offen waere.
-     *
-     * Die zweite ist die eigentliche Zusicherung: sie ist der Grund, warum
-     * `plan()` das Offene bei `totalBudgetU - deliveredFromBudgetU` deckelt.
+     * Verlangen normaler Pfad und Fundament im selben Zyklus je 0,05 U, ist
+     * das Ergebnis 0,05 U und NICHT 0,10 U. Der Beitrag des Fundaments ist
+     * dann null: der Boden lag schon.
      */
     @Test
-    fun `keine Variante ueberschreitet das gemeinsame Budget`() {
+    fun `das Fundament addiert nicht auf den normalen Vorschlag`() {
+        val gleich = MealFoundation.contribute(0.05, 0.05)
+        assertEquals(0.05, gleich.finalCandidateU, 1e-9, "MUSS der Boden sein, nicht die Summe")
+        assertEquals(0.0, gleich.foundationU, 1e-9)
+
+        val normalHoeher = MealFoundation.contribute(0.15, 0.05)
+        assertEquals(0.15, normalHoeher.finalCandidateU, 1e-9)
+        assertEquals(0.0, normalHoeher.foundationU, 1e-9, "der normale Pfad traegt allein")
+
+        val fundamentHoeher = MealFoundation.contribute(0.02, 0.05)
+        assertEquals(0.05, fundamentHoeher.finalCandidateU, 1e-9)
+        assertEquals(
+            0.03, fundamentHoeher.foundationU, 1e-9,
+            "nur die DIFFERENZ ist Beitrag des Fundaments - der Rest ist fremdes Verdienst",
+        )
+    }
+
+    /** Unbrauchbare Eingaben lassen den normalen Vorschlag unangetastet. */
+    @Test
+    fun `unbrauchbare Eingaben veraendern den Vorschlag nicht`() {
+        assertEquals(0.10, MealFoundation.contribute(0.10, Double.NaN).finalCandidateU, 1e-9)
+        assertEquals(0.10, MealFoundation.contribute(0.10, -1.0).finalCandidateU, 1e-9)
+        assertEquals(0.05, MealFoundation.contribute(Double.NaN, 0.05).finalCandidateU, 1e-9)
+    }
+
+    // ---- Abnahme 2: das gemeinsame Budget ----------------------------------
+
+    /**
+     * DAS FUNDAMENT BLEIBT IN SEINEM TEILBUDGET - und fordert nichts mehr,
+     * sobald das GESAMTBUDGET erschoepft ist, auch wenn sein eigenes noch
+     * offen waere.
+     */
+    @Test
+    fun `keine Variante ueberschreitet das Teilbudget des Fundaments`() {
         for (v in varianten) for (m in mahlzeiten) {
             val s = fahre(v, m)
-            val phaseB = BUDGET * (1.0 - v)
             assertTrue(
-                s.fundamentU <= phaseB + 1e-9,
-                "${s.mahlzeit} @ ${(v * 100).toInt()}/${((1 - v) * 100).toInt()}: " +
-                    "Fundament gab ${s.fundamentU} U, Teilbudget ist $phaseB U",
-            )
-            assertTrue(
-                s.fundamentU + s.normalU <= maxOf(BUDGET, s.normalU) + 1e-9,
-                "${s.mahlzeit} @ $v: das Fundament hat ueber das Gesamtbudget hinaus addiert",
+                s.fundamentU <= BUDGET * (1.0 - v) + 1e-9,
+                "${m.name} @ ${(v * 100).toInt()}: Fundament gab ${s.fundamentU} U, " +
+                    "Teilbudget ist ${BUDGET * (1.0 - v)} U",
             )
         }
     }
 
-    /**
-     * UND DER SCHARFE FALL: hat der normale Pfad das Budget SCHON
-     * ausgeschoepft, fordert das Fundament nichts mehr.
-     */
     @Test
     fun `bei erschoepftem Gesamtbudget fordert das Fundament nichts`() {
         val auth = MealFoundation.arm(
             markerTs = t0, foundationEnabled = true, totalBudgetU = BUDGET, phaseAShare = 0.67,
             primeWindowMin = A_BIS, wallCeilingMin = 45, phaseBUntilMin = B_BIS,
         )
-        val snap = MealFoundation.snapshot(
-            auth, t0 + 30 * 60_000L, 0L,
-            deliveredFromBudgetU = BUDGET, deliveredSinceHandoverU = 0.0, bolusStepU = STEP,
-        )
+        val snap = MealFoundation.snapshot(auth, t0 + 30 * 60_000L, 0L, BUDGET, 0.0, STEP)
         assertEquals(0.0, snap.dueU, 1e-9)
         assertEquals(MealFoundation.Binding.BUDGET_EXHAUSTED, snap.binding)
     }
 
-    // ---- Harte Abnahme 2: keine Addition auf ausreichende normale SMBs -----
-
     /**
-     * MINDESTVERSORGUNG, NICHT ADDITION.
+     * PRIME WIRD GEDECKELT, EVIDENZ NICHT.
      *
-     * Hat der normale Pfad seit der Uebergabe schon mindestens das Soll
-     * geliefert, fordert das Fundament NICHTS. Das ist der Unterschied
-     * zwischen "Boden" und "Aufschlag" - und der Grund, warum
-     * `deliveredSinceHandoverU` ALLES zaehlt, was floss, nicht nur die
-     * eigenen Beitraege.
+     * Das ist der Vertrag, den das erste Replay verletzt hat. Ein kleineres
+     * Phase A macht den Prime kleiner - aber der Evidenzkanal bleibt in jeder
+     * Variante gleich gross und darf ueber die 3 U hinaus.
      */
+    @Test
+    fun `Prime folgt dem Phase-A-Budget, Evidenz bleibt unberuehrt`() {
+        val ausgeschoepft = mahlzeiten.first { it.name == "Prime schoepft aus" }
+        assertEquals(2.25, fahre(1.00, ausgeschoepft).primeU, 1e-9, "100/0: nichts zu deckeln")
+        assertEquals(2.01, fahre(0.67, ausgeschoepft).primeU, 1e-9, "67/33: Prime sieht nur 2,01 U")
+
+        val mitEvidenz = mahlzeiten.first { it.name == "Korrektur uebererfuellt" }
+        val evidenzwerte = varianten.map { fahre(it, mitEvidenz).evidenzU }
+        for (e in evidenzwerte) assertTrue(
+            abs(e - evidenzwerte.first()) < 1e-9,
+            "die Evidenzspur MUSS in allen Varianten gleich sein, war $evidenzwerte",
+        )
+        assertTrue(
+            evidenzwerte.first() > 0.0 && fahre(0.67, mitEvidenz).publiziertU > BUDGET,
+            "und sie darf das gepinnte Budget ueberschreiten - sonst waere sie gedeckelt",
+        )
+    }
+
+    // ---- Abnahme 3: Mindestversorgung statt Aufschlag -----------------------
+
     @Test
     fun `auf ausreichende normale Abgaben legt das Fundament nichts drauf`() {
         val uebererfuellt = mahlzeiten.first { it.name == "Korrektur uebererfuellt" }
@@ -264,13 +304,11 @@ class MealFoundationReplayTest {
             val s = fahre(v, uebererfuellt)
             assertEquals(
                 0.0, s.fundamentU, 1e-9,
-                "@ ${(v * 100).toInt()}/${((1 - v) * 100).toInt()}: der normale Pfad hat " +
-                    "bereits mehr als das Soll geliefert - das Fundament MUSS schweigen",
+                "@ ${(v * 100).toInt()}: der normale Pfad liefert bereits mehr als das Soll",
             )
         }
     }
 
-    /** Und in jedem einzelnen Zyklus, nicht nur in der Summe. */
     @Test
     fun `bei erfuelltem Soll ist dueU in jedem Zyklus null`() {
         val auth = MealFoundation.arm(
@@ -280,98 +318,61 @@ class MealFoundationReplayTest {
         for (min in A_BIS..B_BIS) {
             val now = t0 + min * 60_000L
             val soll = MealFoundation.snapshot(auth, now, 0L, 2.25, 0.0, STEP).plannedTotalU
-            // Genau das Soll ist geflossen - kein Rueckstand, keine Forderung.
             val snap = MealFoundation.snapshot(auth, now, 0L, 2.25 + soll, soll, STEP)
             assertEquals(0.0, snap.dueU, 1e-9, "T+$min: Soll erfuellt, trotzdem gefordert")
         }
     }
 
-    // ---- Harte Abnahme 3: Reject wird exakt zurueckgebucht -----------------
+    // ---- Abnahme 4: Reject hinterlaesst keine Spur --------------------------
 
     /**
-     * EIN ABGELEHNTER ZYKLUS DARF KEINE SPUR HINTERLASSEN.
+     * EIN ABGELEHNTER ZYKLUS BUCHT NICHTS.
      *
-     * Gefahren wird dieselbe Mahlzeit zweimal: einmal normal, einmal mit
-     * Rejects in mehreren Minuten. Nach dem Zurueckdrehen muss die Buchung
-     * so stehen, als haette es die abgelehnten Zyklen nie gegeben - kein
-     * Rest, keine Verschiebung.
+     * MEINE ERSTE FASSUNG DIESES TESTS WAR FALSCH KONSTRUIERT. Sie verglich
+     * den Reject-Lauf mit einer Mahlzeit, aus der die abgelehnten Minuten
+     * ENTFERNT waren - und erwartete Gleichheit. Das kann nicht stimmen: die
+     * Zeit laeuft in beiden Laeufen weiter, das Fundament fordert in diesen
+     * Minuten also trotzdem, und nach einem Reject holt es den entstandenen
+     * Rueckstand spaeter auf. Beide Effekte sind GEWOLLT.
+     *
+     * Die tatsaechliche Zusicherung ist enger und pruefbar: in einer
+     * abgelehnten Minute darf sich der gebuchte Stand NICHT bewegen.
      */
     @Test
-    fun `abgelehnte Zyklen werden exakt zurueckgebucht`() {
+    fun `in einer abgelehnten Minute bewegt sich die Buchung nicht`() {
         val abgelehnt = setOf(20, 21, 35, 50)
         for (v in varianten) for (m in mahlzeiten) {
-            val mitReject = fahre(v, m, abgelehnt)
-            // Dieselbe Mahlzeit OHNE die abgelehnten Minuten - das ist der
-            // Zustand, den ein exaktes Zurueckdrehen erzeugen muss.
-            val ohne = Mahlzeit(m.name, m.normalU.filterKeys { it !in abgelehnt })
-            val referenz = fahre(v, ohne)
-            assertTrue(
-                abs(mitReject.ausBudgetU - referenz.ausBudgetU) < 1e-9,
-                "${m.name} @ $v: nach dem Reject stehen ${mitReject.ausBudgetU} U " +
-                    "statt ${referenz.ausBudgetU} U",
-            )
-        }
-    }
-
-    // ---- Harte Abnahme 4: der Evidence-Pfad bleibt frei --------------------
-
-    /**
-     * DAS FUNDAMENT BEGRENZT DEN NORMALEN PFAD NICHT.
-     *
-     * Es ist ein zusaetzlicher Boden unter einer bereits autorisierten Menge,
-     * kein Deckel darueber. Der Evidenzkanal darf weiterhin ueber das
-     * gepinnte Budget hinaus freigeben - er finanziert eine gemessene
-     * Stoerung, nicht die Mahlzeitenwette.
-     *
-     * NACHWEIS UEBER DIE SIGNATUR, nicht ueber einen Lauf: `plan()` bekommt
-     * das schon Geflossene nur als ZAHL herein und gibt eine Menge zurueck.
-     * Es gibt keinen Rueckkanal, ueber den es eine andere Freigabe
-     * verkleinern koennte. Der Lauf bestaetigt es zusaetzlich: der normale
-     * Anteil ist in allen vier Varianten identisch.
-     */
-    @Test
-    fun `der normale Pfad ist in allen Varianten unveraendert`() {
-        for (m in mahlzeiten) {
-            val normalwerte = varianten.map { fahre(it, m).normalU }
-            for (n in normalwerte) assertTrue(
-                abs(n - normalwerte.first()) < 1e-9,
-                "${m.name}: der normale Pfad unterscheidet sich zwischen den Varianten " +
-                    "($normalwerte) - dann misst das Replay nicht mehr die Aufteilung",
-            )
+            val s = fahre(v, m, abgelehnt)
+            for (min in abgelehnt) {
+                if (min == 0 || min > BIS_MIN) continue
+                assertEquals(
+                    s.stand[min - 1], s.stand[min], 1e-12,
+                    "${m.name} @ $v, T+$min: die abgelehnte Menge wurde trotzdem gebucht",
+                )
+            }
         }
     }
 
     /**
-     * Und ausdruecklich: eine Abgabe UEBER dem gepinnten Budget wird nicht
-     * zurueckgewiesen, sie macht nur das Fundament still.
+     * UND DER RUECKSTAND WIRD DANACH AUFGEHOLT, nicht verschluckt.
+     *
+     * Die Gegenrichtung zum Test oben: haette ein Reject die Forderung
+     * dauerhaft geloescht, waere die Mindestversorgung nach jeder Ablehnung
+     * um genau diese Menge kleiner - und niemand saehe es.
      */
     @Test
-    fun `eine Abgabe ueber dem Budget macht das Fundament still statt sie abzuweisen`() {
-        val auth = MealFoundation.arm(
-            markerTs = t0, foundationEnabled = true, totalBudgetU = BUDGET, phaseAShare = 0.75,
-            primeWindowMin = A_BIS, wallCeilingMin = 45, phaseBUntilMin = B_BIS,
-        )
-        val snap = MealFoundation.snapshot(
-            auth, t0 + 30 * 60_000L, 0L,
-            deliveredFromBudgetU = BUDGET + 1.5, deliveredSinceHandoverU = 1.5, bolusStepU = STEP,
-        )
-        assertEquals(0.0, snap.dueU, 1e-9, "nichts mehr vom Fundament")
-        assertEquals(
-            1.5, snap.deliveredSinceHandoverU, 1e-9,
-            "aber die fremde Menge bleibt stehen - sie wird nicht widerrufen",
+    fun `nach einer Ablehnung holt das Fundament den Rueckstand auf`() {
+        val leer = mahlzeiten.first { it.name == "nichts laeuft" }
+        val ohne = fahre(0.75, leer)
+        val mit = fahre(0.75, leer, abgelehnt = setOf(20, 21, 22))
+        assertTrue(
+            mit.fundamentU > ohne.fundamentU - 3 * STEP - 1e-9,
+            "nach drei Ablehnungen fehlen dauerhaft ${ohne.fundamentU - mit.fundamentU} U",
         )
     }
 
-    // ---- Harte Abnahme 5: 100/0 ist der heutige Stand ----------------------
+    // ---- Abnahme 5: 100/0 ist eine Nullspur ---------------------------------
 
-    /**
-     * DIE VERGLEICHSSPUR MUSS EINE NULLSPUR SEIN.
-     *
-     * Bei Anteil 1,0 gibt es kein Phase-B-Budget. Wenn das Fundament dort
-     * auch nur einen Schritt fordert, ist jeder Vergleich der uebrigen
-     * Varianten wertlos - dann misst man nicht die Aufteilung, sondern einen
-     * Rechenfehler.
-     */
     @Test
     fun `bei hundert zu null tut das Fundament nachweislich nichts`() {
         for (m in mahlzeiten) {
@@ -381,84 +382,39 @@ class MealFoundationReplayTest {
         }
     }
 
-    /**
-     * MIT PRIME-DECKEL BLEIBT DAS GESAMTBUDGET WIRKLICH GEDECKELT.
-     *
-     * Das ist die realistische Spur: ein kleineres Phase A macht auch den
-     * Prime kleiner. Hier MUSS die Gesamtsumme in jeder Variante unter dem
-     * gepinnten Budget bleiben - ohne Ausnahme und ohne Rueckgriff auf den
-     * Evidenzkanal.
-     */
-    @Test
-    fun `mit Prime-Deckel bleibt jede Variante unter dem Gesamtbudget`() {
-        for (v in varianten) for (m in mahlzeiten) {
-            val s = fahre(v, m, primeGedeckelt = true)
-            // "Korrektur uebererfuellt" laeuft bewusst ueber das Budget - das
-            // ist der Evidenzkanal, der weiterhin zusaetzlich freigeben darf.
-            // Geprueft wird deshalb der FUNDAMENT-Anteil plus Phase A.
-            assertTrue(
-                s.fundamentU <= BUDGET * (1.0 - v) + 1e-9,
-                "${m.name} @ $v: das Fundament sprengt sein Teilbudget",
-            )
-        }
-    }
-
-    /**
-     * UND DER UNTERSCHIED IST SICHTBAR, nicht nur behauptet: bei einem
-     * ausgeschoepften Prime gibt die gedeckelte Spur weniger als die
-     * eingefrorene, sobald Phase A unter 2,25 U liegt.
-     */
-    @Test
-    fun `der Prime-Deckel wirkt bei kleinem Phase-A-Anteil`() {
-        val ausgeschoepft = mahlzeiten.first { it.name == "Prime schoepft aus" }
-        val ohne = fahre(0.67, ausgeschoepft)
-        val mit = fahre(0.67, ausgeschoepft, primeGedeckelt = true)
-        assertTrue(
-            mit.normalU < ohne.normalU - 1e-9,
-            "bei 67/33 sind nur ${BUDGET * 0.67} U fuer Prime autorisiert - " +
-                "die gedeckelte Spur MUSS weniger zeigen (${mit.normalU} vs ${ohne.normalU})",
-        )
-        // Bei 100/0 gibt es nichts zu deckeln - Phase A ist das ganze Budget.
-        assertEquals(
-            fahre(1.00, ausgeschoepft).normalU,
-            fahre(1.00, ausgeschoepft, primeGedeckelt = true).normalU, 1e-9,
-        )
-    }
-
     // ---- Der Bericht -------------------------------------------------------
 
     /**
-     * KEINE ZUSICHERUNG, sondern die Auswertung zum Draufschauen. Er
-     * scheitert nie - seine Aufgabe ist, die Zahlen nebeneinander zu legen,
-     * damit die Aufteilung an ECHTEN Verlaeufen entschieden werden kann statt
-     * am Gefuehl.
+     * KEINE ZUSICHERUNG, sondern die Auswertung zum Draufschauen.
+     *
+     * Er entscheidet die Aufteilung NICHT - dafuer fehlen die Gates. Was er
+     * zeigt, ist der Rechenkern und der Zeitplan: wieviel das Fundament
+     * VERLANGEN wuerde, in wievielen Zyklen, und wie weit es dabei je
+     * zurueckliegt.
      */
     @Test
     fun `Replay-Bericht`() {
         val z = StringBuilder()
         z.appendLine()
         z.appendLine("=== OFFLINE-REPLAY MAHLZEITENFUNDAMENT ".padEnd(78, '='))
-        z.appendLine("Budget ${BUDGET} U | Prime bis T+$A_BIS | Fenster bis T+$B_BIS | Schritt $STEP U")
-        z.appendLine("links: eingefrorener normaler Pfad (misst die Aufteilung isoliert)")
-        z.appendLine("D:    zusaetzlich am jeweiligen Phase-A-Budget gedeckelter Prime (realistisch)")
+        z.appendLine("Budget $BUDGET U | Prime bis T+$A_BIS | Fenster bis T+$B_BIS | Schritt $STEP U")
+        z.appendLine("Prime am Phase-A-Budget gedeckelt, Evidenz ungedeckelt, max-Semantik")
         for (m in mahlzeiten) {
             z.appendLine()
             z.appendLine("--- ${m.name} ".padEnd(78, '-'))
             z.appendLine(
-                "%-9s %9s %9s %9s %9s %8s   %9s %9s %9s".format(
-                    "Variante", "normal", "Fundam.", "gesamt", "maxRueck", "Zykl.",
-                    "D:normal", "D:Fundam.", "D:gesamt",
+                "%-9s %8s %8s %10s %10s %8s %8s  %s".format(
+                    "Variante", "Prime", "Evidenz", "Fundament", "publiziert",
+                    "maxRueck", "Zyklen", "letzte Bindung",
                 )
             )
             for (v in varianten) {
                 val s = fahre(v, m)
-                val d = fahre(v, m, primeGedeckelt = true)
                 z.appendLine(
-                    "%-9s %9.2f %9.2f %9.2f %9.2f %8d   %9.2f %9.2f %9.2f".format(
+                    "%-9s %8.2f %8.2f %10.2f %10.2f %8.2f %8d  %s".format(
                         "${(v * 100).toInt()}/${Math.round((1 - v) * 100)}",
-                        s.normalU, s.fundamentU, s.normalU + s.fundamentU,
-                        s.maxRueckstandU, s.eingriffe,
-                        d.normalU, d.fundamentU, d.normalU + d.fundamentU,
+                        s.primeU, s.evidenzU, s.fundamentU, s.publiziertU,
+                        s.maxRueckstandU, s.eingriffe, s.letzteBindung?.name ?: "-",
                     )
                 )
             }

@@ -551,6 +551,49 @@ object MealFoundation {
     private fun unusable() = Plan(0.0, 0.0, 0.0, Binding.UNUSABLE_INPUT)
 
     /**
+     * WIE DAS FUNDAMENT MIT DEM NORMALEN VORSCHLAG ZUSAMMENGEHT
+     * (Toni 18.08., P0 aus dem Replay).
+     *
+     * DER FEHLER, DEN DIESE FUNKTION VERHINDERT. Das erste Replay hat
+     * `normal + dueU` gerechnet - also genau den ADDITIVEN BOLUS, den die
+     * Mindestversorgungs-Semantik verbietet. Verlangen im selben Zyklus der
+     * normale Pfad 0,05 U und das Fundament 0,05 U, ist das Ergebnis NICHT
+     * 0,10 U.
+     *
+     * Der Vertrag ist ein BODEN, kein Aufschlag:
+     *
+     *     finaler Kandidat = max(normaler Kandidat, Fundament-Soll)
+     *     Fundamentbeitrag = max(0, Fundament-Soll - normaler Kandidat)
+     *
+     * Danach laufen die gemeinsamen Gates GENAU EINMAL ueber den finalen
+     * Kandidaten, und gebucht wird nur, was tatsaechlich publiziert wurde.
+     * Zwei getrennte Mengen durch zwei Gate-Laeufe zu schicken waere ein
+     * zweiter Kanal - und der duerfte doppelt so viel wie erlaubt.
+     *
+     * SIE STEHT IM KERN UND NICHT IM REPLAY, obwohl heute nur das Replay sie
+     * ruft. Eine Semantik, die nur im Test existiert, wird bei der
+     * Verdrahtung neu erfunden - und dann womoeglich anders.
+     */
+    data class Contribution(
+        /** Was in die gemeinsamen Gates geht - EINE Menge, nicht zwei. */
+        val finalCandidateU: Double,
+        /**
+         * Wieviel davon das Fundament beigesteuert hat. Nur diese Groesse
+         * gehoert in eine Fundament-Bilanz; der Rest waere fremdes Verdienst.
+         */
+        val foundationU: Double,
+    )
+
+    fun contribute(normalCandidateU: Double, foundationDueU: Double): Contribution {
+        // Unbrauchbare Eingaben ergeben keinen Beitrag - nicht "0 statt NaN"
+        // weiterreichen, sondern den normalen Vorschlag unangetastet lassen.
+        val normal = if (normalCandidateU.isFinite() && normalCandidateU > 0.0) normalCandidateU else 0.0
+        val soll = if (foundationDueU.isFinite() && foundationDueU > 0.0) foundationDueU else 0.0
+        val final = max(normal, soll)
+        return Contribution(finalCandidateU = final, foundationU = max(0.0, final - normal))
+    }
+
+    /**
      * DIE VOLLSTAENDIGE SICHT AUF DAS FUNDAMENT ZU EINEM ZEITPUNKT
      * (Punkt 12, Toni 18.08.).
      *
