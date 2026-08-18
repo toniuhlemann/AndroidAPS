@@ -27,6 +27,19 @@ import kotlin.math.abs
 object ExpectationLedger {
 
     /**
+     * Kennung eines VERBRAUCHTEN Messwerts - Teil des persistierbaren
+     * Zustands.
+     *
+     * WARUM PERSISTENT (Toni, P0): der Verbrauch lebte nur innerhalb EINES
+     * `settle`-Aufrufs. Bei minuetlichen Zyklen und 150 s Toleranz konnte
+     * derselbe Messwert in fuenf aufeinanderfolgenden Aufrufen je eine neue
+     * Faelligkeit bedienen - aus EINEM Punkt waere eine vier Minuten lange
+     * MISSED-Strecke entstanden. Eine Persistenz ohne diese Sperre haette
+     * einen mehrfach gezaehlten Nachweis dauerhaft beglaubigt.
+     */
+    data class SampleId(val segmentId: Long, val ts: Long)
+
+    /**
      * Stabile, eindeutige Kennung eines Eintrags.
      *
      * WARUM NICHT `dueTs` (Tonis Befund): die Zuordnung war danach indiziert,
@@ -65,7 +78,10 @@ object ExpectationLedger {
         val interventionRevision: Long,
         /** Der Konfigurationsstand zu diesem Zeitpunkt - aus demselben Grund. */
         val configGeneration: String,
-    )
+    ) {
+
+        val id: SampleId get() = SampleId(segmentId, ts)
+    }
 
     /**
      * Eine abgegebene Prognose, die spaeter geprueft werden kann.
@@ -162,8 +178,26 @@ object ExpectationLedger {
         val distanceFromSafetyLowerMgdl: Double?
             get() = entry.safetyLowerPredictedMgdl?.let { sl -> actualMgdl?.let { it - sl } }
 
-        /** Zaehlt dieses Ergebnis als Beleg gegen die pessimistische Annahme? */
-        val isEvidence: Boolean get() = verdict == Verdict.MISSED
+        /**
+         * Zaehlt dieses Ergebnis als Beleg gegen die pessimistische
+         * lambda-Annahme?
+         *
+         * NICHT JEDES MISSED TAUGT DAFUER (Toni, P1). Ein ausgebliebener
+         * Senkungsschritt allein widerlegt lambda noch nicht - er koennte
+         * auch bedeuten, dass die Lage tatsaechlich nahe an der
+         * Sicherheitsuntergrenze lag und der Abschlag recht hatte. Als Beleg
+         * taugt er nur, wenn die reale Bahn DEUTLICH darueber blieb.
+         *
+         * Der Schwellwert hat KEINEN Vorgabewert: mit einem Default 0 waere
+         * das hier wieder "jedes MISSED", und genau diese Verwechslung soll
+         * der eigene Name verhindern. Fehlt die damalige Untergrenze, ist
+         * das kein Beleg - `null` heisst nicht "war weit genug weg".
+         */
+        fun isLambdaEvidence(minSafetyMarginMgdl: Double): Boolean {
+            if (verdict != Verdict.MISSED) return false
+            val abstand = distanceFromSafetyLowerMgdl ?: return false
+            return abstand >= minSafetyMarginMgdl
+        }
     }
 
     /**
@@ -218,8 +252,17 @@ object ExpectationLedger {
      */
     fun add(entries: List<Entry>, neu: Entry?): List<Entry> {
         if (neu == null) return entries
-        if (entries.any { it.id == neu.id }) return entries
-        return entries + neu
+        val vorhanden = entries.firstOrNull { it.id == neu.id } ?: return entries + neu
+        // GLEICHE BASIS-ID, ABER NEUER STAND -> ERSETZEN (Toni, P1).
+        // Nach einem Eingriff beschreibt die neue Prognose die jetzt gueltige
+        // Lage; die alte zu behalten hiesse, gegen eine ueberholte
+        // Ausgangsannahme zu pruefen. Die Kennung allein kann das nicht
+        // unterscheiden - sie soll ueber Neustarts stabil bleiben und darf
+        // deshalb Revision und Konfiguration gerade NICHT enthalten.
+        if (vorhanden.interventionRevision != neu.interventionRevision ||
+            vorhanden.configGeneration != neu.configGeneration
+        ) return entries.filter { it.id != neu.id } + neu
+        return entries
     }
 
     /**
@@ -252,14 +295,18 @@ object ExpectationLedger {
         entries: List<Entry>,
         nowTs: Long,
         samples: List<Sample>,
+        consumed: Set<SampleId>,
         toleranceMgdl: Double = SETTLE_TOLERANCE_MGDL,
         matchToleranceMs: Long = MATCH_TOLERANCE_MS,
-    ): Pair<List<Outcome>, List<Entry>> {
+    ): Settlement {
         val faellig = entries.filter { it.dueTs <= nowTs }.sortedBy { it.dueTs }
-        if (faellig.isEmpty()) return emptyList<Outcome>() to entries
+        if (faellig.isEmpty()) return Settlement(emptyList(), entries, consumed)
         val offen = entries.filter { it.dueTs > nowTs }
         val brauchbar = samples
-            .filter { it.healthy && it.mgdl.isFinite() }
+            // BEREITS VERBRAUCHTE MESSWERTE SIND AUS DEM SPIEL - auch aus
+            // frueheren Aufrufen. Ohne diese Zeile bedient ein Punkt bei
+            // 1-min-Zyklen bis zu fuenf Faelligkeiten nacheinander.
+            .filter { it.id !in consumed && it.healthy && it.mgdl.isFinite() }
             .sortedBy { it.ts }
 
         val zuteilung = matchOneToOne(faellig, brauchbar, matchToleranceMs)
@@ -276,8 +323,25 @@ object ExpectationLedger {
                 Outcome(e, Verdict.MISSED, treffer.ts, treffer.mgdl)
             else Outcome(e, Verdict.MET, treffer.ts, treffer.mgdl)
         }
-        return abgerechnet to offen
+        // Der Verbrauch wandert in den Rueckgabewert und von dort in die
+        // Persistenz. Beschnitten auf das, was noch gebraucht wird: aelter
+        // als die aelteste offene Faelligkeit minus Toleranz kann nichts
+        // mehr zugeordnet werden. Diese Grenze IST wirksam (anders als das
+        // frueher entfernte MAX_AGE_MIN), weil sie an einer Groesse haengt,
+        // die tatsaechlich waechst.
+        val untergrenze = (offen.minOfOrNull { it.dueTs } ?: nowTs) - matchToleranceMs
+        val neuVerbraucht = (consumed + zuteilung.values.map { it.id })
+            .filterTo(HashSet()) { it.ts >= untergrenze }
+        return Settlement(abgerechnet, offen, neuVerbraucht)
     }
+
+    /** Ergebnis einer Abrechnung - die drei Teile des fortzuschreibenden
+     *  Zustands. */
+    data class Settlement(
+        val outcomes: List<Outcome>,
+        val remaining: List<Entry>,
+        val consumed: Set<SampleId>,
+    )
 
     /**
      * Die monotone Eins-zu-eins-Zuordnung, exakt geloest.
@@ -364,7 +428,14 @@ object ExpectationLedger {
 
     /**
      * Wie lange die versprochene Senkung ununterbrochen und BELEGT ausbleibt
-     * [min].
+     * [min] - und zwar als BELEG GEGEN LAMBDA, nicht als blosse
+     * MISSED-Strecke.
+     *
+     * Der Unterschied ist der Zweck der Funktion: gezaehlt wird nur, was
+     * [Outcome.isLambdaEvidence] besteht, also zusaetzlich deutlich ueber der
+     * damaligen Sicherheitsuntergrenze lag. Eine reine MISSED-Strecke gibt es
+     * hier bewusst NICHT als oeffentliche Groesse - sonst greift der spaetere
+     * Verbraucher versehentlich zur schwaecheren Aussage.
      *
      * VIER ABBRUCHGRUENDE. Ein MET (das Modell hatte recht), ein
      * Segmentwechsel (ueber eine Signalluecke gibt es keinen
@@ -382,9 +453,10 @@ object ExpectationLedger {
      *
      * @param currentSegmentId das Segment, in dem JETZT gerechnet wird.
      */
-    fun missedStreakMin(
+    fun lambdaEvidenceStreakMin(
         outcomes: List<Outcome>,
         currentSegmentId: Long,
+        minSafetyMarginMgdl: Double,
         maxGapMs: Long = MAX_EVIDENCE_GAP_MS,
     ): Int {
         val sortiert = outcomes.sortedByDescending { it.entry.dueTs }
@@ -392,7 +464,7 @@ object ExpectationLedger {
         var letzte: Long? = null
         for (o in sortiert) {
             if (o.entry.segmentId != currentSegmentId) break
-            if (o.verdict != Verdict.MISSED) break
+            if (!o.isLambdaEvidence(minSafetyMarginMgdl)) break
             if (juengste == null) juengste = o.entry.dueTs
             else if (letzte!! - o.entry.dueTs > maxGapMs) break
             letzte = o.entry.dueTs
