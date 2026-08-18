@@ -254,7 +254,7 @@ class FuseExpectationRecorder(
         while (true) {
             val s = runCatching { queue.poll(5, TimeUnit.SECONDS) }.getOrNull() ?: continue
             runCatching { verarbeite(s) }.onFailure {
-                melde("FAILED:${it.javaClass.simpleName}", 0, 0L)
+                veroeffentliche("FAILED:${it.javaClass.simpleName}", 0, 0L)
             }
             // ERST NACH der Verarbeitung hochzaehlen - sonst gilt ein
             // Schnappschuss als fertig, sobald er die Schlange verlassen hat.
@@ -270,7 +270,7 @@ class FuseExpectationRecorder(
         // vorhandene Generation, nur weil der erste Schnappschuss unbrauchbar
         // war.
         if (!s.stamp.valid || s.configGeneration.isBlank()) {
-            melde("SKIPPED:keine gueltige Herkunft", 0, 0L)
+            veroeffentliche("SKIPPED:keine gueltige Herkunft", 0, 0L)
             return
         }
         if (!geladen) {
@@ -278,7 +278,7 @@ class FuseExpectationRecorder(
             ladeVonPlatte(s.dir, s.stamp, s.nowTs)
         }
         blockiert?.let {
-            melde("BLOCKED:$it", 0, 0L)
+            veroeffentliche("BLOCKED:$it", 0, 0L)
             return
         }
         // OHNE LAGE WIRD NICHTS EINGEREIHT. `null` heisst nicht "egal",
@@ -309,17 +309,30 @@ class FuseExpectationRecorder(
             // Ergebnisse auszuwerten, die nie versiegelt wurden.
             persistedState = geschrieben
             entfernteErgebnisse.set(stats.droppedOutcomesTotal)
-            schreibsicht.updateAndGet { it.copy(asOfTs = s.nowTs) }
         }
-        melde(
-            "RECORDED:issued=${neu != null},settled=$abgerechnet,persisted=${stats.ok}",
-            stats.bytes, stats.durationMs,
+        // GENAU EIN AUSTAUSCH FUER ALLE VIER WERTE (Toni 18.08., P2).
+        //
+        // Der vorige Wurf hatte das AtomicReference schon, veroeffentlichte
+        // aber zweimal: erst `asOfTs`, dann Groesse/Dauer/Ergebnis. Ein Leser
+        // dazwischen sah "neuer Zeitstempel + alte Messwerte" - fuer eine
+        // Lastmessung genau die falsche Eigenschaft, denn man will wissen, wie
+        // lange DIESER Vorgang mit DIESER Groesse gedauert hat.
+        //
+        // Bei Fehlschlag bleibt allein `asOfTs` vom letzten Erfolg stehen; die
+        // drei anderen Werte stammen gemeinsam vom aktuellen Versuch. Auch das
+        // ist eine kohaerente Aussage: "zuletzt erfolgreich bei X, letzter
+        // Versuch dauerte Y und schlug fehl."
+        veroeffentliche(
+            ergebnis = "RECORDED:issued=${neu != null},settled=$abgerechnet,persisted=${stats.ok}",
+            bytes = stats.bytes,
+            dauerMs = stats.durationMs,
+            asOfTs = if (stats.written != null) s.nowTs else null,
         )
     }
 
     private fun ladeVonPlatte(dir: File, kopfstand: InterventionStamp, nowTsBeimLaden: Long) {
         if (!kopfstand.valid) {
-            melde("FAILED:ungueltiger Kopfstand", 0, 0L)
+            veroeffentliche("FAILED:ungueltiger Kopfstand", 0, 0L)
             return
         }
         when (val g = runCatching { store.load(dir, kopfstand) }.getOrNull()) {
@@ -353,23 +366,31 @@ class FuseExpectationRecorder(
                 // womit der Datenverlust unbeweisbar wurde. Jetzt klebt die
                 // Sperre, bis jemand ausdruecklich repariert.
                 blockiert = "Generation beschaedigt: ${g.reason}"
-                melde("BLOCKED:$blockiert", 0, 0L)
+                veroeffentliche("BLOCKED:$blockiert", 0, 0L)
             }
 
             null                                   -> {
                 blockiert = "Laden warf"
-                melde("BLOCKED:Laden warf", 0, 0L)
+                veroeffentliche("BLOCKED:Laden warf", 0, 0L)
             }
         }
     }
 
-    private fun melde(ergebnis: String, bytes: Int, dauerMs: Long) {
-        // EIN Austausch fuer alle drei - sonst koennte ein Leser die Groesse
-        // des einen mit der Dauer des naechsten Vorgangs sehen. `asOfTs`
-        // bleibt stehen: es gehoert zum letzten ERFOLGREICHEN Schreibvorgang,
-        // nicht zum letzten Versuch.
+    /**
+     * ALLE VIER WERTE IN EINEM AUSTAUSCH.
+     *
+     * @param asOfTs `null` heisst "unveraendert lassen" - bei einem
+     *   Fehlschlag bleibt der Stand des letzten Erfolgs stehen, waehrend
+     *   Ergebnis, Groesse und Dauer gemeinsam vom aktuellen Versuch kommen.
+     */
+    private fun veroeffentliche(ergebnis: String, bytes: Int, dauerMs: Long, asOfTs: Long? = null) {
         schreibsicht.updateAndGet {
-            it.copy(bytes = bytes, durationMs = dauerMs, lastResult = ergebnis)
+            WriteTelemetry(
+                asOfTs = asOfTs ?: it.asOfTs,
+                bytes = bytes,
+                durationMs = dauerMs,
+                lastResult = ergebnis,
+            )
         }
     }
 

@@ -708,4 +708,36 @@ class FuseExpectationRecorderTest {
         assertTrue(snap.historyTruncated, "die fruehere Kappung bleibt sichtbar")
         assertTrue(snap.droppedOutcomesTotal >= 7L, "und der Stand geht nicht verloren")
     }
+
+    /**
+     * DIE VIER SCHREIBGROESSEN SIND EINE EINHEIT (Toni 18.08., P2).
+     *
+     * Der vorige Wurf hatte das AtomicReference schon, veroeffentlichte aber
+     * zweimal: erst `asOfTs`, dann Groesse/Dauer/Ergebnis. Ein Leser
+     * dazwischen sah "neuer Zeitstempel + alte Messwerte" - fuer eine
+     * Lastmessung genau die falsche Eigenschaft.
+     */
+    @Test
+    fun `nach einem Fehlschlag bleibt asOfTs vom letzten Erfolg stehen`(@TempDir parent: File) {
+        val gut = File(parent, "gut").also { it.mkdirs() }
+        val blockiert = File(parent, "sperre").also { it.writeText("x") }
+        val schlecht = File(blockiert, "unter")
+        val r = recorder()
+
+        // Erfolg: alle vier Werte stammen von diesem Vorgang.
+        r.buche(gut, nowTs = t0, sourceTs = t0)
+        val nachErfolg = r.telemetry
+        assertEquals(t0, nachErfolg.asOfTs)
+        assertTrue(nachErfolg.bytes > 0, "eine echte Groesse")
+        assertTrue(nachErfolg.lastResult.contains("persisted=true"))
+
+        // Fehlschlag: asOfTs bleibt, die drei anderen sind vom neuen Versuch.
+        r.buche(schlecht, nowTs = t0 + 60_000L, sourceTs = t0 + 60_000L)
+        val nachFehler = r.telemetry
+        assertEquals(t0, nachFehler.asOfTs, "der Stand des letzten ERFOLGS bleibt stehen")
+        assertTrue(
+            nachFehler.lastResult.contains("persisted=false"),
+            "und das Ergebnis kommt vom aktuellen Versuch: ${nachFehler.lastResult}",
+        )
+    }
 }
