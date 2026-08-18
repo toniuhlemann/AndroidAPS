@@ -417,12 +417,12 @@ object LedgerCodec {
         val seen = o.getJSONArray("seenEpochs")
         val state = LedgerState(
             entries = entries.associateBy { it.proposalId },
-            errors = o.getJSONArray("errors").objects().map { decodeError(it) },
-            lastSnapshotOrder = o.objOrNull("lastSnapshotOrder")?.let { decodeOrder(it) },
-            lastSnapshotViewHash = o.strOrNull("lastSnapshotViewHash"),
+            errors = o.getJSONArray("errors").objects().map { decodeError(it, schemaVersion) },
+            lastSnapshotOrder = o.objOrNull("lastSnapshotOrder", schemaVersion)?.let { decodeOrder(it) },
+            lastSnapshotViewHash = o.strOrNull("lastSnapshotViewHash", schemaVersion),
             holdGeneration = o.getLong("holdGeneration"),
             seenEpochs = (0 until seen.length()).map { seen.getString(it) }.toSet(),
-            announcedEpochId = o.strOrNull("announcedEpochId"),
+            announcedEpochId = o.strOrNull("announcedEpochId", schemaVersion),
         )
         // Fix 2 (Re-Audit 6.2) + R4-02: die GANZE Generation gegen die
         // Zustandsinvarianten UND die Reducer-Zustandsmaschine pruefen -
@@ -642,13 +642,33 @@ object LedgerCodec {
         // eine beschaedigte Generation - und die leere Menge waere hier die
         // gefaehrliche Deutung: eine verbrauchte Bindungsidentitaet duerfte
         // wieder binden.
-        if (schemaVersion >= RECONCILIATION_VERSION)
+        // AB v3 ZWINGEND EIN ARRAY (Toni 18.08., Codec-Fund 2).
+        //
+        // Die Praesenzpflicht allein war wirkungslos gegen KAPUTTEN Inhalt:
+        // `has()` ist gemessen `true` fuer `"retiredBoundIds": null` und fuer
+        // jeden Nicht-Array-Wert, `optJSONArray` liefert darauf `null`, und das
+        // fruehe `?: return emptyList()` machte daraus stillschweigend die
+        // leere Menge - also genau die Deutung, die der Kommentar oben als die
+        // gefaehrliche benennt. Der Encoder schreibt an dieser Stelle immer ein
+        // echtes Array (notfalls leer); alles andere ist Fremdinhalt.
+        //
+        // Der Schaden waere nicht abstrakt: die Menge ist die PERSISTENTE
+        // Ausschlussmenge der Bindung. Leer heisst, ein bereits verbuchter
+        // fremder Bolus darf eine offene Zeile erneut binden und ihre Haftung
+        // ausbuchen, ohne dass je Insulin nachgewiesen wurde - und ausgebuchte
+        // Haftung ist freie Kapazitaet fuer die naechste Dosis.
+        if (schemaVersion >= RECONCILIATION_VERSION) {
             require(o.has("retiredBoundIds")) { "v$schemaVersion file without retiredBoundIds" }
+            require(o.optJSONArray("retiredBoundIds") != null) {
+                "v$schemaVersion retiredBoundIds is not an array"
+            }
+        }
         // opt statt get: Dateien vor Fix 6 tragen das Feld nicht - fuer sie
-        // ist die leere Menge der ehrliche Zustand, kein Fehler.
+        // ist die leere Menge der ehrliche Zustand, kein Fehler. Ab v3 kann
+        // dieser Zweig nicht mehr greifen, dort hat der require schon geworfen.
         val arr = o.optJSONArray("retiredBoundIds") ?: return emptyList()
         val list = arr.objects().map { r ->
-            RetiredBoundId(temporaryId = r.lngOrNull("temporaryId"), pumpId = r.lngOrNull("pumpId"))
+            RetiredBoundId(temporaryId = r.lngOrNull("temporaryId", schemaVersion), pumpId = r.lngOrNull("pumpId", schemaVersion))
                 .also { require(it.temporaryId != null || it.pumpId != null) { "retiredBoundIds entry without id" } }
         }
         // Defensiv auf die juengsten Eintraege kappen - der Schreiber haelt
@@ -719,7 +739,7 @@ object LedgerCodec {
             // VOLLSTAENDIG. Dieselbe Falle wie ueberall in diesem Projekt: ein
             // fehlendes Feld sieht aus wie eine gueltige Aussage, und zwar wie
             // die harmloseste.
-            val pinTyp = obj.strOrNull("pumpType")
+            val pinTyp = obj.strOrNull("pumpType", schemaVersion)
             // Das Emulationsflag ZUERST, denn es entscheidet, ob die
             // Patch-Pflicht darunter ueberhaupt gilt.
             //
@@ -772,8 +792,17 @@ object LedgerCodec {
             // widerspruechlich, und ein Wurf von dort zaehlt beim Laden wie
             // jede andere Korruption.
             val ep = ProposalPumpEpoch(
-                obj.strOrNull("pumpType"), obj.strOrNull("pumpSerialHash"), unpinned, legacyOpen,
-                patchEpochTs = if (anwendbar) obj.lngOrNull("patchEpochTs") else null,
+                obj.strOrNull("pumpType", schemaVersion), obj.strOrNull("pumpSerialHash", schemaVersion), unpinned, legacyOpen,
+                // KEIN requireWritten: dieses Feld schreibt der Encoder NUR bei
+                // `patchEpochApplicable` (s. encodePumpEpoch) - bei einer
+                // Nicht-Patch-Pumpe gibt es die Kategorie gar nicht. Seine
+                // Praesenz ist oben unter genau den passenden Bedingungen
+                // gefordert (v3 + normaler Pin + nicht emuliert + anwendbar);
+                // ein zweiter, unbedingter Riegel hier wuerde eine korrekte
+                // Medtrum-freie Datei abweisen.
+                patchEpochTs = if (anwendbar) {
+                    if (obj.isNull("patchEpochTs")) null else obj.getLong("patchEpochTs")
+                } else null,
                 patchEpochApplicable = anwendbar,
                 virtualPump = emuliert,
             )
@@ -848,26 +877,26 @@ object LedgerCodec {
         return ProposalEntry(
             proposalId = o.getString("proposalId"),
             phase = LedgerPhase.valueOf(o.getString("phase")),
-            amounts = decodeAmounts(o.getJSONObject("amounts")),
+            amounts = decodeAmounts(o.getJSONObject("amounts"), schemaVersion),
             accounting = AccountingState.valueOf(o.getString("accounting")),
             delivery = DeliveryState.valueOf(o.getString("delivery")),
-            identity = o.objOrNull("identity")?.let { decodeIdentity(it) },
-            queueReject = o.strOrNull("queueReject")?.let { QueueRejectReason.valueOf(it) },
+            identity = o.objOrNull("identity", schemaVersion)?.let { decodeIdentity(it, schemaVersion) },
+            queueReject = o.strOrNull("queueReject", schemaVersion)?.let { QueueRejectReason.valueOf(it) },
             withdrawnProven = o.getBoolean("withdrawnProven"),
             contradicted = o.getBoolean("contradicted"),
-            conservativeFloorU = requireAmountOrNull("conservativeFloorU", o.dblOrNull("conservativeFloorU")),
-            accountedAmountU = requireAmountOrNull("accountedAmountU", o.dblOrNull("accountedAmountU")),
+            conservativeFloorU = requireAmountOrNull("conservativeFloorU", o.dblOrNull("conservativeFloorU", schemaVersion)),
+            accountedAmountU = requireAmountOrNull("accountedAmountU", o.dblOrNull("accountedAmountU", schemaVersion)),
             amountEpsU = requireAmount("amountEpsU", o.getDouble("amountEpsU")),
             bolusStepU = requireAmount("bolusStepU", o.getDouble("bolusStepU")),
-            firstAccountedSnapshotHash = o.strOrNull("firstAccountedSnapshotHash"),
-            lastReconciledViewHash = o.strOrNull("lastReconciledViewHash"),
-            lastReconciledAtTs = o.lngOrNull("lastReconciledAtTs"),
+            firstAccountedSnapshotHash = o.strOrNull("firstAccountedSnapshotHash", schemaVersion),
+            lastReconciledViewHash = o.strOrNull("lastReconciledViewHash", schemaVersion),
+            lastReconciledAtTs = o.lngOrNull("lastReconciledAtTs", schemaVersion),
             // Fehlt das Feld, ist die Antwort NICHT "es gab nie einen Fakt" -
             // sie ist "wir wissen es nicht". Beide sehen als `null` gleich aus,
             // deshalb faengt der Versionsvertrag den Fall: eine Datei unter
             // RECONCILIATION_VERSION geht in den Migrations-Hold und wird gar
             // nicht erst als Laufzeitzustand uebernommen (s. decode).
-            lastPositiveFactTs = o.lngOrNull("lastPositiveFactTs"),
+            lastPositiveFactTs = o.lngOrNull("lastPositiveFactTs", schemaVersion, RECONCILIATION_VERSION),
             terminalSeen = o.getBoolean("terminalSeen"),
             failClosed = o.getBoolean("failClosed"),
             corrections = o.getInt("corrections"),
@@ -892,15 +921,15 @@ object LedgerCodec {
     // Jede Stufe der Mengenachse ist eine Insulinmenge - finite/>=0/<=50
     // (REG-01d: eine negative oder absurde Menge in der Datei darf nie
     // Buchhaltung werden, sie ist Korruptions-Befund und wirft).
-    private fun decodeAmounts(o: JSONObject): AmountAxis = AmountAxis(
+    private fun decodeAmounts(o: JSONObject, schemaVersion: Int): AmountAxis = AmountAxis(
         proposedU = requireAmount("proposedU", o.getDouble("proposedU")),
-        rtPublishedU = requireAmountOrNull("rtPublishedU", o.dblOrNull("rtPublishedU")),
-        loopConstrainedU = requireAmountOrNull("loopConstrainedU", o.dblOrNull("loopConstrainedU")),
-        queueConstrainedU = requireAmountOrNull("queueConstrainedU", o.dblOrNull("queueConstrainedU")),
-        pumpCommandU = requireAmountOrNull("pumpCommandU", o.dblOrNull("pumpCommandU")),
-        reportedDeliveredU = requireAmountOrNull("reportedDeliveredU", o.dblOrNull("reportedDeliveredU")),
-        provenDeliveredU = requireAmountOrNull("provenDeliveredU", o.dblOrNull("provenDeliveredU")),
-        dbAccountedU = requireAmountOrNull("dbAccountedU", o.dblOrNull("dbAccountedU")),
+        rtPublishedU = requireAmountOrNull("rtPublishedU", o.dblOrNull("rtPublishedU", schemaVersion)),
+        loopConstrainedU = requireAmountOrNull("loopConstrainedU", o.dblOrNull("loopConstrainedU", schemaVersion)),
+        queueConstrainedU = requireAmountOrNull("queueConstrainedU", o.dblOrNull("queueConstrainedU", schemaVersion)),
+        pumpCommandU = requireAmountOrNull("pumpCommandU", o.dblOrNull("pumpCommandU", schemaVersion)),
+        reportedDeliveredU = requireAmountOrNull("reportedDeliveredU", o.dblOrNull("reportedDeliveredU", schemaVersion)),
+        provenDeliveredU = requireAmountOrNull("provenDeliveredU", o.dblOrNull("provenDeliveredU", schemaVersion)),
+        dbAccountedU = requireAmountOrNull("dbAccountedU", o.dblOrNull("dbAccountedU", schemaVersion)),
     )
 
     private fun encodeIdentity(i: PumpTreatmentIdentity): JSONObject = JSONObject()
@@ -911,10 +940,10 @@ object LedgerCodec {
         .put("pumpSerialHash", i.pumpSerialHash)
         .put("treatmentTimestamp", i.treatmentTimestamp)
 
-    private fun decodeIdentity(o: JSONObject): PumpTreatmentIdentity = PumpTreatmentIdentity(
+    private fun decodeIdentity(o: JSONObject, schemaVersion: Int): PumpTreatmentIdentity = PumpTreatmentIdentity(
         proposalId = o.getString("proposalId"),
-        temporaryId = o.lngOrNull("temporaryId"),
-        pumpId = o.lngOrNull("pumpId"),
+        temporaryId = o.lngOrNull("temporaryId", schemaVersion),
+        pumpId = o.lngOrNull("pumpId", schemaVersion),
         pumpType = o.getString("pumpType"),
         pumpSerialHash = o.getString("pumpSerialHash"),
         treatmentTimestamp = o.getLong("treatmentTimestamp"),
@@ -932,17 +961,17 @@ object LedgerCodec {
         .putNullable("resolvedReason", r.resolvedReason)
         .putNullable("resolvedGeneration", r.resolvedGeneration)
 
-    private fun decodeError(o: JSONObject): LedgerErrorRecord = LedgerErrorRecord(
-        proposalId = o.strOrNull("proposalId"),
+    private fun decodeError(o: JSONObject, schemaVersion: Int): LedgerErrorRecord = LedgerErrorRecord(
+        proposalId = o.strOrNull("proposalId", schemaVersion),
         error = LedgerError.valueOf(o.getString("error")),
         firstDetail = o.getString("firstDetail"),
         lastDetail = o.getString("lastDetail"),
         occurrences = o.getInt("occurrences"),
         active = o.getBoolean("active"),
         activeGeneration = o.getLong("activeGeneration"),
-        resolvedBy = o.strOrNull("resolvedBy"),
-        resolvedReason = o.strOrNull("resolvedReason"),
-        resolvedGeneration = o.lngOrNull("resolvedGeneration"),
+        resolvedBy = o.strOrNull("resolvedBy", schemaVersion),
+        resolvedReason = o.strOrNull("resolvedReason", schemaVersion),
+        resolvedGeneration = o.lngOrNull("resolvedGeneration", schemaVersion),
     )
 
     private fun encodeOrder(s: SnapshotOrder): JSONObject = JSONObject()
@@ -960,10 +989,71 @@ object LedgerCodec {
 
     private fun JSONObject.putNullable(key: String, v: Any?): JSONObject = put(key, v ?: JSONObject.NULL)
 
-    private fun JSONObject.strOrNull(key: String): String? = if (isNull(key)) null else getString(key)
-    private fun JSONObject.dblOrNull(key: String): Double? = if (isNull(key)) null else getDouble(key)
-    private fun JSONObject.lngOrNull(key: String): Long? = if (isNull(key)) null else getLong(key)
-    private fun JSONObject.objOrNull(key: String): JSONObject? = if (isNull(key)) null else getJSONObject(key)
+    /**
+     * PRAESENZPFLICHT FUER EIN IMMER GESCHRIEBENES NULLABLE-FELD
+     * (Toni 18.08., Codec-Fund 1).
+     *
+     * DER BEFUND. `JSONObject.isNull(key)` liefert `true` auch fuer einen
+     * FEHLENDEN Schluessel - gemessen, nicht vermutet. Die Leser unten
+     * konnten damit "Schluessel weg" nicht von "ausdruecklich null"
+     * unterscheiden. Der Encoder schreibt den Schluessel aber IMMER:
+     * `putNullable(key, v) = put(key, v ?: JSONObject.NULL)`. Ein fehlender
+     * Schluessel kann also gar nicht vom eigenen Schreiber stammen - er ist
+     * Korruption und wurde als "kein Wert" gelesen.
+     *
+     * Bei `conservativeFloorU` heisst das konkret: die Untergrenze der
+     * Haftung faellt weg, die Schuld der Zeile sinkt auf die kleinere
+     * widersprechende Stufe - genau das, was der Reducer verhindern soll -,
+     * und die beschaedigte NEUERE Generation gewinnt gegen eine intakte
+     * aeltere, weil der Decoder nicht gemeckert hat. Der realistische Pfad
+     * dahin ist kein abgeschnittener Schreibvorgang (der parst nicht),
+     * sondern ein Bit-Flip IM SCHLUESSELNAMEN: das JSON bleibt gueltig, der
+     * Schluessel ist weg.
+     *
+     * KEINE GLOBALE VERSCHAERFUNG, sondern feld- und versionsbezogen (Tonis
+     * Auflage): aeltere Schemastaende duerfen Felder tatsaechlich noch nicht
+     * besitzen. [since] sagt, ab welcher Schemaversion der zugehoerige
+     * Encoder den Schluessel schreibt.
+     *
+     * DIE BELEGE ZU [STRICT_VERSION] ALS DEFAULT, aus der Historie dieser
+     * Datei erhoben statt geschaetzt:
+     *
+     *   26 der 27 Nullable-Felder standen schon VOR dem v2-Commit
+     *   (bae885f1f6) im Encoder - in jeder v2-Datei sind sie also da.
+     *
+     *   Genau EINES kam zwischen v2 und v3 dazu, `lastPositiveFactTs`.
+     *   Es traegt deshalb [RECONCILIATION_VERSION], und diese Ableitung
+     *   trifft die Praesenzpflicht, die dort schon von Hand stand.
+     *
+     *   Mit v3, v4 und danach kam KEIN weiteres Nullable-Feld hinzu.
+     *
+     * v1 bleibt nachsichtig: das ist der Altbestand unbekannter Herkunft,
+     * fuer den "Feld fehlt" eine ehrliche Aussage sein kann.
+     */
+    private fun JSONObject.requireWritten(key: String, schemaVersion: Int, since: Int) {
+        if (schemaVersion >= since)
+            require(has(key)) { "v$schemaVersion missing always-written field '$key'" }
+    }
+
+    private fun JSONObject.strOrNull(key: String, schemaVersion: Int, since: Int = STRICT_VERSION): String? {
+        requireWritten(key, schemaVersion, since)
+        return if (isNull(key)) null else getString(key)
+    }
+
+    private fun JSONObject.dblOrNull(key: String, schemaVersion: Int, since: Int = STRICT_VERSION): Double? {
+        requireWritten(key, schemaVersion, since)
+        return if (isNull(key)) null else getDouble(key)
+    }
+
+    private fun JSONObject.lngOrNull(key: String, schemaVersion: Int, since: Int = STRICT_VERSION): Long? {
+        requireWritten(key, schemaVersion, since)
+        return if (isNull(key)) null else getLong(key)
+    }
+
+    private fun JSONObject.objOrNull(key: String, schemaVersion: Int, since: Int = STRICT_VERSION): JSONObject? {
+        requireWritten(key, schemaVersion, since)
+        return if (isNull(key)) null else getJSONObject(key)
+    }
 
     private fun JSONArray.objects(): List<JSONObject> = (0 until length()).map { getJSONObject(it) }
 }
