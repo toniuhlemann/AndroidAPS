@@ -117,18 +117,31 @@ object MealFoundation {
             else handoverTs(armedTs, primeWindowStartTs, pinnedPrimeWindowMin, pinnedWallCeilingMin)
 
         /**
-         * DEN UEBERGANG FESTSCHREIBEN - einmal, beim tatsaechlichen Uebergang.
+         * DEN UEBERGANG FESTSCHREIBEN - nur wenn er WIRKLICH erreicht ist.
          *
-         * Ist er schon gelatcht, bleibt es dabei: ein zweiter Aufruf darf ihn
-         * nicht verschieben, sonst haette eine spaete Clearance nachtraeglich
-         * doch noch Wirkung.
+         * KEIN FREIER ZEITSTEMPEL-SETTER (Toni 18.08., P0). Der erste Wurf
+         * hiess `latched(handoverTs)` und nahm jeden Zeitpunkt entgegen. Ein
+         * Aufrufer konnte damit schon bei T+10 den damals berechneten
+         * T+15-Anker festschreiben - eine spaetere Clearance waere wieder
+         * ignoriert worden. Der gerade beseitigte Fehler blieb also ueber die
+         * API formulierbar, und genau solche Fallen findet spaeter niemand
+         * mehr: der Aufruf sieht richtig aus.
+         *
+         * Jetzt rechnet die Methode den Anker SELBST und latcht nur, wenn er
+         * erreicht ist. Ein zu frueher Aufruf tut nichts.
+         *
+         * Ist er schon gelatcht, bleibt es dabei - sonst haette eine spaete
+         * Clearance nachtraeglich doch noch Wirkung.
          */
-        fun latched(handoverTs: Long): Authorization =
-            if (latchedHandoverTs > 0L || handoverTs <= 0L) this
-            else Authorization(
+        fun latchIfDue(nowTs: Long, primeWindowStartTs: Long): Authorization {
+            if (latchedHandoverTs > 0L || !valid) return this
+            val faellig = effectiveHandoverTs(primeWindowStartTs)
+            if (faellig <= 0L || nowTs < faellig) return this
+            return Authorization(
                 armedTs, totalBudgetU, phaseAShare, pinnedPrimeWindowMin,
-                pinnedWallCeilingMin, endTs, handoverTs,
+                pinnedWallCeilingMin, endTs, faellig,
             )
+        }
 
         companion object {
 

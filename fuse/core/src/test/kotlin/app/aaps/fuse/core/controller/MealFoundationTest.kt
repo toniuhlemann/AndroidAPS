@@ -601,12 +601,48 @@ class MealFoundationTest {
         )
     }
 
-    /** Nach dem Latch steht die Uebergabe fest und wandert nicht mehr. */
+    /**
+     * VOR DER FAELLIGKEIT WIRD NICHT GELATCHT (Toni 18.08., P0).
+     *
+     * Die Methode hiess zunaechst `latched(handoverTs)` und nahm jeden
+     * Zeitpunkt entgegen - ein Aufrufer konnte bei T+10 den damals
+     * berechneten T+15-Anker festschreiben, und eine spaetere Clearance waere
+     * wieder ignoriert worden. Der beseitigte Fehler blieb ueber die API
+     * formulierbar.
+     *
+     * Der ganze Ablauf in einem Test: zu frueh tut nichts, die Clearance
+     * verschiebt weiter, und erst am wirklich erreichten Uebergang wird
+     * festgeschrieben.
+     */
     @Test
-    fun `nach dem Latch verschiebt keine Clearance mehr`() {
-        val gelatcht = armiere().latched(t0 + A_BIS * 60_000L)
+    fun `gelatcht wird erst am tatsaechlich erreichten Uebergang`() {
+        val a = armiere()
+        val clearanceBei = t0 + 10 * 60_000L
+
+        // T+5: viel zu frueh - nichts passiert.
+        val fruehVersuch = a.latchIfDue(t0 + 5 * 60_000L, primeWindowStartTs = 0L)
+        assertEquals(0L, fruehVersuch.latchedHandoverTs, "vor der Faelligkeit kein Latch")
+
+        // Die Clearance verschiebt die Uebergabe auf T+25.
         assertEquals(
-            t0 + A_BIS * 60_000L, gelatcht.effectiveHandoverTs(t0 + 30 * 60_000L),
+            clearanceBei + A_BIS * 60_000L, a.effectiveHandoverTs(clearanceBei),
+            "die Verschiebung wirkt noch",
+        )
+
+        // T+20: nach dem URSPRUENGLICHEN T+15, aber vor dem verschobenen T+25.
+        val dazwischen = a.latchIfDue(t0 + 20 * 60_000L, clearanceBei)
+        assertEquals(
+            0L, dazwischen.latchedHandoverTs,
+            "der alte Anker darf nicht nachtraeglich festgeschrieben werden",
+        )
+
+        // T+25: jetzt ist der verschobene Uebergang erreicht.
+        val gelatcht = a.latchIfDue(t0 + 25 * 60_000L, clearanceBei)
+        assertEquals(clearanceBei + A_BIS * 60_000L, gelatcht.latchedHandoverTs)
+
+        // Und danach wandert er nicht mehr.
+        assertEquals(
+            gelatcht.latchedHandoverTs, gelatcht.effectiveHandoverTs(t0 + 50 * 60_000L),
             "eine spaete Clearance hat keine rueckwirkende Kraft mehr",
         )
     }
@@ -615,9 +651,17 @@ class MealFoundationTest {
      *  die Wirkung einer Clearance nachtraeglich. */
     @Test
     fun `ein zweiter Latch ist wirkungslos`() {
-        val einmal = armiere().latched(t0 + 15 * 60_000L)
-        val zweimal = einmal.latched(t0 + 40 * 60_000L)
+        val einmal = armiere().latchIfDue(t0 + 20 * 60_000L, 0L)
+        assertTrue(einmal.latchedHandoverTs > 0L, "der erste greift")
+        val zweimal = einmal.latchIfDue(t0 + 50 * 60_000L, t0 + 40 * 60_000L)
         assertEquals(einmal.latchedHandoverTs, zweimal.latchedHandoverTs)
+    }
+
+    /** Ohne gueltige Autorisierung wird nie gelatcht. */
+    @Test
+    fun `ohne Autorisierung gibt es keinen Latch`() {
+        val ohne = MealFoundation.Authorization.none().latchIfDue(t0 + 60 * 60_000L, 0L)
+        assertEquals(0L, ohne.latchedHandoverTs)
     }
 
     // ---- Wiederherstellen ist fail-closed --------------------------------
