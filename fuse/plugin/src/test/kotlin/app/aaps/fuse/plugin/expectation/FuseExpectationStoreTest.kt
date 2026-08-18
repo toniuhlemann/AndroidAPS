@@ -128,7 +128,7 @@ class FuseExpectationStoreTest {
         store.save(dir, zustand(1), revision = 3L, kopfstand = InterventionStamp("test-epoche", 42L))
         // Die naechste Generation bleibt als .tmp liegen.
         File(dir, FuseExpectationStore.FILE_NAME + ".tmp")
-            .writeText(FuseExpectationCodec.encode(zustand(2), 4L, lastObservationGapTs = 0L), Charsets.UTF_8)
+            .writeText(FuseExpectationCodec.encode(zustand(2), 4L, lastObservationGapTs = 0L, droppedOutcomesTotal = 0L), Charsets.UTF_8)
 
         val geladen = store.load(dir, InterventionStamp("test-epoche", 42L)) as FuseExpectationStore.Loaded.Ok
         assertEquals(4L, geladen.revision, "die vollstaendige neuere Generation gewinnt")
@@ -150,7 +150,7 @@ class FuseExpectationStoreTest {
         File(dir, FuseExpectationStore.FILE_NAME)
             .renameTo(File(dir, FuseExpectationStore.FILE_NAME + ".bak"))
         File(dir, FuseExpectationStore.FILE_NAME + ".tmp")
-            .writeText(FuseExpectationCodec.encode(zustand(3), 6L, lastObservationGapTs = 0L), Charsets.UTF_8)
+            .writeText(FuseExpectationCodec.encode(zustand(3), 6L, lastObservationGapTs = 0L, droppedOutcomesTotal = 0L), Charsets.UTF_8)
         assertTrue(!File(dir, FuseExpectationStore.FILE_NAME).exists(), "der Aufbau muss stimmen")
 
         val geladen = store.load(dir, InterventionStamp("test-epoche", 42L)) as FuseExpectationStore.Loaded.Ok
@@ -227,11 +227,11 @@ class FuseExpectationStoreTest {
     @Test
     fun `die hoechste Revision gewinnt, unabhaengig von der Dateizeit`(@TempDir dir: File) {
         File(dir, FuseExpectationStore.FILE_NAME)
-            .writeText(FuseExpectationCodec.encode(zustand(1), 100L, lastObservationGapTs = 0L), Charsets.UTF_8)
+            .writeText(FuseExpectationCodec.encode(zustand(1), 100L, lastObservationGapTs = 0L, droppedOutcomesTotal = 0L), Charsets.UTF_8)
         // Die Sicherung ist NEUER auf der Platte, traegt aber die kleinere
         // Generation - sie darf nicht gewinnen.
         val bak = File(dir, FuseExpectationStore.FILE_NAME + ".bak")
-        bak.writeText(FuseExpectationCodec.encode(zustand(3), 99L, lastObservationGapTs = 0L), Charsets.UTF_8)
+        bak.writeText(FuseExpectationCodec.encode(zustand(3), 99L, lastObservationGapTs = 0L, droppedOutcomesTotal = 0L), Charsets.UTF_8)
         bak.setLastModified(System.currentTimeMillis() + 60_000L)
 
         val geladen = FuseExpectationStore(FakeDurability()).load(dir, InterventionStamp("test-epoche", 42L)) as FuseExpectationStore.Loaded.Ok
@@ -251,9 +251,9 @@ class FuseExpectationStoreTest {
     @Test
     fun `ein frueher geprueftes, aber aelteres Ergebnis gewinnt nicht`(@TempDir dir: File) {
         File(dir, FuseExpectationStore.FILE_NAME + ".tmp")
-            .writeText(FuseExpectationCodec.encode(zustand(1), 5L, lastObservationGapTs = 0L), Charsets.UTF_8)
+            .writeText(FuseExpectationCodec.encode(zustand(1), 5L, lastObservationGapTs = 0L, droppedOutcomesTotal = 0L), Charsets.UTF_8)
         File(dir, FuseExpectationStore.FILE_NAME)
-            .writeText(FuseExpectationCodec.encode(zustand(4), 10L, lastObservationGapTs = 0L), Charsets.UTF_8)
+            .writeText(FuseExpectationCodec.encode(zustand(4), 10L, lastObservationGapTs = 0L, droppedOutcomesTotal = 0L), Charsets.UTF_8)
 
         val geladen = FuseExpectationStore(FakeDurability()).load(dir, InterventionStamp("test-epoche", 42L)) as FuseExpectationStore.Loaded.Ok
         assertEquals(10L, geladen.revision, "die hoehere Generation gewinnt, nicht die zuerst geprueft")

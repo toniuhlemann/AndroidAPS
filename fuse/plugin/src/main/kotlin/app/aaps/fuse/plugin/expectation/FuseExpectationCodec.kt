@@ -41,7 +41,12 @@ object FuseExpectationCodec {
      *   ist - ohne sie waere nach einem Absturz zwischen den beiden Renames
      *   nicht feststellbar, welche Datei die neuere Wahrheit traegt.
      */
-    fun encode(state: ExpectationLedger.State, revision: Long, lastObservationGapTs: Long): String =
+    fun encode(
+        state: ExpectationLedger.State,
+        revision: Long,
+        lastObservationGapTs: Long,
+        droppedOutcomesTotal: Long,
+    ): String =
         JSONObject()
             .put("schema", SCHEMA)
             .put("revision", revision)
@@ -49,6 +54,13 @@ object FuseExpectationCodec {
             // einem Neustart nicht mehr erkennbar, dass zwischen den
             // gespeicherten Ergebnissen eine unbeobachtete Minute lag.
             .put("gapTs", lastObservationGapTs)
+            // DER TRUNKIERUNGSZAEHLER MUSS MIT (Toni 18.08.). Als reine
+            // Prozessgroesse meldete eine laengst gekappte Generation nach
+            // jedem Neustart wieder "vollstaendig" - und mehrtaegige Messdaten
+            // saehen genau dann komplett aus, wenn sie es am wenigsten sind.
+            // Er steht in DERSELBEN Generation, die erstmals kappt, nicht erst
+            // im Folgezyklus.
+            .put("droppedTotal", droppedOutcomesTotal)
             // KEIN EIGENER KOPFSTAND MEHR (Toni 18.08.): "Der Expectation-Store
             // speichert die Revision an seinen Eintraegen; die aktuelle
             // Autoritaet kommt aus dem Publikationsledger." Zwei Dateien mit
@@ -81,6 +93,7 @@ object FuseExpectationCodec {
             val state: ExpectationLedger.State,
             val revision: Long,
             val lastObservationGapTs: Long,
+            val droppedOutcomesTotal: Long,
         ) : Decoded
 
         /** Nichts da - beim Erststart der Normalfall. */
@@ -117,6 +130,7 @@ object FuseExpectationCodec {
             Roh(
                 revision,
                 o.optLong("gapTs", 0L),
+                o.optLong("droppedTotal", 0L),
                 o.getJSONArray("entries").let { a -> (0 until a.length()).map { entryOf(a.getJSONObject(it)) } },
                 o.getJSONArray("consumed").let { a ->
                     (0 until a.length()).map {
@@ -137,7 +151,7 @@ object FuseExpectationCodec {
                 kopfstand = kopfstand,
             )
         ) {
-            is ExpectationLedger.Restored.Valid   -> Decoded.Valid(r.state, roh.revision, roh.gapTs)
+            is ExpectationLedger.Restored.Valid   -> Decoded.Valid(r.state, roh.revision, roh.gapTs, roh.droppedTotal)
             is ExpectationLedger.Restored.Invalid -> Decoded.Invalid(r.reason)
         }
     }
@@ -147,6 +161,7 @@ object FuseExpectationCodec {
     private data class Roh(
         val revision: Long,
         val gapTs: Long,
+        val droppedTotal: Long,
         val entries: List<ExpectationLedger.Entry>,
         val consumed: Set<ExpectationLedger.SampleId>,
         val outcomes: List<ExpectationLedger.Outcome>,

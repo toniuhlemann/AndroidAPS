@@ -93,9 +93,36 @@ class FuseExpectationRecorder(
     var persistedState: ExpectationLedger.State = ExpectationLedger.State.empty()
         private set
 
-    @Volatile
-    var telemetry: Telemetry = Telemetry()
-        private set
+    /**
+     * DIE TELEMETRIE IST EINE BERECHNETE SICHT, KEIN GESPEICHERTER ZUSTAND
+     * (Toni 18.08.).
+     *
+     * Der erste Wurf hielt ein `@Volatile`-Feld und ersetzte es mit
+     * `telemetry.copy(...)`. Das ist ein Lese-Aendern-Schreiben ueber mehrere
+     * Felder - Producer (submit, im Loop-Thread) und Worker taten es
+     * gleichzeitig, und dabei gingen Schreibdauer, `asOfTs` oder Drop-Zaehler
+     * verloren. Ausgerechnet die LASTMESSUNG waere damit unzuverlaessig
+     * gewesen, also genau die Zahl, wegen der es den Schalter gibt.
+     *
+     * Jetzt haelt jedes Feld seinen eigenen atomaren Zaehler, und diese Sicht
+     * liest sie zusammen. Ein einzelner Aufruf kann noch einen Moment
+     * zwischen zwei Aktualisierungen erwischen - das ist eine leicht
+     * gemischte Momentaufnahme, aber kein verlorener Wert.
+     */
+    val telemetry: Telemetry
+        get() = Telemetry(
+            queueDepth = queue.size,
+            dropped = verworfen.get(),
+            asOfTs = asOfTsAtomic.get(),
+            bytes = bytesAtomic.get(),
+            durationMs = durationMsAtomic.get(),
+            lastResult = lastResultAtomic.get(),
+        )
+
+    private val asOfTsAtomic = AtomicLong(0L)
+    private val bytesAtomic = java.util.concurrent.atomic.AtomicInteger(0)
+    private val durationMsAtomic = AtomicLong(0L)
+    private val lastResultAtomic = java.util.concurrent.atomic.AtomicReference("NOT_LOADED")
 
     /**
      * ES GIBT KEINEN ZWISCHENSTAND MEHR (Toni 18.08., P0-1).
@@ -135,12 +162,19 @@ class FuseExpectationRecorder(
      * Abstandspruefung sonst gar nicht auf (zwei statt einer Minute Abstand,
      * erlaubt sind fuenf).
      */
-    @Volatile
-    private var lastObservationGapTs: Long = 0L
+    /**
+     * ATOMAR, nicht `@Volatile` (Toni 18.08.).
+     *
+     * `@Volatile` macht `maxOf(lesen, neu)` nicht unteilbar: ein Queue-Drop im
+     * Loop-Thread und das Laden im Worker koennen sich gegenseitig
+     * ueberschreiben - und ausgerechnet die Lueckenmarke duerfte nie
+     * zurueckfallen.
+     */
+    private val lastObservationGapTs = AtomicLong(0L)
 
     /** Nur fuer Tests: die Luecke muss NACHWEISBAR markiert sein, nicht nur
      *  gezaehlt - sonst laeuft die Strecke ueber sie hinweg. */
-    internal val lastObservationGapTsForTest: Long get() = lastObservationGapTs
+    internal val lastObservationGapTsForTest: Long get() = lastObservationGapTs.get()
 
     /**
      * WIE VIELE ERGEBNISSE DIE KAPPUNG SEIT PROZESSSTART ENTFERNT HAT.
@@ -149,8 +183,9 @@ class FuseExpectationRecorder(
      * vollstaendig beobachtete - `size >= MAX_OUTCOMES` allein meldet auch
      * bei exakt vollem, aber ungekuerztem Bestand faelschlich "gekuerzt".
      */
-    @Volatile
-    private var entfernteErgebnisse: Int = 0
+    /** Gesamtstand der Kappungsverluste - wird beim Laden aus der Datei
+     *  uebernommen und mit jedem Schreibvorgang fortgeschrieben. */
+    private val entfernteErgebnisse = AtomicLong(0L)
 
     private val queue = ArrayBlockingQueue<Snapshot>(queueCapacity)
     private val verworfen = AtomicLong(0)
@@ -175,9 +210,8 @@ class FuseExpectationRecorder(
             // DIE LUECKE MARKIEREN, nicht nur zaehlen. Der Zeitpunkt dieses
             // Zyklus ist der spaeteste, ab dem wieder lueckenlos beobachtet
             // wurde.
-            lastObservationGapTs = maxOf(lastObservationGapTs, snapshot.nowTs)
+            lastObservationGapTs.accumulateAndGet(snapshot.nowTs, ::maxOf)
         }
-        telemetry = telemetry.copy(queueDepth = queue.size, dropped = verworfen.get())
         return angenommen
     }
 
@@ -245,15 +279,18 @@ class FuseExpectationRecorder(
         val basis = persistedState
         val kandidat = ExpectationLedger.advance(basis, s.nowTs, neu, s.samples)
         val abgerechnet = (kandidat.outcomes.size - basis.outcomes.size).coerceAtLeast(0)
-        val stats = store.saveWithStats(s.dir, kandidat, ++revision, s.stamp, lastObservationGapTs)
+        val stats = store.saveWithStats(
+            s.dir, kandidat, ++revision, s.stamp,
+            lastObservationGapTs.get(), entfernteErgebnisse.get(),
+        )
         stats.written?.let { geschrieben ->
             // ERST JETZT ist der Stand auswertbar UND die Basis des naechsten
             // Zyklus - und zwar GENAU DER, der auf Platte steht. Den eigenen
             // Kandidaten zu uebernehmen hiesse, ab der Kappungsgrenze
             // Ergebnisse auszuwerten, die nie versiegelt wurden.
             persistedState = geschrieben
-            entfernteErgebnisse += stats.droppedOutcomes
-            telemetry = telemetry.copy(asOfTs = s.nowTs)
+            entfernteErgebnisse.set(stats.droppedOutcomesTotal)
+            asOfTsAtomic.set(s.nowTs)
         }
         melde(
             "RECORDED:issued=${neu != null},settled=$abgerechnet,persisted=${stats.ok}",
@@ -278,13 +315,15 @@ class FuseExpectationRecorder(
                 // wurde, weil der Prozess unmittelbar nach dem Verwerfen
                 // starb. Die geladenen Ergebnisse bleiben fuer den HISTORISCHEN
                 // Export erhalten; aktuell sind sie nicht mehr.
-                lastObservationGapTs = maxOf(
-                    maxOf(lastObservationGapTs, g.lastObservationGapTs), nowTsBeimLaden,
-                )
+                lastObservationGapTs.accumulateAndGet(g.lastObservationGapTs, ::maxOf)
+                lastObservationGapTs.accumulateAndGet(nowTsBeimLaden, ::maxOf)
+                // Der Trunkierungsstand kommt AUS DER DATEI - sonst meldete
+                // eine laengst gekappte Generation nach jedem Neustart wieder
+                // "vollstaendig".
+                entfernteErgebnisse.accumulateAndGet(g.droppedOutcomesTotal, ::maxOf)
                 // Die Marke ueberlebt den Neustart - sonst waere nach einem
                 // Prozesswechsel nicht mehr erkennbar, dass zwischen den
                 // gespeicherten Ergebnissen eine unbeobachtete Minute lag.
-                lastObservationGapTs = maxOf(lastObservationGapTs, g.lastObservationGapTs)
             }
 
             FuseExpectationStore.Loaded.Fresh      -> Unit
@@ -306,10 +345,9 @@ class FuseExpectationRecorder(
     }
 
     private fun melde(ergebnis: String, bytes: Int, dauerMs: Long) {
-        telemetry = telemetry.copy(
-            queueDepth = queue.size, dropped = verworfen.get(),
-            bytes = bytes, durationMs = dauerMs, lastResult = ergebnis,
-        )
+        bytesAtomic.set(bytes)
+        durationMsAtomic.set(dauerMs)
+        lastResultAtomic.set(ergebnis)
     }
 
     /**
@@ -330,7 +368,7 @@ class FuseExpectationRecorder(
             )
         return ExpectationLedger.currentLambdaEvidence(
             persistedState.outcomes, nowTs, stamp, configGeneration, segmentId, klasse,
-            minSafetyMarginMgdl, lastObservationGapTs,
+            minSafetyMarginMgdl, lastObservationGapTs.get(),
         )
     }
 
@@ -386,8 +424,8 @@ class FuseExpectationRecorder(
             // sie ist "mindestens so lang", nicht "genau so lang".
             // AUS DEM ZAEHLER, nicht aus der Groesse: `size >= MAX` meldete
             // auch bei exakt vollem, aber ungekuerztem Bestand "gekuerzt".
-            historyTruncated = entfernteErgebnisse > 0,
-            droppedOutcomesTotal = entfernteErgebnisse,
+            historyTruncated = entfernteErgebnisse.get() > 0L,
+            droppedOutcomesTotal = entfernteErgebnisse.get(),
             // Aus dem PERSISTIERTEN Zustand - er ist seit dem Store-Umbau
             // derselbe, der auf Platte steht.
             oldestRetainedDueTs = z.outcomes.minOfOrNull { it.entry.dueTs } ?: 0L,

@@ -562,13 +562,6 @@ class FuseExpectationRecorderTest {
      * Kappungsgrenze Ergebnisse aus, die nie versiegelt wurden - zwei
      * Wahrheiten ueber denselben Zustand.
      *
-     * GRENZE DIESES TESTS, ausdruecklich benannt: ueber den Recorder laesst
-     * sich die Kappung praktisch nicht ausloesen - MAX_ENTRIES begrenzt die
-     * offenen Erwartungen auf 200, es entstehen also nie mehr als 240
-     * Ergebnisse in einer Welle. Eine Mutationsprobe, die hier wieder den
-     * eigenen Kandidaten uebernimmt, bleibt deshalb gruen. Die REGEL ist am
-     * Store geprueft (FuseExpectationLoadTest: `saveWithStats meldet den
-     * gekappten Zustand`), und dort beissen die Proben.
      */
     @Test
     fun `der ausgewertete Zustand ist genau der geschriebene`(@TempDir dir: File) {
@@ -629,5 +622,90 @@ class FuseExpectationRecorderTest {
         val snap = r.exportSnapshot(t0, STAMP, CFG, SEG, korrektur(), MARGE)
         assertFalse(snap.historyTruncated)
         assertEquals(0, snap.droppedOutcomesTotal)
+    }
+
+    /**
+     * DIE KAPPUNG UEBER DEN RECORDER - Tonis Bauanleitung vom 18.08.
+     *
+     * Ich hatte das zu schnell als untestbar abgetan ("MAX_ENTRIES begrenzt
+     * die offenen Erwartungen"). Der Weg ist: die Datei mit einem vollen
+     * Bestand VORLADEN, eine faellige Erwartung dazugeben und einen Zyklus
+     * abrechnen lassen. Dann kappt der Store genau einmal, und es laesst sich
+     * pruefen, ob der Recorder den GEKAPPTEN Stand uebernimmt.
+     */
+    @Test
+    fun `bei Kappung uebernimmt der Recorder den geschriebenen Stand`(@TempDir dir: File) {
+        val store = FuseExpectationStore(FakeDurability())
+        // Voller Bestand plus EINE offene, gleich faellige Erwartung.
+        // DICHT VOR t0: der Kern beschneidet Ergebnisse aelter als
+        // OUTCOME_RETENTION_MS (4 h). Eine Fuellung aus der weiten
+        // Vergangenheit waere beim ersten `advance` verschwunden, und der Test
+        // haette die Kappung nie erreicht - genau das ist beim ersten Anlauf
+        // passiert.
+        val fuellung = (0 until FuseExpectationStore.MAX_OUTCOMES).map { i ->
+            val quelle = t0 - (i + 1) * 30_000L - H * 60_000L
+            ExpectationLedger.Outcome(
+                ExpectationLedger.Entry(
+                    quelle, quelle + H * 60_000L, SEG, 200.0, 150.0, CFG, STAMP,
+                    ExpectationLedger.ExpectationContext.CORRECTION,
+                    ExpectationLedger.ContextReason.PURE_CORRECTION,
+                    safetyLowerPredictedMgdl = 40.0,
+                ),
+                ExpectationLedger.Verdict.MISSED, quelle + H * 60_000L, 205.0,
+            )
+        }
+        val offen = ExpectationLedger.Entry(
+            t0, t0 + H * 60_000L, SEG, 200.0, 150.0, CFG, STAMP,
+            ExpectationLedger.ExpectationContext.CORRECTION,
+            ExpectationLedger.ContextReason.PURE_CORRECTION,
+            safetyLowerPredictedMgdl = 40.0,
+        )
+        val vorbereitet = when (
+            val r = ExpectationLedger.restore(listOf(offen), emptySet(), fuellung, kopfstand = STAMP)
+        ) {
+            is ExpectationLedger.Restored.Valid   -> r.state
+            is ExpectationLedger.Restored.Invalid -> error(r.reason)
+        }
+        assertTrue(store.save(dir, vorbereitet, revision = 1L, kopfstand = STAMP))
+
+        // Ein Zyklus rechnet die offene Erwartung ab -> 241 Ergebnisse -> Kappung.
+        val r = recorder()
+        val faellig = t0 + H * 60_000L
+        r.buche(dir, nowTs = faellig + 1000L, sourceTs = faellig, mean = null,
+                samples = listOf(probe(faellig, 205.0)))
+
+        val nachgeladen = store.load(dir, STAMP) as FuseExpectationStore.Loaded.Ok
+        assertEquals(
+            FuseExpectationStore.MAX_OUTCOMES, nachgeladen.state.outcomes.size,
+            "auf Platte steht der gekappte Bestand",
+        )
+        assertEquals(
+            nachgeladen.state.outcomes.size, r.persistedState.outcomes.size,
+            "und der Recorder wertet GENAU DEN aus - nicht seinen eigenen Kandidaten",
+        )
+        val snap = r.exportSnapshot(faellig + 1000L, STAMP, CFG, SEG, korrektur(), MARGE)
+        assertTrue(snap.historyTruncated, "die Kappung ist sichtbar")
+        assertEquals(1L, snap.droppedOutcomesTotal, "und beziffert")
+    }
+
+    /**
+     * DER TRUNKIERUNGSSTAND UEBERLEBT DEN NEUSTART (Toni 18.08.).
+     *
+     * Als reine Prozessgroesse meldete eine laengst gekappte Generation nach
+     * jedem Neustart wieder "vollstaendig" - mehrtaegige Messdaten saehen
+     * genau dann komplett aus, wenn sie es am wenigsten sind.
+     */
+    @Test
+    fun `der Trunkierungsstand ueberlebt einen Neustart`(@TempDir dir: File) {
+        val store = FuseExpectationStore(FakeDurability())
+        val leer = ExpectationLedger.State.empty()
+        // Eine Generation, die bereits 7 Verluste ausweist.
+        assertTrue(store.save(dir, leer, revision = 1L, kopfstand = STAMP,
+                              lastObservationGapTs = 0L, droppedOutcomesTotalBefore = 7L))
+        val neu = recorder()
+        neu.buche(dir, nowTs = t0, sourceTs = t0)
+        val snap = neu.exportSnapshot(t0, STAMP, CFG, SEG, korrektur(), MARGE)
+        assertTrue(snap.historyTruncated, "die fruehere Kappung bleibt sichtbar")
+        assertTrue(snap.droppedOutcomesTotal >= 7L, "und der Stand geht nicht verloren")
     }
 }

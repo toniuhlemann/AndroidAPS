@@ -1029,7 +1029,7 @@ object FuseStateJson {
         val historyTruncated: Boolean,
         /** Monoton: wie viele Ergebnisse die Kappung seit Prozessstart
          *  entfernt hat. Eine gekappte Strecke ist "mindestens N Minuten". */
-        val droppedOutcomesTotal: Int,
+        val droppedOutcomesTotal: Long,
         /** Aeltestes noch gehaltenes Ergebnis - davor ist nichts mehr da. */
         val oldestRetainedDueTs: Long,
     )
