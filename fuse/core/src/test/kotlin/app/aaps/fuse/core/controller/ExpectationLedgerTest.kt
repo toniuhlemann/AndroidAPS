@@ -922,6 +922,7 @@ class ExpectationLedgerTest {
         mealWindow = false,
         reboundWindow = false,
         signalHealthy = true,
+        ledgerSealed = true,
     )
 
     @Test
@@ -976,10 +977,45 @@ class ExpectationLedgerTest {
             reineKorrektur().copy(mealWindow = null) to ExpectationLedger.ContextReason.UNKNOWN_INPUT,
             reineKorrektur().copy(reboundWindow = null) to ExpectationLedger.ContextReason.UNKNOWN_INPUT,
             reineKorrektur().copy(signalHealthy = null) to ExpectationLedger.ContextReason.UNKNOWN_INPUT,
+            reineKorrektur().copy(ledgerSealed = null) to ExpectationLedger.ContextReason.UNKNOWN_INPUT,
         )
         for ((lage, grund) in faelle) assertEquals(
             ExpectationLedger.Classification(ExpectationLedger.ExpectationContext.EXCLUDED, grund),
             ExpectationLedger.classify(lage), "$lage",
+        )
+    }
+
+    /**
+     * DIE UNVERSIEGELBARE BUCHHALTUNG SUSPENDIERT DIE MESSUNG (Toni 18.08.).
+     *
+     * Solange der Ledger nicht versiegelbar ist, geht die Schutz-TBR weiter
+     * hinaus - richtig so -, aber ihr Stempel bleibt im Speicher. Eine in
+     * diesem Zustand ausgestellte Erwartung traefe nach einem Neustart auf
+     * denselben Stand wie bei ihrer Ausstellung: Gleichstand, also MET/MISSED
+     * fuer eine Strecke mit realem Eingriff. Deshalb entsteht hier gar keine.
+     */
+    @Test
+    fun `ein unversiegelbarer Ledger suspendiert die Messung`() {
+        assertEquals(
+            ExpectationLedger.Classification(
+                ExpectationLedger.ExpectationContext.EXCLUDED,
+                ExpectationLedger.ContextReason.LEDGER_UNSEALED,
+            ),
+            ExpectationLedger.classify(reineKorrektur().copy(ledgerSealed = false)),
+        )
+    }
+
+    /** Der Grund steht VOR allen anderen: ohne Siegel ist auch ueber eine
+     *  Mahlzeit keine Aussage moeglich. */
+    @Test
+    fun `der unversiegelbare Ledger schlaegt jeden anderen Grund`() {
+        for (lage in listOf(
+            reineKorrektur().copy(ledgerSealed = false, mealMarkerActive = true),
+            reineKorrektur().copy(ledgerSealed = false, reboundWindow = true),
+            reineKorrektur().copy(ledgerSealed = false, signalHealthy = false),
+        )) assertEquals(
+            ExpectationLedger.ContextReason.LEDGER_UNSEALED,
+            ExpectationLedger.classify(lage).reason, "$lage",
         )
     }
 

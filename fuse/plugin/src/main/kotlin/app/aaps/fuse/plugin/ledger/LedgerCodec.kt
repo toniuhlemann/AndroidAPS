@@ -389,6 +389,11 @@ object LedgerCodec {
             retiredBoundIds = decodeRetiredList(o, v),
             pumpEpochs = pumpEpochs,
             migrationRequired = migration,
+            // OPTIONAL LESEN, aber ohne jede Nachsicht: nur ein VOLLSTAENDIGER
+            // Stempel zaehlt. Eine halbe Angabe (Epoche ohne Sequenz oder
+            // umgekehrt) ist keine Herkunft, sondern eine Vermutung ueber eine -
+            // und die traegt hier keine Auswertung.
+            interventionStamp = decodeStamp(o),
         )
     }
 

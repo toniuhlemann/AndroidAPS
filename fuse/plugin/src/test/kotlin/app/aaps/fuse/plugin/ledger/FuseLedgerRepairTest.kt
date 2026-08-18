@@ -348,4 +348,47 @@ class FuseLedgerRepairTest {
         }
         assertTrue(a.recoveryHold)
     }
+
+    /**
+     * DIE REPARATUR EROEFFNET EINE NEUE INTERVENTIONSEPOCHE.
+     *
+     * Genau umgekehrt zur `revision`, die weiterzaehlen MUSS: die verworfene
+     * Generation kann Eingriffe getragen haben, die nie gezaehlt wurden. Ein
+     * fortgeschriebener Eingriffsstempel waere deshalb eine Luege - eine
+     * offene Erwartung von davor traefe spaeter auf einen Stand, der so
+     * aussieht, als sei nichts geschehen, und ihre verfehlte Senkung ginge
+     * als Modellwiderlegung durch.
+     *
+     * Der frische Epochenname macht jeden Eintrag von davor automatisch
+     * INTERVENED - ohne dass die Erwartungsdatei angefasst werden muss.
+     */
+    @Test
+    fun `die Nachfolgegeneration traegt eine NEUE Interventionsepoche`(@TempDir dir: File) {
+        gehaltenerLedger(dir)
+        val vorher = org.json.JSONObject(File(dir, FuseLedgerStore.FILE_NAME).readText())
+            .optString("interventionEpoch", "")
+
+        assertTrue(
+            FuseLedgerRepair.perform(dir, t0 + 1_000L, "Bediener", "Grund") is FuseLedgerRepair.Result.Done,
+        )
+
+        val nachher = org.json.JSONObject(File(dir, FuseLedgerStore.FILE_NAME).readText())
+        val neueEpoche = nachher.getString("interventionEpoch")
+        assertTrue(neueEpoche.isNotBlank(), "ein gueltiger Epochenname muss entstehen")
+        assertFalse(neueEpoche == vorher) { "und zwar ein ANDERER als vorher" }
+        assertEquals(0L, nachher.getLong("interventionSequence"), "der neue Lauf beginnt bei 0")
+
+        // UND SIE MUSS EINDEUTIG SEIN. Eine feste Kennung waere schlimmer als
+        // gar keine: nach zwei Reparaturen traefen Eintraege der ersten auf
+        // Messwerte der zweiten und saehen aus wie derselbe Lauf. Der Test
+        // oben allein faengt das nicht - eine Konstante ist auch "anders als
+        // vorher". Deshalb hier die zweite Reparatur.
+        gehaltenerLedger(dir)
+        assertTrue(
+            FuseLedgerRepair.perform(dir, t0 + 2_000L, "Bediener", "Grund") is FuseLedgerRepair.Result.Done,
+        )
+        val dritte = org.json.JSONObject(File(dir, FuseLedgerStore.FILE_NAME).readText())
+            .getString("interventionEpoch")
+        assertFalse(dritte == neueEpoche) { "zwei Reparaturen duerfen nie dieselbe Epoche ergeben" }
+    }
 }

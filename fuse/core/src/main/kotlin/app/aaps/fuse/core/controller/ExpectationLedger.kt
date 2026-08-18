@@ -98,6 +98,22 @@ object ExpectationLedger {
 
         /** Mindestens eine Lage-Groesse war unbekannt. */
         UNKNOWN_INPUT,
+
+        /**
+         * DIE BUCHHALTUNG LAESST SICH NICHT VERSIEGELN (Toni 18.08.).
+         *
+         * Solange `persistVerified` scheitert, geht die Schutz-TBR weiter
+         * hinaus - richtig so, eine Schutzmassnahme darf nicht zugunsten
+         * eines Beobachtungsledgers verschwinden -, aber ihr Stempel bleibt
+         * im Speicher. Nach einem Neustart waere er weg, und eine offene
+         * Erwartung traefe auf denselben Stand wie bei ihrer Ausstellung:
+         * Gleichstand, also MET/MISSED fuer eine Strecke mit realem Eingriff.
+         *
+         * Deshalb entsteht in diesem Zustand keine neue Erwartung. Kein
+         * Nachweis statt falscher Nachweis - und keine Sekunde weniger
+         * Schutz.
+         */
+        LEDGER_UNSEALED,
     }
 
     /** Einordnung mit Begruendung. */
@@ -137,6 +153,12 @@ object ExpectationLedger {
         val reboundWindow: Boolean?,
         /** Signalgesundheit. Ohne sie ist gar keine Lage belegt. */
         val signalHealthy: Boolean?,
+        /**
+         * Liess sich der Ledger im letzten Zyklus versiegeln? `false`
+         * suspendiert die Messung, `null` ebenfalls (unbekannt ist nicht
+         * "ja").
+         */
+        val ledgerSealed: Boolean?,
     )
 
     /**
@@ -162,8 +184,12 @@ object ExpectationLedger {
         // Markers in der Mahlzeitenanalyse.
         if (s.mealMarkerActive == null || s.evidenceEpisodeActive == null ||
             s.onsetActive == null || s.mealWindow == null ||
-            s.reboundWindow == null || s.signalHealthy == null
+            s.reboundWindow == null || s.signalHealthy == null || s.ledgerSealed == null
         ) return Classification(ExpectationContext.EXCLUDED, ContextReason.UNKNOWN_INPUT)
+        // ZUERST die Buchhaltung: ohne Siegel ist KEINE Aussage ueber
+        // zwischenzeitliche Eingriffe moeglich - auch keine ueber eine
+        // Mahlzeit. Der Grund steht deshalb vor allen anderen.
+        if (!s.ledgerSealed) return Classification(ExpectationContext.EXCLUDED, ContextReason.LEDGER_UNSEALED)
         if (!s.signalHealthy) return Classification(ExpectationContext.EXCLUDED, ContextReason.SIGNAL_UNHEALTHY)
         if (s.reboundWindow) return Classification(ExpectationContext.EXCLUDED, ContextReason.REBOUND)
 

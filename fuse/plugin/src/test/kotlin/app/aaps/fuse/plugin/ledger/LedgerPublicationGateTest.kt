@@ -9,6 +9,7 @@ import app.aaps.core.interfaces.aps.RT
 import app.aaps.fuse.core.util.Sha
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
+import org.junit.jupiter.api.Assertions.assertNotEquals
 import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertSame
@@ -435,5 +436,151 @@ class LedgerPublicationGateTest {
         a.onCycleSnapshot(listOf(LedgerFacts.fact(b)), LedgerFacts.snapshotHash(listOf(b)), t0 + 60_000L)
         assertTrue(a.state.entries.getValue("p1").closed, "Testaufbau: die Zeile sollte geschlossen sein")
         assertFalse(a.hasOpenProposal("p1"))
+    }
+
+    // ---- Der Publikationsvertrag: stempeln VOR dem Versiegeln ------------
+
+    /** Was in der DATEI steht - nicht, was das Objekt im Speicher behauptet. */
+    private fun stempelAusDatei(dir: File): InterventionStamp? {
+        val text = File(dir, "fuse_ledger.json").takeIf { it.isFile }?.readText() ?: return null
+        val o = org.json.JSONObject(text)
+        if (!o.has("interventionEpoch") || !o.has("interventionSequence")) return null
+        return InterventionStamp(o.getString("interventionEpoch"), o.getLong("interventionSequence"))
+    }
+
+    private fun rtNurTbr() = RT(
+        algorithm = APSResult.Algorithm.FUSE, timestamp = t0,
+        reason = StringBuilder("FUSE test"), rate = 0.0, duration = 30,
+    )
+
+    /**
+     * DER KERN DES VERTRAGS (Toni 18.08.): der erhoehte Stempel steht auf
+     * PLATTE, bevor publish zurueckkehrt.
+     *
+     * Nicht "der Adapter hat ihn im Speicher" - genau das waere der Zustand,
+     * den ein Prozesstod vernichtet. Der Test liest deshalb die DATEI.
+     */
+    @Test
+    fun `der erhoehte Stempel steht in der Datei, bevor das RT zurueckkommt`(@TempDir dir: File) {
+        val a = loadedAdapter(dir)
+        val vorher = a.interventionStamp
+        val out = LedgerPublicationGate.publish(
+            rtWithSmb(), a, dir, bucht,
+            published = InterventionStamp.Published(smbU = 0.30, tbrChanged = false),
+            events = { a.onPublished("p1", 0.30, t0, 0L, 0.05) },
+        )
+        assertEquals(0.30, out.rt.units!!, 1e-12, "die Menge geht hinaus")
+        val ausDatei = stempelAusDatei(dir)
+        assertEquals(vorher.epochId, ausDatei?.epochId, "dieselbe Epoche")
+        assertEquals(
+            vorher.sequence + 1, ausDatei?.sequence,
+            "der erhoehte Stand ist DURABEL, nicht nur im Speicher",
+        )
+    }
+
+    /**
+     * DIE TBR-ACHSE WIRD EBENSO GESTEMPELT.
+     *
+     * Ein Zyklus ohne SMB verlaesst das Gate ueber einen eigenen, frueheren
+     * Rueckgabepfad (`rt.units == null`). Ohne eigenen Stempel waere genau
+     * die Basalaenderung der ungezaehlte Eingriff - und sie ist die
+     * haeufigere.
+     */
+    @Test
+    fun `auch ein reiner TBR-Zyklus stempelt durabel`(@TempDir dir: File) {
+        val a = loadedAdapter(dir)
+        val vorher = a.interventionStamp
+        LedgerPublicationGate.publish(
+            rtNurTbr(), a, dir, LedgerPublicationGate.Commitment.None("kein Bolus"),
+            published = InterventionStamp.Published(smbU = 0.0, tbrChanged = true),
+            events = { },
+        )
+        assertEquals(vorher.sequence + 1, stempelAusDatei(dir)?.sequence, "die TBR zaehlt")
+    }
+
+    /** Und der ruhige Zyklus zaehlt NICHT - sonst gaebe es nie eine Strecke
+     *  ohne Eingriff und damit nie lambda-Nachweis. */
+    @Test
+    fun `ein Zyklus ohne Wirkung laesst den Stempel stehen`(@TempDir dir: File) {
+        val a = loadedAdapter(dir)
+        val vorher = a.interventionStamp
+        LedgerPublicationGate.publish(
+            rtNurTbr(), a, dir, LedgerPublicationGate.Commitment.None("kein Bolus"),
+            published = InterventionStamp.Published(smbU = 0.0, tbrChanged = false),
+            events = { },
+        )
+        assertEquals(vorher.sequence, stempelAusDatei(dir)?.sequence)
+    }
+
+    /**
+     * DAS VORAB-URTEIL SPART DEN SCHRITT, WENN NICHTS HINAUSGEHT.
+     *
+     * Faellt der SMB an einem vorab bekannten Grund weg und aendert sich auch
+     * die TBR nicht, darf der Stempel nicht steigen. Sonst kostete ein
+     * laenger stehender Hold in JEDEM Zyklus Nachweis, und es entstuende nie
+     * eine auswertbare Strecke.
+     */
+    @Test
+    fun `ein vorab gestrippter SMB ohne TBR-Aenderung zaehlt nicht`(@TempDir dir: File) {
+        val a = loadedAdapter(dir)
+        val vorher = a.interventionStamp
+        val out = LedgerPublicationGate.publish(
+            rtWithSmb(), a, dir, LedgerPublicationGate.Commitment.None("TREATMENT_VIEW_UNAVAILABLE"),
+            published = InterventionStamp.Published(smbU = 0.30, tbrChanged = false),
+            events = { },
+        )
+        assertNull(out.rt.units, "die Menge geht NICHT hinaus")
+        assertEquals(vorher.sequence, stempelAusDatei(dir)?.sequence, "also kein Schritt")
+    }
+
+    // ---- Epochenwechsel: jeder Bruch eroeffnet einen neuen Lauf ----------
+
+    /**
+     * EINE GENERATION OHNE STEMPEL EROEFFNET EINE NEUE EPOCHE - nicht
+     * Sequenz 0.
+     *
+     * Genau so sieht eine Datei aus, die zwischenzeitlich von einer aelteren
+     * APK geschrieben wurde (der Rollback-Weg, wegen dem die Felder OPTIONAL
+     * sind). Was in der Zwischenzeit dosiert wurde, weiss dann niemand - ein
+     * frischer Epochenname sagt das, eine Null behauptete einen bekannten
+     * Anfang.
+     */
+    @Test
+    fun `eine Generation ohne Stempel eroeffnet eine neue Epoche`(@TempDir dir: File) {
+        // Ein Lauf schreibt eine vollstaendige Generation ...
+        val erst = loadedAdapter(dir)
+        LedgerPublicationGate.publish(
+            rtNurTbr(), erst, dir, LedgerPublicationGate.Commitment.None("x"),
+            published = InterventionStamp.Published(smbU = 0.0, tbrChanged = true),
+            events = { },
+        )
+        val alteEpoche = stempelAusDatei(dir)!!.epochId
+
+        // ... die alte APK entfernt die beiden Felder beim naechsten Schreiben.
+        val datei = File(dir, "fuse_ledger.json")
+        val ohne = org.json.JSONObject(datei.readText())
+            .also { it.remove("interventionEpoch"); it.remove("interventionSequence") }
+        datei.writeText(ohne.toString())
+
+        // Neustart mit der neuen APK.
+        val neu = FuseLedgerAdapter().also { it.loadOnce(dir, "epoch-a", t0) }
+        assertTrue(neu.interventionStamp.valid, "ein gueltiger Stempel muss entstehen")
+        assertNotEquals(alteEpoche, neu.interventionStamp.epochId, "und zwar ein NEUER Lauf")
+        assertEquals(0L, neu.interventionStamp.sequence, "der neue Lauf beginnt bei 0")
+    }
+
+    /** Eine LESBARE Generation MIT Stempel wird dagegen fortgesetzt - sonst
+     *  gaebe es nach jedem Neustart nie eine auswertbare Strecke. */
+    @Test
+    fun `eine vollstaendige Generation setzt ihre Epoche fort`(@TempDir dir: File) {
+        val erst = loadedAdapter(dir)
+        LedgerPublicationGate.publish(
+            rtNurTbr(), erst, dir, LedgerPublicationGate.Commitment.None("x"),
+            published = InterventionStamp.Published(smbU = 0.0, tbrChanged = true),
+            events = { },
+        )
+        val geschrieben = stempelAusDatei(dir)!!
+        val neu = FuseLedgerAdapter().also { it.loadOnce(dir, "epoch-a", t0) }
+        assertEquals(geschrieben, neu.interventionStamp, "Epoche UND Sequenz ueberleben")
     }
 }

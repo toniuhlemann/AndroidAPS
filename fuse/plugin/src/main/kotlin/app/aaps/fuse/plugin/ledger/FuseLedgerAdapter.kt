@@ -989,6 +989,23 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
             // Zeile ist bedeutungslos (geprunte Zeilen sperrt retiredBoundIds).
             proposalPumpEpochs.putAll(decoded.pumpEpochs.filterKeys { it in decoded.state.entries })
         }
+        // JEDER AUSGANG VON loadOnce HINTERLAESST EINEN GUELTIGEN STEMPEL.
+        //
+        // Der erste Wurf eroeffnete die Epoche nur im Zweig "Generation
+        // gelesen". Beim ERSTSTART - leeres Verzeichnis, nichts zu laden -
+        // blieb damit der ungueltige Initialwert (leere Epoche) stehen und
+        // wurde beim naechsten Persist so in die Datei geschrieben. Eine
+        // leere Epoche ist aber die Wildcard, die auf JEDE fremde Epoche
+        // passt; genau davor soll der Stempel schuetzen. Ein Test hat das
+        // gefunden, kein Review.
+        //
+        // Derselbe Zweig faengt die Quarantaene ab (unlesbare Generationen)
+        // und den Fall `migrationPending`, in dem loadOnce frueh zurueckkehrt
+        // - beide sind ebenfalls Laufabrisse und brauchen eine neue Epoche.
+        if (!interventionStamp.valid) oeffneEpoche(
+            nowTs,
+            if (decoded == null) "NO_READABLE_GENERATION" else "STAMP_INVALID_AFTER_LOAD",
+        )
         // C8d (3): der HOLD-MARKER gilt UNABHAENGIG davon, ob der Zustand
         // sauber laedt. Er ist der einzige Zeuge, der einen Prozesswechsel
         // ueberlebt - genau daran scheiterte der alte RAM-Hold.
