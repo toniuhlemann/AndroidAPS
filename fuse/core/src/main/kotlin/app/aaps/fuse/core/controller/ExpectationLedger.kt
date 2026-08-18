@@ -255,7 +255,7 @@ object ExpectationLedger {
      * Aufrufer ruft das je Zyklus, auch nach einem Wiederanlauf mit
      * geladener Liste.
      */
-    fun add(entries: List<Entry>, neu: Entry?): List<Entry> {
+    internal fun add(entries: List<Entry>, neu: Entry?): List<Entry> {
         if (neu == null) return entries
         val vorhanden = entries.firstOrNull { it.id == neu.id } ?: return entries + neu
         // GLEICHE BASIS-ID, ABER NEUER STAND -> ERSETZEN (Toni, P1).
@@ -299,7 +299,7 @@ object ExpectationLedger {
      * darf eine damals saubere Prognose nicht nachtraeglich entwerten -
      * dasselbe gilt fuer den Konfigurationsstand.
      */
-    fun settle(
+    internal fun settle(
         entries: List<Entry>,
         nowTs: Long,
         samples: List<Sample>,
@@ -360,7 +360,7 @@ object ExpectationLedger {
 
     /** Ergebnis einer Abrechnung - die drei Teile des fortzuschreibenden
      *  Zustands. */
-    data class Settlement(
+    internal data class Settlement(
         val outcomes: List<Outcome>,
         val remaining: List<Entry>,
         val consumed: Set<SampleId>,
@@ -565,6 +565,84 @@ object ExpectationLedger {
             .filter { nowTs - it.entry.dueTs <= OUTCOME_RETENTION_MS }
             .sortedBy { it.entry.dueTs }
         return State(abrechnung.remaining, abrechnung.consumed, alle)
+    }
+
+    /**
+     * Das Ergebnis einer WIEDERHERSTELLUNG aus der Persistenz.
+     *
+     * Ein geladener Zustand ist kein gerechneter: er kommt aus einer Datei,
+     * die beschaedigt, veraltet oder manipuliert sein kann. Syntaktisch
+     * gueltig heisst nicht semantisch moeglich - ein frei eingetragenes
+     * MISSED mit plausiblen Zahlen erzeugt unmittelbar lambda-Evidenz.
+     * Deshalb prueft [restore] die Bedeutung, nicht nur die Form.
+     */
+    sealed interface Restored {
+
+        data class Valid(val state: State) : Restored
+
+        /** Semantisch unmoeglich - der Grund ist fuer den Trail benannt, die
+         *  Entscheidung trifft der Aufrufer (Store). */
+        data class Invalid(val reason: String) : Restored
+    }
+
+    /**
+     * DIE EINZIGE TUER IN EINEN GELADENEN ZUSTAND.
+     *
+     * Sie liegt im Kern und nicht im Codec, damit es nur EINE Wahrheit
+     * darueber gibt, was ein moeglicher Zustand ist. Ein Codec, der selbst
+     * pruefte, waere eine zweite - und die beiden liefen mit dem naechsten
+     * Feld auseinander.
+     *
+     * Geprueft wird, was aus dem Zustand selbst folgt: dass eine Faelligkeit
+     * nach ihrer Quelle liegt, dass eine behauptete Senkung gross genug war,
+     * um eingereiht worden zu sein, dass ein Messurteil einen Messwert hat
+     * und ein Nicht-Urteil keinen, und dass der verwendete Messwert im
+     * Zuordnungsfenster lag. Jede dieser Bedingungen kann eine echte
+     * Rechnung gar nicht verletzen - wer sie verletzt, kommt nicht aus einer
+     * Rechnung.
+     */
+    fun restore(
+        entries: List<Entry>,
+        consumed: Set<SampleId>,
+        outcomes: List<Outcome>,
+        matchToleranceMs: Long = MATCH_TOLERANCE_MS,
+        minDropMgdl: Double = MIN_PROMISED_DROP_MGDL,
+    ): Restored {
+        fun pruefeEintrag(e: Entry, wo: String): String? = when {
+            !e.anchorMgdl.isFinite() || !e.meanPredictedMgdl.isFinite() -> "$wo: Zahl nicht endlich"
+            e.configGeneration.isBlank()                                -> "$wo: leere Konfigurationskennung"
+            e.dueTs <= e.sourceTs                                       -> "$wo: dueTs <= sourceTs"
+            e.promisedDropMgdl < minDropMgdl                            ->
+                "$wo: behauptete Senkung ${e.promisedDropMgdl} unter $minDropMgdl"
+
+            e.safetyLowerPredictedMgdl?.isFinite() == false             -> "$wo: safetyLower nicht endlich"
+            e.lambda?.isFinite() == false                               -> "$wo: lambda nicht endlich"
+            else                                                        -> null
+        }
+
+        entries.forEach { e -> pruefeEintrag(e, "entry")?.let { return Restored.Invalid(it) } }
+        if (entries.map { it.id }.toSet().size != entries.size)
+            return Restored.Invalid("doppelte Entry-Kennung")
+
+        outcomes.forEach { o ->
+            pruefeEintrag(o.entry, "outcome")?.let { return Restored.Invalid(it) }
+            val hatUrteil = o.verdict == Verdict.MET || o.verdict == Verdict.MISSED
+            val hatMesswert = o.actualTs != null && o.actualMgdl != null
+            if (hatUrteil != hatMesswert) return Restored.Invalid(
+                // Ein MISSED ohne Messwert waere ein Nachweis aus dem Nichts;
+                // ein UNVERIFIABLE MIT Messwert behauptete, man haette
+                // gemessen und trotzdem nicht geurteilt.
+                "${o.verdict}: Messurteil und Messwert passen nicht zusammen",
+            )
+            if (o.actualMgdl?.isFinite() == false) return Restored.Invalid("actualMgdl nicht endlich")
+            val ts = o.actualTs
+            if (ts != null && abs(ts - o.entry.dueTs) > matchToleranceMs)
+                return Restored.Invalid("actualTs ausserhalb der Zuordnungstoleranz")
+        }
+        if (outcomes.map { it.entry.id }.toSet().size != outcomes.size)
+            return Restored.Invalid("doppelte Outcome-Kennung")
+
+        return Restored.Valid(State(entries, consumed, outcomes))
     }
 
     /** Wie weit die Ergebnisliste zurueckreicht [ms]. Vier Stunden - deutlich

@@ -44,29 +44,53 @@ object FuseExpectationCodec {
             .toString()
 
     /**
-     * @return der gelesene Zustand, oder der LEERE bei jedem Fehler - Schema,
-     *   Syntax, fehlendes Pflichtfeld, unbekanntes Verdikt, unbrauchbare Zahl.
+     * Das Ergebnis eines Ladeversuchs - DREI Faelle, nicht zwei.
+     *
+     * Der erste Wurf gab immer den leeren Zustand zurueck und machte damit
+     * "Datei fehlt" (Erststart, voellig normal) von "Datei beschaedigt"
+     * (Datenverlust, die `.bak`-Generation muss her) ununterscheidbar. Der
+     * Store haette eine kaputte Zieldatei als gueltigen Leerstand
+     * akzeptiert, statt die Sicherung zu ziehen oder einen Hold auszuloesen.
      */
-    fun decode(text: String?): ExpectationLedger.State {
-        if (text.isNullOrBlank()) return ExpectationLedger.State()
-        return runCatching {
+    sealed interface Decoded {
+
+        data class Valid(val state: ExpectationLedger.State) : Decoded
+
+        /** Nichts da - beim Erststart der Normalfall. */
+        data object Missing : Decoded
+
+        /** Unlesbar oder semantisch unmoeglich. Der Grund ist benannt; die
+         *  ENTSCHEIDUNG (Sicherung ziehen, Hold, leer weiterlaufen) trifft
+         *  ausschliesslich der Store. */
+        data class Invalid(val reason: String) : Decoded
+    }
+
+    fun decode(text: String?): Decoded {
+        if (text == null) return Decoded.Missing
+        if (text.isBlank()) return Decoded.Missing
+        val roh = runCatching {
             val o = JSONObject(text)
-            if (o.optInt("schema", -1) != SCHEMA) return ExpectationLedger.State()
-            val entries = o.getJSONArray("entries").let { a ->
-                (0 until a.length()).map { entryOf(a.getJSONObject(it)) }
-            }
-            val consumed = o.getJSONArray("consumed").let { a ->
-                (0 until a.length()).map {
-                    val e = a.getJSONObject(it)
-                    ExpectationLedger.SampleId(e.getLong("seg"), e.getLong("ts"))
-                }.toSet()
-            }
-            val outcomes = o.getJSONArray("outcomes").let { a ->
-                (0 until a.length()).map { outcomeOf(a.getJSONObject(it)) }
-            }
-            ExpectationLedger.State(entries, consumed, outcomes)
-            // GETOR-DEFAULT AUF DEN LEEREN ZUSTAND, nicht auf einen Teil davon.
-        }.getOrDefault(ExpectationLedger.State())
+            val schema = o.optInt("schema", -1)
+            if (schema != SCHEMA) return Decoded.Invalid("Schemastand $schema, erwartet $SCHEMA")
+            Triple(
+                o.getJSONArray("entries").let { a -> (0 until a.length()).map { entryOf(a.getJSONObject(it)) } },
+                o.getJSONArray("consumed").let { a ->
+                    (0 until a.length()).map {
+                        val e = a.getJSONObject(it)
+                        ExpectationLedger.SampleId(e.getLong("seg"), e.getLong("ts"))
+                    }.toSet()
+                },
+                o.getJSONArray("outcomes").let { a -> (0 until a.length()).map { outcomeOf(a.getJSONObject(it)) } },
+            )
+        }.getOrElse { return Decoded.Invalid("unlesbar: ${it.javaClass.simpleName} ${it.message.orEmpty()}") }
+
+        // DIE SEMANTIK PRUEFT DER KERN, nicht dieser Codec. Zwei Stellen mit
+        // je eigener Vorstellung davon, was moeglich ist, liefen mit dem
+        // naechsten Feld auseinander.
+        return when (val r = ExpectationLedger.restore(roh.first, roh.second, roh.third)) {
+            is ExpectationLedger.Restored.Valid   -> Decoded.Valid(r.state)
+            is ExpectationLedger.Restored.Invalid -> Decoded.Invalid(r.reason)
+        }
     }
 
     // ---- Eintrag ----------------------------------------------------------
