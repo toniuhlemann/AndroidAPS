@@ -629,6 +629,56 @@ object MealFoundation {
     }
 
     /**
+     * DER PHASE-B-LIFT (Toni 18.08.).
+     *
+     * Er hebt die Basisentscheidung auf das Fundament-Soll an - hoechstens.
+     * Die Mengenlogik dahinter ist DIESELBE wie bei Prime und steht in
+     * [AuthorizedLift]; hier stehen nur die drei Groessen, die Phase B
+     * ausmachen:
+     *
+     *   das SOLL              [Snapshot.dueU]
+     *   das RESTBUDGET        [Snapshot.remainingInWindowU]
+     *   das ZEITFENSTER       implizit - ausserhalb ist `dueU` bereits 0
+     *
+     * KEINE ONSET-HUELLE, und das ist ausdruecklich (Tonis Auflage): sie
+     * wuerde Phase B mitdeckeln, obwohl normale Onset- und Evidenzabgaben
+     * bereits ueber die max-Semantik in [contribute] und ueber die
+     * tatsaechlich gelieferte Gesamtmenge auf das Soll angerechnet sind. Sie
+     * ein zweites Mal als Kappe zu fuehren, zoege denselben Betrag zweimal
+     * ab.
+     *
+     * DIE PHASE WIRD GEPRUEFT, obwohl `dueU` ausserhalb ohnehin 0 waere. Ein
+     * Riegel, der sich auf eine andere Rechnung verlaesst, ist einer, der
+     * beim naechsten Umbau still verschwindet.
+     */
+    @Suppress("LongParameterList")
+    fun lift(
+        base: FuseController.Decision,
+        snapshot: Snapshot,
+        state: FuseController.State,
+        authorized: Boolean,
+        tailHeadroomU: Double? = null,
+        transportCommitmentU: Double = 0.0,
+        tickEps: Double = 1e-9,
+    ): FuseController.Decision {
+        if (!snapshot.armed) return base
+        if (snapshot.phase != Phase.PHASE_B) return base
+        return AuthorizedLift.lift(
+            base = base,
+            source = AuthorizedLift.Source.FOUNDATION,
+            floorU = snapshot.dueU,
+            remainingU = snapshot.remainingInWindowU,
+            state = state,
+            authorized = authorized,
+            tailHeadroomU = tailHeadroomU,
+            // KEINE Onset-Huelle - s. Blockkommentar.
+            extraCapU = null,
+            transportCommitmentU = transportCommitmentU,
+            tickEps = tickEps,
+        )
+    }
+
+    /**
      * DIE VOLLSTAENDIGE SICHT AUF DAS FUNDAMENT ZU EINEM ZEITPUNKT
      * (Punkt 12, Toni 18.08.).
      *

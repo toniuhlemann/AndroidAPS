@@ -496,6 +496,17 @@ object FuseController {
          */
         val markerAuthorizedU: Double = 0.0,
         /**
+         * WOHER die autorisierte Menge stammt - Prime oder Fundament
+         * (Toni 18.08.).
+         *
+         * `null` heisst: keine autorisierte Menge. Die HOEHE steht weiterhin
+         * in [markerAuthorizedU]; hier steht die Herkunft, und zwar
+         * typisiert. Ohne sie fuehrte der Export beide Phasen als
+         * "primeRelease", und im Replay waere nicht mehr unterscheidbar,
+         * welche geliefert hat - genau die Frage, um die es dort geht.
+         */
+        val authorizedSource: AuthorizedLift.Source? = null,
+        /**
          * BESCHREIBT DIESER ZYKLUS EINE UNSICHERE LAGE? (Toni 17.08.)
          *
          * Getrennt von der Frage, was mit dem Basal geschieht - und genau das
@@ -1039,5 +1050,8 @@ object FuseController {
     const val STAGE_BASE = "base"
     const val STAGE_CANDIDATE = "candidate"
     const val STAGE_PRIME = "prime"
+
+    /** Die nachlaufende Mindestversorgung des Mahlzeitenfundaments. */
+    const val STAGE_FOUNDATION = "foundation"
     const val STAGE_SUBSTEP = "subStep"
 }

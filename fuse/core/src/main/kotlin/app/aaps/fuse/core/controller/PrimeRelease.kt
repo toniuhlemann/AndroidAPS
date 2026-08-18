@@ -342,63 +342,25 @@ object PrimeRelease {
         // eine In-Flight-Menge doppelt in den iobTH-/maxIOB-Spielraum.
         transportCommitmentU: Double = 0.0,
     ): FuseController.Decision {
-        if (!p.active || p.floorU <= 0.0) return base
-        if (base.block !in (if (markerAuthorized) LIFTABLE_ON_MARKER else LIFTABLE)) return base
-
-        var caps = min(
-            min(state.maxSmbU, p.remainingU),
-            // Tonis IOB-Referenz-Regel: Dosier-Grenzen rechnen mit capIob,
-            // nie mit net - zurueckgehaltenes Basal ist kein SMB-Budget.
-            min(
-                state.maxIobU - state.capIobU - transportCommitmentU,
-                state.iobThU - state.capIobU - transportCommitmentU,
-            ),
-        )
-        // DER SCHWANZ IST EINE MODELLANNAHME, und ab hier trennen sich die
-        // beiden Faelle (Tonis Vertrag 11.08.):
-        //
-        // OHNE Autorisierung kappt er wie bisher. MIT Autorisierung nicht -
-        // und das ist keine Feinheit, sondern der Unterschied zwischen
-        // wirksam und wirkungslos: GEMESSEN am 11.08. ist der
-        // Schwanz-Headroom bei BG 62 <= 0, der Lift faellt damit auf 0,
-        // und weil der Lift die Autorisierungsgrenze ERZEUGT, gibt es dann
-        // auch weiter unten nichts mehr zu schuetzen. Der Boden im Runner
-        // kann diese Stelle nicht heilen, sie liegt VOR ihm.
-        //
-        // Die Huellen-Restmenge, maxSmb, iobTH, maxIOB und die
-        // Onset-Huelle bleiben unveraendert bindend - das sind
-        // Mengengrenzen, keine Prognosen.
-        if (!markerAuthorized) tailHeadroomU?.let { caps = min(caps, it) }
-        onsetCapU?.let { caps = min(caps, it) }
-        val stepped = floor(min(p.floorU, caps) / state.pumpIncrementU + TICK_EPS) * state.pumpIncrementU
-        // DIE AUTORISIERUNGSGRENZE ENTSTEHT AUCH OHNE ANHEBUNG (Toni 11.08.,
-        // Randfall 1). Sie ist eine Aussage darueber, WIEVIEL der Knopfdruck
-        // deckt - nicht darueber, ob dieser Aufruf die Menge erhoeht hat.
-        //
-        // WAS SONST PASSIERTE: Basis 0,25 U, Markerboden 0,20 U. Der Lift
-        // sah "Basis ist schon groesser" und ging unveraendert zurueck, ohne
-        // zu stempeln. Verwarf das finale Veto danach die 0,25 U, war
-        // authCap 0 - und es blieben 0 U statt der autorisierten 0,20 U. Der
-        // Markerdruck verlor also gerade dadurch seine Wirkung, dass FUSE
-        // ohnehin dosieren wollte.
-        val authorized = if (markerAuthorized && stepped >= state.pumpIncrementU) stepped else 0.0
-        if (stepped < state.pumpIncrementU || stepped <= base.smbU)
-            return if (authorized > 0.0) base.copy(markerAuthorizedU = authorized) else base
-
-        return base.copy(
-            smbU = stepped,
-            block = FuseController.Block.NONE,
-            bindingLimit = "primeRelease",
-            // S0: die Basiskappen haben diese Menge nicht bestimmt. Leere
-            // Liste mit eigener Stufe sagt das - eine stehengebliebene
-            // Basisliste behauptete das Gegenteil.
-            caps = emptyList(),
-            capsStage = FuseController.STAGE_PRIME,
-            // Die Herkunft, nicht der Betrag: nur wenn der bewusste
-            // Markerdruck sie deckt, traegt diese Menge eine manuelle
-            // Autorisierung. Sonst 0 - ein gewoehnlicher Prime-Release bleibt
-            // von jedem Schutz-Null vollstaendig gedeckelt.
-            markerAuthorizedU = authorized,
+        // OHNE PLAN KEIN LIFT - das ist die Prime-spezifische Vorbedingung
+        // und bleibt hier: [AuthorizedLift] kennt keinen Prime-Plan.
+        if (!p.active) return base
+        // ALLES WEITERE IST GEMEINSAM (Toni 18.08.). Der Rumpf stand hier und
+        // ist nach [AuthorizedLift] gewandert, damit Phase B nicht eine
+        // zweite Fassung derselben Kappen bekommt. Prime reicht seine beiden
+        // eigenen Groessen als Parameter herein: das Restbudget der Huelle
+        // und die Onset-Kappe.
+        return AuthorizedLift.lift(
+            base = base,
+            source = AuthorizedLift.Source.PRIME,
+            floorU = p.floorU,
+            remainingU = p.remainingU,
+            state = state,
+            authorized = markerAuthorized,
+            tailHeadroomU = tailHeadroomU,
+            extraCapU = onsetCapU,
+            transportCommitmentU = transportCommitmentU,
+            tickEps = TICK_EPS,
         )
     }
 }
