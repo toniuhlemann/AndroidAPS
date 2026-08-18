@@ -188,14 +188,14 @@ class MealFoundationReplayTest {
                 stand.add(ausBudget)
                 continue
             }
-            if (beitrag.foundationU > 0.0) eingriffe++
+            if (beitrag.requestedFoundationU > 0.0) eingriffe++
             val publiziert = beitrag.finalCandidateU
             ausBudget += publiziert
             primeVerbraucht += prime
             if (vorher.phase == MealFoundation.Phase.PHASE_B) seitUebergabe += publiziert
             primeSumme += prime
             evidenzSumme += evidenz
-            fundamentSumme += beitrag.foundationU
+            fundamentSumme += beitrag.requestedFoundationU
             publiziertSumme += publiziert
             stand.add(ausBudget)
         }
@@ -218,26 +218,65 @@ class MealFoundationReplayTest {
     fun `das Fundament addiert nicht auf den normalen Vorschlag`() {
         val gleich = MealFoundation.contribute(0.05, 0.05)
         assertEquals(0.05, gleich.finalCandidateU, 1e-9, "MUSS der Boden sein, nicht die Summe")
-        assertEquals(0.0, gleich.foundationU, 1e-9)
+        assertEquals(0.0, gleich.requestedFoundationU, 1e-9)
 
         val normalHoeher = MealFoundation.contribute(0.15, 0.05)
         assertEquals(0.15, normalHoeher.finalCandidateU, 1e-9)
-        assertEquals(0.0, normalHoeher.foundationU, 1e-9, "der normale Pfad traegt allein")
+        assertEquals(0.0, normalHoeher.requestedFoundationU, 1e-9, "der normale Pfad traegt allein")
 
         val fundamentHoeher = MealFoundation.contribute(0.02, 0.05)
         assertEquals(0.05, fundamentHoeher.finalCandidateU, 1e-9)
         assertEquals(
-            0.03, fundamentHoeher.foundationU, 1e-9,
+            0.03, fundamentHoeher.requestedFoundationU, 1e-9,
             "nur die DIFFERENZ ist Beitrag des Fundaments - der Rest ist fremdes Verdienst",
         )
     }
 
-    /** Unbrauchbare Eingaben lassen den normalen Vorschlag unangetastet. */
+    /**
+     * NICHT BERECHENBAR IST NICHT NULL (Toni 18.08., P0).
+     *
+     * DIESER TEST HAT DEN FEHLER FESTGESCHRIEBEN. Seine letzte Zeile lautete
+     * `assertEquals(0.05, contribute(NaN, 0.05).finalCandidateU)` - er
+     * verlangte also ausdruecklich, dass ein UNBERECHENBARER normaler
+     * Kandidat eine Fundamentdosis von 0,05 U erzeugt. Aus "ich weiss nicht,
+     * wo dieser Zyklus steht" wurde "gib etwas".
+     *
+     * Die 0 bleibt der sauberen Aussage vorbehalten, die sie schon traegt:
+     * NO_DEMAND, also kein Bedarf. Ein NaN ist etwas anderes und muss
+     * fail-closed sein.
+     */
     @Test
-    fun `unbrauchbare Eingaben veraendern den Vorschlag nicht`() {
-        assertEquals(0.10, MealFoundation.contribute(0.10, Double.NaN).finalCandidateU, 1e-9)
-        assertEquals(0.10, MealFoundation.contribute(0.10, -1.0).finalCandidateU, 1e-9)
-        assertEquals(0.05, MealFoundation.contribute(Double.NaN, 0.05).finalCandidateU, 1e-9)
+    fun `ein unberechenbarer Kandidat erzeugt keine Dosis`() {
+        for (kaputt in listOf(Double.NaN, Double.POSITIVE_INFINITY, Double.NEGATIVE_INFINITY, -0.5)) {
+            val c = MealFoundation.contribute(kaputt, 0.05)
+            assertEquals(0.0, c.finalCandidateU, 1e-9, "$kaputt darf nichts freigeben")
+            assertEquals(0.0, c.requestedFoundationU, 1e-9, "$kaputt darf nichts anfordern")
+            assertTrue(!c.usable, "$kaputt MUSS als unbrauchbar gemeldet werden")
+        }
+    }
+
+    /**
+     * DIE GEGENRICHTUNG: ein unbrauchbares SOLL laesst den normalen Vorschlag
+     * unangetastet. Hier ist die Fehlerrichtung umgekehrt - das Fundament
+     * schweigt, der bestehende Pfad laeuft weiter wie ohne Fundament.
+     */
+    @Test
+    fun `ein unbrauchbares Soll laesst den normalen Vorschlag stehen`() {
+        for (kaputt in listOf(Double.NaN, -1.0, Double.POSITIVE_INFINITY)) {
+            val c = MealFoundation.contribute(0.10, kaputt)
+            assertEquals(0.10, c.finalCandidateU, 1e-9, "Soll $kaputt")
+            assertEquals(0.0, c.requestedFoundationU, 1e-9)
+            assertTrue(c.usable, "der KANDIDAT war ja in Ordnung")
+        }
+    }
+
+    /** Und die echte Null bleibt eine gueltige Aussage - kein Bedarf. */
+    @Test
+    fun `ein Kandidat von null ist brauchbar und kein Fehler`() {
+        val c = MealFoundation.contribute(0.0, 0.05)
+        assertTrue(c.usable, "0 heisst NO_DEMAND, nicht unberechenbar")
+        assertEquals(0.05, c.finalCandidateU, 1e-9)
+        assertEquals(0.05, c.requestedFoundationU, 1e-9)
     }
 
     // ---- Abnahme 2: das gemeinsame Budget ----------------------------------

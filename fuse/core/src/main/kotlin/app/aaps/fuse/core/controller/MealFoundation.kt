@@ -578,19 +578,54 @@ object MealFoundation {
         /** Was in die gemeinsamen Gates geht - EINE Menge, nicht zwei. */
         val finalCandidateU: Double,
         /**
-         * Wieviel davon das Fundament beigesteuert hat. Nur diese Groesse
-         * gehoert in eine Fundament-Bilanz; der Rest waere fremdes Verdienst.
+         * DER ANGEFORDERTE Fundamentbeitrag - VOR den Gates (Toni 18.08.).
+         *
+         * DER NAME IST DIE ZUSICHERUNG. Er hiess vorher `foundationU`, und
+         * das war eine Einladung zum Fehler: die Zahl sieht aus wie "das hat
+         * das Fundament geliefert", ist aber nur "das hat es verlangt".
+         * Zwischen ihr und der Pumpe liegen Guard, Schwanz, iobTH, maxIOB,
+         * Transport, Ledger und Pumpengate.
+         *
+         * NIEMALS DIREKT BUCHEN. Die Bilanz darf ausschliesslich die nach dem
+         * PUBLIKATIONSGATE tatsaechlich veroeffentlichte Gesamtmenge
+         * verwenden - alles andere behauptet Insulin, das nie geflossen ist,
+         * und der Zaehler waere in genau der Richtung falsch, die spaeter zu
+         * WENIG nachliefert.
          */
-        val foundationU: Double,
+        val requestedFoundationU: Double,
+        /**
+         * War der normale Kandidat ueberhaupt berechenbar?
+         *
+         * NICHT BERECHENBAR IST NICHT NULL (Toni 18.08., P0). Die erste
+         * Fassung deutete ein `NaN` still zu 0 um - und weil das Fundament
+         * gegen 0 rechnet, ERZEUGTE ein kaputter Kandidat dadurch eine
+         * positive Dosis. Genau die falsche Richtung: aus "ich weiss es
+         * nicht" wurde "gib etwas".
+         *
+         * Die 0 bleibt der sauberen Aussage vorbehalten, die sie schon
+         * traegt: `NO_DEMAND`, also kein Bedarf.
+         */
+        val usable: Boolean,
     )
 
     fun contribute(normalCandidateU: Double, foundationDueU: Double): Contribution {
-        // Unbrauchbare Eingaben ergeben keinen Beitrag - nicht "0 statt NaN"
-        // weiterreichen, sondern den normalen Vorschlag unangetastet lassen.
-        val normal = if (normalCandidateU.isFinite() && normalCandidateU > 0.0) normalCandidateU else 0.0
+        // FAIL-CLOSED BEI UNBERECHENBAREM KANDIDATEN. Ist der normale
+        // Vorschlag NaN oder negativ, weiss dieser Zyklus nicht, wo er steht -
+        // dann darf das Fundament NICHTS beisteuern. Die fruehere Fassung
+        // setzte ihn auf 0 und liess das Fundament dagegen rechnen; aus einem
+        // kaputten Eingang wurde so eine positive Dosis.
+        if (!normalCandidateU.isFinite() || normalCandidateU < 0.0)
+            return Contribution(finalCandidateU = 0.0, requestedFoundationU = 0.0, usable = false)
+        // Ein unbrauchbares SOLL laesst den normalen Vorschlag dagegen
+        // unangetastet - hier ist die Fehlerrichtung umgekehrt: das Fundament
+        // schweigt, der bestehende Pfad laeuft weiter wie ohne Fundament.
         val soll = if (foundationDueU.isFinite() && foundationDueU > 0.0) foundationDueU else 0.0
-        val final = max(normal, soll)
-        return Contribution(finalCandidateU = final, foundationU = max(0.0, final - normal))
+        val final = max(normalCandidateU, soll)
+        return Contribution(
+            finalCandidateU = final,
+            requestedFoundationU = max(0.0, final - normalCandidateU),
+            usable = true,
+        )
     }
 
     /**
