@@ -62,7 +62,11 @@ class FuseExpectationStore(private val durability: Durability = Durability.ANDRO
     /** Was beim Laden vorgefunden wurde. */
     sealed interface Loaded {
 
-        data class Ok(val state: ExpectationLedger.State, val revision: Long) : Loaded
+        data class Ok(
+            val state: ExpectationLedger.State,
+            val revision: Long,
+            val interventionRevision: Long,
+        ) : Loaded
 
         /** Nichts da - beim Erststart der Normalfall, leer weiterlaufen. */
         data object Fresh : Loaded
@@ -92,6 +96,7 @@ class FuseExpectationStore(private val durability: Durability = Durability.ANDRO
         var gabEs = false
         var besteState: ExpectationLedger.State? = null
         var besteRevision = Long.MIN_VALUE
+        var besteInterv = 0L
         val gruende = mutableListOf<String>()
         for (f in kandidaten) {
             val text = runCatching { if (f.isFile) f.readText(Charsets.UTF_8) else null }.getOrNull() ?: continue
@@ -101,13 +106,14 @@ class FuseExpectationStore(private val durability: Durability = Durability.ANDRO
                     if (d.revision > besteRevision) {
                         besteState = d.state
                         besteRevision = d.revision
+                        besteInterv = d.interventionRevision
                     }
 
                 is FuseExpectationCodec.Decoded.Invalid -> gruende += f.name + ": " + d.reason
                 FuseExpectationCodec.Decoded.Missing    -> Unit
             }
         }
-        besteState?.let { return Loaded.Ok(it, besteRevision) }
+        besteState?.let { return Loaded.Ok(it, besteRevision, besteInterv) }
         return if (gabEs) Loaded.Corrupt(gruende.joinToString("; ").ifBlank { "keine lesbare Generation" })
         else Loaded.Fresh
     }
@@ -121,8 +127,13 @@ class FuseExpectationStore(private val durability: Durability = Durability.ANDRO
      *   koennen - eine still nicht geschriebene Generation faellt sonst erst
      *   beim naechsten Neustart auf.
      */
-    fun save(dir: File, state: ExpectationLedger.State, revision: Long): Boolean = runCatching {
-        val inhalt = FuseExpectationCodec.encode(kappen(state), revision)
+    fun save(
+        dir: File,
+        state: ExpectationLedger.State,
+        revision: Long,
+        interventionRevision: Long,
+    ): Boolean = runCatching {
+        val inhalt = FuseExpectationCodec.encode(kappen(state, interventionRevision), revision, interventionRevision)
         val tmp = File(dir, FILE_NAME + ".tmp")
         val ziel = File(dir, FILE_NAME)
         val bak = File(dir, FILE_NAME + ".bak")
@@ -160,7 +171,7 @@ class FuseExpectationStore(private val durability: Durability = Durability.ANDRO
      * geschrieben worden waere. Ein stilles Kuerzen im Schreibpfad waere
      * genau die Art Datenverlust, die man erst Wochen spaeter bemerkt.
      */
-    internal fun kappen(state: ExpectationLedger.State): ExpectationLedger.State {
+    internal fun kappen(state: ExpectationLedger.State, interventionRevision: Long): ExpectationLedger.State {
         if (state.entries.size <= MAX_ENTRIES &&
             state.outcomes.size <= MAX_OUTCOMES &&
             state.consumed.size <= MAX_CONSUMED
@@ -171,7 +182,11 @@ class FuseExpectationStore(private val durability: Durability = Durability.ANDRO
         // Ueber restore, damit auch eine gekappte Generation die
         // Semantikpruefung besteht - sonst schriebe das Kappen einen
         // Zustand, den das Laden anschliessend verwirft.
-        return when (val r = ExpectationLedger.restore(entries, consumed, outcomes)) {
+        return when (
+            val r = ExpectationLedger.restore(
+                entries, consumed, outcomes, interventionRevision = interventionRevision,
+            )
+        ) {
             is ExpectationLedger.Restored.Valid   -> r.state
             is ExpectationLedger.Restored.Invalid -> ExpectationLedger.State.empty()
         }

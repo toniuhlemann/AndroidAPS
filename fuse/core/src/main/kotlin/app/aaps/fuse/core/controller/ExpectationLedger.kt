@@ -787,6 +787,7 @@ object ExpectationLedger {
         entries: List<Entry>,
         consumed: Set<SampleId>,
         outcomes: List<Outcome>,
+        interventionRevision: Long,
         matchToleranceMs: Long = MATCH_TOLERANCE_MS,
         minDropMgdl: Double = MIN_PROMISED_DROP_MGDL,
     ): Restored {
@@ -801,6 +802,24 @@ object ExpectationLedger {
             e.lambda?.isFinite() == false                               -> "$wo: lambda nicht endlich"
             else                                                        -> null
         }
+
+        // KEINE BEHAUPTUNG AUS DER ZUKUNFT.
+        //
+        // Jeder Eintrag traegt die Interventionsrevision, unter der er
+        // behauptet wurde. Ist sie HOEHER als der wiederhergestellte Stand,
+        // sind Kopf und Eintraege auseinandergelaufen - und zwar in die
+        // gefaehrliche Richtung: der Vergleich bei der Abrechnung saehe dann
+        // "gleich geblieben" fuer eine Strecke, in der sehr wohl eingegriffen
+        // wurde, und machte daraus lambda-Evidenz. Die ganze Generation ist
+        // damit unbrauchbar; sie zu retten hiesse, den Widerspruch zu
+        // behalten und ihn nur nicht mehr zu sehen.
+        if (interventionRevision < 0L) return Restored.Invalid("negative Interventionsrevision $interventionRevision")
+        (entries.map { it.interventionRevision } + outcomes.map { it.entry.interventionRevision })
+            .maxOrNull()?.let { hoechste ->
+                if (hoechste > interventionRevision) return Restored.Invalid(
+                    "Eintrag mit Interventionsrevision $hoechste ueber dem Stand $interventionRevision",
+                )
+            }
 
         entries.forEach { e -> pruefeEintrag(e, "entry")?.let { return Restored.Invalid(it) } }
         if (entries.map { it.id }.toSet().size != entries.size)

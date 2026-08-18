@@ -805,6 +805,52 @@ class ExpectationLedgerTest {
         )
     }
 
+    // ---- Die Interventionsrevision beim Wiederherstellen ----------------
+
+    private fun eintragMitRevision(rev: Long) = ExpectationLedger.Entry(
+        t0, t0 + H * 60_000L, SEG, 200.0, 150.0, CFG, rev, KTX, KGRUND,
+        safetyLowerPredictedMgdl = 40.0,
+    )
+
+    /**
+     * KEINE BEHAUPTUNG AUS DER ZUKUNFT - im KERN geprueft, nicht nur im Codec.
+     *
+     * Der Codec faengt den Fall heute frueher ab. Das ist kein Ersatz: restore
+     * hat mehr als einen Aufrufer (der Store kappt darueber, der Runner wird
+     * folgen), und ein Riegel, der nur an einer Aufrufstelle sitzt, schuetzt
+     * nur diese eine.
+     */
+    @Test
+    fun `ein Eintrag ueber dem Interventionsstand macht den Zustand ungueltig`() {
+        val r = ExpectationLedger.restore(
+            listOf(eintragMitRevision(50L)), emptySet(), emptyList(), interventionRevision = 49L,
+        )
+        assertTrue(r is ExpectationLedger.Restored.Invalid, "$r")
+    }
+
+    @Test
+    fun `auch ein Ergebnis ueber dem Interventionsstand macht den Zustand ungueltig`() {
+        val erg = ExpectationLedger.Outcome(
+            eintragMitRevision(50L), ExpectationLedger.Verdict.MISSED, t0 + H * 60_000L, 205.0,
+        )
+        val r = ExpectationLedger.restore(emptyList(), emptySet(), listOf(erg), interventionRevision = 49L)
+        assertTrue(r is ExpectationLedger.Restored.Invalid, "$r")
+    }
+
+    @Test
+    fun `gleichstand ist zulaessig - der Eintrag stammt aus genau diesem Stand`() {
+        val r = ExpectationLedger.restore(
+            listOf(eintragMitRevision(50L)), emptySet(), emptyList(), interventionRevision = 50L,
+        )
+        assertTrue(r is ExpectationLedger.Restored.Valid, "$r")
+    }
+
+    @Test
+    fun `eine negative Interventionsrevision macht den Zustand ungueltig`() {
+        val r = ExpectationLedger.restore(emptyList(), emptySet(), emptyList(), interventionRevision = -1L)
+        assertTrue(r is ExpectationLedger.Restored.Invalid, "$r")
+    }
+
     // ---- Der Klassifikator: drei Toepfe, jeder mit Begruendung ----------
 
     /** Reine Korrekturlage - ALLES ausdruecklich belegt. */

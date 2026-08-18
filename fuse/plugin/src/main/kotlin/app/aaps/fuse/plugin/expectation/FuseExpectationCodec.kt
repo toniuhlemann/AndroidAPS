@@ -34,10 +34,25 @@ object FuseExpectationCodec {
      *   ist - ohne sie waere nach einem Absturz zwischen den beiden Renames
      *   nicht feststellbar, welche Datei die neuere Wahrheit traegt.
      */
-    fun encode(state: ExpectationLedger.State, revision: Long): String =
+    fun encode(state: ExpectationLedger.State, revision: Long, interventionRevision: Long): String =
         JSONObject()
             .put("schema", SCHEMA)
             .put("revision", revision)
+            // ZWEI ZAEHLER MIT VERSCHIEDENER BEDEUTUNG, bewusst nicht
+            // zusammengelegt: `revision` sagt, welche DATEI die juengere ist;
+            // `interv` sagt, wie oft FUSE seit Beginn eine Menge publiziert
+            // hat. Die Datei wird jeden Zyklus geschrieben, publiziert wird
+            // nur manchmal - eine Zahl fuer beides waere in dem Moment falsch,
+            // in dem sie gebraucht wird.
+            //
+            // WARUM SIE MIT IN DIE DATEI MUSS: die Eintraege tragen die
+            // Revision, unter der sie behauptet wurden. Ueberlebten sie einen
+            // Neustart, waehrend der Zaehler bei 0 neu begaenne, verglichen
+            // sie gegen einen kleineren Stand - und ein Eingriff waere
+            // unsichtbar. Beide stehen deshalb in DERSELBEN Datei: geht sie
+            // verloren, gehen beide verloren, und der leere Zustand ist
+            // stimmig.
+            .put("interv", interventionRevision)
             .put("entries", JSONArray().apply { state.entries.forEach { put(entryJson(it)) } })
             .put(
                 "consumed",
@@ -61,7 +76,11 @@ object FuseExpectationCodec {
      */
     sealed interface Decoded {
 
-        data class Valid(val state: ExpectationLedger.State, val revision: Long) : Decoded
+        data class Valid(
+            val state: ExpectationLedger.State,
+            val revision: Long,
+            val interventionRevision: Long,
+        ) : Decoded
 
         /** Nichts da - beim Erststart der Normalfall. */
         data object Missing : Decoded
@@ -88,8 +107,11 @@ object FuseExpectationCodec {
             // Eine negative Generation kann nicht aus einem Schreibvorgang
             // stammen - sie waere ein Rueckwaertssprung in der Reihenfolge.
             require(revision >= 0L) { "negative Revision $revision" }
-            Quadruple(
+            val interv = o.getLong("interv")
+            require(interv >= 0L) { "negative Interventionsrevision $interv" }
+            Roh(
                 revision,
+                interv,
                 o.getJSONArray("entries").let { a -> (0 until a.length()).map { entryOf(a.getJSONObject(it)) } },
                 o.getJSONArray("consumed").let { a ->
                     (0 until a.length()).map {
@@ -104,16 +126,22 @@ object FuseExpectationCodec {
         // DIE SEMANTIK PRUEFT DER KERN, nicht dieser Codec. Zwei Stellen mit
         // je eigener Vorstellung davon, was moeglich ist, liefen mit dem
         // naechsten Feld auseinander.
-        return when (val r = ExpectationLedger.restore(roh.entries, roh.consumed, roh.outcomes)) {
-            is ExpectationLedger.Restored.Valid   -> Decoded.Valid(r.state, roh.revision)
+        return when (
+            val r = ExpectationLedger.restore(
+                roh.entries, roh.consumed, roh.outcomes,
+                interventionRevision = roh.interv,
+            )
+        ) {
+            is ExpectationLedger.Restored.Valid   -> Decoded.Valid(r.state, roh.revision, roh.interv)
             is ExpectationLedger.Restored.Invalid -> Decoded.Invalid(r.reason)
         }
     }
 
-    /** Vier Werte aus dem Rohparser - `Triple` reicht seit der Revision nicht
-     *  mehr, und ein namenloses Tupel waere an der Aufrufstelle nicht lesbar. */
-    private data class Quadruple(
+    /** Was der Rohparser herausholt - benannt, weil ein namenloses Tupel mit
+     *  ZWEI Long-Feldern an der Aufrufstelle vertauschbar waere. */
+    private data class Roh(
         val revision: Long,
+        val interv: Long,
         val entries: List<ExpectationLedger.Entry>,
         val consumed: Set<ExpectationLedger.SampleId>,
         val outcomes: List<ExpectationLedger.Outcome>,
