@@ -664,4 +664,54 @@ class ExpectationLedgerTest {
             )
         }
     }
+
+    // ---- advance: die geschlossene Klammer -------------------------------
+
+    /**
+     * EINE BEREITS ABGERECHNETE PROGNOSE WIRD NICHT ERNEUT EINGEREIHT
+     * (Toni, P0 - zweite Haelfte).
+     *
+     * Die Restore-Pruefung faengt eine Datei ab, in der dieselbe Kennung
+     * offen UND abgerechnet steht. Sie kann aber nicht verhindern, dass zur
+     * LAUFZEIT eine schon abgerechnete Prognose noch einmal angeboten wird -
+     * etwa wenn der Aufrufer nach einem Wiederanlauf denselben Zyklus
+     * wiederholt. Dann liefe sie ein zweites Mal durch `settle` und
+     * erzeugte doppelte Evidenz aus einer einzigen Prognose.
+     */
+    @Test
+    fun `advance reiht eine bereits abgerechnete Prognose nicht erneut ein`() {
+        val e = eintrag()
+        // Zyklus 1: einreihen und abrechnen.
+        val nachEins = ExpectationLedger.advance(
+            ExpectationLedger.State.empty(), e.dueTs, e, listOf(probe(e.dueTs, 205.0)),
+        )
+        assertEquals(1, nachEins.outcomes.size, "abgerechnet")
+        assertTrue(nachEins.entries.isEmpty(), "und nicht mehr offen")
+
+        // Zyklus 2: DIESELBE Prognose wird noch einmal angeboten.
+        val nachZwei = ExpectationLedger.advance(
+            nachEins, e.dueTs + 60_000L, e, listOf(probe(e.dueTs + 60_000L, 205.0)),
+        )
+        assertTrue(
+            nachZwei.entries.none { it.id == e.id },
+            "sie darf nicht wieder offen werden",
+        )
+        assertEquals(
+            1, nachZwei.outcomes.count { it.entry.id == e.id },
+            "und genau EIN Ergebnis tragen, nicht zwei",
+        )
+    }
+
+    /** Die Gegenprobe: eine NEUE Prognose wird selbstverstaendlich
+     *  eingereiht - der Filter darf nicht alles blocken. */
+    @Test
+    fun `advance reiht eine neue Prognose ein`() {
+        val e = eintrag()
+        val nachEins = ExpectationLedger.advance(
+            ExpectationLedger.State.empty(), e.dueTs, e, listOf(probe(e.dueTs, 205.0)),
+        )
+        val neu = eintrag(source = t0 + 10 * 60_000L)
+        val nachZwei = ExpectationLedger.advance(nachEins, e.dueTs + 60_000L, neu, emptyList())
+        assertTrue(nachZwei.entries.any { it.id == neu.id }, "die neue muss offen sein")
+    }
 }

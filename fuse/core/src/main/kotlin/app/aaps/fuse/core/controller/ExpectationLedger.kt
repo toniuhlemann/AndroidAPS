@@ -529,13 +529,28 @@ object ExpectationLedger {
      * richtige Ersatz der leere Zustand, nicht ein teilweise gelesener. Ein
      * leerer Zustand verzoegert den Nachweis; ein halber erfindet ihn.
      */
-    data class State(
-        val entries: List<Entry> = emptyList(),
-        val consumed: Set<SampleId> = emptySet(),
-        val outcomes: List<Outcome> = emptyList(),
+    class State internal constructor(
+        val entries: List<Entry>,
+        val consumed: Set<SampleId>,
+        val outcomes: List<Outcome>,
     ) {
 
         val isEmpty: Boolean get() = entries.isEmpty() && consumed.isEmpty() && outcomes.isEmpty()
+
+        /**
+         * KEINE `data class`, und das ist Absicht (Toni, P1).
+         *
+         * Eine data class haette `copy()` mitgebracht - und damit die
+         * Moeglichkeit, aus einer gueltigen Generation eine Teilgeneration zu
+         * bauen: `state.copy(consumed = emptySet())` sieht harmlos aus und
+         * gibt jeden bereits verbrauchten Messwert wieder frei. Der
+         * Konstruktor ist `internal`, die einzigen oeffentlichen Wege in
+         * einen Zustand sind [empty] und [restore].
+         */
+        companion object {
+
+            fun empty() = State(emptyList(), emptySet(), emptyList())
+        }
     }
 
     /**
@@ -559,7 +574,13 @@ object ExpectationLedger {
         toleranceMgdl: Double = SETTLE_TOLERANCE_MGDL,
         matchToleranceMs: Long = MATCH_TOLERANCE_MS,
     ): State {
-        val mitNeuem = add(state.entries, neu)
+        // NICHTS EINREIHEN, WAS SCHON ABGERECHNET IST (Toni, P0). Sonst
+        // liefe dieselbe Prognose ein zweites Mal durch `settle` und
+        // erzeugte doppelte Evidenz - etwa wenn der Aufrufer nach einem
+        // Wiederanlauf denselben Zyklus noch einmal anbietet.
+        val bereitsAbgerechnet = state.outcomes.map { it.entry.id }.toSet()
+        val zulaessig = neu?.takeIf { it.id !in bereitsAbgerechnet }
+        val mitNeuem = add(state.entries, zulaessig)
         val abrechnung = settle(mitNeuem, nowTs, samples, state.consumed, toleranceMgdl, matchToleranceMs)
         val alle = (state.outcomes + abrechnung.outcomes)
             .filter { nowTs - it.entry.dueTs <= OUTCOME_RETENTION_MS }
@@ -627,12 +648,21 @@ object ExpectationLedger {
         outcomes.forEach { o ->
             pruefeEintrag(o.entry, "outcome")?.let { return Restored.Invalid(it) }
             val hatUrteil = o.verdict == Verdict.MET || o.verdict == Verdict.MISSED
-            val hatMesswert = o.actualTs != null && o.actualMgdl != null
-            if (hatUrteil != hatMesswert) return Restored.Invalid(
-                // Ein MISSED ohne Messwert waere ein Nachweis aus dem Nichts;
-                // ein UNVERIFIABLE MIT Messwert behauptete, man haette
+            // BEIDE Felder oder KEINES - ein halbes Messurteil gibt es nicht.
+            // Der erste Wurf pruefte `actualTs != null && actualMgdl != null`;
+            // damit rutschte ein INTERVENED mit NUR einem der beiden Felder
+            // durch, weil `hatMesswert` dann false war und zu "kein Urteil"
+            // passte (Toni, P1).
+            val vollstaendig = o.actualTs != null && o.actualMgdl != null
+            val teilweise = o.actualTs != null || o.actualMgdl != null
+            if (hatUrteil && !vollstaendig) return Restored.Invalid(
+                // Ein MISSED ohne Messwert waere ein Nachweis aus dem Nichts.
+                "${o.verdict}: Messurteil ohne vollstaendigen Messwert",
+            )
+            if (!hatUrteil && teilweise) return Restored.Invalid(
+                // Ein UNVERIFIABLE MIT Messwert behauptete, man haette
                 // gemessen und trotzdem nicht geurteilt.
-                "${o.verdict}: Messurteil und Messwert passen nicht zusammen",
+                "${o.verdict}: Nicht-Urteil traegt einen Messwert",
             )
             if (o.actualMgdl?.isFinite() == false) return Restored.Invalid("actualMgdl nicht endlich")
             val ts = o.actualTs
@@ -641,6 +671,16 @@ object ExpectationLedger {
         }
         if (outcomes.map { it.entry.id }.toSet().size != outcomes.size)
             return Restored.Invalid("doppelte Outcome-Kennung")
+
+        // LISTUEBERGREIFEND EINDEUTIG (Toni, P0). Beide Listen waren nur
+        // INTERN duplikatfrei - dieselbe Kennung konnte gleichzeitig offen
+        // UND abgerechnet sein. Die offene Fassung wuerde dann ein zweites
+        // Mal abgerechnet und erzeugte doppelte Evidenz aus einer einzigen
+        // Prognose. Eine echte Rechnung kann das nicht herstellen: `settle`
+        // nimmt jeden abgerechneten Eintrag aus `remaining` heraus.
+        val ueberschneidung = entries.map { it.id }.toSet() intersect outcomes.map { it.entry.id }.toSet()
+        if (ueberschneidung.isNotEmpty())
+            return Restored.Invalid("Kennung zugleich offen und abgerechnet: ${ueberschneidung.first()}")
 
         return Restored.Valid(State(entries, consumed, outcomes))
     }

@@ -66,8 +66,13 @@ object FuseExpectationCodec {
     }
 
     fun decode(text: String?): Decoded {
+        // NUR `null` HEISST "DATEI FEHLT" (Toni, P1). Eine VORHANDENE Datei
+        // aus Whitespace oder Null-Bytes ist beschaedigt - sie als Missing zu
+        // melden liesse den Store leer weiterlaufen, statt die
+        // .bak-Generation zu ziehen. Genau dieser Fall entsteht bei einem
+        // abgebrochenen Schreibvorgang.
         if (text == null) return Decoded.Missing
-        if (text.isBlank()) return Decoded.Missing
+        if (text.isBlank()) return Decoded.Invalid("Datei vorhanden, aber leer oder nur Leerraum")
         val roh = runCatching {
             val o = JSONObject(text)
             val schema = o.optInt("schema", -1)
