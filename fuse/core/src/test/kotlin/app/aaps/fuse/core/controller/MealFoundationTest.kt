@@ -39,7 +39,7 @@ class MealFoundationTest {
         nowTs = t0 + (minuten * 60_000).toLong(),
         handoverTs = t0 + A_BIS * 60_000L,
         totalBudgetU = BUDGET,
-        phaseAShare = A_SHARE,
+        phaseBBudgetU = B_BUDGET,
         phaseBUntilMin = B_BIS,
         deliveredFromBudgetU = geflossenU,
         deliveredSinceHandoverU = seitUebergabeU,
@@ -233,9 +233,9 @@ class MealFoundationTest {
         val H = t0 + A_BIS * 60_000L
         fun p(
             marker: Long = t0, jetzt: Long = t0 + 30 * 60_000L, uebergabe: Long = H,
-            budget: Double = BUDGET, anteil: Double = A_SHARE, ende: Int = B_BIS,
+            budget: Double = BUDGET, bBudget: Double = B_BUDGET, ende: Int = B_BIS,
             geflossen: Double = 0.0, seitUebergabe: Double = 0.0, step: Double = STEP,
-        ) = MealFoundation.plan(marker, jetzt, uebergabe, budget, anteil, ende, geflossen, seitUebergabe, step)
+        ) = MealFoundation.plan(marker, jetzt, uebergabe, budget, bBudget, ende, geflossen, seitUebergabe, step)
 
         val faelle = listOf(
             "kein Marker" to p(marker = 0L),
@@ -243,8 +243,11 @@ class MealFoundationTest {
             "Uebergabe vor Marker" to p(uebergabe = t0 - 1000L),
             "Budget NaN" to p(budget = Double.NaN),
             "Budget 0" to p(budget = 0.0),
-            "Anteil ueber 1" to p(anteil = 1.5),
-            "Anteil NaN" to p(anteil = Double.NaN),
+            // Seit plan() das Teilbudget DIREKT bekommt, sind das die
+            // Widersprueche, die eine kaputte Quelle liefern koennte.
+            "Teilbudget ueber Gesamt" to p(bBudget = BUDGET + 0.5),
+            "Teilbudget NaN" to p(bBudget = Double.NaN),
+            "Teilbudget negativ" to p(bBudget = -0.1),
             "Schritt 0" to p(step = 0.0),
             "Schritt NaN" to p(step = Double.NaN),
             "geflossen negativ" to p(geflossen = -1.0),
@@ -268,7 +271,7 @@ class MealFoundationTest {
         for (m in listOf(0.0, 15.0, 30.0, 60.0, 90.0)) {
             val p = MealFoundation.plan(
                 t0, t0 + (m * 60_000).toLong(), t0 + A_BIS * 60_000L, BUDGET,
-                phaseAShare = 1.0, phaseBUntilMin = B_BIS,
+                phaseBBudgetU = 0.0, phaseBUntilMin = B_BIS,
                 deliveredFromBudgetU = 3.0, deliveredSinceHandoverU = 0.0, bolusStepU = STEP,
             )
             assertEquals(0.0, p.dueU, 1e-9, "bei T+$m")
@@ -453,7 +456,7 @@ class MealFoundationTest {
         // Uebergabe bei T+30, Ende weiterhin bei T+60: halbes Fenster.
         val p = MealFoundation.plan(
             markerTs = t0, nowTs = t0 + 45 * 60_000L, handoverTs = spaet,
-            totalBudgetU = BUDGET, phaseAShare = A_SHARE, phaseBUntilMin = B_BIS,
+            totalBudgetU = BUDGET, phaseBBudgetU = B_BUDGET, phaseBUntilMin = B_BIS,
             deliveredFromBudgetU = 2.25, deliveredSinceHandoverU = 0.0, bolusStepU = STEP,
         )
         assertEquals(
@@ -477,6 +480,44 @@ class MealFoundationTest {
         assertEquals(
             MealFoundation.Binding.COVERED_BY_DELIVERY, p.binding,
             "der Grund benennt die MENGE, nicht ihre Herkunft",
+        )
+    }
+
+    /**
+     * DIE UEBERGABE FOLGT DEM GEKAPPTEN PRIME-FENSTER, nicht dem eingestellten.
+     *
+     * PrimeRelease.plan kappt sein Fenster auf 5..WALL_CEILING_MIN. Waere die
+     * Uebergabe ungekappt, entstuende bei einem zu grossen Fenster eine Strecke,
+     * auf der WEDER Prime noch das Fundament liefert - Prime hat geschlossen,
+     * das Fundament haelt sich noch fuer Phase A. Bei einem zu kleinen liefen
+     * beide gleichzeitig.
+     *
+     * Heute decken sich Kappung und Einstellgrenzen (5..45). Genau darauf soll
+     * sich der Anker aber NICHT verlassen.
+     */
+    @Test
+    fun `die Uebergabe folgt der Kappung des Prime-Fensters`() {
+        // Zu gross: 60 eingestellt, Prime schliesst trotzdem bei 45.
+        assertEquals(
+            t0 + 45 * 60_000L,
+            MealFoundation.handoverTs(t0, 0L, primeWindowMin = 60, wallCeilingMin = 90),
+            "ohne Kappung stuenden hier 60 min - 15 min ohne jeden Kanal",
+        )
+        // Zu klein: 2 eingestellt, Prime liefert trotzdem bis 5.
+        assertEquals(
+            t0 + 5 * 60_000L,
+            MealFoundation.handoverTs(t0, 0L, primeWindowMin = 2, wallCeilingMin = 45),
+            "ohne Kappung stuenden hier 2 min - 3 min mit beiden Kanaelen",
+        )
+    }
+
+    /** Die Decke bleibt die haertere Grenze, auch nach der Kappung. */
+    @Test
+    fun `die Wanduhr-Decke schlaegt das gekappte Fenster`() {
+        assertEquals(
+            t0 + 20 * 60_000L,
+            MealFoundation.handoverTs(t0, t0 + 30 * 60_000L, primeWindowMin = 45, wallCeilingMin = 20),
+            "eine Clearance bei T+30 darf die Uebergabe nicht ueber die Decke schieben",
         )
     }
 
@@ -716,7 +757,7 @@ class MealFoundationTest {
     fun `keine Zeit nach der Uebergabe ist eine gueltige Lage`() {
         val p = MealFoundation.plan(
             markerTs = t0, nowTs = t0 + 70 * 60_000L, handoverTs = t0 + 90 * 60_000L,
-            totalBudgetU = BUDGET, phaseAShare = A_SHARE, phaseBUntilMin = B_BIS,
+            totalBudgetU = BUDGET, phaseBBudgetU = B_BUDGET, phaseBUntilMin = B_BIS,
             deliveredFromBudgetU = 2.25, deliveredSinceHandoverU = 0.0, bolusStepU = STEP,
         )
         assertEquals(MealFoundation.Binding.NO_WINDOW_AFTER_HANDOVER, p.binding)
@@ -739,7 +780,7 @@ class MealFoundationTest {
 
         val spaet = MealFoundation.plan(
             markerTs = t0, nowTs = t0 + 50 * 60_000L, handoverTs = t0 + 45 * 60_000L,
-            totalBudgetU = BUDGET, phaseAShare = A_SHARE, phaseBUntilMin = B_BIS,
+            totalBudgetU = BUDGET, phaseBBudgetU = B_BUDGET, phaseBUntilMin = B_BIS,
             deliveredFromBudgetU = 2.25, deliveredSinceHandoverU = 0.0, bolusStepU = STEP,
         )
         assertEquals(15, spaet.effectiveWindowMin, "nur noch 15 min")

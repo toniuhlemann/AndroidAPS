@@ -313,7 +313,15 @@ object MealFoundation {
      * @param markerTs wann der Marker gedrueckt wurde. Der Nullpunkt T+0.
      * @param nowTs jetzt.
      * @param totalBudgetU das GEMEINSAME autorisierte Budget (Phase A + B).
-     * @param phaseAShare Anteil von Phase A am Budget, z.B. 0.75.
+     * @param phaseBBudgetU das Phase-B-Budget - DIREKT, nicht abgeleitet
+     *   (Toni 18.08., P1).
+     *
+     *   Die Rohfassung rechnete es aus `totalBudgetU * (1 - phaseAShare)`
+     *   nach, obwohl [Authorization.phaseBBudgetU] es bereits kanonisch
+     *   fuehrt. Derselbe Wert ueber einen zweiten Weg ist genau die zweite
+     *   Wahrheit, die dieser Baustein sonst vermeidet - und der zweite Weg
+     *   ergibt bei ungluecklichen Anteilen sogar einen anderen Rundungsrest
+     *   als `total - A`.
      * @param handoverTs der GEMEINSAME Uebergabeanker aus [handoverTs] - der
      *   Zeitpunkt, an dem Phase A endet und Phase B beginnt. Er wird nicht
      *   hier gerechnet, weil Prime ihn verschieben kann (CLEARANCE) und beide
@@ -354,7 +362,7 @@ object MealFoundation {
         nowTs: Long,
         handoverTs: Long,
         totalBudgetU: Double,
-        phaseAShare: Double,
+        phaseBBudgetU: Double,
         phaseBUntilMin: Int,
         deliveredFromBudgetU: Double,
         deliveredSinceHandoverU: Double,
@@ -366,7 +374,11 @@ object MealFoundation {
         if (markerTs <= 0L || nowTs < markerTs) return unusable()
         if (handoverTs < markerTs) return unusable()
         if (!totalBudgetU.isFinite() || totalBudgetU <= 0.0) return unusable()
-        if (!phaseAShare.isFinite() || phaseAShare < 0.0 || phaseAShare > 1.0) return unusable()
+        if (!phaseBBudgetU.isFinite() || phaseBBudgetU < 0.0) return unusable()
+        // DAS TEILBUDGET KANN NICHT GROESSER SEIN ALS DAS GANZE. Ein solcher
+        // Aufruf koennte nur aus einer widerspruechlichen Quelle stammen -
+        // fail-closed statt "wird schon passen".
+        if (phaseBBudgetU > totalBudgetU + 1e-9) return unusable()
         // DAS FENSTER MUSS NOCH EXISTIEREN. Hat eine CLEARANCE die Uebergabe
         // hinter das Ende geschoben, gibt es kein Phase-B-Fenster mehr - kein
         // Fehler, aber auch keine Versorgung.
@@ -379,7 +391,6 @@ object MealFoundation {
         if (!deliveredSinceHandoverU.isFinite() || deliveredSinceHandoverU < 0.0) return unusable()
         if (!bolusStepU.isFinite() || bolusStepU <= 0.0) return unusable()
 
-        val phaseBBudgetU = totalBudgetU * (1.0 - phaseAShare)
 
         val fensterMin = ((fensterEndeTs - handoverTs) / 60_000L).toInt()
         val rateUProMin = if (fensterMin > 0) phaseBBudgetU / fensterMin else 0.0
@@ -488,7 +499,8 @@ object MealFoundation {
             nowTs = nowTs,
             handoverTs = auth.effectiveHandoverTs(primeWindowStartTs),
             totalBudgetU = auth.totalBudgetU,
-            phaseAShare = auth.phaseAShare,
+            // DIE KANONISCHE GROESSE, nicht noch einmal abgeleitet.
+            phaseBBudgetU = auth.phaseBBudgetU,
             // Aus der Momentaufnahme zurueckgerechnet, damit die Rohfassung
             // eine Signatur behaelt: endTs ist gepinnt, die Minuten sind es
             // damit auch.
@@ -538,6 +550,16 @@ object MealFoundation {
      * bis hinter sein eigenes Fensterende verschieben - es kaeme dann nie zum
      * Zug, und niemand saehe warum.
      *
+     * DASSELBE CLAMPING WIE PRIME, nicht "dieselbe Zahl aus den Prefs".
+     * [PrimeRelease.plan] kappt sein Fenster auf `5..WALL_CEILING_MIN`; wer
+     * hier ungekappt rechnete, verliesse sich darauf, dass die
+     * Einstellgrenzen (heute 5..45) fuer immer deckungsgleich bleiben. Sie
+     * tun es heute - aber der Uebergabeanker darf nicht auf einer
+     * Preference-Grenze ruhen, die jemand spaeter weitet. Beide Richtungen
+     * waeren echte Loecher: ein zu GROSSES Fenster (ohne Kappung 60, Prime
+     * schliesst bei 45) laesst 15 Minuten lang keinen der beiden Kanaele
+     * liefern; ein zu KLEINES (2 statt 5) laesst beide gleichzeitig liefern.
+     *
      * @param primeWindowStartTs der von Prime gefuehrte Fensterstart. 0 heisst
      *   "unverschoben", dann gilt der Marker.
      * @param wallCeilingMin die Decke ab MARKER, nicht ab dem verschobenen
@@ -553,7 +575,9 @@ object MealFoundation {
     ): Long {
         if (markerTs <= 0L) return 0L
         if (primeWindowMin < 0 || wallCeilingMin < 0) return 0L
-        val ausPrime = max(markerTs, primeWindowStartTs) + primeWindowMin * 60_000L
+        // Exakt die Kappung aus PrimeRelease.plan - eine Quelle, keine Kopie.
+        val gekappt = primeWindowMin.coerceIn(5, PrimeRelease.WALL_CEILING_MIN)
+        val ausPrime = max(markerTs, primeWindowStartTs) + gekappt * 60_000L
         val decke = markerTs + wallCeilingMin * 60_000L
         return min(ausPrime, decke)
     }
