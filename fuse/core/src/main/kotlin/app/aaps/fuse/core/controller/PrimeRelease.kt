@@ -304,43 +304,20 @@ object PrimeRelease {
         return Plan(true, floorU, remaining, "PRIME")
     }
 
-    /** Bloecke, die die Freigabe anheben darf: hier fehlte nur BEDARF, keine
-     *  Sicherheit. */
-    private val LIFTABLE = setOf(
-        FuseController.Block.NONE,
-        FuseController.Block.NO_DEMAND,
-        FuseController.Block.BELOW_PUMP_INCREMENT,
-    )
-
     /**
-     * Zusaetzlich hebbar, wenn der bewusste Markerdruck Insulin autorisiert
-     * (Tonis Entscheidung 11.08., Einstellung `MarkerAuthorisesRelease`).
+     * DIE POLITIK LIEGT NICHT MEHR HIER (Toni 18.08.).
      *
-     * NICHT "bei gemessenem Tief" - das stand hier und war der Fehler, den
-     * ein Livefall am 11.08. aufgedeckt hat. Das gemessene Tief war der
-     * Anlass, nicht die Bedingung; SAFETY_HOLD steht in dieser Liste, weil
-     * es ein MODELL-Block ist wie GUARD_FLOOR, nicht weil es vorliegen
-     * muesste.
+     * Hier standen zwei lokale Mengen. Sie sind nach
+     * [MarkerAuthorization] gewandert, weil Phase A (Prime) und Phase B
+     * (Mahlzeitenfundament) aus DERSELBEN Autorisierung stammen und deshalb
+     * dieselbe Politik brauchen - zwei Tabellen waeren zwei Wahrheiten.
      *
-     * Nur diese beiden, und beide, weil sie MODELLURTEILE sind: `SAFETY_HOLD`
-     * traegt heute ausschliesslich `SafetyReason.LOW`, `GUARD_FLOOR` ist
-     * derselbe Befund eine Ebene tiefer, und beide sagen etwas ueber eine
-     * PROGNOSE. Alles Uebrige - Signalfehler, unbekanntes IOB, Ledger-Hold,
-     * Pumpe - bleibt hart und steht bewusst NICHT hier.
-     *
-     * DER SCHWANZ IST KEINE AUSNAHME MEHR, und das stand hier noch anders: er
-     * ist eine Haftungsprognose ueber H und wird bei Autorisierung in [lift]
-     * ausdruecklich uebersprungen. Er taucht nicht in dieser Liste auf, weil
-     * er kein Basis-BLOCK ist, sondern eine Kappe - nicht, weil er hart
-     * bliebe.
-     *
-     * Kaeme je ein zweiter `SafetyReason` dazu, waere `SAFETY_HOLD` hier zu
-     * grob und muesste aufgeteilt werden.
+     * Der ausfuehrliche Grund, warum `SAFETY_HOLD` nicht mehr dabei ist,
+     * steht dort.
      */
-    private val LIFTABLE_ON_MARKER = LIFTABLE + setOf(
-        FuseController.Block.SAFETY_HOLD,
-        FuseController.Block.GUARD_FLOOR,
-    )
+    private val LIFTABLE = MarkerAuthorization.LIFTABLE_WITHOUT_AUTHORIZATION
+
+    private val LIFTABLE_ON_MARKER = MarkerAuthorization.LIFTABLE_ON_AUTHORIZATION
 
     /**
      * Hebt die Basisentscheidung auf die Mindest-Freigabe an - oder laesst sie

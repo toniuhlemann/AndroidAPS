@@ -1259,8 +1259,8 @@ class TransportWiringTest : TestBaseWithProfile() {
     @Test
     fun `der predictorfreie Markerpfad traegt einen Zyklus`(@TempDir dir: File) {
         tailGuard = false
-        flach = 62.0
-        steigungProMin = 0.0
+        flach = 105.0
+        steigungProMin = -0.9          // fallende Bahn statt gemessenem Tief
         markerAt = start + 2 * 60_000L
         markerAuthorized = true
 
@@ -1291,9 +1291,18 @@ class TransportWiringTest : TestBaseWithProfile() {
             "nur der autorisierte Anteil: ${o.decision.smbU}",
         )
 
-        // (5) Der Schutz laeuft daneben weiter.
-        assertEquals(FuseController.TbrAction.ZERO_TEMP, o.decision.tbr)
-        assertTrue(o.reason.contains("SAFETY_ZERO"), "die Basalabsenkung muss laufen: ${o.reason}")
+        // (5) KEINE Modell-Null mehr (Toni 17.08.): eine Null entsteht nur
+        // noch aus dem LowThreatGate, und das ist hier zu - der Aufbau
+        // erzeugt seit dem 18.08. kein gemessenes Tief, sondern eine
+        // fallende Bahn. Dieselbe Vertragsaenderung wie im Livefall-Test
+        // oben, aus demselben Grund: Profilbasal ist das Fundament.
+        assertEquals(
+            FuseController.TbrAction.KEEP_CURRENT, o.decision.tbr,
+            "ohne gemessenes Tief entsteht die Null gar nicht erst",
+        )
+        // KEIN SAFETY_ZERO mehr: der Aufbau erzeugt seit dem 18.08. kein
+        // gemessenes Tief, und nur daraus entsteht der Schutz-Nullstrom.
+        assertTrue(!o.reason.contains("SAFETY_ZERO"), "ohne Tief kein Nullstrom: ${o.reason}")
         assertTrue(o.reason.contains("MARKER_FALLBACK"), "und der Grund muss den Pfad nennen: ${o.reason}")
 
         // (6) Die Huelle ist BELASTET. Ohne das waere der Pfad ein zweiter
@@ -1330,8 +1339,8 @@ class TransportWiringTest : TestBaseWithProfile() {
     @Test
     fun `ein haltender Ledger nullt die Menge im Hauptpfad`(@TempDir dir: File) {
         tailGuard = false
-        flach = 62.0
-        steigungProMin = 0.0
+        flach = 105.0
+        steigungProMin = -0.9          // fallende Bahn statt gemessenem Tief
         markerAt = start + 2 * 60_000L
         markerAuthorized = true
 
@@ -1375,8 +1384,8 @@ class TransportWiringTest : TestBaseWithProfile() {
     @Test
     fun `ein haltender Ledger nullt die Menge auch im Fallbackpfad`(@TempDir dir: File) {
         tailGuard = false
-        flach = 62.0
-        steigungProMin = 0.0
+        flach = 105.0
+        steigungProMin = -0.9          // fallende Bahn statt gemessenem Tief
         markerAt = start + 2 * 60_000L
         markerAuthorized = true
 
@@ -1432,8 +1441,8 @@ class TransportWiringTest : TestBaseWithProfile() {
     fun `die offene Transporthaftung kappt auch den Fallbackpfad`(@TempDir dir: File) {
         fun laufMit(haftungU: Double, unterordner: String): Double {
             tailGuard = false
-            flach = 62.0
-            steigungProMin = 0.0
+            flach = 105.0
+            steigungProMin = -0.9          // fallende Bahn statt gemessenem Tief
             markerAt = start + 2 * 60_000L
             markerAuthorized = true
             predictReject = null
@@ -1583,31 +1592,27 @@ class TransportWiringTest : TestBaseWithProfile() {
     // ---- DIE MANUELLE AUTORISIERUNG, ganz durch ---------------------------
 
     /**
-     * DER ENTSCHEIDENDE TEST - und er verlangt FUENF Dinge GLEICHZEITIG.
+     * DER MARKER GIBT AM GEMESSENEN TIEF NICHTS FREI - GANZE KETTE
+     * (Toni 18.08.).
      *
-     * Vorgeschichte: `MarkerAuthorisesRelease` oeffnete vier Tore und war trotzdem
-     * wirkungslos, weil ein FUENFTES die Menge nullte - der Schutz-Nullstrom im
-     * Translator, der bei Tief zwangslaeufig mitkommt. Gemessen am Geraet:
-     * `block=NONE bind=primeRelease prime=true/PRIME floor=0.10 smb=0.0`.
+     * DIESER TEST HIESS BIS ZUM 18.08. "Marker autorisiert Insulin am
+     * gemessenen Tief" und verlangte das Gegenteil: `smbU > 0.0` bei BG 62.
+     * Er war die End-to-End-Bestaetigung einer Entscheidung, die auf einer
+     * Fehlbeschreibung beruhte - `SAFETY_HOLD` galt als Modell-Block, ist
+     * aber der rohe Messwert unter der Schwelle.
      *
-     * Der Vorgaengertest blieb dabei GRUEN, weil er nur EINE Bedingung prueft
-     * (kein Hold bei BG 200) - die war auch mit dem Fehler erfuellt. Deshalb
-     * hier alles auf einmal, im ECHTEN Zyklus:
+     * Tonis Entscheidung: "Der Marker autorisiert eine Mahlzeit, aber kein
+     * Insulin bei aktuell gemessenem Tief. Das entspricht unserem Vertrag:
+     * Modell ueberstimmbar, Wirklichkeit nicht."
      *
-     *  1. es liegt wirklich ein GEMESSENES Tief vor,
-     *  2. das ENDGUELTIGE SMB - nach dem Translator - ist > 0,
-     *  3. der Schutz-Nullstrom laeuft daneben WEITER,
-     *  4. die Menge ist hoechstens der markerfinanzierte Anteil,
-     *  5. und ihre Herkunft ist TYPISIERT, nicht aus `bindingLimit` geraten.
-     *
-     * WARUM DER SCHWANZ-WAECHTER HIER AUS IST, und das ist ein Befund und kein
-     * Testkniff: bei BG 62 ist der Schwanz-Headroom <= 0, und er nullt die
-     * Menge unabhaengig von allem hier. Das ist eine EIGENE Grenze - Haftung
-     * ueber H, nicht Tiefschutz - und Tonis Entscheidung vom 11.08. hat sie
-     * nicht geoeffnet. Sie steht als eigener Test unten.
+     * GEPRUEFT WIRD DIE GANZE KETTE, nicht nur die Politik-Tabelle: BG 62
+     * erreicht den Observer, wird zu `SafetyReason.LOW`, daraus wird
+     * `state.safetyHold`, daraus `Block.SAFETY_HOLD` - und der Lift laesst
+     * ihn stehen. Ein Test auf der Tabelle allein wuerde nicht merken, wenn
+     * die Kette dazwischen bricht.
      */
     @Test
-    fun `Marker autorisiert Insulin am gemessenen Tief - ganze Kette`() {
+    fun `Marker gibt am gemessenen Tief nichts frei - ganze Kette`() {
         tailGuard = false
         flach = 62.0
         steigungProMin = 0.0
@@ -1615,43 +1620,62 @@ class TransportWiringTest : TestBaseWithProfile() {
         markerAuthorized = true
 
         clock = start
+        var sahTief = false
+        repeat(12) {
+            val o = cycle()
+            if (o.state?.safetyHold == true) {
+                sahTief = true
+                // (1) DIE KERNZUSICHERUNG: keine Menge, in keinem Zyklus.
+                assertEquals(
+                    0.0, o.decision.smbU, 1e-9,
+                    "gemessenes Tief ist Wirklichkeit - der Marker ueberstimmt sie nicht",
+                )
+                // (2) UND AUCH KEINE autorisierte Teilmenge im Datensatz. Ohne
+                // diese Zeile koennte der Lift die Menge berechnen und erst
+                // spaeter verlieren - die Autorisierung waere dann nur
+                // zufaellig wirkungslos.
+                assertEquals(
+                    0.0, o.decision.markerAuthorizedU, 1e-9,
+                    "es darf gar keine autorisierte Menge entstehen",
+                )
+            }
+        }
+        assertTrue(sahTief, "der Aufbau muss ein gemessenes Tief erzeugen, sonst prueft er nichts")
+    }
+
+    /**
+     * DIE GEGENPROBE, die den Test oben erst aussagekraeftig macht: derselbe
+     * Aufbau, nur mit einem PROGNOSTIZIERTEN statt gemessenen Grund, gibt
+     * frei.
+     *
+     * Ohne sie waere nicht unterscheidbar, ob die Kette die Wirklichkeit
+     * respektiert oder ob die Autorisierung ueberhaupt nicht mehr wirkt.
+     */
+    @Test
+    fun `dieselbe Kette mit prognostiziertem Grund gibt frei`() {
+        tailGuard = false
+        flach = 105.0
+        steigungProMin = -0.9          // fallende Bahn statt gemessenem Tief
+        markerAt = start + 2 * 60_000L
+        markerAuthorized = true
+
+        clock = start
         var frei: FuseCycleRunner.Outcome? = null
-        repeat(12) { if (frei == null) cycle().let { o -> if (o.decision.smbU > 0.0) frei = o } }
-        val o = frei ?: throw AssertionError("keine Freigabe am Tief - die Autorisierung ist wirkungslos")
-
-        // (1) GEMESSENES Tief, nicht bloss ein prognostiziertes.
-        assertTrue(o.state?.safetyHold == true, "ohne gemessenes Tief prueft dieser Test nichts")
-        assertTrue(o.bgMgdl!! < 70.0, "BG muss wirklich tief sein: ${o.bgMgdl}")
-
-        // (2)/(5) die Menge ist da UND ihre Herkunft steht als Zahl im Datensatz.
-        assertTrue(o.decision.smbU > 0.0)
-        assertTrue(
-            o.decision.markerAuthorizedU > 0.0,
-            "die Herkunft muss TYPISIERT sein, nicht aus dem Grundtext geraten",
+        repeat(14) { if (frei == null) cycle().let { o -> if (o.decision.smbU > 0.0) frei = o } }
+        val o = frei ?: throw AssertionError(
+            "kein prognostizierter Grund mehr hebbar - dann ist das Fundament sinnlos"
         )
-
-        // (4) NUR der autorisierte Anteil kommt durch.
+        assertTrue(o.state?.safetyHold != true, "hier darf KEIN gemessenes Tief vorliegen")
+        assertTrue(o.decision.markerAuthorizedU > 0.0, "die Herkunft muss typisiert sein")
         assertTrue(
             o.decision.smbU <= o.decision.markerAuthorizedU + 1e-9,
             "es darf nur der autorisierte Anteil durchkommen: ${o.decision.smbU}",
         )
-        // DIE HERKUNFT, und sie hat ZWEI zulaessige Formen. Ohne Widerspruch
-        // des Modells steht dort `primeRelease`. Widerspricht das Modell und
-        // die Autorisierung traegt sie trotzdem, steht dort
-        // `markerAuth|finalVerify:GUARD_FLOOR` - und das ist kein Makel,
-        // sondern die ehrlichere Zeile: sie sagt, WAS ueberstimmt wurde.
         assertTrue(
             o.decision.bindingLimit == "primeRelease" ||
                 o.decision.bindingLimit.startsWith("markerAuth|"),
             "die Menge muss als markerfinanziert erkennbar sein: ${o.decision.bindingLimit}",
         )
-
-        // (3) DER SCHUTZ BLEIBT. Es wird nicht "LOW abgeschaltet" - die
-        // Basalabsenkung laeuft parallel weiter, und der Grund sagt genau das.
-        // Beides zugleich ist kein Widerspruch: das eine ist die erklaerte
-        // Mahlzeit, das andere der Schutz gegen ihr Ausbleiben.
-        assertEquals(FuseController.TbrAction.ZERO_TEMP, o.decision.tbr, "die Basalabsenkung geht verloren")
-        assertTrue(o.reason.contains("SAFETY_ZERO"), "der Schutz-Nullstrom muss laufen: ${o.reason}")
     }
 
     /**
@@ -1697,8 +1721,8 @@ class TransportWiringTest : TestBaseWithProfile() {
     @Test
     fun `der Schwanz-Waechter nullt den autorisierten Anteil nicht mehr`() {
         tailGuard = true
-        flach = 62.0
-        steigungProMin = 0.0
+        flach = 105.0
+        steigungProMin = -0.9          // fallende Bahn statt gemessenem Tief
         markerAt = start + 2 * 60_000L
         markerAuthorized = true
 
@@ -1707,7 +1731,15 @@ class TransportWiringTest : TestBaseWithProfile() {
         repeat(12) { if (frei == null) cycle().let { o -> if (o.decision.smbU > 0.0) frei = o } }
         val o = frei ?: throw AssertionError("der Schwanz nullt den autorisierten Anteil immer noch")
 
-        assertTrue(o.state?.safetyHold == true, "der Aufbau muss dieselbe Tieflage erzeugen wie oben")
+        // Seit dem 18.08. ist das GEMESSENE Tief nicht mehr hebbar; der
+        // Aufbau erzeugt die Sperre deshalb ueber eine fallende BAHN. Fuer
+        // die Aussage dieses Tests - der Schwanz nullt den autorisierten
+        // Anteil nicht mehr - ist das gleichwertig, denn der Schwanz ist
+        // ohnehin eine Haftungsprognose und kein Tiefschutz.
+        assertTrue(
+            o.state?.safetyHold != true,
+            "der Aufbau darf KEIN gemessenes Tief erzeugen - das waere nicht hebbar",
+        )
         assertTrue(o.decision.markerAuthorizedU > 0.0, "ohne Autorisierung prueft das nichts")
         // UND NICHT MEHR ALS DAS. Der Boden hebt auf die Grenze, nicht darueber -
         // sonst waere aus einem Boden ein Freibrief geworden.
@@ -1715,7 +1747,12 @@ class TransportWiringTest : TestBaseWithProfile() {
             o.decision.markerAuthorizedU, o.decision.smbU, 1e-9,
             "genau der autorisierte Anteil, kein Zuschlag",
         )
-        assertEquals(FuseController.TbrAction.ZERO_TEMP, o.decision.tbr, "der Schutz laeuft weiter")
+        // Dieselbe Vertragslage: ohne gemessenes Tief laeuft Profilbasal
+        // weiter, statt dass eine Modell-Null dagegen arbeitet (Toni 17.08.).
+        assertEquals(
+            FuseController.TbrAction.KEEP_CURRENT, o.decision.tbr,
+            "Profilbasal ist das Fundament - die Modell-Null entsteht gar nicht erst",
+        )
     }
 
     /**
@@ -1796,8 +1833,8 @@ class TransportWiringTest : TestBaseWithProfile() {
     @Test
     fun `Ruecknahme und erneutes Druecken erhalten Episode und Zaehler`(@TempDir dir: File) {
         tailGuard = false
-        flach = 62.0
-        steigungProMin = 0.0
+        flach = 105.0
+        steigungProMin = -0.9          // fallende Bahn statt gemessenem Tief
         markerAuthorized = true
 
         val l = FuseLedgerAdapter().also { it.loadOnce(dir.also(File::mkdirs), "test-epoch", start) }
