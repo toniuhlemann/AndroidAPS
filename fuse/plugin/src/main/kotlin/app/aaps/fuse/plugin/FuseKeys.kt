@@ -315,25 +315,6 @@ enum class FuseIntKey(
      */
     PrimeWindowMin("fuse_prime_window_min", 15, 5, 45),
 
-    /**
-     * UEBERGABE VON PHASE A AN PHASE B [min nach Marker].
-     *
-     * Tonis Replay-Kandidat: 15. Eigener Schluessel neben [PrimeWindowMin],
-     * weil die beiden verschiedene Fragen beantworten: jenes sagt, wie lange
-     * die Huelle FREIGEBEN darf, dieses, ab wann das Fundament nachlaeuft.
-     * Sie duerfen sich unterscheiden.
-     */
-    MealFoundationHandoverMin("fuse_meal_foundation_handover_min", 15, 5, 45),
-
-    /**
-     * ENDE VON PHASE B [min nach Marker].
-     *
-     * Tonis Replay-Kandidat: 60. Begruendung gegenueber 45: weniger
-     * IOB-Spitze und mehr Regelreserve, damit FUSE bei starker Absorption
-     * ueber EvidenceStock noch nachlegen kann. Was bei Fensterende noch offen
-     * ist, VERFAELLT - kein Nachliefern Stunden spaeter.
-     */
-    MealFoundationEndMin("fuse_meal_foundation_end_min", 60, 20, 180),
 
     /** Dauer der Marker-SONDERRECHTE ab Druck (erklaerter Kredit + Entwaffnung
      *  der Rebound-Bremsen + Marker-Zweig des Mahlzeit-Fensters). Endet

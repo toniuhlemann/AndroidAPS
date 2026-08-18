@@ -78,6 +78,17 @@ object MealFoundation {
         /** Der Plan ist bis hier erfuellt; der naechste Schritt kommt spaeter. */
         ON_SCHEDULE,
 
+        /**
+         * DER NORMALE PFAD HAT SCHON GENUG GEGEBEN (Toni 18.08., Punkt 5).
+         *
+         * Das Fundament ist eine Mindestversorgung: es hebt nur eine fehlende
+         * Menge an. Laeuft die Versorgung ohnehin, schweigt es - eigener
+         * Grund, weil das im Export etwas voellig anderes bedeutet als
+         * [ON_SCHEDULE]. Dort ist die Zeit noch nicht reif, hier hat jemand
+         * anders geliefert.
+         */
+        COVERED_BY_NORMAL_PATH,
+
         /** Ein Pumpenschritt je Zyklus, nicht mehr - kein Aufhol-Burst. */
         ONE_STEP_PER_CYCLE,
 
@@ -90,24 +101,33 @@ object MealFoundation {
      * @param nowTs jetzt.
      * @param totalBudgetU das GEMEINSAME autorisierte Budget (Phase A + B).
      * @param phaseAShare Anteil von Phase A am Budget, z.B. 0.75.
-     * @param phaseAUntilMin bis wann Phase A laeuft (T+15).
+     * @param phaseAUntilMin bis wann Phase A laeuft - und damit ab wann Phase
+     *   B laeuft. EINE Grenze, nicht zwei (Toni 18.08., Punkt 6): der Aufrufer
+     *   gibt hier `PrimeWindowMin` herein. Zwei unabhaengige Werte koennten
+     *   sich ueberlappen oder eine Versorgungsluecke lassen.
      * @param phaseBUntilMin bis wann Phase B laeuft (T+60).
      * @param deliveredFromBudgetU was aus DIESEM Budget schon geflossen ist -
      *   Phase A UND Phase B zusammen. Ohne diese Zahl entstuende genau die
      *   Doppelfinanzierung, die Spezifikation 3.1 verbietet.
-     * @param deliveredFromPhaseBU was DAS FUNDAMENT selbst schon geliefert hat.
+     * @param deliveredSinceHandoverU was seit der Uebergabe INSGESAMT geflossen
+     *   ist - Fundamentschritte UND normale FUSE-Mengen.
      *
-     *   ZWEI ZAHLEN, NICHT EINE - und das ist ein echter Befund, kein Komfort.
-     *   Der erste Wurf leitete den Phase-B-Verbrauch als
-     *   `geflossen - phaseABudget` ab. Das stimmt nur, wenn Phase A ihr Budget
-     *   auch ausgeschoepft hat. Hat die Huelle weniger genommen - etwa weil der
-     *   Guard sie gebremst hat -, sah das Fundament seinen eigenen Verbrauch
-     *   dauerhaft als 0 und lieferte weiter: im Test 2,15 U statt 0,75 U, also
-     *   fast das ganze Budget ueber das Fenster verteilt. Genau das Gegenteil
-     *   der Absicht.
+     *   DAS FUNDAMENT IST EINE MINDESTVERSORGUNG, KEIN ADDITIVER BOLUS (Toni
+     *   18.08., Punkt 5). Gibt der normale Pfad schon genug ab, gilt das
+     *   zeitliche Soll als bedient - das Fundament hebt nur eine FEHLENDE
+     *   Menge an. Es darf niemals zu jedem normalen SMB einen zusaetzlichen
+     *   Schritt addieren; genau das waere die IOB-Spitze, die es vermeiden
+     *   soll, nur zeitlich verschoben.
      *
-     *   Beide Zahlen zusammen halten beide Vertraege: Phase B nie mehr als
-     *   ihren Anteil, und Phase A + B nie mehr als das Budget.
+     *   Deshalb wird das Soll gegen ALLES gerechnet, was seit der Uebergabe
+     *   geflossen ist, nicht nur gegen die eigenen Schritte. Ein eigener
+     *   Fundamentzaehler waere hier die falsche Groesse: er saehe eine Luecke,
+     *   wo die Versorgung laengst laeuft.
+     *
+     *   Der erste Wurf leitete den Verbrauch als `geflossen - phaseABudget`
+     *   ab. Das stimmt nur, wenn Phase A ihr Budget auch ausschoepft; hat die
+     *   Huelle weniger genommen, lieferte das Fundament fast das ganze Budget
+     *   nach (gemessen 2,15 U statt 0,75 U).
      * @param bolusStepU die Rasterung der Pumpe.
      */
     fun plan(
@@ -118,7 +138,7 @@ object MealFoundation {
         phaseAUntilMin: Int,
         phaseBUntilMin: Int,
         deliveredFromBudgetU: Double,
-        deliveredFromPhaseBU: Double,
+        deliveredSinceHandoverU: Double,
         bolusStepU: Double,
     ): Plan {
         // FAIL-CLOSED BEI JEDER UNBRAUCHBAREN EINGABE. Ein Fundament, das auf
@@ -129,7 +149,7 @@ object MealFoundation {
         if (!phaseAShare.isFinite() || phaseAShare < 0.0 || phaseAShare > 1.0) return unusable()
         if (phaseAUntilMin < 0 || phaseBUntilMin <= phaseAUntilMin) return unusable()
         if (!deliveredFromBudgetU.isFinite() || deliveredFromBudgetU < 0.0) return unusable()
-        if (!deliveredFromPhaseBU.isFinite() || deliveredFromPhaseBU < 0.0) return unusable()
+        if (!deliveredSinceHandoverU.isFinite() || deliveredSinceHandoverU < 0.0) return unusable()
         if (!bolusStepU.isFinite() || bolusStepU <= 0.0) return unusable()
 
         val phaseBBudgetU = totalBudgetU * (1.0 - phaseAShare)
@@ -158,7 +178,7 @@ object MealFoundation {
         // die erste, wenn sie weniger genommen hat. Nur eine von beiden zu
         // pruefen laesst je eine Luecke offen - die zweite hat der Test als
         // 2,15 U statt 0,75 U gezeigt.
-        val ausPhaseBGeflossen = deliveredFromPhaseBU
+        val ausPhaseBGeflossen = deliveredSinceHandoverU
         val offenImFenster = max(
             0.0,
             min(
@@ -177,8 +197,14 @@ object MealFoundation {
             return Plan(0.0, sollU, 0.0, Binding.BUDGET_EXHAUSTED)
 
         val rueckstandU = min(sollU - ausPhaseBGeflossen, offenImFenster)
-        if (rueckstandU < bolusStepU - 1e-9)
-            return Plan(0.0, sollU, offenImFenster, Binding.ON_SCHEDULE)
+        if (rueckstandU < bolusStepU - 1e-9) return Plan(
+            0.0, sollU, offenImFenster,
+            // ZWEI SEHR VERSCHIEDENE GRUENDE FUER DIESELBE NULL. Ist schon
+            // mehr geflossen als das Soll, hat der normale Pfad geliefert;
+            // liegt es nur an der Zeit, ist der Plan erfuellt.
+            if (ausPhaseBGeflossen >= sollU - 1e-9 && ausPhaseBGeflossen > 0.0)
+                Binding.COVERED_BY_NORMAL_PATH else Binding.ON_SCHEDULE,
+        )
 
         // EIN SCHRITT JE ZYKLUS - kein Aufhol-Burst (Tonis Auflage).
         //
@@ -200,6 +226,32 @@ object MealFoundation {
     private fun unusable() = Plan(0.0, 0.0, 0.0, Binding.UNUSABLE_INPUT)
 
     /**
+     * WAS PHASE A - also die bestehende Huelle - freigeben darf.
+     *
+     * EINE FUNKTION FUER BEIDE FAELLE (Toni 18.08., Punkte 3 und 4), weil sie
+     * genau zusammengehoeren:
+     *
+     *  - SCHALTER AUS: die Huelle bekommt das GANZE Budget, unabhaengig von
+     *    einem gespeicherten Anteil. Ein hinterlegtes 0,75 darf die Versorgung
+     *    nicht unbemerkt kuerzen, nur weil jemand den Wert einmal eingestellt
+     *    und das Fundament dann abgeschaltet hat. Verhaltensparitaet heisst
+     *    bitgleich, nicht "fast wie vorher".
+     *
+     *  - SCHALTER AN: die Huelle bekommt NUR ihren Anteil. Sonst entstuenden
+     *    3,0 U Prime PLUS 0,75 U Fundament - also mehr, als autorisiert wurde.
+     *
+     * Zwei getrennte Rechnungen an zwei Aufrufstellen wuerden genau hier
+     * auseinanderlaufen, und die Richtung waere im einen Fall zu wenig
+     * Insulin, im anderen zu viel.
+     */
+    fun phaseABudgetU(totalBudgetU: Double, phaseAShare: Double, foundationEnabled: Boolean): Double {
+        if (!totalBudgetU.isFinite() || totalBudgetU <= 0.0) return 0.0
+        if (!foundationEnabled) return totalBudgetU
+        if (!phaseAShare.isFinite() || phaseAShare < 0.0 || phaseAShare > 1.0) return totalBudgetU
+        return totalBudgetU * phaseAShare
+    }
+
+    /**
      * KEINE KONSTANTEN FUER DIE PARAMETER - sie sind Preferences.
      *
      * Der erste Wurf hatte REPLAY_PHASE_A_SHARE und die beiden Zeitgrenzen
@@ -209,11 +261,11 @@ object MealFoundation {
      * Preference dort waeren zwei Wahrheiten ueber denselben Wert, und beim
      * ersten Verstellen am Geraet waere nicht mehr erkennbar, welche gilt.
      *
-     * Die Werte stehen jetzt in FuseDoubleKey.MealFoundationPhaseAShare,
-     * FuseIntKey.MealFoundationHandoverMin und
-     * FuseIntKey.MealFoundationEndMin - mit Tonis Replay-Kandidat (0,75 /
-     * 15 / 60) in den Kommentaren dort, aber DEFAULT 1.0 fuer den Anteil:
-     * ein Flash darf das Verhalten nicht aendern.
+     * Die Werte stehen jetzt in FuseDoubleKey.MealFoundationPhaseAShare und
+     * FuseIntKey.MealFoundationEndMin; die Uebergabe ist FuseIntKey.
+     * PrimeWindowMin, also DIESELBE Grenze, an der Phase A endet. Tonis
+     * Replay-Kandidat (0,75 / 15 / 60) steht in den Kommentaren dort, aber der
+     * DEFAULT des Anteils ist 1.0: ein Flash darf das Verhalten nicht aendern.
      *
      * ABGELEITET, NICHT EINSTELLBAR bleiben die absoluten Mengen. Sie ergeben
      * sich aus dem gemeinsamen Budget (PrimeEnvelopeU) und dem Anteil; ein

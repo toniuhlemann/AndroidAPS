@@ -31,7 +31,7 @@ class MealFoundationTest {
     private fun plan(
         minuten: Double,
         geflossenU: Double,
-        ausPhaseBU: Double = 0.0,
+        seitUebergabeU: Double = 0.0,
         step: Double = STEP,
     ) = MealFoundation.plan(
         markerTs = t0,
@@ -41,7 +41,7 @@ class MealFoundationTest {
         phaseAUntilMin = A_BIS,
         phaseBUntilMin = B_BIS,
         deliveredFromBudgetU = geflossenU,
-        deliveredFromPhaseBU = ausPhaseBU,
+        deliveredSinceHandoverU = seitUebergabeU,
         bolusStepU = step,
     )
 
@@ -130,7 +130,7 @@ class MealFoundationTest {
         // Von T+18 bis T+60 in Minutenschritten - wie im echten Zyklus. BEIDE
         // Zahlen wachsen mit: der Gesamtverbrauch und der von Phase B.
         for (m in 18..60) {
-            val p = plan(minuten = m.toDouble(), geflossenU = geflossen, ausPhaseBU = ausB)
+            val p = plan(minuten = m.toDouble(), geflossenU = geflossen, seitUebergabeU = ausB)
             if (p.dueU > 0.0) {
                 geflossen += p.dueU
                 ausB += p.dueU
@@ -193,7 +193,7 @@ class MealFoundationTest {
      */
     @Test
     fun `das offene Budget ist auf den Phase-B-Anteil begrenzt`() {
-        val p = plan(minuten = 30.0, geflossenU = 0.0, ausPhaseBU = 0.0)
+        val p = plan(minuten = 30.0, geflossenU = 0.0, seitUebergabeU = 0.0)
         assertEquals(
             B_BUDGET, p.remainingInWindowU, 1e-9,
             "0,75 U - nicht die 3,00 U des Gesamtbudgets",
@@ -207,7 +207,7 @@ class MealFoundationTest {
             var geflossen = startA
             var ausB = 0.0
             for (m in 15..70) {
-                val p = plan(minuten = m.toDouble(), geflossenU = geflossen, ausPhaseBU = ausB)
+                val p = plan(minuten = m.toDouble(), geflossenU = geflossen, seitUebergabeU = ausB)
                 geflossen += p.dueU
                 ausB += p.dueU
             }
@@ -240,7 +240,7 @@ class MealFoundationTest {
             "Schritt 0" to MealFoundation.plan(t0, t0, BUDGET, A_SHARE, A_BIS, B_BIS, 0.0, 0.0, 0.0),
             "Schritt NaN" to MealFoundation.plan(t0, t0, BUDGET, A_SHARE, A_BIS, B_BIS, 0.0, 0.0, Double.NaN),
             "geflossen negativ" to MealFoundation.plan(t0, t0, BUDGET, A_SHARE, A_BIS, B_BIS, -1.0, 0.0, STEP),
-            "Phase-B negativ" to MealFoundation.plan(t0, t0, BUDGET, A_SHARE, A_BIS, B_BIS, 0.0, -1.0, STEP),
+            "seit Uebergabe negativ" to MealFoundation.plan(t0, t0, BUDGET, A_SHARE, A_BIS, B_BIS, 0.0, -1.0, STEP),
         )
         for ((name, p) in faelle) {
             assertEquals(0.0, p.dueU, 1e-9, name)
@@ -261,7 +261,7 @@ class MealFoundationTest {
             val p = MealFoundation.plan(
                 t0, t0 + (m * 60_000).toLong(), BUDGET,
                 phaseAShare = 1.0, phaseAUntilMin = A_BIS, phaseBUntilMin = B_BIS,
-                deliveredFromBudgetU = 3.0, deliveredFromPhaseBU = 0.0, bolusStepU = STEP,
+                deliveredFromBudgetU = 3.0, deliveredSinceHandoverU = 0.0, bolusStepU = STEP,
             )
             assertEquals(0.0, p.dueU, 1e-9, "bei T+$m")
         }
@@ -283,5 +283,99 @@ class MealFoundationTest {
             "das Fundament nimmt sich NICHT das ungenutzte Phase-A-Budget",
         )
         assertNull(plan(60.0, geflossen).binding.takeIf { it == MealFoundation.Binding.UNUSABLE_INPUT })
+    }
+
+    // ---- Mindestversorgung statt additiver Bolus (Punkt 5) ---------------
+
+    /**
+     * DER NORMALE PFAD BEDIENT DAS SOLL MIT.
+     *
+     * Das Fundament ist eine MINDESTversorgung. Gibt FUSE ohnehin genug ab,
+     * schweigt es - sonst addierte es zu jedem normalen SMB einen weiteren
+     * Schritt und erzeugte genau die IOB-Spitze, die es vermeiden soll, nur
+     * zeitlich verschoben.
+     */
+    @Test
+    fun `ein normaler SMB bedient das Fundament-Soll`() {
+        // T+50: Soll = 0,583 U. Der normale Pfad hat schon 0,60 U geliefert.
+        val p = plan(minuten = 50.0, geflossenU = 2.85, seitUebergabeU = 0.60)
+        assertEquals(0.0, p.dueU, 1e-9, "kein zusaetzlicher Schritt")
+        assertEquals(MealFoundation.Binding.COVERED_BY_NORMAL_PATH, p.binding)
+    }
+
+    /** Und die Gegenprobe: liefert der normale Pfad zu wenig, hebt das
+     *  Fundament auf das Soll an. */
+    @Test
+    fun `bei Unterdeckung hebt das Fundament an`() {
+        val p = plan(minuten = 50.0, geflossenU = 2.35, seitUebergabeU = 0.10)
+        assertEquals(STEP, p.dueU, 1e-9)
+    }
+
+    /**
+     * DIE UNTERSCHEIDUNG IM GRUND ist keine Kosmetik: "die Zeit ist noch nicht
+     * reif" und "jemand anders hat geliefert" fuehren zu voellig verschiedenen
+     * Schluessen beim Auswerten des Replays.
+     */
+    @Test
+    fun `ON_SCHEDULE und COVERED_BY_NORMAL_PATH sind unterscheidbar`() {
+        assertEquals(
+            MealFoundation.Binding.ON_SCHEDULE,
+            plan(minuten = 16.0, geflossenU = 2.25, seitUebergabeU = 0.0).binding,
+            "kurz nach der Uebergabe ist einfach noch nichts faellig",
+        )
+        assertEquals(
+            MealFoundation.Binding.COVERED_BY_NORMAL_PATH,
+            plan(minuten = 30.0, geflossenU = 2.65, seitUebergabeU = 0.40).binding,
+            "hier laeuft die Versorgung ohnehin",
+        )
+    }
+
+    // ---- Schalter aus heisst Verhaltensparitaet (Punkte 3 und 4) ---------
+
+    /**
+     * SCHALTER AUS: DIE HUELLE BEKOMMT DAS GANZE BUDGET.
+     *
+     * Auch dann, wenn ein Anteil von 0,75 gespeichert ist. Ein hinterlegter
+     * Wert darf die Versorgung nicht unbemerkt kuerzen, nur weil jemand ihn
+     * einmal eingestellt und das Fundament dann abgeschaltet hat.
+     */
+    @Test
+    fun `bei ausgeschaltetem Fundament bekommt Phase A das ganze Budget`() {
+        assertEquals(
+            BUDGET, MealFoundation.phaseABudgetU(BUDGET, 0.75, foundationEnabled = false), 1e-9,
+            "der gespeicherte Anteil ist ohne Fundament bedeutungslos",
+        )
+        assertEquals(BUDGET, MealFoundation.phaseABudgetU(BUDGET, 0.0, false), 1e-9, "auch bei 0.0")
+    }
+
+    /**
+     * SCHALTER AN: DIE HUELLE BEKOMMT NUR IHREN ANTEIL.
+     *
+     * Sonst entstuenden 3,0 U Prime PLUS 0,75 U Fundament - mehr, als
+     * autorisiert wurde.
+     */
+    @Test
+    fun `bei eingeschaltetem Fundament wird Phase A begrenzt`() {
+        assertEquals(2.25, MealFoundation.phaseABudgetU(BUDGET, 0.75, foundationEnabled = true), 1e-9)
+        assertEquals(BUDGET, MealFoundation.phaseABudgetU(BUDGET, 1.0, true), 1e-9, "Anteil 1.0 = wie aus")
+    }
+
+    /** Und Summe A + B bleibt in jeder Stellung das Gesamtbudget. */
+    @Test
+    fun `Phase A plus Phase B ergibt immer genau das Budget`() {
+        for (share in listOf(0.5, 0.67, 0.75, 0.8, 1.0)) {
+            val a = MealFoundation.phaseABudgetU(BUDGET, share, foundationEnabled = true)
+            val b = BUDGET * (1.0 - share)
+            assertEquals(BUDGET, a + b, 1e-9, "Anteil $share")
+        }
+    }
+
+    /** Unbrauchbare Eingaben ergeben das GANZE Budget, nicht null - fehlende
+     *  Versorgung waere hier die gefaehrliche Richtung, nicht zu viel. */
+    @Test
+    fun `ein unbrauchbarer Anteil laesst Phase A unangetastet`() {
+        assertEquals(BUDGET, MealFoundation.phaseABudgetU(BUDGET, Double.NaN, true), 1e-9)
+        assertEquals(BUDGET, MealFoundation.phaseABudgetU(BUDGET, 1.5, true), 1e-9)
+        assertEquals(BUDGET, MealFoundation.phaseABudgetU(BUDGET, -0.1, true), 1e-9)
     }
 }
