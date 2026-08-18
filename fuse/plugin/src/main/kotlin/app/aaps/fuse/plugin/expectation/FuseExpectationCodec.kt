@@ -28,9 +28,16 @@ object FuseExpectationCodec {
      *  und `decode` liefert den leeren Zustand statt zu raten. */
     const val SCHEMA = 1
 
-    fun encode(state: ExpectationLedger.State): String =
+    /**
+     * @param revision die MONOTONE Generationsnummer. Sie entscheidet beim
+     *   Laden, welcher der drei Kandidaten (.tmp, Ziel, .bak) der juengste
+     *   ist - ohne sie waere nach einem Absturz zwischen den beiden Renames
+     *   nicht feststellbar, welche Datei die neuere Wahrheit traegt.
+     */
+    fun encode(state: ExpectationLedger.State, revision: Long): String =
         JSONObject()
             .put("schema", SCHEMA)
+            .put("revision", revision)
             .put("entries", JSONArray().apply { state.entries.forEach { put(entryJson(it)) } })
             .put(
                 "consumed",
@@ -54,7 +61,7 @@ object FuseExpectationCodec {
      */
     sealed interface Decoded {
 
-        data class Valid(val state: ExpectationLedger.State) : Decoded
+        data class Valid(val state: ExpectationLedger.State, val revision: Long) : Decoded
 
         /** Nichts da - beim Erststart der Normalfall. */
         data object Missing : Decoded
@@ -77,7 +84,12 @@ object FuseExpectationCodec {
             val o = JSONObject(text)
             val schema = o.optInt("schema", -1)
             if (schema != SCHEMA) return Decoded.Invalid("Schemastand $schema, erwartet $SCHEMA")
-            Triple(
+            val revision = o.getLong("revision")
+            // Eine negative Generation kann nicht aus einem Schreibvorgang
+            // stammen - sie waere ein Rueckwaertssprung in der Reihenfolge.
+            require(revision >= 0L) { "negative Revision $revision" }
+            Quadruple(
+                revision,
                 o.getJSONArray("entries").let { a -> (0 until a.length()).map { entryOf(a.getJSONObject(it)) } },
                 o.getJSONArray("consumed").let { a ->
                     (0 until a.length()).map {
@@ -92,11 +104,20 @@ object FuseExpectationCodec {
         // DIE SEMANTIK PRUEFT DER KERN, nicht dieser Codec. Zwei Stellen mit
         // je eigener Vorstellung davon, was moeglich ist, liefen mit dem
         // naechsten Feld auseinander.
-        return when (val r = ExpectationLedger.restore(roh.first, roh.second, roh.third)) {
-            is ExpectationLedger.Restored.Valid   -> Decoded.Valid(r.state)
+        return when (val r = ExpectationLedger.restore(roh.entries, roh.consumed, roh.outcomes)) {
+            is ExpectationLedger.Restored.Valid   -> Decoded.Valid(r.state, roh.revision)
             is ExpectationLedger.Restored.Invalid -> Decoded.Invalid(r.reason)
         }
     }
+
+    /** Vier Werte aus dem Rohparser - `Triple` reicht seit der Revision nicht
+     *  mehr, und ein namenloses Tupel waere an der Aufrufstelle nicht lesbar. */
+    private data class Quadruple(
+        val revision: Long,
+        val entries: List<ExpectationLedger.Entry>,
+        val consumed: Set<ExpectationLedger.SampleId>,
+        val outcomes: List<ExpectationLedger.Outcome>,
+    )
 
     // ---- Eintrag ----------------------------------------------------------
 
