@@ -142,6 +142,21 @@ enum class FuseDoubleKey(
      */
     PrimeEnvelopeU("fuse_prime_envelope_u", 1.2, 0.0, 4.0),
 
+    /**
+     * ANTEIL VON PHASE A AM GEMEINSAMEN MAHLZEITENBUDGET.
+     *
+     * 1.0 ist der HEUTIGE Stand: alles sofort, kein Fundament. Tonis
+     * Replay-Kandidat vom 18.08. ist 0.75; zu pruefen sind ausserdem 0.80 und
+     * 0.67. Der Default bleibt 1.0, damit ein Flash das Verhalten NICHT
+     * aendert - das Fundament ist eine eigene, spaeter zu treffende
+     * Therapieentscheidung.
+     *
+     * NUR DER ANTEIL IST EINSTELLBAR, nicht die absoluten Mengen: die ergeben
+     * sich aus [PrimeEnvelopeU]. Zwei Knoepfe fuer dieselbe Menge waeren zwei
+     * Wahrheiten, und eine davon veraltet (Spezifikation 13.7).
+     */
+    MealFoundationPhaseAShare("fuse_meal_foundation_phase_a_share", 1.0, 0.5, 1.0),
+
 
     /**
      * Obergrenze eines einzelnen SMB, in Einheiten.
@@ -299,6 +314,26 @@ enum class FuseIntKey(
      * gaebe es nichts mehr zu verteilen.
      */
     PrimeWindowMin("fuse_prime_window_min", 15, 5, 45),
+
+    /**
+     * UEBERGABE VON PHASE A AN PHASE B [min nach Marker].
+     *
+     * Tonis Replay-Kandidat: 15. Eigener Schluessel neben [PrimeWindowMin],
+     * weil die beiden verschiedene Fragen beantworten: jenes sagt, wie lange
+     * die Huelle FREIGEBEN darf, dieses, ab wann das Fundament nachlaeuft.
+     * Sie duerfen sich unterscheiden.
+     */
+    MealFoundationHandoverMin("fuse_meal_foundation_handover_min", 15, 5, 45),
+
+    /**
+     * ENDE VON PHASE B [min nach Marker].
+     *
+     * Tonis Replay-Kandidat: 60. Begruendung gegenueber 45: weniger
+     * IOB-Spitze und mehr Regelreserve, damit FUSE bei starker Absorption
+     * ueber EvidenceStock noch nachlegen kann. Was bei Fensterende noch offen
+     * ist, VERFAELLT - kein Nachliefern Stunden spaeter.
+     */
+    MealFoundationEndMin("fuse_meal_foundation_end_min", 60, 20, 180),
 
     /** Dauer der Marker-SONDERRECHTE ab Druck (erklaerter Kredit + Entwaffnung
      *  der Rebound-Bremsen + Marker-Zweig des Mahlzeit-Fensters). Endet
@@ -491,6 +526,22 @@ enum class FuseBooleanKey(
      * umgelegt - und wieder aus, falls die Zykluszeit leidet.
      */
     ExpectationLedgerEnabled("fuse_expectation_ledger_enabled", false),
+
+    /**
+     * DAS MAHLZEITENFUNDAMENT - DEFAULT AUS.
+     *
+     * Anders als der Erwartungs-Ledger ist dies DOSIERWIRKSAM: eingeschaltet
+     * verschiebt es einen Teil des autorisierten Budgets aus der fruehen
+     * Spitze in ein nachlaufendes Fenster. Tonis Reihenfolge (Spezifikation
+     * 12) sieht davor Offline-Replay und eine Abnahme auf der VirtualPump vor,
+     * und danach genau EINE produktive Testvariable ohne gleichzeitige
+     * lambda-Scharfschaltung.
+     *
+     * Bei [MealFoundationPhaseAShare] = 1.0 ist der Schalter ohnehin
+     * wirkungslos - dann gibt es keine Phase B. Beides zusammen macht das
+     * Einschalten zu einer bewussten Entscheidung in zwei Schritten.
+     */
+    MealFoundationEnabled("fuse_meal_foundation_enabled", false),
 
     MarkerAuthorisesRelease("fuse_marker_authorises_low", false),
 
