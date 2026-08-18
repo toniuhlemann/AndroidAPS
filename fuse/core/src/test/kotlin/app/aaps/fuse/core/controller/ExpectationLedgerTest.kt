@@ -471,6 +471,52 @@ class ExpectationLedgerTest {
     }
 
     /**
+     * DER WIDERSPRUCH MUSS SICHTBAR BLEIBEN, auch wenn eine der Zeilen
+     * unbrauchbar ist (Toni, P0).
+     *
+     * Wuerden Gesundheit und Endlichkeit VOR dem Vergleich gefiltert,
+     * verschwaende die ungesunde Zeile - und aus zwei einander
+     * widersprechenden Exportzeilen wuerde ein sauberes MISSED. Der Export
+     * behauptet aber zweierlei ueber denselben Zeitpunkt; das ist ein
+     * Integritaetsproblem und keine gueltige Messung.
+     */
+    @Test
+    fun `ein Widerspruch zaehlt auch dann, wenn eine Zeile unbrauchbar ist`() {
+        val e = eintrag()
+        for (gegenstueck in listOf(
+            probe(e.dueTs, 140.0, healthy = false),          // ungesund
+            probe(e.dueTs, Double.NaN),                       // nicht endlich
+            probe(e.dueTs, 140.0, rev = 999L),                // anderer Stand
+        )) {
+            val gesund = probe(e.dueTs, 205.0)
+            val (out, _, _) = rechne(listOf(e), e.dueTs, listOf(gesund, gegenstueck))
+            assertEquals(
+                ExpectationLedger.Verdict.UNVERIFIABLE, out[0].verdict,
+                "widersprechende Zeilen duerfen kein Urteil tragen: $gegenstueck",
+            )
+        }
+    }
+
+    /** Die Gegenprobe: EINE gesunde Zeile allein bleibt verwertbar - der
+     *  Filter darf nicht pauschal alles verwerfen. */
+    @Test
+    fun `eine einzelne gesunde Zeile bleibt verwertbar`() {
+        val e = eintrag()
+        val (out, _, _) = rechne(listOf(e), e.dueTs, listOf(probe(e.dueTs, 205.0)))
+        assertEquals(ExpectationLedger.Verdict.MISSED, out[0].verdict)
+    }
+
+    /** Und zwei identische UNBRAUCHBARE Zeilen sind kein Widerspruch,
+     *  sondern schlicht unbrauchbar - kein Urteil, aber auch kein Alarm. */
+    @Test
+    fun `zwei identische unbrauchbare Zeilen ergeben schlicht kein Urteil`() {
+        val e = eintrag()
+        val kaputt = probe(e.dueTs, 205.0, healthy = false)
+        val (out, _, _) = rechne(listOf(e), e.dueTs, listOf(kaputt, kaputt))
+        assertEquals(ExpectationLedger.Verdict.UNVERIFIABLE, out[0].verdict)
+    }
+
+    /**
      * EINE UNBRAUCHBARE MARGE IST KEIN FREIBRIEF. Negativ hiesse, dass sogar
      * Werte UNTERHALB der damaligen Sicherheitsuntergrenze als Beleg fuer
      * mehr Insulin durchgingen - die Umkehrung des Begriffs.

@@ -314,13 +314,22 @@ object ExpectationLedger {
             // BEREITS VERBRAUCHTE MESSWERTE SIND AUS DEM SPIEL - auch aus
             // frueheren Aufrufen. Ohne diese Zeile bedient ein Punkt bei
             // 1-min-Zyklen bis zu fuenf Faelligkeiten nacheinander.
-            .filter { it.id !in consumed && it.healthy && it.mgdl.isFinite() }
-            // UND JEDE KENNUNG NUR EINMAL, schon VOR der Zuordnung. Zwei
+            .filter { it.id !in consumed }
+            // DANN JEDE KENNUNG NUR EINMAL, schon VOR der Zuordnung. Zwei
             // identische Exportzeilen sind zwei Listenpositionen und koennten
             // zwei Faelligkeiten bedienen; dass `consumed` sie hinterher zu
-            // einer zusammenzieht, kommt zu spaet - der doppelte Nachweis
-            // waere dann schon entstanden.
+            // einer zusammenzieht, kommt zu spaet.
+            //
+            // DIE REIHENFOLGE IST DER PUNKT (Toni, P0): Gesundheit und
+            // Endlichkeit werden ERST DANACH geprueft. Andersherum
+            // verschwaende eine ungesunde Zeile, BEVOR der Widerspruch
+            // sichtbar wird - aus
+            //     205 mg/dl healthy=true  /  140 mg/dl healthy=false
+            // bei gleicher Kennung wuerde ein sauberes MISSED, obwohl der
+            // Export sich selbst widerspricht. Der Vergleich muss den GANZEN
+            // Inhalt sehen, auch die unbrauchbaren Felder.
             .let(::dedupe)
+            .filter { it.healthy && it.mgdl.isFinite() }
             .sortedBy { it.ts }
 
         val zuteilung = matchOneToOne(faellig, brauchbar, matchToleranceMs)
