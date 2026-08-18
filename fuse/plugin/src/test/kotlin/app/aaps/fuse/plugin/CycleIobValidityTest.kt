@@ -1,5 +1,8 @@
 package app.aaps.fuse.plugin
 
+import org.junit.jupiter.api.Assertions.assertTrue
+import app.aaps.fuse.core.controller.ExpectationLedger
+import app.aaps.fuse.core.controller.EvidenceStock
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNotNull
 import app.aaps.core.data.model.GV
@@ -85,12 +88,24 @@ class CycleIobValidityTest : TestBaseWithProfile() {
      *  (Profilziel ~103 mg/dl), flach genug, dass der Observer nach
      *  `rearmMin` = 5 min Ruhe auf ARMED geht. Ein Mahlzeiten-Anstieg waere
      *  fuer diesen Beweis nur zusaetzliches Rauschen. */
+    /**
+     * DIE BG-KURVE, steuerbar (18.08.).
+     *
+     * Bis hierher war sie konstant 180 und flach. Fuer den
+     * DORMANT-Uebergangstest braucht es einen echten ANSTIEG - nur daraus
+     * entsteht die unbezahlte, BGI-bereinigte Stoerung, die [EvidenceStock]
+     * als Evidenz verbucht. Eine von Hand gesetzte Phase wuerde wieder nur
+     * den Klassifikator pruefen, und der ist anderswo gedeckt.
+     */
+    private var bgKurve: (Long) -> Double = { 180.0 }
+
     private fun series(untilTs: Long): List<GV> =
         generateSequence(start) { it + 60_000L }
             .takeWhile { it <= untilTs }
             .map { ts ->
+                val v = bgKurve(ts)
                 GV(
-                    timestamp = ts, value = 180.0, raw = 180.0, noise = 0.0,
+                    timestamp = ts, value = v, raw = v, noise = 0.0,
                     sourceSensor = SourceSensor.UNKNOWN, trendArrow = TrendArrow.FLAT
                 )
             }
@@ -302,6 +317,125 @@ class CycleIobValidityTest : TestBaseWithProfile() {
         assertEquals(
             o.evidencePhase, lage!!.evidencePhase?.name,
             "die Lage und der Export muessen DIESELBE Phase zeigen",
+        )
+    }
+
+    /**
+     * DER LETZTE FEHLENDE NACHWEIS (Toni 18.08.):
+     *
+     *   Marker -> EvidenceStock ACTIVE -> Abklingen zu DORMANT
+     *   -> Episode weiterhin OFFEN -> ExpectationContext.CORRECTION
+     *
+     * WARUM ER NICHT DURCH DIE VORHANDENEN TESTS GEDECKT IST. Der
+     * Klassifikator ist mit allen sieben Phasen geprueft, der Recorder mit
+     * einer von Hand gesetzten Phase. Was fehlte: dass der RUNNER in genau
+     * diesem Zustand CORRECTION an die Buchfuehrung gibt, waehrend die
+     * Episoden-ID gesetzt ist. Eine Mutationsprobe zurueck auf `episodeId > 0`
+     * blieb in den ruhigen Szenarien gruen, weil dort beide Herleitungen
+     * dasselbe liefern.
+     *
+     * DIE PHASE WIRD GEFAHREN, NICHT GESETZT: erst ein Anstieg, der echte
+     * BGI-bereinigte Stoerung erzeugt, dann Ruhe, bis der Kredit unter die
+     * Schwelle verfaellt. Nur so ist der Uebergang derselbe wie im Betrieb.
+     */
+    @Test
+    fun `nach dem Abklingen einer Mahlzeit meldet der Runner CORRECTION bei offener Episode`() {
+        clock = start
+        // DIE GANZE KURVE VON ANFANG AN.
+        //
+        // `series()` erzeugt die vollstaendige Reihe bei JEDER Abfrage neu -
+        // ein Kurvenwechsel mitten im Lauf schreibt damit die VERGANGENHEIT
+        // um, die Sprungerkennung sieht einen Bruch, und die Evidenz landet
+        // dauerhaft in SUSPENDED. Genau das ist beim ersten Anlauf passiert
+        // (PHASENVERLAUF {SUSPENDED=120}).
+        //
+        // Form: 20 min flach, 20 min Anstieg mit 3 mg/dl je Minute, dann
+        // Plateau. Der Anstieg erzeugt die BGI-bereinigte Stoerung, das
+        // Plateau laesst sie verfallen.
+        val flachBis = start + 20 * 60_000L
+        val anstiegBis = flachBis + 20 * 60_000L
+        bgKurve = { ts ->
+            when {
+                ts <= flachBis   -> 180.0
+                ts <= anstiegBis -> 180.0 + (ts - flachBis) / 60_000.0 * 3.0
+                else             -> 180.0 + 20 * 3.0
+            }
+        }
+
+        // 1) Vorlauf ueber den flachen Teil.
+        repeat(20) { cycle() }
+
+        // 2) Marker druecken, genau am Beginn des Anstiegs.
+        markerPress = clock
+        whenever(preferences.get(FuseLongKey.MealMarkerArmedTs)).thenReturn(clock)
+        whenever(preferences.get(FuseLongKey.MealMarkerStamp)).thenReturn(clock)
+
+        // 3) Den Anstieg fahren - hier entsteht die Evidenz.
+        var mitEvidenz: FuseCycleRunner.Outcome? = null
+        val anstiegPhasen = java.util.LinkedHashMap<String, Int>()
+        repeat(25) {
+            val o = cycle()
+            anstiegPhasen.merge(o.evidencePhase ?: "null", 1, Int::plus)
+            if (o.evidencePhase == EvidenceStock.Phase.ACTIVE.name ||
+                o.evidencePhase == EvidenceStock.Phase.PENDING_SEAL.name
+            ) mitEvidenz = o
+        }
+        assertNotNull(
+            mitEvidenz,
+            "der Anstieg muss Evidenz erzeugen - sonst prueft der Test nichts. Phasen: $anstiegPhasen",
+        )
+        assertTrue(
+            mitEvidenz!!.evidenceEpisodeId > 0L,
+            "und eine Episode eroeffnen: id=${mitEvidenz!!.evidenceEpisodeId}",
+        )
+
+        // 4) DER MARKER BLEIBT GESETZT - nur die Kurve flacht ab.
+        //
+        // Ein Zuruecksetzen der Marker-Preference wirkt wie eine RUECKNAHME,
+        // und die widerruft den Evidenzkredit: die Phase bleibt dann dauerhaft
+        // SUSPENDED/CREDIT_REVOKED statt nach DORMANT zu wandern (gemessen im
+        // ersten Anlauf, 150 Zyklen). Im Betrieb laeuft der Marker durch sein
+        // 90-Minuten-Fenster aus, ohne widerrufen zu werden - das ist der Weg,
+        // auf dem DORMANT ueberhaupt entsteht.
+
+        // 5) Fahren, bis die Phase DORMANT meldet UND das Markerfenster
+        //    abgelaufen ist.
+        //
+        // BEIDE Bedingungen zusammen sind der gesuchte Zustand. Ein noch
+        // laufender Marker macht die Lage zu Recht MEAL - unabhaengig von der
+        // Phase; genau das hat der vorige Anlauf gezeigt (DORMANT erreicht,
+        // Kontext MEAL). Der Marker laeuft nach OnsetChannel.MARKER_WINDOW_MIN
+        // = 90 min von selbst aus, ohne widerrufen zu werden. Wird er dagegen
+        // zurueckgesetzt, gilt das als RUECKNAHME und widerruft den
+        // Evidenzkredit - die Phase bleibt dann dauerhaft
+        // SUSPENDED/CREDIT_REVOKED (ebenfalls gemessen, 150 Zyklen).
+        var ruhig: FuseCycleRunner.Outcome? = null
+        val ruhePhasen = java.util.LinkedHashMap<String, Int>()
+        repeat(200) {
+            val o = cycle()
+            ruhePhasen.merge(
+                (o.evidencePhase ?: "null") + "/marker=" + (o.expectationSituation?.mealMarkerActive), 1, Int::plus,
+            )
+            if (o.evidencePhase == EvidenceStock.Phase.DORMANT.name &&
+                o.expectationSituation?.mealMarkerActive == false &&
+                ruhig == null
+            ) ruhig = o
+        }
+        assertNotNull(ruhig, "DORMANT bei abgelaufenem Marker muss erreichbar sein. Phasen: $ruhePhasen")
+
+        // 6) DER NACHWEIS: Episode offen, Lage CORRECTION.
+        val o = ruhig!!
+        assertTrue(o.evidenceEpisodeId > 0L, "die Episode ist NOCH OFFEN: id=${o.evidenceEpisodeId}")
+        val lage = o.expectationSituation
+        assertNotNull(lage, "und der Zyklus traegt eine Lage")
+        assertEquals(
+            EvidenceStock.Phase.DORMANT, lage!!.evidencePhase,
+            "die Lage traegt die GEFAHRENE Phase",
+        )
+        assertEquals(
+            ExpectationLedger.ExpectationContext.CORRECTION,
+            ExpectationLedger.classify(lage.copy(ledgerSealed = true)).context,
+            "eine offene Episode in DORMANT ist Korrekturbetrieb",
         )
     }
 }
