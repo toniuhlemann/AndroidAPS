@@ -828,7 +828,8 @@ class ExpectationLedgerTest {
         nowTs: Long,
         stamp: InterventionStamp = REV,
         cfg: String = CFG,
-    ) = ExpectationLedger.currentLambdaEvidence(outcomes, nowTs, stamp, cfg, SEG, MARGE)
+        lage: ExpectationLedger.Classification = KORR,
+    ) = ExpectationLedger.currentLambdaEvidence(outcomes, nowTs, stamp, cfg, SEG, lage, MARGE)
 
     @Test
     fun `eine frische lueckenlose Strecke zaehlt`() {
@@ -914,6 +915,59 @@ class ExpectationLedgerTest {
         )
     }
 
+    /**
+     * DIE LAGE JETZT ZAEHLT MIT (Toni 18.08.).
+     *
+     * Die Strecke darf bis zu fuenf Minuten alt sein. In dieser Zeit kann ein
+     * Marker gesetzt worden sein - dann ist die Korrekturstrecke zwar frisch,
+     * die Lage aber keine Korrektur mehr. Ohne diesen Riegel gaelte sie
+     * weiter, und der Nachweis waere formal sauber und inhaltlich falsch.
+     */
+    @Test
+    fun `eine inzwischen andere Lage macht die frische Strecke unzulaessig`() {
+        val bis = t0 + 100 * 60_000L
+        val e = aktuell(folge(10, bis), bis + 60_000L, lage = MAHL)
+        assertFalse(e.eligible, "Marker laeuft jetzt")
+        assertEquals(ExpectationLedger.Denial.CONTEXT_NOT_CORRECTION, e.denialReason)
+        assertEquals(
+            ExpectationLedger.ContextReason.MARKER_ACTIVE, e.currentContextReason,
+            "und WELCHE Lage es ist, steht im Ergebnis",
+        )
+        assertEquals(0, e.minutes)
+    }
+
+    /** Auch eine ausgeschlossene Lage - Rebound, Signalstoerung,
+     *  unversiegelbarer Ledger - sperrt die frische Strecke. */
+    @Test
+    fun `auch eine ausgeschlossene Lage sperrt die frische Strecke`() {
+        val bis = t0 + 100 * 60_000L
+        for (grund in listOf(
+            ExpectationLedger.ContextReason.REBOUND,
+            ExpectationLedger.ContextReason.SIGNAL_UNHEALTHY,
+            ExpectationLedger.ContextReason.LEDGER_UNSEALED,
+            ExpectationLedger.ContextReason.UNKNOWN_INPUT,
+        )) {
+            val e = aktuell(
+                folge(10, bis), bis + 60_000L,
+                lage = ExpectationLedger.Classification(
+                    ExpectationLedger.ExpectationContext.EXCLUDED, grund,
+                ),
+            )
+            assertFalse(e.eligible, "$grund")
+            assertEquals(grund, e.currentContextReason)
+        }
+    }
+
+    /** Und die HISTORISCHE Strecke bleibt davon unberuehrt - sie sagt aus,
+     *  was damals belegt war, nicht was jetzt gilt. */
+    @Test
+    fun `die Lage jetzt aendert die historische Strecke nicht`() {
+        val bis = t0 + 100 * 60_000L
+        val outcomes = folge(10, bis)
+        assertFalse(aktuell(outcomes, bis + 60_000L, lage = MAHL).eligible)
+        assertEquals(9, ExpectationLedger.historicalLambdaStreakMin(outcomes, SEG, MARGE))
+    }
+
     /** Eine andere Konfigurationsgeneration bricht ebenso - mit eigenem
      *  Grund, damit der Export die Ursachen trennen kann. */
     @Test
@@ -930,7 +984,7 @@ class ExpectationLedgerTest {
     fun `ein ungueltiger Kopfstand ergibt keinen Nachweis`() {
         val bis = t0 + 100 * 60_000L
         val e = ExpectationLedger.currentLambdaEvidence(
-            folge(10, bis), bis + 60_000L, InterventionStamp("", 5L), CFG, SEG, MARGE,
+            folge(10, bis), bis + 60_000L, InterventionStamp("", 5L), CFG, SEG, KORR, MARGE,
         )
         assertFalse(e.eligible)
         assertEquals(ExpectationLedger.Denial.STAMP_INVALID, e.denialReason)

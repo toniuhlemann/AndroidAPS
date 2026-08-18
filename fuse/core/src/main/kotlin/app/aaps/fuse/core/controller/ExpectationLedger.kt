@@ -692,11 +692,25 @@ object ExpectationLedger {
         currentStamp: InterventionStamp,
         currentConfigGeneration: String,
         currentSegmentId: Long,
+        currentClassification: Classification,
         minSafetyMarginMgdl: Double,
         maxGapMs: Long = MAX_EVIDENCE_GAP_MS,
     ): LambdaEvidence {
         if (!currentStamp.valid) return LambdaEvidence.denied(Denial.STAMP_INVALID)
         if (currentConfigGeneration.isBlank()) return LambdaEvidence.denied(Denial.CONFIG_UNKNOWN)
+        // DIE LAGE JETZT, nicht nur die der Eintraege (Toni 18.08.).
+        //
+        // Die Strecke darf bis zu [maxGapMs] alt sein - in dieser Zeit kann
+        // ein Marker gesetzt worden, ein Mahlzeitenfenster aufgegangen, ein
+        // Rebound eingetreten oder das Signal ausgefallen sein. Ohne diese
+        // Pruefung gaelte die frische Korrekturstrecke noch fuenf Minuten
+        // weiter, obwohl die Lage laengst eine andere ist. Der Nachweis waere
+        // dann formal sauber und inhaltlich falsch.
+        if (currentClassification.context != ExpectationContext.CORRECTION) return LambdaEvidence(
+            minutes = 0, freshThroughTs = null, eligible = false,
+            denialReason = Denial.CONTEXT_NOT_CORRECTION,
+            currentContextReason = currentClassification.reason,
+        )
 
         val sortiert = outcomes.sortedByDescending { it.entry.dueTs }
         var juengste: Long? = null
@@ -761,6 +775,13 @@ object ExpectationLedger {
         NOT_LAMBDA_EVIDENCE,
         GAP_IN_STREAK,
 
+        /**
+         * DIE LAGE JETZT ist keine reine Korrektur mehr - Marker,
+         * Mahlzeitenfenster, Rebound, Signalstoerung oder unklare Eingabe.
+         * Welche davon, sagt [LambdaEvidence.currentContextReason].
+         */
+        CONTEXT_NOT_CORRECTION,
+
         /** Der uebergebene Kopfstand selbst taugt nicht. */
         STAMP_INVALID,
         CONFIG_UNKNOWN,
@@ -780,6 +801,14 @@ object ExpectationLedger {
         val freshThroughTs: Long?,
         val eligible: Boolean,
         val denialReason: Denial?,
+        /**
+         * Bei [Denial.CONTEXT_NOT_CORRECTION]: WELCHE Lage es stattdessen
+         * ist. Sonst `null`.
+         *
+         * Dieselbe Regel wie ueberall hier - ein Grund, den der Export nur
+         * als "nicht zulaessig" sieht, taugt spaeter fuer keine Auswertung.
+         */
+        val currentContextReason: ContextReason? = null,
     ) {
 
         companion object {
