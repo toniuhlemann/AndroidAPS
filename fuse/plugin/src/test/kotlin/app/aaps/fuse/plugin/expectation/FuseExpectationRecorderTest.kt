@@ -61,11 +61,20 @@ class FuseExpectationRecorderTest {
         anchor: Double? = 200.0,
         mean: Double? = 150.0,
         samples: List<ExpectationLedger.Sample> = emptyList(),
-    ) = record(
-        dir = dir, nowTs = nowTs, situation = situation, stamp = stamp, configGeneration = CFG,
-        segmentId = SEG, sourceTs = sourceTs, anchorMgdl = anchor, meanPredictedMgdl = mean,
-        horizonMin = H, safetyLowerPredictedMgdl = 40.0, lambda = null, samples = samples,
-    )
+    ): FuseExpectationRecorder.Telemetry {
+        // submit ist asynchron - im Test wird ausdruecklich gewartet, im
+        // Betrieb NIE. Genau das ist der Unterschied, um den es geht.
+        submit(
+            FuseExpectationRecorder.Snapshot(
+                dir = dir, nowTs = nowTs, situation = situation, stamp = stamp,
+                configGeneration = CFG, segmentId = SEG, sourceTs = sourceTs,
+                anchorMgdl = anchor, meanPredictedMgdl = mean, horizonMin = H,
+                safetyLowerPredictedMgdl = 40.0, lambda = null, samples = samples,
+            ),
+        )
+        awaitIdleForTest()
+        return telemetry
+    }
 
     // ---- Die Kette ------------------------------------------------------
 
@@ -76,13 +85,12 @@ class FuseExpectationRecorderTest {
     @Test
     fun `eine Prognose wird eingereiht, faellig abgerechnet und persistiert`(@TempDir dir: File) {
         val r = recorder()
-        assertTrue(r.loadOnce(dir, STAMP))
 
         val erg = r.buche(dir, nowTs = t0, sourceTs = t0)
-        assertTrue(erg is FuseExpectationRecorder.Result.Recorded, "$erg")
-        assertTrue((erg as FuseExpectationRecorder.Result.Recorded).issued, "eingereiht")
-        assertTrue(erg.persisted, "und geschrieben")
-        assertEquals(1, r.state.entries.size)
+        assertTrue(erg.lastResult.startsWith("RECORDED"), erg.lastResult)
+        assertTrue(erg.lastResult.contains("issued=true"), erg.lastResult)
+        assertTrue(erg.lastResult.contains("persisted=true"), erg.lastResult)
+        assertEquals(1, r.persistedState.entries.size)
 
         // Faelligkeit: die Senkung ist ausgeblieben.
         val faellig = t0 + H * 60_000L
@@ -90,16 +98,18 @@ class FuseExpectationRecorderTest {
             dir, nowTs = faellig + 1000L, sourceTs = faellig,
             samples = listOf(probe(faellig, 205.0)),
         )
-        assertEquals(1, (erg2 as FuseExpectationRecorder.Result.Recorded).settled, "abgerechnet")
+        assertTrue(erg2.lastResult.contains("settled=1"), erg2.lastResult)
         assertEquals(
-            ExpectationLedger.Verdict.MISSED, r.state.outcomes.single().verdict,
+            ExpectationLedger.Verdict.MISSED, r.persistedState.outcomes.single().verdict,
             "205 statt 150 - die behauptete Senkung blieb aus",
         )
 
-        // Ein frischer Prozess liest denselben Stand.
+        // Ein frischer Prozess liest denselben Stand. Geladen wird beim ERSTEN
+        // Schnappschuss - der Recorder beruehrt die Platte nicht, bevor er
+        // etwas zu tun hat.
         val neu = recorder()
-        assertTrue(neu.loadOnce(dir, STAMP))
-        assertEquals(1, neu.state.outcomes.size, "der Zustand hat den Prozess ueberlebt")
+        neu.buche(dir, nowTs = faellig + 120_000L, sourceTs = faellig + 120_000L, mean = null)
+        assertEquals(1, neu.persistedState.outcomes.size, "der Zustand hat den Prozess ueberlebt")
     }
 
     /**
@@ -112,13 +122,12 @@ class FuseExpectationRecorderTest {
     @Test
     fun `bei unversiegelbarem Ledger entsteht nur ein ausgeschlossener Eintrag`(@TempDir dir: File) {
         val r = recorder()
-        r.loadOnce(dir, STAMP)
         r.buche(dir, nowTs = t0, sourceTs = t0, situation = korrektur(sealed = false))
         assertEquals(
-            ExpectationLedger.ExpectationContext.EXCLUDED, r.state.entries.single().context,
+            ExpectationLedger.ExpectationContext.EXCLUDED, r.persistedState.entries.single().context,
         )
         assertEquals(
-            ExpectationLedger.ContextReason.LEDGER_UNSEALED, r.state.entries.single().contextReason,
+            ExpectationLedger.ContextReason.LEDGER_UNSEALED, r.persistedState.entries.single().contextReason,
         )
     }
 
@@ -126,41 +135,97 @@ class FuseExpectationRecorderTest {
     @Test
     fun `ohne Lage wird nichts eingereiht`(@TempDir dir: File) {
         val r = recorder()
-        r.loadOnce(dir, STAMP)
         val erg = r.buche(dir, nowTs = t0, sourceTs = t0, situation = null)
-        assertFalse((erg as FuseExpectationRecorder.Result.Recorded).issued)
-        assertTrue(r.state.entries.isEmpty())
+        assertTrue(erg.lastResult.contains("issued=false"), erg.lastResult)
+        assertTrue(r.persistedState.entries.isEmpty())
     }
 
     /** Ohne Bahn ebenso - abgerechnet wird trotzdem. */
     @Test
     fun `ohne Prognose wird nur abgerechnet`(@TempDir dir: File) {
         val r = recorder()
-        r.loadOnce(dir, STAMP)
         r.buche(dir, nowTs = t0, sourceTs = t0)
         val faellig = t0 + H * 60_000L
         val erg = r.buche(
             dir, nowTs = faellig + 1000L, sourceTs = faellig, mean = null,
             samples = listOf(probe(faellig, 205.0)),
         )
-        assertFalse((erg as FuseExpectationRecorder.Result.Recorded).issued, "nichts eingereiht")
-        assertEquals(1, erg.settled, "aber abgerechnet")
+        assertTrue(erg.lastResult.contains("issued=false"), erg.lastResult)
+        assertTrue(erg.lastResult.contains("settled=1"), erg.lastResult)
     }
 
     /** Ein ungueltiger Stempel oder eine fehlende Kennung sperrt - mit Grund. */
     @Test
     fun `ohne gueltige Herkunft wird uebersprungen`(@TempDir dir: File) {
         val r = recorder()
-        r.loadOnce(dir, STAMP)
         assertTrue(
-            r.buche(dir, t0, t0, stamp = InterventionStamp("", 0L)) is FuseExpectationRecorder.Result.Skipped,
+            r.buche(dir, t0, t0, stamp = InterventionStamp("", 0L)).lastResult.startsWith("SKIPPED"),
         )
-        val ohneCfg = r.record(
-            dir = dir, nowTs = t0, situation = korrektur(), stamp = STAMP, configGeneration = "",
-            segmentId = SEG, sourceTs = t0, anchorMgdl = 200.0, meanPredictedMgdl = 150.0,
-            horizonMin = H, safetyLowerPredictedMgdl = 40.0, lambda = null, samples = emptyList(),
+        r.submit(
+            FuseExpectationRecorder.Snapshot(
+                dir = dir, nowTs = t0, situation = korrektur(), stamp = STAMP,
+                configGeneration = "", segmentId = SEG, sourceTs = t0,
+                anchorMgdl = 200.0, meanPredictedMgdl = 150.0, horizonMin = H,
+                safetyLowerPredictedMgdl = 40.0, lambda = null, samples = emptyList(),
+            ),
         )
-        assertTrue(ohneCfg is FuseExpectationRecorder.Result.Skipped, "$ohneCfg")
+        r.awaitIdleForTest()
+        assertTrue(r.telemetry.lastResult.startsWith("SKIPPED"), r.telemetry.lastResult)
+    }
+
+    // ---- Die Entkopplung vom Loop-Thread --------------------------------
+
+    /**
+     * DER LOOP WARTET NIE - auch nicht bei vollem Rueckstau.
+     *
+     * Das ist die Zusicherung, um die es beim ganzen Umbau geht (Toni 18.08.:
+     * "niemals den Loop warten lassen"). Geprueft wird sie an der Grenze: mehr
+     * Zyklen als die Schlange fasst, alle nacheinander uebergeben, ohne dass
+     * der Worker Zeit zum Abarbeiten hat.
+     */
+    @Test
+    fun `submit kehrt auch bei vollem Rueckstau sofort zurueck`(@TempDir dir: File) {
+        val r = FuseExpectationRecorder(FuseExpectationStore(FakeDurability()), queueCapacity = 2)
+        val start = System.nanoTime()
+        var verworfen = 0
+        repeat(50) { i ->
+            val ok = r.submit(
+                FuseExpectationRecorder.Snapshot(
+                    dir = dir, nowTs = t0 + i * 60_000L, situation = korrektur(), stamp = STAMP,
+                    configGeneration = CFG, segmentId = SEG, sourceTs = t0 + i * 60_000L,
+                    anchorMgdl = 200.0, meanPredictedMgdl = 150.0, horizonMin = H,
+                    safetyLowerPredictedMgdl = 40.0, lambda = null, samples = emptyList(),
+                ),
+            )
+            if (!ok) verworfen++
+        }
+        val dauerMs = (System.nanoTime() - start) / 1_000_000L
+        // 50 Uebergaben muessen zusammen unter einem einzigen Schreibvorgang
+        // bleiben. Die Schranke ist grosszuegig; sie faellt sofort, wenn hier
+        // wieder synchron geschrieben wuerde.
+        assertTrue(dauerMs < 200, "50 submits brauchten $dauerMs ms - das darf nie blockieren")
+        assertTrue(verworfen > 0, "bei Kapazitaet 2 MUESSEN Zyklen verworfen werden")
+        assertEquals(
+            verworfen.toLong(), r.telemetry.dropped,
+            "und jeder verworfene Zyklus wird gezaehlt - sonst waere die Luecke unsichtbar",
+        )
+    }
+
+    /**
+     * DIE AUSWERTUNG LIEST NUR GESCHRIEBENES.
+     *
+     * Vor dem ersten erfolgreichen Schreibvorgang ist der ausgewertete Zustand
+     * leer - nicht etwa der Zwischenstand des Workers. Ein Nachweis aus
+     * ungeschriebenen Ergebnissen saehe nach einem Prozesstod anders aus als
+     * vorher.
+     */
+    @Test
+    fun `vor dem ersten Schreibvorgang ist der ausgewertete Zustand leer`(@TempDir dir: File) {
+        val r = recorder()
+        assertTrue(r.persistedState.isEmpty, "noch nichts geschrieben")
+        assertEquals(0L, r.telemetry.asOfTs, "und kein Stand ausgewiesen")
+        r.buche(dir, nowTs = t0, sourceTs = t0)
+        assertEquals(t0, r.telemetry.asOfTs, "nach dem Schreiben steht der Stand")
     }
 
     /**
@@ -175,10 +240,32 @@ class FuseExpectationRecorderTest {
         val blockiert = File(parent, "datei-statt-verzeichnis").also { it.writeText("x") }
         val dir = File(blockiert, "unter")
         val r = recorder()
-        r.loadOnce(dir, STAMP)
         val erg = r.buche(dir, t0, t0)
         // Gebucht im Speicher, nur nicht geschrieben - und das steht dran.
-        assertFalse((erg as FuseExpectationRecorder.Result.Recorded).persisted)
+        assertTrue(erg.lastResult.contains("persisted=false"), erg.lastResult)
+    }
+
+    /**
+     * EIN GESCHEITERTER SCHREIBVORGANG DARF NICHTS AUSWERTBAR MACHEN.
+     *
+     * Der Worker hat den Eintrag im Zwischenstand - aber auf Platte steht er
+     * nicht. Wuerde die Auswertung ihn trotzdem sehen, entstuende eine
+     * Strecke, die nach einem Prozesstod anders aussieht als vorher. Genau
+     * das ist die Bauform, die Toni am 18.08. verlangt hat: "aktuelle
+     * Lambda-Evidenz ausschliesslich aus dem zuletzt erfolgreich
+     * persistierten Zustand bilden."
+     */
+    @Test
+    fun `ein gescheiterter Schreibvorgang macht nichts auswertbar`(@TempDir parent: File) {
+        val blockiert = File(parent, "datei-statt-verzeichnis").also { it.writeText("x") }
+        val dir = File(blockiert, "unter")
+        val r = recorder()
+        r.buche(dir, t0, t0)
+        assertTrue(
+            r.persistedState.isEmpty,
+            "der Zwischenstand des Workers darf NICHT in die Auswertung gelangen",
+        )
+        assertEquals(0L, r.telemetry.asOfTs, "und es wird kein Stand ausgewiesen")
     }
 
     // ---- Der Exportschnappschuss ----------------------------------------
@@ -189,7 +276,6 @@ class FuseExpectationRecorderTest {
     @Test
     fun `der Schnappschuss zaehlt nach Kontext getrennt`(@TempDir dir: File) {
         val r = recorder()
-        r.loadOnce(dir, STAMP)
         // Eine Korrektur- und eine Mahlzeitenerwartung.
         r.buche(dir, nowTs = t0, sourceTs = t0)
         r.buche(
@@ -224,7 +310,6 @@ class FuseExpectationRecorderTest {
     @Test
     fun `der Schnappschuss meldet die aktuelle Strecke als unzulaessig, wenn die Lage kippt`(@TempDir dir: File) {
         val r = recorder()
-        r.loadOnce(dir, STAMP)
         val snap = r.exportSnapshot(
             t0, STAMP, CFG, SEG, korrektur().copy(mealMarkerActive = true), MARGE,
         )
@@ -246,7 +331,6 @@ class FuseExpectationRecorderTest {
     @Test
     fun `ohne Lage ist die aktuelle Strecke unzulaessig`(@TempDir dir: File) {
         val r = recorder()
-        r.loadOnce(dir, STAMP)
         val current = r.exportSnapshot(t0, STAMP, CFG, SEG, null, MARGE).current
         assertFalse(current.eligible)
         assertEquals(
@@ -269,7 +353,6 @@ class FuseExpectationRecorderTest {
     @Test
     fun `eine Mahlzeit zwischen Ausgabe und Faelligkeit erzeugt keinen MISSED`(@TempDir dir: File) {
         val r = recorder()
-        r.loadOnce(dir, STAMP)
         r.buche(dir, nowTs = t0, sourceTs = t0)
         val faellig = t0 + H * 60_000L
         r.buche(
@@ -279,7 +362,7 @@ class FuseExpectationRecorderTest {
             samples = listOf(probe(faellig, 205.0, ktx = ExpectationLedger.ExpectationContext.MEAL)),
         )
         assertEquals(
-            ExpectationLedger.Verdict.CONTEXT_CHANGED, r.state.outcomes.single().verdict,
+            ExpectationLedger.Verdict.CONTEXT_CHANGED, r.persistedState.outcomes.single().verdict,
             "kein Beleg - weder dafuer noch dagegen",
         )
     }
@@ -288,14 +371,13 @@ class FuseExpectationRecorderTest {
     @Test
     fun `ein Signalbruch zwischen Ausgabe und Faelligkeit erzeugt keinen MISSED`(@TempDir dir: File) {
         val r = recorder()
-        r.loadOnce(dir, STAMP)
         r.buche(dir, nowTs = t0, sourceTs = t0)
         val faellig = t0 + H * 60_000L
         r.buche(
             dir, nowTs = faellig + 1000L, sourceTs = faellig, mean = null,
             samples = listOf(probe(faellig, 205.0, ktx = ExpectationLedger.ExpectationContext.EXCLUDED)),
         )
-        assertEquals(ExpectationLedger.Verdict.CONTEXT_CHANGED, r.state.outcomes.single().verdict)
+        assertEquals(ExpectationLedger.Verdict.CONTEXT_CHANGED, r.persistedState.outcomes.single().verdict)
     }
 
     // ---- Die Evidenzphase entscheidet, nicht die Episode -----------------
@@ -311,13 +393,12 @@ class FuseExpectationRecorderTest {
     @Test
     fun `DORMANT bei offener Episode ergibt CORRECTION`(@TempDir dir: File) {
         val r = recorder()
-        r.loadOnce(dir, STAMP)
         r.buche(
             dir, nowTs = t0, sourceTs = t0,
             situation = korrektur().copy(evidencePhase = EvidenceStock.Phase.DORMANT),
         )
         assertEquals(
-            ExpectationLedger.ExpectationContext.CORRECTION, r.state.entries.single().context,
+            ExpectationLedger.ExpectationContext.CORRECTION, r.persistedState.entries.single().context,
         )
     }
 
@@ -326,7 +407,6 @@ class FuseExpectationRecorderTest {
     @Test
     fun `neue Evidenz kippt DORMANT sofort zurueck auf MEAL`(@TempDir dir: File) {
         val r = recorder()
-        r.loadOnce(dir, STAMP)
         for ((phase, erwartet) in listOf(
             EvidenceStock.Phase.PENDING_SEAL to ExpectationLedger.ExpectationContext.MEAL,
             EvidenceStock.Phase.ACTIVE to ExpectationLedger.ExpectationContext.MEAL,

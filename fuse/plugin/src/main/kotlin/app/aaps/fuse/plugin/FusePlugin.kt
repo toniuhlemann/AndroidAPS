@@ -195,6 +195,7 @@ class FusePlugin @Inject constructor(
     /** Eigenes Verzeichnis, getrennt von der Reparaturdomaene des
      *  Insulinledgers (s. FuseExpectationStore.DIR_NAME). */
     private fun expectationDir() = FuseExpectationStore.dirIn(context.filesDir)
+        .also { runCatching { if (!it.isDirectory) it.mkdirs() } }
 
     /** Der Erwartungs-Ledger. REIN BEOBACHTEND - kein Regelpfad liest ihn. */
     private val expectationRecorder = FuseExpectationRecorder()
@@ -208,31 +209,19 @@ class FusePlugin @Inject constructor(
      * Regelzyklus nicht kosten.
      */
     private fun buchereWartung(outcome: FuseCycleRunner.Outcome?, sealed: Boolean) {
-        // DER SCHALTER SITZT GANZ VORN - vor dem Laden, vor mkdirs, vor
-        // jedem Dateizugriff. Ausgeschaltet kostet der Baustein damit genau
-        // eine Preference-Abfrage je Zyklus und beruehrt die Platte nie.
-        //
-        // Er schuetzt nicht vor Dosierwirkung (die gibt es nicht), sondern
-        // vor SCHREIBLAST auf dem produktiven Geraet. Erst laeuft die neue
-        // Version ohne ihn; wenn sie ruhig ist, wird unter Beobachtung
-        // eingeschaltet - und beim kleinsten Zweifel wieder aus.
         if (!preferences.get(FuseBooleanKey.ExpectationLedgerEnabled)) return
+        // ALLES HIER MUSS SCHNELL SEIN. `submit` legt einen Schnappschuss in
+        // eine begrenzte Schlange und kehrt sofort zurueck; geschrieben wird
+        // auf einem eigenen Thread. Der Loop ruft diese Methode SYNCHRON
+        // innerhalb von `invoke()` auf, und LoopPlugin aktuiert erst nach
+        // dessen Rueckkehr - jede Millisekunde hier ist Verzoegerung an der
+        // Pumpe.
         runCatching {
+            val o = outcome ?: return@runCatching
             val stempel = ledgerAdapter.interventionStamp
             val dir = expectationDir()
-            if (!dir.isDirectory) dir.mkdirs()
-            if (!expectationRecorder.loadOnce(dir, stempel)) {
-                aapsLogger.debug(LTag.APS, "FUSE expectation: ${expectationRecorder.lastResult}")
-            }
-            val o = outcome ?: return@runCatching
             val bahn = o.prediction
-            // DIE LAGE mit dem Siegel vervollstaendigen. Liess sich die
-            // Generation nicht versiegeln, ist der Stempel dieses Zyklus nur
-            // im Speicher - dann entsteht ueber classify() gar keine
-            // Erwartung (ContextReason.LEDGER_UNSEALED).
             val lage = o.expectationSituation?.copy(ledgerSealed = sealed)
-            // Der Messpunkt DIESES Zyklus, gestempelt mit dem Stand, der JETZT
-            // gilt - also nach dem Gate.
             val proben = o.signal?.let { sig ->
                 o.bgMgdl?.let { bg ->
                     listOf(
@@ -241,32 +230,29 @@ class FusePlugin @Inject constructor(
                             healthy = o.health == app.aaps.fuse.core.observer.Health.READY,
                             interventionStamp = stempel,
                             configGeneration = o.configGeneration,
-                            // DIE LAGE ZU DIESEM MESSPUNKT. Sie entscheidet
-                            // spaeter mit, ob die Beobachtung ueberhaupt zaehlt -
-                            // eine Mahlzeit, die zwischen Ausgabe und
-                            // Faelligkeit beginnt, faellt sonst durch jedes
-                            // Raster (der Stempel bleibt ja unveraendert,
-                            // solange nichts publiziert wurde).
+                            // Die Lage zu DIESEM Messpunkt - sie entscheidet
+                            // spaeter mit, ob die Beobachtung ueberhaupt zaehlt.
                             context = lage?.let { ExpectationLedger.classify(it).context }
                                 ?: ExpectationLedger.ExpectationContext.EXCLUDED,
                         ),
                     )
                 }
             } ?: emptyList()
-            expectationRecorder.record(
-                dir = dir,
-                nowTs = o.computeTs,
-                situation = lage,
-                stamp = stempel,
-                configGeneration = o.configGeneration,
-                segmentId = o.signal?.segmentStartTs ?: 0L,
-                sourceTs = o.signal?.sourceTs ?: o.computeTs,
-                anchorMgdl = bahn?.bgAtAnchor,
-                meanPredictedMgdl = bahn?.bgAtHorizonMean,
-                horizonMin = o.policy?.liabilityHorizonMin ?: 0,
-                safetyLowerPredictedMgdl = bahn?.bgAtHorizonLower,
-                lambda = null,
-                samples = proben,
+            val angenommen = expectationRecorder.submit(
+                FuseExpectationRecorder.Snapshot(
+                    dir = dir, nowTs = o.computeTs, situation = lage, stamp = stempel,
+                    configGeneration = o.configGeneration,
+                    segmentId = o.signal?.segmentStartTs ?: 0L,
+                    sourceTs = o.signal?.sourceTs ?: o.computeTs,
+                    anchorMgdl = bahn?.bgAtAnchor,
+                    meanPredictedMgdl = bahn?.bgAtHorizonMean,
+                    horizonMin = o.policy?.liabilityHorizonMin ?: 0,
+                    safetyLowerPredictedMgdl = bahn?.bgAtHorizonLower,
+                    lambda = null, samples = proben,
+                ),
+            )
+            if (!angenommen) aapsLogger.debug(
+                LTag.APS, "FUSE expectation: Zyklus verworfen (Rueckstau) - Messluecke, keine Dosisfolge",
             )
         }
     }

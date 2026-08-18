@@ -340,6 +340,12 @@ object FuseStateJson {
                     // am Tag.
                     .put("writeBytes", e.writeBytes)
                     .put("writeMs", e.writeDurationMs)
+                    // DIE ENTKOPPLUNG SICHTBAR MACHEN. Ohne diese drei Zahlen
+                    // saehe ein Rueckstau aus wie ein ruhiger Zyklus: die
+                    // Strecke stuende still, und niemand wuesste warum.
+                    .put("queueDepth", e.queueDepth)
+                    .put("droppedCycles", e.droppedCycles)
+                    .put("asOfTs", e.asOfTs)
                     .put(
                         "samples", JSONArray().apply {
                             e.samples.forEach { sm ->
@@ -1010,6 +1016,12 @@ object FuseStateJson {
         val samples: List<ExpectationSample>,
         val writeBytes: Int,
         val writeDurationMs: Long,
+        /** Wie viele Zyklen gerade auf ihre Buchung warten. */
+        val queueDepth: Int,
+        /** Seit Prozessstart verworfene Zyklen - jeder ist eine Messluecke. */
+        val droppedCycles: Long,
+        /** Stand des ausgewerteten, nachweislich geschriebenen Zustands. */
+        val asOfTs: Long,
     )
 
     /**
