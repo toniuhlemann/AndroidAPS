@@ -208,6 +208,15 @@ class FusePlugin @Inject constructor(
      * Regelzyklus nicht kosten.
      */
     private fun buchereWartung(outcome: FuseCycleRunner.Outcome?, sealed: Boolean) {
+        // DER SCHALTER SITZT GANZ VORN - vor dem Laden, vor mkdirs, vor
+        // jedem Dateizugriff. Ausgeschaltet kostet der Baustein damit genau
+        // eine Preference-Abfrage je Zyklus und beruehrt die Platte nie.
+        //
+        // Er schuetzt nicht vor Dosierwirkung (die gibt es nicht), sondern
+        // vor SCHREIBLAST auf dem produktiven Geraet. Erst laeuft die neue
+        // Version ohne ihn; wenn sie ruhig ist, wird unter Beobachtung
+        // eingeschaltet - und beim kleinsten Zweifel wieder aus.
+        if (!preferences.get(FuseBooleanKey.ExpectationLedgerEnabled)) return
         runCatching {
             val stempel = ledgerAdapter.interventionStamp
             val dir = expectationDir()

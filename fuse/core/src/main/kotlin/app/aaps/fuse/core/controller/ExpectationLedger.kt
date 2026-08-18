@@ -187,6 +187,16 @@ object ExpectationLedger {
          * "ja").
          */
         val ledgerSealed: Boolean?,
+        /**
+         * NUR DIAGNOSE - geht in KEINE Klassifikation ein.
+         *
+         * Sie steht hier, damit im Export sichtbar bleibt, dass eine Episode
+         * offen war, waehrend der Kontext CORRECTION lautete. Genau diese
+         * Kombination ist der Uebergang, den die Spezifikation vom 18.08.
+         * verlangt - und ohne die Zahl daneben liesse sich hinterher nicht
+         * belegen, dass er wirklich vorkam.
+         */
+        val episodeIdForDiagnostics: Long = 0L,
     )
 
     /**
@@ -198,11 +208,59 @@ object ExpectationLedger {
      * CORRECTION-lambda-Evidenz."
      *
      * Die Funktion ist bewusst so gebaut, dass CORRECTION der SCHWERE Fall
-     * ist: jede einzelne Bedingung muss ausdruecklich mit `false` belegt
-     * sein, die Gesundheit ausdruecklich mit `true`. Alles andere - auch ein
-     * einziges `null` - ergibt MEAL. Ein vergessenes Merkmal kann damit
-     * hoechstens Nachweis KOSTEN, nie welchen erfinden.
+     * ist: jede einzelne Lage-Groesse muss ausdruecklich belegt sein, die
+     * Gesundheit und die Versiegelbarkeit ausdruecklich mit `true`. Ein
+     * einziges `null` ergibt EXCLUDED/UNKNOWN_INPUT - nicht MEAL. (Bis zum
+     * 18.08. stand hier MEAL, und das stimmte damals auch; seit der
+     * Dreiteilung ist eine unbekannte Lage weder Korrektur noch Mahlzeit,
+     * sondern gar nicht auswertbar. Ein Kommentar, der eine ueberholte Regel
+     * behauptet, ist schlimmer als keiner.)
+     *
+     * Ein vergessenes Merkmal kann damit hoechstens Nachweis KOSTEN, nie
+     * welchen erfinden.
      */
+    /**
+     * DIE LAGE EINES ZYKLUS ZUSAMMENSETZEN - eine typisierte Adapterfunktion.
+     *
+     * Sie existiert, damit die gefaehrlichste Ableitung dieses Bausteins
+     * PRUEFBAR wird (Toni 18.08.). Im Runner war sie eine Zuweisung mitten in
+     * einem 2000-Zeilen-Lauf; eine Mutationsprobe, die dort wieder
+     * `episodeId > 0` einsetzt, blieb gruen, weil das ruhige Testszenario
+     * beide Herleitungen nicht unterscheiden kann.
+     *
+     * WARUM [evidenceEpisodeId] UEBERHAUPT HIER STEHT, obwohl es den Kontext
+     * NICHT bestimmt: nur so ist die falsche Ableitung ueberhaupt
+     * formulierbar - und damit testbar. Eine Funktion, der man das falsche
+     * Datum gar nicht erst gibt, kann man auch nicht dabei ertappen, es zu
+     * benutzen. Der Parameter geht ausschliesslich in die Diagnose.
+     *
+     * Die Regel in einem Satz: eine offene Episode sagt, dass eine Mahlzeit
+     * einmal begonnen HAT. Die Phase sagt, ob gerade eine wirkt. Nur das
+     * zweite ist die Lage dieses Zyklus.
+     */
+    fun situationOf(
+        mealMarkerActive: Boolean?,
+        evidenceEpisodeId: Long,
+        evidencePhase: EvidenceStock.Phase?,
+        onsetActive: Boolean?,
+        mealWindow: Boolean?,
+        reboundWindow: Boolean?,
+        signalHealthy: Boolean?,
+        ledgerSealed: Boolean?,
+    ): Situation = Situation(
+        mealMarkerActive = mealMarkerActive,
+        // DIE PHASE, unabhaengig von `evidenceEpisodeId`. Eine offene Episode
+        // in DORMANT ist Korrekturbetrieb - das ist der Uebergang, um den es
+        // geht.
+        evidencePhase = evidencePhase,
+        onsetActive = onsetActive,
+        mealWindow = mealWindow,
+        reboundWindow = reboundWindow,
+        signalHealthy = signalHealthy,
+        ledgerSealed = ledgerSealed,
+        episodeIdForDiagnostics = evidenceEpisodeId,
+    )
+
     fun classify(situation: Situation): Classification {
         val s = situation
         // REIHENFOLGE IST BEDEUTUNG. Die Ausschlussgruende kommen ZUERST:

@@ -474,6 +474,24 @@ enum class FuseBooleanKey(
      * anderes als bei jedem anderen Schalter. Einmal umlegen ist genau die
      * bewusste Handlung, um die es bei diesem Knopf ohnehin geht.
      */
+    /**
+     * DER ERWARTUNGS-LEDGER - reine Beobachtung, DEFAULT AUS (Toni 18.08.).
+     *
+     * Er kann keine Dosis veraendern; der Schalter schuetzt nicht davor,
+     * sondern vor SCHREIBLAST. Der Recorder schreibt in jedem Zyklus eine
+     * Generation mit fsync, Rotation und Rueckleseprobe - bei Ein-Minuten-Takt
+     * 1440 mal am Tag, und zwar synchron im Loop-Aufruf. Er kann die bereits
+     * bestimmte Dosis nicht mehr aendern, wohl aber den Zyklusabschluss
+     * verzoegern.
+     *
+     * Da nur noch das PRODUKTIVE Geraet zum Messen zur Verfuegung steht
+     * (Toni 18.08.: "wir arbeiten nur noch auf dem produktiv geraet"), muss
+     * die neue Version ohne diese Last installierbar sein. Erst wenn sie
+     * laeuft und nichts stoert, wird der Schalter unter Beobachtung
+     * umgelegt - und wieder aus, falls die Zykluszeit leidet.
+     */
+    ExpectationLedgerEnabled("fuse_expectation_ledger_enabled", false),
+
     MarkerAuthorisesRelease("fuse_marker_authorises_low", false),
 
     ConditionalTailEnabled("fuse_conditional_tail_enabled", true),

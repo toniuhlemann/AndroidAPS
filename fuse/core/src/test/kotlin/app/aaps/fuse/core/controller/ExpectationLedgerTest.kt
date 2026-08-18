@@ -810,6 +810,97 @@ class ExpectationLedgerTest {
         )
     }
 
+    // ---- Der Adapter: Phase schlaegt Episode ----------------------------
+
+    private fun lageMit(
+        episodeId: Long,
+        phase: EvidenceStock.Phase?,
+        marker: Boolean = false,
+        onset: Boolean = false,
+        fenster: Boolean = false,
+    ) = ExpectationLedger.situationOf(
+        mealMarkerActive = marker, evidenceEpisodeId = episodeId, evidencePhase = phase,
+        onsetActive = onset, mealWindow = fenster, reboundWindow = false,
+        signalHealthy = true, ledgerSealed = true,
+    )
+
+    /**
+     * DER WICHTIGSTE UEBERGANG DER GANZEN SPEZIFIKATION (Toni 18.08.):
+     * offene Episode + DORMANT ergibt CORRECTION.
+     *
+     * Er ist der Grund, warum die Ableitung ueberhaupt als eigene Funktion
+     * existiert: im Runner war sie eine Zuweisung, und eine Mutationsprobe
+     * zurueck auf `episodeId > 0` blieb dort gruen, weil das ruhige
+     * Testszenario beide Herleitungen nicht unterscheiden kann. HIER ist die
+     * Episoden-ID ausdruecklich gesetzt - eine Fehlableitung faellt damit
+     * sofort auf.
+     */
+    @Test
+    fun `eine offene Episode in DORMANT ergibt CORRECTION`() {
+        val lage = lageMit(episodeId = 4711L, phase = EvidenceStock.Phase.DORMANT)
+        assertEquals(
+            ExpectationLedger.Classification(
+                ExpectationLedger.ExpectationContext.CORRECTION,
+                ExpectationLedger.ContextReason.PURE_CORRECTION,
+            ),
+            ExpectationLedger.classify(lage),
+            "eine offene Episode sagt, dass eine Mahlzeit BEGANN - nicht, dass sie wirkt",
+        )
+        assertEquals(4711L, lage.episodeIdForDiagnostics, "sichtbar bleibt sie trotzdem")
+    }
+
+    /** Dasselbe fuer die uebrigen ruhigen Phasen - eine offene Episode aendert
+     *  an keiner davon etwas. */
+    @Test
+    fun `auch NONE und EXPIRED ergeben bei offener Episode CORRECTION`() {
+        for (phase in listOf(EvidenceStock.Phase.NONE, EvidenceStock.Phase.EXPIRED)) assertEquals(
+            ExpectationLedger.ExpectationContext.CORRECTION,
+            ExpectationLedger.classify(lageMit(4711L, phase)).context, "$phase",
+        )
+    }
+
+    /**
+     * DIE GEGENPROBE - ohne sie koennte der Test oben auch dadurch gruen sein,
+     * dass die Episode gar nichts mehr bewirkt.
+     */
+    @Test
+    fun `dieselbe offene Episode ergibt bei wirkender Evidenz MEAL`() {
+        for (phase in listOf(EvidenceStock.Phase.PENDING_SEAL, EvidenceStock.Phase.ACTIVE)) assertEquals(
+            ExpectationLedger.ExpectationContext.MEAL,
+            ExpectationLedger.classify(lageMit(4711L, phase)).context, "$phase",
+        )
+    }
+
+    /** Und ohne Episode aendert sich an der Phasenregel nichts - die ID ist
+     *  in KEINER Richtung beteiligt. */
+    @Test
+    fun `die Episoden-ID aendert das Urteil in keiner Richtung`() {
+        for (phase in EvidenceStock.Phase.entries) assertEquals(
+            ExpectationLedger.classify(lageMit(0L, phase)),
+            ExpectationLedger.classify(lageMit(9_999L, phase)),
+            "$phase",
+        )
+    }
+
+    /** DORMANT + Marker bleibt Mahlzeit - die Phase ist nicht das einzige
+     *  Mahlzeitensignal. */
+    @Test
+    fun `DORMANT mit Marker, Onset oder Fenster bleibt MEAL`() {
+        val d = EvidenceStock.Phase.DORMANT
+        assertEquals(
+            ExpectationLedger.ContextReason.MARKER_ACTIVE,
+            ExpectationLedger.classify(lageMit(4711L, d, marker = true)).reason,
+        )
+        assertEquals(
+            ExpectationLedger.ContextReason.ONSET_ACTIVE,
+            ExpectationLedger.classify(lageMit(4711L, d, onset = true)).reason,
+        )
+        assertEquals(
+            ExpectationLedger.ContextReason.MEAL_WINDOW_OPEN,
+            ExpectationLedger.classify(lageMit(4711L, d, fenster = true)).reason,
+        )
+    }
+
     // ---- Die AKTUELLE lambda-Strecke ------------------------------------
 
     /** Eine Folge belegter Ausbleiber im Minutenraster, alle unter [stamp]. */

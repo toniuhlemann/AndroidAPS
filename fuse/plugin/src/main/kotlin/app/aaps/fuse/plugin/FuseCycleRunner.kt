@@ -2067,8 +2067,9 @@ class FuseCycleRunner(
         val computeDurationMs = dateUtil.now() - computeTs
         return Outcome(
             configGeneration = app.aaps.fuse.plugin.export.FuseStateJson.hashOf(cfg).orEmpty(),
-            expectationSituation = ExpectationLedger.Situation(
+            expectationSituation = ExpectationLedger.situationOf(
                 mealMarkerActive = mealMarkerActive,
+                evidenceEpisodeId = episodes.evidenceEpisodeId,
                 // DIE PHASE, nicht die Episoden-ID (Toni 18.08.): eine offene
                 // Episode in DORMANT ist Korrekturbetrieb, keine Mahlzeit.
                 // `null` heisst "dieser Zyklus hat keine Phase gerechnet" und
