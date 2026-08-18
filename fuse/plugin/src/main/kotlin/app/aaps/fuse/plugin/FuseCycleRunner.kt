@@ -469,6 +469,20 @@ class FuseCycleRunner(
         val computeDurationMs: Long?,
         /** Abgabe-Bilanz seit Marker-Druck - null ohne Marker. */
         val mealStats: MealStats?,
+        /**
+         * DIE SICHT AUFS MAHLZEITENFUNDAMENT (Punkt 12).
+         *
+         * Immer gesetzt, auch ohne Autorisierung - dann traegt sie
+         * `armed = false` und lauter Nullen. Das ist Absicht: ein FEHLENDER
+         * Abschnitt im Export waere von "der Zyklus kam nicht so weit" nicht
+         * zu unterscheiden, und genau diese Verwechslung hat hier schon
+         * einmal Arbeit gekostet.
+         *
+         * Solange `arm()` nicht verdrahtet ist, steht hier dauerhaft
+         * [MealFoundation.Snapshot.none] - der Export zeigt dann, dass kein
+         * Fundament laeuft, und das ist die richtige Aussage.
+         */
+        val mealFoundation: MealFoundation.Snapshot = MealFoundation.Snapshot.none(),
         /** `null` = der Zyklus kam nicht bis zum Lesen der Einstellungen. Dann
          *  hat er auch keine Politik, und der Export sagt das statt eine zu
          *  erfinden. */
@@ -2065,6 +2079,16 @@ class FuseCycleRunner(
                 foundationPhase = buchung.phase,
             ) else null
         val mealStats = mealStatsOf(episodes, markerTs, computeTs)
+        // NACH `buche`, nicht davor: dort wird der Uebergang gelatcht und
+        // Phase B belastet. Ein Snapshot davor zeigte den Stand VOR dem
+        // eigenen Zyklus - im Export waere das eine stille Verschiebung um
+        // eine Minute, und im Replay ein systematischer Versatz.
+        val foundationSnapshot = MealFoundation.snapshot(
+            episodes.foundation, computeTs, episodes.primeWindowStartTs,
+            deliveredFromBudgetU = episodes.evidenceCommittedU,
+            deliveredSinceHandoverU = episodes.deliveredSinceHandoverU,
+            bolusStepU = pumpe.bolusStepU,
+        )
 
         val computeDurationMs = dateUtil.now() - computeTs
         return Outcome(
@@ -2087,6 +2111,7 @@ class FuseCycleRunner(
             tbrChanged = tbrAktuation(combined.request, computeTs, profile, currentTbr, pumpe.basalStepUPerH),
             computeDurationMs = computeDurationMs,
             mealStats = mealStats,
+            mealFoundation = foundationSnapshot,
             lowThreat = lowThreatResult,
             evidenceEpisodeId = evidenceEpisodeId,
             evidenceEpisodeDenial = episodeGate.denial?.name,
@@ -2500,6 +2525,15 @@ class FuseCycleRunner(
             maxIobU = maxIobU,
             computeDurationMs = dateUtil.now() - computeTs,
             mealStats = mealStatsOf(episodes, markerTs, computeTs),
+            // DIESELBE Sicht wie im Hauptpfad - der Fallback fuehrt keine
+            // eigene Rechnung, sonst laufen die beiden Pfade genau so
+            // auseinander wie schon einmal bei der Buchfuehrung.
+            mealFoundation = MealFoundation.snapshot(
+                episodes.foundation, computeTs, episodes.primeWindowStartTs,
+                deliveredFromBudgetU = episodes.evidenceCommittedU,
+                deliveredSinceHandoverU = episodes.deliveredSinceHandoverU,
+                bolusStepU = pumpe.bolusStepU,
+            ),
             insulinModel = insulinModel,
             abortReason = null,
             predictorRejected = true,

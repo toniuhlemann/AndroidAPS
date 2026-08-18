@@ -180,6 +180,55 @@ object FuseStateJson {
                 JSONObject().put("sinceMin", m.sinceMin).put("totalU", fin(m.totalU))
                     .put("first30U", fin(m.first30U)).put("first60U", fin(m.first60U))
             } ?: JSONObject.NULL)
+            // ---- Mahlzeitenfundament (Punkt 12, Toni 18.08.) --------------
+            //
+            // IMMER GESCHRIEBEN, auch ohne Autorisierung. Ein fehlender
+            // Abschnitt waere von "der Zyklus kam nicht so weit" nicht zu
+            // unterscheiden; `armed: false` sagt dagegen ausdruecklich, dass
+            // kein Fundament laeuft. Solange arm() nicht verdrahtet ist, ist
+            // das der Dauerzustand - und die richtige Aussage.
+            //
+            // Der Inhalt kommt VOLLSTAENDIG aus MealFoundation.snapshot();
+            // hier wird nur serialisiert. Wuerde diese Stelle irgendetwas
+            // selbst rechnen, saehe das Offline-Replay etwas anderes als der
+            // Feldexport - und jede Auswertung haette eine Annahme statt
+            // einer Messung als Grundlage.
+            .put("mealFoundation", outcome.mealFoundation.let { f ->
+                JSONObject()
+                    .put("armed", f.armed)
+                    .put("armedTs", f.armedTs)
+                    // Das gepinnte Budget und seine beiden Teile. Sie stehen
+                    // einzeln da, statt aus einem Anteil errechenbar zu sein:
+                    // im Replay wird genau ihre Aufteilung variiert.
+                    .put("totalBudgetU", fin(f.totalBudgetU))
+                    .put("phaseABudgetU", fin(f.phaseABudgetU))
+                    .put("phaseBBudgetU", fin(f.phaseBBudgetU))
+                    // BEIDE Uebergaenge: der effektive folgt vor dem Latch
+                    // noch der Prime-Laufzeit, der gelatchte steht fest. Ihre
+                    // Differenz beantwortet die Frage, ob eine Clearance den
+                    // Anker noch verschieben kann - aus einem einzelnen Wert
+                    // ist das nicht ablesbar.
+                    .put("effectiveHandoverTs", f.effectiveHandoverTs)
+                    .put("latchedHandoverTs", f.latchedHandoverTs)
+                    .put("endTs", f.endTs)
+                    .put("phase", f.phase.name)
+                    .put("deliveredSinceHandoverU", fin(f.deliveredSinceHandoverU))
+                    // Soll, Rueckstand und dueU sind DREI Groessen, nicht eine
+                    // in drei Formen: dueU ist gerastert und gedeckelt, der
+                    // Rueckstand zeigt die tatsaechliche Lage (negativ =
+                    // Vorsprung), das Soll den Plan zu diesem Zeitpunkt.
+                    .put("plannedTotalU", fin(f.plannedTotalU))
+                    .put("backlogU", fin(f.backlogU))
+                    .put("dueU", fin(f.dueU))
+                    .put("remainingInWindowU", fin(f.remainingInWindowU))
+                    .put("binding", f.binding?.name ?: JSONObject.NULL)
+                    // Fenster und Rate machen die KOMPRESSION sichtbar: eine
+                    // spaet verschobene Uebergabe presst dasselbe Teilbudget
+                    // in weniger Minuten. Ohne diese beiden faellt eine
+                    // verdreifachte Sollrate im Replay niemandem auf.
+                    .put("effectiveWindowMin", f.effectiveWindowMin)
+                    .put("effectiveRateUPerMin", fin(f.effectiveRateUPerMin))
+            })
             // Die Evidenz-Episode: Identitaet UND der Grund, falls keine
             // eroeffnet wurde. Beides, weil "0 ohne Grund" (kein Marker) etwas
             // anderes ist als "0 mit Grund" (Druck nicht durabel).

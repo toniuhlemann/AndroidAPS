@@ -67,6 +67,8 @@ class FuseStateExportTest {
         reason: String? = null,
         capMin: Int = 360,
         denial: String? = null,
+        foundation: app.aaps.fuse.core.controller.MealFoundation.Snapshot =
+            app.aaps.fuse.core.controller.MealFoundation.Snapshot.none(),
     ) = FuseCycleRunner.Outcome(
         tbrChanged = false,
         decision = FuseController.Decision(
@@ -87,6 +89,7 @@ class FuseStateExportTest {
         evidenceEpisodeCapMin = capMin,
         evidencePhase = phase, evidenceStockMgdl = stockMgdl, evidenceReason = reason,
         evidenceEpisodeDenial = denial,
+        mealFoundation = foundation,
     )
 
     private fun rt(units: Double? = 0.15) = RT(
@@ -727,4 +730,125 @@ class FuseStateExportTest {
         assertTrue(j.isNull("evidenceEpisode"))
         assertEquals("MARKER_STALE", j.getString("evidenceEpisodeDenial"))
     }
+
+    // ---- Mahlzeitenfundament (Punkt 12, Toni 18.08.) ----------------------
+
+    private val fT0 = 1_786_000_000_000L
+
+    private fun fAuth(anteil: Double = 0.75) = app.aaps.fuse.core.controller.MealFoundation.arm(
+        markerTs = fT0, foundationEnabled = true, totalBudgetU = 3.0, phaseAShare = anteil,
+        primeWindowMin = 15, wallCeilingMin = 45, phaseBUntilMin = 60,
+    )
+
+    private fun fSnapshot(
+        minuten: Double = 30.0,
+        ausBudgetU: Double = 2.25,
+        seitUebergabeU: Double = 0.10,
+    ) = app.aaps.fuse.core.controller.MealFoundation.snapshot(
+        fAuth(), fT0 + (minuten * 60_000).toLong(), 0L,
+        deliveredFromBudgetU = ausBudgetU, deliveredSinceHandoverU = seitUebergabeU, bolusStepU = 0.05,
+    )
+
+    /**
+     * Der Abschnitt aus dem ECHTEN Export - nicht aus einer nachgebauten
+     * Serialisierung. Der erste Wurf dieses Tests baute die JSON-Form selbst
+     * nach und haette damit nichts geprueft: waere im Zyklusexport ein Feld
+     * weggefallen, waere er gruen geblieben. Ein Test, der eine Kopie der zu
+     * pruefenden Logik enthaelt, sichert nur sich selbst ab.
+     */
+    private fun fundament(f: app.aaps.fuse.core.controller.MealFoundation.Snapshot) =
+        record(outcome(foundation = f)).getJSONObject("mealFoundation")
+
+    /**
+     * TONIS FELDLISTE, Feld fuer Feld (Punkt 12).
+     *
+     * Nicht weil ein fehlendes Feld den Regler kaputt macht, sondern weil das
+     * Offline-Replay und jede spaetere Feldauswertung nur so gut sind wie
+     * das, was exportiert wird. Ein stilles Wegfallen beim naechsten
+     * Refactoring wuerde erst auffallen, wenn jemand Wochen spaeter eine
+     * Frage nicht mehr beantworten kann.
+     */
+    @Test
+    fun `der Fundament-Export traegt jedes geforderte Feld`() {
+        val o = fundament(fSnapshot())
+        for (feld in listOf(
+            "totalBudgetU", "phaseABudgetU", "phaseBBudgetU",
+            "armedTs", "effectiveHandoverTs", "latchedHandoverTs", "endTs",
+            "phase",
+            "deliveredSinceHandoverU",
+            "plannedTotalU", "backlogU", "dueU", "remainingInWindowU", "binding",
+            "effectiveWindowMin", "effectiveRateUPerMin",
+        )) {
+            assertTrue(o.has(feld), "$feld fehlt im Export")
+        }
+    }
+
+    /** Die Werte muessen stimmen, nicht nur dastehen - ein Export voller
+     *  Nullen bestuende den Feldtest oben. */
+    @Test
+    fun `der Fundament-Export traegt die richtigen Werte`() {
+        val o = fundament(fSnapshot())
+        assertTrue(o.getBoolean("armed"))
+        assertEquals(fT0, o.getLong("armedTs"))
+        assertEquals(3.0, o.getDouble("totalBudgetU"), 1e-9)
+        assertEquals(2.25, o.getDouble("phaseABudgetU"), 1e-9)
+        assertEquals(0.75, o.getDouble("phaseBBudgetU"), 1e-9)
+        assertEquals(fT0 + 15 * 60_000L, o.getLong("effectiveHandoverTs"))
+        assertEquals(0L, o.getLong("latchedHandoverTs"), "noch nicht gelatcht")
+        assertEquals(fT0 + 60 * 60_000L, o.getLong("endTs"))
+        assertEquals("PHASE_B", o.getString("phase"))
+        assertEquals(0.10, o.getDouble("deliveredSinceHandoverU"), 1e-9)
+        assertEquals(45, o.getInt("effectiveWindowMin"), "T+15 bis T+60")
+        assertEquals(0.75 / 45.0, o.getDouble("effectiveRateUPerMin"), 1e-9)
+    }
+
+    /**
+     * OHNE AUTORISIERUNG STEHT DER ABSCHNITT TROTZDEM DA.
+     *
+     * `armed: false` ist eine Aussage; ein fehlender Abschnitt waere von "der
+     * Zyklus kam nicht so weit" nicht zu unterscheiden. Solange arm() nicht
+     * verdrahtet ist, ist das der Dauerzustand im Feld - also genau der Fall,
+     * den man beim Draufschauen richtig lesen koennen muss.
+     */
+    @Test
+    fun `ohne Autorisierung steht armed false statt nichts`() {
+        val o = fundament(app.aaps.fuse.core.controller.MealFoundation.Snapshot.none())
+        assertFalse(o.getBoolean("armed"))
+        assertEquals("NONE", o.getString("phase"))
+        assertEquals(0.0, o.getDouble("totalBudgetU"), 1e-9)
+        assertTrue(o.isNull("binding"))
+    }
+
+    /**
+     * SOLL, RUECKSTAND UND dueU SIND DREI GROESSEN, nicht eine in drei Formen.
+     *
+     * `dueU` ist gerastert (ein Pumpenschritt) und gedeckelt. Aus ihm allein
+     * ist nicht ablesbar, ob das Fundament knapp daneben oder weit hinterher
+     * liegt - beides ergibt einen Schritt.
+     */
+    @Test
+    fun `Soll Rueckstand und dueU sind im Export unterscheidbar`() {
+        val o = fundament(fSnapshot(minuten = 60.0, seitUebergabeU = 0.0))
+        assertEquals(0.75, o.getDouble("plannedTotalU"), 1e-9, "Soll: das volle Teilbudget")
+        assertEquals(0.75, o.getDouble("backlogU"), 1e-9, "Rueckstand: alles davon offen")
+        assertEquals(0.05, o.getDouble("dueU"), 1e-9, "dueU: EIN Schritt, kein Aufhol-Burst")
+        assertEquals("ONE_STEP_PER_CYCLE", o.getString("binding"), "und die Bindung sagt, warum")
+    }
+
+    /**
+     * EIN VORSPRUNG IST EIN NEGATIVER RUECKSTAND, keine Null.
+     *
+     * Hat eine gewoehnliche Korrektur die Mindestversorgung uebererfuellt,
+     * muss das sichtbar sein - sonst sieht dieselbe Lage aus wie "gerade
+     * genau erfuellt", und im Replay waere nicht unterscheidbar, ob eine
+     * Aufteilung passt oder ob der normale Pfad sie ueberholt hat.
+     */
+    @Test
+    fun `ein Vorsprung erscheint im Export als negativer Rueckstand`() {
+        val o = fundament(fSnapshot(minuten = 30.0, ausBudgetU = 2.65, seitUebergabeU = 0.40))
+        assertTrue(o.getDouble("backlogU") < 0.0, "Vorsprung MUSS als negativer Rueckstand erscheinen")
+        assertEquals(0.0, o.getDouble("dueU"), 1e-9, "und nichts wird gefordert")
+        assertEquals("COVERED_BY_DELIVERY", o.getString("binding"))
+    }
 }
+

@@ -249,6 +249,21 @@ object MealFoundation {
         /** Die daraus folgende Sollrate [U/min] - dieselbe Groesse, in der
          *  Form, in der sie im Replay verglichen wird. */
         val effectiveRateUPerMin: Double = 0.0,
+        /**
+         * DER RUECKSTAND: Soll minus bereits Geflossenes, gekappt am noch
+         * Offenen. NEGATIV heisst Vorsprung - es ist mehr geflossen als zu
+         * diesem Zeitpunkt planmaessig waere, typisch weil eine gewoehnliche
+         * Korrektur die Mindestversorgung schon uebererfuellt hat.
+         *
+         * ER STEHT HIER, WEIL [dueU] IHN NICHT ZEIGT. `dueU` ist gerastert
+         * (ein Pumpenschritt je Zyklus) und gedeckelt; aus ihm laesst sich
+         * nicht ablesen, ob das Fundament knapp daneben oder weit hinterher
+         * liegt. Fuers Replay ist genau das die interessante Groesse: eine
+         * Aufteilung, die dauerhaft 0,04 U Rueckstand traegt, verhaelt sich
+         * voellig anders als eine, die 0,40 U aufholt - `dueU` ist in beiden
+         * Faellen 0 bzw. ein Schritt.
+         */
+        val backlogU: Double = 0.0,
     )
 
     /**
@@ -397,7 +412,7 @@ object MealFoundation {
 
         // VOR DEM FENSTER: Phase A ist zustaendig, nicht das Fundament.
         if (nowTs < handoverTs)
-            return Plan(0.0, 0.0, phaseBBudgetU, Binding.BEFORE_WINDOW, fensterMin, rateUProMin)
+            return Plan(0.0, 0.0, phaseBBudgetU, Binding.BEFORE_WINDOW, fensterMin, rateUProMin, backlogU = 0.0)
 
         // DAS SOLL BIS JETZT - linear ueber das Fenster.
         //
@@ -428,11 +443,17 @@ object MealFoundation {
         // NACH DEM FENSTER VERFAELLT DER REST (Tonis Auflage). Kein Nachliefern
         // Stunden spaeter - was dann noch offen ist, war offenbar nicht noetig.
         if (nowTs > fensterEndeTs)
-            return Plan(0.0, phaseBBudgetU, offenImFenster, Binding.AFTER_WINDOW, fensterMin, rateUProMin)
+            return Plan(
+                0.0, phaseBBudgetU, offenImFenster, Binding.AFTER_WINDOW, fensterMin, rateUProMin,
+                // Nach dem Fenster ist der Rueckstand das, was NIE geflossen
+                // ist - die Groesse, die im Replay zeigt, ob eine Aufteilung
+                // ihr Teilbudget ueberhaupt abrufen konnte.
+                backlogU = max(0.0, phaseBBudgetU - ausPhaseBGeflossen),
+            )
 
         // DAS GEMEINSAME BUDGET IST DIE HARTE GRENZE.
         if (deliveredFromBudgetU >= totalBudgetU - 1e-9)
-            return Plan(0.0, sollU, 0.0, Binding.BUDGET_EXHAUSTED, fensterMin, rateUProMin)
+            return Plan(0.0, sollU, 0.0, Binding.BUDGET_EXHAUSTED, fensterMin, rateUProMin, backlogU = 0.0)
 
         val rueckstandU = min(sollU - ausPhaseBGeflossen, offenImFenster)
         if (rueckstandU < bolusStepU - 1e-9) return Plan(
@@ -442,7 +463,7 @@ object MealFoundation {
             // liegt es nur an der Zeit, ist der Plan erfuellt.
             if (ausPhaseBGeflossen >= sollU - 1e-9 && ausPhaseBGeflossen > 0.0)
                 Binding.COVERED_BY_DELIVERY else Binding.ON_SCHEDULE,
-            fensterMin, rateUProMin,
+            fensterMin, rateUProMin, backlogU = rueckstandU,
         )
 
         // EIN SCHRITT JE ZYKLUS - kein Aufhol-Burst (Tonis Auflage).
@@ -461,6 +482,7 @@ object MealFoundation {
             binding = if (schritte > 1.0) Binding.ONE_STEP_PER_CYCLE else null,
             effectiveWindowMin = fensterMin,
             effectiveRateUPerMin = rateUProMin,
+            backlogU = rueckstandU,
         )
     }
 
@@ -527,6 +549,104 @@ object MealFoundation {
         if (auth.valid) auth.phaseABudgetU else liveTotalBudgetU
 
     private fun unusable() = Plan(0.0, 0.0, 0.0, Binding.UNUSABLE_INPUT)
+
+    /**
+     * DIE VOLLSTAENDIGE SICHT AUF DAS FUNDAMENT ZU EINEM ZEITPUNKT
+     * (Punkt 12, Toni 18.08.).
+     *
+     * WARUM EINE STRUKTUR UND NICHT ZWANZIG EXPORTZEILEN. Der Export im
+     * Plugin und das Offline-Replay muessen DASSELBE sehen - sonst wertet
+     * das Replay etwas anderes aus, als spaeter im Feld exportiert wird, und
+     * jede Schlussfolgerung daraus haengt an einer Annahme statt an einer
+     * Messung. Beide rufen deshalb [snapshot]; das Plugin serialisiert nur
+     * noch, was hier drinsteht.
+     *
+     * SIE RECHNET NICHTS ENTSCHEIDENDES SELBST: Phase kommt aus [phaseOf],
+     * Mengen aus [planFrom]. Eine eigene Rechnung waere eine zweite Wahrheit
+     * - genau das, was dieser Baustein an mehreren Stellen schon einmal
+     * teuer bezahlt hat.
+     */
+    data class Snapshot(
+        /** Laeuft ueberhaupt eine Autorisierung? Ist das false, sind alle
+         *  Mengen 0 und die Phase [Phase.NONE] - das ist der heutige
+         *  Normalzustand, solange das Fundament nicht armiert wird. */
+        val armed: Boolean,
+        val armedTs: Long,
+        val totalBudgetU: Double,
+        val phaseABudgetU: Double,
+        val phaseBBudgetU: Double,
+        /** Der AKTUELL geltende Uebergang - folgt vor dem Latch noch der
+         *  Prime-Laufzeit. */
+        val effectiveHandoverTs: Long,
+        /** Der FESTGESCHRIEBENE Uebergang, 0 = noch nicht gelatcht. Beide
+         *  Zeitpunkte stehen im Export, weil ihre DIFFERENZ die Frage
+         *  beantwortet, ob eine Clearance den Anker noch verschieben kann. */
+        val latchedHandoverTs: Long,
+        val endTs: Long,
+        val phase: Phase,
+        val deliveredSinceHandoverU: Double,
+        val plannedTotalU: Double,
+        val backlogU: Double,
+        val dueU: Double,
+        val remainingInWindowU: Double,
+        val binding: Binding?,
+        val effectiveWindowMin: Int,
+        val effectiveRateUPerMin: Double,
+    ) {
+
+        companion object {
+
+            /** Kein Fundament - der Zustand ohne Autorisierung. */
+            fun none() = Snapshot(
+                armed = false, armedTs = 0L, totalBudgetU = 0.0, phaseABudgetU = 0.0,
+                phaseBBudgetU = 0.0, effectiveHandoverTs = 0L, latchedHandoverTs = 0L,
+                endTs = 0L, phase = Phase.NONE, deliveredSinceHandoverU = 0.0,
+                plannedTotalU = 0.0, backlogU = 0.0, dueU = 0.0, remainingInWindowU = 0.0,
+                binding = null, effectiveWindowMin = 0, effectiveRateUPerMin = 0.0,
+            )
+        }
+    }
+
+    /**
+     * Die Sicht dieses Zyklus - fuer Export UND Replay.
+     *
+     * @param deliveredFromBudgetU was insgesamt aus dem gemeinsamen Budget
+     *   floss (beide Phasen), @param deliveredSinceHandoverU davon der Teil
+     *   ab der Uebergabe. Die zweite Groesse ist NICHT aus der ersten
+     *   ableitbar - der Versuch hat schon einmal 2,15 U statt 0,75 U
+     *   gerechnet, weil er den nicht abgerufenen Rest von Phase A dem
+     *   Fundament als Schuld anlastete.
+     */
+    fun snapshot(
+        auth: Authorization,
+        nowTs: Long,
+        primeWindowStartTs: Long,
+        deliveredFromBudgetU: Double,
+        deliveredSinceHandoverU: Double,
+        bolusStepU: Double,
+    ): Snapshot {
+        if (!auth.valid) return Snapshot.none()
+        val plan = planFrom(auth, nowTs, primeWindowStartTs, deliveredFromBudgetU, deliveredSinceHandoverU, bolusStepU)
+        return Snapshot(
+            armed = true,
+            armedTs = auth.armedTs,
+            totalBudgetU = auth.totalBudgetU,
+            phaseABudgetU = auth.phaseABudgetU,
+            phaseBBudgetU = auth.phaseBBudgetU,
+            effectiveHandoverTs = auth.effectiveHandoverTs(primeWindowStartTs),
+            latchedHandoverTs = auth.latchedHandoverTs,
+            endTs = auth.endTs,
+            phase = phaseOf(auth, nowTs, primeWindowStartTs),
+            deliveredSinceHandoverU = deliveredSinceHandoverU,
+            plannedTotalU = plan.plannedTotalU,
+            backlogU = plan.backlogU,
+            dueU = plan.dueU,
+            remainingInWindowU = plan.remainingInWindowU,
+            binding = plan.binding,
+            effectiveWindowMin = plan.effectiveWindowMin,
+            effectiveRateUPerMin = plan.effectiveRateUPerMin,
+        )
+    }
 
     /**
      * IN WELCHER PHASE DES FUNDAMENTS EIN ZYKLUS LIEGT.
