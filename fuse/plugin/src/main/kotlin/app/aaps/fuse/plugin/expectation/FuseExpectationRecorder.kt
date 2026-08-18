@@ -142,6 +142,16 @@ class FuseExpectationRecorder(
      *  gezaehlt - sonst laeuft die Strecke ueber sie hinweg. */
     internal val lastObservationGapTsForTest: Long get() = lastObservationGapTs
 
+    /**
+     * WIE VIELE ERGEBNISSE DIE KAPPUNG SEIT PROZESSSTART ENTFERNT HAT.
+     *
+     * Monoton. Ohne diese Zahl saehe eine gekappte Strecke aus wie eine
+     * vollstaendig beobachtete - `size >= MAX_OUTCOMES` allein meldet auch
+     * bei exakt vollem, aber ungekuerztem Bestand faelschlich "gekuerzt".
+     */
+    @Volatile
+    private var entfernteErgebnisse: Int = 0
+
     private val queue = ArrayBlockingQueue<Snapshot>(queueCapacity)
     private val verworfen = AtomicLong(0)
     private val angenommenZaehler = AtomicLong(0)
@@ -212,7 +222,7 @@ class FuseExpectationRecorder(
         }
         if (!geladen) {
             geladen = true
-            ladeVonPlatte(s.dir, s.stamp)
+            ladeVonPlatte(s.dir, s.stamp, s.nowTs)
         }
         blockiert?.let {
             melde("BLOCKED:$it", 0, 0L)
@@ -236,10 +246,13 @@ class FuseExpectationRecorder(
         val kandidat = ExpectationLedger.advance(basis, s.nowTs, neu, s.samples)
         val abgerechnet = (kandidat.outcomes.size - basis.outcomes.size).coerceAtLeast(0)
         val stats = store.saveWithStats(s.dir, kandidat, ++revision, s.stamp, lastObservationGapTs)
-        if (stats.ok) {
+        stats.written?.let { geschrieben ->
             // ERST JETZT ist der Stand auswertbar UND die Basis des naechsten
-            // Zyklus.
-            persistedState = kandidat
+            // Zyklus - und zwar GENAU DER, der auf Platte steht. Den eigenen
+            // Kandidaten zu uebernehmen hiesse, ab der Kappungsgrenze
+            // Ergebnisse auszuwerten, die nie versiegelt wurden.
+            persistedState = geschrieben
+            entfernteErgebnisse += stats.droppedOutcomes
             telemetry = telemetry.copy(asOfTs = s.nowTs)
         }
         melde(
@@ -248,7 +261,7 @@ class FuseExpectationRecorder(
         )
     }
 
-    private fun ladeVonPlatte(dir: File, kopfstand: InterventionStamp) {
+    private fun ladeVonPlatte(dir: File, kopfstand: InterventionStamp, nowTsBeimLaden: Long) {
         if (!kopfstand.valid) {
             melde("FAILED:ungueltiger Kopfstand", 0, 0L)
             return
@@ -257,6 +270,17 @@ class FuseExpectationRecorder(
             is FuseExpectationStore.Loaded.Ok      -> {
                 persistedState = g.state
                 revision = g.revision
+                // EIN PROZESSNEUSTART IST SELBST EINE BEOBACHTUNGSLUECKE
+                // (Toni 18.08., P0). Zwischen dem letzten geschriebenen
+                // Zyklus und diesem Start hat niemand hingesehen - und wie
+                // lange, weiss niemand. Ohne diese Marke koennte eine Strecke
+                // ueberleben, deren Luecke nur deshalb nicht persistiert
+                // wurde, weil der Prozess unmittelbar nach dem Verwerfen
+                // starb. Die geladenen Ergebnisse bleiben fuer den HISTORISCHEN
+                // Export erhalten; aktuell sind sie nicht mehr.
+                lastObservationGapTs = maxOf(
+                    maxOf(lastObservationGapTs, g.lastObservationGapTs), nowTsBeimLaden,
+                )
                 // Die Marke ueberlebt den Neustart - sonst waere nach einem
                 // Prozesswechsel nicht mehr erkennbar, dass zwischen den
                 // gespeicherten Ergebnissen eine unbeobachtete Minute lag.
@@ -360,7 +384,12 @@ class FuseExpectationRecorder(
             // TRUNKIERUNG SICHTBAR MACHEN (Toni 18.08.). Eine gekappte
             // Strecke darf nie wie eine vollstaendig beobachtete aussehen -
             // sie ist "mindestens so lang", nicht "genau so lang".
-            historyTruncated = z.outcomes.size >= FuseExpectationStore.MAX_OUTCOMES,
+            // AUS DEM ZAEHLER, nicht aus der Groesse: `size >= MAX` meldete
+            // auch bei exakt vollem, aber ungekuerztem Bestand "gekuerzt".
+            historyTruncated = entfernteErgebnisse > 0,
+            droppedOutcomesTotal = entfernteErgebnisse,
+            // Aus dem PERSISTIERTEN Zustand - er ist seit dem Store-Umbau
+            // derselbe, der auf Platte steht.
             oldestRetainedDueTs = z.outcomes.minOfOrNull { it.entry.dueTs } ?: 0L,
             queueDepth = t.queueDepth,
             droppedCycles = t.dropped,

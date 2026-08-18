@@ -551,4 +551,83 @@ class FuseExpectationRecorderTest {
             "die beschaedigte Datei bleibt unangetastet - sonst waere der Verlust unbeweisbar",
         )
     }
+
+    // ---- Tonis Nachtrag 18.08. ------------------------------------------
+
+    /**
+     * RAM UND PLATTE MUESSEN DASSELBE SEIN (P0).
+     *
+     * Der Store kappt beim Schreiben. Uebernaehme der Recorder danach seinen
+     * eigenen, ungekappten Kandidaten, wertete die Auswertung ab der
+     * Kappungsgrenze Ergebnisse aus, die nie versiegelt wurden - zwei
+     * Wahrheiten ueber denselben Zustand.
+     *
+     * GRENZE DIESES TESTS, ausdruecklich benannt: ueber den Recorder laesst
+     * sich die Kappung praktisch nicht ausloesen - MAX_ENTRIES begrenzt die
+     * offenen Erwartungen auf 200, es entstehen also nie mehr als 240
+     * Ergebnisse in einer Welle. Eine Mutationsprobe, die hier wieder den
+     * eigenen Kandidaten uebernimmt, bleibt deshalb gruen. Die REGEL ist am
+     * Store geprueft (FuseExpectationLoadTest: `saveWithStats meldet den
+     * gekappten Zustand`), und dort beissen die Proben.
+     */
+    @Test
+    fun `der ausgewertete Zustand ist genau der geschriebene`(@TempDir dir: File) {
+        val r = recorder()
+        // Mehr Ergebnisse erzeugen, als der Store haelt.
+        val n = FuseExpectationStore.MAX_OUTCOMES + 20
+        for (i in 0 until n) {
+            r.buche(dir, nowTs = t0 + i * 60_000L, sourceTs = t0 + i * 60_000L)
+        }
+        // Faellig werden lassen und abrechnen.
+        for (i in 0 until n) {
+            val f = t0 + (i + H) * 60_000L
+            r.buche(dir, nowTs = f + 1000L, sourceTs = f, mean = null, samples = listOf(probe(f, 205.0)))
+        }
+        val ausDatei = FuseExpectationStore(FakeDurability())
+            .load(dir, STAMP) as FuseExpectationStore.Loaded.Ok
+        assertEquals(
+            ausDatei.state.outcomes.size, r.persistedState.outcomes.size,
+            "der ausgewertete Bestand muss dem auf Platte entsprechen",
+        )
+        assertTrue(
+            r.persistedState.outcomes.size <= FuseExpectationStore.MAX_OUTCOMES,
+            "und die Kappungsgrenze einhalten",
+        )
+    }
+
+    /**
+     * EIN PROZESSNEUSTART IST SELBST EINE BEOBACHTUNGSLUECKE (P0).
+     *
+     * Zwischen dem letzten geschriebenen Zyklus und dem Start hat niemand
+     * hingesehen. Ohne diese Marke koennte eine Strecke ueberleben, deren
+     * Luecke nur deshalb nicht persistiert wurde, weil der Prozess unmittelbar
+     * nach dem Verwerfen starb.
+     */
+    @Test
+    fun `nach einem Neustart ist die alte Strecke nicht mehr aktuell`(@TempDir dir: File) {
+        val alt = recorder()
+        alt.buche(dir, nowTs = t0, sourceTs = t0)
+        val faellig = t0 + H * 60_000L
+        alt.buche(dir, nowTs = faellig + 1000L, sourceTs = faellig, mean = null,
+                  samples = listOf(probe(faellig, 205.0)))
+        assertEquals(1, alt.persistedState.outcomes.size)
+
+        // Neuer Prozess auf derselben Datei.
+        val neu = recorder()
+        neu.buche(dir, nowTs = faellig + 120_000L, sourceTs = faellig + 120_000L, mean = null)
+        assertEquals(1, neu.persistedState.outcomes.size, "der Bestand wird geladen")
+        val e = neu.currentEvidence(faellig + 130_000L, STAMP, CFG, SEG, korrektur(), MARGE)
+        assertFalse(e.eligible, "aber er zaehlt nicht mehr zur AKTUELLEN Strecke: $e")
+    }
+
+    /** Die Trunkierung wird aus dem ZAEHLER gemeldet, nicht aus der Groesse -
+     *  ein exakt voller, aber ungekuerzter Bestand ist nicht gekappt. */
+    @Test
+    fun `ohne Kappung meldet der Export keine Trunkierung`(@TempDir dir: File) {
+        val r = recorder()
+        r.buche(dir, nowTs = t0, sourceTs = t0)
+        val snap = r.exportSnapshot(t0, STAMP, CFG, SEG, korrektur(), MARGE)
+        assertFalse(snap.historyTruncated)
+        assertEquals(0, snap.droppedOutcomesTotal)
+    }
 }

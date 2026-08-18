@@ -194,7 +194,25 @@ class FuseExpectationStore(private val durability: Durability = Durability.ANDRO
      * mal am Tag. Ob das die Zykluszeit belastet, laesst sich nur messen -
      * und zwar bevor es auf dem produktiven Geraet laeuft, nicht danach.
      */
-    data class WriteStats(val ok: Boolean, val bytes: Int, val durationMs: Long)
+    data class WriteStats(
+        val ok: Boolean,
+        val bytes: Int,
+        val durationMs: Long,
+        /**
+         * WAS TATSAECHLICH AUF PLATTE STEHT - gekappt, nicht der uebergebene
+         * Zustand (Toni 18.08.).
+         *
+         * Der erste Wurf gab nur `ok` zurueck, und der Aufrufer uebernahm
+         * seinen eigenen, UNGEKAPPTEN Kandidaten als "persistiert". Ab der
+         * Kappungsgrenze wertete die Auswertung damit Ergebnisse aus, die nie
+         * versiegelt wurden - zwei Wahrheiten ueber denselben Zustand.
+         *
+         * `null` bei Fehlschlag: dann steht nichts Neues auf Platte.
+         */
+        val written: ExpectationLedger.State?,
+        /** Wie viele Ergebnisse die Kappung entfernt hat. */
+        val droppedOutcomes: Int,
+    )
 
     fun save(
         dir: File,
@@ -213,8 +231,16 @@ class FuseExpectationStore(private val durability: Durability = Durability.ANDRO
     ): WriteStats {
         val start = System.nanoTime()
         var groesse = 0
-        val ok = saveInner(dir, state, revision, kopfstand, lastObservationGapTs) { groesse = it }
-        return WriteStats(ok, groesse, (System.nanoTime() - start) / 1_000_000L)
+        // EINMAL kappen und genau diesen Zustand schreiben - nicht zweimal
+        // rechnen. Zwei Aufrufe koennten sich unterscheiden, sobald `kappen`
+        // je eine Ordnung mit Gleichstaenden bekommt.
+        val gekappt = kappen(state, kopfstand)
+        val entfernt = (state.outcomes.size - gekappt.outcomes.size).coerceAtLeast(0)
+        val ok = saveInner(dir, gekappt, revision, kopfstand, lastObservationGapTs) { groesse = it }
+        return WriteStats(
+            ok = ok, bytes = groesse, durationMs = (System.nanoTime() - start) / 1_000_000L,
+            written = if (ok) gekappt else null, droppedOutcomes = entfernt,
+        )
     }
 
     private inline fun saveInner(
@@ -225,7 +251,7 @@ class FuseExpectationStore(private val durability: Durability = Durability.ANDRO
         lastObservationGapTs: Long,
         bytes: (Int) -> Unit,
     ): Boolean = runCatching {
-        val inhalt = FuseExpectationCodec.encode(kappen(state, kopfstand), revision, lastObservationGapTs)
+        val inhalt = FuseExpectationCodec.encode(state, revision, lastObservationGapTs)
         bytes(inhalt.toByteArray(Charsets.UTF_8).size)
         val tmp = File(dir, FILE_NAME + ".tmp")
         val ziel = File(dir, FILE_NAME)

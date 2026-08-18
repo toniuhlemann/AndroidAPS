@@ -347,6 +347,7 @@ object FuseStateJson {
                     .put("droppedCycles", e.droppedCycles)
                     .put("asOfTs", e.asOfTs)
                     .put("historyTruncated", e.historyTruncated)
+                    .put("droppedOutcomesTotal", e.droppedOutcomesTotal)
                     .put("oldestRetainedDueTs", e.oldestRetainedDueTs)
                     .put(
                         "samples", JSONArray().apply {
@@ -1026,6 +1027,9 @@ object FuseStateJson {
         val asOfTs: Long,
         /** Der Speicher ist voll - die Strecke ist MINDESTENS so lang. */
         val historyTruncated: Boolean,
+        /** Monoton: wie viele Ergebnisse die Kappung seit Prozessstart
+         *  entfernt hat. Eine gekappte Strecke ist "mindestens N Minuten". */
+        val droppedOutcomesTotal: Int,
         /** Aeltestes noch gehaltenes Ergebnis - davor ist nichts mehr da. */
         val oldestRetainedDueTs: Long,
     )

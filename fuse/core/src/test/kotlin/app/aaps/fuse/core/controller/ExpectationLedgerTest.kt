@@ -1109,11 +1109,26 @@ class ExpectationLedgerTest {
         val bis = t0 + 100 * 60_000L
         // Ohne Marke traegt die volle Strecke.
         assertEquals(9, aktuell(folge(10, bis), bis + 60_000L).minutes)
-        // Mit einer Marke mitten drin bleibt nur der Teil danach.
-        val marke = bis - 4 * 60_000L
+        // Mit einer Marke bleibt nur, was DANACH AUSGESTELLT wurde.
+        //
+        // Gerechnet: die Eintraege liegen bei dueTs = bis - i Minuten und
+        // wurden H = 30 min davor ausgestellt. Eine Marke bei bis - 35 min
+        // faellt damit in das Beobachtungsfenster der Eintraege i >= 5 und
+        // schneidet sie ab; i = 0..4 bleiben, das sind vier Minuten Spanne.
+        //
+        // Die Marke wirkt auf den AUSSTELLUNGSzeitpunkt, nicht auf die
+        // Faelligkeit - eine Erwartung, deren Fenster die unbeobachtete Minute
+        // enthaelt, ist genauso wertlos wie eine, die ganz davor lag.
+        val marke = bis - 35 * 60_000L
         val e = aktuell(folge(10, bis), bis + 60_000L, gapTs = marke)
-        assertEquals(4, e.minutes, "nur die Ergebnisse NACH der Luecke")
+        assertEquals(4, e.minutes, "nur die Eintraege, deren Fenster GANZ nach der Luecke liegt")
         assertTrue(e.eligible, "der frische Teil bleibt zulaessig: $e")
+
+        // Und eine Marke INNERHALB des juengsten Fensters nimmt auch den:
+        assertFalse(
+            aktuell(folge(10, bis), bis + 60_000L, gapTs = bis - 10 * 60_000L).eligible,
+            "die Luecke liegt im Fenster JEDES Eintrags",
+        )
     }
 
     /** Liegt die Luecke hinter der ganzen Strecke, bleibt gar nichts. */

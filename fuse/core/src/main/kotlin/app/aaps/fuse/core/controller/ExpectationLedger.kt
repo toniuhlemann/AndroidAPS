@@ -887,7 +887,14 @@ object ExpectationLedger {
                 !InterventionStamp.same(o.entry.interventionStamp, currentStamp) -> Denial.INTERVENED_SINCE
                 o.entry.configGeneration != currentConfigGeneration        -> Denial.CONFIG_CHANGED
                 !o.isLambdaEvidence(minSafetyMarginMgdl)                   -> Denial.NOT_LAMBDA_EVIDENCE
-                o.entry.dueTs < lastObservationGapTs                        -> Denial.OBSERVATION_GAP
+                // DAS GANZE INTERVALL, nicht nur die Faelligkeit (Toni
+                // 18.08.). Eine Erwartung, die VOR der Luecke ausgestellt und
+                // DANACH faellig wurde, hat die unbeobachtete Minute in ihrem
+                // eigenen Fenster - sie ist genauso wertlos wie eine, die
+                // ganz davor lag. `>=` statt `>`: bei Gleichstand faellt die
+                // Luecke mit der Ausstellung zusammen, und auch dann fehlt
+                // eine Beobachtung.
+                lastObservationGapTs >= o.entry.sourceTs                    -> Denial.OBSERVATION_GAP
                 juengste != null && letzte!! - o.entry.dueTs > maxGapMs    -> Denial.GAP_IN_STREAK
                 else                                                       -> null
             }

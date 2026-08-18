@@ -1,5 +1,6 @@
 package app.aaps.fuse.plugin.expectation
 
+import org.junit.jupiter.api.Assertions.assertEquals
 import app.aaps.fuse.core.controller.ExpectationLedger
 import app.aaps.fuse.core.controller.InterventionStamp
 import app.aaps.fuse.plugin.ledger.Durability
@@ -149,5 +150,76 @@ class FuseExpectationLoadTest {
         println("FUSE expectation Alltag: ${stats.bytes} Bytes, ${stats.durationMs} ms (JVM)")
         assertTrue(stats.ok)
         assertTrue(stats.bytes < 100_000, "Alltag: ${stats.bytes} Bytes")
+    }
+
+    /**
+     * DER STORE MELDET, WAS ER GESCHRIEBEN HAT - nicht, was man ihm gab
+     * (Toni 18.08., P0).
+     *
+     * Der erste Wurf gab nur `ok` zurueck, und der Recorder uebernahm seinen
+     * eigenen, UNGEKAPPTEN Kandidaten als "persistiert". Ab der
+     * Kappungsgrenze wertete die Auswertung damit Ergebnisse aus, die nie
+     * versiegelt wurden - zwei Wahrheiten ueber denselben Zustand.
+     */
+    @Test
+    fun `saveWithStats meldet den gekappten Zustand und die Zahl der Verluste`(@TempDir dir: File) {
+        val voll = maximalerZustand()
+        assertEquals(FuseExpectationStore.MAX_OUTCOMES, voll.outcomes.size, "Fixture ist an der Grenze")
+        val weitFrueher = t0 - 100L * 24 * 3600_000L
+
+        // Einen Zustand DARUEBER bauen: 20 Ergebnisse mehr, als gehalten wird.
+        val zuViel = when (
+            val r = ExpectationLedger.restore(
+                voll.entries, voll.consumed,
+                // ZUSAETZLICHE ERGEBNISSE MIT GARANTIERT EIGENEN KENNUNGEN.
+                //
+                // Zwei Anlaeufe scheiterten hier an der Semantikpruefung:
+                // erst lag `actualTs` ausserhalb der Zuordnungstoleranz, dann
+                // kollidierten die Kennungen mit dem Bestand. Beides hat
+                // `restore` gemeldet, bevor der Test etwas Falsches messen
+                // konnte - deshalb jetzt ein Zeitraum, der sicher neben allem
+                // anderen liegt.
+                voll.outcomes + (0 until 20).map { i ->
+                    val quelle = weitFrueher - i * 60_000L
+                    ExpectationLedger.Outcome(
+                        voll.outcomes.first().entry.copy(
+                            sourceTs = quelle,
+                            dueTs = quelle + 30 * 60_000L,
+                        ),
+                        ExpectationLedger.Verdict.MISSED, quelle + 30 * 60_000L, 205.0,
+                    )
+                },
+                kopfstand = STAMP,
+            )
+        ) {
+            is ExpectationLedger.Restored.Valid   -> r.state
+            is ExpectationLedger.Restored.Invalid -> error(r.reason)
+        }
+        assertEquals(FuseExpectationStore.MAX_OUTCOMES + 20, zuViel.outcomes.size)
+
+        val stats = FuseExpectationStore(FakeDurability())
+            .saveWithStats(dir, zuViel, revision = 1L, kopfstand = STAMP)
+        assertTrue(stats.ok)
+        assertEquals(
+            FuseExpectationStore.MAX_OUTCOMES, stats.written!!.outcomes.size,
+            "gemeldet wird der GEKAPPTE Stand",
+        )
+        assertEquals(20, stats.droppedOutcomes, "und wie viele dabei verloren gingen")
+
+        // Gegenprobe: was zurueckgelesen wird, ist genau das Gemeldete.
+        val geladen = FuseExpectationStore(FakeDurability())
+            .load(dir, STAMP) as FuseExpectationStore.Loaded.Ok
+        assertEquals(
+            stats.written!!.outcomes.size, geladen.state.outcomes.size,
+            "Platte und Meldung muessen uebereinstimmen",
+        )
+    }
+
+    /** Ohne Ueberschreitung wird nichts als verloren gemeldet. */
+    @Test
+    fun `ohne Kappung meldet der Store keine Verluste`(@TempDir dir: File) {
+        val stats = FuseExpectationStore(FakeDurability())
+            .saveWithStats(dir, maximalerZustand(), revision = 1L, kopfstand = STAMP)
+        assertEquals(0, stats.droppedOutcomes, "exakt voll ist nicht gekappt")
     }
 }
