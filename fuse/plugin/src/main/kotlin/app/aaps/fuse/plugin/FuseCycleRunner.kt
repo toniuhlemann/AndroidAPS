@@ -2651,6 +2651,13 @@ class FuseCycleRunner(
             tailHeadroomU = null,
             transportCommitmentU = transportModelledU,
         )
+        // UND DIE MESSUNG AUCH HIER (Codex 19.08.). Der Fallback ruft
+        // denselben Lift, hat die beiden Groessen aber nicht gesetzt - der
+        // Trail meldete auf diesem Pfad also 0/0, obwohl das Fundament sehr
+        // wohl angehoben haben kann. Genau die Sorte stiller Luecke, die eine
+        // spaetere Auswertung falsch macht, ohne dass etwas rot wird.
+        val preFoundationSmbU = liftedPrime.smbU
+        val foundationLiftU = kotlin.math.max(0.0, lifted.smbU - liftedPrime.smbU)
         val held = LedgerHoldGate.apply(lifted, ledgerView.hold)
 
         val runningTbr = processedTbrEbData.getTempBasalIncludingConvertedExtended(computeTs)
@@ -2757,6 +2764,8 @@ class FuseCycleRunner(
                 confirmedNotSentPhaseAU = episodes.confirmedNotSentPhaseAU,
                 bolusStepU = pumpe.bolusStepU,
             ),
+            preFoundationSmbU = preFoundationSmbU,
+            foundationLiftU = foundationLiftU,
             insulinModel = insulinModel,
             abortReason = null,
             predictorRejected = true,

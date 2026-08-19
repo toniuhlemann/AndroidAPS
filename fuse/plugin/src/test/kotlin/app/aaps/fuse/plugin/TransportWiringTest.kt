@@ -24,6 +24,7 @@ import app.aaps.fuse.plugin.ledger.FuseLedgerAdapter
 import app.aaps.fuse.plugin.ledger.EpisodeBudgets
 import app.aaps.fuse.core.observer.Health
 import kotlin.math.max
+import kotlin.math.min
 import org.junit.jupiter.api.Assertions.assertNull
 import app.aaps.core.interfaces.aps.RT
 import app.aaps.core.interfaces.aps.APSResult
@@ -250,8 +251,13 @@ class TransportWiringTest : TestBaseWithProfile() {
             .toList()
 
     private fun iob(atTs: Long) = IobTotal(roundUp(atTs)).also {
-        it.iob = 0.0; it.basaliob = 0.0; it.activity = aktivitaet; it.valid = true
+        it.iob = 0.0; it.basaliob = 0.0; it.activity = aktivitaet; it.valid = iobGueltig
     }
+
+    /** Ungueltige IOB-Daten -> keine Aktivitaet -> ACTIVITY_MISSING, das
+     *  Signal ist nicht READY. Der Hebel fuer den Nullfall
+     *  "ungesundes Signal"; Default haelt das bisherige Verhalten. */
+    private var iobGueltig = true
 
     private fun roundUp(t: Long) = if (t % 60_000L == 0L) t else (t / 60_000L + 1) * 60_000L
 
@@ -4199,6 +4205,46 @@ class TransportWiringTest : TestBaseWithProfile() {
                 0.0, sicht().dueU, 1e-9,
                 "$anteil: und danach fordert das Fundament nichts mehr",
             )
+
+            // (c) UNGESUNDES SIGNAL (Codex 19.08. - dieser Fall FEHLTE).
+            //
+            // Der Test hiess "gemessenes Tief, ungesundes Signal und
+            // Widerruf" und baute nur zwei davon. Eine Ueberschrift, die mehr
+            // verspricht als der Rumpf prueft, ist schlimmer als eine
+            // fehlende: sie laesst die Luecke geschlossen aussehen.
+            //
+            // Ungueltige IOB-Daten -> keine Aktivitaet -> ACTIVITY_MISSING.
+            // Das Signal ist damit nicht READY, und ohne gesundes Signal darf
+            // das Fundament nichts publizieren - so wenig wie jeder andere
+            // Kanal.
+            fundamentAnteil = anteil
+            flach = 180.0
+            steigungProMin = 2.5
+            knickAbMin = null
+            primeHuelleU = 3.0
+            clock = start
+            transportReset()
+            val d3 = File(dir, "signal$anteil").also(File::mkdirs)
+            neuerRunner(FuseLedgerAdapter().also { it.loadOnce(d3, "test-epoch", start) })
+            markerAt = start + 2 * 60_000L
+            iobGueltig = false
+            var abgegebenKrank = 0.0
+            var gesundGesehen = false
+            repeat(40) {
+                val o = transport(d3)
+                abgegebenKrank += letzteMengeU ?: 0.0
+                if (o.health == Health.READY) gesundGesehen = true
+            }
+            iobGueltig = true
+            assertTrue(
+                !gesundGesehen,
+                "$anteil: der Aufbau MUSS ein ungesundes Signal erzeugen - " +
+                    "sonst prueft dieser Fall nichts",
+            )
+            assertEquals(
+                0.0, abgegebenKrank, 1e-9,
+                "$anteil: bei ungesundem Signal darf das Fundament NICHTS publizieren",
+            )
         }
     }
 
@@ -4230,8 +4276,18 @@ class TransportWiringTest : TestBaseWithProfile() {
         val grenze: String?,
     ) {
 
-        /** Was vom Lift wirklich hinausging. */
-        val durchU get() = max(0.0, publiziertU - preU)
+        /**
+         * Was vom Lift wirklich hinausging - GEDECKELT AN DER FORDERUNG
+         * (Codex 19.08.).
+         *
+         * Ohne die Deckelung wuerde jede spaetere Anhebung dem Fundament
+         * zugerechnet: publiziert die Pumpe mehr, als der normale Pfad
+         * wollte, muss das nicht am Fundament liegen. Nur bis zur Hoehe
+         * seiner eigenen Forderung ist die Differenz ihm zuzuschreiben - was
+         * darueber liegt, hat eine andere Quelle und darf den
+         * Funktionsnachweis nicht schoenen.
+         */
+        val durchU get() = min(liftU, max(0.0, publiziertU - preU))
         val ganzGebremst get() = durchU <= 1e-9
         val teilweiseGebremst get() = !ganzGebremst && durchU < liftU - 1e-9
     }
