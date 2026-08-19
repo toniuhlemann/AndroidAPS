@@ -116,6 +116,96 @@ object LowThreatGate {
     const val NEAR_TERM_HORIZON_MIN = 120
 
     /**
+     * DAS GEMESSENE ABWAERTSRISIKO - getrennt vom Basalnutzen (Toni 19.08.).
+     *
+     * DER ARCHITEKTURFEHLER, DEN DIESE TRENNUNG BEHEBT. [evaluate] beantwortet
+     * zwei verschiedene Fragen in EINEM Verdikt: "faellt es gemessen und ist
+     * es durch Bolus ueberdeckt?" UND "bringt eine Zero-TBR noch mindestens
+     * 5 mg/dl?". Nur wenn BEIDES zutrifft, entstand
+     * [Verdict.FALLING_WITH_BOLUS_OVERCOVERAGE] - und dieses Verdikt steuerte
+     * ausschliesslich die TBR. Fuer den SMB-Pfad war es kein Riegel.
+     *
+     * Daraus wurde am Abend des 19.08. eine widerspruechliche Antwort:
+     *
+     *     gemessene Lage   fallend und durch Bolus ueberdeckt
+     *     Basalpfad        ZERO_TEMP
+     *     SMB-Pfad         Marker hebt GUARD_FLOOR -> weitere 0,15 U
+     *
+     * Vier Minuten Zero-TBR halten bei 0,50 U/h rund 0,033 U zurueck, waehrend
+     * gleichzeitig 0,60 U SMB dazukamen. Das ist keine Kompensation, das ist
+     * eine Groessenordnung daneben. Gemessen: Marker 17:49, danach 24 positive
+     * Zyklen mit 3,70 U; ab 17:55 meldete FUSE bereits
+     * FALLING_WITH_BOLUS_OVERCOVERAGE und trotzdem gingen noch 19 SMBs mit
+     * 2,95 U hinaus; Minimum 58,2 mg/dl um 18:47 bei 3,20 U IOB.
+     *
+     * UND UM 18:13 WURDE ES DEUTLICHER: die Zero-TBR galt wegen
+     * BENEFIT_BELOW_THRESHOLD als zu spaet und nutzlos. Daraus folgte
+     * faktisch, dass zusaetzliche SMBs wieder erlaubt waren. "Basal
+     * zurueckhalten hilft nicht mehr" und "mehr Bolus ist sicher" sind aber
+     * zwei vollstaendig verschiedene Aussagen.
+     *
+     * DIESE FUNKTION BEANTWORTET NUR DIE ERSTE: ist eine gemessene
+     * Abwaertsgefahr da? Der Basalnutzen bleibt [evaluate] vorbehalten und
+     * entscheidet AUSSCHLIESSLICH ueber die TBR.
+     *
+     * DAS MODELL SPIELT HIER KEINE ROLLE. Es darf weiter extrem negative Werte
+     * liefern; entscheidend ist ausschliesslich der gemessene Verlauf.
+     */
+    data class DescentRisk(
+        val active: Boolean,
+        /** Warum KEIN Risiko - dieselben Gruende wie in [Result]. */
+        val denial: String?,
+        val fallRatePerMin: Double?,
+        val bolusIobU: Double?,
+        /** Wie weit der Bolus ueber die Strecke zum Boden hinausreicht
+         *  [mg/dl]. Positiv = ueberdeckt. */
+        val overcoverageMgdl: Double?,
+        val minutesToFloor: Double?,
+    )
+
+    /**
+     * Schritte 1-3: gesundes Signal, gemessen fallend, Bolus deckt die Strecke
+     * zum Boden, und der gemessene Trend erreicht ihn im Nahhorizont.
+     *
+     * KEIN [measuredLow] hier: das gemessene Tief ist ein eigener, schaerferer
+     * Riegel (SAFETY_HOLD) und liegt vor dieser Frage.
+     */
+    fun measuredDescentRisk(
+        signalHealthy: Boolean,
+        bgMgdl: Double?,
+        fallRatePerMin: Double?,
+        bolusIobU: Double?,
+        isfMgdlPerU: Double?,
+        guardFloorMgdl: Double,
+        horizonMin: Double = NEAR_TERM_HORIZON_MIN.toDouble(),
+    ): DescentRisk {
+        if (!signalHealthy) return DescentRisk(false, DENY_UNHEALTHY, fallRatePerMin, bolusIobU, null, null)
+        if (bgMgdl == null || !bgMgdl.isFinite() ||
+            fallRatePerMin == null || !fallRatePerMin.isFinite() ||
+            isfMgdlPerU == null || !isfMgdlPerU.isFinite() || isfMgdlPerU <= 0.0
+        ) return DescentRisk(false, DENY_INPUT, fallRatePerMin, bolusIobU, null, null)
+
+        val strecke = bgMgdl - guardFloorMgdl
+        if (fallRatePerMin >= 0.0)
+            return DescentRisk(false, DENY_NOT_FALLING, fallRatePerMin, bolusIobU, null, null)
+
+        val bolus = bolusIobU?.takeIf { it.isFinite() }
+            ?: return DescentRisk(false, DENY_NO_OVERCOVERAGE, fallRatePerMin, null, null, null)
+        val ueberdeckung = bolus * isfMgdlPerU - strecke
+        if (ueberdeckung <= 0.0)
+            return DescentRisk(false, DENY_NO_OVERCOVERAGE, fallRatePerMin, bolus, ueberdeckung, null)
+
+        val minutenBisBoden = strecke / abs(fallRatePerMin)
+        if (!minutenBisBoden.isFinite() || minutenBisBoden > horizonMin)
+            return DescentRisk(
+                false, DENY_TOO_FAR, fallRatePerMin, bolus, ueberdeckung,
+                minutenBisBoden.takeIf { it.isFinite() },
+            )
+
+        return DescentRisk(true, null, fallRatePerMin, bolus, ueberdeckung, minutenBisBoden)
+    }
+
+    /**
      * @param measuredLow es liegt JETZT ein gemessenes Tief vor (Observer).
      * @param signalHealthy die Signalreihe ist brauchbar - ohne sie gibt es
      *   keinen positiven Nachweis, und ohne Nachweis keine Null.
@@ -162,29 +252,25 @@ object LowThreatGate {
 
         val strecke = bgMgdl - guardFloorMgdl
 
-        // (1) FAELLT ES GEMESSEN? Ein flacher oder steigender Verlauf traegt
-        //     keine Zero-TBR, egal was eine Bahn behauptet.
-        if (fallRatePerMin >= 0.0)
-            return Result(Verdict.NONE, fallRatePerMin, bolusIobU, strecke, denial = DENY_NOT_FALLING)
-
-        // (2) DECKT DER BOLUS MEHR ALS DIE STRECKE ZUM BODEN?
-        //     Nur der Bolusanteil - s. KDoc zu [bolusIobU]. `null` heisst
-        //     unbekannt und ist kein Nachweis.
-        val bolus = bolusIobU?.takeIf { it.isFinite() }
-            ?: return Result(Verdict.NONE, fallRatePerMin, null, strecke, denial = DENY_NO_OVERCOVERAGE)
-        if (bolus * isfMgdlPerU <= strecke)
-            return Result(Verdict.NONE, fallRatePerMin, bolus, strecke, denial = DENY_NO_OVERCOVERAGE)
-
-        // (3) FUEHRT DER GEMESSENE TREND KURZFRISTIG ZUM BODEN?
-        //     Lineare Fortschreibung der GEMESSENEN Rate - keine Modellbahn,
-        //     kein Antriebszerfall, keine Verstaerkung. Liegt der Bodenkontakt
-        //     jenseits des Fensters, ist es keine nahe Gefahr.
-        val minutenBisBoden = strecke / abs(fallRatePerMin)
-        if (!minutenBisBoden.isFinite() || minutenBisBoden > horizonMin)
-            return Result(
-                Verdict.NONE, fallRatePerMin, bolus, strecke,
-                minutenBisBoden.takeIf { it.isFinite() }, denial = DENY_TOO_FAR,
-            )
+        // SCHRITTE 1-3 SIND DAS GEMESSENE ABWAERTSRISIKO und stehen seit dem
+        // 19.08. in [measuredDescentRisk] - EINE Implementierung, hier nur
+        // gerufen. Zwei Kopien wuerden auseinanderlaufen, und dann sperrte der
+        // Insulinriegel bei einer anderen Lage als die TBR-Antwort.
+        val risiko = measuredDescentRisk(
+            signalHealthy = true,   // oben schon geprueft
+            bgMgdl = bgMgdl,
+            fallRatePerMin = fallRatePerMin,
+            bolusIobU = bolusIobU,
+            isfMgdlPerU = isfMgdlPerU,
+            guardFloorMgdl = guardFloorMgdl,
+            horizonMin = horizonMin,
+        )
+        if (!risiko.active) return Result(
+            Verdict.NONE, fallRatePerMin, risiko.bolusIobU, strecke,
+            risiko.minutesToFloor, denial = risiko.denial,
+        )
+        val bolus = risiko.bolusIobU
+        val minutenBisBoden = risiko.minutesToFloor!!
 
         // (4) BRINGT DIE NULL BIS DAHIN UEBERHAUPT ETWAS?
         //     Jede zurueckgehaltene Minute wirkt erst ab ihrem eigenen

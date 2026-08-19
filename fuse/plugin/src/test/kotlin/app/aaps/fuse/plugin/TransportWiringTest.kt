@@ -167,6 +167,9 @@ class TransportWiringTest : TestBaseWithProfile() {
     /** Insulinaktivitaet je Punkt. 0 heisst: der Bolus-Deckungs-Abschlag ist
      *  null, und damit ist die Bremsbahn-Untergrenze IHR EIGENES Mittel -
      *  auch dort passt dann keine Hebung hinein. */
+    /** Bolus-IOB [U] fuer die Ueberdeckungsprobe; null = 0. */
+    private var bolusIobU: Double? = null
+
     private var aktivitaet = 0.0
 
     /**
@@ -251,7 +254,11 @@ class TransportWiringTest : TestBaseWithProfile() {
             .toList()
 
     private fun iob(atTs: Long) = IobTotal(roundUp(atTs)).also {
-        it.iob = 0.0; it.basaliob = 0.0; it.activity = aktivitaet; it.valid = iobGueltig
+        // BOLUS-IOB = iob - basaliob. Das Rig stellte beide auf 0, damit war
+        // eine Bolus-Ueberdeckung nie darstellbar - der Riegel gegen
+        // gemessenes Abwaertsrisiko haette hier nie greifen koennen.
+        it.iob = bolusIobU ?: 0.0; it.basaliob = 0.0
+        it.activity = aktivitaet; it.valid = iobGueltig
     }
 
     /** Ungueltige IOB-Daten -> keine Aktivitaet -> ACTIVITY_MISSING, das
@@ -326,6 +333,13 @@ class TransportWiringTest : TestBaseWithProfile() {
         whenever(preferences.get(FuseDoubleKey.RiseRampHighR)).thenReturn(2.0)
         whenever(preferences.get(FuseDoubleKey.MaxSmbU)).thenAnswer { maxSmbU }
         whenever(preferences.get(FuseDoubleKey.GuardFloorMgdl)).thenAnswer { guardBodenMgdl }
+        // DIESE BEIDEN FEHLTEN. Ohne sie liefert der Mock 0.0, und das
+        // Nahhorizont-Fenster der Low-Pruefung war damit NULL - jede
+        // Bodennaehe galt als "zu weit weg". Ein Riegel, der auf diesen
+        // Wert schaut, konnte im Rig nie greifen; gemerkt habe ich es nur,
+        // weil die Vorbedingung des Tests darauf bestand.
+        whenever(preferences.get(FuseDoubleKey.LowGateHorizonMin)).thenReturn(120.0)
+        whenever(preferences.get(FuseDoubleKey.LowGateMinBenefitMgdl)).thenReturn(5.0)
         whenever(preferences.get(FuseIntKey.IobThPercent)).thenAnswer { iobThPct }
         whenever(preferences.get(FuseIntKey.ReleaseHorizonMin)).thenReturn(60)
         whenever(preferences.get(FuseIntKey.LiabilityHorizonMin)).thenReturn(120)
@@ -4628,6 +4642,174 @@ class TransportWiringTest : TestBaseWithProfile() {
                     "${r.ursachen}",
             )
         }
+    }
+
+
+    // ==== DER FINALE RIEGEL AM GEMEINSAMEN AUSGANG (Toni 19.08., P0) ======
+    //
+    // ER SITZT NACH Prime-/Fundament-Lift, `finalVerify` und `MarkerFloor`,
+    // aber VOR der Publikation. Ein frueher gesetzter Riegel koennte von einem
+    // spaeteren Wiederherstellungspfad umgangen werden - genau so ist der
+    // Abendfall entstanden: ab 17:55 stand die Abwaertslage fest, und ueber
+    // die Marker-Autorisierung gingen danach noch 2,95 U hinaus.
+    //
+    // Diese Tests fahren den ECHTEN Runner. Ein Test auf `LowThreatGate`
+    // allein wuerde nur die Rechnung pruefen, nicht ihre WIRKSAMKEIT am
+    // Ausgang - und der Befund war ja gerade, dass eine richtige Rechnung
+    // folgenlos blieb.
+
+    /** Die Abwaertslage des Abends: fallend, vom Bolus ueberdeckt, Boden nah. */
+    private fun abwaertslage(dir: File) {
+        fundamentAn = true
+        fundamentAnteil = 0.80
+        markerAuthorized = true
+        primeHuelleU = 3.9
+        // BG faellt deutlich, Boden 70 - bei 140 und -2,5/min sind es 28 min.
+        flach = 140.0
+        steigungProMin = -2.5
+        knickAbMin = null
+        // Bolus-IOB deckt die Strecke zum Boden weit ueber: 4,7 U x ISF.
+        bolusIobU = 4.7
+        clock = start
+        transportReset()
+        val l = FuseLedgerAdapter().also { it.loadOnce(dir.also(File::mkdirs), "test-epoch", start) }
+        neuerRunner(l)
+        markerAt = start + 2 * 60_000L
+    }
+
+    /**
+     * DER ABENDFALL: trotz Marker-Autorisierung darf nichts mehr hinausgehen.
+     *
+     * Das ist die Zusicherung, an der der P0 haengt. Vorher hob der Marker den
+     * GUARD_FLOOR und lieferte weiter; jetzt greift der Riegel NACH allen
+     * Autorisierungen.
+     */
+    @Test
+    fun `bei gemessenem Abwaertsrisiko geht trotz Marker nichts hinaus`(@TempDir dir: File) {
+        abwaertslage(dir)
+        var summe = 0.0
+        var riegelGesehen = false
+        repeat(30) {
+            val o = cycle()
+            summe += o.decision.smbU
+            if (o.decision.block == FuseController.Block.MEASURED_DESCENT_RISK) riegelGesehen = true
+        }
+        assertTrue(riegelGesehen, "der Riegel MUSS gegriffen haben - sonst prueft der Test nichts")
+        assertEquals(0.0, summe, 1e-9, "kein positives Insulin bei gemessener Abwaertslage: $summe U")
+    }
+
+    /**
+     * UND DIE TBR BLEIBT DAVON UNBERUEHRT. Bei aktivem Risiko und unwirksamer
+     * Zero-TBR ist die richtige Antwort SMB 0 UND KEEP_CURRENT - keine
+     * nutzlose Null. "Basal zurueckhalten hilft nicht mehr" und "mehr Bolus
+     * ist sicher" sind zwei verschiedene Aussagen, und der Riegel beantwortet
+     * nur die zweite.
+     */
+    @Test
+    fun `der Riegel setzt die Menge auf null und laesst die TBR in Ruhe`(@TempDir dir: File) {
+        abwaertslage(dir)
+        var geprueft = false
+        repeat(30) {
+            val o = cycle()
+            if (o.decision.block == FuseController.Block.MEASURED_DESCENT_RISK) {
+                assertEquals(0.0, o.decision.smbU, 1e-9, "die Menge ist null")
+                // Die Basalantwort stammt weiterhin aus der Nutzenpruefung -
+                // der Riegel fasst sie nicht an.
+                assertTrue(
+                    o.decision.tbr == FuseController.TbrAction.KEEP_CURRENT ||
+                        o.decision.tbr == FuseController.TbrAction.ZERO_TEMP ||
+                        o.decision.tbr == FuseController.TbrAction.NO_NEW_POSITIVE,
+                    "die TBR bleibt Ergebnis des Basalnutzens: ${o.decision.tbr}",
+                )
+                geprueft = true
+            }
+        }
+        assertTrue(geprueft, "der Aufbau muss den Riegel erreichen")
+    }
+
+    /**
+     * DIE GEGENKONTROLLE: eine steigende schnelle Mahlzeit bleibt unberuehrt.
+     *
+     * Ohne sie waere nicht auszuschliessen, dass der Riegel jede Versorgung
+     * aushungert - und das waere ein Fehler derselben Groessenordnung wie der,
+     * den er behebt.
+     */
+    @Test
+    fun `eine steigende Mahlzeit bleibt unberuehrt`(@TempDir dir: File) {
+        fundamentAn = true
+        fundamentAnteil = 0.80
+        markerAuthorized = true
+        primeHuelleU = 3.0
+        flach = 150.0
+        steigungProMin = 2.2
+        knickAbMin = null
+        bolusIobU = null
+        clock = start
+        transportReset()
+        neuerRunner(FuseLedgerAdapter().also { it.loadOnce(dir.also(File::mkdirs), "test-epoch", start) })
+        markerAt = start + 2 * 60_000L
+
+        var summe = 0.0
+        var riegel = 0
+        repeat(25) {
+            val o = cycle()
+            summe += o.decision.smbU
+            if (o.decision.block == FuseController.Block.MEASURED_DESCENT_RISK) riegel++
+        }
+        assertEquals(0, riegel, "bei steigendem Zucker darf der Riegel NIE greifen")
+        assertTrue(summe > 0.0, "und die Mahlzeit wird weiterhin versorgt: $summe U")
+    }
+
+
+
+    /**
+     * DER RIEGEL DARF KEINE SPUR IN DER BUCHFUEHRUNG HINTERLASSEN
+     * (Codex 19.08.).
+     *
+     * `actuatedU` entsteht erst aus `combined.decision.smbU`. Greift der
+     * Riegel, muessen Prime-, Fundament- und Evidenzzaehler sowie die
+     * Reservierung unberuehrt bleiben - sonst waere die Autorisierung als
+     * verbraucht gebucht, ohne dass etwas floss, und die naechste Mahlzeit
+     * begaenne mit einer Huelle, die sie nie bekommen hat.
+     *
+     * DER `grant` BLEIBT BEWUSST STEHEN. Er zeigt im Trail, dass eine
+     * Autorisierung vorhanden war und vom gemessenen Riegel gestoppt wurde.
+     * Entscheidend ist, dass niemand daraus ohne `smbU > 0` eine Aktuation
+     * ableitet - genau das prueft dieser Test.
+     */
+    @Test
+    fun `der Riegel bucht nichts und meldet die Lage als unsicher`(@TempDir dir: File) {
+        abwaertslage(dir)
+        val e = ledger.episodes
+        var geprueft = false
+        var primeVor = 0.0
+        var evidenzVor = 0.0
+        var phaseAVor = 0.0
+        var seitUVor = 0.0
+
+        repeat(30) {
+            primeVor = e.primeSpentU
+            evidenzVor = e.evidenceCommittedU
+            phaseAVor = e.deliveredPhaseAU
+            seitUVor = e.deliveredSinceHandoverU
+            val o = cycle()
+            if (o.decision.block == FuseController.Block.MEASURED_DESCENT_RISK) {
+                assertEquals(0.0, o.decision.smbU, 1e-9, "die Menge ist null")
+                assertTrue(
+                    o.decision.unsafeSituation,
+                    "eine GEMESSENE Abwaertslage MUSS als unsicher gemeldet werden - " +
+                        "nachgelagerte Sicherheitslogik darf sie nicht als sicher lesen",
+                )
+                // KEINE Buchung, keine Reservierung.
+                assertEquals(primeVor, e.primeSpentU, 1e-9, "primeSpentU unveraendert")
+                assertEquals(evidenzVor, e.evidenceCommittedU, 1e-9, "evidenceCommittedU unveraendert")
+                assertEquals(phaseAVor, e.deliveredPhaseAU, 1e-9, "deliveredPhaseAU unveraendert")
+                assertEquals(seitUVor, e.deliveredSinceHandoverU, 1e-9, "deliveredSinceHandoverU unveraendert")
+                assertNull(e.pendingReservation, "und keine Reservierung")
+                geprueft = true
+            }
+        }
+        assertTrue(geprueft, "der Aufbau muss den Riegel erreichen")
     }
 
 }

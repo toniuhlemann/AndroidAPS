@@ -52,6 +52,7 @@ import app.aaps.fuse.core.controller.EvidenceStock
 import app.aaps.fuse.core.controller.MarkerFallback
 import app.aaps.fuse.core.controller.MealFoundation
 import app.aaps.fuse.core.controller.MarkerFloor
+import app.aaps.fuse.core.controller.MeasuredDescentGate
 import app.aaps.fuse.core.controller.OnsetChannel
 import app.aaps.fuse.core.controller.PrimeRelease
 import app.aaps.fuse.core.insulin.KernelOutcome
@@ -592,6 +593,13 @@ class FuseCycleRunner(
         val reboundOverrideDeadlineTs: Long = 0L,
         /** Warum es NICHT gilt - typisiert. null = es gilt. */
         val reboundOverrideDenial: String? = null,
+        /** DAS GEMESSENE ABWAERTSRISIKO dieses Zyklus - der finale Riegel
+         *  gegen neues positives Insulin. Getrennt vom Basalnutzen. */
+        val descentRiskActive: Boolean = false,
+        val descentRiskDenial: String? = null,
+        val descentFallRatePerMin: Double? = null,
+        val descentOvercoverageMgdl: Double? = null,
+        val descentMinutesToFloor: Double? = null,
         /** KUMULATIV in dieser Episode publiziertes Insulin [U] - die
          *  Bezahlseite des Stoerungsbestands. Laeuft bis EXPIRED weiter,
          *  auch waehrend DORMANT und waehrend eines Widerrufs. */
@@ -1368,6 +1376,24 @@ class FuseCycleRunner(
         // macht hier aus "8 U Spielraum belegt" ein "8 U frei".
         if (!iobTotal.valid) return abort("iob unknown (no profile)", signal, cfg, step, predictionOrNull, restraint)
         val isf = profile.getIsfMgdlTimeFromMidnight(MidnightUtils.secondsFromMidnight(signal.sourceTs))
+
+        // FRUEH GERECHNET, WEIL BEIDE PFADE ES BRAUCHEN: der Fallback wird
+        // weiter unten aufgerufen und muss denselben Riegel kennen.
+        // DAS GEMESSENE ABWAERTSRISIKO - getrennt vom Basalnutzen
+        // (Toni 19.08., P0). Es verbietet NEUES POSITIVES INSULIN und sagt
+        // nichts ueber die TBR; die bleibt Sache des Nutzens weiter unten.
+        //
+        // Ein gemessenes Tief laeuft daran vorbei: es ist der schaerfere
+        // Riegel (SAFETY_HOLD) und liegt vor dieser Frage.
+        val descentRisk = LowThreatGate.measuredDescentRisk(
+            signalHealthy = step.health == Health.READY,
+            bgMgdl = signal.q1,
+            fallRatePerMin = signal.ukfRatePerMin,
+            bolusIobU = (iobTotal.iob - iobTotal.basaliob).takeIf { iobTotal.valid },
+            isfMgdlPerU = isf,
+            guardFloorMgdl = cfg.guardFloorMgdl,
+            horizonMin = cfg.lowGateHorizonMin,
+        )
         val (target, targetSource) = activeTarget(profile, computeTs)
 
         val state = when (
@@ -1585,7 +1611,7 @@ class FuseCycleRunner(
                 return abort("$warum | noFallback=${kernelReject ?: "KERNEL_UNAVAILABLE"}", signal, cfg, step, evidenz = evidenz)
             return markerFallbackCycle(
                 rejected, warum, signal, step, cfg, state, profile, pumpe, tempBasalFallback,
-                computeTs, markerTs, mealMarkerActive, measuredLow, evidenceEpisodeId,
+                computeTs, markerTs, mealMarkerActive, measuredLow, descentRisk, evidenceEpisodeId,
                 episodeGate.denial?.name, episodeGate.creditRevoked, evidenz,
                 isf, target, targetSource, iobTotal,
                 maxIobU, transportModelledU, ledgerView, episodes, onset, band,
@@ -2264,7 +2290,24 @@ class FuseCycleRunner(
         // NULL ist eine Entscheidung und kein fehlender Term; erst damit steht
         // dort 3/3 statt 1/3. Er ersetzt nur den BERICHT, nie die Menge - die
         // hat der Riegel oben bereits entschieden.
-        val decision = tailWith(held.smbU)?.let { held.copy(tail = it) } ?: held
+        val vorRiegel = tailWith(held.smbU)?.let { held.copy(tail = it) } ?: held
+        // ---- DER GEMEINSAME ENDRIEGEL: GEMESSENES ABWAERTSRISIKO --------
+        //
+        // ER SITZT HIER UND NICHT FRUEHER (Codex 19.08.): nach Prime- und
+        // Fundament-Lift, nach `finalVerify` und nach `MarkerFloor`, aber
+        // VOR der Publikation. Jeder frueher gesetzte Riegel koennte von
+        // einem spaeteren Wiederherstellungspfad umgangen werden - genau so
+        // ist der Abendfall entstanden.
+        //
+        // Damit gelten Hauptpfad, Fallback, Prime, Fundament und der
+        // normale SMB-Pfad automatisch gleich; es gibt keine Stelle, an der
+        // eine Autorisierung ihn noch aufheben koennte.
+        //
+        // NUR DIE MENGE, NICHT DIE TBR. Die Basalantwort bleibt
+        // ausschliesslich Ergebnis der Nutzenpruefung - "Basal zurueckhalten
+        // hilft nicht mehr" und "mehr Bolus ist sicher" sind zwei
+        // verschiedene Aussagen, und ihre Vermischung war der Befund.
+        val decision = MeasuredDescentGate.apply(vorRiegel, descentRisk)
         // Die Clearance-Verschiebung stand hier und ist nach oben gewandert -
         // vor den Entscheidungssnapshot des Fundaments (s. dort).
 
@@ -2384,6 +2427,11 @@ class FuseCycleRunner(
             evidenceMayOverrideRebound = reboundOverrideErlaubt,
             reboundOverrideDeadlineTs = reboundOverrideDeadlineTs,
             reboundOverrideDenial = reboundOverrideDenial?.name,
+            descentRiskActive = descentRisk.active,
+            descentRiskDenial = descentRisk.denial,
+            descentFallRatePerMin = descentRisk.fallRatePerMin,
+            descentOvercoverageMgdl = descentRisk.overcoverageMgdl,
+            descentMinutesToFloor = descentRisk.minutesToFloor,
             preFoundationSmbU = preFoundationSmbU,
             preFoundationBlock = preFoundationBlock,
             preFoundationBindingLimit = preFoundationBindingLimit,
@@ -2629,6 +2677,16 @@ class FuseCycleRunner(
         /** Nur fuer die parallele Schutz-Null und den Grundtext. Die
          *  Autorisierung haengt NICHT daran. */
         measuredLow: Boolean,
+        /**
+         * DAS GEMESSENE ABWAERTSRISIKO DIESES ZYKLUS - DURCHGEREICHT, nicht
+         * hier neu gerechnet (Toni 19.08.).
+         *
+         * Zwei Rechnungen mit denselben Eingaben driften, sobald eine von
+         * beiden eine Quelle anders waehlt - dieselbe Falle wie bei der
+         * SMB-Zuordnung und beim Fundament-Zaehler. EIN Ergebnis je Zyklus,
+         * beide Pfade lesen es.
+         */
+        descentRisk: LowThreatGate.DescentRisk,
         /** Identitaet der Mahlzeitenepisode fuer den Evidenz-Zaehler; 0 = keine. */
         evidenceEpisodeId: Long,
         /** Warum keine eroeffnet wurde - s. [Outcome.evidenceEpisodeDenial]. */
@@ -2755,10 +2813,15 @@ class FuseCycleRunner(
         val preFoundationBindingLimit = liftedPrime.bindingLimit
         val foundationLiftU = kotlin.math.max(0.0, lifted.smbU - liftedPrime.smbU)
         val held = LedgerHoldGate.apply(lifted, ledgerView.hold)
+        // DERSELBE ENDRIEGEL AUCH HIER. Der Fallback ist ein zweiter Weg
+        // zur Menge und war beim Mahlzeitenfundament schon einmal die
+        // Stelle, an der eine Messung fehlte - ein Riegel, den nur der
+        // Hauptpfad kennt, ist kein Riegel.
+        val heldMitRiegel = MeasuredDescentGate.apply(held, descentRisk)
 
         val runningTbr = processedTbrEbData.getTempBasalIncludingConvertedExtended(computeTs)
         val combined = FuseTbrTranslator.combine(
-            decision = held,
+            decision = heldMitRiegel,
             current = runningTbr?.let {
                 TbrPolicy.Current(
                     absoluteRateUPerH = it.convertedToAbsolute(computeTs, profile),

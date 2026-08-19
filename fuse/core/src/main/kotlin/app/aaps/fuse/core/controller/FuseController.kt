@@ -45,6 +45,7 @@ object FuseController {
         Block.GUARD_FLOOR,
         Block.TAIL,
         Block.SAFETY_HOLD,
+        Block.MEASURED_DESCENT_RISK,
         Block.HEALTH_NOT_READY,
         Block.HORIZON_MISSING,
         Block.NO_INPUT,
@@ -323,6 +324,22 @@ object FuseController {
         /** Die Kandidatensuche hat den Vorschlag inhaltlich auf null gesetzt
          *  (Guard risse MIT der Dosis, Band, Headroom) - s. CandidateGate. */
         CANDIDATE,
+
+        /**
+         * GEMESSENES ABWAERTSRISIKO - der finale Riegel gegen neues
+         * positives Insulin (Toni 19.08.).
+         *
+         * Gesetzt am GEMEINSAMEN Endpunkt des Zyklus: nach Prime- und
+         * Fundament-Lift, nach `finalVerify` und `MarkerFloor`, vor der
+         * Publikation. Keine Autorisierung hebt ihn auf - auch der Marker
+         * nicht.
+         *
+         * ER SAGT NICHTS UEBER DIE TBR. Ob eine Zero-TBR noch nuetzt, ist
+         * eine andere Frage und bleibt beim Basalnutzen; bei aktivem Risiko
+         * und unwirksamer Null ist die richtige Antwort SMB 0 UND
+         * KEEP_CURRENT.
+         */
+        MEASURED_DESCENT_RISK,
 
         /**
          * Der Commitment-Ledger meldet einen Vertragsbruch (holdActuation):

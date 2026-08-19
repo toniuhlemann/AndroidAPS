@@ -85,6 +85,20 @@ object MarkerAuthorization {
             // Wert ungeschehen.
             FuseController.Block.SAFETY_HOLD          -> false
 
+            // MEASURED_DESCENT_RISK ist aus DEMSELBEN Grund hart: er
+            // entsteht aus dem GEMESSENEN Verlauf - fallende Rate, vom
+            // Bolus ueberdeckte Strecke zum Boden, Bodenkontakt im
+            // Nahhorizont -, nicht aus einer Prognose. Genau deshalb ist er
+            // nicht derselbe Fall wie GUARD_FLOOR: der vergleicht eine
+            // MODELLIERTE Unterkante und darf nach einer Prime-Abgabe vom
+            // eigenen Insulin nach unten gerechnet werden - dieser hier
+            // nicht.
+            //
+            // Der gemessene Anlass ist der Abend des 19.08.: ab 17:55 stand
+            // die Abwaertslage fest, und trotzdem gingen ueber die
+            // Marker-Autorisierung noch 2,95 U hinaus.
+            FuseController.Block.MEASURED_DESCENT_RISK -> false
+
             // Signal- und Zustandsfehler: der Zyklus weiss nicht, wo er steht.
             FuseController.Block.HEALTH_NOT_READY     -> false
             FuseController.Block.HORIZON_MISSING      -> false

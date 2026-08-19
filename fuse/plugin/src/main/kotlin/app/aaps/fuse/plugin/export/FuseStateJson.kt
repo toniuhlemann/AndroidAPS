@@ -293,6 +293,15 @@ object FuseStateJson {
             .put("evidenceMayOverrideRebound", outcome.evidenceMayOverrideRebound)
             .put("reboundOverrideDeadlineTs", outcome.reboundOverrideDeadlineTs)
             .putOpt("reboundOverrideDenial", outcome.reboundOverrideDenial)
+            // DAS GEMESSENE ABWAERTSRISIKO. Ohne diese fuenf ist im Trail
+            // nicht zu sehen, WARUM ein Zyklus nichts gab - "kein Bedarf",
+            // "Risiko aktiv" und "Basalnutzen zu klein" sehen als 0 U
+            // gleich aus und bedeuten voellig Verschiedenes.
+            .put("descentRiskActive", outcome.descentRiskActive)
+            .putOpt("descentRiskDenial", outcome.descentRiskDenial)
+            .put("descentFallRatePerMin", fin(outcome.descentFallRatePerMin))
+            .put("descentOvercoverageMgdl", fin(outcome.descentOvercoverageMgdl))
+            .put("descentMinutesToFloor", fin(outcome.descentMinutesToFloor))
             .put(
                 "reboundOverrideRestMin",
                 outcome.reboundOverrideDeadlineTs

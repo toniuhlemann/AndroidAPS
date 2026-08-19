@@ -667,6 +667,11 @@ class MarkerAuthorizationTest {
         )
         val hart = setOf(
             FuseController.Block.SAFETY_HOLD,
+            // MEASURED_DESCENT_RISK aus DEMSELBEN Grund wie SAFETY_HOLD:
+            // er entsteht aus dem GEMESSENEN Verlauf, nicht aus einer
+            // Prognose. Deshalb ist er NICHT der Fall von GUARD_FLOOR, der
+            // bewusst hebbar bleibt (Toni 19.08., P0).
+            FuseController.Block.MEASURED_DESCENT_RISK,
             FuseController.Block.HEALTH_NOT_READY,
             FuseController.Block.HORIZON_MISSING,
             FuseController.Block.NO_INPUT,
