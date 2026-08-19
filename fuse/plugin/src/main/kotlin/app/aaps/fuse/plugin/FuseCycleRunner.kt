@@ -185,9 +185,9 @@ class FuseCycleRunner(
             computeTs - markerTs <= (OnsetChannel.MARKER_WINDOW_MIN + 120) * 60_000L
         ) MealStats(
             sinceMin = ((computeTs - markerTs) / 60_000L).toInt(),
-            totalU = episodes.mealDeliveries.sumOf { it.second },
-            first30U = episodes.mealDeliveries.filter { it.first - markerTs <= 30 * 60_000L }.sumOf { it.second },
-            first60U = episodes.mealDeliveries.filter { it.first - markerTs <= 60 * 60_000L }.sumOf { it.second },
+            totalU = episodes.mealDeliveries.sumOf { it.amountU },
+            first30U = episodes.mealDeliveries.filter { it.ts - markerTs <= 30 * 60_000L }.sumOf { it.amountU },
+            first60U = episodes.mealDeliveries.filter { it.ts - markerTs <= 60 * 60_000L }.sumOf { it.amountU },
         ) else null
 
         /**
@@ -1154,7 +1154,7 @@ class FuseCycleRunner(
         // der Freigabe-Huelle - was die Episode schon geliefert hat (Sofort-
         // Freigabe ODER Rampe), zieht ihn herunter: EINE Huelle fuer beide
         // Pfade, die Erklaerung verbraucht sich selbst.
-        val mealDeliveredU = if (markerTs > 0) episodes.mealDeliveries.sumOf { it.second } else 0.0
+        val mealDeliveredU = if (markerTs > 0) episodes.mealDeliveries.sumOf { it.amountU } else 0.0
         val declaredDrive = if (markerBoost) MarkerScope.declaredAbsorptionDriveMgdlPerMin(
             // "Ohne Vorschuss" heisst auch: kein Erklaerungs-Kredit. Der Kredit
             // unterstellt kommende Absorption in Huellenhoehe - genau die
@@ -2288,7 +2288,9 @@ class FuseCycleRunner(
         // selbst per recoveryHold aus der eigenen Datei aus.
         val mealGebucht = mealMarkerActive && actuatedU > 0.0
         if (mealGebucht) {
-            episodes.mealDeliveries.addLast(sourceTs to actuatedU)
+            episodes.mealDeliveries.addLast(
+                app.aaps.fuse.plugin.ledger.EpisodeBudgets.MealDelivery(sourceTs, actuatedU),
+            )
             while (episodes.mealDeliveries.size > 400) episodes.mealDeliveries.removeFirst()
         }
         return Buchung(mealGebucht, phase)

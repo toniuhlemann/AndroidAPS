@@ -127,7 +127,7 @@ class FuseLedgerAdapterTest {
         a.episodes.primeArmedTs = t0
         a.episodes.onsetSpentU = 0.10
         a.episodes.mealArmedTs = t0
-        a.episodes.mealDeliveries.addLast(t0 + 30_000L to 0.15)
+        a.episodes.mealDeliveries.addLast(EpisodeBudgets.MealDelivery(t0 + 30_000L, 0.15))
         assertTrue(a.persistVerified(dir))
 
         val b = loadedAdapter(dir, "epoch-b", t0 + 120_000L)
@@ -136,7 +136,7 @@ class FuseLedgerAdapterTest {
         assertEquals(0.45, b.episodes.primeSpentU, 0.0)
         assertEquals(t0, b.episodes.primeArmedTs)
         assertEquals(0.10, b.episodes.onsetSpentU, 0.0)
-        assertEquals(listOf(t0 + 30_000L to 0.15), b.episodes.mealDeliveries.toList())
+        assertEquals(listOf(t0 + 30_000L to 0.15), b.episodes.mealDeliveries.map { it.ts to it.amountU })
         // Commitment bleibt gebunden, Unbewiesenes konservativ als abgegeben.
         assertEquals(0.30, b.view().transportCommitmentU, 1e-12)
         assertEquals(DeliveryState.UNKNOWN_ASSUMED, b.state.entries.getValue("p1").delivery)

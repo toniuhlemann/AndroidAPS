@@ -42,7 +42,7 @@ class EpisodePersistReloadTest {
 
     private fun belaste(a: FuseLedgerAdapter, menge: Double = 0.30) {
         a.episodes.primeSpentU = menge
-        a.episodes.mealDeliveries.addLast(ts to menge)
+        a.episodes.mealDeliveries.addLast(EpisodeBudgets.MealDelivery(ts, menge))
         a.episodes.pendingReservation = EpisodeBudgets.Reservation(
             computeTs = ts, amountU = menge, prime = true, onset = false, mealTs = ts,
         )

@@ -161,7 +161,7 @@ class EpisodeBudgets {
      */
     var evidenceState: app.aaps.fuse.core.controller.EvidenceStock.State =
         app.aaps.fuse.core.controller.EvidenceStock.State()
-    val mealDeliveries: ArrayDeque<Pair<Long, Double>> = ArrayDeque()
+    val mealDeliveries: ArrayDeque<MealDelivery> = ArrayDeque()
 
     /**
      * DIE LAUFENDE MAHLZEITEN-AUTORISIERUNG (Punkt 7, Toni 18.08.).
@@ -226,6 +226,39 @@ class EpisodeBudgets {
      * bereits sicheren Fall sicherer zu machen.
      */
     var pendingReservation: Reservation? = null
+
+    /**
+     * EINE EINZELNE ABGABE IM MAHLZEITENFENSTER - mit STABILER IDENTITAET
+     * (Toni 19.08., P0 im P0).
+     *
+     * DER BEFUND. Der Eintrag bestand aus `sourceTs to amountU`, und
+     * [revokeSettled] suchte ihn mit `indexOfLast { it.first == mealTs }`.
+     * Zum Zeitpunkt des Zurueckdrehens hat der Runner aber laengst eine NEUE
+     * Zeile gebucht - der Beweis kommt ja erst im FOLGEZYKLUS. Wiederholt
+     * sich derselbe CGM-Zeitstempel mit anderer Menge (ein wiederholter
+     * Punkt, ein Sensorartefakt), traf `indexOfLast` die NEUE Abgabe statt
+     * der verworfenen alten. Das Ergebnis waere eine Buchhaltung, die eine
+     * geflossene Menge streicht und eine nie geflossene stehen laesst.
+     *
+     * Der Zeitstempel taugt also nicht als Identitaet. Die [proposalId] tut
+     * es: sie ist je Zyklus eindeutig und dieselbe, ueber die der
+     * Nicht-Sende-Beweis kommt.
+     *
+     * SIE WIRD NACHGETRAGEN, nicht beim Anlegen gesetzt: `buche` laeuft im
+     * Runner, und der kennt die Kennung nicht - sie entsteht erst im Plugin
+     * (s. den Kommentar an [Reservation.computeTs]). [resolveReservation]
+     * traegt sie ein, und das ist noch DERSELBE Zyklus, in dem `indexOfLast`
+     * eindeutig ist.
+     *
+     * `null` heisst: keine Kennung, also keine spaetere Entlastung moeglich -
+     * der konservative Ausgang. Das betrifft Altbestand aus Dateien vor
+     * diesem Umbau.
+     */
+    class MealDelivery(
+        val ts: Long,
+        val amountU: Double,
+        var proposalId: String? = null,
+    )
 
     /**
      * DIE ABGESCHLOSSENE BUCHUNG DES VORIGEN ZYKLUS (Toni 19.08., P0).
@@ -1254,6 +1287,14 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
         // Zuordnung und damit auch keine spaetere Entlastung; das ist der
         // konservative Ausgang, nicht ein Mangel.
         val bleibt = (if (publishedU.isFinite()) publishedU else r.amountU).coerceIn(0.0, r.amountU)
+        // DIE KENNUNG NACHTRAGEN, solange die Zuordnung noch eindeutig ist:
+        // hier ist es derselbe Zyklus, in dem `buche` den Eintrag angelegt hat.
+        // Ab dem naechsten waere `indexOfLast` mehrdeutig - genau der Fehler,
+        // gegen den [MealDelivery.proposalId] gebaut ist.
+        if (proposalId != null && bleibt > 0.0 && r.mealTs > 0L) {
+            val idx = episodes.mealDeliveries.indexOfLast { it.ts == r.mealTs && it.proposalId == null }
+            if (idx >= 0) episodes.mealDeliveries[idx].proposalId = proposalId
+        }
         episodes.settled =
             if (proposalId != null && bleibt > 0.0) EpisodeBudgets.Settled(
                 proposalId = proposalId, amountU = bleibt, prime = r.prime,
@@ -1289,10 +1330,14 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
             // Zyklen koennen denselben sourceTs tragen, wenn ein Punkt
             // wiederholt wird. Gesucht wird deshalb von hinten der Eintrag
             // mit genau diesem Zeitstempel.
-            val idx = episodes.mealDeliveries.indexOfLast { it.first == r.mealTs }
+            // HIER ist der Zeitstempel noch eindeutig: es ist derselbe Zyklus,
+            // in dem der Eintrag entstand.
+            val idx = episodes.mealDeliveries.indexOfLast { it.ts == r.mealTs }
             if (idx >= 0) {
-                val rest = episodes.mealDeliveries[idx].second - frei
-                if (rest > 1e-9) episodes.mealDeliveries[idx] = r.mealTs to rest
+                val rest = episodes.mealDeliveries[idx].amountU - frei
+                if (rest > 1e-9)
+                    episodes.mealDeliveries[idx] =
+                        EpisodeBudgets.MealDelivery(r.mealTs, rest, episodes.mealDeliveries[idx].proposalId)
                 else episodes.mealDeliveries.removeAt(idx)
             }
         }
@@ -1326,11 +1371,17 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
         if (s.foundationPhase == app.aaps.fuse.core.controller.MealFoundation.Phase.PHASE_B)
             episodes.deliveredSinceHandoverU =
                 (episodes.deliveredSinceHandoverU - menge).coerceAtLeast(0.0)
+        // UEBER DIE KENNUNG, NICHT UEBER DEN ZEITSTEMPEL. Zum Zeitpunkt
+        // dieses Aufrufs hat der Runner laengst eine neue Zeile gebucht;
+        // `indexOfLast { it.ts == ... }` traefe bei einem wiederholten
+        // CGM-Zeitstempel die NEUE Abgabe statt der verworfenen alten.
         if (s.mealTs > 0L) {
-            val idx = episodes.mealDeliveries.indexOfLast { it.first == s.mealTs }
+            val idx = episodes.mealDeliveries.indexOfFirst { it.proposalId == proposalId }
             if (idx >= 0) {
-                val rest = episodes.mealDeliveries[idx].second - menge
-                if (rest > 1e-9) episodes.mealDeliveries[idx] = s.mealTs to rest
+                val rest = episodes.mealDeliveries[idx].amountU - menge
+                if (rest > 1e-9)
+                    episodes.mealDeliveries[idx] =
+                        EpisodeBudgets.MealDelivery(episodes.mealDeliveries[idx].ts, rest, proposalId)
                 else episodes.mealDeliveries.removeAt(idx)
             }
         }

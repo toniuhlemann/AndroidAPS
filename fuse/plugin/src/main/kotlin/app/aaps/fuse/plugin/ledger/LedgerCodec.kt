@@ -450,7 +450,20 @@ object LedgerCodec {
         .put("markerTurnTs", e.markerTurnTs)
         .put("markerRiseSeen", e.markerRiseSeen)
         .put("lastAcceptedSourceTs", e.lastAcceptedSourceTs)
-        .put("mealDeliveries", JSONArray(e.mealDeliveries.map { (ts, u) -> JSONArray(listOf(ts, u)) }))
+        // DREI Elemente statt zwei: [ts, menge, proposalId] (Toni 19.08.).
+        // Die Kennung MUSS mit - ohne sie findet ein Nicht-Sende-Beweis nach
+        // einem Neustart den Eintrag nicht mehr und laesst eine nie geflossene
+        // Menge stehen. Der dritte Platz ist additiv: eine Altdatei mit zwei
+        // Elementen liest sich als "keine Kennung", also keine spaetere
+        // Entlastung - der konservative Ausgang.
+        .put(
+            "mealDeliveries",
+            JSONArray(
+                e.mealDeliveries.map { d ->
+                    JSONArray(listOf(d.ts, d.amountU, d.proposalId ?: JSONObject.NULL))
+                }
+            )
+        )
         .apply { encodeFoundation(e)?.let { put("foundation", it) } }
 
     /**
@@ -587,7 +600,10 @@ object LedgerCodec {
             val ts = requireTs("mealDeliveries[$i].ts", pair.getLong(0))
             val u = pair.getDouble(1)
             require(u.isFinite() && u > 0.0 && u <= MAX_MEAL_DELIVERY_U) { "mealDeliveries[$i].u out of range: $u" }
-            e.mealDeliveries.addLast(ts to u)
+            // Der dritte Platz ist optional: Dateien vor dem 19.08. tragen ihn
+            // nicht, und dann gibt es fuer diesen Eintrag keine Entlastung mehr.
+            val id = if (pair.length() > 2 && !pair.isNull(2)) pair.getString(2) else null
+            e.mealDeliveries.addLast(EpisodeBudgets.MealDelivery(ts, u, id))
         }
         return e
     }

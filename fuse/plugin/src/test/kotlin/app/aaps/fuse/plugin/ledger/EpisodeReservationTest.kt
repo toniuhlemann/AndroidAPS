@@ -36,7 +36,7 @@ class EpisodeReservationTest {
         val e = a.episodes
         if (prime) e.primeSpentU = menge
         if (onset) e.onsetSpentU = menge
-        if (meal) e.mealDeliveries.addLast(ts to menge)
+        if (meal) e.mealDeliveries.addLast(EpisodeBudgets.MealDelivery(ts, menge))
         e.pendingReservation = EpisodeBudgets.Reservation(
             computeTs = ts, amountU = menge, prime = prime, onset = onset,
             mealTs = if (meal) ts else 0L,
@@ -73,7 +73,7 @@ class EpisodeReservationTest {
         val a = adapterMitReservierung(menge = 0.30)
         a.resolveReservation(ts, publishedU = 0.20)
         assertEquals(0.20, a.episodes.primeSpentU, 1e-12)
-        assertEquals(0.20, a.episodes.mealDeliveries.single().second, 1e-12)
+        assertEquals(0.20, a.episodes.mealDeliveries.single().amountU, 1e-12)
     }
 
     /**

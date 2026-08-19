@@ -201,8 +201,8 @@ class LedgerCodecTest {
             onsetSpentU = 0.10
             onsetQuietMin = 3
             mealArmedTs = t0
-            mealDeliveries.addLast(t0 + 60_000L to 0.15)
-            mealDeliveries.addLast(t0 + 120_000L to 0.30)
+            mealDeliveries.addLast(EpisodeBudgets.MealDelivery(t0 + 60_000L, 0.15))
+            mealDeliveries.addLast(EpisodeBudgets.MealDelivery(t0 + 120_000L, 0.30))
         }
         val decoded = LedgerCodec.decode(JSONObject(LedgerCodec.encode(state, ep, 42L, InterventionStamp("test-epoche", 42L)).toString()))
         assertEquals(state, decoded.state)
@@ -212,7 +212,7 @@ class LedgerCodecTest {
         assertEquals(0.10, decoded.episodes.onsetSpentU, 0.0)
         assertEquals(3, decoded.episodes.onsetQuietMin)
         assertEquals(t0, decoded.episodes.mealArmedTs)
-        assertEquals(listOf(t0 + 60_000L to 0.15, t0 + 120_000L to 0.30), decoded.episodes.mealDeliveries.toList())
+        assertEquals(listOf(t0 + 60_000L to 0.15, t0 + 120_000L to 0.30), decoded.episodes.mealDeliveries.map { it.ts to it.amountU })
     }
 
     // ---- Semantische Decode-Validierung (Audit 2d273cb, REG-01d) ----------
@@ -241,7 +241,7 @@ class LedgerCodecTest {
     @Test
     fun `mealDeliveries mit 501 Eintraegen wirft beim Decode`() {
         val ep = EpisodeBudgets()
-        repeat(501) { ep.mealDeliveries.addLast((t0 + it) to 0.1) }
+        repeat(501) { ep.mealDeliveries.addLast(EpisodeBudgets.MealDelivery(t0 + it, 0.1)) }
         val o = LedgerCodec.encode(LedgerState(), ep, 0L, InterventionStamp("test-epoche", 42L))
         assertThrows(IllegalArgumentException::class.java) { LedgerCodec.decode(JSONObject(o.toString())) }
     }
@@ -754,7 +754,7 @@ class LedgerCodecTest {
     @Test
     fun `mealDeliveries mit 400 Eintraegen bleibt gueltig`() {
         val ep = EpisodeBudgets()
-        repeat(400) { ep.mealDeliveries.addLast((t0 + it) to 0.1) }
+        repeat(400) { ep.mealDeliveries.addLast(EpisodeBudgets.MealDelivery(t0 + it, 0.1)) }
         val decoded = LedgerCodec.decode(JSONObject(LedgerCodec.encode(LedgerState(), ep, 0L, InterventionStamp("test-epoche", 42L)).toString()))
         assertEquals(400, decoded.episodes.mealDeliveries.size)
     }

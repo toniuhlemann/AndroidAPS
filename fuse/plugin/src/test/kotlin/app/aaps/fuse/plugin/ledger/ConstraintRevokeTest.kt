@@ -50,7 +50,7 @@ class ConstraintRevokeTest {
         e.onsetSpentU = schonGebucht + menge
         e.evidenceCommittedU = schonGebucht + menge
         e.deliveredSinceHandoverU = schonGebucht + menge
-        if (meal) e.mealDeliveries.addLast(ts to menge)
+        if (meal) e.mealDeliveries.addLast(EpisodeBudgets.MealDelivery(ts, menge))
         e.pendingReservation = EpisodeBudgets.Reservation(
             computeTs = ts, amountU = menge, prime = prime, onset = onset,
             mealTs = if (meal) ts else 0L, foundationPhase = phase,
@@ -83,39 +83,138 @@ class ConstraintRevokeTest {
     }
 
     /**
-     * DER GANZE GEMESSENE ABLAUF: 20 Schritte, zwei davon verworfen.
+     * DER ECHTE ZYKLUSABLAUF - und er sieht anders aus als mein erster Test
+     * (Toni 19.08.).
      *
-     * Am Ende muessen 2,70 U in den Buechern stehen - dieselbe Zahl wie in
-     * der Pumpendatenbank. Vor dem Fix standen dort 3,00 U.
+     * MEINE ERSTE FASSUNG WAR EINE ATTRAPPE. Sie rief `resolveReservation`
+     * und `revokeSettled` unmittelbar nacheinander im selben
+     * Schleifendurchlauf. Produktiv laeuft es umgekehrt herum:
+     *
+     *   Zyklus n    buche -> resolveReservation(n)
+     *   Zyklus n+1  buche (NEUE Zeile!) -> DANN revokeSettled(n)
+     *
+     * Der Unterschied ist der ganze Punkt: zum Zeitpunkt des Zurueckdrehens
+     * steht in `mealDeliveries` bereits ein NEUER Eintrag. Ein Test, der das
+     * nicht nachstellt, kann den Fehler nicht finden, gegen den er gebaut ist.
+     *
+     * DESHALB WIEDERHOLT SICH HIER DER sourceTs. Genau dann trifft ein
+     * `indexOfLast { it.ts == mealTs }` die falsche - die neue - Zeile. Die
+     * Mengen sind unterschiedlich, damit eine Verwechslung im Ergebnis
+     * sichtbar wird statt sich wegzukuerzen.
+     */
+    @Test
+    fun `im echten Folgezyklus-Ablauf trifft das Zurueckdrehen die richtige Zeile`() {
+        val a = FuseLedgerAdapter()
+        val e = a.episodes
+
+        // --- Zyklus 1: 0,15 U, sourceTs = ts. Publikation geht durch.
+        e.primeSpentU += 0.15
+        e.evidenceCommittedU += 0.15
+        e.deliveredSinceHandoverU += 0.15
+        e.mealDeliveries.addLast(EpisodeBudgets.MealDelivery(ts, 0.15))
+        e.pendingReservation = EpisodeBudgets.Reservation(
+            computeTs = ts, amountU = 0.15, prime = true, onset = false,
+            mealTs = ts, foundationPhase = MealFoundation.Phase.PHASE_B,
+        )
+        a.resolveReservation(ts, publishedU = 0.15, proposalId = "s#1")
+
+        // --- Zyklus 2: DERSELBE sourceTs (wiederholter Punkt), aber 0,05 U.
+        // Der Runner bucht ZUERST, der Beweis fuer Zyklus 1 kommt DANACH.
+        e.primeSpentU += 0.05
+        e.evidenceCommittedU += 0.05
+        e.deliveredSinceHandoverU += 0.05
+        e.mealDeliveries.addLast(EpisodeBudgets.MealDelivery(ts, 0.05))
+        e.pendingReservation = EpisodeBudgets.Reservation(
+            computeTs = ts + 60_000L, amountU = 0.05, prime = true, onset = false,
+            mealTs = ts, foundationPhase = MealFoundation.Phase.PHASE_B,
+        )
+
+        // JETZT der Beweis fuer Zyklus 1 - waehrend die neue Zeile schon steht.
+        val zurueck = a.revokeSettled("s#1")
+
+        assertEquals(0.15, zurueck, 1e-9, "es MUSS die Menge aus Zyklus 1 sein")
+        assertEquals(
+            1, e.mealDeliveries.size,
+            "genau eine Zeile bleibt - die aus Zyklus 2",
+        )
+        assertEquals(
+            0.05, e.mealDeliveries.single().amountU, 1e-9,
+            "und es MUSS die NEUE sein (0,05), nicht die verworfene alte (0,15). " +
+                "Mit indexOfLast ueber den Zeitstempel stuende hier 0,15.",
+        )
+        assertEquals(0.05, e.primeSpentU, 1e-9)
+        assertEquals(0.05, e.deliveredSinceHandoverU, 1e-9)
+    }
+
+    /**
+     * DER GANZE GEMESSENE ABLAUF: 20 Schritte, zwei davon verworfen - jetzt
+     * in der ECHTEN Reihenfolge.
+     *
+     * Am Ende muessen 2,70 U in den Buechern stehen, dieselbe Zahl wie in der
+     * Pumpendatenbank. Vor dem Fix standen dort 3,00 U.
      */
     @Test
     fun `nach zwei verworfenen von zwanzig Schritten stehen 2,70 U`() {
         val a = FuseLedgerAdapter()
         val e = a.episodes
         val verworfen = setOf(7, 13)
+        // Der Beweis eines Zyklus kommt IM NAECHSTEN an.
+        var offenerBeweis: String? = null
 
         for (i in 0 until 20) {
             val id = "s#$i"
             val zyklus = ts + i * 60_000L
+
+            // (1) Der Runner bucht die neue Menge.
             e.primeSpentU += 0.15
             e.evidenceCommittedU += 0.15
             e.deliveredSinceHandoverU += 0.15
-            e.mealDeliveries.addLast(zyklus to 0.15)
+            e.mealDeliveries.addLast(EpisodeBudgets.MealDelivery(zyklus, 0.15))
             e.pendingReservation = EpisodeBudgets.Reservation(
                 computeTs = zyklus, amountU = 0.15, prime = true, onset = false,
                 mealTs = zyklus, foundationPhase = MealFoundation.Phase.PHASE_B,
             )
-            // Das Publikationsgate laesst durch - AAPS greift erst danach.
+
+            // (2) DANN erst wird der Vorgaenger entlastet - so wie im Plugin,
+            // wo notSentClaim VOR der neuen Buchung gebildet, aber im
+            // events-Block gebucht wird.
+            offenerBeweis?.let { a.revokeSettled(it) }
+            offenerBeweis = null
+
+            // (3) Und die Publikation dieses Zyklus wird aufgeloest.
             a.resolveReservation(zyklus, publishedU = 0.15, proposalId = id)
-            // Und im FOLGEZYKLUS kommt der Beweis.
-            if (i in verworfen) a.revokeSettled(id)
+            if (i in verworfen) offenerBeweis = id
         }
+        // Der Beweis des letzten verworfenen Zyklus kommt noch an.
+        offenerBeweis?.let { a.revokeSettled(it) }
 
         assertEquals(2.70, e.primeSpentU, 1e-9, "die Huelle ist NICHT ausgeschoepft")
         assertEquals(2.70, e.evidenceCommittedU, 1e-9, "und der Bestand nicht bezahlt")
         assertEquals(2.70, e.deliveredSinceHandoverU, 1e-9)
         assertEquals(18, e.mealDeliveries.size, "zwei Eintraege sind verschwunden")
-        assertEquals(2.70, e.mealDeliveries.sumOf { it.second }, 1e-9)
+        assertEquals(2.70, e.mealDeliveries.sumOf { it.amountU }, 1e-9)
+    }
+
+    /**
+     * DIE KENNUNG UEBERLEBT DEN NEUSTART.
+     *
+     * Ohne sie in der Datei faende ein Beweis nach einem Neustart den Eintrag
+     * nicht mehr - und liesse eine nie geflossene Menge in `mealDeliveries`
+     * stehen. Der Zaehler waere korrigiert, die Liste nicht.
+     */
+    @Test
+    fun `die Buchungskennung ueberlebt den Rundlauf`() {
+        val a = nachPublikation()
+        val vorher = a.episodes.mealDeliveries.single()
+        assertEquals(ID, vorher.proposalId, "die Kennung MUSS nachgetragen sein")
+
+        val zurueck = LedgerCodec.decodeEpisodes(
+            org.json.JSONObject(LedgerCodec.encodeEpisodes(a.episodes).toString())
+        )
+        assertEquals(
+            ID, zurueck.mealDeliveries.single().proposalId,
+            "und den Rundlauf ueberleben",
+        )
     }
 
     // ---- Die Grenzen des Zurueckdrehens ------------------------------------
