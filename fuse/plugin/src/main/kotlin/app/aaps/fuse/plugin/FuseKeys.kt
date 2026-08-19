@@ -334,6 +334,22 @@ enum class FuseIntKey(
      *  Sonderrechte (Marker bleibt Kontext/Anzeige). */
     MarkerBoostMaxMin("fuse_marker_boost_max_min", 45, 0, 90),
 
+    /**
+     * WIE LANGE DIE EVIDENZ EIN AKTIVES REBOUND-TOTBAND ENTWAFFNEN DARF [min],
+     * gerechnet ab dem MARKERDRUCK (Toni 19.08.).
+     *
+     * DER GEMESSENE ANLASS: 19.08., 13:41 - Marker 287 min alt, Rebound noch
+     * 32 min offen, Evidenz wieder ACTIVE mit +0,42 mg/dl/min, BG 109,8 gegen
+     * eine Schwelle von 138. Fuenf Zyklen, 0,35 U, die das Totband ohne die
+     * damals UNBEFRISTETE Kredit-Ausnahme geblockt haette.
+     *
+     * NICHT DIE EVIDENZ WIRD BESCHNITTEN, nur ihr Sonderrecht: die Episode
+     * lebt weiter bis zum 360-Minuten-Deckel und darf weiter Bedarf erzeugen.
+     *
+     * 0 = die Evidenz darf ein Rebound-Totband NIE entwaffnen.
+     */
+    EvidenceReboundOverrideMaxMin("fuse_evidence_rebound_override_max_min", 120, 0, 180),
+
     /** Beginn des Nachtfensters [min ab Mitternacht]. 23:00 = 1380. */
     NightStartMin("fuse_night_start_min", 1380, 0, 1439),
 

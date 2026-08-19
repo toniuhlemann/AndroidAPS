@@ -122,16 +122,16 @@ class FuseControllerTest {
     @Test
     fun `jeder Entscheidungspfad traegt den Kontext`() {
         val faelle = listOf(
-            FuseController.decide(state(health = Health.DEGRADED), pred(250.0), evidenceCreditActive = false, lowThreat = LowThreatGate.Verdict.NONE),
-            FuseController.decide(state(hold = true), pred(250.0), evidenceCreditActive = false, lowThreat = LowThreatGate.Verdict.NONE),
-            FuseController.decide(state(busy = true), pred(250.0), evidenceCreditActive = false, lowThreat = LowThreatGate.Verdict.NONE),
-            FuseController.decide(state(), null, evidenceCreditActive = false, lowThreat = LowThreatGate.Verdict.NONE),
-            FuseController.decide(state(), pred(250.0, minLower = 60.0), evidenceCreditActive = false, lowThreat = LowThreatGate.Verdict.NONE),
-            FuseController.decide(state(), pred(90.0), evidenceCreditActive = false, lowThreat = LowThreatGate.Verdict.NONE),
-            FuseController.decide(state(netIob = 8.0, bolusIob = 8.0), pred(250.0), evidenceCreditActive = false, lowThreat = LowThreatGate.Verdict.NONE),
-            FuseController.decide(state(netIob = 4.5, bolusIob = 4.5), pred(250.0), evidenceCreditActive = false, lowThreat = LowThreatGate.Verdict.NONE),
-            FuseController.decide(state(maxSmb = 0.04), pred(250.0), evidenceCreditActive = false, lowThreat = LowThreatGate.Verdict.NONE),
-            FuseController.decide(state(), pred(250.0), evidenceCreditActive = false, lowThreat = LowThreatGate.Verdict.NONE),
+            FuseController.decide(state(health = Health.DEGRADED), pred(250.0), evidenceCreditActive = false, evidenceMayOverrideRebound = false, lowThreat = LowThreatGate.Verdict.NONE),
+            FuseController.decide(state(hold = true), pred(250.0), evidenceCreditActive = false, evidenceMayOverrideRebound = false, lowThreat = LowThreatGate.Verdict.NONE),
+            FuseController.decide(state(busy = true), pred(250.0), evidenceCreditActive = false, evidenceMayOverrideRebound = false, lowThreat = LowThreatGate.Verdict.NONE),
+            FuseController.decide(state(), null, evidenceCreditActive = false, evidenceMayOverrideRebound = false, lowThreat = LowThreatGate.Verdict.NONE),
+            FuseController.decide(state(), pred(250.0, minLower = 60.0), evidenceCreditActive = false, evidenceMayOverrideRebound = false, lowThreat = LowThreatGate.Verdict.NONE),
+            FuseController.decide(state(), pred(90.0), evidenceCreditActive = false, evidenceMayOverrideRebound = false, lowThreat = LowThreatGate.Verdict.NONE),
+            FuseController.decide(state(netIob = 8.0, bolusIob = 8.0), pred(250.0), evidenceCreditActive = false, evidenceMayOverrideRebound = false, lowThreat = LowThreatGate.Verdict.NONE),
+            FuseController.decide(state(netIob = 4.5, bolusIob = 4.5), pred(250.0), evidenceCreditActive = false, evidenceMayOverrideRebound = false, lowThreat = LowThreatGate.Verdict.NONE),
+            FuseController.decide(state(maxSmb = 0.04), pred(250.0), evidenceCreditActive = false, evidenceMayOverrideRebound = false, lowThreat = LowThreatGate.Verdict.NONE),
+            FuseController.decide(state(), pred(250.0), evidenceCreditActive = false, evidenceMayOverrideRebound = false, lowThreat = LowThreatGate.Verdict.NONE),
         )
         for (d in faelle) assertEquals(FuseController.Context.CORRECTION, d.context) { "${d.block} ohne Kontext" }
     }
@@ -140,28 +140,28 @@ class FuseControllerTest {
 
     @Test
     fun `health nicht READY erzeugt keine Dosis`() {
-        val d = FuseController.decide(state(health = Health.DEGRADED), pred(250.0), evidenceCreditActive = false, lowThreat = LowThreatGate.Verdict.NONE)
+        val d = FuseController.decide(state(health = Health.DEGRADED), pred(250.0), evidenceCreditActive = false, evidenceMayOverrideRebound = false, lowThreat = LowThreatGate.Verdict.NONE)
         assertEquals(0.0, d.smbU)
         assertEquals(FuseController.Block.HEALTH_NOT_READY, d.block)
     }
 
     @Test
     fun `LOW-Hold sperrt SMB und setzt Zero-Temp`() {
-        val d = FuseController.decide(state(hold = true), pred(250.0), evidenceCreditActive = false, lowThreat = LowThreatGate.Verdict.NONE)
+        val d = FuseController.decide(state(hold = true), pred(250.0), evidenceCreditActive = false, evidenceMayOverrideRebound = false, lowThreat = LowThreatGate.Verdict.NONE)
         assertEquals(0.0, d.smbU)
         assertEquals(FuseController.TbrAction.ZERO_TEMP, d.tbr)
     }
 
     @Test
     fun `Pump-busy erzeugt keine neue Anforderung`() {
-        val d = FuseController.decide(state(busy = true), pred(250.0), evidenceCreditActive = false, lowThreat = LowThreatGate.Verdict.NONE)
+        val d = FuseController.decide(state(busy = true), pred(250.0), evidenceCreditActive = false, evidenceMayOverrideRebound = false, lowThreat = LowThreatGate.Verdict.NONE)
         assertEquals(FuseController.Block.PUMP_BUSY, d.block)
         assertEquals(FuseController.TbrAction.KEEP_CURRENT, d.tbr)
     }
 
     @Test
     fun `fehlende Trajektorie erzeugt keine Dosis`() {
-        val d = FuseController.decide(state(), null, evidenceCreditActive = false, lowThreat = LowThreatGate.Verdict.NONE)
+        val d = FuseController.decide(state(), null, evidenceCreditActive = false, evidenceMayOverrideRebound = false, lowThreat = LowThreatGate.Verdict.NONE)
         assertEquals(FuseController.Block.HORIZON_MISSING, d.block)
     }
 
@@ -173,7 +173,7 @@ class FuseControllerTest {
      *  LowThreatGate (s. `ohne Low-Tor sperrt der Guard die Menge`). */
     @Test
     fun `Zwischentief unter dem Guard sperrt trotz hohem Bedarf`() {
-        val d = FuseController.decide(state(), pred(bgAt30 = 250.0, minLower = 65.0), evidenceCreditActive = false, lowThreat = LowThreatGate.Verdict.NONE)
+        val d = FuseController.decide(state(), pred(bgAt30 = 250.0, minLower = 65.0), evidenceCreditActive = false, evidenceMayOverrideRebound = false, lowThreat = LowThreatGate.Verdict.NONE)
         assertEquals(0.0, d.smbU)
         assertEquals(FuseController.Block.GUARD_FLOOR, d.block)
         assertEquals(FuseController.TbrAction.KEEP_CURRENT, d.tbr)
@@ -181,7 +181,7 @@ class FuseControllerTest {
 
     @Test
     fun `knapp ueber dem Guard wird dosiert`() {
-        val d = FuseController.decide(state(), pred(bgAt30 = 250.0, minLower = 70.0), evidenceCreditActive = false, lowThreat = LowThreatGate.Verdict.NONE)
+        val d = FuseController.decide(state(), pred(bgAt30 = 250.0, minLower = 70.0), evidenceCreditActive = false, evidenceMayOverrideRebound = false, lowThreat = LowThreatGate.Verdict.NONE)
         assertTrue(d.smbU > 0.0)
     }
 
@@ -201,7 +201,7 @@ class FuseControllerTest {
     fun `ohne Low-Tor sperrt der Guard die Menge und laesst das Basal stehen`() {
         val d = FuseController.decide(
             state(), pred(bgAt30 = 250.0, minLower = 65.0),
-            evidenceCreditActive = false, lowThreat = LowThreatGate.Verdict.NONE,
+            evidenceCreditActive = false, evidenceMayOverrideRebound = false, lowThreat = LowThreatGate.Verdict.NONE,
         )
         assertEquals(FuseController.Block.GUARD_FLOOR, d.block)
         assertEquals(0.0, d.smbU, 1e-12, "die Menge bleibt gesperrt")
@@ -223,7 +223,7 @@ class FuseControllerTest {
         )) {
             val d = FuseController.decide(
                 state(), pred(bgAt30 = 250.0, minLower = 65.0),
-                evidenceCreditActive = false, lowThreat = v,
+                evidenceCreditActive = false, evidenceMayOverrideRebound = false, lowThreat = v,
             )
             assertEquals(FuseController.TbrAction.ZERO_TEMP, d.tbr, "$v")
             assertTrue(d.bindingLimit.contains(v.name), "der Grund muss im Trail stehen: ${d.bindingLimit}")
@@ -237,7 +237,7 @@ class FuseControllerTest {
     fun `ein gemessenes Tief nullt weiterhin`() {
         val d = FuseController.decide(
             state(hold = true), pred(bgAt30 = 250.0),
-            evidenceCreditActive = false, lowThreat = LowThreatGate.Verdict.MEASURED_LOW,
+            evidenceCreditActive = false, evidenceMayOverrideRebound = false, lowThreat = LowThreatGate.Verdict.MEASURED_LOW,
         )
         assertEquals(FuseController.TbrAction.ZERO_TEMP, d.tbr)
         assertTrue(d.unsafeSituation)
@@ -251,7 +251,7 @@ class FuseControllerTest {
     // gestoppt. Der Sicherheitsfall laeuft ueber den Guard, nicht hierueber.
     @Test
     fun `kein Bedarf fordert nichts Positives mehr an - aber kein Zero-Temp`() {
-        val d = FuseController.decide(state(), pred(bgAt30 = 90.0), evidenceCreditActive = false, lowThreat = LowThreatGate.Verdict.NONE)
+        val d = FuseController.decide(state(), pred(bgAt30 = 90.0), evidenceCreditActive = false, evidenceMayOverrideRebound = false, lowThreat = LowThreatGate.Verdict.NONE)
         assertEquals(0.0, d.smbU)
         assertEquals(FuseController.Block.NO_DEMAND, d.block)
         assertEquals(FuseController.TbrAction.NO_NEW_POSITIVE, d.tbr)
@@ -268,7 +268,7 @@ class FuseControllerTest {
      */
     @Test
     fun `unsichere Bahn bleibt als Befund erhalten`() {
-        val d = FuseController.decide(state(), pred(bgAt30 = 90.0, minLower = 60.0), evidenceCreditActive = false, lowThreat = LowThreatGate.Verdict.NONE)
+        val d = FuseController.decide(state(), pred(bgAt30 = 90.0, minLower = 60.0), evidenceCreditActive = false, evidenceMayOverrideRebound = false, lowThreat = LowThreatGate.Verdict.NONE)
         assertEquals(0.0, d.smbU)
         assertEquals(FuseController.Block.GUARD_FLOOR, d.block)
         assertTrue(d.unsafeSituation, "der Befund darf nicht verschwinden - daran haengt C8")
@@ -292,13 +292,13 @@ class FuseControllerTest {
     @Test
     fun `ein geblockter Zyklus ist von echtem Nullbedarf unterscheidbar`() {
         // (a) Guard bricht VOR der Bedarfsrechnung ab -> nicht gerechnet.
-        val geblockt = FuseController.decide(state(), pred(bgAt30 = 90.0, minLower = 60.0), evidenceCreditActive = false, lowThreat = LowThreatGate.Verdict.NONE)
+        val geblockt = FuseController.decide(state(), pred(bgAt30 = 90.0, minLower = 60.0), evidenceCreditActive = false, evidenceMayOverrideRebound = false, lowThreat = LowThreatGate.Verdict.NONE)
         assertEquals(FuseController.Block.GUARD_FLOOR, geblockt.block)
         assertEquals(null, geblockt.insulinReqU) { "ein Guard-Ausstieg darf keinen Bedarf behaupten" }
 
         // (b) Bahn ist sicher, der Bedarf wird gerechnet und ist nicht positiv
         //     -> echter Nullbedarf, und der traegt eine ZAHL.
-        val ohneBedarf = FuseController.decide(state(), pred(bgAt30 = 90.0, minLower = 90.0), evidenceCreditActive = false, lowThreat = LowThreatGate.Verdict.NONE)
+        val ohneBedarf = FuseController.decide(state(), pred(bgAt30 = 90.0, minLower = 90.0), evidenceCreditActive = false, evidenceMayOverrideRebound = false, lowThreat = LowThreatGate.Verdict.NONE)
         assertEquals(FuseController.Block.NO_DEMAND, ohneBedarf.block)
         val req = ohneBedarf.insulinReqU
         assertTrue(req != null) { "ein gerechneter Nullbedarf muss eine Zahl tragen, kein null" }
@@ -313,8 +313,8 @@ class FuseControllerTest {
      *  weil die IOB-Wirkung bereits in der Bahn steckt. */
     @Test
     fun `insulinReq zieht IOB nicht ein zweites Mal ab`() {
-        val a = FuseController.decide(state(netIob = 0.5, bolusIob = 0.5), pred(200.0), evidenceCreditActive = false, lowThreat = LowThreatGate.Verdict.NONE)
-        val b = FuseController.decide(state(netIob = 3.0, bolusIob = 3.0), pred(200.0), evidenceCreditActive = false, lowThreat = LowThreatGate.Verdict.NONE)
+        val a = FuseController.decide(state(netIob = 0.5, bolusIob = 0.5), pred(200.0), evidenceCreditActive = false, evidenceMayOverrideRebound = false, lowThreat = LowThreatGate.Verdict.NONE)
+        val b = FuseController.decide(state(netIob = 3.0, bolusIob = 3.0), pred(200.0), evidenceCreditActive = false, evidenceMayOverrideRebound = false, lowThreat = LowThreatGate.Verdict.NONE)
         // `!!` ist hier Absicht: der Test BEHAUPTET, dass auf diesem Pfad
         // gerechnet wurde. Waere der Wert null, ist das ein Befund - der Test
         // soll daran scheitern, statt ihn mit `?: 0.0` zu verstecken.
@@ -326,14 +326,14 @@ class FuseControllerTest {
 
     @Test
     fun `oberhalb iobTH gibt es keinen SMB, aber es bleibt unter maxIOB`() {
-        val d = FuseController.decide(state(netIob = 4.5, bolusIob = 4.5, iobTh = 4.0, maxIob = 8.0), pred(250.0), evidenceCreditActive = false, lowThreat = LowThreatGate.Verdict.NONE)
+        val d = FuseController.decide(state(netIob = 4.5, bolusIob = 4.5, iobTh = 4.0, maxIob = 8.0), pred(250.0), evidenceCreditActive = false, evidenceMayOverrideRebound = false, lowThreat = LowThreatGate.Verdict.NONE)
         assertEquals(0.0, d.smbU)
         assertEquals(FuseController.Block.IOB_TH_REACHED, d.block)
     }
 
     @Test
     fun `maxIOB ist absolut und wird vor iobTH geprueft`() {
-        val d = FuseController.decide(state(netIob = 8.0, bolusIob = 8.0, iobTh = 20.0, maxIob = 8.0), pred(250.0), evidenceCreditActive = false, lowThreat = LowThreatGate.Verdict.NONE)
+        val d = FuseController.decide(state(netIob = 8.0, bolusIob = 8.0, iobTh = 20.0, maxIob = 8.0), pred(250.0), evidenceCreditActive = false, evidenceMayOverrideRebound = false, lowThreat = LowThreatGate.Verdict.NONE)
         assertEquals(FuseController.Block.MAX_IOB_REACHED, d.block)
     }
 
@@ -342,14 +342,14 @@ class FuseControllerTest {
     @Test
     fun `negatives Basal-IOB vergroessert das SMB-Budget nicht`() {
         val s = state(netIob = 0.5, bolusIob = 3.9, iobTh = 4.0)
-        val d = FuseController.decide(s, pred(300.0), evidenceCreditActive = false, lowThreat = LowThreatGate.Verdict.NONE)
+        val d = FuseController.decide(s, pred(300.0), evidenceCreditActive = false, evidenceMayOverrideRebound = false, lowThreat = LowThreatGate.Verdict.NONE)
         assertEquals(3.9, s.capIobU, 1e-12)
         assertTrue(d.smbU <= 0.1 + 1e-9) { "Budget aus capIob, nicht aus net" }
     }
 
     @Test
     fun `die greifende Grenze wird benannt`() {
-        val d = FuseController.decide(state(maxSmb = 0.1), pred(400.0), evidenceCreditActive = false, lowThreat = LowThreatGate.Verdict.NONE)
+        val d = FuseController.decide(state(maxSmb = 0.1), pred(400.0), evidenceCreditActive = false, evidenceMayOverrideRebound = false, lowThreat = LowThreatGate.Verdict.NONE)
         assertEquals("maxSmb", d.bindingLimit)
         assertEquals(0.1, d.smbU, 1e-9)
     }
@@ -359,7 +359,7 @@ class FuseControllerTest {
     @Test
     fun `Rundung erfolgt ausschliesslich abwaerts`() {
         // insulinReq = (240-100)/50 = 2.8; * 0.5 = 1.4 -> maxSmb 0.75 bindet
-        val d = FuseController.decide(state(maxSmb = 0.74), pred(240.0), evidenceCreditActive = false, lowThreat = LowThreatGate.Verdict.NONE)
+        val d = FuseController.decide(state(maxSmb = 0.74), pred(240.0), evidenceCreditActive = false, evidenceMayOverrideRebound = false, lowThreat = LowThreatGate.Verdict.NONE)
         assertEquals(0.70, d.smbU, 1e-9)   // floor(0.74/0.05)*0.05
     }
 
@@ -372,16 +372,16 @@ class FuseControllerTest {
     @Test
     fun `exakte Vielfache des Pumpenschritts verlieren keinen Schritt`() {
         // insulinReq = (250-100)/50 = 3.0; x 0.05 = 0.15 -> exakt 3 Schritte
-        val d = FuseController.decide(state(smbRatio = 0.05, maxSmb = 2.0, netIob = 0.0, bolusIob = 0.0), pred(250.0), evidenceCreditActive = false, lowThreat = LowThreatGate.Verdict.NONE)
+        val d = FuseController.decide(state(smbRatio = 0.05, maxSmb = 2.0, netIob = 0.0, bolusIob = 0.0), pred(250.0), evidenceCreditActive = false, evidenceMayOverrideRebound = false, lowThreat = LowThreatGate.Verdict.NONE)
         assertEquals(0.15, d.smbU, 1e-9)
         // (500-100)/50 = 8.0; x 0.15 = 1.20 -> exakt 24 Schritte
-        val e = FuseController.decide(state(smbRatio = 0.15, maxSmb = 5.0, netIob = 0.0, bolusIob = 0.0, iobTh = 20.0, maxIob = 20.0), pred(500.0), evidenceCreditActive = false, lowThreat = LowThreatGate.Verdict.NONE)
+        val e = FuseController.decide(state(smbRatio = 0.15, maxSmb = 5.0, netIob = 0.0, bolusIob = 0.0, iobTh = 20.0, maxIob = 20.0), pred(500.0), evidenceCreditActive = false, evidenceMayOverrideRebound = false, lowThreat = LowThreatGate.Verdict.NONE)
         assertEquals(1.20, e.smbU, 1e-9)
     }
 
     @Test
     fun `unter dem Pumpeninkrement wird nicht aufgerundet`() {
-        val d = FuseController.decide(state(maxSmb = 0.04), pred(250.0), evidenceCreditActive = false, lowThreat = LowThreatGate.Verdict.NONE)
+        val d = FuseController.decide(state(maxSmb = 0.04), pred(250.0), evidenceCreditActive = false, evidenceMayOverrideRebound = false, lowThreat = LowThreatGate.Verdict.NONE)
         assertEquals(0.0, d.smbU)
         assertEquals(FuseController.Block.BELOW_PUMP_INCREMENT, d.block)
     }
@@ -418,16 +418,16 @@ class FuseControllerTest {
     fun `nur das Low-Tor ergibt eine echte Null - Guard und fehlender Bedarf nicht`() {
         // VERTRAGSAENDERUNG 17.08.: die unsichere BAHN allein reicht nicht
         // mehr. Ohne Low-Tor bleibt das Profilbasal auch unter dem Guard.
-        val guardOhneTor = FuseController.decide(state(), pred(250.0, minLower = 60.0), evidenceCreditActive = false, lowThreat = LowThreatGate.Verdict.NONE)
+        val guardOhneTor = FuseController.decide(state(), pred(250.0, minLower = 60.0), evidenceCreditActive = false, evidenceMayOverrideRebound = false, lowThreat = LowThreatGate.Verdict.NONE)
         assertEquals(FuseController.TbrAction.KEEP_CURRENT, guardOhneTor.tbr)
 
         val guardMitTor = FuseController.decide(
             state(), pred(250.0, minLower = 60.0),
-            evidenceCreditActive = false, lowThreat = LowThreatGate.Verdict.FALLING_WITH_BOLUS_OVERCOVERAGE,
+            evidenceCreditActive = false, evidenceMayOverrideRebound = false, lowThreat = LowThreatGate.Verdict.FALLING_WITH_BOLUS_OVERCOVERAGE,
         )
         assertEquals(0.0, FuseController.tbrRequest(guardMitTor.tbr, 0.8, 3.0)!!.rateUPerH)
 
-        val noDemand = FuseController.decide(state(), pred(90.0), evidenceCreditActive = false, lowThreat = LowThreatGate.Verdict.NONE)
+        val noDemand = FuseController.decide(state(), pred(90.0), evidenceCreditActive = false, evidenceMayOverrideRebound = false, lowThreat = LowThreatGate.Verdict.NONE)
         // null heisst: nichts anfordern. Eine laufende Absenkung laeuft weiter,
         // das Profilbasal wird NICHT gestoppt.
         assertEquals(null, FuseController.tbrRequest(noDemand.tbr, 0.8, 3.0))
@@ -448,8 +448,8 @@ class FuseControllerTest {
             val langsam = pred(bgAt30 = rnd.nextDouble(60.0, 400.0), minLower = rnd.nextDouble(40.0, 300.0))
             val schnell = pred(bgAt30 = rnd.nextDouble(60.0, 400.0), minLower = rnd.nextDouble(40.0, 300.0))
             val st = state(netIob = 0.0, bolusIob = 0.0, maxSmb = 5.0, iobTh = 20.0, maxIob = 20.0)
-            val ohne = FuseController.decide(st, langsam, evidenceCreditActive = false, lowThreat = LowThreatGate.Verdict.NONE)
-            val mit = FuseController.decide(st, langsam, restraint = schnell, evidenceCreditActive = false, lowThreat = LowThreatGate.Verdict.NONE)
+            val ohne = FuseController.decide(st, langsam, evidenceCreditActive = false, evidenceMayOverrideRebound = false, lowThreat = LowThreatGate.Verdict.NONE)
+            val mit = FuseController.decide(st, langsam, restraint = schnell, evidenceCreditActive = false, evidenceMayOverrideRebound = false, lowThreat = LowThreatGate.Verdict.NONE)
             assertTrue(mit.smbU <= ohne.smbU + 1e-12) {
                 "Bremse hat erhoeht: ${ohne.smbU} -> ${mit.smbU}"
             }
@@ -465,8 +465,8 @@ class FuseControllerTest {
         val langsam = pred(bgAt30 = 300.0, minLower = 200.0)   // r noch hoch
         val schnell = pred(bgAt30 = 120.0, minLower = 55.0)    // faellt bereits
         val st = state(netIob = 4.5, bolusIob = 4.5, iobTh = 20.0, maxIob = 20.0)
-        val ohne = FuseController.decide(st, langsam, evidenceCreditActive = false, lowThreat = LowThreatGate.Verdict.NONE)
-        val mit = FuseController.decide(st, langsam, restraint = schnell, evidenceCreditActive = false, lowThreat = LowThreatGate.Verdict.NONE)
+        val ohne = FuseController.decide(st, langsam, evidenceCreditActive = false, evidenceMayOverrideRebound = false, lowThreat = LowThreatGate.Verdict.NONE)
+        val mit = FuseController.decide(st, langsam, restraint = schnell, evidenceCreditActive = false, evidenceMayOverrideRebound = false, lowThreat = LowThreatGate.Verdict.NONE)
         assertTrue(ohne.smbU > 0.0) { "ohne Bremse haette dosiert werden muessen" }
         assertEquals(0.0, mit.smbU)
         assertEquals(FuseController.Block.GUARD_FLOOR, mit.block)
@@ -484,7 +484,7 @@ class FuseControllerTest {
         val langsam = pred(bgAt30 = 60.0, minLower = 60.0)     // r noch negativ
         val schnell = pred(bgAt30 = 200.0, minLower = 150.0)   // steigt bereits
         val st = state()
-        val d = FuseController.decide(st, langsam, restraint = schnell, evidenceCreditActive = false, lowThreat = LowThreatGate.Verdict.NONE)
+        val d = FuseController.decide(st, langsam, restraint = schnell, evidenceCreditActive = false, evidenceMayOverrideRebound = false, lowThreat = LowThreatGate.Verdict.NONE)
         assertEquals(FuseController.Block.GUARD_FLOOR, d.block)
         assertEquals(0.0, d.smbU)
         // Die schnelle Bahn war die harmlosere und wurde deshalb verworfen.
@@ -495,8 +495,8 @@ class FuseControllerTest {
     fun `ohne Bremsbahn bleibt alles wie vorher`() {
         val p = pred(300.0)
         val st = state()
-        assertEquals(FuseController.decide(st, p, evidenceCreditActive = false, lowThreat = LowThreatGate.Verdict.NONE).smbU, FuseController.decide(st, p, restraint = null, evidenceCreditActive = false, lowThreat = LowThreatGate.Verdict.NONE).smbU, 0.0)
-        assertEquals(false, FuseController.decide(st, p, evidenceCreditActive = false, lowThreat = LowThreatGate.Verdict.NONE).restraintBound)
+        assertEquals(FuseController.decide(st, p, evidenceCreditActive = false, evidenceMayOverrideRebound = false, lowThreat = LowThreatGate.Verdict.NONE).smbU, FuseController.decide(st, p, restraint = null, evidenceCreditActive = false, evidenceMayOverrideRebound = false, lowThreat = LowThreatGate.Verdict.NONE).smbU, 0.0)
+        assertEquals(false, FuseController.decide(st, p, evidenceCreditActive = false, evidenceMayOverrideRebound = false, lowThreat = LowThreatGate.Verdict.NONE).restraintBound)
     }
 
     /** Eine schnelle Bahn, die HARMLOSER ist, aendert nichts und wird auch
@@ -506,8 +506,8 @@ class FuseControllerTest {
         val langsam = pred(bgAt30 = 250.0, minLower = 100.0)
         val schnell = pred(bgAt30 = 400.0, minLower = 300.0)
         val st = state()
-        val d = FuseController.decide(st, langsam, restraint = schnell, evidenceCreditActive = false, lowThreat = LowThreatGate.Verdict.NONE)
-        assertEquals(FuseController.decide(st, langsam, evidenceCreditActive = false, lowThreat = LowThreatGate.Verdict.NONE).smbU, d.smbU, 1e-12)
+        val d = FuseController.decide(st, langsam, restraint = schnell, evidenceCreditActive = false, evidenceMayOverrideRebound = false, lowThreat = LowThreatGate.Verdict.NONE)
+        assertEquals(FuseController.decide(st, langsam, evidenceCreditActive = false, evidenceMayOverrideRebound = false, lowThreat = LowThreatGate.Verdict.NONE).smbU, d.smbU, 1e-12)
         assertEquals(false, d.restraintBound)
     }
 
@@ -542,7 +542,7 @@ class FuseControllerTest {
     @Test
     fun `ein Marker-Prior darf einen schuetzenden Guard-Befund nicht unterdruecken`() {
         val gehoben = predWithPrior(bgAt30 = 150.0, minLower = 95.0, priorFree = 65.0)
-        val d = FuseController.decide(state(), gehoben, FuseController.Limits(guardFloorMgdl = 70.0), evidenceCreditActive = false, lowThreat = LowThreatGate.Verdict.NONE)
+        val d = FuseController.decide(state(), gehoben, FuseController.Limits(guardFloorMgdl = 70.0), evidenceCreditActive = false, evidenceMayOverrideRebound = false, lowThreat = LowThreatGate.Verdict.NONE)
         assertEquals(FuseController.Block.GUARD_FLOOR, d.block)
         assertEquals(0.0, d.smbU)
         // VERTRAGSAENDERUNG 17.08.: geprueft wird, dass der BEFUND nicht
@@ -558,7 +558,7 @@ class FuseControllerTest {
         // Gegenprobe: OHNE Prior-Hub war die Lage schon immer ZERO_TEMP.
         assertEquals(
             FuseController.Block.GUARD_FLOOR,
-            FuseController.decide(state(), pred(bgAt30 = 150.0, minLower = 65.0), FuseController.Limits(guardFloorMgdl = 70.0), evidenceCreditActive = false, lowThreat = LowThreatGate.Verdict.NONE).block
+            FuseController.decide(state(), pred(bgAt30 = 150.0, minLower = 65.0), FuseController.Limits(guardFloorMgdl = 70.0), evidenceCreditActive = false, evidenceMayOverrideRebound = false, lowThreat = LowThreatGate.Verdict.NONE).block
         )
     }
 
@@ -568,7 +568,7 @@ class FuseControllerTest {
     fun `auch die Bremsbahn wird prior-frei gegen den Boden geprueft`() {
         val langsam = pred(bgAt30 = 150.0, minLower = 120.0)
         val schnell = predWithPrior(bgAt30 = 150.0, minLower = 100.0, priorFree = 60.0)
-        val d = FuseController.decide(state(), langsam, FuseController.Limits(guardFloorMgdl = 70.0), restraint = schnell, evidenceCreditActive = false, lowThreat = LowThreatGate.Verdict.NONE)
+        val d = FuseController.decide(state(), langsam, FuseController.Limits(guardFloorMgdl = 70.0), restraint = schnell, evidenceCreditActive = false, evidenceMayOverrideRebound = false, lowThreat = LowThreatGate.Verdict.NONE)
         assertEquals(FuseController.Block.GUARD_FLOOR, d.block)
         // Geprueft wird der BEFUND auf der Bremsbahn - die TBR-Antwort haengt
         // seit dem 17.08. am LowThreatGate (s. dortige Tests).
@@ -582,8 +582,8 @@ class FuseControllerTest {
     @Test
     fun `ein Prior ueber dem Boden aendert die Entscheidung nicht`() {
         val gehoben = predWithPrior(bgAt30 = 200.0, minLower = 140.0, priorFree = 120.0)
-        val ohne = FuseController.decide(state(), pred(bgAt30 = 200.0, minLower = 120.0), evidenceCreditActive = false, lowThreat = LowThreatGate.Verdict.NONE)
-        val mit = FuseController.decide(state(), gehoben, evidenceCreditActive = false, lowThreat = LowThreatGate.Verdict.NONE)
+        val ohne = FuseController.decide(state(), pred(bgAt30 = 200.0, minLower = 120.0), evidenceCreditActive = false, evidenceMayOverrideRebound = false, lowThreat = LowThreatGate.Verdict.NONE)
+        val mit = FuseController.decide(state(), gehoben, evidenceCreditActive = false, evidenceMayOverrideRebound = false, lowThreat = LowThreatGate.Verdict.NONE)
         assertEquals(ohne.smbU, mit.smbU, 1e-12)
         assertEquals(FuseController.Block.NONE, mit.block)
     }

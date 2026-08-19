@@ -70,14 +70,92 @@ object NightWindow {
         isNight: Boolean,
         nightDeadbandMgdl: Double,
         markerBoost: Boolean,
-        /** OHNE DEFAULT: ein Default `false` waere hier zwar fail-closed,
-         *  aber ein vergessener Anschluss hielte die Totbaender still im
-         *  Mahlzeitenfenster scharf - genau der Fehler, der zwei Tage lang
-         *  auf dem Geraet lief. Lieber ein Kompilierfehler je Aufrufstelle. */
-        evidenceCreditActive: Boolean,
+        /**
+         * DARF DIE EVIDENZ DAS REBOUND-TOTBAND ENTWAFFNEN?
+         *
+         * ZWEI GETRENNTE BERECHTIGUNGEN, NICHT EIN SIGNAL (Toni 19.08.). Hier
+         * stand fuer beide Baender derselbe `evidenceCreditActive`. Das
+         * Rebound-Sonderrecht bekommt jetzt eine markerbezogene Frist
+         * (`EvidenceReboundOverrideMaxMin`), das NACHT-Verhalten bleibt
+         * unveraendert - waere es dasselbe Signal, haette die Befristung
+         * ungewollt auch die Nacht getroffen.
+         *
+         * OHNE DEFAULT, wie bisher: ein vergessener Anschluss hielte die
+         * Baender still scharf. Genau dieser Fehler lief am 15.08. zwei Tage
+         * lang auf dem Geraet (81 geblockte Kreditzyklen, waehrend die
+         * Commit-Botschaft die Verdrahtung behauptete).
+         */
+        reboundOverrideByEvidence: Boolean,
+        /** Das NACHT-Sonderrecht - unbefristet, Verhalten wie bisher. */
+        nightOverrideByEvidence: Boolean,
     ): Double {
-        val rebound = if (reboundWindow && !evidenceCreditActive) reboundDeadbandMgdl else 0.0
-        val night = if (isNight && !(markerBoost || evidenceCreditActive)) nightDeadbandMgdl.coerceAtLeast(0.0) else 0.0
+        val rebound = if (reboundWindow && !reboundOverrideByEvidence) reboundDeadbandMgdl else 0.0
+        val night = if (isNight && !(markerBoost || nightOverrideByEvidence)) nightDeadbandMgdl.coerceAtLeast(0.0) else 0.0
         return maxOf(rebound, night)
+    }
+
+    /**
+     * DIE FRIST DES REBOUND-SONDERRECHTS (Toni 19.08.).
+     *
+     * DER GEMESSENE ANLASS. Am 19.08. um 13:41 war der Marker 287 Minuten alt,
+     * das Rebound-Fenster lief noch 32 Minuten, die Evidenzepisode war wieder
+     * ACTIVE mit +0,42 mg/dl/min Kredit - und der Zucker stand bei 109,8 gegen
+     * eine Rebound-Schwelle von 138. Zwischen 13:41 und 13:45 gingen fuenf
+     * SMBs ueber 0,35 U hinaus, die das Totband ohne die unbefristete
+     * Kredit-Ausnahme geblockt haette.
+     *
+     * DAS PROBLEM IST NICHT DIE EVIDENZ, SONDERN IHRE DAUER. Die Episode darf
+     * 360 Minuten leben und weiter Bedarf erzeugen; nur ihr Recht, ein
+     * AKTIVES Rebound-Totband zu entwaffnen, ist zeitlich zu begrenzen -
+     * fuenf Stunden nach dem Markerdruck ist die angekuendigte Mahlzeit kein
+     * Argument mehr gegen einen Rebound-Schutz.
+     *
+     * HALB OFFENES FENSTER: bei exakt T+TTL ist das Privileg beendet.
+     *
+     * @param deadlineTs der beim MARKERDRUCK festgeschriebene Ablauf. 0 heisst
+     *   "kein Privileg" - fehlender Marker, Widerruf oder TTL 0.
+     */
+    fun evidenceMayOverrideRebound(
+        evidenceCreditActive: Boolean,
+        deadlineTs: Long,
+        computeTs: Long,
+    ): Boolean = evidenceCreditActive && deadlineTs > 0L && computeTs < deadlineTs
+
+    /** Warum das Rebound-Sonderrecht NICHT gilt - typisiert fuer den Trail. */
+    enum class ReboundOverrideDenial {
+        NO_CREDIT,
+        NO_MARKER,
+        MARKER_FUTURE,
+        /** Die gespeicherte Frist gehoert zu einem ANDEREN Markerdruck.
+         *  Nach einem Warmstart oder einem extern geaenderten Marker haette
+         *  ein neuer Druck sonst die noch laufende Frist des alten geerbt -
+         *  "es gibt eine Frist" ist nicht "es ist SEINE Frist". */
+        MARKER_MISMATCH,
+        EXPIRED,
+        REVOKED,
+    }
+
+    /**
+     * Der Grund, aus dem das Privileg fehlt - oder `null`, wenn es gilt.
+     *
+     * REIHENFOLGE IST DIAGNOSE: der laenger wirkende Befund zuerst. Ein
+     * Widerruf ueberlebt den Zyklus, ein fehlender Kredit betrifft nur ihn.
+     */
+    fun reboundOverrideDenial(
+        evidenceCreditActive: Boolean,
+        deadlineTs: Long,
+        computeTs: Long,
+        markerTs: Long,
+        /** An welchen Druck die gespeicherte Frist gepinnt ist. */
+        pinnedForTs: Long,
+        revoked: Boolean,
+    ): ReboundOverrideDenial? = when {
+        revoked                                 -> ReboundOverrideDenial.REVOKED
+        markerTs <= 0L                          -> ReboundOverrideDenial.NO_MARKER
+        markerTs > computeTs                    -> ReboundOverrideDenial.MARKER_FUTURE
+        markerTs != pinnedForTs                 -> ReboundOverrideDenial.MARKER_MISMATCH
+        deadlineTs <= 0L || computeTs >= deadlineTs -> ReboundOverrideDenial.EXPIRED
+        !evidenceCreditActive                   -> ReboundOverrideDenial.NO_CREDIT
+        else                                    -> null
     }
 }

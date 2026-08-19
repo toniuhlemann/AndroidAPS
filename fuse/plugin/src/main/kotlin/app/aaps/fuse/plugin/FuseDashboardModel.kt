@@ -191,13 +191,19 @@ object FuseDashboardModel {
         val teile = mutableListOf<String>()
         if (state != null && (state.nightWindow || state.reboundWindow)) {
             val creditActive = (outcome.evidenceCreditMgdlPerMin ?: 0.0) > 0.0
+            // DAS ZYKLUSERGEBNIS, KEINE EIGENE RECHNUNG (Toni 19.08.). Das
+            // Rebound-Sonderrecht haengt an einer beim MARKERDRUCK gepinnten
+            // Frist; sie hier aus dem Markeralter nachzubauen waere eine
+            // zweite Wahrheit, die bei jeder Einstellungsaenderung von der
+            // ersten abweicht. Der Runner hat entschieden - die Anzeige liest.
             val effektiv = NightWindow.effectiveDeadbandMgdl(
                 reboundWindow = state.reboundWindow,
                 reboundDeadbandMgdl = state.reboundDeadbandMgdl,
                 isNight = state.nightWindow,
                 nightDeadbandMgdl = state.nightDeadbandMgdl,
                 markerBoost = state.markerBoost,
-                evidenceCreditActive = creditActive,
+                reboundOverrideByEvidence = outcome.evidenceMayOverrideRebound,
+                nightOverrideByEvidence = creditActive,
             )
             val fenster = listOfNotNull(
                 "Nacht".takeIf { state.nightWindow },
@@ -206,7 +212,7 @@ object FuseDashboardModel {
             teile += if (effektiv > 0.0)
                 "$fenster-Totband scharf bis ${f0(state.targetMgdl + effektiv)}"
             else
-                "$fenster-Totband entwaffnet (${if (creditActive) "Kredit" else "Marker"})"
+                "$fenster-Totband entwaffnet (${if (outcome.evidenceMayOverrideRebound || creditActive) "Kredit" else "Marker"})"
         }
         val markerAktiv = marker != null && marker.armedTs > 0L &&
             (nowMs - marker.armedTs) / 60_000L < marker.windowMin

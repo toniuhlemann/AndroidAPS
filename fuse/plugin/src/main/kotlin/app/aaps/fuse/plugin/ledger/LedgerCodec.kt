@@ -459,6 +459,11 @@ object LedgerCodec {
         .put("markerTurnTs", e.markerTurnTs)
         .put("markerRiseSeen", e.markerRiseSeen)
         .put("lastAcceptedSourceTs", e.lastAcceptedSourceTs)
+        // Die gepinnte Frist des Rebound-Sonderrechts. Additiv: eine
+        // Altdatei ohne den Schluessel liest 0 = kein Privileg, also
+        // die konservative Richtung.
+        .put("markerReboundOverrideDeadlineTs", e.markerReboundOverrideDeadlineTs)
+        .put("markerReboundOverridePinnedFor", e.markerReboundOverridePinnedFor)
         // DREI Elemente statt zwei: [ts, menge, proposalId] (Toni 19.08.).
         // Die Kennung MUSS mit - ohne sie findet ein Nicht-Sende-Beweis nach
         // einem Neustart den Eintrag nicht mehr und laesst eine nie geflossene
@@ -616,6 +621,23 @@ object LedgerCodec {
         // als "noch kein Punkt akzeptiert", der naechste akzeptierte Punkt
         // setzt die Epoch neu (konservativ genug: 0 blockiert nie faelschlich).
         e.lastAcceptedSourceTs = requireTs("lastAcceptedSourceTs", o.optLong("lastAcceptedSourceTs", 0L))
+        e.markerReboundOverrideDeadlineTs =
+            requireTs("markerReboundOverrideDeadlineTs", o.optLong("markerReboundOverrideDeadlineTs"))
+        e.markerReboundOverridePinnedFor =
+            requireTs("markerReboundOverridePinnedFor", o.optLong("markerReboundOverridePinnedFor"))
+        // DIE FRIST MUSS ZU IHREM DRUCK PASSEN (Codex 19.08.). Eine Frist
+        // ohne Pinnung, eine vor ihrem Marker oder eine laenger als das
+        // groesste zulaessige TTL kann dieser Schreiber nicht erzeugen -
+        // sie waere ein Sonderrecht unbekannter Herkunft, und zwar in
+        // Richtung MEHR Insulin.
+        if (e.markerReboundOverrideDeadlineTs > 0L) {
+            val pin = e.markerReboundOverridePinnedFor
+            val frist = e.markerReboundOverrideDeadlineTs
+            val maxMs = app.aaps.fuse.plugin.FuseIntKey.EvidenceReboundOverrideMaxMin.max.toLong() * 60_000L
+            require(pin > 0L) { "rebound override deadline without pinned marker" }
+            require(frist > pin) { "rebound override deadline $frist not after marker $pin" }
+            require(frist - pin <= maxMs) { "rebound override ttl ${frist - pin} exceeds $maxMs" }
+        }
         // KEINE MIGRATION, die ein Fundament ERFINDET: fehlt das Objekt, gibt
         // es keine laufende Autorisierung. Eine Altdatei mitten in einer
         // Mahlzeit liest sich damit als "kein Fundament" - Prime finanziert

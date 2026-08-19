@@ -633,12 +633,15 @@ object FuseController {
         tail: TailLiability.Report? = null,
         restraint: PredictorResult? = null,
         evidenceCreditActive: Boolean,
+        /** S. [decideInner] - getrennt vom Nacht-Recht, weil nur dieses
+         *  eine markerbezogene Frist hat. */
+        evidenceMayOverrideRebound: Boolean,
         lowThreat: LowThreatGate.Verdict,
         onsetCapU: Double? = null,
     ): Decision {
         val d = decideInner(
             state, prediction, limits, tail, restraint,
-            evidenceCreditActive, lowThreat, onsetCapU,
+            evidenceCreditActive, evidenceMayOverrideRebound, lowThreat, onsetCapU,
         )
         val geschuetzt = lowThreat == LowThreatGate.Verdict.NONE
         return if (d.basalFloorProtected == geschuetzt) d else d.copy(basalFloorProtected = geschuetzt)
@@ -698,6 +701,18 @@ object FuseController {
          * je Aufrufstelle ist billiger als genau dieser stille Ausfall.
          */
         evidenceCreditActive: Boolean,
+        /**
+         * DARF DIE EVIDENZ IN DIESEM ZYKLUS DAS REBOUND-TOTBAND
+         * ENTWAFFNEN? (Toni 19.08.)
+         *
+         * GETRENNT VON [evidenceCreditActive], weil das Rebound-Recht
+         * eine markerbezogene Frist hat und das NACHT-Recht nicht.
+         * Ein gemeinsames Signal haette die Befristung ungewollt auf
+         * die Nacht ausgedehnt.
+         *
+         * OHNE DEFAULT, aus demselben Grund wie oben.
+         */
+        evidenceMayOverrideRebound: Boolean,
         /**
          * DAS LOW-TOR - der einzige Weg zu einer Zero-TBR (Toni 17.08.).
          *
@@ -878,7 +893,8 @@ object FuseController {
             isNight = state.nightWindow,
             nightDeadbandMgdl = state.nightDeadbandMgdl,
             markerBoost = state.markerBoost,
-            evidenceCreditActive = evidenceCreditActive,
+            reboundOverrideByEvidence = evidenceMayOverrideRebound,
+            nightOverrideByEvidence = evidenceCreditActive,
         )
         if (deadbandMgdl > 0.0 && prediction.bgAtAnchor < state.targetMgdl + deadbandMgdl) {
             return Decision(

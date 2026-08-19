@@ -231,6 +231,10 @@ class FuseCycleRunner(
             require(it.driveTauMin in FuseIntKey.DriveTauMin.min..FuseIntKey.DriveTauMin.max) { "driveTauMin=${it.driveTauMin}" }
             require(it.absorptionCreditWindowMin in FuseIntKey.AbsorptionCreditWindowMin.min..FuseIntKey.AbsorptionCreditWindowMin.max) { "absorptionCreditWindowMin=${it.absorptionCreditWindowMin}" }
             require(it.markerBoostMaxMin in FuseIntKey.MarkerBoostMaxMin.min..FuseIntKey.MarkerBoostMaxMin.max) { "markerBoostMaxMin=${it.markerBoostMaxMin}" }
+            require(
+                it.evidenceReboundOverrideMaxMin in
+                    FuseIntKey.EvidenceReboundOverrideMaxMin.min..FuseIntKey.EvidenceReboundOverrideMaxMin.max
+            ) { "evidenceReboundOverrideMaxMin=${it.evidenceReboundOverrideMaxMin}" }
             require(it.nightStartMin in 0..1439 && it.nightEndMin in 0..1439) { "nightWindow=${it.nightStartMin}..${it.nightEndMin}" }
             require(it.nightDeadbandMgdl.isFinite() && it.nightDeadbandMgdl in FuseDoubleKey.NightDeadbandMgdl.min..FuseDoubleKey.NightDeadbandMgdl.max) { "nightDeadbandMgdl=${it.nightDeadbandMgdl}" }
             require(it.reboundDeadbandMgdl.isFinite() && it.reboundDeadbandMgdl in FuseDoubleKey.ReboundDeadbandMgdl.min..FuseDoubleKey.ReboundDeadbandMgdl.max) { "reboundDeadbandMgdl=${it.reboundDeadbandMgdl}" }
@@ -580,6 +584,14 @@ class FuseCycleRunner(
          * halbe Wahrheit und saehe aus wie eine laufende Lizenz.
          */
         val evidenceCreditRevoked: Boolean = false,
+        /** Darf die Evidenz in DIESEM Zyklus das Rebound-Totband
+         *  entwaffnen? Das Zyklusergebnis - Anzeige und Trail lesen es,
+         *  statt das Markeralter nachzurechnen. */
+        val evidenceMayOverrideRebound: Boolean = false,
+        /** Gepinnter Ablauf des Sonderrechts [ms], 0 = keines. */
+        val reboundOverrideDeadlineTs: Long = 0L,
+        /** Warum es NICHT gilt - typisiert. null = es gilt. */
+        val reboundOverrideDenial: String? = null,
         /** KUMULATIV in dieser Episode publiziertes Insulin [U] - die
          *  Bezahlseite des Stoerungsbestands. Laeuft bis EXPIRED weiter,
          *  auch waehrend DORMANT und waehrend eines Widerrufs. */
@@ -734,6 +746,12 @@ class FuseCycleRunner(
         // widerrufen. `episodeGate.creditRevoked` ist der typisierte Pfad
         // dafuer - der Ablauf laeuft ueber andere Gruende.
         if (episodeGate.creditRevoked) {
+            // DER WIDERRUF LOESCHT AUCH DAS REBOUND-SONDERRECHT (Toni 19.08.).
+            // Er ist ein ausdruecklicher menschlicher Widerruf der Mahlzeit -
+            // dann darf die Evidenz erst recht kein Schutzband mehr
+            // entwaffnen.
+            episodes.markerReboundOverrideDeadlineTs = 0L
+            episodes.markerReboundOverridePinnedFor = 0L
             episodes.foundation = MealFoundation.Authorization.none()
             episodes.deliveredSinceHandoverU = 0.0
             episodes.deliveredPhaseAU = 0.0
@@ -1724,6 +1742,59 @@ class FuseCycleRunner(
             horizonMin = cfg.lowGateHorizonMin,
         )
 
+        // DIE FRIST AM MARKERWECHSEL FESTSCHREIBEN (Codex 19.08.).
+        //
+        // NICHT an `neueEpisode` gehaengt: ein ZWEITER Druck innerhalb der
+        // laufenden 90-Minuten-Prime-Episode haette den Ablauf sonst nicht
+        // erneuert, obwohl der Vertrag "seit dem LETZTEN Marker" sagt.
+        // Ausgeloest wird das Pinnen ausschliesslich vom MARKERWECHSEL -
+        // eine blosse Einstellungsaenderung aendert den Marker nicht und
+        // darf ein abgelaufenes Privileg nicht wieder oeffnen.
+        //
+        // FAIL-CLOSED: nur ein Marker, den DIESER Prozess beobachtet hat,
+        // pinnt. Ein beim Warmstart vorgefundener erzeugt kein
+        // rueckwirkendes Sonderrecht.
+        if (markerTs > 0L && markerTs <= computeTs &&
+            markerTs != episodes.markerReboundOverridePinnedFor &&
+            markerPressObserved() == markerTs
+        ) {
+            episodes.markerReboundOverridePinnedFor = markerTs
+            episodes.markerReboundOverrideDeadlineTs =
+                if (cfg.evidenceReboundOverrideMaxMin > 0)
+                    markerTs + cfg.evidenceReboundOverrideMaxMin * 60_000L
+                else 0L
+        }
+
+        // ---- DAS REBOUND-SONDERRECHT DER EVIDENZ -------------------------
+        //
+        // NUR DAS REBOUND-BAND, NICHT DIE NACHT. Beide liefen bis zum
+        // 19.08. ueber dasselbe Signal; die Frist haette sonst ungewollt
+        // auch das Nacht-Totband getroffen.
+        //
+        // FAIL-CLOSED: fehlender oder zukuenftiger Marker ergibt keine
+        // Frist und damit kein Privileg - das Band bleibt scharf.
+        // DIE FRIST GILT NUR FUER DEN DRUCK, ZU DEM SIE GEPINNT WURDE
+        // (Codex 19.08.). Ohne den Identitaetsvergleich koennte Marker B
+        // nach einem Warmstart oder einer externen Aenderung die noch
+        // laufende Frist von Marker A erben, obwohl B in diesem Prozess
+        // nie beobachtet wurde. Dieselbe Falle wie bei der Ledger-Bindung.
+        val reboundOverrideDeadlineTs =
+            if (markerTs > 0L && markerTs <= computeTs &&
+                markerTs == episodes.markerReboundOverridePinnedFor
+            ) episodes.markerReboundOverrideDeadlineTs else 0L
+        val reboundOverrideErlaubt = NightWindow.evidenceMayOverrideRebound(
+            evidenceCreditActive = evidenzKredit > 0.0,
+            deadlineTs = reboundOverrideDeadlineTs,
+            computeTs = computeTs,
+        )
+        val reboundOverrideDenial = NightWindow.reboundOverrideDenial(
+            evidenceCreditActive = evidenzKredit > 0.0,
+            deadlineTs = reboundOverrideDeadlineTs,
+            computeTs = computeTs,
+            markerTs = markerTs,
+            pinnedForTs = episodes.markerReboundOverridePinnedFor,
+            revoked = episodeGate.creditRevoked,
+        )
         val baseDecision = FuseController.decide(
             state, prediction,
             FuseController.Limits(guardFloorMgdl = cfg.guardFloorMgdl, releaseHorizonMin = cfg.releaseHorizonMin),
@@ -1735,6 +1806,7 @@ class FuseCycleRunner(
             // diese Zeile FEHLTE, der Default false verdeckte das - 81
             // Zyklen im 2-Tage-Trail blieben trotz Kredit im Totband.
             evidenceCreditActive = evidenzKredit > 0.0,
+            evidenceMayOverrideRebound = reboundOverrideErlaubt,
             // DAS LOW-TOR (Toni 17.08.): der einzige Weg zu einer Zero-TBR.
             // Ohne positiven Low-Nachweis sperrt der Guard die MENGE, nicht
             // die Basisversorgung. Die volle Rechenspur steht in
@@ -2309,6 +2381,9 @@ class FuseCycleRunner(
             computeDurationMs = computeDurationMs,
             mealStats = mealStats,
             mealFoundation = foundationSnapshot,
+            evidenceMayOverrideRebound = reboundOverrideErlaubt,
+            reboundOverrideDeadlineTs = reboundOverrideDeadlineTs,
+            reboundOverrideDenial = reboundOverrideDenial?.name,
             preFoundationSmbU = preFoundationSmbU,
             preFoundationBlock = preFoundationBlock,
             preFoundationBindingLimit = preFoundationBindingLimit,
@@ -3040,6 +3115,7 @@ class FuseCycleRunner(
         val absorptionCreditWindowMin: Int,
         /** Dauer der Marker-Sonderrechte ab Druck [min]; 0 = aus. */
         val markerBoostMaxMin: Int,
+        val evidenceReboundOverrideMaxMin: Int,
         /** Nachtfenster [min ab Mitternacht] + Totband; Schalter getrennt. */
         val nightStartMin: Int,
         val nightEndMin: Int,
@@ -3092,6 +3168,7 @@ class FuseCycleRunner(
         driveTauMin = preferences.get(FuseIntKey.DriveTauMin),
         absorptionCreditWindowMin = preferences.get(FuseIntKey.AbsorptionCreditWindowMin),
         markerBoostMaxMin = preferences.get(FuseIntKey.MarkerBoostMaxMin),
+        evidenceReboundOverrideMaxMin = preferences.get(FuseIntKey.EvidenceReboundOverrideMaxMin),
         nightStartMin = preferences.get(FuseIntKey.NightStartMin),
         nightEndMin = preferences.get(FuseIntKey.NightEndMin),
         nightDeadbandMgdl = preferences.get(FuseDoubleKey.NightDeadbandMgdl),

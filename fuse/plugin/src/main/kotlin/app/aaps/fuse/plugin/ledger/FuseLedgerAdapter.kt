@@ -135,6 +135,42 @@ class EpisodeBudgets {
     var lastConsumedMarkerTs: Long = 0L
 
     /**
+     * ABLAUF DES REBOUND-SONDERRECHTS DER EVIDENZ [ms] (Toni 19.08.).
+     * 0 = kein Privileg.
+     *
+     * BEIM MARKERDRUCK FESTGESCHRIEBEN, nicht je Zyklus aus der
+     * aktuellen Einstellung gerechnet - aus demselben Grund wie beim
+     * Mahlzeitenfundament: eine spaetere Aenderung darf ein bereits
+     * ABGELAUFENES Privileg nicht rueckwirkend wieder oeffnen. Wer die
+     * Frist verlaengern will, drueckt einen neuen Marker.
+     *
+     * EIN NEUER MARKER SETZT EINE NEUE FRIST, auch wenn die
+     * 360-Minuten-Evidenzepisode weiterverwendet wird - das Privileg
+     * haengt am MARKER, nicht an der Episode.
+     *
+     * RESTARTFEST: ohne Persistenz saehe ein Neustart kein Privileg und
+     * das Totband bliebe scharf (konservativ) - oder, schlimmer, eine
+     * Neuberechnung aus dem Markerzeitpunkt oeffnete es wieder.
+     */
+    var markerReboundOverrideDeadlineTs: Long = 0L
+
+    /**
+     * AN WELCHEN MARKERDRUCK die Frist gepinnt ist [ms]. 0 = keiner.
+     *
+     * WARUM ZUSAETZLICH ZUR FRIST (Codex 19.08.): das Pinnen hing zuerst an
+     * `neueEpisode`. Ein ZWEITER Markerdruck INNERHALB der laufenden
+     * 90-Minuten-Prime-Episode haette den Ablauf damit nicht erneuert -
+     * der Vertrag sagt aber "seit dem LETZTEN Marker". Mit diesem Feld
+     * erkennt der Runner den Markerwechsel unabhaengig von jeder
+     * Episodenlogik.
+     *
+     * Und er erkennt ihn NUR daran: eine blosse Einstellungsaenderung
+     * aendert den Marker nicht und darf ein abgelaufenes Privileg deshalb
+     * nicht wieder oeffnen.
+     */
+    var markerReboundOverridePinnedFor: Long = 0L
+
+    /**
      * Der ZUSATZKREDIT dieser Episode ist ausdruecklich zurueckgenommen.
      *
      * Er ist NICHT dasselbe wie "keine Episode": Anker, kumulative Bezahlung

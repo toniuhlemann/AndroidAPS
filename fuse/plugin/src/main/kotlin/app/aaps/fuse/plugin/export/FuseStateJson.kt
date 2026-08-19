@@ -52,7 +52,10 @@ object FuseStateJson {
     // und die drei Einstellungen dazu gehen ab jetzt in den Hash ein (s.
     // [hashOf]). Ohne den Bump traegen Laeufe vor und nach dem Umbau
     // denselben Regelstand, obwohl sie verschieden dosieren.
-    const val RULE_SET_VERSION = 11
+    // v12 (19.08.): das Rebound-Sonderrecht der Evidenz bekommt eine
+    // markerbezogene Frist (EvidenceReboundOverrideMaxMin). Ein Lauf davor
+    // und danach dosiert im spaeten Rebound verschieden - eigene Version.
+    const val RULE_SET_VERSION = 12
 
     /** Schema des Trail-Datensatzes - s. die Notiz an der Schreibstelle. */
     const val SCHEMA_VERSION = 4
@@ -281,6 +284,29 @@ object FuseStateJson {
             // dagegen DOPPELT (Toni 12.08.) und sind hier entfallen: ein Block,
             // eine Wahrheit.
             .put("evidenceEpisodeDenial", outcome.evidenceEpisodeDenial ?: JSONObject.NULL)
+            // DAS REBOUND-SONDERRECHT (Toni 19.08.): konfigurierte
+            // Frist, gepinnter Ablauf, Restzeit, das Ergebnis und der
+            // typisierte Grund. Ohne den Grund waere im Trail nicht zu
+            // sehen, WARUM ein Kredit das Band nicht mehr entwaffnet -
+            // abgelaufen, widerrufen oder gar kein Kredit sehen in der
+            // Wirkung gleich aus.
+            .put("evidenceMayOverrideRebound", outcome.evidenceMayOverrideRebound)
+            .put("reboundOverrideDeadlineTs", outcome.reboundOverrideDeadlineTs)
+            .putOpt("reboundOverrideDenial", outcome.reboundOverrideDenial)
+            .put(
+                "reboundOverrideRestMin",
+                outcome.reboundOverrideDeadlineTs
+                    .takeIf { it > 0L }
+                    ?.let { ((it - outcome.computeTs) / 60_000L).toInt() }
+                    ?: JSONObject.NULL,
+            )
+            // Und ob ein Rebound-Band in DIESEM Zyklus wegen der
+            // Evidenz geschwiegen hat - die Frage, die der 13:41-Fall
+            // aufgeworfen hat.
+            .put(
+                "reboundSuppressedByEvidence",
+                outcome.state?.reboundWindow == true && outcome.evidenceMayOverrideRebound,
+            )
             // ---- Die Evidenz-Episode als EIN Block ----------------------
             //
             // Vorher standen Menge, Alter und Deckel einzeln nebeneinander -
@@ -1094,6 +1120,9 @@ object FuseStateJson {
                 // dosierwirksam, beides bis v10 unsichtbar im Hash.
                 p.mealFoundationEnabled,
                 p.mealFoundationEndMin,
+                // v12: die Frist des Rebound-Sonderrechts. Zwei Laeufe mit
+                // 120 und 0 Minuten sind verschiedene Regler.
+                p.evidenceReboundOverrideMaxMin,
             ).map { it.toString() }
         return Sha.of(parts.joinToString("|"))
     }

@@ -33,28 +33,28 @@ class NightWindowTest {
     @Test
     fun `der groessere Schutzgrund gewinnt`() {
         // Nacht 45 schlaegt Rebound 25.
-        assertEquals(45.0, NightWindow.effectiveDeadbandMgdl(true, 25.0, true, 45.0, false, evidenceCreditActive = false), 0.0)
+        assertEquals(45.0, NightWindow.effectiveDeadbandMgdl(true, 25.0, true, 45.0, false, reboundOverrideByEvidence = false, nightOverrideByEvidence = false), 0.0)
         // Rebound allein.
-        assertEquals(25.0, NightWindow.effectiveDeadbandMgdl(true, 25.0, false, 45.0, false, evidenceCreditActive = false), 0.0)
+        assertEquals(25.0, NightWindow.effectiveDeadbandMgdl(true, 25.0, false, 45.0, false, reboundOverrideByEvidence = false, nightOverrideByEvidence = false), 0.0)
         // Nacht allein.
-        assertEquals(45.0, NightWindow.effectiveDeadbandMgdl(false, 25.0, true, 45.0, false, evidenceCreditActive = false), 0.0)
+        assertEquals(45.0, NightWindow.effectiveDeadbandMgdl(false, 25.0, true, 45.0, false, reboundOverrideByEvidence = false, nightOverrideByEvidence = false), 0.0)
         // Keiner.
-        assertEquals(0.0, NightWindow.effectiveDeadbandMgdl(false, 25.0, false, 45.0, false, evidenceCreditActive = false), 0.0)
+        assertEquals(0.0, NightWindow.effectiveDeadbandMgdl(false, 25.0, false, 45.0, false, reboundOverrideByEvidence = false, nightOverrideByEvidence = false), 0.0)
     }
 
     @Test
     fun `ein erklaerter Marker hebt NUR das Nacht-Totband auf`() {
         // Nachts mit Marker: Nacht-Totband weg...
-        assertEquals(0.0, NightWindow.effectiveDeadbandMgdl(false, 25.0, true, 45.0, markerBoost = true, evidenceCreditActive = false), 0.0)
+        assertEquals(0.0, NightWindow.effectiveDeadbandMgdl(false, 25.0, true, 45.0, markerBoost = true, reboundOverrideByEvidence = false, nightOverrideByEvidence = false), 0.0)
         // ...aber das Rebound-Totband bleibt (Hypo-Schutz ist nicht ansagbar).
-        assertEquals(25.0, NightWindow.effectiveDeadbandMgdl(true, 25.0, true, 45.0, markerBoost = true, evidenceCreditActive = false), 0.0)
+        assertEquals(25.0, NightWindow.effectiveDeadbandMgdl(true, 25.0, true, 45.0, markerBoost = true, reboundOverrideByEvidence = false, nightOverrideByEvidence = false), 0.0)
     }
 
     @Test
     fun `abgeschaltete Totbaender liefern null - Einseitigkeit`() {
-        assertEquals(0.0, NightWindow.effectiveDeadbandMgdl(true, 0.0, true, 0.0, false, evidenceCreditActive = false), 0.0)
+        assertEquals(0.0, NightWindow.effectiveDeadbandMgdl(true, 0.0, true, 0.0, false, reboundOverrideByEvidence = false, nightOverrideByEvidence = false), 0.0)
         // Negative Eingabe kann nie schuetzen, aber auch nie oeffnen.
-        assertEquals(0.0, NightWindow.effectiveDeadbandMgdl(false, 0.0, true, -10.0, false, evidenceCreditActive = false), 0.0)
+        assertEquals(0.0, NightWindow.effectiveDeadbandMgdl(false, 0.0, true, -10.0, false, reboundOverrideByEvidence = false, nightOverrideByEvidence = false), 0.0)
     }
 
     /** Der gemessene Anlass: 09.08. 05:25-06:24, BG 89-116 bei Ziel 98.
@@ -62,7 +62,7 @@ class NightWindowTest {
     @Test
     fun `der gemessene Nachtfall waere gesperrt gewesen`() {
         val target = 98.0
-        val schwelle = target + NightWindow.effectiveDeadbandMgdl(false, 25.0, true, 45.0, false, evidenceCreditActive = false)
+        val schwelle = target + NightWindow.effectiveDeadbandMgdl(false, 25.0, true, 45.0, false, reboundOverrideByEvidence = false, nightOverrideByEvidence = false)
         assertEquals(143.0, schwelle, 0.0)
         for (bg in listOf(89.0, 97.0, 103.0, 109.0, 116.0)) assertTrue(bg < schwelle)
     }
@@ -82,7 +82,7 @@ class NightWindowTest {
     fun `Evidenzkredit entwaffnet beide Totbaender`() {
         assertEquals(
             0.0,
-            NightWindow.effectiveDeadbandMgdl(true, 25.0, true, 45.0, markerBoost = false, evidenceCreditActive = true),
+            NightWindow.effectiveDeadbandMgdl(true, 25.0, true, 45.0, markerBoost = false, reboundOverrideByEvidence = true, nightOverrideByEvidence = true),
             0.0,
         )
     }
@@ -93,7 +93,7 @@ class NightWindowTest {
     fun `Evidenzkredit entwaffnet auch das Rebound-Totband`() {
         assertEquals(
             0.0,
-            NightWindow.effectiveDeadbandMgdl(true, 25.0, false, 0.0, markerBoost = false, evidenceCreditActive = true),
+            NightWindow.effectiveDeadbandMgdl(true, 25.0, false, 0.0, markerBoost = false, reboundOverrideByEvidence = true, nightOverrideByEvidence = true),
             0.0,
         )
     }
@@ -104,7 +104,7 @@ class NightWindowTest {
     fun `ohne Kredit bleiben die Totbaender scharf`() {
         assertEquals(
             45.0,
-            NightWindow.effectiveDeadbandMgdl(true, 25.0, true, 45.0, markerBoost = false, evidenceCreditActive = false),
+            NightWindow.effectiveDeadbandMgdl(true, 25.0, true, 45.0, markerBoost = false, reboundOverrideByEvidence = false, nightOverrideByEvidence = false),
             0.0,
         )
     }

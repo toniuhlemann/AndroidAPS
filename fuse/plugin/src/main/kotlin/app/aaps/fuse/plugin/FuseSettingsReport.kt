@@ -38,6 +38,7 @@ internal val fuseEinstellbareKeys: Set<String> = setOf(
     FuseIntKey.DriveLowerQuantilePct.key,
     FuseIntKey.AbsorptionCreditWindowMin.key,
     FuseIntKey.MarkerBoostMaxMin.key,
+    FuseIntKey.EvidenceReboundOverrideMaxMin.key,
     FuseIntKey.LiabilityHorizonMin.key,
     FuseIntKey.NightStartMin.key,
     FuseIntKey.NightEndMin.key,
@@ -117,6 +118,7 @@ object FuseSettingsReport {
                     ganz(FuseIntKey.PrimeWindowMin, "Freigabe-Fenster", "min"),
                     ganz(FuseIntKey.AbsorptionCreditWindowMin, "Absorption", "min"),
                     ganz(FuseIntKey.MarkerBoostMaxMin, "Sonderrechte", "min"),
+                    ganz(FuseIntKey.EvidenceReboundOverrideMaxMin, "Sonderrechte", "min"),
                     schalter(FuseBooleanKey.MarkerAuthorisesRelease, "Marker-Autorisierung"),
                     // Das Mahlzeitenfundament - drei Zeilen, weil alle drei die
                     // Dosierung bestimmen: OB verteilt wird, WIE (Anteil) und

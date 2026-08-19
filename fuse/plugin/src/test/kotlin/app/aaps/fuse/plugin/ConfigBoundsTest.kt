@@ -36,7 +36,7 @@ class ConfigBoundsTest {
         primeReleaseEnabled = true, primeWindowMin = 15, primeEnvelopeU = 1.2,
         maxSmbU = 0.3, guardFloorMgdl = 70.0, lowGateMinBenefitMgdl = 5.0, lowGateHorizonMin = 120.0, iobThPercent = 100,
         releaseHorizonMin = 30, liabilityHorizonMin = 120, driveTauMin = 60,
-        absorptionCreditWindowMin = 60, markerBoostMaxMin = 45,
+        absorptionCreditWindowMin = 60, markerBoostMaxMin = 45, evidenceReboundOverrideMaxMin = 120,
         nightStartMin = 1380, nightEndMin = 420,
         nightDeadbandMgdl = 45.0, nightDeadbandEnabled = true,
         reboundDeadbandMgdl = 25.0, reboundDeadbandEnabled = true,

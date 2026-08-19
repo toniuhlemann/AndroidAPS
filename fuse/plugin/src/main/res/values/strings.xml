@@ -107,4 +107,6 @@
     <string name="fuse_rebound_deadband_enabled_summary">Nach einem Tief (q1 unter 75 in den letzten 45 min) kein SMB, solange der BG unter Ziel + Rebound-Totband liegt - die Erholung ist das ZIEL der Gegenmassnahme, keine Stoerung.</string>
     <string name="fuse_rebound_deadband_title">Rebound-Totband [mg/dl ueber Ziel]</string>
     <string name="fuse_rebound_deadband_summary">War bis 09.08. fest auf 25. Haette in der Nacht 07./08.08. alle 20 Rebound-Dosen genullt (BG lief 65 auf 121 bei Ziel 97).</string>
+    <string name="fuse_evidence_rebound_override_title">Evidenz darf Rebound entwaffnen [min]</string>
+    <string name="fuse_evidence_rebound_override_summary">Wie lange nach dem Mahlzeit-Marker die Evidenz ein aktives Rebound-Totband ausser Kraft setzen darf. Die Evidenzepisode selbst laeuft unveraendert weiter (bis 360 min) - nur dieses Sonderrecht endet. 0 = nie entwaffnen. Das Nacht-Totband ist davon nicht betroffen.</string>
 </resources>
