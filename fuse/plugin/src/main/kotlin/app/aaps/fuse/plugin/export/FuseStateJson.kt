@@ -223,6 +223,12 @@ object FuseStateJson {
                     // verschiedene Bedeutung - und genau die Frage, die dieser
                     // Umbau beantworten soll.
                     .put("confirmedNotSentPhaseAU", fin(f.confirmedNotSentPhaseAU))
+                    // ROH UND EFFEKTIV NEBENEINANDER: der erste sagt, was je
+                    // bewiesen wurde, der zweite, was davon jetzt noch offen
+                    // ist. Laufen sie auseinander, hat Prime seine eigene
+                    // Luecke geschlossen - eine Aussage, die aus keiner der
+                    // beiden Zahlen allein hervorgeht.
+                    .put("effectiveCarryU", fin(f.effectiveCarryU))
                     .put("phaseBAllowanceU", fin(f.phaseBAllowanceU))
                     // Soll, Rueckstand und dueU sind DREI Groessen, nicht eine
                     // in drei Formen: dueU ist gerastert und gedeckelt, der

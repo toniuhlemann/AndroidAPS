@@ -173,6 +173,102 @@ class MealFoundationCarryTest {
         assertEquals(1.05, p.remainingInWindowU, 1e-9, "die Vorschau nennt aber schon die Erlaubnis")
     }
 
+    // ---- Der Uebertrag ist eine Mengen-ZEIT-Groesse (Codex 19.08.) --------
+
+    /**
+     * DER BEFUND, DEN DIESE VIER TESTS ABSICHERN.
+     *
+     * `confirmedNotSentPhaseAU` zaehlt HISTORISCH: "war in Phase A gebucht,
+     * bewiesen nie gesendet". Holt Prime die Menge danach INNERHALB SEINES
+     * EIGENEN FENSTERS nach - und dafuer hat es oft Zeit, bei 75/25 braucht es
+     * nur 15 der 20 Fensterminuten -, ist die Luecke geschlossen, der Zaehler
+     * steht aber weiter.
+     *
+     * DER GESAMTDECKEL FAENGT DAS NICHT AUF, und das war mein Denkfehler: er
+     * begrenzt die SUMME, nicht die RAMPE. Phase B rechnete ihre Sollbahn
+     * weiter aus 1,05 statt 0,75 U und lieferte die tatsaechlich
+     * verbleibenden 0,75 U dadurch ein Drittel schneller - das Insulin wandert
+     * nach vorn, also genau die IOB-Spitze, gegen die die Phasenteilung gebaut
+     * ist. Ein Deckel, der die Menge haelt und die Zeit freigibt, ist kein
+     * Schutz.
+     *
+     * Massgeblich ist deshalb der noch OFFENE Rueckstand:
+     *
+     *     phaseADelivered = deliveredFromBudget - deliveredSinceHandover
+     *     phaseAShortfall = max(0, phaseABudget - phaseADelivered)
+     *     effectiveCarry  = min(confirmedNotSentPhaseAU, phaseAShortfall)
+     *
+     * Alle vier Faelle stehen bewusst am UEBERGABEZEITPUNKT: dort ist
+     * `deliveredSinceHandover` noch 0, der Phase-A-Verbrauch also unmittelbar
+     * ablesbar und die Erwartung nicht durch Phase-B-Arithmetik verwaschen.
+     */
+    @Test
+    fun `eine nicht nachgeholte Luecke gilt voll`() {
+        // 2,25 U wollte Prime, 1,95 U sind angekommen - 0,30 U fehlen.
+        val p = plan(minuten = A_BIS, ausBudgetU = 1.95, uebertragU = 0.30)
+        assertEquals(1.05, p.remainingInWindowU, 1e-9, "Teilbudget plus die volle offene Luecke")
+    }
+
+    /**
+     * VOLLSTAENDIG VON PRIME NACHGEHOLT - der Uebertrag verfaellt.
+     *
+     * Prime hat die verworfenen 0,30 U in den freien Minuten seines eigenen
+     * Fensters doch noch geliefert; gebucht sind wieder 2,25 U. Der Zaehler
+     * steht unveraendert auf 0,30 - wirken darf er nicht mehr.
+     */
+    @Test
+    fun `eine von Prime nachgeholte Luecke gibt die Erlaubnis zurueck`() {
+        val p = plan(minuten = A_BIS, ausBudgetU = 2.25, uebertragU = 0.30)
+        assertEquals(
+            0.75, p.remainingInWindowU, 1e-9,
+            "kein Rueckstand mehr - Phase B rechnet wieder mit ihrem Teilbudget",
+        )
+        // DIE RAMPE IST DIE EIGENTLICHE ZUSICHERUNG, und das ist gemessen,
+        // nicht behauptet: die Mutationsprobe auf den rohen Zaehler laesst die
+        // MENGE oben unveraendert bei 0,75 U durchgehen - der Gesamtdeckel
+        // (3,00 - 2,25) kappt sie ja ohnehin dort. Nur die Rate faellt auf.
+        // Ein Test ohne diese Zeile waere gruen geblieben.
+        assertEquals(
+            0.75 / (B_BIS - A_BIS), p.effectiveRateUPerMin, 1e-9,
+            "die Sollrate MUSS auf das Teilbudget zurueckfallen",
+        )
+    }
+
+    /** TEILWEISE nachgeholt - es gilt genau der Rest. */
+    @Test
+    fun `eine halb nachgeholte Luecke gilt nur zur Haelfte`() {
+        // 2,10 U gebucht: 0,15 der 0,30 U hat Prime nachgeholt.
+        val p = plan(minuten = A_BIS, ausBudgetU = 2.10, uebertragU = 0.30)
+        assertEquals(0.90, p.remainingInWindowU, 1e-9, "0,75 + die verbliebenen 0,15")
+        // Auch hier traegt die MENGE die Aussage nicht allein: mit dem rohen
+        // Zaehler waere die Erlaubnis 1,05 U, gekappt am Restbudget von
+        // 0,90 U - dieselbe Zahl. Die Rate unterscheidet die beiden Lagen.
+        assertEquals(
+            0.90 / (B_BIS - A_BIS), p.effectiveRateUPerMin, 1e-9,
+            "die Sollrate folgt dem OFFENEN Rueckstand, nicht dem Zaehler",
+        )
+    }
+
+    /**
+     * UND DIE GEGENRICHTUNG: ungenutztes Budget wird NICHT nachgeholt.
+     *
+     * Ohne den Zaehler waere die Ableitung allein gefaehrlich - ein
+     * Phase-A-Rueckstand entsteht auch, wenn Prime schlicht nichts wollte
+     * (`NO_DEMAND`, Guard, kein Bedarf). Das ist eine ENTSCHEIDUNG, kein
+     * Verlust, und sie spaeter zu kassieren waere ein Nachholbolus fuer eine
+     * Zurueckhaltung.
+     *
+     * Beide Grenzen sind also noetig, und dieser Test ist die Probe auf die
+     * zweite.
+     */
+    @Test
+    fun `ein Rueckstand ohne Beweis holt nichts nach`() {
+        // Prime hat nur 1,20 von 2,25 U abgerufen - Rueckstand 1,05 U, aber
+        // nichts davon ist als nicht gesendet BEWIESEN.
+        val p = plan(minuten = A_BIS, ausBudgetU = 1.20, uebertragU = 0.0)
+        assertEquals(0.75, p.remainingInWindowU, 1e-9, "ungenutztes Budget ist kein Uebertrag")
+    }
+
     // ---- Fail-closed ------------------------------------------------------
 
     /**

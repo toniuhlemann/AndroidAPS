@@ -485,6 +485,14 @@ object MealFoundation {
          * Bahn und mit derselben Ein-Schritt-Regel nach wie das uebrige
          * Fundament - ein Nachhol-Burst waere genau die IOB-Spitze, gegen die
          * die Phasenteilung gebaut ist.
+         *
+         * ER WIRKT NUR, SOWEIT DIE LUECKE NOCH OFFEN IST (Codex 19.08.).
+         * Dieser Wert ist der HISTORISCHE Zaehler; wieviel davon jetzt noch
+         * gilt, rechnet [effectiveCarryU] aus dem tatsaechlichen
+         * Phase-A-Rueckstand. Holt Prime die Menge in seinem eigenen Fenster
+         * nach, faellt die Erlaubnis auf das Teilbudget zurueck - sonst
+         * lieferte Phase B ihre unveraenderten 0,75 U auf einer 1,05-U-Rampe,
+         * also ein Drittel zu schnell.
          */
         confirmedNotSentPhaseAU: Double,
         phaseBUntilMin: Int,
@@ -534,7 +542,10 @@ object MealFoundation {
         // `deliveredFromBudgetU`, das beim Zurueckdrehen mitgesunken ist. Ohne
         // ihn koennte eine Luecke, die groesser ist als das Phase-A-Budget,
         // eine Erlaubnis oberhalb des Autorisierten erzeugen.
-        val erlaubnisU = allowanceU(totalBudgetU, phaseBBudgetU, confirmedNotSentPhaseAU)
+        val erlaubnisU = allowanceU(
+            totalBudgetU, phaseBBudgetU, confirmedNotSentPhaseAU,
+            deliveredFromBudgetU, deliveredSinceHandoverU,
+        )
         val rateUProMin = if (fensterMin > 0) erlaubnisU / fensterMin else 0.0
 
         // VOR DEM FENSTER: Phase A ist zustaendig, nicht das Fundament.
@@ -705,10 +716,75 @@ object MealFoundation {
      * ihn ohnehin vorher als [Binding.UNUSABLE_INPUT] ab, `snapshot` darf aber
      * kein NaN in den Export tragen.
      */
-    private fun allowanceU(totalBudgetU: Double, phaseBBudgetU: Double, confirmedNotSentPhaseAU: Double): Double {
+    private fun allowanceU(
+        totalBudgetU: Double,
+        phaseBBudgetU: Double,
+        confirmedNotSentPhaseAU: Double,
+        deliveredFromBudgetU: Double,
+        deliveredSinceHandoverU: Double,
+    ): Double = min(
+        phaseBBudgetU + effectiveCarryU(
+            totalBudgetU, phaseBBudgetU, confirmedNotSentPhaseAU,
+            deliveredFromBudgetU, deliveredSinceHandoverU,
+        ),
+        totalBudgetU,
+    )
+
+    /**
+     * DER NOCH OFFENE UEBERTRAG - eine Mengen-ZEIT-Groesse, kein Konto
+     * (Codex-Befund 19.08.).
+     *
+     * DER FEHLER, DEN DAS BEHEBT. `confirmedNotSentPhaseAU` zaehlt HISTORISCH:
+     * "diese Menge war in Phase A gebucht und ist bewiesen nie gesendet
+     * worden". Holt Prime sie danach INNERHALB SEINES EIGENEN FENSTERS nach -
+     * und dafuer hat es oft Zeit, bei 75/25 braucht es nur 15 der 20
+     * Fensterminuten -, dann ist die Luecke geschlossen, der Zaehler steht
+     * aber weiter.
+     *
+     * Der Gesamtdeckel faengt das NICHT auf, und das war meine falsche
+     * Annahme: er begrenzt die SUMME, nicht die RAMPE. Phase B rechnete ihre
+     * Sollbahn weiter aus 1,05 statt 0,75 U und lieferte die tatsaechlich
+     * verbleibenden 0,75 U dadurch um ein Drittel schneller. Das Insulin
+     * wandert nach vorn - also genau die IOB-Spitze, gegen die die 75/25-
+     * Teilung gebaut ist. Ein Deckel, der die Menge haelt und die Zeit
+     * freigibt, ist kein Schutz.
+     *
+     * DIE ABLEITUNG, in den Groessen, die der Zyklus ohnehin fuehrt:
+     *
+     *     phaseADelivered = deliveredFromBudget - deliveredSinceHandover
+     *     phaseAShortfall = max(0, phaseABudget - phaseADelivered)
+     *     effectiveCarry  = min(confirmedNotSentPhaseAU, phaseAShortfall)
+     *
+     * Der Uebertrag ist damit eine OBERGRENZE fuer das, was Phase B nachholen
+     * darf, und der tatsaechliche Rueckstand von Phase A die andere. Es gilt
+     * die kleinere - beide Richtungen sind noetig: ohne den Zaehler wuerde
+     * jede nicht abgerufene Huelle nachgeholt (ungenutztes Budget ist eine
+     * ENTSCHEIDUNG, kein Verlust), ohne den Rueckstand bliebe eine laengst
+     * geschlossene Luecke ewig offen.
+     *
+     * `phaseABudget` wird aus `total - phaseB` abgeleitet und nicht zusaetzlich
+     * hereingereicht: die beiden sind in [Authorization] exakt komplementaer
+     * definiert, ein dritter Parameter waere eine zweite Wahrheit.
+     */
+    private fun effectiveCarryU(
+        totalBudgetU: Double,
+        phaseBBudgetU: Double,
+        confirmedNotSentPhaseAU: Double,
+        deliveredFromBudgetU: Double,
+        deliveredSinceHandoverU: Double,
+    ): Double {
         val uebertrag =
             if (confirmedNotSentPhaseAU.isFinite() && confirmedNotSentPhaseAU > 0.0) confirmedNotSentPhaseAU else 0.0
-        return min(phaseBBudgetU + uebertrag, totalBudgetU)
+        if (uebertrag <= 0.0) return 0.0
+        if (!deliveredFromBudgetU.isFinite() || !deliveredSinceHandoverU.isFinite()) return 0.0
+        // Ein negativer Phase-A-Verbrauch ist ein Widerspruch im Zustand
+        // (mehr seit der Uebergabe als insgesamt). Auf 0 geklemmt ergibt er
+        // den GROESSTEN Rueckstand - also die Lage, in der der volle Zaehler
+        // gilt. Das ist derselbe Ausgang wie vor diesem Fix und damit kein
+        // neues Risiko; der Widerspruch selbst faellt an anderer Stelle auf.
+        val phaseAGeliefert = max(0.0, deliveredFromBudgetU - deliveredSinceHandoverU)
+        val phaseARueckstand = max(0.0, (totalBudgetU - phaseBBudgetU) - phaseAGeliefert)
+        return min(uebertrag, phaseARueckstand)
     }
 
     /**
@@ -892,8 +968,16 @@ object MealFoundation {
          * gleicher Summe und voellig verschiedener Bedeutung.
          */
         val confirmedNotSentPhaseAU: Double,
-        /** Was Phase B insgesamt geben DARF: Teilbudget plus Uebertrag,
-         *  gedeckelt am Gesamtbudget. Die Groesse, gegen die [plan] rechnet. */
+        /**
+         * Der davon NOCH OFFENE Teil - gekappt am tatsaechlichen
+         * Phase-A-Rueckstand. Holt Prime die Luecke in seinem eigenen Fenster
+         * nach, faellt diese Groesse auf 0, waehrend
+         * [confirmedNotSentPhaseAU] stehen bleibt.
+         */
+        val effectiveCarryU: Double,
+        /** Was Phase B insgesamt geben DARF: Teilbudget plus dem noch offenen
+         *  Uebertrag, gedeckelt am Gesamtbudget. Die Groesse, gegen die [plan]
+         *  rechnet. */
         val phaseBAllowanceU: Double,
         val plannedTotalU: Double,
         val backlogU: Double,
@@ -912,7 +996,7 @@ object MealFoundation {
                 totalBudgetU = 0.0, phaseABudgetU = 0.0,
                 phaseBBudgetU = 0.0, effectiveHandoverTs = 0L, latchedHandoverTs = 0L,
                 endTs = 0L, phase = Phase.NONE, deliveredSinceHandoverU = 0.0,
-                confirmedNotSentPhaseAU = 0.0, phaseBAllowanceU = 0.0,
+                confirmedNotSentPhaseAU = 0.0, effectiveCarryU = 0.0, phaseBAllowanceU = 0.0,
                 plannedTotalU = 0.0, backlogU = 0.0, dueU = 0.0, remainingInWindowU = 0.0,
                 binding = null, effectiveWindowMin = 0, effectiveRateUPerMin = 0.0,
             )
@@ -956,10 +1040,22 @@ object MealFoundation {
             phase = phaseOf(auth, nowTs, primeWindowStartTs),
             deliveredSinceHandoverU = deliveredSinceHandoverU,
             confirmedNotSentPhaseAU = confirmedNotSentPhaseAU,
+            // BEIDE Groessen, und der Unterschied ist die ganze Aussage: der
+            // ROHE Zaehler sagt, was je bewiesen wurde, der EFFEKTIVE, was
+            // davon jetzt noch offen ist. Stehen sie im Trail auseinander, hat
+            // Prime seine Luecke selbst geschlossen - ohne beide waere im
+            // Replay nicht zu sehen, ob Phase B nachholte oder Prime.
+            effectiveCarryU = effectiveCarryU(
+                auth.totalBudgetU, auth.phaseBBudgetU, confirmedNotSentPhaseAU,
+                deliveredFromBudgetU, deliveredSinceHandoverU,
+            ),
             // DIESELBE Rechnung wie in [plan], nicht eine zweite: der Deckel am
             // Gesamtbudget gehoert dazu, sonst zeigte der Export eine
             // Erlaubnis, die der Regler gar nicht hat.
-            phaseBAllowanceU = allowanceU(auth.totalBudgetU, auth.phaseBBudgetU, confirmedNotSentPhaseAU),
+            phaseBAllowanceU = allowanceU(
+                auth.totalBudgetU, auth.phaseBBudgetU, confirmedNotSentPhaseAU,
+                deliveredFromBudgetU, deliveredSinceHandoverU,
+            ),
             plannedTotalU = plan.plannedTotalU,
             backlogU = plan.backlogU,
             dueU = plan.dueU,
