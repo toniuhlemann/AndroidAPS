@@ -468,42 +468,57 @@ class ConstraintRevokeTest {
     }
 
     /**
-     * DIE GEFUNDENE ZEILE MUSS DIE MENGE AUCH TRAGEN (Toni 19.08.).
+     * DIE GEFUNDENE ZEILE MUSS DIE MENGE EXAKT TRAGEN (Toni 19.08.).
      *
-     * Die Zeile zu FINDEN reicht nicht: traegt sie weniger als die Ablage
-     * behauptet, zoege der Aufruf global `menge` ab und entfernte lokal nur
-     * den kleineren Betrag - dieselbe Uneinigkeit der Buecher wie bei einer
-     * fehlenden Zeile, nur mit einer gefundenen.
+     * BEIDE Richtungen sind ein Widerspruch, und die zweite hatte ich zuerst
+     * falsch: "groessere Zeile wird gekuerzt, der Rest stammt aus einem
+     * anderen Vorgang" widerspricht der stabilen Identitaet, die dieser Block
+     * gerade erzwingt - eine Vorschlagskennung gehoert genau EINEM Zyklus.
+     * Der stehen gebliebene Rest waere eine Phantomlieferung, die niemand
+     * mehr zuordnen kann.
+     *
+     * Im gueltigen Zustand sind beide Groessen gleich: resolveReservation hat
+     * die Zeile schon auf die tatsaechlich publizierte Menge gebracht.
      */
     @Test
-    fun `eine zu kleine Mahlzeitenzeile entlastet gar nicht`() {
-        val a = nachPublikation()
-        // Widerspruch im RAM: die Ablage nennt 0,15 U, die Zeile traegt 0,05.
-        val z = a.episodes.mealDeliveries.single()
-        a.episodes.mealDeliveries.clear()
-        a.episodes.mealDeliveries.addLast(EpisodeBudgets.MealDelivery(z.ts, 0.05, z.proposalId))
+    fun `eine abweichende Mahlzeitenzeile entlastet gar nicht`() {
+        for (zeilenmenge in listOf(0.05, 0.25)) {
+            val a = nachPublikation()
+            val z = a.episodes.mealDeliveries.single()
+            a.episodes.mealDeliveries.clear()
+            a.episodes.mealDeliveries.addLast(
+                EpisodeBudgets.MealDelivery(z.ts, zeilenmenge, z.proposalId),
+            )
 
-        assertEquals(0.0, a.revokeSettled(ID), 1e-9, "keine Teilentlastung")
-        assertEquals(0.60, a.episodes.primeSpentU, 1e-9)
-        assertEquals(0.60, a.episodes.onsetSpentU, 1e-9)
-        assertEquals(0.60, a.episodes.evidenceCommittedU, 1e-9)
-        assertEquals(0.60, a.episodes.deliveredSinceHandoverU, 1e-9)
-        assertEquals(0.05, a.episodes.mealDeliveries.single().amountU, 1e-9, "und die Zeile bleibt")
+            assertEquals(0.0, a.revokeSettled(ID), 1e-9, "$zeilenmenge: keine Teilentlastung")
+            assertEquals(0.60, a.episodes.primeSpentU, 1e-9, "$zeilenmenge")
+            assertEquals(0.60, a.episodes.onsetSpentU, 1e-9, "$zeilenmenge")
+            assertEquals(0.60, a.episodes.evidenceCommittedU, 1e-9, "$zeilenmenge")
+            assertEquals(0.60, a.episodes.deliveredSinceHandoverU, 1e-9, "$zeilenmenge")
+            assertEquals(
+                zeilenmenge, a.episodes.mealDeliveries.single().amountU, 1e-9,
+                "$zeilenmenge: und die Zeile bleibt unangetastet",
+            )
+        }
     }
 
-    /** Eine GROESSERE Zeile ist dagegen zulaessig - sie wird gekuerzt. */
+    /**
+     * RUNDUNGSRAUSCHEN IST KEINE ABWEICHUNG.
+     *
+     * Ohne diese Gegenprobe waere die Regel mit einem exakten Ungleichheits-
+     * vergleich erfuellbar - und dann scheiterte die Entlastung an der
+     * letzten Nachkommastelle einer Gleitkommarechnung.
+     */
     @Test
-    fun `eine groessere Mahlzeitenzeile wird gekuerzt`() {
+    fun `Rundungsrauschen laesst die Entlastung zu`() {
         val a = nachPublikation()
         val z = a.episodes.mealDeliveries.single()
         a.episodes.mealDeliveries.clear()
-        a.episodes.mealDeliveries.addLast(EpisodeBudgets.MealDelivery(z.ts, 0.25, z.proposalId))
-
-        assertEquals(0.15, a.revokeSettled(ID), 1e-9)
-        assertEquals(
-            0.10, a.episodes.mealDeliveries.single().amountU, 1e-9,
-            "der Rest bleibt stehen - er stammt aus einem anderen Vorgang",
+        a.episodes.mealDeliveries.addLast(
+            EpisodeBudgets.MealDelivery(z.ts, 0.15 + 5e-10, z.proposalId),
         )
+        assertEquals(0.15, a.revokeSettled(ID), 1e-9, "innerhalb 1e-9 wird entlastet")
+        assertTrue(a.episodes.mealDeliveries.isEmpty(), "und die Zeile verschwindet GANZ")
     }
 
     // ---- Die Kennung ist eine erzwungene Invariante (Toni 19.08.) ---------

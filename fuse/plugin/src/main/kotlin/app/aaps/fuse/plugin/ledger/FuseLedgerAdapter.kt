@@ -1396,15 +1396,28 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
             if (s.mealTs > 0L) episodes.mealDeliveries.indexOfFirst { it.proposalId == proposalId }
             else -1
         if (s.mealTs > 0L && idx < 0) return 0.0
-        // UND DIE MENGE MUSS PASSEN (Toni 19.08.). Die Zeile zu FINDEN reicht
-        // nicht: traegt sie weniger als die Ablage behauptet, zoege dieser
-        // Aufruf global `menge` ab und entfernte lokal nur den kleineren
-        // Betrag - dieselbe Uneinigkeit der Buecher, nur mit einer
-        // gefundenen Zeile statt einer fehlenden.
+        // UND DIE MENGE MUSS EXAKT PASSEN (Toni 19.08.).
         //
-        // Der Fall kann heute nur aus einem widerspruechlichen RAM-Zustand
-        // entstehen. Dann ist "gar nichts" der richtige Ausgang.
-        if (idx >= 0 && episodes.mealDeliveries[idx].amountU + 1e-9 < menge) return 0.0
+        // Die Zeile zu FINDEN reicht nicht. Traegt sie WENIGER als die Ablage
+        // behauptet, zoege dieser Aufruf global die Menge ab und entfernte
+        // lokal nur den kleineren Betrag - dieselbe Uneinigkeit der Buecher,
+        // nur mit einer gefundenen Zeile statt einer fehlenden.
+        //
+        // Und MEHR darf sie ebenso wenig tragen, auch wenn das zuerst harmlos
+        // aussieht. Hier stand "wird gekuerzt, der Rest stammt aus einem
+        // anderen Vorgang" - das widerspricht der stabilen Identitaet, die
+        // dieser Block gerade erzwingt: eine Vorschlagskennung gehoert genau
+        // EINEM Zyklus, ein anderer Vorgang kann sie nicht teilen. Der stehen
+        // gebliebene Rest waere eine Phantomlieferung, die niemand mehr
+        // zuordnen kann.
+        //
+        // Im gueltigen Zustand sind beide Groessen ohnehin gleich:
+        // [resolveReservation] hat die Zeile schon auf die tatsaechlich
+        // publizierte Menge gebracht. Jede Abweichung ueber das
+        // Rundungsrauschen hinaus ist ein Widerspruch - und dann ist "gar
+        // nichts" der richtige Ausgang.
+        if (idx >= 0 && kotlin.math.abs(episodes.mealDeliveries[idx].amountU - menge) > 1e-9)
+            return 0.0
 
         // EXAKT DIESELBEN ZAEHLER wie beim Reject einer Reservierung - der
         // Vorgang ist derselbe, nur eine Stufe spaeter bewiesen.
@@ -1419,13 +1432,13 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
         // laengst eine neue Zeile gebucht, und `indexOfLast { it.ts == ... }`
         // traefe bei einem wiederholten CGM-Zeitstempel die NEUE Abgabe statt
         // der verworfenen alten.
-        if (idx >= 0) {
-            val rest = episodes.mealDeliveries[idx].amountU - menge
-            if (rest > 1e-9)
-                episodes.mealDeliveries[idx] =
-                    EpisodeBudgets.MealDelivery(episodes.mealDeliveries[idx].ts, rest, proposalId)
-            else episodes.mealDeliveries.removeAt(idx)
-        }
+        // DIE ZEILE VERSCHWINDET GANZ - ein Kuerzungszweig waere toter Code.
+        // Die Probe oben laesst nur noch Gleichheit durch, es bliebe also nie
+        // ein Rest uebrig. Ihn trotzdem zu behandeln hiesse, einen Zustand
+        // vorzusehen, den derselbe Code wenige Zeilen frueher ausschliesst -
+        // und beim naechsten Lesen waere unklar, welche der beiden Stellen
+        // die Wahrheit sagt.
+        if (idx >= 0) episodes.mealDeliveries.removeAt(idx)
         return menge
     }
 
