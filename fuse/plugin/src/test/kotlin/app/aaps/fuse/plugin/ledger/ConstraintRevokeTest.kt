@@ -6,6 +6,8 @@ import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.io.TempDir
+import java.io.File
 
 /**
  * DIE BUCHFUEHRUNG ZAEHLT NUR, WAS DIE PUMPE AUCH BEKOMMEN HAT
@@ -218,11 +220,22 @@ class ConstraintRevokeTest {
      * der gewollte Ausgang: die Buchung bleibt stehen, FUSE liefert spaeter
      * zu wenig statt zu viel. Der Test unten haelt genau das fest.
      *
-     * Wozu die Kennung in der Datei dann taugt: fuer alles NACH dem naechsten
-     * Persist. Ein Beweis, der einen Zyklus spaeter kommt, findet den Eintrag
-     * dann auch nach einem zwischenzeitlichen Laden - und die
-     * Eindeutigkeitspruefung im Codec haelt die Identitaet ueber Ladevorgaenge
-     * hinweg stabil.
+     * WOZU DIE KENNUNG IN DER DATEI DANN TAUGT - und hier stand schon wieder
+     * eine zu starke Behauptung (Toni 19.08.): "ein Beweis findet den Eintrag
+     * dann auch nach einem zwischenzeitlichen Laden". Auch das stimmt nicht.
+     * Ein Laden IST ein Prozessstart, und danach ist `settled` weg - die
+     * Kennung wird gar nicht mehr gesucht.
+     *
+     * Fuer die ENTLASTUNG taugt sie in der Datei also nicht. Sie taugt fuer
+     * zweierlei anderes, und beides ist real:
+     *
+     *   die EINDEUTIGKEIT bleibt ueber Ladevorgaenge erzwungen, sodass eine
+     *   spaeter nachgetragene Kennung nicht mit einer alten kollidieren kann;
+     *
+     *   und im Trail steht, welche Mahlzeitenzeile zu welchem Zyklus gehoerte -
+     *   ohne das waere eine Abweichung zwischen Buchfuehrung und
+     *   Pumpendatenbank spaeter nicht mehr aufzuloesen. Genau diese Frage hat
+     *   den ganzen Block ausgeloest.
      */
     @Test
     fun `die Buchungskennung ueberlebt den Codec-Rundlauf`() {
@@ -247,24 +260,59 @@ class ConstraintRevokeTest {
      * liefert spaeter zu wenig statt zu viel.
      */
     @Test
-    fun `nach einem Neustart bleibt die Buchung stehen`() {
-        val vor = nachPublikation()
-        val datei = LedgerCodec.encodeEpisodes(vor.episodes).toString()
+    fun `nach einem Neustart bleibt die Buchung stehen`(@TempDir dir: File) {
+        // MEINE ERSTE FASSUNG WAR EINE ATTRAPPE (Toni 19.08.): sie kopierte
+        // den Zustand von Hand in einen neuen Adapter - und vergass dabei
+        // onsetSpentU. Ein Test, der die Einigkeit der fuenf Buecher pruefen
+        // soll, machte sie in seinem eigenen Aufbau uneinig.
+        //
+        // Jetzt der ECHTE Weg: persistVerified -> neuer Adapter -> loadOnce.
+        val vor = FuseLedgerAdapter()
+        vor.loadOnce(dir, "s1", ts)
+        // EINE ECHTE AUTORISIERUNG, und der echte Weg hat sofort gezeigt,
+        // warum das noetig ist: `deliveredSinceHandoverU` wird NUR gemeinsam
+        // mit der Autorisierung persistiert (s. LedgerCodec.encodeFoundation).
+        // Ohne sie ging der Zaehler beim Laden verloren, und der Test schlug
+        // mit 0,0 statt 0,60 fehl. Die Attrappe konnte das nicht zeigen - sie
+        // kopierte den Zaehler ja von Hand.
+        //
+        // Das ist kein Mangel, sondern der Vertrag: ein Bezahlstand ohne
+        // Autorisierung ist bedeutungslos, und die beiden duerfen nicht
+        // auseinanderlaufen.
+        vor.episodes.foundation = MealFoundation.arm(
+            markerTs = ts - 30 * 60_000L, foundationEnabled = true, totalBudgetU = 3.0,
+            phaseAShare = 0.75, primeWindowMin = 15, wallCeilingMin = 45,
+            pressObservedInThisProcess = true, primeDeclinedByUser = false,
+            markerAuthorized = true, phaseBUntilMin = 60,
+        )
+        vor.episodes.primeSpentU = 0.60
+        vor.episodes.onsetSpentU = 0.60
+        vor.episodes.evidenceCommittedU = 0.60
+        vor.episodes.deliveredSinceHandoverU = 0.60
+        vor.episodes.mealDeliveries.addLast(EpisodeBudgets.MealDelivery(ts, 0.15))
+        vor.episodes.pendingReservation = EpisodeBudgets.Reservation(
+            computeTs = ts, amountU = 0.15, prime = true, onset = true,
+            mealTs = ts, foundationPhase = MealFoundation.Phase.PHASE_B,
+        )
+        vor.resolveReservation(ts, publishedU = 0.15, proposalId = ID)
+        assertNotNull(vor.episodes.settled, "vor dem Neustart ist die Ablage da")
+        assertTrue(vor.persistVerified(dir), "schreiben muss gelingen")
 
-        // Der Neustart: neuer Adapter, Zustand aus der Datei, `settled` weg.
+        // Der Neustart.
         val nach = FuseLedgerAdapter()
-        val geladen = LedgerCodec.decodeEpisodes(org.json.JSONObject(datei))
-        nach.episodes.primeSpentU = geladen.primeSpentU
-        nach.episodes.evidenceCommittedU = geladen.evidenceCommittedU
-        nach.episodes.deliveredSinceHandoverU = geladen.deliveredSinceHandoverU
-        geladen.mealDeliveries.forEach { nach.episodes.mealDeliveries.addLast(it) }
-        assertNull(nach.episodes.settled, "ein Neustart hat keine offene Ablage")
+        nach.loadOnce(dir, "s2", ts + 60_000L)
 
+        assertNull(nach.episodes.settled, "ein Neustart hat keine offene Ablage")
         assertEquals(0.0, nach.revokeSettled(ID), 1e-9, "und damit nichts zurueckzudrehen")
-        assertEquals(0.60, nach.episodes.primeSpentU, 1e-9, "die Buchung bleibt stehen")
+
+        // ALLE FUENF Buecher, einzeln geprueft.
+        assertEquals(0.60, nach.episodes.primeSpentU, 1e-9, "primeSpentU")
+        assertEquals(0.60, nach.episodes.onsetSpentU, 1e-9, "onsetSpentU")
+        assertEquals(0.60, nach.episodes.evidenceCommittedU, 1e-9, "evidenceCommittedU")
+        assertEquals(0.60, nach.episodes.deliveredSinceHandoverU, 1e-9, "deliveredSinceHandoverU")
         assertEquals(
             0.15, nach.episodes.mealDeliveries.single().amountU, 1e-9,
-            "und die Mahlzeitenzeile auch - die fuenf Buecher bleiben einig",
+            "mealDeliveries - die fuenf Buecher bleiben einig",
         )
     }
 
@@ -417,6 +465,45 @@ class ConstraintRevokeTest {
             )
             assertEquals(0.45, a.episodes.primeSpentU, 1e-9, "$phase: Prime aber schon")
         }
+    }
+
+    /**
+     * DIE GEFUNDENE ZEILE MUSS DIE MENGE AUCH TRAGEN (Toni 19.08.).
+     *
+     * Die Zeile zu FINDEN reicht nicht: traegt sie weniger als die Ablage
+     * behauptet, zoege der Aufruf global `menge` ab und entfernte lokal nur
+     * den kleineren Betrag - dieselbe Uneinigkeit der Buecher wie bei einer
+     * fehlenden Zeile, nur mit einer gefundenen.
+     */
+    @Test
+    fun `eine zu kleine Mahlzeitenzeile entlastet gar nicht`() {
+        val a = nachPublikation()
+        // Widerspruch im RAM: die Ablage nennt 0,15 U, die Zeile traegt 0,05.
+        val z = a.episodes.mealDeliveries.single()
+        a.episodes.mealDeliveries.clear()
+        a.episodes.mealDeliveries.addLast(EpisodeBudgets.MealDelivery(z.ts, 0.05, z.proposalId))
+
+        assertEquals(0.0, a.revokeSettled(ID), 1e-9, "keine Teilentlastung")
+        assertEquals(0.60, a.episodes.primeSpentU, 1e-9)
+        assertEquals(0.60, a.episodes.onsetSpentU, 1e-9)
+        assertEquals(0.60, a.episodes.evidenceCommittedU, 1e-9)
+        assertEquals(0.60, a.episodes.deliveredSinceHandoverU, 1e-9)
+        assertEquals(0.05, a.episodes.mealDeliveries.single().amountU, 1e-9, "und die Zeile bleibt")
+    }
+
+    /** Eine GROESSERE Zeile ist dagegen zulaessig - sie wird gekuerzt. */
+    @Test
+    fun `eine groessere Mahlzeitenzeile wird gekuerzt`() {
+        val a = nachPublikation()
+        val z = a.episodes.mealDeliveries.single()
+        a.episodes.mealDeliveries.clear()
+        a.episodes.mealDeliveries.addLast(EpisodeBudgets.MealDelivery(z.ts, 0.25, z.proposalId))
+
+        assertEquals(0.15, a.revokeSettled(ID), 1e-9)
+        assertEquals(
+            0.10, a.episodes.mealDeliveries.single().amountU, 1e-9,
+            "der Rest bleibt stehen - er stammt aus einem anderen Vorgang",
+        )
     }
 
     // ---- Die Kennung ist eine erzwungene Invariante (Toni 19.08.) ---------

@@ -1396,6 +1396,15 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
             if (s.mealTs > 0L) episodes.mealDeliveries.indexOfFirst { it.proposalId == proposalId }
             else -1
         if (s.mealTs > 0L && idx < 0) return 0.0
+        // UND DIE MENGE MUSS PASSEN (Toni 19.08.). Die Zeile zu FINDEN reicht
+        // nicht: traegt sie weniger als die Ablage behauptet, zoege dieser
+        // Aufruf global `menge` ab und entfernte lokal nur den kleineren
+        // Betrag - dieselbe Uneinigkeit der Buecher, nur mit einer
+        // gefundenen Zeile statt einer fehlenden.
+        //
+        // Der Fall kann heute nur aus einem widerspruechlichen RAM-Zustand
+        // entstehen. Dann ist "gar nichts" der richtige Ausgang.
+        if (idx >= 0 && episodes.mealDeliveries[idx].amountU + 1e-9 < menge) return 0.0
 
         // EXAKT DIESELBEN ZAEHLER wie beim Reject einer Reservierung - der
         // Vorgang ist derselbe, nur eine Stufe spaeter bewiesen.
