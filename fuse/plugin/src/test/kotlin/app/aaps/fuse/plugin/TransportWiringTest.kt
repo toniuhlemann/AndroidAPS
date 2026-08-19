@@ -3251,10 +3251,19 @@ class TransportWiringTest : TestBaseWithProfile() {
     //
     //     NotSentProof (Beleg ueber den VORIGEN Zyklus, VOR dem Lauf)
     //       -> runner.run()
-    //       -> LedgerPublicationGate.publish { onProvenNotSent + revokeSettled
-    //                                          + onPublished }
+    //       -> LedgerPublicationGate.publish
+    //            events{}: onProvenNotSent + revokeSettled + onPublished
+    //            DANN der verifizierte Persist - INNERHALB des Gates
     //       -> resolveReservation(computeTs, publizierteMenge, cycleId)
     //       -> published*-Felder fortschreiben
+    //
+    // DER CRASH-RAND, richtiggestellt (Codex 19.08.): der Persist liegt IM
+    // Gate und damit VOR `resolveReservation` und vor den published*-Feldern -
+    // nicht am Ende der Kette, wie hier zuerst stand. Fuer die Rueckbuchung
+    // aendert das nichts: sie geschieht im `events`-Block, also VOR dem
+    // Persist, und ist deshalb durabel, sobald das Gate gesiegelt hat. Was
+    // NACH dem Persist stirbt, verliert die Aufloesung der Reservierung - und
+    // das ist der gewollte UNKNOWN-Ausgang: die Belastung bleibt stehen.
     //       -> verifizierter Persist (im Gate)
     //
     // DIE EINE TESTGRENZE, ausdruecklich benannt: `priorActuation` liest
@@ -3553,10 +3562,14 @@ class TransportWiringTest : TestBaseWithProfile() {
         assertEquals(0.0, beweis.decision.smbU, 1e-9, "der Beweiszyklus bucht nichts")
         assertNull(letzterGrund, "ein unauswertbarer Ausgang ist KEIN Beweis")
         assertEquals(0.0, e.confirmedNotSentPhaseAU, 1e-9, "und erzeugt keinen Uebertrag")
-        assertTrue(e.primeSpentU >= primeVor - 1e-9, "primeSpentU darf nicht sinken")
-        assertTrue(e.evidenceCommittedU >= evidenzVor - 1e-9, "evidenceCommittedU auch nicht")
-        assertTrue(e.deliveredPhaseAU >= phaseAVor - 1e-9, "und der Phase-A-Stand ebenso wenig")
-        assertTrue(e.mealDeliveries.size >= zeilenVor, "keine Zeile verschwindet")
+        // EXAKT GLEICH, nicht ">= vorher" (Codex 19.08.). Der ruhige Zyklus
+        // bucht nichts, also darf sich kein Buch bewegen - in KEINE Richtung.
+        // Eine Ungleichung liesse eine Phantom-Buchung durch und der Test
+        // bliebe gruen.
+        assertEquals(primeVor, e.primeSpentU, 1e-9, "primeSpentU unveraendert")
+        assertEquals(evidenzVor, e.evidenceCommittedU, 1e-9, "evidenceCommittedU unveraendert")
+        assertEquals(phaseAVor, e.deliveredPhaseAU, 1e-9, "deliveredPhaseAU unveraendert")
+        assertEquals(zeilenVor, e.mealDeliveries.size, "und keine Zeile kommt oder geht")
         assertEquals(0.0, nachNeustart(dir).confirmedNotSentPhaseAU, 1e-9, "auch nach Neustart nicht")
     }
 
@@ -3663,70 +3676,198 @@ class TransportWiringTest : TestBaseWithProfile() {
         val phaseAVor = e.deliveredPhaseAU
         val zeilenVor = e.mealDeliveries.size
 
-        // Die Kennung des NAECHSTEN Zyklus wird verbogen - der Beleg des
-        // vorigen findet damit keine passende Ablage mehr.
+        // (a) UNBEKANNTE KENNUNG: es gibt gar keine offene Zeile dazu, der
+        // Beleg wird also erst gar nicht gebildet.
         pPropId = "e2e#fremd"
         letzterAusgang = Ausgang.NIE_KOMMANDIERT
         transport(dir)
 
         assertEquals(0.0, e.confirmedNotSentPhaseAU, 1e-9, "kein Uebertrag ohne Zuordnung")
-        assertTrue(e.primeSpentU >= primeVor - 1e-9, "und keine Entlastung")
-        assertTrue(e.deliveredPhaseAU >= phaseAVor - 1e-9)
-        assertTrue(e.mealDeliveries.size >= zeilenVor, "keine Zeile verschwindet")
+        // EXAKT GLEICH - s. den unauswertbaren Fall.
+        assertEquals(primeVor, e.primeSpentU, 1e-9, "keine Entlastung")
+        assertEquals(phaseAVor, e.deliveredPhaseAU, 1e-9)
+        assertEquals(zeilenVor, e.mealDeliveries.size, "und keine Zeile kommt oder geht")
+    }
+
+
+    /**
+     * DIE ZWEITE GESTALT DER FALSCHEN KENNUNG: der Beleg nennt eine Zeile,
+     * die es SEHR WOHL gibt - nur gehoert die abgeschlossene Buchung zu einer
+     * anderen.
+     *
+     * WARUM DAS EIN EIGENER TEST IST, und das hat wieder erst eine
+     * Mutationsprobe gezeigt: bei einer voellig unbekannten Kennung greift
+     * schon `hasOpenProposal`, und der Beleg wird gar nicht erst gebildet.
+     * Die Kennungspruefung IN `revokeSettled` wurde damit nie erreicht - das
+     * Entfernen der Zeile `if (s.proposalId != proposalId) return NONE` blieb
+     * gruen.
+     *
+     * Hier ist die genannte Zeile offen, die Ablage traegt aber den
+     * NACHFOLGER. Genau die Lage, in der ein zu grosszuegiges Zuordnen eine
+     * fremde Menge entlasten wuerde.
+     */
+    @Test
+    fun `E2E offene aber fremde Kennung - alles unveraendert`(@TempDir dir: File) {
+        mahlzeit(dir)
+        bisPhaseABuchung(dir)
+        // Die Kennung des ERSTEN Zyklus merken - sie bleibt offen, bis ein
+        // IOB-Fakt sie bindet.
+        val alteId = pPropId ?: throw AssertionError("der erste Zyklus muss eine offene Zeile haben")
+
+        // Ein ZWEITER Buchungszyklus: die Ablage traegt jetzt ihn.
+        transport(dir)
+        assertTrue(
+            ledger.hasOpenProposal(alteId),
+            "die alte Zeile MUSS noch offen sein, sonst greift schon hasOpenProposal",
+        )
+        assertTrue(
+            ledger.episodes.settled?.proposalId != alteId,
+            "die Ablage MUSS den Nachfolger tragen - sonst prueft der Test nichts",
+        )
+
+        ruhigStellen()
+        val e = ledger.episodes
+        val primeVor = e.primeSpentU
+        val evidenzVor = e.evidenceCommittedU
+        val phaseAVor = e.deliveredPhaseAU
+        val zeilenVor = e.mealDeliveries.size
+
+        // DER BELEG NENNT DIE ALTE, OFFENE ZEILE.
+        pPropId = alteId
+        letzterAusgang = Ausgang.NIE_KOMMANDIERT
+        val beweis = transport(dir)
+        assertEquals(0.0, beweis.decision.smbU, 1e-9, "der Beweiszyklus bucht nichts")
+
+        assertEquals(
+            0.0, e.confirmedNotSentPhaseAU, 1e-9,
+            "eine fremde Buchung darf keinen Uebertrag erzeugen",
+        )
+        assertEquals(primeVor, e.primeSpentU, 1e-9, "primeSpentU unveraendert")
+        assertEquals(evidenzVor, e.evidenceCommittedU, 1e-9, "evidenceCommittedU unveraendert")
+        assertEquals(phaseAVor, e.deliveredPhaseAU, 1e-9, "deliveredPhaseAU unveraendert")
+        assertEquals(zeilenVor, e.mealDeliveries.size, "und keine Zeile kommt oder geht")
     }
 
     // ---- FALL 6: Prime holt vor der Uebergabe nach ------------------------
 
+    /** Die Fundament-Sicht auf den AKTUELLEN Ledger-Stand. */
+    private fun sicht(e: EpisodeBudgets = ledger.episodes) = MealFoundation.snapshot(
+        e.foundation, clock, e.primeWindowStartTs,
+        deliveredFromBudgetU = e.deliveredPhaseAU + e.deliveredSinceHandoverU,
+        deliveredSinceHandoverU = e.deliveredSinceHandoverU,
+        deliveredPhaseAU = e.deliveredPhaseAU,
+        confirmedNotSentPhaseAU = e.confirmedNotSentPhaseAU,
+        bolusStepU = 0.05,
+    )
+
     /**
-     * DER MENGEN-ZEIT-VERTRAG, durch die ganze Kette.
+     * DER MENGEN-ZEIT-VERTRAG, als echter VORHER/NACHHER-Beleg
+     * (Codex 19.08. - die erste Fassung bewies ihn NICHT).
      *
-     * Prime liefert die verworfene Menge in seinem EIGENEN Fenster nach. Der
-     * Rohzaehler bleibt stehen - er ist ein Beweis, kein Konto -, der
-     * EFFEKTIVE Uebertrag faellt auf 0, und mit ihm die Rampe. Ohne diesen
-     * Vertrag lieferte Phase B ihr unveraendertes Teilbudget auf einer zu
-     * schnellen Bahn.
+     * WAS AN DER ERSTEN FASSUNG FALSCH WAR, und es ist dieselbe Sorte Fehler
+     * wie beim zurueckgezogenen E2E:
+     *
+     *   `repeat(8)` garantierte nicht, dass Prime die Luecke ueberhaupt
+     *   schliesst - der Test lief eine feste Zahl Zyklen und behauptete
+     *   danach etwas ueber einen Zustand, den er nicht hergestellt hatte;
+     *
+     *   `effectiveCarryU <= menge` ist erfuellt, wenn der Uebertrag
+     *   UNVERAENDERT voll bleibt - die Zeile konnte den Fehler nicht finden,
+     *   gegen den sie stand;
+     *
+     *   und die Erwartungswerte wurden aus DEMSELBEN Snapshot
+     *   zurueckgerechnet, den sie pruefen sollten. Das prueft die Formel
+     *   gegen sich selbst, nicht den Uebergang.
+     *
+     * Hier stehen jetzt zwei ABSOLUTE Zustaende, aus der Autorisierung
+     * abgeleitet, und dazwischen laeuft die Schleife BIS ZUR BELEGTEN
+     * BEDINGUNG statt eine feste Zahl Zyklen.
+     *
+     * DASS PHASE A DAS BUDGET UEBERSCHREITEN KANN, ist kein Fehler im
+     * Aufbau: `deliveredPhaseAU` zaehlt ALLES, was in der Phase floss, und
+     * Korrektur- und Evidenzinsulin duerfen ausdruecklich ueber das
+     * Mahlzeitenbudget hinausgehen. Die Bedingung lautet deshalb
+     * "Rueckstand geschlossen", nicht "exakt gleich".
      */
     @Test
-    fun `E2E Prime holt nach - Rohuebertrag bleibt, Wirkung faellt`(@TempDir dir: File) {
+    fun `E2E Prime holt nach - Rohzaehler bleibt, Wirkung und Rampe fallen`(@TempDir dir: File) {
         mahlzeit(dir)
         val o = bisPhaseABuchung(dir)
         val menge = o.decision.smbU
+        val phaseABudget = ledger.episodes.foundation.phaseABudgetU
+        val phaseBBudget = ledger.episodes.foundation.phaseBBudgetU
+        assertTrue(phaseBBudget > 0.0, "der Aufbau braucht ein Phase-B-Budget")
 
+        // ---- (1) DIREKT NACH DEM BEWEIS: die Luecke ist offen ------------
+        ruhigStellen()
         letzterAusgang = Ausgang.NIE_KOMMANDIERT
-        transport(dir)
-        assertEquals(menge, ledger.episodes.confirmedNotSentPhaseAU, 1e-9, "der Uebertrag steht")
-
-        // Prime laeuft weiter und liefert in seinem Fenster nach.
-        repeat(8) { transport(dir) }
+        val beweis = transport(dir)
+        assertEquals(0.0, beweis.decision.smbU, 1e-9, "der Beweiszyklus bucht nichts")
 
         val e = ledger.episodes
-        assertEquals(
-            menge, e.confirmedNotSentPhaseAU, 1e-9,
-            "der ROHE Beweiszaehler bleibt unveraendert - er ist ein Beweis, kein Konto",
+        assertEquals(menge, e.confirmedNotSentPhaseAU, 1e-9, "der rohe Beweiszaehler")
+        assertTrue(
+            e.deliveredPhaseAU < phaseABudget - 1e-9,
+            "die Luecke MUSS offen sein: ${e.deliveredPhaseAU} von $phaseABudget",
         )
 
-        // Und die WIRKUNG: der Snapshot rechnet mit dem noch offenen Rest.
-        val snap = MealFoundation.snapshot(
-            e.foundation, clock, e.primeWindowStartTs,
-            deliveredFromBudgetU = e.deliveredPhaseAU + e.deliveredSinceHandoverU,
-            deliveredSinceHandoverU = e.deliveredSinceHandoverU,
-            deliveredPhaseAU = e.deliveredPhaseAU,
-            confirmedNotSentPhaseAU = e.confirmedNotSentPhaseAU,
-            bolusStepU = 0.05,
-        )
-        val rueckstand = maxOf(0.0, snap.phaseABudgetU - e.deliveredPhaseAU)
+        val offen = sicht()
+        assertEquals(menge, offen.effectiveCarryU, 1e-9, "der Uebertrag gilt voll")
         assertEquals(
-            minOf(menge, rueckstand), snap.effectiveCarryU, 1e-9,
-            "der effektive Uebertrag folgt dem OFFENEN Rueckstand",
+            minOf(phaseBBudget + menge, offen.totalBudgetU), offen.phaseBAllowanceU, 1e-9,
+            "und hebt die Erlaubnis",
         )
-        assertEquals(
-            minOf(snap.phaseBBudgetU + snap.effectiveCarryU, snap.totalBudgetU),
-            snap.phaseBAllowanceU, 1e-9,
-            "und die Erlaubnis daraus",
-        )
+        val normaleRate = phaseBBudget / offen.effectiveWindowMin
         assertTrue(
-            snap.effectiveCarryU <= menge + 1e-9,
-            "er kann nie ueber den Beweis hinausgehen",
+            offen.effectiveRateUPerMin > normaleRate + 1e-9,
+            "die Rampe MUSS angehoben sein: ${offen.effectiveRateUPerMin} gegen $normaleRate",
+        )
+
+        // ---- (2) PRIME LIEFERT WIRKLICH NACH -----------------------------
+        //
+        // BIS ZUR BEDINGUNG, mit hartem Deckel. Eine feste Zyklenzahl wuerde
+        // wieder einen Zustand behaupten statt ihn herzustellen.
+        flach = 180.0
+        steigungProMin = 2.5
+        var zyklen = 0
+        while (ledger.episodes.deliveredPhaseAU < phaseABudget - 1e-9) {
+            assertTrue(
+                zyklen++ < 30,
+                "Prime hat die Luecke in 30 Zyklen nicht geschlossen: " +
+                    "${ledger.episodes.deliveredPhaseAU} von $phaseABudget",
+            )
+            transport(dir)
+        }
+
+        // ---- (3) DER ENDZUSTAND ------------------------------------------
+        val zu = sicht()
+        assertEquals(
+            menge, e.confirmedNotSentPhaseAU, 1e-9,
+            "der ROHE Zaehler bleibt - er ist ein Beweis, kein Konto",
+        )
+        assertEquals(0.0, zu.effectiveCarryU, 1e-9, "wirkt aber nicht mehr")
+        assertEquals(
+            phaseBBudget, zu.phaseBAllowanceU, 1e-9,
+            "Phase B rechnet wieder mit ihrem Teilbudget",
+        )
+        assertEquals(
+            phaseBBudget / zu.effectiveWindowMin, zu.effectiveRateUPerMin, 1e-9,
+            "UND DIE RAMPE FAELLT MIT - das ist der eigentliche Schaden, nicht die Summe",
+        )
+
+        // ---- (4) UND DER ENDZUSTAND UEBERLEBT DEN NEUSTART ---------------
+        val nach = nachNeustart(dir)
+        assertEquals(menge, nach.confirmedNotSentPhaseAU, 1e-9, "der Beweis bleibt durabel")
+        assertTrue(
+            nach.deliveredPhaseAU >= phaseABudget - 1e-9,
+            "und der geschlossene Rueckstand auch: ${nach.deliveredPhaseAU}",
+        )
+        val nachSicht = sicht(nach)
+        assertEquals(0.0, nachSicht.effectiveCarryU, 1e-9, "nach dem Neustart wirkt er ebenso wenig")
+        assertEquals(phaseBBudget, nachSicht.phaseBAllowanceU, 1e-9)
+        assertEquals(
+            phaseBBudget / nachSicht.effectiveWindowMin, nachSicht.effectiveRateUPerMin, 1e-9,
+            "sonst liefe Phase B nach jedem Neustart wieder zu schnell",
         )
     }
 
