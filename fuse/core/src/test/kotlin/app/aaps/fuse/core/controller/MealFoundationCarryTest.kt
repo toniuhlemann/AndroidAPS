@@ -1,6 +1,7 @@
 package app.aaps.fuse.core.controller
 
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertNotEquals
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
@@ -279,6 +280,40 @@ class MealFoundationCarryTest {
      * geradezubiegen hiesse, mit einem kaputten Zustand weiterzurechnen und
      * den Fehler unsichtbar zu machen.
      */
+    /**
+     * MEHR SEIT DER UEBERGABE ALS INSGESAMT IST EIN WIDERSPRUCH
+     * (Codex 19.08.).
+     *
+     * Der Teil kann nicht groesser sein als das Ganze. Frueher wurde die
+     * Differenz still auf 0 geklemmt - und ergab damit den GROESSTEN
+     * Phase-A-Rueckstand, also die meiste Freigabe. Die teure Richtung aus
+     * einem kaputten Zustand.
+     *
+     * DASS DER RIEGEL HEUTE STEHEN DARF, haengt an der Quelle: der Runner
+     * liefert die Gesamtmenge seit Codex' Rueckfrage aus den EIGENEN Zaehlern
+     * des Fundaments (`deliveredPhaseAU + deliveredSinceHandoverU`), nicht
+     * mehr aus `evidenceCommittedU`. Mit der alten Quelle war die Ungleichung
+     * im Normalbetrieb verletzt - s. den Runner-Test
+     * `ohne Evidenzepisode waechst nur der Bezahlstand`.
+     */
+    @Test
+    fun `mehr seit der Uebergabe als insgesamt sperrt`() {
+        val p = plan(minuten = 30, ausBudgetU = 1.00, seitUebergabeU = 1.50, uebertragU = 0.30)
+        assertEquals(
+            MealFoundation.Binding.UNUSABLE_INPUT, p.binding,
+            "der Teil kann nicht groesser sein als das Ganze",
+        )
+        assertEquals(0.0, p.dueU, 1e-9, "und es wird nichts gefordert")
+
+        // GEGENPROBE: gleich gross ist zulaessig - Phase A hat dann nichts
+        // geliefert, was ein voellig normaler Verlauf ist.
+        assertNotEquals(
+            MealFoundation.Binding.UNUSABLE_INPUT,
+            plan(minuten = 30, ausBudgetU = 1.50, seitUebergabeU = 1.50, uebertragU = 0.30).binding,
+            "Gleichheit ist kein Widerspruch",
+        )
+    }
+
     @Test
     fun `ein unbrauchbarer Uebertrag ist ein Eingabefehler`() {
         for (u in listOf(-0.05, Double.NaN, Double.POSITIVE_INFINITY)) {

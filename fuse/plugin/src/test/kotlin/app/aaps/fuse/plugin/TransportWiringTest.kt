@@ -2901,6 +2901,73 @@ class TransportWiringTest : TestBaseWithProfile() {
     }
 
     /**
+     * DIE BEZAHLSTAENDE HABEN VERSCHIEDENE LEBENSDAUERN - und das ist
+     * KEIN Widerspruch (Codex-Rueckfrage 19.08., hier beantwortet).
+     *
+     * DIE FRAGE. Fuer den Phase-A-Rueckstand wurde
+     * `deliveredFromBudget - deliveredSinceHandover` gerechnet, und
+     * `deliveredFromBudget` ist produktiv `evidenceCommittedU`. Vorgeschlagen
+     * war, `deliveredSinceHandover > deliveredFromBudget` als Korruption zu
+     * behandeln - fail-closed im Kern, `require` im Codec.
+     *
+     * DAS WAERE EIN SELBSTGEBAUTER AUSFALL GEWESEN. Die beiden Zaehler
+     * wachsen unter UNABHAENGIGEN Bedingungen (`FuseCycleRunner.buche`):
+     *
+     *     if (phase == PHASE_B)        deliveredSinceHandoverU += actuatedU
+     *     if (evidenceEpisodeId > 0L)  evidenceCommittedU      += actuatedU
+     *
+     * und `MarkerEpisodeGate` liefert `episodeId = 0` bei jeder Ablehnung -
+     * unter anderem `MARKER_ALREADY_CONSUMED`, also beim ZWEITEN Markerdruck
+     * innerhalb des 360-Minuten-Deckels. Die Mahlzeiten-Autorisierung haengt
+     * ausdruecklich NICHT an diesem Tor (s. den Kommentar an der
+     * Armierungsstelle): sie wird trotzdem armiert.
+     *
+     * Ergebnis: eine voellig gesunde zweite Mahlzeit laeuft mit
+     * `evidenceCommittedU == 0` und wachsendem `deliveredSinceHandoverU`. Der
+     * Kern haette dort geschwiegen, der Codec die Generation verworfen und
+     * die Aktuation in den RECOVERY_HOLD geschickt.
+     *
+     * DESHALB FUEHRT DAS FUNDAMENT SEINEN EIGENEN PHASE-A-ZAEHLER
+     * ([EpisodeBudgets.deliveredPhaseAU]) - die Alternative, die in der
+     * Rueckfrage selbst benannt ist. Dieser Test haelt den Grund fest, damit
+     * der Riegel nicht spaeter aus guten Absichten nachgereicht wird.
+     */
+    @Test
+    fun `ohne Evidenzepisode waechst nur der Bezahlstand - kein Widerspruch`() {
+        fundamentAn = true
+        flach = 180.0
+        steigungProMin = 2.5           // echter Mahlzeitenanstieg, es fliesst etwas
+        markerAuthorized = true
+        markerAt = start + 2 * 60_000L
+
+        clock = start
+        // DER MARKER GILT ALS VERBRAUCHT -> MARKER_ALREADY_CONSUMED,
+        // episodeId = 0. Genau die Lage der ZWEITEN Mahlzeit im Deckel.
+        ledger.episodes.lastConsumedMarkerTs = markerAt
+
+        // Weit hinter die Uebergabe, damit Phase B laeuft und bucht.
+        repeat(40) { cycle() }
+
+        assertTrue(
+            ledger.episodes.foundation.valid,
+            "die Autorisierung MUSS trotz verbrauchtem Marker stehen - sonst prueft der Test nichts",
+        )
+        assertEquals(
+            0.0, ledger.episodes.evidenceCommittedU, 1e-9,
+            "ohne Evidenzepisode waechst dieser Zaehler gar nicht",
+        )
+        assertTrue(
+            ledger.episodes.deliveredSinceHandoverU > 0.0,
+            "waehrend Phase B sehr wohl bucht: ${ledger.episodes.deliveredSinceHandoverU}",
+        )
+        // UND DAMIT DIE BEZIEHUNG, die als Korruption gelten sollte:
+        assertTrue(
+            ledger.episodes.deliveredSinceHandoverU > ledger.episodes.evidenceCommittedU + 1e-9,
+            "der 'Widerspruch' ist ein gesunder Betriebszustand",
+        )
+    }
+
+    /**
      * UND SIE LOESCHT DEN PHASE-B-UEBERTRAG MIT (Toni 19.08.).
      *
      * Der Uebertrag gehoert zu der Autorisierung, die hier gerade endet.

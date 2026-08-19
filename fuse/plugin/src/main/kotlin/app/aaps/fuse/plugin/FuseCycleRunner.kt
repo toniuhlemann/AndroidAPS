@@ -714,6 +714,7 @@ class FuseCycleRunner(
         if (episodeGate.creditRevoked) {
             episodes.foundation = MealFoundation.Authorization.none()
             episodes.deliveredSinceHandoverU = 0.0
+            episodes.deliveredPhaseAU = 0.0
             // UND DER UEBERTRAG MIT (Toni 19.08.). Er gehoert zu der
             // Autorisierung, die hier gerade endet. Bliebe er stehen, gaebe der
             // ausdrueckliche Widerruf der NAECHSTEN Mahlzeit zusaetzliches
@@ -1130,6 +1131,7 @@ class FuseCycleRunner(
             )
             // Eine neue Autorisierung beginnt mit unbezahlter Phase B.
             episodes.deliveredSinceHandoverU = 0.0
+            episodes.deliveredPhaseAU = 0.0
             // UND OHNE UEBERTRAG (Toni 19.08.). Ein neuer Markerdruck ist eine
             // neue Mahlzeit mit eigenem Budget; eine Luecke aus der vorigen
             // darf sie nicht erben. Das steht hier UND beim Widerruf, weil es
@@ -1863,7 +1865,7 @@ class FuseCycleRunner(
         // beantwortet "wo steht es am Ende".
         val foundationDecision = MealFoundation.snapshot(
             episodes.foundation, computeTs, episodes.primeWindowStartTs,
-            deliveredFromBudgetU = episodes.evidenceCommittedU,
+            deliveredFromBudgetU = episodes.deliveredPhaseAU + episodes.deliveredSinceHandoverU,
             deliveredSinceHandoverU = episodes.deliveredSinceHandoverU,
             confirmedNotSentPhaseAU = episodes.confirmedNotSentPhaseAU,
             bolusStepU =bolusStep,
@@ -2235,7 +2237,7 @@ class FuseCycleRunner(
         // eine Minute, und im Replay ein systematischer Versatz.
         val foundationSnapshot = MealFoundation.snapshot(
             episodes.foundation, computeTs, episodes.primeWindowStartTs,
-            deliveredFromBudgetU = episodes.evidenceCommittedU,
+            deliveredFromBudgetU = episodes.deliveredPhaseAU + episodes.deliveredSinceHandoverU,
             deliveredSinceHandoverU = episodes.deliveredSinceHandoverU,
             confirmedNotSentPhaseAU = episodes.confirmedNotSentPhaseAU,
             bolusStepU =pumpe.bolusStepU,
@@ -2396,6 +2398,13 @@ class FuseCycleRunner(
         // entstuende genau der additive Bolus, den dieser Baustein vermeidet.
         if (phase == MealFoundation.Phase.PHASE_B)
             episodes.deliveredSinceHandoverU += actuatedU
+        // UND DIE PHASE-A-SEITE, symmetrisch (Codex 19.08.). Auch hier zaehlt
+        // ALLES, was in dieser Phase floss - dieselbe Mindestversorgungs-
+        // Semantik. Zusammen ergeben die beiden, was aus DIESEM Budget
+        // geflossen ist; `evidenceCommittedU` kann das nicht sagen, weil er
+        // eine andere Lebensdauer hat (s. [EpisodeBudgets.deliveredPhaseAU]).
+        if (phase == MealFoundation.Phase.PHASE_A)
+            episodes.deliveredPhaseAU += actuatedU
 
         // DER EVIDENZ-ZAEHLER: kumulativ ueber die GANZE Episode, alle
         // Kanaele, und bei Episodenwechsel zurueck auf 0. Er ist die
@@ -2603,7 +2612,7 @@ class FuseCycleRunner(
             base = liftedPrime,
             snapshot = MealFoundation.snapshot(
                 episodes.foundation, computeTs, episodes.primeWindowStartTs,
-                deliveredFromBudgetU = episodes.evidenceCommittedU,
+                deliveredFromBudgetU = episodes.deliveredPhaseAU + episodes.deliveredSinceHandoverU,
                 deliveredSinceHandoverU = episodes.deliveredSinceHandoverU,
                 confirmedNotSentPhaseAU = episodes.confirmedNotSentPhaseAU,
                 bolusStepU = pumpe.bolusStepU,
@@ -2712,7 +2721,7 @@ class FuseCycleRunner(
             // auseinander wie schon einmal bei der Buchfuehrung.
             mealFoundation = MealFoundation.snapshot(
                 episodes.foundation, computeTs, episodes.primeWindowStartTs,
-                deliveredFromBudgetU = episodes.evidenceCommittedU,
+                deliveredFromBudgetU = episodes.deliveredPhaseAU + episodes.deliveredSinceHandoverU,
                 deliveredSinceHandoverU = episodes.deliveredSinceHandoverU,
                 confirmedNotSentPhaseAU = episodes.confirmedNotSentPhaseAU,
                 bolusStepU = pumpe.bolusStepU,

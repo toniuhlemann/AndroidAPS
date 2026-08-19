@@ -248,6 +248,55 @@ class PhaseACarryTest {
     }
 
     /**
+     * DAS ZURUECKDREHEN TRIFFT AUCH DEN PHASE-A-BEZAHLSTAND (Codex 19.08.).
+     *
+     * Beides gehoert in denselben Zug: der Uebertrag entsteht, UND die
+     * gebuchte Phase-A-Menge faellt. Nur so oeffnet sich der Rueckstand, aus
+     * dem der Uebertrag ueberhaupt seine Wirkung bezieht - der effektive Rest
+     * ist das Minimum aus beidem. Bliebe der Bezahlstand stehen, waere der
+     * Uebertrag auf der Stelle wirkungslos und der ganze Mechanismus tot.
+     */
+    @Test
+    fun `das Zurueckdrehen senkt den Phase-A-Bezahlstand mit`() {
+        val a = nachPublikation()
+        a.episodes.deliveredPhaseAU = 1.95      // inklusive der gleich verworfenen 0,15
+        a.revokeSettled(ID)
+
+        assertEquals(1.80, a.episodes.deliveredPhaseAU, 1e-9, "die Menge faellt aus Phase A heraus")
+        assertEquals(0.15, a.episodes.confirmedNotSentPhaseAU, 1e-9, "und steht als Uebertrag da")
+    }
+
+    /** Und er ueberlebt den Rundlauf - sonst saehe ein Neustart einen
+     *  Rueckstand in voller Hoehe und liesse den Uebertrag wirken, obwohl
+     *  Prime laengst geliefert hat. */
+    @Test
+    fun `der Phase-A-Bezahlstand ueberlebt den Rundlauf`() {
+        val a = nachPublikation()
+        a.episodes.deliveredPhaseAU = 1.80
+        assertEquals(1.80, rundlauf(a.episodes).deliveredPhaseAU, 1e-9)
+    }
+
+    /**
+     * KEIN BEZIEHUNGSRIEGEL GEGEN `evidenceCommittedU` (Codex-Rueckfrage,
+     * hier als Regressionsschutz).
+     *
+     * Der Vorschlag war `deliveredSinceHandoverU <= evidenceCommittedU`. Der
+     * Runner-Test `ohne Evidenzepisode waechst nur der Bezahlstand` zeigt, dass
+     * das im Normalbetrieb bricht. Diese Datei haelt fest, dass der Codec eine
+     * solche Datei ANNIMMT - damit der Riegel nicht spaeter aus guten
+     * Absichten nachgereicht wird und eine gesunde zweite Mahlzeit in den
+     * RECOVERY_HOLD schickt.
+     */
+    @Test
+    fun `ein Bezahlstand ueber der Evidenzmenge ist ladbar`() {
+        val a = nachPublikation()
+        a.episodes.evidenceCommittedU = 0.0     // keine Evidenzepisode
+        a.episodes.deliveredSinceHandoverU = 0.40
+        val zurueck = rundlauf(a.episodes)
+        assertEquals(0.40, zurueck.deliveredSinceHandoverU, 1e-9, "ladbar, nicht Korruption")
+    }
+
+    /**
      * ZUSAMMEN ODER GAR NICHT - der Uebertrag steht IM Autorisierungsobjekt.
      *
      * Ohne die Autorisierung wird er gar nicht erst geschrieben. Das ist die

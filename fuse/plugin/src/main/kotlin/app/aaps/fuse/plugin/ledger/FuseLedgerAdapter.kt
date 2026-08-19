@@ -202,6 +202,37 @@ class EpisodeBudgets {
     var deliveredSinceHandoverU: Double = 0.0
 
     /**
+     * WAS IN PHASE A DIESER AUTORISIERUNG GEFLOSSEN IST [U] (Codex 19.08.).
+     *
+     * WARUM EIN EIGENER ZAEHLER UND NICHT `evidenceCommittedU -
+     * deliveredSinceHandoverU`. Die Ableitung sah richtig aus und ist es
+     * nicht: die beiden Zaehler haben VERSCHIEDENE LEBENSDAUERN. In
+     * [FuseCycleRunner.buche] wachsen sie unter unabhaengigen Bedingungen -
+     * `deliveredSinceHandoverU` an der Fundament-PHASE, `evidenceCommittedU`
+     * an einer offenen EVIDENZEPISODE. Beim zweiten Markerdruck innerhalb des
+     * 360-Minuten-Deckels liefert `MarkerEpisodeGate` `episodeId = 0`
+     * (`MARKER_ALREADY_CONSUMED`), waehrend das Fundament sehr wohl armiert
+     * wird - die Differenz wird dann NEGATIV, ohne dass irgendetwas kaputt
+     * ist. Ein Riegel darauf haette eine gesunde zweite Mahlzeit in den
+     * RECOVERY_HOLD geschickt (Test:
+     * `ohne Evidenzepisode waechst nur der Bezahlstand`).
+     *
+     * Und die Gegenrichtung ist genauso schief: eine Evidenzepisode kann ZWEI
+     * Autorisierungen ueberspannen, dann traegt `evidenceCommittedU` Mengen
+     * einer fremden Mahlzeit.
+     *
+     * Dieser Zaehler hat dagegen exakt die Lebensdauer der Autorisierung: er
+     * wird mit ihr genullt, mit ihr persistiert, und bei einem bewiesenen
+     * Nicht-Senden zusammen mit den uebrigen Buechern zurueckgedreht. Erst
+     * dadurch oeffnet sich der Phase-A-Rueckstand, aus dem der Uebertrag
+     * seine Wirkung bezieht.
+     *
+     * ZUSAMMEN MIT [deliveredSinceHandoverU] ist er das, was aus DIESEM
+     * Budget geflossen ist - die Groesse, die der Runner an `plan()` gibt.
+     */
+    var deliveredPhaseAU: Double = 0.0
+
+    /**
      * DIE BEWIESENE PHASE-A-LUECKE dieser Autorisierung [U] (Toni 19.08.).
      *
      * WAS SIE IST: die Summe der Mengen, die in PHASE A gebucht waren, fuer
@@ -1409,6 +1440,12 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
         if (r.foundationPhase == app.aaps.fuse.core.controller.MealFoundation.Phase.PHASE_B)
             episodes.deliveredSinceHandoverU =
                 (episodes.deliveredSinceHandoverU - frei).coerceAtLeast(0.0)
+        // UND DIE PHASE-A-SEITE GENAUSO. Beide Bezahlstaende sind Buecher
+        // derselben Autorisierung; nur einen zurueckzudrehen liesse den
+        // Phase-A-Rueckstand falsch aussehen - und genau daraus bezieht der
+        // Uebertrag seine Wirkung.
+        if (r.foundationPhase == app.aaps.fuse.core.controller.MealFoundation.Phase.PHASE_A)
+            episodes.deliveredPhaseAU = (episodes.deliveredPhaseAU - frei).coerceAtLeast(0.0)
         if (r.mealTs > 0L) {
             // Den EIGENEN Eintrag zurueckdrehen, nicht den letzten: zwei
             // Zyklen koennen denselben sourceTs tragen, wenn ein Punkt
@@ -1521,6 +1558,11 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
         // uebertragen - dann bleibt der Zaehler 0 statt einen Betrag fuer eine
         // kuenftige Mahlzeit aufzubewahren.
         if (s.foundationPhase == app.aaps.fuse.core.controller.MealFoundation.Phase.PHASE_A) {
+            // ZUERST DAS BUCH, DANN DER UEBERTRAG - beide in diesem Zug.
+            // Ohne das Zurueckdrehen bliebe der Phase-A-Rueckstand 0, und der
+            // gerade entstandene Uebertrag waere auf der Stelle wirkungslos:
+            // der effektive Rest ist das MINIMUM aus Zaehler und Rueckstand.
+            episodes.deliveredPhaseAU = (episodes.deliveredPhaseAU - menge).coerceAtLeast(0.0)
             val deckel = episodes.foundation.let { if (it.valid) it.totalBudgetU else 0.0 }
             episodes.confirmedNotSentPhaseAU =
                 (episodes.confirmedNotSentPhaseAU + menge).coerceIn(0.0, deckel)

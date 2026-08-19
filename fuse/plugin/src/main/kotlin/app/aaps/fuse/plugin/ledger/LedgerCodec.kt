@@ -534,6 +534,12 @@ object LedgerCodec {
             // das Fundament ist nie geflasht worden, es existiert keine Datei
             // mit einem `foundation`-Objekt ohne dieses Feld.
             .put("confirmedNotSentPhaseAU", e.confirmedNotSentPhaseAU)
+            // Der Phase-A-Bezahlstand gehoert aus demselben Grund hierher wie
+            // die anderen beiden: er hat die Lebensdauer der Autorisierung,
+            // nicht die der Evidenzepisode. Ginge er verloren, saehe ein
+            // Neustart einen Phase-A-Rueckstand in voller Hoehe - und der
+            // Uebertrag wuerde wirken, obwohl Prime laengst geliefert hat.
+            .put("deliveredPhaseAU", e.deliveredPhaseAU)
     }
 
     /**
@@ -683,6 +689,7 @@ object LedgerCodec {
         val bezahlt = requireAmount("foundation.deliveredSinceHandoverU", o.getDouble("deliveredSinceHandoverU"))
         val uebertrag =
             requireAmount("foundation.confirmedNotSentPhaseAU", o.getDouble("confirmedNotSentPhaseAU"))
+        val phaseA = requireAmount("foundation.deliveredPhaseAU", o.getDouble("deliveredPhaseAU"))
         // KEIN stilles none(): s. den Blockkommentar. Die Felder waren alle da
         // und einzeln plausibel - erst ihre Beziehung ist kaputt, und das kann
         // keine faellige Migration sein.
@@ -695,9 +702,30 @@ object LedgerCodec {
         require(uebertrag <= a.totalBudgetU + 1e-9) {
             "foundation carry $uebertrag exceeds total budget ${a.totalBudgetU}"
         }
+        // HIER STEHT BEWUSST KEIN BEZIEHUNGSRIEGEL - und das ist eine
+        // Feststellung, keine Auslassung (Codex 19.08.).
+        //
+        // Vorgeschlagen war `bezahlt <= evidenceCommittedU`. Das waere falsch:
+        // die beiden haben verschiedene Lebensdauern, und eine gesunde zweite
+        // Mahlzeit im 360-Minuten-Deckel verletzt es regelmaessig - Test
+        // `ohne Evidenzepisode waechst nur der Bezahlstand`.
+        //
+        // Der naheliegende Ersatz `phaseA + bezahlt <= totalBudget` ist
+        // GENAUSO falsch, nur unauffaelliger: beide Zaehler zaehlen ALLES,
+        // was in ihrer Phase floss, auch gewoehnliche Korrektur. Und
+        // Korrektur- und Evidenzinsulin duerfen ausdruecklich ZUSAETZLICH zum
+        // Mahlzeitenbudget entstehen (bestaetigter Vertrag, s.
+        // MealFoundationReplayTest). Ein Riegel darauf schickte jede
+        // Mahlzeit mit Nachkorrektur in den RECOVERY_HOLD.
+        //
+        // Bleibt die FELDWEISE Pruefung: `requireAmount` verlangt endlich,
+        // nicht negativ, im Mengenrahmen. Mehr ist ueber diese Felder ehrlich
+        // nicht zu sagen - und ein Riegel, der gesunde Zustaende abweist, ist
+        // teurer als gar keiner.
         e.foundation = a
         e.deliveredSinceHandoverU = bezahlt
         e.confirmedNotSentPhaseAU = uebertrag
+        e.deliveredPhaseAU = phaseA
     }
 
     // ---- Verbrauchte Bindungs-Identitaeten (Fix 6, NEU-BS-02) -------------

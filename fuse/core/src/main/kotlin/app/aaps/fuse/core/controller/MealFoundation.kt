@@ -525,6 +525,22 @@ object MealFoundation {
             return Plan(0.0, 0.0, 0.0, Binding.NO_WINDOW_AFTER_HANDOVER, effectiveWindowMin = 0)
         if (!deliveredFromBudgetU.isFinite() || deliveredFromBudgetU < 0.0) return unusable()
         if (!deliveredSinceHandoverU.isFinite() || deliveredSinceHandoverU < 0.0) return unusable()
+        // MEHR SEIT DER UEBERGABE ALS INSGESAMT IST EIN WIDERSPRUCH
+        // (Codex 19.08.). Der Teil kann nicht groesser sein als das Ganze.
+        //
+        // ER IST JETZT AUCH EINER. Solange der Runner `evidenceCommittedU` als
+        // Gesamtmenge lieferte, war die Ungleichung im NORMALBETRIEB verletzt -
+        // die beiden Zaehler haben verschiedene Lebensdauern, und beim zweiten
+        // Markerdruck im 360-Minuten-Deckel waechst nur der eine. Ein Riegel
+        // haette dort eine gesunde Mahlzeit stillgelegt.
+        //
+        // Seit die Gesamtmenge aus den EIGENEN Zaehlern des Fundaments kommt
+        // (`deliveredPhaseAU + deliveredSinceHandoverU`), kann er im Betrieb
+        // nicht mehr ausloesen - und genau deshalb darf er hier stehen: er
+        // faengt kuenftige Fehlverdrahtungen, statt heutige Zustaende zu
+        // verbieten. Fail-closed, weil aus der Differenz sonst ein zu grosser
+        // Phase-A-Rueckstand und damit MEHR Freigabe entstuende.
+        if (deliveredSinceHandoverU > deliveredFromBudgetU + 1e-9) return unusable()
         if (!bolusStepU.isFinite() || bolusStepU <= 0.0) return unusable()
 
 
@@ -777,11 +793,18 @@ object MealFoundation {
             if (confirmedNotSentPhaseAU.isFinite() && confirmedNotSentPhaseAU > 0.0) confirmedNotSentPhaseAU else 0.0
         if (uebertrag <= 0.0) return 0.0
         if (!deliveredFromBudgetU.isFinite() || !deliveredSinceHandoverU.isFinite()) return 0.0
-        // Ein negativer Phase-A-Verbrauch ist ein Widerspruch im Zustand
-        // (mehr seit der Uebergabe als insgesamt). Auf 0 geklemmt ergibt er
-        // den GROESSTEN Rueckstand - also die Lage, in der der volle Zaehler
-        // gilt. Das ist derselbe Ausgang wie vor diesem Fix und damit kein
-        // neues Risiko; der Widerspruch selbst faellt an anderer Stelle auf.
+        // KEIN `max(0, ...)` MEHR ALS SCHUTZ (Codex 19.08.). Hier stand, ein
+        // negativer Phase-A-Verbrauch werde auf 0 geklemmt und der Widerspruch
+        // falle "an anderer Stelle" auf - das war eine Behauptung, die ich
+        // nicht geprueft hatte, und sie war falsch: geprueft hat es niemand.
+        // Geklemmt ergab der Widerspruch ausserdem den GROESSTEN Rueckstand,
+        // also die meiste Freigabe - die teure Richtung.
+        //
+        // Den Fall weist jetzt [plan] als [Binding.UNUSABLE_INPUT] ab, bevor
+        // diese Funktion ihn sieht. Das `max` bleibt trotzdem stehen, weil
+        // `effectiveCarryU` auch aus [snapshot] gerufen wird - dort ohne
+        // vorgelagerte Pruefung, und ein NaN im Export waere schlimmer als
+        // eine 0.
         val phaseAGeliefert = max(0.0, deliveredFromBudgetU - deliveredSinceHandoverU)
         val phaseARueckstand = max(0.0, (totalBudgetU - phaseBBudgetU) - phaseAGeliefert)
         return min(uebertrag, phaseARueckstand)
