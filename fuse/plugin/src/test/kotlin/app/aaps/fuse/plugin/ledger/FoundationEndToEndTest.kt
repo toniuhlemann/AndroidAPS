@@ -10,21 +10,43 @@ import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
 /**
- * DER GEMESSENE FALL, END-TO-END: 3,00 U autorisiert, 2,70 U geflossen,
- * Phase B fuellt nach (Toni 19.08.).
+ * ZURUECKGEZOGEN ALS BELEG - dieser Aufbau taugt nicht fuer die Aussage,
+ * die er zu treffen schien (Toni 19.08.).
  *
- * Er verbindet die beiden Bausteine, die bisher getrennt geprueft waren:
+ * Er sollte belegen: 3,00 U autorisiert, zwei Schritte am AAPS-Intervalltor
+ * verworfen, Buecher bei 2,70 U, Phase B fuellt nach. Er belegt das NICHT,
+ * und der daraus gemeldete "Befund" war teilweise ein Artefakt dieses Rigs.
+ * Drei Fehler, alle im Testaufbau:
  *
- *   die BUCHHALTUNG - ein am AAPS-Intervalltor verworfener Schritt wird im
- *   Folgezyklus bewiesen und aus allen fuenf Buechern zurueckgedreht;
+ *   (1) `primeVerbraucht += prime` zaehlt den GEWUENSCHTEN Betrag, nicht den
+ *       gebuchten, und wird bei `revokeSettled` nicht zurueckgedreht. Bei
+ *       75/25 braucht Prime nur 15 der 20 Fenstermninuten - die frueh
+ *       verworfenen Schritte 7 und 13 KOENNTEN in den fuenf freien Minuten
+ *       erneut geliefert werden. Genau diese Selbstheilung hat das Rig
+ *       kuenstlich verhindert und daraus eine bleibende Luecke gemacht.
  *
- *   und die MINDESTVERSORGUNG - Phase B sieht den entstandenen Rueckstand
- *   und fuellt ihn schrittweise auf, ohne Aufhol-Burst.
+ *   (2) `buecher()` liest ausschliesslich `evidenceCommittedU`. Die
+ *       "fuenf Buecher" der Ueberschrift wurden nie einzeln geprueft.
  *
- * DER ZEITLICHE VERLAUF IST DER PUNKT, nicht die Endsumme. Eine Summe
- * allein liesse offen, ob die Menge in einem Schwall kam oder verteilt -
- * und genau das unterscheidet eine Mindestversorgung von einem zweiten
- * Bolus.
+ *   (3) Der Test "Phase B fuellt den Rueckstand" prueft keine zusaetzliche
+ *       Auffuellung: er akzeptiert dieselben 0,75 U mit und ohne Verwerfen.
+ *       Und `mit < ohne + 1e-9` besteht auch bei Gleichheit.
+ *
+ * Der STATISCHE Codebefund bleibt trotzdem gueltig, er stammt aus plan():
+ * ueberlebt eine Phase-A-Luecke tatsaechlich bis zur Uebergabe, darf Phase B
+ * hoechstens ihr eigenes Teilbudget liefern -
+ * `min(phaseB - ausPhaseB, total - deliveredFromBudget)`.
+ *
+ * WAS STATTDESSEN GEBRAUCHT WIRD, und wofuer dieser Aufbau zu duenn ist:
+ * ein Ablauf ueber den echten Runner, das Publikationsgate und
+ * `NotSentProof` - nicht ueber direkte Aufrufe von `revokeSettled`. Erst
+ * dort entscheidet sich, ob eine verworfene Menge im selben Fenster
+ * nachgeholt wird oder bis zur Uebergabe ueberlebt.
+ *
+ * Die Tests unten bleiben stehen, weil sie EINZELNE Zusicherungen tragen,
+ * die weiterhin gelten: dass das Fundament waehrend Prime schweigt, dass es
+ * schrittweise liefert, dass der Schalter aus alles stilllegt. Als
+ * End-to-End-Beleg zaehlen sie nicht.
  */
 class FoundationEndToEndTest {
 
@@ -153,13 +175,15 @@ class FoundationEndToEndTest {
     // ---- Der Fall ---------------------------------------------------------
 
     /**
-     * 3,00 U AUTORISIERT, ZWEI SCHRITTE VERWORFEN, PHASE B FUELLT NACH.
+     * PHASE B LIEFERT SCHRITTWEISE UND ERST NACH DEM UEBERGANG.
      *
-     * Aufteilung 75/25: Phase A darf 2,25 U, Phase B 0,75 U. Prime ruft sein
-     * Budget in 15 Schritten ab; zwei davon nullt das AAPS-Intervalltor.
+     * Der Test hiess "fuellt den Rueckstand" und behauptete damit mehr, als
+     * er prueft: er akzeptierte dieselben 0,75 U mit und ohne Verwerfen. Was
+     * er WIRKLICH belegt, steht jetzt im Namen - der Zeitverlauf, nicht die
+     * Auffuellung.
      */
     @Test
-    fun `nach zwei verworfenen Schritten fuellt Phase B den Rueckstand`() {
+    fun `Phase B liefert schrittweise und erst nach dem Uebergang`() {
         val p = lauf(anteil = 0.75, verworfeneMinuten = setOf(7, 13))
 
         // (1) Prime hat 2,25 U gewollt, zwei Schritte fielen weg.
@@ -192,22 +216,15 @@ class FoundationEndToEndTest {
         )
     }
 
-    /**
-     * DIE BUECHER FOLGEN DER PUMPE.
-     *
-     * Zwei verworfene Schritte à 0,15 U muessen sich in der Endsumme
-     * wiederfinden - sie ist um genau diesen Betrag kleiner als ohne
-     * Verwerfen, sofern Phase B sie nicht auffuellen kann.
-     */
-    @Test
-    fun `die verworfenen Mengen fehlen in allen Buechern`() {
-        val ohne = buecher(lauf(anteil = 0.75))
-        val mit = buecher(lauf(anteil = 0.75, verworfeneMinuten = setOf(7, 13)))
-        assertTrue(
-            mit < ohne + 1e-9,
-            "mit Verwerfen darf nicht MEHR gebucht sein: $mit vs $ohne",
-        )
-    }
+    // KEIN TEST "die verworfenen Mengen fehlen in allen Buechern" MEHR.
+    //
+    // Er verglich `mit < ohne + 1e-9` - eine Bedingung, die auch bei
+    // IDENTISCHEN Summen besteht. Er haette also nie etwas gefunden. Und
+    // "alle Buecher" pruefte er ohnehin nicht: `buecher()` liest nur
+    // evidenceCommittedU.
+    //
+    // Die Aussage gehoert in den echten Runner-Ablauf (s. Klassenkopf) und
+    // muss dort alle fuenf Groessen einzeln vergleichen.
 
     /**
      * KEIN GRANT MEHR, wenn das gemeinsame Budget ausgeschoepft ist.
