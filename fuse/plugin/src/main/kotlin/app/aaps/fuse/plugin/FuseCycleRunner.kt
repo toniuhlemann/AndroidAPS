@@ -1866,6 +1866,7 @@ class FuseCycleRunner(
         val foundationDecision = MealFoundation.snapshot(
             episodes.foundation, computeTs, episodes.primeWindowStartTs,
             deliveredFromBudgetU = episodes.deliveredPhaseAU + episodes.deliveredSinceHandoverU,
+            deliveredPhaseAU = episodes.deliveredPhaseAU,
             deliveredSinceHandoverU = episodes.deliveredSinceHandoverU,
             confirmedNotSentPhaseAU = episodes.confirmedNotSentPhaseAU,
             bolusStepU =bolusStep,
@@ -2238,6 +2239,7 @@ class FuseCycleRunner(
         val foundationSnapshot = MealFoundation.snapshot(
             episodes.foundation, computeTs, episodes.primeWindowStartTs,
             deliveredFromBudgetU = episodes.deliveredPhaseAU + episodes.deliveredSinceHandoverU,
+            deliveredPhaseAU = episodes.deliveredPhaseAU,
             deliveredSinceHandoverU = episodes.deliveredSinceHandoverU,
             confirmedNotSentPhaseAU = episodes.confirmedNotSentPhaseAU,
             bolusStepU =pumpe.bolusStepU,
@@ -2613,6 +2615,7 @@ class FuseCycleRunner(
             snapshot = MealFoundation.snapshot(
                 episodes.foundation, computeTs, episodes.primeWindowStartTs,
                 deliveredFromBudgetU = episodes.deliveredPhaseAU + episodes.deliveredSinceHandoverU,
+                deliveredPhaseAU = episodes.deliveredPhaseAU,
                 deliveredSinceHandoverU = episodes.deliveredSinceHandoverU,
                 confirmedNotSentPhaseAU = episodes.confirmedNotSentPhaseAU,
                 bolusStepU = pumpe.bolusStepU,
@@ -2722,6 +2725,7 @@ class FuseCycleRunner(
             mealFoundation = MealFoundation.snapshot(
                 episodes.foundation, computeTs, episodes.primeWindowStartTs,
                 deliveredFromBudgetU = episodes.deliveredPhaseAU + episodes.deliveredSinceHandoverU,
+                deliveredPhaseAU = episodes.deliveredPhaseAU,
                 deliveredSinceHandoverU = episodes.deliveredSinceHandoverU,
                 confirmedNotSentPhaseAU = episodes.confirmedNotSentPhaseAU,
                 bolusStepU = pumpe.bolusStepU,

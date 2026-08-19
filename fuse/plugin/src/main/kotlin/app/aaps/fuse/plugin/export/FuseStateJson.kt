@@ -212,6 +212,11 @@ object FuseStateJson {
                     .put("latchedHandoverTs", f.latchedHandoverTs)
                     .put("endTs", f.endTs)
                     .put("phase", f.phase.name)
+                    // DER AUTORITATIVE PHASE-A-ZAEHLER (Codex 19.08.). Ohne ihn
+                    // ist die Uebertrags-Ableitung aus dem Trail nicht
+                    // nachrechenbar: sichtbar waeren nur Ergebnis und
+                    // Rohzaehler, nicht die Groesse dazwischen.
+                    .put("deliveredPhaseAU", fin(f.deliveredPhaseAU))
                     .put("deliveredSinceHandoverU", fin(f.deliveredSinceHandoverU))
                     // DIE BELEGTE PHASE-A-LUECKE UND DIE DARAUS FOLGENDE
                     // ERLAUBNIS - beide einzeln, nicht nur ihre Summe.

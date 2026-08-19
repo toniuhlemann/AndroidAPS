@@ -981,6 +981,19 @@ object MealFoundation {
         val latchedHandoverTs: Long,
         val endTs: Long,
         val phase: Phase,
+        /**
+         * WAS IN PHASE A DIESER AUTORISIERUNG FLOSS [U] - der AUTORITATIVE
+         * Zaehler aus dem Ledger, nicht die Differenz, mit der [plan]
+         * gerechnet hat (Codex 19.08.).
+         *
+         * DASS BEIDE HIER STEHEN, IST DER ZWECK. Der Regler bekommt
+         * `deliveredFromBudget` und zieht `deliveredSinceHandover` ab; stimmt
+         * das Ergebnis nicht mit diesem Feld ueberein, hat der Runner die
+         * falsche Gesamtmenge gereicht - genau der Fehler, der bis zum
+         * 19.08. drinsteckte. Waere nur die Differenz im Trail, liesse sich
+         * das nachtraeglich nicht mehr sehen.
+         */
+        val deliveredPhaseAU: Double,
         val deliveredSinceHandoverU: Double,
         /**
          * DIE BELEGTE PHASE-A-LUECKE dieser Episode [U] - s. [plan].
@@ -1018,7 +1031,7 @@ object MealFoundation {
                 armed = false, armedTs = 0L, markerAuthorized = false,
                 totalBudgetU = 0.0, phaseABudgetU = 0.0,
                 phaseBBudgetU = 0.0, effectiveHandoverTs = 0L, latchedHandoverTs = 0L,
-                endTs = 0L, phase = Phase.NONE, deliveredSinceHandoverU = 0.0,
+                endTs = 0L, phase = Phase.NONE, deliveredPhaseAU = 0.0, deliveredSinceHandoverU = 0.0,
                 confirmedNotSentPhaseAU = 0.0, effectiveCarryU = 0.0, phaseBAllowanceU = 0.0,
                 plannedTotalU = 0.0, backlogU = 0.0, dueU = 0.0, remainingInWindowU = 0.0,
                 binding = null, effectiveWindowMin = 0, effectiveRateUPerMin = 0.0,
@@ -1042,6 +1055,9 @@ object MealFoundation {
         primeWindowStartTs: Long,
         deliveredFromBudgetU: Double,
         deliveredSinceHandoverU: Double,
+        /** Der autoritative Ledger-Zaehler - nur fuer den Trail, s.
+         *  [Snapshot.deliveredPhaseAU]. Er geht NICHT in die Rechnung ein. */
+        deliveredPhaseAU: Double,
         confirmedNotSentPhaseAU: Double,
         bolusStepU: Double,
     ): Snapshot {
@@ -1061,6 +1077,7 @@ object MealFoundation {
             latchedHandoverTs = auth.latchedHandoverTs,
             endTs = auth.endTs,
             phase = phaseOf(auth, nowTs, primeWindowStartTs),
+            deliveredPhaseAU = deliveredPhaseAU,
             deliveredSinceHandoverU = deliveredSinceHandoverU,
             confirmedNotSentPhaseAU = confirmedNotSentPhaseAU,
             // BEIDE Groessen, und der Unterschied ist die ganze Aussage: der

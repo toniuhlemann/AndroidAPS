@@ -748,6 +748,7 @@ class FuseStateExportTest {
     ) = app.aaps.fuse.core.controller.MealFoundation.snapshot(
         fAuth(), fT0 + (minuten * 60_000).toLong(), 0L,
         deliveredFromBudgetU = ausBudgetU, deliveredSinceHandoverU = seitUebergabeU,
+        deliveredPhaseAU = ausBudgetU - seitUebergabeU,
         confirmedNotSentPhaseAU = uebertragU, bolusStepU = 0.05,
     )
 
@@ -778,6 +779,13 @@ class FuseStateExportTest {
             "armedTs", "effectiveHandoverTs", "latchedHandoverTs", "endTs",
             "phase",
             "deliveredSinceHandoverU",
+            // Der Uebertrags-Block (19.08.): Rohzaehler, autoritative
+            // Phase-A-Lieferung, effektiver Rest und die daraus folgende
+            // Erlaubnis. Ohne ALLE VIER ist die Ableitung aus dem Trail
+            // nicht nachrechenbar - dann sieht man Ergebnis und Rohwert,
+            // aber nicht die Groesse dazwischen.
+            "confirmedNotSentPhaseAU", "deliveredPhaseAU",
+            "effectiveCarryU", "phaseBAllowanceU",
             "plannedTotalU", "backlogU", "dueU", "remainingInWindowU", "binding",
             "effectiveWindowMin", "effectiveRateUPerMin",
         )) {
@@ -802,6 +810,62 @@ class FuseStateExportTest {
         assertEquals(0.10, o.getDouble("deliveredSinceHandoverU"), 1e-9)
         assertEquals(45, o.getInt("effectiveWindowMin"), "T+15 bis T+60")
         assertEquals(0.75 / 45.0, o.getDouble("effectiveRateUPerMin"), 1e-9)
+    }
+
+    /**
+     * DER UEBERTRAG IST AUS DEM TRAIL NACHRECHENBAR (Codex 19.08., P1).
+     *
+     * DER BEFUND. Exportiert waren Rohzaehler, effektiver Rest und Erlaubnis -
+     * aber nicht, WIEVIEL in Phase A tatsaechlich floss. Genau diese Groesse
+     * steht zwischen Roh und Effektiv:
+     *
+     *     effectiveCarry = min(rawCarry, max(0, phaseABudget - deliveredPhaseA))
+     *
+     * Ohne sie liesse sich im Replay nicht entscheiden, ob ein kleiner
+     * effektiver Uebertrag daher kommt, dass Prime nachgeholt hat, oder aus
+     * einem Rechenfehler.
+     *
+     * Der Aufbau: 2,25 U Phase-A-Budget, 1,80 U davon geflossen, Rohzaehler
+     * 0,30 U. Rueckstand 0,45 U, also gilt der volle Rohzaehler.
+     */
+    @Test
+    fun `der Export macht die Uebertrags-Ableitung nachrechenbar`() {
+        val o = fundament(fSnapshot(ausBudgetU = 1.90, seitUebergabeU = 0.10, uebertragU = 0.30))
+
+        assertEquals(0.30, o.getDouble("confirmedNotSentPhaseAU"), 1e-9, "der rohe Beweiszaehler")
+        assertEquals(1.80, o.getDouble("deliveredPhaseAU"), 1e-9, "was in Phase A wirklich floss")
+        assertEquals(0.10, o.getDouble("deliveredSinceHandoverU"), 1e-9)
+
+        // UND DIE ABLEITUNG GEHT AUF - allein aus den exportierten Zahlen.
+        val phaseABudget = o.getDouble("phaseABudgetU")
+        val rueckstand = maxOf(0.0, phaseABudget - o.getDouble("deliveredPhaseAU"))
+        val effektiv = minOf(o.getDouble("confirmedNotSentPhaseAU"), rueckstand)
+        assertEquals(
+            effektiv, o.getDouble("effectiveCarryU"), 1e-9,
+            "der Trail MUSS die eigene Rechnung tragen",
+        )
+        assertEquals(
+            minOf(o.getDouble("phaseBBudgetU") + effektiv, o.getDouble("totalBudgetU")),
+            o.getDouble("phaseBAllowanceU"), 1e-9,
+            "und die Erlaubnis daraus",
+        )
+    }
+
+    /**
+     * DIE GEGENPROBE: hat Prime nachgeholt, faellt der effektive Rest auf 0 -
+     * der Rohzaehler bleibt stehen. Erst BEIDE Zahlen zusammen sagen, was
+     * passiert ist.
+     */
+    @Test
+    fun `ein nachgeholter Uebertrag ist im Trail als solcher erkennbar`() {
+        val o = fundament(fSnapshot(ausBudgetU = 2.35, seitUebergabeU = 0.10, uebertragU = 0.30))
+        assertEquals(2.25, o.getDouble("deliveredPhaseAU"), 1e-9, "Phase A ist voll geliefert")
+        assertEquals(0.30, o.getDouble("confirmedNotSentPhaseAU"), 1e-9, "der Beweis steht weiter da")
+        assertEquals(0.0, o.getDouble("effectiveCarryU"), 1e-9, "wirkt aber nicht mehr")
+        assertEquals(
+            o.getDouble("phaseBBudgetU"), o.getDouble("phaseBAllowanceU"), 1e-9,
+            "Phase B rechnet wieder mit ihrem Teilbudget",
+        )
     }
 
     /**
