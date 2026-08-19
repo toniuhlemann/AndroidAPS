@@ -257,6 +257,11 @@ class TransportWiringTest : TestBaseWithProfile() {
     /** Ungueltige IOB-Daten -> keine Aktivitaet -> ACTIVITY_MISSING, das
      *  Signal ist nicht READY. Der Hebel fuer den Nullfall
      *  "ungesundes Signal"; Default haelt das bisherige Verhalten. */
+    /** Der Guard-Boden [mg/dl]. Als Variable, damit der TAIL-Lauf den
+     *  Guard ausdruecklich OEFFNEN kann - sonst binden beide Grenzen und
+     *  die Ursache ist nicht zuordenbar. */
+    private var guardBodenMgdl = 70.0
+
     private var iobGueltig = true
 
     private fun roundUp(t: Long) = if (t % 60_000L == 0L) t else (t / 60_000L + 1) * 60_000L
@@ -320,7 +325,7 @@ class TransportWiringTest : TestBaseWithProfile() {
         whenever(preferences.get(FuseDoubleKey.RiseRampLowR)).thenReturn(0.5)
         whenever(preferences.get(FuseDoubleKey.RiseRampHighR)).thenReturn(2.0)
         whenever(preferences.get(FuseDoubleKey.MaxSmbU)).thenAnswer { maxSmbU }
-        whenever(preferences.get(FuseDoubleKey.GuardFloorMgdl)).thenReturn(70.0)
+        whenever(preferences.get(FuseDoubleKey.GuardFloorMgdl)).thenAnswer { guardBodenMgdl }
         whenever(preferences.get(FuseIntKey.IobThPercent)).thenAnswer { iobThPct }
         whenever(preferences.get(FuseIntKey.ReleaseHorizonMin)).thenReturn(60)
         whenever(preferences.get(FuseIntKey.LiabilityHorizonMin)).thenReturn(120)
@@ -4450,6 +4455,179 @@ class TransportWiringTest : TestBaseWithProfile() {
             ohne.lifts.isEmpty(),
             "bei 100/0 darf das Fundament auch auf dem Plateau nichts anheben",
         )
+    }
+
+
+    // ==== DIE RISIKOLAEUFE (Toni/Codex 19.08.) =============================
+    //
+    // WAS SIE BEWEISEN SOLLEN: nicht "zwei synthetische Risikokurven", sondern
+    // dass GUARD beziehungsweise TAIL die Lage erzeugt haben. Deshalb steht in
+    // jedem Lauf als harte Vorbedingung, WAS vor dem Fundament gebunden hat -
+    // gemessen an `preFoundationBlock`/`preFoundationBindingLimit`, nicht an
+    // der Fundament-Bindung, die den urspruenglichen Grund ueberdecken kann.
+    //
+    // UND SIE SIND GETRENNT, weil eine zweite gleichzeitig bindende Grenze die
+    // Ursache unzuordenbar macht. Genau das wird geprueft, nicht gehofft.
+    //
+    // DIE GRENZE DIESER LAEUFE, ausdruecklich: der `aktivitaet`-Hebel erzeugt
+    // die pessimistische Bahn ueber das INSULINMODELL, nicht ueber die
+    // Glukose. Er prueft die REGELMECHANIK - er sagt NICHTS darueber, wie
+    // haeufig diese Lage im echten Betrieb auftritt. Das gemessene Tief bleibt
+    // eine eigene harte Nullkontrolle; hier bleibt der reale BG ausdruecklich
+    // oberhalb des Bodens, und auch das wird geprueft.
+
+    private class RisikoLauf(
+        val anteil: Double,
+        val lifts: List<Lift>,
+        val bgImLift: List<Double>,
+        val gesundImmer: Boolean,
+        val ursachen: Set<String>,
+    )
+
+    private fun risikoLauf(
+        dir: File,
+        anteil: Double,
+        aktivitaetsWert: Double,
+        tailAn: Boolean,
+    ): RisikoLauf {
+        fundamentAn = true
+        fundamentAnteil = anteil
+        fundamentEndeMin = 60
+        markerAuthorized = true
+        primeHuelleU = 3.0
+        // Deutlich ueber dem Boden (70) - das gemessene Tief soll NICHT die
+        // Ursache sein. Anstieg bis T+15, dann Plateau wie im
+        // Funktionsnachweis.
+        flach = 150.0
+        steigungProMin = 1.0
+        knickAbMin = 17
+        steigungNachKnick = 0.1
+        aktivitaet = aktivitaetsWert
+        tailGuard = tailAn
+        conditionalTail = tailAn
+        // IM TAIL-LAUF WIRD DER GUARD AUSDRUECKLICH GEOEFFNET. Gemessen band
+        // er sonst mit (GUARD_FLOOR stand in den Ursachen), und dann ist eine
+        // Bremsung nicht mehr zuzuordnen. Ein tiefer Boden kann bei einem
+        // realen Zucker weit darueber nicht binden.
+        guardBodenMgdl = if (tailAn) 40.0 else 70.0
+        clock = start
+        transportReset()
+        val l = FuseLedgerAdapter().also { it.loadOnce(dir.also(File::mkdirs), "test-epoch", start) }
+        neuerRunner(l)
+        markerAt = start + 2 * 60_000L
+
+        val lifts = mutableListOf<Lift>()
+        val bgImLift = mutableListOf<Double>()
+        val ursachen = mutableSetOf<String>()
+        // GESUNDHEIT IN DEN LIFT-ZYKLEN, nicht ueber den ganzen Lauf: die
+        // ersten Zyklen nach dem Start sind WARMUP, und das ist kein Befund
+        // ueber die Risikolage. Die erste Fassung prueft den Vorlauf mit und
+        // war deshalb rot, ohne dass etwas falsch war.
+        var gesundImmer = true
+        for (i in 0..75) {
+            val o = transport(dir)
+            if (o.foundationLiftU > 0.0) {
+                if (o.health != Health.READY) gesundImmer = false
+                lifts += Lift(
+                    min = ((clock - markerAt) / 60_000L).toInt(),
+                    dueU = o.mealFoundation.dueU, preU = o.preFoundationSmbU,
+                    liftU = o.foundationLiftU, publiziertU = letzteMengeU ?: 0.0,
+                    block = o.preFoundationBlock.name,
+                    grenze = o.preFoundationBindingLimit,
+                )
+                o.bgMgdl?.let { bgImLift += it }
+                // DIE URSACHE VOR DEM FUNDAMENT - typisiert gesammelt.
+                if (o.preFoundationBlock != FuseController.Block.NONE)
+                    ursachen += o.preFoundationBlock.name
+                o.preFoundationBindingLimit?.takeIf { it != "NONE" }?.let { ursachen += it }
+            }
+        }
+        return RisikoLauf(anteil, lifts, bgImLift, gesundImmer, ursachen)
+    }
+
+    private fun berichte(kopf: String, r: RisikoLauf) {
+        val gefordert = r.lifts.sumOf { it.liftU }
+        val durch = r.lifts.sumOf { it.durchU }
+        println(
+            "%s %.2f;lifts=%d;gefordertU=%.3f;durchU=%.3f;ganz=%d;teil=%d;ursachen=%s;bgMin=%.0f".format(
+                kopf, r.anteil, r.lifts.size, gefordert, durch,
+                r.lifts.count { it.ganzGebremst }, r.lifts.count { it.teilweiseGebremst },
+                r.ursachen.sorted().joinToString("|").ifEmpty { "-" },
+                r.bgImLift.minOrNull() ?: 0.0,
+            )
+        )
+    }
+
+    /**
+     * GUARD-LAUF: die pessimistische Bahn bindet, der reale Zucker steht
+     * klar oben.
+     *
+     * Der Tail ist ausdruecklich AUS - sonst waere bei einer Bremsung nicht
+     * zu sagen, welche der beiden Grenzen sie verursacht hat.
+     */
+    @Test
+    fun `Risikolage Guard - das Fundament unter bindender Guard-Bahn`(@TempDir dir: File) {
+        for (anteil in listOf(0.80, 0.75)) {
+            val r = risikoLauf(
+                File(dir, "guard${(anteil * 100).toInt()}"),
+                anteil, aktivitaetsWert = 0.02, tailAn = false,
+            )
+            berichte("GUARD", r)
+
+            assertTrue(r.gesundImmer, "$anteil: das Signal MUSS durchgehend READY sein")
+            assertTrue(
+                r.lifts.isNotEmpty(),
+                "$anteil: das Fundament MUSS angehoben haben - sonst prueft der Lauf nichts",
+            )
+            assertTrue(
+                r.bgImLift.all { it > 75.0 },
+                "$anteil: der REALE Zucker MUSS in jedem Lift-Zyklus klar ueber dem Boden " +
+                    "liegen - sonst waere ein gemessenes Tief die Ursache, nicht Guard: " +
+                    "min=${r.bgImLift.minOrNull()}",
+            )
+            assertTrue(
+                r.ursachen.contains(FuseController.Block.GUARD_FLOOR.name) ||
+                    r.ursachen.any { it.contains("guard", ignoreCase = true) },
+                "$anteil: vor dem Fundament MUSS ausdruecklich GUARD gebunden haben, " +
+                    "gemessen: ${r.ursachen}",
+            )
+            assertTrue(
+                r.ursachen.none { it.contains("tail", ignoreCase = true) },
+                "$anteil: KEINE zweite bindende Grenze - sonst ist die Ursache nicht " +
+                    "zuordenbar: ${r.ursachen}",
+            )
+        }
+    }
+
+    /**
+     * TAIL-LAUF: der Schwanz bindet, Guard ist ausdruecklich offen.
+     */
+    @Test
+    fun `Risikolage Tail - das Fundament unter bindendem Schwanz`(@TempDir dir: File) {
+        for (anteil in listOf(0.80, 0.75)) {
+            val r = risikoLauf(
+                File(dir, "tail${(anteil * 100).toInt()}"),
+                anteil, aktivitaetsWert = 0.0, tailAn = true,
+            )
+            berichte("TAIL", r)
+
+            assertTrue(r.gesundImmer, "$anteil: das Signal MUSS durchgehend READY sein")
+            assertTrue(r.lifts.isNotEmpty(), "$anteil: das Fundament MUSS angehoben haben")
+            assertTrue(
+                r.bgImLift.all { it > 75.0 },
+                "$anteil: der reale Zucker MUSS oben bleiben: min=${r.bgImLift.minOrNull()}",
+            )
+            assertTrue(
+                r.ursachen.any { it.contains("tail", ignoreCase = true) },
+                "$anteil: vor dem Fundament MUSS der TAIL gebunden haben, " +
+                    "gemessen: ${r.ursachen}",
+            )
+            assertTrue(
+                !r.ursachen.contains(FuseController.Block.GUARD_FLOOR.name),
+                "$anteil: Guard MUSS offen sein - sonst ist die Ursache nicht zuordenbar: " +
+                    "${r.ursachen}",
+            )
+        }
     }
 
 }

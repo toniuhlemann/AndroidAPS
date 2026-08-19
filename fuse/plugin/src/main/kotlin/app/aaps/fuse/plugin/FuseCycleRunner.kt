@@ -485,6 +485,21 @@ class FuseCycleRunner(
         val mealFoundation: MealFoundation.Snapshot = MealFoundation.Snapshot.none(),
         /** Der SMB-Stand VOR der Fundament-Anhebung [U] - reine Messung. */
         val preFoundationSmbU: Double = 0.0,
+        /**
+         * DIE URSACHE DER LAGE, gemessen VOR dem Fundament (Codex 19.08.).
+         *
+         * WOZU: [MealFoundation.Snapshot.binding] ist die Bindung DES
+         * FUNDAMENTS. Sie kann den urspruenglichen Guard oder Tail
+         * ueberdecken - ein Test oder eine Auswertung, die daraus "Guard hat
+         * gebunden" liest, behauptet dann nur, wodurch die Lage entstehen
+         * SOLLTE, nicht was wirklich band.
+         *
+         * Beide Werte stammen aus DEMSELBEN Moment wie [preFoundationSmbU] -
+         * Groessen aus verschiedenen Zeitpunkten zu paaren war in diesem
+         * Projekt mehrfach die Fehlerquelle.
+         */
+        val preFoundationBlock: FuseController.Block = FuseController.Block.NONE,
+        val preFoundationBindingLimit: String? = null,
         /** Was das Fundament ueber den normalen Vorschlag hinaus angehoben
          *  hat [U]. Zusammen mit [preFoundationSmbU] und der publizierten
          *  Menge beantwortet es, WER die Dosis wollte und wer sie gebremst
@@ -1929,6 +1944,8 @@ class FuseCycleRunner(
         // DOSIERNEUTRAL: reine Messung, sie geht nirgends in eine Entscheidung
         // ein.
         val preFoundationSmbU = liftedPrime.smbU
+        val preFoundationBlock = liftedPrime.block
+        val preFoundationBindingLimit = liftedPrime.bindingLimit
         val foundationLiftU = kotlin.math.max(0.0, lifted.smbU - liftedPrime.smbU)
         // FIX-PASS 4 Nr. 4 (Codex R4-04, Control-Audit-Invariante): KEINE
         // finale positive Dosis ohne erfolgreiche Wirkungspruefung. Das
@@ -2293,6 +2310,8 @@ class FuseCycleRunner(
             mealStats = mealStats,
             mealFoundation = foundationSnapshot,
             preFoundationSmbU = preFoundationSmbU,
+            preFoundationBlock = preFoundationBlock,
+            preFoundationBindingLimit = preFoundationBindingLimit,
             foundationLiftU = foundationLiftU,
             lowThreat = lowThreatResult,
             evidenceEpisodeId = evidenceEpisodeId,
@@ -2657,6 +2676,8 @@ class FuseCycleRunner(
         // wohl angehoben haben kann. Genau die Sorte stiller Luecke, die eine
         // spaetere Auswertung falsch macht, ohne dass etwas rot wird.
         val preFoundationSmbU = liftedPrime.smbU
+        val preFoundationBlock = liftedPrime.block
+        val preFoundationBindingLimit = liftedPrime.bindingLimit
         val foundationLiftU = kotlin.math.max(0.0, lifted.smbU - liftedPrime.smbU)
         val held = LedgerHoldGate.apply(lifted, ledgerView.hold)
 
@@ -2765,6 +2786,8 @@ class FuseCycleRunner(
                 bolusStepU = pumpe.bolusStepU,
             ),
             preFoundationSmbU = preFoundationSmbU,
+            preFoundationBlock = preFoundationBlock,
+            preFoundationBindingLimit = preFoundationBindingLimit,
             foundationLiftU = foundationLiftU,
             insulinModel = insulinModel,
             abortReason = null,

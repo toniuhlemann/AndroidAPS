@@ -223,7 +223,13 @@ object FuseStateJson {
                     // gebremst wurde - oder ob das Fundament selbst
                     // blockiert war. Die beiden Lagen bedeuten das
                     // Gegenteil voneinander.
-                    .put("preFoundationSmbU", fin(outcome.preFoundationSmbU))
+                    .put("preFoundationSmbU", fin(outcome.preFoundationSmbU))
+                    // UND DIE URSACHE DER LAGE aus demselben Moment: der
+                    // Fundament-Binding kann den urspruenglichen Guard oder
+                    // Tail ueberdecken. Ohne diese beiden sagt der Trail
+                    // nicht, WAS gebunden hat, bevor das Fundament anhob.
+                    .put("preFoundationBlock", outcome.preFoundationBlock.name)
+                    .putOpt("preFoundationBindingLimit", outcome.preFoundationBindingLimit)
                     .put("foundationLiftU", fin(outcome.foundationLiftU))
                     .put("deliveredPhaseAU", fin(f.deliveredPhaseAU))
                     .put("deliveredSinceHandoverU", fin(f.deliveredSinceHandoverU))
