@@ -21,6 +21,13 @@ import app.aaps.core.keys.LongKey
 import app.aaps.core.objects.constraints.ConstraintObject
 import app.aaps.fuse.core.util.Sha
 import app.aaps.fuse.plugin.ledger.FuseLedgerAdapter
+import app.aaps.fuse.plugin.ledger.EpisodeBudgets
+import org.junit.jupiter.api.Assertions.assertNull
+import app.aaps.core.interfaces.aps.RT
+import app.aaps.core.interfaces.aps.APSResult
+import app.aaps.fuse.core.ledger.NotSentProof
+import app.aaps.fuse.core.ledger.QueueRejectReason
+import app.aaps.fuse.plugin.ledger.LedgerPublicationGate
 import app.aaps.plugins.insulin.InsulinLyumjevPlugin
 import app.aaps.shared.tests.TestBaseWithProfile
 import com.google.common.truth.Truth.assertThat
@@ -3234,4 +3241,493 @@ class TransportWiringTest : TestBaseWithProfile() {
         assertTrue(!ledger.episodes.foundation.valid, "Schalter aus - keine Autorisierung")
         assertEquals(0.0, ledger.episodes.deliveredSinceHandoverU, 1e-9)
     }
+
+    // ==== PUNKT 3: DER ECHTE TRANSPORT-E2E ==================================
+    //
+    // WAS HIER ANDERS IST ALS IM ZURUECKGEZOGENEN BELEG. Der lief ueber
+    // direkte `revokeSettled`-Aufrufe und hat damit nur seine eigene
+    // Arithmetik geprueft. Hier laeuft die ECHTE Kette, in der Reihenfolge aus
+    // `FusePlugin.invoke`:
+    //
+    //     NotSentProof (Beleg ueber den VORIGEN Zyklus, VOR dem Lauf)
+    //       -> runner.run()
+    //       -> LedgerPublicationGate.publish { onProvenNotSent + revokeSettled
+    //                                          + onPublished }
+    //       -> resolveReservation(computeTs, publizierteMenge, cycleId)
+    //       -> published*-Felder fortschreiben
+    //       -> verifizierter Persist (im Gate)
+    //
+    // DIE EINE TESTGRENZE, ausdruecklich benannt: `priorActuation` liest
+    // produktiv `loop.lastRun` aus AAPS. Diese beiden Beobachtungswerte -
+    // `aapsConstrainedU` und `smbSetByPumpPresent` - setzt der Test direkt.
+    // Es sind genau die Groessen, die im AAPS-Log stehen; alles DAHINTER
+    // laeuft echt. Der Rest der Kette ist nicht nachgebaut.
+
+    /** Was AAPS mit der Menge DIESES Zyklus tut - ausgewertet im naechsten. */
+    private enum class Ausgang {
+        /** Regelfall: die Menge ging hinaus. */
+        GESENDET,
+
+        /** AAPS hat nach seinen Constraints exakt 0 uebrig gelassen. */
+        CONSTRAINT_NULL,
+
+        /** Menge positiv, Apply-Block nie betreten - Tonis 19:07-Fall. */
+        NIE_KOMMANDIERT,
+
+        /** Kein auswertbarer Befund. Der sichere Ausgang: nichts gilt als
+         *  bewiesen, die Buchung bleibt stehen. */
+        UNKLAR,
+
+        /**
+         * DIE ZWEITE GESTALT DES UNKLAREN AUSGANGS: die Beobachtung SAEHE aus
+         * wie ein Beweis, gehoert aber nachweislich zu einem anderen Lauf
+         * (`correlated = false`).
+         *
+         * SIE BRAUCHT EINEN EIGENEN WERT, und das hat erst eine
+         * Mutationsprobe gezeigt: mit nur [UNKLAR] blieb der Test gruen, als
+         * die Korrelationspruefung aus [NotSentProof] entfernt wurde - dort
+         * sind naemlich ohnehin alle Werte nicht auswertbar. Geprueft wurde
+         * damit die Auswertbarkeit, nicht die Zuordnung.
+         */
+        UNKORRELIERT,
+    }
+
+    private var letzterAusgang = Ausgang.GESENDET
+    private var letzteMengeU: Double? = null
+    private var pPropId: String? = null
+    private var pStripped = false
+    private var pSealed = false
+    private var pPersistFailed = false
+
+    /** Der letzte gebildete Beleg - fuer Zusicherungen ueber den GRUND. */
+    private var letzterGrund: QueueRejectReason? = null
+
+    private fun transportReset() {
+        letzterAusgang = Ausgang.GESENDET
+        letzteMengeU = null
+        pPropId = null
+        pStripped = false
+        pSealed = false
+        pPersistFailed = false
+        letzterGrund = null
+    }
+
+    /**
+     * EIN vollstaendiger Zyklus durch Runner, Gate und Beweis.
+     *
+     * @param ausgang was mit der Menge DIESES Zyklus geschieht. Ausgewertet
+     *   wird er beim NAECHSTEN Aufruf - genau wie produktiv, wo der Befund
+     *   erst im Folgezyklus sichtbar ist.
+     * @param kennungVerbiegen greift in die uebergebene Kennung ein, um den
+     *   Fall "fremde proposalId" zu erzeugen.
+     */
+    private fun transport(
+        dir: File,
+        ausgang: Ausgang = Ausgang.GESENDET,
+        kennungVerbiegen: (String) -> String = { it },
+    ): FuseCycleRunner.Outcome {
+        // (1) DER BELEG UEBER DEN VORIGEN ZYKLUS - vor dem Lauf gebildet,
+        // solange die published*-Felder noch den Vorgaenger beschreiben.
+        val claim = pPropId
+            ?.takeIf { ledger.hasOpenProposal(it) }
+            ?.let { id ->
+                NotSentProof.reasonFor(
+                    NotSentProof.Observation(
+                        correlated = letzterAusgang != Ausgang.UNKLAR &&
+                            letzterAusgang != Ausgang.UNKORRELIERT,
+                        ledgerPublishedU = ledger.publishedAmountOf(id),
+                        gateStripped = pStripped,
+                        gateSealed = pSealed,
+                        gatePersistFailed = pPersistFailed,
+                        aapsConstrainedU = when (letzterAusgang) {
+                            Ausgang.CONSTRAINT_NULL -> 0.0
+                            Ausgang.UNKLAR          -> null
+                            else                    -> letzteMengeU   // auch UNKORRELIERT
+                        },
+                        smbSetByPumpPresent = when (letzterAusgang) {
+                            Ausgang.NIE_KOMMANDIERT -> false
+                            // SAEHE aus wie ein Beweis - nur die Zuordnung fehlt.
+                            Ausgang.UNKORRELIERT    -> false
+                            Ausgang.UNKLAR          -> null
+                            else                    -> true
+                        },
+                    )
+                )?.let { grund -> id to grund }
+            }
+        letzterGrund = claim?.second
+
+        // (2) DER ECHTE ZYKLUS.
+        val o = cycle()
+        val cycleId = kennungVerbiegen("e2e#${o.computeTs}")
+        val units = o.decision.smbU.takeIf { it > 0.0 }
+        val rt = RT(
+            algorithm = APSResult.Algorithm.FUSE, timestamp = o.computeTs,
+            rate = null, duration = null, units = units,
+            deliverAt = units?.let { o.computeTs },
+        )
+
+        // (3) DAS ECHTE PUBLIKATIONSGATE, mit dem echten events-Block.
+        val expected = LedgerPublicationGate.commitmentOf(
+            units = rt.units, treatmentViewPresent = true, proposalId = cycleId,
+        )
+        val publication = LedgerPublicationGate.publish(
+            rt = rt, adapter = ledger, dir = dir, expected = expected,
+            published = InterventionStamp.Published(smbU = rt.units, tbrChanged = o.tbrChanged),
+            events = {
+                // ZUERST entlasten, DANN die neue Menge buchen - die
+                // Reihenfolge des Plugins.
+                claim?.let { (id, grund) ->
+                    if (ledger.hasOpenProposal(id)) ledger.onProvenNotSent(id, grund)
+                    ledger.revokeSettled(id)
+                }
+                if (expected is LedgerPublicationGate.Commitment.Proposal && rt.units != null)
+                    ledger.onPublished(
+                        proposalId = cycleId, unitsU = rt.units!!, decisionTs = o.computeTs,
+                        latestBolusTs = clock, bolusStepU = 0.05,
+                    )
+            },
+        )
+
+        // (4) DIE RESERVIERUNG AUFLOESEN - nach dem Gate, mit der publizierten
+        // Menge.
+        ledger.resolveReservation(o.computeTs, publication.rt.units ?: 0.0, proposalId = cycleId)
+
+        // (5) DEN ZUSTAND FUER DEN NAECHSTEN ZYKLUS FORTSCHREIBEN.
+        pPropId = cycleId.takeIf { ledger.hasOpenProposal(it) }
+        pStripped = !publication.allowed && rt.units != null
+        pSealed = publication.sealed
+        pPersistFailed = !publication.sealed
+        letzterAusgang = ausgang
+        letzteMengeU = publication.rt.units
+        return o
+    }
+
+    /** Der Zustand NACH einem Prozessneustart - aus der Datei, nicht aus dem
+     *  Speicher. Die Probe darauf, dass ein Befund durabel ist. */
+    private fun nachNeustart(dir: File): EpisodeBudgets =
+        FuseLedgerAdapter().also { it.loadOnce(dir, "test-epoch", clock) }.episodes
+
+    /** Ein armiertes Mahlzeitenfenster mit steigendem Zucker - der Aufbau,
+     *  in dem Phase A ueberhaupt etwas bucht. */
+    private fun mahlzeit(dir: File) {
+        fundamentAn = true
+        flach = 180.0
+        steigungProMin = 2.5
+        markerAuthorized = true
+        markerAt = start + 2 * 60_000L
+        clock = start
+        transportReset()
+        val l = FuseLedgerAdapter().also { it.loadOnce(dir.also(File::mkdirs), "test-epoch", start) }
+        neuerRunner(l)
+    }
+
+    /**
+     * DEN BEWEISZYKLUS RUHIG STELLEN.
+     *
+     * WARUM DAS NOETIG IST - und es ist ein Befund ueber das RIG, nicht ueber
+     * den Regler: bucht der Zyklus, in dem der Beweis wirkt, gleichzeitig eine
+     * NEUE Menge, dann bewegen sich dieselben Zaehler aus zwei Gruenden. Die
+     * erste Fassung dieser Tests hat daraus "der Zaehler ist unveraendert"
+     * gelesen, obwohl Entlastung und Neubuchung sich nur aufhoben. Genau die
+     * Sorte Testartefakt, an der der erste E2E gescheitert ist.
+     *
+     * Flach und ohne Anstieg fordert der Regler nichts an; die Zaehler
+     * aendern sich dann ausschliesslich durch die Entlastung. Die Tests
+     * pruefen das ausdruecklich nach, statt es zu unterstellen.
+     */
+    private fun ruhigStellen() {
+        flach = 100.0
+        steigungProMin = 0.0
+    }
+
+    /** Bis zur ersten wirklich gebuchten Phase-A-Menge fahren. */
+    private fun bisPhaseABuchung(dir: File, maxZyklen: Int = 12): FuseCycleRunner.Outcome {
+        repeat(maxZyklen) {
+            val o = transport(dir)
+            if (o.decision.smbU > 0.0 &&
+                ledger.episodes.settled?.foundationPhase == MealFoundation.Phase.PHASE_A
+            ) return o
+        }
+        throw AssertionError("kein Phase-A-Zyklus mit Menge - der Aufbau traegt den Test nicht")
+    }
+
+
+    // ---- FALL 1: BOLUS_IN_QUEUE in Phase A --------------------------------
+
+    /**
+     * TONIS 19:07-FALL, durch die ganze Kette.
+     *
+     * AAPS liess nach seinen Constraints eine positive Menge stehen, hat den
+     * Apply-Block aber nie betreten. [NotSentProof] nennt das
+     * `BOLUS_IN_QUEUE` - der Grund, den die urspruengliche Grundliste
+     * ausgelassen haette.
+     *
+     * Geprueft werden die BUECHER einzeln, die publizierte Menge und der
+     * Zustand NACH einem Neustart - nicht nur ein Summenwert.
+     */
+    @Test
+    fun `E2E BOLUS_IN_QUEUE in Phase A - exakte Rueckbuchung und Uebertrag`(@TempDir dir: File) {
+        mahlzeit(dir)
+        val o = bisPhaseABuchung(dir)
+        val menge = o.decision.smbU
+        // DEN BEWEISZYKLUS RUHIG STELLEN - s. [ruhigStellen].
+        ruhigStellen()
+        val vorher = ledger.episodes
+        val primeVor = vorher.primeSpentU
+        val evidenzVor = vorher.evidenceCommittedU
+        val phaseAVor = vorher.deliveredPhaseAU
+        val zeilenVor = vorher.mealDeliveries.size
+
+        // AAPS hat sie NIE KOMMANDIERT - der Beweis kommt im Folgezyklus.
+        letzterAusgang = Ausgang.NIE_KOMMANDIERT
+        val beweis = transport(dir)
+        assertEquals(
+            0.0, beweis.decision.smbU, 1e-9,
+            "der Beweiszyklus darf NICHTS buchen, sonst misst der Test zwei Vorgaenge auf einmal",
+        )
+
+        assertEquals(
+            QueueRejectReason.BOLUS_IN_QUEUE, letzterGrund,
+            "der Beweis MUSS aus der Beobachtung entstehen, nicht aus einer Liste",
+        )
+        val e = ledger.episodes
+        assertEquals(primeVor - menge, e.primeSpentU, 1e-9, "primeSpentU")
+        assertEquals(evidenzVor - menge, e.evidenceCommittedU, 1e-9, "evidenceCommittedU")
+        assertEquals(phaseAVor - menge, e.deliveredPhaseAU, 1e-9, "deliveredPhaseAU")
+        assertEquals(zeilenVor - 1, e.mealDeliveries.size, "die Mahlzeitenzeile verschwindet")
+        assertEquals(menge, e.confirmedNotSentPhaseAU, 1e-9, "und genau sie steht als Uebertrag")
+
+        // UND DURABEL: nach einem Neustart steht derselbe Befund in der Datei.
+        val nach = nachNeustart(dir)
+        assertEquals(
+            menge, nach.confirmedNotSentPhaseAU, 1e-9,
+            "der Uebertrag MUSS den Neustart ueberleben",
+        )
+        assertEquals(e.deliveredPhaseAU, nach.deliveredPhaseAU, 1e-9, "der Phase-A-Stand auch")
+    }
+
+    // ---- FALL 2: CONSTRAINT_ZERO in Phase A -------------------------------
+
+    /** Dieselbe Kette, anderer Beweis: AAPS hat selbst genullt. Der Grund
+     *  aendert am Ergebnis NICHTS - genau das ist der Vertrag. */
+    @Test
+    fun `E2E CONSTRAINT_ZERO in Phase A - dasselbe Ergebnis`(@TempDir dir: File) {
+        mahlzeit(dir)
+        val o = bisPhaseABuchung(dir)
+        val menge = o.decision.smbU
+        ruhigStellen()
+        val phaseAVor = ledger.episodes.deliveredPhaseAU
+
+        letzterAusgang = Ausgang.CONSTRAINT_NULL
+        val beweis = transport(dir)
+        assertEquals(0.0, beweis.decision.smbU, 1e-9, "der Beweiszyklus bucht nichts")
+
+        assertEquals(QueueRejectReason.CONSTRAINT_ZERO, letzterGrund)
+        assertEquals(menge, ledger.episodes.confirmedNotSentPhaseAU, 1e-9)
+        assertEquals(phaseAVor - menge, ledger.episodes.deliveredPhaseAU, 1e-9)
+        assertEquals(menge, nachNeustart(dir).confirmedNotSentPhaseAU, 1e-9, "durabel")
+    }
+
+    // ---- FALL 3: unklarer Ausgang -----------------------------------------
+
+    /**
+     * OHNE BEWEIS BLEIBT ALLES STEHEN - der konservative Ausgang.
+     *
+     * Die Buchung bleibt als geliefert stehen, FUSE liefert spaeter zu wenig
+     * statt zu viel. Das ist die einzige Richtung, die dieser Ledger raten
+     * darf.
+     */
+    @Test
+    fun `E2E unklarer Ausgang - keine Rueckbuchung, kein Uebertrag`(@TempDir dir: File) {
+        mahlzeit(dir)
+        bisPhaseABuchung(dir)
+        ruhigStellen()
+        val e = ledger.episodes
+        val primeVor = e.primeSpentU
+        val evidenzVor = e.evidenceCommittedU
+        val phaseAVor = e.deliveredPhaseAU
+        val zeilenVor = e.mealDeliveries.size
+
+        letzterAusgang = Ausgang.UNKLAR
+        val beweis = transport(dir)
+        assertEquals(0.0, beweis.decision.smbU, 1e-9, "der Beweiszyklus bucht nichts")
+        assertNull(letzterGrund, "ein unauswertbarer Ausgang ist KEIN Beweis")
+        assertEquals(0.0, e.confirmedNotSentPhaseAU, 1e-9, "und erzeugt keinen Uebertrag")
+        assertTrue(e.primeSpentU >= primeVor - 1e-9, "primeSpentU darf nicht sinken")
+        assertTrue(e.evidenceCommittedU >= evidenzVor - 1e-9, "evidenceCommittedU auch nicht")
+        assertTrue(e.deliveredPhaseAU >= phaseAVor - 1e-9, "und der Phase-A-Stand ebenso wenig")
+        assertTrue(e.mealDeliveries.size >= zeilenVor, "keine Zeile verschwindet")
+        assertEquals(0.0, nachNeustart(dir).confirmedNotSentPhaseAU, 1e-9, "auch nach Neustart nicht")
+    }
+
+    /**
+     * DIE ZWEITE GESTALT DES UNKLAREN AUSGANGS: die Beobachtung SAEHE aus wie
+     * ein Beweis - positive Menge nach Constraints, Apply-Block nie betreten -,
+     * beschreibt aber nachweislich einen ANDEREN Lauf.
+     *
+     * WARUM EIN EIGENER TEST UND KEIN ZWEITER SCHRITT IM VORIGEN: nach einem
+     * ruhigen Zyklus gibt es keine offene Zeile mehr, der Beleg wird also gar
+     * nicht mehr gebildet. Der Fall braucht eine frische Phase-A-Buchung
+     * unmittelbar davor.
+     *
+     * Und warum er ueberhaupt existiert: eine Mutationsprobe hat gezeigt, dass
+     * der unauswertbare Fall die Korrelationspruefung in [NotSentProof] gar
+     * nicht erreicht - dort sind ohnehin alle Werte null. Ohne diesen Test
+     * blieb das Entfernen der Pruefung gruen.
+     */
+    @Test
+    fun `E2E fremder Lauf - keine Rueckbuchung, kein Uebertrag`(@TempDir dir: File) {
+        mahlzeit(dir)
+        bisPhaseABuchung(dir)
+        ruhigStellen()
+        val e = ledger.episodes
+        val primeVor = e.primeSpentU
+        val phaseAVor = e.deliveredPhaseAU
+        val zeilenVor = e.mealDeliveries.size
+
+        letzterAusgang = Ausgang.UNKORRELIERT
+        val beweis = transport(dir)
+        assertEquals(0.0, beweis.decision.smbU, 1e-9, "der Beweiszyklus bucht nichts")
+
+        assertNull(letzterGrund, "ein fremder Lauf ist KEIN Beweis")
+        assertEquals(0.0, e.confirmedNotSentPhaseAU, 1e-9, "und erzeugt keinen Uebertrag")
+        assertEquals(primeVor, e.primeSpentU, 1e-9, "keine Entlastung")
+        assertEquals(phaseAVor, e.deliveredPhaseAU, 1e-9)
+        assertEquals(zeilenVor, e.mealDeliveries.size, "keine Zeile verschwindet")
+    }
+
+    // ---- FALL 4: bewiesenes Nicht-Senden in Phase B -----------------------
+
+    /**
+     * PHASE B WIRD ZURUECKGEBUCHT, BEKOMMT ABER KEINEN UEBERTRAG.
+     *
+     * `deliveredSinceHandoverU` sinkt - damit steht das zeitliche Soll von
+     * selbst wieder offen. Ein Uebertrag obendrauf waere dieselbe Menge
+     * ZWEIMAL.
+     */
+    @Test
+    fun `E2E Nicht-Senden in Phase B - Rueckbuchung ohne Uebertrag`(@TempDir dir: File) {
+        mahlzeit(dir)
+        // Weit hinter die Uebergabe fahren, bis eine PHASE_B-Menge gebucht ist.
+        //
+        // MIT ECHTEM ABBRUCH. Die erste Fassung hatte hier `return@repeat` -
+        // das verlaesst nur den EINEN Schleifendurchlauf, nicht die Schleife.
+        // Sie lief also weiter, `mengeB` trug am Ende irgendeine spaetere
+        // Menge, und `settled` gehoerte zu einem ganz anderen Zyklus.
+        var mengeB = 0.0
+        for (i in 0 until 40) {
+            val o = transport(dir)
+            if (o.decision.smbU > 0.0 &&
+                ledger.episodes.settled?.foundationPhase == MealFoundation.Phase.PHASE_B
+            ) {
+                mengeB = o.decision.smbU
+                break
+            }
+        }
+        assertTrue(mengeB > 0.0, "der Aufbau muss eine Phase-B-Buchung erzeugen")
+        ruhigStellen()
+        val bezahltVor = ledger.episodes.deliveredSinceHandoverU
+
+        letzterAusgang = Ausgang.NIE_KOMMANDIERT
+        val beweis = transport(dir)
+        assertEquals(0.0, beweis.decision.smbU, 1e-9, "der Beweiszyklus bucht nichts")
+
+        val e = ledger.episodes
+        assertTrue(
+            e.deliveredSinceHandoverU < bezahltVor - 1e-9,
+            "der Bezahlstand MUSS sinken: $bezahltVor -> ${e.deliveredSinceHandoverU}",
+        )
+        assertEquals(
+            0.0, e.confirmedNotSentPhaseAU, 1e-9,
+            "aber Phase B bekommt keinen Uebertrag - das waere die Menge zweimal",
+        )
+        assertEquals(0.0, nachNeustart(dir).confirmedNotSentPhaseAU, 1e-9, "auch durabel nicht")
+    }
+
+    // ---- FALL 5: fremde Kennung -------------------------------------------
+
+    /**
+     * EINE FREMDE KENNUNG AENDERT NICHTS.
+     *
+     * Der Beweis kommt ueber die `proposalId`; passt sie nicht, gibt es
+     * nichts zuzuordnen - und dann darf auch nichts geschehen. Sonst
+     * entlastete ein Beleg eine Buchung, die er gar nicht beschreibt.
+     */
+    @Test
+    fun `E2E fremde Kennung - alles unveraendert`(@TempDir dir: File) {
+        mahlzeit(dir)
+        bisPhaseABuchung(dir)
+        ruhigStellen()
+        val e = ledger.episodes
+        val primeVor = e.primeSpentU
+        val phaseAVor = e.deliveredPhaseAU
+        val zeilenVor = e.mealDeliveries.size
+
+        // Die Kennung des NAECHSTEN Zyklus wird verbogen - der Beleg des
+        // vorigen findet damit keine passende Ablage mehr.
+        pPropId = "e2e#fremd"
+        letzterAusgang = Ausgang.NIE_KOMMANDIERT
+        transport(dir)
+
+        assertEquals(0.0, e.confirmedNotSentPhaseAU, 1e-9, "kein Uebertrag ohne Zuordnung")
+        assertTrue(e.primeSpentU >= primeVor - 1e-9, "und keine Entlastung")
+        assertTrue(e.deliveredPhaseAU >= phaseAVor - 1e-9)
+        assertTrue(e.mealDeliveries.size >= zeilenVor, "keine Zeile verschwindet")
+    }
+
+    // ---- FALL 6: Prime holt vor der Uebergabe nach ------------------------
+
+    /**
+     * DER MENGEN-ZEIT-VERTRAG, durch die ganze Kette.
+     *
+     * Prime liefert die verworfene Menge in seinem EIGENEN Fenster nach. Der
+     * Rohzaehler bleibt stehen - er ist ein Beweis, kein Konto -, der
+     * EFFEKTIVE Uebertrag faellt auf 0, und mit ihm die Rampe. Ohne diesen
+     * Vertrag lieferte Phase B ihr unveraendertes Teilbudget auf einer zu
+     * schnellen Bahn.
+     */
+    @Test
+    fun `E2E Prime holt nach - Rohuebertrag bleibt, Wirkung faellt`(@TempDir dir: File) {
+        mahlzeit(dir)
+        val o = bisPhaseABuchung(dir)
+        val menge = o.decision.smbU
+
+        letzterAusgang = Ausgang.NIE_KOMMANDIERT
+        transport(dir)
+        assertEquals(menge, ledger.episodes.confirmedNotSentPhaseAU, 1e-9, "der Uebertrag steht")
+
+        // Prime laeuft weiter und liefert in seinem Fenster nach.
+        repeat(8) { transport(dir) }
+
+        val e = ledger.episodes
+        assertEquals(
+            menge, e.confirmedNotSentPhaseAU, 1e-9,
+            "der ROHE Beweiszaehler bleibt unveraendert - er ist ein Beweis, kein Konto",
+        )
+
+        // Und die WIRKUNG: der Snapshot rechnet mit dem noch offenen Rest.
+        val snap = MealFoundation.snapshot(
+            e.foundation, clock, e.primeWindowStartTs,
+            deliveredFromBudgetU = e.deliveredPhaseAU + e.deliveredSinceHandoverU,
+            deliveredSinceHandoverU = e.deliveredSinceHandoverU,
+            deliveredPhaseAU = e.deliveredPhaseAU,
+            confirmedNotSentPhaseAU = e.confirmedNotSentPhaseAU,
+            bolusStepU = 0.05,
+        )
+        val rueckstand = maxOf(0.0, snap.phaseABudgetU - e.deliveredPhaseAU)
+        assertEquals(
+            minOf(menge, rueckstand), snap.effectiveCarryU, 1e-9,
+            "der effektive Uebertrag folgt dem OFFENEN Rueckstand",
+        )
+        assertEquals(
+            minOf(snap.phaseBBudgetU + snap.effectiveCarryU, snap.totalBudgetU),
+            snap.phaseBAllowanceU, 1e-9,
+            "und die Erlaubnis daraus",
+        )
+        assertTrue(
+            snap.effectiveCarryU <= menge + 1e-9,
+            "er kann nie ueber den Beweis hinausgehen",
+        )
+    }
+
 }
