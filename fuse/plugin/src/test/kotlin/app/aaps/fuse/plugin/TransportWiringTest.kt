@@ -22,6 +22,8 @@ import app.aaps.core.objects.constraints.ConstraintObject
 import app.aaps.fuse.core.util.Sha
 import app.aaps.fuse.plugin.ledger.FuseLedgerAdapter
 import app.aaps.fuse.plugin.ledger.EpisodeBudgets
+import app.aaps.fuse.core.observer.Health
+import kotlin.math.max
 import org.junit.jupiter.api.Assertions.assertNull
 import app.aaps.core.interfaces.aps.RT
 import app.aaps.core.interfaces.aps.APSResult
@@ -124,6 +126,20 @@ class TransportWiringTest : TestBaseWithProfile() {
     /** Hoehe der flachen Rohreihe - niedrig heisst "kein Bedarf". */
     private var flach = 180.0
 
+    /** Minute (ab `start`), ab der die Bahn abknickt. null = durchgehend
+     *  linear, also das bisherige Verhalten. */
+    /** Die Mahlzeitenhuelle [U]. Als Variable, weil die Plateau-Form eine
+     *  realistische Huelle braucht: mit 1,2 U ist das gemeinsame Budget
+     *  schon in Phase A erschoepft (der Korrekturkanal ist NICHT an die
+     *  Huelle gebunden), und Phase B faende nur noch BUDGET_EXHAUSTED vor.
+     *  Der Default haelt das bisherige Verhalten aller anderen Tests. */
+    private var primeHuelleU = 1.2
+
+    private var knickAbMin: Int? = null
+
+    /** Steigung NACH dem Knick [mg/dl/min]. */
+    private var steigungNachKnick = 0.0
+
     /** Steigung der Rohreihe [mg/dl je Minute]. 0 = flach wie bisher. Fuer den
      *  Mahlzeitenfall braucht es einen echten Anstieg, sonst gibt es keinen
      *  Antrieb und die Bremsbahn wird nie die bindende. */
@@ -211,7 +227,21 @@ class TransportWiringTest : TestBaseWithProfile() {
         generateSequence(start) { it + 60_000L }
             .takeWhile { it <= untilTs }
             .map { ts ->
-                val v = flach + steigungProMin * ((ts - start) / 60_000.0)
+                // STETIG GEKNICKTE BAHN (Toni 19.08.). Bis `knickAbMin` gilt
+                // `steigungProMin`, danach `steigungNachKnick` - der Wert am
+                // Knick ist derselbe, es entsteht also KEIN Sprung, den der
+                // Regler als Artefakt lesen wuerde.
+                //
+                // WOZU: die drei bisherigen Formen bringen den normalen Pfad
+                // nie zur Ruhe, deshalb bleibt fuer das Fundament nie eine
+                // Luecke. Eine Bahn, die erst steigt und dann plateaut, laesst
+                // den Regler von SELBST aufhoeren zu fordern - genau die Lage,
+                // fuer die Phase B gebaut ist. Nichts wird kuenstlich genullt.
+                val min = (ts - start) / 60_000.0
+                val k = knickAbMin
+                val v =
+                    if (k == null || min <= k) flach + steigungProMin * min
+                    else flach + steigungProMin * k + steigungNachKnick * (min - k)
                 GV(
                     timestamp = ts, value = v, raw = v, noise = 0.0,
                     sourceSensor = SourceSensor.UNKNOWN, trendArrow = TrendArrow.FLAT
@@ -308,7 +338,7 @@ class TransportWiringTest : TestBaseWithProfile() {
         whenever(preferences.get(FuseBooleanKey.OnsetChannelEnabled)).thenReturn(true)
         whenever(preferences.get(FuseDoubleKey.OnsetEnvelopeU)).thenReturn(1.5)
         whenever(preferences.get(FuseBooleanKey.PrimeReleaseEnabled)).thenReturn(true)
-        whenever(preferences.get(FuseDoubleKey.PrimeEnvelopeU)).thenReturn(1.2)
+        whenever(preferences.get(FuseDoubleKey.PrimeEnvelopeU)).thenAnswer { primeHuelleU }
         whenever(preferences.get(FuseBooleanKey.MealFoundationEnabled)).thenAnswer { fundamentAn }
         whenever(preferences.get(FuseDoubleKey.MealFoundationPhaseAShare)).thenAnswer { fundamentAnteil }
         whenever(preferences.get(FuseIntKey.MealFoundationEndMin)).thenAnswer { fundamentEndeMin }
@@ -3867,6 +3897,502 @@ class TransportWiringTest : TestBaseWithProfile() {
         assertEquals(
             phaseBBudget / nachSicht.effectiveWindowMin, nachSicht.effectiveRateUPerMin, 1e-9,
             "sonst liefe Phase B nach jedem Neustart wieder zu schnell",
+        )
+    }
+
+
+    // ==== DER RUNNER-REPLAY (Toni/Codex 19.08.) =============================
+    //
+    // WAS IHN VOM OFFLINE-REPLAY UNTERSCHEIDET, und es ist genau das, was dort
+    // fehlte: hier laeuft der ECHTE Regler. Guard, Tail, iobTH, maxIOB,
+    // Transport und das Publikationsgate sind nicht simuliert, sondern
+    // wirksam - gemessen wird deshalb die PUBLIZIERTE Menge, nicht die
+    // Forderung.
+    //
+    // EIN-VARIABLEN-DISZIPLIN: Gesamtbudget (PrimeEnvelopeU) und Fenster
+    // (MealFoundationEndMin, PrimeWindowMin) bleiben ueber alle Laeufe
+    // konstant; variiert wird ausschliesslich der Phase-A-Anteil.
+    //
+    // DIE IOB-SPITZE wird aus den publizierten Mengen mit DEMSELBEN
+    // Insulinmodell gerechnet, das der Loop benutzt (`AapsUnitInsulinSampler`
+    // ueber das AAPS-Insulinplugin). Eine eigene Kurve waere eine zweite
+    // Wahrheit; der IOB-Wert des Rigs taugt nicht, er steht fest auf 0.
+    //
+    // DIE GRENZE DIESES RIGS, ausdruecklich: die Glukosebahn ist synthetisch
+    // (Grundwert + konstante Steigung). Sie ist ueber alle vier Aufteilungen
+    // IDENTISCH, der Vergleich ist also sauber - aber es ist keine echte
+    // Mahlzeitenkurve. Aussagen ueber Blutzuckerverlaeufe stehen hier
+    // nirgends.
+
+    private class Lauf(
+        val anteil: Double,
+        val form: String,
+        /** Kumulativ PUBLIZIERT bei T+15/30/45/60. */
+        val bei: Map<Int, Double>,
+        val publiziertU: Double,
+        val leerlaufMin: Int,
+        val iobSpitzeU: Double,
+        val iobSpitzeMin: Int,
+        /** Kumulativ: was der NORMALE Pfad vor dem Fundament wollte. */
+        val normalBei: Map<Int, Double>,
+        /** Kumulativ: was das FUNDAMENT darueber hinaus anhob. */
+        val fundamentBei: Map<Int, Double>,
+        /** Wieviele Zyklen hat das Fundament ueberhaupt angehoben. */
+        val fundamentZyklen: Int,
+        /** Davon: angehoben, aber am Ende NICHTS publiziert - der teure Fall. */
+        val fundamentGebremst: Int,
+        /** Welche Grenzen ueberhaupt gebunden haben - typisiert, gezaehlt. */
+        val bindungen: Map<String, Int>,
+        val fundamentBindung: String?,
+        val effektiverUebertragU: Double,
+        val restRueckstandU: Double,
+    )
+
+    /**
+     * Die IOB-Spitze aus den publizierten Mengen - mit dem Loop-Modell.
+     *
+     * @param gaben (Zeitstempel, Menge) jeder wirklich publizierten Abgabe.
+     */
+    private fun iobSpitze(gaben: List<Pair<Long, Double>>, bisTs: Long): Pair<Double, Int> {
+        if (gaben.isEmpty()) return 0.0 to 0
+        val start = gaben.first().first
+        var spitze = 0.0
+        var spitzeMin = 0
+        var t = start
+        while (t <= bisTs) {
+            var iob = 0.0
+            for ((ts, menge) in gaben) {
+                if (ts > t) continue
+                val sampler = AapsUnitInsulinSampler(insulin, diaHours = 9.0, deliveryTs = ts)
+                iob += sampler.sampleAfterDelivery(menge, ((t - ts) / 60_000L).toInt()).iobU
+            }
+            if (iob > spitze) {
+                spitze = iob
+                spitzeMin = ((t - start) / 60_000L).toInt()
+            }
+            t += 60_000L
+        }
+        return spitze to spitzeMin
+    }
+
+    /**
+     * EIN vollstaendiger Lauf ueber Marker + Fenster, mit echter Aktuation.
+     *
+     * @param anstieg die Mahlzeitenantwort [mg/dl/min]: schnell, langsam oder
+     *   ausbleibend.
+     */
+    private fun runnerLauf(dir: File, anteil: Double, form: String, anstieg: Double): Lauf {
+        fundamentAn = true
+        fundamentAnteil = anteil
+        fundamentEndeMin = 60
+        markerAuthorized = true
+        flach = 140.0
+        steigungProMin = anstieg
+        clock = start
+        transportReset()
+        val l = FuseLedgerAdapter().also { it.loadOnce(dir.also(File::mkdirs), "test-epoch", start) }
+        neuerRunner(l)
+        markerAt = start + 2 * 60_000L
+
+        val gaben = mutableListOf<Pair<Long, Double>>()
+        val bindungen = mutableMapOf<String, Int>()
+        var leerlauf = 0
+        var maxLeerlauf = 0
+        val kumuliert = mutableMapOf<Int, Double>()
+        val kumNormal = mutableMapOf<Int, Double>()
+        val kumFundament = mutableMapOf<Int, Double>()
+        var summe = 0.0
+        var summeNormal = 0.0
+        var summeFundament = 0.0
+        var fundamentZyklen = 0
+        var fundamentGebremst = 0
+
+        for (min in 0..75) {
+            val o = transport(dir)
+            // DIE PUBLIZIERTE Menge - `letzteMengeU` ist der Stand NACH dem
+            // Gate, nicht die Forderung des Reglers.
+            val publiziert = letzteMengeU ?: 0.0
+            if (publiziert > 0.0) {
+                gaben += clock to publiziert
+                summe += publiziert
+                leerlauf = 0
+            } else {
+                leerlauf++
+                if (leerlauf > maxLeerlauf) maxLeerlauf = leerlauf
+            }
+            // BINDENDE GRENZEN, typisiert gezaehlt. `block` ist der harte
+            // Riegel des Reglers, `bindingLimit` die weiche Deckelung.
+            if (o.decision.block != FuseController.Block.NONE)
+                bindungen.merge(o.decision.block.name, 1, Int::plus)
+            o.decision.bindingLimit?.takeIf { it != "NONE" }
+                ?.let { bindungen.merge(it, 1, Int::plus) }
+            // DIE DREI SPUREN GETRENNT (Toni 19.08.): was der normale Pfad
+            // wollte, was das Fundament anhob, was wirklich hinausging.
+            summeNormal += o.preFoundationSmbU
+            summeFundament += o.foundationLiftU
+            if (o.foundationLiftU > 0.0) {
+                fundamentZyklen++
+                // ANGEHOBEN, ABER NICHTS PUBLIZIERT: das Fundament hat
+                // gefordert und ein Gate hat es ganz weggenommen.
+                if (publiziert <= 0.0) fundamentGebremst++
+            }
+            val seitMarker = ((clock - (markerAt)) / 60_000L).toInt()
+            if (seitMarker in listOf(15, 30, 45, 60)) {
+                kumuliert[seitMarker] = summe
+                kumNormal[seitMarker] = summeNormal
+                kumFundament[seitMarker] = summeFundament
+            }
+        }
+
+        val e = ledger.episodes
+        val sicht = sicht(e)
+        val (spitze, spitzeMin) = iobSpitze(gaben, clock)
+        return Lauf(
+            anteil = anteil, form = form,
+            bei = listOf(15, 30, 45, 60).associateWith { kumuliert[it] ?: summe },
+            publiziertU = summe, leerlaufMin = maxLeerlauf,
+            iobSpitzeU = spitze, iobSpitzeMin = spitzeMin,
+            normalBei = listOf(15, 30, 45, 60).associateWith { kumNormal[it] ?: summeNormal },
+            fundamentBei = listOf(15, 30, 45, 60).associateWith { kumFundament[it] ?: summeFundament },
+            fundamentZyklen = fundamentZyklen, fundamentGebremst = fundamentGebremst,
+            bindungen = bindungen, fundamentBindung = sicht.binding?.name,
+            effektiverUebertragU = sicht.effectiveCarryU,
+            restRueckstandU = max(0.0, sicht.phaseBAllowanceU - e.deliveredSinceHandoverU),
+        )
+    }
+
+    /**
+     * DIE VERGLEICHSTAFEL - ausgegeben, nicht festgeschrieben.
+     *
+     * Eine Replay-Zahl als Zusicherung zu setzen hiesse, eine Hypothese zur
+     * Regel zu machen. Festgeschrieben sind nur die Aussagen, die aus der
+     * Bauform folgen (darunter).
+     */
+    @Test
+    fun `Runner-Replay ueber Aufteilung und Mahlzeitenantwort`(@TempDir dir: File) {
+        val formen = listOf("schnell" to 2.5, "langsam" to 0.8, "ausbleibend" to 0.0)
+        // DREI SPUREN JE ZEITPUNKT: norm = was der normale Pfad wollte,
+        // fnd = was das Fundament anhob, pub = was publiziert wurde. Erst ihr
+        // Verhaeltnis unterscheidet "Fundament laeuft, Zusatzbedarf gebremst"
+        // von "Fundament selbst blockiert".
+        println(
+            "RUN anteil;form;" +
+                "pub15;pub30;pub45;pub60;norm60;fnd60;fndZyklen;fndGebremst;" +
+                "publiziertU;leerlaufMin;iobSpitzeU;iobSpitzeMin;" +
+                "fundamentBindung;effUebertragU;restRueckstandU;bindungen"
+        )
+        for ((form, anstieg) in formen) {
+            for (anteil in listOf(1.00, 0.80, 0.75, 0.67)) {
+                val r = runnerLauf(File(dir, "s${(anteil * 100).toInt()}_$form"), anteil, form, anstieg)
+                println(
+                    "RUN %.2f;%s;%.3f;%.3f;%.3f;%.3f;%.3f;%.3f;%d;%d;%.3f;%d;%.3f;%d;%s;%.3f;%.3f;%s".format(
+                        r.anteil, r.form, r.bei[15], r.bei[30], r.bei[45], r.bei[60],
+                        r.normalBei[60], r.fundamentBei[60], r.fundamentZyklen, r.fundamentGebremst,
+                        r.publiziertU, r.leerlaufMin, r.iobSpitzeU, r.iobSpitzeMin,
+                        r.fundamentBindung ?: "-", r.effektiverUebertragU, r.restRueckstandU,
+                        r.bindungen.entries.sortedBy { it.key }.joinToString("|") { "${it.key}=${it.value}" }
+                            .ifEmpty { "-" },
+                    )
+                )
+            }
+        }
+    }
+
+    /**
+     * DER GESAMTDECKEL HAELT - ueber jede Aufteilung und jede
+     * Mahlzeitenantwort.
+     *
+     * DAS IST DIE ZUSICHERUNG, die "kein neues Budget" wirklich bedeutet
+     * (Toni 19.08.): niemals mehr als das gepinnte Gesamtbudget aus Phase A,
+     * Phase B und Uebertrag zusammen. NICHT: dieselbe Menge wie bei 100/0 -
+     * dann koennte das Fundament gerade keine Versorgungsluecke schliessen.
+     *
+     * Gemessen wird der FUNDAMENT-Anteil, nicht die Gesamtabgabe: Korrektur-
+     * und Evidenzinsulin duerfen ausdruecklich zusaetzlich entstehen.
+     */
+    @Test
+    fun `ueber alle Aufteilungen bleibt das Fundament unter dem Gesamtbudget`(@TempDir dir: File) {
+        for ((form, anstieg) in listOf("schnell" to 2.5, "langsam" to 0.8, "ausbleibend" to 0.0)) {
+            for (anteil in listOf(1.00, 0.80, 0.75, 0.67)) {
+                runnerLauf(File(dir, "cap${(anteil * 100).toInt()}_$form"), anteil, form, anstieg)
+                val e = ledger.episodes
+                val budget = e.foundation.totalBudgetU
+                assertTrue(budget > 0.0, "$form/$anteil: die Autorisierung MUSS stehen")
+                // HIER STAND EINE FALSCHE ZUSICHERUNG, und sie ist beim ersten
+                // Lauf umgefallen: `deliveredPhaseAU + deliveredSinceHandoverU`
+                // sei durch das Budget begrenzt. Ist sie nicht - beide Zaehler
+                // zaehlen ALLES, was in ihrer Phase floss, auch gewoehnliche
+                // Korrektur, und die darf ausdruecklich zusaetzlich zum
+                // Mahlzeitenbudget entstehen (bestaetigter Vertrag). Gemessen
+                // wurde 1,2 + 0,1 bei Budget 1,2, und das ist gesund.
+                //
+                // Dieselbe Verwechslung wie beim vorgeschlagenen Codec-Riegel:
+                // "was das Fundament geben darf" ist nicht "was in seinem
+                // Fenster fliesst". Pruefbar ist deshalb die ERLAUBNIS.
+                val sicht = sicht(e)
+                assertTrue(
+                    sicht.phaseBAllowanceU <= budget + 1e-9,
+                    "$form/$anteil: die Phase-B-Erlaubnis MUSS unter dem Gesamtbudget bleiben",
+                )
+                // UND DIE FORDERUNG BLEIBT INNERHALB DER ERLAUBNIS - die
+                // zweite Haelfte desselben Vertrags. Ohne sie sagte der Test
+                // nur, dass die Erlaubnis klein ist, nicht dass sie gilt.
+                assertTrue(
+                    sicht.dueU <= sicht.remainingInWindowU + 1e-9,
+                    "$form/$anteil: das Fundament fordert nie mehr als offen ist: " +
+                        "${sicht.dueU} von ${sicht.remainingInWindowU}",
+                )
+                assertTrue(
+                    sicht.effectiveCarryU <= e.confirmedNotSentPhaseAU + 1e-9,
+                    "$form/$anteil: der effektive Uebertrag geht nie ueber den Beweis hinaus",
+                )
+            }
+        }
+    }
+
+    /**
+     * DIE HARTEN NULLFAELLE BLEIBEN HART - ueber jede Aufteilung.
+     *
+     * Ein gemessenes Tief, ein ungesundes Signal und der Widerruf duerfen vom
+     * Fundament NICHT ueberstimmt werden. Das ist die Zusicherung, die
+     * unabhaengig von jeder Aufteilung gelten muss - sonst waere die
+     * Aufteilung nicht nur eine Verteilungsfrage, sondern eine
+     * Sicherheitsfrage.
+     */
+    @Test
+    fun `harte Nullfaelle bleiben ueber jede Aufteilung hart`(@TempDir dir: File) {
+        for (anteil in listOf(1.00, 0.80, 0.75, 0.67)) {
+            // (a) GEMESSENES TIEF.
+            fundamentAn = true
+            fundamentAnteil = anteil
+            markerAuthorized = true
+            flach = 62.0
+            steigungProMin = -1.2
+            clock = start
+            transportReset()
+            neuerRunner(FuseLedgerAdapter().also { it.loadOnce(File(dir, "tief$anteil").also(File::mkdirs), "test-epoch", start) })
+            markerAt = start + 2 * 60_000L
+            var abgegeben = 0.0
+            repeat(40) { transport(File(dir, "tief$anteil")); abgegeben += letzteMengeU ?: 0.0 }
+            assertEquals(
+                0.0, abgegeben, 1e-9,
+                "$anteil: bei gemessenem Tief darf das Fundament NICHTS publizieren",
+            )
+
+            // (b) WIDERRUF: der Marker wird zurueckgenommen.
+            fundamentAnteil = anteil
+            flach = 180.0
+            steigungProMin = 2.5
+            clock = start
+            transportReset()
+            val d2 = File(dir, "widerruf$anteil").also(File::mkdirs)
+            neuerRunner(FuseLedgerAdapter().also { it.loadOnce(d2, "test-epoch", start) })
+            markerAt = start + 2 * 60_000L
+            repeat(20) { transport(d2) }
+            markerAt = 0L
+            repeat(3) { transport(d2) }
+            assertTrue(
+                !ledger.episodes.foundation.valid,
+                "$anteil: der Widerruf MUSS die Autorisierung beenden",
+            )
+            assertEquals(
+                0.0, sicht().dueU, 1e-9,
+                "$anteil: und danach fordert das Fundament nichts mehr",
+            )
+        }
+    }
+
+
+    // ==== DIE VIERTE FORM: der positive Funktionsnachweis ===================
+    //
+    // DIE DREI BISHERIGEN FORMEN SIND NEGATIVKONTROLLEN und bleiben es: sie
+    // belegen, dass das Fundament NICHT additiv eingreift, solange der
+    // normale Pfad die Mindestversorgung schon erfuellt. Gemessen: in allen
+    // zwoelf Laeufen `foundationLiftU == 0` bei `restRueckstandU == 0` - es
+    // gab schlicht nie eine Luecke.
+    //
+    // DIESE FORM ERZEUGT DIE LUECKE, und zwar ueber die GLUKOSEBAHN, nicht
+    // ueber kuenstlich genullte Entscheidungen:
+    //
+    //     T+0..15   klarer Anstieg  -> Prime arbeitet
+    //     T+15..60  Plateau         -> der Regler kommt von selbst zur Ruhe
+    //
+    // Erst danach ist ein Vergleich von 80/20 gegen 75/25 ueberhaupt
+    // sinnvoll.
+
+    private class Lift(
+        val min: Int,
+        val dueU: Double,
+        val preU: Double,
+        val liftU: Double,
+        val publiziertU: Double,
+        val block: String,
+        val grenze: String?,
+    ) {
+
+        /** Was vom Lift wirklich hinausging. */
+        val durchU get() = max(0.0, publiziertU - preU)
+        val ganzGebremst get() = durchU <= 1e-9
+        val teilweiseGebremst get() = !ganzGebremst && durchU < liftU - 1e-9
+    }
+
+    private class Nachweis(
+        val anteil: Double,
+        val phaseBGesehen: Boolean,
+        val dueGesehen: Boolean,
+        val gesund: Boolean,
+        val tiefOderHold: Boolean,
+        val lifts: List<Lift>,
+        val bei: Map<Int, Double>,
+        val leerlaufMin: Int,
+        val iobSpitzeU: Double,
+        val iobSpitzeMin: Int,
+        val publiziertU: Double,
+    )
+
+    private fun plateauLauf(dir: File, anteil: Double): Nachweis {
+        fundamentAn = true
+        fundamentAnteil = anteil
+        fundamentEndeMin = 60
+        markerAuthorized = true
+        // TONIS ECHTE HUELLE. Mit 1,2 U war das gemeinsame Budget schon in
+        // Phase A erschoepft (gemessen: 3,6 U geflossen), und Phase B fand nur
+        // noch BUDGET_EXHAUSTED - die Vorbedingung \ schlug deshalb
+        // fehl, und das war richtig so.
+        primeHuelleU = 3.0
+        flach = 120.0
+        // Der Marker liegt bei start+2; der Knick soll T+15 NACH dem Marker
+        // liegen, also start+17. Die Steigung ist bewusst MASSVOLL: bei 2,2
+        // dosiert der Korrekturkanal die Huelle in Phase A leer.
+        steigungProMin = 1.0
+        knickAbMin = 17
+        steigungNachKnick = 0.1
+        clock = start
+        transportReset()
+        val l = FuseLedgerAdapter().also { it.loadOnce(dir.also(File::mkdirs), "test-epoch", start) }
+        neuerRunner(l)
+        markerAt = start + 2 * 60_000L
+
+        val lifts = mutableListOf<Lift>()
+        val gaben = mutableListOf<Pair<Long, Double>>()
+        val kum = mutableMapOf<Int, Double>()
+        var summe = 0.0
+        var leerlauf = 0
+        var maxLeerlauf = 0
+        var phaseBGesehen = false
+        var dueGesehen = false
+        var gesund = false
+        var tiefOderHold = false
+
+        for (i in 0..75) {
+            val o = transport(dir)
+            val publiziert = letzteMengeU ?: 0.0
+            if (publiziert > 0.0) {
+                gaben += clock to publiziert
+                summe += publiziert
+                leerlauf = 0
+            } else {
+                leerlauf++
+                if (leerlauf > maxLeerlauf) maxLeerlauf = leerlauf
+            }
+            if (o.mealFoundation.phase == MealFoundation.Phase.PHASE_B) phaseBGesehen = true
+            if (o.mealFoundation.dueU > 0.0) dueGesehen = true
+            if (o.health == Health.READY) gesund = true
+            if (o.decision.block == FuseController.Block.SAFETY_HOLD ||
+                o.decision.block == FuseController.Block.LEDGER_HOLD
+            ) tiefOderHold = true
+            if (o.foundationLiftU > 0.0) lifts += Lift(
+                min = ((clock - markerAt) / 60_000L).toInt(),
+                dueU = o.mealFoundation.dueU, preU = o.preFoundationSmbU,
+                liftU = o.foundationLiftU, publiziertU = publiziert,
+                block = o.decision.block.name, grenze = o.decision.bindingLimit,
+            )
+            val seitMarker = ((clock - markerAt) / 60_000L).toInt()
+            if (seitMarker in listOf(15, 30, 45, 60)) kum[seitMarker] = summe
+        }
+        val (spitze, spitzeMin) = iobSpitze(gaben, clock)
+        return Nachweis(
+            anteil, phaseBGesehen, dueGesehen, gesund, tiefOderHold, lifts,
+            listOf(15, 30, 45, 60).associateWith { kum[it] ?: summe },
+            maxLeerlauf, spitze, spitzeMin, summe,
+        )
+    }
+
+    /**
+     * DER POSITIVE FUNKTIONSNACHWEIS - mit harten Vorbedingungen VOR jeder
+     * Auswertung (Toni 19.08.).
+     *
+     * Ohne sie waere eine Tafel voller Nullen von einem funktionierenden
+     * Fundament nicht zu unterscheiden - genau der Fehler der ersten drei
+     * Formen, nur unbemerkt. Die Vorbedingungen sind deshalb ZUSICHERUNGEN,
+     * nicht Ausgaben: schlaegt eine fehl, taugt der Aufbau nicht und die
+     * Zahlen daraus sind wertlos.
+     *
+     * UND DIE ZENTRALE UNTERSCHEIDUNG: `foundationLiftU` sagt, was das
+     * Fundament FORDERTE. Was davon hinausging, ist
+     * `max(0, publiziert - preFoundationSmbU)`. Die Differenz ist der Anteil,
+     * den Tail, Guard oder ein technisches Gate nachtraeglich weggenommen
+     * haben - aus der Forderung allein ist das nicht ablesbar.
+     */
+    @Test
+    fun `Plateau-Form - positiver Funktionsnachweis des Fundaments`(@TempDir dir: File) {
+        println(
+            "PLT anteil;liftZyklen;gefordertU;durchU;ganzGebremst;teilGebremst;" +
+                "pub15;pub30;pub45;pub60;publiziertU;leerlaufMin;iobSpitzeU;iobSpitzeMin;grenzen"
+        )
+        val ergebnisse = listOf(1.00, 0.80, 0.75, 0.67).map { anteil ->
+            val n = plateauLauf(File(dir, "plt${(anteil * 100).toInt()}"), anteil)
+            val gefordert = n.lifts.sumOf { it.liftU }
+            val durch = n.lifts.sumOf { it.durchU }
+            val grenzen = n.lifts.filter { it.ganzGebremst || it.teilweiseGebremst }
+                .groupingBy { it.grenze ?: it.block }.eachCount()
+                .entries.sortedBy { it.key }.joinToString("|") { "${it.key}=${it.value}" }
+                .ifEmpty { "-" }
+            println(
+                "PLT %.2f;%d;%.3f;%.3f;%d;%d;%.3f;%.3f;%.3f;%.3f;%.3f;%d;%.3f;%d;%s".format(
+                    n.anteil, n.lifts.size, gefordert, durch,
+                    n.lifts.count { it.ganzGebremst }, n.lifts.count { it.teilweiseGebremst },
+                    n.bei[15], n.bei[30], n.bei[45], n.bei[60],
+                    n.publiziertU, n.leerlaufMin, n.iobSpitzeU, n.iobSpitzeMin, grenzen,
+                )
+            )
+            n
+        }
+
+        // ---- HARTE VORBEDINGUNGEN, ohne die die Tafel nichts wert ist ----
+        //
+        // Bei 100/0 gibt es kein Phase B - dort MUSS das Fundament schweigen.
+        // Geprueft werden deshalb die drei geteilten Varianten.
+        for (n in ergebnisse.filter { it.anteil < 1.0 }) {
+            assertTrue(n.phaseBGesehen, "${n.anteil}: Phase B MUSS aktiv gewesen sein")
+            // KEINE ZUSICHERUNG AUF `mealFoundation.dueU` - und das ist ein
+            // BEFUND, kein Verzicht (gemessen 19.08.): der exportierte
+            // Snapshot entsteht ABSICHTLICH nach `buche`. In genau den
+            // Zyklen, in denen das Fundament geliefert hat, ist sein dueU
+            // deshalb schon wieder 0 - die Forderung ist ja bedient. Aus dem
+            // Trail allein war bisher also NICHT ablesbar, was das Fundament
+            // wollte. Genau diese Luecke schliesst `foundationLiftU`, und
+            // deshalb wird hier darauf geprueft.
+            assertTrue(n.gesund, "${n.anteil}: das Signal MUSS gesund gewesen sein")
+            assertTrue(!n.tiefOderHold, "${n.anteil}: kein gemessenes Tief und kein Hold im Lauf")
+            assertTrue(
+                n.lifts.isNotEmpty(),
+                "${n.anteil}: das Fundament MUSS mindestens einmal angehoben haben - " +
+                    "sonst ist dies wieder nur eine Negativkontrolle",
+            )
+            assertTrue(
+                n.lifts.any { it.preU < it.publiziertU - 1e-9 },
+                "${n.anteil}: in mindestens einem Lift-Zyklus MUSS die publizierte Menge " +
+                    "UEBER dem normalen Vorschlag gelegen haben - sonst hat das Fundament " +
+                    "zwar gefordert, aber nichts getragen",
+            )
+        }
+
+        // Und die Negativkontrolle in derselben Bahn: 100/0 hat kein Phase B.
+        val ohne = ergebnisse.first { it.anteil == 1.00 }
+        assertTrue(
+            ohne.lifts.isEmpty(),
+            "bei 100/0 darf das Fundament auch auf dem Plateau nichts anheben",
         )
     }
 

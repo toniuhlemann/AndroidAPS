@@ -483,6 +483,13 @@ class FuseCycleRunner(
          * Fundament laeuft, und das ist die richtige Aussage.
          */
         val mealFoundation: MealFoundation.Snapshot = MealFoundation.Snapshot.none(),
+        /** Der SMB-Stand VOR der Fundament-Anhebung [U] - reine Messung. */
+        val preFoundationSmbU: Double = 0.0,
+        /** Was das Fundament ueber den normalen Vorschlag hinaus angehoben
+         *  hat [U]. Zusammen mit [preFoundationSmbU] und der publizierten
+         *  Menge beantwortet es, WER die Dosis wollte und wer sie gebremst
+         *  hat - aus der Summe allein ist das nicht ablesbar. */
+        val foundationLiftU: Double = 0.0,
         /** `null` = der Zyklus kam nicht bis zum Lesen der Einstellungen. Dann
          *  hat er auch keine Politik, und der Export sagt das statt eine zu
          *  erfinden. */
@@ -1905,6 +1912,24 @@ class FuseCycleRunner(
             tailHeadroomU = tail?.takeIf { it.usable }?.headroomU,
             transportCommitmentU = transportModelledU,
         )
+        // WAS DAS FUNDAMENT SELBST BEIGESTEUERT HAT (Toni 19.08.).
+        //
+        // WOZU DIE ZAHL GEBRAUCHT WIRD, und sie fehlt bisher auch im Feld:
+        // aus der publizierten Menge allein ist nicht zu sehen, WER sie
+        // wollte. Genau das ist aber die Frage bei einer grossen Mahlzeit -
+        // laeuft das Fundament und wird nur der ZUSAETZLICHE Evidenzbedarf
+        // von Guard/Tail gebremst (Mahlzeit bleibt hintenraus unterversorgt),
+        // oder wird das Fundament SELBST bei gesundem, steigendem Zucker
+        // regelmaessig blockiert (dann verfehlt die Bauform ihr Ziel)?
+        //
+        // Die beiden Faelle sehen in der Summe gleich aus und bedeuten das
+        // Gegenteil voneinander. Deshalb wird der Stand VOR und die Anhebung
+        // DURCH das Fundament getrennt gefuehrt.
+        //
+        // DOSIERNEUTRAL: reine Messung, sie geht nirgends in eine Entscheidung
+        // ein.
+        val preFoundationSmbU = liftedPrime.smbU
+        val foundationLiftU = kotlin.math.max(0.0, lifted.smbU - liftedPrime.smbU)
         // FIX-PASS 4 Nr. 4 (Codex R4-04, Control-Audit-Invariante): KEINE
         // finale positive Dosis ohne erfolgreiche Wirkungspruefung. Das
         // verallgemeinert Fix 6b: nicht nur die Prime-Anhebung, JEDE finale
@@ -2267,6 +2292,8 @@ class FuseCycleRunner(
             computeDurationMs = computeDurationMs,
             mealStats = mealStats,
             mealFoundation = foundationSnapshot,
+            preFoundationSmbU = preFoundationSmbU,
+            foundationLiftU = foundationLiftU,
             lowThreat = lowThreatResult,
             evidenceEpisodeId = evidenceEpisodeId,
             evidenceEpisodeDenial = episodeGate.denial?.name,

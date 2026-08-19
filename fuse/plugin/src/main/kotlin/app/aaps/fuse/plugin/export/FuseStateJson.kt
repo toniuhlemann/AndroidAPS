@@ -216,6 +216,15 @@ object FuseStateJson {
                     // ist die Uebertrags-Ableitung aus dem Trail nicht
                     // nachrechenbar: sichtbar waeren nur Ergebnis und
                     // Rohzaehler, nicht die Groesse dazwischen.
+                    // WER DIE DOSIS WOLLTE (Toni 19.08.): der Stand VOR der
+                    // Fundament-Anhebung und die Anhebung selbst. Aus der
+                    // publizierten Menge allein ist nicht zu sehen, ob das
+                    // Fundament lief und nur der ZUSAETZLICHE Bedarf
+                    // gebremst wurde - oder ob das Fundament selbst
+                    // blockiert war. Die beiden Lagen bedeuten das
+                    // Gegenteil voneinander.
+                    .put("preFoundationSmbU", fin(outcome.preFoundationSmbU))
+                    .put("foundationLiftU", fin(outcome.foundationLiftU))
                     .put("deliveredPhaseAU", fin(f.deliveredPhaseAU))
                     .put("deliveredSinceHandoverU", fin(f.deliveredSinceHandoverU))
                     // DIE BELEGTE PHASE-A-LUECKE UND DIE DARAUS FOLGENDE
