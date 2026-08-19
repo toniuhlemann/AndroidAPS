@@ -2161,6 +2161,16 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
             timeOfDay(FuseIntKey.NightStartMin, "Nacht Beginn", "Beginn des Nachtfensters; gleich dem Ende schaltet es aus")
             timeOfDay(FuseIntKey.NightEndMin, "Nacht Ende", "Ende des Nachtfensters (darf ueber Mitternacht gehen)")
             addPreference(AdaptiveSwitchPreference(ctx = context, booleanKey = FuseBooleanKey.ReboundDeadbandEnabled, summary = R.string.fuse_rebound_deadband_enabled_summary, title = R.string.fuse_rebound_deadband_enabled_title))
+            // DER ERWARTUNGS-BEOBACHTER (Toni 19.08.). Er war verdrahtet, aber
+            // der Schalter stand in KEINEM Screen - am Geraet also nicht
+            // erreichbar. Ein Beobachter, den niemand einschalten kann, misst
+            // nie etwas, und genau das faellt erst auf, wenn man die Daten
+            // braucht.
+            //
+            // Der Inventar-Waechter hat es nicht gefunden, weil der Key auch
+            // im Einstellungs-Vertrag fehlte: konsistent ueberall abwesend
+            // statt inkonsistent halb vorhanden.
+            addPreference(AdaptiveSwitchPreference(ctx = context, booleanKey = FuseBooleanKey.ExpectationLedgerEnabled, summary = R.string.fuse_expectation_ledger_summary, title = R.string.fuse_expectation_ledger_title))
             addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.ReboundDeadbandMgdl, dialogMessage = R.string.fuse_rebound_deadband_summary, title = R.string.fuse_rebound_deadband_title))
         }
 

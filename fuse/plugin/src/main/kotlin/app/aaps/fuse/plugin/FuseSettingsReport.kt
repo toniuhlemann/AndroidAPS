@@ -45,6 +45,7 @@ internal val fuseEinstellbareKeys: Set<String> = setOf(
     FuseBooleanKey.OnsetChannelEnabled.key,
     FuseBooleanKey.PrimeReleaseEnabled.key,
     FuseBooleanKey.MealFoundationEnabled.key,
+    FuseBooleanKey.ExpectationLedgerEnabled.key,
     FuseBooleanKey.MarkerAuthorisesRelease.key,
     FuseBooleanKey.TailGuardEnabled.key,
     FuseBooleanKey.ConditionalTailEnabled.key,
@@ -154,6 +155,12 @@ object FuseSettingsReport {
                     zeit(FuseIntKey.NightEndMin, "Nacht Ende"),
                     schalter(FuseBooleanKey.ReboundDeadbandEnabled, "Rebound-Totband"),
                     zahl(FuseDoubleKey.ReboundDeadbandMgdl, "Rebound-Band", "mg/dl"),
+                ),
+                // Eigene Gruppe: er dosiert nichts und gehoert deshalb in
+                // keine der Regelgruppen - wer die Einstellungen liest, soll
+                // auf einen Blick sehen, dass hier nur gemessen wird.
+                "Messen und Beobachten" to listOf(
+                    schalter(FuseBooleanKey.ExpectationLedgerEnabled, "Erwartungs-Beobachter"),
                 ),
             ),
         )
