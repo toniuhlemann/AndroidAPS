@@ -1159,7 +1159,14 @@ class FuseCycleRunner(
             // "Ohne Vorschuss" heisst auch: kein Erklaerungs-Kredit. Der Kredit
             // unterstellt kommende Absorption in Huellenhoehe - genau die
             // Unterstellung, die der Druck abgewaehlt hat.
-            envelopeU = if (markerNoPrime) 0.0 else cfg.primeEnvelopeU,
+            // DAS GEPINNTE Phase-A-Budget, nicht der Live-Wert (Toni 19.08.).
+            // Der Kredit unterstellt kommende Absorption in HUELLENHOEHE -
+            // liest er dabei eine spaeter geaenderte Einstellung, unterstellt er
+            // eine andere Menge, als beim Markerdruck autorisiert wurde. Ohne
+            // aktives Fundament gibt primeBudgetU unveraendert den Live-Wert
+            // zurueck, das Verhalten bleibt also gleich.
+            envelopeU = if (markerNoPrime) 0.0
+            else MealFoundation.primeBudgetU(episodes.foundation, cfg.primeEnvelopeU),
             deliveredU = mealDeliveredU,
             isfMgdlPerU = profile.getIsfMgdlTimeFromMidnight(MidnightUtils.secondsFromMidnight(signal.sourceTs)),
             windowMin = cfg.absorptionCreditWindowMin.toDouble(),
@@ -1720,7 +1727,10 @@ class FuseCycleRunner(
                 armedTsMs = markerTs,
                 windowStartTsMs = episodes.primeWindowStartTs,
                 nowMs = computeTs,
-                envelopeU = cfg.primeEnvelopeU,
+                // Bei aktivem Fundament sieht Prime NUR sein Phase-A-Budget -
+                // sonst gaebe es die ganze Huelle aus und Phase B faende nichts
+                // mehr vor. Ohne Fundament ist es unveraendert der Live-Wert.
+                envelopeU = MealFoundation.primeBudgetU(episodes.foundation, cfg.primeEnvelopeU),
                 spentU = episodes.primeSpentU,
                 // C1 + C2 (Codex H1/H2, K2 Punkte 6/8) ERSETZEN die frueher hier
                 // stehende analytische Entzirkularisierung: statt den Prior-Hub
@@ -2386,7 +2396,9 @@ class FuseCycleRunner(
                 armedTsMs = markerTs,
                 windowStartTsMs = episodes.primeWindowStartTs,
                 nowMs = computeTs,
-                envelopeU = cfg.primeEnvelopeU,
+                // DIESELBE gepinnte Groesse wie im Hauptpfad - der Fallback
+                // fuehrt keine eigene Rechnung.
+                envelopeU = MealFoundation.primeBudgetU(episodes.foundation, cfg.primeEnvelopeU),
                 spentU = episodes.primeSpentU,
                 // KEINE BAHN, und das steht als `null` da statt als Zahl. Die
                 // Freigangsprobe entfaellt hier ohnehin (markerAuthorized),

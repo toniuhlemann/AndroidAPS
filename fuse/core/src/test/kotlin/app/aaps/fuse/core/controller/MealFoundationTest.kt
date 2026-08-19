@@ -554,7 +554,7 @@ class MealFoundationTest {
     fun `Anteil null ergibt ein vollstaendiges Phase-B-Budget`() {
         val a = MealFoundation.arm(
             markerTs = t0, foundationEnabled = true, totalBudgetU = BUDGET, phaseAShare = 0.0,
-            primeWindowMin = A_BIS, wallCeilingMin = 45, phaseBUntilMin = B_BIS,
+            primeWindowMin = A_BIS, wallCeilingMin = 45, markerAuthorized = true, phaseBUntilMin = B_BIS,
         )
         assertTrue(a.valid)
         assertEquals(0.0, a.phaseABudgetU, 1e-9)
@@ -572,7 +572,7 @@ class MealFoundationTest {
         MealFoundation.phaseOf(
             auth ?: MealFoundation.arm(
                 markerTs = t0, foundationEnabled = true, totalBudgetU = BUDGET, phaseAShare = A_SHARE,
-                primeWindowMin = A_BIS, wallCeilingMin = 45, phaseBUntilMin = B_BIS,
+                primeWindowMin = A_BIS, wallCeilingMin = 45, markerAuthorized = true, phaseBUntilMin = B_BIS,
             ),
             t0 + (minuten * 60_000).toLong(), clearance,
         )
@@ -619,7 +619,7 @@ class MealFoundationTest {
     fun `nach dem Latch bleibt die Phasengrenze stehen`() {
         val gelatcht = MealFoundation.arm(
             markerTs = t0, foundationEnabled = true, totalBudgetU = BUDGET, phaseAShare = A_SHARE,
-            primeWindowMin = A_BIS, wallCeilingMin = 45, phaseBUntilMin = B_BIS,
+            primeWindowMin = A_BIS, wallCeilingMin = 45, markerAuthorized = true, phaseBUntilMin = B_BIS,
         ).latchIfDue(t0 + A_BIS * 60_000L, 0L)
         assertEquals(
             MealFoundation.Phase.PHASE_B,

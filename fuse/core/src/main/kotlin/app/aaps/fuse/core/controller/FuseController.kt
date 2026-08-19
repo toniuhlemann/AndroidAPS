@@ -483,15 +483,30 @@ object FuseController {
          *  "es gab keinen Wunsch", nicht "der Wunsch war klein". */
         val desiredBeforeStepU: Double = 0.0,
         /**
-         * Der Anteil dieser Menge, den eine AUSDRUECKLICHE manuelle
-         * Autorisierung bei gemessenem Tief traegt [U] (Toni 11.08.).
+         * DIE AUTORISIERTE MENGE MIT IHRER HERKUNFT - oder `null`.
+         *
+         * DER FRUEHERE TEXT WAR SACHLICH FALSCH (Toni 19.08.). Er sprach von
+         * einer Autorisierung "bei gemessenem Tief" - das war die Entscheidung
+         * vom 11.08. und ist seit dem 18.08. ausdruecklich HART: `SAFETY_HOLD`
+         * steht nicht mehr in [MarkerAuthorization], weil es den ROHEN
+         * Messwert traegt, keine Prognose. Der Marker ueberstimmt das MODELL,
+         * nicht die Wirklichkeit.
+         *
+         * Was er wirklich traegt: den Anteil dieser Menge, den eine
+         * ausdrueckliche Autorisierung deckt - aus dem Prime-Fenster (Phase A)
+         * oder aus der nachlaufenden Mindestversorgung (Phase B).
          *
          * TYPISIERTE HERKUNFT, und das ist der ganze Punkt. Der Translator
-         * muss eine markerfinanzierte Menge von jeder anderen unterscheiden
+         * muss eine autorisierte Menge von jeder anderen unterscheiden
          * koennen, OHNE sie aus `bindingLimit` oder einem Grundtext zu raten -
          * Texte sind fuer Menschen, an ihnen darf keine Insulinabgabe haengen.
          *
-         * 0 heisst: nichts an dieser Menge ist manuell autorisiert. Dann nullt
+         * BETRAG UND QUELLE STEHEN GEMEINSAM, weil sie nur gemeinsam Sinn
+         * ergeben: eine Quelle ohne Menge ist ein Widerspruch, und getrennte
+         * Felder liessen genau den entstehen (s.
+         * [AuthorizedLift.AuthorizedGrant]).
+         *
+         * `null` heisst: nichts an dieser Menge ist autorisiert. Dann nullt
          * jeder Mengen-Block sie vollstaendig, wie bisher.
          */
         val grant: AuthorizedLift.AuthorizedGrant? = null,

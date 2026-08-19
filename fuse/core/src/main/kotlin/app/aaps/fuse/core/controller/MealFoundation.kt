@@ -231,8 +231,14 @@ object MealFoundation {
          * Ob der Markerdruck Insulin autorisiert (Einstellung
          * `MarkerAuthorisesRelease`). Wird GEPINNT - eine spaetere Aenderung
          * erreicht diese Mahlzeit nicht mehr.
+         *
+         * KEIN DEFAULT (Toni 19.08.). Mit einem koennte ein Aufrufer das
+         * Pinning schlicht vergessen, und der Code uebersetzte trotzdem - die
+         * Episode liefe dann dauerhaft ohne Autorisierung, ohne dass es
+         * jemandem auffiele. Ein Pflichtparameter zwingt jede Aufrufstelle,
+         * sich zu erklaeren.
          */
-        markerAuthorized: Boolean = false,
+        markerAuthorized: Boolean,
     ): Authorization {
         if (!foundationEnabled || markerTs <= 0L) return Authorization.none()
         if (!totalBudgetU.isFinite() || totalBudgetU <= 0.0) return Authorization.none()
