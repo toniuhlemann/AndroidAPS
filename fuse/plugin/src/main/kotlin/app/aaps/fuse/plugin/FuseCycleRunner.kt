@@ -697,6 +697,24 @@ class FuseCycleRunner(
         // ist Stufe 3; bis dahin traegt der zustandslose Teil der Regel den
         // Absturzfall (Preference auf 0 = zurueckgenommen, auch nach Neustart).
         episodes.evidenceRevoked = episodeGate.creditRevoked
+        // ---- DIE RUECKNAHME BEENDET AUCH DAS FUNDAMENT (Toni 19.08., P0) --
+        //
+        // Ohne das bliebe die gepinnte Autorisierung nach einer manuellen
+        // Ruecknahme gueltig, und `MealFoundation.snapshot` lieferte weiter
+        // PHASE_B mit `dueU > 0`. Dass `manualMarkerAuthorized` danach false
+        // ist, hilft nicht: der Lift liest die GEPINNTE Autorisierung, genau
+        // wie es der Pinning-Vertrag verlangt.
+        //
+        // NUR BEIM AUSDRUECKLICHEN WIDERRUF, nicht beim blossen Ablauf des
+        // 90-Minuten-Fensters. Der Unterschied ist der ganze Punkt: ein
+        // ausgelaufener Marker hat seine Mahlzeit erklaert und das Fundament
+        // darf sie zu Ende versorgen; ein zurueckgenommener hat die Erklaerung
+        // widerrufen. `episodeGate.creditRevoked` ist der typisierte Pfad
+        // dafuer - der Ablauf laeuft ueber andere Gruende.
+        if (episodeGate.creditRevoked) {
+            episodes.foundation = MealFoundation.Authorization.none()
+            episodes.deliveredSinceHandoverU = 0.0
+        }
         val evidenceEpisodeMin = evidenceEpisodeId.takeIf { it > 0L }
             ?.let { ((computeTs - it) / 60_000L).toInt() }
 
@@ -1047,6 +1065,14 @@ class FuseCycleRunner(
         //
         // `primeArmedTs` ist persistent, die Regel ueberlebt also einen
         // Neustart.
+        // VORGEZOGEN (Toni 19.08.): die Armierung des Fundaments gehoert in
+        // den Episodenblock unten, und dafuer muessen beide Groessen schon
+        // stehen. Sie haengen nur an markerTs, computeTs und cfg - alle drei
+        // sind hier verfuegbar.
+        val mealMarkerActive = markerTs > 0 &&
+            computeTs - markerTs in 0..(OnsetChannel.MARKER_WINDOW_MIN * 60_000L)
+        val manualMarkerAuthorized = cfg.markerAuthorized && mealMarkerActive && markerTs > 0
+
         val neueEpisode = MarkerEpisode.startsNewEpisode(
             armedTs = markerTs,
             episodeTs = episodes.primeArmedTs,
@@ -1058,6 +1084,40 @@ class FuseCycleRunner(
             episodes.primeArmedTs = markerTs
             episodes.primeSpentU = 0.0
             episodes.primeWindowStartTs = 0L
+
+            // ---- DAS MAHLZEITENFUNDAMENT ARMIEREN (Toni 19.08., P0) -------
+            //
+            // HIER UND NICHT AN `episodeGate.opened`. Das Gate gehoert zur
+            // EVIDENZ-Episode, die bis zu 360 Minuten laufen kann; das
+            // Fundament gehoert zum PRIME-/Markerbudget, das mit
+            // `startsNewEpisode` neu bewaffnet wird. Ein zweiter bewusster
+            // Druck nach Ablauf des Primefensters setzt Prime zurueck,
+            // waehrend dieselbe Evidenzepisode weiterlaeuft - dann waere das
+            // Fundament NICHT neu armiert, und Prime laese ueber
+            // `primeBudgetU` weiter das ALTE gepinnte Phase-A-Budget.
+            //
+            // UND ES SCHLIESST DIE ABBRUCHLUECKE: bricht der erste Zyklus
+            // nach dem Druck vorher ab, bleibt `primeArmedTs` unveraendert,
+            // `neueEpisode` ist im naechsten gesunden Zyklus wieder wahr und
+            // die Armierung wird nachgeholt. An `episodeGate.opened` waere
+            // sie dauerhaft verloren gewesen.
+            //
+            // Das GEMEINSAME Budget ist die Prime-Huelle - Phase A und B
+            // teilen sie, sie addieren sich nicht.
+            episodes.foundation = MealFoundation.arm(
+                markerTs = markerTs,
+                foundationEnabled = cfg.mealFoundationEnabled,
+                totalBudgetU = cfg.primeEnvelopeU,
+                phaseAShare = cfg.mealFoundationPhaseAShare,
+                primeWindowMin = cfg.primeWindowMin,
+                wallCeilingMin = PrimeRelease.WALL_CEILING_MIN,
+                phaseBUntilMin = cfg.mealFoundationEndMin,
+                markerAuthorized = manualMarkerAuthorized,
+                pressObservedInThisProcess = markerPressObserved() > 0L,
+                primeDeclinedByUser = markerNoPrime,
+            )
+            // Eine neue Autorisierung beginnt mit unbezahlter Phase B.
+            episodes.deliveredSinceHandoverU = 0.0
             // Fix 7: neue Marker-Episode -> Wende-Latch der Sonderrechte neu.
             episodes.markerTurnTs = 0L
             episodes.markerRiseSeen = false
@@ -1066,9 +1126,6 @@ class FuseCycleRunner(
             episodes.mealArmedTs = markerTs
             episodes.mealDeliveries.clear()
         }
-        val mealMarkerActive = markerTs > 0 &&
-            computeTs - markerTs in 0..(OnsetChannel.MARKER_WINDOW_MIN * 60_000L)
-
         // DIE EPISODEN-IDENTITAET fuer den Stoerungsbestand (Stufe 1).
         //
         // Bewusst ENG gefasst: nur ein Markerdruck eroeffnet eine Episode. Ein
@@ -1332,50 +1389,9 @@ class FuseCycleRunner(
         // ist damit gegenstandslos - er war gefaehrlich, WEIL der damalige
         // Sonderzweig den Guard fuer die GANZE Menge aufhob. Ein
         // mengenbegrenzter Boden kennt dieses Problem nicht.
-        val manualMarkerAuthorized = cfg.markerAuthorized && mealMarkerActive && markerTs > 0
+        // (Die Definition steht jetzt weiter oben - sie wird schon fuer die
+        // Armierung des Fundaments gebraucht.)
 
-        // ---- DAS MAHLZEITENFUNDAMENT ARMIEREN (Toni 19.08.) ---------------
-        //
-        // NUR BEI EINER FRISCH EROEFFNETEN EPISODE. `episodeGate.opened` ist
-        // der eine Punkt, an dem ein Markerdruck eine Episode beginnt - und
-        // das Gate hat dafuer bereits geprueft, dass dieser Prozess den Druck
-        // SELBST gesehen hat (observedPressTs). Ein beim Warmstart
-        // vorgefundener Marker eroeffnet keine Episode und armiert deshalb
-        // auch nichts.
-        //
-        // WARUM HIER UND NICHT OBEN BEI `opened`: dort gibt es `cfg` noch
-        // nicht, und ohne Budget, Anteil und Fensterende laesst sich nichts
-        // pinnen. Der Preis steht ausdruecklich hier: bricht der Zyklus
-        // ZWISCHEN der Episodeneroeffnung und dieser Stelle ab (kein Profil,
-        // Signalfehler, Config-Guard), bleibt die Episode ohne Fundament -
-        // beim naechsten Zyklus ist `opened` schon falsch. Das ist die
-        // konservative Richtung: kein Fundament heisst kein zusaetzliches
-        // Insulin, und die Mahlzeit laeuft wie vor diesem Baustein.
-        //
-        // DIE VORBEDINGUNGEN GEHEN ALS PFLICHTPARAMETER MIT, nicht als
-        // Vorab-Abfrage: so kann keine Aufrufstelle sie vergessen
-        // (s. MealFoundation.arm).
-        if (episodeOpenedThisCycle) {
-            episodes.foundation = MealFoundation.arm(
-                markerTs = markerTs,
-                foundationEnabled = cfg.mealFoundationEnabled,
-                // DAS GEMEINSAME BUDGET ist die Prime-Huelle - Phase A und B
-                // teilen sie, sie addieren sich nicht.
-                totalBudgetU = cfg.primeEnvelopeU,
-                phaseAShare = cfg.mealFoundationPhaseAShare,
-                primeWindowMin = cfg.primeWindowMin,
-                wallCeilingMin = PrimeRelease.WALL_CEILING_MIN,
-                phaseBUntilMin = cfg.mealFoundationEndMin,
-                markerAuthorized = manualMarkerAuthorized,
-                // Das Gate hat es bereits geprueft; hier steht es noch einmal
-                // als eigene Zusicherung, damit die Armierung nicht an einer
-                // fremden Bedingung haengt.
-                pressObservedInThisProcess = markerPressObserved() > 0L,
-                primeDeclinedByUser = markerNoPrime,
-            )
-            // Eine neue Autorisierung beginnt mit unbezahlter Phase B.
-            episodes.deliveredSinceHandoverU = 0.0
-        }
 
         // Nur noch fuer die parallele Schutz-Null und den Warntext - NICHT
         // mehr als Bedingung der Autorisierung.

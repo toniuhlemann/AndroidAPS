@@ -30,6 +30,7 @@ import app.aaps.fuse.core.predictor.PredictorReason
 import app.aaps.fuse.core.predictor.PredictorOutcome
 import app.aaps.fuse.core.predictor.TrajectoryCore
 import app.aaps.fuse.core.controller.EvidenceStock
+import app.aaps.fuse.core.controller.MealFoundation
 import app.aaps.fuse.core.controller.OnsetChannel
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
@@ -133,6 +134,11 @@ class TransportWiringTest : TestBaseWithProfile() {
 
     /** Der Marker autorisiert Insulin bei gemessenem Tief. */
     private var markerAuthorized = false
+
+    /** Das Mahlzeitenfundament - im Test steuerbar, produktiv per Default aus. */
+    private var fundamentAn = false
+    private var fundamentAnteil = 0.75
+    private var fundamentEndeMin = 60
 
     /** Insulinaktivitaet je Punkt. 0 heisst: der Bolus-Deckungs-Abschlag ist
      *  null, und damit ist die Bremsbahn-Untergrenze IHR EIGENES Mittel -
@@ -296,6 +302,9 @@ class TransportWiringTest : TestBaseWithProfile() {
         whenever(preferences.get(FuseDoubleKey.OnsetEnvelopeU)).thenReturn(1.5)
         whenever(preferences.get(FuseBooleanKey.PrimeReleaseEnabled)).thenReturn(true)
         whenever(preferences.get(FuseDoubleKey.PrimeEnvelopeU)).thenReturn(1.2)
+        whenever(preferences.get(FuseBooleanKey.MealFoundationEnabled)).thenAnswer { fundamentAn }
+        whenever(preferences.get(FuseDoubleKey.MealFoundationPhaseAShare)).thenAnswer { fundamentAnteil }
+        whenever(preferences.get(FuseIntKey.MealFoundationEndMin)).thenAnswer { fundamentEndeMin }
         whenever(preferences.get(LongKey.FslCalibrationStart)).thenReturn(-1L)
         whenever(preferences.get(FuseLongKey.MealMarkerStamp)).thenReturn(0L)
         whenever(preferences.get(FuseLongKey.MealMarkerArmedTs)).thenAnswer { markerAt }
@@ -2743,5 +2752,243 @@ class TransportWiringTest : TestBaseWithProfile() {
         markerAt = dritterDruck
         repeat(3) { cycle() }
         assertEquals(dritterDruck, l.episodes.evidenceEpisodeId, "neuer Druck, neue Episode")
+    }
+
+    // ---- Die Armierung des Mahlzeitenfundaments (Toni 19.08.) -------------
+
+    /**
+     * DIE ARMIERUNG HAENGT AN DER PRIME-EPISODE, NICHT AN DER EVIDENZEPISODE.
+     *
+     * MEIN ERSTER WURF HING SIE AN `episodeGate.opened` - und das ist die
+     * EVIDENZ-Episode, die bis zu 360 Minuten laeuft. Das Fundament gehoert
+     * aber zum Prime-/Markerbudget, das mit `startsNewEpisode` neu bewaffnet
+     * wird. Zwei Folgen, beide belegt durch die Tests hier:
+     *
+     *   ein Abbruch nach der Evidenzeroeffnung liess die Armierung dauerhaft
+     *   ausfallen;
+     *
+     *   und ein zweiter Druck nach Ablauf des Primefensters setzte Prime
+     *   zurueck, ohne das Fundament neu zu armieren - Prime laese dann ueber
+     *   `primeBudgetU` weiter das ALTE gepinnte Phase-A-Budget.
+     */
+    @Test
+    fun `ein Abbruch verliert die Armierung nicht - der naechste Zyklus holt sie nach`() {
+        fundamentAn = true
+        flach = 105.0
+        steigungProMin = -0.9
+        markerAuthorized = true
+        markerAt = start + 2 * 60_000L
+
+        clock = start
+        // Erster Zyklus nach dem Druck: kein Profil -> Abbruch.
+        whenever(profileFunction.getProfile(any())).thenReturn(null)
+        val abgebrochen = cycle()
+        assertTrue(abgebrochen.abortReason != null, "der Aufbau MUSS abbrechen")
+        assertTrue(
+            !ledger.episodes.foundation.valid,
+            "im Abbruchzyklus entsteht keine Autorisierung",
+        )
+
+        // Naechster gesunder Zyklus. Mehrere, weil der Marker anfangs in der
+        // Zukunft liegt und der Observer erst READY werden muss.
+        whenever(profileFunction.getProfile(any())).thenReturn(validProfile)
+        repeat(8) { cycle() }
+        assertTrue(
+            ledger.episodes.foundation.valid,
+            "die Armierung MUSS nachgeholt werden - sonst ist sie dauerhaft weg",
+        )
+        assertEquals(
+            markerAtIntern, ledger.episodes.foundation.armedTs,
+            "und zwar fuer genau diesen Markerdruck",
+        )
+    }
+
+    /** UND GENAU EINMAL - nicht bei jedem Folgezyklus neu. */
+    @Test
+    fun `die Armierung geschieht genau einmal`() {
+        fundamentAn = true
+        flach = 105.0
+        steigungProMin = -0.9
+        markerAuthorized = true
+        markerAt = start + 2 * 60_000L
+
+        clock = start
+        repeat(6) { cycle() }
+        val ersteArmierung = ledger.episodes.foundation.armedTs
+        // Ein Bezahlstand, den eine erneute Armierung nullen wuerde.
+        ledger.episodes.deliveredSinceHandoverU = 0.42
+        repeat(4) { cycle() }
+
+        assertEquals(ersteArmierung, ledger.episodes.foundation.armedTs, "dieselbe Autorisierung")
+        assertEquals(
+            0.42, ledger.episodes.deliveredSinceHandoverU, 1e-9,
+            "eine zweite Armierung haette den Bezahlstand genullt",
+        )
+    }
+
+    /**
+     * EIN ZWEITER DRUCK NACH ABLAUF DES PRIMEFENSTERS ARMIERT NEU - auch wenn
+     * dieselbe Evidenzepisode weiterlaeuft.
+     *
+     * Das ist der Fall, den `episodeGate.opened` nicht erwischt haette.
+     */
+    @Test
+    fun `ein zweiter Druck erzeugt eine neue gepinnte Autorisierung`() {
+        fundamentAn = true
+        flach = 105.0
+        steigungProMin = -0.9
+        markerAuthorized = true
+        markerAt = start + 2 * 60_000L
+
+        clock = start
+        repeat(5) { cycle() }
+        val ersteArmierung = ledger.episodes.foundation.armedTs
+        assertTrue(ersteArmierung > 0L, "die erste Autorisierung MUSS stehen")
+
+        // Weit hinter das Markerfenster - die Prime-Episode ist abgelaufen,
+        // die Evidenzepisode (360 min) laeuft weiter.
+        clock += (OnsetChannel.MARKER_WINDOW_MIN + 5) * 60_000L
+        markerAt = clock + 60_000L
+        repeat(4) { cycle() }
+
+        assertTrue(
+            ledger.episodes.foundation.armedTs > ersteArmierung,
+            "der zweite Druck MUSS eine NEUE Autorisierung erzeugen - sonst laese " +
+                "Prime weiter das alte gepinnte Phase-A-Budget",
+        )
+    }
+
+    // ---- Die Ruecknahme ---------------------------------------------------
+
+    /**
+     * EINE RUECKNAHME BEENDET DAS FUNDAMENT SOFORT.
+     *
+     * Ohne das bliebe die gepinnte Autorisierung gueltig, und der Snapshot
+     * lieferte weiter PHASE_B mit `dueU > 0`. Dass `manualMarkerAuthorized`
+     * danach false ist, hilft nicht: der Lift liest die GEPINNTE
+     * Autorisierung - genau wie es der Pinning-Vertrag verlangt.
+     */
+    @Test
+    fun `eine Ruecknahme beendet Autorisierung und Bezahlstand`() {
+        fundamentAn = true
+        flach = 105.0
+        steigungProMin = -0.9
+        markerAuthorized = true
+        markerAt = start + 2 * 60_000L
+
+        clock = start
+        repeat(5) { cycle() }
+        assertTrue(ledger.episodes.foundation.valid, "die Autorisierung MUSS stehen")
+        ledger.episodes.deliveredSinceHandoverU = 0.20
+
+        // DIE RUECKNAHME: der Marker wird zurueckgenommen.
+        markerAt = 0L
+        val o = cycle()
+
+        assertTrue(
+            !ledger.episodes.foundation.valid,
+            "nach der Ruecknahme darf keine Autorisierung mehr stehen",
+        )
+        assertEquals(
+            0.0, ledger.episodes.deliveredSinceHandoverU, 1e-9,
+            "und der Bezahlstand faellt mit - er bedeutet ohne sie nichts",
+        )
+        assertEquals(
+            MealFoundation.Phase.NONE, o.mealFoundation.phase,
+            "der Export MUSS das sofort zeigen",
+        )
+        assertEquals(0.0, o.mealFoundation.dueU, 1e-9, "und nichts mehr fordern")
+    }
+
+    /** Und ein erneuter bewusster Druck armiert danach neu. */
+    @Test
+    fun `nach einer Ruecknahme armiert ein neuer Druck wieder`() {
+        fundamentAn = true
+        flach = 105.0
+        steigungProMin = -0.9
+        markerAuthorized = true
+        markerAt = start + 2 * 60_000L
+
+        clock = start
+        repeat(5) { cycle() }
+        markerAt = 0L
+        repeat(2) { cycle() }
+        assertTrue(!ledger.episodes.foundation.valid, "zurueckgenommen")
+
+        // Hinter das Markerfenster - sonst gilt die Prime-Episode als noch
+        // laufend und `startsNewEpisode` waere falsch.
+        clock += (OnsetChannel.MARKER_WINDOW_MIN + 5) * 60_000L
+        markerAt = clock + 60_000L
+        repeat(6) { cycle() }
+        assertTrue(
+            ledger.episodes.foundation.valid,
+            "ein neuer bewusster Druck MUSS wieder armieren",
+        )
+    }
+
+    /**
+     * EIN VORGEFUNDENER MARKER ARMIERT NICHT (Toni 19.08.).
+     *
+     * Der Markerzeitpunkt liegt in einer Preference und ueberlebt jeden
+     * Neustart; nur `markerPressObservedTs` sagt, ob DIESER Prozess den Druck
+     * gesehen hat. Ein beim Warmstart vorgefundener Marker duerfte kein
+     * rueckwirkendes Fundament erzeugen: dessen Phase A waere laengst vorbei,
+     * und Phase B faende ein Budget vor, aus dem schon geliefert wurde.
+     *
+     * Das Rig setzt `markerPress` beim Setzen von `markerAt` automatisch mit -
+     * genau deshalb muss dieser Test ihn von Hand auf 0 zuruecknehmen. Ohne
+     * ihn blieb die Zusicherung ungeprueft: eine Mutationsprobe
+     * (pressObservedInThisProcess = true) blieb gruen.
+     */
+    @Test
+    fun `ein vorgefundener Marker armiert nicht`() {
+        fundamentAn = true
+        flach = 105.0
+        steigungProMin = -0.9
+        markerAuthorized = true
+        markerAt = start + 2 * 60_000L
+        // Der Druck stammt aus einem FRUEHEREN Prozess.
+        markerPress = 0L
+
+        clock = start
+        repeat(8) { cycle() }
+        assertTrue(
+            !ledger.episodes.foundation.valid,
+            "ohne eigene Beobachtung des Drucks darf nichts armiert werden",
+        )
+
+        // UND DIE GEGENPROBE: mit Beobachtung armiert derselbe Aufbau.
+        //
+        // Sie braucht eine NEUE Prime-Episode: der erste Durchlauf hat
+        // `primeArmedTs` bereits gesetzt (der Reset laeuft unabhaengig von
+        // der Armierung), also waere `neueEpisode` sonst falsch. Das ist
+        // richtig so - die Episode laeuft ja.
+        clock += (OnsetChannel.MARKER_WINDOW_MIN + 5) * 60_000L
+        markerAt = clock + 60_000L
+        repeat(6) { cycle() }
+        assertTrue(
+            ledger.episodes.foundation.valid,
+            "mit Beobachtung MUSS es armieren - sonst prueft der Test oben nichts",
+        )
+    }
+
+    /**
+     * DER SCHALTER AUS BLEIBT VERHALTENSGLEICH.
+     *
+     * Ohne diese Probe waere jede andere hier wertlos: sie zeigt, dass der
+     * ganze Baustein im Auslieferungszustand nichts tut.
+     */
+    @Test
+    fun `bei ausgeschaltetem Fundament entsteht keine Autorisierung`() {
+        fundamentAn = false
+        flach = 105.0
+        steigungProMin = -0.9
+        markerAuthorized = true
+        markerAt = start + 2 * 60_000L
+
+        clock = start
+        repeat(8) { cycle() }
+        assertTrue(!ledger.episodes.foundation.valid, "Schalter aus - keine Autorisierung")
+        assertEquals(0.0, ledger.episodes.deliveredSinceHandoverU, 1e-9)
     }
 }
