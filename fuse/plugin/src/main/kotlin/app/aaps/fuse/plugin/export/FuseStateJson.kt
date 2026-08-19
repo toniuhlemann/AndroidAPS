@@ -46,7 +46,13 @@ object FuseStateJson {
     // v10 (15.08.): eine laufende Schutz-Null endet, sobald ihr Grund weg ist
     // (endZeroWhenReasonGone). Aendert die Aktuation auf der TBR-Achse - ein
     // Lauf davor und danach ist NICHT vergleichbar, deshalb eigene Version.
-    const val RULE_SET_VERSION = 10
+    // v11 (19.08.): DAS MAHLZEITENFUNDAMENT. Phase B verteilt das
+    // markerautorisierte Budget zeitlich anders - eine dosierwirksame
+    // Architekturaenderung. Ein Lauf davor und danach ist NICHT vergleichbar,
+    // und die drei Einstellungen dazu gehen ab jetzt in den Hash ein (s.
+    // [hashOf]). Ohne den Bump traegen Laeufe vor und nach dem Umbau
+    // denselben Regelstand, obwohl sie verschieden dosieren.
+    const val RULE_SET_VERSION = 11
 
     /** Schema des Trail-Datensatzes - s. die Notiz an der Schreibstelle. */
     const val SCHEMA_VERSION = 4
@@ -1067,6 +1073,10 @@ object FuseStateJson {
             // Rampe + Abschlag: fehlten bis v1 - zwei Laeufe mit verschiedenen
             // Rampen bekamen denselben Hash (Audit 07.08.). Version 1->2.
             p.riseRampLowR, p.riseRampHighR, p.bolusShareLambda, p.onsetEnvelopeU, p.primeEnvelopeU,
+            // v11: der Phase-A-Anteil. 80/20 und 75/25 verteilen dieselbe
+            // Huelle verschieden - ohne ihn trugen beide denselben Hash, und
+            // die Feldlaeufe waeren nicht trennbar gewesen.
+            p.mealFoundationPhaseAShare,
         )
         if (doubles.any { !it.isFinite() }) return null
         val parts = listOf("fuse-policy-v$RULE_SET_VERSION") +
@@ -1078,6 +1088,12 @@ object FuseStateJson {
                 // Laeufe mit verschiedener Stellung duerfen nicht denselben
                 // Hash tragen.
                 p.endZeroWhenReasonGone,
+                // v11: Schalter und Fensterende des Fundaments. AUS und EIN
+                // sind zwei verschiedene Regler, und ein anderes Phase-B-Ende
+                // presst dasselbe Teilbudget in eine andere Zeit - beides
+                // dosierwirksam, beides bis v10 unsichtbar im Hash.
+                p.mealFoundationEnabled,
+                p.mealFoundationEndMin,
             ).map { it.toString() }
         return Sha.of(parts.joinToString("|"))
     }

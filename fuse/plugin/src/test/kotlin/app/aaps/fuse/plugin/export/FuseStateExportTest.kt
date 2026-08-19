@@ -382,6 +382,70 @@ class FuseStateExportTest {
     }
 
     /**
+     * DIE REGELSTANDS-IDENTITAET DES MAHLZEITENFUNDAMENTS (Codex 19.08.,
+     * Flash-Blocker).
+     *
+     * DER BEFUND. Die drei Einstellungen wurden EXPORTIERT, gingen aber nicht
+     * in `hashOf()` ein. Damit trugen Laeufe mit sichtbar verschiedenem
+     * Regelverhalten denselben `configGeneration`:
+     *
+     *     Fundament AUS  gegen  EIN
+     *     80/20          gegen  75/25
+     *     Phase-B-Ende 60       gegen 45
+     *
+     * WARUM DAS MEHR IST ALS UNORDNUNG: der Erwartungs-Ledger trennt seine
+     * Strecken nach genau diesem Hash. Zwei verschieden dosierende Regler
+     * unter einer Kennung heisst, dass ihre Ergebnisse in denselben Topf
+     * fallen - und die Feldauswertung danach eine Mischung misst, die es als
+     * Regler nie gab. Ein Schema-Bump behebt das NICHT; er beschreibt die
+     * Datei, nicht den Regler.
+     *
+     * JEDES FELD EINZELN, nicht die drei zusammen: nur so faellt auf, wenn
+     * genau eines wieder aus dem Hash herausfaellt.
+     */
+    @Test
+    fun `der Fundament-Schalter aendert den Politik-Hash`() {
+        val aus = FuseStateJson.hashOf(cfg.copy(mealFoundationEnabled = false))!!
+        val ein = FuseStateJson.hashOf(cfg.copy(mealFoundationEnabled = true))!!
+        assertTrue(aus != ein, "AUS und EIN sind zwei verschiedene Regler")
+    }
+
+    @Test
+    fun `die Phasenaufteilung aendert den Politik-Hash`() {
+        val a80 = FuseStateJson.hashOf(cfg.copy(mealFoundationPhaseAShare = 0.80))!!
+        val a75 = FuseStateJson.hashOf(cfg.copy(mealFoundationPhaseAShare = 0.75))!!
+        assertTrue(a80 != a75, "80/20 und 75/25 verteilen dieselbe Huelle verschieden")
+        // UND GEGEN DEN HEUTIGEN STAND: 100/0 ist der Vergleichsfall im
+        // Replay und muss sich von beiden unterscheiden.
+        val a100 = FuseStateJson.hashOf(cfg.copy(mealFoundationPhaseAShare = 1.00))!!
+        assertTrue(a100 != a80 && a100 != a75, "und 100/0 von beiden")
+    }
+
+    @Test
+    fun `das Phase-B-Fensterende aendert den Politik-Hash`() {
+        val e60 = FuseStateJson.hashOf(cfg.copy(mealFoundationEndMin = 60))!!
+        val e45 = FuseStateJson.hashOf(cfg.copy(mealFoundationEndMin = 45))!!
+        assertTrue(e60 != e45, "ein anderes Ende presst dasselbe Teilbudget in eine andere Zeit")
+    }
+
+    /**
+     * UND DIE VERSION SELBST: der Bump auf 11 gehoert zur Aenderung.
+     *
+     * Ohne ihn traegt ein Lauf VOR dem Fundament-Umbau denselben Regelstand
+     * wie einer danach, obwohl beide verschieden dosieren - die drei Felder
+     * allein trennen nur Stellungen INNERHALB der neuen Bauform, nicht die
+     * Bauform gegen die alte.
+     */
+    @Test
+    fun `die Regelstandsversion traegt den Fundament-Umbau`() {
+        assertEquals(11, FuseStateJson.RULE_SET_VERSION)
+        assertTrue(
+            FuseStateJson.hashOf(cfg)!!.isNotEmpty(),
+            "und der Hash bleibt berechenbar",
+        )
+    }
+
+    /**
      * Die Luecke aus dem Audit 07.08.: bis v1 standen genau diese Knoepfe NICHT
      * im Hash - zwei Laeufe mit voellig verschiedenen Rampen bekamen dieselbe
      * Politik-Signatur. Der Test prueft die Knoepfe EINZELN, damit ein
