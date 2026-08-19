@@ -259,6 +259,18 @@ enum class FuseIntKey(
 ) : IntPreferenceKey {
 
     /**
+     * ENDE DES PHASE-B-FENSTERS [min ab Markerdruck] (Toni 18.08.).
+     *
+     * Bis hierhin verteilt das Mahlzeitenfundament sein Teilbudget. Danach
+     * ist es fertig - der Rest verfaellt, statt spaeter in einer Lage zu
+     * landen, fuer die er nie gedacht war.
+     *
+     * Die Untergrenze liegt ueber dem Prime-Fenster (15 min): ein Ende davor
+     * ergaebe gar kein Phase-B-Fenster.
+     */
+    MealFoundationEndMin("fuse_meal_foundation_end_min", 60, 20, 180),
+
+    /**
      * iobTH als PROZENT von maxIOB (Variante B, K2-C v0.2 §13).
      *
      * Die autoISF-Legacyformel `percent * 130% * maxIOB * Reduktion` wird

@@ -1000,6 +1000,18 @@ object FuseStateJson {
         .put("primeReleaseEnabled", p.primeReleaseEnabled)
         .put("primeEnvelopeU", fin(p.primeEnvelopeU))
         .put("primeWindowMin", p.primeWindowMin)
+        // DAS MAHLZEITENFUNDAMENT (Toni 19.08.). Alle drei, nicht nur der
+        // Schalter: ohne Anteil und Fensterende laesst sich im Replay nicht
+        // nachvollziehen, WELCHE Aufteilung ein Lauf gefahren hat - und genau
+        // das ist die Frage, die dort entschieden wird.
+        //
+        // Sie stehen in der POLICY und nicht im mealFoundation-Abschnitt: dort
+        // steht der Zustand einer laufenden Autorisierung, hier die
+        // Einstellung, aus der die naechste entsteht. Bei ausgeschaltetem
+        // Fundament gibt es keinen Zustand, aber sehr wohl eine Einstellung.
+        .put("mealFoundationEnabled", p.mealFoundationEnabled)
+        .put("mealFoundationPhaseAShare", fin(p.mealFoundationPhaseAShare))
+        .put("mealFoundationEndMin", p.mealFoundationEndMin)
         // Ohne diese Zeile waere hinterher nicht belegbar, OB der Schalter in
         // einem Lauf an war - genau die Luecke, die heute schon zweimal
         // aufgefallen ist (basalIobU, MarkerAuthorisesRelease). Ein Schalter,

@@ -25,7 +25,9 @@ internal val fuseEinstellbareKeys: Set<String> = setOf(
     FuseDoubleKey.BolusShareLambda.key,
     FuseDoubleKey.OnsetEnvelopeU.key,
     FuseDoubleKey.PrimeEnvelopeU.key,
+    FuseDoubleKey.MealFoundationPhaseAShare.key,
     FuseIntKey.PrimeWindowMin.key,
+    FuseIntKey.MealFoundationEndMin.key,
     FuseDoubleKey.TailFloorMgdl.key,
     FuseDoubleKey.TailRecoveryU.key,
     FuseDoubleKey.NightDeadbandMgdl.key,
@@ -42,6 +44,7 @@ internal val fuseEinstellbareKeys: Set<String> = setOf(
     FuseBooleanKey.FastRestraintEnabled.key,
     FuseBooleanKey.OnsetChannelEnabled.key,
     FuseBooleanKey.PrimeReleaseEnabled.key,
+    FuseBooleanKey.MealFoundationEnabled.key,
     FuseBooleanKey.MarkerAuthorisesRelease.key,
     FuseBooleanKey.TailGuardEnabled.key,
     FuseBooleanKey.ConditionalTailEnabled.key,
@@ -114,6 +117,12 @@ object FuseSettingsReport {
                     ganz(FuseIntKey.AbsorptionCreditWindowMin, "Absorption", "min"),
                     ganz(FuseIntKey.MarkerBoostMaxMin, "Sonderrechte", "min"),
                     schalter(FuseBooleanKey.MarkerAuthorisesRelease, "Marker-Autorisierung"),
+                    // Das Mahlzeitenfundament - drei Zeilen, weil alle drei die
+                    // Dosierung bestimmen: OB verteilt wird, WIE (Anteil) und
+                    // BIS WANN. Ein Schalter allein saehe harmlos aus.
+                    schalter(FuseBooleanKey.MealFoundationEnabled, "Mahlzeitenfundament"),
+                    zahl(FuseDoubleKey.MealFoundationPhaseAShare, "Anteil Phase A", ""),
+                    ganz(FuseIntKey.MealFoundationEndMin, "Fundament-Fenster", "min"),
                 ),
                 "Dosierung und Grenzen" to listOf(
                     zahl(FuseDoubleKey.SmbRatio, "Anteil Korrektur", ""),

@@ -1967,6 +1967,9 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
             .put(FuseBooleanKey.OnsetChannelEnabled, preferences)
             .put(FuseBooleanKey.PrimeReleaseEnabled, preferences)
             .put(FuseDoubleKey.PrimeEnvelopeU, preferences)
+            .put(FuseBooleanKey.MealFoundationEnabled, preferences)
+            .put(FuseDoubleKey.MealFoundationPhaseAShare, preferences)
+            .put(FuseIntKey.MealFoundationEndMin, preferences)
             .put(FuseIntKey.PrimeWindowMin, preferences)
 
     override fun applyConfiguration(configuration: JSONObject) {
@@ -1993,6 +1996,9 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
             .store(FuseBooleanKey.OnsetChannelEnabled, preferences)
             .store(FuseBooleanKey.PrimeReleaseEnabled, preferences)
             .store(FuseDoubleKey.PrimeEnvelopeU, preferences)
+            .store(FuseBooleanKey.MealFoundationEnabled, preferences)
+            .store(FuseDoubleKey.MealFoundationPhaseAShare, preferences)
+            .store(FuseIntKey.MealFoundationEndMin, preferences)
             .store(FuseIntKey.PrimeWindowMin, preferences)
     }
 
@@ -2078,6 +2084,13 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
             // Direkt unter der Huelle, weil beide nur ZUSAMMEN einen Sinn
             // ergeben: 4 U in 10 Minuten sind etwas anderes als 4 U in 30.
             addPreference(AdaptiveIntPreference(ctx = context, intKey = FuseIntKey.PrimeWindowMin, dialogMessage = R.string.fuse_prime_window_summary, title = R.string.fuse_prime_window_title))
+            // DAS MAHLZEITENFUNDAMENT, direkt unter Huelle und Fenster: es
+            // verteilt genau diese Huelle zeitlich. Drei Zeilen, weil alle
+            // drei die Dosierung bestimmen - OB verteilt wird, WIE und BIS
+            // WANN. Ein Schalter allein saehe harmlos aus.
+            addPreference(AdaptiveSwitchPreference(ctx = context, booleanKey = FuseBooleanKey.MealFoundationEnabled, summary = R.string.fuse_meal_foundation_summary, title = R.string.fuse_meal_foundation_title))
+            addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.MealFoundationPhaseAShare, dialogMessage = R.string.fuse_meal_foundation_share_summary, title = R.string.fuse_meal_foundation_share_title))
+            addPreference(AdaptiveIntPreference(ctx = context, intKey = FuseIntKey.MealFoundationEndMin, dialogMessage = R.string.fuse_meal_foundation_window_summary, title = R.string.fuse_meal_foundation_window_title))
             addPreference(AdaptiveIntPreference(ctx = context, intKey = FuseIntKey.AbsorptionCreditWindowMin, dialogMessage = R.string.fuse_absorption_credit_summary, title = R.string.fuse_absorption_credit_title))
             addPreference(AdaptiveIntPreference(ctx = context, intKey = FuseIntKey.MarkerBoostMaxMin, dialogMessage = R.string.fuse_marker_boost_summary, title = R.string.fuse_marker_boost_title))
             // Die manuelle Autorisierung bleibt VOM REST ABGESETZT (Toni

@@ -673,6 +673,9 @@ class FuseCycleRunner(
             revokedPersisted = episodes.evidenceRevoked,
         )
         val evidenceEpisodeId = episodeGate.episodeId
+        // Fuer die spaetere Armierung des Fundaments gemerkt: dort ist `cfg`
+        // verfuegbar, hier noch nicht (s. die Armierungsstelle).
+        val episodeOpenedThisCycle = episodeGate.opened
         // OPTION A (Toni 15.08.): ein waehrend der laufenden Episode
         // gedrueckter Marker wird sofort verbraucht - er darf nach dem
         // Deckelende des Vorgaengers keine stille Folgeepisode mehr
@@ -886,6 +889,7 @@ class FuseCycleRunner(
             is CoreInputGuard.Outcome.Built  -> c.value
             is CoreInputGuard.Outcome.Failed -> return abort("config: ${c.failure.detail}", signal, step = step)
         }
+
 
         // LEDGER-SICHT dieses Zyklus (Audit R95, Fix 3): was publiziert, aber
         // noch nicht im IOB nachgewiesen ist, ist KEIN freier Spielraum. Die
@@ -1330,6 +1334,49 @@ class FuseCycleRunner(
         // mengenbegrenzter Boden kennt dieses Problem nicht.
         val manualMarkerAuthorized = cfg.markerAuthorized && mealMarkerActive && markerTs > 0
 
+        // ---- DAS MAHLZEITENFUNDAMENT ARMIEREN (Toni 19.08.) ---------------
+        //
+        // NUR BEI EINER FRISCH EROEFFNETEN EPISODE. `episodeGate.opened` ist
+        // der eine Punkt, an dem ein Markerdruck eine Episode beginnt - und
+        // das Gate hat dafuer bereits geprueft, dass dieser Prozess den Druck
+        // SELBST gesehen hat (observedPressTs). Ein beim Warmstart
+        // vorgefundener Marker eroeffnet keine Episode und armiert deshalb
+        // auch nichts.
+        //
+        // WARUM HIER UND NICHT OBEN BEI `opened`: dort gibt es `cfg` noch
+        // nicht, und ohne Budget, Anteil und Fensterende laesst sich nichts
+        // pinnen. Der Preis steht ausdruecklich hier: bricht der Zyklus
+        // ZWISCHEN der Episodeneroeffnung und dieser Stelle ab (kein Profil,
+        // Signalfehler, Config-Guard), bleibt die Episode ohne Fundament -
+        // beim naechsten Zyklus ist `opened` schon falsch. Das ist die
+        // konservative Richtung: kein Fundament heisst kein zusaetzliches
+        // Insulin, und die Mahlzeit laeuft wie vor diesem Baustein.
+        //
+        // DIE VORBEDINGUNGEN GEHEN ALS PFLICHTPARAMETER MIT, nicht als
+        // Vorab-Abfrage: so kann keine Aufrufstelle sie vergessen
+        // (s. MealFoundation.arm).
+        if (episodeOpenedThisCycle) {
+            episodes.foundation = MealFoundation.arm(
+                markerTs = markerTs,
+                foundationEnabled = cfg.mealFoundationEnabled,
+                // DAS GEMEINSAME BUDGET ist die Prime-Huelle - Phase A und B
+                // teilen sie, sie addieren sich nicht.
+                totalBudgetU = cfg.primeEnvelopeU,
+                phaseAShare = cfg.mealFoundationPhaseAShare,
+                primeWindowMin = cfg.primeWindowMin,
+                wallCeilingMin = PrimeRelease.WALL_CEILING_MIN,
+                phaseBUntilMin = cfg.mealFoundationEndMin,
+                markerAuthorized = manualMarkerAuthorized,
+                // Das Gate hat es bereits geprueft; hier steht es noch einmal
+                // als eigene Zusicherung, damit die Armierung nicht an einer
+                // fremden Bedingung haengt.
+                pressObservedInThisProcess = markerPressObserved() > 0L,
+                primeDeclinedByUser = markerNoPrime,
+            )
+            // Eine neue Autorisierung beginnt mit unbezahlter Phase B.
+            episodes.deliveredSinceHandoverU = 0.0
+        }
+
         // Nur noch fuer die parallele Schutz-Null und den Warntext - NICHT
         // mehr als Bedingung der Autorisierung.
         val measuredLow = step.safetyReasons == setOf(SafetyReason.LOW)
@@ -1747,7 +1794,46 @@ class FuseCycleRunner(
                 markerAuthorized = manualMarkerAuthorized,
             )
         )
-        val lifted = PrimeRelease.lift(
+
+        // ---- LIEFERBARE MINUTEN: der Fensterstart schiebt nach ------------
+        //
+        // Solange nur die Clearance sperrt, schiebt der Fensterstart nach -
+        // eine Freigabe, die nie erteilbar war, darf nicht verfallen. Absolut
+        // gekappt in PrimeRelease selbst. Nur bei CLEARANCE:
+        // DISABLED/NO_MARKER/ENVELOPE_SPENT/NOT_FINITE sind keine "gesperrt,
+        // aber gewollt"-Zustaende, dort waere das Schieben eine stille
+        // Verlaengerung ohne Grund.
+        //
+        // DIESE ZEILE STAND WEITER UNTEN, hinter der fertigen Entscheidung
+        // (Toni 19.08.). Sie muss VOR den Entscheidungssnapshot des
+        // Fundaments, denn der Uebergabeanker haengt an `primeWindowStartTs`:
+        // ein Snapshot davor saehe einen anderen Anker als die spaetere
+        // Buchung, und Phase B rechnete gegen ein Fenster, das gar nicht mehr
+        // gilt.
+        //
+        // VERHALTENSNEUTRAL FUER PRIME, geprueft: zwischen dem `plan`-Aufruf
+        // oben (der `primeWindowStartTs` liest) und dieser Stelle liest sie
+        // niemand sonst.
+        if (primePlan.reason == "CLEARANCE") episodes.primeWindowStartTs = computeTs
+
+        // ---- DER ENTSCHEIDUNGSSNAPSHOT DES FUNDAMENTS --------------------
+        //
+        // Er entsteht NACH der moeglichen Clearance-Verschiebung und VOR jeder
+        // Buchung dieses Zyklus - genau dazwischen ist der einzige Punkt, an
+        // dem Uebergabeanker und Bezahlstand beide gelten.
+        //
+        // Er ist NICHT derselbe wie der Export-Snapshot am Ende des Zyklus:
+        // dieser hier traegt den Stand VOR der eigenen Abgabe und beantwortet
+        // "was fordert das Fundament jetzt", jener den Stand DANACH und
+        // beantwortet "wo steht es am Ende".
+        val foundationDecision = MealFoundation.snapshot(
+            episodes.foundation, computeTs, episodes.primeWindowStartTs,
+            deliveredFromBudgetU = episodes.evidenceCommittedU,
+            deliveredSinceHandoverU = episodes.deliveredSinceHandoverU,
+            bolusStepU = bolusStep,
+        )
+
+        val liftedPrime = PrimeRelease.lift(
             vetted, primePlan, state,
             markerAuthorized = manualMarkerAuthorized,
             tailHeadroomU = tail?.takeIf { it.usable }?.headroomU,
@@ -1755,6 +1841,29 @@ class FuseCycleRunner(
             // Fix-Pass 2 Nr. 2: dieselbe Ledger-Korrektur wie in den
             // Such-Headrooms - sonst finanziert der NO_DEMAND->Lift-Pfad
             // In-Flight-Mengen doppelt.
+            transportCommitmentU = transportModelledU,
+        )
+
+        // ---- PHASE B: die nachlaufende Mindestversorgung ------------------
+        //
+        // Sie steht NACH dem Prime-Lift und arbeitet auf dessen Ergebnis. Das
+        // ist keine Kette zweier Aufschlaege: die beiden Phasen schliessen
+        // sich zeitlich aus (MealFoundation.phaseOf), also greift immer
+        // hoechstens eine. Waehrend Prime laeuft, ist `dueU` null; danach ist
+        // die Prime-Huelle zu.
+        //
+        // DERSELBE MENGENKERN wie bei Prime (AuthorizedLift): maxSMB, iobTH,
+        // maxIOB, Transporthaftung und Pumpenraster gelten unveraendert. Was
+        // Phase B eigen ist, sind nur Soll, Restbudget und Fenster - und dass
+        // die Onset-Huelle hier NICHT deckelt (s. MealFoundation.lift).
+        //
+        // Die Autorisierung kommt aus dem GEPINNTEN Snapshot, nicht aus der
+        // aktuellen Einstellung.
+        val lifted = MealFoundation.lift(
+            base = liftedPrime,
+            snapshot = foundationDecision,
+            state = state,
+            tailHeadroomU = tail?.takeIf { it.usable }?.headroomU,
             transportCommitmentU = transportModelledU,
         )
         // FIX-PASS 4 Nr. 4 (Codex R4-04, Control-Audit-Invariante): KEINE
@@ -2003,13 +2112,8 @@ class FuseCycleRunner(
         // dort 3/3 statt 1/3. Er ersetzt nur den BERICHT, nie die Menge - die
         // hat der Riegel oben bereits entschieden.
         val decision = tailWith(held.smbU)?.let { held.copy(tail = it) } ?: held
-        // LIEFERBARE Minuten (09.08.): solange nur die Clearance sperrt,
-        // schiebt der Fensterstart nach - eine Freigabe, die nie erteilbar war,
-        // darf nicht verfallen. Absolut gekappt in PrimeRelease selbst.
-        // Nur bei CLEARANCE: DISABLED/NO_MARKER/ENVELOPE_SPENT/NOT_FINITE sind
-        // keine "gesperrt, aber gewollt"-Zustaende, dort waere das Schieben
-        // eine stille Verlaengerung ohne Grund.
-        if (primePlan.reason == "CLEARANCE") episodes.primeWindowStartTs = computeTs
+        // Die Clearance-Verschiebung stand hier und ist nach oben gewandert -
+        // vor den Entscheidungssnapshot des Fundaments (s. dort).
 
         val primeWindowOpen = mealMarkerActive && markerTs > 0 &&
             computeTs - maxOf(markerTs, episodes.primeWindowStartTs) < cfg.primeWindowMin * 60_000L &&
@@ -2433,7 +2537,7 @@ class FuseCycleRunner(
             minLowerMgdl = null,
             bindingLimit = "markerFallback",
         )
-        val lifted = PrimeRelease.lift(
+        val liftedPrime = PrimeRelease.lift(
             basis, primePlan, state,
             markerAuthorized = true,
             // Kein Schwanz-Headroom: es gibt keine Bahn, aus der einer
@@ -2442,6 +2546,32 @@ class FuseCycleRunner(
             // ausdrueckliche Auflage zu PENDING_MODEL_TOO_SHORT.
             tailHeadroomU = null,
             onsetCapU = if (onset.active) onset.remainingU else null,
+            transportCommitmentU = transportModelledU,
+        )
+
+        // ---- PHASE B, auch hier - DIESELBE Logik (Toni 19.08.) ------------
+        //
+        // Der Fallback fuehrt keine eigene Rechnung: derselbe Aufruf, derselbe
+        // Mengenkern. Genau so laufen zwei Pfade sonst auseinander, und bei
+        // der Buchfuehrung ist das hier schon einmal passiert.
+        //
+        // Die CLEARANCE-Verschiebung gibt es auf diesem Pfad nicht - er
+        // wertet `primePlan.reason` nirgends aus. Der Uebergabeanker sieht
+        // damit den unveraenderten Fensterstart, und das ist richtig: was
+        // nicht verschoben wurde, darf auch nicht als verschoben gelten.
+        //
+        // Kein Schwanz-Headroom, aus demselben Grund wie beim Prime-Lift
+        // darueber: ohne Bahn gibt es keinen.
+        val lifted = MealFoundation.lift(
+            base = liftedPrime,
+            snapshot = MealFoundation.snapshot(
+                episodes.foundation, computeTs, episodes.primeWindowStartTs,
+                deliveredFromBudgetU = episodes.evidenceCommittedU,
+                deliveredSinceHandoverU = episodes.deliveredSinceHandoverU,
+                bolusStepU = pumpe.bolusStepU,
+            ),
+            state = state,
+            tailHeadroomU = null,
             transportCommitmentU = transportModelledU,
         )
         val held = LedgerHoldGate.apply(lifted, ledgerView.hold)
@@ -2818,6 +2948,12 @@ class FuseCycleRunner(
         val onsetEnvelopeU: Double,
         val primeReleaseEnabled: Boolean,
         val primeEnvelopeU: Double,
+        /** Ist das Mahlzeitenfundament eingeschaltet? Default aus. */
+        val mealFoundationEnabled: Boolean,
+        /** Anteil von Phase A am gepinnten Budget. 1,0 = heutiges Verhalten. */
+        val mealFoundationPhaseAShare: Double,
+        /** Ende des Phase-B-Fensters [min ab Marker]. */
+        val mealFoundationEndMin: Int,
         val primeWindowMin: Int,
         /** Die Null sofort verlassen, sobald ihr Schutzgrund weg ist. */
         val endZeroWhenReasonGone: Boolean,
@@ -2863,6 +2999,9 @@ class FuseCycleRunner(
         onsetEnvelopeU = preferences.get(FuseDoubleKey.OnsetEnvelopeU),
         primeReleaseEnabled = preferences.get(FuseBooleanKey.PrimeReleaseEnabled),
         primeEnvelopeU = preferences.get(FuseDoubleKey.PrimeEnvelopeU),
+        mealFoundationEnabled = preferences.get(FuseBooleanKey.MealFoundationEnabled),
+        mealFoundationPhaseAShare = preferences.get(FuseDoubleKey.MealFoundationPhaseAShare),
+        mealFoundationEndMin = preferences.get(FuseIntKey.MealFoundationEndMin),
         // Ein ungesetzter Wert (0) ist kein Konfigurationsfehler, sondern ein
         // Speicher, der den Schluessel noch nicht kennt - dann gilt die
         // Vorgabe. Echte Fehlwerte faengt die Bereichspruefung darunter.
