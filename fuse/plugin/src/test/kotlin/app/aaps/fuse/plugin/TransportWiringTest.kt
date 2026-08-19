@@ -2973,6 +2973,106 @@ class TransportWiringTest : TestBaseWithProfile() {
     }
 
     /**
+     * NICHT IRGENDEIN DRUCK - GENAU DIESER (Toni 19.08.).
+     *
+     * Die Bedingung lautete `markerPressObserved() > 0L`. Damit haette ein
+     * frueher beobachteter Druck aus einer laengst beendeten Mahlzeit
+     * gereicht, um einen SPAETER vorgefundenen zu autorisieren - also genau
+     * die Lage, gegen die die Beobachtung gebaut ist.
+     */
+    @Test
+    fun `ein fremder beobachteter Druck autorisiert den aktuellen nicht`() {
+        fundamentAn = true
+        flach = 105.0
+        steigungProMin = -0.9
+        markerAuthorized = true
+
+        // Druck A: beobachtet.
+        markerAt = start + 2 * 60_000L
+        val druckA = markerAtIntern
+        clock = start
+        repeat(6) { cycle() }
+        assertTrue(ledger.episodes.foundation.valid, "A wurde beobachtet und armiert")
+
+        // Neue Prime-Episode, Druck B - aber beobachtet ist weiterhin nur A.
+        clock += (OnsetChannel.MARKER_WINDOW_MIN + 5) * 60_000L
+        markerAt = clock + 60_000L
+        markerPress = druckA
+        repeat(8) { cycle() }
+        assertTrue(
+            !ledger.episodes.foundation.valid,
+            "ein FREMDER beobachteter Druck darf B nicht autorisieren",
+        )
+    }
+
+    /**
+     * DIE GEGENPROBE, eigenstaendig: DERSELBE Druck beobachtet -> Armierung.
+     *
+     * Sie steht bewusst als eigener Test und nicht als dritte Stufe des
+     * Tests darueber: mit langer Vorgeschichte haengt sie an Zustaenden, die
+     * mit der Frage nichts zu tun haben, und ein Fehlschlag saehe dann aus
+     * wie eine Aussage ueber die Identitaetspruefung.
+     */
+    @Test
+    fun `derselbe beobachtete Druck autorisiert`() {
+        fundamentAn = true
+        flach = 105.0
+        steigungProMin = -0.9
+        markerAuthorized = true
+        markerAt = start + 2 * 60_000L
+
+        clock = start
+        repeat(8) { cycle() }
+        assertEquals(
+            markerAtIntern, markerPress,
+            "der Aufbau MUSS denselben Druck beobachtet haben",
+        )
+        assertTrue(ledger.episodes.foundation.valid, "und dann armiert er")
+    }
+
+    /**
+     * RUECKNAHME UND ERNEUTER DRUCK IN DERSELBEN PRIME-EPISODE ARMIEREN NICHT
+     * NEU - eine bewusste Grenze, kein Fehler (Toni 19.08.).
+     *
+     * Die Armierung haengt an `MarkerEpisode.startsNewEpisode`, und die ist
+     * innerhalb des 90-Minuten-Fensters falsch. Das verhindert ein
+     * DOPPELBUDGET: sonst koennte Ruecknahme plus erneuter Druck dieselbe
+     * Huelle ein zweites Mal freigeben.
+     *
+     * DER PREIS steht hier ausdruecklich: nach einer VERSEHENTLICHEN
+     * Ruecknahme faellt Phase B bis zur naechsten Prime-Episode aus. Der
+     * Marker selbst wirkt sofort wieder (Prime, Sonderrechte), das Fundament
+     * nicht. Wer das aendern will, braucht eine Unterscheidung zwischen
+     * "widerrufen" und "versehentlich" - die es heute nicht gibt, und die
+     * ohne sie ein Doppelbudget waere.
+     */
+    @Test
+    fun `nach Ruecknahme armiert ein Druck in derselben Prime-Episode nicht neu`() {
+        fundamentAn = true
+        flach = 105.0
+        steigungProMin = -0.9
+        markerAuthorized = true
+        markerAt = start + 2 * 60_000L
+
+        clock = start
+        repeat(6) { cycle() }
+        assertTrue(ledger.episodes.foundation.valid, "armiert")
+
+        markerAt = 0L
+        repeat(2) { cycle() }
+        assertTrue(!ledger.episodes.foundation.valid, "die Ruecknahme beendet sie")
+
+        // Erneuter Druck INNERHALB des 90-Minuten-Fensters.
+        markerAt = clock + 60_000L
+        repeat(6) { cycle() }
+        assertTrue(
+            !ledger.episodes.foundation.valid,
+            "in derselben Prime-Episode entsteht KEIN neues Fundament - sonst " +
+                "gaebe dieselbe Huelle ein zweites Mal frei",
+        )
+    }
+
+    /**
      * DER SCHALTER AUS BLEIBT VERHALTENSGLEICH.
      *
      * Ohne diese Probe waere jede andere hier wertlos: sie zeigt, dass der

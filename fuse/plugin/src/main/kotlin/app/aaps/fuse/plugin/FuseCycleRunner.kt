@@ -1113,7 +1113,13 @@ class FuseCycleRunner(
                 wallCeilingMin = PrimeRelease.WALL_CEILING_MIN,
                 phaseBUntilMin = cfg.mealFoundationEndMin,
                 markerAuthorized = manualMarkerAuthorized,
-                pressObservedInThisProcess = markerPressObserved() > 0L,
+                // IDENTITAET, NICHT NUR VORHANDENSEIN (Toni 19.08.). Hier
+                // stand `> 0L` - damit haette IRGENDEIN frueher beobachteter
+                // Druck gereicht, auch einer aus einer laengst beendeten
+                // Mahlzeit. Der Vertrag verlangt, dass GENAU DIESER Marker
+                // beobachtet wurde; `MarkerEpisodeGate` erzwingt dieselbe
+                // Identitaet bereits fuer die Evidenzepisode.
+                pressObservedInThisProcess = markerPressObserved() == markerTs,
                 primeDeclinedByUser = markerNoPrime,
             )
             // Eine neue Autorisierung beginnt mit unbezahlter Phase B.
