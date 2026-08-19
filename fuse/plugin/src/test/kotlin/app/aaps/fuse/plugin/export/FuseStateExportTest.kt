@@ -737,7 +737,7 @@ class FuseStateExportTest {
 
     private fun fAuth(anteil: Double = 0.75) = app.aaps.fuse.core.controller.MealFoundation.arm(
         markerTs = fT0, foundationEnabled = true, totalBudgetU = 3.0, phaseAShare = anteil,
-        primeWindowMin = 15, wallCeilingMin = 45, markerAuthorized = true, phaseBUntilMin = 60,
+        primeWindowMin = 15, wallCeilingMin = 45, pressObservedInThisProcess = true, primeDeclinedByUser = false, markerAuthorized = true, phaseBUntilMin = 60,
     )
 
     private fun fSnapshot(

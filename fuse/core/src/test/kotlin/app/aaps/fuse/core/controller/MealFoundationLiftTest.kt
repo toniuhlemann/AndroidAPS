@@ -63,7 +63,7 @@ class MealFoundationLiftTest {
     ): MealFoundation.Snapshot {
         val auth = MealFoundation.arm(
             markerTs = t0, foundationEnabled = true, totalBudgetU = 3.0, phaseAShare = 0.75,
-            primeWindowMin = 15, wallCeilingMin = 45, phaseBUntilMin = 60, markerAuthorized = autorisiert,
+            primeWindowMin = 15, wallCeilingMin = 45, phaseBUntilMin = 60, pressObservedInThisProcess = true, primeDeclinedByUser = false, markerAuthorized = autorisiert,
         )
         return MealFoundation.snapshot(
             auth, t0 + (minuten * 60_000).toLong(), 0L,

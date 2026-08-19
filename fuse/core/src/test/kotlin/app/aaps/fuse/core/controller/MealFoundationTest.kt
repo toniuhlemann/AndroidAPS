@@ -554,7 +554,7 @@ class MealFoundationTest {
     fun `Anteil null ergibt ein vollstaendiges Phase-B-Budget`() {
         val a = MealFoundation.arm(
             markerTs = t0, foundationEnabled = true, totalBudgetU = BUDGET, phaseAShare = 0.0,
-            primeWindowMin = A_BIS, wallCeilingMin = 45, markerAuthorized = true, phaseBUntilMin = B_BIS,
+            primeWindowMin = A_BIS, wallCeilingMin = 45, pressObservedInThisProcess = true, primeDeclinedByUser = false, markerAuthorized = true, phaseBUntilMin = B_BIS,
         )
         assertTrue(a.valid)
         assertEquals(0.0, a.phaseABudgetU, 1e-9)
@@ -572,7 +572,7 @@ class MealFoundationTest {
         MealFoundation.phaseOf(
             auth ?: MealFoundation.arm(
                 markerTs = t0, foundationEnabled = true, totalBudgetU = BUDGET, phaseAShare = A_SHARE,
-                primeWindowMin = A_BIS, wallCeilingMin = 45, markerAuthorized = true, phaseBUntilMin = B_BIS,
+                primeWindowMin = A_BIS, wallCeilingMin = 45, pressObservedInThisProcess = true, primeDeclinedByUser = false, markerAuthorized = true, phaseBUntilMin = B_BIS,
             ),
             t0 + (minuten * 60_000).toLong(), clearance,
         )
@@ -619,7 +619,7 @@ class MealFoundationTest {
     fun `nach dem Latch bleibt die Phasengrenze stehen`() {
         val gelatcht = MealFoundation.arm(
             markerTs = t0, foundationEnabled = true, totalBudgetU = BUDGET, phaseAShare = A_SHARE,
-            primeWindowMin = A_BIS, wallCeilingMin = 45, markerAuthorized = true, phaseBUntilMin = B_BIS,
+            primeWindowMin = A_BIS, wallCeilingMin = 45, pressObservedInThisProcess = true, primeDeclinedByUser = false, markerAuthorized = true, phaseBUntilMin = B_BIS,
         ).latchIfDue(t0 + A_BIS * 60_000L, 0L)
         assertEquals(
             MealFoundation.Phase.PHASE_B,
@@ -685,7 +685,7 @@ class MealFoundationTest {
     fun `liegt die Uebergabe hinter dem Ende, gibt es kein Phase B`() {
         val kurz = MealFoundation.arm(
             markerTs = t0, foundationEnabled = true, totalBudgetU = BUDGET, phaseAShare = A_SHARE,
-            primeWindowMin = A_BIS, wallCeilingMin = 45, phaseBUntilMin = 20, markerAuthorized = true,
+            primeWindowMin = A_BIS, wallCeilingMin = 45, phaseBUntilMin = 20, pressObservedInThisProcess = true, primeDeclinedByUser = false, markerAuthorized = true,
         )
         // Clearance bei T+30 schiebt die Uebergabe auf T+45 (Decke), das
         // Fenster endet aber schon bei T+20.
@@ -711,7 +711,7 @@ class MealFoundationTest {
         ende: Int = B_BIS,
     ) = MealFoundation.arm(
         markerTs = t0, foundationEnabled = an, totalBudgetU = budget, phaseAShare = anteil,
-        primeWindowMin = A_BIS, wallCeilingMin = 45, phaseBUntilMin = ende, markerAuthorized = true,
+        primeWindowMin = A_BIS, wallCeilingMin = 45, phaseBUntilMin = ende, pressObservedInThisProcess = true, primeDeclinedByUser = false, markerAuthorized = true,
     )
 
     @Test

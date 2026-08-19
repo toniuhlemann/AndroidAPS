@@ -239,8 +239,48 @@ object MealFoundation {
          * sich zu erklaeren.
          */
         markerAuthorized: Boolean,
+        /**
+         * HAT DIESER PROZESS DEN DRUCK SELBST GESEHEN? (Toni 19.08.)
+         *
+         * Der Markerzeitpunkt liegt in einer Preference und ueberlebt jeden
+         * Neustart. Er allein sagt also NICHT, ob der Druck neu ist oder beim
+         * Warmstart nur VORGEFUNDEN wurde. Genau dafuer fuehrt das Plugin
+         * `markerPressObservedTs` als bewusst NICHT persistentes Prozessfeld -
+         * es ist der Beweis, dass der Druck nach dem letzten Prozessstart lag.
+         *
+         * WARUM DAS FUER DAS FUNDAMENT ZAEHLT. Ein beim Warmstart
+         * vorgefundener Marker duerfte kein RUECKWIRKENDES Fundament
+         * erzeugen: dessen Phase A waere laengst vorbei, und Phase B faende
+         * ein Budget vor, aus dem in Wirklichkeit schon geliefert wurde -
+         * ohne dass dieser Prozess davon weiss. Die Menge waere doppelt.
+         *
+         * Der Runner reicht dieselbe Groesse bereits an
+         * `MarkerEpisodeGate.decide` weiter; hier ist sie derselbe Beweis fuer
+         * dieselbe Frage.
+         */
+        pressObservedInThisProcess: Boolean,
+        /**
+         * HAT DER NUTZER "OHNE VORSCHUSS" GEWAEHLT? (Toni 19.08.)
+         *
+         * Die Bedienoberflaeche sagt dabei zu: "die Freigabe-Huelle dieser
+         * Episode ist 0 - KEIN markerfinanziertes Insulin". Phase B ist per
+         * Definition markerfinanziertes Insulin, nur zeitlich verteilt - ein
+         * Fundament, das nach abgewaehltem Vorschuss trotzdem liefert, waere
+         * ein Seiteneingang durch genau die Tuer, die der Nutzer geschlossen
+         * hat.
+         *
+         * Es steht als eigener Parameter da und nicht als `totalBudgetU = 0`:
+         * so ist im Code lesbar, WARUM nichts entsteht, und eine spaetere
+         * Aenderung an der Budgetrechnung kann diese Sperre nicht versehentlich
+         * aushebeln.
+         */
+        primeDeclinedByUser: Boolean,
     ): Authorization {
         if (!foundationEnabled || markerTs <= 0L) return Authorization.none()
+        // Ein nur VORGEFUNDENER Marker armiert nicht - s. Parameterdoku.
+        if (!pressObservedInThisProcess) return Authorization.none()
+        // "Ohne Vorschuss" schliesst auch das Fundament aus.
+        if (primeDeclinedByUser) return Authorization.none()
         if (!totalBudgetU.isFinite() || totalBudgetU <= 0.0) return Authorization.none()
         if (!phaseAShare.isFinite() || phaseAShare !in 0.0..1.0) return Authorization.none()
         if (phaseBUntilMin <= 0 || primeWindowMin < 0 || wallCeilingMin < 0) return Authorization.none()

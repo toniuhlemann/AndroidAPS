@@ -140,7 +140,7 @@ class MealFoundationReplayTest {
     private fun fahre(anteil: Double, m: Mahlzeit, abgelehnt: Set<Int> = emptySet()): Spur {
         val auth = MealFoundation.arm(
             markerTs = t0, foundationEnabled = true, totalBudgetU = BUDGET, phaseAShare = anteil,
-            primeWindowMin = A_BIS, wallCeilingMin = 45, markerAuthorized = true, phaseBUntilMin = B_BIS,
+            primeWindowMin = A_BIS, wallCeilingMin = 45, pressObservedInThisProcess = true, primeDeclinedByUser = false, markerAuthorized = true, phaseBUntilMin = B_BIS,
         )
         var ausBudget = 0.0
         var seitUebergabe = 0.0
@@ -302,7 +302,7 @@ class MealFoundationReplayTest {
     fun `bei erschoepftem Gesamtbudget fordert das Fundament nichts`() {
         val auth = MealFoundation.arm(
             markerTs = t0, foundationEnabled = true, totalBudgetU = BUDGET, phaseAShare = 0.67,
-            primeWindowMin = A_BIS, wallCeilingMin = 45, markerAuthorized = true, phaseBUntilMin = B_BIS,
+            primeWindowMin = A_BIS, wallCeilingMin = 45, pressObservedInThisProcess = true, primeDeclinedByUser = false, markerAuthorized = true, phaseBUntilMin = B_BIS,
         )
         val snap = MealFoundation.snapshot(auth, t0 + 30 * 60_000L, 0L, BUDGET, 0.0, STEP)
         assertEquals(0.0, snap.dueU, 1e-9)
@@ -352,7 +352,7 @@ class MealFoundationReplayTest {
     fun `bei erfuelltem Soll ist dueU in jedem Zyklus null`() {
         val auth = MealFoundation.arm(
             markerTs = t0, foundationEnabled = true, totalBudgetU = BUDGET, phaseAShare = 0.75,
-            primeWindowMin = A_BIS, wallCeilingMin = 45, markerAuthorized = true, phaseBUntilMin = B_BIS,
+            primeWindowMin = A_BIS, wallCeilingMin = 45, pressObservedInThisProcess = true, primeDeclinedByUser = false, markerAuthorized = true, phaseBUntilMin = B_BIS,
         )
         for (min in A_BIS..B_BIS) {
             val now = t0 + min * 60_000L
