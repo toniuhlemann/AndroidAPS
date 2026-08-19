@@ -1291,12 +1291,30 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
         // hier ist es derselbe Zyklus, in dem `buche` den Eintrag angelegt hat.
         // Ab dem naechsten waere `indexOfLast` mehrdeutig - genau der Fehler,
         // gegen den [MealDelivery.proposalId] gebaut ist.
-        if (proposalId != null && bleibt > 0.0 && r.mealTs > 0L) {
-            val idx = episodes.mealDeliveries.indexOfLast { it.ts == r.mealTs && it.proposalId == null }
-            if (idx >= 0) episodes.mealDeliveries[idx].proposalId = proposalId
-        }
+        val nachgetragen =
+            if (proposalId != null && bleibt > 0.0 && r.mealTs > 0L) {
+                val idx =
+                    episodes.mealDeliveries.indexOfLast { it.ts == r.mealTs && it.proposalId == null }
+                if (idx >= 0) {
+                    episodes.mealDeliveries[idx].proposalId = proposalId
+                    true
+                } else false
+            } else true   // ohne Mahlzeitenzeile gibt es nichts nachzutragen
+
+        // KEINE ABLAGE OHNE NACHGETRAGENE KENNUNG (Toni 19.08.).
+        //
+        // Schlug das Nachtragen fehl, gaebe es spaeter keine auffindbare
+        // Mahlzeitenzeile - [revokeSettled] wuerde vier Zaehler senken und
+        // `mealDeliveries` unberuehrt lassen. Genau das Auseinanderlaufen der
+        // Buecher, gegen das dieser ganze Block gebaut ist, nur eine Stufe
+        // spaeter.
+        //
+        // Der Fall kann heute nur aus einem Widerspruch entstehen (die
+        // Reservierung nennt eine Mahlzeitenzeile, die es nicht gibt). Dann
+        // ist "gar keine Entlastung" der richtige Ausgang: die Buchung bleibt
+        // stehen, FUSE liefert spaeter zu wenig statt zu viel.
         episodes.settled =
-            if (proposalId != null && bleibt > 0.0) EpisodeBudgets.Settled(
+            if (proposalId != null && bleibt > 0.0 && nachgetragen) EpisodeBudgets.Settled(
                 proposalId = proposalId, amountU = bleibt, prime = r.prime,
                 onset = r.onset, mealTs = r.mealTs, foundationPhase = r.foundationPhase,
             ) else null
@@ -1363,6 +1381,22 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
         val menge = s.amountU
         if (!menge.isFinite() || menge <= 0.0) return 0.0
 
+        // ---- ZUERST SUCHEN, DANN AENDERN (Toni 19.08.) -------------------
+        //
+        // ALLES ODER NICHTS. Wuerde die Mahlzeitenzeile erst am Ende gesucht,
+        // stuenden vier Zaehler bereits gesenkt da, wenn sie fehlt - vier
+        // Buecher korrigiert, eines nicht. Genau das Auseinanderlaufen, gegen
+        // das dieser Block gebaut ist.
+        //
+        // Eine fehlende Zeile ist ein Widerspruch im Zustand, kein
+        // Normalfall: [resolveReservation] legt eine Ablage nur an, wenn die
+        // Kennung nachgetragen werden konnte. Tritt er doch ein, ist "gar
+        // keine Entlastung" der sichere Ausgang.
+        val idx =
+            if (s.mealTs > 0L) episodes.mealDeliveries.indexOfFirst { it.proposalId == proposalId }
+            else -1
+        if (s.mealTs > 0L && idx < 0) return 0.0
+
         // EXAKT DIESELBEN ZAEHLER wie beim Reject einer Reservierung - der
         // Vorgang ist derselbe, nur eine Stufe spaeter bewiesen.
         if (s.prime) episodes.primeSpentU = (episodes.primeSpentU - menge).coerceAtLeast(0.0)
@@ -1371,19 +1405,17 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
         if (s.foundationPhase == app.aaps.fuse.core.controller.MealFoundation.Phase.PHASE_B)
             episodes.deliveredSinceHandoverU =
                 (episodes.deliveredSinceHandoverU - menge).coerceAtLeast(0.0)
-        // UEBER DIE KENNUNG, NICHT UEBER DEN ZEITSTEMPEL. Zum Zeitpunkt
-        // dieses Aufrufs hat der Runner laengst eine neue Zeile gebucht;
-        // `indexOfLast { it.ts == ... }` traefe bei einem wiederholten
-        // CGM-Zeitstempel die NEUE Abgabe statt der verworfenen alten.
-        if (s.mealTs > 0L) {
-            val idx = episodes.mealDeliveries.indexOfFirst { it.proposalId == proposalId }
-            if (idx >= 0) {
-                val rest = episodes.mealDeliveries[idx].amountU - menge
-                if (rest > 1e-9)
-                    episodes.mealDeliveries[idx] =
-                        EpisodeBudgets.MealDelivery(episodes.mealDeliveries[idx].ts, rest, proposalId)
-                else episodes.mealDeliveries.removeAt(idx)
-            }
+        // Der Index steht schon fest - gesucht wurde UEBER DIE KENNUNG, nicht
+        // ueber den Zeitstempel: zum Zeitpunkt dieses Aufrufs hat der Runner
+        // laengst eine neue Zeile gebucht, und `indexOfLast { it.ts == ... }`
+        // traefe bei einem wiederholten CGM-Zeitstempel die NEUE Abgabe statt
+        // der verworfenen alten.
+        if (idx >= 0) {
+            val rest = episodes.mealDeliveries[idx].amountU - menge
+            if (rest > 1e-9)
+                episodes.mealDeliveries[idx] =
+                    EpisodeBudgets.MealDelivery(episodes.mealDeliveries[idx].ts, rest, proposalId)
+            else episodes.mealDeliveries.removeAt(idx)
         }
         return menge
     }

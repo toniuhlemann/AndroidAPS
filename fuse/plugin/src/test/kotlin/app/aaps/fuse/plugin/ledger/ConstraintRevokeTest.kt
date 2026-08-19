@@ -4,6 +4,7 @@ import app.aaps.fuse.core.controller.MealFoundation
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Assertions.assertNull
+import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
 /**
@@ -196,25 +197,120 @@ class ConstraintRevokeTest {
     }
 
     /**
-     * DIE KENNUNG UEBERLEBT DEN NEUSTART.
+     * DIE KENNUNG UEBERLEBT DEN CODEC - und NUR das.
      *
-     * Ohne sie in der Datei faende ein Beweis nach einem Neustart den Eintrag
-     * nicht mehr - und liesse eine nie geflossene Menge in `mealDeliveries`
-     * stehen. Der Zaehler waere korrigiert, die Liste nicht.
+     * MEIN ERSTER KOMMENTAR HIER WAR SACHLICH FALSCH (Toni 19.08.). Er
+     * behauptete, ohne die Kennung in der Datei faende ein Beweis "nach einem
+     * Neustart" den Eintrag nicht mehr - und suggerierte damit, MIT ihr ginge
+     * es. Das stimmt nicht, aus zwei unabhaengigen Gruenden:
+     *
+     *   (1) DIE REIHENFOLGE. Produktiv wird ZUERST persistiert
+     *       (LedgerPublicationGate.persistVerified) und erst DANACH in
+     *       resolveReservation die Kennung nachgetragen. Zum Zeitpunkt des
+     *       Persists steht sie also noch gar nicht im Eintrag - sie erreicht
+     *       die Datei erst mit dem NAECHSTEN Persist.
+     *
+     *   (2) `settled` IST NICHT PERSISTENT, ausdruecklich. Nach einem
+     *       Neustart gibt es also gar nichts, was einen Beweis noch
+     *       zuordnen koennte - unabhaengig davon, was in der Datei steht.
+     *
+     * NACH EINEM ECHTEN NEUSTART GEHT DIE ENTLASTUNG VERLOREN, und das ist
+     * der gewollte Ausgang: die Buchung bleibt stehen, FUSE liefert spaeter
+     * zu wenig statt zu viel. Der Test unten haelt genau das fest.
+     *
+     * Wozu die Kennung in der Datei dann taugt: fuer alles NACH dem naechsten
+     * Persist. Ein Beweis, der einen Zyklus spaeter kommt, findet den Eintrag
+     * dann auch nach einem zwischenzeitlichen Laden - und die
+     * Eindeutigkeitspruefung im Codec haelt die Identitaet ueber Ladevorgaenge
+     * hinweg stabil.
      */
     @Test
-    fun `die Buchungskennung ueberlebt den Rundlauf`() {
+    fun `die Buchungskennung ueberlebt den Codec-Rundlauf`() {
         val a = nachPublikation()
-        val vorher = a.episodes.mealDeliveries.single()
-        assertEquals(ID, vorher.proposalId, "die Kennung MUSS nachgetragen sein")
+        assertEquals(ID, a.episodes.mealDeliveries.single().proposalId, "nachgetragen")
 
         val zurueck = LedgerCodec.decodeEpisodes(
             org.json.JSONObject(LedgerCodec.encodeEpisodes(a.episodes).toString())
         )
+        assertEquals(ID, zurueck.mealDeliveries.single().proposalId, "und im Codec erhalten")
+    }
+
+    /**
+     * NACH EINEM NEUSTART GIBT ES KEINE ENTLASTUNG MEHR - konservativ.
+     *
+     * `settled` ist nicht persistent. Ein Beweis, der nach dem Neustart
+     * eintrifft, findet nichts mehr zuzuordnen und darf auch nichts finden:
+     * er koennte sonst eine Menge entlasten, deren Umstaende dieser Prozess
+     * gar nicht kennt.
+     *
+     * Die Fehlrichtung ist die richtige - die Buchung bleibt stehen, FUSE
+     * liefert spaeter zu wenig statt zu viel.
+     */
+    @Test
+    fun `nach einem Neustart bleibt die Buchung stehen`() {
+        val vor = nachPublikation()
+        val datei = LedgerCodec.encodeEpisodes(vor.episodes).toString()
+
+        // Der Neustart: neuer Adapter, Zustand aus der Datei, `settled` weg.
+        val nach = FuseLedgerAdapter()
+        val geladen = LedgerCodec.decodeEpisodes(org.json.JSONObject(datei))
+        nach.episodes.primeSpentU = geladen.primeSpentU
+        nach.episodes.evidenceCommittedU = geladen.evidenceCommittedU
+        nach.episodes.deliveredSinceHandoverU = geladen.deliveredSinceHandoverU
+        geladen.mealDeliveries.forEach { nach.episodes.mealDeliveries.addLast(it) }
+        assertNull(nach.episodes.settled, "ein Neustart hat keine offene Ablage")
+
+        assertEquals(0.0, nach.revokeSettled(ID), 1e-9, "und damit nichts zurueckzudrehen")
+        assertEquals(0.60, nach.episodes.primeSpentU, 1e-9, "die Buchung bleibt stehen")
         assertEquals(
-            ID, zurueck.mealDeliveries.single().proposalId,
-            "und den Rundlauf ueberleben",
+            0.15, nach.episodes.mealDeliveries.single().amountU, 1e-9,
+            "und die Mahlzeitenzeile auch - die fuenf Buecher bleiben einig",
         )
+    }
+
+    /**
+     * OHNE AUFFINDBARE MAHLZEITENZEILE WIRD GAR NICHTS ENTLASTET
+     * (Toni 19.08.).
+     *
+     * Wuerde erst am Ende gesucht, stuenden vier Zaehler bereits gesenkt da -
+     * vier Buecher korrigiert, eines nicht. Genau das Auseinanderlaufen,
+     * gegen das dieser Block gebaut ist.
+     */
+    @Test
+    fun `ohne auffindbare Mahlzeitenzeile bleibt alles stehen`() {
+        val a = nachPublikation()
+        // Der Widerspruch: die Ablage nennt eine Zeile, die es nicht mehr gibt.
+        a.episodes.mealDeliveries.clear()
+
+        assertEquals(0.0, a.revokeSettled(ID), 1e-9, "keine Teilentlastung")
+        assertEquals(0.60, a.episodes.primeSpentU, 1e-9)
+        assertEquals(0.60, a.episodes.onsetSpentU, 1e-9)
+        assertEquals(0.60, a.episodes.evidenceCommittedU, 1e-9)
+        assertEquals(
+            0.60, a.episodes.deliveredSinceHandoverU, 1e-9,
+            "ALLE vier Zaehler MUESSEN unveraendert bleiben",
+        )
+    }
+
+    /**
+     * UND SCHON DIE ABLAGE ENTSTEHT NICHT, wenn die Kennung nicht nachgetragen
+     * werden konnte. Der Fall oben ist damit die zweite Verteidigungslinie -
+     * die erste steht in `resolveReservation`.
+     */
+    @Test
+    fun `ohne nachtragbare Zeile entsteht keine Ablage`() {
+        val a = FuseLedgerAdapter()
+        a.episodes.primeSpentU = 0.15
+        // Die Reservierung nennt eine Mahlzeitenzeile - aber es gibt keine.
+        a.episodes.pendingReservation = EpisodeBudgets.Reservation(
+            computeTs = ts, amountU = 0.15, prime = true, onset = false,
+            mealTs = ts, foundationPhase = MealFoundation.Phase.PHASE_B,
+        )
+        a.resolveReservation(ts, publishedU = 0.15, proposalId = ID)
+
+        assertNull(a.episodes.settled, "ohne nachgetragene Kennung keine Ablage")
+        assertEquals(0.0, a.revokeSettled(ID), 1e-9)
+        assertEquals(0.15, a.episodes.primeSpentU, 1e-9, "die Belastung bleibt stehen")
     }
 
     // ---- Die Grenzen des Zurueckdrehens ------------------------------------
@@ -321,5 +417,66 @@ class ConstraintRevokeTest {
             )
             assertEquals(0.45, a.episodes.primeSpentU, 1e-9, "$phase: Prime aber schon")
         }
+    }
+
+    // ---- Die Kennung ist eine erzwungene Invariante (Toni 19.08.) ---------
+
+    /**
+     * EINE "STABILE IDENTITAET", DIE LEER, UNBEGRENZT LANG ODER DOPPELT SEIN
+     * DARF, IST KEINE.
+     *
+     * Besonders die Eindeutigkeit ist keine Kosmetik: [revokeSettled] sucht
+     * mit `indexOfFirst { it.proposalId == ... }`. Bei einer doppelten
+     * Kennung traefe es die erste - also moeglicherweise die falsche Zeile,
+     * und damit genau der Fehler, gegen den die Identitaet eingefuehrt wurde.
+     */
+    @Test
+    fun `eine unbrauchbare Buchungskennung macht die Generation ungueltig`() {
+        val faelle = listOf<Pair<String, (org.json.JSONArray) -> Unit>>(
+            "leer" to { arr -> arr.getJSONArray(0).put(2, "") },
+            "nur Leerzeichen" to { arr -> arr.getJSONArray(0).put(2, "   ") },
+            "zu lang" to { arr -> arr.getJSONArray(0).put(2, "x".repeat(65)) },
+            "doppelt" to { arr -> arr.getJSONArray(1).put(2, arr.getJSONArray(0).getString(2)) },
+        )
+        for ((name, brich) in faelle) {
+            val e = EpisodeBudgets()
+            e.mealDeliveries.addLast(EpisodeBudgets.MealDelivery(ts, 0.15, "s#1"))
+            e.mealDeliveries.addLast(EpisodeBudgets.MealDelivery(ts + 60_000L, 0.10, "s#2"))
+            val o = LedgerCodec.encodeEpisodes(e)
+            brich(o.getJSONArray("mealDeliveries"))
+            org.junit.jupiter.api.Assertions.assertThrows(
+                IllegalArgumentException::class.java,
+                { LedgerCodec.decodeEpisodes(org.json.JSONObject(o.toString())) },
+                "$name MUSS die Generation verwerfen",
+            )
+        }
+    }
+
+    /** Und die Gegenprobe: zwei verschiedene Kennungen sind der Normalfall. */
+    @Test
+    fun `zwei verschiedene Buchungskennungen sind gueltig`() {
+        val e = EpisodeBudgets()
+        e.mealDeliveries.addLast(EpisodeBudgets.MealDelivery(ts, 0.15, "s#1"))
+        e.mealDeliveries.addLast(EpisodeBudgets.MealDelivery(ts + 60_000L, 0.10, "s#2"))
+        val zurueck = LedgerCodec.decodeEpisodes(
+            org.json.JSONObject(LedgerCodec.encodeEpisodes(e).toString())
+        )
+        assertEquals(listOf("s#1", "s#2"), zurueck.mealDeliveries.map { it.proposalId })
+    }
+
+    /**
+     * MEHRERE EINTRAEGE OHNE KENNUNG bleiben zulaessig - `null` ist keine
+     * Identitaet, sondern ihr Fehlen. Altbestand aus Dateien vor dem 19.08.
+     * besteht genau daraus.
+     */
+    @Test
+    fun `mehrere Eintraege ohne Kennung sind zulaessig`() {
+        val e = EpisodeBudgets()
+        repeat(3) { e.mealDeliveries.addLast(EpisodeBudgets.MealDelivery(ts + it * 60_000L, 0.10)) }
+        val zurueck = LedgerCodec.decodeEpisodes(
+            org.json.JSONObject(LedgerCodec.encodeEpisodes(e).toString())
+        )
+        assertEquals(3, zurueck.mealDeliveries.size)
+        assertTrue(zurueck.mealDeliveries.all { it.proposalId == null })
     }
 }

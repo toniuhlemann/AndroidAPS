@@ -113,6 +113,15 @@ object LedgerCodec {
      *  plausibler Eigenzustand (Sammlung ist episodisch), sondern Befund. */
     private const val MAX_MEAL_DELIVERIES = 500
 
+    /**
+     * Laengengrenze der Buchungskennung in `mealDeliveries` (Toni 19.08.).
+     *
+     * Die Kennungen dieses Codes sind Zyklus-IDs der Form "s#<zahl>" - weit
+     * darunter. Die Grenze faengt Fremdinhalt ab, bevor er in eine Datei
+     * wandert, die pro Episode bis zu 500 Eintraege tragen darf.
+     */
+    private const val MAX_PROPOSAL_ID_LEN = 64
+
     // ---- Gesamtdatei ------------------------------------------------------
 
     data class Decoded(
@@ -602,7 +611,21 @@ object LedgerCodec {
             require(u.isFinite() && u > 0.0 && u <= MAX_MEAL_DELIVERY_U) { "mealDeliveries[$i].u out of range: $u" }
             // Der dritte Platz ist optional: Dateien vor dem 19.08. tragen ihn
             // nicht, und dann gibt es fuer diesen Eintrag keine Entlastung mehr.
+            //
+            // IST ER DA, IST ER EINE INVARIANTE (Toni 19.08.). Eine "stabile
+            // Identitaet", die leer, unbegrenzt lang oder doppelt sein darf,
+            // ist keine - und der Rueckdreher sucht mit `indexOfFirst`, also
+            // traefe er bei einer doppelten Kennung die falsche Zeile.
             val id = if (pair.length() > 2 && !pair.isNull(2)) pair.getString(2) else null
+            if (id != null) {
+                require(id.isNotBlank()) { "mealDeliveries[$i].proposalId leer" }
+                require(id.length <= MAX_PROPOSAL_ID_LEN) {
+                    "mealDeliveries[$i].proposalId zu lang: ${id.length}"
+                }
+                require(e.mealDeliveries.none { it.proposalId == id }) {
+                    "mealDeliveries[$i].proposalId doppelt: $id"
+                }
+            }
             e.mealDeliveries.addLast(EpisodeBudgets.MealDelivery(ts, u, id))
         }
         return e
