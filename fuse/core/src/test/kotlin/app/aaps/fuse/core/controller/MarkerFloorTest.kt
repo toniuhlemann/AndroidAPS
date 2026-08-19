@@ -1,6 +1,7 @@
 package app.aaps.fuse.core.controller
 
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
@@ -36,7 +37,7 @@ class MarkerFloorTest {
     fun `nach dem Veto bleibt genau der autorisierte Anteil`() {
         val d = MarkerFloor.apply(
             verified = entscheidung(0.0, FuseController.Block.CANDIDATE, "finalVerify:TAIL_VETO"),
-            authCapU = 0.05,
+            grant = AuthorizedLift.AuthorizedGrant.of(0.05, AuthorizedLift.Source.PRIME),
             kernelValid = true,
         )
         assertEquals(0.05, d.smbU, 1e-9, "weder 0 noch die verworfene Basis")
@@ -57,7 +58,7 @@ class MarkerFloorTest {
     fun `ohne gueltigen Einheitskern hebt der Boden nichts`() {
         val d = MarkerFloor.apply(
             verified = entscheidung(0.0, FuseController.Block.CANDIDATE, "MODEL_HORIZON_TOO_SHORT"),
-            authCapU = 0.05,
+            grant = AuthorizedLift.AuthorizedGrant.of(0.05, AuthorizedLift.Source.PRIME),
             kernelValid = false,
         )
         assertEquals(0.0, d.smbU, 1e-9)
@@ -65,11 +66,43 @@ class MarkerFloorTest {
     }
 
     /** OHNE Autorisierung bleibt die verworfene Entscheidung, wie sie ist. */
+    /**
+     * OHNE GRANT HEBT DER BODEN NICHTS.
+     *
+     * Bis zum 18.08. nahm `apply` einen nackten Betrag und prueft ihn selbst
+     * auf `<= 0`. Jetzt kommt ein [AuthorizedLift.AuthorizedGrant] herein,
+     * und `of` laesst ihn bei 0, negativ oder NaN gar nicht erst entstehen -
+     * der Fall ist damit im TYP ausgeschlossen statt in einer Abfrage.
+     */
     @Test
     fun `ohne Autorisierung hebt der Boden nichts`() {
-        for (cap in listOf(0.0, -1.0)) {
-            val v = entscheidung(0.0, FuseController.Block.CANDIDATE, "finalVerify:GUARD_FLOOR")
-            assertEquals(v, MarkerFloor.apply(v, cap, kernelValid = true), "cap=$cap")
+        for (betrag in listOf(0.0, -1.0, Double.NaN)) {
+            assertNull(
+                AuthorizedLift.AuthorizedGrant.of(betrag, AuthorizedLift.Source.PRIME),
+                "betrag=$betrag darf keinen Grant ergeben",
+            )
+        }
+        val v = entscheidung(0.0, FuseController.Block.CANDIDATE, "finalVerify:GUARD_FLOOR")
+        assertEquals(v, MarkerFloor.apply(v, null, kernelValid = true))
+    }
+
+    /**
+     * DIE QUELLE UEBERLEBT DIE WIEDERHERSTELLUNG (Toni 18.08.).
+     *
+     * Hier stand fest `capsStage = STAGE_PRIME`. Eine Phase-B-Menge kam nach
+     * dem `finalVerify` also als PRIME heraus - im Export waere nicht mehr
+     * auszumachen, welche Phase geliefert hat.
+     */
+    @Test
+    fun `der Boden erhaelt die Quelle des Grants`() {
+        val v = entscheidung(0.0, FuseController.Block.CANDIDATE, "finalVerify:GUARD_FLOOR")
+        for (quelle in AuthorizedLift.Source.entries) {
+            val d = MarkerFloor.apply(
+                v, AuthorizedLift.AuthorizedGrant.of(0.10, quelle), kernelValid = true,
+            )
+            assertEquals(0.10, d.smbU, 1e-9, "$quelle")
+            assertEquals(quelle, d.authorizedSource, "$quelle muss die Wiederherstellung ueberleben")
+            assertEquals(AuthorizedLift.stageOf(quelle), d.capsStage, "$quelle")
         }
     }
 
@@ -90,7 +123,7 @@ class MarkerFloorTest {
     @Test
     fun `eine groessere ueberlebende Menge wird nicht gesenkt aber gestempelt`() {
         val v = entscheidung(0.30, FuseController.Block.NONE, "smbRatio")
-        val d = MarkerFloor.apply(v, authCapU = 0.05, kernelValid = true)
+        val d = MarkerFloor.apply(v, grant = AuthorizedLift.AuthorizedGrant.of(0.05, AuthorizedLift.Source.PRIME), kernelValid = true)
 
         assertEquals(0.30, d.smbU, 1e-9, "die Dosis bleibt unangetastet")
         assertEquals("smbRatio", d.bindingLimit, "und der Grund auch - hier hat nichts ueberstimmt")
@@ -105,8 +138,8 @@ class MarkerFloorTest {
     @Test
     fun `eine groessere bestehende Grenze bleibt stehen`() {
         val v = entscheidung(0.30, FuseController.Block.NONE, "primeRelease")
-            .copy(markerAuthorizedU = 0.20)
-        assertEquals(v, MarkerFloor.apply(v, authCapU = 0.05, kernelValid = true))
+            .copy(grant = AuthorizedLift.AuthorizedGrant.of(0.20, AuthorizedLift.Source.PRIME))
+        assertEquals(v, MarkerFloor.apply(v, grant = AuthorizedLift.AuthorizedGrant.of(0.05, AuthorizedLift.Source.PRIME), kernelValid = true))
     }
 
     /** Gleichstand erzeugt keinen irrefuehrenden `markerAuth|`-Grund fuer eine
@@ -114,7 +147,7 @@ class MarkerFloorTest {
     @Test
     fun `bei Gleichstand bleibt der Grund unveraendert`() {
         val v = entscheidung(0.05, FuseController.Block.NONE, "primeRelease")
-        val d = MarkerFloor.apply(v, authCapU = 0.05, kernelValid = true)
+        val d = MarkerFloor.apply(v, grant = AuthorizedLift.AuthorizedGrant.of(0.05, AuthorizedLift.Source.PRIME), kernelValid = true)
         assertEquals(0.05, d.smbU, 1e-9)
         assertEquals("primeRelease", d.bindingLimit, "hier hat nichts ueberstimmt")
         assertEquals(0.05, d.markerAuthorizedU, 1e-9)

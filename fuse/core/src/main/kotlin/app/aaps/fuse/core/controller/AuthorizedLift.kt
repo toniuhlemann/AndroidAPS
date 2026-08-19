@@ -56,6 +56,48 @@ object AuthorizedLift {
         FOUNDATION,
     }
 
+    /**
+     * BETRAG UND QUELLE ALS EINE EINHEIT (Toni 18.08.).
+     *
+     * DER FEHLER, DEN DIESER TYP VERHINDERT. Vorher standen die beiden als
+     * getrennte Felder in der Entscheidung: `markerAuthorizedU` und
+     * `authorizedSource`. Der Lift setzte die Quelle AUCH dann, wenn der
+     * Betrag 0 war - es konnte also eine "Quelle FOUNDATION ohne autorisierte
+     * Menge" entstehen. Eine Herkunft ohne Menge ist keine Aussage, sondern
+     * ein Widerspruch, und ein Leser, der auf die Quelle prueft statt auf den
+     * Betrag, haette daraus eine Autorisierung gelesen, die es nicht gab.
+     *
+     * Zwei Felder, die nur gemeinsam Sinn ergeben, gehoeren in einen Typ.
+     * `null` heisst: KEINE Autorisierung - eindeutig, ohne zweite Lesart.
+     *
+     * Der Konstruktor ist privat: [of] ist die einzige Quelle, und sie gibt
+     * bei einem unbrauchbaren Betrag `null` zurueck statt eines halben
+     * Grants.
+     */
+    class AuthorizedGrant private constructor(
+        val amountU: Double,
+        val source: Source,
+    ) {
+
+        override fun equals(other: Any?): Boolean =
+            other is AuthorizedGrant && other.amountU == amountU && other.source == source
+
+        override fun hashCode(): Int = amountU.hashCode() * 31 + source.hashCode()
+
+        override fun toString(): String = "AuthorizedGrant($amountU, $source)"
+
+        companion object {
+
+            /**
+             * FAIL-CLOSED: nur ein endlicher, POSITIVER Betrag ergibt einen
+             * Grant. 0 oder NaN ergeben `null` - "keine Autorisierung", nicht
+             * "eine ueber nichts".
+             */
+            fun of(amountU: Double, source: Source): AuthorizedGrant? =
+                if (amountU.isFinite() && amountU > 0.0) AuthorizedGrant(amountU, source) else null
+        }
+    }
+
     /** Was im `bindingLimit` steht, wenn dieser Lift gebunden hat. */
     fun bindingLimitOf(source: Source): String = when (source) {
         Source.PRIME      -> "primeRelease"
@@ -99,6 +141,32 @@ object AuthorizedLift {
         transportCommitmentU: Double = 0.0,
         tickEps: Double,
     ): FuseController.Decision {
+        // ---- Eingaben pruefen, BEVOR gerechnet wird (Toni 18.08.) --------
+        //
+        // NICHT BERECHENBAR IST NICHT NULL - derselbe Vertrag wie in
+        // [MealFoundation.contribute]. Ein NaN im Restbudget oder in einer
+        // Kappe wuerde durch `min` durchschlagen und am Ende eine Menge
+        // ergeben, die auf einer Zahl beruht, die es nicht gibt. Ein
+        // negatives Restbudget kann kein Schreiber dieses Codes erzeugen -
+        // es waere Korruption.
+        //
+        // Jeder dieser Faelle gibt die Basisentscheidung UNVERAENDERT und
+        // OHNE Grant zurueck: der bestehende Pfad laeuft weiter wie ohne
+        // Lift.
+        if (!floorU.isFinite() || !remainingU.isFinite() || remainingU < 0.0) return base
+        if (tailHeadroomU != null && !tailHeadroomU.isFinite()) return base
+        if (extraCapU != null && !extraCapU.isFinite()) return base
+        if (!transportCommitmentU.isFinite() || transportCommitmentU < 0.0) return base
+        // capIobU ist die EINZIGE dieser Groessen, die der State-Konstruktor
+        // NICHT prueft. Die uebrigen wirft er selbst ab (isFinite und Bereich)
+        // - sie stehen hier als Verteidigung in der Tiefe, nicht weil dieser
+        // Zustand erreichbar waere.
+        if (!state.pumpIncrementU.isFinite() || state.pumpIncrementU <= 0.0) return base
+        if (!state.maxSmbU.isFinite() || !state.maxIobU.isFinite() ||
+            !state.iobThU.isFinite() || !state.capIobU.isFinite()
+        ) return base
+        if (!tickEps.isFinite() || tickEps < 0.0) return base
+
         // Kein Soll, kein Lift. Das ist keine Sicherheitspruefung, sondern
         // die Feststellung, dass es nichts zu heben gibt.
         if (floorU <= 0.0) return base
@@ -126,16 +194,18 @@ object AuthorizedLift {
         extraCapU?.let { caps = min(caps, it) }
 
         val stepped = floor(min(floorU, caps) / state.pumpIncrementU + tickEps) * state.pumpIncrementU
-        val authorizedU = if (authorized && stepped >= state.pumpIncrementU) stepped else 0.0
+        // Der Grant entsteht NUR bei einem tragfaehigen Betrag - `of` gibt
+        // sonst null. Damit kann keine Quelle ohne Menge existieren.
+        val grant =
+            if (authorized && stepped >= state.pumpIncrementU) AuthorizedGrant.of(stepped, source)
+            else null
 
         // KEIN GEWINN: entweder reicht es nicht fuer einen Pumpenschritt, oder
         // die Basis liegt ohnehin schon hoeher. Der zweite Fall ist die
         // Mindestversorgung in Reinform - das Fundament legt NICHTS drauf,
         // wenn der normale Pfad schon liefert.
         if (stepped < state.pumpIncrementU || stepped <= base.smbU)
-            return if (authorizedU > 0.0)
-                base.copy(markerAuthorizedU = authorizedU, authorizedSource = source)
-            else base
+            return if (grant != null) base.copy(grant = grant) else base
 
         return base.copy(
             smbU = stepped,
@@ -143,8 +213,7 @@ object AuthorizedLift {
             bindingLimit = bindingLimitOf(source),
             caps = emptyList(),
             capsStage = stageOf(source),
-            markerAuthorizedU = authorizedU,
-            authorizedSource = source,
+            grant = grant,
         )
     }
 }

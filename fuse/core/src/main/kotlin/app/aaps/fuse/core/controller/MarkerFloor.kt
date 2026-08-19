@@ -26,11 +26,17 @@ object MarkerFloor {
     /**
      * @param verified die Entscheidung NACH der Modellkette (Kandidatensuche,
      *   Guard-Riegel, Schwanz-Veto, Rest-Zaehler).
-     * @param authCapU der markerfinanzierte Anteil aus
-     *   [FuseController.Decision.markerAuthorizedU] der GEHOBENEN Entscheidung -
-     *   nicht deren `smbU`. Seit der Lift auch dann stempelt, wenn die Basis
-     *   schon groesser war, sind die beiden verschieden, und `smbU` wuerde in
-     *   genau dem Fall die vom Veto verworfene groessere Basis wiederherstellen.
+     * @param grant der autorisierte Anteil MIT SEINER QUELLE aus
+     *   [FuseController.Decision.grant] der GEHOBENEN Entscheidung - nicht
+     *   deren `smbU`. Seit der Lift auch dann stempelt, wenn die Basis schon
+     *   groesser war, sind die beiden verschieden, und `smbU` wuerde in genau
+     *   dem Fall die vom Veto verworfene groessere Basis wiederherstellen.
+     *
+     *   DIE QUELLE MUSS MIT (Toni 18.08.). Hier stand nur der Betrag, und der
+     *   Wiederherstellungszweig schrieb `capsStage = STAGE_PRIME` fest - eine
+     *   Phase-B-Menge kam nach dem `finalVerify` also als PRIME heraus. Im
+     *   Export waere nicht mehr auszumachen, welche Phase geliefert hat, und
+     *   genau dafuer wurde die typisierte Herkunft ueberhaupt eingefuehrt.
      * @param kernelValid ob ein Einheitskern gebaut werden konnte.
      *
      *   Ein verworfener Kern ist KEIN Guard-Urteil ueber die Zukunft, sondern
@@ -42,10 +48,14 @@ object MarkerFloor {
      */
     fun apply(
         verified: FuseController.Decision,
-        authCapU: Double,
+        grant: AuthorizedLift.AuthorizedGrant?,
         kernelValid: Boolean,
     ): FuseController.Decision {
-        if (!kernelValid || authCapU <= 0.0) return verified
+        // Kein Grant, kein Boden. `AuthorizedGrant.of` laesst einen Grant nur
+        // mit endlichem, positivem Betrag entstehen - eine inkonsistente
+        // Kombination aus Menge und Quelle kann hier gar nicht ankommen.
+        if (!kernelValid || grant == null) return verified
+        val authCapU = grant.amountU
 
         // DIE PROVENIENZ UEBERLEBT AUCH OHNE ANHEBUNG (Toni 11.08.).
         //
@@ -62,17 +72,20 @@ object MarkerFloor {
         // typisierte Herkunft ueberhaupt eingefuehrt wurde.
         if (verified.smbU >= authCapU)
             return if (verified.markerAuthorizedU >= authCapU) verified
-            else verified.copy(markerAuthorizedU = authCapU)
+            else verified.copy(grant = grant)
         return verified.copy(
             smbU = authCapU,
             block = FuseController.Block.NONE,
-            markerAuthorizedU = authCapU,
+            grant = grant,
             bindingLimit = "markerAuth|" + verified.bindingLimit,
             // Die Basiskappen haben diese Menge nicht bestimmt. Leere Liste mit
             // eigener Stufe sagt das - eine stehengebliebene Basisliste
             // behauptete das Gegenteil.
             caps = emptyList(),
-            capsStage = FuseController.STAGE_PRIME,
+            // DIE STUFE FOLGT DER QUELLE, nicht einer festen Konstante. Hier
+            // stand STAGE_PRIME, und damit kam eine wiederhergestellte
+            // Phase-B-Menge als Prime heraus.
+            capsStage = AuthorizedLift.stageOf(grant.source),
         )
     }
 }

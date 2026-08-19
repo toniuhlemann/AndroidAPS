@@ -84,6 +84,26 @@ object MealFoundation {
         /** Das festgeschriebene Fensterende. */
         val endTs: Long,
         /**
+         * OB DER MARKERDRUCK INSULIN AUTORISIERT HAT - beim Armen
+         * FESTGESCHRIEBEN (Toni 18.08.).
+         *
+         * WARUM NICHT DEN AKTUELLEN WERT LESEN. Das waere derselbe Fehler wie
+         * bei Budget und Anteil, nur folgenreicher: legte jemand den Schalter
+         * `MarkerAuthorisesRelease` waehrend einer laufenden Mahlzeit um,
+         * bekaeme oder verloere die Episode nachtraeglich das Recht,
+         * Modellriegel zu ueberstimmen. Eine Preference-Aenderung ist aber
+         * keine Autorisierung fuer eine Mahlzeit, die vor ihr begann.
+         *
+         * Konfigurierbar heisst auch hier: BEIM NAECHSTEN MARKERDRUCK
+         * waehlbar.
+         *
+         * DIE RUECKNAHME BLEIBT DAVON UNBERUEHRT. Sie ist ein ausdruecklicher
+         * Widerruf durch den Menschen und beendet die Autorisierung ganz -
+         * nicht ueber dieses Feld, sondern indem die Episode selbst endet.
+         * Gepinnt ist die EINSTELLUNG, nicht die Absicht.
+         */
+        val pinnedMarkerAuthorized: Boolean,
+        /**
          * DER ENDGUELTIG GELATCHTE UEBERGABEANKER. 0 heisst "noch nicht
          * uebergeben" - dann folgt der Anker weiter der Prime-Laufzeit.
          */
@@ -139,14 +159,14 @@ object MealFoundation {
             if (faellig <= 0L || nowTs < faellig) return this
             return Authorization(
                 armedTs, totalBudgetU, phaseAShare, pinnedPrimeWindowMin,
-                pinnedWallCeilingMin, endTs, faellig,
+                pinnedWallCeilingMin, endTs, pinnedMarkerAuthorized, faellig,
             )
         }
 
         companion object {
 
             /** Keine laufende Autorisierung - das Fundament ist nicht armiert. */
-            fun none() = Authorization(0L, 0.0, 0.0, 0, 0, 0L, 0L)
+            fun none() = Authorization(0L, 0.0, 0.0, 0, 0, 0L, false, 0L)
 
             /**
              * AUS DER PERSISTENZ WIEDERHERSTELLEN - mit Pruefung.
@@ -162,11 +182,12 @@ object MealFoundation {
                 pinnedPrimeWindowMin: Int,
                 pinnedWallCeilingMin: Int,
                 endTs: Long,
+                pinnedMarkerAuthorized: Boolean,
                 latchedHandoverTs: Long,
             ): Authorization {
                 val a = Authorization(
                     armedTs, totalBudgetU, phaseAShare, pinnedPrimeWindowMin,
-                    pinnedWallCeilingMin, endTs, latchedHandoverTs,
+                    pinnedWallCeilingMin, endTs, pinnedMarkerAuthorized, latchedHandoverTs,
                 )
                 return if (a.valid) a else none()
             }
@@ -178,9 +199,10 @@ object MealFoundation {
                 pinnedPrimeWindowMin: Int,
                 pinnedWallCeilingMin: Int,
                 endTs: Long,
+                pinnedMarkerAuthorized: Boolean,
             ) = Authorization(
                 armedTs, totalBudgetU, phaseAShare, pinnedPrimeWindowMin,
-                pinnedWallCeilingMin, endTs, 0L,
+                pinnedWallCeilingMin, endTs, pinnedMarkerAuthorized, 0L,
             )
         }
     }
@@ -205,6 +227,12 @@ object MealFoundation {
         primeWindowMin: Int,
         wallCeilingMin: Int,
         phaseBUntilMin: Int,
+        /**
+         * Ob der Markerdruck Insulin autorisiert (Einstellung
+         * `MarkerAuthorisesRelease`). Wird GEPINNT - eine spaetere Aenderung
+         * erreicht diese Mahlzeit nicht mehr.
+         */
+        markerAuthorized: Boolean = false,
     ): Authorization {
         if (!foundationEnabled || markerTs <= 0L) return Authorization.none()
         if (!totalBudgetU.isFinite() || totalBudgetU <= 0.0) return Authorization.none()
@@ -217,6 +245,7 @@ object MealFoundation {
             pinnedPrimeWindowMin = primeWindowMin,
             pinnedWallCeilingMin = wallCeilingMin,
             endTs = markerTs + phaseBUntilMin * 60_000L,
+            pinnedMarkerAuthorized = markerAuthorized,
         )
     }
 
@@ -656,7 +685,6 @@ object MealFoundation {
         base: FuseController.Decision,
         snapshot: Snapshot,
         state: FuseController.State,
-        authorized: Boolean,
         tailHeadroomU: Double? = null,
         transportCommitmentU: Double = 0.0,
         tickEps: Double = 1e-9,
@@ -669,7 +697,11 @@ object MealFoundation {
             floorU = snapshot.dueU,
             remainingU = snapshot.remainingInWindowU,
             state = state,
-            authorized = authorized,
+            // DIE GEPINNTE Autorisierung, NICHT der aktuelle Preference-Wert
+            // (Toni 18.08.): eine Aenderung waehrend der laufenden Mahlzeit
+            // darf ihr das Recht, Modellriegel zu ueberstimmen, weder geben
+            // noch nehmen.
+            authorized = snapshot.markerAuthorized,
             tailHeadroomU = tailHeadroomU,
             // KEINE Onset-Huelle - s. Blockkommentar.
             extraCapU = null,
@@ -700,6 +732,12 @@ object MealFoundation {
          *  Normalzustand, solange das Fundament nicht armiert wird. */
         val armed: Boolean,
         val armedTs: Long,
+        /**
+         * Die beim Armen gepinnte Marker-Autorisierung. Sie steht im
+         * Snapshot, damit der Lift sie NICHT aus einer aktuellen Preference
+         * lesen muss - s. [Authorization.pinnedMarkerAuthorized].
+         */
+        val markerAuthorized: Boolean,
         val totalBudgetU: Double,
         val phaseABudgetU: Double,
         val phaseBBudgetU: Double,
@@ -726,7 +764,8 @@ object MealFoundation {
 
             /** Kein Fundament - der Zustand ohne Autorisierung. */
             fun none() = Snapshot(
-                armed = false, armedTs = 0L, totalBudgetU = 0.0, phaseABudgetU = 0.0,
+                armed = false, armedTs = 0L, markerAuthorized = false,
+                totalBudgetU = 0.0, phaseABudgetU = 0.0,
                 phaseBBudgetU = 0.0, effectiveHandoverTs = 0L, latchedHandoverTs = 0L,
                 endTs = 0L, phase = Phase.NONE, deliveredSinceHandoverU = 0.0,
                 plannedTotalU = 0.0, backlogU = 0.0, dueU = 0.0, remainingInWindowU = 0.0,
@@ -758,6 +797,7 @@ object MealFoundation {
         return Snapshot(
             armed = true,
             armedTs = auth.armedTs,
+            markerAuthorized = auth.pinnedMarkerAuthorized,
             totalBudgetU = auth.totalBudgetU,
             phaseABudgetU = auth.phaseABudgetU,
             phaseBBudgetU = auth.phaseBBudgetU,

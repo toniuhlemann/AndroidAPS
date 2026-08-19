@@ -1,5 +1,6 @@
 package app.aaps.fuse.plugin
 
+import app.aaps.fuse.core.controller.AuthorizedLift
 import app.aaps.fuse.core.controller.FuseController
 import app.aaps.fuse.core.controller.TbrPolicy
 import org.junit.jupiter.api.Assertions.assertEquals
@@ -168,7 +169,7 @@ class FuseTbrTranslatorTest {
     fun `C7c unter Marker-Autorisierung endet die Null neben dem SMB`() {
         val r = FuseTbrTranslator.combine(
             decision(0.20, FuseController.TbrAction.KEEP_CURRENT)
-                .copy(markerAuthorizedU = 0.20),
+                .copy(grant = AuthorizedLift.AuthorizedGrant.of(0.20, AuthorizedLift.Source.PRIME)),
             running(0.0), scheduled, cfg,
         )
         assertEquals(FuseController.TbrRequest(0.0, 0), r.request, "der Abbruch muss ausgefuehrt werden")
@@ -219,7 +220,7 @@ class FuseTbrTranslatorTest {
     fun `C7c beruehrt den SAFETY_ZERO-Pfad nicht`() {
         val r = FuseTbrTranslator.combine(
             decision(0.20, FuseController.TbrAction.ZERO_TEMP)
-                .copy(markerAuthorizedU = 0.20),
+                .copy(grant = AuthorizedLift.AuthorizedGrant.of(0.20, AuthorizedLift.Source.PRIME)),
             running(0.0), scheduled, cfg,
         )
         assertNull(r.request, "die laufende Null bleibt - kein Abbruch, keine Erneuerung noetig")
@@ -242,7 +243,7 @@ class FuseTbrTranslatorTest {
 
     /** Wie [decision], aber mit ausdruecklich autorisiertem Anteil. */
     private fun autorisiert(smb: Double, authU: Double, tbr: FuseController.TbrAction) =
-        decision(smb, tbr).copy(markerAuthorizedU = authU)
+        decision(smb, tbr).copy(grant = AuthorizedLift.AuthorizedGrant.of(authU, AuthorizedLift.Source.PRIME))
 
     /**
      * FALL 2: Schutz-Null UND autorisierte Menge -> der autorisierte Anteil
@@ -335,7 +336,7 @@ class FuseTbrTranslatorTest {
         assertEquals(0.0, ausRueckfall.markerAuthorizedU, 1e-12, "der Rueckfall traegt keine Provenienz")
 
         val gestempelt = app.aaps.fuse.core.controller.MarkerFloor.apply(
-            verified = ausRueckfall, authCapU = 0.05, kernelValid = true,
+            verified = ausRueckfall, grant = AuthorizedLift.AuthorizedGrant.of(0.05, AuthorizedLift.Source.PRIME), kernelValid = true,
         )
         assertEquals(0.30, gestempelt.smbU, 1e-12, "die Dosis bleibt unangetastet")
 

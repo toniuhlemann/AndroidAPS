@@ -494,18 +494,8 @@ object FuseController {
          * 0 heisst: nichts an dieser Menge ist manuell autorisiert. Dann nullt
          * jeder Mengen-Block sie vollstaendig, wie bisher.
          */
-        val markerAuthorizedU: Double = 0.0,
-        /**
-         * WOHER die autorisierte Menge stammt - Prime oder Fundament
-         * (Toni 18.08.).
-         *
-         * `null` heisst: keine autorisierte Menge. Die HOEHE steht weiterhin
-         * in [markerAuthorizedU]; hier steht die Herkunft, und zwar
-         * typisiert. Ohne sie fuehrte der Export beide Phasen als
-         * "primeRelease", und im Replay waere nicht mehr unterscheidbar,
-         * welche geliefert hat - genau die Frage, um die es dort geht.
-         */
-        val authorizedSource: AuthorizedLift.Source? = null,
+        val grant: AuthorizedLift.AuthorizedGrant? = null,
+
         /**
          * BESCHREIBT DIESER ZYKLUS EINE UNSICHERE LAGE? (Toni 17.08.)
          *
@@ -552,6 +542,21 @@ object FuseController {
          */
         val basalFloorProtected: Boolean = false,
     ) {
+
+        /**
+         * Der autorisierte Betrag - ABGELEITET aus [grant], nicht
+         * zweitgefuehrt.
+         *
+         * Er stand hier bis zum 18.08. als eigenes Feld neben der Quelle. Als
+         * Getter kann er der Quelle nicht mehr widersprechen: es gibt keinen
+         * Zustand "Betrag ohne Herkunft" und keinen "Herkunft ohne Betrag".
+         *
+         * 0 heisst: nichts an dieser Menge ist autorisiert.
+         */
+        val markerAuthorizedU: Double get() = grant?.amountU ?: 0.0
+
+        /** Die Herkunft - `null`, wenn nichts autorisiert ist. */
+        val authorizedSource: AuthorizedLift.Source? get() = grant?.source
 
         /**
          * Hat die schnelle Bahn ueberhaupt gebremst?

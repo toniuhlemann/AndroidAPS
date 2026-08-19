@@ -59,10 +59,11 @@ class MealFoundationLiftTest {
         minuten: Double = 30.0,
         ausBudgetU: Double = 2.25,
         seitUebergabeU: Double = 0.0,
+        autorisiert: Boolean = true,
     ): MealFoundation.Snapshot {
         val auth = MealFoundation.arm(
             markerTs = t0, foundationEnabled = true, totalBudgetU = 3.0, phaseAShare = 0.75,
-            primeWindowMin = 15, wallCeilingMin = 45, phaseBUntilMin = 60,
+            primeWindowMin = 15, wallCeilingMin = 45, phaseBUntilMin = 60, markerAuthorized = autorisiert,
         )
         return MealFoundation.snapshot(
             auth, t0 + (minuten * 60_000).toLong(), 0L,
@@ -78,8 +79,7 @@ class MealFoundationLiftTest {
         snap: MealFoundation.Snapshot = snapshot(),
         st: FuseController.State = state(),
     ) = MealFoundation.lift(
-        base = basis(block, basisMenge), snapshot = snap, state = st,
-        authorized = true, tailHeadroomU = tailHeadroomU,
+        base = basis(block, basisMenge), snapshot = snap, state = st, tailHeadroomU = tailHeadroomU,
     )
 
     // ---- Pflichtfall 1 und 2: die Kante am Nullpunkt ----------------------
@@ -112,8 +112,8 @@ class MealFoundationLiftTest {
     @Test
     fun `ohne Autorisierung bindet die Schwanzkappe weiterhin`() {
         val d = MealFoundation.lift(
-            base = basis(FuseController.Block.NONE), snapshot = snapshot(), state = state(),
-            authorized = false, tailHeadroomU = 0.01,
+            base = basis(FuseController.Block.NONE),
+            snapshot = snapshot(autorisiert = false), state = state(), tailHeadroomU = 0.01,
         )
         assertEquals(0.0, d.smbU, 1e-9, "0,01 U liegt unter einem Pumpenschritt")
     }
@@ -206,7 +206,7 @@ class MealFoundationLiftTest {
     fun `die Transporthaftung bindet den autorisierten Anteil`() {
         val d = MealFoundation.lift(
             base = basis(FuseController.Block.GUARD_FLOOR), snapshot = snapshot(),
-            state = state(iobTh = 1.0), authorized = true, transportCommitmentU = 0.6,
+            state = state(iobTh = 1.0), transportCommitmentU = 0.6,
         )
         assertEquals(0.0, d.smbU, 1e-9, "offene Transportmenge zaehlt gegen die Grenze")
     }
@@ -253,7 +253,7 @@ class MealFoundationLiftTest {
         )) {
             val d = MealFoundation.lift(
                 base = basis(FuseController.Block.GUARD_FLOOR),
-                snapshot = echt.copy(phase = phase), state = state(), authorized = true,
+                snapshot = echt.copy(phase = phase), state = state(),
             )
             assertEquals(0.0, d.smbU, 1e-9, "$phase darf trotz dueU=${echt.dueU} nicht heben")
         }
@@ -261,7 +261,7 @@ class MealFoundationLiftTest {
         // Und dasselbe fuer eine nicht armierte Autorisierung.
         val d = MealFoundation.lift(
             base = basis(FuseController.Block.GUARD_FLOOR),
-            snapshot = echt.copy(armed = false), state = state(), authorized = true,
+            snapshot = echt.copy(armed = false), state = state(),
         )
         assertEquals(0.0, d.smbU, 1e-9, "ohne Armierung kein Lift, egal was dueU sagt")
     }
@@ -269,9 +269,123 @@ class MealFoundationLiftTest {
     @Test
     fun `ohne Autorisierung hebt der Lift den Guard-Boden nicht`() {
         val d = MealFoundation.lift(
-            base = basis(FuseController.Block.GUARD_FLOOR), snapshot = snapshot(),
-            state = state(), authorized = false,
+            base = basis(FuseController.Block.GUARD_FLOOR),
+            snapshot = snapshot(autorisiert = false), state = state(),
         )
         assertEquals(0.0, d.smbU, 1e-9)
+    }
+
+    // ---- Die drei Vertragsluecken (Toni 18.08.) ---------------------------
+
+    /**
+     * KEINE QUELLE OHNE MENGE.
+     *
+     * Der Lift setzte die Herkunft frueher AUCH bei Betrag 0 - es konnte also
+     * "Quelle FOUNDATION ohne autorisierte Menge" entstehen. Eine Herkunft
+     * ohne Menge ist keine Aussage, sondern ein Widerspruch, und ein Leser,
+     * der auf die Quelle statt auf den Betrag prueft, haette daraus eine
+     * Autorisierung gelesen, die es nicht gab.
+     */
+    @Test
+    fun `es entsteht nie eine Quelle ohne Menge`() {
+        // Ein Soll unter dem Pumpenschritt ergibt keinen Grant.
+        val winzig = snapshot(minuten = 15.1)
+        val d = lift(FuseController.Block.GUARD_FLOOR, snap = winzig)
+        if (d.markerAuthorizedU <= 0.0) assertNull(
+            d.authorizedSource, "Betrag 0 darf keine Herkunft tragen",
+        )
+        // Und der Typ selbst laesst es gar nicht zu.
+        for (betrag in listOf(0.0, -0.1, Double.NaN, Double.POSITIVE_INFINITY)) assertNull(
+            AuthorizedLift.AuthorizedGrant.of(betrag, AuthorizedLift.Source.FOUNDATION),
+            "betrag=$betrag",
+        )
+    }
+
+    /**
+     * DIE QUELLE UEBERLEBT DEN AUTHORIZED-FLOOR.
+     *
+     * `MarkerFloor` kannte nur den Betrag und schrieb `capsStage =
+     * STAGE_PRIME` fest - eine Phase-B-Menge kam nach dem `finalVerify` also
+     * als PRIME heraus.
+     */
+    @Test
+    fun `nach dem Floor bleibt die Quelle FOUNDATION`() {
+        val gehoben = lift(FuseController.Block.GUARD_FLOOR)
+        assertEquals(AuthorizedLift.Source.FOUNDATION, gehoben.authorizedSource)
+
+        // Das Veto hat die Menge verworfen - der Floor stellt sie her.
+        val verworfen = basis(FuseController.Block.CANDIDATE).copy(
+            bindingLimit = "finalVerify:GUARD_FLOOR",
+        )
+        val wieder = MarkerFloor.apply(verworfen, gehoben.grant, kernelValid = true)
+        assertEquals(gehoben.markerAuthorizedU, wieder.smbU, 1e-9)
+        assertEquals(
+            AuthorizedLift.Source.FOUNDATION, wieder.authorizedSource,
+            "die Herkunft MUSS die Wiederherstellung ueberleben",
+        )
+        assertEquals(FuseController.STAGE_FOUNDATION, wieder.capsStage, "nicht STAGE_PRIME")
+    }
+
+    /**
+     * DIE AUTORISIERUNG IST GEPINNT.
+     *
+     * Der Lift liest sie aus dem Snapshot, nicht aus einer aktuellen
+     * Preference. Eine Aenderung waehrend der laufenden Mahlzeit darf ihr das
+     * Recht, Modellriegel zu ueberstimmen, weder geben noch nehmen.
+     */
+    @Test
+    fun `die Autorisierung kommt aus der gepinnten Momentaufnahme`() {
+        assertTrue(lift(FuseController.Block.GUARD_FLOOR).smbU > 0.0, "gepinnt AN")
+        assertEquals(
+            0.0,
+            lift(FuseController.Block.GUARD_FLOOR, snap = snapshot(autorisiert = false)).smbU, 1e-9,
+            "gepinnt AUS - und keine Preference der Welt aendert das nachtraeglich",
+        )
+    }
+
+    /**
+     * UNBRAUCHBARE ZAHLEN GEBEN DIE BASIS UNVERAENDERT ZURUECK.
+     *
+     * NaN in einer Kappe wuerde durch `min` durchschlagen und am Ende eine
+     * Menge ergeben, die auf einer Zahl beruht, die es nicht gibt. Ein
+     * negatives Restbudget kann kein Schreiber dieses Codes erzeugen.
+     */
+    @Test
+    fun `unbrauchbare Zahlen lassen die Basis unveraendert`() {
+        val basis = basis(FuseController.Block.NONE, smbU = 0.10)
+        val snap = snapshot()
+        val faelle = listOf<Pair<String, () -> FuseController.Decision>>(
+            "tailHeadroom NaN" to {
+                MealFoundation.lift(basis, snap, state(), tailHeadroomU = Double.NaN)
+            },
+            "Transport NaN" to {
+                MealFoundation.lift(basis, snap, state(), transportCommitmentU = Double.NaN)
+            },
+            "Transport negativ" to {
+                MealFoundation.lift(basis, snap, state(), transportCommitmentU = -1.0)
+            },
+            "Restbudget NaN" to {
+                MealFoundation.lift(basis, snap.copy(remainingInWindowU = Double.NaN), state())
+            },
+            "Restbudget negativ" to {
+                MealFoundation.lift(basis, snap.copy(remainingInWindowU = -0.5), state())
+            },
+            "Soll NaN" to {
+                MealFoundation.lift(basis, snap.copy(dueU = Double.NaN), state())
+            },
+        )
+        // KEIN State-Fall in dieser Liste, und das ist ein Befund: der
+        // State-Konstruktor prueft pumpIncrementU, maxSmbU, iobThU und maxIobU
+        // selbst auf isFinite und Bereich, netIobU/bolusIobU ueber ihre
+        // Betragsgrenzen (abs(NaN) <= 100 ist false), und capIobU ist daraus
+        // abgeleitet. Ein unbrauchbarer State laesst sich gar nicht bauen.
+        // Die Pruefungen dafuer stehen im Lift als Verteidigung in der Tiefe -
+        // sie sind nicht erreichbar, und ein Test, der das behauptet, waere
+        // eine Attrappe.
+        for ((name, f) in faelle) {
+            val d = f()
+            assertEquals(basis.smbU, d.smbU, 1e-9, "$name: die Basis MUSS unveraendert bleiben")
+            assertNull(d.grant, "$name: und es darf kein Grant entstehen")
+        }
     }
 }

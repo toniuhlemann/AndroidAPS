@@ -492,6 +492,10 @@ object LedgerCodec {
             .put("pinnedWallCeilingMin", a.pinnedWallCeilingMin)
             .put("endTs", a.endTs)
             .put("latchedHandoverTs", a.latchedHandoverTs)
+            // Die beim Armen gepinnte Marker-Autorisierung. Sie MUSS mit:
+            // ohne sie laese ein Neustart den aktuellen Preference-Wert, und
+            // genau das soll das Pinning verhindern.
+            .put("pinnedMarkerAuthorized", a.pinnedMarkerAuthorized)
             .put("deliveredSinceHandoverU", e.deliveredSinceHandoverU)
     }
 
@@ -620,6 +624,7 @@ object LedgerCodec {
             pinnedWallCeilingMin = o.getInt("pinnedWallCeilingMin"),
             endTs = requireTs("foundation.endTs", o.getLong("endTs")),
             latchedHandoverTs = requireTs("foundation.latchedHandoverTs", o.getLong("latchedHandoverTs")),
+            pinnedMarkerAuthorized = o.getBoolean("pinnedMarkerAuthorized"),
         )
         val bezahlt = requireAmount("foundation.deliveredSinceHandoverU", o.getDouble("deliveredSinceHandoverU"))
         // KEIN stilles none(): s. den Blockkommentar. Die Felder waren alle da

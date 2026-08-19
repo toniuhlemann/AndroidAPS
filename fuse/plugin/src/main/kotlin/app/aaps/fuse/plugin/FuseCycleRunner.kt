@@ -1955,7 +1955,7 @@ class FuseCycleRunner(
         // fehlt die BAHN aus zwei Reichweiten-Gruenden, nicht das Modell.
         val autorisiert = MarkerFloor.apply(
             verified = verifiedLift,
-            authCapU = lifted.markerAuthorizedU,
+            grant = lifted.grant,
             kernelValid = kernelFinal != null,
         )
 

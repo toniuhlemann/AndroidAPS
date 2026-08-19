@@ -685,7 +685,7 @@ class MealFoundationTest {
     fun `liegt die Uebergabe hinter dem Ende, gibt es kein Phase B`() {
         val kurz = MealFoundation.arm(
             markerTs = t0, foundationEnabled = true, totalBudgetU = BUDGET, phaseAShare = A_SHARE,
-            primeWindowMin = A_BIS, wallCeilingMin = 45, phaseBUntilMin = 20,
+            primeWindowMin = A_BIS, wallCeilingMin = 45, phaseBUntilMin = 20, markerAuthorized = true,
         )
         // Clearance bei T+30 schiebt die Uebergabe auf T+45 (Decke), das
         // Fenster endet aber schon bei T+20.
@@ -711,7 +711,7 @@ class MealFoundationTest {
         ende: Int = B_BIS,
     ) = MealFoundation.arm(
         markerTs = t0, foundationEnabled = an, totalBudgetU = budget, phaseAShare = anteil,
-        primeWindowMin = A_BIS, wallCeilingMin = 45, phaseBUntilMin = ende,
+        primeWindowMin = A_BIS, wallCeilingMin = 45, phaseBUntilMin = ende, markerAuthorized = true,
     )
 
     @Test
@@ -897,13 +897,13 @@ class MealFoundationTest {
     @Test
     fun `eine widerspruechliche Generation wird beim Restore abgelehnt`() {
         val faelle = mapOf(
-            "kein Marker" to MealFoundation.Authorization.restore(0L, BUDGET, A_SHARE, A_BIS, 45, t0 + 3_600_000L, 0L),
-            "Budget NaN" to MealFoundation.Authorization.restore(t0, Double.NaN, A_SHARE, A_BIS, 45, t0 + 3_600_000L, 0L),
-            "Budget 0" to MealFoundation.Authorization.restore(t0, 0.0, A_SHARE, A_BIS, 45, t0 + 3_600_000L, 0L),
-            "Anteil ueber 1" to MealFoundation.Authorization.restore(t0, BUDGET, 1.5, A_BIS, 45, t0 + 3_600_000L, 0L),
-            "Ende vor Marker" to MealFoundation.Authorization.restore(t0, BUDGET, A_SHARE, A_BIS, 45, t0 - 1000L, 0L),
-            "Latch vor Marker" to MealFoundation.Authorization.restore(t0, BUDGET, A_SHARE, A_BIS, 45, t0 + 3_600_000L, t0 - 1000L),
-            "negatives Fenster" to MealFoundation.Authorization.restore(t0, BUDGET, A_SHARE, -1, 45, t0 + 3_600_000L, 0L),
+            "kein Marker" to MealFoundation.Authorization.restore(0L, BUDGET, A_SHARE, A_BIS, 45, t0 + 3_600_000L, true, 0L),
+            "Budget NaN" to MealFoundation.Authorization.restore(t0, Double.NaN, A_SHARE, A_BIS, 45, t0 + 3_600_000L, true, 0L),
+            "Budget 0" to MealFoundation.Authorization.restore(t0, 0.0, A_SHARE, A_BIS, 45, t0 + 3_600_000L, true, 0L),
+            "Anteil ueber 1" to MealFoundation.Authorization.restore(t0, BUDGET, 1.5, A_BIS, 45, t0 + 3_600_000L, true, 0L),
+            "Ende vor Marker" to MealFoundation.Authorization.restore(t0, BUDGET, A_SHARE, A_BIS, 45, t0 - 1000L, true, 0L),
+            "Latch vor Marker" to MealFoundation.Authorization.restore(t0, BUDGET, A_SHARE, A_BIS, 45, t0 + 3_600_000L, true, t0 - 1000L),
+            "negatives Fenster" to MealFoundation.Authorization.restore(t0, BUDGET, A_SHARE, -1, 45, t0 + 3_600_000L, true, 0L),
         )
         for ((name, a) in faelle) {
             assertFalse(a.valid, name)
@@ -921,11 +921,16 @@ class MealFoundationTest {
     @Test
     fun `eine stimmige Generation ueberlebt den Restore`() {
         val a = MealFoundation.Authorization.restore(
-            t0, BUDGET, A_SHARE, A_BIS, 45, t0 + B_BIS * 60_000L, t0 + 20 * 60_000L,
+            t0, BUDGET, A_SHARE, A_BIS, 45, t0 + B_BIS * 60_000L, true, t0 + 20 * 60_000L,
         )
         assertTrue(a.valid)
         assertEquals(2.25, a.phaseABudgetU, 1e-9)
         assertEquals(t0 + 20 * 60_000L, a.latchedHandoverTs)
+        assertTrue(
+            a.pinnedMarkerAuthorized,
+            "die gepinnte Marker-Autorisierung MUSS den Restore ueberleben - sonst " +
+                "laese der Lift nach einem Neustart wieder die aktuelle Preference",
+        )
         assertEquals(
             t0 + 20 * 60_000L, a.effectiveHandoverTs(t0 + 40 * 60_000L),
             "der gelatchte Anker gilt weiter, egal was Prime inzwischen meldet",

@@ -37,7 +37,7 @@ class MealFoundationLedgerTest {
         anteil: Double = A_SHARE,
     ) = MealFoundation.arm(
         markerTs = t0, foundationEnabled = true, totalBudgetU = budget, phaseAShare = anteil,
-        primeWindowMin = A_BIS, wallCeilingMin = 45, phaseBUntilMin = B_BIS,
+        primeWindowMin = A_BIS, wallCeilingMin = 45, phaseBUntilMin = B_BIS, markerAuthorized = true,
     )
 
     private fun adapter(
