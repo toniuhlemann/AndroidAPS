@@ -1118,6 +1118,26 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
                 // Buchung der neuen Menge.
                 notSentClaim?.let { (id, grund) ->
                     if (ledgerAdapter.hasOpenProposal(id)) ledgerAdapter.onProvenNotSent(id, grund)
+                    // UND DIE EPISODENZAEHLER MIT (Toni 19.08., P0).
+                    //
+                    // Die Ledger-Zeile allein reicht nicht: primeSpentU,
+                    // mealDeliveries, evidenceCommittedU, onsetSpentU und
+                    // deliveredSinceHandoverU stehen daneben und zaehlten
+                    // bisher die PUBLIZIERTE Menge - also die vor dem
+                    // AAPS-Intervalltor. Am 19.08. hiess das: 3,00 U in der
+                    // Buchfuehrung, 2,70 U in der Pumpendatenbank. FUSE hielt
+                    // die Huelle fuer geliefert, meldete WINDOW_OVER und holte
+                    // die fehlenden 0,30 U nie nach.
+                    //
+                    // Bewusst NEBEN onProvenNotSent und mit demselben Beweis:
+                    // zwei Buecher ueber denselben Vorgang muessen gemeinsam
+                    // korrigiert werden, sonst driften sie genau hier
+                    // auseinander.
+                    val zurueck = ledgerAdapter.revokeSettled(id)
+                    if (zurueck > 0.0) aapsLogger.debug(
+                        LTag.APS,
+                        "FUSE: Episodenzaehler um $zurueck U zurueckgedreht ($grund, $id)",
+                    )
                 }
                 notSentClaim = null
                 outcome?.let { o ->
@@ -1219,7 +1239,12 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
         // Zeile entfernt, steht dort null, und die Reservierung wird freigegeben.
         // Wird dieser Punkt nie erreicht (Ausnahme davor, Prozessende), bleibt
         // die Belastung stehen - der gewollte UNKNOWN-Ausgang.
-        outcome?.let { o -> ledgerAdapter.resolveReservation(o.computeTs, publishRt.units ?: 0.0) }
+        // Die cycleId geht MIT: nur ueber sie kann ein Nicht-Sende-Beweis im
+        // Folgezyklus genau diese Buchung wiederfinden (s.
+        // EpisodeBudgets.Settled).
+        outcome?.let { o ->
+            ledgerAdapter.resolveReservation(o.computeTs, publishRt.units ?: 0.0, proposalId = cycleId)
+        }
 
 
         // Fuer die Messung im NAECHSTEN Zyklus merken: die RT-Instanz selbst,

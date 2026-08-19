@@ -227,6 +227,44 @@ class EpisodeBudgets {
      */
     var pendingReservation: Reservation? = null
 
+    /**
+     * DIE ABGESCHLOSSENE BUCHUNG DES VORIGEN ZYKLUS (Toni 19.08., P0).
+     *
+     * DER BEFUND, DER DAZU GEFUEHRT HAT. Am 19.08. forderte FUSE 20 x 0,15 U
+     * an, die Pumpendatenbank zeigte 2,70 U: AAPS hatte zwei Schritte am
+     * Intervalltor verworfen ("SMB requested but still in 1 min interval"),
+     * weil eine verspaetet fertig gewordene Medtrum-Abgabe den Abstand unter
+     * 45 s drueckte. Die Episodenzaehler standen trotzdem auf 3,00 U - FUSE
+     * hielt die Huelle fuer geliefert und den Evidenzbestand fuer bezahlt.
+     *
+     * [pendingReservation] konnte das nicht auffangen: sie wird aufgeloest,
+     * sobald die PUBLIKATION feststeht - und das ist VOR dem AAPS-Constraint.
+     * Der wird erst im NAECHSTEN Zyklus sichtbar, ueber `priorActuation` und
+     * [app.aaps.fuse.core.ledger.NotSentProof].
+     *
+     * Diese Ablage haelt die Buchung deshalb einen Zyklus laenger vor -
+     * gerade lang genug, um sie bei einem BEWIESENEN Nicht-Senden exakt
+     * zurueckzudrehen. Sie wird bei jedem Aufloesen ueberschrieben; mehr als
+     * einen Zyklus braucht es nicht, weil `priorActuation` genau den vorigen
+     * beschreibt.
+     *
+     * NICHT PERSISTENT, aus demselben Grund wie [pendingReservation]: geht sie
+     * beim Neustart verloren, bleibt die Belastung stehen - der konservative
+     * Ausgang. Eine verlorene ENTLASTUNG kostet Genauigkeit, eine verlorene
+     * BELASTUNG kostet Sicherheit.
+     */
+    var settled: Settled? = null
+
+    /** @param proposalId die Zeile, ueber die der Nicht-Sende-Beweis kommt. */
+    class Settled(
+        val proposalId: String,
+        val amountU: Double,
+        val prime: Boolean,
+        val onset: Boolean,
+        val mealTs: Long,
+        val foundationPhase: app.aaps.fuse.core.controller.MealFoundation.Phase,
+    )
+
     /** @param mealTs 0 = nicht in [mealDeliveries] gebucht. */
     class Reservation(
         /** Identitaet ueber `computeTs` - die `cycleId` entsteht erst im
@@ -1204,12 +1242,23 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
      * Wird sie NICHT gerufen (Absturz, Ausnahme, fremder Pfad), bleibt die
      * Belastung stehen. Das ist der gewollte Ausgang fuer UNKNOWN.
      */
-    fun resolveReservation(computeTs: Long, publishedU: Double) {
+    fun resolveReservation(computeTs: Long, publishedU: Double, proposalId: String? = null) {
         val r = episodes.pendingReservation ?: return
         // Fremder Zyklus: nicht anfassen. Ohne diese Pruefung koennte ein
         // spaeter Aufruf die Reservierung eines ANDEREN Zyklus freigeben.
         if (r.computeTs != computeTs) return
         episodes.pendingReservation = null
+
+        // WAS STEHEN BLEIBT, kann im Folgezyklus noch widerlegt werden -
+        // s. [EpisodeBudgets.Settled]. Ohne proposalId gibt es keine
+        // Zuordnung und damit auch keine spaetere Entlastung; das ist der
+        // konservative Ausgang, nicht ein Mangel.
+        val bleibt = (if (publishedU.isFinite()) publishedU else r.amountU).coerceIn(0.0, r.amountU)
+        episodes.settled =
+            if (proposalId != null && bleibt > 0.0) EpisodeBudgets.Settled(
+                proposalId = proposalId, amountU = bleibt, prime = r.prime,
+                onset = r.onset, mealTs = r.mealTs, foundationPhase = r.foundationPhase,
+            ) else null
 
         val frei = (r.amountU - (if (publishedU.isFinite()) publishedU else r.amountU)).coerceAtLeast(0.0)
         if (frei <= 0.0) return
@@ -1247,6 +1296,45 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
                 else episodes.mealDeliveries.removeAt(idx)
             }
         }
+    }
+
+    /**
+     * DIE ABGESCHLOSSENE BUCHUNG ZURUECKDREHEN - nur mit BEWEIS.
+     *
+     * Gerufen wird das ausschliesslich aus dem Nicht-Sende-Beleg
+     * ([app.aaps.fuse.core.ledger.NotSentProof]), und der ist absichtlich
+     * streng: er liefert `null`, sobald irgendetwas ungewiss ist. Ein unklarer
+     * Pumpenausgang bleibt damit als GELIEFERT gebucht - die Fehlrichtung
+     * "zu viel gebucht" laesst FUSE spaeter zu wenig nachliefern, die
+     * umgekehrte liesse es zu viel geben.
+     *
+     * @return die zurueckgedrehte Menge, 0 wenn nichts zuzuordnen war.
+     */
+    fun revokeSettled(proposalId: String): Double {
+        val s = episodes.settled ?: return 0.0
+        // Fremde Zeile: nicht anfassen.
+        if (s.proposalId != proposalId) return 0.0
+        episodes.settled = null
+        val menge = s.amountU
+        if (!menge.isFinite() || menge <= 0.0) return 0.0
+
+        // EXAKT DIESELBEN ZAEHLER wie beim Reject einer Reservierung - der
+        // Vorgang ist derselbe, nur eine Stufe spaeter bewiesen.
+        if (s.prime) episodes.primeSpentU = (episodes.primeSpentU - menge).coerceAtLeast(0.0)
+        if (s.onset) episodes.onsetSpentU = (episodes.onsetSpentU - menge).coerceAtLeast(0.0)
+        episodes.evidenceCommittedU = (episodes.evidenceCommittedU - menge).coerceAtLeast(0.0)
+        if (s.foundationPhase == app.aaps.fuse.core.controller.MealFoundation.Phase.PHASE_B)
+            episodes.deliveredSinceHandoverU =
+                (episodes.deliveredSinceHandoverU - menge).coerceAtLeast(0.0)
+        if (s.mealTs > 0L) {
+            val idx = episodes.mealDeliveries.indexOfLast { it.first == s.mealTs }
+            if (idx >= 0) {
+                val rest = episodes.mealDeliveries[idx].second - menge
+                if (rest > 1e-9) episodes.mealDeliveries[idx] = s.mealTs to rest
+                else episodes.mealDeliveries.removeAt(idx)
+            }
+        }
+        return menge
     }
 
     fun onPublished(
