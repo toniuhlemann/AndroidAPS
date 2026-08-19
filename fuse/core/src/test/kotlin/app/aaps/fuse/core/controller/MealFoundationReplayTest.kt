@@ -463,4 +463,140 @@ class MealFoundationReplayTest {
         z.appendLine()
         println(z)
     }
+
+    // ==== DER AUFTEILUNGS-VERGLEICH (Replay, Toni/Codex 19.08.) ============
+    //
+    // EIN-VARIABLEN-DISZIPLIN: Gesamtbudget und Fenster bleiben ueber alle
+    // vier Laeufe KONSTANT, variiert wird ausschliesslich der Phase-A-Anteil.
+    // Genau das prueft `der Vergleich variiert nur die Aufteilung` nach -
+    // sonst waere jeder Unterschied zwischen den Spuren nicht zuzuordnen.
+    //
+    // WAS DIESER VERGLEICH BEANTWORTEN KANN, und nur das: WANN welche Menge
+    // gefordert und gebucht wird. Die Mahlzeitenformen sind eingefroren, die
+    // Regelentscheidungen ebenso.
+    //
+    // WAS ER AUSDRUECKLICH NICHT KANN - drei der Groessen aus Codex' Liste:
+    //
+    //   GUARD-/TAIL-BINDUNGEN entstehen im Regler, und der ist hier nicht
+    //   simuliert (s. Klassenkopf). Was hier `binding` heisst, ist
+    //   ausschliesslich die FUNDAMENT-Bindung aus `plan()`.
+    //
+    //   DIE MODELLIERTE IOB-SPITZE braucht ein Insulinmodell. Der Kern hat
+    //   eines (`UnitInsulinKernel`), es wird aber aus dem AAPS-Insulinplugin
+    //   gebaut und ist in diesem Modul nicht verfuegbar. Eine eigene Kurve
+    //   hier waere eine zweite Wahrheit.
+    //
+    //   DER EFFEKTIVE UEBERTRAG entsteht im Ledger aus einem Nicht-Sende-
+    //   BEWEIS. Ihn in diesem Rig nachzubilden hiesse, die Buchhaltung ein
+    //   zweites Mal zu schreiben - genau der Fehler, wegen dem der erste E2E
+    //   zurueckgezogen wurde. Er gehoert in den Runner-Pfad.
+    //
+    // Diese drei brauchen den Runner-Replay. Hier steht, was ohne ihn
+    // ehrlich messbar ist.
+
+    /** Die Vergleichsgroessen EINER Spur. */
+    private class Kennzahlen(
+        val anteil: Double,
+        val mahlzeit: String,
+        /** Kumulativ gebucht bei T+15/30/45/60. */
+        val bei: Map<Int, Double>,
+        /** Laengste zusammenhaengende Strecke ohne jede Buchung [min]. */
+        val leerlaufMin: Int,
+        val maxRueckstandU: Double,
+        val restRueckstandU: Double,
+        val fundamentU: Double,
+        val letzteBindung: MealFoundation.Binding?,
+    )
+
+    private fun kennzahlen(anteil: Double, m: Mahlzeit): Kennzahlen {
+        val spur = fahre(anteil, m)
+        // `stand` ist der KUMULATIVE Buchungsstand je Minute. Eine Minute
+        // ohne Zuwachs ist eine Leerlaufminute.
+        var leerlauf = 0
+        var maxLeerlauf = 0
+        for (i in 1 until spur.stand.size) {
+            if (spur.stand[i] - spur.stand[i - 1] <= 1e-9) {
+                leerlauf++
+                if (leerlauf > maxLeerlauf) maxLeerlauf = leerlauf
+            } else leerlauf = 0
+        }
+        val bei = listOf(15, 30, 45, 60).associateWith { spur.stand.getOrElse(it) { spur.stand.last() } }
+        // Der Rueckstand AM FENSTERENDE - was nie geflossen ist.
+        val ende = MealFoundation.arm(
+            markerTs = t0, foundationEnabled = true, totalBudgetU = BUDGET, phaseAShare = anteil,
+            primeWindowMin = A_BIS, wallCeilingMin = 45, phaseBUntilMin = B_BIS,
+            markerAuthorized = true, pressObservedInThisProcess = true, primeDeclinedByUser = false,
+        )
+        val rest = max(0.0, ende.phaseBBudgetU - spur.fundamentU)
+        return Kennzahlen(
+            anteil, m.name, bei, maxLeerlauf, spur.maxRueckstandU, rest,
+            spur.fundamentU, spur.letzteBindung,
+        )
+    }
+
+    /**
+     * DIE EIN-VARIABLEN-PROBE. Ohne sie waere der ganze Vergleich wertlos:
+     * jeder Unterschied koennte aus einem anderen Budget oder Fenster
+     * stammen statt aus der Aufteilung.
+     */
+    @Test
+    fun `der Vergleich variiert nur die Aufteilung`() {
+        val autorisierungen = varianten.map { anteil ->
+            MealFoundation.arm(
+                markerTs = t0, foundationEnabled = true, totalBudgetU = BUDGET, phaseAShare = anteil,
+                primeWindowMin = A_BIS, wallCeilingMin = 45, phaseBUntilMin = B_BIS,
+                markerAuthorized = true, pressObservedInThisProcess = true, primeDeclinedByUser = false,
+            )
+        }
+        for (a in autorisierungen) {
+            assertEquals(BUDGET, a.totalBudgetU, 1e-9, "das Gesamtbudget MUSS konstant bleiben")
+            assertEquals(t0 + B_BIS * 60_000L, a.endTs, "und das Fenster auch")
+            assertEquals(A_BIS, a.pinnedPrimeWindowMin, "und die Uebergabe")
+        }
+        // UND DIE TEILBUDGETS MUESSEN SICH WIRKLICH UNTERSCHEIDEN - sonst
+        // vergliche der Lauf vier Mal dasselbe.
+        val teilbudgets = autorisierungen.map { it.phaseBBudgetU }
+        assertEquals(
+            teilbudgets.size, teilbudgets.distinct().size,
+            "vier verschiedene Aufteilungen MUESSEN vier verschiedene Teilbudgets ergeben",
+        )
+    }
+
+    /**
+     * DIE VERGLEICHSTAFEL - sie wird ausgegeben, nicht behauptet.
+     *
+     * Der Test sichert nur die Zusicherungen, die aus der Bauform folgen; die
+     * Auswertung selbst ist eine MESSUNG und gehoert in den Bericht, nicht in
+     * eine Zusicherung. Eine Zahl hier festzuschreiben hiesse, eine
+     * Replay-Hypothese zur Regel zu machen, bevor sie jemand gelesen hat.
+     */
+    @Test
+    fun `Aufteilungs-Vergleich ueber die eingefrorenen Mahlzeiten`() {
+        println("SPLIT anteil;mahlzeit;T15;T30;T45;T60;leerlaufMin;maxRueckstandU;restRueckstandU;fundamentU;bindung")
+        for (m in mahlzeiten) {
+            for (anteil in varianten) {
+                val k = kennzahlen(anteil, m)
+                println(
+                    "SPLIT %.2f;%s;%.3f;%.3f;%.3f;%.3f;%d;%.3f;%.3f;%.3f;%s".format(
+                        k.anteil, k.mahlzeit,
+                        k.bei[15], k.bei[30], k.bei[45], k.bei[60],
+                        k.leerlaufMin, k.maxRueckstandU, k.restRueckstandU, k.fundamentU,
+                        k.letzteBindung?.name ?: "-",
+                    )
+                )
+            }
+        }
+
+        // DIE EINZIGE ZUSICHERUNG, die aus der Bauform folgt und nicht aus
+        // der Hypothese: 100/0 ist der heutige Stand - dort darf das
+        // Fundament nichts beitragen. Bliebe hier etwas uebrig, waere das
+        // Einschalten des Schalters allein schon eine Verhaltensaenderung.
+        for (m in mahlzeiten) {
+            assertEquals(
+                0.0, kennzahlen(1.00, m).fundamentU, 1e-9,
+                "${m.name}: bei 100/0 MUSS das Fundament schweigen",
+            )
+        }
+    }
+
 }

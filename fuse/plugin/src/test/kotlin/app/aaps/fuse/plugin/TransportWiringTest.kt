@@ -3264,7 +3264,6 @@ class TransportWiringTest : TestBaseWithProfile() {
     // Persist, und ist deshalb durabel, sobald das Gate gesiegelt hat. Was
     // NACH dem Persist stirbt, verliert die Aufloesung der Reservierung - und
     // das ist der gewollte UNKNOWN-Ausgang: die Belastung bleibt stehen.
-    //       -> verifizierter Persist (im Gate)
     //
     // DIE EINE TESTGRENZE, ausdruecklich benannt: `priorActuation` liest
     // produktiv `loop.lastRun` aus AAPS. Diese beiden Beobachtungswerte -
