@@ -55,7 +55,9 @@ object FuseStateJson {
     // v12 (19.08.): das Rebound-Sonderrecht der Evidenz bekommt eine
     // markerbezogene Frist (EvidenceReboundOverrideMaxMin). Ein Lauf davor
     // und danach dosiert im spaeten Rebound verschieden - eigene Version.
-    const val RULE_SET_VERSION = 12
+    // v13 (20.08.): gemessenes Abwaertsrisiko schliesst einen restartfesten
+    // SMB-Riegel; erst drei gesunde Zyklen mit UKF >= +0,20 oeffnen wieder.
+    const val RULE_SET_VERSION = 13
 
     /** Schema des Trail-Datensatzes - s. die Notiz an der Schreibstelle. */
     const val SCHEMA_VERSION = 4
@@ -302,6 +304,13 @@ object FuseStateJson {
             .put("descentFallRatePerMin", fin(outcome.descentFallRatePerMin))
             .put("descentOvercoverageMgdl", fin(outcome.descentOvercoverageMgdl))
             .put("descentMinutesToFloor", fin(outcome.descentMinutesToFloor))
+            // DIE DOSIERWIRKSAME HYSTERESE hinter dem Rohsignal. Ein
+            // `descentRiskActive=false` bedeutet nicht automatisch frei:
+            // der Riegel kann noch auf die bestaetigte Wende warten.
+            .put("descentLatchActive", outcome.descentLatchActive)
+            .putOpt("descentLatchReason", outcome.descentLatchReason)
+            .put("descentRecoveryCycles", outcome.descentRecoveryCycles)
+            .put("descentLatchedAtTs", outcome.descentLatchedAtTs)
             .put(
                 "reboundOverrideRestMin",
                 outcome.reboundOverrideDeadlineTs

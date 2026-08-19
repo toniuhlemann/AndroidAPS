@@ -171,6 +171,21 @@ class EpisodeBudgets {
     var markerReboundOverridePinnedFor: Long = 0L
 
     /**
+     * DER RESTARTFESTE ENDRIEGEL NACH GEMESSENEM ABWAERTSRISIKO.
+     *
+     * Persistiert wird nur, DASS und SEIT WANN er geschlossen ist. Der
+     * Erholungszaehler darunter ist absichtlich prozesslokal: nach einem
+     * Neustart darf eine vor dem Abriss halb beobachtete Wende nicht als
+     * lueckenlos weiterzaehlen. Der Riegel bleibt dagegen stehen.
+     */
+    var descentRecoveryLatch: app.aaps.fuse.core.controller.DescentRecoveryLatch.State =
+        app.aaps.fuse.core.controller.DescentRecoveryLatch.State()
+
+    /** Nicht persistent; s. [descentRecoveryLatch]. */
+    var descentRecoveryRuntime: app.aaps.fuse.core.controller.DescentRecoveryLatch.Runtime =
+        app.aaps.fuse.core.controller.DescentRecoveryLatch.Runtime()
+
+    /**
      * Der ZUSATZKREDIT dieser Episode ist ausdruecklich zurueckgenommen.
      *
      * Er ist NICHT dasselbe wie "keine Episode": Anker, kumulative Bezahlung

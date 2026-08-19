@@ -1,6 +1,7 @@
 package app.aaps.fuse.plugin.ledger
 
 import app.aaps.fuse.core.controller.InterventionStamp
+import app.aaps.fuse.core.controller.DescentRecoveryLatch
 import app.aaps.fuse.core.ledger.AccountedTreatment
 import app.aaps.fuse.core.ledger.AmountStage
 import app.aaps.fuse.core.ledger.DeliveryState
@@ -48,6 +49,65 @@ class LedgerCodecTest {
 
     private fun roundTrip(s: LedgerState): LedgerState =
         LedgerCodec.decodeState(JSONObject(LedgerCodec.encodeState(s).toString()))
+
+    @Test
+    fun `der Abwaertsriegel ueberlebt den Codec aber nicht seine halbe Erholungsserie`() {
+        val ep = EpisodeBudgets().apply {
+            descentRecoveryLatch = DescentRecoveryLatch.State(active = true, latchedAtTs = t0)
+            descentRecoveryRuntime = DescentRecoveryLatch.Runtime(
+                consecutiveRecoveryCycles = 2,
+                lastSourceTs = t0 + 120_000L,
+            )
+        }
+
+        val decoded = LedgerCodec.decode(
+            JSONObject(LedgerCodec.encode(LedgerState(), ep, 0L, InterventionStamp("test-epoche", 42L)).toString()),
+        ).episodes
+
+        assertEquals(DescentRecoveryLatch.State(true, t0), decoded.descentRecoveryLatch)
+        assertEquals(
+            DescentRecoveryLatch.Runtime(), decoded.descentRecoveryRuntime,
+            "eine unbeobachtete Prozessluecke darf zwei alte Erholungszyklen nicht fortsetzen",
+        )
+    }
+
+    @Test
+    fun `Altdatei ohne Abwaertsriegel liest sich konservativ als noch nie geschlossen`() {
+        val json = LedgerCodec.encode(LedgerState(), EpisodeBudgets(), 0L, InterventionStamp("test-epoche", 42L))
+        json.getJSONObject("episodes").remove("descentRecoveryLatch")
+
+        assertEquals(
+            DescentRecoveryLatch.State(),
+            LedgerCodec.decode(JSONObject(json.toString())).episodes.descentRecoveryLatch,
+        )
+    }
+
+    @Test
+    fun `vorhandener aber unvollstaendiger oder widerspruechlicher Abwaertsriegel wirft`() {
+        fun generation() = LedgerCodec.encode(
+            LedgerState(), EpisodeBudgets(), 0L, InterventionStamp("test-epoche", 42L),
+        )
+
+        val ohneZeit = generation()
+        ohneZeit.getJSONObject("episodes").getJSONObject("descentRecoveryLatch").remove("latchedAtTs")
+        assertThrows(Exception::class.java) {
+            LedgerCodec.decode(JSONObject(ohneZeit.toString()))
+        }
+
+        val aktivOhneAnker = generation()
+        aktivOhneAnker.getJSONObject("episodes").getJSONObject("descentRecoveryLatch")
+            .put("active", true).put("latchedAtTs", 0L)
+        assertThrows(Exception::class.java) {
+            LedgerCodec.decode(JSONObject(aktivOhneAnker.toString()))
+        }
+
+        val offenMitAnker = generation()
+        offenMitAnker.getJSONObject("episodes").getJSONObject("descentRecoveryLatch")
+            .put("active", false).put("latchedAtTs", t0)
+        assertThrows(Exception::class.java) {
+            LedgerCodec.decode(JSONObject(offenMitAnker.toString()))
+        }
+    }
 
     @Test
     fun `leerer Zustand`() {

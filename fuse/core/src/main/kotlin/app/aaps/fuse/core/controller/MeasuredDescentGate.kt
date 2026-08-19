@@ -45,9 +45,9 @@ object MeasuredDescentGate {
      */
     fun apply(
         decision: FuseController.Decision,
-        risk: LowThreatGate.DescentRisk,
+        blocksPositive: Boolean,
     ): FuseController.Decision =
-        if (!risk.active || decision.smbU <= 0.0) decision
+        if (!blocksPositive || decision.smbU <= 0.0) decision
         else decision.copy(
             smbU = 0.0,
             block = FuseController.Block.MEASURED_DESCENT_RISK,

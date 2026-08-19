@@ -40,6 +40,7 @@ import app.aaps.fuse.core.predictor.PredictorReason
 import app.aaps.fuse.core.predictor.PredictorOutcome
 import app.aaps.fuse.core.predictor.TrajectoryCore
 import app.aaps.fuse.core.controller.EvidenceStock
+import app.aaps.fuse.core.controller.DescentRecoveryLatch
 import app.aaps.fuse.core.controller.MealFoundation
 import app.aaps.fuse.core.controller.OnsetChannel
 import org.junit.jupiter.api.Assertions.assertEquals
@@ -4758,6 +4759,63 @@ class TransportWiringTest : TestBaseWithProfile() {
         }
         assertEquals(0, riegel, "bei steigendem Zucker darf der Riegel NIE greifen")
         assertTrue(summe > 0.0, "und die Mahlzeit wird weiterhin versorgt: $summe U")
+    }
+
+    /**
+     * DIE WIEDERFREIGABE DURCH DEN ECHTEN RUNNER. Ein einzelner steigender
+     * Wert darf einen zuvor geschlossenen Riegel nicht oeffnen. Erst der
+     * dritte lueckenlose Zyklus mit UKF >= +0,20 darf wieder positives
+     * Insulin passieren lassen.
+     *
+     * Der Zustand wird hier absichtlich als vorgefunden gesetzt: damit
+     * prueft der Test genau die Kante nach Prozessneustart. Der Codec-Test
+     * daneben belegt, dass dieser Zustand auch wirklich so von Platte kommt
+     * und der halbe Runtime-Zaehler nicht mitkommt.
+     */
+    @Test
+    fun `ein vorgefundener Abwaertsriegel oeffnet erst nach drei bestaetigten Wendezyklen`(@TempDir dir: File) {
+        fundamentAn = true
+        fundamentAnteil = 0.80
+        markerAuthorized = true
+        primeHuelleU = 3.0
+        flach = 150.0
+        steigungProMin = 2.2
+        knickAbMin = null
+        bolusIobU = null
+        clock = start
+        transportReset()
+        val l = FuseLedgerAdapter().also { it.loadOnce(dir.also(File::mkdirs), "test-epoch", start) }
+        l.episodes.descentRecoveryLatch = DescentRecoveryLatch.State(true, start - 60_000L)
+        neuerRunner(l)
+        markerAt = start + 2 * 60_000L
+
+        var bestaetigungen = 0
+        var blockiertMitBedarf = 0
+        var freigabeGesehen = false
+        var positiveNachFreigabe = 0.0
+        repeat(40) {
+            val o = cycle()
+            when (o.descentLatchReason) {
+                DescentRecoveryLatch.Reason.WAITING_CONFIRMATION.name -> {
+                    bestaetigungen++
+                    assertTrue(o.descentLatchActive, "waehrend der Bestaetigung bleibt der Riegel aktiv")
+                    if (o.decision.block == FuseController.Block.MEASURED_DESCENT_RISK) {
+                        assertEquals(0.0, o.decision.smbU, 1e-9)
+                        blockiertMitBedarf++
+                    }
+                }
+                DescentRecoveryLatch.Reason.RECOVERED.name -> {
+                    assertFalse(o.descentLatchActive, "der dritte Zyklus oeffnet")
+                    freigabeGesehen = true
+                }
+            }
+            if (freigabeGesehen) positiveNachFreigabe += o.decision.smbU
+        }
+
+        assertEquals(2, bestaetigungen, "vor der Freigabe muessen genau zwei Zyklen warten")
+        assertTrue(blockiertMitBedarf > 0, "der Test muss einen echten positiven Kandidaten blockieren")
+        assertTrue(freigabeGesehen, "die bestaetigte Wende muss den Riegel wieder oeffnen")
+        assertTrue(positiveNachFreigabe > 0.0, "nach der Wende muss die Mahlzeit wieder versorgt werden")
     }
 
 

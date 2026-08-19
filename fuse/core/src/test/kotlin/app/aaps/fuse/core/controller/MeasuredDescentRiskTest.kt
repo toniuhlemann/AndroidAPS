@@ -192,7 +192,7 @@ class MeasuredDescentRiskTest {
         val risk = risiko(bg = 140.0, rate = -2.0, bolus = 4.0)
         assertTrue(risk.active, "die Vorbedingung muss den Riegel oeffnen")
 
-        val nachher = MeasuredDescentGate.apply(vorher, risk)
+        val nachher = MeasuredDescentGate.apply(vorher, blocksPositive = risk.active)
 
         assertEquals(0.0, nachher.smbU, 1e-12)
         assertEquals(FuseController.Block.MEASURED_DESCENT_RISK, nachher.block)

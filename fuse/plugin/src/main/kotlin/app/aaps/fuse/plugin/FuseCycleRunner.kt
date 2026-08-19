@@ -52,6 +52,7 @@ import app.aaps.fuse.core.controller.EvidenceStock
 import app.aaps.fuse.core.controller.MarkerFallback
 import app.aaps.fuse.core.controller.MealFoundation
 import app.aaps.fuse.core.controller.MarkerFloor
+import app.aaps.fuse.core.controller.DescentRecoveryLatch
 import app.aaps.fuse.core.controller.MeasuredDescentGate
 import app.aaps.fuse.core.controller.OnsetChannel
 import app.aaps.fuse.core.controller.PrimeRelease
@@ -600,6 +601,13 @@ class FuseCycleRunner(
         val descentFallRatePerMin: Double? = null,
         val descentOvercoverageMgdl: Double? = null,
         val descentMinutesToFloor: Double? = null,
+        /** RESTARTFESTE HYSTERESE hinter dem Rohsignal. `active` ist die
+         *  dosierwirksame Wahrheit; Rohsignal und Grund bleiben daneben
+         *  sichtbar, damit ein Replay Schliessen und Wiederfreigabe trennt. */
+        val descentLatchActive: Boolean = false,
+        val descentLatchReason: String? = null,
+        val descentRecoveryCycles: Int = 0,
+        val descentLatchedAtTs: Long = 0L,
         /** KUMULATIV in dieser Episode publiziertes Insulin [U] - die
          *  Bezahlseite des Stoerungsbestands. Laeuft bis EXPIRED weiter,
          *  auch waehrend DORMANT und waehrend eines Widerrufs. */
@@ -852,6 +860,13 @@ class FuseCycleRunner(
                 evidenceStockMgdl = evidenz?.state?.stockMgdl,
                 evidenceReason = evidenz?.noInflow?.name,
                 evidenceCreditMgdlPerMin = evidenz?.creditMgdlPerMin,
+                // Der Abbruch fuehrt keinen Erholungszyklus aus, darf einen
+                // bereits geschlossenen Riegel im Trail aber nicht als offen
+                // darstellen. Zustand unveraendert, Runtime nur angezeigt.
+                descentLatchActive = episodes.descentRecoveryLatch.active,
+                descentLatchReason = if (episodes.descentRecoveryLatch.active) "ABORT_UNCHANGED" else null,
+                descentRecoveryCycles = episodes.descentRecoveryRuntime.consecutiveRecoveryCycles,
+                descentLatchedAtTs = episodes.descentRecoveryLatch.latchedAtTs,
             )
         }
 
@@ -1484,6 +1499,23 @@ class FuseCycleRunner(
         // mehr als Bedingung der Autorisierung.
         val measuredLow = step.safetyReasons == setOf(SafetyReason.LOW)
 
+        // DER RESTARTFESTE WIEDERFREIGABE-RIEGEL. Das Rohsignal darf sofort
+        // schliessen. Oeffnen darf erst eine lueckenlos bestaetigte Wende:
+        // drei gesunde, nicht-tiefe Zyklen mit UKF >= +0,20 mg/dl/min.
+        // Nur der Latch-Zustand wird persistiert; eine halbe Erholungsserie
+        // beginnt nach Prozessabriss bewusst von vorn.
+        val descentLatch = DescentRecoveryLatch.advance(
+            state = episodes.descentRecoveryLatch,
+            runtime = episodes.descentRecoveryRuntime,
+            riskActive = descentRisk.active,
+            signalHealthy = step.health == Health.READY,
+            measuredLow = step.safetyReasons.isNotEmpty(),
+            fallRatePerMin = signal.ukfRatePerMin,
+            sourceTs = signal.sourceTs,
+        )
+        episodes.descentRecoveryLatch = descentLatch.state
+        episodes.descentRecoveryRuntime = descentLatch.runtime
+
         // ---- STUFE 3: DER EVIDENZBESTAND RECHNET, ABER ZAHLT NOCH NICHT ----
         //
         // Der Kern laeuft ab hier in jedem Zyklus mit. Sein Kredit ist
@@ -1611,7 +1643,7 @@ class FuseCycleRunner(
                 return abort("$warum | noFallback=${kernelReject ?: "KERNEL_UNAVAILABLE"}", signal, cfg, step, evidenz = evidenz)
             return markerFallbackCycle(
                 rejected, warum, signal, step, cfg, state, profile, pumpe, tempBasalFallback,
-                computeTs, markerTs, mealMarkerActive, measuredLow, descentRisk, evidenceEpisodeId,
+                computeTs, markerTs, mealMarkerActive, measuredLow, descentRisk, descentLatch, evidenceEpisodeId,
                 episodeGate.denial?.name, episodeGate.creditRevoked, evidenz,
                 isf, target, targetSource, iobTotal,
                 maxIobU, transportModelledU, ledgerView, episodes, onset, band,
@@ -2307,7 +2339,7 @@ class FuseCycleRunner(
         // ausschliesslich Ergebnis der Nutzenpruefung - "Basal zurueckhalten
         // hilft nicht mehr" und "mehr Bolus ist sicher" sind zwei
         // verschiedene Aussagen, und ihre Vermischung war der Befund.
-        val decision = MeasuredDescentGate.apply(vorRiegel, descentRisk)
+        val decision = MeasuredDescentGate.apply(vorRiegel, descentLatch.blocksPositive)
         // Die Clearance-Verschiebung stand hier und ist nach oben gewandert -
         // vor den Entscheidungssnapshot des Fundaments (s. dort).
 
@@ -2432,6 +2464,10 @@ class FuseCycleRunner(
             descentFallRatePerMin = descentRisk.fallRatePerMin,
             descentOvercoverageMgdl = descentRisk.overcoverageMgdl,
             descentMinutesToFloor = descentRisk.minutesToFloor,
+            descentLatchActive = descentLatch.state.active,
+            descentLatchReason = descentLatch.reason.name,
+            descentRecoveryCycles = descentLatch.runtime.consecutiveRecoveryCycles,
+            descentLatchedAtTs = descentLatch.state.latchedAtTs,
             preFoundationSmbU = preFoundationSmbU,
             preFoundationBlock = preFoundationBlock,
             preFoundationBindingLimit = preFoundationBindingLimit,
@@ -2687,6 +2723,9 @@ class FuseCycleRunner(
          * beide Pfade lesen es.
          */
         descentRisk: LowThreatGate.DescentRisk,
+        /** Dasselbe Hysterese-Ergebnis wie im Hauptpfad; nie hier neu
+         *  berechnen, sonst koennen Haupt- und Fallbackpfad anders oeffnen. */
+        descentLatch: DescentRecoveryLatch.Result,
         /** Identitaet der Mahlzeitenepisode fuer den Evidenz-Zaehler; 0 = keine. */
         evidenceEpisodeId: Long,
         /** Warum keine eroeffnet wurde - s. [Outcome.evidenceEpisodeDenial]. */
@@ -2817,7 +2856,7 @@ class FuseCycleRunner(
         // zur Menge und war beim Mahlzeitenfundament schon einmal die
         // Stelle, an der eine Messung fehlte - ein Riegel, den nur der
         // Hauptpfad kennt, ist kein Riegel.
-        val heldMitRiegel = MeasuredDescentGate.apply(held, descentRisk)
+        val heldMitRiegel = MeasuredDescentGate.apply(held, descentLatch.blocksPositive)
 
         val runningTbr = processedTbrEbData.getTempBasalIncludingConvertedExtended(computeTs)
         val combined = FuseTbrTranslator.combine(
@@ -2890,6 +2929,15 @@ class FuseCycleRunner(
             evidenceStockMgdl = evidenz?.state?.stockMgdl,
             evidenceReason = evidenz?.noInflow?.name,
             evidenceCreditMgdlPerMin = evidenz?.creditMgdlPerMin,
+            descentRiskActive = descentRisk.active,
+            descentRiskDenial = descentRisk.denial,
+            descentFallRatePerMin = descentRisk.fallRatePerMin,
+            descentOvercoverageMgdl = descentRisk.overcoverageMgdl,
+            descentMinutesToFloor = descentRisk.minutesToFloor,
+            descentLatchActive = descentLatch.state.active,
+            descentLatchReason = descentLatch.reason.name,
+            descentRecoveryCycles = descentLatch.runtime.consecutiveRecoveryCycles,
+            descentLatchedAtTs = descentLatch.state.latchedAtTs,
             alarm = combined.alarm,
             bgMgdl = signal.q1,
             targetMgdl = target,

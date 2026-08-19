@@ -464,6 +464,17 @@ object LedgerCodec {
         // die konservative Richtung.
         .put("markerReboundOverrideDeadlineTs", e.markerReboundOverrideDeadlineTs)
         .put("markerReboundOverridePinnedFor", e.markerReboundOverridePinnedFor)
+        // Eigenes Unterobjekt: ist es vorhanden, sind beide Felder Pflicht.
+        // Es bleibt additiv ohne Schema-Bump, damit ein Rollback die v4-Datei
+        // weiter lesen kann; eine Altdatei ohne Objekt bedeutet "vor dem
+        // ersten Einsatz nicht gelatcht". Nach einem Neustart wird nur der
+        // persistierte Riegel, nie eine halbe Erholungsserie, wiedergefunden.
+        .put(
+            "descentRecoveryLatch",
+            JSONObject()
+                .put("active", e.descentRecoveryLatch.active)
+                .put("latchedAtTs", e.descentRecoveryLatch.latchedAtTs),
+        )
         // DREI Elemente statt zwei: [ts, menge, proposalId] (Toni 19.08.).
         // Die Kennung MUSS mit - ohne sie findet ein Nicht-Sende-Beweis nach
         // einem Neustart den Eintrag nicht mehr und laesst eine nie geflossene
@@ -637,6 +648,14 @@ object LedgerCodec {
             require(pin > 0L) { "rebound override deadline without pinned marker" }
             require(frist > pin) { "rebound override deadline $frist not after marker $pin" }
             require(frist - pin <= maxMs) { "rebound override ttl ${frist - pin} exceeds $maxMs" }
+        }
+        if (o.has("descentRecoveryLatch")) {
+            val latch = o.getJSONObject("descentRecoveryLatch")
+            e.descentRecoveryLatch =
+                app.aaps.fuse.core.controller.DescentRecoveryLatch.State.restore(
+                    active = latch.getBoolean("active"),
+                    latchedAtTs = requireTs("descentRecoveryLatch.latchedAtTs", latch.getLong("latchedAtTs")),
+                ) ?: error("invalid descent recovery latch")
         }
         // KEINE MIGRATION, die ein Fundament ERFINDET: fehlt das Objekt, gibt
         // es keine laufende Autorisierung. Eine Altdatei mitten in einer

@@ -438,15 +438,36 @@ class FuseStateExportTest {
      */
     @Test
     fun `die Regelstandsversion traegt jede dosierwirksame Aenderung`() {
-        // v11 Mahlzeitenfundament, v12 die Frist des Rebound-Sonderrechts.
+        // v11 Mahlzeitenfundament, v12 die Frist des Rebound-Sonderrechts,
+        // v13 der restartfeste Wiederfreigabe-Riegel nach gemessenem Fallen.
         // DIESER TEST IST ABSICHTLICH STUR: er faellt bei jedem Bump um und
         // zwingt damit zu der Frage, ob die Aenderung wirklich dosierwirksam
         // war - ein stiller Bump waere so wertlos wie ein vergessener.
-        assertEquals(12, FuseStateJson.RULE_SET_VERSION)
+        assertEquals(13, FuseStateJson.RULE_SET_VERSION)
         assertTrue(
             FuseStateJson.hashOf(cfg)!!.isNotEmpty(),
             "und der Hash bleibt berechenbar",
         )
+    }
+
+    @Test
+    fun `Rohgefahr und dosierwirksamer Abwaertsriegel bleiben im Trail getrennt`() {
+        val j = record(
+            outcome().copy(
+                descentRiskActive = false,
+                descentRiskDenial = "NOT_FALLING",
+                descentLatchActive = true,
+                descentLatchReason = "WAITING_CONFIRMATION",
+                descentRecoveryCycles = 2,
+                descentLatchedAtTs = 1_700_000_000_000L,
+            ),
+        )
+
+        assertFalse(j.getBoolean("descentRiskActive"), "das Rohsignal ist bereits frei")
+        assertTrue(j.getBoolean("descentLatchActive"), "der wirksame Riegel bleibt noch zu")
+        assertEquals("WAITING_CONFIRMATION", j.getString("descentLatchReason"))
+        assertEquals(2, j.getInt("descentRecoveryCycles"))
+        assertEquals(1_700_000_000_000L, j.getLong("descentLatchedAtTs"))
     }
 
     /**
