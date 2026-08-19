@@ -117,6 +117,7 @@ class FoundationEndToEndTest {
                 e.foundation, now, 0L,
                 deliveredFromBudgetU = e.evidenceCommittedU,
                 deliveredSinceHandoverU = e.deliveredSinceHandoverU,
+                confirmedNotSentPhaseAU = e.confirmedNotSentPhaseAU,
                 bolusStepU = STEP,
             )
 

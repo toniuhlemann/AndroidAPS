@@ -213,6 +213,17 @@ object FuseStateJson {
                     .put("endTs", f.endTs)
                     .put("phase", f.phase.name)
                     .put("deliveredSinceHandoverU", fin(f.deliveredSinceHandoverU))
+                    // DIE BELEGTE PHASE-A-LUECKE UND DIE DARAUS FOLGENDE
+                    // ERLAUBNIS - beide einzeln, nicht nur ihre Summe.
+                    //
+                    // Ohne den Uebertrag waere im Replay ein Lauf, in dem
+                    // Phase B ihr eigenes Teilbudget lieferte, nicht von einem
+                    // zu unterscheiden, in dem sie eine am Intervalltor
+                    // verlorene Prime-Menge nachholte. Gleiche Summe, voellig
+                    // verschiedene Bedeutung - und genau die Frage, die dieser
+                    // Umbau beantworten soll.
+                    .put("confirmedNotSentPhaseAU", fin(f.confirmedNotSentPhaseAU))
+                    .put("phaseBAllowanceU", fin(f.phaseBAllowanceU))
                     // Soll, Rueckstand und dueU sind DREI Groessen, nicht eine
                     // in drei Formen: dueU ist gerastert und gedeckelt, der
                     // Rueckstand zeigt die tatsaechliche Lage (negativ =

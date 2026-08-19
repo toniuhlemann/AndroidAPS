@@ -202,6 +202,39 @@ class EpisodeBudgets {
     var deliveredSinceHandoverU: Double = 0.0
 
     /**
+     * DIE BEWIESENE PHASE-A-LUECKE dieser Autorisierung [U] (Toni 19.08.).
+     *
+     * WAS SIE IST: die Summe der Mengen, die in PHASE A gebucht waren, fuer
+     * die ein Nicht-Sende-BEWEIS vorliegt und die deshalb aus allen Buechern
+     * zurueckgedreht wurden. Phase B darf genau diesen Betrag zusaetzlich
+     * liefern - s. [app.aaps.fuse.core.controller.MealFoundation.plan].
+     *
+     * WAS SIE NICHT IST, und das ist die ganze Grenze:
+     *
+     *   kein UNGENUTZTES Budget. Hat Prime seine Huelle nicht abgerufen
+     *   (`NO_DEMAND`, Guard, kein Bedarf), war das eine ENTSCHEIDUNG - sie
+     *   nachzuholen hiesse, jede Zurueckhaltung spaeter zu kassieren.
+     *
+     *   kein UNKLARER Ausgang. Ohne Beweis bleibt die Menge als geliefert
+     *   gebucht, und dann entsteht hier nichts. Die Fehlerrichtung bleibt
+     *   damit dieselbe wie ueberall im Ledger: lieber zu wenig nachliefern
+     *   als zu viel.
+     *
+     * SIE WAECHST NUR IN [revokeSettled], und zwar in DERSELBEN
+     * Zustandsaenderung, die die fuenf Buecher zurueckdreht. Der Grund ist
+     * eine Konsistenzbedingung, keine Bequemlichkeit: eine Erhoehung ohne
+     * zurueckgedrehte Buecher waere zusaetzliches Insulin ohne Gegenbuchung.
+     * Deshalb entscheidet auch NICHT der Aufrufer anhand einer Grundliste,
+     * ob sie waechst - er weiss gar nicht, ob die Buchung gefunden wurde.
+     *
+     * Zurueckgesetzt wird sie mit jeder NEUEN Autorisierung und bei der
+     * ausdruecklichen RUECKNAHME - beides im Runner, an genau den Stellen,
+     * die auch [deliveredSinceHandoverU] nullen. Ein Uebertrag ohne die
+     * Episode, aus der er stammt, waere ein Freibrief fuer die naechste.
+     */
+    var confirmedNotSentPhaseAU: Double = 0.0
+
+    /**
      * Die Buchung DIESES Zyklus, solange die Publikation nicht feststeht.
      *
      * WARUM RESERVIEREN UND NICHT VERSCHIEBEN: der Runner belastet die
@@ -327,6 +360,39 @@ class EpisodeBudgets {
  * schliessen, ohne dass je Insulin nachgewiesen wurde.
  */
 data class RetiredBoundId(val temporaryId: Long?, val pumpId: Long?)
+
+/**
+ * WAS EIN BEWIESENES NICHT-SENDEN ZURUECKGEDREHT HAT - Menge UND Phase in
+ * EINEM Typ (Toni 19.08.).
+ *
+ * WARUM NICHT WEITER EIN NACKTES `Double`. Der Aufrufer muesste die Phase
+ * sonst selbst aus `episodes.settled` lesen - und genau das kann er zum
+ * richtigen Zeitpunkt nicht mehr: [FuseLedgerAdapter.revokeSettled] loescht
+ * die Ablage als ERSTES, damit kein zweiter Aufruf dieselbe Menge ein zweites
+ * Mal freigibt. Ein Lesen davor wiederum bekaeme die Phase auch dann, wenn
+ * das Zurueckdrehen anschliessend an der Mengenprobe scheitert - also einen
+ * Uebertrag ohne Gegenbuchung.
+ *
+ * Zwei Zahlen aus verschiedenen Momenten zu paaren war in diesem Projekt
+ * schon mehrfach die Fehlerquelle; ein Typ, der beide zusammen fuehrt, macht
+ * den Fehler unmoeglich statt ihn zu verbieten.
+ *
+ * @param amountU die exakt zurueckgedrehte Menge, 0 wenn nichts geschah.
+ * @param foundationPhase die beim BUCHEN festgehaltene Phase - nicht eine
+ *   jetzt neu abgeleitete. Zwischen Buchung und Beweis kann eine CLEARANCE
+ *   den Uebergabeanker verschoben haben.
+ */
+data class RevokeResult(
+    val amountU: Double,
+    val foundationPhase: app.aaps.fuse.core.controller.MealFoundation.Phase,
+) {
+
+    companion object {
+
+        /** Nichts zuzuordnen - der haeufigste und sicherste Ausgang. */
+        val NONE = RevokeResult(0.0, app.aaps.fuse.core.controller.MealFoundation.Phase.NONE)
+    }
+}
 
 /**
  * Fix 3 (Re-Audit c750169, 6.3): die beim PUBLIKATIONSZEITPUNKT aktive
@@ -1371,15 +1437,16 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
      * "zu viel gebucht" laesst FUSE spaeter zu wenig nachliefern, die
      * umgekehrte liesse es zu viel geben.
      *
-     * @return die zurueckgedrehte Menge, 0 wenn nichts zuzuordnen war.
+     * @return WAS zurueckgedreht wurde UND AUS WELCHER PHASE - s.
+     *   [RevokeResult]. [RevokeResult.NONE] heisst "nichts zuzuordnen".
      */
-    fun revokeSettled(proposalId: String): Double {
-        val s = episodes.settled ?: return 0.0
+    fun revokeSettled(proposalId: String): RevokeResult {
+        val s = episodes.settled ?: return RevokeResult.NONE
         // Fremde Zeile: nicht anfassen.
-        if (s.proposalId != proposalId) return 0.0
+        if (s.proposalId != proposalId) return RevokeResult.NONE
         episodes.settled = null
         val menge = s.amountU
-        if (!menge.isFinite() || menge <= 0.0) return 0.0
+        if (!menge.isFinite() || menge <= 0.0) return RevokeResult.NONE
 
         // ---- ZUERST SUCHEN, DANN AENDERN (Toni 19.08.) -------------------
         //
@@ -1395,7 +1462,7 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
         val idx =
             if (s.mealTs > 0L) episodes.mealDeliveries.indexOfFirst { it.proposalId == proposalId }
             else -1
-        if (s.mealTs > 0L && idx < 0) return 0.0
+        if (s.mealTs > 0L && idx < 0) return RevokeResult.NONE
         // UND DIE MENGE MUSS EXAKT PASSEN (Toni 19.08.).
         //
         // Die Zeile zu FINDEN reicht nicht. Traegt sie WENIGER als die Ablage
@@ -1417,7 +1484,7 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
         // Rundungsrauschen hinaus ist ein Widerspruch - und dann ist "gar
         // nichts" der richtige Ausgang.
         if (idx >= 0 && kotlin.math.abs(episodes.mealDeliveries[idx].amountU - menge) > 1e-9)
-            return 0.0
+            return RevokeResult.NONE
 
         // EXAKT DIESELBEN ZAEHLER wie beim Reject einer Reservierung - der
         // Vorgang ist derselbe, nur eine Stufe spaeter bewiesen.
@@ -1427,6 +1494,37 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
         if (s.foundationPhase == app.aaps.fuse.core.controller.MealFoundation.Phase.PHASE_B)
             episodes.deliveredSinceHandoverU =
                 (episodes.deliveredSinceHandoverU - menge).coerceAtLeast(0.0)
+
+        // ---- UND DER UEBERTRAG FUER PHASE B (Toni 19.08.) -----------------
+        //
+        // ER ENTSTEHT HIER UND NIRGENDWO SONST, im selben Zug wie die fuenf
+        // Buecher und noch VOR dem verifizierten Persist. Der Aufrufer
+        // entscheidet nichts: der Vertrag ist "Beweis liegt vor UND die
+        // Buchung wurde exakt gefunden UND ihre GESPEICHERTE Phase ist
+        // PHASE_A" - und die letzten beiden Teile weiss nur diese Methode.
+        //
+        // KEINE GRUNDLISTE. Der erste Bauauftrag nannte `CONSTRAINT_ZERO` und
+        // `GATE_BLOCKED`; das haette ausgerechnet den GEMESSENEN Anlass
+        // verfehlt - Tonis 19:07-Fall ist `BOLUS_IN_QUEUE` (Menge nach
+        // Constraints positiv, Apply-Block nie betreten). Welcher Beweis es
+        // war, ist fuer die MENGE ohne Bedeutung; entscheidend ist, DASS
+        // [app.aaps.fuse.core.ledger.NotSentProof] einen sicheren geliefert
+        // hat - und ohne einen solchen wird diese Methode gar nicht gerufen.
+        //
+        // NUR PHASE A. Eine zurueckgedrehte Phase-B-Menge braucht keinen
+        // Uebertrag: `deliveredSinceHandoverU` ist eine Zeile hoeher schon
+        // gesunken, das Soll steht damit von selbst wieder offen. Ein
+        // Uebertrag obendrauf waere die Menge ZWEIMAL.
+        //
+        // GEDECKELT AM GESAMTBUDGET der laufenden Autorisierung. Ohne
+        // Autorisierung gibt es kein Phase B und damit auch nichts zu
+        // uebertragen - dann bleibt der Zaehler 0 statt einen Betrag fuer eine
+        // kuenftige Mahlzeit aufzubewahren.
+        if (s.foundationPhase == app.aaps.fuse.core.controller.MealFoundation.Phase.PHASE_A) {
+            val deckel = episodes.foundation.let { if (it.valid) it.totalBudgetU else 0.0 }
+            episodes.confirmedNotSentPhaseAU =
+                (episodes.confirmedNotSentPhaseAU + menge).coerceIn(0.0, deckel)
+        }
         // Der Index steht schon fest - gesucht wurde UEBER DIE KENNUNG, nicht
         // ueber den Zeitstempel: zum Zeitpunkt dieses Aufrufs hat der Runner
         // laengst eine neue Zeile gebucht, und `indexOfLast { it.ts == ... }`
@@ -1439,7 +1537,7 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
         // und beim naechsten Lesen waere unklar, welche der beiden Stellen
         // die Wahrheit sagt.
         if (idx >= 0) episodes.mealDeliveries.removeAt(idx)
-        return menge
+        return RevokeResult(menge, s.foundationPhase)
     }
 
     fun onPublished(

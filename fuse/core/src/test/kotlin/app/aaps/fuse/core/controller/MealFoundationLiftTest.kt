@@ -68,7 +68,7 @@ class MealFoundationLiftTest {
         return MealFoundation.snapshot(
             auth, t0 + (minuten * 60_000).toLong(), 0L,
             deliveredFromBudgetU = ausBudgetU, deliveredSinceHandoverU = seitUebergabeU,
-            bolusStepU = STEP,
+            confirmedNotSentPhaseAU = 0.0, bolusStepU = STEP,
         )
     }
 

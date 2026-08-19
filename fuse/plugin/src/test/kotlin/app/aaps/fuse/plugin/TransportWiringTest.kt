@@ -2900,6 +2900,82 @@ class TransportWiringTest : TestBaseWithProfile() {
         assertEquals(0.0, o.mealFoundation.dueU, 1e-9, "und nichts mehr fordern")
     }
 
+    /**
+     * UND SIE LOESCHT DEN PHASE-B-UEBERTRAG MIT (Toni 19.08.).
+     *
+     * Der Uebertrag gehoert zu der Autorisierung, die hier gerade endet.
+     * Bliebe er stehen, gaebe der ausdrueckliche Widerruf der NAECHSTEN
+     * Mahlzeit zusaetzliches Insulin fuer eine Luecke aus der widerrufenen -
+     * der Widerruf haette dann MEHR Insulin zur Folge als das Zulassen.
+     *
+     * UEBER DEN ECHTEN WEG, nicht ueber einen nachgebauten Zustand: der
+     * Runner laeuft, der Marker wird zurueckgenommen, und geprueft wird, was
+     * danach im Ledger steht. Ein von Hand kopierter Zustand hat in dieser
+     * Baustelle schon einmal ein Feld vergessen und den Test gruen gehalten.
+     */
+    @Test
+    fun `eine Ruecknahme loescht auch den Phase-B-Uebertrag`() {
+        fundamentAn = true
+        flach = 105.0
+        steigungProMin = -0.9
+        markerAuthorized = true
+        markerAt = start + 2 * 60_000L
+
+        clock = start
+        repeat(5) { cycle() }
+        assertTrue(ledger.episodes.foundation.valid, "die Autorisierung MUSS stehen")
+        // Eine belegte Phase-A-Luecke, wie sie ein Nicht-Sende-Beweis
+        // hinterlaesst.
+        ledger.episodes.confirmedNotSentPhaseAU = 0.30
+
+        markerAt = 0L
+        cycle()
+
+        assertEquals(
+            0.0, ledger.episodes.confirmedNotSentPhaseAU, 1e-9,
+            "der Uebertrag faellt mit der Autorisierung",
+        )
+    }
+
+    /**
+     * EIN NEUER MARKERDRUCK ERBT DEN UEBERTRAG NICHT.
+     *
+     * Der zweite Weg, eine Episode zu beenden - und er braucht seine eigene
+     * Ruecksetzung: das Armen laeuft an einer voellig anderen Stelle als der
+     * Widerruf. Eine neue Mahlzeit bekommt ihr eigenes Budget; die Luecke der
+     * vorigen ist mit deren Fenster verfallen.
+     */
+    @Test
+    fun `ein neuer Markerdruck erbt den Uebertrag nicht`() {
+        fundamentAn = true
+        flach = 105.0
+        steigungProMin = -0.9
+        markerAuthorized = true
+        markerAt = start + 2 * 60_000L
+
+        clock = start
+        repeat(5) { cycle() }
+        assertTrue(ledger.episodes.foundation.valid, "die erste Autorisierung MUSS stehen")
+        ledger.episodes.confirmedNotSentPhaseAU = 0.30
+        val ersteArmierung = ledger.episodes.foundation.armedTs
+
+        // Hinter das Markerfenster - sonst gilt die alte Episode als laufend
+        // und es wird gar nicht neu armiert (dann pruefte der Test nichts).
+        clock += (OnsetChannel.MARKER_WINDOW_MIN + 5) * 60_000L
+        markerAt = clock + 60_000L
+        repeat(6) { cycle() }
+
+        assertTrue(
+            ledger.episodes.foundation.valid &&
+                ledger.episodes.foundation.armedTs != ersteArmierung,
+            "es MUSS wirklich neu armiert worden sein",
+        )
+        assertEquals(
+            0.0, ledger.episodes.confirmedNotSentPhaseAU, 1e-9,
+            "und die neue Mahlzeit beginnt ohne fremde Luecke",
+        )
+    }
+
     /** Und ein erneuter bewusster Druck armiert danach neu. */
     @Test
     fun `nach einer Ruecknahme armiert ein neuer Druck wieder`() {

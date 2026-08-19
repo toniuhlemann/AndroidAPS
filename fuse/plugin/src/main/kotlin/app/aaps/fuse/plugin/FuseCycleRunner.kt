@@ -714,6 +714,12 @@ class FuseCycleRunner(
         if (episodeGate.creditRevoked) {
             episodes.foundation = MealFoundation.Authorization.none()
             episodes.deliveredSinceHandoverU = 0.0
+            // UND DER UEBERTRAG MIT (Toni 19.08.). Er gehoert zu der
+            // Autorisierung, die hier gerade endet. Bliebe er stehen, gaebe der
+            // ausdrueckliche Widerruf der NAECHSTEN Mahlzeit zusaetzliches
+            // Insulin fuer eine Luecke aus der widerrufenen - der Widerruf
+            // haette dann mehr Insulin zur Folge als das Zulassen.
+            episodes.confirmedNotSentPhaseAU = 0.0
         }
         val evidenceEpisodeMin = evidenceEpisodeId.takeIf { it > 0L }
             ?.let { ((computeTs - it) / 60_000L).toInt() }
@@ -1124,6 +1130,13 @@ class FuseCycleRunner(
             )
             // Eine neue Autorisierung beginnt mit unbezahlter Phase B.
             episodes.deliveredSinceHandoverU = 0.0
+            // UND OHNE UEBERTRAG (Toni 19.08.). Ein neuer Markerdruck ist eine
+            // neue Mahlzeit mit eigenem Budget; eine Luecke aus der vorigen
+            // darf sie nicht erben. Das steht hier UND beim Widerruf, weil es
+            // zwei verschiedene Wege sind, eine Episode zu beenden - ein
+            // gemeinsamer Reset weiter unten wuerde nur einen von beiden
+            // treffen.
+            episodes.confirmedNotSentPhaseAU = 0.0
             // Fix 7: neue Marker-Episode -> Wende-Latch der Sonderrechte neu.
             episodes.markerTurnTs = 0L
             episodes.markerRiseSeen = false
@@ -1852,7 +1865,8 @@ class FuseCycleRunner(
             episodes.foundation, computeTs, episodes.primeWindowStartTs,
             deliveredFromBudgetU = episodes.evidenceCommittedU,
             deliveredSinceHandoverU = episodes.deliveredSinceHandoverU,
-            bolusStepU = bolusStep,
+            confirmedNotSentPhaseAU = episodes.confirmedNotSentPhaseAU,
+            bolusStepU =bolusStep,
         )
 
         val liftedPrime = PrimeRelease.lift(
@@ -2223,7 +2237,8 @@ class FuseCycleRunner(
             episodes.foundation, computeTs, episodes.primeWindowStartTs,
             deliveredFromBudgetU = episodes.evidenceCommittedU,
             deliveredSinceHandoverU = episodes.deliveredSinceHandoverU,
-            bolusStepU = pumpe.bolusStepU,
+            confirmedNotSentPhaseAU = episodes.confirmedNotSentPhaseAU,
+            bolusStepU =pumpe.bolusStepU,
         )
 
         val computeDurationMs = dateUtil.now() - computeTs
@@ -2590,6 +2605,7 @@ class FuseCycleRunner(
                 episodes.foundation, computeTs, episodes.primeWindowStartTs,
                 deliveredFromBudgetU = episodes.evidenceCommittedU,
                 deliveredSinceHandoverU = episodes.deliveredSinceHandoverU,
+                confirmedNotSentPhaseAU = episodes.confirmedNotSentPhaseAU,
                 bolusStepU = pumpe.bolusStepU,
             ),
             state = state,
@@ -2698,6 +2714,7 @@ class FuseCycleRunner(
                 episodes.foundation, computeTs, episodes.primeWindowStartTs,
                 deliveredFromBudgetU = episodes.evidenceCommittedU,
                 deliveredSinceHandoverU = episodes.deliveredSinceHandoverU,
+                confirmedNotSentPhaseAU = episodes.confirmedNotSentPhaseAU,
                 bolusStepU = pumpe.bolusStepU,
             ),
             insulinModel = insulinModel,

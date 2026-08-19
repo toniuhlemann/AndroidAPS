@@ -445,6 +445,9 @@ object MealFoundation {
      *   ab. Das stimmt nur, wenn Phase A ihr Budget auch ausschoepft; hat die
      *   Huelle weniger genommen, lieferte das Fundament fast das ganze Budget
      *   nach (gemessen 2,15 U statt 0,75 U).
+     * @param confirmedNotSentPhaseAU die BEWIESENE Phase-A-Luecke [U] - s. den
+     *   Blockkommentar unten. 0 heisst "keine belegte Luecke" und ergibt exakt
+     *   das Verhalten vor diesem Umbau.
      * @param bolusStepU die Rasterung der Pumpe.
      */
     fun plan(
@@ -453,6 +456,37 @@ object MealFoundation {
         handoverTs: Long,
         totalBudgetU: Double,
         phaseBBudgetU: Double,
+        /**
+         * DIE BELEGTE PHASE-A-LUECKE, die Phase B nachholen darf (Toni 19.08.).
+         *
+         * DER GEMESSENE ANLASS. Am 19.08. forderte FUSE 20 x 0,15 U an, die
+         * Pumpendatenbank zeigte 2,70 U: zwei Schritte hat AAPS am Intervalltor
+         * verworfen. Die Buchhaltung dreht das seit dem Nicht-Sende-Beweis
+         * korrekt zurueck - aber damit ist die Menge nur nicht mehr FALSCH
+         * gebucht, geflossen ist sie trotzdem nicht. Bemerkt Prime den Verlust
+         * erst, wenn sein eigenes Fenster zu ist, faellt sie ersatzlos aus.
+         *
+         * WARUM DAS NICHT SCHON DAS OFFENE GESAMTBUDGET LEISTET. Die zweite
+         * Grenze in [plan] laesst nach dem Zurueckdrehen zwar wieder Luft
+         * (`total - deliveredFromBudget`), die ERSTE aber deckelt Phase B auf
+         * ihr Teilbudget - gemessen im E2E: 0,75 U mit und ohne Verwerfen. Die
+         * getrennten Teilbudgets sind genau die Zusicherung, die sie geben
+         * sollen; ohne diesen Betrag hier bliebe die Luecke also bestehen.
+         *
+         * WAS ER NICHT IST: kein Nachholen von UNGENUTZTEM Budget. Er waechst
+         * ausschliesslich um Mengen, fuer die ein Nicht-Sende-BEWEIS vorliegt
+         * und die in Phase A gebucht waren - ein `NO_DEMAND`, ein unklarer
+         * Pumpenausgang oder eine schlicht nicht abgerufene Huelle erzeugen
+         * nichts. Das Gesamtbudget bleibt die letzte Grenze: die Summe kann
+         * [totalBudgetU] nicht ueberschreiten.
+         *
+         * UND ER WIRD NICHT SOFORT AUSGESCHUETTET, sondern hebt die
+         * Phase-B-ERLAUBNIS. Die Menge laeuft damit auf derselben linearen
+         * Bahn und mit derselben Ein-Schritt-Regel nach wie das uebrige
+         * Fundament - ein Nachhol-Burst waere genau die IOB-Spitze, gegen die
+         * die Phasenteilung gebaut ist.
+         */
+        confirmedNotSentPhaseAU: Double,
         phaseBUntilMin: Int,
         deliveredFromBudgetU: Double,
         deliveredSinceHandoverU: Double,
@@ -469,6 +503,10 @@ object MealFoundation {
         // Aufruf koennte nur aus einer widerspruechlichen Quelle stammen -
         // fail-closed statt "wird schon passen".
         if (phaseBBudgetU > totalBudgetU + 1e-9) return unusable()
+        // DER UEBERTRAG WIRD GEPRUEFT, NICHT GERADEGEBOGEN. Ein negativer oder
+        // unendlicher Wert kann nur aus einem Fehler stammen; ihn auf 0 zu
+        // klemmen hiesse, mit einem kaputten Zustand weiterzurechnen.
+        if (!confirmedNotSentPhaseAU.isFinite() || confirmedNotSentPhaseAU < 0.0) return unusable()
         // DAS FENSTER MUSS NOCH EXISTIEREN. Hat eine CLEARANCE die Uebergabe
         // hinter das Ende geschoben, gibt es kein Phase-B-Fenster mehr - kein
         // Fehler, aber auch keine Versorgung.
@@ -483,11 +521,25 @@ object MealFoundation {
 
 
         val fensterMin = ((fensterEndeTs - handoverTs) / 60_000L).toInt()
-        val rateUProMin = if (fensterMin > 0) phaseBBudgetU / fensterMin else 0.0
+        // DIE ERLAUBNIS VON PHASE B - Teilbudget PLUS belegte Phase-A-Luecke,
+        // gedeckelt am gemeinsamen Gesamtbudget.
+        //
+        // AB HIER GIBT ES NUR NOCH DIESE GROESSE. `phaseBBudgetU` einzeln
+        // weiterzuverwenden waere die zweite Wahrheit, an der dieser Baustein
+        // schon zweimal gescheitert ist: Soll, Rate, offener Rest und
+        // Rueckstand muessen alle dieselbe Obergrenze meinen, sonst holt eine
+        // Zeile die Luecke nach, waehrend eine andere sie noch deckelt.
+        //
+        // Der Deckel ist NICHT bloss Vorsicht: der Uebertrag stammt aus
+        // `deliveredFromBudgetU`, das beim Zurueckdrehen mitgesunken ist. Ohne
+        // ihn koennte eine Luecke, die groesser ist als das Phase-A-Budget,
+        // eine Erlaubnis oberhalb des Autorisierten erzeugen.
+        val erlaubnisU = allowanceU(totalBudgetU, phaseBBudgetU, confirmedNotSentPhaseAU)
+        val rateUProMin = if (fensterMin > 0) erlaubnisU / fensterMin else 0.0
 
         // VOR DEM FENSTER: Phase A ist zustaendig, nicht das Fundament.
         if (nowTs < handoverTs)
-            return Plan(0.0, 0.0, phaseBBudgetU, Binding.BEFORE_WINDOW, fensterMin, rateUProMin, backlogU = 0.0)
+            return Plan(0.0, 0.0, erlaubnisU, Binding.BEFORE_WINDOW, fensterMin, rateUProMin, backlogU = 0.0)
 
         // DAS SOLL BIS JETZT - linear ueber das Fenster.
         //
@@ -496,21 +548,26 @@ object MealFoundation {
         // Die Verteilung ist ohnehin eine Replay-Hypothese; sie soll einfach
         // genug sein, um sie zu widerlegen.
         val fortschritt = min(1.0, (nowTs - handoverTs).toDouble() / (fensterEndeTs - handoverTs))
-        val sollU = phaseBBudgetU * fortschritt
+        val sollU = erlaubnisU * fortschritt
 
         // ZWEI GRENZEN, DIE BEIDE GELTEN:
-        //   1. Phase B liefert nie mehr als ihren Anteil,
+        //   1. Phase B liefert nie mehr als ihre Erlaubnis,
         //   2. Phase A und B zusammen nie mehr als das gemeinsame Budget.
         //
         // Die zweite bindet, wenn Phase A mehr genommen hat als vorgesehen;
         // die erste, wenn sie weniger genommen hat. Nur eine von beiden zu
         // pruefen laesst je eine Luecke offen - die zweite hat der Test als
         // 2,15 U statt 0,75 U gezeigt.
+        //
+        // UND SIE BLEIBEN BEIDE STEHEN, auch mit Uebertrag: die erste ist
+        // dann keine reine Teilbudgetgrenze mehr, sondern die um die BELEGTE
+        // Luecke angehobene - die zweite deckelt weiter am Gesamtbudget und
+        // ist damit die letzte Grenze, genau wie ohne Uebertrag.
         val ausPhaseBGeflossen = deliveredSinceHandoverU
         val offenImFenster = max(
             0.0,
             min(
-                phaseBBudgetU - ausPhaseBGeflossen,
+                erlaubnisU - ausPhaseBGeflossen,
                 totalBudgetU - deliveredFromBudgetU,
             ),
         )
@@ -519,11 +576,11 @@ object MealFoundation {
         // Stunden spaeter - was dann noch offen ist, war offenbar nicht noetig.
         if (nowTs > fensterEndeTs)
             return Plan(
-                0.0, phaseBBudgetU, offenImFenster, Binding.AFTER_WINDOW, fensterMin, rateUProMin,
+                0.0, erlaubnisU, offenImFenster, Binding.AFTER_WINDOW, fensterMin, rateUProMin,
                 // Nach dem Fenster ist der Rueckstand das, was NIE geflossen
                 // ist - die Groesse, die im Replay zeigt, ob eine Aufteilung
                 // ihr Teilbudget ueberhaupt abrufen konnte.
-                backlogU = max(0.0, phaseBBudgetU - ausPhaseBGeflossen),
+                backlogU = max(0.0, erlaubnisU - ausPhaseBGeflossen),
             )
 
         // DAS GEMEINSAME BUDGET IST DIE HARTE GRENZE.
@@ -573,6 +630,15 @@ object MealFoundation {
      * @param deliveredSinceHandoverU alles seit der Uebergabe - die
      *   Mindestversorgung zaehlt jede publizierte Menge, gleich welcher
      *   Herkunft.
+     * @param confirmedNotSentPhaseAU die belegte Phase-A-Luecke - s. [plan].
+     *
+     *   SIE IST KEIN TEIL DER AUTORISIERUNG und wird deshalb durchgereicht
+     *   statt aus `auth` gelesen. Gepinnt sind die REGELPARAMETER; dieser
+     *   Betrag ist eine LAUFENDE Messung derselben Episode, die sich mit jedem
+     *   bewiesenen Nicht-Senden aendert. In die Autorisierung gelegt muesste
+     *   sie bei jedem Beweis neu geschrieben werden - und ein Objekt, das
+     *   "eingefroren" heisst und sich staendig aendert, waere die
+     *   Selbsttaeuschung, gegen die das Pinning gebaut ist.
      */
     fun planFrom(
         auth: Authorization,
@@ -588,6 +654,7 @@ object MealFoundation {
         primeWindowStartTs: Long,
         deliveredFromBudgetU: Double,
         deliveredSinceHandoverU: Double,
+        confirmedNotSentPhaseAU: Double,
         bolusStepU: Double,
     ): Plan {
         if (!auth.valid) return unusable()
@@ -598,6 +665,7 @@ object MealFoundation {
             totalBudgetU = auth.totalBudgetU,
             // DIE KANONISCHE GROESSE, nicht noch einmal abgeleitet.
             phaseBBudgetU = auth.phaseBBudgetU,
+            confirmedNotSentPhaseAU = confirmedNotSentPhaseAU,
             // Aus der Momentaufnahme zurueckgerechnet, damit die Rohfassung
             // eine Signatur behaelt: endTs ist gepinnt, die Minuten sind es
             // damit auch.
@@ -624,6 +692,24 @@ object MealFoundation {
         if (auth.valid) auth.phaseABudgetU else liveTotalBudgetU
 
     private fun unusable() = Plan(0.0, 0.0, 0.0, Binding.UNUSABLE_INPUT)
+
+    /**
+     * WAS PHASE B GEBEN DARF - die EINE Stelle, an der der Uebertrag wirkt.
+     *
+     * [plan] und [snapshot] rufen beide hierher. Zwei getrennte Rechnungen
+     * waeren genau die zweite Wahrheit, die dieses Fundament bei den
+     * Teilbudgets schon einmal 3,75 U aus einer 3-U-Autorisierung sehen liess:
+     * der Export zeigte dann eine andere Erlaubnis, als der Regler benutzt.
+     *
+     * EIN UNBRAUCHBARER UEBERTRAG ERGIBT HIER SCHLICHT KEINEN - `plan` weist
+     * ihn ohnehin vorher als [Binding.UNUSABLE_INPUT] ab, `snapshot` darf aber
+     * kein NaN in den Export tragen.
+     */
+    private fun allowanceU(totalBudgetU: Double, phaseBBudgetU: Double, confirmedNotSentPhaseAU: Double): Double {
+        val uebertrag =
+            if (confirmedNotSentPhaseAU.isFinite() && confirmedNotSentPhaseAU > 0.0) confirmedNotSentPhaseAU else 0.0
+        return min(phaseBBudgetU + uebertrag, totalBudgetU)
+    }
 
     /**
      * WIE DAS FUNDAMENT MIT DEM NORMALEN VORSCHLAG ZUSAMMENGEHT
@@ -797,6 +883,18 @@ object MealFoundation {
         val endTs: Long,
         val phase: Phase,
         val deliveredSinceHandoverU: Double,
+        /**
+         * DIE BELEGTE PHASE-A-LUECKE dieser Episode [U] - s. [plan].
+         *
+         * SIE STEHT NEBEN [phaseBBudgetU] IM EXPORT, nicht darin verrechnet.
+         * Sonst waere im Replay nicht mehr zu sehen, ob Phase B ihr eigenes
+         * Teilbudget lieferte oder eine nachgeholte Luecke - zwei Ablaeufe mit
+         * gleicher Summe und voellig verschiedener Bedeutung.
+         */
+        val confirmedNotSentPhaseAU: Double,
+        /** Was Phase B insgesamt geben DARF: Teilbudget plus Uebertrag,
+         *  gedeckelt am Gesamtbudget. Die Groesse, gegen die [plan] rechnet. */
+        val phaseBAllowanceU: Double,
         val plannedTotalU: Double,
         val backlogU: Double,
         val dueU: Double,
@@ -814,6 +912,7 @@ object MealFoundation {
                 totalBudgetU = 0.0, phaseABudgetU = 0.0,
                 phaseBBudgetU = 0.0, effectiveHandoverTs = 0L, latchedHandoverTs = 0L,
                 endTs = 0L, phase = Phase.NONE, deliveredSinceHandoverU = 0.0,
+                confirmedNotSentPhaseAU = 0.0, phaseBAllowanceU = 0.0,
                 plannedTotalU = 0.0, backlogU = 0.0, dueU = 0.0, remainingInWindowU = 0.0,
                 binding = null, effectiveWindowMin = 0, effectiveRateUPerMin = 0.0,
             )
@@ -836,10 +935,14 @@ object MealFoundation {
         primeWindowStartTs: Long,
         deliveredFromBudgetU: Double,
         deliveredSinceHandoverU: Double,
+        confirmedNotSentPhaseAU: Double,
         bolusStepU: Double,
     ): Snapshot {
         if (!auth.valid) return Snapshot.none()
-        val plan = planFrom(auth, nowTs, primeWindowStartTs, deliveredFromBudgetU, deliveredSinceHandoverU, bolusStepU)
+        val plan = planFrom(
+            auth, nowTs, primeWindowStartTs, deliveredFromBudgetU, deliveredSinceHandoverU,
+            confirmedNotSentPhaseAU, bolusStepU,
+        )
         return Snapshot(
             armed = true,
             armedTs = auth.armedTs,
@@ -852,6 +955,11 @@ object MealFoundation {
             endTs = auth.endTs,
             phase = phaseOf(auth, nowTs, primeWindowStartTs),
             deliveredSinceHandoverU = deliveredSinceHandoverU,
+            confirmedNotSentPhaseAU = confirmedNotSentPhaseAU,
+            // DIESELBE Rechnung wie in [plan], nicht eine zweite: der Deckel am
+            // Gesamtbudget gehoert dazu, sonst zeigte der Export eine
+            // Erlaubnis, die der Regler gar nicht hat.
+            phaseBAllowanceU = allowanceU(auth.totalBudgetU, auth.phaseBBudgetU, confirmedNotSentPhaseAU),
             plannedTotalU = plan.plannedTotalU,
             backlogU = plan.backlogU,
             dueU = plan.dueU,

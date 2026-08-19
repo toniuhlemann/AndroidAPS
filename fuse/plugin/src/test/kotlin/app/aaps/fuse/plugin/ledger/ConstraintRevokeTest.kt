@@ -76,7 +76,7 @@ class ConstraintRevokeTest {
 
         val zurueck = a.revokeSettled(ID)
 
-        assertEquals(0.15, zurueck, 1e-9, "genau die publizierte Menge")
+        assertEquals(0.15, zurueck.amountU, 1e-9, "genau die publizierte Menge")
         assertEquals(0.45, a.episodes.primeSpentU, 1e-9)
         assertEquals(0.45, a.episodes.onsetSpentU, 1e-9)
         assertEquals(0.45, a.episodes.evidenceCommittedU, 1e-9)
@@ -135,7 +135,7 @@ class ConstraintRevokeTest {
         // JETZT der Beweis fuer Zyklus 1 - waehrend die neue Zeile schon steht.
         val zurueck = a.revokeSettled("s#1")
 
-        assertEquals(0.15, zurueck, 1e-9, "es MUSS die Menge aus Zyklus 1 sein")
+        assertEquals(0.15, zurueck.amountU, 1e-9, "es MUSS die Menge aus Zyklus 1 sein")
         assertEquals(
             1, e.mealDeliveries.size,
             "genau eine Zeile bleibt - die aus Zyklus 2",
@@ -303,7 +303,7 @@ class ConstraintRevokeTest {
         nach.loadOnce(dir, "s2", ts + 60_000L)
 
         assertNull(nach.episodes.settled, "ein Neustart hat keine offene Ablage")
-        assertEquals(0.0, nach.revokeSettled(ID), 1e-9, "und damit nichts zurueckzudrehen")
+        assertEquals(0.0, nach.revokeSettled(ID).amountU, 1e-9, "und damit nichts zurueckzudrehen")
 
         // ALLE FUENF Buecher, einzeln geprueft.
         assertEquals(0.60, nach.episodes.primeSpentU, 1e-9, "primeSpentU")
@@ -330,7 +330,7 @@ class ConstraintRevokeTest {
         // Der Widerspruch: die Ablage nennt eine Zeile, die es nicht mehr gibt.
         a.episodes.mealDeliveries.clear()
 
-        assertEquals(0.0, a.revokeSettled(ID), 1e-9, "keine Teilentlastung")
+        assertEquals(0.0, a.revokeSettled(ID).amountU, 1e-9, "keine Teilentlastung")
         assertEquals(0.60, a.episodes.primeSpentU, 1e-9)
         assertEquals(0.60, a.episodes.onsetSpentU, 1e-9)
         assertEquals(0.60, a.episodes.evidenceCommittedU, 1e-9)
@@ -357,7 +357,7 @@ class ConstraintRevokeTest {
         a.resolveReservation(ts, publishedU = 0.15, proposalId = ID)
 
         assertNull(a.episodes.settled, "ohne nachgetragene Kennung keine Ablage")
-        assertEquals(0.0, a.revokeSettled(ID), 1e-9)
+        assertEquals(0.0, a.revokeSettled(ID).amountU, 1e-9)
         assertEquals(0.15, a.episodes.primeSpentU, 1e-9, "die Belastung bleibt stehen")
     }
 
@@ -367,7 +367,7 @@ class ConstraintRevokeTest {
     @Test
     fun `ein fremder Vorschlag dreht nichts zurueck`() {
         val a = nachPublikation()
-        assertEquals(0.0, a.revokeSettled("s#fremd"), 1e-9)
+        assertEquals(0.0, a.revokeSettled("s#fremd").amountU, 1e-9)
         assertEquals(0.60, a.episodes.primeSpentU, 1e-9, "unveraendert")
         assertNotNull(a.episodes.settled, "und die Buchung bleibt zuordenbar")
     }
@@ -377,7 +377,7 @@ class ConstraintRevokeTest {
     fun `das Zurueckdrehen ist idempotent`() {
         val a = nachPublikation()
         a.revokeSettled(ID)
-        assertEquals(0.0, a.revokeSettled(ID), 1e-9)
+        assertEquals(0.0, a.revokeSettled(ID).amountU, 1e-9)
         assertEquals(0.45, a.episodes.primeSpentU, 1e-9)
     }
 
@@ -397,8 +397,8 @@ class ConstraintRevokeTest {
         )
         a.resolveReservation(ts + 60_000L, publishedU = 0.10, proposalId = "s#43")
 
-        assertEquals(0.0, a.revokeSettled(ID), 1e-9, "die alte Zeile ist nicht mehr zuordenbar")
-        assertEquals(0.10, a.revokeSettled("s#43"), 1e-9, "die neue schon")
+        assertEquals(0.0, a.revokeSettled(ID).amountU, 1e-9, "die alte Zeile ist nicht mehr zuordenbar")
+        assertEquals(0.10, a.revokeSettled("s#43").amountU, 1e-9, "die neue schon")
     }
 
     /**
@@ -417,7 +417,7 @@ class ConstraintRevokeTest {
         )
         a.resolveReservation(ts, publishedU = 0.15)
         assertNull(a.episodes.settled)
-        assertEquals(0.0, a.revokeSettled(ID), 1e-9)
+        assertEquals(0.0, a.revokeSettled(ID).amountU, 1e-9)
         assertEquals(0.15, a.episodes.primeSpentU, 1e-9, "die Belastung bleibt stehen")
     }
 
@@ -443,7 +443,7 @@ class ConstraintRevokeTest {
 
         assertNull(a.episodes.settled, "vom Gate entfernt = nichts mehr zurueckzudrehen")
         assertEquals(vorher - 0.15, a.episodes.primeSpentU, 1e-9, "schon hier zurueckgedreht")
-        assertEquals(0.0, a.revokeSettled("s#44"), 1e-9, "und kein zweites Mal")
+        assertEquals(0.0, a.revokeSettled("s#44").amountU, 1e-9, "und kein zweites Mal")
     }
 
     /**
@@ -490,7 +490,7 @@ class ConstraintRevokeTest {
                 EpisodeBudgets.MealDelivery(z.ts, zeilenmenge, z.proposalId),
             )
 
-            assertEquals(0.0, a.revokeSettled(ID), 1e-9, "$zeilenmenge: keine Teilentlastung")
+            assertEquals(0.0, a.revokeSettled(ID).amountU, 1e-9, "$zeilenmenge: keine Teilentlastung")
             assertEquals(0.60, a.episodes.primeSpentU, 1e-9, "$zeilenmenge")
             assertEquals(0.60, a.episodes.onsetSpentU, 1e-9, "$zeilenmenge")
             assertEquals(0.60, a.episodes.evidenceCommittedU, 1e-9, "$zeilenmenge")
@@ -517,7 +517,7 @@ class ConstraintRevokeTest {
         a.episodes.mealDeliveries.addLast(
             EpisodeBudgets.MealDelivery(z.ts, 0.15 + 5e-10, z.proposalId),
         )
-        assertEquals(0.15, a.revokeSettled(ID), 1e-9, "innerhalb 1e-9 wird entlastet")
+        assertEquals(0.15, a.revokeSettled(ID).amountU, 1e-9, "innerhalb 1e-9 wird entlastet")
         assertTrue(a.episodes.mealDeliveries.isEmpty(), "und die Zeile verschwindet GANZ")
     }
 

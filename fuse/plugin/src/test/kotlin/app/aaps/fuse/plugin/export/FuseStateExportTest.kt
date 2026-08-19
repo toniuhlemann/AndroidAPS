@@ -744,9 +744,11 @@ class FuseStateExportTest {
         minuten: Double = 30.0,
         ausBudgetU: Double = 2.25,
         seitUebergabeU: Double = 0.10,
+        uebertragU: Double = 0.0,
     ) = app.aaps.fuse.core.controller.MealFoundation.snapshot(
         fAuth(), fT0 + (minuten * 60_000).toLong(), 0L,
-        deliveredFromBudgetU = ausBudgetU, deliveredSinceHandoverU = seitUebergabeU, bolusStepU = 0.05,
+        deliveredFromBudgetU = ausBudgetU, deliveredSinceHandoverU = seitUebergabeU,
+        confirmedNotSentPhaseAU = uebertragU, bolusStepU = 0.05,
     )
 
     /**

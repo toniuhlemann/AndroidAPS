@@ -519,6 +519,21 @@ object LedgerCodec {
             // genau das soll das Pinning verhindern.
             .put("pinnedMarkerAuthorized", a.pinnedMarkerAuthorized)
             .put("deliveredSinceHandoverU", e.deliveredSinceHandoverU)
+            // DER UEBERTRAG GEHOERT IN DIESES OBJEKT, nicht daneben.
+            //
+            // Er ist ohne die Autorisierung ebenso bedeutungslos wie die
+            // Bezahlung - und gefaehrlicher: allein wiedergefunden erlaubte er
+            // der NAECHSTEN Mahlzeit zusaetzliches Insulin fuer eine Luecke,
+            // die zu einer laengst beendeten gehoert. "Zusammen oder gar
+            // nicht" ist hier also nicht nur Ordnung, sondern die Zusicherung.
+            //
+            // Ein Feld MEHR in einem bestehenden Objekt: eine aeltere Fassung
+            // liest es schlicht nicht und faellt damit auf das Verhalten ohne
+            // Uebertrag zurueck - weniger Insulin, nicht mehr. Die
+            // Gegenrichtung (neue Fassung, alte Datei) kann es nicht geben:
+            // das Fundament ist nie geflasht worden, es existiert keine Datei
+            // mit einem `foundation`-Objekt ohne dieses Feld.
+            .put("confirmedNotSentPhaseAU", e.confirmedNotSentPhaseAU)
     }
 
     /**
@@ -666,12 +681,23 @@ object LedgerCodec {
             pinnedMarkerAuthorized = o.getBoolean("pinnedMarkerAuthorized"),
         )
         val bezahlt = requireAmount("foundation.deliveredSinceHandoverU", o.getDouble("deliveredSinceHandoverU"))
+        val uebertrag =
+            requireAmount("foundation.confirmedNotSentPhaseAU", o.getDouble("confirmedNotSentPhaseAU"))
         // KEIN stilles none(): s. den Blockkommentar. Die Felder waren alle da
         // und einzeln plausibel - erst ihre Beziehung ist kaputt, und das kann
         // keine faellige Migration sein.
         require(a.valid) { "corrupt foundation authorization" }
+        // DIESELBE ART VON BEZIEHUNGSPRUEFUNG, eine Ebene hoeher: ein
+        // Uebertrag oberhalb des autorisierten Gesamtbudgets kann von diesem
+        // Schreiber nicht stammen ([FuseLedgerAdapter.revokeSettled] deckelt
+        // dort). Ihn beim Lesen still zu kappen hiesse, eine beschaedigte
+        // Generation gueltig zu machen - und zwar in Richtung MEHR Insulin.
+        require(uebertrag <= a.totalBudgetU + 1e-9) {
+            "foundation carry $uebertrag exceeds total budget ${a.totalBudgetU}"
+        }
         e.foundation = a
         e.deliveredSinceHandoverU = bezahlt
+        e.confirmedNotSentPhaseAU = uebertrag
     }
 
     // ---- Verbrauchte Bindungs-Identitaeten (Fix 6, NEU-BS-02) -------------

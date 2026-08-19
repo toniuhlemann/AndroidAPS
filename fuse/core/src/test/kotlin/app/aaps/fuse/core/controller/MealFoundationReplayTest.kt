@@ -164,6 +164,7 @@ class MealFoundationReplayTest {
                 laufend, now, 0L,
                 deliveredFromBudgetU = ausBudget,
                 deliveredSinceHandoverU = seitUebergabe,
+                confirmedNotSentPhaseAU = 0.0,
                 bolusStepU = STEP,
             )
 
@@ -304,7 +305,7 @@ class MealFoundationReplayTest {
             markerTs = t0, foundationEnabled = true, totalBudgetU = BUDGET, phaseAShare = 0.67,
             primeWindowMin = A_BIS, wallCeilingMin = 45, pressObservedInThisProcess = true, primeDeclinedByUser = false, markerAuthorized = true, phaseBUntilMin = B_BIS,
         )
-        val snap = MealFoundation.snapshot(auth, t0 + 30 * 60_000L, 0L, BUDGET, 0.0, STEP)
+        val snap = MealFoundation.snapshot(auth, t0 + 30 * 60_000L, 0L, BUDGET, 0.0, 0.0, STEP)
         assertEquals(0.0, snap.dueU, 1e-9)
         assertEquals(MealFoundation.Binding.BUDGET_EXHAUSTED, snap.binding)
     }
@@ -356,8 +357,8 @@ class MealFoundationReplayTest {
         )
         for (min in A_BIS..B_BIS) {
             val now = t0 + min * 60_000L
-            val soll = MealFoundation.snapshot(auth, now, 0L, 2.25, 0.0, STEP).plannedTotalU
-            val snap = MealFoundation.snapshot(auth, now, 0L, 2.25 + soll, soll, STEP)
+            val soll = MealFoundation.snapshot(auth, now, 0L, 2.25, 0.0, 0.0, STEP).plannedTotalU
+            val snap = MealFoundation.snapshot(auth, now, 0L, 2.25 + soll, soll, 0.0, STEP)
             assertEquals(0.0, snap.dueU, 1e-9, "T+$min: Soll erfuellt, trotzdem gefordert")
         }
     }

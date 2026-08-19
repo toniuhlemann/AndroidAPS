@@ -1133,10 +1133,22 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
                     // zwei Buecher ueber denselben Vorgang muessen gemeinsam
                     // korrigiert werden, sonst driften sie genau hier
                     // auseinander.
+                    //
+                    // UND DER UEBERTRAG FUER PHASE B ENTSTEHT DORT MIT, nicht
+                    // hier (Toni 19.08.). Hier stuende sonst eine zweite
+                    // Entscheidung neben der ersten: dieser Block weiss weder,
+                    // ob die Buchung ueberhaupt gefunden wurde, noch in
+                    // welcher Phase sie gebucht war - beides steht nur im
+                    // Ledger, und beides muss zur zurueckgedrehten Menge
+                    // passen. Deshalb liefert `revokeSettled` einen TYPISIERTEN
+                    // Ausgang, und der Grund des Beweises spielt fuer die Menge
+                    // keine Rolle.
                     val zurueck = ledgerAdapter.revokeSettled(id)
-                    if (zurueck > 0.0) aapsLogger.debug(
+                    if (zurueck.amountU > 0.0) aapsLogger.debug(
                         LTag.APS,
-                        "FUSE: Episodenzaehler um $zurueck U zurueckgedreht ($grund, $id)",
+                        "FUSE: Episodenzaehler um ${zurueck.amountU} U zurueckgedreht " +
+                            "($grund, $id, Phase ${zurueck.foundationPhase}, " +
+                            "Uebertrag jetzt ${ledgerAdapter.episodes.confirmedNotSentPhaseAU} U)",
                     )
                 }
                 notSentClaim = null
