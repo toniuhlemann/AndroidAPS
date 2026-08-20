@@ -550,6 +550,11 @@ object LedgerCodec {
             // das Fundament ist nie geflasht worden, es existiert keine Datei
             // mit einem `foundation`-Objekt ohne dieses Feld.
             .put("confirmedNotSentPhaseAU", e.confirmedNotSentPhaseAU)
+            // Sicherheitsaufschub aus dem gemessenen Abwaertsriegel. Das Feld
+            // ist ab RULE_SET_VERSION 14 vorhanden; beim ersten Upgrade einer
+            // bereits laufenden v13-Autorisierung fehlt es und bedeutet
+            // konservativ 0, nicht Korruption.
+            .put("descentDeferredPhaseAU", e.descentDeferredPhaseAU)
             // Der Phase-A-Bezahlstand gehoert aus demselben Grund hierher wie
             // die anderen beiden: er hat die Lebensdauer der Autorisierung,
             // nicht die der Evidenzepisode. Ginge er verloren, saehe ein
@@ -730,6 +735,9 @@ object LedgerCodec {
         val bezahlt = requireAmount("foundation.deliveredSinceHandoverU", o.getDouble("deliveredSinceHandoverU"))
         val uebertrag =
             requireAmount("foundation.confirmedNotSentPhaseAU", o.getDouble("confirmedNotSentPhaseAU"))
+        val abwaertsAufschub = if (o.has("descentDeferredPhaseAU"))
+            requireAmount("foundation.descentDeferredPhaseAU", o.getDouble("descentDeferredPhaseAU"))
+        else 0.0
         val phaseA = requireAmount("foundation.deliveredPhaseAU", o.getDouble("deliveredPhaseAU"))
         // KEIN stilles none(): s. den Blockkommentar. Die Felder waren alle da
         // und einzeln plausibel - erst ihre Beziehung ist kaputt, und das kann
@@ -742,6 +750,9 @@ object LedgerCodec {
         // Generation gueltig zu machen - und zwar in Richtung MEHR Insulin.
         require(uebertrag <= a.totalBudgetU + 1e-9) {
             "foundation carry $uebertrag exceeds total budget ${a.totalBudgetU}"
+        }
+        require(abwaertsAufschub <= a.totalBudgetU + 1e-9) {
+            "foundation descent defer $abwaertsAufschub exceeds total budget ${a.totalBudgetU}"
         }
         // HIER STEHT BEWUSST KEIN BEZIEHUNGSRIEGEL - und das ist eine
         // Feststellung, keine Auslassung (Codex 19.08.).
@@ -766,6 +777,7 @@ object LedgerCodec {
         e.foundation = a
         e.deliveredSinceHandoverU = bezahlt
         e.confirmedNotSentPhaseAU = uebertrag
+        e.descentDeferredPhaseAU = abwaertsAufschub
         e.deliveredPhaseAU = phaseA
     }
 

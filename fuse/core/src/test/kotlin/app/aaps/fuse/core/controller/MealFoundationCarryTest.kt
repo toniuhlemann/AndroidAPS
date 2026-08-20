@@ -55,6 +55,8 @@ class MealFoundationCarryTest {
         totalBudgetU = BUDGET,
         phaseBBudgetU = bBudgetU,
         confirmedNotSentPhaseAU = uebertragU,
+        descentDeferredPhaseAU = 0.0,
+        descentCarryEligibility = DescentDeferredCarry.Eligibility.NO_DEFERRED,
         phaseBUntilMin = B_BIS,
         deliveredFromBudgetU = ausBudgetU,
         deliveredSinceHandoverU = seitUebergabeU,

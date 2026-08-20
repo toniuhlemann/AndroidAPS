@@ -53,6 +53,7 @@ import app.aaps.fuse.core.controller.MarkerFallback
 import app.aaps.fuse.core.controller.MealFoundation
 import app.aaps.fuse.core.controller.MarkerFloor
 import app.aaps.fuse.core.controller.DescentRecoveryLatch
+import app.aaps.fuse.core.controller.DescentDeferredCarry
 import app.aaps.fuse.core.controller.MeasuredDescentGate
 import app.aaps.fuse.core.controller.OnsetChannel
 import app.aaps.fuse.core.controller.PrimeRelease
@@ -777,6 +778,7 @@ class FuseCycleRunner(
             // Insulin fuer eine Luecke aus der widerrufenen - der Widerruf
             // haette dann mehr Insulin zur Folge als das Zulassen.
             episodes.confirmedNotSentPhaseAU = 0.0
+            episodes.descentDeferredPhaseAU = 0.0
         }
         val evidenceEpisodeMin = evidenceEpisodeId.takeIf { it > 0L }
             ?.let { ((computeTs - it) / 60_000L).toInt() }
@@ -1202,6 +1204,7 @@ class FuseCycleRunner(
             // gemeinsamer Reset weiter unten wuerde nur einen von beiden
             // treffen.
             episodes.confirmedNotSentPhaseAU = 0.0
+            episodes.descentDeferredPhaseAU = 0.0
             // Fix 7: neue Marker-Episode -> Wende-Latch der Sonderrechte neu.
             episodes.markerTurnTs = 0L
             episodes.markerRiseSeen = false
@@ -1516,6 +1519,19 @@ class FuseCycleRunner(
         episodes.descentRecoveryLatch = descentLatch.state
         episodes.descentRecoveryRuntime = descentLatch.runtime
 
+        // EIN Urteil fuer Haupt- und Fallbackpfad. Der gespeicherte
+        // Sicherheitsaufschub darf erst in Phase B nach bestaetigter Erholung
+        // wirken; ein echtes Tief, ungesundes Signal oder rohes
+        // Rebound-Fenster sperrt ihn weiterhin.
+        val descentCarryEligibility = DescentDeferredCarry.eligibility(
+            deferredU = episodes.descentDeferredPhaseAU,
+            phase = MealFoundation.phaseOf(episodes.foundation, computeTs, episodes.primeWindowStartTs),
+            latchBlocksPositive = descentLatch.blocksPositive,
+            signalHealthy = step.health == Health.READY,
+            measuredLow = step.safetyReasons.isNotEmpty(),
+            reboundRaw = reboundRaw,
+        )
+
         // ---- STUFE 3: DER EVIDENZBESTAND RECHNET, ABER ZAHLT NOCH NICHT ----
         //
         // Der Kern laeuft ab hier in jedem Zyklus mit. Sein Kredit ist
@@ -1643,7 +1659,8 @@ class FuseCycleRunner(
                 return abort("$warum | noFallback=${kernelReject ?: "KERNEL_UNAVAILABLE"}", signal, cfg, step, evidenz = evidenz)
             return markerFallbackCycle(
                 rejected, warum, signal, step, cfg, state, profile, pumpe, tempBasalFallback,
-                computeTs, markerTs, mealMarkerActive, measuredLow, descentRisk, descentLatch, evidenceEpisodeId,
+                computeTs, markerTs, mealMarkerActive, measuredLow, descentRisk, descentLatch,
+                descentCarryEligibility, evidenceEpisodeId,
                 episodeGate.denial?.name, episodeGate.creditRevoked, evidenz,
                 isf, target, targetSource, iobTotal,
                 maxIobU, transportModelledU, ledgerView, episodes, onset, band,
@@ -2021,6 +2038,8 @@ class FuseCycleRunner(
             deliveredPhaseAU = episodes.deliveredPhaseAU,
             deliveredSinceHandoverU = episodes.deliveredSinceHandoverU,
             confirmedNotSentPhaseAU = episodes.confirmedNotSentPhaseAU,
+            descentDeferredPhaseAU = episodes.descentDeferredPhaseAU,
+            descentCarryEligibility = descentCarryEligibility,
             bolusStepU =bolusStep,
         )
 
@@ -2340,6 +2359,12 @@ class FuseCycleRunner(
         // hilft nicht mehr" und "mehr Bolus ist sicher" sind zwei
         // verschiedene Aussagen, und ihre Vermischung war der Befund.
         val decision = MeasuredDescentGate.apply(vorRiegel, descentLatch.blocksPositive)
+        observeDescentDeferred(
+            episodes = episodes,
+            nowTs = computeTs,
+            maxPositivePerCycleU = state.maxSmbU,
+            finalDecision = decision,
+        )
         // Die Clearance-Verschiebung stand hier und ist nach oben gewandert -
         // vor den Entscheidungssnapshot des Fundaments (s. dort).
 
@@ -2431,6 +2456,8 @@ class FuseCycleRunner(
             deliveredPhaseAU = episodes.deliveredPhaseAU,
             deliveredSinceHandoverU = episodes.deliveredSinceHandoverU,
             confirmedNotSentPhaseAU = episodes.confirmedNotSentPhaseAU,
+            descentDeferredPhaseAU = episodes.descentDeferredPhaseAU,
+            descentCarryEligibility = descentCarryEligibility,
             bolusStepU =pumpe.bolusStepU,
         )
 
@@ -2666,6 +2693,36 @@ class FuseCycleRunner(
         val mealGebucht: Boolean,
         val phase: MealFoundation.Phase,
     )
+
+    /**
+     * Fortschreibung des Sicherheitsaufschubs an genau EINER Stelle fuer
+     * Haupt- und Fallbackpfad. Entscheidend ist der finale Block nach allen
+     * Lifts und Floors; ein frueher Zwischenstand koennte spaeter wieder
+     * angehoben werden und wuerde dann eine nicht existente Luecke buchen.
+     */
+    private fun observeDescentDeferred(
+        episodes: app.aaps.fuse.plugin.ledger.EpisodeBudgets,
+        nowTs: Long,
+        maxPositivePerCycleU: Double,
+        finalDecision: FuseController.Decision,
+    ) {
+        val auth = episodes.foundation
+        if (!auth.valid) return
+        val phase = MealFoundation.phaseOf(auth, nowTs, episodes.primeWindowStartTs)
+        episodes.descentDeferredPhaseAU = DescentDeferredCarry.observe(
+            currentU = episodes.descentDeferredPhaseAU,
+            phase = phase,
+            blockedByMeasuredDescent = finalDecision.block == FuseController.Block.MEASURED_DESCENT_RISK,
+            phaseABudgetU = auth.phaseABudgetU,
+            deliveredPhaseAU = episodes.deliveredPhaseAU,
+            nowTs = nowTs,
+            handoverTs = auth.effectiveHandoverTs(episodes.primeWindowStartTs),
+            // Optimistische Restkapazitaet: damit wird nur gespeichert, was
+            // selbst unter maximaler Kadenz nicht mehr vor Phase B passt.
+            maxPositivePerCycleU = maxPositivePerCycleU,
+        )
+    }
+
     /**
      * DER PREDICTORFREIE MARKERPFAD.
      *
@@ -2726,6 +2783,7 @@ class FuseCycleRunner(
         /** Dasselbe Hysterese-Ergebnis wie im Hauptpfad; nie hier neu
          *  berechnen, sonst koennen Haupt- und Fallbackpfad anders oeffnen. */
         descentLatch: DescentRecoveryLatch.Result,
+        descentCarryEligibility: DescentDeferredCarry.Eligibility,
         /** Identitaet der Mahlzeitenepisode fuer den Evidenz-Zaehler; 0 = keine. */
         evidenceEpisodeId: Long,
         /** Warum keine eroeffnet wurde - s. [Outcome.evidenceEpisodeDenial]. */
@@ -2836,6 +2894,8 @@ class FuseCycleRunner(
                 deliveredPhaseAU = episodes.deliveredPhaseAU,
                 deliveredSinceHandoverU = episodes.deliveredSinceHandoverU,
                 confirmedNotSentPhaseAU = episodes.confirmedNotSentPhaseAU,
+                descentDeferredPhaseAU = episodes.descentDeferredPhaseAU,
+                descentCarryEligibility = descentCarryEligibility,
                 bolusStepU = pumpe.bolusStepU,
             ),
             state = state,
@@ -2857,6 +2917,12 @@ class FuseCycleRunner(
         // Stelle, an der eine Messung fehlte - ein Riegel, den nur der
         // Hauptpfad kennt, ist kein Riegel.
         val heldMitRiegel = MeasuredDescentGate.apply(held, descentLatch.blocksPositive)
+        observeDescentDeferred(
+            episodes = episodes,
+            nowTs = computeTs,
+            maxPositivePerCycleU = state.maxSmbU,
+            finalDecision = heldMitRiegel,
+        )
 
         val runningTbr = processedTbrEbData.getTempBasalIncludingConvertedExtended(computeTs)
         val combined = FuseTbrTranslator.combine(
@@ -2969,6 +3035,8 @@ class FuseCycleRunner(
                 deliveredPhaseAU = episodes.deliveredPhaseAU,
                 deliveredSinceHandoverU = episodes.deliveredSinceHandoverU,
                 confirmedNotSentPhaseAU = episodes.confirmedNotSentPhaseAU,
+                descentDeferredPhaseAU = episodes.descentDeferredPhaseAU,
+                descentCarryEligibility = descentCarryEligibility,
                 bolusStepU = pumpe.bolusStepU,
             ),
             preFoundationSmbU = preFoundationSmbU,

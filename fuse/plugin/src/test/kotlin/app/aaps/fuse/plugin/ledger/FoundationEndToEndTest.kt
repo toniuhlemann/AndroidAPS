@@ -1,6 +1,7 @@
 package app.aaps.fuse.plugin.ledger
 
 import app.aaps.fuse.core.controller.AuthorizedLift
+import app.aaps.fuse.core.controller.DescentDeferredCarry
 import app.aaps.fuse.core.controller.FuseController
 import app.aaps.fuse.core.controller.MealFoundation
 import app.aaps.fuse.core.observer.Health
@@ -119,6 +120,8 @@ class FoundationEndToEndTest {
                 deliveredSinceHandoverU = e.deliveredSinceHandoverU,
                 deliveredPhaseAU = e.deliveredPhaseAU,
                 confirmedNotSentPhaseAU = e.confirmedNotSentPhaseAU,
+                descentDeferredPhaseAU = e.descentDeferredPhaseAU,
+                descentCarryEligibility = DescentDeferredCarry.Eligibility.NO_DEFERRED,
                 bolusStepU = STEP,
             )
 

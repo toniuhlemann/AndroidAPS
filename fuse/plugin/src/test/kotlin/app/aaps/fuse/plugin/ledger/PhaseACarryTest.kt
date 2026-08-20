@@ -276,6 +276,37 @@ class PhaseACarryTest {
         assertEquals(1.80, rundlauf(a.episodes).deliveredPhaseAU, 1e-9)
     }
 
+    @Test
+    fun `der Abwaertsaufschub ueberlebt den Rundlauf`() {
+        val a = nachPublikation()
+        a.episodes.descentDeferredPhaseAU = 1.65
+        assertEquals(1.65, rundlauf(a.episodes).descentDeferredPhaseAU, 1e-9)
+    }
+
+    @Test
+    fun `v13 Autorisierung ohne Abwaertsaufschub startet konservativ bei null`() {
+        val a = nachPublikation()
+        val json = LedgerCodec.encodeEpisodes(a.episodes)
+        json.getJSONObject("foundation").remove("descentDeferredPhaseAU")
+        assertEquals(
+            0.0,
+            LedgerCodec.decodeEpisodes(JSONObject(json.toString())).descentDeferredPhaseAU,
+            1e-9,
+        )
+    }
+
+    @Test
+    fun `unmoeglicher Abwaertsaufschub verwirft die Generation`() {
+        val a = nachPublikation()
+        for (bad in listOf(-0.05, BUDGET + 0.05)) {
+            val json = LedgerCodec.encodeEpisodes(a.episodes)
+            json.getJSONObject("foundation").put("descentDeferredPhaseAU", bad)
+            assertThrows(IllegalArgumentException::class.java) {
+                LedgerCodec.decodeEpisodes(JSONObject(json.toString()))
+            }
+        }
+    }
+
     /**
      * KEIN BEZIEHUNGSRIEGEL GEGEN `evidenceCommittedU` (Codex-Rueckfrage,
      * hier als Regressionsschutz).

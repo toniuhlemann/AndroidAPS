@@ -69,7 +69,10 @@ class MealFoundationLiftTest {
             auth, t0 + (minuten * 60_000).toLong(), 0L,
             deliveredFromBudgetU = ausBudgetU, deliveredSinceHandoverU = seitUebergabeU,
             deliveredPhaseAU = ausBudgetU - seitUebergabeU,
-            confirmedNotSentPhaseAU = 0.0, bolusStepU = STEP,
+            confirmedNotSentPhaseAU = 0.0,
+            descentDeferredPhaseAU = 0.0,
+            descentCarryEligibility = DescentDeferredCarry.Eligibility.NO_DEFERRED,
+            bolusStepU = STEP,
         )
     }
 

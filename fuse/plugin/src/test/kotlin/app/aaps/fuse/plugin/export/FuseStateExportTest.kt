@@ -443,7 +443,7 @@ class FuseStateExportTest {
         // DIESER TEST IST ABSICHTLICH STUR: er faellt bei jedem Bump um und
         // zwingt damit zu der Frage, ob die Aenderung wirklich dosierwirksam
         // war - ein stiller Bump waere so wertlos wie ein vergessener.
-        assertEquals(13, FuseStateJson.RULE_SET_VERSION)
+        assertEquals(14, FuseStateJson.RULE_SET_VERSION)
         assertTrue(
             FuseStateJson.hashOf(cfg)!!.isNotEmpty(),
             "und der Hash bleibt berechenbar",
@@ -834,11 +834,17 @@ class FuseStateExportTest {
         ausBudgetU: Double = 2.25,
         seitUebergabeU: Double = 0.10,
         uebertragU: Double = 0.0,
+        abwaertsU: Double = 0.0,
+        abwaertsEligibility: app.aaps.fuse.core.controller.DescentDeferredCarry.Eligibility =
+            app.aaps.fuse.core.controller.DescentDeferredCarry.Eligibility.NO_DEFERRED,
     ) = app.aaps.fuse.core.controller.MealFoundation.snapshot(
         fAuth(), fT0 + (minuten * 60_000).toLong(), 0L,
         deliveredFromBudgetU = ausBudgetU, deliveredSinceHandoverU = seitUebergabeU,
         deliveredPhaseAU = ausBudgetU - seitUebergabeU,
-        confirmedNotSentPhaseAU = uebertragU, bolusStepU = 0.05,
+        confirmedNotSentPhaseAU = uebertragU,
+        descentDeferredPhaseAU = abwaertsU,
+        descentCarryEligibility = abwaertsEligibility,
+        bolusStepU = 0.05,
     )
 
     /**
@@ -874,7 +880,8 @@ class FuseStateExportTest {
             // nicht nachrechenbar - dann sieht man Ergebnis und Rohwert,
             // aber nicht die Groesse dazwischen.
             "confirmedNotSentPhaseAU", "deliveredPhaseAU",
-            "effectiveCarryU", "phaseBAllowanceU",
+            "effectiveCarryU", "descentDeferredPhaseAU", "descentCarryEligibility",
+            "effectiveDescentCarryU", "phaseBAllowanceU",
             "plannedTotalU", "backlogU", "dueU", "remainingInWindowU", "binding",
             "effectiveWindowMin", "effectiveRateUPerMin",
         )) {
@@ -955,6 +962,22 @@ class FuseStateExportTest {
             o.getDouble("phaseBBudgetU"), o.getDouble("phaseBAllowanceU"), 1e-9,
             "Phase B rechnet wieder mit ihrem Teilbudget",
         )
+    }
+
+    @Test
+    fun `der Sicherheitsaufschub steht roh mit Urteil und wirksamem Anteil im Trail`() {
+        val o = fundament(
+            fSnapshot(
+                ausBudgetU = 1.35,
+                seitUebergabeU = 0.0,
+                abwaertsU = 1.65,
+                abwaertsEligibility = app.aaps.fuse.core.controller.DescentDeferredCarry.Eligibility.ELIGIBLE,
+            ),
+        )
+        assertEquals(1.65, o.getDouble("descentDeferredPhaseAU"), 1e-9)
+        assertEquals("ELIGIBLE", o.getString("descentCarryEligibility"))
+        assertEquals(0.90, o.getDouble("effectiveDescentCarryU"), 1e-9)
+        assertEquals(1.65, o.getDouble("phaseBAllowanceU"), 1e-9)
     }
 
     /**

@@ -41,6 +41,7 @@ import app.aaps.fuse.core.predictor.PredictorOutcome
 import app.aaps.fuse.core.predictor.TrajectoryCore
 import app.aaps.fuse.core.controller.EvidenceStock
 import app.aaps.fuse.core.controller.DescentRecoveryLatch
+import app.aaps.fuse.core.controller.DescentDeferredCarry
 import app.aaps.fuse.core.controller.MealFoundation
 import app.aaps.fuse.core.controller.OnsetChannel
 import org.junit.jupiter.api.Assertions.assertEquals
@@ -2943,6 +2944,7 @@ class TransportWiringTest : TestBaseWithProfile() {
         repeat(5) { cycle() }
         assertTrue(ledger.episodes.foundation.valid, "die Autorisierung MUSS stehen")
         ledger.episodes.deliveredSinceHandoverU = 0.20
+        ledger.episodes.descentDeferredPhaseAU = 0.40
 
         // DIE RUECKNAHME: der Marker wird zurueckgenommen.
         markerAt = 0L
@@ -2955,6 +2957,10 @@ class TransportWiringTest : TestBaseWithProfile() {
         assertEquals(
             0.0, ledger.episodes.deliveredSinceHandoverU, 1e-9,
             "und der Bezahlstand faellt mit - er bedeutet ohne sie nichts",
+        )
+        assertEquals(
+            0.0, ledger.episodes.descentDeferredPhaseAU, 1e-9,
+            "auch ein Sicherheitsaufschub gehoert nur zu dieser Autorisierung",
         )
         assertEquals(
             MealFoundation.Phase.NONE, o.mealFoundation.phase,
@@ -3057,6 +3063,7 @@ class TransportWiringTest : TestBaseWithProfile() {
         // Eine belegte Phase-A-Luecke, wie sie ein Nicht-Sende-Beweis
         // hinterlaesst.
         ledger.episodes.confirmedNotSentPhaseAU = 0.30
+        ledger.episodes.descentDeferredPhaseAU = 0.40
 
         markerAt = 0L
         cycle()
@@ -3103,6 +3110,10 @@ class TransportWiringTest : TestBaseWithProfile() {
         assertEquals(
             0.0, ledger.episodes.confirmedNotSentPhaseAU, 1e-9,
             "und die neue Mahlzeit beginnt ohne fremde Luecke",
+        )
+        assertEquals(
+            0.0, ledger.episodes.descentDeferredPhaseAU, 1e-9,
+            "und ohne Sicherheitsaufschub der vorigen Mahlzeit",
         )
     }
 
@@ -3812,6 +3823,8 @@ class TransportWiringTest : TestBaseWithProfile() {
         deliveredSinceHandoverU = e.deliveredSinceHandoverU,
         deliveredPhaseAU = e.deliveredPhaseAU,
         confirmedNotSentPhaseAU = e.confirmedNotSentPhaseAU,
+        descentDeferredPhaseAU = e.descentDeferredPhaseAU,
+        descentCarryEligibility = app.aaps.fuse.core.controller.DescentDeferredCarry.Eligibility.NO_DEFERRED,
         bolusStepU = 0.05,
     )
 
@@ -4700,6 +4713,38 @@ class TransportWiringTest : TestBaseWithProfile() {
     }
 
     /**
+     * DERSELBE AUFSCHUB IM PREDICTORFREIEN SEITENEINGANG.
+     *
+     * Haupt- und Fallbackpfad rufen dieselbe Fortschreibung auf, aber an zwei
+     * getrennten Verdrahtungsstellen. Der vorangehende Hauptlauf reift nur
+     * Signal und Abwaertslage; unmittelbar vor dem erzwungenen Fallback wird
+     * der Zaehler genullt. Ein positiver Wert danach kann daher nur aus der
+     * Fallback-Stelle stammen.
+     */
+    @Test
+    fun `auch der Fallback merkt den unvermeidbaren Phase-A-Rueckstand`(@TempDir dir: File) {
+        abwaertslage(dir)
+        repeat(10) { cycle() }
+        ledger.episodes.descentDeferredPhaseAU = 0.0
+        predictReject = PredictorReason.PENDING_MODEL_TOO_SHORT
+
+        var fallbackRiskSeen = false
+        repeat(6) {
+            val o = cycle()
+            if (o.markerFallbackUsed && o.decision.block == FuseController.Block.MEASURED_DESCENT_RISK) {
+                assertEquals(0.0, o.decision.smbU, 1e-9)
+                fallbackRiskSeen = true
+            }
+        }
+
+        assertTrue(fallbackRiskSeen, "der Test MUSS den predictorfreien Riegel erreichen")
+        assertTrue(
+            ledger.episodes.descentDeferredPhaseAU > 0.0,
+            "auch der Seiteneingang muss den spaeter kontrolliert nachholbaren Rueckstand festhalten",
+        )
+    }
+
+    /**
      * UND DIE TBR BLEIBT DAVON UNBERUEHRT. Bei aktivem Risiko und unwirksamer
      * Zero-TBR ist die richtige Antwort SMB 0 UND KEEP_CURRENT - keine
      * nutzlose Null. "Basal zurueckhalten hilft nicht mehr" und "mehr Bolus
@@ -4726,6 +4771,10 @@ class TransportWiringTest : TestBaseWithProfile() {
             }
         }
         assertTrue(geprueft, "der Aufbau muss den Riegel erreichen")
+        assertTrue(
+            ledger.episodes.descentDeferredPhaseAU > 0.0,
+            "der harte Riegel bucht keine Lieferung, merkt aber den unvermeidbaren Phase-A-Rueckstand",
+        )
     }
 
     /**
@@ -4816,6 +4865,91 @@ class TransportWiringTest : TestBaseWithProfile() {
         assertTrue(blockiertMitBedarf > 0, "der Test muss einen echten positiven Kandidaten blockieren")
         assertTrue(freigabeGesehen, "die bestaetigte Wende muss den Riegel wieder oeffnen")
         assertTrue(positiveNachFreigabe > 0.0, "nach der Wende muss die Mahlzeit wieder versorgt werden")
+    }
+
+    /**
+     * DER AUFGESCHOBENE PHASE-A-ANTEIL ERREICHT DEN ECHTEN PHASE-B-PFAD.
+     *
+     * Der Kern allein beweist nur die Mengenrechnung. Dieser Test zwingt den
+     * Runner durch dieselbe Reihenfolge wie produktiv: vorgefundener Latch,
+     * drei bestaetigte Wendezyklen, Phase B, Entscheidungssnapshot und Lift.
+     * Die Phase-A-Bilanz wird nach dem bewiesenen Wiederaufgehen eingesetzt,
+     * damit kein normaler Prime-Schritt den zu pruefenden Rueckstand nebenbei
+     * schliesst. Danach springt die Uhr ueber die Uebergabe; die Rohreihe
+     * bleibt dabei minuetlich lueckenlos und wird nicht umgeschrieben.
+     */
+    @Test
+    fun `nach bestaetigter Wende wird der Abwaertsaufschub in Phase B wieder faellig`(@TempDir dir: File) {
+        fundamentAn = true
+        fundamentAnteil = 0.80
+        markerAuthorized = true
+        primeHuelleU = 3.75
+        // Drei klare positive Zyklen fuer die Wende, danach ein ruhiges
+        // Plateau nahe Ziel: der normale Korrekturpfad soll das Fundament
+        // nicht bloss durch eine eigene grosse Anforderung verdecken.
+        flach = 90.0
+        steigungProMin = 2.2
+        knickAbMin = 6
+        steigungNachKnick = 0.0
+        bolusIobU = null
+        clock = start
+        transportReset()
+        val l = FuseLedgerAdapter().also { it.loadOnce(dir.also(File::mkdirs), "test-epoch", start) }
+        l.episodes.descentRecoveryLatch = DescentRecoveryLatch.State(true, start - 60_000L)
+        neuerRunner(l)
+        markerAt = start + 2 * 60_000L
+
+        var recovered = false
+        var phaseBReached = false
+        for (ignored in 0 until 30) {
+            val o = cycle()
+            if (o.descentLatchReason == DescentRecoveryLatch.Reason.RECOVERED.name) recovered = true
+            if (o.mealFoundation.phase == MealFoundation.Phase.PHASE_B) {
+                phaseBReached = true
+                break
+            }
+        }
+        assertTrue(recovered, "die Wende MUSS bestaetigt sein - sonst darf der Aufschub nicht wirken")
+        assertTrue(phaseBReached, "der minuetlich lueckenlose Lauf MUSS Phase B erreichen")
+        assertTrue(ledger.episodes.foundation.valid, "die gepinnte Autorisierung MUSS stehen")
+
+        // Der gemessene Fruehstuecksfall: 3,00 U Phase-A-Soll, 1,35 U
+        // geliefert, 1,65 U durch den harten Riegel unvermeidbar aufgeschoben.
+        ledger.episodes.deliveredPhaseAU = 1.35
+        ledger.episodes.deliveredSinceHandoverU = 0.0
+        ledger.episodes.confirmedNotSentPhaseAU = 0.0
+        ledger.episodes.descentDeferredPhaseAU = 1.65
+
+        // ECHTER Prozessschnitt: Autorisierung, wieder geoeffneter Latch und
+        // Aufschub kommen gemeinsam aus der versiegelten Generation. Die
+        // halbe Erholungsserie ist absichtlich nicht Teil davon; hier ist die
+        // Wende bereits vollstaendig bestaetigt.
+        assertTrue(ledger.persistVerified(dir), "der vorbereitete Zustand muss versiegelt werden")
+        val restarted = FuseLedgerAdapter().also { it.loadOnce(dir, "test-epoch-2", clock) }
+        neuerRunner(restarted)
+        markerPress = 0L
+        assertEquals(1.65, ledger.episodes.descentDeferredPhaseAU, 1e-9, "restartfester Aufschub")
+        assertFalse(ledger.episodes.descentRecoveryLatch.active, "die bestaetigte Wende bleibt offen")
+
+        var eligibleSeen = false
+        var liftSum = 0.0
+        repeat(12) {
+            val o = cycle()
+            if (o.mealFoundation.phase == MealFoundation.Phase.PHASE_B) {
+                assertEquals(
+                    DescentDeferredCarry.Eligibility.ELIGIBLE,
+                    o.mealFoundation.descentCarryEligibility,
+                    "nach der bestaetigten Wende muss genau dieser Aufschub freigegeben sein",
+                )
+                assertEquals(1.65, o.mealFoundation.effectiveDescentCarryU, 1e-9)
+                assertEquals(2.40, o.mealFoundation.phaseBAllowanceU, 1e-9)
+                eligibleSeen = true
+                liftSum += o.foundationLiftU
+            }
+        }
+
+        assertTrue(eligibleSeen, "der echte Runner MUSS Phase B erreicht haben")
+        assertTrue(liftSum > 0.0, "der Aufschub muss ueber den echten Fundament-Lift wieder fliessen koennen")
     }
 
 

@@ -495,6 +495,8 @@ object MealFoundation {
          * also ein Drittel zu schnell.
          */
         confirmedNotSentPhaseAU: Double,
+        descentDeferredPhaseAU: Double,
+        descentCarryEligibility: DescentDeferredCarry.Eligibility,
         phaseBUntilMin: Int,
         deliveredFromBudgetU: Double,
         deliveredSinceHandoverU: Double,
@@ -515,6 +517,8 @@ object MealFoundation {
         // unendlicher Wert kann nur aus einem Fehler stammen; ihn auf 0 zu
         // klemmen hiesse, mit einem kaputten Zustand weiterzurechnen.
         if (!confirmedNotSentPhaseAU.isFinite() || confirmedNotSentPhaseAU < 0.0) return unusable()
+        if (!descentDeferredPhaseAU.isFinite() || descentDeferredPhaseAU < 0.0) return unusable()
+        if (descentDeferredPhaseAU > totalBudgetU + 1e-9) return unusable()
         // DAS FENSTER MUSS NOCH EXISTIEREN. Hat eine CLEARANCE die Uebergabe
         // hinter das Ende geschoben, gibt es kein Phase-B-Fenster mehr - kein
         // Fehler, aber auch keine Versorgung.
@@ -560,6 +564,7 @@ object MealFoundation {
         // eine Erlaubnis oberhalb des Autorisierten erzeugen.
         val erlaubnisU = allowanceU(
             totalBudgetU, phaseBBudgetU, confirmedNotSentPhaseAU,
+            descentDeferredPhaseAU, descentCarryEligibility,
             deliveredFromBudgetU, deliveredSinceHandoverU,
         )
         val rateUProMin = if (fensterMin > 0) erlaubnisU / fensterMin else 0.0
@@ -682,6 +687,8 @@ object MealFoundation {
         deliveredFromBudgetU: Double,
         deliveredSinceHandoverU: Double,
         confirmedNotSentPhaseAU: Double,
+        descentDeferredPhaseAU: Double,
+        descentCarryEligibility: DescentDeferredCarry.Eligibility,
         bolusStepU: Double,
     ): Plan {
         if (!auth.valid) return unusable()
@@ -693,6 +700,8 @@ object MealFoundation {
             // DIE KANONISCHE GROESSE, nicht noch einmal abgeleitet.
             phaseBBudgetU = auth.phaseBBudgetU,
             confirmedNotSentPhaseAU = confirmedNotSentPhaseAU,
+            descentDeferredPhaseAU = descentDeferredPhaseAU,
+            descentCarryEligibility = descentCarryEligibility,
             // Aus der Momentaufnahme zurueckgerechnet, damit die Rohfassung
             // eine Signatur behaelt: endTs ist gepinnt, die Minuten sind es
             // damit auch.
@@ -736,15 +745,41 @@ object MealFoundation {
         totalBudgetU: Double,
         phaseBBudgetU: Double,
         confirmedNotSentPhaseAU: Double,
+        descentDeferredPhaseAU: Double,
+        descentCarryEligibility: DescentDeferredCarry.Eligibility,
         deliveredFromBudgetU: Double,
         deliveredSinceHandoverU: Double,
     ): Double = min(
-        phaseBBudgetU + effectiveCarryU(
+        phaseBBudgetU + carryAllocation(
             totalBudgetU, phaseBBudgetU, confirmedNotSentPhaseAU,
+            descentDeferredPhaseAU, descentCarryEligibility,
             deliveredFromBudgetU, deliveredSinceHandoverU,
-        ),
+        ).totalEffectiveCarryU,
         totalBudgetU,
     )
+
+    private fun carryAllocation(
+        totalBudgetU: Double,
+        phaseBBudgetU: Double,
+        confirmedNotSentPhaseAU: Double,
+        descentDeferredPhaseAU: Double,
+        descentCarryEligibility: DescentDeferredCarry.Eligibility,
+        deliveredFromBudgetU: Double,
+        deliveredSinceHandoverU: Double,
+    ): DescentDeferredCarry.Allocation {
+        if (!deliveredFromBudgetU.isFinite() || !deliveredSinceHandoverU.isFinite())
+            return DescentDeferredCarry.Allocation.none()
+        if (deliveredSinceHandoverU > deliveredFromBudgetU + 1e-9)
+            return DescentDeferredCarry.Allocation.none()
+        val phaseADeliveredU = max(0.0, deliveredFromBudgetU - deliveredSinceHandoverU)
+        return DescentDeferredCarry.allocate(
+            phaseABudgetU = max(0.0, totalBudgetU - phaseBBudgetU),
+            deliveredPhaseAU = phaseADeliveredU,
+            confirmedNotSentPhaseAU = confirmedNotSentPhaseAU,
+            descentDeferredPhaseAU = descentDeferredPhaseAU,
+            descentEligibility = descentCarryEligibility,
+        )
+    }
 
     /**
      * DER NOCH OFFENE UEBERTRAG - eine Mengen-ZEIT-Groesse, kein Konto
@@ -789,25 +824,13 @@ object MealFoundation {
         deliveredFromBudgetU: Double,
         deliveredSinceHandoverU: Double,
     ): Double {
-        val uebertrag =
-            if (confirmedNotSentPhaseAU.isFinite() && confirmedNotSentPhaseAU > 0.0) confirmedNotSentPhaseAU else 0.0
-        if (uebertrag <= 0.0) return 0.0
-        if (!deliveredFromBudgetU.isFinite() || !deliveredSinceHandoverU.isFinite()) return 0.0
-        // KEIN `max(0, ...)` MEHR ALS SCHUTZ (Codex 19.08.). Hier stand, ein
-        // negativer Phase-A-Verbrauch werde auf 0 geklemmt und der Widerspruch
-        // falle "an anderer Stelle" auf - das war eine Behauptung, die ich
-        // nicht geprueft hatte, und sie war falsch: geprueft hat es niemand.
-        // Geklemmt ergab der Widerspruch ausserdem den GROESSTEN Rueckstand,
-        // also die meiste Freigabe - die teure Richtung.
-        //
-        // Den Fall weist jetzt [plan] als [Binding.UNUSABLE_INPUT] ab, bevor
-        // diese Funktion ihn sieht. Das `max` bleibt trotzdem stehen, weil
-        // `effectiveCarryU` auch aus [snapshot] gerufen wird - dort ohne
-        // vorgelagerte Pruefung, und ein NaN im Export waere schlimmer als
-        // eine 0.
-        val phaseAGeliefert = max(0.0, deliveredFromBudgetU - deliveredSinceHandoverU)
-        val phaseARueckstand = max(0.0, (totalBudgetU - phaseBBudgetU) - phaseAGeliefert)
-        return min(uebertrag, phaseARueckstand)
+        return carryAllocation(
+            totalBudgetU, phaseBBudgetU, confirmedNotSentPhaseAU,
+            descentDeferredPhaseAU = 0.0,
+            descentCarryEligibility = DescentDeferredCarry.Eligibility.NO_DEFERRED,
+            deliveredFromBudgetU = deliveredFromBudgetU,
+            deliveredSinceHandoverU = deliveredSinceHandoverU,
+        ).effectiveTransportCarryU
     }
 
     /**
@@ -1011,6 +1034,15 @@ object MealFoundation {
          * [confirmedNotSentPhaseAU] stehen bleibt.
          */
         val effectiveCarryU: Double,
+        /** Wegen des gemessenen Abwaertsriegels in Phase A nicht mehr vor der
+         *  Uebergabe erreichbare Menge. Historischer, restartfester Zaehler. */
+        val descentDeferredPhaseAU: Double,
+        /** Warum der Sicherheitsuebertrag in DIESEM Zyklus wirken darf oder
+         *  schweigt. Das Urteil wird exportiert, nicht aus der Menge geraten. */
+        val descentCarryEligibility: DescentDeferredCarry.Eligibility,
+        /** Vom Sicherheitsuebertrag aktuell noch wirksamer Anteil, nach dem
+         *  staerkeren Transportbeweis und dem realen Phase-A-Rueckstand. */
+        val effectiveDescentCarryU: Double,
         /** Was Phase B insgesamt geben DARF: Teilbudget plus dem noch offenen
          *  Uebertrag, gedeckelt am Gesamtbudget. Die Groesse, gegen die [plan]
          *  rechnet. */
@@ -1032,7 +1064,10 @@ object MealFoundation {
                 totalBudgetU = 0.0, phaseABudgetU = 0.0,
                 phaseBBudgetU = 0.0, effectiveHandoverTs = 0L, latchedHandoverTs = 0L,
                 endTs = 0L, phase = Phase.NONE, deliveredPhaseAU = 0.0, deliveredSinceHandoverU = 0.0,
-                confirmedNotSentPhaseAU = 0.0, effectiveCarryU = 0.0, phaseBAllowanceU = 0.0,
+                confirmedNotSentPhaseAU = 0.0, effectiveCarryU = 0.0,
+                descentDeferredPhaseAU = 0.0,
+                descentCarryEligibility = DescentDeferredCarry.Eligibility.NO_DEFERRED,
+                effectiveDescentCarryU = 0.0, phaseBAllowanceU = 0.0,
                 plannedTotalU = 0.0, backlogU = 0.0, dueU = 0.0, remainingInWindowU = 0.0,
                 binding = null, effectiveWindowMin = 0, effectiveRateUPerMin = 0.0,
             )
@@ -1059,12 +1094,19 @@ object MealFoundation {
          *  [Snapshot.deliveredPhaseAU]. Er geht NICHT in die Rechnung ein. */
         deliveredPhaseAU: Double,
         confirmedNotSentPhaseAU: Double,
+        descentDeferredPhaseAU: Double,
+        descentCarryEligibility: DescentDeferredCarry.Eligibility,
         bolusStepU: Double,
     ): Snapshot {
         if (!auth.valid) return Snapshot.none()
         val plan = planFrom(
             auth, nowTs, primeWindowStartTs, deliveredFromBudgetU, deliveredSinceHandoverU,
-            confirmedNotSentPhaseAU, bolusStepU,
+            confirmedNotSentPhaseAU, descentDeferredPhaseAU, descentCarryEligibility, bolusStepU,
+        )
+        val carry = carryAllocation(
+            auth.totalBudgetU, auth.phaseBBudgetU, confirmedNotSentPhaseAU,
+            descentDeferredPhaseAU, descentCarryEligibility,
+            deliveredFromBudgetU, deliveredSinceHandoverU,
         )
         return Snapshot(
             armed = true,
@@ -1089,11 +1131,15 @@ object MealFoundation {
                 auth.totalBudgetU, auth.phaseBBudgetU, confirmedNotSentPhaseAU,
                 deliveredFromBudgetU, deliveredSinceHandoverU,
             ),
+            descentDeferredPhaseAU = descentDeferredPhaseAU,
+            descentCarryEligibility = descentCarryEligibility,
+            effectiveDescentCarryU = carry.effectiveDescentCarryU,
             // DIESELBE Rechnung wie in [plan], nicht eine zweite: der Deckel am
             // Gesamtbudget gehoert dazu, sonst zeigte der Export eine
             // Erlaubnis, die der Regler gar nicht hat.
             phaseBAllowanceU = allowanceU(
                 auth.totalBudgetU, auth.phaseBBudgetU, confirmedNotSentPhaseAU,
+                descentDeferredPhaseAU, descentCarryEligibility,
                 deliveredFromBudgetU, deliveredSinceHandoverU,
             ),
             plannedTotalU = plan.plannedTotalU,

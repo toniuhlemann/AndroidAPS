@@ -317,6 +317,18 @@ class EpisodeBudgets {
     var confirmedNotSentPhaseAU: Double = 0.0
 
     /**
+     * Durch den harten gemessenen Abwaertsriegel in Phase A nicht mehr vor
+     * der Uebergabe erreichbare Versorgung [U].
+     *
+     * Anders als [confirmedNotSentPhaseAU] ist das kein Transportbeweis,
+     * sondern ein Sicherheitsaufschub. Der Wert allein gibt nichts frei; erst
+     * die aktuelle, typisierte Erholungspruefung in Phase B macht einen noch
+     * offenen Anteil wirksam. Neue Autorisierung und Widerruf setzen ihn auf
+     * null, damit keine Mahlzeit den Aufschub ihrer Vorgaengerin erbt.
+     */
+    var descentDeferredPhaseAU: Double = 0.0
+
+    /**
      * Die Buchung DIESES Zyklus, solange die Publikation nicht feststeht.
      *
      * WARUM RESERVIEREN UND NICHT VERSCHIEBEN: der Runner belastet die

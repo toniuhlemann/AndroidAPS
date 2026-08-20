@@ -43,6 +43,8 @@ class MealFoundationTest {
         totalBudgetU = BUDGET,
         phaseBBudgetU = B_BUDGET,
         confirmedNotSentPhaseAU = uebertragU,
+        descentDeferredPhaseAU = 0.0,
+        descentCarryEligibility = DescentDeferredCarry.Eligibility.NO_DEFERRED,
         phaseBUntilMin = B_BIS,
         deliveredFromBudgetU = geflossenU,
         deliveredSinceHandoverU = seitUebergabeU,
@@ -241,6 +243,8 @@ class MealFoundationTest {
         ) = MealFoundation.plan(
             marker, jetzt, uebergabe, budget, bBudget,
             confirmedNotSentPhaseAU = 0.0,
+            descentDeferredPhaseAU = 0.0,
+            descentCarryEligibility = DescentDeferredCarry.Eligibility.NO_DEFERRED,
             phaseBUntilMin = ende, deliveredFromBudgetU = geflossen,
             deliveredSinceHandoverU = seitUebergabe, bolusStepU = step,
         )
@@ -279,7 +283,10 @@ class MealFoundationTest {
         for (m in listOf(0.0, 15.0, 30.0, 60.0, 90.0)) {
             val p = MealFoundation.plan(
                 t0, t0 + (m * 60_000).toLong(), t0 + A_BIS * 60_000L, BUDGET,
-                phaseBBudgetU = 0.0, confirmedNotSentPhaseAU = 0.0, phaseBUntilMin = B_BIS,
+                phaseBBudgetU = 0.0, confirmedNotSentPhaseAU = 0.0,
+                descentDeferredPhaseAU = 0.0,
+                descentCarryEligibility = DescentDeferredCarry.Eligibility.NO_DEFERRED,
+                phaseBUntilMin = B_BIS,
                 deliveredFromBudgetU = 3.0, deliveredSinceHandoverU = 0.0, bolusStepU = STEP,
             )
             assertEquals(0.0, p.dueU, 1e-9, "bei T+$m")
@@ -464,7 +471,10 @@ class MealFoundationTest {
         // Uebergabe bei T+30, Ende weiterhin bei T+60: halbes Fenster.
         val p = MealFoundation.plan(
             markerTs = t0, nowTs = t0 + 45 * 60_000L, handoverTs = spaet,
-            totalBudgetU = BUDGET, phaseBBudgetU = B_BUDGET, confirmedNotSentPhaseAU = 0.0, phaseBUntilMin = B_BIS,
+            totalBudgetU = BUDGET, phaseBBudgetU = B_BUDGET, confirmedNotSentPhaseAU = 0.0,
+            descentDeferredPhaseAU = 0.0,
+            descentCarryEligibility = DescentDeferredCarry.Eligibility.NO_DEFERRED,
+            phaseBUntilMin = B_BIS,
             deliveredFromBudgetU = 2.25, deliveredSinceHandoverU = 0.0, bolusStepU = STEP,
         )
         assertEquals(
@@ -546,7 +556,10 @@ class MealFoundationTest {
     fun `ein Teilbudget in Hoehe des Gesamtbudgets ist zulaessig`() {
         val p = MealFoundation.plan(
             markerTs = t0, nowTs = t0 + 30 * 60_000L, handoverTs = t0 + A_BIS * 60_000L,
-            totalBudgetU = BUDGET, phaseBBudgetU = BUDGET, confirmedNotSentPhaseAU = 0.0, phaseBUntilMin = B_BIS,
+            totalBudgetU = BUDGET, phaseBBudgetU = BUDGET, confirmedNotSentPhaseAU = 0.0,
+            descentDeferredPhaseAU = 0.0,
+            descentCarryEligibility = DescentDeferredCarry.Eligibility.NO_DEFERRED,
+            phaseBUntilMin = B_BIS,
             deliveredFromBudgetU = 0.0, deliveredSinceHandoverU = 0.0, bolusStepU = STEP,
         )
         assertNotEquals(
@@ -568,7 +581,10 @@ class MealFoundationTest {
         assertEquals(BUDGET, a.phaseBBudgetU, 1e-9)
         assertNotEquals(
             MealFoundation.Binding.UNUSABLE_INPUT,
-            MealFoundation.planFrom(a, t0 + 30 * 60_000L, 0L, 0.0, 0.0, 0.0, STEP).binding,
+            MealFoundation.planFrom(
+                a, t0 + 30 * 60_000L, 0L, 0.0, 0.0, 0.0,
+                0.0, DescentDeferredCarry.Eligibility.NO_DEFERRED, STEP,
+            ).binding,
             "der Riegel darf die eigene Autorisierung nicht abweisen",
         )
     }
@@ -761,7 +777,10 @@ class MealFoundationTest {
     @Test
     fun `eine spaetere Budgetaenderung veraendert die laufende Autorisierung nicht`() {
         val a = armiere(budget = 3.0)
-        val p = MealFoundation.planFrom(a, t0 + 40 * 60_000L, 0L, 2.25, 0.0, 0.0, STEP)
+        val p = MealFoundation.planFrom(
+            a, t0 + 40 * 60_000L, 0L, 2.25, 0.0, 0.0,
+            0.0, DescentDeferredCarry.Eligibility.NO_DEFERRED, STEP,
+        )
         assertEquals(
             0.75, p.remainingInWindowU, 1e-9,
             "das Phase-B-Budget bleibt die Momentaufnahme von 3,0 U",
@@ -771,7 +790,10 @@ class MealFoundationTest {
     @Test
     fun `eine spaetere Endzeit verlaengert die laufende Phase nicht`() {
         val a = armiere(ende = 60)
-        val p = MealFoundation.planFrom(a, t0 + 80 * 60_000L, 0L, 2.25, 0.0, 0.0, STEP)
+        val p = MealFoundation.planFrom(
+            a, t0 + 80 * 60_000L, 0L, 2.25, 0.0, 0.0,
+            0.0, DescentDeferredCarry.Eligibility.NO_DEFERRED, STEP,
+        )
         assertEquals(MealFoundation.Binding.AFTER_WINDOW, p.binding)
         assertEquals(0.0, p.dueU, 1e-9)
     }
@@ -782,7 +804,10 @@ class MealFoundationTest {
         assertFalse(a.valid, "keine Autorisierung")
         assertEquals(
             MealFoundation.Binding.UNUSABLE_INPUT,
-            MealFoundation.planFrom(a, t0 + 40 * 60_000L, 0L, 2.25, 0.0, 0.0, STEP).binding,
+            MealFoundation.planFrom(
+                a, t0 + 40 * 60_000L, 0L, 2.25, 0.0, 0.0,
+                0.0, DescentDeferredCarry.Eligibility.NO_DEFERRED, STEP,
+            ).binding,
             "und damit auch kein rueckwirkender Rueckstand",
         )
     }
@@ -822,7 +847,10 @@ class MealFoundationTest {
             "die Uebergabe folgt dem verschobenen Prime-Fenster",
         )
         // Und bei T+20 - vor der verschobenen Uebergabe - entsteht nichts.
-        val p = MealFoundation.planFrom(a, t0 + 20 * 60_000L, clearanceBei, 2.25, 0.0, 0.0, STEP)
+        val p = MealFoundation.planFrom(
+            a, t0 + 20 * 60_000L, clearanceBei, 2.25, 0.0, 0.0,
+            0.0, DescentDeferredCarry.Eligibility.NO_DEFERRED, STEP,
+        )
         assertEquals(0.0, p.dueU, 1e-9)
         assertEquals(
             MealFoundation.Binding.BEFORE_WINDOW, p.binding,
@@ -950,7 +978,10 @@ class MealFoundationTest {
     fun `keine Zeit nach der Uebergabe ist eine gueltige Lage`() {
         val p = MealFoundation.plan(
             markerTs = t0, nowTs = t0 + 70 * 60_000L, handoverTs = t0 + 90 * 60_000L,
-            totalBudgetU = BUDGET, phaseBBudgetU = B_BUDGET, confirmedNotSentPhaseAU = 0.0, phaseBUntilMin = B_BIS,
+            totalBudgetU = BUDGET, phaseBBudgetU = B_BUDGET, confirmedNotSentPhaseAU = 0.0,
+            descentDeferredPhaseAU = 0.0,
+            descentCarryEligibility = DescentDeferredCarry.Eligibility.NO_DEFERRED,
+            phaseBUntilMin = B_BIS,
             deliveredFromBudgetU = 2.25, deliveredSinceHandoverU = 0.0, bolusStepU = STEP,
         )
         assertEquals(MealFoundation.Binding.NO_WINDOW_AFTER_HANDOVER, p.binding)
@@ -973,7 +1004,10 @@ class MealFoundationTest {
 
         val spaet = MealFoundation.plan(
             markerTs = t0, nowTs = t0 + 50 * 60_000L, handoverTs = t0 + 45 * 60_000L,
-            totalBudgetU = BUDGET, phaseBBudgetU = B_BUDGET, confirmedNotSentPhaseAU = 0.0, phaseBUntilMin = B_BIS,
+            totalBudgetU = BUDGET, phaseBBudgetU = B_BUDGET, confirmedNotSentPhaseAU = 0.0,
+            descentDeferredPhaseAU = 0.0,
+            descentCarryEligibility = DescentDeferredCarry.Eligibility.NO_DEFERRED,
+            phaseBUntilMin = B_BIS,
             deliveredFromBudgetU = 2.25, deliveredSinceHandoverU = 0.0, bolusStepU = STEP,
         )
         assertEquals(15, spaet.effectiveWindowMin, "nur noch 15 min")

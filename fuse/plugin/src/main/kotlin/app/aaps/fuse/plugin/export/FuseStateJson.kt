@@ -57,7 +57,9 @@ object FuseStateJson {
     // und danach dosiert im spaeten Rebound verschieden - eigene Version.
     // v13 (20.08.): gemessenes Abwaertsrisiko schliesst einen restartfesten
     // SMB-Riegel; erst drei gesunde Zyklen mit UKF >= +0,20 oeffnen wieder.
-    const val RULE_SET_VERSION = 13
+    // v14 (20.08.): der dadurch in Phase A unvermeidbar gewordene Rueckstand
+    // darf nach genau dieser Erholung kontrolliert in Phase B nachlaufen.
+    const val RULE_SET_VERSION = 14
 
     /** Schema des Trail-Datensatzes - s. die Notiz an der Schreibstelle. */
     const val SCHEMA_VERSION = 4
@@ -260,6 +262,14 @@ object FuseStateJson {
                     // Luecke geschlossen - eine Aussage, die aus keiner der
                     // beiden Zahlen allein hervorgeht.
                     .put("effectiveCarryU", fin(f.effectiveCarryU))
+                    // Eigener Topf fuer den vom harten Abwaertsriegel
+                    // verschobenen Phase-A-Anteil. Rohwert, aktuelles
+                    // Sicherheitsurteil und wirksamer Anteil bleiben getrennt
+                    // nachrechenbar; ein Nullwert verraet sonst nicht, ob nie
+                    // etwas verschoben wurde oder ein Schutz gerade sperrt.
+                    .put("descentDeferredPhaseAU", fin(f.descentDeferredPhaseAU))
+                    .put("descentCarryEligibility", f.descentCarryEligibility.name)
+                    .put("effectiveDescentCarryU", fin(f.effectiveDescentCarryU))
                     .put("phaseBAllowanceU", fin(f.phaseBAllowanceU))
                     // Soll, Rueckstand und dueU sind DREI Groessen, nicht eine
                     // in drei Formen: dueU ist gerastert und gedeckelt, der
