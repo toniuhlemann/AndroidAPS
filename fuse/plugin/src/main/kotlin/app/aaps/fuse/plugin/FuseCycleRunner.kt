@@ -39,6 +39,7 @@ import app.aaps.fuse.core.controller.MarkerEpisode
 import app.aaps.fuse.core.controller.MarkerEpisodeGate
 import app.aaps.fuse.core.controller.TailLiability
 import app.aaps.fuse.core.controller.TbrPolicy
+import app.aaps.fuse.core.controller.TurnResponseShadow
 import app.aaps.fuse.core.observer.SafetyReason
 import app.aaps.fuse.core.observer.Health
 import app.aaps.fuse.core.observer.ObserverStateMachine
@@ -413,6 +414,11 @@ class FuseCycleRunner(
          * Zeitindizes gerade beheben.
          */
         val restraint: PredictorResult? = null,
+        /**
+         * DOSIERNEUTRALER Tau-/Wende-Shadow. Keine Entscheidung liest dieses
+         * Feld; es wird ausschliesslich in den FUSE-Trail exportiert.
+         */
+        val turnResponseShadow: TurnResponseShadow.Report? = null,
         /**
          * Die SICHERHEITSKANTE am Haftungshorizont, aus der der Schwanz sein
          * Budget rechnet - EINMAL ohne und einmal mit der Ankuendigung.
@@ -1278,6 +1284,21 @@ class FuseCycleRunner(
             )
         )
 
+        // DOSIERNEUTRALER WENDE-SHADOW (Toni 20.08.). Dieselben Samples wie
+        // der Onset-Kanal, aber eine andere Frage: dreht der schnelle,
+        // BGI-bereinigte Antrieb bereits nachhaltig gegen den traegen
+        // 18-min-Antrieb? Das Ergebnis wird unten nur fuer parallele Bahnen
+        // und den Export verwendet. Weder `state` noch `decision` lesen es.
+        val turnClassification = TurnResponseShadow.classify(
+            samples = onsetRing.map {
+                TurnResponseShadow.Sample(it.tsMs, it.ukfRatePerMin, it.fastDriveMgdlPerMin)
+            },
+            slowDriveMgdlPerMin = band.mean,
+            riseThresholdMgdlPerMin = cfg.riseRampLowR,
+            signalHealthy = step.health == Health.READY,
+            q1Outlier = signal.q1Outlier,
+        )
+
         // FENSTER-TRIO: Marker ODER offene Onset-Episode ODER Kinematik
         // (r und schnelle Rate beide ueber der Rampen-Unterkante) oeffnen das
         // Mahlzeit-Fenster fuer 10 min rollierend; nachhaltige Wende schliesst.
@@ -1673,6 +1694,69 @@ class FuseCycleRunner(
         val prediction = predictionOrNull
             ?: return abort("internal: prediction lost", signal, cfg, step, evidenz = evidenz)
 
+        // ---- DOSIERNEUTRALER TAU-/WENDE-SHADOW (Toni 20.08.) ------------
+        //
+        // Die produktive Bahn bleibt BITGENAU unangetastet. Diese parallelen
+        // Resultate werden spaeter nur in [TurnResponseShadow.Report]
+        // geschrieben. Kein Guard, keine Kappe und kein Gate liest sie.
+        //
+        // R60/R55/R50/R45 variieren ausschliesslich den positiven Anteil der
+        // schnellen Bremsbahn. Negative Anteile behalten immer R60 - ihr
+        // schnellerer Zerfall wuerde die Sicherheitsbahn ANHEBEN.
+        data class ShadowPath(
+            val name: String,
+            val requestedTauMin: Int,
+            val effectiveTauMin: Int,
+            val adaptive: Boolean,
+            val main: PredictorResult,
+            val restraint: PredictorResult?,
+        )
+        val shadowFast = fastDrive(signal)
+        fun shadowRestraint(requestedTauMin: Int): Pair<Int, PredictorResult?> {
+            val fast = shadowFast ?: return TurnResponseShadow.MAIN_TAU_MIN to null
+            val effectiveTau = if (fast < 0.0) TurnResponseShadow.MAIN_TAU_MIN else requestedTauMin
+            val drive = DriveEstimate(
+                fast,
+                fast - built.discount.termMgdlPerMin,
+                null,
+                DriveDiscount.methodId("UKF_RATE_RESTRAINT_SHADOW_R$requestedTauMin", built.discount.lambda),
+            )
+            val input = built.input.copy(
+                drive = drive,
+                decay = DriveDecayModel.ExponentialDecay(effectiveTau.toDouble()),
+                // Auch wenn der Mittelantrieb positiv ist, kann die
+                // abgeschlagene Unterkante negativ sein. Sie bleibt R60.
+                decayNegativeDrive = DriveDecayModel.ExponentialDecay(TurnResponseShadow.MAIN_TAU_MIN.toDouble()),
+            )
+            return effectiveTau to ((TrajectoryCore.predict(input) as? PredictorOutcome.Ok)?.result)
+        }
+        val turnShadowStartNs = System.nanoTime()
+        val shadowPaths = mutableListOf<ShadowPath>()
+        // Die Matrix ist nur an einem BESTAETIGTEN Wendepunkt relevant. Sie
+        // in 1440 normalen Tageszyklen zu rechnen waere dosierneutral in der
+        // Menge, aber nicht in der Zeit: die RT-Publikation wartet auf run().
+        if (turnClassification.phase == TurnResponseShadow.Phase.TURNING_UP ||
+            turnClassification.phase == TurnResponseShadow.Phase.TURNING_DOWN
+        ) {
+            TurnResponseShadow.STATIC_RESTRAINT_TAUS_MIN.forEach { tau ->
+                val (effective, path) = shadowRestraint(tau)
+                shadowPaths += ShadowPath("R$tau", tau, effective, false, prediction, path)
+            }
+            val adaptiveMain = turnClassification.upwardMeanDriveMgdlPerMin?.let { up ->
+                val raised = built.input.drive.copy(
+                    meanMgdlPerMin = maxOf(built.input.drive.meanMgdlPerMin, up),
+                    uncertaintyMethodId = built.input.drive.uncertaintyMethodId + "+TURN_UP_SHADOW",
+                )
+                (TrajectoryCore.predict(built.input.copy(drive = raised)) as? PredictorOutcome.Ok)?.result
+            } ?: prediction
+            val adaptiveRequestedTau = turnClassification.adaptiveRestraintTauMin
+            val (adaptiveEffectiveTau, adaptiveRestraint) = shadowRestraint(adaptiveRequestedTau)
+            shadowPaths += ShadowPath(
+                "ADAPTIVE", adaptiveRequestedTau, adaptiveEffectiveTau, true,
+                adaptiveMain, adaptiveRestraint,
+            )
+        }
+
         // Schwanzhaftung. C1/C2: pessimistisch ueber Haupt- UND Bremsbahn und
         // PRIOR-FREI - ein Marker-Prior darf kein Schwanzbudget erzeugen
         // (Codex H1/H2). Die Bahn traegt seit C3 ausserdem die Wirkung der
@@ -1955,6 +2039,90 @@ class FuseCycleRunner(
                 CandidateGate.apply(baseDecision, candidateResult, bolusStep)
             }
         }
+
+        // DIE KOMPLETTE SHADOW-MATRIX, aber nur bis zur Kandidatensuche.
+        // Prime, Fundament, finalVerify und Pumpengates bleiben absichtlich
+        // ausserhalb: `candidateSmbU` heisst daher nicht "abgegeben", sondern
+        // "unter dieser Bahn vor Autorisierungs-Lifts noch zulaessig".
+        // Genau diese Stufe erzeugte im Fall #1 um 11:33 die 0,30 U.
+        val shadowKernel = kernel()
+        val shadowCaps = CandidateSearch.Caps(
+            remainingReleaseBudgetU = cfg.maxSmbU,
+            effectiveIobThHeadroomU = state.iobThU - state.capIobU - transportModelledU,
+            effectiveMaxIobHeadroomU = state.maxIobU - state.capIobU - transportModelledU,
+            pumpIncrementU = bolusStep,
+            maxSmbU = cfg.maxSmbU,
+        )
+        fun conditionalRestraintFor(path: ShadowPath): PredictorResult? = lift.restraint?.let { d ->
+            val input = built.input.copy(
+                drive = d,
+                decay = DriveDecayModel.ExponentialDecay(path.effectiveTauMin.toDouble()),
+                decayNegativeDrive = DriveDecayModel.ExponentialDecay(TurnResponseShadow.MAIN_TAU_MIN.toDouble()),
+            )
+            (TrajectoryCore.predict(input) as? PredictorOutcome.Ok)?.result
+        }
+        val turnVariants = shadowPaths.map { path ->
+            val conditionalShadowRestraint = conditionalRestraintFor(path)
+            val shadowTailLower = minSafetyHorizonLowerOf(
+                conditional ?: path.main,
+                conditionalShadowRestraint ?: path.restraint,
+            )
+            val shadowTail = if (!cfg.tailGuardEnabled) null else
+                TailLiability.evaluate(tailBase.copy(lowerBgAtH = shadowTailLower))
+            val shadowBase = FuseController.decide(
+                state,
+                path.main,
+                FuseController.Limits(
+                    guardFloorMgdl = cfg.guardFloorMgdl,
+                    releaseHorizonMin = cfg.releaseHorizonMin,
+                ),
+                shadowTail,
+                path.restraint,
+                evidenceCreditActive = evidenzKredit > 0.0,
+                evidenceMayOverrideRebound = reboundOverrideErlaubt,
+                lowThreat = lowThreatResult.verdict,
+                onsetCapU = if (onset.active) onset.remainingU else null,
+            )
+            val shadowCandidate = if (shadowBase.smbU <= 0.0 || shadowKernel == null) null else
+                CandidateSearch.search(
+                    prediction = path.main,
+                    kernel = shadowKernel,
+                    isfSlots = built.input.isfSlots,
+                    band = candidateBand,
+                    caps = shadowCaps,
+                    ledgerHold = ledgerView.hold,
+                    restraint = path.restraint,
+                )
+            val shadowDecision = CandidateGate.apply(shadowBase, shadowCandidate, bolusStep)
+            val mainAtRelease = path.main.points
+                .firstOrNull { it.offsetMin == cfg.releaseHorizonMin }?.meanBg
+            val restraintAtRelease = path.restraint?.points
+                ?.firstOrNull { it.offsetMin == cfg.releaseHorizonMin }?.meanBg
+            val mainLowerAtRelease = path.main.points
+                .firstOrNull { it.offsetMin == cfg.releaseHorizonMin }?.safetyLowerBg
+            val restraintLowerAtRelease = path.restraint?.points
+                ?.firstOrNull { it.offsetMin == cfg.releaseHorizonMin }?.safetyLowerBg
+            TurnResponseShadow.Variant(
+                name = path.name,
+                requestedRestraintTauMin = path.requestedTauMin,
+                restraintTauMin = path.effectiveTauMin,
+                adaptive = path.adaptive,
+                predAtReleaseMgdl = listOfNotNull(mainAtRelease, restraintAtRelease).minOrNull(),
+                safetyLowerAtReleaseMgdl = listOfNotNull(mainLowerAtRelease, restraintLowerAtRelease).minOrNull(),
+                minSafetyLowerMgdl = minSafetyLowerOf(path.main, path.restraint),
+                tailHeadroomU = shadowTail?.takeIf { it.usable }?.headroomU,
+                insulinReqU = shadowBase.insulinReqU,
+                ratioCapU = shadowBase.caps.firstOrNull { it.name == "smbRatio" }?.valueU,
+                candidateSmbU = shadowDecision.smbU,
+                candidateBinding = shadowDecision.bindingLimit,
+                candidateReject = shadowCandidate?.reject?.name,
+            )
+        }
+        val turnResponseShadow = TurnResponseShadow.Report(
+            turnClassification,
+            turnVariants,
+            (System.nanoTime() - turnShadowStartNs) / 1_000_000.0,
+        )
 
         // Sofort-Freigabe: Plan aus derselben Momentaufnahme, Anhebung NUR
         // wenn der Basisentscheidung nichts als Bedarf fehlte. Sperren und
@@ -2516,6 +2684,7 @@ class FuseCycleRunner(
             tbr = combined.request,
             prediction = prediction,
             restraint = restraint,
+            turnResponseShadow = turnResponseShadow,
             tailLowerUnconditionalMgdl = tailLowerUnconditional,
             tailLowerConditionalMgdl = tailLowerConditional,
             tailLowerMainUncondMgdl = tailLowerMainUncond,

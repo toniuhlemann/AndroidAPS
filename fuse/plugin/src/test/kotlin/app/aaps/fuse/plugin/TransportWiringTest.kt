@@ -44,6 +44,7 @@ import app.aaps.fuse.core.controller.DescentRecoveryLatch
 import app.aaps.fuse.core.controller.DescentDeferredCarry
 import app.aaps.fuse.core.controller.MealFoundation
 import app.aaps.fuse.core.controller.OnsetChannel
+import app.aaps.fuse.core.controller.TurnResponseShadow
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
@@ -4485,6 +4486,105 @@ class TransportWiringTest : TestBaseWithProfile() {
         )
     }
 
+
+    @Test
+    fun `Tau-Shadow erkennt die Plateau-Wende ohne den produktiven R60-Pfad umzuschreiben`() {
+        // Erst klarer Anstieg, dann ein flacherer positiver Nachlauf. Das ist
+        // die Form des 11:33-Falls: fastDrive dreht bereits ab, r bleibt noch
+        // hoch. Kein Marker, kein Fundament und kein Tail - damit ist R60
+        // direkt mit dem bestehenden Produktivpfad vergleichbar.
+        flach = 140.0
+        steigungProMin = 2.0
+        knickAbMin = 18
+        steigungNachKnick = 0.35
+        tailGuard = false
+        markerAuthorized = false
+        fundamentAn = false
+        clock = start
+
+        var wende: FuseCycleRunner.Outcome? = null
+        var normaleShadowZyklen = 0
+        for (i in 0 until 55) {
+            val o = cycle()
+            if (o.turnResponseShadow?.classification?.phase == TurnResponseShadow.Phase.TURNING_DOWN) {
+                wende = o
+                break
+            }
+            o.turnResponseShadow?.let { sh ->
+                if (sh.classification.phase == TurnResponseShadow.Phase.ALIGNED) {
+                    assertTrue(sh.variants.isEmpty(), "ohne bestaetigte Wende darf die Matrix keine Loopzeit kosten")
+                    normaleShadowZyklen++
+                }
+            }
+        }
+        assertTrue(normaleShadowZyklen > 0, "der Aufbau muss auch den billigen Normalpfad durchlaufen")
+        val o = wende ?: throw AssertionError("der Aufbau hat keine positive Abwaertswende erzeugt")
+        val sh = o.turnResponseShadow!!
+        assertEquals(50, sh.classification.adaptiveRestraintTauMin)
+        assertTrue(sh.classification.fastDriveMgdlPerMin!! > 0.0, "negative Drives duerfen R50 nie oeffnen")
+        val byName = sh.variants.associateBy { it.name }
+        assertEquals(setOf("R60", "R55", "R50", "R45", "ADAPTIVE"), byName.keys)
+
+        val r60 = byName.getValue("R60")
+        val adaptiv = byName.getValue("ADAPTIVE")
+        // R60 ist die Kontrollspur: dieselbe kombinierte Bahn und dieselben
+        // Kappen wie der produktive Regler. Damit kann das Berechnen der
+        // Matrix nicht unbemerkt die Referenzdefinition wechseln.
+        assertEquals(o.decision.predAtReleaseMgdl!!, r60.predAtReleaseMgdl!!, 1e-7)
+        assertEquals(o.decision.minLowerMgdl!!, r60.minSafetyLowerMgdl!!, 1e-7)
+        assertEquals(
+            o.decision.caps.first { it.name == "smbRatio" }.valueU,
+            r60.ratioCapU!!,
+            1e-7,
+        )
+        // Ein bestaetigter DOWN-Shadow darf nur restriktiver sein. Er muss
+        // keine andere Pumpenstufe treffen, darf R60 aber nie ueberbieten.
+        assertTrue((adaptiv.predAtReleaseMgdl ?: Double.MAX_VALUE) <= (r60.predAtReleaseMgdl ?: Double.MAX_VALUE) + 1e-9)
+        assertTrue(
+            adaptiv.predAtReleaseMgdl!! < r60.predAtReleaseMgdl!! - 1e-6,
+            "der Aufbau muss eine echte, nicht nur benannte Bremswirkung erzeugen",
+        )
+        assertTrue((adaptiv.candidateSmbU ?: 0.0) <= (r60.candidateSmbU ?: 0.0) + 1e-9)
+        assertEquals(50, adaptiv.restraintTauMin)
+    }
+
+    @Test
+    fun `Aufwaertswende hebt im Shadow nur die Mittelbahn nicht das Sicherheitszeugnis`() {
+        flach = 110.0
+        steigungProMin = 0.10
+        knickAbMin = 18
+        steigungNachKnick = 2.0
+        tailGuard = false
+        markerAuthorized = false
+        fundamentAn = false
+        clock = start
+
+        var wende: FuseCycleRunner.Outcome? = null
+        for (i in 0 until 55) {
+            val o = cycle()
+            if (o.turnResponseShadow?.classification?.phase == TurnResponseShadow.Phase.TURNING_UP) {
+                wende = o
+                break
+            }
+        }
+        val o = wende ?: throw AssertionError("der Aufbau hat keine Aufwaertswende erzeugt")
+        val byName = o.turnResponseShadow!!.variants.associateBy { it.name }
+        val r60 = byName.getValue("R60")
+        val adaptiv = byName.getValue("ADAPTIVE")
+
+        assertEquals(60, adaptiv.restraintTauMin, "Aufwaertsreaktion darf den Brems-Tau nicht kuerzen")
+        assertTrue(
+            adaptiv.predAtReleaseMgdl!! > r60.predAtReleaseMgdl!! + 1e-6,
+            "der Aufwaertskandidat muss den frueher sichtbaren Bedarf in der Mittelbahn zeigen",
+        )
+        assertEquals(
+            r60.safetyLowerAtReleaseMgdl!!,
+            adaptiv.safetyLowerAtReleaseMgdl!!,
+            1e-7,
+            "Aufwaerts-Shadow darf Guard und Tail kein guenstigeres Zeugnis geben",
+        )
+        assertTrue((adaptiv.candidateSmbU ?: 0.0) + 1e-9 >= (r60.candidateSmbU ?: 0.0))
+    }
 
     // ==== DIE RISIKOLAEUFE (Toni/Codex 19.08.) =============================
     //

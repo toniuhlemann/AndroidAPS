@@ -640,6 +640,49 @@ object FuseStateJson {
                 .put("windowFromTs", s.windowFromTs)
         )
 
+        // ---- DOSIERNEUTRALER WENDE-/TAU-SHADOW (Toni 20.08.) ------------
+        // Der produktive Pfad liest diese Sicht nirgends. Sie macht pro
+        // Zyklus dieselbe Matrix nachrechenbar: statisch R60/R55/R50/R45 und
+        // ein adaptiver Kandidat, dessen Aufwaertsseite nur die Mittelbahn
+        // hebt und dessen Abwaertsseite nur die Bremsbahn verschaerft.
+        outcome.turnResponseShadow?.let { sh ->
+            val c = sh.classification
+            o.put(
+                "turnResponseShadow", JSONObject()
+                    .put("dosageNeutral", true)
+                    .put("phase", c.phase.name)
+                    .put("reason", c.reason.name)
+                    .put("slowDriveMgdlPerMin", fin(c.slowDriveMgdlPerMin))
+                    .put("fastDriveMgdlPerMin", fin(c.fastDriveMgdlPerMin))
+                    .put("delta1MgdlPerMin", fin(c.delta1MgdlPerMin))
+                    .put("delta2MgdlPerMin", fin(c.delta2MgdlPerMin))
+                    .put("delta3MgdlPerMin", fin(c.delta3MgdlPerMin))
+                    .put("upwardMeanDriveMgdlPerMin", fin(c.upwardMeanDriveMgdlPerMin))
+                    .put("adaptiveRestraintTauMin", c.adaptiveRestraintTauMin)
+                    .put("computeDurationMs", fin(sh.computeDurationMs))
+                    .put("variants", JSONArray().apply {
+                        sh.variants.forEach { v ->
+                            put(
+                                JSONObject()
+                                    .put("name", v.name)
+                                    .put("requestedRestraintTauMin", v.requestedRestraintTauMin)
+                                    .put("effectiveRestraintTauMin", v.restraintTauMin)
+                                    .put("adaptive", v.adaptive)
+                                    .put("predAtReleaseMgdl", fin(v.predAtReleaseMgdl))
+                                    .put("safetyLowerAtReleaseMgdl", fin(v.safetyLowerAtReleaseMgdl))
+                                    .put("minSafetyLowerMgdl", fin(v.minSafetyLowerMgdl))
+                                    .put("tailHeadroomU", fin(v.tailHeadroomU))
+                                    .put("insulinReqU", fin(v.insulinReqU))
+                                    .put("ratioCapU", fin(v.ratioCapU))
+                                    .put("candidateSmbU", fin(v.candidateSmbU))
+                                    .put("candidateBinding", v.candidateBinding ?: JSONObject.NULL)
+                                    .put("candidateReject", v.candidateReject ?: JSONObject.NULL),
+                            )
+                        }
+                    }),
+            )
+        } ?: gap("turnResponseShadow", "NO_SHADOW_THIS_CYCLE")
+
         // ---- S0: die Bahnhub-Zerlegung -------------------------------------
         // WARUM BEIDE BAHNEN: der Guard entscheidet gegen das Minimum ueber
         // Haupt- UND Bremsbahn. Stammt es aus der Bremse, erklaert der Hub der

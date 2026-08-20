@@ -4,6 +4,7 @@ import app.aaps.core.interfaces.aps.APSResult
 import app.aaps.core.interfaces.aps.RT
 import app.aaps.fuse.core.controller.FuseController
 import app.aaps.fuse.core.controller.TailLiability
+import app.aaps.fuse.core.controller.TurnResponseShadow
 import app.aaps.fuse.core.observer.ActivityValidity
 import app.aaps.fuse.core.observer.Health
 import app.aaps.fuse.core.signal.PairSlopeBand
@@ -69,6 +70,7 @@ class FuseStateExportTest {
         denial: String? = null,
         foundation: app.aaps.fuse.core.controller.MealFoundation.Snapshot =
             app.aaps.fuse.core.controller.MealFoundation.Snapshot.none(),
+        shadow: TurnResponseShadow.Report? = null,
     ) = FuseCycleRunner.Outcome(
         tbrChanged = false,
         decision = FuseController.Decision(
@@ -90,6 +92,7 @@ class FuseStateExportTest {
         evidencePhase = phase, evidenceStockMgdl = stockMgdl, evidenceReason = reason,
         evidenceEpisodeDenial = denial,
         mealFoundation = foundation,
+        turnResponseShadow = shadow,
     )
 
     private fun rt(units: Double? = 0.15) = RT(
@@ -102,6 +105,63 @@ class FuseStateExportTest {
         r: RT = rt(),
         gate: FuseStateJson.PublicationGate? = null,
     ) = FuseStateJson.record("s#1", o, r, o.policy, BUILD, 0L, null, publicationGate = gate) { 5_000_000L }
+
+    @Test
+    fun `Wende-Shadow exportiert Klassifikation und die vollstaendige Tau-Matrix`() {
+        val classification = TurnResponseShadow.Classification(
+            phase = TurnResponseShadow.Phase.TURNING_DOWN,
+            reason = TurnResponseShadow.Reason.DOWN_CONFIRMED,
+            slowDriveMgdlPerMin = 2.81,
+            fastDriveMgdlPerMin = 2.69,
+            delta1MgdlPerMin = -0.19,
+            delta2MgdlPerMin = -0.25,
+            delta3MgdlPerMin = -0.30,
+            upwardMeanDriveMgdlPerMin = null,
+            adaptiveRestraintTauMin = 50,
+        )
+        fun variant(name: String, tau: Int, adaptive: Boolean = false) = TurnResponseShadow.Variant(
+            name = name,
+            requestedRestraintTauMin = tau,
+            restraintTauMin = tau,
+            adaptive = adaptive,
+            predAtReleaseMgdl = 182.2,
+            safetyLowerAtReleaseMgdl = 75.0,
+            minSafetyLowerMgdl = 75.0,
+            tailHeadroomU = 0.209,
+            insulinReqU = 1.5,
+            ratioCapU = 0.383,
+            candidateSmbU = 0.20,
+            candidateBinding = "candidate:guardFloor",
+            candidateReject = null,
+        )
+        val report = TurnResponseShadow.Report(
+            classification,
+            listOf(variant("R60", 60), variant("R55", 55), variant("R50", 50), variant("R45", 45), variant("ADAPTIVE", 50, true)),
+            computeDurationMs = 2.4,
+        )
+
+        val j = record(outcome(shadow = report)).getJSONObject("turnResponseShadow")
+        assertTrue(j.getBoolean("dosageNeutral"))
+        assertEquals("TURNING_DOWN", j.getString("phase"))
+        assertEquals(50, j.getInt("adaptiveRestraintTauMin"))
+        assertEquals(-0.25, j.getDouble("delta2MgdlPerMin"), 1e-9)
+        assertEquals(2.4, j.getDouble("computeDurationMs"), 1e-9)
+        val variants = j.getJSONArray("variants")
+        assertEquals(listOf("R60", "R55", "R50", "R45", "ADAPTIVE"),
+            (0 until variants.length()).map { variants.getJSONObject(it).getString("name") })
+        val r50 = variants.getJSONObject(2)
+        assertEquals(75.0, r50.getDouble("safetyLowerAtReleaseMgdl"), 1e-9)
+        assertEquals(0.209, r50.getDouble("tailHeadroomU"), 1e-9)
+        assertEquals(0.20, r50.getDouble("candidateSmbU"), 1e-9)
+    }
+
+    @Test
+    fun `Abbruch vor der Bahn benennt den fehlenden Shadow statt einen zu erfinden`() {
+        val j = record(outcome(shadow = null))
+        val gaps = j.getJSONArray("gaps")
+        assertTrue((0 until gaps.length()).map { gaps.getJSONObject(it) }
+            .any { it.getString("field") == "turnResponseShadow" && it.getString("reason") == "NO_SHADOW_THIS_CYCLE" })
+    }
 
     /**
      * IOBTH NIE VERSTECKEN - AUCH IM ABBRUCHZYKLUS (Toni 17.08.).
