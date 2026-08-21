@@ -5,17 +5,21 @@ package app.aaps.fuse.core.controller
  *
  * Das Rohsignal darf den finalen Insulinriegel sofort SCHLIESSEN, aber nicht
  * mit einem einzelnen flachen oder knapp positiven UKF-Zyklus wieder
- * OEFFNEN. Der Replay vom 17.-19.08. trennt die drei Gegenlagen mit
- * `UKF >= +0,20 mg/dl/min` in drei aufeinanderfolgenden gesunden Zyklen:
+ * OEFFNEN. Ein reiner Abwaertsriegel verlangt dafuer
+ * `UKF >= +0,20 mg/dl/min` in drei aufeinanderfolgenden gesunden Zyklen.
+ * Hat der Observer waehrenddessen ein echtes Tief bestaetigt, genuegt nach
+ * dessen eigener fuenfminuetiger Exit-Bestaetigung ein aktueller positiver
+ * UKF-Zyklus; sonst wuerden zwei Hysteresen dieselbe Erholung bezahlen lassen.
+ * Der Replay vom 17.-19.08. trennt damit die drei Gegenlagen:
  *
  *  - schneller Mahlzeitenanstieg nach anfaenglichem Fallen: Freigabe 09:20;
  *  - echte Wende nach dem Low: Freigabe 20:18;
  *  - Abendsturz 17:55: keine Freigabe waehrend Tief oder Signalbruch.
  *
  * Nur [State] wird persistiert. [Runtime] ist absichtlich prozesslokal: nach
- * einem Neustart bleibt ein aktiver Riegel erhalten, die drei
- * Bestaetigungszyklen beginnen aber neu. Eine unbeobachtete Prozessluecke
- * darf keine Erholung belegen.
+ * einem Neustart bleibt ein aktiver Riegel samt Information ueber ein
+ * beobachtetes Tief erhalten. Nur die prozesslokalen Bestaetigungszyklen
+ * beginnen neu. Eine unbeobachtete Prozessluecke darf keine Erholung belegen.
  */
 object DescentRecoveryLatch {
 
@@ -26,13 +30,20 @@ object DescentRecoveryLatch {
     data class State(
         val active: Boolean = false,
         val latchedAtTs: Long = 0L,
+        /**
+         * Der aktive Riegel hat waehrend seiner Lebensdauer ein vom Observer
+         * bestaetigtes gemessenes Tief gesehen. Dessen Oeffnung ist bereits
+         * eine fuenfminuetige Erholungsbestaetigung oberhalb der Low-Schwelle;
+         * sie darf nicht noch einmal drei volle Zyklen bezahlen muessen.
+         */
+        val sawMeasuredLow: Boolean = false,
     ) {
         val valid: Boolean
-            get() = if (active) latchedAtTs > 0L else latchedAtTs == 0L
+            get() = if (active) latchedAtTs > 0L else latchedAtTs == 0L && !sawMeasuredLow
 
         companion object {
-            fun restore(active: Boolean, latchedAtTs: Long): State? =
-                State(active, latchedAtTs).takeIf { it.valid }
+            fun restore(active: Boolean, latchedAtTs: Long, sawMeasuredLow: Boolean = false): State? =
+                State(active, latchedAtTs, sawMeasuredLow).takeIf { it.valid }
         }
     }
 
@@ -72,10 +83,16 @@ object DescentRecoveryLatch {
         require(runtime.consecutiveRecoveryCycles >= 0) { "negative recovery count" }
 
         if (riskActive) {
-            val latched = if (state.active) state else State(true, sourceTs.coerceAtLeast(1L))
+            val latched = if (state.active)
+                state.copy(sawMeasuredLow = state.sawMeasuredLow || measuredLow)
+            else State(true, sourceTs.coerceAtLeast(1L), sawMeasuredLow = measuredLow)
             return Result(latched, Runtime(), true, Reason.RISK_ACTIVE)
         }
         if (!state.active) return Result(State(), Runtime(), false, Reason.CLEAR)
+
+        val stateWithLow = if (measuredLow && !state.sawMeasuredLow)
+            state.copy(sawMeasuredLow = true)
+        else state
 
         val waitingReason = when {
             !signalHealthy -> Reason.WAITING_UNHEALTHY
@@ -85,7 +102,14 @@ object DescentRecoveryLatch {
             else -> null
         }
         if (waitingReason != null)
-            return Result(state, Runtime(), true, waitingReason)
+            return Result(stateWithLow, Runtime(), true, waitingReason)
+
+        // Der Observer hat ein echtes Tief erst nach fuenf Minuten oberhalb
+        // seiner Exit-Schwelle freigegeben. Nach diesem bereits erbrachten
+        // Nachweis verlangt der Endriegel nur noch eine aktuell positive Rate;
+        // die normale Drei-Zyklen-Hysterese waere eine doppelte Wartezeit.
+        if (stateWithLow.sawMeasuredLow)
+            return Result(State(), Runtime(), false, Reason.RECOVERED)
 
         val contiguous = runtime.lastSourceTs > 0L &&
             sourceTs > runtime.lastSourceTs &&
@@ -93,7 +117,7 @@ object DescentRecoveryLatch {
         val count = if (contiguous) runtime.consecutiveRecoveryCycles + 1 else 1
         val nextRuntime = Runtime(count, sourceTs)
         if (count < REQUIRED_CONSECUTIVE_CYCLES)
-            return Result(state, nextRuntime, true, Reason.WAITING_CONFIRMATION)
+            return Result(stateWithLow, nextRuntime, true, Reason.WAITING_CONFIRMATION)
 
         return Result(State(), Runtime(), false, Reason.RECOVERED)
     }

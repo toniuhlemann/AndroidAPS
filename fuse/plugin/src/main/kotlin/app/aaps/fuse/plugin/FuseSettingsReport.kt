@@ -22,6 +22,7 @@ internal val fuseEinstellbareKeys: Set<String> = setOf(
     FuseDoubleKey.RiseRampLowR.key,
     FuseDoubleKey.RiseRampHighR.key,
     FuseDoubleKey.GuardFloorMgdl.key,
+    FuseDoubleKey.PositiveDescentHorizonMin.key,
     FuseDoubleKey.BolusShareLambda.key,
     FuseDoubleKey.OnsetEnvelopeU.key,
     FuseDoubleKey.PrimeEnvelopeU.key,
@@ -138,6 +139,7 @@ object FuseSettingsReport {
                 ),
                 "Schutz und Prognose" to listOf(
                     zahl(FuseDoubleKey.GuardFloorMgdl, "Guard-Boden", "mg/dl"),
+                    zahl(FuseDoubleKey.PositiveDescentHorizonMin, "SMB-Abwaerts-Horizont", "min"),
                     schalter(FuseBooleanKey.FastRestraintEnabled, "Schnelle Bremsbahn"),
                     zahl(FuseDoubleKey.BolusShareLambda, "Bolus-Lambda", ""),
                     ganz(FuseIntKey.ReleaseHorizonMin, "Horizont", "min"),

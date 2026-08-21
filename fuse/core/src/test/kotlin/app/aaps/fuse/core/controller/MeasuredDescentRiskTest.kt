@@ -92,10 +92,25 @@ class MeasuredDescentRiskTest {
      */
     @Test
     fun `der 18-13-Fall bleibt gesperrt, auch wenn die Null nichts mehr bringt`() {
-        val r = risiko(bg = 98.0, rate = -3.13, bolus = 4.73)
+        val r = risiko(bg = 98.0, rate = -3.13, bolus = 4.73, horizon = 30.0)
         assertTrue(r.active, "gemessen fallend, ueberdeckt, Boden in ${r.minutesToFloor} min")
         // 28 mg/dl bis zum Boden bei 3,13/min: rund 9 Minuten.
         assertTrue(r.minutesToFloor!! < 10.0, "der Boden ist zum Greifen nah: ${r.minutesToFloor}")
+    }
+
+    @Test
+    fun `Fruehstueck ist bei 30 Minuten noch nicht akut aber bei 120 voll gesperrt`() {
+        // Live 21.08. 09:18: q1 112,6, UKF -0,49, Bolus-IOB 1,21.
+        // Mit dem spaeteren q1 um 88 lag der lineare Bodenkontakt weiterhin
+        // jenseits 30, aber klar innerhalb 120 Minuten. Genau diese Kopplung
+        // hat die ganze Phase A statt nur die akute Kante gesperrt.
+        val nah = risiko(bg = 88.0, rate = -0.49, bolus = 1.21, horizon = 30.0)
+        val tbrFenster = risiko(bg = 88.0, rate = -0.49, bolus = 1.21, horizon = 120.0)
+
+        assertFalse(nah.active)
+        assertEquals(LowThreatGate.DENY_TOO_FAR, nah.denial)
+        assertTrue(tbrFenster.active)
+        assertTrue(tbrFenster.minutesToFloor!! > 30.0)
     }
 
     // ---- Was den Riegel NICHT ausloest ------------------------------------

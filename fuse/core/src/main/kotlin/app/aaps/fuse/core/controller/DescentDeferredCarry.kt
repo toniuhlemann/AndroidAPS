@@ -30,6 +30,8 @@ object DescentDeferredCarry {
         SIGNAL_UNHEALTHY,
         MEASURED_LOW,
         REBOUND_ACTIVE,
+        MANUAL_BOLUS_UNKNOWN,
+        MANUAL_BOLUS_AFTER_MARKER,
     }
 
     data class Allocation(
@@ -46,13 +48,25 @@ object DescentDeferredCarry {
     }
 
     /**
+     * Welche FINALEN Blocks einen sicherheitsbedingt verpassten Phase-A-
+     * Schritt belegen. Eine Funktion fuer Haupt- und Fallbackpfad; sonst
+     * wuerde `SAFETY_HOLD` beim naechsten Umbau wieder nur in einem Weg
+     * verschwinden.
+     */
+    fun isDeferrableBlock(block: FuseController.Block): Boolean =
+        block == FuseController.Block.MEASURED_DESCENT_RISK ||
+            block == FuseController.Block.SAFETY_HOLD
+
+    /**
      * Fortschreibung waehrend Phase A. Nur ein FINALER
-     * `MEASURED_DESCENT_RISK`-Block darf den Wert erhoehen.
+     * gemessener Sicherheitsblock darf den Wert erhoehen. Dazu gehoeren der
+     * Endriegel `MEASURED_DESCENT_RISK` und der Observer-Block `SAFETY_HOLD`:
+     * beide beruhen auf dem realen Verlauf, nicht auf einem Modellveto.
      */
     fun observe(
         currentU: Double,
         phase: MealFoundation.Phase,
-        blockedByMeasuredDescent: Boolean,
+        blockedByMeasuredSafety: Boolean,
         phaseABudgetU: Double,
         deliveredPhaseAU: Double,
         nowTs: Long,
@@ -60,7 +74,7 @@ object DescentDeferredCarry {
         maxPositivePerCycleU: Double,
     ): Double {
         if (!currentU.isFinite() || currentU < 0.0) return 0.0
-        if (phase != MealFoundation.Phase.PHASE_A || !blockedByMeasuredDescent) return currentU
+        if (phase != MealFoundation.Phase.PHASE_A || !blockedByMeasuredSafety) return currentU
         if (!phaseABudgetU.isFinite() || phaseABudgetU <= 0.0) return currentU
         if (!deliveredPhaseAU.isFinite() || deliveredPhaseAU < 0.0) return currentU
         if (!maxPositivePerCycleU.isFinite() || maxPositivePerCycleU <= 0.0) return currentU
@@ -87,9 +101,16 @@ object DescentDeferredCarry {
         signalHealthy: Boolean,
         measuredLow: Boolean,
         reboundRaw: Boolean,
+        /** Summe gueltiger NORMAL-Boli strikt nach dem Marker. null = die
+         *  Behandlungssicht war nicht lesbar; mehr Insulin darf daraus nie
+         *  folgen. SMB und PRIMING gehoeren ausdruecklich nicht hierher. */
+        manualBolusAfterMarkerU: Double?,
     ): Eligibility = when {
         !deferredU.isFinite() || deferredU <= 0.0 -> Eligibility.NO_DEFERRED
         phase != MealFoundation.Phase.PHASE_B -> Eligibility.NOT_PHASE_B
+        manualBolusAfterMarkerU == null || !manualBolusAfterMarkerU.isFinite() ||
+            manualBolusAfterMarkerU < 0.0 -> Eligibility.MANUAL_BOLUS_UNKNOWN
+        manualBolusAfterMarkerU > 0.0 -> Eligibility.MANUAL_BOLUS_AFTER_MARKER
         latchBlocksPositive -> Eligibility.LATCH_ACTIVE
         !signalHealthy -> Eligibility.SIGNAL_UNHEALTHY
         measuredLow -> Eligibility.MEASURED_LOW

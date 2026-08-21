@@ -473,7 +473,8 @@ object LedgerCodec {
             "descentRecoveryLatch",
             JSONObject()
                 .put("active", e.descentRecoveryLatch.active)
-                .put("latchedAtTs", e.descentRecoveryLatch.latchedAtTs),
+                .put("latchedAtTs", e.descentRecoveryLatch.latchedAtTs)
+                .put("sawMeasuredLow", e.descentRecoveryLatch.sawMeasuredLow),
         )
         // DREI Elemente statt zwei: [ts, menge, proposalId] (Toni 19.08.).
         // Die Kennung MUSS mit - ohne sie findet ein Nicht-Sende-Beweis nach
@@ -660,6 +661,10 @@ object LedgerCodec {
                 app.aaps.fuse.core.controller.DescentRecoveryLatch.State.restore(
                     active = latch.getBoolean("active"),
                     latchedAtTs = requireTs("descentRecoveryLatch.latchedAtTs", latch.getLong("latchedAtTs")),
+                    // Additive Migration: alte Generationen wissen nur, dass
+                    // der Riegel aktiv war. `false` verlangt dann weiter die
+                    // volle Drei-Zyklen-Bestaetigung und ist konservativ.
+                    sawMeasuredLow = latch.optBoolean("sawMeasuredLow", false),
                 ) ?: error("invalid descent recovery latch")
         }
         // KEINE MIGRATION, die ein Fundament ERFINDET: fehlt das Objekt, gibt

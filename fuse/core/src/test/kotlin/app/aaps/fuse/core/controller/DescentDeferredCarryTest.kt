@@ -9,11 +9,19 @@ class DescentDeferredCarryTest {
     private val t0 = 1_787_000_000_000L
 
     @Test
+    fun `Abwaertsriegel und SafetyHold erzeugen denselben Sicherheitsaufschub`() {
+        assertTrue(DescentDeferredCarry.isDeferrableBlock(FuseController.Block.MEASURED_DESCENT_RISK))
+        assertTrue(DescentDeferredCarry.isDeferrableBlock(FuseController.Block.SAFETY_HOLD))
+        assertEquals(false, DescentDeferredCarry.isDeferrableBlock(FuseController.Block.NO_DEMAND))
+        assertEquals(false, DescentDeferredCarry.isDeferrableBlock(FuseController.Block.GUARD_FLOOR))
+    }
+
+    @Test
     fun `Fruehstuecksluecke wird einmalig als unvermeidbarer Rueckstand erfasst`() {
         val observed = DescentDeferredCarry.observe(
             currentU = 0.0,
             phase = MealFoundation.Phase.PHASE_A,
-            blockedByMeasuredDescent = true,
+            blockedByMeasuredSafety = true,
             phaseABudgetU = 3.0,
             deliveredPhaseAU = 0.75,
             nowTs = t0 + 17 * 60_000L,
@@ -27,7 +35,7 @@ class DescentDeferredCarryTest {
         val repeated = DescentDeferredCarry.observe(
             currentU = observed,
             phase = MealFoundation.Phase.PHASE_A,
-            blockedByMeasuredDescent = true,
+            blockedByMeasuredSafety = true,
             phaseABudgetU = 3.0,
             deliveredPhaseAU = 0.75,
             nowTs = t0 + 17 * 60_000L,
@@ -66,7 +74,8 @@ class DescentDeferredCarryTest {
             healthy: Boolean = true,
             low: Boolean = false,
             rebound: Boolean = false,
-        ) = DescentDeferredCarry.eligibility(1.0, phase, latch, healthy, low, rebound)
+            manualU: Double? = 0.0,
+        ) = DescentDeferredCarry.eligibility(1.0, phase, latch, healthy, low, rebound, manualU)
 
         assertEquals(DescentDeferredCarry.Eligibility.ELIGIBLE, eligibility())
         assertEquals(DescentDeferredCarry.Eligibility.NOT_PHASE_B, eligibility(phase = MealFoundation.Phase.PHASE_A))
@@ -74,12 +83,43 @@ class DescentDeferredCarryTest {
         assertEquals(DescentDeferredCarry.Eligibility.SIGNAL_UNHEALTHY, eligibility(healthy = false))
         assertEquals(DescentDeferredCarry.Eligibility.MEASURED_LOW, eligibility(low = true))
         assertEquals(DescentDeferredCarry.Eligibility.REBOUND_ACTIVE, eligibility(rebound = true))
+        assertEquals(DescentDeferredCarry.Eligibility.MANUAL_BOLUS_UNKNOWN, eligibility(manualU = null))
+        assertEquals(DescentDeferredCarry.Eligibility.MANUAL_BOLUS_AFTER_MARKER, eligibility(manualU = 3.0))
         assertEquals(
             DescentDeferredCarry.Eligibility.NO_DEFERRED,
             DescentDeferredCarry.eligibility(
-                0.0, MealFoundation.Phase.PHASE_B, false, true, false, false,
+                0.0, MealFoundation.Phase.PHASE_B, false, true, false, false, null,
             ),
         )
+    }
+
+    @Test
+    fun `manueller Bolus sperrt nur den Sicherheitsaufschub nicht das regulaere B-Budget`() {
+        val a = DescentDeferredCarry.allocate(
+            phaseABudgetU = 3.0,
+            deliveredPhaseAU = 1.35,
+            confirmedNotSentPhaseAU = 0.0,
+            descentDeferredPhaseAU = 1.65,
+            descentEligibility = DescentDeferredCarry.Eligibility.MANUAL_BOLUS_AFTER_MARKER,
+        )
+
+        assertEquals(1.65, a.phaseAShortfallU, 1e-9)
+        assertEquals(0.0, a.effectiveDescentCarryU, 1e-9)
+        val plan = MealFoundation.plan(
+            markerTs = t0,
+            nowTs = t0 + 21 * 60_000L,
+            handoverTs = t0 + 20 * 60_000L,
+            totalBudgetU = 3.75,
+            phaseBBudgetU = 0.75,
+            confirmedNotSentPhaseAU = 0.0,
+            descentDeferredPhaseAU = 1.65,
+            descentCarryEligibility = DescentDeferredCarry.Eligibility.MANUAL_BOLUS_AFTER_MARKER,
+            phaseBUntilMin = 60,
+            deliveredFromBudgetU = 1.35,
+            deliveredSinceHandoverU = 0.0,
+            bolusStepU = 0.05,
+        )
+        assertEquals(0.75, plan.remainingInWindowU, 1e-9, "regulaeres Phase-B-Teilbudget bleibt")
     }
 
     @Test

@@ -180,6 +180,7 @@ class CycleIobValidityTest : TestBaseWithProfile() {
         whenever(preferences.get(FuseDoubleKey.RiseRampHighR)).thenReturn(2.0)
         whenever(preferences.get(FuseDoubleKey.MaxSmbU)).thenReturn(0.3)
         whenever(preferences.get(FuseDoubleKey.GuardFloorMgdl)).thenReturn(70.0)
+        whenever(preferences.get(FuseDoubleKey.PositiveDescentHorizonMin)).thenReturn(30.0)
         whenever(preferences.get(FuseIntKey.IobThPercent)).thenReturn(100)
         whenever(preferences.get(FuseIntKey.ReleaseHorizonMin)).thenReturn(60)
         whenever(preferences.get(FuseIntKey.LiabilityHorizonMin)).thenReturn(120)

@@ -53,7 +53,7 @@ class LedgerCodecTest {
     @Test
     fun `der Abwaertsriegel ueberlebt den Codec aber nicht seine halbe Erholungsserie`() {
         val ep = EpisodeBudgets().apply {
-            descentRecoveryLatch = DescentRecoveryLatch.State(active = true, latchedAtTs = t0)
+            descentRecoveryLatch = DescentRecoveryLatch.State(active = true, latchedAtTs = t0, sawMeasuredLow = true)
             descentRecoveryRuntime = DescentRecoveryLatch.Runtime(
                 consecutiveRecoveryCycles = 2,
                 lastSourceTs = t0 + 120_000L,
@@ -64,7 +64,7 @@ class LedgerCodecTest {
             JSONObject(LedgerCodec.encode(LedgerState(), ep, 0L, InterventionStamp("test-epoche", 42L)).toString()),
         ).episodes
 
-        assertEquals(DescentRecoveryLatch.State(true, t0), decoded.descentRecoveryLatch)
+        assertEquals(DescentRecoveryLatch.State(true, t0, sawMeasuredLow = true), decoded.descentRecoveryLatch)
         assertEquals(
             DescentRecoveryLatch.Runtime(), decoded.descentRecoveryRuntime,
             "eine unbeobachtete Prozessluecke darf zwei alte Erholungszyklen nicht fortsetzen",

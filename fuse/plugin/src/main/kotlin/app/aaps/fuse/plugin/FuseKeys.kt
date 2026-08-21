@@ -215,6 +215,16 @@ enum class FuseDoubleKey(
      */
     LowGateHorizonMin("fuse_low_gate_horizon_min", 120.0, 30.0, 240.0),
 
+    /**
+     * Nahhorizont des harten Endriegels fuer NEUES positives Insulin [min].
+     * Getrennt vom 120-minuetigen TBR-Nutzenfenster: Basal rechtzeitig
+     * zurueckhalten und einen Mahlzeiten-SMB hart verbieten sind zwei
+     * verschiedene Entscheidungen. Der Live-Replay vom 21.08. laesst bei
+     * 30 min noch vier fruehe Schritte zu und sperrt vor der akuten Kante;
+     * 120 min sperrte die komplette Phase A bereits bei BG 88.
+     */
+    PositiveDescentHorizonMin("fuse_positive_descent_horizon_min", 30.0, 15.0, 60.0),
+
     /** Totband der NACHT [mg/dl ueber Ziel]: darunter kein SMB im Nachtfenster.
      *  0 = aus. Ein erklaerter Marker hebt es auf (Toni 09.08.). */
     NightDeadbandMgdl("fuse_night_deadband_mgdl", 45.0, 0.0, 100.0),

@@ -228,6 +228,10 @@ class FuseCycleRunner(
             require(it.riseRampHighR > it.riseRampLowR) { "riseRamp ${it.riseRampLowR}..${it.riseRampHighR} invertiert" }
             require(it.maxSmbU.isFinite() && it.maxSmbU in FuseDoubleKey.MaxSmbU.min..FuseDoubleKey.MaxSmbU.max) { "maxSmbU=${it.maxSmbU}" }
             require(it.guardFloorMgdl.isFinite() && it.guardFloorMgdl in FuseDoubleKey.GuardFloorMgdl.min..FuseDoubleKey.GuardFloorMgdl.max) { "guardFloorMgdl=${it.guardFloorMgdl}" }
+            require(
+                it.positiveDescentHorizonMin.isFinite() &&
+                    it.positiveDescentHorizonMin in FuseDoubleKey.PositiveDescentHorizonMin.min..FuseDoubleKey.PositiveDescentHorizonMin.max
+            ) { "positiveDescentHorizonMin=${it.positiveDescentHorizonMin}" }
             require(it.iobThPercent in FuseIntKey.IobThPercent.min..FuseIntKey.IobThPercent.max) { "iobThPercent=${it.iobThPercent}" }
             require(it.releaseHorizonMin in FuseIntKey.ReleaseHorizonMin.min..FuseIntKey.ReleaseHorizonMin.max) { "releaseHorizonMin=${it.releaseHorizonMin}" }
             // Gleiche Grenzen wie DriveDecayModel.ExponentialDecay - sonst wirft der
@@ -496,6 +500,10 @@ class FuseCycleRunner(
          * Fundament laeuft, und das ist die richtige Aussage.
          */
         val mealFoundation: MealFoundation.Snapshot = MealFoundation.Snapshot.none(),
+        /** Gueltige manuelle NORMAL-Boli strikt nach dem laufenden Marker.
+         *  null = DB-Sicht unlesbar; der Sicherheitsuebertrag sperrt dann
+         *  fail-closed. Die regulaere Phase B bleibt davon unberuehrt. */
+        val manualBolusAfterMarkerU: Double? = null,
         /** Der SMB-Stand VOR der Fundament-Anhebung [U] - reine Messung. */
         val preFoundationSmbU: Double = 0.0,
         /**
@@ -879,6 +887,13 @@ class FuseCycleRunner(
         }
 
         val profile = profileFunction.getProfile(computeTs) ?: return abort("no profile")
+        // EIN Datenbank-Snapshot fuer die manuelle Deckung UND den spaeteren
+        // Ledger-Abgleich. Zwei Abfragen koennten im selben Zyklus zwei
+        // verschiedene Welten sehen. Lazy, damit fruehe Abbruchpfade keine
+        // unnoetige DB-Arbeit erzeugen.
+        val treatmentView by lazy(LazyThreadSafetyMode.NONE) {
+            runCatching { buildTreatmentView(computeTs, profile.dia) }.getOrNull()
+        }
 
         // Beide Epochen EINMAL je Zyklus. Sie begrenzen die Signalreihe UND
         // steuern die Health-Gruende des Observers - zwei verschiedene Lesungen
@@ -1431,7 +1446,11 @@ class FuseCycleRunner(
             bolusIobU = (iobTotal.iob - iobTotal.basaliob).takeIf { iobTotal.valid },
             isfMgdlPerU = isf,
             guardFloorMgdl = cfg.guardFloorMgdl,
-            horizonMin = cfg.lowGateHorizonMin,
+            // NICHT das 120-minuetige TBR-Nutzenfenster. Ein Basalstopp kann
+            // weit voraus sinnvoll sein; ein harter SMB-Endriegel muss eine
+            // akute, gemessene Gefahr meinen. Die Kopplung hat am 21.08. die
+            // komplette Phase A eines Fruehstuecks gesperrt.
+            horizonMin = cfg.positiveDescentHorizonMin,
         )
         val (target, targetSource) = activeTarget(profile, computeTs)
 
@@ -1544,13 +1563,18 @@ class FuseCycleRunner(
         // Sicherheitsaufschub darf erst in Phase B nach bestaetigter Erholung
         // wirken; ein echtes Tief, ungesundes Signal oder rohes
         // Rebound-Fenster sperrt ihn weiterhin.
+        val foundationPhase = MealFoundation.phaseOf(
+            episodes.foundation, computeTs, episodes.primeWindowStartTs,
+        )
+        val manualBolusAfterMarkerU = manualBolusAfterMarkerU(episodes.foundation, treatmentView)
         val descentCarryEligibility = DescentDeferredCarry.eligibility(
             deferredU = episodes.descentDeferredPhaseAU,
-            phase = MealFoundation.phaseOf(episodes.foundation, computeTs, episodes.primeWindowStartTs),
+            phase = foundationPhase,
             latchBlocksPositive = descentLatch.blocksPositive,
             signalHealthy = step.health == Health.READY,
             measuredLow = step.safetyReasons.isNotEmpty(),
             reboundRaw = reboundRaw,
+            manualBolusAfterMarkerU = manualBolusAfterMarkerU,
         )
 
         // ---- STUFE 3: DER EVIDENZBESTAND RECHNET, ABER ZAHLT NOCH NICHT ----
@@ -1681,7 +1705,7 @@ class FuseCycleRunner(
             return markerFallbackCycle(
                 rejected, warum, signal, step, cfg, state, profile, pumpe, tempBasalFallback,
                 computeTs, markerTs, mealMarkerActive, measuredLow, descentRisk, descentLatch,
-                descentCarryEligibility, evidenceEpisodeId,
+                descentCarryEligibility, manualBolusAfterMarkerU, treatmentView, evidenceEpisodeId,
                 episodeGate.denial?.name, episodeGate.creditRevoked, evidenz,
                 isf, target, targetSource, iobTotal,
                 maxIobU, transportModelledU, ledgerView, episodes, onset, band,
@@ -2651,6 +2675,7 @@ class FuseCycleRunner(
             computeDurationMs = computeDurationMs,
             mealStats = mealStats,
             mealFoundation = foundationSnapshot,
+            manualBolusAfterMarkerU = manualBolusAfterMarkerU,
             evidenceMayOverrideRebound = reboundOverrideErlaubt,
             reboundOverrideDeadlineTs = reboundOverrideDeadlineTs,
             reboundOverrideDenial = reboundOverrideDenial?.name,
@@ -2718,7 +2743,7 @@ class FuseCycleRunner(
             // runCatching: eine scheiternde DB-Abfrage darf den Zyklus nicht
             // kosten - dann faellt nur der Ledger-Abgleich dieses Zyklus aus
             // und offene Commitments bleiben konservativ stehen.
-            treatmentView = runCatching { buildTreatmentView(computeTs, profile.dia) }.getOrNull(),
+            treatmentView = treatmentView,
         )
     }
 
@@ -2881,7 +2906,7 @@ class FuseCycleRunner(
         episodes.descentDeferredPhaseAU = DescentDeferredCarry.observe(
             currentU = episodes.descentDeferredPhaseAU,
             phase = phase,
-            blockedByMeasuredDescent = finalDecision.block == FuseController.Block.MEASURED_DESCENT_RISK,
+            blockedByMeasuredSafety = DescentDeferredCarry.isDeferrableBlock(finalDecision.block),
             phaseABudgetU = auth.phaseABudgetU,
             deliveredPhaseAU = episodes.deliveredPhaseAU,
             nowTs = nowTs,
@@ -2953,6 +2978,8 @@ class FuseCycleRunner(
          *  berechnen, sonst koennen Haupt- und Fallbackpfad anders oeffnen. */
         descentLatch: DescentRecoveryLatch.Result,
         descentCarryEligibility: DescentDeferredCarry.Eligibility,
+        manualBolusAfterMarkerU: Double?,
+        treatmentView: TreatmentView?,
         /** Identitaet der Mahlzeitenepisode fuer den Evidenz-Zaehler; 0 = keine. */
         evidenceEpisodeId: Long,
         /** Warum keine eroeffnet wurde - s. [Outcome.evidenceEpisodeDenial]. */
@@ -3208,6 +3235,7 @@ class FuseCycleRunner(
                 descentCarryEligibility = descentCarryEligibility,
                 bolusStepU = pumpe.bolusStepU,
             ),
+            manualBolusAfterMarkerU = manualBolusAfterMarkerU,
             preFoundationSmbU = preFoundationSmbU,
             preFoundationBlock = preFoundationBlock,
             preFoundationBindingLimit = preFoundationBindingLimit,
@@ -3217,8 +3245,27 @@ class FuseCycleRunner(
             predictorRejected = true,
             predictorReason = rejected.reason.name,
             markerFallbackUsed = true,
-            treatmentView = runCatching { buildTreatmentView(computeTs, profile.dia) }.getOrNull(),
+            treatmentView = treatmentView,
         )
+    }
+
+    /**
+     * Die bestaetigte Nutzerentscheidung vom 21.08.: ein manueller
+     * NORMAL-Bolus NACH dem Marker sperrt ausschliesslich den neu eingefuehrten
+     * Sicherheitsuebertrag. Er wird nicht als Fundament-Lieferung umgedeutet
+     * und veraendert das regulaere Phase-B-Teilbudget nicht.
+     */
+    internal fun manualBolusAfterMarkerU(
+        auth: MealFoundation.Authorization,
+        treatmentView: TreatmentView?,
+    ): Double? {
+        if (!auth.valid) return 0.0
+        val view = treatmentView ?: return null
+        val manual = view.boluses.filter {
+            it.isValid && it.type == BS.Type.NORMAL && it.timestamp > auth.armedTs
+        }
+        if (manual.any { !it.amount.isFinite() || it.amount < 0.0 }) return null
+        return manual.sumOf { it.amount }.takeIf { it.isFinite() && it >= 0.0 }
     }
     /** Fensteranfang der Behandlungssicht: DIA + Marge zurueck, zusaetzlich
      *  verlaengert bis vor den aeltesten Fakt einer noch offenen Ledger-Zeile.
@@ -3455,6 +3502,8 @@ class FuseCycleRunner(
         val lowGateMinBenefitMgdl: Double,
         /** Kurzfristfenster der Richtungsprobe [min] - s. [FuseDoubleKey.LowGateHorizonMin]. */
         val lowGateHorizonMin: Double,
+        /** Akuter Horizont des harten positiven Endriegels [min]. */
+        val positiveDescentHorizonMin: Double,
         val iobThPercent: Int,
         val releaseHorizonMin: Int,
         val liabilityHorizonMin: Int,
@@ -3510,6 +3559,7 @@ class FuseCycleRunner(
         guardFloorMgdl = preferences.get(FuseDoubleKey.GuardFloorMgdl),
         lowGateMinBenefitMgdl = preferences.get(FuseDoubleKey.LowGateMinBenefitMgdl),
         lowGateHorizonMin = preferences.get(FuseDoubleKey.LowGateHorizonMin),
+        positiveDescentHorizonMin = preferences.get(FuseDoubleKey.PositiveDescentHorizonMin),
         iobThPercent = preferences.get(FuseIntKey.IobThPercent),
         releaseHorizonMin = preferences.get(FuseIntKey.ReleaseHorizonMin),
         liabilityHorizonMin = preferences.get(FuseIntKey.LiabilityHorizonMin),

@@ -59,7 +59,7 @@ object FuseStateJson {
     // SMB-Riegel; erst drei gesunde Zyklen mit UKF >= +0,20 oeffnen wieder.
     // v14 (20.08.): der dadurch in Phase A unvermeidbar gewordene Rueckstand
     // darf nach genau dieser Erholung kontrolliert in Phase B nachlaufen.
-    const val RULE_SET_VERSION = 14
+    const val RULE_SET_VERSION = 15
 
     /** Schema des Trail-Datensatzes - s. die Notiz an der Schreibstelle. */
     const val SCHEMA_VERSION = 4
@@ -269,6 +269,7 @@ object FuseStateJson {
                     // etwas verschoben wurde oder ein Schutz gerade sperrt.
                     .put("descentDeferredPhaseAU", fin(f.descentDeferredPhaseAU))
                     .put("descentCarryEligibility", f.descentCarryEligibility.name)
+                    .put("manualBolusAfterMarkerU", fin(outcome.manualBolusAfterMarkerU))
                     .put("effectiveDescentCarryU", fin(f.effectiveDescentCarryU))
                     .put("phaseBAllowanceU", fin(f.phaseBAllowanceU))
                     // Soll, Rueckstand und dueU sind DREI Groessen, nicht eine
@@ -1115,6 +1116,7 @@ object FuseStateJson {
         .put("sharedMaxIobU", fin(p.sharedMaxIobU))
         .put("maxSmbU", fin(p.maxSmbU))
         .put("guardFloorMgdl", fin(p.guardFloorMgdl))
+        .put("positiveDescentHorizonMin", fin(p.positiveDescentHorizonMin))
         .put("iobThPercent", p.iobThPercent)
         .put("releaseHorizonMin", p.releaseHorizonMin)
         .put("liabilityHorizonMin", p.liabilityHorizonMin)
@@ -1166,7 +1168,8 @@ object FuseStateJson {
      */
     fun hashOf(p: FuseCycleRunner.Config): String? {
         val doubles = listOf(
-            p.smbRatio, p.smbRatioRise, p.maxSmbU, p.guardFloorMgdl, p.tailFloorMgdl, p.tailRecoveryU,
+            p.smbRatio, p.smbRatioRise, p.maxSmbU, p.guardFloorMgdl, p.positiveDescentHorizonMin,
+            p.tailFloorMgdl, p.tailRecoveryU,
             // Rampe + Abschlag: fehlten bis v1 - zwei Laeufe mit verschiedenen
             // Rampen bekamen denselben Hash (Audit 07.08.). Version 1->2.
             p.riseRampLowR, p.riseRampHighR, p.bolusShareLambda, p.onsetEnvelopeU, p.primeEnvelopeU,

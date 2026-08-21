@@ -1,6 +1,7 @@
 package app.aaps.fuse.plugin
 
 import app.aaps.fuse.core.controller.InterventionStamp
+import app.aaps.core.data.model.BS
 import app.aaps.core.data.model.GV
 import app.aaps.core.data.model.TB
 import app.aaps.core.data.model.SourceSensor
@@ -273,6 +274,7 @@ class TransportWiringTest : TestBaseWithProfile() {
     private var guardBodenMgdl = 70.0
 
     private var iobGueltig = true
+    private var boluses: List<BS> = emptyList()
 
     private fun roundUp(t: Long) = if (t % 60_000L == 0L) t else (t / 60_000L + 1) * 60_000L
 
@@ -301,7 +303,11 @@ class TransportWiringTest : TestBaseWithProfile() {
 
         whenever(persistenceLayer.getLastTherapyRecordUpToNow(any())).thenReturn(null)
         whenever(persistenceLayer.getTemporaryTargetActiveAt(any())).thenReturn(null)
-        whenever(persistenceLayer.getBolusesFromTimeToTime(any(), any(), any())).thenReturn(emptyList())
+        whenever(persistenceLayer.getBolusesFromTimeToTime(any(), any(), any())).thenAnswer { inv ->
+            val from = inv.getArgument<Long>(0)
+            val to = inv.getArgument<Long>(1)
+            boluses.filter { it.timestamp in from..to }
+        }
         whenever(processedTbrEbData.getTempBasalIncludingConvertedExtended(any())).thenReturn(null)
 
         stubPolicy()
@@ -342,6 +348,7 @@ class TransportWiringTest : TestBaseWithProfile() {
         // Wert schaut, konnte im Rig nie greifen; gemerkt habe ich es nur,
         // weil die Vorbedingung des Tests darauf bestand.
         whenever(preferences.get(FuseDoubleKey.LowGateHorizonMin)).thenReturn(120.0)
+        whenever(preferences.get(FuseDoubleKey.PositiveDescentHorizonMin)).thenReturn(30.0)
         whenever(preferences.get(FuseDoubleKey.LowGateMinBenefitMgdl)).thenReturn(5.0)
         whenever(preferences.get(FuseIntKey.IobThPercent)).thenAnswer { iobThPct }
         whenever(preferences.get(FuseIntKey.ReleaseHorizonMin)).thenReturn(60)
@@ -4792,6 +4799,43 @@ class TransportWiringTest : TestBaseWithProfile() {
     }
 
     /**
+     * DER FRUEHSTUECKSFALL VOM 21.08.: q1 rund 113, UKF -0,49/min und
+     * 1,21 U Bolus-IOB. Das alte gemeinsame 120-min-Fenster machte daraus
+     * einen harten positiven Endriegel, obwohl die extrapolierte Bodenzeit
+     * weit ausserhalb einer akuten SMB-Entscheidung lag. Mit dem eigenen
+     * 30-min-Fenster muss die Phase-A-Huelle bereits vor der Wende liefern.
+     */
+    @Test
+    fun `Fruehstuecksfallen ausserhalb 30 Minuten hungert Phase A nicht aus`(@TempDir dir: File) {
+        fundamentAn = true
+        fundamentAnteil = 0.80
+        markerAuthorized = true
+        primeHuelleU = 3.75
+        flach = 116.0
+        steigungProMin = -0.49
+        knickAbMin = null
+        bolusIobU = 1.21
+        clock = start
+        transportReset()
+        neuerRunner(FuseLedgerAdapter().also { it.loadOnce(dir.also(File::mkdirs), "test-epoch", start) })
+        markerAt = start + 2 * 60_000L
+
+        var phaseASum = 0.0
+        var hardDescentSeen = false
+        repeat(20) {
+            val o = cycle()
+            if (o.mealFoundation.phase == MealFoundation.Phase.PHASE_A) {
+                phaseASum += o.decision.smbU
+                if (o.decision.block == FuseController.Block.MEASURED_DESCENT_RISK)
+                    hardDescentSeen = true
+            }
+        }
+
+        assertFalse(hardDescentSeen, "die 30-min-Gefahr darf diesen langsamen Vorlauf nicht akut nennen")
+        assertTrue(phaseASum > 0.0, "die Marker-Huelle muss vor der Mahlzeitenwende bereits liefern")
+    }
+
+    /**
      * DER ABENDFALL: trotz Marker-Autorisierung darf nichts mehr hinausgehen.
      *
      * Das ist die Zusicherung, an der der P0 haengt. Vorher hob der Marker den
@@ -4841,6 +4885,37 @@ class TransportWiringTest : TestBaseWithProfile() {
         assertTrue(
             ledger.episodes.descentDeferredPhaseAU > 0.0,
             "auch der Seiteneingang muss den spaeter kontrolliert nachholbaren Rueckstand festhalten",
+        )
+    }
+
+    @Test
+    fun `auch SafetyHold merkt den unvermeidbaren Phase-A-Rueckstand`(@TempDir dir: File) {
+        fundamentAn = true
+        fundamentAnteil = 0.80
+        markerAuthorized = true
+        primeHuelleU = 3.75
+        // Ein reales Tief, kein Modell-Guard. Die Phase-A-Autorisierung steht,
+        // darf aber nichts liefern; gegen Ende ihres Fensters muss der nicht
+        // mehr einholbare Anteil restartfest als Sicherheitsaufschub stehen.
+        flach = 72.0
+        steigungProMin = 0.0
+        knickAbMin = null
+        bolusIobU = 1.2
+        clock = start
+        transportReset()
+        neuerRunner(FuseLedgerAdapter().also { it.loadOnce(dir.also(File::mkdirs), "test-epoch", start) })
+        markerAt = start + 2 * 60_000L
+
+        var safetyHoldSeen = false
+        repeat(25) {
+            val o = cycle()
+            if (o.decision.block == FuseController.Block.SAFETY_HOLD) safetyHoldSeen = true
+        }
+
+        assertTrue(safetyHoldSeen, "der Aufbau MUSS den gemessenen SafetyHold erreichen")
+        assertTrue(
+            ledger.episodes.descentDeferredPhaseAU > 0.0,
+            "SafetyHold darf die ausgefallene Phase-A-Versorgung nicht unsichtbar verfallen lassen",
         )
     }
 
@@ -5033,7 +5108,7 @@ class TransportWiringTest : TestBaseWithProfile() {
 
         var eligibleSeen = false
         var liftSum = 0.0
-        repeat(12) {
+        repeat(3) {
             val o = cycle()
             if (o.mealFoundation.phase == MealFoundation.Phase.PHASE_B) {
                 assertEquals(
@@ -5050,6 +5125,66 @@ class TransportWiringTest : TestBaseWithProfile() {
 
         assertTrue(eligibleSeen, "der echte Runner MUSS Phase B erreicht haben")
         assertTrue(liftSum > 0.0, "der Aufschub muss ueber den echten Fundament-Lift wieder fliessen koennen")
+
+        // TONIS BESTAETIGTE REGEL (21.08.): ein manueller NORMAL-Bolus nach
+        // dem Marker beendet NUR diesen Sicherheitsaufschub. Er wird nicht
+        // als Fundament-Lieferung umgedeutet; das regulaere B-Teilbudget
+        // bleibt deshalb exakt 0,75 U.
+        boluses = listOf(BS(timestamp = clock, amount = 3.0, type = BS.Type.NORMAL))
+        val manual = cycle()
+        assertEquals(3.0, manual.manualBolusAfterMarkerU!!, 1e-9)
+        assertEquals(
+            DescentDeferredCarry.Eligibility.MANUAL_BOLUS_AFTER_MARKER,
+            manual.mealFoundation.descentCarryEligibility,
+        )
+        assertEquals(0.0, manual.mealFoundation.effectiveDescentCarryU, 1e-9)
+        assertEquals(0.75, manual.mealFoundation.phaseBAllowanceU, 1e-9)
+
+        // Die Behandlungshistorie ist eine Freigabevoraussetzung fuer den
+        // zusaetzlichen Sicherheitsaufschub. Ein Lesefehler darf deshalb nie
+        // als "kein manueller Bolus" durchgehen. Das regulaere B-Teilbudget
+        // bleibt auch in diesem fail-closed-Fall erhalten.
+        whenever(persistenceLayer.getBolusesFromTimeToTime(any(), any(), any()))
+            .thenThrow(IllegalStateException("Bolushistorie nicht lesbar"))
+        val unreadable = cycle()
+        assertNull(unreadable.manualBolusAfterMarkerU)
+        assertEquals(
+            DescentDeferredCarry.Eligibility.MANUAL_BOLUS_UNKNOWN,
+            unreadable.mealFoundation.descentCarryEligibility,
+        )
+        assertEquals(0.0, unreadable.mealFoundation.effectiveDescentCarryU, 1e-9)
+        assertEquals(0.75, unreadable.mealFoundation.phaseBAllowanceU, 1e-9)
+    }
+
+    @Test
+    fun `nur NORMAL strikt nach Marker gilt als manuelle Deckung`() {
+        val auth = MealFoundation.arm(
+            markerTs = start,
+            foundationEnabled = true,
+            totalBudgetU = 3.75,
+            phaseAShare = 0.80,
+            primeWindowMin = 20,
+            wallCeilingMin = 45,
+            pressObservedInThisProcess = true,
+            primeDeclinedByUser = false,
+            markerAuthorized = true,
+            phaseBUntilMin = 60,
+        )
+        val view = FuseCycleRunner.TreatmentView(
+            boluses = listOf(
+                BS(timestamp = start - 1L, amount = 2.0, type = BS.Type.NORMAL),
+                BS(timestamp = start + 1L, amount = 0.3, type = BS.Type.SMB),
+                BS(timestamp = start + 2L, amount = 0.5, type = BS.Type.PRIMING),
+                BS(timestamp = start + 3L, amount = 3.0, type = BS.Type.NORMAL),
+            ),
+            facts = emptyList(),
+            snapshotHash = "test",
+            latestBolusTs = start + 3L,
+            diaHours = 5.0,
+        )
+
+        assertEquals(3.0, runner.manualBolusAfterMarkerU(auth, view)!!, 1e-9)
+        assertNull(runner.manualBolusAfterMarkerU(auth, null), "unlesbar bleibt unbekannt")
     }
 
 

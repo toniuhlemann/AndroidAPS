@@ -77,12 +77,36 @@ class DescentRecoveryLatchTest {
     }
 
     @Test
+    fun `nach bestaetigtem Tief reicht beim Observer-Ausgang eine positive Rate`() {
+        val latched = DescentRecoveryLatch.State(true, 1_000L)
+        val low = step(latched, low = true, rate = -0.4, ts = 61_000L)
+
+        assertTrue(low.state.sawMeasuredLow, "der restartfeste Zustand muss das echte Tief tragen")
+        val clearedByObserver = step(low.state, low.runtime, low = false, rate = 0.25, ts = 121_000L)
+
+        assertFalse(clearedByObserver.blocksPositive)
+        assertEquals(DescentRecoveryLatch.Reason.RECOVERED, clearedByObserver.reason)
+        assertEquals(0, clearedByObserver.runtime.consecutiveRecoveryCycles, "keine zweite Drei-Zyklen-Wartezeit")
+    }
+
+    @Test
+    fun `nach Tief bleibt eine flache oder fallende Rate gesperrt`() {
+        val afterLow = DescentRecoveryLatch.State(true, 1_000L, sawMeasuredLow = true)
+        val flat = step(afterLow, low = false, rate = 0.19, ts = 61_000L)
+
+        assertTrue(flat.blocksPositive)
+        assertEquals(DescentRecoveryLatch.Reason.WAITING_RATE, flat.reason)
+        assertTrue(flat.state.sawMeasuredLow)
+    }
+
+    @Test
     fun `Neustart behaelt den Riegel aber nicht die halbe Erholung`() {
         val latched = DescentRecoveryLatch.State(true, 1_000L)
         val beforeRestart = step(latched, rate = 0.4, ts = 61_000L)
         val restored = DescentRecoveryLatch.State.restore(
             beforeRestart.state.active,
             beforeRestart.state.latchedAtTs,
+            beforeRestart.state.sawMeasuredLow,
         )!!
         val afterRestart = step(restored, rate = 0.4, ts = 121_000L)
 
@@ -95,6 +119,7 @@ class DescentRecoveryLatchTest {
     fun `ungueltige persistierte Kombinationen werden abgewiesen`() {
         assertNull(DescentRecoveryLatch.State.restore(true, 0L))
         assertNull(DescentRecoveryLatch.State.restore(false, 1L))
+        assertNull(DescentRecoveryLatch.State.restore(false, 0L, sawMeasuredLow = true))
         assertEquals(DescentRecoveryLatch.State(), DescentRecoveryLatch.State.restore(false, 0L))
     }
 }

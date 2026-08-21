@@ -26,7 +26,7 @@ class FuseStateExportTest {
     private val BUILD = FuseStateJson.Build("3.4.2.5+fuse1.0.2-toni", "abc1234", true)
 
     private val cfg = FuseCycleRunner.Config(
-        smbRatio = 0.2, smbRatioRise = 0.35, sharedMaxIobU = 7.0, riseRampLowR = 0.5, riseRampHighR = 2.0, bolusShareLambda = 1.0, onsetChannelEnabled = true, onsetEnvelopeU = 1.5, primeReleaseEnabled = true, primeWindowMin = 15, primeEnvelopeU = 1.2, maxSmbU = 0.3, guardFloorMgdl = 70.0, lowGateMinBenefitMgdl = 5.0, lowGateHorizonMin = 120.0, iobThPercent = 100,
+        smbRatio = 0.2, smbRatioRise = 0.35, sharedMaxIobU = 7.0, riseRampLowR = 0.5, riseRampHighR = 2.0, bolusShareLambda = 1.0, onsetChannelEnabled = true, onsetEnvelopeU = 1.5, primeReleaseEnabled = true, primeWindowMin = 15, primeEnvelopeU = 1.2, maxSmbU = 0.3, guardFloorMgdl = 70.0, lowGateMinBenefitMgdl = 5.0, lowGateHorizonMin = 120.0, positiveDescentHorizonMin = 30.0, iobThPercent = 100,
         releaseHorizonMin = 30, liabilityHorizonMin = 120, driveTauMin = 60, absorptionCreditWindowMin = 60, markerBoostMaxMin = 45, evidenceReboundOverrideMaxMin = 120, nightStartMin = 1380, nightEndMin = 420, nightDeadbandMgdl = 45.0, nightDeadbandEnabled = true, reboundDeadbandMgdl = 25.0, reboundDeadbandEnabled = true,
         driveLowerQuantilePct = 50, tailGuardEnabled = false, conditionalTailEnabled = true, markerAuthorized = false, mealFoundationEnabled = false, mealFoundationPhaseAShare = 1.0, mealFoundationEndMin = 60, tailFloorMgdl = 70.0, tailRecoveryU = 0.0, fastRestraintEnabled = true, endZeroWhenReasonGone = true,
     )
@@ -70,6 +70,7 @@ class FuseStateExportTest {
         denial: String? = null,
         foundation: app.aaps.fuse.core.controller.MealFoundation.Snapshot =
             app.aaps.fuse.core.controller.MealFoundation.Snapshot.none(),
+        manualBolusAfterMarkerU: Double? = null,
         shadow: TurnResponseShadow.Report? = null,
     ) = FuseCycleRunner.Outcome(
         tbrChanged = false,
@@ -92,6 +93,7 @@ class FuseStateExportTest {
         evidencePhase = phase, evidenceStockMgdl = stockMgdl, evidenceReason = reason,
         evidenceEpisodeDenial = denial,
         mealFoundation = foundation,
+        manualBolusAfterMarkerU = manualBolusAfterMarkerU,
         turnResponseShadow = shadow,
     )
 
@@ -488,6 +490,14 @@ class FuseStateExportTest {
         assertTrue(e60 != e45, "ein anderes Ende presst dasselbe Teilbudget in eine andere Zeit")
     }
 
+    @Test
+    fun `der positive Abwaerts-Horizont aendert Politik und Export`() {
+        val h30 = FuseStateJson.hashOf(cfg.copy(positiveDescentHorizonMin = 30.0))!!
+        val h45 = FuseStateJson.hashOf(cfg.copy(positiveDescentHorizonMin = 45.0))!!
+        assertTrue(h30 != h45, "30 und 45 Minuten sind verschiedene Endriegel")
+        assertEquals(30.0, FuseStateJson.policyValues(cfg).getDouble("positiveDescentHorizonMin"), 1e-9)
+    }
+
     /**
      * UND DIE VERSION SELBST: der Bump auf 11 gehoert zur Aenderung.
      *
@@ -499,11 +509,12 @@ class FuseStateExportTest {
     @Test
     fun `die Regelstandsversion traegt jede dosierwirksame Aenderung`() {
         // v11 Mahlzeitenfundament, v12 die Frist des Rebound-Sonderrechts,
-        // v13 der restartfeste Wiederfreigabe-Riegel nach gemessenem Fallen.
+        // v13 der restartfeste Wiederfreigabe-Riegel nach gemessenem Fallen,
+        // v14 der Sicherheitsaufschub, v15 der getrennte positive Horizont.
         // DIESER TEST IST ABSICHTLICH STUR: er faellt bei jedem Bump um und
         // zwingt damit zu der Frage, ob die Aenderung wirklich dosierwirksam
         // war - ein stiller Bump waere so wertlos wie ein vergessener.
-        assertEquals(14, FuseStateJson.RULE_SET_VERSION)
+        assertEquals(15, FuseStateJson.RULE_SET_VERSION)
         assertTrue(
             FuseStateJson.hashOf(cfg)!!.isNotEmpty(),
             "und der Hash bleibt berechenbar",
@@ -941,7 +952,7 @@ class FuseStateExportTest {
             // aber nicht die Groesse dazwischen.
             "confirmedNotSentPhaseAU", "deliveredPhaseAU",
             "effectiveCarryU", "descentDeferredPhaseAU", "descentCarryEligibility",
-            "effectiveDescentCarryU", "phaseBAllowanceU",
+            "manualBolusAfterMarkerU", "effectiveDescentCarryU", "phaseBAllowanceU",
             "plannedTotalU", "backlogU", "dueU", "remainingInWindowU", "binding",
             "effectiveWindowMin", "effectiveRateUPerMin",
         )) {
@@ -966,6 +977,23 @@ class FuseStateExportTest {
         assertEquals(0.10, o.getDouble("deliveredSinceHandoverU"), 1e-9)
         assertEquals(45, o.getInt("effectiveWindowMin"), "T+15 bis T+60")
         assertEquals(0.75 / 45.0, o.getDouble("effectiveRateUPerMin"), 1e-9)
+    }
+
+    @Test
+    fun `manuelle Deckung nach Marker steht mit dem Sperrgrund im Trail`() {
+        val foundation = fSnapshot(
+            ausBudgetU = 1.35,
+            seitUebergabeU = 0.0,
+            abwaertsU = 1.65,
+            abwaertsEligibility = app.aaps.fuse.core.controller.DescentDeferredCarry.Eligibility.MANUAL_BOLUS_AFTER_MARKER,
+        )
+        val o = record(outcome(foundation = foundation, manualBolusAfterMarkerU = 3.0))
+            .getJSONObject("mealFoundation")
+
+        assertEquals(3.0, o.getDouble("manualBolusAfterMarkerU"), 1e-9)
+        assertEquals("MANUAL_BOLUS_AFTER_MARKER", o.getString("descentCarryEligibility"))
+        assertEquals(0.0, o.getDouble("effectiveDescentCarryU"), 1e-9)
+        assertEquals(0.75, o.getDouble("phaseBAllowanceU"), 1e-9)
     }
 
     /**
