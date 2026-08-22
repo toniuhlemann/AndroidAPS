@@ -515,6 +515,42 @@ class CandidateSearchTest {
         )
     }
 
+    /**
+     * Codex-P0 22.08. (Liveness-Kanal): [CandidateSearch.verifyTechnicalIntegrity]
+     * ist EXAKT [CandidateSearch.verifyGuardFloor] ohne das semantische
+     * Urteil. Der Diskriminator: eine Menge, die den Boden reisst, ist
+     * technisch einwandfrei - und jeder technische Ausfall ist in beiden
+     * Pruefungen identisch typisiert.
+     */
+    @Test
+    fun `verifyTechnicalIntegrity laesst nur das semantische Urteil aus`() {
+        val p = prediction({ 120.0 }, { 120.0 })
+        // Semantik-Diskriminator: 0,6 U reissen den Boden (GUARD_FLOOR) -
+        // die Integritaetskette allein hat daran nichts auszusetzen.
+        assertEquals(
+            CandidateSearch.Reject.GUARD_FLOOR,
+            CandidateSearch.verifyGuardFloor(p, kernel(), isfSlots, band, 0.6)
+        )
+        assertNull(CandidateSearch.verifyTechnicalIntegrity(p, kernel(), isfSlots, band, 0.6))
+        // Technische Ausfaelle: in beiden identisch.
+        assertEquals(
+            CandidateSearch.Reject.NON_FINITE,
+            CandidateSearch.verifyTechnicalIntegrity(p, kernel(), isfSlots, band, Double.NaN)
+        )
+        assertEquals(
+            CandidateSearch.Reject.ISF_SLOT_MISSING,
+            CandidateSearch.verifyTechnicalIntegrity(
+                p, kernel(), listOf(IsfSlot(anchor, anchor + 30 * 60_000L, isf)), band, 0.3
+            )
+        )
+        assertEquals(
+            CandidateSearch.Reject.DELIVERY_AFTER_RELEASE,
+            CandidateSearch.verifyTechnicalIntegrity(
+                p, kernel(deliveryTs = anchor + 31 * 60_000L), isfSlots, band, 0.3
+            )
+        )
+    }
+
     // ---- C1: die BREMSBAHN in jeder Mit-Dosis-Pruefung ---------------------
     // Codex-Adjudication (D-Tabelle C1, H1, K2 Punkt 6): der Baseline-Guard nahm
     // laengst das Minimum aus Haupt- und Bremsbahn, search/verifyGuardFloor

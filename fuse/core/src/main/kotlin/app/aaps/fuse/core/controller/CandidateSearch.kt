@@ -164,42 +164,81 @@ object CandidateSearch {
          *  bisher. Vorhanden kann sie nur zusaetzlich sperren. */
         restraint: PredictorResult? = null,
     ): Reject? {
-        if (!candidateU.isFinite() || candidateU <= 0.0) return Reject.NON_FINITE
-        if (band.violation() != null) return Reject.INVALID_BAND
+        val geprueft = integrity(prediction, kernel, isfSlots, band, candidateU, restraint)
+        geprueft.reject?.let { return it }
+        return if (geprueft.minLowerMgdl < band.guardFloorMgdl) Reject.GUARD_FLOOR else null
+    }
+
+    /**
+     * NUR DIE TECHNISCHE HAELFTE von [verifyGuardFloor] (Codex-P0 22.08.,
+     * Liveness-Kanal): Eingabe, Band, Raster, Anker, Lieferzeit,
+     * Kern-Deckung, ISF-Slots und Endlichkeit - OHNE das semantische
+     * GUARD_FLOOR-Urteil. Der Kanal ueberstimmt Guard und Schwanz fachlich
+     * begruendet; die technische Integritaet des Modells darf er dabei
+     * nicht mit ueberstimmen.
+     *
+     * DIESELBE Implementierung wie [verifyGuardFloor] ([integrity]) - die
+     * beiden Pruefungen KOENNEN nicht auseinanderlaufen.
+     */
+    fun verifyTechnicalIntegrity(
+        prediction: PredictorResult,
+        kernel: UnitInsulinKernel,
+        isfSlots: List<IsfSlot>,
+        band: Band,
+        candidateU: Double,
+        restraint: PredictorResult? = null,
+    ): Reject? = integrity(prediction, kernel, isfSlots, band, candidateU, restraint).reject
+
+    /** Ergebnis der GETEILTEN Pruefkette: entweder ein TECHNISCHER Reject
+     *  (dann ist [minLowerMgdl] bedeutungslos) oder die verifizierte
+     *  pessimistische Unterkante MIT Kandidatenwirkung. */
+    private data class Integrity(val reject: Reject?, val minLowerMgdl: Double)
+
+    private fun integrity(
+        prediction: PredictorResult,
+        kernel: UnitInsulinKernel,
+        isfSlots: List<IsfSlot>,
+        band: Band,
+        candidateU: Double,
+        restraint: PredictorResult?,
+    ): Integrity {
+        fun technisch(r: Reject) = Integrity(r, Double.NaN)
+        if (!candidateU.isFinite() || candidateU <= 0.0) return technisch(Reject.NON_FINITE)
+        if (band.violation() != null) return technisch(Reject.INVALID_BAND)
         val points = prediction.points
-        if (points.isEmpty()) return Reject.HORIZON_MISSING
+        if (points.isEmpty()) return technisch(Reject.HORIZON_MISSING)
         val releaseIdx = points.indexOfFirst { it.offsetMin == band.releaseHorizonMin }
         val liabilityIdx = points.indexOfFirst { it.offsetMin == band.liabilityHorizonMin }
-        if (releaseIdx < 0 || liabilityIdx < 0) return Reject.HORIZON_MISSING
+        if (releaseIdx < 0 || liabilityIdx < 0) return technisch(Reject.HORIZON_MISSING)
         val anchorTs = prediction.predictionAnchorTs
-        if (!prediction.bgAtAnchor.isFinite()) return Reject.GRID_INCONSISTENT
+        if (!prediction.bgAtAnchor.isFinite()) return technisch(Reject.GRID_INCONSISTENT)
         for (i in points.indices) {
             val p = points[i]
-            if (p.offsetMin != i + 1 || p.tsMs != anchorTs + (i + 1) * 60_000L) return Reject.GRID_INCONSISTENT
+            if (p.offsetMin != i + 1 || p.tsMs != anchorTs + (i + 1) * 60_000L) return technisch(Reject.GRID_INCONSISTENT)
         }
-        if (!restraintFits(prediction, restraint, liabilityIdx)) return Reject.GRID_INCONSISTENT
-        if (kernel.deliveryTs < anchorTs) return Reject.DELIVERY_BEFORE_ANCHOR
-        if (kernel.deliveryTs >= points[releaseIdx].tsMs) return Reject.DELIVERY_AFTER_RELEASE
-        if (!kernel.covers(points[maxOf(releaseIdx, liabilityIdx)].tsMs)) return Reject.MODEL_HORIZON_TOO_SHORT
+        if (!restraintFits(prediction, restraint, liabilityIdx)) return technisch(Reject.GRID_INCONSISTENT)
+        if (kernel.deliveryTs < anchorTs) return technisch(Reject.DELIVERY_BEFORE_ANCHOR)
+        if (kernel.deliveryTs >= points[releaseIdx].tsMs) return technisch(Reject.DELIVERY_AFTER_RELEASE)
+        if (!kernel.covers(points[maxOf(releaseIdx, liabilityIdx)].tsMs)) return technisch(Reject.MODEL_HORIZON_TOO_SHORT)
 
         var acc = 0.0
         var minLower = safetyAnchor(prediction, restraint)
         for (i in 0..liabilityIdx) {
             val p = points[i]
-            val isf = ProfileSlots.isfAt(isfSlots, p.tsMs) ?: return Reject.ISF_SLOT_MISSING
+            val isf = ProfileSlots.isfAt(isfSlots, p.tsMs) ?: return technisch(Reject.ISF_SLOT_MISSING)
             val previousTs = if (i == 0) anchorTs else points[i - 1].tsMs
             val intervalStart = maxOf(previousTs, kernel.deliveryTs)
             val overlapMin = if (p.tsMs > intervalStart) (p.tsMs - intervalStart) / 60_000.0 else 0.0
             if (overlapMin > 0.0) acc += kernel.activityAt(p.tsMs, 1.0) * isf * overlapMin
-            if (!acc.isFinite()) return Reject.NON_FINITE
+            if (!acc.isFinite()) return technisch(Reject.NON_FINITE)
             // C1: punktweise die pessimistischere BEIDER Bahnen, C2: je Bahn die
             // prior-freie Kante. Die Kandidatenwirkung ist auf beiden dieselbe.
             val base = safetyLowerAt(prediction, restraint, i)
-            if (!base.isFinite()) return Reject.NON_FINITE
+            if (!base.isFinite()) return technisch(Reject.NON_FINITE)
             val v = base - candidateU * acc
             if (v < minLower) minLower = v
         }
-        return if (minLower < band.guardFloorMgdl) Reject.GUARD_FLOOR else null
+        return Integrity(null, minLower)
     }
 
     /**

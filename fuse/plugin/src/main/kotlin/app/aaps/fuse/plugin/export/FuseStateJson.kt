@@ -382,6 +382,7 @@ object FuseStateJson {
                     .put("binding", outcome.livenessBinding ?: JSONObject.NULL)
                     .put("denial", outcome.livenessDenial ?: JSONObject.NULL)
                     .put("exit", outcome.livenessExit ?: JSONObject.NULL)
+                    .put("modelReject", outcome.livenessModelReject ?: JSONObject.NULL)
                     .put("reArmUntilTs", outcome.livenessReArmUntilTs),
             )
             .put(

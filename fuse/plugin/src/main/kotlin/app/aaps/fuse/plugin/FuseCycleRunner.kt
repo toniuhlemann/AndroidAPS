@@ -655,6 +655,10 @@ class FuseCycleRunner(
         val livenessBinding: String? = null,
         val livenessDenial: String? = null,
         val livenessExit: String? = null,
+        /** Der TYPISIERTE Grund des Modell-Tors (CandidateSearch.Reject)
+         *  dieses Zyklus - null, wenn die Integritaetskette bestanden ist.
+         *  Nur im Hauptpfad gefuellt. */
+        val livenessModelReject: String? = null,
         val livenessReArmUntilTs: Long = 0L,
         val descentLatchedAtTs: Long = 0L,
         /** KUMULATIV in dieser Episode publiziertes Insulin [U] - die
@@ -2887,6 +2891,7 @@ class FuseCycleRunner(
         // fachlicher Bypass ja, technischer Blindflug nein.
         var livenessDenial: String? = null
         var livenessExit: String? = null
+        var livenessModelReject: String? = null
         var livenessCandidateU = 0.0
         var livenessLiftU = 0.0
         var livenessBinding: String? = null
@@ -2942,20 +2947,25 @@ class FuseCycleRunner(
                 livenessStreak = 0
             }
             livenessLastCycleTs = computeTs
+            // Die TECHNISCHE Modellpruefung, TYPISIERT (Codex-P0 22.08.):
+            // dieselbe Integritaetskette wie in `finalVeto`
+            // (verifyTechnicalIntegrity == verifyGuardFloor OHNE das
+            // semantische Urteil, geteilte Implementierung), geprueft an
+            // EINER Pumpenstufe. Nur GUARD_FLOOR und Schwanz bleiben im
+            // Kanal ueberstimmbar; der Grund steht typisiert im Trail.
+            livenessModelReject = if (kernelFinal == null)
+                CandidateSearch.Reject.MODEL_HORIZON_TOO_SHORT.name
+            else CandidateSearch.verifyTechnicalIntegrity(
+                prediction, kernelFinal, built.input.isfSlots, candidateBand, bolusStep,
+                restraint = restraint,
+            )?.name
             // Die GEMESSENEN Riegel - fuer Lauf UND Bewaffnung. Waehrend
             // eines Laufs beenden sie ihn MIT Sperre; davor verhindern sie
             // die Bewaffnung und setzen den Streak zurueck.
             val hart = when {
                 step.health != Health.READY -> "SIGNAL_UNHEALTHY"
                 treatmentView == null -> "VIEW_UNREADABLE"
-                // Die TECHNISCHE Modellpruefung (Codex 22.08.): derselbe
-                // Einheitskern, den auch `finalVeto` verlangt, und er muss
-                // das GROESSERE der beiden Bewertungsfenster decken. Nur
-                // die semantischen Urteile (Guard-Zertifikat, Schwanz)
-                // bleiben im Kanal ausgesetzt.
-                kernelFinal == null || !kernelFinal.covers(
-                    computeTs + maxOf(cfg.releaseHorizonMin, cfg.liabilityHorizonMin) * 60_000L
-                ) -> "MODEL_UNAVAILABLE"
+                livenessModelReject != null -> "MODEL_UNAVAILABLE"
                 ledgerView.hold -> "LEDGER_HOLD"
                 reboundRaw -> "REBOUND_ACTIVE"
                 measuredLow -> "MEASURED_LOW"
@@ -3329,6 +3339,7 @@ class FuseCycleRunner(
             livenessBinding = livenessBinding,
             livenessDenial = livenessDenial,
             livenessExit = livenessExit,
+            livenessModelReject = livenessModelReject,
             livenessReArmUntilTs = episodes.livenessReArmUntilTs,
             preFoundationSmbU = preFoundationSmbU,
             preFoundationBlock = preFoundationBlock,

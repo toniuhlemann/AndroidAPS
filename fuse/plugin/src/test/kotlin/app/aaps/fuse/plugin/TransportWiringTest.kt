@@ -5859,6 +5859,43 @@ class TransportWiringTest : TestBaseWithProfile() {
     //   Fall 5   Re-Arm-Sperre nach Neustart verloren (+ manueller Exit)
     //   Grenze   BG-Schwelle strikt, konfigurierbar, Aenderung beendet Lauf
 
+    /**
+     * Fall 1b - der GUARD-Deadlock (die 22.08.-Fehlerklasse: Unterkante
+     * median +97 mg/dl zu tief zertifiziert): die aktivitaetsgetriebene
+     * carb-freie Unterkante taucht unter den Boden, der Normalpfad nullt
+     * ueber GUARD_FLOOR - gemessen steigt der Zucker. Der Kanal MUSS hier
+     * heben, und das Modell-Tor darf dabei NIE anschlagen: technisch ist
+     * die Bahn einwandfrei, allein ihr semantisches Urteil ist der
+     * bekannte Fehlzertifikat-Fall. Ein ins Tor geleaktes GUARD-Urteil
+     * (volle verifyGuardFloor statt verifyTechnicalIntegrity) nullt den
+     * Kanal in genau dieser Lage - im Rig als Mutation nachgewiesen.
+     */
+    @Test
+    fun `Liveness Fall 1b - im Guard-Deadlock hebt der Kanal und das Modell-Tor schlaegt nicht an`(@TempDir dir: File) {
+        livenessLage(dir)
+        tailGuard = false
+        aktivitaet = 0.03
+        var liftZyklen = 0
+        var modellFehlalarme = 0
+        var guardGesehen = false
+        repeat(26) {
+            val o = cycle()
+            if (o.decision.block == FuseController.Block.GUARD_FLOOR) guardGesehen = true
+            if (o.livenessDenial == "MODEL_UNAVAILABLE" || o.livenessExit == "MODEL_UNAVAILABLE") modellFehlalarme++
+            if (o.livenessLiftU > 0.0) {
+                liftZyklen++
+                assertEquals(FuseController.Block.NONE, o.decision.block)
+                assertEquals(
+                    LivenessChannel.quantize(o.livenessCandidateU, 0.05), o.decision.smbU, 1e-9,
+                    "die Endmenge ist der Kanal-Kandidat, kein Guard-Rest",
+                )
+            }
+        }
+        assertTrue(guardGesehen, "der Aufbau muss den Guard-Deadlock erreichen")
+        assertEquals(0, modellFehlalarme, "das TECHNISCHE Tor darf im semantischen Deadlock nie anschlagen")
+        assertTrue(liftZyklen >= 4, "der Kanal muss den Guard-Deadlock tragen: $liftZyklen")
+    }
+
     private fun livenessLage(dir: File): FuseLedgerAdapter {
         livenessAn = true
         // Kanaldeckel 90 %: der Spielraum (7,2 - 4,5 = 2,7 U) liegt WEIT
@@ -6172,6 +6209,9 @@ class TransportWiringTest : TestBaseWithProfile() {
         assertEquals("MODEL_UNAVAILABLE", o1.livenessExit, "der technische Modellausfall MUSS den Lauf beenden")
         assertEquals(0.0, o1.livenessLiftU, 1e-9)
         assertTrue(o1.livenessReArmUntilTs > o1.computeTs, "und die Sperre setzen")
+        // Der TYPISIERTE Grund (Codex-P0): der Kern deckt das 360er-Fenster
+        // nicht - exakt die Reject-Sorte, die auch finalVeto benennt.
+        assertEquals("MODEL_HORIZON_TOO_SHORT", o1.livenessModelReject)
         // 14 Zyklen: LAENGER als die 10-min-Sperre - die "nie"-Aussage
         // haengt damit am Modell-Tor selbst, nicht an der Sperre
         // (Audit 22.08.: sonst truege die Sperre den Assert).
@@ -6179,6 +6219,7 @@ class TransportWiringTest : TestBaseWithProfile() {
             val x = cycle()
             assertEquals(0.0, x.livenessLiftU, 1e-9)
             assertEquals("MODEL_UNAVAILABLE", x.livenessDenial, "jeder Zyklus nennt das Tor")
+            assertEquals("MODEL_HORIZON_TOO_SHORT", x.livenessModelReject, "typisiert, jeden Zyklus")
         }
     }
 
