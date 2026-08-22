@@ -171,6 +171,7 @@ class FuseStateExportTest {
             ),
             TurnResponseShadow.DownVariant(
                 "NOW", true, 2, 1.4, 165.0, 0.5, 0.15, "candidate:guardFloor", null, 0.15,
+                endU = 0.20, avoidedEndU = 0.10,
             ),
             TurnResponseShadow.DownVariant(
                 "P2", true, 2, 1.4, Double.NaN, null, null, null, "PREDICT_FAILED", null,
@@ -197,6 +198,8 @@ class FuseStateExportTest {
         assertEquals(2, now.getInt("declineStreak"))
         assertEquals(1.4, now.getDouble("midDriveMgdlPerMin"), 1e-9)
         assertEquals(0.15, now.getDouble("avoidedSmbU"), 1e-9)
+        assertEquals(0.20, now.getDouble("endU"), 1e-9)
+        assertEquals(0.10, now.getDouble("avoidedEndU"), 1e-9)
         assertEquals("candidate:guardFloor", now.getString("candidateBinding"))
         val p2 = dv.getJSONObject(2)
         assertTrue(p2.isNull("predAtReleaseMgdl"), "NaN wird zur benannten Luecke, nicht zum Absturz")

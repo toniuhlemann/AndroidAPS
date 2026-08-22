@@ -2235,6 +2235,7 @@ class FuseCycleRunner(
         // gesenkte Bahn - sie unterscheiden sich nur im WANN, nicht im WIE;
         // mehr als ein zusaetzlicher Predict+Suche-Lauf entsteht pro Zyklus
         // also nicht, und auch der nur bei fast < slow.
+        var shadowDownLaneDecision: FuseController.Decision? = null
         val downVariants: List<TurnResponseShadow.DownVariant> = run {
             val fast = shadowFast ?: return@run emptyList()
             if (produktivTauPos == null || fast >= band.mean) return@run emptyList()
@@ -2296,6 +2297,7 @@ class FuseCycleRunner(
                         restraint = restraint,
                     )
                 val downDecision = CandidateGate.apply(downBase, downCandidate, bolusStep)
+                shadowDownLaneDecision = downDecision
                 TurnResponseShadow.DownVariant(
                     name = "", triggered = true, declineStreak = streak,
                     midDriveMgdlPerMin = gesenkterMid,
@@ -2322,12 +2324,6 @@ class FuseCycleRunner(
             listOf(refZeile, zeile("NOW", true), zeile("P2", streak >= 2), zeile("P3", streak >= 3))
         }
         turnShadowNs += System.nanoTime() - turnShadowBlock2Ns
-        val turnResponseShadow = TurnResponseShadow.Report(
-            turnClassification,
-            turnVariants,
-            turnShadowNs / 1_000_000.0,
-            downVariants,
-        )
 
         // Sofort-Freigabe: Plan aus derselben Momentaufnahme, Anhebung NUR
         // wenn der Basisentscheidung nichts als Bedarf fehlte. Sperren und
@@ -2834,6 +2830,49 @@ class FuseCycleRunner(
                 }
             }
         }
+        // ---- Pruefauftrag 2: die Down-Zeilen bis zur ENDMENGE -------------
+        //
+        // Der 14:10-Livefall: produktiv gingen 0,10 U hinaus (Kandidat +
+        // Sub-Step-Uebertrag), die Zeile sah nur ihren 0,05er-Kandidaten und
+        // meldete avoided = 0. Hier laeuft die geteilte gesenkte Lane durch
+        // DENSELBEN Sub-Step (eigener Uebertrag, identische Verwerfensregeln)
+        // und DIESELBE Wirkungspruefung - verglichen wird gegen die
+        // tatsaechlich publizierte Menge dieses Zyklus.
+        val turnShadowEnrichNs = System.nanoTime()
+        val downVariantsFinal = run {
+            if (downVariants.isEmpty()) return@run downVariants
+            val produktivEndU = decision.smbU
+            val lane = shadowDownLaneDecision
+            val laneEndU = if (lane == null) null else {
+                val laneStep = SubStepAccumulator.step(
+                    carriedU = shadowDownCarryU,
+                    desiredU = lane.desiredBeforeStepU,
+                    steppedU = lane.smbU,
+                    pumpIncrementU = bolusStep,
+                    discard = subStepDiscard,
+                )
+                shadowDownCarryU = laneStep.carryU
+                val roh = lane.smbU + laneStep.releaseU
+                if (roh > 0.0 && finalVeto(roh) != null) 0.0 else roh
+            }
+            downVariants.map { v ->
+                when {
+                    !v.triggered -> v.copy(endU = produktivEndU, avoidedEndU = 0.0)
+                    laneEndU == null -> v // PREDICT_FAILED: benannte Luecke bleibt
+                    else -> v.copy(
+                        endU = laneEndU,
+                        avoidedEndU = kotlin.math.max(0.0, produktivEndU - laneEndU),
+                    )
+                }
+            }
+        }
+        turnShadowNs += System.nanoTime() - turnShadowEnrichNs
+        val turnResponseShadow = TurnResponseShadow.Report(
+            turnClassification,
+            turnVariants,
+            turnShadowNs / 1_000_000.0,
+            downVariantsFinal,
+        )
         observeDescentDeferred(
             episodes = episodes,
             nowTs = computeTs,
@@ -3742,6 +3781,11 @@ class FuseCycleRunner(
      *  ein Neustart belegt keine Erholung - die drei Zyklen werden neu
      *  verdient (konservativ: spaeter offen, nie frueher). */
     private var deferredRecoveryStreak = 0
+
+    /** Pruefauftrag 2 (Toni 22.08.): eigener Sub-Step-Uebertrag der
+     *  gesenkten Schatten-Lane. Prozesslokal wie der produktive Uebertrag;
+     *  die Verwerfensregeln (subStepDiscard) gelten identisch. */
+    private var shadowDownCarryU = 0.0
 
     /** Unter WELCHEN Bedingungen der Uebertrag entstanden ist - s. Aufrufstelle.
      *  `null` heisst: es gibt keinen Uebertrag, der eine Herkunft haette. */

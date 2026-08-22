@@ -741,7 +741,9 @@ object FuseStateJson {
                                     .put("candidateSmbU", fin(v.candidateSmbU))
                                     .put("candidateBinding", v.candidateBinding ?: JSONObject.NULL)
                                     .put("candidateReject", v.candidateReject ?: JSONObject.NULL)
-                                    .put("avoidedSmbU", fin(v.avoidedSmbU)),
+                                    .put("avoidedSmbU", fin(v.avoidedSmbU))
+                                    .put("endU", fin(v.endU))
+                                    .put("avoidedEndU", fin(v.avoidedEndU)),
                             )
                         }
                     }),

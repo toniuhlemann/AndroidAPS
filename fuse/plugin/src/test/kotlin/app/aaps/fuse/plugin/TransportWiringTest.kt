@@ -4836,6 +4836,18 @@ class TransportWiringTest : TestBaseWithProfile() {
         assertTrue(now.candidateSmbU!! <= base.candidateSmbU!! + 1e-9)
         assertEquals(base.candidateSmbU!! - now.candidateSmbU!!, now.avoidedSmbU!!, 1e-9)
 
+        // PRUEFAUFTRAG 2 (14:10-Livefall): die Zeile traegt ihre ENDMENGE
+        // (Lane-Sub-Step + Wirkungspruefung) und den Abstand zur tatsaechlich
+        // publizierten Menge - avoided misst nicht mehr nur den Vorkandidaten.
+        assertEquals(o.decision.smbU, base.endU!!, 1e-9, "BASE-Ende ist die publizierte Menge")
+        assertEquals(0.0, base.avoidedEndU!!, 1e-9)
+        assertTrue(now.endU != null, "die gesenkte Lane muss eine Endmenge tragen")
+        assertTrue(now.endU!! >= now.candidateSmbU!! - 1e-9, "der Uebertrag kann nur hinzufuegen")
+        assertEquals(
+            kotlin.math.max(0.0, o.decision.smbU - now.endU!!), now.avoidedEndU!!, 1e-9,
+            "avoidedEnd = publiziert minus Lane-Ende",
+        )
+
         // AUSLOESER-DISZIPLIN: solange die Persistenz fehlt, traegt P3 die
         // REFERENZ, nicht die Senkung - frueh bremsen ist genau der Fehler,
         // den der 13:59-Gutfall (Peak 196 danach) verbietet.

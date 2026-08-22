@@ -143,8 +143,25 @@ object TurnResponseShadow {
         val candidateBinding: String?,
         val candidateReject: String?,
         /** Referenzkandidat minus Variantenkandidat, nie negativ - "was die
-         *  Senkung in diesem Zyklus vermieden haette". */
+         *  Senkung in diesem Zyklus vermieden haette" - auf KANDIDATENSTUFE.
+         *  Der 14:10-Livefall hat gezeigt, dass das zu frueh gemessen ist:
+         *  produktiv gingen 0,10 U hinaus (Kandidat + Sub-Step-Uebertrag),
+         *  die Zeile sah 0,05 und meldete avoided = 0. */
         val avoidedSmbU: Double?,
+        /**
+         * DIE ENDMENGE DER ZEILE (Pruefauftrag 2, Toni 22.08.): Kandidat
+         * plus Lane-eigener Sub-Step-Uebertrag (dieselbe reine Funktion,
+         * eigener Uebertragszaehler je Lane), danach dieselbe
+         * Wirkungspruefung wie produktiv. Publikations- und Pumpengates
+         * wirken auf alle Lanes gleich und bleiben aussen vor.
+         */
+        val endU: Double? = null,
+        /** Tatsaechlich PUBLIZIERTE produktive Menge minus [endU], nie
+         *  negativ - "was die Senkung an der Endmenge vermieden haette".
+         *  Der Obergrenzen-Charakter bleibt (Lane-Guard rechnet auf der
+         *  gesenkten Bahn); fuer Entscheidungen weiterhin insulinReqU und
+         *  candidateBinding daneben lesen. */
+        val avoidedEndU: Double? = null,
     )
 
     /**
