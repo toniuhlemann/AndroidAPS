@@ -2134,13 +2134,6 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
             addPreference(AdaptiveSwitchPreference(ctx = context, booleanKey = FuseBooleanKey.DeferredPrimeEnabled, summary = R.string.fuse_deferred_prime_summary, title = R.string.fuse_deferred_prime_title))
             addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.MarkerPrimeDescentHorizonMin, dialogMessage = R.string.fuse_marker_prime_horizon_summary, title = R.string.fuse_marker_prime_horizon_title))
             addPreference(AdaptiveIntPreference(ctx = context, intKey = FuseIntKey.DeferredPrimeEndMin, dialogMessage = R.string.fuse_deferred_prime_end_summary, title = R.string.fuse_deferred_prime_end_title))
-            // DER LIVENESS-KANAL: drei Zeilen aus demselben Grund - OB der
-            // Kanal existiert, wie hoch sein EIGENER Deckel liegt und wie
-            // lange er nach einem Exit gesperrt bleibt.
-            addPreference(AdaptiveSwitchPreference(ctx = context, booleanKey = FuseBooleanKey.LivenessChannelEnabled, summary = R.string.fuse_liveness_summary, title = R.string.fuse_liveness_title))
-            addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.LivenessIobCapPercent, dialogMessage = R.string.fuse_liveness_cap_summary, title = R.string.fuse_liveness_cap_title))
-            addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.LivenessBgMinMgdl, dialogMessage = R.string.fuse_liveness_bg_min_summary, title = R.string.fuse_liveness_bg_min_title))
-            addPreference(AdaptiveIntPreference(ctx = context, intKey = FuseIntKey.LivenessReArmMin, dialogMessage = R.string.fuse_liveness_rearm_summary, title = R.string.fuse_liveness_rearm_title))
             addPreference(AdaptiveIntPreference(ctx = context, intKey = FuseIntKey.AbsorptionCreditWindowMin, dialogMessage = R.string.fuse_absorption_credit_summary, title = R.string.fuse_absorption_credit_title))
             addPreference(AdaptiveIntPreference(ctx = context, intKey = FuseIntKey.MarkerBoostMaxMin, dialogMessage = R.string.fuse_marker_boost_summary, title = R.string.fuse_marker_boost_title))
             addPreference(AdaptiveIntPreference(ctx = context, intKey = FuseIntKey.EvidenceReboundOverrideMaxMin, dialogMessage = R.string.fuse_evidence_rebound_override_summary, title = R.string.fuse_evidence_rebound_override_title))
@@ -2176,6 +2169,24 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
                 )
             )
             addPreference(AdaptiveIntPreference(ctx = context, intKey = FuseIntKey.IobThPercent, dialogMessage = R.string.fuse_iob_th_percent_summary, title = R.string.fuse_iob_th_percent_title))
+            // DER LIVENESS-KANAL steht HIER und nicht bei Mahlzeit/Marker
+            // (Toni 22.08., Geraetefund): er ist marker- und mahlzeiten-
+            // UNABHAENGIG - ein mengenbegrenzter Zusatzkanal gegen den
+            // Deadlock der Modell-Vetos, mit eigener Druckbedingung. Die
+            // urspruengliche Einsortierung folgte nur der Bau-Nachbarschaft
+            // zum Aufschub und war sachlich falsch. Vier Zeilen: OB es den
+            // Kanal gibt, sein EIGENER Deckel, die Druck-Schwelle und die
+            // Sperre nach jedem Exit.
+            info(
+                "Liveness-Kanal",
+                "Mengenbegrenzter Zusatzkanal bei anhaltend steigendem Zucker ueber der " +
+                    "Druck-Schwelle, wenn Guard oder Schwanz den Normalpfad deckeln. " +
+                    "Unabhaengig von Marker und Mahlzeitenfenster."
+            )
+            addPreference(AdaptiveSwitchPreference(ctx = context, booleanKey = FuseBooleanKey.LivenessChannelEnabled, summary = R.string.fuse_liveness_summary, title = R.string.fuse_liveness_title))
+            addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.LivenessIobCapPercent, dialogMessage = R.string.fuse_liveness_cap_summary, title = R.string.fuse_liveness_cap_title))
+            addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.LivenessBgMinMgdl, dialogMessage = R.string.fuse_liveness_bg_min_summary, title = R.string.fuse_liveness_bg_min_title))
+            addPreference(AdaptiveIntPreference(ctx = context, intKey = FuseIntKey.LivenessReArmMin, dialogMessage = R.string.fuse_liveness_rearm_summary, title = R.string.fuse_liveness_rearm_title))
         }
 
         cat("fuse_guard", "Schutz und Prognose") {

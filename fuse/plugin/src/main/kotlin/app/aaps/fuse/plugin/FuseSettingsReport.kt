@@ -140,11 +140,6 @@ object FuseSettingsReport {
                     schalter(FuseBooleanKey.DeferredPrimeEnabled, "Marker-Prime-Aufschub"),
                     zahl(FuseDoubleKey.MarkerPrimeDescentHorizonMin, "Marker-Horizont", "min"),
                     ganz(FuseIntKey.DeferredPrimeEndMin, "Aufschub-Frist", "min"),
-                    // Der Liveness-Kanal - dieselbe Drei-Zeilen-Disziplin.
-                    schalter(FuseBooleanKey.LivenessChannelEnabled, "Liveness-Kanal"),
-                    zahl(FuseDoubleKey.LivenessIobCapPercent, "Kanaldeckel", "%"),
-                    zahl(FuseDoubleKey.LivenessBgMinMgdl, "Druck-Schwelle", "mg/dl"),
-                    ganz(FuseIntKey.LivenessReArmMin, "Re-Arm-Sperre", "min"),
                 ),
                 "Dosierung und Grenzen" to listOf(
                     zahl(FuseDoubleKey.SmbRatio, "Anteil Korrektur", ""),
@@ -154,6 +149,13 @@ object FuseSettingsReport {
                     zahl(FuseDoubleKey.RiseRampHighR, "Rampe oben", "r"),
                     maxIob,
                     ganz(FuseIntKey.IobThPercent, "iobTH", "% maxIOB"),
+                    // Der Liveness-Kanal gehoert HIERHER, nicht zu Mahlzeit/
+                    // Marker (Toni 22.08.): er ist markerunabhaengig und
+                    // mengenbasiert - seine Grenzen sind Dosiergrenzen.
+                    schalter(FuseBooleanKey.LivenessChannelEnabled, "Liveness-Kanal"),
+                    zahl(FuseDoubleKey.LivenessIobCapPercent, "Kanaldeckel", "%"),
+                    zahl(FuseDoubleKey.LivenessBgMinMgdl, "Druck-Schwelle", "mg/dl"),
+                    ganz(FuseIntKey.LivenessReArmMin, "Re-Arm-Sperre", "min"),
                 ),
                 "Schutz und Prognose" to listOf(
                     zahl(FuseDoubleKey.GuardFloorMgdl, "Guard-Boden", "mg/dl"),
