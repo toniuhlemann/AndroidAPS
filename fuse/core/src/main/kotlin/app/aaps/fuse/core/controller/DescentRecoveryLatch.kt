@@ -10,16 +10,25 @@ package app.aaps.fuse.core.controller
  * Hat der Observer waehrenddessen ein echtes Tief bestaetigt, genuegt nach
  * dessen eigener fuenfminuetiger Exit-Bestaetigung ein aktueller positiver
  * UKF-Zyklus; sonst wuerden zwei Hysteresen dieselbe Erholung bezahlen lassen.
- * Der Replay vom 17.-19.08. trennt damit die drei Gegenlagen:
- *
- *  - schneller Mahlzeitenanstieg nach anfaenglichem Fallen: Freigabe 09:20;
- *  - echte Wende nach dem Low: Freigabe 20:18;
- *  - Abendsturz 17:55: keine Freigabe waehrend Tief oder Signalbruch.
+ * Der Replay vom 17.-19.08. hat die DREI-ZYKLEN-Regel an den drei Gegenlagen
+ * validiert (schneller Mahlzeitenanstieg nach anfaenglichem Fallen: Freigabe
+ * 09:20; echte Wende nach dem Low: Freigabe 20:18; Abendsturz 17:55: keine
+ * Freigabe waehrend Tief oder Signalbruch). Der spaeter ergaenzte
+ * Ein-Zyklus-Weg nach bestaetigtem Tief ist davon NICHT abgedeckt; ihn
+ * rechtfertigt allein die bereits erbrachte fuenfminuetige Exit-Bestaetigung
+ * des Observers im SELBEN Prozess.
  *
  * Nur [State] wird persistiert. [Runtime] ist absichtlich prozesslokal: nach
- * einem Neustart bleibt ein aktiver Riegel samt Information ueber ein
- * beobachtetes Tief erhalten. Nur die prozesslokalen Bestaetigungszyklen
- * beginnen neu. Eine unbeobachtete Prozessluecke darf keine Erholung belegen.
+ * einem Neustart bleibt ein aktiver Riegel erhalten, aber die prozesslokalen
+ * Bestaetigungszyklen beginnen neu - eine unbeobachtete Prozessluecke darf
+ * keine Erholung belegen. DASSELBE GILT SEIT DEM 22.08. FUER DEN TIEF-KREDIT
+ * [State.sawMeasuredLow]: sein Wert stuetzt sich auf die fuenfminuetige
+ * Exit-Bestaetigung des Observers, und die ist prozesslokal. Ein Neustart
+ * verwirft den Kredit beim [State.restore]; er entsteht neu, sobald der
+ * Observer DIESES Prozesses das Tief wieder bestaetigt (Review 22.08. -
+ * vorher haette der persistierte Kredit nach dem Neustart zwei von drei
+ * Bestaetigungszyklen erlassen, auf einen Beweis hin, den der neue Prozess
+ * nie gesehen hat).
  */
 object DescentRecoveryLatch {
 
@@ -42,8 +51,17 @@ object DescentRecoveryLatch {
             get() = if (active) latchedAtTs > 0L else latchedAtTs == 0L && !sawMeasuredLow
 
         companion object {
+            /**
+             * Die persistierte KOMBINATION wird erst validiert (eine
+             * inkonsistente Datei bleibt abgewiesen), dann wird der
+             * Tief-Kredit VERWORFEN: seine Rechtfertigung - die
+             * Exit-Bestaetigung des Observers - lief im alten Prozess.
+             * Der Riegel selbst bleibt bestehen; das ist die konservative
+             * Richtung (laenger zu, nie frueher offen).
+             */
             fun restore(active: Boolean, latchedAtTs: Long, sawMeasuredLow: Boolean = false): State? =
                 State(active, latchedAtTs, sawMeasuredLow).takeIf { it.valid }
+                    ?.copy(sawMeasuredLow = false)
         }
     }
 

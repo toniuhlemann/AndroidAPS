@@ -64,7 +64,10 @@ class LedgerCodecTest {
             JSONObject(LedgerCodec.encode(LedgerState(), ep, 0L, InterventionStamp("test-epoche", 42L)).toString()),
         ).episodes
 
-        assertEquals(DescentRecoveryLatch.State(true, t0, sawMeasuredLow = true), decoded.descentRecoveryLatch)
+        // Der Riegel ueberlebt, der Tief-Kredit NICHT: seine Rechtfertigung
+        // (die Exit-Bestaetigung des Observers) ist prozesslokal, und der
+        // neue Prozess hat sie nie gesehen (Review 22.08.).
+        assertEquals(DescentRecoveryLatch.State(true, t0, sawMeasuredLow = false), decoded.descentRecoveryLatch)
         assertEquals(
             DescentRecoveryLatch.Runtime(), decoded.descentRecoveryRuntime,
             "eine unbeobachtete Prozessluecke darf zwei alte Erholungszyklen nicht fortsetzen",

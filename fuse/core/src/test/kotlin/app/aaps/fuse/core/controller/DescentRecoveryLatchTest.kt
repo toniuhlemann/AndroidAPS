@@ -115,6 +115,39 @@ class DescentRecoveryLatchTest {
         assertTrue(afterRestart.blocksPositive)
     }
 
+    /**
+     * DER TIEF-KREDIT IST NICHT RESTARTFEST (Review 22.08.).
+     *
+     * Der Ein-Zyklus-Weg stuetzt sich auf die fuenfminuetige
+     * Exit-Bestaetigung des Observers - und die ist prozesslokal. Vor dem
+     * Fix haette ein persistiertes `sawMeasuredLow` nach dem Neustart mit
+     * EINEM positiven Zyklus geoeffnet, obwohl der neue Prozess weder das
+     * Tief noch seinen Ausgang je gesehen hat; das Tief kann beim Neustart
+     * sogar noch andauern, solange der frische Observer es nur noch nicht
+     * wieder bestaetigt hat.
+     */
+    @Test
+    fun `Neustart verwirft den Tief-Kredit und verlangt die volle Hysterese`() {
+        val restored = DescentRecoveryLatch.State.restore(
+            active = true, latchedAtTs = 1_000L, sawMeasuredLow = true,
+        )!!
+        assertFalse(restored.sawMeasuredLow, "der Kredit stirbt mit dem Prozess, der ihn belegt hat")
+
+        // Ein einzelner positiver Zyklus darf jetzt NICHT mehr reichen.
+        val one = step(restored, low = false, rate = 0.4, ts = 61_000L)
+        assertTrue(one.blocksPositive, "ein Zyklus ersetzt keine Drei-Zyklen-Hysterese")
+        assertEquals(DescentRecoveryLatch.Reason.WAITING_CONFIRMATION, one.reason)
+
+        // Aber der NEUE Prozess kann den Kredit neu verdienen: bestaetigt
+        // SEIN Observer das Tief und dann den Ausgang, gilt der schnelle Weg
+        // wieder - konservativ heisst spaeter offen, nicht nie.
+        val lowAgain = step(restored, low = true, rate = -0.5, ts = 61_000L)
+        assertTrue(lowAgain.state.sawMeasuredLow)
+        val released = step(lowAgain.state, lowAgain.runtime, low = false, rate = 0.25, ts = 121_000L)
+        assertFalse(released.blocksPositive)
+        assertEquals(DescentRecoveryLatch.Reason.RECOVERED, released.reason)
+    }
+
     @Test
     fun `ungueltige persistierte Kombinationen werden abgewiesen`() {
         assertNull(DescentRecoveryLatch.State.restore(true, 0L))
