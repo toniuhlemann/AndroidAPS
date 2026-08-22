@@ -236,6 +236,28 @@ enum class FuseDoubleKey(
      */
     MarkerPrimeDescentHorizonMin("fuse_marker_prime_descent_horizon_min", 60.0, 30.0, 120.0),
 
+    /**
+     * EIGENER Deckel des Liveness-Kanals als PROZENT von maxIOB (P0, Codex
+     * 22.08.): ausdruecklich NICHT das globale iobTH - das begrenzt auch
+     * Korrektur, Prime und Fundament, und eine globale Senkung wuerde die
+     * fruehe Mahlzeitenversorgung aushungern. Die strengste Grenze
+     * (globales iobTH, dieser Deckel, maxIOB) gewinnt immer. 50 ist der
+     * konservative Replay-Startwert; 60-70 sind spaetere Pruefkandidaten
+     * (Tonis autoISF-Erfahrung).
+     */
+    LivenessIobCapPercent("fuse_liveness_iob_cap_percent", 50.0, 20.0, 90.0),
+
+    /**
+     * BG-Schwelle der Druckbedingung des Liveness-Kanals [mg/dl].
+     *
+     * Toni 22.08.: nicht hart codieren. Default 160, weil der Kanal ohnehin
+     * AUS bleibt - die Therapieentscheidung (Toni tendiert live zu 140)
+     * faellt erst mit der Aktivierung. Untergrenze 100: unterhalb davon
+     * waere die Schwelle keine Hochdruck-Bedingung mehr, sondern hebelte
+     * den Zielbereich selbst.
+     */
+    LivenessBgMinMgdl("fuse_liveness_bg_min_mgdl", 160.0, 100.0, 250.0),
+
     /** Totband der NACHT [mg/dl ueber Ziel]: darunter kein SMB im Nachtfenster.
      *  0 = aus. Ein erklaerter Marker hebt es auf (Toni 09.08.). */
     NightDeadbandMgdl("fuse_night_deadband_mgdl", 45.0, 0.0, 100.0),
@@ -304,6 +326,15 @@ enum class FuseIntKey(
      * Reserve und bleibt weit unter der 360-min-Evidenzepisode.
      */
     DeferredPrimeEndMin("fuse_deferred_prime_end_min", 120, 45, 240),
+
+    /**
+     * RESTARTFESTE Wiederbewaffnungs-Sperre des Liveness-Kanals [min]:
+     * nach jedem Exit (bestaetigte Abwaertswende, harter Riegel, manuelle
+     * Intervention) darf der Kanal so lange nicht neu bewaffnen. Der
+     * wirksamste Einzelhebel gegen Oszillations-Re-Arming im Replay
+     * (Risiko 1,85 -> 1,35 U im 21.08.-Gegenfenster).
+     */
+    LivenessReArmMin("fuse_liveness_rearm_min", 10, 0, 60),
 
     /**
      * iobTH als PROZENT von maxIOB (Variante B, K2-C v0.2 §13).
@@ -602,6 +633,21 @@ enum class FuseBooleanKey(
      * Huelle bei flachem oder steigendem BG bleibt moeglich.
      */
     DeferredPrimeEnabled("fuse_deferred_prime_enabled", false),
+
+    /**
+     * DER LIVENESS-KANAL - DEFAULT AUS (Bauvertrag Toni + Codex 22.08.
+     * nachts, kein Aktivierungs-GO). DOSIERWIRKSAM: eingeschaltet macht er
+     * bei bestaetigtem, gemessen NICHT fallendem Hochdruck (BG > 160,
+     * r >= 1,0 ueber drei Zyklen, Guard/Tail sperren den Normalpfad) den
+     * bereits erkannten Mittelbahn-Bedarf dosierbar - final = max(normal,
+     * liveness), nie Addition; Tail ist im Kanal weder Veto noch Kappe;
+     * kumulativ begrenzt durch min(globales iobTH,
+     * [FuseDoubleKey.LivenessIobCapPercent] x maxIOB, maxIOB). Gemessene
+     * Riegel (Fallen, Tief, Rebound, Hold) bleiben absolut; Exit bei
+     * bestaetigter Wende oder manueller Intervention mit restartfester
+     * Sperre [FuseIntKey.LivenessReArmMin].
+     */
+    LivenessChannelEnabled("fuse_liveness_channel_enabled", false),
 
     MarkerAuthorisesRelease("fuse_marker_authorises_low", false),
 

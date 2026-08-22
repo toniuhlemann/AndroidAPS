@@ -44,6 +44,7 @@ import app.aaps.fuse.core.controller.EvidenceStock
 import app.aaps.fuse.core.controller.DescentRecoveryLatch
 import app.aaps.fuse.core.controller.DescentDeferredCarry
 import app.aaps.fuse.core.controller.MealFoundation
+import app.aaps.fuse.core.controller.LivenessChannel
 import app.aaps.fuse.core.controller.OnsetChannel
 import app.aaps.fuse.core.controller.TurnResponseShadow
 import org.junit.jupiter.api.Assertions.assertEquals
@@ -151,6 +152,12 @@ class TransportWiringTest : TestBaseWithProfile() {
     private var aufschubAn = false
     private var aufschubHorizontMin = 60.0
     private var aufschubFristMin = 120
+
+    /** Liveness-Kanal-Hebel: Schalter, Kanaldeckel [%], Re-Arm-Sperre [min]. */
+    private var livenessAn = false
+    private var livenessCapPct = 50.0
+    private var livenessBgMin = 160.0
+    private var livenessReArmMin = 10
 
     /** Steigung NACH dem Knick [mg/dl/min]. */
     private var steigungNachKnick = 0.0
@@ -383,6 +390,10 @@ class TransportWiringTest : TestBaseWithProfile() {
         whenever(preferences.get(FuseBooleanKey.DeferredPrimeEnabled)).thenAnswer { aufschubAn }
         whenever(preferences.get(FuseDoubleKey.MarkerPrimeDescentHorizonMin)).thenAnswer { aufschubHorizontMin }
         whenever(preferences.get(FuseIntKey.DeferredPrimeEndMin)).thenAnswer { aufschubFristMin }
+        whenever(preferences.get(FuseBooleanKey.LivenessChannelEnabled)).thenAnswer { livenessAn }
+        whenever(preferences.get(FuseDoubleKey.LivenessIobCapPercent)).thenAnswer { livenessCapPct }
+        whenever(preferences.get(FuseDoubleKey.LivenessBgMinMgdl)).thenAnswer { livenessBgMin }
+        whenever(preferences.get(FuseIntKey.LivenessReArmMin)).thenAnswer { livenessReArmMin }
         whenever(preferences.get(FuseIntKey.AbsorptionCreditWindowMin)).thenReturn(60)
         whenever(preferences.get(FuseIntKey.MarkerBoostMaxMin)).thenReturn(45)
         whenever(preferences.get(FuseIntKey.NightStartMin)).thenReturn(1380)
@@ -5831,6 +5842,310 @@ class TransportWiringTest : TestBaseWithProfile() {
         assertTrue(releasesVorKnick2 >= 2, "vor dem neuen Fall muss die Nachlieferung gelaufen sein")
         assertTrue(risikoGesehen, "der Aufbau muss den neuen Fall mit offenem Rest erreichen")
         assertEquals(0, releasesNachRisiko, "im neuen gemessenen Fall laeuft nichts nach")
+    }
+
+
+    // ==== DER LIVENESS-KANAL (Bauvertrag Toni + Codex 22.08.) ==============
+    //
+    // Schalter default AUS, kein Aktivierungs-GO - die Tests schalten ihn im
+    // Geruest bewusst ein. Die Lage ist der 22.08.-Deadlock: anhaltender
+    // Hochdruck ueber der Schwelle, hohe Bolus-Haftung, der Schwanz nullt
+    // jede Abgabe ueber viele Zyklen. Die fuenf von Toni geforderten
+    // Mutationsfaenger plus die Grenztests der konfigurierbaren Schwelle:
+    //   Fall 1   Tail-Kappe versehentlich noch aktiv im Kanal
+    //   Fall 2   additive statt max-Verknuepfung
+    //   Fall 3   globales iobTH veraendert/ignoriert (P0-Deckelvertrag)
+    //   Fall 4   P2-Exit entfernt (+ Gegen-Tagesform bleibt unversorgt)
+    //   Fall 5   Re-Arm-Sperre nach Neustart verloren (+ manueller Exit)
+    //   Grenze   BG-Schwelle strikt, konfigurierbar, Aenderung beendet Lauf
+
+    private fun livenessLage(dir: File): FuseLedgerAdapter {
+        livenessAn = true
+        // Kanaldeckel 90 %: der Spielraum (7,2 - 4,5 = 2,7 U) liegt WEIT
+        // ueber dem Kandidaten - in dieser Lage bindet der Kandidat, und
+        // die Endmengen-Asserts rechnen gegen ihn. Die Deckel-Bindung
+        // prueft Fall 3 mit eigenen Zahlen.
+        livenessCapPct = 90.0
+        livenessBgMin = 160.0
+        livenessReArmMin = 10
+        tailGuard = true
+        markerAuthorized = false
+        fundamentAn = false
+        aufschubAn = false
+        // Flacher Vorlauf (0,9 - unter der r-Schwelle 1,0), dann Knick
+        // AUFWAERTS auf 1,4: der Filter konvergiert von UNTEN gegen den
+        // Drive. Ein rauschfrei monoton von OBEN konvergierender Drive
+        // wuerde declineStreak >= 2 ausloesen und den frisch bewaffneten
+        // Lauf sofort per P2 beenden (im Rig gesehen; live schuetzt das
+        // Messrauschen diese Kante, im Rig gibt es keins).
+        flach = 185.0
+        steigungProMin = 0.9
+        knickAbMin = 10
+        steigungNachKnick = 1.4
+        knick2AbMin = null
+        // 4,5 U x ISF 54 = ~243 mg/dl Schwanzlast gegen den flachen
+        // Anstieg: der Schwanz bleibt ueber ~25 Zyklen bindend - der
+        // ANHALTENDE 22.08.-Deadlock, nicht nur ein kurzes Fenster.
+        bolusIobU = 4.5
+        clock = start
+        transportReset()
+        val adapter = FuseLedgerAdapter().also { it.loadOnce(dir.also(File::mkdirs), "test-epoch", start) }
+        neuerRunner(adapter)
+        return adapter
+    }
+
+    /**
+     * Fall 1 - die 22.08.-Tagesform: im Schwanz-Deadlock liefert der Kanal
+     * die MENGENLINIE, nicht den Saegezahn. Scharf gegen die Mutation
+     * "Tail-Kappe versehentlich noch aktiv": in jedem Hub-Zyklus ist die
+     * Endmenge der rasterisierte Kanal-Kandidat - eine noch wirkende
+     * Schwanzkappe koennte das nicht liefern. Die AUS-Kontrolle beweist
+     * zugleich, dass der Default dosierneutral ist und der Aufbau den
+     * Deadlock wirklich erreicht.
+     */
+    @Test
+    fun `Liveness Fall 1 - im Tail-Deadlock liefert der Kanal die Mengenlinie statt des Saegezahns`(@TempDir dir: File) {
+        livenessLage(dir)
+        var summeAn = 0.0
+        var liftZyklen = 0
+        var ersterLiftMin = -1
+        repeat(40) { i ->
+            val o = cycle()
+            if (o.livenessLiftU > 0.0) {
+                liftZyklen++
+                if (ersterLiftMin < 0) ersterLiftMin = i + 1
+                assertEquals(FuseController.Block.NONE, o.decision.block)
+                assertTrue(o.decision.bindingLimit.startsWith("liveness:"), o.decision.bindingLimit)
+                assertEquals(
+                    LivenessChannel.quantize(o.livenessCandidateU, 0.05), o.decision.smbU, 1e-9,
+                    "die Endmenge ist der rasterisierte Kanal-Kandidat, kein Tail-Rest",
+                )
+            }
+            summeAn += o.decision.smbU
+        }
+        assertTrue(liftZyklen >= 8, "der Kanal muss den Deadlock tragen: $liftZyklen Hub-Zyklen")
+        assertTrue(ersterLiftMin in 5..22, "Latenz-Auflage: erster Hub bei Minute $ersterLiftMin")
+
+        // Die AUS-Kontrolle: dieselbe Lage ist ohne Schalter der Deadlock.
+        livenessAn = false
+        clock = start
+        transportReset()
+        neuerRunner(FuseLedgerAdapter().also { it.loadOnce(File(dir, "aus").also(File::mkdirs), "test-epoch", start) })
+        var summeAus = 0.0
+        repeat(40) {
+            val o = cycle()
+            summeAus += o.decision.smbU
+            if (o.abortReason == null) assertEquals("DISABLED", o.livenessDenial)
+            assertEquals(0.0, o.livenessLiftU, 1e-9)
+        }
+        assertTrue(
+            summeAn - summeAus >= 1.0,
+            "der Kanal muss gegen AUS mengenwirksam sein: an=$summeAn aus=$summeAus",
+        )
+    }
+
+    /**
+     * Fall 2 - `max`, NIE Addition. Nach dem Deadlock faellt die Haftung,
+     * der Normalpfad rampt per Sub-Step wieder hoch (der Saegezahn),
+     * waehrend der bewaffnete Kanal darueber steht. In jedem Hub-Zyklus
+     * ist die Endmenge der Kanalwert - eine Addition laege um den
+     * Normalanteil darueber und riesse sowohl die Gleichheit als auch die
+     * maxSMB-Grenze. Der Koexistenz-Zaehler erzwingt, dass die
+     * Verknuepfung wirklich geprueft wurde (Normalanteil > 0 im Hub).
+     */
+    @Test
+    fun `Liveness Fall 2 - max statt Addition wenn der Normalpfad wieder liefert`(@TempDir dir: File) {
+        livenessLage(dir)
+        var aktivGesehen = false
+        repeat(22) { val o = cycle(); if (o.livenessActive) aktivGesehen = true }
+        assertTrue(aktivGesehen, "der Kanal muss sich im Deadlock bewaffnen")
+        // Die Haftung faellt in den UEBERGANGSBEREICH (4,5 -> 3,2): Guard
+        // und Schwanz rationieren den Normalpfad auf kleine Mengen (der
+        // Saegezahn), waehrend der Kanal-Kandidat darueber steht. Beide
+        // Nachbarlagen waeren der falsche Aufbau: bei 4,1 bleibt der
+        // Normalpfad komplett genullt (lift == Endmenge, Koexistenz nie
+        // geprueft), bei 1,4 liefert er sofort voll und NORMAL_COVERS
+        // greift - beides im Rig gesehen.
+        bolusIobU = 3.2
+        var koexistenzZyklen = 0
+        repeat(14) {
+            val o = cycle()
+            assertTrue(o.decision.smbU <= maxSmbU + 1e-9, "nie ueber maxSMB: ${o.decision.smbU}")
+            if (o.livenessLiftU > 0.0) {
+                assertEquals(
+                    LivenessChannel.quantize(o.livenessCandidateU, 0.05), o.decision.smbU, 1e-9,
+                    "die Endmenge ist der Kanalwert - eine Addition laege darueber",
+                )
+                if (o.livenessLiftU < o.decision.smbU - 1e-9) koexistenzZyklen++
+            }
+        }
+        assertTrue(
+            koexistenzZyklen >= 1,
+            "mindestens ein Zyklus mit Normalpfad UND Kanalhub - sonst prueft der Test die Verknuepfung nicht",
+        )
+    }
+
+    /**
+     * Fall 3 - der P0-Deckelvertrag: der STRENGSTE der drei Deckel bindet
+     * und ist BENANNT. Erst bindet das global abgesenkte iobTH (50 % von
+     * 8 U bei 3,9 U Haftung -> Rest 0,10 U), dann - zurueck auf 100 % -
+     * der eigene Kanaldeckel mit denselben Zahlen. Ein Kanal, der das
+     * globale iobTH ignoriert, faellt hier sofort um.
+     */
+    @Test
+    fun `Liveness Fall 3 - der strengste Deckel bindet und ist benannt`(@TempDir dir: File) {
+        livenessLage(dir)
+        bolusIobU = 3.9
+        iobThPct = 50
+        livenessCapPct = 90.0
+        var bindung = ""
+        var menge = -1.0
+        repeat(25) { val o = cycle(); if (o.livenessLiftU > 0.0) { bindung = o.decision.bindingLimit; menge = o.decision.smbU } }
+        assertEquals("liveness:globalIobTh", bindung, "das globale iobTH MUSS den Kanal binden")
+        assertTrue(menge in 0.05..0.10 + 1e-9, "und die Menge traegt die Grenze: $menge U")
+
+        iobThPct = 100
+        livenessCapPct = 50.0
+        clock = start
+        transportReset()
+        neuerRunner(FuseLedgerAdapter().also { it.loadOnce(File(dir, "deckel").also(File::mkdirs), "test-epoch", start) })
+        bindung = ""
+        menge = -1.0
+        repeat(25) { val o = cycle(); if (o.livenessLiftU > 0.0) { bindung = o.decision.bindingLimit; menge = o.decision.smbU } }
+        assertEquals("liveness:livenessCap", bindung, "der eigene Kanaldeckel MUSS benannt binden")
+        assertTrue(menge in 0.05..0.10 + 1e-9, "und die Menge traegt die Grenze: $menge U")
+    }
+
+    /**
+     * Fall 4 - der P2-Exit und die 21.08.-Gegenform: bei Minute 26 knickt
+     * der Drive nach unten. Die BESTAETIGTE Wende (declineStreak >= 2)
+     * muss den Lauf beenden, BEVOR Druckverlust oder fallender UKF greifen
+     * - der gemessene Drive reagiert vor den traegen Filtern. In die
+     * anschliessende Abwaertsform liefert der Kanal nichts mehr. Ohne den
+     * P2-Exit stuende hier ein ANDERER Exitgrund, und der Test faellt um.
+     */
+    @Test
+    fun `Liveness Fall 4 - die bestaetigte Wende beendet den Lauf und die Abwaertsform bleibt unversorgt`(@TempDir dir: File) {
+        livenessLage(dir)
+        knick2AbMin = 26
+        steigungNachKnick2 = -1.5
+        var exitGrund: String? = null
+        var exitMin = -1
+        var liftVorKnick = 0
+        var liftNachExit = 0
+        repeat(50) { i ->
+            val minute = i + 1
+            val o = cycle()
+            if (minute <= 26 && o.livenessLiftU > 0.0) liftVorKnick++
+            if (exitMin > 0 && o.livenessLiftU > 0.0) liftNachExit++
+            if (exitMin < 0 && o.livenessExit != null && o.livenessExit != "PRESSURE_GONE") {
+                exitGrund = o.livenessExit
+                exitMin = minute
+            }
+        }
+        assertTrue(liftVorKnick >= 3, "vor der Wende muss der Kanal geliefert haben: $liftVorKnick")
+        assertEquals("TURN_EXIT", exitGrund, "die BESTAETIGTE Wende (P2) beendet den Lauf - nicht erst ein traegerer Riegel")
+        assertTrue(exitMin in 27..34, "der Exit gehoert kurz hinter den Knick: Minute $exitMin")
+        assertEquals(0, liftNachExit, "nach dem Exit versorgt der Kanal die Abwaertsform nicht")
+    }
+
+    /**
+     * Fall 5 - die Re-Arm-Sperre ueberlebt den Neustart. Der Lauf endet
+     * durch MANUELLE INTERVENTION (NORMAL-Bolus nach der Bewaffnung -
+     * damit ist auch dieser Vertragspunkt belegt), die Sperre steht
+     * restartfest in der Ledger-Datei. Nach dem Neustart haelt der Druck
+     * an, aber innerhalb der Sperre wird NICHT bewaffnet - erst nach
+     * Ablauf. Ein Codec, der das Feld verliert, bewaffnet sofort wieder
+     * und faellt an REARM_BLOCKED um.
+     */
+    @Test
+    fun `Liveness Fall 5 - die Re-Arm-Sperre ueberlebt den Neustart`(@TempDir dir: File) {
+        val adapter = livenessLage(dir)
+        var armTs = 0L
+        repeat(24) { val o = cycle(); if (o.livenessActive) armTs = o.computeTs }
+        assertTrue(armTs > 0L, "der Lauf muss stehen")
+        // Der Nutzer greift ein: ein manueller NORMAL-Bolus nach der
+        // Bewaffnung beendet den Lauf und setzt die Sperre.
+        boluses = listOf(BS(timestamp = clock, amount = 1.5, type = BS.Type.NORMAL))
+        var sperreBis = 0L
+        repeat(3) { val o = cycle(); if (o.livenessExit == "MANUAL_INTERVENTION") sperreBis = o.livenessReArmUntilTs }
+        assertTrue(sperreBis > clock, "der manuelle Exit muss die Sperre in die Zukunft gesetzt haben")
+        assertTrue(adapter.persistVerified(dir), "der Zustand muss versiegelt werden")
+        assertEquals(sperreBis, nachNeustart(dir).livenessReArmUntilTs, "die Sperre steht in der Datei")
+
+        neuerRunner(FuseLedgerAdapter().also { it.loadOnce(dir, "test-epoch", clock) })
+        var blockiertGesehen = false
+        var liftInSperre = 0
+        var liftNachSperre = 0
+        repeat(30) {
+            val o = cycle()
+            if (o.computeTs < sperreBis) {
+                if (o.livenessDenial == "REARM_BLOCKED") blockiertGesehen = true
+                if (o.livenessLiftU > 0.0) liftInSperre++
+            } else if (o.livenessLiftU > 0.0) liftNachSperre++
+        }
+        assertTrue(blockiertGesehen, "die Sperre MUSS nach dem Neustart wirken")
+        assertEquals(0, liftInSperre, "kein Hub innerhalb der Sperre")
+        assertTrue(liftNachSperre >= 1, "nach Ablauf der Sperre bewaffnet der Kanal wieder")
+    }
+
+    /**
+     * Grenztest der konfigurierbaren Schwelle (Toni 22.08.): unter ODER
+     * GLEICH der Schwelle hebt der Kanal nie (die Bedingung ist strikt
+     * `>`), knapp darueber hebt er; weit oben angesetzt bleibt dieselbe
+     * Lage stumm. Die exakte Gleichheit ist im E2E nicht erzwingbar (der
+     * Filter trifft nie exakt die Schwelle) - gedeckt ist sie ueber die
+     * <=-Klassifikation jedes einzelnen Zyklus beim Durchgang durch die
+     * Schwelle.
+     */
+    @Test
+    fun `Liveness Grenze - die BG-Schwelle bindet strikt und ist konfigurierbar`(@TempDir dir: File) {
+        livenessLage(dir)
+        livenessBgMin = 205.0
+        var liftUnterOderGleich = 0
+        var liftDarueber = 0
+        repeat(45) {
+            val o = cycle()
+            val bg = o.bgMgdl ?: return@repeat
+            if (o.livenessLiftU > 0.0) { if (bg <= 205.0) liftUnterOderGleich++ else liftDarueber++ }
+        }
+        assertEquals(0, liftUnterOderGleich, "unter oder gleich der Schwelle hebt der Kanal nie")
+        assertTrue(liftDarueber >= 1, "oberhalb der Schwelle muss er heben")
+
+        livenessBgMin = 400.0
+        clock = start
+        transportReset()
+        neuerRunner(FuseLedgerAdapter().also { it.loadOnce(File(dir, "hoch").also(File::mkdirs), "test-epoch", start) })
+        var liftHoch = 0
+        repeat(45) { if (cycle().livenessLiftU > 0.0) liftHoch++ }
+        assertEquals(0, liftHoch, "mit Schwelle 400 bleibt dieselbe Lage stumm")
+    }
+
+    /**
+     * Toni 22.08.: die Aenderung der Schwelle WAEHREND eines Laufs beendet
+     * ihn (CONFIG_CHANGED, ohne Sperre - Bedienhandlung, kein Risiko) und
+     * der Bestaetigungs-Streak beginnt unter der neuen Schwelle neu.
+     */
+    @Test
+    fun `Liveness Grenze - Schwellen-Aenderung beendet den Lauf und der Streak beginnt neu`(@TempDir dir: File) {
+        livenessLage(dir)
+        var aktivGesehen = false
+        repeat(22) { val o = cycle(); if (o.livenessActive) aktivGesehen = true }
+        assertTrue(aktivGesehen, "der Lauf muss stehen")
+        // Die Schwelle sinkt auf 150 - am Druck aendert das nichts (BG weit
+        // darueber), aber der Lauf wurde unter einer ANDEREN Regel bewaffnet.
+        livenessBgMin = 150.0
+        val o1 = cycle()
+        assertEquals("CONFIG_CHANGED", o1.livenessExit, "die Aenderung beendet den Lauf")
+        assertEquals(0.0, o1.livenessLiftU, 1e-9)
+        assertEquals(false, o1.livenessActive)
+        assertEquals(1, o1.livenessStreak, "der Streak beginnt im selben Zyklus neu bei 1")
+        val o2 = cycle()
+        assertEquals(0.0, o2.livenessLiftU, 1e-9, "Zyklus 2 der neuen Zaehlung: noch kein Hub")
+        assertEquals(2, o2.livenessStreak)
+        var wiederAb = -1
+        repeat(6) { i -> if (cycle().livenessLiftU > 0.0 && wiederAb < 0) wiederAb = i + 1 }
+        assertTrue(wiederAb in 1..4, "unter der neuen Schwelle bewaffnet er binnen weniger Zyklen neu: $wiederAb")
     }
 
 }

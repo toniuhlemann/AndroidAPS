@@ -66,6 +66,15 @@ object FuseStateJson {
     // Phase B nach; ein manueller NORMAL-Bolus nach dem Marker sperrt nur den
     // Sicherheits-Uebertrag. Nachgetragen am 22.08. - der Bump selbst kam
     // ohne Journaleintrag (Review-Finding).
+    // v18 (22.08. nachts): der Liveness-Kanal (Bauvertrag Toni+Codex,
+    // Schalter default AUS). Bei bestaetigtem, nicht fallendem Hochdruck
+    // wird der erkannte Mittelbahn-Bedarf dosierbar: final = max(normal,
+    // liveness), Tail im Kanal weder Veto noch Kappe, kumulativ
+    // mengenbegrenzt (eigener Kanaldeckel, globales iobTH, maxIOB),
+    // gemessene Riegel absolut, restartfeste Re-Arm-Sperre, BG-Schwelle
+    // der Druckbedingung einstellbar (Default 160). Der gemessene
+    // Anlass: 93/93 falsche Unterkanten-Zertifikate und 90 blockierte
+    // Hyper-Minuten am 22.08.
     // v17 (22.08. abends): der Marker-Prime-Aufschub (Punkt 6, Bau-GO Toni,
     // Schalter default AUS, KEIN Aktivierungs-GO). Eingeschaltet haelt er
     // markerautorisiertes Insulin bei gemessenem, ueberdecktem Fall mit
@@ -79,7 +88,7 @@ object FuseStateJson {
     // - dosierwirksam auf der TBR-Achse, bis v15 unsichtbar im Fingerprint:
     // zwei Laeufe mit 5 und 20 mg/dl Schwelle trugen denselben Regelstand,
     // und der Trail konnte nicht einmal zeigen, welche Werte galten.
-    const val RULE_SET_VERSION = 17
+    const val RULE_SET_VERSION = 18
 
     /** Schema des Trail-Datensatzes - s. die Notiz an der Schreibstelle. */
     const val SCHEMA_VERSION = 4
@@ -360,6 +369,21 @@ object FuseStateJson {
                 .put("lapseU", fin(outcome.deferredPrimeLapseU))
                 .put("lapseTs", outcome.deferredPrimeLapseTs),
         )
+            // ---- Der Liveness-Kanal --------------------------------------
+            // IMMER als Objekt: die Sperre und der Grund der NICHT-Hebung
+            // (denial/exit) muessen offline nachlesbar sein - besonders in
+            // den Zyklen, in denen der Kanal NICHT gehoben hat.
+            .put(
+                "liveness", JSONObject()
+                    .put("active", outcome.livenessActive)
+                    .put("streak", outcome.livenessStreak)
+                    .put("candidateU", fin(outcome.livenessCandidateU))
+                    .put("liftU", fin(outcome.livenessLiftU))
+                    .put("binding", outcome.livenessBinding ?: JSONObject.NULL)
+                    .put("denial", outcome.livenessDenial ?: JSONObject.NULL)
+                    .put("exit", outcome.livenessExit ?: JSONObject.NULL)
+                    .put("reArmUntilTs", outcome.livenessReArmUntilTs),
+            )
             .put(
                 "reboundOverrideRestMin",
                 outcome.reboundOverrideDeadlineTs
@@ -1230,6 +1254,11 @@ object FuseStateJson {
         .put("deferredPrimeEnabled", p.deferredPrimeEnabled)
         .put("markerPrimeDescentHorizonMin", fin(p.markerPrimeDescentHorizonMin))
         .put("deferredPrimeEndMin", p.deferredPrimeEndMin)
+        // v18: der Liveness-Kanal - alle drei Stellgroessen.
+        .put("livenessChannelEnabled", p.livenessChannelEnabled)
+        .put("livenessIobCapPercent", fin(p.livenessIobCapPercent))
+        .put("livenessBgMinMgdl", fin(p.livenessBgMinMgdl))
+        .put("livenessReArmMin", p.livenessReArmMin)
         // Ohne diese Zeile waere hinterher nicht belegbar, OB der Schalter in
         // einem Lauf an war - genau die Luecke, die heute schon zweimal
         // aufgefallen ist (basalIobU, MarkerAuthorisesRelease). Ein Schalter,
@@ -1259,6 +1288,10 @@ object FuseStateJson {
             p.lowGateMinBenefitMgdl, p.lowGateHorizonMin,
             // v17: der gepinnte Marker-Horizont des Aufschubs.
             p.markerPrimeDescentHorizonMin,
+            // v18: der eigene Kanaldeckel des Liveness-Kanals und die
+            // konfigurierbare BG-Schwelle der Druckbedingung.
+            p.livenessIobCapPercent,
+            p.livenessBgMinMgdl,
         )
         if (doubles.any { !it.isFinite() }) return null
         val parts = listOf("fuse-policy-v$RULE_SET_VERSION") +
@@ -1285,6 +1318,11 @@ object FuseStateJson {
                 // Frist verschiebt, wann ein offener Rest verfaellt.
                 p.deferredPrimeEnabled,
                 p.deferredPrimeEndMin,
+                // v18: Schalter und Sperre des Liveness-Kanals. AUS und EIN
+                // sind zwei verschiedene Regler; eine andere Sperre bewaffnet
+                // nach Wenden verschieden schnell wieder.
+                p.livenessChannelEnabled,
+                p.livenessReArmMin,
             ).map { it.toString() }
         return Sha.of(parts.joinToString("|"))
     }

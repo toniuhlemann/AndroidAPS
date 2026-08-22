@@ -32,6 +32,10 @@ internal val fuseEinstellbareKeys: Set<String> = setOf(
     FuseBooleanKey.DeferredPrimeEnabled.key,
     FuseDoubleKey.MarkerPrimeDescentHorizonMin.key,
     FuseIntKey.DeferredPrimeEndMin.key,
+    FuseBooleanKey.LivenessChannelEnabled.key,
+    FuseDoubleKey.LivenessIobCapPercent.key,
+    FuseDoubleKey.LivenessBgMinMgdl.key,
+    FuseIntKey.LivenessReArmMin.key,
     FuseDoubleKey.TailFloorMgdl.key,
     FuseDoubleKey.TailRecoveryU.key,
     FuseDoubleKey.NightDeadbandMgdl.key,
@@ -136,6 +140,11 @@ object FuseSettingsReport {
                     schalter(FuseBooleanKey.DeferredPrimeEnabled, "Marker-Prime-Aufschub"),
                     zahl(FuseDoubleKey.MarkerPrimeDescentHorizonMin, "Marker-Horizont", "min"),
                     ganz(FuseIntKey.DeferredPrimeEndMin, "Aufschub-Frist", "min"),
+                    // Der Liveness-Kanal - dieselbe Drei-Zeilen-Disziplin.
+                    schalter(FuseBooleanKey.LivenessChannelEnabled, "Liveness-Kanal"),
+                    zahl(FuseDoubleKey.LivenessIobCapPercent, "Kanaldeckel", "%"),
+                    zahl(FuseDoubleKey.LivenessBgMinMgdl, "Druck-Schwelle", "mg/dl"),
+                    ganz(FuseIntKey.LivenessReArmMin, "Re-Arm-Sperre", "min"),
                 ),
                 "Dosierung und Grenzen" to listOf(
                     zahl(FuseDoubleKey.SmbRatio, "Anteil Korrektur", ""),

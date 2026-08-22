@@ -203,6 +203,13 @@ class CycleIobValidityTest : TestBaseWithProfile() {
         whenever(preferences.get(FuseDoubleKey.OnsetEnvelopeU)).thenReturn(1.5)
         whenever(preferences.get(FuseBooleanKey.PrimeReleaseEnabled)).thenReturn(true)
         whenever(preferences.get(FuseDoubleKey.PrimeEnvelopeU)).thenReturn(1.2)
+        // Der Kanaldeckel hat seit v18 einen validate-Riegel (P0): der
+        // Mockito-Default 0.0 laege ausserhalb 20..90 und wuerde jeden
+        // Zyklus benannt abbrechen - deshalb hier echte Defaults.
+        whenever(preferences.get(FuseBooleanKey.LivenessChannelEnabled)).thenReturn(false)
+        whenever(preferences.get(FuseDoubleKey.LivenessIobCapPercent)).thenReturn(50.0)
+        whenever(preferences.get(FuseDoubleKey.LivenessBgMinMgdl)).thenReturn(160.0)
+        whenever(preferences.get(FuseIntKey.LivenessReArmMin)).thenReturn(10)
         whenever(preferences.get(LongKey.FslCalibrationStart)).thenReturn(-1L)
         whenever(preferences.get(FuseLongKey.MealMarkerStamp)).thenReturn(0L)
         whenever(preferences.get(FuseLongKey.MealMarkerArmedTs)).thenReturn(0L)

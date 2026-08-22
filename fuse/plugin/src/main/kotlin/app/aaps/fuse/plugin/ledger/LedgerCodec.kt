@@ -488,6 +488,10 @@ object LedgerCodec {
                 .put("horizonMin", e.deferredPrime.horizonMin)
                 .put("postFoundationDeliveredU", e.postFoundationDeliveredU),
         )
+        // Liveness-Kanal: nur die restartfeste Sperre. Der aktive Zustand
+        // und der Bewaffnungs-Streak sind bewusst prozesslokal - ein
+        // Neustart bewaffnet neu, oeffnet aber nie eine laufende Sperre.
+        .put("livenessReArmUntilTs", e.livenessReArmUntilTs)
         // DREI Elemente statt zwei: [ts, menge, proposalId] (Toni 19.08.).
         // Die Kennung MUSS mit - ohne sie findet ein Nicht-Sende-Beweis nach
         // einem Neustart den Eintrag nicht mehr und laesst eine nie geflossene
@@ -696,6 +700,11 @@ object LedgerCodec {
             require(post.isFinite() && post >= 0.0) { "postFoundationDeliveredU out of range: $post" }
             e.deferredPrime = restored
             e.postFoundationDeliveredU = post
+        }
+        if (o.has("livenessReArmUntilTs")) {
+            val sperre = o.getLong("livenessReArmUntilTs")
+            require(sperre >= 0L) { "livenessReArmUntilTs out of range: $sperre" }
+            e.livenessReArmUntilTs = sperre
         }
         // KEINE MIGRATION, die ein Fundament ERFINDET: fehlt das Objekt, gibt
         // es keine laufende Autorisierung. Eine Altdatei mitten in einer

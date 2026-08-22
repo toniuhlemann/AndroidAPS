@@ -349,6 +349,15 @@ class EpisodeBudgets {
     var postFoundationDeliveredU: Double = 0.0
 
     /**
+     * RESTARTFESTE Wiederbewaffnungs-Sperre des Liveness-Kanals: bis zu
+     * diesem Zeitpunkt darf der Kanal nach einem Exit nicht neu bewaffnen.
+     * Ein Neustart darf die Sperre nicht loeschen (Bauvertrag 22.08.) -
+     * sonst wuerde ein Prozess-Restart mitten in der Wende den Kanal sofort
+     * wieder oeffnen.
+     */
+    var livenessReArmUntilTs: Long = 0L
+
+    /**
      * Die Buchung DIESES Zyklus, solange die Publikation nicht feststeht.
      *
      * WARUM RESERVIEREN UND NICHT VERSCHIEBEN: der Runner belastet die

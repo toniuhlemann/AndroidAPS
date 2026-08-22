@@ -26,6 +26,7 @@ import app.aaps.fuse.core.controller.EpisodeDeadline
 import app.aaps.fuse.core.controller.FuseController
 import app.aaps.fuse.core.controller.LedgerHoldGate
 import app.aaps.fuse.core.controller.LowThreatGate
+import app.aaps.fuse.core.controller.LivenessChannel
 import app.aaps.fuse.core.controller.DeferredPrime
 import app.aaps.fuse.core.controller.MarkerScope
 import app.aaps.fuse.core.controller.NightWindow
@@ -260,6 +261,12 @@ class FuseCycleRunner(
             require(it.liabilityHorizonMin >= 30 && it.liabilityHorizonMin >= it.releaseHorizonMin && it.liabilityHorizonMin <= 360) {
                 "liabilityHorizon=${it.liabilityHorizonMin} (releaseHorizon=${it.releaseHorizonMin}, UI 30..360)"
             }
+            // P0 des Liveness-Bauvertrags: der Kanaldeckel ist eine tragende
+            // Grenze - ein Unsinnswert (0 %, 500 %) darf nie stillschweigend
+            // rechnen, sondern muss den Zyklus benannt abbrechen.
+            require(it.livenessIobCapPercent.isFinite() && it.livenessIobCapPercent in FuseDoubleKey.LivenessIobCapPercent.min..FuseDoubleKey.LivenessIobCapPercent.max) { "livenessIobCapPercent=${it.livenessIobCapPercent}" }
+            require(it.livenessReArmMin in FuseIntKey.LivenessReArmMin.min..FuseIntKey.LivenessReArmMin.max) { "livenessReArmMin=${it.livenessReArmMin}" }
+            require(it.livenessBgMinMgdl.isFinite() && it.livenessBgMinMgdl in FuseDoubleKey.LivenessBgMinMgdl.min..FuseDoubleKey.LivenessBgMinMgdl.max) { "livenessBgMinMgdl=${it.livenessBgMinMgdl}" }
         }
 
         /** Raster des selbst gebauten IOB-Arrays. 5 min wie in AAPS — feiner
@@ -638,6 +645,17 @@ class FuseCycleRunner(
         val deferredPrimeLapseReason: String? = null,
         val deferredPrimeLapseU: Double = 0.0,
         val deferredPrimeLapseTs: Long = 0L,
+        /** Liveness-Kanal: Lauf-Zustand, Kandidat und Hub DIESES Zyklus.
+         *  `binding` nennt die Grenze, die den Kandidaten beschnitten hat -
+         *  die strengste Grenze ist IMMER benannt (P0 des Bauvertrags). */
+        val livenessActive: Boolean = false,
+        val livenessStreak: Int = 0,
+        val livenessCandidateU: Double = 0.0,
+        val livenessLiftU: Double = 0.0,
+        val livenessBinding: String? = null,
+        val livenessDenial: String? = null,
+        val livenessExit: String? = null,
+        val livenessReArmUntilTs: Long = 0L,
         val descentLatchedAtTs: Long = 0L,
         /** KUMULATIV in dieser Episode publiziertes Insulin [U] - die
          *  Bezahlseite des Stoerungsbestands. Laeuft bis EXPIRED weiter,
@@ -2770,7 +2788,7 @@ class FuseCycleRunner(
                 signal.ukfRatePerMin < DescentRecoveryLatch.RECOVERY_RATE_MGDL_PER_MIN -> 0
             else -> minOf(deferredRecoveryStreak + 1, DescentRecoveryLatch.REQUIRED_CONSECUTIVE_CYCLES)
         }
-        val decision = if (deferredPinnedActive && risk60?.active == true && nachRiegel.smbU > 0.0) {
+        val nachAufschub = if (deferredPinnedActive && risk60?.active == true && nachRiegel.smbU > 0.0) {
             // Der markerfinanzierte Anteil ist alles OBERHALB der reinen
             // Basis - und auch die Basis nur, wenn ihr Guard nicht selbst
             // vom Marker gehoben wurde (dann ist sie nicht "rein").
@@ -2829,6 +2847,193 @@ class FuseCycleRunner(
                     )
                 }
             }
+        }
+        // ---- DER LIVENESS-KANAL (Bauvertrag Toni + Codex 22.08.) ---------
+        //
+        // NACH dem Aufschub, VOR der Publikation - dieselbe Stelle wie die
+        // beiden Endriegel. Der Kanal ist MENGENBASIERT (autoISF-Prinzip):
+        // Guard-Unterkante und DIA-Schwanz sind hier weder Veto noch Kappe -
+        // deren Fehlzertifikate SIND der gemessene Anlass (22.08.: 93/93
+        // Deadlock-Zyklen mit Unterkante median +97 mg/dl unter dem real
+        // eingetretenen 120-min-Minimum; 90 der 116 Minuten ueber 180 waren
+        // blockierte Minuten mit ERKANNTEM Bedarf). Was stattdessen traegt:
+        //
+        //   GEMESSENE Riegel absolut: Signal, Sicht, Hold, Rebound, Low,
+        //   30er- und Marker-Horizont-Risiko, Latch, fallender UKF - jeder
+        //   beendet einen aktiven Lauf und setzt die Re-Arm-Sperre.
+        //
+        //   MENGE statt Bahn: Kandidat aus der Mittelbahn (die IOB-Wirkung
+        //   steckt bereits in der Praediktion - kein zweites "- iob"), durch
+        //   effektive Ratio, maxSMB und den STRENGSTEN von drei benannten
+        //   Deckeln (globales iobTH, Kanaldeckel, maxIOB) abzueglich capIob
+        //   und Transporthaftung (P0-Deckelvertrag).
+        //
+        //   `max`, NIE Addition: der Kanal ersetzt den Saegezahn, er stapelt
+        //   nicht auf ihn. KEIN Carry: was das Raster abschneidet, verfaellt -
+        //   kein Nachhol-Burst nach einer Sperrphase.
+        //
+        // BEWUSST KEIN `finalVeto` fuer die Kanalmenge: der enthaelt den
+        // Schwanz-Veto (`tailWith`) und die Guard-Zertifikate - genau die
+        // Instanzen, deren Fehlurteil der Kanal beheben soll. Ihre Aufgabe
+        // uebernehmen hier die gemessenen Riegel plus der Mengendeckel.
+        var livenessDenial: String? = null
+        var livenessExit: String? = null
+        var livenessCandidateU = 0.0
+        var livenessLiftU = 0.0
+        var livenessBinding: String? = null
+        val decision: FuseController.Decision = run {
+            if (!cfg.livenessChannelEnabled) {
+                // AUS heisst aus: Lauf und Streak enden, aber eine bereits
+                // gesetzte Sperre bleibt stehen (sie ist eine Zusage).
+                livenessActive = false
+                livenessStreak = 0
+                livenessDenial = "DISABLED"
+                return@run nachAufschub
+            }
+            // Toni 22.08.: die Schwellen-Aenderung waehrend eines Laufs
+            // beendet ihn und der Streak beginnt unter der NEUEN Schwelle
+            // neu. OHNE Sperre - das ist eine Bedienhandlung, kein
+            // gemessenes Risiko.
+            if (!livenessBgMinSeen.isNaN() && livenessBgMinSeen != cfg.livenessBgMinMgdl) {
+                if (livenessActive) livenessExit = "CONFIG_CHANGED"
+                livenessActive = false
+                livenessStreak = 0
+            }
+            livenessBgMinSeen = cfg.livenessBgMinMgdl
+            fun sperren(grund: String): FuseController.Decision {
+                livenessExit = grund
+                livenessActive = false
+                livenessStreak = 0
+                episodes.livenessReArmUntilTs = computeTs + cfg.livenessReArmMin * 60_000L
+                return nachAufschub
+            }
+            // Die GEMESSENEN Riegel - fuer Lauf UND Bewaffnung. Waehrend
+            // eines Laufs beenden sie ihn MIT Sperre; davor verhindern sie
+            // die Bewaffnung und setzen den Streak zurueck.
+            val hart = when {
+                step.health != Health.READY -> "SIGNAL_UNHEALTHY"
+                treatmentView == null -> "VIEW_UNREADABLE"
+                ledgerView.hold -> "LEDGER_HOLD"
+                reboundRaw -> "REBOUND_ACTIVE"
+                measuredLow -> "MEASURED_LOW"
+                descentRisk.active -> "DESCENT_RISK"
+                risk60?.active == true -> "DESCENT_RISK_MARKER"
+                descentLatch.blocksPositive -> "LATCH_ACTIVE"
+                !signal.ukfRatePerMin.isFinite() ||
+                    signal.ukfRatePerMin < LivenessChannel.UKF_FLOOR_MGDL_PER_MIN -> "FALLING"
+                else -> null
+            }
+            if (hart != null) {
+                if (livenessActive) return@run sperren(hart)
+                livenessStreak = 0
+                livenessDenial = hart
+                return@run nachAufschub
+            }
+            // Manuelle Intervention beendet den Lauf (Vertrag): ein
+            // NORMAL-Bolus nach der Bewaffnung heisst, der Nutzer hat
+            // uebernommen - der Kanal draengelt nicht daneben weiter.
+            // Safe-Call statt Smart-Cast: die Null ist oben bereits ein
+            // harter Riegel (VIEW_UNREADABLE), hierher kommt nur eine Sicht.
+            val manualTs = treatmentView?.boluses
+                ?.filter { it.isValid && it.type == BS.Type.NORMAL }
+                ?.maxOfOrNull { it.timestamp }
+            if (livenessActive && manualTs != null && manualTs > livenessArmTs) {
+                return@run sperren("MANUAL_INTERVENTION")
+            }
+            // P2: die BESTAETIGTE Abwaertswende beendet den Lauf mit Sperre.
+            if (livenessActive &&
+                TurnResponseShadow.declineStreak(turnSamples) >= LivenessChannel.EXIT_DECLINE_STREAK
+            ) return@run sperren("TURN_EXIT")
+            // Druckbedingung: BG > 160 UND r >= 1,0 - drei Zyklen in Folge
+            // bewaffnen. Faellt der Druck waehrend eines Laufs weg, endet er
+            // OHNE Sperre: die Wiederbewaffnung braucht ohnehin drei neue
+            // Druckzyklen, das ist die Hysterese.
+            val rSig = signal.rSigned
+            val druck = signal.q1 > cfg.livenessBgMinMgdl &&
+                rSig != null && rSig.isFinite() && rSig >= LivenessChannel.R_MIN_MGDL_PER_MIN
+            if (livenessActive && !druck) {
+                livenessExit = "PRESSURE_GONE"
+                livenessActive = false
+                livenessStreak = 0
+                return@run nachAufschub
+            }
+            livenessStreak = if (druck) minOf(livenessStreak + 1, 99) else 0
+            if (!livenessActive) {
+                when {
+                    computeTs < episodes.livenessReArmUntilTs -> {
+                        livenessDenial = "REARM_BLOCKED"
+                        return@run nachAufschub
+                    }
+                    livenessStreak < LivenessChannel.ARM_STREAK -> {
+                        livenessDenial = "NOT_CONFIRMED"
+                        return@run nachAufschub
+                    }
+                    // Bewaffnet wird nur GEGEN den Deadlock: der Normalpfad
+                    // muss von Unterkante oder Schwanz gedeckelt sein. Ist er
+                    // offen, gibt es nichts zu heben - und ein spaeterer
+                    // Saegezahn-Zyklus (kleine Menge, Block NONE) erbt den
+                    // Lauf aus dem Deadlock-Zyklus, in dem er begann.
+                    nachAufschub.block != FuseController.Block.GUARD_FLOOR &&
+                        nachAufschub.block != FuseController.Block.TAIL -> {
+                        livenessDenial = "NORMAL_PATH_OPEN"
+                        return@run nachAufschub
+                    }
+                    else -> {
+                        livenessActive = true
+                        livenessArmTs = computeTs
+                    }
+                }
+            }
+            // AKTIV: Kandidat rechnen, `final = max(normal, live)`.
+            val releaseMean = prediction.points
+                .firstOrNull { it.offsetMin == cfg.releaseHorizonMin }?.meanBg
+                ?: return@run sperren("NO_RELEASE_MEAN")
+            val ratio = state.effectiveSmbRatio
+            val bedarfU = kotlin.math.max(0.0, (releaseMean - target) / isf)
+            livenessCandidateU = LivenessChannel.candidateU(
+                releaseMeanMgdl = releaseMean,
+                targetMgdl = target,
+                isfMgdlPerU = isf,
+                smbRatio = ratio,
+                maxSmbU = cfg.maxSmbU,
+            )
+            val head = LivenessChannel.headroomU(
+                globalIobThU = state.iobThU,
+                livenessCapU = cfg.livenessIobCapPercent / 100.0 * state.maxIobU,
+                maxIobU = state.maxIobU,
+                capIobU = state.capIobU,
+                transportU = transportModelledU,
+            )
+            val liveU = LivenessChannel.quantize(
+                kotlin.math.min(livenessCandidateU, head.headroomU), bolusStep,
+            )
+            // Die bindende Grenze wird IMMER benannt (P0): erst die Deckel,
+            // dann maxSMB, sonst war die Ratio selbst das Mass.
+            livenessBinding = when {
+                head.headroomU < livenessCandidateU - 1e-9 -> head.binding
+                cfg.maxSmbU < ratio * bedarfU - 1e-9 -> "maxSmb"
+                else -> "smbRatio"
+            }
+            if (liveU <= nachAufschub.smbU + 1e-9) {
+                // `max` heisst: der Kanal hebt nur, er ersetzt nie nach
+                // unten - liefert der Normalpfad mehr, bleibt der Normalpfad.
+                livenessDenial = if (liveU <= 0.0) "NO_HEADROOM" else "NORMAL_COVERS"
+                return@run nachAufschub
+            }
+            livenessLiftU = liveU - nachAufschub.smbU
+            nachAufschub.copy(
+                smbU = liveU,
+                block = FuseController.Block.NONE,
+                bindingLimit = "liveness:" + livenessBinding,
+                // Wie Sub-Step und Aufschub-Freigabe: die Kanalmenge ging
+                // ueber die Kappen, die die Basis gerastert haben.
+                caps = emptyList(),
+                capsStage = "liveness",
+                // Die gemessenen Riegel sind zu diesem Zeitpunkt nachweislich
+                // frei; ersetzt wurden allein die Modell-Vetos - deren Urteil
+                // der Kanal begruendet verwirft.
+                unsafeSituation = false,
+            )
         }
         // ---- Pruefauftrag 2: die Down-Zeilen bis zur ENDMENGE -------------
         //
@@ -3022,6 +3227,14 @@ class FuseCycleRunner(
             deferredPrimeLapseReason = episodes.deferredPrime.lastLapseReason?.name,
             deferredPrimeLapseU = episodes.deferredPrime.lastLapseU,
             deferredPrimeLapseTs = episodes.deferredPrime.lastLapseTs,
+            livenessActive = livenessActive,
+            livenessStreak = livenessStreak,
+            livenessCandidateU = livenessCandidateU,
+            livenessLiftU = livenessLiftU,
+            livenessBinding = livenessBinding,
+            livenessDenial = livenessDenial,
+            livenessExit = livenessExit,
+            livenessReArmUntilTs = episodes.livenessReArmUntilTs,
             preFoundationSmbU = preFoundationSmbU,
             preFoundationBlock = preFoundationBlock,
             preFoundationBindingLimit = preFoundationBindingLimit,
@@ -3583,6 +3796,9 @@ class FuseCycleRunner(
             deferredPrimeLapseReason = episodes.deferredPrime.lastLapseReason?.name,
             deferredPrimeLapseU = episodes.deferredPrime.lastLapseU,
             deferredPrimeLapseTs = episodes.deferredPrime.lastLapseTs,
+            // Der Kanal laeuft nur im Hauptpfad; der Fallback exportiert
+            // allein die restartfeste Sperre.
+            livenessReArmUntilTs = episodes.livenessReArmUntilTs,
             alarm = combined.alarm,
             bgMgdl = signal.q1,
             targetMgdl = target,
@@ -3787,6 +4003,22 @@ class FuseCycleRunner(
      *  die Verwerfensregeln (subStepDiscard) gelten identisch. */
     private var shadowDownCarryU = 0.0
 
+    /** Liveness-Kanal: PROZESSLOKALER Lauf-Zustand. Streak, aktiv und armTs
+     *  sind bewusst NICHT restartfest - ein Neustart beendet den Lauf, und
+     *  die Bewaffnung wird neu verdient (konservativ: spaeter offen, nie
+     *  frueher). RESTARTFEST ist allein die Re-Arm-Sperre in
+     *  `EpisodeBudgets.livenessReArmUntilTs` - "vorerst nicht wieder" ist
+     *  eine Zusage, die ein Neustart nicht loeschen darf. */
+    private var livenessStreak = 0
+    private var livenessActive = false
+    private var livenessArmTs = 0L
+
+    /** Die BG-Schwelle, unter der der aktuelle Streak/Lauf gezaehlt wurde.
+     *  NaN = noch nie gesehen (Prozessstart). Eine Aenderung beendet einen
+     *  aktiven Lauf und nullt den Streak (Toni 22.08.): ein Lauf, der unter
+     *  einer anderen Regel bewaffnet wurde, traegt nicht weiter. */
+    private var livenessBgMinSeen = Double.NaN
+
     /** Unter WELCHEN Bedingungen der Uebertrag entstanden ist - s. Aufrufstelle.
      *  `null` heisst: es gibt keinen Uebertrag, der eine Herkunft haette. */
     private var subStepCarryContext: String? = null
@@ -3938,6 +4170,12 @@ class FuseCycleRunner(
         val deferredPrimeEnabled: Boolean,
         val markerPrimeDescentHorizonMin: Double,
         val deferredPrimeEndMin: Int,
+        /** Liveness-Kanal (Bauvertrag 22.08. nachts) - s.
+         *  [FuseBooleanKey.LivenessChannelEnabled]. */
+        val livenessChannelEnabled: Boolean,
+        val livenessIobCapPercent: Double,
+        val livenessBgMinMgdl: Double,
+        val livenessReArmMin: Int,
         val primeWindowMin: Int,
         /** Die Null sofort verlassen, sobald ihr Schutzgrund weg ist. */
         val endZeroWhenReasonGone: Boolean,
@@ -3991,6 +4229,10 @@ class FuseCycleRunner(
         deferredPrimeEnabled = preferences.get(FuseBooleanKey.DeferredPrimeEnabled),
         markerPrimeDescentHorizonMin = preferences.get(FuseDoubleKey.MarkerPrimeDescentHorizonMin),
         deferredPrimeEndMin = preferences.get(FuseIntKey.DeferredPrimeEndMin),
+        livenessChannelEnabled = preferences.get(FuseBooleanKey.LivenessChannelEnabled),
+        livenessIobCapPercent = preferences.get(FuseDoubleKey.LivenessIobCapPercent),
+        livenessBgMinMgdl = preferences.get(FuseDoubleKey.LivenessBgMinMgdl),
+        livenessReArmMin = preferences.get(FuseIntKey.LivenessReArmMin),
         // Ein ungesetzter Wert (0) ist kein Konfigurationsfehler, sondern ein
         // Speicher, der den Schluessel noch nicht kennt - dann gilt die
         // Vorgabe. Echte Fehlwerte faengt die Bereichspruefung darunter.

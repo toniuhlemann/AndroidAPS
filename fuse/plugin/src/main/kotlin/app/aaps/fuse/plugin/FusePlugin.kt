@@ -1992,6 +1992,10 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
             .put(FuseBooleanKey.DeferredPrimeEnabled, preferences)
             .put(FuseDoubleKey.MarkerPrimeDescentHorizonMin, preferences)
             .put(FuseIntKey.DeferredPrimeEndMin, preferences)
+            .put(FuseBooleanKey.LivenessChannelEnabled, preferences)
+            .put(FuseDoubleKey.LivenessIobCapPercent, preferences)
+            .put(FuseDoubleKey.LivenessBgMinMgdl, preferences)
+            .put(FuseIntKey.LivenessReArmMin, preferences)
             .put(FuseIntKey.PrimeWindowMin, preferences)
 
     override fun applyConfiguration(configuration: JSONObject) {
@@ -2026,6 +2030,10 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
             .store(FuseBooleanKey.DeferredPrimeEnabled, preferences)
             .store(FuseDoubleKey.MarkerPrimeDescentHorizonMin, preferences)
             .store(FuseIntKey.DeferredPrimeEndMin, preferences)
+            .store(FuseBooleanKey.LivenessChannelEnabled, preferences)
+            .store(FuseDoubleKey.LivenessIobCapPercent, preferences)
+            .store(FuseDoubleKey.LivenessBgMinMgdl, preferences)
+            .store(FuseIntKey.LivenessReArmMin, preferences)
             .store(FuseIntKey.PrimeWindowMin, preferences)
     }
 
@@ -2126,6 +2134,13 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
             addPreference(AdaptiveSwitchPreference(ctx = context, booleanKey = FuseBooleanKey.DeferredPrimeEnabled, summary = R.string.fuse_deferred_prime_summary, title = R.string.fuse_deferred_prime_title))
             addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.MarkerPrimeDescentHorizonMin, dialogMessage = R.string.fuse_marker_prime_horizon_summary, title = R.string.fuse_marker_prime_horizon_title))
             addPreference(AdaptiveIntPreference(ctx = context, intKey = FuseIntKey.DeferredPrimeEndMin, dialogMessage = R.string.fuse_deferred_prime_end_summary, title = R.string.fuse_deferred_prime_end_title))
+            // DER LIVENESS-KANAL: drei Zeilen aus demselben Grund - OB der
+            // Kanal existiert, wie hoch sein EIGENER Deckel liegt und wie
+            // lange er nach einem Exit gesperrt bleibt.
+            addPreference(AdaptiveSwitchPreference(ctx = context, booleanKey = FuseBooleanKey.LivenessChannelEnabled, summary = R.string.fuse_liveness_summary, title = R.string.fuse_liveness_title))
+            addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.LivenessIobCapPercent, dialogMessage = R.string.fuse_liveness_cap_summary, title = R.string.fuse_liveness_cap_title))
+            addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.LivenessBgMinMgdl, dialogMessage = R.string.fuse_liveness_bg_min_summary, title = R.string.fuse_liveness_bg_min_title))
+            addPreference(AdaptiveIntPreference(ctx = context, intKey = FuseIntKey.LivenessReArmMin, dialogMessage = R.string.fuse_liveness_rearm_summary, title = R.string.fuse_liveness_rearm_title))
             addPreference(AdaptiveIntPreference(ctx = context, intKey = FuseIntKey.AbsorptionCreditWindowMin, dialogMessage = R.string.fuse_absorption_credit_summary, title = R.string.fuse_absorption_credit_title))
             addPreference(AdaptiveIntPreference(ctx = context, intKey = FuseIntKey.MarkerBoostMaxMin, dialogMessage = R.string.fuse_marker_boost_summary, title = R.string.fuse_marker_boost_title))
             addPreference(AdaptiveIntPreference(ctx = context, intKey = FuseIntKey.EvidenceReboundOverrideMaxMin, dialogMessage = R.string.fuse_evidence_rebound_override_summary, title = R.string.fuse_evidence_rebound_override_title))
