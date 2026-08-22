@@ -5932,12 +5932,15 @@ class TransportWiringTest : TestBaseWithProfile() {
         transportReset()
         neuerRunner(FuseLedgerAdapter().also { it.loadOnce(File(dir, "aus").also(File::mkdirs), "test-epoch", start) })
         var summeAus = 0.0
+        var tailGesehen = false
         repeat(40) {
             val o = cycle()
             summeAus += o.decision.smbU
+            if (o.decision.block == FuseController.Block.TAIL) tailGesehen = true
             if (o.abortReason == null) assertEquals("DISABLED", o.livenessDenial)
             assertEquals(0.0, o.livenessLiftU, 1e-9)
         }
+        assertTrue(tailGesehen, "auch der AUS-Lauf muss den Deadlock erreichen - sonst beweist die Differenz nichts")
         assertTrue(
             summeAn - summeAus >= 1.0,
             "der Kanal muss gegen AUS mengenwirksam sein: an=$summeAn aus=$summeAus",
@@ -6146,6 +6149,253 @@ class TransportWiringTest : TestBaseWithProfile() {
         var wiederAb = -1
         repeat(6) { i -> if (cycle().livenessLiftU > 0.0 && wiederAb < 0) wiederAb = i + 1 }
         assertTrue(wiederAb in 1..4, "unter der neuen Schwelle bewaffnet er binnen weniger Zyklen neu: $wiederAb")
+    }
+
+
+    // ==== CODEX-GEGENPROBEN (22.08., vor jeder Aktivierung Pflicht) ========
+
+    /**
+     * Gegenprobe 1 - technischer Modellausfall: der Haftungshorizont
+     * waechst ueber den Modellhorizont (DIA 5 h = 300 min) hinaus, der
+     * Einheitskern deckt das Bewertungsfenster nicht mehr. Der Kanal muss
+     * SOFORT stehen - der fachliche Guard/Tail-Bypass ist kein technischer
+     * Blindflug.
+     */
+    @Test
+    fun `Liveness Gegenprobe - technischer Modellausfall beendet den Lauf`(@TempDir dir: File) {
+        livenessLage(dir)
+        var aktiv = false
+        repeat(22) { val o = cycle(); if (o.livenessActive) aktiv = true }
+        assertTrue(aktiv, "der Lauf muss stehen")
+        whenever(preferences.get(FuseIntKey.LiabilityHorizonMin)).thenReturn(360)
+        val o1 = cycle()
+        assertEquals("MODEL_UNAVAILABLE", o1.livenessExit, "der technische Modellausfall MUSS den Lauf beenden")
+        assertEquals(0.0, o1.livenessLiftU, 1e-9)
+        assertTrue(o1.livenessReArmUntilTs > o1.computeTs, "und die Sperre setzen")
+        // 14 Zyklen: LAENGER als die 10-min-Sperre - die "nie"-Aussage
+        // haengt damit am Modell-Tor selbst, nicht an der Sperre
+        // (Audit 22.08.: sonst truege die Sperre den Assert).
+        repeat(14) {
+            val x = cycle()
+            assertEquals(0.0, x.livenessLiftU, 1e-9)
+            assertEquals("MODEL_UNAVAILABLE", x.livenessDenial, "jeder Zyklus nennt das Tor")
+        }
+    }
+
+    /**
+     * Gegenprobe 2 - manueller Bolus WAEHREND der Bewaffnung: der Nutzer
+     * hat uebernommen, bevor der Streak voll war. Streak weg und dieselbe
+     * Sperre wie beim Lauf-Exit - sonst hinge die Wirkung davon ab, ob der
+     * Bolus einen Zyklus vor oder nach der Bewaffnung faellt.
+     */
+    @Test
+    fun `Liveness Gegenprobe - manueller Bolus waehrend der Bewaffnung sperrt`(@TempDir dir: File) {
+        livenessLage(dir)
+        var o = cycle()
+        var zyklen = 1
+        while (zyklen < 40 && o.livenessStreak == 0) { o = cycle(); zyklen++ }
+        assertTrue(o.livenessStreak in 1..2, "mitten in der Bewaffnung ankommen: Streak ${o.livenessStreak}")
+        assertEquals(false, o.livenessActive)
+        boluses = listOf(BS(timestamp = clock, amount = 1.0, type = BS.Type.NORMAL))
+        val nach = cycle()
+        assertEquals("MANUAL_INTERVENTION", nach.livenessDenial, "der Bolus WAEHREND der Bewaffnung muss den Streak beenden")
+        assertEquals(0, nach.livenessStreak)
+        assertTrue(nach.livenessReArmUntilTs > nach.computeTs, "und dieselbe Sperre setzen wie beim Lauf-Exit")
+        var liftInSperre = 0
+        repeat(9) { val x = cycle(); if (x.livenessLiftU > 0.0) liftInSperre++ }
+        assertEquals(0, liftInSperre, "innerhalb der Sperre keine Bewaffnung, kein Hub")
+    }
+
+    /**
+     * Gegenprobe 3 - aktiver Lauf, dann Abbruchzyklus, dann gesunder
+     * Zyklus: eine absurde ISF laesst den Predictor ablehnen; ohne Marker
+     * gibt es keinen Fallback, der Zyklus bricht ab. Der Kanal kann in
+     * diesem Zyklus weder Riegel noch Druck pruefen - der Lauf endet
+     * (OBSERVATION_LOST, mit Sperre) und laeuft im naechsten gesunden
+     * Zyklus NICHT einfach weiter.
+     */
+    @Test
+    fun `Liveness Gegenprobe - Abbruchzyklus beendet den Lauf statt ihn zu ueberbruecken`(@TempDir dir: File) {
+        livenessLage(dir)
+        var aktiv = false
+        repeat(22) { val o = cycle(); if (o.livenessActive) aktiv = true }
+        assertTrue(aktiv, "der Lauf muss stehen")
+        val kaputt = org.mockito.kotlin.spy(validProfile)
+        org.mockito.kotlin.doReturn(5000.0).whenever(kaputt).getIsfMgdlTimeFromMidnight(org.mockito.kotlin.any())
+        whenever(profileFunction.getProfile()).thenReturn(kaputt)
+        whenever(profileFunction.getProfile(any())).thenReturn(kaputt)
+        val abbruch = cycle()
+        assertTrue(abbruch.abortReason != null, "der Aufbau muss wirklich abbrechen: ${abbruch.abortReason}")
+        assertEquals("OBSERVATION_LOST", abbruch.livenessExit, "der aktive Lauf endet im unbeobachteten Zyklus")
+        assertTrue(abbruch.livenessReArmUntilTs > abbruch.computeTs, "mit Sperre")
+        whenever(profileFunction.getProfile()).thenReturn(validProfile)
+        whenever(profileFunction.getProfile(any())).thenReturn(validProfile)
+        var liftInSperre = 0
+        repeat(9) { val x = cycle()
+            assertEquals(false, x.livenessActive, "kein Weiterlaufen nach dem unbeobachteten Zyklus")
+            if (x.livenessLiftU > 0.0) liftInSperre++
+        }
+        assertEquals(0, liftInSperre)
+    }
+
+    /**
+     * Gegenprobe 4 - EXCLUDED-Lage: die Marker-Ruecknahme widerruft den
+     * Evidenzkredit, die Lage ist SUSPENDED - weder Mahlzeit noch
+     * Korrektur. Obwohl Druck und Schwanz-Deadlock stehen, bewaffnet der
+     * Kanal NICHT.
+     */
+    @Test
+    fun `Liveness Gegenprobe - EXCLUDED-Lage bewaffnet nicht`(@TempDir dir: File) {
+        livenessLage(dir)
+        markerAuthorized = true
+        markerAt = start + 2 * 60_000L
+        repeat(12) { cycle() }
+        // Ruecknahme: der Kredit ist widerrufen, die Evidenzlage SUSPENDED.
+        markerAt = 0L
+        var exklusiv = false
+        var armGesehen = false
+        var lifts = 0
+        repeat(20) {
+            val o = cycle()
+            if (o.livenessDenial == "EXCLUDED_LAGE") {
+                exklusiv = true
+                // Der Grund ist wirklich die SUSPENDED-Evidenz - nicht der
+                // Sammelname (Audit 22.08.: EXCLUDED_LAGE deckt drei
+                // Ursachen, gepinnt wird die behauptete).
+                assertEquals("SUSPENDED", o.evidencePhase)
+            }
+            if (o.livenessActive) armGesehen = true
+            if (o.livenessLiftU > 0.0) lifts++
+        }
+        assertTrue(exklusiv, "die EXCLUDED-Lage muss benannt im Trail stehen")
+        assertEquals(false, armGesehen, "keine Bewaffnung in der EXCLUDED-Lage")
+        assertEquals(0, lifts)
+    }
+
+    /**
+     * Gegenprobe 5 - die MINIMALE P2-Scheinwende: der Drive knickt um nur
+     * 0,15 mg/dl/min (1,4 -> 1,25), Druck und Anstieg bleiben klar
+     * erhalten. Der magnitudenblinde P2-Exit beendet den Lauf trotzdem -
+     * das ist die DOKUMENTIERTE konservative Kante des Vertrags: eine
+     * Scheinwende kostet Verfuegbarkeit (Sperre), nie Sicherheit. Im
+     * rauschfreien Rig konvergiert der Drive danach asymptotisch weiter
+     * fallend, jede Wiederbewaffnung endet sofort wieder per P2 - deshalb
+     * ist hier KEIN spaeterer Hub zu erwarten (live bricht Messrauschen
+     * die strenge Monotonie): P2 wirkt symmetrisch auch als
+     * Bewaffnungssperre (TURN_STANDING) - ohne sie lieferte jeder
+     * Wiederanlauf genau einen Hub, bevor der Exit ihn wieder beendet
+     * (im Rig gesehen).
+     */
+    @Test
+    fun `Liveness Gegenprobe - die minimale P2-Scheinwende beendet den Lauf`(@TempDir dir: File) {
+        livenessLage(dir)
+        knick2AbMin = 24
+        steigungNachKnick2 = 1.25
+        var exit: String? = null
+        var exitMin = -1
+        var liftVor = 0
+        var liftNachExit = 0
+        var turnStanding = false
+        repeat(40) { i ->
+            val minute = i + 1
+            val o = cycle()
+            if (exitMin < 0 && o.livenessLiftU > 0.0) liftVor++
+            if (exitMin > 0 && o.livenessLiftU > 0.0) liftNachExit++
+            if (exitMin < 0 && o.livenessExit != null) { exit = o.livenessExit; exitMin = minute }
+            if (exitMin > 0 && o.livenessDenial == "TURN_STANDING") turnStanding = true
+        }
+        assertTrue(liftVor >= 3, "vor der Scheinwende muss der Kanal geliefert haben: $liftVor")
+        assertEquals("TURN_EXIT", exit, "auch die minimale Scheinwende beendet den Lauf per P2")
+        // Obergrenze 30, nicht 31: TURN_STANDING ist erst nach Ablauf der
+        // 10-min-Sperre beobachtbar und braucht Platz im 40er-Budget.
+        assertTrue(exitMin in 25..30, "kurz hinter dem Knick: Minute $exitMin")
+        assertEquals(0, liftNachExit, "kein einziger Hub in die stehende Wende")
+        assertTrue(turnStanding, "die Bewaffnungssperre TURN_STANDING muss im Trail stehen")
+    }
+
+    /**
+     * Gegenprobe 6 (Codex): nicht nur die BG-Schwelle - auch Kanaldeckel
+     * und Re-Arm-Zeit veraendern einen laufenden Kanal und muessen ihn
+     * beenden.
+     */
+    @Test
+    fun `Liveness Grenze - auch Deckel- und Sperrzeit-Aenderung beenden den Lauf`(@TempDir dir: File) {
+        livenessLage(dir)
+        var aktiv = false
+        repeat(22) { val o = cycle(); if (o.livenessActive) aktiv = true }
+        assertTrue(aktiv, "der Lauf muss stehen")
+        livenessCapPct = 85.0
+        val o1 = cycle()
+        assertEquals("CONFIG_CHANGED", o1.livenessExit, "die Deckel-Aenderung beendet den Lauf")
+        assertEquals(0.0, o1.livenessLiftU, 1e-9)
+        var wiederAktiv = -1
+        repeat(6) { i -> val o = cycle(); if (o.livenessActive && wiederAktiv < 0) wiederAktiv = i + 1 }
+        assertTrue(wiederAktiv in 1..4, "unter dem neuen Deckel bewaffnet er neu: $wiederAktiv")
+        livenessReArmMin = 12
+        val o2 = cycle()
+        assertEquals("CONFIG_CHANGED", o2.livenessExit, "auch die Sperrzeit-Aenderung beendet den Lauf")
+        assertEquals(0.0, o2.livenessLiftU, 1e-9)
+    }
+
+
+    /**
+     * Gegenprobe 7 (Audit 22.08.): das ZWEITE unbeobachtete Loch neben dem
+     * Abort - der predictorfreie Marker-Fallback-Zyklus. Er dosiert, laeuft
+     * aber ohne die Kanalstufe; ein aktiver Lauf muss auch dort enden.
+     * Ohne diese Probe ueberlebte das Loeschen genau dieses Aufrufs die
+     * gesamte Suite.
+     */
+    @Test
+    fun `Liveness Gegenprobe - auch der Marker-Fallback-Zyklus beendet den Lauf`(@TempDir dir: File) {
+        livenessLage(dir)
+        markerAuthorized = true
+        var aktiv = false
+        repeat(22) { val o = cycle(); if (o.livenessActive) aktiv = true }
+        assertTrue(aktiv, "der Lauf muss stehen")
+        // Druck UND ueberstimmbare Bahn-Ablehnung im SELBEN Zyklus: nur so
+        // trifft ein Fallback-Zyklus auf einen noch aktiven Lauf. Zwei
+        // Zyklen frueher ginge es nicht - unter offenem Markerfenster ist
+        // der Normalpfad nie GUARD/TAIL-gedeckelt (der Kanal bewaffnet
+        // dann korrekt nicht, NORMAL_PATH_OPEN), und ein Druck in einen
+        // Hauptpfad-Zyklus beendet den Lauf schon selbst als
+        // Segmentbruch-EXCLUDED - beides im Rig gesehen.
+        markerAt = clock
+        predictReject = PredictorReason.PENDING_MODEL_TOO_SHORT
+        val fb = cycle()
+        assertTrue(fb.markerFallbackUsed, "der Aufbau muss wirklich den Fallback-Pfad treffen")
+        assertEquals("OBSERVATION_LOST", fb.livenessExit, "der aktive Lauf endet im Fallback-Zyklus")
+        assertTrue(fb.livenessReArmUntilTs > fb.computeTs, "mit Sperre")
+        predictReject = null
+        var liftInSperre = 0
+        repeat(9) {
+            val x = cycle()
+            assertEquals(false, x.livenessActive, "kein Weiterlaufen nach dem Fallback-Zyklus")
+            if (x.livenessLiftU > 0.0) liftInSperre++
+        }
+        assertEquals(0, liftInSperre)
+    }
+
+    /**
+     * Gegenprobe 8 (Audit 22.08.): eine TAKTLUECKE - Minuten ohne Zyklus
+     * bei lueckenlos weiterlaufender CGM-Reihe (Pumpe belegt, Prozess
+     * pausiert) - ueberbrueckt den Lauf nicht. BEWUSST OHNE Sperre: die
+     * Medtrum-Zyklen strecken sich real bis 854 s; eine Sperre je
+     * Streckung entwertete den Kanal. Aber die Bewaffnung ist neu zu
+     * verdienen.
+     */
+    @Test
+    fun `Liveness Gegenprobe - eine Taktluecke ueberbrueckt den Lauf nicht`(@TempDir dir: File) {
+        livenessLage(dir)
+        var aktiv = false
+        repeat(22) { val o = cycle(); if (o.livenessActive) aktiv = true }
+        assertTrue(aktiv, "der Lauf muss stehen")
+        clock += 4 * 60_000L
+        val o1 = cycle()
+        assertEquals("CONTINUITY_GAP", o1.livenessExit, "die Taktluecke beendet den Lauf")
+        assertEquals(0.0, o1.livenessLiftU, 1e-9)
+        var wiederAb = -1
+        repeat(6) { i -> if (cycle().livenessLiftU > 0.0 && wiederAb < 0) wiederAb = i + 1 }
+        assertTrue(wiederAb in 2..5, "drei frische Druckzyklen vor dem naechsten Hub: $wiederAb")
     }
 
 }

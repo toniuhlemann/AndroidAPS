@@ -870,6 +870,9 @@ class FuseCycleRunner(
             // dem alle diese Pfade vorbeikommen; hier zu verwerfen, deckt sie
             // alle ab, statt sie einzeln nachzupflegen.
             subStepCarryU = 0.0
+            // Codex 22.08.: ein Abbruchzyklus ist fuer den Liveness-Kanal
+            // ein unbeobachteter Zyklus - ein aktiver Lauf endet hier.
+            val livenessLostExit = livenessObservationLost(episodes, computeTs, policy?.livenessReArmMin)
             val (cancelTbr, tbrAlarm) = abortTbr()
             // Auch ein Abbruch kennt die Basiswerte (Toni 08.08.: nie
             // verstecken) - jede Lesung einzeln tolerant, ein Abbruch darf an
@@ -897,6 +900,8 @@ class FuseCycleRunner(
                 signal = signal, band = null, discount = null, onset = null, prime = null, candidate = null, candidateGap = null, policy = policy, state = null, step = step,
                 sensorEpoch = null, calibrationEpoch = null,
                 isfMgdlPerU = null, iobU = iob, iobThU = iobTh, maxIobU = maxIob, computeDurationMs = null, mealStats = null, abortReason = reason,
+                livenessExit = livenessLostExit,
+                livenessReArmUntilTs = episodes.livenessReArmUntilTs,
                 // AUCH IM ABBRUCH. Nach einem Neustart ist der Abbruch der
                 // WAHRSCHEINLICHE Ausgang, und genau dort muss der Nutzer
                 // erfahren, dass sein Marker keine Episode hat.
@@ -2876,6 +2881,10 @@ class FuseCycleRunner(
         // Schwanz-Veto (`tailWith`) und die Guard-Zertifikate - genau die
         // Instanzen, deren Fehlurteil der Kanal beheben soll. Ihre Aufgabe
         // uebernehmen hier die gemessenen Riegel plus der Mengendeckel.
+        // Die TECHNISCHE Haelfte der Pruefung bleibt aber Pflicht (Codex
+        // 22.08.): ohne gebauten Einheitskern, der das Bewertungsfenster
+        // deckt, dosiert auch dieser Kanal nicht (MODEL_UNAVAILABLE) -
+        // fachlicher Bypass ja, technischer Blindflug nein.
         var livenessDenial: String? = null
         var livenessExit: String? = null
         var livenessCandidateU = 0.0
@@ -2884,41 +2893,86 @@ class FuseCycleRunner(
         val decision: FuseController.Decision = run {
             if (!cfg.livenessChannelEnabled) {
                 // AUS heisst aus: Lauf und Streak enden, aber eine bereits
-                // gesetzte Sperre bleibt stehen (sie ist eine Zusage).
+                // gesetzte Sperre bleibt stehen (sie ist eine Zusage). Ein
+                // dabei beendeter Lauf traegt sein Exit-Label (Audit 22.08.:
+                // sonst endete er unbenannt).
+                if (livenessActive) livenessExit = "DISABLED"
                 livenessActive = false
                 livenessStreak = 0
                 livenessDenial = "DISABLED"
                 return@run nachAufschub
             }
-            // Toni 22.08.: die Schwellen-Aenderung waehrend eines Laufs
-            // beendet ihn und der Streak beginnt unter der NEUEN Schwelle
-            // neu. OHNE Sperre - das ist eine Bedienhandlung, kein
-            // gemessenes Risiko.
-            if (!livenessBgMinSeen.isNaN() && livenessBgMinSeen != cfg.livenessBgMinMgdl) {
-                if (livenessActive) livenessExit = "CONFIG_CHANGED"
-                livenessActive = false
-                livenessStreak = 0
-            }
-            livenessBgMinSeen = cfg.livenessBgMinMgdl
+            // Toni + Codex 22.08.: JEDE Aenderung an den drei
+            // Kanal-Stellgroessen waehrend eines Laufs beendet ihn, und der
+            // Streak beginnt unter der neuen Regel neu - auch Deckel und
+            // Sperrzeit veraendern sonst einen bereits laufenden Kanal.
+            // OHNE Sperre: das ist eine Bedienhandlung, kein gemessenes
+            // Risiko.
+            val cfgJetzt = cfg.livenessBgMinMgdl.toString() + "|" +
+                cfg.livenessIobCapPercent + "|" + cfg.livenessReArmMin
+            // ERST gemerkt, ANGEWENDET erst nach den harten Riegeln (Audit
+            // 22.08.): faellt die Aenderung mit einem gemessenen Riegel
+            // zusammen, gewinnt der Riegel-Exit MIT Sperre - der sperrfreie
+            // CONFIG_CHANGED-Ausgang darf ihn nicht verdraengen.
+            val cfgGeaendert = livenessCfgSeen != null && livenessCfgSeen != cfgJetzt
+            livenessCfgSeen = cfgJetzt
             fun sperren(grund: String): FuseController.Decision {
                 livenessExit = grund
                 livenessActive = false
                 livenessStreak = 0
-                episodes.livenessReArmUntilTs = computeTs + cfg.livenessReArmMin * 60_000L
+                // maxOf: eine stehende Sperre ist eine Zusage - sie wird
+                // verlaengert, nie verkuerzt (Audit 22.08.).
+                episodes.livenessReArmUntilTs = maxOf(
+                    episodes.livenessReArmUntilTs,
+                    computeTs + cfg.livenessReArmMin * 60_000L,
+                )
                 return nachAufschub
             }
+            // Taktluecke (Audit 22.08.): mehr als drei Minuten ohne Zyklus
+            // sind so unbeobachtet wie ein Abbruchzyklus - der Lauf endet,
+            // die Bewaffnung wird neu verdient. BEWUSST OHNE Sperre: die
+            // Medtrum-Zyklen strecken sich real bis 854 s (Lifecycle-
+            // Messung), eine Sperre je Streckung entwertete den Kanal.
+            if (livenessLastCycleTs > 0L &&
+                computeTs - livenessLastCycleTs > 3 * 60_000L &&
+                (livenessActive || livenessStreak > 0)
+            ) {
+                if (livenessActive) livenessExit = "CONTINUITY_GAP"
+                livenessActive = false
+                livenessStreak = 0
+            }
+            livenessLastCycleTs = computeTs
             // Die GEMESSENEN Riegel - fuer Lauf UND Bewaffnung. Waehrend
             // eines Laufs beenden sie ihn MIT Sperre; davor verhindern sie
             // die Bewaffnung und setzen den Streak zurueck.
             val hart = when {
                 step.health != Health.READY -> "SIGNAL_UNHEALTHY"
                 treatmentView == null -> "VIEW_UNREADABLE"
+                // Die TECHNISCHE Modellpruefung (Codex 22.08.): derselbe
+                // Einheitskern, den auch `finalVeto` verlangt, und er muss
+                // das GROESSERE der beiden Bewertungsfenster decken. Nur
+                // die semantischen Urteile (Guard-Zertifikat, Schwanz)
+                // bleiben im Kanal ausgesetzt.
+                kernelFinal == null || !kernelFinal.covers(
+                    computeTs + maxOf(cfg.releaseHorizonMin, cfg.liabilityHorizonMin) * 60_000L
+                ) -> "MODEL_UNAVAILABLE"
                 ledgerView.hold -> "LEDGER_HOLD"
                 reboundRaw -> "REBOUND_ACTIVE"
                 measuredLow -> "MEASURED_LOW"
                 descentRisk.active -> "DESCENT_RISK"
                 risk60?.active == true -> "DESCENT_RISK_MARKER"
                 descentLatch.blocksPositive -> "LATCH_ACTIVE"
+                // Tonis Lagen-Vertrag: MEAL und CORRECTION duerfen, eine
+                // EXCLUDED-Lage nie. Rebound und Signal decken die Riegel
+                // oben; hier kommen die Evidenz-Ausschluesse dazu:
+                // SUSPENDED (widerrufener Kredit, Segmentbruch, Tief) und
+                // UNKNOWN (fragliche Buchfuehrung) sind weder Mahlzeit
+                // noch Korrektur. `ledgerSealed` kennt erst das Plugin
+                // nach der Publikation - dessen Ausfall deckt der
+                // LEDGER_HOLD-Riegel.
+                evidenz == null ||
+                    evidenz.phase == EvidenceStock.Phase.SUSPENDED ||
+                    evidenz.phase == EvidenceStock.Phase.UNKNOWN -> "EXCLUDED_LAGE"
                 !signal.ukfRatePerMin.isFinite() ||
                     signal.ukfRatePerMin < LivenessChannel.UKF_FLOOR_MGDL_PER_MIN -> "FALLING"
                 else -> null
@@ -2929,6 +2983,11 @@ class FuseCycleRunner(
                 livenessDenial = hart
                 return@run nachAufschub
             }
+            if (cfgGeaendert) {
+                if (livenessActive) livenessExit = "CONFIG_CHANGED"
+                livenessActive = false
+                livenessStreak = 0
+            }
             // Manuelle Intervention beendet den Lauf (Vertrag): ein
             // NORMAL-Bolus nach der Bewaffnung heisst, der Nutzer hat
             // uebernommen - der Kanal draengelt nicht daneben weiter.
@@ -2937,8 +2996,32 @@ class FuseCycleRunner(
             val manualTs = treatmentView?.boluses
                 ?.filter { it.isValid && it.type == BS.Type.NORMAL }
                 ?.maxOfOrNull { it.timestamp }
-            if (livenessActive && manualTs != null && manualTs > livenessArmTs) {
+            // Aktiver Lauf: massgeblich ist der BEGINN des Bewaffnungs-
+            // Streaks, nicht der Bewaffnungsmoment - ein Bolus aus dem
+            // Bewaffnungsfenster, der erst NACH der Bewaffnung in der Sicht
+            // auftaucht (DB-Latenz), beendet den Lauf trotzdem (Audit
+            // 22.08., Sichtbarkeitsrennen).
+            if (livenessActive && manualTs != null && manualTs >= livenessStreakStartTs) {
                 return@run sperren("MANUAL_INTERVENTION")
+            }
+            // Codex 22.08.: auch VOR der Bewaffnung hat der Nutzer mit
+            // einem NORMAL-Bolus uebernommen. WANDUHR statt Streak-Fenster
+            // (Audit 22.08.): ein Streak-Reset durch Riegel, Druckflackern
+            // oder Config-Wechsel stempelte das Fenster sonst am Bolus
+            // vorbei, und die Bewaffnung liefe drei Zyklen spaeter doch.
+            // Die Sperre rechnet ab dem BOLUS und verkuerzt eine stehende
+            // nie; sie ist damit von selbst neustartfest (die Boluse kommen
+            // aus der Behandlungssicht).
+            if (!livenessActive && manualTs != null &&
+                manualTs + cfg.livenessReArmMin * 60_000L > computeTs
+            ) {
+                livenessDenial = "MANUAL_INTERVENTION"
+                livenessStreak = 0
+                episodes.livenessReArmUntilTs = maxOf(
+                    episodes.livenessReArmUntilTs,
+                    manualTs + cfg.livenessReArmMin * 60_000L,
+                )
+                return@run nachAufschub
             }
             // P2: die BESTAETIGTE Abwaertswende beendet den Lauf mit Sperre.
             if (livenessActive &&
@@ -2957,7 +3040,10 @@ class FuseCycleRunner(
                 livenessStreak = 0
                 return@run nachAufschub
             }
-            livenessStreak = if (druck) minOf(livenessStreak + 1, 99) else 0
+            if (druck) {
+                if (livenessStreak == 0) livenessStreakStartTs = computeTs
+                livenessStreak = minOf(livenessStreak + 1, 99)
+            } else livenessStreak = 0
             if (!livenessActive) {
                 when {
                     computeTs < episodes.livenessReArmUntilTs -> {
@@ -2966,6 +3052,15 @@ class FuseCycleRunner(
                     }
                     livenessStreak < LivenessChannel.ARM_STREAK -> {
                         livenessDenial = "NOT_CONFIRMED"
+                        return@run nachAufschub
+                    }
+                    // P2 symmetrisch (Codex-Gegenprobe Scheinwende): solange
+                    // eine BESTAETIGTE Wende steht, wird auch nicht neu
+                    // bewaffnet - sonst liefert jeder Wiederanlauf genau
+                    // einen Hub, bevor der Exit ihn wieder beendet.
+                    TurnResponseShadow.declineStreak(turnSamples) >=
+                        LivenessChannel.EXIT_DECLINE_STREAK -> {
+                        livenessDenial = "TURN_STANDING"
                         return@run nachAufschub
                     }
                     // Bewaffnet wird nur GEGEN den Deadlock: der Normalpfad
@@ -3595,6 +3690,10 @@ class FuseCycleRunner(
         gate: FusePumpGate.Result,
     ): Outcome {
         subStepCarryU = 0.0
+        // Codex 22.08.: ein Fallback-Zyklus laeuft OHNE die Kanalstufe -
+        // weder Riegel noch Druck sind geprueft. Ein aktiver Liveness-Lauf
+        // endet deshalb hier wie an einem harten Riegel.
+        val livenessLostExit = livenessObservationLost(episodes, computeTs, cfg.livenessReArmMin)
 
         // Dieselbe Episoden-Wahl wie im Hauptpfad - hier lokal gelesen, weil
         // dieser Pfad seine Eingaben als Parameter bekommt.
@@ -3796,8 +3895,10 @@ class FuseCycleRunner(
             deferredPrimeLapseReason = episodes.deferredPrime.lastLapseReason?.name,
             deferredPrimeLapseU = episodes.deferredPrime.lastLapseU,
             deferredPrimeLapseTs = episodes.deferredPrime.lastLapseTs,
-            // Der Kanal laeuft nur im Hauptpfad; der Fallback exportiert
-            // allein die restartfeste Sperre.
+            // Der Kanal laeuft nur im Hauptpfad - ein aktiver Lauf ist
+            // oben beim Betreten dieses Pfads beendet worden; exportiert
+            // werden der Exit und der restartfeste Stand.
+            livenessExit = livenessLostExit,
             livenessReArmUntilTs = episodes.livenessReArmUntilTs,
             alarm = combined.alarm,
             bgMgdl = signal.q1,
@@ -4013,11 +4114,56 @@ class FuseCycleRunner(
     private var livenessActive = false
     private var livenessArmTs = 0L
 
-    /** Die BG-Schwelle, unter der der aktuelle Streak/Lauf gezaehlt wurde.
-     *  NaN = noch nie gesehen (Prozessstart). Eine Aenderung beendet einen
-     *  aktiven Lauf und nullt den Streak (Toni 22.08.): ein Lauf, der unter
-     *  einer anderen Regel bewaffnet wurde, traegt nicht weiter. */
-    private var livenessBgMinSeen = Double.NaN
+    /** Beginn des laufenden Bewaffnungs-Streaks - fuer die Frage, ob ein
+     *  manueller Bolus WAEHREND der Bewaffnung fiel (Codex 22.08.). */
+    private var livenessStreakStartTs = 0L
+
+    /** Fingerprint ALLER drei Kanal-Stellgroessen (Schwelle, Kanaldeckel,
+     *  Re-Arm-Zeit), unter denen Streak und Lauf gezaehlt wurden. null =
+     *  noch nie gesehen (Prozessstart). JEDE Aenderung beendet einen
+     *  aktiven Lauf und nullt den Streak (Toni + Codex 22.08.): ein Lauf,
+     *  der unter einer anderen Regel bewaffnet wurde, traegt nicht weiter -
+     *  das gilt fuer Deckel und Sperrzeit genauso wie fuer die Schwelle. */
+    private var livenessCfgSeen: String? = null
+
+    /** Zeitstempel des letzten Zyklus, der die Kanalstufe erreicht hat -
+     *  fuer die Taktluecken-Pruefung (Audit 22.08.): eine Luecke ohne
+     *  Zyklus ist genauso unbeobachtet wie ein Abbruchzyklus. */
+    private var livenessLastCycleTs = 0L
+
+    /**
+     * Ein Zyklus OHNE Kanalstufe (Abort, Marker-Fallback) kann weder die
+     * gemessenen Riegel noch den Druck pruefen (Codex 22.08.). Ein aktiver
+     * Lauf endet deshalb dort wie an einem harten Riegel - mit Sperre -,
+     * und ein Bewaffnungs-Streak faellt auf null (eine unbeobachtete
+     * Minute belegt keinen Druck; dieselbe Logik wie bei der
+     * Latch-Erholung). Rueckgabe: der Exit-Grund fuer den Trail, sonst null.
+     */
+    private fun livenessObservationLost(
+        episodes: app.aaps.fuse.plugin.ledger.EpisodeBudgets,
+        nowTs: Long,
+        reArmMin: Int?,
+    ): String? {
+        val lauf = livenessActive
+        livenessActive = false
+        livenessStreak = 0
+        if (lauf) {
+            // Fruehe Aborts kommen ohne geparste Config an (policy == null) -
+            // dann gilt der KONFIGURIERTE Wert aus den Preferences, nicht
+            // der Compile-Default (Audit 22.08.: sonst waere die Sperre bei
+            // ReArmMin 60 stillschweigend sechsmal kuerzer als zugesagt).
+            val minuten = reArmMin
+                ?: runCatching { preferences.get(FuseIntKey.LivenessReArmMin) }.getOrNull()
+                ?: FuseIntKey.LivenessReArmMin.defaultValue
+            // maxOf: eine stehende Sperre ist eine Zusage - sie wird
+            // verlaengert, nie verkuerzt.
+            episodes.livenessReArmUntilTs = maxOf(
+                episodes.livenessReArmUntilTs,
+                nowTs + minuten * 60_000L,
+            )
+        }
+        return if (lauf) "OBSERVATION_LOST" else null
+    }
 
     /** Unter WELCHEN Bedingungen der Uebertrag entstanden ist - s. Aufrufstelle.
      *  `null` heisst: es gibt keinen Uebertrag, der eine Herkunft haette. */
