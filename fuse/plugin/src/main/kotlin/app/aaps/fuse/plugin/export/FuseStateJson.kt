@@ -66,13 +66,20 @@ object FuseStateJson {
     // Phase B nach; ein manueller NORMAL-Bolus nach dem Marker sperrt nur den
     // Sicherheits-Uebertrag. Nachgetragen am 22.08. - der Bump selbst kam
     // ohne Journaleintrag (Review-Finding).
+    // v17 (22.08. abends): der Marker-Prime-Aufschub (Punkt 6, Bau-GO Toni,
+    // Schalter default AUS, KEIN Aktivierungs-GO). Eingeschaltet haelt er
+    // markerautorisiertes Insulin bei gemessenem, ueberdecktem Fall mit
+    // Boden im gepinnten langen Horizont zurueck und gibt den offenen Rest
+    // nach bestaetigter Erholung schrittweise frei - dosierwirksam in beide
+    // Richtungen, darum eigene Version; die drei Stellgroessen gehen in den
+    // Hash ein.
     // v16 (22.08.): Zulassungsschwelle und Fenster des Low-Tors
     // (LowGateMinBenefitMgdl, LowGateHorizonMin) gehen in Hash und
     // policyValues ein. Beide steuern, ab wann eine Zero-TBR als nutzlos gilt
     // - dosierwirksam auf der TBR-Achse, bis v15 unsichtbar im Fingerprint:
     // zwei Laeufe mit 5 und 20 mg/dl Schwelle trugen denselben Regelstand,
     // und der Trail konnte nicht einmal zeigen, welche Werte galten.
-    const val RULE_SET_VERSION = 16
+    const val RULE_SET_VERSION = 17
 
     /** Schema des Trail-Datensatzes - s. die Notiz an der Schreibstelle. */
     const val SCHEMA_VERSION = 4
@@ -335,6 +342,24 @@ object FuseStateJson {
             .putOpt("descentLatchReason", outcome.descentLatchReason)
             .put("descentRecoveryCycles", outcome.descentRecoveryCycles)
             .put("descentLatchedAtTs", outcome.descentLatchedAtTs)
+
+        // ---- Punkt 6: der Marker-Prime-Aufschub -------------------------
+        // IMMER als Objekt, auch ungenutzt: ein verfallener Rest MUSS im
+        // Trail sichtbar bleiben (Vertrag 10), und die Ableitung von
+        // openU/Frist muss offline nachrechenbar sein.
+        o.put(
+            "deferredPrime", JSONObject()
+                .put("openU", fin(outcome.deferredPrimeOpenU))
+                .put("pinnedForTs", outcome.deferredPrimePinnedForTs)
+                .put("deadlineTs", outcome.deferredPrimeDeadlineTs)
+                .put("horizonMin", outcome.deferredPrimeHorizonMin)
+                .put("withheldU", fin(outcome.deferredPrimeWithheldU))
+                .put("releasedU", fin(outcome.deferredPrimeReleasedU))
+                .put("denial", outcome.deferredPrimeDenial ?: JSONObject.NULL)
+                .put("lapseReason", outcome.deferredPrimeLapseReason ?: JSONObject.NULL)
+                .put("lapseU", fin(outcome.deferredPrimeLapseU))
+                .put("lapseTs", outcome.deferredPrimeLapseTs),
+        )
             .put(
                 "reboundOverrideRestMin",
                 outcome.reboundOverrideDeadlineTs
@@ -1197,6 +1222,12 @@ object FuseStateJson {
         .put("mealFoundationEnabled", p.mealFoundationEnabled)
         .put("mealFoundationPhaseAShare", fin(p.mealFoundationPhaseAShare))
         .put("mealFoundationEndMin", p.mealFoundationEndMin)
+        // v17: der Marker-Prime-Aufschub. Schalter, gepinnter Horizont und
+        // gepinnte Frist - ohne sie ist im Replay nicht trennbar, WELCHER
+        // Aufschub-Regler einen Lauf gefahren hat.
+        .put("deferredPrimeEnabled", p.deferredPrimeEnabled)
+        .put("markerPrimeDescentHorizonMin", fin(p.markerPrimeDescentHorizonMin))
+        .put("deferredPrimeEndMin", p.deferredPrimeEndMin)
         // Ohne diese Zeile waere hinterher nicht belegbar, OB der Schalter in
         // einem Lauf an war - genau die Luecke, die heute schon zweimal
         // aufgefallen ist (basalIobU, MarkerAuthorisesRelease). Ein Schalter,
@@ -1224,6 +1255,8 @@ object FuseStateJson {
             // wann eine Zero-TBR als nutzlos gilt - dosierwirksam auf der
             // TBR-Achse und bis v15 im Fingerprint unsichtbar.
             p.lowGateMinBenefitMgdl, p.lowGateHorizonMin,
+            // v17: der gepinnte Marker-Horizont des Aufschubs.
+            p.markerPrimeDescentHorizonMin,
         )
         if (doubles.any { !it.isFinite() }) return null
         val parts = listOf("fuse-policy-v$RULE_SET_VERSION") +
@@ -1244,6 +1277,12 @@ object FuseStateJson {
                 // v12: die Frist des Rebound-Sonderrechts. Zwei Laeufe mit
                 // 120 und 0 Minuten sind verschiedene Regler.
                 p.evidenceReboundOverrideMaxMin,
+                // v17: Schalter und Frist des Marker-Prime-Aufschubs. AUS
+                // und EIN sind zwei verschiedene Regler in BEIDE
+                // Richtungen (haelt zurueck UND liefert nach); eine andere
+                // Frist verschiebt, wann ein offener Rest verfaellt.
+                p.deferredPrimeEnabled,
+                p.deferredPrimeEndMin,
             ).map { it.toString() }
         return Sha.of(parts.joinToString("|"))
     }

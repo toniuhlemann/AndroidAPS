@@ -476,6 +476,18 @@ object LedgerCodec {
                 .put("latchedAtTs", e.descentRecoveryLatch.latchedAtTs)
                 .put("sawMeasuredLow", e.descentRecoveryLatch.sawMeasuredLow),
         )
+        // Punkt 6: der Marker-Prime-Aufschub - Budget UND Frist muessen den
+        // Neustart identisch ueberleben (Vertrag/Replay-Fall 6). Additiv wie
+        // der Riegel: eine Altdatei ohne Objekt heisst "kein Aufschub".
+        .put(
+            "deferredPrime",
+            JSONObject()
+                .put("openU", e.deferredPrime.openU)
+                .put("pinnedForMarkerTs", e.deferredPrime.pinnedForMarkerTs)
+                .put("deadlineTs", e.deferredPrime.deadlineTs)
+                .put("horizonMin", e.deferredPrime.horizonMin)
+                .put("postFoundationDeliveredU", e.postFoundationDeliveredU),
+        )
         // DREI Elemente statt zwei: [ts, menge, proposalId] (Toni 19.08.).
         // Die Kennung MUSS mit - ohne sie findet ein Nicht-Sende-Beweis nach
         // einem Neustart den Eintrag nicht mehr und laesst eine nie geflossene
@@ -666,6 +678,24 @@ object LedgerCodec {
                     // volle Drei-Zyklen-Bestaetigung und ist konservativ.
                     sawMeasuredLow = latch.optBoolean("sawMeasuredLow", false),
                 ) ?: error("invalid descent recovery latch")
+        }
+        if (o.has("deferredPrime")) {
+            val dp = o.getJSONObject("deferredPrime")
+            val restored = app.aaps.fuse.core.controller.DeferredPrime.State(
+                openU = dp.getDouble("openU"),
+                pinnedForMarkerTs = dp.getLong("pinnedForMarkerTs"),
+                deadlineTs = dp.getLong("deadlineTs"),
+                horizonMin = dp.getInt("horizonMin"),
+            )
+            // Dieselbe Strenge wie beim Riegel: eine inkonsistente Datei wird
+            // ABGEWIESEN statt geraten. Der Verfalls-Vermerk ist bewusst
+            // NICHT persistiert - er ist Trail-Anzeige, kein Zustand.
+            require(restored.valid) { "invalid deferred prime state" }
+            require(restored.openU <= MAX_MEAL_DELIVERY_U * 10) { "deferred prime open out of range" }
+            val post = dp.getDouble("postFoundationDeliveredU")
+            require(post.isFinite() && post >= 0.0) { "postFoundationDeliveredU out of range: $post" }
+            e.deferredPrime = restored
+            e.postFoundationDeliveredU = post
         }
         // KEINE MIGRATION, die ein Fundament ERFINDET: fehlt das Objekt, gibt
         // es keine laufende Autorisierung. Eine Altdatei mitten in einer

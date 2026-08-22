@@ -142,6 +142,16 @@ class TransportWiringTest : TestBaseWithProfile() {
 
     private var knickAbMin: Int? = null
 
+    /** ZWEITER Knick - stetig wie der erste. Fuer Verlaeufe Fall->Erholung->
+     *  neuer Fall (Punkt-6-Replayfall 7). Muss NACH `knickAbMin` liegen. */
+    private var knick2AbMin: Int? = null
+    private var steigungNachKnick2 = 0.0
+
+    /** Punkt-6-Hebel: Schalter, gepinnter Horizont, gepinnte Frist. */
+    private var aufschubAn = false
+    private var aufschubHorizontMin = 60.0
+    private var aufschubFristMin = 120
+
     /** Steigung NACH dem Knick [mg/dl/min]. */
     private var steigungNachKnick = 0.0
 
@@ -259,9 +269,13 @@ class TransportWiringTest : TestBaseWithProfile() {
                 // fuer die Phase B gebaut ist. Nichts wird kuenstlich genullt.
                 val min = (ts - start) / 60_000.0
                 val k = knickAbMin
-                val v =
-                    if (k == null || min <= k) flach + steigungProMin * min
-                    else flach + steigungProMin * k + steigungNachKnick * (min - k)
+                val k2 = knick2AbMin
+                val v = when {
+                    k == null || min <= k -> flach + steigungProMin * min
+                    k2 == null || min <= k2 -> flach + steigungProMin * k + steigungNachKnick * (min - k)
+                    else -> flach + steigungProMin * k + steigungNachKnick * (k2 - k) +
+                        steigungNachKnick2 * (min - k2)
+                }
                 GV(
                     timestamp = ts, value = v, raw = v, noise = 0.0,
                     sourceSensor = SourceSensor.UNKNOWN, trendArrow = TrendArrow.FLAT
@@ -366,6 +380,9 @@ class TransportWiringTest : TestBaseWithProfile() {
         whenever(preferences.get(FuseIntKey.ReleaseHorizonMin)).thenReturn(60)
         whenever(preferences.get(FuseIntKey.LiabilityHorizonMin)).thenReturn(120)
         whenever(preferences.get(FuseIntKey.DriveTauMin)).thenReturn(60)
+        whenever(preferences.get(FuseBooleanKey.DeferredPrimeEnabled)).thenAnswer { aufschubAn }
+        whenever(preferences.get(FuseDoubleKey.MarkerPrimeDescentHorizonMin)).thenAnswer { aufschubHorizontMin }
+        whenever(preferences.get(FuseIntKey.DeferredPrimeEndMin)).thenAnswer { aufschubFristMin }
         whenever(preferences.get(FuseIntKey.AbsorptionCreditWindowMin)).thenReturn(60)
         whenever(preferences.get(FuseIntKey.MarkerBoostMaxMin)).thenReturn(45)
         whenever(preferences.get(FuseIntKey.NightStartMin)).thenReturn(1380)
@@ -5514,6 +5531,294 @@ class TransportWiringTest : TestBaseWithProfile() {
             }
         }
         assertTrue(geprueft, "der Aufbau muss den Riegel erreichen")
+    }
+
+
+    // ==== PUNKT 6: DER MARKER-PRIME-AUFSCHUB (Tonis 7 Replay-Pflichtfaelle) =
+    //
+    // Schalter default AUS, kein Aktivierungs-GO - diese Tests schalten ihn
+    // im Geruest bewusst ein und fahren den ECHTEN Runner. Die Form ist der
+    // 18:19-Fall: maessiger Fall, Boden ZWISCHEN dem 30er-Korrekturriegel
+    // und dem gepinnten 60er-Marker-Horizont, Bolus-Ueberdeckung vorhanden.
+
+    private fun punkt6Lage(dir: File, fristMin: Int = 120): FuseLedgerAdapter {
+        aufschubAn = true
+        aufschubHorizontMin = 60.0
+        aufschubFristMin = fristMin
+        fundamentAn = true
+        fundamentAnteil = 0.80
+        markerAuthorized = true
+        primeHuelleU = 3.75
+        tailGuard = false
+        flach = 140.0
+        steigungProMin = -1.2
+        knickAbMin = null
+        knick2AbMin = null
+        bolusIobU = 3.0
+        clock = start
+        transportReset()
+        val adapter = FuseLedgerAdapter().also { it.loadOnce(dir.also(File::mkdirs), "test-epoch", start) }
+        neuerRunner(adapter)
+        markerAt = start + 2 * 60_000L
+        return adapter
+    }
+
+    /** Replay-Fall 1 (18:19): vollstaendiger Aufschub, kein Insulin im Fall. */
+    @Test
+    fun `P6 Fall 1 - im gemessenen Fall geht trotz Marker nichts hinaus sondern in den Aufschub`(@TempDir dir: File) {
+        punkt6Lage(dir)
+        // Der Marker faellt wie am 18:19 MITTEN in den laufenden Fall - die
+        // Rate ist dann bereits gemessen konvergiert. Ein Marker in einen
+        // noch kalten Filter hinein ist eine andere (mildere) Lage: dort
+        // liegt der Boden gemessen noch jenseits des Horizonts.
+        markerAt = start + 8 * 60_000L
+        var summe = 0.0
+        var withheld = 0.0
+        var open = 0.0
+        var blockGesehen = false
+        repeat(24) { i ->
+            val o = cycle()
+            if (i >= 8) summe += o.decision.smbU
+            withheld += o.deferredPrimeWithheldU
+            open = o.deferredPrimeOpenU
+            if (o.decision.block == FuseController.Block.MARKER_PRIME_DEFERRED) blockGesehen = true
+        }
+        assertTrue(blockGesehen, "der Aufschub-Block MUSS im Trail stehen")
+        assertEquals(0.0, summe, 1e-9, "kein Insulin im gemessenen Fall: $summe U")
+        assertTrue(withheld > 0.2, "es MUSS wirklich etwas zurueckgehalten worden sein: $withheld U")
+        assertTrue(open > 0.0 && open <= withheld + 1e-9, "offen = zurueckgehalten, huellengedeckelt: $open")
+        assertTrue(open <= 3.75 + 1e-9, "nie ueber die gepinnte Huelle")
+    }
+
+    /**
+     * DIE POSITIVKONTROLLE des Schalters: dieselbe Lage mit Schalter AUS ist
+     * exakt der 18:19-Fehler - Insulin fliesst in den Fall. Sie beweist
+     * beides zugleich: der Default ist dosierneutral, und der Aufbau
+     * erreicht wirklich den Mechanismus.
+     */
+    @Test
+    fun `P6 Fall 1b - Schalter aus ist der alte Fehler und bleibt dosierneutral`(@TempDir dir: File) {
+        punkt6Lage(dir)
+        aufschubAn = false
+        var summe = 0.0
+        var withheld = 0.0
+        repeat(24) {
+            val o = cycle()
+            summe += o.decision.smbU
+            withheld += o.deferredPrimeWithheldU
+            assertTrue(o.decision.block != FuseController.Block.MARKER_PRIME_DEFERRED)
+        }
+        assertTrue(summe > 0.2, "ohne Schalter fliesst markerautorisiertes Insulin in den Fall: $summe U")
+        assertEquals(0.0, withheld, 1e-9)
+    }
+
+    /** Replay-Fall 2 (14:21/08:59): kein unnoetiger Aufschub beim langsamen Fall. */
+    @Test
+    fun `P6 Fall 2 - der langsame Fall mit fernem Boden wird nicht aufgeschoben`(@TempDir dir: File) {
+        punkt6Lage(dir)
+        // Die 08:59-Form: Boden erst in ~67 min - jenseits des 60er-Horizonts.
+        flach = 100.0
+        steigungProMin = -0.45
+        // Wie am 08:59 gemessen: die Rate klingt ab, der Boden bleibt fern.
+        knickAbMin = 10
+        steigungNachKnick = -0.05
+        bolusIobU = 1.2
+        var summe = 0.0
+        var withheld = 0.0
+        repeat(20) {
+            val o = cycle()
+            summe += o.decision.smbU
+            withheld += o.deferredPrimeWithheldU
+        }
+        assertEquals(0.0, withheld, 1e-9, "kein Fehlaufschub im Gutfall")
+        assertTrue(summe > 0.3, "das Prime fliesst wie bisher: $summe U")
+    }
+
+    /** Replay-Fall 3: Erholung -> kontrollierte Freigabe, kein Burst. */
+    @Test
+    fun `P6 Fall 3 - nach bestaetigter Erholung kommt hoechstens ein Schritt je Zyklus`(@TempDir dir: File) {
+        punkt6Lage(dir)
+        knickAbMin = 15
+        steigungNachKnick = 1.5
+        var releasedSum = 0.0
+        var releaseZyklen = 0
+        var vorher = Double.MAX_VALUE
+        val denials = mutableListOf<String?>()
+        repeat(45) {
+            val o = cycle()
+            assertTrue(
+                o.deferredPrimeReleasedU <= 0.05 + 1e-9,
+                "hoechstens EIN Pumpenschritt je Zyklus: " + o.deferredPrimeReleasedU,
+            )
+            if (o.deferredPrimeReleasedU > 0.0) {
+                releaseZyklen++
+                releasedSum += o.deferredPrimeReleasedU
+                assertTrue(
+                    o.deferredPrimeOpenU < vorher,
+                    "jede Freigabe verkleinert den offenen Betrag",
+                )
+            }
+            if (o.deferredPrimeOpenU > 0.0 || o.deferredPrimeReleasedU > 0.0) vorher = o.deferredPrimeOpenU
+            denials.add(o.deferredPrimeDenial)
+        }
+        assertTrue(releaseZyklen >= 3, "die Freigabe muss wirklich gelaufen sein: $releaseZyklen Zyklen, Denials: $denials")
+        assertTrue(releasedSum > 0.1, "und messbar geliefert haben: $releasedSum U")
+    }
+
+    /** Replay-Fall 4: keine Erholung bis zur Frist -> Rest verfaellt typisiert. */
+    @Test
+    fun `P6 Fall 4 - ohne Erholung verfaellt der Rest sichtbar an der gepinnten Frist`(@TempDir dir: File) {
+        punkt6Lage(dir, fristMin = 45)
+        // Nach dem ersten Fall nur noch ein Drift: nie drei Erholungszyklen.
+        knickAbMin = 20
+        steigungNachKnick = -0.05
+        var lapseReason: String? = null
+        var lapseU = 0.0
+        var openDavor = 0.0
+        repeat(55) {
+            val o = cycle()
+            if (o.deferredPrimeLapseReason == "EXPIRED" && lapseReason == null) {
+                lapseReason = o.deferredPrimeLapseReason
+                lapseU = o.deferredPrimeLapseU
+            }
+            if (o.deferredPrimeOpenU > 0.0) openDavor = o.deferredPrimeOpenU
+            assertEquals(0.0, o.deferredPrimeReleasedU, 1e-9, "ohne bestaetigte Erholung keine Freigabe")
+        }
+        assertEquals("EXPIRED", lapseReason, "der Verfall MUSS typisiert im Trail stehen")
+        assertTrue(lapseU > 0.0, "und die verfallene Menge beziffern: $lapseU")
+        assertEquals(openDavor, lapseU, 1e-9, "verfallen ist genau der zuletzt offene Betrag")
+    }
+
+    /** Replay-Fall 5: normale/manuelle Lieferung reduziert denselben offenen Betrag. */
+    @Test
+    fun `P6 Fall 5 - ein manueller Bolus nach Erholung verkleinert den offenen Betrag`(@TempDir dir: File) {
+        punkt6Lage(dir)
+        knickAbMin = 15
+        steigungNachKnick = 1.5
+        var openVorBolus = 0.0
+        repeat(28) {
+            val o = cycle()
+            if (o.deferredPrimeOpenU > 0.0) openVorBolus = o.deferredPrimeOpenU
+        }
+        assertTrue(openVorBolus > 0.15, "der Aufbau braucht einen nennenswerten offenen Betrag: $openVorBolus")
+        // Manueller NORMAL-Bolus NACH dem Marker: zehrt von derselben Huelle.
+        boluses = listOf(BS(timestamp = clock, amount = 1.0, type = BS.Type.NORMAL))
+        val o = cycle()
+        // POOL-MATHEMATIK (Vertraege 6+7): der manuelle Bolus zehrt zuerst
+        // die freie Huelle auf und drueckt DANN den offenen Aufschub -
+        // openNach = min(openVor, Resthuelle - 1,0). Ein Betrag, der nicht
+        // sinkt, waere der Fehler; um WIE viel er sinkt, haengt an der
+        // freien Huelle des Aufbaus.
+        assertTrue(
+            o.deferredPrimeOpenU < openVorBolus - 1e-9,
+            "der manuelle Bolus MUSS den offenen Betrag druecken: " +
+                openVorBolus + " -> " + o.deferredPrimeOpenU,
+        )
+        assertTrue(
+            o.deferredPrimeOpenU + 1.0 <= openVorBolus + 0.8 + 1e-9,
+            "und zwar um mindestens den Teil des Bolus, der nicht mehr in die freie Huelle passt",
+        )
+    }
+
+    /** Replay-Fall 6: Neustart vor und nach der Erholung - identisches Budget, identische Frist. */
+    @Test
+    fun `P6 Fall 6 - der Neustart aendert weder Budget noch Frist`(@TempDir dir: File) {
+        val ledger = punkt6Lage(dir)
+        knickAbMin = 15
+        steigungNachKnick = 1.5
+        var openVor = 0.0
+        var deadlineVor = 0L
+        // 18 Zyklen: Fall (Aufschub waechst), dann drei Minuten Anstieg -
+        // NOCH ohne bestaetigte Erholung, also eingefrorener Zustand.
+        repeat(18) {
+            val o = cycle()
+            if (o.deferredPrimePinnedForTs > 0L) {
+                openVor = o.deferredPrimeOpenU
+                deadlineVor = o.deferredPrimeDeadlineTs
+            }
+        }
+        assertTrue(openVor > 0.0, "vor dem Neustart muss etwas offen sein")
+        assertTrue(deadlineVor > 0L)
+
+        // Im Geruest laeuft die Publikation (und damit der zyklische
+        // Persist) nicht - versiegeln wie am Zyklusende des Plugins.
+        assertTrue(ledger.persistVerified(dir), "der Zustand muss versiegelt werden")
+
+        // ERST DIE DATEI: der durable Zustand traegt Budget und Frist.
+        val durabel = nachNeustart(dir).deferredPrime
+        assertEquals(openVor, durabel.openU, 1e-9, "identisches Budget in der Datei")
+        assertEquals(deadlineVor, durabel.deadlineTs, "identische gepinnte Frist in der Datei")
+
+        // NEUSTART MITTEN IM AUFSCHUB: gleicher Ordner, gleiche Epoche.
+        neuerRunner(FuseLedgerAdapter().also { it.loadOnce(dir, "test-epoch", clock) })
+        var openNach = -1.0
+        var deadlineNach = 0L
+        var horizonNach = 0
+        var gepinnteZyklen = 0
+        repeat(8) {
+            val o = cycle()
+            if (o.deferredPrimePinnedForTs > 0L) {
+                gepinnteZyklen++
+                if (openNach < 0.0) {
+                    // Der ERSTE gepinnte Zyklus nach dem Neustart traegt den
+                    // wiederhergestellten Zustand, bevor neue Buchungen laufen.
+                    openNach = o.deferredPrimeOpenU
+                    deadlineNach = o.deferredPrimeDeadlineTs
+                    horizonNach = o.deferredPrimeHorizonMin
+                }
+            }
+            // Ein Neustart belegt KEINE Erholung: die drei Zyklen werden neu
+            // verdient. Erst ab dem dritten gepinnten Zyklus darf wieder
+            // etwas nachlaufen - fruehere Freigabe waere Vertragsbruch 4.
+            if (gepinnteZyklen < 3) assertEquals(
+                0.0, o.deferredPrimeReleasedU, 1e-9,
+                "keine Freigabe vor neu verdienter Erholung",
+            )
+        }
+        assertEquals(openVor, openNach, 1e-9, "identisches Budget nach dem Neustart")
+        assertEquals(deadlineVor, deadlineNach, "identische gepinnte Frist")
+        assertEquals(60, horizonNach, "identischer gepinnter Horizont")
+    }
+
+    /** Replay-Fall 7: neues gemessenes Risiko waehrend der Nachlieferung stoppt sofort. */
+    @Test
+    fun `P6 Fall 7 - ein neuer Fall stoppt die Nachlieferung sofort`(@TempDir dir: File) {
+        punkt6Lage(dir)
+        knickAbMin = 15
+        // Flache Erholung: die Kandidaten des Anstiegs sollen den Pool nicht
+        // schon VOR dem neuen Fall leeren (Vertrag 6 laesst sie zehren).
+        steigungNachKnick = 0.8
+        knick2AbMin = 28
+        steigungNachKnick2 = -2.5
+        var releasesVorKnick2 = 0
+        var releasesNachRisiko = 0
+        var openBeiRisiko = -1.0
+        var risikoGesehen = false
+        repeat(55) { i ->
+            val o = cycle()
+            val minute = i + 1
+            if (minute < 28 && o.deferredPrimeReleasedU > 0.0) releasesVorKnick2++
+            if (minute >= 32) {
+                // Spaetestens vier Minuten nach dem zweiten Knick ist der
+                // Fall gemessen - ab da darf NICHTS mehr nachlaufen.
+                if (o.deferredPrimeOpenU > 0.0) {
+                    risikoGesehen = true
+                    if (openBeiRisiko < 0.0) openBeiRisiko = o.deferredPrimeOpenU
+                    if (o.deferredPrimeReleasedU > 0.0) releasesNachRisiko++
+                    // KEIN Einfrieren behaupten: andere Lieferungen desselben
+                    // Pools duerfen ihn weiter DRUECKEN (Vertrag 6). Er darf
+                    // nur nie wachsen und nie ueber Freigaben schrumpfen.
+                    assertTrue(
+                        o.deferredPrimeOpenU <= openBeiRisiko + 1e-9,
+                        "im neuen Fall waechst nichts nach",
+                    )
+                    openBeiRisiko = o.deferredPrimeOpenU
+                }
+            }
+        }
+        assertTrue(releasesVorKnick2 >= 2, "vor dem neuen Fall muss die Nachlieferung gelaufen sein")
+        assertTrue(risikoGesehen, "der Aufbau muss den neuen Fall mit offenem Rest erreichen")
+        assertEquals(0, releasesNachRisiko, "im neuen gemessenen Fall laeuft nichts nach")
     }
 
 }

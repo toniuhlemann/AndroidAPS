@@ -329,6 +329,26 @@ class EpisodeBudgets {
     var descentDeferredPhaseAU: Double = 0.0
 
     /**
+     * DER MARKER-PRIME-AUFSCHUB (Punkt 6, Toni 22.08.) - restartfest, mit
+     * BEIM MARKER gepinntem Horizont und gepinnter Ablauffrist. Offen heisst
+     * AUTORISIERT, nicht versprochen; der Verfall ist typisiert und bleibt
+     * fuer den Trail stehen. Getrennt von [descentDeferredPhaseAU]: jener
+     * ist ein Phase-A-BESTAND fuer Phase B, dieser ein zurueckgehaltener
+     * FLUSS mit eigener Frist, der auch NACH dem Fundamentfenster noch
+     * schrittweise fliessen darf.
+     */
+    var deferredPrime: app.aaps.fuse.core.controller.DeferredPrime.State =
+        app.aaps.fuse.core.controller.DeferredPrime.State()
+
+    /**
+     * Alles, was NACH dem Fundamentfenster unter einem gepinnten Aufschub
+     * floss - Teil der Vertraege 6+7: auch spaete normale SMBs und
+     * Freigabeschritte zehren von derselben gepinnten Huelle. Ohne diesen
+     * Zaehler saehe die Huellenrechnung nach dem Fenster nichts mehr.
+     */
+    var postFoundationDeliveredU: Double = 0.0
+
+    /**
      * Die Buchung DIESES Zyklus, solange die Publikation nicht feststeht.
      *
      * WARUM RESERVIEREN UND NICHT VERSCHIEBEN: der Runner belastet die

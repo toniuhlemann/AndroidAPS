@@ -26,7 +26,7 @@ class FuseStateExportTest {
     private val BUILD = FuseStateJson.Build("3.4.2.5+fuse1.0.2-toni", "abc1234", true)
 
     private val cfg = FuseCycleRunner.Config(
-        smbRatio = 0.2, smbRatioRise = 0.35, sharedMaxIobU = 7.0, riseRampLowR = 0.5, riseRampHighR = 2.0, bolusShareLambda = 1.0, onsetChannelEnabled = true, onsetEnvelopeU = 1.5, primeReleaseEnabled = true, primeWindowMin = 15, primeEnvelopeU = 1.2, maxSmbU = 0.3, guardFloorMgdl = 70.0, lowGateMinBenefitMgdl = 5.0, lowGateHorizonMin = 120.0, positiveDescentHorizonMin = 30.0, iobThPercent = 100,
+        smbRatio = 0.2, smbRatioRise = 0.35, sharedMaxIobU = 7.0, riseRampLowR = 0.5, riseRampHighR = 2.0, bolusShareLambda = 1.0, onsetChannelEnabled = true, onsetEnvelopeU = 1.5, primeReleaseEnabled = true, primeWindowMin = 15, primeEnvelopeU = 1.2, maxSmbU = 0.3, guardFloorMgdl = 70.0, lowGateMinBenefitMgdl = 5.0, lowGateHorizonMin = 120.0, positiveDescentHorizonMin = 30.0, deferredPrimeEnabled = false, markerPrimeDescentHorizonMin = 60.0, deferredPrimeEndMin = 120, iobThPercent = 100,
         releaseHorizonMin = 30, liabilityHorizonMin = 120, driveTauMin = 60, absorptionCreditWindowMin = 60, markerBoostMaxMin = 45, evidenceReboundOverrideMaxMin = 120, nightStartMin = 1380, nightEndMin = 420, nightDeadbandMgdl = 45.0, nightDeadbandEnabled = true, reboundDeadbandMgdl = 25.0, reboundDeadbandEnabled = true,
         driveLowerQuantilePct = 50, tailGuardEnabled = false, conditionalTailEnabled = true, markerAuthorized = false, mealFoundationEnabled = false, mealFoundationPhaseAShare = 1.0, mealFoundationEndMin = 60, tailFloorMgdl = 70.0, tailRecoveryU = 0.0, fastRestraintEnabled = true, endZeroWhenReasonGone = true,
     )
@@ -569,6 +569,62 @@ class FuseStateExportTest {
     }
 
     /**
+     * DIE DREI STELLGROESSEN DES MARKER-PRIME-AUFSCHUBS (v17, Punkt 6).
+     * Schalter, gepinnter Horizont und gepinnte Frist sind dosierwirksam in
+     * BEIDE Richtungen (zurueckhalten UND nachliefern) - Laeufe mit
+     * verschiedenen Stellungen duerfen nie denselben Regelstand tragen.
+     */
+    @Test
+    fun `die Aufschub-Stellgroessen aendern Politik und Export`() {
+        val h = FuseStateJson.hashOf(cfg)!!
+        assertTrue(
+            FuseStateJson.hashOf(cfg.copy(deferredPrimeEnabled = true)) != h,
+            "AUS und EIN sind zwei verschiedene Regler",
+        )
+        assertTrue(
+            FuseStateJson.hashOf(cfg.copy(markerPrimeDescentHorizonMin = 90.0)) != h,
+            "60 und 90 Minuten Marker-Horizont sind verschiedene Riegel",
+        )
+        assertTrue(
+            FuseStateJson.hashOf(cfg.copy(deferredPrimeEndMin = 60)) != h,
+            "120 und 60 Minuten Frist verfallen verschieden",
+        )
+        val pv = FuseStateJson.policyValues(cfg)
+        assertEquals(false, pv.getBoolean("deferredPrimeEnabled"))
+        assertEquals(60.0, pv.getDouble("markerPrimeDescentHorizonMin"), 1e-9)
+        assertEquals(120, pv.getInt("deferredPrimeEndMin"))
+    }
+
+    /** Der Aufschub steht IMMER als Objekt im Trail - auch der Verfall. */
+    @Test
+    fun `der Aufschub-Block traegt Zustand Freigabe und Verfall`() {
+        val j = record(
+            outcome().copy(
+                deferredPrimeOpenU = 0.85,
+                deferredPrimePinnedForTs = 111L,
+                deferredPrimeDeadlineTs = 222L,
+                deferredPrimeHorizonMin = 60,
+                deferredPrimeWithheldU = 0.15,
+                deferredPrimeReleasedU = 0.05,
+                deferredPrimeDenial = null,
+                deferredPrimeLapseReason = "EXPIRED",
+                deferredPrimeLapseU = 0.40,
+                deferredPrimeLapseTs = 333L,
+            ),
+        ).getJSONObject("deferredPrime")
+        assertEquals(0.85, j.getDouble("openU"), 1e-9)
+        assertEquals(111L, j.getLong("pinnedForTs"))
+        assertEquals(222L, j.getLong("deadlineTs"))
+        assertEquals(60, j.getInt("horizonMin"))
+        assertEquals(0.15, j.getDouble("withheldU"), 1e-9)
+        assertEquals(0.05, j.getDouble("releasedU"), 1e-9)
+        assertTrue(j.isNull("denial"))
+        assertEquals("EXPIRED", j.getString("lapseReason"))
+        assertEquals(0.40, j.getDouble("lapseU"), 1e-9)
+        assertEquals(333L, j.getLong("lapseTs"))
+    }
+
+    /**
      * UND DIE VERSION SELBST: der Bump auf 11 gehoert zur Aenderung.
      *
      * Ohne ihn traegt ein Lauf VOR dem Fundament-Umbau denselben Regelstand
@@ -581,11 +637,12 @@ class FuseStateExportTest {
         // v11 Mahlzeitenfundament, v12 die Frist des Rebound-Sonderrechts,
         // v13 der restartfeste Wiederfreigabe-Riegel nach gemessenem Fallen,
         // v14 der Sicherheitsaufschub, v15 der getrennte positive Horizont,
-        // v16 die zwei Low-Tor-Stellgroessen im Fingerprint.
+        // v16 die zwei Low-Tor-Stellgroessen im Fingerprint, v17 der
+        // Marker-Prime-Aufschub (Punkt 6).
         // DIESER TEST IST ABSICHTLICH STUR: er faellt bei jedem Bump um und
         // zwingt damit zu der Frage, ob die Aenderung wirklich dosierwirksam
         // war - ein stiller Bump waere so wertlos wie ein vergessener.
-        assertEquals(16, FuseStateJson.RULE_SET_VERSION)
+        assertEquals(17, FuseStateJson.RULE_SET_VERSION)
         assertTrue(
             FuseStateJson.hashOf(cfg)!!.isNotEmpty(),
             "und der Hash bleibt berechenbar",

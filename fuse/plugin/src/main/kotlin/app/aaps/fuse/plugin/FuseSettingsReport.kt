@@ -29,6 +29,9 @@ internal val fuseEinstellbareKeys: Set<String> = setOf(
     FuseDoubleKey.MealFoundationPhaseAShare.key,
     FuseIntKey.PrimeWindowMin.key,
     FuseIntKey.MealFoundationEndMin.key,
+    FuseBooleanKey.DeferredPrimeEnabled.key,
+    FuseDoubleKey.MarkerPrimeDescentHorizonMin.key,
+    FuseIntKey.DeferredPrimeEndMin.key,
     FuseDoubleKey.TailFloorMgdl.key,
     FuseDoubleKey.TailRecoveryU.key,
     FuseDoubleKey.NightDeadbandMgdl.key,
@@ -127,6 +130,12 @@ object FuseSettingsReport {
                     schalter(FuseBooleanKey.MealFoundationEnabled, "Mahlzeitenfundament"),
                     zahl(FuseDoubleKey.MealFoundationPhaseAShare, "Anteil Phase A", ""),
                     ganz(FuseIntKey.MealFoundationEndMin, "Fundament-Fenster", "min"),
+                    // Der Marker-Prime-Aufschub - aus demselben Grund drei
+                    // Zeilen: OB aufgeschoben wird, mit welchem gepinnten
+                    // Horizont und bis zu welcher gepinnten Frist.
+                    schalter(FuseBooleanKey.DeferredPrimeEnabled, "Marker-Prime-Aufschub"),
+                    zahl(FuseDoubleKey.MarkerPrimeDescentHorizonMin, "Marker-Horizont", "min"),
+                    ganz(FuseIntKey.DeferredPrimeEndMin, "Aufschub-Frist", "min"),
                 ),
                 "Dosierung und Grenzen" to listOf(
                     zahl(FuseDoubleKey.SmbRatio, "Anteil Korrektur", ""),

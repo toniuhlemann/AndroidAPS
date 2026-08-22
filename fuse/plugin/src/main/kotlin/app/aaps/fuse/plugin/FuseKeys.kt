@@ -225,6 +225,17 @@ enum class FuseDoubleKey(
      */
     PositiveDescentHorizonMin("fuse_positive_descent_horizon_min", 30.0, 15.0, 60.0),
 
+    /**
+     * Nahhorizont des Abwaertsriegels NUR fuer markerautorisiertes Insulin
+     * [min] (Punkt 6, Toni 22.08.). Reine Korrekturen behalten
+     * [PositiveDescentHorizonMin]; dieser Wert wird BEIM MARKER GEPINNT und
+     * gilt fuer dessen ganze Laufzeit. Der Replay der drei Markerfaelle:
+     * 60 schob am 21.08. 18:19 alle 1,20 U auf (Boden 36-61 min) und liess
+     * die Gutfaelle 14:21/08:59 unangetastet (Boden >= 63 min) - Marge nur
+     * 3-5 min bei n=3, darum konfigurierbar statt festgenagelt.
+     */
+    MarkerPrimeDescentHorizonMin("fuse_marker_prime_descent_horizon_min", 60.0, 30.0, 120.0),
+
     /** Totband der NACHT [mg/dl ueber Ziel]: darunter kein SMB im Nachtfenster.
      *  0 = aus. Ein erklaerter Marker hebt es auf (Toni 09.08.). */
     NightDeadbandMgdl("fuse_night_deadband_mgdl", 45.0, 0.0, 100.0),
@@ -279,6 +290,20 @@ enum class FuseIntKey(
      * ergaebe gar kein Phase-B-Fenster.
      */
     MealFoundationEndMin("fuse_meal_foundation_end_min", 60, 20, 180),
+
+    /**
+     * ABLAUFFRIST DES MARKER-PRIME-AUFSCHUBS [min ab Markerdruck]
+     * (Punkt 6, Toni 22.08.). Wird BEIM MARKER GEPINNT; nach Ablauf
+     * verfaellt der offene Rest sichtbar mit typisiertem Grund -
+     * "ueberlebt das Fundamentfenster" heisst ausdruecklich NICHT
+     * "bleibt unbegrenzt offen".
+     *
+     * STARTWERT AUS DEM REPLAY: die Erholungen der drei Abfall-Marker
+     * (20.08. 20:22, 21.08. 09:46, 21.08. 18:19) lagen 34-71 min nach dem
+     * Druck, die spaeteste Mahlzeitenankunft bei 67 min - 120 deckt alle mit
+     * Reserve und bleibt weit unter der 360-min-Evidenzepisode.
+     */
+    DeferredPrimeEndMin("fuse_deferred_prime_end_min", 120, 45, 240),
 
     /**
      * iobTH als PROZENT von maxIOB (Variante B, K2-C v0.2 §13).
@@ -561,6 +586,22 @@ enum class FuseBooleanKey(
      * Einschalten zu einer bewussten Entscheidung in zwei Schritten.
      */
     MealFoundationEnabled("fuse_meal_foundation_enabled", false),
+
+    /**
+     * DER MARKER-PRIME-AUFSCHUB - DEFAULT AUS (Punkt 6, Bau-GO Toni 22.08.,
+     * KEIN Aktivierungs-GO).
+     *
+     * DOSIERWIRKSAM in beide Richtungen: eingeschaltet haelt er
+     * markerautorisiertes Insulin bei gemessenem, ueberdecktem Fall mit
+     * Boden im gepinnten [FuseDoubleKey.MarkerPrimeDescentHorizonMin]
+     * zurueck (statt es zu liefern) und gibt den offenen Rest nach
+     * bestaetigter Erholung mit hoechstens EINEM Pumpenschritt je Zyklus
+     * wieder frei - bis zur gepinnten Frist
+     * [FuseIntKey.DeferredPrimeEndMin], danach verfaellt er sichtbar.
+     * Er schuetzt NUR gegen Liefern in den gemessenen Fall; eine zu grosse
+     * Huelle bei flachem oder steigendem BG bleibt moeglich.
+     */
+    DeferredPrimeEnabled("fuse_deferred_prime_enabled", false),
 
     MarkerAuthorisesRelease("fuse_marker_authorises_low", false),
 

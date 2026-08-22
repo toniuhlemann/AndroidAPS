@@ -672,6 +672,11 @@ class MarkerAuthorizationTest {
             // Prognose. Deshalb ist er NICHT der Fall von GUARD_FLOOR, der
             // bewusst hebbar bleibt (Toni 19.08., P0).
             FuseController.Block.MEASURED_DESCENT_RISK,
+            // MARKER_PRIME_DEFERRED ist derselbe gemessene Grund fuer den
+            // markerfinanzierten Anteil (Punkt 6): der Aufschub entsteht
+            // gerade daraus, dass die Autorisierung nicht liefern darf -
+            // sie darf sich nicht selbst wieder heben.
+            FuseController.Block.MARKER_PRIME_DEFERRED,
             FuseController.Block.HEALTH_NOT_READY,
             FuseController.Block.HORIZON_MISSING,
             FuseController.Block.NO_INPUT,

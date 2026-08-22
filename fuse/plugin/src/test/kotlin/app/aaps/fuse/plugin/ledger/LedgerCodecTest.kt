@@ -959,4 +959,35 @@ class LedgerCodecTest {
         o.getJSONObject("episodes").getJSONObject("evidenceState").put("stockMgdl", -1.0)
         assertThrows(IllegalArgumentException::class.java) { LedgerCodec.decode(JSONObject(o.toString())) }
     }
+
+    /** Punkt 6 / Replay-Fall 6: Budget UND Frist ueberleben den Codec. */
+    @Test
+    fun `der Marker-Prime-Aufschub ueberlebt den Codec mit Budget und Frist`() {
+        val ep = EpisodeBudgets().apply {
+            deferredPrime = app.aaps.fuse.core.controller.DeferredPrime.State(
+                openU = 2.0, pinnedForMarkerTs = t0,
+                deadlineTs = t0 + 120 * 60_000L, horizonMin = 60,
+            )
+            postFoundationDeliveredU = 0.35
+        }
+        val decoded = LedgerCodec.decode(
+            JSONObject(LedgerCodec.encode(LedgerState(), ep, 0L, InterventionStamp("test-epoche", 42L)).toString()),
+        ).episodes
+        assertEquals(2.0, decoded.deferredPrime.openU, 1e-9)
+        assertEquals(t0, decoded.deferredPrime.pinnedForMarkerTs)
+        assertEquals(t0 + 120 * 60_000L, decoded.deferredPrime.deadlineTs)
+        assertEquals(60, decoded.deferredPrime.horizonMin)
+        assertEquals(0.35, decoded.postFoundationDeliveredU, 1e-9)
+    }
+
+    /** Eine Altdatei ohne Aufschub liest sich als "kein Aufschub". */
+    @Test
+    fun `Altdatei ohne Aufschub bleibt konservativ leer`() {
+        val roh = LedgerCodec.encode(LedgerState(), EpisodeBudgets(), 0L, InterventionStamp("test-epoche", 42L)).toString()
+        val ohne = JSONObject(roh).also { it.remove("deferredPrime") }
+        val decoded = LedgerCodec.decode(ohne).episodes
+        assertEquals(0.0, decoded.deferredPrime.openU, 1e-9)
+        assertEquals(0L, decoded.deferredPrime.pinnedForMarkerTs)
+    }
+
 }

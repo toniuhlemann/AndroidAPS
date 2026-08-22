@@ -26,6 +26,7 @@ import app.aaps.fuse.core.controller.EpisodeDeadline
 import app.aaps.fuse.core.controller.FuseController
 import app.aaps.fuse.core.controller.LedgerHoldGate
 import app.aaps.fuse.core.controller.LowThreatGate
+import app.aaps.fuse.core.controller.DeferredPrime
 import app.aaps.fuse.core.controller.MarkerScope
 import app.aaps.fuse.core.controller.NightWindow
 import app.aaps.fuse.core.controller.SubStepAccumulator
@@ -623,6 +624,20 @@ class FuseCycleRunner(
         val descentLatchActive: Boolean = false,
         val descentLatchReason: String? = null,
         val descentRecoveryCycles: Int = 0,
+        // ---- Punkt 6: der Marker-Prime-Aufschub, vollstaendig im Trail ----
+        val deferredPrimeOpenU: Double = 0.0,
+        val deferredPrimePinnedForTs: Long = 0L,
+        val deferredPrimeDeadlineTs: Long = 0L,
+        val deferredPrimeHorizonMin: Int = 0,
+        /** In DIESEM Zyklus zurueckgehalten / freigegeben. */
+        val deferredPrimeWithheldU: Double = 0.0,
+        val deferredPrimeReleasedU: Double = 0.0,
+        /** Warum KEINE Freigabe (typisiert) - null, wenn freigegeben wurde
+         *  oder die Frage sich in diesem Zyklus nicht stellte. */
+        val deferredPrimeDenial: String? = null,
+        val deferredPrimeLapseReason: String? = null,
+        val deferredPrimeLapseU: Double = 0.0,
+        val deferredPrimeLapseTs: Long = 0L,
         val descentLatchedAtTs: Long = 0L,
         /** KUMULATIV in dieser Episode publiziertes Insulin [U] - die
          *  Bezahlseite des Stoerungsbestands. Laeuft bis EXPIRED weiter,
@@ -1992,6 +2007,37 @@ class FuseCycleRunner(
             if (markerTs > 0L && markerTs <= computeTs &&
                 markerTs == episodes.markerReboundOverridePinnedFor
             ) episodes.markerReboundOverrideDeadlineTs else 0L
+
+        // ---- PUNKT 6: AUFSCHUB PINNEN / AUFRAEUMEN (Toni 22.08.) ---------
+        //
+        // DIESELBE Identitaetsdisziplin wie beim Rebound-Sonderrecht: gepinnt
+        // wird nur ein in DIESEM Prozess beobachteter Druck. Horizont und
+        // Frist frieren beim Pinnen ein (Vertrag 2). Ein neuer Marker laesst
+        // einen offenen Rest des alten SICHTBAR verfallen; ein Widerruf und
+        // das Ausschalten ebenso - nichts verschwindet stumm (Vertraege 8+10).
+        if (!cfg.deferredPrimeEnabled) {
+            if (episodes.deferredPrime.pinnedForMarkerTs > 0L)
+                episodes.deferredPrime = DeferredPrime.lapse(
+                    episodes.deferredPrime, DeferredPrime.LapseReason.DISABLED, computeTs,
+                )
+        } else if (markerTs > 0L && markerTs <= computeTs && markerPressObserved() == markerTs) {
+            if (episodes.deferredPrime.pinnedForMarkerTs != markerTs) {
+                episodes.deferredPrime = DeferredPrime.pin(
+                    episodes.deferredPrime, markerTs,
+                    horizonMin = cfg.markerPrimeDescentHorizonMin.toInt(),
+                    endMin = cfg.deferredPrimeEndMin,
+                )
+                episodes.postFoundationDeliveredU = 0.0
+            }
+        } else if (episodes.deferredPrime.pinnedForMarkerTs > 0L && markerTs <= 0L) {
+            // RUECKNAHME (Vertrag 8): der Marker selbst ist weg. Bewusst NICHT
+            // an `creditRevoked` gekoppelt - das Flag entsteht auch als
+            // Neustart-Artefakt und haette Budget und Frist entgegen
+            // Replay-Fall 6 geraeumt.
+            episodes.deferredPrime = DeferredPrime.lapse(
+                episodes.deferredPrime, DeferredPrime.LapseReason.REVOKED, computeTs,
+            )
+        }
         val reboundOverrideErlaubt = NightWindow.evidenceMayOverrideRebound(
             evidenceCreditActive = evidenzKredit > 0.0,
             deadlineTs = reboundOverrideDeadlineTs,
@@ -2685,7 +2731,109 @@ class FuseCycleRunner(
         // ausschliesslich Ergebnis der Nutzenpruefung - "Basal zurueckhalten
         // hilft nicht mehr" und "mehr Bolus ist sicher" sind zwei
         // verschiedene Aussagen, und ihre Vermischung war der Befund.
-        val decision = MeasuredDescentGate.apply(vorRiegel, descentLatch.blocksPositive)
+        val nachRiegel = MeasuredDescentGate.apply(vorRiegel, descentLatch.blocksPositive)
+
+        // ---- PUNKT 6: DER MARKER-PRIME-AUFSCHUB (Toni 22.08.) ------------
+        //
+        // NACH dem 30er-Endriegel, VOR der Publikation - dieselbe Stelle,
+        // an der keine Autorisierung mehr etwas heben kann. Zwei Seiten:
+        //
+        //   ZURUECKHALTEN: ist der gepinnte lange Horizont verletzt
+        //   (gemessen fallend, ueberdeckt, Boden nah), geht der
+        //   MARKERFINANZIERTE Anteil nicht hinaus, sondern in den offenen
+        //   Aufschub. Die reine Korrekturbasis behaelt den 30er-Riegel und
+        //   bleibt unangetastet (Vertrag 1).
+        //
+        //   FREIGEBEN: nach bestaetigter Erholung hoechstens EIN
+        //   Pumpenschritt je Zyklus, und auch der nur mit bestandener
+        //   Wirkungspruefung (finalVeto) - der Aufschub ist Autorisierung,
+        //   keine Schuld (Vertraege 3-5).
+        episodes.deferredPrime = DeferredPrime.expireIfDue(episodes.deferredPrime, computeTs)
+        val deferredHullRestU = deferredHullRemainingU(episodes, manualBolusAfterMarkerU)
+        val deferredPinnedActive = cfg.deferredPrimeEnabled &&
+            episodes.deferredPrime.pinnedForMarkerTs > 0L &&
+            episodes.deferredPrime.pinnedForMarkerTs == markerTs
+        val risk60 = if (!deferredPinnedActive) null else LowThreatGate.measuredDescentRisk(
+            signalHealthy = step.health == Health.READY,
+            bgMgdl = signal.q1,
+            fallRatePerMin = signal.ukfRatePerMin,
+            bolusIobU = (iobTotal.iob - iobTotal.basaliob).takeIf { iobTotal.valid },
+            isfMgdlPerU = isf,
+            guardFloorMgdl = cfg.guardFloorMgdl,
+            horizonMin = episodes.deferredPrime.horizonMin.toDouble(),
+        )
+        var deferredWithheldU = 0.0
+        var deferredReleaseU = 0.0
+        var deferredDenial: String? = null
+        // Bestaetigte Erholung (Vertrag 4): DIESELBE Rate wie die
+        // Latch-Erholung, drei Zyklen in Folge, Risiko setzt zurueck.
+        deferredRecoveryStreak = when {
+            risk60?.active == true || descentRisk.active -> 0
+            step.health != Health.READY -> 0
+            !signal.ukfRatePerMin.isFinite() ||
+                signal.ukfRatePerMin < DescentRecoveryLatch.RECOVERY_RATE_MGDL_PER_MIN -> 0
+            else -> minOf(deferredRecoveryStreak + 1, DescentRecoveryLatch.REQUIRED_CONSECUTIVE_CYCLES)
+        }
+        val decision = if (deferredPinnedActive && risk60?.active == true && nachRiegel.smbU > 0.0) {
+            // Der markerfinanzierte Anteil ist alles OBERHALB der reinen
+            // Basis - und auch die Basis nur, wenn ihr Guard nicht selbst
+            // vom Marker gehoben wurde (dann ist sie nicht "rein").
+            val reineBasisU = if (vetted.smbU > 0.0 && !vetted.bindingLimit.contains("markerAuth"))
+                kotlin.math.min(vetted.smbU, nachRiegel.smbU) else 0.0
+            val markerFinanziertU = kotlin.math.max(0.0, nachRiegel.smbU - reineBasisU)
+            if (markerFinanziertU <= 0.0) nachRiegel else {
+                episodes.deferredPrime = DeferredPrime.withhold(
+                    episodes.deferredPrime, markerFinanziertU, deferredHullRestU,
+                )
+                deferredWithheldU = markerFinanziertU
+                if (reineBasisU > 0.0) nachRiegel.copy(
+                    smbU = reineBasisU,
+                    bindingLimit = nachRiegel.bindingLimit + "|deferredPrime",
+                ) else nachRiegel.copy(
+                    smbU = 0.0,
+                    block = FuseController.Block.MARKER_PRIME_DEFERRED,
+                    bindingLimit = "deferredPrime",
+                    unsafeSituation = true,
+                )
+            }
+        } else {
+            val frei = DeferredPrime.releaseStep(
+                state = episodes.deferredPrime,
+                nowTs = computeTs,
+                enabled = cfg.deferredPrimeEnabled,
+                activeMarkerTs = markerTs,
+                ledgerHold = ledgerView.hold,
+                latchBlocksPositive = descentLatch.blocksPositive,
+                recoveryConfirmed = deferredRecoveryStreak >= DescentRecoveryLatch.REQUIRED_CONSECUTIVE_CYCLES,
+                signalHealthy = step.health == Health.READY,
+                measuredLow = measuredLow,
+                reboundRaw = reboundRaw,
+                descentRiskActive = risk60?.active == true || descentRisk.active,
+                manualBolusAfterMarkerU = manualBolusAfterMarkerU,
+                pumpStepU = bolusStep,
+                hullRemainingU = deferredHullRestU,
+            )
+            deferredDenial = frei.denial?.name
+            when {
+                frei.stepU <= 0.0 -> nachRiegel
+                finalVeto(nachRiegel.smbU + frei.stepU) != null -> {
+                    deferredDenial = "VERIFY_FAILED"
+                    nachRiegel
+                }
+                else -> {
+                    deferredReleaseU = frei.stepU
+                    nachRiegel.copy(
+                        smbU = nachRiegel.smbU + frei.stepU,
+                        block = FuseController.Block.NONE,
+                        bindingLimit = nachRiegel.bindingLimit + "|deferredPrimeRelease",
+                        // Wie beim Sub-Step: die Anhebung geht ueber die
+                        // Kappen, die die Basis gerastert haben.
+                        caps = emptyList(),
+                        capsStage = "deferredRelease",
+                    )
+                }
+            }
+        }
         observeDescentDeferred(
             episodes = episodes,
             nowTs = computeTs,
@@ -2752,6 +2900,8 @@ class FuseCycleRunner(
         val buchung = buche(
             episodes, actuatedU, primeWindowOpen, onset.active, mealMarkerActive, signal.sourceTs,
             evidenceEpisodeId = evidenceEpisodeId, computeTs = computeTs,
+            deferredReleaseU = deferredReleaseU,
+            manualBolusAfterMarkerU = manualBolusAfterMarkerU,
         )
 
         // RESERVIERT, NICHT ENDGUELTIG (11.08.). Oben ist gegen das PUMPEN-Gate
@@ -2823,6 +2973,16 @@ class FuseCycleRunner(
             descentLatchReason = descentLatch.reason.name,
             descentRecoveryCycles = descentLatch.runtime.consecutiveRecoveryCycles,
             descentLatchedAtTs = descentLatch.state.latchedAtTs,
+            deferredPrimeOpenU = episodes.deferredPrime.openU,
+            deferredPrimePinnedForTs = episodes.deferredPrime.pinnedForMarkerTs,
+            deferredPrimeDeadlineTs = episodes.deferredPrime.deadlineTs,
+            deferredPrimeHorizonMin = episodes.deferredPrime.horizonMin,
+            deferredPrimeWithheldU = deferredWithheldU,
+            deferredPrimeReleasedU = deferredReleaseU,
+            deferredPrimeDenial = deferredDenial,
+            deferredPrimeLapseReason = episodes.deferredPrime.lastLapseReason?.name,
+            deferredPrimeLapseU = episodes.deferredPrime.lastLapseU,
+            deferredPrimeLapseTs = episodes.deferredPrime.lastLapseTs,
             preFoundationSmbU = preFoundationSmbU,
             preFoundationBlock = preFoundationBlock,
             preFoundationBindingLimit = preFoundationBindingLimit,
@@ -2931,6 +3091,24 @@ class FuseCycleRunner(
         )
     }
 
+    /**
+     * Vertrag 6+7 des Marker-Prime-Aufschubs: die GEPINNTE Huelle minus
+     * allem, was seit dem Marker floss - Fundamentphasen, Nachfenster UND
+     * manuelle NORMAL-Boli. Eine unlesbare Behandlungssicht ergibt 0
+     * (fail-closed: dann oeffnet und liefert der Aufschub nichts).
+     */
+    private fun deferredHullRemainingU(
+        episodes: app.aaps.fuse.plugin.ledger.EpisodeBudgets,
+        manualBolusAfterMarkerU: Double?,
+    ): Double {
+        val f = episodes.foundation
+        if (!f.valid) return 0.0
+        val manuell = manualBolusAfterMarkerU?.takeIf { it.isFinite() && it >= 0.0 } ?: return 0.0
+        val geliefert = episodes.deliveredPhaseAU + episodes.deliveredSinceHandoverU +
+            episodes.postFoundationDeliveredU + manuell
+        return kotlin.math.max(0.0, f.totalBudgetU - geliefert)
+    }
+
     private fun buche(
         episodes: app.aaps.fuse.plugin.ledger.EpisodeBudgets,
         actuatedU: Double,
@@ -2942,6 +3120,10 @@ class FuseCycleRunner(
         evidenceEpisodeId: Long,
         /** Der Zyklus - entscheidet ueber die Fundament-Phase. */
         computeTs: Long,
+        /** In DIESEM Zyklus als Aufschub-Freigabe angehobene Menge. */
+        deferredReleaseU: Double = 0.0,
+        /** Fuer die Huellenrechnung des Aufschubs - s. [deferredHullRemainingU]. */
+        manualBolusAfterMarkerU: Double? = null,
     ): Buchung {
         if (primeWindowOpen) episodes.primeSpentU += actuatedU
 
@@ -2968,6 +3150,24 @@ class FuseCycleRunner(
         // eine andere Lebensdauer hat (s. [EpisodeBudgets.deliveredPhaseAU]).
         if (phase == MealFoundation.Phase.PHASE_A)
             episodes.deliveredPhaseAU += actuatedU
+
+        // ---- Punkt 6: derselbe offene Gesamtbetrag (Vertraege 6+7) -------
+        // JEDE Lieferung unter einem gepinnten Aufschub zehrt von der
+        // gepinnten Huelle: Nachfenster-Mengen werden gezaehlt, ein
+        // publizierter Freigabeschritt wird abgebucht, und danach wird der
+        // offene Rest an die geschrumpfte Huelle geklemmt - ein normaler SMB
+        // verkleinert den Aufschub damit genauso wie die Freigabe selbst.
+        if (episodes.deferredPrime.pinnedForMarkerTs > 0L && actuatedU > 0.0) {
+            if (phase != MealFoundation.Phase.PHASE_A && phase != MealFoundation.Phase.PHASE_B)
+                episodes.postFoundationDeliveredU += actuatedU
+            episodes.deferredPrime = DeferredPrime.consume(
+                episodes.deferredPrime, kotlin.math.min(actuatedU, deferredReleaseU),
+            )
+            episodes.deferredPrime = DeferredPrime.clampToHull(
+                episodes.deferredPrime,
+                deferredHullRemainingU(episodes, manualBolusAfterMarkerU),
+            )
+        }
 
         // DER EVIDENZ-ZAEHLER: kumulativ ueber die GANZE Episode, alle
         // Kanaele, und bei Episodenwechsel zurueck auf 0. Er ist die
@@ -3335,6 +3535,15 @@ class FuseCycleRunner(
             descentLatchReason = descentLatch.reason.name,
             descentRecoveryCycles = descentLatch.runtime.consecutiveRecoveryCycles,
             descentLatchedAtTs = descentLatch.state.latchedAtTs,
+            // Punkt 6 laeuft nur im Hauptpfad; der Fallback exportiert den
+            // ZUSTAND (restartfest), aber haelt und liefert selbst nichts.
+            deferredPrimeOpenU = episodes.deferredPrime.openU,
+            deferredPrimePinnedForTs = episodes.deferredPrime.pinnedForMarkerTs,
+            deferredPrimeDeadlineTs = episodes.deferredPrime.deadlineTs,
+            deferredPrimeHorizonMin = episodes.deferredPrime.horizonMin,
+            deferredPrimeLapseReason = episodes.deferredPrime.lastLapseReason?.name,
+            deferredPrimeLapseU = episodes.deferredPrime.lastLapseU,
+            deferredPrimeLapseTs = episodes.deferredPrime.lastLapseTs,
             alarm = combined.alarm,
             bgMgdl = signal.q1,
             targetMgdl = target,
@@ -3527,6 +3736,13 @@ class FuseCycleRunner(
 
     private var subStepCarryU = 0.0
 
+    /** Punkt 6: zusammenhaengende gesunde Zyklen mit UKF >= der
+     *  Latch-Erholungsrate seit dem letzten aktiven Marker-Horizont-Risiko.
+     *  PROZESSLOKAL wie die Latch-Erholung: eine unbeobachtete Luecke oder
+     *  ein Neustart belegt keine Erholung - die drei Zyklen werden neu
+     *  verdient (konservativ: spaeter offen, nie frueher). */
+    private var deferredRecoveryStreak = 0
+
     /** Unter WELCHEN Bedingungen der Uebertrag entstanden ist - s. Aufrufstelle.
      *  `null` heisst: es gibt keinen Uebertrag, der eine Herkunft haette. */
     private var subStepCarryContext: String? = null
@@ -3673,6 +3889,11 @@ class FuseCycleRunner(
         val mealFoundationPhaseAShare: Double,
         /** Ende des Phase-B-Fensters [min ab Marker]. */
         val mealFoundationEndMin: Int,
+        /** Punkt 6: Schalter (default aus), gepinnter Marker-Horizont und
+         *  gepinnte Ablauffrist - s. [FuseBooleanKey.DeferredPrimeEnabled]. */
+        val deferredPrimeEnabled: Boolean,
+        val markerPrimeDescentHorizonMin: Double,
+        val deferredPrimeEndMin: Int,
         val primeWindowMin: Int,
         /** Die Null sofort verlassen, sobald ihr Schutzgrund weg ist. */
         val endZeroWhenReasonGone: Boolean,
@@ -3723,6 +3944,9 @@ class FuseCycleRunner(
         mealFoundationEnabled = preferences.get(FuseBooleanKey.MealFoundationEnabled),
         mealFoundationPhaseAShare = preferences.get(FuseDoubleKey.MealFoundationPhaseAShare),
         mealFoundationEndMin = preferences.get(FuseIntKey.MealFoundationEndMin),
+        deferredPrimeEnabled = preferences.get(FuseBooleanKey.DeferredPrimeEnabled),
+        markerPrimeDescentHorizonMin = preferences.get(FuseDoubleKey.MarkerPrimeDescentHorizonMin),
+        deferredPrimeEndMin = preferences.get(FuseIntKey.DeferredPrimeEndMin),
         // Ein ungesetzter Wert (0) ist kein Konfigurationsfehler, sondern ein
         // Speicher, der den Schluessel noch nicht kennt - dann gilt die
         // Vorgabe. Echte Fehlwerte faengt die Bereichspruefung darunter.

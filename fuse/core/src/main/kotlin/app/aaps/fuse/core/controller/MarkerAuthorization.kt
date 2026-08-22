@@ -99,6 +99,13 @@ object MarkerAuthorization {
             // Marker-Autorisierung noch 2,95 U hinaus.
             FuseController.Block.MEASURED_DESCENT_RISK -> false
 
+            // MARKER_PRIME_DEFERRED ist derselbe gemessene Grund, nur fuer
+            // den markerautorisierten Anteil mit dem laengeren gepinnten
+            // Horizont (Punkt 6): der Aufschub ENTSTEHT gerade daraus, dass
+            // die Autorisierung nicht liefern darf. Sie darf sich erst recht
+            // nicht selbst wieder heben.
+            FuseController.Block.MARKER_PRIME_DEFERRED -> false
+
             // Signal- und Zustandsfehler: der Zyklus weiss nicht, wo er steht.
             FuseController.Block.HEALTH_NOT_READY     -> false
             FuseController.Block.HORIZON_MISSING      -> false

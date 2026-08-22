@@ -46,6 +46,9 @@ object FuseController {
         Block.TAIL,
         Block.SAFETY_HOLD,
         Block.MEASURED_DESCENT_RISK,
+        // Punkt 6: der Aufschub entsteht NUR aus einer gemessenen
+        // Abwaertslage - nachgelagerte Logik darf sie nicht als sicher lesen.
+        Block.MARKER_PRIME_DEFERRED,
         Block.HEALTH_NOT_READY,
         Block.HORIZON_MISSING,
         Block.NO_INPUT,
@@ -340,6 +343,17 @@ object FuseController {
          * KEEP_CURRENT.
          */
         MEASURED_DESCENT_RISK,
+
+        /**
+         * MARKERAUTORISIERTES Insulin bei gemessenem, ueberdecktem Fall mit
+         * Boden im GEPINNTEN Prime-Horizont zurueckgehalten (Punkt 6,
+         * Toni 22.08.). Die Menge ist nicht weg: sie wandert als offener
+         * Aufschub in [DeferredPrime] und kommt nach bestaetigter Erholung
+         * schrittweise wieder - oder verfaellt sichtbar an der gepinnten
+         * Frist. Reine Korrekturen tragen diesen Block NIE; fuer sie gilt
+         * weiterhin [MEASURED_DESCENT_RISK] mit dem kurzen Horizont.
+         */
+        MARKER_PRIME_DEFERRED,
 
         /**
          * Der Commitment-Ledger meldet einen Vertragsbruch (holdActuation):
