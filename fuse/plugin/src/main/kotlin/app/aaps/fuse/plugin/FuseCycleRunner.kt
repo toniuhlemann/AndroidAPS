@@ -2177,11 +2177,12 @@ class FuseCycleRunner(
         }
         // ---- ADAPTIVE-DOWN ALS SCHATTEN (Toni 22.08.) --------------------
         //
-        // Einseitige BEDARFSSENKUNG: die Mittelbahn faellt auf min(r, fast),
-        // geklemmt an der bestehenden unteren Antriebskante, damit die
-        // Senkung nie zur Sicherheitsaussage wird. Guard, Tail und Bremsbahn
-        // laufen unveraendert auf dem PRODUKTIVEN Zeugnis - gesenkt wird nur,
-        // was der Regler FORDERT, nie, wovor er schuetzt.
+        // Einseitige BEDARFSSENKUNG: die Mittelbahn faellt auf min(r, fast).
+        // Der PRODUKTIVE Pfad bleibt bitgenau unangetastet; INNERHALB der
+        // Zeile ziehen untere und prior-freie Kante mit der Mittelbahn mit
+        // (Bandordnung), ihr Guard rechnet also auf der gesenkten Bahn und
+        // ist STRENGER als produktiv - Details und Messkonsequenz an der
+        // Senkung unten und im KDoc von [TurnResponseShadow.DownVariant].
         //
         // `vetted` ist die stufengleiche Referenz (Kandidat VOR Prime,
         // Fundament und Endriegel). Die drei Ausloeser teilen sich EINE

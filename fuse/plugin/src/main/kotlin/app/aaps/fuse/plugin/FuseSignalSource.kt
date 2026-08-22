@@ -149,17 +149,30 @@ class FuseSignalSource(
         val boundedBy: SignalWindow.Bound,
         val windowFromTs: Long,
         /** Beginn des juengsten LUECKENFREIEN Segments - Bezugspunkt der
-         *  BGI-Bereinigung. Ueber eine Segmentgrenze hinweg ist jede Differenz
-         *  der bereinigten Reihe wertlos, weil `cumulativeBgi` dort neu bei 0
-         *  beginnt; der Evidenzkern braucht ihn deshalb ausdruecklich und darf
-         *  ihn nicht aus `windowFromTs` raten. */
+         *  BGI-Bereinigung (die Rechnung selbst nutzt die lokale Variable in
+         *  [read]; seit dem 22.08. hat dieses FELD keinen Produktions-Leser
+         *  mehr - der fruehere Evidenzkern-Bezug ist am 12.08. entfallen,
+         *  die Ledger-Identitaet liest [signalEpochTs]). Es bleibt fuer
+         *  Tests und als dokumentierte GEGENGROESSE: wer hier je wieder eine
+         *  IDENTITAET anschliessen will, lese zuerst das KDoc von
+         *  [signalEpochTs] - diese Kante wandert mit jedem CGM-Wert. */
         val segmentStartTs: Long,
         /**
          * STABILE SIGNALEPOCHE (Toni 22.08.) - die Segment-IDENTITAET des
          * Erwartungs-Ledgers. Sie wechselt NUR bei einem echten Bruch:
-         * CGM-Luecke > 3 min, Sensor-/Kalibrierepoche, Input-Sprung oder
-         * Prozessneustart (der Filterzustand ist dann weg, Prognosen davor
-         * und danach sind nicht vergleichbar).
+         * CGM-Luecke > 3 min, Sensor-/Kalibrierepoche oder Input-Sprung.
+         *
+         * NEUSTART IST EINE HEURISTIK, KEINE GARANTIE (Review 22.08.): der
+         * frische Prozess leitet die Epoche aus dem CGM-Puffer neu ab. Liegt
+         * der juengste echte Bruch noch im Puffer - oder belegt der Puffer
+         * eine lueckenlose Reihe -, entsteht dieselbe Epoche wie vor dem
+         * Neustart, und Eintraege von davor koennen gegen Proben von danach
+         * abgerechnet werden. Das ist gewollt: die lueckenlose Reihe BEWEIST
+         * die Vergleichbarkeit (q1/Theil-Sen sind reine Funktionen des
+         * Puffers). Ein Neustart mit > 3 min Ausfall muenzt dagegen
+         * automatisch eine neue Epoche, weil die Wiederaufnahme selbst der
+         * Bruch ist. Wer offline "Neustart = immer neue Epoche" annimmt,
+         * liest den Trail falsch. Monotonie gilt JE INSTANZ, nicht global.
          *
          * AUSDRUECKLICH NICHT [segmentStartTs]: der ist im lueckenfreien
          * Normalfall die GLEITENDE Unterkante des 18-min-Fensters und wandert

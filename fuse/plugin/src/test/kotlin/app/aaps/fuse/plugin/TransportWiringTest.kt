@@ -4716,6 +4716,42 @@ class TransportWiringTest : TestBaseWithProfile() {
             1, danach.distinct().size,
             "und sie steht nach dem Bruch wieder still: ${danach.distinct()}",
         )
+
+        // DIE ROLLENDE PUFFERKANTE (Review 22.08., Major): jenseits des
+        // Lookbacks beschneidet die Quelle die Reihe an anchor - ~198 min,
+        // series.first() WANDERT dann jede Minute - exakt das Regime, in dem
+        // die alte Fensterkanten-Identitaet erkrankte. In den ersten beiden
+        // Abschnitten dieses Tests ist series.first() konstant `start`; ein
+        // unbedingtes Neusetzen der Epoche aus series.first() (die
+        // Regression) waere dort UNSICHTBAR. Erst hier, mit gerollter Kante
+        // und der Luecke bereits AUSSERHALB des Fensters, beisst die
+        // Zusicherung: die Epoche bleibt bei 41 min stehen, obwohl kein
+        // Bruchkandidat mehr in der Reihe liegt.
+        clock = start + 250 * 60_000L
+        val gerollt = mutableListOf<Long>()
+        var kante250 = 0L
+        repeat(25) {
+            val o = cycle()
+            o.signal?.let { gerollt.add(it.signalEpochTs); kante250 = it.windowFromTs }
+        }
+        assertTrue(gerollt.isNotEmpty())
+        assertTrue(
+            kante250 > start + 41 * 60_000L,
+            "der Aufbau muss die Kante wirklich ueber den Bruch hinaus gerollt haben: $kante250",
+        )
+        assertEquals(
+            start + 41 * 60_000L, gerollt.last(),
+            "die Epoche ueberlebt das Herausrollen ihres Bruchs aus dem Puffer",
+        )
+        assertEquals(
+            1, gerollt.distinct().size,
+            "und wandert nicht mit der rollenden Pufferkante: ${gerollt.distinct()}",
+        )
+        // GRENZE, ehrlich benannt: Sensor-/Kalibrierepochen und Input-Sprung
+        // (bound != NONE) sind im Rig auf AUS gepinnt und hier ungeprueft;
+        // ebenso bleibt der Neustart eine Heuristik (eine lueckenlos
+        // belegte Reihe darf die alte Epoche wiederherstellen - s. KDoc
+        // von signalEpochTs).
     }
 
     /**
