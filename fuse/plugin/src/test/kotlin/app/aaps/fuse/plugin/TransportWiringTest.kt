@@ -157,6 +157,13 @@ class TransportWiringTest : TestBaseWithProfile() {
     private var livenessAn = false
     private var livenessCapPct = 50.0
     private var livenessBgMin = 160.0
+
+    /** Nachtschwelle des Kanals; null = nie gesetzt -> folgt der Tagesschwelle. */
+    private var livenessBgMinNacht: Double? = null
+
+    /** Nachtfenster-Hebel (Default wie bisher fest verdrahtet). */
+    private var nachtStartMin = 1380
+    private var nachtEndeMin = 480
     private var livenessReArmMin = 10
 
     /** Steigung NACH dem Knick [mg/dl/min]. */
@@ -392,12 +399,13 @@ class TransportWiringTest : TestBaseWithProfile() {
         whenever(preferences.get(FuseIntKey.DeferredPrimeEndMin)).thenAnswer { aufschubFristMin }
         whenever(preferences.get(FuseBooleanKey.LivenessChannelEnabled)).thenAnswer { livenessAn }
         whenever(preferences.get(FuseDoubleKey.LivenessIobCapPercent)).thenAnswer { livenessCapPct }
-        whenever(preferences.get(FuseDoubleKey.LivenessBgMinMgdl)).thenAnswer { livenessBgMin }
+        whenever(preferences.get(FuseDoubleKey.LivenessBgMinDayMgdl)).thenAnswer { livenessBgMin }
+        whenever(preferences.getIfExists(FuseDoubleKey.LivenessBgMinNightMgdl)).thenAnswer { livenessBgMinNacht }
         whenever(preferences.get(FuseIntKey.LivenessReArmMin)).thenAnswer { livenessReArmMin }
         whenever(preferences.get(FuseIntKey.AbsorptionCreditWindowMin)).thenReturn(60)
         whenever(preferences.get(FuseIntKey.MarkerBoostMaxMin)).thenReturn(45)
-        whenever(preferences.get(FuseIntKey.NightStartMin)).thenReturn(1380)
-        whenever(preferences.get(FuseIntKey.NightEndMin)).thenReturn(480)
+        whenever(preferences.get(FuseIntKey.NightStartMin)).thenAnswer { nachtStartMin }
+        whenever(preferences.get(FuseIntKey.NightEndMin)).thenAnswer { nachtEndeMin }
         whenever(preferences.get(FuseDoubleKey.NightDeadbandMgdl)).thenReturn(45.0)
         whenever(preferences.get(FuseBooleanKey.NightDeadbandEnabled)).thenAnswer { nightDeadband }
         whenever(preferences.get(FuseDoubleKey.ReboundDeadbandMgdl)).thenReturn(25.0)
@@ -6322,44 +6330,33 @@ class TransportWiringTest : TestBaseWithProfile() {
     }
 
     /**
-     * Gegenprobe 5 - die MINIMALE P2-Scheinwende: der Drive knickt um nur
-     * 0,15 mg/dl/min (1,4 -> 1,25), Druck und Anstieg bleiben klar
-     * erhalten. Der magnitudenblinde P2-Exit beendet den Lauf trotzdem -
-     * das ist die DOKUMENTIERTE konservative Kante des Vertrags: eine
-     * Scheinwende kostet Verfuegbarkeit (Sperre), nie Sicherheit. Im
-     * rauschfreien Rig konvergiert der Drive danach asymptotisch weiter
-     * fallend, jede Wiederbewaffnung endet sofort wieder per P2 - deshalb
-     * ist hier KEIN spaeterer Hub zu erwarten (live bricht Messrauschen
-     * die strenge Monotonie): P2 wirkt symmetrisch auch als
-     * Bewaffnungssperre (TURN_STANDING) - ohne sie lieferte jeder
-     * Wiederanlauf genau einen Hub, bevor der Exit ihn wieder beendet
-     * (im Rig gesehen).
+     * Gegenprobe 5, INVERTIERT mit v21 (Codex 22.08. spaet): die MINIMALE
+     * Scheinwende - Drive-Knick um nur 0,15 mg/dl/min (1,4 -> 1,25,
+     * kumuliert UNTER der 0,20er-Magnitude der Schatten-Klassifikation),
+     * Druck und Anstieg bleiben klar erhalten - beendet den Lauf NICHT
+     * mehr. Genau diese Kante entwaffnete den Kanal live fuer zehn Minuten
+     * (22:53), obwohl die Abflachung eines weiterhin starken Anstiegs
+     * keine Wende ist. Der Kanal traegt die Abflachung durch; die
+     * DEUTLICHE Wende prueft weiterhin Fall 4.
      */
     @Test
-    fun `Liveness Gegenprobe - die minimale P2-Scheinwende beendet den Lauf`(@TempDir dir: File) {
+    fun `Liveness Gegenprobe - die minimale Scheinwende beendet den Lauf nicht mehr`(@TempDir dir: File) {
         livenessLage(dir)
         knick2AbMin = 24
         steigungNachKnick2 = 1.25
-        var exit: String? = null
-        var exitMin = -1
-        var liftVor = 0
-        var liftNachExit = 0
-        var turnStanding = false
+        var wendeExits = 0
+        var turnStanding = 0
+        var liftNachKnick = 0
         repeat(40) { i ->
             val minute = i + 1
             val o = cycle()
-            if (exitMin < 0 && o.livenessLiftU > 0.0) liftVor++
-            if (exitMin > 0 && o.livenessLiftU > 0.0) liftNachExit++
-            if (exitMin < 0 && o.livenessExit != null) { exit = o.livenessExit; exitMin = minute }
-            if (exitMin > 0 && o.livenessDenial == "TURN_STANDING") turnStanding = true
+            if (o.livenessExit == "TURN_EXIT") wendeExits++
+            if (o.livenessDenial == "TURN_STANDING") turnStanding++
+            if (minute > 26 && o.livenessLiftU > 0.0) liftNachKnick++
         }
-        assertTrue(liftVor >= 3, "vor der Scheinwende muss der Kanal geliefert haben: $liftVor")
-        assertEquals("TURN_EXIT", exit, "auch die minimale Scheinwende beendet den Lauf per P2")
-        // Obergrenze 30, nicht 31: TURN_STANDING ist erst nach Ablauf der
-        // 10-min-Sperre beobachtbar und braucht Platz im 40er-Budget.
-        assertTrue(exitMin in 25..30, "kurz hinter dem Knick: Minute $exitMin")
-        assertEquals(0, liftNachExit, "kein einziger Hub in die stehende Wende")
-        assertTrue(turnStanding, "die Bewaffnungssperre TURN_STANDING muss im Trail stehen")
+        assertEquals(0, wendeExits, "eine 0,15er-Abflachung ist keine bestaetigte Wende")
+        assertEquals(0, turnStanding, "und blockt auch keine Bewaffnung")
+        assertTrue(liftNachKnick >= 8, "der Kanal traegt die Abflachung durch: $liftNachKnick Hubs")
     }
 
     /**
@@ -6386,6 +6383,71 @@ class TransportWiringTest : TestBaseWithProfile() {
         assertEquals(0.0, o2.livenessLiftU, 1e-9)
     }
 
+
+    /**
+     * v20-Vertrag (Toni/Codex 22.08. spaet): getrennte Tag-/Nachtschwelle.
+     * Der regulaere Tag/Nacht-Wechsel ist KEIN CONFIG_CHANGED; ein Wechsel
+     * in die Nacht unter der neuen Schwelle beendet einen Lauf als
+     * DRUCKVERLUST ohne Sperre; eine Aenderung des KONFIGURIERTEN
+     * Nachtwerts beendet ihn dagegen sehr wohl (der Fingerprint traegt
+     * beide konfigurierten Werte, nie den wirksamen).
+     */
+    @Test
+    fun `Liveness v20 - Nachtschwelle wirkt im Nachtfenster ohne CONFIG_CHANGED`(@TempDir dir: File) {
+        livenessLage(dir)
+        // Erst NIE Nacht (Start == Ende), damit die Bewaffnung eindeutig
+        // unter der Tagesschwelle laeuft - der Rig-Startzeitpunkt laege
+        // sonst je nach Zeitzone mitten im Default-Nachtfenster.
+        nachtStartMin = 0
+        nachtEndeMin = 0
+        var aktiv = false
+        var quelleTag = false
+        repeat(22) { val o = cycle()
+            if (o.livenessActive) aktiv = true
+            if (o.livenessBgMinSource == "DAY") quelleTag = true
+        }
+        assertTrue(aktiv, "der Lauf muss unter der Tagesschwelle stehen")
+        assertTrue(quelleTag, "die Quelle DAY muss exportiert sein")
+        // Die Nachtschwelle ist von Beginn an KONFIGURIERT (250 = Maximum
+        // der Key-Grenzen; 400 wuerde die Migrations-Klammer als "nie
+        // gesetzt" verwerfen) - erst dadurch ist der Fenster-Wechsel unten
+        // eine reine Tag/Nacht-Frage ohne Fingerprint-Aenderung.
+        livenessBgMinNacht = 250.0
+        // Nacht AN (ganztags): der BG liegt unter der Nachtschwelle, der
+        // Lauf endet als DRUCKVERLUST - ohne Sperre. Der Fingerprint traegt
+        // beide KONFIGURIERTEN Werte und aendert sich beim Fensterwechsel
+        // nicht mehr... doch: die Nachtschwelle wurde soeben erst gesetzt
+        // (Fallback 160 -> 250). Deshalb EIN Verarbeitungszyklus dazwischen.
+        val cfgZyklus = cycle()
+        assertEquals("CONFIG_CHANGED", cfgZyklus.livenessExit, "das Setzen der Nachtschwelle ist ein Config-Wechsel")
+        // Wieder bewaffnen lassen (drei frische Zyklen unter Tag 160).
+        var wiederAktiv = false
+        repeat(5) { if (cycle().livenessActive) wiederAktiv = true }
+        assertTrue(wiederAktiv, "nach dem Config-Wechsel bewaffnet er neu")
+        nachtStartMin = 0
+        nachtEndeMin = 1439
+        val o1 = cycle()
+        assertEquals("PRESSURE_GONE", o1.livenessExit, "Nachteintritt unter der Schwelle = Druckverlust")
+        assertEquals("NIGHT", o1.livenessBgMinSource)
+        assertEquals(250.0, o1.livenessBgMinEffectiveMgdl ?: 0.0, 1e-9)
+        assertEquals(0L, o1.livenessReArmUntilTs, "ohne Sperre")
+        // Zurueck zum Tag: KEIN CONFIG_CHANGED, und die Bewaffnung beginnt
+        // sauber mit drei frischen Zyklen unter der niedrigeren Schwelle.
+        nachtStartMin = 0
+        nachtEndeMin = 0
+        var wiederAktivMin = -1
+        repeat(6) { i ->
+            val o = cycle()
+            assertTrue(o.livenessExit != "CONFIG_CHANGED", "Tag/Nacht-Wechsel ist kein CONFIG_CHANGED")
+            if (o.livenessActive && wiederAktivMin < 0) wiederAktivMin = i + 1
+        }
+        assertTrue(wiederAktivMin in 3..5, "drei frische Zyklen unter der Tagesschwelle: " + wiederAktivMin)
+        // Die Aenderung des KONFIGURIERTEN Nachtwerts beendet den Lauf.
+        livenessBgMinNacht = 170.0
+        val o2 = cycle()
+        assertEquals("CONFIG_CHANGED", o2.livenessExit)
+        assertEquals(0L, o2.livenessReArmUntilTs, "Config-Wechsel bleibt sperrfrei")
+    }
 
     /**
      * v19-Vertrag (Codex, Live-Trail 22:53-23:03): die Sperre NULLT den

@@ -91,8 +91,10 @@
     <string name="fuse_liveness_summary">Macht bei bestaetigtem, gemessen NICHT fallendem Hochdruck (BG ueber der einstellbaren Druck-Schwelle, r anhaltend positiv, Guard/Tail sperren) den bereits erkannten Mittelbahn-Bedarf dosierbar: final = max(normal, liveness), nie Addition. Tail ist in diesem Kanal weder Veto noch Mengenkappe. Kumulativ begrenzt durch die STRENGSTE Grenze aus Kanaldeckel, globalem iobTH und maxIOB. Gemessenes Fallen, Tief, Rebound und Hold stoppen sofort; nach jedem Exit gilt die Wiederbewaffnungs-Sperre.</string>
     <string name="fuse_liveness_cap_title">Kanaldeckel [% von maxIOB]</string>
     <string name="fuse_liveness_cap_summary">EIGENER Deckel des Liveness-Kanals - NICHT das globale iobTH (das wuerde auch Prime und Fundament bremsen). Die strengste Grenze gewinnt immer. 50 ist der konservative Startwert aus dem Replay; 60-70 sind spaetere Pruefkandidaten.</string>
-    <string name="fuse_liveness_bg_min_title">Druck-Schwelle [mg/dl]</string>
+    <string name="fuse_liveness_bg_min_title">Druck-Schwelle Tag [mg/dl]</string>
     <string name="fuse_liveness_bg_min_summary">BG-Schwelle der Druckbedingung: bewaffnet wird nur oberhalb. Default 160 als konservativer Startwert; die Therapieentscheidung faellt erst mit der Aktivierung. Eine Aenderung waehrend eines aktiven Laufs beendet ihn, und die Bestaetigungszyklen beginnen unter der neuen Schwelle neu.</string>
+    <string name="fuse_liveness_bg_min_night_title">Druck-Schwelle Nacht [mg/dl]</string>
+    <string name="fuse_liveness_bg_min_night_summary">Eigene, meist konservativere Schwelle im Nachtfenster (dasselbe Fenster wie das Nacht-Totband, aber unabhaengig von dessen Schalter). Solange sie NIE gesetzt wurde, folgt sie der Tagesschwelle - ein Update aendert nichts still. Tag/Nacht-Wechsel beendet keinen Lauf per CONFIG_CHANGED; faellt der BG beim Wechsel unter die neue Schwelle, endet ein Lauf als Druckverlust ohne Sperre.</string>
     <string name="fuse_liveness_rearm_title">Re-Arm-Sperre [min]</string>
     <string name="fuse_liveness_rearm_summary">Restartfeste Sperre nach jedem Kanal-Exit (Wende, harter Riegel, manuelle Intervention). Wirksamster Einzelhebel gegen Oszillations-Wiederbewaffnung; kostet dafuer Wieder-Anlauf nach kurzen Dellen.</string>
     <string name="fuse_deferred_prime_title">Marker-Prime-Aufschub</string>

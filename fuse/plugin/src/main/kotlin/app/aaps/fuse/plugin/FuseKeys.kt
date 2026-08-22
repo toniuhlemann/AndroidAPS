@@ -248,15 +248,29 @@ enum class FuseDoubleKey(
     LivenessIobCapPercent("fuse_liveness_iob_cap_percent", 50.0, 20.0, 90.0),
 
     /**
-     * BG-Schwelle der Druckbedingung des Liveness-Kanals [mg/dl].
+     * BG-Schwelle der Druckbedingung des Liveness-Kanals am TAG [mg/dl].
      *
-     * Toni 22.08.: nicht hart codieren. Default 160, weil der Kanal ohnehin
-     * AUS bleibt - die Therapieentscheidung (Toni tendiert live zu 140)
-     * faellt erst mit der Aktivierung. Untergrenze 100: unterhalb davon
-     * waere die Schwelle keine Hochdruck-Bedingung mehr, sondern hebelte
-     * den Zielbereich selbst.
+     * Toni 22.08.: nicht hart codieren. Untergrenze 100: darunter waere die
+     * Schwelle keine Hochdruck-Bedingung mehr, sondern hebelte den
+     * Zielbereich selbst. Seit v20 die TAGES-Haelfte des Paars; der
+     * SCHLUESSEL bleibt der alte Einzelwert-Schluessel, damit ein bereits
+     * eingestellter Wert das Update ueberlebt.
      */
-    LivenessBgMinMgdl("fuse_liveness_bg_min_mgdl", 160.0, 100.0, 250.0),
+    LivenessBgMinDayMgdl("fuse_liveness_bg_min_mgdl", 160.0, 100.0, 250.0),
+
+    /**
+     * BG-Schwelle der Druckbedingung in der NACHT [mg/dl] (v20, Toni/Codex
+     * 22.08. spaet): die Nacht darf konservativer beginnen - Profilziel +
+     * Nacht-Totband liegt bei ~143, eine eigene Nachtschwelle (Kandidat
+     * 160) greift auch dann, wenn das Totband ueberschritten oder
+     * entwaffnet ist. Rebound und gemessene Riegel bleiben unberuehrt.
+     *
+     * MIGRATION: solange dieser Schluessel NIE gesetzt wurde, folgt die
+     * Nachtschwelle zur Laufzeit der Tagesschwelle (getIfExists-Fallback im
+     * Config-Bau) - ein Update veraendert nichts still. Der Default hier
+     * greift nur fuer die Bildschirm-Anzeige vor dem ersten Setzen.
+     */
+    LivenessBgMinNightMgdl("fuse_liveness_bg_min_night_mgdl", 160.0, 100.0, 250.0),
 
     /** Totband der NACHT [mg/dl ueber Ziel]: darunter kein SMB im Nachtfenster.
      *  0 = aus. Ein erklaerter Marker hebt es auf (Toni 09.08.). */

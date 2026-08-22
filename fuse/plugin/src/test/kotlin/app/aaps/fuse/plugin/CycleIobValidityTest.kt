@@ -208,7 +208,7 @@ class CycleIobValidityTest : TestBaseWithProfile() {
         // Zyklus benannt abbrechen - deshalb hier echte Defaults.
         whenever(preferences.get(FuseBooleanKey.LivenessChannelEnabled)).thenReturn(false)
         whenever(preferences.get(FuseDoubleKey.LivenessIobCapPercent)).thenReturn(50.0)
-        whenever(preferences.get(FuseDoubleKey.LivenessBgMinMgdl)).thenReturn(160.0)
+        whenever(preferences.get(FuseDoubleKey.LivenessBgMinDayMgdl)).thenReturn(160.0)
         whenever(preferences.get(FuseIntKey.LivenessReArmMin)).thenReturn(10)
         whenever(preferences.get(LongKey.FslCalibrationStart)).thenReturn(-1L)
         whenever(preferences.get(FuseLongKey.MealMarkerStamp)).thenReturn(0L)

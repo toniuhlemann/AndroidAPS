@@ -34,7 +34,8 @@ internal val fuseEinstellbareKeys: Set<String> = setOf(
     FuseIntKey.DeferredPrimeEndMin.key,
     FuseBooleanKey.LivenessChannelEnabled.key,
     FuseDoubleKey.LivenessIobCapPercent.key,
-    FuseDoubleKey.LivenessBgMinMgdl.key,
+    FuseDoubleKey.LivenessBgMinDayMgdl.key,
+    FuseDoubleKey.LivenessBgMinNightMgdl.key,
     FuseIntKey.LivenessReArmMin.key,
     FuseDoubleKey.TailFloorMgdl.key,
     FuseDoubleKey.TailRecoveryU.key,
@@ -154,7 +155,23 @@ object FuseSettingsReport {
                     // mengenbasiert - seine Grenzen sind Dosiergrenzen.
                     schalter(FuseBooleanKey.LivenessChannelEnabled, "Liveness-Kanal"),
                     zahl(FuseDoubleKey.LivenessIobCapPercent, "Kanaldeckel", "%"),
-                    zahl(FuseDoubleKey.LivenessBgMinMgdl, "Druck-Schwelle", "mg/dl"),
+                    zahl(FuseDoubleKey.LivenessBgMinDayMgdl, "Druck-Schwelle Tag", "mg/dl"),
+                    // Die Nachtschwelle EHRLICH anzeigen: solange sie nie
+                    // gesetzt wurde, folgt sie zur Laufzeit der Tagesschwelle
+                    // (Lese-Migration v20) - der Bildschirm-Default 160 waere
+                    // dann eine Falschaussage.
+                    preferences.getIfExists(FuseDoubleKey.LivenessBgMinNightMgdl)
+                        ?.takeIf { it.isFinite() && it in FuseDoubleKey.LivenessBgMinNightMgdl.min..FuseDoubleKey.LivenessBgMinNightMgdl.max }
+                        .let { nacht ->
+                        FuseScreenModel.SettingRow(
+                            key = FuseDoubleKey.LivenessBgMinNightMgdl.key,
+                            label = "Druck-Schwelle Nacht",
+                            value = nacht?.let { "${f2(it)} mg/dl" }
+                                ?: "folgt Tag (${f2(preferences.get(FuseDoubleKey.LivenessBgMinDayMgdl))} mg/dl)",
+                            standard = nacht?.takeIf { abweicht(it, FuseDoubleKey.LivenessBgMinNightMgdl.defaultValue) }
+                                ?.let { "${f2(FuseDoubleKey.LivenessBgMinNightMgdl.defaultValue)} mg/dl" },
+                        )
+                    },
                     ganz(FuseIntKey.LivenessReArmMin, "Re-Arm-Sperre", "min"),
                 ),
                 "Schutz und Prognose" to listOf(

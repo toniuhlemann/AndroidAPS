@@ -266,7 +266,8 @@ class FuseCycleRunner(
             // rechnen, sondern muss den Zyklus benannt abbrechen.
             require(it.livenessIobCapPercent.isFinite() && it.livenessIobCapPercent in FuseDoubleKey.LivenessIobCapPercent.min..FuseDoubleKey.LivenessIobCapPercent.max) { "livenessIobCapPercent=${it.livenessIobCapPercent}" }
             require(it.livenessReArmMin in FuseIntKey.LivenessReArmMin.min..FuseIntKey.LivenessReArmMin.max) { "livenessReArmMin=${it.livenessReArmMin}" }
-            require(it.livenessBgMinMgdl.isFinite() && it.livenessBgMinMgdl in FuseDoubleKey.LivenessBgMinMgdl.min..FuseDoubleKey.LivenessBgMinMgdl.max) { "livenessBgMinMgdl=${it.livenessBgMinMgdl}" }
+            require(it.livenessBgMinDayMgdl.isFinite() && it.livenessBgMinDayMgdl in FuseDoubleKey.LivenessBgMinDayMgdl.min..FuseDoubleKey.LivenessBgMinDayMgdl.max) { "livenessBgMinDayMgdl=${it.livenessBgMinDayMgdl}" }
+            require(it.livenessBgMinNightMgdl.isFinite() && it.livenessBgMinNightMgdl in FuseDoubleKey.LivenessBgMinNightMgdl.min..FuseDoubleKey.LivenessBgMinNightMgdl.max) { "livenessBgMinNightMgdl=${it.livenessBgMinNightMgdl}" }
         }
 
         /** Raster des selbst gebauten IOB-Arrays. 5 min wie in AAPS — feiner
@@ -660,6 +661,10 @@ class FuseCycleRunner(
         /** Die Mittelbahn, gegen die der Kanal gerechnet hat - NICHT immer
          *  dieselbe wie decision.predAtReleaseMgdl (min mit Bremsbahn). */
         val livenessReleaseMeanMgdl: Double? = null,
+        /** Die in DIESEM Zyklus wirksame Druck-Schwelle und ihre Quelle
+         *  (DAY|NIGHT, v20) - fuer die Anzeige "Live wartet - BG 151/160". */
+        val livenessBgMinEffectiveMgdl: Double? = null,
+        val livenessBgMinSource: String? = null,
         val livenessLiftU: Double = 0.0,
         val livenessBinding: String? = null,
         val livenessDenial: String? = null,
@@ -2903,6 +2908,8 @@ class FuseCycleRunner(
         var livenessModelReject: String? = null
         var livenessNeedU: Double? = null
         var livenessReleaseMeanMgdl: Double? = null
+        var livenessBgMinEffective: Double? = null
+        var livenessBgMinSource: String? = null
         var livenessCandidateU = 0.0
         var livenessLiftU = 0.0
         var livenessBinding: String? = null
@@ -2924,7 +2931,10 @@ class FuseCycleRunner(
             // Sperrzeit veraendern sonst einen bereits laufenden Kanal.
             // OHNE Sperre: das ist eine Bedienhandlung, kein gemessenes
             // Risiko.
-            val cfgJetzt = cfg.livenessBgMinMgdl.toString() + "|" +
+            // Beide KONFIGURIERTEN Schwellen, nie die wirksame: ein
+            // regulaerer Tag/Nacht-Wechsel ist KEIN CONFIG_CHANGED (v20).
+            val cfgJetzt = cfg.livenessBgMinDayMgdl.toString() + "|" +
+                cfg.livenessBgMinNightMgdl + "|" +
                 cfg.livenessIobCapPercent + "|" + cfg.livenessReArmMin
             // ERST gemerkt, ANGEWENDET erst nach den harten Riegeln (Audit
             // 22.08.): faellt die Aenderung mit einem gemessenen Riegel
@@ -2932,6 +2942,16 @@ class FuseCycleRunner(
             // CONFIG_CHANGED-Ausgang darf ihn nicht verdraengen.
             val cfgGeaendert = livenessCfgSeen != null && livenessCfgSeen != cfgJetzt
             livenessCfgSeen = cfgJetzt
+            // v20: getrennte Tag-/Nachtschwelle. DIESELBE autoritative
+            // Nachtrechnung wie beim Totband - aber OHNE dessen Schalter:
+            // die Schwelle darf nicht am Totband-Schalter haengen. Rebound
+            // und gemessene Riegel bleiben davon unberuehrt.
+            val nachtFenster = NightWindow.isNight(
+                MidnightUtils.secondsFromMidnight(signal.sourceTs), cfg.nightStartMin, cfg.nightEndMin,
+            )
+            val bgMinWirksam = if (nachtFenster) cfg.livenessBgMinNightMgdl else cfg.livenessBgMinDayMgdl
+            livenessBgMinEffective = bgMinWirksam
+            livenessBgMinSource = if (nachtFenster) "NIGHT" else "DAY"
             fun sperren(grund: String): FuseController.Decision {
                 livenessExit = grund
                 livenessActive = false
@@ -3044,16 +3064,25 @@ class FuseCycleRunner(
                 )
                 return@run nachAufschub
             }
-            // P2: die BESTAETIGTE Abwaertswende beendet den Lauf mit Sperre.
-            if (livenessActive &&
-                TurnResponseShadow.declineStreak(turnSamples) >= LivenessChannel.EXIT_DECLINE_STREAK
-            ) return@run sperren("TURN_EXIT")
-            // Druckbedingung: BG > 160 UND r >= 1,0 - drei Zyklen in Folge
+            // P2, seit v21 magnitudenSENSITIV (Codex 22.08. spaet):
+            // `declineStreak >= 2` beendete auch bei 3,000 -> 2,995 -> 2,990
+            // - eine normale Abflachung eines weiterhin starken Anstiegs
+            // entwaffnete den Kanal fuer zehn Minuten. Jetzt gilt die
+            // AUTORITATIVE bestaetigte Wende der Schatten-Klassifikation:
+            // drei monoton fallende Werte UND kumulierte Abnahme >= 0,20
+            // mg/dl/min (dieselbe belegte Schwelle, die ADAPTIVE traegt).
+            // Gemessenes Fallen (FALLING), Low, Rebound, Descent-Risk
+            // bleiben sofortige harte Exits; r < 1 endet weiter ohne Sperre.
+            if (livenessActive && turnClassification.phase == TurnResponseShadow.Phase.TURNING_DOWN) {
+                return@run sperren("TURN_EXIT")
+            }
+            // Druckbedingung: BG ueber der WIRKSAMEN Schwelle (Tag/Nacht)
+            // UND r >= 1,0 - drei Zyklen in Folge
             // bewaffnen. Faellt der Druck waehrend eines Laufs weg, endet er
             // OHNE Sperre: die Wiederbewaffnung braucht ohnehin drei neue
             // Druckzyklen, das ist die Hysterese.
             val rSig = signal.rSigned
-            val druck = signal.q1 > cfg.livenessBgMinMgdl &&
+            val druck = signal.q1 > bgMinWirksam &&
                 rSig != null && rSig.isFinite() && rSig >= LivenessChannel.R_MIN_MGDL_PER_MIN
             if (livenessActive && !druck) {
                 livenessExit = "PRESSURE_GONE"
@@ -3082,12 +3111,10 @@ class FuseCycleRunner(
                         livenessDenial = "NOT_CONFIRMED"
                         return@run nachAufschub
                     }
-                    // P2 symmetrisch (Codex-Gegenprobe Scheinwende): solange
-                    // eine BESTAETIGTE Wende steht, wird auch nicht neu
-                    // bewaffnet - sonst liefert jeder Wiederanlauf genau
-                    // einen Hub, bevor der Exit ihn wieder beendet.
-                    TurnResponseShadow.declineStreak(turnSamples) >=
-                        LivenessChannel.EXIT_DECLINE_STREAK -> {
+                    // P2 symmetrisch, seit v21 mit derselben Magnitude wie
+                    // der Exit: solange eine BESTAETIGTE Wende steht, wird
+                    // nicht neu bewaffnet.
+                    turnClassification.phase == TurnResponseShadow.Phase.TURNING_DOWN -> {
                         livenessDenial = "TURN_STANDING"
                         return@run nachAufschub
                     }
@@ -3363,6 +3390,8 @@ class FuseCycleRunner(
             livenessCandidateU = livenessCandidateU,
             livenessNeedU = livenessNeedU,
             livenessReleaseMeanMgdl = livenessReleaseMeanMgdl,
+            livenessBgMinEffectiveMgdl = livenessBgMinEffective,
+            livenessBgMinSource = livenessBgMinSource,
             livenessLiftU = livenessLiftU,
             livenessBinding = livenessBinding,
             livenessDenial = livenessDenial,
@@ -4359,7 +4388,8 @@ class FuseCycleRunner(
          *  [FuseBooleanKey.LivenessChannelEnabled]. */
         val livenessChannelEnabled: Boolean,
         val livenessIobCapPercent: Double,
-        val livenessBgMinMgdl: Double,
+        val livenessBgMinDayMgdl: Double,
+        val livenessBgMinNightMgdl: Double,
         val livenessReArmMin: Int,
         val primeWindowMin: Int,
         /** Die Null sofort verlassen, sobald ihr Schutzgrund weg ist. */
@@ -4416,7 +4446,19 @@ class FuseCycleRunner(
         deferredPrimeEndMin = preferences.get(FuseIntKey.DeferredPrimeEndMin),
         livenessChannelEnabled = preferences.get(FuseBooleanKey.LivenessChannelEnabled),
         livenessIobCapPercent = preferences.get(FuseDoubleKey.LivenessIobCapPercent),
-        livenessBgMinMgdl = preferences.get(FuseDoubleKey.LivenessBgMinMgdl),
+        livenessBgMinDayMgdl = preferences.get(FuseDoubleKey.LivenessBgMinDayMgdl),
+        // LESE-MIGRATION (v20): solange die Nachtschwelle nie gesetzt wurde,
+        // folgt sie der Tagesschwelle - ein Update veraendert nichts still.
+        // (Die Preferences-Schnittstelle bietet fuer PreferenceKeys kein
+        // put; deshalb Fallback je Lesung statt einmaligem Seed.)
+        // Die Grenzen-Klammer gehoert zur Migration: ein Wert ausserhalb
+        // der Key-Grenzen kann nicht bewusst eingestellt worden sein (die
+        // UI klemmt) - er zaehlt als "nie gesetzt". Ohne die Klammer brach
+        // eine Test-Preferences-Implementierung, die 0.0 statt null liefert,
+        // jeden Zyklus an der Validierung ab.
+        livenessBgMinNightMgdl = preferences.getIfExists(FuseDoubleKey.LivenessBgMinNightMgdl)
+            ?.takeIf { it.isFinite() && it in FuseDoubleKey.LivenessBgMinNightMgdl.min..FuseDoubleKey.LivenessBgMinNightMgdl.max }
+            ?: preferences.get(FuseDoubleKey.LivenessBgMinDayMgdl),
         livenessReArmMin = preferences.get(FuseIntKey.LivenessReArmMin),
         // Ein ungesetzter Wert (0) ist kein Konfigurationsfehler, sondern ein
         // Speicher, der den Schluessel noch nicht kennt - dann gilt die

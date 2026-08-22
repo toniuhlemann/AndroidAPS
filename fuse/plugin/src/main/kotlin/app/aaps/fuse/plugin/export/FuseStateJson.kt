@@ -66,6 +66,17 @@ object FuseStateJson {
     // Phase B nach; ein manueller NORMAL-Bolus nach dem Marker sperrt nur den
     // Sicherheits-Uebertrag. Nachgetragen am 22.08. - der Bump selbst kam
     // ohne Journaleintrag (Review-Finding).
+    // v21 (22.08. spaet): der Wende-Exit des Liveness-Kanals ist
+    // magnitudensensitiv - TURN_EXIT/TURN_STANDING verlangen die
+    // bestaetigte Wende der Schatten-Klassifikation (3 monoton fallende
+    // Werte, kumuliert >= 0,20 mg/dl/min) statt zweier beliebig kleiner
+    // Rueckgaenge. Live entwaffneten 0,005er-Rueckgaenge den Kanal.
+    // v20 (22.08. spaet): getrennte Tag-/Nacht-Druckschwelle des
+    // Liveness-Kanals (Auswahl ueber das autoritative Nachtfenster, OHNE
+    // den Totband-Schalter; Lese-Migration: ungesetzte Nachtschwelle folgt
+    // der Tagesschwelle). Tag/Nacht-Wechsel ist KEIN CONFIG_CHANGED; ein
+    // Wechsel in die Nacht unter der neuen Schwelle endet als
+    // PRESSURE_GONE ohne Sperre.
     // v19 (22.08. spaet): die Re-Arm-Sperre des Liveness-Kanals NULLT den
     // Bewaffnungs-Streak. Live gemessen (22:53-23:03) zaehlte er waehrend
     // der Pause 1->10 weiter, und der Kanal war nach Fristablauf sofort
@@ -93,7 +104,7 @@ object FuseStateJson {
     // - dosierwirksam auf der TBR-Achse, bis v15 unsichtbar im Fingerprint:
     // zwei Laeufe mit 5 und 20 mg/dl Schwelle trugen denselben Regelstand,
     // und der Trail konnte nicht einmal zeigen, welche Werte galten.
-    const val RULE_SET_VERSION = 19
+    const val RULE_SET_VERSION = 21
 
     /** Schema des Trail-Datensatzes - s. die Notiz an der Schreibstelle. */
     const val SCHEMA_VERSION = 4
@@ -385,6 +396,8 @@ object FuseStateJson {
                     .put("candidateU", fin(outcome.livenessCandidateU))
                     .put("needU", fin(outcome.livenessNeedU))
                     .put("releaseMeanMgdl", fin(outcome.livenessReleaseMeanMgdl))
+                    .put("bgMinEffectiveMgdl", fin(outcome.livenessBgMinEffectiveMgdl))
+                    .put("bgMinSource", outcome.livenessBgMinSource ?: JSONObject.NULL)
                     .put("liftU", fin(outcome.livenessLiftU))
                     .put("binding", outcome.livenessBinding ?: JSONObject.NULL)
                     .put("denial", outcome.livenessDenial ?: JSONObject.NULL)
@@ -1265,7 +1278,8 @@ object FuseStateJson {
         // v18: der Liveness-Kanal - alle drei Stellgroessen.
         .put("livenessChannelEnabled", p.livenessChannelEnabled)
         .put("livenessIobCapPercent", fin(p.livenessIobCapPercent))
-        .put("livenessBgMinMgdl", fin(p.livenessBgMinMgdl))
+        .put("livenessBgMinDayMgdl", fin(p.livenessBgMinDayMgdl))
+        .put("livenessBgMinNightMgdl", fin(p.livenessBgMinNightMgdl))
         .put("livenessReArmMin", p.livenessReArmMin)
         // Ohne diese Zeile waere hinterher nicht belegbar, OB der Schalter in
         // einem Lauf an war - genau die Luecke, die heute schon zweimal
@@ -1299,7 +1313,9 @@ object FuseStateJson {
             // v18: der eigene Kanaldeckel des Liveness-Kanals und die
             // konfigurierbare BG-Schwelle der Druckbedingung.
             p.livenessIobCapPercent,
-            p.livenessBgMinMgdl,
+            p.livenessBgMinDayMgdl,
+            // v20: die getrennte Nachtschwelle.
+            p.livenessBgMinNightMgdl,
         )
         if (doubles.any { !it.isFinite() }) return null
         val parts = listOf("fuse-policy-v$RULE_SET_VERSION") +

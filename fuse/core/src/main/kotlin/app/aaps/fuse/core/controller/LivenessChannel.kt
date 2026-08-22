@@ -47,8 +47,6 @@ object LivenessChannel {
 
     /** Bestaetigte Rueckgaenge des schnellen Drives, ab denen der Kanal
      *  aussteigt - dieselbe Persistenzzaehlung wie ADAPTIVE-DOWN P2. */
-    const val EXIT_DECLINE_STREAK = 2
-
     /** Zyklen in Folge, die die Druckbedingung erfuellen muessen. */
     const val ARM_STREAK = 3
 
