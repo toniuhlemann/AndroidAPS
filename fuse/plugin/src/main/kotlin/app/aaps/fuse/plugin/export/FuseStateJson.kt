@@ -59,7 +59,20 @@ object FuseStateJson {
     // SMB-Riegel; erst drei gesunde Zyklen mit UKF >= +0,20 oeffnen wieder.
     // v14 (20.08.): der dadurch in Phase A unvermeidbar gewordene Rueckstand
     // darf nach genau dieser Erholung kontrolliert in Phase B nachlaufen.
-    const val RULE_SET_VERSION = 15
+    // v15 (21.08.): der harte Positiv-Insulin-Horizont des Abwaertsriegels
+    // wird vom laengeren Basal-Nutzen-Horizont getrennt
+    // (positiveDescentHorizonMin, ab jetzt im Hash), Erholung ueberlebt den
+    // Neustart, SAFETY_HOLD-/Riegel-Rueckstaende laufen nach der Erholung in
+    // Phase B nach; ein manueller NORMAL-Bolus nach dem Marker sperrt nur den
+    // Sicherheits-Uebertrag. Nachgetragen am 22.08. - der Bump selbst kam
+    // ohne Journaleintrag (Review-Finding).
+    // v16 (22.08.): Zulassungsschwelle und Fenster des Low-Tors
+    // (LowGateMinBenefitMgdl, LowGateHorizonMin) gehen in Hash und
+    // policyValues ein. Beide steuern, ab wann eine Zero-TBR als nutzlos gilt
+    // - dosierwirksam auf der TBR-Achse, bis v15 unsichtbar im Fingerprint:
+    // zwei Laeufe mit 5 und 20 mg/dl Schwelle trugen denselben Regelstand,
+    // und der Trail konnte nicht einmal zeigen, welche Werte galten.
+    const val RULE_SET_VERSION = 16
 
     /** Schema des Trail-Datensatzes - s. die Notiz an der Schreibstelle. */
     const val SCHEMA_VERSION = 4
@@ -1117,6 +1130,10 @@ object FuseStateJson {
         .put("maxSmbU", fin(p.maxSmbU))
         .put("guardFloorMgdl", fin(p.guardFloorMgdl))
         .put("positiveDescentHorizonMin", fin(p.positiveDescentHorizonMin))
+        // v16: die zwei Stellgroessen des Low-Tors. Ohne sie war im Trail
+        // nicht einmal ablesbar, mit welcher Nutzenschwelle ein Lauf fuhr.
+        .put("lowGateMinBenefitMgdl", fin(p.lowGateMinBenefitMgdl))
+        .put("lowGateHorizonMin", fin(p.lowGateHorizonMin))
         .put("iobThPercent", p.iobThPercent)
         .put("releaseHorizonMin", p.releaseHorizonMin)
         .put("liabilityHorizonMin", p.liabilityHorizonMin)
@@ -1177,6 +1194,10 @@ object FuseStateJson {
             // Huelle verschieden - ohne ihn trugen beide denselben Hash, und
             // die Feldlaeufe waeren nicht trennbar gewesen.
             p.mealFoundationPhaseAShare,
+            // v16: Schwelle und Fenster des Low-Tors. Beide entscheiden, ab
+            // wann eine Zero-TBR als nutzlos gilt - dosierwirksam auf der
+            // TBR-Achse und bis v15 im Fingerprint unsichtbar.
+            p.lowGateMinBenefitMgdl, p.lowGateHorizonMin,
         )
         if (doubles.any { !it.isFinite() }) return null
         val parts = listOf("fuse-policy-v$RULE_SET_VERSION") +

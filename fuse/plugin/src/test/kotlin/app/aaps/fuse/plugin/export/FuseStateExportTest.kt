@@ -499,6 +499,30 @@ class FuseStateExportTest {
     }
 
     /**
+     * DIE ZWEI STELLGROESSEN DES LOW-TORS (v16, Review 22.08.).
+     *
+     * Beide entscheiden, ab wann eine Zero-TBR als nutzlos gilt - also WANN
+     * der Basalpfad wieder freigibt. Bis v15 fehlten sie in Hash UND
+     * policyValues: zwei Laeufe mit 5 und 20 mg/dl Schwelle trugen denselben
+     * Regelstand, und der Trail konnte nicht einmal ZEIGEN, welche Werte
+     * galten - genau die Luecke, gegen die der Fingerprint gebaut ist.
+     */
+    @Test
+    fun `Schwelle und Fenster des Low-Tors aendern Politik und Export`() {
+        val h = FuseStateJson.hashOf(cfg)!!
+        assertTrue(
+            FuseStateJson.hashOf(cfg.copy(lowGateMinBenefitMgdl = 20.0)) != h,
+            "5 und 20 mg/dl Nutzenschwelle sind verschiedene Regler",
+        )
+        assertTrue(
+            FuseStateJson.hashOf(cfg.copy(lowGateHorizonMin = 60.0)) != h,
+            "120 und 60 Minuten Nutzenfenster sind verschiedene Regler",
+        )
+        assertEquals(5.0, FuseStateJson.policyValues(cfg).getDouble("lowGateMinBenefitMgdl"), 1e-9)
+        assertEquals(120.0, FuseStateJson.policyValues(cfg).getDouble("lowGateHorizonMin"), 1e-9)
+    }
+
+    /**
      * UND DIE VERSION SELBST: der Bump auf 11 gehoert zur Aenderung.
      *
      * Ohne ihn traegt ein Lauf VOR dem Fundament-Umbau denselben Regelstand
@@ -510,11 +534,12 @@ class FuseStateExportTest {
     fun `die Regelstandsversion traegt jede dosierwirksame Aenderung`() {
         // v11 Mahlzeitenfundament, v12 die Frist des Rebound-Sonderrechts,
         // v13 der restartfeste Wiederfreigabe-Riegel nach gemessenem Fallen,
-        // v14 der Sicherheitsaufschub, v15 der getrennte positive Horizont.
+        // v14 der Sicherheitsaufschub, v15 der getrennte positive Horizont,
+        // v16 die zwei Low-Tor-Stellgroessen im Fingerprint.
         // DIESER TEST IST ABSICHTLICH STUR: er faellt bei jedem Bump um und
         // zwingt damit zu der Frage, ob die Aenderung wirklich dosierwirksam
         // war - ein stiller Bump waere so wertlos wie ein vergessener.
-        assertEquals(15, FuseStateJson.RULE_SET_VERSION)
+        assertEquals(16, FuseStateJson.RULE_SET_VERSION)
         assertTrue(
             FuseStateJson.hashOf(cfg)!!.isNotEmpty(),
             "und der Hash bleibt berechenbar",
