@@ -4555,6 +4555,100 @@ class TransportWiringTest : TestBaseWithProfile() {
         assertEquals(50, adaptiv.restraintTauMin)
     }
 
+    /**
+     * IM REBOUND-FENSTER IST DIE PRODUKTION DIE SCHAERFERE BREMSE (Review
+     * 22.08.). Sie faehrt min(driveTauMin, 15); die fruehere harte
+     * 45-60-Matrix ueberzeichnete dort jede Kandidatenzeile, und R60 war
+     * genau in dem Fenster KEINE Kontrollspur mehr, in dem eine unterdrueckte
+     * Bremsbahn am meisten zaehlt - 25% der Wendezyklen des ersten
+     * Messlaufs lagen dort.
+     */
+    @Test
+    fun `im Rebound-Fenster erbt die Matrix den produktiven Tau 15`() {
+        // Start am Tief: der Anstieg beginnt UNTER der Rebound-Schwelle, so
+        // dass auch nach dem Warmlauf des Gerists noch verarbeitete Zyklen
+        // mit q1 < 75 liegen und das 45-min-Fenster armieren. Danach dieselbe
+        // Form wie der Plateau-Fall: klarer Anstieg, flacher positiver
+        // Nachlauf.
+        flach = 55.0
+        steigungProMin = 2.0
+        knickAbMin = 18
+        steigungNachKnick = 0.35
+        tailGuard = false
+        markerAuthorized = false
+        fundamentAn = false
+        clock = start
+
+        var wende: FuseCycleRunner.Outcome? = null
+        for (i in 0 until 40) {
+            val o = cycle()
+            if (o.turnResponseShadow?.classification?.phase == TurnResponseShadow.Phase.TURNING_DOWN) {
+                wende = o
+                break
+            }
+        }
+        val o = wende ?: throw AssertionError("der Aufbau hat keine Wende im Rebound-Fenster erzeugt")
+        val byName = o.turnResponseShadow!!.variants.associateBy { it.name }
+        for (name in listOf("R60", "R55", "R50", "R45", "ADAPTIVE")) {
+            assertEquals(
+                15, byName.getValue(name).restraintTauMin,
+                "$name: die Produktion bremst im Rebound mit Tau 15 - eine Variante, " +
+                    "die laenger nachschiebt, waere keine Kuerzung, sondern eine Lockerung",
+            )
+        }
+        // Und die Kontrollspur-Zusicherung gilt AUCH hier: R60 (effektiv 15)
+        // ist bitgenau der produktive Pfad.
+        assertEquals(o.decision.predAtReleaseMgdl!!, byName.getValue("R60").predAtReleaseMgdl!!, 1e-7)
+    }
+
+    /**
+     * DIE BASELINE FOLGT driveTauMin, NICHT DER ZAHL 60. Mit einem legalen
+     * driveTauMin = 45 waere die alte Matrix (hart 60) eine LOCKERUNG der
+     * Produktion gewesen - der Kontrollspur-Test blieb nur gruen, weil das
+     * Geruest zufaellig 60 stubbt.
+     */
+    @Test
+    fun `bei fremdem driveTauMin bleibt R60 die produktive Kontrollspur`() {
+        whenever(preferences.get(FuseIntKey.DriveTauMin)).thenReturn(45)
+        // Die Form des 18:19-Falls: nach dem Knick faellt der ROHE Verlauf,
+        // waehrend Bolusaktivitaet den bereinigten Drive positiv haelt. So
+        // wird die abgeschlagene Unterkante NEGATIV, und auch der
+        // Negativ-Zerfall der Bremsbahn muss die produktive Spur sein - ein
+        // hart kodierter 60er dort waere im Sicherheitszeugnis sichtbar.
+        flach = 140.0
+        steigungProMin = 2.0
+        knickAbMin = 18
+        steigungNachKnick = -1.0
+        aktivitaet = 0.03
+        bolusIobU = 3.0
+        tailGuard = false
+        markerAuthorized = false
+        fundamentAn = false
+        clock = start
+
+        var wende: FuseCycleRunner.Outcome? = null
+        for (i in 0 until 55) {
+            val o = cycle()
+            if (o.turnResponseShadow?.classification?.phase == TurnResponseShadow.Phase.TURNING_DOWN) {
+                wende = o
+                break
+            }
+        }
+        val o = wende ?: throw AssertionError("der Aufbau hat keine positive Abwaertswende erzeugt")
+        val byName = o.turnResponseShadow!!.variants.associateBy { it.name }
+        assertEquals(45, byName.getValue("R60").restraintTauMin, "min(60, produktiv 45) = 45")
+        assertEquals(45, byName.getValue("R45").restraintTauMin)
+        assertEquals(o.decision.predAtReleaseMgdl!!, byName.getValue("R60").predAtReleaseMgdl!!, 1e-7)
+        // Auch das SICHERHEITSZEUGNIS ist die produktive Spur. EHRLICHE
+        // GRENZE dieser Zusicherung (Mutationsprobe 22.08.): das Zeugnis ist
+        // ein min() ueber Haupt- und Bremsbahn, und an bestaetigten Wenden
+        // dominiert die Hauptbahn die Unterkante - ein falscher NEGATIV-Tau
+        // der Bremsbahn ist hier deshalb nicht beobachtbar. Er ist ausserhalb
+        // von driveTauMin != 60 verhaltensgleich und irrt sonst nur in die
+        // konservative Richtung (tieferes Zeugnis, kleinere Kandidaten).
+        assertEquals(o.decision.minLowerMgdl!!, byName.getValue("R60").minSafetyLowerMgdl!!, 1e-7)
+    }
+
     @Test
     fun `Aufwaertswende hebt im Shadow nur die Mittelbahn nicht das Sicherheitszeugnis`() {
         flach = 110.0

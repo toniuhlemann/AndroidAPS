@@ -15,8 +15,15 @@ import kotlin.math.max
  *    und Tail bleiben auf dem produktiven Zeugnis.
  *  - TURNING_DOWN darf nur die schnelle Bremsbahn verkuerzen. Sie kann damit
  *    eine Kandidatenmenge verkleinern, niemals vergroessern.
- *  - negative schnelle Drives bleiben bei Tau 60. Ihr schnellerer Zerfall
- *    wuerde die Sicherheitsbahn anheben und waere damit kein Brems-Shadow.
+ *  - negative schnelle Drives behalten den PRODUKTIVEN Negativ-Tau. Ihr
+ *    schnellerer Zerfall wuerde die Sicherheitsbahn anheben und waere damit
+ *    kein Brems-Shadow.
+ *  - seit dem 22.08. gilt fuer die positiven Varianten: sie duerfen den
+ *    produktiven Tau nur KUERZEN, nie verlaengern. Faehrt die Produktion im
+ *    Rebound-Fenster bereits min(driveTauMin, 15), gilt deren Tau - die
+ *    fruehere harte 45-60-Matrix war dort keine Baseline (Review 22.08.).
+ *    Die Ableitung steht im Runner an EINER Stelle: abgelesen aus dem
+ *    produktiven PredictorInput, nicht nachgebaut.
  */
 object TurnResponseShadow {
 
@@ -68,7 +75,9 @@ object TurnResponseShadow {
     data class Variant(
         val name: String,
         val requestedRestraintTauMin: Int,
-        /** Bei negativem Drive immer 60, unabhaengig vom angefragten Tau. */
+        /** Tatsaechlich gerechneter Tau: bei negativem Drive der produktive
+         *  Negativ-Tau, sonst min(angefragt, produktiver Positiv-Tau) - im
+         *  Rebound-Fenster also z. B. 15 statt der angefragten 45-60. */
         val restraintTauMin: Int,
         val adaptive: Boolean,
         val predAtReleaseMgdl: Double?,

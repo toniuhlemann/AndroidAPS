@@ -73,6 +73,7 @@ import app.aaps.fuse.core.predictor.PredictorResult
 import app.aaps.fuse.core.predictor.TrajectoryCore
 import app.aaps.fuse.core.predictor.minSafetyHorizonLowerOf
 import app.aaps.fuse.core.predictor.minSafetyLowerOf
+import kotlin.math.roundToInt
 
 /**
  * Der Zyklus: AAPS hinein, Entscheidung heraus. Er entscheidet NICHTS selbst.
@@ -1736,9 +1737,26 @@ class FuseCycleRunner(
             val restraint: PredictorResult?,
         )
         val shadowFast = fastDrive(signal)
+        // DIE PRODUKTIVE BEZUGSGROESSE WIRD ABGELESEN, NICHT NACHGEBAUT
+        // (Review 22.08.). Die Produktion kuerzt im Rebound-Fenster den
+        // positiven Tau auf min(driveTauMin, 15) und faehrt sonst
+        // cfg.driveTauMin - beides steckt bereits in `built.input`. Die
+        // fruehere zweite Kopie (hart 45-60) war im Rebound-Fenster KEINE
+        // Baseline mehr: R60 ueberzeichnete die Kandidaten genau im
+        // hypo-nahen Fenster, 25% der Wendezyklen des ersten Messlaufs.
+        // Abgelesen kann die Regel nicht abdriften; die Varianten duerfen
+        // den produktiven Tau nur KUERZEN, nie verlaengern.
+        val produktivTauPos = (built.input.decay as? DriveDecayModel.ExponentialDecay)
+            ?.tauMin?.roundToInt()
+        val produktivTauNeg = (built.input.decayNegativeDrive as? DriveDecayModel.ExponentialDecay)
+            ?.tauMin?.roundToInt() ?: produktivTauPos
         fun shadowRestraint(requestedTauMin: Int): Pair<Int, PredictorResult?> {
             val fast = shadowFast ?: return TurnResponseShadow.MAIN_TAU_MIN to null
-            val effectiveTau = if (fast < 0.0) TurnResponseShadow.MAIN_TAU_MIN else requestedTauMin
+            // Kein exponentieller produktiver Zerfall -> keine vergleichbare
+            // Bremsbahn. Lieber eine benannte Luecke als eine falsche Zeile.
+            val basePos = produktivTauPos ?: return TurnResponseShadow.MAIN_TAU_MIN to null
+            val baseNeg = produktivTauNeg ?: basePos
+            val effectiveTau = if (fast < 0.0) baseNeg else minOf(requestedTauMin, basePos)
             val drive = DriveEstimate(
                 fast,
                 fast - built.discount.termMgdlPerMin,
@@ -1749,8 +1767,10 @@ class FuseCycleRunner(
                 drive = drive,
                 decay = DriveDecayModel.ExponentialDecay(effectiveTau.toDouble()),
                 // Auch wenn der Mittelantrieb positiv ist, kann die
-                // abgeschlagene Unterkante negativ sein. Sie bleibt R60.
-                decayNegativeDrive = DriveDecayModel.ExponentialDecay(TurnResponseShadow.MAIN_TAU_MIN.toDouble()),
+                // abgeschlagene Unterkante negativ sein. Sie behaelt den
+                // produktiven Negativ-Tau - hart 60 waere im Rebound erneut
+                // eine fremde Baseline.
+                decayNegativeDrive = DriveDecayModel.ExponentialDecay(baseNeg.toDouble()),
             )
             return effectiveTau to ((TrajectoryCore.predict(input) as? PredictorOutcome.Ok)?.result)
         }
@@ -2081,7 +2101,12 @@ class FuseCycleRunner(
             val input = built.input.copy(
                 drive = d,
                 decay = DriveDecayModel.ExponentialDecay(path.effectiveTauMin.toDouble()),
-                decayNegativeDrive = DriveDecayModel.ExponentialDecay(TurnResponseShadow.MAIN_TAU_MIN.toDouble()),
+                // Produktiver Negativ-Tau, dieselbe Regel wie in
+                // shadowRestraint - hart 60 waere im Rebound eine fremde
+                // Baseline (Review 22.08.).
+                decayNegativeDrive = DriveDecayModel.ExponentialDecay(
+                    (produktivTauNeg ?: TurnResponseShadow.MAIN_TAU_MIN).toDouble()
+                ),
             )
             (TrajectoryCore.predict(input) as? PredictorOutcome.Ok)?.result
         }
