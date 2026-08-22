@@ -162,16 +162,20 @@ class FuseSignalSource(
          * Erwartungs-Ledgers. Sie wechselt NUR bei einem echten Bruch:
          * CGM-Luecke > 3 min, Sensor-/Kalibrierepoche oder Input-Sprung.
          *
-         * NEUSTART IST EINE HEURISTIK, KEINE GARANTIE (Review 22.08.): der
-         * frische Prozess leitet die Epoche aus dem CGM-Puffer neu ab. Liegt
-         * der juengste echte Bruch noch im Puffer - oder belegt der Puffer
-         * eine lueckenlose Reihe -, entsteht dieselbe Epoche wie vor dem
-         * Neustart, und Eintraege von davor koennen gegen Proben von danach
-         * abgerechnet werden. Das ist gewollt: die lueckenlose Reihe BEWEIST
-         * die Vergleichbarkeit (q1/Theil-Sen sind reine Funktionen des
-         * Puffers). Ein Neustart mit > 3 min Ausfall muenzt dagegen
-         * automatisch eine neue Epoche, weil die Wiederaufnahme selbst der
-         * Bruch ist. Wer offline "Neustart = immer neue Epoche" annimmt,
+         * NEUSTART IST EINE HEURISTIK, KEINE GARANTIE (Review + Toni
+         * 22.08.): der frische Prozess leitet die Epoche aus dem CGM-Puffer
+         * neu ab. DIESELBE Epoche entsteht nur, solange der urspruengliche
+         * Epochenanfang (Bruchzeitpunkt oder Reihenbeginn) noch im rollenden
+         * Puffer liegt - dann koennen Eintraege von davor gegen Proben von
+         * danach abgerechnet werden, und das ist gewollt: die lueckenlose
+         * Reihe BEWEIST die Vergleichbarkeit (q1/Theil-Sen sind reine
+         * Funktionen des Puffers). Ist der Anfang dagegen bereits
+         * herausgerollt, beginnt der neue Prozess mit dem aeltesten
+         * VERBLIEBENEN Wert - eine NEUE Epoche, obwohl die Reihe lueckenlos
+         * ist; alte Erwartungen enden dann konservativ UNVERIFIABLE. Ein
+         * Neustart mit > 3 min Ausfall muenzt immer eine neue Epoche, weil
+         * die Wiederaufnahme selbst der Bruch ist. Wer offline "Neustart =
+         * immer neue Epoche" ODER "lueckenlos = immer dieselbe" annimmt,
          * liest den Trail falsch. Monotonie gilt JE INSTANZ, nicht global.
          *
          * AUSDRUECKLICH NICHT [segmentStartTs]: der ist im lueckenfreien
