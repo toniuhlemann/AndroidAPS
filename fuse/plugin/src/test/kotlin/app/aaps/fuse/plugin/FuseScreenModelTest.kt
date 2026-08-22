@@ -96,7 +96,7 @@ class FuseScreenModelTest {
             adjusted = app.aaps.fuse.core.signal.BgiAdjustedSeries.adjust(emptyList()), activity = ActivityValidity.VALID,
             samplesUsed = 19, rawSeriesSize = 200, gapBeforeMin = 1.0, stepFromLastMgdl = -1.0, stepRateActualMgdlPerMin = -1.0, postGapIndex = 18, q1Outlier = false,
             boundedBy = bound, windowFromTs = 1_699_988_120_000L,
- segmentStartTs = 1_699_988_120_000L,
+ segmentStartTs = 1_699_988_120_000L, signalEpochTs = 1_699_900_000_000L,
         )
 
     private fun outcome(

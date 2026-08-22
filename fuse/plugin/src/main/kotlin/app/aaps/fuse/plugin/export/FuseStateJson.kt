@@ -652,6 +652,10 @@ object FuseStateJson {
                 .put("q1Outlier", s.q1Outlier)
                 .put("boundedBy", s.boundedBy.name)
                 .put("windowFromTs", s.windowFromTs)
+                // Die Segment-Identitaet des Erwartungs-Ledgers - stabil bis
+                // zum naechsten echten Bruch. Ohne sie im Trail liesse sich
+                // ein SEGMENT_CHANGED-Denial nicht nachrechnen.
+                .put("signalEpochTs", s.signalEpochTs)
         )
 
         // ---- DOSIERNEUTRALER WENDE-/TAU-SHADOW (Toni 20.08.) ------------
@@ -691,6 +695,28 @@ object FuseStateJson {
                                     .put("candidateSmbU", fin(v.candidateSmbU))
                                     .put("candidateBinding", v.candidateBinding ?: JSONObject.NULL)
                                     .put("candidateReject", v.candidateReject ?: JSONObject.NULL),
+                            )
+                        }
+                    })
+                    // ADAPTIVE-DOWN (Toni 22.08.): dieselbe einseitige
+                    // Senkung, drei Ausloeser. Leer, wenn fast >= slow.
+                    // Kontext (CORRECTION/MEAL) und Phase stehen je Zeile
+                    // schon im Datensatz; Peak/Nadir nach +60/90/120 rechnet
+                    // die Auswertung aus den Folgezeilen des Trails.
+                    .put("downVariants", JSONArray().apply {
+                        sh.downVariants.forEach { v ->
+                            put(
+                                JSONObject()
+                                    .put("name", v.name)
+                                    .put("triggered", v.triggered)
+                                    .put("declineStreak", v.declineStreak)
+                                    .put("midDriveMgdlPerMin", fin(v.midDriveMgdlPerMin))
+                                    .put("predAtReleaseMgdl", fin(v.predAtReleaseMgdl))
+                                    .put("insulinReqU", fin(v.insulinReqU))
+                                    .put("candidateSmbU", fin(v.candidateSmbU))
+                                    .put("candidateBinding", v.candidateBinding ?: JSONObject.NULL)
+                                    .put("candidateReject", v.candidateReject ?: JSONObject.NULL)
+                                    .put("avoidedSmbU", fin(v.avoidedSmbU)),
                             )
                         }
                     }),

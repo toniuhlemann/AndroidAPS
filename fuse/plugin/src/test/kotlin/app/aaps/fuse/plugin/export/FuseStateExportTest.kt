@@ -36,7 +36,7 @@ class FuseStateExportTest {
         ukfRatePerMin = 1.1, ukfLearnedR = 2.2, rawSlopePerMin = 1.4, activityAtAnchor = 0.01, isfAtAnchor = 90.0,
         adjusted = app.aaps.fuse.core.signal.BgiAdjustedSeries.adjust(emptyList()), activity = ActivityValidity.VALID,
         samplesUsed = 19, rawSeriesSize = 200, gapBeforeMin = 1.0, stepFromLastMgdl = -1.0, stepRateActualMgdlPerMin = -1.0, postGapIndex = 18, q1Outlier = false,
-        boundedBy = SignalWindow.Bound.NONE, windowFromTs = 1_699_988_120_000L, segmentStartTs = 1_699_988_120_000L,
+        boundedBy = SignalWindow.Bound.NONE, windowFromTs = 1_699_988_120_000L, segmentStartTs = 1_699_988_120_000L, signalEpochTs = 1_699_900_000_000L,
     )
 
     private fun step() = app.aaps.fuse.core.observer.ObserverStep(
@@ -155,6 +155,52 @@ class FuseStateExportTest {
         assertEquals(75.0, r50.getDouble("safetyLowerAtReleaseMgdl"), 1e-9)
         assertEquals(0.209, r50.getDouble("tailHeadroomU"), 1e-9)
         assertEquals(0.20, r50.getDouble("candidateSmbU"), 1e-9)
+    }
+
+    /**
+     * ADAPTIVE-DOWN im Export (Toni 22.08.): vier Zeilen, jede vollstaendig
+     * - inklusive der PREDICT_FAILED-Luecke mit NaN, die ueber [fin] zu NULL
+     * werden MUSS statt den ganzen Datensatz zu reissen (org.json wirft bei
+     * NaN, und der Wurf laege im runCatching des Exports).
+     */
+    @Test
+    fun `die Down-Zeilen stehen vollstaendig und NaN-fest im Export`() {
+        val down = listOf(
+            TurnResponseShadow.DownVariant(
+                "BASE", false, 2, 2.5, 180.0, 0.9, 0.30, "smbRatio", null, 0.0,
+            ),
+            TurnResponseShadow.DownVariant(
+                "NOW", true, 2, 1.4, 165.0, 0.5, 0.15, "candidate:guardFloor", null, 0.15,
+            ),
+            TurnResponseShadow.DownVariant(
+                "P2", true, 2, 1.4, Double.NaN, null, null, null, "PREDICT_FAILED", null,
+            ),
+            TurnResponseShadow.DownVariant(
+                "P3", false, 2, 2.5, 180.0, 0.9, 0.30, "smbRatio", null, 0.0,
+            ),
+        )
+        val report = TurnResponseShadow.Report(
+            TurnResponseShadow.Classification(
+                TurnResponseShadow.Phase.ALIGNED, TurnResponseShadow.Reason.NO_CONFIRMED_TURN,
+                2.8, 1.4, null, null, null, null, 60,
+            ),
+            emptyList(), computeDurationMs = 1.1, downVariants = down,
+        )
+        val j = record(outcome(shadow = report)).getJSONObject("turnResponseShadow")
+        val dv = j.getJSONArray("downVariants")
+        assertEquals(
+            listOf("BASE", "NOW", "P2", "P3"),
+            (0 until dv.length()).map { dv.getJSONObject(it).getString("name") },
+        )
+        val now = dv.getJSONObject(1)
+        assertTrue(now.getBoolean("triggered"))
+        assertEquals(2, now.getInt("declineStreak"))
+        assertEquals(1.4, now.getDouble("midDriveMgdlPerMin"), 1e-9)
+        assertEquals(0.15, now.getDouble("avoidedSmbU"), 1e-9)
+        assertEquals("candidate:guardFloor", now.getString("candidateBinding"))
+        val p2 = dv.getJSONObject(2)
+        assertTrue(p2.isNull("predAtReleaseMgdl"), "NaN wird zur benannten Luecke, nicht zum Absturz")
+        assertEquals("PREDICT_FAILED", p2.getString("candidateReject"))
     }
 
     @Test

@@ -97,4 +97,56 @@ class TurnResponseShadowTest {
         assertEquals(listOf(60, 55, 50, 45), TurnResponseShadow.STATIC_RESTRAINT_TAUS_MIN)
         assertTrue(TurnResponseShadow.STATIC_RESTRAINT_TAUS_MIN.zipWithNext().all { (a, b) -> b < a })
     }
+
+    // ---- declineStreak: die Persistenzzaehlung der ADAPTIVE-DOWN-Ausloeser -
+
+    @Test
+    fun `der Streak zaehlt nur zusammenhaengende Rueckgaenge am Reihenende`() {
+        assertEquals(
+            3,
+            TurnResponseShadow.declineStreak(
+                listOf(s(0, 3.0), s(1, 2.6), s(2, 2.3), s(3, 2.1)),
+            ),
+        )
+        // Der letzte Schritt steigt: alles davor zaehlt nicht.
+        assertEquals(
+            0,
+            TurnResponseShadow.declineStreak(
+                listOf(s(0, 3.0), s(1, 2.6), s(2, 2.3), s(3, 2.4)),
+            ),
+        )
+        // Gleichstand ist KEIN Rueckgang.
+        assertEquals(
+            0,
+            TurnResponseShadow.declineStreak(listOf(s(0, 2.0), s(1, 2.0))),
+        )
+        assertEquals(0, TurnResponseShadow.declineStreak(emptyList()))
+        assertEquals(0, TurnResponseShadow.declineStreak(listOf(s(0, 2.0))))
+    }
+
+    /**
+     * EINE LUECKE DARF KEINE PERSISTENZ BELEGEN. Zwei Rueckgaenge vor und
+     * einer nach einer 10-min-Luecke sind KEINE drei zusammenhaengenden -
+     * dieselbe Regel, mit der auch classify() Luecken behandelt.
+     */
+    @Test
+    fun `eine Luecke bricht die Streak-Zaehlung`() {
+        val samples = listOf(
+            s(0, 3.0), s(1, 2.6), s(2, 2.3),
+            // 10-min-Luecke, danach ein weiterer Rueckgang.
+            s(12, 2.1), s(13, 1.9),
+        )
+        assertEquals(1, TurnResponseShadow.declineStreak(samples))
+    }
+
+    @Test
+    fun `nicht-endliche Werte beenden die Streak-Zaehlung`() {
+        assertEquals(
+            1,
+            TurnResponseShadow.declineStreak(
+                listOf(s(0, 3.0), s(1, Double.NaN), s(2, 2.3), s(3, 2.1)),
+            ),
+        )
+    }
+
 }

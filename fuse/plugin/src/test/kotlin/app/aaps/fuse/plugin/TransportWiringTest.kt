@@ -231,9 +231,21 @@ class TransportWiringTest : TestBaseWithProfile() {
      *  allein binden, 200 den maxIob. */
     private var iobThPct = 100
 
+    /** CGM-Luecke im Rohpuffer: Minuten [von, bis) seit `start` OHNE
+     *  Messwerte. Der Hebel fuer die stabile Signalepoche - eine Luecke
+     *  > 3 min ist ein ECHTER Bruch, die wandernde Fensterkante keiner. */
+    private var lueckeVonMin: Int? = null
+    private var lueckeBisMin: Int? = null
+
     private fun series(untilTs: Long): List<GV> =
         generateSequence(start) { it + 60_000L }
             .takeWhile { it <= untilTs }
+            .filter { ts ->
+                val von = lueckeVonMin ?: return@filter true
+                val bis = lueckeBisMin ?: return@filter true
+                val min = (ts - start) / 60_000.0
+                min < von || min >= bis
+            }
             .map { ts ->
                 // STETIG GEKNICKTE BAHN (Toni 19.08.). Bis `knickAbMin` gilt
                 // `steigungProMin`, danach `steigungNachKnick` - der Wert am
@@ -4647,6 +4659,141 @@ class TransportWiringTest : TestBaseWithProfile() {
         // von driveTauMin != 60 verhaltensgleich und irrt sonst nur in die
         // konservative Richtung (tieferes Zeugnis, kleinere Kandidaten).
         assertEquals(o.decision.minLowerMgdl!!, byName.getValue("R60").minSafetyLowerMgdl!!, 1e-7)
+    }
+
+    /**
+     * DIE STABILE SIGNALEPOCHE (Toni 22.08.) - die Segment-Identitaet des
+     * Erwartungs-Ledgers. Mit der gleitenden 18-min-Fensterkante als
+     * Identitaet konnten sich Entry (Kante bei Ausstellung) und Probe (Kante
+     * 120 min spaeter) per Konstruktion NIE treffen: alle 1091 Outcomes des
+     * ersten Messlaufs waren UNVERIFIABLE. Die Epoche steht still, bis ein
+     * ECHTER Bruch kommt.
+     */
+    @Test
+    fun `die Signalepoche steht still und wechselt nur am echten Bruch`() {
+        flach = 120.0
+        steigungProMin = 0.5
+        knickAbMin = null
+        tailGuard = false
+        markerAuthorized = false
+        fundamentAn = false
+        clock = start
+
+        val epochen = mutableListOf<Long>()
+        var kante = 0L
+        repeat(30) {
+            val o = cycle()
+            o.signal?.let { epochen.add(it.signalEpochTs); kante = it.segmentStartTs }
+        }
+        assertTrue(epochen.size >= 20, "der Aufbau muss lesbare Signale liefern")
+        assertEquals(
+            1, epochen.distinct().size,
+            "die Epoche darf nicht mit der Fensterkante wandern: ${epochen.distinct()}",
+        )
+        // Und sie ist NICHT die gleitende Kante: nach 30 min liegt die
+        // 18-min-Kante laengst hinter dem Reihenbeginn.
+        assertTrue(
+            epochen.last() < kante,
+            "Epoche ${epochen.last()} muss VOR der wandernden Kante $kante liegen",
+        )
+
+        // DER ECHTE BRUCH: eine 10-min-Luecke. Die Epoche springt genau auf
+        // den ersten Punkt NACH der Luecke - und steht danach wieder still.
+        lueckeVonMin = 31
+        lueckeBisMin = 41
+        clock = start + 44 * 60_000L
+        val danach = mutableListOf<Long>()
+        repeat(20) {
+            val o = cycle()
+            o.signal?.let { danach.add(it.signalEpochTs) }
+        }
+        assertTrue(danach.isNotEmpty(), "auch nach der Luecke muss wieder ein Signal kommen")
+        assertEquals(
+            start + 41 * 60_000L, danach.last(),
+            "die Epoche ist der erste Punkt NACH der Luecke",
+        )
+        assertEquals(
+            1, danach.distinct().size,
+            "und sie steht nach dem Bruch wieder still: ${danach.distinct()}",
+        )
+    }
+
+    /**
+     * ADAPTIVE-DOWN ALS SCHATTEN (Toni 22.08.). Der 5b-Replay: am
+     * Korrektur-AUSGANG haelt keine Bremse mehr etwas zurueck (0,00 U ueber
+     * 39,5h - Guard/SAFETY_HOLD/Riegel schliessen die Tuer laengst); das
+     * Tief-Insulin fliesst waehrend ABBREMSENDER ANSTIEGE, vom traegen r
+     * lizenziert. Die Antwort ist die einseitige Mittelbahn-Senkung - hier
+     * ihre Schatten-Zusicherungen: Referenzzeile = produktiver Pfad, Senkung
+     * nur nach Ausloeser, Ausloeser-Disziplin (P2/P3 ziehen erst mit
+     * Persistenz), vermiedene Menge nie negativ, Produktion unangetastet.
+     */
+    @Test
+    fun `ADAPTIVE-DOWN senkt im Schatten nur die Mittelbahn und nur nach Ausloeser`() {
+        // Die 18:47-Form: klarer Anstieg, dann flacher positiver Nachlauf -
+        // fastAdj kollabiert gegen das noch hohe r.
+        flach = 140.0
+        steigungProMin = 2.0
+        knickAbMin = 18
+        steigungNachKnick = 0.35
+        tailGuard = false
+        markerAuthorized = false
+        fundamentAn = false
+        clock = start
+
+        var gesenkt: FuseCycleRunner.Outcome? = null
+        var disziplin: FuseCycleRunner.Outcome? = null
+        var persistenz: FuseCycleRunner.Outcome? = null
+        repeat(55) {
+            val o = cycle()
+            val dv = o.turnResponseShadow?.downVariants ?: return@repeat
+            if (dv.isEmpty()) return@repeat
+            val now = dv.first { it.name == "NOW" }
+            val p3 = dv.first { it.name == "P3" }
+            // Vermiedene Menge ist NIE negativ - in jedem Zyklus.
+            dv.forEach { v ->
+                assertTrue(
+                    (v.avoidedSmbU ?: 0.0) >= -1e-9,
+                    "${v.name}: eine Senkung kann nichts hinzufuegen",
+                )
+            }
+            if (gesenkt == null && now.triggered &&
+                (now.predAtReleaseMgdl ?: Double.MAX_VALUE) <
+                (dv.first { it.name == "BASE" }.predAtReleaseMgdl ?: 0.0) - 1e-6
+            ) gesenkt = o
+            if (disziplin == null && now.triggered && !p3.triggered) disziplin = o
+            if (persistenz == null && p3.triggered) persistenz = o
+        }
+
+        val o = gesenkt ?: throw AssertionError("der Aufbau muss eine echte Senkung erzeugen")
+        val dv = o.turnResponseShadow!!.downVariants.associateBy { it.name }
+        val base = dv.getValue("BASE")
+        val now = dv.getValue("NOW")
+        // DIE REFERENZZEILE IST DER PRODUKTIVE PFAD: ohne Marker, Fundament
+        // und Riegel ist der publizierte SMB genau der Kandidat der Stufe,
+        // auf der auch die Varianten rechnen. Damit ist die Dosierneutralitaet
+        // auf DATENEBENE belegt, nicht nur behauptet. (predAtRelease wird
+        // absichtlich NICHT gegen decision verglichen: die Down-Zeilen
+        // tragen die reine Mittelbahn ohne das min() mit der Bremsbahn -
+        // s. KDoc von DownVariant.predAtReleaseMgdl.)
+        assertEquals(o.decision.smbU, base.candidateSmbU!!, 1e-9)
+        // Die Senkung senkt: Mittelbahn tiefer, Kandidat nie groesser, und
+        // die vermiedene Menge ist exakt die Differenz.
+        assertTrue(now.midDriveMgdlPerMin!! < base.midDriveMgdlPerMin!! - 1e-9)
+        assertTrue(now.candidateSmbU!! <= base.candidateSmbU!! + 1e-9)
+        assertEquals(base.candidateSmbU!! - now.candidateSmbU!!, now.avoidedSmbU!!, 1e-9)
+
+        // AUSLOESER-DISZIPLIN: solange die Persistenz fehlt, traegt P3 die
+        // REFERENZ, nicht die Senkung - frueh bremsen ist genau der Fehler,
+        // den der 13:59-Gutfall (Peak 196 danach) verbietet.
+        val d = disziplin ?: throw AssertionError("der Aufbau muss einen Zyklus vor voller Persistenz treffen")
+        val dvd = d.turnResponseShadow!!.downVariants.associateBy { it.name }
+        assertEquals(false, dvd.getValue("P3").triggered)
+        assertEquals(dvd.getValue("BASE").candidateSmbU, dvd.getValue("P3").candidateSmbU)
+        // Und mit Persistenz zieht P3.
+        val p = persistenz ?: throw AssertionError("der Aufbau muss auch die volle Persistenz erreichen")
+        assertTrue(p.turnResponseShadow!!.downVariants.first { it.name == "P3" }.triggered)
+        assertTrue(p.turnResponseShadow!!.downVariants.first { it.name == "P3" }.declineStreak >= 3)
     }
 
     @Test

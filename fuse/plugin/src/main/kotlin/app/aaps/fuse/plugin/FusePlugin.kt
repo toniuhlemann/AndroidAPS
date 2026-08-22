@@ -226,7 +226,12 @@ class FusePlugin @Inject constructor(
                 o.bgMgdl?.let { bg ->
                     listOf(
                         ExpectationLedger.Sample(
-                            ts = sig.sourceTs, mgdl = bg, segmentId = sig.segmentStartTs,
+                            // STABILE EPOCHE, nicht die gleitende Fensterkante
+                            // (Toni 22.08.): mit `segmentStartTs` konnten sich
+                            // Entry und Probe per Konstruktion NIE treffen -
+                            // alle 1091 Outcomes des ersten Laufs waren
+                            // UNVERIFIABLE.
+                            ts = sig.sourceTs, mgdl = bg, segmentId = sig.signalEpochTs,
                             healthy = o.health == app.aaps.fuse.core.observer.Health.READY,
                             interventionStamp = stempel,
                             configGeneration = o.configGeneration,
@@ -242,7 +247,7 @@ class FusePlugin @Inject constructor(
                 FuseExpectationRecorder.Snapshot(
                     dir = dir, nowTs = o.computeTs, situation = lage, stamp = stempel,
                     configGeneration = o.configGeneration,
-                    segmentId = o.signal?.segmentStartTs ?: 0L,
+                    segmentId = o.signal?.signalEpochTs ?: 0L,
                     sourceTs = o.signal?.sourceTs ?: o.computeTs,
                     anchorMgdl = bahn?.bgAtAnchor,
                     meanPredictedMgdl = bahn?.bgAtHorizonMean,
@@ -1415,7 +1420,7 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
                     nowTs = outcome.computeTs,
                     stamp = ledgerAdapter.interventionStamp,
                     configGeneration = outcome.configGeneration,
-                    segmentId = outcome.signal?.segmentStartTs ?: 0L,
+                    segmentId = outcome.signal?.signalEpochTs ?: 0L,
                     situation = outcome.expectationSituation?.copy(ledgerSealed = publishedGateSealed),
                     minSafetyMarginMgdl = ExpectationLedger.EXPORT_SAFETY_MARGIN_MGDL,
                 )

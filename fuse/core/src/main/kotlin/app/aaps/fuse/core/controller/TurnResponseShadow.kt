@@ -93,11 +93,87 @@ object TurnResponseShadow {
         val candidateReject: String?,
     )
 
+    /**
+     * ADAPTIVE-DOWN als SCHATTEN (Toni 22.08.). Der 5b-Replay hat gezeigt:
+     * am Korrektur-AUSGANG ist nichts mehr zu holen (vier Bremskandidaten,
+     * 0,00 U ueber 39,5h - die Tuer ist durch Guard/SAFETY_HOLD/Riegel schon
+     * zu). Das Tief-Insulin fliesst FRUEHER, waehrend abbremsender Anstiege,
+     * lizenziert vom langsamen r gegen kollabierenden fastDrive (6,10 U in
+     * 39,5h; Schadensblock 20.08. 18:47 mit 2,90 U gegen den fast
+     * signaturgleichen Gutfall 21.08. 13:59 mit Peak 196 danach). Per Zyklus
+     * sind die beiden NICHT trennbar - nur der VERLAUF trennt sie. Deshalb
+     * drei Ausloese-Varianten derselben einseitigen Senkung, alle
+     * dosierneutral, zum Offline-Vergleich:
+     *
+     *   BASE  die aktuelle Mittelbahn (Referenz, keine Senkung)
+     *   NOW   min(r, fastDrive) sofort, sobald fast < slow
+     *   P2    dito, aber erst nach ZWEI zusammenhaengenden Rueckgaengen
+     *   P3    dito nach DREI Rueckgaengen
+     *
+     * Die bestehende Persistenzregel des Klassifikators (2 Rueckgaenge +
+     * 0,20-Gesamtabfall + slow >= Rampe) ist offline aus P2 und dem separat
+     * exportierten `phase` synthetisierbar - sie braucht keine eigene Zeile.
+     *
+     * AUTORITAET WIE BEIM UP-SPIEGEL, nur andersherum: gesenkt wird der
+     * BEDARF; die PRODUKTIVEN Zertifikate (Guard, Tail, Bremsbahn des
+     * Reglers) bleiben unangetastet. Innerhalb der Varianten-Zeile ziehen
+     * untere und prior-freie Kante mit der Mittelbahn mit (Bandordnung) -
+     * die Zeile rechnet ihren Guard damit auf der gesenkten Bahn und ist
+     * STRENGER als produktiv. [DownVariant.avoidedSmbU] ist deshalb eine
+     * OBERGRENZE; `candidateBinding` trennt offline Bedarfssenkung von
+     * Guard-Bindung, `insulinReqU` traegt die reine Bedarfsgroesse.
+     */
+    data class DownVariant(
+        val name: String,
+        /** War die Ausloesebedingung dieser Variante in diesem Zyklus wahr?
+         *  Bei false traegt die Zeile die Referenzwerte der Mittelbahn. */
+        val triggered: Boolean,
+        val declineStreak: Int,
+        /** Der Mittelantrieb dieser Zeile [mg/dl/min] - gesenkt nur bei
+         *  triggered. */
+        val midDriveMgdlPerMin: Double?,
+        /** Die MITTELBAHN am Freigabehorizont - absichtlich OHNE das min()
+         *  mit der Bremsbahn (anders als [Variant.predAtReleaseMgdl] und
+         *  `decision.predAtReleaseMgdl`): eine tief bindende Bremsbahn
+         *  wuerde die Senkung sonst unsichtbar machen, und gemessen werden
+         *  soll genau sie. */
+        val predAtReleaseMgdl: Double?,
+        val insulinReqU: Double?,
+        val candidateSmbU: Double?,
+        val candidateBinding: String?,
+        val candidateReject: String?,
+        /** Referenzkandidat minus Variantenkandidat, nie negativ - "was die
+         *  Senkung in diesem Zyklus vermieden haette". */
+        val avoidedSmbU: Double?,
+    )
+
+    /**
+     * Zusammenhaengende Rueckgaenge des schnellen Drives am Reihenende.
+     * 0 = der letzte Schritt war kein Rueckgang. Eine Luecke > [MAX_GAP_MS]
+     * oder ein nicht-endlicher Wert beendet die Zaehlung - eine
+     * ueberbrueckte Luecke darf keine Persistenz belegen.
+     */
+    fun declineStreak(samples: List<Sample>): Int {
+        var n = 0
+        for (i in samples.size - 1 downTo 1) {
+            val dt = samples[i].tsMs - samples[i - 1].tsMs
+            if (dt <= 0L || dt > MAX_GAP_MS) break
+            val a = samples[i - 1].fastDriveMgdlPerMin
+            val b = samples[i].fastDriveMgdlPerMin
+            if (!a.isFinite() || !b.isFinite() || b >= a) break
+            n++
+        }
+        return n
+    }
+
     data class Report(
         val classification: Classification,
         val variants: List<Variant>,
         /** Reine Rechenzeit der Variantenmatrix, nicht des Regelpfads. */
         val computeDurationMs: Double,
+        /** Leer, wenn die Senkung trivial waere (fast >= slow) oder kein
+         *  schneller Drive vorliegt. */
+        val downVariants: List<DownVariant> = emptyList(),
     )
 
     fun classify(

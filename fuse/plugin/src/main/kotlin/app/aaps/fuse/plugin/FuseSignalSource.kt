@@ -40,6 +40,16 @@ class FuseSignalSource(
     private val profileFunction: ProfileFunction,
 ) {
 
+    /**
+     * Zustand der stabilen Signalepoche - MONOTON: `maxOf` mit jedem neuen
+     * Bruchkandidaten. Die Monotonie traegt zwei Robustheiten: (a) faellt ein
+     * alter Bruch aus dem rollenden Puffer, bleibt die Epoche stehen statt
+     * zurueckzuspringen; (b) eine Grenze, die mehrere Zyklen lang sichtbar
+     * ist (Input-Sprung im Puffer), setzt die Epoche genau einmal.
+     * Prozesslokal mit Absicht - s. [Signal.signalEpochTs].
+     */
+    private var signalEpochTs = 0L
+
     data class Signal(
         val sourceTs: Long,
         /** Der KALIBRIERTE ROHWERT am Anker, ungefiltert. Die Sprungerkennung
@@ -144,6 +154,22 @@ class FuseSignalSource(
          *  beginnt; der Evidenzkern braucht ihn deshalb ausdruecklich und darf
          *  ihn nicht aus `windowFromTs` raten. */
         val segmentStartTs: Long,
+        /**
+         * STABILE SIGNALEPOCHE (Toni 22.08.) - die Segment-IDENTITAET des
+         * Erwartungs-Ledgers. Sie wechselt NUR bei einem echten Bruch:
+         * CGM-Luecke > 3 min, Sensor-/Kalibrierepoche, Input-Sprung oder
+         * Prozessneustart (der Filterzustand ist dann weg, Prognosen davor
+         * und danach sind nicht vergleichbar).
+         *
+         * AUSDRUECKLICH NICHT [segmentStartTs]: der ist im lueckenfreien
+         * Normalfall die GLEITENDE Unterkante des 18-min-Fensters und wandert
+         * mit jedem CGM-Wert. Als Identitaet ueber den 120-min-Horizont kann
+         * er sich per Konstruktion nie selbst wiedertreffen - alle 1091
+         * Outcomes des ersten Messlaufs waren deshalb UNVERIFIABLE. Fuer die
+         * BGI-Bereinigung bleibt er richtig; fuer Identitaet gilt diese
+         * Epoche.
+         */
+        val signalEpochTs: Long,
     )
 
     sealed interface Outcome {
@@ -271,6 +297,23 @@ class FuseSignalSource(
         val adjusted = BgiAdjustedSeries.adjust(samples)
         val rSigned = BgiAdjustedSeries.theilSen(adjusted.points, sourceTs)
 
+        // ---- STABILE SIGNALEPOCHE (Toni 22.08.) -------------------------
+        // Bruchkandidaten dieses Zyklus: eine explizite Fenstergrenze
+        // (Sensor-/Kalibrierepoche oder Input-Sprung: dann BEGINNT die Reihe
+        // an der Grenze) und die juengste CGM-Luecke > 3 min im Puffer. Die
+        // rollende Pufferkante (bound == NONE) ist ausdruecklich KEIN Bruch.
+        val epochBoundaryTs = if (bound != SignalWindow.Bound.NONE) series.first().tsMs else 0L
+        val gapBreakTs = run {
+            val ts = series.map { it.tsMs }
+            var found = 0L
+            for (i in ts.size - 1 downTo 1) {
+                if (ts[i] - ts[i - 1] > BgiAdjustedSeries.SEGMENT_BREAK_MS) { found = ts[i]; break }
+            }
+            found
+        }
+        if (signalEpochTs == 0L) signalEpochTs = series.first().tsMs
+        signalEpochTs = maxOf(signalEpochTs, epochBoundaryTs, gapBreakTs)
+
         return Outcome.Ok(
             Signal(
                 sourceTs = sourceTs,
@@ -302,6 +345,7 @@ class FuseSignalSource(
                 boundedBy = bound,
                 windowFromTs = window.fromTs,
                 segmentStartTs = windowStart,
+                signalEpochTs = signalEpochTs,
             )
         )
     }

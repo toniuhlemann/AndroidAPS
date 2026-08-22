@@ -1305,10 +1305,11 @@ class FuseCycleRunner(
         // BGI-bereinigte Antrieb bereits nachhaltig gegen den traegen
         // 18-min-Antrieb? Das Ergebnis wird unten nur fuer parallele Bahnen
         // und den Export verwendet. Weder `state` noch `decision` lesen es.
+        val turnSamples = onsetRing.map {
+            TurnResponseShadow.Sample(it.tsMs, it.ukfRatePerMin, it.fastDriveMgdlPerMin)
+        }
         val turnClassification = TurnResponseShadow.classify(
-            samples = onsetRing.map {
-                TurnResponseShadow.Sample(it.tsMs, it.ukfRatePerMin, it.fastDriveMgdlPerMin)
-            },
+            samples = turnSamples,
             slowDriveMgdlPerMin = band.mean,
             riseThresholdMgdlPerMin = cfg.riseRampLowR,
             signalHealthy = step.health == Health.READY,
@@ -1774,7 +1775,12 @@ class FuseCycleRunner(
             )
             return effectiveTau to ((TrajectoryCore.predict(input) as? PredictorOutcome.Ok)?.result)
         }
-        val turnShadowStartNs = System.nanoTime()
+        // Rechenzeit der MATRIX in zwei TEILSPANNEN akkumuliert: zwischen den
+        // Shadow-Bloecken laeuft der produktive Regelpfad, und der gehoert
+        // nicht in diese Zahl (Review 22.08. - die alte Einspann-Messung
+        // enthielt ihn und machte die Kostenzusage der Matrix unpruefbar).
+        var turnShadowNs = 0L
+        val turnShadowBlock1Ns = System.nanoTime()
         val shadowPaths = mutableListOf<ShadowPath>()
         // Die Matrix ist nur an einem BESTAETIGTEN Wendepunkt relevant. Sie
         // in 1440 normalen Tageszyklen zu rechnen waere dosierneutral in der
@@ -1800,6 +1806,7 @@ class FuseCycleRunner(
                 adaptiveMain, adaptiveRestraint,
             )
         }
+        turnShadowNs += System.nanoTime() - turnShadowBlock1Ns
 
         // Schwanzhaftung. C1/C2: pessimistisch ueber Haupt- UND Bremsbahn und
         // PRIOR-FREI - ein Marker-Prior darf kein Schwanzbudget erzeugen
@@ -2089,6 +2096,7 @@ class FuseCycleRunner(
         // ausserhalb: `candidateSmbU` heisst daher nicht "abgegeben", sondern
         // "unter dieser Bahn vor Autorisierungs-Lifts noch zulaessig".
         // Genau diese Stufe erzeugte im Fall #1 um 11:33 die 0,30 U.
+        val turnShadowBlock2Ns = System.nanoTime()
         val shadowKernel = kernel()
         val shadowCaps = CandidateSearch.Caps(
             remainingReleaseBudgetU = cfg.maxSmbU,
@@ -2167,10 +2175,111 @@ class FuseCycleRunner(
                 candidateReject = shadowCandidate?.reject?.name,
             )
         }
+        // ---- ADAPTIVE-DOWN ALS SCHATTEN (Toni 22.08.) --------------------
+        //
+        // Einseitige BEDARFSSENKUNG: die Mittelbahn faellt auf min(r, fast),
+        // geklemmt an der bestehenden unteren Antriebskante, damit die
+        // Senkung nie zur Sicherheitsaussage wird. Guard, Tail und Bremsbahn
+        // laufen unveraendert auf dem PRODUKTIVEN Zeugnis - gesenkt wird nur,
+        // was der Regler FORDERT, nie, wovor er schuetzt.
+        //
+        // `vetted` ist die stufengleiche Referenz (Kandidat VOR Prime,
+        // Fundament und Endriegel). Die drei Ausloeser teilen sich EINE
+        // gesenkte Bahn - sie unterscheiden sich nur im WANN, nicht im WIE;
+        // mehr als ein zusaetzlicher Predict+Suche-Lauf entsteht pro Zyklus
+        // also nicht, und auch der nur bei fast < slow.
+        val downVariants: List<TurnResponseShadow.DownVariant> = run {
+            val fast = shadowFast ?: return@run emptyList()
+            if (produktivTauPos == null || fast >= band.mean) return@run emptyList()
+            val streak = TurnResponseShadow.declineStreak(turnSamples)
+            val refZeile = TurnResponseShadow.DownVariant(
+                name = "BASE", triggered = false, declineStreak = streak,
+                midDriveMgdlPerMin = built.input.drive.meanMgdlPerMin,
+                predAtReleaseMgdl = prediction.points
+                    .firstOrNull { it.offsetMin == cfg.releaseHorizonMin }?.meanBg,
+                insulinReqU = vetted.insulinReqU,
+                candidateSmbU = vetted.smbU,
+                candidateBinding = vetted.bindingLimit,
+                candidateReject = candidateResult?.reject?.name,
+                avoidedSmbU = 0.0,
+            )
+            // Die Senkung erhaelt die BANDORDNUNG: faellt die Mittelbahn
+            // unter die untere Kante (bei spreizungsfreiem Band ist
+            // lower == mean, die Klemme an der Kante hatte die Senkung
+            // komplett neutralisiert), ziehen lower und prior-freie Kante
+            // mit. MESSKONSEQUENZ, ehrlich benannt: Guard/Tail der Zeile
+            // rechnen damit auf der GESENKTEN Bahn und sind strenger als
+            // produktiv - `avoidedSmbU` ist eine OBERGRENZE. Offline trennt
+            // `candidateBinding` die Bedarfssenkung von einer Guard-Bindung,
+            // und `insulinReqU` traegt die reine Bedarfsgroesse.
+            val gesenkterMid = minOf(built.input.drive.meanMgdlPerMin, fast)
+            val loweredMain = (TrajectoryCore.predict(
+                built.input.copy(
+                    drive = built.input.drive.copy(
+                        meanMgdlPerMin = gesenkterMid,
+                        lowerMgdlPerMin = minOf(built.input.drive.lowerMgdlPerMin, gesenkterMid),
+                        lowerPriorFreeMgdlPerMin = built.input.drive.lowerPriorFreeMgdlPerMin
+                            ?.let { minOf(it, gesenkterMid) },
+                        uncertaintyMethodId = built.input.drive.uncertaintyMethodId + "+TURN_DOWN_SHADOW",
+                    ),
+                )
+            ) as? PredictorOutcome.Ok)?.result
+            val gesenkteZeile: TurnResponseShadow.DownVariant? = loweredMain?.let { lm ->
+                val downBase = FuseController.decide(
+                    state, lm,
+                    FuseController.Limits(
+                        guardFloorMgdl = cfg.guardFloorMgdl,
+                        releaseHorizonMin = cfg.releaseHorizonMin,
+                    ),
+                    tail,
+                    restraint,
+                    evidenceCreditActive = evidenzKredit > 0.0,
+                    evidenceMayOverrideRebound = reboundOverrideErlaubt,
+                    lowThreat = lowThreatResult.verdict,
+                    onsetCapU = if (onset.active) onset.remainingU else null,
+                )
+                val downCandidate = if (downBase.smbU <= 0.0 || shadowKernel == null) null else
+                    CandidateSearch.search(
+                        prediction = lm,
+                        kernel = shadowKernel,
+                        isfSlots = built.input.isfSlots,
+                        band = candidateBand,
+                        caps = shadowCaps,
+                        ledgerHold = ledgerView.hold,
+                        restraint = restraint,
+                    )
+                val downDecision = CandidateGate.apply(downBase, downCandidate, bolusStep)
+                TurnResponseShadow.DownVariant(
+                    name = "", triggered = true, declineStreak = streak,
+                    midDriveMgdlPerMin = gesenkterMid,
+                    predAtReleaseMgdl = lm.points
+                        .firstOrNull { it.offsetMin == cfg.releaseHorizonMin }?.meanBg,
+                    insulinReqU = downBase.insulinReqU,
+                    candidateSmbU = downDecision.smbU,
+                    candidateBinding = downDecision.bindingLimit,
+                    candidateReject = downCandidate?.reject?.name,
+                    avoidedSmbU = maxOf(0.0, vetted.smbU - downDecision.smbU),
+                )
+            }
+            fun zeile(name: String, ausgeloest: Boolean) = when {
+                !ausgeloest -> refZeile.copy(name = name)
+                gesenkteZeile != null -> gesenkteZeile.copy(name = name)
+                // Ausgeloest, aber Bahn nicht berechenbar: als benannte
+                // Luecke exportieren, NICHT als stille Referenzzeile - sonst
+                // saehe der Ausloeser offline aus, als haette er nie gezogen.
+                else -> TurnResponseShadow.DownVariant(
+                    name, true, streak, gesenkterMid,
+                    null, null, null, null, "PREDICT_FAILED", null,
+                )
+            }
+            listOf(refZeile, zeile("NOW", true), zeile("P2", streak >= 2), zeile("P3", streak >= 3))
+        }
+        turnShadowNs += System.nanoTime() - turnShadowBlock2Ns
         val turnResponseShadow = TurnResponseShadow.Report(
             turnClassification,
             turnVariants,
-            (System.nanoTime() - turnShadowStartNs) / 1_000_000.0,
+            turnShadowNs / 1_000_000.0,
+            downVariants,
         )
 
         // Sofort-Freigabe: Plan aus derselben Momentaufnahme, Anhebung NUR
