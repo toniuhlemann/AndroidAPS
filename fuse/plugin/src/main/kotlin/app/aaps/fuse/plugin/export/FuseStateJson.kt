@@ -66,6 +66,11 @@ object FuseStateJson {
     // Phase B nach; ein manueller NORMAL-Bolus nach dem Marker sperrt nur den
     // Sicherheits-Uebertrag. Nachgetragen am 22.08. - der Bump selbst kam
     // ohne Journaleintrag (Review-Finding).
+    // v19 (22.08. spaet): die Re-Arm-Sperre des Liveness-Kanals NULLT den
+    // Bewaffnungs-Streak. Live gemessen (22:53-23:03) zaehlte er waehrend
+    // der Pause 1->10 weiter, und der Kanal war nach Fristablauf sofort
+    // wieder scharf - der Vertrag verlangt drei FRISCHE Druckzyklen nach
+    // der Sperre.
     // v18 (22.08. nachts): der Liveness-Kanal (Bauvertrag Toni+Codex,
     // Schalter default AUS). Bei bestaetigtem, nicht fallendem Hochdruck
     // wird der erkannte Mittelbahn-Bedarf dosierbar: final = max(normal,
@@ -88,7 +93,7 @@ object FuseStateJson {
     // - dosierwirksam auf der TBR-Achse, bis v15 unsichtbar im Fingerprint:
     // zwei Laeufe mit 5 und 20 mg/dl Schwelle trugen denselben Regelstand,
     // und der Trail konnte nicht einmal zeigen, welche Werte galten.
-    const val RULE_SET_VERSION = 18
+    const val RULE_SET_VERSION = 19
 
     /** Schema des Trail-Datensatzes - s. die Notiz an der Schreibstelle. */
     const val SCHEMA_VERSION = 4
@@ -378,6 +383,8 @@ object FuseStateJson {
                     .put("active", outcome.livenessActive)
                     .put("streak", outcome.livenessStreak)
                     .put("candidateU", fin(outcome.livenessCandidateU))
+                    .put("needU", fin(outcome.livenessNeedU))
+                    .put("releaseMeanMgdl", fin(outcome.livenessReleaseMeanMgdl))
                     .put("liftU", fin(outcome.livenessLiftU))
                     .put("binding", outcome.livenessBinding ?: JSONObject.NULL)
                     .put("denial", outcome.livenessDenial ?: JSONObject.NULL)

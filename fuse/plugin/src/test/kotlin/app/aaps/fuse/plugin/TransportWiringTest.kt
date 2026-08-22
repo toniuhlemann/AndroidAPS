@@ -5957,6 +5957,13 @@ class TransportWiringTest : TestBaseWithProfile() {
                     LivenessChannel.quantize(o.livenessCandidateU, 0.05), o.decision.smbU, 1e-9,
                     "die Endmenge ist der rasterisierte Kanal-Kandidat, kein Tail-Rest",
                 )
+                // Codex 22.08. spaet: der rohe Bedarf MUSS im Hub-Zyklus
+                // exportiert sein - er ist die Zahl, die der Viewer an der
+                // Bedarf-Stelle zeigt, wenn der Normalpfad null meldet.
+                assertTrue(
+                    (o.livenessNeedU ?: -1.0) > 0.0 && (o.livenessReleaseMeanMgdl ?: 0.0) > 0.0,
+                    "needU/releaseMean fehlen im Hub-Zyklus: ${o.livenessNeedU}/${o.livenessReleaseMeanMgdl}",
+                )
             }
             summeAn += o.decision.smbU
         }
@@ -5976,6 +5983,7 @@ class TransportWiringTest : TestBaseWithProfile() {
             if (o.decision.block == FuseController.Block.TAIL) tailGesehen = true
             if (o.abortReason == null) assertEquals("DISABLED", o.livenessDenial)
             assertEquals(0.0, o.livenessLiftU, 1e-9)
+            assertEquals(null, o.livenessNeedU, "AUS: die Bedarfsrechnung lief nicht - null, nicht 0")
         }
         assertTrue(tailGesehen, "auch der AUS-Lauf muss den Deadlock erreichen - sonst beweist die Differenz nichts")
         assertTrue(
@@ -6380,6 +6388,55 @@ class TransportWiringTest : TestBaseWithProfile() {
 
 
     /**
+     * v19-Vertrag (Codex, Live-Trail 22:53-23:03): die Sperre NULLT den
+     * Streak. Vorher zaehlte er waehrend der Pause weiter (live gemessen
+     * 1->10), und der Kanal war nach Fristablauf SOFORT wieder scharf -
+     * statt drei frische Druckzyklen zu verlangen. Der Exit laeuft hier
+     * ueber einen Abbruchzyklus, weil nur dieser Exit KEINE stehende
+     * Bedingung hinterlaesst (Manual-Exit nullt den Streak selbst per
+     * Wanduhr, Modell-/Wende-Exits blocken auch nach der Pause weiter -
+     * die Mutation waere dort unsichtbar).
+     */
+    @Test
+    fun `Liveness v19 - die Sperre nullt den Streak und danach zaehlen drei frische Zyklen`(@TempDir dir: File) {
+        livenessLage(dir)
+        // Minimaler AUFWAERTS-Knick nach dem Abbruch: im rauschfreien Rig
+        // faellt der Drive sonst asymptotisch ewig weiter und TURN_STANDING
+        // blockte die Wiederbewaffnung dauerhaft (dieselbe Kante wie in der
+        // Scheinwende-Gegenprobe, nur andersherum aufgeloest).
+        knick2AbMin = 24
+        steigungNachKnick2 = 1.45
+        var aktiv = false
+        repeat(22) { val o = cycle(); if (o.livenessActive) aktiv = true }
+        assertTrue(aktiv, "der Lauf muss stehen")
+        val kaputt = org.mockito.kotlin.spy(validProfile)
+        org.mockito.kotlin.doReturn(5000.0).whenever(kaputt).getIsfMgdlTimeFromMidnight(org.mockito.kotlin.any())
+        whenever(profileFunction.getProfile()).thenReturn(kaputt)
+        whenever(profileFunction.getProfile(any())).thenReturn(kaputt)
+        val abbruch = cycle()
+        assertEquals("OBSERVATION_LOST", abbruch.livenessExit)
+        val sperreBis = abbruch.livenessReArmUntilTs
+        whenever(profileFunction.getProfile()).thenReturn(validProfile)
+        whenever(profileFunction.getProfile(any())).thenReturn(validProfile)
+        var ersterLiftTs = 0L
+        repeat(24) {
+            val o = cycle()
+            if (o.computeTs < sperreBis) {
+                assertEquals(0, o.livenessStreak, "waehrend der Sperre bleibt der Streak null")
+            }
+            if (ersterLiftTs == 0L && o.livenessLiftU > 0.0) ersterLiftTs = o.computeTs
+        }
+        assertTrue(ersterLiftTs > 0L, "nach Sperre und drei frischen Zyklen muss der Kanal wieder heben")
+        // Drei frische Zyklen 1/3, 2/3, 3/3: der fruehestmoegliche Hub liegt
+        // ZWEI Minuten nach dem ersten freien Zyklus - eine Sofort-Bewaffnung
+        // aus einem waehrend der Pause gezaehlten Streak laege bei +0.
+        assertTrue(
+            ersterLiftTs >= sperreBis + 2 * 60_000L,
+            "drei FRISCHE Druckzyklen nach Ablauf: Sperre bis $sperreBis, Hub $ersterLiftTs",
+        )
+    }
+
+    /**
      * Gegenprobe 7 (Audit 22.08.): das ZWEITE unbeobachtete Loch neben dem
      * Abort - der predictorfreie Marker-Fallback-Zyklus. Er dosiert, laeuft
      * aber ohne die Kanalstufe; ein aktiver Lauf muss auch dort enden.

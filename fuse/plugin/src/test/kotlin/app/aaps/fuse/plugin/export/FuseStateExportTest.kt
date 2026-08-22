@@ -642,11 +642,13 @@ class FuseStateExportTest {
         // v14 der Sicherheitsaufschub, v15 der getrennte positive Horizont,
         // v16 die zwei Low-Tor-Stellgroessen im Fingerprint, v17 der
         // Marker-Prime-Aufschub (Punkt 6), v18 der Liveness-Kanal
-        // (mengenbasierter Zusatzkanal gegen den Tail-Deadlock, 22.08.).
+        // (mengenbasierter Zusatzkanal gegen den Tail-Deadlock, 22.08.),
+        // v19 die streaknullende Re-Arm-Sperre (drei frische Druckzyklen
+        // nach der Pause - live zaehlte er waehrend der Sperre weiter).
         // DIESER TEST IST ABSICHTLICH STUR: er faellt bei jedem Bump um und
         // zwingt damit zu der Frage, ob die Aenderung wirklich dosierwirksam
         // war - ein stiller Bump waere so wertlos wie ein vergessener.
-        assertEquals(18, FuseStateJson.RULE_SET_VERSION)
+        assertEquals(19, FuseStateJson.RULE_SET_VERSION)
         assertTrue(
             FuseStateJson.hashOf(cfg)!!.isNotEmpty(),
             "und der Hash bleibt berechenbar",

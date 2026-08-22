@@ -651,6 +651,15 @@ class FuseCycleRunner(
         val livenessActive: Boolean = false,
         val livenessStreak: Int = 0,
         val livenessCandidateU: Double = 0.0,
+        /** Der ROHE Kanalbedarf `max(0, (releaseMean-target)/ISF)` (Codex
+         *  22.08. spaet). null = die Bedarfsrechnung lief in diesem Zyklus
+         *  nicht (Kanal aus, Riegel, nicht bewaffnet); 0.0 = gelaufen, kein
+         *  positiver Bedarf. Der Viewer darf ihn NIE aus candidateU/ratio
+         *  zurueckrechnen (maxSMB-Bindung ist nicht invertierbar). */
+        val livenessNeedU: Double? = null,
+        /** Die Mittelbahn, gegen die der Kanal gerechnet hat - NICHT immer
+         *  dieselbe wie decision.predAtReleaseMgdl (min mit Bremsbahn). */
+        val livenessReleaseMeanMgdl: Double? = null,
         val livenessLiftU: Double = 0.0,
         val livenessBinding: String? = null,
         val livenessDenial: String? = null,
@@ -2892,6 +2901,8 @@ class FuseCycleRunner(
         var livenessDenial: String? = null
         var livenessExit: String? = null
         var livenessModelReject: String? = null
+        var livenessNeedU: Double? = null
+        var livenessReleaseMeanMgdl: Double? = null
         var livenessCandidateU = 0.0
         var livenessLiftU = 0.0
         var livenessBinding: String? = null
@@ -3057,6 +3068,13 @@ class FuseCycleRunner(
             if (!livenessActive) {
                 when {
                     computeTs < episodes.livenessReArmUntilTs -> {
+                        // v19 (Codex-Befund im Live-Trail 22.08. 22:53-23:03):
+                        // der Streak lief WAEHREND der Sperre weiter (1->10)
+                        // und der Kanal war nach Fristablauf sofort wieder
+                        // scharf. Vertrag: die Sperre nullt den Streak jeden
+                        // Zyklus - erst NACH Ablauf zaehlen drei frische
+                        // Druckzyklen (1/3, 2/3, 3/3), dann bewaffnet er.
+                        livenessStreak = 0
                         livenessDenial = "REARM_BLOCKED"
                         return@run nachAufschub
                     }
@@ -3095,6 +3113,14 @@ class FuseCycleRunner(
                 ?: return@run sperren("NO_RELEASE_MEAN")
             val ratio = state.effectiveSmbRatio
             val bedarfU = kotlin.math.max(0.0, (releaseMean - target) / isf)
+            // Codex 22.08. spaet: der ROHE Kanalbedarf gehoert in den Export.
+            // Ohne ihn stand im Viewer "Bedarf -", waehrend der Kanal 0,10 U
+            // anforderte (decision.insulinReqU ist im Deadlock null, und
+            // candidateU/ratio ist bei maxSMB-Bindung nicht invertierbar).
+            // null = Rechnung nicht ausgefuehrt; 0.0 = ausgefuehrt, kein
+            // positiver Bedarf.
+            livenessNeedU = bedarfU
+            livenessReleaseMeanMgdl = releaseMean
             livenessCandidateU = LivenessChannel.candidateU(
                 releaseMeanMgdl = releaseMean,
                 targetMgdl = target,
@@ -3335,6 +3361,8 @@ class FuseCycleRunner(
             livenessActive = livenessActive,
             livenessStreak = livenessStreak,
             livenessCandidateU = livenessCandidateU,
+            livenessNeedU = livenessNeedU,
+            livenessReleaseMeanMgdl = livenessReleaseMeanMgdl,
             livenessLiftU = livenessLiftU,
             livenessBinding = livenessBinding,
             livenessDenial = livenessDenial,
