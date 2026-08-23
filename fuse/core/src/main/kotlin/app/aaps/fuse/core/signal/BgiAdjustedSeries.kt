@@ -180,8 +180,12 @@ object BgiAdjustedSeries {
      * Untergrenze DARAUS zu bilden ist Policy und gehoert nach
      * [PairSlopeBand], nicht in diese gelockte Datei.
      */
-    internal fun pairSlopes(points: List<AdjustedPoint>, nowTs: Long): ArrayList<Double>? {
-        val window = points.filter { nowTs - it.sourceTs <= WINDOW_MS && it.sourceTs <= nowTs }
+    internal fun pairSlopes(points: List<AdjustedPoint>, nowTs: Long, windowMs: Long = WINDOW_MS): ArrayList<Double>? {
+        // `windowMs` mit Default = WINDOW_MS: die Produktion ruft ohne
+        // Argument und bleibt bitgleich (der gelockte Kandidat aendert sich
+        // nicht). Der Parameter existiert fuer den OFFLINE-Fenster-Replay
+        // (Phase 2, Toni/Codex 23.08.) - kein Produktionspfad setzt ihn.
+        val window = points.filter { nowTs - it.sourceTs <= windowMs && it.sourceTs <= nowTs }
         if (window.size < MIN_POINTS) return null
         val slopes = ArrayList<Double>()
         for (i in window.indices) for (j in i + 1 until window.size) {

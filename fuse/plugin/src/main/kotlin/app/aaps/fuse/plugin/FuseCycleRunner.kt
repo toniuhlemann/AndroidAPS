@@ -46,6 +46,7 @@ import app.aaps.fuse.core.observer.SafetyReason
 import app.aaps.fuse.core.observer.Health
 import app.aaps.fuse.core.observer.ObserverStateMachine
 import app.aaps.fuse.core.observer.ObserverStep
+import app.aaps.fuse.core.signal.BgiAdjustedSeries
 import app.aaps.fuse.core.signal.PairSlopeBand
 import app.aaps.fuse.core.predictor.ActualTrajectoryFactory
 import app.aaps.fuse.core.predictor.DriveDecayModel
@@ -133,6 +134,16 @@ class FuseCycleRunner(
      * beobachtet. Einzige zulaessige Quelle ist das Umschalten selbst.
      */
     private val markerPressObserved: () -> Long,
+    /**
+     * NUR FUER DEN PHASE-2-FENSTER-REPLAY (Toni/Codex 23.08.): ersetzt das
+     * Theil-Sen-Fenster der Antriebs-Schaetzung. Am Geraet ist der Wert
+     * konstruktionsbedingt null - er ist KEIN Preference und die
+     * DI-Konstruktion kennt den Parameter nicht. Nur der Offline-Treiber
+     * im Test-Scope setzt ihn (W10/W8-Gegenlaeufe auf aufgezeichneten
+     * Tagen); der W18-Referenzlauf laesst ihn null und muss die
+     * aufgezeichneten Entscheidungen reproduzieren (Validierungstor).
+     */
+    private val theilSenWindowMsOverride: Long? = null,
     /**
      * DIE EINE EVIDENZ-KONFIGURATION DES ZYKLUS.
      *
@@ -1163,7 +1174,12 @@ class FuseCycleRunner(
         // "Mittel da, Band fehlt" geben: ein Rueckfall auf lower = mean wuerde
         // den Null-Abstand ausgerechnet bei der schlechtesten Datenlage still
         // wiederherstellen.
-        val band = PairSlopeBand.estimate(signal.adjusted.points, signal.sourceTs, cfg.driveLowerQuantilePct)
+        val band = PairSlopeBand.estimate(
+            signal.adjusted.points, signal.sourceTs, cfg.driveLowerQuantilePct,
+            // Nur der Phase-2-Replay-Treiber setzt das Fenster um; am Geraet
+            // ist der Wert konstruktionsbedingt null (kein Preference-Weg).
+            windowMs = theilSenWindowMsOverride ?: BgiAdjustedSeries.WINDOW_MS,
+        )
             ?: return abort("drive not estimable (${signal.samplesUsed} samples)", signal, cfg, step)
 
         // Bolus-Aktivitaet am Anker - Eingang des Deckungs-Abschlags.

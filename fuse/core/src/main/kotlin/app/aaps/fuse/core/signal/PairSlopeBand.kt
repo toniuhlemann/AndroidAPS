@@ -109,8 +109,15 @@ object PairSlopeBand {
      * Null-Abstand ausgerechnet in der Lage mit der schlechtesten Datenlage
      * still wiederherstellen.
      */
-    fun estimate(points: List<BgiAdjustedSeries.AdjustedPoint>, nowTs: Long, quantilePct: Int): Estimate? {
-        val slopes = BgiAdjustedSeries.pairSlopes(points, nowTs) ?: return null
+    fun estimate(
+        points: List<BgiAdjustedSeries.AdjustedPoint>,
+        nowTs: Long,
+        quantilePct: Int,
+        /** NUR fuer den Offline-Fenster-Replay (Phase 2); Produktion nutzt
+         *  den Default und bleibt bitgleich. */
+        windowMs: Long = BgiAdjustedSeries.WINDOW_MS,
+    ): Estimate? {
+        val slopes = BgiAdjustedSeries.pairSlopes(points, nowTs, windowMs) ?: return null
         val mean = BgiAdjustedSeries.median(slopes)
         return Estimate(mean, quantile(slopes, mean, quantilePct), slopes.size, quantilePct)
     }

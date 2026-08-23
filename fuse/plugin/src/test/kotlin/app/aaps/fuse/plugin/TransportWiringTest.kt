@@ -265,7 +265,14 @@ class TransportWiringTest : TestBaseWithProfile() {
     private var lueckeBisMin: Int? = null
 
     private fun series(untilTs: Long): List<GV> =
-        generateSequence(start) { it + 60_000L }
+        rohSerie?.let { serie ->
+            return serie.asSequence().filter { it.first <= untilTs }.map { (ts, v) ->
+                GV(
+                    timestamp = ts, value = v, raw = v, noise = 0.0,
+                    sourceSensor = SourceSensor.UNKNOWN, trendArrow = TrendArrow.FLAT
+                )
+            }.toList()
+        } ?: generateSequence(start) { it + 60_000L }
             .takeWhile { it <= untilTs }
             .filter { ts ->
                 val von = lueckeVonMin ?: return@filter true
@@ -304,8 +311,14 @@ class TransportWiringTest : TestBaseWithProfile() {
         // BOLUS-IOB = iob - basaliob. Das Rig stellte beide auf 0, damit war
         // eine Bolus-Ueberdeckung nie darstellbar - der Riegel gegen
         // gemessenes Abwaertsrisiko haette hier nie greifen koennen.
-        it.iob = bolusIobU ?: 0.0; it.basaliob = 0.0
-        it.activity = aktivitaet; it.valid = iobGueltig
+        val karte = iobProTs?.let { k ->
+            val unter = k.floorEntry(atTs)
+            val ueber = k.ceilingEntry(atTs)
+            val nah = listOfNotNull(unter, ueber).minByOrNull { e -> kotlin.math.abs(e.key - atTs) }
+            nah?.takeIf { e -> kotlin.math.abs(e.key - atTs) <= 90_000L }?.value
+        }
+        it.iob = karte?.first ?: bolusIobU ?: 0.0; it.basaliob = 0.0
+        it.activity = karte?.second ?: aktivitaet; it.valid = iobGueltig
     }
 
     /** Ungueltige IOB-Daten -> keine Aktivitaet -> ACTIVITY_MISSING, das
@@ -317,6 +330,14 @@ class TransportWiringTest : TestBaseWithProfile() {
     private var guardBodenMgdl = 70.0
 
     private var iobGueltig = true
+
+    /** PHASE-2-REPLAY (23.08.): aufgezeichnete Rohserie statt synthetischer
+     *  Kurve. null = normale Rig-Kurve. */
+    private var rohSerie: List<Pair<Long, Double>>? = null
+
+    /** PHASE-2-REPLAY: (iobU, activityUPerMin) je Sample-Zeitstempel -
+     *  naechster Eintrag binnen 90 s; null = normale Rig-Hebel. */
+    private var iobProTs: java.util.TreeMap<Long, Pair<Double, Double>>? = null
     private var boluses: List<BS> = emptyList()
 
     private fun roundUp(t: Long) = if (t % 60_000L == 0L) t else (t / 60_000L + 1) * 60_000L
@@ -357,12 +378,13 @@ class TransportWiringTest : TestBaseWithProfile() {
         neuerRunner(FuseLedgerAdapter())
     }
 
-    private fun neuerRunner(l: FuseLedgerAdapter, evidenz: EvidenceStock.Config = EvidenceStock.Config()) {
+    private fun neuerRunner(l: FuseLedgerAdapter, evidenz: EvidenceStock.Config = EvidenceStock.Config(), fensterMs: Long? = null) {
         ledger = l
         runner = FuseCycleRunner(
             iobCobCalculator, profileFunction, activePlugin, constraintsChecker, commandQueue,
             preferences, persistenceLayer, processedTbrEbData, dateUtil, ledger, "test-epoch", { markerPress },
             evidenceConfig = evidenz,
+            theilSenWindowMsOverride = fensterMs,
             predict = { input ->
                 predictReject
                     ?.let { PredictorOutcome.Rejected(it, "erzwungen") }
@@ -6391,6 +6413,175 @@ class TransportWiringTest : TestBaseWithProfile() {
         assertEquals(0.0, o2.livenessLiftU, 1e-9)
     }
 
+
+
+    /**
+     * PHASE-2-FENSTER-REPLAY (Toni/Codex 23.08.): die AUFGEZEICHNETEN Tage
+     * laufen durch den ECHTEN Runner - einmal mit Produktionsfenster W18
+     * (Validierungstor: muss die aufgezeichneten Entscheidungen treffen),
+     * dann W10 und W8 ueber den Konstruktor-Override, der am Geraet
+     * konstruktionsbedingt nicht setzbar ist. Gespeist wird alles aus dem
+     * Trail: Roh-BG-Serie, IOB+Aktivitaet je Sample, ISF je Tagesminute,
+     * Ziel bleibt Rig-Profil (Toni faehrt ~98). GRENZE, ehrlich benannt:
+     * Budgets/Ledger starten frisch (der Trailausschnitt beginnt deshalb
+     * an einer ruhigen Grenze), und der spaetere reale BG entstand unter
+     * der W18-Dosierung - verglichen werden Entscheidungs-Gegenrechnungen,
+     * kein BG-Verlauf.
+     *
+     * Laeuft NUR mit Umgebungsvariablen (sonst uebersprungen):
+     *   FUSE_REPLAY_TRAIL = Pfad zur jsonl-Datei
+     *   FUSE_REPLAY_VON/BIS = optional epoch-ms-Grenzen
+     *   FUSE_REPLAY_OUT = Ausgabeverzeichnis (Default: neben der Quelle)
+     */
+    @Test
+    fun `Phase 2 - Fenster-Replay der aufgezeichneten Tage`(@TempDir dir: File) {
+        val quelle = System.getenv("FUSE_REPLAY_TRAIL")
+        org.junit.jupiter.api.Assumptions.assumeTrue(quelle != null, "nur mit FUSE_REPLAY_TRAIL")
+        val von = System.getenv("FUSE_REPLAY_VON")?.toLong() ?: 0L
+        val bis = System.getenv("FUSE_REPLAY_BIS")?.toLong() ?: Long.MAX_VALUE
+        val outDir = File(System.getenv("FUSE_REPLAY_OUT") ?: File(quelle!!).parent).also { it.mkdirs() }
+
+        data class Zyklus(
+            val ts: Long, val raw: Double, val q1: Double, val act: Double, val isf: Double,
+            val iobU: Double, val maxIob: Double, val marker: Long,
+            val smbU: Double, val block: String?, val policy: org.json.JSONObject?,
+        )
+        val zyklen = ArrayList<Zyklus>()
+        File(quelle).forEachLine { line ->
+            runCatching {
+                val o = org.json.JSONObject(line)
+                val sig = o.optJSONObject("signal") ?: return@runCatching
+                val st = o.optJSONObject("state")
+                val dec = o.optJSONObject("decision")
+                val ts = sig.optLong("sourceTs").takeIf { it > 0L } ?: o.optLong("sourceTs")
+                if (ts !in von..bis) return@runCatching
+                val raw0 = sig.optDouble("rawBg"); val q1 = sig.optDouble("q1")
+                val act = sig.optDouble("activityAtAnchor"); val isf = sig.optDouble("isfAtAnchor")
+                if (ts <= 0L || !raw0.isFinite() || !act.isFinite() || !isf.isFinite()) return@runCatching
+                zyklen.add(Zyklus(
+                    ts, raw0, q1, act, isf,
+                    st?.optDouble("iobU")?.takeIf { it.isFinite() } ?: 0.0,
+                    st?.optDouble("maxIobU")?.takeIf { it.isFinite() } ?: 8.0,
+                    st?.optLong("markerArmedTs") ?: 0L,
+                    dec?.optDouble("smbU")?.takeIf { it.isFinite() } ?: 0.0,
+                    dec?.optString("block")?.takeIf { it.isNotBlank() },
+                    o.optJSONObject("policy")?.optJSONObject("values"),
+                ))
+            }
+        }
+        zyklen.sortBy { it.ts }
+        require(zyklen.size > 100) { "zu wenig Zyklen: ${zyklen.size}" }
+        println("REPLAY: ${zyklen.size} Zyklen ${java.util.Date(zyklen.first().ts)} .. ${java.util.Date(zyklen.last().ts)}")
+
+        // Politik aus der ERSTEN Zeile auf die Rig-Hebel uebertragen; jede
+        // Abweichung von den Rig-Konstanten wird gedruckt statt still zu
+        // driften.
+        println("POLICY der ersten Zeile: " + (zyklen.firstNotNullOfOrNull { it.policy }?.toString() ?: "FEHLT"))
+        var pol: org.json.JSONObject? = null
+        fun d(k: String, sonst: Double) = pol?.optDouble(k)?.takeIf { it.isFinite() } ?: sonst
+        fun i(k: String, sonst: Int) = pol?.optInt(k, sonst) ?: sonst
+        fun b(k: String, sonst: Boolean) = pol?.optBoolean(k, sonst) ?: sonst
+        fun politikAnwenden(p: org.json.JSONObject?) {
+            pol = p ?: return
+            maxSmbU = d("maxSmbU", maxSmbU)
+            guardBodenMgdl = d("guardFloorMgdl", guardBodenMgdl)
+            iobThPct = i("iobThPercent", iobThPct)
+            quantilePct = i("driveLowerQuantilePct", quantilePct)
+            tailGuard = b("tailGuardEnabled", tailGuard)
+            conditionalTail = b("conditionalTailEnabled", conditionalTail)
+            fundamentAn = b("mealFoundationEnabled", fundamentAn)
+            fundamentAnteil = d("mealFoundationPhaseAShare", fundamentAnteil)
+            fundamentEndeMin = i("mealFoundationEndMin", fundamentEndeMin)
+            aufschubAn = b("deferredPrimeEnabled", aufschubAn)
+            aufschubHorizontMin = d("markerPrimeDescentHorizonMin", aufschubHorizontMin)
+            aufschubFristMin = i("deferredPrimeEndMin", aufschubFristMin)
+            primeHuelleU = d("primeEnvelopeU", primeHuelleU)
+            livenessAn = b("livenessChannelEnabled", livenessAn)
+            livenessCapPct = d("livenessIobCapPercent", livenessCapPct)
+            livenessBgMin = d("livenessBgMinDayMgdl", livenessBgMin)
+            livenessBgMinNacht = pol?.optDouble("livenessBgMinNightMgdl")?.takeIf { it.isFinite() }
+            livenessReArmMin = i("livenessReArmMin", livenessReArmMin)
+            nachtStartMin = i("nightStartMin", nachtStartMin)
+            nachtEndeMin = i("nightEndMin", nachtEndeMin)
+            nightDeadband = b("nightDeadbandEnabled", nightDeadband)
+            // Diese drei sind im Rig FESTE Stubs - fuer den Replay auf die
+            // aufgezeichnete Politik umgebogen (22.08.: Rampe 2,5, Rebound-
+            // Totband 40, Prime-Fenster 20).
+            whenever(preferences.get(FuseDoubleKey.RiseRampHighR)).thenReturn(d("riseRampHighR", 2.0))
+            whenever(preferences.get(FuseDoubleKey.ReboundDeadbandMgdl)).thenReturn(d("reboundDeadbandMgdl", 25.0))
+            whenever(preferences.get(FuseIntKey.PrimeWindowMin)).thenReturn(i("primeWindowMin", 15))
+            whenever(preferences.get(FuseDoubleKey.SmbRatio)).thenReturn(d("smbRatioCorrection", 0.15))
+            whenever(preferences.get(FuseDoubleKey.SmbRatioRise)).thenReturn(d("smbRatioRise", 0.35))
+        }
+        // Der Marker-Schalter steht NICHT in den alten Policy-Exporten -
+        // Toni faehrt ihn konstant AN (Marker-Knopf ist sein Werkzeug).
+        markerAuthorized = true
+        politikAnwenden(zyklen.firstNotNullOfOrNull { it.policy })
+
+        // Rohserie + IOB/Aktivitaets-Karte aus dem Trail.
+        rohSerie = zyklen.map { it.ts to it.raw }
+        iobProTs = java.util.TreeMap(zyklen.associate { it.ts to (it.iobU to it.act) })
+
+        // ISF je Tagesminute aus dem Trail (Toni faehrt ein Zeitprofil).
+        val isfProMin = HashMap<Int, Double>()
+        zyklen.forEach { z ->
+            val min = ((z.ts / 60_000L) % 1440L).toInt() // UTC-Minute; konsistent je Lauf
+            isfProMin[min] = z.isf
+        }
+        val replayProfil = org.mockito.kotlin.spy(validProfile)
+        org.mockito.kotlin.doAnswer { inv ->
+            val sec = inv.getArgument<Int>(0)
+            isfProMin[(sec / 60) % 1440] ?: validProfile.getIsfMgdlTimeFromMidnight(sec)
+        }.whenever(replayProfil).getIsfMgdlTimeFromMidnight(org.mockito.kotlin.any())
+        whenever(profileFunction.getProfile()).thenReturn(replayProfil)
+        whenever(profileFunction.getProfile(any())).thenReturn(replayProfil)
+
+        // WICHTIG: Tagesminute des Rigs vs. Toni - der Runner rechnet
+        // secondsFromMidnight in der JVM-Zeitzone. Der ISF-Spy oben nutzt
+        // dieselbe Uhr wie der Runner, solange beide aus tsMs ableiten -
+        // deshalb hier KEINE lokale Umrechnung: der Spy bekommt die vom
+        // Runner errechneten Sekunden und mappt sie konsistent.
+
+        fun lauf(name: String, fensterMs: Long?): File {
+            transportReset()
+            boluses = emptyList()
+            markerAt = 0L
+            forecastShadowAn = false // Replay braucht die Matrizen nicht - Tempo
+            val adapter = FuseLedgerAdapter().also { it.loadOnce(File(dir, name).also(File::mkdirs), "test-epoch", zyklen.first().ts) }
+            neuerRunner(adapter, fensterMs = fensterMs)
+            val outFile = File(outDir, "replay_$name.csv")
+            outFile.printWriter().use { w ->
+                w.println("ts;smbU;block;binding;insulinReq;liftU;needU;abort;recSmbU;recBlock")
+                var prevMarker = 0L
+                var polText = pol?.toString()
+                for (z in zyklen) {
+                    z.policy?.toString()?.takeIf { it != polText }?.let {
+                        polText = it
+                        politikAnwenden(z.policy)
+                    }
+                    if (z.marker != prevMarker && z.marker > 0L) markerAt = z.marker
+                    prevMarker = z.marker
+                    clock = z.ts
+                    val o = runner.run(false, testPumpe())
+                    w.println(listOf(
+                        z.ts, "%.3f".format(java.util.Locale.US, o.decision.smbU), o.decision.block,
+                        o.decision.bindingLimit,
+                        o.decision.insulinReqU?.let { "%.3f".format(java.util.Locale.US, it) } ?: "",
+                        "%.3f".format(java.util.Locale.US, o.livenessLiftU),
+                        o.livenessNeedU?.let { "%.3f".format(java.util.Locale.US, it) } ?: "",
+                        o.abortReason ?: "",
+                        "%.3f".format(java.util.Locale.US, z.smbU), z.block ?: "",
+                    ).joinToString(";"))
+                }
+            }
+            println("$name -> ${outFile.absolutePath}")
+            return outFile
+        }
+
+        lauf("w18", null)
+        lauf("w10", 10L * 60_000L)
+        lauf("w08", 8L * 60_000L)
+    }
 
     /**
      * Prognose-Shadow-Masterschalter (Toni/Codex 23.08.): AUS heisst leere
