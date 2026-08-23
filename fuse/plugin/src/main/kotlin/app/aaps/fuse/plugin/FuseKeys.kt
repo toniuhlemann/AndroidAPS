@@ -457,6 +457,26 @@ enum class FuseIntKey(
      * `floor(0.05 * 7) = 0`. Deshalb steht die Paaranzahl im Export.
      */
     DriveLowerQuantilePct("fuse_drive_lower_quantile_pct", 50, 5, 50),
+
+    /**
+     * FENSTER DES THEIL-SEN-HAUPTSCHAETZERS [min] (Toni-Vertrag 23.08.).
+     *
+     * Bisher fest 18 (Candidate-Lock R58). Der Zwei-Tage-Replay durch den
+     * echten Runner (22.08. Problemtag / 21.08. Kontrolltag, TZ-korrigiert)
+     * zeigt: W10 weicht am Normaltag praktisch nie ab, entriegelt am
+     * Problemtag aber Onset und Abendessen-Deadlock ueber den NORMALPFAD
+     * (Erstabweichungen 09:50 und 17:49). 18 = bisheriges Verhalten,
+     * bitgleich. Struktureller Informations-Lag ~Fenster/2; kuerzer heisst
+     * aktueller UND rauschanfaelliger (+55% Ruhe-Flips bei W12, Phase 1).
+     *
+     * DOSIERWIRKSAM: steht im Politik-Hash (v22), in policyValues, Backup,
+     * Report und in der Methoden-Kennung TS-PS-...-W<min>-.... Ein
+     * Fensterwechsel ist ein MODELLWECHSEL: der Evidenz-Bestand wird
+     * geschnitten, offene Erwartungen entwertet der neue Hash
+     * (Denial.CONFIG_CHANGED) - W18-Erwartungen duerfen nie als
+     * W10-Evidenz verbucht werden.
+     */
+    TheilSenWindowMin("fuse_theil_sen_window_min", 18, 8, 18),
 }
 
 /**

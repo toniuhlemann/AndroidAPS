@@ -365,6 +365,12 @@ class EpisodeBudgets {
     var forecastShadowEpochTs: Long = 0L
     var forecastShadowLastState: Long = -1L
 
+    /** Zuletzt gesehenes Theil-Sen-Fenster [min]; 0 = nie gesehen. Restart-
+     *  fest, weil der Fensterwechsel-Schnitt (Evidenz-Bestand nullen) sonst
+     *  von einem Neustart verschluckt wuerde: Praeferenz schon neu, Feld
+     *  wieder 0 -> Erstkontakt-Pfad -> kein Schnitt. */
+    var theilSenWindowLastMin: Long = 0L
+
     /**
      * Die Buchung DIESES Zyklus, solange die Publikation nicht feststeht.
      *

@@ -41,6 +41,8 @@
     <string name="fuse_drive_tau_title">Antriebs-Zerfallszeit Tau [min]</string>
     <string name="fuse_drive_tau_summary">Wie lange FUSE annimmt, dass ein beobachteter Anstieg noch weiterwirkt - nach so vielen Minuten ist noch etwa ein Drittel davon uebrig. Praegt die Vorhersage staerker als jeder andere Wert hier. 60 ist ein Platzhalter, kein Messergebnis.</string>
 
+    <string name="fuse_theil_sen_window_title">Theil-Sen-Fenster [min]</string>
+    <string name="fuse_theil_sen_window_summary">Fenster des Hauptschaetzers (8-18). 18 = bisheriges Verhalten. Kuerzer = aktueller, aber rauschanfaelliger (Informations-Lag etwa Fenster/2). Ein Wechsel ist ein Modellwechsel: Evidenz-Bestand wird geschnitten, offene Erwartungen verfallen (neuer Politik-Hash). Replay-gestuetzter Testwert: 10.</string>
     <string name="fuse_drive_quantile_title">Guard-Quantil [%]</string>
     <string name="fuse_drive_quantile_summary">Geplanter Sicherheitsabstand in der Vorhersage. 50 = ausgeschaltet. NICHT absenken: nachgerechnet liefert ein niedrigeres Quantil hier keine Vorsicht, sondern nur AELTERE Messwerte (25 = die Steigung von vor 11,5 Minuten). Bleibt stehen, bis es etwas Besseres gibt.</string>
 

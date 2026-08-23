@@ -194,6 +194,7 @@ class CycleIobValidityTest : TestBaseWithProfile() {
         whenever(preferences.get(FuseDoubleKey.ReboundDeadbandMgdl)).thenReturn(25.0)
         whenever(preferences.get(FuseBooleanKey.ReboundDeadbandEnabled)).thenReturn(true)
         whenever(preferences.get(FuseIntKey.DriveLowerQuantilePct)).thenReturn(50)
+        whenever(preferences.get(FuseIntKey.TheilSenWindowMin)).thenReturn(18)
         whenever(preferences.get(FuseBooleanKey.TailGuardEnabled)).thenReturn(true)
         whenever(preferences.get(FuseDoubleKey.TailFloorMgdl)).thenReturn(70.0)
         whenever(preferences.get(FuseDoubleKey.TailRecoveryU)).thenReturn(0.0)

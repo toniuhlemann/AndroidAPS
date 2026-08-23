@@ -128,8 +128,14 @@ class PairSlopeBandTest {
     }
 
     @Test
-    fun `der Methodenbezeichner traegt das Quantil`() {
-        assertEquals("TS-PS-Q25-W18-DT2-RF1", PairSlopeBand.methodId(25))
-        assertTrue(PairSlopeBand.methodId(10) != PairSlopeBand.methodId(25))
+    fun `der Methodenbezeichner traegt Quantil UND Fenster`() {
+        // W18 MUSS die historische Kennung ergeben - sonst waeren alle
+        // bisherigen Trail-Zeilen rueckwirkend einem fremden Verfahren
+        // zugeordnet.
+        assertEquals("TS-PS-Q25-W18-DT2-RF1", PairSlopeBand.methodId(25, 18))
+        assertEquals("TS-PS-Q50-W10-DT2-RF1", PairSlopeBand.methodId(50, 10))
+        assertTrue(PairSlopeBand.methodId(10, 18) != PairSlopeBand.methodId(25, 18))
+        // Vertragspunkt 3 (Toni 23.08.): zwei Fenster = zwei Kennungen.
+        assertTrue(PairSlopeBand.methodId(50, 18) != PairSlopeBand.methodId(50, 10))
     }
 }

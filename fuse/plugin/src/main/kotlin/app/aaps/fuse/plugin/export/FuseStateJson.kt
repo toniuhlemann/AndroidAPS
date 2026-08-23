@@ -105,7 +105,17 @@ object FuseStateJson {
     // - dosierwirksam auf der TBR-Achse, bis v15 unsichtbar im Fingerprint:
     // zwei Laeufe mit 5 und 20 mg/dl Schwelle trugen denselben Regelstand,
     // und der Trail konnte nicht einmal zeigen, welche Werte galten.
-    const val RULE_SET_VERSION = 21
+    // v22 (23.08.): das Theil-Sen-Fenster des Hauptschaetzers wird
+    // konfigurierbar (TheilSenWindowMin, 8..18, Default 18 = bitgleich zum
+    // Candidate-Lock R58) und geht in Hash, policyValues und die
+    // Methoden-Kennung TS-PS-...-W<min>-... ein. Zwei Laeufe mit W18 und
+    // W10 sind verschiedene Schaetzer und duerfen weder denselben
+    // Fingerprint noch dieselbe Kennung tragen; ueber die configGeneration
+    // entwertet der neue Hash zugleich alle offenen Erwartungen des alten
+    // Fensters (Pkt. 5 des Vertrags). Belegt durch den Zwei-Tage-Replay
+    // (22.08. Problemtag: W10 entriegelt Onset+Deadlock; 21.08.
+    // Kontrolltag: W10 praktisch identisch zu W18).
+    const val RULE_SET_VERSION = 22
 
     /** Schema des Trail-Datensatzes - s. die Notiz an der Schreibstelle. */
     const val SCHEMA_VERSION = 4
@@ -854,7 +864,7 @@ object FuseStateJson {
                 // Das Flag kommt aus DEMSELBEN Praedikat wie der Zweig.
                 .put("quantilePct", b.quantilePct)
                 .put("bandActive", b.bandActive)
-                .put("methodId", policy?.let { app.aaps.fuse.core.signal.PairSlopeBand.methodId(it.driveLowerQuantilePct) } ?: JSONObject.NULL)
+                .put("methodId", policy?.let { app.aaps.fuse.core.signal.PairSlopeBand.methodId(it.driveLowerQuantilePct, it.theilSenWindowMin) } ?: JSONObject.NULL)
                 .put("candidate", outcome.candidate?.let { c ->
                     JSONObject()
                         .put("smbU", fin(c.smbU))
@@ -1250,6 +1260,7 @@ object FuseStateJson {
         .put("reboundDeadbandMgdl", p.reboundDeadbandMgdl)
         .put("reboundDeadbandEnabled", p.reboundDeadbandEnabled)
         .put("driveLowerQuantilePct", p.driveLowerQuantilePct)
+        .put("theilSenWindowMin", p.theilSenWindowMin)
         .put("tailGuardEnabled", p.tailGuardEnabled)
         .put("tailFloorMgdl", fin(p.tailFloorMgdl))
         .put("tailRecoveryU", fin(p.tailRecoveryU))
@@ -1327,7 +1338,11 @@ object FuseStateJson {
             doubles.map { Sha.lossless(it) } +
             listOf(
                 p.iobThPercent, p.releaseHorizonMin, p.liabilityHorizonMin, p.primeWindowMin,
-                p.driveTauMin, p.driveLowerQuantilePct, p.tailGuardEnabled, p.fastRestraintEnabled, p.onsetChannelEnabled, p.primeReleaseEnabled,
+                p.driveTauMin, p.driveLowerQuantilePct,
+                // v22: das Fenster des Hauptschaetzers - dosierwirksam auf
+                // JEDER Bahn (Guard, Drive, Kennung), s. Journal.
+                p.theilSenWindowMin,
+                p.tailGuardEnabled, p.fastRestraintEnabled, p.onsetChannelEnabled, p.primeReleaseEnabled,
                 // v3: der Null-Ausgang aendert das Aktuationsverhalten - zwei
                 // Laeufe mit verschiedener Stellung duerfen nicht denselben
                 // Hash tragen.

@@ -186,6 +186,7 @@ class TransportWiringTest : TestBaseWithProfile() {
      *  Bahn die Mittelbahn, und es gibt keinen Zwischenraum, in den eine
      *  Hebung passt). */
     private var quantilePct = 50
+    private var theilSenFensterMin = 18
 
     /** Der Marker autorisiert Insulin bei gemessenem Tief. */
     private var markerAuthorized = false
@@ -437,6 +438,7 @@ class TransportWiringTest : TestBaseWithProfile() {
         whenever(preferences.get(FuseDoubleKey.ReboundDeadbandMgdl)).thenReturn(25.0)
         whenever(preferences.get(FuseBooleanKey.ReboundDeadbandEnabled)).thenReturn(true)
         whenever(preferences.get(FuseIntKey.DriveLowerQuantilePct)).thenAnswer { quantilePct }
+        whenever(preferences.get(FuseIntKey.TheilSenWindowMin)).thenAnswer { theilSenFensterMin }
         whenever(preferences.get(FuseBooleanKey.TailGuardEnabled)).thenAnswer { tailGuard }
         whenever(preferences.get(FuseBooleanKey.ConditionalTailEnabled)).thenAnswer { conditionalTail }
         whenever(preferences.get(FuseBooleanKey.MarkerAuthorisesRelease)).thenAnswer { markerAuthorized }
@@ -6487,6 +6489,7 @@ class TransportWiringTest : TestBaseWithProfile() {
             guardBodenMgdl = d("guardFloorMgdl", guardBodenMgdl)
             iobThPct = i("iobThPercent", iobThPct)
             quantilePct = i("driveLowerQuantilePct", quantilePct)
+            theilSenFensterMin = i("theilSenWindowMin", theilSenFensterMin)
             tailGuard = b("tailGuardEnabled", tailGuard)
             conditionalTail = b("conditionalTailEnabled", conditionalTail)
             fundamentAn = b("mealFoundationEnabled", fundamentAn)
@@ -6589,6 +6592,94 @@ class TransportWiringTest : TestBaseWithProfile() {
         lauf("w08", 8L * 60_000L)
     }
 
+
+    /**
+     * V22-VERTRAGSTEST (Toni 23.08., Pkt. 1): das Theil-Sen-Fenster kommt am
+     * Geraet aus der EINSTELLUNG. Gleiche geknickte Bahn, zwei Fenster: kurz
+     * nach dem Knick MUSS W10 steiler sehen als W18, weil es weniger
+     * Flachanteil mittelt. Die Mutation, gegen die dieser Test steht: der
+     * Band-Aufruf faellt still auf die feste Konstante zurueck - dann sind
+     * beide Laeufe identisch und die Differenz-Assertion reisst.
+     */
+    @Test
+    fun `v22 - das Fenster wirkt ueber die Einstellung auf den Schaetzer`(@TempDir dir: File) {
+        fun bandMean(fenster: Int): Double {
+            transportReset()
+            flach = 120.0; steigungProMin = 0.0
+            knickAbMin = 30; steigungNachKnick = 2.0
+            theilSenFensterMin = fenster
+            val l = FuseLedgerAdapter().also { it.loadOnce(File(dir, "w$fenster").also(File::mkdirs), "test-epoch", start) }
+            neuerRunner(l)
+            clock = start + 39 * 60_000L
+            val o = cycle() // Minute 40: W10 sieht nur Anstieg, W18 noch 8 min Flachbahn
+            assertTrue(o.abortReason == null, "der Zyklus muss durchrechnen: ${o.abortReason}")
+            return o.band!!.mean
+        }
+        val w18 = bandMean(18)
+        val w10 = bandMean(10)
+        assertTrue(w10 > w18 + 0.3, "W10 muss den Knick aktueller sehen: w10=$w10 w18=$w18")
+    }
+
+    /**
+     * V22-VERTRAGSTEST (Pkt. 5): ein Fensterwechsel ist ein MODELLWECHSEL -
+     * der unter dem alten Fenster verdiente Evidenz-Bestand wird geschnitten
+     * (Bestand 0, Messbasis neu), waehrend der Kontrolllauf ohne Wechsel
+     * denselben gesaeten Bestand durch den Zyklus traegt. Erstkontakt
+     * (Altdatei ohne Feld, Stand 0) schneidet NICht, und der zuletzt gesehene
+     * Stand ist restartfest. Die fallende Bahn ohne Autorisierung ist
+     * Absicht: Episode ja, Abgabe nein - kein Abzug verfaelscht den Bestand.
+     */
+    @Test
+    fun `v22 - der Fensterwechsel schneidet den Evidenz-Bestand`(@TempDir dir: File) {
+        fun aufbau(name: String): FuseLedgerAdapter {
+            transportReset()
+            flach = 150.0; steigungProMin = -0.5
+            theilSenFensterMin = 18
+            markerAuthorized = false
+            val l = FuseLedgerAdapter().also { it.loadOnce(File(dir, name).also(File::mkdirs), "test-epoch", start) }
+            neuerRunner(l)
+            clock = start + 24 * 60_000L
+            markerAt = clock // frische Episode
+            val o = cycle()
+            assertTrue(o.abortReason == null, "Aufbauzyklus: ${o.abortReason}")
+            // Bestand saeen, wie ihn eine laufende Episode truege - mit
+            // gueltiger Messbasis, sonst nullt der Kern selbst (unmoeglich()).
+            l.episodes.evidenceState = l.episodes.evidenceState.copy(
+                stockMgdl = 5.0, rebaseRequired = false,
+                lastAcceptedTs = clock, lastDecayTs = clock,
+            )
+            return l
+        }
+
+        // KONTROLLE zuerst: ohne Wechsel uebersteht der Bestand den Zyklus
+        // (verfallen, aber deutlich > 0). Ohne diese Haelfte koennte der
+        // Schnitt-Beweis ein Artefakt der Episodenmechanik sein.
+        aufbau("kontrolle")
+        val ok = cycle()
+        assertTrue((ok.evidenceStockMgdl ?: 0.0) > 1.0, "Kontrolle traegt den Bestand: ${ok.evidenceStockMgdl} (${ok.evidencePhase})")
+
+        // WECHSEL 18 -> 10: der naechste Zyklus schneidet.
+        val w = aufbau("wechsel")
+        theilSenFensterMin = 10
+        val ow = cycle()
+        assertEquals(0.0, ow.evidenceStockMgdl ?: -1.0, 1e-9, "der Bestand ist geschnitten (${ow.evidencePhase})")
+        assertEquals(10L, w.episodes.theilSenWindowLastMin, "der neue Stand ist gemerkt")
+        // RESTARTFEST: der Stand steht in der Datei - sonst verschluckte ein
+        // Neustart mitten im Wechsel den Schnitt (Praeferenz schon neu, Feld
+        // wieder 0 -> Erstkontakt-Pfad). Versiegeln ist im Rig Plugin-Arbeit,
+        // deshalb hier ausdruecklich.
+        assertTrue(w.persistVerified(File(dir, "wechsel")), "versiegeln")
+        assertEquals(10L, nachNeustart(File(dir, "wechsel")).theilSenWindowLastMin, "restartfest")
+
+        // ERSTKONTAKT: Altdatei ohne Feld (Stand 0) schneidet nicht - der
+        // Bestand entstand unter dem bis dahin einzigen Fenster.
+        val e = aufbau("erstkontakt")
+        e.episodes.theilSenWindowLastMin = 0L
+        val oe = cycle()
+        assertTrue((oe.evidenceStockMgdl ?: 0.0) > 1.0, "Erstkontakt schneidet nicht: ${oe.evidenceStockMgdl} (${oe.evidencePhase})")
+        assertEquals(18L, e.episodes.theilSenWindowLastMin, "der Stand ist danach gesetzt")
+    }
+
     /**
      * Prognose-Shadow-Masterschalter (Toni/Codex 23.08.): AUS heisst leere
      * Matrizen und enabled:false im Export - und die DOSIERUNG ist bitgleich
@@ -6650,7 +6741,7 @@ class TransportWiringTest : TestBaseWithProfile() {
         assertEquals(e3, nachNeustart(dir).forecastShadowEpochTs, "die Epoche steht in der Datei")
     }
 
-    /**
+    /**
      * v20-Vertrag (Toni/Codex 22.08. spaet): getrennte Tag-/Nachtschwelle.
      * Der regulaere Tag/Nacht-Wechsel ist KEIN CONFIG_CHANGED; ein Wechsel
      * in die Nacht unter der neuen Schwelle beendet einen Lauf als
@@ -6764,7 +6855,7 @@ class TransportWiringTest : TestBaseWithProfile() {
         )
     }
 
-    /**
+    /**
      * Gegenprobe 7 (Audit 22.08.): das ZWEITE unbeobachtete Loch neben dem
      * Abort - der predictorfreie Marker-Fallback-Zyklus. Er dosiert, laeuft
      * aber ohne die Kanalstufe; ein aktiver Lauf muss auch dort enden.

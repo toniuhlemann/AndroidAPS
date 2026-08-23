@@ -95,11 +95,13 @@ object PairSlopeBand {
     /**
      * Kurzform fuer den Grund und den Export. Der Prozentsatz MUSS drinstehen:
      * zwei Laeufe mit q10 und q25 sind verschiedene Groessen und duerfen nicht
-     * denselben Namen tragen. `W18`/`DT2` stehen drin, weil Fensterbreite und
-     * Paarfilter die Verteilung bestimmen, `RF` fuer die Rangregel, `1` fuer
-     * eine spaetere Kalibrierung.
+     * denselben Namen tragen. Dasselbe gilt seit dem konfigurierbaren
+     * Fenster fuer `W<min>` (Toni-Vertrag 23.08., kein Default - jeder
+     * Aufrufer muss sagen, welches Fenster er meint): Fensterbreite und
+     * Paarfilter (`DT2`) bestimmen die Verteilung, `RF` ist die Rangregel,
+     * `1` eine spaetere Kalibrierung. W18 ergibt exakt die alte Kennung.
      */
-    fun methodId(qPct: Int): String = "TS-PS-Q$qPct-W18-DT2-RF1"
+    fun methodId(qPct: Int, windowMin: Int): String = "TS-PS-Q$qPct-W$windowMin-DT2-RF1"
 
     /**
      * EINE Funktion liefert Mittel UND Untergrenze ODER null.

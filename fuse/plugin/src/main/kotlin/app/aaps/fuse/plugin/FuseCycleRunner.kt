@@ -263,6 +263,9 @@ class FuseCycleRunner(
             require(it.driveLowerQuantilePct in PairSlopeBand.MIN_PCT..PairSlopeBand.MAX_PCT) {
                 "driveLowerQuantile=${it.driveLowerQuantilePct}"
             }
+            require(it.theilSenWindowMin in FuseIntKey.TheilSenWindowMin.min..FuseIntKey.TheilSenWindowMin.max) {
+                "theilSenWindowMin=${it.theilSenWindowMin}"
+            }
             require(it.tailFloorMgdl.isFinite() && it.tailFloorMgdl in FuseDoubleKey.TailFloorMgdl.min..FuseDoubleKey.TailFloorMgdl.max) { "tailFloorMgdl=${it.tailFloorMgdl}" }
             require(it.tailRecoveryU.isFinite() && it.tailRecoveryU in FuseDoubleKey.TailRecoveryU.min..FuseDoubleKey.TailRecoveryU.max) { "tailRecoveryU=${it.tailRecoveryU}" }
             require(it.bolusShareLambda.isFinite() && it.bolusShareLambda in FuseDoubleKey.BolusShareLambda.min..FuseDoubleKey.BolusShareLambda.max) { "bolusShareLambda=${it.bolusShareLambda}" }
@@ -1170,15 +1173,31 @@ class FuseCycleRunner(
             else kernel()?.let { k -> transport.map { KernelPendingInsulin(k, it.amountU, it.earliestTs) } }
                 ?: emptyList()
 
+        // ---- FENSTERWECHSEL = MODELLWECHSEL (Toni-Vertrag 23.08., Pkt. 5) --
+        // Der Evidenz-Bestand wurde unter dem ALTEN Schaetzer verdient und
+        // wird beim Wechsel nicht weiterverwendet: Schnitt wie bei SUSPENDED
+        // (Bestand 0, Messbasis neu aufsetzen). Offene ERWARTUNGEN entwertet
+        // der Ledger selbst - das Fenster steht ab v22 im Politik-Hash, der
+        // die configGeneration jedes Eintrags ist (Denial.CONFIG_CHANGED).
+        // Erstkontakt (Altdatei ohne Feld, Wert 0) schneidet NICHT: der
+        // Bestand entstand unter dem bis dahin einzigen Fenster W18.
+        if (episodes.theilSenWindowLastMin != cfg.theilSenWindowMin.toLong()) {
+            if (episodes.theilSenWindowLastMin > 0L) {
+                episodes.evidenceState = episodes.evidenceState.copy(stockMgdl = 0.0, rebaseRequired = true)
+            }
+            episodes.theilSenWindowLastMin = cfg.theilSenWindowMin.toLong()
+        }
+
         // Mittel- UND Untergrenze aus DEMSELBEN Aufruf. Es darf keinen Zustand
         // "Mittel da, Band fehlt" geben: ein Rueckfall auf lower = mean wuerde
         // den Null-Abstand ausgerechnet bei der schlechtesten Datenlage still
         // wiederherstellen.
         val band = PairSlopeBand.estimate(
             signal.adjusted.points, signal.sourceTs, cfg.driveLowerQuantilePct,
-            // Nur der Phase-2-Replay-Treiber setzt das Fenster um; am Geraet
-            // ist der Wert konstruktionsbedingt null (kein Preference-Weg).
-            windowMs = theilSenWindowMsOverride ?: BgiAdjustedSeries.WINDOW_MS,
+            // Seit v22 kommt das Fenster aus der Einstellung (Toni-Vertrag
+            // 23.08.); der Konstruktor-Override des Phase-2-Replay-Treibers
+            // gewinnt weiterhin, am Geraet ist er konstruktionsbedingt null.
+            windowMs = theilSenWindowMsOverride ?: (cfg.theilSenWindowMin * 60_000L),
         )
             ?: return abort("drive not estimable (${signal.samplesUsed} samples)", signal, cfg, step)
 
@@ -4415,6 +4434,8 @@ class FuseCycleRunner(
         val reboundDeadbandMgdl: Double,
         val reboundDeadbandEnabled: Boolean,
         val driveLowerQuantilePct: Int,
+        /** Fenster des Theil-Sen-Hauptschaetzers [min] - s. FuseKeys. */
+        val theilSenWindowMin: Int,
         val tailGuardEnabled: Boolean,
         val conditionalTailEnabled: Boolean,
         val markerAuthorized: Boolean,
@@ -4480,6 +4501,7 @@ class FuseCycleRunner(
         reboundDeadbandMgdl = preferences.get(FuseDoubleKey.ReboundDeadbandMgdl),
         reboundDeadbandEnabled = preferences.get(FuseBooleanKey.ReboundDeadbandEnabled),
         driveLowerQuantilePct = preferences.get(FuseIntKey.DriveLowerQuantilePct),
+        theilSenWindowMin = preferences.get(FuseIntKey.TheilSenWindowMin),
         tailGuardEnabled = preferences.get(FuseBooleanKey.TailGuardEnabled),
         conditionalTailEnabled = preferences.get(FuseBooleanKey.ConditionalTailEnabled),
         markerAuthorized = preferences.get(FuseBooleanKey.MarkerAuthorisesRelease),
@@ -4693,7 +4715,7 @@ class FuseCycleRunner(
                     minOf(band.mean, discount.lowerAfterMgdlPerMin + PrimeRelease.MARKER_PRIOR_MGDL_PER_MIN)
                 else discount.lowerAfterMgdlPerMin,
                 null,
-                DriveDiscount.methodId(PairSlopeBand.methodId(cfg.driveLowerQuantilePct), discount.lambda) +
+                DriveDiscount.methodId(PairSlopeBand.methodId(cfg.driveLowerQuantilePct, cfg.theilSenWindowMin), discount.lambda) +
                     if (onsetDriveMgdlPerMin != null && onsetDriveMgdlPerMin > band.mean) "+ONSET" else "",
                 // C2 (Codex H2): DERSELBE untere Antrieb ohne den Prior. Aus ihm
                 // rechnet TrajectoryCore die prior-freie Zwillingsbahn, gegen die

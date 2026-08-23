@@ -494,6 +494,7 @@ object LedgerCodec {
         .put("livenessReArmUntilTs", e.livenessReArmUntilTs)
         .put("forecastShadowEpochTs", e.forecastShadowEpochTs)
         .put("forecastShadowLastState", e.forecastShadowLastState)
+        .put("theilSenWindowLastMin", e.theilSenWindowLastMin)
         // DREI Elemente statt zwei: [ts, menge, proposalId] (Toni 19.08.).
         // Die Kennung MUSS mit - ohne sie findet ein Nicht-Sende-Beweis nach
         // einem Neustart den Eintrag nicht mehr und laesst eine nie geflossene
@@ -717,6 +718,11 @@ object LedgerCodec {
             val stand = o.getLong("forecastShadowLastState")
             require(stand in -1L..1L) { "forecastShadowLastState out of range: $stand" }
             e.forecastShadowLastState = stand
+        }
+        if (o.has("theilSenWindowLastMin")) {
+            val fenster = o.getLong("theilSenWindowLastMin")
+            require(fenster in 0L..1440L) { "theilSenWindowLastMin out of range: $fenster" }
+            e.theilSenWindowLastMin = fenster
         }
         // KEINE MIGRATION, die ein Fundament ERFINDET: fehlt das Objekt, gibt
         // es keine laufende Autorisierung. Eine Altdatei mitten in einer
