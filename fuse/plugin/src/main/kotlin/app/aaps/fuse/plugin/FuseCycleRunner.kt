@@ -665,6 +665,9 @@ class FuseCycleRunner(
          *  (DAY|NIGHT, v20) - fuer die Anzeige "Live wartet - BG 151/160". */
         val livenessBgMinEffectiveMgdl: Double? = null,
         val livenessBgMinSource: String? = null,
+        /** Rest des STRENGSTEN Kanaldeckels [U] in diesem Zyklus - nur im
+         *  aktiven Lauf gerechnet (null sonst). 0 = Deckel voll. */
+        val livenessHeadroomU: Double? = null,
         val livenessLiftU: Double = 0.0,
         val livenessBinding: String? = null,
         val livenessDenial: String? = null,
@@ -2910,6 +2913,7 @@ class FuseCycleRunner(
         var livenessReleaseMeanMgdl: Double? = null
         var livenessBgMinEffective: Double? = null
         var livenessBgMinSource: String? = null
+        var livenessHeadroomU: Double? = null
         var livenessCandidateU = 0.0
         var livenessLiftU = 0.0
         var livenessBinding: String? = null
@@ -3162,6 +3166,12 @@ class FuseCycleRunner(
                 capIobU = state.capIobU,
                 transportU = transportModelledU,
             )
+            // Der REST des Kanaldeckels gehoert in den Export (Toni 23.08.:
+            // "iobTH voll" war am Geraet unsichtbar, und die SMB-Zeile soll
+            // zeigen, wieviel der Kanal noch darf). Nie im Viewer
+            // nachrechnen - das waere eine zweite Wahrheit ueber dieselbe
+            // Groesse.
+            livenessHeadroomU = head.headroomU
             val liveU = LivenessChannel.quantize(
                 kotlin.math.min(livenessCandidateU, head.headroomU), bolusStep,
             )
@@ -3392,6 +3402,7 @@ class FuseCycleRunner(
             livenessReleaseMeanMgdl = livenessReleaseMeanMgdl,
             livenessBgMinEffectiveMgdl = livenessBgMinEffective,
             livenessBgMinSource = livenessBgMinSource,
+            livenessHeadroomU = livenessHeadroomU,
             livenessLiftU = livenessLiftU,
             livenessBinding = livenessBinding,
             livenessDenial = livenessDenial,

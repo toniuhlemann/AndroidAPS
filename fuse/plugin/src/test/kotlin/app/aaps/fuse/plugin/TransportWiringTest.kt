@@ -5972,6 +5972,10 @@ class TransportWiringTest : TestBaseWithProfile() {
                     (o.livenessNeedU ?: -1.0) > 0.0 && (o.livenessReleaseMeanMgdl ?: 0.0) > 0.0,
                     "needU/releaseMean fehlen im Hub-Zyklus: ${o.livenessNeedU}/${o.livenessReleaseMeanMgdl}",
                 )
+                assertTrue(
+                    (o.livenessHeadroomU ?: -1.0) > 0.0,
+                    "der Deckelrest muss im aktiven Lauf exportiert sein: ${o.livenessHeadroomU}",
+                )
             }
             summeAn += o.decision.smbU
         }

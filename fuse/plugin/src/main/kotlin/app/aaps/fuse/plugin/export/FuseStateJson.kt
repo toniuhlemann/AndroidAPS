@@ -398,6 +398,7 @@ object FuseStateJson {
                     .put("releaseMeanMgdl", fin(outcome.livenessReleaseMeanMgdl))
                     .put("bgMinEffectiveMgdl", fin(outcome.livenessBgMinEffectiveMgdl))
                     .put("bgMinSource", outcome.livenessBgMinSource ?: JSONObject.NULL)
+                    .put("headroomU", fin(outcome.livenessHeadroomU))
                     .put("liftU", fin(outcome.livenessLiftU))
                     .put("binding", outcome.livenessBinding ?: JSONObject.NULL)
                     .put("denial", outcome.livenessDenial ?: JSONObject.NULL)
