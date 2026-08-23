@@ -6551,10 +6551,17 @@ class TransportWiringTest : TestBaseWithProfile() {
         // die Karte ist seit dem Zeitzonen-Fix oben ebenfalls lokal gefuellt
         // - eine Uhr fuer beide Seiten.
 
-        fun lauf(name: String, fensterMs: Long?, trendRegel: String? = null, fenster: Int = 18, ratioCap: Double = 1.0): File {
+        fun lauf(name: String, fensterMs: Long?, trendRegel: String? = null, fenster: Int = 18, ratioCap: Double = 1.0, livenessStart: Boolean = true): File {
             transportReset()
             boluses = emptyList()
             markerAt = 0L
+            // HEBEL-LECK GESCHLOSSEN (23.08. spaet): v16-Trails tragen den
+            // livenessChannelEnabled-Schluessel nicht - der Hebel behielt
+            // dann den Stand des VORHERIGEN Laufs (der 22.08.-cap100-Lauf
+            // fuhr dadurch ohne Kanal, die Folgelaeufe mit). Jeder Lauf
+            // startet jetzt explizit; Zeilen MIT Schluessel ueberschreiben
+            // wie gehabt per politikAnwenden.
+            livenessAn = livenessStart
             forecastShadowAn = false // Replay braucht die Matrizen nicht - Tempo
             livenessRatioDeckel = ratioCap // v23: aufgezeichnete v22-Politik traegt den Schluessel nicht - der Hebel gilt
             theilSenFensterMin = fenster // W18-Trails tragen den Schluessel nicht - der Hebel gilt
@@ -6616,7 +6623,7 @@ class TransportWiringTest : TestBaseWithProfile() {
                 lauf("cap%03d".format((cap * 100).toInt()), null, fenster = 10, ratioCap = cap)
             }
         } else {
-            lauf("w18", null)
+            lauf("w18", null, livenessStart = false) // Tor: aufzeichnungstreu (22.08. hatte bis 21:50 keinen Kanal)
             lauf("w10ref", null, fenster = 10)
             lauf("w10up", null, "UP", fenster = 10)
             lauf("w10p2", null, "DOWN_P2", fenster = 10)
