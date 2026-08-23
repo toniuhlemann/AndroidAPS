@@ -379,13 +379,14 @@ class TransportWiringTest : TestBaseWithProfile() {
         neuerRunner(FuseLedgerAdapter())
     }
 
-    private fun neuerRunner(l: FuseLedgerAdapter, evidenz: EvidenceStock.Config = EvidenceStock.Config(), fensterMs: Long? = null) {
+    private fun neuerRunner(l: FuseLedgerAdapter, evidenz: EvidenceStock.Config = EvidenceStock.Config(), fensterMs: Long? = null, trendRegel: String? = null) {
         ledger = l
         runner = FuseCycleRunner(
             iobCobCalculator, profileFunction, activePlugin, constraintsChecker, commandQueue,
             preferences, persistenceLayer, processedTbrEbData, dateUtil, ledger, "test-epoch", { markerPress },
             evidenceConfig = evidenz,
             theilSenWindowMsOverride = fensterMs,
+            trendRuleOverride = trendRegel,
             predict = { input ->
                 predictReject
                     ?.let { PredictorOutcome.Rejected(it, "erzwungen") }
@@ -6527,17 +6528,13 @@ class TransportWiringTest : TestBaseWithProfile() {
 
         // ISF je Tagesminute aus dem Trail (Toni faehrt ein Zeitprofil).
         val isfProMin = HashMap<Int, Double>()
-        run {
-            // LOKALE Tagesminute, nicht UTC (Codex-Befund 23.08.): der Runner
-            // fragt mit MidnightUtils.secondsFromMidnight, und das rechnet in
-            // der JVM-Zeitzone. Die UTC-Fuellung verschob die ISF-Karte unter
-            // CEST um zwei Stunden - im Abendfenster lief die Gegenrechnung
-            // mit ISF 60 statt der aufgezeichneten 72 und war zu aggressiv.
-            val cal = java.util.Calendar.getInstance()
-            zyklen.forEach { z ->
-                cal.timeInMillis = z.ts
-                isfProMin[cal.get(java.util.Calendar.HOUR_OF_DAY) * 60 + cal.get(java.util.Calendar.MINUTE)] = z.isf
-            }
+        // DIESELBE FUNKTION AUF BEIDEN SEITEN (Toni 23.08. Abend): der Runner
+        // fragt mit MidnightUtils.secondsFromMidnight - also fuellt die Karte
+        // mit EXAKT dieser Funktion statt einer parallelen Calendar-Rechnung.
+        // Konsistenz per Konstruktion; der fruehere UTC-Modulo verschob unter
+        // CEST um zwei Stunden (Abend-ISF 60 statt 72, zu aggressiv).
+        zyklen.forEach { z ->
+            isfProMin[app.aaps.core.utils.MidnightUtils.secondsFromMidnight(z.ts) / 60] = z.isf
         }
         val replayProfil = org.mockito.kotlin.spy(validProfile)
         org.mockito.kotlin.doAnswer { inv ->
@@ -6551,16 +6548,19 @@ class TransportWiringTest : TestBaseWithProfile() {
         // die Karte ist seit dem Zeitzonen-Fix oben ebenfalls lokal gefuellt
         // - eine Uhr fuer beide Seiten.
 
-        fun lauf(name: String, fensterMs: Long?): File {
+        fun lauf(name: String, fensterMs: Long?, trendRegel: String? = null, fenster: Int = 18): File {
             transportReset()
             boluses = emptyList()
             markerAt = 0L
             forecastShadowAn = false // Replay braucht die Matrizen nicht - Tempo
+            theilSenFensterMin = fenster // W18-Trails tragen den Schluessel nicht - der Hebel gilt
+            politikAnwenden(zyklen.firstNotNullOfOrNull { it.policy })
+            theilSenFensterMin = fenster // die erste Politik darf den Matrixwert nicht ueberschreiben (W10-Live-Trails tragen 10)
             val adapter = FuseLedgerAdapter().also { it.loadOnce(File(dir, name).also(File::mkdirs), "test-epoch", zyklen.first().ts) }
-            neuerRunner(adapter, fensterMs = fensterMs)
+            neuerRunner(adapter, fensterMs = fensterMs, trendRegel = trendRegel)
             val outFile = File(outDir, "replay_$name.csv")
             outFile.printWriter().use { w ->
-                w.println("ts;smbU;block;binding;insulinReq;liftU;needU;abort;recSmbU;recBlock")
+                w.println("ts;smbU;block;binding;insulinReq;liftU;needU;abort;phase;fastD;slowD;trend;raw;recSmbU;recBlock")
                 var prevMarker = 0L
                 var polText = pol?.toString()
                 for (z in zyklen) {
@@ -6572,6 +6572,7 @@ class TransportWiringTest : TestBaseWithProfile() {
                     prevMarker = z.marker
                     clock = z.ts
                     val o = runner.run(false, testPumpe())
+                    val klass = o.turnResponseShadow?.classification
                     w.println(listOf(
                         z.ts, "%.3f".format(java.util.Locale.US, o.decision.smbU), o.decision.block,
                         o.decision.bindingLimit,
@@ -6579,6 +6580,11 @@ class TransportWiringTest : TestBaseWithProfile() {
                         "%.3f".format(java.util.Locale.US, o.livenessLiftU),
                         o.livenessNeedU?.let { "%.3f".format(java.util.Locale.US, it) } ?: "",
                         o.abortReason ?: "",
+                        klass?.phase?.name ?: "",
+                        klass?.fastDriveMgdlPerMin?.let { "%.3f".format(java.util.Locale.US, it) } ?: "",
+                        klass?.slowDriveMgdlPerMin?.let { "%.3f".format(java.util.Locale.US, it) } ?: "",
+                        if (o.trendRuleApplied) "1" else "0",
+                        "%.1f".format(java.util.Locale.US, z.raw),
                         "%.3f".format(java.util.Locale.US, z.smbU), z.block ?: "",
                     ).joinToString(";"))
                 }
@@ -6588,10 +6594,111 @@ class TransportWiringTest : TestBaseWithProfile() {
         }
 
         lauf("w18", null)
-        lauf("w10", 10L * 60_000L)
-        lauf("w08", 8L * 60_000L)
+        lauf("w10ref", null, fenster = 10)
+        lauf("w10up", null, "UP", fenster = 10)
+        lauf("w10p2", null, "DOWN_P2", fenster = 10)
+        lauf("w10p3", null, "DOWN_P3", fenster = 10)
     }
 
+
+
+    /**
+     * TRENDREGEL-VERTRAG (Toni 23.08. Abend), DOWN-Seite - MIT DEM
+     * STRUKTURBEFUND, der beim Bau herauskam und den die Live-Daten
+     * bestaetigen (1719 getriggerte Lane-Zyklen im Shadow-Trail,
+     * avoidedSmbU exakt 0 in ALLEN): die Senkung min(mean, fast) ist
+     * gegen die PRODUKTIVE BREMSBAHN redundant. FuseController bindet
+     * den Bedarf ueber releaseMean = min(Hauptbahn, Bremsbahn), und die
+     * gesenkte Hauptbahn (fast, gleicher Tau) IST die Bremsbahn -
+     * Kandidat und Guard rechnen pessimistisch ueber beide. Der Vertrag
+     * hier ist deshalb zweiseitig:
+     *   1. der Ausloeser zieht nach der verlangten Persistenz (P2 nie
+     *      spaeter als P3), davor ist der Lauf BITGLEICH (zugleich der
+     *      Geraete-Inertheitsbeweis: null ist am Geraet der einzige Fall),
+     *   2. die BAHN ist sichtbar gesenkt (prediction.bgAtHorizonMean),
+     *      die ENTSCHEIDUNG aber identisch - genau die Redundanz.
+     * Reisst Punkt 2 links, ist die Injektion tot; reisst er rechts, hat
+     * sich die Bremsbahn-Bindung geaendert und der Befund ist zu pruefen.
+     */
+    @Test
+    fun `trendregel DOWN senkt erst nach der verlangten Persistenz`(@TempDir dir: File) {
+        fun laufMit(regel: String?, name: String): List<FuseCycleRunner.Outcome> {
+            transportReset()
+            // Steiler Anstieg, dann fast flach: der UKF-fastDrive faellt nach
+            // dem Knick monoton, waehrend das Theil-Sen-Fenster noch den
+            // steilen Teil mittelt -> fast < slow + wachsender Streak.
+            flach = 95.0; steigungProMin = 2.0
+            knickAbMin = 30; steigungNachKnick = 0.2
+            markerAuthorized = false
+            val l = FuseLedgerAdapter().also { it.loadOnce(File(dir, name).also(File::mkdirs), "test-epoch", start) }
+            neuerRunner(l, trendRegel = regel)
+            clock = start + 28 * 60_000L
+            return (0 until 14).map { cycle() }
+        }
+        val ohne = laufMit(null, "ohne")
+        val p3 = laufMit("DOWN_P3", "p3")
+        val p2 = laufMit("DOWN_P2", "p2")
+
+        assertTrue(ohne.all { !it.trendRuleApplied }, "ohne Regel darf das Flag nie stehen")
+        val erster3 = p3.indexOfFirst { it.trendRuleApplied }
+        val erster2 = p2.indexOfFirst { it.trendRuleApplied }
+        assertTrue(erster3 > 0, "P3 muss in dieser Lage ziehen")
+        assertTrue(erster2 in 1..erster3, "P2 zieht nie spaeter als P3: p2=$erster2 p3=$erster3")
+        (0 until erster3).forEach { i ->
+            assertEquals(ohne[i].decision.smbU, p3[i].decision.smbU, 1e-9, "vor dem Trigger bitgleich (Zyklus $i)")
+        }
+        // Die Bahn ist ab dem Trigger SICHTBAR gesenkt ...
+        val bahnGesenkt = p3.indices.count { i ->
+            p3[i].trendRuleApplied &&
+                (p3[i].prediction?.bgAtHorizonMean ?: Double.MAX_VALUE) <
+                (ohne[i].prediction?.bgAtHorizonMean ?: Double.MAX_VALUE) - 1.0
+        }
+        assertTrue(bahnGesenkt >= 3, "die Hauptbahn muss unter der ungesenkten liegen (gesenkt in $bahnGesenkt Zyklen)")
+        // ... und die ENTSCHEIDUNG bleibt trotzdem die der Bremsbahn.
+        p3.indices.forEach { i ->
+            assertEquals(ohne[i].decision.smbU, p3[i].decision.smbU, 1e-9, "Bremsbahn-Redundanz smb (Zyklus $i)")
+            assertEquals(ohne[i].decision.insulinReqU ?: -1.0, p3[i].decision.insulinReqU ?: -1.0, 1e-9, "Bremsbahn-Redundanz req (Zyklus $i)")
+        }
+    }
+
+    /**
+     * TRENDREGEL-VERTRAG, UP-Seite: die Regel hebt bei bestaetigter
+     * Aufwaertswende NUR die Mittelbahn auf max(mean, upwardMeanDrive) -
+     * der Bedarf steigt, waehrend die Zyklen vor dem Trigger bitgleich
+     * bleiben. Die Unterkante bleibt produktiv (Shadow-Vertrag: TURNING_UP
+     * hebt nie Guard/Tail-Zeugnisse).
+     */
+    @Test
+    fun `trendregel UP hebt die Mittelbahn bei bestaetigter Aufwaertswende`(@TempDir dir: File) {
+        fun laufMit(regel: String?, name: String): List<FuseCycleRunner.Outcome> {
+            transportReset()
+            // Flachbahn, dann steiler Knick: der fastDrive steigt monoton
+            // ueber das noch traege Fenster -> TURNING_UP bestaetigt.
+            flach = 110.0; steigungProMin = 0.0
+            knickAbMin = 25; steigungNachKnick = 2.5
+            markerAuthorized = false
+            val l = FuseLedgerAdapter().also { it.loadOnce(File(dir, name).also(File::mkdirs), "test-epoch", start) }
+            neuerRunner(l, trendRegel = regel)
+            clock = start + 24 * 60_000L
+            return (0 until 12).map { cycle() }
+        }
+        val ohne = laufMit(null, "ohne")
+        val up = laufMit("UP", "up")
+
+        assertTrue(ohne.all { !it.trendRuleApplied }, "ohne Regel darf das Flag nie stehen")
+        val erster = up.indexOfFirst { it.trendRuleApplied }
+        assertTrue(erster > 0, "UP muss in dieser Lage ziehen: " +
+            up.mapIndexed { i, o -> "$i:${o.turnResponseShadow?.classification?.phase}" }.joinToString(" "))
+        (0 until erster).forEach { i ->
+            assertEquals(ohne[i].decision.smbU, up[i].decision.smbU, 1e-9, "vor dem Trigger bitgleich (Zyklus $i)")
+        }
+        val gehoben = up.indices.any { i ->
+            up[i].trendRuleApplied &&
+                (up[i].decision.insulinReqU ?: 0.0) > (ohne[i].decision.insulinReqU ?: 0.0) + 1e-6
+        }
+        assertTrue(gehoben, "die Anhebung muss den Bedarf heben: " +
+            up.mapIndexed { i, o -> "$i:${o.trendRuleApplied}:${o.decision.insulinReqU} vs ${ohne[i].decision.insulinReqU}" }.joinToString(" "))
+    }
 
     /**
      * V22-VERTRAGSTEST (Toni 23.08., Pkt. 1): das Theil-Sen-Fenster kommt am

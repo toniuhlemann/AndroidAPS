@@ -145,6 +145,21 @@ class FuseCycleRunner(
      */
     private val theilSenWindowMsOverride: Long? = null,
     /**
+     * NUR FUER DEN PHASE-2-REPLAY (Toni 23.08. Abend): schaltet EINE
+     * Trendregel des Turn-Shadows als ECHTE Dosierbahn scharf.
+     *   "UP"       Mittelbahn-Anhebung bei bestaetigter Aufwaertswende
+     *              (nur mean; Unterkante/Guard/Tail bleiben produktiv)
+     *   "DOWN_P2"  Bedarfssenkung min(mean, fastDrive) nach ZWEI
+     *   "DOWN_P3"  bzw. DREI zusammenhaengenden fastDrive-Rueckgaengen -
+     *              exakt die Lane-Mathematik des ADAPTIVE-DOWN-Schattens.
+     * Am Geraet ist der Wert konstruktionsbedingt null (kein Preference-
+     * Weg, die DI-Konstruktion kennt den Parameter nicht) - dann ist der
+     * Injektionsblock toter Code und `built` dasselbe Objekt wie ohne ihn.
+     * Klassifikation und Streaks entstehen im Lauf selbst aus dem jeweils
+     * gefahrenen Fenster; nichts wird aus Exporten uebernommen.
+     */
+    private val trendRuleOverride: String? = null,
+    /**
      * DIE EINE EVIDENZ-KONFIGURATION DES ZYKLUS.
      *
      * Sie wurde bis zum 12.08. an drei Stellen frisch erzeugt - Markertor,
@@ -447,6 +462,9 @@ class FuseCycleRunner(
          * Feld; es wird ausschliesslich in den FUSE-Trail exportiert.
          */
         val turnResponseShadow: TurnResponseShadow.Report? = null,
+        /** Hat die Replay-Trendregel in DIESEM Zyklus die Bahn veraendert?
+         *  Am Geraet konstruktionsbedingt immer false (Override ist null). */
+        val trendRuleApplied: Boolean = false,
         /**
          * Die SICHERHEITSKANTE am Haftungshorizont, aus der der Schwanz sein
          * Budget rechnet - EINMAL ohne und einmal mit der Ankuendigung.
@@ -1473,10 +1491,57 @@ class FuseCycleRunner(
             windowMin = cfg.absorptionCreditWindowMin.toDouble(),
         ) else 0.0
 
-        val built = when (val b = CoreInputGuard.build { buildPredictorInput(signal, profile, cfg, band, bolusActivityUPerMin, if (onset.active) onset.driveMgdlPerMin else null, reboundWindow, markerBoost, declaredDrive, pending) }) {
+        val builtVorTrend = when (val b = CoreInputGuard.build { buildPredictorInput(signal, profile, cfg, band, bolusActivityUPerMin, if (onset.active) onset.driveMgdlPerMin else null, reboundWindow, markerBoost, declaredDrive, pending) }) {
             is CoreInputGuard.Outcome.Built  -> b.value ?: return abort("input incomplete", signal, cfg, step)
             is CoreInputGuard.Outcome.Failed -> return abort("input: ${b.failure.detail}", signal, cfg, step)
         }
+
+        // ---- REPLAY-TRENDREGEL (Toni 23.08. Abend) ---------------------
+        // Injiziert die Lane-Mathematik des Turn-Shadows als ECHTE Bahn:
+        // UP hebt NUR die Mittelbahn auf max(mean, upwardMeanDrive) - die
+        // Unterkante und damit Guard/Tail bleiben auf dem produktiven
+        // Zeugnis, wie es der Shadow-Vertrag verlangt. DOWN_P2/P3 senken
+        // die Mittelbahn auf min(mean, fastDrive) und ziehen untere und
+        // prior-freie Kante mit (Bandordnung) - exakt die Formeln der
+        // ADAPTIVE-DOWN-Lane inkl. ihres Tors (fast < slow, exponentieller
+        // Produktiv-Tau vorhanden). Alles stromabwaerts - Prediction,
+        // Guard, Tail, harte gemessene Riegel, Sub-Step, Wirkungspruefung,
+        // Liveness - laeuft unveraendert auf der injizierten Bahn: die
+        // Frage des Replays ist "was, WAERE das die Produktionsregel",
+        // nicht die Schattenmessung mit produktivem Endriegel. Am Geraet
+        // ist trendRuleOverride null und `built` referenzgleich.
+        val trendDrive = when (trendRuleOverride) {
+            null -> null
+            "UP" -> {
+                val up = turnClassification.upwardMeanDriveMgdlPerMin
+                if (turnClassification.phase != TurnResponseShadow.Phase.TURNING_UP || up == null) null
+                else builtVorTrend.input.drive.copy(
+                    meanMgdlPerMin = maxOf(builtVorTrend.input.drive.meanMgdlPerMin, up),
+                    uncertaintyMethodId = builtVorTrend.input.drive.uncertaintyMethodId + "+TURN_UP_LIVE",
+                )
+            }
+            "DOWN_P2", "DOWN_P3" -> {
+                val fast = fastDrive(signal)
+                val tauDa = builtVorTrend.input.decay is DriveDecayModel.ExponentialDecay
+                val streak = TurnResponseShadow.declineStreak(turnSamples)
+                val noetig = if (trendRuleOverride == "DOWN_P3") 3 else 2
+                if (fast == null || !tauDa || fast >= band.mean || streak < noetig) null
+                else {
+                    val gesenkt = minOf(builtVorTrend.input.drive.meanMgdlPerMin, fast)
+                    builtVorTrend.input.drive.copy(
+                        meanMgdlPerMin = gesenkt,
+                        lowerMgdlPerMin = minOf(builtVorTrend.input.drive.lowerMgdlPerMin, gesenkt),
+                        lowerPriorFreeMgdlPerMin = builtVorTrend.input.drive.lowerPriorFreeMgdlPerMin?.let { minOf(it, gesenkt) },
+                        uncertaintyMethodId = builtVorTrend.input.drive.uncertaintyMethodId + "+TURN_DOWN_LIVE",
+                    )
+                }
+            }
+            else -> error("unbekannte Trendregel: $trendRuleOverride")
+        }
+        val built = trendDrive?.let {
+            Built(builtVorTrend.input.copy(drive = it), builtVorTrend.iobAtH, builtVorTrend.isfTail, builtVorTrend.discount)
+        } ?: builtVorTrend
+        val trendAngewendet = built !== builtVorTrend
 
         // DER ABBRUCH IST AUFGESCHOBEN, NICHT AUFGEHOBEN (Tonis Auflage
         // 11.08.). Eine verworfene Trajektorie beendete den Zyklus hier -
@@ -3490,6 +3555,7 @@ class FuseCycleRunner(
             prediction = prediction,
             restraint = restraint,
             turnResponseShadow = turnResponseShadow,
+            trendRuleApplied = trendAngewendet,
             forecastShadowEnabled = forecastShadowEnabled,
             forecastShadowEpochTs = forecastShadowEpochTs,
             tailLowerUnconditionalMgdl = tailLowerUnconditional,
