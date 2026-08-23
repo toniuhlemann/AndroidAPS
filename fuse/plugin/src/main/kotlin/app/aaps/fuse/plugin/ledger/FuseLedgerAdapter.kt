@@ -357,6 +357,14 @@ class EpisodeBudgets {
      */
     var livenessReArmUntilTs: Long = 0L
 
+    /** Sammel-Epoche der Prognose-Shadows: gesetzt bei jedem Umschalten des
+     *  Master-Schalters, damit Auswertungen keine Messluecke ueberbruecken.
+     *  [forecastShadowLastState] traegt den zuletzt gesehenen Schalterstand
+     *  (-1 = nie gesehen, 0 = aus, 1 = an) - nur so ist ein Umschalten
+     *  waehrend eines Neustarts erkennbar. */
+    var forecastShadowEpochTs: Long = 0L
+    var forecastShadowLastState: Long = -1L
+
     /**
      * Die Buchung DIESES Zyklus, solange die Publikation nicht feststeht.
      *

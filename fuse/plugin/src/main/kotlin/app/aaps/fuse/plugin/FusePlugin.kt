@@ -1993,6 +1993,7 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
             .put(FuseDoubleKey.MarkerPrimeDescentHorizonMin, preferences)
             .put(FuseIntKey.DeferredPrimeEndMin, preferences)
             .put(FuseBooleanKey.LivenessChannelEnabled, preferences)
+            .put(FuseBooleanKey.ForecastShadowCollectionEnabled, preferences)
             .put(FuseDoubleKey.LivenessIobCapPercent, preferences)
             .put(FuseDoubleKey.LivenessBgMinDayMgdl, preferences)
             .put(FuseDoubleKey.LivenessBgMinNightMgdl, preferences)
@@ -2032,6 +2033,7 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
             .store(FuseDoubleKey.MarkerPrimeDescentHorizonMin, preferences)
             .store(FuseIntKey.DeferredPrimeEndMin, preferences)
             .store(FuseBooleanKey.LivenessChannelEnabled, preferences)
+            .store(FuseBooleanKey.ForecastShadowCollectionEnabled, preferences)
             .store(FuseDoubleKey.LivenessIobCapPercent, preferences)
             .store(FuseDoubleKey.LivenessBgMinDayMgdl, preferences)
             .store(FuseDoubleKey.LivenessBgMinNightMgdl, preferences)
@@ -2237,6 +2239,7 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
             // im Einstellungs-Vertrag fehlte: konsistent ueberall abwesend
             // statt inkonsistent halb vorhanden.
             addPreference(AdaptiveSwitchPreference(ctx = context, booleanKey = FuseBooleanKey.ExpectationLedgerEnabled, summary = R.string.fuse_expectation_ledger_summary, title = R.string.fuse_expectation_ledger_title))
+            addPreference(AdaptiveSwitchPreference(ctx = context, booleanKey = FuseBooleanKey.ForecastShadowCollectionEnabled, summary = R.string.fuse_forecast_shadow_summary, title = R.string.fuse_forecast_shadow_title))
             addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.ReboundDeadbandMgdl, dialogMessage = R.string.fuse_rebound_deadband_summary, title = R.string.fuse_rebound_deadband_title))
         }
 

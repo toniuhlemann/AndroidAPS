@@ -617,6 +617,21 @@ enum class FuseBooleanKey(
     ExpectationLedgerEnabled("fuse_expectation_ledger_enabled", false),
 
     /**
+     * MASTER-Schalter der Prognose-Forschungssammler (Toni/Codex 23.08.):
+     * Trend-/Tau-Matrix und ADAPTIVE-DOWN-Lanes. REIN diagnostisch, wird
+     * nie von Dosierlogik gelesen (die Wende-KLASSIFIKATION selbst ist
+     * Produktionseingang des Liveness-Exits und laeuft immer). Default AN,
+     * solange die Messphase laeuft; im Normalbetrieb abschaltbar, damit
+     * Forschungscode nicht unbegrenzt still mitrechnet. AUS exportiert
+     * `enabled:false` statt fehlender Felder; jedes Umschalten eroeffnet
+     * eine neue Sammel-Epoche. BEWUSST NICHT im Policy-Hash: keine
+     * Dosierregel. Keine Einzelschalter je Variante - eine im Code
+     * versionierte Matrix (methodId) ist reproduzierbarer als
+     * Schalter-Kombinatorik.
+     */
+    ForecastShadowCollectionEnabled("fuse_forecast_shadow_collection_enabled", true),
+
+    /**
      * DAS MAHLZEITENFUNDAMENT - DEFAULT AUS.
      *
      * Anders als der Erwartungs-Ledger ist dies DOSIERWIRKSAM: eingeschaltet

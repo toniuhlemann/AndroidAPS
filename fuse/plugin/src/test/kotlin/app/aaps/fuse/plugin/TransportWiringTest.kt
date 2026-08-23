@@ -155,6 +155,9 @@ class TransportWiringTest : TestBaseWithProfile() {
 
     /** Liveness-Kanal-Hebel: Schalter, Kanaldeckel [%], Re-Arm-Sperre [min]. */
     private var livenessAn = false
+
+    /** Masterschalter der Prognose-Shadows (Default AN wie in Produktion). */
+    private var forecastShadowAn = true
     private var livenessCapPct = 50.0
     private var livenessBgMin = 160.0
 
@@ -398,6 +401,7 @@ class TransportWiringTest : TestBaseWithProfile() {
         whenever(preferences.get(FuseDoubleKey.MarkerPrimeDescentHorizonMin)).thenAnswer { aufschubHorizontMin }
         whenever(preferences.get(FuseIntKey.DeferredPrimeEndMin)).thenAnswer { aufschubFristMin }
         whenever(preferences.get(FuseBooleanKey.LivenessChannelEnabled)).thenAnswer { livenessAn }
+        whenever(preferences.get(FuseBooleanKey.ForecastShadowCollectionEnabled)).thenAnswer { forecastShadowAn }
         whenever(preferences.get(FuseDoubleKey.LivenessIobCapPercent)).thenAnswer { livenessCapPct }
         whenever(preferences.get(FuseDoubleKey.LivenessBgMinDayMgdl)).thenAnswer { livenessBgMin }
         whenever(preferences.getIfExists(FuseDoubleKey.LivenessBgMinNightMgdl)).thenAnswer { livenessBgMinNacht }
@@ -6389,6 +6393,67 @@ class TransportWiringTest : TestBaseWithProfile() {
 
 
     /**
+     * Prognose-Shadow-Masterschalter (Toni/Codex 23.08.): AUS heisst leere
+     * Matrizen und enabled:false im Export - und die DOSIERUNG ist bitgleich
+     * zum AN-Lauf. Der Schalter wird nie von Dosierlogik gelesen; die
+     * Wende-KLASSIFIKATION laeuft weiter und speist den Liveness-Exit
+     * unveraendert (die Lage enthaelt absichtlich einen bestaetigten
+     * Wende-Exit, damit genau dieser Pfad im Vergleich steckt).
+     */
+    @Test
+    fun `Prognose-Shadow AUS laesst die Dosierung bitgleich und sammelt nichts`(@TempDir dir: File) {
+        livenessLage(dir)
+        knick2AbMin = 26
+        steigungNachKnick2 = -1.5
+        val an = ArrayList<Double>()
+        var anVarianten = 0
+        repeat(40) { val o = cycle()
+            an.add(o.decision.smbU)
+            anVarianten += (o.turnResponseShadow?.variants?.size ?: 0) +
+                (o.turnResponseShadow?.downVariants?.size ?: 0)
+        }
+        assertTrue(anVarianten > 0, "der AN-Lauf muss an der Wende Varianten gesammelt haben")
+
+        forecastShadowAn = false
+        clock = start
+        transportReset()
+        neuerRunner(FuseLedgerAdapter().also { it.loadOnce(File(dir, "aus").also(File::mkdirs), "test-epoch", start) })
+        val aus = ArrayList<Double>()
+        var ausVarianten = 0
+        repeat(40) { val o = cycle()
+            aus.add(o.decision.smbU)
+            ausVarianten += (o.turnResponseShadow?.variants?.size ?: 0) +
+                (o.turnResponseShadow?.downVariants?.size ?: 0)
+            // Abbruchzyklen (Signalaufbau) tragen die Outcome-Defaults -
+            // bewertet wird nur der Hauptpfad.
+            if (o.abortReason == null) assertEquals(false, o.forecastShadowEnabled)
+        }
+        assertEquals(0, ausVarianten, "AUS sammelt nichts")
+        assertEquals(an, aus, "die Dosierung haengt nicht am Sammler")
+    }
+
+    /** Jedes Umschalten eroeffnet eine neue, restartfeste Sammel-Epoche -
+     *  Auswertungen duerfen keine Messluecke ueberbruecken. */
+    @Test
+    fun `Prognose-Shadow Umschalten eroeffnet eine neue restartfeste Epoche`(@TempDir dir: File) {
+        val adapter = livenessLage(dir)
+        // Signalaufbau: die ersten Zyklen brechen ab und tragen Defaults.
+        repeat(6) { cycle() }
+        val e1 = cycle().forecastShadowEpochTs
+        assertTrue(e1 > 0L)
+        repeat(3) { assertEquals(e1, cycle().forecastShadowEpochTs, "ohne Umschalten bleibt die Epoche") }
+        forecastShadowAn = false
+        val e2 = cycle().forecastShadowEpochTs
+        assertTrue(e2 > e1, "AUS eroeffnet eine neue Epoche")
+        forecastShadowAn = true
+        val e3 = cycle().forecastShadowEpochTs
+        assertTrue(e3 > e2, "AN eroeffnet wieder eine neue")
+        repeat(2) { assertEquals(e3, cycle().forecastShadowEpochTs) }
+        assertTrue(adapter.persistVerified(dir))
+        assertEquals(e3, nachNeustart(dir).forecastShadowEpochTs, "die Epoche steht in der Datei")
+    }
+
+    /**
      * v20-Vertrag (Toni/Codex 22.08. spaet): getrennte Tag-/Nachtschwelle.
      * Der regulaere Tag/Nacht-Wechsel ist KEIN CONFIG_CHANGED; ein Wechsel
      * in die Nacht unter der neuen Schwelle beendet einen Lauf als

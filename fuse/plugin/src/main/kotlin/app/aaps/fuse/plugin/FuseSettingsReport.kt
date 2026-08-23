@@ -56,6 +56,7 @@ internal val fuseEinstellbareKeys: Set<String> = setOf(
     FuseBooleanKey.PrimeReleaseEnabled.key,
     FuseBooleanKey.MealFoundationEnabled.key,
     FuseBooleanKey.ExpectationLedgerEnabled.key,
+    FuseBooleanKey.ForecastShadowCollectionEnabled.key,
     FuseBooleanKey.MarkerAuthorisesRelease.key,
     FuseBooleanKey.TailGuardEnabled.key,
     FuseBooleanKey.ConditionalTailEnabled.key,
@@ -202,6 +203,7 @@ object FuseSettingsReport {
                 // auf einen Blick sehen, dass hier nur gemessen wird.
                 "Messen und Beobachten" to listOf(
                     schalter(FuseBooleanKey.ExpectationLedgerEnabled, "Erwartungs-Beobachter"),
+                    schalter(FuseBooleanKey.ForecastShadowCollectionEnabled, "Prognose-Shadow"),
                 ),
             ),
         )

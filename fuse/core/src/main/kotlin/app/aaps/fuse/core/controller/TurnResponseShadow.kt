@@ -27,6 +27,10 @@ import kotlin.math.max
  */
 object TurnResponseShadow {
 
+    /** Algorithmusstand der Matrix fuer die Auswertung - bei jeder
+     *  Aenderung an Varianten oder Rechenweg hochzaehlen. */
+    const val METHOD_ID = "TAU-R60-R55-R50-R45-ADAPTIVE-DOWN-v1"
+
     const val SAMPLE_COUNT = 3
     const val MAX_GAP_MS = 90_000L
     const val MIN_TOTAL_CHANGE_MGDL_PER_MIN = 0.20

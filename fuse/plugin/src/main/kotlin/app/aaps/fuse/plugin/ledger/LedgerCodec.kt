@@ -492,6 +492,8 @@ object LedgerCodec {
         // und der Bewaffnungs-Streak sind bewusst prozesslokal - ein
         // Neustart bewaffnet neu, oeffnet aber nie eine laufende Sperre.
         .put("livenessReArmUntilTs", e.livenessReArmUntilTs)
+        .put("forecastShadowEpochTs", e.forecastShadowEpochTs)
+        .put("forecastShadowLastState", e.forecastShadowLastState)
         // DREI Elemente statt zwei: [ts, menge, proposalId] (Toni 19.08.).
         // Die Kennung MUSS mit - ohne sie findet ein Nicht-Sende-Beweis nach
         // einem Neustart den Eintrag nicht mehr und laesst eine nie geflossene
@@ -705,6 +707,16 @@ object LedgerCodec {
             val sperre = o.getLong("livenessReArmUntilTs")
             require(sperre >= 0L) { "livenessReArmUntilTs out of range: $sperre" }
             e.livenessReArmUntilTs = sperre
+        }
+        if (o.has("forecastShadowEpochTs")) {
+            val epoche = o.getLong("forecastShadowEpochTs")
+            require(epoche >= 0L) { "forecastShadowEpochTs out of range: $epoche" }
+            e.forecastShadowEpochTs = epoche
+        }
+        if (o.has("forecastShadowLastState")) {
+            val stand = o.getLong("forecastShadowLastState")
+            require(stand in -1L..1L) { "forecastShadowLastState out of range: $stand" }
+            e.forecastShadowLastState = stand
         }
         // KEINE MIGRATION, die ein Fundament ERFINDET: fehlt das Objekt, gibt
         // es keine laufende Autorisierung. Eine Altdatei mitten in einer

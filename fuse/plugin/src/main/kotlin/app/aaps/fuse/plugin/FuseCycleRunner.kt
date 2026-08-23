@@ -677,6 +677,11 @@ class FuseCycleRunner(
          *  Nur im Hauptpfad gefuellt. */
         val livenessModelReject: String? = null,
         val livenessReArmUntilTs: Long = 0L,
+        /** Master-Schalter + Sammel-Epoche der Prognose-Shadows - damit
+         *  "bewusst aus", "alter Build" und "neue Messreihe" im Trail
+         *  unterscheidbar sind. */
+        val forecastShadowEnabled: Boolean = true,
+        val forecastShadowEpochTs: Long = 0L,
         val descentLatchedAtTs: Long = 0L,
         /** KUMULATIV in dieser Episode publiziertes Insulin [U] - die
          *  Bezahlseite des Stoerungsbestands. Laeuft bis EXPIRED weiter,
@@ -1364,6 +1369,22 @@ class FuseCycleRunner(
         // BGI-bereinigte Antrieb bereits nachhaltig gegen den traegen
         // 18-min-Antrieb? Das Ergebnis wird unten nur fuer parallele Bahnen
         // und den Export verwendet. Weder `state` noch `decision` lesen es.
+        // ---- PROGNOSE-SHADOW-MASTERSCHALTER (Toni/Codex 23.08.) ---------
+        // EIN Schalter fuer beide Forschungs-Sammler (Tau-Matrix +
+        // ADAPTIVE-DOWN-Lanes). Er wird NIE von Dosierlogik gelesen; die
+        // Wende-KLASSIFIKATION unten ist Produktionseingang (Liveness-Exit)
+        // und laeuft unabhaengig davon. Nicht im Policy-Hash. Jedes
+        // Umschalten eroeffnet eine neue, restartfeste Sammel-Epoche -
+        // Auswertungen duerfen keine Messluecke ueberbruecken.
+        val forecastShadowEnabled = preferences.get(FuseBooleanKey.ForecastShadowCollectionEnabled)
+        val forecastShadowEpochTs = run {
+            val stand = if (forecastShadowEnabled) 1L else 0L
+            if (episodes.forecastShadowLastState != stand || episodes.forecastShadowEpochTs <= 0L) {
+                episodes.forecastShadowLastState = stand
+                episodes.forecastShadowEpochTs = computeTs
+            }
+            episodes.forecastShadowEpochTs
+        }
         val turnSamples = onsetRing.map {
             TurnResponseShadow.Sample(it.tsMs, it.ukfRatePerMin, it.fastDriveMgdlPerMin)
         }
@@ -1844,8 +1865,10 @@ class FuseCycleRunner(
         // Die Matrix ist nur an einem BESTAETIGTEN Wendepunkt relevant. Sie
         // in 1440 normalen Tageszyklen zu rechnen waere dosierneutral in der
         // Menge, aber nicht in der Zeit: die RT-Publikation wartet auf run().
-        if (turnClassification.phase == TurnResponseShadow.Phase.TURNING_UP ||
-            turnClassification.phase == TurnResponseShadow.Phase.TURNING_DOWN
+        if (forecastShadowEnabled && (
+                turnClassification.phase == TurnResponseShadow.Phase.TURNING_UP ||
+                turnClassification.phase == TurnResponseShadow.Phase.TURNING_DOWN
+            )
         ) {
             TurnResponseShadow.STATIC_RESTRAINT_TAUS_MIN.forEach { tau ->
                 val (effective, path) = shadowRestraint(tau)
@@ -2281,6 +2304,7 @@ class FuseCycleRunner(
         // also nicht, und auch der nur bei fast < slow.
         var shadowDownLaneDecision: FuseController.Decision? = null
         val downVariants: List<TurnResponseShadow.DownVariant> = run {
+            if (!forecastShadowEnabled) return@run emptyList()
             val fast = shadowFast ?: return@run emptyList()
             if (produktivTauPos == null || fast >= band.mean) return@run emptyList()
             val streak = TurnResponseShadow.declineStreak(turnSamples)
@@ -3431,6 +3455,8 @@ class FuseCycleRunner(
             prediction = prediction,
             restraint = restraint,
             turnResponseShadow = turnResponseShadow,
+            forecastShadowEnabled = forecastShadowEnabled,
+            forecastShadowEpochTs = forecastShadowEpochTs,
             tailLowerUnconditionalMgdl = tailLowerUnconditional,
             tailLowerConditionalMgdl = tailLowerConditional,
             tailLowerMainUncondMgdl = tailLowerMainUncond,

@@ -3,6 +3,7 @@ package app.aaps.fuse.plugin.export
 import app.aaps.core.interfaces.aps.RT
 import app.aaps.fuse.core.util.Sha
 import app.aaps.fuse.plugin.FuseCycleRunner
+import app.aaps.fuse.core.controller.TurnResponseShadow
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -738,6 +739,9 @@ object FuseStateJson {
             val c = sh.classification
             o.put(
                 "turnResponseShadow", JSONObject()
+                    .put("enabled", outcome.forecastShadowEnabled)
+                    .put("collectionEpoch", outcome.forecastShadowEpochTs)
+                    .put("methodId", TurnResponseShadow.METHOD_ID)
                     .put("dosageNeutral", true)
                     .put("phase", c.phase.name)
                     .put("reason", c.reason.name)
