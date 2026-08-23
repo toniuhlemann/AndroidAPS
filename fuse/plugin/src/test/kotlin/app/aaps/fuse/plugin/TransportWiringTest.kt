@@ -6524,9 +6524,17 @@ class TransportWiringTest : TestBaseWithProfile() {
 
         // ISF je Tagesminute aus dem Trail (Toni faehrt ein Zeitprofil).
         val isfProMin = HashMap<Int, Double>()
-        zyklen.forEach { z ->
-            val min = ((z.ts / 60_000L) % 1440L).toInt() // UTC-Minute; konsistent je Lauf
-            isfProMin[min] = z.isf
+        run {
+            // LOKALE Tagesminute, nicht UTC (Codex-Befund 23.08.): der Runner
+            // fragt mit MidnightUtils.secondsFromMidnight, und das rechnet in
+            // der JVM-Zeitzone. Die UTC-Fuellung verschob die ISF-Karte unter
+            // CEST um zwei Stunden - im Abendfenster lief die Gegenrechnung
+            // mit ISF 60 statt der aufgezeichneten 72 und war zu aggressiv.
+            val cal = java.util.Calendar.getInstance()
+            zyklen.forEach { z ->
+                cal.timeInMillis = z.ts
+                isfProMin[cal.get(java.util.Calendar.HOUR_OF_DAY) * 60 + cal.get(java.util.Calendar.MINUTE)] = z.isf
+            }
         }
         val replayProfil = org.mockito.kotlin.spy(validProfile)
         org.mockito.kotlin.doAnswer { inv ->
@@ -6536,11 +6544,9 @@ class TransportWiringTest : TestBaseWithProfile() {
         whenever(profileFunction.getProfile()).thenReturn(replayProfil)
         whenever(profileFunction.getProfile(any())).thenReturn(replayProfil)
 
-        // WICHTIG: Tagesminute des Rigs vs. Toni - der Runner rechnet
-        // secondsFromMidnight in der JVM-Zeitzone. Der ISF-Spy oben nutzt
-        // dieselbe Uhr wie der Runner, solange beide aus tsMs ableiten -
-        // deshalb hier KEINE lokale Umrechnung: der Spy bekommt die vom
-        // Runner errechneten Sekunden und mappt sie konsistent.
+        // Der Spy bekommt die vom Runner errechneten LOKALEN Sekunden und
+        // die Karte ist seit dem Zeitzonen-Fix oben ebenfalls lokal gefuellt
+        // - eine Uhr fuer beide Seiten.
 
         fun lauf(name: String, fensterMs: Long?): File {
             transportReset()
