@@ -34,7 +34,7 @@ class ConfigBoundsTest {
         riseRampLowR = 0.5, riseRampHighR = 2.0, bolusShareLambda = 1.0,
         onsetChannelEnabled = true, onsetEnvelopeU = 1.5,
         primeReleaseEnabled = true, primeWindowMin = 15, primeEnvelopeU = 1.2,
-        maxSmbU = 0.3, guardFloorMgdl = 70.0, lowGateMinBenefitMgdl = 5.0, lowGateHorizonMin = 120.0, positiveDescentHorizonMin = 30.0, deferredPrimeEnabled = false, markerPrimeDescentHorizonMin = 60.0, deferredPrimeEndMin = 120, livenessChannelEnabled = false, livenessIobCapPercent = 50.0, livenessBgMinDayMgdl = 160.0, livenessBgMinNightMgdl = 160.0, livenessReArmMin = 10, iobThPercent = 100,
+        maxSmbU = 0.3, guardFloorMgdl = 70.0, lowGateMinBenefitMgdl = 5.0, lowGateHorizonMin = 120.0, positiveDescentHorizonMin = 30.0, deferredPrimeEnabled = false, markerPrimeDescentHorizonMin = 60.0, deferredPrimeEndMin = 120, livenessChannelEnabled = false, livenessIobCapPercent = 50.0, livenessBgMinDayMgdl = 160.0, livenessBgMinNightMgdl = 160.0, livenessRatioCap = 1.0, livenessReArmMin = 10, iobThPercent = 100,
         releaseHorizonMin = 30, liabilityHorizonMin = 120, driveTauMin = 60, theilSenWindowMin = 18,
         absorptionCreditWindowMin = 60, markerBoostMaxMin = 45, evidenceReboundOverrideMaxMin = 120,
         nightStartMin = 1380, nightEndMin = 420,

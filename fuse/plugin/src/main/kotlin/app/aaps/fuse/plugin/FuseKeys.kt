@@ -248,6 +248,25 @@ enum class FuseDoubleKey(
     LivenessIobCapPercent("fuse_liveness_iob_cap_percent", 50.0, 20.0, 90.0),
 
     /**
+     * RATIO-DECKEL DES LIVENESS-KANALS (Tonis Vertrag 23.08. spaet):
+     * liveRatio = min(effectiveRatio, Cap) - begrenzt die GESCHWINDIGKEIT
+     * je Zyklus, waehrend [LivenessIobCapPercent] die GESAMTMENGE deckelt
+     * und die gemessenen Abwaerts-Exits den Lauf beenden. Alle drei sind
+     * komplementaer; keiner ersetzt einen anderen.
+     *
+     * GEMESSENER ANLASS: die 15:33-Episode vom 23.08. lieferte 3,85 U in
+     * 23 min (0,17 U/min) bis an den Kanaldeckel, Min90 danach 64 - bei
+     * 10-20 min Wirklatenz ist der Bedarf bei einem Forecast-Miss
+     * ausgeliefert, bevor ein gemessener Exit greifen KANN. Der Cap
+     * streckt die Lieferung und gibt den Exits Zeit.
+     *
+     * DEFAULT 1.0 = NICHT BINDEND (effectiveRatio ist stets kleiner):
+     * das Update ist dosierneutral. Der NORMALE Ratio-Pfad (Anteil
+     * Korrektur/Anstieg, Rampe) bleibt in jedem Fall unberuehrt.
+     */
+    LivenessRatioCap("fuse_liveness_ratio_cap", 1.0, 0.05, 1.0),
+
+    /**
      * BG-Schwelle der Druckbedingung des Liveness-Kanals am TAG [mg/dl].
      *
      * Toni 22.08.: nicht hart codieren. Untergrenze 100: darunter waere die

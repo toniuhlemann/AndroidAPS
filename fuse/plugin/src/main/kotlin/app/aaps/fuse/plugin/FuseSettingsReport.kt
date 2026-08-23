@@ -34,6 +34,7 @@ internal val fuseEinstellbareKeys: Set<String> = setOf(
     FuseIntKey.DeferredPrimeEndMin.key,
     FuseBooleanKey.LivenessChannelEnabled.key,
     FuseDoubleKey.LivenessIobCapPercent.key,
+    FuseDoubleKey.LivenessRatioCap.key,
     FuseDoubleKey.LivenessBgMinDayMgdl.key,
     FuseDoubleKey.LivenessBgMinNightMgdl.key,
     FuseIntKey.LivenessReArmMin.key,
@@ -157,6 +158,7 @@ object FuseSettingsReport {
                     // mengenbasiert - seine Grenzen sind Dosiergrenzen.
                     schalter(FuseBooleanKey.LivenessChannelEnabled, "Liveness-Kanal"),
                     zahl(FuseDoubleKey.LivenessIobCapPercent, "Kanaldeckel", "%"),
+                    zahl(FuseDoubleKey.LivenessRatioCap, "Ratio-Deckel", ""),
                     zahl(FuseDoubleKey.LivenessBgMinDayMgdl, "Druck-Schwelle Tag", "mg/dl"),
                     // Die Nachtschwelle EHRLICH anzeigen: solange sie nie
                     // gesetzt wurde, folgt sie zur Laufzeit der Tagesschwelle

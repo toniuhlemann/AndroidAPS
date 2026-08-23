@@ -294,6 +294,7 @@ class FuseCycleRunner(
             // Grenze - ein Unsinnswert (0 %, 500 %) darf nie stillschweigend
             // rechnen, sondern muss den Zyklus benannt abbrechen.
             require(it.livenessIobCapPercent.isFinite() && it.livenessIobCapPercent in FuseDoubleKey.LivenessIobCapPercent.min..FuseDoubleKey.LivenessIobCapPercent.max) { "livenessIobCapPercent=${it.livenessIobCapPercent}" }
+            require(it.livenessRatioCap.isFinite() && it.livenessRatioCap in FuseDoubleKey.LivenessRatioCap.min..FuseDoubleKey.LivenessRatioCap.max) { "livenessRatioCap=${it.livenessRatioCap}" }
             require(it.livenessReArmMin in FuseIntKey.LivenessReArmMin.min..FuseIntKey.LivenessReArmMin.max) { "livenessReArmMin=${it.livenessReArmMin}" }
             require(it.livenessBgMinDayMgdl.isFinite() && it.livenessBgMinDayMgdl in FuseDoubleKey.LivenessBgMinDayMgdl.min..FuseDoubleKey.LivenessBgMinDayMgdl.max) { "livenessBgMinDayMgdl=${it.livenessBgMinDayMgdl}" }
             require(it.livenessBgMinNightMgdl.isFinite() && it.livenessBgMinNightMgdl in FuseDoubleKey.LivenessBgMinNightMgdl.min..FuseDoubleKey.LivenessBgMinNightMgdl.max) { "livenessBgMinNightMgdl=${it.livenessBgMinNightMgdl}" }
@@ -693,6 +694,12 @@ class FuseCycleRunner(
         /** Die Mittelbahn, gegen die der Kanal gerechnet hat - NICHT immer
          *  dieselbe wie decision.predAtReleaseMgdl (min mit Bremsbahn). */
         val livenessReleaseMeanMgdl: Double? = null,
+        /** Die im Kanal WIRKSAME Ratio = min(effectiveRatio, Cap). Nur
+         *  gesetzt, wenn die Kandidatenrechnung lief; zusammen mit
+         *  state.smbRatioEffective und policy.livenessRatioCap ist die
+         *  Kappung offline vollstaendig nachrechenbar (Vertrag: Export von
+         *  effectiveRatio, liveRatio und Cap). */
+        val livenessLiveRatio: Double? = null,
         /** Die in DIESEM Zyklus wirksame Druck-Schwelle und ihre Quelle
          *  (DAY|NIGHT, v20) - fuer die Anzeige "Live wartet - BG 151/160". */
         val livenessBgMinEffectiveMgdl: Double? = null,
@@ -3035,6 +3042,7 @@ class FuseCycleRunner(
         var livenessModelReject: String? = null
         var livenessNeedU: Double? = null
         var livenessReleaseMeanMgdl: Double? = null
+        var livenessLiveRatio: Double? = null
         var livenessBgMinEffective: Double? = null
         var livenessBgMinSource: String? = null
         var livenessHeadroomU: Double? = null
@@ -3267,6 +3275,12 @@ class FuseCycleRunner(
                 .firstOrNull { it.offsetMin == cfg.releaseHorizonMin }?.meanBg
                 ?: return@run sperren("NO_RELEASE_MEAN")
             val ratio = state.effectiveSmbRatio
+            // ---- RATIO-DECKEL (Tonis Vertrag 23.08. spaet) --------------
+            // liveRatio = min(effectiveRatio, Cap): begrenzt NUR die
+            // Geschwindigkeit dieses Kanals. Der normale Ratio-Pfad liest
+            // weiter state.effectiveSmbRatio; Default 1.0 ist nicht bindend
+            // und laesst diese Zeile zur Identitaet werden.
+            val liveRatio = kotlin.math.min(ratio, cfg.livenessRatioCap)
             val bedarfU = kotlin.math.max(0.0, (releaseMean - target) / isf)
             // Codex 22.08. spaet: der ROHE Kanalbedarf gehoert in den Export.
             // Ohne ihn stand im Viewer "Bedarf -", waehrend der Kanal 0,10 U
@@ -3276,11 +3290,12 @@ class FuseCycleRunner(
             // positiver Bedarf.
             livenessNeedU = bedarfU
             livenessReleaseMeanMgdl = releaseMean
+            livenessLiveRatio = liveRatio
             livenessCandidateU = LivenessChannel.candidateU(
                 releaseMeanMgdl = releaseMean,
                 targetMgdl = target,
                 isfMgdlPerU = isf,
-                smbRatio = ratio,
+                smbRatio = liveRatio,
                 maxSmbU = cfg.maxSmbU,
             )
             val head = LivenessChannel.headroomU(
@@ -3303,7 +3318,10 @@ class FuseCycleRunner(
             // dann maxSMB, sonst war die Ratio selbst das Mass.
             livenessBinding = when {
                 head.headroomU < livenessCandidateU - 1e-9 -> head.binding
-                cfg.maxSmbU < ratio * bedarfU - 1e-9 -> "maxSmb"
+                cfg.maxSmbU < liveRatio * bedarfU - 1e-9 -> "maxSmb"
+                // Der Cap war das Mass, wenn er die Ratio real gekappt hat -
+                // sonst bleibt "smbRatio" die ehrliche Antwort.
+                liveRatio < ratio - 1e-9 -> "livenessRatioCap"
                 else -> "smbRatio"
             }
             if (liveU <= nachAufschub.smbU + 1e-9) {
@@ -3523,6 +3541,7 @@ class FuseCycleRunner(
             livenessStreak = livenessStreak,
             livenessCandidateU = livenessCandidateU,
             livenessNeedU = livenessNeedU,
+            livenessLiveRatio = livenessLiveRatio,
             livenessReleaseMeanMgdl = livenessReleaseMeanMgdl,
             livenessBgMinEffectiveMgdl = livenessBgMinEffective,
             livenessBgMinSource = livenessBgMinSource,
@@ -4530,6 +4549,8 @@ class FuseCycleRunner(
         val livenessIobCapPercent: Double,
         val livenessBgMinDayMgdl: Double,
         val livenessBgMinNightMgdl: Double,
+        /** Ratio-Deckel des Kanals; 1.0 = nicht bindend - s. FuseKeys. */
+        val livenessRatioCap: Double,
         val livenessReArmMin: Int,
         val primeWindowMin: Int,
         /** Die Null sofort verlassen, sobald ihr Schutzgrund weg ist. */
@@ -4600,6 +4621,7 @@ class FuseCycleRunner(
         livenessBgMinNightMgdl = preferences.getIfExists(FuseDoubleKey.LivenessBgMinNightMgdl)
             ?.takeIf { it.isFinite() && it in FuseDoubleKey.LivenessBgMinNightMgdl.min..FuseDoubleKey.LivenessBgMinNightMgdl.max }
             ?: preferences.get(FuseDoubleKey.LivenessBgMinDayMgdl),
+        livenessRatioCap = preferences.get(FuseDoubleKey.LivenessRatioCap),
         livenessReArmMin = preferences.get(FuseIntKey.LivenessReArmMin),
         // Ein ungesetzter Wert (0) ist kein Konfigurationsfehler, sondern ein
         // Speicher, der den Schluessel noch nicht kennt - dann gilt die

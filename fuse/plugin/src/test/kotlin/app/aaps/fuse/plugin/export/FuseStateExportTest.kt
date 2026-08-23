@@ -26,7 +26,7 @@ class FuseStateExportTest {
     private val BUILD = FuseStateJson.Build("3.4.2.5+fuse1.0.2-toni", "abc1234", true)
 
     private val cfg = FuseCycleRunner.Config(
-        smbRatio = 0.2, smbRatioRise = 0.35, sharedMaxIobU = 7.0, riseRampLowR = 0.5, riseRampHighR = 2.0, bolusShareLambda = 1.0, onsetChannelEnabled = true, onsetEnvelopeU = 1.5, primeReleaseEnabled = true, primeWindowMin = 15, primeEnvelopeU = 1.2, maxSmbU = 0.3, guardFloorMgdl = 70.0, lowGateMinBenefitMgdl = 5.0, lowGateHorizonMin = 120.0, positiveDescentHorizonMin = 30.0, deferredPrimeEnabled = false, markerPrimeDescentHorizonMin = 60.0, deferredPrimeEndMin = 120, livenessChannelEnabled = false, livenessIobCapPercent = 50.0, livenessBgMinDayMgdl = 160.0, livenessBgMinNightMgdl = 160.0, livenessReArmMin = 10, iobThPercent = 100,
+        smbRatio = 0.2, smbRatioRise = 0.35, sharedMaxIobU = 7.0, riseRampLowR = 0.5, riseRampHighR = 2.0, bolusShareLambda = 1.0, onsetChannelEnabled = true, onsetEnvelopeU = 1.5, primeReleaseEnabled = true, primeWindowMin = 15, primeEnvelopeU = 1.2, maxSmbU = 0.3, guardFloorMgdl = 70.0, lowGateMinBenefitMgdl = 5.0, lowGateHorizonMin = 120.0, positiveDescentHorizonMin = 30.0, deferredPrimeEnabled = false, markerPrimeDescentHorizonMin = 60.0, deferredPrimeEndMin = 120, livenessChannelEnabled = false, livenessIobCapPercent = 50.0, livenessBgMinDayMgdl = 160.0, livenessBgMinNightMgdl = 160.0, livenessRatioCap = 1.0, livenessReArmMin = 10, iobThPercent = 100,
         releaseHorizonMin = 30, liabilityHorizonMin = 120, driveTauMin = 60, theilSenWindowMin = 18, absorptionCreditWindowMin = 60, markerBoostMaxMin = 45, evidenceReboundOverrideMaxMin = 120, nightStartMin = 1380, nightEndMin = 420, nightDeadbandMgdl = 45.0, nightDeadbandEnabled = true, reboundDeadbandMgdl = 25.0, reboundDeadbandEnabled = true,
         driveLowerQuantilePct = 50, tailGuardEnabled = false, conditionalTailEnabled = true, markerAuthorized = false, mealFoundationEnabled = false, mealFoundationPhaseAShare = 1.0, mealFoundationEndMin = 60, tailFloorMgdl = 70.0, tailRecoveryU = 0.0, fastRestraintEnabled = true, endZeroWhenReasonGone = true,
     )
@@ -491,6 +491,9 @@ class FuseStateExportTest {
         // v22: W18 und W10 sind verschiedene Schaetzer - MUTATIONSPROBE fuer
         // das Fenster im Fingerprint (Vertragspunkt 4).
         assertTrue(FuseStateJson.hashOf(cfg.copy(theilSenWindowMin = 10)) != h)
+        // v23: der Ratio-Deckel des Liveness-Kanals - MUTATIONSPROBE fuer
+        // den Fingerprint (Tonis Vertrag: Aufnahme in Policy-Hash).
+        assertTrue(FuseStateJson.hashOf(cfg.copy(livenessRatioCap = 0.2)) != h)
         assertTrue(FuseStateJson.hashOf(cfg.copy(tailGuardEnabled = true)) != h)
         assertEquals(h, FuseStateJson.hashOf(cfg.copy()))
     }
@@ -654,7 +657,7 @@ class FuseStateExportTest {
         // DIESER TEST IST ABSICHTLICH STUR: er faellt bei jedem Bump um und
         // zwingt damit zu der Frage, ob die Aenderung wirklich dosierwirksam
         // war - ein stiller Bump waere so wertlos wie ein vergessener.
-        assertEquals(22, FuseStateJson.RULE_SET_VERSION)
+        assertEquals(23, FuseStateJson.RULE_SET_VERSION)
         assertTrue(
             FuseStateJson.hashOf(cfg)!!.isNotEmpty(),
             "und der Hash bleibt berechenbar",

@@ -1996,6 +1996,7 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
             .put(FuseBooleanKey.LivenessChannelEnabled, preferences)
             .put(FuseBooleanKey.ForecastShadowCollectionEnabled, preferences)
             .put(FuseDoubleKey.LivenessIobCapPercent, preferences)
+            .put(FuseDoubleKey.LivenessRatioCap, preferences)
             .put(FuseDoubleKey.LivenessBgMinDayMgdl, preferences)
             .put(FuseDoubleKey.LivenessBgMinNightMgdl, preferences)
             .put(FuseIntKey.LivenessReArmMin, preferences)
@@ -2037,6 +2038,7 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
             .store(FuseBooleanKey.LivenessChannelEnabled, preferences)
             .store(FuseBooleanKey.ForecastShadowCollectionEnabled, preferences)
             .store(FuseDoubleKey.LivenessIobCapPercent, preferences)
+            .store(FuseDoubleKey.LivenessRatioCap, preferences)
             .store(FuseDoubleKey.LivenessBgMinDayMgdl, preferences)
             .store(FuseDoubleKey.LivenessBgMinNightMgdl, preferences)
             .store(FuseIntKey.LivenessReArmMin, preferences)
@@ -2191,6 +2193,7 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
             )
             addPreference(AdaptiveSwitchPreference(ctx = context, booleanKey = FuseBooleanKey.LivenessChannelEnabled, summary = R.string.fuse_liveness_summary, title = R.string.fuse_liveness_title))
             addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.LivenessIobCapPercent, dialogMessage = R.string.fuse_liveness_cap_summary, title = R.string.fuse_liveness_cap_title))
+            addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.LivenessRatioCap, dialogMessage = R.string.fuse_liveness_ratio_cap_summary, title = R.string.fuse_liveness_ratio_cap_title))
             addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.LivenessBgMinDayMgdl, dialogMessage = R.string.fuse_liveness_bg_min_summary, title = R.string.fuse_liveness_bg_min_title))
             addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.LivenessBgMinNightMgdl, dialogMessage = R.string.fuse_liveness_bg_min_night_summary, title = R.string.fuse_liveness_bg_min_night_title))
             addPreference(AdaptiveIntPreference(ctx = context, intKey = FuseIntKey.LivenessReArmMin, dialogMessage = R.string.fuse_liveness_rearm_summary, title = R.string.fuse_liveness_rearm_title))
@@ -2232,6 +2235,10 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
             timeOfDay(FuseIntKey.NightStartMin, "Nacht Beginn", "Beginn des Nachtfensters; gleich dem Ende schaltet es aus")
             timeOfDay(FuseIntKey.NightEndMin, "Nacht Ende", "Ende des Nachtfensters (darf ueber Mitternacht gehen)")
             addPreference(AdaptiveSwitchPreference(ctx = context, booleanKey = FuseBooleanKey.ReboundDeadbandEnabled, summary = R.string.fuse_rebound_deadband_enabled_summary, title = R.string.fuse_rebound_deadband_enabled_title))
+            // Der Wert DIREKT hinter seinem Schalter (Toni 23.08. spaet) -
+            // vorher sassen Beobachter und Prognose-Shadow dazwischen, und
+            // wer das Totband stellte, musste am Schalter vorbei scrollen.
+            addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.ReboundDeadbandMgdl, dialogMessage = R.string.fuse_rebound_deadband_summary, title = R.string.fuse_rebound_deadband_title))
             // DER ERWARTUNGS-BEOBACHTER (Toni 19.08.). Er war verdrahtet, aber
             // der Schalter stand in KEINEM Screen - am Geraet also nicht
             // erreichbar. Ein Beobachter, den niemand einschalten kann, misst
@@ -2243,7 +2250,6 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
             // statt inkonsistent halb vorhanden.
             addPreference(AdaptiveSwitchPreference(ctx = context, booleanKey = FuseBooleanKey.ExpectationLedgerEnabled, summary = R.string.fuse_expectation_ledger_summary, title = R.string.fuse_expectation_ledger_title))
             addPreference(AdaptiveSwitchPreference(ctx = context, booleanKey = FuseBooleanKey.ForecastShadowCollectionEnabled, summary = R.string.fuse_forecast_shadow_summary, title = R.string.fuse_forecast_shadow_title))
-            addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.ReboundDeadbandMgdl, dialogMessage = R.string.fuse_rebound_deadband_summary, title = R.string.fuse_rebound_deadband_title))
         }
 
         // System-Wissen und der Reparatur-Eingriff teilen sich den letzten

@@ -159,6 +159,7 @@ class TransportWiringTest : TestBaseWithProfile() {
     /** Masterschalter der Prognose-Shadows (Default AN wie in Produktion). */
     private var forecastShadowAn = true
     private var livenessCapPct = 50.0
+    private var livenessRatioDeckel = 1.0
     private var livenessBgMin = 160.0
 
     /** Nachtschwelle des Kanals; null = nie gesetzt -> folgt der Tagesschwelle. */
@@ -427,6 +428,7 @@ class TransportWiringTest : TestBaseWithProfile() {
         whenever(preferences.get(FuseBooleanKey.LivenessChannelEnabled)).thenAnswer { livenessAn }
         whenever(preferences.get(FuseBooleanKey.ForecastShadowCollectionEnabled)).thenAnswer { forecastShadowAn }
         whenever(preferences.get(FuseDoubleKey.LivenessIobCapPercent)).thenAnswer { livenessCapPct }
+        whenever(preferences.get(FuseDoubleKey.LivenessRatioCap)).thenAnswer { livenessRatioDeckel }
         whenever(preferences.get(FuseDoubleKey.LivenessBgMinDayMgdl)).thenAnswer { livenessBgMin }
         whenever(preferences.getIfExists(FuseDoubleKey.LivenessBgMinNightMgdl)).thenAnswer { livenessBgMinNacht }
         whenever(preferences.get(FuseIntKey.LivenessReArmMin)).thenAnswer { livenessReArmMin }
@@ -6502,6 +6504,7 @@ class TransportWiringTest : TestBaseWithProfile() {
             primeHuelleU = d("primeEnvelopeU", primeHuelleU)
             livenessAn = b("livenessChannelEnabled", livenessAn)
             livenessCapPct = d("livenessIobCapPercent", livenessCapPct)
+            livenessRatioDeckel = d("livenessRatioCap", livenessRatioDeckel)
             livenessBgMin = d("livenessBgMinDayMgdl", livenessBgMin)
             livenessBgMinNacht = pol?.optDouble("livenessBgMinNightMgdl")?.takeIf { it.isFinite() }
             livenessReArmMin = i("livenessReArmMin", livenessReArmMin)
@@ -6548,11 +6551,12 @@ class TransportWiringTest : TestBaseWithProfile() {
         // die Karte ist seit dem Zeitzonen-Fix oben ebenfalls lokal gefuellt
         // - eine Uhr fuer beide Seiten.
 
-        fun lauf(name: String, fensterMs: Long?, trendRegel: String? = null, fenster: Int = 18): File {
+        fun lauf(name: String, fensterMs: Long?, trendRegel: String? = null, fenster: Int = 18, ratioCap: Double = 1.0): File {
             transportReset()
             boluses = emptyList()
             markerAt = 0L
             forecastShadowAn = false // Replay braucht die Matrizen nicht - Tempo
+            livenessRatioDeckel = ratioCap // v23: aufgezeichnete v22-Politik traegt den Schluessel nicht - der Hebel gilt
             theilSenFensterMin = fenster // W18-Trails tragen den Schluessel nicht - der Hebel gilt
             politikAnwenden(zyklen.firstNotNullOfOrNull { it.policy })
             theilSenFensterMin = fenster // die erste Politik darf den Matrixwert nicht ueberschreiben (W10-Live-Trails tragen 10)
@@ -6603,14 +6607,70 @@ class TransportWiringTest : TestBaseWithProfile() {
             return outFile
         }
 
-        lauf("w18", null)
-        lauf("w10ref", null, fenster = 10)
-        lauf("w10up", null, "UP", fenster = 10)
-        lauf("w10p2", null, "DOWN_P2", fenster = 10)
-        lauf("w10p3", null, "DOWN_P3", fenster = 10)
+        val capsEnv = System.getenv("FUSE_REPLAY_CAPS")
+        if (capsEnv != null) {
+            // Cap-Matrix (Tonis Vertrag 23.08. spaet): ungekappt gegen die
+            // Kandidaten - z.B. FUSE_REPLAY_CAPS=1.0,0.25,0.20,0.15.
+            capsEnv.split(",").forEach { c ->
+                val cap = c.trim().toDouble()
+                lauf("cap%03d".format((cap * 100).toInt()), null, fenster = 10, ratioCap = cap)
+            }
+        } else {
+            lauf("w18", null)
+            lauf("w10ref", null, fenster = 10)
+            lauf("w10up", null, "UP", fenster = 10)
+            lauf("w10p2", null, "DOWN_P2", fenster = 10)
+            lauf("w10p3", null, "DOWN_P3", fenster = 10)
+        }
     }
 
 
+
+
+    /**
+     * RATIO-DECKEL-VERTRAG (Toni 23.08. spaet): liveRatio = min(eff. Ratio,
+     * Cap) begrenzt die GESCHWINDIGKEIT des Kanals je Zyklus. Default 1.0
+     * ist nicht bindend (die Fall-1-bis-5-Tests laufen unveraendert mit
+     * dem Default - das ist der Neutralitaetsbeweis auf Suite-Ebene); ein
+     * bindender Cap verkleinert den Hub und NENNT sich als Grenze. Der
+     * normale Ratio-Pfad bleibt unberuehrt - der Vergleichslauf prueft
+     * beides in derselben Lage.
+     */
+    @Test
+    fun `liveness ratio-deckel kappt die geschwindigkeit und nennt sich als grenze`(@TempDir dir: File) {
+        fun laufMit(cap: Double, name: String): List<FuseCycleRunner.Outcome> {
+            livenessRatioDeckel = cap
+            livenessLage(File(dir, name))
+            return (0 until 30).map { cycle() }
+        }
+        val offen = laufMit(1.0, "offen")
+        val eng = laufMit(0.05, "eng")
+
+        val offenHub = offen.filter { it.livenessLiftU > 0 }
+        val engHub = eng.filter { it.livenessLiftU > 0 }
+        assertTrue(offenHub.isNotEmpty(), "die Lage muss den Kanal heben")
+        assertTrue(engHub.isNotEmpty(), "auch gekappt hebt der Kanal - nur langsamer")
+        // 1. Geschwindigkeit: die Summe der Huebe ist unter dem Cap KLEINER.
+        val sOffen = offenHub.sumOf { it.livenessLiftU }
+        val sEng = engHub.sumOf { it.livenessLiftU }
+        assertTrue(sEng < sOffen - 0.049, "Cap muss die Lieferrate druecken: eng=$sEng offen=$sOffen")
+        // 2. Der Cap NENNT sich als Grenze (Tonis Vertrag: Binding
+        //    livenessRatioCap, wenn er begrenzt).
+        assertTrue(engHub.any { it.decision.bindingLimit == "liveness:livenessRatioCap" },
+            "Binding muss den Cap nennen: " + engHub.map { it.decision.bindingLimit }.distinct())
+        assertTrue(offen.none { it.decision.bindingLimit == "liveness:livenessRatioCap" },
+            "Default 1.0 darf nie als Grenze auftauchen")
+        // 3. Export: liveRatio ist im gekappten Lauf der Cap, im offenen die
+        //    effektive Ratio (Vertrag: effectiveRatio, liveRatio, Cap).
+        assertTrue(engHub.all { (it.livenessLiveRatio ?: 9.9) <= 0.05 + 1e-9 }, "liveRatio == Cap im gekappten Lauf")
+        assertTrue(offenHub.all { (it.livenessLiveRatio ?: 0.0) > 0.05 }, "liveRatio == eff. Ratio im offenen Lauf")
+        // 4. Der NORMALE Pfad ist unberuehrt: vor der ersten Hebung sind
+        //    beide Laeufe bitgleich.
+        val ersterHub = offen.indexOfFirst { it.livenessLiftU > 0 }
+        (0 until ersterHub).forEach { i ->
+            assertEquals(offen[i].decision.smbU, eng[i].decision.smbU, 1e-9, "Normalpfad bitgleich (Zyklus $i)")
+        }
+    }
 
     /**
      * TRENDREGEL-VERTRAG (Toni 23.08. Abend), DOWN-Seite - MIT DEM

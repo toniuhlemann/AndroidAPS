@@ -115,7 +115,16 @@ object FuseStateJson {
     // Fensters (Pkt. 5 des Vertrags). Belegt durch den Zwei-Tage-Replay
     // (22.08. Problemtag: W10 entriegelt Onset+Deadlock; 21.08.
     // Kontrolltag: W10 praktisch identisch zu W18).
-    const val RULE_SET_VERSION = 22
+    // v23 (23.08. spaet): der Ratio-Deckel des Liveness-Kanals
+    // (LivenessRatioCap, Default 1.0 = nicht bindend, damit der Bump selbst
+    // dosierneutral ist). liveRatio = min(effectiveRatio, Cap) begrenzt die
+    // Geschwindigkeit des Kanals je Zyklus; der Kanaldeckel begrenzt die
+    // Menge, die gemessenen Exits beenden den Lauf - komplementaer, nichts
+    // ersetzt etwas. Gemessener Anlass: 3,85 U in 23 min (15:33-Episode
+    // 23.08., Min90 danach 64) - bei 10-20 min Wirklatenz war die Menge vor
+    // jedem moeglichen gemessenen Exit draussen. Zwei Laeufe mit
+    // verschiedenem Cap dosieren im Kanal verschieden -> Hash+policyValues.
+    const val RULE_SET_VERSION = 23
 
     /** Schema des Trail-Datensatzes - s. die Notiz an der Schreibstelle. */
     const val SCHEMA_VERSION = 4
@@ -407,6 +416,7 @@ object FuseStateJson {
                     .put("candidateU", fin(outcome.livenessCandidateU))
                     .put("needU", fin(outcome.livenessNeedU))
                     .put("releaseMeanMgdl", fin(outcome.livenessReleaseMeanMgdl))
+                    .put("liveRatio", fin(outcome.livenessLiveRatio))
                     .put("bgMinEffectiveMgdl", fin(outcome.livenessBgMinEffectiveMgdl))
                     .put("bgMinSource", outcome.livenessBgMinSource ?: JSONObject.NULL)
                     .put("headroomU", fin(outcome.livenessHeadroomU))
@@ -1296,6 +1306,7 @@ object FuseStateJson {
         .put("livenessIobCapPercent", fin(p.livenessIobCapPercent))
         .put("livenessBgMinDayMgdl", fin(p.livenessBgMinDayMgdl))
         .put("livenessBgMinNightMgdl", fin(p.livenessBgMinNightMgdl))
+        .put("livenessRatioCap", fin(p.livenessRatioCap))
         .put("livenessReArmMin", p.livenessReArmMin)
         // Ohne diese Zeile waere hinterher nicht belegbar, OB der Schalter in
         // einem Lauf an war - genau die Luecke, die heute schon zweimal
@@ -1332,6 +1343,8 @@ object FuseStateJson {
             p.livenessBgMinDayMgdl,
             // v20: die getrennte Nachtschwelle.
             p.livenessBgMinNightMgdl,
+            // v23: der Ratio-Deckel des Liveness-Kanals.
+            p.livenessRatioCap,
         )
         if (doubles.any { !it.isFinite() }) return null
         val parts = listOf("fuse-policy-v$RULE_SET_VERSION") +
