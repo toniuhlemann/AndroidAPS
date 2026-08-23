@@ -6563,7 +6563,17 @@ class TransportWiringTest : TestBaseWithProfile() {
                 w.println("ts;smbU;block;binding;insulinReq;liftU;needU;abort;phase;fastD;slowD;trend;raw;recSmbU;recBlock")
                 var prevMarker = 0L
                 var polText = pol?.toString()
+                var zyklusNr = 0
                 for (z in zyklen) {
+                    // MOCKITO-INVOCATION-HYGIENE: ohne das sammelt Mockito
+                    // ueber 5 Laeufe x >1400 Zyklen zig Millionen
+                    // Aufruf-Records und der Test-Executor stirbt (beobachtet
+                    // am 21.08.-Tag nach ~20 min). Stubs bleiben erhalten,
+                    // nur die Aufzeichnung wird geleert.
+                    if (zyklusNr++ % 200 == 0) org.mockito.Mockito.clearInvocations(
+                        preferences, profileFunction, iobCobCalculator,
+                        persistenceLayer, dateUtil, replayProfil,
+                    )
                     z.policy?.toString()?.takeIf { it != polText }?.let {
                         polText = it
                         politikAnwenden(z.policy)
