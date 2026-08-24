@@ -6634,13 +6634,16 @@ class TransportWiringTest : TestBaseWithProfile() {
 
         val profilEnv = System.getenv("FUSE_REPLAY_PROFILE")
         if (profilEnv != null) {
-            // §10-Abnahme: EIN Split-Profil-Lauf (meal
-            // Ratio,IOB,corrRatio,corrIOB) gegen die w10ref-Referenz.
+            // §10-Abnahme + Cap-Wahl-Matrix: Split-Profil-Laeufe (je Spez
+            // "mealRatio,mealIob,corrRatio,corrIob", mehrere per ";")
+            // gegen die w10ref-Referenz.
             lauf("w10ref", null, fenster = 10)
-            val t = profilEnv.split(",").map { it.trim().toDouble() }
-            mealRatioDeckel = t[0]; mealIobDeckel = t[1]
-            corrRatioDeckel = t[2]; corrIobDeckel = t[3]
-            lauf("profil", null, fenster = 10)
+            profilEnv.split(";").forEachIndexed { idx, spez ->
+                val t = spez.split(",").map { it.trim().toDouble() }
+                mealRatioDeckel = t[0]; mealIobDeckel = t[1]
+                corrRatioDeckel = t[2]; corrIobDeckel = t[3]
+                lauf(if (profilEnv.contains(";")) "profil${idx + 1}" else "profil", null, fenster = 10)
+            }
             mealRatioDeckel = null; mealIobDeckel = null; corrRatioDeckel = null; corrIobDeckel = null
             return
         }
