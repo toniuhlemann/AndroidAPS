@@ -6587,7 +6587,7 @@ class TransportWiringTest : TestBaseWithProfile() {
             neuerRunner(adapter, fensterMs = fensterMs, trendRegel = trendRegel)
             val outFile = File(outDir, "replay_$name.csv")
             outFile.printWriter().use { w ->
-                w.println("ts;smbU;block;binding;insulinReq;liftU;needU;abort;phase;fastD;slowD;trend;raw;recSmbU;recBlock")
+                w.println("ts;smbU;block;binding;insulinReq;liftU;needU;abort;phase;fastD;slowD;trend;raw;recSmbU;recBlock;profil;restMin")
                 var prevMarker = 0L
                 var polText = pol?.toString()
                 var zyklusNr = 0
@@ -6623,6 +6623,8 @@ class TransportWiringTest : TestBaseWithProfile() {
                         if (o.trendRuleApplied) "1" else "0",
                         "%.1f".format(java.util.Locale.US, z.raw),
                         "%.3f".format(java.util.Locale.US, z.smbU), z.block ?: "",
+                        o.livenessProfile ?: "",
+                        if (o.markerPowerDeadlineTs > o.computeTs) ((o.markerPowerDeadlineTs - o.computeTs) / 60_000L).toString() else "",
                     ).joinToString(";"))
                 }
             }
@@ -6630,6 +6632,18 @@ class TransportWiringTest : TestBaseWithProfile() {
             return outFile
         }
 
+        val profilEnv = System.getenv("FUSE_REPLAY_PROFILE")
+        if (profilEnv != null) {
+            // §10-Abnahme: EIN Split-Profil-Lauf (meal
+            // Ratio,IOB,corrRatio,corrIOB) gegen die w10ref-Referenz.
+            lauf("w10ref", null, fenster = 10)
+            val t = profilEnv.split(",").map { it.trim().toDouble() }
+            mealRatioDeckel = t[0]; mealIobDeckel = t[1]
+            corrRatioDeckel = t[2]; corrIobDeckel = t[3]
+            lauf("profil", null, fenster = 10)
+            mealRatioDeckel = null; mealIobDeckel = null; corrRatioDeckel = null; corrIobDeckel = null
+            return
+        }
         val capsEnv = System.getenv("FUSE_REPLAY_CAPS")
         if (capsEnv != null) {
             // Cap-Matrix (Tonis Vertrag 23.08. spaet): ungekappt gegen die
