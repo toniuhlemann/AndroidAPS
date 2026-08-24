@@ -2232,6 +2232,14 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
             addPreference(AdaptiveIntPreference(ctx = context, intKey = FuseIntKey.DriveLowerQuantilePct, dialogMessage = R.string.fuse_drive_quantile_summary, title = R.string.fuse_drive_quantile_title))
             addPreference(AdaptiveIntPreference(ctx = context, intKey = FuseIntKey.TheilSenWindowMin, dialogMessage = R.string.fuse_theil_sen_window_summary, title = R.string.fuse_theil_sen_window_title))
             addPreference(AdaptiveSwitchPreference(ctx = context, booleanKey = FuseBooleanKey.TbrEndZeroWhenReasonGone, summary = R.string.fuse_end_zero_summary, title = R.string.fuse_end_zero_title))
+            // ZERO-TBR-SCHUTZ als gemeinsamer Unterblock (Toni 24.08.): der
+            // Latch arbeitet ganztaegig (nicht "Nacht und Rebound") und
+            // begrenzt keine positive Menge (nicht "Dosierung und Grenzen") -
+            // er schuetzt die Basalachse, also gehoert er direkt hinter die
+            // Null-Basal-Regel in Schutz und Prognose.
+            addPreference(AdaptiveSwitchPreference(ctx = context, booleanKey = FuseBooleanKey.ZeroLatchEnabled, summary = R.string.fuse_zero_latch_enabled_summary, title = R.string.fuse_zero_latch_enabled_title))
+            addPreference(AdaptiveIntPreference(ctx = context, intKey = FuseIntKey.ZeroLatchCalmExitMin, dialogMessage = R.string.fuse_zero_latch_calm_min_summary, title = R.string.fuse_zero_latch_calm_min_title))
+            addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.ZeroLatchCalmDistanceMgdl, dialogMessage = R.string.fuse_zero_latch_calm_dist_summary, title = R.string.fuse_zero_latch_calm_dist_title))
             info(
                 "Schwanz - die spaete Wirkung",
                 "Haftung fuer Insulin, das erst hinter dem Freigabe-Horizont wirkt."
@@ -2253,9 +2261,6 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
             addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.NightDeadbandMgdl, dialogMessage = R.string.fuse_night_deadband_summary, title = R.string.fuse_night_deadband_title))
             timeOfDay(FuseIntKey.NightStartMin, "Nacht Beginn", "Beginn des Nachtfensters; gleich dem Ende schaltet es aus")
             timeOfDay(FuseIntKey.NightEndMin, "Nacht Ende", "Ende des Nachtfensters (darf ueber Mitternacht gehen)")
-            addPreference(AdaptiveSwitchPreference(ctx = context, booleanKey = FuseBooleanKey.ZeroLatchEnabled, summary = R.string.fuse_zero_latch_enabled_summary, title = R.string.fuse_zero_latch_enabled_title))
-            addPreference(AdaptiveIntPreference(ctx = context, intKey = FuseIntKey.ZeroLatchCalmExitMin, dialogMessage = R.string.fuse_zero_latch_calm_min_summary, title = R.string.fuse_zero_latch_calm_min_title))
-            addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.ZeroLatchCalmDistanceMgdl, dialogMessage = R.string.fuse_zero_latch_calm_dist_summary, title = R.string.fuse_zero_latch_calm_dist_title))
             addPreference(AdaptiveSwitchPreference(ctx = context, booleanKey = FuseBooleanKey.ReboundDeadbandEnabled, summary = R.string.fuse_rebound_deadband_enabled_summary, title = R.string.fuse_rebound_deadband_enabled_title))
             // Der Wert DIREKT hinter seinem Schalter (Toni 23.08. spaet) -
             // vorher sassen Beobachter und Prognose-Shadow dazwischen, und

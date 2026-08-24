@@ -409,8 +409,13 @@ enum class FuseIntKey(
      */
     LivenessMealPowerMin("fuse_liveness_meal_power_min", 120, 15, 360),
 
-    /** Ruhe-Zyklen bis der Zero-Latch ohne Anstieg loest - s.
-     *  [FuseDoubleKey.ZeroLatchCalmDistanceMgdl]. */
+    /** Ruhe-ZYKLEN bis der Zero-Latch ohne Anstieg loest - s.
+     *  [FuseDoubleKey.ZeroLatchCalmDistanceMgdl]. ACHTUNG NAME (Tonis
+     *  Review 24.08.): das "Min" im Schluessel ist irrefuehrend - gezaehlt
+     *  werden ZUSAMMENHAENGENDE Zyklen (Luecke > 90 s nullt), keine
+     *  Wanduhrminuten. Bei 1-min-Takt ist beides gleich; bei gestreckten
+     *  Medtrum-Zyklen zaehlt der Zaehler LANGSAMER als die Uhr - die
+     *  konservative Richtung. Die UI sagt ehrlich "Ruhe-Zyklen". */
     ZeroLatchCalmExitMin("fuse_zero_latch_calm_exit_min", 20, 5, 120),
 
     /**

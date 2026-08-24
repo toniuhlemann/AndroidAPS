@@ -6596,7 +6596,7 @@ class TransportWiringTest : TestBaseWithProfile() {
             neuerRunner(adapter, fensterMs = fensterMs, trendRegel = trendRegel)
             val outFile = File(outDir, "replay_$name.csv")
             outFile.printWriter().use { w ->
-                w.println("ts;smbU;block;binding;insulinReq;liftU;needU;abort;phase;fastD;slowD;trend;raw;recSmbU;recBlock;profil;restMin;tbr;latch")
+                w.println("ts;smbU;block;binding;insulinReq;liftU;needU;abort;phase;fastD;slowD;trend;raw;recSmbU;recBlock;profil;restMin;tbr;latch;lvDenial;lvExit;lvStreak;lvHead;transC")
                 var prevMarker = 0L
                 var polText = pol?.toString()
                 var zyklusNr = 0
@@ -6636,6 +6636,9 @@ class TransportWiringTest : TestBaseWithProfile() {
                         if (o.markerPowerDeadlineTs > o.computeTs) ((o.markerPowerDeadlineTs - o.computeTs) / 60_000L).toString() else "",
                         o.decision.tbr.name,
                         if (o.zeroLatchActive) "1" else "0",
+                        o.livenessDenial ?: "", o.livenessExit ?: "", o.livenessStreak.toString(),
+                        o.livenessHeadroomU?.let { h -> "%.3f".format(java.util.Locale.US, h) } ?: "",
+                        "",
                     ).joinToString(";"))
                 }
             }

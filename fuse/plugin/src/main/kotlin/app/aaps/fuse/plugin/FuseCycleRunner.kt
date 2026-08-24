@@ -3552,7 +3552,14 @@ class FuseCycleRunner(
                     q1NichtFallend &&
                     abstand != null && abstand >= cfg.zeroLatchCalmDistanceMgdl &&
                     ueberdeckung != null && ueberdeckung <= 0.0
-                zeroCalmStreak = if (ruhig) zeroCalmStreak + 1 else 0
+                // ZUSAMMENHAENGENDE Zyklen wie beim Erholungszaehler: eine
+                // Luecke > 90 s darf keine Ruhe belegen (Tonis Review 24.08.
+                // - der Schluessel zaehlt Zyklen, keine Wanduhrminuten).
+                val anschluss = zeroCalmLastTs > 0L &&
+                    signal.sourceTs > zeroCalmLastTs &&
+                    signal.sourceTs - zeroCalmLastTs <= 90_000L
+                zeroCalmStreak = if (ruhig) (if (anschluss) zeroCalmStreak + 1 else 1) else 0
+                zeroCalmLastTs = signal.sourceTs
                 if (zeroCalmStreak >= cfg.zeroLatchCalmExitMin) {
                     episodes.zeroLatch = DescentRecoveryLatch.State()
                     zeroLatchRuntime = DescentRecoveryLatch.Runtime()
@@ -4605,6 +4612,7 @@ class FuseCycleRunner(
      *  selbst lebt restartfest in EpisodeBudgets.zeroLatch. */
     private var zeroLatchRuntime = DescentRecoveryLatch.Runtime()
     private var zeroCalmStreak = 0
+    private var zeroCalmLastTs = 0L
     private var zeroLatchLastQ1 = Double.NaN
 
     /** Zeitstempel des letzten Zyklus, der die Kanalstufe erreicht hat -

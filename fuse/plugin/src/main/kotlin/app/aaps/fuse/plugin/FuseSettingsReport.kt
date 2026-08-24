@@ -168,9 +168,6 @@ object FuseSettingsReport {
                     zahl(FuseDoubleKey.LivenessMealIobCapPercent, "M-Kanaldeckel", "%"),
                     zahl(FuseDoubleKey.LivenessCorrectionRatioCap, "K-Ratio-Deckel", ""),
                     zahl(FuseDoubleKey.LivenessCorrectionIobCapPercent, "K-Kanaldeckel", "%"),
-                    schalter(FuseBooleanKey.ZeroLatchEnabled, "Zero-Latch"),
-                    ganz(FuseIntKey.ZeroLatchCalmExitMin, "Latch-Ruhe", "Zyk"),
-                    zahl(FuseDoubleKey.ZeroLatchCalmDistanceMgdl, "Latch-Abstand", "mg/dl"),
                     zahl(FuseDoubleKey.LivenessBgMinDayMgdl, "Druck-Schwelle Tag", "mg/dl"),
                     // Die Nachtschwelle EHRLICH anzeigen: solange sie nie
                     // gesetzt wurde, folgt sie zur Laufzeit der Tagesschwelle
@@ -200,6 +197,9 @@ object FuseSettingsReport {
                     ganz(FuseIntKey.DriveLowerQuantilePct, "Guard-Quantil", "%"),
                     ganz(FuseIntKey.TheilSenWindowMin, "TS-Fenster", "min"),
                     schalter(FuseBooleanKey.TbrEndZeroWhenReasonGone, "Null sofort beenden"),
+                    schalter(FuseBooleanKey.ZeroLatchEnabled, "Zero-Latch"),
+                    ganz(FuseIntKey.ZeroLatchCalmExitMin, "Latch-Ruhe", "Zyk"),
+                    zahl(FuseDoubleKey.ZeroLatchCalmDistanceMgdl, "Latch-Abstand", "mg/dl"),
                     schalter(FuseBooleanKey.TailGuardEnabled, "Schwanz-Guard"),
                     schalter(FuseBooleanKey.ConditionalTailEnabled, "Mahlzeit im Schwanz"),
                     ganz(FuseIntKey.LiabilityHorizonMin, "Haftung", "min"),
