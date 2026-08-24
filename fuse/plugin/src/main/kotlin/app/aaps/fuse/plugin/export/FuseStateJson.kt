@@ -437,7 +437,11 @@ object FuseStateJson {
                     .put("effectiveInsulinCoverageU", JSONObject.NULL)
                     .put("coverageMarginU", JSONObject.NULL)
                     .put("coverageState", outcome.livenessCoverageState ?: JSONObject.NULL)
-                    .put("disturbanceActive", outcome.livenessDisturbanceActive ?: JSONObject.NULL)
+                    // Review Toni 24.08.: nicht behaupten - null, bis eine
+                    // modellkonsistente Stoerungsgroesse existiert. Die
+                    // Druckbedingung steht getrennt daneben.
+                    .put("disturbanceActive", JSONObject.NULL)
+                    .put("pressureActive", outcome.livenessPressureActive ?: JSONObject.NULL)
                     .put("markerPowerPinnedFor", outcome.markerPowerPinnedFor)
                     .put("markerPowerDeadlineTs", outcome.markerPowerDeadlineTs)
                     .put(

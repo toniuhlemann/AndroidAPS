@@ -718,7 +718,10 @@ class FuseCycleRunner(
          *  bleiben bewusst null - nichts wird geschaetzt. */
         val livenessStaticCorrectionNeedU: Double? = null,
         val livenessCoverageState: String? = null,
-        val livenessDisturbanceActive: Boolean? = null,
+        /** Die DRUCKBEDINGUNG des Kanals (BG ueber Schwelle UND r >= 1) -
+         *  bewusst NICHT disturbanceActive: eine Stoerung wird erst
+         *  behauptet, wenn es eine modellkonsistente Groesse gibt. */
+        val livenessPressureActive: Boolean? = null,
         val markerPowerPinnedFor: Long = 0L,
         val markerPowerDeadlineTs: Long = 0L,
         /** Die im Kanal WIRKSAME Ratio = min(effectiveRatio, Cap). Nur
@@ -3083,7 +3086,7 @@ class FuseCycleRunner(
         var livenessProfileIobLimitU: Double? = null
         var livenessStaticCorrectionNeedU: Double? = null
         var livenessCoverageState: String? = null
-        var livenessDisturbanceActive: Boolean? = null
+        var livenessPressureActive: Boolean? = null
 
         // ---- MARKER-LEISTUNGSFRIST (Bauauftrag Toni 23.08. nachts) --------
         // Der Marker ist eine ZEITLICH BEGRENZTE Leistungsautorisierung des
@@ -3404,7 +3407,13 @@ class FuseCycleRunner(
             // Regel-Semantik entscheidet ein eigener Commit nach Auswertung.
             livenessStaticCorrectionNeedU = kotlin.math.max(0.0, (signal.q1 - target) / isf)
             livenessCoverageState = "UNAVAILABLE"
-            livenessDisturbanceActive = druck
+            // Review Toni 24.08.: `druck` (BG ueber Schwelle UND r >= 1) ist
+            // die DRUCKBEDINGUNG des Kanals, KEINE nachgewiesene Stoerung -
+            // als disturbanceActive haette das Feld waehrend fast jedes
+            // Laufs true getragen und die spaetere Ueberdeckungsbremse
+            // strukturell entwertet. disturbanceActive bleibt null, bis
+            // eine echte, modellkonsistente Stoerungsgroesse existiert.
+            livenessPressureActive = druck
             // Codex 22.08. spaet: der ROHE Kanalbedarf gehoert in den Export.
             // Ohne ihn stand im Viewer "Bedarf -", waehrend der Kanal 0,10 U
             // anforderte (decision.insulinReqU ist im Deadlock null, und
@@ -3676,7 +3685,7 @@ class FuseCycleRunner(
             livenessNormalSmbU = livenessNormalSmbU,
             livenessStaticCorrectionNeedU = livenessStaticCorrectionNeedU,
             livenessCoverageState = livenessCoverageState,
-            livenessDisturbanceActive = livenessDisturbanceActive,
+            livenessPressureActive = livenessPressureActive,
             markerPowerPinnedFor = episodes.markerPowerPinnedFor,
             markerPowerDeadlineTs = episodes.markerPowerDeadlineTs,
             livenessReleaseMeanMgdl = livenessReleaseMeanMgdl,

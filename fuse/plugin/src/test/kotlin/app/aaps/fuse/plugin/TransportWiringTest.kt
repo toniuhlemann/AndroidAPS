@@ -6734,7 +6734,9 @@ class TransportWiringTest : TestBaseWithProfile() {
         assertEquals(70.0, k.livenessSelectedIobCapPercent!!, 1e-9)
         assertEquals("UNAVAILABLE", k.livenessCoverageState)
         assertTrue(k.livenessStaticCorrectionNeedU != null && k.livenessStaticCorrectionNeedU!! > 0.0)
-        assertEquals(true, k.livenessDisturbanceActive)
+        // Review 24.08.: die Druckbedingung heisst Druck, nicht Stoerung -
+        // disturbanceActive wird NICHT behauptet.
+        assertEquals(true, k.livenessPressureActive)
 
         // Beobachteter Marker: der laufende Lauf endet MARKER_CHANGED (kein
         // stiller Cap-Tausch), dann frische Bewaffnung unter MEAL-Caps.

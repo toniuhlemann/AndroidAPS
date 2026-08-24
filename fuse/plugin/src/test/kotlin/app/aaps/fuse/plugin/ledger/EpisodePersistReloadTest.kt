@@ -189,4 +189,41 @@ class EpisodePersistReloadTest {
 
         assertEquals(0L, LedgerCodec.decodeEpisodes(o).lastConsumedMarkerTs)
     }
+
+    /**
+     * REVIEW 24.08.: Pin und Deadline der Marker-Leistungsfrist sind EINE
+     * Identitaet. Eine halbe (nur ein Feld, oder halb null) ist eine
+     * beschaedigte Generation und wird abgelehnt - nicht mit 0 ergaenzt.
+     */
+    @org.junit.jupiter.api.Test
+    fun `markerfrist-codec lehnt halbe identitaet ab`() {
+        val e = EpisodeBudgets()
+        e.markerPowerPinnedFor = 1_000L
+        e.markerPowerDeadlineTs = 1_000L + 120 * 60_000L
+        val voll = LedgerCodec.decodeEpisodes(LedgerCodec.encodeEpisodes(e))
+        org.junit.jupiter.api.Assertions.assertEquals(e.markerPowerPinnedFor, voll.markerPowerPinnedFor)
+        org.junit.jupiter.api.Assertions.assertEquals(e.markerPowerDeadlineTs, voll.markerPowerDeadlineTs)
+
+        // Beide 0: keine Autorisierung, gueltig.
+        LedgerCodec.decodeEpisodes(LedgerCodec.encodeEpisodes(EpisodeBudgets()))
+
+        // Nur EIN Feld vorhanden: ablehnen.
+        val halb = LedgerCodec.encodeEpisodes(e)
+        halb.remove("markerPowerDeadlineTs")
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException::class.java) {
+            LedgerCodec.decodeEpisodes(halb)
+        }
+        // Halb null: ablehnen.
+        val halbNull = LedgerCodec.encodeEpisodes(e)
+        halbNull.put("markerPowerPinnedFor", 0L)
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException::class.java) {
+            LedgerCodec.decodeEpisodes(halbNull)
+        }
+        // Deadline vor dem Pin: ablehnen.
+        val verdreht = LedgerCodec.encodeEpisodes(e)
+        verdreht.put("markerPowerDeadlineTs", 500L)
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException::class.java) {
+            LedgerCodec.decodeEpisodes(verdreht)
+        }
+    }
 }

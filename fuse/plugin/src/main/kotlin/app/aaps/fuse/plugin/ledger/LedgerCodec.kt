@@ -727,14 +727,21 @@ object LedgerCodec {
             require(fenster in 0L..1440L) { "theilSenWindowLastMin out of range: $fenster" }
             e.theilSenWindowLastMin = fenster
         }
-        if (o.has("markerPowerPinnedFor") || o.has("markerPowerDeadlineTs")) {
-            // GEMEINSAM validiert (Bauauftrag §3): Deadline nach dem Marker
-            // und nie laenger als die maximal erlaubte Konfigurationsdauer -
-            // eine Frist, die das nicht erfuellt, ist keine Frist.
-            val pin = o.optLong("markerPowerPinnedFor")
-            val frist = o.optLong("markerPowerDeadlineTs")
+        // GEMEINSAM validiert (Bauauftrag §3 + Review 24.08.): Pin und
+        // Deadline sind EINE Identitaet. Beide fehlen = Altgeneration,
+        // zulaessig; beide 0 = keine Autorisierung; beide positiv =
+        // Beziehungen pruefen; NUR EINES vorhanden oder halb null =
+        // beschaedigte Generation, ablehnen statt mit 0 ergaenzen.
+        run {
+            val hatPin = o.has("markerPowerPinnedFor")
+            val hatFrist = o.has("markerPowerDeadlineTs")
+            require(hatPin == hatFrist) { "markerPower half identity: pin=$hatPin deadline=$hatFrist" }
+            if (!hatPin) return@run
+            val pin = o.getLong("markerPowerPinnedFor")
+            val frist = o.getLong("markerPowerDeadlineTs")
             require(pin >= 0L && frist >= 0L) { "markerPower out of range: $pin/$frist" }
-            if (pin > 0L || frist > 0L) {
+            require((pin == 0L) == (frist == 0L)) { "markerPower half zero: $pin/$frist" }
+            if (pin > 0L) {
                 require(frist > pin) { "markerPowerDeadline not after pin: $pin/$frist" }
                 require(frist - pin <= FuseIntKey.LivenessMealPowerMin.max * 60_000L) {
                     "markerPower window too long: ${frist - pin}"
