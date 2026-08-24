@@ -60,6 +60,35 @@ object LivenessChannel {
     const val R_MIN_MGDL_PER_MIN = 1.0
 
     /**
+     * BASIS-RATIO des Kanals nach PROFIL (Toni 24.08.): das gepinnte
+     * MEAL-Profil traegt die R-Rampe SELBST. `state.effectiveSmbRatio`
+     * faellt ausserhalb des Normalpfad-Mahlzeitfensters auf die
+     * Korrektur-Ratio zurueck - damit lief ein gepinntes MEAL-Profil
+     * unsichtbar auf der Korrektur-Ratio ("Live M", Ratio 0,15 bei
+     * r 2,69), und der Profildeckel als reine OBERGRENZE konnte die Basis
+     * nie anheben. Der Normalpfad entscheidet ueber sein Fenster-Trio, ob
+     * er die Rampe verwenden darf; der Kanal entscheidet ueber das
+     * gepinnte Profil. CORRECTION bleibt bei der Korrektur-Ratio, auch
+     * bei starkem r. Unbrauchbares r geht in [FuseController.rampSmbRatio]
+     * fail-closed auf die Korrektur-Ratio. Der Profildeckel wird ERST
+     * NACH dieser Basis angewendet (im Runner: min(base, Cap)).
+     */
+    fun baseRatio(
+        mealProfile: Boolean,
+        smbRatioCorrection: Double,
+        smbRatioRise: Double,
+        rSignedMgdlPerMin: Double?,
+        riseRampLowRPerMin: Double,
+        riseRampHighRPerMin: Double,
+    ): Double = if (mealProfile) FuseController.rampSmbRatio(
+        smbRatioCorrection = smbRatioCorrection,
+        smbRatioRise = smbRatioRise,
+        rSignedMgdlPerMin = rSignedMgdlPerMin,
+        riseRampLowRPerMin = riseRampLowRPerMin,
+        riseRampHighRPerMin = riseRampHighRPerMin,
+    ) else smbRatioCorrection
+
+    /**
      * Der Kandidat des Kanals: DERSELBE Bedarf, den der Regler rechnet
      * ([FuseController]: `insulinReq = (releaseMean - target) / isf` - die
      * IOB-Wirkung steckt bereits in der Bahn, KEIN zweites "- iob"),

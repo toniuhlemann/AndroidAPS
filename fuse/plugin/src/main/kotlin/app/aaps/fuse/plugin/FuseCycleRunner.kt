@@ -734,11 +734,18 @@ class FuseCycleRunner(
         val zeroLatchReason: String? = null,
         val zeroLatchCalmStreak: Int = 0,
         val zeroLatchOverrode: Boolean = false,
-        /** Die im Kanal WIRKSAME Ratio = min(effectiveRatio, Cap). Nur
+        /** Die BASIS-Ratio des Kanals VOR dem Profildeckel (Toni 24.08.):
+         *  im MEAL-Profil die R-Rampe, im CORRECTION-Profil die
+         *  Korrektur-Ratio. Nur gesetzt, wenn die Kandidatenrechnung lief.
+         *  Getrennt von state.smbRatioEffective, die das
+         *  Normalpfad-Fenster gated - genau diese Differenz war der
+         *  unsichtbare 0,15-Livefall. */
+        val livenessBaseRatio: Double? = null,
+        /** Die im Kanal WIRKSAME Ratio = min(baseRatio, Cap). Nur
          *  gesetzt, wenn die Kandidatenrechnung lief; zusammen mit
-         *  state.smbRatioEffective und policy.livenessRatioCap ist die
+         *  baseRatio und policy.livenessRatioCap ist die
          *  Kappung offline vollstaendig nachrechenbar (Vertrag: Export von
-         *  effectiveRatio, liveRatio und Cap). */
+         *  baseRatio, liveRatio und Cap). */
         val livenessLiveRatio: Double? = null,
         /** Die in DIESEM Zyklus wirksame Druck-Schwelle und ihre Quelle
          *  (DAY|NIGHT, v20) - fuer die Anzeige "Live wartet - BG 151/160". */
@@ -3082,6 +3089,7 @@ class FuseCycleRunner(
         var livenessModelReject: String? = null
         var livenessNeedU: Double? = null
         var livenessReleaseMeanMgdl: Double? = null
+        var livenessBaseRatio: Double? = null
         var livenessLiveRatio: Double? = null
         var livenessBgMinEffective: Double? = null
         var livenessBgMinSource: String? = null
@@ -3392,13 +3400,31 @@ class FuseCycleRunner(
             val releaseMean = prediction.points
                 .firstOrNull { it.offsetMin == cfg.releaseHorizonMin }?.meanBg
                 ?: return@run sperren("NO_RELEASE_MEAN")
-            val ratio = state.effectiveSmbRatio
+            // ---- BASIS-RATIO NACH PROFIL (Toni 24.08. abends) -----------
+            // Nicht mehr state.effectiveSmbRatio: der faellt ausserhalb des
+            // Normalpfad-Mahlzeitfensters auf die Korrektur-Ratio zurueck,
+            // und der Livefall (Marker +115 min, r 2,69, mealWindow false)
+            // lief als "Live M" unsichtbar auf 0,15 - der Profildeckel als
+            // reine Obergrenze konnte nichts anheben. Das MEAL-Profil
+            // traegt die R-Rampe selbst (gleiche geteilte Mathematik,
+            // gleiche State-Eingaben); CORRECTION bleibt bei der
+            // Korrektur-Ratio. Der Normalpfad liest weiter
+            // state.effectiveSmbRatio und bleibt bitgleich.
+            val baseRatio = LivenessChannel.baseRatio(
+                mealProfile = markerPowerActive,
+                smbRatioCorrection = state.smbRatioCorrection,
+                smbRatioRise = state.smbRatioRise,
+                rSignedMgdlPerMin = state.rSignedMgdlPerMin,
+                riseRampLowRPerMin = state.riseRampLowRPerMin,
+                riseRampHighRPerMin = state.riseRampHighRPerMin,
+            )
+            livenessBaseRatio = baseRatio
             // ---- RATIO-DECKEL, PROFILGEWAEHLT (Bauauftrag §4) -----------
-            // liveRatio = min(effectiveRatio, Profil-Cap): begrenzt NUR die
-            // Geschwindigkeit dieses Kanals. Der normale Ratio-Pfad liest
-            // weiter state.effectiveSmbRatio; gleiche Profile reproduzieren
-            // das bisherige Verhalten bitgleich.
-            val liveRatio = kotlin.math.min(ratio, profilRatioCap)
+            // liveRatio = min(Basis, Profil-Cap): der Deckel begrenzt NUR
+            // die Geschwindigkeit dieses Kanals und wird ERST NACH der
+            // Basisberechnung angewendet - 1,0 heisst weiterhin nur "kein
+            // zusaetzlicher Deckel", nie Ratio 1,0.
+            val liveRatio = kotlin.math.min(baseRatio, profilRatioCap)
             val bedarfU = kotlin.math.max(0.0, (releaseMean - target) / isf)
             // ---- COVERAGE-VORBEREITUNG (Toni 23.08. nachts) --------------
             // HIER ist der Anschlusspunkt des spaeteren, AUSSCHLIESSLICH im
@@ -3464,9 +3490,9 @@ class FuseCycleRunner(
             livenessBinding = when {
                 head.headroomU < livenessCandidateU - 1e-9 -> head.binding
                 cfg.maxSmbU < liveRatio * bedarfU - 1e-9 -> "maxSmb"
-                // Der Cap war das Mass, wenn er die Ratio real gekappt hat -
+                // Der Cap war das Mass, wenn er die Basis real gekappt hat -
                 // sonst bleibt "smbRatio" die ehrliche Antwort.
-                liveRatio < ratio - 1e-9 -> "livenessRatioCap"
+                liveRatio < baseRatio - 1e-9 -> "livenessRatioCap"
                 else -> "smbRatio"
             }
             if (liveU <= nachAufschub.smbU + 1e-9) {
@@ -3772,6 +3798,7 @@ class FuseCycleRunner(
             livenessStreak = livenessStreak,
             livenessCandidateU = livenessCandidateU,
             livenessNeedU = livenessNeedU,
+            livenessBaseRatio = livenessBaseRatio,
             livenessLiveRatio = livenessLiveRatio,
             livenessProfile = livenessProfil,
             livenessProfileReason = livenessProfilGrund,

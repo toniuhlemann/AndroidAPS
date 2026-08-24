@@ -29,6 +29,30 @@ object FuseController {
     private const val TICK_EPS = 1e-9
 
     /**
+     * DIE R-RAMPE als GETEILTE reine Funktion (Toni 24.08.): Korrekturanteil
+     * -> Anstiegsanteil, linear zwischen unterer und oberer Rampenkante.
+     * ZWEI Aufrufer, EINE Mathematik: [State.effectiveSmbRatio] (Normalpfad,
+     * dort gated ueber Rebound- und Mahlzeit-Fenster) und der Liveness-Kanal
+     * ([LivenessChannel.baseRatio], dort gated ueber das gepinnte
+     * MEAL-Profil). Unbrauchbares r (null/NaN/Inf) oder eine ungueltige
+     * Rampe (high <= low) fallen fail-closed auf den Korrekturanteil - ohne
+     * Evidenz gibt es keinen Grund fuer mehr.
+     */
+    fun rampSmbRatio(
+        smbRatioCorrection: Double,
+        smbRatioRise: Double,
+        rSignedMgdlPerMin: Double?,
+        riseRampLowRPerMin: Double,
+        riseRampHighRPerMin: Double,
+    ): Double {
+        val r = rSignedMgdlPerMin ?: return smbRatioCorrection
+        if (!r.isFinite() || riseRampHighRPerMin <= riseRampLowRPerMin) return smbRatioCorrection
+        val f = ((r - riseRampLowRPerMin) / (riseRampHighRPerMin - riseRampLowRPerMin))
+            .coerceIn(0.0, 1.0)
+        return smbRatioCorrection + f * (smbRatioRise - smbRatioCorrection)
+    }
+
+    /**
      * Bloecke, die eine UNSICHERE LAGE beschreiben - unabhaengig davon, was
      * mit dem Basal geschieht (Toni 17.08.).
      *
@@ -246,11 +270,13 @@ object FuseController {
                 if (reboundWindow) return smbRatioCorrection
                 // Fenster-Trio: volle Rampe nur im Mahlzeit-Fenster.
                 if (!mealWindow) return smbRatioCorrection
-                val r = rSignedMgdlPerMin ?: return smbRatioCorrection
-                if (!r.isFinite() || riseRampHighRPerMin <= riseRampLowRPerMin) return smbRatioCorrection
-                val f = ((r - riseRampLowRPerMin) / (riseRampHighRPerMin - riseRampLowRPerMin))
-                    .coerceIn(0.0, 1.0)
-                return smbRatioCorrection + f * (smbRatioRise - smbRatioCorrection)
+                return rampSmbRatio(
+                    smbRatioCorrection = smbRatioCorrection,
+                    smbRatioRise = smbRatioRise,
+                    rSignedMgdlPerMin = rSignedMgdlPerMin,
+                    riseRampLowRPerMin = riseRampLowRPerMin,
+                    riseRampHighRPerMin = riseRampHighRPerMin,
+                )
             }
     }
 

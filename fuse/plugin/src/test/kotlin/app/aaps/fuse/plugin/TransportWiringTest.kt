@@ -7098,7 +7098,7 @@ class TransportWiringTest : TestBaseWithProfile() {
         assertTrue(offen.none { it.decision.bindingLimit == "liveness:livenessRatioCap" },
             "Default 1.0 darf nie als Grenze auftauchen")
         // 3. Export: liveRatio ist im gekappten Lauf der Cap, im offenen die
-        //    effektive Ratio (Vertrag: effectiveRatio, liveRatio, Cap).
+        //    Basis-Ratio des Profils (v26: ohne Marker die Korrektur-Ratio).
         assertTrue(engHub.all { (it.livenessLiveRatio ?: 9.9) <= 0.05 + 1e-9 }, "liveRatio == Cap im gekappten Lauf")
         assertTrue(offenHub.all { (it.livenessLiveRatio ?: 0.0) > 0.05 }, "liveRatio == eff. Ratio im offenen Lauf")
         // 4. Der NORMALE Pfad ist unberuehrt: vor der ersten Hebung sind
@@ -7106,6 +7106,163 @@ class TransportWiringTest : TestBaseWithProfile() {
         val ersterHub = offen.indexOfFirst { it.livenessLiftU > 0 }
         (0 until ersterHub).forEach { i ->
             assertEquals(offen[i].decision.smbU, eng[i].decision.smbU, 1e-9, "Normalpfad bitgleich (Zyklus $i)")
+        }
+    }
+
+    /**
+     * DER 0,15-LIVEFALL (Bauauftrag Toni 24.08. abends): Marker +~60 min
+     * (Sonderrechte nach 45 min abgelaufen -> mealWindow FALSE), r ueber
+     * der Rampen-Unterkante, Tail-Deadlock. Vorher uebernahm der Kanal
+     * blind state.effectiveSmbRatio - die faellt ausserhalb des
+     * Normalpfad-Fensters auf die Korrektur-Ratio, und "Live M" dosierte
+     * unsichtbar mit dem K-Tempo (Live-Trail: r 2,69, liveRatio 0,15).
+     * Jetzt traegt das MEAL-Profil die R-Rampe selbst (Pflichttests 5/9),
+     * der Normalpfad bleibt bitgleich auf der Korrektur-Ratio (Pflicht-
+     * test 10), an der Deadline gilt sofort das K-Profil ohne Rampe
+     * (Pflichttest 11, halb offen) und gemessenes Fallen bleibt auch im
+     * MEAL-Profil ein absoluter Riegel (Abnahme c).
+     *
+     * LAGE: UKF-Steigung 1,2 bleibt UNTER der Rampen-Unterkante 1,5
+     * (kein Kinematik-Fenster, kein FALLING), waehrend die
+     * Insulinaktivitaet r darueber hebt - genau die Livefall-Signatur.
+     * Der Onset-Kanal ist AUS, sonst oeffnete sein Fenster-Zweig das
+     * Normalpfad-Fenster und der Diskriminator waere blind.
+     */
+    @Test
+    fun `liveness meal-profil traegt die r-rampe selbst - der 0,15-livefall`(@TempDir dir: File) {
+        whenever(preferences.get(FuseDoubleKey.RiseRampLowR)).thenReturn(1.5)
+        whenever(preferences.get(FuseDoubleKey.RiseRampHighR)).thenReturn(3.0)
+        whenever(preferences.get(FuseBooleanKey.OnsetChannelEnabled)).thenReturn(false)
+        livenessLage(dir)
+        steigungProMin = 0.9
+        knickAbMin = 55
+        steigungNachKnick = 1.2
+        aktivitaet = 0.028
+        repeat(6) { cycle() } // Signal-Warm-up
+        markerAt = clock
+        val deadline = markerAt + 120 * 60_000L
+
+        // Bis kurz vor die Deadline laufen; ab Marker-Alter 60 min sind die
+        // Sonderrechte (45) samt 10-min-Nachlauf sicher weg.
+        val alle = ArrayList<FuseCycleRunner.Outcome>()
+        while (clock < deadline - 60_000L) alle.add(cycle())
+        val disk = alle.filter {
+            it.computeTs - markerAt in (60 * 60_000L)..(75 * 60_000L) && it.livenessLiftU > 0.0
+        }
+        assertTrue(disk.size >= 8, "die Lage muss im Diskriminator-Fenster heben: ${disk.size}")
+        disk.forEach { o ->
+            assertEquals("MEAL", o.livenessProfile)
+            // Pflichttest 10 + Mutationsprobe "Normalpfad nutzt Profilwahl":
+            // das Fenster-Trio ist zu, der Normalpfad steht auf der
+            // Korrektur-Ratio - bitgleich.
+            assertEquals(0.15, o.state!!.effectiveSmbRatio, 1e-9, "Normalpfad bleibt Korrektur-Ratio")
+            // Pflichttest 9 + Mutationsprobe "Rueckfall auf
+            // effectiveSmbRatio": die Kanal-Basis ist die Rampe.
+            val erwartet = FuseController.rampSmbRatio(
+                0.15, 0.35, o.state!!.rSignedMgdlPerMin, 1.5, 3.0,
+            )
+            assertEquals(erwartet, o.livenessBaseRatio!!, 1e-9, "Basis == geteilte Rampe")
+            assertTrue(o.livenessBaseRatio!! >= 0.20, "die Rampe muss real heben: ${o.livenessBaseRatio}")
+            // Pflichttest 5: M-Cap Default 1,0 = kein zusaetzlicher Deckel.
+            assertEquals(o.livenessBaseRatio!!, o.livenessLiveRatio!!, 1e-9)
+            assertTrue(o.livenessBinding != "livenessRatioCap", "Default 1,0 bindet nie")
+            // Endmenge bleibt der rasterisierte Kanal-Kandidat.
+            assertEquals(LivenessChannel.quantize(o.livenessCandidateU, 0.05), o.decision.smbU, 1e-9)
+        }
+
+        // Pflichttest 11 (halb offen): der Zyklus EXAKT auf der Deadline
+        // traegt bereits das K-Profil und die Korrektur-Basis - trotz
+        // unveraendert hohem r.
+        var anDeadline: FuseCycleRunner.Outcome? = null
+        while (anDeadline == null) { val o = cycle(); if (o.computeTs >= deadline) anDeadline = o }
+        assertEquals(deadline, anDeadline!!.computeTs, "Zyklus liegt exakt auf der Deadline")
+        assertEquals("CORRECTION", anDeadline!!.livenessProfile)
+        val nachDeadline = (0 until 3).map { cycle() }.filter { it.livenessBaseRatio != null }
+        assertTrue(nachDeadline.isNotEmpty(), "auch nach der Frist rechnet der Kanal")
+        nachDeadline.forEach {
+            assertEquals(0.15, it.livenessBaseRatio!!, 1e-9, "K-Profil: keine Rampe mehr")
+        }
+
+        // Abnahme c: gemessenes Fallen bleibt im MEAL-Vertragssinn ein
+        // absoluter Riegel - hier nach der Frist, der Riegel ist
+        // profilunabhaengig HART (dieselbe hart-Kette wie im MEAL-Lauf).
+        knick2AbMin = ((clock - start) / 60_000L).toInt()
+        steigungNachKnick2 = -1.0
+        repeat(6) { cycle() }
+        val fallend = cycle()
+        assertEquals(0.0, fallend.livenessLiftU, 1e-9, "im gemessenen Fall hebt nichts")
+        assertEquals("EXCLUDED", fallend.livenessProfile, "harte Riegel setzen EXCLUDED")
+    }
+
+    /**
+     * GEGENLAGE (Abnahme b, Pflichttests 7/8): DIESELBE Druck-Lage ohne
+     * Marker ist CORRECTION - die Basis bleibt die Korrektur-Ratio, auch
+     * wenn r tief in der Rampe steht (Mutationsprobe "Rampe auch im
+     * CORRECTION-Profil"), und der K-Cap kappt sie mit Namen.
+     */
+    @Test
+    fun `correction-basis bleibt korrektur-ratio auch bei starkem r`(@TempDir dir: File) {
+        whenever(preferences.get(FuseDoubleKey.RiseRampLowR)).thenReturn(1.5)
+        whenever(preferences.get(FuseDoubleKey.RiseRampHighR)).thenReturn(3.0)
+        whenever(preferences.get(FuseBooleanKey.OnsetChannelEnabled)).thenReturn(false)
+        corrRatioDeckel = 0.10; mealRatioDeckel = 0.30
+        livenessLage(dir)
+        steigungProMin = 0.9
+        knickAbMin = 55
+        steigungNachKnick = 1.2
+        aktivitaet = 0.028
+        val alle = (0 until 80).map { cycle() }
+        val hub = alle.filter { it.livenessLiftU > 0.0 }
+        assertTrue(hub.size >= 8, "die Lage muss ohne Marker heben (CORRECTION): ${hub.size}")
+        hub.forEach { o ->
+            assertEquals("CORRECTION", o.livenessProfile)
+            assertEquals(0.15, o.livenessBaseRatio!!, 1e-9, "CORRECTION rampt NIE")
+            assertEquals(0.10, o.livenessLiveRatio!!, 1e-9, "K-Cap 0,10 bindet")
+        }
+        // Der Gegenbeweis braucht ein r IN der Rampe - sonst prueft der
+        // Test nichts (spaete Zyklen: Steigung 1,2 + Aktivitaetshub).
+        assertTrue(
+            hub.takeLast(5).all { (it.state!!.rSignedMgdlPerMin ?: 0.0) > 1.7 },
+            "r muss in der Rampe stehen: " + hub.takeLast(5).map { it.state!!.rSignedMgdlPerMin },
+        )
+        assertTrue(
+            hub.any { it.livenessBinding == "livenessRatioCap" },
+            "der K-Cap nennt sich als Grenze: " + hub.map { it.livenessBinding }.distinct(),
+        )
+    }
+
+    /**
+     * M-RATIO-DECKEL AUF DER RAMPENBASIS (Abnahme e, Pflichttest 6): erst
+     * die Basis (Rampe), DANN der Deckel. Cap 0,20 unter einer Basis
+     * >= 0,25 -> liveRatio 0,20, Binding livenessRatioCap (Mutations-
+     * proben "Profildeckel ignoriert" und "min durch max ersetzt").
+     */
+    @Test
+    fun `m-ratio-deckel kappt die rampenbasis und nennt sich`(@TempDir dir: File) {
+        whenever(preferences.get(FuseDoubleKey.RiseRampLowR)).thenReturn(1.5)
+        whenever(preferences.get(FuseDoubleKey.RiseRampHighR)).thenReturn(3.0)
+        whenever(preferences.get(FuseBooleanKey.OnsetChannelEnabled)).thenReturn(false)
+        mealRatioDeckel = 0.20; corrRatioDeckel = 0.15
+        // maxSMB offen, sonst bindet es VOR dem Ratio-Deckel (0,20 x
+        // ~2,5 U Bedarf > 0,3) und der Test saehe nie den Cap als Grenze.
+        maxSmbU = 1.0
+        livenessLage(dir)
+        steigungProMin = 0.9
+        knickAbMin = 55
+        steigungNachKnick = 1.2
+        aktivitaet = 0.028
+        repeat(6) { cycle() } // Signal-Warm-up
+        markerAt = clock
+        val alle = (0 until 80).map { cycle() }
+        val disk = alle.filter {
+            it.computeTs - markerAt in (60 * 60_000L)..(75 * 60_000L) && it.livenessLiftU > 0.0
+        }
+        assertTrue(disk.size >= 8, "die Lage muss im Diskriminator-Fenster heben: ${disk.size}")
+        disk.forEach { o ->
+            assertEquals("MEAL", o.livenessProfile)
+            assertTrue(o.livenessBaseRatio!! >= 0.20 + 1e-9, "die Basis liegt ueber dem Cap: ${o.livenessBaseRatio}")
+            assertEquals(0.20, o.livenessLiveRatio!!, 1e-9, "der M-Cap kappt die Rampenbasis")
+            assertEquals("livenessRatioCap", o.livenessBinding, "und nennt sich als Grenze")
         }
     }
 

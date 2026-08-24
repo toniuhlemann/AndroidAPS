@@ -663,11 +663,14 @@ class FuseStateExportTest {
         // nach der Pause - live zaehlte er waehrend der Sperre weiter),
         // v20 die getrennte Tag-/Nacht-Druckschwelle des Liveness-Kanals,
         // v21 der magnitudensensitive Wende-Exit (bestaetigte Wende statt
-        // zweier beliebig kleiner Rueckgaenge).
+        // zweier beliebig kleiner Rueckgaenge), v26 die Liveness-Basis-Ratio
+        // nach Profil (MEAL traegt die R-Rampe selbst statt der
+        // fenster-gegateten effectiveSmbRatio - der unsichtbare
+        // 0,15-Livefall bei Marker +115 min).
         // DIESER TEST IST ABSICHTLICH STUR: er faellt bei jedem Bump um und
         // zwingt damit zu der Frage, ob die Aenderung wirklich dosierwirksam
         // war - ein stiller Bump waere so wertlos wie ein vergessener.
-        assertEquals(25, FuseStateJson.RULE_SET_VERSION)
+        assertEquals(26, FuseStateJson.RULE_SET_VERSION)
         assertTrue(
             FuseStateJson.hashOf(cfg)!!.isNotEmpty(),
             "und der Hash bleibt berechenbar",

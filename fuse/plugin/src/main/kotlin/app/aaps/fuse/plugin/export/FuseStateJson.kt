@@ -143,7 +143,16 @@ object FuseStateJson {
     // +0,20 x 3 mit q1- und Risiko-Bedingung) oder den Ruhe-Ausgang.
     // Schalter Default AUS -> der Bump selbst ist dosierneutral. NUR die
     // Basalachse; der SMB-Pfad bleibt ueber latchZeroOnly unberuehrt.
-    const val RULE_SET_VERSION = 25
+    // v26 (24.08. abends, DOSIERWIRKSAM): das Liveness-MEAL-Profil traegt
+    // die R-Rampe SELBST (Befund im Live-Trail: Marker +115 min, r 2,69,
+    // mealWindow false -> state.effectiveSmbRatio fiel auf die
+    // Korrektur-Ratio 0,15, und "Live M" dosierte unsichtbar mit dem
+    // K-Tempo; der Profildeckel als reine Obergrenze konnte nichts
+    // anheben). Basis: MEAL = Rampe correction->rise ueber r (geteilte
+    // Mathematik mit dem Normalpfad), CORRECTION = Korrektur-Ratio;
+    // Profildeckel ERST NACH der Basis. Der Normalpfad bleibt bitgleich.
+    // Export: liveness.baseRatio vor dem Deckel.
+    const val RULE_SET_VERSION = 26
 
     /** Schema des Trail-Datensatzes - s. die Notiz an der Schreibstelle. */
     const val SCHEMA_VERSION = 4
@@ -435,6 +444,7 @@ object FuseStateJson {
                     .put("candidateU", fin(outcome.livenessCandidateU))
                     .put("needU", fin(outcome.livenessNeedU))
                     .put("releaseMeanMgdl", fin(outcome.livenessReleaseMeanMgdl))
+                    .put("baseRatio", fin(outcome.livenessBaseRatio))
                     .put("liveRatio", fin(outcome.livenessLiveRatio))
                     .put("profile", outcome.livenessProfile ?: JSONObject.NULL)
                     .put("profileReason", outcome.livenessProfileReason ?: JSONObject.NULL)

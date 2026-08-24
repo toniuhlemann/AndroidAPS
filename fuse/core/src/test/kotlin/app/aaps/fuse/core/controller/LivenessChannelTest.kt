@@ -49,4 +49,50 @@ class LivenessChannelTest {
         assertEquals(0.10, LivenessChannel.finalU(0.10, 0.05), 1e-9, "offener Normalpfad -> kein Zusatz")
         assertEquals(0.10, LivenessChannel.finalU(0.10, 0.0), 1e-9)
     }
+
+    /**
+     * BASIS-RATIO NACH PROFIL (Toni 24.08., Pflichttests 1-4/7/12): das
+     * MEAL-Profil traegt die R-Rampe selbst; CORRECTION bleibt bei der
+     * Korrektur-Ratio, auch bei starkem r. Zahlen des Bauauftrags:
+     * Korrektur 0,15, Anstieg 0,35, Rampe 1,50 -> 3,00.
+     */
+    @Test
+    fun `meal-basis laeuft die r-rampe und correction bleibt bei der korrektur-ratio`() {
+        fun meal(r: Double?) = LivenessChannel.baseRatio(true, 0.15, 0.35, r, 1.50, 3.00)
+        fun corr(r: Double?) = LivenessChannel.baseRatio(false, 0.15, 0.35, r, 1.50, 3.00)
+        assertEquals(0.15, meal(1.50), 1e-9, "Pflichttest 1: untere Kante")
+        assertEquals(0.25, meal(2.25), 1e-9, "Pflichttest 2: Mitte")
+        assertEquals(0.35, meal(3.00), 1e-9, "Pflichttest 3: obere Kante")
+        assertEquals(0.35, meal(4.00), 1e-9, "Pflichttest 4: ueber der Rampe bleibt 0,35")
+        // Der gemessene Livefall: r 2,69 -> f ~0,79 -> ~0,31.
+        assertEquals(0.15 + (2.69 - 1.50) / 1.50 * 0.20, meal(2.69), 1e-9)
+        assertEquals(0.15, corr(3.00), 1e-9, "Pflichttest 7: CORRECTION rampt NIE")
+        assertEquals(0.15, corr(2.25), 1e-9)
+    }
+
+    /** Pflichttest 12: unbrauchbares r oder eine ungueltige Rampe fallen
+     *  fail-closed auf die Korrektur-Ratio - keine erfundene Anhebung. */
+    @Test
+    fun `unbrauchbares r faellt auch im meal-profil auf die korrektur-ratio`() {
+        assertEquals(0.15, LivenessChannel.baseRatio(true, 0.15, 0.35, null, 1.50, 3.00), 1e-9)
+        assertEquals(0.15, LivenessChannel.baseRatio(true, 0.15, 0.35, Double.NaN, 1.50, 3.00), 1e-9)
+        assertEquals(
+            0.15, LivenessChannel.baseRatio(true, 0.15, 0.35, 2.5, 3.00, 1.50), 1e-9,
+            "Rampe high <= low ist ungueltig",
+        )
+    }
+
+    /** EINE Mathematik, zwei Aufrufer: die Kanal-Basis im MEAL-Profil ist
+     *  exakt die geteilte Rampe des Normalpfads - jede Duplikation oder
+     *  Abweichung faellt hier um. */
+    @Test
+    fun `die meal-basis ist exakt die geteilte rampe des normalpfads`() {
+        for (r in listOf(0.0, 1.49, 1.51, 2.0, 2.69, 2.99, 3.5)) {
+            assertEquals(
+                FuseController.rampSmbRatio(0.15, 0.35, r, 1.50, 3.00),
+                LivenessChannel.baseRatio(true, 0.15, 0.35, r, 1.50, 3.00),
+                1e-12,
+            )
+        }
+    }
 }
