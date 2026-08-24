@@ -27,6 +27,7 @@ internal val fuseEinstellbareKeys: Set<String> = setOf(
     FuseDoubleKey.OnsetEnvelopeU.key,
     FuseDoubleKey.PrimeEnvelopeU.key,
     FuseDoubleKey.MealFoundationPhaseAShare.key,
+    FuseDoubleKey.MealFoundationPhaseAUpfrontShare.key,
     FuseIntKey.PrimeWindowMin.key,
     FuseIntKey.MealFoundationEndMin.key,
     FuseBooleanKey.DeferredPrimeEnabled.key,
@@ -143,6 +144,7 @@ object FuseSettingsReport {
                     // BIS WANN. Ein Schalter allein saehe harmlos aus.
                     schalter(FuseBooleanKey.MealFoundationEnabled, "Mahlzeitenfundament"),
                     zahl(FuseDoubleKey.MealFoundationPhaseAShare, "Anteil Phase A", ""),
+                    zahl(FuseDoubleKey.MealFoundationPhaseAUpfrontShare, "Phase A Sofortanteil", ""),
                     ganz(FuseIntKey.MealFoundationEndMin, "Fundament-Fenster", "min"),
                     // Der Marker-Prime-Aufschub - aus demselben Grund drei
                     // Zeilen: OB aufgeschoben wird, mit welchem gepinnten

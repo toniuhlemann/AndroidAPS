@@ -139,7 +139,7 @@ class MealFoundationReplayTest {
      */
     private fun fahre(anteil: Double, m: Mahlzeit, abgelehnt: Set<Int> = emptySet()): Spur {
         val auth = MealFoundation.arm(
-            markerTs = t0, foundationEnabled = true, totalBudgetU = BUDGET, phaseAShare = anteil,
+            markerTs = t0, foundationEnabled = true, totalBudgetU = BUDGET, phaseAShare = anteil, phaseAUpfrontShare = 0.0,
             primeWindowMin = A_BIS, wallCeilingMin = 45, pressObservedInThisProcess = true, primeDeclinedByUser = false, markerAuthorized = true, phaseBUntilMin = B_BIS,
         )
         var ausBudget = 0.0
@@ -305,7 +305,7 @@ class MealFoundationReplayTest {
     @Test
     fun `bei erschoepftem Gesamtbudget fordert das Fundament nichts`() {
         val auth = MealFoundation.arm(
-            markerTs = t0, foundationEnabled = true, totalBudgetU = BUDGET, phaseAShare = 0.67,
+            markerTs = t0, foundationEnabled = true, totalBudgetU = BUDGET, phaseAShare = 0.67, phaseAUpfrontShare = 0.0,
             primeWindowMin = A_BIS, wallCeilingMin = 45, pressObservedInThisProcess = true, primeDeclinedByUser = false, markerAuthorized = true, phaseBUntilMin = B_BIS,
         )
         val snap = MealFoundation.snapshot(
@@ -358,7 +358,7 @@ class MealFoundationReplayTest {
     @Test
     fun `bei erfuelltem Soll ist dueU in jedem Zyklus null`() {
         val auth = MealFoundation.arm(
-            markerTs = t0, foundationEnabled = true, totalBudgetU = BUDGET, phaseAShare = 0.75,
+            markerTs = t0, foundationEnabled = true, totalBudgetU = BUDGET, phaseAShare = 0.75, phaseAUpfrontShare = 0.0,
             primeWindowMin = A_BIS, wallCeilingMin = 45, pressObservedInThisProcess = true, primeDeclinedByUser = false, markerAuthorized = true, phaseBUntilMin = B_BIS,
         )
         for (min in A_BIS..B_BIS) {
@@ -534,7 +534,7 @@ class MealFoundationReplayTest {
         val bei = listOf(15, 30, 45, 60).associateWith { spur.stand.getOrElse(it) { spur.stand.last() } }
         // Der Rueckstand AM FENSTERENDE - was nie geflossen ist.
         val ende = MealFoundation.arm(
-            markerTs = t0, foundationEnabled = true, totalBudgetU = BUDGET, phaseAShare = anteil,
+            markerTs = t0, foundationEnabled = true, totalBudgetU = BUDGET, phaseAShare = anteil, phaseAUpfrontShare = 0.0,
             primeWindowMin = A_BIS, wallCeilingMin = 45, phaseBUntilMin = B_BIS,
             markerAuthorized = true, pressObservedInThisProcess = true, primeDeclinedByUser = false,
         )
@@ -554,7 +554,7 @@ class MealFoundationReplayTest {
     fun `der Vergleich variiert nur die Aufteilung`() {
         val autorisierungen = varianten.map { anteil ->
             MealFoundation.arm(
-                markerTs = t0, foundationEnabled = true, totalBudgetU = BUDGET, phaseAShare = anteil,
+                markerTs = t0, foundationEnabled = true, totalBudgetU = BUDGET, phaseAShare = anteil, phaseAUpfrontShare = 0.0,
                 primeWindowMin = A_BIS, wallCeilingMin = 45, phaseBUntilMin = B_BIS,
                 markerAuthorized = true, pressObservedInThisProcess = true, primeDeclinedByUser = false,
             )

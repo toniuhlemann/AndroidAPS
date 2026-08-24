@@ -36,7 +36,7 @@ class MealFoundationLedgerTest {
         budget: Double = BUDGET,
         anteil: Double = A_SHARE,
     ) = MealFoundation.arm(
-        markerTs = t0, foundationEnabled = true, totalBudgetU = budget, phaseAShare = anteil,
+        markerTs = t0, foundationEnabled = true, totalBudgetU = budget, phaseAShare = anteil, phaseAUpfrontShare = 0.0,
         primeWindowMin = A_BIS, wallCeilingMin = 45, phaseBUntilMin = B_BIS, pressObservedInThisProcess = true, primeDeclinedByUser = false, markerAuthorized = true,
     )
 

@@ -1989,6 +1989,7 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
             .put(FuseDoubleKey.PrimeEnvelopeU, preferences)
             .put(FuseBooleanKey.MealFoundationEnabled, preferences)
             .put(FuseDoubleKey.MealFoundationPhaseAShare, preferences)
+            .put(FuseDoubleKey.MealFoundationPhaseAUpfrontShare, preferences)
             .put(FuseIntKey.MealFoundationEndMin, preferences)
             .put(FuseBooleanKey.DeferredPrimeEnabled, preferences)
             .put(FuseDoubleKey.MarkerPrimeDescentHorizonMin, preferences)
@@ -2039,6 +2040,7 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
             .store(FuseDoubleKey.PrimeEnvelopeU, preferences)
             .store(FuseBooleanKey.MealFoundationEnabled, preferences)
             .store(FuseDoubleKey.MealFoundationPhaseAShare, preferences)
+            .store(FuseDoubleKey.MealFoundationPhaseAUpfrontShare, preferences)
             .store(FuseIntKey.MealFoundationEndMin, preferences)
             .store(FuseBooleanKey.DeferredPrimeEnabled, preferences)
             .store(FuseDoubleKey.MarkerPrimeDescentHorizonMin, preferences)
@@ -2149,6 +2151,9 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
             // WANN. Ein Schalter allein saehe harmlos aus.
             addPreference(AdaptiveSwitchPreference(ctx = context, booleanKey = FuseBooleanKey.MealFoundationEnabled, summary = R.string.fuse_meal_foundation_summary, title = R.string.fuse_meal_foundation_title))
             addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.MealFoundationPhaseAShare, dialogMessage = R.string.fuse_meal_foundation_share_summary, title = R.string.fuse_meal_foundation_share_title))
+            // Der Sofortanteil (iLet) direkt hinter dem A-Anteil: er verteilt
+            // dieselbe Phase-A-Menge, nur frueher. Default 0,00 = bitgleich.
+            addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.MealFoundationPhaseAUpfrontShare, dialogMessage = R.string.fuse_meal_foundation_upfront_summary, title = R.string.fuse_meal_foundation_upfront_title))
             addPreference(AdaptiveIntPreference(ctx = context, intKey = FuseIntKey.MealFoundationEndMin, dialogMessage = R.string.fuse_meal_foundation_window_summary, title = R.string.fuse_meal_foundation_window_title))
             // DER MARKER-PRIME-AUFSCHUB direkt unter dem Fundament: er
             // arbeitet auf derselben gepinnten Huelle. Drei Zeilen aus

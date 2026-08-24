@@ -43,7 +43,7 @@ class PhaseACarryTest {
     private val BUDGET = 3.0
 
     private fun autorisierung(budget: Double = BUDGET) = MealFoundation.arm(
-        markerTs = ts, foundationEnabled = true, totalBudgetU = budget, phaseAShare = 0.75,
+        markerTs = ts, foundationEnabled = true, totalBudgetU = budget, phaseAShare = 0.75, phaseAUpfrontShare = 0.0,
         primeWindowMin = 15, wallCeilingMin = 45, phaseBUntilMin = 60,
         pressObservedInThisProcess = true, primeDeclinedByUser = false, markerAuthorized = true,
     )

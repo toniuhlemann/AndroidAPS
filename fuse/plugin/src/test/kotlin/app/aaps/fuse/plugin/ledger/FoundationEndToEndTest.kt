@@ -101,6 +101,7 @@ class FoundationEndToEndTest {
         e.foundation = MealFoundation.arm(
             markerTs = t0, foundationEnabled = fundamentAn, totalBudgetU = BUDGET,
             phaseAShare = anteil, primeWindowMin = A_BIS, wallCeilingMin = 45,
+            phaseAUpfrontShare = 0.0,
             phaseBUntilMin = B_BIS, markerAuthorized = true,
             pressObservedInThisProcess = true, primeDeclinedByUser = false,
         )

@@ -206,6 +206,9 @@ class TransportWiringTest : TestBaseWithProfile() {
     private var fundamentAnteil = 0.75
     private var fundamentEndeMin = 60
 
+    /** Phase-A-Sofortanteil (iLet, v28). 0.0 = heutiges Verhalten. */
+    private var upfrontAnteil = 0.0
+
     /** Insulinaktivitaet je Punkt. 0 heisst: der Bolus-Deckungs-Abschlag ist
      *  null, und damit ist die Bremsbahn-Untergrenze IHR EIGENES Mittel -
      *  auch dort passt dann keine Hebung hinein. */
@@ -472,6 +475,7 @@ class TransportWiringTest : TestBaseWithProfile() {
         whenever(preferences.get(FuseDoubleKey.PrimeEnvelopeU)).thenAnswer { primeHuelleU }
         whenever(preferences.get(FuseBooleanKey.MealFoundationEnabled)).thenAnswer { fundamentAn }
         whenever(preferences.get(FuseDoubleKey.MealFoundationPhaseAShare)).thenAnswer { fundamentAnteil }
+        whenever(preferences.get(FuseDoubleKey.MealFoundationPhaseAUpfrontShare)).thenAnswer { upfrontAnteil }
         whenever(preferences.get(FuseIntKey.MealFoundationEndMin)).thenAnswer { fundamentEndeMin }
         whenever(preferences.get(LongKey.FslCalibrationStart)).thenReturn(-1L)
         whenever(preferences.get(FuseLongKey.MealMarkerStamp)).thenReturn(0L)
@@ -495,9 +499,14 @@ class TransportWiringTest : TestBaseWithProfile() {
      * ALLOWED ist hier korrekt und kein Trick: virtualPump = true ergibt in
      * FusePumpGate.decide genau dieses Verdikt.
      */
+    /** Hebel fuer ein GESPERRTES Pumpen-Gate (z.B. Sofortanteil-Test 9:
+     *  armiert, aber nichts aktuiert). Default offen wie bisher. */
+    private var pumpeBelegt = false
+
     private fun testPumpe() = FuseActivePump(
         "GENERIC_AAPS", virtualPump = true, bolusStepU = 0.05, basalStepUPerH = 0.05,
-        gate = FusePumpGate.Result(FusePumpGate.Verdict.ALLOWED, "TestPump"),
+        gate = if (pumpeBelegt) FusePumpGate.Result(FusePumpGate.Verdict.BLOCKED_REAL_PUMP, "belegt")
+        else FusePumpGate.Result(FusePumpGate.Verdict.ALLOWED, "TestPump"),
     )
 
     /** Bis zur ersten positiven Dosis fahren - der Observer braucht Vorlauf. */
@@ -3630,6 +3639,317 @@ class TransportWiringTest : TestBaseWithProfile() {
         throw AssertionError("kein Phase-A-Zyklus mit Menge - der Aufbau traegt den Test nicht")
     }
 
+    // ---- PHASE-A-SOFORTANTEIL (iLet-Prinzip, v28) --------------------------
+    //
+    // Pflichttest 1 (UpfrontShare=0 -> Bitgleichheit) traegt die GESAMTE
+    // uebrige Suite: jeder andere Test laeuft mit upfrontAnteil = 0.0, und
+    // upfrontFloorU(share 0) ist 0 - der Lift existiert dann nicht.
+    // Pflichttest 13/14/15 (Ruecknahme verwirft, vorgefundener Marker
+    // armiert nicht, neuer Marker erbt nichts) tragen die bestehenden
+    // Episodenvertraege: der Boden haengt an der Autorisierung (Ruecknahme
+    // -> none()), arm() verlangt den im Prozess beobachteten Druck, und
+    // der Episodenneustart nullt deliveredPhaseAU - zusammen mit dem
+    // upfrontFloorU-Bilanztest ist der frische Boden die Folge, keine
+    // eigene Mechanik.
+
+    /** Armierter Marker in RUHIGER Lage: der Normalpfad fordert nichts
+     *  (NO_DEMAND), die Sofortdosis kommt allein aus der Autorisierung -
+     *  der Bauauftrags-Kernfall "kein normaler Korrekturbedarf noetig". */
+    private fun upfrontMahlzeit(dir: File, anteil: Double) {
+        upfrontAnteil = anteil
+        primeHuelleU = 3.75
+        fundamentAnteil = 0.8
+        mahlzeit(dir)
+        ruhigStellen()
+    }
+
+    /** Bis zur Sofortdosis fahren (Warm-up + Markerzyklus). */
+    private fun bisSofortdosis(dir: File, maxZyklen: Int = 12): FuseCycleRunner.Outcome {
+        repeat(maxZyklen) {
+            val o = transport(dir)
+            if (o.phaseAUpfrontRequestedU > 0.0) return o
+        }
+        throw AssertionError("die Sofortdosis muss kommen - der Aufbau traegt den Test nicht")
+    }
+
+    /**
+     * Pflichttests 2/4/8/16: das ganze Phase-A-Budget GENAU EINMAL sofort,
+     * als EINE Dosis (3,0 U bei maxSMB 0,3 - die typisierte Quelle
+     * MEAL_UPFRONT wird nicht zerteilt), budgettreu ueber das ganze
+     * Fundament-Fenster, und ein Neustart nach der Buchung sendet nie
+     * ein zweites Mal.
+     */
+    @Test
+    fun `sofortanteil 1,0 - das ganze phase-a-budget genau einmal ungeteilt`(@TempDir dir: File) {
+        upfrontMahlzeit(dir, 1.0)
+        val d = bisSofortdosis(dir)
+        assertEquals(3.0, d.phaseAUpfrontRequestedU, 1e-9, "3,75 x 0,8 x 1,0")
+        assertEquals(3.0, d.decision.smbU, 1e-9, "EINE Dosis, nicht von maxSMB (0,3) zerteilt")
+        // In der ruhigen Lage nimmt das Tail-/Guard-Veto die Menge und der
+        // Marker-Boden stellt sie wieder her - dann heisst das Binding
+        // ehrlich markerAuth|finalVerify. Ohne Veto bleibt "mealUpfront".
+        assertTrue(
+            d.decision.bindingLimit == "mealUpfront" || d.decision.bindingLimit.startsWith("markerAuth"),
+            "Binding: ${d.decision.bindingLimit}",
+        )
+        assertEquals(3.0, ledger.episodes.deliveredPhaseAU, 1e-9, "gebucht")
+        // GENAU EINMAL: der Boden ist 0, kein Zyklus fordert erneut - auch
+        // nicht ueber die Uebergabe hinaus (Phase B liefert ihr eigenes
+        // Teilbudget als Mindestversorgung, nie eine zweite Sofortdosis).
+        repeat(70) {
+            val o = transport(dir)
+            assertEquals(0.0, o.phaseAUpfrontRequestedU, 1e-9, "keine zweite Sofortanforderung")
+        }
+        // Pflichttest 4: A + B ueberschreiten das Gesamtbudget nie (ruhige
+        // Lage: alles Gelieferte ist markerfinanziert).
+        val e = ledger.episodes
+        assertTrue(
+            e.deliveredPhaseAU + e.deliveredSinceHandoverU <= 3.75 + 1e-6,
+            "Budgettreue: A=${e.deliveredPhaseAU} B=${e.deliveredSinceHandoverU}",
+        )
+        // Pflichttest 8: Neustart nach bestaetigter Dosis - der Boden lebt
+        // aus dem persistierten Zaehler, keine zweite Abgabe.
+        neuerRunner(FuseLedgerAdapter().also { it.loadOnce(dir, "test-epoch", clock) })
+        repeat(6) {
+            val o = transport(dir)
+            assertEquals(0.0, o.phaseAUpfrontRequestedU, 1e-9, "Neustart sendet nicht doppelt")
+        }
+    }
+
+    /**
+     * Pflichttests 3/6: Haelfte sofort, Haelfte linear ueber das
+     * BESTEHENDE Prime-Fenster; die Uebergabe zu Phase B bleibt bei
+     * PrimeWindowMin und Phase B behaelt ihr Teilbudget - Lieferkurve und
+     * Phasengrenze sind zwei verschiedene Groessen.
+     */
+    @Test
+    fun `sofortanteil 0,5 - haelfte sofort, rest linear, uebergabe unveraendert`(@TempDir dir: File) {
+        upfrontMahlzeit(dir, 0.5)
+        val d = bisSofortdosis(dir)
+        assertEquals(1.5, d.phaseAUpfrontRequestedU, 1e-9, "3,0 x 0,5 sofort")
+        assertEquals(1.5, d.decision.smbU, 1e-9)
+        // Der lineare Rest laeuft ueber die unveraenderte Prime-Mathematik:
+        // bis zur Uebergabe liefert Phase A insgesamt hoechstens ihr Budget,
+        // und mehr als die Sofortdosis ist dazugekommen.
+        var upfrontNochmal = 0
+        while (clock < markerAt + 20 * 60_000L) {
+            if (transport(dir).phaseAUpfrontRequestedU > 0.0) upfrontNochmal++
+        }
+        assertEquals(0, upfrontNochmal, "der lineare Rest ist NIE eine zweite Sofortdosis")
+        val phaseA = ledger.episodes.deliveredPhaseAU
+        assertTrue(phaseA > 1.5 + 0.04, "der lineare Rest liefert real nach: $phaseA")
+        assertTrue(phaseA <= 3.0 + 1e-6, "und bleibt im Phase-A-Budget: $phaseA")
+        // Pflichttest 6: exakt ab der Uebergabe gilt Phase B mit ihrem
+        // komplementaeren Teilbudget - unabhaengig vom Sofortanteil.
+        val o = transport(dir)
+        assertEquals("PHASE_B", o.mealFoundation.phase.name)
+        assertEquals(0.75, o.mealFoundation.phaseBBudgetU, 1e-9)
+    }
+
+    /** Pflichttest 5: Sofortdosis und normaler SMB werden NICHT addiert -
+     *  die Endmenge ist der Boden (max-Semantik des AuthorizedLift). */
+    @Test
+    fun `sofortdosis ist max und niemals addition`(@TempDir dir: File) {
+        upfrontAnteil = 0.5
+        primeHuelleU = 3.75
+        fundamentAnteil = 0.8
+        mahlzeit(dir) // steigende Lage: der Normalpfad fordert selbst
+        val d = bisSofortdosis(dir)
+        assertTrue(d.preFoundationSmbU >= d.phaseAUpfrontRequestedU - 1e-9, "der Boden traegt")
+        assertEquals(
+            1.5, d.decision.smbU, 1e-9,
+            "Endmenge == Sofortboden 1,5 - eine Addition laege darueber",
+        )
+    }
+
+    /** Pflichttest 7: die Autorisierung ist GEPINNT - eine Aenderung der
+     *  Preference waehrend der laufenden Episode wirkt erst beim naechsten
+     *  frischen Marker. */
+    @Test
+    fun `preference-aenderung im lauf aendert die gepinnte autorisierung nicht`(@TempDir dir: File) {
+        upfrontMahlzeit(dir, 0.5)
+        val d = bisSofortdosis(dir)
+        assertEquals(0.5, d.mealFoundation.phaseAUpfrontShare, 1e-9)
+        upfrontAnteil = 1.0
+        val o = transport(dir)
+        assertEquals(0.5, o.mealFoundation.phaseAUpfrontShare, 1e-9, "gepinnt, nicht live")
+        assertEquals(0.0, o.phaseAUpfrontRequestedU, 1e-9, "und kein Nachschlag aus der Aenderung")
+    }
+
+    /**
+     * Pflichttest 12 (Abwaertsriegel): der gepinnte lange Horizont haelt
+     * die Sofortdosis zurueck - sie geht NICHT hinaus, wird als
+     * markerfinanziert im DeferredPrime-Aufschub erfasst und der Boden
+     * fordert sie im naechsten Zyklus NICHT erneut an (keine
+     * Doppelbuchung im Aufschub).
+     */
+    @Test
+    fun `abwaertsriegel schiebt die sofortdosis in den aufschub - genau einmal`(@TempDir dir: File) {
+        aufschubAn = true
+        upfrontAnteil = 1.0
+        primeHuelleU = 3.75
+        fundamentAnteil = 0.8
+        mahlzeit(dir)
+        // Gemessen fallende, BOLUS-ueberdeckte Lage im 60er-Horizont, aber
+        // ausserhalb des harten 30ers: BG 150, -1,5/min -> Boden in ~53 min;
+        // 2,0 U x ISF 54 = 108 mg/dl Deckung > 80 Abstand.
+        flach = 150.0
+        steigungProMin = -1.5
+        bolusIobU = 2.0
+        var withheld: FuseCycleRunner.Outcome? = null
+        repeat(12) {
+            if (withheld == null) {
+                val o = transport(dir)
+                if (o.mealFoundation.armed && o.deferredPrimeWithheldU > 0.0) withheld = o
+            }
+        }
+        val w = withheld ?: error("der Aufschub muss die Sofortdosis fangen")
+        assertEquals(0.0, w.decision.smbU, 1e-9, "im gemessenen Fall geht nichts hinaus")
+        assertTrue(w.deferredPrimeOpenU >= 2.9, "die Sofortdosis liegt im Aufschub: ${w.deferredPrimeOpenU}")
+        // KEINE Akkumulation der SOFORTDOSIS: der Boden zieht den Aufschub
+        // ab und fordert nicht erneut. Der lineare Prime-Anteil sammelt
+        // planmaessig weiter (bestehende Punkt-6-Semantik), bleibt aber am
+        // Huellen-Deckel geklemmt - nie mehr als das Gesamtbudget.
+        repeat(4) {
+            val o2 = transport(dir)
+            assertEquals(0.0, o2.phaseAUpfrontRequestedU, 1e-9, "der Boden fordert nicht erneut")
+            assertTrue(o2.deferredPrimeOpenU <= 3.75 + 1e-9, "Huellen-Deckel: ${o2.deferredPrimeOpenU}")
+            assertEquals("DEFERRED", o2.phaseAUpfrontState)
+        }
+    }
+
+    /** Pflichttest 12b: ein AKTIVER Zero-TBR-Latch sperrt die Sofortdosis
+     *  ausdruecklich (Bauauftrag) - der Boden bleibt offen und wartet. */
+    @Test
+    fun `aktiver zero-latch sperrt die sofortdosis`(@TempDir dir: File) {
+        zeroLatchAn = true
+        upfrontAnteil = 1.0
+        primeHuelleU = 3.75
+        fundamentAnteil = 0.8
+        fundamentAn = true
+        markerAuthorized = true
+        // Fall-Lage des Latch: das Low-Tor zuendet, BG bleibt ueber dem Tief.
+        flach = 140.0
+        steigungProMin = -1.2
+        knickAbMin = 25
+        steigungNachKnick = 0.0
+        bolusIobU = 2.5
+        clock = start
+        transportReset()
+        neuerRunner(FuseLedgerAdapter().also { it.loadOnce(dir.also(File::mkdirs), "test-epoch", start) })
+        var gezuendet = false
+        repeat(30) { if (!gezuendet) gezuendet = cycle().zeroLatchActive }
+        assertTrue(gezuendet, "der Latch muss zuenden")
+        markerAt = clock
+        repeat(8) {
+            val o = cycle()
+            assertEquals(0.0, o.phaseAUpfrontRequestedU, 1e-9, "kein mealUpfront unter aktivem Latch")
+            if (o.mealFoundation.armed && o.zeroLatchActive) {
+                assertEquals("BLOCKED_ZERO_LATCH", o.phaseAUpfrontState)
+            }
+        }
+    }
+
+    /** Pflichttest 10: unklarer Pumpenausgang -> die Buchung haftet, der
+     *  Boden bleibt 0, nichts wird blind wiederholt. */
+    @Test
+    fun `unklarer ausgang wiederholt die sofortdosis nicht`(@TempDir dir: File) {
+        upfrontMahlzeit(dir, 1.0)
+        bisSofortdosis(dir)
+        letzterAusgang = Ausgang.UNKLAR
+        repeat(6) {
+            val o = transport(dir, Ausgang.UNKLAR)
+            assertEquals(0.0, o.phaseAUpfrontRequestedU, 1e-9, "ohne Beweis keine Wiederholung")
+        }
+        assertEquals(3.0, ledger.episodes.deliveredPhaseAU, 1e-9, "die Haftung steht")
+    }
+
+    /** Pflichttest 11: ein sicherer Nicht-Sende-Beweis entlastet exakt und
+     *  erlaubt GENAU EINEN neuen Versuch. */
+    @Test
+    fun `nicht-sende-beweis belebt den sofort-boden exakt einmal`(@TempDir dir: File) {
+        upfrontMahlzeit(dir, 1.0)
+        bisSofortdosis(dir)
+        // AAPS hat sie nie kommandiert - der Beweis kommt im Folgezyklus.
+        letzterAusgang = Ausgang.NIE_KOMMANDIERT
+        val beweis = transport(dir)
+        assertEquals(QueueRejectReason.BOLUS_IN_QUEUE, letzterGrund, "der Beweis muss stehen")
+        // Die Entlastung hat den Boden wiederbelebt: im Beweiszyklus selbst
+        // oder im naechsten kommt GENAU EIN neuer Versuch ...
+        letzterAusgang = Ausgang.GESENDET
+        val neu = if (beweis.phaseAUpfrontRequestedU > 0.0) beweis else bisSofortdosis(dir, 4)
+        assertEquals(3.0, neu.phaseAUpfrontRequestedU, 1e-9, "genau ein neuer Versuch, volle Menge")
+        // ... und danach ist wieder Schluss.
+        repeat(6) {
+            assertEquals(0.0, transport(dir).phaseAUpfrontRequestedU, 1e-9, "nicht mehr als einer")
+        }
+    }
+
+    /** Pflichttest 9: Neustart VOR der Dosis setzt den persistierten Boden
+     *  fort - "sofort, wenn sicher; aufgeschoben, wenn gemessen unsicher;
+     *  niemals verloren oder doppelt". Der harte 30er-Abwaertsriegel
+     *  verhindert die Dosis ganz (kein Lift, kein Withhold), die armierte
+     *  Autorisierung ist persistiert, und nach Neustart + bestaetigter
+     *  Erholung kommt sie genau einmal. */
+    @Test
+    fun `neustart vor der dosis setzt den boden fort`(@TempDir dir: File) {
+        // Breites, GEPINNTES Prime-Fenster: die Erholung nach dem Neustart
+        // braucht mehr als die geklemmten 5 Minuten des unstubbten Rigs.
+        whenever(preferences.get(FuseIntKey.PrimeWindowMin)).thenReturn(40)
+        upfrontAnteil = 1.0
+        primeHuelleU = 3.75
+        fundamentAnteil = 0.8
+        mahlzeit(dir)
+        // Steiler, ueberdeckter Fall im harten 30er-Horizont: BG 150,
+        // -3,0/min -> Boden in ~27 min; 2,0 U x 54 deckt den Abstand.
+        flach = 150.0
+        steigungProMin = -3.0
+        bolusIobU = 2.0
+        repeat(6) { transport(dir) }
+        assertEquals(0.0, ledger.episodes.deliveredPhaseAU, 1e-9, "im gemessenen Fall geht nichts hinaus")
+        assertTrue(ledger.episodes.foundation.valid, "aber armiert und persistiert")
+        // Neustart, danach bestaetigte Erholung (steigende Kurve oeffnet
+        // den restartfesten Abwaertsriegel nach drei gesunden Zyklen).
+        // Die Uhr laeuft MONOTON weiter - die Kurve wird nur neu verankert,
+        // damit sie ab jetzt bei ~130 steigend weiterlaeuft.
+        neuerRunner(FuseLedgerAdapter().also { it.loadOnce(dir, "test-epoch", clock) })
+        steigungProMin = 0.8
+        flach = 130.0 - 0.8 * ((clock - start) / 60_000.0)
+        knickAbMin = null
+        bolusIobU = null
+        val d = bisSofortdosis(dir, 30)
+        assertEquals(3.0, d.phaseAUpfrontRequestedU, 1e-9, "nach dem Neustart die volle Menge")
+        // Der restartfeste Abwaertsriegel kann die ersten Anforderungen
+        // noch nullen (Erholung braucht drei gesunde Zyklen) - der Boden
+        // fordert dann WEITER, bis wirklich gebucht ist. Nie verloren:
+        repeat(10) { if (ledger.episodes.deliveredPhaseAU < 3.0 - 1e-9) transport(dir) }
+        assertEquals(3.0, ledger.episodes.deliveredPhaseAU, 1e-9, "genau einmal geliefert")
+        // Und nie doppelt: ab der Buchung ist der Boden zu.
+        repeat(4) { assertEquals(0.0, transport(dir).phaseAUpfrontRequestedU, 1e-9, "nie doppelt") }
+    }
+
+    /** Pflichttest 17: maxIOB und Transporthaftung bleiben hart - die
+     *  Sofortdosis wird am IOB-Spielraum gekappt, und solange die
+     *  publizierte Menge als offene Haftung steht, zieht der Boden NICHT
+     *  nach (konservativ: der Rest bleibt sichtbar offen statt den
+     *  Spielraum doppelt zu belegen). */
+    @Test
+    fun `maxiob und transporthaftung kappen die sofortdosis hart`(@TempDir dir: File) {
+        upfrontMahlzeit(dir, 1.0)
+        bolusIobU = 6.5 // maxIOB 8 -> Headroom 1,5 U
+        val d1 = bisSofortdosis(dir)
+        assertEquals(1.5, d1.phaseAUpfrontRequestedU, 1e-9, "gekappt am IOB-Spielraum")
+        assertEquals(1.5, ledger.episodes.deliveredPhaseAU, 1e-9)
+        // Die offene Zeile haftet (im Rig bindet nie ein Pumpenfakt): IOB
+        // 6,5 + Haftung 1,5 fuellen maxIOB 8 exakt - kein Nachzug.
+        repeat(6) {
+            val o = transport(dir)
+            assertEquals(0.0, o.phaseAUpfrontRequestedU, 1e-9, "Haftung + IOB sperren den Nachzug")
+            assertEquals(1.5, o.phaseAUpfrontPendingU, 1e-9, "der Rest bleibt sichtbar offen")
+        }
+        assertEquals(1.5, ledger.episodes.deliveredPhaseAU, 1e-9, "nie ueber den Spielraum")
+    }
+
 
     // ---- FALL 1: BOLUS_IN_QUEUE in Phase A --------------------------------
 
@@ -5536,6 +5856,7 @@ class TransportWiringTest : TestBaseWithProfile() {
             foundationEnabled = true,
             totalBudgetU = 3.75,
             phaseAShare = 0.80,
+            phaseAUpfrontShare = 0.0,
             primeWindowMin = 20,
             wallCeilingMin = 45,
             pressObservedInThisProcess = true,
@@ -6576,7 +6897,7 @@ class TransportWiringTest : TestBaseWithProfile() {
         // die Karte ist seit dem Zeitzonen-Fix oben ebenfalls lokal gefuellt
         // - eine Uhr fuer beide Seiten.
 
-        fun lauf(name: String, fensterMs: Long?, trendRegel: String? = null, fenster: Int = 18, ratioCap: Double = 1.0, livenessStart: Boolean = true, profilCapsBehalten: Boolean = false): File {
+        fun lauf(name: String, fensterMs: Long?, trendRegel: String? = null, fenster: Int = 18, ratioCap: Double = 1.0, livenessStart: Boolean = true, profilCapsBehalten: Boolean = false, upfrontStart: Double = 0.0): File {
             transportReset()
             boluses = emptyList()
             markerAt = 0L
@@ -6601,6 +6922,9 @@ class TransportWiringTest : TestBaseWithProfile() {
                 mealRatioDeckel = null; mealIobDeckel = null
                 corrRatioDeckel = null; corrIobDeckel = null
             }
+            // Dieselbe Leck-Regel fuer den Sofortanteil (v28): alte Trails
+            // tragen den Schluessel nicht, jeder Lauf startet explizit.
+            upfrontAnteil = upfrontStart
             forecastShadowAn = false // Replay braucht die Matrizen nicht - Tempo
             livenessRatioDeckel = ratioCap // v23: aufgezeichnete v22-Politik traegt den Schluessel nicht - der Hebel gilt
             theilSenFensterMin = fenster // W18-Trails tragen den Schluessel nicht - der Hebel gilt
@@ -6683,6 +7007,20 @@ class TransportWiringTest : TestBaseWithProfile() {
                 lauf(if (profilEnv.contains(";")) "profil${idx + 1}" else "profil", null, fenster = 10, profilCapsBehalten = true)
             }
             mealRatioDeckel = null; mealIobDeckel = null; corrRatioDeckel = null; corrIobDeckel = null
+            return
+        }
+        val upfrontEnv = System.getenv("FUSE_REPLAY_UPFRONT")
+        if (upfrontEnv != null) {
+            // Sofortanteil-Matrix (iLet, v28): je Wert ein Lauf ueber
+            // dieselben historischen Mahlzeiten, alles andere konstant -
+            // z.B. FUSE_REPLAY_UPFRONT=0,0.5,0.75,1.0 -> upf000..upf100.
+            // Rueckkopplungsblind: nach der ersten Dosisdivergenz sind die
+            // Summen nur Obergrenzen; belastbar sind Zeitpunkt und
+            // Richtung der ersten Abweichung.
+            upfrontEnv.split(",").forEach { u ->
+                val anteil = u.trim().toDouble()
+                lauf("upf%03d".format((anteil * 100).toInt()), null, fenster = 10, upfrontStart = anteil)
+            }
             return
         }
         val capsEnv = System.getenv("FUSE_REPLAY_CAPS")

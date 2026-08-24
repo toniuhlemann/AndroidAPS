@@ -76,6 +76,16 @@ object MealFoundation {
         val armedTs: Long,
         val totalBudgetU: Double,
         val phaseAShare: Double,
+        /**
+         * SOFORTANTEIL von Phase A (iLet-Prinzip, Bauauftrag Toni 24.08.):
+         * dieser Anteil des Phase-A-Budgets soll im ersten berechtigten
+         * Zyklus nach dem Markerdruck SOFORT angefordert werden statt
+         * linear ueber das Prime-Fenster. 0 = heutiges Verhalten
+         * (bitgleich). GEPINNT wie die Geschwister: eine Preference-
+         * Aenderung wirkt erst beim naechsten frischen Marker. Die
+         * Sofort-MENGE ist abgeleitet ([phaseAUpfrontU]), nie gespeichert.
+         */
+        val phaseAUpfrontShare: Double,
         /** Das beim Armen gueltige Prime-Fenster [min] - gepinnt, damit eine
          *  spaetere Aenderung die laufende Uebergabe nicht verschiebt. */
         val pinnedPrimeWindowMin: Int,
@@ -117,9 +127,18 @@ object MealFoundation {
          *  ergibt. Ein zweites Produkt waere es nicht. */
         val phaseBBudgetU: Double get() = totalBudgetU - phaseABudgetU
 
+        /** Die SOFORT-Menge - abgeleitet, dieselbe Ein-Wahrheits-Disziplin
+         *  wie die Teilbudgets. */
+        val phaseAUpfrontU: Double get() = phaseABudgetU * phaseAUpfrontShare
+
+        /** Der lineare Phase-A-Planrest - exakt komplementaer zur
+         *  Sofort-Menge, kein zweites Produkt. */
+        val phaseARemainderU: Double get() = phaseABudgetU - phaseAUpfrontU
+
         val valid: Boolean
             get() = armedTs > 0L && totalBudgetU.isFinite() && totalBudgetU > 0.0 &&
                 phaseAShare.isFinite() && phaseAShare in 0.0..1.0 &&
+                phaseAUpfrontShare.isFinite() && phaseAUpfrontShare in 0.0..1.0 &&
                 pinnedPrimeWindowMin >= 0 && pinnedWallCeilingMin >= 0 &&
                 endTs > armedTs && latchedHandoverTs >= 0L &&
                 (latchedHandoverTs == 0L || latchedHandoverTs >= armedTs)
@@ -158,7 +177,7 @@ object MealFoundation {
             val faellig = effectiveHandoverTs(primeWindowStartTs)
             if (faellig <= 0L || nowTs < faellig) return this
             return Authorization(
-                armedTs, totalBudgetU, phaseAShare, pinnedPrimeWindowMin,
+                armedTs, totalBudgetU, phaseAShare, phaseAUpfrontShare, pinnedPrimeWindowMin,
                 pinnedWallCeilingMin, endTs, pinnedMarkerAuthorized, faellig,
             )
         }
@@ -166,7 +185,7 @@ object MealFoundation {
         companion object {
 
             /** Keine laufende Autorisierung - das Fundament ist nicht armiert. */
-            fun none() = Authorization(0L, 0.0, 0.0, 0, 0, 0L, false, 0L)
+            fun none() = Authorization(0L, 0.0, 0.0, 0.0, 0, 0, 0L, false, 0L)
 
             /**
              * AUS DER PERSISTENZ WIEDERHERSTELLEN - mit Pruefung.
@@ -179,6 +198,7 @@ object MealFoundation {
                 armedTs: Long,
                 totalBudgetU: Double,
                 phaseAShare: Double,
+                phaseAUpfrontShare: Double,
                 pinnedPrimeWindowMin: Int,
                 pinnedWallCeilingMin: Int,
                 endTs: Long,
@@ -186,7 +206,7 @@ object MealFoundation {
                 latchedHandoverTs: Long,
             ): Authorization {
                 val a = Authorization(
-                    armedTs, totalBudgetU, phaseAShare, pinnedPrimeWindowMin,
+                    armedTs, totalBudgetU, phaseAShare, phaseAUpfrontShare, pinnedPrimeWindowMin,
                     pinnedWallCeilingMin, endTs, pinnedMarkerAuthorized, latchedHandoverTs,
                 )
                 return if (a.valid) a else none()
@@ -196,12 +216,13 @@ object MealFoundation {
                 armedTs: Long,
                 totalBudgetU: Double,
                 phaseAShare: Double,
+                phaseAUpfrontShare: Double,
                 pinnedPrimeWindowMin: Int,
                 pinnedWallCeilingMin: Int,
                 endTs: Long,
                 pinnedMarkerAuthorized: Boolean,
             ) = Authorization(
-                armedTs, totalBudgetU, phaseAShare, pinnedPrimeWindowMin,
+                armedTs, totalBudgetU, phaseAShare, phaseAUpfrontShare, pinnedPrimeWindowMin,
                 pinnedWallCeilingMin, endTs, pinnedMarkerAuthorized, 0L,
             )
         }
@@ -224,6 +245,17 @@ object MealFoundation {
         foundationEnabled: Boolean,
         totalBudgetU: Double,
         phaseAShare: Double,
+        /**
+         * SOFORTANTEIL von Phase A (iLet-Prinzip, Bauauftrag Toni 24.08.):
+         * `upfrontU = phaseABudgetU x UpfrontShare` wird im ersten
+         * berechtigten Zyklus sofort angefordert, der Rest laeuft weiter
+         * linear ueber das Prime-Fenster. 0 = heutiges Verhalten.
+         *
+         * KEIN DEFAULT, aus demselben Grund wie [markerAuthorized]: jede
+         * Aufrufstelle muss sich erklaeren, sonst vergisst eine das Pinning
+         * und liest still den Live-Wert.
+         */
+        phaseAUpfrontShare: Double,
         primeWindowMin: Int,
         wallCeilingMin: Int,
         phaseBUntilMin: Int,
@@ -283,15 +315,98 @@ object MealFoundation {
         if (primeDeclinedByUser) return Authorization.none()
         if (!totalBudgetU.isFinite() || totalBudgetU <= 0.0) return Authorization.none()
         if (!phaseAShare.isFinite() || phaseAShare !in 0.0..1.0) return Authorization.none()
+        if (!phaseAUpfrontShare.isFinite() || phaseAUpfrontShare !in 0.0..1.0) return Authorization.none()
         if (phaseBUntilMin <= 0 || primeWindowMin < 0 || wallCeilingMin < 0) return Authorization.none()
         return Authorization.create(
             armedTs = markerTs,
             totalBudgetU = totalBudgetU,
             phaseAShare = phaseAShare,
+            phaseAUpfrontShare = phaseAUpfrontShare,
             pinnedPrimeWindowMin = primeWindowMin,
             pinnedWallCeilingMin = wallCeilingMin,
             endTs = markerTs + phaseBUntilMin * 60_000L,
             pinnedMarkerAuthorized = markerAuthorized,
+        )
+    }
+
+    /**
+     * DER OFFENE SOFORTANTEIL - die eine Boden-Wahrheit des
+     * Phase-A-Sofortanteils (iLet-Prinzip, Bauauftrag Toni 24.08.).
+     *
+     * KEIN EIGENER EINMAL-ZUSTAND, sondern eine monotone BILANZ auf den
+     * bereits persistierten, gate- und beweiskorrigierten Zaehlern:
+     *
+     *     offen = upfrontU - deliveredPhaseAU - deferredOpenU
+     *
+     * Daraus folgen die exactly-once-Zusagen ohne neuen Zustandsapparat:
+     *  - LIEFERUNG senkt `deliveredPhaseAU` (Ledger-Buchung) -> der Boden
+     *    faellt auf 0, kein zweiter Versand. Ein NEUSTART aendert daran
+     *    nichts, der Zaehler ist persistiert.
+     *  - UNKLARER PUMPENAUSGANG laesst die Buchung stehen (Adapter-Vertrag)
+     *    -> der Boden bleibt 0, nichts wird blind wiederholt.
+     *  - Ein sicherer NICHT-SENDE-BEWEIS dreht exakt die bewiesene Menge
+     *    zurueck -> der Boden lebt exakt einmal je Beweis wieder auf.
+     *  - Der SICHERHEITSAUFSCHUB (Punkt 6) haelt den markerfinanzierten
+     *    Anteil in `deferredPrime.openU`; der Abzug hier verhindert, dass
+     *    der Boden dieselbe Menge im naechsten Riegel-Zyklus ERNEUT
+     *    anfordert und der Aufschub sie doppelt sammelt. Der Abzug ist
+     *    bewusst KONSERVATIV: openU kann auch linear zurueckgehaltenes
+     *    Prime enthalten - dann fordert der Boden zu wenig sofort, nie zu
+     *    viel, und der Aufschub liefert es nach Erholung ohnehin.
+     *
+     * Normale SMBs in Phase A zaehlen GEGEN den Sofortanteil (sie stehen in
+     * `deliveredPhaseAU`) - das ist die max-statt-Addition-Zusage des
+     * Bauauftrags in Bilanzform.
+     */
+    fun upfrontFloorU(
+        auth: Authorization,
+        deliveredPhaseAU: Double,
+        deferredOpenU: Double,
+    ): Double {
+        if (!auth.valid) return 0.0
+        if (!deliveredPhaseAU.isFinite() || deliveredPhaseAU < 0.0) return 0.0
+        if (!deferredOpenU.isFinite() || deferredOpenU < 0.0) return 0.0
+        return max(0.0, auth.phaseAUpfrontU - deliveredPhaseAU - deferredOpenU)
+    }
+
+    /**
+     * DER PHASE-A-SOFORT-LIFT (iLet-Prinzip, Bauauftrag Toni 24.08.).
+     *
+     * NUR in Phase A - danach regeln Uebergabe, Uebertrag und Aufschub. Der
+     * Boden kommt aus [upfrontFloorU] (Bilanz statt Einmal-Zustand), das
+     * Restbudget ist die Phase-A-Huelle minus Geliefertem (Verteidigung in
+     * der Tiefe - der Boden ist per Bilanz schon kleiner), und Guard/Tail
+     * folgen der BESTEHENDEN MarkerAuthorization-Politik ueber die GEPINNTE
+     * Autorisierung. Die maxSMB-Ausnahme traegt die Quelle
+     * [AuthorizedLift.Source.MEAL_UPFRONT] in [AuthorizedLift.lift];
+     * iobTH, maxIOB, Transporthaftung und Pumpenraster bleiben hart.
+     */
+    @Suppress("LongParameterList")
+    fun liftUpfront(
+        base: FuseController.Decision,
+        auth: Authorization,
+        phase: Phase,
+        deliveredPhaseAU: Double,
+        deferredOpenU: Double,
+        state: FuseController.State,
+        tailHeadroomU: Double? = null,
+        transportCommitmentU: Double = 0.0,
+        tickEps: Double = 1e-9,
+    ): FuseController.Decision {
+        if (phase != Phase.PHASE_A) return base
+        val floorU = upfrontFloorU(auth, deliveredPhaseAU, deferredOpenU)
+        if (floorU <= 0.0) return base
+        return AuthorizedLift.lift(
+            base = base,
+            source = AuthorizedLift.Source.MEAL_UPFRONT,
+            floorU = floorU,
+            remainingU = max(0.0, auth.phaseABudgetU - deliveredPhaseAU),
+            state = state,
+            authorized = auth.pinnedMarkerAuthorized,
+            tailHeadroomU = tailHeadroomU,
+            extraCapU = null,
+            transportCommitmentU = transportCommitmentU,
+            tickEps = tickEps,
         )
     }
 
@@ -995,6 +1110,12 @@ object MealFoundation {
         val totalBudgetU: Double,
         val phaseABudgetU: Double,
         val phaseBBudgetU: Double,
+        /** Der gepinnte Sofortanteil (iLet-Prinzip) samt abgeleiteter
+         *  Sofort-Menge und linearem Planrest - fuer Export und Replay,
+         *  dieselben Getter wie im Regler, keine zweite Rechnung. */
+        val phaseAUpfrontShare: Double,
+        val phaseAUpfrontPlannedU: Double,
+        val phaseARemainderU: Double,
         /** Der AKTUELL geltende Uebergang - folgt vor dem Latch noch der
          *  Prime-Laufzeit. */
         val effectiveHandoverTs: Long,
@@ -1062,7 +1183,9 @@ object MealFoundation {
             fun none() = Snapshot(
                 armed = false, armedTs = 0L, markerAuthorized = false,
                 totalBudgetU = 0.0, phaseABudgetU = 0.0,
-                phaseBBudgetU = 0.0, effectiveHandoverTs = 0L, latchedHandoverTs = 0L,
+                phaseBBudgetU = 0.0,
+                phaseAUpfrontShare = 0.0, phaseAUpfrontPlannedU = 0.0, phaseARemainderU = 0.0,
+                effectiveHandoverTs = 0L, latchedHandoverTs = 0L,
                 endTs = 0L, phase = Phase.NONE, deliveredPhaseAU = 0.0, deliveredSinceHandoverU = 0.0,
                 confirmedNotSentPhaseAU = 0.0, effectiveCarryU = 0.0,
                 descentDeferredPhaseAU = 0.0,
@@ -1115,6 +1238,9 @@ object MealFoundation {
             totalBudgetU = auth.totalBudgetU,
             phaseABudgetU = auth.phaseABudgetU,
             phaseBBudgetU = auth.phaseBBudgetU,
+            phaseAUpfrontShare = auth.phaseAUpfrontShare,
+            phaseAUpfrontPlannedU = auth.phaseAUpfrontU,
+            phaseARemainderU = auth.phaseARemainderU,
             effectiveHandoverTs = auth.effectiveHandoverTs(primeWindowStartTs),
             latchedHandoverTs = auth.latchedHandoverTs,
             endTs = auth.endTs,

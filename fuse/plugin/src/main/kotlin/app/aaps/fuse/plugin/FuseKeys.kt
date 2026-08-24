@@ -157,6 +157,27 @@ enum class FuseDoubleKey(
      */
     MealFoundationPhaseAShare("fuse_meal_foundation_phase_a_share", 1.0, 0.5, 1.0),
 
+    /**
+     * PHASE-A-SOFORTANTEIL nach iLet-Prinzip (Bauauftrag Toni 24.08.).
+     *
+     * `upfrontU = phaseABudgetU x UpfrontShare` wird im ersten berechtigten
+     * Zyklus nach dem Markerdruck SOFORT angefordert; der Rest laeuft
+     * weiter linear ueber das Prime-Fenster. Anlass: wiederkehrende fruehe
+     * Mahlzeitenpeaks - die Phase-A-Menge ist nicht zwingend zu klein, sie
+     * kommt zu spaet (iLet liefert ~75 % des gelernten Mahlzeitenbedarfs
+     * als unmittelbare Dosis).
+     *
+     * Default 0,00 = BITGLEICH heutiges Verhalten. GEPINNT beim Armen wie
+     * die Geschwister: eine Aenderung wirkt erst beim naechsten frischen
+     * Marker. Die Sofortdosis wird als typisierte Quelle MEAL_UPFRONT
+     * gefuehrt und NICHT von maxSMB zerteilt; PrimeWindowMin bleibt
+     * unveraendert die Phasengrenze zu Phase B (Lieferkurve und
+     * Phasengrenze sind zwei verschiedene Groessen). NUR DER ANTEIL ist
+     * einstellbar, die Menge folgt aus [PrimeEnvelopeU] x
+     * [MealFoundationPhaseAShare] - eine Wahrheit, kein zweiter Knopf.
+     */
+    MealFoundationPhaseAUpfrontShare("fuse_meal_foundation_phase_a_upfront_share", 0.0, 0.0, 1.0),
+
 
     /**
      * Obergrenze eines einzelnen SMB, in Einheiten.

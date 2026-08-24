@@ -54,6 +54,17 @@ object AuthorizedLift {
 
         /** Die nachlaufende Mindestversorgung des Mahlzeitenfundaments. */
         FOUNDATION,
+
+        /**
+         * Der PHASE-A-SOFORTANTEIL (iLet-Prinzip, Bauauftrag Toni 24.08.):
+         * die beim Markerdruck gepinnte Sofort-Menge
+         * `phaseABudgetU x UpfrontShare`. Die EINZIGE Quelle, deren
+         * Einzeldosis nicht von maxSMB zerteilt wird - sonst waere
+         * UpfrontShare 1,0 keine Sofortdosis, sondern dieselbe Rampe in
+         * groesseren Schritten. Budget, iobTH, maxIOB, Transporthaftung
+         * und Pumpenraster bleiben unveraendert hart.
+         */
+        MEAL_UPFRONT,
     }
 
     /**
@@ -100,13 +111,15 @@ object AuthorizedLift {
 
     /** Was im `bindingLimit` steht, wenn dieser Lift gebunden hat. */
     fun bindingLimitOf(source: Source): String = when (source) {
-        Source.PRIME      -> "primeRelease"
-        Source.FOUNDATION -> "mealFoundation"
+        Source.PRIME        -> "primeRelease"
+        Source.FOUNDATION   -> "mealFoundation"
+        Source.MEAL_UPFRONT -> "mealUpfront"
     }
 
     fun stageOf(source: Source): String = when (source) {
-        Source.PRIME      -> FuseController.STAGE_PRIME
-        Source.FOUNDATION -> FuseController.STAGE_FOUNDATION
+        Source.PRIME        -> FuseController.STAGE_PRIME
+        Source.FOUNDATION   -> FuseController.STAGE_FOUNDATION
+        Source.MEAL_UPFRONT -> FuseController.STAGE_UPFRONT
     }
 
     /**
@@ -181,8 +194,20 @@ object AuthorizedLift {
         // Transporthaftung das bereits unterwegs Befindliche. Keine
         // Autorisierung hebt sie - sie sagen nichts ueber eine Prognose,
         // sondern ueber eine Obergrenze.
+        //
+        // EINE AUSNAHME, quellengebunden (Bauauftrag Toni 24.08., gleiches
+        // Muster wie die `!authorized`-Schwanzkappe unten): der
+        // Phase-A-SOFORTANTEIL wird nicht von maxSMB in Einzelzyklen
+        // zerteilt - seine absolute Obergrenze ist der gepinnte
+        // Sofortbetrag selbst (floorU), das Restbudget (remainingU) und
+        // die Bestandsgrenzen. Das ist eine gezielte Markerautorisierung,
+        // KEINE Erhoehung von maxSMB: Normal-, Liveness-, Prime- und
+        // Fundamentpfad behalten die Einzeldosisgrenze unveraendert.
+        val singleDoseCapU =
+            if (source == Source.MEAL_UPFRONT) remainingU
+            else min(state.maxSmbU, remainingU)
         var caps = min(
-            min(state.maxSmbU, remainingU),
+            singleDoseCapU,
             min(
                 state.maxIobU - state.capIobU - transportCommitmentU,
                 state.iobThU - state.capIobU - transportCommitmentU,
@@ -196,16 +221,30 @@ object AuthorizedLift {
         val stepped = floor(min(floorU, caps) / state.pumpIncrementU + tickEps) * state.pumpIncrementU
         // Der Grant entsteht NUR bei einem tragfaehigen Betrag - `of` gibt
         // sonst null. Damit kann keine Quelle ohne Menge existieren.
-        val grant =
+        //
+        // UND ER SCHRUMPFT NIE EINEN BESTEHENDEN (v28-Baubefund): laeuft der
+        // Prime-Lift auf einer Basis, die der Sofort-Lift bereits auf 3,0 U
+        // gehoben hat, ist sein eigener kleiner Boden (0,25/Zyklus) kein
+        // Gewinn - aber der alte Code kopierte trotzdem SEINEN Grant in die
+        // Entscheidung. Nach einem Modell-Veto stellte MarkerFloor dann nur
+        // noch die 0,25 wieder her, und die Sofortdosis war still zerhackt.
+        // Der Boden der Entscheidung ist der GROESSTE autorisierte Betrag.
+        val eigener =
             if (authorized && stepped >= state.pumpIncrementU) AuthorizedGrant.of(stepped, source)
             else null
+        val grant = when {
+            eigener == null -> base.grant
+            base.grant == null -> eigener
+            base.grant!!.amountU >= eigener.amountU -> base.grant
+            else -> eigener
+        }
 
         // KEIN GEWINN: entweder reicht es nicht fuer einen Pumpenschritt, oder
         // die Basis liegt ohnehin schon hoeher. Der zweite Fall ist die
         // Mindestversorgung in Reinform - das Fundament legt NICHTS drauf,
         // wenn der normale Pfad schon liefert.
         if (stepped < state.pumpIncrementU || stepped <= base.smbU)
-            return if (grant != null) base.copy(grant = grant) else base
+            return if (grant !== base.grant) base.copy(grant = grant) else base
 
         return base.copy(
             smbU = stepped,

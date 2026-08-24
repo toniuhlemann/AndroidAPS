@@ -578,6 +578,14 @@ class FuseCycleRunner(
          *  Menge beantwortet es, WER die Dosis wollte und wer sie gebremst
          *  hat - aus der Summe allein ist das nicht ablesbar. */
         val foundationLiftU: Double = 0.0,
+        /** PHASE-A-SOFORTANTEIL (iLet, Bauauftrag Toni 24.08.): der offene
+         *  Boden VOR diesem Zyklus [U] (upfrontFloorU-Bilanz), die in DIESEM
+         *  Zyklus als MEAL_UPFRONT angeforderte Menge [U] und der abgeleitete
+         *  Zustand fuer Export/Viewer. Angefordert heisst NICHT publiziert
+         *  oder pumpenbestaetigt - die Publikation entscheidet das Gate. */
+        val phaseAUpfrontPendingU: Double = 0.0,
+        val phaseAUpfrontRequestedU: Double = 0.0,
+        val phaseAUpfrontState: String? = null,
         /** `null` = der Zyklus kam nicht bis zum Lesen der Einstellungen. Dann
          *  hat er auch keine Politik, und der Export sagt das statt eine zu
          *  erfinden. */
@@ -1374,6 +1382,7 @@ class FuseCycleRunner(
                 foundationEnabled = cfg.mealFoundationEnabled,
                 totalBudgetU = cfg.primeEnvelopeU,
                 phaseAShare = cfg.mealFoundationPhaseAShare,
+                phaseAUpfrontShare = cfg.mealFoundationPhaseAUpfrontShare,
                 primeWindowMin = cfg.primeWindowMin,
                 wallCeilingMin = PrimeRelease.WALL_CEILING_MIN,
                 phaseBUntilMin = cfg.mealFoundationEndMin,
@@ -2634,8 +2643,53 @@ class FuseCycleRunner(
             bolusStepU =bolusStep,
         )
 
+        // ---- PHASE-A-SOFORTANTEIL (iLet-Prinzip, Bauauftrag Toni 24.08.) --
+        //
+        // VOR dem Prime-Lift, auf derselben Basis: die Sofortdosis ist ein
+        // BODEN auf der kumulierten Phase-A-Lieferung
+        // (MealFoundation.upfrontFloorU), kein Einmal-Zustand - Lieferung,
+        // unklarer Pumpenausgang, Nicht-Sende-Beweis und Sicherheitsaufschub
+        // verrechnen sich ueber die persistierten, gate- und
+        // beweiskorrigierten Zaehler (exactly-once als Bilanz). Der
+        // Prime-Lift arbeitet auf dem Ergebnis und hebt per max-Semantik nur,
+        // wenn sein eigener Boden hoeher laege - nie Addition.
+        //
+        // Ein AKTIVER ZERO-LATCH sperrt die Sofortdosis ausdruecklich
+        // (Bauauftrag): er ist der einzige harte Riegel, den die spaeteren
+        // Stufen nicht ohnehin tragen (der Latch laesst den SMB-Pfad ueber
+        // latchZeroOnly frei). Gelesen wird der persistierte Stand VOR dem
+        // Latch-Advance dieses Zyklus. Low (SAFETY_HOLD), Descent-Risk,
+        // Descent-Latch, Health, Ledger-Hold und Pumpengates wirken
+        // unveraendert ueber Blockpolitik, MeasuredDescentGate,
+        // LedgerHoldGate und Publikationsgate; der gemessene Abwaertsriegel
+        // des gepinnten Horizonts leitet die Menge unten in den
+        // DeferredPrime-Aufschub um (sie steht oberhalb der reinen Basis).
+        val upfrontDeferredOpenU =
+            if (episodes.deferredPrime.pinnedForMarkerTs == episodes.foundation.armedTs)
+                episodes.deferredPrime.openU else 0.0
+        // Der Riegel-Stand ZUM LIFT-ZEITPUNKT, festgehalten - der Latch
+        // selbst advanced erst spaeter in diesem Zyklus.
+        val upfrontZeroLatchGate = cfg.zeroLatchEnabled && episodes.zeroLatch.active
+        val liftedUpfront =
+            if (upfrontZeroLatchGate) vetted
+            else MealFoundation.liftUpfront(
+                base = vetted,
+                auth = episodes.foundation,
+                phase = foundationDecision.phase,
+                deliveredPhaseAU = episodes.deliveredPhaseAU,
+                deferredOpenU = upfrontDeferredOpenU,
+                state = state,
+                tailHeadroomU = tail?.takeIf { it.usable }?.headroomU,
+                transportCommitmentU = transportModelledU,
+            )
+        val upfrontPendingU = MealFoundation.upfrontFloorU(
+            episodes.foundation, episodes.deliveredPhaseAU, upfrontDeferredOpenU,
+        )
+        val upfrontRequestedU =
+            if (liftedUpfront.bindingLimit == "mealUpfront") liftedUpfront.smbU else 0.0
+
         val liftedPrime = PrimeRelease.lift(
-            vetted, primePlan, state,
+            liftedUpfront, primePlan, state,
             markerAuthorized = manualMarkerAuthorized,
             tailHeadroomU = tail?.takeIf { it.usable }?.headroomU,
             onsetCapU = if (onset.active) onset.remainingU else null,
@@ -3831,6 +3885,16 @@ class FuseCycleRunner(
             preFoundationBlock = preFoundationBlock,
             preFoundationBindingLimit = preFoundationBindingLimit,
             foundationLiftU = foundationLiftU,
+            phaseAUpfrontPendingU = upfrontPendingU,
+            phaseAUpfrontRequestedU = upfrontRequestedU,
+            phaseAUpfrontState = upfrontState(
+                auth = episodes.foundation,
+                phase = foundationDecision.phase,
+                pendingU = upfrontPendingU,
+                requestedU = upfrontRequestedU,
+                deferredOpenU = upfrontDeferredOpenU,
+                zeroLatchBlocked = upfrontZeroLatchGate,
+            ),
             lowThreat = lowThreatResult,
             evidenceEpisodeId = evidenceEpisodeId,
             evidenceEpisodeDenial = episodeGate.denial?.name,
@@ -3954,6 +4018,32 @@ class FuseCycleRunner(
         val geliefert = episodes.deliveredPhaseAU + episodes.deliveredSinceHandoverU +
             episodes.postFoundationDeliveredU + manuell
         return kotlin.math.max(0.0, f.totalBudgetU - geliefert)
+    }
+
+    /**
+     * Der ABGELEITETE Zustand des Phase-A-Sofortanteils - reine
+     * Berichtsgroesse fuer Export und Viewer, keine Dosierlogik (die haengt
+     * ausschliesslich an der upfrontFloorU-Bilanz). null = kein Sofortanteil
+     * konfiguriert oder keine Autorisierung.
+     */
+    private fun upfrontState(
+        auth: MealFoundation.Authorization,
+        phase: MealFoundation.Phase,
+        pendingU: Double,
+        requestedU: Double,
+        deferredOpenU: Double,
+        zeroLatchBlocked: Boolean,
+    ): String? = when {
+        !auth.valid || auth.phaseAUpfrontU <= 0.0 -> null
+        zeroLatchBlocked && pendingU > 0.0 -> "BLOCKED_ZERO_LATCH"
+        requestedU > 0.0 -> "REQUESTED"
+        // Anteil liegt im Sicherheitsaufschub - der bestehende
+        // DeferredPrime-Pfad uebernimmt (konservative Zuordnung: openU kann
+        // auch linearen Prime-Anteil enthalten).
+        pendingU <= 0.0 && deferredOpenU > 0.0 -> "DEFERRED"
+        pendingU <= 0.0 -> "COVERED"
+        phase != MealFoundation.Phase.PHASE_A -> "WINDOW_OVER"
+        else -> "PLANNED"
     }
 
     private fun buche(
@@ -4244,8 +4334,40 @@ class FuseCycleRunner(
             minLowerMgdl = null,
             bindingLimit = "markerFallback",
         )
+        // ---- PHASE-A-SOFORTANTEIL auch hier (iLet, Toni 24.08.) -----------
+        //
+        // DERSELBE Boden wie im Hauptpfad - der Fallback traegt genau die
+        // Zyklen, in denen die Sofortdosis nach dem Druck sonst still einen
+        // Modellausfall abwarten wuerde. measuredLow traegt SAFETY_HOLD
+        // (nicht hebbar), der Zero-Latch sperrt ausdruecklich; die uebrigen
+        // Riegel wirken wie im Hauptpfad ueber die nachgelagerten Stufen.
+        val upfrontDeferredOpenU =
+            if (episodes.deferredPrime.pinnedForMarkerTs == episodes.foundation.armedTs)
+                episodes.deferredPrime.openU else 0.0
+        val upfrontZeroLatchGate = cfg.zeroLatchEnabled && episodes.zeroLatch.active
+        val upfrontPhase = MealFoundation.phaseOf(
+            episodes.foundation, computeTs, episodes.primeWindowStartTs,
+        )
+        val liftedUpfront =
+            if (upfrontZeroLatchGate) basis
+            else MealFoundation.liftUpfront(
+                base = basis,
+                auth = episodes.foundation,
+                phase = upfrontPhase,
+                deliveredPhaseAU = episodes.deliveredPhaseAU,
+                deferredOpenU = upfrontDeferredOpenU,
+                state = state,
+                // Kein Schwanz-Headroom: es gibt keine Bahn (s. unten).
+                tailHeadroomU = null,
+                transportCommitmentU = transportModelledU,
+            )
+        val upfrontPendingU = MealFoundation.upfrontFloorU(
+            episodes.foundation, episodes.deliveredPhaseAU, upfrontDeferredOpenU,
+        )
+        val upfrontRequestedU =
+            if (liftedUpfront.bindingLimit == "mealUpfront") liftedUpfront.smbU else 0.0
         val liftedPrime = PrimeRelease.lift(
-            basis, primePlan, state,
+            liftedUpfront, primePlan, state,
             markerAuthorized = true,
             // Kein Schwanz-Headroom: es gibt keine Bahn, aus der einer
             // entstehen koennte. Der Onset-Deckel und die Transportmenge sind
@@ -4441,6 +4563,16 @@ class FuseCycleRunner(
             preFoundationBlock = preFoundationBlock,
             preFoundationBindingLimit = preFoundationBindingLimit,
             foundationLiftU = foundationLiftU,
+            phaseAUpfrontPendingU = upfrontPendingU,
+            phaseAUpfrontRequestedU = upfrontRequestedU,
+            phaseAUpfrontState = upfrontState(
+                auth = episodes.foundation,
+                phase = upfrontPhase,
+                pendingU = upfrontPendingU,
+                requestedU = upfrontRequestedU,
+                deferredOpenU = upfrontDeferredOpenU,
+                zeroLatchBlocked = upfrontZeroLatchGate,
+            ),
             insulinModel = insulinModel,
             abortReason = null,
             predictorRejected = true,
@@ -4832,6 +4964,9 @@ class FuseCycleRunner(
         val mealFoundationEnabled: Boolean,
         /** Anteil von Phase A am gepinnten Budget. 1,0 = heutiges Verhalten. */
         val mealFoundationPhaseAShare: Double,
+        /** SOFORTANTEIL von Phase A (iLet-Prinzip). 0,0 = heutiges
+         *  Verhalten, bitgleich. Gepinnt beim Armen - s. [MealFoundation]. */
+        val mealFoundationPhaseAUpfrontShare: Double,
         /** Ende des Phase-B-Fensters [min ab Marker]. */
         val mealFoundationEndMin: Int,
         /** Punkt 6: Schalter (default aus), gepinnter Marker-Horizont und
@@ -4905,6 +5040,7 @@ class FuseCycleRunner(
         primeEnvelopeU = preferences.get(FuseDoubleKey.PrimeEnvelopeU),
         mealFoundationEnabled = preferences.get(FuseBooleanKey.MealFoundationEnabled),
         mealFoundationPhaseAShare = preferences.get(FuseDoubleKey.MealFoundationPhaseAShare),
+        mealFoundationPhaseAUpfrontShare = preferences.get(FuseDoubleKey.MealFoundationPhaseAUpfrontShare),
         mealFoundationEndMin = preferences.get(FuseIntKey.MealFoundationEndMin),
         deferredPrimeEnabled = preferences.get(FuseBooleanKey.DeferredPrimeEnabled),
         markerPrimeDescentHorizonMin = preferences.get(FuseDoubleKey.MarkerPrimeDescentHorizonMin),

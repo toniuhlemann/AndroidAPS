@@ -556,6 +556,9 @@ object LedgerCodec {
             .put("armedTs", a.armedTs)
             .put("totalBudgetU", a.totalBudgetU)
             .put("phaseAShare", a.phaseAShare)
+            // Der gepinnte Sofortanteil (iLet, v27). Die Sofort-MENGE ist
+            // abgeleitet und steht bewusst nicht hier - eine Wahrheit.
+            .put("phaseAUpfrontShare", a.phaseAUpfrontShare)
             .put("pinnedPrimeWindowMin", a.pinnedPrimeWindowMin)
             .put("pinnedWallCeilingMin", a.pinnedWallCeilingMin)
             .put("endTs", a.endTs)
@@ -830,6 +833,11 @@ object LedgerCodec {
             armedTs = requireTs("foundation.armedTs", o.getLong("armedTs")),
             totalBudgetU = requireAmount("foundation.totalBudgetU", o.getDouble("totalBudgetU")),
             phaseAShare = o.getDouble("phaseAShare"),
+            // Der Sofortanteil (iLet, ab RULE_SET_VERSION 27) folgt dem
+            // descentDeferredPhaseAU-Migrationsmuster: eine bereits laufende
+            // Alt-Autorisierung ohne das Feld hat KONSERVATIV keinen
+            // Sofortanteil (0), das ist keine Korruption.
+            phaseAUpfrontShare = if (o.has("phaseAUpfrontShare")) o.getDouble("phaseAUpfrontShare") else 0.0,
             pinnedPrimeWindowMin = o.getInt("pinnedPrimeWindowMin"),
             pinnedWallCeilingMin = o.getInt("pinnedWallCeilingMin"),
             endTs = requireTs("foundation.endTs", o.getLong("endTs")),

@@ -62,7 +62,7 @@ class MealFoundationLiftTest {
         autorisiert: Boolean = true,
     ): MealFoundation.Snapshot {
         val auth = MealFoundation.arm(
-            markerTs = t0, foundationEnabled = true, totalBudgetU = 3.0, phaseAShare = 0.75,
+            markerTs = t0, foundationEnabled = true, totalBudgetU = 3.0, phaseAShare = 0.75, phaseAUpfrontShare = 0.0,
             primeWindowMin = 15, wallCeilingMin = 45, phaseBUntilMin = 60, pressObservedInThisProcess = true, primeDeclinedByUser = false, markerAuthorized = autorisiert,
         )
         return MealFoundation.snapshot(
@@ -391,5 +391,77 @@ class MealFoundationLiftTest {
             assertEquals(basis.smbU, d.smbU, 1e-9, "$name: die Basis MUSS unveraendert bleiben")
             assertNull(d.grant, "$name: und es darf kein Grant entstehen")
         }
+    }
+
+    // ---- PHASE-A-SOFORTANTEIL (iLet, v28) ---------------------------------
+
+    private fun upfrontAuth(anteil: Double = 1.0) = MealFoundation.arm(
+        markerTs = t0, foundationEnabled = true, totalBudgetU = 3.75, phaseAShare = 0.8, phaseAUpfrontShare = anteil,
+        primeWindowMin = 20, wallCeilingMin = 45, phaseBUntilMin = 60, pressObservedInThisProcess = true, primeDeclinedByUser = false, markerAuthorized = true,
+    )
+
+    /**
+     * Die maxSMB-Ausnahme ist QUELLENGEBUNDEN (Bauauftrag Toni 24.08.,
+     * Pflichttest 16): MEAL_UPFRONT wird nicht zerteilt - dieselbe Menge
+     * als PRIME oder FOUNDATION bleibt maxSmb-gekappt, und Budget wie
+     * maxIOB kappen auch die Sofortdosis (Pflichttest 17).
+     */
+    @Test
+    fun `mealUpfront umgeht maxSmb - und NUR mealUpfront`() {
+        val auth = upfrontAuth(1.0) // upfrontU = 3,75 x 0,8 = 3,0
+        val d = MealFoundation.liftUpfront(
+            base = basis(FuseController.Block.NO_DEMAND), auth = auth,
+            phase = MealFoundation.Phase.PHASE_A,
+            deliveredPhaseAU = 0.0, deferredOpenU = 0.0, state = state(maxSmb = 0.30),
+        )
+        assertEquals(3.0, d.smbU, 1e-9, "EINE Dosis - maxSMB 0,30 zerteilt sie nicht")
+        assertEquals("mealUpfront", d.bindingLimit)
+        assertEquals(FuseController.STAGE_UPFRONT, d.capsStage)
+        // Dieselbe Menge aus den anderen Quellen bleibt zerteilt.
+        val p = AuthorizedLift.lift(
+            base = basis(FuseController.Block.NO_DEMAND), source = AuthorizedLift.Source.PRIME,
+            floorU = 3.0, remainingU = 3.0, state = state(maxSmb = 0.30), authorized = true, tickEps = 1e-9,
+        )
+        assertEquals(0.30, p.smbU, 1e-9, "PRIME behaelt die Einzeldosisgrenze")
+        val f = AuthorizedLift.lift(
+            base = basis(FuseController.Block.NO_DEMAND), source = AuthorizedLift.Source.FOUNDATION,
+            floorU = 3.0, remainingU = 3.0, state = state(maxSmb = 0.30), authorized = true, tickEps = 1e-9,
+        )
+        assertEquals(0.30, f.smbU, 1e-9, "FOUNDATION ebenso")
+        // maxIOB bleibt hart: Headroom 2,0 - 0,5 = 1,5.
+        val k = MealFoundation.liftUpfront(
+            base = basis(FuseController.Block.NO_DEMAND), auth = auth,
+            phase = MealFoundation.Phase.PHASE_A,
+            deliveredPhaseAU = 0.0, deferredOpenU = 0.0, state = state(maxSmb = 0.30, maxIob = 2.0),
+        )
+        assertEquals(1.5, k.smbU, 1e-9, "maxIOB kappt auch die Sofortdosis")
+        // Das Restbudget kappt: nach 3,0 gelieferten ist der Boden 0.
+        val leer = MealFoundation.liftUpfront(
+            base = basis(FuseController.Block.NO_DEMAND), auth = auth,
+            phase = MealFoundation.Phase.PHASE_A,
+            deliveredPhaseAU = 3.0, deferredOpenU = 0.0, state = state(maxSmb = 0.30),
+        )
+        assertEquals(0.0, leer.smbU, 1e-9, "gedeckter Boden hebt nichts")
+    }
+
+    /** Der Sofort-Lift existiert NUR in Phase A - danach regeln Uebergabe,
+     *  Uebertrag und Aufschub; und die Bilanz senkt den Boden um
+     *  Lieferung UND Aufschub. */
+    @Test
+    fun `sofort-lift nur in phase a und die bilanz senkt den boden`() {
+        val auth = upfrontAuth(1.0)
+        for (phase in listOf(MealFoundation.Phase.NONE, MealFoundation.Phase.PHASE_B, MealFoundation.Phase.AFTER_WINDOW)) {
+            val d = MealFoundation.liftUpfront(
+                base = basis(FuseController.Block.NO_DEMAND), auth = auth, phase = phase,
+                deliveredPhaseAU = 0.0, deferredOpenU = 0.0, state = state(),
+            )
+            assertEquals(0.0, d.smbU, 1e-9, "$phase: kein Sofort-Lift")
+        }
+        val teil = MealFoundation.liftUpfront(
+            base = basis(FuseController.Block.NO_DEMAND), auth = auth,
+            phase = MealFoundation.Phase.PHASE_A,
+            deliveredPhaseAU = 1.0, deferredOpenU = 0.5, state = state(maxSmb = 0.30),
+        )
+        assertEquals(1.5, teil.smbU, 1e-9, "Boden = 3,0 - 1,0 geliefert - 0,5 Aufschub")
     }
 }

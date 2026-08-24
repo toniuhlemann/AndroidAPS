@@ -28,7 +28,7 @@ class FuseStateExportTest {
     private val cfg = FuseCycleRunner.Config(
         smbRatio = 0.2, smbRatioRise = 0.35, sharedMaxIobU = 7.0, riseRampLowR = 0.5, riseRampHighR = 2.0, bolusShareLambda = 1.0, onsetChannelEnabled = true, onsetEnvelopeU = 1.5, primeReleaseEnabled = true, primeWindowMin = 15, primeEnvelopeU = 1.2, maxSmbU = 0.3, guardFloorMgdl = 70.0, lowGateMinBenefitMgdl = 5.0, zeroLatchEnabled = false, zeroLatchCalmExitMin = 20, zeroLatchCalmDistanceMgdl = 30.0, lowGateHorizonMin = 120.0, positiveDescentHorizonMin = 30.0, deferredPrimeEnabled = false, markerPrimeDescentHorizonMin = 60.0, deferredPrimeEndMin = 120, livenessChannelEnabled = false, livenessMealPowerMin = 120, livenessMealRatioCap = 1.0, livenessMealIobCapPercent = 50.0, livenessCorrectionRatioCap = 1.0, livenessCorrectionIobCapPercent = 50.0, livenessBgMinDayMgdl = 160.0, livenessBgMinNightMgdl = 160.0, livenessReArmMin = 10, iobThPercent = 100,
         releaseHorizonMin = 30, liabilityHorizonMin = 120, driveTauMin = 60, theilSenWindowMin = 18, absorptionCreditWindowMin = 60, markerBoostMaxMin = 45, evidenceReboundOverrideMaxMin = 120, nightStartMin = 1380, nightEndMin = 420, nightDeadbandMgdl = 45.0, nightDeadbandEnabled = true, reboundDeadbandMgdl = 25.0, reboundDeadbandEnabled = true,
-        driveLowerQuantilePct = 50, tailGuardEnabled = false, conditionalTailEnabled = true, markerAuthorized = false, mealFoundationEnabled = false, mealFoundationPhaseAShare = 1.0, mealFoundationEndMin = 60, tailFloorMgdl = 70.0, tailRecoveryU = 0.0, fastRestraintEnabled = true, endZeroWhenReasonGone = true,
+        driveLowerQuantilePct = 50, tailGuardEnabled = false, conditionalTailEnabled = true, markerAuthorized = false, mealFoundationEnabled = false, mealFoundationPhaseAShare = 1.0, mealFoundationPhaseAUpfrontShare = 0.0, mealFoundationEndMin = 60, tailFloorMgdl = 70.0, tailRecoveryU = 0.0, fastRestraintEnabled = true, endZeroWhenReasonGone = true,
     )
 
     private fun signal() = FuseSignalSource.Signal(
@@ -548,6 +548,16 @@ class FuseStateExportTest {
         assertTrue(a100 != a80 && a100 != a75, "und 100/0 von beiden")
     }
 
+    /** v28: der Sofortanteil - 0/0,5/0,75/1,0 verteilen dieselbe
+     *  Phase-A-Menge voellig verschieden ueber die Zeit (Replay-Matrix des
+     *  Bauauftrags), jede Stufe braucht ihren eigenen Fingerprint. */
+    @Test
+    fun `der phase-a-sofortanteil aendert den politik-hash`() {
+        val stufen = listOf(0.0, 0.5, 0.75, 1.0)
+            .map { FuseStateJson.hashOf(cfg.copy(mealFoundationPhaseAUpfrontShare = it))!! }
+        assertEquals(stufen.size, stufen.toSet().size, "jede Stufe ein eigener Hash: $stufen")
+    }
+
     @Test
     fun `das Phase-B-Fensterende aendert den Politik-Hash`() {
         val e60 = FuseStateJson.hashOf(cfg.copy(mealFoundationEndMin = 60))!!
@@ -668,11 +678,14 @@ class FuseStateExportTest {
         // fenster-gegateten effectiveSmbRatio - der unsichtbare
         // 0,15-Livefall bei Marker +115 min), v27 Tonis Korrektur dazu:
         // BEIDE Profile rampen, der Profilunterschied ist allein der
-        // M-/K-Deckel (v26 liess den K-Deckel nie skalieren).
+        // M-/K-Deckel (v26 liess den K-Deckel nie skalieren), v28 der
+        // Phase-A-Sofortanteil nach iLet-Prinzip (Default 0,00 bitgleich;
+        // typisierte Quelle MEAL_UPFRONT, nicht maxSmb-zerteilt,
+        // exactly-once als Bilanz auf den beweiskorrigierten Zaehlern).
         // DIESER TEST IST ABSICHTLICH STUR: er faellt bei jedem Bump um und
         // zwingt damit zu der Frage, ob die Aenderung wirklich dosierwirksam
         // war - ein stiller Bump waere so wertlos wie ein vergessener.
-        assertEquals(27, FuseStateJson.RULE_SET_VERSION)
+        assertEquals(28, FuseStateJson.RULE_SET_VERSION)
         assertTrue(
             FuseStateJson.hashOf(cfg)!!.isNotEmpty(),
             "und der Hash bleibt berechenbar",
@@ -1054,7 +1067,7 @@ class FuseStateExportTest {
     private val fT0 = 1_786_000_000_000L
 
     private fun fAuth(anteil: Double = 0.75) = app.aaps.fuse.core.controller.MealFoundation.arm(
-        markerTs = fT0, foundationEnabled = true, totalBudgetU = 3.0, phaseAShare = anteil,
+        markerTs = fT0, foundationEnabled = true, totalBudgetU = 3.0, phaseAShare = anteil, phaseAUpfrontShare = 0.0,
         primeWindowMin = 15, wallCeilingMin = 45, pressObservedInThisProcess = true, primeDeclinedByUser = false, markerAuthorized = true, phaseBUntilMin = 60,
     )
 
@@ -1113,9 +1126,18 @@ class FuseStateExportTest {
             "manualBolusAfterMarkerU", "effectiveDescentCarryU", "phaseBAllowanceU",
             "plannedTotalU", "backlogU", "dueU", "remainingInWindowU", "binding",
             "effectiveWindowMin", "effectiveRateUPerMin",
+            // v28: der Sofortanteil - angefordert, publiziert und
+            // pumpenbestaetigt bleiben getrennte Begriffe.
+            "phaseAUpfrontShare", "phaseAUpfrontPlannedU", "phaseARemainderU",
+            "phaseAUpfrontRequestedU", "phaseAUpfrontPublishedU",
+            "phaseAUpfrontConfirmedU", "phaseAUpfrontPendingU",
+            "phaseAUpfrontState", "phaseAUpfrontProposalId",
         )) {
             assertTrue(o.has(feld), "$feld fehlt im Export")
         }
+        // confirmed wird NICHT behauptet: FUSE fuehrt keine
+        // Pumpenbestaetigungs-Buchfuehrung je Menge.
+        assertTrue(fundament(fSnapshot()).isNull("phaseAUpfrontConfirmedU"))
     }
 
     /** Die Werte muessen stimmen, nicht nur dastehen - ein Export voller

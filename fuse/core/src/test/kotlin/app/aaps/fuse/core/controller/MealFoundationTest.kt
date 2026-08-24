@@ -573,7 +573,7 @@ class MealFoundationTest {
     @Test
     fun `Anteil null ergibt ein vollstaendiges Phase-B-Budget`() {
         val a = MealFoundation.arm(
-            markerTs = t0, foundationEnabled = true, totalBudgetU = BUDGET, phaseAShare = 0.0,
+            markerTs = t0, foundationEnabled = true, totalBudgetU = BUDGET, phaseAShare = 0.0, phaseAUpfrontShare = 0.0,
             primeWindowMin = A_BIS, wallCeilingMin = 45, pressObservedInThisProcess = true, primeDeclinedByUser = false, markerAuthorized = true, phaseBUntilMin = B_BIS,
         )
         assertTrue(a.valid)
@@ -594,7 +594,7 @@ class MealFoundationTest {
     private fun phase(minuten: Double, clearance: Long = 0L, auth: MealFoundation.Authorization? = null) =
         MealFoundation.phaseOf(
             auth ?: MealFoundation.arm(
-                markerTs = t0, foundationEnabled = true, totalBudgetU = BUDGET, phaseAShare = A_SHARE,
+                markerTs = t0, foundationEnabled = true, totalBudgetU = BUDGET, phaseAShare = A_SHARE, phaseAUpfrontShare = 0.0,
                 primeWindowMin = A_BIS, wallCeilingMin = 45, pressObservedInThisProcess = true, primeDeclinedByUser = false, markerAuthorized = true, phaseBUntilMin = B_BIS,
             ),
             t0 + (minuten * 60_000).toLong(), clearance,
@@ -641,7 +641,7 @@ class MealFoundationTest {
     @Test
     fun `nach dem Latch bleibt die Phasengrenze stehen`() {
         val gelatcht = MealFoundation.arm(
-            markerTs = t0, foundationEnabled = true, totalBudgetU = BUDGET, phaseAShare = A_SHARE,
+            markerTs = t0, foundationEnabled = true, totalBudgetU = BUDGET, phaseAShare = A_SHARE, phaseAUpfrontShare = 0.0,
             primeWindowMin = A_BIS, wallCeilingMin = 45, pressObservedInThisProcess = true, primeDeclinedByUser = false, markerAuthorized = true, phaseBUntilMin = B_BIS,
         ).latchIfDue(t0 + A_BIS * 60_000L, 0L)
         assertEquals(
@@ -707,7 +707,7 @@ class MealFoundationTest {
     @Test
     fun `liegt die Uebergabe hinter dem Ende, gibt es kein Phase B`() {
         val kurz = MealFoundation.arm(
-            markerTs = t0, foundationEnabled = true, totalBudgetU = BUDGET, phaseAShare = A_SHARE,
+            markerTs = t0, foundationEnabled = true, totalBudgetU = BUDGET, phaseAShare = A_SHARE, phaseAUpfrontShare = 0.0,
             primeWindowMin = A_BIS, wallCeilingMin = 45, phaseBUntilMin = 20, pressObservedInThisProcess = true, primeDeclinedByUser = false, markerAuthorized = true,
         )
         // Clearance bei T+30 schiebt die Uebergabe auf T+45 (Decke), das
@@ -733,7 +733,7 @@ class MealFoundationTest {
         an: Boolean = true,
         ende: Int = B_BIS,
     ) = MealFoundation.arm(
-        markerTs = t0, foundationEnabled = an, totalBudgetU = budget, phaseAShare = anteil,
+        markerTs = t0, foundationEnabled = an, totalBudgetU = budget, phaseAShare = anteil, phaseAUpfrontShare = 0.0,
         primeWindowMin = A_BIS, wallCeilingMin = 45, phaseBUntilMin = ende, pressObservedInThisProcess = true, primeDeclinedByUser = false, markerAuthorized = true,
     )
 
@@ -932,13 +932,13 @@ class MealFoundationTest {
     @Test
     fun `eine widerspruechliche Generation wird beim Restore abgelehnt`() {
         val faelle = mapOf(
-            "kein Marker" to MealFoundation.Authorization.restore(0L, BUDGET, A_SHARE, A_BIS, 45, t0 + 3_600_000L, true, 0L),
-            "Budget NaN" to MealFoundation.Authorization.restore(t0, Double.NaN, A_SHARE, A_BIS, 45, t0 + 3_600_000L, true, 0L),
-            "Budget 0" to MealFoundation.Authorization.restore(t0, 0.0, A_SHARE, A_BIS, 45, t0 + 3_600_000L, true, 0L),
-            "Anteil ueber 1" to MealFoundation.Authorization.restore(t0, BUDGET, 1.5, A_BIS, 45, t0 + 3_600_000L, true, 0L),
-            "Ende vor Marker" to MealFoundation.Authorization.restore(t0, BUDGET, A_SHARE, A_BIS, 45, t0 - 1000L, true, 0L),
-            "Latch vor Marker" to MealFoundation.Authorization.restore(t0, BUDGET, A_SHARE, A_BIS, 45, t0 + 3_600_000L, true, t0 - 1000L),
-            "negatives Fenster" to MealFoundation.Authorization.restore(t0, BUDGET, A_SHARE, -1, 45, t0 + 3_600_000L, true, 0L),
+            "kein Marker" to MealFoundation.Authorization.restore(0L, BUDGET, A_SHARE, 0.0, A_BIS, 45, t0 + 3_600_000L, true, 0L),
+            "Budget NaN" to MealFoundation.Authorization.restore(t0, Double.NaN, A_SHARE, 0.0, A_BIS, 45, t0 + 3_600_000L, true, 0L),
+            "Budget 0" to MealFoundation.Authorization.restore(t0, 0.0, A_SHARE, 0.0, A_BIS, 45, t0 + 3_600_000L, true, 0L),
+            "Anteil ueber 1" to MealFoundation.Authorization.restore(t0, BUDGET, 1.5, 0.0, A_BIS, 45, t0 + 3_600_000L, true, 0L),
+            "Ende vor Marker" to MealFoundation.Authorization.restore(t0, BUDGET, A_SHARE, 0.0, A_BIS, 45, t0 - 1000L, true, 0L),
+            "Latch vor Marker" to MealFoundation.Authorization.restore(t0, BUDGET, A_SHARE, 0.0, A_BIS, 45, t0 + 3_600_000L, true, t0 - 1000L),
+            "negatives Fenster" to MealFoundation.Authorization.restore(t0, BUDGET, A_SHARE, 0.0, -1, 45, t0 + 3_600_000L, true, 0L),
         )
         for ((name, a) in faelle) {
             assertFalse(a.valid, name)
@@ -956,7 +956,7 @@ class MealFoundationTest {
     @Test
     fun `eine stimmige Generation ueberlebt den Restore`() {
         val a = MealFoundation.Authorization.restore(
-            t0, BUDGET, A_SHARE, A_BIS, 45, t0 + B_BIS * 60_000L, true, t0 + 20 * 60_000L,
+            t0, BUDGET, A_SHARE, 0.0, A_BIS, 45, t0 + B_BIS * 60_000L, true, t0 + 20 * 60_000L,
         )
         assertTrue(a.valid)
         assertEquals(2.25, a.phaseABudgetU, 1e-9)
@@ -1015,5 +1015,59 @@ class MealFoundationTest {
             0.75 / 15.0, spaet.effectiveRateUPerMin, 1e-9,
             "dreifache Sollrate - sichtbar, nicht versteckt",
         )
+    }
+
+    // ---- PHASE-A-SOFORTANTEIL (iLet, v28) ---------------------------------
+
+    private fun upfrontAuth(anteil: Double) = MealFoundation.arm(
+        markerTs = t0, foundationEnabled = true, totalBudgetU = 3.75, phaseAShare = 0.8, phaseAUpfrontShare = anteil,
+        primeWindowMin = A_BIS, wallCeilingMin = 45, phaseBUntilMin = B_BIS, pressObservedInThisProcess = true, primeDeclinedByUser = false, markerAuthorized = true,
+    )
+
+    /** Pflichttest-Beispiele des Bauauftrags: gepinnter Anteil, abgeleitete
+     *  Sofort-Menge, exakt komplementaerer Planrest - EINE Wahrheit. */
+    @Test
+    fun `der sofortanteil ist gepinnt und abgeleitet`() {
+        for ((anteil, sofort) in mapOf(0.0 to 0.0, 0.5 to 1.5, 0.75 to 2.25, 1.0 to 3.0)) {
+            val a = upfrontAuth(anteil)
+            assertTrue(a.valid, "Anteil $anteil")
+            assertEquals(sofort, a.phaseAUpfrontU, 1e-9, "3,0 x $anteil")
+            assertEquals(3.0 - sofort, a.phaseARemainderU, 1e-9, "exakt komplementaer")
+        }
+        // Unbrauchbarer Anteil: fail-closed GANZ, wie die Geschwister.
+        assertFalse(upfrontAuth(1.5).valid, "Anteil ueber 1")
+        assertFalse(upfrontAuth(Double.NaN).valid, "NaN")
+        // Restore traegt das Feld und prueft denselben Bereich.
+        val r = MealFoundation.Authorization.restore(
+            t0, 3.75, 0.8, 0.75, A_BIS, 45, t0 + B_BIS * 60_000L, true, 0L,
+        )
+        assertEquals(0.75, r.phaseAUpfrontShare, 1e-9, "restore traegt den Anteil")
+        assertFalse(
+            MealFoundation.Authorization.restore(
+                t0, 3.75, 0.8, 1.5, A_BIS, 45, t0 + B_BIS * 60_000L, true, 0L,
+            ).valid,
+            "widerspruechlicher Anteil wird abgelehnt",
+        )
+    }
+
+    /**
+     * DIE SOFORT-BILANZ (exactly-once ohne Einmal-Zustand): der Boden ist
+     * upfrontU minus Geliefertem minus Aufgeschobenem - Lieferung senkt,
+     * ein Nicht-Sende-Beweis (der `deliveredPhaseAU` exakt zurueckdreht)
+     * belebt exakt, der Aufschub-Abzug verhindert die Doppelbuchung, und
+     * unbrauchbare Eingaben sind fail-closed 0.
+     */
+    @Test
+    fun `die sofort-bilanz senkt sich um lieferung und aufschub`() {
+        val a = upfrontAuth(1.0) // upfrontU = 3,0
+        assertEquals(3.0, MealFoundation.upfrontFloorU(a, 0.0, 0.0), 1e-9)
+        assertEquals(1.5, MealFoundation.upfrontFloorU(a, 1.5, 0.0), 1e-9, "Lieferung senkt")
+        assertEquals(0.0, MealFoundation.upfrontFloorU(a, 3.0, 0.0), 1e-9, "gedeckt")
+        assertEquals(0.0, MealFoundation.upfrontFloorU(a, 4.5, 0.0), 1e-9, "nie negativ")
+        assertEquals(1.0, MealFoundation.upfrontFloorU(a, 0.0, 2.0), 1e-9, "Aufschub senkt konservativ")
+        assertEquals(0.0, MealFoundation.upfrontFloorU(a, 2.0, 2.0), 1e-9)
+        assertEquals(0.0, MealFoundation.upfrontFloorU(MealFoundation.Authorization.none(), 0.0, 0.0), 1e-9)
+        assertEquals(0.0, MealFoundation.upfrontFloorU(a, Double.NaN, 0.0), 1e-9, "fail-closed")
+        assertEquals(0.0, MealFoundation.upfrontFloorU(a, 0.0, -1.0), 1e-9, "fail-closed")
     }
 }

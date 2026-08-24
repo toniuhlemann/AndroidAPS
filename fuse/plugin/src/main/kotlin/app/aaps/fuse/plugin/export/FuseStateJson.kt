@@ -161,7 +161,19 @@ object FuseStateJson {
     // Basis 0,185 unter dem Deckel; r 2,69 -> Basis 0,31, K-Deckel kappt
     // auf 0,20). Der normale Nicht-Liveness-Pfad behaelt sein
     // mealWindow-Gate und bleibt bitgleich.
-    const val RULE_SET_VERSION = 27
+    // v28 (24.08. spaet, DOSIERWIRKSAM bei gesetztem Anteil): der
+    // Phase-A-SOFORTANTEIL nach iLet-Prinzip (Bauauftrag Toni).
+    // MealFoundationPhaseAUpfrontShare (Default 0,00 = bitgleich) pinnt beim
+    // Markerdruck; upfrontU = phaseABudget x Share wird im ersten
+    // berechtigten Zyklus als typisierte Quelle MEAL_UPFRONT angefordert -
+    // NICHT von maxSMB zerteilt, Budget/iobTH/maxIOB/Transport/Pumpenraster
+    // bleiben hart. Exactly-once als BILANZ auf den persistierten, gate- und
+    // beweiskorrigierten Zaehlern (upfrontFloorU = upfront - deliveredPhaseA
+    // - deferredOpen); gemessener Abwaertsriegel leitet in den bestehenden
+    // DeferredPrime-Aufschub um, aktiver Zero-Latch sperrt ausdruecklich.
+    // PrimeWindowMin bleibt die Phasengrenze. Export: neun
+    // phaseAUpfront*-Felder im mealFoundation-Block.
+    const val RULE_SET_VERSION = 28
 
     /** Schema des Trail-Datensatzes - s. die Notiz an der Schreibstelle. */
     const val SCHEMA_VERSION = 4
@@ -318,6 +330,34 @@ object FuseStateJson {
                     .put("totalBudgetU", fin(f.totalBudgetU))
                     .put("phaseABudgetU", fin(f.phaseABudgetU))
                     .put("phaseBBudgetU", fin(f.phaseBBudgetU))
+                    // ---- PHASE-A-SOFORTANTEIL (iLet, v27) -----------------
+                    // "angefordert", "publiziert" und "pumpenbestaetigt"
+                    // bleiben getrennt: requested ist die MEAL_UPFRONT-
+                    // Anforderung DIESES Zyklus (vor Gate), published der
+                    // kumulativ gate- und beweiskorrigierte Anteil
+                    // (min(planned, deliveredPhaseAU) - deliveredPhaseAU ist
+                    // publiziert-und-nicht-widerlegt), pending der offene
+                    // Boden. confirmed ist NULL: FUSE fuehrt keine
+                    // Pumpenbestaetigungs-Buchfuehrung je Menge, und hier
+                    // wird nichts behauptet (Zeilen schliessen ueber die
+                    // IOB-Reconciliation). Die proposalId der Anforderung
+                    // ist die cycleId des Zyklus mit requested > 0 - sie
+                    // steht dauerhaft im Trail an genau diesem Zyklus.
+                    .put("phaseAUpfrontShare", fin(f.phaseAUpfrontShare))
+                    .put("phaseAUpfrontPlannedU", fin(f.phaseAUpfrontPlannedU))
+                    .put("phaseARemainderU", fin(f.phaseARemainderU))
+                    .put("phaseAUpfrontRequestedU", fin(outcome.phaseAUpfrontRequestedU))
+                    .put(
+                        "phaseAUpfrontPublishedU",
+                        fin(kotlin.math.min(f.phaseAUpfrontPlannedU, f.deliveredPhaseAU)),
+                    )
+                    .put("phaseAUpfrontConfirmedU", JSONObject.NULL)
+                    .put("phaseAUpfrontPendingU", fin(outcome.phaseAUpfrontPendingU))
+                    .put("phaseAUpfrontState", outcome.phaseAUpfrontState ?: JSONObject.NULL)
+                    .put(
+                        "phaseAUpfrontProposalId",
+                        if (outcome.phaseAUpfrontRequestedU > 0.0) cycleId else JSONObject.NULL,
+                    )
                     // BEIDE Uebergaenge: der effektive folgt vor dem Latch
                     // noch der Prime-Laufzeit, der gelatchte steht fest. Ihre
                     // Differenz beantwortet die Frage, ob eine Clearance den
@@ -1363,6 +1403,7 @@ object FuseStateJson {
         // Fundament gibt es keinen Zustand, aber sehr wohl eine Einstellung.
         .put("mealFoundationEnabled", p.mealFoundationEnabled)
         .put("mealFoundationPhaseAShare", fin(p.mealFoundationPhaseAShare))
+        .put("mealFoundationPhaseAUpfrontShare", fin(p.mealFoundationPhaseAUpfrontShare))
         .put("mealFoundationEndMin", p.mealFoundationEndMin)
         // v17: der Marker-Prime-Aufschub. Schalter, gepinnter Horizont und
         // gepinnte Frist - ohne sie ist im Replay nicht trennbar, WELCHER
@@ -1407,6 +1448,9 @@ object FuseStateJson {
             // Huelle verschieden - ohne ihn trugen beide denselben Hash, und
             // die Feldlaeufe waeren nicht trennbar gewesen.
             p.mealFoundationPhaseAShare,
+            // v27: der Sofortanteil - 0/0,5/0,75/1,0 verteilen dieselbe
+            // Phase-A-Menge voellig verschieden ueber die Zeit.
+            p.mealFoundationPhaseAUpfrontShare,
             // v16: Schwelle und Fenster des Low-Tors. Beide entscheiden, ab
             // wann eine Zero-TBR als nutzlos gilt - dosierwirksam auf der
             // TBR-Achse und bis v15 im Fingerprint unsichtbar.

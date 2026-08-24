@@ -282,6 +282,7 @@ class ConstraintRevokeTest {
         vor.episodes.foundation = MealFoundation.arm(
             markerTs = ts - 30 * 60_000L, foundationEnabled = true, totalBudgetU = 3.0,
             phaseAShare = 0.75, primeWindowMin = 15, wallCeilingMin = 45,
+            phaseAUpfrontShare = 0.0,
             pressObservedInThisProcess = true, primeDeclinedByUser = false,
             markerAuthorized = true, phaseBUntilMin = 60,
         )
