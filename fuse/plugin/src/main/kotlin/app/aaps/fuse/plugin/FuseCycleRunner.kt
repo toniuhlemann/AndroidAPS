@@ -741,6 +741,9 @@ class FuseCycleRunner(
         val zeroLatchSinceTs: Long = 0L,
         val zeroLatchReason: String? = null,
         val zeroLatchCalmStreak: Int = 0,
+        /** v29: Ausloese-Zaehler des Fall-Verdikts (2 aufeinanderfolgende
+         *  qualifizierende Zyklen zuenden; Unterbrechung nullt). */
+        val zeroLatchArmStreak: Int = 0,
         val zeroLatchOverrode: Boolean = false,
         /** Die BASIS-Ratio des Kanals VOR dem Profildeckel (Toni 24.08.):
          *  im MEAL-Profil die R-Rampe, im CORRECTION-Profil die
@@ -3601,15 +3604,37 @@ class FuseCycleRunner(
                 if (episodes.zeroLatch.active) episodes.zeroLatch = DescentRecoveryLatch.State()
                 zeroLatchRuntime = DescentRecoveryLatch.Runtime()
                 zeroCalmStreak = 0
+                zeroArmStreak = 0
+                zeroArmLastTs = 0L
                 zeroLatchLastQ1 = Double.NaN
                 return@run decisionVorZeroLatch
             }
             val q1NichtFallend = zeroLatchLastQ1.isNaN() || signal.q1 >= zeroLatchLastQ1 - 0.01
             zeroLatchLastQ1 = signal.q1
+            // ---- AUSLOESE-ZAEHLER (v29, Toni 24.08. nacht) ----------------
+            // Der 21:58-Grenzfall: EIN einziger knapper
+            // FALLING_WITH_BOLUS_OVERCOVERAGE-Zyklus (Ueberdeckung +0,55,
+            // Bodenkontakt 117,2/120 min) verriegelte den restartfesten
+            // Latch. Jetzt: MEASURED_LOW verriegelt weiter SOFORT; das
+            // Fall-Verdikt erst nach ZWEI aufeinanderfolgenden
+            // qualifizierenden Zyklen (90-s-Anschluss wie der Ruhe-Zaehler,
+            // jeder Unterbrechungszyklus nullt). Ein bereits AKTIVER Latch
+            // wird von jedem Fall-Verdikt weiter gehalten - die
+            // Zwei-Zyklen-Regel betrifft nur die Zuendung. Ein einzelner
+            // Sensorzacken kann damit keine lange Null mehr verriegeln;
+            // im 21:58-Verlauf haette die Null ~1 min spaeter eingesetzt.
+            val fallVerdikt =
+                lowThreatResult.verdict == LowThreatGate.Verdict.FALLING_WITH_BOLUS_OVERCOVERAGE
+            val lowVerdikt = lowThreatResult.verdict == LowThreatGate.Verdict.MEASURED_LOW
+            val armAnschluss = zeroArmLastTs > 0L && signal.sourceTs > zeroArmLastTs &&
+                signal.sourceTs - zeroArmLastTs <= 90_000L
+            zeroArmStreak = if (fallVerdikt) (if (armAnschluss) zeroArmStreak + 1 else 1) else 0
+            zeroArmLastTs = signal.sourceTs
             val latch = DescentRecoveryLatch.advance(
                 state = episodes.zeroLatch,
                 runtime = zeroLatchRuntime,
-                riskActive = lowThreatResult.verdict != LowThreatGate.Verdict.NONE,
+                riskActive = lowVerdikt ||
+                    (fallVerdikt && (episodes.zeroLatch.active || zeroArmStreak >= 2)),
                 signalHealthy = step.health == Health.READY,
                 measuredLow = measuredLow,
                 fallRatePerMin = signal.ukfRatePerMin,
@@ -3870,6 +3895,7 @@ class FuseCycleRunner(
             zeroLatchSinceTs = episodes.zeroLatch.latchedAtTs,
             zeroLatchReason = zeroLatchGrund,
             zeroLatchCalmStreak = zeroCalmStreak,
+            zeroLatchArmStreak = zeroArmStreak,
             zeroLatchOverrode = zeroLatchUebersteuert,
             livenessReleaseMeanMgdl = livenessReleaseMeanMgdl,
             livenessBgMinEffectiveMgdl = livenessBgMinEffective,
@@ -4773,6 +4799,11 @@ class FuseCycleRunner(
     private var zeroLatchRuntime = DescentRecoveryLatch.Runtime()
     private var zeroCalmStreak = 0
     private var zeroCalmLastTs = 0L
+    /** AUSLOESE-Zaehler des Fall-Verdikts (v29): zwei aufeinanderfolgende
+     *  qualifizierende Zyklen zuenden, Unterbrechung nullt. Prozesslokal
+     *  wie die Erholungs-Runtime - ein Neustart im Anlauf beginnt neu. */
+    private var zeroArmStreak = 0
+    private var zeroArmLastTs = 0L
     private var zeroLatchLastQ1 = Double.NaN
 
     /** Zeitstempel des letzten Zyklus, der die Kanalstufe erreicht hat -

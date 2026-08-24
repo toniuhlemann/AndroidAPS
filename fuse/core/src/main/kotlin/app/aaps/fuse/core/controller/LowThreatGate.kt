@@ -93,6 +93,18 @@ object LowThreatGate {
         val minutesToFloor: Double? = null,
         /** Was eine ab jetzt laufende Null bis dahin verhindert [mg/dl]. */
         val benefitMgdl: Double? = null,
+        /**
+         * UEBERDECKUNGSSTAERKE [mg/dl]: bolusIobU x ISF minus Abstand zum
+         * Boden - wie weit die Bolusdeckung ueber den Fall hinausreicht
+         * (v29, Toni 24.08. nacht: der 21:58-Grenzfall trug nur +0,55).
+         * REINES MESSFELD fuer Export und Replay; eine Mindestmarge wird
+         * erst nach Replay-Auswertung festgelegt, nicht geraten.
+         */
+        val overcoverageMarginMgdl: Double? = null,
+        /** Abstand des Bodenkontakts zur Horizontkante [min] - wie knapp das
+         *  120-Minuten-Fenster den Fall noch fasst (21:58: nur 2,8 min).
+         *  Reines Messfeld, dieselbe Regel wie oben. */
+        val horizonMarginMin: Double? = null,
         /** WORAN es gescheitert ist; `null` bei offenem Tor. */
         val denial: String? = null,
     )
@@ -271,6 +283,11 @@ object LowThreatGate {
         )
         val bolus = risiko.bolusIobU
         val minutenBisBoden = risiko.minutesToFloor!!
+        // Die beiden GRENZFALL-Messgroessen (v29): wie robust die
+        // Ueberdeckung und wie knapp die Horizontkante war. Sie STEUERN
+        // nichts - sie machen den 21:58-Grenzfall im Trail beziffbar.
+        val ueberdeckungsMarge = (bolus ?: 0.0) * isfMgdlPerU - strecke
+        val horizontMarge = horizonMin - minutenBisBoden
 
         // (4) BRINGT DIE NULL BIS DAHIN UEBERHAUPT ETWAS?
         //     Jede zurueckgehaltene Minute wirkt erst ab ihrem eigenen
@@ -279,12 +296,14 @@ object LowThreatGate {
         if (nutzen < minBenefitMgdl)
             return Result(
                 Verdict.NONE, fallRatePerMin, bolus, strecke, minutenBisBoden, nutzen,
+                overcoverageMarginMgdl = ueberdeckungsMarge, horizonMarginMin = horizontMarge,
                 denial = DENY_NO_BENEFIT,
             )
 
         return Result(
             Verdict.FALLING_WITH_BOLUS_OVERCOVERAGE,
             fallRatePerMin, bolus, strecke, minutenBisBoden, nutzen,
+            overcoverageMarginMgdl = ueberdeckungsMarge, horizonMarginMin = horizontMarge,
         )
     }
 

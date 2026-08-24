@@ -681,11 +681,14 @@ class FuseStateExportTest {
         // M-/K-Deckel (v26 liess den K-Deckel nie skalieren), v28 der
         // Phase-A-Sofortanteil nach iLet-Prinzip (Default 0,00 bitgleich;
         // typisierte Quelle MEAL_UPFRONT, nicht maxSmb-zerteilt,
-        // exactly-once als Bilanz auf den beweiskorrigierten Zaehlern).
+        // exactly-once als Bilanz auf den beweiskorrigierten Zaehlern),
+        // v29 die Zwei-Zyklen-Zuendung des Zero-Latch-Fall-Verdikts (ein
+        // einzelner Grenzzyklus/Sensorzacken verriegelt keine lange Null
+        // mehr; MEASURED_LOW weiter sofort).
         // DIESER TEST IST ABSICHTLICH STUR: er faellt bei jedem Bump um und
         // zwingt damit zu der Frage, ob die Aenderung wirklich dosierwirksam
         // war - ein stiller Bump waere so wertlos wie ein vergessener.
-        assertEquals(28, FuseStateJson.RULE_SET_VERSION)
+        assertEquals(29, FuseStateJson.RULE_SET_VERSION)
         assertTrue(
             FuseStateJson.hashOf(cfg)!!.isNotEmpty(),
             "und der Hash bleibt berechenbar",

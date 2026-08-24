@@ -173,7 +173,17 @@ object FuseStateJson {
     // DeferredPrime-Aufschub um, aktiver Zero-Latch sperrt ausdruecklich.
     // PrimeWindowMin bleibt die Phasengrenze. Export: neun
     // phaseAUpfront*-Felder im mealFoundation-Block.
-    const val RULE_SET_VERSION = 28
+    // v29 (24.08. nacht, DOSIERWIRKSAM bei aktivem Latch, Tonis
+    // Nachbesserung): der Zero-Latch zuendet auf das Fall-Verdikt
+    // (FALLING_WITH_BOLUS_OVERCOVERAGE) erst nach ZWEI aufeinanderfolgenden
+    // qualifizierenden Zyklen (90-s-Anschluss, Unterbrechung nullt);
+    // MEASURED_LOW verriegelt weiter sofort, ein aktiver Latch wird von
+    // jedem Fall-Verdikt gehalten. Anlass: der 21:58-Grenzfall (Ueberdeckung
+    // +0,55 mg/dl, Bodenkontakt 117,2/120 min) verriegelte als EINZELNER
+    // Zyklus eine lange Null - ein Sensorzacken darf das nicht. Export:
+    // lowThreat.overcoverageMarginMgdl/horizonMarginMin (Messfelder, keine
+    // Mindestmarge geraten) + zeroLatch.armStreak.
+    const val RULE_SET_VERSION = 29
 
     /** Schema des Trail-Datensatzes - s. die Notiz an der Schreibstelle. */
     const val SCHEMA_VERSION = 4
@@ -725,6 +735,8 @@ object FuseStateJson {
                 .put("sinceTs", outcome.zeroLatchSinceTs)
                 .put("reason", outcome.zeroLatchReason ?: JSONObject.NULL)
                 .put("calmStreak", outcome.zeroLatchCalmStreak)
+                // v29: der Ausloese-Zaehler des Fall-Verdikts (2 zuenden).
+                .put("armStreak", outcome.zeroLatchArmStreak)
                 .put("overrode", outcome.zeroLatchOverrode),
         )
         outcome.lowThreat?.let { lt ->
@@ -741,7 +753,13 @@ object FuseStateJson {
                     // Was eine ab jetzt laufende Null bis zum Bodenkontakt
                     // verhindert haette. Unter der Schwelle ist sie keine
                     // Massnahme, sondern nur ein Basalverlust.
-                    .put("benefitMgdl", fin(lt.benefitMgdl)),
+                    .put("benefitMgdl", fin(lt.benefitMgdl))
+                    // v29: die Grenzfall-Messgroessen des 21:58-Falls -
+                    // Ueberdeckungsstaerke und Abstand zur Horizontkante.
+                    // Reine Messfelder; eine Mindestmarge wird erst nach
+                    // Replay-Auswertung festgelegt.
+                    .put("overcoverageMarginMgdl", fin(lt.overcoverageMarginMgdl))
+                    .put("horizonMarginMin", fin(lt.horizonMarginMin)),
             )
         }
         // Genau die vier Felder, ueber die AAPS aktuiert. null heisst hier

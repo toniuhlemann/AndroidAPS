@@ -7106,6 +7106,97 @@ class TransportWiringTest : TestBaseWithProfile() {
     }
 
     /**
+     * v29 (Tonis 21:58-Grenzfall): das Fall-Verdikt zuendet erst nach ZWEI
+     * aufeinanderfolgenden qualifizierenden Zyklen - der EINZELNE
+     * Verdikt-Zyklus verriegelt nicht mehr (Sensorzacken-Schutz). Die
+     * Grenzfall-Messgroessen (Ueberdeckungsmarge, Horizontkanten-Abstand)
+     * stehen im Verdikt-Zyklus im Export; eine Mindestmarge wird NICHT
+     * geraten.
+     */
+    @Test
+    fun `zero-latch zuendet erst nach zwei qualifizierenden zyklen`(@TempDir dir: File) {
+        latchLage(dir, an = true, knick2 = -1.2, knick2Ab = 28)
+        val laufe = (0 until 45).map { cycle() }
+        val ersterVerdikt = laufe.indexOfFirst {
+            it.lowThreat?.verdict ==
+                app.aaps.fuse.core.controller.LowThreatGate.Verdict.FALLING_WITH_BOLUS_OVERCOVERAGE
+        }
+        assertTrue(ersterVerdikt >= 0, "die Lage muss das Fall-Verdikt liefern")
+        assertFalse(laufe[ersterVerdikt].zeroLatchActive, "der EINZELNE Verdikt-Zyklus verriegelt nicht")
+        assertEquals(1, laufe[ersterVerdikt].zeroLatchArmStreak, "Ausloese-Zaehler 1/2")
+        val zuendung = laufe.indexOfFirst { it.zeroLatchActive }
+        assertEquals(ersterVerdikt + 1, zuendung, "Zuendung genau einen Zyklus spaeter")
+        assertTrue(laufe[zuendung].zeroLatchArmStreak >= 2, "und erst mit 2/2")
+        // Die Messfelder des Grenzfalls stehen im Trail.
+        val lt = laufe[ersterVerdikt].lowThreat!!
+        assertTrue((lt.overcoverageMarginMgdl ?: -1.0) > 0.0, "Ueberdeckungsmarge exportiert")
+        assertTrue(lt.horizonMarginMin != null, "Horizontkanten-Abstand exportiert")
+    }
+
+    /** v29: jeder Unterbrechungs- oder Lueckenzyklus nullt den
+     *  Ausloese-Zaehler - zwei Verdikt-Zyklen MIT Luecke dazwischen
+     *  zuenden nicht als Paar, sondern beginnen neu. */
+    @Test
+    fun `eine unterbrechung nullt den ausloese-zaehler`(@TempDir dir: File) {
+        latchLage(dir, an = true, knick2 = -1.2, knick2Ab = 28)
+        var erster: FuseCycleRunner.Outcome? = null
+        repeat(45) {
+            if (erster == null) {
+                val o = cycle()
+                if (o.lowThreat?.verdict ==
+                    app.aaps.fuse.core.controller.LowThreatGate.Verdict.FALLING_WITH_BOLUS_OVERCOVERAGE
+                ) erster = o
+            }
+        }
+        assertEquals(1, erster!!.zeroLatchArmStreak, "erster Verdikt-Zyklus: 1/2")
+        assertFalse(erster!!.zeroLatchActive)
+        // LUECKE MIT EINGEFRORENEM ZAEHLER: Abort-Zyklen (ungueltiges IOB)
+        // erreichen die Latch-Stage nicht - der Zaehler friert bei 1, und
+        // NUR die 90-s-Anschlussregel verhindert, dass der naechste
+        // Verdikt-Zyklus Minuten spaeter als "zweiter in Folge" zaehlt.
+        iobGueltig = false
+        repeat(3) { cycle() }
+        iobGueltig = true
+        var nachLuecke: FuseCycleRunner.Outcome? = null
+        repeat(15) {
+            if (nachLuecke == null) {
+                val o = cycle()
+                if (o.lowThreat?.verdict ==
+                    app.aaps.fuse.core.controller.LowThreatGate.Verdict.FALLING_WITH_BOLUS_OVERCOVERAGE
+                ) nachLuecke = o
+            }
+        }
+        assertTrue(nachLuecke != null, "nach der Luecke muss das Verdikt wiederkommen")
+        assertEquals(1, nachLuecke!!.zeroLatchArmStreak, "nach der Luecke beginnt der Zaehler neu")
+        assertFalse(nachLuecke!!.zeroLatchActive, "kein Zuenden aus zwei Zyklen mit Luecke")
+    }
+
+    /** v29: MEASURED_LOW verriegelt weiter SOFORT - die Zwei-Zyklen-Regel
+     *  gilt nur fuer das Fall-Verdikt. Lage ohne Bolusdeckung: das
+     *  Fall-Verdikt kann nie entstehen, nur das gemessene Tief. */
+    @Test
+    fun `measured_low verriegelt weiter sofort`(@TempDir dir: File) {
+        latchLage(dir, an = true)
+        flach = 92.0
+        steigungProMin = -2.0
+        knickAbMin = null
+        bolusIobU = null // keine Ueberdeckung -> nie FALLING_WITH_BOLUS_OVERCOVERAGE
+        val laufe = (0 until 25).map { cycle() }
+        assertTrue(
+            laufe.none {
+                it.lowThreat?.verdict ==
+                    app.aaps.fuse.core.controller.LowThreatGate.Verdict.FALLING_WITH_BOLUS_OVERCOVERAGE
+            },
+            "die Lage darf das Fall-Verdikt nie tragen",
+        )
+        val low = laufe.indexOfFirst {
+            it.lowThreat?.verdict == app.aaps.fuse.core.controller.LowThreatGate.Verdict.MEASURED_LOW
+        }
+        assertTrue(low >= 0, "die Lage muss das gemessene Tief erreichen")
+        assertTrue(laufe[low].zeroLatchActive, "MEASURED_LOW verriegelt im SELBEN Zyklus")
+    }
+
+    /**
      * Pflichttests 2/3/5: eine Scheinwende (zwei positive Zyklen, dann
      * erneuter Fall) loest den Latch NICHT und nullt den Zaehler; erst die
      * anhaltende gemessene Erholung (drei lueckenlose Zyklen UKF >= +0,20
