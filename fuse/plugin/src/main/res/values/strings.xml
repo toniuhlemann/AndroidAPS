@@ -138,6 +138,12 @@
     <string name="fuse_night_start_summary">1380 = 23:00. Das Fenster darf Mitternacht ueberschreiten. Beginn = Ende schaltet das Nachtfenster aus.</string>
     <string name="fuse_night_end_title">Nacht Ende [min ab Mitternacht]</string>
     <string name="fuse_night_end_summary">420 = 07:00.</string>
+    <string name="fuse_zero_latch_enabled_title">Zero-Latch aktiv</string>
+    <string name="fuse_zero_latch_enabled_summary">Eine vom Low-Tor berechtigt eroeffnete Zero-TBR bleibt fuer die Dauer der Fall-Episode verriegelt - ein punktuell zu kleiner Nutzenwert wirft sie nicht mehr weg. Geloest erst nach belegter Erholung (UKF mind. +0,20 und q1 nicht weiter fallend, 3 lueckenlose Zyklen; nach bestaetigtem Tief genuegt einer) oder ueber den Ruhe-Ausgang. Wirkt NUR auf die Basalachse; SMBs bleiben unberuehrt.</string>
+    <string name="fuse_zero_latch_calm_min_title">Zero-Latch Ruhe-Zyklen</string>
+    <string name="fuse_zero_latch_calm_min_summary">Zweiter Freigabepfad gegen die Zero-Falle: so viele Zyklen stabil nicht fallend, ausreichend Abstand zum Boden und ohne Bolus-Ueberdeckung loesen die verriegelte Null auch ohne Anstieg.</string>
+    <string name="fuse_zero_latch_calm_dist_title">Zero-Latch Ruhe-Abstand [mg/dl]</string>
+    <string name="fuse_zero_latch_calm_dist_summary">Mindestabstand des q1 ueber dem Guard-Boden, damit ein Ruhe-Zyklus fuer den zweiten Freigabepfad zaehlt.</string>
     <string name="fuse_rebound_deadband_enabled_title">Rebound-Totband aktiv</string>
     <string name="fuse_rebound_deadband_enabled_summary">Nach einem Tief (q1 unter 75 in den letzten 45 min) kein SMB, solange der BG unter Ziel + Rebound-Totband liegt - die Erholung ist das ZIEL der Gegenmassnahme, keine Stoerung.</string>
     <string name="fuse_rebound_deadband_title">Rebound-Totband [mg/dl ueber Ziel]</string>

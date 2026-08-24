@@ -155,4 +155,25 @@ class DescentRecoveryLatchTest {
         assertNull(DescentRecoveryLatch.State.restore(false, 0L, sawMeasuredLow = true))
         assertEquals(DescentRecoveryLatch.State(), DescentRecoveryLatch.State.restore(false, 0L))
     }
+
+    /** Zero-Latch-Erweiterung (24.08.): zusaetzlicher Risiko-Wartegrund
+     *  ohne Tief-Kredit und die q1-Bedingung. Defaults bleiben bitgleich. */
+    @org.junit.jupiter.api.Test
+    fun `extraRiskWait und rawNotFalling sind eigene wartegruende`() {
+        val zu = DescentRecoveryLatch.advance(
+            DescentRecoveryLatch.State(true, 1L), DescentRecoveryLatch.Runtime(),
+            riskActive = false, signalHealthy = true, measuredLow = false,
+            fallRatePerMin = 0.5, sourceTs = 60_000L, extraRiskWait = true,
+        )
+        org.junit.jupiter.api.Assertions.assertEquals(DescentRecoveryLatch.Reason.WAITING_RISK, zu.reason)
+        org.junit.jupiter.api.Assertions.assertTrue(zu.state.active)
+        org.junit.jupiter.api.Assertions.assertFalse(zu.state.sawMeasuredLow, "Risiko ist KEIN Tief-Kredit")
+        val roh = DescentRecoveryLatch.advance(
+            DescentRecoveryLatch.State(true, 1L), DescentRecoveryLatch.Runtime(),
+            riskActive = false, signalHealthy = true, measuredLow = false,
+            fallRatePerMin = 0.5, sourceTs = 60_000L, rawNotFalling = false,
+        )
+        org.junit.jupiter.api.Assertions.assertEquals(DescentRecoveryLatch.Reason.WAITING_RAW, roh.reason)
+        org.junit.jupiter.api.Assertions.assertTrue(roh.state.active)
+    }
 }

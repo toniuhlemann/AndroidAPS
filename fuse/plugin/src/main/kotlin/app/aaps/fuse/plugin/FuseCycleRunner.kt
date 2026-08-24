@@ -281,6 +281,8 @@ class FuseCycleRunner(
             require(it.theilSenWindowMin in FuseIntKey.TheilSenWindowMin.min..FuseIntKey.TheilSenWindowMin.max) {
                 "theilSenWindowMin=${it.theilSenWindowMin}"
             }
+            require(it.zeroLatchCalmExitMin in FuseIntKey.ZeroLatchCalmExitMin.min..FuseIntKey.ZeroLatchCalmExitMin.max) { "zeroLatchCalmExitMin=${it.zeroLatchCalmExitMin}" }
+            require(it.zeroLatchCalmDistanceMgdl.isFinite() && it.zeroLatchCalmDistanceMgdl in FuseDoubleKey.ZeroLatchCalmDistanceMgdl.min..FuseDoubleKey.ZeroLatchCalmDistanceMgdl.max) { "zeroLatchCalmDistanceMgdl=${it.zeroLatchCalmDistanceMgdl}" }
             require(it.tailFloorMgdl.isFinite() && it.tailFloorMgdl in FuseDoubleKey.TailFloorMgdl.min..FuseDoubleKey.TailFloorMgdl.max) { "tailFloorMgdl=${it.tailFloorMgdl}" }
             require(it.tailRecoveryU.isFinite() && it.tailRecoveryU in FuseDoubleKey.TailRecoveryU.min..FuseDoubleKey.TailRecoveryU.max) { "tailRecoveryU=${it.tailRecoveryU}" }
             require(it.bolusShareLambda.isFinite() && it.bolusShareLambda in FuseDoubleKey.BolusShareLambda.min..FuseDoubleKey.BolusShareLambda.max) { "bolusShareLambda=${it.bolusShareLambda}" }
@@ -724,6 +726,14 @@ class FuseCycleRunner(
         val livenessPressureActive: Boolean? = null,
         val markerPowerPinnedFor: Long = 0L,
         val markerPowerDeadlineTs: Long = 0L,
+        /** ZERO-TBR-LATCH: verriegelte Null, Grund des Zyklus, Ruhe-
+         *  Zaehler und ob der Latch die TBR dieses Zyklus uebersteuert hat
+         *  (Basalachse; smbU bleibt per latchZeroOnly unberuehrt). */
+        val zeroLatchActive: Boolean = false,
+        val zeroLatchSinceTs: Long = 0L,
+        val zeroLatchReason: String? = null,
+        val zeroLatchCalmStreak: Int = 0,
+        val zeroLatchOverrode: Boolean = false,
         /** Die im Kanal WIRKSAME Ratio = min(effectiveRatio, Cap). Nur
          *  gesetzt, wenn die Kandidatenrechnung lief; zusammen mit
          *  state.smbRatioEffective und policy.livenessRatioCap ist die
@@ -3116,7 +3126,7 @@ class FuseCycleRunner(
             computeTs >= episodes.markerPowerPinnedFor &&
             computeTs < episodes.markerPowerDeadlineTs
         val livenessNormalSmbU = nachAufschub.smbU
-        val decision: FuseController.Decision = run {
+        val decisionVorZeroLatch: FuseController.Decision = run {
             if (!cfg.livenessChannelEnabled) {
                 // AUS heisst aus: Lauf und Streak enden, aber eine bereits
                 // gesetzte Sperre bleibt stehen (sie ist eine Zusage). Ein
@@ -3480,6 +3490,84 @@ class FuseCycleRunner(
                 unsafeSituation = false,
             )
         }
+        // ---- ZERO-TBR-LATCH (Bauauftrag Toni 24.08. abends) ---------------
+        // Befund desselben Tages: das Low-Tor eroeffnete 16:41-17:53 FUENF
+        // berechtigte Zero-TBRs, und der punktuelle Nutzenwert (benefit < 5)
+        // warf sie jeweils binnen Minuten weg - ~79 min Profilbasal liefen
+        // in einen vorhersehbaren, langsamen Fall (Nadir 62). Der Latch
+        // verriegelt eine EINMAL berechtigt eroeffnete Null fuer die Dauer
+        // der Fall-Episode: riskActive ist das VERDIKT des Low-Tors (nicht
+        // die Nutzenprobe); solange es positiv ist, haelt der Riegel
+        // trivial, und faellt es auf NONE (BENEFIT_BELOW_THRESHOLD,
+        // FLOOR_BEYOND_HORIZON, NOT_FALLING), beginnt die ERHOLUNGS-
+        // pruefung statt des Abbruchs. Geloest wird ueber die GETEILTE
+        // Descent-Erholungssemantik (UKF >= +0,20 UND roher q1 faellt
+        // nicht weiter UND kein Descent-/Low-Risiko, drei lueckenlose
+        // Zyklen, jeder Rueckfall nullt; nach bestaetigtem Observer-Tief
+        // genuegt wie beim Descent-Latch EIN Zyklus) ODER den RUHE-AUSGANG
+        // gegen die Zero-Falle (zeroLatchCalmExitMin Zyklen stabil nicht
+        // fallend, q1 >= Boden + zeroLatchCalmDistanceMgdl, keine
+        // Bolus-Ueberdeckung). NUR die Basalachse: der Override ersetzt
+        // ausschliesslich die TbrAction; smbU/Block/Bindung bleiben
+        // unangetastet, und der Translator laesst ueber latchZeroOnly den
+        // SMB-Anteil ausdruecklich frei.
+        var zeroLatchGrund: String? = null
+        var zeroLatchUebersteuert = false
+        val decision: FuseController.Decision = run {
+            if (!cfg.zeroLatchEnabled) {
+                // AUS heisst aus - auch ein persistierter Riegel wird
+                // geleert, damit ein spaeteres Einschalten frisch beginnt.
+                if (episodes.zeroLatch.active) episodes.zeroLatch = DescentRecoveryLatch.State()
+                zeroLatchRuntime = DescentRecoveryLatch.Runtime()
+                zeroCalmStreak = 0
+                zeroLatchLastQ1 = Double.NaN
+                return@run decisionVorZeroLatch
+            }
+            val q1NichtFallend = zeroLatchLastQ1.isNaN() || signal.q1 >= zeroLatchLastQ1 - 0.01
+            zeroLatchLastQ1 = signal.q1
+            val latch = DescentRecoveryLatch.advance(
+                state = episodes.zeroLatch,
+                runtime = zeroLatchRuntime,
+                riskActive = lowThreatResult.verdict != LowThreatGate.Verdict.NONE,
+                signalHealthy = step.health == Health.READY,
+                measuredLow = measuredLow,
+                fallRatePerMin = signal.ukfRatePerMin,
+                sourceTs = signal.sourceTs,
+                extraRiskWait = descentRisk.active,
+                rawNotFalling = q1NichtFallend,
+            )
+            episodes.zeroLatch = latch.state
+            zeroLatchRuntime = latch.runtime
+            zeroLatchGrund = latch.reason.name
+            if (latch.state.active) {
+                // RUHE-AUSGANG (Pfad 2): stabil, weit genug ueber dem Boden
+                // und ohne Bolus-Ueberdeckung - sonst hielte ein dauerhaft
+                // flacher BG die Null unbegrenzt ("Zero-Falle").
+                val abstand = lowThreatResult.distanceToFloorMgdl
+                val ueberdeckung = lowThreatResult.bolusIobU?.let { b ->
+                    abstand?.let { b * isf - it }
+                }
+                val ruhig = step.health == Health.READY && !measuredLow && !descentRisk.active &&
+                    signal.ukfRatePerMin.isFinite() && signal.ukfRatePerMin >= -0.03 &&
+                    q1NichtFallend &&
+                    abstand != null && abstand >= cfg.zeroLatchCalmDistanceMgdl &&
+                    ueberdeckung != null && ueberdeckung <= 0.0
+                zeroCalmStreak = if (ruhig) zeroCalmStreak + 1 else 0
+                if (zeroCalmStreak >= cfg.zeroLatchCalmExitMin) {
+                    episodes.zeroLatch = DescentRecoveryLatch.State()
+                    zeroLatchRuntime = DescentRecoveryLatch.Runtime()
+                    zeroCalmStreak = 0
+                    zeroLatchGrund = "CALM_RECOVERED"
+                }
+            } else zeroCalmStreak = 0
+            if (episodes.zeroLatch.active &&
+                decisionVorZeroLatch.tbr != FuseController.TbrAction.ZERO_TEMP
+            ) {
+                zeroLatchUebersteuert = true
+                decisionVorZeroLatch.copy(tbr = FuseController.TbrAction.ZERO_TEMP)
+            } else decisionVorZeroLatch
+        }
+
         // ---- Pruefauftrag 2: die Down-Zeilen bis zur ENDMENGE -------------
         //
         // Der 14:10-Livefall: produktiv gingen 0,10 U hinaus (Kandidat +
@@ -3545,6 +3633,7 @@ class FuseCycleRunner(
         val combined = FuseTbrTranslator.combine(
             decision = decision,
             current = currentTbr,
+            latchZeroOnly = zeroLatchUebersteuert,
             scheduledBasalUPerH = profile.getBasal(computeTs),
             cfg = TbrPolicy.Config(
                 basalStepUPerH = pumpe.basalStepUPerH,
@@ -3688,6 +3777,11 @@ class FuseCycleRunner(
             livenessPressureActive = livenessPressureActive,
             markerPowerPinnedFor = episodes.markerPowerPinnedFor,
             markerPowerDeadlineTs = episodes.markerPowerDeadlineTs,
+            zeroLatchActive = episodes.zeroLatch.active,
+            zeroLatchSinceTs = episodes.zeroLatch.latchedAtTs,
+            zeroLatchReason = zeroLatchGrund,
+            zeroLatchCalmStreak = zeroCalmStreak,
+            zeroLatchOverrode = zeroLatchUebersteuert,
             livenessReleaseMeanMgdl = livenessReleaseMeanMgdl,
             livenessBgMinEffectiveMgdl = livenessBgMinEffective,
             livenessBgMinSource = livenessBgMinSource,
@@ -4105,7 +4199,8 @@ class FuseCycleRunner(
         // gerechneten nicht mehr zu unterscheiden.
         val basis = FuseController.Decision(
             smbU = 0.0,
-            tbr = if (measuredLow) FuseController.TbrAction.ZERO_TEMP
+            tbr = if (measuredLow || (cfg.zeroLatchEnabled && episodes.zeroLatch.active))
+                FuseController.TbrAction.ZERO_TEMP
             else FuseController.TbrAction.KEEP_CURRENT,
             block = if (measuredLow) FuseController.Block.SAFETY_HOLD
             else FuseController.Block.NONE,
@@ -4505,6 +4600,13 @@ class FuseCycleRunner(
      *  Markerwechsel tauscht Caps nie still in einem alten Lauf (§5). */
     private var livenessRunPinnedFor = 0L
 
+    /** ZERO-LATCH: Erholungsserie und Ruhe-Zaehler sind prozesslokal
+     *  (Neustart = konservativ: Riegel bleibt, Zaehler neu); der Riegel
+     *  selbst lebt restartfest in EpisodeBudgets.zeroLatch. */
+    private var zeroLatchRuntime = DescentRecoveryLatch.Runtime()
+    private var zeroCalmStreak = 0
+    private var zeroLatchLastQ1 = Double.NaN
+
     /** Zeitstempel des letzten Zyklus, der die Kanalstufe erreicht hat -
      *  fuer die Taktluecken-Pruefung (Audit 22.08.): eine Luecke ohne
      *  Zyklus ist genauso unbeobachtet wie ein Abbruchzyklus. */
@@ -4652,6 +4754,10 @@ class FuseCycleRunner(
         val guardFloorMgdl: Double,
         /** Zulassungsschwelle des Low-Tors [mg/dl] - s. [FuseDoubleKey.LowGateMinBenefitMgdl]. */
         val lowGateMinBenefitMgdl: Double,
+        /** Zero-TBR-Latch - s. FuseKeys.ZeroLatchEnabled. */
+        val zeroLatchEnabled: Boolean,
+        val zeroLatchCalmExitMin: Int,
+        val zeroLatchCalmDistanceMgdl: Double,
         /** Kurzfristfenster der Richtungsprobe [min] - s. [FuseDoubleKey.LowGateHorizonMin]. */
         val lowGateHorizonMin: Double,
         /** Akuter Horizont des harten positiven Endriegels [min]. */
@@ -4730,6 +4836,9 @@ class FuseCycleRunner(
         maxSmbU = preferences.get(FuseDoubleKey.MaxSmbU),
         guardFloorMgdl = preferences.get(FuseDoubleKey.GuardFloorMgdl),
         lowGateMinBenefitMgdl = preferences.get(FuseDoubleKey.LowGateMinBenefitMgdl),
+        zeroLatchEnabled = preferences.get(FuseBooleanKey.ZeroLatchEnabled),
+        zeroLatchCalmExitMin = preferences.get(FuseIntKey.ZeroLatchCalmExitMin),
+        zeroLatchCalmDistanceMgdl = preferences.get(FuseDoubleKey.ZeroLatchCalmDistanceMgdl),
         lowGateHorizonMin = preferences.get(FuseDoubleKey.LowGateHorizonMin),
         positiveDescentHorizonMin = preferences.get(FuseDoubleKey.PositiveDescentHorizonMin),
         iobThPercent = preferences.get(FuseIntKey.IobThPercent),

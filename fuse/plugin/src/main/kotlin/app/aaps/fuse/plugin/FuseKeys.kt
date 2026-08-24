@@ -216,6 +216,17 @@ enum class FuseDoubleKey(
     LowGateHorizonMin("fuse_low_gate_horizon_min", 120.0, 30.0, 240.0),
 
     /**
+     * ZERO-LATCH, RUHE-AUSGANG (Bauauftrag Toni 24.08. abends): der zweite,
+     * langsame Freigabepfad gegen die "Zero-Falle" - ein dauerhaft flacher
+     * BG ohne Anstieg soll die verriegelte Null nicht unbegrenzt halten.
+     * Geloest wird, wenn ueber [ZeroLatchCalmExitMin] Zyklen STABIL gilt:
+     * nicht fallend, q1 mindestens diesen Abstand ueber dem Guard-Boden
+     * und KEINE Bolus-Ueberdeckung mehr. Werte replay-kalibriert, Toni
+     * stellt.
+     */
+    ZeroLatchCalmDistanceMgdl("fuse_zero_latch_calm_distance_mgdl", 30.0, 10.0, 60.0),
+
+    /**
      * Nahhorizont des harten Endriegels fuer NEUES positives Insulin [min].
      * Getrennt vom 120-minuetigen TBR-Nutzenfenster: Basal rechtzeitig
      * zurueckhalten und einen Mahlzeiten-SMB hart verbieten sind zwei
@@ -397,6 +408,10 @@ enum class FuseIntKey(
      * leben, verlaengert dieses Mengenprivileg aber nicht.
      */
     LivenessMealPowerMin("fuse_liveness_meal_power_min", 120, 15, 360),
+
+    /** Ruhe-Zyklen bis der Zero-Latch ohne Anstieg loest - s.
+     *  [FuseDoubleKey.ZeroLatchCalmDistanceMgdl]. */
+    ZeroLatchCalmExitMin("fuse_zero_latch_calm_exit_min", 20, 5, 120),
 
     /**
      * iobTH als PROZENT von maxIOB (Variante B, K2-C v0.2 §13).
@@ -698,6 +713,27 @@ enum class FuseBooleanKey(
      * Schalter-Kombinatorik.
      */
     ForecastShadowCollectionEnabled("fuse_forecast_shadow_collection_enabled", true),
+
+    /**
+     * ZERO-TBR-LATCH (Bauauftrag Toni 24.08. abends). Der Befund vom
+     * selben Tag: zwischen 16:41 und 18:15 eroeffnete das Low-Tor
+     * FUENFMAL eine berechtigte Zero-TBR, und der punktuelle Nutzenwert
+     * (benefit < 5) warf sie jeweils binnen Minuten wieder weg - ~79 min
+     * Profilbasal (~0,79 U) liefen in einen vorhersehbaren, langsamen
+     * Fall bis zum Nadir 62. Der Latch verriegelt eine EINMAL berechtigt
+     * eroeffnete Null (Verdikt FALLING_WITH_BOLUS_OVERCOVERAGE oder
+     * MEASURED_LOW) fuer die Dauer der Fall-Episode:
+     * BENEFIT_BELOW_THRESHOLD / FLOOR_BEYOND_HORIZON / NOT_FALLING
+     * einzelner Zyklen loesen ihn NICHT. Geloest wird er nur durch
+     * belegte gemessene Erholung (dieselbe geteilte Semantik wie der
+     * Descent-Latch: UKF >= +0,20 UND roher q1 faellt nicht weiter UND
+     * kein Descent-/Low-Risiko, drei lueckenlose Zyklen; jeder negative
+     * Zyklus nullt den Zaehler) ODER den Ruhe-Ausgang (s.
+     * [FuseIntKey.ZeroLatchCalmExitMin]). NUR die Basalachse: der
+     * positive Insulinpfad bleibt strukturell unberuehrt
+     * (latchZeroOnly-Weg im Translator). Restartfest; Default AUS.
+     */
+    ZeroLatchEnabled("fuse_zero_latch_enabled", false),
 
     /**
      * DAS MAHLZEITENFUNDAMENT - DEFAULT AUS.

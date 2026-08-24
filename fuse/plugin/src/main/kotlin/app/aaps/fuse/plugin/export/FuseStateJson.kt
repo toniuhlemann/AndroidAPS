@@ -134,7 +134,16 @@ object FuseStateJson {
     // dosierneutral. Die fuenf Stellgroessen ersetzen livenessRatioCap und
     // livenessIobCapPercent in Hash und policyValues; relational validiert
     // (CORRECTION nie offener als MEAL, fail-closed).
-    const val RULE_SET_VERSION = 24
+    // v25 (24.08. abends): der ZERO-TBR-LATCH (Bauauftrag Toni). Eine vom
+    // Low-Tor berechtigt eroeffnete Zero-TBR bleibt fuer die Dauer der
+    // Fall-Episode verriegelt - der punktuelle Nutzenwert darf sie nicht
+    // mehr wegwerfen (Befund 24.08.: fuenf eroeffnete Nullen in 94 min
+    // verworfen, ~0,79 U Profilbasal in einen vorhersehbaren Fall, Nadir
+    // 62). Geloest nur durch belegte Erholung (geteilte Descent-Semantik
+    // +0,20 x 3 mit q1- und Risiko-Bedingung) oder den Ruhe-Ausgang.
+    // Schalter Default AUS -> der Bump selbst ist dosierneutral. NUR die
+    // Basalachse; der SMB-Pfad bleibt ueber latchZeroOnly unberuehrt.
+    const val RULE_SET_VERSION = 25
 
     /** Schema des Trail-Datensatzes - s. die Notiz an der Schreibstelle. */
     const val SCHEMA_VERSION = 4
@@ -651,6 +660,14 @@ object FuseStateJson {
                     ),
             )
         }
+        o.put(
+            "zeroLatch", JSONObject()
+                .put("active", outcome.zeroLatchActive)
+                .put("sinceTs", outcome.zeroLatchSinceTs)
+                .put("reason", outcome.zeroLatchReason ?: JSONObject.NULL)
+                .put("calmStreak", outcome.zeroLatchCalmStreak)
+                .put("overrode", outcome.zeroLatchOverrode),
+        )
         outcome.lowThreat?.let { lt ->
             o.put(
                 "lowThreat", JSONObject()
@@ -1341,6 +1358,9 @@ object FuseStateJson {
         .put("mealIobCapPercent", fin(p.livenessMealIobCapPercent))
         .put("correctionRatioCap", fin(p.livenessCorrectionRatioCap))
         .put("correctionIobCapPercent", fin(p.livenessCorrectionIobCapPercent))
+        .put("zeroLatchEnabled", p.zeroLatchEnabled)
+        .put("zeroLatchCalmExitMin", p.zeroLatchCalmExitMin)
+        .put("zeroLatchCalmDistanceMgdl", fin(p.zeroLatchCalmDistanceMgdl))
         .put("livenessBgMinDayMgdl", fin(p.livenessBgMinDayMgdl))
         .put("livenessBgMinNightMgdl", fin(p.livenessBgMinNightMgdl))
 
@@ -1382,6 +1402,8 @@ object FuseStateJson {
             p.livenessBgMinDayMgdl,
             // v20: die getrennte Nachtschwelle.
             p.livenessBgMinNightMgdl,
+            // v25: der Ruhe-Abstand des Zero-Latch.
+            p.zeroLatchCalmDistanceMgdl,
         )
         if (doubles.any { !it.isFinite() }) return null
         val parts = listOf("fuse-policy-v$RULE_SET_VERSION") +
@@ -1417,6 +1439,9 @@ object FuseStateJson {
                 // nach Wenden verschieden schnell wieder.
                 p.livenessChannelEnabled,
                 p.livenessReArmMin,
+                // v25: der Zero-Latch (Schalter + Ruhe-Zyklen).
+                p.zeroLatchEnabled,
+                p.zeroLatchCalmExitMin,
                 // v24: die gepinnte Leistungsfrist ist dosierwirksam - zwei
                 // Laeufe mit 60 und 240 min MEAL-Fenster sind verschiedene
                 // Regler.

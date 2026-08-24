@@ -166,6 +166,9 @@ class TransportWiringTest : TestBaseWithProfile() {
     private var mealIobDeckel: Double? = null
     private var corrRatioDeckel: Double? = null
     private var corrIobDeckel: Double? = null
+    private var zeroLatchAn = false
+    private var zeroLatchRuheZyklen = 20
+    private var zeroLatchRuheAbstand = 30.0
     private var livenessBgMin = 160.0
 
     /** Nachtschwelle des Kanals; null = nie gesetzt -> folgt der Tagesschwelle. */
@@ -436,6 +439,9 @@ class TransportWiringTest : TestBaseWithProfile() {
         whenever(preferences.get(FuseDoubleKey.LivenessIobCapPercent)).thenAnswer { livenessCapPct }
         whenever(preferences.get(FuseDoubleKey.LivenessRatioCap)).thenAnswer { livenessRatioDeckel }
         whenever(preferences.get(FuseIntKey.LivenessMealPowerMin)).thenAnswer { mealPowerMin }
+        whenever(preferences.get(FuseBooleanKey.ZeroLatchEnabled)).thenAnswer { zeroLatchAn }
+        whenever(preferences.get(FuseIntKey.ZeroLatchCalmExitMin)).thenAnswer { zeroLatchRuheZyklen }
+        whenever(preferences.get(FuseDoubleKey.ZeroLatchCalmDistanceMgdl)).thenAnswer { zeroLatchRuheAbstand }
         whenever(preferences.getIfExists(FuseDoubleKey.LivenessMealRatioCap)).thenAnswer { mealRatioDeckel }
         whenever(preferences.getIfExists(FuseDoubleKey.LivenessMealIobCapPercent)).thenAnswer { mealIobDeckel }
         whenever(preferences.getIfExists(FuseDoubleKey.LivenessCorrectionRatioCap)).thenAnswer { corrRatioDeckel }
@@ -6517,6 +6523,9 @@ class TransportWiringTest : TestBaseWithProfile() {
             livenessCapPct = d("livenessIobCapPercent", livenessCapPct)
             livenessRatioDeckel = d("livenessRatioCap", livenessRatioDeckel)
             mealPowerMin = i("mealPowerMin", mealPowerMin)
+            zeroLatchAn = b("zeroLatchEnabled", zeroLatchAn)
+            zeroLatchRuheZyklen = i("zeroLatchCalmExitMin", zeroLatchRuheZyklen)
+            zeroLatchRuheAbstand = d("zeroLatchCalmDistanceMgdl", zeroLatchRuheAbstand)
             p?.optDouble("mealRatioCap")?.takeIf { it.isFinite() }?.let { mealRatioDeckel = it }
             p?.optDouble("mealIobCapPercent")?.takeIf { it.isFinite() }?.let { mealIobDeckel = it }
             p?.optDouble("correctionRatioCap")?.takeIf { it.isFinite() }?.let { corrRatioDeckel = it }
@@ -6587,7 +6596,7 @@ class TransportWiringTest : TestBaseWithProfile() {
             neuerRunner(adapter, fensterMs = fensterMs, trendRegel = trendRegel)
             val outFile = File(outDir, "replay_$name.csv")
             outFile.printWriter().use { w ->
-                w.println("ts;smbU;block;binding;insulinReq;liftU;needU;abort;phase;fastD;slowD;trend;raw;recSmbU;recBlock;profil;restMin")
+                w.println("ts;smbU;block;binding;insulinReq;liftU;needU;abort;phase;fastD;slowD;trend;raw;recSmbU;recBlock;profil;restMin;tbr;latch")
                 var prevMarker = 0L
                 var polText = pol?.toString()
                 var zyklusNr = 0
@@ -6625,6 +6634,8 @@ class TransportWiringTest : TestBaseWithProfile() {
                         "%.3f".format(java.util.Locale.US, z.smbU), z.block ?: "",
                         o.livenessProfile ?: "",
                         if (o.markerPowerDeadlineTs > o.computeTs) ((o.markerPowerDeadlineTs - o.computeTs) / 60_000L).toString() else "",
+                        o.decision.tbr.name,
+                        if (o.zeroLatchActive) "1" else "0",
                     ).joinToString(";"))
                 }
             }
@@ -6632,6 +6643,16 @@ class TransportWiringTest : TestBaseWithProfile() {
             return outFile
         }
 
+        System.getenv("FUSE_REPLAY_ZEROLATCH")?.let {
+            // Zero-Latch-Gegenrechnung: derselbe Tag einmal ohne und einmal
+            // mit verriegelter Null (Bauauftrag Toni 24.08. abends).
+            zeroLatchAn = false
+            lauf("latchAus", null, fenster = 10)
+            zeroLatchAn = true
+            lauf("latchAn", null, fenster = 10)
+            zeroLatchAn = false
+            return
+        }
         val profilEnv = System.getenv("FUSE_REPLAY_PROFILE")
         if (profilEnv != null) {
             // §10-Abnahme + Cap-Wahl-Matrix: Split-Profil-Laeufe (je Spez
@@ -6667,6 +6688,177 @@ class TransportWiringTest : TestBaseWithProfile() {
 
 
 
+
+
+    /** Fall-Lage des Zero-Latch: stetiger, langsamer Fall mit Bolus an
+     *  Bord - das Low-Tor eroeffnet berechtigt, und die Frage ist, was
+     *  mit der Null passiert, wenn das Verdikt zwischendurch wegfaellt. */
+    private fun latchLage(dir: File, an: Boolean, knick2: Double? = null, knick2Ab: Int? = null): FuseLedgerAdapter {
+        zeroLatchAn = an
+        zeroLatchRuheZyklen = 60
+        zeroLatchRuheAbstand = 40.0
+        livenessAn = false
+        markerAuthorized = false
+        fundamentAn = false
+        tailGuard = true
+        flach = 140.0
+        steigungProMin = -1.2
+        knickAbMin = 25
+        steigungNachKnick = 0.0
+        knick2AbMin = knick2Ab
+        steigungNachKnick2 = knick2 ?: 0.0
+        bolusIobU = 2.5
+        clock = start
+        transportReset()
+        val adapter = FuseLedgerAdapter().also { it.loadOnce(dir.also(File::mkdirs), "test-epoch", start) }
+        neuerRunner(adapter)
+        return adapter
+    }
+
+    /**
+     * ZERO-LATCH-PFLICHTTESTS 1/7/8 (Bauauftrag Toni 24.08. abends): eine
+     * berechtigt eroeffnete Null bleibt durch die Fall-Episode verriegelt -
+     * auch in Zyklen, in denen das Verdikt auf NONE faellt (NOT_FALLING im
+     * flachen Zwischenstueck; der heutige Wegwerf-Moment). Ohne Schalter
+     * bricht die Null dort wie bisher ab. Der SMB-Pfad ist in beiden
+     * Laeufen bitgleich - der Latch fasst NUR die Basalachse an.
+     */
+    @Test
+    fun `zero-latch haelt die null durch die fall-episode`(@TempDir dir: File) {
+        latchLage(File(dir, "aus"), an = false, knick2 = -1.2, knick2Ab = 28)
+        val ohne = (0 until 45).map { cycle() }
+        latchLage(File(dir, "an"), an = true, knick2 = -1.2, knick2Ab = 28)
+        val mit = (0 until 45).map { cycle() }
+
+        val zuendung = mit.indexOfFirst { it.zeroLatchActive }
+        assertTrue(zuendung > 0, "das Low-Tor muss den Latch zuenden")
+        // Ab der Zuendung bleibt die TBR-Achse null - JEDER Zyklus.
+        (zuendung until mit.size).forEach { i ->
+            assertEquals(FuseController.TbrAction.ZERO_TEMP, mit[i].decision.tbr,
+                "Zyklus $i muss verriegelt null bleiben (Grund=${mit[i].zeroLatchReason})")
+        }
+        // Ohne Latch wirft das flache Zwischenstueck die Null weg (heutiges
+        // Verhalten): mindestens ein Nach-Zuendungs-Zyklus ohne ZERO_TEMP.
+        val ohneWurf = (zuendung until ohne.size).any { ohne[it].decision.tbr != FuseController.TbrAction.ZERO_TEMP }
+        assertTrue(ohneWurf, "ohne Latch muss die Null zwischenzeitlich fallen")
+        // Pflicht 8: der positive Pfad ist bitgleich - nur die TBR differiert.
+        mit.indices.forEach { i ->
+            assertEquals(ohne[i].decision.smbU, mit[i].decision.smbU, 1e-9, "smb bitgleich (Zyklus $i)")
+        }
+        // Pflicht 7: am Ende ist die Lage ein gemessenes Tief - der Latch
+        // haelt unabhaengig vom errechneten Nutzen.
+        assertTrue(mit.takeLast(5).all { it.decision.tbr == FuseController.TbrAction.ZERO_TEMP })
+    }
+
+    /**
+     * Pflichttests 2/3/5: eine Scheinwende (zwei positive Zyklen, dann
+     * erneuter Fall) loest den Latch NICHT und nullt den Zaehler; erst die
+     * anhaltende gemessene Erholung (drei lueckenlose Zyklen UKF >= +0,20
+     * mit nicht weiter fallendem q1) gibt das Profilbasal frei.
+     */
+    @Test
+    fun `zero-latch loest erst nach bestaetigter erholung`(@TempDir dir: File) {
+        // Fall 25 min, dann DAUERHAFTER Anstieg +2: nach dem UKF-Umschwung
+        // loest die Drei-Zyklen-Bestaetigung.
+        latchLage(File(dir, "erholung"), an = true, knick2 = 2.0, knick2Ab = 26)
+        val laufE = (0 until 45).map { cycle() }
+        val zuendung = laufE.indexOfFirst { it.zeroLatchActive }
+        assertTrue(zuendung > 0, "Zuendung noetig")
+        val geloest = laufE.indexOfFirst { it.zeroLatchReason == "RECOVERED" }
+        assertTrue(geloest > zuendung, "die Erholung muss den Latch loesen: " +
+            laufE.mapIndexed { i, o -> "$i:${o.zeroLatchReason}" }.filterIndexed { i, _ -> i >= zuendung }.take(25).joinToString(" "))
+        assertTrue(laufE.drop(geloest + 1).take(5).all { !it.zeroLatchActive }, "danach frei")
+
+        // Scheinwende: Anstieg nur 2 Zyklen, dann weiter fallend -> haelt.
+        transportReset()
+        latchLage(File(dir, "schein"), an = true, knick2 = -1.0, knick2Ab = 28)
+        // knick 25->28 = 3 min flach; dieses Fenster erzeugt einzelne nicht
+        // fallende Zyklen, aber keine drei bestaetigten 0,20er.
+        val laufS = (0 until 40).map { cycle() }
+        val z2 = laufS.indexOfFirst { it.zeroLatchActive }
+        assertTrue(z2 > 0)
+        assertTrue((z2 until laufS.size).all { laufS[it].zeroLatchActive },
+            "die Scheinwende darf nicht loesen: " + laufS.drop(z2).map { it.zeroLatchReason }.distinct())
+    }
+
+    /**
+     * Pflichttest 4 (Zero-Falle): stabilisiert sich der BG weit genug ueber
+     * dem Boden und ist keine Bolus-Ueberdeckung mehr da, loest der
+     * Ruhe-Ausgang die Null auch ohne Anstieg - und mit zu kleinem Abstand
+     * loest er NICHT (Gegenprobe der Abstandsbedingung).
+     */
+    @Test
+    fun `zero-latch ruhe-ausgang loest ohne anstieg`(@TempDir dir: File) {
+        latchLage(File(dir, "ruhe"), an = true)
+        zeroLatchRuheZyklen = 6
+        zeroLatchRuheAbstand = 30.0
+        // Fall bis ~110 (Minute 25), dann exakt flach; die Ueberdeckung
+        // verschwindet mit dem Bolus-IOB.
+        var geloestBei = -1
+        val outs = (0 until 45).map { i ->
+            if (i == 26) bolusIobU = 0.0
+            val o = cycle()
+            if (geloestBei < 0 && o.zeroLatchReason == "CALM_RECOVERED") geloestBei = i
+            o
+        }
+        assertTrue(outs.any { it.zeroLatchActive }, "Zuendung noetig")
+        assertTrue(geloestBei > 0, "der Ruhe-Ausgang muss loesen: " +
+            outs.takeLast(12).joinToString(" ") { "${it.zeroLatchReason}/${it.zeroLatchCalmStreak}" })
+        assertTrue(outs.drop(geloestBei + 1).take(5).all { !it.zeroLatchActive })
+
+        // Gegenprobe: derselbe Verlauf, aber der Abstand reicht nicht.
+        transportReset()
+        latchLage(File(dir, "ruheEng"), an = true)
+        zeroLatchRuheZyklen = 6
+        zeroLatchRuheAbstand = 55.0 // Plateau ~110 = Boden+40 < 55 -> zaehlt nie
+        val outs2 = (0 until 45).map { i ->
+            if (i == 26) bolusIobU = 0.0
+            cycle()
+        }
+        assertTrue(outs2.any { it.zeroLatchActive })
+        assertTrue(outs2.none { it.zeroLatchReason == "CALM_RECOVERED" },
+            "mit zu kleinem Abstand darf der Ruhe-Ausgang nicht loesen")
+    }
+
+    /**
+     * Pflichttest 6: der Riegel selbst ist restartfest, die Erholungsserie
+     * bewusst nicht - nach einem Neustart bleibt die Null verriegelt und
+     * die Bestaetigung beginnt von vorn (konservative Richtung).
+     */
+    @Test
+    fun `zero-latch ist restartfest`(@TempDir dir: File) {
+        val lage = File(dir, "a")
+        val adapter = latchLage(lage, an = true)
+        repeat(30) { cycle() }
+        assertTrue(ledger.episodes.zeroLatch.active, "Zuendung noetig")
+        assertTrue(adapter.persistVerified(lage), "versiegeln")
+        assertEquals(true, nachNeustart(lage).zeroLatch.active, "der Riegel ueberlebt den Neustart")
+        neuerRunner(FuseLedgerAdapter().also { it.loadOnce(lage, "test-epoch", clock) })
+        val o = cycle()
+        assertEquals(FuseController.TbrAction.ZERO_TEMP, o.decision.tbr, "verriegelt auch nach Neustart")
+    }
+
+    /**
+     * Pflicht 8 strukturell: der latchZeroOnly-Weg des Translators laesst
+     * den SMB-Anteil einer NUR vom Latch stammenden Null unberuehrt -
+     * waehrend ein echter Sicherheits-Nullbefund ihn weiterhin sperrt.
+     */
+    @Test
+    fun `latchZeroOnly laesst den smb-anteil frei`() {
+        val d = FuseController.Decision(
+            smbU = 0.30, tbr = FuseController.TbrAction.ZERO_TEMP,
+            block = FuseController.Block.NONE, insulinReqU = 1.0,
+            predAtReleaseMgdl = null, minLowerMgdl = null,
+            bindingLimit = "test", desiredBeforeStepU = 0.30,
+        )
+        val cfgT = app.aaps.fuse.core.controller.TbrPolicy.Config(basalStepUPerH = 0.05)
+        fun combineMit(latchOnly: Boolean) = FuseTbrTranslator.combine(
+            decision = d, current = null, scheduledBasalUPerH = 0.6, cfg = cfgT,
+            latchZeroOnly = latchOnly,
+        )
+        assertEquals(0.30, combineMit(true).decision.smbU, 1e-9, "Latch-Null laesst den SMB frei")
+        assertEquals(0.0, combineMit(false).decision.smbU, 1e-9, "echter Sicherheitsbefund sperrt weiter")
+    }
 
     /**
      * MEAL/CORRECTION-BAUAUFTRAG (Toni 23.08. nachts), Profilwahl: der

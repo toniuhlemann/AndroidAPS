@@ -146,6 +146,12 @@ object FuseTbrTranslator {
         protectionCleared: Boolean = false,
         /** Bisher erfolglose Abbruchversuche in Folge (Medtrum-Backoff). */
         endZeroAttempts: Int = 0,
+        /** ZERO-LATCH (Toni 24.08. abends): die Null kommt NUR vom Latch,
+         *  nicht aus einem Sicherheitsbefund DIESES Zyklus. Die Rate wird
+         *  wie SAFETY_ZERO gesetzt/erneuert, aber der SMB-Anteil bleibt
+         *  UNBERUEHRT - der Latch haelt ausschliesslich die Basalachse,
+         *  der positive Insulinpfad ist strukturell unbeeinflusst. */
+        latchZeroOnly: Boolean = false,
     ): Result {
         val tbr = TbrPolicy.decide(
             intentOf(decision.tbr), current, scheduledBasalUPerH, cfg, fault, pumpBusy,
@@ -162,7 +168,12 @@ object FuseTbrTranslator {
             // Anlauf dieses Fixes gescheitert.
             unsafeSituation = decision.unsafeSituation,
         )
-        val effective = applyBlock(decision, tbr.smbBlockCause)
+        val effective = applyBlock(
+            decision,
+            if (latchZeroOnly && tbr.smbBlockCause == TbrPolicy.SmbBlockCause.SAFETY_ZERO)
+                TbrPolicy.SmbBlockCause.NONE
+            else tbr.smbBlockCause,
+        )
         // C7a — GEMEINSAMES ZERTIFIKAT (Codex-Adjudication H3, D-Tabelle C7).
         val ends = effective.smbU > 0.0 && endsWithholding(tbr.outcome, current, scheduledBasalUPerH, cfg)
         // C7c — DIE AUTORISIERUNG ZERTIFIZIERT BEIDE GEMEINSAM (Toni 17.08.).

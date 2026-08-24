@@ -211,6 +211,8 @@ class CycleIobValidityTest : TestBaseWithProfile() {
         whenever(preferences.get(FuseBooleanKey.ForecastShadowCollectionEnabled)).thenReturn(true)
         whenever(preferences.get(FuseDoubleKey.LivenessIobCapPercent)).thenReturn(50.0)
         whenever(preferences.get(FuseIntKey.LivenessMealPowerMin)).thenReturn(120)
+        whenever(preferences.get(FuseIntKey.ZeroLatchCalmExitMin)).thenReturn(20)
+        whenever(preferences.get(FuseDoubleKey.ZeroLatchCalmDistanceMgdl)).thenReturn(30.0)
         whenever(preferences.get(FuseDoubleKey.LivenessBgMinDayMgdl)).thenReturn(160.0)
         whenever(preferences.get(FuseIntKey.LivenessReArmMin)).thenReturn(10)
         whenever(preferences.get(FuseDoubleKey.LivenessRatioCap)).thenReturn(1.0)

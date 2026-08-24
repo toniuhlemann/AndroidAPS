@@ -477,6 +477,13 @@ object LedgerCodec {
                 .put("latchedAtTs", e.descentRecoveryLatch.latchedAtTs)
                 .put("sawMeasuredLow", e.descentRecoveryLatch.sawMeasuredLow),
         )
+        .put(
+            "zeroLatch",
+            JSONObject()
+                .put("active", e.zeroLatch.active)
+                .put("latchedAtTs", e.zeroLatch.latchedAtTs)
+                .put("sawMeasuredLow", e.zeroLatch.sawMeasuredLow),
+        )
         // Punkt 6: der Marker-Prime-Aufschub - Budget UND Frist muessen den
         // Neustart identisch ueberleben (Vertrag/Replay-Fall 6). Additiv wie
         // der Riegel: eine Altdatei ohne Objekt heisst "kein Aufschub".
@@ -688,6 +695,15 @@ object LedgerCodec {
                     // volle Drei-Zyklen-Bestaetigung und ist konservativ.
                     sawMeasuredLow = latch.optBoolean("sawMeasuredLow", false),
                 ) ?: error("invalid descent recovery latch")
+        }
+        if (o.has("zeroLatch")) {
+            val latch = o.getJSONObject("zeroLatch")
+            e.zeroLatch =
+                app.aaps.fuse.core.controller.DescentRecoveryLatch.State.restore(
+                    active = latch.getBoolean("active"),
+                    latchedAtTs = requireTs("zeroLatch.latchedAtTs", latch.getLong("latchedAtTs")),
+                    sawMeasuredLow = latch.optBoolean("sawMeasuredLow", false),
+                ) ?: error("invalid zero latch")
         }
         if (o.has("deferredPrime")) {
             val dp = o.getJSONObject("deferredPrime")

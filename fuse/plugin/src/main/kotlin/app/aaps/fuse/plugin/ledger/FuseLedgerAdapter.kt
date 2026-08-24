@@ -185,6 +185,13 @@ class EpisodeBudgets {
     var descentRecoveryRuntime: app.aaps.fuse.core.controller.DescentRecoveryLatch.Runtime =
         app.aaps.fuse.core.controller.DescentRecoveryLatch.Runtime()
 
+    /** ZERO-TBR-LATCH (Toni 24.08. abends): dieselbe geteilte Riegel-
+     *  Struktur wie [descentRecoveryLatch], eigene Instanz - die Erholungs-
+     *  serie ist wie dort bewusst prozesslokal (Neustart = konservativ,
+     *  Riegel bleibt zu, Zaehler beginnt neu). */
+    var zeroLatch: app.aaps.fuse.core.controller.DescentRecoveryLatch.State =
+        app.aaps.fuse.core.controller.DescentRecoveryLatch.State()
+
     /**
      * Der ZUSATZKREDIT dieser Episode ist ausdruecklich zurueckgenommen.
      *

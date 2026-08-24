@@ -38,6 +38,9 @@ internal val fuseEinstellbareKeys: Set<String> = setOf(
     FuseDoubleKey.LivenessMealIobCapPercent.key,
     FuseDoubleKey.LivenessCorrectionRatioCap.key,
     FuseDoubleKey.LivenessCorrectionIobCapPercent.key,
+    FuseBooleanKey.ZeroLatchEnabled.key,
+    FuseIntKey.ZeroLatchCalmExitMin.key,
+    FuseDoubleKey.ZeroLatchCalmDistanceMgdl.key,
     FuseDoubleKey.LivenessBgMinDayMgdl.key,
     FuseDoubleKey.LivenessBgMinNightMgdl.key,
     FuseIntKey.LivenessReArmMin.key,
@@ -165,6 +168,9 @@ object FuseSettingsReport {
                     zahl(FuseDoubleKey.LivenessMealIobCapPercent, "M-Kanaldeckel", "%"),
                     zahl(FuseDoubleKey.LivenessCorrectionRatioCap, "K-Ratio-Deckel", ""),
                     zahl(FuseDoubleKey.LivenessCorrectionIobCapPercent, "K-Kanaldeckel", "%"),
+                    schalter(FuseBooleanKey.ZeroLatchEnabled, "Zero-Latch"),
+                    ganz(FuseIntKey.ZeroLatchCalmExitMin, "Latch-Ruhe", "Zyk"),
+                    zahl(FuseDoubleKey.ZeroLatchCalmDistanceMgdl, "Latch-Abstand", "mg/dl"),
                     zahl(FuseDoubleKey.LivenessBgMinDayMgdl, "Druck-Schwelle Tag", "mg/dl"),
                     // Die Nachtschwelle EHRLICH anzeigen: solange sie nie
                     // gesetzt wurde, folgt sie zur Laufzeit der Tagesschwelle

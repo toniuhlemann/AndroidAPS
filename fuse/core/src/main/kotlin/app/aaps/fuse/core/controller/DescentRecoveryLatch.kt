@@ -77,6 +77,13 @@ object DescentRecoveryLatch {
         WAITING_UNHEALTHY,
         WAITING_MEASURED_LOW,
         WAITING_RATE,
+        /** Zusaetzlicher Risiko-Wartegrund des Aufrufers (z.B. Descent-
+         *  Risiko fuer den Zero-Latch) - wie measuredLow, aber OHNE den
+         *  sawMeasuredLow-Kredit: er ist keine Observer-Bestaetigung. */
+        WAITING_RISK,
+        /** Der ROHE q1 faellt weiter, obwohl die UKF-Rate schon positiv
+         *  liest (Zero-Latch-Vertrag: beide Groessen muessen stimmen). */
+        WAITING_RAW,
         WAITING_CONFIRMATION,
         RECOVERED,
     }
@@ -96,6 +103,12 @@ object DescentRecoveryLatch {
         measuredLow: Boolean,
         fallRatePerMin: Double?,
         sourceTs: Long,
+        /** Zusaetzlicher Wartegrund ohne Tief-Kredit; Default false =
+         *  Descent-Verhalten bitgleich. */
+        extraRiskWait: Boolean = false,
+        /** Verlangt zusaetzlich, dass der rohe q1 nicht weiter faellt;
+         *  Default true = Descent-Verhalten bitgleich. */
+        rawNotFalling: Boolean = true,
     ): Result {
         require(state.valid) { "invalid descent latch state $state" }
         require(runtime.consecutiveRecoveryCycles >= 0) { "negative recovery count" }
@@ -115,8 +128,10 @@ object DescentRecoveryLatch {
         val waitingReason = when {
             !signalHealthy -> Reason.WAITING_UNHEALTHY
             measuredLow -> Reason.WAITING_MEASURED_LOW
+            extraRiskWait -> Reason.WAITING_RISK
             fallRatePerMin == null || !fallRatePerMin.isFinite() ||
                 fallRatePerMin < RECOVERY_RATE_MGDL_PER_MIN -> Reason.WAITING_RATE
+            !rawNotFalling -> Reason.WAITING_RAW
             else -> null
         }
         if (waitingReason != null)
