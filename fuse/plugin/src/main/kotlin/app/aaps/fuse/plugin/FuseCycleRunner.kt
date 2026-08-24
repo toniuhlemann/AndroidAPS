@@ -2200,6 +2200,40 @@ class FuseCycleRunner(
             horizonMin = cfg.lowGateHorizonMin,
         )
 
+        // ---- v29: ZWEI-ZYKLEN-ZUENDUNG DES FALL-VERDIKTS ------------------
+        //
+        // VOR decide, damit auch die ERSTE Zero-TBR wartet (Tonis Korrektur
+        // 24.08. nacht: die erste Fassung verzoegerte nur den LATCH - der
+        // einzelne Grenzzyklus setzte weiterhin sofort ZERO_TEMP, und der
+        // Sensorzacken-Schutz war damit nur halb). Vertrag:
+        //   1. Fallzyklus:  KEEP_CURRENT, Latch aus, Zaehler 1/2
+        //   2. Fallzyklus:  ZERO_TEMP und Latch, 2/2
+        //   MEASURED_LOW:   sofort beides
+        // NUR bei eingeschaltetem Latch-Feature - ohne den Schalter bleibt
+        // das bisherige Verhalten bitgleich (Zero sofort, Nutzenprobe
+        // verwirft sie wie gehabt). Ein bereits AKTIVER Latch reicht das
+        // Verdikt ungefiltert durch: Halten und "Null sofort beenden"
+        // brauchen den echten Grund.
+        val zeroFallVerdikt =
+            lowThreatResult.verdict == LowThreatGate.Verdict.FALLING_WITH_BOLUS_OVERCOVERAGE
+        val zeroLowVerdikt = lowThreatResult.verdict == LowThreatGate.Verdict.MEASURED_LOW
+        if (cfg.zeroLatchEnabled) {
+            val anschluss = zeroArmLastTs > 0L && signal.sourceTs > zeroArmLastTs &&
+                signal.sourceTs - zeroArmLastTs <= 90_000L
+            zeroArmStreak = if (zeroFallVerdikt) (if (anschluss) zeroArmStreak + 1 else 1) else 0
+            zeroArmLastTs = signal.sourceTs
+        } else {
+            zeroArmStreak = 0
+            zeroArmLastTs = 0L
+        }
+        val zeroVerdiktScharf = !cfg.zeroLatchEnabled || zeroLowVerdikt ||
+            episodes.zeroLatch.active || (zeroFallVerdikt && zeroArmStreak >= 2)
+        // Das WIRKSAME Verdikt der Dosierung; das ROHE Result bleibt
+        // unveraendert im Trail (lowThreat-Block + armStreak machen die
+        // Daempfung offline ablesbar: Verdikt FALLING + Streak 1 + KEEP).
+        val lowThreatWirksam =
+            if (zeroVerdiktScharf) lowThreatResult.verdict else LowThreatGate.Verdict.NONE
+
         // DIE FRIST AM MARKERWECHSEL FESTSCHREIBEN (Codex 19.08.).
         //
         // NICHT an `neueEpisode` gehaengt: ein ZWEITER Druck innerhalb der
@@ -2302,7 +2336,7 @@ class FuseCycleRunner(
             // `lowThreatResult` und geht in den Trail - eine Null, die NICHT
             // kam, waere sonst von einem Zyklus ohne Befund nicht zu
             // unterscheiden (Tonis Auflage vor dem Produktiv-Flash).
-            lowThreat = lowThreatResult.verdict,
+            lowThreat = lowThreatWirksam,
             onsetCapU = if (onset.active) onset.remainingU else null,
         )
 
@@ -2416,7 +2450,7 @@ class FuseCycleRunner(
                 path.restraint,
                 evidenceCreditActive = evidenzKredit > 0.0,
                 evidenceMayOverrideRebound = reboundOverrideErlaubt,
-                lowThreat = lowThreatResult.verdict,
+                lowThreat = lowThreatWirksam,
                 onsetCapU = if (onset.active) onset.remainingU else null,
             )
             val shadowCandidate = if (shadowBase.smbU <= 0.0 || shadowKernel == null) null else
@@ -2517,7 +2551,7 @@ class FuseCycleRunner(
                     restraint,
                     evidenceCreditActive = evidenzKredit > 0.0,
                     evidenceMayOverrideRebound = reboundOverrideErlaubt,
-                    lowThreat = lowThreatResult.verdict,
+                    lowThreat = lowThreatWirksam,
                     onsetCapU = if (onset.active) onset.remainingU else null,
                 )
                 val downCandidate = if (downBase.smbU <= 0.0 || shadowKernel == null) null else
@@ -2670,12 +2704,47 @@ class FuseCycleRunner(
         val upfrontDeferredOpenU =
             if (episodes.deferredPrime.pinnedForMarkerTs == episodes.foundation.armedTs)
                 episodes.deferredPrime.openU else 0.0
-        // Der Riegel-Stand ZUM LIFT-ZEITPUNKT, festgehalten - der Latch
-        // selbst advanced erst spaeter in diesem Zyklus.
-        val upfrontZeroLatchGate = cfg.zeroLatchEnabled && episodes.zeroLatch.active
-        val liftedUpfront =
-            if (upfrontZeroLatchGate) vetted
-            else MealFoundation.liftUpfront(
+        // ---- TONIS FREIGABETOR DER SOFORTDOSIS (Mindeststand vor GO) ------
+        //
+        // Die aussergewoehnlich grosse Dosis braucht ein STRENGERES Tor als
+        // der normale Markerpfad - der Marker-Horizont selbst bleibt bei
+        // 60 min, das bereits berechnete 120-min-LowThreat-Verdikt ist die
+        // ZUSAETZLICHE Zulaessigkeitspruefung. Typisierte GEMESSENE
+        // Risikogruende (Verdikt roh - auch der gedaempfte Grenzzyklus zaehlt
+        // fuer die grosse Dosis -, aktiver oder gerade zuendender Zero-Latch,
+        // Rebound) VERSCHIEBEN die komplette offene Sofortmenge in den
+        // DeferredPrime-Aufschub: aufgeschoben, nie verworfen; Freigabe nach
+        // bestaetigter Erholung in Pumpenschritten (eine schnellere
+        // Upfront-Freigabe waere eine eigene Produktentscheidung). Eine bloss
+        // noch LAUFENDE alte Zero-TBR blockiert nichts - gelesen werden
+        // typisierte Gruende, nie die Pumpenrate. SICHERHEITSAUFLAGEN
+        // ausserdem: nur mit aktivem DeferredPrime-Netz (sonst fail-closed,
+        // BLOCKED_NO_DEFERRED) und nie bei Ledger-Hold (dort wird gewartet,
+        // nicht gebucht).
+        val upfrontRisikoAufschub = lowThreatResult.verdict != LowThreatGate.Verdict.NONE ||
+            (cfg.zeroLatchEnabled && episodes.zeroLatch.active) ||
+            reboundRaw
+        val upfrontOhneNetz = !cfg.deferredPrimeEnabled
+        var upfrontDeferredNowU = 0.0
+        val liftedUpfront = when {
+            upfrontOhneNetz || ledgerView.hold -> vetted
+            upfrontRisikoAufschub -> {
+                val offenJetzt = MealFoundation.upfrontFloorU(
+                    episodes.foundation, episodes.deliveredPhaseAU, upfrontDeferredOpenU,
+                )
+                if (offenJetzt > 0.0 &&
+                    foundationDecision.phase == MealFoundation.Phase.PHASE_A &&
+                    episodes.deferredPrime.pinnedForMarkerTs == episodes.foundation.armedTs
+                ) {
+                    episodes.deferredPrime = DeferredPrime.withhold(
+                        episodes.deferredPrime, offenJetzt,
+                        deferredHullRemainingU(episodes, manualBolusAfterMarkerU),
+                    )
+                    upfrontDeferredNowU = offenJetzt
+                }
+                vetted
+            }
+            else -> MealFoundation.liftUpfront(
                 base = vetted,
                 auth = episodes.foundation,
                 phase = foundationDecision.phase,
@@ -2685,8 +2754,14 @@ class FuseCycleRunner(
                 tailHeadroomU = tail?.takeIf { it.usable }?.headroomU,
                 transportCommitmentU = transportModelledU,
             )
+        }
+        // Export-Bilanz mit dem FRISCHEN Aufschubstand: ein gerade
+        // verschobener Anteil erscheint sofort als DEFERRED, nicht erst im
+        // Folgezyklus.
         val upfrontPendingU = MealFoundation.upfrontFloorU(
-            episodes.foundation, episodes.deliveredPhaseAU, upfrontDeferredOpenU,
+            episodes.foundation, episodes.deliveredPhaseAU,
+            if (episodes.deferredPrime.pinnedForMarkerTs == episodes.foundation.armedTs)
+                episodes.deferredPrime.openU else 0.0,
         )
         val upfrontRequestedU =
             if (liftedUpfront.bindingLimit == "mealUpfront") liftedUpfront.smbU else 0.0
@@ -3037,7 +3112,9 @@ class FuseCycleRunner(
             guardFloorMgdl = cfg.guardFloorMgdl,
             horizonMin = episodes.deferredPrime.horizonMin.toDouble(),
         )
-        var deferredWithheldU = 0.0
+        // Startet mit dem im Freigabetor verschobenen Sofortanteil - beide
+        // Verschiebewege desselben Zyklus stehen zusammen im Export.
+        var deferredWithheldU = upfrontDeferredNowU
         var deferredReleaseU = 0.0
         var deferredDenial: String? = null
         // Bestaetigte Erholung (Vertrag 4): DIESELBE Rate wie die
@@ -3611,30 +3688,13 @@ class FuseCycleRunner(
             }
             val q1NichtFallend = zeroLatchLastQ1.isNaN() || signal.q1 >= zeroLatchLastQ1 - 0.01
             zeroLatchLastQ1 = signal.q1
-            // ---- AUSLOESE-ZAEHLER (v29, Toni 24.08. nacht) ----------------
-            // Der 21:58-Grenzfall: EIN einziger knapper
-            // FALLING_WITH_BOLUS_OVERCOVERAGE-Zyklus (Ueberdeckung +0,55,
-            // Bodenkontakt 117,2/120 min) verriegelte den restartfesten
-            // Latch. Jetzt: MEASURED_LOW verriegelt weiter SOFORT; das
-            // Fall-Verdikt erst nach ZWEI aufeinanderfolgenden
-            // qualifizierenden Zyklen (90-s-Anschluss wie der Ruhe-Zaehler,
-            // jeder Unterbrechungszyklus nullt). Ein bereits AKTIVER Latch
-            // wird von jedem Fall-Verdikt weiter gehalten - die
-            // Zwei-Zyklen-Regel betrifft nur die Zuendung. Ein einzelner
-            // Sensorzacken kann damit keine lange Null mehr verriegeln;
-            // im 21:58-Verlauf haette die Null ~1 min spaeter eingesetzt.
-            val fallVerdikt =
-                lowThreatResult.verdict == LowThreatGate.Verdict.FALLING_WITH_BOLUS_OVERCOVERAGE
-            val lowVerdikt = lowThreatResult.verdict == LowThreatGate.Verdict.MEASURED_LOW
-            val armAnschluss = zeroArmLastTs > 0L && signal.sourceTs > zeroArmLastTs &&
-                signal.sourceTs - zeroArmLastTs <= 90_000L
-            zeroArmStreak = if (fallVerdikt) (if (armAnschluss) zeroArmStreak + 1 else 1) else 0
-            zeroArmLastTs = signal.sourceTs
+            // Der AUSLOESE-Zaehler (v29) laeuft VOR decide - hier gilt nur
+            // noch sein Ergebnis: das Risiko steht, wenn das Verdikt
+            // SCHARF ist (Low sofort, Fall erst 2/2, aktiver Latch haelt).
             val latch = DescentRecoveryLatch.advance(
                 state = episodes.zeroLatch,
                 runtime = zeroLatchRuntime,
-                riskActive = lowVerdikt ||
-                    (fallVerdikt && (episodes.zeroLatch.active || zeroArmStreak >= 2)),
+                riskActive = zeroVerdiktScharf && (zeroLowVerdikt || zeroFallVerdikt),
                 signalHealthy = step.health == Health.READY,
                 measuredLow = measuredLow,
                 fallRatePerMin = signal.ukfRatePerMin,
@@ -3918,8 +3978,12 @@ class FuseCycleRunner(
                 phase = foundationDecision.phase,
                 pendingU = upfrontPendingU,
                 requestedU = upfrontRequestedU,
-                deferredOpenU = upfrontDeferredOpenU,
-                zeroLatchBlocked = upfrontZeroLatchGate,
+                // FRISCHER Aufschubstand: ein in diesem Zyklus verschobener
+                // Anteil ist sofort als DEFERRED sichtbar.
+                deferredOpenU = if (episodes.deferredPrime.pinnedForMarkerTs == episodes.foundation.armedTs)
+                    episodes.deferredPrime.openU else 0.0,
+                zeroLatchBlocked = cfg.zeroLatchEnabled && episodes.zeroLatch.active,
+                deferredPrimeEnabled = cfg.deferredPrimeEnabled,
             ),
             lowThreat = lowThreatResult,
             evidenceEpisodeId = evidenceEpisodeId,
@@ -4059,8 +4123,12 @@ class FuseCycleRunner(
         requestedU: Double,
         deferredOpenU: Double,
         zeroLatchBlocked: Boolean,
+        deferredPrimeEnabled: Boolean = true,
+        fallback: Boolean = false,
     ): String? = when {
         !auth.valid || auth.phaseAUpfrontU <= 0.0 -> null
+        !deferredPrimeEnabled && pendingU > 0.0 -> "BLOCKED_NO_DEFERRED"
+        fallback && pendingU > 0.0 -> "BLOCKED_FALLBACK"
         zeroLatchBlocked && pendingU > 0.0 -> "BLOCKED_ZERO_LATCH"
         requestedU > 0.0 -> "REQUESTED"
         // Anteil liegt im Sicherheitsaufschub - der bestehende
@@ -4360,40 +4428,27 @@ class FuseCycleRunner(
             minLowerMgdl = null,
             bindingLimit = "markerFallback",
         )
-        // ---- PHASE-A-SOFORTANTEIL auch hier (iLet, Toni 24.08.) -----------
+        // ---- PHASE-A-SOFORTANTEIL: im FALLBACK KEIN LIFT (Toni) -----------
         //
-        // DERSELBE Boden wie im Hauptpfad - der Fallback traegt genau die
-        // Zyklen, in denen die Sofortdosis nach dem Druck sonst still einen
-        // Modellausfall abwarten wuerde. measuredLow traegt SAFETY_HOLD
-        // (nicht hebbar), der Zero-Latch sperrt ausdruecklich; die uebrigen
-        // Riegel wirken wie im Hauptpfad ueber die nachgelagerten Stufen.
+        // SICHERHEITSAUFLAGE: eine Mehr-Einheiten-Sofortdosis gehoert nicht
+        // auf den predictorfreien Technik-Pfad - ohne Bahn gibt es keine
+        // Wirkungspruefung, die eine 3-U-Dosis tragen koennte. Der Boden
+        // bleibt ueber die Bilanz sichtbar offen (BLOCKED_FALLBACK) und
+        // feuert im naechsten gesunden Hauptpfad-Zyklus - aufgeschoben,
+        // nicht verloren. Der kleine lineare Prime-Anteil laeuft hier wie
+        // bisher.
         val upfrontDeferredOpenU =
             if (episodes.deferredPrime.pinnedForMarkerTs == episodes.foundation.armedTs)
                 episodes.deferredPrime.openU else 0.0
-        val upfrontZeroLatchGate = cfg.zeroLatchEnabled && episodes.zeroLatch.active
         val upfrontPhase = MealFoundation.phaseOf(
             episodes.foundation, computeTs, episodes.primeWindowStartTs,
         )
-        val liftedUpfront =
-            if (upfrontZeroLatchGate) basis
-            else MealFoundation.liftUpfront(
-                base = basis,
-                auth = episodes.foundation,
-                phase = upfrontPhase,
-                deliveredPhaseAU = episodes.deliveredPhaseAU,
-                deferredOpenU = upfrontDeferredOpenU,
-                state = state,
-                // Kein Schwanz-Headroom: es gibt keine Bahn (s. unten).
-                tailHeadroomU = null,
-                transportCommitmentU = transportModelledU,
-            )
         val upfrontPendingU = MealFoundation.upfrontFloorU(
             episodes.foundation, episodes.deliveredPhaseAU, upfrontDeferredOpenU,
         )
-        val upfrontRequestedU =
-            if (liftedUpfront.bindingLimit == "mealUpfront") liftedUpfront.smbU else 0.0
+        val upfrontRequestedU = 0.0
         val liftedPrime = PrimeRelease.lift(
-            liftedUpfront, primePlan, state,
+            basis, primePlan, state,
             markerAuthorized = true,
             // Kein Schwanz-Headroom: es gibt keine Bahn, aus der einer
             // entstehen koennte. Der Onset-Deckel und die Transportmenge sind
@@ -4597,7 +4652,9 @@ class FuseCycleRunner(
                 pendingU = upfrontPendingU,
                 requestedU = upfrontRequestedU,
                 deferredOpenU = upfrontDeferredOpenU,
-                zeroLatchBlocked = upfrontZeroLatchGate,
+                zeroLatchBlocked = cfg.zeroLatchEnabled && episodes.zeroLatch.active,
+                deferredPrimeEnabled = cfg.deferredPrimeEnabled,
+                fallback = true,
             ),
             insulinModel = insulinModel,
             abortReason = null,

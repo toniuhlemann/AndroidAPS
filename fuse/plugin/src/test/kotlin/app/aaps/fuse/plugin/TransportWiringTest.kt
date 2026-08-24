@@ -3659,8 +3659,118 @@ class TransportWiringTest : TestBaseWithProfile() {
         upfrontAnteil = anteil
         primeHuelleU = 3.75
         fundamentAnteil = 0.8
+        // SICHERHEITSAUFLAGE (Toni): die Sofortdosis verlangt das aktive
+        // DeferredPrime-Sicherheitsnetz - ohne es fail-closed.
+        aufschubAn = true
         mahlzeit(dir)
         ruhigStellen()
+    }
+
+    /** Sicherheitsauflage: OHNE aktives DeferredPrime-Netz keine
+     *  Sofortdosis - fail-closed, der Boden bleibt sichtbar offen. */
+    @Test
+    fun `ohne deferred-prime keine sofortdosis`(@TempDir dir: File) {
+        upfrontAnteil = 1.0
+        primeHuelleU = 3.75
+        fundamentAnteil = 0.8
+        aufschubAn = false
+        mahlzeit(dir)
+        ruhigStellen()
+        val laufe = (0 until 12).map { transport(dir) }
+        assertTrue(laufe.all { it.phaseAUpfrontRequestedU == 0.0 }, "fail-closed ohne Netz")
+        val armiert = laufe.filter { it.mealFoundation.armed && it.phaseAUpfrontPendingU > 0.0 }
+        assertTrue(armiert.isNotEmpty(), "die Autorisierung selbst besteht")
+        assertTrue(
+            armiert.all { it.phaseAUpfrontState == "BLOCKED_NO_DEFERRED" },
+            "und der Grund ist benannt: " + armiert.map { it.phaseAUpfrontState }.distinct(),
+        )
+    }
+
+    /** Sicherheitsauflage: im predictorfreien Technik-Fallback KEINE
+     *  Sofortdosis - ohne Bahn traegt keine Wirkungspruefung eine
+     *  3-U-Dosis. Der Boden bleibt sichtbar offen (BLOCKED_FALLBACK) und
+     *  feuert im naechsten gesunden Hauptpfad-Zyklus: aufgeschoben, nicht
+     *  verloren. */
+    @Test
+    fun `im predictor-fallback keine sofortdosis`(@TempDir dir: File) {
+        upfrontAnteil = 1.0
+        primeHuelleU = 3.75
+        fundamentAnteil = 0.8
+        aufschubAn = true
+        markerAuthorized = true
+        fundamentAn = true
+        flach = 100.0
+        steigungProMin = 0.0
+        markerAt = 0L
+        clock = start
+        transportReset()
+        neuerRunner(FuseLedgerAdapter().also { it.loadOnce(dir.also(File::mkdirs), "test-epoch", start) })
+        repeat(6) { cycle() } // Observer READY werden lassen
+        predictReject = PredictorReason.PENDING_MODEL_TOO_SHORT
+        markerAt = clock // der Druck faellt mitten in den Modellausfall
+        val imFallback = (0 until 8).map { cycle() }.filter { it.markerFallbackUsed }
+        assertTrue(imFallback.isNotEmpty(), "der Fallback muss laufen")
+        assertTrue(
+            imFallback.all { it.phaseAUpfrontRequestedU == 0.0 },
+            "keine Sofortdosis ohne Bahn",
+        )
+        assertTrue(
+            imFallback.any { it.phaseAUpfrontState == "BLOCKED_FALLBACK" },
+            "der Grund ist benannt: " + imFallback.map { it.phaseAUpfrontState }.distinct(),
+        )
+        // Modell wieder da: der Boden feuert - die BILANZ bleibt exakt das
+        // A-Budget (waehrend des Fallbacks lieferte der lineare Prime
+        // weiter, der Boden fordert nur den Rest: aufgeschoben, nie
+        // verloren, nie doppelt).
+        predictReject = null
+        val d = bisSofortdosis(dir)
+        assertTrue(d.phaseAUpfrontRequestedU > 0.0, "der Boden feuert nach dem Comeback")
+        assertEquals(
+            3.0, ledger.episodes.deliveredPhaseAU, 1e-9,
+            "linear + sofort = exakt das Phase-A-Budget",
+        )
+        repeat(4) { assertEquals(0.0, transport(dir).phaseAUpfrontRequestedU, 1e-9, "und Schluss") }
+    }
+
+    /** Sicherheitsauflage: der Zyklus, der den Zero-Latch GERADE zuendet
+     *  (scharfes Verdikt), sperrt die Sofortdosis - nicht erst der
+     *  aktive Latch im Folgezyklus. */
+    @Test
+    fun `der zuendende zyklus sperrt die sofortdosis`(@TempDir dir: File) {
+        zeroLatchAn = true
+        aufschubAn = true
+        upfrontAnteil = 1.0
+        primeHuelleU = 3.75
+        fundamentAnteil = 0.8
+        fundamentAn = true
+        markerAuthorized = true
+        flach = 140.0
+        steigungProMin = -1.2
+        knickAbMin = 25
+        steigungNachKnick = 0.0
+        bolusIobU = 2.5
+        clock = start
+        transportReset()
+        neuerRunner(FuseLedgerAdapter().also { it.loadOnce(dir.also(File::mkdirs), "test-epoch", start) })
+        repeat(6) { cycle() } // Warm-up
+        markerAt = clock
+        val laufe = (0 until 30).map { cycle() }
+        // Die INVARIANTE ueber die ganze Fall-Episode: in KEINEM Zyklus mit
+        // Low-Tor-Verdikt (roh - deckt Zuend- und Haltezyklen) und in
+        // keinem Zyklus mit aktivem Latch geht eine Sofortdosis hinaus.
+        val verdiktZyklen = laufe.filter {
+            it.lowThreat != null &&
+                it.lowThreat!!.verdict != app.aaps.fuse.core.controller.LowThreatGate.Verdict.NONE
+        }
+        assertTrue(verdiktZyklen.size >= 2, "die Lage muss Verdikt-Zyklen tragen: ${verdiktZyklen.size}")
+        assertTrue(
+            verdiktZyklen.all { it.phaseAUpfrontRequestedU == 0.0 },
+            "keine Sofortdosis in einem Verdikt-Zyklus",
+        )
+        assertTrue(
+            laufe.filter { it.zeroLatchActive }.all { it.phaseAUpfrontRequestedU == 0.0 },
+            "und keine unter aktivem Latch",
+        )
     }
 
     /** Bis zur Sofortdosis fahren (Warm-up + Markerzyklus). */
@@ -3753,6 +3863,7 @@ class TransportWiringTest : TestBaseWithProfile() {
         upfrontAnteil = 0.5
         primeHuelleU = 3.75
         fundamentAnteil = 0.8
+        aufschubAn = true
         mahlzeit(dir) // steigende Lage: der Normalpfad fordert selbst
         val d = bisSofortdosis(dir)
         assertTrue(d.preFoundationSmbU >= d.phaseAUpfrontRequestedU - 1e-9, "der Boden traegt")
@@ -3823,6 +3934,7 @@ class TransportWiringTest : TestBaseWithProfile() {
     @Test
     fun `aktiver zero-latch sperrt die sofortdosis`(@TempDir dir: File) {
         zeroLatchAn = true
+        aufschubAn = true
         upfrontAnteil = 1.0
         primeHuelleU = 3.75
         fundamentAnteil = 0.8
@@ -3841,13 +3953,20 @@ class TransportWiringTest : TestBaseWithProfile() {
         repeat(30) { if (!gezuendet) gezuendet = cycle().zeroLatchActive }
         assertTrue(gezuendet, "der Latch muss zuenden")
         markerAt = clock
-        repeat(8) {
-            val o = cycle()
+        val laufe = (0 until 8).map { cycle() }
+        laufe.forEach { o ->
             assertEquals(0.0, o.phaseAUpfrontRequestedU, 1e-9, "kein mealUpfront unter aktivem Latch")
-            if (o.mealFoundation.armed && o.zeroLatchActive) {
-                assertEquals("BLOCKED_ZERO_LATCH", o.phaseAUpfrontState)
-            }
         }
+        // Tonis Vertrag: der Marker wird ANGENOMMEN, die Sofortmenge wird
+        // VERSCHOBEN (nie verworfen) - sie liegt im Aufschub und der Boden
+        // ist entsprechend zu.
+        val armiert = laufe.filter { it.mealFoundation.armed && it.zeroLatchActive }
+        assertTrue(armiert.isNotEmpty(), "die Autorisierung muss unter dem Latch bestehen")
+        assertTrue(
+            armiert.any { it.phaseAUpfrontState == "DEFERRED" && it.deferredPrimeOpenU >= 2.9 },
+            "die Sofortmenge liegt im Aufschub: " +
+                armiert.map { it.phaseAUpfrontState to it.deferredPrimeOpenU }.distinct(),
+        )
     }
 
     /** Pflichttest 10: unklarer Pumpenausgang -> die Buchung haftet, der
@@ -3899,6 +4018,7 @@ class TransportWiringTest : TestBaseWithProfile() {
         upfrontAnteil = 1.0
         primeHuelleU = 3.75
         fundamentAnteil = 0.8
+        aufschubAn = true
         mahlzeit(dir)
         // Steiler, ueberdeckter Fall im harten 30er-Horizont: BG 150,
         // -3,0/min -> Boden in ~27 min; 2,0 U x 54 deckt den Abstand.
@@ -7124,9 +7244,19 @@ class TransportWiringTest : TestBaseWithProfile() {
         assertTrue(ersterVerdikt >= 0, "die Lage muss das Fall-Verdikt liefern")
         assertFalse(laufe[ersterVerdikt].zeroLatchActive, "der EINZELNE Verdikt-Zyklus verriegelt nicht")
         assertEquals(1, laufe[ersterVerdikt].zeroLatchArmStreak, "Ausloese-Zaehler 1/2")
+        // Tonis Korrektur: auch die ERSTE Zero-TBR wartet - der einzelne
+        // Grenzzyklus setzt noch gar keine Null.
+        assertTrue(
+            laufe[ersterVerdikt].decision.tbr != FuseController.TbrAction.ZERO_TEMP,
+            "Zyklus 1: KEINE Zero-TBR (${laufe[ersterVerdikt].decision.tbr})",
+        )
         val zuendung = laufe.indexOfFirst { it.zeroLatchActive }
         assertEquals(ersterVerdikt + 1, zuendung, "Zuendung genau einen Zyklus spaeter")
         assertTrue(laufe[zuendung].zeroLatchArmStreak >= 2, "und erst mit 2/2")
+        assertEquals(
+            FuseController.TbrAction.ZERO_TEMP, laufe[zuendung].decision.tbr,
+            "Zyklus 2: Null und Latch gemeinsam",
+        )
         // Die Messfelder des Grenzfalls stehen im Trail.
         val lt = laufe[ersterVerdikt].lowThreat!!
         assertTrue((lt.overcoverageMarginMgdl ?: -1.0) > 0.0, "Ueberdeckungsmarge exportiert")
@@ -7169,6 +7299,10 @@ class TransportWiringTest : TestBaseWithProfile() {
         assertTrue(nachLuecke != null, "nach der Luecke muss das Verdikt wiederkommen")
         assertEquals(1, nachLuecke!!.zeroLatchArmStreak, "nach der Luecke beginnt der Zaehler neu")
         assertFalse(nachLuecke!!.zeroLatchActive, "kein Zuenden aus zwei Zyklen mit Luecke")
+        assertTrue(
+            nachLuecke!!.decision.tbr != FuseController.TbrAction.ZERO_TEMP,
+            "und auch KEINE Zero-TBR aus dem Einzelzyklus nach der Luecke",
+        )
     }
 
     /** v29: MEASURED_LOW verriegelt weiter SOFORT - die Zwei-Zyklen-Regel
@@ -7194,6 +7328,10 @@ class TransportWiringTest : TestBaseWithProfile() {
         }
         assertTrue(low >= 0, "die Lage muss das gemessene Tief erreichen")
         assertTrue(laufe[low].zeroLatchActive, "MEASURED_LOW verriegelt im SELBEN Zyklus")
+        assertEquals(
+            FuseController.TbrAction.ZERO_TEMP, laufe[low].decision.tbr,
+            "und die Null steht sofort",
+        )
     }
 
     /**

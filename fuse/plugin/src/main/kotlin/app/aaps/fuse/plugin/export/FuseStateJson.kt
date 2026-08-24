@@ -176,7 +176,15 @@ object FuseStateJson {
     // v29 (24.08. nacht, DOSIERWIRKSAM bei aktivem Latch, Tonis
     // Nachbesserung): der Zero-Latch zuendet auf das Fall-Verdikt
     // (FALLING_WITH_BOLUS_OVERCOVERAGE) erst nach ZWEI aufeinanderfolgenden
-    // qualifizierenden Zyklen (90-s-Anschluss, Unterbrechung nullt);
+    // qualifizierenden Zyklen - und auch die ERSTE Zero-TBR wartet (das
+    // gedaempfte Verdikt geht als NONE in decide; Zyklus 1 KEEP, Zyklus 2
+    // Null+Latch, MEASURED_LOW sofort beides). Ausserdem Tonis
+    // Sofortdosis-Freigabetor (v28-Auflagen): MEAL_UPFRONT nur mit aktivem
+    // DeferredPrime-Netz, nie im Predictor-Fallback; typisierte
+    // Risikogruende (120-min-LowThreat-Verdikt roh, aktiver Zero-Latch,
+    // Rebound) VERSCHIEBEN die offene Sofortmenge in den Aufschub - nie
+    // die Pumpenrate lesen, nie verwerfen (90-s-Anschluss, Unterbrechung
+    // nullt);
     // MEASURED_LOW verriegelt weiter sofort, ein aktiver Latch wird von
     // jedem Fall-Verdikt gehalten. Anlass: der 21:58-Grenzfall (Ueberdeckung
     // +0,55 mg/dl, Bodenkontakt 117,2/120 min) verriegelte als EINZELNER
