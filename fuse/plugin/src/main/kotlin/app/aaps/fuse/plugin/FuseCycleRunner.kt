@@ -2721,9 +2721,25 @@ class FuseCycleRunner(
         // ausserdem: nur mit aktivem DeferredPrime-Netz (sonst fail-closed,
         // BLOCKED_NO_DEFERRED) und nie bei Ledger-Hold (dort wird gewartet,
         // nicht gebucht).
+        // P0 (Toni): TECHNISCHE INTEGRITAET wie im Liveness-Kanal. Ein Kern
+        // kann existieren und trotzdem typisierte Modellfehler tragen
+        // (ISF_SLOT_MISSING, DELIVERY_AFTER_RELEASE, NON_FINITE, ...) -
+        // finalVeto saehe das, aber MarkerFloor stellte die grosse
+        // autorisierte Dosis danach wieder her. Dieselbe geteilte Pruefung
+        // VOR dem Lift; nur Guard-/Tail-URTEILE bleiben markerpolitisch
+        // ueberstimmbar. Ein technischer Reject ist ein AUFSCHUB-Grund wie
+        // die gemessenen Risiken: die Menge wandert in den Aufschub, damit
+        // ein langer Modellfehler sie nicht ueber das Phasenende verliert.
+        val upfrontKern = kernel()
+        val upfrontTechReject = upfrontKern == null ||
+            CandidateSearch.verifyTechnicalIntegrity(
+                prediction, upfrontKern, built.input.isfSlots, candidateBand, bolusStep,
+                restraint = restraint,
+            ) != null
         val upfrontRisikoAufschub = lowThreatResult.verdict != LowThreatGate.Verdict.NONE ||
             (cfg.zeroLatchEnabled && episodes.zeroLatch.active) ||
-            reboundRaw
+            reboundRaw ||
+            upfrontTechReject
         val upfrontOhneNetz = !cfg.deferredPrimeEnabled
         var upfrontDeferredNowU = 0.0
         val liftedUpfront = when {
@@ -2736,11 +2752,15 @@ class FuseCycleRunner(
                     foundationDecision.phase == MealFoundation.Phase.PHASE_A &&
                     episodes.deferredPrime.pinnedForMarkerTs == episodes.foundation.armedTs
                 ) {
+                    val openVorher = episodes.deferredPrime.openU
                     episodes.deferredPrime = DeferredPrime.withhold(
                         episodes.deferredPrime, offenJetzt,
                         deferredHullRemainingU(episodes, manualBolusAfterMarkerU),
                     )
-                    upfrontDeferredNowU = offenJetzt
+                    // Die REALE Differenz - withhold kann am Huellenrest
+                    // kappen, exportiert wird nie mehr als gebucht.
+                    upfrontDeferredNowU =
+                        (episodes.deferredPrime.openU - openVorher).coerceAtLeast(0.0)
                 }
                 vetted
             }
@@ -4432,19 +4452,51 @@ class FuseCycleRunner(
         //
         // SICHERHEITSAUFLAGE: eine Mehr-Einheiten-Sofortdosis gehoert nicht
         // auf den predictorfreien Technik-Pfad - ohne Bahn gibt es keine
-        // Wirkungspruefung, die eine 3-U-Dosis tragen koennte. Der Boden
-        // bleibt ueber die Bilanz sichtbar offen (BLOCKED_FALLBACK) und
-        // feuert im naechsten gesunden Hauptpfad-Zyklus - aufgeschoben,
-        // nicht verloren. Der kleine lineare Prime-Anteil laeuft hier wie
-        // bisher.
+        // Wirkungspruefung, die eine 3-U-Dosis tragen koennte. Und WIRKLICH
+        // VERLUSTFREI (Tonis Review): der offene Betrag wird HIER in den
+        // Aufschub gebucht - dauert der Modellausfall bis nach Phase A,
+        // waere der blosse Boden sonst als WINDOW_OVER verfallen. Der
+        // kleine lineare Prime-Anteil laeuft wie bisher.
         val upfrontDeferredOpenU =
             if (episodes.deferredPrime.pinnedForMarkerTs == episodes.foundation.armedTs)
                 episodes.deferredPrime.openU else 0.0
         val upfrontPhase = MealFoundation.phaseOf(
             episodes.foundation, computeTs, episodes.primeWindowStartTs,
         )
-        val upfrontPendingU = MealFoundation.upfrontFloorU(
+        val offenImFallbackU = MealFoundation.upfrontFloorU(
             episodes.foundation, episodes.deliveredPhaseAU, upfrontDeferredOpenU,
+        )
+        // Der Punkt-6-PIN liegt im Hauptpfad NACH der Fallback-Weiche - ein
+        // Druck mitten im Modellausfall waere sonst nie gepinnt und die
+        // Verschiebung unten ein No-op. DIESELBE Identitaetsdisziplin wie
+        // dort: nur ein in DIESEM Prozess beobachteter Druck pinnt.
+        if (cfg.deferredPrimeEnabled && markerTs > 0L && markerTs <= computeTs &&
+            markerPressObserved() == markerTs &&
+            episodes.deferredPrime.pinnedForMarkerTs != markerTs
+        ) {
+            episodes.deferredPrime = DeferredPrime.pin(
+                episodes.deferredPrime, markerTs,
+                horizonMin = cfg.markerPrimeDescentHorizonMin.toInt(),
+                endMin = cfg.deferredPrimeEndMin,
+            )
+            episodes.postFoundationDeliveredU = 0.0
+        }
+        if (offenImFallbackU > 0.0 &&
+            upfrontPhase == MealFoundation.Phase.PHASE_A &&
+            cfg.deferredPrimeEnabled && !ledgerView.hold &&
+            episodes.deferredPrime.pinnedForMarkerTs == episodes.foundation.armedTs
+        ) {
+            episodes.deferredPrime = DeferredPrime.withhold(
+                episodes.deferredPrime, offenImFallbackU,
+                deferredHullRemainingU(episodes, manualBolusAfterMarkerU),
+            )
+        }
+        // Export mit dem FRISCHEN Aufschubstand: die Bilanz zeigt den
+        // verschobenen Anteil sofort als DEFERRED.
+        val upfrontPendingU = MealFoundation.upfrontFloorU(
+            episodes.foundation, episodes.deliveredPhaseAU,
+            if (episodes.deferredPrime.pinnedForMarkerTs == episodes.foundation.armedTs)
+                episodes.deferredPrime.openU else 0.0,
         )
         val upfrontRequestedU = 0.0
         val liftedPrime = PrimeRelease.lift(
@@ -4543,6 +4595,12 @@ class FuseCycleRunner(
         val buchung = buche(
             episodes, actuatedU, primeWindowOpen, onset.active, mealMarkerActive, signal.sourceTs,
             evidenceEpisodeId = evidenceEpisodeId, computeTs = computeTs,
+            // OHNE diesen Parameter rechnete die Aufschub-Huelle fail-closed
+            // 0 und clampToHull klemmte einen frisch verschobenen
+            // Sofortanteil im selben Fallback-Zyklus wieder auf 0 - die
+            // Menge waere still verloren gewesen (Baubefund beim
+            // verlustfreien Fallback, praeexistenter Mangel dieses Aufrufs).
+            manualBolusAfterMarkerU = manualBolusAfterMarkerU,
         )
         episodes.pendingReservation =
             if (actuatedU > 0.0) app.aaps.fuse.plugin.ledger.EpisodeBudgets.Reservation(
@@ -4651,7 +4709,10 @@ class FuseCycleRunner(
                 phase = upfrontPhase,
                 pendingU = upfrontPendingU,
                 requestedU = upfrontRequestedU,
-                deferredOpenU = upfrontDeferredOpenU,
+                // FRISCHER Aufschubstand - ein hier verschobener Anteil ist
+                // sofort als DEFERRED sichtbar.
+                deferredOpenU = if (episodes.deferredPrime.pinnedForMarkerTs == episodes.foundation.armedTs)
+                    episodes.deferredPrime.openU else 0.0,
                 zeroLatchBlocked = cfg.zeroLatchEnabled && episodes.zeroLatch.active,
                 deferredPrimeEnabled = cfg.deferredPrimeEnabled,
                 fallback = true,

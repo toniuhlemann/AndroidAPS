@@ -3686,6 +3686,42 @@ class TransportWiringTest : TestBaseWithProfile() {
         )
     }
 
+    /** P0 (Toni): TECHNISCHE INTEGRITAET IM HAUPTPFAD - ein Zyklus kann
+     *  einen Kern haben und trotzdem einen typisierten Modellfehler
+     *  tragen; finalVeto saehe ihn, aber MarkerFloor stellte die grosse
+     *  Dosis wieder her. Das Tor prueft VOR dem Lift: kein mealUpfront,
+     *  die Menge wandert in den Aufschub - nie verloren. */
+    @Test
+    fun `technischer modellfehler traegt keine sofortdosis`(@TempDir dir: File) {
+        upfrontAnteil = 1.0
+        primeHuelleU = 3.75
+        fundamentAnteil = 0.8
+        aufschubAn = true
+        markerAuthorized = true
+        fundamentAn = true
+        flach = 100.0
+        steigungProMin = 0.0
+        markerAt = 0L
+        clock = start
+        transportReset()
+        neuerRunner(FuseLedgerAdapter().also { it.loadOnce(dir.also(File::mkdirs), "test-epoch", start) })
+        repeat(6) { cycle() } // Observer READY
+        // Der Kern deckt das 360er-Fenster nicht - exakt die typisierte
+        // Reject-Sorte des Liveness-Modell-Tors (MODEL_HORIZON_TOO_SHORT).
+        whenever(preferences.get(FuseIntKey.LiabilityHorizonMin)).thenReturn(360)
+        markerAt = clock
+        val laufe = (0 until 8).map { cycle() }
+        assertTrue(
+            laufe.all { it.phaseAUpfrontRequestedU == 0.0 },
+            "kein mealUpfront bei technischem Modellfehler",
+        )
+        assertTrue(
+            laufe.any { it.phaseAUpfrontState == "DEFERRED" && it.deferredPrimeOpenU > 0.5 },
+            "die Menge liegt im Aufschub: " +
+                laufe.map { it.phaseAUpfrontState to it.deferredPrimeOpenU }.distinct(),
+        )
+    }
+
     /** Sicherheitsauflage: im predictorfreien Technik-Fallback KEINE
      *  Sofortdosis - ohne Bahn traegt keine Wirkungspruefung eine
      *  3-U-Dosis. Der Boden bleibt sichtbar offen (BLOCKED_FALLBACK) und
@@ -3714,22 +3750,26 @@ class TransportWiringTest : TestBaseWithProfile() {
             imFallback.all { it.phaseAUpfrontRequestedU == 0.0 },
             "keine Sofortdosis ohne Bahn",
         )
+        // WIRKLICH VERLUSTFREI (Tonis Review): der offene Betrag liegt im
+        // Aufschub - ein Modellausfall bis nach Phase A koennte einen
+        // blossen Boden sonst als WINDOW_OVER verfallen lassen.
+        val verschoben = imFallback.filter { it.mealFoundation.armed }
+        assertTrue(verschoben.isNotEmpty(), "die Autorisierung muss im Fallback bestehen")
         assertTrue(
-            imFallback.any { it.phaseAUpfrontState == "BLOCKED_FALLBACK" },
-            "der Grund ist benannt: " + imFallback.map { it.phaseAUpfrontState }.distinct(),
+            verschoben.any { it.phaseAUpfrontState == "DEFERRED" && it.deferredPrimeOpenU > 0.5 },
+            "die Sofortmenge liegt im Aufschub: " +
+                verschoben.map { it.phaseAUpfrontState to it.deferredPrimeOpenU }.distinct(),
         )
-        // Modell wieder da: der Boden feuert - die BILANZ bleibt exakt das
-        // A-Budget (waehrend des Fallbacks lieferte der lineare Prime
-        // weiter, der Boden fordert nur den Rest: aufgeschoben, nie
-        // verloren, nie doppelt).
+        // Modell wieder da: der Boden ist ZU (verschoben, nicht verworfen) -
+        // keine Doppel-Anforderung; die Nachlieferung laeuft ueber die
+        // bestehende Aufschub-Freigabe nach bestaetigter Erholung
+        // (P6-Vertraege), nie als ungebremster Nachholbolus.
         predictReject = null
-        val d = bisSofortdosis(dir)
-        assertTrue(d.phaseAUpfrontRequestedU > 0.0, "der Boden feuert nach dem Comeback")
-        assertEquals(
-            3.0, ledger.episodes.deliveredPhaseAU, 1e-9,
-            "linear + sofort = exakt das Phase-A-Budget",
-        )
-        repeat(4) { assertEquals(0.0, transport(dir).phaseAUpfrontRequestedU, 1e-9, "und Schluss") }
+        repeat(6) {
+            val o = transport(dir)
+            assertEquals(0.0, o.phaseAUpfrontRequestedU, 1e-9, "kein Doppel nach dem Comeback")
+        }
+        assertTrue(ledger.episodes.deferredPrime.openU > 0.5, "die Menge bleibt gebucht offen")
     }
 
     /** Sicherheitsauflage: der Zyklus, der den Zero-Latch GERADE zuendet
