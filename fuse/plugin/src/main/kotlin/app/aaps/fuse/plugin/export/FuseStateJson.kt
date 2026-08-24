@@ -152,7 +152,16 @@ object FuseStateJson {
     // Mathematik mit dem Normalpfad), CORRECTION = Korrektur-Ratio;
     // Profildeckel ERST NACH der Basis. Der Normalpfad bleibt bitgleich.
     // Export: liveness.baseRatio vor dem Deckel.
-    const val RULE_SET_VERSION = 26
+    // v27 (24.08. spaet, DOSIERWIRKSAM, Tonis Korrektur zu v26): die
+    // Liveness-Basis kommt in BEIDEN Profilen aus der R-Rampe - der
+    // Unterschied MEAL/CORRECTION ist AUSSCHLIESSLICH der ausgewaehlte
+    // Ratio-Deckel. v26 liess CORRECTION fest auf der Korrektur-Ratio
+    // stehen; damit wurde ein K-Deckel 0,20 nur als Obergrenze einer
+    // festen 0,15 gelesen und konnte nie skalieren (Beispiele: r 1,76 ->
+    // Basis 0,185 unter dem Deckel; r 2,69 -> Basis 0,31, K-Deckel kappt
+    // auf 0,20). Der normale Nicht-Liveness-Pfad behaelt sein
+    // mealWindow-Gate und bleibt bitgleich.
+    const val RULE_SET_VERSION = 27
 
     /** Schema des Trail-Datensatzes - s. die Notiz an der Schreibstelle. */
     const val SCHEMA_VERSION = 4

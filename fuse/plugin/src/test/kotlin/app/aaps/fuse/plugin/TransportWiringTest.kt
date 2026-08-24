@@ -7130,11 +7130,12 @@ class TransportWiringTest : TestBaseWithProfile() {
      * blind state.effectiveSmbRatio - die faellt ausserhalb des
      * Normalpfad-Fensters auf die Korrektur-Ratio, und "Live M" dosierte
      * unsichtbar mit dem K-Tempo (Live-Trail: r 2,69, liveRatio 0,15).
-     * Jetzt traegt das MEAL-Profil die R-Rampe selbst (Pflichttests 5/9),
-     * der Normalpfad bleibt bitgleich auf der Korrektur-Ratio (Pflicht-
-     * test 10), an der Deadline gilt sofort das K-Profil ohne Rampe
-     * (Pflichttest 11, halb offen) und gemessenes Fallen bleibt auch im
-     * MEAL-Profil ein absoluter Riegel (Abnahme c).
+     * Jetzt rampt der Kanal fensterunabhaengig (Pflichttests 5/9), der
+     * Normalpfad bleibt bitgleich auf der Korrektur-Ratio (Pflichttest
+     * 10), an der Deadline gilt sofort das K-Profil - seit Tonis
+     * v27-Korrektur heisst das: GLEICHE Rampenbasis, aber der K-DECKEL
+     * kappt (Pflichttest 11, halb offen) - und gemessenes Fallen bleibt
+     * ein absoluter Riegel (Abnahme c).
      *
      * LAGE: UKF-Steigung 1,2 bleibt UNTER der Rampen-Unterkante 1,5
      * (kein Kinematik-Fenster, kein FALLING), waehrend die
@@ -7147,6 +7148,12 @@ class TransportWiringTest : TestBaseWithProfile() {
         whenever(preferences.get(FuseDoubleKey.RiseRampLowR)).thenReturn(1.5)
         whenever(preferences.get(FuseDoubleKey.RiseRampHighR)).thenReturn(3.0)
         whenever(preferences.get(FuseBooleanKey.OnsetChannelEnabled)).thenReturn(false)
+        // K-Deckel eng, M-Deckel offen (Migration 1,0): der Fristuebergang
+        // wird damit als DECKEL-Wechsel messbar - gleiche Rampenbasis,
+        // engere Kappe (Tonis v27-Korrektur). maxSMB offen, sonst bindet es
+        // vor dem Ratio-Deckel und traegt dessen Namen davon.
+        corrRatioDeckel = 0.20
+        maxSmbU = 1.0
         livenessLage(dir)
         steigungProMin = 0.9
         knickAbMin = 55
@@ -7185,8 +7192,9 @@ class TransportWiringTest : TestBaseWithProfile() {
         }
 
         // Pflichttest 11 (halb offen): der Zyklus EXAKT auf der Deadline
-        // traegt bereits das K-Profil und die Korrektur-Basis - trotz
-        // unveraendert hohem r.
+        // traegt bereits das K-Profil - gleiche Rampenbasis, aber der
+        // K-DECKEL 0,20 kappt (v27: der Deckel ist der einzige
+        // Profilunterschied der Ratio).
         var anDeadline: FuseCycleRunner.Outcome? = null
         while (anDeadline == null) { val o = cycle(); if (o.computeTs >= deadline) anDeadline = o }
         assertEquals(deadline, anDeadline!!.computeTs, "Zyklus liegt exakt auf der Deadline")
@@ -7194,7 +7202,13 @@ class TransportWiringTest : TestBaseWithProfile() {
         val nachDeadline = (0 until 3).map { cycle() }.filter { it.livenessBaseRatio != null }
         assertTrue(nachDeadline.isNotEmpty(), "auch nach der Frist rechnet der Kanal")
         nachDeadline.forEach {
-            assertEquals(0.15, it.livenessBaseRatio!!, 1e-9, "K-Profil: keine Rampe mehr")
+            val erwartet = FuseController.rampSmbRatio(
+                0.15, 0.35, it.state!!.rSignedMgdlPerMin, 1.5, 3.0,
+            )
+            assertEquals(erwartet, it.livenessBaseRatio!!, 1e-9, "K-Profil: dieselbe Rampenbasis")
+            assertTrue(it.livenessBaseRatio!! > 0.20 + 1e-9, "die Basis steht ueber dem K-Deckel: ${it.livenessBaseRatio}")
+            assertEquals(0.20, it.livenessLiveRatio!!, 1e-9, "der K-Deckel 0,20 kappt ab der Frist")
+            assertEquals("livenessRatioCap", it.livenessBinding, "und nennt sich als Grenze")
         }
 
         // Abnahme c: gemessenes Fallen bleibt im MEAL-Vertragssinn ein
@@ -7209,40 +7223,63 @@ class TransportWiringTest : TestBaseWithProfile() {
     }
 
     /**
-     * GEGENLAGE (Abnahme b, Pflichttests 7/8): DIESELBE Druck-Lage ohne
-     * Marker ist CORRECTION - die Basis bleibt die Korrektur-Ratio, auch
-     * wenn r tief in der Rampe steht (Mutationsprobe "Rampe auch im
-     * CORRECTION-Profil"), und der K-Cap kappt sie mit Namen.
+     * K-PROFIL SKALIERT UEBER DIE RAMPE BIS ZUM K-DECKEL (Tonis
+     * v27-Korrektur, 24.08. spaet): die v26-Fassung liess CORRECTION fest
+     * auf der Korrektur-Ratio stehen - der K-Deckel 0,20 wurde nur als
+     * Obergrenze einer festen 0,15 gelesen und konnte nie skalieren.
+     * Jetzt: Basis = Rampe in BEIDEN Profilen, der K-Deckel ist die
+     * Skalierungsgrenze. Zwei Laeufe derselben Lage: ein enger Deckel
+     * kappt die Rampenbasis mit Namen, ein offener laesst sie skalieren
+     * (liveRatio == Basis > 0,15 - der scharfe Diskriminator gegen das
+     * alte Verhalten UND gegen die Mutationsprobe "K-Basis faellt auf die
+     * Korrektur-Ratio zurueck").
      */
     @Test
-    fun `correction-basis bleibt korrektur-ratio auch bei starkem r`(@TempDir dir: File) {
+    fun `correction-profil skaliert ueber die rampe bis zum k-deckel`(@TempDir dir: File) {
         whenever(preferences.get(FuseDoubleKey.RiseRampLowR)).thenReturn(1.5)
         whenever(preferences.get(FuseDoubleKey.RiseRampHighR)).thenReturn(3.0)
         whenever(preferences.get(FuseBooleanKey.OnsetChannelEnabled)).thenReturn(false)
-        corrRatioDeckel = 0.10; mealRatioDeckel = 0.30
-        livenessLage(dir)
-        steigungProMin = 0.9
-        knickAbMin = 55
-        steigungNachKnick = 1.2
-        aktivitaet = 0.028
-        val alle = (0 until 80).map { cycle() }
-        val hub = alle.filter { it.livenessLiftU > 0.0 }
-        assertTrue(hub.size >= 8, "die Lage muss ohne Marker heben (CORRECTION): ${hub.size}")
-        hub.forEach { o ->
+        fun laufMit(kCap: Double, name: String): List<FuseCycleRunner.Outcome> {
+            corrRatioDeckel = kCap; mealRatioDeckel = kotlin.math.max(kCap, 0.30)
+            maxSmbU = 1.0 // sonst bindet maxSMB vor dem Ratio-Deckel
+            livenessLage(File(dir, name))
+            steigungProMin = 0.9
+            knickAbMin = 55
+            steigungNachKnick = 1.2
+            aktivitaet = 0.028
+            return (0 until 80).map { cycle() }
+        }
+        val eng = laufMit(0.10, "eng").filter { it.livenessLiftU > 0.0 }
+        assertTrue(eng.size >= 8, "die Lage muss ohne Marker heben (CORRECTION): ${eng.size}")
+        eng.forEach { o ->
             assertEquals("CORRECTION", o.livenessProfile)
-            assertEquals(0.15, o.livenessBaseRatio!!, 1e-9, "CORRECTION rampt NIE")
-            assertEquals(0.10, o.livenessLiveRatio!!, 1e-9, "K-Cap 0,10 bindet")
+            val erwartet = FuseController.rampSmbRatio(
+                0.15, 0.35, o.state!!.rSignedMgdlPerMin, 1.5, 3.0,
+            )
+            assertEquals(erwartet, o.livenessBaseRatio!!, 1e-9, "Basis == Rampe auch im K-Profil")
+            assertEquals(0.10, o.livenessLiveRatio!!, 1e-9, "der enge K-Deckel kappt")
+            assertEquals("livenessRatioCap", o.livenessBinding, "und nennt sich als Grenze")
         }
         // Der Gegenbeweis braucht ein r IN der Rampe - sonst prueft der
         // Test nichts (spaete Zyklen: Steigung 1,2 + Aktivitaetshub).
         assertTrue(
-            hub.takeLast(5).all { (it.state!!.rSignedMgdlPerMin ?: 0.0) > 1.7 },
-            "r muss in der Rampe stehen: " + hub.takeLast(5).map { it.state!!.rSignedMgdlPerMin },
+            eng.takeLast(5).all { (it.state!!.rSignedMgdlPerMin ?: 0.0) > 1.7 },
+            "r muss in der Rampe stehen: " + eng.takeLast(5).map { it.state!!.rSignedMgdlPerMin },
         )
-        assertTrue(
-            hub.any { it.livenessBinding == "livenessRatioCap" },
-            "der K-Cap nennt sich als Grenze: " + hub.map { it.livenessBinding }.distinct(),
-        )
+
+        // Offener K-Deckel 0,35 (= Rampenmaximum): die Korrektur-Ratio
+        // SKALIERT - liveRatio folgt der Rampenbasis ueber 0,15 hinaus,
+        // der Deckel bindet nie real.
+        transportReset()
+        val offen = laufMit(0.35, "offen").filter { it.livenessLiftU > 0.0 }
+        assertTrue(offen.size >= 8, "auch der offene Lauf muss heben: ${offen.size}")
+        val spaet = offen.filter { (it.state!!.rSignedMgdlPerMin ?: 0.0) > 1.7 }
+        assertTrue(spaet.size >= 5, "es braucht Zyklen mit r in der Rampe: ${spaet.size}")
+        spaet.forEach { o ->
+            assertEquals(o.livenessBaseRatio!!, o.livenessLiveRatio!!, 1e-9, "unter dem Deckel folgt die Ratio der Rampe")
+            assertTrue(o.livenessLiveRatio!! > 0.15 + 1e-9, "und skaliert ueber 0,15 hinaus: ${o.livenessLiveRatio}")
+            assertTrue(o.livenessBinding != "livenessRatioCap", "der offene Deckel bindet nicht")
+        }
     }
 
     /**

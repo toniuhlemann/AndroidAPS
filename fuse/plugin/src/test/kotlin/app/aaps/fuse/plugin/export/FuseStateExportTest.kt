@@ -666,11 +666,13 @@ class FuseStateExportTest {
         // zweier beliebig kleiner Rueckgaenge), v26 die Liveness-Basis-Ratio
         // nach Profil (MEAL traegt die R-Rampe selbst statt der
         // fenster-gegateten effectiveSmbRatio - der unsichtbare
-        // 0,15-Livefall bei Marker +115 min).
+        // 0,15-Livefall bei Marker +115 min), v27 Tonis Korrektur dazu:
+        // BEIDE Profile rampen, der Profilunterschied ist allein der
+        // M-/K-Deckel (v26 liess den K-Deckel nie skalieren).
         // DIESER TEST IST ABSICHTLICH STUR: er faellt bei jedem Bump um und
         // zwingt damit zu der Frage, ob die Aenderung wirklich dosierwirksam
         // war - ein stiller Bump waere so wertlos wie ein vergessener.
-        assertEquals(26, FuseStateJson.RULE_SET_VERSION)
+        assertEquals(27, FuseStateJson.RULE_SET_VERSION)
         assertTrue(
             FuseStateJson.hashOf(cfg)!!.isNotEmpty(),
             "und der Hash bleibt berechenbar",

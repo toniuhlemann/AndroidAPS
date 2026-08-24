@@ -3400,18 +3400,19 @@ class FuseCycleRunner(
             val releaseMean = prediction.points
                 .firstOrNull { it.offsetMin == cfg.releaseHorizonMin }?.meanBg
                 ?: return@run sperren("NO_RELEASE_MEAN")
-            // ---- BASIS-RATIO NACH PROFIL (Toni 24.08. abends) -----------
-            // Nicht mehr state.effectiveSmbRatio: der faellt ausserhalb des
+            // ---- BASIS-RATIO AUS DER RAMPE (Toni 24.08., v27-Korrektur) --
+            // Nicht state.effectiveSmbRatio: die faellt ausserhalb des
             // Normalpfad-Mahlzeitfensters auf die Korrektur-Ratio zurueck,
             // und der Livefall (Marker +115 min, r 2,69, mealWindow false)
-            // lief als "Live M" unsichtbar auf 0,15 - der Profildeckel als
-            // reine Obergrenze konnte nichts anheben. Das MEAL-Profil
-            // traegt die R-Rampe selbst (gleiche geteilte Mathematik,
-            // gleiche State-Eingaben); CORRECTION bleibt bei der
-            // Korrektur-Ratio. Der Normalpfad liest weiter
+            // lief als "Live M" unsichtbar auf 0,15. BEIDE Profile rampen
+            // (gleiche geteilte Mathematik, gleiche State-Eingaben); der
+            // Unterschied MEAL/CORRECTION ist AUSSCHLIESSLICH der unten
+            // angewendete Profildeckel - der K-Deckel ist die
+            // Skalierungsgrenze der Korrektur, keine Obergrenze einer
+            // festen 0,15 (v26-Irrtum, von Toni am selben Abend
+            // korrigiert). Der Normalpfad liest weiter
             // state.effectiveSmbRatio und bleibt bitgleich.
             val baseRatio = LivenessChannel.baseRatio(
-                mealProfile = markerPowerActive,
                 smbRatioCorrection = state.smbRatioCorrection,
                 smbRatioRise = state.smbRatioRise,
                 rSignedMgdlPerMin = state.rSignedMgdlPerMin,
