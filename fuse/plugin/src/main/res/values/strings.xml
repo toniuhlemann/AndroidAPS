@@ -104,7 +104,7 @@
     <string name="fuse_liveness_corr_iob_title">K Kanaldeckel [% maxIOB]</string>
     <string name="fuse_liveness_corr_iob_summary">IOB-Deckel des Liveness-Kanals AUSSERHALB der Mahlzeiten-Frist. Ungesetzt gilt der alte globale Kanaldeckel. Nie groesser als der M-Wert.</string>
     <string name="fuse_liveness_ratio_cap_title">Ratio-Deckel [0-1]</string>
-    <string name="fuse_liveness_ratio_cap_summary">Kappt die je Zyklus wirksame Ratio des Liveness-Kanals: liveRatio = min(eff. Ratio, Deckel). Begrenzt die GESCHWINDIGKEIT (der Kanaldeckel begrenzt die Menge, die gemessenen Exits beenden den Lauf). 1.0 = aus. Replay-Kandidaten: 0.25 / 0.20 / 0.15. Der normale Ratio-Pfad bleibt unberuehrt.</string>
+    <string name="fuse_liveness_ratio_cap_summary">ALT (Migrationsquelle der Profil-Deckel): Kappt die je Zyklus wirksame Ratio des Liveness-Kanals. Seit v26 gilt liveRatio = min(Profil-Basis, Profil-Deckel); die Basis traegt im MEAL-Profil die R-Rampe. Ungesetzte Profil-Deckel erben diesen Wert. Der normale Ratio-Pfad bleibt unberuehrt.</string>
     <string name="fuse_liveness_cap_title">Kanaldeckel [% von maxIOB]</string>
     <string name="fuse_liveness_cap_summary">EIGENER Deckel des Liveness-Kanals - NICHT das globale iobTH (das wuerde auch Prime und Fundament bremsen). Die strengste Grenze gewinnt immer. 50 ist der konservative Startwert aus dem Replay; 60-70 sind spaetere Pruefkandidaten.</string>
     <string name="fuse_liveness_bg_min_title">Druck-Schwelle Tag [mg/dl]</string>

@@ -6576,7 +6576,7 @@ class TransportWiringTest : TestBaseWithProfile() {
         // die Karte ist seit dem Zeitzonen-Fix oben ebenfalls lokal gefuellt
         // - eine Uhr fuer beide Seiten.
 
-        fun lauf(name: String, fensterMs: Long?, trendRegel: String? = null, fenster: Int = 18, ratioCap: Double = 1.0, livenessStart: Boolean = true): File {
+        fun lauf(name: String, fensterMs: Long?, trendRegel: String? = null, fenster: Int = 18, ratioCap: Double = 1.0, livenessStart: Boolean = true, profilCapsBehalten: Boolean = false): File {
             transportReset()
             boluses = emptyList()
             markerAt = 0L
@@ -6587,6 +6587,20 @@ class TransportWiringTest : TestBaseWithProfile() {
             // startet jetzt explizit; Zeilen MIT Schluessel ueberschreiben
             // wie gehabt per politikAnwenden.
             livenessAn = livenessStart
+            // HEBEL-LECK TEIL 2 (24.08., Ermittler-Befund der 2,000-U-
+            // Differenz): die vier Profil-Cap-Felder setzt politikAnwenden
+            // NUR, wenn die Trail-Zeile den Schluessel traegt. Wechselt der
+            // Trail mittags das Schema (alt livenessIobCapPercent -> v24-
+            // Split), erbt Lauf 2 fuer die FRUEHEN Zyklen die SPAETEN Werte
+            // von Lauf 1: (65-40)% x maxIob 8 = exakt 2,000 U weniger
+            // Liveness-Headroom, 57 scheinbare SMB-Abweichungen im
+            // Latch-Vergleich. Jeder Lauf startet ungesetzt; NUR die
+            // Profil-Matrix (FUSE_REPLAY_PROFILE) behaelt ihre bewusst
+            // gesetzten Caps.
+            if (!profilCapsBehalten) {
+                mealRatioDeckel = null; mealIobDeckel = null
+                corrRatioDeckel = null; corrIobDeckel = null
+            }
             forecastShadowAn = false // Replay braucht die Matrizen nicht - Tempo
             livenessRatioDeckel = ratioCap // v23: aufgezeichnete v22-Politik traegt den Schluessel nicht - der Hebel gilt
             theilSenFensterMin = fenster // W18-Trails tragen den Schluessel nicht - der Hebel gilt
@@ -6666,7 +6680,7 @@ class TransportWiringTest : TestBaseWithProfile() {
                 val t = spez.split(",").map { it.trim().toDouble() }
                 mealRatioDeckel = t[0]; mealIobDeckel = t[1]
                 corrRatioDeckel = t[2]; corrIobDeckel = t[3]
-                lauf(if (profilEnv.contains(";")) "profil${idx + 1}" else "profil", null, fenster = 10)
+                lauf(if (profilEnv.contains(";")) "profil${idx + 1}" else "profil", null, fenster = 10, profilCapsBehalten = true)
             }
             mealRatioDeckel = null; mealIobDeckel = null; corrRatioDeckel = null; corrIobDeckel = null
             return
