@@ -33,8 +33,11 @@ internal val fuseEinstellbareKeys: Set<String> = setOf(
     FuseDoubleKey.MarkerPrimeDescentHorizonMin.key,
     FuseIntKey.DeferredPrimeEndMin.key,
     FuseBooleanKey.LivenessChannelEnabled.key,
-    FuseDoubleKey.LivenessIobCapPercent.key,
-    FuseDoubleKey.LivenessRatioCap.key,
+    FuseIntKey.LivenessMealPowerMin.key,
+    FuseDoubleKey.LivenessMealRatioCap.key,
+    FuseDoubleKey.LivenessMealIobCapPercent.key,
+    FuseDoubleKey.LivenessCorrectionRatioCap.key,
+    FuseDoubleKey.LivenessCorrectionIobCapPercent.key,
     FuseDoubleKey.LivenessBgMinDayMgdl.key,
     FuseDoubleKey.LivenessBgMinNightMgdl.key,
     FuseIntKey.LivenessReArmMin.key,
@@ -157,8 +160,11 @@ object FuseSettingsReport {
                     // Marker (Toni 22.08.): er ist markerunabhaengig und
                     // mengenbasiert - seine Grenzen sind Dosiergrenzen.
                     schalter(FuseBooleanKey.LivenessChannelEnabled, "Liveness-Kanal"),
-                    zahl(FuseDoubleKey.LivenessIobCapPercent, "Kanaldeckel", "%"),
-                    zahl(FuseDoubleKey.LivenessRatioCap, "Ratio-Deckel", ""),
+                    ganz(FuseIntKey.LivenessMealPowerMin, "M-Frist", "min"),
+                    zahl(FuseDoubleKey.LivenessMealRatioCap, "M-Ratio-Deckel", ""),
+                    zahl(FuseDoubleKey.LivenessMealIobCapPercent, "M-Kanaldeckel", "%"),
+                    zahl(FuseDoubleKey.LivenessCorrectionRatioCap, "K-Ratio-Deckel", ""),
+                    zahl(FuseDoubleKey.LivenessCorrectionIobCapPercent, "K-Kanaldeckel", "%"),
                     zahl(FuseDoubleKey.LivenessBgMinDayMgdl, "Druck-Schwelle Tag", "mg/dl"),
                     // Die Nachtschwelle EHRLICH anzeigen: solange sie nie
                     // gesetzt wurde, folgt sie zur Laufzeit der Tagesschwelle

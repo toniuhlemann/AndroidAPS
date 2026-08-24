@@ -293,8 +293,15 @@ class FuseCycleRunner(
             // P0 des Liveness-Bauvertrags: der Kanaldeckel ist eine tragende
             // Grenze - ein Unsinnswert (0 %, 500 %) darf nie stillschweigend
             // rechnen, sondern muss den Zyklus benannt abbrechen.
-            require(it.livenessIobCapPercent.isFinite() && it.livenessIobCapPercent in FuseDoubleKey.LivenessIobCapPercent.min..FuseDoubleKey.LivenessIobCapPercent.max) { "livenessIobCapPercent=${it.livenessIobCapPercent}" }
-            require(it.livenessRatioCap.isFinite() && it.livenessRatioCap in FuseDoubleKey.LivenessRatioCap.min..FuseDoubleKey.LivenessRatioCap.max) { "livenessRatioCap=${it.livenessRatioCap}" }
+            require(it.livenessMealPowerMin in FuseIntKey.LivenessMealPowerMin.min..FuseIntKey.LivenessMealPowerMin.max) { "livenessMealPowerMin=${it.livenessMealPowerMin}" }
+            require(it.livenessMealRatioCap.isFinite() && it.livenessMealRatioCap in FuseDoubleKey.LivenessMealRatioCap.min..FuseDoubleKey.LivenessMealRatioCap.max) { "livenessMealRatioCap=${it.livenessMealRatioCap}" }
+            require(it.livenessMealIobCapPercent.isFinite() && it.livenessMealIobCapPercent in FuseDoubleKey.LivenessMealIobCapPercent.min..FuseDoubleKey.LivenessMealIobCapPercent.max) { "livenessMealIobCapPercent=${it.livenessMealIobCapPercent}" }
+            require(it.livenessCorrectionRatioCap.isFinite() && it.livenessCorrectionRatioCap in FuseDoubleKey.LivenessCorrectionRatioCap.min..FuseDoubleKey.LivenessCorrectionRatioCap.max) { "livenessCorrectionRatioCap=${it.livenessCorrectionRatioCap}" }
+            require(it.livenessCorrectionIobCapPercent.isFinite() && it.livenessCorrectionIobCapPercent in FuseDoubleKey.LivenessCorrectionIobCapPercent.min..FuseDoubleKey.LivenessCorrectionIobCapPercent.max) { "livenessCorrectionIobCapPercent=${it.livenessCorrectionIobCapPercent}" }
+            // RELATIONAL, FAIL-CLOSED (Bauauftrag §1): CORRECTION darf nie
+            // offener sein als MEAL - nicht tauschen, nicht klemmen, ablehnen.
+            require(it.livenessCorrectionRatioCap <= it.livenessMealRatioCap) { "livenessCorrectionRatioCap=${it.livenessCorrectionRatioCap} > meal ${it.livenessMealRatioCap}" }
+            require(it.livenessCorrectionIobCapPercent <= it.livenessMealIobCapPercent) { "livenessCorrectionIobCapPercent=${it.livenessCorrectionIobCapPercent} > meal ${it.livenessMealIobCapPercent}" }
             require(it.livenessReArmMin in FuseIntKey.LivenessReArmMin.min..FuseIntKey.LivenessReArmMin.max) { "livenessReArmMin=${it.livenessReArmMin}" }
             require(it.livenessBgMinDayMgdl.isFinite() && it.livenessBgMinDayMgdl in FuseDoubleKey.LivenessBgMinDayMgdl.min..FuseDoubleKey.LivenessBgMinDayMgdl.max) { "livenessBgMinDayMgdl=${it.livenessBgMinDayMgdl}" }
             require(it.livenessBgMinNightMgdl.isFinite() && it.livenessBgMinNightMgdl in FuseDoubleKey.LivenessBgMinNightMgdl.min..FuseDoubleKey.LivenessBgMinNightMgdl.max) { "livenessBgMinNightMgdl=${it.livenessBgMinNightMgdl}" }
@@ -694,6 +701,26 @@ class FuseCycleRunner(
         /** Die Mittelbahn, gegen die der Kanal gerechnet hat - NICHT immer
          *  dieselbe wie decision.predAtReleaseMgdl (min mit Bremsbahn). */
         val livenessReleaseMeanMgdl: Double? = null,
+        /** MEAL | CORRECTION | EXCLUDED - Identitaet der Liveness-Haftung
+         *  aus der persistierten Markerfrist (§6: NIE aus state.context).
+         *  null = Kanal aus oder Stufe nicht erreicht. */
+        val livenessProfile: String? = null,
+        val livenessProfileReason: String? = null,
+        val livenessSelectedRatioCap: Double? = null,
+        val livenessSelectedIobCapPercent: Double? = null,
+        val livenessProfileIobLimitU: Double? = null,
+        /** Der Normalpfad-Anteil VOR `final = max(normal, live)`. */
+        val livenessNormalSmbU: Double? = null,
+        /** COVERAGE-VORBEREITUNG (dosierneutral): statische Korrektur-
+         *  distanz (q1-Ziel)/ISF, Zustand UNAVAILABLE solange keine
+         *  horizontkonsistente Deckungsgroesse existiert, gemessene
+         *  Druckbedingung. effectiveInsulinCoverageU/coverageMarginU
+         *  bleiben bewusst null - nichts wird geschaetzt. */
+        val livenessStaticCorrectionNeedU: Double? = null,
+        val livenessCoverageState: String? = null,
+        val livenessDisturbanceActive: Boolean? = null,
+        val markerPowerPinnedFor: Long = 0L,
+        val markerPowerDeadlineTs: Long = 0L,
         /** Die im Kanal WIRKSAME Ratio = min(effectiveRatio, Cap). Nur
          *  gesetzt, wenn die Kandidatenrechnung lief; zusammen mit
          *  state.smbRatioEffective und policy.livenessRatioCap ist die
@@ -3049,6 +3076,43 @@ class FuseCycleRunner(
         var livenessCandidateU = 0.0
         var livenessLiftU = 0.0
         var livenessBinding: String? = null
+        var livenessProfil: String? = null
+        var livenessProfilGrund: String? = null
+        var livenessSelectedRatioCap: Double? = null
+        var livenessSelectedIobCapPct: Double? = null
+        var livenessProfileIobLimitU: Double? = null
+        var livenessStaticCorrectionNeedU: Double? = null
+        var livenessCoverageState: String? = null
+        var livenessDisturbanceActive: Boolean? = null
+
+        // ---- MARKER-LEISTUNGSFRIST (Bauauftrag Toni 23.08. nachts) --------
+        // Der Marker ist eine ZEITLICH BEGRENZTE Leistungsautorisierung des
+        // Liveness-Kanals, keine Voraussetzung fuer Liveness insgesamt.
+        // Gepinnt wird NUR ein im Prozess beobachteter Markerwechsel; ein
+        // beim Warmstart bloss vorgefundener Marker ohne passende
+        // persistierte Identitaet eroeffnet kein rueckwirkendes MEAL (§3).
+        // Die Dauer wird beim Druck eingefroren.
+        if (episodeGate.creditRevoked || markerTs <= 0L) {
+            // Ruecknahme loescht Identitaet und Frist SOFORT.
+            episodes.markerPowerPinnedFor = 0L
+            episodes.markerPowerDeadlineTs = 0L
+            markerPowerLastSeenTs = 0L
+        } else if (markerPowerLastSeenTs == -1L) {
+            markerPowerLastSeenTs = markerTs
+        } else if (markerTs != markerPowerLastSeenTs) {
+            episodes.markerPowerPinnedFor = markerTs
+            episodes.markerPowerDeadlineTs = markerTs + cfg.livenessMealPowerMin * 60_000L
+            markerPowerLastSeenTs = markerTs
+        }
+        // HALB OFFEN: exakt an der Deadline gilt bereits CORRECTION. Eine
+        // laenger lebende Evidenzepisode verlaengert die Frist NICHT; die
+        // persistierte Markerfrist ist autoritativ, nie state.context (§6 -
+        // der Live-Trail zeigte state.context=CORRECTION bei aktivem Marker).
+        val markerPowerActive = episodes.markerPowerPinnedFor > 0L &&
+            episodes.markerPowerPinnedFor == markerTs &&
+            computeTs >= episodes.markerPowerPinnedFor &&
+            computeTs < episodes.markerPowerDeadlineTs
+        val livenessNormalSmbU = nachAufschub.smbU
         val decision: FuseController.Decision = run {
             if (!cfg.livenessChannelEnabled) {
                 // AUS heisst aus: Lauf und Streak enden, aber eine bereits
@@ -3061,6 +3125,21 @@ class FuseCycleRunner(
                 livenessDenial = "DISABLED"
                 return@run nachAufschub
             }
+            // ---- PROFILWAHL (Bauauftrag §2): EIN Kanal, zwei Mengenprofile.
+            // MEAL innerhalb der Markerfrist, CORRECTION sonst; EXCLUDED
+            // setzt der harte Riegel unten. Alle uebrigen Schutzregeln
+            // bleiben gemeinsam.
+            val profilRatioCap = if (markerPowerActive) cfg.livenessMealRatioCap else cfg.livenessCorrectionRatioCap
+            val profilIobCapPct = if (markerPowerActive) cfg.livenessMealIobCapPercent else cfg.livenessCorrectionIobCapPercent
+            livenessProfil = if (markerPowerActive) "MEAL" else "CORRECTION"
+            livenessProfilGrund = when {
+                markerPowerActive -> "MARKER_POWER"
+                episodes.markerPowerPinnedFor > 0L && episodes.markerPowerPinnedFor == markerTs -> "POWER_EXPIRED"
+                markerTs > 0L -> "MARKER_NOT_PINNED"
+                else -> "NO_MARKER"
+            }
+            livenessSelectedRatioCap = profilRatioCap
+            livenessSelectedIobCapPct = profilIobCapPct
             // Toni + Codex 22.08.: JEDE Aenderung an den drei
             // Kanal-Stellgroessen waehrend eines Laufs beendet ihn, und der
             // Streak beginnt unter der neuen Regel neu - auch Deckel und
@@ -3071,7 +3150,9 @@ class FuseCycleRunner(
             // regulaerer Tag/Nacht-Wechsel ist KEIN CONFIG_CHANGED (v20).
             val cfgJetzt = cfg.livenessBgMinDayMgdl.toString() + "|" +
                 cfg.livenessBgMinNightMgdl + "|" +
-                cfg.livenessIobCapPercent + "|" + cfg.livenessReArmMin
+                cfg.livenessMealRatioCap + "|" + cfg.livenessMealIobCapPercent + "|" +
+                cfg.livenessCorrectionRatioCap + "|" + cfg.livenessCorrectionIobCapPercent + "|" +
+                cfg.livenessReArmMin
             // ERST gemerkt, ANGEWENDET erst nach den harten Riegeln (Audit
             // 22.08.): faellt die Aenderung mit einem gemessenen Riegel
             // zusammen, gewinnt der Riegel-Exit MIT Sperre - der sperrfreie
@@ -3126,6 +3207,28 @@ class FuseCycleRunner(
                 prediction, kernelFinal, built.input.isfSlots, candidateBand, bolusStep,
                 restraint = restraint,
             )?.name
+            // §5: ein Markerwechsel tauscht die Caps nie STILL in einem
+            // laufenden Lauf - Lauf und Streak gehoeren eindeutig zu dem
+            // Pin, unter dem sie begannen. Ende OHNE Sperre; die frische
+            // Bewaffnung (drei Druckzyklen) ist die Hysterese. Der
+            // FristABLAUF wechselt dagegen NAHTLOS auf die engeren
+            // Correction-Caps (Profilwahl oben, je Zyklus): sicher, weil
+            // die Validierung garantiert, dass CORRECTION nie offener ist -
+            // kein Carry, keine weitere MEAL-Haftung, keine Luecke.
+            if (livenessRunPinnedFor != episodes.markerPowerPinnedFor) {
+                if (livenessActive || livenessStreak > 0) {
+                    if (livenessActive) livenessExit = "MARKER_CHANGED"
+                    livenessActive = false
+                    livenessStreak = 0
+                }
+                livenessRunPinnedFor = episodes.markerPowerPinnedFor
+            }
+            // VOR den gemessenen Riegeln, mit Absicht: der Druckzyklus
+            // selbst traegt den Evidenz-Rebase-Blip (EXCLUDED_LAGE) - ein
+            // Markerdruck waehrend eines Laufs endete sonst als Riegel-Exit
+            // MIT 10-min-Sperre, und die Mahlzeit wartete auf den Kanal.
+            // Die Riegel selbst bleiben absolut: sie verhindern unten
+            // weiterhin Bewaffnung und Hub dieses Zyklus.
             // Die GEMESSENEN Riegel - fuer Lauf UND Bewaffnung. Waehrend
             // eines Laufs beenden sie ihn MIT Sperre; davor verhindern sie
             // die Bewaffnung und setzen den Streak zurueck.
@@ -3155,6 +3258,8 @@ class FuseCycleRunner(
                 else -> null
             }
             if (hart != null) {
+                livenessProfil = "EXCLUDED"
+                livenessProfilGrund = hart
                 if (livenessActive) return@run sperren(hart)
                 livenessStreak = 0
                 livenessDenial = hart
@@ -3275,13 +3380,31 @@ class FuseCycleRunner(
                 .firstOrNull { it.offsetMin == cfg.releaseHorizonMin }?.meanBg
                 ?: return@run sperren("NO_RELEASE_MEAN")
             val ratio = state.effectiveSmbRatio
-            // ---- RATIO-DECKEL (Tonis Vertrag 23.08. spaet) --------------
-            // liveRatio = min(effectiveRatio, Cap): begrenzt NUR die
+            // ---- RATIO-DECKEL, PROFILGEWAEHLT (Bauauftrag §4) -----------
+            // liveRatio = min(effectiveRatio, Profil-Cap): begrenzt NUR die
             // Geschwindigkeit dieses Kanals. Der normale Ratio-Pfad liest
-            // weiter state.effectiveSmbRatio; Default 1.0 ist nicht bindend
-            // und laesst diese Zeile zur Identitaet werden.
-            val liveRatio = kotlin.math.min(ratio, cfg.livenessRatioCap)
+            // weiter state.effectiveSmbRatio; gleiche Profile reproduzieren
+            // das bisherige Verhalten bitgleich.
+            val liveRatio = kotlin.math.min(ratio, profilRatioCap)
             val bedarfU = kotlin.math.max(0.0, (releaseMean - target) / isf)
+            // ---- COVERAGE-VORBEREITUNG (Toni 23.08. nachts) --------------
+            // HIER ist der Anschlusspunkt des spaeteren, AUSSCHLIESSLICH im
+            // CORRECTION-Profil wirkenden Coverage-Riegels:
+            //   Profil -> Bedarf/Kandidat -> technische Integritaet ->
+            //   [CorrectionCoverageAssessment] -> Profil-Caps -> max(...)
+            // CORRECTION_COVERED darf dann NUR den Liveness-Lift nullen; der
+            // Normalpfad bleibt verfuegbar, und im MEAL-Profil sperrt
+            // Coverage nie hart. BEWUSST KEIN insulinReq - IOB: insulinReq
+            // stammt aus einer IOB-beeinflussten Prognose, ein weiterer
+            // Abzug waere eine Doppelanrechnung. Solange keine gemeinsame,
+            // horizontkonsistente Insulinwirkung vorliegt, wird NICHTS
+            // geschaetzt: coverageState = UNAVAILABLE, effektive Deckung
+            // und Marge bleiben null - exportiert wird nur die STATISCHE
+            // Korrekturdistanz und die gemessene Druckbedingung. Die
+            // Regel-Semantik entscheidet ein eigener Commit nach Auswertung.
+            livenessStaticCorrectionNeedU = kotlin.math.max(0.0, (signal.q1 - target) / isf)
+            livenessCoverageState = "UNAVAILABLE"
+            livenessDisturbanceActive = druck
             // Codex 22.08. spaet: der ROHE Kanalbedarf gehoert in den Export.
             // Ohne ihn stand im Viewer "Bedarf -", waehrend der Kanal 0,10 U
             // anforderte (decision.insulinReqU ist im Deadlock null, und
@@ -3298,9 +3421,12 @@ class FuseCycleRunner(
                 smbRatio = liveRatio,
                 maxSmbU = cfg.maxSmbU,
             )
+            livenessProfileIobLimitU = profilIobCapPct / 100.0 * state.maxIobU
             val head = LivenessChannel.headroomU(
                 globalIobThU = state.iobThU,
-                livenessCapU = cfg.livenessIobCapPercent / 100.0 * state.maxIobU,
+                // PROFIL-IOB-Deckel (§4); globales iobTH und maxIOB bleiben
+                // harte Obergrenzen im selben min().
+                livenessCapU = profilIobCapPct / 100.0 * state.maxIobU,
                 maxIobU = state.maxIobU,
                 capIobU = state.capIobU,
                 transportU = transportModelledU,
@@ -3542,6 +3668,17 @@ class FuseCycleRunner(
             livenessCandidateU = livenessCandidateU,
             livenessNeedU = livenessNeedU,
             livenessLiveRatio = livenessLiveRatio,
+            livenessProfile = livenessProfil,
+            livenessProfileReason = livenessProfilGrund,
+            livenessSelectedRatioCap = livenessSelectedRatioCap,
+            livenessSelectedIobCapPercent = livenessSelectedIobCapPct,
+            livenessProfileIobLimitU = livenessProfileIobLimitU,
+            livenessNormalSmbU = livenessNormalSmbU,
+            livenessStaticCorrectionNeedU = livenessStaticCorrectionNeedU,
+            livenessCoverageState = livenessCoverageState,
+            livenessDisturbanceActive = livenessDisturbanceActive,
+            markerPowerPinnedFor = episodes.markerPowerPinnedFor,
+            markerPowerDeadlineTs = episodes.markerPowerDeadlineTs,
             livenessReleaseMeanMgdl = livenessReleaseMeanMgdl,
             livenessBgMinEffectiveMgdl = livenessBgMinEffective,
             livenessBgMinSource = livenessBgMinSource,
@@ -4351,6 +4488,14 @@ class FuseCycleRunner(
      *  das gilt fuer Deckel und Sperrzeit genauso wie fuer die Schwelle. */
     private var livenessCfgSeen: String? = null
 
+    /** Zuletzt IM PROZESS gesehener Marker-Zeitstempel; -1 = noch nie
+     *  gesehen (Warmstart-Anker: der erste Blick pinnt NICHT). */
+    private var markerPowerLastSeenTs = -1L
+
+    /** Der Pin, unter dem der aktuelle Streak/Lauf begann - ein
+     *  Markerwechsel tauscht Caps nie still in einem alten Lauf (§5). */
+    private var livenessRunPinnedFor = 0L
+
     /** Zeitstempel des letzten Zyklus, der die Kanalstufe erreicht hat -
      *  fuer die Taktluecken-Pruefung (Audit 22.08.): eine Luecke ohne
      *  Zyklus ist genauso unbeobachtet wie ein Abbruchzyklus. */
@@ -4546,11 +4691,15 @@ class FuseCycleRunner(
         /** Liveness-Kanal (Bauvertrag 22.08. nachts) - s.
          *  [FuseBooleanKey.LivenessChannelEnabled]. */
         val livenessChannelEnabled: Boolean,
-        val livenessIobCapPercent: Double,
+        /** MEAL/CORRECTION (Bauauftrag 23.08. nachts) - s. FuseKeys.
+         *  Werte sind bereits LESE-MIGRIERT (ungesetzt = alter Globalwert). */
+        val livenessMealPowerMin: Int,
+        val livenessMealRatioCap: Double,
+        val livenessMealIobCapPercent: Double,
+        val livenessCorrectionRatioCap: Double,
+        val livenessCorrectionIobCapPercent: Double,
         val livenessBgMinDayMgdl: Double,
         val livenessBgMinNightMgdl: Double,
-        /** Ratio-Deckel des Kanals; 1.0 = nicht bindend - s. FuseKeys. */
-        val livenessRatioCap: Double,
         val livenessReArmMin: Int,
         val primeWindowMin: Int,
         /** Die Null sofort verlassen, sobald ihr Schutzgrund weg ist. */
@@ -4607,7 +4756,23 @@ class FuseCycleRunner(
         markerPrimeDescentHorizonMin = preferences.get(FuseDoubleKey.MarkerPrimeDescentHorizonMin),
         deferredPrimeEndMin = preferences.get(FuseIntKey.DeferredPrimeEndMin),
         livenessChannelEnabled = preferences.get(FuseBooleanKey.LivenessChannelEnabled),
-        livenessIobCapPercent = preferences.get(FuseDoubleKey.LivenessIobCapPercent),
+        // MEAL/CORRECTION-LESE-MIGRATION (Bauauftrag §7): ungesetzte neue
+        // Schluessel folgen dem bisherigen Globalwert - das Update ist
+        // dosierneutral; die Grenzen-Klammer zaehlt Ausreisser als "nie
+        // gesetzt" (dieselbe Regel wie bei der Nachtschwelle).
+        livenessMealPowerMin = preferences.get(FuseIntKey.LivenessMealPowerMin),
+        livenessMealRatioCap = preferences.getIfExists(FuseDoubleKey.LivenessMealRatioCap)
+            ?.takeIf { it.isFinite() && it in FuseDoubleKey.LivenessMealRatioCap.min..FuseDoubleKey.LivenessMealRatioCap.max }
+            ?: preferences.get(FuseDoubleKey.LivenessRatioCap),
+        livenessMealIobCapPercent = preferences.getIfExists(FuseDoubleKey.LivenessMealIobCapPercent)
+            ?.takeIf { it.isFinite() && it in FuseDoubleKey.LivenessMealIobCapPercent.min..FuseDoubleKey.LivenessMealIobCapPercent.max }
+            ?: preferences.get(FuseDoubleKey.LivenessIobCapPercent),
+        livenessCorrectionRatioCap = preferences.getIfExists(FuseDoubleKey.LivenessCorrectionRatioCap)
+            ?.takeIf { it.isFinite() && it in FuseDoubleKey.LivenessCorrectionRatioCap.min..FuseDoubleKey.LivenessCorrectionRatioCap.max }
+            ?: preferences.get(FuseDoubleKey.LivenessRatioCap),
+        livenessCorrectionIobCapPercent = preferences.getIfExists(FuseDoubleKey.LivenessCorrectionIobCapPercent)
+            ?.takeIf { it.isFinite() && it in FuseDoubleKey.LivenessCorrectionIobCapPercent.min..FuseDoubleKey.LivenessCorrectionIobCapPercent.max }
+            ?: preferences.get(FuseDoubleKey.LivenessIobCapPercent),
         livenessBgMinDayMgdl = preferences.get(FuseDoubleKey.LivenessBgMinDayMgdl),
         // LESE-MIGRATION (v20): solange die Nachtschwelle nie gesetzt wurde,
         // folgt sie der Tagesschwelle - ein Update veraendert nichts still.
@@ -4621,7 +4786,6 @@ class FuseCycleRunner(
         livenessBgMinNightMgdl = preferences.getIfExists(FuseDoubleKey.LivenessBgMinNightMgdl)
             ?.takeIf { it.isFinite() && it in FuseDoubleKey.LivenessBgMinNightMgdl.min..FuseDoubleKey.LivenessBgMinNightMgdl.max }
             ?: preferences.get(FuseDoubleKey.LivenessBgMinDayMgdl),
-        livenessRatioCap = preferences.get(FuseDoubleKey.LivenessRatioCap),
         livenessReArmMin = preferences.get(FuseIntKey.LivenessReArmMin),
         // Ein ungesetzter Wert (0) ist kein Konfigurationsfehler, sondern ein
         // Speicher, der den Schluessel noch nicht kennt - dann gilt die

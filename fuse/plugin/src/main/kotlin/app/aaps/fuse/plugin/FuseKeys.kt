@@ -267,6 +267,24 @@ enum class FuseDoubleKey(
     LivenessRatioCap("fuse_liveness_ratio_cap", 1.0, 0.05, 1.0),
 
     /**
+     * MEAL-/CORRECTION-PROFIL des Liveness-Kanals (Bauauftrag Toni 23.08.
+     * nachts): EIN Kanal, zwei Mengenprofile. Innerhalb der
+     * Marker-Leistungsfrist gelten die MEAL-Caps, danach die CORRECTION-
+     * Caps; alle uebrigen Schutzregeln (BG-Min Tag/Nacht, Druckschwelle,
+     * Re-Arm, maxSMB, Modellpruefung, gemessene Riegel) bleiben gemeinsam.
+     *
+     * LESE-MIGRATION: solange ein Schluessel nie gesetzt wurde, gilt der
+     * bisherige GLOBALE Kanalwert ([LivenessRatioCap] bzw.
+     * [LivenessIobCapPercent]) - das Update ist dosierneutral, die
+     * Trennung wird erst mit bewusst verschiedenen Werten wirksam.
+     * RELATIONAL, fail-closed validiert: CORRECTION nie offener als MEAL.
+     */
+    LivenessMealRatioCap("fuse_liveness_meal_ratio_cap", 1.0, 0.05, 1.0),
+    LivenessMealIobCapPercent("fuse_liveness_meal_iob_cap_percent", 50.0, 20.0, 90.0),
+    LivenessCorrectionRatioCap("fuse_liveness_corr_ratio_cap", 1.0, 0.05, 1.0),
+    LivenessCorrectionIobCapPercent("fuse_liveness_corr_iob_cap_percent", 50.0, 20.0, 90.0),
+
+    /**
      * BG-Schwelle der Druckbedingung des Liveness-Kanals am TAG [mg/dl].
      *
      * Toni 22.08.: nicht hart codieren. Untergrenze 100: darunter waere die
@@ -368,6 +386,17 @@ enum class FuseIntKey(
      * (Risiko 1,85 -> 1,35 U im 21.08.-Gegenfenster).
      */
     LivenessReArmMin("fuse_liveness_rearm_min", 10, 0, 60),
+
+    /**
+     * MARKER-LEISTUNGSFRIST [min] (Bauauftrag Toni 23.08. nachts): so lange
+     * nach dem letzten IM PROZESS beobachteten Marker faehrt der
+     * Liveness-Kanal die offenen MEAL-Caps; ab der (halb offenen) Deadline
+     * gelten die gedaempften CORRECTION-Caps. Die Dauer wird beim Druck
+     * GEPINNT - eine spaetere Aenderung wirkt erst auf den naechsten
+     * Marker und oeffnet nie eine abgelaufene Frist. Evidenz darf laenger
+     * leben, verlaengert dieses Mengenprivileg aber nicht.
+     */
+    LivenessMealPowerMin("fuse_liveness_meal_power_min", 120, 15, 360),
 
     /**
      * iobTH als PROZENT von maxIOB (Variante B, K2-C v0.2 §13).

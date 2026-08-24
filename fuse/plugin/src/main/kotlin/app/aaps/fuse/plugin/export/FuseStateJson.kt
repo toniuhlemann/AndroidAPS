@@ -124,7 +124,17 @@ object FuseStateJson {
     // 23.08., Min90 danach 64) - bei 10-20 min Wirklatenz war die Menge vor
     // jedem moeglichen gemessenen Exit draussen. Zwei Laeufe mit
     // verschiedenem Cap dosieren im Kanal verschieden -> Hash+policyValues.
-    const val RULE_SET_VERSION = 23
+    // v24 (23.08. nachts): der Liveness-Kanal bekommt MEAL- und
+    // CORRECTION-Mengenprofile (Bauauftrag Toni). Der Marker autorisiert
+    // fuer die gepinnte Leistungsfrist (Default 120 min) die offenen
+    // MEAL-Caps (Ratio + IOB je Profil); danach faellt der Kanal auf die
+    // gedaempften CORRECTION-Caps zurueck. Evidenz darf laenger leben,
+    // verlaengert das Mengenprivileg aber nicht. Lese-Migration: ungesetzte
+    // Profilwerte folgen den bisherigen Globalwerten - der Bump selbst ist
+    // dosierneutral. Die fuenf Stellgroessen ersetzen livenessRatioCap und
+    // livenessIobCapPercent in Hash und policyValues; relational validiert
+    // (CORRECTION nie offener als MEAL, fail-closed).
+    const val RULE_SET_VERSION = 24
 
     /** Schema des Trail-Datensatzes - s. die Notiz an der Schreibstelle. */
     const val SCHEMA_VERSION = 4
@@ -417,6 +427,25 @@ object FuseStateJson {
                     .put("needU", fin(outcome.livenessNeedU))
                     .put("releaseMeanMgdl", fin(outcome.livenessReleaseMeanMgdl))
                     .put("liveRatio", fin(outcome.livenessLiveRatio))
+                    .put("profile", outcome.livenessProfile ?: JSONObject.NULL)
+                    .put("profileReason", outcome.livenessProfileReason ?: JSONObject.NULL)
+                    .put("selectedRatioCap", fin(outcome.livenessSelectedRatioCap))
+                    .put("selectedIobCapPercent", fin(outcome.livenessSelectedIobCapPercent))
+                    .put("profileIobLimitU", fin(outcome.livenessProfileIobLimitU))
+                    .put("normalSmbU", fin(outcome.livenessNormalSmbU))
+                    .put("staticCorrectionNeedU", fin(outcome.livenessStaticCorrectionNeedU))
+                    .put("effectiveInsulinCoverageU", JSONObject.NULL)
+                    .put("coverageMarginU", JSONObject.NULL)
+                    .put("coverageState", outcome.livenessCoverageState ?: JSONObject.NULL)
+                    .put("disturbanceActive", outcome.livenessDisturbanceActive ?: JSONObject.NULL)
+                    .put("markerPowerPinnedFor", outcome.markerPowerPinnedFor)
+                    .put("markerPowerDeadlineTs", outcome.markerPowerDeadlineTs)
+                    .put(
+                        "markerPowerRemainingMin",
+                        if (outcome.markerPowerDeadlineTs > outcome.computeTs)
+                            (outcome.markerPowerDeadlineTs - outcome.computeTs) / 60_000L
+                        else 0L,
+                    )
                     .put("bgMinEffectiveMgdl", fin(outcome.livenessBgMinEffectiveMgdl))
                     .put("bgMinSource", outcome.livenessBgMinSource ?: JSONObject.NULL)
                     .put("headroomU", fin(outcome.livenessHeadroomU))
@@ -1303,10 +1332,14 @@ object FuseStateJson {
         .put("deferredPrimeEndMin", p.deferredPrimeEndMin)
         // v18: der Liveness-Kanal - alle drei Stellgroessen.
         .put("livenessChannelEnabled", p.livenessChannelEnabled)
-        .put("livenessIobCapPercent", fin(p.livenessIobCapPercent))
+        .put("mealPowerMin", p.livenessMealPowerMin)
+        .put("mealRatioCap", fin(p.livenessMealRatioCap))
+        .put("mealIobCapPercent", fin(p.livenessMealIobCapPercent))
+        .put("correctionRatioCap", fin(p.livenessCorrectionRatioCap))
+        .put("correctionIobCapPercent", fin(p.livenessCorrectionIobCapPercent))
         .put("livenessBgMinDayMgdl", fin(p.livenessBgMinDayMgdl))
         .put("livenessBgMinNightMgdl", fin(p.livenessBgMinNightMgdl))
-        .put("livenessRatioCap", fin(p.livenessRatioCap))
+
         .put("livenessReArmMin", p.livenessReArmMin)
         // Ohne diese Zeile waere hinterher nicht belegbar, OB der Schalter in
         // einem Lauf an war - genau die Luecke, die heute schon zweimal
@@ -1339,12 +1372,12 @@ object FuseStateJson {
             p.markerPrimeDescentHorizonMin,
             // v18: der eigene Kanaldeckel des Liveness-Kanals und die
             // konfigurierbare BG-Schwelle der Druckbedingung.
-            p.livenessIobCapPercent,
+            // v24: die vier Profil-Caps des Liveness-Kanals.
+            p.livenessMealRatioCap, p.livenessMealIobCapPercent,
+            p.livenessCorrectionRatioCap, p.livenessCorrectionIobCapPercent,
             p.livenessBgMinDayMgdl,
             // v20: die getrennte Nachtschwelle.
             p.livenessBgMinNightMgdl,
-            // v23: der Ratio-Deckel des Liveness-Kanals.
-            p.livenessRatioCap,
         )
         if (doubles.any { !it.isFinite() }) return null
         val parts = listOf("fuse-policy-v$RULE_SET_VERSION") +
@@ -1380,6 +1413,10 @@ object FuseStateJson {
                 // nach Wenden verschieden schnell wieder.
                 p.livenessChannelEnabled,
                 p.livenessReArmMin,
+                // v24: die gepinnte Leistungsfrist ist dosierwirksam - zwei
+                // Laeufe mit 60 und 240 min MEAL-Fenster sind verschiedene
+                // Regler.
+                p.livenessMealPowerMin,
             ).map { it.toString() }
         return Sha.of(parts.joinToString("|"))
     }

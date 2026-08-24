@@ -15,6 +15,7 @@ import app.aaps.fuse.core.ledger.SnapshotOrder
 import org.json.JSONArray
 import org.json.JSONObject
 import app.aaps.fuse.plugin.FuseActivePump
+import app.aaps.fuse.plugin.FuseIntKey
 
 /**
  * [LedgerState] <-> JSON, VERLUSTFREI (Audit R95, Fix 3).
@@ -495,6 +496,8 @@ object LedgerCodec {
         .put("forecastShadowEpochTs", e.forecastShadowEpochTs)
         .put("forecastShadowLastState", e.forecastShadowLastState)
         .put("theilSenWindowLastMin", e.theilSenWindowLastMin)
+        .put("markerPowerPinnedFor", e.markerPowerPinnedFor)
+        .put("markerPowerDeadlineTs", e.markerPowerDeadlineTs)
         // DREI Elemente statt zwei: [ts, menge, proposalId] (Toni 19.08.).
         // Die Kennung MUSS mit - ohne sie findet ein Nicht-Sende-Beweis nach
         // einem Neustart den Eintrag nicht mehr und laesst eine nie geflossene
@@ -723,6 +726,22 @@ object LedgerCodec {
             val fenster = o.getLong("theilSenWindowLastMin")
             require(fenster in 0L..1440L) { "theilSenWindowLastMin out of range: $fenster" }
             e.theilSenWindowLastMin = fenster
+        }
+        if (o.has("markerPowerPinnedFor") || o.has("markerPowerDeadlineTs")) {
+            // GEMEINSAM validiert (Bauauftrag §3): Deadline nach dem Marker
+            // und nie laenger als die maximal erlaubte Konfigurationsdauer -
+            // eine Frist, die das nicht erfuellt, ist keine Frist.
+            val pin = o.optLong("markerPowerPinnedFor")
+            val frist = o.optLong("markerPowerDeadlineTs")
+            require(pin >= 0L && frist >= 0L) { "markerPower out of range: $pin/$frist" }
+            if (pin > 0L || frist > 0L) {
+                require(frist > pin) { "markerPowerDeadline not after pin: $pin/$frist" }
+                require(frist - pin <= FuseIntKey.LivenessMealPowerMin.max * 60_000L) {
+                    "markerPower window too long: ${frist - pin}"
+                }
+            }
+            e.markerPowerPinnedFor = pin
+            e.markerPowerDeadlineTs = frist
         }
         // KEINE MIGRATION, die ein Fundament ERFINDET: fehlt das Objekt, gibt
         // es keine laufende Autorisierung. Eine Altdatei mitten in einer

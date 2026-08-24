@@ -160,6 +160,12 @@ class TransportWiringTest : TestBaseWithProfile() {
     private var forecastShadowAn = true
     private var livenessCapPct = 50.0
     private var livenessRatioDeckel = 1.0
+    private var mealPowerMin = 120
+    /** null = Migration: der Wert folgt dem alten Globalhebel. */
+    private var mealRatioDeckel: Double? = null
+    private var mealIobDeckel: Double? = null
+    private var corrRatioDeckel: Double? = null
+    private var corrIobDeckel: Double? = null
     private var livenessBgMin = 160.0
 
     /** Nachtschwelle des Kanals; null = nie gesetzt -> folgt der Tagesschwelle. */
@@ -429,6 +435,11 @@ class TransportWiringTest : TestBaseWithProfile() {
         whenever(preferences.get(FuseBooleanKey.ForecastShadowCollectionEnabled)).thenAnswer { forecastShadowAn }
         whenever(preferences.get(FuseDoubleKey.LivenessIobCapPercent)).thenAnswer { livenessCapPct }
         whenever(preferences.get(FuseDoubleKey.LivenessRatioCap)).thenAnswer { livenessRatioDeckel }
+        whenever(preferences.get(FuseIntKey.LivenessMealPowerMin)).thenAnswer { mealPowerMin }
+        whenever(preferences.getIfExists(FuseDoubleKey.LivenessMealRatioCap)).thenAnswer { mealRatioDeckel }
+        whenever(preferences.getIfExists(FuseDoubleKey.LivenessMealIobCapPercent)).thenAnswer { mealIobDeckel }
+        whenever(preferences.getIfExists(FuseDoubleKey.LivenessCorrectionRatioCap)).thenAnswer { corrRatioDeckel }
+        whenever(preferences.getIfExists(FuseDoubleKey.LivenessCorrectionIobCapPercent)).thenAnswer { corrIobDeckel }
         whenever(preferences.get(FuseDoubleKey.LivenessBgMinDayMgdl)).thenAnswer { livenessBgMin }
         whenever(preferences.getIfExists(FuseDoubleKey.LivenessBgMinNightMgdl)).thenAnswer { livenessBgMinNacht }
         whenever(preferences.get(FuseIntKey.LivenessReArmMin)).thenAnswer { livenessReArmMin }
@@ -6505,6 +6516,11 @@ class TransportWiringTest : TestBaseWithProfile() {
             livenessAn = b("livenessChannelEnabled", livenessAn)
             livenessCapPct = d("livenessIobCapPercent", livenessCapPct)
             livenessRatioDeckel = d("livenessRatioCap", livenessRatioDeckel)
+            mealPowerMin = i("mealPowerMin", mealPowerMin)
+            p?.optDouble("mealRatioCap")?.takeIf { it.isFinite() }?.let { mealRatioDeckel = it }
+            p?.optDouble("mealIobCapPercent")?.takeIf { it.isFinite() }?.let { mealIobDeckel = it }
+            p?.optDouble("correctionRatioCap")?.takeIf { it.isFinite() }?.let { corrRatioDeckel = it }
+            p?.optDouble("correctionIobCapPercent")?.takeIf { it.isFinite() }?.let { corrIobDeckel = it }
             livenessBgMin = d("livenessBgMinDayMgdl", livenessBgMin)
             livenessBgMinNacht = pol?.optDouble("livenessBgMinNightMgdl")?.takeIf { it.isFinite() }
             livenessReArmMin = i("livenessReArmMin", livenessReArmMin)
@@ -6633,6 +6649,206 @@ class TransportWiringTest : TestBaseWithProfile() {
 
 
 
+
+
+    /**
+     * MEAL/CORRECTION-BAUAUFTRAG (Toni 23.08. nachts), Profilwahl: der
+     * Marker ist eine ZEITLICH BEGRENZTE Leistungsautorisierung. Kein
+     * Marker -> CORRECTION; beobachteter Marker -> MEAL mit gepinnter
+     * Frist; exakt an der (halb offenen) Deadline -> CORRECTION mit
+     * POWER_EXPIRED, obwohl der Marker (und damit die Evidenzepisode)
+     * weiterlebt; eine Dauer-Aenderung oeffnet die gepinnte Frist nicht;
+     * ein zweiter Marker erneuert sie.
+     */
+    @Test
+    fun `profilwahl folgt der gepinnten markerfrist`(@TempDir dir: File) {
+        livenessLage(dir)
+        repeat(6) { cycle() } // Signal-Warm-up: die ersten Zyklen aborten
+        val o1 = cycle()
+        assertEquals("CORRECTION", o1.livenessProfile)
+        assertEquals("NO_MARKER", o1.livenessProfileReason)
+
+        markerAt = clock // beobachteter Wechsel
+        // Der ERSTE Zyklus nach dem Druck ist die Evidenz-Rebase (EXCLUDED-
+        // Blip, bestehendes v18-Verhalten) - danach gilt MEAL.
+        repeat(2) { cycle() }
+        val o2 = cycle()
+        assertEquals("MEAL", o2.livenessProfile, "Grund=${o2.livenessProfileReason}")
+        assertEquals(markerAt, o2.markerPowerPinnedFor)
+        assertEquals(markerAt + 120 * 60_000L, o2.markerPowerDeadlineTs)
+
+        // Dauer-Aenderung wirkt NICHT auf die gepinnte Frist (Test 9).
+        mealPowerMin = 240
+        val o3 = cycle()
+        assertEquals(markerAt + 120 * 60_000L, o3.markerPowerDeadlineTs, "Frist ist gepinnt")
+        mealPowerMin = 120
+
+        // Exakt an der Deadline gilt CORRECTION (halb offen, Test 3+4).
+        // HINLAUFEN statt springen: ein 110-min-Sprung risse einen
+        // Segmentbruch-Blip (EXCLUDED) genau in den Messzyklus.
+        clock = o2.markerPowerDeadlineTs - 6 * 60_000L
+        repeat(5) { cycle() }
+        val o4 = cycle()
+        assertEquals(o2.markerPowerDeadlineTs, o4.computeTs, "Zyklus liegt exakt auf der Deadline")
+        assertEquals("CORRECTION", o4.livenessProfile)
+        assertEquals("POWER_EXPIRED", o4.livenessProfileReason)
+
+        // Zweiter Marker eroeffnet eine neue Frist (Test 5).
+        markerAt = clock
+        val o5 = cycle()
+        assertEquals("MEAL", o5.livenessProfile)
+        assertEquals(markerAt + 120 * 60_000L, o5.markerPowerDeadlineTs)
+    }
+
+    /**
+     * Profil-Caps wirken: ohne Marker die Correction-Caps, mit Marker nach
+     * frischer Bewaffnung die Meal-Caps - und die Ruecknahme beendet das
+     * MEAL-Profil sofort samt Lauf (MARKER_CHANGED, ohne Sperre). Die
+     * Coverage-Vorbereitung exportiert UNAVAILABLE statt Schaetzwerten.
+     */
+    @Test
+    fun `profil-caps schalten mit dem marker um und ruecknahme wirkt sofort`(@TempDir dir: File) {
+        mealRatioDeckel = 0.30; mealIobDeckel = 80.0
+        corrRatioDeckel = 0.10; corrIobDeckel = 70.0 // 5,6 U > Lage-IOB 4,5 - der Deckel laesst Spielraum
+        livenessLage(dir)
+        repeat(6) { cycle() } // Signal-Warm-up
+        var corrHub: FuseCycleRunner.Outcome? = null
+        repeat(25) { val o = cycle(); if (o.livenessLiftU > 0 && corrHub == null) corrHub = o }
+        val k = corrHub ?: error("die Lage muss ohne Marker heben (CORRECTION)")
+        assertEquals("CORRECTION", k.livenessProfile)
+        assertEquals(0.10, k.livenessSelectedRatioCap!!, 1e-9)
+        assertEquals(70.0, k.livenessSelectedIobCapPercent!!, 1e-9)
+        assertEquals("UNAVAILABLE", k.livenessCoverageState)
+        assertTrue(k.livenessStaticCorrectionNeedU != null && k.livenessStaticCorrectionNeedU!! > 0.0)
+        assertEquals(true, k.livenessDisturbanceActive)
+
+        // Beobachteter Marker: der laufende Lauf endet MARKER_CHANGED (kein
+        // stiller Cap-Tausch), dann frische Bewaffnung unter MEAL-Caps.
+        markerAt = clock
+        val wechsel = cycle()
+        assertEquals("MARKER_CHANGED", wechsel.livenessExit)
+        var mealHub: FuseCycleRunner.Outcome? = null
+        repeat(25) { val o = cycle(); if (o.livenessLiftU > 0 && mealHub == null) mealHub = o }
+        val m = mealHub ?: error("nach frischer Bewaffnung muss der Kanal unter MEAL heben")
+        assertEquals("MEAL", m.livenessProfile)
+        assertEquals(0.30, m.livenessSelectedRatioCap!!, 1e-9)
+        assertEquals(80.0, m.livenessSelectedIobCapPercent!!, 1e-9)
+        assertTrue(m.livenessLiftU > k.livenessLiftU, "MEAL-Ratio hebt mehr als CORRECTION: ${m.livenessLiftU} vs ${k.livenessLiftU}")
+
+        // Ruecknahme: Identitaet und Frist SOFORT weg, Lauf endet (Test 6).
+        markerAt = 0L
+        val weg = cycle()
+        assertEquals(0L, weg.markerPowerPinnedFor, "Identitaet sofort geloescht")
+        assertEquals(0L, weg.markerPowerDeadlineTs, "Frist sofort geloescht")
+        assertEquals("MARKER_CHANGED", weg.livenessExit, "Lauf endet als Bedienhandlung, nicht als Riegel")
+        // Nach der Ruecknahme ist die Lage ehrlich EXCLUDED, solange die
+        // widerrufene Evidenz-Episode laeuft (bestehende v18-Semantik:
+        // "die Episode bleibt, der Kredit ist weg" -> SUSPENDED). Der
+        // Vertrag verlangt: MEAL endet SOFORT - und das tut es.
+        assertTrue(weg.livenessProfile != "MEAL", "MEAL endet sofort: ${weg.livenessProfile}")
+        val danach = cycle()
+        assertEquals("EXCLUDED", danach.livenessProfile)
+        assertEquals("EXCLUDED_LAGE", danach.livenessProfileReason)
+    }
+
+    /**
+     * Restart-Vertraege (Tests 7/8/15): passende persistierte Identitaet
+     * setzt die Restfrist fort; ein beim Warmstart nur VORGEFUNDENER Marker
+     * ohne passende Identitaet eroeffnet kein MEAL; die Frist ueberlebt den
+     * Codec-Roundtrip identisch.
+     */
+    @Test
+    fun `markerfrist ist restartfest und warmstart pinnt nie rueckwirkend`(@TempDir dir: File) {
+        val lage = File(dir, "a")
+        val adapter = livenessLage(lage)
+        repeat(6) { cycle() } // Signal-Warm-up
+        markerAt = clock
+        repeat(2) { cycle() } // Evidenz-Rebase-Blip nach dem Druck
+        val o = cycle()
+        assertEquals("MEAL", o.livenessProfile)
+        assertTrue(adapter.persistVerified(lage), "versiegeln")
+
+        // T7+T15: Identitaet passt -> Restfrist laeuft weiter.
+        neuerRunner(FuseLedgerAdapter().also { it.loadOnce(lage, "test-epoch", clock) })
+        val n = cycle()
+        assertEquals(o.markerPowerPinnedFor, n.markerPowerPinnedFor, "Codec-Roundtrip identisch")
+        assertEquals(o.markerPowerDeadlineTs, n.markerPowerDeadlineTs)
+        assertEquals("MEAL", n.livenessProfile, "Restfrist wird fortgesetzt")
+
+        // T8 + Identitaetsvergleich: anderer Marker, nur vorgefunden (kein
+        // im Prozess beobachteter Wechsel) -> KEIN rueckwirkendes MEAL.
+        markerAt = clock + 60_000L
+        neuerRunner(FuseLedgerAdapter().also { it.loadOnce(lage, "test-epoch", clock) })
+        clock += 120_000L
+        val f = cycle()
+        assertEquals("CORRECTION", f.livenessProfile, "vorgefundener fremder Marker pinnt nicht")
+        assertEquals("MARKER_NOT_PINNED", f.livenessProfileReason)
+    }
+
+    /**
+     * Cap-Aenderung waehrend eines Laufs (Test 10): CONFIG_CHANGED beendet
+     * ihn ohne Sperre, die Bewaffnung beginnt unter den neuen Werten neu.
+     * Relational ungueltige Werte (Test 11) fallen fail-closed als
+     * Konfigurationsfehler aus - nichts wird getauscht oder geklemmt.
+     */
+    @Test
+    fun `cap-aenderung beendet den lauf und ungueltige relation faellt aus`(@TempDir dir: File) {
+        corrRatioDeckel = 0.10; mealRatioDeckel = 0.30
+        livenessLage(dir)
+        var aktiv = false
+        repeat(25) { val o = cycle(); if (o.livenessActive) aktiv = true }
+        assertTrue(aktiv, "der Lauf muss stehen")
+        corrRatioDeckel = 0.05
+        val o = cycle()
+        assertEquals("CONFIG_CHANGED", o.livenessExit)
+        assertEquals(0L, o.livenessReArmUntilTs, "Bedienhandlung: keine Sperre")
+
+        // Test 11: CORRECTION offener als MEAL -> fail-closed.
+        corrRatioDeckel = 0.40
+        val kaputt = cycle()
+        assertTrue(kaputt.abortReason?.contains("livenessCorrectionRatioCap") == true,
+            "relationale Validierung muss ablehnen: ${kaputt.abortReason}")
+    }
+
+    /**
+     * Profil-IOB-Deckel (Tests 12/13): erreicht der Kanal seinen
+     * profilspezifischen Deckel, wird NUR sein Zusatzanteil null - die
+     * Entscheidung faellt auf den Normalpfad zurueck. Das globale iobTH
+     * bleibt auch im MEAL-Profil eine harte Obergrenze im selben min().
+     */
+    @Test
+    fun `profil-iob-deckel nullt nur den kanal und global iobth bleibt hart`(@TempDir dir: File) {
+        // CORRECTION-Deckel 20% von maxIOB 8 = 1,6 U; bolusIobU 4,5 der Lage
+        // liegt DARUEBER -> Kanal-Headroom 0, Denial NO_HEADROOM.
+        corrIobDeckel = 20.0; mealIobDeckel = 60.0
+        livenessLage(dir)
+        var gedeckelt: FuseCycleRunner.Outcome? = null
+        // Verlangt wird ein Zyklus, in dem der NORMALPFAD liefert (Saegezahn
+        // im Lauf) UND der Kanal am Profil-Deckel haengt - nur dort ist
+        // beweisbar, dass der Deckel NUR den Kanalanteil nullt (Test 12;
+        // 0==0 im stillen Deadlock waere blind fuer die Mutation).
+        repeat(90) {
+            val o = cycle()
+            if (o.livenessDenial == "NO_HEADROOM" && (o.livenessNormalSmbU ?: 0.0) > 0.0 && gedeckelt == null) gedeckelt = o
+        }
+        val g = gedeckelt ?: error("der Profil-Deckel muss in einem Saegezahn-Zyklus greifen")
+        assertEquals(0.0, g.livenessLiftU, 1e-9, "nur der Kanalanteil wird null")
+        assertTrue(g.livenessNormalSmbU!! > 0.0, "der Normalpfad liefert in diesem Zyklus")
+        assertEquals(g.livenessNormalSmbU!!, g.decision.smbU, 1e-9, "die Entscheidung IST der Normalpfad")
+        assertEquals(20.0 / 100.0 * 8.0, g.livenessProfileIobLimitU!!, 1e-9)
+
+        // T13: MEAL-Deckel 90% waere offen, aber das globale iobTH (hier
+        // via iobTH-Prozent klein gestellt) bleibt im min() hart.
+        transportReset()
+        corrIobDeckel = 80.0; mealIobDeckel = 90.0
+        iobThPct = 40 // iobTH = 3,2 U < bolusIobU 4,5 -> global bindet
+        livenessLage(File(dir, "global"))
+        markerAt = clock
+        var global: FuseCycleRunner.Outcome? = null
+        repeat(25) { val o = cycle(); if (o.livenessDenial == "NO_HEADROOM" && global == null) global = o }
+        assertTrue(global != null, "das globale iobTH muss trotz MEAL-Profil deckeln")
+        iobThPct = 100
+    }
 
     /**
      * RATIO-DECKEL-VERTRAG (Toni 23.08. spaet): liveRatio = min(eff. Ratio,

@@ -371,6 +371,15 @@ class EpisodeBudgets {
      *  wieder 0 -> Erstkontakt-Pfad -> kein Schnitt. */
     var theilSenWindowLastMin: Long = 0L
 
+    /** MARKER-LEISTUNGSFRIST (MEAL/CORRECTION, Toni 23.08. nachts): der
+     *  Marker, fuer den die volle Mahlzeitenleistung gepinnt wurde, und
+     *  das Fristende. Die Dauer ist beim Druck EINGEFROREN - eine spaetere
+     *  Aenderung von MealPowerMin oeffnet keine abgelaufene Frist. 0/0 =
+     *  keine Frist. Nur ein IM PROZESS beobachteter Markerwechsel pinnt;
+     *  ein Warmstart setzt eine passende persistierte Frist fort. */
+    var markerPowerPinnedFor: Long = 0L
+    var markerPowerDeadlineTs: Long = 0L
+
     /**
      * Die Buchung DIESES Zyklus, solange die Publikation nicht feststeht.
      *
