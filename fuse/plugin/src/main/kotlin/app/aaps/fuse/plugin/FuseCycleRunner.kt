@@ -468,11 +468,33 @@ class FuseCycleRunner(
     /** Stationen des Sofortbatch-Endpfads samt Ruhe-Telemetrie. */
     data class UpfrontChain(
         val recoveryMode: String,
+        /** Welche Behandlung der ruhige Pfad gewaehlt hat, sonst null. */
+        val calmTreatment: String?,
         val recoveryStreak: Int,
         val recoveryRequired: Int,
         val recoveryDenial: String?,
         val currentHazard: String,
         val guardDistanceMgdl: Double?,
+        /**
+         * Was der NORMALE Pfad vor jedem Sofortbatch-Hub verlangt [U].
+         *
+         * Getrennt von [beforeMarkerFloorU] gefuehrt, weil die beiden nur im
+         * ruhigen Pfad zusammenfallen: sobald `liftUpfront` laeuft, traegt
+         * `beforeMarkerFloorU` bereits die gehobene Batchmenge. Ohne diese
+         * Spalte laesst sich nicht belegen, dass der ruhige Pfad den Bedarf
+         * nicht ueberschritten hat.
+         */
+        val normalNeedBeforeMarkerFloorU: Double,
+        /** Der noch offene Sofortanteil [U]. */
+        val upfrontOpenU: Double,
+        /**
+         * Was der ruhige Pfad in DIESEM Zyklus hoechstens zugelassen haette
+         * [U] - reine Beobachtung, kein Steuerwert. 0, solange der Modus
+         * nicht CALM_RECOVERED ist.
+         */
+        val calmEligibleU: Double,
+        /** Was der ruhige Pfad in den schrittweisen Pfad verschoben hat [U]. */
+        val calmShiftedU: Double,
         /** Der autorisierte Grant dieses Zyklus [U], 0 wenn keiner. */
         val grantU: Double,
         val grantSource: String?,
@@ -480,6 +502,12 @@ class FuseCycleRunner(
         val beforeMarkerFloorU: Double,
         /** Menge NACH MarkerFloor. */
         val afterMarkerFloorU: Double,
+        /**
+         * Wieviel MarkerFloor angehoben hat [U]. Die Kernzahl der
+         * Sicherheitskante: im ruhigen Pfad muss sie beweisbar 0 bleiben,
+         * weil dort gar kein MEAL_UPFRONT-Grant entsteht.
+         */
+        val markerFloorLiftU: Double,
         /** Menge NACH dem Endriegel (MeasuredDescentGate). */
         val afterDescentGateU: Double,
         /**
@@ -2971,7 +2999,11 @@ class FuseCycleRunner(
             prior = episodes.upfrontRecovery,
             deferredOpen = episodes.upfrontBatchDeferredSince > 0L,
             inPhaseA = upfrontInPhaseA,
-            hasAuthority = episodes.foundation?.valid == true && (markerTs ?: 0L) > 0L,
+            // DIE IDENTITAET, NICHT NUR EIN BOOLEAN: der Ruhezaehler gehoert
+            // zu EINER Autorisierung. Ein Markerwechsel muss ihn abbrechen,
+            // sonst erbt die naechste Mahlzeit eine Ruhe, die zur vorigen
+            // gehoerte - und ein geerbter Zaehler gibt frueher frei.
+            markerIdentity = episodes.foundation.takeIf { it.valid }?.armedTs ?: 0L,
             hazards = app.aaps.fuse.core.controller.UpfrontRecovery.Hazards(
                 descentRisk = descentRisk.active,
                 lowThreat = lowThreatResult.verdict != LowThreatGate.Verdict.NONE,
@@ -2986,11 +3018,68 @@ class FuseCycleRunner(
             ukfRatePerMin = signal.ukfRatePerMin.takeIf { it.isFinite() },
             q1Falling = upfrontQ1Faellt,
             guardDistanceMgdl = lowThreatResult.distanceToFloorMgdl,
-            nowTs = signal.sourceTs,
+            sourceTs = signal.sourceTs,
+            nowTs = computeTs,
         )
         episodes.upfrontRecovery = upfrontRecovery.track
+
+        // DER AUFRUFER MUSS DIE DREI FAELLE TRENNEN (Toni 25.08. spaet).
+        //
+        // Hier stand `!upfrontRecovery.releases`. Das war eine versteckte
+        // Vollbatch-Autorisierung: eine bestaetigte RUHE haette denselben
+        // `liftUpfront`-Pfad erreicht wie die bestaetigte schnelle Erholung,
+        // dort einen `MEAL_UPFRONT`-Grant gestempelt - und [MarkerFloor]
+        // haette ihn nach dem `finalVerify` auf die volle autorisierte Menge
+        // angehoben. Am Abendfall des 25.08. waeren das 3,60 U bei BG 78 und
+        // acht mg/dl Abstand zum Guard-Boden gewesen, in einem Zyklus, in dem
+        // der Regler selbst `insulinReq <= 0` sah.
+        //
+        // NUR [Decision.FullBatchEligible] darf deshalb `liftUpfront`
+        // erreichen. Der ruhige Pfad stempelt gar keinen Grant - das ist die
+        // Sicherheitskante, nicht ein Deckel in MarkerFloor.
+        var upfrontRuheUeberfuehrungU = 0.0
+        val upfrontVollbatchFrei = when (upfrontRecovery) {
+            is app.aaps.fuse.core.controller.UpfrontRecovery.Decision.Blocked -> false
+            is app.aaps.fuse.core.controller.UpfrontRecovery.Decision.FullBatchEligible -> true
+            is app.aaps.fuse.core.controller.UpfrontRecovery.Decision.CalmRecovered -> {
+                when (upfrontRecovery.treatment) {
+                    // Bedarfsbegrenzt: der normale Pfad bleibt stehen, wie er
+                    // ist. Verlangt er nichts, geschieht nichts.
+                    app.aaps.fuse.core.controller.UpfrontRecovery.CalmTreatment.DEMAND_LIMITED ->
+                        Unit
+                    // Kontrolliert verschoben: die Menge geht in den
+                    // schrittweisen Pfad - nicht als Vollbatch heraus.
+                    app.aaps.fuse.core.controller.UpfrontRecovery.CalmTreatment.SHIFT_TO_DEFERRED ->
+                        upfrontRuheUeberfuehrungU = upfrontOffenU
+                }
+                false
+            }
+        }
+
+        // DIESELBE BUCHUNG wie am Phase-A-Ende, nicht eine zweite. Die beiden
+        // Zweige schliessen sich aus (`upfrontInPhaseA`), und der Uebertrag
+        // wird nur gutgeschrieben, soweit die Huelle ihn wirklich aufnahm.
+        if (upfrontRuheUeberfuehrungU > 0.0 && upfrontInPhaseA && !upfrontSichtUnlesbar &&
+            episodes.foundation.valid &&
+            episodes.deferredPrime.pinnedForMarkerTs == episodes.foundation.armedTs
+        ) {
+            val vorherRuhe = episodes.deferredPrime.openU
+            episodes.deferredPrime = DeferredPrime.withhold(
+                episodes.deferredPrime, upfrontRuheUeberfuehrungU,
+                deferredHullRemainingU(episodes, manualBolusAfterMarkerU),
+            )
+            val angekommen = (episodes.deferredPrime.openU - vorherRuhe).coerceAtLeast(0.0)
+            upfrontTransferNowU += angekommen
+            episodes.upfrontTransferredU += angekommen
+            episodes.upfrontLapsedU +=
+                (upfrontRuheUeberfuehrungU - angekommen).coerceAtLeast(0.0)
+            episodes.upfrontBatchDeferredSince = 0L
+        } else {
+            upfrontRuheUeberfuehrungU = 0.0
+        }
+
         val upfrontWartetAufErholung = episodes.upfrontBatchDeferredSince > 0L &&
-            !upfrontRecovery.releases
+            !upfrontVollbatchFrei
         val liftedUpfront = when {
             upfrontOhneNetz || ledgerView.hold -> vetted
             // Sicherheitsriegel aktiv: der Batch bleibt VOLLSTAENDIG offen -
@@ -3336,17 +3425,35 @@ class FuseCycleRunner(
         // HIER sind alle Stationen zugleich bekannt - eine spaetere Rekon-
         // struktion aus Einzelfeldern waere genau die Art Nachrechnung, die
         // schon einmal die falsche Geschichte erzaehlt hat.
+        val ruheBlockiert =
+            upfrontRecovery as? app.aaps.fuse.core.controller.UpfrontRecovery.Decision.Blocked
+        val ruheRuhig =
+            upfrontRecovery as? app.aaps.fuse.core.controller.UpfrontRecovery.Decision.CalmRecovered
         upfrontChainThisCycle = UpfrontChain(
-            recoveryMode = upfrontRecovery.mode.name,
-            recoveryStreak = upfrontRecovery.track.calmStreak,
-            recoveryRequired = upfrontRecovery.required,
-            recoveryDenial = upfrontRecovery.denial?.name,
+            recoveryMode = upfrontRecovery.modeName,
+            calmTreatment = ruheRuhig?.treatment?.name,
+            recoveryStreak = upfrontRecovery.track.streak,
+            recoveryRequired = ruheBlockiert?.requiredCycles ?: upfrontRecoveryParams.calmCycles,
+            recoveryDenial = ruheBlockiert?.denial?.name,
             currentHazard = upfrontRecovery.hazards,
             guardDistanceMgdl = upfrontRecovery.guardDistanceMgdl,
+            normalNeedBeforeMarkerFloorU = vetted.smbU,
+            upfrontOpenU = upfrontOffenU,
+            // Reine Beobachtung. Bei SHIFT_TO_DEFERRED wird sofort NICHTS
+            // frei - die Menge wandert; bei DEMAND_LIMITED begrenzt der
+            // Bedarf des normalen Pfades.
+            calmEligibleU = when (ruheRuhig?.treatment) {
+                null -> 0.0
+                app.aaps.fuse.core.controller.UpfrontRecovery.CalmTreatment.SHIFT_TO_DEFERRED -> 0.0
+                app.aaps.fuse.core.controller.UpfrontRecovery.CalmTreatment.DEMAND_LIMITED ->
+                    minOf(upfrontOffenU, vetted.smbU.coerceAtLeast(0.0))
+            },
+            calmShiftedU = upfrontRuheUeberfuehrungU,
             grantU = lifted.grant?.amountU ?: 0.0,
             grantSource = lifted.grant?.source?.name,
             beforeMarkerFloorU = verifiedLift.smbU,
             afterMarkerFloorU = autorisiert.smbU,
+            markerFloorLiftU = (autorisiert.smbU - verifiedLift.smbU).coerceAtLeast(0.0),
             afterDescentGateU = nachDescent.smbU,
             requestedRtU = nachDescent.smbU,
         )

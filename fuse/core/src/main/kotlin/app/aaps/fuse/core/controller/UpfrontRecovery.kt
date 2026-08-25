@@ -2,52 +2,94 @@ package app.aaps.fuse.core.controller
 
 /**
  * WANN DARF DER PHASE-A-SOFORTBATCH NACH EINEM ABFALL WIEDER RAUS?
- * (Bauauftrag Toni 25.08. spaet.)
+ * (Bauauftrag Toni 25.08. spaet, neu geschnitten nach der Messung des
+ * Abendfalls.)
  *
  * DER ANLASS. Der Sofortbatch wird korrekt zurueckgehalten, solange
- * `MEASURED_DESCENT_RISK`, Low-Threat, Zero-Latch oder Rebound aktiv
- * sind. Ist das AKTUELLE Risiko vorbei, haengt er aber weiter am
- * allgemeinen [DescentRecoveryLatch], und der verlangt drei Zyklen mit
- * mindestens +0,20 mg/dl/min. Am Abendessen des 25.08. blieb der volle
- * Sofortanteil dadurch die GANZE Phase A blockiert, obwohl der gemessene
- * Abfall um 18:16 zu Ende war: die UKF-Rate erreichte in der Erholung
- * maximal +0,196 - vier Tausendstel zu wenig -, und `descentRecoveryCycles`
- * stand durchgehend auf 0. Am Ende von Phase A ging der Anteil in den
- * schrittweisen Aufschub. Das verfehlt die Funktion "Sofortanteil".
+ * `MEASURED_DESCENT_RISK`, Low-Threat, Zero-Latch oder Rebound aktiv sind.
+ * Ist das AKTUELLE Risiko vorbei, haengt er aber weiter am allgemeinen
+ * [DescentRecoveryLatch], und der verlangt drei Zyklen mit mindestens
+ * +0,20 mg/dl/min.
+ *
+ * DIE MESSUNG am Abendessen des 25.08., 18:07-18:27 (20 Zyklen Phase A):
+ *
+ *   descentLatchActive   23 von 23 Zyklen
+ *   descentRiskActive    10 von 23 - die letzten NEUN durchgehend false,
+ *                        `NOT_FALLING`, Rate STEIGEND (+0,070 .. +0,196)
+ *   Batch                3,60 U geplant, 0 angefordert, 0 publiziert
+ *
+ * Der blockierende Grund war also abgestanden. ABER: BG 76-78 bei einem
+ * Guard-Boden von 70 - sechs bis acht mg/dl Abstand -, und unmittelbar
+ * nach Phase A meldete der Regler selbst `NO_DEMAND` mit
+ * `insulinReq <= 0`. Ein Ruhe-Ausgang, der nur den Latch loest, haette
+ * also nichts freigegeben - aber [MarkerFloor] liest keinen Bedarf,
+ * sondern eine Autorisierung. Aus "Block entfaellt" waeren 3,60 U bei
+ * BG 78 geworden.
  *
  * ZWEI GETRENNTE FRAGEN, und ihre Vermischung war der Fehler:
  *
- *   1. IST GERADE NOCH GEFAHR? -> [Hazards]. Bleibt absolut. Kein
- *      Marker, keine Ruhe und kein Zeitablauf ueberstimmt sie.
- *   2. IST DIE LAGE NACH DEM ENDE DER GEFAHR STABIL GENUG? -> diese
- *      Klasse. Sie ersetzt NICHT die erste Frage, sondern kommt nach ihr.
+ *   1. IST GERADE NOCH GEFAHR? -> [Hazards]. Bleibt absolut. Kein Marker,
+ *      keine Ruhe und kein Zeitablauf ueberstimmt sie.
+ *   2. IST DIE LAGE NACH DEM ENDE DER GEFAHR STABIL GENUG - UND WOFUER?
+ *      -> diese Klasse. Sie kommt nach der ersten Frage, nicht statt ihr.
  *
- * ZWEI WEGE HERAUS, und der zweite ist neu:
- *   [Mode.RISING]  die bestehende schnelle Erholung des allgemeinen
- *                  Latches (UKF >= +0,20 ueber drei Zyklen).
- *   [Mode.CALM]    eine bestaetigte RUHIGE Lage: UKF nicht mehr materiell
- *                  negativ, q1 faellt nicht weiter, genug Abstand zum
- *                  Guard-Boden - und das LUECKENLOS ueber mehrere echte
- *                  Zyklen. Ein einzelner flacher Messwert genuegt nicht;
- *                  jeder erneut negative Zyklus setzt den Zaehler auf 0.
+ * WARUM [Decision] EIN SEALED INTERFACE IST UND KEIN BOOLEAN.
+ * Die Vorgaengerfassung gab `releases: Boolean` heraus. Ein Aufrufer mit
+ * `if (result.releases)` erreicht damit denselben Vollbatchpfad wie die
+ * bestaetigte schnelle Erholung - eine versteckte Vollbatch-Autorisierung.
+ * Der Typ zwingt den Aufrufer jetzt zur exhaustiven Fallunterscheidung.
+ *
+ * UND [Decision.CalmRecovered] TRAEGT ABSICHTLICH KEINE MENGE. Nicht
+ * `authCapU`, nicht "freigegeben bis". Der Grund steht in [MarkerFloor]:
+ * dort wird angehoben, sobald ein `grant` ankommt, und `grant == null`
+ * bedeutet "kein Boden". Die Sicherheitskante ist also nicht ein Deckel
+ * IN MarkerFloor, sondern dass im ruhigen Pfad gar kein
+ * `MEAL_UPFRONT`-Grant entsteht. Ein Mengenfeld an dieser Stelle waere
+ * genau der Weg, auf dem die volle Autorisierung doch wieder
+ * durchgereicht wird.
  *
  * DER GELTUNGSBEREICH IST ENG: ausschliesslich `MEAL_UPFRONT` innerhalb
  * Phase A. Normal-SMB, Liveness, Prime-Rest und Phase B bleiben unter dem
  * allgemeinen Descent-Latch. Diese Klasse trifft daher gar keine
- * Dosierentscheidung - sie beantwortet nur, ob der Batch-Aufschub endet.
+ * Dosierentscheidung - sie beantwortet nur, ob und WOFUER der
+ * Batch-Aufschub endet.
  *
  * DIE PARAMETER SIND INJIZIERT UND HABEN BEWUSST KEINE PRODUKTIONS-
  * DEFAULTS: sie werden am echten Abendfall und an Kontrollverlaeufen
  * replay-kalibriert, und zwar durch den VOLLSTAENDIGEN Endpfad
  * (liftUpfront -> finalVerify -> MarkerFloor -> MeasuredDescentGate ->
- * Publikation). Der Grund steht im Review: [MarkerFloor] hebt einen
- * typisierten Grant nach dem `finalVerify` wieder auf die autorisierte
- * Menge an - eine Freigabe bei knappem Guard-Abstand ist deshalb NICHT
- * durch den Guard-Boden begrenzt, wie es auf den ersten Blick aussieht.
+ * Publikation).
  */
 object UpfrontRecovery {
 
-    enum class Mode { NONE, RISING, CALM }
+    /**
+     * WIE EIN BESTAETIGT RUHIGER BATCH BEHANDELT WIRD. Beide Wege sind
+     * architektonisch sauber und werden im Replay VERGLICHEN - keiner ist
+     * voreingestellt.
+     */
+    enum class CalmTreatment {
+
+        /**
+         * BEDARFSBEGRENZT: hoechstens das, was der normale Pfad VOR
+         * [MarkerFloor] tatsaechlich verlangt. Kein `MEAL_UPFRONT`-Grant
+         * wird gestempelt, also kann der Boden nichts wiederherstellen.
+         * Im Abendfall des 25.08. liefert dieser Weg NICHTS, weil der
+         * Regler dort `insulinReq <= 0` sah - das ist kein Mangel des
+         * Weges, sondern sein Zweck.
+         */
+        DEMAND_LIMITED,
+
+        /**
+         * KONTROLLIERT VERSCHOBEN: der offene Sofortanteil geht in den
+         * schrittweisen [DeferredPrime]-Pfad, statt zu verfallen oder als
+         * Vollbatch auszuzahlen. Bewahrt die Menge, ohne 3,60 U bei BG 78
+         * auf einmal freizugeben.
+         */
+        SHIFT_TO_DEFERRED,
+    }
+
+    /** Welcher Weg den letzten Trackeintrag erzeugt hat. */
+    enum class TrackMode { NONE, RISING, CALM }
 
     enum class Denial {
         /** Kein Aufschub offen - die Frage stellt sich nicht. */
@@ -74,12 +116,12 @@ object UpfrontRecovery {
         /** Zu nah am Guard-Boden. */
         GUARD_DISTANCE,
 
-        /** Ruhe-Ausgang ausgeschaltet. */
+        /** Ruhe-Ausgang ausgeschaltet oder ohne Behandlungswahl. */
         DISABLED,
     }
 
     /**
-     * Die AKTUELLEN harten Blocker. Alle sechs sind Ausschlusskriterien;
+     * Die AKTUELLEN harten Blocker. Alle sieben sind Ausschlusskriterien;
      * der Marker ueberstimmt keinen davon.
      */
     class Hazards(
@@ -121,38 +163,161 @@ object UpfrontRecovery {
         val minUkf: Double,
         /** Mindestabstand von q1 zum Guard-Boden [mg/dl]. */
         val minGuardDistanceMgdl: Double,
+        /** Wie ein bestaetigt ruhiger Batch behandelt wird. */
+        val calmTreatment: CalmTreatment?,
     ) {
 
         companion object {
 
-            val OFF = Params(false, 0, 0.0, 0.0)
+            val OFF = Params(false, 0, 0.0, 0.0, null)
 
             /**
              * Unbrauchbare Werte ergeben [OFF] - kein stiller Rueckfall auf
-             * eine erfundene Kalibrierung.
+             * eine erfundene Kalibrierung. Die Behandlungswahl ist Pflicht:
+             * ohne sie gibt es keinen ruhigen Pfad, nur den alten Vertrag.
              */
-            fun of(calmCycles: Int, minUkf: Double, minGuardDistanceMgdl: Double): Params =
+            fun of(
+                calmCycles: Int,
+                minUkf: Double,
+                minGuardDistanceMgdl: Double,
+                calmTreatment: CalmTreatment,
+            ): Params =
                 if (calmCycles in 1..20 && minUkf.isFinite() && minUkf >= -1.0 && minUkf <= 1.0 &&
                     minGuardDistanceMgdl.isFinite() && minGuardDistanceMgdl >= 0.0 &&
                     minGuardDistanceMgdl <= 100.0
-                ) Params(true, calmCycles, minUkf, minGuardDistanceMgdl)
+                ) Params(true, calmCycles, minUkf, minGuardDistanceMgdl, calmTreatment)
                 else OFF
         }
     }
 
-    /** Der fortgeschriebene Zaehler - restartfest im Ledger zu halten. */
-    class Track(val calmStreak: Int = 0, val lastTs: Long = 0L)
-
-    class Result(
-        val mode: Mode,
-        val track: Track,
-        val denial: Denial?,
-        val required: Int,
-        val guardDistanceMgdl: Double?,
-        val hazards: String,
+    /**
+     * DER FORTGESCHRIEBENE RUHEZAEHLER - und alles, was ihn nach einem
+     * Prozessneustart ueberhaupt fortsetzbar macht (Toni 25.08. spaet).
+     *
+     * Nur den Streak zu speichern genuegt nicht. Ein wiederaufgenommener
+     * Zaehler gibt potenziell MEHR Insulin frei; er darf deshalb nur
+     * fortgesetzt werden, wenn Markeridentitaet, Signalanschluss und
+     * Zeitkontinuitaet stimmen - und wenn saemtliche aktuellen Gefahren im
+     * aufnehmenden Zyklus erneut negativ geprueft wurden. Letzteres
+     * garantiert [evaluate] dadurch, dass [Hazards.any] VOR jeder
+     * Fortschreibung zurueckkehrt.
+     *
+     * ZUM CODEC-BEFUND: heute ist dieser Zustand faktisch NICHT restartfest
+     * - `FuseLedgerAdapter` deklariert das Feld, der Codec fuehrt es weder
+     * in `encodeEpisodes` noch in `encodeFoundation`. Der Typ ist hier
+     * bereits so geschnitten, dass eine spaetere Persistierung die
+     * Identitaeten mitnehmen MUSS; [ofPersisted] lehnt unvollstaendige oder
+     * widerspruechliche Kombinationen fail-closed ab.
+     */
+    class Track(
+        /** `armedTs` des Markers, zu dem dieser Zaehler gehoert. */
+        val markerIdentity: Long = 0L,
+        val streak: Int = 0,
+        /** Der Signalpunkt, auf dem der letzte Ruhezyklus beruhte. */
+        val lastAcceptedSourceTs: Long = 0L,
+        /** Wann zuletzt ausgewertet wurde. */
+        val lastEvaluationTs: Long = 0L,
+        val mode: TrackMode = TrackMode.NONE,
     ) {
 
-        val releases: Boolean get() = mode != Mode.NONE
+        /**
+         * Ein Zaehler ohne vollstaendige Identitaet ist kein Zaehler.
+         * Entweder alles leer, oder alles gesetzt.
+         */
+        val consistent: Boolean
+            get() = if (streak <= 0) markerIdentity == 0L && lastAcceptedSourceTs == 0L &&
+                lastEvaluationTs == 0L && mode == TrackMode.NONE
+            else markerIdentity > 0L && lastAcceptedSourceTs > 0L &&
+                lastEvaluationTs > 0L && mode != TrackMode.NONE && streak <= MAX_STREAK
+
+        companion object {
+
+            val EMPTY = Track()
+
+            /** Obergrenze gegen einen davongelaufenen Zaehler. */
+            const val MAX_STREAK = 1000
+
+            /**
+             * FAIL-CLOSED: was der Codec liefert, wird geprueft, nicht
+             * geglaubt. Jede unvollstaendige oder widerspruechliche
+             * Kombination ergibt [EMPTY] - der konservative Zustand, weil
+             * ein fortgesetzter Zaehler mehr Insulin freigeben kann als ein
+             * neu begonnener.
+             */
+            fun ofPersisted(
+                markerIdentity: Long,
+                streak: Int,
+                lastAcceptedSourceTs: Long,
+                lastEvaluationTs: Long,
+                mode: TrackMode,
+            ): Track {
+                val t = Track(markerIdentity, streak, lastAcceptedSourceTs, lastEvaluationTs, mode)
+                return if (t.consistent) t else EMPTY
+            }
+        }
+    }
+
+    /**
+     * DAS ERGEBNIS - als sealed interface, damit der Aufrufer die drei
+     * Faelle nicht zusammenfassen KANN.
+     */
+    sealed interface Decision {
+
+        val track: Track
+        val hazards: String
+        val guardDistanceMgdl: Double?
+
+        /**
+         * NUR FUER DEN EXPORT. Steuerfluss laeuft ueber `when` auf den Typ -
+         * ein String liesse sich wieder zu `== "CALM_RECOVERED" || ...`
+         * zusammenfassen, und genau das soll der Typ verhindern.
+         */
+        val modeName: String
+            get() = when (this) {
+                is Blocked -> "BLOCKED"
+                is FullBatchEligible -> "FULL_BATCH_ELIGIBLE"
+                is CalmRecovered -> "CALM_RECOVERED"
+            }
+
+        /** Aktuelle Gefahr, fehlende Vorbedingung oder Ruhe noch nicht reif. */
+        class Blocked(
+            override val track: Track,
+            override val hazards: String,
+            override val guardDistanceMgdl: Double?,
+            val denial: Denial,
+            val requiredCycles: Int,
+        ) : Decision
+
+        /**
+         * Die bestehende, streng bestaetigte RISING-Erholung des
+         * allgemeinen Latches. Fuehrt auf den unveraenderten
+         * Vollbatchpfad - hier DARF ein `MEAL_UPFRONT`-Grant entstehen.
+         */
+        class FullBatchEligible(
+            override val track: Track,
+            override val hazards: String,
+            override val guardDistanceMgdl: Double?,
+        ) : Decision
+
+        /**
+         * Gefahr vorbei, aber keine starke Erholung.
+         *
+         * HIER STEHT ABSICHTLICH KEINE MENGE. Kein `authCapU`, kein
+         * "freigegeben bis", kein `eligibleU`. Wer hier ein Mengenfeld
+         * ergaenzt, oeffnet den Weg, auf dem [MarkerFloor] die volle
+         * Autorisierung wiederherstellt - genau die Kante, die der
+         * Abendfall des 25.08. sichtbar gemacht hat. Der Aufrufer muss
+         * ueber [treatment] entscheiden, was geschieht, und darf dabei
+         * KEINEN `MEAL_UPFRONT`-Grant stempeln.
+         */
+        class CalmRecovered(
+            override val track: Track,
+            override val hazards: String,
+            /** Nicht-null: der Abstand wurde geprueft, sonst waere es [Blocked]. */
+            override val guardDistanceMgdl: Double,
+            val calmStreak: Int,
+            val treatment: CalmTreatment,
+        ) : Decision
     }
 
     /**
@@ -160,13 +325,16 @@ object UpfrontRecovery {
      * @param prior der Zaehlerstand aus dem Ledger.
      * @param deferredOpen ist ueberhaupt ein Batch aufgeschoben?
      * @param inPhaseA laeuft Phase A noch?
-     * @param hasAuthority Marker- und Batchidentitaet vorhanden?
+     * @param markerIdentity `armedTs` des gepinnten Markers; 0 = keine
+     *   Autorisierung. Ein Markerwechsel bricht den Ruhezaehler ab - der
+     *   Zaehler gehoert zu EINER Autorisierung, nicht zum Geraet.
      * @param hazards die AKTUELLEN harten Blocker.
      * @param risingConfirmed hat der allgemeine Latch seine schnelle
      *   Erholung bestaetigt? Dieser Weg bleibt unveraendert bestehen.
      * @param ukfRatePerMin aktuelle UKF-Rate.
      * @param q1Falling faellt q1 gegenueber dem Vorzyklus?
      * @param guardDistanceMgdl Abstand von q1 zum Guard-Boden.
+     * @param sourceTs der Signalpunkt dieses Zyklus - Anschlussnachweis.
      * @param nowTs Anker dieses Zyklus - fuer den Restart-Schutz.
      */
     fun evaluate(
@@ -174,32 +342,39 @@ object UpfrontRecovery {
         prior: Track,
         deferredOpen: Boolean,
         inPhaseA: Boolean,
-        hasAuthority: Boolean,
+        markerIdentity: Long,
         hazards: Hazards,
         risingConfirmed: Boolean,
         ukfRatePerMin: Double?,
         q1Falling: Boolean,
         guardDistanceMgdl: Double?,
+        sourceTs: Long,
         nowTs: Long,
-    ): Result {
-        fun nein(d: Denial, t: Track = Track()) =
-            Result(Mode.NONE, t, d, params.calmCycles, guardDistanceMgdl, hazards.names)
+    ): Decision {
+        fun nein(d: Denial, t: Track = Track.EMPTY) =
+            Decision.Blocked(t, hazards.names, guardDistanceMgdl, d, params.calmCycles)
 
         // Die aktuelle Gefahr steht VOR allem anderen und loescht den
         // Ruhezaehler - eine Ruhe, die von einer Gefahr unterbrochen wurde,
-        // war keine.
+        // war keine. Dass dieser Zweig zuerst kommt, ist zugleich die
+        // Zusicherung aus dem Track-KDoc: ein fortgesetzter Zaehler hat die
+        // Gefahren in DIESEM Zyklus erneut negativ geprueft.
         if (hazards.any) return nein(Denial.CURRENT_HAZARD)
-        if (!deferredOpen) return nein(Denial.NOTHING_DEFERRED, prior)
-        if (!inPhaseA) return nein(Denial.NOT_PHASE_A, prior)
-        if (!hasAuthority) return nein(Denial.NO_AUTHORITY)
+        if (!deferredOpen) return nein(Denial.NOTHING_DEFERRED, geerbt(prior, markerIdentity))
+        if (!inPhaseA) return nein(Denial.NOT_PHASE_A, geerbt(prior, markerIdentity))
+        if (markerIdentity <= 0L) return nein(Denial.NO_AUTHORITY)
 
         // WEG 1 - unveraendert: die bestaetigte schnelle Erholung des
         // allgemeinen Latches. Sie brauchte nie eine Ruhezaehlung.
-        if (risingConfirmed)
-            return Result(Mode.RISING, prior, null, params.calmCycles,
-                          guardDistanceMgdl, hazards.names)
+        if (risingConfirmed) return Decision.FullBatchEligible(
+            Track(markerIdentity, maxOf(1, geerbt(prior, markerIdentity).streak),
+                  sourceTs, nowTs, TrackMode.RISING),
+            hazards.names, guardDistanceMgdl,
+        )
 
-        if (!params.enabled) return nein(Denial.DISABLED, prior)
+        val treatment = params.calmTreatment
+        if (!params.enabled || treatment == null)
+            return nein(Denial.DISABLED, geerbt(prior, markerIdentity))
 
         // WEG 2 - die bestaetigte ruhige Lage. Jede verletzte Bedingung
         // setzt den Zaehler auf 0; ein einzelner flacher Zyklus genuegt
@@ -211,19 +386,32 @@ object UpfrontRecovery {
             guardDistanceMgdl < params.minGuardDistanceMgdl
         ) return nein(Denial.GUARD_DISTANCE)
 
-        // LUECKENLOS heisst: der vorige Ruhezyklus muss der VORIGE ZYKLUS
-        // gewesen sein. Nach einem Neustart oder einer Zykluspause faengt
-        // die Zaehlung neu an, statt erfundene Zyklen zu erben.
-        val anschluss = prior.lastTs > 0L && nowTs > prior.lastTs &&
-            nowTs - prior.lastTs <= LUECKENLOS_MAX_MS
-        val streak = if (anschluss) prior.calmStreak + 1 else 1
-        val track = Track(streak, nowTs)
+        // LUECKENLOS heisst dreierlei: dieselbe Autorisierung, ein
+        // Signalanschluss und Zeitkontinuitaet. Nach einem Neustart, einem
+        // Markerwechsel oder einer Zykluspause faengt die Zaehlung neu an,
+        // statt erfundene Zyklen zu erben.
+        val basis = geerbt(prior, markerIdentity)
+        val anschluss = basis.streak > 0 &&
+            nowTs > basis.lastEvaluationTs &&
+            nowTs - basis.lastEvaluationTs <= LUECKENLOS_MAX_MS &&
+            sourceTs > basis.lastAcceptedSourceTs &&
+            sourceTs - basis.lastAcceptedSourceTs <= LUECKENLOS_MAX_MS
+        val streak = if (anschluss) basis.streak + 1 else 1
+        val track = Track(markerIdentity, streak, sourceTs, nowTs, TrackMode.CALM)
         if (streak < params.calmCycles)
-            return Result(Mode.NONE, track, Denial.CALM_STREAK_SHORT,
-                          params.calmCycles, guardDistanceMgdl, hazards.names)
-        return Result(Mode.CALM, track, null, params.calmCycles,
-                      guardDistanceMgdl, hazards.names)
+            return Decision.Blocked(track, hazards.names, guardDistanceMgdl,
+                                    Denial.CALM_STREAK_SHORT, params.calmCycles)
+        return Decision.CalmRecovered(track, hazards.names, guardDistanceMgdl, streak, treatment)
     }
+
+    /**
+     * Ein Zaehler gehoert zu EINER Autorisierung. Passt die Markeridentitaet
+     * nicht - oder ist der geladene Zustand inkonsistent -, wird er
+     * verworfen statt uminterpretiert.
+     */
+    private fun geerbt(prior: Track, markerIdentity: Long): Track =
+        if (prior.consistent && prior.streak > 0 && prior.markerIdentity == markerIdentity) prior
+        else Track.EMPTY
 
     /**
      * Groesster Abstand zweier Zyklen, der noch als "lueckenlos" gilt.

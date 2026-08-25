@@ -353,7 +353,43 @@ class TransportWiringTest : TestBaseWithProfile() {
             val nah = listOfNotNull(unter, ueber).minByOrNull { e -> kotlin.math.abs(e.key - atTs) }
             nah?.takeIf { e -> kotlin.math.abs(e.key - atTs) <= 90_000L }?.value
         }
+        // KEINE SENTINELS IM NORMALEN HARNESS (Toni 25.08. spaet).
+        //
+        // Hier standen kurzzeitig NaN fuer Nicht-Anker-Punkte. Das war in
+        // zweifacher Hinsicht falsch: die Bedingung traf Vergangenheit UND
+        // Zukunft, und die abgefragten Punkte sind ueberwiegend BAHNPUNKTE
+        // der Prognose (+127 bis +131 min). Der Prädiktor rechnet dort und
+        // lehnte folgerichtig mit NON_FINITE_INPUT ab - 350 von 373 Zyklen
+        // brachen ab, der Replay war unbrauchbar.
+        //
+        // Die Tripwire hat damit ihren Zweck erfuellt und ist beendet: sie
+        // hat den Verbraucher gefunden. Der richtige Ersatz ist keine
+        // Vergiftung, sondern die AS-OF-MODELLRECHNUNG - IOB und Aktivitaet
+        // fuer BELIEBIGE Abfragezeitpunkte aus den bis `computeTs`
+        // pumpenbestaetigten Behandlungen. Bis die steht, gilt wieder das
+        // bisherige Verhalten; es ist ungenau, aber endlich und benannt.
         it.iob = gesamt
+        // basalIOB = totalIOB - exportiertes bolusIOB. So sind BEIDE
+        // Groessen zugleich geraetetreu (Toni 25.08. spaet).
+        //
+        // OHNE das Feld bleibt es beim alten `basaliob = 0` - und damit
+        // beim alten Fehler, dass eine negative Gesamt-IOB als negative
+        // Bolus-IOB durchschlaegt. Das ist hier nicht heimlich: solche
+        // Zyklen werden gezaehlt, und das Aequivalenztor verwirft einen
+        // Lauf, der davon welche im Bewertungsfenster hat. Ein stiller
+        // Ersatzwert waere die schlechtere Wahl - er saehe wie eine
+        // Messung aus.
+        if (bolusAusTrail == null) {
+            // ANKER heisst: die Abfrage gilt dem Zeitpunkt dieses Zyklus.
+            // 90 s Toleranz, dieselbe wie bei der Zuordnung oben.
+            if (kotlin.math.abs(atTs - clock) <= 90_000L) {
+                bolusIobFehltAnker++
+                bolusIobAnkerFehltJetzt = true
+            } else bolusIobFehltHistorisch++
+        }
+        // basalIOB = totalIOB - exportiertes bolusIOB, wo der Trail es
+        // traegt (am Anker immer). Sonst 0 - das ist die alte, ungenaue
+        // Naeherung und ausdruecklich eine Baustelle, kein Vertrag.
         it.basaliob = bolusAusTrail?.let { gesamt - it } ?: 0.0
         it.activity = karte?.second ?: aktivitaet; it.valid = iobGueltig
     }
@@ -381,6 +417,21 @@ class TransportWiringTest : TestBaseWithProfile() {
     /** PHASE-2-REPLAY: (iobU, activityUPerMin) je Sample-Zeitstempel -
      *  naechster Eintrag binnen 90 s; null = normale Rig-Hebel. */
     private var iobProTs: java.util.TreeMap<Long, Pair<Double, Double>>? = null
+
+    /**
+     * FEHLENDE BOLUS-IOB, NACH ART DER ABFRAGE GETRENNT.
+     *
+     * Die Gesamtzahl allein sagt nichts: der Regler fragt je Zyklus
+     * rund ein Dutzend HISTORISCHE Stuetzstellen ab (die q1-/BGI-Reihe),
+     * und fuer die traegt der Trail naturgemaess keinen eigenen
+     * Zyklus-Eintrag. Entscheidend ist der ANKER - an ihm haengen
+     * Low-Threat, Abwaertsrisiko und Guard.
+     */
+    private var bolusIobFehltAnker = 0
+    private var bolusIobFehltHistorisch = 0
+
+    /** Fehlte die Bolus-IOB am Anker DIESES Zyklus? */
+    private var bolusIobAnkerFehltJetzt = false
 
     /** Die BOLUS-IOB je Zeitpunkt aus dem Trail. */
     private var bolusIobProTs: java.util.TreeMap<Long, Double>? = null
@@ -7486,6 +7537,13 @@ class TransportWiringTest : TestBaseWithProfile() {
             conditionalTail = b("conditionalTailEnabled", conditionalTail)
             fundamentAn = b("mealFoundationEnabled", fundamentAn)
             fundamentAnteil = d("mealFoundationPhaseAShare", fundamentAnteil)
+            // DER SOFORTANTEIL FEHLTE HIER (Befund 25.08. spaet). Ohne ihn
+            // lief jede Standardspur mit 0,0, waehrend das Geraet 1,0 fuhr -
+            // `phaseAUpfrontU = phaseABudgetU * 0` und upfrontState() gibt
+            // dann unbedingt null zurueck. Die Auslassung war ausgerechnet
+            // dort, wo sie am meisten kostet: Huelle und Phase-A-Anteil
+            // kamen an, nur der Faktor 1 fiel weg.
+            upfrontAnteil = d("mealFoundationPhaseAUpfrontShare", upfrontAnteil)
             fundamentEndeMin = i("mealFoundationEndMin", fundamentEndeMin)
             aufschubAn = b("deferredPrimeEnabled", aufschubAn)
             aufschubHorizontMin = d("markerPrimeDescentHorizonMin", aufschubHorizontMin)
@@ -7549,7 +7607,7 @@ class TransportWiringTest : TestBaseWithProfile() {
         // die Karte ist seit dem Zeitzonen-Fix oben ebenfalls lokal gefuellt
         // - eine Uhr fuer beide Seiten.
 
-        fun lauf(name: String, fensterMs: Long?, trendRegel: String? = null, fenster: Int = 18, ratioCap: Double = 1.0, livenessStart: Boolean = true, profilCapsBehalten: Boolean = false, upfrontStart: Double = 0.0, guardsStart: Boolean = false, reversalConfirm: Int = 2, gapBreakMs: Long? = null, reifeTag: String? = null, rejoin: Boolean = false, ruhe: app.aaps.fuse.core.controller.UpfrontRecovery.Params = app.aaps.fuse.core.controller.UpfrontRecovery.Params.OFF): File {
+        fun lauf(name: String, fensterMs: Long?, trendRegel: String? = null, fenster: Int = 18, ratioCap: Double = 1.0, livenessStart: Boolean = true, profilCapsBehalten: Boolean = false, upfrontStart: Double? = null, guardsStart: Boolean = false, reversalConfirm: Int = 2, gapBreakMs: Long? = null, reifeTag: String? = null, rejoin: Boolean = false, ruhe: app.aaps.fuse.core.controller.UpfrontRecovery.Params = app.aaps.fuse.core.controller.UpfrontRecovery.Params.OFF): File {
             transportReset()
             boluses = emptyList()
             markerAt = 0L
@@ -7576,7 +7634,10 @@ class TransportWiringTest : TestBaseWithProfile() {
             }
             // Dieselbe Leck-Regel fuer den Sofortanteil (v28): alte Trails
             // tragen den Schluessel nicht, jeder Lauf startet explizit.
-            upfrontAnteil = upfrontStart
+            // `null` heisst NICHT GESETZT - bei 0.0 waere "die Matrix will
+            // ausdruecklich 0" von "der Aufrufer sagt nichts" nicht zu
+            // unterscheiden, und die Politik duerfte nie mehr durchkommen.
+            upfrontStart?.let { upfrontAnteil = it }
             // Dieselbe Leck-Regel fuer die Korrekturpfad-Riegel (v30);
             // politikAnwenden liest die Guard-Schluessel bewusst NICHT ein -
             // die Matrix steuert, nicht die aufgezeichnete Politik.
@@ -7618,12 +7679,29 @@ class TransportWiringTest : TestBaseWithProfile() {
             theilSenFensterMin = fenster // W18-Trails tragen den Schluessel nicht - der Hebel gilt
             politikAnwenden(zyklen.firstNotNullOfOrNull { it.policy })
             theilSenFensterMin = fenster // die erste Politik darf den Matrixwert nicht ueberschreiben (W10-Live-Trails tragen 10)
+            upfrontStart?.let { upfrontAnteil = it }   // derselbe Vorrang fuer den Sofortanteil
             val adapter = FuseLedgerAdapter().also { it.loadOnce(File(dir, name).also(File::mkdirs), "test-epoch", zyklen.first().ts) }
             neuerRunner(adapter, fensterMs = fensterMs, trendRegel = trendRegel, gapPolitik = gapPolitik, reifePolitik = reifePolitik, wiedereinstieg = rejoinPolitik, ruheParams = ruhe)
             val outFile = File(outDir, "replay_$name.csv")
             outFile.printWriter().use { w ->
-                w.println("ts;smbU;block;binding;insulinReq;liftU;needU;abort;phase;fastD;slowD;trend;raw;recSmbU;recBlock;profil;restMin;tbr;latch;lvDenial;lvExit;lvStreak;lvHead;transC;revGrund;rearmGrund;ctxGrund;basis;gapBreakMs;samplesUsed;gapBeforeMin;r;bandN;matP;matS;iob;rejoin;rejoinGrund;gapMs;vollreifeTs;regimeGrund;regimeTs;regimeSegTs;vorReif;ruheModus;ruheStreak;ruheDenial;gefahr;guardAbst;grantU;vorFloor;nachFloor;nachRiegel;rtAngefordert")
-                var prevMarker = 0L
+                w.println("ts;smbU;block;binding;insulinReq;liftU;needU;abort;phase;fastD;slowD;trend;raw;recSmbU;recBlock;profil;restMin;tbr;latch;lvDenial;lvExit;lvStreak;lvHead;transC;revGrund;rearmGrund;ctxGrund;basis;gapBreakMs;samplesUsed;gapBeforeMin;r;bandN;matP;matS;iob;rejoin;rejoinGrund;gapMs;vollreifeTs;regimeGrund;regimeTs;regimeSegTs;vorReif;ruheModus;ruheStreak;ruheDenial;gefahr;guardAbst;grantU;vorFloor;nachFloor;nachRiegel;rtAngefordert;upfrontState;upfrontPendingU;riskAktiv;latchAktiv;latchGrund;iobAnkerFehlt;iobFehltAnkerKum;iobFehltHistKum;upfrontShare;q1;ukf;aktivitaet;bolusIobU;totalIobU;guardBoden;abstandBoden;minToFloor;ueberdeckung;fallrate;lowVerdikt;riskDenial;recoveryZyklen;horizontMin;aufschubGrund")
+                // DER VORGEFUNDENE MARKER IST KEIN BEOBACHTETER DRUCK
+                // (Toni 25.08. spaet). `prevMarker = 0` liess den ersten
+                // Zyklus jeden schon laufenden Marker als frisch gedrueckt
+                // sehen: am 25.08. wurde der alte 11-Uhr-Marker um 16:30
+                // "gedrueckt", und damit entstanden Pinning, Batch und
+                // Resetfolge auf einer Vorgeschichte, die es am Geraet nie
+                // gab. Das Geraet kannte ihn seit Stunden - und
+                // `markerPressObserved() == markerTs` war fuer ihn FALSCH.
+                //
+                // `markerAtIntern` statt `markerAt`: der Setter wuerde den
+                // Druck mitsetzen, und genau den soll es hier nicht geben.
+                val startMarker = zyklen.first().marker
+                if (startMarker > 0L) {
+                    markerAtIntern = startMarker
+                    markerPress = 0L
+                }
+                var prevMarker = startMarker
                 var polText = pol?.toString()
                 var zyklusNr = 0
                 for (z in zyklen) {
@@ -7643,6 +7721,7 @@ class TransportWiringTest : TestBaseWithProfile() {
                     if (z.marker != prevMarker && z.marker > 0L) markerAt = z.marker
                     prevMarker = z.marker
                     clock = z.ts
+                    bolusIobAnkerFehltJetzt = false
                     val o = runner.run(false, testPumpe())
                     val klass = o.turnResponseShadow?.classification
                     w.println(listOf(
@@ -7707,6 +7786,42 @@ class TransportWiringTest : TestBaseWithProfile() {
                         o.upfrontChain?.afterMarkerFloorU?.let { "%.3f".format(java.util.Locale.US, it) } ?: "",
                         o.upfrontChain?.afterDescentGateU?.let { "%.3f".format(java.util.Locale.US, it) } ?: "",
                         o.upfrontChain?.requestedRtU?.let { "%.3f".format(java.util.Locale.US, it) } ?: "",
+                        // DIE VERGLEICHSGROESSEN DES AEQUIVALENZTORS (Toni
+                        // 25.08. spaet): "0x NO_INPUT" reicht nicht - der
+                        // OFF-Lauf muss je Zyklus Grant, Aufschubzustand,
+                        // Risk/Latch und Endanforderung treffen.
+                        o.phaseAUpfrontState ?: "",
+                        "%.3f".format(java.util.Locale.US, o.phaseAUpfrontPendingU),
+                        if (o.descentRiskActive) "1" else "0",
+                        if (o.descentLatchActive) "1" else "0",
+                        o.descentLatchReason ?: "",
+                        if (bolusIobAnkerFehltJetzt) "1" else "0",
+                        bolusIobFehltAnker.toString(),
+                        bolusIobFehltHistorisch.toString(),
+                        // DER WIRKSAME SOFORTANTEIL DIESES LAUFS. Seine
+                        // Unsichtbarkeit hat Referenz und Kandidat unbemerkt
+                        // auseinanderlaufen lassen; er gehoert in jede Zeile.
+                        "%.2f".format(java.util.Locale.US, upfrontAnteil),
+                        // DIE EINGABEKETTE DES ABWAERTSRISIKOS (Toni 25.08.
+                        // spaet). `FLOOR_BEYOND_HORIZON` kann auch aus einem
+                        // falsch gestubbten HORIZONT entstehen, obwohl q1 und
+                        // UKF identisch sind - deshalb steht der Horizont
+                        // danebem.
+                        o.signal?.q1?.let { "%.3f".format(java.util.Locale.US, it) } ?: "",
+                        o.signal?.ukfRatePerMin?.let { "%.4f".format(java.util.Locale.US, it) } ?: "",
+                        o.signal?.activityAtAnchor?.let { "%.6f".format(java.util.Locale.US, it) } ?: "",
+                        o.lowThreat?.bolusIobU?.let { "%.3f".format(java.util.Locale.US, it) } ?: "",
+                        o.iobU?.let { "%.3f".format(java.util.Locale.US, it) } ?: "",
+                        "%.1f".format(java.util.Locale.US, guardBodenMgdl),
+                        o.lowThreat?.distanceToFloorMgdl?.let { "%.3f".format(java.util.Locale.US, it) } ?: "",
+                        o.descentMinutesToFloor?.let { "%.3f".format(java.util.Locale.US, it) } ?: "",
+                        o.descentOvercoverageMgdl?.let { "%.4f".format(java.util.Locale.US, it) } ?: "",
+                        o.descentFallRatePerMin?.let { "%.4f".format(java.util.Locale.US, it) } ?: "",
+                        o.lowThreat?.verdict?.name ?: "",
+                        o.descentRiskDenial ?: "",
+                        o.descentRecoveryCycles.toString(),
+                        aufschubHorizontMin.toString(),
+                        o.upfrontChain?.recoveryDenial ?: "",
                     ).joinToString(";"))
                 }
             }
@@ -7806,15 +7921,30 @@ class TransportWiringTest : TestBaseWithProfile() {
             //
             // Der Referenzlauf setzt NICHTS - `Params.OFF` ist der heutige
             // Vertrag, und die Matrix misst gegen ihn.
-            lauf("calmRef", null, fenster = 10)
+            lauf("calmRef", null, fenster = 10, upfrontStart = 1.0)
             ruheEnv.split(",").forEach { spec ->
                 val t = spec.trim().split(":")
+                // DIE BEHANDLUNG IST PFLICHT, kein vierter Wert mit Default:
+                // "ruhig" allein sagt nicht, was mit der Menge geschieht, und
+                // genau diese Verwechslung war die Sicherheitskante.
+                // Format: N:minUkf:minAbstand:(demand|shift)
+                require(t.size == 4) {
+                    "Ruhe-Spezifikation braucht N:minUkf:minAbstand:(demand|shift), war '$spec'"
+                }
+                val behandlung = when (t[3].trim().lowercase()) {
+                    "demand" ->
+                        app.aaps.fuse.core.controller.UpfrontRecovery.CalmTreatment.DEMAND_LIMITED
+                    "shift" ->
+                        app.aaps.fuse.core.controller.UpfrontRecovery.CalmTreatment.SHIFT_TO_DEFERRED
+                    else -> error("unbekannte Behandlung '${t[3]}' - erlaubt: demand, shift")
+                }
                 val p = app.aaps.fuse.core.controller.UpfrontRecovery.Params.of(
                     calmCycles = t[0].toInt(),
                     minUkf = t[1].toDouble(),
                     minGuardDistanceMgdl = t[2].toDouble(),
+                    calmTreatment = behandlung,
                 )
-                lauf("calm${t[0]}_${t[1].replace(".", "")}_${t[2].replace(".", "")}",
+                lauf("calm${t[0]}_${t[1].replace(".", "")}_${t[2].replace(".", "")}_${t[3].trim()}",
                      null, fenster = 10, upfrontStart = 1.0, ruhe = p)
             }
             lauf("calmRefNach", null, fenster = 10, upfrontStart = 1.0)
