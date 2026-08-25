@@ -206,6 +206,19 @@ class EpisodeBudgets {
      */
     var upfrontBatchDeferredSince: Long = 0L
 
+    /**
+     * DIE IN DEN SCHRITTWEISEN PFAD UEBERFUEHRTE Sofortmenge [U]
+     * (Review 25.08. abends, Punkt 2).
+     *
+     * Nach dem Ende von Phase A gibt es KEINEN spaeten
+     * Mehr-Einheiten-Batch mehr. Was dann noch offen ist, wandert EINMAL
+     * in den bestehenden `DeferredPrime` - unter dessen gepinnter Frist -
+     * und wird hier vermerkt, damit die Sofort-Bilanz dieselbe Menge
+     * nicht ein zweites Mal als offen ausweist. Ein BUCHWECHSEL, keine
+     * Lieferung: genau EINMAL je Autorisierung.
+     */
+    var upfrontTransferredU: Double = 0.0
+
     /** V-REVERSAL-RIEGEL (v30, Review-P0.1): die IDENTITAET (Fall-Minimum,
      *  Zuendung) ist persistent - ein Neustart entfernt den Riegel nicht.
      *  Die r-Bestaetigungszaehler sind wie beim [zeroLatch] bewusst

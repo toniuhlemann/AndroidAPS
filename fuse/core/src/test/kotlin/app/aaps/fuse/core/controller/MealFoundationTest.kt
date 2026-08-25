@@ -1066,20 +1066,43 @@ class MealFoundationTest {
     @Test
     fun `die sofort-bilanz senkt sich um lieferung und manuelles insulin`() {
         val a = upfrontAuth(1.0) // upfrontU = 3,0
-        assertEquals(3.0, MealFoundation.remainingUpfrontU(a, 0.0, 0.0), 1e-9)
-        assertEquals(1.5, MealFoundation.remainingUpfrontU(a, 1.5, 0.0), 1e-9, "Lieferung senkt")
-        assertEquals(0.0, MealFoundation.remainingUpfrontU(a, 3.0, 0.0), 1e-9, "gedeckt")
-        assertEquals(0.0, MealFoundation.remainingUpfrontU(a, 4.5, 0.0), 1e-9, "nie negativ")
-        assertEquals(1.0, MealFoundation.remainingUpfrontU(a, 0.0, 2.0), 1e-9, "manuelles Insulin senkt")
-        assertEquals(0.5, MealFoundation.remainingUpfrontU(a, 1.5, 1.0), 1e-9, "beides zusammen")
+        assertEquals(3.0, MealFoundation.remainingUpfrontU(a, 0.0, 0.0))
+        assertEquals(1.5, MealFoundation.remainingUpfrontU(a, 1.5, 0.0), "Lieferung senkt")
+        assertEquals(0.0, MealFoundation.remainingUpfrontU(a, 3.0, 0.0), "gedeckt")
+        assertEquals(0.0, MealFoundation.remainingUpfrontU(a, 4.5, 0.0), "nie negativ")
+        assertEquals(1.0, MealFoundation.remainingUpfrontU(a, 0.0, 2.0), "manuelles Insulin senkt")
+        assertEquals(0.5, MealFoundation.remainingUpfrontU(a, 1.5, 1.0), "beides zusammen")
         // DER LIVEFALL vom 25.08.: Plan 3,20, davon 0,60 in Phase A
         // geliefert -> genau 2,60 offen (gemeldet waren 3,10).
         val live = upfrontAuth(1.0, totalU = 4.0, phaseAShare = 0.8) // upfrontU = 3,20
         assertEquals(3.20, live.phaseAUpfrontU, 1e-9)
-        assertEquals(2.60, MealFoundation.remainingUpfrontU(live, 0.60, 0.0), 1e-9)
-        assertEquals(0.0, MealFoundation.remainingUpfrontU(MealFoundation.Authorization.none(), 0.0, 0.0), 1e-9)
-        assertEquals(0.0, MealFoundation.remainingUpfrontU(a, Double.NaN, 0.0), 1e-9, "fail-closed")
-        assertEquals(0.0, MealFoundation.remainingUpfrontU(a, 0.0, -1.0), 1e-9, "fail-closed")
-        assertEquals(0.0, MealFoundation.remainingUpfrontU(a, 0.0, null), 1e-9, "unlesbar = fail-closed")
+        assertEquals(2.60, MealFoundation.remainingUpfrontU(live, 0.60, 0.0)!!, 1e-9)
+        // ALLE Lieferungen nach dem Marker zaehlen (Review-Punkt 3) - sonst
+        // koennten Phase-B- oder Korrekturabgaben flieszen und danach
+        // trotzdem der nahezu volle Batch.
+        assertEquals(
+            1.10,
+            MealFoundation.remainingUpfrontU(
+                live, deliveredPhaseAU = 0.60, manualAfterMarkerU = 0.20,
+                deliveredSinceHandoverU = 0.80, postFoundationDeliveredU = 0.50,
+            )!!, 1e-9,
+            "3,20 - 0,60 - 0,20 - 0,80 - 0,50",
+        )
+        // Der UEBERTRAG ist keine Lieferung, sondern ein Buchwechsel - er
+        // verhindert, dass dieselbe Menge zweimal offen erscheint.
+        assertEquals(
+            0.0,
+            MealFoundation.remainingUpfrontU(
+                live, deliveredPhaseAU = 0.60, manualAfterMarkerU = 0.0,
+                transferredToDeferredU = 2.60,
+            )!!, 1e-9,
+            "nach der Ueberfuehrung ist nichts mehr sofort offen",
+        )
+        assertEquals(0.0, MealFoundation.remainingUpfrontU(MealFoundation.Authorization.none(), 0.0, 0.0))
+        // UNBESTIMMBAR ist NICHT gedeckt (Review-Punkt 6): `null` statt 0.
+        assertNull(MealFoundation.remainingUpfrontU(a, 0.0, null), "unlesbare Sicht = keine Aussage")
+        assertNull(MealFoundation.remainingUpfrontU(a, Double.NaN, 0.0), "unbrauchbare Zahl = keine Aussage")
+        assertNull(MealFoundation.remainingUpfrontU(a, 0.0, -1.0))
+        assertNull(MealFoundation.remainingUpfrontU(a, 0.0, 0.0, deliveredSinceHandoverU = Double.NaN))
     }
 }

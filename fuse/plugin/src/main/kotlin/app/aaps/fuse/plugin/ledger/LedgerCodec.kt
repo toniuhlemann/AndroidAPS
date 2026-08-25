@@ -622,6 +622,7 @@ object LedgerCodec {
             // Fehlrichtung waere "mehr Insulin". Additiv; eine Altdatei
             // ohne Feld heisst "nie aufgeschoben".
             .put("upfrontBatchDeferredSince", e.upfrontBatchDeferredSince)
+            .put("upfrontTransferredU", e.upfrontTransferredU)
     }
 
     /**
@@ -945,6 +946,9 @@ object LedgerCodec {
         if (o.has("upfrontBatchDeferredSince"))
             e.upfrontBatchDeferredSince =
                 requireTs("foundation.upfrontBatchDeferredSince", o.getLong("upfrontBatchDeferredSince"))
+        if (o.has("upfrontTransferredU"))
+            e.upfrontTransferredU =
+                requireAmount("foundation.upfrontTransferredU", o.getDouble("upfrontTransferredU"))
     }
 
     // ---- Verbrauchte Bindungs-Identitaeten (Fix 6, NEU-BS-02) -------------

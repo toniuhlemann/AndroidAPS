@@ -3723,9 +3723,10 @@ class TransportWiringTest : TestBaseWithProfile() {
      */
     @Test
     fun `der aufgeschobene sofortanteil kommt als ein batch zurueck`(@TempDir dir: File) {
-        // Breites, GEPINNTES Prime-Fenster: Riegel UND Erholung muessen in
-        // Phase A passen.
-        whenever(preferences.get(FuseIntKey.PrimeWindowMin)).thenReturn(40)
+        // LIVE-FENSTER 20 min (Review 25.08. abends): der fruehere Wert 40
+        // machte den Test wertlos - er verschob den Phasenwechsel hinter
+        // die Erholung und pruefte damit genau den kritischen Fall nicht.
+        whenever(preferences.get(FuseIntKey.PrimeWindowMin)).thenReturn(20)
         upfrontAnteil = 1.0
         primeHuelleU = 4.0       // Tonis Huelle -> Phase A 3,20, Fundament 0,80
         fundamentAnteil = 0.8
@@ -3739,7 +3740,7 @@ class TransportWiringTest : TestBaseWithProfile() {
         flach = 150.0
         steigungProMin = -3.0
         bolusIobU = 2.0
-        val imRiegel = (0 until 6).map { transport(dir) }
+        val imRiegel = (0 until 13).map { transport(dir) }
         assertTrue(imRiegel.all { it.phaseAUpfrontRequestedU == 0.0 }) {
             "im Riegel darf NICHTS aus dem Batch fliessen - " +
                 imRiegel.joinToString(" ") { "${it.phaseAUpfrontRequestedU}/${it.phaseAUpfrontState}" }
@@ -3801,6 +3802,101 @@ class TransportWiringTest : TestBaseWithProfile() {
             "der Batch wird nicht wiederholt - " +
                 weitere.joinToString(" ") { "%.2f".format(it.phaseAUpfrontRequestedU) }
         }
+    }
+
+    /**
+     * DER FALL, DEN DER ERSTE PFLICHTTEST MASKIERT HAT (Review 25.08.
+     * abends): die Erholung kommt erst NACH dem Ende von Phase A.
+     *
+     * `liftUpfront` liefert nur in Phase A - ein spaeter
+     * Mehr-Einheiten-Batch ist ausdruecklich nicht gewollt. Die Menge
+     * darf deshalb weder fliessen noch verschwinden: sie geht GENAU
+     * EINMAL in den schrittweisen Aufschub ueber, unter dessen gepinnter
+     * Frist. Der erste Wurf des Tests setzte das Prime-Fenster auf 40 min
+     * und verschob damit den Phasenwechsel hinter die Erholung - er
+     * pruefte genau diesen Fall nicht.
+     */
+    @Test
+    fun `nach phase a kommt kein vollbatch sondern ein ueberrtrag`(@TempDir dir: File) {
+        whenever(preferences.get(FuseIntKey.PrimeWindowMin)).thenReturn(20) // LIVE
+        upfrontAnteil = 1.0
+        primeHuelleU = 4.0
+        fundamentAnteil = 0.8
+        aufschubAn = true
+        maxSmbU = 0.30
+        mahlzeit(dir)
+
+        // Riegel LAENGER als das Prime-Fenster: der Phasenwechsel faellt in
+        // die Riegelzeit, die Erholung liegt danach.
+        flach = 150.0
+        steigungProMin = -3.0
+        bolusIobU = 2.0
+        val imRiegel = (0 until 24).map { transport(dir) }
+        assertTrue(imRiegel.all { it.phaseAUpfrontRequestedU == 0.0 }, "im Riegel fliesst nichts")
+
+        // DER UEBERTRAG: genau ein Zyklus meldet ihn, danach ist der
+        // Sofortanteil erledigt - nicht "gedeckt", sondern ueberfuehrt.
+        val uebertrag = imRiegel.filter { it.phaseAUpfrontState == "TRANSFERRED_TO_DEFERRED" }
+        assertTrue(uebertrag.isNotEmpty()) {
+            "der Rest muss beim Phasenwechsel uebergehen - " +
+                imRiegel.mapNotNull { it.phaseAUpfrontState }.distinct().joinToString(" ")
+        }
+        assertEquals(0.0, uebertrag.first().phaseAUpfrontPendingU, 1e-9, "danach nichts mehr sofort offen")
+        // EXACTLY ONCE: der Uebertrag-Posten steht genau einmal.
+        assertTrue(ledger.episodes.upfrontTransferredU > 2.0) {
+            "die Menge ist verlustfrei ueberfuehrt: ${ledger.episodes.upfrontTransferredU}"
+        }
+        val nachUebertrag = ledger.episodes.upfrontTransferredU
+
+        // DIE ERHOLUNG NACH T+20: kein Vollbatch mehr - der schrittweise
+        // Pfad liefert, gebremst auf Pumpenschritte.
+        steigungProMin = 0.8
+        flach = 130.0 - 0.8 * ((clock - start) / 60_000.0)
+        knickAbMin = null
+        bolusIobU = null
+        val nachher = (0 until 12).map { transport(dir) }
+        assertTrue(nachher.all { it.phaseAUpfrontRequestedU == 0.0 }) {
+            "nach Phase A darf KEIN Vollbatch kommen - " +
+                nachher.joinToString(" ") { "%.2f".format(it.phaseAUpfrontRequestedU) }
+        }
+        assertEquals(nachUebertrag, ledger.episodes.upfrontTransferredU, 1e-9) {
+            "und der Uebertrag geschieht genau EINMAL"
+        }
+        // Verlustfrei heisst: der schrittweise Pfad hat die Menge wirklich.
+        assertTrue(nachher.any { it.deferredPrimeOpenU > 1.0 }) {
+            "die Menge liegt im schrittweisen Aufschub - " +
+                nachher.joinToString(" ") { "%.2f".format(it.deferredPrimeOpenU) }
+        }
+    }
+
+    /**
+     * PUNKT 6: eine unlesbare Behandlungssicht ist NICHT "gedeckt". Frueher
+     * fiel die Bilanz dort fail-closed auf 0 - und 0 offen las sich als
+     * COVERED, also als erledigt. Jetzt ist der Zustand typisiert.
+     */
+    @Test
+    fun `unlesbare behandlungssicht erscheint nicht als gedeckt`(@TempDir dir: File) {
+        whenever(preferences.get(FuseIntKey.PrimeWindowMin)).thenReturn(20)
+        upfrontAnteil = 1.0
+        primeHuelleU = 4.0
+        fundamentAnteil = 0.8
+        aufschubAn = true
+        mahlzeit(dir)
+        // Die Bolushistorie ist unlesbar - genau der fail-closed-Fall.
+        whenever(persistenceLayer.getBolusesFromTimeToTime(any(), any(), any()))
+            .thenThrow(IllegalStateException("Bolushistorie nicht lesbar"))
+        val laufe = (0 until 6).map { transport(dir) }
+        val armiert = laufe.filter { it.mealFoundation.armed }
+        assertTrue(armiert.isNotEmpty(), "die Autorisierung besteht")
+        assertTrue(armiert.none { it.phaseAUpfrontState == "COVERED" }) {
+            "unlesbar darf nie als gedeckt erscheinen - " +
+                armiert.mapNotNull { it.phaseAUpfrontState }.distinct().joinToString(" ")
+        }
+        assertTrue(armiert.any { it.phaseAUpfrontState == "BLOCKED_VIEW" }) {
+            "und der Grund ist benannt - " +
+                armiert.mapNotNull { it.phaseAUpfrontState }.distinct().joinToString(" ")
+        }
+        assertTrue(armiert.all { it.phaseAUpfrontRequestedU == 0.0 }, "und es fliesst nichts")
     }
 
     /** Sicherheitsauflage: OHNE aktives DeferredPrime-Netz keine

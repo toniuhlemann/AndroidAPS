@@ -260,13 +260,18 @@ object FuseDashboardModel {
 
     /** Typisierter Batch-Zustand in Klartext; null = nichts zu sagen. */
     private fun upfrontStateLabel(state: String?): String? = when (state) {
-        "DEFERRED_UPFRONT_BATCH" -> "aufgeschoben (Sicherheitsriegel)"
-        "BLOCKED_ZERO_LATCH"     -> "aufgeschoben (Null-Basal verriegelt)"
-        "BLOCKED_FALLBACK"       -> "aufgeschoben (Modellausfall)"
-        "BLOCKED_NO_DEFERRED"    -> "gesperrt (Sicherheitsnetz aus)"
-        "REQUESTED"              -> "wird angefordert"
-        "WINDOW_OVER"            -> "Fenster vorbei"
-        else                     -> null
+        "DEFERRED_UPFRONT_BATCH"   -> "aufgeschoben (Sicherheitsriegel)"
+        "BLOCKED_ZERO_LATCH"       -> "aufgeschoben (Null-Basal verriegelt)"
+        "BLOCKED_FALLBACK"         -> "aufgeschoben (Modellausfall)"
+        "BLOCKED_NO_DEFERRED"      -> "gesperrt (Sicherheitsnetz aus)"
+        // Nach Phase A gibt es keinen Vollbatch mehr - die Menge laeuft
+        // schrittweise weiter (Review 25.08. abends, Punkt 2/5).
+        "TRANSFERRED_TO_DEFERRED"  -> "in den schrittweisen Pfad uebergeben"
+        "EXPIRED"                  -> "abgelaufen"
+        // Unbestimmbar ist NICHT gedeckt (Punkt 6).
+        "BLOCKED_VIEW"             -> "unbestimmbar (Behandlungssicht unlesbar)"
+        "REQUESTED"                -> "wird angefordert"
+        else                       -> null
     }
 
     private fun markerText(outcome: FuseCycleRunner.Outcome?, nowMs: Long, marker: FuseScreenModel.MarkerInfo?): String {

@@ -337,7 +337,19 @@ object MealFoundation {
      * KEIN EIGENER EINMAL-ZUSTAND, sondern eine BILANZ auf den bereits
      * persistierten, gate- und beweiskorrigierten Zaehlern:
      *
-     *     verbleibend = plannedUpfrontU - deliveredPhaseAU - manuellU
+     *     verbleibend = plannedUpfrontU
+     *                   - deliveredPhaseAU
+     *                   - deliveredSinceHandoverU
+     *                   - postFoundationDeliveredU
+     *                   - manuellU
+     *                   - transferredToDeferredU
+     *
+     * ALLE Lieferungen nach dem Marker zaehlen (Review 25.08. abends,
+     * Punkt 3): sonst koennten Phase-B- oder Korrekturabgaben flieszen
+     * und danach trotzdem der nahezu vollstaendige Batch. Der
+     * Uebertrag-Posten ist keine Lieferung, sondern ein BUCHWECHSEL - er
+     * steht hier, damit eine einmal in den schrittweisen Pfad ueberfuehrte
+     * Menge nicht zweimal offen erscheint.
      *
      * WAS HIER FRUEHER STAND UND WARUM ES FALSCH WAR: die Bilanz zog
      * zusaetzlich `deferredPrime.openU` ab, weil der Sicherheitsaufschub
@@ -373,13 +385,24 @@ object MealFoundation {
         auth: Authorization,
         deliveredPhaseAU: Double,
         manualAfterMarkerU: Double?,
-    ): Double {
+        deliveredSinceHandoverU: Double = 0.0,
+        postFoundationDeliveredU: Double = 0.0,
+        transferredToDeferredU: Double = 0.0,
+    ): Double? {
         if (!auth.valid) return 0.0
-        if (!deliveredPhaseAU.isFinite() || deliveredPhaseAU < 0.0) return 0.0
+        // UNBESTIMMBAR ist NICHT "gedeckt" (Review 25.08. abends, Punkt 6):
+        // eine unlesbare Behandlungssicht darf nicht als COVERED erscheinen.
+        // `null` heisst "keine Aussage moeglich"; der Aufrufer liefert dann
+        // nichts aus (fail-closed) und benennt den Zustand als solchen.
         if (manualAfterMarkerU == null || !manualAfterMarkerU.isFinite() ||
             manualAfterMarkerU < 0.0
-        ) return 0.0
-        return max(0.0, auth.phaseAUpfrontU - deliveredPhaseAU - manualAfterMarkerU)
+        ) return null
+        val abzuege = listOf(
+            deliveredPhaseAU, manualAfterMarkerU,
+            deliveredSinceHandoverU, postFoundationDeliveredU, transferredToDeferredU,
+        )
+        if (abzuege.any { !it.isFinite() || it < 0.0 }) return null
+        return max(0.0, auth.phaseAUpfrontU - abzuege.sum())
     }
 
     /**
@@ -413,7 +436,7 @@ object MealFoundation {
         tickEps: Double = 1e-9,
     ): FuseController.Decision {
         if (phase != Phase.PHASE_A) return base
-        val floorU = remainingUpfrontU(auth, deliveredPhaseAU, manualAfterMarkerU)
+        val floorU = remainingUpfrontU(auth, deliveredPhaseAU, manualAfterMarkerU) ?: return base
         if (floorU <= 0.0) return base
         return AuthorizedLift.lift(
             base = base,

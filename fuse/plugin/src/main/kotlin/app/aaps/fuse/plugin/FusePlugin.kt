@@ -774,6 +774,8 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
                 "BLOCKED_ZERO_LATCH"     -> "Null-Basal verriegelt"
                 "BLOCKED_FALLBACK"       -> "Modellausfall"
                 "BLOCKED_NO_DEFERRED"    -> "Sicherheitsnetz aus"
+                "TRANSFERRED_TO_DEFERRED" -> "laeuft schrittweise weiter"
+                "BLOCKED_VIEW"           -> "Behandlungssicht unlesbar"
                 else                     -> null
             },
             // Aus DEMSELBEN Zyklus wie die uebrigen Zahlen - kein zweiter
