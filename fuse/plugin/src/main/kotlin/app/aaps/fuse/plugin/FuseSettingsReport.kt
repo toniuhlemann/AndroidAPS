@@ -34,6 +34,7 @@ internal val fuseEinstellbareKeys: Set<String> = setOf(
     FuseDoubleKey.MarkerPrimeDescentHorizonMin.key,
     FuseIntKey.DeferredPrimeEndMin.key,
     FuseBooleanKey.LivenessChannelEnabled.key,
+    FuseBooleanKey.SignalRejoinEnabled.key,
     FuseIntKey.LivenessMealPowerMin.key,
     FuseDoubleKey.LivenessMealRatioCap.key,
     FuseDoubleKey.LivenessMealIobCapPercent.key,
@@ -174,6 +175,7 @@ object FuseSettingsReport {
                     // Marker (Toni 22.08.): er ist markerunabhaengig und
                     // mengenbasiert - seine Grenzen sind Dosiergrenzen.
                     schalter(FuseBooleanKey.LivenessChannelEnabled, "Liveness-Kanal"),
+                    schalter(FuseBooleanKey.SignalRejoinEnabled, "Wiedereinstieg nach Funkluecke"),
                     ganz(FuseIntKey.LivenessMealPowerMin, "M-Frist", "min"),
                     zahl(FuseDoubleKey.LivenessMealRatioCap, "M-Ratio-Deckel", ""),
                     zahl(FuseDoubleKey.LivenessMealIobCapPercent, "M-Kanaldeckel", "%"),

@@ -870,6 +870,26 @@ enum class FuseBooleanKey(
      */
     LivenessChannelEnabled("fuse_liveness_channel_enabled", false),
 
+    /**
+     * WIEDEREINSTIEG NACH CGM-FUNKLUECKE (Toni 25.08. abends).
+     *
+     * Eingeschaltet reift der Antriebsschaetzer NUR nach einer eindeutig
+     * identifizierten echten Funkluecke frueher (4 Punkte / 3 Paare statt
+     * 5 / 8) - und nur innerhalb von 10 min nach Segmentbeginn und nur
+     * bei einer Luecke bis 10 min. NIEMALS bei Kaltstart, Sensorwechsel,
+     * Kalibrierung, Eingangssprung oder wenn die Reihe gar nicht
+     * unterbrochen war (Schleifenpause).
+     *
+     * DOSIERWIRKUNG: gemessen ueber 9 echte Luecken der Woche 20.-25.08.
+     * rund zwei gesparte Minuten je Luecke bei +0,050 U ueber einen
+     * ganzen Tag. Der Wiedereinstieg erlaubt wieder eine ENTSCHEIDUNG -
+     * er umgeht kein Sicherheitsgate: Guards, Low-/Descent-Riegel, Tail
+     * und die technischen Tore gelten unveraendert. In drei von fuenf
+     * Replay-Laeufen war die einzige Wirkung, dass ein Zyklus von
+     * "blind abgebrochen" zu "aus benanntem Grund geblockt" wechselte.
+     */
+    SignalRejoinEnabled("fuse_signal_rejoin_enabled", false),
+
     MarkerAuthorisesRelease("fuse_marker_authorises_low", false),
 
     ConditionalTailEnabled("fuse_conditional_tail_enabled", true),

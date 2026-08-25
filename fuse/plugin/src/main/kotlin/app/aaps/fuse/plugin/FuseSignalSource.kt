@@ -59,6 +59,15 @@ class FuseSignalSource(
      */
     private var signalEpochTs = 0L
 
+    /** Segment, auf das sich [vollreifeTs] bezieht - wechselt es, faellt
+     *  die Vollreife zurueck. */
+    private var vollreifeSegmentTs = 0L
+
+    /** Wann DIESES Segment erstmals die STRENGE Reife trug (0 = noch
+     *  nicht). Exportauflage Toni 25.08.: nur daran ist ablesbar, wie
+     *  lange der Wiedereinstieg ueberhaupt etwas geaendert hat. */
+    private var vollreifeTs = 0L
+
     data class Signal(
         val sourceTs: Long,
         /** Der KALIBRIERTE ROHWERT am Anker, ungefiltert. Die Sprungerkennung
@@ -196,6 +205,14 @@ class FuseSignalSource(
          * Epoche.
          */
         val signalEpochTs: Long,
+        /**
+         * DIE GEWAEHLTE REIFE DIESES ZYKLUS samt Begruendung. Der Runner
+         * gibt genau dieses Objekt an `PairSlopeBand.estimate` weiter -
+         * es gibt keine zweite Auswahl.
+         */
+        val rejoin: app.aaps.fuse.core.signal.SignalRejoin.Selection,
+        /** Wann dieses Segment erstmals die STRENGE Reife trug, 0 = noch nicht. */
+        val fullMaturityTs: Long,
     )
 
     sealed interface Outcome {
@@ -226,7 +243,17 @@ class FuseSignalSource(
         return (points.last().value - first.value) / dtMin
     }
 
-    fun read(sensorStartTs: Long, calibrationStartTs: Long): Outcome {
+    /**
+     * @param rejoin der Wiedereinstieg nach Funkluecke. Wird JE ZYKLUS
+     *   uebergeben, damit der Schalter am Geraet wirkt, ohne dass irgendwo
+     *   ein veraenderlicher Zustand entsteht - der Wert selbst ist
+     *   unveraenderlich, und `OFF` ist der Vorgabewert jedes Pfades.
+     */
+    fun read(
+        sensorStartTs: Long,
+        calibrationStartTs: Long,
+        rejoin: app.aaps.fuse.core.signal.RejoinPolicy = app.aaps.fuse.core.signal.RejoinPolicy.OFF,
+    ): Outcome {
         // Aufsteigend, und nur kalibrierte Rohwerte: `raw` ist der Eingang, den
         // auch der Fork-Q1 nutzt. `value` waere der (moeglicherweise schon
         // geglaettete) Anzeigewert, `noise` ist entgegen dem Namen der
@@ -321,7 +348,35 @@ class FuseSignalSource(
         )
 
         val adjusted = BgiAdjustedSeries.adjust(samples)
-        val rSigned = BgiAdjustedSeries.theilSen(adjusted.points, sourceTs, maturity)
+
+        // DIE EINE AUSWAHL. Sie faellt hier, weil nur hier bekannt ist,
+        // WARUM das Segment beginnt - und sie reist im Signal weiter, damit
+        // der zweite Verbraucher (PairSlopeBand im Runner) exakt dieselbe
+        // liest. Zwei unabhaengige Auswahlen waeren der Fehler, den die
+        // Gap-Grenze schon einmal hatte: der Trail truege ein r, das der
+        // Regler nicht hatte.
+        val auswahl = app.aaps.fuse.core.signal.SignalRejoin.select(
+            policy = rejoin,
+            base = maturity,
+            ascendingTs = series.map { it.tsMs },
+            segmentStartTs = windowStart,
+            bound = bound,
+            nowTs = sourceTs,
+            breakMs = gapPolicy.rSegmentBreakMs,
+        )
+        val rSigned = BgiAdjustedSeries.theilSen(adjusted.points, sourceTs, auswahl.maturity)
+
+        // ZEITPUNKT DER VOLLREIFE (Exportauflage Toni): wann traegt DIESES
+        // Segment die strenge Reife? Solange die Lockerung wirkt, steht hier
+        // 0 - und genau daran ist im Trail ablesbar, wie lange der
+        // Wiedereinstieg ueberhaupt etwas geaendert hat.
+        if (windowStart != vollreifeSegmentTs) {
+            vollreifeSegmentTs = windowStart
+            vollreifeTs = 0L
+        }
+        if (vollreifeTs == 0L &&
+            BgiAdjustedSeries.theilSen(adjusted.points, sourceTs) != null
+        ) vollreifeTs = sourceTs
 
         // ---- STABILE SIGNALEPOCHE (Toni 22.08.) -------------------------
         // Bruchkandidaten dieses Zyklus: eine explizite Fenstergrenze
@@ -372,6 +427,8 @@ class FuseSignalSource(
                 windowFromTs = window.fromTs,
                 segmentStartTs = windowStart,
                 signalEpochTs = signalEpochTs,
+                rejoin = auswahl,
+                fullMaturityTs = vollreifeTs,
             )
         )
     }

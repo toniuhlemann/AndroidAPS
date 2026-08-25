@@ -356,6 +356,9 @@ class TransportWiringTest : TestBaseWithProfile() {
      *  Kurve. null = normale Rig-Kurve. */
     private var rohSerie: List<Pair<Long, Double>>? = null
 
+    /** Schalter des Wiedereinstiegs nach Funkluecke (Default AUS wie am Geraet). */
+    private var rejoinAn = false
+
     /** PHASE-2-REPLAY: (iobU, activityUPerMin) je Sample-Zeitstempel -
      *  naechster Eintrag binnen 90 s; null = normale Rig-Hebel. */
     private var iobProTs: java.util.TreeMap<Long, Pair<Double, Double>>? = null
@@ -399,7 +402,7 @@ class TransportWiringTest : TestBaseWithProfile() {
         neuerRunner(FuseLedgerAdapter())
     }
 
-    private fun neuerRunner(l: FuseLedgerAdapter, evidenz: EvidenceStock.Config = EvidenceStock.Config(), fensterMs: Long? = null, trendRegel: String? = null, gapPolitik: app.aaps.fuse.core.signal.GapPolicy = app.aaps.fuse.core.signal.GapPolicy.PRODUCTION, reifePolitik: app.aaps.fuse.core.signal.MaturityPolicy = app.aaps.fuse.core.signal.MaturityPolicy.PRODUCTION) {
+    private fun neuerRunner(l: FuseLedgerAdapter, evidenz: EvidenceStock.Config = EvidenceStock.Config(), fensterMs: Long? = null, trendRegel: String? = null, wiedereinstieg: app.aaps.fuse.core.signal.RejoinPolicy = app.aaps.fuse.core.signal.RejoinPolicy.OFF, gapPolitik: app.aaps.fuse.core.signal.GapPolicy = app.aaps.fuse.core.signal.GapPolicy.PRODUCTION, reifePolitik: app.aaps.fuse.core.signal.MaturityPolicy = app.aaps.fuse.core.signal.MaturityPolicy.PRODUCTION) {
         ledger = l
         runner = FuseCycleRunner(
             iobCobCalculator, profileFunction, activePlugin, constraintsChecker, commandQueue,
@@ -409,6 +412,7 @@ class TransportWiringTest : TestBaseWithProfile() {
             trendRuleOverride = trendRegel,
             gapPolicy = gapPolitik,
             maturityPolicy = reifePolitik,
+            rejoinPolicy = wiedereinstieg,
             predict = { input ->
                 predictReject
                     ?.let { PredictorOutcome.Rejected(it, "erzwungen") }
@@ -474,6 +478,7 @@ class TransportWiringTest : TestBaseWithProfile() {
         whenever(preferences.get(FuseBooleanKey.TailGuardEnabled)).thenAnswer { tailGuard }
         whenever(preferences.get(FuseBooleanKey.ConditionalTailEnabled)).thenAnswer { conditionalTail }
         whenever(preferences.get(FuseBooleanKey.MarkerAuthorisesRelease)).thenAnswer { markerAuthorized }
+        whenever(preferences.get(FuseBooleanKey.SignalRejoinEnabled)).thenAnswer { rejoinAn }
         whenever(preferences.get(FuseDoubleKey.TailFloorMgdl)).thenReturn(70.0)
         whenever(preferences.get(FuseDoubleKey.TailRecoveryU)).thenReturn(0.0)
         whenever(preferences.get(FuseBooleanKey.FastRestraintEnabled)).thenReturn(true)
@@ -7517,7 +7522,7 @@ class TransportWiringTest : TestBaseWithProfile() {
         // die Karte ist seit dem Zeitzonen-Fix oben ebenfalls lokal gefuellt
         // - eine Uhr fuer beide Seiten.
 
-        fun lauf(name: String, fensterMs: Long?, trendRegel: String? = null, fenster: Int = 18, ratioCap: Double = 1.0, livenessStart: Boolean = true, profilCapsBehalten: Boolean = false, upfrontStart: Double = 0.0, guardsStart: Boolean = false, reversalConfirm: Int = 2, gapBreakMs: Long? = null, reifeTag: String? = null): File {
+        fun lauf(name: String, fensterMs: Long?, trendRegel: String? = null, fenster: Int = 18, ratioCap: Double = 1.0, livenessStart: Boolean = true, profilCapsBehalten: Boolean = false, upfrontStart: Double = 0.0, guardsStart: Boolean = false, reversalConfirm: Int = 2, gapBreakMs: Long? = null, reifeTag: String? = null, rejoin: Boolean = false): File {
             transportReset()
             boluses = emptyList()
             markerAt = 0L
@@ -7574,16 +7579,23 @@ class TransportWiringTest : TestBaseWithProfile() {
             // scharf, und der Vorlauf muss nur den Kaltstart abdecken.
             val reifeAbTs = zyklen.first().ts + 20L * 60_000L
             val reifePolitik = app.aaps.fuse.core.signal.MaturityPolicy.parse(reifeTag, reifeAbTs)
+            // Der PRODUKT-Rejoin - nicht die globale Reife. Er wirkt nur
+            // nach einer Luecke IN DER REIHE; der Schalter torsteuert ihn
+            // wie am Geraet.
+            rejoinAn = rejoin
+            val rejoinPolitik =
+                if (rejoin) app.aaps.fuse.core.signal.RejoinPolicy.enabled()
+                else app.aaps.fuse.core.signal.RejoinPolicy.OFF
             forecastShadowAn = false // Replay braucht die Matrizen nicht - Tempo
             livenessRatioDeckel = ratioCap // v23: aufgezeichnete v22-Politik traegt den Schluessel nicht - der Hebel gilt
             theilSenFensterMin = fenster // W18-Trails tragen den Schluessel nicht - der Hebel gilt
             politikAnwenden(zyklen.firstNotNullOfOrNull { it.policy })
             theilSenFensterMin = fenster // die erste Politik darf den Matrixwert nicht ueberschreiben (W10-Live-Trails tragen 10)
             val adapter = FuseLedgerAdapter().also { it.loadOnce(File(dir, name).also(File::mkdirs), "test-epoch", zyklen.first().ts) }
-            neuerRunner(adapter, fensterMs = fensterMs, trendRegel = trendRegel, gapPolitik = gapPolitik, reifePolitik = reifePolitik)
+            neuerRunner(adapter, fensterMs = fensterMs, trendRegel = trendRegel, gapPolitik = gapPolitik, reifePolitik = reifePolitik, wiedereinstieg = rejoinPolitik)
             val outFile = File(outDir, "replay_$name.csv")
             outFile.printWriter().use { w ->
-                w.println("ts;smbU;block;binding;insulinReq;liftU;needU;abort;phase;fastD;slowD;trend;raw;recSmbU;recBlock;profil;restMin;tbr;latch;lvDenial;lvExit;lvStreak;lvHead;transC;revGrund;rearmGrund;ctxGrund;basis;gapBreakMs;samplesUsed;gapBeforeMin;r;bandN;matP;matS;iob")
+                w.println("ts;smbU;block;binding;insulinReq;liftU;needU;abort;phase;fastD;slowD;trend;raw;recSmbU;recBlock;profil;restMin;tbr;latch;lvDenial;lvExit;lvStreak;lvHead;transC;revGrund;rearmGrund;ctxGrund;basis;gapBreakMs;samplesUsed;gapBeforeMin;r;bandN;matP;matS;iob;rejoin;rejoinGrund;gapMs;vollreifeTs")
                 var prevMarker = 0L
                 var polText = pol?.toString()
                 var zyklusNr = 0
@@ -7647,6 +7659,10 @@ class TransportWiringTest : TestBaseWithProfile() {
                         o.band?.pairCount ?: "",
                         o.maturity.minPointsAt(z.ts), o.maturity.minSlopesAt(z.ts),
                         o.iobU?.let { "%.3f".format(java.util.Locale.US, it) } ?: "",
+                        if (o.signal?.rejoin?.active == true) "1" else "0",
+                        o.signal?.rejoin?.cause?.name ?: "",
+                        o.signal?.rejoin?.gapMs ?: "",
+                        o.signal?.fullMaturityTs ?: "",
                     ).joinToString(";"))
                 }
             }
@@ -7735,6 +7751,22 @@ class TransportWiringTest : TestBaseWithProfile() {
                 val anteil = u.trim().toDouble()
                 lauf("upf%03d".format((anteil * 100).toInt()), null, fenster = 10, upfrontStart = anteil)
             }
+            return
+        }
+        if (System.getenv("FUSE_REPLAY_REJOIN") != null) {
+            // PRODUKT-REJOIN gegen die Produktion, ueber denselben
+            // Ausschnitt. Anders als FUSE_REPLAY_MATURITY aendert das NICHT
+            // die globale Reife: die Lockerung wirkt nur nach einer Luecke
+            // IN DER REIHE, mit allen Verweigerungsgruenden.
+            //
+            // RIG-VORBEHALT, der in jeden Befund gehoert: der Replay speist
+            // die Reihe aus ZYKLEN. Eine Schleifenpause (Bolus laeuft, CGM
+            // laeuft weiter) sieht darin aus wie Funkstille - am Geraet
+            // nicht, dort haengt die Reihe an den CGM-Werten. Solche
+            // Episoden muessen in der Auswertung ausgeschlossen werden.
+            lauf("rejoinRef", null, fenster = 10)
+            lauf("rejoinAn", null, fenster = 10, rejoin = true)
+            lauf("rejoinRefNach", null, fenster = 10)
             return
         }
         val reifeEnv = System.getenv("FUSE_REPLAY_MATURITY")
@@ -9415,6 +9447,119 @@ class TransportWiringTest : TestBaseWithProfile() {
         var wiederAb = -1
         repeat(6) { i -> if (cycle().livenessLiftU > 0.0 && wiederAb < 0) wiederAb = i + 1 }
         assertTrue(wiederAb in 2..5, "drei frische Druckzyklen vor dem naechsten Hub: $wiederAb")
+    }
+
+
+    // ---- WIEDEREINSTIEG NACH FUNKLUECKE (Toni 25.08. abends) ------------
+
+    /**
+     * Baut eine Reihe mit einer echten Funkluecke im GERAETETAKT und
+     * faehrt sie bis zum ersten Zyklus nach der Luecke.
+     *
+     * @return die Aussenzeitpunkte der Zyklen nach der Luecke.
+     */
+    private fun funklueckeAufbauen(dir: File, basisBg: Double, steigung: Double): List<Long> {
+        val start = 1_700_000_000_000L
+        val takt = listOf(58_000L, 61_000L, 59_000L, 60_000L, 62_000L, 59_000L)
+        val vor = ArrayList<Pair<Long, Double>>()
+        var t = start
+        // 25 min Vorlauf, damit die Reihe VOR der Luecke nachweislich lief.
+        repeat(25) { i -> vor.add(t to basisBg + steigung * i); t += takt[i % takt.size] }
+        // 200 s Funkluecke - ueber der 180-s-Bruchgrenze, unter 10 min.
+        t = vor.last().first + 200_000L
+        val nach = ArrayList<Pair<Long, Double>>()
+        repeat(10) { i ->
+            nach.add(t to basisBg + steigung * (25 + 3 + i)); t += takt[i % takt.size]
+        }
+        rohSerie = vor + nach
+        clock = vor.last().first
+        transportReset()
+        val adapter = FuseLedgerAdapter().also { it.loadOnce(dir.also(File::mkdirs), "test-epoch", start) }
+        neuerRunner(adapter, wiedereinstieg = app.aaps.fuse.core.signal.RejoinPolicy.enabled())
+        return nach.map { it.first }
+    }
+
+    /**
+     * PFLICHTPROBE: BEIDE Schaetzerverbraucher sehen DIESELBE Reife.
+     *
+     * `theilSen` in der Signalquelle und `PairSlopeBand.estimate` im
+     * Runner treffen KEINE zwei Entscheidungen - die Auswahl faellt einmal
+     * und reist im Signal mit. Liefe der Runner weiter auf 5x8, waere das
+     * hier sichtbar: der Trail truege ein rSigned, waehrend die
+     * Entscheidung mit "drive not estimable" abbricht. Genau diese
+     * Kombination darf es nicht geben.
+     */
+    @org.junit.jupiter.api.Test
+    fun `nach funkluecke sehen beide schaetzerverbraucher dieselbe reife`(@TempDir dir: File) {
+        rejoinAn = true
+        val nachTs = funklueckeAufbauen(dir, basisBg = 120.0, steigung = 1.0)
+        var gesehen = 0
+        for (ts in nachTs) {
+            clock = ts
+            val o = runner.run(false, testPumpe())
+            val r = o.signal?.rSigned
+            val blind = o.abortReason?.contains("drive not estimable") == true
+            assertFalse(
+                r != null && blind,
+                "Zyklus $ts: rSigned=$r vorhanden, aber Band bricht ab - zwei Reifebegriffe",
+            )
+            if (r != null) {
+                gesehen++
+                // Und die Begruendung steht im Signal, nicht nur im Kopf.
+                assertEquals(
+                    app.aaps.fuse.core.signal.SignalRejoin.Cause.GAP,
+                    o.signal?.rejoin?.cause,
+                    "der Grund muss die Funkluecke sein",
+                )
+            }
+        }
+        assertTrue(gesehen > 0, "in dieser Reihe muss irgendwann ein r entstehen")
+    }
+
+    /**
+     * PFLICHTPROBE: der Wiedereinstieg spart Blindzeit - sonst prueft die
+     * Probe oben nichts. Derselbe Ausschnitt einmal mit und einmal ohne
+     * Schalter; die Zahl der blinden Zyklen MUSS sinken, und die
+     * TBR-Achse darf sich dabei nicht heimlich verschieben.
+     */
+    @org.junit.jupiter.api.Test
+    fun `der wiedereinstieg spart blinde zyklen`(@TempDir dir: File) {
+        fun blindeZyklen(an: Boolean): Int {
+            rejoinAn = an
+            val nachTs = funklueckeAufbauen(dir, basisBg = 120.0, steigung = 1.0)
+            var blind = 0
+            for (ts in nachTs) {
+                clock = ts
+                val o = runner.run(false, testPumpe())
+                if (o.abortReason?.contains("drive not estimable") == true) blind++
+            }
+            return blind
+        }
+        val ohne = blindeZyklen(false)
+        val mit = blindeZyklen(true)
+        assertTrue(mit < ohne, "der Wiedereinstieg muss Blindzeit sparen (ohne=$ohne, mit=$mit)")
+    }
+
+    /**
+     * PFLICHTPROBE: KEIN SICHERHEITSGATE WIRD UMGANGEN.
+     *
+     * Dieselbe Funkluecke, aber im Tief und fallend - die Lage des
+     * Pflichtfalls 24.08. 18:09 (BG 76 -> 74). Der Wiedereinstieg gibt
+     * dort wieder eine ENTSCHEIDUNG frei, aber kein Insulin: die Menge
+     * bleibt in jedem Zyklus null, und sie ist mit Schalter dieselbe wie
+     * ohne.
+     */
+    @org.junit.jupiter.api.Test
+    fun `im tief gibt der wiedereinstieg kein insulin frei`(@TempDir dir: File) {
+        fun mengen(an: Boolean): List<Double> {
+            rejoinAn = an
+            val nachTs = funklueckeAufbauen(dir, basisBg = 76.0, steigung = -0.3)
+            return nachTs.map { ts -> clock = ts; runner.run(false, testPumpe()).decision.smbU }
+        }
+        val ohne = mengen(false)
+        val mit = mengen(true)
+        assertEquals(0.0, mit.sum(), 1e-9, "im Tief darf der Wiedereinstieg nichts freigeben")
+        assertEquals(ohne, mit, "die Mengenachse muss im Tief bitgleich bleiben")
     }
 
 }

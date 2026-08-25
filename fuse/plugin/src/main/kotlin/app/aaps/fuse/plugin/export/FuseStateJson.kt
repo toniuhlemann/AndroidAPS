@@ -950,8 +950,36 @@ object FuseStateJson {
                 // ein Reife-Replay-Befund nicht gegen den Lauf pruefen,
                 // der ihn erzeugt hat - und ein versehentlich nicht
                 // gesetzter Hebel saehe wie ein Ergebnis aus.
-                .put("maturityMinPoints", outcome.maturity.minPointsAt(s.sourceTs))
-                .put("maturityMinSlopes", outcome.maturity.minSlopesAt(s.sourceTs))
+                // WIEDEREINSTIEG NACH FUNKLUECKE (Exportauflage Toni 25.08.):
+                // die WIRKSAME Reife dieses Zyklus, ihr Grund, die Dauer der
+                // erkannten Luecke, das Alter des Segments - und der
+                // Reifestand aus DERSELBEN Fensterbreite, die auch das
+                // Dosiertor benutzt. Ohne diese Felder liesse sich ein
+                // Rejoin-Befund nicht gegen den Zyklus pruefen, der ihn
+                // erzeugt hat.
+                .put("maturityMinPoints", s.rejoin.maturity.minPointsAt(s.sourceTs))
+                .put("maturityMinSlopes", s.rejoin.maturity.minSlopesAt(s.sourceTs))
+                .put("rejoinActive", s.rejoin.active)
+                .put("rejoinCause", s.rejoin.cause.name)
+                .put("rejoinGapMs", s.rejoin.gapMs)
+                .put("rejoinAgeMs", s.rejoin.ageMs)
+                // 0 = dieses Segment traegt die STRENGE Reife noch nicht.
+                // Genau daran ist ablesbar, wie lange der Wiedereinstieg
+                // ueberhaupt etwas geaendert hat.
+                .put("fullMaturityTs", s.fullMaturityTs)
+                .let { j ->
+                    val reife = app.aaps.fuse.core.signal.BgiAdjustedSeries.readiness(
+                        s.adjusted.points, s.sourceTs,
+                        windowMs = (policy?.theilSenWindowMin
+                            ?: (app.aaps.fuse.core.signal.BgiAdjustedSeries.WINDOW_MS / 60_000L).toInt()) * 60_000L,
+                        maturity = s.rejoin.maturity,
+                    )
+                    j.put("readyPoints", reife.points)
+                        .put("readyPointsRequired", reife.pointsRequired)
+                        .put("readySlopes", reife.slopes)
+                        .put("readySlopesRequired", reife.slopesRequired)
+                        .put("readyReason", reife.reason.name)
+                }
                 .put("stepFromLastMgdl", fin(s.stepFromLastMgdl))
                 .put("stepRateActualMgdlPerMin", fin(s.stepRateActualMgdlPerMin))
                 .put("postGapIndex", s.postGapIndex)

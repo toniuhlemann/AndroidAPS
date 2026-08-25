@@ -2002,6 +2002,12 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
             // denen nach einem Neustart. `dateUtil.now()` und nicht ein Zufall,
             // damit sie in einem Export sortierbar bleibt.
             sessionId = "fuse-${dateUtil.now()}",
+            // Der Wiedereinstieg nach Funkluecke wird MIT PARAMETERN gebaut
+            // und vom Schalter [FuseBooleanKey.SignalRejoinEnabled] je Zyklus
+            // torgesteuert. Waere die Politik hier OFF, taete der Schalter
+            // nichts; waere sie ohne Schalter scharf, gaebe es keinen
+            // Rueckweg ohne Neubau. Beides ist Absicht so getrennt.
+            rejoinPolicy = app.aaps.fuse.core.signal.RejoinPolicy.enabled(),
             markerPressObserved = { markerPressObservedTs },
         ).also { runner = it }
 
@@ -2052,6 +2058,7 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
             .put(FuseDoubleKey.MarkerPrimeDescentHorizonMin, preferences)
             .put(FuseIntKey.DeferredPrimeEndMin, preferences)
             .put(FuseBooleanKey.LivenessChannelEnabled, preferences)
+            .put(FuseBooleanKey.SignalRejoinEnabled, preferences)
             .put(FuseBooleanKey.ForecastShadowCollectionEnabled, preferences)
             .put(FuseDoubleKey.LivenessIobCapPercent, preferences)
             .put(FuseDoubleKey.LivenessRatioCap, preferences)
@@ -2112,6 +2119,7 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
             .store(FuseDoubleKey.MarkerPrimeDescentHorizonMin, preferences)
             .store(FuseIntKey.DeferredPrimeEndMin, preferences)
             .store(FuseBooleanKey.LivenessChannelEnabled, preferences)
+            .store(FuseBooleanKey.SignalRejoinEnabled, preferences)
             .store(FuseBooleanKey.ForecastShadowCollectionEnabled, preferences)
             .store(FuseDoubleKey.LivenessIobCapPercent, preferences)
             .store(FuseDoubleKey.LivenessRatioCap, preferences)
@@ -2288,6 +2296,7 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
                     "Unabhaengig von Marker und Mahlzeitenfenster."
             )
             addPreference(AdaptiveSwitchPreference(ctx = context, booleanKey = FuseBooleanKey.LivenessChannelEnabled, summary = R.string.fuse_liveness_summary, title = R.string.fuse_liveness_title))
+            addPreference(AdaptiveSwitchPreference(ctx = context, booleanKey = FuseBooleanKey.SignalRejoinEnabled, summary = R.string.fuse_signal_rejoin_summary, title = R.string.fuse_signal_rejoin_title))
             addPreference(AdaptiveIntPreference(ctx = context, intKey = FuseIntKey.LivenessMealPowerMin, dialogMessage = R.string.fuse_liveness_meal_power_summary, title = R.string.fuse_liveness_meal_power_title))
             addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.LivenessMealRatioCap, dialogMessage = R.string.fuse_liveness_meal_ratio_summary, title = R.string.fuse_liveness_meal_ratio_title))
             addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.LivenessMealIobCapPercent, dialogMessage = R.string.fuse_liveness_meal_iob_summary, title = R.string.fuse_liveness_meal_iob_title))

@@ -164,6 +164,16 @@ class FuseCycleRunner(
     private val maturityPolicy: app.aaps.fuse.core.signal.MaturityPolicy =
         app.aaps.fuse.core.signal.MaturityPolicy.PRODUCTION,
     /**
+     * DER WIEDEREINSTIEG NACH FUNKLUECKE - unveraenderlich, injiziert
+     * (Bauauftrag Toni 25.08. abends). Er ersetzt NICHT die globale
+     * Reife: die Lockerung gilt ausschliesslich nach einer eindeutig
+     * identifizierten echten CGM-Funkluecke in einem begrenzten
+     * Altersfenster, nie bei Kaltstart, Sensor-/Kalibrierwechsel oder
+     * Eingangssprung. Am Geraet zusaetzlich per Schalter torgesteuert.
+     */
+    private val rejoinPolicy: app.aaps.fuse.core.signal.RejoinPolicy =
+        app.aaps.fuse.core.signal.RejoinPolicy.OFF,
+    /**
      * NUR FUER DEN PHASE-2-REPLAY (Toni 23.08. Abend): schaltet EINE
      * Trendregel des Turn-Shadows als ECHTE Dosierbahn scharf.
      *   "UP"       Mittelbahn-Anhebung bei bestaetigter Aufwaertswende
@@ -1152,7 +1162,13 @@ class FuseCycleRunner(
             else runCatching { iobSnapshotWitness(computeTs, profile.dia) }.getOrNull()
 
         // ---- 1 Signal ------------------------------------------------------
-        val signal = when (val s = signalSource.read(sensorEpoch, calibrationEpoch)) {
+        // Der Schalter entscheidet nur EIN/AUS; die Parameter kommen aus
+        // der injizierten, unveraenderlichen Politik. Damit kann eine
+        // Einstellung die Frage nicht in ein anderes Regime verschieben.
+        val rejoinJetzt =
+            if (preferences.get(FuseBooleanKey.SignalRejoinEnabled)) rejoinPolicy
+            else app.aaps.fuse.core.signal.RejoinPolicy.OFF
+        val signal = when (val s = signalSource.read(sensorEpoch, calibrationEpoch, rejoinJetzt)) {
             is FuseSignalSource.Outcome.Ok          -> s.signal
             is FuseSignalSource.Outcome.Unavailable -> return abort("signal: ${s.reason}")
         }
@@ -1335,7 +1351,11 @@ class FuseCycleRunner(
             // 23.08.); der Konstruktor-Override des Phase-2-Replay-Treibers
             // gewinnt weiterhin, am Geraet ist er konstruktionsbedingt null.
             windowMs = theilSenWindowMsOverride ?: (cfg.theilSenWindowMin * 60_000L),
-            maturity = maturityPolicy,
+            // DIESELBE Auswahl wie der Schaetzer in der Signalquelle - nicht
+            // `maturityPolicy` und keine zweite Entscheidung. Liefe hier eine
+            // andere Reife, truege der Trail ein r, das der Regler nicht
+            // hatte (oder umgekehrt).
+            maturity = signal.rejoin.maturity,
         )
             ?: return abort("drive not estimable (${signal.samplesUsed} samples)", signal, cfg, step)
 
