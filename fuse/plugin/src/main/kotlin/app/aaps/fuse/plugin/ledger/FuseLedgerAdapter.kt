@@ -219,6 +219,21 @@ class EpisodeBudgets {
      */
     var upfrontTransferredU: Double = 0.0
 
+    /**
+     * AM UEBERGANG VERFALLENE Sofortmenge [U] (Review 25.08. spaet, P1.2).
+     *
+     * Klemmt die Huelle den Uebertrag - offen 2,60, gebucht nur 2,40 -,
+     * dann sind die restlichen 0,20 U weder uebertragen noch offen: sie
+     * sind ERLEDIGT. Frueher stand der ganze offene Betrag in
+     * [upfrontTransferredU], und der Trail meldete "2,60 uebertragen",
+     * obwohl nur 2,40 im schrittweisen Pfad ankamen. Dosierseitig war das
+     * konservativ, aber die Aussage war falsch.
+     *
+     * Beide Posten zusammen schliessen die Bilanz: was nicht geliefert
+     * und nicht uebertragen wurde, ist hier verfallen.
+     */
+    var upfrontLapsedU: Double = 0.0
+
     /** V-REVERSAL-RIEGEL (v30, Review-P0.1): die IDENTITAET (Fall-Minimum,
      *  Zuendung) ist persistent - ein Neustart entfernt den Riegel nicht.
      *  Die r-Bestaetigungszaehler sind wie beim [zeroLatch] bewusst

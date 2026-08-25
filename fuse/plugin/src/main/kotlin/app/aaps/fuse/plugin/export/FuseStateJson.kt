@@ -396,6 +396,12 @@ object FuseStateJson {
                     .put("phaseAUpfrontConfirmedU", JSONObject.NULL)
                     .put("phaseAUpfrontPendingU", fin(outcome.phaseAUpfrontPendingU))
                     .put("phaseAUpfrontState", outcome.phaseAUpfrontState ?: JSONObject.NULL)
+                    // ZWEI GETRENNTE GROESSEN (Review-P1.2): was real im
+                    // schrittweisen Pfad ankam, und was die Huelle beim
+                    // Uebergang nicht mehr aufnahm. "Uebertragen" darf nur
+                    // heissen, was wirklich uebertragen wurde.
+                    .put("phaseAUpfrontTransferredU", fin(outcome.phaseAUpfrontTransferredU))
+                    .put("phaseAUpfrontLapsedU", fin(outcome.phaseAUpfrontLapsedU))
                     .put(
                         "phaseAUpfrontProposalId",
                         if (outcome.phaseAUpfrontRequestedU > 0.0) cycleId else JSONObject.NULL,

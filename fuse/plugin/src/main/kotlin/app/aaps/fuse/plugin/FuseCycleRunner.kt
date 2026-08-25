@@ -588,6 +588,10 @@ class FuseCycleRunner(
         val phaseAUpfrontPendingU: Double = 0.0,
         val phaseAUpfrontRequestedU: Double = 0.0,
         val phaseAUpfrontState: String? = null,
+        /** Real in den schrittweisen Pfad uebertragen [U] - kumulativ. */
+        val phaseAUpfrontTransferredU: Double = 0.0,
+        /** Am Uebergang verfallen [U] - die Huelle nahm sie nicht mehr auf. */
+        val phaseAUpfrontLapsedU: Double = 0.0,
         /** `null` = der Zyklus kam nicht bis zum Lesen der Einstellungen. Dann
          *  hat er auch keine Politik, und der Export sagt das statt eine zu
          *  erfinden. */
@@ -965,6 +969,7 @@ class FuseCycleRunner(
             // neuer Marker, Widerruf und Ablauf loeschen beides (Punkt 4).
             episodes.upfrontBatchDeferredSince = 0L
             episodes.upfrontTransferredU = 0.0
+            episodes.upfrontLapsedU = 0.0
             // UND DER UEBERTRAG MIT (Toni 19.08.). Er gehoert zu der
             // Autorisierung, die hier gerade endet. Bliebe er stehen, gaebe der
             // ausdrueckliche Widerruf der NAECHSTEN Mahlzeit zusaetzliches
@@ -1428,6 +1433,7 @@ class FuseCycleRunner(
             // neuer Marker, Widerruf und Ablauf loeschen beides (Punkt 4).
             episodes.upfrontBatchDeferredSince = 0L
             episodes.upfrontTransferredU = 0.0
+            episodes.upfrontLapsedU = 0.0
             // UND OHNE UEBERTRAG (Toni 19.08.). Ein neuer Markerdruck ist eine
             // neue Mahlzeit mit eigenem Budget; eine Luecke aus der vorigen
             // darf sie nicht erben. Das steht hier UND beim Widerruf, weil es
@@ -2801,6 +2807,7 @@ class FuseCycleRunner(
             deliveredSinceHandoverU = episodes.deliveredSinceHandoverU,
             postFoundationDeliveredU = episodes.postFoundationDeliveredU,
             transferredToDeferredU = episodes.upfrontTransferredU,
+            lapsedU = episodes.upfrontLapsedU,
         )
         val upfrontSichtUnlesbar = upfrontOffenRoh == null
         val upfrontOffenU = upfrontOffenRoh ?: 0.0
@@ -2828,11 +2835,14 @@ class FuseCycleRunner(
                 episodes.deferredPrime, upfrontOffenU,
                 deferredHullRemainingU(episodes, manualBolusAfterMarkerU),
             )
-            // Die REAL gebuchte Differenz - withhold kappt an der Huelle.
+            // ZWEI GETRENNTE GROESSEN (Review-P1.2): was WIRKLICH im
+            // schrittweisen Pfad ankam, und was die Huelle nicht mehr
+            // aufnahm. Frueher stand der ganze offene Betrag als
+            // "uebertragen" im Trail - dosierseitig konservativ, aber die
+            // Aussage "verlustfrei uebertragen" war falsch.
             upfrontTransferNowU = (episodes.deferredPrime.openU - vorher).coerceAtLeast(0.0)
-            // Auch der NICHT gebuchte Teil ist erledigt: er passt nicht mehr
-            // in die Huelle und darf nicht als Sofortmenge offen bleiben.
-            episodes.upfrontTransferredU += upfrontOffenU
+            episodes.upfrontTransferredU += upfrontTransferNowU
+            episodes.upfrontLapsedU += (upfrontOffenU - upfrontTransferNowU).coerceAtLeast(0.0)
             episodes.upfrontBatchDeferredSince = 0L
         }
         // Aufgeschoben wird NUR, wenn es etwas aufzuschieben gibt.
@@ -4244,6 +4254,8 @@ class FuseCycleRunner(
                 viewUnavailable = upfrontSichtUnlesbar,
                 deferredPrimeEnabled = cfg.deferredPrimeEnabled,
             ),
+            phaseAUpfrontTransferredU = episodes.upfrontTransferredU,
+            phaseAUpfrontLapsedU = episodes.upfrontLapsedU,
             lowThreat = lowThreatResult,
             evidenceEpisodeId = evidenceEpisodeId,
             evidenceEpisodeDenial = episodeGate.denial?.name,
@@ -4730,6 +4742,7 @@ class FuseCycleRunner(
             deliveredSinceHandoverU = episodes.deliveredSinceHandoverU,
             postFoundationDeliveredU = episodes.postFoundationDeliveredU,
             transferredToDeferredU = episodes.upfrontTransferredU,
+            lapsedU = episodes.upfrontLapsedU,
         )
         val fallbackSichtUnlesbar = offenImFallbackRoh == null
         val offenImFallbackU = offenImFallbackRoh ?: 0.0
@@ -4748,7 +4761,8 @@ class FuseCycleRunner(
                 deferredHullRemainingU(episodes, manualBolusAfterMarkerU),
             )
             fallbackTransferNowU = (episodes.deferredPrime.openU - vorher).coerceAtLeast(0.0)
-            episodes.upfrontTransferredU += offenImFallbackU
+            episodes.upfrontTransferredU += fallbackTransferNowU
+            episodes.upfrontLapsedU += (offenImFallbackU - fallbackTransferNowU).coerceAtLeast(0.0)
             episodes.upfrontBatchDeferredSince = 0L
         }
         // Der Punkt-6-PIN liegt im Hauptpfad NACH der Fallback-Weiche - ein
@@ -4996,6 +5010,8 @@ class FuseCycleRunner(
                 deferredPrimeEnabled = cfg.deferredPrimeEnabled,
                 fallback = true,
             ),
+            phaseAUpfrontTransferredU = episodes.upfrontTransferredU,
+            phaseAUpfrontLapsedU = episodes.upfrontLapsedU,
             insulinModel = insulinModel,
             abortReason = null,
             predictorRejected = true,

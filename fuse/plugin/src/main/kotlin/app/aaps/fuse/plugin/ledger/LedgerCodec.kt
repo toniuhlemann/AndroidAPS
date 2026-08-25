@@ -623,6 +623,7 @@ object LedgerCodec {
             // ohne Feld heisst "nie aufgeschoben".
             .put("upfrontBatchDeferredSince", e.upfrontBatchDeferredSince)
             .put("upfrontTransferredU", e.upfrontTransferredU)
+            .put("upfrontLapsedU", e.upfrontLapsedU)
     }
 
     /**
@@ -948,7 +949,10 @@ object LedgerCodec {
                 requireTs("foundation.upfrontBatchDeferredSince", o.getLong("upfrontBatchDeferredSince"))
         if (o.has("upfrontTransferredU"))
             e.upfrontTransferredU =
-                requireAmount("foundation.upfrontTransferredU", o.getDouble("upfrontTransferredU"))
+                requireAmount("foundation.upfrontTransferredU", o.getDouble("upfrontTransferredU"))
+        if (o.has("upfrontLapsedU"))
+            e.upfrontLapsedU =
+                requireAmount("foundation.upfrontLapsedU", o.getDouble("upfrontLapsedU"))
     }
 
     // ---- Verbrauchte Bindungs-Identitaeten (Fix 6, NEU-BS-02) -------------

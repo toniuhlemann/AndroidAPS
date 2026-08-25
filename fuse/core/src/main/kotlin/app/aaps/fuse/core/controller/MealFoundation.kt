@@ -343,6 +343,7 @@ object MealFoundation {
      *                   - postFoundationDeliveredU
      *                   - manuellU
      *                   - transferredToDeferredU
+     *                   - lapsedU
      *
      * ALLE Lieferungen nach dem Marker zaehlen (Review 25.08. abends,
      * Punkt 3): sonst koennten Phase-B- oder Korrekturabgaben flieszen
@@ -388,6 +389,12 @@ object MealFoundation {
         deliveredSinceHandoverU: Double = 0.0,
         postFoundationDeliveredU: Double = 0.0,
         transferredToDeferredU: Double = 0.0,
+        /**
+         * Am Phasenuebergang VERFALLENE Menge [U] - der Teil, den die
+         * Huelle beim Uebertrag nicht mehr aufnehmen konnte. Weder
+         * geliefert noch uebertragen, aber erledigt (Review-P1.2).
+         */
+        lapsedU: Double = 0.0,
     ): Double? {
         if (!auth.valid) return 0.0
         // UNBESTIMMBAR ist NICHT "gedeckt" (Review 25.08. abends, Punkt 6):
@@ -399,7 +406,8 @@ object MealFoundation {
         ) return null
         val abzuege = listOf(
             deliveredPhaseAU, manualAfterMarkerU,
-            deliveredSinceHandoverU, postFoundationDeliveredU, transferredToDeferredU,
+            deliveredSinceHandoverU, postFoundationDeliveredU,
+            transferredToDeferredU, lapsedU,
         )
         if (abzuege.any { !it.isFinite() || it < 0.0 }) return null
         return max(0.0, auth.phaseAUpfrontU - abzuege.sum())

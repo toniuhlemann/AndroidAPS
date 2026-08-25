@@ -3870,6 +3870,139 @@ class TransportWiringTest : TestBaseWithProfile() {
     }
 
     /**
+     * DIE NACHLIEFERUNG IST BELEGT, nicht bloss gebucht (Review 25.08.
+     * spaet, P1.1). Der vorige Test zeigte nur, dass `deferredPrimeOpenU`
+     * gefuellt ist - das ist kein Beweis, dass die Menge je ankommt.
+     *
+     * Geprueft wird die ganze Kette: Ueberfuehrung -> Persist/Restore ->
+     * bestaetigte Erholung -> Freigabe EXAKT in Pumpenschritten, kein
+     * Vollbatch, kein zweiter Uebertrag.
+     */
+    @Test
+    fun `die uebertragene menge wird schrittweise wirklich nachgeliefert`(@TempDir dir: File) {
+        whenever(preferences.get(FuseIntKey.PrimeWindowMin)).thenReturn(20) // LIVE
+        upfrontAnteil = 1.0
+        primeHuelleU = 4.0
+        fundamentAnteil = 0.8
+        aufschubAn = true
+        maxSmbU = 0.30
+        mahlzeit(dir)
+
+        // Riegel ueber das Prime-Fenster hinaus -> Uebertrag am Phasenende.
+        flach = 150.0
+        steigungProMin = -3.0
+        bolusIobU = 2.0
+        val imRiegel = (0 until 24).map { transport(dir) }
+        assertTrue(imRiegel.any { it.phaseAUpfrontState == "TRANSFERRED_TO_DEFERRED" }, "Uebertrag noetig")
+        val uebertragenU = ledger.episodes.upfrontTransferredU
+        assertTrue(uebertragenU > 1.0, "es muss etwas uebertragen sein: $uebertragenU")
+        // P1.2: uebertragen ist NUR, was der Aufschub wirklich aufnahm.
+        assertEquals(uebertragenU, ledger.episodes.deferredPrime.openU, 1e-9) {
+            "uebertragen = real gebucht (verfallen: ${ledger.episodes.upfrontLapsedU})"
+        }
+
+        // NEUSTART mitten im Uebertrag - der Zustand muss aus der Datei kommen.
+        assertTrue(ledger.persistVerified(dir), "versiegeln")
+        val wieder = nachNeustart(dir)
+        assertEquals(uebertragenU, wieder.upfrontTransferredU, 1e-9, "der Uebertrag ueberlebt")
+        assertEquals(uebertragenU, wieder.deferredPrime.openU, 1e-9, "und die Menge im Aufschub")
+        neuerRunner(FuseLedgerAdapter().also { it.loadOnce(dir, "test-epoch", clock) })
+
+        // BESTAETIGTE ERHOLUNG nach dem Neustart.
+        steigungProMin = 0.8
+        flach = 130.0 - 0.8 * ((clock - start) / 60_000.0)
+        knickAbMin = null
+        bolusIobU = null
+        val nachher = (0 until 20).map { transport(dir) }
+
+        // KEIN Vollbatch - der Sofortpfad bleibt zu.
+        assertTrue(nachher.all { it.phaseAUpfrontRequestedU == 0.0 }) {
+            "nach Phase A nie ein Vollbatch - " +
+                nachher.joinToString(" ") { "%.2f".format(it.phaseAUpfrontRequestedU) }
+        }
+        // ABER: die Menge kommt wirklich, in Pumpenschritten.
+        val freigaben = nachher.filter { it.deferredPrimeReleasedU > 0.0 }
+        assertTrue(freigaben.isNotEmpty()) {
+            "die uebertragene Menge muss nachgeliefert werden - " +
+                nachher.joinToString(" ") { "${it.deferredPrimeDenial}" }
+        }
+        freigaben.forEach { o ->
+            assertEquals(0.05, o.deferredPrimeReleasedU, 1e-9) {
+                "genau EIN Pumpenschritt je Zyklus, nie ein Batch: ${o.deferredPrimeReleasedU}"
+            }
+        }
+        // Der Aufschub sinkt entsprechend - die Menge kommt an.
+        assertTrue(nachher.last().deferredPrimeOpenU < uebertragenU - 1e-9) {
+            "der Aufschub muss sinken: ${nachher.last().deferredPrimeOpenU} von $uebertragenU"
+        }
+        // Und der Uebertrag geschieht genau EINMAL.
+        assertEquals(uebertragenU, ledger.episodes.upfrontTransferredU, 1e-9, "kein zweiter Uebertrag")
+    }
+
+    /**
+     * P1.1, letzter Punkt - ABLAUF MIT SICHTBAREM REST.
+     *
+     * BEFUND BEIM BAUEN: die gepinnte Aufschubfrist kann den Marker-
+     * Widerruf NIE ueberholen. Ihr Minimum ist 45 min
+     * (`DeferredPrimeEndMin`), das Markerfenster ist ebenfalls 45
+     * (`OnsetChannel.MARKER_WINDOW_MIN`) - der Widerruf kommt also immer
+     * zuerst oder gleichzeitig. Der EXPIRED-Pfad des Aufschubs ist damit
+     * im Live-Betrieb unerreichbar; was tatsaechlich beendet, ist der
+     * Widerruf.
+     *
+     * Geprueft wird deshalb, was wirklich passiert: der uebertragene Rest
+     * bleibt bis zum Ende der Autorisierung SICHTBAR, und danach ist der
+     * Zustand sauber leer - keine stille Nachlieferung, kein
+     * Wiederaufleben.
+     */
+    @Test
+    fun `der uebertragene rest bleibt sichtbar und endet mit der autorisierung`(@TempDir dir: File) {
+        whenever(preferences.get(FuseIntKey.PrimeWindowMin)).thenReturn(20)
+        aufschubFristMin = 45
+        upfrontAnteil = 1.0
+        primeHuelleU = 4.0
+        fundamentAnteil = 0.8
+        aufschubAn = true
+        mahlzeit(dir)
+        flach = 150.0
+        steigungProMin = -3.0
+        bolusIobU = 2.0
+        val laufe = (0 until 50).map { transport(dir) }
+
+        val uebertrag = laufe.indexOfFirst { it.phaseAUpfrontState == "TRANSFERRED_TO_DEFERRED" }
+        assertTrue(uebertrag > 0, "der Uebertrag muss stattfinden")
+        // SICHTBAR: solange die Autorisierung lebt, steht die Menge im
+        // Aufschub und der Zustand benennt sie.
+        val sichtbar = laufe.drop(uebertrag).takeWhile { it.phaseAUpfrontState == "TRANSFERRED_TO_DEFERRED" }
+        assertTrue(sichtbar.size >= 10) { "der Rest muss sichtbar bleiben: ${sichtbar.size} Zyklen" }
+        assertTrue(sichtbar.all { it.deferredPrimeOpenU > 1.0 }) {
+            "und beziffert - " + sichtbar.joinToString(" ") { "%.2f".format(it.deferredPrimeOpenU) }
+        }
+        // ENDE mit der Autorisierung: danach ist alles leer, und es fliesst
+        // nichts mehr aus diesem Bestand.
+        val danach = laufe.drop(uebertrag + sichtbar.size)
+        assertTrue(danach.isNotEmpty(), "die Autorisierung muss im Lauf enden")
+        assertTrue(danach.all { it.deferredPrimeOpenU == 0.0 }) {
+            "nach dem Ende ist der Aufschub leer - " +
+                danach.joinToString(" ") { "%.2f".format(it.deferredPrimeOpenU) }
+        }
+        assertTrue(danach.all { it.phaseAUpfrontRequestedU == 0.0 }, "und nichts lebt wieder auf")
+        // PUNKT 4 - TESTGRENZE, ehrlich benannt: nach Ablauf der
+        // Autorisierung bleibt der Uebertrag-Posten als Buchungsspur
+        // stehen (es flieszt ja nichts mehr); geloescht wird er beim
+        // naechsten Armen. Diese Nullung steht in DERSELBEN Codezeile
+        // wie die von `deliveredPhaseAU` und `deliveredSinceHandoverU`
+        // (FuseCycleRunner, Block nach `MealFoundation.arm` bzw. beim
+        // Widerruf) - sie ist damit von den bestehenden Arm- und
+        // Widerrufstests mitgedeckt. Eine EIGENE Neuarmierung laesst sich
+        // in diesem Rig-Ablauf nicht ausloesen (der beobachtete Druck
+        // haengt an einem Prozessfeld, das der Replay-Transport nicht
+        // fuellt); das hier zu erzwingen haette den Test verbogen statt
+        // etwas zu beweisen.
+        assertTrue(ledger.episodes.upfrontTransferredU > 0.0, "die Spur bleibt sichtbar")
+    }
+
+    /**
      * PUNKT 6: eine unlesbare Behandlungssicht ist NICHT "gedeckt". Frueher
      * fiel die Bilanz dort fail-closed auf 0 - und 0 offen las sich als
      * COVERED, also als erledigt. Jetzt ist der Zustand typisiert.
