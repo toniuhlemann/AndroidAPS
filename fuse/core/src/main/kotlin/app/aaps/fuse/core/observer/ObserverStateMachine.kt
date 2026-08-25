@@ -181,7 +181,12 @@ class ObserverStateMachine(
         // Gap-Eigenschaften sind KUMULATIV, nicht first-match: eine 61-min-
         // Luecke ist gleichzeitig Continuity-, Segment- und Reinit-Bruch.
         if (dtMin > p.stateContMaxMin) out += ResetCause.CONTINUITY_BREAK
-        if (dtMin > p.rSegmentBreakMin) out += ResetCause.R_SEGMENT_BREAK
+        // DIE EINE POLITIK, direkt gelesen: ein einmal erzeugtes
+        // Params-Objekt wuerde den Wert einfrieren, und ein Replay-Override
+        // erreichte den Observer nie - genau die Haelfte, die den Messfehler
+        // erzeugt haette (Befund 25.08.).
+        val segmentBreakMin = app.aaps.fuse.core.signal.GapPolicy.rSegmentBreakMin
+        if (dtMin > segmentBreakMin) out += ResetCause.R_SEGMENT_BREAK
         if (dtMin > p.reinitMin) out += ResetCause.FULL_REINIT
         if (input.inputGap) out += ResetCause.INPUT_DROP
         if (lastSensorEpoch != null && input.sensorEpoch != lastSensorEpoch) out += ResetCause.SENSOR_RESET
@@ -199,7 +204,7 @@ class ObserverStateMachine(
             // r-Reihe - alter und neuer Messregime-Punkt lagen zusammen in
             // derselben Steigungsschaetzung. Jenseits von rSegmentBreakMin
             // bricht das Segment ohnehin, dort braucht es die Pruefung nicht.
-            dtMin <= p.rSegmentBreakMin && kotlin.math.abs(now - prev) >= p.inputStepMgdl
+            dtMin <= segmentBreakMin && kotlin.math.abs(now - prev) >= p.inputStepMgdl
         ) out += ResetCause.INPUT_STEP_SUSPECTED
         return out
     }

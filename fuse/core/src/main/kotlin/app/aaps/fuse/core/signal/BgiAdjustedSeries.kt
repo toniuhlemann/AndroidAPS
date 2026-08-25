@@ -122,9 +122,18 @@ object BgiAdjustedSeries {
         }
     }
 
-    /** Kontraktgrenze aus dem KDoc von [adjust]: dt darueber ist ein
-     *  Segmentbruch und beendet das R-Segment. */
-    const val SEGMENT_BREAK_MS: Long = 3 * 60_000L
+    /**
+     * Kontraktgrenze aus dem KDoc von [adjust]: dt darueber ist ein
+     * Segmentbruch und beendet das R-Segment.
+     *
+     * SEIT 25.08. ABGELEITET, nicht mehr selbst gesetzt: die Grenze stand
+     * an drei Orten, davon einer (ObserverTypes.rSegmentBreakMin) als
+     * unabhaengiges Literal - zwei Wahrheiten, die auseinanderlaufen
+     * konnten. Die eine Wahrheit ist jetzt [GapPolicy]; hier steht nur
+     * noch der Zugriff darauf, damit die vorhandenen Lesestellen
+     * unveraendert bleiben.
+     */
+    val SEGMENT_BREAK_MS: Long get() = GapPolicy.rSegmentBreakMs
 
     /**
      * Audit R95 NEU-03: die Brucherkennung war "Sache des Aufrufers" - und der
@@ -197,6 +206,48 @@ object BgiAdjustedSeries {
         if (slopes.size < MIN_SLOPES) return null
         slopes.sort()
         return slopes
+    }
+
+    /**
+     * DER REIFESTAND - dieselbe Fensterwahl und dieselbe Paarschleife wie
+     * [pairSlopes], nur ohne Abbruch (Bauauftrag Toni 25.08. abends).
+     *
+     * ES MUSS DIESELBE RECHNUNG SEIN. Eine zweite, nachgebaute Zaehlung
+     * waere genau der Fehler, den die Anzeige heute schon macht: sie
+     * zaehlt `samplesUsed` im festen 18-min-Fenster, waehrend der Regler
+     * auf das eingestellte Fenster filtert - und zeigt damit Reife an,
+     * wo der Regler weiter abbricht.
+     *
+     * @param lastGapMs juengste Luecke im betrachteten Fenster, fuer die
+     *   Unterscheidung "baut gerade auf" gegen "gerade gebrochen".
+     */
+    fun readiness(
+        points: List<AdjustedPoint>,
+        nowTs: Long,
+        windowMs: Long = WINDOW_MS,
+        lastGapMs: Long? = null,
+    ): SignalReadiness {
+        val window = points.filter { nowTs - it.sourceTs <= windowMs && it.sourceTs <= nowTs }
+        var slopes = 0
+        for (i in window.indices) for (j in i + 1 until window.size) {
+            if (window[j].sourceTs - window[i].sourceTs >= PAIR_DT_MIN_MS) slopes++
+        }
+        val grund = when {
+            lastGapMs != null && lastGapMs > GapPolicy.rSegmentBreakMs &&
+                window.size < MIN_POINTS -> SignalReadiness.Reason.GAP_RESET
+
+            window.size < MIN_POINTS     -> SignalReadiness.Reason.TOO_FEW_POINTS
+            slopes < MIN_SLOPES          -> SignalReadiness.Reason.TOO_FEW_SLOPES
+            else                         -> SignalReadiness.Reason.READY
+        }
+        return SignalReadiness(
+            points = window.size, pointsRequired = MIN_POINTS,
+            slopes = slopes, slopesRequired = MIN_SLOPES,
+            windowMin = (windowMs / 60_000L).toInt(),
+            lastGapMs = lastGapMs,
+            breakMs = GapPolicy.rSegmentBreakMs,
+            reason = grund,
+        )
     }
 
     /** Median einer bereits SORTIERTEN Liste — exakt die Zeilen, die vorher am

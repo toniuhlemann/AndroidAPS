@@ -938,6 +938,11 @@ object FuseStateJson {
                 // (90-105)/35 = -0,43, voellig unauffaellig. Erst
                 // `postGapIndex` ZUSAMMEN mit `stepFromLastMgdl` zeigt es.
                 .put("gapBeforeMin", fin(s.gapBeforeMin))
+                // DER WIRKSAME Wert dieses Laufs (Bauauftrag Toni 25.08.):
+                // die Grenze stand frueher an drei Orten und war im Trail
+                // gar nicht sichtbar - ein Replay-Befund liess sich damit
+                // nicht gegen den Lauf pruefen, der ihn erzeugt hat.
+                .put("rSegmentBreakMs", app.aaps.fuse.core.signal.GapPolicy.rSegmentBreakMs)
                 .put("stepFromLastMgdl", fin(s.stepFromLastMgdl))
                 .put("stepRateActualMgdlPerMin", fin(s.stepRateActualMgdlPerMin))
                 .put("postGapIndex", s.postGapIndex)

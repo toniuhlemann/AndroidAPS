@@ -120,7 +120,15 @@ data class ObserverParams(
     val confirmN: Int = 2,
     val rearmMin: Double = 5.0,
     val eventWindowMin: Double = 30.0,
-    val rSegmentBreakMin: Double = 3.0,
+    /**
+     * SEIT 25.08. AUS [app.aaps.fuse.core.signal.GapPolicy] - hier stand
+     * ein eigenes Literal `3.0`, unabhaengig von
+     * `BgiAdjustedSeries.SEGMENT_BREAK_MS`. Zwei Wahrheiten fuer dieselbe
+     * Grenze: die r-Reihe haette sich verbinden lassen, waehrend der
+     * Observer weiter bricht (oder umgekehrt). Der Default liest jetzt
+     * die eine Politik; ein Test darf ihn weiterhin ausdruecklich setzen.
+     */
+    val rSegmentBreakMin: Double = app.aaps.fuse.core.signal.GapPolicy.rSegmentBreakMin,
     val stateContMaxMin: Double = 1.5,
     val staleMin: Double = 5.0,
     val reinitMin: Double = 60.0,
