@@ -355,14 +355,40 @@ class FuseSignalSource(
         // liest. Zwei unabhaengige Auswahlen waeren der Fehler, den die
         // Gap-Grenze schon einmal hatte: der Trail truege ein r, das der
         // Regler nicht hatte.
+        //
+        // DIE REGIMEGRENZE ALS (URSACHE, ZEITPUNKT), nicht als blosses
+        // Enum (Review Toni 25.08. abends): `bound` allein beantwortet
+        // "warum beginnt das 180-min-Fenster?", der Wiedereinstieg
+        // braucht "warum beginnt das aktuelle Segment?". Ohne den
+        // Zeitpunkt sperrte eine zwei Stunden alte Kalibrierung auch
+        // einen spaeteren, voellig eigenstaendigen Funkabriss.
+        //
+        // ZUM ZEITSTEMPEL, EHRLICH GEMESSEN: auf DIESEM Pfad klemmt er
+        // nichts, denn `series` ist oben bereits an genau dieser Grenze
+        // beschnitten (epochTrimmed bzw. der Schnitt bei `stepTs`). Eine
+        // Mutation, die ihn auf 0 setzt, bleibt hier folgerichtig gruen.
+        // Er steht trotzdem hier, aus zwei Gruenden: er GEHT IN DEN
+        // EXPORT (ohne ihn liesse sich im Trail nicht unterscheiden, ob
+        // eine Kalibrierung den aktuellen Segmentbeginn erklaert oder
+        // bloss im Puffer liegt), und `SignalRejoin.select` verlaesst
+        // sich NICHT auf die Beschneidung des Aufrufers - dort ist die
+        // Klemme geprueft und mutationsfest (s. SignalRejoinTest,
+        // "punkte vor der regimegrenze zaehlen nicht als etablierung").
+        val regime = if (stepTs != null)
+            app.aaps.fuse.core.signal.SignalRejoin.Regime(
+                app.aaps.fuse.core.signal.SignalWindow.Bound.INPUT_STEP, stepTs
+            )
+        else if (window.bound != app.aaps.fuse.core.signal.SignalWindow.Bound.NONE)
+            app.aaps.fuse.core.signal.SignalRejoin.Regime(window.bound, window.fromTs)
+        else app.aaps.fuse.core.signal.SignalRejoin.Regime.NONE
         val auswahl = app.aaps.fuse.core.signal.SignalRejoin.select(
             policy = rejoin,
             base = maturity,
             ascendingTs = series.map { it.tsMs },
             segmentStartTs = windowStart,
-            bound = bound,
+            regime = regime,
             nowTs = sourceTs,
-            breakMs = gapPolicy.rSegmentBreakMs,
+            gapPolicy = gapPolicy,
         )
         val rSigned = BgiAdjustedSeries.theilSen(adjusted.points, sourceTs, auswahl.maturity)
 

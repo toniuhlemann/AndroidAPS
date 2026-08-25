@@ -963,6 +963,14 @@ object FuseStateJson {
                 .put("rejoinCause", s.rejoin.cause.name)
                 .put("rejoinGapMs", s.rejoin.gapMs)
                 .put("rejoinAgeMs", s.rejoin.ageMs)
+                // Die REGIMEGRENZE samt Zeitpunkt und die Etablierungsfrage
+                // (Review Toni 25.08. abends): ohne beides laesst sich im
+                // Trail nicht unterscheiden, ob eine Kalibrierung den
+                // AKTUELLEN Segmentbeginn erklaert oder bloss irgendwo im
+                // Rueckblickpuffer liegt.
+                .put("rejoinRegimeCause", s.rejoin.regime.bound.name)
+                .put("rejoinRegimeTs", s.rejoin.regime.ts)
+                .put("rejoinPreGapStrictReady", s.rejoin.preGapStrictReady)
                 // 0 = dieses Segment traegt die STRENGE Reife noch nicht.
                 // Genau daran ist ablesbar, wie lange der Wiedereinstieg
                 // ueberhaupt etwas geaendert hat.

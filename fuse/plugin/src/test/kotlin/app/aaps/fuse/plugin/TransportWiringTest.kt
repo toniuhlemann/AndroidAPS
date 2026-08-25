@@ -7598,7 +7598,7 @@ class TransportWiringTest : TestBaseWithProfile() {
             neuerRunner(adapter, fensterMs = fensterMs, trendRegel = trendRegel, gapPolitik = gapPolitik, reifePolitik = reifePolitik, wiedereinstieg = rejoinPolitik)
             val outFile = File(outDir, "replay_$name.csv")
             outFile.printWriter().use { w ->
-                w.println("ts;smbU;block;binding;insulinReq;liftU;needU;abort;phase;fastD;slowD;trend;raw;recSmbU;recBlock;profil;restMin;tbr;latch;lvDenial;lvExit;lvStreak;lvHead;transC;revGrund;rearmGrund;ctxGrund;basis;gapBreakMs;samplesUsed;gapBeforeMin;r;bandN;matP;matS;iob;rejoin;rejoinGrund;gapMs;vollreifeTs")
+                w.println("ts;smbU;block;binding;insulinReq;liftU;needU;abort;phase;fastD;slowD;trend;raw;recSmbU;recBlock;profil;restMin;tbr;latch;lvDenial;lvExit;lvStreak;lvHead;transC;revGrund;rearmGrund;ctxGrund;basis;gapBreakMs;samplesUsed;gapBeforeMin;r;bandN;matP;matS;iob;rejoin;rejoinGrund;gapMs;vollreifeTs;regimeGrund;regimeTs;vorReif")
                 var prevMarker = 0L
                 var polText = pol?.toString()
                 var zyklusNr = 0
@@ -7669,6 +7669,9 @@ class TransportWiringTest : TestBaseWithProfile() {
                         o.signal?.rejoin?.cause?.name ?: "",
                         o.signal?.rejoin?.gapMs ?: "",
                         o.signal?.fullMaturityTs ?: "",
+                        o.signal?.rejoin?.regime?.bound?.name ?: "",
+                        o.signal?.rejoin?.regime?.ts ?: "",
+                        if (o.signal?.rejoin?.preGapStrictReady == true) "1" else "0",
                     ).joinToString(";"))
                 }
             }
@@ -9552,37 +9555,82 @@ class TransportWiringTest : TestBaseWithProfile() {
     }
 
     /**
-     * PFLICHTPROBE: DER REGIMEWECHSEL WIRD BIS ZUM SCHAETZER DURCHGEREICHT.
+     * PFLICHTPROBE: EINE FRISCHE KALIBRIERUNG SPERRT - und die
+     * Regimegrenze wird bis zum Schaetzer durchgereicht.
      *
-     * Die reine Entscheidung [SignalRejoin.select] weist eine Kalibrierung
-     * ab - das prueft SignalRejoinTest. Was sie NICHT prueft: dass der
-     * AUFRUFER den echten Grund uebergibt. Eine Verdrahtung, die stur
-     * `Bound.NONE` einsetzt, liefe an allen Kernproben vorbei; gemessen
-     * blieben dabei 183 von 183 Tests gruen.
+     * Die Kalibrierung liegt drei Zyklen vor der Funkluecke. Der
+     * Abschnitt zwischen ihr und der Luecke traegt also nur drei Punkte
+     * und war nie streng gereift - es gibt keine bekannte Kurve
+     * fortzusetzen.
      *
-     * Hier liegt die Kalibrierung mitten im Vorlauf und die Funkluecke
-     * DANACH - die Luecke bleibt also in der Reihe erhalten und wuerde
-     * ohne die Regimeregel lockern.
+     * DAS IST ZUGLEICH DIE VERDRAHTUNGSPROBE. Die reine Entscheidung
+     * prueft SignalRejoinTest; was sie NICHT prueft, ist ob der AUFRUFER
+     * die echte Grenze uebergibt. Eine Verdrahtung, die stur
+     * `Bound.NONE`/Zeitpunkt 0 einsetzt, saehe hier 25 Punkte statt drei
+     * und wuerde lockern - gemessen liefen ohne diese Probe 183 von 183
+     * Tests gruen.
      */
     @org.junit.jupiter.api.Test
-    fun `eine kalibrierung verhindert den wiedereinstieg trotz luecke`(@TempDir dir: File) {
+    fun `eine frische kalibrierung verhindert den wiedereinstieg`(@TempDir dir: File) {
         rejoinAn = true
-        val nachTs = funklueckeAufbauen(dir, basisBg = 120.0, steigung = 1.0, kalibrierNachMin = 5)
+        val nachTs = funklueckeAufbauen(dir, basisBg = 120.0, steigung = 1.0, kalibrierNachMin = 22)
         val gruende = ArrayList<app.aaps.fuse.core.signal.SignalRejoin.Cause>()
         for (ts in nachTs) {
             clock = ts
             val o = runner.run(false, testPumpe())
             o.signal?.rejoin?.let {
                 gruende += it.cause
-                assertFalse(it.active, "bei laufender Kalibrierung darf nichts gelockert werden")
+                assertFalse(it.active, "das neue Regime war noch nicht etabliert")
+                assertFalse(it.preGapStrictReady)
             }
         }
         assertTrue(
-            gruende.contains(app.aaps.fuse.core.signal.SignalRejoin.Cause.CALIBRATION),
-            "der Grund muss die Kalibrierung sein, nicht bloss 'kein Bruch' - sonst " +
-                "wuerde ein verschluckter Regimewechsel nicht auffallen (gesehen: " +
+            gruende.contains(app.aaps.fuse.core.signal.SignalRejoin.Cause.PRE_GAP_NOT_MATURE),
+            "der Grund muss die fehlende Vor-Luecken-Reife sein, nicht bloss 'kein Bruch' - " +
+                "sonst wuerde eine verschluckte Regimegrenze nicht auffallen (gesehen: " +
                 gruende.distinct() + ")",
         )
+    }
+
+    /**
+     * PFLICHTPROBE - TONIS BEISPIEL: eine ETABLIERTE Kalibrierung sperrt
+     * NICHT mehr.
+     *
+     *     12:00 Kalibrierung
+     *     12:05-12:06 neues Signal erreicht 5x8-Reife
+     *     13:00 kurze Funkluecke
+     *     13:04 4x3-Rejoin erlaubt
+     *
+     * Der erste Wurf haette hier bis etwa 15:00 gesperrt, weil die Grenze
+     * noch im 180-min-Rueckblickpuffer lag. Das verwechselte die
+     * historische Fenstergrenze mit der Ursache des aktuellen
+     * Segmentbruchs.
+     */
+    @org.junit.jupiter.api.Test
+    fun `eine etablierte kalibrierung sperrt den wiedereinstieg nicht mehr`(@TempDir dir: File) {
+        rejoinAn = true
+        val nachTs = funklueckeAufbauen(dir, basisBg = 120.0, steigung = 1.0, kalibrierNachMin = 3)
+        var gelockert = 0
+        for (ts in nachTs) {
+            clock = ts
+            val o = runner.run(false, testPumpe())
+            if (o.signal?.rejoin?.active == true) {
+                gelockert++
+                assertEquals(
+                    app.aaps.fuse.core.signal.SignalRejoin.Cause.GAP,
+                    o.signal?.rejoin?.cause,
+                    "nach der Etablierung ist die Luecke eine gewoehnliche Funkluecke",
+                )
+                assertTrue(o.signal?.rejoin?.preGapStrictReady == true)
+                // Die Grenze ist nicht verschwunden - sie erklaert diesen
+                // Segmentbeginn nur nicht.
+                assertEquals(
+                    app.aaps.fuse.core.signal.SignalWindow.Bound.CALIBRATION_START,
+                    o.signal?.rejoin?.regime?.bound,
+                )
+            }
+        }
+        assertTrue(gelockert > 0, "nach der Etablierung MUSS der Wiedereinstieg wieder greifen")
     }
 
     /**

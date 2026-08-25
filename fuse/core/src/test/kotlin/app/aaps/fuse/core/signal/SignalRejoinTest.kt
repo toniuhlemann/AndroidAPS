@@ -9,64 +9,66 @@ import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
 /**
- * DIE PFLICHTPROBEN ZUM WIEDEREINSTIEG (Tonis Liste vom 25.08. abends).
+ * DIE PFLICHTPROBEN ZUM WIEDEREINSTIEG (Tonis Listen vom 25.08. abends,
+ * einschliesslich der Nachbesserung zur SEGMENTIDENTITAET).
  *
  * Der Wiedereinstieg lockert die Theil-Sen-Reife von 5x8 auf 4x3 - aber
- * NUR nach einer eindeutig identifizierten echten CGM-Funkluecke. Jede
- * andere Ursache eines Segmentbeginns beschreibt ein neues Messregime,
- * und dort waere eine fruehe Steigung eine Behauptung ueber Daten, die
- * es nicht gibt.
+ * nur nach einer echten CGM-Funkluecke in einem ETABLIERTEN Messregime.
+ * Etabliert heisst: der Abschnitt zwischen der letzten Regimegrenze und
+ * dem Punkt vor der Luecke war selbst streng 5x8-reif.
  *
- * Jede Probe hier benennt den Fall aus Tonis Liste, damit ein spaeterer
+ * Jede Probe benennt den Fall aus Tonis Listen, damit ein spaeterer
  * Review die Abdeckung nachzaehlen kann.
  */
 class SignalRejoinTest {
 
     private val t0 = 1_700_000_000_000L
-    private val BREAK = GapPolicy.PRODUCTION.rSegmentBreakMs   // 180 s
+    private val GAP = GapPolicy.PRODUCTION
+    private val BREAK = GAP.rSegmentBreakMs                    // 180 s
     private val AN = RejoinPolicy.enabled()
+    private val TAKT = listOf(58_000L, 61_000L, 59_000L, 60_000L, 62_000L, 59_000L)
 
     /** Reihe im ECHTEN Geraetetakt (58-62 s), optional mit einer Luecke. */
     private fun reihe(vorLuecke: Int, lueckeMs: Long, nachLuecke: Int): List<Long> {
-        val takt = listOf(58_000L, 61_000L, 59_000L, 60_000L, 62_000L, 59_000L)
         val out = ArrayList<Long>()
         var t = t0
-        repeat(vorLuecke) { out.add(t); t += takt[it % takt.size] }
+        repeat(vorLuecke) { out.add(t); t += TAKT[it % TAKT.size] }
         if (lueckeMs > 0L) t = out.last() + lueckeMs
-        repeat(nachLuecke) { out.add(t); t += takt[it % takt.size] }
+        repeat(nachLuecke) { out.add(t); t += TAKT[it % TAKT.size] }
         return out
     }
 
     private fun waehle(
         ts: List<Long>,
         segmentStart: Long,
-        bound: SignalWindow.Bound = SignalWindow.Bound.NONE,
+        regime: SignalRejoin.Regime = SignalRejoin.Regime.NONE,
         now: Long = ts.last(),
         policy: RejoinPolicy = AN,
         base: MaturityPolicy = MaturityPolicy.PRODUCTION,
-    ) = SignalRejoin.select(policy, base, ts, segmentStart, bound, now, BREAK)
+    ) = SignalRejoin.select(policy, base, ts, segmentStart, regime, now, GAP)
+
+    private fun regime(b: SignalWindow.Bound, ts: Long) = SignalRejoin.Regime(b, ts)
 
     // ---- NUTZENFAELLE ---------------------------------------------------
 
-    /** PFLICHTFALL "Nutzen": echte Funkluecke ueber der Bruchgrenze. */
+    /** PFLICHTFALL "Nutzen": echte Funkluecke in einem etablierten Regime. */
     @Test
     fun `nach echter funkluecke wird gelockert`() {
-        // 8 Punkte, 200 s Luecke, dann 4 Punkte.
-        val ts = reihe(8, 200_000L, 4)
-        val segment = ts[8]
-        val w = waehle(ts, segment)
+        val ts = reihe(8, 200_000L, 4)          // 8 Punkte reichen fuer 5x8
+        val w = waehle(ts, ts[8])
         assertTrue(w.active, "die Funkluecke muss lockern")
         assertEquals(SignalRejoin.Cause.GAP, w.cause)
         assertEquals(200_000L, w.gapMs)
+        assertTrue(w.preGapStrictReady, "vor der Luecke lag ein streng gereiftes Signal")
         assertEquals(4, w.maturity.minPoints)
         assertEquals(3, w.maturity.minSlopes)
     }
 
     /**
-     * UND DER NUTZEN IST ECHT: dieselben vier Punkte im Geraetetakt sind
-     * unter 5x8 blind und unter dem Wiedereinstieg reif. Ohne diese
-     * Gegenprobe koennte der Test gruen sein, waehrend sich am Schaetzer
-     * nichts aendert.
+     * UND DER NUTZEN IST ECHT: dieselben Punkte im Geraetetakt sind unter
+     * 5x8 blind und unter dem Wiedereinstieg reif. Ohne diese Gegenprobe
+     * koennte der Test gruen sein, waehrend sich am Schaetzer nichts
+     * aendert.
      */
     @Test
     fun `der gelockerte schaetzer liefert dort, wo der strenge noch blind ist`() {
@@ -108,44 +110,133 @@ class SignalRejoinTest {
         )
     }
 
-    // ---- DIE VERWEIGERUNGSFAELLE ---------------------------------------
+    // ---- SEGMENTIDENTITAET (Tonis Nachbesserung) ------------------------
 
-    /** PFLICHTFALL "Kaltstart": kein Punkt vor dem Segmentbeginn. */
+    /**
+     * PFLICHTFALL 1: Kalibrierung UND gleichzeitige Luecke -> kein Rejoin.
+     *
+     * Die Reihe beginnt an der Kalibrierung; gleich danach faellt der Funk
+     * aus. Vor der Luecke steht genau ein Punkt - das ist keine bekannte
+     * Kurve, sondern der Anfang einer neuen.
+     */
     @Test
-    fun `kaltstart lockert nicht`() {
-        val ts = reihe(0, 0L, 5)
-        val w = waehle(ts, ts.first())
-        assertFalse(w.active, "ohne Vorgeschichte gibt es nichts fortzusetzen")
-        assertEquals(SignalRejoin.Cause.COLD_START, w.cause)
-        assertSame(MaturityPolicy.PRODUCTION, w.maturity)
-    }
-
-    /** PFLICHTFALL "Sensorwechsel". */
-    @Test
-    fun `sensorwechsel lockert nicht`() {
-        val ts = reihe(8, 200_000L, 4)
-        val w = waehle(ts, ts[8], bound = SignalWindow.Bound.SENSOR_CHANGE)
-        assertFalse(w.active, "neuer Sensor heisst neue Kennlinie")
-        assertEquals(SignalRejoin.Cause.SENSOR_CHANGE, w.cause)
-    }
-
-    /** PFLICHTFALL "Kalibrierung". */
-    @Test
-    fun `kalibrierung lockert nicht`() {
-        val ts = reihe(8, 200_000L, 4)
-        val w = waehle(ts, ts[8], bound = SignalWindow.Bound.CALIBRATION_START)
+    fun `kalibrierung mit gleichzeitiger luecke lockert nicht`() {
+        val ts = reihe(1, 200_000L, 5)
+        val w = waehle(ts, ts[1], regime = regime(SignalWindow.Bound.CALIBRATION_START, ts[0]))
         assertFalse(w.active)
-        assertEquals(SignalRejoin.Cause.CALIBRATION, w.cause)
+        assertEquals(SignalRejoin.Cause.PRE_GAP_NOT_MATURE, w.cause,
+                     "ein einziger Punkt vor der Luecke belegt keine Kurve")
+        assertFalse(w.preGapStrictReady)
     }
 
-    /** PFLICHTFALL "Input-Step". */
+    /** Und wenn die Grenze den Segmentbeginn SELBST erklaert, heisst sie so. */
     @Test
-    fun `eingangssprung lockert nicht`() {
-        val ts = reihe(8, 200_000L, 4)
-        val w = waehle(ts, ts[8], bound = SignalWindow.Bound.INPUT_STEP)
-        assertFalse(w.active)
-        assertEquals(SignalRejoin.Cause.INPUT_STEP, w.cause)
+    fun `eine grenze am segmentbeginn wird beim namen genannt`() {
+        val ts = reihe(0, 0L, 6)
+        for ((b, c) in listOf(
+            SignalWindow.Bound.CALIBRATION_START to SignalRejoin.Cause.CALIBRATION,
+            SignalWindow.Bound.SENSOR_CHANGE to SignalRejoin.Cause.SENSOR_CHANGE,
+            SignalWindow.Bound.INPUT_STEP to SignalRejoin.Cause.INPUT_STEP,
+        )) {
+            val w = waehle(ts, ts[0], regime = regime(b, ts[0]))
+            assertFalse(w.active)
+            assertEquals(c, w.cause)
+        }
+        // Ohne Grenze ist derselbe Fall ein Kaltstart.
+        assertEquals(SignalRejoin.Cause.COLD_START, waehle(ts, ts[0]).cause)
     }
+
+    /**
+     * PFLICHTFALL 2 - DER KERN DER NACHBESSERUNG: Kalibrierung, danach
+     * vollstaendige 5x8-Reife, SPAETER eine Funkluecke -> Rejoin.
+     *
+     * Tonis Beispiel: 12:00 Kalibrierung, 12:05-12:06 neues Signal reif,
+     * 13:00 kurze Funkluecke, 13:04 Rejoin erlaubt. Der erste Wurf haette
+     * hier bis etwa 15:00 gesperrt, weil die Grenze noch im
+     * 180-min-Puffer lag - das verwechselte die historische Fenstergrenze
+     * mit der Ursache des aktuellen Segmentbruchs.
+     */
+    @Test
+    fun `kalibrierung, dann volle reife, dann spaetere luecke lockert wieder`() {
+        // 60 Punkte nach der Kalibrierung (eine Stunde), dann 200 s Luecke.
+        val ts = reihe(60, 200_000L, 5)
+        val kalibrierung = ts[0]
+        val w = waehle(ts, ts[60], regime = regime(SignalWindow.Bound.CALIBRATION_START, kalibrierung))
+        assertTrue(w.active, "das neue Regime war laengst etabliert")
+        assertEquals(SignalRejoin.Cause.GAP, w.cause)
+        assertTrue(w.preGapStrictReady)
+        // Die Grenze steht trotzdem im Ergebnis - sie ist nicht verschwunden,
+        // sie erklaert nur diesen Segmentbeginn nicht.
+        assertEquals(SignalWindow.Bound.CALIBRATION_START, w.regime.bound)
+        assertEquals(kalibrierung, w.regime.ts)
+    }
+
+    /**
+     * PFLICHTFALL 3: Kaltstart, wenige Werte, Funkluecke -> kein Rejoin.
+     *
+     * Genau die Luecke, die Toni benannt hat: zwei neue Werte, dann
+     * Funkverlust, dann 4x3-Reife haetten den Wiedereinstieg geoeffnet,
+     * obwohl vor der Luecke nie ein streng gereiftes Signal existierte.
+     */
+    @Test
+    fun `kaltstart mit wenigen werten und dann luecke lockert nicht`() {
+        for (n in 1..5) {
+            val ts = reihe(n, 200_000L, 5)
+            val w = waehle(ts, ts[n])
+            assertFalse(w.active, "$n Punkte vor der Luecke duerfen nicht lockern")
+            assertEquals(SignalRejoin.Cause.PRE_GAP_NOT_MATURE, w.cause, "bei $n Punkten")
+            assertFalse(w.preGapStrictReady)
+        }
+        // Ab sechs Punkten im Geraetetakt traegt 5x8 - und erst dann lockert er.
+        val sechs = reihe(6, 200_000L, 5)
+        assertTrue(waehle(sechs, sechs[6]).active, "sechs Punkte sind streng reif")
+    }
+
+    /**
+     * PFLICHTFALL 4: Eingangssprung, danach gereifte neue Reihe, dann
+     * Funkverlust -> Rejoin. Dieselbe Regel wie fuer die Kalibrierung.
+     */
+    @Test
+    fun `input-step, dann volle reife, dann luecke lockert wieder`() {
+        val ts = reihe(30, 200_000L, 5)
+        val w = waehle(ts, ts[30], regime = regime(SignalWindow.Bound.INPUT_STEP, ts[0]))
+        assertTrue(w.active, "die neue Reihe war etabliert")
+        assertEquals(SignalRejoin.Cause.GAP, w.cause)
+        assertTrue(w.preGapStrictReady)
+    }
+
+    /**
+     * DIE REGIMEGRENZE SCHNEIDET DIE VORGESCHICHTE AB. Punkte VOR der
+     * Grenze belegen nichts ueber das neue Regime - auch wenn sie
+     * lueckenlos anschliessen.
+     */
+    @Test
+    fun `punkte vor der regimegrenze zaehlen nicht als etablierung`() {
+        // 20 Punkte, Grenze kurz vor der Luecke: nur 2 Punkte danach.
+        val ts = reihe(20, 200_000L, 5)
+        val spaeteGrenze = ts[18]
+        val w = waehle(ts, ts[20], regime = regime(SignalWindow.Bound.SENSOR_CHANGE, spaeteGrenze))
+        assertFalse(w.active, "nach der Grenze standen nur zwei Punkte")
+        assertEquals(SignalRejoin.Cause.PRE_GAP_NOT_MATURE, w.cause)
+        // Ohne die Grenze waere derselbe Verlauf reif - der Unterschied ist
+        // allein die Grenze.
+        assertTrue(waehle(ts, ts[20]).active)
+    }
+
+    /** Eine FRUEHERE Luecke trennt ebenso wie eine Regimegrenze. */
+    @Test
+    fun `eine fruehere luecke trennt die vorgeschichte ebenso`() {
+        // 10 Punkte, Luecke, 2 Punkte, Luecke - vor der zweiten Luecke
+        // stehen nur zwei Punkte des neuen Abschnitts.
+        val a = reihe(10, 200_000L, 2)
+        var t = a.last() + 200_000L
+        val ts = a + (0 until 5).map { i -> (t + (0 until i).sumOf { TAKT[it % TAKT.size] }) }
+        val w = waehle(ts, ts[12])
+        assertFalse(w.active, "der Abschnitt zwischen den beiden Luecken traegt nicht")
+        assertEquals(SignalRejoin.Cause.PRE_GAP_NOT_MATURE, w.cause)
+    }
+
+    // ---- DIE UEBRIGEN VERWEIGERUNGSFAELLE -------------------------------
 
     /**
      * PFLICHTFALL "Schleifenpause 24.08. 18:49". Der Regler stand
@@ -153,19 +244,15 @@ class SignalRejoinTest {
      * Luecke, auch wenn zwischen zwei Reglerzyklen 181 s liegen.
      *
      * Genau so sah es am Geraet aus: gapBeforeMin 1,01 min, 18 Samples,
-     * r sofort +2,15. Der Wiedereinstieg darf hier nicht greifen - und er
-     * kann es auch gar nicht, weil er die REIHE prueft und nicht die
-     * Zykluskadenz.
+     * r sofort +2,15.
      */
     @Test
     fun `schleifenpause lockert nicht - die reihe hat keine luecke`() {
         val ts = reihe(18, 0L, 0)                    // durchgehende Reihe
         val jetzt = ts.last() + 181_000L             // Regler kommt spaet wieder
-        // Der Segmentbeginn ist die rollende Fensterkante, kein Punkt.
         val w = waehle(ts, jetzt - 18 * 60_000L, now = jetzt)
         assertFalse(w.active, "ohne Luecke IN DER REIHE gibt es keinen Wiedereinstieg")
         assertEquals(SignalRejoin.Cause.NO_BREAK, w.cause)
-        // Und die strenge Reife traegt hier ohnehin: 18 Punkte.
         val punkte = ts.mapIndexed { i, t -> BgiAdjustedSeries.AdjustedPoint(t, 100.0 + i) }
         assertNotNull(BgiAdjustedSeries.theilSen(punkte, jetzt))
     }
@@ -173,23 +260,19 @@ class SignalRejoinTest {
     /**
      * DIE BEIDEN DECKEL SIND VERSCHIEDENE DINGE. Mit den Vorgabewerten
      * sind beide 10 min - ein vertauschtes Feldpaar waere damit unsichtbar.
-     * Hier stehen sie ausdruecklich auseinander.
      */
     @Test
     fun `lueckendauer und altersfenster sind nicht dasselbe`() {
         val p = RejoinPolicy.enabled(maxGapMs = 6 * 60_000L, maxAgeMs = 9 * 60_000L)
         assertTrue(p.enabled)
-        // Luecke 8 min: ueber dem GAP-Deckel (6), unter dem ALTERS-Deckel (9).
         val lang = reihe(8, 8 * 60_000L, 4)
-        val w1 = waehle(lang, lang[8], policy = p, now = lang[8] + 60_000L)
-        assertEquals(SignalRejoin.Cause.GAP_TOO_LONG, w1.cause,
+        assertEquals(SignalRejoin.Cause.GAP_TOO_LONG,
+                     waehle(lang, lang[8], policy = p, now = lang[8] + 60_000L).cause,
                      "8 min Luecke muss am GAP-Deckel scheitern, nicht am Alter")
-        // Luecke 4 min (unter 6), aber Segment 10 min alt (ueber 9).
         val kurz = reihe(8, 4 * 60_000L, 4)
-        val w2 = waehle(kurz, kurz[8], policy = p, now = kurz[8] + 10 * 60_000L)
-        assertEquals(SignalRejoin.Cause.TOO_OLD, w2.cause,
+        assertEquals(SignalRejoin.Cause.TOO_OLD,
+                     waehle(kurz, kurz[8], policy = p, now = kurz[8] + 10 * 60_000L).cause,
                      "4 min Luecke muss am ALTERS-Deckel scheitern, nicht an der Dauer")
-        // Und beides innerhalb: gelockert.
         assertTrue(waehle(kurz, kurz[8], policy = p, now = kurz[8] + 60_000L).active)
     }
 
@@ -202,7 +285,6 @@ class SignalRejoinTest {
         assertFalse(w.active, "ueber 10 min ist zu viel Kurve unbeobachtet vergangen")
         assertEquals(SignalRejoin.Cause.GAP_TOO_LONG, w.cause)
         assertEquals(zuLang, w.gapMs)
-        // Die Kante selbst ist noch zulaessig.
         val gerade = reihe(8, RejoinPolicy.DEFAULT_MAX_GAP_MS, 4)
         assertTrue(waehle(gerade, gerade[8]).active)
     }
@@ -212,11 +294,9 @@ class SignalRejoinTest {
     fun `zu altes segment lockert nicht mehr`() {
         val ts = reihe(8, 200_000L, 4)
         val segment = ts[8]
-        val spaet = segment + RejoinPolicy.DEFAULT_MAX_AGE_MS + 1
-        val w = waehle(ts, segment, now = spaet)
+        val w = waehle(ts, segment, now = segment + RejoinPolicy.DEFAULT_MAX_AGE_MS + 1)
         assertFalse(w.active)
         assertEquals(SignalRejoin.Cause.TOO_OLD, w.cause)
-        // Genau auf der Kante gilt sie noch.
         assertTrue(waehle(ts, segment, now = segment + RejoinPolicy.DEFAULT_MAX_AGE_MS).active)
     }
 
@@ -242,8 +322,7 @@ class SignalRejoinTest {
 
     /**
      * 3x1 waere eine EINZIGE Paarsteigung - ein "Median" ueber ein
-     * Element, also kein robuster Theil-Sen mehr. Die Politik weist das
-     * ab, statt still eine schwaechere Statistik zu erlauben.
+     * Element, also kein robuster Theil-Sen mehr.
      */
     @Test
     fun `unter 4x3 gibt es keinen wiedereinstieg`() {
@@ -251,15 +330,9 @@ class SignalRejoinTest {
         assertFalse(RejoinPolicy.enabled(MaturityPolicy.of(4, 2)).enabled)
         assertFalse(RejoinPolicy.enabled(MaturityPolicy.of(3, 3)).enabled)
         assertFalse(RejoinPolicy.enabled(MaturityPolicy.of(2, 1)).enabled)
-        // Der Boden selbst ist zulaessig.
         assertTrue(RejoinPolicy.enabled(MaturityPolicy.of(4, 3)).enabled)
-        // Und eine "Lockerung", die strenger als die Produktion waere,
-        // gehoerte in die Produktionskonstanten und nicht hierher.
         assertFalse(RejoinPolicy.enabled(MaturityPolicy.of(6, 12)).enabled)
-        // Ein Vorlauf-Fenster ist ein Replay-Werkzeug und hat im Produkt
-        // nichts zu suchen.
         assertFalse(RejoinPolicy.enabled(MaturityPolicy.of(4, 3, t0)).enabled)
-        // Unbrauchbare Deckel ebenso.
         assertFalse(RejoinPolicy.enabled(maxGapMs = 0L).enabled)
         assertFalse(RejoinPolicy.enabled(maxGapMs = RejoinPolicy.MAX_GAP_CEILING_MS + 1).enabled)
         assertFalse(RejoinPolicy.enabled(maxAgeMs = 0L).enabled)
@@ -279,22 +352,5 @@ class SignalRejoinTest {
         assertSame(basis, w.maturity)
         assertFalse(w.active, "nichts geaendert heisst nicht aktiv")
         assertEquals(SignalRejoin.Cause.GAP, w.cause)
-    }
-
-    /**
-     * DIE REIHENFOLGE DER GRUENDE ist bedeutungstragend: liegt ZUGLEICH
-     * eine Luecke und ein Sensorwechsel vor, gewinnt der Sensorwechsel.
-     * Andersherum waere die Regel durch eine zufaellig gleichzeitige
-     * Funkluecke aushebelbar.
-     */
-    @Test
-    fun `bei luecke UND regimewechsel gewinnt der regimewechsel`() {
-        val ts = reihe(8, 200_000L, 4)
-        for (b in listOf(SignalWindow.Bound.SENSOR_CHANGE,
-                         SignalWindow.Bound.CALIBRATION_START,
-                         SignalWindow.Bound.INPUT_STEP)) {
-            val w = waehle(ts, ts[8], bound = b)
-            assertFalse(w.active, "$b darf nicht durch eine Luecke ausgehebelt werden")
-        }
     }
 }
