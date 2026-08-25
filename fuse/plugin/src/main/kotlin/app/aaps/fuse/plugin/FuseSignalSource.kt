@@ -42,6 +42,11 @@ class FuseSignalSource(
      *  Replay erzeugt je Variante eine eigene Quelle. */
     private val gapPolicy: app.aaps.fuse.core.signal.GapPolicy =
         app.aaps.fuse.core.signal.GapPolicy.PRODUCTION,
+    /** Die Reifebedingung dieses Laufs - ebenfalls injiziert. Sie muss
+     *  DIESELBE sein wie die des Runners, sonst traegt der Trail ein
+     *  rSigned, das der Regler nicht hatte (oder umgekehrt). */
+    private val maturity: app.aaps.fuse.core.signal.MaturityPolicy =
+        app.aaps.fuse.core.signal.MaturityPolicy.PRODUCTION,
 ) {
 
     /**
@@ -316,7 +321,7 @@ class FuseSignalSource(
         )
 
         val adjusted = BgiAdjustedSeries.adjust(samples)
-        val rSigned = BgiAdjustedSeries.theilSen(adjusted.points, sourceTs)
+        val rSigned = BgiAdjustedSeries.theilSen(adjusted.points, sourceTs, maturity)
 
         // ---- STABILE SIGNALEPOCHE (Toni 22.08.) -------------------------
         // Bruchkandidaten dieses Zyklus: eine explizite Fenstergrenze

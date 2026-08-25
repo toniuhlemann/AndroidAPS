@@ -118,8 +118,13 @@ object PairSlopeBand {
         /** NUR fuer den Offline-Fenster-Replay (Phase 2); Produktion nutzt
          *  den Default und bleibt bitgleich. */
         windowMs: Long = BgiAdjustedSeries.WINDOW_MS,
+        /** NUR fuer den Offline-Reife-Replay (25.08.); Produktion nutzt den
+         *  Default. DIESE Funktion ist das eigentliche Tor: ihr `null`
+         *  erzeugt im Runner den Abbruch "drive not estimable" und damit
+         *  die blinden Minuten nach einer CGM-Luecke. */
+        maturity: MaturityPolicy = MaturityPolicy.PRODUCTION,
     ): Estimate? {
-        val slopes = BgiAdjustedSeries.pairSlopes(points, nowTs, windowMs) ?: return null
+        val slopes = BgiAdjustedSeries.pairSlopes(points, nowTs, windowMs, maturity) ?: return null
         val mean = BgiAdjustedSeries.median(slopes)
         return Estimate(mean, quantile(slopes, mean, quantilePct), slopes.size, quantilePct)
     }

@@ -176,8 +176,11 @@ object BgiAdjustedSeries {
      * (Spec: rSigned = null + DEGRADED(INSUFFICIENT_SIGNAL_HISTORY)) —
      * ausdruecklich KEIN 0.0, das waere die Behauptung "flach".
      */
-    fun theilSen(points: List<AdjustedPoint>, nowTs: Long): Double? =
-        pairSlopes(points, nowTs)?.let { median(it) }
+    fun theilSen(
+        points: List<AdjustedPoint>,
+        nowTs: Long,
+        maturity: MaturityPolicy = MaturityPolicy.PRODUCTION,
+    ): Double? = pairSlopes(points, nowTs, maturity = maturity)?.let { median(it) }
 
     /**
      * Die SORTIERTE Liste der paarweisen Steigungen [mg/dl/min] — die
@@ -192,13 +195,30 @@ object BgiAdjustedSeries {
      * Untergrenze DARAUS zu bilden ist Policy und gehoert nach
      * [PairSlopeBand], nicht in diese gelockte Datei.
      */
-    internal fun pairSlopes(points: List<AdjustedPoint>, nowTs: Long, windowMs: Long = WINDOW_MS): ArrayList<Double>? {
+    internal fun pairSlopes(
+        points: List<AdjustedPoint>,
+        nowTs: Long,
+        windowMs: Long = WINDOW_MS,
+        maturity: MaturityPolicy = MaturityPolicy.PRODUCTION,
+    ): ArrayList<Double>? {
         // `windowMs` mit Default = WINDOW_MS: die Produktion ruft ohne
         // Argument und bleibt bitgleich (der gelockte Kandidat aendert sich
         // nicht). Der Parameter existiert fuer den OFFLINE-Fenster-Replay
         // (Phase 2, Toni/Codex 23.08.) - kein Produktionspfad setzt ihn.
+        //
+        // `maturity` ebenso, seit 25.08. abends (Reife-Replay): die
+        // GELOCKTEN Konstanten [MIN_POINTS]/[MIN_SLOPES] bleiben stehen und
+        // sind der Vorgabewert. Der Replay injiziert eine andere Politik JE
+        // RUNNER; ein prozessweiter Schalter haette Laeufe im selben
+        // Prozess vermischt (dieselbe Lehre wie bei [GapPolicy]).
+        //
+        // WICHTIG FUER DIE AUSWERTUNG: die Politik entscheidet nur, OB ein
+        // Wert herauskommt - nicht, aus welchen Punkten. Sobald beide
+        // Politiken reif sind, rechnen sie auf demselben Fenster und
+        // liefern denselben Median. Unterschiede sind damit strikt auf die
+        // Zyklen beschraenkt, in denen die Produktion noch blind ist.
         val window = points.filter { nowTs - it.sourceTs <= windowMs && it.sourceTs <= nowTs }
-        if (window.size < MIN_POINTS) return null
+        if (window.size < maturity.minPointsAt(nowTs)) return null
         val slopes = ArrayList<Double>()
         for (i in window.indices) for (j in i + 1 until window.size) {
             val dtMs = window[j].sourceTs - window[i].sourceTs
@@ -206,7 +226,7 @@ object BgiAdjustedSeries {
                 slopes.add((window[j].adjusted - window[i].adjusted) / (dtMs / 60_000.0))
             }
         }
-        if (slopes.size < MIN_SLOPES) return null
+        if (slopes.size < maturity.minSlopesAt(nowTs)) return null
         slopes.sort()
         return slopes
     }
@@ -230,6 +250,7 @@ object BgiAdjustedSeries {
         windowMs: Long = WINDOW_MS,
         lastGapMs: Long? = null,
         policy: GapPolicy = GapPolicy.PRODUCTION,
+        maturity: MaturityPolicy = MaturityPolicy.PRODUCTION,
     ): SignalReadiness {
         val window = points.filter { nowTs - it.sourceTs <= windowMs && it.sourceTs <= nowTs }
         var slopes = 0
@@ -238,15 +259,15 @@ object BgiAdjustedSeries {
         }
         val grund = when {
             lastGapMs != null && lastGapMs > policy.rSegmentBreakMs &&
-                window.size < MIN_POINTS -> SignalReadiness.Reason.GAP_RESET
+                window.size < maturity.minPointsAt(nowTs) -> SignalReadiness.Reason.GAP_RESET
 
-            window.size < MIN_POINTS     -> SignalReadiness.Reason.TOO_FEW_POINTS
-            slopes < MIN_SLOPES          -> SignalReadiness.Reason.TOO_FEW_SLOPES
-            else                         -> SignalReadiness.Reason.READY
+            window.size < maturity.minPointsAt(nowTs) -> SignalReadiness.Reason.TOO_FEW_POINTS
+            slopes < maturity.minSlopesAt(nowTs)      -> SignalReadiness.Reason.TOO_FEW_SLOPES
+            else                                      -> SignalReadiness.Reason.READY
         }
         return SignalReadiness(
-            points = window.size, pointsRequired = MIN_POINTS,
-            slopes = slopes, slopesRequired = MIN_SLOPES,
+            points = window.size, pointsRequired = maturity.minPointsAt(nowTs),
+            slopes = slopes, slopesRequired = maturity.minSlopesAt(nowTs),
             windowMin = (windowMs / 60_000L).toInt(),
             lastGapMs = lastGapMs,
             breakMs = policy.rSegmentBreakMs,

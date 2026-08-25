@@ -399,7 +399,7 @@ class TransportWiringTest : TestBaseWithProfile() {
         neuerRunner(FuseLedgerAdapter())
     }
 
-    private fun neuerRunner(l: FuseLedgerAdapter, evidenz: EvidenceStock.Config = EvidenceStock.Config(), fensterMs: Long? = null, trendRegel: String? = null, gapPolitik: app.aaps.fuse.core.signal.GapPolicy = app.aaps.fuse.core.signal.GapPolicy.PRODUCTION) {
+    private fun neuerRunner(l: FuseLedgerAdapter, evidenz: EvidenceStock.Config = EvidenceStock.Config(), fensterMs: Long? = null, trendRegel: String? = null, gapPolitik: app.aaps.fuse.core.signal.GapPolicy = app.aaps.fuse.core.signal.GapPolicy.PRODUCTION, reifePolitik: app.aaps.fuse.core.signal.MaturityPolicy = app.aaps.fuse.core.signal.MaturityPolicy.PRODUCTION) {
         ledger = l
         runner = FuseCycleRunner(
             iobCobCalculator, profileFunction, activePlugin, constraintsChecker, commandQueue,
@@ -408,6 +408,7 @@ class TransportWiringTest : TestBaseWithProfile() {
             theilSenWindowMsOverride = fensterMs,
             trendRuleOverride = trendRegel,
             gapPolicy = gapPolitik,
+            maturityPolicy = reifePolitik,
             predict = { input ->
                 predictReject
                     ?.let { PredictorOutcome.Rejected(it, "erzwungen") }
@@ -7516,7 +7517,7 @@ class TransportWiringTest : TestBaseWithProfile() {
         // die Karte ist seit dem Zeitzonen-Fix oben ebenfalls lokal gefuellt
         // - eine Uhr fuer beide Seiten.
 
-        fun lauf(name: String, fensterMs: Long?, trendRegel: String? = null, fenster: Int = 18, ratioCap: Double = 1.0, livenessStart: Boolean = true, profilCapsBehalten: Boolean = false, upfrontStart: Double = 0.0, guardsStart: Boolean = false, reversalConfirm: Int = 2, gapBreakMs: Long? = null): File {
+        fun lauf(name: String, fensterMs: Long?, trendRegel: String? = null, fenster: Int = 18, ratioCap: Double = 1.0, livenessStart: Boolean = true, profilCapsBehalten: Boolean = false, upfrontStart: Double = 0.0, guardsStart: Boolean = false, reversalConfirm: Int = 2, gapBreakMs: Long? = null, reifeTag: String? = null): File {
             transportReset()
             boluses = emptyList()
             markerAt = 0L
@@ -7557,16 +7558,32 @@ class TransportWiringTest : TestBaseWithProfile() {
             val gapPolitik = gapBreakMs
                 ?.let { app.aaps.fuse.core.signal.GapPolicy.of(it) }
                 ?: app.aaps.fuse.core.signal.GapPolicy.PRODUCTION
+            // Dieselbe Regel fuer die Reifebedingung (25.08. abends): ein
+            // Wert, der nur im Konstruktor dieses Laufs lebt. `parse(null)`
+            // ergibt die Produktion - der Referenzlauf braucht also gar
+            // nichts zu setzen und kann auch nichts vergessen.
+            // VORLAUF: die Variante greift erst 20 min nach Fensterbeginn.
+            // Ein Replay startet kalt; in seinen ersten Minuten ist die
+            // Referenz blind, weil noch keine Reihe da ist - nicht, weil
+            // das Geraet blind war. Ohne diese Sperre dosiert eine
+            // aggressive Variante in den Kaltstart hinein, und ueber
+            // Ledger und Deckel verseucht das den ganzen Lauf (gemessen
+            // am Fall 25.08. 11:42: 3x1 dosierte dort 3 x 0,550 U im
+            // Kaltstart, die Haelfte der scheinbaren Mehrmenge).
+            // 20 min sind reichlich: der Observer ist nach ~8 Zyklen
+            // scharf, und der Vorlauf muss nur den Kaltstart abdecken.
+            val reifeAbTs = zyklen.first().ts + 20L * 60_000L
+            val reifePolitik = app.aaps.fuse.core.signal.MaturityPolicy.parse(reifeTag, reifeAbTs)
             forecastShadowAn = false // Replay braucht die Matrizen nicht - Tempo
             livenessRatioDeckel = ratioCap // v23: aufgezeichnete v22-Politik traegt den Schluessel nicht - der Hebel gilt
             theilSenFensterMin = fenster // W18-Trails tragen den Schluessel nicht - der Hebel gilt
             politikAnwenden(zyklen.firstNotNullOfOrNull { it.policy })
             theilSenFensterMin = fenster // die erste Politik darf den Matrixwert nicht ueberschreiben (W10-Live-Trails tragen 10)
             val adapter = FuseLedgerAdapter().also { it.loadOnce(File(dir, name).also(File::mkdirs), "test-epoch", zyklen.first().ts) }
-            neuerRunner(adapter, fensterMs = fensterMs, trendRegel = trendRegel, gapPolitik = gapPolitik)
+            neuerRunner(adapter, fensterMs = fensterMs, trendRegel = trendRegel, gapPolitik = gapPolitik, reifePolitik = reifePolitik)
             val outFile = File(outDir, "replay_$name.csv")
             outFile.printWriter().use { w ->
-                w.println("ts;smbU;block;binding;insulinReq;liftU;needU;abort;phase;fastD;slowD;trend;raw;recSmbU;recBlock;profil;restMin;tbr;latch;lvDenial;lvExit;lvStreak;lvHead;transC;revGrund;rearmGrund;ctxGrund;basis;gapBreakMs;samplesUsed;gapBeforeMin")
+                w.println("ts;smbU;block;binding;insulinReq;liftU;needU;abort;phase;fastD;slowD;trend;raw;recSmbU;recBlock;profil;restMin;tbr;latch;lvDenial;lvExit;lvStreak;lvHead;transC;revGrund;rearmGrund;ctxGrund;basis;gapBreakMs;samplesUsed;gapBeforeMin;r;bandN;matP;matS;iob")
                 var prevMarker = 0L
                 var polText = pol?.toString()
                 var zyklusNr = 0
@@ -7622,6 +7639,14 @@ class TransportWiringTest : TestBaseWithProfile() {
                         o.rSegmentBreakMs,
                         o.signal?.samplesUsed ?: "",
                         o.signal?.gapBeforeMin?.let { "%.2f".format(java.util.Locale.US, it) } ?: "",
+                        // REIFE-REPLAY (25.08. abends). `r` fehlte bisher
+                        // ganz - eine Auswertung des Schaetzfehlers war damit
+                        // gar nicht moeglich, und ein Leser, der die Spalte
+                        // vermutete, bekam stillschweigend Nullen.
+                        o.signal?.rSigned?.let { "%.4f".format(java.util.Locale.US, it) } ?: "",
+                        o.band?.pairCount ?: "",
+                        o.maturity.minPointsAt(z.ts), o.maturity.minSlopesAt(z.ts),
+                        o.iobU?.let { "%.3f".format(java.util.Locale.US, it) } ?: "",
                     ).joinToString(";"))
                 }
             }
@@ -7710,6 +7735,34 @@ class TransportWiringTest : TestBaseWithProfile() {
                 val anteil = u.trim().toDouble()
                 lauf("upf%03d".format((anteil * 100).toInt()), null, fenster = 10, upfrontStart = anteil)
             }
+            return
+        }
+        val reifeEnv = System.getenv("FUSE_REPLAY_MATURITY")
+        if (reifeEnv != null) {
+            // REIFE-MATRIX (Bauauftrag Toni 25.08. abends, dosierneutral):
+            // FUSE_REPLAY_MATURITY=5x6,4x3,3x1 - je Wert ein eigener
+            // Runner ueber denselben Ausschnitt, geaendert wird NUR die
+            // Theil-Sen-Reifebedingung.
+            //
+            // Die Frage dahinter: nach einer echten CGM-Luecke bleiben
+            // heute ~5-6 min blind, UNABHAENGIG von der Lueckenlaenge -
+            // das ist die Reifebedingung, nicht die Luecke. Bei 1-min-
+            // Kadenz entsprechen 5x8/5x6/4x3/3x1 genau 6/5/4/3 Punkten,
+            // also 5/4/3/2 Wartminuten.
+            //
+            // Der Referenzlauf setzt NICHTS: `parse(null)` ergibt die
+            // Produktion. Er muss bitgleich zu einem Lauf ohne diesen
+            // Hebel sein, sonst traegt die Matrix nicht.
+            lauf("matRef", null, fenster = 10)
+            reifeEnv.split(",").forEach { t ->
+                val tag = t.trim()
+                lauf("mat$tag", null, fenster = 10, reifeTag = tag)
+            }
+            // INTERLEAVING-PROBE (Toni): unmittelbar nach der Matrix noch
+            // einmal die Referenz. Waere die Politik irgendwo prozessweit,
+            // truege dieser Lauf den zuletzt gesetzten Wert - er muss
+            // stattdessen bitgleich zu `matRef` sein.
+            lauf("matRefNach", null, fenster = 10)
             return
         }
         val gapEnv = System.getenv("FUSE_REPLAY_GAP")

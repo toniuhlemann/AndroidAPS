@@ -156,6 +156,14 @@ class FuseCycleRunner(
     private val gapPolicy: app.aaps.fuse.core.signal.GapPolicy =
         app.aaps.fuse.core.signal.GapPolicy.PRODUCTION,
     /**
+     * DIE REIFEBEDINGUNG DIESES RUNNERS - unveraenderlich, injiziert
+     * (Bauauftrag Toni 25.08. abends, dosierneutraler Reife-Replay).
+     * Am Geraet ist das konstruktionsbedingt die Produktion; die
+     * gelockten Konstanten in BgiAdjustedSeries bleiben unangetastet.
+     */
+    private val maturityPolicy: app.aaps.fuse.core.signal.MaturityPolicy =
+        app.aaps.fuse.core.signal.MaturityPolicy.PRODUCTION,
+    /**
      * NUR FUER DEN PHASE-2-REPLAY (Toni 23.08. Abend): schaltet EINE
      * Trendregel des Turn-Shadows als ECHTE Dosierbahn scharf.
      *   "UP"       Mittelbahn-Anhebung bei bestaetigter Aufwaertswende
@@ -205,7 +213,7 @@ class FuseCycleRunner(
         p = app.aaps.fuse.core.observer.ObserverParams(rSegmentBreakMin = gapPolicy.rSegmentBreakMin),
         sessionId = sessionId,
     )
-    private val signalSource = FuseSignalSource(iobCobCalculator, profileFunction, gapPolicy)
+    private val signalSource = FuseSignalSource(iobCobCalculator, profileFunction, gapPolicy, maturityPolicy)
 
     companion object {
 
@@ -644,6 +652,9 @@ class FuseCycleRunner(
         val abortReason: String?,
         /** Die WIRKSAME Segmentgrenze dieses Zyklus [ms] - s. GapPolicy. */
         val rSegmentBreakMs: Long = app.aaps.fuse.core.signal.GapPolicy.DEFAULT_R_SEGMENT_BREAK_MS,
+        /** Die WIRKSAME Reifebedingung dieses Zyklus - s. MaturityPolicy. */
+        val maturity: app.aaps.fuse.core.signal.MaturityPolicy =
+            app.aaps.fuse.core.signal.MaturityPolicy.PRODUCTION,
         /** Die Bahn wurde verworfen. GETRENNT von [abortReason] gefuehrt, weil
          *  der Zyklus deswegen seit dem 11.08. nicht mehr zwingend endet. */
         val predictorRejected: Boolean = false,
@@ -1065,7 +1076,7 @@ class FuseCycleRunner(
                 reason = reason, alarm = tbrAlarm, bgMgdl = signal?.q1, targetMgdl = null, targetSource = null,
                 signal = signal, band = null, discount = null, onset = null, prime = null, candidate = null, candidateGap = null, policy = policy, state = null, step = step,
                 sensorEpoch = null, calibrationEpoch = null,
-                isfMgdlPerU = null, iobU = iob, iobThU = iobTh, maxIobU = maxIob, computeDurationMs = null, mealStats = null, abortReason = reason, rSegmentBreakMs = gapPolicy.rSegmentBreakMs,
+                isfMgdlPerU = null, iobU = iob, iobThU = iobTh, maxIobU = maxIob, computeDurationMs = null, mealStats = null, abortReason = reason, rSegmentBreakMs = gapPolicy.rSegmentBreakMs, maturity = maturityPolicy,
                 livenessExit = livenessLostExit,
                 livenessReArmUntilTs = episodes.livenessReArmUntilTs,
                 // AUCH IM ABBRUCH. Nach einem Neustart ist der Abbruch der
@@ -1324,6 +1335,7 @@ class FuseCycleRunner(
             // 23.08.); der Konstruktor-Override des Phase-2-Replay-Treibers
             // gewinnt weiterhin, am Geraet ist er konstruktionsbedingt null.
             windowMs = theilSenWindowMsOverride ?: (cfg.theilSenWindowMin * 60_000L),
+            maturity = maturityPolicy,
         )
             ?: return abort("drive not estimable (${signal.samplesUsed} samples)", signal, cfg, step)
 
@@ -4324,6 +4336,7 @@ class FuseCycleRunner(
             iobU = iobTotal.iob,
             abortReason = null,
             rSegmentBreakMs = gapPolicy.rSegmentBreakMs,
+            maturity = maturityPolicy,
             // runCatching: eine scheiternde DB-Abfrage darf den Zyklus nicht
             // kosten - dann faellt nur der Ledger-Abgleich dieses Zyklus aus
             // und offene Commitments bleiben konservativ stehen.
@@ -5032,6 +5045,7 @@ class FuseCycleRunner(
             insulinModel = insulinModel,
             abortReason = null,
             rSegmentBreakMs = gapPolicy.rSegmentBreakMs,
+            maturity = maturityPolicy,
             predictorRejected = true,
             predictorReason = rejected.reason.name,
             markerFallbackUsed = true,

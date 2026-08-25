@@ -946,6 +946,12 @@ object FuseStateJson {
                 // sonst zeigte der Trail den Wert des ZULETZT gebauten
                 // Runners statt den dieses Zyklus.
                 .put("rSegmentBreakMs", outcome.rSegmentBreakMs)
+                // Ebenso die WIRKSAME Reifebedingung. Ohne sie liesse sich
+                // ein Reife-Replay-Befund nicht gegen den Lauf pruefen,
+                // der ihn erzeugt hat - und ein versehentlich nicht
+                // gesetzter Hebel saehe wie ein Ergebnis aus.
+                .put("maturityMinPoints", outcome.maturity.minPointsAt(s.sourceTs))
+                .put("maturityMinSlopes", outcome.maturity.minSlopesAt(s.sourceTs))
                 .put("stepFromLastMgdl", fin(s.stepFromLastMgdl))
                 .put("stepRateActualMgdlPerMin", fin(s.stepRateActualMgdlPerMin))
                 .put("postGapIndex", s.postGapIndex)
