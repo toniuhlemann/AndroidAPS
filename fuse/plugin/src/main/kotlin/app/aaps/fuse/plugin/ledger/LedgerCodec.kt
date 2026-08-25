@@ -949,7 +949,7 @@ object LedgerCodec {
                 requireTs("foundation.upfrontBatchDeferredSince", o.getLong("upfrontBatchDeferredSince"))
         if (o.has("upfrontTransferredU"))
             e.upfrontTransferredU =
-                requireAmount("foundation.upfrontTransferredU", o.getDouble("upfrontTransferredU"))
+                requireAmount("foundation.upfrontTransferredU", o.getDouble("upfrontTransferredU"))
         if (o.has("upfrontLapsedU"))
             e.upfrontLapsedU =
                 requireAmount("foundation.upfrontLapsedU", o.getDouble("upfrontLapsedU"))
