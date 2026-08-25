@@ -92,7 +92,7 @@
     <string name="fuse_meal_foundation_share_title">Anteil Phase A</string>
     <string name="fuse_meal_foundation_share_summary">Welcher Teil der Huelle sofort freigegeben wird. 1,0 = alles sofort, also das heutige Verhalten. 0,75 heisst: drei Viertel im Freigabe-Fenster, ein Viertel verteilt ueber das Fundament-Fenster danach. Kleinere Werte verschieben mehr Insulin nach hinten - das entschaerft die fruehe IOB-Spitze, liefert dafuer spaeter.</string>
     <string name="fuse_reversal_guard_title">V-Reversal-Schutz (Korrektur)</string>
-    <string name="fuse_reversal_guard_summary">Nach einem steilen Fall loest eine schnelle Gegenbewegung KEINE Korrektur-SMBs aus, solange das robuste r negativ oder unbestaetigt ist (Pflichtfall 25.08.: 1,75 U auf die Erholung eines Sensor-V bei r -0,82). Nur im reinen Korrekturkontext - Marker, Prime, Fundament und MEAL-Frist bleiben unberuehrt. Kein Nachholbolus.</string>
+    <string name="fuse_reversal_guard_summary">Nach einem steilen Fall loest eine schnelle Gegenbewegung KEINE Korrektur-SMBs aus, solange das robuste r negativ oder unbestaetigt ist (Pflichtfall 25.08.: 1,75 U auf die Erholung eines Sensor-V bei r -0,82). Greift im Korrekturkontext UND bei bloss kinematisch vermuteter Mahlzeit; bei marker- oder evidenzbestaetigter Mahlzeit nie. Sperrt positive Korrektur-SMBs einschliesslich Liveness-K, veraendert weder TBR noch Basalantwort. Kein Nachholbolus.</string>
     <string name="fuse_reversal_fall_title">Reversal: Fall-Schwelle [mg/dl/min]</string>
     <string name="fuse_reversal_fall_summary">So steil muss der Fall im Rueckblick gewesen sein (UKF-Minimum), damit der Schutz ueberhaupt bewaffnet (Pflichtfall: -2,81).</string>
     <string name="fuse_reversal_lookback_title">Reversal: Rueckblick [min]</string>
@@ -102,7 +102,7 @@
     <string name="fuse_reversal_confirm_title">Reversal: r-Bestaetigung [Zyklen]</string>
     <string name="fuse_reversal_confirm_summary">So viele ZUSAMMENHAENGENDE Zyklen muss das robuste r positiv sein, bevor die Erholung als echter Anstieg gilt und Korrektur wieder frei ist (Luecke ueber 90 s nullt).</string>
     <string name="fuse_rearm_title">Freigabe-Nachlauf (Korrektur)</string>
-    <string name="fuse_rearm_summary">Das Ende einer verriegelten Null (Zero-Latch loest) oder des Nachtfensters oeffnet positive Korrektur-SMBs NICHT in der naechsten Minute: erst nach Mindestdauer UND kurz bestaetigter Aufwaertslage (Pflichtfall 25.08.: 0,35 U direkt nach der 08:00-Kante, BG fiel danach). Nur im reinen Korrekturkontext; der Zero-Latch bleibt als zweite Schutzlinie unveraendert.</string>
+    <string name="fuse_rearm_summary">Das Ende einer verriegelten Null (Zero-Latch loest) oder des Nachtfensters oeffnet positive Korrektur-SMBs NICHT in der naechsten Minute: erst nach Mindestdauer UND kurz bestaetigter Aufwaertslage (Pflichtfall 25.08.: 0,35 U direkt nach der 08:00-Kante, BG fiel danach). Greift im Korrekturkontext UND bei bloss kinematisch vermuteter Mahlzeit; bei marker- oder evidenzbestaetigter Mahlzeit nie. Sperrt positive Korrektur-SMBs einschliesslich Liveness-K, veraendert weder TBR noch Basalantwort; der Zero-Latch bleibt als zweite Schutzlinie unveraendert.</string>
     <string name="fuse_rearm_hold_title">Nachlauf: Mindestdauer [min]</string>
     <string name="fuse_rearm_hold_summary">So lange bleiben positive Korrektur-SMBs nach der Kante mindestens zu.</string>
     <string name="fuse_rearm_confirm_title">Nachlauf: Aufwaerts-Zyklen</string>

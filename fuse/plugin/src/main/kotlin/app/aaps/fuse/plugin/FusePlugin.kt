@@ -2327,9 +2327,16 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
             // nicht mehr lesbar.
             info(
                 "Korrekturpfad-Schutz",
-                "Zwei Riegel, die AUSSCHLIESSLICH im reinen Korrekturkontext greifen - " +
-                    "nie bei Marker, offenem Mahlzeitenfenster oder laufender Evidenz-Mahlzeit. " +
-                    "Sie begrenzen nur die SMB-Menge, nie die Basalantwort.",
+                // WOERTLICH nach Tonis Korrektur (25.08. abends): der fruehere
+                // Text stammte aus der Zeit VOR der Mahlzeitenbasis-Achse und
+                // behauptete "nur reiner Korrekturkontext". Seit v30 greifen
+                // die Riegel auch bei bloss kinematisch vermuteter Mahlzeit -
+                // ausgenommen sind nur BELEGTE Mahlzeiten.
+                "Zwei Riegel fuer unbelegte Korrekturlagen. Sie greifen im " +
+                    "Korrekturkontext sowie bei ausschliesslich kinematisch erkanntem " +
+                    "Mahlzeitenverdacht. Bei marker- oder evidenzbestaetigter Mahlzeit " +
+                    "greifen sie nie. Sie sperren positive Korrektur-SMBs einschliesslich " +
+                    "Liveness-K, veraendern aber weder TBR noch Basalantwort.",
             )
             addPreference(AdaptiveSwitchPreference(ctx = context, booleanKey = FuseBooleanKey.CorrectionReversalGuardEnabled, summary = R.string.fuse_reversal_guard_summary, title = R.string.fuse_reversal_guard_title))
             addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.ReversalFallUkf, dialogMessage = R.string.fuse_reversal_fall_summary, title = R.string.fuse_reversal_fall_title))
