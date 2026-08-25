@@ -484,6 +484,29 @@ object LedgerCodec {
                 .put("latchedAtTs", e.zeroLatch.latchedAtTs)
                 .put("sawMeasuredLow", e.zeroLatch.sawMeasuredLow),
         )
+        // v30-Korrekturpfad-Riegel (Review-P0.1): NUR die Identitaet -
+        // Fall-Minimum/Zuendung bzw. Anker/Quelle ueberleben den Neustart,
+        // die Bestaetigungszaehler sind prozesslokal (restored nullt).
+        // Additiv und NUR BEI BESTAND geschrieben: eine Altdatei oder eine
+        // Lage ohne Fall/Anker liest sich als leerer Track; JSON kennt
+        // zudem kein NaN, ein leeres minUkf ist gar nicht abbildbar.
+        .apply {
+            val rev = e.correctionReversal
+            if (rev.minUkfTs > 0L && !rev.minUkf.isNaN()) put(
+                "correctionReversal",
+                JSONObject()
+                    .put("minUkf", rev.minUkf)
+                    .put("minUkfTs", rev.minUkfTs)
+                    .put("reboundSeenTs", rev.reboundSeenTs),
+            )
+            val re = e.correctionRearm
+            if (re.ankerTs > 0L) put(
+                "correctionRearm",
+                JSONObject()
+                    .put("ankerTs", re.ankerTs)
+                    .put("quelle", re.quelle.name),
+            )
+        }
         // Punkt 6: der Marker-Prime-Aufschub - Budget UND Frist muessen den
         // Neustart identisch ueberleben (Vertrag/Replay-Fall 6). Additiv wie
         // der Riegel: eine Altdatei ohne Objekt heisst "kein Aufschub".
@@ -707,6 +730,29 @@ object LedgerCodec {
                     latchedAtTs = requireTs("zeroLatch.latchedAtTs", latch.getLong("latchedAtTs")),
                     sawMeasuredLow = latch.optBoolean("sawMeasuredLow", false),
                 ) ?: error("invalid zero latch")
+        }
+        if (o.has("correctionReversal")) {
+            val rev = o.getJSONObject("correctionReversal")
+            val minUkf = rev.getDouble("minUkf")
+            require(minUkf.isFinite()) { "correctionReversal.minUkf not finite" }
+            val reboundSeen = rev.getLong("reboundSeenTs")
+            require(reboundSeen >= 0L) { "correctionReversal.reboundSeenTs out of range: $reboundSeen" }
+            // restored erhaelt die Identitaet und NULLT die r-Bestaetigung
+            // (konservative Richtung - wie die Erholungsserie des Latch).
+            e.correctionReversal = app.aaps.fuse.core.controller.CorrectionReversalGuard.restored(
+                minUkf = minUkf,
+                minUkfTs = requireTs("correctionReversal.minUkfTs", rev.getLong("minUkfTs")),
+                reboundSeenTs = reboundSeen,
+            )
+        }
+        if (o.has("correctionRearm")) {
+            val re = o.getJSONObject("correctionRearm")
+            // Ein unbekannter Quellen-Name wirft (valueOf) und macht die
+            // Generation ungueltig - Raten waere die falsche Richtung.
+            e.correctionRearm = app.aaps.fuse.core.controller.PositiveCorrectionRearm.restored(
+                ankerTs = requireTs("correctionRearm.ankerTs", re.getLong("ankerTs")),
+                quelle = app.aaps.fuse.core.controller.PositiveCorrectionRearm.Source.valueOf(re.getString("quelle")),
+            )
         }
         if (o.has("deferredPrime")) {
             val dp = o.getJSONObject("deferredPrime")

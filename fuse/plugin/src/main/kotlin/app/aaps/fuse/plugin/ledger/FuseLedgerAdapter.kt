@@ -192,6 +192,21 @@ class EpisodeBudgets {
     var zeroLatch: app.aaps.fuse.core.controller.DescentRecoveryLatch.State =
         app.aaps.fuse.core.controller.DescentRecoveryLatch.State()
 
+    /** V-REVERSAL-RIEGEL (v30, Review-P0.1): die IDENTITAET (Fall-Minimum,
+     *  Zuendung) ist persistent - ein Neustart entfernt den Riegel nicht.
+     *  Die r-Bestaetigungszaehler sind wie beim [zeroLatch] bewusst
+     *  prozesslokal: der Codec restauriert ueber
+     *  CorrectionReversalGuard.restored, das die Zaehler nullt
+     *  (konservative Richtung, Bestaetigung beginnt neu). */
+    var correctionReversal: app.aaps.fuse.core.controller.CorrectionReversalGuard.Track =
+        app.aaps.fuse.core.controller.CorrectionReversalGuard.Track()
+
+    /** FREIGABE-NACHLAUF (v30, Review-P0.1): Anker und Quelle persistent,
+     *  Aufwaerts-Bestaetigungszaehler prozesslokal - restauriert ueber
+     *  PositiveCorrectionRearm.restored. */
+    var correctionRearm: app.aaps.fuse.core.controller.PositiveCorrectionRearm.Track =
+        app.aaps.fuse.core.controller.PositiveCorrectionRearm.Track()
+
     /**
      * Der ZUSATZKREDIT dieser Episode ist ausdruecklich zurueckgenommen.
      *

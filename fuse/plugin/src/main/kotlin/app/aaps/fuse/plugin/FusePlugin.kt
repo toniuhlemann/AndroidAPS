@@ -2264,7 +2264,16 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
             addPreference(AdaptiveIntPreference(ctx = context, intKey = FuseIntKey.ZeroLatchCalmExitMin, dialogMessage = R.string.fuse_zero_latch_calm_min_summary, title = R.string.fuse_zero_latch_calm_min_title))
             addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.ZeroLatchCalmDistanceMgdl, dialogMessage = R.string.fuse_zero_latch_calm_dist_summary, title = R.string.fuse_zero_latch_calm_dist_title))
             // Die Korrekturpfad-Riegel (25.08.) direkt dahinter - dieselbe
-            // Schutzfamilie, beide nur im reinen Korrekturkontext.
+            // Schutzfamilie, beide nur im reinen Korrekturkontext. Eigene
+            // Zwischenueberschrift (Tonis UI-Hinweis 25.08. abends): neun
+            // Einzelwerte unmittelbar hinter dem Zero-Latch waeren sonst
+            // nicht mehr lesbar.
+            info(
+                "Korrekturpfad-Schutz",
+                "Zwei Riegel, die AUSSCHLIESSLICH im reinen Korrekturkontext greifen - " +
+                    "nie bei Marker, offenem Mahlzeitenfenster oder laufender Evidenz-Mahlzeit. " +
+                    "Sie begrenzen nur die SMB-Menge, nie die Basalantwort.",
+            )
             addPreference(AdaptiveSwitchPreference(ctx = context, booleanKey = FuseBooleanKey.CorrectionReversalGuardEnabled, summary = R.string.fuse_reversal_guard_summary, title = R.string.fuse_reversal_guard_title))
             addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.ReversalFallUkf, dialogMessage = R.string.fuse_reversal_fall_summary, title = R.string.fuse_reversal_fall_title))
             addPreference(AdaptiveIntPreference(ctx = context, intKey = FuseIntKey.ReversalLookbackMin, dialogMessage = R.string.fuse_reversal_lookback_summary, title = R.string.fuse_reversal_lookback_title))

@@ -75,6 +75,66 @@ class LedgerCodecTest {
     }
 
     @Test
+    fun `die korrekturpfad-riegel ueberleben den codec ohne ihre zaehler`() {
+        // v30/Review-P0.1: Identitaet restartfest, Bestaetigungszaehler
+        // beginnen neu - dieselbe Doktrin wie beim Abwaertsriegel.
+        val ep = EpisodeBudgets().apply {
+            correctionReversal = app.aaps.fuse.core.controller.CorrectionReversalGuard.Track(
+                minUkf = -2.81, minUkfTs = t0, reboundSeenTs = t0 + 600_000L,
+                rPosStreak = 1, rPosLastTs = t0 + 660_000L,
+            )
+            correctionRearm = app.aaps.fuse.core.controller.PositiveCorrectionRearm.Track(
+                ankerTs = t0 + 300_000L,
+                quelle = app.aaps.fuse.core.controller.PositiveCorrectionRearm.Source.ZERO_LATCH_RELEASED,
+                upStreak = 2, upLastTs = t0 + 360_000L,
+            )
+        }
+        val decoded = LedgerCodec.decode(
+            JSONObject(LedgerCodec.encode(LedgerState(), ep, 0L, InterventionStamp("test-epoche", 42L)).toString()),
+        ).episodes
+
+        assertEquals(-2.81, decoded.correctionReversal.minUkf, 1e-12)
+        assertEquals(t0, decoded.correctionReversal.minUkfTs)
+        assertEquals(t0 + 600_000L, decoded.correctionReversal.reboundSeenTs, "die Zuendung ueberlebt")
+        assertEquals(0, decoded.correctionReversal.rPosStreak, "die r-Bestaetigung nicht")
+        assertEquals(0L, decoded.correctionReversal.rPosLastTs)
+
+        assertEquals(t0 + 300_000L, decoded.correctionRearm.ankerTs)
+        assertEquals(
+            app.aaps.fuse.core.controller.PositiveCorrectionRearm.Source.ZERO_LATCH_RELEASED,
+            decoded.correctionRearm.quelle,
+        )
+        assertEquals(0, decoded.correctionRearm.upStreak, "der Aufwaerts-Zaehler nicht")
+    }
+
+    @Test
+    fun `Altdatei ohne korrekturpfad-riegel liest sich als kein riegel`() {
+        // Additiv ohne Versions-Bump: eine Altdatei (und jede Lage ohne
+        // Fall/Anker) traegt die Objekte gar nicht.
+        val json = LedgerCodec.encode(LedgerState(), EpisodeBudgets(), 0L, InterventionStamp("test-epoche", 42L))
+        assertFalse(json.getJSONObject("episodes").has("correctionReversal"),
+            "ein leerer Track wird gar nicht erst geschrieben")
+        assertFalse(json.getJSONObject("episodes").has("correctionRearm"))
+        val decoded = LedgerCodec.decode(JSONObject(json.toString())).episodes
+        assertEquals(app.aaps.fuse.core.controller.CorrectionReversalGuard.Track(), decoded.correctionReversal)
+        assertEquals(app.aaps.fuse.core.controller.PositiveCorrectionRearm.Track(), decoded.correctionRearm)
+    }
+
+    @Test
+    fun `ein widerspruechlicher korrekturpfad-riegel wirft statt zu raten`() {
+        val ep = EpisodeBudgets().apply {
+            correctionRearm = app.aaps.fuse.core.controller.PositiveCorrectionRearm.Track(
+                ankerTs = t0, quelle = app.aaps.fuse.core.controller.PositiveCorrectionRearm.Source.NIGHT_END,
+            )
+        }
+        val json = LedgerCodec.encode(LedgerState(), ep, 0L, InterventionStamp("test-epoche", 42L))
+        json.getJSONObject("episodes").getJSONObject("correctionRearm").put("quelle", "GIBTESNICHT")
+        assertThrows(IllegalArgumentException::class.java) {
+            LedgerCodec.decode(JSONObject(json.toString()))
+        }
+    }
+
+    @Test
     fun `Altdatei ohne Abwaertsriegel liest sich konservativ als noch nie geschlossen`() {
         val json = LedgerCodec.encode(LedgerState(), EpisodeBudgets(), 0L, InterventionStamp("test-epoche", 42L))
         json.getJSONObject("episodes").remove("descentRecoveryLatch")

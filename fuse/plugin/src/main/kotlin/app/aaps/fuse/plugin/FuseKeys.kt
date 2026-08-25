@@ -140,7 +140,12 @@ enum class FuseDoubleKey(
      * nichts, was der Nutzer nicht weiss), aber sie halten das NACHLEGEN an,
      * wenn die angekuendigte Absorption ausbleibt.
      */
-    PrimeEnvelopeU("fuse_prime_envelope_u", 1.2, 0.0, 4.0),
+    // OBERGRENZE 6,0 (Toni 25.08. abends, zuvor 4,0): der Stellbereich,
+    // nicht der Wert. Der Default bleibt 1,2; die groesseren Huellen
+    // entstehen erst durch bewusstes Stellen. Hintergrund ist die
+    // Liveness-Deadlock-Messung: eine Mahlzeit braucht 5-7 U, waehrend
+    // die Huelle bei 3,75/60 min deckelte.
+    PrimeEnvelopeU("fuse_prime_envelope_u", 1.2, 0.0, 6.0),
 
     /**
      * ANTEIL VON PHASE A AM GEMEINSAMEN MAHLZEITENBUDGET.

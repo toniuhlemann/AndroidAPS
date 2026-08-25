@@ -45,6 +45,7 @@ import app.aaps.fuse.core.controller.DescentRecoveryLatch
 import app.aaps.fuse.core.controller.DescentDeferredCarry
 import app.aaps.fuse.core.controller.MealFoundation
 import app.aaps.fuse.core.controller.LivenessChannel
+import app.aaps.fuse.core.controller.ExpectationLedger
 import app.aaps.fuse.core.controller.OnsetChannel
 import app.aaps.fuse.core.controller.PositiveCorrectionRearm
 import app.aaps.fuse.core.controller.TurnResponseShadow
@@ -419,7 +420,7 @@ class TransportWiringTest : TestBaseWithProfile() {
         whenever(preferences.get(FuseDoubleKey.SmbRatio)).thenReturn(0.15)
         whenever(preferences.get(FuseDoubleKey.SmbRatioRise)).thenReturn(0.35)
         whenever(preferences.get(DoubleKey.ApsSmbMaxIob)).thenAnswer { maxIobU }
-        whenever(preferences.get(FuseDoubleKey.RiseRampLowR)).thenReturn(0.5)
+        whenever(preferences.get(FuseDoubleKey.RiseRampLowR)).thenAnswer { riseRampLowRWert }
         whenever(preferences.get(FuseDoubleKey.RiseRampHighR)).thenReturn(2.0)
         whenever(preferences.get(FuseDoubleKey.MaxSmbU)).thenAnswer { maxSmbU }
         whenever(preferences.get(FuseDoubleKey.GuardFloorMgdl)).thenAnswer { guardBodenMgdl }
@@ -481,11 +482,11 @@ class TransportWiringTest : TestBaseWithProfile() {
         whenever(preferences.get(FuseDoubleKey.ReversalFallUkf)).thenReturn(2.0)
         whenever(preferences.get(FuseIntKey.ReversalLookbackMin)).thenReturn(20)
         whenever(preferences.get(FuseDoubleKey.ReversalReboundUkf)).thenReturn(1.0)
-        whenever(preferences.get(FuseIntKey.ReversalConfirmCycles)).thenReturn(2)
+        whenever(preferences.get(FuseIntKey.ReversalConfirmCycles)).thenAnswer { reversalConfirmWert }
         whenever(preferences.get(FuseBooleanKey.PositiveCorrectionRearmEnabled)).thenAnswer { rearmAn }
         whenever(preferences.get(FuseIntKey.RearmHoldMin)).thenReturn(5)
         whenever(preferences.get(FuseIntKey.RearmConfirmCycles)).thenReturn(2)
-        whenever(preferences.get(FuseDoubleKey.RearmUpUkf)).thenReturn(0.3)
+        whenever(preferences.get(FuseDoubleKey.RearmUpUkf)).thenAnswer { rearmUpUkfWert }
         whenever(preferences.get(FuseIntKey.MealFoundationEndMin)).thenAnswer { fundamentEndeMin }
         whenever(preferences.get(LongKey.FslCalibrationStart)).thenReturn(-1L)
         whenever(preferences.get(FuseLongKey.MealMarkerStamp)).thenReturn(0L)
@@ -516,6 +517,26 @@ class TransportWiringTest : TestBaseWithProfile() {
     /** Korrekturpfad-Riegel (v30). Default AUS wie am Geraet. */
     private var reversalAn = false
     private var rearmAn = false
+
+    /** Die RAMPEN-UNTERKANTE. Sie ist zugleich die Schwelle des
+     *  Onset-Kanals und der Mahlzeitenfenster-Kinematik und entscheidet
+     *  damit, wann der autoritative Kontext von Korrektur auf Mahlzeit
+     *  kippt. Das Rig fuhr bisher 0,5; Toni faehrt am Geraet 1,5 - die
+     *  Pflichtfall-Tests brauchen den Geraetewert, sonst liegt die
+     *  Kontextgrenze eine Kurvenphase zu frueh. */
+    private var riseRampLowRWert = 0.5
+
+    /** Aufwaerts-Schwelle des Freigabe-Nachlaufs. Als Hebel, weil eine
+     *  Erholung, die die Rampen-Unterkante erreicht, das
+     *  Mahlzeitenfenster kinematisch oeffnet und dem Riegel den
+     *  autoritativen Korrekturkontext nimmt - ein Nachlauf-Test braucht
+     *  deshalb eine Bestaetigungsschwelle UNTER dieser Kante. */
+    private var rearmUpUkfWert = 0.3
+
+    /** Bestaetigungszyklen des V-Riegels. Als Hebel, damit ein Test den
+     *  Riegel absichtlich LANG scharf halten kann - nur dann laesst sich
+     *  pruefen, was ihn ausser der r-Bestaetigung noch beendet. */
+    private var reversalConfirmWert = 2
 
     private fun testPumpe() = FuseActivePump(
         "GENERIC_AAPS", virtualPump = true, bolusStepU = 0.05, basalStepUPerH = 0.05,
@@ -7113,7 +7134,7 @@ class TransportWiringTest : TestBaseWithProfile() {
             neuerRunner(adapter, fensterMs = fensterMs, trendRegel = trendRegel)
             val outFile = File(outDir, "replay_$name.csv")
             outFile.printWriter().use { w ->
-                w.println("ts;smbU;block;binding;insulinReq;liftU;needU;abort;phase;fastD;slowD;trend;raw;recSmbU;recBlock;profil;restMin;tbr;latch;lvDenial;lvExit;lvStreak;lvHead;transC;revGrund;rearmGrund")
+                w.println("ts;smbU;block;binding;insulinReq;liftU;needU;abort;phase;fastD;slowD;trend;raw;recSmbU;recBlock;profil;restMin;tbr;latch;lvDenial;lvExit;lvStreak;lvHead;transC;revGrund;rearmGrund;ctxGrund")
                 var prevMarker = 0L
                 var polText = pol?.toString()
                 var zyklusNr = 0
@@ -7161,6 +7182,10 @@ class TransportWiringTest : TestBaseWithProfile() {
                         // das die Doppelverteidigung mit dem Nachtband).
                         o.correctionReversal?.reason ?: "",
                         o.correctionRearm?.reason ?: "",
+                        // Der AUTORITATIVE Kontextgrund (Review-P0.2) -
+                        // damit im Replay pruefbar ist, dass in
+                        // EVIDENCE_ACTIVE-Zyklen kein Riegel steht.
+                        o.correctionContextReason ?: "",
                     ).joinToString(";"))
                 }
             }
@@ -7178,11 +7203,21 @@ class TransportWiringTest : TestBaseWithProfile() {
             zeroLatchAn = false
             return
         }
-        System.getenv("FUSE_REPLAY_GUARDS")?.let {
+        System.getenv("FUSE_REPLAY_GUARDS")?.let { modus ->
             // Korrekturpfad-Riegel-Gegenrechnung (v30): derselbe Tag einmal
             // ohne und einmal mit beiden Schutzlinien. Rueckkopplungsblind -
             // belastbar sind die Block-Zyklen (binding traegt REVERSAL_/
             // REARM_) und der Zeitpunkt der ersten Abweichung.
+            //
+            // FUSE_REPLAY_GUARDS=blind faehrt stattdessen ZWEIMAL DENSELBEN
+            // Lauf. Jede Differenz daraus ist ein Rig-Artefakt der
+            // Lauf-Reihenfolge und KEINE Schalterwirkung - die Probe
+            // gehoert vor jede Aussage ueber gemessene Unterschiede.
+            if (modus == "blind") {
+                lauf("blindA", null, fenster = 10)
+                lauf("blindB", null, fenster = 10)
+                return
+            }
             lauf("guardsAus", null, fenster = 10)
             lauf("guardsAn", null, fenster = 10, guardsStart = true)
             return
@@ -7518,10 +7553,26 @@ class TransportWiringTest : TestBaseWithProfile() {
     }
 
     /**
-     * V-REVERSAL-LAGE (Bauauftrag Toni 25.08.): flach, steiler Fall unter
-     * die -2,0er-Schwelle, dann steile Gegenbewegung - der 06:27-Kern
-     * verkleinert. Ohne Marker, ohne Fundament, IOB 0 (die Ueberdeckung
-     * soll NICHT der Grund fuers Nichtdosieren sein).
+     * DIE GEMESSENE V-KURVE DES PFLICHTFALLS (25.08., 06:05-06:40), roh
+     * aus dem Geraete-Trail uebernommen: flach 137-139, Sturz auf 101
+     * (UKF-Minimum -2,81 um 06:16), steile Erholung auf 149, danach
+     * FLACH. Synthetische Formen taugen hier nicht: ein DAUER-Anstieg
+     * erfuellt die Kinematik-Bedingung des Mahlzeitenfensters (r und
+     * UKF beide ueber der Rampen-Unterkante) und nimmt dem Riegel den
+     * autoritativen Kontext - die echte Kurve traegt genau die Lage,
+     * um die es geht: UKF +4,0 bei robustem r noch -0,82.
+     */
+    private val vKurveRoh = listOf(
+        137.0, 139.0, 139.0, 136.0, 132.0, 126.0, 120.0, 114.0, 111.0, 109.0,
+        108.0, 105.0, 103.0, 101.0, 105.0, 113.0, 125.0, 136.0, 142.0, 146.0,
+        149.0, 149.0, 149.0, 148.0, 147.0, 147.0, 147.0, 147.0, 147.0, 147.0,
+        147.0, 146.0, 144.0, 144.0, 143.0, 142.0,
+    )
+
+    /**
+     * V-REVERSAL-LAGE: die gemessene Kurve, ohne Marker, ohne Fundament,
+     * IOB 0 (die Ueberdeckung soll NICHT der Grund fuers Nichtdosieren
+     * sein). Der Vorlauf haelt den Rohpuffer gefuellt.
      */
     private fun reversalLage(dir: File) {
         zeroLatchAn = false
@@ -7530,15 +7581,23 @@ class TransportWiringTest : TestBaseWithProfile() {
         markerAt = 0L
         fundamentAn = false
         tailGuard = true
-        flach = 170.0
-        steigungProMin = 0.0
-        knickAbMin = 10
-        // Der kausale UKF daempft die Kurvensteigung auf ~55% - fuer ein
-        // Fall-Minimum unter der -2,0er-Schwelle braucht die Bahn -4,5/min
-        // (gemessen: -2,5-Bahn -> UKF-Minimum nur -1,40).
-        steigungNachKnick = -4.5
-        knick2AbMin = 18
-        steigungNachKnick2 = 3.5
+        // GERAETEPOLITIK des Pflichtfalls (aus dem Trail der Vorfallszeit):
+        // die Rampen-Unterkante setzt die Kontextgrenze, das W10-Fenster
+        // die Geschwindigkeit, mit der das robuste r der Wende folgt. Mit
+        // dem Rig-Default W18 traegt der Sturz so lange nach, dass
+        // Prognose-Boden und Kontextwechsel zusammenfallen und die zu
+        // pruefende Lage gar nicht entsteht.
+        riseRampLowRWert = 1.5
+        theilSenFensterMin = 10
+        // Den Guard-Boden ausdruecklich OEFFNEN: er ist eine ANDERE
+        // Verteidigung und wuerde in den Riegel-Zyklen mitbinden - dann
+        // waere die verhinderte Dosis nicht dem Riegel zuzuordnen. Am
+        // Geraet lag an derselben Stelle das Nachtband davor; die erste
+        // reale Dosis fiel 06:27 mit dessen Ende.
+        guardBodenMgdl = 40.0
+        // 20 min flacher Vorlauf auf dem Startwert, dann die Messkurve.
+        rohSerie = (0 until 20).map { min -> (start + min * 60_000L) to 137.0 } +
+            vKurveRoh.mapIndexed { i, v -> (start + (20 + i) * 60_000L) to v }
         bolusIobU = 0.0
         clock = start
         transportReset()
@@ -7557,13 +7616,13 @@ class TransportWiringTest : TestBaseWithProfile() {
     fun `correction-reversal-guard blockt die v-erholung bis r bestaetigt`(@TempDir dir: File) {
         reversalLage(File(dir, "aus"))
         reversalAn = false
-        val ohne = (0 until 40).map { cycle() }
+        val ohne = (0 until 56).map { cycle() }
         reversalLage(File(dir, "an"))
         reversalAn = true
-        val mit = (0 until 40).map { cycle() }
+        val mit = (0 until 56).map { cycle() }
 
         // Vorbedingung: die Lage dosiert ueberhaupt (sonst ist der Test leer).
-        val dosierwunsch = ohne.indices.filter { it > 18 && ohne[it].decision.smbU > 0.0 }
+        val dosierwunsch = ohne.indices.filter { ohne[it].decision.smbU > 0.0 }
         assertTrue(dosierwunsch.isNotEmpty(), "die Gegenbewegung muss ohne Guard SMBs ausloesen - " +
             ohne.mapIndexed { i, o -> "$i:${"%.2f".format(o.decision.smbU)}" }.joinToString(" "))
 
@@ -7571,8 +7630,9 @@ class TransportWiringTest : TestBaseWithProfile() {
         // Gegenzug bei negativem/unbestaetigtem r - der 06:27-Kern.
         val blockZyklen = mit.indices.filter { mit[it].correctionReversal?.blocks == true }
         assertTrue(blockZyklen.isNotEmpty()) {
-            "die V-Erholung muss den Riegel tragen - " + mit.drop(19).take(15)
-                .joinToString(" ") { "${it.correctionReversal?.reason}/min=${it.correctionReversal?.fallMinUkf}" }
+            "die V-Erholung muss den Riegel tragen - " + mit.indices.joinToString(" ") {
+                "$it:${mit[it].correctionReversal?.reason}/${mit[it].correctionContextReason}"
+            }
         }
         assertTrue(blockZyklen.any { mit[it].correctionReversal?.reason == "REVERSAL_R_NEGATIVE" },
             "mindestens ein Block bei noch NEGATIVEM r (der Vorfallskern)")
@@ -7580,6 +7640,8 @@ class TransportWiringTest : TestBaseWithProfile() {
             assertEquals(0.0, mit[i].decision.smbU, 1e-9,
                 "Block-Zyklus $i traegt keinen SMB (binding=${mit[i].decision.bindingLimit})")
             assertTrue(mit[i].correctionContext, "reiner Korrekturkontext (Zyklus $i)")
+            assertEquals("PURE_CORRECTION", mit[i].correctionContextReason,
+                "der Riegel greift nur im autoritativ reinen Korrekturkontext (Zyklus $i)")
         }
         // Die Wirkung ist real: mindestens ein Block-Zyklus, in dem der
         // ungeschuetzte Lauf dosiert haette - typisiert im Limit.
@@ -7596,16 +7658,171 @@ class TransportWiringTest : TestBaseWithProfile() {
             assertEquals(ohne[i].decision.tbr, mit[i].decision.tbr, "die TBR-Achse bleibt unberuehrt (Zyklus $i)")
         }
 
-        // FREIGABE: nach der r-Bestaetigung fliesst es auch im Guard-Lauf -
-        // erst Block, dann Dosen, kein Carry.
-        val frei = mit.indices.filter { it > blockZyklen.first() && mit[it].decision.smbU > 0.0 }
+        // FREIGABE: danach fliesst es auch im Guard-Lauf - kein Carry.
+        // Der Ausgang ist entweder die r-Bestaetigung oder der
+        // Kontextwechsel (die gemessene Kurve nimmt den zweiten Weg:
+        // r 1,11 bei UKF 3,52 erfuellt die Kinematik des
+        // Mahlzeitenfensters, s. Replay-Bericht).
+        val frei = mit.indices.filter { it > blockZyklen.last() && mit[it].decision.smbU > 0.0 }
         assertTrue(frei.isNotEmpty()) {
-            "bestaetigtes r muss die Korrektur wieder freigeben - " +
-                mit.drop(19).joinToString(" ") { "${it.correctionReversal?.reason}/${"%.2f".format(it.decision.smbU)}" }
+            "nach dem Riegel muss die Korrektur wieder fliessen - " +
+                mit.indices.joinToString(" ") { "$it:${mit[it].correctionReversal?.reason}/${"%.2f".format(mit[it].decision.smbU)}" }
         }
-        assertTrue(frei.first() > blockZyklen.last(), "erst Block, dann Freigabe")
-        assertTrue((mit[frei.first()].correctionReversal?.rConfirmStreak ?: 0) >= 2,
-            "die Freigabe kommt aus der r-Bestaetigung")
+    }
+
+    /**
+     * v30-PFLICHTFALL P0.2 im vollen Pfad: der Riegel gibt ab, sobald die
+     * AUTORITATIVE Klassifikation die Lage als Mahlzeit fuehrt - auch
+     * wenn seine eigene r-Bestaetigung noch laeuft. Der Riegel wird dafuer
+     * absichtlich lang scharf gestellt (sechs Bestaetigungszyklen); ohne
+     * die autoritative Ableitung wuerde er in die Mahlzeitenphase
+     * hineinriegeln. Genau das trennt die neue Ableitung von der alten
+     * Rekonstruktion (die nur Marker/Frist/Fundament kannte und ein
+     * kinematisch offenes Fenster nicht sah).
+     */
+    @Test
+    fun `der v-riegel gibt im mahlzeitenfenster ab`(@TempDir dir: File) {
+        reversalLage(dir)
+        reversalAn = true
+        reversalConfirmWert = 6 // laenger scharf als die Kurve braucht
+        val outs = (0 until 56).map { cycle() }
+
+        val mahlzeitZyklen = outs.filter {
+            it.correctionContextReason == "MEAL_WINDOW_OPEN" || it.correctionContextReason == "ONSET_ACTIVE"
+        }
+        assertTrue(mahlzeitZyklen.isNotEmpty()) {
+            "die Lage muss in ein Mahlzeitenfenster laufen - " +
+                outs.mapNotNull { it.correctionContextReason }.distinct().joinToString(" ")
+        }
+        // In diesen Zyklen ist die r-Bestaetigung noch NICHT erfuellt -
+        // nur der Kontext nimmt den Riegel heraus.
+        val unbestaetigt = mahlzeitZyklen.filter { (it.correctionReversal?.rConfirmStreak ?: 0) < 6 }
+        assertTrue(unbestaetigt.isNotEmpty(), "sonst pruefte der Test nur die r-Bestaetigung")
+        unbestaetigt.forEach { o ->
+            assertFalse(o.correctionContext, "Mahlzeitenfenster ist kein Korrekturkontext")
+            assertTrue(o.correctionReversal?.blocks != true,
+                "der Riegel darf im Mahlzeitenfenster nicht tragen (Grund=${o.correctionReversal?.reason})")
+            assertFalse(o.decision.bindingLimit.contains("REVERSAL_"))
+        }
+        assertTrue(unbestaetigt.any { it.decision.smbU > 0.0 },
+            "und die Mahlzeitendosen fliessen")
+    }
+
+    /**
+     * v30-PFLICHTFALL P0.1 (Review 25.08. abends): der Riegel ist
+     * RESTARTFEST. Ein Neustart mitten in der V-Episode darf nicht mehr
+     * Insulin erlauben - die Identitaet (Fall-Minimum, Zuendung) kommt
+     * aus dem Ledger zurueck, nur die r-Bestaetigung beginnt neu
+     * (konservative Richtung, wie beim Zero-Latch).
+     */
+    @Test
+    fun `der reversal-riegel ueberlebt den neustart`(@TempDir dir: File) {
+        val lage = File(dir, "restart")
+        reversalLage(lage)
+        reversalAn = true
+        // Bis in die gezuendete Episode fahren.
+        val vorher = (0 until 41).map { cycle() }
+        val geblockt = vorher.indexOfLast { it.correctionReversal?.blocks == true }
+        assertTrue(geblockt > 0, "die Episode muss stehen")
+        assertTrue(ledger.episodes.correctionReversal.reboundSeenTs > 0L, "die Zuendung ist im Ledger")
+        assertTrue(ledger.persistVerified(lage), "versiegeln")
+
+        // Neustart: aus der Datei, nicht aus dem Speicher.
+        val wieder = nachNeustart(lage)
+        assertEquals(ledger.episodes.correctionReversal.minUkf, wieder.correctionReversal.minUkf, 1e-9,
+            "das Fall-Minimum ueberlebt")
+        assertEquals(ledger.episodes.correctionReversal.reboundSeenTs, wieder.correctionReversal.reboundSeenTs,
+            "die Zuendung ueberlebt")
+        assertEquals(0, wieder.correctionReversal.rPosStreak, "die r-Bestaetigung beginnt neu")
+
+        neuerRunner(FuseLedgerAdapter().also { it.loadOnce(lage, "test-epoch", clock) })
+        val o = cycle()
+        assertTrue(o.correctionReversal?.blocks == true,
+            "nach dem Neustart traegt der Riegel weiter (Grund=${o.correctionReversal?.reason})")
+        assertEquals(0.0, o.decision.smbU, 1e-9, "und laesst keine Dosis durch")
+    }
+
+    /**
+     * v30-PFLICHTFALL P0.1 fuer den Nachlauf: auch der Freigabe-Anker
+     * ueberlebt den Neustart - sonst oeffnete ein Neustart in den ersten
+     * Minuten nach der Kante genau das, was der Nachlauf zuhaelt.
+     */
+    @Test
+    fun `der freigabe-nachlauf ueberlebt den neustart`(@TempDir dir: File) {
+        val lage = File(dir, "restartRearm")
+        latchLage(lage, an = true, knick2 = 0.45, knick2Ab = 26)
+        rearmUpUkfWert = 0.15
+        rearmAn = true
+        var geloest = -1
+        (0 until 60).forEachIndexed { i, _ ->
+            val o = cycle()
+            if (geloest < 0 && o.zeroLatchReason == "RECOVERED") {
+                geloest = i
+                bolusIobU = 0.0
+            }
+            // Direkt nach der Loesung, IM Nachlauf, versiegeln.
+            if (geloest > 0 && i == geloest + 1) {
+                assertTrue(ledger.episodes.correctionRearm.ankerTs > 0L, "der Anker steht im Ledger")
+                assertTrue(ledger.persistVerified(lage), "versiegeln")
+                val wieder = nachNeustart(lage)
+                assertEquals(ledger.episodes.correctionRearm.ankerTs, wieder.correctionRearm.ankerTs,
+                    "der Anker ueberlebt")
+                assertEquals(
+                    PositiveCorrectionRearm.Source.ZERO_LATCH_RELEASED, wieder.correctionRearm.quelle,
+                    "die Quelle ueberlebt",
+                )
+                assertEquals(0, wieder.correctionRearm.upStreak, "der Aufwaerts-Zaehler beginnt neu")
+                neuerRunner(FuseLedgerAdapter().also { a -> a.loadOnce(lage, "test-epoch", clock) })
+                val nach = cycle()
+                assertTrue(nach.correctionRearm?.blocks == true,
+                    "nach dem Neustart haelt der Nachlauf (Grund=${nach.correctionRearm?.reason})")
+                assertEquals(0.0, nach.decision.smbU, 1e-9)
+                return
+            }
+        }
+        throw AssertionError("die Erholung muss den Latch loesen")
+    }
+
+    /**
+     * v30-PFLICHTFALL P0.2 (Review 25.08. abends): der Riegel liest den
+     * Kontext aus der AUTORITATIVEN Klassifikation. Geprueft wird die
+     * Ableitung selbst - dieselbe Funktion, die den exportierten
+     * ExpectationContext bestimmt: eine ACTIVE Evidenzepisode ohne
+     * Marker/Onset/Fenster ist MEAL (EVIDENCE_ACTIVE), nicht Korrektur.
+     * Genau das trennt die neue Ableitung von der alten, zweitgefuehrten
+     * Rekonstruktion (Marker-Fenster + Marker-Frist + Fundament-Phase),
+     * die diese Lage faelschlich als Korrektur gelesen haette.
+     *
+     * Der VOLLE Pfad ueber echte Zyklen liegt im Replay: der
+     * Mahlzeitentag 22.08. traegt 10:50-11:45 EVIDENCE_ACTIVE nach
+     * abgelaufener Markerfrist, und der Guards-Lauf setzt dort keinen
+     * einzigen Riegel-Tag (s. guards_analyse).
+     */
+    @Test
+    fun `aktive evidenz-mahlzeit ist kein korrekturkontext`() {
+        fun lage(phase: EvidenceStock.Phase) = ExpectationLedger.situationOf(
+            mealMarkerActive = false,
+            evidenceEpisodeId = 42L,
+            evidencePhase = phase,
+            onsetActive = false,
+            mealWindow = false,
+            reboundWindow = false,
+            signalHealthy = true,
+            ledgerSealed = true,
+        )
+        // Die Markerfrist ist abgelaufen (kein Marker, kein Onset, kein
+        // Fenster) - allein die lebende Evidenz traegt die Lage.
+        val aktiv = ExpectationLedger.classify(lage(EvidenceStock.Phase.ACTIVE))
+        assertEquals(ExpectationLedger.ExpectationContext.MEAL, aktiv.context,
+            "eine aktive Evidenz-Mahlzeit ist KEIN Korrekturkontext")
+        assertEquals(ExpectationLedger.ContextReason.EVIDENCE_ACTIVE, aktiv.reason)
+        val versiegelnd = ExpectationLedger.classify(lage(EvidenceStock.Phase.PENDING_SEAL))
+        assertEquals(ExpectationLedger.ExpectationContext.MEAL, versiegelnd.context)
+        // Gegenprobe: ruht die Episode, ist es wieder reine Korrektur -
+        // der Riegel darf dort arbeiten.
+        val ruhend = ExpectationLedger.classify(lage(EvidenceStock.Phase.DORMANT))
+        assertEquals(ExpectationLedger.ExpectationContext.CORRECTION, ruhend.context)
+        assertEquals(ExpectationLedger.ContextReason.PURE_CORRECTION, ruhend.reason)
     }
 
     /**
@@ -7618,17 +7835,75 @@ class TransportWiringTest : TestBaseWithProfile() {
     fun `der marker nimmt der v-erholung den korrekturkontext`(@TempDir dir: File) {
         reversalLage(dir)
         reversalAn = true
-        val outs = (0 until 40).map { i ->
-            if (i == 18) markerAt = clock + 60_000L // Druck an der Wende
+        val outs = (0 until 56).map { i ->
+            // Druck an der Wende (Kurvenminimum 101 liegt auf Zyklus 33).
+            if (i == 32) markerAt = clock + 60_000L
             cycle()
         }
         assertTrue(outs.none { it.decision.bindingLimit.contains("REVERSAL_") }) {
             "Mahlzeitenpfade bleiben ausdruecklich unberuehrt: " +
                 outs.first { it.decision.bindingLimit.contains("REVERSAL_") }.decision.bindingLimit
         }
-        assertTrue(outs.drop(19).none { it.correctionContext }, "der Marker beendet den Korrekturkontext")
-        assertTrue(outs.drop(19).any { it.decision.smbU > 0.0 },
+        assertTrue(outs.drop(34).none { it.correctionContext }, "der Marker beendet den Korrekturkontext")
+        assertEquals("MARKER_ACTIVE", outs[34].correctionContextReason,
+            "die autoritative Klassifikation benennt den Marker")
+        assertTrue(outs.drop(34).any { it.decision.smbU > 0.0 },
             "der Schutz darf das FCL nicht bremsen - nach dem Marker muessen Dosen fliessen")
+    }
+
+    /**
+     * v30-PFLICHTFALL P1.4 (Review 25.08. abends): die Nachtband-Kante
+     * ankert den Nachlauf NUR, wenn der letzte Nachtzyklus bezifferten
+     * positiven Bedarf AUSSCHLIESSLICH ueber das Nachtband unterdrueckt
+     * hat. Ein ruhiger Morgen (kein Bedarf im Nachtband) darf nicht
+     * jeden Tag pauschal fuenf Minuten blockieren.
+     */
+    @Test
+    fun `die nachtkante ankert nur nach unterdruecktem bedarf`(@TempDir dir: File) {
+        /** Faehrt ueber die Nachtband-Kante; liefert die Zyklen danach. */
+        fun ueberDieKante(unterDir: String, hoch: Boolean): List<FuseCycleRunner.Outcome> {
+            zeroLatchAn = false
+            livenessAn = false
+            markerAuthorized = false
+            markerAt = 0L
+            fundamentAn = false
+            tailGuard = true
+            nightDeadband = true
+            rearmAn = true
+            reversalAn = false
+            rearmUpUkfWert = 0.15
+            // Der Kantenzeitpunkt: NightEndMin liegt bei 480 (08:00). Der
+            // Lauf startet 10 min davor, in der Nacht.
+            val mitternacht = start - (app.aaps.core.utils.MidnightUtils.secondsFromMidnight(start) * 1000L)
+            clock = mitternacht + (470L * 60_000L) - 60_000L
+            val laufStart = clock + 60_000L
+            // HOCH: BG ueber Ziel, aber INNERHALB des Totbands
+            // (Ziel 98 + 45 = 143) - genau die Lage, in der das Nachtband
+            // bezifferten Bedarf unterdrueckt. Darueber greift es gar
+            // nicht. RUHIG: BG unter Ziel - gar kein Bedarf.
+            val basis = if (hoch) 120.0 else 88.0
+            rohSerie = (0 until 60).map { min -> (laufStart - 20 * 60_000L + min * 60_000L) to (basis + 0.25 * min) }
+            bolusIobU = 0.0
+            transportReset()
+            neuerRunner(FuseLedgerAdapter().also { it.loadOnce(File(dir, unterDir).also(File::mkdirs), "test-epoch", clock) })
+            return (0 until 25).map { cycle() }
+        }
+
+        val mitBedarf = ueberDieKante("hoch", hoch = true)
+        assertTrue(mitBedarf.any { it.correctionRearm?.blocks == true }) {
+            "nach unterdruecktem Nachtbedarf muss die Kante ankern - " +
+                mitBedarf.joinToString(" ") { "${it.decision.bindingLimit}/${it.correctionRearm?.reason}" }
+        }
+        assertEquals(
+            PositiveCorrectionRearm.Source.NIGHT_END,
+            mitBedarf.first { it.correctionRearm?.blocks == true }.correctionRearm?.source,
+        )
+
+        val ruhig = ueberDieKante("ruhig", hoch = false)
+        assertTrue(ruhig.none { it.correctionRearm?.blocks == true }) {
+            "ein ruhiger Morgen darf NICHT pauschal blockieren - " +
+                ruhig.joinToString(" ") { "${it.decision.bindingLimit}/${it.correctionRearm?.reason}" }
+        }
     }
 
     /**
@@ -7640,11 +7915,18 @@ class TransportWiringTest : TestBaseWithProfile() {
     @Test
     fun `positive-correction-rearm haelt die latch-loesung zurueck`(@TempDir dir: File) {
         fun lauf(an: Boolean, unterDir: String): Pair<List<FuseCycleRunner.Outcome>, Int> {
-            latchLage(File(dir, unterDir), an = true, knick2 = 2.5, knick2Ab = 26)
+            // +0,45/min ist die 08:00-Form: genug fuer die Latch-Loesung,
+            // aber UNTER der Rampen-Unterkante - der autoritative Kontext
+            // bleibt Korrektur (eine steilere Erholung oeffnet das
+            // Mahlzeitenfenster kinematisch und nimmt dem Riegel den
+            // Kontext). Die Bestaetigungsschwelle liegt entsprechend
+            // darunter; am Geraet trug 08:00 UKF 0,84 bei r < 0,5.
+            latchLage(File(dir, unterDir), an = true, knick2 = 0.45, knick2Ab = 26)
+            rearmUpUkfWert = 0.15
             rearmAn = an
             reversalAn = false
             var geloestBei = -1
-            val outs = (0 until 55).map { i ->
+            val outs = (0 until 60).map { i ->
                 val o = cycle()
                 if (geloestBei < 0 && o.zeroLatchReason == "RECOVERED") {
                     geloestBei = i

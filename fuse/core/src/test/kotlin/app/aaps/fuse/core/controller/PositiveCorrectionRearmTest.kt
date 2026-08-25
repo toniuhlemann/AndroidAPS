@@ -22,10 +22,12 @@ class PositiveCorrectionRearmTest {
         enabled: Boolean = true,
         holdMin: Int = 5,
         confirm: Int = 2,
+        gesund: Boolean = true,
     ) = PositiveCorrectionRearm.advance(
         track = track, enabled = enabled, nowTs = t0 + minute * 60_000L,
         ukfNow = ukf, korrekturKontext = kontext,
         holdMin = holdMin, confirmCycles = confirm, upThresholdUkf = 0.3,
+        lageGesund = gesund,
     )
 
     @Test
@@ -74,6 +76,75 @@ class PositiveCorrectionRearmTest {
         val (_, res) = schritt(track, 9, 0.5) // Luecke > 90 s
         assertTrue(res.blocks, "nach der Luecke beginnt die Bestaetigung neu")
         assertEquals(1, res.upConfirmStreak)
+    }
+
+    @Test
+    fun `eine ungesunde lage zaehlt keine aufwaertszyklen`() {
+        // Tonis Review-P0.3: Signalstoerung, fallendes q1, Low, Descent,
+        // Rebound oder Hold duerfen kein fruehes Oeffnen vorbereiten -
+        // der Aufrufer meldet die Lage, der Zaehler nullt.
+        var track = PositiveCorrectionRearm.anker(
+            PositiveCorrectionRearm.Track(), t0, PositiveCorrectionRearm.Source.ZERO_LATCH_RELEASED,
+        )
+        for (min in 0..5) track = schritt(track, min, -0.2).first
+        // Aufwaerts-UKF, aber die Lage ist ungesund: es zaehlt NICHT.
+        val (t1, r1) = schritt(track, 6, 0.8, gesund = false)
+        track = t1
+        assertTrue(r1.blocks)
+        assertEquals(0, r1.upConfirmStreak, "ungesund zaehlt nicht")
+        val (t2, r2) = schritt(track, 7, 0.8)
+        track = t2
+        assertTrue(r2.blocks, "ein gesunder Zyklus allein reicht nicht")
+        assertEquals(1, r2.upConfirmStreak)
+        // Ein ungesunder Zyklus MITTEN in der Bestaetigung nullt.
+        track = schritt(track, 8, 0.8, gesund = false).first
+        val (t4, r4) = schritt(track, 9, 0.8)
+        track = t4
+        assertTrue(r4.blocks, "nach der Stoerung beginnt die Bestaetigung neu")
+        assertEquals(1, r4.upConfirmStreak)
+        val (_, frei) = schritt(track, 10, 0.8)
+        assertFalse(frei.blocks, "zwei gesunde Aufwaertszyklen geben frei")
+    }
+
+    @Test
+    fun `ein nie bestaetigter anker haengt nicht unbegrenzt nach`() {
+        // Gemessen am 25.08.: die Kante lag 08:00, die Lage war danach
+        // sechs Minuten lang Mahlzeit (kinematisches Fenster), und der
+        // nie freigegebene Anker riegelte erst 08:23-08:26 - in einer
+        // voellig anderen Lage. Nach Ablauf der Frist beendet ein
+        // Nicht-Korrektur-Zyklus den Anker.
+        var track = PositiveCorrectionRearm.anker(
+            PositiveCorrectionRearm.Track(), t0, PositiveCorrectionRearm.Source.NIGHT_END,
+        )
+        // Waehrend der Frist aendert ein Mahlzeitenzyklus nichts.
+        val (t1, inFrist) = schritt(track, 2, 0.8, kontext = false)
+        track = t1
+        assertFalse(inFrist.blocks, "ausserhalb des Korrekturkontexts blockt nie")
+        assertTrue(track.ankerTs > 0L, "waehrend der Frist bleibt der Anker stehen")
+        // Zurueck im Korrekturkontext INNERHALB der Frist: er traegt.
+        val (_, wiederKorrektur) = schritt(track, 3, -0.2)
+        assertTrue(wiederKorrektur.blocks)
+        // NACH der Frist beendet ein Mahlzeitenzyklus den Anker.
+        val (leer, nachFrist) = schritt(track, 6, 0.8, kontext = false)
+        assertFalse(nachFrist.blocks)
+        assertEquals(PositiveCorrectionRearm.Track(), leer, "der Anker verfaellt")
+        val (_, danach) = schritt(leer, 7, -0.2)
+        assertFalse(danach.blocks, "spaetere Korrekturzyklen sind frei")
+    }
+
+    @Test
+    fun `restored erhaelt den anker und nullt den zaehler`() {
+        // Tonis Review-P0.1: der Nachlauf ueberlebt den Neustart.
+        val wieder = PositiveCorrectionRearm.restored(
+            t0, PositiveCorrectionRearm.Source.NIGHT_END,
+        )
+        assertEquals(t0, wieder.ankerTs)
+        assertEquals(PositiveCorrectionRearm.Source.NIGHT_END, wieder.quelle)
+        assertEquals(0, wieder.upStreak)
+        val (_, res) = schritt(wieder, 1, 0.8)
+        assertTrue(res.blocks, "der restaurierte Anker traegt")
+        assertEquals(PositiveCorrectionRearm.REASON_HOLD, res.reason)
+        assertEquals(PositiveCorrectionRearm.Track(), PositiveCorrectionRearm.restored(0L, PositiveCorrectionRearm.Source.NIGHT_END))
     }
 
     @Test

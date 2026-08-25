@@ -51,6 +51,12 @@ object PositiveCorrectionRearm {
     fun anker(track: Track, nowTs: Long, quelle: Source): Track =
         Track(ankerTs = nowTs, quelle = quelle, upStreak = 0, upLastTs = 0L)
 
+    /** RESTAURIERTE Identitaet nach Neustart (Tonis Review 25.08., P0.1):
+     *  der Anker bleibt AKTIV, nur der Bestaetigungszaehler beginnt neu -
+     *  die konservative Richtung, wie beim Zero-Latch. */
+    fun restored(ankerTs: Long, quelle: Source): Track =
+        if (ankerTs <= 0L) Track() else Track(ankerTs = ankerTs, quelle = quelle)
+
     @Suppress("LongParameterList")
     fun advance(
         track: Track,
@@ -61,13 +67,20 @@ object PositiveCorrectionRearm {
         holdMin: Int,
         confirmCycles: Int,
         upThresholdUkf: Double,
+        /** Lage-Gesundheit (Tonis Review 25.08., P0.3): der Aufwaerts-
+         *  Zaehler zaehlt NUR, wenn der Aufrufer die Lage als gesund und
+         *  widerspruchsfrei meldet (Signal READY, q1 nicht fallend, kein
+         *  Low/Descent/Rebound/Hold). Andernfalls nullt der Zyklus den
+         *  Zaehler - eine ungesunde Lage darf kein fruehes Oeffnen
+         *  vorbereiten. Der Nachlauf selbst blockt unveraendert. */
+        lageGesund: Boolean = true,
     ): Pair<Track, Result> {
         if (!enabled) return Track() to Result(false)
         if (track.ankerTs <= 0L) return track to Result(false)
 
         val anschluss = track.upLastTs > 0L && nowTs > track.upLastTs &&
             nowTs - track.upLastTs <= 90_000L
-        val aufwaerts = ukfNow.isFinite() && ukfNow >= upThresholdUkf
+        val aufwaerts = lageGesund && ukfNow.isFinite() && ukfNow >= upThresholdUkf
         val streak = if (aufwaerts) (if (anschluss) track.upStreak + 1 else 1) else 0
         val fortgeschrieben = track.copy(upStreak = streak, upLastTs = nowTs)
 
@@ -82,9 +95,21 @@ object PositiveCorrectionRearm {
         if (!imNachlauf && bestaetigt) return Track() to Result(
             false, source = track.quelle, upConfirmStreak = streak,
         )
-        if (!korrekturKontext) return fortgeschrieben to Result(
-            false, source = track.quelle, upConfirmStreak = streak,
-        )
+        if (!korrekturKontext) {
+            // NACH ABLAUF DER FRIST verfaellt der Anker auch ohne
+            // Bestaetigung, sobald die Lage keine reine Korrekturlage mehr
+            // ist. Ohne diese Kante haengt ein nie bestaetigter Anker
+            // unbegrenzt nach und riegelt Minuten spaeter in einer voellig
+            // anderen Lage (gemessen am 25.08.: Kante 08:00, Block erst
+            // 08:23-08:26). WAEHREND der Frist verfaellt nichts - sie ist
+            // der eigentliche Schutz.
+            if (!imNachlauf) return Track() to Result(
+                false, source = track.quelle, upConfirmStreak = streak,
+            )
+            return fortgeschrieben to Result(
+                false, source = track.quelle, upConfirmStreak = streak,
+            )
+        }
         return fortgeschrieben to Result(
             blocks = true,
             reason = if (imNachlauf) REASON_HOLD else REASON_UNCONFIRMED,

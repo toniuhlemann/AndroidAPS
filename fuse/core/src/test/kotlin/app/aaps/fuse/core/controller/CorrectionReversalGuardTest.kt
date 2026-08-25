@@ -108,6 +108,47 @@ class CorrectionReversalGuardTest {
     }
 
     @Test
+    fun `vorbestaetigtes r zaehlt nicht ueber die zuendung`() {
+        // Tonis Review-P1.5: laeuft r schon VOR der V-Zuendung positiv
+        // (langsame Erholung unter der Gegenzug-Schwelle), darf der
+        // Zaehler bei der Zuendung nicht bereits erfuellt sein - sonst
+        // greift der Riegel bei dieser Kurvenform NIE.
+        var track = CorrectionReversalGuard.Track()
+        track = schritt(track, 0, -2.8, -0.9).first
+        track = schritt(track, 1, 0.5, 0.5).first  // r positiv, keine Zuendung
+        track = schritt(track, 2, 0.8, 0.8).first  // alter Code: streak 2
+        val (t3, zuend) = schritt(track, 3, 3.0, 0.6)
+        track = t3
+        assertTrue(zuend.blocks, "die Zuendung beginnt die Bestaetigung NEU")
+        assertEquals(CorrectionReversalGuard.REASON_R_UNCONFIRMED, zuend.reason)
+        assertEquals(1, zuend.rConfirmStreak, "der Zuendungszyklus zaehlt als erster")
+        val (_, frei) = schritt(track, 4, 2.5, 0.9)
+        assertFalse(frei.blocks, "ab der Zuendung gezaehlt: zwei Zyklen geben frei")
+    }
+
+    @Test
+    fun `restored erhaelt die identitaet und nullt die zaehler`() {
+        // Tonis Review-P0.1: der Riegel ueberlebt den Neustart, die
+        // r-Bestaetigung beginnt von vorn (konservative Richtung).
+        var track = CorrectionReversalGuard.Track()
+        track = schritt(track, 0, -2.8, -0.9).first
+        track = schritt(track, 1, 3.0, 0.5).first // Zuendung + streak 1
+        val wieder = CorrectionReversalGuard.restored(
+            track.minUkf, track.minUkfTs, track.reboundSeenTs,
+        )
+        assertEquals(track.minUkf, wieder.minUkf, 1e-12)
+        assertEquals(track.minUkfTs, wieder.minUkfTs)
+        assertEquals(track.reboundSeenTs, wieder.reboundSeenTs, "die Zuendung bleibt")
+        assertEquals(0, wieder.rPosStreak, "der Zaehler beginnt neu")
+        // Direkt nach dem Neustart blockt der Riegel weiter.
+        val (_, res) = schritt(wieder, 2, 0.4, 0.9)
+        assertTrue(res.blocks, "die restaurierte Episode traegt")
+        assertEquals(1, res.rConfirmStreak)
+        // Leere Identitaet restauriert leer.
+        assertEquals(CorrectionReversalGuard.Track(), CorrectionReversalGuard.restored(Double.NaN, 0L, 0L))
+    }
+
+    @Test
     fun `das fall-minimum verfaellt nach dem rueckblick`() {
         var track = CorrectionReversalGuard.Track()
         track = schritt(track, 0, -2.8, -0.9).first

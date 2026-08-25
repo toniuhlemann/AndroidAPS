@@ -55,6 +55,14 @@ object CorrectionReversalGuard {
     const val REASON_R_NEGATIVE = "REVERSAL_R_NEGATIVE"
     const val REASON_R_UNCONFIRMED = "REVERSAL_R_UNCONFIRMED"
 
+    /** RESTAURIERTE Identitaet nach Neustart (Tonis Review 25.08., P0.1):
+     *  Fall-Minimum und Zuendung bleiben erhalten (der Riegel BLEIBT),
+     *  nur der r-Bestaetigungszaehler beginnt neu - die konservative
+     *  Richtung, wie beim Zero-Latch. */
+    fun restored(minUkf: Double, minUkfTs: Long, reboundSeenTs: Long): Track =
+        if (minUkfTs <= 0L || minUkf.isNaN()) Track()
+        else Track(minUkf = minUkf, minUkfTs = minUkfTs, reboundSeenTs = reboundSeenTs)
+
     /**
      * Ein Zyklus. Der Aufrufer reicht [korrekturKontext] - der Riegel
      * selbst entscheidet NIE ueber Mahlzeiten (Tonis Auflage: Mahlzeit-
@@ -90,12 +98,6 @@ object CorrectionReversalGuard {
             ) track.copy(minUkf = ukfNow, minUkfTs = nowTs, reboundSeenTs = 0L)
             else track
 
-        // r-Bestaetigung: zusammenhaengend positive robuste Zyklen.
-        val anschluss = neuesMin.rPosLastTs > 0L && nowTs > neuesMin.rPosLastTs &&
-            nowTs - neuesMin.rPosLastTs <= 90_000L
-        val rPositiv = rNow != null && rNow.isFinite() && rNow > 0.0
-        val streak = if (rPositiv) (if (anschluss) neuesMin.rPosStreak + 1 else 1) else 0
-
         val fallSteht = !neuesMin.minUkf.isNaN() &&
             neuesMin.minUkf <= -fallThresholdUkf &&
             nowTs - neuesMin.minUkfTs <= lookbackMs
@@ -105,9 +107,25 @@ object CorrectionReversalGuard {
         // trug die Erholung noch. Ende NUR durch r-Bestaetigung oder den
         // Verfall des Fall-Minimums (die Ersetzung oben loescht mit).
         val zuendung = fallSteht && ukfNow.isFinite() && ukfNow >= reboundThresholdUkf
+        val frischGezuendet = zuendung && neuesMin.reboundSeenTs == 0L
+
+        // r-Bestaetigung: zusammenhaengend positive robuste Zyklen -
+        // gezaehlt ERST AB DER ZUENDUNG (Tonis Review 25.08., P1.5): ein
+        // vor der Zuendung gelaufener Zaehler wuerde den Riegel bei
+        // passender Kurvenform sofort wieder oeffnen. Der Zuendungszyklus
+        // selbst zaehlt mit, wenn r dort schon positiv ist.
+        val anschluss = neuesMin.rPosLastTs > 0L && nowTs > neuesMin.rPosLastTs &&
+            nowTs - neuesMin.rPosLastTs <= 90_000L
+        val rPositiv = rNow != null && rNow.isFinite() && rNow > 0.0
+        val streak = when {
+            !rPositiv -> 0
+            frischGezuendet -> 1
+            anschluss -> neuesMin.rPosStreak + 1
+            else -> 1
+        }
         val fertig = neuesMin.copy(
             rPosStreak = streak, rPosLastTs = nowTs,
-            reboundSeenTs = if (zuendung && neuesMin.reboundSeenTs == 0L) nowTs else neuesMin.reboundSeenTs,
+            reboundSeenTs = if (frischGezuendet) nowTs else neuesMin.reboundSeenTs,
         )
         val episodeAktiv = fallSteht && fertig.reboundSeenTs > 0L
         val alterMin = if (fertig.minUkfTs > 0L) (nowTs - fertig.minUkfTs) / 60_000.0 else null

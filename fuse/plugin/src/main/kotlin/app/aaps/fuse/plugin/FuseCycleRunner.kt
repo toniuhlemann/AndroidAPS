@@ -751,6 +751,9 @@ class FuseCycleRunner(
          *  (Fallback/Abort). */
         val correctionReversal: CorrectionReversalGuard.Result? = null,
         val correctionRearm: PositiveCorrectionRearm.Result? = null,
+        /** Der ContextReason der autoritativen Klassifikation (Review-
+         *  P0.2) - Diagnose, warum der Kontext (nicht) Korrektur war. */
+        val correctionContextReason: String? = null,
         /** Ob der Zyklus im REINEN Korrekturkontext lief (kein Marker,
          *  keine MEAL-Frist, keine Fundament-Phase). */
         val correctionContext: Boolean = false,
@@ -3113,7 +3116,8 @@ class FuseCycleRunner(
         // verschiedene Aussagen, und ihre Vermischung war der Befund.
         val nachDescent = MeasuredDescentGate.apply(vorRiegel, descentLatch.blocksPositive)
 
-        // ---- KORREKTURPFAD-RIEGEL (Bauauftrag Toni 25.08.) ---------------
+        // ---- KORREKTURPFAD-RIEGEL (Bauauftrag Toni 25.08., nachgebessert
+        //      nach dem Review vom 25.08. abends) -------------------------
         //
         // ZWEI getrennte, Default-AUS-Schutzlinien fuer den REINEN
         // Korrekturkontext - Pflichtfall 25.08. frueh: (1) 1,75 U ab 06:27
@@ -3121,28 +3125,37 @@ class FuseCycleRunner(
         // (2) 0,35 U ab 08:00 in der ersten Minute nach der
         // Nachtband-Kante, direkt nach einer Stunde verriegelter Null.
         //
-        // KONTEXT: nur ohne aktiven Marker, ohne Prime-Fenster, ohne
-        // Fundament-Phase und ohne MEAL-Frist - Mahlzeitenpfade bleiben
-        // ausdruecklich unberuehrt, r/UKF werden NICHT global haerter.
+        // KONTEXT AUS DER AUTORITATIVEN FUNKTION (Review-P0.2): dieselbe
+        // ExpectationLedger.classify, die den exportierten
+        // ExpectationContext bestimmt - keine zweitgefuehrte
+        // Rekonstruktion mehr. Damit haelt eine aktive Evidenz-MEAL den
+        // Kontext auch NACH Ablauf der Markerfrist (EVIDENCE_ACTIVE),
+        // und ein offenes Mahlzeitenfenster (MEAL_WINDOW_OPEN) nimmt den
+        // Riegel heraus. EXCLUDED-Lagen (Rebound, Signal, SUSPENDED,
+        // UNKNOWN) blocken ebenfalls NICHT - genullt wird nur im BEJAHTEN
+        // Korrekturkontext. Das Ledger-Siegel kennt erst das Plugin nach
+        // der Publikation; wie bei der Liveness-Kette deckt der
+        // LEDGER_HOLD-Zustand dessen Ausfall (hold geht unten in die
+        // Lage-Gesundheit ein), deshalb hier ledgerSealed = true.
         // NUR die SMB-Menge OHNE Marker-Grant wird genullt; TBR und alle
         // markerfinanzierten Anteile bleiben. Kein Carry. Der Zero-Latch
         // bleibt als zweite Schutzlinie unveraendert.
-        val foundationPhaseJetzt = MealFoundation.phaseOf(
-            episodes.foundation, computeTs, episodes.primeWindowStartTs,
+        val kontextLage = ExpectationLedger.classify(
+            ExpectationLedger.situationOf(
+                mealMarkerActive = mealMarkerActive,
+                evidenceEpisodeId = episodes.evidenceEpisodeId,
+                evidencePhase = evidenz?.phase,
+                onsetActive = onset.active,
+                mealWindow = mealWindow,
+                reboundWindow = reboundWindow,
+                signalHealthy = step.health == Health.READY,
+                ledgerSealed = true,
+            ),
         )
-        // Die MEAL-Frist inline aus den persistierten Feldern (die
-        // markerPowerActive-Groesse entsteht erst spaeter im Zyklus; im
-        // frischen Druckzyklus deckt mealMarkerActive den Kontext).
-        val markerPowerJetzt = episodes.markerPowerPinnedFor > 0L &&
-            episodes.markerPowerPinnedFor == markerTs &&
-            computeTs >= episodes.markerPowerPinnedFor &&
-            computeTs < episodes.markerPowerDeadlineTs
-        val korrekturKontext = !mealMarkerActive &&
-            !markerPowerJetzt &&
-            foundationPhaseJetzt != MealFoundation.Phase.PHASE_A &&
-            foundationPhaseJetzt != MealFoundation.Phase.PHASE_B
+        val korrekturKontext =
+            kontextLage.context == ExpectationLedger.ExpectationContext.CORRECTION
         val (revTrack, reversal) = CorrectionReversalGuard.advance(
-            track = reversalTrack,
+            track = episodes.correctionReversal,
             enabled = cfg.reversalGuardEnabled,
             nowTs = signal.sourceTs,
             ukfNow = signal.ukfRatePerMin,
@@ -3153,19 +3166,39 @@ class FuseCycleRunner(
             reboundThresholdUkf = cfg.reversalReboundUkf,
             confirmCycles = cfg.reversalConfirmCycles,
         )
-        reversalTrack = revTrack
-        // Die NACHT-KANTE ankert im Uebergangszyklus selbst; die
-        // Zero-Latch-Loesung ankert beim Loesen in der Latch-Stage (einen
-        // Zyklus versetzt - konservativ spaeter, nie frueher).
+        episodes.correctionReversal = revTrack
+        // Die NACHT-KANTE ankert im Uebergangszyklus selbst - aber NUR,
+        // wenn der letzte Nachtzyklus bezifferten positiven Bedarf
+        // AUSSCHLIESSLICH ueber das Nachtband unterdrueckt hat
+        // (Review-P1.4): ein ruhiger Morgen traegt keinen pauschalen
+        // Nachlauf. Die Zero-Latch-Loesung ankert beim Loesen in der
+        // Latch-Stage (einen Zyklus versetzt - konservativ spaeter, nie
+        // frueher). Der Merker ist prozesslokal: ein Neustart exakt auf
+        // der Kante verliert den Anker - Fehlrichtung "Riegel fehlt".
         val nightJetzt = state.nightWindow
-        if (lastNightWindow && !nightJetzt) {
-            rearmTrack = PositiveCorrectionRearm.anker(
-                rearmTrack, signal.sourceTs, PositiveCorrectionRearm.Source.NIGHT_END,
+        if (lastNightWindow && !nightJetzt && lastNightSuppressedU > 0.0) {
+            episodes.correctionRearm = PositiveCorrectionRearm.anker(
+                episodes.correctionRearm, signal.sourceTs, PositiveCorrectionRearm.Source.NIGHT_END,
             )
         }
         lastNightWindow = nightJetzt
+        // LAGE-GESUNDHEIT (Review-P0.3): der Aufwaertszaehler des
+        // Nachlaufs zaehlt nur in gesunder, widerspruchsfreier Lage -
+        // Signal READY, q1 nicht fallend, kein gemessenes Tief, kein
+        // Abwaertsrisiko/-riegel, kein Rebound, kein Ledger-Hold. Der
+        // q1-Vergleich hat einen EIGENEN Merker: zeroLatchLastQ1 gehoert
+        // der Latch-Stage und traegt hier noch den Vorzykluswert.
+        val korrQ1NichtFallend = korrLastQ1.isNaN() || signal.q1 >= korrLastQ1 - 0.01
+        korrLastQ1 = signal.q1
+        val korrLageGesund = step.health == Health.READY &&
+            korrQ1NichtFallend &&
+            !measuredLow &&
+            !descentRisk.active &&
+            !descentLatch.blocksPositive &&
+            !reboundRaw &&
+            !ledgerView.hold
         val (reTrack, rearm) = PositiveCorrectionRearm.advance(
-            track = rearmTrack,
+            track = episodes.correctionRearm,
             enabled = cfg.correctionRearmEnabled,
             nowTs = signal.sourceTs,
             ukfNow = signal.ukfRatePerMin,
@@ -3173,8 +3206,9 @@ class FuseCycleRunner(
             holdMin = cfg.rearmHoldMin,
             confirmCycles = cfg.rearmConfirmCycles,
             upThresholdUkf = cfg.rearmUpUkf,
+            lageGesund = korrLageGesund,
         )
-        rearmTrack = reTrack
+        episodes.correctionRearm = reTrack
         val korrRiegelGrund = reversal.reason ?: rearm.reason
         val nachRiegel =
             if (korrRiegelGrund != null && nachDescent.smbU > 0.0 && nachDescent.grant == null)
@@ -3813,8 +3847,8 @@ class FuseCycleRunner(
             // den PositiveCorrectionRearm - die Kante wirkt ab dem
             // NAECHSTEN Zyklus (konservativ spaeter, nie frueher).
             if (episodes.zeroLatch.active && !latch.state.active) {
-                rearmTrack = PositiveCorrectionRearm.anker(
-                    rearmTrack, signal.sourceTs,
+                episodes.correctionRearm = PositiveCorrectionRearm.anker(
+                    episodes.correctionRearm, signal.sourceTs,
                     PositiveCorrectionRearm.Source.ZERO_LATCH_RELEASED,
                 )
             }
@@ -3844,8 +3878,8 @@ class FuseCycleRunner(
                 zeroCalmLastTs = signal.sourceTs
                 if (zeroCalmStreak >= cfg.zeroLatchCalmExitMin) {
                     // Auch der Ruhe-Ausgang ist eine Freigabe-Kante.
-                    rearmTrack = PositiveCorrectionRearm.anker(
-                        rearmTrack, signal.sourceTs,
+                    episodes.correctionRearm = PositiveCorrectionRearm.anker(
+                        episodes.correctionRearm, signal.sourceTs,
                         PositiveCorrectionRearm.Source.ZERO_LATCH_RELEASED,
                     )
                     episodes.zeroLatch = DescentRecoveryLatch.State()
@@ -3861,6 +3895,15 @@ class FuseCycleRunner(
                 decisionVorZeroLatch.copy(tbr = FuseController.TbrAction.ZERO_TEMP)
             } else decisionVorZeroLatch
         }
+
+        // Der Vorzyklus-Merker der Nachtband-Kante (Review-P1.4): nur ein
+        // Nachtzyklus, dessen positiven Bedarf AUSSCHLIESSLICH das
+        // Nachtband genullt hat (Binding exakt "nightDeadband",
+        // insulinReq > 0), berechtigt die Kante zum Rearm-Anker.
+        lastNightSuppressedU =
+            if (state.nightWindow && decision.bindingLimit == "nightDeadband" &&
+                (decision.insulinReqU ?: 0.0) > 0.0
+            ) decision.insulinReqU ?: 0.0 else 0.0
 
         // ---- Pruefauftrag 2: die Down-Zeilen bis zur ENDMENGE -------------
         //
@@ -4080,6 +4123,7 @@ class FuseCycleRunner(
             correctionReversal = reversal,
             correctionRearm = rearm,
             correctionContext = korrekturKontext,
+            correctionContextReason = kontextLage.reason.name,
             zeroLatchOverrode = zeroLatchUebersteuert,
             livenessReleaseMeanMgdl = livenessReleaseMeanMgdl,
             livenessBgMinEffectiveMgdl = livenessBgMinEffective,
@@ -5030,9 +5074,18 @@ class FuseCycleRunner(
     /** Korrekturpfad-Riegel (25.08.): prozesslokale Merker des
      *  V-Reversal-Schutzes und des Freigabe-Nachlaufs; die Fehlrichtung
      *  eines Neustarts ist "Riegel fehlt", nie "Riegel klemmt". */
-    private var reversalTrack = CorrectionReversalGuard.Track()
-    private var rearmTrack = PositiveCorrectionRearm.Track()
     private var lastNightWindow = false
+
+    /** Vorzyklus-Merker fuer die Nachtband-Kante (Review-P1.4): der
+     *  bezifferten positive Bedarf, den AUSSCHLIESSLICH das Nachtband
+     *  im letzten Nachtzyklus genullt hat. Prozesslokal - ein Neustart
+     *  exakt auf der Kante verliert den Anker ("Riegel fehlt"). */
+    private var lastNightSuppressedU = 0.0
+
+    /** Eigener q1-Merker der Korrekturpfad-Riegel (Review-P0.3);
+     *  zeroLatchLastQ1 gehoert der Latch-Stage und traegt an der
+     *  Riegel-Stelle noch den Vorzykluswert. */
+    private var korrLastQ1 = Double.NaN
     private var zeroLatchLastQ1 = Double.NaN
 
     /** Zeitstempel des letzten Zyklus, der die Kanalstufe erreicht hat -

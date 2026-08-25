@@ -204,6 +204,17 @@ object FuseStateJson {
     // unberuehrt, r/UKF werden NICHT global haerter; kein Carry; der
     // Zero-Latch bleibt zweite Schutzlinie. Neun Stellgroessen in Hash und
     // policyValues; Export-Block correctionGuards.
+    // NACHBESSERUNG (Review 25.08. abends, vor dem ersten Flash - dieselbe
+    // Versionsnummer): (P0.1) beide Riegel-Identitaeten persistiert
+    // (Ledger episodes.correctionReversal/correctionRearm), Zaehler nach
+    // Neustart genullt; (P0.2) Korrekturkontext aus der AUTORITATIVEN
+    // ExpectationLedger.classify statt zweitgefuehrter Rekonstruktion -
+    // Export correctionGuards.contextReason; (P0.3) der Rearm-Zaehler
+    // zaehlt nur bei gesunder Lage (READY, q1 nicht fallend, kein
+    // Low/Descent/Rebound/Hold); (P1.4) die Nachtkante ankert nur, wenn
+    // der letzte Nachtzyklus positiven Bedarf AUSSCHLIESSLICH ueber das
+    // Nachtband unterdrueckt hat; (P1.5) die r-Bestaetigung zaehlt erst
+    // ab der V-Zuendung.
     const val RULE_SET_VERSION = 30
 
     /** Schema des Trail-Datensatzes - s. die Notiz an der Schreibstelle. */
@@ -767,6 +778,10 @@ object FuseStateJson {
         o.put(
             "correctionGuards", JSONObject()
                 .put("context", outcome.correctionContext)
+                // Review-P0.2: der ContextReason der AUTORITATIVEN
+                // Klassifikation (ExpectationLedger.classify) - warum der
+                // Kontext (nicht) Korrektur war.
+                .put("contextReason", outcome.correctionContextReason ?: JSONObject.NULL)
                 .put(
                     "reversal",
                     outcome.correctionReversal?.let { r ->
