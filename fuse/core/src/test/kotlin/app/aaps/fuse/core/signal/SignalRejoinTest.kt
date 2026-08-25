@@ -170,6 +170,29 @@ class SignalRejoinTest {
         assertNotNull(BgiAdjustedSeries.theilSen(punkte, jetzt))
     }
 
+    /**
+     * DIE BEIDEN DECKEL SIND VERSCHIEDENE DINGE. Mit den Vorgabewerten
+     * sind beide 10 min - ein vertauschtes Feldpaar waere damit unsichtbar.
+     * Hier stehen sie ausdruecklich auseinander.
+     */
+    @Test
+    fun `lueckendauer und altersfenster sind nicht dasselbe`() {
+        val p = RejoinPolicy.enabled(maxGapMs = 6 * 60_000L, maxAgeMs = 9 * 60_000L)
+        assertTrue(p.enabled)
+        // Luecke 8 min: ueber dem GAP-Deckel (6), unter dem ALTERS-Deckel (9).
+        val lang = reihe(8, 8 * 60_000L, 4)
+        val w1 = waehle(lang, lang[8], policy = p, now = lang[8] + 60_000L)
+        assertEquals(SignalRejoin.Cause.GAP_TOO_LONG, w1.cause,
+                     "8 min Luecke muss am GAP-Deckel scheitern, nicht am Alter")
+        // Luecke 4 min (unter 6), aber Segment 10 min alt (ueber 9).
+        val kurz = reihe(8, 4 * 60_000L, 4)
+        val w2 = waehle(kurz, kurz[8], policy = p, now = kurz[8] + 10 * 60_000L)
+        assertEquals(SignalRejoin.Cause.TOO_OLD, w2.cause,
+                     "4 min Luecke muss am ALTERS-Deckel scheitern, nicht an der Dauer")
+        // Und beides innerhalb: gelockert.
+        assertTrue(waehle(kurz, kurz[8], policy = p, now = kurz[8] + 60_000L).active)
+    }
+
     /** PFLICHTFALL "Luecke ueber Maximaldauer". */
     @Test
     fun `zu lange luecke lockert nicht`() {

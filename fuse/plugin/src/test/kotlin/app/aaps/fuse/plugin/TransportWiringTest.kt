@@ -359,6 +359,9 @@ class TransportWiringTest : TestBaseWithProfile() {
     /** Schalter des Wiedereinstiegs nach Funkluecke (Default AUS wie am Geraet). */
     private var rejoinAn = false
 
+    /** Beginn der laufenden Kalibrierung; -1 = nie kalibriert (Default des Keys). */
+    private var kalibrierStart = -1L
+
     /** PHASE-2-REPLAY: (iobU, activityUPerMin) je Sample-Zeitstempel -
      *  naechster Eintrag binnen 90 s; null = normale Rig-Hebel. */
     private var iobProTs: java.util.TreeMap<Long, Pair<Double, Double>>? = null
@@ -500,7 +503,7 @@ class TransportWiringTest : TestBaseWithProfile() {
         whenever(preferences.get(FuseIntKey.RearmConfirmCycles)).thenReturn(2)
         whenever(preferences.get(FuseDoubleKey.RearmUpUkf)).thenAnswer { rearmUpUkfWert }
         whenever(preferences.get(FuseIntKey.MealFoundationEndMin)).thenAnswer { fundamentEndeMin }
-        whenever(preferences.get(LongKey.FslCalibrationStart)).thenReturn(-1L)
+        whenever(preferences.get(LongKey.FslCalibrationStart)).thenAnswer { kalibrierStart }
         whenever(preferences.get(FuseLongKey.MealMarkerStamp)).thenReturn(0L)
         whenever(preferences.get(FuseLongKey.MealMarkerArmedTs)).thenAnswer { markerAt }
     }
@@ -7657,7 +7660,10 @@ class TransportWiringTest : TestBaseWithProfile() {
                         // vermutete, bekam stillschweigend Nullen.
                         o.signal?.rSigned?.let { "%.4f".format(java.util.Locale.US, it) } ?: "",
                         o.band?.pairCount ?: "",
-                        o.maturity.minPointsAt(z.ts), o.maturity.minSlopesAt(z.ts),
+                        // Die WIRKSAME Reife dieses Zyklus - nach dem
+                        // Wiedereinstieg ist das nicht mehr die Basis.
+                        (o.signal?.rejoin?.maturity ?: o.maturity).minPointsAt(z.ts),
+                        (o.signal?.rejoin?.maturity ?: o.maturity).minSlopesAt(z.ts),
                         o.iobU?.let { "%.3f".format(java.util.Locale.US, it) } ?: "",
                         if (o.signal?.rejoin?.active == true) "1" else "0",
                         o.signal?.rejoin?.cause?.name ?: "",
@@ -9458,7 +9464,7 @@ class TransportWiringTest : TestBaseWithProfile() {
      *
      * @return die Aussenzeitpunkte der Zyklen nach der Luecke.
      */
-    private fun funklueckeAufbauen(dir: File, basisBg: Double, steigung: Double): List<Long> {
+    private fun funklueckeAufbauen(dir: File, basisBg: Double, steigung: Double, kalibrierNachMin: Int? = null): List<Long> {
         val start = 1_700_000_000_000L
         val takt = listOf(58_000L, 61_000L, 59_000L, 60_000L, 62_000L, 59_000L)
         val vor = ArrayList<Pair<Long, Double>>()
@@ -9472,6 +9478,11 @@ class TransportWiringTest : TestBaseWithProfile() {
             nach.add(t to basisBg + steigung * (25 + 3 + i)); t += takt[i % takt.size]
         }
         rohSerie = vor + nach
+        // Optional ein Kalibrierbeginn MITTEN in der Vorlaufreihe: dann ist
+        // das Fenster durch die Kalibrierung begrenzt, waehrend die Luecke
+        // DANACH liegt und in der Reihe erhalten bleibt. Genau die Lage, in
+        // der die Regimeregel etwas zu entscheiden hat.
+        kalibrierStart = kalibrierNachMin?.let { vor[it].first } ?: -1L
         clock = vor.last().first
         transportReset()
         val adapter = FuseLedgerAdapter().also { it.loadOnce(dir.also(File::mkdirs), "test-epoch", start) }
@@ -9541,6 +9552,40 @@ class TransportWiringTest : TestBaseWithProfile() {
     }
 
     /**
+     * PFLICHTPROBE: DER REGIMEWECHSEL WIRD BIS ZUM SCHAETZER DURCHGEREICHT.
+     *
+     * Die reine Entscheidung [SignalRejoin.select] weist eine Kalibrierung
+     * ab - das prueft SignalRejoinTest. Was sie NICHT prueft: dass der
+     * AUFRUFER den echten Grund uebergibt. Eine Verdrahtung, die stur
+     * `Bound.NONE` einsetzt, liefe an allen Kernproben vorbei; gemessen
+     * blieben dabei 183 von 183 Tests gruen.
+     *
+     * Hier liegt die Kalibrierung mitten im Vorlauf und die Funkluecke
+     * DANACH - die Luecke bleibt also in der Reihe erhalten und wuerde
+     * ohne die Regimeregel lockern.
+     */
+    @org.junit.jupiter.api.Test
+    fun `eine kalibrierung verhindert den wiedereinstieg trotz luecke`(@TempDir dir: File) {
+        rejoinAn = true
+        val nachTs = funklueckeAufbauen(dir, basisBg = 120.0, steigung = 1.0, kalibrierNachMin = 5)
+        val gruende = ArrayList<app.aaps.fuse.core.signal.SignalRejoin.Cause>()
+        for (ts in nachTs) {
+            clock = ts
+            val o = runner.run(false, testPumpe())
+            o.signal?.rejoin?.let {
+                gruende += it.cause
+                assertFalse(it.active, "bei laufender Kalibrierung darf nichts gelockert werden")
+            }
+        }
+        assertTrue(
+            gruende.contains(app.aaps.fuse.core.signal.SignalRejoin.Cause.CALIBRATION),
+            "der Grund muss die Kalibrierung sein, nicht bloss 'kein Bruch' - sonst " +
+                "wuerde ein verschluckter Regimewechsel nicht auffallen (gesehen: " +
+                gruende.distinct() + ")",
+        )
+    }
+
+    /**
      * PFLICHTPROBE: KEIN SICHERHEITSGATE WIRD UMGANGEN.
      *
      * Dieselbe Funkluecke, aber im Tief und fallend - die Lage des
@@ -9551,13 +9596,24 @@ class TransportWiringTest : TestBaseWithProfile() {
      */
     @org.junit.jupiter.api.Test
     fun `im tief gibt der wiedereinstieg kein insulin frei`(@TempDir dir: File) {
+        var gelockert = 0
         fun mengen(an: Boolean): List<Double> {
             rejoinAn = an
+            gelockert = 0
             val nachTs = funklueckeAufbauen(dir, basisBg = 76.0, steigung = -0.3)
-            return nachTs.map { ts -> clock = ts; runner.run(false, testPumpe()).decision.smbU }
+            return nachTs.map { ts ->
+                clock = ts
+                val o = runner.run(false, testPumpe())
+                if (o.signal?.rejoin?.active == true) gelockert++
+                o.decision.smbU
+            }
         }
         val ohne = mengen(false)
         val mit = mengen(true)
+        // OHNE DIESE ZEILE waere die Probe aussagelos: sie koennte gruen sein,
+        // weil der Wiedereinstieg im Tief gar nicht erst griff. Er MUSS
+        // gegriffen haben - und trotzdem faellt kein Insulin.
+        assertTrue(gelockert > 0, "der Wiedereinstieg muss im Tief ueberhaupt gegriffen haben")
         assertEquals(0.0, mit.sum(), 1e-9, "im Tief darf der Wiedereinstieg nichts freigeben")
         assertEquals(ohne, mit, "die Mengenachse muss im Tief bitgleich bleiben")
     }

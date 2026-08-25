@@ -215,7 +215,7 @@ object FuseStateJson {
     // der letzte Nachtzyklus positiven Bedarf AUSSCHLIESSLICH ueber das
     // Nachtband unterdrueckt hat; (P1.5) die r-Bestaetigung zaehlt erst
     // ab der V-Zuendung.
-    const val RULE_SET_VERSION = 30
+    const val RULE_SET_VERSION = 31
 
     /** Schema des Trail-Datensatzes - s. die Notiz an der Schreibstelle. */
     const val SCHEMA_VERSION = 4
@@ -1517,6 +1517,7 @@ object FuseStateJson {
         .put("reboundDeadbandEnabled", p.reboundDeadbandEnabled)
         .put("driveLowerQuantilePct", p.driveLowerQuantilePct)
         .put("theilSenWindowMin", p.theilSenWindowMin)
+        .put("signalRejoinEnabled", p.signalRejoinEnabled)
         .put("tailGuardEnabled", p.tailGuardEnabled)
         .put("tailFloorMgdl", fin(p.tailFloorMgdl))
         .put("tailRecoveryU", fin(p.tailRecoveryU))
@@ -1628,6 +1629,12 @@ object FuseStateJson {
                 // v22: das Fenster des Hauptschaetzers - dosierwirksam auf
                 // JEDER Bahn (Guard, Drive, Kennung), s. Journal.
                 p.theilSenWindowMin,
+                // v31: der Wiedereinstieg nach Funkluecke. Mit Schalter
+                // entstehen Entscheidungen, die ohne ihn als "drive not
+                // estimable" gestorben waeren (gemessen 26 -> 21 blinde
+                // Zyklen, +0,050 U je Tag). AUS und EIN sind zwei
+                // verschiedene Regler.
+                p.signalRejoinEnabled,
                 p.tailGuardEnabled, p.fastRestraintEnabled, p.onsetChannelEnabled, p.primeReleaseEnabled,
                 // v3: der Null-Ausgang aendert das Aktuationsverhalten - zwei
                 // Laeufe mit verschiedener Stellung duerfen nicht denselben

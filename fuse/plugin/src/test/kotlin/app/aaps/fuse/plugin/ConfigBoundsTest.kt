@@ -35,7 +35,7 @@ class ConfigBoundsTest {
         onsetChannelEnabled = true, onsetEnvelopeU = 1.5,
         primeReleaseEnabled = true, primeWindowMin = 15, primeEnvelopeU = 1.2,
         maxSmbU = 0.3, guardFloorMgdl = 70.0, lowGateMinBenefitMgdl = 5.0, zeroLatchEnabled = false, zeroLatchCalmExitMin = 20, zeroLatchCalmDistanceMgdl = 30.0, reversalGuardEnabled = false, reversalFallUkf = 2.0, reversalLookbackMin = 20, reversalReboundUkf = 1.0, reversalConfirmCycles = 2, correctionRearmEnabled = false, rearmHoldMin = 5, rearmConfirmCycles = 2, rearmUpUkf = 0.3, lowGateHorizonMin = 120.0, positiveDescentHorizonMin = 30.0, deferredPrimeEnabled = false, markerPrimeDescentHorizonMin = 60.0, deferredPrimeEndMin = 120, livenessChannelEnabled = false, livenessMealPowerMin = 120, livenessMealRatioCap = 1.0, livenessMealIobCapPercent = 50.0, livenessCorrectionRatioCap = 1.0, livenessCorrectionIobCapPercent = 50.0, livenessBgMinDayMgdl = 160.0, livenessBgMinNightMgdl = 160.0, livenessReArmMin = 10, iobThPercent = 100,
-        releaseHorizonMin = 30, liabilityHorizonMin = 120, driveTauMin = 60, theilSenWindowMin = 18,
+        releaseHorizonMin = 30, liabilityHorizonMin = 120, driveTauMin = 60, signalRejoinEnabled = false, theilSenWindowMin = 18,
         absorptionCreditWindowMin = 60, markerBoostMaxMin = 45, evidenceReboundOverrideMaxMin = 120,
         nightStartMin = 1380, nightEndMin = 420,
         nightDeadbandMgdl = 45.0, nightDeadbandEnabled = true,
@@ -108,7 +108,7 @@ class ConfigBoundsTest {
             Feld("absorptionCreditWindowMin", FuseIntKey.AbsorptionCreditWindowMin) { c, v -> c.copy(absorptionCreditWindowMin = v) },
             Feld("markerBoostMaxMin", FuseIntKey.MarkerBoostMaxMin) { c, v -> c.copy(markerBoostMaxMin = v) },
             Feld("driveLowerQuantilePct", FuseIntKey.DriveLowerQuantilePct) { c, v -> c.copy(driveLowerQuantilePct = v) },
-            Feld("theilSenWindowMin", FuseIntKey.TheilSenWindowMin) { c, v -> c.copy(theilSenWindowMin = v) },
+            Feld("theilSenWindowMin", FuseIntKey.TheilSenWindowMin) { c, v -> c.copy(signalRejoinEnabled = false, theilSenWindowMin = v) },
         )
         for (f in felder) {
             ok(f.setze(mitte(), f.key.max), "${f.name} = ${f.key.max} (Dialog-Maximum)")

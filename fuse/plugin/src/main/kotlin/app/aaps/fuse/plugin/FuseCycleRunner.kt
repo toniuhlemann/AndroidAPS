@@ -1165,8 +1165,13 @@ class FuseCycleRunner(
         // Der Schalter entscheidet nur EIN/AUS; die Parameter kommen aus
         // der injizierten, unveraenderlichen Politik. Damit kann eine
         // Einstellung die Frage nicht in ein anderes Regime verschieben.
+        // EINE Lesung. Das Signal wird VOR readConfig() geholt, deshalb
+        // steht sie hier - aber genau dieser Wert geht ueber `Config`
+        // spaeter in Kennung und policyValues ein. Zwei Lesungen koennten
+        // im selben Zyklus auseinanderlaufen.
+        val rejoinAnJetzt = preferences.get(FuseBooleanKey.SignalRejoinEnabled)
         val rejoinJetzt =
-            if (preferences.get(FuseBooleanKey.SignalRejoinEnabled)) rejoinPolicy
+            if (rejoinAnJetzt) rejoinPolicy
             else app.aaps.fuse.core.signal.RejoinPolicy.OFF
         val signal = when (val s = signalSource.read(sensorEpoch, calibrationEpoch, rejoinJetzt)) {
             is FuseSignalSource.Outcome.Ok          -> s.signal
@@ -5474,6 +5479,16 @@ class FuseCycleRunner(
         val driveLowerQuantilePct: Int,
         /** Fenster des Theil-Sen-Hauptschaetzers [min] - s. FuseKeys. */
         val theilSenWindowMin: Int,
+        /**
+         * WIEDEREINSTIEG NACH FUNKLUECKE. Er steht hier und nicht nur in
+         * den Einstellungen, weil er DOSIERWIRKSAM ist: mit Schalter
+         * entstehen Entscheidungen, die ohne ihn als "drive not
+         * estimable" gestorben waeren. Zwei Laeufe mit verschiedener
+         * Stellung sind zwei verschiedene Regler und duerfen nicht
+         * dieselbe Kennung tragen - genau die Klasse, die im Repo schon
+         * einmal ein Flash-Blocker war (mealFoundationEnabled).
+         */
+        val signalRejoinEnabled: Boolean,
         val tailGuardEnabled: Boolean,
         val conditionalTailEnabled: Boolean,
         val markerAuthorized: Boolean,
@@ -5561,6 +5576,7 @@ class FuseCycleRunner(
         reboundDeadbandEnabled = preferences.get(FuseBooleanKey.ReboundDeadbandEnabled),
         driveLowerQuantilePct = preferences.get(FuseIntKey.DriveLowerQuantilePct),
         theilSenWindowMin = preferences.get(FuseIntKey.TheilSenWindowMin),
+        signalRejoinEnabled = preferences.get(FuseBooleanKey.SignalRejoinEnabled),
         tailGuardEnabled = preferences.get(FuseBooleanKey.TailGuardEnabled),
         conditionalTailEnabled = preferences.get(FuseBooleanKey.ConditionalTailEnabled),
         markerAuthorized = preferences.get(FuseBooleanKey.MarkerAuthorisesRelease),

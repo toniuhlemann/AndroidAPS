@@ -27,7 +27,7 @@ class FuseStateExportTest {
 
     private val cfg = FuseCycleRunner.Config(
         smbRatio = 0.2, smbRatioRise = 0.35, sharedMaxIobU = 7.0, riseRampLowR = 0.5, riseRampHighR = 2.0, bolusShareLambda = 1.0, onsetChannelEnabled = true, onsetEnvelopeU = 1.5, primeReleaseEnabled = true, primeWindowMin = 15, primeEnvelopeU = 1.2, maxSmbU = 0.3, guardFloorMgdl = 70.0, lowGateMinBenefitMgdl = 5.0, zeroLatchEnabled = false, zeroLatchCalmExitMin = 20, zeroLatchCalmDistanceMgdl = 30.0, reversalGuardEnabled = false, reversalFallUkf = 2.0, reversalLookbackMin = 20, reversalReboundUkf = 1.0, reversalConfirmCycles = 2, correctionRearmEnabled = false, rearmHoldMin = 5, rearmConfirmCycles = 2, rearmUpUkf = 0.3, lowGateHorizonMin = 120.0, positiveDescentHorizonMin = 30.0, deferredPrimeEnabled = false, markerPrimeDescentHorizonMin = 60.0, deferredPrimeEndMin = 120, livenessChannelEnabled = false, livenessMealPowerMin = 120, livenessMealRatioCap = 1.0, livenessMealIobCapPercent = 50.0, livenessCorrectionRatioCap = 1.0, livenessCorrectionIobCapPercent = 50.0, livenessBgMinDayMgdl = 160.0, livenessBgMinNightMgdl = 160.0, livenessReArmMin = 10, iobThPercent = 100,
-        releaseHorizonMin = 30, liabilityHorizonMin = 120, driveTauMin = 60, theilSenWindowMin = 18, absorptionCreditWindowMin = 60, markerBoostMaxMin = 45, evidenceReboundOverrideMaxMin = 120, nightStartMin = 1380, nightEndMin = 420, nightDeadbandMgdl = 45.0, nightDeadbandEnabled = true, reboundDeadbandMgdl = 25.0, reboundDeadbandEnabled = true,
+        releaseHorizonMin = 30, liabilityHorizonMin = 120, driveTauMin = 60, signalRejoinEnabled = false, theilSenWindowMin = 18, absorptionCreditWindowMin = 60, markerBoostMaxMin = 45, evidenceReboundOverrideMaxMin = 120, nightStartMin = 1380, nightEndMin = 420, nightDeadbandMgdl = 45.0, nightDeadbandEnabled = true, reboundDeadbandMgdl = 25.0, reboundDeadbandEnabled = true,
         driveLowerQuantilePct = 50, tailGuardEnabled = false, conditionalTailEnabled = true, markerAuthorized = false, mealFoundationEnabled = false, mealFoundationPhaseAShare = 1.0, mealFoundationPhaseAUpfrontShare = 0.0, mealFoundationEndMin = 60, tailFloorMgdl = 70.0, tailRecoveryU = 0.0, fastRestraintEnabled = true, endZeroWhenReasonGone = true,
     )
 
@@ -490,7 +490,7 @@ class FuseStateExportTest {
         assertTrue(FuseStateJson.hashOf(cfg.copy(driveTauMin = 61)) != h)
         // v22: W18 und W10 sind verschiedene Schaetzer - MUTATIONSPROBE fuer
         // das Fenster im Fingerprint (Vertragspunkt 4).
-        assertTrue(FuseStateJson.hashOf(cfg.copy(theilSenWindowMin = 10)) != h)
+        assertTrue(FuseStateJson.hashOf(cfg.copy(signalRejoinEnabled = false, theilSenWindowMin = 10)) != h)
         // v23: der Ratio-Deckel des Liveness-Kanals - MUTATIONSPROBE fuer
         // den Fingerprint (Tonis Vertrag: Aufnahme in Policy-Hash).
         // v24: die vier Profil-Caps und die gepinnte Frist - jede einzeln
@@ -530,6 +530,30 @@ class FuseStateExportTest {
      * JEDES FELD EINZELN, nicht die drei zusammen: nur so faellt auf, wenn
      * genau eines wieder aus dem Hash herausfaellt.
      */
+    /**
+     * DIESELBE REGEL FUER DEN WIEDEREINSTIEG NACH FUNKLUECKE (Review
+     * 25.08. abends, P1).
+     *
+     * Er war zuerst nur eine Einstellung, die im Zyklus gelesen wurde -
+     * exportiert je Zyklus, aber nicht in der Kennung. Damit trugen zwei
+     * messbar verschiedene Regler denselben `configGeneration`: mit
+     * Schalter entstehen Entscheidungen, die ohne ihn als "drive not
+     * estimable" gestorben waeren (gemessen 26 -> 21 blinde Zyklen und
+     * +0,050 U ueber einen Tag). Der Erwartungs-Ledger trennt seine
+     * Strecken nach genau diesem Hash - ihre Ergebnisse waeren in
+     * denselben Topf gefallen.
+     */
+    @Test
+    fun `der Wiedereinstiegs-Schalter aendert den Politik-Hash`() {
+        val aus = FuseStateJson.hashOf(cfg.copy(signalRejoinEnabled = false))!!
+        val ein = FuseStateJson.hashOf(cfg.copy(signalRejoinEnabled = true))!!
+        assertTrue(aus != ein, "AUS und EIN sind zwei verschiedene Regler")
+        // Und er steht auch in den ausgeschriebenen Politikwerten - der
+        // Hash allein sagt nicht, WAS sich unterschied.
+        val werte = FuseStateJson.policyValues(cfg.copy(signalRejoinEnabled = true))
+        assertTrue(werte.toString().contains("signalRejoinEnabled"))
+    }
+
     @Test
     fun `der Fundament-Schalter aendert den Politik-Hash`() {
         val aus = FuseStateJson.hashOf(cfg.copy(mealFoundationEnabled = false))!!
@@ -691,7 +715,7 @@ class FuseStateExportTest {
         // DIESER TEST IST ABSICHTLICH STUR: er faellt bei jedem Bump um und
         // zwingt damit zu der Frage, ob die Aenderung wirklich dosierwirksam
         // war - ein stiller Bump waere so wertlos wie ein vergessener.
-        assertEquals(30, FuseStateJson.RULE_SET_VERSION)
+        assertEquals(31, FuseStateJson.RULE_SET_VERSION)
         assertTrue(
             FuseStateJson.hashOf(cfg)!!.isNotEmpty(),
             "und der Hash bleibt berechenbar",
