@@ -162,13 +162,23 @@
     <string name="overview_insulin_label">Insulin</string>
     <string name="overview_fuse_meal_label">Mahlzeit</string>
     <string name="overview_fuse_meal_active_label">◉ Mahlzeit</string>
-    <string name="fuse_meal_confirm_no_prime">Ohne Vorschuss</string>
+    <!-- Die Knoepfe BENENNEN die Handlung. "OK" sagte nicht, dass Insulin
+         freigegeben wird; "Ohne Vorschuss" klang nach "keine Sofortdosis,
+         aber weiter verteilt" - tatsaechlich setzt die Wahl die GANZE
+         Huelle samt Fundament auf null. -->
+    <string name="fuse_meal_confirm_no_prime">Nur Marker · 0 U</string>
+    <string name="fuse_meal_confirm_release">Mit Insulinfreigabe</string>
     <string name="overview_fuse_meal_confirm_title">Mahlzeit ankuendigen?</string>
-    <!-- EINE Zeile. Der Knopf wird mehrmals taeglich gedrueckt; alles, was man
-         nur EINMAL lesen muss, steht in der Einstellungsbeschreibung. -->
-    <string name="overview_fuse_meal_confirm_body">%1$.2f U sofort, bis %2$.2f U in %3$d min</string>
+    <!-- EINE Zeile JE ANTEIL der Autorisierung, Nullteile entfallen. Alles,
+         was man nur EINMAL lesen muss, steht in der
+         Einstellungsbeschreibung. "Angefordert" ist woertlich gemeint:
+         Riegel, IOB-Spielraum, Aufschub und Pumpen-Gates koennen kuerzen. -->
+    <string name="overview_fuse_meal_confirm_upfront">%1$.2f U sofort angefordert</string>
+    <string name="overview_fuse_meal_confirm_spread">+ %1$.2f U verteilt bis %2$d min</string>
     <!-- Ohne bekanntes Fenster wird KEINE Dauer genannt statt einer falschen. -->
-    <string name="overview_fuse_meal_confirm_body_no_window">%1$.2f U sofort, bis %2$.2f U im Freigabe-Fenster</string>
+    <string name="overview_fuse_meal_confirm_spread_no_window">+ %1$.2f U verteilt im Freigabe-Fenster</string>
+    <string name="overview_fuse_meal_confirm_foundation">+ bis %1$.2f U Fundament bis %2$d min</string>
+    <string name="overview_fuse_meal_confirm_total">Gesamtlimit %1$.2f U</string>
     <string name="overview_fuse_meal_confirm_low">Zucker ist TIEF.</string>
     <string name="overview_fuse_meal_confirm_foreign">Achtung: %1$.2f U manueller Bolus in der letzten Stunde. Die Hülle wird davon NICHT gekürzt — beides zusammen wirkt.</string>
     <string name="overview_fuse_meal_confirm_episode">Evidenz-Fenster läuft in %1$d min ab — danach ohne Mahlzeiten-Kredit.</string>

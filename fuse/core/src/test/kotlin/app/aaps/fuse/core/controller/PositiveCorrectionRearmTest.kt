@@ -133,6 +133,29 @@ class PositiveCorrectionRearmTest {
     }
 
     @Test
+    fun `der nachlauf endet spaetestens nach der hoechstdauer`() {
+        // Gemessen am 25.08.: die Kante lag 08:00, die Aufwaertslage
+        // blieb unbestaetigt, und der Anker riegelte noch 08:23-08:26.
+        // Nach dem Dreifachen der Frist ist ein Kanteneffekt vorbei.
+        var track = PositiveCorrectionRearm.anker(
+            PositiveCorrectionRearm.Track(), t0, PositiveCorrectionRearm.Source.NIGHT_END,
+        )
+        // Dauerhaft fallend: nie bestaetigt, Kontext durchgehend Korrektur.
+        for (min in 0..14) {
+            val (t, res) = schritt(track, min, -0.2)
+            track = t
+            assertTrue(res.blocks, "Minute $min liegt noch im Nachlauf")
+        }
+        // Minute 15 = 3 x holdMin(5): der Anker verfaellt.
+        val (leer, frei) = schritt(track, 15, -0.2)
+        assertFalse(frei.blocks, "nach der Hoechstdauer ist Schluss")
+        assertEquals(PositiveCorrectionRearm.Track(), leer, "der Anker ist weg")
+        // Und bleibt weg.
+        val (_, danach) = schritt(leer, 16, -0.2)
+        assertFalse(danach.blocks)
+    }
+
+    @Test
     fun `restored erhaelt den anker und nullt den zaehler`() {
         // Tonis Review-P0.1: der Nachlauf ueberlebt den Neustart.
         val wieder = PositiveCorrectionRearm.restored(

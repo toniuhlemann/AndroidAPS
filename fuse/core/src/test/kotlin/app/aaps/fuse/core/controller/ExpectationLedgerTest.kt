@@ -825,6 +825,74 @@ class ExpectationLedgerTest {
     )
 
     /**
+     * DIE MAHLZEITENBASIS IST ORTHOGONAL (Tonis Nachforderung 25.08.
+     * abends) - und genau deshalb NICHT aus dem ContextReason
+     * erschliessbar: `classify` nennt nur den ERSTEN zutreffenden Grund,
+     * und Onset/Fenster stehen vor der Evidenz. Wer die Belegart aus dem
+     * Grund liest, haelt eine belegte Mahlzeit fuer blosse Kinematik.
+     */
+    @Test
+    fun `die Mahlzeitenbasis wird von Onset und Fenster nicht verdeckt`() {
+        // DER MASKIERUNGSFALL: aktive Evidenz UND Onset. Der Grund nennt
+        // Onset - die Basis muss trotzdem den Beleg zeigen.
+        val maskiert = lageMit(episodeId = 7L, phase = EvidenceStock.Phase.ACTIVE, onset = true)
+        val kl = ExpectationLedger.classify(maskiert)
+        assertEquals(ExpectationLedger.ContextReason.ONSET_ACTIVE, kl.reason, "der Grund ist priorisiert")
+        assertEquals(
+            ExpectationLedger.MealBasis.EVIDENCE_CONFIRMED, kl.mealBasis,
+            "die BASIS ist es nicht - hinter dem Onset steht gebuchte Evidenz",
+        )
+        // Dasselbe mit Mahlzeitenfenster.
+        val fensterMaske = lageMit(episodeId = 7L, phase = EvidenceStock.Phase.PENDING_SEAL, fenster = true)
+        assertEquals(ExpectationLedger.ContextReason.MEAL_WINDOW_OPEN, ExpectationLedger.classify(fensterMaske).reason)
+        assertEquals(
+            ExpectationLedger.MealBasis.EVIDENCE_CONFIRMED,
+            ExpectationLedger.classify(fensterMaske).mealBasis,
+        )
+        // Marker schlaegt alles - auch mit Evidenz und Kinematik daneben.
+        val mitMarker = lageMit(episodeId = 7L, phase = EvidenceStock.Phase.ACTIVE, marker = true, onset = true)
+        assertEquals(ExpectationLedger.MealBasis.MARKER_CONFIRMED, ExpectationLedger.classify(mitMarker).mealBasis)
+    }
+
+    @Test
+    fun `nur Kinematik ist ein Verdacht, kein Beleg`() {
+        // Onset bzw. Fenster OHNE Marker und ohne Evidenzbestand: die Lage
+        // ist MEAL, aber nur kinematisch - hier darf der Korrekturschutz
+        // arbeiten (die V-Erholung faellt genau hierher).
+        val nurOnset = lageMit(episodeId = 0L, phase = EvidenceStock.Phase.NONE, onset = true)
+        assertEquals(ExpectationLedger.ExpectationContext.MEAL, ExpectationLedger.classify(nurOnset).context)
+        assertEquals(ExpectationLedger.MealBasis.KINEMATIC_ONLY, ExpectationLedger.classify(nurOnset).mealBasis)
+        val nurFenster = lageMit(episodeId = 0L, phase = EvidenceStock.Phase.DORMANT, fenster = true)
+        assertEquals(ExpectationLedger.MealBasis.KINEMATIC_ONLY, ExpectationLedger.classify(nurFenster).mealBasis)
+        // DORMANT ohne Kinematik ist gar keine Basis.
+        val ruhig = lageMit(episodeId = 4711L, phase = EvidenceStock.Phase.DORMANT)
+        assertEquals(ExpectationLedger.MealBasis.NONE, ExpectationLedger.classify(ruhig).mealBasis)
+    }
+
+    @Test
+    fun `die Basis ueberlebt jeden Ausschluss`() {
+        // Auch eine EXCLUDED-Lage kann auf einem gedrueckten Marker sitzen -
+        // der Beleg verschwindet nicht, weil das Signal stoert.
+        val gestoert = ExpectationLedger.situationOf(
+            mealMarkerActive = true, evidenceEpisodeId = 1L, evidencePhase = EvidenceStock.Phase.ACTIVE,
+            onsetActive = false, mealWindow = false, reboundWindow = true,
+            signalHealthy = true, ledgerSealed = true,
+        )
+        val kl = ExpectationLedger.classify(gestoert)
+        assertEquals(ExpectationLedger.ExpectationContext.EXCLUDED, kl.context)
+        assertEquals(ExpectationLedger.ContextReason.REBOUND, kl.reason)
+        assertEquals(ExpectationLedger.MealBasis.MARKER_CONFIRMED, kl.mealBasis, "der Beleg bleibt sichtbar")
+        // Unbekannte Eingaben belegen NICHTS - fail-closed heisst hier
+        // "keine Basis", nicht "Mahlzeit".
+        val unbekannt = ExpectationLedger.situationOf(
+            mealMarkerActive = null, evidenceEpisodeId = 0L, evidencePhase = null,
+            onsetActive = null, mealWindow = null, reboundWindow = null,
+            signalHealthy = null, ledgerSealed = null,
+        )
+        assertEquals(ExpectationLedger.MealBasis.NONE, ExpectationLedger.classify(unbekannt).mealBasis)
+    }
+
+    /**
      * DER WICHTIGSTE UEBERGANG DER GANZEN SPEZIFIKATION (Toni 18.08.):
      * offene Episode + DORMANT ergibt CORRECTION.
      *
@@ -1278,15 +1346,23 @@ class ExpectationLedgerTest {
      */
     @Test
     fun `jede ausdrueckliche Mahlzeitenlage ergibt MEAL mit ihrem Grund`() {
+        // Je Lage: der GRUND und - seit 25.08. orthogonal daneben - die
+        // BASIS. Marker und Evidenz sind BELEGE, Onset und Fenster nur
+        // Kinematik; der Korrekturschutz unterscheidet danach.
         val faelle = mapOf(
-            reineKorrektur().copy(mealMarkerActive = true) to ExpectationLedger.ContextReason.MARKER_ACTIVE,
+            reineKorrektur().copy(mealMarkerActive = true) to
+                (ExpectationLedger.ContextReason.MARKER_ACTIVE to ExpectationLedger.MealBasis.MARKER_CONFIRMED),
             reineKorrektur().copy(evidencePhase = EvidenceStock.Phase.ACTIVE) to
-                ExpectationLedger.ContextReason.EVIDENCE_ACTIVE,
-            reineKorrektur().copy(onsetActive = true) to ExpectationLedger.ContextReason.ONSET_ACTIVE,
-            reineKorrektur().copy(mealWindow = true) to ExpectationLedger.ContextReason.MEAL_WINDOW_OPEN,
+                (ExpectationLedger.ContextReason.EVIDENCE_ACTIVE to ExpectationLedger.MealBasis.EVIDENCE_CONFIRMED),
+            reineKorrektur().copy(onsetActive = true) to
+                (ExpectationLedger.ContextReason.ONSET_ACTIVE to ExpectationLedger.MealBasis.KINEMATIC_ONLY),
+            reineKorrektur().copy(mealWindow = true) to
+                (ExpectationLedger.ContextReason.MEAL_WINDOW_OPEN to ExpectationLedger.MealBasis.KINEMATIC_ONLY),
         )
-        for ((lage, grund) in faelle) assertEquals(
-            ExpectationLedger.Classification(ExpectationLedger.ExpectationContext.MEAL, grund),
+        for ((lage, erwartet) in faelle) assertEquals(
+            ExpectationLedger.Classification(
+                ExpectationLedger.ExpectationContext.MEAL, erwartet.first, erwartet.second,
+            ),
             ExpectationLedger.classify(lage), "$lage",
         )
     }
@@ -1403,6 +1479,9 @@ class ExpectationLedgerTest {
             ExpectationLedger.Classification(
                 ExpectationLedger.ExpectationContext.MEAL,
                 ExpectationLedger.ContextReason.EVIDENCE_ACTIVE,
+                // Die laufende Absorption ist ein BELEG, nicht blosse
+                // Kinematik - der Korrekturschutz haelt sich hier heraus.
+                ExpectationLedger.MealBasis.EVIDENCE_CONFIRMED,
             ),
             ExpectationLedger.classify(nachlauf),
             "die Nachlaufphase ist keine Korrektur",

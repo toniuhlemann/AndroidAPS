@@ -55,21 +55,44 @@ object FuseMarkerDialog {
         onConfirm: Runnable,
         onConfirmNoPrime: Runnable? = null,
     ) {
-        val rest = (facts.envelopeU - facts.alreadyDeliveredU).coerceAtLeast(0.0)
-        // EINE Zeile Zahlen. Der Rest steht in der Einstellungsbeschreibung -
-        // dort liest man ihn EINMAL, hier saehe man ihn mehrmals taeglich.
-        // DIE DAUER KOMMT AUS DER EINSTELLUNG (Geraetefund Toni 17.08.2026).
+        // DIE MENGEN DER AUTORISIERUNG, die dieser Druck erzeugt - eine
+        // Zeile je Anteil, Nullteile ausgeblendet (Tonis UI-P0 25.08.):
         //
-        // Hier stand "in 15 min" fest im Ressourcen-String, waehrend das
-        // Freigabe-Fenster auf 25 Minuten eingestellt war. Der Satz nennt eine
-        // MENGE und eine ZEIT; stimmt die Zeit nicht, ist die genannte Menge im
-        // falschen Zeitraum gedacht - und genau darauf gruendet der Nutzer
-        // seine Zustimmung. Ist das Fenster unbekannt, wird GAR KEINE Dauer
-        // genannt statt einer erfundenen.
+        //   3,20 U sofort angefordert
+        //   + bis 0,80 U Fundament bis 60 min
+        //   Gesamtlimit 4,00 U
+        //
+        // WAS HIER VORHER STAND, war der Zyklusanteil der alten
+        // Prime-Schrittrechnung ("0,27 U") - bei Sofortanteil 1,0 nannte
+        // der Dialog also ein Zwoelftel der Menge, die der Druck wirklich
+        // anfordert. Ein Ja auf falscher Grundlage.
+        //
+        // "ANGEFORDERT" ist bewusst gewaehlt und keine Floskel:
+        // Sicherheitsriegel, IOB-Spielraum, Aufschub und Pumpen-Gates
+        // koennen jede dieser Mengen noch kuerzen oder verschieben.
+        //
+        // DIE DAUER KOMMT AUS DER EINSTELLUNG (Geraetefund Toni 17.08.):
+        // ist das Fenster unbekannt, wird GAR KEINE Dauer genannt statt
+        // einer erfundenen.
+        // WELCHE Zeilen erscheinen, entscheidet `MarkerPrompt.lines` - dort
+        // ist es geprueft. Hier steht nur die Uebersetzung in Text.
         val text = StringBuilder(
-            facts.windowMin?.let {
-                rh.gs(R.string.overview_fuse_meal_confirm_body, facts.firstStepU, rest, it)
-            } ?: rh.gs(R.string.overview_fuse_meal_confirm_body_no_window, facts.firstStepU, rest)
+            facts.lines.joinToString("\n") { z ->
+                when (z) {
+                    is FuseOverviewSource.MarkerPromptFacts.Line.Upfront ->
+                        rh.gs(R.string.overview_fuse_meal_confirm_upfront, z.amountU)
+
+                    is FuseOverviewSource.MarkerPromptFacts.Line.Spread   ->
+                        z.windowMin?.let { rh.gs(R.string.overview_fuse_meal_confirm_spread, z.amountU, it) }
+                            ?: rh.gs(R.string.overview_fuse_meal_confirm_spread_no_window, z.amountU)
+
+                    is FuseOverviewSource.MarkerPromptFacts.Line.Foundation ->
+                        rh.gs(R.string.overview_fuse_meal_confirm_foundation, z.amountU, z.untilMin)
+
+                    is FuseOverviewSource.MarkerPromptFacts.Line.Total    ->
+                        rh.gs(R.string.overview_fuse_meal_confirm_total, z.amountU)
+                }
+            }
         )
         // Das gemessene Tief ist die dringlichste Lage, die den Druck von einem
         // gewoehnlichen unterscheidet - deshalb zuerst.
@@ -111,7 +134,13 @@ object FuseMarkerDialog {
         MaterialAlertDialogBuilder(activity, R.style.DialogTheme)
             .setMessage(text.toString())
             .setCustomTitle(AlertDialogHelper.buildCustomTitle(activity, rh.gs(R.string.overview_fuse_meal_confirm_title)))
-            .setPositiveButton(android.R.string.ok) { d: DialogInterface, _: Int -> waehle(d, onConfirm) }
+            // DIE KNOEPFE BENENNEN DIE HANDLUNG (Tonis UI-P0 25.08.):
+            // "OK" sagte nicht, dass hier Insulin freigegeben wird, und
+            // "OHNE VORSCHUSS" war gefaehrlich mehrdeutig - es klang nach
+            // "keine Sofortdosis, aber weiter verteilt", waehrend es in
+            // Wahrheit die GANZE Huelle einschliesslich Fundament auf null
+            // setzt.
+            .setPositiveButton(R.string.fuse_meal_confirm_release) { d: DialogInterface, _: Int -> waehle(d, onConfirm) }
             .setNeutralButton(R.string.fuse_meal_confirm_no_prime) { d: DialogInterface, _: Int -> waehle(d, onConfirmNoPrime) }
             .setNegativeButton(android.R.string.cancel) { d: DialogInterface, _: Int ->
                 if (!gewaehlt) { gewaehlt = true; d.dismiss() }

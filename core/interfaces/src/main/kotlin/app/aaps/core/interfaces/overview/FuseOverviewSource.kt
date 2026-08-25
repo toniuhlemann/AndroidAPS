@@ -56,8 +56,22 @@ interface FuseOverviewSource {
 
     /** Die Zahlen, die in der Rueckfrage stehen muessen. */
     data class MarkerPromptFacts(
-        /** Was der erste Zyklus hoechstens freigeben kann [U]. */
-        val firstStepU: Double,
+        /**
+         * DIE MENGENZEILEN, fertig ausgewaehlt - Nullteile sind bereits
+         * entfallen. Die Auswahl faellt in FUSE (`MarkerPrompt.lines`),
+         * damit sie geprueft ist; die Bedienoberflaeche uebersetzt nur
+         * noch in Text. ALLE Mengen sind ANFORDERUNGEN - Riegel,
+         * IOB-Spielraum, Aufschub und Pumpen-Gates koennen sie kuerzen.
+         */
+        val lines: List<Line>,
+        /** Sofort angeforderter Phase-A-Anteil [U] (0 = kein Sofortanteil). */
+        val upfrontPlannedU: Double,
+        /** Ueber das Prime-Fenster verteilter Rest von Phase A [U]. */
+        val phaseARemainderU: Double,
+        /** Fundament-Budget [U] bis [foundationEndMin]. */
+        val phaseBBudgetU: Double,
+        /** Ende des Fundament-Fensters [min ab Druck], null = kein Fundament. */
+        val foundationEndMin: Int?,
         /** Die ganze Huelle ueber das Fenster [U]. */
         val envelopeU: Double,
         /** Was diese Episode schon geliefert hat [U]. */
@@ -78,7 +92,16 @@ interface FuseOverviewSource {
         /** Laenge des Freigabe-Fensters [min] aus der EINSTELLUNG; `null` =
          *  unbekannt, dann nennt der Dialog keine Dauer statt einer falschen. */
         val windowMin: Int? = null,
-    )
+    ) {
+
+        /** Eine Mengenzeile der Rueckfrage. */
+        sealed interface Line {
+            data class Upfront(val amountU: Double) : Line
+            data class Spread(val amountU: Double, val windowMin: Int?) : Line
+            data class Foundation(val amountU: Double, val untilMin: Int) : Line
+            data class Total(val amountU: Double) : Line
+        }
+    }
 
     fun fuseMarkerArmed(now: Long): Boolean
 

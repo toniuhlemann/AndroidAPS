@@ -131,8 +131,70 @@ object ExpectationLedger {
         LEDGER_UNSEALED,
     }
 
-    /** Einordnung mit Begruendung. */
-    data class Classification(val context: ExpectationContext, val reason: ContextReason)
+    /**
+     * WORAUF DIE MAHLZEIT BERUHT - orthogonal zum [ExpectationContext]
+     * und zum [ContextReason] (Tonis Nachforderung 25.08. abends).
+     *
+     * DER ARCHITEKTURFEHLER, den diese Achse behebt: [ExpectationContext]
+     * kennt nur EIN `MEAL` und wirft damit zwei grundverschiedene Lagen
+     * zusammen - die BELEGTE Mahlzeit (der Nutzer hat den Marker
+     * gedrueckt, oder es steht eine Evidenzepisode) und die bloss
+     * KINEMATISCH VERMUTETE (r und UKF ueber der Rampen-Unterkante,
+     * also "sieht aus wie ein Anstieg"). Genau in die zweite Sorte faellt
+     * die Erholung eines Sensor-V - und ein Korrekturschutz, der jedes
+     * `MEAL` ausnimmt, kann den Vorfall vom 25.08. konstruktiv NIE
+     * verhindern.
+     *
+     * WARUM NICHT AUS [ContextReason] ABLEITBAR: `classify` priorisiert
+     * Marker vor Onset vor Fenster vor Evidenz und nennt nur den ERSTEN
+     * zutreffenden Grund. Eine aktive Evidenzepisode verschwindet damit
+     * hinter `ONSET_ACTIVE` oder `MEAL_WINDOW_OPEN` - wer die Basis aus
+     * dem Grund erschliesst, haelt eine belegte Mahlzeit faelschlich fuer
+     * kinematisch. Diese Achse wird deshalb SELBSTAENDIG bestimmt.
+     */
+    enum class MealBasis {
+
+        /** Der Nutzer hat die Mahlzeit ausdruecklich autorisiert. */
+        MARKER_CONFIRMED,
+
+        /** Gebuchte Evidenz - laufende oder eben eingetroffene Welle. */
+        EVIDENCE_CONFIRMED,
+
+        /** NUR Kinematik: Onset-Kanal oder Mahlzeitenfenster, ohne
+         *  Marker und ohne Evidenzbestand. Ein Verdacht, kein Beleg. */
+        KINEMATIC_ONLY,
+
+        /** Keine Mahlzeitenbasis - reine Korrektur oder gar keine
+         *  auswertbare Lage. */
+        NONE,
+    }
+
+    /** Einordnung mit Begruendung und - orthogonal - der Mahlzeitenbasis. */
+    data class Classification(
+        val context: ExpectationContext,
+        val reason: ContextReason,
+        val mealBasis: MealBasis = MealBasis.NONE,
+    )
+
+    /**
+     * DIE MAHLZEITENBASIS, unabhaengig von der Gruende-Reihenfolge und
+     * unabhaengig davon, ob die Lage als Ganzes auswertbar ist: auch eine
+     * EXCLUDED-Lage kann auf einem gedrueckten Marker sitzen. Unbekannte
+     * Eingaben ergeben [MealBasis.NONE] - die Entscheidung, was daraus
+     * folgt, faellt beim Aufrufer (fail-closed heisst hier nicht
+     * "Mahlzeit", sondern "keine Basis belegt").
+     *
+     * Die Rangfolge unter den BELEGEN ist bedeutungslos fuer die
+     * Schutzfrage (beide sind Belege), aber sie macht den Export
+     * eindeutig: Marker schlaegt Evidenz, Evidenz schlaegt Kinematik.
+     */
+    fun mealBasisOf(s: Situation): MealBasis = when {
+        s.mealMarkerActive == true -> MealBasis.MARKER_CONFIRMED
+        s.evidencePhase == EvidenceStock.Phase.ACTIVE ||
+            s.evidencePhase == EvidenceStock.Phase.PENDING_SEAL -> MealBasis.EVIDENCE_CONFIRMED
+        s.onsetActive == true || s.mealWindow == true -> MealBasis.KINEMATIC_ONLY
+        else -> MealBasis.NONE
+    }
 
     /**
      * DIE LAGE, aus der sich der [ExpectationContext] ergibt.
@@ -271,13 +333,17 @@ object ExpectationLedger {
         if (s.mealMarkerActive == null || s.evidencePhase == null ||
             s.onsetActive == null || s.mealWindow == null ||
             s.reboundWindow == null || s.signalHealthy == null || s.ledgerSealed == null
-        ) return Classification(ExpectationContext.EXCLUDED, ContextReason.UNKNOWN_INPUT)
+        ) return Classification(ExpectationContext.EXCLUDED, ContextReason.UNKNOWN_INPUT, mealBasisOf(s))
+        // DIE MAHLZEITENBASIS steht unabhaengig von allem Folgenden fest
+        // (Tonis Nachforderung 25.08.): sie ueberlebt jeden Ausschluss und
+        // wird NICHT von der Gruende-Reihenfolge verdeckt.
+        val basis = mealBasisOf(s)
         // ZUERST die Buchhaltung: ohne Siegel ist KEINE Aussage ueber
         // zwischenzeitliche Eingriffe moeglich - auch keine ueber eine
         // Mahlzeit. Der Grund steht deshalb vor allen anderen.
-        if (!s.ledgerSealed) return Classification(ExpectationContext.EXCLUDED, ContextReason.LEDGER_UNSEALED)
-        if (!s.signalHealthy) return Classification(ExpectationContext.EXCLUDED, ContextReason.SIGNAL_UNHEALTHY)
-        if (s.reboundWindow) return Classification(ExpectationContext.EXCLUDED, ContextReason.REBOUND)
+        if (!s.ledgerSealed) return Classification(ExpectationContext.EXCLUDED, ContextReason.LEDGER_UNSEALED, basis)
+        if (!s.signalHealthy) return Classification(ExpectationContext.EXCLUDED, ContextReason.SIGNAL_UNHEALTHY, basis)
+        if (s.reboundWindow) return Classification(ExpectationContext.EXCLUDED, ContextReason.REBOUND, basis)
         // ZWEI PHASEN SIND SELBST EIN AUSSCHLUSS. SUSPENDED heisst "wir
         // duerfen bzw. wissen gerade nicht" (gemessenes Tief, ungesundes
         // Signal, Segmentbruch), UNKNOWN heisst "die Buchfuehrung ist
@@ -285,18 +351,22 @@ object ExpectationLedger {
         // waere als Korrektur gelesen ein erfundener Nachweis.
         when (s.evidencePhase) {
             EvidenceStock.Phase.SUSPENDED ->
-                return Classification(ExpectationContext.EXCLUDED, ContextReason.EVIDENCE_SUSPENDED)
+                return Classification(ExpectationContext.EXCLUDED, ContextReason.EVIDENCE_SUSPENDED, basis)
 
             EvidenceStock.Phase.UNKNOWN   ->
-                return Classification(ExpectationContext.EXCLUDED, ContextReason.EVIDENCE_UNKNOWN)
+                return Classification(ExpectationContext.EXCLUDED, ContextReason.EVIDENCE_UNKNOWN, basis)
 
             else                          -> Unit
         }
 
         // Dann die Mahlzeitengruende - der erste zutreffende benennt sie.
-        if (s.mealMarkerActive) return Classification(ExpectationContext.MEAL, ContextReason.MARKER_ACTIVE)
-        if (s.onsetActive) return Classification(ExpectationContext.MEAL, ContextReason.ONSET_ACTIVE)
-        if (s.mealWindow) return Classification(ExpectationContext.MEAL, ContextReason.MEAL_WINDOW_OPEN)
+        // ACHTUNG: der GRUND ist priorisiert, die BASIS oben ist es nicht -
+        // hinter ONSET_ACTIVE/MEAL_WINDOW_OPEN kann sehr wohl eine
+        // Evidenzepisode stehen. Wer die Belegart wissen will, liest
+        // `mealBasis`, nie den Grund.
+        if (s.mealMarkerActive) return Classification(ExpectationContext.MEAL, ContextReason.MARKER_ACTIVE, basis)
+        if (s.onsetActive) return Classification(ExpectationContext.MEAL, ContextReason.ONSET_ACTIVE, basis)
+        if (s.mealWindow) return Classification(ExpectationContext.MEAL, ContextReason.MEAL_WINDOW_OPEN, basis)
         // NUR ZWEI PHASEN MACHEN MAHLZEIT. PENDING_SEAL heisst "eben ist
         // Evidenz eingetroffen, noch nicht versiegelt" - eine anlaufende
         // Welle, also gerade KEINE Korrektur. ACTIVE heisst versiegelter,
@@ -309,11 +379,11 @@ object ExpectationLedger {
         // PENDING_SEAL und der Kontext kippt im selben Zyklus zurueck auf
         // MEAL - ohne dass eine neue Episode noetig waere.
         if (s.evidencePhase == EvidenceStock.Phase.PENDING_SEAL)
-            return Classification(ExpectationContext.MEAL, ContextReason.EVIDENCE_PENDING_SEAL)
+            return Classification(ExpectationContext.MEAL, ContextReason.EVIDENCE_PENDING_SEAL, basis)
         if (s.evidencePhase == EvidenceStock.Phase.ACTIVE)
-            return Classification(ExpectationContext.MEAL, ContextReason.EVIDENCE_ACTIVE)
+            return Classification(ExpectationContext.MEAL, ContextReason.EVIDENCE_ACTIVE, basis)
 
-        return Classification(ExpectationContext.CORRECTION, ContextReason.PURE_CORRECTION)
+        return Classification(ExpectationContext.CORRECTION, ContextReason.PURE_CORRECTION, basis)
     }
 
     /**

@@ -256,6 +256,11 @@ class TransportWiringTest : TestBaseWithProfile() {
      *  schalten es scharf. */
     private var nightDeadband = false
 
+    /** Schaltet das Nachtband in einem Replay-Lauf AUS - auch gegen die
+     *  aufgezeichnete Politik. Fuer Ein-Variablen-Messungen, wenn das
+     *  Nachtband dieselben Zyklen nullt wie der zu messende Riegel. */
+    private var nightDeadbandAus = false
+
     /**
      * ERZWUNGENE PREDICTOR-ABLEHNUNG, `null` = echter Predictor.
      *
@@ -7051,7 +7056,7 @@ class TransportWiringTest : TestBaseWithProfile() {
             livenessReArmMin = i("livenessReArmMin", livenessReArmMin)
             nachtStartMin = i("nightStartMin", nachtStartMin)
             nachtEndeMin = i("nightEndMin", nachtEndeMin)
-            nightDeadband = b("nightDeadbandEnabled", nightDeadband)
+            nightDeadband = if (nightDeadbandAus) false else b("nightDeadbandEnabled", nightDeadband)
             // Diese drei sind im Rig FESTE Stubs - fuer den Replay auf die
             // aufgezeichnete Politik umgebogen (22.08.: Rampe 2,5, Rebound-
             // Totband 40, Prime-Fenster 20).
@@ -7092,7 +7097,7 @@ class TransportWiringTest : TestBaseWithProfile() {
         // die Karte ist seit dem Zeitzonen-Fix oben ebenfalls lokal gefuellt
         // - eine Uhr fuer beide Seiten.
 
-        fun lauf(name: String, fensterMs: Long?, trendRegel: String? = null, fenster: Int = 18, ratioCap: Double = 1.0, livenessStart: Boolean = true, profilCapsBehalten: Boolean = false, upfrontStart: Double = 0.0, guardsStart: Boolean = false): File {
+        fun lauf(name: String, fensterMs: Long?, trendRegel: String? = null, fenster: Int = 18, ratioCap: Double = 1.0, livenessStart: Boolean = true, profilCapsBehalten: Boolean = false, upfrontStart: Double = 0.0, guardsStart: Boolean = false, reversalConfirm: Int = 2): File {
             transportReset()
             boluses = emptyList()
             markerAt = 0L
@@ -7125,6 +7130,7 @@ class TransportWiringTest : TestBaseWithProfile() {
             // die Matrix steuert, nicht die aufgezeichnete Politik.
             reversalAn = guardsStart
             rearmAn = guardsStart
+            reversalConfirmWert = reversalConfirm
             forecastShadowAn = false // Replay braucht die Matrizen nicht - Tempo
             livenessRatioDeckel = ratioCap // v23: aufgezeichnete v22-Politik traegt den Schluessel nicht - der Hebel gilt
             theilSenFensterMin = fenster // W18-Trails tragen den Schluessel nicht - der Hebel gilt
@@ -7134,7 +7140,7 @@ class TransportWiringTest : TestBaseWithProfile() {
             neuerRunner(adapter, fensterMs = fensterMs, trendRegel = trendRegel)
             val outFile = File(outDir, "replay_$name.csv")
             outFile.printWriter().use { w ->
-                w.println("ts;smbU;block;binding;insulinReq;liftU;needU;abort;phase;fastD;slowD;trend;raw;recSmbU;recBlock;profil;restMin;tbr;latch;lvDenial;lvExit;lvStreak;lvHead;transC;revGrund;rearmGrund;ctxGrund")
+                w.println("ts;smbU;block;binding;insulinReq;liftU;needU;abort;phase;fastD;slowD;trend;raw;recSmbU;recBlock;profil;restMin;tbr;latch;lvDenial;lvExit;lvStreak;lvHead;transC;revGrund;rearmGrund;ctxGrund;basis")
                 var prevMarker = 0L
                 var polText = pol?.toString()
                 var zyklusNr = 0
@@ -7186,6 +7192,7 @@ class TransportWiringTest : TestBaseWithProfile() {
                         // damit im Replay pruefbar ist, dass in
                         // EVIDENCE_ACTIVE-Zyklen kein Riegel steht.
                         o.correctionContextReason ?: "",
+                        o.correctionMealBasis ?: "",
                     ).joinToString(";"))
                 }
             }
@@ -7216,6 +7223,31 @@ class TransportWiringTest : TestBaseWithProfile() {
             if (modus == "blind") {
                 lauf("blindA", null, fenster = 10)
                 lauf("blindB", null, fenster = 10)
+                return
+            }
+            // CONFIRM-MATRIX: FUSE_REPLAY_GUARDS=confirm:2,3,4,6 faehrt
+            // denselben Tag mit verschiedenen r-Bestaetigungszyklen des
+            // V-Riegels. Erst seit die Kontextsperre korrigiert ist
+            // (Mahlzeitenbasis statt jedes MEAL), kann dieser Parameter
+            // ueberhaupt wirken - vorher band die Kontextgrenze frueher.
+            // OHNE NACHTBAND: am Vorfallstag nullt das Nachtband dieselben
+            // Zyklen, in denen der V-Riegel steht (06:25-06:28) - eine
+            // Doppelverteidigung, die die Riegelwirkung im Replay
+            // unsichtbar macht. Dieser Lauf schaltet NUR das Nachtband in
+            // BEIDEN Laeufen ab und misst den Riegel allein.
+            if (modus == "nonight") {
+                nightDeadbandAus = true
+                lauf("nonightAus", null, fenster = 10)
+                lauf("nonightAn", null, fenster = 10, guardsStart = true)
+                nightDeadbandAus = false
+                return
+            }
+            if (modus.startsWith("confirm:")) {
+                lauf("confirmAus", null, fenster = 10)
+                modus.removePrefix("confirm:").split(",").forEach { c ->
+                    val n = c.trim().toInt()
+                    lauf("confirm%02d".format(n), null, fenster = 10, guardsStart = true, reversalConfirm = n)
+                }
                 return
             }
             lauf("guardsAus", null, fenster = 10)
@@ -7671,41 +7703,98 @@ class TransportWiringTest : TestBaseWithProfile() {
     }
 
     /**
-     * v30-PFLICHTFALL P0.2 im vollen Pfad: der Riegel gibt ab, sobald die
-     * AUTORITATIVE Klassifikation die Lage als Mahlzeit fuehrt - auch
-     * wenn seine eigene r-Bestaetigung noch laeuft. Der Riegel wird dafuer
-     * absichtlich lang scharf gestellt (sechs Bestaetigungszyklen); ohne
-     * die autoritative Ableitung wuerde er in die Mahlzeitenphase
-     * hineinriegeln. Genau das trennt die neue Ableitung von der alten
-     * Rekonstruktion (die nur Marker/Frist/Fundament kannte und ein
-     * kinematisch offenes Fenster nicht sah).
+     * PFLICHTPRUEFUNG 5 (Tonis Nachforderung 25.08. abends): ein NUR
+     * KINEMATISCH vermutetes Mahlzeitenfenster nimmt dem Riegel den
+     * Schutz NICHT.
+     *
+     * DAS WAR DER ARCHITEKTURFEHLER: `ExpectationContext.MEAL` wirft die
+     * belegte Mahlzeit (Marker, Evidenz) und die bloss vermutete (r/UKF
+     * ueber der Rampenkante) zusammen. Genau als vermutete Mahlzeit wird
+     * die Erholung eines Sensor-V eingestuft - ein Schutz, der jedes
+     * `MEAL` ausnimmt, kann den Vorfall vom 25.08. konstruktiv nie
+     * verhindern. Der Riegel wird hier absichtlich lang scharf gestellt
+     * (sechs Bestaetigungszyklen), damit die Kurve ins Fenster laeuft,
+     * WAEHREND er noch traegt.
      */
     @Test
-    fun `der v-riegel gibt im mahlzeitenfenster ab`(@TempDir dir: File) {
+    fun `der v-riegel traegt auch im nur kinematischen mahlzeitenfenster`(@TempDir dir: File) {
         reversalLage(dir)
         reversalAn = true
         reversalConfirmWert = 6 // laenger scharf als die Kurve braucht
         val outs = (0 until 56).map { cycle() }
 
-        val mahlzeitZyklen = outs.filter {
+        val kinematisch = outs.filter { it.correctionMealBasis == "KINEMATIC_ONLY" }
+        assertTrue(kinematisch.isNotEmpty()) {
+            "die Lage muss in ein kinematisches Fenster laufen - " +
+                outs.mapNotNull { it.correctionMealBasis }.distinct().joinToString(" ")
+        }
+        // Der Kontext ist MEAL, die Basis aber nur Kinematik - hier MUSS
+        // der Schutz weiterarbeiten duerfen.
+        val imFenster = kinematisch.filter {
             it.correctionContextReason == "MEAL_WINDOW_OPEN" || it.correctionContextReason == "ONSET_ACTIVE"
         }
-        assertTrue(mahlzeitZyklen.isNotEmpty()) {
-            "die Lage muss in ein Mahlzeitenfenster laufen - " +
-                outs.mapNotNull { it.correctionContextReason }.distinct().joinToString(" ")
+        assertTrue(imFenster.isNotEmpty(), "genau die Fenster-Zyklen sind gemeint")
+        imFenster.forEach { o ->
+            assertTrue(o.correctionContext) {
+                "kinematische Mahlzeit ist KEIN Ausschluss fuer den Korrekturschutz " +
+                    "(Grund=${o.correctionContextReason}, Basis=${o.correctionMealBasis})"
+            }
         }
-        // In diesen Zyklen ist die r-Bestaetigung noch NICHT erfuellt -
-        // nur der Kontext nimmt den Riegel heraus.
-        val unbestaetigt = mahlzeitZyklen.filter { (it.correctionReversal?.rConfirmStreak ?: 0) < 6 }
-        assertTrue(unbestaetigt.isNotEmpty(), "sonst pruefte der Test nur die r-Bestaetigung")
-        unbestaetigt.forEach { o ->
-            assertFalse(o.correctionContext, "Mahlzeitenfenster ist kein Korrekturkontext")
-            assertTrue(o.correctionReversal?.blocks != true,
-                "der Riegel darf im Mahlzeitenfenster nicht tragen (Grund=${o.correctionReversal?.reason})")
+        // Und er traegt dort auch wirklich: mindestens ein Block-Zyklus
+        // liegt im kinematischen Fenster.
+        val blockImFenster = imFenster.filter { it.correctionReversal?.blocks == true }
+        assertTrue(blockImFenster.isNotEmpty()) {
+            "der Riegel muss im kinematischen Fenster tragen - " +
+                imFenster.joinToString(" ") { "${it.correctionContextReason}/${it.correctionReversal?.reason}" }
+        }
+        blockImFenster.forEach { o ->
+            assertEquals(0.0, o.decision.smbU, 1e-9, "und dort keine Dosis tragen")
+            assertTrue(o.decision.bindingLimit.contains("REVERSAL_"))
+        }
+    }
+
+    /**
+     * PFLICHTPRUEFUNG 4 im vollen Pfad: eine BELEGTE Mahlzeit nimmt den
+     * Schutz heraus, auch waehrend parallel Onset und Fenster offen sind.
+     *
+     * DEN REINEN MASKIERUNGSFALL - Grund nennt `ONSET_ACTIVE`, Basis
+     * traegt `EVIDENCE_CONFIRMED` - prueft
+     * `ExpectationLedgerTest.die Mahlzeitenbasis wird von Onset und
+     * Fenster nicht verdeckt` an der Klassifikation selbst; im Rig laesst
+     * er sich nicht herstellen, weil eine Evidenzepisode ohne Marker eine
+     * gewachsene Absorptionsgeschichte braucht. An ECHTEN Zyklen deckt
+     * ihn der Mahlzeiten-Gegenlauf ab (22.08.: 231 EVIDENCE_ACTIVE-Zyklen,
+     * kein einziger Riegel-Tag).
+     */
+    @Test
+    fun `eine belegte mahlzeit hinter der kinematik nimmt den schutz heraus`(@TempDir dir: File) {
+        reversalLage(dir)
+        reversalAn = true
+        reversalConfirmWert = 6
+        markerAuthorized = true
+        // Der Marker faellt in die Erholung: ab dort ist die Mahlzeit
+        // BELEGT, auch wenn parallel Onset/Fenster offen sind.
+        val outs = (0 until 56).map { i ->
+            if (i == 38) markerAt = clock + 60_000L
+            cycle()
+        }
+        val belegt = outs.drop(39).filter {
+            it.correctionMealBasis == "MARKER_CONFIRMED" || it.correctionMealBasis == "EVIDENCE_CONFIRMED"
+        }
+        assertTrue(belegt.isNotEmpty()) {
+            "die Lage muss belegte Mahlzeit tragen - " +
+                outs.drop(39).mapNotNull { it.correctionMealBasis }.distinct().joinToString(" ")
+        }
+        // Die Kinematik laeuft parallel weiter (das V klingt aus) - der
+        // Beleg gewinnt trotzdem.
+        belegt.forEach { o ->
+            assertFalse(o.correctionContext) {
+                "belegte Mahlzeit nimmt den Schutz heraus (Grund=${o.correctionContextReason}, " +
+                    "Basis=${o.correctionMealBasis})"
+            }
+            assertTrue(o.correctionReversal?.blocks != true)
             assertFalse(o.decision.bindingLimit.contains("REVERSAL_"))
         }
-        assertTrue(unbestaetigt.any { it.decision.smbU > 0.0 },
-            "und die Mahlzeitendosen fliessen")
     }
 
     /**

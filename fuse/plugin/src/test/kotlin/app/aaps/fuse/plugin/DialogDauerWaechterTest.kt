@@ -47,13 +47,49 @@ class DialogDauerWaechterTest {
      */
     @Test
     fun `der Marker-Dialog nennt die Dauer als Parameter`() {
-        val zeile = uiStrings().lines()
-            .first { it.contains("overview_fuse_meal_confirm_body\"") }
-        assertTrue(zeile.contains("%3\$d")) {
-            "die Dauer fehlt als Parameter - der Text kann die Einstellung nicht abbilden: $zeile"
+        // Seit dem UI-P0 vom 25.08. steht eine Zeile JE ANTEIL. Beide
+        // Zeilen mit Zeitangabe muessen die Dauer als PARAMETER fuehren -
+        // die verteilte Phase A (Freigabe-Fenster) und das Fundament
+        // (Fundament-Ende).
+        listOf(
+            "overview_fuse_meal_confirm_spread\"" to "%2\$d",
+            "overview_fuse_meal_confirm_foundation\"" to "%2\$d",
+        ).forEach { (schluessel, parameter) ->
+            val zeile = uiStrings().lines().first { it.contains(schluessel) }
+            assertTrue(zeile.contains(parameter)) {
+                "die Dauer fehlt als Parameter - der Text kann die Einstellung nicht abbilden: $zeile"
+            }
+            assertFalse(Regex("""\d+\s*min""").containsMatchIn(zeile)) {
+                "eine feste Minutenzahl im Dialogtext: $zeile"
+            }
         }
-        assertFalse(Regex("""\d+\s*min""").containsMatchIn(zeile)) {
-            "eine feste Minutenzahl im Dialogtext: $zeile"
+    }
+
+    /**
+     * DIE MENGEN SIND ANFORDERUNGEN, keine Zusagen (UI-P0 25.08.).
+     *
+     * Der Dialog nannte "0,27 U" aus der alten Prime-Schrittrechnung,
+     * waehrend bei Sofortanteil 1,0 in Wahrheit der ganze Phase-A-Betrag
+     * unmittelbar angefordert wird. Seither zeigt er die Anteile der
+     * gepinnten Autorisierung - und der positive Knopf muss benennen,
+     * dass hier INSULIN freigegeben wird.
+     */
+    @Test
+    fun `der Dialog benennt Anforderung und Insulinfreigabe`() {
+        val s = uiStrings()
+        assertTrue(s.contains("overview_fuse_meal_confirm_upfront")) { "die Sofort-Zeile fehlt" }
+        assertTrue(s.contains("overview_fuse_meal_confirm_total")) { "das Gesamtlimit fehlt" }
+        val sofort = s.lines().first { it.contains("overview_fuse_meal_confirm_upfront\"") }
+        assertTrue(sofort.contains("angefordert")) {
+            "die Menge muss als ANFORDERUNG benannt sein - Riegel, IOB und Gates koennen kuerzen: $sofort"
+        }
+        val freigabe = s.lines().first { it.contains("fuse_meal_confirm_release\"") }
+        assertTrue(freigabe.contains("Insulin")) {
+            "der positive Knopf muss die Insulinfreigabe benennen: $freigabe"
+        }
+        val null0 = s.lines().first { it.contains("fuse_meal_confirm_no_prime\"") }
+        assertTrue(null0.contains("0 U")) {
+            "die Nullwahl muss unmissverstaendlich 0 U nennen: $null0"
         }
     }
 
@@ -64,7 +100,7 @@ class DialogDauerWaechterTest {
      */
     @Test
     fun `es gibt eine Fassung ohne Dauer`() {
-        assertTrue(uiStrings().contains("overview_fuse_meal_confirm_body_no_window")) {
+        assertTrue(uiStrings().contains("overview_fuse_meal_confirm_spread_no_window")) {
             "die Fassung ohne bekanntes Fenster fehlt"
         }
     }

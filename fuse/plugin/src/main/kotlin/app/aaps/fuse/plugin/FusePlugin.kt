@@ -12,6 +12,7 @@ import androidx.preference.PreferenceScreen
 import app.aaps.fuse.core.controller.InterventionStamp
 import app.aaps.fuse.core.controller.MarkerPrompt
 import app.aaps.fuse.core.controller.MarkerTimeline
+import app.aaps.fuse.core.controller.MealFoundation
 import app.aaps.fuse.core.controller.PrimeRelease
 import app.aaps.core.data.plugin.PluginType
 import app.aaps.core.interfaces.aps.APS
@@ -698,15 +699,41 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
         val huelle = mealMarkerEnvelopeU()
         val letzter = lastOutcome
         val geliefert = letzter?.mealStats?.totalU ?: 0.0
-        // MIT maxSmb GEDECKELT (Toni am Geraet): der Plan-Boden allein ignoriert
-        // ihn, und maxSmb ist eine konfigurierbare Zahl - bei kleinem maxSmb und
-        // grosser Huelle haette der Dialog eine Menge versprochen, die der Regler
-        // nie abgeben kann. Weiterhin eine OBERGRENZE: iobTH, maxIOB, die
-        // Onset-Huelle und die Pumpenschrittweite kappen zusaetzlich, aendern
-        // sich aber im Minutentakt und gehoeren nicht in einen Knopfdialog.
-        val zyklus = letzter?.prime?.floorU?.takeIf { it > 0.0 }
-            ?: (huelle - geliefert).coerceAtLeast(0.0) / PrimeRelease.WINDOW_MIN
-        val schritt = minOf(zyklus, preferences.get(FuseDoubleKey.MaxSmbU))
+        // DIE MENGEN AUS DER AUTORISIERUNG, DIE DER DRUCK ERZEUGEN WUERDE
+        // (Tonis UI-P0 vom 25.08. abends) - berechnet mit DERSELBEN
+        // Funktion, die der Runner beim Armen aufruft, mit denselben
+        // Einstellungen. Kein zweiter Rechenweg, kein `firstStepU`, kein
+        // fest verdrahtetes 15-Minuten-Fenster mehr.
+        //
+        // WARUM DAS NOETIG WAR: der Dialog nannte den Zyklusanteil der
+        // alten Prime-Schrittrechnung ("0,27 U"), waehrend bei
+        // Sofortanteil 1,0 in Wahrheit der ganze Phase-A-Betrag sofort
+        // angefordert wird (3,20 U bei Huelle 4,0 und Phase-A-Anteil 0,8).
+        val fensterMin = preferences.get(FuseIntKey.PrimeWindowMin)
+        val fundamentEndeMin = preferences.get(FuseIntKey.MealFoundationEndMin)
+        val vorschau = MealFoundation.arm(
+            markerTs = now,
+            foundationEnabled = preferences.get(FuseBooleanKey.MealFoundationEnabled),
+            totalBudgetU = huelle,
+            phaseAShare = preferences.get(FuseDoubleKey.MealFoundationPhaseAShare),
+            phaseAUpfrontShare = preferences.get(FuseDoubleKey.MealFoundationPhaseAUpfrontShare),
+            primeWindowMin = fensterMin,
+            wallCeilingMin = PrimeRelease.WALL_CEILING_MIN,
+            phaseBUntilMin = fundamentEndeMin,
+            markerAuthorized = preferences.get(FuseBooleanKey.MarkerAuthorisesRelease),
+            // VORSCHAU: der Druck geschieht in diesem Moment, und "ohne
+            // Vorschuss" waehlt der Nutzer erst IM Dialog. Beides hier
+            // bejaht, sonst rechnete die Vorschau eine leere Autorisierung.
+            pressObservedInThisProcess = true,
+            primeDeclinedByUser = false,
+        )
+        // OHNE FUNDAMENT bleibt es beim reinen Prime-Verhalten: die ganze
+        // (Rest-)Huelle laeuft verteilt ueber das Fenster, kein
+        // Sofortanteil, kein Fundament-Budget.
+        val restHuelle = (huelle - geliefert).coerceAtLeast(0.0)
+        val sofortU = if (vorschau.valid) vorschau.phaseAUpfrontU else 0.0
+        val verteiltU = if (vorschau.valid) vorschau.phaseARemainderU else restHuelle
+        val fundamentU = if (vorschau.valid) vorschau.phaseBBudgetU else 0.0
         // FREMDES INSULIN - eigene Abfrage, und das ist hier KEIN Bruch der
         // Regel oben. Jene verbietet einen zweiten Rechenweg fuer eine
         // Groesse, die der Regler bereits fuehrt. Manuelles Insulin fuehrt er
@@ -724,7 +751,10 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
         }.getOrNull()
 
         val fakten = MarkerPrompt.Facts(
-            firstStepU = schritt,
+            upfrontPlannedU = sofortU,
+            phaseARemainderU = verteiltU,
+            phaseBBudgetU = fundamentU,
+            foundationEndMin = fundamentEndeMin.takeIf { vorschau.valid && fundamentU > 0.0 },
             envelopeU = huelle,
             alreadyDeliveredU = geliefert,
             authorizesAgainstModel = preferences.get(FuseBooleanKey.MarkerAuthorisesRelease),
@@ -734,7 +764,7 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
             // holt sie ueber denselben Schluessel) - keine zweite Quelle fuer
             // dieselbe Zahl, sonst laufen Text und Verhalten wieder
             // auseinander.
-            windowMin = preferences.get(FuseIntKey.PrimeWindowMin).takeIf { it > 0 },
+            windowMin = fensterMin.takeIf { it > 0 },
             // Aus DEMSELBEN Zyklus wie die uebrigen Zahlen - kein zweiter
             // Rechenweg. Nur wenn die Uhr wirklich knapp wird (Fall 1 des
             // Audit-Nachtrags: die zweite Mahlzeit erbte den Topf der ersten
@@ -747,7 +777,20 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
         )
         return MarkerPrompt.required(armed = mealMarkerActive(now), facts = fakten)?.let {
             FuseOverviewSource.MarkerPromptFacts(
-                firstStepU = it.firstStepU,
+                // Die Zeilenauswahl kommt aus FUSE - die Bedienoberflaeche
+                // uebersetzt sie nur noch.
+                lines = MarkerPrompt.lines(it).map { z ->
+                    when (z) {
+                        is MarkerPrompt.Line.Upfront    -> FuseOverviewSource.MarkerPromptFacts.Line.Upfront(z.amountU)
+                        is MarkerPrompt.Line.Spread     -> FuseOverviewSource.MarkerPromptFacts.Line.Spread(z.amountU, z.windowMin)
+                        is MarkerPrompt.Line.Foundation -> FuseOverviewSource.MarkerPromptFacts.Line.Foundation(z.amountU, z.untilMin)
+                        is MarkerPrompt.Line.Total      -> FuseOverviewSource.MarkerPromptFacts.Line.Total(z.amountU)
+                    }
+                },
+                upfrontPlannedU = it.upfrontPlannedU,
+                phaseARemainderU = it.phaseARemainderU,
+                phaseBBudgetU = it.phaseBBudgetU,
+                foundationEndMin = it.foundationEndMin,
                 envelopeU = it.envelopeU,
                 alreadyDeliveredU = it.alreadyDeliveredU,
                 authorizesAgainstModel = it.authorizesAgainstModel,

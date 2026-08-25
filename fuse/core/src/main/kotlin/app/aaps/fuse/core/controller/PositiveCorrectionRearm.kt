@@ -46,6 +46,22 @@ object PositiveCorrectionRearm {
     const val REASON_HOLD = "REARM_HOLD"
     const val REASON_UNCONFIRMED = "REARM_UP_UNCONFIRMED"
 
+    /**
+     * HOECHSTDAUER des Nachlaufs als Vielfaches von `holdMin`.
+     *
+     * GEMESSENER ANLASS (Replay 25.08.): bleibt die Aufwaertslage
+     * dauerhaft unbestaetigt, haengt ein Anker unbegrenzt nach und
+     * riegelt Minuten spaeter in einer voellig anderen Lage - die Kante
+     * lag 08:00, geriegelt wurde noch 08:23-08:26. Ein Kanteneffekt ist
+     * nach dem Dreifachen der Frist vorbei; was dann noch dosiert werden
+     * will, ist gewoehnliche Korrektur.
+     *
+     * ALS VIELFACHES und nicht als eigene Einstellung: die Groesse ist
+     * kein unabhaengiger Regler, sondern die Aussage "der Nachlauf endet
+     * spaetestens dann". Wer die Frist stellt, stellt sie mit.
+     */
+    const val MAX_HOLD_FACTOR = 3
+
     /** Ein Uebergang ankert den Nachlauf NEU (Zaehler nullt) - die
      *  juengste Kante zaehlt, ihre Quelle wird exportiert. */
     fun anker(track: Track, nowTs: Long, quelle: Source): Track =
@@ -87,6 +103,12 @@ object PositiveCorrectionRearm {
         val holdBisTs = track.ankerTs + holdMin * 60_000L
         val imNachlauf = nowTs < holdBisTs
         val bestaetigt = streak >= confirmCycles
+        // HOECHSTDAUER: der Anker verfaellt spaetestens nach
+        // [MAX_HOLD_FACTOR] x Frist, auch ohne Bestaetigung und ohne
+        // Kontextwechsel - sonst haengt eine nie bestaetigte Kante
+        // unbegrenzt nach (s. MAX_HOLD_FACTOR).
+        if (nowTs >= track.ankerTs + MAX_HOLD_FACTOR.toLong() * holdMin * 60_000L)
+            return Track() to Result(false, source = track.quelle, upConfirmStreak = streak)
 
         // FREIGABE beendet den Anker ganz - der naechste Uebergang beginnt
         // frisch. Der Riegel wirkt nur im Korrekturkontext, der Zustand

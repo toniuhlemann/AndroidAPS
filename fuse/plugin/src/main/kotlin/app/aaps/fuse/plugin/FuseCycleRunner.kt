@@ -754,6 +754,11 @@ class FuseCycleRunner(
         /** Der ContextReason der autoritativen Klassifikation (Review-
          *  P0.2) - Diagnose, warum der Kontext (nicht) Korrektur war. */
         val correctionContextReason: String? = null,
+        /** Die orthogonale MAHLZEITENBASIS derselben Klassifikation -
+         *  worauf die Mahlzeit beruht (Beleg oder blosse Kinematik). Sie
+         *  entscheidet zusammen mit dem Kontext ueber die Schutzfreigabe
+         *  und ist NICHT aus dem Grund erschliessbar. */
+        val correctionMealBasis: String? = null,
         /** Ob der Zyklus im REINEN Korrekturkontext lief (kein Marker,
          *  keine MEAL-Frist, keine Fundament-Phase). */
         val correctionContext: Boolean = false,
@@ -3128,13 +3133,8 @@ class FuseCycleRunner(
         // KONTEXT AUS DER AUTORITATIVEN FUNKTION (Review-P0.2): dieselbe
         // ExpectationLedger.classify, die den exportierten
         // ExpectationContext bestimmt - keine zweitgefuehrte
-        // Rekonstruktion mehr. Damit haelt eine aktive Evidenz-MEAL den
-        // Kontext auch NACH Ablauf der Markerfrist (EVIDENCE_ACTIVE),
-        // und ein offenes Mahlzeitenfenster (MEAL_WINDOW_OPEN) nimmt den
-        // Riegel heraus. EXCLUDED-Lagen (Rebound, Signal, SUSPENDED,
-        // UNKNOWN) blocken ebenfalls NICHT - genullt wird nur im BEJAHTEN
-        // Korrekturkontext. Das Ledger-Siegel kennt erst das Plugin nach
-        // der Publikation; wie bei der Liveness-Kette deckt der
+        // Rekonstruktion mehr. Das Ledger-Siegel kennt erst das Plugin
+        // nach der Publikation; wie bei der Liveness-Kette deckt der
         // LEDGER_HOLD-Zustand dessen Ausfall (hold geht unten in die
         // Lage-Gesundheit ein), deshalb hier ledgerSealed = true.
         // NUR die SMB-Menge OHNE Marker-Grant wird genullt; TBR und alle
@@ -3152,8 +3152,29 @@ class FuseCycleRunner(
                 ledgerSealed = true,
             ),
         )
-        val korrekturKontext =
-            kontextLage.context == ExpectationLedger.ExpectationContext.CORRECTION
+        // DIE SCHUTZFREIGABE (Tonis Nachforderung 25.08. abends) haengt an
+        // ZWEI autoritativen Achsen, beide aus derselben Klassifikation -
+        // hier wird NICHTS neu abgeleitet und NICHTS aus dem Grundtext
+        // erschlossen:
+        //
+        //   Kontext CORRECTION            -> Schutz erlaubt
+        //   Kontext MEAL, Basis KINEMATIC -> Schutz erlaubt (nur Verdacht:
+        //                                    r/UKF ueber der Rampenkante,
+        //                                    genau die V-Erholung)
+        //   Basis MARKER_/EVIDENCE_CONF.  -> NIE (belegte Mahlzeit)
+        //   Kontext EXCLUDED              -> NIE (keine auswertbare Lage)
+        //
+        // Der Unterschied zur Vorfassung ist der Vorfallskern: sie nahm
+        // JEDES `MEAL` heraus und konnte den 25.08. deshalb konstruktiv
+        // nicht verhindern. Die Basis wird SELBSTAENDIG bestimmt, damit
+        // eine Evidenzepisode nicht hinter ONSET_ACTIVE/MEAL_WINDOW_OPEN
+        // verschwindet (Maskierungsfall).
+        val korrekturKontext = when {
+            kontextLage.context == ExpectationLedger.ExpectationContext.EXCLUDED -> false
+            kontextLage.mealBasis == ExpectationLedger.MealBasis.MARKER_CONFIRMED -> false
+            kontextLage.mealBasis == ExpectationLedger.MealBasis.EVIDENCE_CONFIRMED -> false
+            else -> true
+        }
         val (revTrack, reversal) = CorrectionReversalGuard.advance(
             track = episodes.correctionReversal,
             enabled = cfg.reversalGuardEnabled,
@@ -4124,6 +4145,7 @@ class FuseCycleRunner(
             correctionRearm = rearm,
             correctionContext = korrekturKontext,
             correctionContextReason = kontextLage.reason.name,
+            correctionMealBasis = kontextLage.mealBasis.name,
             zeroLatchOverrode = zeroLatchUebersteuert,
             livenessReleaseMeanMgdl = livenessReleaseMeanMgdl,
             livenessBgMinEffectiveMgdl = livenessBgMinEffective,

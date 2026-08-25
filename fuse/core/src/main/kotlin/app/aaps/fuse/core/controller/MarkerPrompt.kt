@@ -29,9 +29,14 @@ package app.aaps.fuse.core.controller
 object MarkerPrompt {
 
     /**
-     * @param firstStepU was der erste Zyklus hoechstens freigeben kann - der
-     *   gerasterte Zyklusanteil der Huelle, nicht die Huelle selbst.
-     * @param envelopeU die GANZE Huelle ueber das Fenster.
+     * @param upfrontPlannedU der SOFORTANTEIL von Phase A [U] - was der
+     *   Druck unmittelbar anfordert (iLet-Prinzip). 0 = kein Sofortanteil,
+     *   dann laeuft alles verteilt.
+     * @param phaseARemainderU der ueber das Prime-Fenster VERTEILTE Rest
+     *   von Phase A [U].
+     * @param phaseBBudgetU das Fundament-Budget [U] bis zum Fensterende.
+     * @param foundationEndMin Ende des Fundament-Fensters [min ab Druck].
+     * @param envelopeU die GANZE Huelle = Gesamtlimit dieser Episode.
      * @param alreadyDeliveredU was diese Episode bereits geliefert hat. > 0
      *   heisst: der Nutzer armt gerade NACH einer Teillieferung nach, und die
      *   Huelle ist entsprechend kleiner.
@@ -41,7 +46,25 @@ object MarkerPrompt {
      * @param measuredLow ob JETZT ein gemessenes Tief vorliegt.
      */
     data class Facts(
-        val firstStepU: Double,
+        /**
+         * DIE DREI MENGEN DER GEPINNTEN AUTORISIERUNG (Tonis UI-P0 vom
+         * 25.08. abends). Sie ersetzen den frueheren `firstStepU`.
+         *
+         * DER BEFUND: der Dialog nannte "0,27 U" - den Zyklusanteil aus
+         * der alten Prime-Schrittrechnung -, waehrend bei Sofortanteil
+         * 1,0 tatsaechlich 3,20 U unmittelbar angefordert wurden. Der
+         * Nutzer bestaetigte also eine Groessenordnung, die der Dialog
+         * nicht nannte. Zusaetzlich teilte der Ersatzweg durch feste 15
+         * Minuten, obwohl das Fenster auf 20 stand.
+         *
+         * ALLE DREI SIND ANFORDERUNGEN, keine Zusagen: Sicherheitsriegel,
+         * IOB-Spielraum, Aufschub und Pumpen-Gates koennen sie kuerzen
+         * oder verschieben. Der Text muss das sagen.
+         */
+        val upfrontPlannedU: Double,
+        val phaseARemainderU: Double,
+        val phaseBBudgetU: Double,
+        val foundationEndMin: Int?,
         val envelopeU: Double,
         val alreadyDeliveredU: Double,
         val authorizesAgainstModel: Boolean,
@@ -88,6 +111,45 @@ object MarkerPrompt {
          */
         val windowMin: Int? = null,
     )
+
+    /**
+     * DIE MENGENZEILEN DES DIALOGS - typisiert, damit die Auswahl
+     * pruefbar ist und nicht in einer Android-Klasse ohne Test steckt
+     * (Tonis UI-P0 25.08.). Die Uebersetzung in Text bleibt in der
+     * Bedienoberflaeche; WELCHE Zeilen mit WELCHEN Mengen erscheinen,
+     * entscheidet sich hier.
+     */
+    sealed interface Line {
+
+        /** Sofort angeforderter Phase-A-Anteil. */
+        data class Upfront(val amountU: Double) : Line
+
+        /** Ueber das Freigabe-Fenster verteilter Rest von Phase A.
+         *  `windowMin = null` heisst: Fenster unbekannt, dann wird KEINE
+         *  Dauer genannt statt einer erfundenen. */
+        data class Spread(val amountU: Double, val windowMin: Int?) : Line
+
+        /** Fundament-Budget bis zum Fensterende. */
+        data class Foundation(val amountU: Double, val untilMin: Int) : Line
+
+        /** Das Gesamtlimit dieser Episode. */
+        data class Total(val amountU: Double) : Line
+    }
+
+    /**
+     * Welche Mengenzeilen der Dialog zeigt. NULLTEILE ENTFALLEN - bei
+     * Sofortanteil 1,0 gibt es keine "verteilt"-Zeile, bei 0,0 keine
+     * "sofort"-Zeile, und ohne Fundament keine Fundament-Zeile. Das
+     * Gesamtlimit steht IMMER, es ist die Zahl, gegen die der Nutzer
+     * seine Zustimmung abwaegt.
+     */
+    fun lines(f: Facts): List<Line> = buildList {
+        if (f.upfrontPlannedU > 0.0) add(Line.Upfront(f.upfrontPlannedU))
+        if (f.phaseARemainderU > 0.0) add(Line.Spread(f.phaseARemainderU, f.windowMin))
+        if (f.phaseBBudgetU > 0.0 && f.foundationEndMin != null)
+            add(Line.Foundation(f.phaseBBudgetU, f.foundationEndMin))
+        add(Line.Total((f.envelopeU - f.alreadyDeliveredU).coerceAtLeast(0.0)))
+    }
 
     /** Fenster, in dem ein manueller Bolus als "zu dieser Mahlzeit" gilt. */
     const val FOREIGN_WINDOW_MIN = 60

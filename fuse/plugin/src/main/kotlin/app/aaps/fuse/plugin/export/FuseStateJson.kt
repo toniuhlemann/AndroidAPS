@@ -782,6 +782,11 @@ object FuseStateJson {
                 // Klassifikation (ExpectationLedger.classify) - warum der
                 // Kontext (nicht) Korrektur war.
                 .put("contextReason", outcome.correctionContextReason ?: JSONObject.NULL)
+                // Die orthogonale Mahlzeitenbasis: MARKER_CONFIRMED /
+                // EVIDENCE_CONFIRMED (Beleg - nie Schutz) gegen
+                // KINEMATIC_ONLY / NONE (Verdacht bzw. Korrektur - Schutz
+                // erlaubt). Nicht aus contextReason erschliessbar.
+                .put("mealBasis", outcome.correctionMealBasis ?: JSONObject.NULL)
                 .put(
                     "reversal",
                     outcome.correctionReversal?.let { r ->
