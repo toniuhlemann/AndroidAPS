@@ -2296,7 +2296,6 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
                     "Unabhaengig von Marker und Mahlzeitenfenster."
             )
             addPreference(AdaptiveSwitchPreference(ctx = context, booleanKey = FuseBooleanKey.LivenessChannelEnabled, summary = R.string.fuse_liveness_summary, title = R.string.fuse_liveness_title))
-            addPreference(AdaptiveSwitchPreference(ctx = context, booleanKey = FuseBooleanKey.SignalRejoinEnabled, summary = R.string.fuse_signal_rejoin_summary, title = R.string.fuse_signal_rejoin_title))
             addPreference(AdaptiveIntPreference(ctx = context, intKey = FuseIntKey.LivenessMealPowerMin, dialogMessage = R.string.fuse_liveness_meal_power_summary, title = R.string.fuse_liveness_meal_power_title))
             addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.LivenessMealRatioCap, dialogMessage = R.string.fuse_liveness_meal_ratio_summary, title = R.string.fuse_liveness_meal_ratio_title))
             addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.LivenessMealIobCapPercent, dialogMessage = R.string.fuse_liveness_meal_iob_summary, title = R.string.fuse_liveness_meal_iob_title))
@@ -2320,6 +2319,7 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
             addPreference(AdaptiveIntPreference(ctx = context, intKey = FuseIntKey.DriveTauMin, dialogMessage = R.string.fuse_drive_tau_summary, title = R.string.fuse_drive_tau_title))
             addPreference(AdaptiveIntPreference(ctx = context, intKey = FuseIntKey.DriveLowerQuantilePct, dialogMessage = R.string.fuse_drive_quantile_summary, title = R.string.fuse_drive_quantile_title))
             addPreference(AdaptiveIntPreference(ctx = context, intKey = FuseIntKey.TheilSenWindowMin, dialogMessage = R.string.fuse_theil_sen_window_summary, title = R.string.fuse_theil_sen_window_title))
+            addPreference(AdaptiveSwitchPreference(ctx = context, booleanKey = FuseBooleanKey.SignalRejoinEnabled, summary = R.string.fuse_signal_rejoin_summary, title = R.string.fuse_signal_rejoin_title))
             addPreference(AdaptiveSwitchPreference(ctx = context, booleanKey = FuseBooleanKey.TbrEndZeroWhenReasonGone, summary = R.string.fuse_end_zero_summary, title = R.string.fuse_end_zero_title))
             // ZERO-TBR-SCHUTZ als gemeinsamer Unterblock (Toni 24.08.): der
             // Latch arbeitet ganztaegig (nicht "Nacht und Rebound") und
