@@ -91,6 +91,24 @@
     <string name="fuse_meal_foundation_summary">Verteilt die Freigabe-Huelle zeitlich, statt sie sofort ganz freizugeben. Phase A liefert wie bisher im Freigabe-Fenster, Phase B laeuft danach als MINDESTVERSORGUNG nach: sie legt nichts obendrauf, sondern fuellt nur auf, was der normale Regler nicht schon liefert. Das GEMEINSAME Budget bleibt die Freigabe-Huelle - die beiden Phasen teilen sie, sie addieren sich nicht. Aus: die Huelle wirkt wie bisher.</string>
     <string name="fuse_meal_foundation_share_title">Anteil Phase A</string>
     <string name="fuse_meal_foundation_share_summary">Welcher Teil der Huelle sofort freigegeben wird. 1,0 = alles sofort, also das heutige Verhalten. 0,75 heisst: drei Viertel im Freigabe-Fenster, ein Viertel verteilt ueber das Fundament-Fenster danach. Kleinere Werte verschieben mehr Insulin nach hinten - das entschaerft die fruehe IOB-Spitze, liefert dafuer spaeter.</string>
+    <string name="fuse_reversal_guard_title">V-Reversal-Schutz (Korrektur)</string>
+    <string name="fuse_reversal_guard_summary">Nach einem steilen Fall loest eine schnelle Gegenbewegung KEINE Korrektur-SMBs aus, solange das robuste r negativ oder unbestaetigt ist (Pflichtfall 25.08.: 1,75 U auf die Erholung eines Sensor-V bei r -0,82). Nur im reinen Korrekturkontext - Marker, Prime, Fundament und MEAL-Frist bleiben unberuehrt. Kein Nachholbolus.</string>
+    <string name="fuse_reversal_fall_title">Reversal: Fall-Schwelle [mg/dl/min]</string>
+    <string name="fuse_reversal_fall_summary">So steil muss der Fall im Rueckblick gewesen sein (UKF-Minimum), damit der Schutz ueberhaupt bewaffnet (Pflichtfall: -2,81).</string>
+    <string name="fuse_reversal_lookback_title">Reversal: Rueckblick [min]</string>
+    <string name="fuse_reversal_lookback_summary">So lange traegt das Fall-Minimum den Schutz (Pflichtfall: Minimum 11 min vor der ersten fraglichen Dosis).</string>
+    <string name="fuse_reversal_rebound_title">Reversal: Gegenbewegung [mg/dl/min]</string>
+    <string name="fuse_reversal_rebound_summary">Ab dieser schnellen Erholungsrate (UKF) gilt die Lage als V-Gegenbewegung (Pflichtfall: +4,0).</string>
+    <string name="fuse_reversal_confirm_title">Reversal: r-Bestaetigung [Zyklen]</string>
+    <string name="fuse_reversal_confirm_summary">So viele ZUSAMMENHAENGENDE Zyklen muss das robuste r positiv sein, bevor die Erholung als echter Anstieg gilt und Korrektur wieder frei ist (Luecke ueber 90 s nullt).</string>
+    <string name="fuse_rearm_title">Freigabe-Nachlauf (Korrektur)</string>
+    <string name="fuse_rearm_summary">Das Ende einer verriegelten Null (Zero-Latch loest) oder des Nachtfensters oeffnet positive Korrektur-SMBs NICHT in der naechsten Minute: erst nach Mindestdauer UND kurz bestaetigter Aufwaertslage (Pflichtfall 25.08.: 0,35 U direkt nach der 08:00-Kante, BG fiel danach). Nur im reinen Korrekturkontext; der Zero-Latch bleibt als zweite Schutzlinie unveraendert.</string>
+    <string name="fuse_rearm_hold_title">Nachlauf: Mindestdauer [min]</string>
+    <string name="fuse_rearm_hold_summary">So lange bleiben positive Korrektur-SMBs nach der Kante mindestens zu.</string>
+    <string name="fuse_rearm_confirm_title">Nachlauf: Aufwaerts-Zyklen</string>
+    <string name="fuse_rearm_confirm_summary">So viele zusammenhaengende Aufwaertszyklen (ab der Kante gezaehlt) braucht die Freigabe zusaetzlich zur Mindestdauer.</string>
+    <string name="fuse_rearm_up_title">Nachlauf: Aufwaerts-Schwelle [mg/dl/min]</string>
+    <string name="fuse_rearm_up_summary">Ab dieser UKF-Rate zaehlt ein Zyklus als Aufwaertslage.</string>
     <string name="fuse_meal_foundation_upfront_title">Phase A Sofortanteil</string>
     <string name="fuse_meal_foundation_upfront_summary">Welcher Teil des Phase-A-Budgets beim Markerdruck SOFORT als eine Dosis angefordert wird statt linear ueber das Freigabe-Fenster (iLet-Prinzip: die Menge ist nicht zu klein, sie kommt zu spaet). 0,00 = heutiges Verhalten. Beispiel bei 3,75 U Huelle und A-Anteil 0,80: 0,75 heisst 2,25 U sofort + 0,75 U verteilt. Die Sofortdosis wird nicht von max Einzel-SMB zerteilt; Gesamtbudget, maxIOB, harte Riegel und Pumpengrenzen bleiben unveraendert. Gepinnt beim Druck - eine Aenderung wirkt erst auf den naechsten Marker. Das Freigabe-Fenster bleibt die Phasengrenze zu Phase B.</string>
     <string name="fuse_liveness_title">Liveness-Kanal</string>

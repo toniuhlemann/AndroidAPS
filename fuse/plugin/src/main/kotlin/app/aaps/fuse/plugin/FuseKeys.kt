@@ -178,6 +178,22 @@ enum class FuseDoubleKey(
      */
     MealFoundationPhaseAUpfrontShare("fuse_meal_foundation_phase_a_upfront_share", 0.0, 0.0, 1.0),
 
+    /**
+     * V-REVERSAL-SCHUTZ (Bauauftrag Toni 25.08., Pflichtfall 06:27): die
+     * Fall-Schwelle [mg/dl/min] - so tief muss das UKF-Minimum im
+     * Rueckblick gelegen haben, damit "steiler Fall" gilt (Pflichtfall:
+     * -2,81). Nur Korrekturkontext; s. CorrectionReversalGuard.
+     */
+    ReversalFallUkf("fuse_reversal_fall_ukf", 2.0, 0.5, 5.0),
+
+    /** Gegenbewegungs-Schwelle [mg/dl/min] - ab dieser schnellen
+     *  Erholungsrate greift der Riegel (Pflichtfall: +4,0). */
+    ReversalReboundUkf("fuse_reversal_rebound_ukf", 1.0, 0.2, 5.0),
+
+    /** Nachlauf-Bestaetigung: UKF-Schwelle der Aufwaertslage nach
+     *  Zero-Latch-/Nachtende [mg/dl/min]. */
+    RearmUpUkf("fuse_rearm_up_ukf", 0.3, 0.0, 2.0),
+
 
     /**
      * Obergrenze eines einzelnen SMB, in Einheiten.
@@ -438,6 +454,26 @@ enum class FuseIntKey(
      *  Medtrum-Zyklen zaehlt der Zaehler LANGSAMER als die Uhr - die
      *  konservative Richtung. Die UI sagt ehrlich "Ruhe-Zyklen". */
     ZeroLatchCalmExitMin("fuse_zero_latch_calm_exit_min", 20, 5, 120),
+
+    /** V-Reversal-Schutz: Rueckblickfenster [min], in dem das
+     *  Fall-Minimum den Riegel traegt (Pflichtfall: Minimum 11 min vor
+     *  der ersten fraglichen Dosis). */
+    ReversalLookbackMin("fuse_reversal_lookback_min", 20, 5, 45),
+
+    /** V-Reversal-Schutz: so viele ZUSAMMENHAENGENDE Zyklen muss das
+     *  robuste r positiv sein, bevor die Erholung als echter Anstieg
+     *  gilt (90-s-Anschluss; Pflichtfall: r -0,82 im Dosierzyklus). */
+    ReversalConfirmCycles("fuse_reversal_confirm_cycles", 2, 1, 6),
+
+    /** Freigabe-Nachlauf: Mindestdauer [min] nach Zero-Latch-Loesung
+     *  bzw. Nachtende, in der positive Korrektur-SMBs zu bleiben
+     *  (Pflichtfall: 0,35 U in den ersten 4 Minuten nach der Kante). */
+    RearmHoldMin("fuse_rearm_hold_min", 5, 1, 30),
+
+    /** Freigabe-Nachlauf: so viele zusammenhaengende Aufwaertszyklen
+     *  (UKF >= RearmUpUkf) braucht die Freigabe ZUSAETZLICH zur
+     *  Mindestdauer - gezaehlt ab der Kante. */
+    RearmConfirmCycles("fuse_rearm_confirm_cycles", 2, 1, 6),
 
     /**
      * iobTH als PROZENT von maxIOB (Variante B, K2-C v0.2 §13).
@@ -760,6 +796,27 @@ enum class FuseBooleanKey(
      * (latchZeroOnly-Weg im Translator). Restartfest; Default AUS.
      */
     ZeroLatchEnabled("fuse_zero_latch_enabled", false),
+
+    /**
+     * V-REVERSAL-SCHUTZ, nur im Korrekturkontext (Bauauftrag Toni 25.08.,
+     * Pflichtfall 06:27-06:33: 1,75 U auf die Erholung eines Sensor-V bei
+     * robustem r -0,82). Nach steilem Fall loest eine schnelle
+     * Gegenbewegung keine Korrektur-SMBs aus, solange das robuste r
+     * negativ oder unbestaetigt ist. Kein Carry; Mahlzeitenpfade
+     * (Marker/Prime/Fundament/Liveness-MEAL) bleiben unberuehrt.
+     * Default AUS.
+     */
+    CorrectionReversalGuardEnabled("fuse_correction_reversal_guard_enabled", false),
+
+    /**
+     * FREIGABE-NACHLAUF nach Zero-Latch-Loesung/Nachtende, nur im
+     * Korrekturkontext (Pflichtfall 08:00-08:03: 0,35 U in der ersten
+     * Minute nach der Nachtband-Kante, BG fiel danach auf 106). Die Kante
+     * oeffnet positive Korrektur-SMBs erst nach Mindestdauer UND
+     * zusammenhaengend bestaetigter Aufwaertslage. Der Zero-Latch bleibt
+     * als zweite Schutzlinie unveraendert. Default AUS.
+     */
+    PositiveCorrectionRearmEnabled("fuse_positive_correction_rearm_enabled", false),
 
     /**
      * DAS MAHLZEITENFUNDAMENT - DEFAULT AUS.

@@ -46,6 +46,7 @@ import app.aaps.fuse.core.controller.DescentDeferredCarry
 import app.aaps.fuse.core.controller.MealFoundation
 import app.aaps.fuse.core.controller.LivenessChannel
 import app.aaps.fuse.core.controller.OnsetChannel
+import app.aaps.fuse.core.controller.PositiveCorrectionRearm
 import app.aaps.fuse.core.controller.TurnResponseShadow
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
@@ -476,6 +477,15 @@ class TransportWiringTest : TestBaseWithProfile() {
         whenever(preferences.get(FuseBooleanKey.MealFoundationEnabled)).thenAnswer { fundamentAn }
         whenever(preferences.get(FuseDoubleKey.MealFoundationPhaseAShare)).thenAnswer { fundamentAnteil }
         whenever(preferences.get(FuseDoubleKey.MealFoundationPhaseAUpfrontShare)).thenAnswer { upfrontAnteil }
+        whenever(preferences.get(FuseBooleanKey.CorrectionReversalGuardEnabled)).thenAnswer { reversalAn }
+        whenever(preferences.get(FuseDoubleKey.ReversalFallUkf)).thenReturn(2.0)
+        whenever(preferences.get(FuseIntKey.ReversalLookbackMin)).thenReturn(20)
+        whenever(preferences.get(FuseDoubleKey.ReversalReboundUkf)).thenReturn(1.0)
+        whenever(preferences.get(FuseIntKey.ReversalConfirmCycles)).thenReturn(2)
+        whenever(preferences.get(FuseBooleanKey.PositiveCorrectionRearmEnabled)).thenAnswer { rearmAn }
+        whenever(preferences.get(FuseIntKey.RearmHoldMin)).thenReturn(5)
+        whenever(preferences.get(FuseIntKey.RearmConfirmCycles)).thenReturn(2)
+        whenever(preferences.get(FuseDoubleKey.RearmUpUkf)).thenReturn(0.3)
         whenever(preferences.get(FuseIntKey.MealFoundationEndMin)).thenAnswer { fundamentEndeMin }
         whenever(preferences.get(LongKey.FslCalibrationStart)).thenReturn(-1L)
         whenever(preferences.get(FuseLongKey.MealMarkerStamp)).thenReturn(0L)
@@ -502,6 +512,10 @@ class TransportWiringTest : TestBaseWithProfile() {
     /** Hebel fuer ein GESPERRTES Pumpen-Gate (z.B. Sofortanteil-Test 9:
      *  armiert, aber nichts aktuiert). Default offen wie bisher. */
     private var pumpeBelegt = false
+
+    /** Korrekturpfad-Riegel (v30). Default AUS wie am Geraet. */
+    private var reversalAn = false
+    private var rearmAn = false
 
     private fun testPumpe() = FuseActivePump(
         "GENERIC_AAPS", virtualPump = true, bolusStepU = 0.05, basalStepUPerH = 0.05,
@@ -7057,7 +7071,7 @@ class TransportWiringTest : TestBaseWithProfile() {
         // die Karte ist seit dem Zeitzonen-Fix oben ebenfalls lokal gefuellt
         // - eine Uhr fuer beide Seiten.
 
-        fun lauf(name: String, fensterMs: Long?, trendRegel: String? = null, fenster: Int = 18, ratioCap: Double = 1.0, livenessStart: Boolean = true, profilCapsBehalten: Boolean = false, upfrontStart: Double = 0.0): File {
+        fun lauf(name: String, fensterMs: Long?, trendRegel: String? = null, fenster: Int = 18, ratioCap: Double = 1.0, livenessStart: Boolean = true, profilCapsBehalten: Boolean = false, upfrontStart: Double = 0.0, guardsStart: Boolean = false): File {
             transportReset()
             boluses = emptyList()
             markerAt = 0L
@@ -7085,6 +7099,11 @@ class TransportWiringTest : TestBaseWithProfile() {
             // Dieselbe Leck-Regel fuer den Sofortanteil (v28): alte Trails
             // tragen den Schluessel nicht, jeder Lauf startet explizit.
             upfrontAnteil = upfrontStart
+            // Dieselbe Leck-Regel fuer die Korrekturpfad-Riegel (v30);
+            // politikAnwenden liest die Guard-Schluessel bewusst NICHT ein -
+            // die Matrix steuert, nicht die aufgezeichnete Politik.
+            reversalAn = guardsStart
+            rearmAn = guardsStart
             forecastShadowAn = false // Replay braucht die Matrizen nicht - Tempo
             livenessRatioDeckel = ratioCap // v23: aufgezeichnete v22-Politik traegt den Schluessel nicht - der Hebel gilt
             theilSenFensterMin = fenster // W18-Trails tragen den Schluessel nicht - der Hebel gilt
@@ -7094,7 +7113,7 @@ class TransportWiringTest : TestBaseWithProfile() {
             neuerRunner(adapter, fensterMs = fensterMs, trendRegel = trendRegel)
             val outFile = File(outDir, "replay_$name.csv")
             outFile.printWriter().use { w ->
-                w.println("ts;smbU;block;binding;insulinReq;liftU;needU;abort;phase;fastD;slowD;trend;raw;recSmbU;recBlock;profil;restMin;tbr;latch;lvDenial;lvExit;lvStreak;lvHead;transC")
+                w.println("ts;smbU;block;binding;insulinReq;liftU;needU;abort;phase;fastD;slowD;trend;raw;recSmbU;recBlock;profil;restMin;tbr;latch;lvDenial;lvExit;lvStreak;lvHead;transC;revGrund;rearmGrund")
                 var prevMarker = 0L
                 var polText = pol?.toString()
                 var zyklusNr = 0
@@ -7137,6 +7156,11 @@ class TransportWiringTest : TestBaseWithProfile() {
                         o.livenessDenial ?: "", o.livenessExit ?: "", o.livenessStreak.toString(),
                         o.livenessHeadroomU?.let { h -> "%.3f".format(java.util.Locale.US, h) } ?: "",
                         "",
+                        // v30: die GERECHNETEN Riegel-Gruende - auch dort, wo
+                        // der SMB schon aus anderem Grund 0 war (im Replay ist
+                        // das die Doppelverteidigung mit dem Nachtband).
+                        o.correctionReversal?.reason ?: "",
+                        o.correctionRearm?.reason ?: "",
                     ).joinToString(";"))
                 }
             }
@@ -7152,6 +7176,15 @@ class TransportWiringTest : TestBaseWithProfile() {
             zeroLatchAn = true
             lauf("latchAn", null, fenster = 10)
             zeroLatchAn = false
+            return
+        }
+        System.getenv("FUSE_REPLAY_GUARDS")?.let {
+            // Korrekturpfad-Riegel-Gegenrechnung (v30): derselbe Tag einmal
+            // ohne und einmal mit beiden Schutzlinien. Rueckkopplungsblind -
+            // belastbar sind die Block-Zyklen (binding traegt REVERSAL_/
+            // REARM_) und der Zeitpunkt der ersten Abweichung.
+            lauf("guardsAus", null, fenster = 10)
+            lauf("guardsAn", null, fenster = 10, guardsStart = true)
             return
         }
         val profilEnv = System.getenv("FUSE_REPLAY_PROFILE")
@@ -7482,6 +7515,179 @@ class TransportWiringTest : TestBaseWithProfile() {
         )
         assertEquals(0.30, combineMit(true).decision.smbU, 1e-9, "Latch-Null laesst den SMB frei")
         assertEquals(0.0, combineMit(false).decision.smbU, 1e-9, "echter Sicherheitsbefund sperrt weiter")
+    }
+
+    /**
+     * V-REVERSAL-LAGE (Bauauftrag Toni 25.08.): flach, steiler Fall unter
+     * die -2,0er-Schwelle, dann steile Gegenbewegung - der 06:27-Kern
+     * verkleinert. Ohne Marker, ohne Fundament, IOB 0 (die Ueberdeckung
+     * soll NICHT der Grund fuers Nichtdosieren sein).
+     */
+    private fun reversalLage(dir: File) {
+        zeroLatchAn = false
+        livenessAn = false
+        markerAuthorized = false
+        markerAt = 0L
+        fundamentAn = false
+        tailGuard = true
+        flach = 170.0
+        steigungProMin = 0.0
+        knickAbMin = 10
+        // Der kausale UKF daempft die Kurvensteigung auf ~55% - fuer ein
+        // Fall-Minimum unter der -2,0er-Schwelle braucht die Bahn -4,5/min
+        // (gemessen: -2,5-Bahn -> UKF-Minimum nur -1,40).
+        steigungNachKnick = -4.5
+        knick2AbMin = 18
+        steigungNachKnick2 = 3.5
+        bolusIobU = 0.0
+        clock = start
+        transportReset()
+        val adapter = FuseLedgerAdapter().also { it.loadOnce(dir.also(File::mkdirs), "test-epoch", start) }
+        neuerRunner(adapter)
+    }
+
+    /**
+     * v30-PFLICHTFALL 1 (06:27-06:33): nach dem steilen Fall traegt die
+     * schnelle Gegenbewegung keine Korrektur-SMBs, solange das robuste r
+     * negativ oder unbestaetigt ist. NUR die Menge ohne Grant faellt; die
+     * TBR-Achse ist in beiden Laeufen bitgleich. Nach der r-Bestaetigung
+     * fliesst es wieder - kein Carry, keine globale r/UKF-Verschaerfung.
+     */
+    @Test
+    fun `correction-reversal-guard blockt die v-erholung bis r bestaetigt`(@TempDir dir: File) {
+        reversalLage(File(dir, "aus"))
+        reversalAn = false
+        val ohne = (0 until 40).map { cycle() }
+        reversalLage(File(dir, "an"))
+        reversalAn = true
+        val mit = (0 until 40).map { cycle() }
+
+        // Vorbedingung: die Lage dosiert ueberhaupt (sonst ist der Test leer).
+        val dosierwunsch = ohne.indices.filter { it > 18 && ohne[it].decision.smbU > 0.0 }
+        assertTrue(dosierwunsch.isNotEmpty(), "die Gegenbewegung muss ohne Guard SMBs ausloesen - " +
+            ohne.mapIndexed { i, o -> "$i:${"%.2f".format(o.decision.smbU)}" }.joinToString(" "))
+
+        // Der Riegel muss in dieser Lage RECHNEN und BLOCKEN: schneller
+        // Gegenzug bei negativem/unbestaetigtem r - der 06:27-Kern.
+        val blockZyklen = mit.indices.filter { mit[it].correctionReversal?.blocks == true }
+        assertTrue(blockZyklen.isNotEmpty()) {
+            "die V-Erholung muss den Riegel tragen - " + mit.drop(19).take(15)
+                .joinToString(" ") { "${it.correctionReversal?.reason}/min=${it.correctionReversal?.fallMinUkf}" }
+        }
+        assertTrue(blockZyklen.any { mit[it].correctionReversal?.reason == "REVERSAL_R_NEGATIVE" },
+            "mindestens ein Block bei noch NEGATIVEM r (der Vorfallskern)")
+        blockZyklen.forEach { i ->
+            assertEquals(0.0, mit[i].decision.smbU, 1e-9,
+                "Block-Zyklus $i traegt keinen SMB (binding=${mit[i].decision.bindingLimit})")
+            assertTrue(mit[i].correctionContext, "reiner Korrekturkontext (Zyklus $i)")
+        }
+        // Die Wirkung ist real: mindestens ein Block-Zyklus, in dem der
+        // ungeschuetzte Lauf dosiert haette - typisiert im Limit.
+        val verhindert = blockZyklen.filter { ohne[it].decision.smbU > 0.0 }
+        assertTrue(verhindert.isNotEmpty(), "der Riegel muss reale Dosen verhindern - ohne-Lauf: " +
+            dosierwunsch.joinToString(" ") { "$it:${"%.2f".format(ohne[it].decision.smbU)}" })
+        verhindert.forEach { i ->
+            assertTrue(mit[i].decision.bindingLimit.contains("REVERSAL_"),
+                "Block-Zyklus $i ohne typisierten Grund: ${mit[i].decision.bindingLimit}")
+        }
+        // Ungeblockte Zyklen sind bitgleich; die TBR-Achse IMMER.
+        mit.indices.forEach { i ->
+            if (i !in blockZyklen) assertEquals(ohne[i].decision.smbU, mit[i].decision.smbU, 1e-9, "smb bitgleich (Zyklus $i)")
+            assertEquals(ohne[i].decision.tbr, mit[i].decision.tbr, "die TBR-Achse bleibt unberuehrt (Zyklus $i)")
+        }
+
+        // FREIGABE: nach der r-Bestaetigung fliesst es auch im Guard-Lauf -
+        // erst Block, dann Dosen, kein Carry.
+        val frei = mit.indices.filter { it > blockZyklen.first() && mit[it].decision.smbU > 0.0 }
+        assertTrue(frei.isNotEmpty()) {
+            "bestaetigtes r muss die Korrektur wieder freigeben - " +
+                mit.drop(19).joinToString(" ") { "${it.correctionReversal?.reason}/${"%.2f".format(it.decision.smbU)}" }
+        }
+        assertTrue(frei.first() > blockZyklen.last(), "erst Block, dann Freigabe")
+        assertTrue((mit[frei.first()].correctionReversal?.rConfirmStreak ?: 0) >= 2,
+            "die Freigabe kommt aus der r-Bestaetigung")
+    }
+
+    /**
+     * v30-GEGENPROBE (Tonis Auflage): ein ECHTER frueher Mahlzeitenanstieg
+     * darf nicht gebremst werden. Dieselbe V-Lage, aber der Marker kommt
+     * an der Wende - der Kontext faellt, kein einziger Zyklus traegt einen
+     * REVERSAL-Tag, und nach dem Marker fliessen Dosen.
+     */
+    @Test
+    fun `der marker nimmt der v-erholung den korrekturkontext`(@TempDir dir: File) {
+        reversalLage(dir)
+        reversalAn = true
+        val outs = (0 until 40).map { i ->
+            if (i == 18) markerAt = clock + 60_000L // Druck an der Wende
+            cycle()
+        }
+        assertTrue(outs.none { it.decision.bindingLimit.contains("REVERSAL_") }) {
+            "Mahlzeitenpfade bleiben ausdruecklich unberuehrt: " +
+                outs.first { it.decision.bindingLimit.contains("REVERSAL_") }.decision.bindingLimit
+        }
+        assertTrue(outs.drop(19).none { it.correctionContext }, "der Marker beendet den Korrekturkontext")
+        assertTrue(outs.drop(19).any { it.decision.smbU > 0.0 },
+            "der Schutz darf das FCL nicht bremsen - nach dem Marker muessen Dosen fliessen")
+    }
+
+    /**
+     * v30-PFLICHTFALL 2 (08:00-08:03): die Zero-Latch-Loesung oeffnet
+     * positive Korrektur-SMBs erst nach der Mindestdauer UND bestaetigter
+     * Aufwaertslage - nicht in der ersten Minute nach einer Stunde
+     * verriegelter Null. Ohne Schalter fliesst es sofort (Vorbedingung).
+     */
+    @Test
+    fun `positive-correction-rearm haelt die latch-loesung zurueck`(@TempDir dir: File) {
+        fun lauf(an: Boolean, unterDir: String): Pair<List<FuseCycleRunner.Outcome>, Int> {
+            latchLage(File(dir, unterDir), an = true, knick2 = 2.5, knick2Ab = 26)
+            rearmAn = an
+            reversalAn = false
+            var geloestBei = -1
+            val outs = (0 until 55).map { i ->
+                val o = cycle()
+                if (geloestBei < 0 && o.zeroLatchReason == "RECOVERED") {
+                    geloestBei = i
+                    bolusIobU = 0.0 // die Ueberdeckung endet mit der Loesung
+                }
+                o
+            }
+            assertTrue(geloestBei > 0, "die Erholung muss den Latch loesen ($unterDir)")
+            return outs to geloestBei
+        }
+
+        val (ohne, geloestOhne) = lauf(an = false, unterDir = "aus")
+        // Vorbedingung: ohne Nachlauf will der Regler im 4-Zyklen-Fenster
+        // dosieren (Anker = Loesezyklus; holdMin 5 min ab Anker deckt die
+        // Zyklen +1..+4, der +5te ist die Fristkante selbst).
+        val fenster = (geloestOhne + 1)..(geloestOhne + 4)
+        val wunsch = fenster.filter { ohne[it].decision.smbU > 0.0 }
+        assertTrue(wunsch.isNotEmpty(), "ohne Nachlauf muss im Fenster dosiert werden - " +
+            fenster.joinToString(" ") { "$it:${"%.2f".format(ohne[it].decision.smbU)}" })
+
+        val (mit, geloestMit) = lauf(an = true, unterDir = "an")
+        assertEquals(geloestOhne, geloestMit, "die Loesung selbst ist schalterunabhaengig")
+        // Der Nachlauf traegt: im Fenster keine einzige positive Dosis -
+        // insbesondere NICHT in der ersten Minute nach der Kante (08:00-Kern).
+        ((geloestMit + 1)..(geloestMit + 4)).forEach { i ->
+            assertEquals(0.0, mit[i].decision.smbU, 1e-9,
+                "Zyklus $i liegt im Nachlauf (binding=${mit[i].decision.bindingLimit})")
+            assertTrue(mit[i].correctionRearm?.blocks == true, "Zyklus $i muss als Nachlauf gerechnet sein")
+            assertEquals(PositiveCorrectionRearm.Source.ZERO_LATCH_RELEASED, mit[i].correctionRearm?.source)
+        }
+        val getagt = ((geloestMit + 1)..(geloestMit + 4)).filter { ohne[it].decision.smbU > 0.0 }
+        getagt.forEach { i ->
+            assertTrue(mit[i].decision.bindingLimit.contains("REARM_"),
+                "Block-Zyklus $i ohne typisierten Grund: ${mit[i].decision.bindingLimit}")
+        }
+        // An der Fristkante gibt die laengst bestaetigte Aufwaertslage frei.
+        assertTrue(mit.drop(geloestMit + 5).any { it.decision.smbU > 0.0 },
+            "nach Frist und Bestaetigung muss es wieder fliessen - " +
+                mit.drop(geloestMit + 5).take(12).joinToString(" ") { "${it.correctionRearm?.reason}/${"%.2f".format(it.decision.smbU)}" })
+        // Die TBR-Achse bleibt in beiden Laeufen bitgleich.
+        mit.indices.forEach { i ->
+            assertEquals(ohne[i].decision.tbr, mit[i].decision.tbr, "TBR bitgleich (Zyklus $i)")
+        }
     }
 
     /**

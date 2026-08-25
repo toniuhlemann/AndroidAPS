@@ -56,7 +56,9 @@ import app.aaps.fuse.core.controller.EvidenceStock
 import app.aaps.fuse.core.controller.MarkerFallback
 import app.aaps.fuse.core.controller.MealFoundation
 import app.aaps.fuse.core.controller.MarkerFloor
+import app.aaps.fuse.core.controller.CorrectionReversalGuard
 import app.aaps.fuse.core.controller.DescentRecoveryLatch
+import app.aaps.fuse.core.controller.PositiveCorrectionRearm
 import app.aaps.fuse.core.controller.DescentDeferredCarry
 import app.aaps.fuse.core.controller.MeasuredDescentGate
 import app.aaps.fuse.core.controller.OnsetChannel
@@ -744,6 +746,14 @@ class FuseCycleRunner(
         /** v29: Ausloese-Zaehler des Fall-Verdikts (2 aufeinanderfolgende
          *  qualifizierende Zyklen zuenden; Unterbrechung nullt). */
         val zeroLatchArmStreak: Int = 0,
+        /** Korrekturpfad-Riegel (25.08.): die vollstaendigen Urteile beider
+         *  Schutzlinien - null, wenn der Pfad sie nicht gerechnet hat
+         *  (Fallback/Abort). */
+        val correctionReversal: CorrectionReversalGuard.Result? = null,
+        val correctionRearm: PositiveCorrectionRearm.Result? = null,
+        /** Ob der Zyklus im REINEN Korrekturkontext lief (kein Marker,
+         *  keine MEAL-Frist, keine Fundament-Phase). */
+        val correctionContext: Boolean = false,
         val zeroLatchOverrode: Boolean = false,
         /** Die BASIS-Ratio des Kanals VOR dem Profildeckel (Toni 24.08.):
          *  im MEAL-Profil die R-Rampe, im CORRECTION-Profil die
@@ -3101,7 +3111,78 @@ class FuseCycleRunner(
         // ausschliesslich Ergebnis der Nutzenpruefung - "Basal zurueckhalten
         // hilft nicht mehr" und "mehr Bolus ist sicher" sind zwei
         // verschiedene Aussagen, und ihre Vermischung war der Befund.
-        val nachRiegel = MeasuredDescentGate.apply(vorRiegel, descentLatch.blocksPositive)
+        val nachDescent = MeasuredDescentGate.apply(vorRiegel, descentLatch.blocksPositive)
+
+        // ---- KORREKTURPFAD-RIEGEL (Bauauftrag Toni 25.08.) ---------------
+        //
+        // ZWEI getrennte, Default-AUS-Schutzlinien fuer den REINEN
+        // Korrekturkontext - Pflichtfall 25.08. frueh: (1) 1,75 U ab 06:27
+        // auf die Erholung eines Sensor-V (UKF +4,0 bei robustem r -0,82);
+        // (2) 0,35 U ab 08:00 in der ersten Minute nach der
+        // Nachtband-Kante, direkt nach einer Stunde verriegelter Null.
+        //
+        // KONTEXT: nur ohne aktiven Marker, ohne Prime-Fenster, ohne
+        // Fundament-Phase und ohne MEAL-Frist - Mahlzeitenpfade bleiben
+        // ausdruecklich unberuehrt, r/UKF werden NICHT global haerter.
+        // NUR die SMB-Menge OHNE Marker-Grant wird genullt; TBR und alle
+        // markerfinanzierten Anteile bleiben. Kein Carry. Der Zero-Latch
+        // bleibt als zweite Schutzlinie unveraendert.
+        val foundationPhaseJetzt = MealFoundation.phaseOf(
+            episodes.foundation, computeTs, episodes.primeWindowStartTs,
+        )
+        // Die MEAL-Frist inline aus den persistierten Feldern (die
+        // markerPowerActive-Groesse entsteht erst spaeter im Zyklus; im
+        // frischen Druckzyklus deckt mealMarkerActive den Kontext).
+        val markerPowerJetzt = episodes.markerPowerPinnedFor > 0L &&
+            episodes.markerPowerPinnedFor == markerTs &&
+            computeTs >= episodes.markerPowerPinnedFor &&
+            computeTs < episodes.markerPowerDeadlineTs
+        val korrekturKontext = !mealMarkerActive &&
+            !markerPowerJetzt &&
+            foundationPhaseJetzt != MealFoundation.Phase.PHASE_A &&
+            foundationPhaseJetzt != MealFoundation.Phase.PHASE_B
+        val (revTrack, reversal) = CorrectionReversalGuard.advance(
+            track = reversalTrack,
+            enabled = cfg.reversalGuardEnabled,
+            nowTs = signal.sourceTs,
+            ukfNow = signal.ukfRatePerMin,
+            rNow = signal.rSigned,
+            korrekturKontext = korrekturKontext,
+            fallThresholdUkf = cfg.reversalFallUkf,
+            lookbackMin = cfg.reversalLookbackMin,
+            reboundThresholdUkf = cfg.reversalReboundUkf,
+            confirmCycles = cfg.reversalConfirmCycles,
+        )
+        reversalTrack = revTrack
+        // Die NACHT-KANTE ankert im Uebergangszyklus selbst; die
+        // Zero-Latch-Loesung ankert beim Loesen in der Latch-Stage (einen
+        // Zyklus versetzt - konservativ spaeter, nie frueher).
+        val nightJetzt = state.nightWindow
+        if (lastNightWindow && !nightJetzt) {
+            rearmTrack = PositiveCorrectionRearm.anker(
+                rearmTrack, signal.sourceTs, PositiveCorrectionRearm.Source.NIGHT_END,
+            )
+        }
+        lastNightWindow = nightJetzt
+        val (reTrack, rearm) = PositiveCorrectionRearm.advance(
+            track = rearmTrack,
+            enabled = cfg.correctionRearmEnabled,
+            nowTs = signal.sourceTs,
+            ukfNow = signal.ukfRatePerMin,
+            korrekturKontext = korrekturKontext,
+            holdMin = cfg.rearmHoldMin,
+            confirmCycles = cfg.rearmConfirmCycles,
+            upThresholdUkf = cfg.rearmUpUkf,
+        )
+        rearmTrack = reTrack
+        val korrRiegelGrund = reversal.reason ?: rearm.reason
+        val nachRiegel =
+            if (korrRiegelGrund != null && nachDescent.smbU > 0.0 && nachDescent.grant == null)
+                nachDescent.copy(
+                    smbU = 0.0,
+                    bindingLimit = nachDescent.bindingLimit + "|" + korrRiegelGrund,
+                )
+            else nachDescent
 
         // ---- PUNKT 6: DER MARKER-PRIME-AUFSCHUB (Toni 22.08.) ------------
         //
@@ -3417,6 +3498,12 @@ class FuseCycleRunner(
                 descentRisk.active -> "DESCENT_RISK"
                 risk60?.active == true -> "DESCENT_RISK_MARKER"
                 descentLatch.blocksPositive -> "LATCH_ACTIVE"
+                // Korrekturpfad-Riegel (25.08.): im K-Profil sperren
+                // V-Reversal und Freigabe-Nachlauf auch den Kanal - die
+                // MEAL-Frist bleibt ausdruecklich frei (Mahlzeitenpfade
+                // duerfen nicht pauschal betroffen sein).
+                !markerPowerActive && reversal.blocks -> reversal.reason!!
+                !markerPowerActive && rearm.blocks -> rearm.reason!!
                 // Tonis Lagen-Vertrag: MEAL und CORRECTION duerfen, eine
                 // EXCLUDED-Lage nie. Rebound und Signal decken die Riegel
                 // oben; hier kommen die Evidenz-Ausschluesse dazu:
@@ -3722,6 +3809,15 @@ class FuseCycleRunner(
                 extraRiskWait = descentRisk.active,
                 rawNotFalling = q1NichtFallend,
             )
+            // FREIGABE-NACHLAUF (25.08.): eine geloeste Verriegelung ankert
+            // den PositiveCorrectionRearm - die Kante wirkt ab dem
+            // NAECHSTEN Zyklus (konservativ spaeter, nie frueher).
+            if (episodes.zeroLatch.active && !latch.state.active) {
+                rearmTrack = PositiveCorrectionRearm.anker(
+                    rearmTrack, signal.sourceTs,
+                    PositiveCorrectionRearm.Source.ZERO_LATCH_RELEASED,
+                )
+            }
             episodes.zeroLatch = latch.state
             zeroLatchRuntime = latch.runtime
             zeroLatchGrund = latch.reason.name
@@ -3747,6 +3843,11 @@ class FuseCycleRunner(
                 zeroCalmStreak = if (ruhig) (if (anschluss) zeroCalmStreak + 1 else 1) else 0
                 zeroCalmLastTs = signal.sourceTs
                 if (zeroCalmStreak >= cfg.zeroLatchCalmExitMin) {
+                    // Auch der Ruhe-Ausgang ist eine Freigabe-Kante.
+                    rearmTrack = PositiveCorrectionRearm.anker(
+                        rearmTrack, signal.sourceTs,
+                        PositiveCorrectionRearm.Source.ZERO_LATCH_RELEASED,
+                    )
                     episodes.zeroLatch = DescentRecoveryLatch.State()
                     zeroLatchRuntime = DescentRecoveryLatch.Runtime()
                     zeroCalmStreak = 0
@@ -3976,6 +4077,9 @@ class FuseCycleRunner(
             zeroLatchReason = zeroLatchGrund,
             zeroLatchCalmStreak = zeroCalmStreak,
             zeroLatchArmStreak = zeroArmStreak,
+            correctionReversal = reversal,
+            correctionRearm = rearm,
+            correctionContext = korrekturKontext,
             zeroLatchOverrode = zeroLatchUebersteuert,
             livenessReleaseMeanMgdl = livenessReleaseMeanMgdl,
             livenessBgMinEffectiveMgdl = livenessBgMinEffective,
@@ -4922,6 +5026,13 @@ class FuseCycleRunner(
      *  wie die Erholungs-Runtime - ein Neustart im Anlauf beginnt neu. */
     private var zeroArmStreak = 0
     private var zeroArmLastTs = 0L
+
+    /** Korrekturpfad-Riegel (25.08.): prozesslokale Merker des
+     *  V-Reversal-Schutzes und des Freigabe-Nachlaufs; die Fehlrichtung
+     *  eines Neustarts ist "Riegel fehlt", nie "Riegel klemmt". */
+    private var reversalTrack = CorrectionReversalGuard.Track()
+    private var rearmTrack = PositiveCorrectionRearm.Track()
+    private var lastNightWindow = false
     private var zeroLatchLastQ1 = Double.NaN
 
     /** Zeitstempel des letzten Zyklus, der die Kanalstufe erreicht hat -
@@ -5075,6 +5186,19 @@ class FuseCycleRunner(
         val zeroLatchEnabled: Boolean,
         val zeroLatchCalmExitMin: Int,
         val zeroLatchCalmDistanceMgdl: Double,
+        /** V-Reversal-Schutz im Korrekturkontext - s.
+         *  [CorrectionReversalGuard] und FuseKeys (Default AUS). */
+        val reversalGuardEnabled: Boolean,
+        val reversalFallUkf: Double,
+        val reversalLookbackMin: Int,
+        val reversalReboundUkf: Double,
+        val reversalConfirmCycles: Int,
+        /** Freigabe-Nachlauf nach Zero-Latch-/Nachtende - s.
+         *  [PositiveCorrectionRearm] (Default AUS). */
+        val correctionRearmEnabled: Boolean,
+        val rearmHoldMin: Int,
+        val rearmConfirmCycles: Int,
+        val rearmUpUkf: Double,
         /** Kurzfristfenster der Richtungsprobe [min] - s. [FuseDoubleKey.LowGateHorizonMin]. */
         val lowGateHorizonMin: Double,
         /** Akuter Horizont des harten positiven Endriegels [min]. */
@@ -5159,6 +5283,15 @@ class FuseCycleRunner(
         zeroLatchEnabled = preferences.get(FuseBooleanKey.ZeroLatchEnabled),
         zeroLatchCalmExitMin = preferences.get(FuseIntKey.ZeroLatchCalmExitMin),
         zeroLatchCalmDistanceMgdl = preferences.get(FuseDoubleKey.ZeroLatchCalmDistanceMgdl),
+        reversalGuardEnabled = preferences.get(FuseBooleanKey.CorrectionReversalGuardEnabled),
+        reversalFallUkf = preferences.get(FuseDoubleKey.ReversalFallUkf),
+        reversalLookbackMin = preferences.get(FuseIntKey.ReversalLookbackMin),
+        reversalReboundUkf = preferences.get(FuseDoubleKey.ReversalReboundUkf),
+        reversalConfirmCycles = preferences.get(FuseIntKey.ReversalConfirmCycles),
+        correctionRearmEnabled = preferences.get(FuseBooleanKey.PositiveCorrectionRearmEnabled),
+        rearmHoldMin = preferences.get(FuseIntKey.RearmHoldMin),
+        rearmConfirmCycles = preferences.get(FuseIntKey.RearmConfirmCycles),
+        rearmUpUkf = preferences.get(FuseDoubleKey.RearmUpUkf),
         lowGateHorizonMin = preferences.get(FuseDoubleKey.LowGateHorizonMin),
         positiveDescentHorizonMin = preferences.get(FuseDoubleKey.PositiveDescentHorizonMin),
         iobThPercent = preferences.get(FuseIntKey.IobThPercent),

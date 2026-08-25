@@ -191,7 +191,20 @@ object FuseStateJson {
     // Zyklus eine lange Null - ein Sensorzacken darf das nicht. Export:
     // lowThreat.overcoverageMarginMgdl/horizonMarginMin (Messfelder, keine
     // Mindestmarge geraten) + zeroLatch.armStreak.
-    const val RULE_SET_VERSION = 29
+    // v30 (25.08., DOSIERWIRKSAM bei eingeschalteten Schaltern, beide
+    // Default AUS): die KORREKTURPFAD-RIEGEL. (1) CorrectionReversalGuard -
+    // nach steilem Fall loest eine schnelle Gegenbewegung keine
+    // Korrektur-SMBs aus, solange das robuste r negativ/unbestaetigt ist
+    // (Pflichtfall 06:27: 1,75 U auf ein Sensor-V bei r -0,82, Prognose
+    // ~171 mg/dl zu hoch). (2) PositiveCorrectionRearm - Zero-Latch-Loesung
+    // und Nachtende oeffnen positive Korrektur-SMBs erst nach Mindestdauer
+    // UND zusammenhaengend bestaetigter Aufwaertslage (Pflichtfall 08:00:
+    // 0,35 U in der ersten Minute nach der Nachtband-Kante). NUR reiner
+    // Korrekturkontext - Marker/Prime/Fundament/MEAL-Frist bleiben
+    // unberuehrt, r/UKF werden NICHT global haerter; kein Carry; der
+    // Zero-Latch bleibt zweite Schutzlinie. Neun Stellgroessen in Hash und
+    // policyValues; Export-Block correctionGuards.
+    const val RULE_SET_VERSION = 30
 
     /** Schema des Trail-Datensatzes - s. die Notiz an der Schreibstelle. */
     const val SCHEMA_VERSION = 4
@@ -746,6 +759,36 @@ object FuseStateJson {
                 // v29: der Ausloese-Zaehler des Fall-Verdikts (2 zuenden).
                 .put("armStreak", outcome.zeroLatchArmStreak)
                 .put("overrode", outcome.zeroLatchOverrode),
+        )
+        // Korrekturpfad-Riegel (v30, 25.08.): beide Urteile vollstaendig -
+        // auch in Zyklen, in denen NICHT geblockt wurde (das Replay braucht
+        // die Gegenprobe genauso wie den Treffer). null = Pfad hat sie
+        // nicht gerechnet (Fallback/Abort).
+        o.put(
+            "correctionGuards", JSONObject()
+                .put("context", outcome.correctionContext)
+                .put(
+                    "reversal",
+                    outcome.correctionReversal?.let { r ->
+                        JSONObject()
+                            .put("blocks", r.blocks)
+                            .put("reason", r.reason ?: JSONObject.NULL)
+                            .put("fallMinUkf", fin(r.fallMinUkf))
+                            .put("fallMinAgeMin", fin(r.fallMinAgeMin))
+                            .put("rConfirmStreak", r.rConfirmStreak)
+                    } ?: JSONObject.NULL,
+                )
+                .put(
+                    "rearm",
+                    outcome.correctionRearm?.let { r ->
+                        JSONObject()
+                            .put("blocks", r.blocks)
+                            .put("reason", r.reason ?: JSONObject.NULL)
+                            .put("source", r.source.name)
+                            .put("holdRestMin", fin(r.holdRestMin))
+                            .put("upConfirmStreak", r.upConfirmStreak)
+                    } ?: JSONObject.NULL,
+                ),
         )
         outcome.lowThreat?.let { lt ->
             o.put(
@@ -1447,6 +1490,16 @@ object FuseStateJson {
         .put("zeroLatchEnabled", p.zeroLatchEnabled)
         .put("zeroLatchCalmExitMin", p.zeroLatchCalmExitMin)
         .put("zeroLatchCalmDistanceMgdl", fin(p.zeroLatchCalmDistanceMgdl))
+        // v30: die Korrekturpfad-Riegel (V-Reversal + Freigabe-Nachlauf).
+        .put("reversalGuardEnabled", p.reversalGuardEnabled)
+        .put("reversalFallUkf", fin(p.reversalFallUkf))
+        .put("reversalLookbackMin", p.reversalLookbackMin)
+        .put("reversalReboundUkf", fin(p.reversalReboundUkf))
+        .put("reversalConfirmCycles", p.reversalConfirmCycles)
+        .put("correctionRearmEnabled", p.correctionRearmEnabled)
+        .put("rearmHoldMin", p.rearmHoldMin)
+        .put("rearmConfirmCycles", p.rearmConfirmCycles)
+        .put("rearmUpUkf", fin(p.rearmUpUkf))
         .put("livenessBgMinDayMgdl", fin(p.livenessBgMinDayMgdl))
         .put("livenessBgMinNightMgdl", fin(p.livenessBgMinNightMgdl))
 
@@ -1493,6 +1546,10 @@ object FuseStateJson {
             p.livenessBgMinNightMgdl,
             // v25: der Ruhe-Abstand des Zero-Latch.
             p.zeroLatchCalmDistanceMgdl,
+            // v30: die dosierwirksamen Schwellen der Korrekturpfad-Riegel.
+            p.reversalFallUkf,
+            p.reversalReboundUkf,
+            p.rearmUpUkf,
         )
         if (doubles.any { !it.isFinite() }) return null
         val parts = listOf("fuse-policy-v$RULE_SET_VERSION") +
@@ -1531,6 +1588,12 @@ object FuseStateJson {
                 // v25: der Zero-Latch (Schalter + Ruhe-Zyklen).
                 p.zeroLatchEnabled,
                 p.zeroLatchCalmExitMin,
+                p.reversalGuardEnabled,
+                p.reversalLookbackMin,
+                p.reversalConfirmCycles,
+                p.correctionRearmEnabled,
+                p.rearmHoldMin,
+                p.rearmConfirmCycles,
                 // v24: die gepinnte Leistungsfrist ist dosierwirksam - zwei
                 // Laeufe mit 60 und 240 min MEAL-Fenster sind verschiedene
                 // Regler.
