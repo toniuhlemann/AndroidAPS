@@ -5,6 +5,7 @@ import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertSame
+import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
@@ -47,7 +48,11 @@ class SignalRejoinTest {
         base: MaturityPolicy = MaturityPolicy.PRODUCTION,
     ) = SignalRejoin.select(policy, base, ts, segmentStart, regime, now, GAP)
 
-    private fun regime(b: SignalWindow.Bound, ts: Long) = SignalRejoin.Regime(b, ts)
+    /** Regime mit Segmentidentitaet; ohne Angabe faellt der erste
+     *  Segmentpunkt mit der Grenze zusammen (so wie am Geraet, wo die
+     *  Reihe an der Grenze beschnitten wird). */
+    private fun regime(b: SignalWindow.Bound, ts: Long, segStart: Long = ts) =
+        SignalRejoin.Regime.of(b, ts, segStart)
 
     // ---- NUTZENFAELLE ---------------------------------------------------
 
@@ -168,7 +173,82 @@ class SignalRejoinTest {
         // Die Grenze steht trotzdem im Ergebnis - sie ist nicht verschwunden,
         // sie erklaert nur diesen Segmentbeginn nicht.
         assertEquals(SignalWindow.Bound.CALIBRATION_START, w.regime.bound)
-        assertEquals(kalibrierung, w.regime.ts)
+        assertEquals(kalibrierung, w.regime.boundaryTs)
+        // Und die Identitaet zeigt, WARUM sie nicht erklaert: ihr erster
+        // Segmentpunkt ist ein anderer als der aktuelle Segmentbeginn.
+        assertEquals(kalibrierung, w.regime.segmentStartTs)
+        assertFalse(w.regime.explains(ts[60]))
+    }
+
+    /**
+     * DIE IDENTITAET TRAEGT AUS SICH SELBST - ohne dass der Aufrufer die
+     * Reihe beschnitten haben muesste.
+     *
+     * Der erste Wurf entschied an der POSITION in der Liste (`i == 0`) und
+     * funktionierte nur, weil die Produktreihe vorher an der Grenze
+     * beschnitten wurde. Eine Mutation, die den Grenzzeitpunkt auf 0
+     * setzte, blieb deshalb gruen. Hier ist die Reihe ausdruecklich NICHT
+     * beschnitten: die Kalibrierung faellt mit der Luecke zusammen und
+     * traegt acht Punkte Vorgeschichte, die streng reif waeren. Nur die
+     * Identitaet verhindert den Rejoin.
+     */
+    @Test
+    fun `eine grenze auf dem segmentbeginn sperrt auch in unbeschnittener reihe`() {
+        val ts = reihe(8, 200_000L, 4)
+        val segment = ts[8]
+        // Ohne Grenze: gelockert, denn acht Punkte davor sind streng reif.
+        assertTrue(waehle(ts, segment).active)
+        // Mit einer Grenze, deren erster Segmentpunkt GENAU dieser
+        // Segmentbeginn ist: gesperrt, obwohl ein Vorgaenger existiert.
+        val w = waehle(ts, segment,
+                       regime = regime(SignalWindow.Bound.CALIBRATION_START, segment, segment))
+        assertFalse(w.active, "die Grenze erklaert diesen Segmentbeginn")
+        assertEquals(SignalRejoin.Cause.CALIBRATION, w.cause)
+        // Dieselbe Grenze, aber mit einem ANDEREN ersten Segmentpunkt,
+        // erklaert ihn nicht - dann ist es wieder eine gewoehnliche Luecke.
+        val w2 = waehle(ts, segment,
+                        regime = regime(SignalWindow.Bound.CALIBRATION_START, ts[0], ts[0]))
+        assertTrue(w2.active)
+        assertEquals(SignalRejoin.Cause.GAP, w2.cause)
+    }
+
+    /**
+     * UNMOEGLICHE KOMBINATIONEN GIBT ES NICHT. Ein Regime ohne
+     * Segmentidentitaet waere die GEFAEHRLICHE Richtung: `explains` faende
+     * nie eine Uebereinstimmung, die Grenze sperrte also NIE - eine
+     * kaputte Verdrahtung saehe aus wie "kein Regimewechsel".
+     */
+    @Test
+    fun `die factory weist unmoegliche regime ab`() {
+        // NONE traegt keine Zeitstempel.
+        assertThrows(IllegalArgumentException::class.java) {
+            SignalRejoin.Regime.of(SignalWindow.Bound.NONE, t0, t0)
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            SignalRejoin.Regime.of(SignalWindow.Bound.NONE, 0L, t0)
+        }
+        // Eine Grenze ohne Zeitpunkt oder ohne Segmentidentitaet.
+        assertThrows(IllegalArgumentException::class.java) {
+            SignalRejoin.Regime.of(SignalWindow.Bound.CALIBRATION_START, 0L, t0)
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            SignalRejoin.Regime.of(SignalWindow.Bound.SENSOR_CHANGE, t0, 0L)
+        }
+        // Ein erster Segmentpunkt VOR der Grenze kann kein Punkt dieses
+        // Regimes sein.
+        assertThrows(IllegalArgumentException::class.java) {
+            SignalRejoin.Regime.of(SignalWindow.Bound.INPUT_STEP, t0, t0 - 1)
+        }
+        // Die zulaessigen Faelle.
+        assertSame(SignalRejoin.Regime.NONE,
+                   SignalRejoin.Regime.of(SignalWindow.Bound.NONE, 0L, 0L))
+        val r = SignalRejoin.Regime.of(SignalWindow.Bound.CALIBRATION_START, t0, t0 + 60_000L)
+        assertEquals(t0, r.boundaryTs)
+        assertEquals(t0 + 60_000L, r.segmentStartTs)
+        assertTrue(r.explains(t0 + 60_000L))
+        assertFalse(r.explains(t0))
+        // Und NONE erklaert nie etwas - auch nicht den Zeitpunkt 0.
+        assertFalse(SignalRejoin.Regime.NONE.explains(0L))
     }
 
     /**

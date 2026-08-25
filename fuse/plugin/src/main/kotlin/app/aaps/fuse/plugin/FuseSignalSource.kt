@@ -375,11 +375,17 @@ class FuseSignalSource(
         // Klemme geprueft und mutationsfest (s. SignalRejoinTest,
         // "punkte vor der regimegrenze zaehlen nicht als etablierung").
         val regime = if (stepTs != null)
-            app.aaps.fuse.core.signal.SignalRejoin.Regime(
-                app.aaps.fuse.core.signal.SignalWindow.Bound.INPUT_STEP, stepTs
+            app.aaps.fuse.core.signal.SignalRejoin.Regime.of(
+                app.aaps.fuse.core.signal.SignalWindow.Bound.INPUT_STEP,
+                boundaryTs = stepTs,
+                segmentStartTs = series.first().tsMs,
             )
         else if (window.bound != app.aaps.fuse.core.signal.SignalWindow.Bound.NONE)
-            app.aaps.fuse.core.signal.SignalRejoin.Regime(window.bound, window.fromTs)
+            app.aaps.fuse.core.signal.SignalRejoin.Regime.of(
+                window.bound,
+                boundaryTs = window.fromTs,
+                segmentStartTs = series.first().tsMs,
+            )
         else app.aaps.fuse.core.signal.SignalRejoin.Regime.NONE
         val auswahl = app.aaps.fuse.core.signal.SignalRejoin.select(
             policy = rejoin,

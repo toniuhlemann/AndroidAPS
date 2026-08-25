@@ -7598,7 +7598,7 @@ class TransportWiringTest : TestBaseWithProfile() {
             neuerRunner(adapter, fensterMs = fensterMs, trendRegel = trendRegel, gapPolitik = gapPolitik, reifePolitik = reifePolitik, wiedereinstieg = rejoinPolitik)
             val outFile = File(outDir, "replay_$name.csv")
             outFile.printWriter().use { w ->
-                w.println("ts;smbU;block;binding;insulinReq;liftU;needU;abort;phase;fastD;slowD;trend;raw;recSmbU;recBlock;profil;restMin;tbr;latch;lvDenial;lvExit;lvStreak;lvHead;transC;revGrund;rearmGrund;ctxGrund;basis;gapBreakMs;samplesUsed;gapBeforeMin;r;bandN;matP;matS;iob;rejoin;rejoinGrund;gapMs;vollreifeTs;regimeGrund;regimeTs;vorReif")
+                w.println("ts;smbU;block;binding;insulinReq;liftU;needU;abort;phase;fastD;slowD;trend;raw;recSmbU;recBlock;profil;restMin;tbr;latch;lvDenial;lvExit;lvStreak;lvHead;transC;revGrund;rearmGrund;ctxGrund;basis;gapBreakMs;samplesUsed;gapBeforeMin;r;bandN;matP;matS;iob;rejoin;rejoinGrund;gapMs;vollreifeTs;regimeGrund;regimeTs;regimeSegTs;vorReif")
                 var prevMarker = 0L
                 var polText = pol?.toString()
                 var zyklusNr = 0
@@ -7670,7 +7670,8 @@ class TransportWiringTest : TestBaseWithProfile() {
                         o.signal?.rejoin?.gapMs ?: "",
                         o.signal?.fullMaturityTs ?: "",
                         o.signal?.rejoin?.regime?.bound?.name ?: "",
-                        o.signal?.rejoin?.regime?.ts ?: "",
+                        o.signal?.rejoin?.regime?.boundaryTs ?: "",
+                        o.signal?.rejoin?.regime?.segmentStartTs ?: "",
                         if (o.signal?.rejoin?.preGapStrictReady == true) "1" else "0",
                     ).joinToString(";"))
                 }
@@ -9485,7 +9486,12 @@ class TransportWiringTest : TestBaseWithProfile() {
         // das Fenster durch die Kalibrierung begrenzt, waehrend die Luecke
         // DANACH liegt und in der Reihe erhalten bleibt. Genau die Lage, in
         // der die Regimeregel etwas zu entscheiden hat.
-        kalibrierStart = kalibrierNachMin?.let { vor[it].first } ?: -1L
+        // SIEBEN SEKUNDEN VOR dem Messwert - eine Kalibrierung faellt in
+        // der Wirklichkeit nicht auf einen CGM-Zeitstempel. Genau dieser
+        // Versatz macht Grenzzeitpunkt und ersten Segmentpunkt
+        // unterscheidbar; laegen beide aufeinander, waere eine
+        // Fehlverdrahtung der Segmentidentitaet nicht beobachtbar.
+        kalibrierStart = kalibrierNachMin?.let { vor[it].first - 7_000L } ?: -1L
         clock = vor.last().first
         transportReset()
         val adapter = FuseLedgerAdapter().also { it.loadOnce(dir.also(File::mkdirs), "test-epoch", start) }

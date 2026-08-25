@@ -969,7 +969,8 @@ object FuseStateJson {
                 // AKTUELLEN Segmentbeginn erklaert oder bloss irgendwo im
                 // Rueckblickpuffer liegt.
                 .put("rejoinRegimeCause", s.rejoin.regime.bound.name)
-                .put("rejoinRegimeTs", s.rejoin.regime.ts)
+                .put("rejoinRegimeTs", s.rejoin.regime.boundaryTs)
+                .put("rejoinRegimeSegmentTs", s.rejoin.regime.segmentStartTs)
                 .put("rejoinPreGapStrictReady", s.rejoin.preGapStrictReady)
                 // 0 = dieses Segment traegt die STRENGE Reife noch nicht.
                 // Genau daran ist ablesbar, wie lange der Wiedereinstieg
@@ -987,6 +988,19 @@ object FuseStateJson {
                         .put("readySlopes", reife.slopes)
                         .put("readySlopesRequired", reife.slopesRequired)
                         .put("readyReason", reife.reason.name)
+                        // DIE STRENGEN ANFORDERUNGEN AUSDRUECKLICH (Toni
+                        // 25.08. spaet, fuer den Viewer): waehrend 4x3 traegt,
+                        // nennen readyPointsRequired/readySlopesRequired die
+                        // WIRKSAMEN Schranken. Eine Anzeige wie
+                        // "streng 4/5P - 3/8S" braucht daneben die strengen -
+                        // und die soll der Viewer nicht hartkodieren, sonst
+                        // steht dort eine Zahl, die niemand nachfuehrt.
+                        // Die ZAEHLER sind politikunabhaengig und gelten fuer
+                        // beide Lesarten.
+                        .put("strictPointsRequired",
+                             app.aaps.fuse.core.signal.MaturityPolicy.PRODUCTION.minPoints)
+                        .put("strictSlopesRequired",
+                             app.aaps.fuse.core.signal.MaturityPolicy.PRODUCTION.minSlopes)
                 }
                 .put("stepFromLastMgdl", fin(s.stepFromLastMgdl))
                 .put("stepRateActualMgdlPerMin", fin(s.stepRateActualMgdlPerMin))

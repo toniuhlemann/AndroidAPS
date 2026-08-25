@@ -74,14 +74,78 @@ object SignalRejoin {
      *
      * @param ts Zeitpunkt der Grenze; 0 wenn [bound] == NONE.
      */
-    class Regime(val bound: SignalWindow.Bound, val ts: Long) {
+    class Regime private constructor(
+        val bound: SignalWindow.Bound,
+        /** Der Zeitpunkt der Grenze selbst. */
+        val boundaryTs: Long,
+        /**
+         * DER ERSTE SEGMENTPUNKT, DER AUS DIESER GRENZE FOLGT.
+         *
+         * Ohne ihn ist der Vertrag nicht eigenstaendig erzwungen: der
+         * erste Wurf verliess sich darauf, dass der Aufrufer die Reihe
+         * bereits an der Grenze beschnitten hatte. Das stimmte zwar - eine
+         * Mutation, die den Zeitpunkt auf 0 setzte, blieb aber gruen, weil
+         * die Beschneidung die Arbeit tat. Jetzt traegt das Regime die
+         * Identitaet selbst, und [explains] prueft sie.
+         */
+        val segmentStartTs: Long,
+    ) {
 
-        override fun toString() = "Regime(${bound.name}@$ts)"
+        /**
+         * ERKLAERT diese Grenze den uebergebenen Segmentbeginn?
+         *
+         * Nur dann sperrt sie. Bei einer SPAETEREN echten Funkluecke sind
+         * beide verschieden - dann ist die Grenze bloss Vorgeschichte und
+         * die Luecke ein gewoehnlicher [Cause.GAP].
+         */
+        fun explains(aktuellerSegmentStartTs: Long): Boolean =
+            bound != SignalWindow.Bound.NONE && segmentStartTs == aktuellerSegmentStartTs
+
+        override fun toString() =
+            if (bound == SignalWindow.Bound.NONE) "Regime(NONE)"
+            else "Regime(${bound.name}@$boundaryTs -> $segmentStartTs)"
 
         companion object {
 
             /** Kein Regimewechsel im Puffer. */
-            val NONE = Regime(SignalWindow.Bound.NONE, 0L)
+            val NONE = Regime(SignalWindow.Bound.NONE, 0L, 0L)
+
+            /**
+             * DER EINZIGE BAUWEG - und er weist unmoegliche Kombinationen
+             * ab, statt sie still zu tragen.
+             *
+             * Ein Regime ohne Segmentidentitaet waere die gefaehrliche
+             * Richtung: [explains] faende nie eine Uebereinstimmung, die
+             * Grenze sperrte also NIE - eine kaputte Verdrahtung saehe wie
+             * "kein Regimewechsel" aus. Deshalb `require` und nicht ein
+             * stiller Rueckfall auf [NONE].
+             */
+            fun of(
+                bound: SignalWindow.Bound,
+                boundaryTs: Long,
+                segmentStartTs: Long,
+            ): Regime {
+                if (bound == SignalWindow.Bound.NONE) {
+                    require(boundaryTs == 0L && segmentStartTs == 0L) {
+                        "Regime NONE traegt keine Zeitstempel, war aber " +
+                            "boundaryTs=$boundaryTs segmentStartTs=$segmentStartTs"
+                    }
+                    return NONE
+                }
+                require(boundaryTs > 0L) { "$bound ohne Grenzzeitpunkt" }
+                // LOGISCH SUBSUMIERT von der naechsten Zeile (0 >= boundaryTs
+                // ist bei boundaryTs > 0 immer falsch) - und trotzdem hier,
+                // weil sie den WAHRSCHEINLICHSTEN Verdrahtungsfehler beim
+                // Namen nennt. Ein Waechter, der dieselbe Ablehnung besser
+                // begruendet, ist etwas anderes als ein toter Zweig, der eine
+                // zweite Verteidigung vortaeuscht.
+                require(segmentStartTs > 0L) { "$bound ohne Segmentidentitaet" }
+                require(segmentStartTs >= boundaryTs) {
+                    "der erste Segmentpunkt ($segmentStartTs) liegt VOR der " +
+                        "Grenze ($boundaryTs) - das kann kein Punkt dieses Regimes sein"
+                }
+                return Regime(bound, boundaryTs, segmentStartTs)
+            }
         }
     }
 
@@ -170,10 +234,11 @@ object SignalRejoin {
             // die Reihe laeuft durch.
             return nein(Cause.NO_BREAK)
         }
-        if (i == 0) {
-            // Kein Vorgaenger. WARUM nicht? Wenn die Reihe an einer
-            // Regimegrenze beschnitten wurde, ERKLAERT diese Grenze den
-            // Segmentbeginn - und nur dann sperrt sie.
+        // ERKLAERT die Regimegrenze DIESEN Segmentbeginn? Nur dann sperrt
+        // sie. Geprueft wird die Identitaet des Segments, nicht die
+        // Position in der Liste - damit steht der Vertrag auch dann, wenn
+        // ein Aufrufer die Reihe nicht an der Grenze beschnitten hat.
+        if (regime.explains(segmentStartTs)) {
             return nein(
                 when (regime.bound) {
                     SignalWindow.Bound.SENSOR_CHANGE     -> Cause.SENSOR_CHANGE
@@ -182,6 +247,11 @@ object SignalRejoin {
                     SignalWindow.Bound.NONE              -> Cause.COLD_START
                 }
             )
+        }
+        if (i == 0) {
+            // Kein Vorgaenger, und keine Grenze erklaert es: der Puffer
+            // faengt hier schlicht an.
+            return nein(Cause.COLD_START)
         }
 
         val luecke = ascendingTs[i] - ascendingTs[i - 1]
@@ -194,7 +264,7 @@ object SignalRejoin {
         // gereift gewesen sein. Damit sperrt ein Regimewechsel genau so
         // lange, wie das neue Regime braucht, um sich zu etablieren - und
         // keine Minute laenger.
-        val reif = strengReifVorLuecke(ascendingTs, i, regime.ts, gapPolicy, windowMs, strict)
+        val reif = strengReifVorLuecke(ascendingTs, i, regime.boundaryTs, gapPolicy, windowMs, strict)
         if (!reif) return nein(Cause.PRE_GAP_NOT_MATURE, luecke)
 
         // Und selbst dann wird nur GELOCKERT, nie verschaerft: ist die
