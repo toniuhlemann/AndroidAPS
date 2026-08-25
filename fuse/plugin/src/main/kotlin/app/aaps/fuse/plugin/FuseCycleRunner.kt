@@ -174,6 +174,15 @@ class FuseCycleRunner(
     private val rejoinPolicy: app.aaps.fuse.core.signal.RejoinPolicy =
         app.aaps.fuse.core.signal.RejoinPolicy.OFF,
     /**
+     * DER RUHE-AUSGANG DES PHASE-A-SOFORTBATCHES - injiziert und ohne
+     * Produktionsdefault (Toni 25.08. spaet). Die Parameter werden am
+     * echten Abendfall durch den VOLLSTAENDIGEN Endpfad kalibriert; bis
+     * dahin nennt sie nur der Replay. `OFF` heisst: es bleibt beim
+     * bisherigen Vertrag.
+     */
+    private val upfrontRecoveryParams: app.aaps.fuse.core.controller.UpfrontRecovery.Params =
+        app.aaps.fuse.core.controller.UpfrontRecovery.Params.OFF,
+    /**
      * NUR FUER DEN PHASE-2-REPLAY (Toni 23.08. Abend): schaltet EINE
      * Trendregel des Turn-Shadows als ECHTE Dosierbahn scharf.
      *   "UP"       Mittelbahn-Anhebung bei bestaetigter Aufwaertswende
@@ -219,6 +228,12 @@ class FuseCycleRunner(
 
     // BEIDE Verbraucher bekommen DIESELBE Politik - das ist die eine
     // Wahrheit, und sie ist hier sichtbar an genau einer Stelle.
+    /** Die Stationen des Sofortbatch-Endpfads dieses Zyklus. */
+    private var upfrontChainThisCycle: UpfrontChain? = null
+
+    /** q1 des Vorzyklus - nur fuer die Ruhepruefung des Sofortbatches. */
+    private var upfrontLastQ1: Double? = null
+
     private val observer = ObserverStateMachine(
         p = app.aaps.fuse.core.observer.ObserverParams(rSegmentBreakMin = gapPolicy.rSegmentBreakMin),
         sessionId = sessionId,
@@ -450,6 +465,27 @@ class FuseCycleRunner(
         )
     }
 
+    /** Stationen des Sofortbatch-Endpfads samt Ruhe-Telemetrie. */
+    data class UpfrontChain(
+        val recoveryMode: String,
+        val recoveryStreak: Int,
+        val recoveryRequired: Int,
+        val recoveryDenial: String?,
+        val currentHazard: String,
+        val guardDistanceMgdl: Double?,
+        /** Der autorisierte Grant dieses Zyklus [U], 0 wenn keiner. */
+        val grantU: Double,
+        val grantSource: String?,
+        /** Menge VOR MarkerFloor (nach finalVerify). */
+        val beforeMarkerFloorU: Double,
+        /** Menge NACH MarkerFloor. */
+        val afterMarkerFloorU: Double,
+        /** Menge NACH dem Endriegel (MeasuredDescentGate). */
+        val afterDescentGateU: Double,
+        /** Was tatsaechlich veroeffentlicht wurde. */
+        val publishedU: Double,
+    )
+
     data class Outcome(
         val decision: FuseController.Decision,
         val tbr: FuseController.TbrRequest?,
@@ -660,6 +696,16 @@ class FuseCycleRunner(
         val insulinModel: app.aaps.fuse.core.predictor.InsulinModelProvenance? = null,
         /** Warum NICHT gerechnet wurde. `null` heisst: der Zyklus lief durch. */
         val abortReason: String?,
+        /**
+         * DIE STATIONEN DES SOFORTBATCH-ENDPFADS (Auflage Toni 25.08.).
+         *
+         * Ohne sie endet jede Kalibrierung bei "waere zulaessig gewesen" -
+         * und genau dort war meine erste Deutung falsch: `MarkerFloor` hebt
+         * einen typisierten Grant NACH dem `finalVerify` wieder auf die
+         * autorisierte Menge an. Was der Guard-Boden geurteilt hat, sagt
+         * also nichts darueber, was am Ende herauskommt.
+         */
+        val upfrontChain: UpfrontChain? = null,
         /** Die WIRKSAME Segmentgrenze dieses Zyklus [ms] - s. GapPolicy. */
         val rSegmentBreakMs: Long = app.aaps.fuse.core.signal.GapPolicy.DEFAULT_R_SEGMENT_BREAK_MS,
         /** Die WIRKSAME Reifebedingung dieses Zyklus - s. MaturityPolicy. */
@@ -2902,11 +2948,41 @@ class FuseCycleRunner(
         val upfrontAufschubJetzt = upfrontRisikoAufschub && upfrontOffenU > 0.0 && upfrontInPhaseA
         if (upfrontAufschubJetzt && episodes.upfrontBatchDeferredSince <= 0L)
             episodes.upfrontBatchDeferredSince = computeTs
-        // Nach einem Aufschub oeffnet erst die BESTAETIGTE Erholung wieder -
-        // dieselbe Schwelle, die auch der Aufschub des linearen Prime
-        // verlangt (drei zusammenhaengende gesunde Erholungszyklen).
+        // DIE ERHOLUNG DES SOFORTBATCHES - zwei getrennte Fragen (Toni
+        // 25.08. spaet). Die AKTUELLE Gefahr bleibt absolut; erst danach
+        // wird gefragt, ob die Lage stabil genug ist. Weg 1 ist die
+        // bisherige schnelle Erholung (UKF >= +0,20 ueber drei Zyklen),
+        // Weg 2 die neue bestaetigte RUHE. Ohne injizierte Parameter ist
+        // Weg 2 aus, und es bleibt exakt beim alten Vertrag.
+        val upfrontQ1Faellt = upfrontLastQ1.let { v ->
+            v != null && signal.q1.isFinite() && signal.q1 < v - 1e-9
+        }
+        upfrontLastQ1 = signal.q1.takeIf { it.isFinite() }
+        val upfrontRecovery = app.aaps.fuse.core.controller.UpfrontRecovery.evaluate(
+            params = upfrontRecoveryParams,
+            prior = episodes.upfrontRecovery,
+            deferredOpen = episodes.upfrontBatchDeferredSince > 0L,
+            inPhaseA = upfrontInPhaseA,
+            hasAuthority = episodes.foundation?.valid == true && (markerTs ?: 0L) > 0L,
+            hazards = app.aaps.fuse.core.controller.UpfrontRecovery.Hazards(
+                descentRisk = descentRisk.active,
+                lowThreat = lowThreatResult.verdict != LowThreatGate.Verdict.NONE,
+                zeroLatch = cfg.zeroLatchEnabled && episodes.zeroLatch.active,
+                rebound = reboundRaw,
+                signalUnhealthy = step.health != Health.READY,
+                technical = upfrontTechReject,
+                ledgerHold = ledgerView.hold,
+            ),
+            risingConfirmed =
+                deferredRecoveryStreak >= DescentRecoveryLatch.REQUIRED_CONSECUTIVE_CYCLES,
+            ukfRatePerMin = signal.ukfRatePerMin.takeIf { it.isFinite() },
+            q1Falling = upfrontQ1Faellt,
+            guardDistanceMgdl = lowThreatResult.distanceToFloorMgdl,
+            nowTs = signal.sourceTs,
+        )
+        episodes.upfrontRecovery = upfrontRecovery.track
         val upfrontWartetAufErholung = episodes.upfrontBatchDeferredSince > 0L &&
-            deferredRecoveryStreak < DescentRecoveryLatch.REQUIRED_CONSECUTIVE_CYCLES
+            !upfrontRecovery.releases
         val liftedUpfront = when {
             upfrontOhneNetz || ledgerView.hold -> vetted
             // Sicherheitsriegel aktiv: der Batch bleibt VOLLSTAENDIG offen -
@@ -3249,6 +3325,23 @@ class FuseCycleRunner(
         // hilft nicht mehr" und "mehr Bolus ist sicher" sind zwei
         // verschiedene Aussagen, und ihre Vermischung war der Befund.
         val nachDescent = MeasuredDescentGate.apply(vorRiegel, descentLatch.blocksPositive)
+        // HIER sind alle Stationen zugleich bekannt - eine spaetere Rekon-
+        // struktion aus Einzelfeldern waere genau die Art Nachrechnung, die
+        // schon einmal die falsche Geschichte erzaehlt hat.
+        upfrontChainThisCycle = UpfrontChain(
+            recoveryMode = upfrontRecovery.mode.name,
+            recoveryStreak = upfrontRecovery.track.calmStreak,
+            recoveryRequired = upfrontRecovery.required,
+            recoveryDenial = upfrontRecovery.denial?.name,
+            currentHazard = upfrontRecovery.hazards,
+            guardDistanceMgdl = upfrontRecovery.guardDistanceMgdl,
+            grantU = lifted.grant?.amountU ?: 0.0,
+            grantSource = lifted.grant?.source?.name,
+            beforeMarkerFloorU = verifiedLift.smbU,
+            afterMarkerFloorU = autorisiert.smbU,
+            afterDescentGateU = nachDescent.smbU,
+            publishedU = nachDescent.smbU,
+        )
 
         // ---- KORREKTURPFAD-RIEGEL (Bauauftrag Toni 25.08., nachgebessert
         //      nach dem Review vom 25.08. abends) -------------------------
@@ -4361,6 +4454,7 @@ class FuseCycleRunner(
             iobU = iobTotal.iob,
             abortReason = null,
             rSegmentBreakMs = gapPolicy.rSegmentBreakMs,
+            upfrontChain = upfrontChainThisCycle,
             maturity = maturityPolicy,
             // runCatching: eine scheiternde DB-Abfrage darf den Zyklus nicht
             // kosten - dann faellt nur der Ledger-Abgleich dieses Zyklus aus
@@ -5070,6 +5164,7 @@ class FuseCycleRunner(
             insulinModel = insulinModel,
             abortReason = null,
             rSegmentBreakMs = gapPolicy.rSegmentBreakMs,
+            upfrontChain = upfrontChainThisCycle,
             maturity = maturityPolicy,
             predictorRejected = true,
             predictorReason = rejected.reason.name,

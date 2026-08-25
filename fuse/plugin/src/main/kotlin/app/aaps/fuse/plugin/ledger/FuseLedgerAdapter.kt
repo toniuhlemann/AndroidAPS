@@ -234,6 +234,14 @@ class EpisodeBudgets {
      */
     var upfrontLapsedU: Double = 0.0
 
+    /**
+     * Der RUHEZAEHLER des Phase-A-Sofortbatches (Toni 25.08. spaet).
+     * Restartfest, weil eine Ruhe, die ein Neustart erfunden hat, keine
+     * ist - `evaluate` prueft zusaetzlich den lueckenlosen Anschluss.
+     */
+    var upfrontRecovery: app.aaps.fuse.core.controller.UpfrontRecovery.Track =
+        app.aaps.fuse.core.controller.UpfrontRecovery.Track()
+
     /** V-REVERSAL-RIEGEL (v30, Review-P0.1): die IDENTITAET (Fall-Minimum,
      *  Zuendung) ist persistent - ein Neustart entfernt den Riegel nicht.
      *  Die r-Bestaetigungszaehler sind wie beim [zeroLatch] bewusst

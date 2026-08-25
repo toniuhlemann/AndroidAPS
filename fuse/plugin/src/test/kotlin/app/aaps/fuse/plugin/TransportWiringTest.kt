@@ -405,7 +405,7 @@ class TransportWiringTest : TestBaseWithProfile() {
         neuerRunner(FuseLedgerAdapter())
     }
 
-    private fun neuerRunner(l: FuseLedgerAdapter, evidenz: EvidenceStock.Config = EvidenceStock.Config(), fensterMs: Long? = null, trendRegel: String? = null, wiedereinstieg: app.aaps.fuse.core.signal.RejoinPolicy = app.aaps.fuse.core.signal.RejoinPolicy.OFF, gapPolitik: app.aaps.fuse.core.signal.GapPolicy = app.aaps.fuse.core.signal.GapPolicy.PRODUCTION, reifePolitik: app.aaps.fuse.core.signal.MaturityPolicy = app.aaps.fuse.core.signal.MaturityPolicy.PRODUCTION) {
+    private fun neuerRunner(l: FuseLedgerAdapter, evidenz: EvidenceStock.Config = EvidenceStock.Config(), fensterMs: Long? = null, trendRegel: String? = null, wiedereinstieg: app.aaps.fuse.core.signal.RejoinPolicy = app.aaps.fuse.core.signal.RejoinPolicy.OFF, ruheParams: app.aaps.fuse.core.controller.UpfrontRecovery.Params = app.aaps.fuse.core.controller.UpfrontRecovery.Params.OFF, gapPolitik: app.aaps.fuse.core.signal.GapPolicy = app.aaps.fuse.core.signal.GapPolicy.PRODUCTION, reifePolitik: app.aaps.fuse.core.signal.MaturityPolicy = app.aaps.fuse.core.signal.MaturityPolicy.PRODUCTION) {
         ledger = l
         runner = FuseCycleRunner(
             iobCobCalculator, profileFunction, activePlugin, constraintsChecker, commandQueue,
@@ -416,6 +416,7 @@ class TransportWiringTest : TestBaseWithProfile() {
             gapPolicy = gapPolitik,
             maturityPolicy = reifePolitik,
             rejoinPolicy = wiedereinstieg,
+            upfrontRecoveryParams = ruheParams,
             predict = { input ->
                 predictReject
                     ?.let { PredictorOutcome.Rejected(it, "erzwungen") }
@@ -7525,7 +7526,7 @@ class TransportWiringTest : TestBaseWithProfile() {
         // die Karte ist seit dem Zeitzonen-Fix oben ebenfalls lokal gefuellt
         // - eine Uhr fuer beide Seiten.
 
-        fun lauf(name: String, fensterMs: Long?, trendRegel: String? = null, fenster: Int = 18, ratioCap: Double = 1.0, livenessStart: Boolean = true, profilCapsBehalten: Boolean = false, upfrontStart: Double = 0.0, guardsStart: Boolean = false, reversalConfirm: Int = 2, gapBreakMs: Long? = null, reifeTag: String? = null, rejoin: Boolean = false): File {
+        fun lauf(name: String, fensterMs: Long?, trendRegel: String? = null, fenster: Int = 18, ratioCap: Double = 1.0, livenessStart: Boolean = true, profilCapsBehalten: Boolean = false, upfrontStart: Double = 0.0, guardsStart: Boolean = false, reversalConfirm: Int = 2, gapBreakMs: Long? = null, reifeTag: String? = null, rejoin: Boolean = false, ruhe: app.aaps.fuse.core.controller.UpfrontRecovery.Params = app.aaps.fuse.core.controller.UpfrontRecovery.Params.OFF): File {
             transportReset()
             boluses = emptyList()
             markerAt = 0L
@@ -7595,10 +7596,10 @@ class TransportWiringTest : TestBaseWithProfile() {
             politikAnwenden(zyklen.firstNotNullOfOrNull { it.policy })
             theilSenFensterMin = fenster // die erste Politik darf den Matrixwert nicht ueberschreiben (W10-Live-Trails tragen 10)
             val adapter = FuseLedgerAdapter().also { it.loadOnce(File(dir, name).also(File::mkdirs), "test-epoch", zyklen.first().ts) }
-            neuerRunner(adapter, fensterMs = fensterMs, trendRegel = trendRegel, gapPolitik = gapPolitik, reifePolitik = reifePolitik, wiedereinstieg = rejoinPolitik)
+            neuerRunner(adapter, fensterMs = fensterMs, trendRegel = trendRegel, gapPolitik = gapPolitik, reifePolitik = reifePolitik, wiedereinstieg = rejoinPolitik, ruheParams = ruhe)
             val outFile = File(outDir, "replay_$name.csv")
             outFile.printWriter().use { w ->
-                w.println("ts;smbU;block;binding;insulinReq;liftU;needU;abort;phase;fastD;slowD;trend;raw;recSmbU;recBlock;profil;restMin;tbr;latch;lvDenial;lvExit;lvStreak;lvHead;transC;revGrund;rearmGrund;ctxGrund;basis;gapBreakMs;samplesUsed;gapBeforeMin;r;bandN;matP;matS;iob;rejoin;rejoinGrund;gapMs;vollreifeTs;regimeGrund;regimeTs;regimeSegTs;vorReif")
+                w.println("ts;smbU;block;binding;insulinReq;liftU;needU;abort;phase;fastD;slowD;trend;raw;recSmbU;recBlock;profil;restMin;tbr;latch;lvDenial;lvExit;lvStreak;lvHead;transC;revGrund;rearmGrund;ctxGrund;basis;gapBreakMs;samplesUsed;gapBeforeMin;r;bandN;matP;matS;iob;rejoin;rejoinGrund;gapMs;vollreifeTs;regimeGrund;regimeTs;regimeSegTs;vorReif;ruheModus;ruheStreak;ruheDenial;gefahr;guardAbst;grantU;vorFloor;nachFloor;nachRiegel;publU")
                 var prevMarker = 0L
                 var polText = pol?.toString()
                 var zyklusNr = 0
@@ -7673,6 +7674,16 @@ class TransportWiringTest : TestBaseWithProfile() {
                         o.signal?.rejoin?.regime?.boundaryTs ?: "",
                         o.signal?.rejoin?.regime?.segmentStartTs ?: "",
                         if (o.signal?.rejoin?.preGapStrictReady == true) "1" else "0",
+                        o.upfrontChain?.recoveryMode ?: "",
+                        o.upfrontChain?.recoveryStreak ?: "",
+                        o.upfrontChain?.recoveryDenial ?: "",
+                        o.upfrontChain?.currentHazard ?: "",
+                        o.upfrontChain?.guardDistanceMgdl?.let { "%.1f".format(java.util.Locale.US, it) } ?: "",
+                        o.upfrontChain?.grantU?.let { "%.3f".format(java.util.Locale.US, it) } ?: "",
+                        o.upfrontChain?.beforeMarkerFloorU?.let { "%.3f".format(java.util.Locale.US, it) } ?: "",
+                        o.upfrontChain?.afterMarkerFloorU?.let { "%.3f".format(java.util.Locale.US, it) } ?: "",
+                        o.upfrontChain?.afterDescentGateU?.let { "%.3f".format(java.util.Locale.US, it) } ?: "",
+                        o.upfrontChain?.publishedU?.let { "%.3f".format(java.util.Locale.US, it) } ?: "",
                     ).joinToString(";"))
                 }
             }
@@ -7761,6 +7772,29 @@ class TransportWiringTest : TestBaseWithProfile() {
                 val anteil = u.trim().toDouble()
                 lauf("upf%03d".format((anteil * 100).toInt()), null, fenster = 10, upfrontStart = anteil)
             }
+            return
+        }
+        val ruheEnv = System.getenv("FUSE_REPLAY_UPFRONT_CALM")
+        if (ruheEnv != null) {
+            // RUHE-MATRIX (Auflage Toni 25.08. spaet). Jeder Kandidat
+            // laeuft durch den VOLLSTAENDIGEN Endpfad; die CSV weist Grant,
+            // vor/nach MarkerFloor, nach Endriegel und publizierte Menge
+            // einzeln aus. Format: N:minUkf:minAbstand, mehrere durch Komma.
+            //
+            // Der Referenzlauf setzt NICHTS - `Params.OFF` ist der heutige
+            // Vertrag, und die Matrix misst gegen ihn.
+            lauf("calmRef", null, fenster = 10)
+            ruheEnv.split(",").forEach { spec ->
+                val t = spec.trim().split(":")
+                val p = app.aaps.fuse.core.controller.UpfrontRecovery.Params.of(
+                    calmCycles = t[0].toInt(),
+                    minUkf = t[1].toDouble(),
+                    minGuardDistanceMgdl = t[2].toDouble(),
+                )
+                lauf("calm${t[0]}_${t[1].replace(".", "")}_${t[2].replace(".", "")}",
+                     null, fenster = 10, upfrontStart = 1.0, ruhe = p)
+            }
+            lauf("calmRefNach", null, fenster = 10, upfrontStart = 1.0)
             return
         }
         if (System.getenv("FUSE_REPLAY_REJOIN") != null) {
