@@ -74,6 +74,41 @@ class LedgerCodecTest {
         )
     }
 
+    /**
+     * UEBERTRAG UND VERFALL ueberleben den Codec GETRENNT (Review 25.08.
+     * spaet, Punkt 3) - mit unterschiedlichen Werten, damit eine
+     * Vertauschung auffiele.
+     */
+    @Test
+    fun `uebertrag und verfall des sofortanteils ueberleben getrennt`() {
+        // Beide Posten gehoeren ZUR AUTORISIERUNG - ohne gueltige
+        // Autorisierung schreibt der Codec den ganzen Fundament-Block
+        // nicht, und sie sind bedeutungslos. Genau deshalb ist ihr Reset
+        // beim Ende der Autorisierung strukturell gegeben.
+        val ep = EpisodeBudgets().apply {
+            foundation = app.aaps.fuse.core.controller.MealFoundation.arm(
+                markerTs = t0, foundationEnabled = true, totalBudgetU = 4.0,
+                phaseAShare = 0.8, phaseAUpfrontShare = 1.0,
+                primeWindowMin = 20, wallCeilingMin = 45, phaseBUntilMin = 60,
+                markerAuthorized = true, pressObservedInThisProcess = true,
+                primeDeclinedByUser = false,
+            )
+            upfrontTransferredU = 2.40
+            upfrontLapsedU = 0.20
+            upfrontBatchDeferredSince = t0
+        }
+        val decoded = LedgerCodec.decode(
+            JSONObject(LedgerCodec.encode(LedgerState(), ep, 0L, InterventionStamp("test-epoche", 42L)).toString()),
+        ).episodes
+        assertEquals(2.40, decoded.upfrontTransferredU, 1e-12)
+        assertEquals(0.20, decoded.upfrontLapsedU, 1e-12)
+        assertEquals(t0, decoded.upfrontBatchDeferredSince)
+        // Altdatei ohne die Felder: konservativ 0, kein Raten.
+        val json = LedgerCodec.encode(LedgerState(), ep, 0L, InterventionStamp("test-epoche", 42L))
+        json.getJSONObject("episodes").getJSONObject("foundation").remove("upfrontLapsedU")
+        assertEquals(0.0, LedgerCodec.decode(JSONObject(json.toString())).episodes.upfrontLapsedU, 1e-12)
+    }
+
     @Test
     fun `die korrekturpfad-riegel ueberleben den codec ohne ihre zaehler`() {
         // v30/Review-P0.1: Identitaet restartfest, Bestaetigungszaehler

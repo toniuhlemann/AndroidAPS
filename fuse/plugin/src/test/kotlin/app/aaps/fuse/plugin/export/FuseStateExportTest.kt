@@ -1106,6 +1106,32 @@ class FuseStateExportTest {
         record(outcome(foundation = f)).getJSONObject("mealFoundation")
 
     /**
+     * UEBERTRAGEN UND VERFALLEN SIND ZWEI GROESSEN (Review 25.08. spaet,
+     * Punkt 3). Mit UNTERSCHIEDLICHEN Werten geprueft - stuenden beide
+     * auf demselben Wert, waere eine Verwechslung im Export unsichtbar.
+     */
+    @Test
+    fun `Uebertrag und Verfall stehen getrennt im Export`() {
+        val o = record(
+            outcome().copy(
+                phaseAUpfrontTransferredU = 2.40,
+                phaseAUpfrontLapsedU = 0.20,
+            )
+        ).getJSONObject("mealFoundation")
+        assertEquals(2.40, o.getDouble("phaseAUpfrontTransferredU"), 1e-9)
+        assertEquals(0.20, o.getDouble("phaseAUpfrontLapsedU"), 1e-9)
+        // Und andersherum, damit keine Vertauschung durchrutscht.
+        val v = record(
+            outcome().copy(
+                phaseAUpfrontTransferredU = 0.20,
+                phaseAUpfrontLapsedU = 2.40,
+            )
+        ).getJSONObject("mealFoundation")
+        assertEquals(0.20, v.getDouble("phaseAUpfrontTransferredU"), 1e-9)
+        assertEquals(2.40, v.getDouble("phaseAUpfrontLapsedU"), 1e-9)
+    }
+
+    /**
      * TONIS FELDLISTE, Feld fuer Feld (Punkt 12).
      *
      * Nicht weil ein fehlendes Feld den Regler kaputt macht, sondern weil das
@@ -1138,6 +1164,10 @@ class FuseStateExportTest {
             "phaseAUpfrontRequestedU", "phaseAUpfrontPublishedU",
             "phaseAUpfrontConfirmedU", "phaseAUpfrontPendingU",
             "phaseAUpfrontState", "phaseAUpfrontProposalId",
+            // Review 25.08. spaet: uebertragen und verfallen sind ZWEI
+            // Groessen - "uebertragen" darf nur heissen, was der
+            // schrittweise Pfad wirklich aufgenommen hat.
+            "phaseAUpfrontTransferredU", "phaseAUpfrontLapsedU",
         )) {
             assertTrue(o.has(feld), "$feld fehlt im Export")
         }
