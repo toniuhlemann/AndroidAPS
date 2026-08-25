@@ -482,8 +482,16 @@ class FuseCycleRunner(
         val afterMarkerFloorU: Double,
         /** Menge NACH dem Endriegel (MeasuredDescentGate). */
         val afterDescentGateU: Double,
-        /** Was tatsaechlich veroeffentlicht wurde. */
-        val publishedU: Double,
+        /**
+         * Die ANGEFORDERTE RT-Menge - und ausdruecklich NICHT "publiziert".
+         *
+         * Der Runner kennt die Publikation nicht: die Reihenfolge ist
+         * `Runner -> Publikationsgate -> persistVerified -> resolveReservation`.
+         * Hier stand "publishedU", und damit haette eine blosse Anforderung
+         * in jeder Auswertung als abgegeben gegolten (Toni 25.08. spaet).
+         * Die angenommene Menge ergaenzt das Plugin nach dem Gate.
+         */
+        val requestedRtU: Double,
     )
 
     data class Outcome(
@@ -3340,7 +3348,7 @@ class FuseCycleRunner(
             beforeMarkerFloorU = verifiedLift.smbU,
             afterMarkerFloorU = autorisiert.smbU,
             afterDescentGateU = nachDescent.smbU,
-            publishedU = nachDescent.smbU,
+            requestedRtU = nachDescent.smbU,
         )
 
         // ---- KORREKTURPFAD-RIEGEL (Bauauftrag Toni 25.08., nachgebessert

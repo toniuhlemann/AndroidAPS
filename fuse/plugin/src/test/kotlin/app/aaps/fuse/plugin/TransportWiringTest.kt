@@ -338,7 +338,23 @@ class TransportWiringTest : TestBaseWithProfile() {
             val nah = listOfNotNull(unter, ueber).minByOrNull { e -> kotlin.math.abs(e.key - atTs) }
             nah?.takeIf { e -> kotlin.math.abs(e.key - atTs) <= 90_000L }?.value
         }
-        it.iob = karte?.first ?: bolusIobU ?: 0.0; it.basaliob = 0.0
+        val gesamt = karte?.first ?: bolusIobU ?: 0.0
+        // DIE BOLUS-IOB IST NICHT DIE GESAMT-IOB (Rig-Befund 25.08. spaet).
+        // `basaliob = 0` machte aus jeder negativen Gesamt-IOB eine negative
+        // BOLUS-IOB - und die bricht als Integritaetsbefund den ganzen
+        // Zyklus ab. Am 25.08. abends waren das 23 Zyklen im
+        // Phase-A-Fenster: Gesamt-IOB -0,33 bis -0,22 (Basal
+        // zurueckgehalten), Bolus-IOB am Geraet aber +0,10. Traegt der
+        // Trail die Bolus-IOB, wird `basaliob` so gesetzt, dass
+        // `iob - basaliob` genau sie ergibt.
+        val bolusAusTrail = bolusIobProTs?.let { k ->
+            val unter = k.floorEntry(atTs)
+            val ueber = k.ceilingEntry(atTs)
+            val nah = listOfNotNull(unter, ueber).minByOrNull { e -> kotlin.math.abs(e.key - atTs) }
+            nah?.takeIf { e -> kotlin.math.abs(e.key - atTs) <= 90_000L }?.value
+        }
+        it.iob = gesamt
+        it.basaliob = bolusAusTrail?.let { gesamt - it } ?: 0.0
         it.activity = karte?.second ?: aktivitaet; it.valid = iobGueltig
     }
 
@@ -365,6 +381,9 @@ class TransportWiringTest : TestBaseWithProfile() {
     /** PHASE-2-REPLAY: (iobU, activityUPerMin) je Sample-Zeitstempel -
      *  naechster Eintrag binnen 90 s; null = normale Rig-Hebel. */
     private var iobProTs: java.util.TreeMap<Long, Pair<Double, Double>>? = null
+
+    /** Die BOLUS-IOB je Zeitpunkt aus dem Trail. */
+    private var bolusIobProTs: java.util.TreeMap<Long, Double>? = null
     private var boluses: List<BS> = emptyList()
 
     private fun roundUp(t: Long) = if (t % 60_000L == 0L) t else (t / 60_000L + 1) * 60_000L
@@ -7416,6 +7435,8 @@ class TransportWiringTest : TestBaseWithProfile() {
         data class Zyklus(
             val ts: Long, val raw: Double, val q1: Double, val act: Double, val isf: Double,
             val iobU: Double, val maxIob: Double, val marker: Long,
+            /** Die BOLUS-IOB des Geraets - getrennt von der Gesamt-IOB. */
+            val bolusIobU: Double?,
             val smbU: Double, val block: String?, val policy: org.json.JSONObject?,
         )
         val zyklen = ArrayList<Zyklus>()
@@ -7435,6 +7456,7 @@ class TransportWiringTest : TestBaseWithProfile() {
                     st?.optDouble("iobU")?.takeIf { it.isFinite() } ?: 0.0,
                     st?.optDouble("maxIobU")?.takeIf { it.isFinite() } ?: 8.0,
                     st?.optLong("markerArmedTs") ?: 0L,
+                    o.optJSONObject("lowThreat")?.optDouble("bolusIobU")?.takeIf { it.isFinite() },
                     dec?.optDouble("smbU")?.takeIf { it.isFinite() } ?: 0.0,
                     dec?.optString("block")?.takeIf { it.isNotBlank() },
                     o.optJSONObject("policy")?.optJSONObject("values"),
@@ -7503,6 +7525,7 @@ class TransportWiringTest : TestBaseWithProfile() {
         // Rohserie + IOB/Aktivitaets-Karte aus dem Trail.
         rohSerie = zyklen.map { it.ts to it.raw }
         iobProTs = java.util.TreeMap(zyklen.associate { it.ts to (it.iobU to it.act) })
+        bolusIobProTs = java.util.TreeMap(zyklen.mapNotNull { z -> z.bolusIobU?.let { z.ts to it } }.toMap())
 
         // ISF je Tagesminute aus dem Trail (Toni faehrt ein Zeitprofil).
         val isfProMin = HashMap<Int, Double>()
@@ -7599,7 +7622,7 @@ class TransportWiringTest : TestBaseWithProfile() {
             neuerRunner(adapter, fensterMs = fensterMs, trendRegel = trendRegel, gapPolitik = gapPolitik, reifePolitik = reifePolitik, wiedereinstieg = rejoinPolitik, ruheParams = ruhe)
             val outFile = File(outDir, "replay_$name.csv")
             outFile.printWriter().use { w ->
-                w.println("ts;smbU;block;binding;insulinReq;liftU;needU;abort;phase;fastD;slowD;trend;raw;recSmbU;recBlock;profil;restMin;tbr;latch;lvDenial;lvExit;lvStreak;lvHead;transC;revGrund;rearmGrund;ctxGrund;basis;gapBreakMs;samplesUsed;gapBeforeMin;r;bandN;matP;matS;iob;rejoin;rejoinGrund;gapMs;vollreifeTs;regimeGrund;regimeTs;regimeSegTs;vorReif;ruheModus;ruheStreak;ruheDenial;gefahr;guardAbst;grantU;vorFloor;nachFloor;nachRiegel;publU")
+                w.println("ts;smbU;block;binding;insulinReq;liftU;needU;abort;phase;fastD;slowD;trend;raw;recSmbU;recBlock;profil;restMin;tbr;latch;lvDenial;lvExit;lvStreak;lvHead;transC;revGrund;rearmGrund;ctxGrund;basis;gapBreakMs;samplesUsed;gapBeforeMin;r;bandN;matP;matS;iob;rejoin;rejoinGrund;gapMs;vollreifeTs;regimeGrund;regimeTs;regimeSegTs;vorReif;ruheModus;ruheStreak;ruheDenial;gefahr;guardAbst;grantU;vorFloor;nachFloor;nachRiegel;rtAngefordert")
                 var prevMarker = 0L
                 var polText = pol?.toString()
                 var zyklusNr = 0
@@ -7683,7 +7706,7 @@ class TransportWiringTest : TestBaseWithProfile() {
                         o.upfrontChain?.beforeMarkerFloorU?.let { "%.3f".format(java.util.Locale.US, it) } ?: "",
                         o.upfrontChain?.afterMarkerFloorU?.let { "%.3f".format(java.util.Locale.US, it) } ?: "",
                         o.upfrontChain?.afterDescentGateU?.let { "%.3f".format(java.util.Locale.US, it) } ?: "",
-                        o.upfrontChain?.publishedU?.let { "%.3f".format(java.util.Locale.US, it) } ?: "",
+                        o.upfrontChain?.requestedRtU?.let { "%.3f".format(java.util.Locale.US, it) } ?: "",
                     ).joinToString(";"))
                 }
             }
