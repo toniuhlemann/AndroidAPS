@@ -38,6 +38,10 @@ import app.aaps.fuse.core.signal.UkfQ1
 class FuseSignalSource(
     private val iobCobCalculator: IobCobCalculator,
     private val profileFunction: ProfileFunction,
+    /** Die Segmentgrenze dieses Laufs - injiziert, nicht global. Ein
+     *  Replay erzeugt je Variante eine eigene Quelle. */
+    private val gapPolicy: app.aaps.fuse.core.signal.GapPolicy =
+        app.aaps.fuse.core.signal.GapPolicy.PRODUCTION,
 ) {
 
     /**
@@ -270,7 +274,7 @@ class FuseSignalSource(
         // q1/UKF bleiben unbeschnitten (eigene, dt-bewusste Filterung); nur r
         // faellt bis zur Segmentreife benannt aus ("drive not estimable").
         val windowStart = BgiAdjustedSeries.segmentStart(
-            series.map { it.tsMs }, sourceTs - BgiAdjustedSeries.WINDOW_MS
+            series.map { it.tsMs }, sourceTs - BgiAdjustedSeries.WINDOW_MS, gapPolicy
         )
         val samples = ArrayList<BgiAdjustedSeries.Sample>()
         for ((index, point) in series.withIndex()) {
@@ -324,7 +328,7 @@ class FuseSignalSource(
             val ts = series.map { it.tsMs }
             var found = 0L
             for (i in ts.size - 1 downTo 1) {
-                if (ts[i] - ts[i - 1] > BgiAdjustedSeries.SEGMENT_BREAK_MS) { found = ts[i]; break }
+                if (ts[i] - ts[i - 1] > gapPolicy.rSegmentBreakMs) { found = ts[i]; break }
             }
             found
         }

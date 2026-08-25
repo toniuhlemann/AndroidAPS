@@ -126,14 +126,13 @@ object BgiAdjustedSeries {
      * Kontraktgrenze aus dem KDoc von [adjust]: dt darueber ist ein
      * Segmentbruch und beendet das R-Segment.
      *
-     * SEIT 25.08. ABGELEITET, nicht mehr selbst gesetzt: die Grenze stand
-     * an drei Orten, davon einer (ObserverTypes.rSegmentBreakMin) als
-     * unabhaengiges Literal - zwei Wahrheiten, die auseinanderlaufen
-     * konnten. Die eine Wahrheit ist jetzt [GapPolicy]; hier steht nur
-     * noch der Zugriff darauf, damit die vorhandenen Lesestellen
-     * unveraendert bleiben.
+     * NUR NOCH DER VORGABEWERT. Die wirksame Grenze kommt seit 25.08. aus
+     * einer INJIZIERTEN [GapPolicy] - sie stand vorher an drei Orten
+     * (einer davon ein unabhaengiges Literal im Observer), und ein
+     * globaler Schalter haette Runner und Tests im selben Prozess
+     * denselben Wert teilen lassen.
      */
-    val SEGMENT_BREAK_MS: Long get() = GapPolicy.rSegmentBreakMs
+    const val SEGMENT_BREAK_MS: Long = GapPolicy.DEFAULT_R_SEGMENT_BREAK_MS
 
     /**
      * Audit R95 NEU-03: die Brucherkennung war "Sache des Aufrufers" - und der
@@ -147,10 +146,14 @@ object BgiAdjustedSeries {
      * Fenster bruchfrei ist. r existiert damit nach einem Bruch erst wieder,
      * wenn das NEUE Segment genug Punkte traegt (Spec v0.5 Abs. 4.2).
      */
-    fun segmentStart(ascendingTs: List<Long>, windowStartTs: Long): Long {
+    fun segmentStart(
+        ascendingTs: List<Long>,
+        windowStartTs: Long,
+        policy: GapPolicy = GapPolicy.PRODUCTION,
+    ): Long {
         for (i in ascendingTs.size - 1 downTo 1) {
             if (ascendingTs[i - 1] < windowStartTs && ascendingTs[i] < windowStartTs) break
-            if (ascendingTs[i] - ascendingTs[i - 1] > SEGMENT_BREAK_MS) {
+            if (ascendingTs[i] - ascendingTs[i - 1] > policy.rSegmentBreakMs) {
                 return maxOf(windowStartTs, ascendingTs[i])
             }
         }
@@ -226,6 +229,7 @@ object BgiAdjustedSeries {
         nowTs: Long,
         windowMs: Long = WINDOW_MS,
         lastGapMs: Long? = null,
+        policy: GapPolicy = GapPolicy.PRODUCTION,
     ): SignalReadiness {
         val window = points.filter { nowTs - it.sourceTs <= windowMs && it.sourceTs <= nowTs }
         var slopes = 0
@@ -233,7 +237,7 @@ object BgiAdjustedSeries {
             if (window[j].sourceTs - window[i].sourceTs >= PAIR_DT_MIN_MS) slopes++
         }
         val grund = when {
-            lastGapMs != null && lastGapMs > GapPolicy.rSegmentBreakMs &&
+            lastGapMs != null && lastGapMs > policy.rSegmentBreakMs &&
                 window.size < MIN_POINTS -> SignalReadiness.Reason.GAP_RESET
 
             window.size < MIN_POINTS     -> SignalReadiness.Reason.TOO_FEW_POINTS
@@ -245,7 +249,7 @@ object BgiAdjustedSeries {
             slopes = slopes, slopesRequired = MIN_SLOPES,
             windowMin = (windowMs / 60_000L).toInt(),
             lastGapMs = lastGapMs,
-            breakMs = GapPolicy.rSegmentBreakMs,
+            breakMs = policy.rSegmentBreakMs,
             reason = grund,
         )
     }

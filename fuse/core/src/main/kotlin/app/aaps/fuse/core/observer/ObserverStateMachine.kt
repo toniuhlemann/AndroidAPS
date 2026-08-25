@@ -181,11 +181,12 @@ class ObserverStateMachine(
         // Gap-Eigenschaften sind KUMULATIV, nicht first-match: eine 61-min-
         // Luecke ist gleichzeitig Continuity-, Segment- und Reinit-Bruch.
         if (dtMin > p.stateContMaxMin) out += ResetCause.CONTINUITY_BREAK
-        // DIE EINE POLITIK, direkt gelesen: ein einmal erzeugtes
-        // Params-Objekt wuerde den Wert einfrieren, und ein Replay-Override
-        // erreichte den Observer nie - genau die Haelfte, die den Messfehler
-        // erzeugt haette (Befund 25.08.).
-        val segmentBreakMin = app.aaps.fuse.core.signal.GapPolicy.rSegmentBreakMin
+        // DER EIGENE PARAMETER, nicht ein globales Objekt (Review 25.08.
+        // abends): die Politik wird beim Bauen des Observers injiziert und
+        // ist danach unveraenderlich. Ein prozessweiter Schalter haette
+        // parallele Runner und Tests denselben Wert teilen lassen - zwei
+        // Matrixlaeufe koennten sich vermischen.
+        val segmentBreakMin = p.rSegmentBreakMin
         if (dtMin > segmentBreakMin) out += ResetCause.R_SEGMENT_BREAK
         if (dtMin > p.reinitMin) out += ResetCause.FULL_REINIT
         if (input.inputGap) out += ResetCause.INPUT_DROP

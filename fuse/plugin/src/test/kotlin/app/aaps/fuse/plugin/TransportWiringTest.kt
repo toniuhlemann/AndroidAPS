@@ -399,7 +399,7 @@ class TransportWiringTest : TestBaseWithProfile() {
         neuerRunner(FuseLedgerAdapter())
     }
 
-    private fun neuerRunner(l: FuseLedgerAdapter, evidenz: EvidenceStock.Config = EvidenceStock.Config(), fensterMs: Long? = null, trendRegel: String? = null) {
+    private fun neuerRunner(l: FuseLedgerAdapter, evidenz: EvidenceStock.Config = EvidenceStock.Config(), fensterMs: Long? = null, trendRegel: String? = null, gapPolitik: app.aaps.fuse.core.signal.GapPolicy = app.aaps.fuse.core.signal.GapPolicy.PRODUCTION) {
         ledger = l
         runner = FuseCycleRunner(
             iobCobCalculator, profileFunction, activePlugin, constraintsChecker, commandQueue,
@@ -407,6 +407,7 @@ class TransportWiringTest : TestBaseWithProfile() {
             evidenceConfig = evidenz,
             theilSenWindowMsOverride = fensterMs,
             trendRuleOverride = trendRegel,
+            gapPolicy = gapPolitik,
             predict = { input ->
                 predictReject
                     ?.let { PredictorOutcome.Rejected(it, "erzwungen") }
@@ -7549,18 +7550,20 @@ class TransportWiringTest : TestBaseWithProfile() {
             reversalAn = guardsStart
             rearmAn = guardsStart
             reversalConfirmWert = reversalConfirm
-            // Dieselbe Leck-Regel fuer die Gap-Politik: sie ist ein
-            // PROZESSWEITER Zustand (object), nicht ein Rig-Feld - ein
-            // vergessener Wert wuerde in JEDEN Folgelauf lecken, auch in
-            // andere Matrizen. Jeder Lauf setzt sie ausdruecklich.
-            app.aaps.fuse.core.signal.GapPolicy.overrideForReplay(gapBreakMs)
+            // DIE GAP-POLITIK IST KEIN RIG-FELD MEHR und auch kein
+            // Prozesszustand: sie geht als Wert in den Runner dieses Laufs
+            // (Review Toni 25.08. abends). Damit kann sie nicht mehr in
+            // einen Folgelauf lecken - jeder Lauf traegt seine eigene.
+            val gapPolitik = gapBreakMs
+                ?.let { app.aaps.fuse.core.signal.GapPolicy.of(it) }
+                ?: app.aaps.fuse.core.signal.GapPolicy.PRODUCTION
             forecastShadowAn = false // Replay braucht die Matrizen nicht - Tempo
             livenessRatioDeckel = ratioCap // v23: aufgezeichnete v22-Politik traegt den Schluessel nicht - der Hebel gilt
             theilSenFensterMin = fenster // W18-Trails tragen den Schluessel nicht - der Hebel gilt
             politikAnwenden(zyklen.firstNotNullOfOrNull { it.policy })
             theilSenFensterMin = fenster // die erste Politik darf den Matrixwert nicht ueberschreiben (W10-Live-Trails tragen 10)
             val adapter = FuseLedgerAdapter().also { it.loadOnce(File(dir, name).also(File::mkdirs), "test-epoch", zyklen.first().ts) }
-            neuerRunner(adapter, fensterMs = fensterMs, trendRegel = trendRegel)
+            neuerRunner(adapter, fensterMs = fensterMs, trendRegel = trendRegel, gapPolitik = gapPolitik)
             val outFile = File(outDir, "replay_$name.csv")
             outFile.printWriter().use { w ->
                 w.println("ts;smbU;block;binding;insulinReq;liftU;needU;abort;phase;fastD;slowD;trend;raw;recSmbU;recBlock;profil;restMin;tbr;latch;lvDenial;lvExit;lvStreak;lvHead;transC;revGrund;rearmGrund;ctxGrund;basis;gapBreakMs;samplesUsed;gapBeforeMin")
@@ -7616,7 +7619,7 @@ class TransportWiringTest : TestBaseWithProfile() {
                         // EVIDENCE_ACTIVE-Zyklen kein Riegel steht.
                         o.correctionContextReason ?: "",
                         o.correctionMealBasis ?: "",
-                        app.aaps.fuse.core.signal.GapPolicy.rSegmentBreakMs,
+                        o.rSegmentBreakMs,
                         o.signal?.samplesUsed ?: "",
                         o.signal?.gapBeforeMin?.let { "%.2f".format(java.util.Locale.US, it) } ?: "",
                     ).joinToString(";"))
@@ -7721,7 +7724,6 @@ class TransportWiringTest : TestBaseWithProfile() {
                 val sek = g.trim().toLong()
                 lauf("gap%03d".format(sek), null, fenster = 10, gapBreakMs = sek * 1000L)
             }
-            app.aaps.fuse.core.signal.GapPolicy.overrideForReplay(null)
             return
         }
         val capsEnv = System.getenv("FUSE_REPLAY_CAPS")

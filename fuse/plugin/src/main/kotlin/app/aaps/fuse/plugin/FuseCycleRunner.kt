@@ -147,6 +147,15 @@ class FuseCycleRunner(
      */
     private val theilSenWindowMsOverride: Long? = null,
     /**
+     * DIE SEGMENTGRENZE DIESES RUNNERS - unveraenderlich, injiziert
+     * (Review Toni 25.08. abends). Der erste Wurf trug einen
+     * prozessweiten Schalter; damit haetten sich zwei Matrixlaeufe im
+     * selben Prozess denselben Wert geteilt. Jetzt erzeugt ein Replay je
+     * Variante einen eigenen Runner.
+     */
+    private val gapPolicy: app.aaps.fuse.core.signal.GapPolicy =
+        app.aaps.fuse.core.signal.GapPolicy.PRODUCTION,
+    /**
      * NUR FUER DEN PHASE-2-REPLAY (Toni 23.08. Abend): schaltet EINE
      * Trendregel des Turn-Shadows als ECHTE Dosierbahn scharf.
      *   "UP"       Mittelbahn-Anhebung bei bestaetigter Aufwaertswende
@@ -190,8 +199,13 @@ class FuseCycleRunner(
     private val predict: (PredictorInput) -> PredictorOutcome = TrajectoryCore::predict,
 ) {
 
-    private val observer = ObserverStateMachine(sessionId = sessionId)
-    private val signalSource = FuseSignalSource(iobCobCalculator, profileFunction)
+    // BEIDE Verbraucher bekommen DIESELBE Politik - das ist die eine
+    // Wahrheit, und sie ist hier sichtbar an genau einer Stelle.
+    private val observer = ObserverStateMachine(
+        p = app.aaps.fuse.core.observer.ObserverParams(rSegmentBreakMin = gapPolicy.rSegmentBreakMin),
+        sessionId = sessionId,
+    )
+    private val signalSource = FuseSignalSource(iobCobCalculator, profileFunction, gapPolicy)
 
     companion object {
 
@@ -628,6 +642,8 @@ class FuseCycleRunner(
         val insulinModel: app.aaps.fuse.core.predictor.InsulinModelProvenance? = null,
         /** Warum NICHT gerechnet wurde. `null` heisst: der Zyklus lief durch. */
         val abortReason: String?,
+        /** Die WIRKSAME Segmentgrenze dieses Zyklus [ms] - s. GapPolicy. */
+        val rSegmentBreakMs: Long = app.aaps.fuse.core.signal.GapPolicy.DEFAULT_R_SEGMENT_BREAK_MS,
         /** Die Bahn wurde verworfen. GETRENNT von [abortReason] gefuehrt, weil
          *  der Zyklus deswegen seit dem 11.08. nicht mehr zwingend endet. */
         val predictorRejected: Boolean = false,
@@ -1049,7 +1065,7 @@ class FuseCycleRunner(
                 reason = reason, alarm = tbrAlarm, bgMgdl = signal?.q1, targetMgdl = null, targetSource = null,
                 signal = signal, band = null, discount = null, onset = null, prime = null, candidate = null, candidateGap = null, policy = policy, state = null, step = step,
                 sensorEpoch = null, calibrationEpoch = null,
-                isfMgdlPerU = null, iobU = iob, iobThU = iobTh, maxIobU = maxIob, computeDurationMs = null, mealStats = null, abortReason = reason,
+                isfMgdlPerU = null, iobU = iob, iobThU = iobTh, maxIobU = maxIob, computeDurationMs = null, mealStats = null, abortReason = reason, rSegmentBreakMs = gapPolicy.rSegmentBreakMs,
                 livenessExit = livenessLostExit,
                 livenessReArmUntilTs = episodes.livenessReArmUntilTs,
                 // AUCH IM ABBRUCH. Nach einem Neustart ist der Abbruch der
@@ -4307,6 +4323,7 @@ class FuseCycleRunner(
             isfMgdlPerU = isf,
             iobU = iobTotal.iob,
             abortReason = null,
+            rSegmentBreakMs = gapPolicy.rSegmentBreakMs,
             // runCatching: eine scheiternde DB-Abfrage darf den Zyklus nicht
             // kosten - dann faellt nur der Ledger-Abgleich dieses Zyklus aus
             // und offene Commitments bleiben konservativ stehen.
@@ -5014,6 +5031,7 @@ class FuseCycleRunner(
             phaseAUpfrontLapsedU = episodes.upfrontLapsedU,
             insulinModel = insulinModel,
             abortReason = null,
+            rSegmentBreakMs = gapPolicy.rSegmentBreakMs,
             predictorRejected = true,
             predictorReason = rejected.reason.name,
             markerFallbackUsed = true,

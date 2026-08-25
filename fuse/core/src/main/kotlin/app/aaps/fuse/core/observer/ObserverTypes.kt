@@ -125,10 +125,13 @@ data class ObserverParams(
      * ein eigenes Literal `3.0`, unabhaengig von
      * `BgiAdjustedSeries.SEGMENT_BREAK_MS`. Zwei Wahrheiten fuer dieselbe
      * Grenze: die r-Reihe haette sich verbinden lassen, waehrend der
-     * Observer weiter bricht (oder umgekehrt). Der Default liest jetzt
-     * die eine Politik; ein Test darf ihn weiterhin ausdruecklich setzen.
+     * Observer weiter bricht (oder umgekehrt).
+     *
+     * Der Vorgabewert ist die PRODUKTIONS-Politik; ein Replay injiziert
+     * eine andere ueber den Runner. Kein globaler Schalter - sonst
+     * teilten sich parallele Laeufe im selben Prozess einen Wert.
      */
-    val rSegmentBreakMin: Double = app.aaps.fuse.core.signal.GapPolicy.rSegmentBreakMin,
+    val rSegmentBreakMin: Double = app.aaps.fuse.core.signal.GapPolicy.PRODUCTION.rSegmentBreakMin,
     val stateContMaxMin: Double = 1.5,
     val staleMin: Double = 5.0,
     val reinitMin: Double = 60.0,
