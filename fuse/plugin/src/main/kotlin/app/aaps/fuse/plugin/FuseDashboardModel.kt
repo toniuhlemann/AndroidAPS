@@ -49,6 +49,12 @@ object FuseDashboardModel {
         val evidence: String,
         /** Totband-/Prime-/Onset-Status; null = nichts aktiv -> Zeile weg. */
         val windows: String?,
+        /**
+         * DER SOFORT-BATCH, getrennt nach geplant / aufgeschoben /
+         * geliefert / verbleibend (Nachtrag Toni 25.08., Punkt 9).
+         * null = kein Sofortanteil konfiguriert -> Zeile weg.
+         */
+        val upfrontBatch: String?,
         /** IOB verdichtet: netto (Bolus/Basal in Klammern). */
         val iobLine: String,
         /** Nur bei offener Transportmenge - sonst null -> Zeile weg. */
@@ -76,6 +82,7 @@ object FuseDashboardModel {
             marker = markerText(null, nowMs, marker),
             evidence = "noch nicht bewertet",
             windows = null,
+            upfrontBatch = null,
             iobLine = "IOB -",
             transport = null,
             limits = "-",
@@ -134,6 +141,7 @@ object FuseDashboardModel {
             marker = markerText(outcome, nowMs, marker),
             evidence = evidenceText(outcome),
             windows = windowsText(outcome, nowMs, marker),
+            upfrontBatch = upfrontBatchText(outcome),
             iobLine = iobLine(outcome),
             transport = ledger?.transportCommitmentU?.takeIf { it > 0.0 }
                 ?.let { "Transport offen ${u(it)} - wird vom Spielraum abgezogen" },
@@ -223,6 +231,42 @@ object FuseDashboardModel {
             teile += "Onset offen ${u(o.remainingU.coerceAtLeast(0.0))}"
         }
         return teile.takeIf { it.isNotEmpty() }?.joinToString("  |  ")
+    }
+
+    /**
+     * DER SOFORT-BATCH IN VIER GETRENNTEN GROESSEN (Nachtrag Toni 25.08.,
+     * Punkt 9): geplant, aktuell aufgeschoben, bereits geliefert und der
+     * verbleibende Batch. Vorher stand keine dieser Groessen in der
+     * Oberflaeche - der Feldbefund (3,20 geplant, in Haeppchen geliefert,
+     * 3,10 statt 2,60 gemeldet) war nur im Trail sichtbar.
+     *
+     * Kein zweiter Rechenweg: `geliefert` ist dieselbe Formel wie im
+     * Export, `verbleibend` ist die Bilanzgroesse des Reglers.
+     */
+    private fun upfrontBatchText(outcome: FuseCycleRunner.Outcome): String? {
+        val f = outcome.mealFoundation
+        val geplant = f.phaseAUpfrontPlannedU
+        if (!f.armed || geplant <= 0.0) return null
+        val geliefert = minOf(geplant, f.deliveredPhaseAU).coerceAtLeast(0.0)
+        val rest = outcome.phaseAUpfrontPendingU.coerceAtLeast(0.0)
+        val teile = mutableListOf("Sofort geplant ${u(geplant)}")
+        if (geliefert > 0.0) teile += "geliefert ${u(geliefert)}"
+        if (rest > 0.0) teile += "offen ${u(rest)}"
+        // Der ZUSTAND benennt, warum der Rest noch offen ist - typisiert
+        // uebersetzt, nie roh (Konvention der uebrigen Label-Funktionen).
+        upfrontStateLabel(outcome.phaseAUpfrontState)?.let { teile += it }
+        return teile.joinToString("  |  ")
+    }
+
+    /** Typisierter Batch-Zustand in Klartext; null = nichts zu sagen. */
+    private fun upfrontStateLabel(state: String?): String? = when (state) {
+        "DEFERRED_UPFRONT_BATCH" -> "aufgeschoben (Sicherheitsriegel)"
+        "BLOCKED_ZERO_LATCH"     -> "aufgeschoben (Null-Basal verriegelt)"
+        "BLOCKED_FALLBACK"       -> "aufgeschoben (Modellausfall)"
+        "BLOCKED_NO_DEFERRED"    -> "gesperrt (Sicherheitsnetz aus)"
+        "REQUESTED"              -> "wird angefordert"
+        "WINDOW_OVER"            -> "Fenster vorbei"
+        else                     -> null
     }
 
     private fun markerText(outcome: FuseCycleRunner.Outcome?, nowMs: Long, marker: FuseScreenModel.MarkerInfo?): String {

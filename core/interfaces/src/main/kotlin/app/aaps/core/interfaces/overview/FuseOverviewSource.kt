@@ -100,6 +100,8 @@ interface FuseOverviewSource {
             data class Spread(val amountU: Double, val windowMin: Int?) : Line
             data class Foundation(val amountU: Double, val untilMin: Int) : Line
             data class Total(val amountU: Double) : Line
+            /** Aktueller Zustand: der Sofortanteil ist aufgeschoben. */
+            data class Deferred(val reason: String) : Line
         }
     }
 

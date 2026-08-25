@@ -173,7 +173,13 @@
          was man nur EINMAL lesen muss, steht in der
          Einstellungsbeschreibung. "Angefordert" ist woertlich gemeint:
          Riegel, IOB-Spielraum, Aufschub und Pumpen-Gates koennen kuerzen. -->
-    <string name="overview_fuse_meal_confirm_upfront">%1$.2f U sofort angefordert</string>
+    <!-- "VORGESEHEN", nicht "angefordert": ist beim Druck ein
+         Abwaertsriegel aktiv, wird der Sofortanteil zunaechst
+         AUFGESCHOBEN - angefordert werden dann 0 U. Der Dialog darf
+         die Anforderung nicht behaupten, bevor sie feststeht. -->
+    <string name="overview_fuse_meal_confirm_upfront">%1$.2f U Sofortanteil vorgesehen</string>
+    <!-- Der aktuelle Zustand, wenn beim Druck bereits ein Riegel steht. -->
+    <string name="overview_fuse_meal_confirm_deferred">Aktuell aufgeschoben: %1$s</string>
     <string name="overview_fuse_meal_confirm_spread">+ %1$.2f U verteilt bis %2$d min</string>
     <!-- Ohne bekanntes Fenster wird KEINE Dauer genannt statt einer falschen. -->
     <string name="overview_fuse_meal_confirm_spread_no_window">+ %1$.2f U verteilt im Freigabe-Fenster</string>

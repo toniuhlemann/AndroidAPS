@@ -149,6 +149,16 @@
                     android:visibility="gone"
                     tools:text="Nacht-Totband entwaffnet (Kredit) | Prime 0.40 U offen"
                     tools:visibility="visible" />
+
+                <TextView
+                    android:id="@+id/fuse_overview_upfront_batch"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:textColor="?android:attr/textColorPrimary"
+                    android:visibility="gone"
+                    tools:text="Sofort geplant 3.20 U | geliefert 0.60 U | offen 2.60 U | aufgeschoben (Sicherheitsriegel)"
+                    tools:visibility="visible" />
             </LinearLayout>
         </com.google.android.material.card.MaterialCardView>
 

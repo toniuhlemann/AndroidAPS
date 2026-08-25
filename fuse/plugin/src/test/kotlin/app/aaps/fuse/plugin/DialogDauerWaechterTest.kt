@@ -80,8 +80,15 @@ class DialogDauerWaechterTest {
         assertTrue(s.contains("overview_fuse_meal_confirm_upfront")) { "die Sofort-Zeile fehlt" }
         assertTrue(s.contains("overview_fuse_meal_confirm_total")) { "das Gesamtlimit fehlt" }
         val sofort = s.lines().first { it.contains("overview_fuse_meal_confirm_upfront\"") }
-        assertTrue(sofort.contains("angefordert")) {
-            "die Menge muss als ANFORDERUNG benannt sein - Riegel, IOB und Gates koennen kuerzen: $sofort"
+        // "VORGESEHEN" oder "angefordert" - nie eine Zusage. Steht beim
+        // Druck ein Abwaertsriegel, wird der Sofortanteil AUFGESCHOBEN und
+        // in diesem Zyklus 0 U angefordert; der Dialog darf die Anforderung
+        // deshalb nicht behaupten (Tonis Korrektur 25.08. abends).
+        assertTrue(sofort.contains("vorgesehen") || sofort.contains("angefordert")) {
+            "die Menge darf nicht als sichere Abgabe benannt sein: $sofort"
+        }
+        assertTrue(s.contains("overview_fuse_meal_confirm_deferred")) {
+            "der Zustandshinweis fuer den aufgeschobenen Batch fehlt"
         }
         val freigabe = s.lines().first { it.contains("fuse_meal_confirm_release\"") }
         assertTrue(freigabe.contains("Insulin")) {

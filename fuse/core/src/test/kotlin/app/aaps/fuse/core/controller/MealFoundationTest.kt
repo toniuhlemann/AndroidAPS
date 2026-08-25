@@ -1019,8 +1019,8 @@ class MealFoundationTest {
 
     // ---- PHASE-A-SOFORTANTEIL (iLet, v28) ---------------------------------
 
-    private fun upfrontAuth(anteil: Double) = MealFoundation.arm(
-        markerTs = t0, foundationEnabled = true, totalBudgetU = 3.75, phaseAShare = 0.8, phaseAUpfrontShare = anteil,
+    private fun upfrontAuth(anteil: Double, totalU: Double = 3.75, phaseAShare: Double = 0.8) = MealFoundation.arm(
+        markerTs = t0, foundationEnabled = true, totalBudgetU = totalU, phaseAShare = phaseAShare, phaseAUpfrontShare = anteil,
         primeWindowMin = A_BIS, wallCeilingMin = 45, phaseBUntilMin = B_BIS, pressObservedInThisProcess = true, primeDeclinedByUser = false, markerAuthorized = true,
     )
 
@@ -1052,22 +1052,34 @@ class MealFoundationTest {
 
     /**
      * DIE SOFORT-BILANZ (exactly-once ohne Einmal-Zustand): der Boden ist
-     * upfrontU minus Geliefertem minus Aufgeschobenem - Lieferung senkt,
-     * ein Nicht-Sende-Beweis (der `deliveredPhaseAU` exakt zurueckdreht)
-     * belebt exakt, der Aufschub-Abzug verhindert die Doppelbuchung, und
-     * unbrauchbare Eingaben sind fail-closed 0.
+     * upfrontU minus Geliefertem minus manuellem Insulin - Lieferung senkt
+     * sofort, ein Nicht-Sende-Beweis (der `deliveredPhaseAU` exakt
+     * zurueckdreht) belebt exakt, und unbrauchbare Eingaben sind
+     * fail-closed 0.
+     *
+     * DER AUFSCHUB STEHT HIER NICHT MEHR (Nachtrag Toni 25.08. mittags):
+     * frueher zog die Bilanz zusaetzlich `deferredPrime.openU` ab, weil der
+     * Sicherheitsaufschub den Sofortanteil dort sammelte. Zwei Buecher fuer
+     * dieselbe Menge liefen auseinander - gemessen 3,10 U gemeldet, wo nach
+     * 0,60 U Lieferung hoechstens 2,60 U offen sein konnten.
      */
     @Test
-    fun `die sofort-bilanz senkt sich um lieferung und aufschub`() {
+    fun `die sofort-bilanz senkt sich um lieferung und manuelles insulin`() {
         val a = upfrontAuth(1.0) // upfrontU = 3,0
-        assertEquals(3.0, MealFoundation.upfrontFloorU(a, 0.0, 0.0), 1e-9)
-        assertEquals(1.5, MealFoundation.upfrontFloorU(a, 1.5, 0.0), 1e-9, "Lieferung senkt")
-        assertEquals(0.0, MealFoundation.upfrontFloorU(a, 3.0, 0.0), 1e-9, "gedeckt")
-        assertEquals(0.0, MealFoundation.upfrontFloorU(a, 4.5, 0.0), 1e-9, "nie negativ")
-        assertEquals(1.0, MealFoundation.upfrontFloorU(a, 0.0, 2.0), 1e-9, "Aufschub senkt konservativ")
-        assertEquals(0.0, MealFoundation.upfrontFloorU(a, 2.0, 2.0), 1e-9)
-        assertEquals(0.0, MealFoundation.upfrontFloorU(MealFoundation.Authorization.none(), 0.0, 0.0), 1e-9)
-        assertEquals(0.0, MealFoundation.upfrontFloorU(a, Double.NaN, 0.0), 1e-9, "fail-closed")
-        assertEquals(0.0, MealFoundation.upfrontFloorU(a, 0.0, -1.0), 1e-9, "fail-closed")
+        assertEquals(3.0, MealFoundation.remainingUpfrontU(a, 0.0, 0.0), 1e-9)
+        assertEquals(1.5, MealFoundation.remainingUpfrontU(a, 1.5, 0.0), 1e-9, "Lieferung senkt")
+        assertEquals(0.0, MealFoundation.remainingUpfrontU(a, 3.0, 0.0), 1e-9, "gedeckt")
+        assertEquals(0.0, MealFoundation.remainingUpfrontU(a, 4.5, 0.0), 1e-9, "nie negativ")
+        assertEquals(1.0, MealFoundation.remainingUpfrontU(a, 0.0, 2.0), 1e-9, "manuelles Insulin senkt")
+        assertEquals(0.5, MealFoundation.remainingUpfrontU(a, 1.5, 1.0), 1e-9, "beides zusammen")
+        // DER LIVEFALL vom 25.08.: Plan 3,20, davon 0,60 in Phase A
+        // geliefert -> genau 2,60 offen (gemeldet waren 3,10).
+        val live = upfrontAuth(1.0, totalU = 4.0, phaseAShare = 0.8) // upfrontU = 3,20
+        assertEquals(3.20, live.phaseAUpfrontU, 1e-9)
+        assertEquals(2.60, MealFoundation.remainingUpfrontU(live, 0.60, 0.0), 1e-9)
+        assertEquals(0.0, MealFoundation.remainingUpfrontU(MealFoundation.Authorization.none(), 0.0, 0.0), 1e-9)
+        assertEquals(0.0, MealFoundation.remainingUpfrontU(a, Double.NaN, 0.0), 1e-9, "fail-closed")
+        assertEquals(0.0, MealFoundation.remainingUpfrontU(a, 0.0, -1.0), 1e-9, "fail-closed")
+        assertEquals(0.0, MealFoundation.remainingUpfrontU(a, 0.0, null), 1e-9, "unlesbar = fail-closed")
     }
 }

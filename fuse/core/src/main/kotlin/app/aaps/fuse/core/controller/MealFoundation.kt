@@ -330,56 +330,75 @@ object MealFoundation {
     }
 
     /**
-     * DER OFFENE SOFORTANTEIL - die eine Boden-Wahrheit des
-     * Phase-A-Sofortanteils (iLet-Prinzip, Bauauftrag Toni 24.08.).
+     * DER VERBLEIBENDE SOFORT-BATCH - die eine Wahrheit des
+     * Phase-A-Sofortanteils (iLet-Prinzip; Bauauftrag Toni 24.08.,
+     * korrigiert nach dem Feldbefund vom 25.08. mittags).
      *
-     * KEIN EIGENER EINMAL-ZUSTAND, sondern eine monotone BILANZ auf den
-     * bereits persistierten, gate- und beweiskorrigierten Zaehlern:
+     * KEIN EIGENER EINMAL-ZUSTAND, sondern eine BILANZ auf den bereits
+     * persistierten, gate- und beweiskorrigierten Zaehlern:
      *
-     *     offen = upfrontU - deliveredPhaseAU - deferredOpenU
+     *     verbleibend = plannedUpfrontU - deliveredPhaseAU - manuellU
+     *
+     * WAS HIER FRUEHER STAND UND WARUM ES FALSCH WAR: die Bilanz zog
+     * zusaetzlich `deferredPrime.openU` ab, weil der Sicherheitsaufschub
+     * den zurueckgehaltenen Sofortanteil dort SAMMELTE. Damit gab es zwei
+     * Buecher fuer dieselbe Menge, und sie liefen auseinander - gemessen
+     * am 25.08.: Plan 3,20 U, in Phase A geliefert 0,60 U, also hoechstens
+     * 2,60 U offen; der Aufschub meldete 3,10 U, weil er nur seine EIGENEN
+     * 0,05er-Freigaben abzog, nicht die normalen Phase-A-Lieferungen.
+     * Der Aufschub sammelt den Sofortanteil deshalb nicht mehr; der
+     * Rueckstand ergibt sich allein aus dieser Bilanz.
      *
      * Daraus folgen die exactly-once-Zusagen ohne neuen Zustandsapparat:
-     *  - LIEFERUNG senkt `deliveredPhaseAU` (Ledger-Buchung) -> der Boden
-     *    faellt auf 0, kein zweiter Versand. Ein NEUSTART aendert daran
+     *  - LIEFERUNG erhoeht `deliveredPhaseAU` (Ledger-Buchung) -> der Rest
+     *    faellt sofort, kein zweiter Versand. Ein NEUSTART aendert daran
      *    nichts, der Zaehler ist persistiert.
-     *  - UNKLARER PUMPENAUSGANG laesst die Buchung stehen (Adapter-Vertrag)
-     *    -> der Boden bleibt 0, nichts wird blind wiederholt.
+     *  - TEILKAPPUNG durch iobTH/maxIOB/Transport/Pumpenraster bucht nur
+     *    den geflossenen Teil -> der echte Rest bleibt sichtbar offen.
+     *  - UNKLARER PUMPENAUSGANG laesst die Buchung stehen (Adapter-
+     *    Vertrag) -> nichts wird blind wiederholt.
      *  - Ein sicherer NICHT-SENDE-BEWEIS dreht exakt die bewiesene Menge
-     *    zurueck -> der Boden lebt exakt einmal je Beweis wieder auf.
-     *  - Der SICHERHEITSAUFSCHUB (Punkt 6) haelt den markerfinanzierten
-     *    Anteil in `deferredPrime.openU`; der Abzug hier verhindert, dass
-     *    der Boden dieselbe Menge im naechsten Riegel-Zyklus ERNEUT
-     *    anfordert und der Aufschub sie doppelt sammelt. Der Abzug ist
-     *    bewusst KONSERVATIV: openU kann auch linear zurueckgehaltenes
-     *    Prime enthalten - dann fordert der Boden zu wenig sofort, nie zu
-     *    viel, und der Aufschub liefert es nach Erholung ohnehin.
+     *    zurueck -> der Rest lebt exakt einmal je Beweis wieder auf.
      *
      * Normale SMBs in Phase A zaehlen GEGEN den Sofortanteil (sie stehen in
      * `deliveredPhaseAU`) - das ist die max-statt-Addition-Zusage des
-     * Bauauftrags in Bilanzform.
+     * Bauauftrags in Bilanzform, und zugleich Punkt 6 des Nachtrags:
+     * gewoehnliche Phase-A-Lieferungen verkleinern den Batch sofort.
+     *
+     * @param manualAfterMarkerU manuelles Insulin seit dem Markerdruck.
+     *   `null` = Behandlungssicht unlesbar; dann ist die Bilanz NICHT
+     *   bestimmbar und der Batch faellt fail-closed auf 0 (nie raten).
      */
-    fun upfrontFloorU(
+    fun remainingUpfrontU(
         auth: Authorization,
         deliveredPhaseAU: Double,
-        deferredOpenU: Double,
+        manualAfterMarkerU: Double?,
     ): Double {
         if (!auth.valid) return 0.0
         if (!deliveredPhaseAU.isFinite() || deliveredPhaseAU < 0.0) return 0.0
-        if (!deferredOpenU.isFinite() || deferredOpenU < 0.0) return 0.0
-        return max(0.0, auth.phaseAUpfrontU - deliveredPhaseAU - deferredOpenU)
+        if (manualAfterMarkerU == null || !manualAfterMarkerU.isFinite() ||
+            manualAfterMarkerU < 0.0
+        ) return 0.0
+        return max(0.0, auth.phaseAUpfrontU - deliveredPhaseAU - manualAfterMarkerU)
     }
 
     /**
      * DER PHASE-A-SOFORT-LIFT (iLet-Prinzip, Bauauftrag Toni 24.08.).
      *
      * NUR in Phase A - danach regeln Uebergabe, Uebertrag und Aufschub. Der
-     * Boden kommt aus [upfrontFloorU] (Bilanz statt Einmal-Zustand), das
-     * Restbudget ist die Phase-A-Huelle minus Geliefertem (Verteidigung in
-     * der Tiefe - der Boden ist per Bilanz schon kleiner), und Guard/Tail
-     * folgen der BESTEHENDEN MarkerAuthorization-Politik ueber die GEPINNTE
-     * Autorisierung. Die maxSMB-Ausnahme traegt die Quelle
+     * Betrag kommt aus [remainingUpfrontU] (Bilanz statt Einmal-Zustand),
+     * das Restbudget ist die Phase-A-Huelle minus Geliefertem (Verteidigung
+     * in der Tiefe - der Betrag ist per Bilanz schon kleiner), und
+     * Guard/Tail folgen der BESTEHENDEN MarkerAuthorization-Politik ueber
+     * die GEPINNTE Autorisierung. Die maxSMB-Ausnahme traegt die Quelle
      * [AuthorizedLift.Source.MEAL_UPFRONT] in [AuthorizedLift.lift];
      * iobTH, maxIOB, Transporthaftung und Pumpenraster bleiben hart.
+     *
+     * ALS GANZER BATCH, nie zerteilt (Nachtrag Toni 25.08. mittags): der
+     * ganze verbleibende Betrag wird in EINEM Zug angefordert. Kappt eine
+     * Mengengrenze, flieszt der erlaubte Teil und der echte Rest bleibt
+     * ueber die Bilanz offen - aber es gibt keine absichtliche Zerlegung
+     * in Pumpenschritte mehr.
      */
     @Suppress("LongParameterList")
     fun liftUpfront(
@@ -387,14 +406,14 @@ object MealFoundation {
         auth: Authorization,
         phase: Phase,
         deliveredPhaseAU: Double,
-        deferredOpenU: Double,
+        manualAfterMarkerU: Double?,
         state: FuseController.State,
         tailHeadroomU: Double? = null,
         transportCommitmentU: Double = 0.0,
         tickEps: Double = 1e-9,
     ): FuseController.Decision {
         if (phase != Phase.PHASE_A) return base
-        val floorU = upfrontFloorU(auth, deliveredPhaseAU, deferredOpenU)
+        val floorU = remainingUpfrontU(auth, deliveredPhaseAU, manualAfterMarkerU)
         if (floorU <= 0.0) return base
         return AuthorizedLift.lift(
             base = base,

@@ -412,7 +412,7 @@ class MealFoundationLiftTest {
         val d = MealFoundation.liftUpfront(
             base = basis(FuseController.Block.NO_DEMAND), auth = auth,
             phase = MealFoundation.Phase.PHASE_A,
-            deliveredPhaseAU = 0.0, deferredOpenU = 0.0, state = state(maxSmb = 0.30),
+            deliveredPhaseAU = 0.0, manualAfterMarkerU = 0.0, state = state(maxSmb = 0.30),
         )
         assertEquals(3.0, d.smbU, 1e-9, "EINE Dosis - maxSMB 0,30 zerteilt sie nicht")
         assertEquals("mealUpfront", d.bindingLimit)
@@ -432,14 +432,14 @@ class MealFoundationLiftTest {
         val k = MealFoundation.liftUpfront(
             base = basis(FuseController.Block.NO_DEMAND), auth = auth,
             phase = MealFoundation.Phase.PHASE_A,
-            deliveredPhaseAU = 0.0, deferredOpenU = 0.0, state = state(maxSmb = 0.30, maxIob = 2.0),
+            deliveredPhaseAU = 0.0, manualAfterMarkerU = 0.0, state = state(maxSmb = 0.30, maxIob = 2.0),
         )
         assertEquals(1.5, k.smbU, 1e-9, "maxIOB kappt auch die Sofortdosis")
         // Das Restbudget kappt: nach 3,0 gelieferten ist der Boden 0.
         val leer = MealFoundation.liftUpfront(
             base = basis(FuseController.Block.NO_DEMAND), auth = auth,
             phase = MealFoundation.Phase.PHASE_A,
-            deliveredPhaseAU = 3.0, deferredOpenU = 0.0, state = state(maxSmb = 0.30),
+            deliveredPhaseAU = 3.0, manualAfterMarkerU = 0.0, state = state(maxSmb = 0.30),
         )
         assertEquals(0.0, leer.smbU, 1e-9, "gedeckter Boden hebt nichts")
     }
@@ -453,15 +453,15 @@ class MealFoundationLiftTest {
         for (phase in listOf(MealFoundation.Phase.NONE, MealFoundation.Phase.PHASE_B, MealFoundation.Phase.AFTER_WINDOW)) {
             val d = MealFoundation.liftUpfront(
                 base = basis(FuseController.Block.NO_DEMAND), auth = auth, phase = phase,
-                deliveredPhaseAU = 0.0, deferredOpenU = 0.0, state = state(),
+                deliveredPhaseAU = 0.0, manualAfterMarkerU = 0.0, state = state(),
             )
             assertEquals(0.0, d.smbU, 1e-9, "$phase: kein Sofort-Lift")
         }
         val teil = MealFoundation.liftUpfront(
             base = basis(FuseController.Block.NO_DEMAND), auth = auth,
             phase = MealFoundation.Phase.PHASE_A,
-            deliveredPhaseAU = 1.0, deferredOpenU = 0.5, state = state(maxSmb = 0.30),
+            deliveredPhaseAU = 1.0, manualAfterMarkerU = 0.5, state = state(maxSmb = 0.30),
         )
-        assertEquals(1.5, teil.smbU, 1e-9, "Boden = 3,0 - 1,0 geliefert - 0,5 Aufschub")
+        assertEquals(1.5, teil.smbU, 1e-9, "Rest = 3,0 - 1,0 geliefert - 0,5 manuell")
     }
 }

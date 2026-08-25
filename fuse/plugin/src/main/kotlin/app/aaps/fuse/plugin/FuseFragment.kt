@@ -147,6 +147,8 @@ class FuseFragment : DaggerFragment() {
         // nur, wenn sie etwas zu sagen haben.
         binding.fuseOverviewWindows.isVisible = dashboard.windows != null
         binding.fuseOverviewWindows.text = dashboard.windows ?: ""
+        binding.fuseOverviewUpfrontBatch.isVisible = dashboard.upfrontBatch != null
+        binding.fuseOverviewUpfrontBatch.text = dashboard.upfrontBatch ?: ""
         binding.fuseOverviewTransport.isVisible = dashboard.transport != null
         binding.fuseOverviewTransport.text = dashboard.transport ?: ""
         binding.fuseOverviewIobLine.text = dashboard.iobLine

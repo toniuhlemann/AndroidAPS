@@ -961,6 +961,8 @@ class FuseCycleRunner(
             episodes.foundation = MealFoundation.Authorization.none()
             episodes.deliveredSinceHandoverU = 0.0
             episodes.deliveredPhaseAU = 0.0
+            // Der Aufschub-Merker gehoert zur Autorisierung.
+            episodes.upfrontBatchDeferredSince = 0L
             // UND DER UEBERTRAG MIT (Toni 19.08.). Er gehoert zu der
             // Autorisierung, die hier gerade endet. Bliebe er stehen, gaebe der
             // ausdrueckliche Widerruf der NAECHSTEN Mahlzeit zusaetzliches
@@ -1420,6 +1422,8 @@ class FuseCycleRunner(
             // Eine neue Autorisierung beginnt mit unbezahlter Phase B.
             episodes.deliveredSinceHandoverU = 0.0
             episodes.deliveredPhaseAU = 0.0
+            // Der Aufschub-Merker gehoert zur Autorisierung.
+            episodes.upfrontBatchDeferredSince = 0L
             // UND OHNE UEBERTRAG (Toni 19.08.). Ein neuer Markerdruck ist eine
             // neue Mahlzeit mit eigenem Budget; eine Luecke aus der vorigen
             // darf sie nicht erben. Das steht hier UND beim Widerruf, weil es
@@ -2754,53 +2758,70 @@ class FuseCycleRunner(
                 prediction, upfrontKern, built.input.isfSlots, candidateBand, bolusStep,
                 restraint = restraint,
             ) != null
+        // JEDER gemessene Sicherheitsriegel schiebt auf (Vertrag 5 des
+        // Nachtrags: "Batch bleibt vollstaendig offen, keine Miniabgaben").
+        // Das GEMESSENE ABWAERTSRISIKO und der Erholungsriegel gehoerten
+        // frueher nicht dazu - der Lift forderte die volle Menge an, und
+        // erst MeasuredDescentGate nullte sie danach. Ergebnis war zwar
+        // keine Dosis, aber ein Zustand "REQUESTED" bei stehendem Riegel
+        // und eine Anforderung, die jeder Zyklus wiederholte.
         val upfrontRisikoAufschub = lowThreatResult.verdict != LowThreatGate.Verdict.NONE ||
             (cfg.zeroLatchEnabled && episodes.zeroLatch.active) ||
             reboundRaw ||
+            descentRisk.active ||
+            descentLatch.blocksPositive ||
             upfrontTechReject
+        // ---- DER SOFORT-BATCH (Nachtrag Toni 25.08. mittags) -------------
+        //
+        // WAS SICH GEAENDERT HAT: der zurueckgehaltene Sofortanteil wandert
+        // NICHT mehr in den generischen `DeferredPrime`. Der gibt bauartbe-
+        // dingt hoechstens EINEN Pumpenschritt je Zyklus frei - gemessen am
+        // 25.08. kam der als 3,20 U geplante Sofortanteil danach als
+        // 0,20/0,15/0,25 U heraus, und weil der Aufschub nur seine eigenen
+        // 0,05er abzog, meldete er 3,10 U offen, obwohl nach 0,60 U
+        // Phase-A-Lieferung hoechstens 2,60 U offen sein konnten.
+        //
+        // STATTDESSEN: der Rueckstand ergibt sich allein aus der Bilanz
+        // (`remainingUpfrontU`), und ein persistenter MERKER haelt fest,
+        // dass aufgeschoben wurde. Solange er steht, verlangt die Freigabe
+        // die BESTAETIGTE Erholung - danach wird der GANZE zulaessige Rest
+        // in einem Zug als MEAL_UPFRONT angefordert.
         val upfrontOhneNetz = !cfg.deferredPrimeEnabled
-        var upfrontDeferredNowU = 0.0
+        // Der offene Batch VOR jeder Entscheidung dieses Zyklus.
+        val upfrontOffenU = MealFoundation.remainingUpfrontU(
+            episodes.foundation, episodes.deliveredPhaseAU, manualBolusAfterMarkerU,
+        )
+        val upfrontInPhaseA = foundationDecision.phase == MealFoundation.Phase.PHASE_A
+        // Aufgeschoben wird NUR, wenn es etwas aufzuschieben gibt.
+        val upfrontAufschubJetzt = upfrontRisikoAufschub && upfrontOffenU > 0.0 && upfrontInPhaseA
+        if (upfrontAufschubJetzt && episodes.upfrontBatchDeferredSince <= 0L)
+            episodes.upfrontBatchDeferredSince = computeTs
+        // Nach einem Aufschub oeffnet erst die BESTAETIGTE Erholung wieder -
+        // dieselbe Schwelle, die auch der Aufschub des linearen Prime
+        // verlangt (drei zusammenhaengende gesunde Erholungszyklen).
+        val upfrontWartetAufErholung = episodes.upfrontBatchDeferredSince > 0L &&
+            deferredRecoveryStreak < DescentRecoveryLatch.REQUIRED_CONSECUTIVE_CYCLES
         val liftedUpfront = when {
             upfrontOhneNetz || ledgerView.hold -> vetted
-            upfrontRisikoAufschub -> {
-                val offenJetzt = MealFoundation.upfrontFloorU(
-                    episodes.foundation, episodes.deliveredPhaseAU, upfrontDeferredOpenU,
-                )
-                if (offenJetzt > 0.0 &&
-                    foundationDecision.phase == MealFoundation.Phase.PHASE_A &&
-                    episodes.deferredPrime.pinnedForMarkerTs == episodes.foundation.armedTs
-                ) {
-                    val openVorher = episodes.deferredPrime.openU
-                    episodes.deferredPrime = DeferredPrime.withhold(
-                        episodes.deferredPrime, offenJetzt,
-                        deferredHullRemainingU(episodes, manualBolusAfterMarkerU),
-                    )
-                    // Die REALE Differenz - withhold kann am Huellenrest
-                    // kappen, exportiert wird nie mehr als gebucht.
-                    upfrontDeferredNowU =
-                        (episodes.deferredPrime.openU - openVorher).coerceAtLeast(0.0)
-                }
-                vetted
-            }
+            // Sicherheitsriegel aktiv: der Batch bleibt VOLLSTAENDIG offen -
+            // keine Miniabgaben aus diesem Bestand (Vertrag 5).
+            upfrontRisikoAufschub -> vetted
+            upfrontWartetAufErholung -> vetted
             else -> MealFoundation.liftUpfront(
                 base = vetted,
                 auth = episodes.foundation,
                 phase = foundationDecision.phase,
                 deliveredPhaseAU = episodes.deliveredPhaseAU,
-                deferredOpenU = upfrontDeferredOpenU,
+                manualAfterMarkerU = manualBolusAfterMarkerU,
                 state = state,
                 tailHeadroomU = tail?.takeIf { it.usable }?.headroomU,
                 transportCommitmentU = transportModelledU,
             )
         }
-        // Export-Bilanz mit dem FRISCHEN Aufschubstand: ein gerade
-        // verschobener Anteil erscheint sofort als DEFERRED, nicht erst im
-        // Folgezyklus.
-        val upfrontPendingU = MealFoundation.upfrontFloorU(
-            episodes.foundation, episodes.deliveredPhaseAU,
-            if (episodes.deferredPrime.pinnedForMarkerTs == episodes.foundation.armedTs)
-                episodes.deferredPrime.openU else 0.0,
-        )
+        // Der Rueckstand ist die BILANZ - kein zweiter Zaehler. Was dieser
+        // Zyklus anfordert, ist noch nicht geliefert und steht deshalb
+        // weiter offen; erst die Buchung senkt ihn.
+        val upfrontPendingU = upfrontOffenU
         val upfrontRequestedU =
             if (liftedUpfront.bindingLimit == "mealUpfront") liftedUpfront.smbU else 0.0
 
@@ -3268,9 +3289,11 @@ class FuseCycleRunner(
             guardFloorMgdl = cfg.guardFloorMgdl,
             horizonMin = episodes.deferredPrime.horizonMin.toDouble(),
         )
-        // Startet mit dem im Freigabetor verschobenen Sofortanteil - beide
-        // Verschiebewege desselben Zyklus stehen zusammen im Export.
-        var deferredWithheldU = upfrontDeferredNowU
+        // NUR der lineare Prime-Anteil: der Sofort-Batch wandert seit dem
+        // Nachtrag vom 25.08. nicht mehr in diesen Aufschub (er wuerde dort
+        // in Pumpenschritten zerrieselt). Sein Rueckstand steht in der
+        // Bilanz und im eigenen Zustand DEFERRED_UPFRONT_BATCH.
+        var deferredWithheldU = 0.0
         var deferredReleaseU = 0.0
         var deferredDenial: String? = null
         // Bestaetigte Erholung (Vertrag 4): DIESELBE Rate wie die
@@ -4168,10 +4191,8 @@ class FuseCycleRunner(
                 phase = foundationDecision.phase,
                 pendingU = upfrontPendingU,
                 requestedU = upfrontRequestedU,
-                // FRISCHER Aufschubstand: ein in diesem Zyklus verschobener
-                // Anteil ist sofort als DEFERRED sichtbar.
-                deferredOpenU = if (episodes.deferredPrime.pinnedForMarkerTs == episodes.foundation.armedTs)
-                    episodes.deferredPrime.openU else 0.0,
+                batchDeferred = upfrontAufschubJetzt,
+                awaitingRecovery = upfrontWartetAufErholung,
                 zeroLatchBlocked = cfg.zeroLatchEnabled && episodes.zeroLatch.active,
                 deferredPrimeEnabled = cfg.deferredPrimeEnabled,
             ),
@@ -4311,7 +4332,10 @@ class FuseCycleRunner(
         phase: MealFoundation.Phase,
         pendingU: Double,
         requestedU: Double,
-        deferredOpenU: Double,
+        /** Steht der Batch im EIGENEN Aufschub (Merker gesetzt)? */
+        batchDeferred: Boolean,
+        /** Wartet er nach dem Aufschub noch auf die bestaetigte Erholung? */
+        awaitingRecovery: Boolean,
         zeroLatchBlocked: Boolean,
         deferredPrimeEnabled: Boolean = true,
         fallback: Boolean = false,
@@ -4321,11 +4345,15 @@ class FuseCycleRunner(
         fallback && pendingU > 0.0 -> "BLOCKED_FALLBACK"
         zeroLatchBlocked && pendingU > 0.0 -> "BLOCKED_ZERO_LATCH"
         requestedU > 0.0 -> "REQUESTED"
-        // Anteil liegt im Sicherheitsaufschub - der bestehende
-        // DeferredPrime-Pfad uebernimmt (konservative Zuordnung: openU kann
-        // auch linearen Prime-Anteil enthalten).
-        pendingU <= 0.0 && deferredOpenU > 0.0 -> "DEFERRED"
         pendingU <= 0.0 -> "COVERED"
+        // DER EIGENE ZUSTAND DES SOFORT-BATCHES (Nachtrag Toni 25.08.):
+        // frueher stand hier das generische "DEFERRED" des linearen
+        // Prime-Aufschubs - und weil der Batch dort auch tatsaechlich
+        // gebucht wurde, rieselte er in Pumpenschritten heraus. Jetzt ist
+        // er ein eigener, typisierter Zustand: die Menge bleibt
+        // vollstaendig offen und wird nach bestaetigter Erholung in EINEM
+        // Zug angefordert.
+        batchDeferred || awaitingRecovery -> "DEFERRED_UPFRONT_BATCH"
         phase != MealFoundation.Phase.PHASE_A -> "WINDOW_OVER"
         else -> "PLANNED"
     }
@@ -4627,14 +4655,11 @@ class FuseCycleRunner(
         // Aufschub gebucht - dauert der Modellausfall bis nach Phase A,
         // waere der blosse Boden sonst als WINDOW_OVER verfallen. Der
         // kleine lineare Prime-Anteil laeuft wie bisher.
-        val upfrontDeferredOpenU =
-            if (episodes.deferredPrime.pinnedForMarkerTs == episodes.foundation.armedTs)
-                episodes.deferredPrime.openU else 0.0
         val upfrontPhase = MealFoundation.phaseOf(
             episodes.foundation, computeTs, episodes.primeWindowStartTs,
         )
-        val offenImFallbackU = MealFoundation.upfrontFloorU(
-            episodes.foundation, episodes.deliveredPhaseAU, upfrontDeferredOpenU,
+        val offenImFallbackU = MealFoundation.remainingUpfrontU(
+            episodes.foundation, episodes.deliveredPhaseAU, manualBolusAfterMarkerU,
         )
         // Der Punkt-6-PIN liegt im Hauptpfad NACH der Fallback-Weiche - ein
         // Druck mitten im Modellausfall waere sonst nie gepinnt und die
@@ -4651,23 +4676,16 @@ class FuseCycleRunner(
             )
             episodes.postFoundationDeliveredU = 0.0
         }
+        // VERLUSTFREI OHNE ZWEITES BUCH: der Modellausfall ist ein
+        // Aufschubgrund wie jedes gemessene Risiko - er setzt den Merker,
+        // die Menge bleibt ueber die Bilanz offen. Frueher wurde sie hier
+        // in den DeferredPrime gebucht; genau diese zweite Buchfuehrung
+        // lief mit der Bilanz auseinander.
         if (offenImFallbackU > 0.0 &&
             upfrontPhase == MealFoundation.Phase.PHASE_A &&
-            cfg.deferredPrimeEnabled && !ledgerView.hold &&
-            episodes.deferredPrime.pinnedForMarkerTs == episodes.foundation.armedTs
-        ) {
-            episodes.deferredPrime = DeferredPrime.withhold(
-                episodes.deferredPrime, offenImFallbackU,
-                deferredHullRemainingU(episodes, manualBolusAfterMarkerU),
-            )
-        }
-        // Export mit dem FRISCHEN Aufschubstand: die Bilanz zeigt den
-        // verschobenen Anteil sofort als DEFERRED.
-        val upfrontPendingU = MealFoundation.upfrontFloorU(
-            episodes.foundation, episodes.deliveredPhaseAU,
-            if (episodes.deferredPrime.pinnedForMarkerTs == episodes.foundation.armedTs)
-                episodes.deferredPrime.openU else 0.0,
-        )
+            episodes.upfrontBatchDeferredSince <= 0L
+        ) episodes.upfrontBatchDeferredSince = computeTs
+        val upfrontPendingU = offenImFallbackU
         val upfrontRequestedU = 0.0
         val liftedPrime = PrimeRelease.lift(
             basis, primePlan, state,
@@ -4879,10 +4897,8 @@ class FuseCycleRunner(
                 phase = upfrontPhase,
                 pendingU = upfrontPendingU,
                 requestedU = upfrontRequestedU,
-                // FRISCHER Aufschubstand - ein hier verschobener Anteil ist
-                // sofort als DEFERRED sichtbar.
-                deferredOpenU = if (episodes.deferredPrime.pinnedForMarkerTs == episodes.foundation.armedTs)
-                    episodes.deferredPrime.openU else 0.0,
+                batchDeferred = episodes.upfrontBatchDeferredSince > 0L,
+                awaitingRecovery = false,
                 zeroLatchBlocked = cfg.zeroLatchEnabled && episodes.zeroLatch.active,
                 deferredPrimeEnabled = cfg.deferredPrimeEnabled,
                 fallback = true,

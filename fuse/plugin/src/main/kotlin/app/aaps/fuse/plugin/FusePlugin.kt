@@ -765,6 +765,17 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
             // dieselbe Zahl, sonst laufen Text und Verhalten wieder
             // auseinander.
             windowMin = fensterMin.takeIf { it > 0 },
+            // Steht JETZT schon ein Riegel, wird der Sofortanteil
+            // aufgeschoben - dann fordert der Zyklus 0 U an. Der Zustand
+            // kommt aus dem letzten Zyklus (eine eigene Rechnung waere
+            // eine zweite Wahrheit).
+            deferredReason = when (letzter?.phaseAUpfrontState) {
+                "DEFERRED_UPFRONT_BATCH" -> "Sicherheitsriegel"
+                "BLOCKED_ZERO_LATCH"     -> "Null-Basal verriegelt"
+                "BLOCKED_FALLBACK"       -> "Modellausfall"
+                "BLOCKED_NO_DEFERRED"    -> "Sicherheitsnetz aus"
+                else                     -> null
+            },
             // Aus DEMSELBEN Zyklus wie die uebrigen Zahlen - kein zweiter
             // Rechenweg. Nur wenn die Uhr wirklich knapp wird (Fall 1 des
             // Audit-Nachtrags: die zweite Mahlzeit erbte den Topf der ersten
@@ -785,6 +796,7 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
                         is MarkerPrompt.Line.Spread     -> FuseOverviewSource.MarkerPromptFacts.Line.Spread(z.amountU, z.windowMin)
                         is MarkerPrompt.Line.Foundation -> FuseOverviewSource.MarkerPromptFacts.Line.Foundation(z.amountU, z.untilMin)
                         is MarkerPrompt.Line.Total      -> FuseOverviewSource.MarkerPromptFacts.Line.Total(z.amountU)
+                        is MarkerPrompt.Line.Deferred   -> FuseOverviewSource.MarkerPromptFacts.Line.Deferred(z.reason)
                     }
                 },
                 upfrontPlannedU = it.upfrontPlannedU,

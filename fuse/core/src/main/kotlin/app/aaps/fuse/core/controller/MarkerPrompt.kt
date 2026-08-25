@@ -110,6 +110,12 @@ object MarkerPrompt {
          * genau darauf gruendet der Nutzer seine Zustimmung.
          */
         val windowMin: Int? = null,
+        /**
+         * Steht beim Druck bereits ein Sicherheitsriegel? Dann wird der
+         * Sofortanteil aufgeschoben; `null` = kein Riegel. Der Text ist
+         * bereits uebersetzt (der Aufrufer kennt die typisierten Gruende).
+         */
+        val deferredReason: String? = null,
     )
 
     /**
@@ -134,6 +140,14 @@ object MarkerPrompt {
 
         /** Das Gesamtlimit dieser Episode. */
         data class Total(val amountU: Double) : Line
+
+        /**
+         * DER AKTUELLE ZUSTAND, wenn beim Druck bereits ein Riegel steht
+         * (Tonis Korrektur 25.08. abends): dann fordert der Zyklus 0 U an
+         * und der Sofortanteil wird AUFGESCHOBEN - der Dialog darf die
+         * Anforderung nicht behaupten. [reason] ist der typisierte Grund.
+         */
+        data class Deferred(val reason: String) : Line
     }
 
     /**
@@ -149,6 +163,7 @@ object MarkerPrompt {
         if (f.phaseBBudgetU > 0.0 && f.foundationEndMin != null)
             add(Line.Foundation(f.phaseBBudgetU, f.foundationEndMin))
         add(Line.Total((f.envelopeU - f.alreadyDeliveredU).coerceAtLeast(0.0)))
+        f.deferredReason?.let { add(Line.Deferred(it)) }
     }
 
     /** Fenster, in dem ein manueller Bolus als "zu dieser Mahlzeit" gilt. */

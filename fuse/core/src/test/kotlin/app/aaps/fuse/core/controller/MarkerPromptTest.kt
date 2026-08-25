@@ -3,6 +3,7 @@ package app.aaps.fuse.core.controller
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Assertions.assertNull
+import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
 /**
@@ -75,6 +76,9 @@ class MarkerPromptTest {
 
             is MarkerPrompt.Line.Total      ->
                 assertEquals(erwartet.amountU, (zeile as MarkerPrompt.Line.Total).amountU, 1e-9)
+
+            is MarkerPrompt.Line.Deferred   ->
+                assertEquals(erwartet.reason, (zeile as MarkerPrompt.Line.Deferred).reason)
         }
     }
 
@@ -126,6 +130,24 @@ class MarkerPromptTest {
             )
         )
         assertEquals(listOf(MarkerPrompt.Line.Spread(4.0, 20), MarkerPrompt.Line.Total(4.0)), z)
+    }
+
+    @Test
+    fun `ein stehender Riegel wird als Zustand genannt`() {
+        // Tonis Korrektur 25.08. abends: steht beim Druck ein Riegel,
+        // werden 0 U angefordert und der Sofortanteil aufgeschoben. Der
+        // Dialog sagt die Menge als VORGESEHEN und nennt den Zustand.
+        val z = MarkerPrompt.lines(
+            MarkerPrompt.Facts(
+                upfrontPlannedU = 3.20, phaseARemainderU = 0.0, phaseBBudgetU = 0.80,
+                foundationEndMin = 60, envelopeU = 4.0, alreadyDeliveredU = 0.0,
+                authorizesAgainstModel = true, measuredLow = false, windowMin = 20,
+                deferredReason = "Abwaertsriegel",
+            )
+        )
+        assertEquals(MarkerPrompt.Line.Deferred("Abwaertsriegel"), z.last())
+        // Ohne Riegel gibt es die Zeile nicht.
+        assertTrue(mengen(sofortAnteil = 1.0).none { it is MarkerPrompt.Line.Deferred })
     }
 
     @Test

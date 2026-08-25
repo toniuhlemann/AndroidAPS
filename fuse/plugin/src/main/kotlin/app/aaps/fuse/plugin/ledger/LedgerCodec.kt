@@ -617,6 +617,11 @@ object LedgerCodec {
             // Neustart einen Phase-A-Rueckstand in voller Hoehe - und der
             // Uebertrag wuerde wirken, obwohl Prime laengst geliefert hat.
             .put("deliveredPhaseAU", e.deliveredPhaseAU)
+            // Der Aufschub-Merker des Sofort-Batches: ohne ihn faellt ein
+            // Neustart im Aufschub in eine sofortige Freigabe - die
+            // Fehlrichtung waere "mehr Insulin". Additiv; eine Altdatei
+            // ohne Feld heisst "nie aufgeschoben".
+            .put("upfrontBatchDeferredSince", e.upfrontBatchDeferredSince)
     }
 
     /**
@@ -937,6 +942,9 @@ object LedgerCodec {
         e.confirmedNotSentPhaseAU = uebertrag
         e.descentDeferredPhaseAU = abwaertsAufschub
         e.deliveredPhaseAU = phaseA
+        if (o.has("upfrontBatchDeferredSince"))
+            e.upfrontBatchDeferredSince =
+                requireTs("foundation.upfrontBatchDeferredSince", o.getLong("upfrontBatchDeferredSince"))
     }
 
     // ---- Verbrauchte Bindungs-Identitaeten (Fix 6, NEU-BS-02) -------------

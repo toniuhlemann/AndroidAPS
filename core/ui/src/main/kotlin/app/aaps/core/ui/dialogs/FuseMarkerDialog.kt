@@ -91,6 +91,9 @@ object FuseMarkerDialog {
 
                     is FuseOverviewSource.MarkerPromptFacts.Line.Total    ->
                         rh.gs(R.string.overview_fuse_meal_confirm_total, z.amountU)
+
+                    is FuseOverviewSource.MarkerPromptFacts.Line.Deferred ->
+                        rh.gs(R.string.overview_fuse_meal_confirm_deferred, z.reason)
                 }
             }
         )

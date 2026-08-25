@@ -3706,6 +3706,103 @@ class TransportWiringTest : TestBaseWithProfile() {
         ruhigStellen()
     }
 
+    /**
+     * DER LIVE-PFLICHTFALL DES SOFORT-BATCHES (Nachtrag Toni 25.08.
+     * mittags, Punkt 8): 3,20 geplant -> Riegel -> 0,60 normal geliefert
+     * -> Erholung -> GENAU 2,60 als EIN Batch.
+     *
+     * GEMESSEN WAR: 0,20 / 0,15 / 0,25 U in drei Zyklen - der
+     * zurueckgehaltene Sofortanteil lag im generischen DeferredPrime, und
+     * der gibt hoechstens einen Pumpenschritt je Zyklus frei. Dieselbe
+     * Messung zeigte den zweiten Fehler: der Aufschub meldete 3,10 U
+     * offen, obwohl nach 0,60 U Lieferung hoechstens 2,60 U offen sein
+     * konnten - er zog nur seine eigenen Freigaben ab.
+     *
+     * Die Haeppchenfolge muss diesen Test VERFEHLEN: geprueft wird eine
+     * EINZELNE Anforderung ueber 2,60 U, nicht eine Summe.
+     */
+    @Test
+    fun `der aufgeschobene sofortanteil kommt als ein batch zurueck`(@TempDir dir: File) {
+        // Breites, GEPINNTES Prime-Fenster: Riegel UND Erholung muessen in
+        // Phase A passen.
+        whenever(preferences.get(FuseIntKey.PrimeWindowMin)).thenReturn(40)
+        upfrontAnteil = 1.0
+        primeHuelleU = 4.0       // Tonis Huelle -> Phase A 3,20, Fundament 0,80
+        fundamentAnteil = 0.8
+        aufschubAn = true
+        maxSmbU = 0.30           // darf den Batch NICHT zerteilen
+        mahlzeit(dir)
+
+        // (1) DER RIEGEL: ein gemessenes, ueberdecktes Abwaertsrisiko haelt
+        // den Batch vollstaendig zurueck - keine Miniabgaben aus diesem
+        // Bestand. Dieselbe Lage wie im Neustart-Pflichttest.
+        flach = 150.0
+        steigungProMin = -3.0
+        bolusIobU = 2.0
+        val imRiegel = (0 until 6).map { transport(dir) }
+        assertTrue(imRiegel.all { it.phaseAUpfrontRequestedU == 0.0 }) {
+            "im Riegel darf NICHTS aus dem Batch fliessen - " +
+                imRiegel.joinToString(" ") { "${it.phaseAUpfrontRequestedU}/${it.phaseAUpfrontState}" }
+        }
+        assertTrue(imRiegel.any { it.phaseAUpfrontState == "DEFERRED_UPFRONT_BATCH" }) {
+            "und der Zustand ist EIGEN typisiert - " +
+                imRiegel.map { it.phaseAUpfrontState }.distinct().joinToString(" ")
+        }
+        assertEquals(3.20, imRiegel.last().phaseAUpfrontPendingU, 1e-9, "vollstaendig offen")
+
+        // (2) NORMALE PHASE-A-LIEFERUNG von 0,60 U verkleinert den Batch
+        // SOFORT (Punkt 6) - hier direkt gebucht, wie ein gewoehnlicher SMB.
+        ledger.episodes.deliveredPhaseAU += 0.60
+        val nachLieferung = transport(dir)
+        assertEquals(2.60, nachLieferung.phaseAUpfrontPendingU, 1e-9) {
+            "3,20 geplant - 0,60 geliefert = 2,60 offen (gemeldet waren 3,10)"
+        }
+
+        // (3) DIE ERHOLUNG: erst nach bestaetigter Erholung oeffnet der
+        // Batch - und dann als EIN Zug. Die Kurve wird steigend neu
+        // verankert, die Uhr laeuft monoton weiter.
+        steigungProMin = 0.8
+        flach = 130.0 - 0.8 * ((clock - start) / 60_000.0)
+        knickAbMin = null
+        bolusIobU = null
+        val nachher = (0 until 12).map { transport(dir) }
+        val batchIdx = nachher.indexOfFirst { it.phaseAUpfrontRequestedU > 0.0 }
+        assertTrue(batchIdx >= 0) {
+            "nach der Erholung muss der Batch kommen - " +
+                nachher.joinToString(" ") { "${it.phaseAUpfrontRequestedU}/${it.phaseAUpfrontState}" }
+        }
+        val batch = nachher[batchIdx]
+        // DIE INVARIANTE: angefordert wird GENAU der Rest, den der Zyklus
+        // davor als offen ausgewiesen hat - in EINEM Zug. Die gemessene
+        // Haeppchenfolge 0,20/0,15/0,25 verfehlt das doppelt: jede einzelne
+        // Menge ist kleiner als der Rest, und es sind drei Zyklen.
+        assertEquals(batch.phaseAUpfrontPendingU, batch.phaseAUpfrontRequestedU, 1e-9) {
+            "der GANZE offene Rest desselben Zyklus in einem Zug - " +
+                nachher.joinToString(" ") { "%.2f".format(it.phaseAUpfrontRequestedU) }
+        }
+        // Und der Groessenordnung nach ist es der Livefall: 3,20 geplant,
+        // 0,60 gebucht. Dass es 2,45 statt 2,60 sind, ist Vertrag 6 in
+        // Aktion - zwischen Buchung und Batch flossen regulaer 0,15 U in
+        // Phase A, und die verkleinern den Batch SOFORT.
+        assertTrue(batch.phaseAUpfrontRequestedU > 2.0) {
+            "die Groessenordnung des Livefalls, nie ein Haeppchen: ${batch.phaseAUpfrontRequestedU}"
+        }
+        assertEquals("REQUESTED", batch.phaseAUpfrontState)
+        // NACH dem Batch ist der Sofortanteil gedeckt - die Bilanz schliesst
+        // ohne zweiten Zaehler. (Die Gesamtsumme in `deliveredPhaseAU`
+        // liegt hoeher als der Plan, weil dieser Test die 0,60 direkt in
+        // den Zaehler schreibt, ohne dass dafuer Insulin geflossen ist -
+        // der Regler dosiert sein eigenes Budget davon unbeeindruckt aus.)
+        assertEquals(0.0, nachher.last().phaseAUpfrontPendingU, 1e-9, "nichts bleibt offen")
+        assertEquals("COVERED", nachher.last().phaseAUpfrontState)
+        // Und exactly once: kein zweiter Batch derselben Menge.
+        val weitere = nachher.dropWhile { it.phaseAUpfrontRequestedU <= 0.0 }.drop(1)
+        assertTrue(weitere.all { it.phaseAUpfrontRequestedU <= 0.0 }) {
+            "der Batch wird nicht wiederholt - " +
+                weitere.joinToString(" ") { "%.2f".format(it.phaseAUpfrontRequestedU) }
+        }
+    }
+
     /** Sicherheitsauflage: OHNE aktives DeferredPrime-Netz keine
      *  Sofortdosis - fail-closed, der Boden bleibt sichtbar offen. */
     @Test
@@ -3755,9 +3852,13 @@ class TransportWiringTest : TestBaseWithProfile() {
             laufe.all { it.phaseAUpfrontRequestedU == 0.0 },
             "kein mealUpfront bei technischem Modellfehler",
         )
+        // NEUER VERTRAG (25.08. mittags): die Menge liegt NICHT mehr im
+        // generischen Aufschub-Buch, sondern bleibt ueber die Bilanz offen -
+        // im eigenen Zustand DEFERRED_UPFRONT_BATCH. Verloren geht sie so
+        // wenig wie vorher, aber sie rieselt nicht in Pumpenschritten.
         assertTrue(
-            laufe.any { it.phaseAUpfrontState == "DEFERRED" && it.deferredPrimeOpenU > 0.5 },
-            "die Menge liegt im Aufschub: " +
+            laufe.any { it.phaseAUpfrontState == "DEFERRED_UPFRONT_BATCH" && it.phaseAUpfrontPendingU > 0.5 },
+            "die Menge bleibt offen: " +
                 laufe.map { it.phaseAUpfrontState to it.deferredPrimeOpenU }.distinct(),
         )
     }
@@ -3795,9 +3896,11 @@ class TransportWiringTest : TestBaseWithProfile() {
         // blossen Boden sonst als WINDOW_OVER verfallen lassen.
         val verschoben = imFallback.filter { it.mealFoundation.armed }
         assertTrue(verschoben.isNotEmpty(), "die Autorisierung muss im Fallback bestehen")
+        // Der Fallback schiebt ebenfalls in den eigenen Batch-Zustand -
+        // BLOCKED_FALLBACK benennt den Grund, die Bilanz haelt die Menge.
         assertTrue(
-            verschoben.any { it.phaseAUpfrontState == "DEFERRED" && it.deferredPrimeOpenU > 0.5 },
-            "die Sofortmenge liegt im Aufschub: " +
+            verschoben.any { it.phaseAUpfrontPendingU > 0.5 },
+            "die Sofortmenge bleibt offen: " +
                 verschoben.map { it.phaseAUpfrontState to it.deferredPrimeOpenU }.distinct(),
         )
         // Modell wieder da: der Boden ist ZU (verschoben, nicht verworfen) -
@@ -3805,11 +3908,17 @@ class TransportWiringTest : TestBaseWithProfile() {
         // bestehende Aufschub-Freigabe nach bestaetigter Erholung
         // (P6-Vertraege), nie als ungebremster Nachholbolus.
         predictReject = null
-        repeat(6) {
-            val o = transport(dir)
+        val nachComeback = (0 until 6).map { transport(dir) }
+        nachComeback.forEach { o ->
             assertEquals(0.0, o.phaseAUpfrontRequestedU, 1e-9, "kein Doppel nach dem Comeback")
         }
-        assertTrue(ledger.episodes.deferredPrime.openU > 0.5, "die Menge bleibt gebucht offen")
+        // Die Menge ist durch den Modellausfall NICHT verloren gegangen -
+        // sie steht ueber die Bilanz offen, nicht in einem zweiten Buch.
+        // Genau dessen Abweichung war der Befund vom 25.08.
+        assertTrue(nachComeback.first().phaseAUpfrontPendingU > 0.5) {
+            "die Menge bleibt offen: " +
+                nachComeback.joinToString(" ") { "${it.phaseAUpfrontPendingU}/${it.phaseAUpfrontState}" }
+        }
     }
 
     /** Sicherheitsauflage: der Zyklus, der den Zero-Latch GERADE zuendet
@@ -3996,7 +4105,10 @@ class TransportWiringTest : TestBaseWithProfile() {
         }
         val w = withheld ?: error("der Aufschub muss die Sofortdosis fangen")
         assertEquals(0.0, w.decision.smbU, 1e-9, "im gemessenen Fall geht nichts hinaus")
-        assertTrue(w.deferredPrimeOpenU >= 2.9, "die Sofortdosis liegt im Aufschub: ${w.deferredPrimeOpenU}")
+        assertTrue(w.phaseAUpfrontPendingU >= 2.9) {
+            "die Sofortdosis bleibt vollstaendig offen: ${w.phaseAUpfrontPendingU}"
+        }
+        assertEquals("DEFERRED_UPFRONT_BATCH", w.phaseAUpfrontState, "im eigenen Zustand")
         // KEINE Akkumulation der SOFORTDOSIS: der Boden zieht den Aufschub
         // ab und fordert nicht erneut. Der lineare Prime-Anteil sammelt
         // planmaessig weiter (bestehende Punkt-6-Semantik), bleibt aber am
@@ -4005,7 +4117,7 @@ class TransportWiringTest : TestBaseWithProfile() {
             val o2 = transport(dir)
             assertEquals(0.0, o2.phaseAUpfrontRequestedU, 1e-9, "der Boden fordert nicht erneut")
             assertTrue(o2.deferredPrimeOpenU <= 3.75 + 1e-9, "Huellen-Deckel: ${o2.deferredPrimeOpenU}")
-            assertEquals("DEFERRED", o2.phaseAUpfrontState)
+            assertEquals("DEFERRED_UPFRONT_BATCH", o2.phaseAUpfrontState)
         }
     }
 
@@ -4043,8 +4155,8 @@ class TransportWiringTest : TestBaseWithProfile() {
         val armiert = laufe.filter { it.mealFoundation.armed && it.zeroLatchActive }
         assertTrue(armiert.isNotEmpty(), "die Autorisierung muss unter dem Latch bestehen")
         assertTrue(
-            armiert.any { it.phaseAUpfrontState == "DEFERRED" && it.deferredPrimeOpenU >= 2.9 },
-            "die Sofortmenge liegt im Aufschub: " +
+            armiert.any { it.phaseAUpfrontState == "BLOCKED_ZERO_LATCH" && it.phaseAUpfrontPendingU >= 2.9 },
+            "die Sofortmenge bleibt unter dem Latch vollstaendig offen: " +
                 armiert.map { it.phaseAUpfrontState to it.deferredPrimeOpenU }.distinct(),
         )
     }
@@ -4118,7 +4230,17 @@ class TransportWiringTest : TestBaseWithProfile() {
         knickAbMin = null
         bolusIobU = null
         val d = bisSofortdosis(dir, 30)
-        assertEquals(3.0, d.phaseAUpfrontRequestedU, 1e-9, "nach dem Neustart die volle Menge")
+        // DER GANZE offene Rest in EINEM Zug. Nicht starr 3,0: flossen in
+        // der Erholung schon regulaere Phase-A-Mengen, verkleinern sie den
+        // Batch sofort (Vertrag 6) - die Invariante ist "Batch = offener
+        // Rest desselben Zyklus", nicht eine feste Zahl.
+        assertEquals(d.phaseAUpfrontPendingU, d.phaseAUpfrontRequestedU, 1e-9) {
+            "nach dem Neustart der ganze Rest in einem Zug: " +
+                "${d.phaseAUpfrontRequestedU} von ${d.phaseAUpfrontPendingU}"
+        }
+        assertTrue(d.phaseAUpfrontRequestedU > 2.5) {
+            "und der Groessenordnung nach die volle Menge: ${d.phaseAUpfrontRequestedU}"
+        }
         // Der restartfeste Abwaertsriegel kann die ersten Anforderungen
         // noch nullen (Erholung braucht drei gesunde Zyklen) - der Boden
         // fordert dann WEITER, bis wirklich gebucht ist. Nie verloren:

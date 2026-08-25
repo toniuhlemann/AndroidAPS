@@ -192,6 +192,20 @@ class EpisodeBudgets {
     var zeroLatch: app.aaps.fuse.core.controller.DescentRecoveryLatch.State =
         app.aaps.fuse.core.controller.DescentRecoveryLatch.State()
 
+    /**
+     * DER SOFORT-BATCH IST AUFGESCHOBEN (Nachtrag Toni 25.08. mittags):
+     * Zeitpunkt des ERSTEN Sicherheitsaufschubs dieser Autorisierung,
+     * 0 = nie aufgeschoben.
+     *
+     * WOZU: ohne ihn wuerde der Batch in dem Moment wieder anfordern, in
+     * dem der Riegel faellt - der Vertrag verlangt aber die BESTAETIGTE
+     * Erholung. Der Merker ist persistent, damit ein Neustart im Aufschub
+     * nicht in eine sofortige Freigabe faellt (die Fehlrichtung waere
+     * "mehr Insulin"). Genullt wird er mit der Autorisierung selbst und
+     * sobald der Batch vollstaendig angefordert wurde.
+     */
+    var upfrontBatchDeferredSince: Long = 0L
+
     /** V-REVERSAL-RIEGEL (v30, Review-P0.1): die IDENTITAET (Fall-Minimum,
      *  Zuendung) ist persistent - ein Neustart entfernt den Riegel nicht.
      *  Die r-Bestaetigungszaehler sind wie beim [zeroLatch] bewusst
