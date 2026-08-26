@@ -10373,20 +10373,57 @@ class TransportWiringTest : TestBaseWithProfile() {
         val ohne = blockiert.sumOf { (it.upfrontChain?.requestedRtU ?: 0.0).coerceAtLeast(0.0) }
         val mit = batch.sumOf { (it.upfrontChain?.requestedRtU ?: 0.0).coerceAtLeast(0.0) }
         assertTrue(mit > ohne + 1e-9) {
-            "CALM_BATCH muss mehr freigeben als der blockierte Zweig: " +
-                "$mit vs $ohne. Angeforderte Sofortanteile: " +
-                batch.map { it.phaseAUpfrontRequestedU }.filter { it > 0.0 }
+            "CALM_BATCH muss mehr freigeben als der blockierte Zweig: $mit vs $ohne"
         }
-        // Und die Mehrmenge kommt aus dem Sofortanteil, nicht von woanders.
-        assertTrue(batch.any { it.phaseAUpfrontRequestedU > 0.0 }) {
-            "der Sofortanteil selbst muss angefordert worden sein"
+
+        // ---- EXACTLY ONCE ------------------------------------------------
+        //
+        // Die Summe allein beweist das NICHT: acht wiederholte 3-U-An-
+        // forderungen haetten sie ebenso bestanden. Genau diese acht Zyklen
+        // hat eine Zwischenfassung erzeugt, bevor der Endriegel sie nullte.
+        val anfragen = batch.withIndex()
+            .filter { (_, o) -> o.phaseAUpfrontRequestedU > 0.0 }
+        assertEquals(1, anfragen.size) {
+            "genau EINE Sofortanteil-Anforderung, war: " +
+                anfragen.map { "Zyklus ${it.index}=${it.value.phaseAUpfrontRequestedU}" }
         }
+        val (iAnf, anf) = anfragen.single()
+
+        // Die angeforderte Menge ist genau der offene Sofortanteil des
+        // Zyklus davor - nicht mehr, nicht weniger.
+        val offenVorher = batch[iAnf - 1].phaseAUpfrontPendingU
+        assertEquals(offenVorher, anf.phaseAUpfrontRequestedU, 1e-6) {
+            "die Anforderung muss dem offenen Anteil entsprechen: " +
+                "${anf.phaseAUpfrontRequestedU} vs $offenVorher"
+        }
+
+        // Alle spaeteren Ruhezyklen fordern nichts mehr an.
+        batch.drop(iAnf + 1).forEachIndexed { k, o ->
+            assertEquals(0.0, o.phaseAUpfrontRequestedU, 1e-9) {
+                "Zyklus ${iAnf + 1 + k}: keine zweite Anforderung"
+            }
+        }
+
+        // ---- PROVENIENZ AM ENDRIEGEL -------------------------------------
+        //
+        // Durchgelassen wird HOECHSTENS die autorisierte Grantmenge. Ein
+        // gleichzeitig groesserer Normal- oder Liveness-Kandidat bleibt vom
+        // historischen Latch blockiert.
+        val k = anf.upfrontChain!!
+        assertTrue(k.requestedRtU <= k.grantU + 1e-9) {
+            "am Endriegel darf hoechstens der Grant vorbei: " +
+                "${k.requestedRtU} vs Grant ${k.grantU}"
+        }
+        assertEquals("MEAL_UPFRONT", k.grantSource) {
+            "und zwar ausschliesslich der Sofortanteil-Grant"
+        }
+
         // KEIN Zyklus mit aktueller Gefahr darf dabei geliefert haben.
         batch.forEach { o ->
-            val k = o.upfrontChain ?: return@forEach
+            val c = o.upfrontChain ?: return@forEach
             if (o.phaseAUpfrontRequestedU > 0.0)
-                assertEquals("none", k.currentHazard) {
-                    "bei aktueller Gefahr darf der Batch nicht heraus: ${k.currentHazard}"
+                assertEquals("none", c.currentHazard) {
+                    "bei aktueller Gefahr darf der Batch nicht heraus: ${c.currentHazard}"
                 }
         }
     }

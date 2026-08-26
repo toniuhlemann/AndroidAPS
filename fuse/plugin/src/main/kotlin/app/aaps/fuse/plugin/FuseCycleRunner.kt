@@ -3525,8 +3525,41 @@ class FuseCycleRunner(
         // Kandidat nicht: dessen Menge entsteht NACH dem Riegel und traegt
         // keinen Grant. Die Batchmenge entsteht davor, in `liftUpfront` -
         // sie muss den Riegel passieren, nicht ihn umgehen.
-        val riegelBlockiert = descentLatch.blocksPositive && !upfrontRuheBatchFrei
-        val nachDescentRoh = MeasuredDescentGate.apply(vorRiegel, riegelBlockiert)
+        // (1) DIE GESAMTE NORMALE ENTSCHEIDUNG geht unveraendert durch den
+        // Riegel. Die erste Fassung schaltete ihn fuer `vorRiegel` als
+        // Ganzes ab - darin koennen ausser MEAL_UPFRONT auch Normalbedarf,
+        // Prime, Fundament und Liveness stecken. Das war eine Aufweitung
+        // weit ueber die Produktentscheidung hinaus.
+        val normalNachRiegel = MeasuredDescentGate.apply(vorRiegel, descentLatch.blocksPositive)
+
+        // (2)+(3) NUR der Sofortanteil-Grant darf am historischen Latch
+        // vorbei, und HART auf seine autorisierte Menge begrenzt. Ein
+        // gleichzeitig groesserer Normal- oder Liveness-Kandidat bleibt
+        // blockiert; durchgelassen wird hoechstens `grant.amountU`.
+        val ruheBatchGrant = vorRiegel.grant
+            ?.takeIf { upfrontRuheBatchFrei && it.source ==
+                    app.aaps.fuse.core.controller.AuthorizedLift.Source.MEAL_UPFRONT }
+        val calmBatchU =
+            if (ruheBatchGrant == null) 0.0
+            else minOf(vorRiegel.smbU, ruheBatchGrant.amountU).coerceAtLeast(0.0)
+
+        // (4) MAX, niemals Addition - und die Provenienz faehrt mit, weil
+        // die Menge aus `vorRiegel` samt ihrem Grant stammt.
+        val nachDescentGemergt =
+            if (calmBatchU > normalNachRiegel.smbU + 1e-9) vorRiegel.copy(
+                smbU = calmBatchU,
+                block = FuseController.Block.NONE,
+                bindingLimit = "calmBatch|" + normalNachRiegel.bindingLimit,
+            ) else normalNachRiegel
+
+        // (5) DER SCHWANZBERICHT GILT FUER DIE TATSAECHLICHE ENDMENGE.
+        // `vorRiegel` traegt den Bericht zur ungeriegelten Menge; bleibt er
+        // stehen, beschriebe er eine Menge, die es nicht gibt.
+        val nachDescentRoh =
+            if (nachDescentGemergt.smbU != vorRiegel.smbU)
+                tailWith(nachDescentGemergt.smbU)
+                    ?.let { nachDescentGemergt.copy(tail = it) } ?: nachDescentGemergt
+            else nachDescentGemergt
         val ruheBlockiert =
             upfrontRecovery as? app.aaps.fuse.core.controller.UpfrontRecovery.Decision.Blocked
         val ruheRuhig =
