@@ -215,7 +215,7 @@ object FuseStateJson {
     // der letzte Nachtzyklus positiven Bedarf AUSSCHLIESSLICH ueber das
     // Nachtband unterdrueckt hat; (P1.5) die r-Bestaetigung zaehlt erst
     // ab der V-Zuendung.
-    const val RULE_SET_VERSION = 31
+    const val RULE_SET_VERSION = 32
 
     /** Schema des Trail-Datensatzes - s. die Notiz an der Schreibstelle. */
     const val SCHEMA_VERSION = 4
@@ -1554,6 +1554,20 @@ object FuseStateJson {
         .put("driveLowerQuantilePct", p.driveLowerQuantilePct)
         .put("theilSenWindowMin", p.theilSenWindowMin)
         .put("signalRejoinEnabled", p.signalRejoinEnabled)
+        // DER RUHE-AUSGANG - dosierwirksam, also vollstaendig im Export.
+        .put("calmRecoveryEnabled", p.calmRecoveryEnabled)
+        .put("calmRecoveryCycles", p.calmRecoveryCycles)
+        .put("calmRecoveryMinUkf", p.calmRecoveryMinUkf)
+        .put("calmRecoveryGuardDistanceMgdl", p.calmRecoveryGuardDistanceMgdl)
+        .put("calmTreatmentMode", p.calmTreatmentMode)
+        // Der ausgeschriebene Modus, damit ein Leser die Zahl nicht
+        // nachschlagen muss - und damit eine Umnummerierung auffaellt.
+        .put(
+            "calmTreatment",
+            app.aaps.fuse.core.controller.UpfrontRecovery.CalmTreatment
+                .ofSetting(p.calmTreatmentMode).name,
+        )
+        .put("calmRecoveryFingerprint", p.calmParams.fingerprint)
         .put("tailGuardEnabled", p.tailGuardEnabled)
         .put("tailFloorMgdl", fin(p.tailFloorMgdl))
         .put("tailRecoveryU", fin(p.tailRecoveryU))
@@ -1628,6 +1642,11 @@ object FuseStateJson {
             // Rampe + Abschlag: fehlten bis v1 - zwei Laeufe mit verschiedenen
             // Rampen bekamen denselben Hash (Audit 07.08.). Version 1->2.
             p.riseRampLowR, p.riseRampHighR, p.bolusShareLambda, p.onsetEnvelopeU, p.primeEnvelopeU,
+            // v32: die beiden Ruheschwellen. Zwei Laeufe mit 0,00 und 0,20
+            // mg/dl/min sind verschiedene Regler, ebenso 5 und 10 mg/dl
+            // Bodenabstand - letzteres machte den Fix im Motivationsfall
+            // vollstaendig wirkungslos.
+            p.calmRecoveryMinUkf, p.calmRecoveryGuardDistanceMgdl,
             // v11: der Phase-A-Anteil. 80/20 und 75/25 verteilen dieselbe
             // Huelle verschieden - ohne ihn trugen beide denselben Hash, und
             // die Feldlaeufe waeren nicht trennbar gewesen.
@@ -1671,6 +1690,14 @@ object FuseStateJson {
                 // Zyklen, +0,050 U je Tag). AUS und EIN sind zwei
                 // verschiedene Regler.
                 p.signalRejoinEnabled,
+                // v32: der Ruhe-Ausgang aus Phase A. DOSIERWIRKSAM, sobald
+                // der Modus auf CALM_BATCH steht - dann verlaesst der offene
+                // Sofortanteil den historischen Latch. Schalter, Zyklenzahl
+                // und Modus gehoeren deshalb in den Hash; die beiden
+                // Schwellen stehen als Doubles darueber.
+                p.calmRecoveryEnabled,
+                p.calmRecoveryCycles,
+                p.calmTreatmentMode,
                 p.tailGuardEnabled, p.fastRestraintEnabled, p.onsetChannelEnabled, p.primeReleaseEnabled,
                 // v3: der Null-Ausgang aendert das Aktuationsverhalten - zwei
                 // Laeufe mit verschiedener Stellung duerfen nicht denselben

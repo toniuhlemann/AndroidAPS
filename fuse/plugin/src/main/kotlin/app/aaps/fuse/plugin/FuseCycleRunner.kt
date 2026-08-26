@@ -180,8 +180,12 @@ class FuseCycleRunner(
      * dahin nennt sie nur der Replay. `OFF` heisst: es bleibt beim
      * bisherigen Vertrag.
      */
-    private val upfrontRecoveryParams: app.aaps.fuse.core.controller.UpfrontRecovery.Params =
-        app.aaps.fuse.core.controller.UpfrontRecovery.Params.OFF,
+    /**
+     * NUR EIN OVERRIDE fuer den Replay. `null` heisst "nimm die
+     * Einstellungen" - so entsteht die Produktionsverdrahtung an genau
+     * einer Stelle ([Config.calmParams]) und nicht zweimal.
+     */
+    private val upfrontRecoveryParams: app.aaps.fuse.core.controller.UpfrontRecovery.Params? = null,
     /**
      * NUR FUER DEN PHASE-2-REPLAY (Toni 23.08. Abend): schaltet EINE
      * Trendregel des Turn-Shadows als ECHTE Dosierbahn scharf.
@@ -3048,7 +3052,7 @@ class FuseCycleRunner(
         }
         upfrontLastQ1 = signal.q1.takeIf { it.isFinite() }
         val upfrontRecovery = app.aaps.fuse.core.controller.UpfrontRecovery.evaluate(
-            params = upfrontRecoveryParams,
+            params = upfrontRecoveryParams ?: cfg.calmParams,
             prior = episodes.upfrontRecovery,
             deferredOpen = episodes.upfrontBatchDeferredSince > 0L,
             inPhaseA = upfrontInPhaseA,
@@ -3692,7 +3696,7 @@ class FuseCycleRunner(
             calmTreatment = ruheRuhig?.treatment?.name,
             recoveryStreak = upfrontRecovery.track.streak,
             recoveryTrackReset = upfrontRecovery.trackReset.name,
-            recoveryRequired = ruheBlockiert?.requiredCycles ?: upfrontRecoveryParams.calmCycles,
+            recoveryRequired = ruheBlockiert?.requiredCycles ?: (upfrontRecoveryParams ?: cfg.calmParams).calmCycles,
             recoveryDenial = ruheBlockiert?.denial?.name,
             currentHazard = upfrontRecovery.hazards,
             guardDistanceMgdl = upfrontRecovery.guardDistanceMgdl,
@@ -6047,6 +6051,20 @@ class FuseCycleRunner(
         /** Punkt 6: Schalter (default aus), gepinnter Marker-Horizont und
          *  gepinnte Ablauffrist - s. [FuseBooleanKey.DeferredPrimeEnabled]. */
         val deferredPrimeEnabled: Boolean,
+        /**
+         * DER RUHE-AUSGANG AUS PHASE A - Schalter und Schwellen aus den
+         * Einstellungen. Ist er aus, ergibt [calmParams] `Params.OFF` und
+         * es bleibt exakt beim bisherigen Vertrag.
+         */
+        // Die Vorgaben sind FAIL-CLOSED: ohne ausdrueckliche Verdrahtung ist
+        // der Ruhe-Ausgang aus, und `calmParams` ergibt `Params.OFF`. Ein
+        // vergessener Aufrufer bekommt damit den bisherigen Vertrag, nicht
+        // eine stille Freigabe.
+        val calmRecoveryEnabled: Boolean = false,
+        val calmRecoveryCycles: Int = 3,
+        val calmRecoveryMinUkf: Double = 0.0,
+        val calmRecoveryGuardDistanceMgdl: Double = 5.0,
+        val calmTreatmentMode: Int = 0,
         val markerPrimeDescentHorizonMin: Double,
         val deferredPrimeEndMin: Int,
         /** Liveness-Kanal (Bauvertrag 22.08. nachts) - s.
@@ -6065,7 +6083,29 @@ class FuseCycleRunner(
         val primeWindowMin: Int,
         /** Die Null sofort verlassen, sobald ihr Schutzgrund weg ist. */
         val endZeroWhenReasonGone: Boolean,
-    )
+    ) {
+
+        /**
+         * DIE RUHEPARAMETER AUS DEN EINSTELLUNGEN - an genau EINER Stelle.
+         *
+         * Ist der Schalter aus, ergibt sich `Params.OFF`, und der Zyklus
+         * folgt exakt dem bisherigen Vertrag. Der Fingerprint traegt die
+         * RuleSet-Version mit: eine Aenderung der Schwellen WAEHREND einer
+         * Episode entwertet damit den laufenden Ruhezaehler
+         * (`TrackReset.CONFIG_CHANGED`), statt zwei Beobachtungen unter
+         * alten und eine dritte unter neuen Schwellen zu vermischen.
+         */
+        val calmParams: app.aaps.fuse.core.controller.UpfrontRecovery.Params
+            get() = if (!calmRecoveryEnabled) app.aaps.fuse.core.controller.UpfrontRecovery.Params.OFF
+            else app.aaps.fuse.core.controller.UpfrontRecovery.Params.of(
+                calmCycles = calmRecoveryCycles,
+                minUkf = calmRecoveryMinUkf,
+                minGuardDistanceMgdl = calmRecoveryGuardDistanceMgdl,
+                calmTreatment = app.aaps.fuse.core.controller.UpfrontRecovery.CalmTreatment.ofSetting(calmTreatmentMode),
+                ruleSetVersion =
+                    app.aaps.fuse.plugin.export.FuseStateJson.RULE_SET_VERSION,
+            )
+    }
 
     /**
      * ALLE Stellgroessen kommen aus den Einstellungen — im Regelpfad steht keine
@@ -6128,6 +6168,12 @@ class FuseCycleRunner(
         mealFoundationPhaseAUpfrontShare = preferences.get(FuseDoubleKey.MealFoundationPhaseAUpfrontShare),
         mealFoundationEndMin = preferences.get(FuseIntKey.MealFoundationEndMin),
         deferredPrimeEnabled = preferences.get(FuseBooleanKey.DeferredPrimeEnabled),
+        calmRecoveryEnabled = preferences.get(FuseBooleanKey.CalmRecoveryEnabled),
+        calmRecoveryCycles = preferences.get(FuseIntKey.CalmRecoveryCycles),
+        calmRecoveryMinUkf = preferences.get(FuseDoubleKey.CalmRecoveryMinUkf),
+        calmRecoveryGuardDistanceMgdl =
+            preferences.get(FuseDoubleKey.CalmRecoveryGuardDistanceMgdl),
+        calmTreatmentMode = preferences.get(FuseIntKey.CalmTreatmentMode),
         markerPrimeDescentHorizonMin = preferences.get(FuseDoubleKey.MarkerPrimeDescentHorizonMin),
         deferredPrimeEndMin = preferences.get(FuseIntKey.DeferredPrimeEndMin),
         livenessChannelEnabled = preferences.get(FuseBooleanKey.LivenessChannelEnabled),

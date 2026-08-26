@@ -712,10 +712,17 @@ class FuseStateExportTest {
         // v30 die Korrekturpfad-Riegel (V-Reversal-Schutz + Freigabe-
         // Nachlauf nach Zero-Latch-/Nachtende, beide Default AUS, nur im
         // reinen Korrekturkontext - Pflichtfall 25.08. frueh).
+        // v31 der Wiedereinstieg nach Funkluecke (4x3-Rejoin, Default AUS).
+        // v32 DER RUHE-AUSGANG AUS PHASE A. Dosierwirksam im Modus
+        // CALM_BATCH: der zurueckgehaltene Sofortanteil verlaesst dann nach
+        // N bestaetigten Ruhezyklen den HISTORISCHEN Latch - aktuelle
+        // Gefahren bleiben absolut. Anlass ist der Abendfall 25.08.:
+        // 3,60 U blieben die ganze Phase A blockiert, obwohl das gemessene
+        // Abwaertsrisiko seit neun Zyklen vorbei war. Default AUS.
         // DIESER TEST IST ABSICHTLICH STUR: er faellt bei jedem Bump um und
         // zwingt damit zu der Frage, ob die Aenderung wirklich dosierwirksam
         // war - ein stiller Bump waere so wertlos wie ein vergessener.
-        assertEquals(31, FuseStateJson.RULE_SET_VERSION)
+        assertEquals(32, FuseStateJson.RULE_SET_VERSION)
         assertTrue(
             FuseStateJson.hashOf(cfg)!!.isNotEmpty(),
             "und der Hash bleibt berechenbar",

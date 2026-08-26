@@ -135,6 +135,16 @@
     <string name="fuse_liveness_bg_min_night_summary">Eigene, meist konservativere Schwelle im Nachtfenster (dasselbe Fenster wie das Nacht-Totband, aber unabhaengig von dessen Schalter). Solange sie NIE gesetzt wurde, folgt sie der Tagesschwelle - ein Update aendert nichts still. Tag/Nacht-Wechsel beendet keinen Lauf per CONFIG_CHANGED; faellt der BG beim Wechsel unter die neue Schwelle, endet ein Lauf als Druckverlust ohne Sperre.</string>
     <string name="fuse_liveness_rearm_title">Re-Arm-Sperre [min]</string>
     <string name="fuse_liveness_rearm_summary">Restartfeste Sperre nach jedem Kanal-Exit (Wende, harter Riegel, manuelle Intervention). Wirksamster Einzelhebel gegen Oszillations-Wiederbewaffnung; kostet dafuer Wieder-Anlauf nach kurzen Dellen.</string>
+    <string name="fuse_calm_recovery_title">Ruhe-Ausgang Phase A</string>
+    <string name="fuse_calm_recovery_summary">Nach bestaetigter Ruhe den zurueckgehaltenen Sofortanteil wieder freigeben. Aktuelle Gefahren bleiben absolut. Default aus.</string>
+    <string name="fuse_calm_cycles_title">Ruhezyklen</string>
+    <string name="fuse_calm_cycles_summary">Wieviele lueckenlose ruhige Zyklen bis zur Freigabe.</string>
+    <string name="fuse_calm_mode_title">Ruhe-Behandlung</string>
+    <string name="fuse_calm_mode_summary">0 = nur vorhandener Normalbedarf, 1 = in den schrittweisen Aufschub verschieben, 2 = Sofortbatch (dosierwirksam).</string>
+    <string name="fuse_calm_min_ukf_title">Ruhe: Mindestrate</string>
+    <string name="fuse_calm_min_ukf_summary">Kleinste UKF-Rate, die noch als ruhig gilt [mg/dl/min].</string>
+    <string name="fuse_calm_guard_title">Ruhe: Bodenabstand</string>
+    <string name="fuse_calm_guard_summary">Mindestabstand zum Guard-Boden fuer die Freigabe [mg/dl].</string>
     <string name="fuse_deferred_prime_title">Marker-Prime-Aufschub</string>
     <string name="fuse_deferred_prime_summary">Haelt markerautorisiertes Insulin zurueck, solange der Zucker GEMESSEN faellt, der Bolus die Strecke zum Boden ueberdeckt und der Boden im Marker-Horizont liegt - statt in den Fall hinein zu liefern. Der Rest bleibt AUTORISIERT und kommt nach bestaetigter Erholung mit hoechstens einem Pumpenschritt je Zyklus nach, bis zur Aufschub-Frist; danach verfaellt er sichtbar. Schuetzt NUR gegen Liefern in den gemessenen Fall - eine zu grosse Huelle bei flachem oder steigendem Zucker begrenzt er nicht.</string>
     <string name="fuse_marker_prime_horizon_title">Marker-Horizont [min]</string>

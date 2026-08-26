@@ -115,6 +115,24 @@ object UpfrontRecovery {
          * Endet Phase A vorher, bleibt es beim bestehenden Uebertragspfad.
          */
         CALM_BATCH,
+        ;
+
+        companion object {
+
+            /**
+             * AUS DER EINSTELLUNG, fail-closed. Es gibt keinen
+             * `FuseStringKey`, die Wahl liegt also als Zahl vor. Ein
+             * unbekannter Wert ergibt den harmlosesten Modus - nicht den
+             * dosierwirksamen. Wer die Reihenfolge hier aendert, aendert
+             * die Bedeutung gespeicherter Einstellungen; deshalb sind die
+             * Zahlen ausgeschrieben statt `values()[i]`.
+             */
+            fun ofSetting(v: Int): CalmTreatment = when (v) {
+                1 -> SHIFT_TO_DEFERRED
+                2 -> CALM_BATCH
+                else -> DEMAND_LIMITED
+            }
+        }
     }
 
     /** Welcher Weg den letzten Trackeintrag erzeugt hat. */

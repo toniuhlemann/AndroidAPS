@@ -33,6 +33,14 @@ internal val fuseEinstellbareKeys: Set<String> = setOf(
     FuseBooleanKey.DeferredPrimeEnabled.key,
     FuseDoubleKey.MarkerPrimeDescentHorizonMin.key,
     FuseIntKey.DeferredPrimeEndMin.key,
+    // DER RUHE-AUSGANG AUS PHASE A (v32). Dosierwirksam im Modus
+    // CALM_BATCH - er gehoert damit in den Bericht des Reiters, sonst
+    // waere eine Einstellung verstellbar, die im Bericht fehlt.
+    FuseBooleanKey.CalmRecoveryEnabled.key,
+    FuseIntKey.CalmRecoveryCycles.key,
+    FuseIntKey.CalmTreatmentMode.key,
+    FuseDoubleKey.CalmRecoveryMinUkf.key,
+    FuseDoubleKey.CalmRecoveryGuardDistanceMgdl.key,
     FuseBooleanKey.LivenessChannelEnabled.key,
     FuseBooleanKey.SignalRejoinEnabled.key,
     FuseIntKey.LivenessMealPowerMin.key,
@@ -162,6 +170,18 @@ object FuseSettingsReport {
                     schalter(FuseBooleanKey.DeferredPrimeEnabled, "Marker-Prime-Aufschub"),
                     zahl(FuseDoubleKey.MarkerPrimeDescentHorizonMin, "Marker-Horizont", "min"),
                     ganz(FuseIntKey.DeferredPrimeEndMin, "Aufschub-Frist", "min"),
+                    // Der Ruhe-Ausgang. Der Modus steht als Zahl im
+                    // Speicher, im Bericht aber ausgeschrieben - sonst
+                    // muesste der Leser 0/1/2 nachschlagen, und eine
+                    // Umnummerierung fiele niemandem auf.
+                    schalter(FuseBooleanKey.CalmRecoveryEnabled, "Ruhe-Ausgang Phase A"),
+                    ganz(FuseIntKey.CalmRecoveryCycles, "Ruhezyklen", ""),
+                    ganz(FuseIntKey.CalmTreatmentMode, "Ruhe-Behandlung", ""),
+                    zahl(FuseDoubleKey.CalmRecoveryMinUkf, "Ruhe: Mindestrate", "mg/dl/min"),
+                    zahl(
+                        FuseDoubleKey.CalmRecoveryGuardDistanceMgdl,
+                        "Ruhe: Bodenabstand", "mg/dl",
+                    ),
                 ),
                 "Dosierung und Grenzen" to listOf(
                     zahl(FuseDoubleKey.SmbRatio, "Anteil Korrektur", ""),

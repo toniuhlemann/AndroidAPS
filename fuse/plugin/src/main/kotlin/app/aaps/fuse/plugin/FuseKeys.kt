@@ -100,6 +100,12 @@ enum class FuseDoubleKey(
      * davor). Wirkt NUR auf `lower` - die Dosis haengt an der Mittelbahn
      * (s. DriveDiscount).
      */
+    /** Kleinste UKF-Rate, die noch als "ruhig" gilt [mg/dl/min]. */
+    CalmRecoveryMinUkf("fuse_calm_recovery_min_ukf", 0.0, -1.0, 1.0),
+
+    /** Mindestabstand von q1 zum Guard-Boden fuer die Ruhefreigabe [mg/dl]. */
+    CalmRecoveryGuardDistanceMgdl("fuse_calm_recovery_guard_distance", 5.0, 0.0, 100.0),
+
     BolusShareLambda("fuse_bolus_share_lambda", 1.0, 0.0, 2.0),
 
 
@@ -607,6 +613,17 @@ enum class FuseIntKey(
      * W10-Evidenz verbucht werden.
      */
     TheilSenWindowMin("fuse_theil_sen_window_min", 18, 8, 18),
+
+    /** Lueckenlose Ruhezyklen bis zur Freigabe - s. [FuseBooleanKey.CalmRecoveryEnabled]. */
+    CalmRecoveryCycles("fuse_calm_recovery_cycles", 3, 1, 20),
+
+    /**
+     * DIE BEHANDLUNG: 0 = bedarfsbegrenzt, 1 = in den schrittweisen
+     * Aufschub verschoben, 2 = Sofortbatch (DOSIERWIRKSAM).
+     * Abbildung in [app.aaps.fuse.core.controller.UpfrontRecovery.CalmTreatment.ofSetting] -
+     * ein unbekannter Wert ergibt den harmlosesten Modus.
+     */
+    CalmTreatmentMode("fuse_calm_treatment_mode", 0, 0, 2),
 }
 
 /**
@@ -889,6 +906,15 @@ enum class FuseBooleanKey(
      * "blind abgebrochen" zu "aus benanntem Grund geblockt" wechselte.
      */
     SignalRejoinEnabled("fuse_signal_rejoin_enabled", false),
+
+    /**
+     * DER RUHE-AUSGANG AUS PHASE A (Bauauftrag Toni 25.08. spaet).
+     *
+     * DOSIERWIRKSAM, wenn der Modus auf CALM_BATCH steht: dann darf der
+     * noch offene Sofortanteil nach bestaetigter Ruhe als Batch heraus.
+     * Default AUS - die Kalibrierung der Schwellen steht aus.
+     */
+    CalmRecoveryEnabled("fuse_calm_recovery_enabled", false),
 
     MarkerAuthorisesRelease("fuse_marker_authorises_low", false),
 

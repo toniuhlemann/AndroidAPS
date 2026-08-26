@@ -521,6 +521,42 @@ class UpfrontRecoveryTest {
         )
     }
 
+    /**
+     * DIE MODUSZAHL AUS DER EINSTELLUNG IST FAIL-CLOSED.
+     *
+     * Es gibt keinen `FuseStringKey`, die Wahl liegt also als Zahl vor. Ein
+     * unbekannter oder beschaedigter Wert darf NICHT den dosierwirksamen
+     * Modus ergeben - er ergibt den harmlosesten.
+     */
+    @Test
+    fun `eine unbekannte Moduszahl ergibt den harmlosesten Modus`() {
+        assertEquals(UpfrontRecovery.CalmTreatment.DEMAND_LIMITED,
+                     UpfrontRecovery.CalmTreatment.ofSetting(0))
+        assertEquals(UpfrontRecovery.CalmTreatment.SHIFT_TO_DEFERRED,
+                     UpfrontRecovery.CalmTreatment.ofSetting(1))
+        assertEquals(UpfrontRecovery.CalmTreatment.CALM_BATCH,
+                     UpfrontRecovery.CalmTreatment.ofSetting(2))
+        // Alles andere - negativ, zu gross, Muell aus einer Altdatei.
+        listOf(-1, 3, 99, Int.MIN_VALUE, Int.MAX_VALUE).forEach {
+            assertEquals(UpfrontRecovery.CalmTreatment.DEMAND_LIMITED,
+                         UpfrontRecovery.CalmTreatment.ofSetting(it),
+                         "Moduszahl $it darf nicht dosierwirksam werden")
+        }
+    }
+
+    @Test
+    fun `der Fingerprint trennt auch die Behandlung CALM_BATCH`() {
+        val batch = UpfrontRecovery.Params.of(
+            3, 0.0, 5.0, UpfrontRecovery.CalmTreatment.CALM_BATCH, regelVersion,
+        )
+        val bedarf = UpfrontRecovery.Params.of(
+            3, 0.0, 5.0, UpfrontRecovery.CalmTreatment.DEMAND_LIMITED, regelVersion,
+        )
+        assertNotEquals(batch.fingerprint, bedarf.fingerprint) {
+            "ein Moduswechsel MUSS den laufenden Ruhezaehler entwerten"
+        }
+    }
+
     @Test
     fun `die drei Modi tragen stabile Kennungen`() {
         assertEquals("BLOCKED", bewerte(deferredOpen = false, sourceTs = 1L).modeName)
