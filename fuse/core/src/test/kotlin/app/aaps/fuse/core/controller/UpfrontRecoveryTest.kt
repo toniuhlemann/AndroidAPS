@@ -387,6 +387,100 @@ class UpfrontRecoveryTest {
 
     // ---- DIE EXPORTKENNUNG --------------------------------------------
 
+    // ---- DIE GENERATION UND DER NEUSTART ------------------------------
+
+    @Test
+    fun `ein Generationswechsel verwirft den Zaehler mit typisiertem Grund`() {
+        // Zwei Beobachtungen unter den alten Schwellen...
+        val zwei = streakUeber(2)
+        assertEquals(2, zwei.track.streak)
+        assertEquals(UpfrontRecovery.TrackReset.NONE, zwei.trackReset)
+
+        // ...und der dritte Zyklus unter GELOCKERTEN. Ohne die sechste
+        // Identitaet gaeben die drei gemeinsam frei, obwohl nur einer unter
+        // den neuen Schwellen beobachtet wurde.
+        val gelockert = UpfrontRecovery.Params.of(
+            3, 0.01, 1.0, UpfrontRecovery.CalmTreatment.DEMAND_LIMITED, regelVersion,
+        )
+        val d = bewerte(params = gelockert, prior = zwei.track, sourceTs = 1_120_000L)
+        assertEquals(1, d.track.streak, "der geerbte Zaehler faellt")
+        assertEquals(UpfrontRecovery.TrackReset.CONFIG_CHANGED, d.trackReset,
+                     "und der Grund steht typisiert da, nicht still als leerer Track")
+        assertInstanceOf(UpfrontRecovery.Decision.Blocked::class.java, d)
+    }
+
+    @Test
+    fun `auch ein neuer RuleSet-Stand verwirft den Zaehler`() {
+        val zwei = streakUeber(2)
+        val d = bewerte(params = ruhig(version = regelVersion + 1), prior = zwei.track,
+                        sourceTs = 1_120_000L)
+        assertEquals(UpfrontRecovery.TrackReset.CONFIG_CHANGED, d.trackReset)
+        assertEquals(1, d.track.streak)
+    }
+
+    @Test
+    fun `ein Markerwechsel wird als solcher benannt, nicht als Konfigurationswechsel`() {
+        val zwei = streakUeber(2)
+        val d = bewerte(prior = zwei.track, markerIdentity = marker + 5_000L,
+                        sourceTs = 1_120_000L)
+        assertEquals(UpfrontRecovery.TrackReset.MARKER_CHANGED, d.trackReset)
+    }
+
+    @Test
+    fun `ein inkonsistenter geladener Stand wird als solcher benannt`() {
+        val kaputt = UpfrontRecovery.Track(
+            markerIdentity = marker, streak = 9, lastAcceptedSourceTs = 0L,
+            lastEvaluationTs = 1L, mode = UpfrontRecovery.TrackMode.CALM,
+            fingerprint = ruhig().fingerprint,
+        )
+        assertFalse(kaputt.consistent)
+        assertEquals(UpfrontRecovery.TrackReset.INCONSISTENT,
+                     bewerte(prior = kaputt, sourceTs = 1_000_000L).trackReset)
+    }
+
+    @Test
+    fun `nach einem Neustart verhindert aktuelles Risiko die Freigabe trotz geerbtem Streak`() {
+        // DER NEUSTARTFALL: der Ledger bringt einen VOLLEN Ruhezaehler
+        // zurueck - genug fuer eine Freigabe. Er allein darf nichts
+        // bewirken: die aktuellen Gefahren werden im aufnehmenden Zyklus
+        // erneut geprueft, und eine davon steht.
+        val reif = streakUeber(3)
+        assertInstanceOf(UpfrontRecovery.Decision.CalmRecovered::class.java, reif)
+        val geladen = UpfrontRecovery.Track.ofPersisted(
+            markerIdentity = reif.track.markerIdentity,
+            streak = reif.track.streak,
+            lastAcceptedSourceTs = reif.track.lastAcceptedSourceTs,
+            lastEvaluationTs = reif.track.lastEvaluationTs,
+            mode = reif.track.mode,
+            fingerprint = reif.track.fingerprint,
+        )
+        assertEquals(3, geladen.streak, "der geladene Stand waere freigabereif")
+
+        val d = bewerte(
+            prior = geladen,
+            hazards = UpfrontRecovery.Hazards(
+                descentRisk = true, lowThreat = false, zeroLatch = false, rebound = false,
+                signalUnhealthy = false, technical = false, ledgerHold = false,
+            ),
+            sourceTs = 1_180_000L,
+        )
+        val b = assertInstanceOf(UpfrontRecovery.Decision.Blocked::class.java, d)
+        assertEquals(UpfrontRecovery.Denial.CURRENT_HAZARD, b.denial)
+        assertEquals(0, b.track.streak, "und der geerbte Zaehler faellt dabei auf 0")
+    }
+
+    @Test
+    fun `ein geladener Zaehler allein gibt nichts frei - die Entscheidung entsteht neu`() {
+        // Der Track traegt KEIN Urteil; nach dem Laden muss der Zyklus die
+        // Ruhebedingungen selbst wieder erfuellen. Hier tut er es nicht
+        // (die Rate ist negativ), also faellt der volle Zaehler.
+        val reif = streakUeber(3)
+        val d = bewerte(prior = reif.track, ukf = -0.5, sourceTs = 1_180_000L)
+        val b = assertInstanceOf(UpfrontRecovery.Decision.Blocked::class.java, d)
+        assertEquals(UpfrontRecovery.Denial.STILL_FALLING, b.denial)
+        assertEquals(0, b.track.streak)
+    }
+
     @Test
     fun `die drei Modi tragen stabile Kennungen`() {
         assertEquals("BLOCKED", bewerte(deferredOpen = false, sourceTs = 1L).modeName)

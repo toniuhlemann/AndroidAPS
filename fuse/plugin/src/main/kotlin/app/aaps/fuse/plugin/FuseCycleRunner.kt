@@ -471,6 +471,12 @@ class FuseCycleRunner(
         /** Welche Behandlung der ruhige Pfad gewaehlt hat, sonst null. */
         val calmTreatment: String?,
         val recoveryStreak: Int,
+        /**
+         * Warum ein geladener Ruhezaehler verworfen wurde - typisiert.
+         * Ein stilles "streak 0" liesse "nie beobachtet" und "durch
+         * Konfigurationswechsel entwertet" ununterscheidbar.
+         */
+        val recoveryTrackReset: String,
         val recoveryRequired: Int,
         val recoveryDenial: String?,
         val currentHazard: String,
@@ -3528,6 +3534,7 @@ class FuseCycleRunner(
             recoveryMode = upfrontRecovery.modeName,
             calmTreatment = ruheRuhig?.treatment?.name,
             recoveryStreak = upfrontRecovery.track.streak,
+            recoveryTrackReset = upfrontRecovery.trackReset.name,
             recoveryRequired = ruheBlockiert?.requiredCycles ?: upfrontRecoveryParams.calmCycles,
             recoveryDenial = ruheBlockiert?.denial?.name,
             currentHazard = upfrontRecovery.hazards,
