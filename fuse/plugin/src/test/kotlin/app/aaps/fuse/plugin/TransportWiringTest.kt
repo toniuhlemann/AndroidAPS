@@ -10334,6 +10334,64 @@ class TransportWiringTest : TestBaseWithProfile() {
     }
 
     /**
+     * DER DOSIERWIRKSAME MODUS IM ABENDFALL (Bauauftrag Toni 25.08. spaet).
+     *
+     * Genau die Lage, in der die beiden anderen Behandlungen nichts
+     * ausrichten: normaler Bedarf 0, also gibt `DEMAND_LIMITED` per Vertrag
+     * nichts, und `SHIFT_TO_DEFERRED` verschiebt nur. `CALM_BATCH` muss
+     * hier liefern - sonst loest der dritte Modus das Problem nicht, fuer
+     * das er gebaut wurde.
+     *
+     * Gegen `Params.OFF` gestellt, damit die Mehrmenge nachweislich vom
+     * Modus kommt und nicht vom Verlauf.
+     */
+    @Test
+    fun `CALM_BATCH gibt den offenen Sofortanteil frei, wo Bedarf 0 ist`(@TempDir dir: File) {
+        fun lauf(b: app.aaps.fuse.core.controller.UpfrontRecovery.CalmTreatment?) = ruheLauf(
+            File(dir, b?.name ?: "off"), b,
+            zyklen = 45, abstiegBg = 82.0, abstiegRate = -0.5, abstiegIob = 2.0,
+            wendeZyklus = 6, ruheRate = 0.10, ruheIob = 0.3,
+        )
+        val blockiert = lauf(null)
+        val batch = lauf(app.aaps.fuse.core.controller.UpfrontRecovery.CalmTreatment.CALM_BATCH)
+
+        val ruhig = batch.filter { it.upfrontChain?.recoveryMode == "CALM_RECOVERED" }
+        assertTrue(ruhig.isNotEmpty()) {
+            "die Ruhelage muss erreicht werden, Modi: " +
+                batch.mapNotNull { it.upfrontChain?.recoveryMode }.groupingBy { it }.eachCount()
+        }
+        // Der Fall taugt nur, wenn es Ruhezyklen OHNE Normalbedarf gibt -
+        // sonst haette auch DEMAND_LIMITED geliefert und der dritte Modus
+        // bewiese nichts Eigenes.
+        assertTrue(
+            ruhig.any { (it.upfrontChain?.normalNeedBeforeMarkerFloorU ?: 1.0) <= 1e-9 },
+        ) {
+            "mindestens ein Ruhezyklus ohne Normalbedarf wird gebraucht, Bedarfe: " +
+                ruhig.map { it.upfrontChain?.normalNeedBeforeMarkerFloorU }.distinct()
+        }
+
+        val ohne = blockiert.sumOf { (it.upfrontChain?.requestedRtU ?: 0.0).coerceAtLeast(0.0) }
+        val mit = batch.sumOf { (it.upfrontChain?.requestedRtU ?: 0.0).coerceAtLeast(0.0) }
+        assertTrue(mit > ohne + 1e-9) {
+            "CALM_BATCH muss mehr freigeben als der blockierte Zweig: " +
+                "$mit vs $ohne. Angeforderte Sofortanteile: " +
+                batch.map { it.phaseAUpfrontRequestedU }.filter { it > 0.0 }
+        }
+        // Und die Mehrmenge kommt aus dem Sofortanteil, nicht von woanders.
+        assertTrue(batch.any { it.phaseAUpfrontRequestedU > 0.0 }) {
+            "der Sofortanteil selbst muss angefordert worden sein"
+        }
+        // KEIN Zyklus mit aktueller Gefahr darf dabei geliefert haben.
+        batch.forEach { o ->
+            val k = o.upfrontChain ?: return@forEach
+            if (o.phaseAUpfrontRequestedU > 0.0)
+                assertEquals("none", k.currentHazard) {
+                    "bei aktueller Gefahr darf der Batch nicht heraus: ${k.currentHazard}"
+                }
+        }
+    }
+
+    /**
      * DIE POSITIVPROBE FUER DEMAND_LIMITED (Toni 25.08. spaet).
      *
      * Die Ziellage, und jede Zeile davon ist noetig:

@@ -3091,10 +3091,14 @@ class FuseCycleRunner(
         // erreichen. Der ruhige Pfad stempelt gar keinen Grant - das ist die
         // Sicherheitskante, nicht ein Deckel in MarkerFloor.
         var upfrontRuheUeberfuehrungU = 0.0
+        // Gilt NUR fuer den dosierwirksamen Modus - s. Begruendung unten.
+        var upfrontRuheBatchFrei = false
         val upfrontVollbatchFrei = when (upfrontRecovery) {
             is app.aaps.fuse.core.controller.UpfrontRecovery.Decision.Blocked -> false
             is app.aaps.fuse.core.controller.UpfrontRecovery.Decision.FullBatchEligible -> true
             is app.aaps.fuse.core.controller.UpfrontRecovery.Decision.CalmRecovered -> {
+                val upfrontRuheBatch = upfrontRecovery.treatment ==
+                    app.aaps.fuse.core.controller.UpfrontRecovery.CalmTreatment.CALM_BATCH
                 when (upfrontRecovery.treatment) {
                     // Bedarfsbegrenzt: der normale Pfad bleibt stehen, wie er
                     // ist. Verlangt er nichts, geschieht nichts.
@@ -3104,8 +3108,24 @@ class FuseCycleRunner(
                     // schrittweisen Pfad - nicht als Vollbatch heraus.
                     app.aaps.fuse.core.controller.UpfrontRecovery.CalmTreatment.SHIFT_TO_DEFERRED ->
                         upfrontRuheUeberfuehrungU = upfrontOffenU
+                    // DOSIERWIRKSAM (Bauauftrag Toni 25.08. spaet): der noch
+                    // offene Sofortanteil darf als Batch heraus.
+                    //
+                    // DAS IST NICHT DIE ALTE ABKUERZUNG. Der frueher hier
+                    // stehende `releases`-Boolean liess JEDE Ruhe auf den
+                    // Vollbatchpfad; diese Freigabe gilt nur fuer EINEN
+                    // ausdruecklich gewaehlten Behandlungsmodus, erst nach N
+                    // lueckenlos bestaetigten Ruhezyklen, und sie erreicht
+                    // denselben `liftUpfront`-Pfad mit allen seinen Grenzen:
+                    // `remainingUpfrontU` verrechnet den manuellen Bolus
+                    // (keine Doppelgabe), `AuthorizedLift.lift` traegt
+                    // Huelle, iobTH, maxIOB, Transporthaftung und
+                    // Pumpenraster. Die aktuellen Gefahren bleiben absolut -
+                    // CalmRecovered entsteht ohne sie gar nicht.
+                    app.aaps.fuse.core.controller.UpfrontRecovery.CalmTreatment.CALM_BATCH ->
+                        upfrontRuheBatchFrei = true
                 }
-                false
+                upfrontRuheBatch
             }
         }
 
@@ -3137,7 +3157,19 @@ class FuseCycleRunner(
             upfrontOhneNetz || ledgerView.hold -> vetted
             // Sicherheitsriegel aktiv: der Batch bleibt VOLLSTAENDIG offen -
             // keine Miniabgaben aus diesem Bestand (Vertrag 5).
-            upfrontRisikoAufschub -> vetted
+            //
+            // AUSNAHME NUR FUER DEN DOSIERWIRKSAMEN RUHEMODUS, und sie ist
+            // beweisbar eng: `upfrontRisikoAufschub` setzt sich aus
+            // lowThreat, zeroLatch, rebound, descentRisk.active,
+            // upfrontTechReject und `descentLatch.blocksPositive` zusammen.
+            // Die ERSTEN FUENF sind saemtlich [UpfrontRecovery.Hazards] -
+            // unter `CALM_RECOVERED` sind sie zwingend falsch, sonst waere
+            // die Entscheidung gar nicht entstanden (am Konstruktor
+            // geprueft). Bleibt genau EIN Bestandteil, der hier noch wahr
+            // sein kann: der HISTORISCHE Latch. Genau ihn - und nur ihn -
+            // ueberstimmt dieser Modus, dieselbe Kante wie beim
+            // bedarfsbegrenzten Kandidaten.
+            upfrontRisikoAufschub && !upfrontRuheBatchFrei -> vetted
             upfrontWartetAufErholung -> vetted
             else -> MealFoundation.liftUpfront(
                 base = vetted,
@@ -3474,7 +3506,27 @@ class FuseCycleRunner(
         // ausschliesslich Ergebnis der Nutzenpruefung - "Basal zurueckhalten
         // hilft nicht mehr" und "mehr Bolus ist sicher" sind zwei
         // verschiedene Aussagen, und ihre Vermischung war der Befund.
-        val nachDescentRoh = MeasuredDescentGate.apply(vorRiegel, descentLatch.blocksPositive)
+        // DER ENDRIEGEL - und die EINZIGE Ausnahme, die er kennt.
+        //
+        // Er sitzt bewusst so spaet, damit keine Autorisierung ihn mehr
+        // heben kann; genau so entstand der Abendfall vom 19.08. Der
+        // dosierwirksame Ruhemodus ist die ausdrueckliche Produkt-
+        // entscheidung dagegen (Toni 25.08. spaet) - und sie ist beweisbar
+        // auf EINEN Bestandteil begrenzt:
+        //
+        // `upfrontRuheBatchFrei` wird nur unter `CALM_RECOVERED` gesetzt,
+        // und dort sind saemtliche [UpfrontRecovery.Hazards] zwingend falsch
+        // (am Konstruktor geprueft). `blocksPositive` kann in diesem Zustand
+        // also ausschliesslich vom HISTORISCHEN Latch stammen. Aktuelles
+        // Abwaertsrisiko, bestaetigtes Tief, Low-Threat, Rebound,
+        // Zero-Latch, Signal- und Modellfehler bleiben unberuehrt absolut.
+        //
+        // WARUM DER BATCH DIESEN WEG BRAUCHT und der bedarfsbegrenzte
+        // Kandidat nicht: dessen Menge entsteht NACH dem Riegel und traegt
+        // keinen Grant. Die Batchmenge entsteht davor, in `liftUpfront` -
+        // sie muss den Riegel passieren, nicht ihn umgehen.
+        val riegelBlockiert = descentLatch.blocksPositive && !upfrontRuheBatchFrei
+        val nachDescentRoh = MeasuredDescentGate.apply(vorRiegel, riegelBlockiert)
         val ruheBlockiert =
             upfrontRecovery as? app.aaps.fuse.core.controller.UpfrontRecovery.Decision.Blocked
         val ruheRuhig =
@@ -3619,6 +3671,9 @@ class FuseCycleRunner(
             calmEligibleU = when (ruheRuhig?.treatment) {
                 null -> 0.0
                 app.aaps.fuse.core.controller.UpfrontRecovery.CalmTreatment.SHIFT_TO_DEFERRED -> 0.0
+                // Der Batchmodus laeuft NICHT ueber den bedarfsbegrenzten
+                // Kandidaten, sondern ueber liftUpfront - hier ist er 0.
+                app.aaps.fuse.core.controller.UpfrontRecovery.CalmTreatment.CALM_BATCH -> 0.0
                 app.aaps.fuse.core.controller.UpfrontRecovery.CalmTreatment.DEMAND_LIMITED ->
                     minOf(upfrontOffenU, vetted.smbU.coerceAtLeast(0.0))
             },

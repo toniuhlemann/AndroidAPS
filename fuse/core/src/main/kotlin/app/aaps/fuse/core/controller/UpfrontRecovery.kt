@@ -86,6 +86,35 @@ object UpfrontRecovery {
          * auf einmal freizugeben.
          */
         SHIFT_TO_DEFERRED,
+
+        /**
+         * DER DOSIERWIRKSAME MODUS (Bauauftrag Toni 25.08. spaet).
+         *
+         * WARUM ER NOETIG IST. Die beiden anderen Wege loesen das
+         * eigentliche Problem nicht: [DEMAND_LIMITED] laesst nur
+         * vorhandenen Normalbedarf durch - am Abendfall des 25.08. war der
+         * 0 -, und [SHIFT_TO_DEFERRED] bewahrt die Menge, gibt sie aber
+         * schrittweise. Der volle Batch blieb bisher allein
+         * [Decision.FullBatchEligible] vorbehalten, also der schnellen
+         * Erholung, die genau dann nicht eintritt, wenn man sie braucht.
+         *
+         * WAS ER TUT: nach N lueckenlos bestaetigten ruhigen Zyklen darf der
+         * NOCH OFFENE Sofortanteil als Batch heraus - innerhalb Phase A,
+         * nur bei gueltigem gepinntem Marker und offenem Anteil.
+         *
+         * WAS IHN BEGRENZT, und das ist keine neue Rechnung: er laeuft
+         * durch denselben `MealFoundation.liftUpfront`-Pfad wie der
+         * Vollbatch. Dort verrechnet `remainingUpfrontU` den manuellen
+         * Bolus (keine Doppelgabe), und `AuthorizedLift.lift` traegt
+         * Huelle, iobTH, maxIOB, Transporthaftung und Pumpenraster.
+         *
+         * WAS ABSOLUT BLEIBT: saemtliche aktuellen Gefahren. Eine
+         * [Decision.CalmRecovered] entsteht nur, wenn [Hazards.any] in
+         * DIESEM Zyklus falsch war - das ist am Konstruktor geprueft.
+         *
+         * Endet Phase A vorher, bleibt es beim bestehenden Uebertragspfad.
+         */
+        CALM_BATCH,
     }
 
     /** Welcher Weg den letzten Trackeintrag erzeugt hat. */
