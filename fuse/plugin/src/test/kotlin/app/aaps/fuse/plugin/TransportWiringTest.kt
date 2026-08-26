@@ -9959,6 +9959,79 @@ class TransportWiringTest : TestBaseWithProfile() {
                          "Zyklus $i: Grantquelle")
             assertEquals(r.phaseAUpfrontPendingU, q.phaseAUpfrontPendingU, 1e-9,
                          "Zyklus $i: offener Sofortanteil")
+            // DER ENDPFAD - der eigentliche Gegenstand. Grant-Gleichheit am
+            // MarkerFloor allein waere zu schwach: der Ruhe-Ausgang kann
+            // einen vorhandenen PRIME-Grant nicht erzeugen, aber WIRKSAM
+            // machen, indem er den historischen Riegel umgeht. Kausal waere
+            // die Mehrmenge dann durch CALM_RECOVERED entstanden.
+            assertEquals(r.upfrontChain?.afterDescentGateU, q.upfrontChain?.afterDescentGateU,
+                         "Zyklus $i: Menge nach dem Endriegel")
+            assertEquals(r.upfrontChain?.requestedRtU, q.upfrontChain?.requestedRtU,
+                         "Zyklus $i: requestedRtU")
+            assertEquals(r.upfrontChain?.normalNeedBeforeMarkerFloorU,
+                         q.upfrontChain?.normalNeedBeforeMarkerFloorU,
+                         "Zyklus $i: normaler Bedarf vor allen Lifts")
+
+            // DIE INVARIANTE, die auch eine kuenftige Aenderung von
+            // DEMAND_LIMITED ueberlebt: was gegenueber BLOCKED zusaetzlich
+            // herauskommt, ist hoechstens der normale Bedarf - niemals ein
+            // Anteil, der ausschliesslich aus einem Grant entstuende.
+            val rq = r.upfrontChain
+            val qq = q.upfrontChain
+            if (rq != null && qq != null) {
+                val zusatz = qq.requestedRtU - rq.requestedRtU
+                assertTrue(zusatz <= qq.normalNeedBeforeMarkerFloorU + 1e-9) {
+                    "Zyklus $i: Mehrmenge $zusatz ueber dem normalen Bedarf " +
+                        "${qq.normalNeedBeforeMarkerFloorU} - das waere ein Grant-Anteil"
+                }
+            }
+        }
+
+        // BEI BEDARF NULL MUSS NULL HERAUSKOMMEN. Das ist die schaerfste
+        // Form des Abendfalls: der Regler sieht keinen Bedarf, und trotzdem
+        // liegt ein PRIME-Grant am MarkerFloor. Nach dem Endriegel darf
+        // davon nichts uebrig sein.
+        val ohneBedarf = ruhig.filter {
+            it.upfrontChain?.recoveryMode == "CALM_RECOVERED" &&
+                (it.upfrontChain?.normalNeedBeforeMarkerFloorU ?: 1.0) <= 1e-9
+        }
+        assertTrue(ohneBedarf.isNotEmpty()) {
+            "der Fall 'ruhig, aber kein Bedarf' muss vorkommen, sonst prueft " +
+                "die schaerfste Probe nichts"
+        }
+        // GEMESSEN, und die Zahl gehoert in den Test statt in einen Bericht:
+        // bei normalem Bedarf 0 kommen hier 0,30 U heraus - vollstaendig aus
+        // einem PRIME-Grant, den MarkerFloor um 0,30 U angehoben hat.
+        //
+        // DAS IST NICHT DER RUHE-AUSGANG. Derselbe Zyklus im Referenzlauf
+        // (Params.OFF, also BLOCKED) fordert dieselben 0,30 U an. Es ist die
+        // entworfene MarkerFloor-Semantik: der markerfinanzierte Anteil ist
+        // eine AUTORISIERUNG, kein Modellbedarf, und "insulinReq <= 0" ist
+        // eine Aussage des Modells, nicht des Nutzers.
+        //
+        // Die absolute Fassung "Bedarf 0 -> requestedRtU 0" gilt im heutigen
+        // System also nicht, und zwar unabhaengig von CALM_RECOVERED. Was
+        // gelten MUSS und hier geprueft wird: der ruhige Pfad darf daran
+        // nichts aendern. Waere die absolute Fassung gewollt, waere das eine
+        // Aenderung an MarkerFloor - nicht am Ruhe-Ausgang.
+        ohneBedarf.forEach { o ->
+            val i = ruhig.indexOf(o)
+            val k = o.upfrontChain!!
+            val ref = referenz[i].upfrontChain!!
+            assertEquals(0.0, ref.normalNeedBeforeMarkerFloorU, 1e-9,
+                         "Zyklus $i: der Referenzlauf muss denselben Nullbedarf sehen")
+            assertEquals(ref.requestedRtU, k.requestedRtU, 1e-9) {
+                "Zyklus $i: bei Bedarf 0 darf der Ruhe-Ausgang die Endmenge " +
+                    "nicht veraendern - Referenz ${ref.requestedRtU} U, " +
+                    "ruhig ${k.requestedRtU} U (Grant ${k.grantU} aus " +
+                    "${k.grantSource}, MarkerFloor hob ${k.markerFloorLiftU} U)"
+            }
+            // Und der Anteil stammt nachweislich aus dem Grant, nicht aus
+            // Bedarf - genau das macht ihn zum Pruefgegenstand.
+            assertTrue(k.markerFloorLiftU > 0.0 && k.grantSource != null) {
+                "Zyklus $i: dieser Fall soll den Grant-finanzierten Anteil " +
+                    "treffen; ohne Anhebung prueft er nichts"
+            }
         }
 
         // Und in KEINEM ruhigen Zyklus darf der Sofortanteil-Grant am Boden
