@@ -5,6 +5,7 @@ import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertInstanceOf
 import org.junit.jupiter.api.Assertions.assertNotEquals
 import org.junit.jupiter.api.Assertions.assertSame
+import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
@@ -479,6 +480,45 @@ class UpfrontRecoveryTest {
         val b = assertInstanceOf(UpfrontRecovery.Decision.Blocked::class.java, d)
         assertEquals(UpfrontRecovery.Denial.STILL_FALLING, b.denial)
         assertEquals(0, b.track.streak)
+    }
+
+    /**
+     * DIE IMPLIKATION IST AM TYP GEPRUEFT, nicht nur in der Reihenfolge
+     * von `evaluate` (Toni 25.08. spaet).
+     *
+     * Die Mutationsmatrix zeigte, dass die Laufzeitpruefung
+     * `descentRisk.active` im Runner beweisbar redundant ist: ein
+     * Freigabetyp entsteht nur nach der Gefahrenpruefung. Statt dafuer
+     * einen kuenstlich roten Testfall zu bauen, ist die Implikation jetzt
+     * eine Konstruktorbedingung - und DIE ist pruefbar.
+     */
+    @Test
+    fun `ein Freigabetyp kann bei aktueller Gefahr gar nicht entstehen`() {
+        val gefahr = UpfrontRecovery.Hazards(
+            descentRisk = true, lowThreat = false, zeroLatch = false, rebound = false,
+            signalUnhealthy = false, technical = false, ledgerHold = false,
+        ).names
+        assertThrows(IllegalArgumentException::class.java) {
+            UpfrontRecovery.Decision.CalmRecovered(
+                UpfrontRecovery.Track.EMPTY, gefahr, 8.0, 3,
+                UpfrontRecovery.CalmTreatment.DEMAND_LIMITED,
+                UpfrontRecovery.TrackReset.NONE,
+            )
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            UpfrontRecovery.Decision.FullBatchEligible(
+                UpfrontRecovery.Track.EMPTY, gefahr, 8.0, UpfrontRecovery.TrackReset.NONE,
+            )
+        }
+        // Und ohne Gefahr entstehen sie anstandslos.
+        UpfrontRecovery.Decision.CalmRecovered(
+            UpfrontRecovery.Track.EMPTY, UpfrontRecovery.KEINE_GEFAHR, 8.0, 3,
+            UpfrontRecovery.CalmTreatment.DEMAND_LIMITED, UpfrontRecovery.TrackReset.NONE,
+        )
+        UpfrontRecovery.Decision.FullBatchEligible(
+            UpfrontRecovery.Track.EMPTY, UpfrontRecovery.KEINE_GEFAHR, 8.0,
+            UpfrontRecovery.TrackReset.NONE,
+        )
     }
 
     @Test

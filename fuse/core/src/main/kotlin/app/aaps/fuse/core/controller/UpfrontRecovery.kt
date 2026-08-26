@@ -185,8 +185,11 @@ object UpfrontRecovery {
                 "signal".takeIf { signalUnhealthy },
                 "technical".takeIf { technical },
                 "ledgerHold".takeIf { ledgerHold },
-            ).joinToString("+").ifEmpty { "none" }
+            ).joinToString("+").ifEmpty { KEINE_GEFAHR }
     }
+
+    /** Der Exportwert von [Hazards.names], wenn keine Gefahr besteht. */
+    const val KEINE_GEFAHR = "none"
 
     /**
      * Die Ruheparameter. KEIN Produktionsdefault - der Aufrufer muss sie
@@ -377,7 +380,19 @@ object UpfrontRecovery {
             override val hazards: String,
             override val guardDistanceMgdl: Double?,
             override val trackReset: TrackReset,
-        ) : Decision
+        ) : Decision {
+
+            init {
+                // DIE IMPLIKATION AM TYP, nicht als Kommentar (Toni 25.08.
+                // spaet). Beide Freigabetypen entstehen ausschliesslich
+                // NACH der Gefahrenpruefung. Ein Aufrufer darf sich darauf
+                // verlassen, ohne die Reihenfolge in `evaluate` zu kennen -
+                // und wer sie umsortiert, laeuft hier auf.
+                require(hazards == KEINE_GEFAHR) {
+                    "FullBatchEligible bei aktueller Gefahr: $hazards"
+                }
+            }
+        }
 
         /**
          * Gefahr vorbei, aber keine starke Erholung.
@@ -398,7 +413,14 @@ object UpfrontRecovery {
             val calmStreak: Int,
             val treatment: CalmTreatment,
             override val trackReset: TrackReset,
-        ) : Decision
+        ) : Decision {
+
+            init {
+                require(hazards == KEINE_GEFAHR) {
+                    "CalmRecovered bei aktueller Gefahr: $hazards"
+                }
+            }
+        }
     }
 
     /**

@@ -10396,6 +10396,86 @@ class TransportWiringTest : TestBaseWithProfile() {
         }
     }
 
+    /**
+     * DER PROVENIENZNACHWEIS UEBER ALLE DREI GEOMETRIEN (Toni 25.08. spaet).
+     *
+     * Die drei Gleichheiten standen bisher nur im flachen Verlauf - also
+     * ausgerechnet dort, wo der Ruhe-Kandidat nie feuert. Bewiesen war damit
+     * "wenn nichts passiert, aendert sich nichts". Hier laufen sie gepaart
+     * gegen den BLOCKED-Lauf in ALLEN drei Lagen, auch in denen, in denen
+     * der Kandidat wirklich greift:
+     *
+     *   grantU, grantSource und markerFloorLiftU sind identisch
+     *   -> CALM_RECOVERED aendert weder Autorisierung noch Boden
+     *
+     *   requestedRtU(CALM) - requestedRtU(BLOCKED) == calmDemandU
+     *   -> die Mehrmenge IST der Kandidat, exakt und ausschliesslich.
+     *      Keine andere Stelle darf sie erzeugt haben, und bei Bedarf 0
+     *      sind beide Endanforderungen gleich (naemlich beide 0).
+     */
+    @Test
+    fun `die Provenienz bleibt in allen drei Geometrien unveraendert`(@TempDir dir: File) {
+        data class Lage(
+            val name: String, val bg: Double, val rate: Double, val iob: Double,
+            val wende: Int, val ruheRate: Double, val ruheIob: Double, val zyklen: Int,
+        )
+        val lagen = listOf(
+            // flach: der Kandidat feuert nie - die Kontrolle
+            Lage("flach", 150.0, -1.5, 2.0, 8, 0.10, 0.5, 40),
+            // scharfer Latch bei echtem Bedarf: hier feuert er
+            Lage("latch", 180.0, -4.0, 2.5, 10, 0.15, 0.3, 45),
+            // die Abendgeometrie: scharfer Latch bei Bedarf 0
+            Lage("abend", 82.0, -0.5, 2.0, 6, 0.10, 0.3, 45),
+        )
+        var gefeuert = 0
+        lagen.forEach { l ->
+            fun fahre(b: app.aaps.fuse.core.controller.UpfrontRecovery.CalmTreatment?) =
+                ruheLauf(File(dir, l.name + (b?.name ?: "ref")), b, zyklen = l.zyklen,
+                         abstiegBg = l.bg, abstiegRate = l.rate, abstiegIob = l.iob,
+                         wendeZyklus = l.wende, ruheRate = l.ruheRate, ruheIob = l.ruheIob)
+            val blockiert = fahre(null)
+            val ruhig = fahre(
+                app.aaps.fuse.core.controller.UpfrontRecovery.CalmTreatment.DEMAND_LIMITED,
+            )
+            assertEquals(blockiert.size, ruhig.size, "${l.name}: gleich viele Zyklen")
+
+            blockiert.zip(ruhig).forEachIndexed { i, (b, q) ->
+                val kb = b.upfrontChain
+                val kq = q.upfrontChain
+                if (kb == null || kq == null) return@forEachIndexed
+                val wo = "${l.name} Zyklus $i"
+
+                // DIE PROVENIENZ - unveraendert, ohne jede Bedingung.
+                assertEquals(kb.grantU, kq.grantU, 1e-9, "$wo: Grantmenge")
+                assertEquals(kb.grantSource, kq.grantSource, "$wo: Grantquelle")
+                assertEquals(kb.markerFloorLiftU, kq.markerFloorLiftU, 1e-9,
+                             "$wo: MarkerFloor-Anhebung")
+
+                // DIE MENGE - die Mehrmenge ist exakt der Kandidat.
+                val zusatz = kq.requestedRtU - kb.requestedRtU
+                assertEquals(kq.calmDemandU, zusatz, 1e-9) {
+                    "$wo: die Mehrmenge gegenueber BLOCKED muss exakt der " +
+                        "Ruhe-Kandidat sein - Kandidat ${kq.calmDemandU}, " +
+                        "Differenz $zusatz (BLOCKED ${kb.requestedRtU}, " +
+                        "CALM ${kq.requestedRtU})"
+                }
+                if (kq.calmDemandU > 0.0) {
+                    gefeuert++
+                    assertTrue(kq.calmDemandU <= kq.normalNeedBeforeMarkerFloorU + 1e-9) {
+                        "$wo: hoechstens der reine Normalbedarf"
+                    }
+                } else {
+                    assertEquals(kb.requestedRtU, kq.requestedRtU, 1e-9,
+                                 "$wo: ohne Kandidaten sind beide Endanforderungen gleich")
+                }
+            }
+        }
+        assertTrue(gefeuert > 0) {
+            "in mindestens einer Lage muss der Kandidat feuern - sonst " +
+                "belegt der Provenienznachweis nur den Leerlauf"
+        }
+    }
+
 
     /**
      * DER KANDIDAT DARF NUR IN DER ERLAUBTEN LAGE FEUERN.

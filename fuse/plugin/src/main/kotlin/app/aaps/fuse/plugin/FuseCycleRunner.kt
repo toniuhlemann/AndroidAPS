@@ -3486,6 +3486,45 @@ class FuseCycleRunner(
         val ruheReineBasisU =
             if (vetted.smbU > 0.0 && !vetted.bindingLimit.contains("markerAuth")) vetted.smbU
             else 0.0
+        // WAS VON DIESEN BEDINGUNGEN TRAEGT, UND WAS TIEFENVERTEIDIGUNG IST
+        // (Mutationsmatrix in einem eigenen Worktree auf 2bda111f95,
+        // 2072 Tests Ausgangslage, jede Bedingung einzeln entfernt).
+        //
+        // KEINE der sechs Bedingungen wird beim Entfernen rot. Das ist hier
+        // KEIN Testloch, das man zubauen muesste - es ist ueberwiegend
+        // beweisbare Redundanz, und ein Testfall, der sie kuenstlich rot
+        // macht, waere Schein-Abdeckung:
+        //
+        //   descentRisk.active  - BEWEISBAR redundant. `ruheRuhig != null`
+        //     setzt [UpfrontRecovery.Hazards.any] == false voraus, und
+        //     `descentRisk` IST eine dieser Gefahren. Die Implikation ist
+        //     seit dem `require` in [UpfrontRecovery.Decision.CalmRecovered]
+        //     am Typ verankert, nicht nur hier kommentiert.
+        //
+        //   ruheReineBasisU <= 0 - BEWEISBAR redundant: der else-Zweig gibt
+        //     genau diesen Wert zurueck, also 0. Buchstaeblich dasselbe.
+        //
+        //   nachDescentRoh.smbU > 0 - beweisbar redundant GEGEBEN der
+        //     Ursachenpruefung: HISTORICAL_LATCH heisst `blocksPositive`,
+        //     und [MeasuredDescentGate.apply] nullt dann die Menge.
+        //
+        //   riegelUrsache != HISTORICAL_LATCH - TIEFENVERTEIDIGUNG mit
+        //     einem Restfall. CURRENT_DESCENT_RISK und die Signalfaelle
+        //     unter OTHER sind bereits Gefahren; NONE faengt eine der
+        //     beiden Bedingungen darueber. MEASURED_LOW und WAITING_RISK
+        //     sind aber NICHT beweisbar durch die Gefahrenmenge
+        //     ausgeschlossen - dieser Rest ist in den gefahrenen Geometrien
+        //     nicht erreichbar und deshalb ungetestet. Die Bedingung bleibt.
+        //
+        //   markerAuth-Ausschluss - ECHTER Riegel, in den gefahrenen
+        //     Geometrien nicht erreicht: `vetted` trug dort nie selbst eine
+        //     Markerfinanzierung. Ungetestet, nicht redundant. Bleibt.
+        //
+        //   der gemeinsame Endcheck unten - kann heute nicht ausloesen,
+        //     weil der Kandidat exakt `vetted.smbU` ist und das die
+        //     Kandidatensuche schon verifiziert hat. Er ist der Riegel fuer
+        //     den Tag, an dem der Kandidat anders gerechnet wird - genau
+        //     dafuer steht er als eigene Stufe nach dem Merge.
         val ruheKandidatRohU = when {
             ruheRuhig == null -> 0.0
             ruheRuhig.treatment != app.aaps.fuse.core.controller.UpfrontRecovery.CalmTreatment.DEMAND_LIMITED -> 0.0
