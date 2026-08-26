@@ -9859,4 +9859,202 @@ class TransportWiringTest : TestBaseWithProfile() {
         assertEquals(ohne, mit, "die Mengenachse muss im Tief bitgleich bleiben")
     }
 
+
+    // ---- P0-GEGENPROBEN ZUM RUHE-AUSGANG (Toni 25.08. spaet) ----------
+    //
+    // Die Einheitstests in UpfrontRecoveryTest pruefen die ENTSCHEIDUNG.
+    // Was sie nicht pruefen koennen: was am ECHTEN MarkerFloor ankommt.
+    // In Phase A existieren weitere Marker- und Prime-Autorisierungen; der
+    // Vollbatch koennte ueber eine benachbarte Autorisierung
+    // wiederhereinkommen. Diese Proben laufen deshalb mit der
+    // vollstaendigen Geraetepolitik.
+
+    private fun mahlzeitMitRuhe(dir: File, params: app.aaps.fuse.core.controller.UpfrontRecovery.Params) {
+        fundamentAn = true
+        flach = 180.0
+        steigungProMin = 2.5
+        markerAuthorized = true
+        markerAt = start + 2 * 60_000L
+        clock = start
+        transportReset()
+        val l = FuseLedgerAdapter().also { it.loadOnce(dir.also(File::mkdirs), "test-epoch", start) }
+        neuerRunner(l, ruheParams = params)
+    }
+
+    /**
+     * Treibt einen Sofortbatch in den Aufschub und danach in eine RUHIGE
+     * Lage: die Fallgefahr endet und der Zucker steigt wieder - aber mit
+     * +0,10/min LANGSAMER als die +0,20/min, die der allgemeine Latch fuer
+     * seine schnelle Erholung verlangt. Genau dazwischen liegt
+     * CALM_RECOVERED; darueber waere es FULL_BATCH_ELIGIBLE, darunter
+     * bliebe es blockiert.
+     */
+    private fun ruheLauf(
+        dir: File,
+        behandlung: app.aaps.fuse.core.controller.UpfrontRecovery.CalmTreatment?,
+        zyklen: Int = 40,
+    ): List<FuseCycleRunner.Outcome> {
+        aufschubAn = true
+        upfrontAnteil = 1.0
+        primeHuelleU = 3.75
+        fundamentAnteil = 0.8
+        mahlzeitMitRuhe(dir, behandlung?.let {
+            app.aaps.fuse.core.controller.UpfrontRecovery.Params.of(
+                calmCycles = 3, minUkf = 0.05, minGuardDistanceMgdl = 5.0,
+                calmTreatment = it,
+            )
+        } ?: app.aaps.fuse.core.controller.UpfrontRecovery.Params.OFF)
+        flach = 150.0
+        steigungProMin = -1.5
+        bolusIobU = 2.0
+        val alle = mutableListOf<FuseCycleRunner.Outcome>()
+        repeat(zyklen) { i ->
+            if (i == 8) {
+                steigungProMin = 0.10
+                bolusIobU = 0.5
+            }
+            alle += transport(dir)
+        }
+        return alle
+    }
+
+    /**
+     * P0.1: KEIN GRANT AM TATSAECHLICHEN MarkerFloor - nicht bloss kein
+     * MEAL_UPFRONT-Grant.
+     *
+     * `MarkerFloor.apply` bekommt `lifted.grant`, und `lifted` durchlaeuft
+     * ausser `liftUpfront` auch `PrimeRelease.lift` und die Phase-B-Hebung.
+     * Die Zusicherung "der ruhige Pfad stempelt keinen Grant" ist also erst
+     * dann belegt, wenn sie an dieser Stelle geprueft wird.
+     */
+    @Test
+    fun `der ruhige Pfad veraendert am MarkerFloor nichts`(@TempDir dir: File) {
+        // DIE FRAGE IST NICHT "kommt ein Grant an", sondern "kommt EIN
+        // ANDERER an als ohne Ruhe-Ausgang". Gemessen: waehrend
+        // CALM_RECOVERED liegt am MarkerFloor sehr wohl ein Grant - 0,30 U
+        // aus PRIME -, und der Boden hebt darauf 0,25 U an. Das ist der
+        // gewoehnliche Prime-Pfad und existiert unabhaengig vom
+        // Ruhe-Ausgang. Beweisen laesst sich das nur gegen die Referenz.
+        val referenz = ruheLauf(File(dir, "ref"), null)
+        val ruhig = ruheLauf(File(dir, "demand"),
+                             app.aaps.fuse.core.controller.UpfrontRecovery.CalmTreatment.DEMAND_LIMITED)
+        assertEquals(referenz.size, ruhig.size)
+
+        val calmZyklen = ruhig.count { it.upfrontChain?.recoveryMode == "CALM_RECOVERED" }
+        assertTrue(calmZyklen > 0) {
+            "der Ruhe-Ausgang muss erreicht werden, gesehen: " +
+                ruhig.mapNotNull { it.upfrontChain?.recoveryMode }.distinct()
+        }
+
+        // BEDARFSBEGRENZT HEISST: gar keine Aenderung. Der Zweig faellt mit
+        // dem blockierten zusammen - er benennt nur, WARUM nicht gehoben
+        // wurde. Weicht hier irgendetwas ab, gibt der ruhige Pfad Insulin
+        // frei, das der heutige Vertrag nicht gibt.
+        referenz.zip(ruhig).forEachIndexed { i, (r, q) ->
+            assertEquals(r.decision.smbU, q.decision.smbU, 1e-9, "Zyklus $i: Menge")
+            assertEquals(r.upfrontChain?.markerFloorLiftU, q.upfrontChain?.markerFloorLiftU,
+                         "Zyklus $i: MarkerFloor-Anhebung")
+            assertEquals(r.upfrontChain?.grantU, q.upfrontChain?.grantU, "Zyklus $i: Grant")
+            assertEquals(r.upfrontChain?.grantSource, q.upfrontChain?.grantSource,
+                         "Zyklus $i: Grantquelle")
+            assertEquals(r.phaseAUpfrontPendingU, q.phaseAUpfrontPendingU, 1e-9,
+                         "Zyklus $i: offener Sofortanteil")
+        }
+
+        // Und in KEINEM ruhigen Zyklus darf der Sofortanteil-Grant am Boden
+        // ankommen - das waere der Vollbatch ueber eine Nachbarautorisierung.
+        ruhig.filter { it.upfrontChain?.recoveryMode == "CALM_RECOVERED" }.forEach { o ->
+            val k = o.upfrontChain!!
+            assertTrue(k.grantSource != "MEAL_UPFRONT") {
+                "im ruhigen Pfad darf kein Sofortanteil-Grant am MarkerFloor " +
+                    "ankommen, war ${k.grantU} U"
+            }
+        }
+    }
+
+    /**
+     * DIE MUTATIONSPROBE ZUR OBIGEN: gaebe der ruhige Pfad den Vollbatch
+     * frei, muesste die Referenzgleichheit brechen. Der Test hier faehrt
+     * denselben Ausschnitt mit FULL_BATCH_ELIGIBLE-Semantik - erzwungen
+     * ueber eine schnelle Erholung - und belegt, dass der Ausschnitt
+     * ueberhaupt empfindlich ist.
+     */
+    @Test
+    fun `die Referenzgleichheit ist empfindlich - der Vollbatchpfad bricht sie`(@TempDir dir: File) {
+        val referenz = ruheLauf(File(dir, "ref"), null)
+        // +0,30/min statt +0,10: ueber der Erholungsschwelle des allgemeinen
+        // Latches, also FULL_BATCH_ELIGIBLE statt CALM_RECOVERED.
+        val schnell = run {
+            aufschubAn = true
+            upfrontAnteil = 1.0
+            primeHuelleU = 3.75
+            fundamentAnteil = 0.8
+            mahlzeitMitRuhe(File(dir, "rising"),
+                            app.aaps.fuse.core.controller.UpfrontRecovery.Params.OFF)
+            flach = 150.0
+            steigungProMin = -1.5
+            bolusIobU = 2.0
+            val alle = mutableListOf<FuseCycleRunner.Outcome>()
+            repeat(40) { i ->
+                if (i == 8) {
+                    steigungProMin = 0.30
+                    bolusIobU = 0.5
+                }
+                alle += transport(File(dir, "rising"))
+            }
+            alle
+        }
+        val unterschiede = referenz.zip(schnell).count { (r, q) ->
+            kotlin.math.abs(r.decision.smbU - q.decision.smbU) > 1e-9
+        }
+        assertTrue(unterschiede > 0) {
+            "wenn der Vollbatchpfad denselben Verlauf erzeugt wie der " +
+                "blockierte, prueft die Referenzgleichheit nichts"
+        }
+    }
+
+    /**
+     * P0.2: DIE VERSCHIEBUNG BUCHT GENAU EINMAL - und ob im selben Zyklus
+     * schon ein Schritt herausgeht, steht ausdruecklich da.
+     *
+     * `DeferredPrime.releaseStep` laeuft NACH MarkerFloor und sieht den
+     * frisch verschobenen Betrag. Das ist nicht zwingend falsch, darf aber
+     * nicht stillschweigend geschehen: sonst heisst "verschoben" im Bericht,
+     * waehrend tatsaechlich sofort ein Schritt angefordert wurde.
+     */
+    @Test
+    fun `die Verschiebung bucht genau einmal und haelt die Bilanz`(@TempDir dir: File) {
+        val alle = ruheLauf(dir, app.aaps.fuse.core.controller.UpfrontRecovery.CalmTreatment.SHIFT_TO_DEFERRED)
+        val mitShift = alle.withIndex()
+            .filter { (_, o) -> (o.upfrontChain?.calmShiftedU ?: 0.0) > 0.0 }
+        assertEquals(1, mitShift.size) {
+            "genau EINE Buchung, war: " + mitShift.map { it.index }
+        }
+        val (i, s) = mitShift.single()
+
+        alle.drop(i + 1).forEachIndexed { k, o ->
+            assertEquals(0.0, o.upfrontChain?.calmShiftedU ?: 0.0, 1e-9,
+                         "kein zweiter Transfer im Folgezyklus ${i + 1 + k}")
+        }
+
+        // DIE GRUNDLINIE IST DER OFFENE BETRAG ZUR BUCHUNGSZEIT, nicht der
+        // des Vorzyklus. Zwischen zwei Zyklen kann regulaer etwas geliefert
+        // worden sein; die erste Fassung dieses Tests las diese Lieferung als
+        // Buchungsloch (2,05 + 0,35 gegen 2,70 statt gegen 2,40).
+        val offenVorher = s.upfrontChain!!.upfrontOpenU
+        assertTrue(offenVorher > 0.0, "vor der Verschiebung muss etwas offen sein")
+        assertEquals(offenVorher, s.phaseAUpfrontTransferredU + s.phaseAUpfrontLapsedU, 1e-6) {
+            "transferred + lapsed muss dem offenen Betrag entsprechen: " +
+                "${s.phaseAUpfrontTransferredU} + ${s.phaseAUpfrontLapsedU} vs $offenVorher"
+        }
+        assertEquals(0.0, s.phaseAUpfrontPendingU, 1e-9,
+                     "nach der Verschiebung ist nichts mehr offen")
+
+        assertEquals(0.0, s.deferredPrimeReleasedU, 1e-9) {
+            "im Verschiebezyklus darf 'verschoben' nicht heimlich " +
+                "'sofort angefordert' heissen - freigegeben wurden " +
+                "${s.deferredPrimeReleasedU} U"
+        }
+    }
+
 }
