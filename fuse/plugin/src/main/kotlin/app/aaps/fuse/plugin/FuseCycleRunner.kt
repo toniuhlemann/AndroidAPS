@@ -841,7 +841,14 @@ class FuseCycleRunner(
          * sieht dieses Fenster aus wie ein Bestand, den es nicht mehr gibt.
          */
         val deferredHullRemainingU: Double = 0.0,
-        /** Offener Aufschub VOR der letzten Klemmung [U]. */
+        /**
+         * Offener Aufschub vor der Klemmung DIESES Zyklus [U].
+         *
+         * Nicht "vor der letzten Klemmung": seit das Ereignis lokal in
+         * [Buchung] entsteht, beschreibt es ausschliesslich den eigenen
+         * Zyklus. 0 heisst "hier wurde nicht geklemmt", nicht
+         * "zuletzt war der Bestand 0".
+         */
         val deferredOpenBeforeClampU: Double = 0.0,
         /** Der Huellenrest ZUM ZEITPUNKT der Klemmung [U]. */
         val deferredClampHullAtClampU: Double = 0.0,

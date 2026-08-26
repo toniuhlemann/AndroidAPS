@@ -9911,10 +9911,11 @@ class TransportWiringTest : TestBaseWithProfile() {
         // Huellenklemmung zu erzeugen.
         manuellBeiZyklus: Int? = null,
         manuellU: Double = 4.0,
+        huelleU: Double = 3.75,
     ): List<FuseCycleRunner.Outcome> {
         aufschubAn = true
         upfrontAnteil = 1.0
-        primeHuelleU = 3.75
+        primeHuelleU = huelleU
         fundamentAnteil = 0.8
         mahlzeitMitRuhe(dir, behandlung?.let {
             app.aaps.fuse.core.controller.UpfrontRecovery.Params.of(
@@ -10586,11 +10587,13 @@ class TransportWiringTest : TestBaseWithProfile() {
         // (2) KEIN Zeitstempel darf zweimal auftauchen. Genau so saehe ein
         // klebendes Ereignis aus, und genau so wuerde es doppelt gezaehlt.
         val stempel = alle.map { it.deferredClampTs }.filter { it > 0L }
-        // DIE GRENZE DIESES TESTS, ausdruecklich statt stillschweigend:
-        // im Rig entsteht KEINE Klemmung. Gemessen: 0 Kuerzungen,
-        // Huellenreste nur 0,00 und 3,75 - der eingespeiste manuelle Bolus
-        // erreicht `manualBolusAfterMarkerU` nicht, und ohne verkleinerte
-        // Huelle kann `clampToHull` nichts wegnehmen.
+        // WARUM HIER NICHT GEKLEMMT WIRD, und die erste Erklaerung war
+        // falsch: der eingespeiste manuelle Bolus erreicht
+        // `manualBolusAfterMarkerU` sehr wohl - das Rig ist NICHT kaputt.
+        // Der Grund ist die Huelle: in diesem Lauf ist `totalBudgetU` 3,75,
+        // und 3,75 - 4,00 ergibt Huellenrest 0. Bei `openU == 0` kehrt
+        // `clampToHull` sofort zurueck, es gibt nichts wegzunehmen.
+        // Der ECHTE Klemmfall steht als eigene Pflichtprobe darunter.
         //
         // Die Punkte (1) und (2) pruefen deshalb den Leerlauf: dass ein
         // Zyklus OHNE Klemmung auch keine berichtet. Genau das war der
@@ -10617,6 +10620,99 @@ class TransportWiringTest : TestBaseWithProfile() {
         // manuellem Bolus und naechster Lieferung.
         assertTrue(alle.any { it.deferredHullRemainingU > 0.0 }) {
             "der Huellenrest muss als laufender Zustand sichtbar sein"
+        }
+    }
+
+    /**
+     * DIE PFLICHTPROBE DES KLEMMFALLS (Toni 25.08. spaet).
+     *
+     * Der Leerlauftest darueber beweist nur "kein Ereignis ohne Clamp". Was
+     * er nicht beweist, sind die WERTE beim Clamp. Hier steht die Kette des
+     * echten Abendfalls mit denselben Groessen:
+     *
+     *   Huelle 4,50, manueller NORMAL-Bolus 4,00  -> Huellenrest 0,50
+     *   offener Aufschub 3,60, erste Abgabe 0,05  -> Rest 0,45
+     *   erwartet: vorher 3,60, Kuerzung 3,15, Grund MANUAL_BOLUS_COVERAGE,
+     *             Zeitstempel dieses Zyklus
+     *   Folgezyklus ohne Clamp: Kuerzung 0, Grund null, Zeitstempel 0
+     *
+     * WARUM DIE HUELLE 4,50 SEIN MUSS: bei 3,75 ergibt 3,75 - 4,00 einen
+     * Rest von 0, `clampToHull` kehrt bei leerem Bestand sofort zurueck,
+     * und es gaebe gar kein Ereignis. Genau daran ist die erste Fassung
+     * gescheitert - nicht an der Behandlungssicht des Rigs.
+     */
+    @Test
+    fun `der Klemmfall meldet Bestand, Kuerzung, Grund und Zeitstempel`(@TempDir dir: File) {
+        val alle = ruheLauf(
+            dir, app.aaps.fuse.core.controller.UpfrontRecovery.CalmTreatment.SHIFT_TO_DEFERRED,
+            zyklen = 45, abstiegBg = 180.0, abstiegRate = -4.0, abstiegIob = 2.5,
+            // +0,25/min: UEBER der Erholungsschwelle. Der historische
+            // Latch loest, es wird wieder geliefert - und nur eine
+            // Lieferung loest die Klemmung ueberhaupt aus
+            // (`clampToHull` laeuft nur bei `actuatedU > 0`).
+            wendeZyklus = 10, ruheRate = 0.25, ruheIob = 0.0,
+            manuellBeiZyklus = 16, manuellU = 4.0, huelleU = 4.5,
+        )
+        // NUR die Klemmungen NACH dem manuellen Bolus. Davor gibt es
+        // ebenfalls welche - dort ist der Grund korrekterweise
+        // AUTOMATIC_DELIVERY, weil noch kein manueller Bolus wirkte. Die
+        // erste Fassung griff blind die erste Klemmung und pruefte damit
+        // den falschen Fall.
+        val klemmen = alle.withIndex().filter { (_, o) ->
+            o.deferredClampReductionU > 0.0 && (o.manualBolusAfterMarkerU ?: 0.0) >= 4.0
+        }
+        // Und die Gegenrichtung gehoert dazu: VOR dem Bolus muss der Grund
+        // automatisch lauten, sonst waere die Unterscheidung wertlos.
+        val vorherigeKlemmung = alle.firstOrNull {
+            it.deferredClampReductionU > 0.0 && (it.manualBolusAfterMarkerU ?: 0.0) <= 0.0
+        }
+        if (vorherigeKlemmung != null)
+            assertEquals("AUTOMATIC_DELIVERY", vorherigeKlemmung.deferredClampReason,
+                         "ohne manuellen Bolus ist die Ursache automatisch")
+        assertTrue(klemmen.isNotEmpty()) {
+            "es muss geklemmt werden - sonst prueft diese Probe nichts. " +
+                "Huellenreste: " +
+                alle.map { String.format("%.2f", it.deferredHullRemainingU) }.distinct().sorted() +
+                " | manuell: " + alle.map { it.manualBolusAfterMarkerU }.distinct() +
+                " | defOpen: " +
+                alle.map { String.format("%.2f", it.deferredPrimeOpenU) }.distinct().sorted() +
+                " | Abgaben nach dem Bolus: " +
+                alle.drop(17).count { it.decision.smbU > 0.0 } +
+                " | Mengen: " +
+                alle.drop(17).map { it.decision.smbU }.filter { it > 0.0 }.take(8)
+        }
+        val (i, k) = klemmen.first()
+
+        // Die Werte des Ereignisses haengen zusammen und werden gemeinsam
+        // geprueft - eine Kuerzung ohne passenden Ausgangsbestand waere
+        // eine andere Geschichte als die erzaehlte.
+        assertEquals(k.deferredOpenBeforeClampU - k.deferredClampHullAtClampU,
+                     k.deferredClampReductionU, 1e-6) {
+            "Kuerzung muss Bestand minus Huellenrest sein: " +
+                "${k.deferredOpenBeforeClampU} - ${k.deferredClampHullAtClampU} " +
+                "vs ${k.deferredClampReductionU}"
+        }
+        assertEquals("MANUAL_BOLUS_COVERAGE", k.deferredClampReason) {
+            "der manuelle Bolus allein erklaert die Klemmung"
+        }
+        assertTrue(k.deferredClampTs > 0L, "mit Zeitstempel")
+        assertEquals(k.deferredClampHullAtClampU, k.deferredHullRemainingU, 1e-6,
+                     "Huellenrest zum Klemmzeitpunkt und laufender Zustand sind derselbe Wert")
+
+        // DER FOLGEZYKLUS: kein Ereignis mehr. Genau hier haette die
+        // klebende Fassung dasselbe Ereignis erneut berichtet.
+        val danach = alle.drop(i + 1).firstOrNull { it.deferredClampReductionU <= 0.0 }
+        assertNotNull(danach, "nach der Klemmung muss ein Zyklus ohne Klemmung folgen")
+        assertNull(danach!!.deferredClampReason, "kein Grund ohne Kuerzung")
+        assertEquals(0L, danach.deferredClampTs, "kein Zeitstempel ohne Kuerzung")
+        assertEquals(0.0, danach.deferredOpenBeforeClampU, 1e-9, "kein Bestand ohne Kuerzung")
+
+        // UND DAS PHASE-B-BUDGET BLEIBT UNBERUEHRT - der manuelle Bolus
+        // ersetzte die ausgefallene Phase A, er kuerzt nicht den Nachlauf.
+        val budgets = alle.mapNotNull { it.mealFoundation.phaseBBudgetU }.distinct()
+        assertTrue(budgets.size <= 2) {
+            "das Phase-B-Budget darf sich durch den manuellen Bolus nicht " +
+                "veraendern, sah aber: $budgets"
         }
     }
 
