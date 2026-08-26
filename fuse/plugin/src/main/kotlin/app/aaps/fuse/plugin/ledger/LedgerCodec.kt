@@ -484,6 +484,31 @@ object LedgerCodec {
                 .put("latchedAtTs", e.zeroLatch.latchedAtTs)
                 .put("sawMeasuredLow", e.zeroLatch.sawMeasuredLow),
         )
+        // DER RUHE-BEOBACHTUNGSZUSTAND des Phase-A-Sofortbatches (Toni
+        // 25.08. spaet). Persistiert wird AUSSCHLIESSLICH die Beobachtung -
+        // niemals ein bereits gefaelltes CALM_RECOVERED- oder
+        // FULL_BATCH_ELIGIBLE-Urteil. Nach einem Neustart wird nur dieser
+        // Track geladen; aktuelle Gefahren und Kandidat werden vollstaendig
+        // neu berechnet.
+        //
+        // Alle sechs Identitaeten muessen mit, sonst waere der Zaehler nach
+        // dem Laden nicht pruefbar: Marker, Signalanschluss, Zeitkontinuitaet,
+        // Modus, Streak - und der Fingerprint der Regel-/Konfigurations-
+        // generation, damit zwei Beobachtungen unter alten und eine dritte
+        // unter gelockerten Schwellen nicht gemeinsam freigeben.
+        //
+        // Additiv: eine Altdatei ohne das Objekt ergibt den leeren Track,
+        // also einen sauberen Neustart bei 0 - die konservative Richtung.
+        .put(
+            "upfrontRecovery",
+            JSONObject()
+                .put("markerIdentity", e.upfrontRecovery.markerIdentity)
+                .put("streak", e.upfrontRecovery.streak)
+                .put("lastAcceptedSourceTs", e.upfrontRecovery.lastAcceptedSourceTs)
+                .put("lastEvaluationTs", e.upfrontRecovery.lastEvaluationTs)
+                .put("mode", e.upfrontRecovery.mode.name)
+                .put("fingerprint", e.upfrontRecovery.fingerprint),
+        )
         // v30-Korrekturpfad-Riegel (Review-P0.1): NUR die Identitaet -
         // Fall-Minimum/Zuendung bzw. Anker/Quelle ueberleben den Neustart,
         // die Bestaetigungszaehler sind prozesslokal (restored nullt).
@@ -737,6 +762,28 @@ object LedgerCodec {
                     latchedAtTs = requireTs("zeroLatch.latchedAtTs", latch.getLong("latchedAtTs")),
                     sawMeasuredLow = latch.optBoolean("sawMeasuredLow", false),
                 ) ?: error("invalid zero latch")
+        }
+        // Fail-closed: `ofPersisted` prueft die Identitaeten und liefert bei
+        // jeder unvollstaendigen oder widerspruechlichen Kombination den
+        // leeren Track. Ein fortgesetzter Zaehler kann mehr Insulin
+        // freigeben als ein neu begonnener - deshalb wird hier geprueft,
+        // nicht geglaubt.
+        //
+        // `isNull` VOR `optString`: auf Android liefert `optString` fuer ein
+        // JSON-null den String "null", nicht den Defaultwert. Ein so
+        // gelesener Fingerprint waere ein gueltig aussehender Fremdwert.
+        if (o.has("upfrontRecovery")) {
+            val t = o.getJSONObject("upfrontRecovery")
+            val modus = if (t.isNull("mode")) "NONE" else t.optString("mode", "NONE")
+            e.upfrontRecovery = app.aaps.fuse.core.controller.UpfrontRecovery.Track.ofPersisted(
+                markerIdentity = t.optLong("markerIdentity", 0L),
+                streak = t.optInt("streak", 0),
+                lastAcceptedSourceTs = t.optLong("lastAcceptedSourceTs", 0L),
+                lastEvaluationTs = t.optLong("lastEvaluationTs", 0L),
+                mode = runCatching { app.aaps.fuse.core.controller.UpfrontRecovery.TrackMode.valueOf(modus) }
+                    .getOrDefault(app.aaps.fuse.core.controller.UpfrontRecovery.TrackMode.NONE),
+                fingerprint = if (t.isNull("fingerprint")) "" else t.optString("fingerprint", ""),
+            )
         }
         if (o.has("correctionReversal")) {
             val rev = o.getJSONObject("correctionReversal")

@@ -235,9 +235,16 @@ class EpisodeBudgets {
     var upfrontLapsedU: Double = 0.0
 
     /**
-     * Der RUHEZAEHLER des Phase-A-Sofortbatches (Toni 25.08. spaet).
-     * Restartfest, weil eine Ruhe, die ein Neustart erfunden hat, keine
-     * ist - `evaluate` prueft zusaetzlich den lueckenlosen Anschluss.
+     * Der RUHE-BEOBACHTUNGSZUSTAND des Phase-A-Sofortbatches (Toni 25.08.
+     * spaet). Seit dem Codec-Nachtrag tatsaechlich restartfest - vorher
+     * behauptete dieses KDoc es, waehrend `LedgerCodec` das Feld nirgends
+     * fuehrte.
+     *
+     * Persistiert wird ausschliesslich die BEOBACHTUNG samt ihren sechs
+     * Identitaeten, niemals ein gefaelltes Urteil. Nach einem Neustart
+     * prueft `evaluate` Markeridentitaet, Signalanschluss, Zeitkontinuitaet
+     * und Generationen-Fingerprint erneut und berechnet die Entscheidung
+     * vollstaendig neu.
      */
     var upfrontRecovery: app.aaps.fuse.core.controller.UpfrontRecovery.Track =
         app.aaps.fuse.core.controller.UpfrontRecovery.Track()

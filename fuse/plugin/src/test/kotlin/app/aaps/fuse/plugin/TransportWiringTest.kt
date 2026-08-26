@@ -7943,6 +7943,7 @@ class TransportWiringTest : TestBaseWithProfile() {
                     minUkf = t[1].toDouble(),
                     minGuardDistanceMgdl = t[2].toDouble(),
                     calmTreatment = behandlung,
+                    ruleSetVersion = app.aaps.fuse.plugin.export.FuseStateJson.RULE_SET_VERSION,
                 )
                 lauf("calm${t[0]}_${t[1].replace(".", "")}_${t[2].replace(".", "")}_${t[3].trim()}",
                      null, fenster = 10, upfrontStart = 1.0, ruhe = p)
@@ -9912,7 +9913,7 @@ class TransportWiringTest : TestBaseWithProfile() {
         mahlzeitMitRuhe(dir, behandlung?.let {
             app.aaps.fuse.core.controller.UpfrontRecovery.Params.of(
                 calmCycles = 3, minUkf = 0.05, minGuardDistanceMgdl = 5.0,
-                calmTreatment = it,
+                calmTreatment = it, ruleSetVersion = app.aaps.fuse.plugin.export.FuseStateJson.RULE_SET_VERSION,
             )
         } ?: app.aaps.fuse.core.controller.UpfrontRecovery.Params.OFF)
         flach = abstiegBg
@@ -10245,6 +10246,63 @@ class TransportWiringTest : TestBaseWithProfile() {
             }
             assertTrue(k.requestedRtU > 0.0, "und er kommt am Ende auch an")
         }
+    }
+
+
+    /**
+     * DER KANDIDAT DARF NUR IN DER ERLAUBTEN LAGE FEUERN.
+     *
+     * WARUM DIESER TEST NOETIG WAR, und der Grund ist ein Testfehler von
+     * mir: die Referenzpruefung vergleicht Mengen nur in Zyklen mit
+     * `calmDemandU == 0`. Feuert der Kandidat unter einer Mutation
+     * HAEUFIGER, ueberspringt sie genau die neu entstandenen Zyklen - die
+     * Zusicherung schaltet sich selbst ab. Gemessen: alle sechs
+     * Mutationen der Kandidatenbedingung blieben gruen.
+     *
+     * Dieser Test prueft deshalb die Gegenrichtung: WO IMMER der Kandidat
+     * gefeuert hat, muss die volle Lage vorgelegen haben.
+     */
+    @Test
+    fun `der Ruhe-Kandidat feuert nur in der erlaubten Lage`(@TempDir dir: File) {
+        // Beide Verlaeufe: der ohne scharfen Latch und der mit.
+        val laeufe = listOf(
+            ruheLauf(File(dir, "flach"), app.aaps.fuse.core.controller.UpfrontRecovery.CalmTreatment.DEMAND_LIMITED),
+            ruheLauf(
+                File(dir, "latch"), app.aaps.fuse.core.controller.UpfrontRecovery.CalmTreatment.DEMAND_LIMITED,
+                zyklen = 45, abstiegBg = 180.0, abstiegRate = -4.0, abstiegIob = 2.5,
+                wendeZyklus = 10, ruheRate = 0.15, ruheIob = 0.3,
+            ),
+        )
+        var gefeuert = 0
+        laeufe.forEachIndexed { l, alle ->
+            alle.forEachIndexed { i, o ->
+                val k = o.upfrontChain ?: return@forEachIndexed
+                if (k.calmDemandU <= 0.0) return@forEachIndexed
+                gefeuert++
+                val wo = "Lauf $l Zyklus $i"
+                assertEquals("CALM_RECOVERED", k.recoveryMode,
+                             "$wo: nur der ruhige Pfad darf den Kandidaten erzeugen")
+                assertEquals("HISTORICAL_LATCH", k.descentGateCause) {
+                    "$wo: NUR ein historischer Latch darf ueberstimmt werden, " +
+                        "Ursache war ${k.descentGateCause}"
+                }
+                assertTrue(k.normalNeedBeforeMarkerFloorU > 0.0) {
+                    "$wo: ohne echten Normalbedarf darf kein Kandidat entstehen"
+                }
+                assertTrue(k.calmDemandU <= k.normalNeedBeforeMarkerFloorU + 1e-9) {
+                    "$wo: hoechstens der reine Normalbedarf - " +
+                        "${k.calmDemandU} vs ${k.normalNeedBeforeMarkerFloorU}"
+                }
+                assertNull(k.calmDeniedByFinalVerify) {
+                    "$wo: ein vom Endcheck verworfener Kandidat darf nicht " +
+                        "als gefeuert gelten (${k.calmDeniedByFinalVerify})"
+                }
+                assertTrue(k.requestedRtU > 0.0) {
+                    "$wo: was gefeuert hat, muss am Ende auch ankommen"
+                }
+            }
+        }
+        assertTrue(gefeuert > 0, "mindestens ein Lauf muss den Kandidaten ausloesen")
     }
 
 }

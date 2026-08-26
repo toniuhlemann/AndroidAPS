@@ -31,9 +31,15 @@ class UpfrontRecoveryTest {
         signalUnhealthy = false, technical = false, ledgerHold = false,
     )
 
-    private fun ruhig(zyklen: Int = 3) = UpfrontRecovery.Params.of(
+    private val regelVersion = 31
+
+    private fun ruhig(
+        zyklen: Int = 3,
+        version: Int = regelVersion,
+    ) = UpfrontRecovery.Params.of(
         calmCycles = zyklen, minUkf = 0.05, minGuardDistanceMgdl = 5.0,
         calmTreatment = UpfrontRecovery.CalmTreatment.DEMAND_LIMITED,
+        ruleSetVersion = version,
     )
 
     private fun bewerte(
@@ -306,28 +312,34 @@ class UpfrontRecoveryTest {
         // Streak ohne Identitaeten - genau das, was ein halber Codec liefert.
         assertSame(UpfrontRecovery.Track.EMPTY, UpfrontRecovery.Track.ofPersisted(
             markerIdentity = 0L, streak = 5, lastAcceptedSourceTs = 0L,
-            lastEvaluationTs = 0L, mode = UpfrontRecovery.TrackMode.CALM,
+            lastEvaluationTs = 0L, mode = UpfrontRecovery.TrackMode.CALM, fingerprint = "x",
         ))
         // Identitaeten ohne Streak.
         assertSame(UpfrontRecovery.Track.EMPTY, UpfrontRecovery.Track.ofPersisted(
             markerIdentity = marker, streak = 0, lastAcceptedSourceTs = 1L,
-            lastEvaluationTs = 1L, mode = UpfrontRecovery.TrackMode.CALM,
+            lastEvaluationTs = 1L, mode = UpfrontRecovery.TrackMode.CALM, fingerprint = "x",
         ))
         // Streak ohne Modus.
         assertSame(UpfrontRecovery.Track.EMPTY, UpfrontRecovery.Track.ofPersisted(
             markerIdentity = marker, streak = 2, lastAcceptedSourceTs = 1L,
-            lastEvaluationTs = 1L, mode = UpfrontRecovery.TrackMode.NONE,
+            lastEvaluationTs = 1L, mode = UpfrontRecovery.TrackMode.NONE, fingerprint = "x",
+        ))
+        // Streak ohne Fingerprint - die sechste Identitaet fehlt.
+        assertSame(UpfrontRecovery.Track.EMPTY, UpfrontRecovery.Track.ofPersisted(
+            markerIdentity = marker, streak = 2, lastAcceptedSourceTs = 1L,
+            lastEvaluationTs = 1L, mode = UpfrontRecovery.TrackMode.CALM, fingerprint = "",
         ))
         // Davongelaufener Zaehler.
         assertSame(UpfrontRecovery.Track.EMPTY, UpfrontRecovery.Track.ofPersisted(
             markerIdentity = marker, streak = UpfrontRecovery.Track.MAX_STREAK + 1,
             lastAcceptedSourceTs = 1L, lastEvaluationTs = 1L,
-            mode = UpfrontRecovery.TrackMode.CALM,
+            mode = UpfrontRecovery.TrackMode.CALM, fingerprint = "x",
         ))
         // Und der vollstaendige Fall kommt durch.
         val gut = UpfrontRecovery.Track.ofPersisted(
             markerIdentity = marker, streak = 2, lastAcceptedSourceTs = 1_000L,
             lastEvaluationTs = 1_000L, mode = UpfrontRecovery.TrackMode.CALM,
+            fingerprint = ruhig().fingerprint,
         )
         assertEquals(2, gut.streak)
         assertTrue(gut.consistent)
@@ -338,6 +350,7 @@ class UpfrontRecoveryTest {
         val kaputt = UpfrontRecovery.Track(
             markerIdentity = 0L, streak = 9, lastAcceptedSourceTs = 0L,
             lastEvaluationTs = 0L, mode = UpfrontRecovery.TrackMode.CALM,
+            fingerprint = ruhig().fingerprint,
         )
         assertFalse(kaputt.consistent)
         val d = bewerte(prior = kaputt, sourceTs = 1_000_000L)
@@ -354,8 +367,9 @@ class UpfrontRecoveryTest {
             Triple(3, 0.05, -1.0), Triple(3, 0.05, 101.0), Triple(3, 0.05, Double.NaN),
         )
         schlecht.forEach { (n, u, g) ->
-            val p = UpfrontRecovery.Params.of(n, u, g,
-                                              UpfrontRecovery.CalmTreatment.DEMAND_LIMITED)
+            val p = UpfrontRecovery.Params.of(
+                n, u, g, UpfrontRecovery.CalmTreatment.DEMAND_LIMITED, regelVersion,
+            )
             assertSame(UpfrontRecovery.Params.OFF, p, "($n, $u, $g) haette OFF ergeben muessen")
         }
         assertNotEquals(UpfrontRecovery.Params.OFF, ruhig(3))
@@ -364,7 +378,7 @@ class UpfrontRecoveryTest {
     @Test
     fun `die Behandlungswahl wandert unveraendert in die Entscheidung`() {
         val verschieben = UpfrontRecovery.Params.of(
-            2, 0.05, 5.0, UpfrontRecovery.CalmTreatment.SHIFT_TO_DEFERRED,
+            2, 0.05, 5.0, UpfrontRecovery.CalmTreatment.SHIFT_TO_DEFERRED, regelVersion,
         )
         val d = streakUeber(2, params = verschieben)
         val c = assertInstanceOf(UpfrontRecovery.Decision.CalmRecovered::class.java, d)

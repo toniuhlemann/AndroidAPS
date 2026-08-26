@@ -165,11 +165,26 @@ object UpfrontRecovery {
         val minGuardDistanceMgdl: Double,
         /** Wie ein bestaetigt ruhiger Batch behandelt wird. */
         val calmTreatment: CalmTreatment?,
+        /** Die Regel-/Konfigurationsgeneration, unter der beobachtet wird. */
+        val ruleSetVersion: Int,
     ) {
+
+        /**
+         * DIE SECHSTE IDENTITAET (Toni 25.08. spaet). Ein Streak darf nach
+         * einem Settingswechsel oder Flash nicht unter ANDEREN Schwellen
+         * fortgesetzt werden - sonst loesen zwei Beobachtungen unter alten
+         * und eine dritte unter gelockerten Parametern gemeinsam eine
+         * Freigabe aus. Der Fingerprint deckt alles ab, was die Bedeutung
+         * eines Ruhezyklus bestimmt.
+         */
+        val fingerprint: String
+            get() = if (!enabled) "off"
+            else "rs$ruleSetVersion|c$calmCycles|u$minUkf|g$minGuardDistanceMgdl|" +
+                "t${calmTreatment?.name}"
 
         companion object {
 
-            val OFF = Params(false, 0, 0.0, 0.0, null)
+            val OFF = Params(false, 0, 0.0, 0.0, null, 0)
 
             /**
              * Unbrauchbare Werte ergeben [OFF] - kein stiller Rueckfall auf
@@ -181,11 +196,13 @@ object UpfrontRecovery {
                 minUkf: Double,
                 minGuardDistanceMgdl: Double,
                 calmTreatment: CalmTreatment,
+                ruleSetVersion: Int,
             ): Params =
                 if (calmCycles in 1..20 && minUkf.isFinite() && minUkf >= -1.0 && minUkf <= 1.0 &&
                     minGuardDistanceMgdl.isFinite() && minGuardDistanceMgdl >= 0.0 &&
-                    minGuardDistanceMgdl <= 100.0
-                ) Params(true, calmCycles, minUkf, minGuardDistanceMgdl, calmTreatment)
+                    minGuardDistanceMgdl <= 100.0 && ruleSetVersion > 0
+                ) Params(true, calmCycles, minUkf, minGuardDistanceMgdl, calmTreatment,
+                         ruleSetVersion)
                 else OFF
         }
     }
@@ -218,6 +235,12 @@ object UpfrontRecovery {
         /** Wann zuletzt ausgewertet wurde. */
         val lastEvaluationTs: Long = 0L,
         val mode: TrackMode = TrackMode.NONE,
+        /**
+         * Die Regel-/Konfigurationsgeneration, unter der dieser Zaehler
+         * entstanden ist. Ein Wechsel verwirft ihn - er wird niemals
+         * umgedeutet.
+         */
+        val fingerprint: String = "",
     ) {
 
         /**
@@ -226,9 +249,10 @@ object UpfrontRecovery {
          */
         val consistent: Boolean
             get() = if (streak <= 0) markerIdentity == 0L && lastAcceptedSourceTs == 0L &&
-                lastEvaluationTs == 0L && mode == TrackMode.NONE
+                lastEvaluationTs == 0L && mode == TrackMode.NONE && fingerprint.isEmpty()
             else markerIdentity > 0L && lastAcceptedSourceTs > 0L &&
-                lastEvaluationTs > 0L && mode != TrackMode.NONE && streak <= MAX_STREAK
+                lastEvaluationTs > 0L && mode != TrackMode.NONE && streak <= MAX_STREAK &&
+                fingerprint.isNotEmpty()
 
         companion object {
 
@@ -250,8 +274,10 @@ object UpfrontRecovery {
                 lastAcceptedSourceTs: Long,
                 lastEvaluationTs: Long,
                 mode: TrackMode,
+                fingerprint: String,
             ): Track {
-                val t = Track(markerIdentity, streak, lastAcceptedSourceTs, lastEvaluationTs, mode)
+                val t = Track(markerIdentity, streak, lastAcceptedSourceTs, lastEvaluationTs,
+                              mode, fingerprint)
                 return if (t.consistent) t else EMPTY
             }
         }
@@ -360,21 +386,22 @@ object UpfrontRecovery {
         // Zusicherung aus dem Track-KDoc: ein fortgesetzter Zaehler hat die
         // Gefahren in DIESEM Zyklus erneut negativ geprueft.
         if (hazards.any) return nein(Denial.CURRENT_HAZARD)
-        if (!deferredOpen) return nein(Denial.NOTHING_DEFERRED, geerbt(prior, markerIdentity))
-        if (!inPhaseA) return nein(Denial.NOT_PHASE_A, geerbt(prior, markerIdentity))
+        if (!deferredOpen) return nein(Denial.NOTHING_DEFERRED, geerbt(prior, markerIdentity, params.fingerprint))
+        if (!inPhaseA) return nein(Denial.NOT_PHASE_A, geerbt(prior, markerIdentity, params.fingerprint))
         if (markerIdentity <= 0L) return nein(Denial.NO_AUTHORITY)
 
         // WEG 1 - unveraendert: die bestaetigte schnelle Erholung des
         // allgemeinen Latches. Sie brauchte nie eine Ruhezaehlung.
         if (risingConfirmed) return Decision.FullBatchEligible(
-            Track(markerIdentity, maxOf(1, geerbt(prior, markerIdentity).streak),
-                  sourceTs, nowTs, TrackMode.RISING),
+            Track(markerIdentity,
+                  maxOf(1, geerbt(prior, markerIdentity, params.fingerprint).streak),
+                  sourceTs, nowTs, TrackMode.RISING, params.fingerprint),
             hazards.names, guardDistanceMgdl,
         )
 
         val treatment = params.calmTreatment
         if (!params.enabled || treatment == null)
-            return nein(Denial.DISABLED, geerbt(prior, markerIdentity))
+            return nein(Denial.DISABLED, geerbt(prior, markerIdentity, params.fingerprint))
 
         // WEG 2 - die bestaetigte ruhige Lage. Jede verletzte Bedingung
         // setzt den Zaehler auf 0; ein einzelner flacher Zyklus genuegt
@@ -390,14 +417,15 @@ object UpfrontRecovery {
         // Signalanschluss und Zeitkontinuitaet. Nach einem Neustart, einem
         // Markerwechsel oder einer Zykluspause faengt die Zaehlung neu an,
         // statt erfundene Zyklen zu erben.
-        val basis = geerbt(prior, markerIdentity)
+        val basis = geerbt(prior, markerIdentity, params.fingerprint)
         val anschluss = basis.streak > 0 &&
             nowTs > basis.lastEvaluationTs &&
             nowTs - basis.lastEvaluationTs <= LUECKENLOS_MAX_MS &&
             sourceTs > basis.lastAcceptedSourceTs &&
             sourceTs - basis.lastAcceptedSourceTs <= LUECKENLOS_MAX_MS
         val streak = if (anschluss) basis.streak + 1 else 1
-        val track = Track(markerIdentity, streak, sourceTs, nowTs, TrackMode.CALM)
+        val track = Track(markerIdentity, streak, sourceTs, nowTs, TrackMode.CALM,
+                          params.fingerprint)
         if (streak < params.calmCycles)
             return Decision.Blocked(track, hazards.names, guardDistanceMgdl,
                                     Denial.CALM_STREAK_SHORT, params.calmCycles)
@@ -409,8 +437,10 @@ object UpfrontRecovery {
      * nicht - oder ist der geladene Zustand inkonsistent -, wird er
      * verworfen statt uminterpretiert.
      */
-    private fun geerbt(prior: Track, markerIdentity: Long): Track =
-        if (prior.consistent && prior.streak > 0 && prior.markerIdentity == markerIdentity) prior
+    private fun geerbt(prior: Track, markerIdentity: Long, fingerprint: String): Track =
+        if (prior.consistent && prior.streak > 0 && prior.markerIdentity == markerIdentity &&
+            prior.fingerprint == fingerprint
+        ) prior
         else Track.EMPTY
 
     /**
