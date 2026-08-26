@@ -133,6 +133,27 @@ object FuseSettingsReport {
             standard = uhr(k.defaultValue).takeIf { preferences.get(k) != k.defaultValue },
         )
 
+        /**
+         * DIE RUHE-BEHANDLUNG ALS NAME, nicht als Zahl.
+         *
+         * Der Modus liegt als 0/1/2 im Speicher. Im Bericht stand bis eben
+         * genau diese Zahl - der Leser haette sie nachschlagen muessen, und
+         * eine Umnummerierung waere niemandem aufgefallen. Der Name kommt
+         * aus derselben typisierten Abbildung, die der Regler benutzt.
+         */
+        fun behandlung(k: FuseIntKey, label: String): FuseScreenModel.SettingRow {
+            fun name(v: Int) = when (app.aaps.fuse.core.controller.UpfrontRecovery.CalmTreatment.ofSetting(v)) {
+                app.aaps.fuse.core.controller.UpfrontRecovery.CalmTreatment.DEMAND_LIMITED -> "bedarfsbegrenzt"
+                app.aaps.fuse.core.controller.UpfrontRecovery.CalmTreatment.SHIFT_TO_DEFERRED -> "schrittweise verschieben"
+                app.aaps.fuse.core.controller.UpfrontRecovery.CalmTreatment.CALM_BATCH -> "Sofortbatch nach Ruhe"
+            }
+            return FuseScreenModel.SettingRow(
+                key = k.key, label = label, value = name(preferences.get(k)),
+                standard = name(k.defaultValue)
+                    .takeIf { preferences.get(k) != k.defaultValue },
+            )
+        }
+
         fun schalter(k: FuseBooleanKey, label: String) = FuseScreenModel.SettingRow(
             key = k.key, label = label, value = if (preferences.get(k)) "an" else "aus",
             standard = (if (k.defaultValue) "an" else "aus").takeIf { preferences.get(k) != k.defaultValue },
@@ -176,7 +197,7 @@ object FuseSettingsReport {
                     // Umnummerierung fiele niemandem auf.
                     schalter(FuseBooleanKey.CalmRecoveryEnabled, "Ruhe-Ausgang Phase A"),
                     ganz(FuseIntKey.CalmRecoveryCycles, "Ruhezyklen", ""),
-                    ganz(FuseIntKey.CalmTreatmentMode, "Ruhe-Behandlung", ""),
+                    behandlung(FuseIntKey.CalmTreatmentMode, "Ruhe-Behandlung"),
                     zahl(FuseDoubleKey.CalmRecoveryMinUkf, "Ruhe: Mindestrate", "mg/dl/min"),
                     zahl(
                         FuseDoubleKey.CalmRecoveryGuardDistanceMgdl,

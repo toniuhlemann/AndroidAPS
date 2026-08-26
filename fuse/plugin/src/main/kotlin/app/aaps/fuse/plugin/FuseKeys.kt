@@ -100,11 +100,23 @@ enum class FuseDoubleKey(
      * davor). Wirkt NUR auf `lower` - die Dosis haengt an der Mittelbahn
      * (s. DriveDiscount).
      */
-    /** Kleinste UKF-Rate, die noch als "ruhig" gilt [mg/dl/min]. */
-    CalmRecoveryMinUkf("fuse_calm_recovery_min_ukf", 0.0, -1.0, 1.0),
+    /**
+     * Kleinste UKF-Rate, die noch als "ruhig" gilt [mg/dl/min].
+     *
+     * MINIMUM 0,0, nicht negativ: `FLOOR_BEYOND_HORIZON` kann das AKTUELLE
+     * Risiko aufheben, waehrend die UKF-Rate noch deutlich negativ ist.
+     * Eine negative Schwelle liesse den Sofortbatch dann auf einer weiter
+     * fallenden Kurve zuenden, sofern q1 gerade nicht faellt.
+     */
+    CalmRecoveryMinUkf("fuse_calm_recovery_min_ukf", 0.0, 0.0, 1.0),
 
-    /** Mindestabstand von q1 zum Guard-Boden fuer die Ruhefreigabe [mg/dl]. */
-    CalmRecoveryGuardDistanceMgdl("fuse_calm_recovery_guard_distance", 5.0, 0.0, 100.0),
+    /**
+     * Mindestabstand von q1 zum Guard-Boden fuer die Ruhefreigabe [mg/dl].
+     *
+     * MINIMUM 5, nicht 0: bei 0 waere eine Freigabe unmittelbar AM
+     * Guard-Boden einstellbar. 5 ist der bislang untersuchte Kandidat.
+     */
+    CalmRecoveryGuardDistanceMgdl("fuse_calm_recovery_guard_distance", 5.0, 5.0, 100.0),
 
     BolusShareLambda("fuse_bolus_share_lambda", 1.0, 0.0, 2.0),
 
@@ -614,8 +626,15 @@ enum class FuseIntKey(
      */
     TheilSenWindowMin("fuse_theil_sen_window_min", 18, 8, 18),
 
-    /** Lueckenlose Ruhezyklen bis zur Freigabe - s. [FuseBooleanKey.CalmRecoveryEnabled]. */
-    CalmRecoveryCycles("fuse_calm_recovery_cycles", 3, 1, 20),
+    /**
+     * Lueckenlose Ruhezyklen bis zur Freigabe - s.
+     * [FuseBooleanKey.CalmRecoveryEnabled].
+     *
+     * MINIMUM 2, nicht 1: der Codevertrag lautet ausdruecklich "ein
+     * einzelner ruhiger Zyklus genuegt nicht". Eine Einstellung, die das
+     * unterlaeuft, waere ein Widerspruch zur Klasse selbst.
+     */
+    CalmRecoveryCycles("fuse_calm_recovery_cycles", 3, 2, 20),
 
     /**
      * DIE BEHANDLUNG: 0 = bedarfsbegrenzt, 1 = in den schrittweisen

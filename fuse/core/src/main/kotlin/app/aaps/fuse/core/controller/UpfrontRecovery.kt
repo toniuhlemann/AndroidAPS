@@ -281,6 +281,16 @@ object UpfrontRecovery {
 
             val OFF = Params(false, 0, 0.0, 0.0, null, 0)
 
+            /** s. [FuseIntKey.CalmRecoveryCycles] - der Vertrag der Klasse. */
+            const val MIN_CALM_CYCLES = 2
+            const val MAX_CALM_CYCLES = 20
+
+            /** Kein Batch auf einer noch fallenden Kurve. */
+            const val MIN_CALM_UKF = 0.0
+
+            /** Keine Freigabe unmittelbar am Guard-Boden. */
+            const val MIN_GUARD_DISTANCE_MGDL = 5.0
+
             /**
              * Unbrauchbare Werte ergeben [OFF] - kein stiller Rueckfall auf
              * eine erfundene Kalibrierung. Die Behandlungswahl ist Pflicht:
@@ -293,8 +303,20 @@ object UpfrontRecovery {
                 calmTreatment: CalmTreatment,
                 ruleSetVersion: Int,
             ): Params =
-                if (calmCycles in 1..20 && minUkf.isFinite() && minUkf >= -1.0 && minUkf <= 1.0 &&
-                    minGuardDistanceMgdl.isFinite() && minGuardDistanceMgdl >= 0.0 &&
+                // DIESELBEN GRENZEN WIE DIE EINSTELLUNG - und hier ist es
+                // die letzte Verteidigung: ein Wert aus einem Backup, einer
+                // Altdatei oder einem Replay-Override kommt hier ebenso an
+                // wie einer aus dem Bildschirm.
+                //   calmCycles >= 2  - ein einzelner ruhiger Zyklus genuegt
+                //                      ausdruecklich nicht
+                //   minUkf >= 0.0    - FLOOR_BEYOND_HORIZON hebt das aktuelle
+                //                      Risiko auf, waehrend die Rate noch
+                //                      negativ ist
+                //   Abstand >= 5.0   - keine Freigabe am Guard-Boden
+                if (calmCycles in MIN_CALM_CYCLES..MAX_CALM_CYCLES &&
+                    minUkf.isFinite() && minUkf >= MIN_CALM_UKF && minUkf <= 1.0 &&
+                    minGuardDistanceMgdl.isFinite() &&
+                    minGuardDistanceMgdl >= MIN_GUARD_DISTANCE_MGDL &&
                     minGuardDistanceMgdl <= 100.0 && ruleSetVersion > 0
                 ) Params(true, calmCycles, minUkf, minGuardDistanceMgdl, calmTreatment,
                          ruleSetVersion)

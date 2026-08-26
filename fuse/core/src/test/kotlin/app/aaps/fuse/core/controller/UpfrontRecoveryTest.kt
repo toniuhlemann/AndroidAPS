@@ -364,8 +364,20 @@ class UpfrontRecoveryTest {
     fun `unbrauchbare Parameter ergeben OFF statt einer erfundenen Kalibrierung`() {
         val schlecht = listOf(
             Triple(0, 0.05, 5.0), Triple(21, 0.05, 5.0),
+            // EIN einzelner Ruhezyklus: der Codevertrag sagt ausdruecklich,
+            // dass er nicht genuegt - eine Einstellung darf das nicht
+            // unterlaufen (Toni 25.08. spaet).
+            Triple(1, 0.05, 5.0),
             Triple(3, Double.NaN, 5.0), Triple(3, 2.0, 5.0), Triple(3, -2.0, 5.0),
+            // NEGATIVE Mindestrate: `FLOOR_BEYOND_HORIZON` kann das aktuelle
+            // Risiko aufheben, waehrend die UKF-Rate noch faellt. Eine
+            // negative Schwelle liesse den Batch auf der fallenden Kurve
+            // zuenden - auch knapp unter null.
+            Triple(3, -0.01, 5.0),
             Triple(3, 0.05, -1.0), Triple(3, 0.05, 101.0), Triple(3, 0.05, Double.NaN),
+            // BODENABSTAND unter dem untersuchten Kandidaten: bei 0 waere
+            // eine Freigabe unmittelbar am Guard-Boden einstellbar.
+            Triple(3, 0.05, 0.0), Triple(3, 0.05, 4.9),
         )
         schlecht.forEach { (n, u, g) ->
             val p = UpfrontRecovery.Params.of(
@@ -374,6 +386,16 @@ class UpfrontRecoveryTest {
             assertSame(UpfrontRecovery.Params.OFF, p, "($n, $u, $g) haette OFF ergeben muessen")
         }
         assertNotEquals(UpfrontRecovery.Params.OFF, ruhig(3))
+        // UND DER KANDIDAT BLEIBT GUELTIG: CALM_BATCH, 3 Zyklen,
+        // Mindestrate 0,00, Bodenabstand 5 - genau an den neuen Grenzen.
+        val kandidat = UpfrontRecovery.Params.of(
+            3, 0.0, 5.0, UpfrontRecovery.CalmTreatment.CALM_BATCH, regelVersion,
+        )
+        assertNotEquals(UpfrontRecovery.Params.OFF, kandidat)
+        assertTrue(kandidat.enabled, "der Kandidat muss weiter einstellbar sein")
+        assertEquals(2, UpfrontRecovery.Params.MIN_CALM_CYCLES)
+        assertEquals(0.0, UpfrontRecovery.Params.MIN_CALM_UKF, 1e-12)
+        assertEquals(5.0, UpfrontRecovery.Params.MIN_GUARD_DISTANCE_MGDL, 1e-12)
     }
 
     @Test
@@ -400,9 +422,14 @@ class UpfrontRecoveryTest {
         // ...und der dritte Zyklus unter GELOCKERTEN. Ohne die sechste
         // Identitaet gaeben die drei gemeinsam frei, obwohl nur einer unter
         // den neuen Schwellen beobachtet wurde.
+        // GUELTIG, aber eine andere Generation. Die erste Fassung nahm
+        // Bodenabstand 1,0 - seit der Haertung ergibt das `Params.OFF`, und
+        // der Test haette dann den ausgeschalteten Pfad geprueft statt den
+        // Generationswechsel. Genau dafuer sind die Grenzen da.
         val gelockert = UpfrontRecovery.Params.of(
-            3, 0.01, 1.0, UpfrontRecovery.CalmTreatment.DEMAND_LIMITED, regelVersion,
+            2, 0.0, 5.0, UpfrontRecovery.CalmTreatment.DEMAND_LIMITED, regelVersion,
         )
+        assertTrue(gelockert.enabled, "die Vergleichsgeneration muss gueltig sein")
         val d = bewerte(params = gelockert, prior = zwei.track, sourceTs = 1_120_000L)
         assertEquals(1, d.track.streak, "der geerbte Zaehler faellt")
         assertEquals(UpfrontRecovery.TrackReset.CONFIG_CHANGED, d.trackReset,

@@ -50,6 +50,7 @@ import app.aaps.core.objects.extensions.put
 import app.aaps.core.objects.extensions.store
 import app.aaps.core.validators.preferences.AdaptiveDoublePreference
 import app.aaps.core.validators.preferences.AdaptiveIntPreference
+import app.aaps.core.validators.preferences.AdaptiveListIntPreference
 import app.aaps.core.validators.preferences.AdaptiveSwitchPreference
 import app.aaps.fuse.plugin.export.FuseStateExporter
 import app.aaps.fuse.plugin.export.FuseStateJson
@@ -2261,7 +2262,21 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
             // Kontrollverlaeufen kalibriert.
             addPreference(AdaptiveSwitchPreference(ctx = context, booleanKey = FuseBooleanKey.CalmRecoveryEnabled, summary = R.string.fuse_calm_recovery_summary, title = R.string.fuse_calm_recovery_title))
             addPreference(AdaptiveIntPreference(ctx = context, intKey = FuseIntKey.CalmRecoveryCycles, dialogMessage = R.string.fuse_calm_cycles_summary, title = R.string.fuse_calm_cycles_title))
-            addPreference(AdaptiveIntPreference(ctx = context, intKey = FuseIntKey.CalmTreatmentMode, dialogMessage = R.string.fuse_calm_mode_summary, title = R.string.fuse_calm_mode_title))
+            // BESCHRIFTETE AUSWAHL statt freiem Zahlenfeld: eine "2" ohne
+            // Beschriftung ist die dosierwirksame Stellung, und das darf
+            // niemand aus einer Zahl erraten muessen.
+            addPreference(
+                AdaptiveListIntPreference(
+                    ctx = context, intKey = FuseIntKey.CalmTreatmentMode,
+                    title = R.string.fuse_calm_mode_title,
+                    entries = arrayOf<CharSequence>(
+                        rh.gs(R.string.fuse_calm_mode_demand),
+                        rh.gs(R.string.fuse_calm_mode_shift),
+                        rh.gs(R.string.fuse_calm_mode_batch),
+                    ),
+                    entryValues = arrayOf<CharSequence>("0", "1", "2"),
+                ),
+            )
             addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.CalmRecoveryMinUkf, dialogMessage = R.string.fuse_calm_min_ukf_summary, title = R.string.fuse_calm_min_ukf_title))
             addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.CalmRecoveryGuardDistanceMgdl, dialogMessage = R.string.fuse_calm_guard_summary, title = R.string.fuse_calm_guard_title))
             addPreference(AdaptiveIntPreference(ctx = context, intKey = FuseIntKey.AbsorptionCreditWindowMin, dialogMessage = R.string.fuse_absorption_credit_summary, title = R.string.fuse_absorption_credit_title))

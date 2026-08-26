@@ -140,6 +140,9 @@
     <string name="fuse_calm_cycles_title">Ruhezyklen</string>
     <string name="fuse_calm_cycles_summary">Wieviele lueckenlose ruhige Zyklen bis zur Freigabe.</string>
     <string name="fuse_calm_mode_title">Ruhe-Behandlung</string>
+    <string name="fuse_calm_mode_demand">Bedarfsbegrenzt</string>
+    <string name="fuse_calm_mode_shift">Schrittweise verschieben</string>
+    <string name="fuse_calm_mode_batch">Sofortbatch nach Ruhe (dosierwirksam)</string>
     <string name="fuse_calm_mode_summary">0 = nur vorhandener Normalbedarf, 1 = in den schrittweisen Aufschub verschieben, 2 = Sofortbatch (dosierwirksam).</string>
     <string name="fuse_calm_min_ukf_title">Ruhe: Mindestrate</string>
     <string name="fuse_calm_min_ukf_summary">Kleinste UKF-Rate, die noch als ruhig gilt [mg/dl/min].</string>
