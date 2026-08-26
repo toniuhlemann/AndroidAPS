@@ -520,6 +520,14 @@ object FuseStateJson {
         o.put(
             "deferredPrime", JSONObject()
                 .put("openU", fin(outcome.deferredPrimeOpenU))
+                // DIE HUELLE UND IHRE KLEMMUNG. Ohne diese vier Felder
+                // sieht ein durch einen manuellen Bolus gedeckter
+                // Bestand aus wie ein stilles Verschwinden - genau die
+                // Fehldeutung, die der Abendfall des 25.08. provoziert hat.
+                .put("hullRemainingU", fin(outcome.deferredHullRemainingU))
+                .put("openBeforeClampU", fin(outcome.deferredOpenBeforeClampU))
+                .put("clampReductionU", fin(outcome.deferredClampReductionU))
+                .put("clampReason", outcome.deferredClampReason)
                 .put("pinnedForTs", outcome.deferredPrimePinnedForTs)
                 .put("deadlineTs", outcome.deferredPrimeDeadlineTs)
                 .put("horizonMin", outcome.deferredPrimeHorizonMin)
