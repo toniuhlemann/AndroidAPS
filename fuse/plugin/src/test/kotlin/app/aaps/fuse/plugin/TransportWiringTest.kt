@@ -10190,6 +10190,141 @@ class TransportWiringTest : TestBaseWithProfile() {
 
 
     /**
+     * DER REALE ABENDFALL ALS NULLVERTRAG (Toni 25.08. spaet).
+     *
+     * Die Geometrie des 25.08., 18:07-18:27, nachgestellt:
+     *
+     *   Sofortanteil offen, aktuelles Abwaertsrisiko beendet,
+     *   NUR der historische Latch blockiert, Ruhe-Streak erreicht,
+     *   BG knapp ueber dem Guard-Boden, normaler Bedarf 0
+     *
+     * Er ist ausdruecklich KEINE Wirksamkeitsprobe - dafuer gibt es
+     * `der Ruhe-Kandidat entriegelt genau den historischen Latch`. Hier
+     * wird die andere Haelfte belegt: dass aus "der Riegel ist abgestanden"
+     * eben NICHT die volle Autorisierung wird. Genau das waere passiert,
+     * haette der Ruhe-Ausgang den Vollbatchpfad erreicht: 3,60 U bei BG 78
+     * und acht mg/dl Abstand zum Boden, in einem Zyklus mit
+     * `insulinReq <= 0`.
+     */
+    @Test
+    fun `im Abendfall bleibt die Anforderung bei Bedarf 0 auch dann 0`(@TempDir dir: File) {
+        // DIE ECHTE GEOMETRIE, nicht irgendeine fallende. Der erste Anlauf
+        // dieses Tests fiel von 150 mit -3,0/min - zehnmal steiler als der
+        // gemessene Abendverlauf (-0,29/min). Die Riegel-Ursachen stimmten
+        // dabei sogar (20x CURRENT_DESCENT_RISK, dann 20x HISTORICAL_LATCH),
+        // aber CALM_RECOVERED entstand nie: nach einem so steilen Sturz
+        // braucht die UKF viel zu lange, um ueber die Ruheschwelle zu
+        // kommen.
+        //
+        // Gemessen am echten Fall: BG 75-79, `lowThreat` durchgehend NONE,
+        // 13 von 23 Zyklen voellig ohne aktuelle Gefahr, Latchgrund
+        // WAITING_RATE. Ein SANFTER Abstieg dicht ueber dem Guard-Boden
+        // stellt genau das her - der Boden liegt im Horizont (das Risiko
+        // feuert), und die Erholung ist flach genug, dass der Latch
+        // WAITING_RATE bleibt.
+        val alle = ruheLauf(
+            dir, app.aaps.fuse.core.controller.UpfrontRecovery.CalmTreatment.DEMAND_LIMITED,
+            zyklen = 45, abstiegBg = 82.0, abstiegRate = -0.5, abstiegIob = 2.0,
+            wendeZyklus = 6, ruheRate = 0.10, ruheIob = 0.3,
+        )
+        val ruhig = alle.filter { it.upfrontChain?.recoveryMode == "CALM_RECOVERED" }
+        assertTrue(ruhig.isNotEmpty()) {
+            "die Abendlage muss erreicht werden. Riegel-Ursachen: " +
+                alle.mapNotNull { it.upfrontChain?.descentGateCause }
+                    .groupingBy { it }.eachCount() +
+                "; Ruhe-Modi: " +
+                alle.mapNotNull { it.upfrontChain?.recoveryMode }
+                    .groupingBy { it }.eachCount() +
+                "; Ablehnungsgruende: " +
+                alle.mapNotNull { it.upfrontChain?.recoveryDenial }
+                    .groupingBy { it }.eachCount() +
+                "; Streaks: " +
+                alle.mapNotNull { it.upfrontChain?.recoveryStreak }.distinct().sorted() +
+                "; Batchzustaende: " +
+                alle.map { it.phaseAUpfrontState ?: "-" }.groupingBy { it }.eachCount() +
+                "; offen: " +
+                alle.map { String.format("%.2f", it.phaseAUpfrontPendingU) }
+                    .distinct().sorted() +
+                "; Phasen: " +
+                alle.map { it.mealFoundation.phase }.groupingBy { it }.eachCount()
+        }
+
+        // Der Fall ist nur dann der Abendfall, wenn wirklich etwas offen ist.
+        val offen = ruhig.maxOf { it.phaseAUpfrontPendingU }
+        assertTrue(offen >= 1.0) {
+            "es muss ein nennenswerter Sofortanteil offen sein, war $offen U"
+        }
+
+        // DER NULLVERTRAG, Zyklus fuer Zyklus.
+        var ohneBedarf = 0
+        ruhig.forEach { o ->
+            val k = o.upfrontChain!!
+            if (k.normalNeedBeforeMarkerFloorU > 0.0) return@forEach
+            ohneBedarf++
+            assertEquals(0.0, k.calmDemandU, 1e-9,
+                         "bei Bedarf 0 entsteht kein Ruhe-Kandidat")
+            assertEquals(0.0, k.requestedRtU, 1e-9) {
+                "bei Bedarf 0 bleibt die Anforderung 0 - war ${k.requestedRtU} U " +
+                    "bei ${k.upfrontOpenU} U offen, Grant ${k.grantU} aus ${k.grantSource}"
+            }
+            assertTrue(k.grantSource != "MEAL_UPFRONT") {
+                "und aus dem abgestandenen Riegel darf nie der Sofortanteil werden"
+            }
+            // HIER STAND `requestedRtU < upfrontOpenU`, und das war zu
+            // schwach (Toni 25.08. spaet): ein fehlerhafter Vollbatch, den
+            // irgendein Deckel auf einen Bruchteil kappt, haette die
+            // Ungleichung bestanden.
+            //
+            // NICHT maxSMB - den umgeht der Sofortanteil ausdruecklich, das
+            // ist gerade sein Zweck. Aber iobTH, maxIOB, die
+            // Transporthaftung, die Resthuelle und die nachgelagerten
+            // AAPS-/Pumpengrenzen koennen ihn sehr wohl verkleinern; jede
+            // davon haette den Fehler unter der Schwelle versteckt.
+            //
+            // Die starke Fassung ist `requestedRtU == 0` oben - sie laesst
+            // gar keinen Anteil zu, gedeckelt oder nicht.
+            //
+            // WAS HIER NICHT STEHEN DARF, und der erste Anlauf tat es:
+            // `markerFloorLiftU == 0`. Gemessen hebt MarkerFloor in diesen
+            // Zyklen sehr wohl 0,30 U an - den gewoehnlichen PRIME-Boden,
+            // den es unabhaengig vom Ruhe-Ausgang gibt. Danach nullt der
+            // historische Latch die Menge wieder, weshalb `requestedRtU`
+            // trotzdem 0 ist. Eine Zusicherung "gar kein Lift" haette also
+            // eine Eigenschaft verlangt, die das System nicht hat, und
+            // waere an vorbestehendem Verhalten gescheitert statt an einem
+            // Fehler des Ruhe-Ausgangs.
+            //
+            // Verlangt ist "kein Lift AUF DEN CALM-ANTEIL" - und der ist
+            // hier 0, also kann keine Anhebung ihm zugerechnet werden. Die
+            // Zurechenbarkeit selbst prueft der Referenzvergleich, der
+            // markerFloorLiftU gegen den BLOCKED-Lauf stellt.
+            assertEquals(0.0, k.calmDemandU, 1e-9,
+                         "und der Calm-Anteil, auf den nichts gehoben werden darf, ist 0")
+        }
+        assertTrue(ohneBedarf > 0) {
+            "der Fall 'ruhig, aber kein Bedarf' muss vorkommen - sonst prueft " +
+                "der Nullvertrag nichts"
+        }
+
+        // UND DIE GEGENRICHTUNG: solange das AKTUELLE Risiko lief, war der
+        // Riegel CURRENT_DESCENT_RISK und nichts wurde angefordert.
+        val mitRisiko = alle.filter {
+            it.upfrontChain?.descentGateCause == "CURRENT_DESCENT_RISK"
+        }
+        assertTrue(mitRisiko.isNotEmpty(), "der Abstieg muss echtes Risiko erzeugt haben")
+        mitRisiko.forEach { o ->
+            val k = o.upfrontChain!!
+            assertEquals(0.0, k.calmDemandU, 1e-9,
+                         "bei aktuellem Risiko gibt es keinen Ruhe-Kandidaten")
+            assertEquals(0.0, k.requestedRtU, 1e-9,
+                         "und es wird nichts angefordert")
+            assertTrue(o.upfrontChain?.recoveryMode != "CALM_RECOVERED") {
+                "aktuelles Risiko ist absolut - es kann keinen ruhigen Pfad geben"
+            }
+        }
+    }
+
+    /**
      * DIE POSITIVPROBE FUER DEMAND_LIMITED (Toni 25.08. spaet).
      *
      * Die Ziellage, und jede Zeile davon ist noetig:
@@ -10245,6 +10380,19 @@ class TransportWiringTest : TestBaseWithProfile() {
                     "${k.normalNeedBeforeMarkerFloorU}"
             }
             assertTrue(k.requestedRtU > 0.0, "und er kommt am Ende auch an")
+            // KEIN BODEN AUF DEM CALM-ANTEIL. Die Menge, die am Ende
+            // herauskommt, IST der Kandidat - nicht der Kandidat plus eine
+            // Anhebung. Der Kandidat entsteht konstruktiv nach MarkerFloor
+            // und traegt `grant = null`; diese Zusicherung friert das ein,
+            // statt es der Reihenfolge zu ueberlassen.
+            assertEquals(k.calmDemandU, k.requestedRtU, 1e-9) {
+                "der Calm-Anteil darf nicht angehoben werden: Kandidat " +
+                    "${k.calmDemandU}, angefordert ${k.requestedRtU}, " +
+                    "MarkerFloor hob ${k.markerFloorLiftU}"
+            }
+            assertTrue(k.grantSource != "MEAL_UPFRONT") {
+                "und niemals ueber einen Sofortanteil-Grant finanziert"
+            }
         }
     }
 
