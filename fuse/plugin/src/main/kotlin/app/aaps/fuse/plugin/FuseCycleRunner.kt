@@ -328,6 +328,7 @@ class FuseCycleRunner(
             require(it.nightStartMin in 0..1439 && it.nightEndMin in 0..1439) { "nightWindow=${it.nightStartMin}..${it.nightEndMin}" }
             require(it.nightDeadbandMgdl.isFinite() && it.nightDeadbandMgdl in FuseDoubleKey.NightDeadbandMgdl.min..FuseDoubleKey.NightDeadbandMgdl.max) { "nightDeadbandMgdl=${it.nightDeadbandMgdl}" }
             require(it.reboundDeadbandMgdl.isFinite() && it.reboundDeadbandMgdl in FuseDoubleKey.ReboundDeadbandMgdl.min..FuseDoubleKey.ReboundDeadbandMgdl.max) { "reboundDeadbandMgdl=${it.reboundDeadbandMgdl}" }
+            require(it.reboundWindowMin in FuseIntKey.ReboundWindowMin.min..FuseIntKey.ReboundWindowMin.max) { "reboundWindowMin=${it.reboundWindowMin}" }
             require(it.driveLowerQuantilePct in PairSlopeBand.MIN_PCT..PairSlopeBand.MAX_PCT) {
                 "driveLowerQuantile=${it.driveLowerQuantilePct}"
             }
@@ -1509,7 +1510,7 @@ class FuseCycleRunner(
         // Versatz zweitrangig; die Zahl steht im Export und ist nachpruefbar.
         if (signal.q1 < FuseController.REBOUND_LOW_MGDL) lastLowTs = signal.sourceTs
         val reboundRaw = lastLowTs > 0 &&
-            signal.sourceTs - lastLowTs < FuseController.REBOUND_WINDOW_MIN * 60_000L
+            signal.sourceTs - lastLowTs < cfg.reboundWindowMin * 60_000L
 
         // UNBEKANNT IST NICHT NULL (Codex Re-Audit 3b5cadbf, F1 - P0). Auch
         // diese Lesung laeuft ueber `calculateIobFromBolusToTime` und liefert
@@ -1953,7 +1954,7 @@ class FuseCycleRunner(
                     // Restzeit beim Markerdruck und taeuschte ein beendetes
                     // Fenster vor.
                     reboundRestMin = if (reboundRaw)
-                        ((lastLowTs + FuseController.REBOUND_WINDOW_MIN * 60_000L - signal.sourceTs) / 60_000L)
+                        ((lastLowTs + cfg.reboundWindowMin * 60_000L - signal.sourceTs) / 60_000L)
                             .toInt().coerceAtLeast(0)
                     else null,
                     reboundDeadbandMgdl = if (cfg.reboundDeadbandEnabled) cfg.reboundDeadbandMgdl else 0.0,
@@ -6015,6 +6016,12 @@ class FuseCycleRunner(
         val nightDeadbandEnabled: Boolean,
         val reboundDeadbandMgdl: Double,
         val reboundDeadbandEnabled: Boolean,
+        /**
+         * Dauer des Rebound-Fensters [min] - s. [FuseIntKey.ReboundWindowMin].
+         * Wirkt auf Totband, Ratio-Deckel, Liveness-Sperre und tau-Kuerzung
+         * GEMEINSAM, nicht nur auf das Totband.
+         */
+        val reboundWindowMin: Int,
         val driveLowerQuantilePct: Int,
         /** Fenster des Theil-Sen-Hauptschaetzers [min] - s. FuseKeys. */
         val theilSenWindowMin: Int,
@@ -6149,6 +6156,7 @@ class FuseCycleRunner(
         nightDeadbandEnabled = preferences.get(FuseBooleanKey.NightDeadbandEnabled),
         reboundDeadbandMgdl = preferences.get(FuseDoubleKey.ReboundDeadbandMgdl),
         reboundDeadbandEnabled = preferences.get(FuseBooleanKey.ReboundDeadbandEnabled),
+        reboundWindowMin = preferences.get(FuseIntKey.ReboundWindowMin),
         driveLowerQuantilePct = preferences.get(FuseIntKey.DriveLowerQuantilePct),
         theilSenWindowMin = preferences.get(FuseIntKey.TheilSenWindowMin),
         signalRejoinEnabled = preferences.get(FuseBooleanKey.SignalRejoinEnabled),

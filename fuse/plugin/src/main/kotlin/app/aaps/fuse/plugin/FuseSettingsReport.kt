@@ -72,6 +72,7 @@ internal val fuseEinstellbareKeys: Set<String> = setOf(
     FuseIntKey.DriveTauMin.key,
     FuseIntKey.DriveLowerQuantilePct.key,
     FuseIntKey.TheilSenWindowMin.key,
+    FuseIntKey.ReboundWindowMin.key,
     FuseIntKey.AbsorptionCreditWindowMin.key,
     FuseIntKey.MarkerBoostMaxMin.key,
     FuseIntKey.EvidenceReboundOverrideMaxMin.key,
@@ -276,6 +277,7 @@ object FuseSettingsReport {
                     zeit(FuseIntKey.NightEndMin, "Nacht Ende"),
                     schalter(FuseBooleanKey.ReboundDeadbandEnabled, "Rebound-Totband"),
                     zahl(FuseDoubleKey.ReboundDeadbandMgdl, "Rebound-Band", "mg/dl"),
+                    ganz(FuseIntKey.ReboundWindowMin, "Rebound-Dauer", "min"),
                 ),
                 // Eigene Gruppe: er dosiert nichts und gehoert deshalb in
                 // keine der Regelgruppen - wer die Einstellungen liest, soll

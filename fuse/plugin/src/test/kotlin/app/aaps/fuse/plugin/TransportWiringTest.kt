@@ -200,6 +200,8 @@ class TransportWiringTest : TestBaseWithProfile() {
      *  Hebung passt). */
     private var quantilePct = 50
     private var theilSenFensterMin = 18
+    /** Rebound-Fensterdauer [min] - Replay-Hebel fuer die Matrix 26.08. */
+    private var reboundFensterMin = 45
 
     /** Der Marker autorisiert Insulin bei gemessenem Tief. */
     private var markerAuthorized = false
@@ -550,6 +552,7 @@ class TransportWiringTest : TestBaseWithProfile() {
         whenever(preferences.get(FuseBooleanKey.ReboundDeadbandEnabled)).thenReturn(true)
         whenever(preferences.get(FuseIntKey.DriveLowerQuantilePct)).thenAnswer { quantilePct }
         whenever(preferences.get(FuseIntKey.TheilSenWindowMin)).thenAnswer { theilSenFensterMin }
+        whenever(preferences.get(FuseIntKey.ReboundWindowMin)).thenAnswer { reboundFensterMin }
         whenever(preferences.get(FuseBooleanKey.TailGuardEnabled)).thenAnswer { tailGuard }
         whenever(preferences.get(FuseBooleanKey.ConditionalTailEnabled)).thenAnswer { conditionalTail }
         whenever(preferences.get(FuseBooleanKey.MarkerAuthorisesRelease)).thenAnswer { markerAuthorized }
@@ -7534,6 +7537,10 @@ class TransportWiringTest : TestBaseWithProfile() {
             iobThPct = i("iobThPercent", iobThPct)
             quantilePct = i("driveLowerQuantilePct", quantilePct)
             theilSenFensterMin = i("theilSenWindowMin", theilSenFensterMin)
+            // Aeltere Trails (vor RuleSet 33) tragen das Feld nicht - dann
+            // bleibt der Default 45 stehen, also exakt das aufgezeichnete
+            // Verhalten. Ein fehlendes Feld darf nie als "0" gelesen werden.
+            reboundFensterMin = i("reboundWindowMin", reboundFensterMin)
             tailGuard = b("tailGuardEnabled", tailGuard)
             conditionalTail = b("conditionalTailEnabled", conditionalTail)
             fundamentAn = b("mealFoundationEnabled", fundamentAn)
@@ -8014,6 +8021,42 @@ class TransportWiringTest : TestBaseWithProfile() {
                 val sek = g.trim().toLong()
                 lauf("gap%03d".format(sek), null, fenster = 10, gapBreakMs = sek * 1000L)
             }
+            return
+        }
+        val reboundEnv = System.getenv("FUSE_REPLAY_REBOUND")
+        if (reboundEnv != null) {
+            // REBOUND-DAUER-MATRIX (Toni 26.08.). Derselbe Tag mit
+            // verschiedenen Fensterdauern - Band konstant aus der Politik
+            // des Trails.
+            //
+            // WAS DIE DAUER VERLAENGERT, gehoert beim Lesen der Ausgabe
+            // mitgedacht: nicht nur das Totband, sondern GLEICHZEITIG den
+            // SMB-Ratio-Deckel auf smbRatioCorrection, die Liveness-Sperre
+            // und die tau-Kuerzung. Eine Differenz zwischen zwei Spuren ist
+            // deshalb keine Totband-Wirkung, sondern die Summe aus dreien.
+            //
+            // RUECKKOPPLUNGSBLIND: die BG-Reihe ist EINGANG und bleibt in
+            // allen Spuren dieselbe. Belastbar sind Insulinmengen, Block-
+            // Gruende und Zeitpunkte. Ein BG-Verlauf oder ein Peak steht
+            // hier NICHT zur Verfuegung und darf aus diesen Dateien auch
+            // nicht abgeleitet werden - er entstand unter der aufgezeichneten
+            // 45-Minuten-Dosierung.
+            //
+            // FUSE_REPLAY_REBOUND=blind faehrt zweimal dieselbe Dauer. Jede
+            // Differenz daraus ist ein Rig-Artefakt der Lauf-Reihenfolge und
+            // KEINE Wirkung der Einstellung - die Probe gehoert vor jede
+            // Aussage ueber gemessene Unterschiede.
+            if (reboundEnv == "blind") {
+                lauf("blindA", null, fenster = 10)
+                lauf("blindB", null, fenster = 10)
+                return
+            }
+            val dauern = reboundEnv.split(",").map { it.trim().toInt() }
+            for (d in dauern) {
+                reboundFensterMin = d
+                lauf("reb%03d".format(d), null, fenster = 10)
+            }
+            reboundFensterMin = 45
             return
         }
         val capsEnv = System.getenv("FUSE_REPLAY_CAPS")

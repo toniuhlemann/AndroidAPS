@@ -180,7 +180,9 @@
     <string name="fuse_zero_latch_calm_dist_title">Zero-Latch Ruhe-Abstand [mg/dl]</string>
     <string name="fuse_zero_latch_calm_dist_summary">Mindestabstand des q1 ueber dem Guard-Boden, damit ein Ruhe-Zyklus fuer den zweiten Freigabepfad zaehlt.</string>
     <string name="fuse_rebound_deadband_enabled_title">Rebound-Totband aktiv</string>
-    <string name="fuse_rebound_deadband_enabled_summary">Nach einem Tief (q1 unter 75 in den letzten 45 min) kein SMB, solange der BG unter Ziel + Rebound-Totband liegt - die Erholung ist das ZIEL der Gegenmassnahme, keine Stoerung.</string>
+    <string name="fuse_rebound_deadband_enabled_summary">Nach einem Tief (q1 unter 75 innerhalb der Rebound-Dauer) kein SMB, solange der BG unter Ziel + Rebound-Totband liegt - die Erholung ist das ZIEL der Gegenmassnahme, keine Stoerung.</string>
+    <string name="fuse_rebound_window_title">Rebound-Dauer [min]</string>
+    <string name="fuse_rebound_window_summary">Wie lange das Rebound-Fenster nach dem letzten q1 unter 75 laeuft. War bis 26.08. fest auf 45. Verlaengert nicht nur das Totband, sondern auch den Ratio-Deckel und die Liveness-Sperre. Am 26.08. sprang die Ratio bei Fensterende sofort von 0,15 auf 0,33 und der SMB von 0,10 auf 0,50 U; bis zum naechsten Tief flossen 3,45 U.</string>
     <string name="fuse_rebound_deadband_title">Rebound-Totband [mg/dl ueber Ziel]</string>
     <string name="fuse_rebound_deadband_summary">War bis 09.08. fest auf 25. Haette in der Nacht 07./08.08. alle 20 Rebound-Dosen genullt (BG lief 65 auf 121 bei Ziel 97).</string>
     <string name="fuse_evidence_rebound_override_title">Evidenz darf Rebound entwaffnen [min]</string>

@@ -39,7 +39,7 @@ class ConfigBoundsTest {
         absorptionCreditWindowMin = 60, markerBoostMaxMin = 45, evidenceReboundOverrideMaxMin = 120,
         nightStartMin = 1380, nightEndMin = 420,
         nightDeadbandMgdl = 45.0, nightDeadbandEnabled = true,
-        reboundDeadbandMgdl = 25.0, reboundDeadbandEnabled = true,
+        reboundDeadbandMgdl = 25.0, reboundDeadbandEnabled = true, reboundWindowMin = 45,
         driveLowerQuantilePct = 50, tailGuardEnabled = false, conditionalTailEnabled = true, markerAuthorized = false,
         mealFoundationEnabled = false, mealFoundationPhaseAShare = 1.0, mealFoundationPhaseAUpfrontShare = 0.0, mealFoundationEndMin = 60, tailFloorMgdl = 70.0, tailRecoveryU = 0.0, fastRestraintEnabled = true, endZeroWhenReasonGone = true,
     )
@@ -109,6 +109,7 @@ class ConfigBoundsTest {
             Feld("markerBoostMaxMin", FuseIntKey.MarkerBoostMaxMin) { c, v -> c.copy(markerBoostMaxMin = v) },
             Feld("driveLowerQuantilePct", FuseIntKey.DriveLowerQuantilePct) { c, v -> c.copy(driveLowerQuantilePct = v) },
             Feld("theilSenWindowMin", FuseIntKey.TheilSenWindowMin) { c, v -> c.copy(signalRejoinEnabled = false, theilSenWindowMin = v) },
+            Feld("reboundWindowMin", FuseIntKey.ReboundWindowMin) { c, v -> c.copy(reboundWindowMin = v) },
         )
         for (f in felder) {
             ok(f.setze(mitte(), f.key.max), "${f.name} = ${f.key.max} (Dialog-Maximum)")

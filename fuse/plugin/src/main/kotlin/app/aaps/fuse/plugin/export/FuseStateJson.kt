@@ -215,7 +215,18 @@ object FuseStateJson {
     // der letzte Nachtzyklus positiven Bedarf AUSSCHLIESSLICH ueber das
     // Nachtband unterdrueckt hat; (P1.5) die r-Bestaetigung zaehlt erst
     // ab der V-Zuendung.
-    const val RULE_SET_VERSION = 32
+    // v33 (26.08.): die REBOUND-FENSTERDAUER ist einstellbar
+    // (FuseIntKey.ReboundWindowMin, 45..240, Default 45 = bitgleich zum
+    // bisherigen Verhalten). Anlass ist der gemessene Verlauf vom 26.08.:
+    // das Totband liess unter Ziel+Band 0,00 U durch, aber im Zyklus nach
+    // Fensterende sprang die Ratio von 0,15 auf 0,325 und der SMB von 0,10
+    // auf 0,50 U; bis zum naechsten Tief (Nadir q1 54,6) flossen 3,45 U,
+    // davon 1,85 U aus dem Liveness-Kanal. Die Dauer wirkt an DREI Stellen:
+    // Fenstertest und Restzeit im Runner sowie das Tief-Gedaechtnis in
+    // FuseLowMemory, das nach einem Neustart alles aeltere verwirft - haette
+    // man dort die Konstante stehen lassen, kappte jeder Flash ein laengeres
+    // Fenster still auf 45 Minuten.
+    const val RULE_SET_VERSION = 33
 
     /** Schema des Trail-Datensatzes - s. die Notiz an der Schreibstelle. */
     const val SCHEMA_VERSION = 4
@@ -1585,6 +1596,7 @@ object FuseStateJson {
         .put("nightDeadbandEnabled", p.nightDeadbandEnabled)
         .put("reboundDeadbandMgdl", p.reboundDeadbandMgdl)
         .put("reboundDeadbandEnabled", p.reboundDeadbandEnabled)
+        .put("reboundWindowMin", p.reboundWindowMin)
         .put("driveLowerQuantilePct", p.driveLowerQuantilePct)
         .put("theilSenWindowMin", p.theilSenWindowMin)
         .put("signalRejoinEnabled", p.signalRejoinEnabled)
@@ -1770,6 +1782,13 @@ object FuseStateJson {
                 // Laeufe mit 60 und 240 min MEAL-Fenster sind verschiedene
                 // Regler.
                 p.livenessMealPowerMin,
+                // v33: die Dauer des Rebound-Fensters. Dosierwirksam ueber
+                // DREI Kanaele gleichzeitig - Totband, Ratio-Deckel und
+                // Liveness-Sperre enden alle mit dem Fenster. Zwei Laeufe mit
+                // 45 und 120 Minuten sind verschiedene Regler, und ein Lauf
+                // mit laengerem Fenster darf die Erwartungen des kuerzeren
+                // nicht erben.
+                p.reboundWindowMin,
             ).map { it.toString() }
         return Sha.of(parts.joinToString("|"))
     }

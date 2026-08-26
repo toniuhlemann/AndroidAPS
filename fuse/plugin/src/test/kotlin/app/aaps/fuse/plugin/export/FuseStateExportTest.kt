@@ -27,7 +27,7 @@ class FuseStateExportTest {
 
     private val cfg = FuseCycleRunner.Config(
         smbRatio = 0.2, smbRatioRise = 0.35, sharedMaxIobU = 7.0, riseRampLowR = 0.5, riseRampHighR = 2.0, bolusShareLambda = 1.0, onsetChannelEnabled = true, onsetEnvelopeU = 1.5, primeReleaseEnabled = true, primeWindowMin = 15, primeEnvelopeU = 1.2, maxSmbU = 0.3, guardFloorMgdl = 70.0, lowGateMinBenefitMgdl = 5.0, zeroLatchEnabled = false, zeroLatchCalmExitMin = 20, zeroLatchCalmDistanceMgdl = 30.0, reversalGuardEnabled = false, reversalFallUkf = 2.0, reversalLookbackMin = 20, reversalReboundUkf = 1.0, reversalConfirmCycles = 2, correctionRearmEnabled = false, rearmHoldMin = 5, rearmConfirmCycles = 2, rearmUpUkf = 0.3, lowGateHorizonMin = 120.0, positiveDescentHorizonMin = 30.0, deferredPrimeEnabled = false, markerPrimeDescentHorizonMin = 60.0, deferredPrimeEndMin = 120, livenessChannelEnabled = false, livenessMealPowerMin = 120, livenessMealRatioCap = 1.0, livenessMealIobCapPercent = 50.0, livenessCorrectionRatioCap = 1.0, livenessCorrectionIobCapPercent = 50.0, livenessBgMinDayMgdl = 160.0, livenessBgMinNightMgdl = 160.0, livenessReArmMin = 10, iobThPercent = 100,
-        releaseHorizonMin = 30, liabilityHorizonMin = 120, driveTauMin = 60, signalRejoinEnabled = false, theilSenWindowMin = 18, absorptionCreditWindowMin = 60, markerBoostMaxMin = 45, evidenceReboundOverrideMaxMin = 120, nightStartMin = 1380, nightEndMin = 420, nightDeadbandMgdl = 45.0, nightDeadbandEnabled = true, reboundDeadbandMgdl = 25.0, reboundDeadbandEnabled = true,
+        releaseHorizonMin = 30, liabilityHorizonMin = 120, driveTauMin = 60, signalRejoinEnabled = false, theilSenWindowMin = 18, absorptionCreditWindowMin = 60, markerBoostMaxMin = 45, evidenceReboundOverrideMaxMin = 120, nightStartMin = 1380, nightEndMin = 420, nightDeadbandMgdl = 45.0, nightDeadbandEnabled = true, reboundDeadbandMgdl = 25.0, reboundDeadbandEnabled = true, reboundWindowMin = 45,
         driveLowerQuantilePct = 50, tailGuardEnabled = false, conditionalTailEnabled = true, markerAuthorized = false, mealFoundationEnabled = false, mealFoundationPhaseAShare = 1.0, mealFoundationPhaseAUpfrontShare = 0.0, mealFoundationEndMin = 60, tailFloorMgdl = 70.0, tailRecoveryU = 0.0, fastRestraintEnabled = true, endZeroWhenReasonGone = true,
     )
 
@@ -493,6 +493,10 @@ class FuseStateExportTest {
         // v22: W18 und W10 sind verschiedene Schaetzer - MUTATIONSPROBE fuer
         // das Fenster im Fingerprint (Vertragspunkt 4).
         assertTrue(FuseStateJson.hashOf(cfg.copy(signalRejoinEnabled = false, theilSenWindowMin = 10)) != h)
+        // v33: die Rebound-Dauer ist dosierwirksam und MUSS den Hash
+        // bewegen - sonst erbte ein 120-Minuten-Lauf die Erwartungen
+        // eines 45-Minuten-Laufs.
+        assertTrue(FuseStateJson.hashOf(cfg.copy(reboundWindowMin = 120)) != h)
         // v23: der Ratio-Deckel des Liveness-Kanals - MUTATIONSPROBE fuer
         // den Fingerprint (Tonis Vertrag: Aufnahme in Policy-Hash).
         // v24: die vier Profil-Caps und die gepinnte Frist - jede einzeln
@@ -721,10 +725,19 @@ class FuseStateExportTest {
         // Gefahren bleiben absolut. Anlass ist der Abendfall 25.08.:
         // 3,60 U blieben die ganze Phase A blockiert, obwohl das gemessene
         // Abwaertsrisiko seit neun Zyklen vorbei war. Default AUS.
+        // v33 DIE EINSTELLBARE REBOUND-FENSTERDAUER. Die Frage, die dieser
+        // Test erzwingt - ist die Aenderung wirklich dosierwirksam? - hat
+        // hier eine dreifache Antwort: das Fenster beendet NICHT nur das
+        // Totband, sondern gleichzeitig den SMB-Ratio-Deckel auf
+        // smbRatioCorrection und die Liveness-Sperre. Am gemessenen Tag
+        // (26.08.) sprang die Ratio im Zyklus nach Fensterende von 0,15 auf
+        // 0,325 und der SMB von 0,10 auf 0,50 U. Default 45 ist bitgleich
+        // zum bisherigen Verhalten, aber 45 und 120 sind zwei verschiedene
+        // Regler - und ihre Erwartungen duerfen sich nicht vermischen.
         // DIESER TEST IST ABSICHTLICH STUR: er faellt bei jedem Bump um und
         // zwingt damit zu der Frage, ob die Aenderung wirklich dosierwirksam
         // war - ein stiller Bump waere so wertlos wie ein vergessener.
-        assertEquals(32, FuseStateJson.RULE_SET_VERSION)
+        assertEquals(33, FuseStateJson.RULE_SET_VERSION)
         assertTrue(
             FuseStateJson.hashOf(cfg)!!.isNotEmpty(),
             "und der Hash bleibt berechenbar",

@@ -20,7 +20,10 @@ class FuseLowMemoryTest {
     }
 
     private fun lies(vararg zeilen: String) =
-        FuseLowMemory.lastLowTsFromTrail(zeilen.asSequence(), jetzt)
+        FuseLowMemory.lastLowTsFromTrail(zeilen.asSequence(), jetzt, FuseController.REBOUND_WINDOW_MIN)
+
+    private fun liesMit(fensterMin: Int, vararg zeilen: String) =
+        FuseLowMemory.lastLowTsFromTrail(zeilen.asSequence(), jetzt, fensterMin)
 
     /** Die gemessene Reihe: das juengste Tief war 11 min alt. */
     @Test
@@ -64,5 +67,40 @@ class FuseLowMemoryTest {
     @Test
     fun `Zeitstempel aus der Zukunft werden verworfen`() {
         assertEquals(0L, lies(zeile(-30, 65.0)))
+    }
+
+    /**
+     * DIE EIGENTLICHE NEUERUNG (26.08.): dasselbe Tief, zwei Fensterdauern.
+     *
+     * Waere die Dauer hier weiterhin die Konstante, gaebe der laengere Lauf
+     * dieselbe Null zurueck wie der kuerzere - und ein auf 120 gestelltes
+     * Fenster waere nach jedem Neustart still wieder 45 Minuten lang. Genau
+     * dieser stille Verlust ist der Grund, warum das Gedaechtnis die Dauer
+     * als Parameter bekommt und nicht selbst kennt.
+     */
+    @Test
+    fun `ein laengeres Fenster holt ein aelteres Tief zurueck`() {
+        val alt = zeile(70, 68.0)
+        assertEquals(0L, liesMit(45, alt))
+        assertEquals(jetzt - 70 * 60_000L, liesMit(90, alt))
+        assertEquals(jetzt - 70 * 60_000L, liesMit(120, alt))
+        // Die Kante bleibt strikt: exakt auf der Grenze zaehlt nicht mehr.
+        assertEquals(0L, liesMit(70, alt))
+        assert(liesMit(71, alt) > 0L)
+    }
+
+    /**
+     * FAIL-CLOSED statt fail-open: ein fehlerhafter Aufruf mit 0 oder negativ
+     * darf das Gedaechtnis nicht ABSCHALTEN, sondern faellt auf den Default
+     * zurueck. Ein ausgeschaltetes Tief-Gedaechtnis oeffnet den SMB-Kanal
+     * genau in der Lage, fuer die das Fenster gebaut wurde.
+     */
+    @Test
+    fun `unbrauchbare Dauer faellt auf den Default zurueck`() {
+        val drin = zeile(20, 68.0)
+        assertEquals(jetzt - 20 * 60_000L, liesMit(0, drin))
+        assertEquals(jetzt - 20 * 60_000L, liesMit(-5, drin))
+        // ... und faellt eben NICHT auf "unbegrenzt" zurueck.
+        assertEquals(0L, liesMit(0, zeile(FuseController.REBOUND_WINDOW_MIN + 5L, 68.0)))
     }
 }

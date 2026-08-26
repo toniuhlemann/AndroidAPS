@@ -28,13 +28,23 @@ internal object FuseLowMemory {
      * oder 0, wenn keiner im noch wirksamen Fenster liegt.
      *
      * Zeilen ohne `q1` (aeltere Exporte, Abbruchzyklen) werden uebersprungen -
-     * eine fehlende Zahl ist kein Tief. Aelteres als [FuseController.
-     * REBOUND_WINDOW_MIN] wird verworfen: es wuerde das Fenster nicht mehr
-     * oeffnen, und ein Zeitstempel, der nichts mehr bewirkt, hat im Zustand
-     * nichts zu suchen.
+     * eine fehlende Zahl ist kein Tief. Aelteres als [reboundWindowMin] wird
+     * verworfen: es wuerde das Fenster nicht mehr oeffnen, und ein
+     * Zeitstempel, der nichts mehr bewirkt, hat im Zustand nichts zu suchen.
+     *
+     * DIE DAUER IST EIN PARAMETER, KEINE KONSTANTE (26.08.). Stuende hier
+     * weiter [FuseController.REBOUND_WINDOW_MIN], kappte ein Neustart ein
+     * laenger eingestelltes Fenster still auf 45 Minuten - der Schutz waere
+     * ausgerechnet nach einem Flash am kuerzesten, also genau dort, wo der
+     * Vorfall vom 15.08. ihn schon einmal verloren hat.
+     *
+     * @param reboundWindowMin Dauer des Fensters [min]. Werte kleiner gleich 0
+     *   werden auf [FuseController.REBOUND_WINDOW_MIN] gehoben - ein
+     *   fehlerhafter Aufruf darf das Gedaechtnis nicht ausschalten.
      */
-    fun lastLowTsFromTrail(lines: Sequence<String>, nowMs: Long): Long {
-        val cutoff = nowMs - FuseController.REBOUND_WINDOW_MIN * 60_000L
+    fun lastLowTsFromTrail(lines: Sequence<String>, nowMs: Long, reboundWindowMin: Int): Long {
+        val fenster = if (reboundWindowMin > 0) reboundWindowMin else FuseController.REBOUND_WINDOW_MIN
+        val cutoff = nowMs - fenster * 60_000L
         var neuestes = 0L
         for (line in lines) {
             val j = runCatching { JSONObject(line) }.getOrNull() ?: continue

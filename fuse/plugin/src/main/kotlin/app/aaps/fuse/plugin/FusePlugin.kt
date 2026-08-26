@@ -463,7 +463,9 @@ class FusePlugin @Inject constructor(
         lastLowWarmed = true
         runCatching {
             val ts = f.bufferedReader().useLines { lines ->
-                FuseLowMemory.lastLowTsFromTrail(lines, System.currentTimeMillis())
+                FuseLowMemory.lastLowTsFromTrail(
+                    lines, System.currentTimeMillis(), preferences.get(FuseIntKey.ReboundWindowMin)
+                )
             }
             if (ts > 0L) cycleRunner().primeLastLowTs(ts)
         }
@@ -2040,6 +2042,7 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
             .put(FuseIntKey.EvidenceReboundOverrideMaxMin, preferences)
             .put(FuseIntKey.DriveLowerQuantilePct, preferences)
             .put(FuseIntKey.TheilSenWindowMin, preferences)
+            .put(FuseIntKey.ReboundWindowMin, preferences)
             .put(FuseBooleanKey.TailGuardEnabled, preferences)
             .put(FuseBooleanKey.ConditionalTailEnabled, preferences)
             .put(FuseBooleanKey.MarkerAuthorisesRelease, preferences)
@@ -2106,6 +2109,7 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
             .store(FuseIntKey.EvidenceReboundOverrideMaxMin, preferences)
             .store(FuseIntKey.DriveLowerQuantilePct, preferences)
             .store(FuseIntKey.TheilSenWindowMin, preferences)
+            .store(FuseIntKey.ReboundWindowMin, preferences)
             .store(FuseBooleanKey.TailGuardEnabled, preferences)
             .store(FuseBooleanKey.ConditionalTailEnabled, preferences)
             .store(FuseBooleanKey.MarkerAuthorisesRelease, preferences)
@@ -2415,6 +2419,7 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
             // vorher sassen Beobachter und Prognose-Shadow dazwischen, und
             // wer das Totband stellte, musste am Schalter vorbei scrollen.
             addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.ReboundDeadbandMgdl, dialogMessage = R.string.fuse_rebound_deadband_summary, title = R.string.fuse_rebound_deadband_title))
+            addPreference(AdaptiveIntPreference(ctx = context, intKey = FuseIntKey.ReboundWindowMin, dialogMessage = R.string.fuse_rebound_window_summary, title = R.string.fuse_rebound_window_title))
             // DER ERWARTUNGS-BEOBACHTER (Toni 19.08.). Er war verdrahtet, aber
             // der Schalter stand in KEINEM Screen - am Geraet also nicht
             // erreichbar. Ein Beobachter, den niemand einschalten kann, misst

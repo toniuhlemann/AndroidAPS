@@ -627,6 +627,41 @@ enum class FuseIntKey(
     TheilSenWindowMin("fuse_theil_sen_window_min", 18, 8, 18),
 
     /**
+     * DIE DAUER DES REBOUND-FENSTERS [min] nach dem juengsten Tief
+     * (signal.q1 unter [FuseController.REBOUND_LOW_MGDL]). War bis 26.08.
+     * fest; [FuseController.REBOUND_WINDOW_MIN] ist nur noch der Default.
+     *
+     * DER GEMESSENE ANLASS (Toni, 26.08.). Tief um 12:07, Nadir q1 66,1,
+     * Rescue-KH, Anstieg. Das Totband liess unter Ziel+Band exakt 0,00 U
+     * durch - es funktionierte. Um 13:10:37 endete das 45-Minuten-Fenster,
+     * und im SELBEN Zyklus sprang die Ratio von 0,15 auf 0,325 und der SMB
+     * von 0,10 auf 0,50 U. Bis zum naechsten Tief flossen danach 3,45 U,
+     * davon 1,85 U aus dem Liveness-Kanal, der im Fenster gesperrt gewesen
+     * waere. Um 15:15 fiel der BG erneut, Nadir q1 54,6.
+     *
+     * WAS EINE LAENGERE DAUER TUT UND WAS NICHT: sie verlaengert nicht das
+     * Totband allein, sondern ALLES, was am Rebound-Fenster haengt - den
+     * SMB-Ratio-Deckel auf smbRatioCorrection, die Liveness-Sperre und die
+     * tau-Kuerzung auf [FuseController.REBOUND_TAU_MIN]. Sie verhindert
+     * ausdruecklich NICHT die kleinen Korrekturen OBERHALB von Ziel+Band;
+     * dafuer ist das Band zustaendig, nicht die Dauer.
+     *
+     * MINIMUM 45, NICHT KLEINER: eine kuerzere Dauer waere die Abschwaechung
+     * eines Schutzes, und dafuer gibt es keinen gemessenen Anlass. Der
+     * Bereich oeffnet nur nach oben.
+     *
+     * DOSIERWIRKSAM: steht im Politik-Hash (v33), in policyValues, Backup und
+     * Report. Zwei Laeufe mit 45 und 120 Minuten sind verschiedene Regler.
+     *
+     * DRITTE WIRKSTELLE, leicht zu uebersehen: [FuseLowMemory] rekonstruiert
+     * lastLowTs nach einem Neustart aus dem Trail und verwirft dabei alles
+     * aeltere als diese Dauer. Bliebe sie dort fest, kappte jeder Neustart
+     * ein laengeres Fenster still auf 45 Minuten - der Schutz waere
+     * ausgerechnet nach einem Flash am kuerzesten.
+     */
+    ReboundWindowMin("fuse_rebound_window_min", 45, 45, 240),
+
+    /**
      * Lueckenlose Ruhezyklen bis zur Freigabe - s.
      * [FuseBooleanKey.CalmRecoveryEnabled].
      *

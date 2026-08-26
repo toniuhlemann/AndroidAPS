@@ -48,3 +48,6 @@ keystore.properties
 messungen/**/*.jsonl
 messungen/**/*.jsonl.gz
 messungen/**/*.json
+
+# Persoenliche Geraetedaten (Trails, Logs) - NIE in den oeffentlichen Fork.
+mylogs/
