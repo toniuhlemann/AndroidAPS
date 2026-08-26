@@ -7937,7 +7937,13 @@ class TransportWiringTest : TestBaseWithProfile() {
                         app.aaps.fuse.core.controller.UpfrontRecovery.CalmTreatment.DEMAND_LIMITED
                     "shift" ->
                         app.aaps.fuse.core.controller.UpfrontRecovery.CalmTreatment.SHIFT_TO_DEFERRED
-                    else -> error("unbekannte Behandlung '${t[3]}' - erlaubt: demand, shift")
+                    // Der dosierwirksame Modus - der einzige, der im Replay
+                    // andere ENDMENGEN erzeugen kann.
+                    "batch" ->
+                        app.aaps.fuse.core.controller.UpfrontRecovery.CalmTreatment.CALM_BATCH
+                    else -> error(
+                        "unbekannte Behandlung '${t[3]}' - erlaubt: demand, shift, batch",
+                    )
                 }
                 val p = app.aaps.fuse.core.controller.UpfrontRecovery.Params.of(
                     calmCycles = t[0].toInt(),
