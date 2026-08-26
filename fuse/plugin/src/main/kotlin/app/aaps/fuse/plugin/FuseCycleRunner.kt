@@ -495,6 +495,12 @@ class FuseCycleRunner(
         val calmEligibleU: Double,
         /** Was der ruhige Pfad in den schrittweisen Pfad verschoben hat [U]. */
         val calmShiftedU: Double,
+        /**
+         * Was der bedarfsbegrenzte Ruhe-Kandidat zusaetzlich wirksam gemacht
+         * hat [U] - reiner Bedarf, provenienzfrei, ohne Grant. 0, wenn er
+         * nicht gegriffen hat.
+         */
+        val calmDemandU: Double,
         /** Der autorisierte Grant dieses Zyklus [U], 0 wenn keiner. */
         val grantU: Double,
         val grantSource: String?,
@@ -3421,14 +3427,65 @@ class FuseCycleRunner(
         // ausschliesslich Ergebnis der Nutzenpruefung - "Basal zurueckhalten
         // hilft nicht mehr" und "mehr Bolus ist sicher" sind zwei
         // verschiedene Aussagen, und ihre Vermischung war der Befund.
-        val nachDescent = MeasuredDescentGate.apply(vorRiegel, descentLatch.blocksPositive)
-        // HIER sind alle Stationen zugleich bekannt - eine spaetere Rekon-
-        // struktion aus Einzelfeldern waere genau die Art Nachrechnung, die
-        // schon einmal die falsche Geschichte erzaehlt hat.
+        val nachDescentRoh = MeasuredDescentGate.apply(vorRiegel, descentLatch.blocksPositive)
         val ruheBlockiert =
             upfrontRecovery as? app.aaps.fuse.core.controller.UpfrontRecovery.Decision.Blocked
         val ruheRuhig =
             upfrontRecovery as? app.aaps.fuse.core.controller.UpfrontRecovery.Decision.CalmRecovered
+
+        // ---- DER BEDARFSBEGRENZTE RUHE-KANDIDAT (Toni 25.08. spaet) -----
+        //
+        // OHNE IHN WAERE DEMAND_LIMITED NUR EIN ETIKETT. Der Zweig fiel
+        // messbar mit `Blocked` zusammen: `vetted` durchlaeuft denselben
+        // Endriegel, und der HISTORISCHE Latch nullt auch den reinen Bedarf.
+        //
+        // WARUM DAS HIER TROTZ DES KOMMENTARS DARUEBER STEHEN DARF. Der
+        // Endriegel sitzt bewusst so spaet, damit keine Autorisierung ihn
+        // mehr heben kann - genau so entstand der Abendfall. Dieser Kandidat
+        // ist deshalb PROVENIENZ-ISOLIERT und hebt nichts Autorisiertes:
+        //
+        //   - er ist hoechstens der REINE Bedarf des Normalpfades. Traegt
+        //     `vetted` selbst schon `markerAuth`, ist er nicht rein und der
+        //     Kandidat ist 0.
+        //   - liegt am Endriegel bereits ein Grant an, greift er GAR NICHT.
+        //     Sonst vermischten sich zwei Herkuenfte in einer Menge.
+        //   - er traegt selbst keinen Grant (`grant = null`) und ist damit
+        //     fuer jeden nachfolgenden Wiederherstellungspfad unsichtbar.
+        //   - `MarkerFloor` liegt bereits hinter uns; er kann ihn also
+        //     konstruktiv nicht anheben.
+        //   - er ueberstimmt AUSSCHLIESSLICH den historischen Latch. Alle
+        //     AKTUELLEN Gefahren sind bereits absolut: `ruheRuhig` entsteht
+        //     nur, wenn [UpfrontRecovery.Hazards.any] in DIESEM Zyklus
+        //     falsch war - gemessenes Fallen, Low, Rebound, Zero-Latch,
+        //     Signalfehler, technischer Modellfehler und Ledger-Hold.
+        //   - `finalVeto` gilt unveraendert.
+        //   - MAX, keine Addition.
+        //
+        // Bei normalem Bedarf 0 bleibt die Zusatzmenge damit zwingend 0.
+        val ruheReineBasisU =
+            if (vetted.smbU > 0.0 && !vetted.bindingLimit.contains("markerAuth")) vetted.smbU
+            else 0.0
+        val ruheKandidatU = when {
+            ruheRuhig == null -> 0.0
+            ruheRuhig.treatment != app.aaps.fuse.core.controller.UpfrontRecovery.CalmTreatment.DEMAND_LIMITED -> 0.0
+            // Eine bereits autorisierte Menge wird nicht angefasst.
+            nachDescentRoh.grant != null -> 0.0
+            ruheReineBasisU <= nachDescentRoh.smbU + 1e-9 -> 0.0
+            finalVeto(ruheReineBasisU) != null -> 0.0
+            else -> ruheReineBasisU
+        }
+        val nachDescent = if (ruheKandidatU > 0.0) nachDescentRoh.copy(
+            smbU = ruheKandidatU,
+            block = FuseController.Block.NONE,
+            // KEIN GRANT: dieser Anteil ist Bedarf, keine Autorisierung.
+            grant = null,
+            bindingLimit = "calmDemand|" + nachDescentRoh.bindingLimit,
+            caps = emptyList(),
+            capsStage = "calmDemand",
+        ) else nachDescentRoh
+        // HIER sind alle Stationen zugleich bekannt - eine spaetere Rekon-
+        // struktion aus Einzelfeldern waere genau die Art Nachrechnung, die
+        // schon einmal die falsche Geschichte erzaehlt hat.
         upfrontChainThisCycle = UpfrontChain(
             recoveryMode = upfrontRecovery.modeName,
             calmTreatment = ruheRuhig?.treatment?.name,
@@ -3449,6 +3506,7 @@ class FuseCycleRunner(
                     minOf(upfrontOffenU, vetted.smbU.coerceAtLeast(0.0))
             },
             calmShiftedU = upfrontRuheUeberfuehrungU,
+            calmDemandU = ruheKandidatU,
             grantU = lifted.grant?.amountU ?: 0.0,
             grantSource = lifted.grant?.source?.name,
             beforeMarkerFloorU = verifiedLift.smbU,

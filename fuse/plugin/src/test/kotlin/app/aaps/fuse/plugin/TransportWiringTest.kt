@@ -9940,6 +9940,29 @@ class TransportWiringTest : TestBaseWithProfile() {
                              app.aaps.fuse.core.controller.UpfrontRecovery.CalmTreatment.DEMAND_LIMITED)
         assertEquals(referenz.size, ruhig.size)
 
+        // DIE GRENZE DIESES AUFBAUS - festgehalten statt uebergangen.
+        //
+        // Der bedarfsbegrenzte Kandidat feuert hier NIE, und der Grund ist
+        // nicht der Kandidat, sondern der Verlauf: gemessen sechs
+        // Ruhe-Zyklen, in keinem davon blockierte der Endriegel. Der
+        // historische Latch war in diesem synthetischen Verlauf gar nicht
+        // scharf - es gab also nichts zu entriegeln.
+        //
+        // Die ECHTE Abendlage des 25.08. sah anders aus: descentLatchActive
+        // 23/23, alle 20 Phase-A-Zyklen 0 U mit MEASURED_DESCENT_RISK.
+        // Genau dort waere DEMAND_LIMITED wirksam - und genau die bildet
+        // dieser Aufbau nicht ab.
+        //
+        // WAS DER VERGLEICH UNTEN DAHER PRUEFT: die UNVERAENDERTHEIT des
+        // Endpfades, nicht die Wirksamkeit von DEMAND_LIMITED. Wer diesen
+        // Test als Beleg fuer die Wirksamkeit liest, liest ihn falsch. Der
+        // Beleg kommt erst aus dem Replay des echten Verlaufs.
+        val gefeuert = ruhig.count { (it.upfrontChain?.calmDemandU ?: 0.0) > 0.0 }
+        assertEquals(0, gefeuert) {
+            "Aufbau hat sich geaendert: der Kandidat feuert jetzt ($gefeuert " +
+                "Zyklen). Dann muss dieser Test auf Wirksamkeit umgestellt " +
+                "werden, statt Unveraendertheit zu behaupten."
+        }
         val calmZyklen = ruhig.count { it.upfrontChain?.recoveryMode == "CALM_RECOVERED" }
         assertTrue(calmZyklen > 0) {
             "der Ruhe-Ausgang muss erreicht werden, gesehen: " +
@@ -9951,7 +9974,8 @@ class TransportWiringTest : TestBaseWithProfile() {
         // wurde. Weicht hier irgendetwas ab, gibt der ruhige Pfad Insulin
         // frei, das der heutige Vertrag nicht gibt.
         referenz.zip(ruhig).forEachIndexed { i, (r, q) ->
-            assertEquals(r.decision.smbU, q.decision.smbU, 1e-9, "Zyklus $i: Menge")
+            // DIE PROVENIENZ BLEIBT STRIKT GLEICH. Der Ruhe-Kandidat ist
+            // reiner Bedarf; er darf an keiner Autorisierung etwas aendern.
             assertEquals(r.upfrontChain?.markerFloorLiftU, q.upfrontChain?.markerFloorLiftU,
                          "Zyklus $i: MarkerFloor-Anhebung")
             assertEquals(r.upfrontChain?.grantU, q.upfrontChain?.grantU, "Zyklus $i: Grant")
@@ -9959,18 +9983,26 @@ class TransportWiringTest : TestBaseWithProfile() {
                          "Zyklus $i: Grantquelle")
             assertEquals(r.phaseAUpfrontPendingU, q.phaseAUpfrontPendingU, 1e-9,
                          "Zyklus $i: offener Sofortanteil")
+            // WO DER KANDIDAT NICHT GREIFT, muss alles gleich bleiben -
+            // sonst waere der Ruhe-Ausgang an einer anderen Stelle wirksam
+            // geworden, als er es sein darf.
+            if ((q.upfrontChain?.calmDemandU ?: 0.0) <= 0.0) {
+                assertEquals(r.decision.smbU, q.decision.smbU, 1e-9, "Zyklus $i: Menge")
+            }
             // DER ENDPFAD - der eigentliche Gegenstand. Grant-Gleichheit am
             // MarkerFloor allein waere zu schwach: der Ruhe-Ausgang kann
             // einen vorhandenen PRIME-Grant nicht erzeugen, aber WIRKSAM
             // machen, indem er den historischen Riegel umgeht. Kausal waere
             // die Mehrmenge dann durch CALM_RECOVERED entstanden.
-            assertEquals(r.upfrontChain?.afterDescentGateU, q.upfrontChain?.afterDescentGateU,
-                         "Zyklus $i: Menge nach dem Endriegel")
-            assertEquals(r.upfrontChain?.requestedRtU, q.upfrontChain?.requestedRtU,
-                         "Zyklus $i: requestedRtU")
             assertEquals(r.upfrontChain?.normalNeedBeforeMarkerFloorU,
                          q.upfrontChain?.normalNeedBeforeMarkerFloorU,
                          "Zyklus $i: normaler Bedarf vor allen Lifts")
+            if ((q.upfrontChain?.calmDemandU ?: 0.0) <= 0.0) {
+                assertEquals(r.upfrontChain?.afterDescentGateU, q.upfrontChain?.afterDescentGateU,
+                             "Zyklus $i: Menge nach dem Endriegel")
+                assertEquals(r.upfrontChain?.requestedRtU, q.upfrontChain?.requestedRtU,
+                             "Zyklus $i: requestedRtU")
+            }
 
             // DIE INVARIANTE, die auch eine kuenftige Aenderung von
             // DEMAND_LIMITED ueberlebt: was gegenueber BLOCKED zusaetzlich
@@ -9983,6 +10015,16 @@ class TransportWiringTest : TestBaseWithProfile() {
                 assertTrue(zusatz <= qq.normalNeedBeforeMarkerFloorU + 1e-9) {
                     "Zyklus $i: Mehrmenge $zusatz ueber dem normalen Bedarf " +
                         "${qq.normalNeedBeforeMarkerFloorU} - das waere ein Grant-Anteil"
+                }
+                assertTrue(zusatz >= -1e-9) {
+                    "Zyklus $i: der Ruhe-Ausgang darf nie WENIGER ergeben als " +
+                        "der blockierte Zweig (Max, keine Ersetzung): $zusatz"
+                }
+                // Und die Mehrmenge ist genau der Kandidat - keine andere
+                // Stelle darf sie erzeugt haben.
+                assertEquals(qq.calmDemandU, if (zusatz > 1e-9) qq.requestedRtU else 0.0, 1e-9) {
+                    "Zyklus $i: Mehrmenge $zusatz stammt nicht aus dem " +
+                        "Ruhe-Kandidaten (${qq.calmDemandU})"
                 }
             }
         }
@@ -10003,23 +10045,27 @@ class TransportWiringTest : TestBaseWithProfile() {
         // bei normalem Bedarf 0 kommen hier 0,30 U heraus - vollstaendig aus
         // einem PRIME-Grant, den MarkerFloor um 0,30 U angehoben hat.
         //
-        // DAS IST NICHT DER RUHE-AUSGANG. Derselbe Zyklus im Referenzlauf
-        // (Params.OFF, also BLOCKED) fordert dieselben 0,30 U an. Es ist die
-        // entworfene MarkerFloor-Semantik: der markerfinanzierte Anteil ist
-        // eine AUTORISIERUNG, kein Modellbedarf, und "insulinReq <= 0" ist
-        // eine Aussage des Modells, nicht des Nutzers.
+        // DAS IST NICHT DER RUHE-AUSGANG: derselbe Zyklus im Referenzlauf
+        // (Params.OFF, also BLOCKED) fordert dieselben 0,30 U an.
         //
-        // Die absolute Fassung "Bedarf 0 -> requestedRtU 0" gilt im heutigen
-        // System also nicht, und zwar unabhaengig von CALM_RECOVERED. Was
-        // gelten MUSS und hier geprueft wird: der ruhige Pfad darf daran
-        // nichts aendern. Waere die absolute Fassung gewollt, waere das eine
-        // Aenderung an MarkerFloor - nicht am Ruhe-Ausgang.
+        // WIE WEIT DAS TRAEGT - und weiter darf es nicht gelesen werden
+        // (Toni 25.08. spaet): belegt ist ausschliesslich, dass
+        // CALM_RECOVERED IN DIESEM TESTAUFBAU keine zusaetzliche Menge
+        // gegenueber Params.OFF erzeugt. Ueber die allgemeine
+        // Produktsemantik sagt der Aufbau nichts. Im ECHTEN Abendverlauf
+        // des 25.08. forderte das Geraet in ALLEN 20 Phase-A-Zyklen 0 U
+        // mit MEASURED_DESCENT_RISK - diese Endgate-/Latch-Lage trifft der
+        // synthetische Fall gerade nicht. Ob "Bedarf 0 -> requestedRtU 0"
+        // im Produkt gilt, entscheidet erst der Replay des echten
+        // Verlaufs, nicht dieser Test.
         ohneBedarf.forEach { o ->
             val i = ruhig.indexOf(o)
             val k = o.upfrontChain!!
             val ref = referenz[i].upfrontChain!!
             assertEquals(0.0, ref.normalNeedBeforeMarkerFloorU, 1e-9,
                          "Zyklus $i: der Referenzlauf muss denselben Nullbedarf sehen")
+            assertEquals(0.0, k.calmDemandU, 1e-9,
+                         "Zyklus $i: bei Bedarf 0 ist der Ruhe-Kandidat zwingend 0")
             assertEquals(ref.requestedRtU, k.requestedRtU, 1e-9) {
                 "Zyklus $i: bei Bedarf 0 darf der Ruhe-Ausgang die Endmenge " +
                     "nicht veraendern - Referenz ${ref.requestedRtU} U, " +
