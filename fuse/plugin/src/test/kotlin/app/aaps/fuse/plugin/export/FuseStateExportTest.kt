@@ -72,6 +72,7 @@ class FuseStateExportTest {
             app.aaps.fuse.core.controller.MealFoundation.Snapshot.none(),
         manualBolusAfterMarkerU: Double? = null,
         shadow: TurnResponseShadow.Report? = null,
+        upfrontChain: FuseCycleRunner.UpfrontChain? = null,
     ) = FuseCycleRunner.Outcome(
         tbrChanged = false,
         decision = FuseController.Decision(
@@ -95,6 +96,7 @@ class FuseStateExportTest {
         mealFoundation = foundation,
         manualBolusAfterMarkerU = manualBolusAfterMarkerU,
         turnResponseShadow = shadow,
+        upfrontChain = upfrontChain,
     )
 
     private fun rt(units: Double? = 0.15) = RT(
@@ -1363,4 +1365,61 @@ class FuseStateExportTest {
         assertEquals(0.0, o.getDouble("dueU"), 1e-9, "und nichts wird gefordert")
         assertEquals("COVERED_BY_DELIVERY", o.getString("binding"))
     }
+
+    /**
+     * DIE ENDKETTE DES SOFORTANTEILS MUSS IM TRAIL STEHEN.
+     *
+     * Sie existierte lange NUR im `Outcome`. Der Replay liest den direkt,
+     * also waren alle Tests dazu gruen - auf dem Geraet fehlte die
+     * Telemetrie aber vollstaendig: kein Ruhemodus, kein Streak, kein
+     * Grant, keine MarkerFloor-Anhebung, keine Endmenge. Aufgefallen ist es
+     * erst, als der Viewer sie lesen sollte.
+     *
+     * Der Test prueft ausserdem die Benennung: `requestedRtU` heisst
+     * ANGEFORDERT. Wer daraus "gegeben" macht, hat drei verschiedene
+     * Wahrheiten zu einer verschmolzen.
+     */
+    @Test
+    fun `der Trail traegt die Endkette des Sofortanteils`() {
+        val kette = FuseCycleRunner.UpfrontChain(
+            recoveryMode = "CALM_RECOVERED",
+            calmTreatment = "CALM_BATCH",
+            recoveryStreak = 3,
+            recoveryTrackReset = "NONE",
+            recoveryRequired = 3,
+            recoveryDenial = null,
+            currentHazard = "none",
+            guardDistanceMgdl = 7.9,
+            normalNeedBeforeMarkerFloorU = 0.0,
+            upfrontOpenU = 3.6,
+            calmEligibleU = 0.0,
+            calmShiftedU = 0.0,
+            calmDemandU = 0.0,
+            descentGateCause = "HISTORICAL_LATCH",
+            calmDeniedByFinalVerify = null,
+            grantU = 3.6,
+            grantSource = "MEAL_UPFRONT",
+            beforeMarkerFloorU = 0.0,
+            afterMarkerFloorU = 3.6,
+            markerFloorLiftU = 3.6,
+            afterDescentGateU = 3.6,
+            requestedRtU = 3.6,
+        )
+        val c = record(outcome(upfrontChain = kette)).optJSONObject("upfrontChain")
+        assertNotNull(c, "die Endkette fehlt im Trail")
+        assertEquals("CALM_RECOVERED", c!!.optString("recoveryMode"))
+        assertEquals("CALM_BATCH", c.optString("calmTreatment"))
+        assertEquals(3, c.optInt("recoveryStreak"))
+        assertEquals("HISTORICAL_LATCH", c.optString("descentGateCause"))
+        assertEquals("MEAL_UPFRONT", c.optString("grantSource"))
+        assertEquals(3.6, c.optDouble("requestedRtU"), 1e-9)
+        assertEquals(3.6, c.optDouble("markerFloorLiftU"), 1e-9)
+        assertEquals(3.6, c.optDouble("upfrontOpenU"), 1e-9)
+        // Es gibt KEIN Feld, das "gegeben" behauptet.
+        assertFalse(c.keys().asSequence().any { it.contains("delivered", true) }) {
+            "die Endkette darf keine Liefermenge vortaeuschen: " +
+                c.keys().asSequence().toList()
+        }
+    }
+
 }

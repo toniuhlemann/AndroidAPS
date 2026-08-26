@@ -362,6 +362,40 @@ object FuseStateJson {
             // selbst rechnen, saehe das Offline-Replay etwas anderes als der
             // Feldexport - und jede Auswertung haette eine Annahme statt
             // einer Messung als Grundlage.
+            // DIE ENDKETTE DES SOFORTANTEILS - bis eben NUR im Outcome, also
+            // nur fuer den Replay lesbar. Auf dem Geraet fehlte sie
+            // vollstaendig: der Trail trug weder Ruhemodus noch Streak,
+            // Grant, MarkerFloor-Anhebung oder Endmenge. Die Tests waren
+            // trotzdem gruen, weil der Replay den Outcome direkt liest -
+            // genau die Art Luecke, die ein Viewer als Erstes findet.
+            .put("upfrontChain", outcome.upfrontChain?.let { c ->
+                JSONObject()
+                    .put("recoveryMode", c.recoveryMode)
+                    .put("calmTreatment", c.calmTreatment)
+                    .put("recoveryStreak", c.recoveryStreak)
+                    .put("recoveryRequired", c.recoveryRequired)
+                    .put("recoveryDenial", c.recoveryDenial)
+                    .put("recoveryTrackReset", c.recoveryTrackReset)
+                    .put("currentHazard", c.currentHazard)
+                    .put("descentGateCause", c.descentGateCause)
+                    .put("guardDistanceMgdl", fin(c.guardDistanceMgdl))
+                    .put("normalNeedBeforeMarkerFloorU", fin(c.normalNeedBeforeMarkerFloorU))
+                    .put("upfrontOpenU", fin(c.upfrontOpenU))
+                    .put("calmEligibleU", fin(c.calmEligibleU))
+                    .put("calmShiftedU", fin(c.calmShiftedU))
+                    .put("calmDemandU", fin(c.calmDemandU))
+                    .put("calmDeniedByFinalVerify", c.calmDeniedByFinalVerify)
+                    .put("grantU", fin(c.grantU))
+                    .put("grantSource", c.grantSource)
+                    .put("beforeMarkerFloorU", fin(c.beforeMarkerFloorU))
+                    .put("afterMarkerFloorU", fin(c.afterMarkerFloorU))
+                    .put("markerFloorLiftU", fin(c.markerFloorLiftU))
+                    .put("afterDescentGateU", fin(c.afterDescentGateU))
+                    // ANGEFORDERT - nicht publiziert, nicht bestaetigt. Der
+                    // Name traegt das, und der Viewer darf daraus niemals
+                    // "gegeben" machen.
+                    .put("requestedRtU", fin(c.requestedRtU))
+            })
             .put("mealFoundation", outcome.mealFoundation.let { f ->
                 JSONObject()
                     .put("armed", f.armed)
