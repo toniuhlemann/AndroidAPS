@@ -37,6 +37,63 @@ package app.aaps.fuse.core.controller
 object MeasuredDescentGate {
 
     /**
+     * WARUM DIE MENGE GENULLT WURDE - typisiert (Toni 25.08. spaet).
+     *
+     * `blocksPositive` allein beantwortet nur DASS geriegelt wurde. Wer
+     * spaeter einen eng umrissenen Ausnahmepfad bauen will - etwa den
+     * bedarfsbegrenzten Ruhe-Kandidaten, der AUSSCHLIESSLICH einen
+     * historischen Latch ueberstimmen darf -, braucht das WARUM. Ohne
+     * diese Unterscheidung liesse sich "Menge ist 0" nicht von "Menge ist 0
+     * WEGEN aktueller Gefahr" trennen, und der Ausnahmepfad wuerde beides
+     * gleich behandeln.
+     */
+    enum class Cause {
+        /** Nicht geriegelt. */
+        NONE,
+
+        /** AKTUELL gemessenes Abwaertsrisiko. Niemals umgehbar. */
+        CURRENT_DESCENT_RISK,
+
+        /**
+         * Der Riegel steht noch, weil die Erholung nicht belegt ist -
+         * WAITING_RATE oder WAITING_RAW. Nur DIESE Ursache ist historisch:
+         * die Gefahr ist vorbei, die Hysterese laeuft noch.
+         */
+        HISTORICAL_LATCH,
+
+        /** Ein bestaetigtes Tief. Niemals umgehbar. */
+        MEASURED_LOW,
+
+        /**
+         * ALLES UEBRIGE - und ausdruecklich NIEMALS umgehbar.
+         *
+         * Tonis Vorgabe nannte vier Werte. Dieser fuenfte ist noetig, weil
+         * `WAITING_UNHEALTHY` (Signalfehler) und `WAITING_RISK`
+         * (zusaetzlicher Risiko-Wartegrund des Aufrufers) AKTUELLE
+         * Stoerungen sind, keine abgelaufene Hysterese. Sie unter
+         * [HISTORICAL_LATCH] zu fuehren waere genau der Bypass unter
+         * laufendem Fehler, den die Unterscheidung verhindern soll.
+         */
+        OTHER,
+    }
+
+    /**
+     * Die Ursache aus Riegelzustand und Latch-Grund. Reine Abbildung, kein
+     * Zustand - der Aufrufer haelt beides ohnehin.
+     */
+    fun causeOf(
+        blocksPositive: Boolean,
+        reason: DescentRecoveryLatch.Reason,
+    ): Cause = when {
+        !blocksPositive -> Cause.NONE
+        reason == DescentRecoveryLatch.Reason.RISK_ACTIVE -> Cause.CURRENT_DESCENT_RISK
+        reason == DescentRecoveryLatch.Reason.WAITING_MEASURED_LOW -> Cause.MEASURED_LOW
+        reason == DescentRecoveryLatch.Reason.WAITING_RATE ||
+            reason == DescentRecoveryLatch.Reason.WAITING_RAW -> Cause.HISTORICAL_LATCH
+        else -> Cause.OTHER
+    }
+
+    /**
      * Setzt die Menge auf 0, wenn ein gemessenes Abwaertsrisiko vorliegt.
      *
      * IDEMPOTENT UND FOLGENLOS OHNE RISIKO: ohne aktives Risiko oder ohne

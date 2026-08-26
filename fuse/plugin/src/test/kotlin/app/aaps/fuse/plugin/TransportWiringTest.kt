@@ -9893,6 +9893,17 @@ class TransportWiringTest : TestBaseWithProfile() {
         dir: File,
         behandlung: app.aaps.fuse.core.controller.UpfrontRecovery.CalmTreatment?,
         zyklen: Int = 40,
+        // Der Abstieg. Damit der HISTORISCHE Latch ueberhaupt scharf wird,
+        // muss der Guard-Boden im harten Horizont liegen - BG 150 bei
+        // -1,5/min sind 53 Minuten und reichen dafuer nicht.
+        abstiegBg: Double = 150.0,
+        abstiegRate: Double = -1.5,
+        abstiegIob: Double = 2.0,
+        wendeZyklus: Int = 8,
+        // Die Ruhe: positiv, aber unter den +0,20/min der schnellen
+        // Erholung - sonst FULL_BATCH_ELIGIBLE statt CALM_RECOVERED.
+        ruheRate: Double = 0.10,
+        ruheIob: Double = 0.5,
     ): List<FuseCycleRunner.Outcome> {
         aufschubAn = true
         upfrontAnteil = 1.0
@@ -9904,14 +9915,14 @@ class TransportWiringTest : TestBaseWithProfile() {
                 calmTreatment = it,
             )
         } ?: app.aaps.fuse.core.controller.UpfrontRecovery.Params.OFF)
-        flach = 150.0
-        steigungProMin = -1.5
-        bolusIobU = 2.0
+        flach = abstiegBg
+        steigungProMin = abstiegRate
+        bolusIobU = abstiegIob
         val alle = mutableListOf<FuseCycleRunner.Outcome>()
         repeat(zyklen) { i ->
-            if (i == 8) {
-                steigungProMin = 0.10
-                bolusIobU = 0.5
+            if (i == wendeZyklus) {
+                steigungProMin = ruheRate
+                bolusIobU = ruheIob
             }
             alle += transport(dir)
         }
@@ -10173,6 +10184,66 @@ class TransportWiringTest : TestBaseWithProfile() {
             "im Verschiebezyklus darf 'verschoben' nicht heimlich " +
                 "'sofort angefordert' heissen - freigegeben wurden " +
                 "${s.deferredPrimeReleasedU} U"
+        }
+    }
+
+
+    /**
+     * DIE POSITIVPROBE FUER DEMAND_LIMITED (Toni 25.08. spaet).
+     *
+     * Die Ziellage, und jede Zeile davon ist noetig:
+     *
+     *   historischer Latch aktiv, Grund WAITING_RATE
+     *   aktuelles descentRisk false
+     *   normaler Bedarf > 0
+     *   PRIME-Grant vorhanden
+     *   baseline requested = 0
+     *   -> calm requested > 0, hoechstens der reine Normalbedarf,
+     *      und der Calm-Anteil traegt KEINE Grantquelle
+     *
+     * Der reale Abendfall ist dafuer ausdruecklich NICHT geeignet: dort war
+     * der normale Bedarf am Ende 0. Er prueft den Nullvertrag, nicht die
+     * Wirksamkeit.
+     */
+    @Test
+    fun `der Ruhe-Kandidat entriegelt genau den historischen Latch`(@TempDir dir: File) {
+        // SCHNELLER ABSTIEG AUS DER HOEHE: der Boden liegt damit im harten
+        // Horizont, das aktuelle Risiko feuert und der Latch wird scharf.
+        // Danach ein langsamer Anstieg auf noch hohem BG - Bedarf > 0,
+        // Guard-Abstand gross, Rate unter der Erholungsschwelle.
+        val alle = ruheLauf(
+            dir, app.aaps.fuse.core.controller.UpfrontRecovery.CalmTreatment.DEMAND_LIMITED,
+            zyklen = 45, abstiegBg = 180.0, abstiegRate = -4.0, abstiegIob = 2.5,
+            wendeZyklus = 10, ruheRate = 0.15, ruheIob = 0.3,
+        )
+        val ruhig = alle.filter { it.upfrontChain?.recoveryMode == "CALM_RECOVERED" }
+        val ziel = ruhig.filter {
+            val k = it.upfrontChain!!
+            k.descentGateCause == "HISTORICAL_LATCH" &&
+                k.normalNeedBeforeMarkerFloorU > 0.0
+        }
+        assertTrue(ziel.isNotEmpty()) {
+            "Ziellage nicht erreicht. Ruhe-Zyklen: ${ruhig.size}; " +
+                "Riegel-Ursachen: " +
+                ruhig.groupingBy { it.upfrontChain!!.descentGateCause }.eachCount() +
+                "; davon mit normalem Bedarf > 0: " +
+                ruhig.count { it.upfrontChain!!.normalNeedBeforeMarkerFloorU > 0.0 } +
+                "; Riegel-Ursachen im GANZEN Lauf: " +
+                alle.mapNotNull { it.upfrontChain?.descentGateCause }
+                    .groupingBy { it }.eachCount()
+        }
+        ziel.forEach { o ->
+            val k = o.upfrontChain!!
+            assertTrue(k.calmDemandU > 0.0) {
+                "in der Ziellage MUSS der Kandidat greifen - " +
+                    "Bedarf ${k.normalNeedBeforeMarkerFloorU}, " +
+                    "Endcheck ${k.calmDeniedByFinalVerify}"
+            }
+            assertTrue(k.calmDemandU <= k.normalNeedBeforeMarkerFloorU + 1e-9) {
+                "hoechstens der reine Normalbedarf: ${k.calmDemandU} vs " +
+                    "${k.normalNeedBeforeMarkerFloorU}"
+            }
+            assertTrue(k.requestedRtU > 0.0, "und er kommt am Ende auch an")
         }
     }
 

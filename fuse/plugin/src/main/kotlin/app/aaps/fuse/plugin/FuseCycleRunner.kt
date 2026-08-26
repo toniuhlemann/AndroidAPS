@@ -501,6 +501,14 @@ class FuseCycleRunner(
          * nicht gegriffen hat.
          */
         val calmDemandU: Double,
+        /** Warum der Endriegel genullt hat - typisiert. */
+        val descentGateCause: String,
+        /**
+         * Der Grund, aus dem der gemeinsame Endcheck den bereits gemergten
+         * Ruhe-Kandidaten doch verworfen hat; null, wenn er durchkam oder
+         * gar nicht erst entstand.
+         */
+        val calmDeniedByFinalVerify: String?,
         /** Der autorisierte Grant dieses Zyklus [U], 0 wenn keiner. */
         val grantU: Double,
         val grantSource: String?,
@@ -3462,20 +3470,34 @@ class FuseCycleRunner(
         //   - MAX, keine Addition.
         //
         // Bei normalem Bedarf 0 bleibt die Zusatzmenge damit zwingend 0.
+        // DIE TYPISIERTE RIEGEL-URSACHE. `grant != null` war hier zuerst der
+        // Riegel und war zu breit; `smbU == 0` allein waere es ebenfalls -
+        // Null kann aus AKTUELLEM Risiko oder anderen Sperren stammen. Nur
+        // die Ursache trennt das sauber.
+        val riegelUrsache = MeasuredDescentGate.causeOf(
+            descentLatch.blocksPositive, descentLatch.reason,
+        )
         val ruheReineBasisU =
             if (vetted.smbU > 0.0 && !vetted.bindingLimit.contains("markerAuth")) vetted.smbU
             else 0.0
-        val ruheKandidatU = when {
+        val ruheKandidatRohU = when {
             ruheRuhig == null -> 0.0
             ruheRuhig.treatment != app.aaps.fuse.core.controller.UpfrontRecovery.CalmTreatment.DEMAND_LIMITED -> 0.0
-            // Eine bereits autorisierte Menge wird nicht angefasst.
-            nachDescentRoh.grant != null -> 0.0
-            ruheReineBasisU <= nachDescentRoh.smbU + 1e-9 -> 0.0
-            finalVeto(ruheReineBasisU) != null -> 0.0
+            // AUSSCHLIESSLICH der historische Latch. Aktuelles Risiko,
+            // bestaetigtes Tief, Signalfehler und jeder sonstige Wartegrund
+            // bleiben absolut.
+            riegelUrsache != MeasuredDescentGate.Cause.HISTORICAL_LATCH -> 0.0
+            // Doppelt gesichert, unabhaengig von der Ursachenabbildung.
+            descentRisk.active -> 0.0
+            // NOTWENDIGE BEOBACHTUNG, nicht die Autorisierung: der Riegel
+            // muss die Menge tatsaechlich genullt haben.
+            nachDescentRoh.smbU > 1e-9 -> 0.0
+            // Und es muss echten Normalbedarf geben.
+            ruheReineBasisU <= 0.0 -> 0.0
             else -> ruheReineBasisU
         }
-        val nachDescent = if (ruheKandidatU > 0.0) nachDescentRoh.copy(
-            smbU = ruheKandidatU,
+        val ruheMerge = if (ruheKandidatRohU > 0.0) nachDescentRoh.copy(
+            smbU = ruheKandidatRohU,
             block = FuseController.Block.NONE,
             // KEIN GRANT: dieser Anteil ist Bedarf, keine Autorisierung.
             grant = null,
@@ -3483,6 +3505,22 @@ class FuseCycleRunner(
             caps = emptyList(),
             capsStage = "calmDemand",
         ) else nachDescentRoh
+
+        // ---- DER GEMEINSAME ENDCHECK NACH DEM MAX-MERGE (Toni 25.08.) ---
+        //
+        // OHNE IHN hiesse "nur den historischen Latch umgehen" im Code
+        // faktisch "alles nach dem Latch umgehen". Er laeuft auf der
+        // GEMERGTEN Menge und ist deshalb eine eigene Stufe, nicht ein
+        // weiterer Zweig der `when`-Kette oben: eine Vorpruefung am
+        // Kandidaten waere durch das Merge hindurch nicht mehr
+        // nachweisbar - und eine Mutation, die sie entfernt, bliebe gruen.
+        val ruheEndcheckGrund =
+            if (ruheKandidatRohU > 0.0) finalVeto(ruheMerge.smbU) else null
+        val ruheKandidatU = if (ruheEndcheckGrund != null) 0.0 else ruheKandidatRohU
+        val nachDescent = if (ruheEndcheckGrund != null) nachDescentRoh.copy(
+            bindingLimit = "calmDemand|finalVerify:$ruheEndcheckGrund|" +
+                nachDescentRoh.bindingLimit,
+        ) else ruheMerge
         // HIER sind alle Stationen zugleich bekannt - eine spaetere Rekon-
         // struktion aus Einzelfeldern waere genau die Art Nachrechnung, die
         // schon einmal die falsche Geschichte erzaehlt hat.
@@ -3507,6 +3545,8 @@ class FuseCycleRunner(
             },
             calmShiftedU = upfrontRuheUeberfuehrungU,
             calmDemandU = ruheKandidatU,
+            descentGateCause = riegelUrsache.name,
+            calmDeniedByFinalVerify = ruheEndcheckGrund,
             grantU = lifted.grant?.amountU ?: 0.0,
             grantSource = lifted.grant?.source?.name,
             beforeMarkerFloorU = verifiedLift.smbU,
