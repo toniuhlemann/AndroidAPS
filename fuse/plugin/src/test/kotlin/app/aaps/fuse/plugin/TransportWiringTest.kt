@@ -8023,6 +8023,28 @@ class TransportWiringTest : TestBaseWithProfile() {
             }
             return
         }
+        val tsEnv = System.getenv("FUSE_REPLAY_TS")
+        if (tsEnv != null) {
+            // THEIL-SEN-FENSTERMATRIX (Tonis Dauerfrage: passt W10, oder waere
+            // W8/W12 der bessere Schritt?). FUSE_REPLAY_TS=10,8,12,10 faehrt
+            // denselben Tag durch mehrere Hauptschaetzer-Fenster.
+            //
+            // BLINDPROBE EINGEBAUT: steht ein Fenster zweimal in der Liste,
+            // sind seine beiden Spuren die Kontrolle. Weichen sie in einer
+            // dosierrelevanten Spalte ab, ist JEDE Differenz der Matrix ein
+            // Artefakt der Lauf-Reihenfolge und keine Fensterwirkung.
+            //
+            // DIE REBOUND-DAUER wird optional gepinnt, damit alle Spuren
+            // denselben Schutz fahren. Ohne die Klammer laege sie auf dem
+            // Wert der ERSTEN Trailzeile - bei einem Tag, der mitten im Lauf
+            // umgestellt wurde, waere das nicht der aktuelle Stand.
+            System.getenv("FUSE_REPLAY_TS_REBOUND")?.let { reboundFensterMin = it.trim().toInt() }
+            tsEnv.split(",").forEachIndexed { idx, w ->
+                val n = w.trim().toInt()
+                lauf("ts%d-w%02d".format(idx, n), null, fenster = n)
+            }
+            return
+        }
         val reboundEnv = System.getenv("FUSE_REPLAY_REBOUND")
         if (reboundEnv != null) {
             // REBOUND-DAUER-MATRIX (Toni 26.08.). Derselbe Tag mit
