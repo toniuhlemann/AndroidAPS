@@ -843,8 +843,12 @@ class FuseCycleRunner(
         val deferredHullRemainingU: Double = 0.0,
         /** Offener Aufschub VOR der letzten Klemmung [U]. */
         val deferredOpenBeforeClampU: Double = 0.0,
-        /** Wieviel die letzte Klemmung weggenommen hat [U]. */
+        /** Der Huellenrest ZUM ZEITPUNKT der Klemmung [U]. */
+        val deferredClampHullAtClampU: Double = 0.0,
+        /** Wieviel die Klemmung DIESES Zyklus weggenommen hat [U]. */
         val deferredClampReductionU: Double = 0.0,
+        /** Wann geklemmt wurde; 0 = in diesem Zyklus nicht geklemmt. */
+        val deferredClampTs: Long = 0L,
         /**
          * Warum geklemmt wurde. `MANUAL_BOLUS_COVERAGE` heisst: der
          * manuelle Bolus allein haette den Bestand schon nicht mehr
@@ -4616,9 +4620,11 @@ class FuseCycleRunner(
             descentLatchedAtTs = descentLatch.state.latchedAtTs,
             deferredPrimeOpenU = episodes.deferredPrime.openU,
             deferredHullRemainingU = deferredHullRestU,
-            deferredOpenBeforeClampU = deferredClampBeforeU,
-            deferredClampReductionU = deferredClampCutU,
-            deferredClampReason = deferredClampGrund,
+            deferredOpenBeforeClampU = buchung.clampBeforeU,
+            deferredClampHullAtClampU = buchung.clampHullU,
+            deferredClampReductionU = buchung.clampReductionU,
+            deferredClampReason = buchung.clampReason,
+            deferredClampTs = buchung.clampTs,
             deferredPrimePinnedForTs = episodes.deferredPrime.pinnedForMarkerTs,
             deferredPrimeDeadlineTs = episodes.deferredPrime.deadlineTs,
             deferredPrimeHorizonMin = episodes.deferredPrime.horizonMin,
@@ -4885,6 +4891,7 @@ class FuseCycleRunner(
         /** Fuer die Huellenrechnung des Aufschubs - s. [deferredHullRemainingU]. */
         manualBolusAfterMarkerU: Double? = null,
     ): Buchung {
+        var klemmung = Klemmung()
         if (primeWindowOpen) episodes.primeSpentU += actuatedU
 
         // ---- Mahlzeitenfundament (Punkt 7) -------------------------------
@@ -4929,20 +4936,23 @@ class FuseCycleRunner(
                 episodes.deferredPrime, huelleRest,
             )
             val weg = (vorKlemmung - episodes.deferredPrime.openU).coerceAtLeast(0.0)
-            deferredClampBeforeU = vorKlemmung
-            deferredClampHullU = huelleRest
-            deferredClampCutU = weg
-            // DER GRUND, typisiert. Haette der manuelle Bolus ALLEIN den
-            // Bestand schon nicht mehr gedeckt, ist er die Erklaerung -
-            // nicht die automatischen Lieferungen daneben.
+            // DIE DOMINANTE URSACHE, nicht die ausschliessliche. Am 25.08.
+            // wirkten um 18:36 vier Einheiten manuell UND 0,05 U automatisch
+            // zugleich; `MANUAL_BOLUS_COVERAGE` ist richtig, weil der
+            // manuelle Bolus ALLEIN die Klemmung schon erklaert - nicht,
+            // weil nichts anderes beigetragen haette.
             val manuell = manualBolusAfterMarkerU?.takeIf { it.isFinite() && it > 0.0 }
-            deferredClampGrund = when {
-                weg <= 0.0 -> null
-                manuell != null &&
-                    (episodes.foundation.totalBudgetU - manuell) < vorKlemmung ->
-                    "MANUAL_BOLUS_COVERAGE"
-                else -> "AUTOMATIC_DELIVERY"
-            }
+            klemmung = Klemmung(
+                vorKlemmung, huelleRest, weg,
+                when {
+                    weg <= 0.0 -> null
+                    manuell != null &&
+                        (episodes.foundation.totalBudgetU - manuell) < vorKlemmung ->
+                        "MANUAL_BOLUS_COVERAGE"
+                    else -> "AUTOMATIC_DELIVERY"
+                },
+                if (weg > 0.0) computeTs else 0L,
+            )
         }
 
         // DER EVIDENZ-ZAEHLER: kumulativ ueber die GANZE Episode, alle
@@ -4982,7 +4992,8 @@ class FuseCycleRunner(
             )
             while (episodes.mealDeliveries.size > 400) episodes.mealDeliveries.removeFirst()
         }
-        return Buchung(mealGebucht, phase)
+        return Buchung(mealGebucht, phase, klemmung.vorU, klemmung.huelleU,
+                       klemmung.wegU, klemmung.grund, klemmung.ts)
     }
 
     /**
@@ -4994,9 +5005,33 @@ class FuseCycleRunner(
      * Neuableitung drehte dann womoeglich einen anderen Zaehler zurueck als
      * den belasteten.
      */
+    /** Reines Zwischenergebnis innerhalb von [buche]. */
+    private data class Klemmung(
+        val vorU: Double = 0.0,
+        val huelleU: Double = 0.0,
+        val wegU: Double = 0.0,
+        val grund: String? = null,
+        val ts: Long = 0L,
+    )
+
     private data class Buchung(
         val mealGebucht: Boolean,
         val phase: MealFoundation.Phase,
+        /**
+         * DAS KLEMMEREIGNIS DIESES ZYKLUS - lokal zurueckgegeben, nicht in
+         * Runnerfeldern gehalten.
+         *
+         * Die erste Fassung merkte es sich prozessweit und setzte es nie
+         * zurueck. Damit haette derselbe alte Clamp in JEDEM folgenden
+         * Trailzyklus erneut gestanden - ohne Zeitstempel nicht als
+         * Wiederholung erkennbar, und bei einer Summierung mehrfach
+         * gezaehlt. Ein Ereignis gehoert dorthin, wo es entsteht.
+         */
+        val clampBeforeU: Double = 0.0,
+        val clampHullU: Double = 0.0,
+        val clampReductionU: Double = 0.0,
+        val clampReason: String? = null,
+        val clampTs: Long = 0L,
     )
 
     /**
@@ -5397,9 +5432,11 @@ class FuseCycleRunner(
             // Zyklus ohne Hauptpfad so aus, als gaebe es keine Klemmung.
             deferredHullRemainingU =
                 deferredHullRemainingU(episodes, manualBolusAfterMarkerU),
-            deferredOpenBeforeClampU = deferredClampBeforeU,
-            deferredClampReductionU = deferredClampCutU,
-            deferredClampReason = deferredClampGrund,
+            deferredOpenBeforeClampU = buchung.clampBeforeU,
+            deferredClampHullAtClampU = buchung.clampHullU,
+            deferredClampReductionU = buchung.clampReductionU,
+            deferredClampReason = buchung.clampReason,
+            deferredClampTs = buchung.clampTs,
             deferredPrimePinnedForTs = episodes.deferredPrime.pinnedForMarkerTs,
             deferredPrimeDeadlineTs = episodes.deferredPrime.deadlineTs,
             deferredPrimeHorizonMin = episodes.deferredPrime.horizonMin,
@@ -5629,17 +5666,6 @@ class FuseCycleRunner(
      *  PROZESSLOKAL wie die Latch-Erholung: eine unbeobachtete Luecke oder
      *  ein Neustart belegt keine Erholung - die drei Zyklen werden neu
      *  verdient (konservativ: spaeter offen, nie frueher). */
-    /**
-     * Die letzte Huellenklemmung - prozesslokal wie die uebrigen
-     * Uebertraege. Sie beschreibt einen VERGANGENEN Buchungsvorgang; nach
-     * einem Neustart gibt es nichts zu berichten, und eine erfundene
-     * Vorgeschichte waere schlechter als keine.
-     */
-    private var deferredClampBeforeU = 0.0
-    private var deferredClampHullU = 0.0
-    private var deferredClampCutU = 0.0
-    private var deferredClampGrund: String? = null
-
     private var deferredRecoveryStreak = 0
 
     /** Pruefauftrag 2 (Toni 22.08.): eigener Sub-Step-Uebertrag der

@@ -528,6 +528,12 @@ object FuseStateJson {
                 .put("openBeforeClampU", fin(outcome.deferredOpenBeforeClampU))
                 .put("clampReductionU", fin(outcome.deferredClampReductionU))
                 .put("clampReason", outcome.deferredClampReason)
+                // Der Zeitstempel macht eine WIEDERHOLUNG erkennbar.
+                // Ohne ihn saehe ein klebengebliebenes Ereignis wie
+                // eine erneute Klemmung aus und wuerde beim Summieren
+                // mehrfach gezaehlt.
+                .put("clampTs", outcome.deferredClampTs)
+                .put("clampHullAtClampU", fin(outcome.deferredClampHullAtClampU))
                 .put("pinnedForTs", outcome.deferredPrimePinnedForTs)
                 .put("deadlineTs", outcome.deferredPrimeDeadlineTs)
                 .put("horizonMin", outcome.deferredPrimeHorizonMin)

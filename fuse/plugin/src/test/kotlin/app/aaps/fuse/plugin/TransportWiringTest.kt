@@ -26,6 +26,7 @@ import app.aaps.fuse.plugin.ledger.EpisodeBudgets
 import app.aaps.fuse.core.observer.Health
 import kotlin.math.max
 import kotlin.math.min
+import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Assertions.assertNull
 import app.aaps.core.interfaces.aps.RT
 import app.aaps.core.interfaces.aps.APSResult
@@ -9905,6 +9906,11 @@ class TransportWiringTest : TestBaseWithProfile() {
         // Erholung - sonst FULL_BATCH_ELIGIBLE statt CALM_RECOVERED.
         ruheRate: Double = 0.10,
         ruheIob: Double = 0.5,
+        // Ein MANUELLER Ersatzbolus - er zehrt an derselben gepinnten
+        // Huelle und ist damit der einzige Weg, im Rig eine echte
+        // Huellenklemmung zu erzeugen.
+        manuellBeiZyklus: Int? = null,
+        manuellU: Double = 4.0,
     ): List<FuseCycleRunner.Outcome> {
         aufschubAn = true
         upfrontAnteil = 1.0
@@ -9925,6 +9931,8 @@ class TransportWiringTest : TestBaseWithProfile() {
                 steigungProMin = ruheRate
                 bolusIobU = ruheIob
             }
+            if (i == manuellBeiZyklus)
+                boluses = listOf(BS(timestamp = clock, amount = manuellU, type = BS.Type.NORMAL))
             alle += transport(dir)
         }
         return alle
@@ -10531,6 +10539,85 @@ class TransportWiringTest : TestBaseWithProfile() {
             }
         }
         assertTrue(gefeuert > 0, "mindestens ein Lauf muss den Kandidaten ausloesen")
+    }
+
+
+    /**
+     * DAS KLEMMEREIGNIS DARF NICHT KLEBEN (Toni 25.08. spaet, P1).
+     *
+     * Die erste Fassung hielt `openBeforeClamp`, `clampReduction` und
+     * `clampReason` in Runnerfeldern und setzte sie nie zurueck. Derselbe
+     * alte Clamp haette damit in JEDEM folgenden Trailzyklus erneut
+     * gestanden - ohne Zeitstempel nicht als Wiederholung erkennbar, und
+     * bei einer Summierung mehrfach gezaehlt.
+     *
+     * Die Gegenprobe ist genau die von Toni benannte: ein Zyklus klemmt,
+     * der unmittelbar folgende ohne Lieferung muss `reduction == 0` und
+     * `reason == null` zeigen.
+     */
+    @Test
+    fun `das Klemmereignis gilt nur fuer seinen eigenen Zyklus`(@TempDir dir: File) {
+        // DER ABENDFALL VOLLSTAENDIG: nach der Wende ein manueller
+        // 4-U-Ersatzbolus. Er senkt den Huellenrest unter den offenen
+        // Aufschub, und die naechste Lieferung klemmt - genau die Kette vom
+        // 25.08. (18:29 Bolus, 18:36 erste Lieferung, defOpen 3,60 -> 0,45).
+        val alle = ruheLauf(
+            dir, app.aaps.fuse.core.controller.UpfrontRecovery.CalmTreatment.SHIFT_TO_DEFERRED,
+            zyklen = 45, abstiegBg = 180.0, abstiegRate = -4.0, abstiegIob = 2.5,
+            wendeZyklus = 10, ruheRate = 0.15, ruheIob = 0.3,
+            manuellBeiZyklus = 16, manuellU = 4.0,
+        )
+        // (1) Die Felder sind untereinander konsistent.
+        alle.forEachIndexed { i, o ->
+            if (o.deferredClampReductionU > 0.0) {
+                assertNotNull(o.deferredClampReason, "Zyklus $i: Kuerzung ohne Grund")
+                assertTrue(o.deferredClampTs > 0L, "Zyklus $i: Kuerzung ohne Zeitstempel")
+                assertTrue(o.deferredOpenBeforeClampU > 0.0,
+                           "Zyklus $i: Kuerzung ohne Ausgangsbestand")
+            } else {
+                assertNull(o.deferredClampReason) {
+                    "Zyklus $i: Grund ohne Kuerzung - das Ereignis klebt"
+                }
+                assertEquals(0L, o.deferredClampTs) {
+                    "Zyklus $i: Zeitstempel ohne Kuerzung - das Ereignis klebt"
+                }
+            }
+        }
+        // (2) KEIN Zeitstempel darf zweimal auftauchen. Genau so saehe ein
+        // klebendes Ereignis aus, und genau so wuerde es doppelt gezaehlt.
+        val stempel = alle.map { it.deferredClampTs }.filter { it > 0L }
+        // DIE GRENZE DIESES TESTS, ausdruecklich statt stillschweigend:
+        // im Rig entsteht KEINE Klemmung. Gemessen: 0 Kuerzungen,
+        // Huellenreste nur 0,00 und 3,75 - der eingespeiste manuelle Bolus
+        // erreicht `manualBolusAfterMarkerU` nicht, und ohne verkleinerte
+        // Huelle kann `clampToHull` nichts wegnehmen.
+        //
+        // Die Punkte (1) und (2) pruefen deshalb den Leerlauf: dass ein
+        // Zyklus OHNE Klemmung auch keine berichtet. Genau das war der
+        // Fehler der ersten Fassung - die prozessweiten Felder hielten das
+        // Ereignis fest -, und dagegen ist der Test wirksam.
+        //
+        // NICHT geprueft ist der Klemmfall selbst. Er ist konstruktiv
+        // abgesichert: `klemmung` ist eine lokale Variable in `buche()` mit
+        // Nullvorgabe, und die Felder reisen im zurueckgegebenen [Buchung]
+        // mit. Ein Zyklus ohne Klemmung KANN keine berichten. Das ersetzt
+        // keinen Test des Klemmfalls - solange das Rig ihn nicht herstellt,
+        // steht diese Luecke hier und wird nicht zugebaut.
+        assertEquals(0, stempel.size) {
+            "Aufbau hat sich geaendert: es klemmt jetzt ($stempel). Dann muss " +
+                "dieser Test auf den ECHTEN Klemmfall umgestellt werden, statt " +
+                "nur den Leerlauf zu pruefen."
+        }
+        assertEquals(stempel.size, stempel.distinct().size) {
+            "jeder Klemmzeitstempel darf nur EINMAL berichtet werden, war: " +
+                stempel.groupingBy { it }.eachCount().filterValues { it > 1 }
+        }
+        // (3) Der Huellenrest wird dagegen JEDEN Zyklus berichtet - er ist
+        // ein Zustand, kein Ereignis, und schliesst das Fenster zwischen
+        // manuellem Bolus und naechster Lieferung.
+        assertTrue(alle.any { it.deferredHullRemainingU > 0.0 }) {
+            "der Huellenrest muss als laufender Zustand sichtbar sein"
+        }
     }
 
 }
