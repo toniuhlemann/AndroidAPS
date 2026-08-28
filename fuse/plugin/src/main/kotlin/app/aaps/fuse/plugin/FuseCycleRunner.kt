@@ -565,8 +565,27 @@ class FuseCycleRunner(
         val afterMarkerFloorU: Double,
         /**
          * Wieviel MarkerFloor angehoben hat [U]. Die Kernzahl der
-         * Sicherheitskante: im ruhigen Pfad muss sie beweisbar 0 bleiben,
-         * weil dort gar kein MEAL_UPFRONT-Grant entsteht.
+         * Sicherheitskante.
+         *
+         * PRAEZISIERT AM 28.08., weil hier eine inzwischen falsche Zusage
+         * stand: "im ruhigen Pfad muss sie beweisbar 0 bleiben, weil dort gar
+         * kein MEAL_UPFRONT-Grant entsteht". Das gilt fuer die
+         * NICHT-dosierwirksamen Ruhemodi - DEMAND_LIMITED und
+         * SHIFT_TO_DEFERRED stempeln keinen Grant, also greift der Boden
+         * mangels `grant` gar nicht.
+         *
+         * Unter CALM_BATCH (Bauauftrag Toni 25.08. spaet) ist es anders und
+         * MUSS es sein: dieser Modus erreicht `liftUpfront`, stempelt einen
+         * MEAL_UPFRONT-Grant, und damit hat der Boden etwas, worauf er
+         * zurueckfaellt. GEMESSEN in der Plateau-Endpfadprobe: `vorFloor 0,00
+         * -> nachFloor 1,95`, waehrend der normale Pfad 0,00 verlangte. Die
+         * gesamte freigegebene Menge stammt dort also aus dem Boden.
+         *
+         * Das ist der Vertrag vom 11.08. (Vetos duerfen den markerfinanzierten
+         * Anteil senken, aber nicht unter ihn) und keine Umgehung. Es ist aber
+         * auch genau die Form des Abendfalls vom 25.08. - deshalb steht die
+         * Zahl hier im Export und wird in der Endpfadprobe ausdruecklich
+         * behauptet, statt nebenbei zu passieren.
          */
         val markerFloorLiftU: Double,
         /** Menge NACH dem Endriegel (MeasuredDescentGate). */

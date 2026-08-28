@@ -4417,12 +4417,22 @@ class TransportWiringTest : TestBaseWithProfile() {
         markerAuthorized = true
         bolusIobU = 2.5
         clock = start
+        // DEN MARKERZUSTAND AUSDRUECKLICH ZURUECKSETZEN (Toni 28.08.).
+        // `transportReset()` raeumt Uhr und Transport, aber NICHT markerAt,
+        // markerAtIntern oder markerPress. Wer mehrere Takte in EINER
+        // Testinstanz hintereinander faehrt, schleppt damit Markerinformation
+        // aus dem vorigen Lauf mit - eine ueberpruefbare Fehlerquelle, die
+        // jeden Taktbefund zum Artefakt machen kann. Deshalb liegt jeder Takt
+        // zusaetzlich in einer EIGENEN Testmethode: JUnit baut je Methode eine
+        // frische Instanz.
+        markerAt = 0L
+        markerAtIntern = 0L
+        markerPress = 0L
         transportReset()
-        // PHASE A LANG GENUG FUER BEIDE TAKTE. Bei 62 Sekunden passen weniger
-        // Zyklen in dieselbe Zeit, und die bestaetigte Ruhe fiel sonst hinter
-        // das Phasenende (Denial NOT_PHASE_A) - eine Geometriefrage des
-        // Szenarios, nicht der Pruefgegenstand.
-        whenever(preferences.get(FuseIntKey.PrimeWindowMin)).thenReturn(45)
+        // PHASE A: 20 min wie produktiv. Ein laengeres Fenster waere ein
+        // Diagnoseaufbau und keine Abnahme (Toni 28.08.) - der Verlauf muss
+        // kausal so gebaut sein, dass die Ruhe INNERHALB der Frist steht.
+        whenever(preferences.get(FuseIntKey.PrimeWindowMin)).thenReturn(20)
         neuerRunner(
             FuseLedgerAdapter().also { it.loadOnce(dir.also(File::mkdirs), "test-epoch", start) },
             ruheParams = app.aaps.fuse.core.controller.UpfrontRecovery.Params.of(
@@ -4442,72 +4452,161 @@ class TransportWiringTest : TestBaseWithProfile() {
      * jener Wert traegt die gesamte RT-Menge des Zyklus, also auch normale
      * Korrekturen.
      *
-     * Bei 61 UND 62 Sekunden.
+     * JE TAKT EINE EIGENE METHODE, damit kein Zustand aus dem vorigen Lauf
+     * mitwandert. Der 62-s-Fall ist eine AUSFUEHRBARE Regression, kein
+     * Kommentar: eine gruene Suite, aus der der Problemfall herausgenommen
+     * wurde, ist keine Abnahme.
+     */
+    private fun plateauEndpfad(dir: File, takt: Long) {
+        endpfadAufbau(dir, takt)
+        val punkte = endpfadReihe(takt, plateauAbIndex = 8, spaeterProMin = 0.0)
+        var gezuendet = false
+        val laeufe = ArrayList<FuseCycleRunner.Outcome>()
+        repeat(punkte - 2) {
+            val o = cycle()
+            if (!gezuendet && o.zeroLatchActive) {
+                gezuendet = true
+                markerAt = clock
+            }
+            if (gezuendet) laeufe.add(o)
+        }
+        assertTrue(gezuendet, "der Aufschub muss zuenden (Takt $takt)")
+
+        val ketten = laeufe.mapNotNull { it.upfrontChain }
+        val freigaben = laeufe.filter {
+            val c = it.upfrontChain
+            c != null && c.requestedRtU > 0.0 && c.grantSource == "MEAL_UPFRONT"
+        }
+        val enden = freigaben.mapNotNull { it.upfrontChain }
+        assertEquals(1, enden.size,
+                     "GENAU EINE Batch-Endanforderung (Takt $takt): " +
+                         enden.map { it.requestedRtU } +
+                         " | Modi " + ketten.map { it.recoveryMode }.distinct() +
+                         " | Behandlung " + ketten.map { it.calmTreatment }.distinct() +
+                         " | Denials " + ketten.mapNotNull { it.recoveryDenial }.distinct() +
+                         " | offen " + ketten.map { it.upfrontOpenU }.distinct() +
+                         " | Zustaende " + laeufe.mapNotNull { it.phaseAUpfrontState }.distinct())
+        val k = enden.single()
+        assertTrue(k.requestedRtU > 0.0, "eine Menge muss fliessen (Takt $takt): $k")
+        assertEquals(k.upfrontOpenU, k.requestedRtU, 1e-9,
+                     "der GANZE offene Anteil in einem Zug (Takt $takt): $k")
+        // DER MODUS AUSDRUECKLICH: CALM_RECOVERED allein heisst noch nicht,
+        // dass ueber CALM_BATCH freigegeben wurde (Toni 28.08.).
+        assertEquals("CALM_RECOVERED", k.recoveryMode, "Freigabemodus (Takt $takt): $k")
+        assertEquals("CALM_BATCH", k.calmTreatment, "Behandlung (Takt $takt): $k")
+        assertEquals("WITHIN_TOLERANCE", k.stabilisation, "Takt $takt: $k")
+
+        // DIE MENGE DURCH DIE STUFEN, nicht nur am Ende. Eine Probe, die nur
+        // die Endzahl prueft, kann eine Stufe uebersehen, die kuerzt und eine
+        // spaetere, die wieder auffuellt.
+        val stufen = "Takt $takt | offen=${k.upfrontOpenU} eligible=${k.calmEligibleU}" +
+            " shifted=${k.calmShiftedU} demand=${k.calmDemandU} grant=${k.grantU}" +
+            " vorFloor=${k.beforeMarkerFloorU} nachFloor=${k.afterMarkerFloorU}" +
+            " nachGate=${k.afterDescentGateU} rt=${k.requestedRtU}" +
+            " gateGrund=${k.descentGateCause} finalVerify=${k.calmDeniedByFinalVerify}"
+        // CALM_BATCH nimmt WEDER den schrittweisen NOCH den bedarfsbegrenzten
+        // Pfad: `calmShiftedU` gehoert zu SHIFT_TO_DEFERRED, `calmDemandU`
+        // zu DEMAND_LIMITED. Beide muessen hier 0 sein - sonst liefe der
+        // Batch ueber einen anderen Mechanismus als behauptet.
+        assertEquals(0.0, k.calmShiftedU, 1e-9, "kein Verschiebepfad: $stufen")
+        assertEquals(0.0, k.calmDemandU, 1e-9, "kein Bedarfspfad: $stufen")
+        assertEquals(k.upfrontOpenU, k.grantU, 1e-9, "der Grant traegt den offenen Anteil: $stufen")
+        assertEquals(k.upfrontOpenU, k.afterDescentGateU, 1e-9, "und passiert das Abstiegstor: $stufen")
+        assertNull(k.calmDeniedByFinalVerify, "keine Endabweisung: $stufen")
+
+        // WOHER DIE MENGE WIRKLICH KOMMT - ausdruecklich behauptet, nicht
+        // nebenbei passiert. Gemessen: der normale Pfad verlangt NICHTS, die
+        // Menge nach der Modellkette ist 0, und der Markerboden stellt den
+        // vollen autorisierten Anteil wieder her.
+        //
+        // Das ist der Vertrag vom 11.08. (ein Veto darf den markerfinanzierten
+        // Anteil senken, aber nicht unter ihn) und arbeitet hier regelgerecht.
+        // Es ist aber auch die Form des Abendfalls vom 25.08. Wenn dieser
+        // Vertrag fuer CALM_BATCH je eingeschraenkt wird, muss diese Probe
+        // brechen - und nicht still weiterlaufen.
+        assertEquals(0.0, k.normalNeedBeforeMarkerFloorU, 1e-9,
+                     "der normale Pfad verlangt nichts: $stufen")
+        assertEquals(0.0, k.beforeMarkerFloorU, 1e-9, "die Modellkette laesst nichts uebrig: $stufen")
+        assertEquals(k.requestedRtU, k.markerFloorLiftU, 1e-9,
+                     "die ganze Menge stammt aus dem Markerboden: $stufen")
+
+        // PLANNED IST EINE ABGELEITETE ANZEIGE, KEIN NACHWEIS EINER UMBUCHUNG
+        // (Toni 28.08.). Der freigebende Zyklus muss den Batch wirklich
+        // umgebucht haben.
+        val zustand = freigaben.single().phaseAUpfrontState
+        assertTrue(zustand == "REQUESTED" || zustand == "COVERED",
+                   "der freigebende Zyklus muss umgebucht haben, nicht nur planen (Takt $takt): " +
+                       "$zustand | alle " + laeufe.mapNotNull { it.phaseAUpfrontState }.distinct())
+        assertTrue(laeufe.any { it.phaseAUpfrontState == "DEFERRED_UPFRONT_BATCH" },
+                   "und vorher wirklich aufgeschoben gewesen sein (Takt $takt)")
+
+        // UNABHAENGIG ERWARTETE WERTE aus der vorgegebenen Reihe: ab dem
+        // Plateau ist sie konstant. Ein Netto oder Rueckgang ungleich 0 waere
+        // eine falsche Zuordnung - und die faende ein Vergleich
+        // "JSON == Outcome" nicht.
+        assertEquals(0.0, k.recentNetMgdl, 1e-9, "konstante Reihe -> Netto 0 (Takt $takt): $k")
+        assertEquals(0.0, k.recentWorstDropMgdl, 1e-9, "und kein Rueckgang (Takt $takt): $k")
+        assertTrue(k.recentSpanMin >= 4.5 && k.recentSpanMin <= 7.0,
+                   "Abschnittsspanne, nicht Fensterspanne (Takt $takt): ${k.recentSpanMin}")
+
+        val json = app.aaps.fuse.plugin.export.FuseStateJson.upfrontChainJson(k)
+        assertEquals("WITHIN_TOLERANCE", json.optString("stabilisation"))
+        assertEquals(0.0, json.optDouble("recentNetMgdl"), 1e-9)
+        assertEquals(0.0, json.optDouble("recentWorstDropMgdl"), 1e-9)
+        assertTrue(json.optDouble("recentSpanMin") >= 4.5)
+        assertEquals(k.requestedRtU, json.optDouble("requestedRtU"), 1e-9)
+    }
+
+
+    /**
+     * REGRESSION: BEIDE TAKTE NACHEINANDER IN EINER INSTANZ.
+     *
+     * Diese Probe haelt einen GEMESSENEN TESTFEHLER fest, den ich zunaechst
+     * fuer einen taktabhaengigen Produktionsfehler gehalten hatte. Toni hat
+     * die Stoerquelle benannt: `endpfadAufbau` setzte Uhr und Transport
+     * zurueck, aber nicht `markerAt` / `markerAtIntern` / `markerPress`.
+     *
+     * Die Messung im gemeinsamen Lauf, ohne diesen Reset:
+     *
+     *   61, 62 -> erster 2,15 U, zweiter NICHTS
+     *   62, 61 -> erster 2,20 U, zweiter NICHTS
+     *   nur 62 -> 2,20 U
+     *
+     * Der Fehler folgt also der POSITION, nicht dem Takt. Der zweite Lauf
+     * erbte den Marker des ersten - dort auf dessen Enduhr gesetzt, waehrend
+     * die neue Uhr wieder auf `start` steht: ein Marker in der Zukunft. Die
+     * Kette meldete dann zwar `CALM_RECOVERED`, blieb aber bei Quelle `PRIME`
+     * und Zustand `PLANNED`, und der offene Anteil rieselte in Einzelschritten
+     * heraus. `PLANNED` ist eben eine abgeleitete Anzeige und kein Nachweis
+     * einer Umbuchung.
+     *
+     * Mit Reset liefern beide Laeufe. Diese Probe ist der Waechter dafuer:
+     * wer den Reset wieder entfernt, sieht es hier - und nicht erst an einem
+     * Befund, der nach Produktionsfehler aussieht.
      */
     @Test
-    fun `Endpfad - Plateau gibt den aufgeschobenen Batch als Endmenge frei`(@TempDir dir: File) {
-        // NUR 61 s. Bei 62 s zeigt derselbe Aufbau einen OFFENEN BEFUND, der
-        // nicht zu dieser Probe gehoert und nicht durch Zurechtbiegen des
-        // Szenarios verschwinden darf: die Ruhe wird bestaetigt
-        // (CALM_RECOVERED), der Zustand wechselt aber von
-        // DEFERRED_UPFRONT_BATCH auf PLANNED, die Quelle bleibt PRIME, und
-        // der offene Anteil rieselt in 0,05-Schritten heraus statt als Batch
-        // zu fliessen - genau der Fehlermodus, gegen den der Batch-Pfad
-        // gebaut wurde. Gemessen: open 3,00 -> 2,05 in Einzelschritten.
-        for (takt in longArrayOf(61_000L)) {
-            endpfadAufbau(File(dir, "p$takt"), takt)
-            // Frueh genug, dass auch beim LANGSAMEREN Takt genug Plateauzeit
-            // INNERHALB von Phase A liegt: bei 62 s passen weniger Zyklen in
-            // dasselbe Zeitfenster, und die Ruhe wurde sonst erst nach
-            // Phasenende bestaetigt (Denial NOT_PHASE_A).
-            val punkte = endpfadReihe(takt, plateauAbIndex = 8, spaeterProMin = 0.0)
-            var gezuendet = false
-            val laeufe = ArrayList<FuseCycleRunner.Outcome>()
-            repeat(punkte - 2) { i ->
-                val o = cycle()
-                if (!gezuendet && o.zeroLatchActive) {
-                    gezuendet = true
-                    markerAt = clock
-                }
-                if (gezuendet) laeufe.add(o)
-            }
-            assertTrue(gezuendet, "der Aufschub muss zuenden (Takt $takt)")
-
-            val ketten = laeufe.mapNotNull { it.upfrontChain }
-            val enden = ketten.filter { it.requestedRtU > 0.0 && it.grantSource == "MEAL_UPFRONT" }
-            assertEquals(1, enden.size,
-                         "GENAU EINE Batch-Endanforderung (Takt $takt): " +
-                             enden.map { it.requestedRtU } + " | Modi " +
-                             ketten.map { it.recoveryMode }.distinct() + " | Denials " +
-                             ketten.mapNotNull { it.recoveryDenial }.distinct())
-            val k = enden.single()
-            // DIE ERWARTETE BATCHMENGE ist der GANZE offene Anteil in einem
-            // Zug - nicht eine feste Zahl aus einem anderen Szenario.
-            // `upfrontOpenU` ist der Stand VOR der Entscheidung dieses Zyklus.
-            assertTrue(k.requestedRtU > 0.0, "eine Menge muss fliessen (Takt $takt): $k")
-            assertEquals(k.upfrontOpenU, k.requestedRtU, 1e-9,
-                         "der GANZE offene Anteil in einem Zug (Takt $takt): $k")
-            assertEquals("WITHIN_TOLERANCE", k.stabilisation, "Takt $takt: $k")
-
-            // UNABHAENGIG ERWARTETE WERTE aus der vorgegebenen Reihe: ab dem
-            // Plateau ist sie konstant. Ein Netto oder Rueckgang ungleich 0
-            // waere eine falsche Zuordnung - und die faende ein Vergleich
-            // "JSON == Outcome" nicht.
-            assertEquals(0.0, k.recentNetMgdl, 1e-9,
-                         "konstante Reihe -> Netto 0 (Takt $takt): $k")
-            assertEquals(0.0, k.recentWorstDropMgdl, 1e-9,
-                         "und kein Rueckgang (Takt $takt): $k")
-            assertTrue(k.recentSpanMin >= 4.5 && k.recentSpanMin <= 7.0,
-                       "Abschnittsspanne, nicht Fensterspanne (Takt $takt): ${k.recentSpanMin}")
-
-            val json = app.aaps.fuse.plugin.export.FuseStateJson.upfrontChainJson(k)
-            assertEquals("WITHIN_TOLERANCE", json.optString("stabilisation"))
-            assertEquals(0.0, json.optDouble("recentNetMgdl"), 1e-9)
-            assertEquals(0.0, json.optDouble("recentWorstDropMgdl"), 1e-9)
-            assertTrue(json.optDouble("recentSpanMin") >= 4.5)
-            assertEquals(k.requestedRtU, json.optDouble("requestedRtU"), 1e-9)
-        }
+    fun `Endpfad - zwei Takte nacheinander in einer Instanz geben beide frei`(@TempDir dir: File) {
+        plateauEndpfad(File(dir, "erst61"), 61_000L)
+        plateauEndpfad(File(dir, "dann62"), 62_000L)
     }
+
+    @Test
+    fun `Endpfad - dieselben zwei Takte in vertauschter Reihenfolge`(@TempDir dir: File) {
+        plateauEndpfad(File(dir, "erst62"), 62_000L)
+        plateauEndpfad(File(dir, "dann61"), 61_000L)
+    }
+
+    @Test
+    fun `Endpfad - Plateau bei 61 Sekunden gibt den Batch als Endmenge frei`(@TempDir dir: File) =
+        plateauEndpfad(dir, 61_000L)
+
+    @Test
+    fun `Endpfad - Plateau bei 62 Sekunden gibt den Batch als Endmenge frei`(@TempDir dir: File) =
+        plateauEndpfad(dir, 62_000L)
+
+    @Test
+    fun `Endpfad - Plateau bei 60 Sekunden gibt den Batch als Endmenge frei`(@TempDir dir: File) =
+        plateauEndpfad(dir, 60_000L)
 
     /**
      * ENDPFAD-PROBE 2: DAUERABFALL. Der Batch bleibt offen und aufgeschoben,
