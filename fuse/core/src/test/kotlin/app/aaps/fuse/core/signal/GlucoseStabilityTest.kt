@@ -112,11 +112,42 @@ class GlucoseStabilityTest {
                      GlucoseStability.evaluate(s, s.jetzt(), p).verdict)
     }
 
+    /**
+     * TONIS GEGENFALL (28.08.): ein UNUNTERBROCHENER langsamer Abfall darf
+     * nicht als stabilisiert gelten.
+     *
+     * -0,5 mg/dl/min ergibt ueber den Fuenf-Minuten-Abschnitt -2,5 gegen
+     * erlaubte 2 + 0,1*5 = 2,5 - exakt auf der Kante, also frueher
+     * STABILISIERT. Der Test prueft deshalb BEIDE Felder: das alte
+     * Fensterurteil UND das freigabewirksame. Er war vorher gruen, weil er
+     * nur das erste ansah.
+     */
     @Test
-    fun `auch ein langsamer Abfall wird erkannt`() {
+    fun `ein ununterbrochener langsamer Abfall ist weder stabil noch stabilisiert`() {
         val s = reihe(120.0, 119.5, 119.0, 118.5, 118.0, 117.5, 117.0, 116.5, 116.0, 115.5)
-        assertEquals(GlucoseStability.Verdict.FALLING,
-                     GlucoseStability.evaluate(s, s.jetzt(), p).verdict)
+        val r = GlucoseStability.evaluate(s, s.jetzt(), p)
+        assertEquals(GlucoseStability.Verdict.FALLING, r.verdict, "$r")
+        assertEquals(GlucoseStability.Stabilisation.STILL_FALLING, r.stabilisation,
+                     "langsam genug ist nicht dasselbe wie beendet: $r")
+        assertEquals(0, r.confirmedCycles, "und nichts ist bestaetigt: $r")
+    }
+
+    /**
+     * DIE DREI LAGEN AUSDRUECKLICH AUSEINANDERGEHALTEN (Tonis Auflage):
+     * Plateau, toleriertes Quantisierungsrauschen und ununterbrochener
+     * langsamer Abfall.
+     */
+    @Test
+    fun `Plateau Rauschen und langsamer Abfall werden unterschieden`() {
+        val plateau = reihe(110.0, 110.0, 110.0, 110.0, 110.0, 110.0, 110.0, 110.0)
+        val rauschen = reihe(95.0, 94.0, 95.0, 95.0, 94.0, 95.0, 95.0, 94.0)
+        val abfall = reihe(120.0, 119.5, 119.0, 118.5, 118.0, 117.5, 117.0, 116.5)
+        assertEquals(GlucoseStability.Stabilisation.STABILISED,
+                     GlucoseStability.evaluate(plateau, plateau.jetzt(), p).stabilisation, "Plateau")
+        assertEquals(GlucoseStability.Stabilisation.STABILISED,
+                     GlucoseStability.evaluate(rauschen, rauschen.jetzt(), p).stabilisation, "Rauschen")
+        assertEquals(GlucoseStability.Stabilisation.STILL_FALLING,
+                     GlucoseStability.evaluate(abfall, abfall.jetzt(), p).stabilisation, "langsamer Abfall")
     }
 
     // ---- V-Verlauf durch MEHRERE Fensterpositionen ------------------------

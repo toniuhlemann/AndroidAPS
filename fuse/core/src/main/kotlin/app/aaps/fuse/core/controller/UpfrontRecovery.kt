@@ -181,7 +181,12 @@ object UpfrontRecovery {
     // alten Welt darf unter der neuen Regel NICHT still weiterlaufen - er
     // wuerde eine Bestaetigung behaupten, die nie unter diesen Bedingungen
     // entstanden ist.
-    const val TRACK_SCHEMA = 2
+    // v3 (28.08.): `confirmedCycles` zaehlt jetzt STABILISIERUNG IM
+    // JUENGSTEN ABSCHNITT statt Stabilitaet des Gesamtfensters. Wieder ein
+    // Bedeutungswechsel, wieder eine Generation - ein gespeicherter Stand
+    // behauptet sonst eine Bestaetigung, die unter der neuen Regel nie
+    // entstanden ist.
+    const val TRACK_SCHEMA = 3
 
     enum class Denial {
         /** Kein Aufschub offen - die Frage stellt sich nicht. */

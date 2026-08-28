@@ -508,6 +508,8 @@ object GlucoseStability {
                 val dt = (letzte[b].sourceTs - letzte[a].sourceTs) / 60_000.0
                 if (dt <= 0.0) continue
                 val d = letzte[b].rawBg - letzte[a].rawBg
+                // (1) Kein SCHARFER Einbruch im Abschnitt - laengenabhaengig,
+                //     damit ein Quantisierungsschritt nicht zaehlt.
                 if (d + params.allowedDropMgdl(dt) < 0.0) reisst = true
                 if (d < schlecht) {
                     schlecht = d
@@ -515,8 +517,23 @@ object GlucoseStability {
                 }
             }
         }
+        // (2) UND ES MUSS AUFGEHOERT HABEN. Diese Schranke waechst
+        //     AUSDRUECKLICH NICHT mit der Dauer (Toni 28.08.).
+        //
+        //     Der Grund ist ein Gegenfall an der eigenen Kante: ein
+        //     ununterbrochener Abfall von -0,5 mg/dl/min ergibt ueber fuenf
+        //     Minuten -2,5 gegen erlaubte 2 + 0,1*5 = 2,5 - er galt damit als
+        //     STABILISIERT. Mit einer mitwachsenden Schranke ist JEDER
+        //     hinreichend langsame Dauerabfall per Konstruktion "stabil", und
+        //     die Regel unterscheidet "Abfall beendet" nicht mehr von "Abfall
+        //     langsam genug". Genau diese Unterscheidung ist ihr Zweck.
+        //
+        //     Das Netto misst deshalb gegen die dauerUNabhaengige Zugabe -
+        //     dieselbe Groesse, die auch ein Quantisierungsschritt kostet.
+        val netto = letzte.last().rawBg - letzte.first().rawBg
+        val hatAufgehoert = netto >= -params.noiseAllowanceMgdl
         return Triple(
-            if (reisst) Stabilisation.STILL_FALLING else Stabilisation.STABILISED,
+            if (reisst || !hatAufgehoert) Stabilisation.STILL_FALLING else Stabilisation.STABILISED,
             schlecht, schlechtSpan,
         )
     }
