@@ -643,9 +643,15 @@ object UpfrontRecovery {
         //
         // Der Nachweis laeuft jetzt ueber die GEMESSENE Reihe. Er ist
         // dreiwertig, und "nicht beurteilbar" bleibt eine Sperre.
-        when (stability?.verdict) {
-            app.aaps.fuse.core.signal.GlucoseStability.Verdict.STABLE -> Unit
-            app.aaps.fuse.core.signal.GlucoseStability.Verdict.FALLING ->
+        // GEHOERT WIRD DIE STABILISIERUNG IM JUENGSTEN ABSCHNITT, nicht das
+        // Fensterurteil (Toni 28.08.). Ein historischer Rueckgang bis auf das
+        // heutige Niveau ist kein laufender Abfall - die Reihe
+        // 110,100,100,100,100,100,100,100 ist seit sechs Minuten unveraendert
+        // und faellt im Fensterurteil trotzdem durch. Genau diese Lage soll
+        // der Ruhe-Ausgang loesen koennen; dafuer war er gebaut.
+        when (stability?.stabilisation) {
+            app.aaps.fuse.core.signal.GlucoseStability.Stabilisation.STABILISED -> Unit
+            app.aaps.fuse.core.signal.GlucoseStability.Stabilisation.STILL_FALLING ->
                 return nein(Denial.STILL_FALLING)
             else -> return nein(Denial.SIGNAL_UNDETERMINED)
         }

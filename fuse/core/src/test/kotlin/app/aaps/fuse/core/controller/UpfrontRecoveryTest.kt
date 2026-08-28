@@ -38,19 +38,25 @@ class UpfrontRecoveryTest {
     private fun stabil() = app.aaps.fuse.core.signal.GlucoseStability.Result(
         app.aaps.fuse.core.signal.GlucoseStability.Verdict.STABLE, app.aaps.fuse.core.signal.GlucoseStability.Reason.OK,
         -1.0, 5.0, 2.5, marker + 600_000L, 10, 10.0, 30,
-        bindingEndsAtNewest = false, freshDropExists = false, confirmedCycles = 1,
+        bindingEndsAtNewest = false, dropReachesNow = false,
+        stabilisation = app.aaps.fuse.core.signal.GlucoseStability.Stabilisation.STABILISED,
+        recentWorstDropMgdl = 0.0, recentWorstDropSpanMin = 3.0, confirmedCycles = 1,
     )
 
     private fun fallend() = app.aaps.fuse.core.signal.GlucoseStability.Result(
         app.aaps.fuse.core.signal.GlucoseStability.Verdict.FALLING, app.aaps.fuse.core.signal.GlucoseStability.Reason.DROP_EXCEEDS,
         -8.0, 2.0, 2.2, marker + 600_000L, 10, 10.0, 30,
-        bindingEndsAtNewest = true, freshDropExists = true, confirmedCycles = 0,
+        bindingEndsAtNewest = true, dropReachesNow = true,
+        stabilisation = app.aaps.fuse.core.signal.GlucoseStability.Stabilisation.STILL_FALLING,
+        recentWorstDropMgdl = -8.0, recentWorstDropSpanMin = 2.0, confirmedCycles = 0,
     )
 
     private fun unbestimmbar() = app.aaps.fuse.core.signal.GlucoseStability.Result(
         app.aaps.fuse.core.signal.GlucoseStability.Verdict.UNDETERMINED, app.aaps.fuse.core.signal.GlucoseStability.Reason.TOO_FEW_POINTS,
         0.0, 0.0, 0.0, 0L, 2, 1.0, 0,
-        bindingEndsAtNewest = false, freshDropExists = false, confirmedCycles = 0,
+        bindingEndsAtNewest = false, dropReachesNow = false,
+        stabilisation = app.aaps.fuse.core.signal.GlucoseStability.Stabilisation.UNDETERMINED,
+        recentWorstDropMgdl = 0.0, recentWorstDropSpanMin = 0.0, confirmedCycles = 0,
     )
 
     private val regelVersion = 31

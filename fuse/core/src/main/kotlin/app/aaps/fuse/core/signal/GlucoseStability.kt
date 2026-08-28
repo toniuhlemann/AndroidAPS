@@ -71,6 +71,36 @@ object GlucoseStability {
         UNDETERMINED,
     }
 
+    /**
+     * HAT SICH DIE LAGE IM JUENGSTEN ZUSAMMENHAENGENDEN ABSCHNITT BERUHIGT?
+     *
+     * DIES IST DER NACHWEIS, AUF DEN DER RUHE-AUSGANG HOERT - nicht das
+     * Fensterurteil [Verdict] und schon gar nicht eines der Diagnoseflags.
+     *
+     * WARUM ES IHN BRAUCHT (Toni 28.08.). Weder [Result.dropReachesNow] noch
+     * [Result.bindingEndsAtNewest] belegt eine LAUFENDE Fallbewegung. Beide
+     * sagen nur etwas ueber den Vergleich mit frueheren Werten: die Reihe
+     * 110,100,100,100,100,100,100,100 ist seit sechs Minuten unveraendert und
+     * meldet trotzdem beides. Ein historischer Rueckgang BIS AUF das heutige
+     * Niveau ist etwas anderes als ein Abfall, der jetzt noch laeuft - und
+     * genau diese zwei Dinge waren vermengt.
+     *
+     * Die urspruengliche Aufgabe lautet: eine BELEGTE STABILISIERUNG soll
+     * einen historischen Erholungsriegel loesen koennen. Dafuer reicht es
+     * nicht, alte und aktuelle Messpunkte anders zu vergleichen.
+     */
+    enum class Stabilisation {
+        /** Der juengste Abschnitt faellt nicht mehr ueber die Toleranz. */
+        STABILISED,
+
+        /** Er faellt weiter - eine laufende Bewegung, kein Altbestand. */
+        STILL_FALLING,
+
+        /** Zu wenige Punkte, Luecke oder zu kurze Spanne im juengsten
+         *  Abschnitt. Keine Entwarnung. */
+        UNDETERMINED,
+    }
+
     enum class Reason {
         OK,
 
@@ -131,6 +161,15 @@ object GlucoseStability {
         val minPoints: Int = 6,
         val maxGapMin: Double = 3.0,
         val maxAgeMin: Double = 3.0,
+        /**
+         * Der JUENGSTE zusammenhaengende Abschnitt, in dem die Stabilisierung
+         * belegt werden muss [min]. WAHL, KANDIDAT: kurz genug, dass ein
+         * abgeschlossener Rueckgang herausfaellt, lang genug, dass eine
+         * Pause zwischen zwei Abfaellen ihn nicht vortaeuscht.
+         */
+        val recentWindowMin: Int = 5,
+        /** Mindestpunkte im juengsten Abschnitt. */
+        val recentMinPoints: Int = 4,
     ) {
 
         /** Ein Parametersatz, unter dem kein Urteil moeglich waere, ist selbst
@@ -139,6 +178,7 @@ object GlucoseStability {
             get() = windowMin > 0 && minPoints >= 2 &&
                 maxGapMin > 0.0 && maxGapMin.isFinite() &&
                 maxAgeMin > 0.0 && maxAgeMin.isFinite() &&
+                recentWindowMin > 0 && recentMinPoints >= 2 &&
                 noiseAllowanceMgdl >= 0.0 && driftMgdlPerMin >= 0.0 &&
                 noiseAllowanceMgdl.isFinite() && driftMgdlPerMin.isFinite()
 
@@ -210,7 +250,26 @@ object GlucoseStability {
          * Diese Klasse HANDELT nicht danach. Wer eine Lockerung darauf bauen
          * will, braucht diesen Wert, nicht den anderen.
          */
-        val freshDropExists: Boolean,
+        /**
+         * Liegt der AKTUELLE Wert gegenueber irgendeinem frueheren staerker
+         * unter der erlaubten Differenz?
+         *
+         * HIESS BIS 28.08. `freshDropExists` - ein irrefuehrender Name, den
+         * Toni an einem eigenen Testfall entlarvt hat: die Reihe
+         * 110,100,100,100,100,100,100,100 ist seit sechs Minuten unveraendert
+         * und meldet trotzdem `true`. Das Flag beschreibt einen HISTORISCHEN
+         * RUECKGANG BIS AUF DAS HEUTIGE NIVEAU, keine laufende Bewegung.
+         *
+         * Es beweist damit NICHTS ueber die Gegenwart. Wer wissen will, ob
+         * gerade noch gefallen wird, liest [stabilisation].
+         */
+        val dropReachesNow: Boolean,
+        /** Der eigentliche Gegenwartsnachweis - s. [Stabilisation]. */
+        val stabilisation: Stabilisation,
+        /** Groesster Rueckgang im juengsten Abschnitt [mg/dl], fuer den Bericht. */
+        val recentWorstDropMgdl: Double,
+        /** Und ueber welche Dauer - dieselbe Hoehe heisst nicht dasselbe. */
+        val recentWorstDropSpanMin: Double,
         /**
          * Wie viele AUFEINANDERFOLGENDE Zyklen bis hierher bereits stabil
          * waren - rueckwirkend aus der vorhandenen Reihe gerechnet.
@@ -224,7 +283,10 @@ object GlucoseStability {
     )
 
     private fun nein(reason: Reason, punkte: Int = 0, span: Double = 0.0) =
-        Result(Verdict.UNDETERMINED, reason, 0.0, 0.0, 0.0, 0L, punkte, span, 0, false, false, 0)
+        Result(
+            Verdict.UNDETERMINED, reason, 0.0, 0.0, 0.0, 0L, punkte, span, 0, false,
+            false, Stabilisation.UNDETERMINED, 0.0, 0.0, 0,
+        )
 
     /** Wie weit die Rueckrechnung hoechstens geht. Mehr als das braucht kein
      *  Bestaetigungszaehler, und die Kosten waeren quadratisch je Schritt. */
@@ -262,7 +324,7 @@ object GlucoseStability {
             return nein(Reason.INVALID_INPUT, series.size)
 
         val jetzt = kern(series, nowTs, params)
-        if (jetzt.verdict != Verdict.STABLE) return jetzt
+        if (jetzt.stabilisation != Stabilisation.STABILISED) return jetzt
         return jetzt.copy(confirmedCycles = bestaetigteZyklen(series, nowTs, params))
     }
 
@@ -365,6 +427,7 @@ object GlucoseStability {
         // KEIN PAAR HEISST KEIN URTEIL, nicht "stabil".
         if (paare == 0) return nein(Reason.TOO_FEW_POINTS, punkte.size, spanMin)
 
+        val beruhigt = juengsterAbschnitt(punkte, params)
         val faellt = engster < 0.0
         // FRISCH ODER ALT: endet der bindende Abschnitt am juengsten Punkt?
         val bindetBisJetzt = engStartTs != 0L &&
@@ -380,7 +443,10 @@ object GlucoseStability {
             spanMin = spanMin,
             evaluatedPairs = paare,
             bindingEndsAtNewest = bindetBisJetzt,
-            freshDropExists = frischerAbfall,
+            dropReachesNow = frischerAbfall,
+            stabilisation = beruhigt.first,
+            recentWorstDropMgdl = beruhigt.second,
+            recentWorstDropSpanMin = beruhigt.third,
             // Der Kern zaehlt NICHT zurueck - das taete er sonst rekursiv.
             confirmedCycles = 0,
         )
@@ -407,6 +473,54 @@ object GlucoseStability {
      * Ungefaehrlichkeit. Autorisierung und Mengenbilanz haengen unveraendert
      * am neuen Marker.
      */
+    /**
+     * DER JUENGSTE ZUSAMMENHAENGENDE ABSCHNITT - faellt dort noch etwas?
+     *
+     * Dieselbe laengenabhaengige Toleranz wie im grossen Fenster, aber nur
+     * auf die letzten [Params.recentWindowMin] Minuten angewandt. Ein
+     * abgeschlossener Rueckgang faellt damit heraus, sobald er alt genug ist;
+     * eine Pause zwischen zwei Abfaellen taeuscht keine Beruhigung vor,
+     * solange der zweite Abfall im Abschnitt liegt.
+     *
+     * @return Urteil, groesster Rueckgang [mg/dl], dessen Dauer [min]
+     */
+    private fun juengsterAbschnitt(
+        punkte: List<GlucosePoint>,
+        params: Params,
+    ): Triple<Stabilisation, Double, Double> {
+        val bis = punkte.last().sourceTs
+        val von = bis - params.recentWindowMin * 60_000L
+        val letzte = punkte.filter { it.sourceTs in von..bis }
+        if (letzte.size < params.recentMinPoints)
+            return Triple(Stabilisation.UNDETERMINED, 0.0, 0.0)
+        val spanne = (letzte.last().sourceTs - letzte.first().sourceTs) / 60_000.0
+        if (spanne < params.recentWindowMin * 0.6)
+            return Triple(Stabilisation.UNDETERMINED, 0.0, 0.0)
+        for (i in 1 until letzte.size) {
+            val luecke = (letzte[i].sourceTs - letzte[i - 1].sourceTs) / 60_000.0
+            if (luecke > params.maxGapMin) return Triple(Stabilisation.UNDETERMINED, 0.0, 0.0)
+        }
+        var schlecht = 0.0
+        var schlechtSpan = 0.0
+        var reisst = false
+        for (a in letzte.indices) {
+            for (b in a + 1 until letzte.size) {
+                val dt = (letzte[b].sourceTs - letzte[a].sourceTs) / 60_000.0
+                if (dt <= 0.0) continue
+                val d = letzte[b].rawBg - letzte[a].rawBg
+                if (d + params.allowedDropMgdl(dt) < 0.0) reisst = true
+                if (d < schlecht) {
+                    schlecht = d
+                    schlechtSpan = dt
+                }
+            }
+        }
+        return Triple(
+            if (reisst) Stabilisation.STILL_FALLING else Stabilisation.STABILISED,
+            schlecht, schlechtSpan,
+        )
+    }
+
     private fun bestaetigteZyklen(
         series: MeasuredGlucose,
         nowTs: Long,
@@ -418,7 +532,10 @@ object GlucoseStability {
         while (i >= 0 && zaehler < MAX_CONFIRM_LOOKBACK) {
             // DIESELBE vollstaendige Bewertung wie fuer die Gegenwart -
             // inklusive Luecken-, Frische-, Zahlen- und Spannenpruefung.
-            if (kern(series, zeiten[i], params).verdict != Verdict.STABLE) break
+            // Gezaehlt wird die STABILISIERUNG, nicht das Fensterurteil: ein
+            // historischer Rueckgang darf die Bestaetigung nicht abreissen,
+            // wenn der juengste Abschnitt laengst ruhig ist.
+            if (kern(series, zeiten[i], params).stabilisation != Stabilisation.STABILISED) break
             zaehler++
             i--
         }

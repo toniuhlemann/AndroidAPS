@@ -307,18 +307,74 @@ class GlucoseStabilityTest {
         val r = GlucoseStability.evaluate(s, s.jetzt(), p)
         assertEquals(GlucoseStability.Verdict.FALLING, r.verdict)
         assertTrue(!r.bindingEndsAtNewest, "das staerkste Paar liegt frueh: $r")
-        assertTrue(r.freshDropExists,
-                   "aber es faellt sehr wohl gerade etwas - genau das darf nicht verdeckt werden")
+        assertTrue(r.dropReachesNow,
+                   "der Vergleich mit frueher reisst bis zum juengsten Punkt")
+        assertEquals(GlucoseStability.Stabilisation.STILL_FALLING, r.stabilisation,
+                     "und der juengste Abschnitt faellt wirklich: $r")
     }
 
-    /** Und die Gegenrichtung: ein Paar am juengsten Punkt beweist keinen
-     *  fortdauernden Abfall, wenn der Endwert seit Minuten steht. */
+    /**
+     * DIE GRENZE DER BEIDEN FLAGS, an Tonis Beispiel (28.08.).
+     *
+     * Dieser Test hiess einmal "meldet keinen frischen Abfall" und behauptete
+     * dann `assertTrue(freshDropExists)` - Name und Zusicherung widersprachen
+     * sich, und ein beschoenigender Kommentar hat den Widerspruch zugedeckt.
+     *
+     * Die Reihe ist seit sechs Minuten unveraendert. `dropReachesNow` meldet
+     * trotzdem `true`, weil der aktuelle Wert unter einem frueheren liegt -
+     * ein HISTORISCHER Rueckgang bis auf das heutige Niveau. Ueber die
+     * Gegenwart sagt das nichts. Genau deshalb hoert der Ruhe-Ausgang auf
+     * [GlucoseStability.Stabilisation] und auf keines dieser Flags.
+     */
     @Test
-    fun `ein flaches Ende trotz alter Stufe meldet keinen frischen Abfall`() {
+    fun `ein flaches Ende meldet dropReachesNow und ist trotzdem stabilisiert`() {
         val s = reihe(110.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0)
         val r = GlucoseStability.evaluate(s, s.jetzt(), p)
-        assertEquals(GlucoseStability.Verdict.FALLING, r.verdict, "die Stufe reisst noch: $r")
-        assertTrue(r.freshDropExists, "sie laeuft bis zum juengsten Punkt - ehrlich gemeldet")
+        assertEquals(GlucoseStability.Verdict.FALLING, r.verdict,
+                     "das FENSTER traegt die alte Stufe noch: $r")
+        assertTrue(r.dropReachesNow, "und der Vergleich mit frueher reisst - aber das ist Historie")
+        assertEquals(GlucoseStability.Stabilisation.STABILISED, r.stabilisation,
+                     "der juengste Abschnitt ist seit sechs Minuten flach: $r")
+    }
+
+    // ---- Tonis drei Gegenproben zur Stabilisierung -------------------------
+
+    /** (1) ABFALL -> PLATEAU: die Beruhigung ist belegt. */
+    @Test
+    fun `Abfall dann Plateau gilt als stabilisiert`() {
+        val s = reihe(120.0, 116.0, 112.0, 108.0, 108.0, 108.0, 108.0, 108.0, 108.0)
+        val r = GlucoseStability.evaluate(s, s.jetzt(), p)
+        assertEquals(GlucoseStability.Stabilisation.STABILISED, r.stabilisation, "$r")
+    }
+
+    /** (2) ABFALL -> KURZE PAUSE -> ERNEUTER ABFALL: keine Beruhigung. */
+    @Test
+    fun `Abfall Pause Abfall gilt nicht als stabilisiert`() {
+        val s = reihe(120.0, 114.0, 108.0, 108.0, 108.0, 102.0, 96.0, 90.0)
+        val r = GlucoseStability.evaluate(s, s.jetzt(), p)
+        assertEquals(GlucoseStability.Stabilisation.STILL_FALLING, r.stabilisation, "$r")
+    }
+
+    /** (3) ALTER STARKER ABFALL + FRISCHER SCHWAECHERER: keine Beruhigung.
+     *  Der starke alte darf den schwaechergen frischen nicht verdecken. */
+    @Test
+    fun `alter starker und frischer schwacher Abfall gilt nicht als stabilisiert`() {
+        val s = reihe(140.0, 120.0, 110.0, 110.0, 110.0, 108.0, 106.0, 104.0)
+        val r = GlucoseStability.evaluate(s, s.jetzt(), p)
+        assertEquals(GlucoseStability.Stabilisation.STILL_FALLING, r.stabilisation,
+                     "der frische Abfall zaehlt, obwohl der alte staerker war: $r")
+    }
+
+    /** Zu wenige Punkte im juengsten Abschnitt sind keine Beruhigung. */
+    @Test
+    fun `ein zu duenner juengster Abschnitt ist unbestimmbar`() {
+        val ts = listOf(0L, 1L, 2L, 3L, 4L, 5L, 10L)
+        val s = MeasuredGlucose(
+            points = ts.map { GlucosePoint(t0 + it * 60_000L, 95.0, 95.0) },
+            segmentStartTs = t0, signalEpochTs = 1L,
+        )
+        val r = GlucoseStability.evaluate(s, t0 + 10 * 60_000L, p)
+        assertEquals(GlucoseStability.Stabilisation.UNDETERMINED, r.stabilisation, "$r")
     }
 
     // ---- Die Historienberechnung SELBST ------------------------------------
@@ -334,18 +390,35 @@ class GlucoseStabilityTest {
                    "die Reihe belegt mehrere ruhige Zyklen: ${r.confirmedCycles}")
     }
 
-    /** Ein Abfall in der Vergangenheit beendet die Zaehlung dort. */
+    /**
+     * DIESER TEST STAND ANDERSHERUM und kodierte den alten Vertrag: ein
+     * historischer Abfall unterbrach die Bestaetigung. Genau das soll er seit
+     * dem 28.08. NICHT mehr - der Ruhe-Ausgang wurde gebaut, damit eine
+     * belegte Beruhigung einen historischen Riegel loesen kann. Ein Sturz vor
+     * zehn Minuten, gefolgt von einem langen Plateau, ist eine beruhigte
+     * Lage; wer sie weiter sperrt, sperrt Geschichte.
+     *
+     * Was den Zaehler weiterhin abreisst, ist ein Abfall im JUENGSTEN
+     * Abschnitt - das prueft der Test darunter.
+     */
     @Test
-    fun `ein historischer Abfall unterbricht die Bestaetigung`() {
-        // Erst ein Sturz, dann acht ruhige Minuten.
+    fun `ein historischer Abfall unterbricht die Bestaetigung nicht mehr`() {
         val s = reihe(120.0, 110.0, 110.0, 110.0, 110.0, 110.0, 110.0, 110.0,
                       110.0, 110.0, 110.0, 110.0, 110.0, 110.0)
         val r = GlucoseStability.evaluate(s, s.jetzt(), p)
-        assertEquals(GlucoseStability.Verdict.STABLE, r.verdict, "$r")
-        val ohneSturz = GlucoseStability.evaluate(reihe(*DoubleArray(14) { 95.0 }),
-                                                  s.jetzt(), p).confirmedCycles
-        assertTrue(r.confirmedCycles < ohneSturz,
-                   "der Sturz muss die Zaehlung begrenzen: ${r.confirmedCycles} gegen $ohneSturz")
+        assertEquals(GlucoseStability.Stabilisation.STABILISED, r.stabilisation, "$r")
+        assertTrue(r.confirmedCycles >= 3,
+                   "das lange Plateau belegt mehrere Zyklen: ${r.confirmedCycles}")
+    }
+
+    /** Ein Abfall im juengsten Abschnitt reisst die Bestaetigung sehr wohl ab. */
+    @Test
+    fun `ein frischer Abfall unterbricht die Bestaetigung`() {
+        val s = reihe(110.0, 110.0, 110.0, 110.0, 110.0, 110.0, 110.0, 110.0,
+                      110.0, 110.0, 106.0, 102.0)
+        val r = GlucoseStability.evaluate(s, s.jetzt(), p)
+        assertEquals(GlucoseStability.Stabilisation.STILL_FALLING, r.stabilisation, "$r")
+        assertEquals(0, r.confirmedCycles, "und der Zaehler steht bei null: $r")
     }
 
     /**
