@@ -224,6 +224,72 @@ class GlucoseStabilityTest {
                      GlucoseStability.evaluate(s, s.jetzt(), p, priorEpochTs = 41L).reason)
     }
 
+    // ---- Tonis Nachbesserungen (28.08.) -----------------------------------
+
+    /**
+     * DEFEKT 1: ein Punkt HINTER `nowTs` machte die Altersprüfung negativ und
+     * wurde danach vom Fensterfilter entfernt - die verbliebene Reihe war vier
+     * Minuten alt und wurde trotzdem beurteilt.
+     *
+     * Jetzt gilt die Frische fuer die Punkte, die WIRKLICH benutzt werden.
+     */
+    @Test
+    fun `ein Zukunftspunkt darf die Frischepruefung nicht unterlaufen`() {
+        val min = listOf(0L, 1L, 2L, 3L, 4L, 6L, 11L)
+        val s = MeasuredGlucose(
+            points = min.map { GlucosePoint(t0 + it * 60_000L, 95.0, 95.0) },
+            segmentStartTs = t0, signalEpochTs = 1L,
+        )
+        val r = GlucoseStability.evaluate(s, t0 + 10 * 60_000L, p)
+        assertEquals(GlucoseStability.Verdict.UNDETERMINED, r.verdict,
+                     "der juengste BENUTZTE Punkt ist vier Minuten alt: $r")
+    }
+
+    /** Ein Punkt weit in der Zukunft ist ein Uhrenproblem, kein Messwert. */
+    @Test
+    fun `ein weit zukuenftiger Punkt ist ungueltig`() {
+        val s = MeasuredGlucose(
+            points = (0..6).map { GlucosePoint(t0 + it * 60_000L, 95.0, 95.0) } +
+                GlucosePoint(t0 + 20 * 60_000L, 95.0, 95.0),
+            segmentStartTs = t0, signalEpochTs = 1L,
+        )
+        val r = GlucoseStability.evaluate(s, t0 + 6 * 60_000L, p)
+        assertEquals(GlucoseStability.Reason.INVALID_INPUT, r.reason, "$r")
+    }
+
+    /** DEFEKT 1b: unendliche Schranken schalten sich selbst ab. */
+    @Test
+    fun `unendliche Schranken sind unbrauchbar`() {
+        val s = reihe(*DoubleArray(11) { 95.0 })
+        for (kaputt in listOf(
+            p.copy(maxGapMin = Double.POSITIVE_INFINITY),
+            p.copy(maxAgeMin = Double.POSITIVE_INFINITY),
+        )) {
+            assertEquals(GlucoseStability.Verdict.UNDETERMINED,
+                         GlucoseStability.evaluate(s, s.jetzt(), kaputt).verdict,
+                         "$kaputt darf keine Schranke ausschalten")
+        }
+    }
+
+    /**
+     * DEFEKT 2: im stabilen Fall beschrieben Rueckgang, Dauer und Zeitstempel
+     * kein gemeinsames Paar - der Rueckgang kam aus einem zweiten Scan,
+     * Dauer und Zeitstempel blieben 0. Herauskam "-2 mg/dl ueber 0 Minuten".
+     */
+    @Test
+    fun `auch im stabilen Fall beschreibt die Diagnose EIN Paar`() {
+        val s = reihe(96.0, 96.0, 95.0, 95.0, 95.0, 95.0, 95.0, 95.0, 94.0, 95.0, 95.0)
+        val r = GlucoseStability.evaluate(s, s.jetzt(), p)
+        assertEquals(GlucoseStability.Verdict.STABLE, r.verdict, "$r")
+        assertTrue(r.worstDropMgdl < 0.0, "es gab einen Rueckgang: $r")
+        assertTrue(r.worstDropSpanMin > 0.0, "und er hat eine Dauer: $r")
+        assertTrue(r.worstDropEndsTs > 0L, "und einen Ablauf: $r")
+        // Und die erlaubte Menge steht daneben, damit nachvollziehbar ist,
+        // WARUM der Grenzfall bestanden hat.
+        assertTrue(r.worstDropAllowedMgdl >= -r.worstDropMgdl,
+                   "erlaubt ${r.worstDropAllowedMgdl} gegen gefallen ${r.worstDropMgdl}")
+    }
+
     // ---- Kein Freigabe-Countdown ------------------------------------------
 
     /**

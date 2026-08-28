@@ -136,7 +136,9 @@ object GlucoseStability {
         /** Ein Parametersatz, unter dem kein Urteil moeglich waere, ist selbst
          *  ein Ablehnungsgrund - nicht ein stilles STABLE. */
         val usable: Boolean
-            get() = windowMin > 0 && minPoints >= 2 && maxGapMin > 0.0 && maxAgeMin > 0.0 &&
+            get() = windowMin > 0 && minPoints >= 2 &&
+                maxGapMin > 0.0 && maxGapMin.isFinite() &&
+                maxAgeMin > 0.0 && maxAgeMin.isFinite() &&
                 noiseAllowanceMgdl >= 0.0 && driftMgdlPerMin >= 0.0 &&
                 noiseAllowanceMgdl.isFinite() && driftMgdlPerMin.isFinite()
 
@@ -166,6 +168,9 @@ object GlucoseStability {
         val reason: Reason,
         val worstDropMgdl: Double,
         val worstDropSpanMin: Double,
+        /** Was dieser Abschnitt haette fallen duerfen - damit im stabilen
+         *  Grenzfall nachvollziehbar ist, WARUM er bestanden hat. */
+        val worstDropAllowedMgdl: Double,
         val worstDropEndsTs: Long,
         val points: Int,
         val spanMin: Double,
@@ -173,7 +178,11 @@ object GlucoseStability {
     )
 
     private fun nein(reason: Reason, punkte: Int = 0, span: Double = 0.0) =
-        Result(Verdict.UNDETERMINED, reason, 0.0, 0.0, 0L, punkte, span, 0)
+        Result(Verdict.UNDETERMINED, reason, 0.0, 0.0, 0.0, 0L, punkte, span, 0)
+
+    /** Ein Zeitstempel darf `nowTs` um diese Spanne ueberschreiten, ohne als
+     *  Uhrenproblem zu gelten - Rechenzeit innerhalb eines Zyklus. */
+    const val FUTURE_TOLERANCE_MS = 60_000L
 
     /**
      * @param priorEpochTs Segmentidentitaet des Vorzyklus, 0 = keine. Wechselt
@@ -190,14 +199,21 @@ object GlucoseStability {
         if (priorEpochTs != 0L && series.signalEpochTs != priorEpochTs)
             return nein(Reason.SEGMENT_CHANGED)
 
-        // VERALTET IST NICHT RUHIG - und die Pruefung gehoert VOR den
-        // Fensterfilter. Stuende sie dahinter, haette der Filter die alten
-        // Punkte laengst entfernt, STALE waere unerreichbar und die Diagnose
-        // hiesse TOO_FEW_POINTS. Der Aufrufer suchte dann nach Luecken,
-        // waehrend in Wahrheit die ganze Reihe alt ist.
-        val juengster = series.points.lastOrNull()
+        // ZUKUNFTSPUNKTE AUSDRUECKLICH BEHANDELN (Toni 28.08.). Ein Punkt
+        // hinter `nowTs` ist ein Uhrenproblem, kein Messwert - und er hat die
+        // Altersprüfung unterlaufen: er machte ihr Ergebnis NEGATIV, wurde
+        // danach vom Fensterfilter entfernt, und die verbliebene Reihe war
+        // vier Minuten alt und wurde trotzdem beurteilt.
+        val neuester = series.points.lastOrNull() ?: return nein(Reason.TOO_FEW_POINTS)
+        if (neuester.sourceTs - nowTs > FUTURE_TOLERANCE_MS)
+            return nein(Reason.INVALID_INPUT, series.size)
+
+        // VERALTET IST NICHT RUHIG. Diese Vorpruefung faengt die vollstaendig
+        // alte Reihe; die eigentliche Zusicherung steht weiter unten auf dem
+        // juengsten TATSAECHLICH BENUTZTEN Punkt.
+        val juengsterEcht = series.points.lastOrNull { it.sourceTs <= nowTs }
             ?: return nein(Reason.TOO_FEW_POINTS)
-        if ((nowTs - juengster.sourceTs) / 60_000.0 > params.maxAgeMin)
+        if ((nowTs - juengsterEcht.sourceTs) / 60_000.0 > params.maxAgeMin)
             return nein(Reason.STALE, series.size)
 
         val punkte = series.lastMinutes(nowTs, params.windowMin)
@@ -224,12 +240,27 @@ object GlucoseStability {
             if (luecke > params.maxGapMin) return nein(Reason.GAP_IN_WINDOW, punkte.size, spanMin)
         }
 
+        // DIE FRISCHE GILT FUER DIE PUNKTE, DIE WIRKLICH BEURTEILT WERDEN.
+        // Die Vorpruefung oben kann das nicht leisten: sie sieht auch Punkte,
+        // die der Fensterfilter danach entfernt.
+        if ((nowTs - punkte.last().sourceTs) / 60_000.0 > params.maxAgeMin)
+            return nein(Reason.STALE, punkte.size, spanMin)
+
         // JEDES Paar wird beurteilt - keines wird uebersprungen. Verglichen
         // wird der Rueckgang gegen die zur Dauer passende Toleranz.
-        var schlimmste = 0.0          // Ueberschreitung (negativ = ueber der Toleranz)
-        var schlechtDrop = 0.0
-        var schlechtSpan = 0.0
-        var schlechtStartTs = 0L
+        //
+        // ES GEWINNT IMMER DASSELBE PAAR, in beiden Ausgaengen (Toni 28.08.):
+        // das mit dem KLEINSTEN Abstand zu seiner Toleranz. Vorher kam der
+        // gemeldete Rueckgang im stabilen Fall aus einem zweiten,
+        // nachtraeglichen Scan, waehrend Dauer und Zeitstempel nur bei einer
+        // Verletzung gesetzt wurden - herauskam "-2 mg/dl ueber 0 Minuten",
+        // ein Tripel, das kein Paar beschreibt. Gerade im stabilen Grenzfall
+        // war damit nicht nachvollziehbar, WARUM er bestanden hat.
+        var engster = Double.MAX_VALUE   // kleinster Abstand zur Toleranz
+        var engDrop = 0.0
+        var engSpan = 0.0
+        var engStartTs = 0L
+        var engErlaubt = 0.0
         var paare = 0
         for (a in punkte.indices) {
             for (b in a + 1 until punkte.size) {
@@ -237,44 +268,34 @@ object GlucoseStability {
                 if (dt <= 0.0) continue
                 paare++
                 val d = punkte[b].rawBg - punkte[a].rawBg
-                // Wie weit REISST der Abschnitt die Toleranz - nicht wie tief
-                // er faellt. Sonst gewaenne immer das laengste Intervall.
-                val ueberschuss = d + params.allowedDropMgdl(dt)
-                if (ueberschuss < schlimmste) {
-                    schlimmste = ueberschuss
-                    schlechtDrop = d
-                    schlechtSpan = dt
-                    schlechtStartTs = punkte[a].sourceTs
+                val erlaubt = params.allowedDropMgdl(dt)
+                // Wie weit REISST der Abschnitt seine Toleranz - nicht wie
+                // tief er faellt. Sonst gewaenne immer das laengste Intervall.
+                val abstand = d + erlaubt
+                if (abstand < engster) {
+                    engster = abstand
+                    engDrop = d
+                    engSpan = dt
+                    engStartTs = punkte[a].sourceTs
+                    engErlaubt = erlaubt
                 }
             }
         }
         // KEIN PAAR HEISST KEIN URTEIL, nicht "stabil".
         if (paare == 0) return nein(Reason.TOO_FEW_POINTS, punkte.size, spanMin)
 
-        val faellt = schlimmste < 0.0
+        val faellt = engster < 0.0
         return Result(
             verdict = if (faellt) Verdict.FALLING else Verdict.STABLE,
             reason = if (faellt) Reason.DROP_EXCEEDS else Reason.OK,
-            worstDropMgdl = if (faellt) schlechtDrop else groesserRueckgang(punkte),
-            worstDropSpanMin = schlechtSpan,
-            worstDropEndsTs = if (schlechtStartTs == 0L) 0L
-            else schlechtStartTs + params.windowMin * 60_000L,
+            worstDropMgdl = engDrop,
+            worstDropSpanMin = engSpan,
+            worstDropAllowedMgdl = engErlaubt,
+            worstDropEndsTs = engStartTs + params.windowMin * 60_000L,
             points = punkte.size,
             spanMin = spanMin,
             evaluatedPairs = paare,
         )
-    }
-
-    /** Der groesste Rueckgang im Fenster - fuer den Bericht, wenn nichts die
-     *  Toleranz reisst. Ohne ihn stuende im stabilen Fall eine Null, und man
-     *  saehe nicht, wie nah die Lage an der Grenze war. */
-    private fun groesserRueckgang(punkte: List<GlucosePoint>): Double {
-        var schlecht = 0.0
-        for (a in punkte.indices) for (b in a + 1 until punkte.size) {
-            val d = punkte[b].rawBg - punkte[a].rawBg
-            if (d < schlecht) schlecht = d
-        }
-        return schlecht
     }
 
     /** Nur fuer Tests und Anzeige: reisst dieser Abschnitt die Toleranz? */
