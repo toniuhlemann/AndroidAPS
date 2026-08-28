@@ -38,16 +38,19 @@ class UpfrontRecoveryTest {
     private fun stabil() = app.aaps.fuse.core.signal.GlucoseStability.Result(
         app.aaps.fuse.core.signal.GlucoseStability.Verdict.STABLE, app.aaps.fuse.core.signal.GlucoseStability.Reason.OK,
         -1.0, 5.0, 2.5, marker + 600_000L, 10, 10.0, 30,
+        bindingEndsAtNewest = false, confirmedCycles = 1,
     )
 
     private fun fallend() = app.aaps.fuse.core.signal.GlucoseStability.Result(
         app.aaps.fuse.core.signal.GlucoseStability.Verdict.FALLING, app.aaps.fuse.core.signal.GlucoseStability.Reason.DROP_EXCEEDS,
         -8.0, 2.0, 2.2, marker + 600_000L, 10, 10.0, 30,
+        bindingEndsAtNewest = true, confirmedCycles = 0,
     )
 
     private fun unbestimmbar() = app.aaps.fuse.core.signal.GlucoseStability.Result(
         app.aaps.fuse.core.signal.GlucoseStability.Verdict.UNDETERMINED, app.aaps.fuse.core.signal.GlucoseStability.Reason.TOO_FEW_POINTS,
         0.0, 0.0, 0.0, 0L, 2, 1.0, 0,
+        bindingEndsAtNewest = false, confirmedCycles = 0,
     )
 
     private val regelVersion = 31
@@ -605,6 +608,51 @@ class UpfrontRecoveryTest {
         val b = assertInstanceOf(UpfrontRecovery.Decision.Blocked::class.java, d)
         assertEquals(UpfrontRecovery.Denial.CURRENT_HAZARD, b.denial)
         assertTrue(b.hazards.contains("pinnedMealRisk"))
+    }
+
+    /**
+     * DIE VORGESCHICHTE ZAEHLT AUCH ZEITLICH (Toni 28.08.). Ohne sie begann
+     * die Zaehlung nach jedem Marker wieder bei eins - am Fruehstueck des
+     * 28.08. kostete das rund vier Minuten, obwohl die Reihe die Ruhe
+     * laengst belegte.
+     */
+    @Test
+    fun `eine belegte ruhige Vorgeschichte saet den Zaehler`() {
+        val d = bewerte(
+            prior = UpfrontRecovery.Track.EMPTY,
+            stability = stabil().copy(confirmedCycles = 3),
+            sourceTs = 5_000_000L,
+        )
+        assertInstanceOf(UpfrontRecovery.Decision.CalmRecovered::class.java, d,
+                         "drei belegte ruhige Zyklen genuegen sofort")
+    }
+
+    /** Aber sie ueberstimmt keine AKTUELLE Gefahr. */
+    @Test
+    fun `eine ruhige Vorgeschichte ueberstimmt keine aktuelle Gefahr`() {
+        val d = bewerte(
+            prior = UpfrontRecovery.Track.EMPTY,
+            stability = stabil().copy(confirmedCycles = 9),
+            hazards = UpfrontRecovery.Hazards(
+                descentRisk = true, measuredLow = false, pinnedMealRisk = false,
+                rebound = false, signalUnhealthy = false, technical = false, ledgerHold = false,
+            ),
+            sourceTs = 5_000_000L,
+        )
+        assertEquals(UpfrontRecovery.Denial.CURRENT_HAZARD,
+                     assertInstanceOf(UpfrontRecovery.Decision.Blocked::class.java, d).denial)
+    }
+
+    /** Und mehr als die geforderten Zyklen bringt keinen Vorsprung. */
+    @Test
+    fun `die Saat wird auf die geforderte Zyklenzahl gedeckelt`() {
+        val d = bewerte(
+            prior = UpfrontRecovery.Track.EMPTY,
+            stability = stabil().copy(confirmedCycles = 99),
+            sourceTs = 5_000_000L,
+        )
+        val c = assertInstanceOf(UpfrontRecovery.Decision.CalmRecovered::class.java, d)
+        assertEquals(3, c.track.streak, "gedeckelt auf calmCycles")
     }
 
     @Test

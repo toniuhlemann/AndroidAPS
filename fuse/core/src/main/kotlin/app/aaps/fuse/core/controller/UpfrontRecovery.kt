@@ -654,7 +654,24 @@ object UpfrontRecovery {
             nowTs - basis.lastEvaluationTs <= LUECKENLOS_MAX_MS &&
             sourceTs > basis.lastAcceptedSourceTs &&
             sourceTs - basis.lastAcceptedSourceTs <= LUECKENLOS_MAX_MS
-        val streak = if (anschluss) basis.streak + 1 else 1
+        // DIE VORGESCHICHTE ZAEHLT AUCH ZEITLICH (Toni 28.08.).
+        //
+        // Hier stand `else 1`: nach jedem Markerwechsel begann die Zaehlung
+        // wieder bei eins, obwohl die gemessene Reihe laengst belegte, dass
+        // die Lage seit mehreren Zyklen ruhig ist. Am Fruehstueck des 28.08.
+        // kostete das allein rund vier Minuten - eine Wartezeit aus
+        // unvollstaendiger Nutzung der Historie, nicht aus einer
+        // Sicherheitsbedingung.
+        //
+        // WAS DAMIT NICHT WANDERT: Autorisierung, Budget und
+        // Lieferidentitaet kommen unveraendert aus dem NEUEN Marker - der
+        // Zaehler belegt Signalruhe, nicht Berechtigung. Und die AKTUELLEN
+        // Gefahren stehen weiter ganz oben in dieser Funktion und werden in
+        // DIESEM Zyklus geprueft; eine ruhige Vorgeschichte ueberstimmt
+        // keine davon.
+        val ausHistorie = stability?.confirmedCycles ?: 0
+        val streak = if (anschluss) basis.streak + 1
+        else maxOf(1, minOf(ausHistorie, params.calmCycles))
         val track = Track(markerIdentity, streak, sourceTs, nowTs, TrackMode.CALM,
                           params.fingerprint)
         if (streak < params.calmCycles)

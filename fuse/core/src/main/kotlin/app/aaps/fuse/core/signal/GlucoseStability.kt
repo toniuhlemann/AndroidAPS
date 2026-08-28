@@ -175,10 +175,37 @@ object GlucoseStability {
         val points: Int,
         val spanMin: Double,
         val evaluatedPairs: Int,
+        /**
+         * ENDET DER BINDENDE ABSCHNITT AM JUENGSTEN PUNKT?
+         *
+         * `true` = ein FRISCHER Abfall: der Rueckgang laeuft bis jetzt.
+         * `false` = ein AELTERER Rueckgang, der das Fenster noch nicht
+         * verlassen hat - gerade faellt nichts mehr.
+         *
+         * Getrennt auszuweisen (Toni 28.08.), weil es zwei verschiedene Lagen
+         * sind: am Fruehstueck des 28.08. hielt von 09:24 bis 09:26 ein
+         * Rueckgang, der um 09:23 bereits beendet war. Diese Klasse handelt
+         * NICHT unterschiedlich danach - sie sagt nur, welcher Fall vorliegt.
+         */
+        val bindingEndsAtNewest: Boolean,
+        /**
+         * Wie viele AUFEINANDERFOLGENDE Zyklen bis hierher bereits stabil
+         * waren - rueckwirkend aus der vorhandenen Reihe gerechnet.
+         *
+         * Jede dieser Rueckrechnungen benutzt AUSSCHLIESSLICH Punkte bis zu
+         * ihrem eigenen Zeitpunkt. Es fliesst keine Zukunftsinformation in
+         * eine Vergangenheitsbewertung; es ist dieselbe Rechnung, nur frueher
+         * angesetzt.
+         */
+        val confirmedCycles: Int,
     )
 
     private fun nein(reason: Reason, punkte: Int = 0, span: Double = 0.0) =
-        Result(Verdict.UNDETERMINED, reason, 0.0, 0.0, 0.0, 0L, punkte, span, 0)
+        Result(Verdict.UNDETERMINED, reason, 0.0, 0.0, 0.0, 0L, punkte, span, 0, false, 0)
+
+    /** Wie weit die Rueckrechnung hoechstens geht. Mehr als das braucht kein
+     *  Bestaetigungszaehler, und die Kosten waeren quadratisch je Schritt. */
+    const val MAX_CONFIRM_LOOKBACK = 12
 
     /** Ein Zeitstempel darf `nowTs` um diese Spanne ueberschreiten, ohne als
      *  Uhrenproblem zu gelten - Rechenzeit innerhalb eines Zyklus. */
@@ -285,6 +312,9 @@ object GlucoseStability {
         if (paare == 0) return nein(Reason.TOO_FEW_POINTS, punkte.size, spanMin)
 
         val faellt = engster < 0.0
+        // FRISCH ODER ALT: endet der bindende Abschnitt am juengsten Punkt?
+        val bindetBisJetzt = engStartTs != 0L &&
+            engStartTs + (engSpan * 60_000L).toLong() >= punkte.last().sourceTs - 1_000L
         return Result(
             verdict = if (faellt) Verdict.FALLING else Verdict.STABLE,
             reason = if (faellt) Reason.DROP_EXCEEDS else Reason.OK,
@@ -295,7 +325,66 @@ object GlucoseStability {
             points = punkte.size,
             spanMin = spanMin,
             evaluatedPairs = paare,
+            bindingEndsAtNewest = bindetBisJetzt,
+            confirmedCycles = if (faellt) 0 else bestaetigteZyklen(series, punkte, params),
         )
+    }
+
+    /**
+     * WIE VIELE ZYKLEN WAR ES SCHON STABIL - aus der vorhandenen Reihe.
+     *
+     * DER ANLASS (Toni 28.08.): der Nachweis las zwar die Vorgeschichte,
+     * aber der BESTAETIGUNGSZAEHLER begann nach dem Marker wieder bei 1. Am
+     * Fruehstueck hiess das: 09:22 stabil (1/3), 09:23-09:26 ein alter
+     * Rueckgang setzt zurueck, 09:27 wieder 1/3, Freigabe erst 09:29:22 -
+     * also 7 min 25 s nach dem Marker. Die Wartezeit kam aus der
+     * unvollstaendigen Nutzung der Historie, nicht aus einer
+     * Sicherheitsbedingung.
+     *
+     * KEINE ZUKUNFTSINFORMATION: jede Rueckrechnung sieht ausschliesslich
+     * Punkte bis zu IHREM eigenen Zeitpunkt. Es ist dieselbe Rechnung, nur
+     * frueher angesetzt.
+     *
+     * WAS DAS AUSDRUECKLICH NICHT TUT: es ersetzt keine aktuelle
+     * Gefahrenpruefung. Die laeuft im Aufrufer in DIESEM Zyklus und
+     * unmittelbar vor der Anforderung - Historie belegt Signalruhe, nicht
+     * Ungefaehrlichkeit. Autorisierung und Mengenbilanz haengen unveraendert
+     * am neuen Marker.
+     */
+    private fun bestaetigteZyklen(
+        series: MeasuredGlucose,
+        aktuell: List<GlucosePoint>,
+        params: Params,
+    ): Int {
+        var zaehler = 1                       // dieser Zyklus ist stabil
+        val zeiten = series.points.map { it.sourceTs }
+        val juengsterIndex = zeiten.indexOf(aktuell.last().sourceTs)
+        if (juengsterIndex < 0) return zaehler
+        var i = juengsterIndex - 1
+        while (i >= 0 && zaehler < MAX_CONFIRM_LOOKBACK) {
+            val ts = zeiten[i]
+            val frueher = series.lastMinutes(ts, params.windowMin)
+            if (frueher.size < params.minPoints) break
+            val spanne = (frueher.last().sourceTs - frueher.first().sourceTs) / 60_000.0
+            if (spanne < params.windowMin * 0.6) break
+            if (!istStabil(frueher, params)) break
+            zaehler++
+            i--
+        }
+        return zaehler
+    }
+
+    /** Der reine Toleranztest ohne Diagnose - fuer die Rueckrechnung. */
+    private fun istStabil(punkte: List<GlucosePoint>, params: Params): Boolean {
+        for (a in punkte.indices) {
+            if (!punkte[a].rawBg.isFinite()) return false
+            for (b in a + 1 until punkte.size) {
+                val dt = (punkte[b].sourceTs - punkte[a].sourceTs) / 60_000.0
+                if (dt <= 0.0) return false
+                if (punkte[b].rawBg - punkte[a].rawBg + params.allowedDropMgdl(dt) < 0.0) return false
+            }
+        }
+        return true
     }
 
     /** Nur fuer Tests und Anzeige: reisst dieser Abschnitt die Toleranz? */
