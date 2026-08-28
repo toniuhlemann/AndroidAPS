@@ -98,6 +98,15 @@ class TransportWiringTest : TestBaseWithProfile() {
     private var markerPress = 0L
 
     private var clock = 0L
+
+    /**
+     * DER MESSTAKT DES RIGS [ms]. War fest 60_000 - und genau darin lag ein
+     * Fehler unentdeckt: bei 61 oder 62 Sekunden erreicht ein
+     * Fuenf-Minuten-Fenster seine eigene Laenge nicht mehr, und ein Plateau
+     * blieb dauerhaft unbestimmbar (Toni 28.08.). Ein Rig, das nur den
+     * glatten Takt kennt, kann so etwas nicht finden.
+     */
+    private var taktMs = 60_000L
     private val start = 1_700_000_000_000L / 60_000L * 60_000L
 
     /**
@@ -313,7 +322,7 @@ class TransportWiringTest : TestBaseWithProfile() {
                     sourceSensor = SourceSensor.UNKNOWN, trendArrow = TrendArrow.FLAT
                 )
             }.toList()
-        } ?: generateSequence(start) { it + 60_000L }
+        } ?: generateSequence(start) { it + taktMs }
             .takeWhile { it <= untilTs }
             .filter { ts ->
                 val von = lueckeVonMin ?: return@filter true
@@ -601,7 +610,7 @@ class TransportWiringTest : TestBaseWithProfile() {
     }
 
     private fun cycle(): FuseCycleRunner.Outcome {
-        clock += 60_000L
+        clock += taktMs
         return runner.run(false, testPumpe())
     }
 
@@ -4362,6 +4371,130 @@ class TransportWiringTest : TestBaseWithProfile() {
         // Low-Tor-Verdikt, und DAS sperrt unveraendert. Der Nachweis fuer
         // die neue Richtung steht in
         // `aktiver zero-latch sperrt die sofortdosis nicht mehr`.
+    }
+
+    /**
+     * ENDPFAD-PROBEN: DER STABILITAETSNACHWEIS GATET DIE ERHOLUNG EINES
+     * AUFGESCHOBENEN BATCHES - nicht die erste, ungehinderte Freigabe.
+     *
+     * DAS MUSSTE ICH ERST LERNEN. Ein erster Wurf dieser Proben fuhr eine
+     * Lage ohne jede Gefahr; der Batch ging dort in Zyklus 4 heraus, mit
+     * `denial = NOTHING_DEFERRED` und `stabilisation = UNDETERMINED` - also
+     * OHNE den Nachweis je zu betreten. `UpfrontRecovery.evaluate` kehrt bei
+     * `deferredOpen == false` vor dem Stabilitaetstor zurueck.
+     *
+     * Das ist kein Defekt des Nachweises, aber eine Grenze seines
+     * Geltungsbereichs, und sie gehoert benannt: WER DEN UNGEHINDERTEN
+     * ERSTLAUF ABSICHERN WILL, tut das ueber die vorhandenen Risikohorizonte
+     * (descentRisk 30 min, gepinnter Mahlzeitenhorizont 60 min), nicht ueber
+     * diesen Nachweis.
+     *
+     * Die Proben erzwingen deshalb zuerst einen Aufschub.
+     */
+    private fun aufgeschobeneMahlzeit(dir: File, taktMillis: Long) {
+        taktMs = taktMillis
+        zeroLatchAn = true
+        aufschubAn = true
+        upfrontAnteil = 1.0
+        primeHuelleU = 3.75
+        fundamentAnteil = 0.8
+        fundamentAn = true
+        markerAuthorized = true
+        // Fall-Lage: das Low-Tor zuendet und schiebt den Batch auf.
+        flach = 140.0
+        steigungProMin = -1.2
+        knickAbMin = 25
+        steigungNachKnick = 0.0
+        bolusIobU = 2.5
+        clock = start
+        transportReset()
+        neuerRunner(
+            FuseLedgerAdapter().also { it.loadOnce(dir.also(File::mkdirs), "test-epoch", start) },
+            ruheParams = app.aaps.fuse.core.controller.UpfrontRecovery.Params.of(
+                calmCycles = 3, minUkf = 0.0, minGuardDistanceMgdl = 5.0,
+                calmTreatment = app.aaps.fuse.core.controller.UpfrontRecovery.CalmTreatment.CALM_BATCH,
+                ruleSetVersion = app.aaps.fuse.plugin.export.FuseStateJson.RULE_SET_VERSION,
+            ),
+        )
+    }
+
+    /**
+     * ENDPFAD-PROBE 1: PLATEAU BEI 61-SEKUNDEN-TAKT.
+     *
+     * Nach dem Aufschub beruhigt sich die Lage vollstaendig. Der Batch muss
+     * TATSAECHLICH angefordert werden, und zwar genau einmal - bei einem
+     * Takt, unter dem ein Fuenf-Minuten-Fenster ohne Klammerpunkt seine
+     * eigene Laenge nie erreicht haette.
+     */
+    @Test
+    fun `Endpfad - Plateau bei 61 Sekunden gibt den aufgeschobenen Batch frei`(@TempDir dir: File) {
+        aufgeschobeneMahlzeit(dir, 61_000L)
+        var gezuendet = false
+        repeat(30) { if (!gezuendet) gezuendet = cycle().zeroLatchActive }
+        assertTrue(gezuendet, "der Aufschub muss zuenden")
+        markerAt = clock
+        // Ab hier vollkommen flach.
+        flach = 110.0
+        steigungProMin = 0.0
+        knickAbMin = 0
+        steigungNachKnick = 0.0
+        val laeufe = (0 until 30).map { cycle() }
+
+        val anforderungen = laeufe.filter { it.phaseAUpfrontRequestedU > 0.0 }
+        assertEquals(1, anforderungen.size,
+                     "GENAU EINE Anforderung: " + anforderungen.map { it.phaseAUpfrontRequestedU })
+        val o = anforderungen.single()
+        val kette = o.upfrontChain
+        assertNotNull(kette, "die Endkette muss stehen")
+        assertEquals("WITHIN_TOLERANCE", kette!!.stabilisation,
+                     "ein Plateau bei 61 s darf nicht unbestimmbar sein: $kette")
+        assertTrue(kette.recentSpanMin >= 4.5,
+                   "die beobachtete Abschnittsspanne muss reichen: ${kette.recentSpanMin}")
+
+        // DAS WIRKLICHE RUNNER-ERGEBNIS BIS INS JSON - nicht ein von Hand
+        // gebautes Outcome. Genau diese Luecke hatte eine falsche
+        // Verdrahtung verdeckt.
+        val json = app.aaps.fuse.plugin.export.FuseStateJson.upfrontChainJson(kette)
+        assertEquals("WITHIN_TOLERANCE", json.optString("stabilisation"))
+        assertEquals(kette.recentSpanMin, json.optDouble("recentSpanMin"), 1e-9)
+        assertEquals(kette.recentNetMgdl, json.optDouble("recentNetMgdl"), 1e-9)
+        assertEquals(kette.recentWorstDropMgdl, json.optDouble("recentWorstDropMgdl"), 1e-9)
+        assertEquals(kette.allowedDropMgdl, json.optDouble("allowedDropMgdl"), 1e-9)
+        assertEquals(kette.recentWorstDropSpanMin, json.optDouble("recentWorstDropSpanMin"), 1e-9)
+    }
+
+    /**
+     * ENDPFAD-PROBE 2: DAUERABFALL. Gleicher Aufbau, aber die Lage beruhigt
+     * sich nicht - keine Batch-Endanforderung.
+     */
+    @Test
+    fun `Endpfad - ein Dauerabfall gibt den aufgeschobenen Batch nicht frei`(@TempDir dir: File) {
+        aufgeschobeneMahlzeit(dir, 61_000L)
+        var gezuendet = false
+        repeat(30) { if (!gezuendet) gezuendet = cycle().zeroLatchActive }
+        assertTrue(gezuendet, "der Aufschub muss zuenden")
+        markerAt = clock
+        // Weiter fallend, deutlich ueber dem akzeptierten Dauerabfall.
+        steigungNachKnick = -0.8
+        knickAbMin = 0
+        steigungProMin = -0.8
+        val laeufe = (0 until 30).map { cycle() }
+
+        assertTrue(
+            laeufe.all { it.phaseAUpfrontRequestedU == 0.0 },
+            "kein Batch bei laufendem Abfall: " +
+                laeufe.filter { it.phaseAUpfrontRequestedU > 0.0 }.map { it.phaseAUpfrontRequestedU },
+        )
+        val ketten = laeufe.mapNotNull { it.upfrontChain }
+        assertTrue(ketten.isNotEmpty(), "die Kette muss stehen")
+        assertTrue(
+            ketten.none { it.stabilisation == "WITHIN_TOLERANCE" },
+            "der Abschnitt darf nie innerhalb der Toleranz liegen: " +
+                ketten.map { it.stabilisation }.distinct(),
+        )
+        val json = app.aaps.fuse.plugin.export.FuseStateJson.upfrontChainJson(ketten.last())
+        assertTrue(json.optString("stabilisation") != "WITHIN_TOLERANCE")
+        assertEquals(ketten.last().recentNetMgdl, json.optDouble("recentNetMgdl"), 1e-9)
     }
 
     /** Bis zur Sofortdosis fahren (Warm-up + Markerzyklus). */

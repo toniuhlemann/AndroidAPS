@@ -400,52 +400,7 @@ object FuseStateJson {
             // Grant, MarkerFloor-Anhebung oder Endmenge. Die Tests waren
             // trotzdem gruen, weil der Replay den Outcome direkt liest -
             // genau die Art Luecke, die ein Viewer als Erstes findet.
-            .put("upfrontChain", outcome.upfrontChain?.let { c ->
-                JSONObject()
-                    .put("recoveryMode", c.recoveryMode)
-                    .put("calmTreatment", c.calmTreatment)
-                    .put("recoveryStreak", c.recoveryStreak)
-                    .put("recoveryRequired", c.recoveryRequired)
-                    .put("recoveryDenial", c.recoveryDenial)
-                    .put("recoveryTrackReset", c.recoveryTrackReset)
-                    .put("currentHazard", c.currentHazard)
-                    // DER STABILITAETSNACHWEIS. `stabilisation` traegt die
-                    // Freigabe; `stabilityVerdict` beschreibt das groessere
-                    // Fenster und darf davon abweichen.
-                    .put("stabilisation", c.stabilisation)
-                    .put("stabilityVerdict", c.stabilityVerdict)
-                    .put("stabilityReason", c.stabilityReason)
-                    .put("recentSpanMin", fin(c.recentSpanMin))
-                    // FEHLTE (Toni 28.08.): das Feld wurde gefuellt, aber nie
-                    // geschrieben - und es ist die Groesse, an der "hat es
-                    // aufgehoert" haengt.
-                    .put("recentNetMgdl", fin(c.recentNetMgdl))
-                    .put("recentWorstDropMgdl", fin(c.recentWorstDropMgdl))
-                    .put("recentWorstDropSpanMin", fin(c.recentWorstDropSpanMin))
-                    .put("allowedDropMgdl", fin(c.allowedDropMgdl))
-                    // Der Vertrag als Zahl - wer "innerhalb der Toleranz" als
-                    // "hat aufgehoert" liest, sieht hier, was das kostet.
-                    .put("acceptedSustainedFallMgdlPerMin", fin(c.acceptedSustainedFallMgdlPerMin))
-                    .put("stabilityConfirmedCycles", c.stabilityConfirmedCycles)
-                    .put("descentGateCause", c.descentGateCause)
-                    .put("guardDistanceMgdl", fin(c.guardDistanceMgdl))
-                    .put("normalNeedBeforeMarkerFloorU", fin(c.normalNeedBeforeMarkerFloorU))
-                    .put("upfrontOpenU", fin(c.upfrontOpenU))
-                    .put("calmEligibleU", fin(c.calmEligibleU))
-                    .put("calmShiftedU", fin(c.calmShiftedU))
-                    .put("calmDemandU", fin(c.calmDemandU))
-                    .put("calmDeniedByFinalVerify", c.calmDeniedByFinalVerify)
-                    .put("grantU", fin(c.grantU))
-                    .put("grantSource", c.grantSource)
-                    .put("beforeMarkerFloorU", fin(c.beforeMarkerFloorU))
-                    .put("afterMarkerFloorU", fin(c.afterMarkerFloorU))
-                    .put("markerFloorLiftU", fin(c.markerFloorLiftU))
-                    .put("afterDescentGateU", fin(c.afterDescentGateU))
-                    // ANGEFORDERT - nicht publiziert, nicht bestaetigt. Der
-                    // Name traegt das, und der Viewer darf daraus niemals
-                    // "gegeben" machen.
-                    .put("requestedRtU", fin(c.requestedRtU))
-            })
+            .put("upfrontChain", outcome.upfrontChain?.let { upfrontChainJson(it) })
             .put("mealFoundation", outcome.mealFoundation.let { f ->
                 JSONObject()
                     .put("armed", f.armed)
@@ -1720,6 +1675,67 @@ object FuseStateJson {
      * waere danach dauerhaft still weg. Lieber kein Hash und ein benannter
      * Grund als ein Ersatzwert.
      */
+
+    /**
+     * DIE ENDKETTE ALS JSON - benannt, damit sie mit einem ECHTEN
+     * Runner-Ergebnis geprueft werden kann.
+     *
+     * Sie stand als Lambda mitten im Export. Ein Test konnte sie deshalb nur
+     * mit einem von Hand gebauten Outcome erreichen - und genau das hat eine
+     * falsche Verdrahtung im Runner verdeckt (Toni 28.08.): recentSpanMin bekam
+     * die Spanne des grossen Fensters, recentNetMgdl den groessten
+     * Teilrueckgang statt des Nettos. Beide Werte waren im JSON korrekt
+     * serialisiert und trotzdem falsch.
+     *
+     * Hier wird NUR serialisiert. Wuerde diese Stelle etwas selbst rechnen,
+     * saehe der Trail etwas anderes als der Regler.
+     */
+    fun upfrontChainJson(c: app.aaps.fuse.plugin.FuseCycleRunner.UpfrontChain): JSONObject =
+                JSONObject()
+                    .put("recoveryMode", c.recoveryMode)
+                    .put("calmTreatment", c.calmTreatment)
+                    .put("recoveryStreak", c.recoveryStreak)
+                    .put("recoveryRequired", c.recoveryRequired)
+                    .put("recoveryDenial", c.recoveryDenial)
+                    .put("recoveryTrackReset", c.recoveryTrackReset)
+                    .put("currentHazard", c.currentHazard)
+                    // DER STABILITAETSNACHWEIS. `stabilisation` traegt die
+                    // Freigabe; `stabilityVerdict` beschreibt das groessere
+                    // Fenster und darf davon abweichen.
+                    .put("stabilisation", c.stabilisation)
+                    .put("stabilityVerdict", c.stabilityVerdict)
+                    .put("stabilityReason", c.stabilityReason)
+                    .put("recentSpanMin", fin(c.recentSpanMin))
+                    // FEHLTE (Toni 28.08.): das Feld wurde gefuellt, aber nie
+                    // geschrieben - und es ist die Groesse, an der "hat es
+                    // aufgehoert" haengt.
+                    .put("recentNetMgdl", fin(c.recentNetMgdl))
+                    .put("recentWorstDropMgdl", fin(c.recentWorstDropMgdl))
+                    .put("recentWorstDropSpanMin", fin(c.recentWorstDropSpanMin))
+                    .put("allowedDropMgdl", fin(c.allowedDropMgdl))
+                    // Der Vertrag als Zahl - wer "innerhalb der Toleranz" als
+                    // "hat aufgehoert" liest, sieht hier, was das kostet.
+                    .put("acceptedSustainedFallMgdlPerMin", fin(c.acceptedSustainedFallMgdlPerMin))
+                    .put("stabilityConfirmedCycles", c.stabilityConfirmedCycles)
+                    .put("descentGateCause", c.descentGateCause)
+                    .put("guardDistanceMgdl", fin(c.guardDistanceMgdl))
+                    .put("normalNeedBeforeMarkerFloorU", fin(c.normalNeedBeforeMarkerFloorU))
+                    .put("upfrontOpenU", fin(c.upfrontOpenU))
+                    .put("calmEligibleU", fin(c.calmEligibleU))
+                    .put("calmShiftedU", fin(c.calmShiftedU))
+                    .put("calmDemandU", fin(c.calmDemandU))
+                    .put("calmDeniedByFinalVerify", c.calmDeniedByFinalVerify)
+                    .put("grantU", fin(c.grantU))
+                    .put("grantSource", c.grantSource)
+                    .put("beforeMarkerFloorU", fin(c.beforeMarkerFloorU))
+                    .put("afterMarkerFloorU", fin(c.afterMarkerFloorU))
+                    .put("markerFloorLiftU", fin(c.markerFloorLiftU))
+                    .put("afterDescentGateU", fin(c.afterDescentGateU))
+                    // ANGEFORDERT - nicht publiziert, nicht bestaetigt. Der
+                    // Name traegt das, und der Viewer darf daraus niemals
+                    // "gegeben" machen.
+                    .put("requestedRtU", fin(c.requestedRtU))
+
     fun hashOf(p: FuseCycleRunner.Config): String? {
         val doubles = listOf(
             p.smbRatio, p.smbRatioRise, p.maxSmbU, p.guardFloorMgdl, p.positiveDescentHorizonMin,
