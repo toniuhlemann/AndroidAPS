@@ -118,6 +118,13 @@ class FuseSignalSource(
          *  OHNE dass die Signalquelle Preferences liest — die Fensterbildung
          *  bleibt so eine Sache, die Bandpolitik eine andere. */
         val adjusted: BgiAdjustedSeries.AdjustedSeries,
+        /**
+         * DIE GEMESSENE Reihe - roh und gefiltert, je Punkt. NEBEN
+         * [adjusted], nicht statt ihr: jene traegt den BGI-bereinigten
+         * ANTRIEB und ist fuer die Frage "faellt der Zucker noch?"
+         * systematisch zu permissiv. s. [app.aaps.fuse.core.signal.MeasuredGlucose].
+         */
+        val measured: app.aaps.fuse.core.signal.MeasuredGlucose,
         val activity: ActivityValidity,
         val samplesUsed: Int,
         val rawSeriesSize: Int,
@@ -309,6 +316,7 @@ class FuseSignalSource(
             series.map { it.tsMs }, sourceTs - BgiAdjustedSeries.WINDOW_MS, gapPolicy
         )
         val samples = ArrayList<BgiAdjustedSeries.Sample>()
+        val gemessen = ArrayList<app.aaps.fuse.core.signal.GlucosePoint>()
         for ((index, point) in series.withIndex()) {
             if (point.tsMs < windowStart) continue
             val prefix = series.subList(maxOf(0, index + 1 - UkfQ1.WINDOW_SAMPLES), index + 1)
@@ -331,6 +339,9 @@ class FuseSignalSource(
             val activity = iobAt.activity
             if (!activity.isFinite()) return Outcome.Unavailable("activity not finite at ${point.tsMs}")
             samples.add(BgiAdjustedSeries.Sample(point.tsMs, q1, activity, isf))
+            // ADDITIV (Toni 28.08.): derselbe Punkt, ungefiltert UND
+            // gefiltert. Nichts an der Bereinigung oder am UKF aendert sich.
+            gemessen.add(app.aaps.fuse.core.signal.GlucosePoint(point.tsMs, point.value, q1))
         }
         if (samples.isEmpty()) return Outcome.Unavailable("no samples in window ($boundLabel)")
 
@@ -444,6 +455,11 @@ class FuseSignalSource(
                 isfAtAnchor = samples.last().profileIsf,
                 rawSlopePerMin = rawSlope(readings, sourceTs),
                 adjusted = adjusted,
+                measured = app.aaps.fuse.core.signal.MeasuredGlucose(
+                    points = gemessen,
+                    segmentStartTs = windowStart,
+                    signalEpochTs = signalEpochTs,
+                ),
                 // Die Aktivitaet wurde AM Zeitpunkt selbst gerechnet, nicht per
                 // LOCF uebernommen — sie ist damit definitionsgemaess kausal
                 // und aktuell.
