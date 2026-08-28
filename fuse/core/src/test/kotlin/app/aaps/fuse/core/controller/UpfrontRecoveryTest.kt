@@ -28,7 +28,7 @@ class UpfrontRecoveryTest {
     private val marker = 1_700_000_000_000L
 
     private fun keineGefahr() = UpfrontRecovery.Hazards(
-        descentRisk = false, lowThreat = false, zeroLatch = false, rebound = false,
+        descentRisk = false, lowThreat = false, rebound = false,
         signalUnhealthy = false, technical = false, ledgerHold = false,
     )
 
@@ -90,7 +90,7 @@ class UpfrontRecoveryTest {
             prior = reif.track,
             hazards = keineGefahr().let {
                 UpfrontRecovery.Hazards(
-                    descentRisk = true, lowThreat = false, zeroLatch = false, rebound = false,
+                    descentRisk = true, lowThreat = false, rebound = false,
                     signalUnhealthy = false, technical = false, ledgerHold = false,
                 )
             },
@@ -103,15 +103,14 @@ class UpfrontRecoveryTest {
     }
 
     @Test
-    fun `jede der sieben Gefahren blockiert einzeln`() {
+    fun `jede der sechs Gefahren blockiert einzeln`() {
         val faelle = listOf(
-            "descentRisk" to UpfrontRecovery.Hazards(true, false, false, false, false, false, false),
-            "lowThreat" to UpfrontRecovery.Hazards(false, true, false, false, false, false, false),
-            "zeroLatch" to UpfrontRecovery.Hazards(false, false, true, false, false, false, false),
-            "rebound" to UpfrontRecovery.Hazards(false, false, false, true, false, false, false),
-            "signal" to UpfrontRecovery.Hazards(false, false, false, false, true, false, false),
-            "technical" to UpfrontRecovery.Hazards(false, false, false, false, false, true, false),
-            "ledgerHold" to UpfrontRecovery.Hazards(false, false, false, false, false, false, true),
+            "descentRisk" to UpfrontRecovery.Hazards(true, false, false, false, false, false),
+            "lowThreat" to UpfrontRecovery.Hazards(false, true, false, false, false, false),
+            "rebound" to UpfrontRecovery.Hazards(false, false, true, false, false, false),
+            "signal" to UpfrontRecovery.Hazards(false, false, false, true, false, false),
+            "technical" to UpfrontRecovery.Hazards(false, false, false, false, true, false),
+            "ledgerHold" to UpfrontRecovery.Hazards(false, false, false, false, false, true),
         )
         faelle.forEach { (name, h) ->
             val d = bewerte(prior = streakUeber(3).track, hazards = h, sourceTs = 2_000_000L)
@@ -487,7 +486,7 @@ class UpfrontRecoveryTest {
         val d = bewerte(
             prior = geladen,
             hazards = UpfrontRecovery.Hazards(
-                descentRisk = true, lowThreat = false, zeroLatch = false, rebound = false,
+                descentRisk = true, lowThreat = false, rebound = false,
                 signalUnhealthy = false, technical = false, ledgerHold = false,
             ),
             sourceTs = 1_180_000L,
@@ -495,6 +494,33 @@ class UpfrontRecoveryTest {
         val b = assertInstanceOf(UpfrontRecovery.Decision.Blocked::class.java, d)
         assertEquals(UpfrontRecovery.Denial.CURRENT_HAZARD, b.denial)
         assertEquals(0, b.track.streak, "und der geerbte Zaehler faellt dabei auf 0")
+    }
+
+    /**
+     * PFLICHTNACHWEIS 1 (Toni 28.08.), Typebene: der historisch gehaltene
+     * Zero-Latch ist keine Gefahr mehr.
+     *
+     * Er hat die Klasse verlassen, also kann dieser Test ihn nicht mehr
+     * setzen - und genau das ist die Aussage. Was hier geprueft wird, ist
+     * die Folge davon: mit den sechs verbliebenen Feldern auf false entsteht
+     * ein Freigabetyp, obwohl am Geraet gleichzeitig eine Zero-TBR laufen
+     * darf. Die Sperre dafuer sitzt seit dem 28.08. NICHT mehr hier, sondern
+     * ausschliesslich im bedarfsbegrenzten Ruhekandidaten des Runners - der
+     * Integrationsnachweis dazu steht in TransportWiringTest.
+     *
+     * Die Gegenrichtung deckt `jede der sechs Gefahren blockiert einzeln`:
+     * jede AKTUELLE Gefahr blockiert unveraendert.
+     */
+    @Test
+    fun `ohne aktuelle Gefahr entsteht ein Freigabetyp - der Zero-Latch zaehlt nicht mehr`() {
+        val reif = streakUeber(3)
+        val c = assertInstanceOf(UpfrontRecovery.Decision.CalmRecovered::class.java, reif)
+        assertEquals(UpfrontRecovery.KEINE_GEFAHR, c.hazards)
+        // Und der Export nennt die sechs, nicht sieben.
+        assertEquals(
+            "descentRisk+lowThreat+rebound+signal+technical+ledgerHold",
+            UpfrontRecovery.Hazards(true, true, true, true, true, true).names,
+        )
     }
 
     @Test
@@ -522,7 +548,7 @@ class UpfrontRecoveryTest {
     @Test
     fun `ein Freigabetyp kann bei aktueller Gefahr gar nicht entstehen`() {
         val gefahr = UpfrontRecovery.Hazards(
-            descentRisk = true, lowThreat = false, zeroLatch = false, rebound = false,
+            descentRisk = true, lowThreat = false, rebound = false,
             signalUnhealthy = false, technical = false, ledgerHold = false,
         ).names
         assertThrows(IllegalArgumentException::class.java) {

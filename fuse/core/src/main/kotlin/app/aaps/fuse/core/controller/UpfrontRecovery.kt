@@ -205,13 +205,30 @@ object UpfrontRecovery {
     }
 
     /**
-     * Die AKTUELLEN harten Blocker. Alle sieben sind Ausschlusskriterien;
+     * Die AKTUELLEN harten Blocker. Alle sechs sind Ausschlusskriterien;
      * der Marker ueberstimmt keinen davon.
+     *
+     * DER ZERO-LATCH STEHT HIER NICHT MEHR (Toni 28.08.). Er war der
+     * einzige Eintrag, der KEINE aktuelle Gefahr beschreibt, sondern einen
+     * historisch gehaltenen Basalschutz - gemessen am Fruehstueck des
+     * 28.08.: von 09:22 bis 09:36 meldete die Kette `currentHazard
+     * zeroLatch` als EINZIGEN Blocker, bei `descentRiskActive=false`,
+     * `lowThreat=NONE`, `rebound=false` und gesundem Signal. Vier
+     * autorisierte Einheiten blieben liegen, weil das Basal verriegelt war.
+     * Basalschutz und Mahlzeitenfreigabe sind zwei Entscheidungen.
+     *
+     * WO ER STATTDESSEN WIRKT, damit die Entkopplung eng bleibt: der
+     * bedarfsbegrenzte Ruhekandidat im Runner (`ruheKandidatRohU`) fuehrt
+     * ihn als EIGENE Bedingung weiter. Dieser Pfad gibt reinen
+     * NORMAL-Bedarf frei, keinen autorisierten Mahlzeitenanteil - fuer ihn
+     * bleibt der verriegelte Basalzustand ein Ausschluss. Faellt die
+     * Bedingung dort weg, oeffnet dieselbe Aenderung still die
+     * Korrekturbahn; das ist der Grund, warum sie dort steht und nicht
+     * hier.
      */
     class Hazards(
         val descentRisk: Boolean,
         val lowThreat: Boolean,
-        val zeroLatch: Boolean,
         val rebound: Boolean,
         val signalUnhealthy: Boolean,
         val technical: Boolean,
@@ -219,7 +236,7 @@ object UpfrontRecovery {
     ) {
 
         val any: Boolean
-            get() = descentRisk || lowThreat || zeroLatch || rebound ||
+            get() = descentRisk || lowThreat || rebound ||
                 signalUnhealthy || technical || ledgerHold
 
         /** Fuer den Export: welche genau. */
@@ -227,7 +244,6 @@ object UpfrontRecovery {
             get() = listOfNotNull(
                 "descentRisk".takeIf { descentRisk },
                 "lowThreat".takeIf { lowThreat },
-                "zeroLatch".takeIf { zeroLatch },
                 "rebound".takeIf { rebound },
                 "signal".takeIf { signalUnhealthy },
                 "technical".takeIf { technical },

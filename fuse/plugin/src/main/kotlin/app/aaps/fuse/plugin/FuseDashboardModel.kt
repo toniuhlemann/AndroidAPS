@@ -261,6 +261,10 @@ object FuseDashboardModel {
     /** Typisierter Batch-Zustand in Klartext; null = nichts zu sagen. */
     private fun upfrontStateLabel(state: String?): String? = when (state) {
         "DEFERRED_UPFRONT_BATCH"   -> "aufgeschoben (Sicherheitsriegel)"
+        // Nur noch aus Trails VOR RuleSet 34: seit dem 28.08. sperrt der
+        // Zero-Latch die Mahlzeiten-Direktdosis nicht mehr und der Runner
+        // schreibt diesen Zustand nicht mehr. Die Abbildung bleibt, damit
+        // aufgezeichnete Laeufe lesbar bleiben.
         "BLOCKED_ZERO_LATCH"       -> "aufgeschoben (Null-Basal verriegelt)"
         "BLOCKED_FALLBACK"         -> "aufgeschoben (Modellausfall)"
         "BLOCKED_NO_DEFERRED"      -> "gesperrt (Sicherheitsnetz aus)"

@@ -737,7 +737,13 @@ class FuseStateExportTest {
         // DIESER TEST IST ABSICHTLICH STUR: er faellt bei jedem Bump um und
         // zwingt damit zu der Frage, ob die Aenderung wirklich dosierwirksam
         // war - ein stiller Bump waere so wertlos wie ein vergessener.
-        assertEquals(33, FuseStateJson.RULE_SET_VERSION)
+        // v34 DIE ENTKOPPLUNG DER PHASE-A-DIREKTDOSIS VOM ZERO-LATCH.
+        // Dosierwirksam ohne jeden Zweifel: derselbe Zustand, der am
+        // 28.08. von 09:22 bis 09:36 vier autorisierte Einheiten
+        // zurueckhielt, gibt sie danach frei - der historische Basalschutz
+        // ist kein Grund mehr gegen eine angekuendigte Mahlzeit. Aktuelle
+        // Gefahren sind unveraendert absolut.
+        assertEquals(34, FuseStateJson.RULE_SET_VERSION)
         assertTrue(
             FuseStateJson.hashOf(cfg)!!.isNotEmpty(),
             "und der Hash bleibt berechenbar",

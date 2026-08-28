@@ -2968,8 +2968,17 @@ class FuseCycleRunner(
         // erst MeasuredDescentGate nullte sie danach. Ergebnis war zwar
         // keine Dosis, aber ein Zustand "REQUESTED" bei stehendem Riegel
         // und eine Anforderung, die jeder Zyklus wiederholte.
+        //
+        // DER ZERO-LATCH SCHIEBT NICHT MEHR AUF (Toni 28.08.). Er stand hier
+        // als `cfg.zeroLatchEnabled && episodes.zeroLatch.active` und war
+        // der einzige Term, der keine aktuelle Gefahr misst, sondern einen
+        // historisch gehaltenen Basalschutz. Am Fruehstueck des 28.08. war
+        // er von 09:22 bis 09:36 der EINZIGE Blocker der Kette, bei
+        // gesundem Signal und ohne Abwaertsrisiko - vier autorisierte
+        // Einheiten lagen still. Die Zero-TBR selbst bleibt unberuehrt: sie
+        // darf waehrend der Mahlzeitenfreigabe weiterlaufen, ihre Ein- und
+        // Ausstiegslogik ist nicht angefasst.
         val upfrontRisikoAufschub = lowThreatResult.verdict != LowThreatGate.Verdict.NONE ||
-            (cfg.zeroLatchEnabled && episodes.zeroLatch.active) ||
             reboundRaw ||
             descentRisk.active ||
             descentLatch.blocksPositive ||
@@ -3065,7 +3074,6 @@ class FuseCycleRunner(
             hazards = app.aaps.fuse.core.controller.UpfrontRecovery.Hazards(
                 descentRisk = descentRisk.active,
                 lowThreat = lowThreatResult.verdict != LowThreatGate.Verdict.NONE,
-                zeroLatch = cfg.zeroLatchEnabled && episodes.zeroLatch.active,
                 rebound = reboundRaw,
                 signalUnhealthy = step.health != Health.READY,
                 technical = upfrontTechReject,
@@ -3164,16 +3172,20 @@ class FuseCycleRunner(
             // keine Miniabgaben aus diesem Bestand (Vertrag 5).
             //
             // AUSNAHME NUR FUER DEN DOSIERWIRKSAMEN RUHEMODUS, und sie ist
-            // beweisbar eng: `upfrontRisikoAufschub` setzt sich aus
-            // lowThreat, zeroLatch, rebound, descentRisk.active,
+            // beweisbar eng: `upfrontRisikoAufschub` setzt sich seit dem
+            // 28.08. aus lowThreat, rebound, descentRisk.active,
             // upfrontTechReject und `descentLatch.blocksPositive` zusammen.
-            // Die ERSTEN FUENF sind saemtlich [UpfrontRecovery.Hazards] -
+            // Die ERSTEN VIER sind saemtlich [UpfrontRecovery.Hazards] -
             // unter `CALM_RECOVERED` sind sie zwingend falsch, sonst waere
             // die Entscheidung gar nicht entstanden (am Konstruktor
             // geprueft). Bleibt genau EIN Bestandteil, der hier noch wahr
-            // sein kann: der HISTORISCHE Latch. Genau ihn - und nur ihn -
-            // ueberstimmt dieser Modus, dieselbe Kante wie beim
+            // sein kann: der HISTORISCHE Abwaertsriegel. Genau ihn - und
+            // nur ihn - ueberstimmt dieser Modus, dieselbe Kante wie beim
             // bedarfsbegrenzten Kandidaten.
+            //
+            // Der Zero-Latch stand frueher ebenfalls in dieser Liste. Er ist
+            // seit dem 28.08. gar nicht mehr Teil des Aufschubs, weicht also
+            // schon vorher - und nicht erst durch diese Ausnahme.
             upfrontRisikoAufschub && !upfrontRuheBatchFrei -> vetted
             upfrontWartetAufErholung -> vetted
             else -> MealFoundation.liftUpfront(
@@ -3657,6 +3669,25 @@ class FuseCycleRunner(
             riegelUrsache != MeasuredDescentGate.Cause.HISTORICAL_LATCH -> 0.0
             // Doppelt gesichert, unabhaengig von der Ursachenabbildung.
             descentRisk.active -> 0.0
+            // DER ZERO-LATCH BLEIBT HIER EIN AUSSCHLUSS (Toni 28.08.).
+            //
+            // Er ist am 28.08. aus [UpfrontRecovery.Hazards] entfernt worden,
+            // damit ein historisch verriegeltes Basal die autorisierte
+            // MAHLZEITEN-Direktdosis nicht laenger blockiert. Dieser
+            // Kandidat hier ist aber KEINE Mahlzeitenmenge: `ruheReineBasisU`
+            // ist exakt `vetted.smbU`, also reiner NORMAL-Bedarf, und der
+            // Merge stempelt ausdruecklich `grant = null`. Seine einzige
+            // Absicherung gegen aktuelle Lagen war bisher `ruheRuhig != null`
+            // - und das haengt an `Hazards.any`. Ohne diese Zeile haette die
+            // Entkopplung still die KORREKTURBAHN unter verriegeltem Basal
+            // geoeffnet, also genau die Ausweitung, die der Bauauftrag
+            // ausschliesst ("keine zusaetzliche Freigabe fuer Normal- oder
+            // Liveness-Korrekturen").
+            //
+            // Das Zeitfenster waere nicht klein gewesen: der Ruhe-Streak
+            // steht auf 3 Zyklen bei 5 mg/dl Guard-Abstand, der Zero-Latch
+            // verlaesst seine Ruhe erst nach 20 Zyklen bei 30 mg/dl.
+            cfg.zeroLatchEnabled && episodes.zeroLatch.active -> 0.0
             // NOTWENDIGE BEOBACHTUNG, nicht die Autorisierung: der Riegel
             // muss die Menge tatsaechlich genullt haben.
             nachDescentRoh.smbU > 1e-9 -> 0.0
@@ -4785,7 +4816,6 @@ class FuseCycleRunner(
                 requestedU = upfrontRequestedU,
                 batchDeferred = upfrontAufschubJetzt,
                 awaitingRecovery = upfrontWartetAufErholung,
-                zeroLatchBlocked = cfg.zeroLatchEnabled && episodes.zeroLatch.active,
                 transferredNowU = upfrontTransferNowU,
                 transferredTotalU = episodes.upfrontTransferredU,
                 viewUnavailable = upfrontSichtUnlesbar,
@@ -4936,7 +4966,6 @@ class FuseCycleRunner(
         batchDeferred: Boolean,
         /** Wartet er nach dem Aufschub noch auf die bestaetigte Erholung? */
         awaitingRecovery: Boolean,
-        zeroLatchBlocked: Boolean,
         /** In DIESEM Zyklus in den schrittweisen Pfad ueberfuehrt [U]. */
         transferredNowU: Double = 0.0,
         /** Bereits frueher ueberfuehrt [U] - der Batch ist dann erledigt. */
@@ -4955,7 +4984,24 @@ class FuseCycleRunner(
         transferredNowU > 0.0 -> "TRANSFERRED_TO_DEFERRED"
         !deferredPrimeEnabled && pendingU > 0.0 -> "BLOCKED_NO_DEFERRED"
         fallback && pendingU > 0.0 -> "BLOCKED_FALLBACK"
-        zeroLatchBlocked && pendingU > 0.0 -> "BLOCKED_ZERO_LATCH"
+        // "BLOCKED_ZERO_LATCH" IST HIER ENTFALLEN (Toni 28.08.).
+        //
+        // Der Zweig stand frueher VOR "REQUESTED" und lautete
+        // `zeroLatchBlocked && pendingU > 0.0`. Seit der Zero-Latch die
+        // autorisierte Mahlzeiten-Direktdosis nicht mehr sperrt, kann er
+        // NIE MEHR der Grund sein - weder fuer eine Anforderung noch fuer
+        // einen Aufschub. Ihn stehen zu lassen hiesse, einen Grund zu
+        // nennen, der nicht wirkt.
+        //
+        // Der A/B-Nachweis hat das sichtbar gemacht: mit und ohne Latch
+        // waren die MENGEN zyklusgenau identisch, aber derselbe Zyklus
+        // meldete einmal "BLOCKED_ZERO_LATCH" und einmal
+        // "DEFERRED_UPFRONT_BATCH". Der wahre Grund ist der zweite - der
+        // Batch wartet auf die bestaetigte Erholung.
+        //
+        // Die Anzeige-Abbildungen in FuseDashboardModel und
+        // FusePlugin.deferredReason BLEIBEN: sie lesen auch alte Trails,
+        // und dort ist der Wert echt.
         requestedU > 0.0 -> "REQUESTED"
         // Nach einer Ueberfuehrung ist der Sofortanteil erledigt - er ist
         // nicht "gedeckt", sondern liegt im schrittweisen Pfad.
@@ -5597,7 +5643,6 @@ class FuseCycleRunner(
                 requestedU = upfrontRequestedU,
                 batchDeferred = episodes.upfrontBatchDeferredSince > 0L,
                 awaitingRecovery = false,
-                zeroLatchBlocked = cfg.zeroLatchEnabled && episodes.zeroLatch.active,
                 transferredNowU = fallbackTransferNowU,
                 transferredTotalU = episodes.upfrontTransferredU,
                 viewUnavailable = fallbackSichtUnlesbar,

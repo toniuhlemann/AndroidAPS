@@ -226,7 +226,20 @@ object FuseStateJson {
     // FuseLowMemory, das nach einem Neustart alles aeltere verwirft - haette
     // man dort die Konstante stehen lassen, kappte jeder Flash ein laengeres
     // Fenster still auf 45 Minuten.
-    const val RULE_SET_VERSION = 33
+    // v34 (28.08.): DIE PHASE-A-DIREKTDOSIS IST VOM ZERO-LATCH ENTKOPPELT.
+    // Ein historisch gehaltener Basalschutz blockiert die autorisierte
+    // Mahlzeiten-Direktdosis nicht mehr; aktuelle Low-Gefahr, gemessenes
+    // Abwaertsrisiko, Rebound sowie Signal-, Modell- und Ledger-Sperren
+    // bleiben unveraendert wirksam. Anlass ist das Fruehstueck des 28.08.:
+    // von 09:22 bis 09:36 war `zeroLatch` der EINZIGE Eintrag in
+    // `currentHazard`, bei descentRisk=false und gesundem Signal, und vier
+    // autorisierte Einheiten lagen still. Dosierwirksam, deshalb der Bump.
+    // Zwei Stellen mussten mit, beide KEINE Parameteraenderung: der
+    // bedarfsbegrenzte Ruhekandidat fuehrt den Latch jetzt als eigene
+    // Bedingung (sonst haette die Entkopplung die Korrekturbahn geoeffnet),
+    // und in `upfrontState` schlaegt REQUESTED den Latch-Zweig (sonst
+    // meldete der Markerdialog "verriegelt", waehrend die Menge herausgeht).
+    const val RULE_SET_VERSION = 34
 
     /** Schema des Trail-Datensatzes - s. die Notiz an der Schreibstelle. */
     const val SCHEMA_VERSION = 4

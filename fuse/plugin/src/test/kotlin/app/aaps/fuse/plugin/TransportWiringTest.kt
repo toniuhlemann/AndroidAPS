@@ -4337,10 +4337,14 @@ class TransportWiringTest : TestBaseWithProfile() {
             verdiktZyklen.all { it.phaseAUpfrontRequestedU == 0.0 },
             "keine Sofortdosis in einem Verdikt-Zyklus",
         )
-        assertTrue(
-            laufe.filter { it.zeroLatchActive }.all { it.phaseAUpfrontRequestedU == 0.0 },
-            "und keine unter aktivem Latch",
-        )
+        // DIE ZWEITE ZUSICHERUNG IST AM 28.08. ENTFALLEN. Hier stand
+        // "und keine unter aktivem Latch". Der aktive Zero-Latch sperrt die
+        // autorisierte Mahlzeiten-Direktdosis seither nicht mehr - er ist
+        // Basalschutz, keine aktuelle Gefahr. Was diesen Test traegt, ist
+        // die Zusicherung darueber: der ZUENDENDE Zyklus hat ein scharfes
+        // Low-Tor-Verdikt, und DAS sperrt unveraendert. Der Nachweis fuer
+        // die neue Richtung steht in
+        // `aktiver zero-latch sperrt die sofortdosis nicht mehr`.
     }
 
     /** Bis zur Sofortdosis fahren (Warm-up + Markerzyklus). */
@@ -4502,10 +4506,26 @@ class TransportWiringTest : TestBaseWithProfile() {
         }
     }
 
-    /** Pflichttest 12b: ein AKTIVER Zero-TBR-Latch sperrt die Sofortdosis
-     *  ausdruecklich (Bauauftrag) - der Boden bleibt offen und wartet. */
+    /**
+     * PFLICHTNACHWEIS 1 UND 2 (Bauauftrag Toni 28.08.).
+     *
+     * DIESER TEST STAND FRUEHER ANDERSHERUM ("aktiver zero-latch sperrt die
+     * sofortdosis"). Der Vertrag ist umgedreht: ein historisch gehaltener
+     * Zero-Latch ist BASALSCHUTZ und darf die autorisierte
+     * Mahlzeiten-Direktdosis nicht mehr blockieren. Was er weiterhin darf -
+     * und was dieser Test in derselben Lage mitprueft - ist sperren, solange
+     * eine AKTUELLE Gefahr steht.
+     *
+     * Gemessener Anlass: Fruehstueck 28.08., Marker 09:21:56. Von 09:22 bis
+     * 09:36 meldete die Kette `currentHazard zeroLatch` als EINZIGEN
+     * Blocker, bei `descentRiskActive=false`, `lowThreat=NONE`, gesundem
+     * Signal - und 4,00 autorisierte Einheiten lagen still.
+     *
+     * NACHWEIS 2 (Gefahr sperrt weiter) steht bewusst VOR Nachweis 1: waere
+     * er rot, waere die Freigabe wertlos.
+     */
     @Test
-    fun `aktiver zero-latch sperrt die sofortdosis`(@TempDir dir: File) {
+    fun `aktiver zero-latch sperrt die sofortdosis nicht mehr`(@TempDir dir: File) {
         zeroLatchAn = true
         aufschubAn = true
         upfrontAnteil = 1.0
@@ -4522,23 +4542,140 @@ class TransportWiringTest : TestBaseWithProfile() {
         clock = start
         transportReset()
         neuerRunner(FuseLedgerAdapter().also { it.loadOnce(dir.also(File::mkdirs), "test-epoch", start) })
+        // A/B GEGEN DENSELBEN VERLAUF. Die Entkopplung heisst: der Zero-Latch
+        // veraendert die Sofortanteil-Entscheidung NICHT mehr. Das ist
+        // pruefbar, ohne dass die Menge in dieser Lage fliessen muss - und
+        // genau so gehoert es geprueft. Ein Test, der auf "die Dosis geht
+        // heraus" wartet, misst mit, was ANDERE Riegel tun (in dieser
+        // Fall-Lage haelt der Abwaertsriegel weiter, HISTORICAL_LATCH), und
+        // waere damit gegen die falsche Ursache gruen oder rot.
+        fun lauf(unter: File, latch: Boolean): List<FuseCycleRunner.Outcome> {
+            zeroLatchAn = latch
+            clock = start
+            transportReset()
+            neuerRunner(
+                FuseLedgerAdapter().also { it.loadOnce(unter.also(File::mkdirs), "test-epoch", start) },
+            )
+            var gez = false
+            repeat(30) { if (!gez) gez = cycle().zeroLatchActive || !latch }
+            markerAt = clock
+            return (0 until 30).map { cycle() }
+        }
+
+        val mitLatch = lauf(File(dir, "mit"), true)
+        val ohneLatch = lauf(File(dir, "ohne"), false)
+
+        fun gefahr(o: FuseCycleRunner.Outcome) =
+            o.lowThreat != null &&
+                o.lowThreat!!.verdict != app.aaps.fuse.core.controller.LowThreatGate.Verdict.NONE
+
+        // Der Test prueft nur etwas, wenn der Latch im A-Lauf wirklich stand.
+        assertTrue(mitLatch.any { it.zeroLatchActive }, "der Latch muss im A-Lauf stehen")
+        assertTrue(ohneLatch.none { it.zeroLatchActive }, "und im B-Lauf nicht")
+
+        // ---- NACHWEIS 1: der Latch aendert die Sofortanteil-Entscheidung
+        //      nicht mehr - Zyklus fuer Zyklus identisch.
+        assertEquals(
+            ohneLatch.map { it.phaseAUpfrontRequestedU },
+            mitLatch.map { it.phaseAUpfrontRequestedU },
+            "der Zero-Latch darf die Sofortdosis nicht mehr veraendern",
+        )
+        // DEN ZUSTAND NICHT ZYKLUSWEISE VERGLEICHEN. Die beiden Laeufe haben
+        // vor dem Marker eine verschiedene Geschichte - ohne Latch dosiert
+        // der Loop im Warm-up anders, und das SOLL er: die Entkopplung
+        // betrifft den Sofortanteil, nicht das Basal. Der B-Lauf startet
+        // deshalb mit ein paar Zyklen, in denen die Autorisierung noch nicht
+        // gilt (Zustand null). Gleich sein MUSS die Aussage, nicht der
+        // Startversatz.
+        assertTrue(
+            mitLatch.none { it.phaseAUpfrontState == "BLOCKED_ZERO_LATCH" },
+            "der Zero-Latch darf kein Zustandsgrund des Sofortanteils mehr sein: " +
+                mitLatch.map { it.phaseAUpfrontState }.distinct(),
+        )
+        assertEquals(
+            ohneLatch.mapNotNull { it.phaseAUpfrontState }.distinct().toSet(),
+            mitLatch.mapNotNull { it.phaseAUpfrontState }.distinct().toSet(),
+            "und es duerfen keine anderen Zustaende auftreten als ohne Latch",
+        )
+
+        // ---- NACHWEIS 2: aktuelle Gefahr sperrt unveraendert -------------
+        val mitGefahr = mitLatch.filter(::gefahr)
+        assertTrue(mitGefahr.isNotEmpty(), "die Lage muss Verdikt-Zyklen tragen")
+        assertTrue(
+            mitGefahr.all { it.phaseAUpfrontRequestedU == 0.0 },
+            "aktuelle Gefahr sperrt unveraendert: " +
+                mitGefahr.filter { it.phaseAUpfrontRequestedU > 0.0 }.map { it.phaseAUpfrontRequestedU },
+        )
+
+        // ---- Der Zustand darf nicht luegen (Blocker 1 des Audits) --------
+        // Invariante statt Einzelfall: WENN angefordert wird, darf die Zeile
+        // nicht "verriegelt" melden. `phaseAUpfrontPendingU` ist im
+        // Anforderungszyklus noch > 0 (die Bilanz sinkt erst mit der
+        // Buchung); stuende der Latch-Zweig weiter vor REQUESTED, traefe das
+        // jede Freigabe - und derselbe Text landet ueber
+        // FusePlugin.deferredReason im MARKERDIALOG.
+        assertTrue(
+            mitLatch.none { it.phaseAUpfrontRequestedU > 0.0 && it.phaseAUpfrontState == "BLOCKED_ZERO_LATCH" },
+            "kein Zyklus darf gleichzeitig anfordern und verriegelt melden",
+        )
+
+        // ---- Die Autorisierung besteht unter dem Latch fort --------------
+        assertTrue(
+            mitLatch.any { it.mealFoundation.armed && it.zeroLatchActive },
+            "die Autorisierung muss unter dem Latch bestehen",
+        )
+    }
+
+    /**
+     * ABGRENZUNG (Bauauftrag Toni 28.08.: "keine zusaetzliche Freigabe fuer
+     * Normal- oder Liveness-Korrekturen").
+     *
+     * Der bedarfsbegrenzte Ruhekandidat gibt REINEN Normalbedarf frei -
+     * `ruheReineBasisU` ist exakt `vetted.smbU`, und der Merge stempelt
+     * `grant = null`. Seine einzige Absicherung gegen aktuelle Lagen war
+     * `Hazards.any`. Waere der Zero-Latch dort ersatzlos herausgefallen,
+     * haette dieselbe Aenderung still die KORREKTURBAHN unter verriegeltem
+     * Basal geoeffnet - mit einem Zeitfenster von rund 17 Zyklen (Ruhe-
+     * Streak 3 gegen Zero-Latch-Ausgang 20).
+     *
+     * Deshalb fuehrt `ruheKandidatRohU` den Latch als EIGENE Bedingung.
+     * Dieser Test haelt das fest.
+     */
+    @Test
+    fun `der bedarfsbegrenzte ruhekandidat bleibt unter dem zero-latch gesperrt`(@TempDir dir: File) {
+        zeroLatchAn = true
+        aufschubAn = true
+        upfrontAnteil = 1.0
+        primeHuelleU = 3.75
+        fundamentAnteil = 0.8
+        fundamentAn = true
+        markerAuthorized = true
+        flach = 140.0
+        steigungProMin = -1.2
+        knickAbMin = 25
+        steigungNachKnick = 0.0
+        bolusIobU = 2.5
+        clock = start
+        transportReset()
+        neuerRunner(
+            FuseLedgerAdapter().also { it.loadOnce(dir.also(File::mkdirs), "test-epoch", start) },
+            ruheParams = app.aaps.fuse.core.controller.UpfrontRecovery.Params.of(
+                calmCycles = 3, minUkf = 0.0, minGuardDistanceMgdl = 5.0,
+                calmTreatment = app.aaps.fuse.core.controller.UpfrontRecovery.CalmTreatment.DEMAND_LIMITED,
+                ruleSetVersion = app.aaps.fuse.plugin.export.FuseStateJson.RULE_SET_VERSION,
+            ),
+        )
         var gezuendet = false
         repeat(30) { if (!gezuendet) gezuendet = cycle().zeroLatchActive }
         assertTrue(gezuendet, "der Latch muss zuenden")
-        markerAt = clock
-        val laufe = (0 until 8).map { cycle() }
-        laufe.forEach { o ->
-            assertEquals(0.0, o.phaseAUpfrontRequestedU, 1e-9, "kein mealUpfront unter aktivem Latch")
-        }
-        // Tonis Vertrag: der Marker wird ANGENOMMEN, die Sofortmenge wird
-        // VERSCHOBEN (nie verworfen) - sie liegt im Aufschub und der Boden
-        // ist entsprechend zu.
-        val armiert = laufe.filter { it.mealFoundation.armed && it.zeroLatchActive }
-        assertTrue(armiert.isNotEmpty(), "die Autorisierung muss unter dem Latch bestehen")
+        steigungNachKnick = 0.8
+        val laufe = (0 until 40).map { cycle() }
+        val unterLatch = laufe.filter { it.zeroLatchActive }
+        assertTrue(unterLatch.isNotEmpty(), "es muss Zyklen unter aktivem Latch geben")
         assertTrue(
-            armiert.any { it.phaseAUpfrontState == "BLOCKED_ZERO_LATCH" && it.phaseAUpfrontPendingU >= 2.9 },
-            "die Sofortmenge bleibt unter dem Latch vollstaendig offen: " +
-                armiert.map { it.phaseAUpfrontState to it.deferredPrimeOpenU }.distinct(),
+            unterLatch.none { it.decision.bindingLimit.contains("calmDemand") },
+            "kein bedarfsbegrenzter Ruheanteil unter aktivem Latch: " +
+                unterLatch.map { it.decision.bindingLimit }.distinct(),
         )
     }
 
