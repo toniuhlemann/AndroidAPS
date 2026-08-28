@@ -290,6 +290,86 @@ class GlucoseStabilityTest {
                    "erlaubt ${r.worstDropAllowedMgdl} gegen gefallen ${r.worstDropMgdl}")
     }
 
+    // ---- Staerkstes Paar ist NICHT die Gegenwart ---------------------------
+
+    /**
+     * TONIS GEGENFALL (28.08.): ein starker ALTER Abfall verdeckt einen
+     * frischen.
+     *
+     * Das staerkste Paar ist 120 -> 100 (-20 ueber 2 min) und liegt frueh,
+     * also meldet `bindingEndsAtNewest` ALT. Gleichzeitig laufen mehrere
+     * verletzende Abschnitte bis zum juengsten Punkt. Wer aus "staerkstes
+     * Paar ist alt" auf "jetzt faellt nichts" schliesst, uebersieht sie.
+     */
+    @Test
+    fun `ein starker alter Abfall verdeckt keinen frischen`() {
+        val s = reihe(120.0, 120.0, 110.0, 100.0, 100.0, 110.0, 112.0, 114.0, 116.0, 114.0, 111.0)
+        val r = GlucoseStability.evaluate(s, s.jetzt(), p)
+        assertEquals(GlucoseStability.Verdict.FALLING, r.verdict)
+        assertTrue(!r.bindingEndsAtNewest, "das staerkste Paar liegt frueh: $r")
+        assertTrue(r.freshDropExists,
+                   "aber es faellt sehr wohl gerade etwas - genau das darf nicht verdeckt werden")
+    }
+
+    /** Und die Gegenrichtung: ein Paar am juengsten Punkt beweist keinen
+     *  fortdauernden Abfall, wenn der Endwert seit Minuten steht. */
+    @Test
+    fun `ein flaches Ende trotz alter Stufe meldet keinen frischen Abfall`() {
+        val s = reihe(110.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0)
+        val r = GlucoseStability.evaluate(s, s.jetzt(), p)
+        assertEquals(GlucoseStability.Verdict.FALLING, r.verdict, "die Stufe reisst noch: $r")
+        assertTrue(r.freshDropExists, "sie laeuft bis zum juengsten Punkt - ehrlich gemeldet")
+    }
+
+    // ---- Die Historienberechnung SELBST ------------------------------------
+
+    /** Bisher wurde nur die UEBERNAHME von confirmedCycles geprueft, nicht
+     *  seine Berechnung (Tonis Befund 28.08.). */
+    @Test
+    fun `eine durchgehend ruhige Reihe bestaetigt mehrere Zyklen`() {
+        val s = reihe(*DoubleArray(14) { 95.0 })
+        val r = GlucoseStability.evaluate(s, s.jetzt(), p)
+        assertEquals(GlucoseStability.Verdict.STABLE, r.verdict)
+        assertTrue(r.confirmedCycles >= 3,
+                   "die Reihe belegt mehrere ruhige Zyklen: ${r.confirmedCycles}")
+    }
+
+    /** Ein Abfall in der Vergangenheit beendet die Zaehlung dort. */
+    @Test
+    fun `ein historischer Abfall unterbricht die Bestaetigung`() {
+        // Erst ein Sturz, dann acht ruhige Minuten.
+        val s = reihe(120.0, 110.0, 110.0, 110.0, 110.0, 110.0, 110.0, 110.0,
+                      110.0, 110.0, 110.0, 110.0, 110.0, 110.0)
+        val r = GlucoseStability.evaluate(s, s.jetzt(), p)
+        assertEquals(GlucoseStability.Verdict.STABLE, r.verdict, "$r")
+        val ohneSturz = GlucoseStability.evaluate(reihe(*DoubleArray(14) { 95.0 }),
+                                                  s.jetzt(), p).confirmedCycles
+        assertTrue(r.confirmedCycles < ohneSturz,
+                   "der Sturz muss die Zaehlung begrenzen: ${r.confirmedCycles} gegen $ohneSturz")
+    }
+
+    /**
+     * TONIS GEGENFALL 2 (28.08.): die Rueckschau prueft dieselben Bedingungen
+     * wie die Gegenwart - auch die Luecke.
+     *
+     * Konstante Werte bei Minute -1,3,4,...,10. Das aktuelle Fenster ist
+     * sauber; die historischen enthalten eine Vierminutenluecke und sind
+     * vollstaendig bewertet UNDETERMINED. Die alte, abgespeckte
+     * Historienpruefung zaehlte sie trotzdem mit.
+     */
+    @Test
+    fun `eine Luecke in der Historie beendet die Bestaetigung`() {
+        val min = listOf(-1L, 3L, 4L, 5L, 6L, 7L, 8L, 9L, 10L)
+        val s = MeasuredGlucose(
+            points = min.map { GlucosePoint(t0 + it * 60_000L, 95.0, 95.0) },
+            segmentStartTs = t0 - 60_000L, signalEpochTs = 1L,
+        )
+        val r = GlucoseStability.evaluate(s, t0 + 10 * 60_000L, p)
+        assertEquals(GlucoseStability.Verdict.STABLE, r.verdict, "das aktuelle Fenster ist sauber: $r")
+        assertEquals(1, r.confirmedCycles,
+                     "die Vierminutenluecke macht jedes fruehere Fenster unbestimmbar: $r")
+    }
+
     // ---- Kein Freigabe-Countdown ------------------------------------------
 
     /**

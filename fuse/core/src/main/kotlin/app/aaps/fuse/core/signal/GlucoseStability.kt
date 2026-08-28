@@ -189,6 +189,29 @@ object GlucoseStability {
          */
         val bindingEndsAtNewest: Boolean,
         /**
+         * FAELLT GERADE ETWAS? - der ehrliche Gegenwartsbefund.
+         *
+         * `true`, wenn IRGENDEIN die Toleranz reissender Abschnitt bis zum
+         * juengsten Punkt laeuft. Nicht zu verwechseln mit
+         * [bindingEndsAtNewest], das nur das STAERKSTE Paar beschreibt.
+         *
+         * Toni hat den Unterschied am Gegenfall gezeigt (28.08.):
+         * 120,120,110,100,100,110,112,114,116,114,111 - das staerkste Paar ist
+         * 120 -> 100 (-20 ueber 2 min) und liegt frueh, also meldet
+         * bindingEndsAtNewest ALT. Gleichzeitig laufen FUENF verletzende
+         * Abschnitte bis zum juengsten Punkt, darunter -3,0 ueber 3 min. Wer
+         * aus "staerkstes Paar ist alt" auf "jetzt faellt nichts" schliesst,
+         * uebersieht einen frischen Abfall.
+         *
+         * Umgekehrt gilt ebenso wenig: ein Paar, das am juengsten Punkt endet,
+         * beweist keinen FORTDAUERNDEN Abfall - sein Endwert kann seit
+         * Minuten unveraendert sein.
+         *
+         * Diese Klasse HANDELT nicht danach. Wer eine Lockerung darauf bauen
+         * will, braucht diesen Wert, nicht den anderen.
+         */
+        val freshDropExists: Boolean,
+        /**
          * Wie viele AUFEINANDERFOLGENDE Zyklen bis hierher bereits stabil
          * waren - rueckwirkend aus der vorhandenen Reihe gerechnet.
          *
@@ -201,7 +224,7 @@ object GlucoseStability {
     )
 
     private fun nein(reason: Reason, punkte: Int = 0, span: Double = 0.0) =
-        Result(Verdict.UNDETERMINED, reason, 0.0, 0.0, 0.0, 0L, punkte, span, 0, false, 0)
+        Result(Verdict.UNDETERMINED, reason, 0.0, 0.0, 0.0, 0L, punkte, span, 0, false, false, 0)
 
     /** Wie weit die Rueckrechnung hoechstens geht. Mehr als das braucht kein
      *  Bestaetigungszaehler, und die Kosten waeren quadratisch je Schritt. */
@@ -225,15 +248,41 @@ object GlucoseStability {
         if (!params.usable) return nein(Reason.INVALID_PARAMS)
         if (priorEpochTs != 0L && series.signalEpochTs != priorEpochTs)
             return nein(Reason.SEGMENT_CHANGED)
-
         // ZUKUNFTSPUNKTE AUSDRUECKLICH BEHANDELN (Toni 28.08.). Ein Punkt
-        // hinter `nowTs` ist ein Uhrenproblem, kein Messwert - und er hat die
-        // Altersprüfung unterlaufen: er machte ihr Ergebnis NEGATIV, wurde
-        // danach vom Fensterfilter entfernt, und die verbliebene Reihe war
-        // vier Minuten alt und wurde trotzdem beurteilt.
+        // hinter `nowTs` ist ein Uhrenproblem, kein Messwert.
+        //
+        // DIE PRUEFUNG STEHT HIER, NICHT IM KERN: die Rueckschau bewertet
+        // frueheres Zeitpunkte DERSELBEN Reihe, und dort liegen die spaeteren
+        // Punkte natuerlich hinter ihrem `nowTs`. Stuende sie im Kern, fiele
+        // jede Rueckrechnung mehr als eine Minute zurueck als INVALID_INPUT
+        // durch - gemessen: eine durchgehend ruhige Reihe belegte nur zwei
+        // statt vieler Zyklen.
         val neuester = series.points.lastOrNull() ?: return nein(Reason.TOO_FEW_POINTS)
         if (neuester.sourceTs - nowTs > FUTURE_TOLERANCE_MS)
             return nein(Reason.INVALID_INPUT, series.size)
+
+        val jetzt = kern(series, nowTs, params)
+        if (jetzt.verdict != Verdict.STABLE) return jetzt
+        return jetzt.copy(confirmedCycles = bestaetigteZyklen(series, nowTs, params))
+    }
+
+    /**
+     * DIE VOLLSTAENDIGE BEWERTUNG EINES ZEITPUNKTES.
+     *
+     * SIE GILT FUER HISTORIE UND GEGENWART GLEICHERMASSEN (Toni 28.08.).
+     * Vorher rechnete die Rueckschau mit einer abgespeckten Variante, die
+     * Zahlen, Reihenfolge und Toleranzen prueft - aber KEINE Luecke. Tonis
+     * Gegenfall: konstante Werte bei Minute -1,3,4,...,10. Das aktuelle
+     * Fenster ist sauber, die historischen enthalten eine Vierminutenluecke
+     * und waeren vollstaendig bewertet UNDETERMINED - die Rueckschau zaehlte
+     * sie trotzdem als vier bestaetigte Zyklen. Zwei Bewertungsfunktionen
+     * heissen zwei Wahrheiten; jetzt gibt es nur diese eine.
+     */
+    private fun kern(
+        series: MeasuredGlucose,
+        nowTs: Long,
+        params: Params,
+    ): Result {
 
         // VERALTET IST NICHT RUHIG. Diese Vorpruefung faengt die vollstaendig
         // alte Reihe; die eigentliche Zusicherung steht weiter unten auf dem
@@ -289,6 +338,10 @@ object GlucoseStability {
         var engStartTs = 0L
         var engErlaubt = 0.0
         var paare = 0
+        // Faellt IRGENDEIN Abschnitt, der bis zum juengsten Punkt laeuft, aus
+        // der Toleranz? Das ist die Gegenwartsfrage - unabhaengig davon,
+        // welches Paar am staerksten reisst.
+        var frischerAbfall = false
         for (a in punkte.indices) {
             for (b in a + 1 until punkte.size) {
                 val dt = (punkte[b].sourceTs - punkte[a].sourceTs) / 60_000.0
@@ -299,6 +352,7 @@ object GlucoseStability {
                 // Wie weit REISST der Abschnitt seine Toleranz - nicht wie
                 // tief er faellt. Sonst gewaenne immer das laengste Intervall.
                 val abstand = d + erlaubt
+                if (abstand < 0.0 && b == punkte.size - 1) frischerAbfall = true
                 if (abstand < engster) {
                     engster = abstand
                     engDrop = d
@@ -326,7 +380,9 @@ object GlucoseStability {
             spanMin = spanMin,
             evaluatedPairs = paare,
             bindingEndsAtNewest = bindetBisJetzt,
-            confirmedCycles = if (faellt) 0 else bestaetigteZyklen(series, punkte, params),
+            freshDropExists = frischerAbfall,
+            // Der Kern zaehlt NICHT zurueck - das taete er sonst rekursiv.
+            confirmedCycles = 0,
         )
     }
 
@@ -353,38 +409,20 @@ object GlucoseStability {
      */
     private fun bestaetigteZyklen(
         series: MeasuredGlucose,
-        aktuell: List<GlucosePoint>,
+        nowTs: Long,
         params: Params,
     ): Int {
         var zaehler = 1                       // dieser Zyklus ist stabil
-        val zeiten = series.points.map { it.sourceTs }
-        val juengsterIndex = zeiten.indexOf(aktuell.last().sourceTs)
-        if (juengsterIndex < 0) return zaehler
-        var i = juengsterIndex - 1
+        val zeiten = series.points.map { it.sourceTs }.filter { it <= nowTs }
+        var i = zeiten.size - 2               // der Punkt VOR dem juengsten
         while (i >= 0 && zaehler < MAX_CONFIRM_LOOKBACK) {
-            val ts = zeiten[i]
-            val frueher = series.lastMinutes(ts, params.windowMin)
-            if (frueher.size < params.minPoints) break
-            val spanne = (frueher.last().sourceTs - frueher.first().sourceTs) / 60_000.0
-            if (spanne < params.windowMin * 0.6) break
-            if (!istStabil(frueher, params)) break
+            // DIESELBE vollstaendige Bewertung wie fuer die Gegenwart -
+            // inklusive Luecken-, Frische-, Zahlen- und Spannenpruefung.
+            if (kern(series, zeiten[i], params).verdict != Verdict.STABLE) break
             zaehler++
             i--
         }
         return zaehler
-    }
-
-    /** Der reine Toleranztest ohne Diagnose - fuer die Rueckrechnung. */
-    private fun istStabil(punkte: List<GlucosePoint>, params: Params): Boolean {
-        for (a in punkte.indices) {
-            if (!punkte[a].rawBg.isFinite()) return false
-            for (b in a + 1 until punkte.size) {
-                val dt = (punkte[b].sourceTs - punkte[a].sourceTs) / 60_000.0
-                if (dt <= 0.0) return false
-                if (punkte[b].rawBg - punkte[a].rawBg + params.allowedDropMgdl(dt) < 0.0) return false
-            }
-        }
-        return true
     }
 
     /** Nur fuer Tests und Anzeige: reisst dieser Abschnitt die Toleranz? */

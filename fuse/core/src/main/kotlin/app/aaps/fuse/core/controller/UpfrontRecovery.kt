@@ -173,7 +173,15 @@ object UpfrontRecovery {
      * anderer Streak-Vertrag -, erhoeht diese Zahl und entwertet damit
      * jeden gespeicherten Zaehler. Das ist der ausdrueckliche Hebel dafuer.
      */
-    const val TRACK_SCHEMA = 1
+    // v2 (28.08.): BEDEUTUNG UND HERKUNFT DES RUHEZAEHLERS HABEN SICH
+    // GEAENDERT. Er zaehlte frueher ausschliesslich frische Zyklen unter zwei
+    // Nulltoleranzen (UKF < 0, q1 gefallen); jetzt steht dahinter der
+    // Stabilitaetsnachweis auf der gemessenen Reihe, und der Zaehler kann aus
+    // belegter Vorgeschichte gesaet sein. Ein gespeicherter Stand aus der
+    // alten Welt darf unter der neuen Regel NICHT still weiterlaufen - er
+    // wuerde eine Bestaetigung behaupten, die nie unter diesen Bedingungen
+    // entstanden ist.
+    const val TRACK_SCHEMA = 2
 
     enum class Denial {
         /** Kein Aufschub offen - die Frage stellt sich nicht. */
