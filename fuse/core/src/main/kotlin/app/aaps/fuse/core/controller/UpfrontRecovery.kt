@@ -191,11 +191,19 @@ object UpfrontRecovery {
         /** Ruhe noch nicht lange genug bestaetigt. */
         CALM_STREAK_SHORT,
 
-        /** UKF noch materiell negativ. */
+        /** Die GEMESSENE Reihe faellt - s. [app.aaps.fuse.core.signal.GlucoseStability]. */
         STILL_FALLING,
 
-        /** q1 faellt weiter. */
-        Q1_FALLING,
+        /**
+         * Die Stabilitaet ist NICHT BEURTEILBAR - zu wenige Punkte, ein Loch,
+         * ein Segmentwechsel, unbrauchbare Zahlen oder veraltete Daten.
+         *
+         * EIGENER GRUND, nicht mit STILL_FALLING gebuendelt: "faellt" und
+         * "weiss ich nicht" sind zwei verschiedene Auskuenfte, und nur die
+         * zweite ist behebbar, indem man wartet. Fehlende Daten bleiben
+         * ausdruecklich eine Sperre.
+         */
+        SIGNAL_UNDETERMINED,
 
         /** Zu nah am Guard-Boden. */
         GUARD_DISTANCE,
@@ -228,7 +236,33 @@ object UpfrontRecovery {
      */
     class Hazards(
         val descentRisk: Boolean,
-        val lowThreat: Boolean,
+        /**
+         * GEMESSENES TIEF - eigener Eintrag, absolut (Toni 28.08.).
+         *
+         * Frueher steckte es im gebuendelten `lowThreat`. Das war gefaehrlich,
+         * sobald jenes Buendel faellt: [Decision.FullBatchEligible] kehrt
+         * FUENFZEHN ZEILEN VOR der Bodenabstandspruefung zurueck, und ein
+         * MEASURED_LOW liefert `distanceToFloorMgdl == null` - der schnelle
+         * Erholungspfad haette also an einem gemessenen Tief vorbeigehen
+         * koennen. Deshalb steht es hier fuer sich.
+         */
+        val measuredLow: Boolean,
+        /**
+         * DER AM MARKER GEPINNTE ABWAERTSRISIKO-VERTRAG (Toni 28.08.).
+         *
+         * Hier stand `lowThreat = verdict != NONE`, also das 120-Minuten-
+         * BASALVERDIKT des Low-Tors. Das ist die Frage "lohnt sich ein
+         * Basalstopp?" - gebaut als einziger Weg zu einer Zero-TBR - und nicht
+         * die Frage "ist diese Mahlzeitendosis gefaehrlich?". Der 120er ist
+         * VIERMAL so lang wie der SMB-Riegel (30) und DOPPELT so lang wie der
+         * markerbezogene (60); ein Bodenkontakt zwischen 60 und 120 Minuten
+         * fiel nur in das Basalfenster. Genau so lag der 28.08.
+         *
+         * FEHLENDER ODER UNGUELTIGER PIN IST KEINE ENTWARNUNG: der Aufrufer
+         * muss dann `true` uebergeben. Das steht hier, weil man es an einem
+         * Boolean nicht mehr sieht.
+         */
+        val pinnedMealRisk: Boolean,
         val rebound: Boolean,
         val signalUnhealthy: Boolean,
         val technical: Boolean,
@@ -236,14 +270,15 @@ object UpfrontRecovery {
     ) {
 
         val any: Boolean
-            get() = descentRisk || lowThreat || rebound ||
+            get() = descentRisk || measuredLow || pinnedMealRisk || rebound ||
                 signalUnhealthy || technical || ledgerHold
 
         /** Fuer den Export: welche genau. */
         val names: String
             get() = listOfNotNull(
                 "descentRisk".takeIf { descentRisk },
-                "lowThreat".takeIf { lowThreat },
+                "measuredLow".takeIf { measuredLow },
+                "pinnedMealRisk".takeIf { pinnedMealRisk },
                 "rebound".takeIf { rebound },
                 "signal".takeIf { signalUnhealthy },
                 "technical".takeIf { technical },
@@ -525,6 +560,18 @@ object UpfrontRecovery {
      * @param sourceTs der Signalpunkt dieses Zyklus - Anschlussnachweis.
      * @param nowTs Anker dieses Zyklus - fuer den Restart-Schutz.
      */
+    /**
+     * DIE RESTART-ASYMMETRIE IST MIT DEM STABILITAETSTOR ENTFALLEN (Toni
+     * 28.08.). Der alte `q1Falling`-Riegel verglich mit EINEM prozesslokalen
+     * Vorzykluswert; nach einem Neustart war der `null`, also galt "nicht
+     * gefallen" - das Tor stand fuer einen Zyklus still offen, waehrend der
+     * Ruhezaehler aus dem Ledger geerbt wurde. Ein fehlender Vorwert ist aber
+     * "Vergleich unbekannt", nicht "kein Abfall".
+     *
+     * Die gemessene Reihe kennt diesen Fall nicht: fehlt sie oder ist sie zu
+     * kurz, lautet das Urteil UNDETERMINED und sperrt. Ein geerbter Zaehler
+     * ersetzt damit keinen aktuellen Nachweis mehr.
+     */
     fun evaluate(
         params: Params,
         prior: Track,
@@ -533,8 +580,11 @@ object UpfrontRecovery {
         markerIdentity: Long,
         hazards: Hazards,
         risingConfirmed: Boolean,
-        ukfRatePerMin: Double?,
-        q1Falling: Boolean,
+        /**
+         * Das Urteil ueber die GEMESSENE Reihe. `null` heisst "gar nicht
+         * gerechnet" und wird wie UNDETERMINED behandelt - nie wie stabil.
+         */
+        stability: app.aaps.fuse.core.signal.GlucoseStability.Result?,
         guardDistanceMgdl: Double?,
         sourceTs: Long,
         nowTs: Long,
@@ -574,9 +624,23 @@ object UpfrontRecovery {
         // WEG 2 - die bestaetigte ruhige Lage. Jede verletzte Bedingung
         // setzt den Zaehler auf 0; ein einzelner flacher Zyklus genuegt
         // ausdruecklich nicht.
-        if (ukfRatePerMin == null || !ukfRatePerMin.isFinite() || ukfRatePerMin < params.minUkf)
-            return nein(Denial.STILL_FALLING)
-        if (q1Falling) return nein(Denial.Q1_FALLING)
+        // HIER STANDEN ZWEI NULLTOLERANZEN (bis 28.08.):
+        //   ukfRatePerMin < params.minUkf  ->  STILL_FALLING
+        //   q1Falling                      ->  Q1_FALLING
+        // Am Fruehstueck des 28.08. hielten sie vier autorisierte Einheiten
+        // minutenlang fest, obwohl q1 zwischen 94,3 und 95,5 lag: die
+        // Filterrate blieb knapp negativ (zuletzt -0,0133) und q1 wackelte um
+        // 0,1 bis 0,3. Ein nachlaufender Filter und ein einzelner Wackler
+        // waren damit staerker als die gemessene Lage.
+        //
+        // Der Nachweis laeuft jetzt ueber die GEMESSENE Reihe. Er ist
+        // dreiwertig, und "nicht beurteilbar" bleibt eine Sperre.
+        when (stability?.verdict) {
+            app.aaps.fuse.core.signal.GlucoseStability.Verdict.STABLE -> Unit
+            app.aaps.fuse.core.signal.GlucoseStability.Verdict.FALLING ->
+                return nein(Denial.STILL_FALLING)
+            else -> return nein(Denial.SIGNAL_UNDETERMINED)
+        }
         if (guardDistanceMgdl == null || !guardDistanceMgdl.isFinite() ||
             guardDistanceMgdl < params.minGuardDistanceMgdl
         ) return nein(Denial.GUARD_DISTANCE)

@@ -236,7 +236,17 @@ class FuseCycleRunner(
     private var upfrontChainThisCycle: UpfrontChain? = null
 
     /** q1 des Vorzyklus - nur fuer die Ruhepruefung des Sofortbatches. */
-    private var upfrontLastQ1: Double? = null
+    /**
+     * Die Segmentidentitaet des VORZYKLUS fuer den Stabilitaetsnachweis.
+     *
+     * Sie ersetzt `upfrontLastQ1`, den prozesslokalen Einzelwert des alten
+     * q1-Riegels. Der hatte eine Restart-Asymmetrie: nach einem Neustart war
+     * er `null`, also galt "nicht gefallen", und das Tor stand fuer einen
+     * Zyklus offen - waehrend der Ruhezaehler aus dem Ledger geerbt wurde.
+     * Ein Segmentwechsel fuehrt jetzt zu UNDETERMINED und damit zu einer
+     * Sperre, nicht zu einer Freigabe.
+     */
+    private var upfrontStabilitaetsEpoche: Long = 0L
 
     private val observer = ObserverStateMachine(
         p = app.aaps.fuse.core.observer.ObserverParams(rSegmentBreakMin = gapPolicy.rSegmentBreakMin),
@@ -3057,10 +3067,55 @@ class FuseCycleRunner(
         // bisherige schnelle Erholung (UKF >= +0,20 ueber drei Zyklen),
         // Weg 2 die neue bestaetigte RUHE. Ohne injizierte Parameter ist
         // Weg 2 aus, und es bleibt exakt beim alten Vertrag.
-        val upfrontQ1Faellt = upfrontLastQ1.let { v ->
-            v != null && signal.q1.isFinite() && signal.q1 < v - 1e-9
-        }
-        upfrontLastQ1 = signal.q1.takeIf { it.isFinite() }
+        // ---- DER STABILITAETSNACHWEIS AUF DER GEMESSENEN REIHE ----------
+        //
+        // Er ersetzt die beiden Nulltoleranzen (UKF < 0 und "q1 gegenueber dem
+        // Vorzyklus gefallen"), die am 28.08. vier autorisierte Einheiten
+        // minutenlang hielten, obwohl q1 zwischen 94,3 und 95,5 lag.
+        //
+        // GUELTIGE VORGESCHICHTE ZAEHLT: die Reihe reicht ueber den
+        // Markerzeitpunkt zurueck. War die Lage schon vorher stabil, traegt
+        // der Nachweis im ERSTEN regulaeren Zyklus danach - es entsteht keine
+        // neue Wartezeit. Autorisierung, Budget und Lieferidentitaet kommen
+        // davon unberuehrt weiterhin ausschliesslich aus dem neuen Marker.
+        val upfrontStabilitaet = app.aaps.fuse.core.signal.GlucoseStability.evaluate(
+            series = signal.measured,
+            nowTs = signal.sourceTs,
+            params = app.aaps.fuse.core.signal.GlucoseStability.Params(),
+            priorEpochTs = upfrontStabilitaetsEpoche,
+        )
+        upfrontStabilitaetsEpoche = signal.measured.signalEpochTs
+
+        // ---- DER GEPINNTE MAHLZEITEN-RISIKOHORIZONT ---------------------
+        //
+        // VOR der Batchfreigabe, nicht erst im spaeteren Aufschubpfad (Toni
+        // 28.08.). Der gleichnamige `risk60` weiter unten bleibt unveraendert
+        // fuer den linearen Prime-Anteil; hier steht dieselbe reine Funktion
+        // mit demselben gepinnten Horizont, nur frueher.
+        //
+        // DER PIN WIRD GELESEN, NICHT VERDRAHTET: `horizonMin` kommt aus der
+        // beim Markerdruck festgeschriebenen Autorisierung. Eine feste 60
+        // waere eine zweite Wahrheit neben ihr.
+        val batchPinGueltig = cfg.deferredPrimeEnabled &&
+            markerTs > 0L &&
+            episodes.deferredPrime.pinnedForMarkerTs > 0L &&
+            episodes.deferredPrime.pinnedForMarkerTs == markerTs &&
+            episodes.deferredPrime.horizonMin > 0
+        val batchRisiko = if (!batchPinGueltig) null else LowThreatGate.measuredDescentRisk(
+            signalHealthy = step.health == Health.READY,
+            bgMgdl = signal.q1,
+            fallRatePerMin = signal.ukfRatePerMin,
+            bolusIobU = (iobTotal.iob - iobTotal.basaliob).takeIf { iobTotal.valid },
+            isfMgdlPerU = isf,
+            guardFloorMgdl = cfg.guardFloorMgdl,
+            horizonMin = episodes.deferredPrime.horizonMin.toDouble(),
+        )
+        // FEHLENDER ODER UNGUELTIGER PIN IST KEINE ENTWARNUNG. Ohne gueltige
+        // Frist gibt es keine Aussage ueber das Abwaertsrisiko dieser
+        // Mahlzeit - und keine Aussage ist ein Grund zu halten, nicht
+        // freizugeben.
+        val batchRisikoSperrt = batchRisiko?.active ?: true
+
         val upfrontRecovery = app.aaps.fuse.core.controller.UpfrontRecovery.evaluate(
             params = upfrontRecoveryParams ?: cfg.calmParams,
             prior = episodes.upfrontRecovery,
@@ -3073,7 +3128,14 @@ class FuseCycleRunner(
             markerIdentity = episodes.foundation.takeIf { it.valid }?.armedTs ?: 0L,
             hazards = app.aaps.fuse.core.controller.UpfrontRecovery.Hazards(
                 descentRisk = descentRisk.active,
-                lowThreat = lowThreatResult.verdict != LowThreatGate.Verdict.NONE,
+                // GEMESSENES TIEF EIGENSTAENDIG - der schnelle Erholungspfad
+                // kehrt vor der Bodenabstandspruefung zurueck, und ein
+                // MEASURED_LOW liefert dort gar keine Distanz.
+                measuredLow = measuredLow ||
+                    lowThreatResult.verdict == LowThreatGate.Verdict.MEASURED_LOW,
+                // STATT des 120-Minuten-Basalverdikts: der am Marker gepinnte
+                // Abwaertsrisiko-Vertrag dieser Mahlzeit.
+                pinnedMealRisk = batchRisikoSperrt,
                 rebound = reboundRaw,
                 signalUnhealthy = step.health != Health.READY,
                 technical = upfrontTechReject,
@@ -3081,8 +3143,7 @@ class FuseCycleRunner(
             ),
             risingConfirmed =
                 deferredRecoveryStreak >= DescentRecoveryLatch.REQUIRED_CONSECUTIVE_CYCLES,
-            ukfRatePerMin = signal.ukfRatePerMin.takeIf { it.isFinite() },
-            q1Falling = upfrontQ1Faellt,
+            stability = upfrontStabilitaet,
             guardDistanceMgdl = lowThreatResult.distanceToFloorMgdl,
             sourceTs = signal.sourceTs,
             nowTs = computeTs,

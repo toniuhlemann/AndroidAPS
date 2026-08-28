@@ -28,8 +28,26 @@ class UpfrontRecoveryTest {
     private val marker = 1_700_000_000_000L
 
     private fun keineGefahr() = UpfrontRecovery.Hazards(
-        descentRisk = false, lowThreat = false, rebound = false,
-        signalUnhealthy = false, technical = false, ledgerHold = false,
+        descentRisk = false, measuredLow = false, pinnedMealRisk = false,
+        rebound = false, signalUnhealthy = false, technical = false, ledgerHold = false,
+    )
+
+    /** Die drei Stabilitaetsurteile als Testbausteine. Direkt konstruiert,
+     *  damit dieser Test die Signalauswertung nicht mitprueft - dafuer gibt
+     *  es GlucoseStabilityTest. */
+    private fun stabil() = app.aaps.fuse.core.signal.GlucoseStability.Result(
+        app.aaps.fuse.core.signal.GlucoseStability.Verdict.STABLE, app.aaps.fuse.core.signal.GlucoseStability.Reason.OK,
+        -1.0, 5.0, 2.5, marker + 600_000L, 10, 10.0, 30,
+    )
+
+    private fun fallend() = app.aaps.fuse.core.signal.GlucoseStability.Result(
+        app.aaps.fuse.core.signal.GlucoseStability.Verdict.FALLING, app.aaps.fuse.core.signal.GlucoseStability.Reason.DROP_EXCEEDS,
+        -8.0, 2.0, 2.2, marker + 600_000L, 10, 10.0, 30,
+    )
+
+    private fun unbestimmbar() = app.aaps.fuse.core.signal.GlucoseStability.Result(
+        app.aaps.fuse.core.signal.GlucoseStability.Verdict.UNDETERMINED, app.aaps.fuse.core.signal.GlucoseStability.Reason.TOO_FEW_POINTS,
+        0.0, 0.0, 0.0, 0L, 2, 1.0, 0,
     )
 
     private val regelVersion = 31
@@ -51,14 +69,13 @@ class UpfrontRecoveryTest {
         markerIdentity: Long = marker,
         hazards: UpfrontRecovery.Hazards = keineGefahr(),
         risingConfirmed: Boolean = false,
-        ukf: Double? = 0.10,
-        q1Falling: Boolean = false,
+        stability: app.aaps.fuse.core.signal.GlucoseStability.Result? = stabil(),
         guardDistance: Double? = 8.0,
         sourceTs: Long,
         nowTs: Long = sourceTs,
     ) = UpfrontRecovery.evaluate(
         params, prior, deferredOpen, inPhaseA, markerIdentity, hazards, risingConfirmed,
-        ukf, q1Falling, guardDistance, sourceTs, nowTs,
+        stability, guardDistance, sourceTs, nowTs,
     )
 
     /** Baut einen echten Streak ueber `n` lueckenlose Zyklen auf. */
@@ -90,8 +107,8 @@ class UpfrontRecoveryTest {
             prior = reif.track,
             hazards = keineGefahr().let {
                 UpfrontRecovery.Hazards(
-                    descentRisk = true, lowThreat = false, rebound = false,
-                    signalUnhealthy = false, technical = false, ledgerHold = false,
+                    descentRisk = true, measuredLow = false, pinnedMealRisk = false,
+                    rebound = false, signalUnhealthy = false, technical = false, ledgerHold = false,
                 )
             },
             sourceTs = 1_180_000L,
@@ -103,14 +120,15 @@ class UpfrontRecoveryTest {
     }
 
     @Test
-    fun `jede der sechs Gefahren blockiert einzeln`() {
+    fun `jede der sieben Gefahren blockiert einzeln`() {
         val faelle = listOf(
-            "descentRisk" to UpfrontRecovery.Hazards(true, false, false, false, false, false),
-            "lowThreat" to UpfrontRecovery.Hazards(false, true, false, false, false, false),
-            "rebound" to UpfrontRecovery.Hazards(false, false, true, false, false, false),
-            "signal" to UpfrontRecovery.Hazards(false, false, false, true, false, false),
-            "technical" to UpfrontRecovery.Hazards(false, false, false, false, true, false),
-            "ledgerHold" to UpfrontRecovery.Hazards(false, false, false, false, false, true),
+            "descentRisk" to UpfrontRecovery.Hazards(true, false, false, false, false, false, false),
+            "measuredLow" to UpfrontRecovery.Hazards(false, true, false, false, false, false, false),
+            "pinnedMealRisk" to UpfrontRecovery.Hazards(false, false, true, false, false, false, false),
+            "rebound" to UpfrontRecovery.Hazards(false, false, false, true, false, false, false),
+            "signal" to UpfrontRecovery.Hazards(false, false, false, false, true, false, false),
+            "technical" to UpfrontRecovery.Hazards(false, false, false, false, false, true, false),
+            "ledgerHold" to UpfrontRecovery.Hazards(false, false, false, false, false, false, true),
         )
         faelle.forEach { (name, h) ->
             val d = bewerte(prior = streakUeber(3).track, hazards = h, sourceTs = 2_000_000L)
@@ -189,20 +207,26 @@ class UpfrontRecoveryTest {
     }
 
     @Test
-    fun `noch fallende Rate blockiert und nullt den Zaehler`() {
+    fun `eine gemessen fallende Reihe blockiert und nullt den Zaehler`() {
         val zwei = streakUeber(2)
         assertEquals(2, zwei.track.streak)
-        val d = bewerte(prior = zwei.track, ukf = -0.01, sourceTs = 1_120_000L)
+        val d = bewerte(prior = zwei.track, stability = fallend(), sourceTs = 1_120_000L)
         val b = assertInstanceOf(UpfrontRecovery.Decision.Blocked::class.java, d)
         assertEquals(UpfrontRecovery.Denial.STILL_FALLING, b.denial)
         assertEquals(0, b.track.streak)
     }
 
+    /**
+     * DER ALTE q1-RIEGEL IST ENTFALLEN (28.08.). Er verglich mit EINEM
+     * Vorzykluswert und liess ein Wackeln von 0,1 mg/dl als "faellt weiter"
+     * gelten - genau das hielt am 28.08. vier autorisierte Einheiten fest.
+     * Dieselbe Lage wird jetzt ueber die gemessene Reihe beurteilt, und ein
+     * einzelner Wackler reisst deren laengenabhaengige Toleranz nicht.
+     */
     @Test
-    fun `weiter fallendes q1 blockiert`() {
-        val d = bewerte(prior = streakUeber(2).track, q1Falling = true, sourceTs = 1_120_000L)
-        assertEquals(UpfrontRecovery.Denial.Q1_FALLING,
-                     assertInstanceOf(UpfrontRecovery.Decision.Blocked::class.java, d).denial)
+    fun `ein einzelner Wackler blockiert nicht mehr`() {
+        val d = bewerte(prior = streakUeber(2).track, stability = stabil(), sourceTs = 1_120_000L)
+        assertInstanceOf(UpfrontRecovery.Decision.CalmRecovered::class.java, d)
     }
 
     @Test
@@ -214,12 +238,12 @@ class UpfrontRecoveryTest {
 
     @Test
     fun `nicht endliche Eingaben blockieren, statt durchzurutschen`() {
-        assertEquals(UpfrontRecovery.Denial.STILL_FALLING,
+        assertEquals(UpfrontRecovery.Denial.SIGNAL_UNDETERMINED,
                      assertInstanceOf(UpfrontRecovery.Decision.Blocked::class.java,
-                                      bewerte(ukf = Double.NaN, sourceTs = 1L)).denial)
-        assertEquals(UpfrontRecovery.Denial.STILL_FALLING,
+                                      bewerte(stability = unbestimmbar(), sourceTs = 1L)).denial)
+        assertEquals(UpfrontRecovery.Denial.SIGNAL_UNDETERMINED,
                      assertInstanceOf(UpfrontRecovery.Decision.Blocked::class.java,
-                                      bewerte(ukf = null, sourceTs = 1L)).denial)
+                                      bewerte(stability = null, sourceTs = 1L)).denial)
         assertEquals(UpfrontRecovery.Denial.GUARD_DISTANCE,
                      assertInstanceOf(UpfrontRecovery.Decision.Blocked::class.java,
                                       bewerte(guardDistance = Double.NaN, sourceTs = 1L)).denial)
@@ -486,8 +510,8 @@ class UpfrontRecoveryTest {
         val d = bewerte(
             prior = geladen,
             hazards = UpfrontRecovery.Hazards(
-                descentRisk = true, lowThreat = false, rebound = false,
-                signalUnhealthy = false, technical = false, ledgerHold = false,
+                descentRisk = true, measuredLow = false, pinnedMealRisk = false,
+                rebound = false, signalUnhealthy = false, technical = false, ledgerHold = false,
             ),
             sourceTs = 1_180_000L,
         )
@@ -518,9 +542,69 @@ class UpfrontRecoveryTest {
         assertEquals(UpfrontRecovery.KEINE_GEFAHR, c.hazards)
         // Und der Export nennt die sechs, nicht sieben.
         assertEquals(
-            "descentRisk+lowThreat+rebound+signal+technical+ledgerHold",
-            UpfrontRecovery.Hazards(true, true, true, true, true, true).names,
+            "descentRisk+measuredLow+pinnedMealRisk+rebound+signal+technical+ledgerHold",
+            UpfrontRecovery.Hazards(true, true, true, true, true, true, true).names,
         )
+    }
+
+    /**
+     * NICHT BEURTEILBAR IST EIN EIGENER GRUND (Toni 28.08.). "faellt" und
+     * "weiss ich nicht" sind zwei verschiedene Auskuenfte - und beide sperren.
+     */
+    @Test
+    fun `unbestimmbare Stabilitaet sperrt mit eigenem Grund`() {
+        val d = bewerte(prior = streakUeber(3).track, stability = unbestimmbar(), sourceTs = 1_180_000L)
+        val b = assertInstanceOf(UpfrontRecovery.Decision.Blocked::class.java, d)
+        assertEquals(UpfrontRecovery.Denial.SIGNAL_UNDETERMINED, b.denial)
+        assertEquals(0, b.track.streak, "und der Zaehler faellt")
+    }
+
+    /** Gar kein Urteil ist wie ein unbestimmbares - nie wie stabil. */
+    @Test
+    fun `fehlende Stabilitaet ist keine Freigabe`() {
+        val d = bewerte(prior = streakUeber(3).track, stability = null, sourceTs = 1_180_000L)
+        val b = assertInstanceOf(UpfrontRecovery.Decision.Blocked::class.java, d)
+        assertEquals(UpfrontRecovery.Denial.SIGNAL_UNDETERMINED, b.denial)
+    }
+
+    /**
+     * DAS GEMESSENE TIEF IST EIGENSTAENDIG (Toni 28.08.): FullBatchEligible
+     * kehrt VOR der Bodenabstandspruefung zurueck, und ein MEASURED_LOW
+     * liefert dort gar keine Distanz. Stuende es weiter im gebuendelten
+     * lowThreat, ginge der schnelle Erholungspfad daran vorbei.
+     */
+    @Test
+    fun `ein gemessenes Tief blockiert auch den schnellen Erholungspfad`() {
+        val d = bewerte(
+            prior = streakUeber(3).track,
+            hazards = UpfrontRecovery.Hazards(
+                descentRisk = false, measuredLow = true, pinnedMealRisk = false,
+                rebound = false, signalUnhealthy = false, technical = false, ledgerHold = false,
+            ),
+            risingConfirmed = true,
+            guardDistance = null,
+            sourceTs = 1_180_000L,
+        )
+        val b = assertInstanceOf(UpfrontRecovery.Decision.Blocked::class.java, d,
+                                 "risingConfirmed darf am gemessenen Tief nicht vorbei")
+        assertEquals(UpfrontRecovery.Denial.CURRENT_HAZARD, b.denial)
+        assertTrue(b.hazards.contains("measuredLow"))
+    }
+
+    /** Der gepinnte Mahlzeitenhorizont sperrt wie jede andere aktuelle Gefahr. */
+    @Test
+    fun `ein gepinntes Abwaertsrisiko blockiert den Batch`() {
+        val d = bewerte(
+            prior = streakUeber(3).track,
+            hazards = UpfrontRecovery.Hazards(
+                descentRisk = false, measuredLow = false, pinnedMealRisk = true,
+                rebound = false, signalUnhealthy = false, technical = false, ledgerHold = false,
+            ),
+            sourceTs = 1_180_000L,
+        )
+        val b = assertInstanceOf(UpfrontRecovery.Decision.Blocked::class.java, d)
+        assertEquals(UpfrontRecovery.Denial.CURRENT_HAZARD, b.denial)
+        assertTrue(b.hazards.contains("pinnedMealRisk"))
     }
 
     @Test
@@ -529,7 +613,7 @@ class UpfrontRecoveryTest {
         // Ruhebedingungen selbst wieder erfuellen. Hier tut er es nicht
         // (die Rate ist negativ), also faellt der volle Zaehler.
         val reif = streakUeber(3)
-        val d = bewerte(prior = reif.track, ukf = -0.5, sourceTs = 1_180_000L)
+        val d = bewerte(prior = reif.track, stability = fallend(), sourceTs = 1_180_000L)
         val b = assertInstanceOf(UpfrontRecovery.Decision.Blocked::class.java, d)
         assertEquals(UpfrontRecovery.Denial.STILL_FALLING, b.denial)
         assertEquals(0, b.track.streak)
@@ -548,8 +632,8 @@ class UpfrontRecoveryTest {
     @Test
     fun `ein Freigabetyp kann bei aktueller Gefahr gar nicht entstehen`() {
         val gefahr = UpfrontRecovery.Hazards(
-            descentRisk = true, lowThreat = false, rebound = false,
-            signalUnhealthy = false, technical = false, ledgerHold = false,
+            descentRisk = true, measuredLow = false, pinnedMealRisk = false,
+            rebound = false, signalUnhealthy = false, technical = false, ledgerHold = false,
         ).names
         assertThrows(IllegalArgumentException::class.java) {
             UpfrontRecovery.Decision.CalmRecovered(
