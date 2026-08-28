@@ -743,7 +743,14 @@ class FuseStateExportTest {
         // zurueckhielt, gibt sie danach frei - der historische Basalschutz
         // ist kein Grund mehr gegen eine angekuendigte Mahlzeit. Aktuelle
         // Gefahren sind unveraendert absolut.
-        assertEquals(34, FuseStateJson.RULE_SET_VERSION)
+        // v35 DER FREIGABEVERTRAG DES SOFORTANTEILS. Die Frage, die dieser
+        // Test erzwingt - wirklich dosierwirksam? - beantwortet der
+        // Fruehstuecksfall: dieselben 4,00 U wandern von 09:37/09:38 auf
+        // 09:22:21, also 25 Sekunden nach dem Marker. Der Nachweis auf der
+        // gemessenen Reihe ersetzt zwei Nulltoleranzen, das gemessene Tief
+        // bekommt ein eigenes Gefahrenfeld, und das 120-Minuten-Basalverdikt
+        // weicht dem am Marker gepinnten Abwaertsrisiko-Vertrag.
+        assertEquals(35, FuseStateJson.RULE_SET_VERSION)
         assertTrue(
             FuseStateJson.hashOf(cfg)!!.isNotEmpty(),
             "und der Hash bleibt berechenbar",
@@ -1423,6 +1430,16 @@ class FuseStateExportTest {
             markerFloorLiftU = 3.6,
             afterDescentGateU = 3.6,
             requestedRtU = 3.6,
+            stabilisation = "WITHIN_TOLERANCE",
+            stabilityVerdict = "STABLE",
+            stabilityReason = "OK",
+            recentSpanMin = 5.0,
+            recentNetMgdl = -1.0,
+            recentWorstDropMgdl = -1.0,
+            recentWorstDropSpanMin = 2.0,
+            allowedDropMgdl = 2.2,
+            acceptedSustainedFallMgdlPerMin = 2.0 / 4.5,
+            stabilityConfirmedCycles = 3,
         )
         val c = record(outcome(upfrontChain = kette)).optJSONObject("upfrontChain")
         assertNotNull(c, "die Endkette fehlt im Trail")
@@ -1434,6 +1451,18 @@ class FuseStateExportTest {
         assertEquals(3.6, c.optDouble("requestedRtU"), 1e-9)
         assertEquals(3.6, c.optDouble("markerFloorLiftU"), 1e-9)
         assertEquals(3.6, c.optDouble("upfrontOpenU"), 1e-9)
+        // DER STABILITAETSNACHWEIS steht im Trail - ohne ihn ist am Geraet
+        // nicht erkennbar, welcher Abschnitt sperrt und wie lange noch.
+        assertEquals("WITHIN_TOLERANCE", c.optString("stabilisation"))
+        assertEquals("STABLE", c.optString("stabilityVerdict"))
+        assertEquals(5.0, c.optDouble("recentSpanMin"), 1e-9)
+        assertEquals(-1.0, c.optDouble("recentWorstDropMgdl"), 1e-9)
+        assertEquals(2.0, c.optDouble("recentWorstDropSpanMin"), 1e-9)
+        assertEquals(2.2, c.optDouble("allowedDropMgdl"), 1e-9)
+        assertEquals(3, c.optInt("stabilityConfirmedCycles"))
+        // Der Vertrag als Zahl - damit "innerhalb der Toleranz" nicht als
+        // "hat aufgehoert" gelesen wird.
+        assertEquals(2.0 / 4.5, c.optDouble("acceptedSustainedFallMgdlPerMin"), 1e-9)
         // Es gibt KEIN Feld, das "gegeben" behauptet.
         assertFalse(c.keys().asSequence().any { it.contains("delivered", true) }) {
             "die Endkette darf keine Liefermenge vortaeuschen: " +

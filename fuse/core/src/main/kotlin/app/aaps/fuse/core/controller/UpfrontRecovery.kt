@@ -186,7 +186,12 @@ object UpfrontRecovery {
     // Bedeutungswechsel, wieder eine Generation - ein gespeicherter Stand
     // behauptet sonst eine Bestaetigung, die unter der neuen Regel nie
     // entstanden ist.
-    const val TRACK_SCHEMA = 3
+    // v4 (28.08.): der juengste Abschnitt verlangt jetzt eine TATSAECHLICH
+    // beobachtete Mindestspanne statt 60 Prozent des Fensters, und das Urteil
+    // heisst ehrlich "innerhalb der Toleranz" statt "stabilisiert". Der
+    // akzeptierte Dauerabfall aendert sich damit von 0,667 auf 0,444
+    // mg/dl/min - ein gespeicherter Zaehler stammt aus der lockereren Regel.
+    const val TRACK_SCHEMA = 4
 
     enum class Denial {
         /** Kein Aufschub offen - die Frage stellt sich nicht. */
@@ -655,8 +660,8 @@ object UpfrontRecovery {
         // und faellt im Fensterurteil trotzdem durch. Genau diese Lage soll
         // der Ruhe-Ausgang loesen koennen; dafuer war er gebaut.
         when (stability?.stabilisation) {
-            app.aaps.fuse.core.signal.GlucoseStability.Stabilisation.STABILISED -> Unit
-            app.aaps.fuse.core.signal.GlucoseStability.Stabilisation.STILL_FALLING ->
+            app.aaps.fuse.core.signal.GlucoseStability.Stabilisation.WITHIN_TOLERANCE -> Unit
+            app.aaps.fuse.core.signal.GlucoseStability.Stabilisation.FALLING_BEYOND_TOLERANCE ->
                 return nein(Denial.STILL_FALLING)
             else -> return nein(Denial.SIGNAL_UNDETERMINED)
         }

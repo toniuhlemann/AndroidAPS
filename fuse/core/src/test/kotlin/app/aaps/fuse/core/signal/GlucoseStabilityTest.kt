@@ -127,7 +127,7 @@ class GlucoseStabilityTest {
         val s = reihe(120.0, 119.5, 119.0, 118.5, 118.0, 117.5, 117.0, 116.5, 116.0, 115.5)
         val r = GlucoseStability.evaluate(s, s.jetzt(), p)
         assertEquals(GlucoseStability.Verdict.FALLING, r.verdict, "$r")
-        assertEquals(GlucoseStability.Stabilisation.STILL_FALLING, r.stabilisation,
+        assertEquals(GlucoseStability.Stabilisation.FALLING_BEYOND_TOLERANCE, r.stabilisation,
                      "langsam genug ist nicht dasselbe wie beendet: $r")
         assertEquals(0, r.confirmedCycles, "und nichts ist bestaetigt: $r")
     }
@@ -142,11 +142,11 @@ class GlucoseStabilityTest {
         val plateau = reihe(110.0, 110.0, 110.0, 110.0, 110.0, 110.0, 110.0, 110.0)
         val rauschen = reihe(95.0, 94.0, 95.0, 95.0, 94.0, 95.0, 95.0, 94.0)
         val abfall = reihe(120.0, 119.5, 119.0, 118.5, 118.0, 117.5, 117.0, 116.5)
-        assertEquals(GlucoseStability.Stabilisation.STABILISED,
+        assertEquals(GlucoseStability.Stabilisation.WITHIN_TOLERANCE,
                      GlucoseStability.evaluate(plateau, plateau.jetzt(), p).stabilisation, "Plateau")
-        assertEquals(GlucoseStability.Stabilisation.STABILISED,
+        assertEquals(GlucoseStability.Stabilisation.WITHIN_TOLERANCE,
                      GlucoseStability.evaluate(rauschen, rauschen.jetzt(), p).stabilisation, "Rauschen")
-        assertEquals(GlucoseStability.Stabilisation.STILL_FALLING,
+        assertEquals(GlucoseStability.Stabilisation.FALLING_BEYOND_TOLERANCE,
                      GlucoseStability.evaluate(abfall, abfall.jetzt(), p).stabilisation, "langsamer Abfall")
     }
 
@@ -340,7 +340,7 @@ class GlucoseStabilityTest {
         assertTrue(!r.bindingEndsAtNewest, "das staerkste Paar liegt frueh: $r")
         assertTrue(r.dropReachesNow,
                    "der Vergleich mit frueher reisst bis zum juengsten Punkt")
-        assertEquals(GlucoseStability.Stabilisation.STILL_FALLING, r.stabilisation,
+        assertEquals(GlucoseStability.Stabilisation.FALLING_BEYOND_TOLERANCE, r.stabilisation,
                      "und der juengste Abschnitt faellt wirklich: $r")
     }
 
@@ -364,7 +364,7 @@ class GlucoseStabilityTest {
         assertEquals(GlucoseStability.Verdict.FALLING, r.verdict,
                      "das FENSTER traegt die alte Stufe noch: $r")
         assertTrue(r.dropReachesNow, "und der Vergleich mit frueher reisst - aber das ist Historie")
-        assertEquals(GlucoseStability.Stabilisation.STABILISED, r.stabilisation,
+        assertEquals(GlucoseStability.Stabilisation.WITHIN_TOLERANCE, r.stabilisation,
                      "der juengste Abschnitt ist seit sechs Minuten flach: $r")
     }
 
@@ -375,7 +375,7 @@ class GlucoseStabilityTest {
     fun `Abfall dann Plateau gilt als stabilisiert`() {
         val s = reihe(120.0, 116.0, 112.0, 108.0, 108.0, 108.0, 108.0, 108.0, 108.0)
         val r = GlucoseStability.evaluate(s, s.jetzt(), p)
-        assertEquals(GlucoseStability.Stabilisation.STABILISED, r.stabilisation, "$r")
+        assertEquals(GlucoseStability.Stabilisation.WITHIN_TOLERANCE, r.stabilisation, "$r")
     }
 
     /** (2) ABFALL -> KURZE PAUSE -> ERNEUTER ABFALL: keine Beruhigung. */
@@ -383,7 +383,7 @@ class GlucoseStabilityTest {
     fun `Abfall Pause Abfall gilt nicht als stabilisiert`() {
         val s = reihe(120.0, 114.0, 108.0, 108.0, 108.0, 102.0, 96.0, 90.0)
         val r = GlucoseStability.evaluate(s, s.jetzt(), p)
-        assertEquals(GlucoseStability.Stabilisation.STILL_FALLING, r.stabilisation, "$r")
+        assertEquals(GlucoseStability.Stabilisation.FALLING_BEYOND_TOLERANCE, r.stabilisation, "$r")
     }
 
     /** (3) ALTER STARKER ABFALL + FRISCHER SCHWAECHERER: keine Beruhigung.
@@ -392,7 +392,7 @@ class GlucoseStabilityTest {
     fun `alter starker und frischer schwacher Abfall gilt nicht als stabilisiert`() {
         val s = reihe(140.0, 120.0, 110.0, 110.0, 110.0, 108.0, 106.0, 104.0)
         val r = GlucoseStability.evaluate(s, s.jetzt(), p)
-        assertEquals(GlucoseStability.Stabilisation.STILL_FALLING, r.stabilisation,
+        assertEquals(GlucoseStability.Stabilisation.FALLING_BEYOND_TOLERANCE, r.stabilisation,
                      "der frische Abfall zaehlt, obwohl der alte staerker war: $r")
     }
 
@@ -437,7 +437,7 @@ class GlucoseStabilityTest {
         val s = reihe(120.0, 110.0, 110.0, 110.0, 110.0, 110.0, 110.0, 110.0,
                       110.0, 110.0, 110.0, 110.0, 110.0, 110.0)
         val r = GlucoseStability.evaluate(s, s.jetzt(), p)
-        assertEquals(GlucoseStability.Stabilisation.STABILISED, r.stabilisation, "$r")
+        assertEquals(GlucoseStability.Stabilisation.WITHIN_TOLERANCE, r.stabilisation, "$r")
         assertTrue(r.confirmedCycles >= 3,
                    "das lange Plateau belegt mehrere Zyklen: ${r.confirmedCycles}")
     }
@@ -448,7 +448,7 @@ class GlucoseStabilityTest {
         val s = reihe(110.0, 110.0, 110.0, 110.0, 110.0, 110.0, 110.0, 110.0,
                       110.0, 110.0, 106.0, 102.0)
         val r = GlucoseStability.evaluate(s, s.jetzt(), p)
-        assertEquals(GlucoseStability.Stabilisation.STILL_FALLING, r.stabilisation, "$r")
+        assertEquals(GlucoseStability.Stabilisation.FALLING_BEYOND_TOLERANCE, r.stabilisation, "$r")
         assertEquals(0, r.confirmedCycles, "und der Zaehler steht bei null: $r")
     }
 
@@ -472,6 +472,87 @@ class GlucoseStabilityTest {
         assertEquals(GlucoseStability.Verdict.STABLE, r.verdict, "das aktuelle Fenster ist sauber: $r")
         assertEquals(1, r.confirmedCycles,
                      "die Vierminutenluecke macht jedes fruehere Fenster unbestimmbar: $r")
+    }
+
+    // ---- Taktjitter und Fensterpositionen (Toni 28.08.) --------------------
+
+    /** Reihe mit unregelmaessigem Takt zwischen 58 und 62 Sekunden. */
+    private fun jitterReihe(start: Double, ratePerMin: Double, n: Int, versatzMs: Long = 0L):
+        Pair<MeasuredGlucose, Long> {
+        val takte = longArrayOf(58_000, 62_000, 59_000, 61_000, 60_000, 58_000, 62_000, 59_000)
+        var ts = t0 + versatzMs
+        val punkte = ArrayList<GlucosePoint>()
+        var wert = start
+        for (i in 0 until n) {
+            punkte.add(GlucosePoint(ts, wert, wert))
+            val dt = takte[i % takte.size]
+            ts += dt
+            wert -= ratePerMin * dt / 60_000.0
+        }
+        return MeasuredGlucose(punkte, t0, 1L) to punkte.last().sourceTs
+    }
+
+    /**
+     * TONIS DRITTE ZEILE (28.08.): bei 58-62-s-Takt kann der aelteste Punkt
+     * knapp aus dem Fenster fallen. Mit der alten 60-Prozent-Regel blieben
+     * dann etwa 3:59 - und darueber ergab -0,5 mg/dl/min nur -1,99 und
+     * passierte. Die beobachtete Mindestspanne schliesst das.
+     *
+     * Geprueft ueber MEHRERE Fensterpositionen, damit kein guenstiger
+     * Einzelschnitt das Ergebnis traegt.
+     */
+    @Test
+    fun `ein halber Punkt pro Minute passiert bei keinem Taktversatz`() {
+        for (versatzS in 0..59 step 7) {
+            for (n in 6..12) {
+                val (reihe, jetzt) = jitterReihe(120.0, 0.5, n, versatzS * 1000L)
+                val r = GlucoseStability.evaluate(reihe, jetzt, p)
+                assertTrue(
+                    r.stabilisation != GlucoseStability.Stabilisation.WITHIN_TOLERANCE,
+                    "Versatz ${versatzS}s, $n Punkte: -0,5 mg/dl/min darf nie durchgehen - $r",
+                )
+            }
+        }
+    }
+
+    /** Und ein Plateau bleibt bei demselben Jitter durchgehend zulaessig. */
+    @Test
+    fun `ein Plateau haelt bei jedem Taktversatz`() {
+        for (versatzS in 0..59 step 7) {
+            val (reihe, jetzt) = jitterReihe(110.0, 0.0, 10, versatzS * 1000L)
+            val r = GlucoseStability.evaluate(reihe, jetzt, p)
+            assertEquals(GlucoseStability.Stabilisation.WITHIN_TOLERANCE, r.stabilisation,
+                         "Versatz ${versatzS}s: $r")
+        }
+    }
+
+    // ---- Der Vertrag steht als Zahl da -------------------------------------
+
+    /**
+     * DER AKZEPTIERTE DAUERABFALL IST AUSRECHENBAR und gehoert in den
+     * Bericht: Zugabe geteilt durch beobachtete Mindestspanne. Wer
+     * "innerhalb der Toleranz" als "hat aufgehoert" liest, soll hier sehen,
+     * was das kostet.
+     */
+    @Test
+    fun `der akzeptierte Dauerabfall folgt aus dem Vertrag`() {
+        assertEquals(2.0 / 4.5, p.acceptedSustainedFallMgdlPerMin, 1e-9)
+        // Die alte 60-Prozent-Regel entsprach 2,0/3,0 - deutlich lockerer.
+        assertTrue(p.acceptedSustainedFallMgdlPerMin < 2.0 / 3.0,
+                   "die beobachtete Mindestspanne muss den Vertrag verschaerfen")
+    }
+
+    /** Knapp unter dem Vertrag passiert, knapp darueber nicht. */
+    @Test
+    fun `die Vertragsgrenze trennt`() {
+        val unter = p.acceptedSustainedFallMgdlPerMin * 0.9
+        val ueber = p.acceptedSustainedFallMgdlPerMin * 1.1
+        val (a, ja) = jitterReihe(120.0, unter, 10)
+        val (b, jb) = jitterReihe(120.0, ueber, 10)
+        assertEquals(GlucoseStability.Stabilisation.WITHIN_TOLERANCE,
+                     GlucoseStability.evaluate(a, ja, p).stabilisation, "knapp unter dem Vertrag")
+        assertEquals(GlucoseStability.Stabilisation.FALLING_BEYOND_TOLERANCE,
+                     GlucoseStability.evaluate(b, jb, p).stabilisation, "knapp darueber")
     }
 
     // ---- Kein Freigabe-Countdown ------------------------------------------

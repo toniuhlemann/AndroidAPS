@@ -39,7 +39,7 @@ class UpfrontRecoveryTest {
         app.aaps.fuse.core.signal.GlucoseStability.Verdict.STABLE, app.aaps.fuse.core.signal.GlucoseStability.Reason.OK,
         -1.0, 5.0, 2.5, marker + 600_000L, 10, 10.0, 30,
         bindingEndsAtNewest = false, dropReachesNow = false,
-        stabilisation = app.aaps.fuse.core.signal.GlucoseStability.Stabilisation.STABILISED,
+        stabilisation = app.aaps.fuse.core.signal.GlucoseStability.Stabilisation.WITHIN_TOLERANCE,
         recentWorstDropMgdl = 0.0, recentWorstDropSpanMin = 3.0, confirmedCycles = 1,
     )
 
@@ -47,7 +47,7 @@ class UpfrontRecoveryTest {
         app.aaps.fuse.core.signal.GlucoseStability.Verdict.FALLING, app.aaps.fuse.core.signal.GlucoseStability.Reason.DROP_EXCEEDS,
         -8.0, 2.0, 2.2, marker + 600_000L, 10, 10.0, 30,
         bindingEndsAtNewest = true, dropReachesNow = true,
-        stabilisation = app.aaps.fuse.core.signal.GlucoseStability.Stabilisation.STILL_FALLING,
+        stabilisation = app.aaps.fuse.core.signal.GlucoseStability.Stabilisation.FALLING_BEYOND_TOLERANCE,
         recentWorstDropMgdl = -8.0, recentWorstDropSpanMin = 2.0, confirmedCycles = 0,
     )
 

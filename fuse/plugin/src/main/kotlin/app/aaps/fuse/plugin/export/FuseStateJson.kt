@@ -239,7 +239,15 @@ object FuseStateJson {
     // Bedingung (sonst haette die Entkopplung die Korrekturbahn geoeffnet),
     // und in `upfrontState` schlaegt REQUESTED den Latch-Zweig (sonst
     // meldete der Markerdialog "verriegelt", waehrend die Menge herausgeht).
-    const val RULE_SET_VERSION = 34
+    // v35 (28.08.): DER FREIGABEVERTRAG DES MEAL_UPFRONT-BATCHES.
+    // Zwei Nulltoleranzen (UKF < 0, q1 gefallen) sind durch den
+    // Stabilitaetsnachweis auf der gemessenen Reihe ersetzt; MEASURED_LOW ist
+    // ein eigenes Gefahrenfeld; das 120-min-Basalverdikt ist durch den am
+    // Marker gepinnten Abwaertsrisiko-Vertrag ersetzt; die Vorgeschichte
+    // zaehlt auch zeitlich. Am Fruehstueck des 28.08. verschiebt das die
+    // Anforderung von 09:37/09:38 auf 09:22:21 - dieselbe Menge, 25 s nach
+    // dem Marker. Dosierwirksam ohne jeden Zweifel.
+    const val RULE_SET_VERSION = 35
 
     /** Schema des Trail-Datensatzes - s. die Notiz an der Schreibstelle. */
     const val SCHEMA_VERSION = 4
@@ -401,6 +409,20 @@ object FuseStateJson {
                     .put("recoveryDenial", c.recoveryDenial)
                     .put("recoveryTrackReset", c.recoveryTrackReset)
                     .put("currentHazard", c.currentHazard)
+                    // DER STABILITAETSNACHWEIS. `stabilisation` traegt die
+                    // Freigabe; `stabilityVerdict` beschreibt das groessere
+                    // Fenster und darf davon abweichen.
+                    .put("stabilisation", c.stabilisation)
+                    .put("stabilityVerdict", c.stabilityVerdict)
+                    .put("stabilityReason", c.stabilityReason)
+                    .put("recentSpanMin", fin(c.recentSpanMin))
+                    .put("recentWorstDropMgdl", fin(c.recentWorstDropMgdl))
+                    .put("recentWorstDropSpanMin", fin(c.recentWorstDropSpanMin))
+                    .put("allowedDropMgdl", fin(c.allowedDropMgdl))
+                    // Der Vertrag als Zahl - wer "innerhalb der Toleranz" als
+                    // "hat aufgehoert" liest, sieht hier, was das kostet.
+                    .put("acceptedSustainedFallMgdlPerMin", fin(c.acceptedSustainedFallMgdlPerMin))
+                    .put("stabilityConfirmedCycles", c.stabilityConfirmedCycles)
                     .put("descentGateCause", c.descentGateCause)
                     .put("guardDistanceMgdl", fin(c.guardDistanceMgdl))
                     .put("normalNeedBeforeMarkerFloorU", fin(c.normalNeedBeforeMarkerFloorU))

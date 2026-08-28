@@ -90,11 +90,20 @@ object GlucoseStability {
      * nicht, alte und aktuelle Messpunkte anders zu vergleichen.
      */
     enum class Stabilisation {
-        /** Der juengste Abschnitt faellt nicht mehr ueber die Toleranz. */
-        STABILISED,
+        /**
+         * Der juengste Abschnitt bleibt INNERHALB DER ZUGELASSENEN TOLERANZ.
+         *
+         * DAS HIESS EINMAL "STABILISED" - zu stark (Toni 28.08.). Bewiesen ist
+         * nicht, dass der Abfall aufgehoert hat, sondern nur, dass er die
+         * vereinbarte Grenze nicht reisst. Wie gross der dabei akzeptierte
+         * DAUERABFALL ist, steht ausrechenbar in
+         * [Params.acceptedSustainedFallMgdlPerMin] - und muss dort stehen,
+         * weil er sonst als "beendet" missverstanden wird.
+         */
+        WITHIN_TOLERANCE,
 
-        /** Er faellt weiter - eine laufende Bewegung, kein Altbestand. */
-        STILL_FALLING,
+        /** Er reisst die Toleranz - eine laufende Bewegung. */
+        FALLING_BEYOND_TOLERANCE,
 
         /** Zu wenige Punkte, Luecke oder zu kurze Spanne im juengsten
          *  Abschnitt. Keine Entwarnung. */
@@ -170,7 +179,38 @@ object GlucoseStability {
         val recentWindowMin: Int = 5,
         /** Mindestpunkte im juengsten Abschnitt. */
         val recentMinPoints: Int = 4,
+        /**
+         * Die TATSAECHLICH BEOBACHTETE Mindestspanne des juengsten Abschnitts
+         * [min] - Teil des Vertrags, nicht der Implementierung.
+         *
+         * Hier stand eine 60-Prozent-Regel auf [recentWindowMin], also drei
+         * Minuten. Toni hat gezeigt, wohin das fuehrt: bei 58-62-s-Takt faellt
+         * der aelteste Punkt knapp aus dem Fenster, es bleiben etwa 3:59 - und
+         * ein Abfall von -0,5 mg/dl/min ergibt darueber nur -1,99 und
+         * passierte. Der akzeptierte Dauerabfall haengt also unmittelbar an
+         * dieser Spanne, und deshalb ist sie eine eigene, benannte Groesse
+         * statt eines Faktors im Code.
+         *
+         * 4,5 statt 5,0 laesst Taktjitter zu, ohne das Loch wieder zu oeffnen.
+         */
+        val recentMinObservedSpanMin: Double = 4.5,
     ) {
+
+        /**
+         * DER VERTRAG IN EINER ZAHL: welcher UNUNTERBROCHENE Abfall
+         * [mg/dl/min] passiert diese Fassung hoechstens?
+         *
+         * Er folgt zwingend aus Zugabe und beobachteter Mindestspanne. Mit den
+         * Kandidatenwerten sind das 2,0 / 4,5 = 0,444 mg/dl/min. Zum
+         * Vergleich: die frueheren 60 Prozent von 5 Minuten liessen
+         * 2,0 / 3,0 = 0,667 durch, ohne dass es irgendwo stand.
+         *
+         * DIESE ZAHL GEHOERT IN DEN BERICHT. Wer "innerhalb der Toleranz" als
+         * "hat aufgehoert" liest, soll hier sehen, was das kostet.
+         */
+        val acceptedSustainedFallMgdlPerMin: Double
+            get() = if (recentMinObservedSpanMin > 0.0)
+                noiseAllowanceMgdl / recentMinObservedSpanMin else Double.NaN
 
         /** Ein Parametersatz, unter dem kein Urteil moeglich waere, ist selbst
          *  ein Ablehnungsgrund - nicht ein stilles STABLE. */
@@ -179,6 +219,7 @@ object GlucoseStability {
                 maxGapMin > 0.0 && maxGapMin.isFinite() &&
                 maxAgeMin > 0.0 && maxAgeMin.isFinite() &&
                 recentWindowMin > 0 && recentMinPoints >= 2 &&
+                recentMinObservedSpanMin > 0.0 && recentMinObservedSpanMin.isFinite() &&
                 noiseAllowanceMgdl >= 0.0 && driftMgdlPerMin >= 0.0 &&
                 noiseAllowanceMgdl.isFinite() && driftMgdlPerMin.isFinite()
 
@@ -324,7 +365,7 @@ object GlucoseStability {
             return nein(Reason.INVALID_INPUT, series.size)
 
         val jetzt = kern(series, nowTs, params)
-        if (jetzt.stabilisation != Stabilisation.STABILISED) return jetzt
+        if (jetzt.stabilisation != Stabilisation.WITHIN_TOLERANCE) return jetzt
         return jetzt.copy(confirmedCycles = bestaetigteZyklen(series, nowTs, params))
     }
 
@@ -494,7 +535,10 @@ object GlucoseStability {
         if (letzte.size < params.recentMinPoints)
             return Triple(Stabilisation.UNDETERMINED, 0.0, 0.0)
         val spanne = (letzte.last().sourceTs - letzte.first().sourceTs) / 60_000.0
-        if (spanne < params.recentWindowMin * 0.6)
+        // DIE SPANNE MUSS TATSAECHLICH BEOBACHTET SEIN. Eine 60-Prozent-Regel
+        // stand hier und liess bei Taktjitter 3:59 statt 5:00 zu - genau
+        // darueber passierte ein Abfall von -0,5 mg/dl/min wieder.
+        if (spanne < params.recentMinObservedSpanMin)
             return Triple(Stabilisation.UNDETERMINED, 0.0, 0.0)
         for (i in 1 until letzte.size) {
             val luecke = (letzte[i].sourceTs - letzte[i - 1].sourceTs) / 60_000.0
@@ -533,7 +577,7 @@ object GlucoseStability {
         val netto = letzte.last().rawBg - letzte.first().rawBg
         val hatAufgehoert = netto >= -params.noiseAllowanceMgdl
         return Triple(
-            if (reisst || !hatAufgehoert) Stabilisation.STILL_FALLING else Stabilisation.STABILISED,
+            if (reisst || !hatAufgehoert) Stabilisation.FALLING_BEYOND_TOLERANCE else Stabilisation.WITHIN_TOLERANCE,
             schlecht, schlechtSpan,
         )
     }
@@ -552,7 +596,7 @@ object GlucoseStability {
             // Gezaehlt wird die STABILISIERUNG, nicht das Fensterurteil: ein
             // historischer Rueckgang darf die Bestaetigung nicht abreissen,
             // wenn der juengste Abschnitt laengst ruhig ist.
-            if (kern(series, zeiten[i], params).stabilisation != Stabilisation.STABILISED) break
+            if (kern(series, zeiten[i], params).stabilisation != Stabilisation.WITHIN_TOLERANCE) break
             zaehler++
             i--
         }

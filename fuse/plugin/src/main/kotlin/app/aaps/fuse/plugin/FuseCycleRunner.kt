@@ -495,6 +495,32 @@ class FuseCycleRunner(
         val recoveryRequired: Int,
         val recoveryDenial: String?,
         val currentHazard: String,
+        /**
+         * DER STABILITAETSNACHWEIS, wie er die Freigabe getragen oder
+         * gehalten hat. Ohne diese Felder ist am Geraet nicht erkennbar,
+         * welcher Abschnitt gerade sperrt und wie lange noch (Toni 28.08.).
+         *
+         * `stabilisation` ist der freigabewirksame Wert. `verdict` beschreibt
+         * das groessere Fenster und kann davon abweichen - ein historischer
+         * Rueckgang bis auf das heutige Niveau laesst es FALLING melden,
+         * waehrend der juengste Abschnitt laengst innerhalb der Toleranz ist.
+         */
+        val stabilisation: String,
+        val stabilityVerdict: String,
+        val stabilityReason: String,
+        /** Die TATSAECHLICH beobachtete Spanne des juengsten Abschnitts [min]. */
+        val recentSpanMin: Double,
+        /** Netto ueber den juengsten Abschnitt [mg/dl]. */
+        val recentNetMgdl: Double,
+        /** Groesster Rueckgang dort [mg/dl] und ueber welche Dauer. */
+        val recentWorstDropMgdl: Double,
+        val recentWorstDropSpanMin: Double,
+        /** Was der bindende Abschnitt haette fallen duerfen [mg/dl]. */
+        val allowedDropMgdl: Double,
+        /** Der Vertrag als Zahl: welcher Dauerabfall passiert hoechstens. */
+        val acceptedSustainedFallMgdlPerMin: Double,
+        /** Wie viele Zyklen die Reihe rueckwirkend belegt. */
+        val stabilityConfirmedCycles: Int,
         val guardDistanceMgdl: Double?,
         /**
          * Was der NORMALE Pfad vor jedem Sofortbatch-Hub verlangt [U].
@@ -3792,6 +3818,23 @@ class FuseCycleRunner(
             recoveryRequired = ruheBlockiert?.requiredCycles ?: (upfrontRecoveryParams ?: cfg.calmParams).calmCycles,
             recoveryDenial = ruheBlockiert?.denial?.name,
             currentHazard = upfrontRecovery.hazards,
+            stabilisation = upfrontStabilitaet.stabilisation.name,
+            stabilityVerdict = upfrontStabilitaet.verdict.name,
+            stabilityReason = upfrontStabilitaet.reason.name,
+            recentSpanMin = upfrontStabilitaet.spanMin,
+            // Das Netto des juengsten Abschnitts ist die Groesse, an der die
+            // Entscheidung "hat es aufgehoert" haengt - es gehoert sichtbar
+            // neben die erlaubte Menge, nicht in eine Ableitung.
+            recentNetMgdl = upfrontStabilitaet.recentWorstDropMgdl,
+            recentWorstDropMgdl = upfrontStabilitaet.recentWorstDropMgdl,
+            recentWorstDropSpanMin = upfrontStabilitaet.recentWorstDropSpanMin,
+            allowedDropMgdl = upfrontStabilitaet.worstDropAllowedMgdl,
+            acceptedSustainedFallMgdlPerMin =
+                (upfrontRecoveryParams ?: cfg.calmParams).let { _ ->
+                    app.aaps.fuse.core.signal.GlucoseStability.Params()
+                        .acceptedSustainedFallMgdlPerMin
+                },
+            stabilityConfirmedCycles = upfrontStabilitaet.confirmedCycles,
             guardDistanceMgdl = upfrontRecovery.guardDistanceMgdl,
             normalNeedBeforeMarkerFloorU = vetted.smbU,
             upfrontOpenU = upfrontOffenU,
