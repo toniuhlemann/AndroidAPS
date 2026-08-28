@@ -312,6 +312,22 @@ object GlucoseStability {
         /** Und ueber welche Dauer - dieselbe Hoehe heisst nicht dasselbe. */
         val recentWorstDropSpanMin: Double,
         /**
+         * Die TATSAECHLICH beobachtete Spanne DES JUENGSTEN ABSCHNITTS [min].
+         *
+         * Nicht [spanMin] - das ist die Spanne des GROSSEN Fensters. Die
+         * beiden waren im Export vertauscht (Toni 28.08.), und weil der
+         * Exporttest seine Werte von Hand zusammenbaute, fiel es dort nicht
+         * auf. Deshalb tragen sie jetzt beide ihren eigenen Wert, und der
+         * Test setzt sie ABSICHTLICH verschieden.
+         */
+        val recentSpanMin: Double,
+        /** NETTO ueber den juengsten Abschnitt [mg/dl] - erster gegen letzter
+         *  Punkt. Die Groesse, an der "hat es aufgehoert" haengt; sie ist
+         *  NICHT der groesste Teilrueckgang. */
+        val recentNetMgdl: Double,
+        /** Was der bindende Abschnitt DORT haette fallen duerfen [mg/dl]. */
+        val recentAllowedDropMgdl: Double,
+        /**
          * Wie viele AUFEINANDERFOLGENDE Zyklen bis hierher bereits stabil
          * waren - rueckwirkend aus der vorhandenen Reihe gerechnet.
          *
@@ -326,7 +342,7 @@ object GlucoseStability {
     private fun nein(reason: Reason, punkte: Int = 0, span: Double = 0.0) =
         Result(
             Verdict.UNDETERMINED, reason, 0.0, 0.0, 0.0, 0L, punkte, span, 0, false,
-            false, Stabilisation.UNDETERMINED, 0.0, 0.0, 0,
+            false, Stabilisation.UNDETERMINED, 0.0, 0.0, 0.0, 0.0, 0.0, 0,
         )
 
     /** Wie weit die Rueckrechnung hoechstens geht. Mehr als das braucht kein
@@ -468,7 +484,7 @@ object GlucoseStability {
         // KEIN PAAR HEISST KEIN URTEIL, nicht "stabil".
         if (paare == 0) return nein(Reason.TOO_FEW_POINTS, punkte.size, spanMin)
 
-        val beruhigt = juengsterAbschnitt(punkte, params)
+        val beruhigt = juengsterAbschnitt(series, nowTs, params)
         val faellt = engster < 0.0
         // FRISCH ODER ALT: endet der bindende Abschnitt am juengsten Punkt?
         val bindetBisJetzt = engStartTs != 0L &&
@@ -485,9 +501,12 @@ object GlucoseStability {
             evaluatedPairs = paare,
             bindingEndsAtNewest = bindetBisJetzt,
             dropReachesNow = frischerAbfall,
-            stabilisation = beruhigt.first,
-            recentWorstDropMgdl = beruhigt.second,
-            recentWorstDropSpanMin = beruhigt.third,
+            stabilisation = beruhigt.verdict,
+            recentWorstDropMgdl = beruhigt.worstDropMgdl,
+            recentWorstDropSpanMin = beruhigt.worstDropSpanMin,
+            recentSpanMin = beruhigt.spanMin,
+            recentNetMgdl = beruhigt.netMgdl,
+            recentAllowedDropMgdl = beruhigt.allowedDropMgdl,
             // Der Kern zaehlt NICHT zurueck - das taete er sonst rekursiv.
             confirmedCycles = 0,
         )
@@ -525,60 +544,74 @@ object GlucoseStability {
      *
      * @return Urteil, groesster Rueckgang [mg/dl], dessen Dauer [min]
      */
+    /** Was der juengste Abschnitt hergibt - benannt statt als Triple. */
+    private data class Recent(
+        val verdict: Stabilisation,
+        val worstDropMgdl: Double,
+        val worstDropSpanMin: Double,
+        val spanMin: Double,
+        val netMgdl: Double,
+        val allowedDropMgdl: Double,
+    )
+
+    /**
+     * DER JUENGSTE ZUSAMMENHAENGENDE ABSCHNITT - faellt dort noch etwas?
+     *
+     * Zwei Bedingungen, und sie messen Verschiedenes:
+     *  (1) kein SCHARFER Einbruch - laengenabhaengig, damit ein
+     *      Quantisierungsschritt nicht zaehlt;
+     *  (2) das NETTO >= -noiseAllowanceMgdl - dauerUNabhaengig, weil "hat es
+     *      aufgehoert" nichts mit der Dauer zu tun hat. Mit einer
+     *      mitwachsenden Schranke waere jeder hinreichend langsame
+     *      Dauerabfall per Konstruktion "stabil".
+     *
+     * DAS FENSTER SCHLIESST DEN KLAMMERPUNKT EIN - s.
+     * [MeasuredGlucose.windowCovering]. Ohne ihn erreichte es bei 61- oder
+     * 62-Sekunden-Takt seine eigene Laenge nie und lieferte dauerhaft
+     * UNDETERMINED, auch bei vollkommen konstantem Zucker.
+     */
     private fun juengsterAbschnitt(
-        punkte: List<GlucosePoint>,
+        series: MeasuredGlucose,
+        nowTs: Long,
         params: Params,
-    ): Triple<Stabilisation, Double, Double> {
-        val bis = punkte.last().sourceTs
-        val von = bis - params.recentWindowMin * 60_000L
-        val letzte = punkte.filter { it.sourceTs in von..bis }
-        if (letzte.size < params.recentMinPoints)
-            return Triple(Stabilisation.UNDETERMINED, 0.0, 0.0)
+    ): Recent {
+        val leer = Recent(Stabilisation.UNDETERMINED, 0.0, 0.0, 0.0, 0.0, 0.0)
+        val letzte = series.windowCovering(nowTs, params.recentWindowMin, params.recentMinObservedSpanMin)
+        if (letzte.size < params.recentMinPoints) return leer
         val spanne = (letzte.last().sourceTs - letzte.first().sourceTs) / 60_000.0
-        // DIE SPANNE MUSS TATSAECHLICH BEOBACHTET SEIN. Eine 60-Prozent-Regel
-        // stand hier und liess bei Taktjitter 3:59 statt 5:00 zu - genau
-        // darueber passierte ein Abfall von -0,5 mg/dl/min wieder.
-        if (spanne < params.recentMinObservedSpanMin)
-            return Triple(Stabilisation.UNDETERMINED, 0.0, 0.0)
+        if (spanne < params.recentMinObservedSpanMin) return leer.copy(spanMin = spanne)
         for (i in 1 until letzte.size) {
             val luecke = (letzte[i].sourceTs - letzte[i - 1].sourceTs) / 60_000.0
-            if (luecke > params.maxGapMin) return Triple(Stabilisation.UNDETERMINED, 0.0, 0.0)
+            if (luecke > params.maxGapMin) return leer.copy(spanMin = spanne)
         }
         var schlecht = 0.0
         var schlechtSpan = 0.0
+        var schlechtErlaubt = 0.0
         var reisst = false
-        for (a in letzte.indices) {
-            for (b in a + 1 until letzte.size) {
-                val dt = (letzte[b].sourceTs - letzte[a].sourceTs) / 60_000.0
+        for (i in letzte.indices) {
+            for (j in i + 1 until letzte.size) {
+                val dt = (letzte[j].sourceTs - letzte[i].sourceTs) / 60_000.0
                 if (dt <= 0.0) continue
-                val d = letzte[b].rawBg - letzte[a].rawBg
-                // (1) Kein SCHARFER Einbruch im Abschnitt - laengenabhaengig,
-                //     damit ein Quantisierungsschritt nicht zaehlt.
-                if (d + params.allowedDropMgdl(dt) < 0.0) reisst = true
+                val d = letzte[j].rawBg - letzte[i].rawBg
+                val erlaubt = params.allowedDropMgdl(dt)
+                if (d + erlaubt < 0.0) reisst = true
                 if (d < schlecht) {
                     schlecht = d
                     schlechtSpan = dt
+                    schlechtErlaubt = erlaubt
                 }
             }
         }
-        // (2) UND ES MUSS AUFGEHOERT HABEN. Diese Schranke waechst
-        //     AUSDRUECKLICH NICHT mit der Dauer (Toni 28.08.).
-        //
-        //     Der Grund ist ein Gegenfall an der eigenen Kante: ein
-        //     ununterbrochener Abfall von -0,5 mg/dl/min ergibt ueber fuenf
-        //     Minuten -2,5 gegen erlaubte 2 + 0,1*5 = 2,5 - er galt damit als
-        //     STABILISIERT. Mit einer mitwachsenden Schranke ist JEDER
-        //     hinreichend langsame Dauerabfall per Konstruktion "stabil", und
-        //     die Regel unterscheidet "Abfall beendet" nicht mehr von "Abfall
-        //     langsam genug". Genau diese Unterscheidung ist ihr Zweck.
-        //
-        //     Das Netto misst deshalb gegen die dauerUNabhaengige Zugabe -
-        //     dieselbe Groesse, die auch ein Quantisierungsschritt kostet.
         val netto = letzte.last().rawBg - letzte.first().rawBg
         val hatAufgehoert = netto >= -params.noiseAllowanceMgdl
-        return Triple(
-            if (reisst || !hatAufgehoert) Stabilisation.FALLING_BEYOND_TOLERANCE else Stabilisation.WITHIN_TOLERANCE,
-            schlecht, schlechtSpan,
+        return Recent(
+            verdict = if (reisst || !hatAufgehoert) Stabilisation.FALLING_BEYOND_TOLERANCE
+            else Stabilisation.WITHIN_TOLERANCE,
+            worstDropMgdl = schlecht,
+            worstDropSpanMin = schlechtSpan,
+            spanMin = spanne,
+            netMgdl = netto,
+            allowedDropMgdl = schlechtErlaubt,
         )
     }
 

@@ -40,7 +40,9 @@ class UpfrontRecoveryTest {
         -1.0, 5.0, 2.5, marker + 600_000L, 10, 10.0, 30,
         bindingEndsAtNewest = false, dropReachesNow = false,
         stabilisation = app.aaps.fuse.core.signal.GlucoseStability.Stabilisation.WITHIN_TOLERANCE,
-        recentWorstDropMgdl = 0.0, recentWorstDropSpanMin = 3.0, confirmedCycles = 1,
+        recentWorstDropMgdl = 0.0, recentWorstDropSpanMin = 3.0,
+        recentSpanMin = 5.1, recentNetMgdl = 0.0, recentAllowedDropMgdl = 2.3,
+        confirmedCycles = 1,
     )
 
     private fun fallend() = app.aaps.fuse.core.signal.GlucoseStability.Result(
@@ -48,7 +50,9 @@ class UpfrontRecoveryTest {
         -8.0, 2.0, 2.2, marker + 600_000L, 10, 10.0, 30,
         bindingEndsAtNewest = true, dropReachesNow = true,
         stabilisation = app.aaps.fuse.core.signal.GlucoseStability.Stabilisation.FALLING_BEYOND_TOLERANCE,
-        recentWorstDropMgdl = -8.0, recentWorstDropSpanMin = 2.0, confirmedCycles = 0,
+        recentWorstDropMgdl = -8.0, recentWorstDropSpanMin = 2.0,
+        recentSpanMin = 5.1, recentNetMgdl = -8.0, recentAllowedDropMgdl = 2.2,
+        confirmedCycles = 0,
     )
 
     private fun unbestimmbar() = app.aaps.fuse.core.signal.GlucoseStability.Result(
@@ -56,7 +60,9 @@ class UpfrontRecoveryTest {
         0.0, 0.0, 0.0, 0L, 2, 1.0, 0,
         bindingEndsAtNewest = false, dropReachesNow = false,
         stabilisation = app.aaps.fuse.core.signal.GlucoseStability.Stabilisation.UNDETERMINED,
-        recentWorstDropMgdl = 0.0, recentWorstDropSpanMin = 0.0, confirmedCycles = 0,
+        recentWorstDropMgdl = 0.0, recentWorstDropSpanMin = 0.0,
+        recentSpanMin = 0.0, recentNetMgdl = 0.0, recentAllowedDropMgdl = 0.0,
+        confirmedCycles = 0,
     )
 
     private val regelVersion = 31

@@ -3821,14 +3821,17 @@ class FuseCycleRunner(
             stabilisation = upfrontStabilitaet.stabilisation.name,
             stabilityVerdict = upfrontStabilitaet.verdict.name,
             stabilityReason = upfrontStabilitaet.reason.name,
-            recentSpanMin = upfrontStabilitaet.spanMin,
-            // Das Netto des juengsten Abschnitts ist die Groesse, an der die
-            // Entscheidung "hat es aufgehoert" haengt - es gehoert sichtbar
-            // neben die erlaubte Menge, nicht in eine Ableitung.
-            recentNetMgdl = upfrontStabilitaet.recentWorstDropMgdl,
+            // ALLE VIER AUS DERSELBEN BEWERTUNG DES JUENGSTEN ABSCHNITTS.
+            // Hier standen Werte des GROSSEN Fensters: recentSpanMin bekam
+            // dessen Spanne, recentNetMgdl den groessten Teilrueckgang statt
+            // des Nettos, allowedDropMgdl die Grenze von dessen bindendem
+            // Paar. Der Exporttest baute seine Werte von Hand und konnte das
+            // nicht sehen (Toni 28.08.).
+            recentSpanMin = upfrontStabilitaet.recentSpanMin,
+            recentNetMgdl = upfrontStabilitaet.recentNetMgdl,
             recentWorstDropMgdl = upfrontStabilitaet.recentWorstDropMgdl,
             recentWorstDropSpanMin = upfrontStabilitaet.recentWorstDropSpanMin,
-            allowedDropMgdl = upfrontStabilitaet.worstDropAllowedMgdl,
+            allowedDropMgdl = upfrontStabilitaet.recentAllowedDropMgdl,
             acceptedSustainedFallMgdlPerMin =
                 (upfrontRecoveryParams ?: cfg.calmParams).let { _ ->
                     app.aaps.fuse.core.signal.GlucoseStability.Params()

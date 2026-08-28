@@ -64,6 +64,41 @@ class MeasuredGlucose(
         return points.filter { it.sourceTs in von..nowTs }
     }
 
+    /**
+     * Die Punkte, die ein Fenster von [minutes] Minuten vor [nowTs]
+     * TATSAECHLICH ABDECKEN - einschliesslich des KLAMMERPUNKTES, also des
+     * letzten Punktes vor der Fensterkante.
+     *
+     * WARUM DAS NOETIG IST (Toni 28.08.). [lastMinutes] nimmt nur Punkte
+     * INNERHALB des Fensters. Bei konstantem 61-Sekunden-Takt liegen sechs
+     * Punkte ueber 305 Sekunden; ein Fuenf-Minuten-Fenster wirft den
+     * aeltesten heraus, und uebrig bleiben fuenf Punkte ueber 244 Sekunden -
+     * ein Fenster, das seine eigene Laenge nie erreicht. Das wiederholt sich
+     * in JEDEM Zyklus, auch bei vollkommen konstantem Zucker und beliebig
+     * langer Vorgeschichte, und haette damit genau die Wartezeit wieder
+     * eingebaut, die hier beseitigt werden sollte.
+     *
+     * Mit dem Klammerpunkt sind es sechs Punkte ueber 305 Sekunden - das
+     * Fenster ist abgedeckt. Die Spanne faellt dadurch etwas laenger aus als
+     * [minutes]; wer sie braucht, misst sie am Ergebnis.
+     */
+    fun windowCovering(nowTs: Long, minutes: Int, minSpanMin: Double): List<GlucosePoint> {
+        if (minutes <= 0) return emptyList()
+        val kante = nowTs - minutes * 60_000L
+        val drin = points.filter { it.sourceTs in kante..nowTs }
+        if (drin.size < 2) return drin
+        val spanne = (drin.last().sourceTs - drin.first().sourceTs) / 60_000.0
+        // NUR WENN NOETIG. Ein bedingungsloser Klammerpunkt verlaengert das
+        // Fenster in JEDEM Zyklus um einen Takt und zieht damit einen
+        // aelteren Wert herein - "Abfall dann Plateau" wurde dadurch
+        // strenger beurteilt, obwohl das Plateau die Fensterlaenge deckte.
+        // Gebraucht wird er ausschliesslich dort, wo die Spanne sonst ihre
+        // eigene Mindestlaenge nicht erreicht.
+        if (spanne >= minSpanMin) return drin
+        val klammer = points.lastOrNull { it.sourceTs < kante } ?: return drin
+        return listOf(klammer) + drin
+    }
+
     companion object {
 
         val EMPTY = MeasuredGlucose(emptyList(), 0L, 0L)

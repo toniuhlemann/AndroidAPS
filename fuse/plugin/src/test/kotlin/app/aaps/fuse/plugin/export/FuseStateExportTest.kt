@@ -1433,11 +1433,14 @@ class FuseStateExportTest {
             stabilisation = "WITHIN_TOLERANCE",
             stabilityVerdict = "STABLE",
             stabilityReason = "OK",
-            recentSpanMin = 5.0,
-            recentNetMgdl = -1.0,
-            recentWorstDropMgdl = -1.0,
-            recentWorstDropSpanMin = 2.0,
-            allowedDropMgdl = 2.2,
+            // ABSICHTLICH ALLE VERSCHIEDEN: waeren zwei gleich, bliebe eine
+            // Verwechslung von grossem Fenster und juengstem Abschnitt
+            // unsichtbar - genau so ist sie im Runner entstanden.
+            recentSpanMin = 5.3,
+            recentNetMgdl = -0.7,
+            recentWorstDropMgdl = -1.4,
+            recentWorstDropSpanMin = 2.1,
+            allowedDropMgdl = 2.21,
             acceptedSustainedFallMgdlPerMin = 2.0 / 4.5,
             stabilityConfirmedCycles = 3,
         )
@@ -1455,10 +1458,11 @@ class FuseStateExportTest {
         // nicht erkennbar, welcher Abschnitt sperrt und wie lange noch.
         assertEquals("WITHIN_TOLERANCE", c.optString("stabilisation"))
         assertEquals("STABLE", c.optString("stabilityVerdict"))
-        assertEquals(5.0, c.optDouble("recentSpanMin"), 1e-9)
-        assertEquals(-1.0, c.optDouble("recentWorstDropMgdl"), 1e-9)
-        assertEquals(2.0, c.optDouble("recentWorstDropSpanMin"), 1e-9)
-        assertEquals(2.2, c.optDouble("allowedDropMgdl"), 1e-9)
+        assertEquals(5.3, c.optDouble("recentSpanMin"), 1e-9)
+        assertEquals(-0.7, c.optDouble("recentNetMgdl"), 1e-9)
+        assertEquals(-1.4, c.optDouble("recentWorstDropMgdl"), 1e-9)
+        assertEquals(2.1, c.optDouble("recentWorstDropSpanMin"), 1e-9)
+        assertEquals(2.21, c.optDouble("allowedDropMgdl"), 1e-9)
         assertEquals(3, c.optInt("stabilityConfirmedCycles"))
         // Der Vertrag als Zahl - damit "innerhalb der Toleranz" nicht als
         // "hat aufgehoert" gelesen wird.

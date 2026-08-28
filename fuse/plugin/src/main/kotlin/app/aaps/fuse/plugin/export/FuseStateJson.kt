@@ -416,6 +416,10 @@ object FuseStateJson {
                     .put("stabilityVerdict", c.stabilityVerdict)
                     .put("stabilityReason", c.stabilityReason)
                     .put("recentSpanMin", fin(c.recentSpanMin))
+                    // FEHLTE (Toni 28.08.): das Feld wurde gefuellt, aber nie
+                    // geschrieben - und es ist die Groesse, an der "hat es
+                    // aufgehoert" haengt.
+                    .put("recentNetMgdl", fin(c.recentNetMgdl))
                     .put("recentWorstDropMgdl", fin(c.recentWorstDropMgdl))
                     .put("recentWorstDropSpanMin", fin(c.recentWorstDropSpanMin))
                     .put("allowedDropMgdl", fin(c.allowedDropMgdl))

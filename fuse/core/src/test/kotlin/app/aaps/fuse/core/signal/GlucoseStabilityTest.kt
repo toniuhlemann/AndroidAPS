@@ -526,6 +526,54 @@ class GlucoseStabilityTest {
         }
     }
 
+    /**
+     * TONIS PLATEAU-BEFUND (28.08.): bei KONSTANTEM 61- oder 62-Sekunden-Takt
+     * liegen sechs Punkte ueber 305 bzw. 310 Sekunden. Ein hartes
+     * Fuenf-Minuten-Fenster warf den aeltesten heraus - uebrig blieben fuenf
+     * Punkte ueber 244 Sekunden, also weniger als die verlangten 270. Das
+     * wiederholte sich in JEDEM Zyklus, auch bei vollkommen konstantem Zucker
+     * und beliebig langer Vorgeschichte, und haette genau die Wartezeit
+     * wieder eingebaut, die beseitigt werden sollte.
+     *
+     * Der frueher vorhandene Plateau-Test konnte das nicht sehen: sein
+     * "Versatz" verschob Messpunkte UND Auswertungszeit gemeinsam und liess
+     * die relative Fensterlage unveraendert.
+     */
+    @Test
+    fun `ein Plateau bleibt bei konstantem 61- und 62-Sekunden-Takt freigabefaehig`() {
+        for (taktMs in longArrayOf(58_000, 59_000, 60_000, 61_000, 62_000)) {
+            // Lange Vorgeschichte, damit nur die Fensterlage zaehlt.
+            val alle = (0 until 20).map { GlucosePoint(t0 + it * taktMs, 110.0, 110.0) }
+            // UND ueber mehrere Auswertungszeitpunkte, damit kein guenstiger
+            // Einzelschnitt das Ergebnis traegt. Die Reihe endet dabei jeweils
+            // AM Auswertungspunkt - eine Reihe mit spaeteren Punkten waere aus
+            // deren Sicht eine Uhr aus der Zukunft.
+            for (letzter in 12 until alle.size) {
+                val s = MeasuredGlucose(alle.take(letzter + 1), t0, 1L)
+                val r = GlucoseStability.evaluate(s, alle[letzter].sourceTs, p)
+                assertEquals(
+                    GlucoseStability.Stabilisation.WITHIN_TOLERANCE, r.stabilisation,
+                    "Takt ${taktMs / 1000}s, Punkt $letzter: ein Plateau darf nie sperren - $r",
+                )
+                assertTrue(r.recentSpanMin >= p.recentMinObservedSpanMin,
+                           "und die beobachtete Spanne muss reichen: ${r.recentSpanMin}")
+            }
+        }
+    }
+
+    /** Der Abschnitt traegt SEINE eigenen Kennzahlen, nicht die des grossen
+     *  Fensters - beide muessen sich unterscheiden koennen. */
+    @Test
+    fun `der juengste Abschnitt meldet eigene Spanne und eigenes Netto`() {
+        val s = reihe(120.0, 118.0, 116.0, 114.0, 112.0, 112.0, 112.0, 112.0, 112.0, 112.0, 112.0)
+        val r = GlucoseStability.evaluate(s, s.jetzt(), p)
+        assertTrue(r.spanMin > r.recentSpanMin,
+                   "das grosse Fenster ist laenger: ${r.spanMin} gegen ${r.recentSpanMin}")
+        assertEquals(0.0, r.recentNetMgdl, 1e-9, "der juengste Abschnitt ist flach: $r")
+        assertTrue(r.worstDropMgdl < r.recentNetMgdl,
+                   "waehrend das grosse Fenster den alten Sturz traegt: $r")
+    }
+
     // ---- Der Vertrag steht als Zahl da -------------------------------------
 
     /**
