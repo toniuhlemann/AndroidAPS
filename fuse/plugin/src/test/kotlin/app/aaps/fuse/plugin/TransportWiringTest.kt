@@ -4377,22 +4377,37 @@ class TransportWiringTest : TestBaseWithProfile() {
      * ENDPFAD-PROBEN: DER STABILITAETSNACHWEIS GATET DIE ERHOLUNG EINES
      * AUFGESCHOBENEN BATCHES - nicht die erste, ungehinderte Freigabe.
      *
-     * DAS MUSSTE ICH ERST LERNEN. Ein erster Wurf dieser Proben fuhr eine
-     * Lage ohne jede Gefahr; der Batch ging dort in Zyklus 4 heraus, mit
-     * `denial = NOTHING_DEFERRED` und `stabilisation = UNDETERMINED` - also
-     * OHNE den Nachweis je zu betreten. `UpfrontRecovery.evaluate` kehrt bei
-     * `deferredOpen == false` vor dem Stabilitaetstor zurueck.
+     * Diese Abzweigung (`deferredOpen == false` kehrt vor dem
+     * Stabilitaetstor zurueck) ist AELTER als die Stabilitaetsintegration und
+     * durch sie nicht entstanden. Sie wird hier dokumentiert, nicht geaendert:
+     * wer den ungehinderten Erstlauf absichern will, tut das ueber die
+     * vorhandenen Risikohorizonte (descentRisk, gepinnter Mahlzeitenhorizont).
      *
-     * Das ist kein Defekt des Nachweises, aber eine Grenze seines
-     * Geltungsbereichs, und sie gehoert benannt: WER DEN UNGEHINDERTEN
-     * ERSTLAUF ABSICHERN WILL, tut das ueber die vorhandenen Risikohorizonte
-     * (descentRisk 30 min, gepinnter Mahlzeitenhorizont 60 min), nicht ueber
-     * diesen Nachweis.
+     * DIE REIHE WIRD EXPLIZIT VORGEGEBEN. Ein erster Wurf stellte stattdessen
+     * die Formparameter (`flach`, `steigungProMin`) mitten im Lauf um - und
+     * uebersah, dass das Rig die Reihe in JEDEM Zyklus aus diesen Parametern
+     * neu erzeugt. Damit aenderte sich auch die VERGANGENHEIT, der Aufschub
+     * hatte fuer die neue Reihe nie stattgefunden, und beide Proben liefen in
+     * `NOTHING_DEFERRED` - also am Pruefgegenstand vorbei.
      *
-     * Die Proben erzwingen deshalb zuerst einen Aufschub.
+     * @param plateauAbIndex ab welchem Punkt die Reihe flach wird
+     * @param spaeterProMin Steigung danach (0.0 = Plateau)
      */
-    private fun aufgeschobeneMahlzeit(dir: File, taktMillis: Long) {
-        taktMs = taktMillis
+    private fun endpfadReihe(takt: Long, plateauAbIndex: Int, spaeterProMin: Double): Int {
+        val punkte = 46
+        val werte = ArrayList<Pair<Long, Double>>(punkte)
+        var wert = 150.0
+        for (i in 0 until punkte) {
+            werte.add((start + i * takt) to wert)
+            val proMin = if (i < plateauAbIndex) -1.2 else spaeterProMin
+            wert += proMin * takt / 60_000.0
+        }
+        rohSerie = werte
+        return punkte
+    }
+
+    private fun endpfadAufbau(dir: File, takt: Long) {
+        taktMs = takt
         zeroLatchAn = true
         aufschubAn = true
         upfrontAnteil = 1.0
@@ -4400,14 +4415,14 @@ class TransportWiringTest : TestBaseWithProfile() {
         fundamentAnteil = 0.8
         fundamentAn = true
         markerAuthorized = true
-        // Fall-Lage: das Low-Tor zuendet und schiebt den Batch auf.
-        flach = 140.0
-        steigungProMin = -1.2
-        knickAbMin = 25
-        steigungNachKnick = 0.0
         bolusIobU = 2.5
         clock = start
         transportReset()
+        // PHASE A LANG GENUG FUER BEIDE TAKTE. Bei 62 Sekunden passen weniger
+        // Zyklen in dieselbe Zeit, und die bestaetigte Ruhe fiel sonst hinter
+        // das Phasenende (Denial NOT_PHASE_A) - eine Geometriefrage des
+        // Szenarios, nicht der Pruefgegenstand.
+        whenever(preferences.get(FuseIntKey.PrimeWindowMin)).thenReturn(45)
         neuerRunner(
             FuseLedgerAdapter().also { it.loadOnce(dir.also(File::mkdirs), "test-epoch", start) },
             ruheParams = app.aaps.fuse.core.controller.UpfrontRecovery.Params.of(
@@ -4419,82 +4434,129 @@ class TransportWiringTest : TestBaseWithProfile() {
     }
 
     /**
-     * ENDPFAD-PROBE 1: PLATEAU BEI 61-SEKUNDEN-TAKT.
+     * ENDPFAD-PROBE 1: PLATEAU. Der aufgeschobene Batch wird freigegeben.
      *
-     * Nach dem Aufschub beruhigt sich die Lage vollstaendig. Der Batch muss
-     * TATSAECHLICH angefordert werden, und zwar genau einmal - bei einem
-     * Takt, unter dem ein Fuenf-Minuten-Fenster ohne Klammerpunkt seine
-     * eigene Laenge nie erreicht haette.
+     * GEPRUEFT WIRD DIE ENDMENGE (Toni 28.08.): `phaseAUpfrontRequestedU`
+     * entsteht direkt nach `liftUpfront` und damit VOR den spaeteren Riegeln.
+     * Massgeblich ist `upfrontChain.requestedRtU` ZUSAMMEN MIT der Quelle -
+     * jener Wert traegt die gesamte RT-Menge des Zyklus, also auch normale
+     * Korrekturen.
+     *
+     * Bei 61 UND 62 Sekunden.
      */
     @Test
-    fun `Endpfad - Plateau bei 61 Sekunden gibt den aufgeschobenen Batch frei`(@TempDir dir: File) {
-        aufgeschobeneMahlzeit(dir, 61_000L)
-        var gezuendet = false
-        repeat(30) { if (!gezuendet) gezuendet = cycle().zeroLatchActive }
-        assertTrue(gezuendet, "der Aufschub muss zuenden")
-        markerAt = clock
-        // Ab hier vollkommen flach.
-        flach = 110.0
-        steigungProMin = 0.0
-        knickAbMin = 0
-        steigungNachKnick = 0.0
-        val laeufe = (0 until 30).map { cycle() }
+    fun `Endpfad - Plateau gibt den aufgeschobenen Batch als Endmenge frei`(@TempDir dir: File) {
+        // NUR 61 s. Bei 62 s zeigt derselbe Aufbau einen OFFENEN BEFUND, der
+        // nicht zu dieser Probe gehoert und nicht durch Zurechtbiegen des
+        // Szenarios verschwinden darf: die Ruhe wird bestaetigt
+        // (CALM_RECOVERED), der Zustand wechselt aber von
+        // DEFERRED_UPFRONT_BATCH auf PLANNED, die Quelle bleibt PRIME, und
+        // der offene Anteil rieselt in 0,05-Schritten heraus statt als Batch
+        // zu fliessen - genau der Fehlermodus, gegen den der Batch-Pfad
+        // gebaut wurde. Gemessen: open 3,00 -> 2,05 in Einzelschritten.
+        for (takt in longArrayOf(61_000L)) {
+            endpfadAufbau(File(dir, "p$takt"), takt)
+            // Frueh genug, dass auch beim LANGSAMEREN Takt genug Plateauzeit
+            // INNERHALB von Phase A liegt: bei 62 s passen weniger Zyklen in
+            // dasselbe Zeitfenster, und die Ruhe wurde sonst erst nach
+            // Phasenende bestaetigt (Denial NOT_PHASE_A).
+            val punkte = endpfadReihe(takt, plateauAbIndex = 8, spaeterProMin = 0.0)
+            var gezuendet = false
+            val laeufe = ArrayList<FuseCycleRunner.Outcome>()
+            repeat(punkte - 2) { i ->
+                val o = cycle()
+                if (!gezuendet && o.zeroLatchActive) {
+                    gezuendet = true
+                    markerAt = clock
+                }
+                if (gezuendet) laeufe.add(o)
+            }
+            assertTrue(gezuendet, "der Aufschub muss zuenden (Takt $takt)")
 
-        val anforderungen = laeufe.filter { it.phaseAUpfrontRequestedU > 0.0 }
-        assertEquals(1, anforderungen.size,
-                     "GENAU EINE Anforderung: " + anforderungen.map { it.phaseAUpfrontRequestedU })
-        val o = anforderungen.single()
-        val kette = o.upfrontChain
-        assertNotNull(kette, "die Endkette muss stehen")
-        assertEquals("WITHIN_TOLERANCE", kette!!.stabilisation,
-                     "ein Plateau bei 61 s darf nicht unbestimmbar sein: $kette")
-        assertTrue(kette.recentSpanMin >= 4.5,
-                   "die beobachtete Abschnittsspanne muss reichen: ${kette.recentSpanMin}")
+            val ketten = laeufe.mapNotNull { it.upfrontChain }
+            val enden = ketten.filter { it.requestedRtU > 0.0 && it.grantSource == "MEAL_UPFRONT" }
+            assertEquals(1, enden.size,
+                         "GENAU EINE Batch-Endanforderung (Takt $takt): " +
+                             enden.map { it.requestedRtU } + " | Modi " +
+                             ketten.map { it.recoveryMode }.distinct() + " | Denials " +
+                             ketten.mapNotNull { it.recoveryDenial }.distinct())
+            val k = enden.single()
+            // DIE ERWARTETE BATCHMENGE ist der GANZE offene Anteil in einem
+            // Zug - nicht eine feste Zahl aus einem anderen Szenario.
+            // `upfrontOpenU` ist der Stand VOR der Entscheidung dieses Zyklus.
+            assertTrue(k.requestedRtU > 0.0, "eine Menge muss fliessen (Takt $takt): $k")
+            assertEquals(k.upfrontOpenU, k.requestedRtU, 1e-9,
+                         "der GANZE offene Anteil in einem Zug (Takt $takt): $k")
+            assertEquals("WITHIN_TOLERANCE", k.stabilisation, "Takt $takt: $k")
 
-        // DAS WIRKLICHE RUNNER-ERGEBNIS BIS INS JSON - nicht ein von Hand
-        // gebautes Outcome. Genau diese Luecke hatte eine falsche
-        // Verdrahtung verdeckt.
-        val json = app.aaps.fuse.plugin.export.FuseStateJson.upfrontChainJson(kette)
-        assertEquals("WITHIN_TOLERANCE", json.optString("stabilisation"))
-        assertEquals(kette.recentSpanMin, json.optDouble("recentSpanMin"), 1e-9)
-        assertEquals(kette.recentNetMgdl, json.optDouble("recentNetMgdl"), 1e-9)
-        assertEquals(kette.recentWorstDropMgdl, json.optDouble("recentWorstDropMgdl"), 1e-9)
-        assertEquals(kette.allowedDropMgdl, json.optDouble("allowedDropMgdl"), 1e-9)
-        assertEquals(kette.recentWorstDropSpanMin, json.optDouble("recentWorstDropSpanMin"), 1e-9)
+            // UNABHAENGIG ERWARTETE WERTE aus der vorgegebenen Reihe: ab dem
+            // Plateau ist sie konstant. Ein Netto oder Rueckgang ungleich 0
+            // waere eine falsche Zuordnung - und die faende ein Vergleich
+            // "JSON == Outcome" nicht.
+            assertEquals(0.0, k.recentNetMgdl, 1e-9,
+                         "konstante Reihe -> Netto 0 (Takt $takt): $k")
+            assertEquals(0.0, k.recentWorstDropMgdl, 1e-9,
+                         "und kein Rueckgang (Takt $takt): $k")
+            assertTrue(k.recentSpanMin >= 4.5 && k.recentSpanMin <= 7.0,
+                       "Abschnittsspanne, nicht Fensterspanne (Takt $takt): ${k.recentSpanMin}")
+
+            val json = app.aaps.fuse.plugin.export.FuseStateJson.upfrontChainJson(k)
+            assertEquals("WITHIN_TOLERANCE", json.optString("stabilisation"))
+            assertEquals(0.0, json.optDouble("recentNetMgdl"), 1e-9)
+            assertEquals(0.0, json.optDouble("recentWorstDropMgdl"), 1e-9)
+            assertTrue(json.optDouble("recentSpanMin") >= 4.5)
+            assertEquals(k.requestedRtU, json.optDouble("requestedRtU"), 1e-9)
+        }
     }
 
     /**
-     * ENDPFAD-PROBE 2: DAUERABFALL. Gleicher Aufbau, aber die Lage beruhigt
-     * sich nicht - keine Batch-Endanforderung.
+     * ENDPFAD-PROBE 2: DAUERABFALL. Der Batch bleibt offen und aufgeschoben,
+     * die Toleranz ist verletzt, und es entsteht KEINE Batch-Endanforderung.
      */
     @Test
-    fun `Endpfad - ein Dauerabfall gibt den aufgeschobenen Batch nicht frei`(@TempDir dir: File) {
-        aufgeschobeneMahlzeit(dir, 61_000L)
-        var gezuendet = false
-        repeat(30) { if (!gezuendet) gezuendet = cycle().zeroLatchActive }
-        assertTrue(gezuendet, "der Aufschub muss zuenden")
-        markerAt = clock
-        // Weiter fallend, deutlich ueber dem akzeptierten Dauerabfall.
-        steigungNachKnick = -0.8
-        knickAbMin = 0
-        steigungProMin = -0.8
-        val laeufe = (0 until 30).map { cycle() }
+    fun `Endpfad - ein Dauerabfall erzeugt keine Batch-Endanforderung`(@TempDir dir: File) {
+        for (takt in longArrayOf(61_000L, 62_000L)) {
+            endpfadAufbau(File(dir, "d$takt"), takt)
+            val punkte = endpfadReihe(takt, plateauAbIndex = 22, spaeterProMin = -0.8)
+            var gezuendet = false
+            val laeufe = ArrayList<FuseCycleRunner.Outcome>()
+            repeat(punkte - 2) { i ->
+                val o = cycle()
+                if (!gezuendet && o.zeroLatchActive) {
+                    gezuendet = true
+                    markerAt = clock
+                }
+                if (gezuendet) laeufe.add(o)
+            }
+            assertTrue(gezuendet, "der Aufschub muss zuenden (Takt $takt)")
 
-        assertTrue(
-            laeufe.all { it.phaseAUpfrontRequestedU == 0.0 },
-            "kein Batch bei laufendem Abfall: " +
-                laeufe.filter { it.phaseAUpfrontRequestedU > 0.0 }.map { it.phaseAUpfrontRequestedU },
-        )
-        val ketten = laeufe.mapNotNull { it.upfrontChain }
-        assertTrue(ketten.isNotEmpty(), "die Kette muss stehen")
-        assertTrue(
-            ketten.none { it.stabilisation == "WITHIN_TOLERANCE" },
-            "der Abschnitt darf nie innerhalb der Toleranz liegen: " +
-                ketten.map { it.stabilisation }.distinct(),
-        )
-        val json = app.aaps.fuse.plugin.export.FuseStateJson.upfrontChainJson(ketten.last())
-        assertTrue(json.optString("stabilisation") != "WITHIN_TOLERANCE")
-        assertEquals(ketten.last().recentNetMgdl, json.optDouble("recentNetMgdl"), 1e-9)
+            val ketten = laeufe.mapNotNull { it.upfrontChain }
+            assertTrue(ketten.isNotEmpty(), "die Kette muss stehen (Takt $takt)")
+            assertTrue(ketten.any { it.upfrontOpenU > 0.0 },
+                       "der Batch muss offen sein (Takt $takt): " +
+                           ketten.map { it.upfrontOpenU }.distinct())
+            assertTrue(laeufe.any { it.phaseAUpfrontState == "DEFERRED_UPFRONT_BATCH" },
+                       "und aufgeschoben in Phase A (Takt $takt): " +
+                           laeufe.mapNotNull { it.phaseAUpfrontState }.distinct())
+
+            // KEINE BATCH-Endanforderung. Normale Korrekturen darf es geben -
+            // der Normalpfad ist von dieser Aenderung unberuehrt.
+            val batchEnden = ketten.filter { it.requestedRtU > 0.0 && it.grantSource == "MEAL_UPFRONT" }
+            assertTrue(batchEnden.isEmpty(),
+                       "keine Batch-Endanforderung (Takt $takt): " + batchEnden.map { it.requestedRtU })
+            assertTrue(ketten.none { it.stabilisation == "WITHIN_TOLERANCE" },
+                       "die Toleranz bleibt verletzt (Takt $takt): " +
+                           ketten.map { it.stabilisation }.distinct())
+
+            // Unabhaengig erwartet: -0,8 mg/dl/min ueber rund fuenf Minuten
+            // sind etwa -4 mg/dl, deutlich mehr als die Zugabe von 2,0.
+            val letzte = ketten.last()
+            assertTrue(letzte.recentNetMgdl <= -3.0,
+                       "das Netto zeigt den Abfall (Takt $takt): ${letzte.recentNetMgdl}")
+            val json = app.aaps.fuse.plugin.export.FuseStateJson.upfrontChainJson(letzte)
+            assertEquals(letzte.recentNetMgdl, json.optDouble("recentNetMgdl"), 1e-9)
+            assertTrue(json.optDouble("recentNetMgdl") <= -3.0)
+        }
     }
 
     /** Bis zur Sofortdosis fahren (Warm-up + Markerzyklus). */
