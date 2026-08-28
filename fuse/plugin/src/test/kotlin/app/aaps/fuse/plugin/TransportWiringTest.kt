@@ -203,6 +203,23 @@ class TransportWiringTest : TestBaseWithProfile() {
     /** Rebound-Fensterdauer [min] - Replay-Hebel fuer die Matrix 26.08. */
     private var reboundFensterMin = 45
 
+    /**
+     * DIE RUHEPARAMETER AUS DER AUFGEZEICHNETEN POLITIK (Befund Toni 28.08.).
+     *
+     * Hier klaffte ein Loch, das eine ganze Abnahme wertlos gemacht hat: der
+     * Trail trug `calmRecoveryEnabled=true` und `calmTreatment=CALM_BATCH`,
+     * `politikAnwenden` uebernahm beides NICHT, und `neuerRunner` setzt
+     * `Params.OFF` als Default. Der Replay lief also mit ausgeschaltetem
+     * Pruefgegenstand und meldete `ruheDenial=DISABLED` - waehrend das
+     * Geraet den Modus scharf hatte.
+     *
+     * Eine Blindprobe findet das NICHT: sie vergleicht zwei Arme
+     * gegeneinander und ist gegen einen GEMEINSAMEN Konfigurationsfehler
+     * blind. Dagegen hilft nur, die WIRKSAMEN Parameter auszugeben und
+     * gegen die Gerätepolitik zu pruefen - s. `ruheParameterPruefen`.
+     */
+    private var ruheAusPolitik: app.aaps.fuse.core.controller.UpfrontRecovery.Params? = null
+
     /** Der Marker autorisiert Insulin bei gemessenem Tief. */
     private var markerAuthorized = false
 
@@ -7701,6 +7718,19 @@ class TransportWiringTest : TestBaseWithProfile() {
             zeroLatchAn = b("zeroLatchEnabled", zeroLatchAn)
             zeroLatchRuheZyklen = i("zeroLatchCalmExitMin", zeroLatchRuheZyklen)
             zeroLatchRuheAbstand = d("zeroLatchCalmDistanceMgdl", zeroLatchRuheAbstand)
+            // DIE RUHE-EINSTELLUNGEN - bis 28.08. fehlten sie hier komplett.
+            // Fehlt das Feld (Trails vor RuleSet 32), bleibt es bei AUS, also
+            // beim aufgezeichneten Verhalten.
+            ruheAusPolitik = if (!b("calmRecoveryEnabled", false)) null else runCatching {
+                app.aaps.fuse.core.controller.UpfrontRecovery.Params.of(
+                    calmCycles = i("calmRecoveryCycles", 3),
+                    minUkf = d("calmRecoveryMinUkf", 0.0),
+                    minGuardDistanceMgdl = d("calmRecoveryGuardDistanceMgdl", 5.0),
+                    calmTreatment = app.aaps.fuse.core.controller.UpfrontRecovery.CalmTreatment
+                        .ofSetting(i("calmTreatmentMode", 0)),
+                    ruleSetVersion = i("ruleSetVersion", app.aaps.fuse.plugin.export.FuseStateJson.RULE_SET_VERSION),
+                )
+            }.getOrNull()
             p?.optDouble("mealRatioCap")?.takeIf { it.isFinite() }?.let { mealRatioDeckel = it }
             p?.optDouble("mealIobCapPercent")?.takeIf { it.isFinite() }?.let { mealIobDeckel = it }
             p?.optDouble("correctionRatioCap")?.takeIf { it.isFinite() }?.let { corrRatioDeckel = it }
@@ -7751,6 +7781,31 @@ class TransportWiringTest : TestBaseWithProfile() {
         // Der Spy bekommt die vom Runner errechneten LOKALEN Sekunden und
         // die Karte ist seit dem Zeitzonen-Fix oben ebenfalls lokal gefuellt
         // - eine Uhr fuer beide Seiten.
+
+        // DIE WIRKSAMEN RUHEPARAMETER SICHTBAR MACHEN - und widersprechen,
+        // wenn sie der aufgezeichneten Politik widersprechen. Genau dieser
+        // stille Widerspruch hat die Abnahme vom 28.08. entwertet.
+        fun ruheParameterPruefen(name: String, wirksam: app.aaps.fuse.core.controller.UpfrontRecovery.Params) {
+            val ausPolitik = pol?.optBoolean("calmRecoveryEnabled", false) ?: false
+            val modus = pol?.optString("calmTreatment") ?: "?"
+            // KEIN toString() DES OBJEKTS - das druckt die Adresse. Was
+            // geprueft werden muss, sind die WERTE gegen die Politik.
+            println(
+                "RUHE[$name]: wirksam=" + (wirksam != app.aaps.fuse.core.controller.UpfrontRecovery.Params.OFF) +
+                    "  Politik: enabled=$ausPolitik modus=$modus" +
+                    " zyklen=" + (pol?.optInt("calmRecoveryCycles", -1) ?: -1) +
+                    " minUkf=" + (pol?.optDouble("calmRecoveryMinUkf", -1.0) ?: -1.0) +
+                    " guard=" + (pol?.optDouble("calmRecoveryGuardDistanceMgdl", -1.0) ?: -1.0)
+            )
+            if (ausPolitik && wirksam == app.aaps.fuse.core.controller.UpfrontRecovery.Params.OFF) {
+                error(
+                    "REPLAY LIEFE OHNE RUHEFUNKTION, obwohl die aufgezeichnete " +
+                        "Politik sie scharf hat ($modus). Ein Lauf in dieser " +
+                        "Verfassung beweist nichts ueber den Ruhepfad - er hat " +
+                        "am 28.08. eine ganze Abnahme entwertet."
+                )
+            }
+        }
 
         fun lauf(name: String, fensterMs: Long?, trendRegel: String? = null, fenster: Int = 18, ratioCap: Double = 1.0, livenessStart: Boolean = true, profilCapsBehalten: Boolean = false, upfrontStart: Double? = null, guardsStart: Boolean = false, reversalConfirm: Int = 2, gapBreakMs: Long? = null, reifeTag: String? = null, rejoin: Boolean = false, ruhe: app.aaps.fuse.core.controller.UpfrontRecovery.Params = app.aaps.fuse.core.controller.UpfrontRecovery.Params.OFF): File {
             transportReset()
@@ -7826,7 +7881,14 @@ class TransportWiringTest : TestBaseWithProfile() {
             theilSenFensterMin = fenster // die erste Politik darf den Matrixwert nicht ueberschreiben (W10-Live-Trails tragen 10)
             upfrontStart?.let { upfrontAnteil = it }   // derselbe Vorrang fuer den Sofortanteil
             val adapter = FuseLedgerAdapter().also { it.loadOnce(File(dir, name).also(File::mkdirs), "test-epoch", zyklen.first().ts) }
-            neuerRunner(adapter, fensterMs = fensterMs, trendRegel = trendRegel, gapPolitik = gapPolitik, reifePolitik = reifePolitik, wiedereinstieg = rejoinPolitik, ruheParams = ruhe)
+            // EIN EXPLIZITER TREIBER-OVERRIDE SCHLAEGT DIE POLITIK, sonst gilt
+            // die aufgezeichnete Einstellung. Vor dem 28.08. stand hier
+            // unbedingt `ruhe` - und weil dessen Default AUS ist, lief jeder
+            // Replay ohne Ruhefunktion, egal was das Geraet fuhr.
+            val ruheWirksam = if (ruhe != app.aaps.fuse.core.controller.UpfrontRecovery.Params.OFF) ruhe
+            else ruheAusPolitik ?: app.aaps.fuse.core.controller.UpfrontRecovery.Params.OFF
+            ruheParameterPruefen(name, ruheWirksam)
+            neuerRunner(adapter, fensterMs = fensterMs, trendRegel = trendRegel, gapPolitik = gapPolitik, reifePolitik = reifePolitik, wiedereinstieg = rejoinPolitik, ruheParams = ruheWirksam)
             val outFile = File(outDir, "replay_$name.csv")
             outFile.printWriter().use { w ->
                 w.println("ts;smbU;block;binding;insulinReq;liftU;needU;abort;phase;fastD;slowD;trend;raw;recSmbU;recBlock;profil;restMin;tbr;latch;lvDenial;lvExit;lvStreak;lvHead;transC;revGrund;rearmGrund;ctxGrund;basis;gapBreakMs;samplesUsed;gapBeforeMin;r;bandN;matP;matS;iob;rejoin;rejoinGrund;gapMs;vollreifeTs;regimeGrund;regimeTs;regimeSegTs;vorReif;ruheModus;ruheStreak;ruheDenial;gefahr;guardAbst;grantU;vorFloor;nachFloor;nachRiegel;rtAngefordert;upfrontState;upfrontPendingU;riskAktiv;latchAktiv;latchGrund;iobAnkerFehlt;iobFehltAnkerKum;iobFehltHistKum;upfrontShare;q1;ukf;aktivitaet;bolusIobU;totalIobU;guardBoden;abstandBoden;minToFloor;ueberdeckung;fallrate;lowVerdikt;riskDenial;recoveryZyklen;horizontMin;aufschubGrund")
