@@ -2347,10 +2347,19 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
             )
             addPreference(AdaptiveSwitchPreference(ctx = context, booleanKey = FuseBooleanKey.LivenessChannelEnabled, summary = R.string.fuse_liveness_summary, title = R.string.fuse_liveness_title))
             addPreference(AdaptiveIntPreference(ctx = context, intKey = FuseIntKey.LivenessMealPowerMin, dialogMessage = R.string.fuse_liveness_meal_power_summary, title = R.string.fuse_liveness_meal_power_title))
-            addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.LivenessMealRatioCap, dialogMessage = R.string.fuse_liveness_meal_ratio_summary, title = R.string.fuse_liveness_meal_ratio_title))
-            addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.LivenessMealIobCapPercent, dialogMessage = R.string.fuse_liveness_meal_iob_summary, title = R.string.fuse_liveness_meal_iob_title))
-            addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.LivenessCorrectionRatioCap, dialogMessage = R.string.fuse_liveness_corr_ratio_summary, title = R.string.fuse_liveness_corr_ratio_title))
-            addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.LivenessCorrectionIobCapPercent, dialogMessage = R.string.fuse_liveness_corr_iob_summary, title = R.string.fuse_liveness_corr_iob_title))
+            // LEGACY-CLEANUP (Toni 29.08. spaet): im Zentralmodus sind die
+            // vier Legacy-Kanaldeckel wirkungslos (P1-Fix) und deshalb
+            // UNSICHTBAR - keine Anzeige darf eine ignorierte Grenze wie
+            // eine wirksame erscheinen lassen. Die Keys bleiben im Screen
+            // registriert (Inventar-Wache sammelt sichtbarkeits-agnostisch)
+            // und im LEGACY-Modus voll bedienbar - das ist der bewusst
+            // erhaltene Rueckweg fuer den ersten Produktivstand.
+            val zentralAktiv = preferences.get(FuseBooleanKey.CentralProfilesEnabled)
+            val legacyLivenessPrefs = mutableListOf<androidx.preference.Preference>()
+            addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.LivenessMealRatioCap, dialogMessage = R.string.fuse_liveness_meal_ratio_summary, title = R.string.fuse_liveness_meal_ratio_title).also { it.isVisible = !zentralAktiv; legacyLivenessPrefs += it })
+            addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.LivenessMealIobCapPercent, dialogMessage = R.string.fuse_liveness_meal_iob_summary, title = R.string.fuse_liveness_meal_iob_title).also { it.isVisible = !zentralAktiv; legacyLivenessPrefs += it })
+            addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.LivenessCorrectionRatioCap, dialogMessage = R.string.fuse_liveness_corr_ratio_summary, title = R.string.fuse_liveness_corr_ratio_title).also { it.isVisible = !zentralAktiv; legacyLivenessPrefs += it })
+            addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.LivenessCorrectionIobCapPercent, dialogMessage = R.string.fuse_liveness_corr_iob_summary, title = R.string.fuse_liveness_corr_iob_title).also { it.isVisible = !zentralAktiv; legacyLivenessPrefs += it })
             addPreference(
                 AdaptiveSwitchPreference(ctx = context, booleanKey = FuseBooleanKey.CentralProfilesEnabled, summary = R.string.fuse_central_profiles_summary, title = R.string.fuse_central_profiles_title).also { schalter ->
                     // AKTIVIERUNGSSPERRE (Toni 29.08.): der Wechsel auf
@@ -2359,7 +2368,12 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
                     // sonst braeche jeder Folgezyklus fail-closed ab. Die
                     // Laufzeitvalidierung bleibt als letzte Sicherung.
                     schalter.setOnPreferenceChangeListener { _, neu ->
-                        if (neu != true) return@setOnPreferenceChangeListener true
+                        if (neu != true) {
+                            // Rueckweg auf LEGACY: die Legacy-Deckel werden
+                            // sofort wieder sichtbar und bedienbar.
+                            legacyLivenessPrefs.forEach { it.isVisible = true }
+                            return@setOnPreferenceChangeListener true
+                        }
                         val fehler = FuseCentralProfileBackup.aktivierungsFehler(preferences)
                         if (fehler != null) {
                             app.aaps.core.ui.toast.ToastUtils.warnToast(
@@ -2367,6 +2381,9 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
                             )
                             return@setOnPreferenceChangeListener false
                         }
+                        // Sofort, nicht erst beim naechsten Screen-Aufbau:
+                        // die ignorierten Legacy-Deckel verschwinden.
+                        legacyLivenessPrefs.forEach { it.isVisible = false }
                         true
                     }
                 }

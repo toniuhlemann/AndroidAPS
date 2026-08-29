@@ -132,16 +132,16 @@ object FuseSettingsReport {
             standard = f2(k.defaultValue).takeIf { abweicht(preferences.get(k), k.defaultValue) }?.let { "$it $einheit".trim() },
         )
 
-        // A5-Abschluss: im Zentralmodus werden die Legacy-Profilcaps
-        // nicht mehr dosierwirksam gelesen - der Bericht sagt das
-        // AUSDRUECKLICH, statt einen wirkungslosen Wert als wirksam zu
-        // zeigen (Bauauftrag 7.5.7 Punkt 6).
-        fun legacyCap(k: FuseDoubleKey, label: String, einheit: String) =
-            if (preferences.get(FuseBooleanKey.CentralProfilesEnabled)) FuseScreenModel.SettingRow(
-                key = k.key, label = label,
-                value = "ignoriert (zentrale Profile)",
-                standard = null,
-            ) else zahl(k, label, einheit)
+        // LEGACY-CLEANUP (Toni 29.08. spaet, ersetzt den A5-Stand
+        // "ignoriert (zentrale Profile)"): im Zentralmodus sind die
+        // Legacy-Profilcaps wirkungslos (P1-Fix) und erscheinen deshalb
+        // GAR NICHT mehr - auch eine als "ignoriert" beschriftete Zeile
+        // liess eine Altgrenze wie einen Teil der wirksamen Politik
+        // aussehen. Der Modus selbst steht als policyMode-Zeile im
+        // Bericht; die Rueckkehr zu LEGACY bringt die Zeilen zurueck.
+        fun legacyCap(k: FuseDoubleKey, label: String, einheit: String): FuseScreenModel.SettingRow? =
+            if (preferences.get(FuseBooleanKey.CentralProfilesEnabled)) null
+            else zahl(k, label, einheit)
 
         // A4: ein KANDIDAT zeigt "unkonfiguriert", solange er nie gesetzt
         // wurde - die Grenzen-Klammer zaehlt Ausreisser als nie gesetzt
@@ -235,7 +235,7 @@ object FuseSettingsReport {
                         "Ruhe: Bodenabstand", "mg/dl",
                     ),
                 ),
-                "Dosierung und Grenzen" to listOf(
+                "Dosierung und Grenzen" to listOfNotNull(
                     zahl(FuseDoubleKey.SmbRatio, "Anteil Korrektur", ""),
                     zahl(FuseDoubleKey.SmbRatioRise, "Anteil Anstieg", ""),
                     zahl(FuseDoubleKey.MaxSmbU, "max Einzel-SMB", "U"),

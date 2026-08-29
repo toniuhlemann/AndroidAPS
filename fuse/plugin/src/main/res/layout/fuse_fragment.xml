@@ -79,6 +79,16 @@
                     tools:text="SMB 0.20 U -&gt; 0.20 U | keine neue TBR" />
 
                 <TextView
+                    android:id="@+id/fuse_overview_smb_status"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:textColor="?android:attr/textColorPrimary"
+                    android:textSize="14sp"
+                    android:textStyle="bold"
+                    tools:text="SMB STOP EXPOSURE | CORRECTION | CAP 2.50 U | belegt 2.20 U | frei 0.00 U" />
+
+                <TextView
                     android:id="@+id/fuse_overview_reason"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"

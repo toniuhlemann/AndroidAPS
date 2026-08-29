@@ -40,6 +40,14 @@ object FuseDashboardModel {
         val signal: String,
         /** Eine Zeile: SMB berechnet -> angefordert, TBR. */
         val action: String,
+        /** DIE VERBINDLICHE STATUSZEILE (Toni 29.08. spaet): typisierter
+         *  Zustand + Profil + wirksames CAP/belegt/frei + Mengenkette.
+         *  Alles ABGESCHRIEBEN aus dem typisierten Export, nie geraten.
+         *  null = noch kein Zyklus. */
+        val smbStatus: String?,
+        /** FREE|STOP|NO_DEMAND|UNKNOWN - fuer die Einfaerbung (Text UND
+         *  Farbe: NO_DEMAND ist ausdruecklich nie rot). */
+        val smbStatusTone: String?,
         /** Menschenlesbarer Grund; das rohe Token steht in Klammern. */
         val decisionReason: String,
         /** Leise Fusszeile (Gate + Ledger) - oder die laute Sperrliste. */
@@ -64,6 +72,40 @@ object FuseDashboardModel {
         val profile: String,
     )
 
+    /** Die Statuszeile: Zustand+Grund, Profil (+MEAL-Restfrist), wirksames
+     *  CAP, belegte Exposition, freier Raum, bindende Grenze; zweite Zeile
+     *  angeforderte -> finale Menge mit der angeforderten Quelle. LEGACY
+     *  ohne CAP-Teil (kein Gate). */
+    private fun smbStatusText(o: FuseCycleRunner.Outcome, nowMs: Long): String {
+        val zustand = when (o.smbState) {
+            "FREE" -> "SMB FREI"
+            "STOP" -> "SMB STOP ${o.smbStopReason ?: ""}".trim()
+            "NO_DEMAND" -> "SMB RUHIG (kein Bedarf)"
+            else -> "SMB ?"
+        }
+        val profil = o.dosingContextProfile?.let { p ->
+            if (p == "MEAL") {
+                val restMin = o.dosingContextAuthorizationExpiresAt
+                    ?.let { ((it - nowMs) / 60_000L).coerceAtLeast(0L) }
+                if (restMin != null) "MEAL noch $restMin min" else "MEAL"
+            } else p
+        }
+        val cap = o.exposureGateContextLimitU?.let { "CAP ${u(it)}" }
+        val belegt = o.exposureOccupiedU?.let { "belegt ${u(it)}" }
+        val frei = o.exposureGateHeadroomU?.let { "frei ${u(it)}" }
+        val grenze = o.exposureGateBinding
+            ?.takeIf { o.exposureGateBindet == true }
+            ?.let { "Grenze ${kurz(it)}" }
+        val kopf = listOfNotNull(zustand, profil, cap, belegt, frei, grenze)
+            .joinToString("  |  ")
+        val mengen = o.smbRequestedU?.let { req ->
+            val quelle = o.exposureRequestedSource
+                ?.takeIf { it != "NONE" }?.let { "  ($it)" } ?: ""
+            "angefordert ${u(req)} -> final ${u(o.smbPublishedU ?: 0.0)}$quelle"
+        }
+        return if (mengen != null) kopf + "\n" + mengen else kopf
+    }
+
     fun build(
         outcome: FuseCycleRunner.Outcome?,
         apsResult: APSResult?,
@@ -77,6 +119,8 @@ object FuseDashboardModel {
             statusDetail = "Noch kein FUSE-Ergebnis in diesem Prozess",
             signal = "Störung r -  |  Modus -  |  SMB-Anteil -",
             action = "Keine aktuelle Entscheidung",
+            smbStatus = null,
+            smbStatusTone = null,
             decisionReason = "-",
             gate = "Pumpengate und Ledger noch nicht bewertet",
             marker = markerText(null, nowMs, marker),
@@ -136,6 +180,8 @@ object FuseDashboardModel {
             statusDetail = statusDetail,
             signal = signalText(outcome),
             action = action,
+            smbStatus = smbStatusText(outcome, nowMs),
+            smbStatusTone = outcome.smbState ?: "UNKNOWN",
             decisionReason = decisionReason,
             gate = gate,
             marker = markerText(outcome, nowMs, marker),

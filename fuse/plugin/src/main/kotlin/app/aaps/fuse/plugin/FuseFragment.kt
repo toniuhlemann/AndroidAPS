@@ -139,6 +139,18 @@ class FuseFragment : DaggerFragment() {
         binding.fuseOverviewStatusDetail.text = dashboard.statusDetail
         binding.fuseOverviewSignal.text = dashboard.signal
         binding.fuseOverviewAction.text = dashboard.action
+        // Statuszeile: TEXT UND FARBE tragen den Zustand (Tonis Auflage);
+        // NO_DEMAND/UNKNOWN bleiben neutral - ein ruhiger Zielverlauf darf
+        // nicht wie eine Stoerung aussehen.
+        binding.fuseOverviewSmbStatus.isVisible = dashboard.smbStatus != null
+        binding.fuseOverviewSmbStatus.text = dashboard.smbStatus ?: ""
+        binding.fuseOverviewSmbStatus.setTextColor(
+            when (dashboard.smbStatusTone) {
+                "FREE" -> 0xFF66BB6A.toInt()
+                "STOP" -> 0xFFEF5350.toInt()
+                else -> binding.fuseOverviewGate.currentTextColor
+            }
+        )
         binding.fuseOverviewReason.text = dashboard.decisionReason
         binding.fuseOverviewGate.text = dashboard.gate
         binding.fuseOverviewMarker.text = dashboard.marker

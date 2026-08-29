@@ -96,6 +96,44 @@ class FuseDashboardModelTest {
         lastRepairTs = null,
     )
 
+    /** Die verbindliche Statuszeile (Toni 29.08. spaet): typisierter
+     *  Zustand, Profil, CAP/belegt/frei, bindende Grenze und die
+     *  Mengenkette mit angeforderter Quelle - abgeschrieben, nie geraten. */
+    @Test
+    fun `die Statuszeile traegt Zustand Profil CAP und Mengenkette`() {
+        val o = outcome().copy(
+            smbState = "STOP", smbStopReason = "EXPOSURE",
+            smbRequestedU = 0.55, smbCappedU = 0.0, smbPublishedU = 0.0,
+            exposureRequestedSource = "LIVENESS",
+            dosingContextProfile = "CORRECTION",
+            exposureGateContextLimitU = 2.5, exposureOccupiedU = 2.2,
+            exposureGateHeadroomU = 0.0, exposureGateBindet = true,
+            exposureGateBinding = "correctionExposureLimit",
+        )
+        val v = FuseDashboardModel.build(o, null, now, null, null, null)
+        assertTrue(v.smbStatus!!.startsWith("SMB STOP EXPOSURE"), v.smbStatus)
+        assertTrue(v.smbStatus!!.contains("CORRECTION"), v.smbStatus)
+        assertTrue(v.smbStatus!!.contains("CAP"), v.smbStatus)
+        assertTrue(v.smbStatus!!.contains("frei"), v.smbStatus)
+        assertTrue(v.smbStatus!!.contains("angefordert"), v.smbStatus)
+        assertTrue(v.smbStatus!!.contains("(LIVENESS)"), v.smbStatus)
+        assertEquals("STOP", v.smbStatusTone)
+    }
+
+    /** NO_DEMAND ist RUHE, nie ein Stop - Ton und Text sagen es beide. */
+    @Test
+    fun `die ruhige Lage erscheint nie als Stop`() {
+        val o = outcome().copy(
+            smbState = "NO_DEMAND",
+            smbRequestedU = 0.0, smbPublishedU = 0.0,
+            dosingContextProfile = "CORRECTION",
+        )
+        val v = FuseDashboardModel.build(o, null, now, null, null, null)
+        assertTrue(v.smbStatus!!.startsWith("SMB RUHIG"), v.smbStatus)
+        assertTrue(!v.smbStatus!!.contains("STOP"), v.smbStatus)
+        assertEquals("NO_DEMAND", v.smbStatusTone)
+    }
+
     @Test
     fun `ohne Zyklus zeigt die Kopfsektion keine erfundenen Werte`() {
         val v = FuseDashboardModel.build(
