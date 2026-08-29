@@ -236,10 +236,72 @@ stehen mit Belegen im Audit-Detail.
   inaktiv = Neutralitaetsnachweis); in Schritt B brechen die benannten
   Endpfad-/Kanalproben GEWOLLT.
 
+## 6b. NACHTRAG 29.08.: Die Block-Verdeckung ist DOCH live aufgetreten — am Fruehstueck 28.08.
+
+Tonis Einwand nach dem Review, am Trail verifiziert (Fruehstuecks-Marker
+09:21:56, also derselbe Tag wie Fall 2, aber ausserhalb des untersuchten
+Abendfensters 17:00-22:00):
+
+    09:48:28  q1 142,2  r +3,60  fndLift 0,05  block NONE   streak 1  NOT_CONFIRMED
+    09:49:27  q1 145,4  r +3,77  fndLift 0     GUARD_FLOOR  streak 2  NOT_CONFIRMED
+    09:50:27  q1 148,2  r +4,28  fndLift 0,05  block NONE   streak 3  NORMAL_PATH_OPEN  <-- Maskierung
+    09:51:28  q1 151,0  r +4,33  Liveness AKTIV, cand 0,41, geliefert 0,25 (livenessCap)
+
+Im 09:50-Zyklus: `mealFoundation.preFoundationBlock = GUARD_FLOOR`,
+`preFoundationSmbU = 0`, `foundationLiftU = 0,05`, Binding
+`markerAuth|finalVerify:GUARD_FLOOR`. Die Kette: Normalpfad 0/GUARD_FLOOR ->
+Foundation-Lift +0,05 -> finalVeto nullt (GUARD_FLOOR) -> MarkerFloor stellt
+den Grant wieder her -> Block NONE -> Bewaffnungstor liest NONE ->
+NORMAL_PATH_OPEN bei exakt Streak 3. Bewaffnung einen Zyklus spaeter.
+
+**Das aendert die Bewertung von Abschnitt 2 im Detail, nicht im Kern**: Die
+Abendfall-Analyse (0 Wirkzyklen 18:37-20:45) bleibt korrekt; die
+Gegenpruefung hatte diese Konstellation (Streak>=3 + Lift-Zyklus + keine
+Wende) ausdruecklich als moeglichen Wirkfall benannt — am Fruehstueck ist sie
+eingetreten. Kosten: genau 1 Zyklus (~0,25 U eine Minute spaeter bei +4,28
+mg/dl/min). Begrenzt, weil NORMAL_PATH_OPEN den Streak NICHT nullt
+(im Trail belegt: Streak 3 -> 4).
+
+**Reparatur (in den Bauauftrag aufzunehmen, deckungsgleich mit dessen
+Zielarchitektur "underlying block = GUARD/TAIL -> Liveness-Eignung daraus"):**
+Das Bewaffnungstor liest kuenftig einen neuen, je Zyklus abgeleiteten
+`underlyingNormalBlock` — den Block der Entscheidung VOR dem ersten
+autorisierten Lift (vor `liftUpfront`, Runner:3297). WICHTIG:
+`preFoundationBlock` ist als Tor-Quelle UNGEEIGNET — er wird nach
+PrimeRelease.lift gemessen; in Phase A maskieren Prime-Schritte und der
+Upfront-Batch auf demselben Weg (gleiche Familie: JEDER autorisierte Boden
+plus MarkerFloor-Restauration ueberschreibt den Blockgrund). Keine
+Persistenz noetig (Zyklusfakt, kein Zustand); `preFoundationBlock` bleibt
+als eigene Messgroesse unveraendert bestehen.
+
+Verhaltensaenderungs-Flaeche (zu messen, nicht zu raten): In Phase A unter
+Marker konnte der Kanal bisher praktisch nie bewaffnen (v18-Rig-Notiz "unter
+offenem Markerfenster nie GUARD/TAIL-gedeckelt" — durch die Lift-Maskierung
+mitverursacht); mit dem underlying-Tor wird Bewaffnung dort moeglich. In der
+MEAL-Profil-Welt ist das gewollt, gehoert aber in den Offline-Vergleich
+(Erwartung Abendfall 28.08.: 0 geaenderte Zyklen; Fruehstueck: +1 Zyklus).
+Pflichtfall dazu: Rig mit Guard-gedeckeltem Normalpfad + faelligem
+Foundation-Schritt + Streak 3 -> Bewaffnung im SELBEN Zyklus; Mutation
+(Tor zurueck auf Entscheidungs-Block) -> rot.
+
+**Zur Phase-B-Frage selbst**: Die 0,05er sind als MENGENprinzip in Ordnung —
+der Lift ist ein Boden (max, nie Kappung eines groesseren Normal-SMB;
+code-verifiziert in AuthorizedLift). Phase B nicht auf 0 setzen und nicht
+100 % Phase A waehlen, um einen Software-Seiteneffekt zu umgehen; der
+Entscheidungsweg wird repariert. Die zweite Phase-B-Schwaeche bleibt die
+Drive-Blindheit der festen Rate (0,025 U/min) — genau dafuer ist die
+MEAL-Liveness zustaendig, sobald Tor (dieser Nachtrag) und Druckschwelle
+(Entscheidung 1) sie lassen. Das Fruehstueck bestaetigt auch die
+Schwellen-Diagnose in klein: r lag ab ~09:42 ueber 1, q1 ueberschritt 140
+erst 09:48 — ~6 min Schwellenloch (abends waren es 55).
+
 ## 7. Offene Entscheidungen (Toni)
 
 1. Liveness-BG-Schwelle profilabhaengig machen (der 55-min-Hebel von Fall 2):
    in diesen Auftrag aufnehmen oder benannter Folgeauftrag?
+1b. underlyingNormalBlock-Tor (Nachtrag 6b) in den Auftrag aufnehmen —
+   Empfehlung: JA, als eigener frueher Commit (klein, unabhaengig, Rig +
+   Mutation + Replay-Gegenprobe am Abendfall).
 2. GUARD_CHAIN_PASSED: erschoepfter Exposure-Raum beendet stehende Nullen wie
    iobTH heute? (Empfehlung: ja, dokumentiert.)
 3. Exposure-Headroom zusaetzlich in die Grant-Bildung (AuthorizedLift)?
