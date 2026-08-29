@@ -41,8 +41,8 @@ import kotlin.math.min
  *  - Rasterung NACH UNTEN aufs Pumpenraster - die Endpruefung rundet nie
  *    auf.
  *
- * NUR im Modus CENTRAL_PROFILES aktiv (policyMode); im LEGACY-Modus wird
- * sie gar nicht erst gerufen - bitgleicher Altpfad.
+ * Seit dem CENTRAL-only-Cleanup (v44) laeuft sie in JEDEM Zyklus - die
+ * zentrale Dosierpolitik ist die einzige.
  */
 object ExposureGate {
 

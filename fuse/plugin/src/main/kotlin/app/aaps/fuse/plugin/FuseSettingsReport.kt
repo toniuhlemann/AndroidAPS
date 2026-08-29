@@ -44,7 +44,7 @@ internal val fuseEinstellbareKeys: Set<String> = setOf(
     FuseBooleanKey.LivenessChannelEnabled.key,
     FuseBooleanKey.SignalRejoinEnabled.key,
     FuseIntKey.LivenessMealPowerMin.key,
-    // A4 (Bauauftrag 7.5.7): policyMode + die vier zentralen Kandidaten.
+    // Die vier zentralen Profilwerte (CENTRAL-only, echte Defaults).
     FuseDoubleKey.CorrectionExposureLimitU.key,
     FuseDoubleKey.MealExposureLimitU.key,
     FuseDoubleKey.CorrectionDemandRatioCap.key,

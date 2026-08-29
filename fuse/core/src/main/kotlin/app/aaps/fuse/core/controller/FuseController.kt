@@ -158,7 +158,8 @@ object FuseController {
          * Mahlzeit-Fenster) unveraendert bleibt und die bindende Grenze
          * ehrlich benannt wird. Ein Cap ist keine feste Ratio: 1,0 heisst nur
          * "kein zusaetzlicher Deckel", nie "volle Bedarfsabgabe".
-         * `null` = LEGACY-Modus — die Kappenliste bleibt bitgleich alt.
+         * `null` laesst die Kappenliste unveraendert (Sonderpfade/Tests -
+         * der Runner setzt den Cap seit CENTRAL-only immer).
          */
         val contextDemandRatioCap: Double? = null,
         val pumpBusy: Boolean,

@@ -1011,12 +1011,11 @@ class FuseCycleRunner(
          *  Normalpfad-Fenster gated - genau diese Differenz war der
          *  unsichtbare 0,15-Livefall. */
         val livenessBaseRatio: Double? = null,
-        /** Die im Kanal WIRKSAME Ratio = min(baseRatio, Cap). Nur
-         *  gesetzt, wenn die Kandidatenrechnung lief; zusammen mit
-         *  baseRatio und dem modusabhaengigen Cap (LEGACY: Liveness-
-         *  Profil-Cap, zentral: Kontext-Cap - exportiert als
-         *  selectedRatioCap) ist die Kappung offline vollstaendig
-         *  nachrechenbar (Vertrag: Export von baseRatio, liveRatio, Cap). */
+        /** Die im Kanal WIRKSAME Ratio = min(baseRatio, Kontext-Cap des
+         *  Dosierprofils - exportiert als selectedRatioCap). Nur gesetzt,
+         *  wenn die Kandidatenrechnung lief; die Kappung ist offline
+         *  vollstaendig nachrechenbar (Export von baseRatio, liveRatio,
+         *  Cap). */
         val livenessLiveRatio: Double? = null,
         /** Die in DIESEM Zyklus wirksame Druck-Schwelle und ihre Quelle
          *  (DAY|NIGHT, v20) - fuer die Anzeige "Live wartet - BG 151/160". */
@@ -1080,7 +1079,8 @@ class FuseCycleRunner(
         val dosingContextAuthorizationId: Long? = null,
         val dosingContextAuthorizationExpiresAt: Long? = null,
         /** B1: typisierte Quellen-Provenienz der Endmenge + das Ergebnis
-         *  der verbindlichen Endpruefung (null = LEGACY/kein Lauf). */
+         *  der verbindlichen Endpruefung (null = Zyklus ohne Rechnung,
+         *  z.B. Abbruch oder aeltere Trails). */
         val exposureFinalSource: String? = null,
         /** Punkt-2-Fix (Review 29.08. spaet): die letzte hebende ABSICHT vor
          *  der Endpruefung. [exposureFinalSource] ist NONE, wenn final
@@ -1093,7 +1093,7 @@ class FuseCycleRunner(
         val smbStopReason: String? = null,
         /** Endgueltige Anforderung VOR der Endpruefung [U]. */
         val smbRequestedU: Double? = null,
-        /** Nach der Endpruefung [U] (LEGACY: identisch mit requested). */
+        /** Nach der Endpruefung [U]. */
         val smbCappedU: Double? = null,
         /** Publizierte Anforderung dieses Zyklus [U] (= decision.smbU). */
         val smbPublishedU: Double? = null,
@@ -4719,9 +4719,9 @@ class FuseCycleRunner(
             livenessProfileIobLimitU = kanalDeckelU
             val head = LivenessChannel.headroomU(
                 globalIobThU = state.iobThU,
-                // Kanaldeckel: LEGACY der Profil-Prozentdeckel, zentral die
-                // Kontextgrenze (P1-Fix); globales iobTH und maxIOB bleiben
-                // harte Obergrenzen im selben min().
+                // Kanaldeckel = die Kontextgrenze des Dosierprofils
+                // (P1-Fix); globales iobTH und maxIOB bleiben harte
+                // Obergrenzen im selben min().
                 livenessCapU = kanalDeckelU,
                 maxIobU = state.maxIobU,
                 capIobU = state.capIobU,
@@ -4775,8 +4775,8 @@ class FuseCycleRunner(
         // Freigabe und Liveness-Merge - nach ihr veraendert keine Stufe die
         // Menge mehr nach oben. REINE Mengenpruefung (kein erneuter Guard/
         // Tail/finalVeto - sonst kehrte der Saegezahn zurueck, den der
-        // Kanal per Vertrag umgeht). NUR im Modus CENTRAL_PROFILES;
-        // LEGACY laeuft bitgleich vorbei. Der Grant kann die Kappe
+        // Kanal per Vertrag umgeht). Sie laeuft in JEDEM Zyklus
+        // (CENTRAL-only). Der Grant kann die Kappe
         // konstruktiv nicht reissen (AuthorizedLift traegt dieselbe Grenze
         // in der Grant-Bildung, gleiche Zyklus-Eingaben) - die Endpruefung
         // faengt die stufenuebergreifenden Hebungen (SubStep,
@@ -6031,8 +6031,8 @@ class FuseCycleRunner(
             smbU = heldMitRiegel.smbU,
             insulinReqU = heldMitRiegel.insulinReqU,
             pumpIncrementU = pumpe.bolusStepU,
-            // Im LEGACY-Fallback ist der Raum nicht bestimmt (kein Gate,
-            // keine Kandidatensuche) - dann entscheidet allein der Block.
+            // Ohne Gate-Ergebnis (Abbruch vor der Pruefung) ist der Raum
+            // nicht bestimmt - dann entscheidet allein der Block.
             freeHeadroomU = fallbackGateResult?.headroomU,
             headroomBinding = fallbackGateResult?.binding,
         )

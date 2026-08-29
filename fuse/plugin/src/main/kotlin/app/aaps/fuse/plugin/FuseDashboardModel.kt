@@ -74,8 +74,8 @@ object FuseDashboardModel {
 
     /** Die Statuszeile: Zustand+Grund, Profil (+MEAL-Restfrist), wirksames
      *  CAP, belegte Exposition, freier Raum, bindende Grenze; zweite Zeile
-     *  angeforderte -> finale Menge mit der angeforderten Quelle. LEGACY
-     *  ohne CAP-Teil (kein Gate). */
+     *  angeforderte -> finale Menge mit der angeforderten Quelle. Fehlt
+     *  ein Gate-Ergebnis (Abbruchzyklus), entfaellt der CAP-Teil. */
     private fun smbStatusText(o: FuseCycleRunner.Outcome, nowMs: Long): String {
         val zustand = when (o.smbState) {
             "FREE" -> "SMB FREI"

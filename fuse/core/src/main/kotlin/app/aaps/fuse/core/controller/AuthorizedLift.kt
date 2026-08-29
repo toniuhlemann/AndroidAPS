@@ -153,10 +153,10 @@ object AuthorizedLift {
         extraCapU: Double? = null,
         transportCommitmentU: Double = 0.0,
         /** B1: die kontextabhaengige Expositionsgrenze des Zyklus (MEAL
-         *  bzw. CORRECTION), nur im Modus CENTRAL_PROFILES gesetzt. Sie
-         *  steht bereits in der GRANT-BILDUNG - ein Grant entsteht nie
-         *  oberhalb des Raums, MarkerFloor kann konstruktiv nichts
-         *  wiederherstellen, was die Endpruefung reisst. null = LEGACY. */
+         *  bzw. CORRECTION). Sie steht bereits in der GRANT-BILDUNG - ein
+         *  Grant entsteht nie oberhalb des Raums, MarkerFloor kann
+         *  konstruktiv nichts wiederherstellen, was die Endpruefung
+         *  reisst. null nur in Sonderpfaden ohne Kontext (Tests). */
         contextExposureLimitU: Double? = null,
         tickEps: Double,
     ): FuseController.Decision {

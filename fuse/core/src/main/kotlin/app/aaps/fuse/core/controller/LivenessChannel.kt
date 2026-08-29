@@ -34,9 +34,8 @@ import kotlin.math.min
  * P0 (Codex): der Kanaldeckel ist eine EIGENE Grenze, NICHT das globale
  * iobTH - das begrenzt auch Korrektur, Prime und Fundament, und eine
  * globale Senkung wuerde ausgerechnet die fruehe Mahlzeitenversorgung
- * aushungern. Woher der Deckel kommt, ist MODUSABHAENGIG (P1-Fix 29.08.):
- * LEGACY der Profil-Prozentsatz (Liveness*IobCapPercent x maxIOB),
- * zentral die Kontextgrenze (contextExposureLimit) - der Kern bekommt ihn
+ * aushungern. Der Deckel IST die Kontextgrenze des Dosierprofils
+ * (contextExposureLimit, CENTRAL-only seit v44) - der Kern bekommt ihn
  * fertig als livenessCapU. Ist das globale iobTH niedriger, gewinnt
  * selbstverstaendlich die strengere Grenze.
  *
