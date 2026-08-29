@@ -110,6 +110,29 @@ class FuseStateExportTest {
         gate: FuseStateJson.PublicationGate? = null,
     ) = FuseStateJson.record("s#1", o, r, o.policy, BUILD, 0L, null, publicationGate = gate) { 5_000_000L }
 
+    /** Viewer-Vertrag (Toni 29.08. spaet): der typisierte SMB-Status und
+     *  die Quellen-Trennung stehen WOERTLICH im Export - kein Anzeiger
+     *  raet aus Reason-Texten. */
+    @Test
+    fun `der typisierte SMB-Status steht im Export`() {
+        val j = record(outcome().copy(
+            smbState = "STOP", smbStopReason = "EXPOSURE",
+            smbRequestedU = 0.55, smbCappedU = 0.0, smbPublishedU = 0.0,
+            exposureRequestedSource = "LIVENESS", exposureFinalSource = "NONE",
+        ))
+        val smb = j.getJSONObject("smb")
+        assertEquals("STOP", smb.getString("state"))
+        assertEquals("EXPOSURE", smb.getString("stopReason"))
+        assertEquals(0.55, smb.getDouble("requestedU"), 1e-9)
+        assertEquals(0.0, smb.getDouble("cappedU"), 1e-9)
+        assertEquals(0.0, smb.getDouble("publishedU"), 1e-9)
+        // Der voll gekappte Liveness-Vorschlag: Absicht LIVENESS, final NONE
+        // - der exposure-Block existiert auch ohne Sicht-Zahlen (Fallback).
+        val exp = j.getJSONObject("exposure")
+        assertEquals("NONE", exp.getString("source"))
+        assertEquals("LIVENESS", exp.getString("requestedSource"))
+    }
+
     @Test
     fun `Wende-Shadow exportiert Klassifikation und die vollstaendige Tau-Matrix`() {
         val classification = TurnResponseShadow.Classification(

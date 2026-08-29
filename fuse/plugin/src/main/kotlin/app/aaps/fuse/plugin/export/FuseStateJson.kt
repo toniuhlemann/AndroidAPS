@@ -607,9 +607,13 @@ object FuseStateJson {
             // unbekannt) stehen in ExposureView.coverage. `source` ist die
             // capsStage der Entscheidung - das vorhandene Herkunftslabel,
             // keine zweite Wahrheit.
-            .put("exposure", outcome.exposureOccupiedU?.let { occ ->
+            // Punkt-2-Fix: der Block haengt nicht mehr allein an
+            // occupiedExposureU - der FALLBACK fuellt Provenienz und Gate,
+            // aber keine Sicht-Zahlen; sein exposure-Block war deshalb
+            // faelschlich NULL und versteckte source/gate.
+            .put("exposure", if (outcome.exposureOccupiedU == null && outcome.exposureFinalSource == null) JSONObject.NULL else
                 JSONObject()
-                    .put("occupiedExposureU", fin(occ))
+                    .put("occupiedExposureU", outcome.exposureOccupiedU?.let { fin(it) } ?: JSONObject.NULL)
                     .put("pendingExposureU", outcome.exposurePendingU?.let { fin(it) } ?: JSONObject.NULL)
                     .put("capIobU", outcome.exposureCapIobU?.let { fin(it) } ?: JSONObject.NULL)
                     .put("bolusIobU", outcome.exposureBolusIobU?.let { fin(it) } ?: JSONObject.NULL)
@@ -621,6 +625,11 @@ object FuseStateJson {
                     // identisch abgeleitet fuer Haupt- und Fallbackpfad,
                     // aus typisierten Fakten, nie aus Texten.
                     .put("source", outcome.exposureFinalSource ?: JSONObject.NULL)
+                    // Punkt-2-Fix: die letzte hebende ABSICHT - getrennt von
+                    // der finalen Quelle (bei finaler Nullmenge NONE). Ein
+                    // voll gekappter Liveness-Vorschlag erscheint als
+                    // requestedSource=LIVENESS, source=NONE.
+                    .put("requestedSource", outcome.exposureRequestedSource ?: JSONObject.NULL)
                     // B1: das Ergebnis der verbindlichen Endpruefung
                     // (null = LEGACY-Modus, Pruefung nicht gelaufen).
                     .put("gate", outcome.exposureGateBindet?.let { bindet ->
@@ -632,6 +641,25 @@ object FuseStateJson {
                             .put("contextLimitU", outcome.exposureGateContextLimitU?.let { fin(it) } ?: JSONObject.NULL)
                             .put("binding", outcome.exposureGateBinding ?: JSONObject.NULL)
                     } ?: JSONObject.NULL)
+            )
+            // DER TYPISIERTE SMB-STATUS (Toni 29.08. spaet) - Schema fuer
+            // den Viewer-Anschluss, NIE aus Reason-Texten geraten:
+            //   state      FREE | STOP | NO_DEMAND | UNKNOWN
+            //   stopReason EXPOSURE | IOB_TH | MAX_IOB | GUARD | TAIL |
+            //              HEALTH | LEDGER | PUMP | SAFETY | DESCENT |
+            //              DEFERRED (null ausser bei STOP)
+            //   requestedU Anforderung VOR der Endpruefung
+            //   cappedU    nach der Endpruefung
+            //   publishedU publizierte Anforderung (= decision.smbU;
+            //              pumpenbestaetigt ist eine ANDERE Wahrheit und
+            //              steht im Transport)
+            .put("smb", outcome.smbState?.let { st ->
+                JSONObject()
+                    .put("state", st)
+                    .put("stopReason", outcome.smbStopReason ?: JSONObject.NULL)
+                    .put("requestedU", outcome.smbRequestedU?.let { fin(it) } ?: JSONObject.NULL)
+                    .put("cappedU", outcome.smbCappedU?.let { fin(it) } ?: JSONObject.NULL)
+                    .put("publishedU", outcome.smbPublishedU?.let { fin(it) } ?: JSONObject.NULL)
             } ?: JSONObject.NULL)
             // A1: der zentrale Dosierkontext (Bauauftrag §4) mit den vier
             // Pflichtfeldern; policyGeneration = der bestehende Policy-Hash

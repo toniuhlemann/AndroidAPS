@@ -8146,6 +8146,61 @@ class TransportWiringTest : TestBaseWithProfile() {
     }
 
     /**
+     * Punkt-2-/Status-Fix (Review 29.08. spaet): Anforderung, Kappung und
+     * finale Quelle sind GETRENNTE Wahrheiten. Im Liefermoment ist der
+     * Status FREE und final==angefordert; im Vollblock ist der Status
+     * STOP/EXPOSURE, die finale Quelle NONE - waehrend die ABSICHT
+     * (requestedSource) und die angeforderte Menge sichtbar bleiben.
+     */
+    @Test
+    fun `Status - Anforderung, Kappung und finale Quelle sind getrennt`(@TempDir dir: File) {
+        // Zwei Teil-Lagen: die 2,0er liefert (FREE), die 1,5er ist von
+        // Beginn an erschoepft (capIob 1,6) und erreicht den Vollblock.
+        b1Lage(File(dir, "frei"), corrLimit = 2.0)
+        var frei: FuseCycleRunner.Outcome? = null
+        repeat(40) {
+            val o = cycle()
+            if (frei == null && o.decision.smbU > 0.0) frei = o
+        }
+        b1Lage(File(dir, "stop"), corrLimit = 1.5)
+        var stop: FuseCycleRunner.Outcome? = null
+        repeat(40) {
+            val o = cycle()
+            if (stop == null && o.exposureGateBlocked == true) stop = o
+        }
+        val f = frei ?: error("die Lage muss liefern")
+        assertEquals("FREE", f.smbState)
+        assertEquals(null, f.smbStopReason)
+        assertEquals(f.exposureRequestedSource, f.exposureFinalSource, "im Liefermoment ist final = angefordert")
+        assertEquals(f.decision.smbU, f.smbPublishedU!!, 1e-12)
+        val s = stop ?: error("die Lage muss den Vollblock erreichen")
+        assertEquals("STOP", s.smbState)
+        assertEquals("EXPOSURE", s.smbStopReason)
+        assertEquals("NONE", s.exposureFinalSource, "final 0 U heisst finale Quelle NONE")
+        assertTrue(
+            s.exposureRequestedSource!!.startsWith("NORMAL"),
+            "die Absicht bleibt sichtbar: ${s.exposureRequestedSource}",
+        )
+        assertTrue(s.smbRequestedU!! > 0.0, "die angeforderte Menge bleibt sichtbar")
+        assertEquals(0.0, s.smbCappedU!!, 1e-12)
+        assertEquals(0.0, s.smbPublishedU!!, 1e-12)
+    }
+
+    /** Tonis Auflage: ein ruhiger Zielverlauf ist NO_DEMAND - kein Stop,
+     *  kein Grund, keine Stoerung. */
+    @Test
+    fun `Status - ohne Bedarf ist die Lage NO_DEMAND`(@TempDir dir: File) {
+        b1Lage(dir, corrLimit = 6.0)
+        flach = 100.0
+        steigungProMin = 0.0
+        knickAbMin = 999
+        var ruhig: FuseCycleRunner.Outcome? = null
+        repeat(30) { val o = cycle(); if (o.smbState == "NO_DEMAND") ruhig = o }
+        assertTrue(ruhig != null, "die flache Ziellage muss NO_DEMAND erreichen")
+        assertEquals(null, ruhig!!.smbStopReason)
+    }
+
+    /**
      * Bauauftrag Paragraph 10, Pflichtfall "spaeterer Wiederherstellungs-
      * pfad": auch die CALM_BATCH-Freigabe steht unter der gemeinsamen
      * Endgrenze. Dieselbe Lage wie der CALM_BATCH-Basistest - einmal
@@ -8979,7 +9034,7 @@ class TransportWiringTest : TestBaseWithProfile() {
             neuerRunner(adapter, fensterMs = fensterMs, trendRegel = trendRegel, gapPolitik = gapPolitik, reifePolitik = reifePolitik, wiedereinstieg = rejoinPolitik, ruheParams = ruheWirksam)
             val outFile = File(outDir, "replay_$name.csv")
             outFile.printWriter().use { w ->
-                w.println("ts;smbU;block;binding;insulinReq;liftU;needU;abort;phase;fastD;slowD;trend;raw;recSmbU;recBlock;profil;restMin;tbr;latch;lvDenial;lvExit;lvStreak;lvHead;transC;revGrund;rearmGrund;ctxGrund;basis;gapBreakMs;samplesUsed;gapBeforeMin;r;bandN;matP;matS;iob;rejoin;rejoinGrund;gapMs;vollreifeTs;regimeGrund;regimeTs;regimeSegTs;vorReif;ruheModus;ruheStreak;ruheDenial;gefahr;guardAbst;grantU;vorFloor;nachFloor;nachRiegel;rtAngefordert;upfrontState;upfrontPendingU;riskAktiv;latchAktiv;latchGrund;iobAnkerFehlt;iobFehltAnkerKum;iobFehltHistKum;upfrontShare;q1;ukf;aktivitaet;bolusIobU;totalIobU;guardBoden;abstandBoden;minToFloor;ueberdeckung;fallrate;lowVerdikt;riskDenial;recoveryZyklen;horizontMin;aufschubGrund;dosingProfil;dosingGrund;expoSource;expoBind;expoBlock;expoBinding;expoHeadU;expoLimitU;bgMinQuelle")
+                w.println("ts;smbU;block;binding;insulinReq;liftU;needU;abort;phase;fastD;slowD;trend;raw;recSmbU;recBlock;profil;restMin;tbr;latch;lvDenial;lvExit;lvStreak;lvHead;transC;revGrund;rearmGrund;ctxGrund;basis;gapBreakMs;samplesUsed;gapBeforeMin;r;bandN;matP;matS;iob;rejoin;rejoinGrund;gapMs;vollreifeTs;regimeGrund;regimeTs;regimeSegTs;vorReif;ruheModus;ruheStreak;ruheDenial;gefahr;guardAbst;grantU;vorFloor;nachFloor;nachRiegel;rtAngefordert;upfrontState;upfrontPendingU;riskAktiv;latchAktiv;latchGrund;iobAnkerFehlt;iobFehltAnkerKum;iobFehltHistKum;upfrontShare;q1;ukf;aktivitaet;bolusIobU;totalIobU;guardBoden;abstandBoden;minToFloor;ueberdeckung;fallrate;lowVerdikt;riskDenial;recoveryZyklen;horizontMin;aufschubGrund;dosingProfil;dosingGrund;expoSource;expoBind;expoBlock;expoBinding;expoHeadU;expoLimitU;bgMinQuelle;expoReqSource;smbState;smbStop;reqU;capU")
                 // DER VORGEFUNDENE MARKER IST KEIN BEOBACHTETER DRUCK
                 // (Toni 25.08. spaet). `prevMarker = 0` liess den ersten
                 // Zyklus jeden schon laufenden Marker als frisch gedrueckt
@@ -9136,6 +9191,11 @@ class TransportWiringTest : TestBaseWithProfile() {
                         o.exposureGateHeadroomU?.let { "%.3f".format(java.util.Locale.US, it) } ?: "",
                         o.exposureGateEffectiveLimitU?.let { "%.3f".format(java.util.Locale.US, it) } ?: "",
                         o.livenessBgMinSource ?: "",
+                        o.exposureRequestedSource ?: "",
+                        o.smbState ?: "",
+                        o.smbStopReason ?: "",
+                        o.smbRequestedU?.let { "%.3f".format(java.util.Locale.US, it) } ?: "",
+                        o.smbCappedU?.let { "%.3f".format(java.util.Locale.US, it) } ?: "",
                     ).joinToString(";"))
                 }
             }

@@ -1094,6 +1094,21 @@ class FuseCycleRunner(
         /** B1: typisierte Quellen-Provenienz der Endmenge + das Ergebnis
          *  der verbindlichen Endpruefung (null = LEGACY/kein Lauf). */
         val exposureFinalSource: String? = null,
+        /** Punkt-2-Fix (Review 29.08. spaet): die letzte hebende ABSICHT vor
+         *  der Endpruefung. [exposureFinalSource] ist NONE, wenn final
+         *  nichts herausgeht - Anforderung und publizierte Menge werden nie
+         *  vermischt. */
+        val exposureRequestedSource: String? = null,
+        /** Typisierter SMB-Status (SmbStatus): FREE|STOP|NO_DEMAND|UNKNOWN -
+         *  Widget/Dashboard/Viewer raten NIE aus Reason-Texten. */
+        val smbState: String? = null,
+        val smbStopReason: String? = null,
+        /** Endgueltige Anforderung VOR der Endpruefung [U]. */
+        val smbRequestedU: Double? = null,
+        /** Nach der Endpruefung [U] (LEGACY: identisch mit requested). */
+        val smbCappedU: Double? = null,
+        /** Publizierte Anforderung dieses Zyklus [U] (= decision.smbU). */
+        val smbPublishedU: Double? = null,
         val exposureGateBindet: Boolean? = null,
         val exposureGateBlocked: Boolean? = null,
         val exposureGateHeadroomU: Double? = null,
@@ -1339,7 +1354,10 @@ class FuseCycleRunner(
                 reason = reason, alarm = tbrAlarm, bgMgdl = signal?.q1, targetMgdl = null, targetSource = null,
                 signal = signal, band = null, discount = null, onset = null, prime = null, candidate = null, candidateGap = null, policy = policy, state = null, step = step,
                 sensorEpoch = null, calibrationEpoch = null,
-                isfMgdlPerU = null, iobU = iob, iobThU = iobTh, maxIobU = maxIob, computeDurationMs = null, mealStats = null, abortReason = reason, rSegmentBreakMs = gapPolicy.rSegmentBreakMs, maturity = maturityPolicy,
+                isfMgdlPerU = null, iobU = iob, iobThU = iobTh, maxIobU = maxIob, computeDurationMs = null, mealStats = null, abortReason = reason,
+                // Typisierter Status auch im Abbruch: NO_INPUT = UNKNOWN -
+                // die Anzeigeseite muss nichts aus abortReason raten.
+                smbState = app.aaps.fuse.core.controller.SmbStatus.State.UNKNOWN.name, rSegmentBreakMs = gapPolicy.rSegmentBreakMs, maturity = maturityPolicy,
                 livenessExit = livenessLostExit,
                 livenessReArmUntilTs = episodes.livenessReArmUntilTs,
                 // AUCH IM ABBRUCH. Nach einem Neustart ist der Abbruch der
@@ -5114,6 +5132,38 @@ class FuseCycleRunner(
         )
 
         val computeDurationMs = dateUtil.now() - computeTs
+        // Punkt-2-/Status-Fix (Review 29.08. spaet): die ANGEFORDERTE
+        // Quelle wird aus den VOR-Gate-Stufen abgeleitet (letzte hebende
+        // Absicht); die finale Quelle unten nullt auf NONE, wenn final
+        // nichts herausgeht. Der typisierte SMB-Status kommt aus SmbStatus
+        // (reine Ableitung, when-ohne-else ueber Block).
+        val exposureRequestedSourceWert = when {
+            livenessLiftU > 0.0 -> app.aaps.fuse.core.controller.ExposureGate.FinalSource.LIVENESS
+            deferredReleaseU > 0.0 -> app.aaps.fuse.core.controller.ExposureGate.FinalSource.DEFERRED_RELEASE
+            ruheKandidatU > 0.0 -> app.aaps.fuse.core.controller.ExposureGate.FinalSource.CALM_DEMAND
+            calmBatchU > normalNachRiegel.smbU + 1e-9 -> app.aaps.fuse.core.controller.ExposureGate.FinalSource.CALM_BATCH
+            decisionVorEndpruefung.grant != null && decisionVorEndpruefung.smbU > 0.0 ->
+                when (decisionVorEndpruefung.grant!!.source) {
+                    app.aaps.fuse.core.controller.AuthorizedLift.Source.PRIME -> app.aaps.fuse.core.controller.ExposureGate.FinalSource.PRIME
+                    app.aaps.fuse.core.controller.AuthorizedLift.Source.FOUNDATION -> app.aaps.fuse.core.controller.ExposureGate.FinalSource.FOUNDATION
+                    app.aaps.fuse.core.controller.AuthorizedLift.Source.MEAL_UPFRONT -> app.aaps.fuse.core.controller.ExposureGate.FinalSource.MEAL_UPFRONT
+                }
+            subStep.releaseU > 0.0 -> app.aaps.fuse.core.controller.ExposureGate.FinalSource.NORMAL_SUBSTEP
+            decisionVorEndpruefung.smbU > 0.0 -> app.aaps.fuse.core.controller.ExposureGate.FinalSource.NORMAL
+            else -> app.aaps.fuse.core.controller.ExposureGate.FinalSource.NONE
+        }
+        val smbVerdict = app.aaps.fuse.core.controller.SmbStatus.of(
+            block = decision.block,
+            smbU = decision.smbU,
+            insulinReqU = decision.insulinReqU,
+            pumpIncrementU = bolusStep,
+            // Der freie Raum dieses Zyklus: Gate-Headroom (zentral, traegt
+            // alle drei Grenzen) sonst das min der Dosier-Headrooms (A2).
+            freeHeadroomU = exposureGateResult?.headroomU
+                ?: minOf(exposure.iobThHeadroomU, exposure.maxIobHeadroomU),
+            headroomBinding = exposureGateResult?.binding
+                ?: if (exposure.iobThHeadroomU <= exposure.maxIobHeadroomU) "iobThHeadroom" else "maxIobHeadroom",
+        )
         return Outcome(
             configGeneration = app.aaps.fuse.plugin.export.FuseStateJson.hashOf(cfg).orEmpty(),
             expectationSituation = ExpectationLedger.situationOf(
@@ -5237,24 +5287,20 @@ class FuseCycleRunner(
             evidenceReason = evidenz?.noInflow?.name,
             evidenceCreditMgdlPerMin = evidenz?.creditMgdlPerMin,
             underlyingNormalBlock = underlyingNormalBlock.name,
-            // B1: die typisierte Provenienz der Endmenge - abgeleitet aus
-            // TYPISIERTEN Fakten der hebenden Stufen (nie aus Texten), in
-            // der Reihenfolge der Stufen: die letzte hebende gewinnt.
-            exposureFinalSource = when {
-                livenessLiftU > 0.0 -> app.aaps.fuse.core.controller.ExposureGate.FinalSource.LIVENESS
-                deferredReleaseU > 0.0 -> app.aaps.fuse.core.controller.ExposureGate.FinalSource.DEFERRED_RELEASE
-                ruheKandidatU > 0.0 -> app.aaps.fuse.core.controller.ExposureGate.FinalSource.CALM_DEMAND
-                calmBatchU > normalNachRiegel.smbU + 1e-9 -> app.aaps.fuse.core.controller.ExposureGate.FinalSource.CALM_BATCH
-                decisionVorZeroLatch.grant != null && decisionVorZeroLatch.smbU > 0.0 ->
-                    when (decisionVorZeroLatch.grant!!.source) {
-                        app.aaps.fuse.core.controller.AuthorizedLift.Source.PRIME -> app.aaps.fuse.core.controller.ExposureGate.FinalSource.PRIME
-                        app.aaps.fuse.core.controller.AuthorizedLift.Source.FOUNDATION -> app.aaps.fuse.core.controller.ExposureGate.FinalSource.FOUNDATION
-                        app.aaps.fuse.core.controller.AuthorizedLift.Source.MEAL_UPFRONT -> app.aaps.fuse.core.controller.ExposureGate.FinalSource.MEAL_UPFRONT
-                    }
-                subStep.releaseU > 0.0 -> app.aaps.fuse.core.controller.ExposureGate.FinalSource.NORMAL_SUBSTEP
-                decisionVorZeroLatch.smbU > 0.0 -> app.aaps.fuse.core.controller.ExposureGate.FinalSource.NORMAL
-                else -> app.aaps.fuse.core.controller.ExposureGate.FinalSource.NONE
-            }.name,
+            // B1 + Punkt-2-Fix: ANGEFORDERT (letzte hebende Absicht, vor
+            // der Endpruefung) getrennt von FINAL (NONE bei finaler
+            // Nullmenge) - abgeleitet aus TYPISIERTEN Fakten, s. die
+            // Berechnung vor dem Konstrukt.
+            exposureRequestedSource = exposureRequestedSourceWert.name,
+            exposureFinalSource = (
+                if (decision.smbU > 0.0) exposureRequestedSourceWert
+                else app.aaps.fuse.core.controller.ExposureGate.FinalSource.NONE
+            ).name,
+            smbState = smbVerdict.state.name,
+            smbStopReason = smbVerdict.stopReason?.name,
+            smbRequestedU = decisionVorEndpruefung.smbU,
+            smbCappedU = decisionVorZeroLatch.smbU,
+            smbPublishedU = decision.smbU,
             exposureGateBindet = exposureGateResult?.bindet,
             exposureGateBlocked = exposureGateResult?.blocked,
             exposureGateHeadroomU = exposureGateResult?.headroomU,
@@ -6024,6 +6070,26 @@ class FuseCycleRunner(
                 foundationPhase = buchung.phase,
             ) else null
 
+        val fallbackRequestedSourceWert = when {
+            heldVorEndpruefung.grant != null && heldVorEndpruefung.smbU > 0.0 ->
+                when (heldVorEndpruefung.grant!!.source) {
+                    app.aaps.fuse.core.controller.AuthorizedLift.Source.PRIME -> app.aaps.fuse.core.controller.ExposureGate.FinalSource.PRIME
+                    app.aaps.fuse.core.controller.AuthorizedLift.Source.FOUNDATION -> app.aaps.fuse.core.controller.ExposureGate.FinalSource.FOUNDATION
+                    app.aaps.fuse.core.controller.AuthorizedLift.Source.MEAL_UPFRONT -> app.aaps.fuse.core.controller.ExposureGate.FinalSource.MEAL_UPFRONT
+                }
+            heldVorEndpruefung.smbU > 0.0 -> app.aaps.fuse.core.controller.ExposureGate.FinalSource.NORMAL
+            else -> app.aaps.fuse.core.controller.ExposureGate.FinalSource.NONE
+        }
+        val fallbackVerdict = app.aaps.fuse.core.controller.SmbStatus.of(
+            block = heldMitRiegel.block,
+            smbU = heldMitRiegel.smbU,
+            insulinReqU = heldMitRiegel.insulinReqU,
+            pumpIncrementU = pumpe.bolusStepU,
+            // Im LEGACY-Fallback ist der Raum nicht bestimmt (kein Gate,
+            // keine Kandidatensuche) - dann entscheidet allein der Block.
+            freeHeadroomU = fallbackGateResult?.headroomU,
+            headroomBinding = fallbackGateResult?.binding,
+        )
         return Outcome(
             decision = combined.decision,
             tbr = combined.request,
@@ -6053,16 +6119,18 @@ class FuseCycleRunner(
             evidenceRevokeRebased = evidenz?.revokeRebased,
             evidenceReason = evidenz?.noInflow?.name,
             evidenceCreditMgdlPerMin = evidenz?.creditMgdlPerMin,
-            exposureFinalSource = when {
-                heldMitRiegel.grant != null && heldMitRiegel.smbU > 0.0 ->
-                    when (heldMitRiegel.grant!!.source) {
-                        app.aaps.fuse.core.controller.AuthorizedLift.Source.PRIME -> app.aaps.fuse.core.controller.ExposureGate.FinalSource.PRIME
-                        app.aaps.fuse.core.controller.AuthorizedLift.Source.FOUNDATION -> app.aaps.fuse.core.controller.ExposureGate.FinalSource.FOUNDATION
-                        app.aaps.fuse.core.controller.AuthorizedLift.Source.MEAL_UPFRONT -> app.aaps.fuse.core.controller.ExposureGate.FinalSource.MEAL_UPFRONT
-                    }
-                heldMitRiegel.smbU > 0.0 -> app.aaps.fuse.core.controller.ExposureGate.FinalSource.NORMAL
-                else -> app.aaps.fuse.core.controller.ExposureGate.FinalSource.NONE
-            }.name,
+            // Punkt-2-Fix: dieselbe Trennung im Fallback - die Absicht aus
+            // dem VOR-Gate-Stand, final nullt auf NONE.
+            exposureRequestedSource = fallbackRequestedSourceWert.name,
+            exposureFinalSource = (
+                if (heldMitRiegel.smbU > 0.0) fallbackRequestedSourceWert
+                else app.aaps.fuse.core.controller.ExposureGate.FinalSource.NONE
+            ).name,
+            smbState = fallbackVerdict.state.name,
+            smbStopReason = fallbackVerdict.stopReason?.name,
+            smbRequestedU = heldVorEndpruefung.smbU,
+            smbCappedU = heldMitRiegel.smbU,
+            smbPublishedU = heldMitRiegel.smbU,
             exposureGateBindet = fallbackGateResult?.bindet,
             exposureGateBlocked = fallbackGateResult?.blocked,
             exposureGateHeadroomU = fallbackGateResult?.headroomU,
