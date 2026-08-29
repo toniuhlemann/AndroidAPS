@@ -2658,6 +2658,14 @@ class FuseCycleRunner(
         // Suche, weil auch die Sofort-Freigabe dieselbe Wirkungspruefung
         // braucht - gerade dann, wenn die Basis NO_DEMAND war und die Suche
         // deshalb nie lief.
+        // ---- GEMEINSAME EXPOSITIONSSICHT (Bauauftrag §5, A2) -------------
+        // EINE gemeinsame DEFINITION statt sechs Inline-Kopien (AuthorizedLift
+        // baut sich seine Sicht aus denselben Eingaben selbst); exakt dieselbe
+        // Ausdrucksreihenfolge wie zuvor (bitgleich, s. ExposureView-KDoc).
+        val exposure = app.aaps.fuse.core.controller.ExposureView.of(
+            iobThU = state.iobThU, maxIobU = state.maxIobU,
+            capIobU = state.capIobU, transportU = transportModelledU,
+        )
         val candidateBand = CandidateSearch.Band(
             releaseTargetLowMgdl = target - CandidateGate.RELEASE_LOW_MARGIN_MGDL,
             releaseTargetHighMgdl = target,
@@ -2690,10 +2698,11 @@ class FuseCycleRunner(
                         // C3-02: die MODELLIERTE Transportmenge, nicht der
                         // Ledgerwert - sie ist per Vertrag nie kleiner, die
                         // Headrooms koennen dadurch nur enger werden.
-                        effectiveIobThHeadroomU = state.iobThU - state.capIobU - transportModelledU,
+                        effectiveIobThHeadroomU = exposure.iobThHeadroomU,
                         // Tonis IOB-Referenz-Regel: Dosier-Grenzen auf
-                        // capIob - negatives Basal-Delta ist kein Budget.
-                        effectiveMaxIobHeadroomU = state.maxIobU - state.capIobU - transportModelledU,
+                        // capIob - negatives Basal-Delta ist kein Budget
+                        // (steckt im capIob-Eingang der ExposureView).
+                        effectiveMaxIobHeadroomU = exposure.maxIobHeadroomU,
                         pumpIncrementU = bolusStep,
                         maxSmbU = cfg.maxSmbU,
                     ),
@@ -2717,8 +2726,8 @@ class FuseCycleRunner(
         val shadowKernel = kernel()
         val shadowCaps = CandidateSearch.Caps(
             remainingReleaseBudgetU = cfg.maxSmbU,
-            effectiveIobThHeadroomU = state.iobThU - state.capIobU - transportModelledU,
-            effectiveMaxIobHeadroomU = state.maxIobU - state.capIobU - transportModelledU,
+            effectiveIobThHeadroomU = exposure.iobThHeadroomU,
+            effectiveMaxIobHeadroomU = exposure.maxIobHeadroomU,
             pumpIncrementU = bolusStep,
             maxSmbU = cfg.maxSmbU,
         )
@@ -3488,8 +3497,8 @@ class FuseCycleRunner(
         // Sicherheitskappen vorbei.
         val otherCapsU = minOf(
             cfg.maxSmbU,
-            state.iobThU - state.capIobU - transportModelledU,
-            state.maxIobU - state.capIobU - transportModelledU,
+            exposure.iobThHeadroomU,
+            exposure.maxIobHeadroomU,
             tail?.takeIf { it.usable }?.headroomU ?: Double.MAX_VALUE,
             if (onset.active) onset.remainingU else Double.MAX_VALUE,
         )

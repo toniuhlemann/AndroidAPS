@@ -206,12 +206,16 @@ object AuthorizedLift {
         val singleDoseCapU =
             if (source == Source.MEAL_UPFRONT) remainingU
             else min(state.maxSmbU, remainingU)
+        // A2: dieselbe gemeinsame Expositionssicht wie in der
+        // Kandidatensuche und im SubStep - identische Ausdrucksreihenfolge,
+        // bitgleiche Werte (s. ExposureView-KDoc).
+        val exposure = ExposureView.of(
+            iobThU = state.iobThU, maxIobU = state.maxIobU,
+            capIobU = state.capIobU, transportU = transportCommitmentU,
+        )
         var caps = min(
             singleDoseCapU,
-            min(
-                state.maxIobU - state.capIobU - transportCommitmentU,
-                state.iobThU - state.capIobU - transportCommitmentU,
-            ),
+            min(exposure.maxIobHeadroomU, exposure.iobThHeadroomU),
         )
         // Die Schwanzkappe bindet nur OHNE Autorisierung.
         if (!authorized) tailHeadroomU?.let { caps = min(caps, it) }
