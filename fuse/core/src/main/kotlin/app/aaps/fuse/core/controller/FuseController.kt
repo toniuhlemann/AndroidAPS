@@ -371,6 +371,23 @@ object FuseController {
         MEASURED_DESCENT_RISK,
 
         /**
+         * B1 (Bauauftrag 5.1): die GEMEINSAME kontextabhaengige
+         * Expositionsgrenze ist erschoepft - CorrectionExposureLimit bzw.
+         * MealExposureLimit im min mit iobTH und maxIOB, gegen
+         * capIob + Transporthaftung.
+         *
+         * ABSOLUTE Mengengrenze der Klasse IOB_TH_REACHED/MAX_IOB_REACHED:
+         * keine Autorisierung hebt sie (MarkerAuthorization.lifts = false),
+         * sie ist KEIN Gefahrensignal (nicht in UNSAFE_BLOCKS, TbrAction
+         * NO_NEW_POSITIVE - Invariante 7: erzeugt nie eigenstaendig
+         * Zero-TBR) und sie BEENDET wie die beiden IOB-Grenzen eine
+         * stehende FUSE-Null (GUARD_CHAIN_PASSED, Tonis Entscheid 29.08.).
+         * Gesetzt NUR von der verbindlichen Endpruefung (ExposureGate) -
+         * nach ihr hebt keine Stufe mehr.
+         */
+        EXPOSURE_LIMIT,
+
+        /**
          * MARKERAUTORISIERTES Insulin bei gemessenem, ueberdecktem Fall mit
          * Boden im GEPINNTEN Prime-Horizont zurueckgehalten (Punkt 6,
          * Toni 22.08.). Die Menge ist nicht weg: sie wandert als offener

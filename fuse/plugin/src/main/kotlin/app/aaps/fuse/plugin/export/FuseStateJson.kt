@@ -286,7 +286,16 @@ object FuseStateJson {
     // Altbestand-bitgleich; CORRECTION bleibt immer bei 3). Gesetzt auf 1
     // bewaffnet der Kanal im ERSTEN Druckzyklus der autorisierten
     // Mahlzeit - autoISF-artige Sofortreaktion nur unter der Vollmacht.
-    const val RULE_SET_VERSION = 40
+    // v41 (29.08., B1 aus Bauauftrag 5.1): die VERBINDLICHE ENDPRUEFUNG.
+    // Im Modus CENTRAL_PROFILES prueft ExposureGate die endgueltige
+    // Zusatzdosis als LETZTE hebende Mengenstufe an BEIDEN Einbaustellen
+    // (Hauptpfad nach dem Liveness-Merge, Fallback nach dessen
+    // MeasuredDescentGate) gegen min(iobTH, maxIOB, Kontextgrenze) minus
+    // capIob+Transport; AuthorizedLift traegt dieselbe Grenze bereits in
+    // der GRANT-BILDUNG. Neuer Block EXPOSURE_LIMIT (absolut, nie hebbar,
+    // NO_NEW_POSITIVE, GUARD_CHAIN_PASSED). Im LEGACY-Modus bitgleich
+    // inaktiv - dosierwirksam erst mit aktivierten zentralen Profilen.
+    const val RULE_SET_VERSION = 41
 
     /** Schema des Trail-Datensatzes - s. die Notiz an der Schreibstelle. */
     const val SCHEMA_VERSION = 4
@@ -587,13 +596,21 @@ object FuseStateJson {
                     .put("staticCorrectionNeedU", outcome.exposureStaticNeedU?.let { fin(it) } ?: JSONObject.NULL)
                     .put("coveragePct", outcome.exposureCoveragePct?.let { fin(it) } ?: JSONObject.NULL)
                     .put("excessU", outcome.exposureExcessU?.let { fin(it) } ?: JSONObject.NULL)
-                    // Die QUELLEN-Provenienz (NORMAL/LIVENESS/MEAL_UPFRONT/
-                    // FOUNDATION) ist erst in Schritt B typisiert - capsStage
-                    // ist eine RECHENSTUFE und waere hier eine falsche
-                    // Aussage (Toni 29.08.). Bis dahin ehrlich NULL; Haupt-
-                    // und Fallbackpfad muessen in B dieselbe Provenienz
-                    // liefern.
-                    .put("source", JSONObject.NULL)
+                    // B1: die TYPISIERTE Quellen-Provenienz der Endmenge -
+                    // identisch abgeleitet fuer Haupt- und Fallbackpfad,
+                    // aus typisierten Fakten, nie aus Texten.
+                    .put("source", outcome.exposureFinalSource ?: JSONObject.NULL)
+                    // B1: das Ergebnis der verbindlichen Endpruefung
+                    // (null = LEGACY-Modus, Pruefung nicht gelaufen).
+                    .put("gate", outcome.exposureGateBindet?.let { bindet ->
+                        JSONObject()
+                            .put("bindet", bindet)
+                            .put("blocked", outcome.exposureGateBlocked ?: false)
+                            .put("headroomU", outcome.exposureGateHeadroomU?.let { fin(it) } ?: JSONObject.NULL)
+                            .put("effectiveLimitU", outcome.exposureGateEffectiveLimitU?.let { fin(it) } ?: JSONObject.NULL)
+                            .put("contextLimitU", outcome.exposureGateContextLimitU?.let { fin(it) } ?: JSONObject.NULL)
+                            .put("binding", outcome.exposureGateBinding ?: JSONObject.NULL)
+                    } ?: JSONObject.NULL)
             } ?: JSONObject.NULL)
             // A1: der zentrale Dosierkontext (Bauauftrag §4) mit den vier
             // Pflichtfeldern; policyGeneration = der bestehende Policy-Hash

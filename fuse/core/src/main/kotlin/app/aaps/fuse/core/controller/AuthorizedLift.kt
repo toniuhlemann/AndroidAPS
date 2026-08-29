@@ -152,6 +152,12 @@ object AuthorizedLift {
         tailHeadroomU: Double? = null,
         extraCapU: Double? = null,
         transportCommitmentU: Double = 0.0,
+        /** B1: die kontextabhaengige Expositionsgrenze des Zyklus (MEAL
+         *  bzw. CORRECTION), nur im Modus CENTRAL_PROFILES gesetzt. Sie
+         *  steht bereits in der GRANT-BILDUNG - ein Grant entsteht nie
+         *  oberhalb des Raums, MarkerFloor kann konstruktiv nichts
+         *  wiederherstellen, was die Endpruefung reisst. null = LEGACY. */
+        contextExposureLimitU: Double? = null,
         tickEps: Double,
     ): FuseController.Decision {
         // ---- Eingaben pruefen, BEVOR gerechnet wird (Toni 18.08.) --------
@@ -217,6 +223,12 @@ object AuthorizedLift {
             singleDoseCapU,
             min(exposure.maxIobHeadroomU, exposure.iobThHeadroomU),
         )
+        // B1: dieselbe Belegungs-Semantik wie iobTH/maxIOB - die
+        // Kontextgrenze ist eine ABSOLUTE Mengengrenze und gilt auch fuer
+        // autorisierte Quellen (Bauauftrag 7.3).
+        contextExposureLimitU?.let {
+            caps = min(caps, it - state.capIobU - transportCommitmentU)
+        }
         // Die Schwanzkappe bindet nur OHNE Autorisierung.
         if (!authorized) tailHeadroomU?.let { caps = min(caps, it) }
         // Die phasenspezifische Zusatzkappe (Prime: Onset-Huelle).

@@ -27,11 +27,16 @@ class FuseTbrReasonGoneTest {
     )
 
     @Test
-    fun `nur die drei Bloecke unterhalb der Schutzkette gelten als Nachweis`() {
+    fun `nur die Bloecke unterhalb der Schutzkette gelten als Nachweis`() {
         val erlaubt = setOf(
             FuseController.Block.NO_DEMAND,
             FuseController.Block.IOB_TH_REACHED,
             FuseController.Block.MAX_IOB_REACHED,
+            // B1 (Tonis Entscheid 29.08.): ein erschoepfter Exposure-Raum
+            // ist kein Gefahrensignal - er beendet eine stehende Null wie
+            // die beiden IOB-Grenzen (Ledger/Rebound-Bedingungen gelten
+            // unveraendert im Aufrufer).
+            FuseController.Block.EXPOSURE_LIMIT,
         )
         for (b in FuseController.Block.entries) {
             val ergebnis = FuseTbrTranslator.reasonGone(entscheidung(b), ledgerHold = false, reboundWindow = false)

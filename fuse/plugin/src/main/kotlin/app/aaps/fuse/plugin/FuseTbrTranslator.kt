@@ -129,6 +129,11 @@ object FuseTbrTranslator {
     ): Boolean = !ledgerHold && !reboundWindow && decision.block in GUARD_CHAIN_PASSED
 
     private val GUARD_CHAIN_PASSED = setOf(
+        // B1 (Tonis Entscheid 29.08.): ein erschoepfter Exposure-Raum ist
+        // kein Gefahrensignal - er beendet eine stehende Null wie
+        // IOB_TH_REACHED, sofern Ledger/Rebound frei sind (dieselben
+        // Bedingungen im Aufrufer).
+        FuseController.Block.EXPOSURE_LIMIT,
         FuseController.Block.NO_DEMAND,
         FuseController.Block.MAX_IOB_REACHED,
         FuseController.Block.IOB_TH_REACHED,

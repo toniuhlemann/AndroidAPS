@@ -341,6 +341,8 @@ object PrimeRelease {
         // den NOMINALEN - ueber den NO_DEMAND-Pfad (Suche laeuft nie) konnte
         // eine In-Flight-Menge doppelt in den iobTH-/maxIOB-Spielraum.
         transportCommitmentU: Double = 0.0,
+        /** B1: Kontextgrenze des Zyklus, s. [AuthorizedLift.lift]. */
+        contextExposureLimitU: Double? = null,
     ): FuseController.Decision {
         // OHNE PLAN KEIN LIFT - das ist die Prime-spezifische Vorbedingung
         // und bleibt hier: [AuthorizedLift] kennt keinen Prime-Plan.
@@ -360,6 +362,7 @@ object PrimeRelease {
             tailHeadroomU = tailHeadroomU,
             extraCapU = onsetCapU,
             transportCommitmentU = transportCommitmentU,
+            contextExposureLimitU = contextExposureLimitU,
             tickEps = TICK_EPS,
         )
     }

@@ -120,6 +120,11 @@ object MarkerAuthorization {
             // sein darf, und stehen ueber jeder einzelnen Autorisierung.
             FuseController.Block.IOB_TH_REACHED       -> false
             FuseController.Block.MAX_IOB_REACHED      -> false
+            // B1: die kontextabhaengige Expositionsgrenze gehoert in
+            // DIESELBE Klasse - nie hebbar (Bauauftrag 5.1: "nicht
+            // ueberstimmbar"; Marker-Vertrag: absolute Mengengrenzen
+            // bleiben zwingend zu).
+            FuseController.Block.EXPOSURE_LIMIT       -> false
 
             // Buchfuehrung und Transport.
             FuseController.Block.LEDGER_HOLD          -> false

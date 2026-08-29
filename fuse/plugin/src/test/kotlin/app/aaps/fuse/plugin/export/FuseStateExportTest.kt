@@ -765,7 +765,9 @@ class FuseStateExportTest {
         // Altpfad, gesetzt dosierwirksam (die gemessenen Schwellenloecher).
         // v40 M3: MealArmCycles - Default 3 bitgleich, gesetzt auf 1
         // bewaffnet der erste Druckzyklus unter der Vollmacht.
-        assertEquals(40, FuseStateJson.RULE_SET_VERSION)
+        // v41 B1: die verbindliche Endpruefung (ExposureGate, Block
+        // EXPOSURE_LIMIT) - dosierwirksam nur im Modus CENTRAL_PROFILES.
+        assertEquals(41, FuseStateJson.RULE_SET_VERSION)
         assertTrue(
             FuseStateJson.hashOf(cfg)!!.isNotEmpty(),
             "und der Hash bleibt berechenbar",

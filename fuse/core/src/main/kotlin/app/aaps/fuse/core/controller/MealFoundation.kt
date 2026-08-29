@@ -441,6 +441,8 @@ object MealFoundation {
         state: FuseController.State,
         tailHeadroomU: Double? = null,
         transportCommitmentU: Double = 0.0,
+        /** B1: Kontextgrenze des Zyklus, s. [AuthorizedLift.lift]. */
+        contextExposureLimitU: Double? = null,
         tickEps: Double = 1e-9,
     ): FuseController.Decision {
         if (phase != Phase.PHASE_A) return base
@@ -456,6 +458,7 @@ object MealFoundation {
             tailHeadroomU = tailHeadroomU,
             extraCapU = null,
             transportCommitmentU = transportCommitmentU,
+            contextExposureLimitU = contextExposureLimitU,
             tickEps = tickEps,
         )
     }
@@ -1106,6 +1109,8 @@ object MealFoundation {
         state: FuseController.State,
         tailHeadroomU: Double? = null,
         transportCommitmentU: Double = 0.0,
+        /** B1: Kontextgrenze des Zyklus, s. [AuthorizedLift.lift]. */
+        contextExposureLimitU: Double? = null,
         tickEps: Double = 1e-9,
     ): FuseController.Decision {
         if (!snapshot.armed) return base
@@ -1125,6 +1130,7 @@ object MealFoundation {
             // KEINE Onset-Huelle - s. Blockkommentar.
             extraCapU = null,
             transportCommitmentU = transportCommitmentU,
+            contextExposureLimitU = contextExposureLimitU,
             tickEps = tickEps,
         )
     }

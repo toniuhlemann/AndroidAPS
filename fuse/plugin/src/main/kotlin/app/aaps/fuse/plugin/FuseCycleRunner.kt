@@ -1091,6 +1091,15 @@ class FuseCycleRunner(
         val dosingContextReason: String? = null,
         val dosingContextAuthorizationId: Long? = null,
         val dosingContextAuthorizationExpiresAt: Long? = null,
+        /** B1: typisierte Quellen-Provenienz der Endmenge + das Ergebnis
+         *  der verbindlichen Endpruefung (null = LEGACY/kein Lauf). */
+        val exposureFinalSource: String? = null,
+        val exposureGateBindet: Boolean? = null,
+        val exposureGateBlocked: Boolean? = null,
+        val exposureGateHeadroomU: Double? = null,
+        val exposureGateEffectiveLimitU: Double? = null,
+        val exposureGateContextLimitU: Double? = null,
+        val exposureGateBinding: String? = null,
         /** A3 (Bauauftrag §8): die gemeinsame Expositionssicht als
          *  DIAGNOSE - alle Werte stammen aus ExposureView/State, der
          *  Exporter schreibt nur ab. null = Zyklus ohne Hauptpfad
@@ -3353,6 +3362,51 @@ class FuseCycleRunner(
         // ZYKLUSLOKAL, nicht persistiert; `preFoundationBlock` bleibt als
         // eigene Messgroesse unveraendert (er misst NACH PrimeRelease.lift
         // und deckt Phase-A-Maskierungen nicht).
+        // ---- MARKER-LEISTUNGSFRIST (Bauauftrag Toni 23.08. nachts) --------
+        // Der Marker ist eine ZEITLICH BEGRENZTE Leistungsautorisierung des
+        // Liveness-Kanals, keine Voraussetzung fuer Liveness insgesamt.
+        // Gepinnt wird NUR ein im Prozess beobachteter Markerwechsel; ein
+        // beim Warmstart bloss vorgefundener Marker ohne passende
+        // persistierte Identitaet eroeffnet kein rueckwirkendes MEAL (§3).
+        // Die Dauer wird beim Druck eingefroren. SEIT B1 STEHT DER BLOCK
+        // HIER, vor der Lift-Kette: die Kontextgrenze muss bereits in die
+        // GRANT-BILDUNG (AuthorizedLift) - zwischen alter und neuer
+        // Position schreibt nichts an markerTs oder die Pins
+        // (verhaltensidentische Verlegung).
+        if (episodeGate.creditRevoked || markerTs <= 0L) {
+            // Ruecknahme loescht Identitaet und Frist SOFORT.
+            episodes.markerPowerPinnedFor = 0L
+            episodes.markerPowerDeadlineTs = 0L
+            markerPowerLastSeenTs = 0L
+        } else if (markerPowerLastSeenTs == -1L) {
+            markerPowerLastSeenTs = markerTs
+        } else if (markerTs != markerPowerLastSeenTs) {
+            episodes.markerPowerPinnedFor = markerTs
+            episodes.markerPowerDeadlineTs = markerTs + cfg.livenessMealPowerMin * 60_000L
+            markerPowerLastSeenTs = markerTs
+        }
+        // ---- ZENTRALER DOSIERKONTEXT (Bauauftrag §4, Schritt A1) ---------
+        // UNBEDINGT je Zyklus, unabhaengig vom Liveness-Schalter.
+        // HALB OFFEN: exakt an der Deadline gilt bereits CORRECTION. Eine
+        // laenger lebende Evidenzepisode verlaengert die Frist NICHT; die
+        // persistierte Markerfrist ist autoritativ, nie state.context (§6).
+        // Bit-identische Extraktion der bisherigen markerPowerActive-Regel.
+        val dosingCtx = app.aaps.fuse.core.controller.DosingContext.decide(
+            nowMs = computeTs,
+            markerTs = markerTs,
+            pinnedFor = episodes.markerPowerPinnedFor,
+            deadlineTs = episodes.markerPowerDeadlineTs,
+        )
+        val markerPowerActive = dosingCtx.mealAuthorized
+        // ---- B1: DIE KONTEXTGRENZE DIESES ZYKLUS -------------------------
+        // MealExposureLimit unter gueltiger Vollmacht, sonst
+        // CorrectionExposureLimit - NUR im Modus CENTRAL_PROFILES
+        // (validate garantiert dort alle vier Werte); null = LEGACY,
+        // Grant-Bildung und Endpruefung bleiben bitgleich inaktiv.
+        val kontextExposureLimitU: Double? =
+            if (!cfg.centralProfilesEnabled) null
+            else if (dosingCtx.mealAuthorized) cfg.mealExposureLimitU
+            else cfg.correctionExposureLimitU
         val underlyingNormalBlock = vetted.block
         val liftedUpfront = when {
             upfrontOhneNetz || ledgerView.hold -> vetted
@@ -3385,6 +3439,7 @@ class FuseCycleRunner(
                 state = state,
                 tailHeadroomU = tail?.takeIf { it.usable }?.headroomU,
                 transportCommitmentU = transportModelledU,
+                contextExposureLimitU = kontextExposureLimitU,
             )
         }
         // Der Rueckstand ist die BILANZ - kein zweiter Zaehler. Was dieser
@@ -3405,6 +3460,7 @@ class FuseCycleRunner(
             // Such-Headrooms - sonst finanziert der NO_DEMAND->Lift-Pfad
             // In-Flight-Mengen doppelt.
             transportCommitmentU = transportModelledU,
+            contextExposureLimitU = kontextExposureLimitU,
         )
 
         // ---- PHASE B: die nachlaufende Mindestversorgung ------------------
@@ -3428,6 +3484,7 @@ class FuseCycleRunner(
             state = state,
             tailHeadroomU = tail?.takeIf { it.usable }?.headroomU,
             transportCommitmentU = transportModelledU,
+            contextExposureLimitU = kontextExposureLimitU,
         )
         // WAS DAS FUNDAMENT SELBST BEIGESTEUERT HAT (Toni 19.08.).
         //
@@ -4244,43 +4301,11 @@ class FuseCycleRunner(
         var livenessCoverageState: String? = null
         var livenessPressureActive: Boolean? = null
 
-        // ---- MARKER-LEISTUNGSFRIST (Bauauftrag Toni 23.08. nachts) --------
-        // Der Marker ist eine ZEITLICH BEGRENZTE Leistungsautorisierung des
-        // Liveness-Kanals, keine Voraussetzung fuer Liveness insgesamt.
-        // Gepinnt wird NUR ein im Prozess beobachteter Markerwechsel; ein
-        // beim Warmstart bloss vorgefundener Marker ohne passende
-        // persistierte Identitaet eroeffnet kein rueckwirkendes MEAL (§3).
-        // Die Dauer wird beim Druck eingefroren.
-        if (episodeGate.creditRevoked || markerTs <= 0L) {
-            // Ruecknahme loescht Identitaet und Frist SOFORT.
-            episodes.markerPowerPinnedFor = 0L
-            episodes.markerPowerDeadlineTs = 0L
-            markerPowerLastSeenTs = 0L
-        } else if (markerPowerLastSeenTs == -1L) {
-            markerPowerLastSeenTs = markerTs
-        } else if (markerTs != markerPowerLastSeenTs) {
-            episodes.markerPowerPinnedFor = markerTs
-            episodes.markerPowerDeadlineTs = markerTs + cfg.livenessMealPowerMin * 60_000L
-            markerPowerLastSeenTs = markerTs
-        }
-        // ---- ZENTRALER DOSIERKONTEXT (Bauauftrag §4, Schritt A1) ---------
-        // UNBEDINGT je Zyklus, unabhaengig vom Liveness-Schalter - die
-        // Profilwahl lebte bis A1 im Liveness-Block und existierte bei
-        // ausgeschaltetem Kanal gar nicht (woertlicher §4-Verstoss).
-        // HALB OFFEN: exakt an der Deadline gilt bereits CORRECTION. Eine
-        // laenger lebende Evidenzepisode verlaengert die Frist NICHT; die
-        // persistierte Markerfrist ist autoritativ, nie state.context (§6 -
-        // der Live-Trail zeigte state.context=CORRECTION bei aktivem Marker).
-        // Bit-identische Extraktion der bisherigen markerPowerActive-Regel.
-        val dosingCtx = app.aaps.fuse.core.controller.DosingContext.decide(
-            nowMs = computeTs,
-            markerTs = markerTs,
-            pinnedFor = episodes.markerPowerPinnedFor,
-            deadlineTs = episodes.markerPowerDeadlineTs,
-        )
-        val markerPowerActive = dosingCtx.mealAuthorized
+        // Marker-Leistungsfrist + zentraler Dosierkontext: seit B1 VOR der
+        // Lift-Kette bestimmt (die Kontextgrenze steht bereits in der
+        // Grant-Bildung) - s. oben vor `underlyingNormalBlock`.
         val livenessNormalSmbU = nachAufschub.smbU
-        val decisionVorZeroLatch: FuseController.Decision = run {
+        val decisionVorEndpruefung: FuseController.Decision = run {
             if (!cfg.livenessChannelEnabled) {
                 // AUS heisst aus: Lauf und Streak enden, aber eine bereits
                 // gesetzte Sperre bleibt stehen (sie ist eine Zusage). Ein
@@ -4699,6 +4724,55 @@ class FuseCycleRunner(
                 unsafeSituation = false,
             )
         }
+        // ---- B1: DIE VERBINDLICHE ENDPRUEFUNG (Bauauftrag 5.1) ------------
+        // Die LETZTE HEBENDE MENGENSTUFE: nach MarkerFloor, CALM, Aufschub-
+        // Freigabe und Liveness-Merge - nach ihr veraendert keine Stufe die
+        // Menge mehr nach oben. REINE Mengenpruefung (kein erneuter Guard/
+        // Tail/finalVeto - sonst kehrte der Saegezahn zurueck, den der
+        // Kanal per Vertrag umgeht). NUR im Modus CENTRAL_PROFILES;
+        // LEGACY laeuft bitgleich vorbei. Der Grant kann die Kappe
+        // konstruktiv nicht reissen (AuthorizedLift traegt dieselbe Grenze
+        // in der Grant-Bildung, gleiche Zyklus-Eingaben) - die Endpruefung
+        // faengt die stufenuebergreifenden Hebungen (SubStep,
+        // DeferredPrime-Release, Liveness).
+        var exposureGateResult: app.aaps.fuse.core.controller.ExposureGate.Result? = null
+        val decisionVorZeroLatch =
+            if (kontextExposureLimitU == null) decisionVorEndpruefung
+            else {
+                val g = app.aaps.fuse.core.controller.ExposureGate.pruefe(
+                    requestedU = decisionVorEndpruefung.smbU,
+                    mealAuthorized = dosingCtx.mealAuthorized,
+                    correctionLimitU = checkNotNull(cfg.correctionExposureLimitU),
+                    mealLimitU = checkNotNull(cfg.mealExposureLimitU),
+                    iobThU = state.iobThU,
+                    maxIobU = state.maxIobU,
+                    capIobU = state.capIobU,
+                    transportU = transportModelledU,
+                    pumpIncrementU = bolusStep,
+                )
+                exposureGateResult = g
+                when {
+                    !g.bindet -> decisionVorEndpruefung
+                    g.blocked -> decisionVorEndpruefung.copy(
+                        smbU = 0.0,
+                        block = FuseController.Block.EXPOSURE_LIMIT,
+                        // Invariante 7: KEIN eigenstaendiges Zero - eine
+                        // stehende SCHUTZ-Null bleibt, sonst gilt die
+                        // Mengen-Antwort NO_NEW_POSITIVE (wie iobTH/maxIOB).
+                        tbr = if (decisionVorEndpruefung.tbr == FuseController.TbrAction.ZERO_TEMP)
+                            decisionVorEndpruefung.tbr
+                        else FuseController.TbrAction.NO_NEW_POSITIVE,
+                        bindingLimit = g.binding,
+                        unsafeSituation = false,
+                    )
+                    else -> decisionVorEndpruefung.copy(
+                        smbU = g.cappedU,
+                        // TEILKAPPUNG: die Menge fliesst weiter, die Grenze
+                        // wird BENANNT; Block bleibt der der Quelle.
+                        bindingLimit = g.binding,
+                    )
+                }
+            }
         // ---- ZERO-TBR-LATCH (Bauauftrag Toni 24.08. abends) ---------------
         // Befund desselben Tages: das Low-Tor eroeffnete 16:41-17:53 FUENF
         // berechtigte Zero-TBRs, und der punktuelle Nutzenwert (benefit < 5)
@@ -5084,6 +5158,30 @@ class FuseCycleRunner(
             evidenceReason = evidenz?.noInflow?.name,
             evidenceCreditMgdlPerMin = evidenz?.creditMgdlPerMin,
             underlyingNormalBlock = underlyingNormalBlock.name,
+            // B1: die typisierte Provenienz der Endmenge - abgeleitet aus
+            // TYPISIERTEN Fakten der hebenden Stufen (nie aus Texten), in
+            // der Reihenfolge der Stufen: die letzte hebende gewinnt.
+            exposureFinalSource = when {
+                livenessLiftU > 0.0 -> app.aaps.fuse.core.controller.ExposureGate.FinalSource.LIVENESS
+                deferredReleaseU > 0.0 -> app.aaps.fuse.core.controller.ExposureGate.FinalSource.DEFERRED_RELEASE
+                ruheKandidatU > 0.0 -> app.aaps.fuse.core.controller.ExposureGate.FinalSource.CALM_DEMAND
+                calmBatchU > normalNachRiegel.smbU + 1e-9 -> app.aaps.fuse.core.controller.ExposureGate.FinalSource.CALM_BATCH
+                decisionVorZeroLatch.grant != null && decisionVorZeroLatch.smbU > 0.0 ->
+                    when (decisionVorZeroLatch.grant!!.source) {
+                        app.aaps.fuse.core.controller.AuthorizedLift.Source.PRIME -> app.aaps.fuse.core.controller.ExposureGate.FinalSource.PRIME
+                        app.aaps.fuse.core.controller.AuthorizedLift.Source.FOUNDATION -> app.aaps.fuse.core.controller.ExposureGate.FinalSource.FOUNDATION
+                        app.aaps.fuse.core.controller.AuthorizedLift.Source.MEAL_UPFRONT -> app.aaps.fuse.core.controller.ExposureGate.FinalSource.MEAL_UPFRONT
+                    }
+                subStep.releaseU > 0.0 -> app.aaps.fuse.core.controller.ExposureGate.FinalSource.NORMAL_SUBSTEP
+                decisionVorZeroLatch.smbU > 0.0 -> app.aaps.fuse.core.controller.ExposureGate.FinalSource.NORMAL
+                else -> app.aaps.fuse.core.controller.ExposureGate.FinalSource.NONE
+            }.name,
+            exposureGateBindet = exposureGateResult?.bindet,
+            exposureGateBlocked = exposureGateResult?.blocked,
+            exposureGateHeadroomU = exposureGateResult?.headroomU,
+            exposureGateEffectiveLimitU = exposureGateResult?.effectiveLimitU,
+            exposureGateContextLimitU = exposureGateResult?.contextLimitU,
+            exposureGateBinding = exposureGateResult?.binding,
             exposureOccupiedU = exposure.occupiedU,
             exposurePendingU = exposure.transportU,
             exposureCapIobU = exposure.capIobU,
@@ -5568,6 +5666,12 @@ class FuseCycleRunner(
             pinnedFor = episodes.markerPowerPinnedFor,
             deadlineTs = episodes.markerPowerDeadlineTs,
         )
+        // B1: DIESELBE Kontextgrenze wie im Hauptpfad - der Fallback ist
+        // ein zweiter Weg zur Menge, kein zweiter Vertrag.
+        val fallbackKontextLimitU: Double? =
+            if (!cfg.centralProfilesEnabled) null
+            else if (fallbackCtx.mealAuthorized) cfg.mealExposureLimitU
+            else cfg.correctionExposureLimitU
         subStepCarryU = 0.0
         // Codex 22.08.: ein Fallback-Zyklus laeuft OHNE die Kanalstufe -
         // weder Riegel noch Druck sind geprueft. Ein aktiver Liveness-Lauf
@@ -5701,6 +5805,7 @@ class FuseCycleRunner(
             tailHeadroomU = null,
             onsetCapU = if (onset.active) onset.remainingU else null,
             transportCommitmentU = transportModelledU,
+            contextExposureLimitU = fallbackKontextLimitU,
         )
 
         // ---- PHASE B, auch hier - DIESELBE Logik (Toni 19.08.) ------------
@@ -5731,6 +5836,7 @@ class FuseCycleRunner(
             state = state,
             tailHeadroomU = null,
             transportCommitmentU = transportModelledU,
+            contextExposureLimitU = fallbackKontextLimitU,
         )
         // UND DIE MESSUNG AUCH HIER (Codex 19.08.). Der Fallback ruft
         // denselben Lift, hat die beiden Groessen aber nicht gesetzt - der
@@ -5746,7 +5852,42 @@ class FuseCycleRunner(
         // zur Menge und war beim Mahlzeitenfundament schon einmal die
         // Stelle, an der eine Messung fehlte - ein Riegel, den nur der
         // Hauptpfad kennt, ist kein Riegel.
-        val heldMitRiegel = MeasuredDescentGate.apply(held, descentLatch.blocksPositive)
+        val heldVorEndpruefung = MeasuredDescentGate.apply(held, descentLatch.blocksPositive)
+        // ---- B1: DIE VERBINDLICHE ENDPRUEFUNG, ZWEITE EINBAUSTELLE --------
+        // Der Fallback passiert die Hauptpfad-Stelle nie und hat einen
+        // EIGENEN Translator + eigene Reservierung - ohne diese Stelle
+        // umginge genau die in Bauauftrag 5.1 benannte Fallback-Quelle die
+        // gemeinsame Grenze. Gleiche Regeln, gleicher Kern.
+        var fallbackGateResult: app.aaps.fuse.core.controller.ExposureGate.Result? = null
+        val heldMitRiegel =
+            if (fallbackKontextLimitU == null) heldVorEndpruefung
+            else {
+                val g = app.aaps.fuse.core.controller.ExposureGate.pruefe(
+                    requestedU = heldVorEndpruefung.smbU,
+                    mealAuthorized = fallbackCtx.mealAuthorized,
+                    correctionLimitU = checkNotNull(cfg.correctionExposureLimitU),
+                    mealLimitU = checkNotNull(cfg.mealExposureLimitU),
+                    iobThU = state.iobThU,
+                    maxIobU = state.maxIobU,
+                    capIobU = state.capIobU,
+                    transportU = transportModelledU,
+                    pumpIncrementU = pumpe.bolusStepU,
+                )
+                fallbackGateResult = g
+                when {
+                    !g.bindet -> heldVorEndpruefung
+                    g.blocked -> heldVorEndpruefung.copy(
+                        smbU = 0.0,
+                        block = FuseController.Block.EXPOSURE_LIMIT,
+                        tbr = if (heldVorEndpruefung.tbr == FuseController.TbrAction.ZERO_TEMP)
+                            heldVorEndpruefung.tbr
+                        else FuseController.TbrAction.NO_NEW_POSITIVE,
+                        bindingLimit = g.binding,
+                        unsafeSituation = false,
+                    )
+                    else -> heldVorEndpruefung.copy(smbU = g.cappedU, bindingLimit = g.binding)
+                }
+            }
         observeDescentDeferred(
             episodes = episodes,
             nowTs = computeTs,
@@ -5833,6 +5974,22 @@ class FuseCycleRunner(
             evidenceRevokeRebased = evidenz?.revokeRebased,
             evidenceReason = evidenz?.noInflow?.name,
             evidenceCreditMgdlPerMin = evidenz?.creditMgdlPerMin,
+            exposureFinalSource = when {
+                heldMitRiegel.grant != null && heldMitRiegel.smbU > 0.0 ->
+                    when (heldMitRiegel.grant!!.source) {
+                        app.aaps.fuse.core.controller.AuthorizedLift.Source.PRIME -> app.aaps.fuse.core.controller.ExposureGate.FinalSource.PRIME
+                        app.aaps.fuse.core.controller.AuthorizedLift.Source.FOUNDATION -> app.aaps.fuse.core.controller.ExposureGate.FinalSource.FOUNDATION
+                        app.aaps.fuse.core.controller.AuthorizedLift.Source.MEAL_UPFRONT -> app.aaps.fuse.core.controller.ExposureGate.FinalSource.MEAL_UPFRONT
+                    }
+                heldMitRiegel.smbU > 0.0 -> app.aaps.fuse.core.controller.ExposureGate.FinalSource.NORMAL
+                else -> app.aaps.fuse.core.controller.ExposureGate.FinalSource.NONE
+            }.name,
+            exposureGateBindet = fallbackGateResult?.bindet,
+            exposureGateBlocked = fallbackGateResult?.blocked,
+            exposureGateHeadroomU = fallbackGateResult?.headroomU,
+            exposureGateEffectiveLimitU = fallbackGateResult?.effectiveLimitU,
+            exposureGateContextLimitU = fallbackGateResult?.contextLimitU,
+            exposureGateBinding = fallbackGateResult?.binding,
             dosingContextProfile = fallbackCtx.profile.name,
             dosingContextReason = fallbackCtx.reason.name,
             dosingContextAuthorizationId = fallbackCtx.authorizationId.takeIf { it > 0L },

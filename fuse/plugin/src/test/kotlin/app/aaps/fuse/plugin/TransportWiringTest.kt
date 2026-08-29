@@ -174,6 +174,11 @@ class TransportWiringTest : TestBaseWithProfile() {
     private var livenessRatioDeckel = 1.0
     private var mealPowerMin = 120
     private var mealArmZyklen = 3
+    private var centralAn = false
+    private var corrExpLimit: Double? = null
+    private var mealExpLimit: Double? = null
+    private var corrRatioCapZ: Double? = null
+    private var mealRatioCapZ: Double? = null
     /** null = Migration: der Wert folgt dem alten Globalhebel. */
     private var mealRatioDeckel: Double? = null
     private var mealIobDeckel: Double? = null
@@ -560,6 +565,11 @@ class TransportWiringTest : TestBaseWithProfile() {
         whenever(preferences.get(FuseDoubleKey.LivenessRatioCap)).thenAnswer { livenessRatioDeckel }
         whenever(preferences.get(FuseIntKey.LivenessMealPowerMin)).thenAnswer { mealPowerMin }
         whenever(preferences.get(FuseIntKey.MealArmCycles)).thenAnswer { mealArmZyklen }
+        whenever(preferences.get(FuseBooleanKey.CentralProfilesEnabled)).thenAnswer { centralAn }
+        whenever(preferences.getIfExists(FuseDoubleKey.CorrectionExposureLimitU)).thenAnswer { corrExpLimit }
+        whenever(preferences.getIfExists(FuseDoubleKey.MealExposureLimitU)).thenAnswer { mealExpLimit }
+        whenever(preferences.getIfExists(FuseDoubleKey.CorrectionDemandRatioCap)).thenAnswer { corrRatioCapZ }
+        whenever(preferences.getIfExists(FuseDoubleKey.MealDemandRatioCap)).thenAnswer { mealRatioCapZ }
         whenever(preferences.get(FuseBooleanKey.ZeroLatchEnabled)).thenAnswer { zeroLatchAn }
         whenever(preferences.get(FuseIntKey.ZeroLatchCalmExitMin)).thenAnswer { zeroLatchRuheZyklen }
         whenever(preferences.get(FuseDoubleKey.ZeroLatchCalmDistanceMgdl)).thenAnswer { zeroLatchRuheAbstand }
@@ -7771,6 +7781,176 @@ class TransportWiringTest : TestBaseWithProfile() {
         }
         assertTrue(armZyklus != null, "die Lage muss ueberhaupt bewaffnen (sonst prueft der Fall nichts)")
         assertEquals(3, armZyklus!!.livenessStreak)
+    }
+
+    /** B1-Aufbau: zentrale Profile aktiv, offener Normalpfad (kein Guard-
+     *  Deadlock, kein Tail, keine Liveness) - die Endmenge kommt aus der
+     *  normalen Ratio und trifft NUR auf die neue Kontextgrenze. */
+    private fun b1Lage(dir: File, corrLimit: Double) {
+        centralAn = true
+        corrExpLimit = corrLimit
+        mealExpLimit = 6.0
+        corrRatioCapZ = 1.0
+        mealRatioCapZ = 1.0
+        livenessAn = false
+        tailGuard = false
+        markerAuthorized = false
+        flach = 150.0
+        steigungProMin = 0.3
+        knickAbMin = 12
+        steigungNachKnick = 1.2
+        knick2AbMin = null
+        bolusIobU = 1.6
+        clock = start
+        markerAt = 0L
+        transportReset()
+        val adapter = FuseLedgerAdapter().also { it.loadOnce(dir.also(File::mkdirs), "test-epoch", start) }
+        neuerRunner(adapter)
+    }
+
+    /**
+     * B1, PFLICHTFALL 2 (Bauauftrag Paragraph 10, Zeile 2): der neue
+     * Correction-Cap kann auch die NORMALE Endmenge begrenzen - genau die
+     * Verhaltensaenderung, die der 27.08.-Burst verlangt hat (2,50 U in 12
+     * Zyklen, waehrend iobTH/maxIOB 4-6 U Luft liessen). Die Mutation
+     * "Endgrenze entfernt" macht exakt diesen Test rot.
+     */
+    @Test
+    fun `B1 - der Correction-Cap begrenzt die normale Endmenge`(@TempDir dir: File) {
+        // 1,8 - capIob(1,6) = 0,2 U Raum; die Korrektur-Ratio wollte ~0,25+.
+        b1Lage(dir, corrLimit = 1.8)
+        var gebunden = false
+        repeat(40) {
+            val o = cycle()
+            if (o.exposureGateBindet == true && o.decision.smbU > 0.0) {
+                gebunden = true
+                assertEquals("correctionExposureLimit", o.exposureGateBinding)
+                assertEquals("correctionExposureLimit", o.decision.bindingLimit)
+            }
+            // KEIN Zyklus darf den Raum reissen; die Transporthaftung
+            // verengt nur weiter.
+            assertTrue(
+                o.decision.smbU <= 0.2 + 1e-9,
+                "Endmenge ${o.decision.smbU} muss unter dem Kontext-Headroom bleiben",
+            )
+        }
+        assertTrue(gebunden, "die Kontextgrenze MUSS mindestens einmal real binden")
+    }
+
+    /** B1: erschoepfter Raum -> Block EXPOSURE_LIMIT, Menge 0, TBR-Antwort
+     *  NO_NEW_POSITIVE (Invariante 7: kein eigenstaendiges Zero). */
+    @Test
+    fun `B1 - erschoepfter Raum setzt EXPOSURE_LIMIT ohne Zero`(@TempDir dir: File) {
+        b1Lage(dir, corrLimit = 1.5)
+        var geblockt = false
+        repeat(40) {
+            val o = cycle()
+            if (o.exposureGateBlocked == true) {
+                geblockt = true
+                assertEquals(FuseController.Block.EXPOSURE_LIMIT, o.decision.block)
+                assertEquals(0.0, o.decision.smbU, 1e-12)
+                assertTrue(
+                    o.decision.tbr != FuseController.TbrAction.ZERO_TEMP,
+                    "ein erschoepfter Raum erzeugt nie eigenstaendig Zero-TBR",
+                )
+            }
+        }
+        assertTrue(geblockt, "die Lage muss den Vollblock erreichen")
+    }
+
+    /** B1: unter MEAL-Vollmacht gilt die MEAL-Grenze - dieselbe knappe
+     *  Correction-Grenze bindet dann nicht. */
+    @Test
+    fun `B1 - unter Vollmacht gilt die MEAL-Grenze im Gate`(@TempDir dir: File) {
+        b1Lage(dir, corrLimit = 1.5)
+        markerAuthorized = true
+        repeat(7) { cycle() }
+        markerAt = clock + 60_000L
+        var mealGeprueft = false
+        repeat(30) {
+            val o = cycle()
+            if (o.dosingContextProfile == "MEAL" && o.exposureGateBindet != null) {
+                mealGeprueft = true
+                assertTrue(
+                    o.decision.block != FuseController.Block.EXPOSURE_LIMIT,
+                    "unter der Vollmacht darf die knappe CORRECTION-Grenze nicht blocken",
+                )
+                if (o.exposureGateBindet == true) assertTrue(
+                    o.exposureGateBinding != "correctionExposureLimit",
+                    "im MEAL-Profil bindet nie die CORRECTION-Grenze",
+                )
+            }
+        }
+        assertTrue(mealGeprueft, "die Vollmacht muss das Gate im MEAL-Profil erreichen")
+    }
+
+    /** B1-GEGENPROBE: im LEGACY-Modus laeuft das Gate GAR NICHT - gesetzte
+     *  Kandidaten sind wirkungslos, der Altpfad bleibt bitgleich. */
+    @Test
+    fun `B1 - im LEGACY-Modus laeuft das Gate nicht`(@TempDir dir: File) {
+        b1Lage(dir, corrLimit = 1.5)
+        centralAn = false
+        var geliefert = false
+        repeat(40) {
+            val o = cycle()
+            assertTrue(o.exposureGateBindet == null, "LEGACY: die Endpruefung darf nie laufen")
+            assertTrue(o.decision.block != FuseController.Block.EXPOSURE_LIMIT)
+            // Die 1,5er-Grenze laege UNTER capIob 1,6 - im Zentralmodus
+            // waere JEDE Lieferung geblockt. Also beweist jede Lieferung
+            // die Inertheit des Kandidaten.
+            if (o.decision.smbU > 0.0) geliefert = true
+        }
+        assertTrue(geliefert, "ohne Gate liefert der Normalpfad trotz Kandidaten-Grenze")
+    }
+
+    /** B1: die Kontextgrenze steht bereits in der GRANT-BILDUNG - ein
+     *  4-U-Sofortanteil wird an einer knappen MEAL-Grenze schon bei der
+     *  Anforderung gekappt, der Rest bleibt in der Bilanz ABRECHENBAR
+     *  offen (verschieben, nie verwerfen). */
+    @Test
+    fun `B1 - der Grant entsteht nie oberhalb des Raums und der Rest bleibt offen`(@TempDir dir: File) {
+        centralAn = true
+        corrExpLimit = 2.0
+        mealExpLimit = 2.5
+        corrRatioCapZ = 1.0
+        mealRatioCapZ = 1.0
+        livenessAn = false
+        tailGuard = false
+        fundamentAn = true
+        fundamentAnteil = 0.8
+        upfrontAnteil = 1.0
+        primeHuelleU = 5.0
+        aufschubAn = true
+        markerAuthorized = true
+        whenever(preferences.get(FuseIntKey.PrimeWindowMin)).thenReturn(20)
+        flach = 110.0
+        steigungProMin = 0.4
+        bolusIobU = 0.4
+        clock = start
+        transportReset()
+        val adapter = FuseLedgerAdapter().also { it.loadOnce(dir.also(File::mkdirs), "test-epoch", start) }
+        neuerRunner(adapter)
+        repeat(7) { cycle() }
+        markerAt = clock + 60_000L
+        var markerZyklus: FuseCycleRunner.Outcome? = null
+        repeat(12) {
+            val o = cycle()
+            if (markerZyklus == null && o.phaseAUpfrontRequestedU > 0.0) markerZyklus = o
+            // KEINE Anforderung darf den Raum reissen: 2,5 - capIob(0,4)
+            // = 2,1 U - die Grenze steht schon in der GRANT-BILDUNG.
+            assertTrue(
+                o.phaseAUpfrontRequestedU <= 2.1 + 1e-9,
+                "Anforderung ${o.phaseAUpfrontRequestedU} muss im Raum bleiben",
+            )
+        }
+        assertTrue(markerZyklus != null, "der Sofortanteil muss angefordert werden")
+        // Und die Kappe hat REAL gegriffen: vom 4,0-U-Plan (5,0 x 0,8 x 1,0)
+        // wurde nur der Raum angefordert - der Rest bleibt in der Bilanz
+        // abrechenbar offen (buche laeuft auf actuatedU, exactly-once).
+        assertTrue(
+            markerZyklus!!.phaseAUpfrontRequestedU < 4.0 - 1e-9,
+            "die Grant-Kappung muss real greifen",
+        )
     }
 
     /**

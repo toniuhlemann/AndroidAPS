@@ -226,6 +226,9 @@ class MarkerAuthorizationTest {
             FuseController.Block.CANDIDATE,
             FuseController.Block.MAX_IOB_REACHED,
             FuseController.Block.IOB_TH_REACHED,
+            // B1: die kontextabhaengige Expositionsgrenze - dieselbe
+            // Klasse absoluter Mengengrenzen, nie hebbar.
+            FuseController.Block.EXPOSURE_LIMIT,
         )) {
             val d = PrimeRelease.lift(blockiert(b), p, state(), markerAuthorized = true)
             assertEquals(0.0, d.smbU, "$b darf NICHT uebersteuerbar sein")
