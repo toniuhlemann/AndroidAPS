@@ -685,6 +685,10 @@ class MarkerAuthorizationTest {
             FuseController.Block.NO_INPUT,
             FuseController.Block.IOB_TH_REACHED,
             FuseController.Block.MAX_IOB_REACHED,
+            // B1: die kontextabhaengige Expositionsgrenze - dieselbe Klasse
+            // absoluter Mengengrenzen wie iobTH/maxIOB, nie hebbar
+            // (Bauauftrag 5.1 "nicht ueberstimmbar").
+            FuseController.Block.EXPOSURE_LIMIT,
             FuseController.Block.LEDGER_HOLD,
             FuseController.Block.PUMP_BUSY,
             // CANDIDATE bleibt hart: ein SAMMELBLOCK aus modellbasierten UND
