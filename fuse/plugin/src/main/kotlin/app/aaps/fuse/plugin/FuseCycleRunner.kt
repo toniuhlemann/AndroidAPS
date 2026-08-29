@@ -1066,6 +1066,13 @@ class FuseCycleRunner(
          *  Boeden - die Groesse, die das Bewaffnungstor liest. null im
          *  Fallback-Pfad (dort gibt es keine Kandidatensuche). */
         val underlyingNormalBlock: String? = null,
+        /** A1: der zentrale Dosierkontext (Bauauftrag §4) - je Zyklus
+         *  unbedingt bestimmt, unabhaengig vom Liveness-Schalter. null nur
+         *  im Abbruchzyklus (dort gibt es keine Entscheidung). */
+        val dosingContextProfile: String? = null,
+        val dosingContextReason: String? = null,
+        val dosingContextAuthorizationId: Long? = null,
+        val dosingContextAuthorizationExpiresAt: Long? = null,
         val evidenceReason: String? = null,
         /** Der Kredit, der in DIESEM Zyklus die Sicherheitskante gehoben hat
          *  [mg/dl/min]. `null` = kein Evidenzkern gelaufen. */
@@ -4211,14 +4218,22 @@ class FuseCycleRunner(
             episodes.markerPowerDeadlineTs = markerTs + cfg.livenessMealPowerMin * 60_000L
             markerPowerLastSeenTs = markerTs
         }
+        // ---- ZENTRALER DOSIERKONTEXT (Bauauftrag §4, Schritt A1) ---------
+        // UNBEDINGT je Zyklus, unabhaengig vom Liveness-Schalter - die
+        // Profilwahl lebte bis A1 im Liveness-Block und existierte bei
+        // ausgeschaltetem Kanal gar nicht (woertlicher §4-Verstoss).
         // HALB OFFEN: exakt an der Deadline gilt bereits CORRECTION. Eine
         // laenger lebende Evidenzepisode verlaengert die Frist NICHT; die
         // persistierte Markerfrist ist autoritativ, nie state.context (§6 -
         // der Live-Trail zeigte state.context=CORRECTION bei aktivem Marker).
-        val markerPowerActive = episodes.markerPowerPinnedFor > 0L &&
-            episodes.markerPowerPinnedFor == markerTs &&
-            computeTs >= episodes.markerPowerPinnedFor &&
-            computeTs < episodes.markerPowerDeadlineTs
+        // Bit-identische Extraktion der bisherigen markerPowerActive-Regel.
+        val dosingCtx = app.aaps.fuse.core.controller.DosingContext.decide(
+            nowMs = computeTs,
+            markerTs = markerTs,
+            pinnedFor = episodes.markerPowerPinnedFor,
+            deadlineTs = episodes.markerPowerDeadlineTs,
+        )
+        val markerPowerActive = dosingCtx.mealAuthorized
         val livenessNormalSmbU = nachAufschub.smbU
         val decisionVorZeroLatch: FuseController.Decision = run {
             if (!cfg.livenessChannelEnabled) {
@@ -4236,15 +4251,12 @@ class FuseCycleRunner(
             // MEAL innerhalb der Markerfrist, CORRECTION sonst; EXCLUDED
             // setzt der harte Riegel unten. Alle uebrigen Schutzregeln
             // bleiben gemeinsam.
+            // Seit A1 nur noch KONSUM der zentralen Entscheidung - die
+            // Namen sind dieselben Woerter wie zuvor (Trail-kompatibel).
             val profilRatioCap = if (markerPowerActive) cfg.livenessMealRatioCap else cfg.livenessCorrectionRatioCap
             val profilIobCapPct = if (markerPowerActive) cfg.livenessMealIobCapPercent else cfg.livenessCorrectionIobCapPercent
-            livenessProfil = if (markerPowerActive) "MEAL" else "CORRECTION"
-            livenessProfilGrund = when {
-                markerPowerActive -> "MARKER_POWER"
-                episodes.markerPowerPinnedFor > 0L && episodes.markerPowerPinnedFor == markerTs -> "POWER_EXPIRED"
-                markerTs > 0L -> "MARKER_NOT_PINNED"
-                else -> "NO_MARKER"
-            }
+            livenessProfil = dosingCtx.profile.name
+            livenessProfilGrund = dosingCtx.reason.name
             livenessSelectedRatioCap = profilRatioCap
             livenessSelectedIobCapPct = profilIobCapPct
             // Toni + Codex 22.08.: JEDE Aenderung an den drei
@@ -5003,6 +5015,10 @@ class FuseCycleRunner(
             evidenceReason = evidenz?.noInflow?.name,
             evidenceCreditMgdlPerMin = evidenz?.creditMgdlPerMin,
             underlyingNormalBlock = underlyingNormalBlock.name,
+            dosingContextProfile = dosingCtx.profile.name,
+            dosingContextReason = dosingCtx.reason.name,
+            dosingContextAuthorizationId = dosingCtx.authorizationId.takeIf { it > 0L },
+            dosingContextAuthorizationExpiresAt = dosingCtx.authorizationExpiresAt.takeIf { it > 0L },
             insulinModel = built.input.trajectory.model,
             decision = combined.decision,
             tbr = combined.request,
@@ -5468,6 +5484,13 @@ class FuseCycleRunner(
         calibrationEpoch: Long?,
         gate: FusePumpGate.Result,
     ): Outcome {
+        // A1: derselbe zentrale Kontext auch im predictorfreien Pfad -
+        // ein Zyklus, EINE Entscheidung, egal welcher Weg ihn traegt.
+        val fallbackCtx = app.aaps.fuse.core.controller.DosingContext.decide(
+            nowMs = computeTs, markerTs = markerTs,
+            pinnedFor = episodes.markerPowerPinnedFor,
+            deadlineTs = episodes.markerPowerDeadlineTs,
+        )
         subStepCarryU = 0.0
         // Codex 22.08.: ein Fallback-Zyklus laeuft OHNE die Kanalstufe -
         // weder Riegel noch Druck sind geprueft. Ein aktiver Liveness-Lauf
@@ -5733,6 +5756,10 @@ class FuseCycleRunner(
             evidenceRevokeRebased = evidenz?.revokeRebased,
             evidenceReason = evidenz?.noInflow?.name,
             evidenceCreditMgdlPerMin = evidenz?.creditMgdlPerMin,
+            dosingContextProfile = fallbackCtx.profile.name,
+            dosingContextReason = fallbackCtx.reason.name,
+            dosingContextAuthorizationId = fallbackCtx.authorizationId.takeIf { it > 0L },
+            dosingContextAuthorizationExpiresAt = fallbackCtx.authorizationExpiresAt.takeIf { it > 0L },
             descentRiskActive = descentRisk.active,
             descentRiskDenial = descentRisk.denial,
             descentFallRatePerMin = descentRisk.fallRatePerMin,

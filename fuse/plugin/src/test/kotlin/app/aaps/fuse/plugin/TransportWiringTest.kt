@@ -7542,6 +7542,53 @@ class TransportWiringTest : TestBaseWithProfile() {
     }
 
     /**
+     * A1 (Bauauftrag Paragraph 4): DIE KONTEXTWAHL HAENGT NICHT AM
+     * LIVENESS-SCHALTER. Vor A1 existierte die MEAL/CORRECTION-Entscheidung
+     * nur im eingeschalteten Kanal - mit Kanal AUS gab es gar keinen
+     * Kontext. Jetzt traegt jeder Zyklus die zentrale Entscheidung, auch
+     * wenn der Kanal aus ist; der Kanal ist nur noch Konsument.
+     */
+    @Test
+    fun `A1 - der Dosierkontext existiert auch mit ausgeschaltetem Kanal`(@TempDir dir: File) {
+        livenessAn = false
+        fundamentAn = true
+        markerAuthorized = true
+        whenever(preferences.get(FuseIntKey.PrimeWindowMin)).thenReturn(20)
+        flach = 120.0
+        steigungProMin = 0.5
+        clock = start
+        transportReset()
+        val adapter = FuseLedgerAdapter().also { it.loadOnce(dir.also(File::mkdirs), "test-epoch", start) }
+        neuerRunner(adapter)
+
+        // ERST gesunde Zyklen OHNE Marker, DANN der Druck: ein Druck, den
+        // der erste gesunde Zyklus ueberhaupt sieht, gilt als VORGEFUNDEN
+        // (lastSeen == -1) und pinnt vertragsgemaess nicht - im Rig fiel
+        // der Druck sonst mit den Kaltstart-Abbruechen zusammen.
+        repeat(6) { cycle() }
+        markerAt = clock + 60_000L
+
+        var mealGesehen = false
+        var letzter: FuseCycleRunner.Outcome? = null
+        val gesehen = mutableListOf<String>()
+        repeat(12) {
+            val o = cycle()
+            letzter = o
+            gesehen += "${o.dosingContextProfile}/${o.dosingContextReason}" 
+            if (o.dosingContextProfile == "MEAL") {
+                mealGesehen = true
+                assertEquals("MARKER_POWER", o.dosingContextReason)
+                assertEquals(markerAtIntern, o.dosingContextAuthorizationId)
+                assertTrue((o.dosingContextAuthorizationExpiresAt ?: 0L) > markerAtIntern)
+            }
+            // Der Kanal selbst bleibt aus - Kontext und Kanal sind getrennt.
+            assertTrue(o.livenessDenial == "DISABLED" || o.livenessDenial == null)
+        }
+        assertTrue(mealGesehen, "die gepinnte Markervollmacht MUSS als MEAL-Kontext erscheinen - gesehen: $gesehen")
+        assertTrue(letzter!!.dosingContextProfile != null, "kein Zyklus ohne Kontextentscheidung")
+    }
+
+    /**
      * Fall 1 - die 22.08.-Tagesform: im Schwanz-Deadlock liefert der Kanal
      * die MENGENLINIE, nicht den Saegezahn. Scharf gegen die Mutation
      * "Tail-Kappe versehentlich noch aktiv": in jedem Hub-Zyklus ist die

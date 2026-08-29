@@ -550,6 +550,18 @@ object FuseStateJson {
             // von mealFoundation.preFoundationBlock (der misst NACH
             // PrimeRelease.lift). null = Fallback-Pfad ohne Kandidatensuche.
             .put("underlyingNormalBlock", outcome.underlyingNormalBlock ?: JSONObject.NULL)
+            // A1: der zentrale Dosierkontext (Bauauftrag §4) mit den vier
+            // Pflichtfeldern; policyGeneration = der bestehende Policy-Hash
+            // (Tonis Entscheid: keine neue Generation erfinden). Optionaler
+            // Block - alte Trails und Viewer bleiben lesbar.
+            .put("dosingContext", outcome.dosingContextProfile?.let { prof ->
+                JSONObject()
+                    .put("profile", prof)
+                    .put("reason", outcome.dosingContextReason ?: JSONObject.NULL)
+                    .put("authorizationId", outcome.dosingContextAuthorizationId ?: JSONObject.NULL)
+                    .put("authorizationExpiresAt", outcome.dosingContextAuthorizationExpiresAt ?: JSONObject.NULL)
+                    .put("policyGeneration", policy?.let { hashOf(it) } ?: JSONObject.NULL)
+            } ?: JSONObject.NULL)
             // DAS REBOUND-SONDERRECHT (Toni 19.08.): konfigurierte
             // Frist, gepinnter Ablauf, Restzeit, das Ergebnis und der
             // typisierte Grund. Ohne den Grund waere im Trail nicht zu
