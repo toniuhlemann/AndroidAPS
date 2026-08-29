@@ -2,6 +2,7 @@ package app.aaps.fuse.plugin
 
 import app.aaps.core.interfaces.aps.APSResult
 import app.aaps.fuse.core.signal.SignalWindow
+import kotlin.math.roundToInt
 
 /**
  * Was auf dem FUSE-Schirm steht — als reiner Text, ohne Android.
@@ -280,9 +281,12 @@ object FuseScreenModel {
             // bei stark negativem Basal-Delta gehen sie weit auseinander.
             row(b, "", "Bolus ${f2(it.bolusIobU)} | Basal ${f2(it.basalIobU)} | cap ${f2(it.capIobU)}")
             row(b, "iobTH / maxIOB", "${f2(it.iobThU)} / ${f2(it.maxIobU)} U")
+            // roundToInt statt toInt (30.08.): (0,35-0,25)/1,25 ist binaer
+            // 7,999... - Abschneiden zeigte 7 %, gemeint sind 8 %. Der
+            // Viewer rechnet dieselbe Zeile ("Rampe x %") jetzt identisch.
             val rampPct = it.rSignedMgdlPerMin?.let { r ->
                 (((r - it.riseRampLowRPerMin) / (it.riseRampHighRPerMin - it.riseRampLowRPerMin))
-                    .coerceIn(0.0, 1.0) * 100).toInt()
+                    .coerceIn(0.0, 1.0) * 100).roundToInt()
             }
             // Eigene Mini-Sektion statt Kombizeile (Tonis Layout 08.08.):
             // Rampe, wirksamer Deckel und Effektivwert je als Label-Wert-Paar.
