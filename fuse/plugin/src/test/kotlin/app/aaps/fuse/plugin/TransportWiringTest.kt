@@ -7522,9 +7522,22 @@ class TransportWiringTest : TestBaseWithProfile() {
             0, maskiert,
             "kein Zyklus darf mit verdecktem GUARD/TAIL als NORMAL_PATH_OPEN abgelehnt werden",
         )
+        // DIE GEMEINSAME BESTAETIGUNG AM ERSTEN BEWAFFNETEN ZYKLUS (Toni
+        // 29.08.): exakt die Live-Signatur der Maskierung - Streak 3
+        // (erster armierbarer Zyklus, nichts davor verloren), ein
+        // Foundation-Schritt IN diesem Zyklus, unterliegend GUARD/TAIL,
+        // publizierter Block offen. Unter dem alten Tor waere genau dieser
+        // Zyklus NORMAL_PATH_OPEN gewesen.
+        val arm = armZyklus!!
+        assertEquals(3, arm.livenessStreak, "bewaffnet im ERSTEN armierbaren Zyklus")
+        assertTrue(arm.foundationLiftU > 0.0, "der Bewaffnungszyklus traegt einen Foundation-Schritt")
         assertTrue(
-            armZyklus!!.underlyingNormalBlock in listOf("GUARD_FLOOR", "TAIL"),
-            "und der Bewaffnungszyklus stand unterliegend im Deadlock: ${armZyklus!!.underlyingNormalBlock}",
+            arm.underlyingNormalBlock in listOf("GUARD_FLOOR", "TAIL"),
+            "unterliegend im Deadlock: ${arm.underlyingNormalBlock}",
+        )
+        assertEquals(
+            FuseController.Block.NONE, arm.decision.block,
+            "und der publizierte Block ist offen - die Maskierungs-Signatur",
         )
     }
 

@@ -680,9 +680,12 @@ object LedgerCodec {
             lastDecayTs = requireTs("evidence.lastDecayTs", o.getLong("lastDecayTs")),
             lastCommittedU = requireAmount("evidence.lastCommittedU", o.getDouble("lastCommittedU")),
             rebaseRequired = o.getBoolean("rebaseRequired"),
-            // Altdatei: Revision 0 - zusammen mit dem 0-Default des
+            // Altdatei: fehlendes Feld = 0, zusammen mit dem 0-Default des
             // Episodenzaehlers konsistent (beide stehen in DERSELBEN Datei).
-            lastCommitmentRevision = o.optLong("lastCommitmentRevision", 0L),
+            // Negative Werte sind Korruption -> Recovery-Hold (Toni 29.08.).
+            lastCommitmentRevision = requireRevision(
+                "evidence.lastCommitmentRevision", o.optLong("lastCommitmentRevision", 0L),
+            ),
         )
     }
 
@@ -700,8 +703,15 @@ object LedgerCodec {
         // ohne episodeId gibt es keinen Kredit (EvidenceStock.NO_EPISODE),
         // und der Zaehler startet mit der naechsten Episode bei 0.
         e.evidenceCommittedU = requireAmount("evidenceCommittedU", o.optDouble("evidenceCommittedU", 0.0))
-        // Altdatei: Revision 0, konsistent mit dem Evidence-State-Default.
-        e.evidenceCommitmentRevision = o.optLong("evidenceCommitmentRevision", 0L).coerceAtLeast(0L)
+        // Altdatei: FEHLENDES Feld ist 0 (konsistent mit dem Evidence-State-
+        // Default). Ein VORHANDENES negatives Feld ist dagegen Korruption -
+        // ablehnen statt klemmen (Toni 29.08.): eine geklemmte 0 saehe wie
+        // eine frische Episode aus und machte jeden spaeteren Widerruf zum
+        // fail-closed UNKNOWN mit scheinbar gesunder Vorgeschichte. Der Wurf
+        // fuehrt in den Recovery-Hold, wie jede andere kaputte Generation.
+        e.evidenceCommitmentRevision = requireRevision(
+            "evidenceCommitmentRevision", o.optLong("evidenceCommitmentRevision", 0L),
+        )
         e.evidenceEpisodeId = requireTs("evidenceEpisodeId", o.optLong("evidenceEpisodeId", 0L))
         // Der verbrauchte Markeranker: fehlt er (Altdatei), gilt 0 - dann ist
         // noch nichts verbraucht. Das ist hier die WENIGER konservative
@@ -1207,6 +1217,11 @@ object LedgerCodec {
 
     private fun requireTs(name: String, v: Long): Long {
         require(v >= 0L) { "$name negative timestamp: $v" }
+        return v
+    }
+
+    private fun requireRevision(name: String, v: Long): Long {
+        require(v >= 0L) { "$name negative revision: $v" }
         return v
     }
 

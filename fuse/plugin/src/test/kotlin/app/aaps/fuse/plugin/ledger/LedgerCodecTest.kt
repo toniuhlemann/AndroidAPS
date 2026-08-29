@@ -733,6 +733,29 @@ class LedgerCodecTest {
         assertEquals(0L, zurueck.evidenceState.lastCommitmentRevision)
     }
 
+    /** Ein VORHANDENES negatives Revisionsfeld ist Korruption, keine
+     *  Migration - ablehnen statt auf 0 klemmen (Toni 29.08.): die
+     *  geklemmte 0 saehe wie eine frische Episode aus, und jeder legale
+     *  Widerruf danach fiele als UNKNOWN aus. Der Wurf macht die
+     *  Generation ungueltig -> Recovery-Hold. Beide Felder einzeln. */
+    @Test
+    fun `eine negative Revision wird abgelehnt statt geklemmt`() {
+        val e = EpisodeBudgets()
+        e.evidenceState = app.aaps.fuse.core.controller.EvidenceStock.State(
+            stockMgdl = 1.0, episodeId = 1_786_000_000_000L, episodeStartTs = 1_786_000_000_000L,
+            lastAcceptedTs = 1_786_000_060_000L, lastDecayTs = 1_786_000_060_000L,
+        )
+        val kaputt1 = LedgerCodec.encodeEpisodes(e).put("evidenceCommitmentRevision", -1L)
+        assertThrows(IllegalArgumentException::class.java) {
+            LedgerCodec.decodeEpisodes(kaputt1)
+        }
+        val kaputt2 = LedgerCodec.encodeEpisodes(e)
+        kaputt2.getJSONObject("evidenceState").put("lastCommitmentRevision", -3L)
+        assertThrows(IllegalArgumentException::class.java) {
+            LedgerCodec.decodeEpisodes(kaputt2)
+        }
+    }
+
     /**
      * PUNKT 9: die MIGRATION ist konservativ und beweisbar.
      *
