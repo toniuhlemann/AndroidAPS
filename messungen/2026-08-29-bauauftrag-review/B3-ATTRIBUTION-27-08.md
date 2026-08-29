@@ -72,6 +72,32 @@ LIVENESS (letzte dosierende Quelle) auf NONE, sobald nichts mehr fliesst.
   blieb mangels Vollmacht korrekt unbeteiligt (`pressureThreshold`
   getrennt lesbar).
 
+## Nachtrag: Neurechnung unter v43 (P1-Fix, 29.08. spaet)
+
+Tonis Review fand die versteckte Altgrenze: die Legacy-IOB-Prozentdeckel
+wirkten im Zentralmodus weiter. Nach dem P1-Fix (f2741e84f1) wurde die
+komplette Matrix NEU gerechnet (identisches Fenster, identische
+Kandidaten):
+
+- ctxbase (LEGACY): bitgleich 3,40 U - die Neutralitaet des Altpfads
+  haelt auch nach dem Fix.
+- ctx01 (2,5) und ctx02 (3,0): ZYKLUSGLEICH unveraendert (0,45 / 1,15 U)
+  - bei diesen engen Kandidaten war das Exposure-Limit ohnehin die
+  engere Grenze; die Zahlen der Haupttabelle oben GELTEN unveraendert.
+- ctx03 (offene Grenzen): 3,95 -> 4,30 U (+0,35 U; erste Abweichung
+  22:02:22, 0,350 -> 0,550). Die versteckte Altgrenze hat dort REAL
+  gedrosselt - exakt Tonis P1-Befund, jetzt in Zahlen. Der Merksatz
+  aus Befund 2 verschaerft sich: im Zentralmodus ohne bewusste
+  Kandidaten ist der Kanal noch schneller als zuvor gemessen.
+- Neue CSV-Attribution (typisierter Status): am Beispiel ctxbase
+  204x STOP/GUARD (alles echte GUARD_FLOOR-Bloecke ohne gerechneten
+  Bedarf - das Tor ist real zu), 56x FREE, 5x UNKNOWN
+  (Kaltstart-Abbrueche), 3x STOP/TAIL. OFFENE ANZEIGEFRAGE an Toni:
+  ein GUARD-Stop OHNE positiven Bedarf ist ehrlich "Tor zu", faerbt
+  den Abend im Widget aber weitgehend rot - falls unerwuenscht, waere
+  das eine bewusste Darstellungsentscheidung (z.B. gedaempfter Ton bei
+  fehlendem Bedarf), KEINE Aenderung der Statusableitung.
+
 ## Grenzen
 
 - Rueckkopplungsblind: ob der gestoppte Burst hyperglykaemische Folgezeit

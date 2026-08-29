@@ -163,6 +163,31 @@ Produktivgang (Tonis Tor); Wende-Pause als separater Folgeauftrag (KEIN
 GO fürs Entfernen); Legacy-Abbau erst nach belegtem Produktivstand;
 Kaltstart-Pin-Kante (P2).
 
+## 7b. Nachtrag 29.08. spaet: Review-Korrekturpaket (P1 + Cleanup + Statusmodell)
+
+Tonis Review-Verdikt (P1-Blocker + Legacy-Cleanup in zwei Schichten +
+typisierter SMB-Status) ist umgesetzt, Reihenfolge 1-6:
+
+| Schritt | Commit | Inhalt |
+|---|---|---|
+| 1+2 P1 | `f2741e84f1` (v43) | Liveness-Kanaldeckel = Kontextgrenze im Zentralmodus; Legacy-Prozentdeckel NUR noch LEGACY; Lauf-Kennung traegt die wirksamen Werte; selectedIobCapPercent zentral null; Mutation "zurueck zum Prozentdeckel" rot |
+| 3 Status | `98e66e3366` | SmbStatus (FREE/STOP/NO_DEMAND/UNKNOWN + typisierte Gruende), requestedSource/finalSource getrennt (final NONE bei 0 U), requestedU/cappedU/publishedU, Fallback-Export-Block repariert, CSV +5 Spalten |
+| 4 Entschlackung | `51740c5139` | Legacy-Deckel im Zentralmodus UNSICHTBAR (Settings, sofort in beide Richtungen), Report-Zeilen fallen weg (statt "ignoriert"), FUSE-Tab traegt die verbindliche Statuszeile |
+| 5 Viewer | Viewer `f3ade1d` | Parser (smb/exposure/dosingContext/policyMode), EIN Modell fuseSmbStatusZeilen fuer Widget (smb2-Slot) UND Dashboard, RUHIG/UNBEKANNT nie rot |
+| 6 Replays | s. B3-ATTRIBUTION Nachtrag | LEGACY bitgleich; enge Kandidaten zyklusgleich; ctx03 +0,35 U = die versteckte Altgrenze wirkte real |
+
+Suiten (ungefilterter Exit, --rerun): Fork core 1237 / plugin 970 gruen
+(1 skip = env-Replay); Viewer 430 gruen. Die fruehere 7.4-Begruendung
+des B2-Commits ist damit KORRIGIERT: 7.5.7 ersetzt den Parallelbetrieb;
+im Zentralmodus wirkt und erscheint keine Altgrenze mehr. Der
+LEGACY-Rueckweg (Keys + Pfad) bleibt fuer den ersten Produktivstand
+erhalten; Abbau nach belegtem Korrektur- UND Mahlzeitenlauf.
+
+Offen aus dem Paket: Geraeteblick auf Settings-Sichtbarkeit, FUSE-Tab-
+und Widget-Zeile (fuse-ui-testluecke - Modelle sind getestet, Geraete-
+Rendering nicht); Anzeigefrage GUARD-Stop ohne Bedarf (s. B3-Nachtrag);
+Analyse-Tab des Viewers liest die neuen Bloecke noch nicht (P2).
+
 ## 8. Betriebsstatus
 
 - **Am Gerät aktiv:** Stand `851f4b9e11` (28.08. 18:15, ruleSet 35). NICHTS
