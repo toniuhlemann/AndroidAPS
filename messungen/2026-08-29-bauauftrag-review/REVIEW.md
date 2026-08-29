@@ -205,9 +205,12 @@ Unkonfiguriert-Semantik der Relation "K nie offener als M" inkl. Fall "nur MEAL
 gesetzt"; R-Rampe des Normalpfads als Bedarfsregel deklarieren, kappbar durch
 den K-Cap, bitidentisch bei unkonfigurierten Caps; Invariante 6 mit
 Enumeration der orthogonalen Zustaende; eigenes Exportfeld fuer die finale
-Endanforderung — requestedRtU ist ein Stufen-Snapshot VOR Liveness/Aufschub;
-Uebergangs-Koexistenz LivenessIobCapPercent + contextExposureLimit als min())
-stehen mit Belegen im Audit-Detail.
+Endanforderung — requestedRtU ist ein Stufen-Snapshot VOR Liveness/Aufschub)
+stehen mit Belegen im Audit-Detail. UEBERHOLT (Toni 29.08. mittags): der
+hier urspruenglich vorgeschlagene min(alt, neu)-Uebergang ist VERWORFEN -
+stattdessen harter Modusschalter `policyMode = LEGACY | CENTRAL_PROFILES`,
+keine versteckten Altgrenzen im zentralen Modus, UI zeigt nur die neue
+Struktur, Abbauplan definiert (Bauauftrag 7.5.7).
 
 ## 6. Tests, Infrastruktur, Schnitt
 
@@ -353,6 +356,21 @@ Offen als eigene Produktfrage danach (nicht Teil des P0-Fixes): darf eine
 UNKNOWN-Evidenz den Liveness-Kanal ueberhaupt hart ausschliessen, solange
 die gepinnte Markervollmacht laeuft? (SUSPENDED — Tief, Segmentbruch,
 Widerruf des Markers — bleibt unstrittig absolut.)
+
+**Abgrenzung (Toni 29.08., uebernommen):** Mechanisch belegt ist der
+TOTALAUSFALL der Nachsteuerung — FUSE hatte in diesem Verlauf trotz
+bestehender Lage keinen nennenswerten Gegensteuerpfad mehr. Dass die
+konkreten 190/229-Werte die direkte FOLGE waren, ist counterfactual nicht
+beweisbar und wird nicht behauptet.
+
+**ENTSCHEIDUNGEN 29.08. (Toni):** P0 GO mit TYPISIERTEM Vertrag
+(commitmentRevision je Episode, nur die zwei Ledger-Widerrufspfade erhoehen
+atomar, Rebase nur bei vorgerueckter Revision, kein frueher Return an den
+Gefahren-Toren, Export von Revision+Grund — Volltext im Bauauftrag 7.5.4);
+MEAL-Streak als eigene M3 nach A1 (MealArmCycles, unkonfiguriert 3,
+Tests fuer 1 und 3); Wende-Pause NICHT entfernen — separater Folgeauftrag
+(TURN_STANDING pausiert nur die Menge, kein Carry, keine lange
+Rearm-Luecke). Reihenfolge: P0 -> M2 -> Schritt A -> M1+M3 -> Wende-Pause.
 
 ## 7. Offene Entscheidungen (Toni)
 
