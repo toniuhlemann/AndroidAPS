@@ -98,6 +98,25 @@ Kandidaten):
   das eine bewusste Darstellungsentscheidung (z.B. gedaempfter Ton bei
   fehlendem Bedarf), KEINE Aenderung der Statusableitung.
 
+## Nachtrag 2: CENTRAL-only unter v44 mit Startsatz-Defaults
+
+Nach Tonis Cleanup-Vertrag (v44, 5553147540) existiert der LEGACY-Pfad
+nicht mehr; der Replay-Lauf-Reset steht auf den echten Startsatz-
+Defaults (3,0 / 7,0 / 0,20 / 0,35). Dieselbe 27.08.-Rechnung:
+
+- ctxbase (= Startsatz als Default): Burst-Fenster 0,85 U - zwischen
+  dem scharfen 2,5er-Kandidaten (0,45) und 3,0 mit offener Ratio
+  (1,15). Der 0,20-Ratio-Cap drosselt den Kanal ZUSAETZLICH zur
+  3,0-Grenze auf die alte Korrektur-Geschwindigkeit - exakt die
+  Begruendung des Startsatzes.
+- ctx01 (2,5/1,0): 0,45 U - konsistent zur v42/v43-Messung.
+- ctx02 (Startsatz EXPLIZIT gesetzt): identisch zu ctxbase (0,85 U) -
+  Konsistenzbeweis Default-Reset == explizite Kandidaten.
+- Je Lauf 6 Gate-Vollblocks, Status durchgehend typisiert.
+- Die fruehere LEGACY-Basislinie (2,45/3,40 U) ist seit dem Cleanup
+  bewusst nicht mehr nachbildbar; sie bleibt als historische Messung
+  der Haupttabelle dokumentiert.
+
 ## Grenzen
 
 - Rueckkopplungsblind: ob der gestoppte Burst hyperglykaemische Folgezeit

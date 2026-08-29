@@ -188,6 +188,37 @@ und Widget-Zeile (fuse-ui-testluecke - Modelle sind getestet, Geraete-
 Rendering nicht); Anzeigefrage GUARD-Stop ohne Bedarf (s. B3-Nachtrag);
 Analyse-Tab des Viewers liest die neuen Bloecke noch nicht (P2).
 
+## 7c. Nachtrag 29.08. nachts: CENTRAL-only (Tonis Cleanup-Vertrag, v44)
+
+Auf Tonis GO ist die Doppelarchitektur beendet: Modusschalter,
+LEGACY-Runtime und die sechs Legacy-Kanaldeckel sind vollstaendig
+entfernt (`5553147540`, v44); policyMode bleibt als Export-Konstante.
+CORRECTION ist der Grundzustand, MEAL kommt aus der Markervollmacht.
+Die vier Profilwerte und die MEAL-Regler tragen ECHTE Startsatz-
+Defaults (CORR 3,0 U / 0,20 / Druck 140/160, Armierung 3 im Kanal;
+MEAL 7,0 U / 0,35 / Druck 110 / Armierung 1) - als Runtime- UND
+Migrationsdefaults mit Default-Waechter-Test; gesetzte Werte
+ueberschreibt kein Update. Davor: CAP-Anzeigefix (CAP =
+effectiveLimitU, Profil-CAP nur bei Abweichung; Fork `e2e1bfa888`,
+Viewer `9d389a2`) und der Viewer-Abschlussblock (`fc178d1`:
+Analyse-Parser typisiert, SMB-Tabelle mit Mengen-/Quellenkette,
+Meal-Dialog trennt Vollmacht von Evidenzepisode, Config-Tab +
+SystemCheck-Check 9, toter SMB-Inspektor samt zweiter Pumpenpaarung
+geloescht; positiveRequestU/rt.units fuer die Pumpenpaarung
+unangetastet).
+
+v44-Replay-Smoke am 27.08.-Fall: Startsatz -> Burst 0,85 U (2,5er:
+0,45; Konsistenzbeweis Default == explizit). Suiten: Fork core 1237 /
+plugin 962, Viewer 431, alle Exit 0. Tonis Feintuning-Regel nach dem
+ersten Lauf: jeweils nur EINEN Wert aendern (MEAL endet frueh an
+EXPOSURE -> Meal-Exposure in 0,5er-Schritten; Exposure frei aber
+demandRatioCap bindet -> Meal-Ratio; spaete CORRECTION zu stark ->
+zuerst Correction-Exposure).
+
+Weiter offen: Geraeteblick (Settings/FUSE-Tab/Widget/Viewer), dann
+Flash-GO. Legacy-Abbau-Restposten: keiner - erledigt mit v44; die
+alten Keys existieren nur noch in historischen Trails.
+
 ## 8. Betriebsstatus
 
 - **Am Gerät aktiv:** Stand `851f4b9e11` (28.08. 18:15, ruleSet 35). NICHTS
