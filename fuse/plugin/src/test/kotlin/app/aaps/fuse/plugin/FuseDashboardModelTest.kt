@@ -106,18 +106,37 @@ class FuseDashboardModelTest {
             smbRequestedU = 0.55, smbCappedU = 0.0, smbPublishedU = 0.0,
             exposureRequestedSource = "LIVENESS",
             dosingContextProfile = "CORRECTION",
-            exposureGateContextLimitU = 2.5, exposureOccupiedU = 2.2,
+            exposureGateContextLimitU = 2.5, exposureGateEffectiveLimitU = 2.5,
+            exposureOccupiedU = 2.2,
             exposureGateHeadroomU = 0.0, exposureGateBindet = true,
             exposureGateBinding = "correctionExposureLimit",
         )
         val v = FuseDashboardModel.build(o, null, now, null, null, null)
         assertTrue(v.smbStatus!!.startsWith("SMB STOP EXPOSURE"), v.smbStatus)
+        // Gleiche Grenzen: CAP = wirksame Grenze, KEIN Profil-CAP-Zusatz.
+        assertTrue(!v.smbStatus!!.contains("Profil-CAP"), v.smbStatus)
         assertTrue(v.smbStatus!!.contains("CORRECTION"), v.smbStatus)
         assertTrue(v.smbStatus!!.contains("CAP"), v.smbStatus)
         assertTrue(v.smbStatus!!.contains("frei"), v.smbStatus)
         assertTrue(v.smbStatus!!.contains("angefordert"), v.smbStatus)
         assertTrue(v.smbStatus!!.contains("(LIVENESS)"), v.smbStatus)
         assertEquals("STOP", v.smbStatusTone)
+    }
+
+    /** Tonis P1-Anzeigefix: CAP ist die WIRKSAME Grenze. Liegt iobTH (4,0)
+     *  unter dem MEAL-Limit (6,0), zeigt CAP 4,0 - und die Profilgrenze
+     *  erscheint als eigener Zusatz statt als falsches CAP. */
+    @Test
+    fun `bei abweichenden Grenzen zeigt CAP die wirksame und Profil-CAP die Profilgrenze`() {
+        val o = outcome().copy(
+            smbState = "FREE", smbRequestedU = 0.3, smbPublishedU = 0.3,
+            dosingContextProfile = "MEAL",
+            exposureGateContextLimitU = 6.0, exposureGateEffectiveLimitU = 4.0,
+            exposureOccupiedU = 3.0, exposureGateHeadroomU = 1.0,
+        )
+        val v = FuseDashboardModel.build(o, null, now, null, null, null)
+        assertTrue(v.smbStatus!!.contains("CAP 4.00 U"), v.smbStatus)
+        assertTrue(v.smbStatus!!.contains("Profil-CAP 6.00 U"), v.smbStatus)
     }
 
     /** NO_DEMAND ist RUHE, nie ein Stop - Ton und Text sagen es beide. */

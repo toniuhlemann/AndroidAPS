@@ -90,13 +90,20 @@ object FuseDashboardModel {
                 if (restMin != null) "MEAL noch $restMin min" else "MEAL"
             } else p
         }
-        val cap = o.exposureGateContextLimitU?.let { "CAP ${u(it)}" }
+        // CAP ist die WIRKSAME Grenze = min(Profil-Exposure, iobTH, maxIOB)
+        // (Tonis P1-Anzeigefix 29.08. nachts): contextLimitU als "CAP" zu
+        // beschriften haette bei iobTH 4 < MEAL-Limit 6 falsche 6 U gezeigt.
+        // Die Profilgrenze erscheint ZUSAETZLICH, wenn sie abweicht.
+        val cap = o.exposureGateEffectiveLimitU?.let { "CAP ${u(it)}" }
+        val profilCap = o.exposureGateContextLimitU?.takeIf { ctx ->
+            o.exposureGateEffectiveLimitU?.let { eff -> kotlin.math.abs(ctx - eff) > 1e-9 } == true
+        }?.let { "Profil-CAP ${u(it)}" }
         val belegt = o.exposureOccupiedU?.let { "belegt ${u(it)}" }
         val frei = o.exposureGateHeadroomU?.let { "frei ${u(it)}" }
         val grenze = o.exposureGateBinding
             ?.takeIf { o.exposureGateBindet == true }
             ?.let { "Grenze ${kurz(it)}" }
-        val kopf = listOfNotNull(zustand, profil, cap, belegt, frei, grenze)
+        val kopf = listOfNotNull(zustand, profil, cap, profilCap, belegt, frei, grenze)
             .joinToString("  |  ")
         val mengen = o.smbRequestedU?.let { req ->
             val quelle = o.exposureRequestedSource
