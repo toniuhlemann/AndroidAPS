@@ -118,11 +118,11 @@
     <string name="fuse_liveness_meal_power_title">Mahlzeiten-Frist [min]</string>
     <string name="fuse_liveness_meal_power_summary">So lange nach dem letzten Marker faehrt der Liveness-Kanal die offenen MEAL-Caps; ab der Deadline gelten die Korrektur-Caps. Die Dauer wird beim Druck eingefroren - eine Aenderung wirkt erst auf den naechsten Marker. Evidenz verlaengert die Frist nicht.</string>
     <string name="fuse_liveness_meal_ratio_title">M Ratio-Deckel [0-1]</string>
-    <string name="fuse_liveness_meal_ratio_summary">Ratio-Deckel des Liveness-Kanals INNERHALB der Mahlzeiten-Frist. Ungesetzt gilt der alte globale Ratio-Deckel. Muss groesser oder gleich dem K-Wert sein (sonst faellt jeder Zyklus mit Konfigurationsfehler aus).</string>
+    <string name="fuse_liveness_meal_ratio_summary">Ratio-Deckel des Liveness-Kanals INNERHALB der Mahlzeiten-Frist. Ungesetzt gilt der alte globale Ratio-Deckel. Muss groesser oder gleich dem K-Wert sein (sonst faellt jeder Zyklus mit Konfigurationsfehler aus). Im Modus CENTRAL_PROFILES ignoriert.</string>
     <string name="fuse_liveness_meal_iob_title">M Kanaldeckel [% maxIOB]</string>
-    <string name="fuse_liveness_meal_iob_summary">IOB-Deckel des Liveness-Kanals INNERHALB der Mahlzeiten-Frist. Ungesetzt gilt der alte globale Kanaldeckel. Globales iobTH und maxIOB bleiben harte Obergrenzen. Muss groesser oder gleich dem K-Wert sein.</string>
+    <string name="fuse_liveness_meal_iob_summary">IOB-Deckel des Liveness-Kanals INNERHALB der Mahlzeiten-Frist. Ungesetzt gilt der alte globale Kanaldeckel. Globales iobTH und maxIOB bleiben harte Obergrenzen. Muss groesser oder gleich dem K-Wert sein. Im Modus CENTRAL_PROFILES ignoriert.</string>
     <string name="fuse_liveness_corr_ratio_title">K Ratio-Deckel [0-1]</string>
-    <string name="fuse_liveness_corr_ratio_summary">Ratio-Deckel des Liveness-Kanals AUSSERHALB der Mahlzeiten-Frist (reine Korrektur). Ungesetzt gilt der alte globale Ratio-Deckel. Nie groesser als der M-Wert.</string>
+    <string name="fuse_liveness_corr_ratio_summary">Ratio-Deckel des Liveness-Kanals AUSSERHALB der Mahlzeiten-Frist (reine Korrektur). Ungesetzt gilt der alte globale Ratio-Deckel. Nie groesser als der M-Wert. Im Modus CENTRAL_PROFILES ignoriert.</string>
     <string name="fuse_liveness_corr_iob_title">K Kanaldeckel [% maxIOB]</string>
     <string name="fuse_central_profiles_title">Zentrale Profile</string>
     <string name="fuse_central_profiles_summary">policyMode: AUS = LEGACY (alle heutigen Einstellungen gelten unveraendert), AN = CENTRAL_PROFILES. Hart entweder/oder, keine Mischgrenzen. Aktivierung verlangt alle vier Profilwerte gueltig gesetzt, sonst faellt jeder Zyklus mit Konfigurationsfehler aus. Vor Schritt B ohne Dosierwirkung (reine Struktur).</string>
@@ -134,7 +134,7 @@
     <string name="fuse_meal_demand_ratio_summary">Deckel der Bedarfs-Ratio (NORMAL und LIVENESS) im MEAL-Profil. Kandidat - wirkt erst mit aktivierten zentralen Profilen. Ein Cap ist keine feste Ratio: 1,0 heisst nur kein zusaetzlicher Deckel.</string>
     <string name="fuse_corr_demand_ratio_title">CORR Demand-Ratio-Cap [0-1]</string>
     <string name="fuse_corr_demand_ratio_summary">Deckel der Bedarfs-Ratio im CORRECTION-Profil. Kandidat - wirkt erst mit aktivierten zentralen Profilen. Nie groesser als der MEAL-Wert.</string>
-    <string name="fuse_liveness_corr_iob_summary">IOB-Deckel des Liveness-Kanals AUSSERHALB der Mahlzeiten-Frist. Ungesetzt gilt der alte globale Kanaldeckel. Nie groesser als der M-Wert.</string>
+    <string name="fuse_liveness_corr_iob_summary">IOB-Deckel des Liveness-Kanals AUSSERHALB der Mahlzeiten-Frist. Ungesetzt gilt der alte globale Kanaldeckel. Nie groesser als der M-Wert. Im Modus CENTRAL_PROFILES ignoriert.</string>
     <string name="fuse_liveness_ratio_cap_title">Ratio-Deckel [0-1]</string>
     <string name="fuse_liveness_ratio_cap_summary">ALT (Migrationsquelle der Profil-Deckel): Kappt die je Zyklus wirksame Ratio des Liveness-Kanals. Seit v26 gilt liveRatio = min(Profil-Basis, Profil-Deckel); die Basis traegt im MEAL-Profil die R-Rampe. Ungesetzte Profil-Deckel erben diesen Wert. Der normale Ratio-Pfad bleibt unberuehrt.</string>
     <string name="fuse_liveness_cap_title">Kanaldeckel [% von maxIOB]</string>

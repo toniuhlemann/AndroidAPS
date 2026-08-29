@@ -768,6 +768,50 @@ class FuseStateExportTest {
         )
     }
 
+    /**
+     * A5-ABSCHLUSS (Toni 29.08.): die Hash-Eingaenge sind MODUSABHAENGIG -
+     * in BEIDE Richtungen. Im LEGACY-Modus darf die blosse VORBEREITUNG
+     * eines Kandidaten offene Erwartungen nicht entwerten; im Zentralmodus
+     * darf ein ignorierter Legacy-Cap den Hash nicht bewegen.
+     */
+    @Test
+    fun `die Hash-Eingaenge sind modusabhaengig - beide Richtungen`() {
+        val legacy = cfg
+        // LEGACY: ein vorbereiteter Kandidat aendert den Hash NICHT ...
+        assertEquals(
+            FuseStateJson.hashOf(legacy),
+            FuseStateJson.hashOf(legacy.copy(mealExposureLimitU = 6.0)),
+            "Kandidaten-Vorbereitung entwertet keine Erwartungen",
+        )
+        // ... ein wirksamer Legacy-Cap sehr wohl.
+        org.junit.jupiter.api.Assertions.assertNotEquals(
+            FuseStateJson.hashOf(legacy),
+            FuseStateJson.hashOf(legacy.copy(livenessMealRatioCap = 0.5)),
+            "wirksame Legacy-Caps zaehlen im LEGACY-Modus",
+        )
+        val central = legacy.copy(
+            centralProfilesEnabled = true,
+            correctionExposureLimitU = 3.0, mealExposureLimitU = 6.0,
+            correctionDemandRatioCap = 0.15, mealDemandRatioCap = 0.35,
+        )
+        // Der Modus selbst ist immer Teil des Hashes (zwei Regler).
+        org.junit.jupiter.api.Assertions.assertNotEquals(
+            FuseStateJson.hashOf(legacy), FuseStateJson.hashOf(central),
+        )
+        // ZENTRAL: ein ignorierter Legacy-Cap aendert den Hash NICHT ...
+        assertEquals(
+            FuseStateJson.hashOf(central),
+            FuseStateJson.hashOf(central.copy(livenessMealRatioCap = 0.5)),
+            "ignorierte Legacy-Caps zaehlen im Zentralmodus nicht",
+        )
+        // ... ein wirksamer Profilwert sehr wohl.
+        org.junit.jupiter.api.Assertions.assertNotEquals(
+            FuseStateJson.hashOf(central),
+            FuseStateJson.hashOf(central.copy(mealExposureLimitU = 7.0)),
+            "wirksame Profilwerte zaehlen im Zentralmodus",
+        )
+    }
+
     @Test
     fun `Rohgefahr und dosierwirksamer Abwaertsriegel bleiben im Trail getrennt`() {
         val j = record(

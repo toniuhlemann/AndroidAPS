@@ -130,6 +130,17 @@ object FuseSettingsReport {
             standard = f2(k.defaultValue).takeIf { abweicht(preferences.get(k), k.defaultValue) }?.let { "$it $einheit".trim() },
         )
 
+        // A5-Abschluss: im Zentralmodus werden die Legacy-Profilcaps
+        // nicht mehr dosierwirksam gelesen - der Bericht sagt das
+        // AUSDRUECKLICH, statt einen wirkungslosen Wert als wirksam zu
+        // zeigen (Bauauftrag 7.5.7 Punkt 6).
+        fun legacyCap(k: FuseDoubleKey, label: String, einheit: String) =
+            if (preferences.get(FuseBooleanKey.CentralProfilesEnabled)) FuseScreenModel.SettingRow(
+                key = k.key, label = label,
+                value = "ignoriert (zentrale Profile)",
+                standard = null,
+            ) else zahl(k, label, einheit)
+
         // A4: ein KANDIDAT zeigt "unkonfiguriert", solange er nie gesetzt
         // wurde - die Grenzen-Klammer zaehlt Ausreisser als nie gesetzt
         // (dieselbe Regel wie im Config-Bau).
@@ -236,10 +247,10 @@ object FuseSettingsReport {
                     schalter(FuseBooleanKey.LivenessChannelEnabled, "Liveness-Kanal"),
                     schalter(FuseBooleanKey.SignalRejoinEnabled, "Wiedereinstieg nach Funkluecke"),
                     ganz(FuseIntKey.LivenessMealPowerMin, "M-Frist", "min"),
-                    zahl(FuseDoubleKey.LivenessMealRatioCap, "M-Ratio-Deckel", ""),
-                    zahl(FuseDoubleKey.LivenessMealIobCapPercent, "M-Kanaldeckel", "%"),
-                    zahl(FuseDoubleKey.LivenessCorrectionRatioCap, "K-Ratio-Deckel", ""),
-                    zahl(FuseDoubleKey.LivenessCorrectionIobCapPercent, "K-Kanaldeckel", "%"),
+                    legacyCap(FuseDoubleKey.LivenessMealRatioCap, "M-Ratio-Deckel", ""),
+                    legacyCap(FuseDoubleKey.LivenessMealIobCapPercent, "M-Kanaldeckel", "%"),
+                    legacyCap(FuseDoubleKey.LivenessCorrectionRatioCap, "K-Ratio-Deckel", ""),
+                    legacyCap(FuseDoubleKey.LivenessCorrectionIobCapPercent, "K-Kanaldeckel", "%"),
                     // A4: policyMode + Kandidaten. UNKONFIGURIERT wird
                     // ausdruecklich so genannt (Bauauftrag 7.1) - der
                     // Bildschirm-Default waere eine Falschaussage.

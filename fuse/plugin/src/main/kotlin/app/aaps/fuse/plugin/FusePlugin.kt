@@ -2077,10 +2077,11 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
             .put(FuseDoubleKey.LivenessCorrectionRatioCap, preferences)
             .put(FuseDoubleKey.LivenessCorrectionIobCapPercent, preferences)
             .put(FuseBooleanKey.CentralProfilesEnabled, preferences)
-            .put(FuseDoubleKey.CorrectionExposureLimitU, preferences)
-            .put(FuseDoubleKey.MealExposureLimitU, preferences)
-            .put(FuseDoubleKey.CorrectionDemandRatioCap, preferences)
-            .put(FuseDoubleKey.MealDemandRatioCap, preferences)
+            // A5-Abschluss: die vier Kandidaten NUR sichern, wenn sie
+            // wirklich gesetzt sind - das generische put laese den
+            // Bildschirm-Default und ein Restore machte aus
+            // "unkonfiguriert" stillschweigend gesetzte 5/5/1/1.
+            .also { json -> FuseCentralProfileBackup.schreibe(json, preferences) }
             .put(FuseBooleanKey.ZeroLatchEnabled, preferences)
             .put(FuseIntKey.ZeroLatchCalmExitMin, preferences)
             .put(FuseDoubleKey.ZeroLatchCalmDistanceMgdl, preferences)
@@ -2148,11 +2149,10 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
             .store(FuseDoubleKey.LivenessMealIobCapPercent, preferences)
             .store(FuseDoubleKey.LivenessCorrectionRatioCap, preferences)
             .store(FuseDoubleKey.LivenessCorrectionIobCapPercent, preferences)
-            .store(FuseBooleanKey.CentralProfilesEnabled, preferences)
-            .store(FuseDoubleKey.CorrectionExposureLimitU, preferences)
-            .store(FuseDoubleKey.MealExposureLimitU, preferences)
-            .store(FuseDoubleKey.CorrectionDemandRatioCap, preferences)
-            .store(FuseDoubleKey.MealDemandRatioCap, preferences)
+            // A5-Abschluss: fehlender policyMode im Backup fuehrt SICHER
+            // zu LEGACY, fehlende Kandidaten werden ENTFERNT statt auf den
+            // Default gesetzt - "unkonfiguriert" ueberlebt den Rundlauf.
+            .also { json -> FuseCentralProfileBackup.lese(json, preferences) }
             .store(FuseBooleanKey.ZeroLatchEnabled, preferences)
             .store(FuseIntKey.ZeroLatchCalmExitMin, preferences)
             .store(FuseDoubleKey.ZeroLatchCalmDistanceMgdl, preferences)

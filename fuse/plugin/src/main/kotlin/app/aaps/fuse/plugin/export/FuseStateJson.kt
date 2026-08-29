@@ -575,7 +575,13 @@ object FuseStateJson {
                     .put("staticCorrectionNeedU", outcome.exposureStaticNeedU?.let { fin(it) } ?: JSONObject.NULL)
                     .put("coveragePct", outcome.exposureCoveragePct?.let { fin(it) } ?: JSONObject.NULL)
                     .put("excessU", outcome.exposureExcessU?.let { fin(it) } ?: JSONObject.NULL)
-                    .put("source", outcome.decision.capsStage)
+                    // Die QUELLEN-Provenienz (NORMAL/LIVENESS/MEAL_UPFRONT/
+                    // FOUNDATION) ist erst in Schritt B typisiert - capsStage
+                    // ist eine RECHENSTUFE und waere hier eine falsche
+                    // Aussage (Toni 29.08.). Bis dahin ehrlich NULL; Haupt-
+                    // und Fallbackpfad muessen in B dieselbe Provenienz
+                    // liefern.
+                    .put("source", JSONObject.NULL)
             } ?: JSONObject.NULL)
             // A1: der zentrale Dosierkontext (Bauauftrag §4) mit den vier
             // Pflichtfeldern; policyGeneration = der bestehende Policy-Hash
@@ -1838,9 +1844,9 @@ object FuseStateJson {
             p.markerPrimeDescentHorizonMin,
             // v18: der eigene Kanaldeckel des Liveness-Kanals und die
             // konfigurierbare BG-Schwelle der Druckbedingung.
-            // v24: die vier Profil-Caps des Liveness-Kanals.
-            p.livenessMealRatioCap, p.livenessMealIobCapPercent,
-            p.livenessCorrectionRatioCap, p.livenessCorrectionIobCapPercent,
+            // v24: die vier Liveness-Profil-Caps stehen seit dem
+            // v38-Abschluss NICHT mehr hier, sondern MODUSABHAENGIG in
+            // `modusTeile` (validate haelt sie weiterhin unbedingt endlich).
             p.livenessBgMinDayMgdl,
             // v20: die getrennte Nachtschwelle.
             p.livenessBgMinNightMgdl,
@@ -1852,6 +1858,26 @@ object FuseStateJson {
             p.rearmUpUkf,
         )
         if (doubles.any { !it.isFinite() }) return null
+        // v38-ABSCHLUSS (A5-Neutralitaet, Toni 29.08.): die Hash-Eingaenge
+        // sind MODUSABHAENGIG. Im LEGACY-Modus zaehlen die wirksamen
+        // Liveness-Profil-Caps; die vier wirkungslosen Kandidaten zaehlen
+        // NICHT - ihre blosse Vorbereitung darf offene Erwartungen nicht
+        // entwerten. Im Zentralmodus umgekehrt: die ignorierten Legacy-Caps
+        // sind eine Konstante, die vier Profilwerte zaehlen. Der Modus
+        // selbst steht immer im Hash (zwei verschiedene Regler).
+        val modusTeile = if (p.centralProfilesEnabled) listOf(
+            "legacyProfileCaps:ignored",
+            p.correctionExposureLimitU?.let { Sha.lossless(it) } ?: "unset",
+            p.mealExposureLimitU?.let { Sha.lossless(it) } ?: "unset",
+            p.correctionDemandRatioCap?.let { Sha.lossless(it) } ?: "unset",
+            p.mealDemandRatioCap?.let { Sha.lossless(it) } ?: "unset",
+        ) else listOf(
+            Sha.lossless(p.livenessMealRatioCap),
+            Sha.lossless(p.livenessMealIobCapPercent),
+            Sha.lossless(p.livenessCorrectionRatioCap),
+            Sha.lossless(p.livenessCorrectionIobCapPercent),
+            "centralCandidates:inactive",
+        )
         val parts = listOf("fuse-policy-v$RULE_SET_VERSION") +
             doubles.map { Sha.lossless(it) } +
             listOf(
@@ -1899,17 +1925,10 @@ object FuseStateJson {
                 // nach Wenden verschieden schnell wieder.
                 p.livenessChannelEnabled,
                 p.livenessReArmMin,
-                // v38 (A4): policyMode + die vier zentralen Profilwerte.
-                // LEGACY und CENTRAL_PROFILES sind verschiedene Regler,
-                // sobald Schritt B konsumiert - der Hash traegt sie ab der
-                // Struktur, damit die Feldlaeufe von Anfang an trennbar
-                // sind. Unkonfiguriert ist ein EIGENER Zustand ("unset"),
-                // nie eine 0.
+                // v38: der policyMode selbst - LEGACY und
+                // CENTRAL_PROFILES sind verschiedene Regler. Die
+                // Wertemengen dazu stehen MODUSABHAENGIG in `modusTeile`.
                 p.centralProfilesEnabled,
-                p.correctionExposureLimitU?.let { Sha.lossless(it) } ?: "unset",
-                p.mealExposureLimitU?.let { Sha.lossless(it) } ?: "unset",
-                p.correctionDemandRatioCap?.let { Sha.lossless(it) } ?: "unset",
-                p.mealDemandRatioCap?.let { Sha.lossless(it) } ?: "unset",
                 // v25: der Zero-Latch (Schalter + Ruhe-Zyklen).
                 p.zeroLatchEnabled,
                 p.zeroLatchCalmExitMin,
@@ -1930,7 +1949,7 @@ object FuseStateJson {
                 // mit laengerem Fenster darf die Erwartungen des kuerzeren
                 // nicht erben.
                 p.reboundWindowMin,
-            ).map { it.toString() }
+            ).map { it.toString() } + modusTeile
         return Sha.of(parts.joinToString("|"))
     }
 
