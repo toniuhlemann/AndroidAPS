@@ -755,7 +755,10 @@ class FuseStateExportTest {
         // UNKNOWN/EXCLUDED_LAGE, obwohl die Markervollmacht lief - mit
         // Revision waere der Widerruf ein Rebase gewesen und der Kanal
         // verfuegbar geblieben.
-        assertEquals(36, FuseStateJson.RULE_SET_VERSION)
+        // v37 M2: das Bewaffnungstor liest underlyingNormalBlock - ein
+        // Foundation-Schritt kann die Bewaffnung nicht mehr um den
+        // Streak-3-Zyklus verschieben (zweimal live gemessen).
+        assertEquals(37, FuseStateJson.RULE_SET_VERSION)
         assertTrue(
             FuseStateJson.hashOf(cfg)!!.isNotEmpty(),
             "und der Hash bleibt berechenbar",

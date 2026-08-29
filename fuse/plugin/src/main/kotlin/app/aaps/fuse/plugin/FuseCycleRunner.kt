@@ -1062,6 +1062,10 @@ class FuseCycleRunner(
          *  Widerruf-Rebase verbucht hat (Toni 29.08.; reine Beobachtung). */
         val evidenceCommitmentRevision: Long = 0L,
         val evidenceRevokeRebased: Boolean? = null,
+        /** M2: der urspruengliche Normalpfad-Block VOR den autorisierten
+         *  Boeden - die Groesse, die das Bewaffnungstor liest. null im
+         *  Fallback-Pfad (dort gibt es keine Kandidatensuche). */
+        val underlyingNormalBlock: String? = null,
         val evidenceReason: String? = null,
         /** Der Kredit, der in DIESEM Zyklus die Sicherheitskante gehoben hat
          *  [mg/dl/min]. `null` = kein Evidenzkern gelaufen. */
@@ -3285,6 +3289,19 @@ class FuseCycleRunner(
 
         val upfrontWartetAufErholung = episodes.upfrontBatchDeferredSince > 0L &&
             !upfrontVollbatchFrei
+        // ---- M2 (Bauauftrag 7.5.2, Toni 29.08.): DER URSPRUENGLICHE ------
+        // BLOCKGRUND DES NORMALPFADS, abgegriffen VOR der ersten
+        // autorisierten Anhebung. Autorisierte Boeden (Upfront, Prime,
+        // Foundation) und die MarkerFloor-Restauration ueberschreiben
+        // `block` mit NONE - das Bewaffnungstor der Liveness las damit
+        // "Normalpfad offen", waehrend der modellbasierte Bedarf GUARD/TAIL-
+        // gedeckelt war. Gemessen je ein verlorener Bewaffnungszyklus am
+        // 28.08. 09:50 und 29.08. 09:41 (fndLift 0,05, preFoundationBlock
+        // GUARD_FLOOR, Denial NORMAL_PATH_OPEN bei erfuelltem Streak).
+        // ZYKLUSLOKAL, nicht persistiert; `preFoundationBlock` bleibt als
+        // eigene Messgroesse unveraendert (er misst NACH PrimeRelease.lift
+        // und deckt Phase-A-Maskierungen nicht).
+        val underlyingNormalBlock = vetted.block
         val liftedUpfront = when {
             upfrontOhneNetz || ledgerView.hold -> vetted
             // Sicherheitsriegel aktiv: der Batch bleibt VOLLSTAENDIG offen -
@@ -4460,8 +4477,17 @@ class FuseCycleRunner(
                     // offen, gibt es nichts zu heben - und ein spaeterer
                     // Saegezahn-Zyklus (kleine Menge, Block NONE) erbt den
                     // Lauf aus dem Deadlock-Zyklus, in dem er begann.
-                    nachAufschub.block != FuseController.Block.GUARD_FLOOR &&
-                        nachAufschub.block != FuseController.Block.TAIL -> {
+                    //
+                    // SEIT M2 (Toni 29.08.) zaehlt der URSPRUENGLICHE Grund
+                    // VOR den autorisierten Boeden (`underlyingNormalBlock`),
+                    // nicht der publizierte Block: ein 0,05-U-Foundation-
+                    // Schritt (plus MarkerFloor-Restauration nach Guard-Veto)
+                    // machte aus GUARD_FLOOR ein NONE und verzoegerte die
+                    // Bewaffnung um genau den Streak-3-Zyklus - zweimal live
+                    // gemessen. Alle orthogonalen Gefahren- und
+                    // Integritaetstore stehen unveraendert VOR diesem Tor.
+                    underlyingNormalBlock != FuseController.Block.GUARD_FLOOR &&
+                        underlyingNormalBlock != FuseController.Block.TAIL -> {
                         livenessDenial = "NORMAL_PATH_OPEN"
                         return@run nachAufschub
                     }
@@ -4976,6 +5002,7 @@ class FuseCycleRunner(
             evidenceRevokeRebased = evidenz?.revokeRebased,
             evidenceReason = evidenz?.noInflow?.name,
             evidenceCreditMgdlPerMin = evidenz?.creditMgdlPerMin,
+            underlyingNormalBlock = underlyingNormalBlock.name,
             insulinModel = built.input.trajectory.model,
             decision = combined.decision,
             tbr = combined.request,

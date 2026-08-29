@@ -7460,6 +7460,75 @@ class TransportWiringTest : TestBaseWithProfile() {
     }
 
     /**
+     * M2 (Bauauftrag 7.5.2, Toni 29.08.): DER FOUNDATION-TROPF DARF DIE
+     * BEWAFFNUNG NICHT MASKIEREN.
+     *
+     * Livefall zweimal gemessen (28.08. 09:50, 29.08. 09:41): der 0,05er-
+     * Phase-B-Schritt (plus MarkerFloor-Restauration nach dem Guard-Veto)
+     * machte aus GUARD_FLOOR ein publiziertes NONE, und das Bewaffnungstor
+     * las NORMAL_PATH_OPEN - ausgerechnet im Streak-3-Zyklus. Dieses Rig
+     * stellt den Tropf DICHT (Phase-B-Budget 2,0 U ueber 40 min = ein
+     * Schritt je Zyklus): unter dem alten Tor waere JEDER Druckzyklus
+     * maskiert und der Kanal bewaffnete waehrend des gesamten Tropfs nie.
+     * Die Mutation (Tor zurueck auf den publizierten Block) macht genau
+     * dieses Rig rot - beide Asserts.
+     */
+    @Test
+    fun `M2 - der Foundation-Tropf maskiert die Bewaffnung nicht mehr`(@TempDir dir: File) {
+        livenessAn = true
+        livenessCapPct = 90.0
+        livenessBgMin = 160.0
+        livenessReArmMin = 10
+        tailGuard = true
+        fundamentAn = true
+        fundamentAnteil = 0.5
+        upfrontAnteil = 0.0
+        primeHuelleU = 4.0
+        fundamentEndeMin = 60
+        markerAuthorized = true
+        // Rig-Falle: unstubbt faellt PrimeWindowMin auf 15 zurueck - hier
+        // ausdruecklich der Geraetewert, damit Phase B ab Minute 22 laeuft.
+        whenever(preferences.get(FuseIntKey.PrimeWindowMin)).thenReturn(20)
+        // Ruhiger Unterlauf, Knick AUFWAERTS (der Filter konvergiert von
+        // unten - keine Scheinwende), die 160er-Schwelle faellt in Phase B.
+        flach = 150.0
+        steigungProMin = 0.2
+        knickAbMin = 18
+        steigungNachKnick = 1.4
+        knick2AbMin = null
+        bolusIobU = 4.5
+        clock = start
+        markerAt = start + 2 * 60_000L
+        transportReset()
+        val adapter = FuseLedgerAdapter().also { it.loadOnce(dir.also(File::mkdirs), "test-epoch", start) }
+        neuerRunner(adapter)
+
+        var armZyklus: FuseCycleRunner.Outcome? = null
+        var maskiert = 0
+        var liftImDruck = false
+        repeat(50) {
+            val o = cycle()
+            if (o.livenessDenial == "NORMAL_PATH_OPEN" &&
+                o.underlyingNormalBlock in listOf("GUARD_FLOOR", "TAIL")
+            ) maskiert++
+            if (!o.livenessActive && o.livenessStreak > 0 && o.foundationLiftU > 0.0) liftImDruck = true
+            if (armZyklus == null && o.livenessActive) armZyklus = o
+        }
+        // Vorbedingung des Rigs: die Ziel-Konstellation wurde erreicht -
+        // mindestens ein Druckzyklus trug wirklich einen Foundation-Schritt.
+        assertTrue(liftImDruck, "der Aufbau MUSS Druckzyklen mit Foundation-Schritt erzeugen")
+        assertTrue(armZyklus != null, "der Kanal MUSS sich trotz laufendem Tropf bewaffnen")
+        assertEquals(
+            0, maskiert,
+            "kein Zyklus darf mit verdecktem GUARD/TAIL als NORMAL_PATH_OPEN abgelehnt werden",
+        )
+        assertTrue(
+            armZyklus!!.underlyingNormalBlock in listOf("GUARD_FLOOR", "TAIL"),
+            "und der Bewaffnungszyklus stand unterliegend im Deadlock: ${armZyklus!!.underlyingNormalBlock}",
+        )
+    }
+
+    /**
      * Fall 1 - die 22.08.-Tagesform: im Schwanz-Deadlock liefert der Kanal
      * die MENGENLINIE, nicht den Saegezahn. Scharf gegen die Mutation
      * "Tail-Kappe versehentlich noch aktiv": in jedem Hub-Zyklus ist die

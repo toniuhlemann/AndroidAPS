@@ -258,7 +258,15 @@ object FuseStateJson {
     // ein legaler Rebase (Marke runter, keine Erstattung, Gefahren-Tore
     // laufen weiter), jede andere bleibt fail-closed UNKNOWN. Aendert die
     // Evidenzphase und damit die Kanalverfuegbarkeit - dosierwirksam.
-    const val RULE_SET_VERSION = 36
+    // v37 (29.08., M2 aus Bauauftrag 7.5.2): das Liveness-Bewaffnungstor
+    // liest den URSPRUENGLICHEN Normalpfad-Block (underlyingNormalBlock =
+    // vetted.block VOR liftUpfront) statt des publizierten Blocks.
+    // Autorisierte Boeden (Foundation-Drip, Prime, Upfront) plus
+    // MarkerFloor-Restauration machten aus GUARD_FLOOR ein NONE und
+    // verzoegerten die Bewaffnung um den Streak-3-Zyklus (28.08. 09:50,
+    // 29.08. 09:41 - je 1 Zyklus gemessen). Nur das Bewaffnungstor; alle
+    // Gefahren-/Integritaetstore unveraendert. Dosierwirksam.
+    const val RULE_SET_VERSION = 37
 
     /** Schema des Trail-Datensatzes - s. die Notiz an der Schreibstelle. */
     const val SCHEMA_VERSION = 4
@@ -537,6 +545,11 @@ object FuseStateJson {
             // dagegen DOPPELT (Toni 12.08.) und sind hier entfallen: ein Block,
             // eine Wahrheit.
             .put("evidenceEpisodeDenial", outcome.evidenceEpisodeDenial ?: JSONObject.NULL)
+            // M2: der urspruengliche Normalpfad-Block VOR den autorisierten
+            // Boeden - die Groesse, die das Bewaffnungstor liest. Getrennt
+            // von mealFoundation.preFoundationBlock (der misst NACH
+            // PrimeRelease.lift). null = Fallback-Pfad ohne Kandidatensuche.
+            .put("underlyingNormalBlock", outcome.underlyingNormalBlock ?: JSONObject.NULL)
             // DAS REBOUND-SONDERRECHT (Toni 19.08.): konfigurierte
             // Frist, gepinnter Ablauf, Restzeit, das Ergebnis und der
             // typisierte Grund. Ohne den Grund waere im Trail nicht zu

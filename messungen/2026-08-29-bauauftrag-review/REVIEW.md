@@ -372,6 +372,43 @@ Tests fuer 1 und 3); Wende-Pause NICHT entfernen — separater Folgeauftrag
 (TURN_STANDING pausiert nur die Menge, kein Carry, keine lange
 Rearm-Luecke). Reihenfolge: P0 -> M2 -> Schritt A -> M1+M3 -> Wende-Pause.
 
+## 6d. ABNAHME P0 + M2 (29.08. mittags, gebaut und getestet - NICHT geflasht)
+
+**P0** (`ff53a68806`, ruleSet v36): typisierter Widerruf-Rebase nach Vertrag
+7.5.4. Suiten core 1209 / plugin 932 gruen; Mutationsproben (A untypisierter
+Zahlen-Rebase, B alter UNKNOWN-Pfad) je 3 rot, Original wieder gruen.
+
+**M2** (ruleSet v37): `underlyingNormalBlock = vetted.block`, abgegriffen vor
+`liftUpfront`; NUR das Bewaffnungstor liest ihn; separater Export;
+`preFoundationBlock` unveraendert; Fallback-Pfad ehrlich null. Rig
+"dichter Phase-B-Tropf" (ein 0,05er je Zyklus: unter dem alten Tor waere
+JEDER Druckzyklus maskiert) gruen inkl. Vorbedingungs-Assert; Mutation
+(Tor zurueck auf den publizierten Block) exakt an diesem Rig rot. Volle
+Suiten mit M2: core 1209 / plugin 933 gruen.
+
+**Replay-Gegenprobe (Referenzlauf-Muster: Baseline=nur P0 vs Kandidat=P0+M2
+im IDENTISCHEN Harness, Lane w10ref, Vorlauf ausgeschlossen):**
+- Abendfall 28.08. (rs35, 189 Zyklen 18:20-21:30): **0 abweichende Zyklen,
+  Summen bitgleich** - M2 aendert dort nichts. Keine vorweggenommene
+  Garantie fuer andere Lagen.
+- Fruehstueck 29.08. (rs35, 77 Zyklen 08:40-10:01): ebenfalls **0
+  abweichende Zyklen** - aber NICHT, weil M2 wirkungslos waere, sondern
+  weil das rueckkopplungsblinde Replay die Voraussetzung der Maskierung
+  strukturell nicht nachstellen kann: es dosiert ab 09:36 mit OFFENEM
+  Normalpfad 0,45-0,55 U je Zyklus (Bindung smbRatio/maxSmb), weil sein
+  IOB aus dem Trail stammt (unter der 0,05er-Realdosierung entstanden)
+  und der Guard damit nie schliesst; NORMAL_PATH_OPEN ist dort ECHT, in
+  beiden Codestaenden identisch, die Liveness bewaffnet in keinem. Der
+  Guard-Deadlock + Foundation-Tropf-Fall ist im Replay unerreichbar,
+  solange das Replay fetter dosiert als das Geraet. Der deterministische
+  Wirkungsnachweis von M2 ist das Rig (gruen) + die Mutation (rot) + die
+  zwei Livefaelle (28.08. 09:50, 29.08. 09:41).
+- Fidelity-Boden des Harness dokumentiert: schon die BASELINE weicht von
+  der AUFZEICHNUNG deutlich ab (Abend: 61 Zyklen, +12,35 U - frischer
+  Ledger/Transport, keine Sende-Latenz, rueckkopplungsblind). Ein
+  Null-Divergenz-Vergleich gegen die Aufzeichnung ist mit diesem Harness
+  fuer solche Fenster nicht zu haben; nur Base-vs-Kandidat ist sauber.
+
 ## 7. Offene Entscheidungen (Toni)
 
 1. Liveness-BG-Schwelle profilabhaengig machen (der 55-min-Hebel von Fall 2):
