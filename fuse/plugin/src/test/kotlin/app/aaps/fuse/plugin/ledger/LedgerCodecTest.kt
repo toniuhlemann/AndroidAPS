@@ -703,9 +703,34 @@ class LedgerCodecTest {
             stockMgdl = 12.5, episodeId = 1_786_000_000_000L, episodeStartTs = 1_786_000_000_000L,
             lastAcceptedTs = 1_786_000_060_000L, lastDecayTs = 1_786_000_060_000L,
             lastCommittedU = 0.85, rebaseRequired = true,
+            lastCommitmentRevision = 3L,
         )
+        e.evidenceCommitmentRevision = 3L
         val zurueck = LedgerCodec.decodeEpisodes(LedgerCodec.encodeEpisodes(e))
         assertEquals(e.evidenceState, zurueck.evidenceState)
+        assertEquals(3L, zurueck.evidenceCommitmentRevision)
+    }
+
+    /** ALTDATEI OHNE REVISION: beide Felder fehlen GEMEINSAM (sie stehen in
+     *  derselben Datei) und lesen sich als 0 - konsistent, nie gemischt.
+     *  Ein 0-Stand erzeugt bei einer Absenkung weiterhin UNKNOWN, exakt das
+     *  Verhalten vor dem Feld (fail-closed, Toni 29.08.). */
+    @Test
+    fun `eine Altdatei ohne Revision liest sich als 0`() {
+        val e = EpisodeBudgets()
+        e.evidenceState = app.aaps.fuse.core.controller.EvidenceStock.State(
+            stockMgdl = 12.5, episodeId = 1_786_000_000_000L, episodeStartTs = 1_786_000_000_000L,
+            lastAcceptedTs = 1_786_000_060_000L, lastDecayTs = 1_786_000_060_000L,
+            lastCommittedU = 0.85, rebaseRequired = false,
+            lastCommitmentRevision = 7L,
+        )
+        e.evidenceCommitmentRevision = 7L
+        val json = LedgerCodec.encodeEpisodes(e)
+        json.remove("evidenceCommitmentRevision")
+        json.getJSONObject("evidenceState").remove("lastCommitmentRevision")
+        val zurueck = LedgerCodec.decodeEpisodes(json)
+        assertEquals(0L, zurueck.evidenceCommitmentRevision)
+        assertEquals(0L, zurueck.evidenceState.lastCommitmentRevision)
     }
 
     /**

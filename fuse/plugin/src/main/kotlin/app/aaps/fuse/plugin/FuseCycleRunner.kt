@@ -1058,6 +1058,10 @@ class FuseCycleRunner(
          */
         val evidencePhase: String? = null,
         val evidenceStockMgdl: Double? = null,
+        /** Widerrufs-Revision der Episode + ob DIESER Zyklus einen legalen
+         *  Widerruf-Rebase verbucht hat (Toni 29.08.; reine Beobachtung). */
+        val evidenceCommitmentRevision: Long = 0L,
+        val evidenceRevokeRebased: Boolean? = null,
         val evidenceReason: String? = null,
         /** Der Kredit, der in DIESEM Zyklus die Sicherheitskante gehoben hat
          *  [mg/dl/min]. `null` = kein Evidenzkern gelaufen. */
@@ -1166,6 +1170,9 @@ class FuseCycleRunner(
             episodes.lastConsumedMarkerTs = maxOf(episodes.lastConsumedMarkerTs, markerTs)
             episodes.evidenceEpisodeId = evidenceEpisodeId
             episodes.evidenceCommittedU = 0.0
+            // Summe und Widerrufs-Revision GEMEINSAM zuruecksetzen (Toni
+            // 29.08.) - eine neue Episode erbt keine alte Revisionshistorie.
+            episodes.evidenceCommitmentRevision = 0L
         }
         // WIDERRUF ZUERST FESTSCHREIBEN, dann weiterrechnen. Die Reihenfolge
         // ist die Zusicherung: der Stand steht im Ledger, bevor irgendein
@@ -1291,10 +1298,12 @@ class FuseCycleRunner(
                 evidenceEpisodeDenial = episodeGate.denial?.name,
                 evidenceCreditRevoked = episodeGate.creditRevoked,
                 evidenceCommittedU = episodes.evidenceCommittedU,
+                evidenceCommitmentRevision = episodes.evidenceCommitmentRevision,
                 evidenceEpisodeMin = evidenceEpisodeMin,
                 evidenceEpisodeCapMin = (evidenceCapMs / 60_000L).toInt(),
                 evidencePhase = evidenz?.phase?.name,
                 evidenceStockMgdl = evidenz?.state?.stockMgdl,
+                evidenceRevokeRebased = evidenz?.revokeRebased,
                 evidenceReason = evidenz?.noInflow?.name,
                 evidenceCreditMgdlPerMin = evidenz?.creditMgdlPerMin,
                 // Der Abbruch fuehrt keinen Erholungszyklus aus, darf einen
@@ -2166,6 +2175,10 @@ class FuseCycleRunner(
                     creditRevoked = episodeGate.creditRevoked,
                     episodeId = evidenceEpisodeId,
                     episodeCommittedU = episodes.evidenceCommittedU,
+                    // Die Widerrufs-Revision faehrt MIT der Summe - nur so
+                    // kann der Kern einen legalen Widerruf von verlorenem
+                    // Zustand unterscheiden (Toni 29.08.).
+                    commitmentRevision = episodes.evidenceCommitmentRevision,
                     isfMgdlPerU = isf,
                     // Der geladene Zustand gilt, solange der Ledger nicht
                     // haelt. Haelt er, ist die Buchfuehrung fraglich - und ein
@@ -4954,11 +4967,13 @@ class FuseCycleRunner(
             evidenceEpisodeDenial = episodeGate.denial?.name,
             evidenceCreditRevoked = episodeGate.creditRevoked,
             evidenceCommittedU = episodes.evidenceCommittedU,
+            evidenceCommitmentRevision = episodes.evidenceCommitmentRevision,
             evidenceEpisodeMin = evidenceEpisodeMin,
             evidenceEpisodeCapMin = (evidenceCapMs / 60_000L).toInt(),
 
             evidencePhase = evidenz?.phase?.name,
             evidenceStockMgdl = evidenz?.state?.stockMgdl,
+            evidenceRevokeRebased = evidenz?.revokeRebased,
             evidenceReason = evidenz?.noInflow?.name,
             evidenceCreditMgdlPerMin = evidenz?.creditMgdlPerMin,
             insulinModel = built.input.trajectory.model,
@@ -5235,6 +5250,7 @@ class FuseCycleRunner(
             if (episodes.evidenceEpisodeId != evidenceEpisodeId) {
                 episodes.evidenceEpisodeId = evidenceEpisodeId
                 episodes.evidenceCommittedU = 0.0
+                episodes.evidenceCommitmentRevision = 0L
             }
             episodes.evidenceCommittedU += actuatedU
         }
@@ -5682,10 +5698,12 @@ class FuseCycleRunner(
             evidenceEpisodeDenial = evidenceEpisodeDenial,
             evidenceCreditRevoked = evidenceCreditRevoked,
             evidenceCommittedU = episodes.evidenceCommittedU,
+            evidenceCommitmentRevision = episodes.evidenceCommitmentRevision,
             evidenceEpisodeMin = evidenceEpisodeId.takeIf { it > 0L }?.let { ((computeTs - it) / 60_000L).toInt() },
             evidenceEpisodeCapMin = evidenceConfig.maxEpisodeMin,
             evidencePhase = evidenz?.phase?.name,
             evidenceStockMgdl = evidenz?.state?.stockMgdl,
+            evidenceRevokeRebased = evidenz?.revokeRebased,
             evidenceReason = evidenz?.noInflow?.name,
             evidenceCreditMgdlPerMin = evidenz?.creditMgdlPerMin,
             descentRiskActive = descentRisk.active,

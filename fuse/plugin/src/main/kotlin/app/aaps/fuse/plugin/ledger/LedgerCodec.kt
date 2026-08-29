@@ -449,6 +449,7 @@ object LedgerCodec {
         .put("primeSpentU", e.primeSpentU)
         .put("primeWindowStartTs", e.primeWindowStartTs)
         .put("evidenceCommittedU", e.evidenceCommittedU)
+        .put("evidenceCommitmentRevision", e.evidenceCommitmentRevision)
         .put("evidenceEpisodeId", e.evidenceEpisodeId)
         .put("lastConsumedMarkerTs", e.lastConsumedMarkerTs)
         .put("evidenceRevoked", e.evidenceRevoked)
@@ -664,6 +665,7 @@ object LedgerCodec {
         .put("lastDecayTs", s.lastDecayTs)
         .put("lastCommittedU", s.lastCommittedU)
         .put("rebaseRequired", s.rebaseRequired)
+        .put("lastCommitmentRevision", s.lastCommitmentRevision)
 
     fun decodeEvidence(o: JSONObject): app.aaps.fuse.core.controller.EvidenceStock.State {
         val stock = o.getDouble("stockMgdl")
@@ -678,6 +680,9 @@ object LedgerCodec {
             lastDecayTs = requireTs("evidence.lastDecayTs", o.getLong("lastDecayTs")),
             lastCommittedU = requireAmount("evidence.lastCommittedU", o.getDouble("lastCommittedU")),
             rebaseRequired = o.getBoolean("rebaseRequired"),
+            // Altdatei: Revision 0 - zusammen mit dem 0-Default des
+            // Episodenzaehlers konsistent (beide stehen in DERSELBEN Datei).
+            lastCommitmentRevision = o.optLong("lastCommitmentRevision", 0L),
         )
     }
 
@@ -695,6 +700,8 @@ object LedgerCodec {
         // ohne episodeId gibt es keinen Kredit (EvidenceStock.NO_EPISODE),
         // und der Zaehler startet mit der naechsten Episode bei 0.
         e.evidenceCommittedU = requireAmount("evidenceCommittedU", o.optDouble("evidenceCommittedU", 0.0))
+        // Altdatei: Revision 0, konsistent mit dem Evidence-State-Default.
+        e.evidenceCommitmentRevision = o.optLong("evidenceCommitmentRevision", 0L).coerceAtLeast(0L)
         e.evidenceEpisodeId = requireTs("evidenceEpisodeId", o.optLong("evidenceEpisodeId", 0L))
         // Der verbrauchte Markeranker: fehlt er (Altdatei), gilt 0 - dann ist
         // noch nichts verbraucht. Das ist hier die WENIGER konservative

@@ -247,7 +247,18 @@ object FuseStateJson {
     // zaehlt auch zeitlich. Am Fruehstueck des 28.08. verschiebt das die
     // Anforderung von 09:37/09:38 auf 09:22:21 - dieselbe Menge, 25 s nach
     // dem Marker. Dosierwirksam ohne jeden Zweifel.
-    const val RULE_SET_VERSION = 35
+    // v36 (29.08.): TYPISIERTER WIDERRUF-REBASE der Evidenzsumme. Ein
+    // regulaerer Ledger-Widerruf (-0,10 U am Fensterende des Fruehstuecks
+    // 29.08.) senkte `evidenceCommittedU`; EvidenceStock wertete das als
+    // verlorenen Zustand (UNKNOWN ohne Selbstheilung), und EXCLUDED_LAGE
+    // nahm den Liveness-Kanal fuer den Episodenrest aus dem Spiel - bei
+    // noch 73 min gueltiger Markervollmacht. Jetzt traegt der Ledger eine
+    // monotone commitmentRevision, die NUR die beiden Widerrufspfade
+    // atomar vorruecken; nur eine Absenkung MIT vorgerueckter Revision ist
+    // ein legaler Rebase (Marke runter, keine Erstattung, Gefahren-Tore
+    // laufen weiter), jede andere bleibt fail-closed UNKNOWN. Aendert die
+    // Evidenzphase und damit die Kanalverfuegbarkeit - dosierwirksam.
+    const val RULE_SET_VERSION = 36
 
     /** Schema des Trail-Datensatzes - s. die Notiz an der Schreibstelle. */
     const val SCHEMA_VERSION = 4
@@ -669,6 +680,10 @@ object FuseStateJson {
                     .put("stockMgdl", outcome.evidenceStockMgdl?.let { fin(it) } ?: JSONObject.NULL)
                     .put("reason", outcome.evidenceReason ?: JSONObject.NULL)
                     .put("creditMgdlPerMin", outcome.evidenceCreditMgdlPerMin?.let { fin(it) } ?: JSONObject.NULL)
+                    // Widerrufs-Revision + Rebase-Kennzeichen (Toni 29.08.):
+                    // optionale Felder, alte Trails/Viewer bleiben lesbar.
+                    .put("commitmentRevision", outcome.evidenceCommitmentRevision)
+                    .put("revokeRebased", outcome.evidenceRevokeRebased ?: JSONObject.NULL)
             } ?: JSONObject.NULL)
         if (outcome.evidenceEpisodeId > 0L && outcome.evidencePhase == null)
             gap("evidenceEpisode.phase", GAP_EVIDENCE_NOT_EVALUATED)

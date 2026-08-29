@@ -750,7 +750,12 @@ class FuseStateExportTest {
         // gemessenen Reihe ersetzt zwei Nulltoleranzen, das gemessene Tief
         // bekommt ein eigenes Gefahrenfeld, und das 120-Minuten-Basalverdikt
         // weicht dem am Marker gepinnten Abwaertsrisiko-Vertrag.
-        assertEquals(35, FuseStateJson.RULE_SET_VERSION)
+        // v36 DER TYPISIERTE WIDERRUF-REBASE. Dosierwirksam ueber die
+        // Evidenzphase: der 29.08.-Livefall stand ab 09:44 bis Datenende in
+        // UNKNOWN/EXCLUDED_LAGE, obwohl die Markervollmacht lief - mit
+        // Revision waere der Widerruf ein Rebase gewesen und der Kanal
+        // verfuegbar geblieben.
+        assertEquals(36, FuseStateJson.RULE_SET_VERSION)
         assertTrue(
             FuseStateJson.hashOf(cfg)!!.isNotEmpty(),
             "und der Hash bleibt berechenbar",

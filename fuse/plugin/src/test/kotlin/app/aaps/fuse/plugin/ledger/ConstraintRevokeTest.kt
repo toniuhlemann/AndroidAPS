@@ -80,6 +80,9 @@ class ConstraintRevokeTest {
         assertEquals(0.45, a.episodes.primeSpentU, 1e-9)
         assertEquals(0.45, a.episodes.onsetSpentU, 1e-9)
         assertEquals(0.45, a.episodes.evidenceCommittedU, 1e-9)
+        // Die Widerrufs-Revision rueckt ATOMAR mit der Absenkung vor (Toni
+        // 29.08.) - nur sie erlaubt EvidenceStock den Rebase statt UNKNOWN.
+        assertEquals(1L, a.episodes.evidenceCommitmentRevision)
         assertEquals(0.45, a.episodes.deliveredSinceHandoverU, 1e-9)
         assertEquals(0, a.episodes.mealDeliveries.size, "und der Eintrag verschwindet")
         assertNull(a.episodes.settled, "danach gibt es nichts mehr zurueckzudrehen")
@@ -380,6 +383,9 @@ class ConstraintRevokeTest {
         a.revokeSettled(ID)
         assertEquals(0.0, a.revokeSettled(ID).amountU, 1e-9)
         assertEquals(0.45, a.episodes.primeSpentU, 1e-9)
+        // Auch die Revision rueckt nur EINMAL vor: der zweite Aufruf senkt
+        // nichts, also darf er auch keine neue Widerrufs-Erlaubnis erzeugen.
+        assertEquals(1L, a.episodes.evidenceCommitmentRevision)
     }
 
     /**

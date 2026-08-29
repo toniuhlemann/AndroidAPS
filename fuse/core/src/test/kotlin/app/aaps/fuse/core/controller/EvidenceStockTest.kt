@@ -61,6 +61,7 @@ class EvidenceStockTest {
         episodeId: Long = 1L,
         persistedStateKnown: Boolean = true,
         creditRevoked: Boolean = false,
+        revision: Long = 0L,
     ) = eintragen(T0 + minute * 60_000L, adjusted).let { EvidenceStock.Input(
         nowMs = T0 + minute * 60_000L,
         sourceTs = T0 + minute * 60_000L,
@@ -73,6 +74,7 @@ class EvidenceStockTest {
         persistedStateKnown = persistedStateKnown,
         creditRevoked = creditRevoked,
         interval = null,
+        commitmentRevision = revision,
     ) }
 
     private fun eintragen(ts: Long, adjusted: Double) { reihe[ts] = adjusted }
@@ -402,6 +404,89 @@ class EvidenceStockTest {
         assertEquals(EvidenceStock.NoInflow.EVIDENCE_STATE_UNKNOWN, r.noInflow)
         assertEquals(0.0, r.creditMgdlPerMin, 1e-9)
         assertEquals(0.0, r.state.stockMgdl, 1e-9)
+    }
+
+    /**
+     * DER TYPISIERTE WIDERRUF-REBASE (Toni 29.08.). Livefall: ein regulaerer
+     * Ledger-Widerruf (-0,10 U am Fensterende) verklemmte die Evidenz in
+     * UNKNOWN ohne Selbstheilung, und EXCLUDED_LAGE nahm den Liveness-Kanal
+     * fuer den Episodenrest aus dem Spiel - bei noch 73 min gueltiger
+     * Markervollmacht. Eine Absenkung MIT vorgerueckter Revision ist ein
+     * legaler Widerruf: Marke runter, KEIN UNKNOWN, Bestand NICHT erstattet.
+     */
+    @Test
+    fun `ein legaler Widerruf mit vorgerueckter Revision sperrt nicht`() {
+        var s = schritt(EvidenceStock.State(), eingabe(0, 100.0)).state
+        s = schritt(s, eingabe(1, 200.0, committedU = 0.40)).state
+        val vorher = schritt(s, eingabe(2, 220.0, committedU = 0.40))
+        assertTrue(vorher.state.stockMgdl > 0.0)
+        val r = schritt(vorher.state, eingabe(3, 220.0, committedU = 0.30, revision = 1L))
+        assertTrue(r.noInflow != EvidenceStock.NoInflow.EVIDENCE_STATE_UNKNOWN)
+        assertTrue(r.phase != EvidenceStock.Phase.UNKNOWN)
+        assertTrue(r.revokeRebased)
+        assertEquals(0.30, r.state.lastCommittedU, 1e-9)
+        assertEquals(1L, r.state.lastCommitmentRevision)
+        // KEINE Erstattung: der Bestand darf durch den Widerruf nicht
+        // WACHSEN - erlaubt sind nur Verfall und regulaerer Zufluss (hier
+        // Delta 0, also hoechstens Verfall).
+        assertTrue(r.state.stockMgdl <= vorher.state.stockMgdl + 1e-9)
+        assertTrue(r.state.stockMgdl > 0.0)
+    }
+
+    /** Nach einem legalen Widerruf ist eine WEITERE Absenkung ohne neue
+     *  Revision wieder der alte fail-closed-Fall - die Revision erlaubt
+     *  genau die Absenkung, mit der sie vorgerueckt ist, keine Generalitaet. */
+    @Test
+    fun `eine weitere Absenkung ohne neue Revision sperrt wieder`() {
+        var s = schritt(EvidenceStock.State(), eingabe(0, 100.0)).state
+        s = schritt(s, eingabe(1, 200.0, committedU = 0.40)).state
+        s = schritt(s, eingabe(2, 220.0, committedU = 0.30, revision = 1L)).state
+        val r = schritt(s, eingabe(3, 230.0, committedU = 0.20, revision = 1L))
+        assertEquals(EvidenceStock.NoInflow.EVIDENCE_STATE_UNKNOWN, r.noInflow)
+        assertEquals(EvidenceStock.Phase.UNKNOWN, r.phase)
+        assertEquals(0.0, r.state.stockMgdl, 1e-9)
+    }
+
+    /** Eine RUECKLAEUFIGE Revision ist selbst ein vertauschter Zustand -
+     *  fail-closed auch OHNE Absenkung der Summe. */
+    @Test
+    fun `eine ruecklaeufige Revision sperrt den Kredit`() {
+        var s = schritt(EvidenceStock.State(), eingabe(0, 100.0)).state
+        s = schritt(s, eingabe(1, 200.0, committedU = 0.40, revision = 2L)).state
+        val r = schritt(s, eingabe(2, 220.0, committedU = 0.40, revision = 1L))
+        assertEquals(EvidenceStock.NoInflow.EVIDENCE_STATE_UNKNOWN, r.noInflow)
+        assertEquals(EvidenceStock.Phase.UNKNOWN, r.phase)
+    }
+
+    /** KEIN FRUEHER RETURN am Rebase: die Gefahren-Tore laufen danach
+     *  unveraendert - ein legaler Widerruf im selben Zyklus wie ein
+     *  gemessenes Tief endet ordnungsgemaess SUSPENDED, nicht ACTIVE. */
+    @Test
+    fun `legaler Widerruf unter gemessenem Tief bleibt SUSPENDED`() {
+        var s = schritt(EvidenceStock.State(), eingabe(0, 100.0)).state
+        s = schritt(s, eingabe(1, 200.0, committedU = 0.40)).state
+        val r = schritt(s, eingabe(2, 220.0, committedU = 0.30, revision = 1L, measuredLow = true))
+        assertEquals(EvidenceStock.NoInflow.MEASURED_LOW, r.noInflow)
+        assertEquals(EvidenceStock.Phase.SUSPENDED, r.phase)
+        assertTrue(r.revokeRebased)
+        // Die Rebase-Buchung ist trotzdem passiert - sonst spraeche der
+        // naechste gesunde Zyklus wieder von einer Absenkung.
+        assertEquals(0.30, r.state.lastCommittedU, 1e-9)
+        assertEquals(1L, r.state.lastCommitmentRevision)
+    }
+
+    /** DOPPELWIDERRUF IST IDEMPOTENT: derselbe abgesenkte Stand mit
+     *  derselben Revision ist im Folgezyklus schlicht "gleicher Wert". */
+    @Test
+    fun `ein Doppelwiderruf ist idempotent`() {
+        var s = schritt(EvidenceStock.State(), eingabe(0, 100.0)).state
+        s = schritt(s, eingabe(1, 200.0, committedU = 0.40)).state
+        s = schritt(s, eingabe(2, 220.0, committedU = 0.30, revision = 1L)).state
+        val r = schritt(s, eingabe(3, 230.0, committedU = 0.30, revision = 1L))
+        assertTrue(r.noInflow != EvidenceStock.NoInflow.EVIDENCE_STATE_UNKNOWN)
+        assertTrue(!r.revokeRebased)
+        assertEquals(0.30, r.state.lastCommittedU, 1e-9)
+        assertEquals(1L, r.state.lastCommitmentRevision)
     }
 
     /** Eine NEUE Episode startet den Zaehler bei null - dort ist ein

@@ -216,6 +216,14 @@ object EvidenceStock {
          * DARAUFFOLGENDE Punkt erzeugt wieder Evidenz.
          */
         val rebaseRequired: Boolean = false,
+        /**
+         * Zuletzt gesehene [Input.commitmentRevision] - der TYPISIERTE
+         * Unterscheider zwischen legalem Ledger-Widerruf und verlorenem
+         * Zustand (Toni 29.08.). Nur eine Absenkung von [lastCommittedU],
+         * deren Revision gegenueber diesem Stand VORGERUECKT ist, ist ein
+         * Widerruf-Rebase; jede andere Absenkung bleibt fail-closed UNKNOWN.
+         */
+        val lastCommitmentRevision: Long = 0L,
     )
 
     /** Warum in diesem Zyklus KEIN Zufluss stattfand - fuer den Export, damit
@@ -315,6 +323,17 @@ object EvidenceStock {
          *  darf. `false` sperrt den Kredit - s.
          *  [NoInflow.EVIDENCE_STATE_UNKNOWN]. */
         val persistedStateKnown: Boolean = true,
+        /**
+         * Monotone Widerrufs-Revision der Episode (Toni 29.08.): NUR die
+         * beiden belegten Ledger-Widerrufspfade ruecken sie vor, atomar mit
+         * der tatsaechlichen Absenkung von [episodeCommittedU]. Sie ist der
+         * einzige legale Grund, warum die kumulative Summe sinken darf.
+         *
+         * Default 0 ist FAIL-CLOSED: ein Zulieferer, der sie nicht
+         * durchreicht, erzeugt bei einer Absenkung weiterhin UNKNOWN -
+         * exakt das Verhalten vor diesem Feld, nie eine stille Erlaubnis.
+         */
+        val commitmentRevision: Long = 0L,
     )
 
     /**
@@ -407,6 +426,14 @@ object EvidenceStock {
          * dann gaebe es zwei Wahrheiten ueber dieselbe Episode.
          */
         val phase: Phase,
+        /**
+         * Dieser Zyklus hat einen LEGALEN Widerruf-Rebase verbucht: die
+         * kumulative Summe sank mit vorgerueckter Revision, die Marke wurde
+         * gesenkt, der Bestand nicht erstattet. KEIN Sperrgrund - die
+         * Gefahren-Tore sind danach normal durchlaufen worden. Fuer den
+         * Export (Rebase-Grund), nie fuer eine Dosierentscheidung.
+         */
+        val revokeRebased: Boolean = false,
     )
 
     /**
@@ -482,24 +509,50 @@ object EvidenceStock {
 
         // ---- Abzug: kumulativer Zuwachs, also genau einmal -----------------
         //
-        // MONOTON INNERHALB DER EPISODE. Gleicher Wert ist idempotent (Replay,
-        // zweiter Reglerzyklus auf demselben Stand) - ein KLEINERER ist es
-        // nicht: er kann nur aus einem verlorenen oder vertauschten Zustand
-        // kommen. Ihn als "kein Abzug" zu schlucken waere die falsche
-        // Richtung, denn dann steht Bestand zur Verfuegung, dessen Bezahlung
-        // wir gerade vergessen haben. Fail-closed mit eigenem Grund.
-        if (input.episodeCommittedU < basis.lastCommittedU - 1e-9)
+        // MONOTON INNERHALB DER EPISODE - mit GENAU EINER typisierten
+        // Ausnahme (Toni 29.08.). Gleicher Wert ist idempotent (Replay,
+        // zweiter Reglerzyklus auf demselben Stand). Ein KLEINERER Wert hat
+        // zwei Herkuenfte, die unterschieden werden MUESSEN:
+        //
+        //   (a) LEGALER LEDGER-WIDERRUF: eine publizierte, aber beweisbar
+        //       nicht geflossene Dosis wurde zurueckgebucht - die Buecher
+        //       sind gerade ehrlicher geworden. Livefall 29.08.: -0,10 U am
+        //       Fensterende, das alte fail-closed UNKNOWN heilte nie
+        //       (die Summe blieb unter der Marke, weil nichts mehr
+        //       nachlieferte), und EXCLUDED_LAGE nahm den Liveness-Kanal
+        //       fuer den Episodenrest aus dem Spiel - bei noch 73 Minuten
+        //       gueltiger Markervollmacht.
+        //   (b) VERLORENER ODER VERTAUSCHTER ZUSTAND: dann stuende Bestand
+        //       zur Verfuegung, dessen Bezahlung vergessen wurde -
+        //       fail-closed bleibt die einzige richtige Antwort.
+        //
+        // Der Unterscheider ist TYPISIERT, kein Zahlen-Rebase: die Revision
+        // rueckt NUR in den beiden belegten Widerrufspfaden des Ledgers vor,
+        // atomar mit der Absenkung. Eine ruecklaeufige Revision ist selbst
+        // ein vertauschter Zustand. Beim legalen Rebase wird die Marke
+        // gesenkt, der Bestand NICHT erstattet (konservativ: die beim Buchen
+        // abgezogene Evidenz bleibt abgezogen), und es wird NICHT frueh
+        // zurueckgekehrt - Verfall sowie Tief-, Signal-, Segment- und
+        // Widerrufstore laufen unten unveraendert durch.
+        if (input.commitmentRevision < basis.lastCommitmentRevision)
             return Result(basis.copy(stockMgdl = 0.0), 0.0, 0.0, NoInflow.EVIDENCE_STATE_UNKNOWN, Phase.UNKNOWN)
-        val zuwachsU = max(0.0, input.episodeCommittedU - basis.lastCommittedU)
+        val gesunken = input.episodeCommittedU < basis.lastCommittedU - 1e-9
+        val widerrufRebase = gesunken && input.commitmentRevision > basis.lastCommitmentRevision
+        if (gesunken && !widerrufRebase)
+            return Result(basis.copy(stockMgdl = 0.0), 0.0, 0.0, NoInflow.EVIDENCE_STATE_UNKNOWN, Phase.UNKNOWN)
+        val basisKorr = if (widerrufRebase)
+            basis.copy(lastCommittedU = input.episodeCommittedU) else basis
+        val zuwachsU = max(0.0, input.episodeCommittedU - basisKorr.lastCommittedU)
         val abzug = zuwachsU * max(0.0, input.isfMgdlPerU)
 
         // Buchhaltung IMMER fortschreiben - auch bei Widerruf. Sonst wuerde
         // derselbe kumulative Abgabestand danach ein zweites Mal abgezogen.
-        val gemerkt = basis.copy(
+        val gemerkt = basisKorr.copy(
             episodeId = input.episodeId,
             episodeStartTs = start,
             lastDecayTs = input.nowMs,
-            lastCommittedU = max(basis.lastCommittedU, input.episodeCommittedU),
+            lastCommittedU = max(basisKorr.lastCommittedU, input.episodeCommittedU),
+            lastCommitmentRevision = max(basis.lastCommitmentRevision, input.commitmentRevision),
         )
 
         // DREI SPERREN, EIN VERHALTEN: Bestand auf 0, Verfall und Buchfuehrung
@@ -507,14 +560,14 @@ object EvidenceStock {
         // das Letzte holte der erste gesunde Punkt danach die ganze Sperrzeit
         // als Zufluss nach - bei einem Tief die teuerste Richtung ueberhaupt.
         if (input.measuredLow)
-            return Result(gemerkt.copy(stockMgdl = 0.0, rebaseRequired = true), 0.0, 0.0, NoInflow.MEASURED_LOW, Phase.SUSPENDED)
+            return Result(gemerkt.copy(stockMgdl = 0.0, rebaseRequired = true), 0.0, 0.0, NoInflow.MEASURED_LOW, Phase.SUSPENDED, revokeRebased = widerrufRebase)
         if (!input.healthReady)
-            return Result(gemerkt.copy(stockMgdl = 0.0, rebaseRequired = true), 0.0, 0.0, NoInflow.HEALTH_NOT_READY, Phase.SUSPENDED)
+            return Result(gemerkt.copy(stockMgdl = 0.0, rebaseRequired = true), 0.0, 0.0, NoInflow.HEALTH_NOT_READY, Phase.SUSPENDED, revokeRebased = widerrufRebase)
         // WIDERRUF: die Episode bleibt, der Kredit ist weg. Er zaehlt zu den
         // Sperren und nicht zu DORMANT - DORMANT hiesse "die Mahlzeit ist
         // durch", hier hat der Nutzer die Erlaubnis entzogen.
         if (input.creditRevoked)
-            return Result(gemerkt.copy(stockMgdl = 0.0, rebaseRequired = true), 0.0, 0.0, NoInflow.CREDIT_REVOKED, Phase.SUSPENDED)
+            return Result(gemerkt.copy(stockMgdl = 0.0, rebaseRequired = true), 0.0, 0.0, NoInflow.CREDIT_REVOKED, Phase.SUSPENDED, revokeRebased = widerrufRebase)
 
         // ---- Erster gesunder Punkt nach einer Sperre: NUR Basis ----------
         if (basis.rebaseRequired)
@@ -530,6 +583,7 @@ object EvidenceStock {
                 // Noch nicht DORMANT: es ist kein Urteil ueber die Mahlzeit,
                 // sondern der eine Zyklus, der die Messbasis wiederherstellt.
                 phase = Phase.SUSPENDED,
+                revokeRebased = widerrufRebase,
             )
 
         // ---- KEIN INTERVALL: REBASE, KEIN NACHHOLEN ------------------------
@@ -568,6 +622,7 @@ object EvidenceStock {
                     nurWiederholung -> Phase.DORMANT
                     else -> Phase.SUSPENDED
                 },
+                revokeRebased = widerrufRebase,
             )
         }
 
@@ -639,6 +694,7 @@ object EvidenceStock {
                 neu > 0.0        -> Phase.PENDING_SEAL
                 else             -> Phase.DORMANT
             },
+            revokeRebased = widerrufRebase,
         )
     }
 

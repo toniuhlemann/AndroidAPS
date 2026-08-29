@@ -90,6 +90,22 @@ class EpisodeBudgets {
     var evidenceCommittedU: Double = 0.0
 
     /**
+     * MONOTONE WIDERRUFS-REVISION zu [evidenceCommittedU] (Toni 29.08.).
+     *
+     * Sie rueckt AUSSCHLIESSLICH an den beiden belegten Widerrufspfaden vor
+     * ([resolveReservation]-Reject und [revokeSettled]), atomar mit der
+     * tatsaechlichen Absenkung des Zaehlers. EvidenceStock akzeptiert eine
+     * gesunkene kumulative Summe NUR mit vorgerueckter Revision als legalen
+     * Widerruf-Rebase; jede Absenkung ohne Revision bleibt fail-closed
+     * UNKNOWN (Schutz gegen verlorenen/vertauschten Zustand). Livefall
+     * 29.08.: ein regulaerer 0,10-U-Widerruf verklemmte die Evidenz sonst
+     * fuer den Episodenrest in UNKNOWN/EXCLUDED_LAGE.
+     *
+     * Episodenwechsel setzt Summe und Revision GEMEINSAM zurueck.
+     */
+    var evidenceCommitmentRevision: Long = 0L
+
+    /**
      * Identitaet der Episode, zu der [evidenceCommittedU] gehoert - der
      * ERSTE Markerdruck dieser Episode.
      *
@@ -1625,7 +1641,15 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
         // zusaetzliche Freigabe. THERAPEUTISCH ist es trotzdem falsch, und
         // die Bilanz ist verletzt: die Buecher behaupten eine Bezahlung, die
         // es nicht gab. Konservativ heisst nicht richtig.
-        episodes.evidenceCommittedU = (episodes.evidenceCommittedU - frei).coerceAtLeast(0.0)
+        run {
+            val vorherCommitted = episodes.evidenceCommittedU
+            episodes.evidenceCommittedU = (vorherCommitted - frei).coerceAtLeast(0.0)
+            // Revision ATOMAR mit der tatsaechlichen Absenkung (Toni 29.08.):
+            // nur wenn der Zaehler wirklich gesunken ist - eine Klemmung auf 0
+            // ohne Wertaenderung ist keine Absenkung und braucht keine.
+            if (episodes.evidenceCommittedU < vorherCommitted - 1e-12)
+                episodes.evidenceCommitmentRevision += 1
+        }
         // Phase B nur, wenn die Menge dort gebucht WURDE - nach der beim
         // Buchen festgehaltenen Phase, nicht nach einer neu abgeleiteten.
         // Zwischen Buchung und Aufloesung kann eine CLEARANCE den
@@ -1721,7 +1745,14 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
         // Vorgang ist derselbe, nur eine Stufe spaeter bewiesen.
         if (s.prime) episodes.primeSpentU = (episodes.primeSpentU - menge).coerceAtLeast(0.0)
         if (s.onset) episodes.onsetSpentU = (episodes.onsetSpentU - menge).coerceAtLeast(0.0)
-        episodes.evidenceCommittedU = (episodes.evidenceCommittedU - menge).coerceAtLeast(0.0)
+        run {
+            val vorherCommitted = episodes.evidenceCommittedU
+            episodes.evidenceCommittedU = (vorherCommitted - menge).coerceAtLeast(0.0)
+            // Zweiter belegter Widerrufspfad - dieselbe atomare Revision wie
+            // beim Reservierungs-Reject (Toni 29.08.).
+            if (episodes.evidenceCommittedU < vorherCommitted - 1e-12)
+                episodes.evidenceCommitmentRevision += 1
+        }
         if (s.foundationPhase == app.aaps.fuse.core.controller.MealFoundation.Phase.PHASE_B)
             episodes.deliveredSinceHandoverU =
                 (episodes.deliveredSinceHandoverU - menge).coerceAtLeast(0.0)
