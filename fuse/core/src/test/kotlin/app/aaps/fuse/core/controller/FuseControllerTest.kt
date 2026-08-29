@@ -36,6 +36,7 @@ class FuseControllerTest {
         smbRatio: Double = 0.5,
         maxSmb: Double = 0.75,
         r: Double? = null,
+        cap: Double? = null,
     ) = FuseController.State(
         health = health, safetyHold = hold, phase = Phase.REARMING,
         netIobU = netIob, bolusIobU = bolusIob, basalIobU = 0.0,
@@ -43,6 +44,7 @@ class FuseControllerTest {
         smbRatioCorrection = smbRatio, smbRatioRise = smbRatio,
         rSignedMgdlPerMin = r, riseRampLowRPerMin = 0.5, riseRampHighRPerMin = 2.0,
         pumpIncrementU = 0.05, maxSmbU = maxSmb, pumpBusy = busy,
+        contextDemandRatioCap = cap,
     )
 
     // ---- Mahlzeit oder Korrektur -----------------------------------------
@@ -352,6 +354,51 @@ class FuseControllerTest {
         val d = FuseController.decide(state(maxSmb = 0.1), pred(400.0), evidenceCreditActive = false, evidenceMayOverrideRebound = false, lowThreat = LowThreatGate.Verdict.NONE)
         assertEquals("maxSmb", d.bindingLimit)
         assertEquals(0.1, d.smbU, 1e-9)
+    }
+
+    // ---- B2: Kontext-Demand-Ratio-Cap (Bauauftrag 7.2) -------------------
+
+    /** effectiveDemandRatio = min(Basis, Kontext-Cap): der Cap ist ein
+     *  EIGENER Kandidat der Kappenliste und traegt bei echtem Griff seinen
+     *  Namen. insulinReq = (400-100)/50 = 6,0; Basis 0,5 -> 3,0 U; Cap 0,1
+     *  -> 0,60 U bindet unter iobTH (3,0), maxIOB (7,0) und maxSmb (2,0). */
+    @Test
+    fun `der Kontext-Cap begrenzt die Bedarfsrate und traegt seinen Namen`() {
+        val d = FuseController.decide(state(maxSmb = 2.0, cap = 0.1), pred(400.0), evidenceCreditActive = false, evidenceMayOverrideRebound = false, lowThreat = LowThreatGate.Verdict.NONE)
+        assertEquals("demandRatioCap", d.bindingLimit)
+        assertEquals(0.60, d.smbU, 1e-9)
+    }
+
+    /** LEGACY (`null`) bleibt bitgleich - und ein Cap OBERHALB der Basis
+     *  aendert weder Menge noch Namen (1,0 heisst "kein zusaetzlicher
+     *  Deckel", nie "volle Bedarfsabgabe"). */
+    @Test
+    fun `ohne Griff aendert der Cap nichts am Altpfad`() {
+        val ohne = FuseController.decide(state(maxSmb = 2.0), pred(400.0), evidenceCreditActive = false, evidenceMayOverrideRebound = false, lowThreat = LowThreatGate.Verdict.NONE)
+        val mit = FuseController.decide(state(maxSmb = 2.0, cap = 1.0), pred(400.0), evidenceCreditActive = false, evidenceMayOverrideRebound = false, lowThreat = LowThreatGate.Verdict.NONE)
+        assertEquals(ohne.smbU, mit.smbU, 1e-12)
+        assertEquals(ohne.bindingLimit, mit.bindingLimit)
+    }
+
+    /** Gleichstand mit der Basis: der Cap hat nicht real gekappt, also
+     *  bleibt "smbRatio" die ehrliche Antwort (erster Eintrag gewinnt). */
+    @Test
+    fun `bei Gleichstand bleibt die Basis benannt`() {
+        // Beide Ratio-Kandidaten stehen auf 6,0 x 0,5 = 3,0 - alle anderen
+        // Grenzen liegen darueber (iobTH 6-1=5, maxIOB 8-1=7, maxSmb 4).
+        val d = FuseController.decide(state(maxSmb = 4.0, iobTh = 6.0, cap = 0.5), pred(400.0), evidenceCreditActive = false, evidenceMayOverrideRebound = false, lowThreat = LowThreatGate.Verdict.NONE)
+        assertEquals("smbRatio", d.bindingLimit)
+    }
+
+    /** Ein unplausibler Cap wirft bei der State-Konstruktion - fail-loud,
+     *  nie stille Nullwirkung. */
+    @Test
+    fun `ein unplausibler Cap wirft im State`() {
+        for (kaputt in listOf(0.0, -0.1, 1.5, Double.NaN)) {
+            org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException::class.java) {
+                state(cap = kaputt)
+            }
+        }
     }
 
     // ---- Rundung ---------------------------------------------------------

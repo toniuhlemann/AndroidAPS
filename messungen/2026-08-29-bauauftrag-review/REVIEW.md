@@ -409,6 +409,52 @@ im IDENTISCHEN Harness, Lane w10ref, Vorlauf ausgeschlossen):**
   Null-Divergenz-Vergleich gegen die Aufzeichnung ist mit diesem Harness
   fuer solche Fenster nicht zu haben; nur Base-vs-Kandidat ist sauber.
 
+## 6e. ABNAHME B2 (29.08. nachts, gebaut und getestet - NICHT geflasht)
+
+effectiveDemandRatio = min(Basis, Kontext-Cap) fuer NORMAL und LIVENESS
+(Bauauftrag 7.2), ruleSet v42. Entscheidungen und Nachweise:
+
+- NORMAL: der Cap geht als EIGENER benannter Kandidat (`demandRatioCap`)
+  in die Kappenliste des Reglers - die Basis (Rampe + Rebound-/
+  Mahlzeit-Fenster) bleibt unveraendert, das min der Liste IST die
+  Formel, und die bindende Grenze traegt bei echtem Griff ihren Namen
+  (bei Gleichstand bleibt `smbRatio` benannt).
+- LIVENESS: Basis bleibt die v27-Rampe OHNE Fenster-Gate (dokumentierte
+  Basisdifferenz zum Normalpfad); im zentralen Modus ist der Profil-Cap
+  der Kontext-Cap und ERSETZT die Alt-Caps (kein min(alt, neu) -
+  Migrationsvertrag "keine versteckte Altgrenze"). Die Profil-IOB-Deckel
+  bleiben in BEIDEN Modi stehen (7.4: bestehende Liveness-Begrenzungen
+  erst nach ausdruecklich nachgewiesener Abloesung entfernen).
+- Invariante 5: Direktdosen (Upfront/Prime/Foundation/Aufschub/CALM)
+  werden vom Cap NIE umgedeutet - Rig-Beweis: 4-U-Sofortanteil bei
+  Cap 0,05 unveraendert angefordert.
+- SubStep: KEINE Signatur-Aenderung. Der Uebertrag existiert nur,
+  solange `smbRatio` das Mass ist (`ratioIsBinding`); bindet der Cap,
+  wird der Rest ohnehin verworfen - dieselbe Klasse wie maxSmb. Die
+  wirksame (kontextabhaengige) Grosse darf ohnehin nie in die Signatur
+  (Invariante 2: ein Profilwechsel setzt offene Zusagen nicht zurueck).
+  Zusaetzlich traegt `otherCapsU` den Cap als Endsummen-Grenze - der
+  Rest-Zaehler ist kein Weg an der neuen Bedarfsgrenze vorbei.
+- Kanal-Kennung (`cfgJetzt`): im zentralen Modus stehen die Profil-Caps
+  mit Z-Praefix in der Kennung - eine Cap-Aenderung und der Moduswechsel
+  selbst beenden einen Lauf (Bedienhandlung), im LEGACY-Modus bleibt die
+  Kennung zeichengleich.
+- VERLEGUNG: Markerfrist-Pflege + Dosierkontext stehen jetzt VOR der
+  State-Konstruktion (der Cap muss in den Regler). NICHT
+  verhaltensidentisch fuer Fallback-/Abbruch-Zyklen: die zweigten bisher
+  zwischen alter und neuer Position ab und liefen mit eingefrorenen
+  Pins - jetzt pflegt auch ein predictorfreier Zyklus die Frist.
+  DIESELBEN Werte, nur frueher (die Deadline haengt allein an markerTs);
+  das ist die A1-Zusage "derselbe zentrale Kontext auch im
+  predictorfreien Pfad". Im Fallback selbst hat B2 KEINEN Wirkort
+  (Basis smbU=0, nur Prime-Anteil - es gibt dort keine Bedarfsrate).
+- LEGACY bitgleich: Cap null -> Kappenliste, Liveness-Wahl und Kennung
+  unveraendert; Rig-Gegenprobe (gesetzte Kandidaten wirkungslos) gruen.
+- Nachweise: Core-Tests (Cap bindet/Name, LEGACY/1,0-Neutralitaet,
+  Gleichstand, fail-loud-require), 4 Rigs (Rate begrenzt, LEGACY,
+  Invariante 5, Alt-Cap-Ersetzung), Mutation "Kandidat entfernt" ->
+  exakt die zwei Waechter rot (Core-Name + Rig-Rate).
+
 ## 7. Offene Entscheidungen (Toni)
 
 1. Liveness-BG-Schwelle profilabhaengig machen (der 55-min-Hebel von Fall 2):

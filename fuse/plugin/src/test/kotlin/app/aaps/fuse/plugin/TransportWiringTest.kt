@@ -7954,6 +7954,126 @@ class TransportWiringTest : TestBaseWithProfile() {
     }
 
     /**
+     * B2 (Bauauftrag 7.2): der Kontext-Cap begrenzt die BEDARFSRATE des
+     * Normalpfads - effectiveDemandRatio = min(Basis, Cap) als eigener
+     * benannter Kandidat der Kappenliste. Die Mutation "Cap-Kandidat
+     * entfernt" macht exakt diesen Test rot.
+     */
+    @Test
+    fun `B2 - der Correction-Cap begrenzt die normale Bedarfsrate`(@TempDir dir: File) {
+        b1Lage(dir, corrLimit = 6.0)
+        corrRatioCapZ = 0.1
+        var gebunden = false
+        repeat(40) {
+            val o = cycle()
+            if (o.decision.bindingLimit.startsWith("demandRatioCap") && o.decision.smbU > 0.0) {
+                gebunden = true
+                // Der Cap ist eine RATE: hoechstens insulinReq x 0,1 je
+                // Zyklus (plus Abwaertsrundung, nie darueber).
+                assertTrue(
+                    o.decision.smbU <= o.decision.insulinReqU!! * 0.1 + 1e-9,
+                    "Endmenge ${o.decision.smbU} muss unter req*Cap bleiben",
+                )
+            }
+        }
+        assertTrue(gebunden, "der Kontext-Cap MUSS mindestens einmal real binden")
+    }
+
+    /** B2-GEGENPROBE: im LEGACY-Modus wirkt kein Kandidaten-Cap - gesetzte
+     *  Werte sind wirkungslos, der Altpfad bleibt bitgleich. */
+    @Test
+    fun `B2 - im LEGACY-Modus wirkt kein Kandidaten-Cap`(@TempDir dir: File) {
+        b1Lage(dir, corrLimit = 6.0)
+        centralAn = false
+        corrRatioCapZ = 0.05
+        mealRatioCapZ = 0.05
+        var oberhalb = false
+        repeat(40) {
+            val o = cycle()
+            assertTrue(
+                !o.decision.bindingLimit.contains("demandRatioCap"),
+                "LEGACY: der Kandidaten-Cap darf nie binden",
+            )
+            if (o.decision.smbU > 0.0 && o.decision.insulinReqU != null &&
+                o.decision.smbU > o.decision.insulinReqU!! * 0.05 + 1e-9
+            ) oberhalb = true
+        }
+        assertTrue(oberhalb, "ohne Modus liefert der Normalpfad oberhalb des Kandidaten-Caps")
+    }
+
+    /**
+     * B2, INVARIANTE 5: Ratio-Caps deuten autorisierte Direktdosen NIE zu
+     * normaler Bedarfsdosierung um. Derselbe 4-U-Sofortanteil wie im
+     * B1-Grant-Test, aber mit winzigem MEAL-Ratio-Cap 0,05 und weitem
+     * Exposure-Raum: die Anforderung bleibt die Direktdosis, nicht
+     * req x 0,05.
+     */
+    @Test
+    fun `B2 - der Sofortanteil bleibt eine Direktdosis trotz winzigem Cap`(@TempDir dir: File) {
+        centralAn = true
+        corrExpLimit = 6.0
+        mealExpLimit = 8.0
+        corrRatioCapZ = 0.05
+        mealRatioCapZ = 0.05
+        livenessAn = false
+        tailGuard = false
+        fundamentAn = true
+        fundamentAnteil = 0.8
+        upfrontAnteil = 1.0
+        primeHuelleU = 5.0
+        aufschubAn = true
+        markerAuthorized = true
+        whenever(preferences.get(FuseIntKey.PrimeWindowMin)).thenReturn(20)
+        flach = 110.0
+        steigungProMin = 0.4
+        bolusIobU = 0.4
+        clock = start
+        transportReset()
+        val adapter = FuseLedgerAdapter().also { it.loadOnce(dir.also(File::mkdirs), "test-epoch", start) }
+        neuerRunner(adapter)
+        repeat(7) { cycle() }
+        markerAt = clock + 60_000L
+        var markerZyklus: FuseCycleRunner.Outcome? = null
+        repeat(12) {
+            val o = cycle()
+            if (markerZyklus == null && o.phaseAUpfrontRequestedU > 0.0) markerZyklus = o
+        }
+        assertTrue(markerZyklus != null, "der Sofortanteil muss angefordert werden")
+        // Der Plan ist 4,0 U (5,0 x 0,8 x 1,0; s. B1-Grant-Test).
+        // Eine Umdeutung in Bedarfsdosierung ergaebe req x 0,05 (<< 1 U).
+        // >= 3,0 statt == 4,0: tolerant gegen eine moegliche
+        // SafetyMaxBolus-Kante, beweiskraeftig gegen die Umdeutung.
+        assertTrue(
+            markerZyklus!!.phaseAUpfrontRequestedU >= 3.0 - 1e-9,
+            "Direktdosis ${markerZyklus!!.phaseAUpfrontRequestedU} darf nicht ratio-gedeutet werden",
+        )
+    }
+
+    /**
+     * B2, MIGRATIONSVERTRAG: im zentralen Modus ERSETZT der Kontext-Cap die
+     * Liveness-Alt-Caps - kein min(alt, neu), keine versteckte Altgrenze.
+     * Alt-Cap 0,10 gesetzt, Kontext-Cap 0,55: der Kanal waehlt 0,55.
+     */
+    @Test
+    fun `B2 - im zentralen Modus ersetzt der Kontext-Cap die Liveness-Alt-Caps`(@TempDir dir: File) {
+        mealRatioDeckel = 0.30
+        corrRatioDeckel = 0.10
+        livenessLage(dir)
+        centralAn = true
+        corrExpLimit = 8.0
+        mealExpLimit = 8.0
+        corrRatioCapZ = 0.55
+        mealRatioCapZ = 0.55
+        repeat(6) { cycle() }
+        var hub: FuseCycleRunner.Outcome? = null
+        repeat(25) { val o = cycle(); if (o.livenessLiftU > 0 && hub == null) hub = o }
+        val k = hub ?: error("die Lage muss ohne Marker heben (CORRECTION)")
+        assertEquals("CORRECTION", k.livenessProfile)
+        // 0,55 und NICHT 0,10 (Alt-Cap) und NICHT min(0,10, 0,55).
+        assertEquals(0.55, k.livenessSelectedRatioCap!!, 1e-9)
+    }
+
+    /**
      * Fall 1 - die 22.08.-Tagesform: im Schwanz-Deadlock liefert der Kanal
      * die MENGENLINIE, nicht den Saegezahn. Scharf gegen die Mutation
      * "Tail-Kappe versehentlich noch aktiv": in jedem Hub-Zyklus ist die

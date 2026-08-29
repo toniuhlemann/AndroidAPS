@@ -150,6 +150,17 @@ object FuseController {
         val riseRampHighRPerMin: Double,
         val pumpIncrementU: Double,
         val maxSmbU: Double,
+        /**
+         * B2 (Bauauftrag 7.2): der kontextabhaengige Demand-Ratio-Cap des
+         * zentralen Dosierprofils — `effectiveDemandRatio = min(Basis, Cap)`.
+         * Er geht als EIGENER benannter Kandidat in die Kappenliste
+         * (`demandRatioCap`), damit die Basisrechnung (Rampe + Rebound- und
+         * Mahlzeit-Fenster) unveraendert bleibt und die bindende Grenze
+         * ehrlich benannt wird. Ein Cap ist keine feste Ratio: 1,0 heisst nur
+         * "kein zusaetzlicher Deckel", nie "volle Bedarfsabgabe".
+         * `null` = LEGACY-Modus — die Kappenliste bleibt bitgleich alt.
+         */
+        val contextDemandRatioCap: Double? = null,
         val pumpBusy: Boolean,
         /** q1 war in den letzten [REBOUND_WINDOW_MIN] min unter
          *  [REBOUND_LOW_MGDL] - die Rampe bleibt auf dem Korrektur-Anteil. */
@@ -234,6 +245,9 @@ object FuseController {
             require(pumpIncrementU.isFinite() && pumpIncrementU > 0.0) { "Pumpenschritt unplausibel: $pumpIncrementU" }
             require(maxSmbU.isFinite() && maxSmbU >= 0.0) { "maxSMB unplausibel: $maxSmbU" }
             require(targetMgdl.isFinite() && targetMgdl in 40.0..400.0) { "Ziel unplausibel: $targetMgdl" }
+            contextDemandRatioCap?.let {
+                require(it.isFinite() && it > 0.0 && it <= 1.0) { "contextDemandRatioCap unplausibel: $it" }
+            }
             require(iobThU.isFinite() && iobThU >= 0.0 && maxIobU.isFinite() && maxIobU >= 0.0) {
                 "iobTH/maxIOB unplausibel: $iobThU/$maxIobU"
             }
@@ -1037,8 +1051,14 @@ object FuseController {
             ).tele(iobCaps)
         }
 
-        val baseCandidates = listOf(
+        val baseCandidates = listOfNotNull(
             "smbRatio" to insulinReq * state.effectiveSmbRatio,
+            // B2 (Bauauftrag 7.2): effectiveDemandRatio = min(Basis, Kontext-
+            // Cap) — als EIGENER Kandidat, nicht als Aenderung der Basis. Das
+            // min der Liste IST die Formel, und bei echtem Griff traegt die
+            // Grenze ihren Namen (bei Gleichstand gewinnt weiterhin der erste
+            // Eintrag — der Cap wird nur benannt, wenn er real gekappt hat).
+            state.contextDemandRatioCap?.let { "demandRatioCap" to insulinReq * it },
             "iobThHeadroom" to fastHeadroom,
             "maxIobHeadroom" to maxIobHeadroom,
             "maxSmb" to state.maxSmbU,

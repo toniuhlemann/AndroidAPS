@@ -295,7 +295,19 @@ object FuseStateJson {
     // der GRANT-BILDUNG. Neuer Block EXPOSURE_LIMIT (absolut, nie hebbar,
     // NO_NEW_POSITIVE, GUARD_CHAIN_PASSED). Im LEGACY-Modus bitgleich
     // inaktiv - dosierwirksam erst mit aktivierten zentralen Profilen.
-    const val RULE_SET_VERSION = 41
+    // v42 (29.08., B2 aus Bauauftrag 7.2): effectiveDemandRatio =
+    // min(Basis, Kontext-Cap) fuer NORMAL und LIVENESS. Der Normalpfad
+    // bekommt den Cap als EIGENEN benannten Kandidaten (demandRatioCap)
+    // in die Kappenliste - die Basis (Rampe, Rebound-/Mahlzeit-Fenster)
+    // bleibt unveraendert; die Liveness-Basis bleibt die v27-Rampe OHNE
+    // Fenster-Gate (dokumentierte Basisdifferenz), ihr Profil-Cap ist im
+    // zentralen Modus der Kontext-Cap und ERSETZT die Alt-Caps (kein
+    // min(alt, neu); die Profil-IOB-Deckel bleiben nach 7.4 stehen).
+    // Direktdosen (Upfront/Prime/Foundation/Aufschub/CALM) deutet der
+    // Cap NIE um (Invariante 5). Kontextblock jetzt VOR der State-
+    // Konstruktion: Fallback-/Abbruch-Zyklen pflegen die Markerfrist
+    // mit (dieselben Werte, nur frueher). Im LEGACY-Modus bitgleich.
+    const val RULE_SET_VERSION = 42
 
     /** Schema des Trail-Datensatzes - s. die Notiz an der Schreibstelle. */
     const val SCHEMA_VERSION = 4

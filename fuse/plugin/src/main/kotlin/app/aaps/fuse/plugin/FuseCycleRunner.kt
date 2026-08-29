@@ -2042,6 +2042,70 @@ class FuseCycleRunner(
         )
         val (target, targetSource) = activeTarget(profile, computeTs)
 
+        // ---- MARKER-LEISTUNGSFRIST (Bauauftrag Toni 23.08. nachts) --------
+        // Der Marker ist eine ZEITLICH BEGRENZTE Leistungsautorisierung des
+        // Liveness-Kanals, keine Voraussetzung fuer Liveness insgesamt.
+        // Gepinnt wird NUR ein im Prozess beobachteter Markerwechsel; ein
+        // beim Warmstart bloss vorgefundener Marker ohne passende
+        // persistierte Identitaet eroeffnet kein rueckwirkendes MEAL (§3).
+        // Die Dauer wird beim Druck eingefroren. SEIT B2 STEHT DER BLOCK
+        // HIER, vor der State-Konstruktion: seit B1 muss die Kontextgrenze
+        // in die GRANT-BILDUNG (AuthorizedLift), seit B2 der Kontext-
+        // Ratio-Cap in die Kappenliste des Reglers (State). Schreibstellen
+        // der Pins existieren nur hier; episodeGate und markerTs stehen
+        // weit oben. NICHT verhaltensidentisch fuer Fallback-/Abbruch-
+        // Zyklen: die zweigten bisher ZWISCHEN alter und neuer Position ab
+        // und liefen mit eingefrorenen Pins - jetzt pflegt auch ein
+        // predictorfreier Zyklus die Frist (dieselben Werte, nur frueher:
+        // die Deadline haengt allein an markerTs). Das ist die A1-Zusage
+        // "derselbe zentrale Kontext auch im predictorfreien Pfad".
+        if (episodeGate.creditRevoked || markerTs <= 0L) {
+            // Ruecknahme loescht Identitaet und Frist SOFORT.
+            episodes.markerPowerPinnedFor = 0L
+            episodes.markerPowerDeadlineTs = 0L
+            markerPowerLastSeenTs = 0L
+        } else if (markerPowerLastSeenTs == -1L) {
+            markerPowerLastSeenTs = markerTs
+        } else if (markerTs != markerPowerLastSeenTs) {
+            episodes.markerPowerPinnedFor = markerTs
+            episodes.markerPowerDeadlineTs = markerTs + cfg.livenessMealPowerMin * 60_000L
+            markerPowerLastSeenTs = markerTs
+        }
+        // ---- ZENTRALER DOSIERKONTEXT (Bauauftrag §4, Schritt A1) ---------
+        // UNBEDINGT je Zyklus, unabhaengig vom Liveness-Schalter.
+        // HALB OFFEN: exakt an der Deadline gilt bereits CORRECTION. Eine
+        // laenger lebende Evidenzepisode verlaengert die Frist NICHT; die
+        // persistierte Markerfrist ist autoritativ, nie state.context (§6).
+        // Bit-identische Extraktion der bisherigen markerPowerActive-Regel.
+        val dosingCtx = app.aaps.fuse.core.controller.DosingContext.decide(
+            nowMs = computeTs,
+            markerTs = markerTs,
+            pinnedFor = episodes.markerPowerPinnedFor,
+            deadlineTs = episodes.markerPowerDeadlineTs,
+        )
+        val markerPowerActive = dosingCtx.mealAuthorized
+        // ---- B1: DIE KONTEXTGRENZE DIESES ZYKLUS -------------------------
+        // MealExposureLimit unter gueltiger Vollmacht, sonst
+        // CorrectionExposureLimit - NUR im Modus CENTRAL_PROFILES
+        // (validate garantiert dort alle vier Werte); null = LEGACY,
+        // Grant-Bildung und Endpruefung bleiben bitgleich inaktiv.
+        val kontextExposureLimitU: Double? =
+            if (!cfg.centralProfilesEnabled) null
+            else if (dosingCtx.mealAuthorized) cfg.mealExposureLimitU
+            else cfg.correctionExposureLimitU
+
+        // ---- B2: DER DEMAND-RATIO-CAP DIESES ZYKLUS ----------------------
+        // MealDemandRatioCap unter gueltiger Vollmacht, sonst
+        // CorrectionDemandRatioCap - NUR im Modus CENTRAL_PROFILES
+        // (validate garantiert dort beide Werte); null = LEGACY, die
+        // Kappenliste des Reglers bleibt bitgleich alt. Er begrenzt die
+        // BEDARFSRATE des Normalpfads und des Liveness-Kanals; autorisierte
+        // Direktdosen (Upfront, Prime, Foundation, Aufschub, CALM) werden
+        // von ihm NIE umgedeutet (Invariante 5).
+        val kontextDemandRatioCap: Double? =
+            if (!cfg.centralProfilesEnabled) null
+            else if (dosingCtx.mealAuthorized) cfg.mealDemandRatioCap
+            else cfg.correctionDemandRatioCap
         val state = when (
             val s = CoreInputGuard.build {
                 FuseController.State(
@@ -2088,6 +2152,7 @@ class FuseCycleRunner(
                     riseRampHighRPerMin = cfg.riseRampHighR,
                     pumpIncrementU = bolusStep,
                     maxSmbU = cfg.maxSmbU,
+                    contextDemandRatioCap = kontextDemandRatioCap,
                     // pumpBusy gehoert NICHT in den Regler, sondern
                     // ausschliesslich in die TBR-Tabelle: dort unterdrueckt es
                     // die ANFORDERUNG, ohne den Sicherheitsgrund und seinen
@@ -3362,51 +3427,6 @@ class FuseCycleRunner(
         // ZYKLUSLOKAL, nicht persistiert; `preFoundationBlock` bleibt als
         // eigene Messgroesse unveraendert (er misst NACH PrimeRelease.lift
         // und deckt Phase-A-Maskierungen nicht).
-        // ---- MARKER-LEISTUNGSFRIST (Bauauftrag Toni 23.08. nachts) --------
-        // Der Marker ist eine ZEITLICH BEGRENZTE Leistungsautorisierung des
-        // Liveness-Kanals, keine Voraussetzung fuer Liveness insgesamt.
-        // Gepinnt wird NUR ein im Prozess beobachteter Markerwechsel; ein
-        // beim Warmstart bloss vorgefundener Marker ohne passende
-        // persistierte Identitaet eroeffnet kein rueckwirkendes MEAL (§3).
-        // Die Dauer wird beim Druck eingefroren. SEIT B1 STEHT DER BLOCK
-        // HIER, vor der Lift-Kette: die Kontextgrenze muss bereits in die
-        // GRANT-BILDUNG (AuthorizedLift) - zwischen alter und neuer
-        // Position schreibt nichts an markerTs oder die Pins
-        // (verhaltensidentische Verlegung).
-        if (episodeGate.creditRevoked || markerTs <= 0L) {
-            // Ruecknahme loescht Identitaet und Frist SOFORT.
-            episodes.markerPowerPinnedFor = 0L
-            episodes.markerPowerDeadlineTs = 0L
-            markerPowerLastSeenTs = 0L
-        } else if (markerPowerLastSeenTs == -1L) {
-            markerPowerLastSeenTs = markerTs
-        } else if (markerTs != markerPowerLastSeenTs) {
-            episodes.markerPowerPinnedFor = markerTs
-            episodes.markerPowerDeadlineTs = markerTs + cfg.livenessMealPowerMin * 60_000L
-            markerPowerLastSeenTs = markerTs
-        }
-        // ---- ZENTRALER DOSIERKONTEXT (Bauauftrag §4, Schritt A1) ---------
-        // UNBEDINGT je Zyklus, unabhaengig vom Liveness-Schalter.
-        // HALB OFFEN: exakt an der Deadline gilt bereits CORRECTION. Eine
-        // laenger lebende Evidenzepisode verlaengert die Frist NICHT; die
-        // persistierte Markerfrist ist autoritativ, nie state.context (§6).
-        // Bit-identische Extraktion der bisherigen markerPowerActive-Regel.
-        val dosingCtx = app.aaps.fuse.core.controller.DosingContext.decide(
-            nowMs = computeTs,
-            markerTs = markerTs,
-            pinnedFor = episodes.markerPowerPinnedFor,
-            deadlineTs = episodes.markerPowerDeadlineTs,
-        )
-        val markerPowerActive = dosingCtx.mealAuthorized
-        // ---- B1: DIE KONTEXTGRENZE DIESES ZYKLUS -------------------------
-        // MealExposureLimit unter gueltiger Vollmacht, sonst
-        // CorrectionExposureLimit - NUR im Modus CENTRAL_PROFILES
-        // (validate garantiert dort alle vier Werte); null = LEGACY,
-        // Grant-Bildung und Endpruefung bleiben bitgleich inaktiv.
-        val kontextExposureLimitU: Double? =
-            if (!cfg.centralProfilesEnabled) null
-            else if (dosingCtx.mealAuthorized) cfg.mealExposureLimitU
-            else cfg.correctionExposureLimitU
         val underlyingNormalBlock = vetted.block
         val liftedUpfront = when {
             upfrontOhneNetz || ledgerView.hold -> vetted
@@ -3590,6 +3610,11 @@ class FuseCycleRunner(
         // Sicherheitskappen vorbei.
         val otherCapsU = minOf(
             cfg.maxSmbU,
+            // B2: auch der Kontext-Cap traegt die Endsumme - sonst waere der
+            // Rest-Zaehler ein Weg an der neuen Bedarfsgrenze vorbei. (Bindet
+            // der Cap selbst, ist ratioIsBinding ohnehin false und der
+            // Uebertrag wird verworfen - dieselbe Klasse wie maxSmb.)
+            kontextDemandRatioCap?.let { (lifted.insulinReqU ?: 0.0) * it } ?: Double.MAX_VALUE,
             exposure.iobThHeadroomU,
             exposure.maxIobHeadroomU,
             tail?.takeIf { it.usable }?.headroomU ?: Double.MAX_VALUE,
@@ -4301,9 +4326,9 @@ class FuseCycleRunner(
         var livenessCoverageState: String? = null
         var livenessPressureActive: Boolean? = null
 
-        // Marker-Leistungsfrist + zentraler Dosierkontext: seit B1 VOR der
-        // Lift-Kette bestimmt (die Kontextgrenze steht bereits in der
-        // Grant-Bildung) - s. oben vor `underlyingNormalBlock`.
+        // Marker-Leistungsfrist + zentraler Dosierkontext: seit B2 VOR der
+        // State-Konstruktion bestimmt (Kontextgrenze in der Grant-Bildung,
+        // Kontext-Ratio-Cap in der Kappenliste des Reglers) - s. oben.
         val livenessNormalSmbU = nachAufschub.smbU
         val decisionVorEndpruefung: FuseController.Decision = run {
             if (!cfg.livenessChannelEnabled) {
@@ -4323,7 +4348,17 @@ class FuseCycleRunner(
             // bleiben gemeinsam.
             // Seit A1 nur noch KONSUM der zentralen Entscheidung - die
             // Namen sind dieselben Woerter wie zuvor (Trail-kompatibel).
-            val profilRatioCap = if (markerPowerActive) cfg.livenessMealRatioCap else cfg.livenessCorrectionRatioCap
+            // B2 (Bauauftrag 7.2 + Migrationsvertrag): im zentralen Modus
+            // ist der Profil-Cap der KONTEXT-Cap - er ERSETZT die
+            // Liveness-Alt-Caps, es gibt kein min(alt, neu) (keine
+            // versteckte Altgrenze im zentralen Modus; validate garantiert
+            // dort beide Werte). Die Profil-IOB-Deckel bleiben in BEIDEN
+            // Modi stehen (7.4: bestehende Liveness-Begrenzungen erst nach
+            // ausdruecklich nachgewiesener Abloesung entfernen).
+            val profilRatioCap =
+                if (cfg.centralProfilesEnabled) kontextDemandRatioCap!!
+                else if (markerPowerActive) cfg.livenessMealRatioCap
+                else cfg.livenessCorrectionRatioCap
             val profilIobCapPct = if (markerPowerActive) cfg.livenessMealIobCapPercent else cfg.livenessCorrectionIobCapPercent
             livenessProfil = dosingCtx.profile.name
             livenessProfilGrund = dosingCtx.reason.name
@@ -4337,6 +4372,16 @@ class FuseCycleRunner(
             // Risiko.
             // Beide KONFIGURIERTEN Schwellen, nie die wirksame: ein
             // regulaerer Tag/Nacht-Wechsel ist KEIN CONFIG_CHANGED (v20).
+            // B2: die Ratio-Stellgroessen des AKTIVEN Modus - im zentralen
+            // Modus sind das die Profil-Caps (Z-Praefix: der Moduswechsel
+            // selbst ist eine Bedienhandlung und beendet einen Lauf). Im
+            // LEGACY-Modus bleibt die Kennung zeichengleich zum Altstand.
+            val cfgRatioMeal =
+                if (cfg.centralProfilesEnabled) "Z" + cfg.mealDemandRatioCap
+                else cfg.livenessMealRatioCap.toString()
+            val cfgRatioCorr =
+                if (cfg.centralProfilesEnabled) "Z" + cfg.correctionDemandRatioCap
+                else cfg.livenessCorrectionRatioCap.toString()
             val cfgJetzt = cfg.livenessBgMinDayMgdl.toString() + "|" +
                 cfg.livenessBgMinNightMgdl + "|" +
                 // M1: auch die KONFIGURIERTE MEAL-Schwelle - eine Aenderung
@@ -4346,8 +4391,8 @@ class FuseCycleRunner(
                 // Tag/Nacht KEIN CONFIG_CHANGED.
                 cfg.livenessBgMinMealMgdl + "|" +
                 cfg.mealArmCycles + "|" +
-                cfg.livenessMealRatioCap + "|" + cfg.livenessMealIobCapPercent + "|" +
-                cfg.livenessCorrectionRatioCap + "|" + cfg.livenessCorrectionIobCapPercent + "|" +
+                cfgRatioMeal + "|" + cfg.livenessMealIobCapPercent + "|" +
+                cfgRatioCorr + "|" + cfg.livenessCorrectionIobCapPercent + "|" +
                 cfg.livenessReArmMin
             // ERST gemerkt, ANGEWENDET erst nach den harten Riegeln (Audit
             // 22.08.): faellt die Aenderung mit einem gemessenen Riegel
@@ -4700,7 +4745,8 @@ class FuseCycleRunner(
                 cfg.maxSmbU < liveRatio * bedarfU - 1e-9 -> "maxSmb"
                 // Der Cap war das Mass, wenn er die Basis real gekappt hat -
                 // sonst bleibt "smbRatio" die ehrliche Antwort.
-                liveRatio < baseRatio - 1e-9 -> "livenessRatioCap"
+                liveRatio < baseRatio - 1e-9 ->
+                    if (cfg.centralProfilesEnabled) "demandRatioCap" else "livenessRatioCap"
                 else -> "smbRatio"
             }
             if (liveU <= nachAufschub.smbU + 1e-9) {

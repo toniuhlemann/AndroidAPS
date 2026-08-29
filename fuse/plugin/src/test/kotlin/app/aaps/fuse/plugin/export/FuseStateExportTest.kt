@@ -767,7 +767,12 @@ class FuseStateExportTest {
         // bewaffnet der erste Druckzyklus unter der Vollmacht.
         // v41 B1: die verbindliche Endpruefung (ExposureGate, Block
         // EXPOSURE_LIMIT) - dosierwirksam nur im Modus CENTRAL_PROFILES.
-        assertEquals(41, FuseStateJson.RULE_SET_VERSION)
+        // v42 B2: effectiveDemandRatio = min(Basis, Kontext-Cap) fuer
+        // NORMAL (Kandidat demandRatioCap) und LIVENESS (Kontext-Cap
+        // ERSETZT die Alt-Caps, kein min(alt, neu)); Kontextblock vor der
+        // State-Konstruktion (Fallback pflegt die Markerfrist mit) -
+        // dosierwirksam nur im Modus CENTRAL_PROFILES.
+        assertEquals(42, FuseStateJson.RULE_SET_VERSION)
         assertTrue(
             FuseStateJson.hashOf(cfg)!!.isNotEmpty(),
             "und der Hash bleibt berechenbar",
