@@ -295,6 +295,65 @@ MEAL-Liveness zustaendig, sobald Tor (dieser Nachtrag) und Druckschwelle
 Schwellen-Diagnose in klein: r lag ab ~09:42 ueber 1, q1 ueberschritt 140
 erst 09:48 — ~6 min Schwellenloch (abends waren es 55).
 
+## 6c. NACHTRAG 29.08. mittags: Fruehstueck 29.08. — Totalausfall der Nachsteuerung, NEUER P0
+
+Live beobachtet und am Trail verifiziert (Marker 08:57:39, 4,0 U Upfront
+08:58, Phase-B-Drip 19x0,05 = 0,95 U bis 09:41, Liveness-Lifts 0,10+0,05 um
+09:42/09:43 — danach NICHTS mehr; q1 stieg von 143 (09:43) auf 229+ (10:18)
+bei r +4 bis +4,9; Normalpfad durchgehend GUARD_FLOOR, Schwanz negativ).
+
+**Ursachenkette (drei Defekte im selben Fruehstueck):**
+
+1. **NEUER P0 — Vertragskollision Ledger-Widerruf vs. Evidenz-Monotonie:**
+   Um 09:44 sank `evidenceEpisode.committedU` von 5,10 auf 5,00 (exakt die
+   0,10 des 09:42er-Liveness-Lifts; Ledger-Widerrufspfade
+   FuseLedgerAdapter.kt:1628/:1724 drehen den Zaehler bei nicht bewiesener
+   Lieferung ZURUECK — nach ihrem eigenen Vertrag korrekt: "die Buecher
+   duerfen keine Bezahlung behaupten, die es nicht gab"). `EvidenceStock`
+   wertet einen sinkenden kumulativen Abgabestand aber als verlorenen/
+   vertauschten Zustand (EvidenceStock.kt:492, fail-closed: Phase UNKNOWN,
+   Bestand 0) — ebenfalls nach eigenem Vertrag korrekt. Folge: der harte
+   Liveness-Riegel `EXCLUDED_LAGE` (FuseCycleRunner.kt:4336-4338) nimmt den
+   Kanal aus dem Spiel. **Und der Zustand heilt nie von selbst**: committedU
+   bleibt unter der gemerkten Hochwassermarke (das Fenster ist zu, nichts
+   liefert mehr nach), UNKNOWN steht bis zum 4-h-Episodendeckel. Gemessen:
+   EXCLUDED_LAGE durchgehend 09:44 bis mindestens 10:12 (Ende der Daten),
+   Markervollmacht dabei noch 73-45 min gueltig, `ctxReason` =
+   EVIDENCE_UNKNOWN bei `mealBasis` = MARKER_CONFIRMED.
+2. **Druckschwelle (= M1-Beleg Nr. 2):** r >= 1,0 ab 09:02, q1 > 140 erst
+   09:37 — 35 min NOT_CONFIRMED allein durch die BG-Schwelle, waehrend der
+   Normalpfad GUARD-gedeckelt war und nur der 0,05er-Drip floss.
+3. **Block-Maskierung (= M2-Beleg Nr. 2):** 09:41:31 NORMAL_PATH_OPEN bei
+   Streak 5 mit foundationLiftU 0,05 und preFoundationBlock GUARD_FLOOR —
+   zweiter Live-Fall, wieder genau 1 Zyklus.
+
+Dazu die ehrliche Einordnung von Tonis Systemkritik: Selbst der bewaffnete
+Kanal lieferte um 09:42 nur 0,10 U, weil `needU` aus der Bahn kam (0,35 U
+bei q1 143 und +4,3/min — die Bahn hielt die Lage fuer weitgehend gedeckt).
+Die Verlaesslichkeit der Mahlzeit haengt heute strukturell an der
+Huellen-Schaetzung; die Erweiterungen M1/M2 und der P0-Fix reparieren die
+LIEFERTORE, nicht die Bedarfsrechnung. Deren Ueberdeckungsfrage bleibt der
+benannte offene Coverage-/Erwartungs-Arbeitspunkt.
+
+**Fix-Vorschlag P0 (Vertragsentscheidung, VOR 1b/Schritt A):**
+`EvidenceStock` behandelt einen SINKENDEN `episodeCommittedU` nicht mehr als
+verlorenen Zustand, sondern als Widerruf: die interne Marke
+(`lastCommittedU`) wird auf den niedrigeren Wert REBASIERT, der Bestand wird
+NICHT erstattet (konservativ: die beim Buchen abgezogene Evidenz bleibt
+abgezogen), Phase bleibt unveraendert; Export traegt einen
+Widerruf-Rebase-Zaehler. Neustart-ohne-Zustand und ruecklaufende
+Episodenidentitaet bleiben unveraendert fail-closed UNKNOWN. Begruendung:
+das Signal "kumulative Summe sinkt" ist nicht diskriminativ — es entsteht
+durch jeden legalen Widerruf; die konservative Rebase-Richtung verliert
+hoechstens Kredit, nie Sicherheit. Tests: Widerruf mitten in aktiver
+Episode -> Phase bleibt ACTIVE, Bestand unveraendert, kein EXCLUDED_LAGE;
+Mutation (alter fail-closed-Pfad) -> rot; Doppel-Widerruf idempotent.
+
+Offen als eigene Produktfrage danach (nicht Teil des P0-Fixes): darf eine
+UNKNOWN-Evidenz den Liveness-Kanal ueberhaupt hart ausschliessen, solange
+die gepinnte Markervollmacht laeuft? (SUSPENDED — Tief, Segmentbruch,
+Widerruf des Markers — bleibt unstrittig absolut.)
+
 ## 7. Offene Entscheidungen (Toni)
 
 1. Liveness-BG-Schwelle profilabhaengig machen (der 55-min-Hebel von Fall 2):
