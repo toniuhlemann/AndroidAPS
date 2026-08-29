@@ -48,6 +48,12 @@ internal val fuseEinstellbareKeys: Set<String> = setOf(
     FuseDoubleKey.LivenessMealIobCapPercent.key,
     FuseDoubleKey.LivenessCorrectionRatioCap.key,
     FuseDoubleKey.LivenessCorrectionIobCapPercent.key,
+    // A4 (Bauauftrag 7.5.7): policyMode + die vier zentralen Kandidaten.
+    FuseBooleanKey.CentralProfilesEnabled.key,
+    FuseDoubleKey.CorrectionExposureLimitU.key,
+    FuseDoubleKey.MealExposureLimitU.key,
+    FuseDoubleKey.CorrectionDemandRatioCap.key,
+    FuseDoubleKey.MealDemandRatioCap.key,
     FuseBooleanKey.ZeroLatchEnabled.key,
     FuseIntKey.ZeroLatchCalmExitMin.key,
     FuseDoubleKey.ZeroLatchCalmDistanceMgdl.key,
@@ -122,6 +128,17 @@ object FuseSettingsReport {
         fun zahl(k: FuseDoubleKey, label: String, einheit: String) = FuseScreenModel.SettingRow(
             key = k.key, label = label, value = "${f2(preferences.get(k))} $einheit".trim(),
             standard = f2(k.defaultValue).takeIf { abweicht(preferences.get(k), k.defaultValue) }?.let { "$it $einheit".trim() },
+        )
+
+        // A4: ein KANDIDAT zeigt "unkonfiguriert", solange er nie gesetzt
+        // wurde - die Grenzen-Klammer zaehlt Ausreisser als nie gesetzt
+        // (dieselbe Regel wie im Config-Bau).
+        fun kandidat(k: FuseDoubleKey, label: String, einheit: String) = FuseScreenModel.SettingRow(
+            key = k.key, label = label,
+            value = preferences.getIfExists(k)
+                ?.takeIf { it.isFinite() && it in k.min..k.max }
+                ?.let { ("" + f2(it) + " " + einheit).trim() } ?: "unkonfiguriert",
+            standard = null,
         )
 
         fun ganz(k: FuseIntKey, label: String, einheit: String) = FuseScreenModel.SettingRow(
@@ -223,6 +240,19 @@ object FuseSettingsReport {
                     zahl(FuseDoubleKey.LivenessMealIobCapPercent, "M-Kanaldeckel", "%"),
                     zahl(FuseDoubleKey.LivenessCorrectionRatioCap, "K-Ratio-Deckel", ""),
                     zahl(FuseDoubleKey.LivenessCorrectionIobCapPercent, "K-Kanaldeckel", "%"),
+                    // A4: policyMode + Kandidaten. UNKONFIGURIERT wird
+                    // ausdruecklich so genannt (Bauauftrag 7.1) - der
+                    // Bildschirm-Default waere eine Falschaussage.
+                    FuseScreenModel.SettingRow(
+                        key = FuseBooleanKey.CentralProfilesEnabled.key,
+                        label = "policyMode",
+                        value = if (preferences.get(FuseBooleanKey.CentralProfilesEnabled)) "CENTRAL_PROFILES" else "LEGACY",
+                        standard = "LEGACY".takeIf { preferences.get(FuseBooleanKey.CentralProfilesEnabled) },
+                    ),
+                    kandidat(FuseDoubleKey.MealExposureLimitU, "MEAL Exposure-Limit", "U"),
+                    kandidat(FuseDoubleKey.CorrectionExposureLimitU, "CORR Exposure-Limit", "U"),
+                    kandidat(FuseDoubleKey.MealDemandRatioCap, "MEAL Demand-Ratio-Cap", ""),
+                    kandidat(FuseDoubleKey.CorrectionDemandRatioCap, "CORR Demand-Ratio-Cap", ""),
                     zahl(FuseDoubleKey.LivenessBgMinDayMgdl, "Druck-Schwelle Tag", "mg/dl"),
                     // Die Nachtschwelle EHRLICH anzeigen: solange sie nie
                     // gesetzt wurde, folgt sie zur Laufzeit der Tagesschwelle

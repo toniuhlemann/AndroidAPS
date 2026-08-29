@@ -34,7 +34,7 @@ class ConfigBoundsTest {
         riseRampLowR = 0.5, riseRampHighR = 2.0, bolusShareLambda = 1.0,
         onsetChannelEnabled = true, onsetEnvelopeU = 1.5,
         primeReleaseEnabled = true, primeWindowMin = 15, primeEnvelopeU = 1.2,
-        maxSmbU = 0.3, guardFloorMgdl = 70.0, lowGateMinBenefitMgdl = 5.0, zeroLatchEnabled = false, zeroLatchCalmExitMin = 20, zeroLatchCalmDistanceMgdl = 30.0, reversalGuardEnabled = false, reversalFallUkf = 2.0, reversalLookbackMin = 20, reversalReboundUkf = 1.0, reversalConfirmCycles = 2, correctionRearmEnabled = false, rearmHoldMin = 5, rearmConfirmCycles = 2, rearmUpUkf = 0.3, lowGateHorizonMin = 120.0, positiveDescentHorizonMin = 30.0, deferredPrimeEnabled = false, markerPrimeDescentHorizonMin = 60.0, deferredPrimeEndMin = 120, livenessChannelEnabled = false, livenessMealPowerMin = 120, livenessMealRatioCap = 1.0, livenessMealIobCapPercent = 50.0, livenessCorrectionRatioCap = 1.0, livenessCorrectionIobCapPercent = 50.0, livenessBgMinDayMgdl = 160.0, livenessBgMinNightMgdl = 160.0, livenessReArmMin = 10, iobThPercent = 100,
+        maxSmbU = 0.3, guardFloorMgdl = 70.0, lowGateMinBenefitMgdl = 5.0, zeroLatchEnabled = false, zeroLatchCalmExitMin = 20, zeroLatchCalmDistanceMgdl = 30.0, reversalGuardEnabled = false, reversalFallUkf = 2.0, reversalLookbackMin = 20, reversalReboundUkf = 1.0, reversalConfirmCycles = 2, correctionRearmEnabled = false, rearmHoldMin = 5, rearmConfirmCycles = 2, rearmUpUkf = 0.3, lowGateHorizonMin = 120.0, positiveDescentHorizonMin = 30.0, deferredPrimeEnabled = false, markerPrimeDescentHorizonMin = 60.0, deferredPrimeEndMin = 120, livenessChannelEnabled = false, livenessMealPowerMin = 120, livenessMealRatioCap = 1.0, livenessMealIobCapPercent = 50.0, livenessCorrectionRatioCap = 1.0, livenessCorrectionIobCapPercent = 50.0, centralProfilesEnabled = false, correctionExposureLimitU = null, mealExposureLimitU = null, correctionDemandRatioCap = null, mealDemandRatioCap = null, livenessBgMinDayMgdl = 160.0, livenessBgMinNightMgdl = 160.0, livenessReArmMin = 10, iobThPercent = 100,
         releaseHorizonMin = 30, liabilityHorizonMin = 120, driveTauMin = 60, signalRejoinEnabled = false, theilSenWindowMin = 18,
         absorptionCreditWindowMin = 60, markerBoostMaxMin = 45, evidenceReboundOverrideMaxMin = 120,
         nightStartMin = 1380, nightEndMin = 420,
@@ -149,6 +149,55 @@ class ConfigBoundsTest {
         }
         assertThrows(IllegalArgumentException::class.java) {
             FuseCycleRunner.validate(mitte().copy(releaseHorizonMin = 90, liabilityHorizonMin = 60))
+        }
+    }
+
+    /** A4 (Bauauftrag 7.5.7): die zentrale Politik aktiviert NUR mit vier
+     *  vollstaendig gueltig gesetzten Werten - typisierte Ablehnung statt
+     *  stiller Teilaktivierung; K nie offener als M (beide Paare). Im
+     *  LEGACY-Modus sind unkonfigurierte Kandidaten erlaubt. */
+    @Test
+    fun `zentrale Profile verlangen vier gueltige Werte und die Relation`() {
+        // LEGACY: teilgesetzte Kandidaten sind erlaubt und wirken nirgends.
+        ok(mitte().copy(mealExposureLimitU = 6.0), "LEGACY mit einem Kandidaten")
+        // Vollstaendig + Relation eingehalten: geht durch.
+        ok(
+            mitte().copy(
+                centralProfilesEnabled = true,
+                correctionExposureLimitU = 3.0, mealExposureLimitU = 6.0,
+                correctionDemandRatioCap = 0.15, mealDemandRatioCap = 0.35,
+            ),
+            "CENTRAL_PROFILES vollstaendig",
+        )
+        // Ein fehlender Wert: typisierte Ablehnung.
+        assertThrows(IllegalArgumentException::class.java) {
+            FuseCycleRunner.validate(
+                mitte().copy(
+                    centralProfilesEnabled = true,
+                    correctionExposureLimitU = 3.0, mealExposureLimitU = 6.0,
+                    correctionDemandRatioCap = 0.15, mealDemandRatioCap = null,
+                )
+            )
+        }
+        // Relation verletzt (Exposure): CORRECTION offener als MEAL.
+        assertThrows(IllegalArgumentException::class.java) {
+            FuseCycleRunner.validate(
+                mitte().copy(
+                    centralProfilesEnabled = true,
+                    correctionExposureLimitU = 7.0, mealExposureLimitU = 6.0,
+                    correctionDemandRatioCap = 0.15, mealDemandRatioCap = 0.35,
+                )
+            )
+        }
+        // Relation verletzt (Ratio).
+        assertThrows(IllegalArgumentException::class.java) {
+            FuseCycleRunner.validate(
+                mitte().copy(
+                    centralProfilesEnabled = true,
+                    correctionExposureLimitU = 3.0, mealExposureLimitU = 6.0,
+                    correctionDemandRatioCap = 0.5, mealDemandRatioCap = 0.35,
+                )
+            )
         }
     }
 }

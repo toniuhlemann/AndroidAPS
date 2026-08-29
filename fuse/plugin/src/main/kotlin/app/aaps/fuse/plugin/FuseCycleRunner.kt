@@ -368,6 +368,20 @@ class FuseCycleRunner(
             // offener sein als MEAL - nicht tauschen, nicht klemmen, ablehnen.
             require(it.livenessCorrectionRatioCap <= it.livenessMealRatioCap) { "livenessCorrectionRatioCap=${it.livenessCorrectionRatioCap} > meal ${it.livenessMealRatioCap}" }
             require(it.livenessCorrectionIobCapPercent <= it.livenessMealIobCapPercent) { "livenessCorrectionIobCapPercent=${it.livenessCorrectionIobCapPercent} > meal ${it.livenessMealIobCapPercent}" }
+            // A4 (Bauauftrag 7.5.7): die zentrale Politik aktiviert NUR mit
+            // vollstaendig gueltig gesetzten Profilwerten - typisierte
+            // Ablehnung statt stiller Teilaktivierung oder Rueckfall.
+            // Unkonfigurierte KANDIDATEN (null) sind im LEGACY-Modus
+            // erlaubt und wirken nirgends. Relation auf kanonischen U bzw.
+            // Ratio-Werten, nach genau EINER Lesung: K nie offener als M.
+            if (it.centralProfilesEnabled) {
+                require(it.correctionExposureLimitU != null) { "centralProfiles: correctionExposureLimitU nicht gesetzt" }
+                require(it.mealExposureLimitU != null) { "centralProfiles: mealExposureLimitU nicht gesetzt" }
+                require(it.correctionDemandRatioCap != null) { "centralProfiles: correctionDemandRatioCap nicht gesetzt" }
+                require(it.mealDemandRatioCap != null) { "centralProfiles: mealDemandRatioCap nicht gesetzt" }
+                require(it.correctionExposureLimitU <= it.mealExposureLimitU) { "centralProfiles: correctionExposureLimitU=${it.correctionExposureLimitU} > meal ${it.mealExposureLimitU}" }
+                require(it.correctionDemandRatioCap <= it.mealDemandRatioCap) { "centralProfiles: correctionDemandRatioCap=${it.correctionDemandRatioCap} > meal ${it.mealDemandRatioCap}" }
+            }
             require(it.livenessReArmMin in FuseIntKey.LivenessReArmMin.min..FuseIntKey.LivenessReArmMin.max) { "livenessReArmMin=${it.livenessReArmMin}" }
             require(it.livenessBgMinDayMgdl.isFinite() && it.livenessBgMinDayMgdl in FuseDoubleKey.LivenessBgMinDayMgdl.min..FuseDoubleKey.LivenessBgMinDayMgdl.max) { "livenessBgMinDayMgdl=${it.livenessBgMinDayMgdl}" }
             require(it.livenessBgMinNightMgdl.isFinite() && it.livenessBgMinNightMgdl in FuseDoubleKey.LivenessBgMinNightMgdl.min..FuseDoubleKey.LivenessBgMinNightMgdl.max) { "livenessBgMinNightMgdl=${it.livenessBgMinNightMgdl}" }
@@ -6362,6 +6376,14 @@ class FuseCycleRunner(
         val livenessMealIobCapPercent: Double,
         val livenessCorrectionRatioCap: Double,
         val livenessCorrectionIobCapPercent: Double,
+        /** A4 (Bauauftrag 7.5.7): policyMode + die vier zentralen
+         *  Profilwerte. null = unkonfigurierter KANDIDAT (kein Legacy-
+         *  Fallback, kein stiller Default); Konsum erst in Schritt B. */
+        val centralProfilesEnabled: Boolean,
+        val correctionExposureLimitU: Double?,
+        val mealExposureLimitU: Double?,
+        val correctionDemandRatioCap: Double?,
+        val mealDemandRatioCap: Double?,
         val livenessBgMinDayMgdl: Double,
         val livenessBgMinNightMgdl: Double,
         val livenessReArmMin: Int,
@@ -6480,6 +6502,17 @@ class FuseCycleRunner(
         livenessCorrectionIobCapPercent = preferences.getIfExists(FuseDoubleKey.LivenessCorrectionIobCapPercent)
             ?.takeIf { it.isFinite() && it in FuseDoubleKey.LivenessCorrectionIobCapPercent.min..FuseDoubleKey.LivenessCorrectionIobCapPercent.max }
             ?: preferences.get(FuseDoubleKey.LivenessIobCapPercent),
+        // A4: BEWUSST KEIN Legacy-Fallback - unkonfiguriert bleibt null
+        // (Kandidat), die Grenzen-Klammer zaehlt Ausreisser als nie gesetzt.
+        centralProfilesEnabled = preferences.get(FuseBooleanKey.CentralProfilesEnabled),
+        correctionExposureLimitU = preferences.getIfExists(FuseDoubleKey.CorrectionExposureLimitU)
+            ?.takeIf { it.isFinite() && it in FuseDoubleKey.CorrectionExposureLimitU.min..FuseDoubleKey.CorrectionExposureLimitU.max },
+        mealExposureLimitU = preferences.getIfExists(FuseDoubleKey.MealExposureLimitU)
+            ?.takeIf { it.isFinite() && it in FuseDoubleKey.MealExposureLimitU.min..FuseDoubleKey.MealExposureLimitU.max },
+        correctionDemandRatioCap = preferences.getIfExists(FuseDoubleKey.CorrectionDemandRatioCap)
+            ?.takeIf { it.isFinite() && it in FuseDoubleKey.CorrectionDemandRatioCap.min..FuseDoubleKey.CorrectionDemandRatioCap.max },
+        mealDemandRatioCap = preferences.getIfExists(FuseDoubleKey.MealDemandRatioCap)
+            ?.takeIf { it.isFinite() && it in FuseDoubleKey.MealDemandRatioCap.min..FuseDoubleKey.MealDemandRatioCap.max },
         livenessBgMinDayMgdl = preferences.get(FuseDoubleKey.LivenessBgMinDayMgdl),
         // LESE-MIGRATION (v20): solange die Nachtschwelle nie gesetzt wurde,
         // folgt sie der Tagesschwelle - ein Update veraendert nichts still.

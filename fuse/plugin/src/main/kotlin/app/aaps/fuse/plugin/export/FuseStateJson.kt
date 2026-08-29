@@ -266,7 +266,15 @@ object FuseStateJson {
     // verzoegerten die Bewaffnung um den Streak-3-Zyklus (28.08. 09:50,
     // 29.08. 09:41 - je 1 Zyklus gemessen). Nur das Bewaffnungstor; alle
     // Gefahren-/Integritaetstore unveraendert. Dosierwirksam.
-    const val RULE_SET_VERSION = 37
+    // v38 (29.08., A4 aus Bauauftrag 7.5.7): policyMode (LEGACY |
+    // CENTRAL_PROFILES) + die vier zentralen Profilwerte als KANDIDATEN in
+    // Config, Validierung (Aktivierung nur mit vier gueltigen Werten,
+    // relational K nie offener als M, typisierte Ablehnung), policyValues
+    // und Hash. In Schritt A konsumiert sie KEIN Dosierpfad - der Bump
+    // selbst ist bei Default AUS dosierneutral, aber die Hash-Eingaben
+    // wechseln (offene Erwartungen werden wie bei v22/v24 einmalig
+    // entwertet - gewollt).
+    const val RULE_SET_VERSION = 38
 
     /** Schema des Trail-Datensatzes - s. die Notiz an der Schreibstelle. */
     const val SCHEMA_VERSION = 4
@@ -1705,6 +1713,14 @@ object FuseStateJson {
         .put("mealIobCapPercent", fin(p.livenessMealIobCapPercent))
         .put("correctionRatioCap", fin(p.livenessCorrectionRatioCap))
         .put("correctionIobCapPercent", fin(p.livenessCorrectionIobCapPercent))
+        // A4 (Bauauftrag 7.5.7): policyMode + die vier zentralen Kandidaten.
+        // Unkonfiguriert ist NULL - nie eine erfundene 0. Im LEGACY-Modus
+        // sind das reine Kandidaten ohne Dosier-Konsumenten.
+        .put("policyMode", if (p.centralProfilesEnabled) "CENTRAL_PROFILES" else "LEGACY")
+        .put("correctionExposureLimitU", p.correctionExposureLimitU?.let { fin(it) } ?: JSONObject.NULL)
+        .put("mealExposureLimitU", p.mealExposureLimitU?.let { fin(it) } ?: JSONObject.NULL)
+        .put("correctionDemandRatioCap", p.correctionDemandRatioCap?.let { fin(it) } ?: JSONObject.NULL)
+        .put("mealDemandRatioCap", p.mealDemandRatioCap?.let { fin(it) } ?: JSONObject.NULL)
         .put("zeroLatchEnabled", p.zeroLatchEnabled)
         .put("zeroLatchCalmExitMin", p.zeroLatchCalmExitMin)
         .put("zeroLatchCalmDistanceMgdl", fin(p.zeroLatchCalmDistanceMgdl))
@@ -1883,6 +1899,17 @@ object FuseStateJson {
                 // nach Wenden verschieden schnell wieder.
                 p.livenessChannelEnabled,
                 p.livenessReArmMin,
+                // v38 (A4): policyMode + die vier zentralen Profilwerte.
+                // LEGACY und CENTRAL_PROFILES sind verschiedene Regler,
+                // sobald Schritt B konsumiert - der Hash traegt sie ab der
+                // Struktur, damit die Feldlaeufe von Anfang an trennbar
+                // sind. Unkonfiguriert ist ein EIGENER Zustand ("unset"),
+                // nie eine 0.
+                p.centralProfilesEnabled,
+                p.correctionExposureLimitU?.let { Sha.lossless(it) } ?: "unset",
+                p.mealExposureLimitU?.let { Sha.lossless(it) } ?: "unset",
+                p.correctionDemandRatioCap?.let { Sha.lossless(it) } ?: "unset",
+                p.mealDemandRatioCap?.let { Sha.lossless(it) } ?: "unset",
                 // v25: der Zero-Latch (Schalter + Ruhe-Zyklen).
                 p.zeroLatchEnabled,
                 p.zeroLatchCalmExitMin,

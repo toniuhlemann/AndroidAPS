@@ -356,6 +356,24 @@ enum class FuseDoubleKey(
     LivenessCorrectionIobCapPercent("fuse_liveness_corr_iob_cap_percent", 50.0, 20.0, 90.0),
 
     /**
+     * DIE VIER ZENTRALEN PROFILWERTE (Bauauftrag 7.1 + 7.5.7, Schritt A4).
+     *
+     * KANDIDATEN, solange [FuseBooleanKey.CentralProfilesEnabled] aus ist:
+     * sie werden gelesen, validiert und exportiert, aber von KEINEM
+     * Dosierpfad konsumiert (das ist Schritt B). Unkonfiguriert = null im
+     * Config-Bau (getIfExists, Grenzen-Klammer wie bei der Nachtschwelle) -
+     * es gibt KEINE Lese-Migration aus Legacy-Werten und keinen stillen
+     * Default: vor der Aktivierung muessen alle vier ausdruecklich gueltig
+     * gesetzt sein (typisierte Ablehnung sonst). Exposure intern in
+     * kanonischen U; relational fail-closed CORRECTION nie offener als MEAL.
+     * Die Bildschirm-Defaults sind reine Anzeige vor dem ersten Setzen.
+     */
+    CorrectionExposureLimitU("fuse_correction_exposure_limit_u", 5.0, 0.5, 20.0),
+    MealExposureLimitU("fuse_meal_exposure_limit_u", 5.0, 0.5, 20.0),
+    CorrectionDemandRatioCap("fuse_correction_demand_ratio_cap", 1.0, 0.05, 1.0),
+    MealDemandRatioCap("fuse_meal_demand_ratio_cap", 1.0, 0.05, 1.0),
+
+    /**
      * BG-Schwelle der Druckbedingung des Liveness-Kanals am TAG [mg/dl].
      *
      * Toni 22.08.: nicht hart codieren. Untergrenze 100: darunter waere die
@@ -940,6 +958,16 @@ enum class FuseBooleanKey(
      * Sperre [FuseIntKey.LivenessReArmMin].
      */
     LivenessChannelEnabled("fuse_liveness_channel_enabled", false),
+
+    /**
+     * policyMode-Schalter (Bauauftrag 7.5.7, Toni 29.08.): false = LEGACY
+     * (heutige Settings gelten unveraendert), true = CENTRAL_PROFILES.
+     * HART entweder/oder - keine min(alt,neu)-Mischgrenzen. Default AUS:
+     * ein Update veraendert nichts still. Die Aktivierung verlangt alle
+     * vier Profilwerte gueltig gesetzt (validate, typisierte Ablehnung).
+     * In Schritt A ohne jeden Dosier-Konsumenten (reine Struktur).
+     */
+    CentralProfilesEnabled("fuse_central_profiles_enabled", false),
 
     /**
      * WIEDEREINSTIEG NACH CGM-FUNKLUECKE (Toni 25.08. abends).
