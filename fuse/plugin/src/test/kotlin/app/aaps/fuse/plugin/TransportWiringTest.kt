@@ -8076,6 +8076,76 @@ class TransportWiringTest : TestBaseWithProfile() {
     }
 
     /**
+     * P1-Fix (Review 29.08. spaet): im zentralen Modus ist der Kanaldeckel
+     * die KONTEXTGRENZE - die Legacy-Prozentdeckel sind wirkungslos. Der
+     * kleinste zulaessige Deckel (20 Prozent = 1,6 U bei maxIOB 8, unter
+     * dem Lage-IOB 4,5; kleinere Werte fallen im readConfig auf den
+     * Basis-Key zurueck!)
+     * wuergt den Kanal im LEGACY-Modus vollstaendig; im Zentralmodus
+     * aendert er BITGLEICH nichts. Die Mutation "zurueck zum
+     * Prozentdeckel" macht exakt diesen Test rot.
+     */
+    @Test
+    fun `P1 - ein winziger Legacy-Kanaldeckel aendert die CENTRAL-Liveness nicht`(@TempDir dir: File) {
+        fun lauf(unterDir: String, deckelPct: Double, zentral: Boolean): List<FuseCycleRunner.Outcome> {
+            corrIobDeckel = deckelPct
+            mealIobDeckel = deckelPct
+            livenessLage(File(dir, unterDir))
+            centralAn = zentral
+            corrExpLimit = if (zentral) 8.0 else null
+            mealExpLimit = if (zentral) 8.0 else null
+            corrRatioCapZ = if (zentral) 1.0 else null
+            mealRatioCapZ = if (zentral) 1.0 else null
+            return (0 until 30).map { cycle() }
+        }
+        val winzig = lauf("winzig", 20.0, zentral = true)
+        val gross = lauf("gross", 90.0, zentral = true)
+        winzig.indices.forEach { i ->
+            assertEquals(gross[i].decision.smbU, winzig[i].decision.smbU, 1e-12, "Endmenge Zyklus $i")
+            assertEquals(gross[i].livenessLiftU, winzig[i].livenessLiftU, 1e-12, "Kanal-Hub Zyklus $i")
+            assertEquals(gross[i].decision.block, winzig[i].decision.block, "Block Zyklus $i")
+        }
+        val hub = winzig.firstOrNull { it.livenessLiftU > 0.0 }
+        assertTrue(hub != null, "der Kanal muss trotz 1,6-U-Legacy-Deckel liefern")
+        // Export: der Prozentdeckel ist im Zentralmodus NICHT ANWENDBAR
+        // (null), der Kanaldeckel ist die Kontextgrenze in U.
+        assertEquals(null, hub!!.livenessSelectedIobCapPercent)
+        assertEquals(8.0, hub.livenessProfileIobLimitU!!, 1e-9)
+        // GEGENPROBE: im LEGACY-Modus wirkt derselbe Deckel weiter und
+        // wuergt den Kanal - der Rueckweg bleibt unveraendert.
+        val legacy = lauf("legacy", 20.0, zentral = false)
+        assertTrue(legacy.none { it.livenessLiftU > 0.0 }, "LEGACY: der Prozentdeckel muss wuergen")
+    }
+
+    /**
+     * P1-Fix, Kennungs-Richtungen: die Lauf-Kennung folgt dem WIRKSAMEN
+     * Wert. Ein im Zentralmodus ignorierter Legacy-Deckel darf einen Lauf
+     * nicht beenden; eine Aenderung des wirksamen Exposure-Limits ist eine
+     * Bedienhandlung und beendet ihn.
+     */
+    @Test
+    fun `P1 - die Kennung folgt dem wirksamen Wert nicht dem ignorierten`(@TempDir dir: File) {
+        corrIobDeckel = 70.0
+        mealIobDeckel = 80.0
+        livenessLage(dir)
+        centralAn = true
+        corrExpLimit = 8.0
+        mealExpLimit = 8.0
+        corrRatioCapZ = 1.0
+        mealRatioCapZ = 1.0
+        var aktiv = false
+        repeat(22) { val o = cycle(); if (o.livenessActive) aktiv = true }
+        assertTrue(aktiv, "der Lauf muss stehen")
+        corrIobDeckel = 20.0 // im Zentralmodus IGNORIERT
+        val o1 = cycle()
+        assertTrue(o1.livenessExit != "CONFIG_CHANGED", "ein ignorierter Wert beendet keinen Lauf")
+        assertEquals(true, o1.livenessActive)
+        corrExpLimit = 7.5 // WIRKSAM
+        val o2 = cycle()
+        assertEquals("CONFIG_CHANGED", o2.livenessExit, "der wirksame Wert beendet den Lauf")
+    }
+
+    /**
      * Bauauftrag Paragraph 10, Pflichtfall "spaeterer Wiederherstellungs-
      * pfad": auch die CALM_BATCH-Freigabe steht unter der gemeinsamen
      * Endgrenze. Dieselbe Lage wie der CALM_BATCH-Basistest - einmal

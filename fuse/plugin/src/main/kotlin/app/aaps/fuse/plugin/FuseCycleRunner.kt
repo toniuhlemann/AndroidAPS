@@ -4352,14 +4352,32 @@ class FuseCycleRunner(
             // ist der Profil-Cap der KONTEXT-Cap - er ERSETZT die
             // Liveness-Alt-Caps, es gibt kein min(alt, neu) (keine
             // versteckte Altgrenze im zentralen Modus; validate garantiert
-            // dort beide Werte). Die Profil-IOB-Deckel bleiben in BEIDEN
-            // Modi stehen (7.4: bestehende Liveness-Begrenzungen erst nach
-            // ausdruecklich nachgewiesener Abloesung entfernen).
+            // dort beide Werte).
             val profilRatioCap =
                 if (cfg.centralProfilesEnabled) kontextDemandRatioCap!!
                 else if (markerPowerActive) cfg.livenessMealRatioCap
                 else cfg.livenessCorrectionRatioCap
-            val profilIobCapPct = if (markerPowerActive) cfg.livenessMealIobCapPercent else cfg.livenessCorrectionIobCapPercent
+            // P1-Fix (Review 29.08. spaet): DIESELBE Regel fuer die
+            // IOB-Deckel. Im zentralen Modus verwendet der Kanal DENSELBEN
+            // Raum wie die Endpruefung - sein Deckel IST die Kontextgrenze
+            // (das min mit globalem iobTH und maxIOB zieht headroomU unten,
+            // capIob + Transport belegen wie ueberall). Die Legacy-
+            // Prozentdeckel wirken NUR im LEGACY-Modus: 7.5.7 ersetzt den
+            // Parallelbetrieb ausdruecklich, und ein wirksamer Wert, der
+            // nicht im Policy-Hash steht, waere eine versteckte
+            // Parallelarchitektur. (Der fruehere 7.4-Verweis traegt nicht:
+            // er schuetzt den LEGACY-Pfad, nicht einen Parallelbetrieb im
+            // Zentralmodus.)
+            val profilIobCapPct: Double? =
+                if (cfg.centralProfilesEnabled) null
+                else if (markerPowerActive) cfg.livenessMealIobCapPercent
+                else cfg.livenessCorrectionIobCapPercent
+            val kanalDeckelU = profilIobCapPct?.let { it / 100.0 * state.maxIobU }
+                ?: kontextExposureLimitU!!
+            val kanalDeckelName =
+                if (profilIobCapPct != null) "livenessCap"
+                else if (markerPowerActive) "mealExposureLimit"
+                else "correctionExposureLimit"
             livenessProfil = dosingCtx.profile.name
             livenessProfilGrund = dosingCtx.reason.name
             livenessSelectedRatioCap = profilRatioCap
@@ -4382,6 +4400,17 @@ class FuseCycleRunner(
             val cfgRatioCorr =
                 if (cfg.centralProfilesEnabled) "Z" + cfg.correctionDemandRatioCap
                 else cfg.livenessCorrectionRatioCap.toString()
+            // P1-Fix: auch die IOB-Stellgroessen des AKTIVEN Modus - im
+            // zentralen Modus sind die wirksamen Werte die Exposure-Limits.
+            // Eine Aenderung des WIRKSAMEN Werts muss die Kennung treffen
+            // (Lauf endet als Bedienhandlung); eine Aenderung eines im
+            // Zentralmodus IGNORIERTEN Legacy-Deckels darf es nicht.
+            val cfgIobMeal =
+                if (cfg.centralProfilesEnabled) "Z" + cfg.mealExposureLimitU
+                else cfg.livenessMealIobCapPercent.toString()
+            val cfgIobCorr =
+                if (cfg.centralProfilesEnabled) "Z" + cfg.correctionExposureLimitU
+                else cfg.livenessCorrectionIobCapPercent.toString()
             val cfgJetzt = cfg.livenessBgMinDayMgdl.toString() + "|" +
                 cfg.livenessBgMinNightMgdl + "|" +
                 // M1: auch die KONFIGURIERTE MEAL-Schwelle - eine Aenderung
@@ -4391,8 +4420,8 @@ class FuseCycleRunner(
                 // Tag/Nacht KEIN CONFIG_CHANGED.
                 cfg.livenessBgMinMealMgdl + "|" +
                 cfg.mealArmCycles + "|" +
-                cfgRatioMeal + "|" + cfg.livenessMealIobCapPercent + "|" +
-                cfgRatioCorr + "|" + cfg.livenessCorrectionIobCapPercent + "|" +
+                cfgRatioMeal + "|" + cfgIobMeal + "|" +
+                cfgRatioCorr + "|" + cfgIobCorr + "|" +
                 cfg.livenessReArmMin
             // ERST gemerkt, ANGEWENDET erst nach den harten Riegeln (Audit
             // 22.08.): faellt die Aenderung mit einem gemessenen Riegel
@@ -4719,12 +4748,13 @@ class FuseCycleRunner(
                 smbRatio = liveRatio,
                 maxSmbU = cfg.maxSmbU,
             )
-            livenessProfileIobLimitU = profilIobCapPct / 100.0 * state.maxIobU
+            livenessProfileIobLimitU = kanalDeckelU
             val head = LivenessChannel.headroomU(
                 globalIobThU = state.iobThU,
-                // PROFIL-IOB-Deckel (§4); globales iobTH und maxIOB bleiben
+                // Kanaldeckel: LEGACY der Profil-Prozentdeckel, zentral die
+                // Kontextgrenze (P1-Fix); globales iobTH und maxIOB bleiben
                 // harte Obergrenzen im selben min().
-                livenessCapU = profilIobCapPct / 100.0 * state.maxIobU,
+                livenessCapU = kanalDeckelU,
                 maxIobU = state.maxIobU,
                 capIobU = state.capIobU,
                 transportU = transportModelledU,
@@ -4741,7 +4771,10 @@ class FuseCycleRunner(
             // Die bindende Grenze wird IMMER benannt (P0): erst die Deckel,
             // dann maxSMB, sonst war die Ratio selbst das Mass.
             livenessBinding = when {
-                head.headroomU < livenessCandidateU - 1e-9 -> head.binding
+                // P1-Fix: bindet der Kanaldeckel, traegt er im zentralen
+                // Modus den Namen der Kontextgrenze - denselben wie am Gate.
+                head.headroomU < livenessCandidateU - 1e-9 ->
+                    if (head.binding == "livenessCap") kanalDeckelName else head.binding
                 cfg.maxSmbU < liveRatio * bedarfU - 1e-9 -> "maxSmb"
                 // Der Cap war das Mass, wenn er die Basis real gekappt hat -
                 // sonst bleibt "smbRatio" die ehrliche Antwort.

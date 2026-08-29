@@ -772,7 +772,10 @@ class FuseStateExportTest {
         // ERSETZT die Alt-Caps, kein min(alt, neu)); Kontextblock vor der
         // State-Konstruktion (Fallback pflegt die Markerfrist mit) -
         // dosierwirksam nur im Modus CENTRAL_PROFILES.
-        assertEquals(42, FuseStateJson.RULE_SET_VERSION)
+        // v43 P1-Fix: der Liveness-Kanaldeckel ist im Zentralmodus die
+        // Kontextgrenze; die Legacy-Prozentdeckel sind dort wirkungslos
+        // (vorher versteckte Parallelarchitektur ausserhalb des Hashs).
+        assertEquals(43, FuseStateJson.RULE_SET_VERSION)
         assertTrue(
             FuseStateJson.hashOf(cfg)!!.isNotEmpty(),
             "und der Hash bleibt berechenbar",

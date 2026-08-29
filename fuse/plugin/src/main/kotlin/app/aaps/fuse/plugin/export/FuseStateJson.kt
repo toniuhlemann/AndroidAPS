@@ -307,7 +307,16 @@ object FuseStateJson {
     // Cap NIE um (Invariante 5). Kontextblock jetzt VOR der State-
     // Konstruktion: Fallback-/Abbruch-Zyklen pflegen die Markerfrist
     // mit (dieselben Werte, nur frueher). Im LEGACY-Modus bitgleich.
-    const val RULE_SET_VERSION = 42
+    // v43 (29.08. spaet, P1 aus Tonis Review): im Modus CENTRAL_PROFILES
+    // ist der Liveness-Kanaldeckel die KONTEXTGRENZE (derselbe Raum wie
+    // die Endpruefung); die Legacy-Prozentdeckel (livenessMeal-/
+    // livenessCorrectionIobCapPercent) sind dort vollstaendig wirkungslos
+    // - vorher wirkten sie als versteckte Parallelarchitektur weiter,
+    // OHNE im Policy-Hash zu stehen. Lauf-Kennung traegt die
+    // Exposure-Limits statt der ignorierten Deckel;
+    // selectedIobCapPercent exportiert im Zentralmodus null. Im
+    // LEGACY-Modus bitgleich.
+    const val RULE_SET_VERSION = 43
 
     /** Schema des Trail-Datensatzes - s. die Notiz an der Schreibstelle. */
     const val SCHEMA_VERSION = 4
