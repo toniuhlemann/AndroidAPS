@@ -8076,6 +8076,66 @@ class TransportWiringTest : TestBaseWithProfile() {
     }
 
     /**
+     * Bauauftrag Paragraph 10, Pflichtfall "spaeterer Wiederherstellungs-
+     * pfad": auch die CALM_BATCH-Freigabe steht unter der gemeinsamen
+     * Endgrenze. Dieselbe Lage wie der CALM_BATCH-Basistest - einmal
+     * LEGACY (Referenz: voller Batch), einmal zentral mit knapper
+     * Kontextgrenze: der Batch wird gekappt, der Rest bleibt SOFORT in
+     * der Bilanz abrechenbar offen, und kein Zyklus der neuen Mengenregel
+     * erzeugt Zero-TBR. Der Marker ist hier VORGEFUNDEN (mahlzeitMitRuhe
+     * setzt ihn vor dem ersten Zyklus) und pinnt nach A1 nie - der
+     * Kontext ist CORRECTION, die 1,6er-Grenze die wirksame.
+     */
+    @Test
+    fun `B - der Wiederherstellungspfad steht unter der gemeinsamen Endgrenze`(@TempDir dir: File) {
+        fun ruheBatch(zentral: Boolean, unterDir: String): List<FuseCycleRunner.Outcome> {
+            centralAn = zentral
+            corrExpLimit = if (zentral) 1.6 else null
+            mealExpLimit = if (zentral) 2.0 else null
+            corrRatioCapZ = if (zentral) 1.0 else null
+            mealRatioCapZ = if (zentral) 1.0 else null
+            return ruheLauf(
+                File(dir, unterDir), app.aaps.fuse.core.controller.UpfrontRecovery.CalmTreatment.CALM_BATCH,
+                zyklen = 45, abstiegBg = 82.0, abstiegRate = -0.5, abstiegIob = 2.0,
+                wendeZyklus = 6, ruheRate = 0.10, ruheIob = 0.3,
+            )
+        }
+        val frei = ruheBatch(false, "legacy")
+        val anfFrei = frei.withIndex().filter { it.value.phaseAUpfrontRequestedU > 0.0 }
+        assertEquals(1, anfFrei.size, "die Referenz muss den Batch genau einmal anfordern")
+        val batchU = anfFrei.single().value.phaseAUpfrontRequestedU
+        assertTrue(batchU > 1.4, "die Referenz muss OBERHALB der knappen Grenze liegen ($batchU)")
+
+        val eng = ruheBatch(true, "zentral")
+        val anfEng = eng.withIndex().filter { it.value.phaseAUpfrontRequestedU > 0.0 }
+        assertTrue(anfEng.isNotEmpty(), "auch der enge Lauf muss den Batch anfordern")
+        val (iAnf, anf) = anfEng.first()
+        // Die Endgrenze ist verbindlich - ob sie in der Grant-Bildung
+        // (AuthorizedLift) oder am Gate greift: die Anforderung liegt
+        // STRIKT unter der Referenz und im Raum (1,6 - capIob 0,3 = 1,3).
+        assertTrue(
+            anf.phaseAUpfrontRequestedU < batchU - 1e-9,
+            "die Grenze muss den Batch real kappen: ${anf.phaseAUpfrontRequestedU} vs $batchU",
+        )
+        eng.forEach { o ->
+            assertTrue(
+                o.decision.smbU <= 1.3 + 1e-9,
+                "keine Endmenge darf den Kontext-Raum reissen: ${o.decision.smbU}",
+            )
+            if (o.decision.block == FuseController.Block.EXPOSURE_LIMIT) assertTrue(
+                o.decision.tbr != FuseController.TbrAction.ZERO_TEMP,
+                "die neue Mengenregel erzeugt nie eigenstaendig Zero-TBR",
+            )
+        }
+        // VERSCHIEBEN, NIE VERWERFEN: der nicht angeforderte Rest steht im
+        // Folgezyklus weiter als offener Sofortanteil in der Bilanz.
+        assertTrue(
+            eng[iAnf + 1].phaseAUpfrontPendingU > 0.0,
+            "der gekappte Rest muss abrechenbar offen bleiben",
+        )
+    }
+
+    /**
      * Fall 1 - die 22.08.-Tagesform: im Schwanz-Deadlock liefert der Kanal
      * die MENGENLINIE, nicht den Saegezahn. Scharf gegen die Mutation
      * "Tail-Kappe versehentlich noch aktiv": in jedem Hub-Zyklus ist die
