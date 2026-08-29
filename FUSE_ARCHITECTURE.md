@@ -5,7 +5,7 @@ This document describes the architecture implemented on the FUSE branches. It is
 Chapters 1-3 say what FUSE is and how one cycle is ordered; 4-13 follow that order layer by layer; 14-18 cover failure direction, delimitation, open work and the source map. Terms are defined once in the glossary and then used without further explanation.
 
 > [!WARNING]
-> FUSE is experimental insulin-dosing research software. Since 15.08.2026 it has been dosing a real pump (Medtrum Nano) for its single author; before that it ran only against VirtualPump. That is a change in exposure, not a change in maturity: one user, one pump model, one CGM, days of data, no second site, no independent review, no clinical evaluation. Pump eligibility is deliberately narrow and empirically justified - what is allowed is what has actually been run, not what shares a driver. Reading this document is not sufficient preparation for building or using it.
+> FUSE is experimental insulin-dosing research software. Since 15.08.2026 it has been dosing a real pump (Medtrum Nano) for its single author; before that it ran only against VirtualPump. That is a change in exposure, not a change in maturity: one user, one pump model, one CGM, about two weeks of field data, no second site, no independent review, no clinical evaluation. Pump eligibility is deliberately narrow and empirically justified - what is allowed is what has actually been run, not what shares a driver. Reading this document is not sufficient preparation for building or using it.
 
 ## 1. Scope and design target
 
@@ -52,6 +52,9 @@ The ordinary meaning also fits: FUSE combines (“fuses”) signal, profile, ins
 | tail liability | What insulin will still do after the guard's horizon (chapter 9). |
 | capIOB | `max(netIOB, bolusIOB)` - the IOB figure the dose caps read (chapter 7). |
 | iobTH | The boundary between the fast channel (SMB) and the slow channel, not a total ceiling: above it the SMB channel closes while basal continues. |
+| dosing profile / dosing context | Every cycle is assigned CORRECTION (the ordinary state) or MEAL (only while a marker press has pinned a meal authorization, default 120 min). The profile selects the exposure limit and the demand-ratio cap (chapter 7). |
+| exposure gate | The binding final amount check of every cycle: `min(iobTH, maxIOB, profile exposure limit)` minus occupied exposure, rounded down to the pump raster (chapter 7). |
+| liveness channel | A bounded follow-up channel that makes already-recognised mid-path demand deliverable when guard and tail starve it; merged as `max(normal, liveness)`, never added (chapter 7). |
 | liability | An amount FUSE has handed over and must keep counting against itself until a written fact resolves it - either delivery or proof that it never left. |
 | commitment ledger | The persistent store that owns those liabilities across cycles and restarts (chapter 11). |
 | published | Handed over into the AAPS result. Not a network publication. |
@@ -99,7 +102,7 @@ The cycle order is implemented in [`FuseCycleRunner`](fuse/plugin/src/main/kotli
 4. amount;
 5. actuation channel.
 
-Within step 4, the amount passes a fixed chain of stages, and the order is part of the contract: base ratio, candidate search, candidate gate, prime release lift, marker floor, ledger hold gate, sub-step accumulation, TBR translation, publication gate. Every stage may only reduce the amount, with exactly two documented exceptions that lift it - the prime release and the marker floor, both of which require an explicit human authorization and are themselves bounded. No stage may invent a missing input or bypass a failed safety prerequisite. The stage that last touched the caps is exported by name (`base`, `candidate`, `prime`, `subStep`), so 'why 0.2 U?' is answered from the record rather than reconstructed.
+Within step 4, the amount passes a fixed chain of stages, and the order is part of the contract: central dosing-context decision, base ratio, candidate search, candidate gate, the meal releases (prime, foundation, upfront), marker floor, the liveness merge, the binding exposure check, ledger hold gate, sub-step accumulation, TBR translation, publication gate. Every stage may only reduce the amount; the documented exceptions that lift it - the meal releases, the marker floor and the liveness merge - each require either an explicit human authorization or an already-recognised, separately capped demand, and every lift stays under the exposure check: after it, no stage raises the amount. No stage may invent a missing input or bypass a failed safety prerequisite. The typed source of the final amount and the limit that actually bound are exported every cycle, so 'why 0.2 U?' is answered from the record rather than reconstructed.
 
 The runner constructs one coherent cycle snapshot. Pump type, profile, IOB, signal time, and treatment view must not be independently re-read halfway through a decision because two individually valid reads can describe different physical moments. The snapshot is assembled and checked in [`CycleAssembly.kt`](fuse/core/src/main/kotlin/app/aaps/fuse/core/adapter/CycleAssembly.kt) and [`CoreInputGuard.kt`](fuse/core/src/main/kotlin/app/aaps/fuse/core/adapter/CoreInputGuard.kt); `CycleAssemblyTest`, `CoreInputGuardTest` and `CycleIobValidityTest` hold the guarantee.
 
@@ -202,6 +205,11 @@ Relevant code:
 - [`IobThreshold.kt`](fuse/core/src/main/kotlin/app/aaps/fuse/core/controller/IobThreshold.kt)
 - [`EvidenceStock.kt`](fuse/core/src/main/kotlin/app/aaps/fuse/core/controller/EvidenceStock.kt)
 - [`LedgerHoldGate.kt`](fuse/core/src/main/kotlin/app/aaps/fuse/core/controller/LedgerHoldGate.kt)
+- [`DosingContext.kt`](fuse/core/src/main/kotlin/app/aaps/fuse/core/controller/DosingContext.kt)
+- [`ExposureGate.kt`](fuse/core/src/main/kotlin/app/aaps/fuse/core/controller/ExposureGate.kt)
+- [`AuthorizedLift.kt`](fuse/core/src/main/kotlin/app/aaps/fuse/core/controller/AuthorizedLift.kt)
+- [`SmbStatus.kt`](fuse/core/src/main/kotlin/app/aaps/fuse/core/controller/SmbStatus.kt)
+- [`LivenessChannel.kt`](fuse/core/src/main/kotlin/app/aaps/fuse/core/controller/LivenessChannel.kt)
 
 The controller separates four questions:
 
@@ -214,13 +222,14 @@ Every exported cycle answers these four questions in this order, which is also t
 
 The candidate search evaluates candidate-dependent trajectory effects. This cannot be replaced by applying a list of scalar caps after the fact: the lower path itself changes with candidate size.
 
-The final amount is checked against three kinds of limit: what the glucose curve allows (the near-horizon guard floor and the long-horizon tail liability); what the insulin budget allows (per-cycle `maxSMB`, iobTH and maxIOB headroom against `capIOB`, and amounts already handed over but not yet visible); and what the situation allows (pump increment and sub-step accumulation, episode release envelopes, deadbands, health and validity gates). Limits apply to the final amount, not to independently added dose channels. The binding limit - the one that actually cut the amount - is exported by name every cycle.
+The final amount is checked against three kinds of limit: what the glucose curve allows (the near-horizon guard floor and the long-horizon tail liability); what the insulin budget allows (per-cycle `maxSMB`, iobTH and maxIOB headroom against `capIOB`, the active dosing profile's exposure limit, and amounts already handed over but not yet visible); and what the situation allows (pump increment and sub-step accumulation, episode release envelopes, deadbands, health and validity gates). Limits apply to the final amount, not to independently added dose channels. The binding limit - the one that actually cut the amount - is exported by name every cycle.
 
 In detail:
 
 - per-cycle `maxSMB`;
 - iobTH headroom;
 - maxIOB headroom;
+- the active dosing profile's exposure limit and demand-ratio cap;
 - persistent transport commitment;
 - near-horizon guard floor;
 - long-horizon tail liability;
@@ -237,6 +246,32 @@ capIOB = max(netIOB, bolusIOB)
 ```
 
 Net IOB is still calculated, exported and displayed; it is simply not the number the caps read. iobTH itself is the boundary between the fast channel and the slow one, not a total ceiling: above it the SMB channel closes while basal continues. Its conversion happens exactly once, and the formula identity is exported (`IobThreshold.FORMULA_ID`); the autoISF legacy formula is deliberately not inherited.
+
+### Central dosing profiles: CORRECTION and MEAL
+
+Since 29.08.2026 the controller runs one central dosing policy and no other ([`DosingContext.kt`](fuse/core/src/main/kotlin/app/aaps/fuse/core/controller/DosingContext.kt), [`ExposureGate.kt`](fuse/core/src/main/kotlin/app/aaps/fuse/core/controller/ExposureGate.kt), [`SmbStatus.kt`](fuse/core/src/main/kotlin/app/aaps/fuse/core/controller/SmbStatus.kt)). Every cycle is assigned exactly one profile before any amount is computed, from the same coherent snapshot:
+
+- **CORRECTION** is the ordinary state - no precondition, nothing to switch on.
+- **MEAL** exists only while a marker press has pinned a meal power authorization, and only for the period frozen at the press (default 120 min, configurable). The pin is persisted; a marker merely found at process start does not create retroactive MEAL. The interval is half open: at the deadline the cycle is already CORRECTION again - no mode switch, no cleanup duty.
+
+Kinematic windows, a high drive, a running rise or a still-living evidence episode deliberately do NOT reach MEAL. The measured counter-example is the correction burst of 27.08.2026: it ran on a kinematic-only window with an empty authorization and delivered 2.5 U in twelve tail-headroom cycles, precisely because no context-dependent ceiling existed in the normal path while iobTH and maxIOB still left 4-6 U of room.
+
+The profile decides two numbers:
+
+1. **The exposure limit.** The exposure gate certifies the finished amount of every cycle - whatever stage produced it - against `min(iobTH, maxIOB, profile exposure limit)` minus the exposure already occupied (capIOB plus open transport liability), rounded DOWN to the pump raster. It runs at both amount-producing sites (main path after the liveness merge, and the fallback path), it is a pure amount check - deliberately no second guard/tail run on the merged amount - and after it no stage raises the amount; the authorized grant is built under the same context headroom, so a grant never comes into existence above the room. A full zero of a positive request is the named block `EXPOSURE_LIMIT`; the check never creates a protective zero TBR on its own.
+2. **The demand-ratio cap.** The fraction of computed demand one cycle may express is `min(base ratio, profile cap)`; the liveness channel's own ceiling is the same profile exposure limit.
+
+The cycle's SMB outcome is exported TYPED: `FREE`, `STOP` with a typed stop reason (`EXPOSURE`, `IOB_TH`, `MAX_IOB`, `GUARD`, `TAIL`, `HEALTH`, `LEDGER`, `PUMP`, `SAFETY`, `DESCENT`, `DEFERRED`), `NO_DEMAND` - deliberately not an alarm state - or `UNKNOWN`, together with the requested, capped and published amounts and the typed source of the final amount (`NORMAL`, `PRIME`, `FOUNDATION`, `MEAL_UPFRONT`, `DEFERRED_RELEASE`, `LIVENESS`, ...). Displays derive nothing from reason texts.
+
+The four profile values (two exposure limits, two ratio caps) ship as real runtime and migration defaults - a working start set, not a therapy recommendation - and an update never overwrites a value the user has set. The exported `policy.values.policyMode` is the constant `CENTRAL_PROFILES`: older trails that still carry the earlier two-mode field remain readable, but the runtime no longer has a second mode.
+
+### The liveness channel
+
+Relevant code: [`LivenessChannel.kt`](fuse/core/src/main/kotlin/app/aaps/fuse/core/controller/LivenessChannel.kt).
+
+The measured motivation (22.08.2026): at high glucose after meals, the carbohydrate-free pessimistic curve and the DIA tail rationed or zeroed every delivery while the main path itself kept recognising 1.8-2.1 U of demand - in 93 of 93 deadlock cycles that day, the certified lower path lay a median of 97 mg/dl below the minimum that actually occurred, and 90 of the day's 116 minutes above 180 were blocked minutes with RECOGNISED demand.
+
+The channel makes that already-recognised mid-path demand deliverable instead of inventing its own: `final = max(normal, liveness)` - never an addition - where the liveness candidate passes its own ratio cap, the profile exposure limit as its channel ceiling, global iobTH and maxIOB, transport liability and the pump raster. Guard and tail stay fully in force for the normal path and remain visible in the export; inside the channel they are neither veto nor cap, because that would reproduce exactly the sawtooth the channel exists to break. Measured falling, a measured low, rebound windows, signal faults, ledger holds and the pump and transport gates remain absolute for both paths. The channel arms only after a persistent pressure condition (configurable day/night/meal glucose thresholds), exits on a confirmed downward turn and on every manual intervention, and then holds a restart-safe re-arm lock. It is switchable and ships off.
 
 ### Deadbands
 
@@ -262,7 +297,7 @@ FUSE exposes exactly one meal control: a marker. It is not a carbohydrate estima
 
 The contract is amount-based:
 
-- one configured envelope in insulin units, default 1.2 U, configurable up to 4 U;
+- one configured envelope in insulin units, default 1.2 U, configurable up to 6 U;
 - a consumable remainder and a per-cycle maximum;
 - a deliverable release window, configurable from 5 to 45 minutes (default 15), inside a hard wall-clock ceiling of 45 minutes;
 - restart-safe accounting in the ledger;
@@ -272,6 +307,8 @@ The contract is amount-based:
 Withdrawal deliberately does not reset the books. Ending the episode as well would let 'press by mistake, withdraw, press properly' fund the envelope a second time. Identity and revocation are therefore separate facts (`MarkerEpisode.startsNewEpisode`, `MarkerEpisodeGate.creditRevoked`, and the permanently consumed anchor `lastConsumedMarkerTs`).
 
 The advance release is spread over the window instead of being delivered at once. The reason is measured: the same amount delivered inside a few minutes produced an IOB peak that then blocked the guard for hours - precisely while absorption was arriving. Spreading gives the same head start with a lower peak at the moment it matters.
+
+Two later refinements shape the same advance without changing its budget. The meal foundation ([`MealFoundation.kt`](fuse/core/src/main/kotlin/app/aaps/fuse/core/controller/MealFoundation.kt)) splits the authorized amount into an immediate share and a windowed remainder that is paid out over a configurable window and stays revocable - it distributes budget over time, it never creates budget, and its parameters are frozen when the meal arms, so changing a setting cannot retroactively change a running meal. And when the cycle can show that delivering the advance right now is not safe - an unresolved transport backlog, a measured downward risk - the release is deferred rather than silently dropped ([`DeferredPrime.kt`](fuse/core/src/main/kotlin/app/aaps/fuse/core/controller/DeferredPrime.kt)): the deferral is a typed, exported state, and the deferred share is released or expires under the same books.
 
 The marker-authorized amount can coexist with a protective zero TBR. That required giving the SMB block cause a type: a safety-zero model judgment can be overridden for the marker-funded amount, while pump busy, invalid input, missing snapshot, fake extended bolus, ledger failure, or transport failure cannot (chapter 10).
 
@@ -284,7 +321,7 @@ The authorization contract has four parts, and each is a floor rather than a ski
 
 The dividing line is not dangerous versus harmless, it is who knows better. The human knows about the food; the model does not. The human knows nothing about the pump, the transport path, the ledger or a missing measurement, so those are never overridable.
 
-The marker's special rights and the marker as CONTEXT are not the same duration. The boost ends with the sustained turn and at the latest after 45 minutes (configurable 0-90); the onset channel treats a marker as context for 90 minutes; the episode itself runs far longer (chapter 8.1).
+The marker's special rights and the marker as CONTEXT are not the same duration. The boost ends with the sustained turn and at the latest after 45 minutes (configurable 0-90); the onset channel treats a marker as context for 90 minutes; the episode itself runs far longer (chapter 8.1). The dosing-profile authorization (chapter 7) is a further, separate clock: MEAL exposure room lasts for the period frozen at the press (default 120 min) and then falls back to CORRECTION on its own.
 
 Six named denials distinguish cases that require different human reactions. `MARKER_ALREADY_CONSUMED` - do nothing, the press was counted. `MARKER_CLOCK_ROLLBACK` - pressing again does NOT help. `MARKER_EVENT_NOT_DURABLE` - the UI shows 'marker active' while no credit exists, which is the one case a user must be able to recognize.
 
@@ -362,7 +399,9 @@ Three further rules carry the channel policy:
 
 The SMB block reason has a TYPE, not a free-text string: `NONE`, `SAFETY_ZERO`, `PUMP_BUSY`, `INVALID_INPUT`, `SAFETY_SNAPSHOT_MISSING`, `FAKE_EXTENDED`, `FAULT`. Exactly one of them - `SAFETY_ZERO`, a model judgement - can be overridden by manual authorization. The others are not judgement calls; they are statements that the machinery is not in a fit state to dose. This typing is what makes chapter 8 possible at all.
 
-The correction-path review has since been carried out; it produced the early exit from a protective zero described above. What remains open is only the positive TBR itself - whether a slow positive rate improves sub-increment corrections and deadband behaviour without creating an undesirable 30-minute commitment. Until that is decided, documentation must not claim the correction architecture is finished.
+Two later rules tighten the protective-zero side without touching amounts: a protective zero originates only from the explicit low-threat gate and is latched, so it cannot flap minute by minute; and a measured-descent gate holds direct doses while the measured recent course itself still shows an uncertified descent risk - a typed stop reason (`DESCENT`), not a silent zero. Profile basal is the normal state; a zero TBR is the exception that has to justify itself, never a default.
+
+The correction-path review has since been carried out twice: it first produced the early exit from a protective zero described above, and on 29.08.2026 the correction dosing itself was placed under the central dosing policy (chapter 7). What remains open is only the positive TBR itself - whether a slow positive rate improves sub-increment corrections and deadband behaviour without creating an undesirable 30-minute commitment. Until that is decided, documentation must not claim the correction architecture is finished.
 
 ## 11. Persistent commitment ledger
 
@@ -462,6 +501,9 @@ Every cycle writes a JSONL evidence record to `Documents/aapsLogs/fuse_state_his
 - signal, phase, health, and reset causes;
 - trajectory components and lower-path minima;
 - calculated SMB/TBR and binding limit;
+- the dosing context: profile, typed reason, authorization identity and expiry;
+- the typed SMB status: state, stop reason, requested/capped/published amounts, and the typed source of the final amount;
+- the exposure view: occupied exposure, effective limit, context limit, headroom, and the name of the binding bound;
 - iobTH/maxIOB headroom and `capIOB`;
 - guard and tail components;
 - marker state, episode spending, and authorization;
@@ -474,7 +516,7 @@ Every cycle writes a JSONL evidence record to `Documents/aapsLogs/fuse_state_his
 - patch-epoch applicability and reason;
 - named gaps instead of silently absent mandatory fields.
 
-Each record carries `schemaVersion` (currently 4) and `ruleSetVersion` (currently 10), plus `ruleSetVersionIsManual: true`. The rule-set number is maintained by hand: an evaluation must not rely on it blindly, or it will treat two different rule sets as one. `policy.hash` over the actual configuration values is the machine-checkable half of that pair. A measurement window is only valid with one `build.head` AND one rule set.
+Each record carries `schemaVersion` (currently 4) and `ruleSetVersion` (currently 44), plus `ruleSetVersionIsManual: true`. Since rule set 44, `policy.values.policyMode` is the constant `CENTRAL_PROFILES`. The rule-set number is maintained by hand: an evaluation must not rely on it blindly, or it will treat two different rule sets as one. `policy.hash` over the actual configuration values is the machine-checkable half of that pair. A measurement window is only valid with one `build.head` AND one rule set.
 
 The UI is a view of the same cycle state, not a second control source. The compact dashboard shows operational state first; the full technical trace remains available for diagnosis.
 
@@ -527,10 +569,13 @@ Whether these differences produce better glucose outcomes must be established by
 ### Closed since the first version of this document
 - clean single-build meal runs (point 1) - carried out; the run is no longer the bottleneck;
 - correction-path review (point 3) - carried out; it produced the early exit from a protective zero (chapter 10);
-- FUSE tab and preference language (point 5) - rebuilt on 15.08.2026: five settings entry points, a slimmed tab, and a settings report.
+- FUSE tab and preference language (point 5) - rebuilt on 15.08.2026: five settings entry points, a slimmed tab, and a settings report;
+- the high-glucose dosing deadlock of 22.08.2026 - answered by the liveness channel (chapter 7);
+- the missing context-dependent ceiling behind the correction burst of 27.08.2026 - closed on 29.08.2026 by the central dosing policy: dosing context, exposure gate, typed SMB status (chapter 7).
 
 ### Open
 - hand-off from the advance release into confirmed absorption at large and slowly absorbed meals - the evidence stock (chapter 8.1) is the mechanism, its four parameters are unswept alpha hypotheses;
+- sweeping the central profile start set (two exposure limits, two ratio caps) against live data - the shipped values are a working start set, tuned one value at a time;
 - false-marker behaviour in life;
 - formal FCL/HCL switching and the semantics of entered carbohydrates and manual boluses;
 - whether a positive TBR is useful below SMB granularity or inside deadbands.
@@ -564,9 +609,13 @@ The repository builds `3.4.2.5+fuse1.0.2-toni`. The `1.0.x` line means 'the auth
 | Transport journal | `DeliveryJournal` | `DeliveryJournalTest`, `TransportWiringTest` |
 | Ledger hold as last stage | `LedgerHoldGate` | `LedgerHoldGateTest` |
 | Cycle snapshot coherence | `CycleAssembly`, `CoreInputGuard` | `CycleAssemblyTest`, `CoreInputGuardTest`, `CycleIobValidityTest` |
+| Dosing context and exposure gate | `DosingContext`, `ExposureGate`, `AuthorizedLift` | `DosingContextTest`, `ExposureGateTest`, `TransportWiringTest` |
+| Typed SMB status | `SmbStatus` | `SmbStatusTest` |
+| Liveness channel | `LivenessChannel` | `LivenessChannelTest` |
+| Central profile defaults and backup | `FuseKeys`, `FuseCentralProfileBackup` | `ConfigBoundsTest`, `FuseCentralProfileBackupTest` |
 | UI semantics | `FuseScreenModel`, `FuseSettingsReport` | `FuseScreenModelTest`, `FuseSettingsReportTest` |
 
-101 test classes and 1319 test methods run under `fuse/**` on the JVM. Tested here means covered by automated tests; it does not mean clinically evaluated and it does not mean observed to behave well in life. The user interface is the known weak spot: three defects were found by hand on the device on 10.08.2026 and none of them by the test suite of the day, which is why a static idiom watcher exists and why UI work counts as finished only after a look at the device.
+143 test classes and 2172 test methods run under `fuse/**` on the JVM. Tested here means covered by automated tests; it does not mean clinically evaluated and it does not mean observed to behave well in life. The user interface is the known weak spot: three defects were found by hand on the device on 10.08.2026 and none of them by the test suite of the day, which is why a static idiom watcher exists and why UI work counts as finished only after a look at the device.
 
 CI runs the FUSE modules plus the AAPS modules containing unavoidable core changes. See [the workflow](.github/workflows/fuse-architecture-ci.yml) and [the porting matrix](FUSE_UPSTREAM_PORTING_MATRIX.md).
 

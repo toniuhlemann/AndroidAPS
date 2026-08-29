@@ -11,7 +11,7 @@ Merge zu tun ist.
 dokumentierte **additive** Änderungen wieder baubar sein, **ohne Pumpentreiberlogik erneut
 zu analysieren oder zu portieren**.
 
-**Stand:** 2026-08-09 · Basis des FUSE-Zweigs: `9e7658cd76` (erster `fuse/`-Commit) ·
+**Stand:** 2026-08-29 · Basis des FUSE-Zweigs: `9e7658cd76` (erster `fuse/`-Commit) ·
 Upstream-Basis des Forks: **`3.4.2.5`** (`buildSrc/.../Versions.kt`:
 `3.4.2.5+fuse1.0.0-toni`; `aaps-ci.yml` fährt `3.4.2.5-dev`). Der Tag `3.4.2.4` auf
 `origin/master` ist ein älterer Stand des gespiegelten Upstream-Zweigs und **nicht** die
@@ -113,6 +113,8 @@ ablesen müsste, was das System getan hat.
 | `core/interfaces/.../overview/OverviewData.kt` | FUSE-Felder | B | Felder ergänzen |
 | `core/interfaces/.../overview/OverviewMenus.kt` | `FUSE_DRV`, `FUSE_GRD` | L | zwei Enum-Werte |
 | `core/graph/.../MealMarkerDataPoint.kt` | Marker-Datenpunkt | **N** | kommt mit |
+| `core/ui/.../dialogs/FuseMarkerDialog.kt` | Marker-Dialog (mit/ohne Vorschuss, Rücknahme) | **N** | kommt mit. **Achtung, kein Schmuck:** der einzige Bedienknopf. Fällt er beim Merge weg, regelt FUSE weiter, aber nur noch CORRECTION — keine Mahlzeiten-Erklärung mehr. Trotzdem §3: der Regler selbst bleibt identisch |
+| `core/ui/res/values/strings.xml` | Dialog-Beschriftungen | L | Einträge ergänzen |
 | `core/graph/.../Shape.kt`, `PointsWithLabelGraphSeries.kt` | Marker-Form | B | Zweig ergänzen |
 | `core/ui/res/{colors,styles,attrs}.xml` | Marker-Farben, hell und dunkel | L | Einträge ergänzen |
 | `plugins/main/.../overview/{OverviewModule,OverviewDataImpl,OverviewFragment,OverviewMenusImpl,GraphData}.kt` | FUSE-Overlay im Hauptschirm | B | **teuerste Stelle dieses Blocks** — Upstream fasst die Overview oft an. Bei Konflikt: Overlay weglassen, Rest bauen |
