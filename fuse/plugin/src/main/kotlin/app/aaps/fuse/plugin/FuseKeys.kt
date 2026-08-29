@@ -365,14 +365,14 @@ enum class FuseDoubleKey(
      * Marker-Autorisierung jede Druckzaehlung, waehrend r laengst >= 1 lief
      * und der Normalpfad GUARD-gedeckelt war.
      *
-     * UNKONFIGURIERT folgt die MEAL-Schwelle der bisherigen wirksamen
-     * Tag-/Nachtschwelle (neutraler Altpfad, getIfExists-null im
-     * Config-Bau - der Default hier ist reine Anzeige). CORRECTION behaelt
-     * Tag/Nacht IMMER. Untergrenze 80: unter der Vollmacht darf die
-     * Schwelle nahe an den Zielbereich, aber nie unter den Guard-Boden-
-     * Bereich - die gemessenen Riegel (Tief, Fallen, Rebound) bleiben
-     * davon unberuehrt absolut. KEIN Live-Default durch diesen Bau -
-     * Toni setzt.
+     * ECHTER Startsatz-Default 110 (Toni 29.08. nachts, aus den beiden
+     * Mahlzeitenfaellen: ~45/35 min frueherer Druck als 140, ohne direkt
+     * ueber Ziel zu zuenden) - der fruehere Tag-/Nacht-Fallback ist mit
+     * dem CENTRAL-only-Cleanup beendet. CORRECTION behaelt Tag/Nacht
+     * IMMER. Untergrenze 80: unter der Vollmacht darf die Schwelle nahe
+     * an den Zielbereich, aber nie unter den Guard-Boden-Bereich - die
+     * gemessenen Riegel (Tief, Fallen, Rebound) bleiben davon unberuehrt
+     * absolut.
      */
     LivenessBgMinMealMgdl("fuse_liveness_bg_min_meal_mgdl", 110.0, 80.0, 250.0),
 
@@ -460,9 +460,9 @@ enum class FuseIntKey(
      *
      * CORRECTION bleibt IMMER bei den drei Druckzyklen (ARM_STREAK) -
      * autoISF-artige Sofortreaktion gehoert nur der autorisierten
-     * Mahlzeit. Default 3 = neutraler Altbestand: ein Update veraendert
-     * nichts, erst ein bewusst gesetzter kleinerer Wert beschleunigt.
-     * Keine Wahl des Live-Werts vor Schritt C - Toni setzt.
+     * Mahlzeit. Startsatz-Default 1 (Toni 29.08. nachts): unter der
+     * ausdruecklichen Vollmacht reagiert der Kanal im ersten vollstaendig
+     * passenden Zyklus.
      */
     MealArmCycles("fuse_meal_arm_cycles", 1, 1, 10),
 

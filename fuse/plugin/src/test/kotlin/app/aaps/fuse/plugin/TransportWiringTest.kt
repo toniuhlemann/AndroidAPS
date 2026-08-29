@@ -7999,6 +7999,39 @@ class TransportWiringTest : TestBaseWithProfile() {
         )
     }
 
+    /**
+     * REVIEW-REGRESSION (30.08.): Tonis Ziel-Konstellation end-to-end -
+     * Marker autorisiert, HUELLE 0, Fundament AUS. Das Profil ist trotzdem
+     * MEAL (die Vollmacht haengt am beobachteten Marker, nicht an einer
+     * Direktdosis), und bei Druck entsteht ein REAKTIVER Kandidat aus dem
+     * Liveness-Kanal - die Mahlzeit ist ohne jede Huelle versorgbar.
+     * Ohne Huelle darf dabei KEINE Direktdosis angefordert werden.
+     */
+    @Test
+    fun `marker mit huelle null und fundament aus traegt MEAL und reagiert auf druck`(@TempDir dir: File) {
+        livenessLage(dir)
+        fundamentAn = false
+        aufschubAn = false
+        primeHuelleU = 0.0
+        markerAuthorized = true
+        mealBgMin = 110.0
+        mealArmZyklen = 1
+        repeat(7) { cycle() } // gesunde Zyklen - erst dann pinnt ein Druck
+        markerAt = clock + 60_000L
+        var meal: FuseCycleRunner.Outcome? = null
+        var reaktiv: FuseCycleRunner.Outcome? = null
+        repeat(30) {
+            val o = cycle()
+            if (meal == null && o.dosingContextProfile == "MEAL") meal = o
+            if (reaktiv == null && o.livenessLiftU > 0.0) reaktiv = o
+            assertEquals(0.0, o.phaseAUpfrontRequestedU, 1e-9, "ohne Huelle keine Direktdosis")
+        }
+        assertTrue(meal != null, "die Vollmacht muss das MEAL-Profil tragen - auch ohne Huelle")
+        val r = reaktiv ?: error("bei Druck muss ein reaktiver Kandidat entstehen")
+        assertEquals("MEAL", r.dosingContextProfile)
+        assertTrue(r.decision.smbU > 0.0, "der Kandidat wird dosierbar")
+    }
+
     /** Die Lauf-Kennung folgt den WIRKSAMEN Profilwerten: eine Aenderung
      *  des Exposure-Limits waehrend eines Laufs ist eine Bedienhandlung
      *  und beendet ihn (CONFIG_CHANGED, ohne Sperre). */

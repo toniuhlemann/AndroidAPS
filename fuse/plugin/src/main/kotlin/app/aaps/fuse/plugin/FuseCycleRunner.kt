@@ -4405,12 +4405,11 @@ class FuseCycleRunner(
                 MidnightUtils.secondsFromMidnight(signal.sourceTs), cfg.nightStartMin, cfg.nightEndMin,
             )
             val tagNachtMin = if (nachtFenster) cfg.livenessBgMinNightMgdl else cfg.livenessBgMinDayMgdl
-            // M1 (Bauauftrag 7.5.1): unter GUELTIGER MEAL-Vollmacht gilt die
-            // eigene MEAL-Druckschwelle (absolut); unkonfiguriert folgt sie
-            // der bisherigen wirksamen Schwelle - neutraler Altpfad.
-            // CORRECTION behaelt Tag/Nacht unveraendert. Gemessene Riegel
-            // (Tief, Fallen, Rebound, Descent) stehen unveraendert VOR der
-            // Druckpruefung.
+            // M1 (Bauauftrag 7.5.1): unter GUELTIGER MEAL-Vollmacht gilt
+            // die eigene MEAL-Druckschwelle (absolut, echter Default 110 -
+            // Startsatz). CORRECTION behaelt Tag/Nacht unveraendert.
+            // Gemessene Riegel (Tief, Fallen, Rebound, Descent) stehen
+            // unveraendert VOR der Druckpruefung.
             val mealMin = if (dosingCtx.mealAuthorized) cfg.livenessBgMinMealMgdl else null
             val bgMinWirksam = mealMin ?: tagNachtMin
             livenessBgMinEffective = bgMinWirksam
@@ -4605,10 +4604,11 @@ class FuseCycleRunner(
                         return@run nachAufschub
                     }
                     // M3 (Bauauftrag 7.5.5): unter GUELTIGER MEAL-
-                    // Vollmacht gilt die konfigurierbare Zyklenzahl (Default
-                    // 3 = Altbestand); CORRECTION bleibt IMMER bei den drei
-                    // Druckzyklen. Der Druck selbst (Schwelle + r) und alle
-                    // Riegel davor sind unveraendert.
+                    // Vollmacht gilt die konfigurierbare Zyklenzahl
+                    // (Startsatz-Default 1 = Reaktion im ersten vollstaendig
+                    // passenden Zyklus); CORRECTION bleibt IMMER bei den
+                    // drei Druckzyklen. Der Druck selbst (Schwelle + r) und
+                    // alle Riegel davor sind unveraendert.
                     livenessStreak < (if (dosingCtx.mealAuthorized) cfg.mealArmCycles else LivenessChannel.ARM_STREAK) -> {
                         livenessDenial = "NOT_CONFIRMED"
                         return@run nachAufschub
@@ -6650,20 +6650,20 @@ class FuseCycleRunner(
         /** MEAL/CORRECTION (Bauauftrag 23.08. nachts) - s. FuseKeys.
          *  Werte sind bereits LESE-MIGRIERT (ungesetzt = alter Globalwert). */
         val livenessMealPowerMin: Int,
-        /** A4 (Bauauftrag 7.5.7): policyMode + die vier zentralen
-         *  Profilwerte. null = unkonfigurierter KANDIDAT (kein Legacy-
-         *  Fallback, kein stiller Default); Konsum erst in Schritt B. */
+        /** Die vier zentralen Profilwerte (CENTRAL-only) - immer gesetzt
+         *  ueber die echten Startsatz-Defaults; validate haelt Rahmen und
+         *  Relation (K nie offener als M) fail-closed. */
         val correctionExposureLimitU: Double,
         val mealExposureLimitU: Double,
         val correctionDemandRatioCap: Double,
         val mealDemandRatioCap: Double,
         val livenessBgMinDayMgdl: Double,
         val livenessBgMinNightMgdl: Double,
-        /** M1: MEAL-Druckschwelle; null = unkonfiguriert -> wirksame
-         *  Tag-/Nachtschwelle (neutraler Altpfad). */
+        /** M1: MEAL-Druckschwelle unter Vollmacht - echter Default 110
+         *  (Startsatz), kein Tag-/Nacht-Fallback mehr. */
         val livenessBgMinMealMgdl: Double,
-        /** M3: Bewaffnungszyklen unter MEAL-Vollmacht; 3 = Altbestand,
-         *  CORRECTION bleibt immer bei LivenessChannel.ARM_STREAK. */
+        /** M3: Bewaffnungszyklen unter MEAL-Vollmacht - Startsatz-Default
+         *  1; CORRECTION bleibt immer bei LivenessChannel.ARM_STREAK. */
         val mealArmCycles: Int,
         val livenessReArmMin: Int,
         val primeWindowMin: Int,
@@ -6785,8 +6785,8 @@ class FuseCycleRunner(
         // nachts, aus den beiden Mahlzeitenfaellen: ~45/35 min frueherer
         // Druck als 140, ohne direkt ueber Ziel zu zuenden).
         livenessBgMinMealMgdl = preferences.get(FuseDoubleKey.LivenessBgMinMealMgdl),
-        // M3: ein Speicher ohne den Schluessel liefert 0 - dann gilt die
-        // Vorgabe 3 (Altbestand), wie beim PrimeWindowMin-Muster.
+        // M3: ein Speicher ohne den Schluessel liefert 0 - dann gilt der
+        // Startsatz-Default (1), wie beim PrimeWindowMin-Muster.
         mealArmCycles = preferences.get(FuseIntKey.MealArmCycles).takeIf { it > 0 }
             ?: FuseIntKey.MealArmCycles.defaultValue,
         livenessReArmMin = preferences.get(FuseIntKey.LivenessReArmMin),

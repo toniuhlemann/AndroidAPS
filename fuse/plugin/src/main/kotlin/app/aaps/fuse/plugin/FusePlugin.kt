@@ -2071,10 +2071,10 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
             .put(FuseBooleanKey.ForecastShadowCollectionEnabled, preferences)
             .put(FuseIntKey.LivenessMealPowerMin, preferences)
             .put(FuseIntKey.MealArmCycles, preferences)
-            // A5-Abschluss: die vier Kandidaten NUR sichern, wenn sie
-            // wirklich gesetzt sind - das generische put laese den
-            // Bildschirm-Default und ein Restore machte aus
-            // "unkonfiguriert" stillschweigend gesetzte 5/5/1/1.
+            // Review-P1 30.08.: der Helper sichert die EFFEKTIVEN Werte
+            // IMMER (gesetzt oder Startsatz-Default) - ein Backup muss die
+            // tatsaechlich gefahrene Politik wiederherstellen, auch wenn
+            // sich Defaults spaeter aendern.
             .also { json -> FuseCentralProfileBackup.schreibe(json, preferences) }
             .put(FuseBooleanKey.ZeroLatchEnabled, preferences)
             .put(FuseIntKey.ZeroLatchCalmExitMin, preferences)
@@ -2138,10 +2138,10 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
             .store(FuseBooleanKey.ForecastShadowCollectionEnabled, preferences)
             .store(FuseIntKey.LivenessMealPowerMin, preferences)
             // MealArmCycles laeuft im Helper mit (Alt-Backup ohne den
-            // Schluessel stellt den neutralen Altwert 3 wieder her).
-            // A5-Abschluss: fehlender policyMode im Backup fuehrt SICHER
-            // zu LEGACY, fehlende Kandidaten werden ENTFERNT statt auf den
-            // Default gesetzt - "unkonfiguriert" ueberlebt den Rundlauf.
+            // Schluessel migriert auf den Startsatz-Default 1). Fehlende
+            // Profilwert-Felder werden ENTFERNT statt erfunden - danach
+            // gelten die AKTUELLEN Defaults; neue Backups tragen die
+            // Felder immer (Review-P1 30.08.).
             .also { json -> FuseCentralProfileBackup.lese(json, preferences) }
             .store(FuseBooleanKey.ZeroLatchEnabled, preferences)
             .store(FuseIntKey.ZeroLatchCalmExitMin, preferences)

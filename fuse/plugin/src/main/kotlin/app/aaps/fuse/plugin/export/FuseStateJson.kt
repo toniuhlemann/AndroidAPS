@@ -1811,9 +1811,9 @@ object FuseStateJson {
         // interpretierbar bleiben - LEGACY existiert nur noch in
         // historischen Aufzeichnungen.
         .put("policyMode", "CENTRAL_PROFILES")
-        // M1: die MEAL-Druckschwelle (null = unkonfiguriert = Altpfad).
+        // M1: die MEAL-Druckschwelle (echter Startsatz-Default 110).
         .put("livenessBgMinMealMgdl", fin(p.livenessBgMinMealMgdl))
-        // M3: Bewaffnungszyklen unter MEAL-Vollmacht (3 = Altbestand).
+        // M3: Bewaffnungszyklen unter MEAL-Vollmacht (Startsatz-Default 1).
         .put("mealArmCycles", p.mealArmCycles)
         .put("correctionExposureLimitU", fin(p.correctionExposureLimitU))
         .put("mealExposureLimitU", fin(p.mealExposureLimitU))
