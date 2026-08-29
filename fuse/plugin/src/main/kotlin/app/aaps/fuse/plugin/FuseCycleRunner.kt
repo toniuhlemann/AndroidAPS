@@ -388,6 +388,7 @@ class FuseCycleRunner(
             it.livenessBgMinMealMgdl?.let { v ->
                 require(v.isFinite() && v in FuseDoubleKey.LivenessBgMinMealMgdl.min..FuseDoubleKey.LivenessBgMinMealMgdl.max) { "livenessBgMinMealMgdl=$v" }
             }
+            require(it.mealArmCycles in FuseIntKey.MealArmCycles.min..FuseIntKey.MealArmCycles.max) { "mealArmCycles=${it.mealArmCycles}" }
         }
 
         /** Raster des selbst gebauten IOB-Arrays. 5 min wie in AAPS — feiner
@@ -4319,6 +4320,7 @@ class FuseCycleRunner(
                 // selbst wechselt nur die WIRKSAME Schwelle und ist wie
                 // Tag/Nacht KEIN CONFIG_CHANGED.
                 cfg.livenessBgMinMealMgdl + "|" +
+                cfg.mealArmCycles + "|" +
                 cfg.livenessMealRatioCap + "|" + cfg.livenessMealIobCapPercent + "|" +
                 cfg.livenessCorrectionRatioCap + "|" + cfg.livenessCorrectionIobCapPercent + "|" +
                 cfg.livenessReArmMin
@@ -4535,7 +4537,12 @@ class FuseCycleRunner(
                         livenessDenial = "REARM_BLOCKED"
                         return@run nachAufschub
                     }
-                    livenessStreak < LivenessChannel.ARM_STREAK -> {
+                    // M3 (Bauauftrag 7.5.5): unter GUELTIGER MEAL-
+                    // Vollmacht gilt die konfigurierbare Zyklenzahl (Default
+                    // 3 = Altbestand); CORRECTION bleibt IMMER bei den drei
+                    // Druckzyklen. Der Druck selbst (Schwelle + r) und alle
+                    // Riegel davor sind unveraendert.
+                    livenessStreak < (if (dosingCtx.mealAuthorized) cfg.mealArmCycles else LivenessChannel.ARM_STREAK) -> {
                         livenessDenial = "NOT_CONFIRMED"
                         return@run nachAufschub
                     }
@@ -6410,6 +6417,9 @@ class FuseCycleRunner(
         /** M1: MEAL-Druckschwelle; null = unkonfiguriert -> wirksame
          *  Tag-/Nachtschwelle (neutraler Altpfad). */
         val livenessBgMinMealMgdl: Double?,
+        /** M3: Bewaffnungszyklen unter MEAL-Vollmacht; 3 = Altbestand,
+         *  CORRECTION bleibt immer bei LivenessChannel.ARM_STREAK. */
+        val mealArmCycles: Int,
         val livenessReArmMin: Int,
         val primeWindowMin: Int,
         /** Die Null sofort verlassen, sobald ihr Schutzgrund weg ist. */
@@ -6553,6 +6563,10 @@ class FuseCycleRunner(
         // M1: unkonfiguriert bleibt null - der Altpfad (Tag/Nacht) gilt.
         livenessBgMinMealMgdl = preferences.getIfExists(FuseDoubleKey.LivenessBgMinMealMgdl)
             ?.takeIf { it.isFinite() && it in FuseDoubleKey.LivenessBgMinMealMgdl.min..FuseDoubleKey.LivenessBgMinMealMgdl.max },
+        // M3: ein Speicher ohne den Schluessel liefert 0 - dann gilt die
+        // Vorgabe 3 (Altbestand), wie beim PrimeWindowMin-Muster.
+        mealArmCycles = preferences.get(FuseIntKey.MealArmCycles).takeIf { it > 0 }
+            ?: FuseIntKey.MealArmCycles.defaultValue,
         livenessReArmMin = preferences.get(FuseIntKey.LivenessReArmMin),
         // Ein ungesetzter Wert (0) ist kein Konfigurationsfehler, sondern ein
         // Speicher, der den Schluessel noch nicht kennt - dann gilt die

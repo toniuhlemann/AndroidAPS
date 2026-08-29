@@ -69,6 +69,7 @@ internal val fuseEinstellbareKeys: Set<String> = setOf(
     FuseDoubleKey.LivenessBgMinDayMgdl.key,
     FuseDoubleKey.LivenessBgMinNightMgdl.key,
     FuseDoubleKey.LivenessBgMinMealMgdl.key,
+    FuseIntKey.MealArmCycles.key,
     FuseIntKey.LivenessReArmMin.key,
     FuseDoubleKey.TailFloorMgdl.key,
     FuseDoubleKey.TailRecoveryU.key,
@@ -295,6 +296,7 @@ object FuseSettingsReport {
                                 standard = null,
                             )
                         },
+                    ganz(FuseIntKey.MealArmCycles, "Bewaffnung MEAL", "Zyklen"),
                     ganz(FuseIntKey.LivenessReArmMin, "Re-Arm-Sperre", "min"),
                 ),
                 "Schutz und Prognose" to listOf(

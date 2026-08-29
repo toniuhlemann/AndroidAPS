@@ -497,6 +497,18 @@ enum class FuseIntKey(
     LivenessReArmMin("fuse_liveness_rearm_min", 10, 0, 60),
 
     /**
+     * ERWEITERUNG M3 (Bauauftrag 7.5.5, Toni 29.08.): Bewaffnungszyklen
+     * des Liveness-Kanals unter GUELTIGER MEAL-Vollmacht.
+     *
+     * CORRECTION bleibt IMMER bei den drei Druckzyklen (ARM_STREAK) -
+     * autoISF-artige Sofortreaktion gehoert nur der autorisierten
+     * Mahlzeit. Default 3 = neutraler Altbestand: ein Update veraendert
+     * nichts, erst ein bewusst gesetzter kleinerer Wert beschleunigt.
+     * Keine Wahl des Live-Werts vor Schritt C - Toni setzt.
+     */
+    MealArmCycles("fuse_meal_arm_cycles", 3, 1, 10),
+
+    /**
      * MARKER-LEISTUNGSFRIST [min] (Bauauftrag Toni 23.08. nachts): so lange
      * nach dem letzten IM PROZESS beobachteten Marker faehrt der
      * Liveness-Kanal die offenen MEAL-Caps; ab der (halb offenen) Deadline

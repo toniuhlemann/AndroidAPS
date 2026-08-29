@@ -126,6 +126,8 @@
     <string name="fuse_liveness_corr_iob_title">K Kanaldeckel [% maxIOB]</string>
     <string name="fuse_liveness_bg_min_meal_title">Druck-Schwelle MEAL [mg/dl]</string>
     <string name="fuse_liveness_bg_min_meal_summary">Eigene Druckschwelle des Liveness-Kanals, solange die MEAL-Vollmacht des Markers laeuft (absoluter Wert). Ungesetzt folgt sie der wirksamen Tag-/Nachtschwelle - der bisherige Weg bleibt dann unveraendert. CORRECTION behaelt immer Tag/Nacht. Gemessene Riegel (Tief, Fallen, Rebound) bleiben davor.</string>
+    <string name="fuse_meal_arm_cycles_title">Bewaffnung MEAL [Zyklen]</string>
+    <string name="fuse_meal_arm_cycles_summary">So viele Druckzyklen braucht die Liveness-Bewaffnung, solange die MEAL-Vollmacht laeuft. 3 = bisheriges Verhalten; 1 bewaffnet im ersten Druckzyklus der autorisierten Mahlzeit. CORRECTION bleibt immer bei 3. Druckbedingung und alle Schutzriegel unveraendert.</string>
     <string name="fuse_central_profiles_title">Zentrale Profile</string>
     <string name="fuse_central_profiles_summary">policyMode: AUS = LEGACY (alle heutigen Einstellungen gelten unveraendert), AN = CENTRAL_PROFILES. Hart entweder/oder, keine Mischgrenzen. Aktivierung verlangt alle vier Profilwerte gueltig gesetzt, sonst faellt jeder Zyklus mit Konfigurationsfehler aus. Vor Schritt B ohne Dosierwirkung (reine Struktur).</string>
     <string name="fuse_meal_exposure_limit_title">MEAL Exposure-Limit [U]</string>

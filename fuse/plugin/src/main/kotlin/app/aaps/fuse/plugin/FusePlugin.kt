@@ -2076,6 +2076,7 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
             .put(FuseDoubleKey.LivenessMealIobCapPercent, preferences)
             .put(FuseDoubleKey.LivenessCorrectionRatioCap, preferences)
             .put(FuseDoubleKey.LivenessCorrectionIobCapPercent, preferences)
+            .put(FuseIntKey.MealArmCycles, preferences)
             .put(FuseBooleanKey.CentralProfilesEnabled, preferences)
             // A5-Abschluss: die vier Kandidaten NUR sichern, wenn sie
             // wirklich gesetzt sind - das generische put laese den
@@ -2149,6 +2150,7 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
             .store(FuseDoubleKey.LivenessMealIobCapPercent, preferences)
             .store(FuseDoubleKey.LivenessCorrectionRatioCap, preferences)
             .store(FuseDoubleKey.LivenessCorrectionIobCapPercent, preferences)
+            .store(FuseIntKey.MealArmCycles, preferences)
             // A5-Abschluss: fehlender policyMode im Backup fuehrt SICHER
             // zu LEGACY, fehlende Kandidaten werden ENTFERNT statt auf den
             // Default gesetzt - "unkonfiguriert" ueberlebt den Rundlauf.
@@ -2356,6 +2358,7 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
             addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.LivenessBgMinDayMgdl, dialogMessage = R.string.fuse_liveness_bg_min_summary, title = R.string.fuse_liveness_bg_min_title))
             addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.LivenessBgMinNightMgdl, dialogMessage = R.string.fuse_liveness_bg_min_night_summary, title = R.string.fuse_liveness_bg_min_night_title))
             addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.LivenessBgMinMealMgdl, dialogMessage = R.string.fuse_liveness_bg_min_meal_summary, title = R.string.fuse_liveness_bg_min_meal_title))
+            addPreference(AdaptiveIntPreference(ctx = context, intKey = FuseIntKey.MealArmCycles, dialogMessage = R.string.fuse_meal_arm_cycles_summary, title = R.string.fuse_meal_arm_cycles_title))
             addPreference(AdaptiveIntPreference(ctx = context, intKey = FuseIntKey.LivenessReArmMin, dialogMessage = R.string.fuse_liveness_rearm_summary, title = R.string.fuse_liveness_rearm_title))
         }
 

@@ -281,7 +281,12 @@ object FuseStateJson {
     // (Abend 28.08.) und 35-min-Loecher (Fruehstueck 29.08.) entstanden
     // aus der Korrektur-Schwelle unter stehender MEAL-Vollmacht.
     // bgMinSource kennt jetzt MEAL; Profilwechsel ist KEIN CONFIG_CHANGED.
-    const val RULE_SET_VERSION = 39
+    // v40 (29.08., M3 aus Bauauftrag 7.5.5): konfigurierbare
+    // Bewaffnungszyklen unter MEAL-Vollmacht (MealArmCycles, Default 3 =
+    // Altbestand-bitgleich; CORRECTION bleibt immer bei 3). Gesetzt auf 1
+    // bewaffnet der Kanal im ERSTEN Druckzyklus der autorisierten
+    // Mahlzeit - autoISF-artige Sofortreaktion nur unter der Vollmacht.
+    const val RULE_SET_VERSION = 40
 
     /** Schema des Trail-Datensatzes - s. die Notiz an der Schreibstelle. */
     const val SCHEMA_VERSION = 4
@@ -1732,6 +1737,8 @@ object FuseStateJson {
         .put("policyMode", if (p.centralProfilesEnabled) "CENTRAL_PROFILES" else "LEGACY")
         // M1: die MEAL-Druckschwelle (null = unkonfiguriert = Altpfad).
         .put("livenessBgMinMealMgdl", p.livenessBgMinMealMgdl?.let { fin(it) } ?: JSONObject.NULL)
+        // M3: Bewaffnungszyklen unter MEAL-Vollmacht (3 = Altbestand).
+        .put("mealArmCycles", p.mealArmCycles)
         .put("correctionExposureLimitU", p.correctionExposureLimitU?.let { fin(it) } ?: JSONObject.NULL)
         .put("mealExposureLimitU", p.mealExposureLimitU?.let { fin(it) } ?: JSONObject.NULL)
         .put("correctionDemandRatioCap", p.correctionDemandRatioCap?.let { fin(it) } ?: JSONObject.NULL)
@@ -1941,6 +1948,9 @@ object FuseStateJson {
                 // nach Wenden verschieden schnell wieder.
                 p.livenessChannelEnabled,
                 p.livenessReArmMin,
+                // v40 (M3): dosierwirksam unter MEAL-Vollmacht, sobald
+                // kleiner 3 gesetzt - modusunabhaengig immer im Hash.
+                p.mealArmCycles,
                 // v38: der policyMode selbst - LEGACY und
                 // CENTRAL_PROFILES sind verschiedene Regler. Die
                 // Wertemengen dazu stehen MODUSABHAENGIG in `modusTeile`.

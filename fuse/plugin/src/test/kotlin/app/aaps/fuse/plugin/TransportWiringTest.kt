@@ -173,6 +173,7 @@ class TransportWiringTest : TestBaseWithProfile() {
     private var livenessCapPct = 50.0
     private var livenessRatioDeckel = 1.0
     private var mealPowerMin = 120
+    private var mealArmZyklen = 3
     /** null = Migration: der Wert folgt dem alten Globalhebel. */
     private var mealRatioDeckel: Double? = null
     private var mealIobDeckel: Double? = null
@@ -558,6 +559,7 @@ class TransportWiringTest : TestBaseWithProfile() {
         whenever(preferences.get(FuseDoubleKey.LivenessIobCapPercent)).thenAnswer { livenessCapPct }
         whenever(preferences.get(FuseDoubleKey.LivenessRatioCap)).thenAnswer { livenessRatioDeckel }
         whenever(preferences.get(FuseIntKey.LivenessMealPowerMin)).thenAnswer { mealPowerMin }
+        whenever(preferences.get(FuseIntKey.MealArmCycles)).thenAnswer { mealArmZyklen }
         whenever(preferences.get(FuseBooleanKey.ZeroLatchEnabled)).thenAnswer { zeroLatchAn }
         whenever(preferences.get(FuseIntKey.ZeroLatchCalmExitMin)).thenAnswer { zeroLatchRuheZyklen }
         whenever(preferences.get(FuseDoubleKey.ZeroLatchCalmDistanceMgdl)).thenAnswer { zeroLatchRuheAbstand }
@@ -7673,6 +7675,102 @@ class TransportWiringTest : TestBaseWithProfile() {
             )
         }
         assertTrue(!druckGesehen, "q1 bleibt unter der Tagesschwelle - kein Druckzyklus")
+    }
+
+    /** M3-Aufbau: MEAL-Vollmacht + Guard-Deadlock + Kurve ueber der
+     *  Tagesschwelle - der erste bewaffnete Zyklus zeigt, wie viele
+     *  Druckzyklen die Bewaffnung brauchte. */
+    private fun m3Lage(dir: File): FuseLedgerAdapter {
+        livenessAn = true
+        livenessCapPct = 90.0
+        livenessBgMin = 160.0
+        livenessReArmMin = 10
+        tailGuard = true
+        markerAuthorized = true
+        whenever(preferences.get(FuseIntKey.PrimeWindowMin)).thenReturn(20)
+        flach = 150.0
+        steigungProMin = 0.3
+        knickAbMin = 12
+        steigungNachKnick = 1.4
+        knick2AbMin = null
+        bolusIobU = 4.5
+        clock = start
+        transportReset()
+        val adapter = FuseLedgerAdapter().also { it.loadOnce(dir.also(File::mkdirs), "test-epoch", start) }
+        neuerRunner(adapter)
+        repeat(7) { cycle() }
+        markerAt = clock + 60_000L
+        return adapter
+    }
+
+    /** M3 (Bauauftrag 7.5.5), Pflichtfall 1: MealArmCycles = 1 bewaffnet
+     *  unter der Vollmacht im ERSTEN Druckzyklus. */
+    @Test
+    fun `M3 - ein Zyklus bewaffnet unter Vollmacht sofort`(@TempDir dir: File) {
+        mealArmZyklen = 1
+        m3Lage(dir)
+        var armZyklus: FuseCycleRunner.Outcome? = null
+        repeat(40) {
+            val o = cycle()
+            if (armZyklus == null && o.livenessActive) armZyklus = o
+        }
+        assertTrue(armZyklus != null, "der Kanal MUSS bewaffnen")
+        assertEquals(1, armZyklus!!.livenessStreak, "im ERSTEN Druckzyklus")
+    }
+
+    /** M3, Pflichtfall 3: der Default 3 ist der Altbestand - bewaffnet wird
+     *  fruehestens im dritten Druckzyklus, keinen frueher. */
+    @Test
+    fun `M3 - der Default drei bleibt der Altbestand`(@TempDir dir: File) {
+        mealArmZyklen = 3
+        m3Lage(dir)
+        var armZyklus: FuseCycleRunner.Outcome? = null
+        repeat(40) {
+            val o = cycle()
+            if (!o.livenessActive && o.livenessStreak in 1..2) assertEquals(
+                "NOT_CONFIRMED", o.livenessDenial,
+                "unter drei Druckzyklen wird nicht bewaffnet",
+            )
+            if (armZyklus == null && o.livenessActive) armZyklus = o
+        }
+        assertTrue(armZyklus != null, "der Kanal MUSS bewaffnen")
+        assertEquals(3, armZyklus!!.livenessStreak, "fruehestens im dritten Druckzyklus")
+    }
+
+    /** GEGENPROBE: ohne Vollmacht bleibt CORRECTION bei drei Zyklen, auch
+     *  wenn MealArmCycles = 1 gesetzt ist. Eine Mutation, die die
+     *  Zyklenzahl ohne Vollmacht anwendet, macht diesen Test rot. */
+    @Test
+    fun `M3 - ohne Vollmacht bleiben drei Zyklen`(@TempDir dir: File) {
+        mealArmZyklen = 1
+        livenessAn = true
+        livenessCapPct = 90.0
+        livenessBgMin = 160.0
+        livenessReArmMin = 10
+        tailGuard = true
+        markerAuthorized = false
+        flach = 150.0
+        steigungProMin = 0.3
+        knickAbMin = 12
+        steigungNachKnick = 1.4
+        knick2AbMin = null
+        bolusIobU = 4.5
+        clock = start
+        markerAt = 0L
+        transportReset()
+        val adapter = FuseLedgerAdapter().also { it.loadOnce(dir.also(File::mkdirs), "test-epoch", start) }
+        neuerRunner(adapter)
+        var armZyklus: FuseCycleRunner.Outcome? = null
+        repeat(47) {
+            val o = cycle()
+            if (!o.livenessActive && o.livenessStreak in 1..2) assertEquals(
+                "NOT_CONFIRMED", o.livenessDenial,
+                "CORRECTION bewaffnet nie unter drei Druckzyklen",
+            )
+            if (armZyklus == null && o.livenessActive) armZyklus = o
+        }
+        assertTrue(armZyklus != null, "die Lage muss ueberhaupt bewaffnen (sonst prueft der Fall nichts)")
+        assertEquals(3, armZyklus!!.livenessStreak)
     }
 
     /**
