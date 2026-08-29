@@ -2069,15 +2069,8 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
             .put(FuseBooleanKey.LivenessChannelEnabled, preferences)
             .put(FuseBooleanKey.SignalRejoinEnabled, preferences)
             .put(FuseBooleanKey.ForecastShadowCollectionEnabled, preferences)
-            .put(FuseDoubleKey.LivenessIobCapPercent, preferences)
-            .put(FuseDoubleKey.LivenessRatioCap, preferences)
             .put(FuseIntKey.LivenessMealPowerMin, preferences)
-            .put(FuseDoubleKey.LivenessMealRatioCap, preferences)
-            .put(FuseDoubleKey.LivenessMealIobCapPercent, preferences)
-            .put(FuseDoubleKey.LivenessCorrectionRatioCap, preferences)
-            .put(FuseDoubleKey.LivenessCorrectionIobCapPercent, preferences)
             .put(FuseIntKey.MealArmCycles, preferences)
-            .put(FuseBooleanKey.CentralProfilesEnabled, preferences)
             // A5-Abschluss: die vier Kandidaten NUR sichern, wenn sie
             // wirklich gesetzt sind - das generische put laese den
             // Bildschirm-Default und ein Restore machte aus
@@ -2143,13 +2136,7 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
             .store(FuseBooleanKey.LivenessChannelEnabled, preferences)
             .store(FuseBooleanKey.SignalRejoinEnabled, preferences)
             .store(FuseBooleanKey.ForecastShadowCollectionEnabled, preferences)
-            .store(FuseDoubleKey.LivenessIobCapPercent, preferences)
-            .store(FuseDoubleKey.LivenessRatioCap, preferences)
             .store(FuseIntKey.LivenessMealPowerMin, preferences)
-            .store(FuseDoubleKey.LivenessMealRatioCap, preferences)
-            .store(FuseDoubleKey.LivenessMealIobCapPercent, preferences)
-            .store(FuseDoubleKey.LivenessCorrectionRatioCap, preferences)
-            .store(FuseDoubleKey.LivenessCorrectionIobCapPercent, preferences)
             // MealArmCycles laeuft im Helper mit (Alt-Backup ohne den
             // Schluessel stellt den neutralen Altwert 3 wieder her).
             // A5-Abschluss: fehlender policyMode im Backup fuehrt SICHER
@@ -2347,47 +2334,12 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
             )
             addPreference(AdaptiveSwitchPreference(ctx = context, booleanKey = FuseBooleanKey.LivenessChannelEnabled, summary = R.string.fuse_liveness_summary, title = R.string.fuse_liveness_title))
             addPreference(AdaptiveIntPreference(ctx = context, intKey = FuseIntKey.LivenessMealPowerMin, dialogMessage = R.string.fuse_liveness_meal_power_summary, title = R.string.fuse_liveness_meal_power_title))
-            // LEGACY-CLEANUP (Toni 29.08. spaet): im Zentralmodus sind die
-            // vier Legacy-Kanaldeckel wirkungslos (P1-Fix) und deshalb
-            // UNSICHTBAR - keine Anzeige darf eine ignorierte Grenze wie
-            // eine wirksame erscheinen lassen. Die Keys bleiben im Screen
-            // registriert (Inventar-Wache sammelt sichtbarkeits-agnostisch)
-            // und im LEGACY-Modus voll bedienbar - das ist der bewusst
-            // erhaltene Rueckweg fuer den ersten Produktivstand.
-            val zentralAktiv = preferences.get(FuseBooleanKey.CentralProfilesEnabled)
-            val legacyLivenessPrefs = mutableListOf<androidx.preference.Preference>()
-            addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.LivenessMealRatioCap, dialogMessage = R.string.fuse_liveness_meal_ratio_summary, title = R.string.fuse_liveness_meal_ratio_title).also { it.isVisible = !zentralAktiv; legacyLivenessPrefs += it })
-            addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.LivenessMealIobCapPercent, dialogMessage = R.string.fuse_liveness_meal_iob_summary, title = R.string.fuse_liveness_meal_iob_title).also { it.isVisible = !zentralAktiv; legacyLivenessPrefs += it })
-            addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.LivenessCorrectionRatioCap, dialogMessage = R.string.fuse_liveness_corr_ratio_summary, title = R.string.fuse_liveness_corr_ratio_title).also { it.isVisible = !zentralAktiv; legacyLivenessPrefs += it })
-            addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.LivenessCorrectionIobCapPercent, dialogMessage = R.string.fuse_liveness_corr_iob_summary, title = R.string.fuse_liveness_corr_iob_title).also { it.isVisible = !zentralAktiv; legacyLivenessPrefs += it })
-            addPreference(
-                AdaptiveSwitchPreference(ctx = context, booleanKey = FuseBooleanKey.CentralProfilesEnabled, summary = R.string.fuse_central_profiles_summary, title = R.string.fuse_central_profiles_title).also { schalter ->
-                    // AKTIVIERUNGSSPERRE (Toni 29.08.): der Wechsel auf
-                    // CENTRAL_PROFILES ist nur mit vier vollstaendig
-                    // gueltigen, relational korrekten Werten erlaubt -
-                    // sonst braeche jeder Folgezyklus fail-closed ab. Die
-                    // Laufzeitvalidierung bleibt als letzte Sicherung.
-                    schalter.setOnPreferenceChangeListener { _, neu ->
-                        if (neu != true) {
-                            // Rueckweg auf LEGACY: die Legacy-Deckel werden
-                            // sofort wieder sichtbar und bedienbar.
-                            legacyLivenessPrefs.forEach { it.isVisible = true }
-                            return@setOnPreferenceChangeListener true
-                        }
-                        val fehler = FuseCentralProfileBackup.aktivierungsFehler(preferences)
-                        if (fehler != null) {
-                            app.aaps.core.ui.toast.ToastUtils.warnToast(
-                                context, "Zentrale Profile nicht aktivierbar: $fehler",
-                            )
-                            return@setOnPreferenceChangeListener false
-                        }
-                        // Sofort, nicht erst beim naechsten Screen-Aufbau:
-                        // die ignorierten Legacy-Deckel verschwinden.
-                        legacyLivenessPrefs.forEach { it.isVisible = false }
-                        true
-                    }
-                }
-            )
+            // CENTRAL-ONLY (Legacy-Cleanup, Tonis Vertrag 29.08. nachts):
+            // es gibt keinen Modusschalter und keine Legacy-Kanaldeckel
+            // mehr - die zentrale Dosierpolitik ist die EINZIGE. Die vier
+            // Profilwerte tragen echte Runtime-Defaults (Startsatz aus den
+            // Messfaellen); CORRECTION ist der Grundzustand, MEAL kommt aus
+            // der Markervollmacht und endet mit deren Frist.
             addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.MealExposureLimitU, dialogMessage = R.string.fuse_meal_exposure_limit_summary, title = R.string.fuse_meal_exposure_limit_title))
             addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.CorrectionExposureLimitU, dialogMessage = R.string.fuse_corr_exposure_limit_summary, title = R.string.fuse_corr_exposure_limit_title))
             addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.MealDemandRatioCap, dialogMessage = R.string.fuse_meal_demand_ratio_summary, title = R.string.fuse_meal_demand_ratio_title))

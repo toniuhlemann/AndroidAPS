@@ -360,45 +360,21 @@ class FuseCycleRunner(
             // Grenze - ein Unsinnswert (0 %, 500 %) darf nie stillschweigend
             // rechnen, sondern muss den Zyklus benannt abbrechen.
             require(it.livenessMealPowerMin in FuseIntKey.LivenessMealPowerMin.min..FuseIntKey.LivenessMealPowerMin.max) { "livenessMealPowerMin=${it.livenessMealPowerMin}" }
-            // NUR IM LEGACY-MODUS (Verifikations-P2, 29.08. spaet): im
-            // Zentralmodus sind die vier Legacy-Deckel wirkungslos UND
-            // unsichtbar - ein kaputter Altwert (z.B. ein roh restaurierter
-            // Basis-Key ausserhalb der Klammer) darf dort nicht jeden
-            // Zyklus abbrechen, waehrend der Nutzer die Ursache weder sehen
-            // noch korrigieren kann. Im LEGACY-Modus bleiben die requires
-            // fail-closed wie gehabt (dort sind die Werte wirksam UND
-            // sichtbar).
-            if (!it.centralProfilesEnabled) {
-                require(it.livenessMealRatioCap.isFinite() && it.livenessMealRatioCap in FuseDoubleKey.LivenessMealRatioCap.min..FuseDoubleKey.LivenessMealRatioCap.max) { "livenessMealRatioCap=${it.livenessMealRatioCap}" }
-                require(it.livenessMealIobCapPercent.isFinite() && it.livenessMealIobCapPercent in FuseDoubleKey.LivenessMealIobCapPercent.min..FuseDoubleKey.LivenessMealIobCapPercent.max) { "livenessMealIobCapPercent=${it.livenessMealIobCapPercent}" }
-                require(it.livenessCorrectionRatioCap.isFinite() && it.livenessCorrectionRatioCap in FuseDoubleKey.LivenessCorrectionRatioCap.min..FuseDoubleKey.LivenessCorrectionRatioCap.max) { "livenessCorrectionRatioCap=${it.livenessCorrectionRatioCap}" }
-                require(it.livenessCorrectionIobCapPercent.isFinite() && it.livenessCorrectionIobCapPercent in FuseDoubleKey.LivenessCorrectionIobCapPercent.min..FuseDoubleKey.LivenessCorrectionIobCapPercent.max) { "livenessCorrectionIobCapPercent=${it.livenessCorrectionIobCapPercent}" }
-                // RELATIONAL, FAIL-CLOSED (Bauauftrag §1): CORRECTION darf
-                // nie offener sein als MEAL - nicht tauschen, nicht
-                // klemmen, ablehnen.
-                require(it.livenessCorrectionRatioCap <= it.livenessMealRatioCap) { "livenessCorrectionRatioCap=${it.livenessCorrectionRatioCap} > meal ${it.livenessMealRatioCap}" }
-                require(it.livenessCorrectionIobCapPercent <= it.livenessMealIobCapPercent) { "livenessCorrectionIobCapPercent=${it.livenessCorrectionIobCapPercent} > meal ${it.livenessMealIobCapPercent}" }
-            }
-            // A4 (Bauauftrag 7.5.7): die zentrale Politik aktiviert NUR mit
-            // vollstaendig gueltig gesetzten Profilwerten - typisierte
-            // Ablehnung statt stiller Teilaktivierung oder Rueckfall.
-            // Unkonfigurierte KANDIDATEN (null) sind im LEGACY-Modus
-            // erlaubt und wirken nirgends. Relation auf kanonischen U bzw.
-            // Ratio-Werten, nach genau EINER Lesung: K nie offener als M.
-            if (it.centralProfilesEnabled) {
-                require(it.correctionExposureLimitU != null) { "centralProfiles: correctionExposureLimitU nicht gesetzt" }
-                require(it.mealExposureLimitU != null) { "centralProfiles: mealExposureLimitU nicht gesetzt" }
-                require(it.correctionDemandRatioCap != null) { "centralProfiles: correctionDemandRatioCap nicht gesetzt" }
-                require(it.mealDemandRatioCap != null) { "centralProfiles: mealDemandRatioCap nicht gesetzt" }
-                require(it.correctionExposureLimitU <= it.mealExposureLimitU) { "centralProfiles: correctionExposureLimitU=${it.correctionExposureLimitU} > meal ${it.mealExposureLimitU}" }
-                require(it.correctionDemandRatioCap <= it.mealDemandRatioCap) { "centralProfiles: correctionDemandRatioCap=${it.correctionDemandRatioCap} > meal ${it.mealDemandRatioCap}" }
-            }
+            // CENTRAL-ONLY (Legacy-Cleanup, Tonis Vertrag 29.08. nachts):
+            // die vier Profilwerte sind die EINZIGE Dosierpolitik - immer
+            // gesetzt (echte Defaults), immer im Rahmen, relational
+            // fail-closed: K nie offener als M. Typisierte Ablehnung, nie
+            // stiller Tausch.
+            require(it.correctionExposureLimitU.isFinite() && it.correctionExposureLimitU in FuseDoubleKey.CorrectionExposureLimitU.min..FuseDoubleKey.CorrectionExposureLimitU.max) { "correctionExposureLimitU=${it.correctionExposureLimitU}" }
+            require(it.mealExposureLimitU.isFinite() && it.mealExposureLimitU in FuseDoubleKey.MealExposureLimitU.min..FuseDoubleKey.MealExposureLimitU.max) { "mealExposureLimitU=${it.mealExposureLimitU}" }
+            require(it.correctionDemandRatioCap.isFinite() && it.correctionDemandRatioCap in FuseDoubleKey.CorrectionDemandRatioCap.min..FuseDoubleKey.CorrectionDemandRatioCap.max) { "correctionDemandRatioCap=${it.correctionDemandRatioCap}" }
+            require(it.mealDemandRatioCap.isFinite() && it.mealDemandRatioCap in FuseDoubleKey.MealDemandRatioCap.min..FuseDoubleKey.MealDemandRatioCap.max) { "mealDemandRatioCap=${it.mealDemandRatioCap}" }
+            require(it.correctionExposureLimitU <= it.mealExposureLimitU) { "correctionExposureLimitU=${it.correctionExposureLimitU} > meal ${it.mealExposureLimitU}" }
+            require(it.correctionDemandRatioCap <= it.mealDemandRatioCap) { "correctionDemandRatioCap=${it.correctionDemandRatioCap} > meal ${it.mealDemandRatioCap}" }
             require(it.livenessReArmMin in FuseIntKey.LivenessReArmMin.min..FuseIntKey.LivenessReArmMin.max) { "livenessReArmMin=${it.livenessReArmMin}" }
             require(it.livenessBgMinDayMgdl.isFinite() && it.livenessBgMinDayMgdl in FuseDoubleKey.LivenessBgMinDayMgdl.min..FuseDoubleKey.LivenessBgMinDayMgdl.max) { "livenessBgMinDayMgdl=${it.livenessBgMinDayMgdl}" }
             require(it.livenessBgMinNightMgdl.isFinite() && it.livenessBgMinNightMgdl in FuseDoubleKey.LivenessBgMinNightMgdl.min..FuseDoubleKey.LivenessBgMinNightMgdl.max) { "livenessBgMinNightMgdl=${it.livenessBgMinNightMgdl}" }
-            it.livenessBgMinMealMgdl?.let { v ->
-                require(v.isFinite() && v in FuseDoubleKey.LivenessBgMinMealMgdl.min..FuseDoubleKey.LivenessBgMinMealMgdl.max) { "livenessBgMinMealMgdl=$v" }
-            }
+            require(it.livenessBgMinMealMgdl.isFinite() && it.livenessBgMinMealMgdl in FuseDoubleKey.LivenessBgMinMealMgdl.min..FuseDoubleKey.LivenessBgMinMealMgdl.max) { "livenessBgMinMealMgdl=${it.livenessBgMinMealMgdl}" }
             require(it.mealArmCycles in FuseIntKey.MealArmCycles.min..FuseIntKey.MealArmCycles.max) { "mealArmCycles=${it.mealArmCycles}" }
         }
 
@@ -2116,25 +2092,20 @@ class FuseCycleRunner(
         val markerPowerActive = dosingCtx.mealAuthorized
         // ---- B1: DIE KONTEXTGRENZE DIESES ZYKLUS -------------------------
         // MealExposureLimit unter gueltiger Vollmacht, sonst
-        // CorrectionExposureLimit - NUR im Modus CENTRAL_PROFILES
-        // (validate garantiert dort alle vier Werte); null = LEGACY,
-        // Grant-Bildung und Endpruefung bleiben bitgleich inaktiv.
-        val kontextExposureLimitU: Double? =
-            if (!cfg.centralProfilesEnabled) null
-            else if (dosingCtx.mealAuthorized) cfg.mealExposureLimitU
+        // CorrectionExposureLimit (CENTRAL-only: es gibt keinen anderen
+        // Modus mehr; validate garantiert alle vier Werte).
+        val kontextExposureLimitU: Double =
+            if (dosingCtx.mealAuthorized) cfg.mealExposureLimitU
             else cfg.correctionExposureLimitU
 
         // ---- B2: DER DEMAND-RATIO-CAP DIESES ZYKLUS ----------------------
         // MealDemandRatioCap unter gueltiger Vollmacht, sonst
-        // CorrectionDemandRatioCap - NUR im Modus CENTRAL_PROFILES
-        // (validate garantiert dort beide Werte); null = LEGACY, die
-        // Kappenliste des Reglers bleibt bitgleich alt. Er begrenzt die
-        // BEDARFSRATE des Normalpfads und des Liveness-Kanals; autorisierte
-        // Direktdosen (Upfront, Prime, Foundation, Aufschub, CALM) werden
-        // von ihm NIE umgedeutet (Invariante 5).
-        val kontextDemandRatioCap: Double? =
-            if (!cfg.centralProfilesEnabled) null
-            else if (dosingCtx.mealAuthorized) cfg.mealDemandRatioCap
+        // CorrectionDemandRatioCap. Er begrenzt die BEDARFSRATE des
+        // Normalpfads und des Liveness-Kanals; autorisierte Direktdosen
+        // (Upfront, Prime, Foundation, Aufschub, CALM) werden von ihm NIE
+        // umgedeutet (Invariante 5).
+        val kontextDemandRatioCap: Double =
+            if (dosingCtx.mealAuthorized) cfg.mealDemandRatioCap
             else cfg.correctionDemandRatioCap
         val state = when (
             val s = CoreInputGuard.build {
@@ -4378,40 +4349,20 @@ class FuseCycleRunner(
             // bleiben gemeinsam.
             // Seit A1 nur noch KONSUM der zentralen Entscheidung - die
             // Namen sind dieselben Woerter wie zuvor (Trail-kompatibel).
-            // B2 (Bauauftrag 7.2 + Migrationsvertrag): im zentralen Modus
-            // ist der Profil-Cap der KONTEXT-Cap - er ERSETZT die
-            // Liveness-Alt-Caps, es gibt kein min(alt, neu) (keine
-            // versteckte Altgrenze im zentralen Modus; validate garantiert
-            // dort beide Werte).
-            val profilRatioCap =
-                if (cfg.centralProfilesEnabled) kontextDemandRatioCap!!
-                else if (markerPowerActive) cfg.livenessMealRatioCap
-                else cfg.livenessCorrectionRatioCap
-            // P1-Fix (Review 29.08. spaet): DIESELBE Regel fuer die
-            // IOB-Deckel. Im zentralen Modus verwendet der Kanal DENSELBEN
-            // Raum wie die Endpruefung - sein Deckel IST die Kontextgrenze
-            // (das min mit globalem iobTH und maxIOB zieht headroomU unten,
-            // capIob + Transport belegen wie ueberall). Die Legacy-
-            // Prozentdeckel wirken NUR im LEGACY-Modus: 7.5.7 ersetzt den
-            // Parallelbetrieb ausdruecklich, und ein wirksamer Wert, der
-            // nicht im Policy-Hash steht, waere eine versteckte
-            // Parallelarchitektur. (Der fruehere 7.4-Verweis traegt nicht:
-            // er schuetzt den LEGACY-Pfad, nicht einen Parallelbetrieb im
-            // Zentralmodus.)
-            val profilIobCapPct: Double? =
-                if (cfg.centralProfilesEnabled) null
-                else if (markerPowerActive) cfg.livenessMealIobCapPercent
-                else cfg.livenessCorrectionIobCapPercent
-            val kanalDeckelU = profilIobCapPct?.let { it / 100.0 * state.maxIobU }
-                ?: kontextExposureLimitU!!
+            // B2 + P1-Fix, CENTRAL-only: der Profil-Cap IST der
+            // Kontext-Cap, und der Kanaldeckel IST die Kontextgrenze -
+            // DERSELBE Raum wie die Endpruefung (min mit globalem iobTH und
+            // maxIOB zieht headroomU unten, capIob + Transport belegen wie
+            // ueberall). Die frueheren Liveness-Prozent-/Ratio-Deckel sind
+            // mit dem LEGACY-Pfad entfernt.
+            val profilRatioCap = kontextDemandRatioCap
+            val kanalDeckelU = kontextExposureLimitU
             val kanalDeckelName =
-                if (profilIobCapPct != null) "livenessCap"
-                else if (markerPowerActive) "mealExposureLimit"
+                if (markerPowerActive) "mealExposureLimit"
                 else "correctionExposureLimit"
             livenessProfil = dosingCtx.profile.name
             livenessProfilGrund = dosingCtx.reason.name
             livenessSelectedRatioCap = profilRatioCap
-            livenessSelectedIobCapPct = profilIobCapPct
             // Toni + Codex 22.08.: JEDE Aenderung an den drei
             // Kanal-Stellgroessen waehrend eines Laufs beendet ihn, und der
             // Streak beginnt unter der neuen Regel neu - auch Deckel und
@@ -4420,27 +4371,14 @@ class FuseCycleRunner(
             // Risiko.
             // Beide KONFIGURIERTEN Schwellen, nie die wirksame: ein
             // regulaerer Tag/Nacht-Wechsel ist KEIN CONFIG_CHANGED (v20).
-            // B2: die Ratio-Stellgroessen des AKTIVEN Modus - im zentralen
-            // Modus sind das die Profil-Caps (Z-Praefix: der Moduswechsel
-            // selbst ist eine Bedienhandlung und beendet einen Lauf). Im
-            // LEGACY-Modus bleibt die Kennung zeichengleich zum Altstand.
-            val cfgRatioMeal =
-                if (cfg.centralProfilesEnabled) "Z" + cfg.mealDemandRatioCap
-                else cfg.livenessMealRatioCap.toString()
-            val cfgRatioCorr =
-                if (cfg.centralProfilesEnabled) "Z" + cfg.correctionDemandRatioCap
-                else cfg.livenessCorrectionRatioCap.toString()
-            // P1-Fix: auch die IOB-Stellgroessen des AKTIVEN Modus - im
-            // zentralen Modus sind die wirksamen Werte die Exposure-Limits.
-            // Eine Aenderung des WIRKSAMEN Werts muss die Kennung treffen
-            // (Lauf endet als Bedienhandlung); eine Aenderung eines im
-            // Zentralmodus IGNORIERTEN Legacy-Deckels darf es nicht.
-            val cfgIobMeal =
-                if (cfg.centralProfilesEnabled) "Z" + cfg.mealExposureLimitU
-                else cfg.livenessMealIobCapPercent.toString()
-            val cfgIobCorr =
-                if (cfg.centralProfilesEnabled) "Z" + cfg.correctionExposureLimitU
-                else cfg.livenessCorrectionIobCapPercent.toString()
+            // CENTRAL-only: die Stellgroessen des Kanals sind die vier
+            // Profilwerte (Z-Praefix aus der Migrationszeit beibehalten -
+            // die Kennung bleibt zeichenstabil zum v43-Stand, kein
+            // unnoetiger CONFIG_CHANGED beim Update).
+            val cfgRatioMeal = "Z" + cfg.mealDemandRatioCap
+            val cfgRatioCorr = "Z" + cfg.correctionDemandRatioCap
+            val cfgIobMeal = "Z" + cfg.mealExposureLimitU
+            val cfgIobCorr = "Z" + cfg.correctionExposureLimitU
             val cfgJetzt = cfg.livenessBgMinDayMgdl.toString() + "|" +
                 cfg.livenessBgMinNightMgdl + "|" +
                 // M1: auch die KONFIGURIERTE MEAL-Schwelle - eine Aenderung
@@ -4808,8 +4746,7 @@ class FuseCycleRunner(
                 cfg.maxSmbU < liveRatio * bedarfU - 1e-9 -> "maxSmb"
                 // Der Cap war das Mass, wenn er die Basis real gekappt hat -
                 // sonst bleibt "smbRatio" die ehrliche Antwort.
-                liveRatio < baseRatio - 1e-9 ->
-                    if (cfg.centralProfilesEnabled) "demandRatioCap" else "livenessRatioCap"
+                liveRatio < baseRatio - 1e-9 -> "demandRatioCap"
                 else -> "smbRatio"
             }
             if (liveU <= nachAufschub.smbU + 1e-9) {
@@ -4846,13 +4783,12 @@ class FuseCycleRunner(
         // DeferredPrime-Release, Liveness).
         var exposureGateResult: app.aaps.fuse.core.controller.ExposureGate.Result? = null
         val decisionVorZeroLatch =
-            if (kontextExposureLimitU == null) decisionVorEndpruefung
-            else {
+            run {
                 val g = app.aaps.fuse.core.controller.ExposureGate.pruefe(
                     requestedU = decisionVorEndpruefung.smbU,
                     mealAuthorized = dosingCtx.mealAuthorized,
-                    correctionLimitU = checkNotNull(cfg.correctionExposureLimitU),
-                    mealLimitU = checkNotNull(cfg.mealExposureLimitU),
+                    correctionLimitU = cfg.correctionExposureLimitU,
+                    mealLimitU = cfg.mealExposureLimitU,
                     iobThU = state.iobThU,
                     maxIobU = state.maxIobU,
                     capIobU = state.capIobU,
@@ -5805,9 +5741,8 @@ class FuseCycleRunner(
         )
         // B1: DIESELBE Kontextgrenze wie im Hauptpfad - der Fallback ist
         // ein zweiter Weg zur Menge, kein zweiter Vertrag.
-        val fallbackKontextLimitU: Double? =
-            if (!cfg.centralProfilesEnabled) null
-            else if (fallbackCtx.mealAuthorized) cfg.mealExposureLimitU
+        val fallbackKontextLimitU: Double =
+            if (fallbackCtx.mealAuthorized) cfg.mealExposureLimitU
             else cfg.correctionExposureLimitU
         subStepCarryU = 0.0
         // Codex 22.08.: ein Fallback-Zyklus laeuft OHNE die Kanalstufe -
@@ -5997,13 +5932,12 @@ class FuseCycleRunner(
         // gemeinsame Grenze. Gleiche Regeln, gleicher Kern.
         var fallbackGateResult: app.aaps.fuse.core.controller.ExposureGate.Result? = null
         val heldMitRiegel =
-            if (fallbackKontextLimitU == null) heldVorEndpruefung
-            else {
+            run {
                 val g = app.aaps.fuse.core.controller.ExposureGate.pruefe(
                     requestedU = heldVorEndpruefung.smbU,
                     mealAuthorized = fallbackCtx.mealAuthorized,
-                    correctionLimitU = checkNotNull(cfg.correctionExposureLimitU),
-                    mealLimitU = checkNotNull(cfg.mealExposureLimitU),
+                    correctionLimitU = cfg.correctionExposureLimitU,
+                    mealLimitU = cfg.mealExposureLimitU,
                     iobThU = state.iobThU,
                     maxIobU = state.maxIobU,
                     capIobU = state.capIobU,
@@ -6716,23 +6650,18 @@ class FuseCycleRunner(
         /** MEAL/CORRECTION (Bauauftrag 23.08. nachts) - s. FuseKeys.
          *  Werte sind bereits LESE-MIGRIERT (ungesetzt = alter Globalwert). */
         val livenessMealPowerMin: Int,
-        val livenessMealRatioCap: Double,
-        val livenessMealIobCapPercent: Double,
-        val livenessCorrectionRatioCap: Double,
-        val livenessCorrectionIobCapPercent: Double,
         /** A4 (Bauauftrag 7.5.7): policyMode + die vier zentralen
          *  Profilwerte. null = unkonfigurierter KANDIDAT (kein Legacy-
          *  Fallback, kein stiller Default); Konsum erst in Schritt B. */
-        val centralProfilesEnabled: Boolean,
-        val correctionExposureLimitU: Double?,
-        val mealExposureLimitU: Double?,
-        val correctionDemandRatioCap: Double?,
-        val mealDemandRatioCap: Double?,
+        val correctionExposureLimitU: Double,
+        val mealExposureLimitU: Double,
+        val correctionDemandRatioCap: Double,
+        val mealDemandRatioCap: Double,
         val livenessBgMinDayMgdl: Double,
         val livenessBgMinNightMgdl: Double,
         /** M1: MEAL-Druckschwelle; null = unkonfiguriert -> wirksame
          *  Tag-/Nachtschwelle (neutraler Altpfad). */
-        val livenessBgMinMealMgdl: Double?,
+        val livenessBgMinMealMgdl: Double,
         /** M3: Bewaffnungszyklen unter MEAL-Vollmacht; 3 = Altbestand,
          *  CORRECTION bleibt immer bei LivenessChannel.ARM_STREAK. */
         val mealArmCycles: Int,
@@ -6840,45 +6769,22 @@ class FuseCycleRunner(
         // dosierneutral; die Grenzen-Klammer zaehlt Ausreisser als "nie
         // gesetzt" (dieselbe Regel wie bei der Nachtschwelle).
         livenessMealPowerMin = preferences.get(FuseIntKey.LivenessMealPowerMin),
-        livenessMealRatioCap = preferences.getIfExists(FuseDoubleKey.LivenessMealRatioCap)
-            ?.takeIf { it.isFinite() && it in FuseDoubleKey.LivenessMealRatioCap.min..FuseDoubleKey.LivenessMealRatioCap.max }
-            ?: preferences.get(FuseDoubleKey.LivenessRatioCap),
-        livenessMealIobCapPercent = preferences.getIfExists(FuseDoubleKey.LivenessMealIobCapPercent)
-            ?.takeIf { it.isFinite() && it in FuseDoubleKey.LivenessMealIobCapPercent.min..FuseDoubleKey.LivenessMealIobCapPercent.max }
-            ?: preferences.get(FuseDoubleKey.LivenessIobCapPercent),
-        livenessCorrectionRatioCap = preferences.getIfExists(FuseDoubleKey.LivenessCorrectionRatioCap)
-            ?.takeIf { it.isFinite() && it in FuseDoubleKey.LivenessCorrectionRatioCap.min..FuseDoubleKey.LivenessCorrectionRatioCap.max }
-            ?: preferences.get(FuseDoubleKey.LivenessRatioCap),
-        livenessCorrectionIobCapPercent = preferences.getIfExists(FuseDoubleKey.LivenessCorrectionIobCapPercent)
-            ?.takeIf { it.isFinite() && it in FuseDoubleKey.LivenessCorrectionIobCapPercent.min..FuseDoubleKey.LivenessCorrectionIobCapPercent.max }
-            ?: preferences.get(FuseDoubleKey.LivenessIobCapPercent),
-        // A4: BEWUSST KEIN Legacy-Fallback - unkonfiguriert bleibt null
-        // (Kandidat), die Grenzen-Klammer zaehlt Ausreisser als nie gesetzt.
-        centralProfilesEnabled = preferences.get(FuseBooleanKey.CentralProfilesEnabled),
-        correctionExposureLimitU = preferences.getIfExists(FuseDoubleKey.CorrectionExposureLimitU)
-            ?.takeIf { it.isFinite() && it in FuseDoubleKey.CorrectionExposureLimitU.min..FuseDoubleKey.CorrectionExposureLimitU.max },
-        mealExposureLimitU = preferences.getIfExists(FuseDoubleKey.MealExposureLimitU)
-            ?.takeIf { it.isFinite() && it in FuseDoubleKey.MealExposureLimitU.min..FuseDoubleKey.MealExposureLimitU.max },
-        correctionDemandRatioCap = preferences.getIfExists(FuseDoubleKey.CorrectionDemandRatioCap)
-            ?.takeIf { it.isFinite() && it in FuseDoubleKey.CorrectionDemandRatioCap.min..FuseDoubleKey.CorrectionDemandRatioCap.max },
-        mealDemandRatioCap = preferences.getIfExists(FuseDoubleKey.MealDemandRatioCap)
-            ?.takeIf { it.isFinite() && it in FuseDoubleKey.MealDemandRatioCap.min..FuseDoubleKey.MealDemandRatioCap.max },
+        // CENTRAL-only: echte Defaults (Tonis Startsatz) - ein ungesetzter
+        // Schluessel liefert den Default, ein gesetzter seinen Wert;
+        // validate haelt Rahmen und Relationen fail-closed.
+        correctionExposureLimitU = preferences.get(FuseDoubleKey.CorrectionExposureLimitU),
+        mealExposureLimitU = preferences.get(FuseDoubleKey.MealExposureLimitU),
+        correctionDemandRatioCap = preferences.get(FuseDoubleKey.CorrectionDemandRatioCap),
+        mealDemandRatioCap = preferences.get(FuseDoubleKey.MealDemandRatioCap),
         livenessBgMinDayMgdl = preferences.get(FuseDoubleKey.LivenessBgMinDayMgdl),
-        // LESE-MIGRATION (v20): solange die Nachtschwelle nie gesetzt wurde,
-        // folgt sie der Tagesschwelle - ein Update veraendert nichts still.
-        // (Die Preferences-Schnittstelle bietet fuer PreferenceKeys kein
-        // put; deshalb Fallback je Lesung statt einmaligem Seed.)
-        // Die Grenzen-Klammer gehoert zur Migration: ein Wert ausserhalb
-        // der Key-Grenzen kann nicht bewusst eingestellt worden sein (die
-        // UI klemmt) - er zaehlt als "nie gesetzt". Ohne die Klammer brach
-        // eine Test-Preferences-Implementierung, die 0.0 statt null liefert,
-        // jeden Zyklus an der Validierung ab.
-        livenessBgMinNightMgdl = preferences.getIfExists(FuseDoubleKey.LivenessBgMinNightMgdl)
-            ?.takeIf { it.isFinite() && it in FuseDoubleKey.LivenessBgMinNightMgdl.min..FuseDoubleKey.LivenessBgMinNightMgdl.max }
-            ?: preferences.get(FuseDoubleKey.LivenessBgMinDayMgdl),
-        // M1: unkonfiguriert bleibt null - der Altpfad (Tag/Nacht) gilt.
-        livenessBgMinMealMgdl = preferences.getIfExists(FuseDoubleKey.LivenessBgMinMealMgdl)
-            ?.takeIf { it.isFinite() && it in FuseDoubleKey.LivenessBgMinMealMgdl.min..FuseDoubleKey.LivenessBgMinMealMgdl.max },
+        // CENTRAL-Startsatz: die Nachtschwelle traegt einen ECHTEN Default
+        // (160) - die fruehere Folgt-Tag-Migration ist mit dem Cleanup
+        // beendet; ein bewusst gesetzter Wert bleibt unangetastet.
+        livenessBgMinNightMgdl = preferences.get(FuseDoubleKey.LivenessBgMinNightMgdl),
+        // M1, CENTRAL-Startsatz: ECHTER Default 110 mg/dl (Toni 29.08.
+        // nachts, aus den beiden Mahlzeitenfaellen: ~45/35 min frueherer
+        // Druck als 140, ohne direkt ueber Ziel zu zuenden).
+        livenessBgMinMealMgdl = preferences.get(FuseDoubleKey.LivenessBgMinMealMgdl),
         // M3: ein Speicher ohne den Schluessel liefert 0 - dann gilt die
         // Vorgabe 3 (Altbestand), wie beim PrimeWindowMin-Muster.
         mealArmCycles = preferences.get(FuseIntKey.MealArmCycles).takeIf { it > 0 }

@@ -36,29 +36,6 @@ class FuseSettingsReportTest {
         assertEquals(fuseEinstellbareKeys, keys.toSet())
     }
 
-    /** LEGACY-CLEANUP: im Zentralmodus verschwinden exakt die vier
-     *  Legacy-Kanaldeckel aus dem Bericht - nicht mehr, nicht weniger.
-     *  (Der Aktivierungs-Validator ist hier nicht im Spiel: der Bericht
-     *  beschreibt den gespeicherten Zustand.) */
-    @Test
-    fun `im Zentralmodus verschwinden exakt die Legacy-Deckel-Zeilen`() {
-        val p = standardPreferences()
-        whenever(p.get(FuseBooleanKey.CentralProfilesEnabled)).thenReturn(true)
-        val report = FuseSettingsReport.build(p)
-        val keys = report.gruppen.flatMap { it.second }.map { it.key }.toSet()
-        val legacy = setOf(
-            FuseDoubleKey.LivenessMealRatioCap.key,
-            FuseDoubleKey.LivenessMealIobCapPercent.key,
-            FuseDoubleKey.LivenessCorrectionRatioCap.key,
-            FuseDoubleKey.LivenessCorrectionIobCapPercent.key,
-        )
-        assertEquals(fuseEinstellbareKeys - legacy, keys)
-        assertTrue(
-            report.gruppen.flatMap { it.second }.none { it.value.contains("ignoriert") },
-            "keine Anzeige darf eine ignorierte Grenze zeigen",
-        )
-    }
-
     @Test
     fun `auf Standardwerten traegt keine Zeile eine Abweichungsmarke`() {
         val report = FuseSettingsReport.build(standardPreferences())

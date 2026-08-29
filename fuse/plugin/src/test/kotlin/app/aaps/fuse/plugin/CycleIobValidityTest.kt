@@ -210,13 +210,20 @@ class CycleIobValidityTest : TestBaseWithProfile() {
         // Zyklus benannt abbrechen - deshalb hier echte Defaults.
         whenever(preferences.get(FuseBooleanKey.LivenessChannelEnabled)).thenReturn(false)
         whenever(preferences.get(FuseBooleanKey.ForecastShadowCollectionEnabled)).thenReturn(true)
-        whenever(preferences.get(FuseDoubleKey.LivenessIobCapPercent)).thenReturn(50.0)
         whenever(preferences.get(FuseIntKey.LivenessMealPowerMin)).thenReturn(120)
+        // CENTRAL-only: die Profilwerte und MEAL-Regler sind Pflicht-Config
+        // (unstubbte Mocks liefern 0 -> validate braeche jeden Zyklus ab).
+        whenever(preferences.get(FuseDoubleKey.CorrectionExposureLimitU)).thenReturn(3.0)
+        whenever(preferences.get(FuseDoubleKey.MealExposureLimitU)).thenReturn(7.0)
+        whenever(preferences.get(FuseDoubleKey.CorrectionDemandRatioCap)).thenReturn(0.20)
+        whenever(preferences.get(FuseDoubleKey.MealDemandRatioCap)).thenReturn(0.35)
+        whenever(preferences.get(FuseDoubleKey.LivenessBgMinMealMgdl)).thenReturn(110.0)
+        whenever(preferences.get(FuseDoubleKey.LivenessBgMinNightMgdl)).thenReturn(160.0)
+        whenever(preferences.get(FuseIntKey.MealArmCycles)).thenReturn(1)
         whenever(preferences.get(FuseIntKey.ZeroLatchCalmExitMin)).thenReturn(20)
         whenever(preferences.get(FuseDoubleKey.ZeroLatchCalmDistanceMgdl)).thenReturn(30.0)
         whenever(preferences.get(FuseDoubleKey.LivenessBgMinDayMgdl)).thenReturn(160.0)
         whenever(preferences.get(FuseIntKey.LivenessReArmMin)).thenReturn(10)
-        whenever(preferences.get(FuseDoubleKey.LivenessRatioCap)).thenReturn(1.0)
         whenever(preferences.get(LongKey.FslCalibrationStart)).thenReturn(-1L)
         whenever(preferences.get(FuseLongKey.MealMarkerStamp)).thenReturn(0L)
         whenever(preferences.get(FuseLongKey.MealMarkerArmedTs)).thenReturn(0L)

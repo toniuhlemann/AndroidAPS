@@ -170,21 +170,18 @@ class TransportWiringTest : TestBaseWithProfile() {
 
     /** Masterschalter der Prognose-Shadows (Default AN wie in Produktion). */
     private var forecastShadowAn = true
-    private var livenessCapPct = 50.0
-    private var livenessRatioDeckel = 1.0
     private var mealPowerMin = 120
     private var mealArmZyklen = 3
-    private var mealBgMin: Double? = null
-    private var centralAn = false
-    private var corrExpLimit: Double? = null
-    private var mealExpLimit: Double? = null
-    private var corrRatioCapZ: Double? = null
-    private var mealRatioCapZ: Double? = null
+    // CENTRAL-only-Labor: die Profilwerte starten OFFEN (20/20/1/1) und
+    // MEAL-Schwelle 160, damit die historischen Rigs ihre Lagen behalten -
+    // Tests der Politik setzen enge Werte ausdruecklich. Die ECHTEN
+    // Produkt-Defaults (3/7/0,2/0,35/110/1) prueft der Default-Test.
+    private var mealBgMin: Double = 160.0
+    private var corrExpLimit: Double = 20.0
+    private var mealExpLimit: Double = 20.0
+    private var corrRatioCapZ: Double = 1.0
+    private var mealRatioCapZ: Double = 1.0
     /** null = Migration: der Wert folgt dem alten Globalhebel. */
-    private var mealRatioDeckel: Double? = null
-    private var mealIobDeckel: Double? = null
-    private var corrRatioDeckel: Double? = null
-    private var corrIobDeckel: Double? = null
     private var zeroLatchAn = false
     private var zeroLatchRuheZyklen = 20
     private var zeroLatchRuheAbstand = 30.0
@@ -562,24 +559,19 @@ class TransportWiringTest : TestBaseWithProfile() {
         whenever(preferences.get(FuseIntKey.DeferredPrimeEndMin)).thenAnswer { aufschubFristMin }
         whenever(preferences.get(FuseBooleanKey.LivenessChannelEnabled)).thenAnswer { livenessAn }
         whenever(preferences.get(FuseBooleanKey.ForecastShadowCollectionEnabled)).thenAnswer { forecastShadowAn }
-        whenever(preferences.get(FuseDoubleKey.LivenessIobCapPercent)).thenAnswer { livenessCapPct }
-        whenever(preferences.get(FuseDoubleKey.LivenessRatioCap)).thenAnswer { livenessRatioDeckel }
         whenever(preferences.get(FuseIntKey.LivenessMealPowerMin)).thenAnswer { mealPowerMin }
         whenever(preferences.get(FuseIntKey.MealArmCycles)).thenAnswer { mealArmZyklen }
+        whenever(preferences.get(FuseDoubleKey.LivenessBgMinMealMgdl)).thenAnswer { mealBgMin }
         whenever(preferences.getIfExists(FuseDoubleKey.LivenessBgMinMealMgdl)).thenAnswer { mealBgMin }
-        whenever(preferences.get(FuseBooleanKey.CentralProfilesEnabled)).thenAnswer { centralAn }
-        whenever(preferences.getIfExists(FuseDoubleKey.CorrectionExposureLimitU)).thenAnswer { corrExpLimit }
-        whenever(preferences.getIfExists(FuseDoubleKey.MealExposureLimitU)).thenAnswer { mealExpLimit }
-        whenever(preferences.getIfExists(FuseDoubleKey.CorrectionDemandRatioCap)).thenAnswer { corrRatioCapZ }
-        whenever(preferences.getIfExists(FuseDoubleKey.MealDemandRatioCap)).thenAnswer { mealRatioCapZ }
+        whenever(preferences.get(FuseDoubleKey.CorrectionExposureLimitU)).thenAnswer { corrExpLimit }
+        whenever(preferences.get(FuseDoubleKey.MealExposureLimitU)).thenAnswer { mealExpLimit }
+        whenever(preferences.get(FuseDoubleKey.CorrectionDemandRatioCap)).thenAnswer { corrRatioCapZ }
+        whenever(preferences.get(FuseDoubleKey.MealDemandRatioCap)).thenAnswer { mealRatioCapZ }
         whenever(preferences.get(FuseBooleanKey.ZeroLatchEnabled)).thenAnswer { zeroLatchAn }
         whenever(preferences.get(FuseIntKey.ZeroLatchCalmExitMin)).thenAnswer { zeroLatchRuheZyklen }
         whenever(preferences.get(FuseDoubleKey.ZeroLatchCalmDistanceMgdl)).thenAnswer { zeroLatchRuheAbstand }
-        whenever(preferences.getIfExists(FuseDoubleKey.LivenessMealRatioCap)).thenAnswer { mealRatioDeckel }
-        whenever(preferences.getIfExists(FuseDoubleKey.LivenessMealIobCapPercent)).thenAnswer { mealIobDeckel }
-        whenever(preferences.getIfExists(FuseDoubleKey.LivenessCorrectionRatioCap)).thenAnswer { corrRatioDeckel }
-        whenever(preferences.getIfExists(FuseDoubleKey.LivenessCorrectionIobCapPercent)).thenAnswer { corrIobDeckel }
         whenever(preferences.get(FuseDoubleKey.LivenessBgMinDayMgdl)).thenAnswer { livenessBgMin }
+        whenever(preferences.get(FuseDoubleKey.LivenessBgMinNightMgdl)).thenAnswer { livenessBgMinNacht ?: livenessBgMin }
         whenever(preferences.getIfExists(FuseDoubleKey.LivenessBgMinNightMgdl)).thenAnswer { livenessBgMinNacht }
         whenever(preferences.get(FuseIntKey.LivenessReArmMin)).thenAnswer { livenessReArmMin }
         whenever(preferences.get(FuseIntKey.AbsorptionCreditWindowMin)).thenReturn(60)
@@ -7444,7 +7436,7 @@ class TransportWiringTest : TestBaseWithProfile() {
         // ueber dem Kandidaten - in dieser Lage bindet der Kandidat, und
         // die Endmengen-Asserts rechnen gegen ihn. Die Deckel-Bindung
         // prueft Fall 3 mit eigenen Zahlen.
-        livenessCapPct = 90.0
+        corrExpLimit = 7.2; mealExpLimit = 7.2 // frueher 90 % x maxIOB 8
         livenessBgMin = 160.0
         livenessReArmMin = 10
         tailGuard = true
@@ -7490,7 +7482,7 @@ class TransportWiringTest : TestBaseWithProfile() {
     @Test
     fun `M2 - der Foundation-Tropf maskiert die Bewaffnung nicht mehr`(@TempDir dir: File) {
         livenessAn = true
-        livenessCapPct = 90.0
+        corrExpLimit = 7.2; mealExpLimit = 7.2 // frueher 90 % x maxIOB 8
         livenessBgMin = 160.0
         livenessReArmMin = 10
         tailGuard = true
@@ -7613,13 +7605,13 @@ class TransportWiringTest : TestBaseWithProfile() {
     @Test
     fun `M1 - die MEAL-Schwelle bewaffnet unterhalb der Tagesschwelle`(@TempDir dir: File) {
         livenessAn = true
-        livenessCapPct = 90.0
+        corrExpLimit = 7.2; mealExpLimit = 7.2 // frueher 90 % x maxIOB 8
         livenessBgMin = 160.0
         livenessReArmMin = 10
         tailGuard = true
         markerAuthorized = true
         whenever(preferences.get(FuseIntKey.PrimeWindowMin)).thenReturn(20)
-        whenever(preferences.getIfExists(FuseDoubleKey.LivenessBgMinMealMgdl)).thenReturn(120.0)
+        mealBgMin = 120.0
         flach = 100.0
         steigungProMin = 0.3
         knickAbMin = 12
@@ -7657,13 +7649,13 @@ class TransportWiringTest : TestBaseWithProfile() {
     @Test
     fun `M1 - ohne Vollmacht gilt die Tagesschwelle weiter`(@TempDir dir: File) {
         livenessAn = true
-        livenessCapPct = 90.0
+        corrExpLimit = 7.2; mealExpLimit = 7.2 // frueher 90 % x maxIOB 8
         livenessBgMin = 160.0
         livenessReArmMin = 10
         tailGuard = true
         markerAuthorized = true
         whenever(preferences.get(FuseIntKey.PrimeWindowMin)).thenReturn(20)
-        whenever(preferences.getIfExists(FuseDoubleKey.LivenessBgMinMealMgdl)).thenReturn(120.0)
+        mealBgMin = 120.0
         flach = 100.0
         steigungProMin = 0.3
         knickAbMin = 12
@@ -7694,7 +7686,7 @@ class TransportWiringTest : TestBaseWithProfile() {
      *  Druckzyklen die Bewaffnung brauchte. */
     private fun m3Lage(dir: File): FuseLedgerAdapter {
         livenessAn = true
-        livenessCapPct = 90.0
+        corrExpLimit = 7.2; mealExpLimit = 7.2 // frueher 90 % x maxIOB 8
         livenessBgMin = 160.0
         livenessReArmMin = 10
         tailGuard = true
@@ -7756,7 +7748,7 @@ class TransportWiringTest : TestBaseWithProfile() {
     fun `M3 - ohne Vollmacht bleiben drei Zyklen`(@TempDir dir: File) {
         mealArmZyklen = 1
         livenessAn = true
-        livenessCapPct = 90.0
+        corrExpLimit = 7.2; mealExpLimit = 7.2 // frueher 90 % x maxIOB 8
         livenessBgMin = 160.0
         livenessReArmMin = 10
         tailGuard = true
@@ -7789,7 +7781,6 @@ class TransportWiringTest : TestBaseWithProfile() {
      *  Deadlock, kein Tail, keine Liveness) - die Endmenge kommt aus der
      *  normalen Ratio und trifft NUR auf die neue Kontextgrenze. */
     private fun b1Lage(dir: File, corrLimit: Double) {
-        centralAn = true
         corrExpLimit = corrLimit
         mealExpLimit = 6.0
         corrRatioCapZ = 1.0
@@ -7886,32 +7877,12 @@ class TransportWiringTest : TestBaseWithProfile() {
         assertTrue(mealGeprueft, "die Vollmacht muss das Gate im MEAL-Profil erreichen")
     }
 
-    /** B1-GEGENPROBE: im LEGACY-Modus laeuft das Gate GAR NICHT - gesetzte
-     *  Kandidaten sind wirkungslos, der Altpfad bleibt bitgleich. */
-    @Test
-    fun `B1 - im LEGACY-Modus laeuft das Gate nicht`(@TempDir dir: File) {
-        b1Lage(dir, corrLimit = 1.5)
-        centralAn = false
-        var geliefert = false
-        repeat(40) {
-            val o = cycle()
-            assertTrue(o.exposureGateBindet == null, "LEGACY: die Endpruefung darf nie laufen")
-            assertTrue(o.decision.block != FuseController.Block.EXPOSURE_LIMIT)
-            // Die 1,5er-Grenze laege UNTER capIob 1,6 - im Zentralmodus
-            // waere JEDE Lieferung geblockt. Also beweist jede Lieferung
-            // die Inertheit des Kandidaten.
-            if (o.decision.smbU > 0.0) geliefert = true
-        }
-        assertTrue(geliefert, "ohne Gate liefert der Normalpfad trotz Kandidaten-Grenze")
-    }
-
     /** B1: die Kontextgrenze steht bereits in der GRANT-BILDUNG - ein
      *  4-U-Sofortanteil wird an einer knappen MEAL-Grenze schon bei der
      *  Anforderung gekappt, der Rest bleibt in der Bilanz ABRECHENBAR
      *  offen (verschieben, nie verwerfen). */
     @Test
     fun `B1 - der Grant entsteht nie oberhalb des Raums und der Rest bleibt offen`(@TempDir dir: File) {
-        centralAn = true
         corrExpLimit = 2.0
         mealExpLimit = 2.5
         corrRatioCapZ = 1.0
@@ -7981,28 +7952,6 @@ class TransportWiringTest : TestBaseWithProfile() {
         assertTrue(gebunden, "der Kontext-Cap MUSS mindestens einmal real binden")
     }
 
-    /** B2-GEGENPROBE: im LEGACY-Modus wirkt kein Kandidaten-Cap - gesetzte
-     *  Werte sind wirkungslos, der Altpfad bleibt bitgleich. */
-    @Test
-    fun `B2 - im LEGACY-Modus wirkt kein Kandidaten-Cap`(@TempDir dir: File) {
-        b1Lage(dir, corrLimit = 6.0)
-        centralAn = false
-        corrRatioCapZ = 0.05
-        mealRatioCapZ = 0.05
-        var oberhalb = false
-        repeat(40) {
-            val o = cycle()
-            assertTrue(
-                !o.decision.bindingLimit.contains("demandRatioCap"),
-                "LEGACY: der Kandidaten-Cap darf nie binden",
-            )
-            if (o.decision.smbU > 0.0 && o.decision.insulinReqU != null &&
-                o.decision.smbU > o.decision.insulinReqU!! * 0.05 + 1e-9
-            ) oberhalb = true
-        }
-        assertTrue(oberhalb, "ohne Modus liefert der Normalpfad oberhalb des Kandidaten-Caps")
-    }
-
     /**
      * B2, INVARIANTE 5: Ratio-Caps deuten autorisierte Direktdosen NIE zu
      * normaler Bedarfsdosierung um. Derselbe 4-U-Sofortanteil wie im
@@ -8012,7 +7961,6 @@ class TransportWiringTest : TestBaseWithProfile() {
      */
     @Test
     fun `B2 - der Sofortanteil bleibt eine Direktdosis trotz winzigem Cap`(@TempDir dir: File) {
-        centralAn = true
         corrExpLimit = 6.0
         mealExpLimit = 8.0
         corrRatioCapZ = 0.05
@@ -8051,95 +7999,17 @@ class TransportWiringTest : TestBaseWithProfile() {
         )
     }
 
-    /**
-     * B2, MIGRATIONSVERTRAG: im zentralen Modus ERSETZT der Kontext-Cap die
-     * Liveness-Alt-Caps - kein min(alt, neu), keine versteckte Altgrenze.
-     * Alt-Cap 0,10 gesetzt, Kontext-Cap 0,55: der Kanal waehlt 0,55.
-     */
+    /** Die Lauf-Kennung folgt den WIRKSAMEN Profilwerten: eine Aenderung
+     *  des Exposure-Limits waehrend eines Laufs ist eine Bedienhandlung
+     *  und beendet ihn (CONFIG_CHANGED, ohne Sperre). */
     @Test
-    fun `B2 - im zentralen Modus ersetzt der Kontext-Cap die Liveness-Alt-Caps`(@TempDir dir: File) {
-        mealRatioDeckel = 0.30
-        corrRatioDeckel = 0.10
+    fun `die Kennung folgt den wirksamen Profilwerten`(@TempDir dir: File) {
         livenessLage(dir)
-        centralAn = true
         corrExpLimit = 8.0
         mealExpLimit = 8.0
-        corrRatioCapZ = 0.55
-        mealRatioCapZ = 0.55
-        repeat(6) { cycle() }
-        var hub: FuseCycleRunner.Outcome? = null
-        repeat(25) { val o = cycle(); if (o.livenessLiftU > 0 && hub == null) hub = o }
-        val k = hub ?: error("die Lage muss ohne Marker heben (CORRECTION)")
-        assertEquals("CORRECTION", k.livenessProfile)
-        // 0,55 und NICHT 0,10 (Alt-Cap) und NICHT min(0,10, 0,55).
-        assertEquals(0.55, k.livenessSelectedRatioCap!!, 1e-9)
-    }
-
-    /**
-     * P1-Fix (Review 29.08. spaet): im zentralen Modus ist der Kanaldeckel
-     * die KONTEXTGRENZE - die Legacy-Prozentdeckel sind wirkungslos. Der
-     * kleinste zulaessige Deckel (20 Prozent = 1,6 U bei maxIOB 8, unter
-     * dem Lage-IOB 4,5; kleinere Werte fallen im readConfig auf den
-     * Basis-Key zurueck!)
-     * wuergt den Kanal im LEGACY-Modus vollstaendig; im Zentralmodus
-     * aendert er BITGLEICH nichts. Die Mutation "zurueck zum
-     * Prozentdeckel" macht exakt diesen Test rot.
-     */
-    @Test
-    fun `P1 - ein winziger Legacy-Kanaldeckel aendert die CENTRAL-Liveness nicht`(@TempDir dir: File) {
-        fun lauf(unterDir: String, deckelPct: Double, zentral: Boolean): List<FuseCycleRunner.Outcome> {
-            corrIobDeckel = deckelPct
-            mealIobDeckel = deckelPct
-            livenessLage(File(dir, unterDir))
-            centralAn = zentral
-            corrExpLimit = if (zentral) 8.0 else null
-            mealExpLimit = if (zentral) 8.0 else null
-            corrRatioCapZ = if (zentral) 1.0 else null
-            mealRatioCapZ = if (zentral) 1.0 else null
-            return (0 until 30).map { cycle() }
-        }
-        val winzig = lauf("winzig", 20.0, zentral = true)
-        val gross = lauf("gross", 90.0, zentral = true)
-        winzig.indices.forEach { i ->
-            assertEquals(gross[i].decision.smbU, winzig[i].decision.smbU, 1e-12, "Endmenge Zyklus $i")
-            assertEquals(gross[i].livenessLiftU, winzig[i].livenessLiftU, 1e-12, "Kanal-Hub Zyklus $i")
-            assertEquals(gross[i].decision.block, winzig[i].decision.block, "Block Zyklus $i")
-        }
-        val hub = winzig.firstOrNull { it.livenessLiftU > 0.0 }
-        assertTrue(hub != null, "der Kanal muss trotz 1,6-U-Legacy-Deckel liefern")
-        // Export: der Prozentdeckel ist im Zentralmodus NICHT ANWENDBAR
-        // (null), der Kanaldeckel ist die Kontextgrenze in U.
-        assertEquals(null, hub!!.livenessSelectedIobCapPercent)
-        assertEquals(8.0, hub.livenessProfileIobLimitU!!, 1e-9)
-        // GEGENPROBE: im LEGACY-Modus wirkt derselbe Deckel weiter und
-        // wuergt den Kanal - der Rueckweg bleibt unveraendert.
-        val legacy = lauf("legacy", 20.0, zentral = false)
-        assertTrue(legacy.none { it.livenessLiftU > 0.0 }, "LEGACY: der Prozentdeckel muss wuergen")
-    }
-
-    /**
-     * P1-Fix, Kennungs-Richtungen: die Lauf-Kennung folgt dem WIRKSAMEN
-     * Wert. Ein im Zentralmodus ignorierter Legacy-Deckel darf einen Lauf
-     * nicht beenden; eine Aenderung des wirksamen Exposure-Limits ist eine
-     * Bedienhandlung und beendet ihn.
-     */
-    @Test
-    fun `P1 - die Kennung folgt dem wirksamen Wert nicht dem ignorierten`(@TempDir dir: File) {
-        corrIobDeckel = 70.0
-        mealIobDeckel = 80.0
-        livenessLage(dir)
-        centralAn = true
-        corrExpLimit = 8.0
-        mealExpLimit = 8.0
-        corrRatioCapZ = 1.0
-        mealRatioCapZ = 1.0
         var aktiv = false
         repeat(22) { val o = cycle(); if (o.livenessActive) aktiv = true }
         assertTrue(aktiv, "der Lauf muss stehen")
-        corrIobDeckel = 20.0 // im Zentralmodus IGNORIERT
-        val o1 = cycle()
-        assertTrue(o1.livenessExit != "CONFIG_CHANGED", "ein ignorierter Wert beendet keinen Lauf")
-        assertEquals(true, o1.livenessActive)
         corrExpLimit = 7.5 // WIRKSAM
         val o2 = cycle()
         assertEquals("CONFIG_CHANGED", o2.livenessExit, "der wirksame Wert beendet den Lauf")
@@ -8213,25 +8083,26 @@ class TransportWiringTest : TestBaseWithProfile() {
      */
     @Test
     fun `B - der Wiederherstellungspfad steht unter der gemeinsamen Endgrenze`(@TempDir dir: File) {
-        fun ruheBatch(zentral: Boolean, unterDir: String): List<FuseCycleRunner.Outcome> {
-            centralAn = zentral
-            corrExpLimit = if (zentral) 1.6 else null
-            mealExpLimit = if (zentral) 2.0 else null
-            corrRatioCapZ = if (zentral) 1.0 else null
-            mealRatioCapZ = if (zentral) 1.0 else null
+        fun ruheBatch(eng: Boolean, unterDir: String): List<FuseCycleRunner.Outcome> {
+            // Referenz = OFFENE Grenzen (der Batch passt vollstaendig),
+            // Kandidat = enge Kontextgrenze 1,6/2,0.
+            corrExpLimit = if (eng) 1.6 else 20.0
+            mealExpLimit = if (eng) 2.0 else 20.0
+            corrRatioCapZ = 1.0
+            mealRatioCapZ = 1.0
             return ruheLauf(
                 File(dir, unterDir), app.aaps.fuse.core.controller.UpfrontRecovery.CalmTreatment.CALM_BATCH,
                 zyklen = 45, abstiegBg = 82.0, abstiegRate = -0.5, abstiegIob = 2.0,
                 wendeZyklus = 6, ruheRate = 0.10, ruheIob = 0.3,
             )
         }
-        val frei = ruheBatch(false, "legacy")
+        val frei = ruheBatch(false, "offen")
         val anfFrei = frei.withIndex().filter { it.value.phaseAUpfrontRequestedU > 0.0 }
         assertEquals(1, anfFrei.size, "die Referenz muss den Batch genau einmal anfordern")
         val batchU = anfFrei.single().value.phaseAUpfrontRequestedU
         assertTrue(batchU > 1.4, "die Referenz muss OBERHALB der knappen Grenze liegen ($batchU)")
 
-        val eng = ruheBatch(true, "zentral")
+        val eng = ruheBatch(true, "eng")
         val anfEng = eng.withIndex().filter { it.value.phaseAUpfrontRequestedU > 0.0 }
         assertTrue(anfEng.isNotEmpty(), "auch der enge Lauf muss den Batch anfordern")
         val (iAnf, anf) = anfEng.first()
@@ -8378,7 +8249,7 @@ class TransportWiringTest : TestBaseWithProfile() {
         livenessLage(dir)
         bolusIobU = 3.9
         iobThPct = 50
-        livenessCapPct = 90.0
+        corrExpLimit = 7.2; mealExpLimit = 7.2 // frueher 90 % x maxIOB 8
         var bindung = ""
         var menge = -1.0
         repeat(25) { val o = cycle(); if (o.livenessLiftU > 0.0) { bindung = o.decision.bindingLimit; menge = o.decision.smbU } }
@@ -8386,14 +8257,14 @@ class TransportWiringTest : TestBaseWithProfile() {
         assertTrue(menge in 0.05..0.10 + 1e-9, "und die Menge traegt die Grenze: $menge U")
 
         iobThPct = 100
-        livenessCapPct = 50.0
+        corrExpLimit = 4.0; mealExpLimit = 4.0 // frueher 50 % x maxIOB 8
         clock = start
         transportReset()
         neuerRunner(FuseLedgerAdapter().also { it.loadOnce(File(dir, "deckel").also(File::mkdirs), "test-epoch", start) })
         bindung = ""
         menge = -1.0
         repeat(25) { val o = cycle(); if (o.livenessLiftU > 0.0) { bindung = o.decision.bindingLimit; menge = o.decision.smbU } }
-        assertEquals("liveness:livenessCap", bindung, "der eigene Kanaldeckel MUSS benannt binden")
+        assertEquals("liveness:correctionExposureLimit", bindung, "der eigene Kanaldeckel MUSS benannt binden")
         assertTrue(menge in 0.05..0.10 + 1e-9, "und die Menge traegt die Grenze: $menge U")
     }
 
@@ -8695,7 +8566,7 @@ class TransportWiringTest : TestBaseWithProfile() {
         var aktiv = false
         repeat(22) { val o = cycle(); if (o.livenessActive) aktiv = true }
         assertTrue(aktiv, "der Lauf muss stehen")
-        livenessCapPct = 85.0
+        corrExpLimit = 6.8; mealExpLimit = 6.8 // frueher 85 % x maxIOB 8
         val o1 = cycle()
         assertEquals("CONFIG_CHANGED", o1.livenessExit, "die Deckel-Aenderung beendet den Lauf")
         assertEquals(0.0, o1.livenessLiftU, 1e-9)
@@ -8807,8 +8678,6 @@ class TransportWiringTest : TestBaseWithProfile() {
             aufschubFristMin = i("deferredPrimeEndMin", aufschubFristMin)
             primeHuelleU = d("primeEnvelopeU", primeHuelleU)
             livenessAn = b("livenessChannelEnabled", livenessAn)
-            livenessCapPct = d("livenessIobCapPercent", livenessCapPct)
-            livenessRatioDeckel = d("livenessRatioCap", livenessRatioDeckel)
             mealPowerMin = i("mealPowerMin", mealPowerMin)
             zeroLatchAn = b("zeroLatchEnabled", zeroLatchAn)
             zeroLatchRuheZyklen = i("zeroLatchCalmExitMin", zeroLatchRuheZyklen)
@@ -8826,10 +8695,6 @@ class TransportWiringTest : TestBaseWithProfile() {
                     ruleSetVersion = i("ruleSetVersion", app.aaps.fuse.plugin.export.FuseStateJson.RULE_SET_VERSION),
                 )
             }.getOrNull()
-            p?.optDouble("mealRatioCap")?.takeIf { it.isFinite() }?.let { mealRatioDeckel = it }
-            p?.optDouble("mealIobCapPercent")?.takeIf { it.isFinite() }?.let { mealIobDeckel = it }
-            p?.optDouble("correctionRatioCap")?.takeIf { it.isFinite() }?.let { corrRatioDeckel = it }
-            p?.optDouble("correctionIobCapPercent")?.takeIf { it.isFinite() }?.let { corrIobDeckel = it }
             livenessBgMin = d("livenessBgMinDayMgdl", livenessBgMin)
             livenessBgMinNacht = pol?.optDouble("livenessBgMinNightMgdl")?.takeIf { it.isFinite() }
             livenessReArmMin = i("livenessReArmMin", livenessReArmMin)
@@ -8843,12 +8708,11 @@ class TransportWiringTest : TestBaseWithProfile() {
             // als 0 gelesen (optDouble auf JSON-null ist NaN -> takeIf).
             // KEIN optString fuer policyMode (die Android-optString-Falle
             // macht aus JSON-null den String "null").
-            centralAn = (pol?.opt("policyMode") as? String) == "CENTRAL_PROFILES"
-            corrExpLimit = pol?.optDouble("correctionExposureLimitU")?.takeIf { it.isFinite() }
-            mealExpLimit = pol?.optDouble("mealExposureLimitU")?.takeIf { it.isFinite() }
-            corrRatioCapZ = pol?.optDouble("correctionDemandRatioCap")?.takeIf { it.isFinite() }
-            mealRatioCapZ = pol?.optDouble("mealDemandRatioCap")?.takeIf { it.isFinite() }
-            mealBgMin = pol?.optDouble("livenessBgMinMealMgdl")?.takeIf { it.isFinite() }
+            pol?.optDouble("correctionExposureLimitU")?.takeIf { it.isFinite() }?.let { corrExpLimit = it }
+            pol?.optDouble("mealExposureLimitU")?.takeIf { it.isFinite() }?.let { mealExpLimit = it }
+            pol?.optDouble("correctionDemandRatioCap")?.takeIf { it.isFinite() }?.let { corrRatioCapZ = it }
+            pol?.optDouble("mealDemandRatioCap")?.takeIf { it.isFinite() }?.let { mealRatioCapZ = it }
+            pol?.optDouble("livenessBgMinMealMgdl")?.takeIf { it.isFinite() }?.let { mealBgMin = it }
             mealArmZyklen = i("mealArmCycles", 3)
             // Diese drei sind im Rig FESTE Stubs - fuer den Replay auf die
             // aufgezeichnete Politik umgebogen (22.08.: Rampe 2,5, Rebound-
@@ -8864,7 +8728,6 @@ class TransportWiringTest : TestBaseWithProfile() {
         // halbe Variante wuerde von validate je Zyklus abgelehnt und
         // erschiene als Abort-Rauschen statt als klare Fehlermeldung.
         fun dosingKandidatAnwenden(text: String) {
-            centralAn = true
             text.split(",").forEach { teil ->
                 val kv = teil.trim().split("=", limit = 2)
                 require(kv.size == 2) { "Dosierkontext-Teil ohne '=': $teil" }
@@ -8939,7 +8802,7 @@ class TransportWiringTest : TestBaseWithProfile() {
             }
         }
 
-        fun lauf(name: String, fensterMs: Long?, trendRegel: String? = null, fenster: Int = 18, ratioCap: Double = 1.0, livenessStart: Boolean = true, profilCapsBehalten: Boolean = false, upfrontStart: Double? = null, guardsStart: Boolean = false, reversalConfirm: Int = 2, gapBreakMs: Long? = null, reifeTag: String? = null, rejoin: Boolean = false, ruhe: app.aaps.fuse.core.controller.UpfrontRecovery.Params = app.aaps.fuse.core.controller.UpfrontRecovery.Params.OFF, dosingKandidat: String? = null): File {
+        fun lauf(name: String, fensterMs: Long?, trendRegel: String? = null, fenster: Int = 18, livenessStart: Boolean = true, upfrontStart: Double? = null, guardsStart: Boolean = false, reversalConfirm: Int = 2, gapBreakMs: Long? = null, reifeTag: String? = null, rejoin: Boolean = false, ruhe: app.aaps.fuse.core.controller.UpfrontRecovery.Params = app.aaps.fuse.core.controller.UpfrontRecovery.Params.OFF, dosingKandidat: String? = null): File {
             transportReset()
             boluses = emptyList()
             markerAt = 0L
@@ -8960,10 +8823,6 @@ class TransportWiringTest : TestBaseWithProfile() {
             // Latch-Vergleich. Jeder Lauf startet ungesetzt; NUR die
             // Profil-Matrix (FUSE_REPLAY_PROFILE) behaelt ihre bewusst
             // gesetzten Caps.
-            if (!profilCapsBehalten) {
-                mealRatioDeckel = null; mealIobDeckel = null
-                corrRatioDeckel = null; corrIobDeckel = null
-            }
             // Dieselbe Leck-Regel fuer den Sofortanteil (v28): alte Trails
             // tragen den Schluessel nicht, jeder Lauf startet explizit.
             // `null` heisst NICHT GESETZT - bei 0.0 waere "die Matrix will
@@ -9007,18 +8866,17 @@ class TransportWiringTest : TestBaseWithProfile() {
                 if (rejoin) app.aaps.fuse.core.signal.RejoinPolicy.enabled()
                 else app.aaps.fuse.core.signal.RejoinPolicy.OFF
             forecastShadowAn = false // Replay braucht die Matrizen nicht - Tempo
-            livenessRatioDeckel = ratioCap // v23: aufgezeichnete v22-Politik traegt den Schluessel nicht - der Hebel gilt
             theilSenFensterMin = fenster // W18-Trails tragen den Schluessel nicht - der Hebel gilt
-            // B3, dieselbe Leck-Regel fuer den zentralen Modus samt
-            // Kandidaten und M1/M3: jeder Lauf startet auf LEGACY/unset;
-            // traegt die Politik-Zeile die Schluessel, setzt
-            // politikAnwenden sie ohnehin selbst (selbst-resettend) -
-            // dieser Block deckt Trails OHNE jede Politik-Zeile.
-            centralAn = false
-            corrExpLimit = null; mealExpLimit = null
-            corrRatioCapZ = null; mealRatioCapZ = null
-            mealBgMin = null
-            mealArmZyklen = 3
+            // CENTRAL-only-Leck-Regel: jeder Lauf startet auf den ECHTEN
+            // Produkt-Defaults (Tonis Startsatz); traegt die Politik-Zeile
+            // die Schluessel, ueberschreibt politikAnwenden sie. Alte
+            // LEGACY-Trails werden damit ausdruecklich "wie CENTRAL-only
+            // es gefahren haette" gerechnet - eine LEGACY-Nachbildung gibt
+            // es seit dem Cleanup nicht mehr.
+            corrExpLimit = 3.0; mealExpLimit = 7.0
+            corrRatioCapZ = 0.20; mealRatioCapZ = 0.35
+            mealBgMin = 110.0
+            mealArmZyklen = 1
             politikAnwenden(zyklen.firstNotNullOfOrNull { it.policy })
             theilSenFensterMin = fenster // die erste Politik darf den Matrixwert nicht ueberschreiben (W10-Live-Trails tragen 10)
             upfrontStart?.let { upfrontAnteil = it }   // derselbe Vorrang fuer den Sofortanteil
@@ -9257,21 +9115,9 @@ class TransportWiringTest : TestBaseWithProfile() {
             lauf("guardsAn", null, fenster = 10, guardsStart = true)
             return
         }
-        val profilEnv = System.getenv("FUSE_REPLAY_PROFILE")
-        if (profilEnv != null) {
-            // §10-Abnahme + Cap-Wahl-Matrix: Split-Profil-Laeufe (je Spez
-            // "mealRatio,mealIob,corrRatio,corrIob", mehrere per ";")
-            // gegen die w10ref-Referenz.
-            lauf("w10ref", null, fenster = 10)
-            profilEnv.split(";").forEachIndexed { idx, spez ->
-                val t = spez.split(",").map { it.trim().toDouble() }
-                mealRatioDeckel = t[0]; mealIobDeckel = t[1]
-                corrRatioDeckel = t[2]; corrIobDeckel = t[3]
-                lauf(if (profilEnv.contains(";")) "profil${idx + 1}" else "profil", null, fenster = 10, profilCapsBehalten = true)
-            }
-            mealRatioDeckel = null; mealIobDeckel = null; corrRatioDeckel = null; corrIobDeckel = null
-            return
-        }
+        // FUSE_REPLAY_PROFILE (Legacy-Cap-Matrix) ist mit dem
+        // CENTRAL-only-Cleanup entfernt - Profilvarianten laufen ueber
+        // FUSE_REPLAY_DOSING_CONTEXT.
         val upfrontEnv = System.getenv("FUSE_REPLAY_UPFRONT")
         if (upfrontEnv != null) {
             // Sofortanteil-Matrix (iLet, v28): je Wert ein Lauf ueber
@@ -9464,15 +9310,10 @@ class TransportWiringTest : TestBaseWithProfile() {
             }
             return
         }
-        val capsEnv = System.getenv("FUSE_REPLAY_CAPS")
-        if (capsEnv != null) {
-            // Cap-Matrix (Tonis Vertrag 23.08. spaet): ungekappt gegen die
-            // Kandidaten - z.B. FUSE_REPLAY_CAPS=1.0,0.25,0.20,0.15.
-            capsEnv.split(",").forEach { c ->
-                val cap = c.trim().toDouble()
-                lauf("cap%03d".format((cap * 100).toInt()), null, fenster = 10, ratioCap = cap)
-            }
-        } else {
+        // FUSE_REPLAY_CAPS (v23-Ratio-Matrix des Alt-Deckels) ist mit dem
+        // CENTRAL-only-Cleanup entfernt - Ratio-Kandidaten laufen ueber
+        // FUSE_REPLAY_DOSING_CONTEXT (corrRatio=/mealRatio=).
+        run {
             lauf("w18", null, livenessStart = false) // Tor: aufzeichnungstreu (22.08. hatte bis 21:50 keinen Kanal)
             lauf("w10ref", null, fenster = 10)
             lauf("w10up", null, "UP", fenster = 10)
@@ -10292,59 +10133,6 @@ class TransportWiringTest : TestBaseWithProfile() {
     }
 
     /**
-     * Profil-Caps wirken: ohne Marker die Correction-Caps, mit Marker nach
-     * frischer Bewaffnung die Meal-Caps - und die Ruecknahme beendet das
-     * MEAL-Profil sofort samt Lauf (MARKER_CHANGED, ohne Sperre). Die
-     * Coverage-Vorbereitung exportiert UNAVAILABLE statt Schaetzwerten.
-     */
-    @Test
-    fun `profil-caps schalten mit dem marker um und ruecknahme wirkt sofort`(@TempDir dir: File) {
-        mealRatioDeckel = 0.30; mealIobDeckel = 80.0
-        corrRatioDeckel = 0.10; corrIobDeckel = 70.0 // 5,6 U > Lage-IOB 4,5 - der Deckel laesst Spielraum
-        livenessLage(dir)
-        repeat(6) { cycle() } // Signal-Warm-up
-        var corrHub: FuseCycleRunner.Outcome? = null
-        repeat(25) { val o = cycle(); if (o.livenessLiftU > 0 && corrHub == null) corrHub = o }
-        val k = corrHub ?: error("die Lage muss ohne Marker heben (CORRECTION)")
-        assertEquals("CORRECTION", k.livenessProfile)
-        assertEquals(0.10, k.livenessSelectedRatioCap!!, 1e-9)
-        assertEquals(70.0, k.livenessSelectedIobCapPercent!!, 1e-9)
-        assertEquals("UNAVAILABLE", k.livenessCoverageState)
-        assertTrue(k.livenessStaticCorrectionNeedU != null && k.livenessStaticCorrectionNeedU!! > 0.0)
-        // Review 24.08.: die Druckbedingung heisst Druck, nicht Stoerung -
-        // disturbanceActive wird NICHT behauptet.
-        assertEquals(true, k.livenessPressureActive)
-
-        // Beobachteter Marker: der laufende Lauf endet MARKER_CHANGED (kein
-        // stiller Cap-Tausch), dann frische Bewaffnung unter MEAL-Caps.
-        markerAt = clock
-        val wechsel = cycle()
-        assertEquals("MARKER_CHANGED", wechsel.livenessExit)
-        var mealHub: FuseCycleRunner.Outcome? = null
-        repeat(25) { val o = cycle(); if (o.livenessLiftU > 0 && mealHub == null) mealHub = o }
-        val m = mealHub ?: error("nach frischer Bewaffnung muss der Kanal unter MEAL heben")
-        assertEquals("MEAL", m.livenessProfile)
-        assertEquals(0.30, m.livenessSelectedRatioCap!!, 1e-9)
-        assertEquals(80.0, m.livenessSelectedIobCapPercent!!, 1e-9)
-        assertTrue(m.livenessLiftU > k.livenessLiftU, "MEAL-Ratio hebt mehr als CORRECTION: ${m.livenessLiftU} vs ${k.livenessLiftU}")
-
-        // Ruecknahme: Identitaet und Frist SOFORT weg, Lauf endet (Test 6).
-        markerAt = 0L
-        val weg = cycle()
-        assertEquals(0L, weg.markerPowerPinnedFor, "Identitaet sofort geloescht")
-        assertEquals(0L, weg.markerPowerDeadlineTs, "Frist sofort geloescht")
-        assertEquals("MARKER_CHANGED", weg.livenessExit, "Lauf endet als Bedienhandlung, nicht als Riegel")
-        // Nach der Ruecknahme ist die Lage ehrlich EXCLUDED, solange die
-        // widerrufene Evidenz-Episode laeuft (bestehende v18-Semantik:
-        // "die Episode bleibt, der Kredit ist weg" -> SUSPENDED). Der
-        // Vertrag verlangt: MEAL endet SOFORT - und das tut es.
-        assertTrue(weg.livenessProfile != "MEAL", "MEAL endet sofort: ${weg.livenessProfile}")
-        val danach = cycle()
-        assertEquals("EXCLUDED", danach.livenessProfile)
-        assertEquals("EXCLUDED_LAGE", danach.livenessProfileReason)
-    }
-
-    /**
      * Restart-Vertraege (Tests 7/8/15): passende persistierte Identitaet
      * setzt die Restfrist fort; ein beim Warmstart nur VORGEFUNDENER Marker
      * ohne passende Identitaet eroeffnet kein MEAL; die Frist ueberlebt den
@@ -10386,55 +10174,55 @@ class TransportWiringTest : TestBaseWithProfile() {
      */
     @Test
     fun `cap-aenderung beendet den lauf und ungueltige relation faellt aus`(@TempDir dir: File) {
-        corrRatioDeckel = 0.10; mealRatioDeckel = 0.30
         livenessLage(dir)
+        corrRatioCapZ = 0.10; mealRatioCapZ = 0.30
         var aktiv = false
         repeat(25) { val o = cycle(); if (o.livenessActive) aktiv = true }
         assertTrue(aktiv, "der Lauf muss stehen")
-        corrRatioDeckel = 0.05
+        corrRatioCapZ = 0.05
         val o = cycle()
         assertEquals("CONFIG_CHANGED", o.livenessExit)
         assertEquals(0L, o.livenessReArmUntilTs, "Bedienhandlung: keine Sperre")
 
         // Test 11: CORRECTION offener als MEAL -> fail-closed.
-        corrRatioDeckel = 0.40
+        corrRatioCapZ = 0.40
         val kaputt = cycle()
-        assertTrue(kaputt.abortReason?.contains("livenessCorrectionRatioCap") == true,
+        assertTrue(kaputt.abortReason?.contains("correctionDemandRatioCap") == true,
             "relationale Validierung muss ablehnen: ${kaputt.abortReason}")
     }
 
     /**
-     * Profil-IOB-Deckel (Tests 12/13): erreicht der Kanal seinen
-     * profilspezifischen Deckel, wird NUR sein Zusatzanteil null - die
-     * Entscheidung faellt auf den Normalpfad zurueck. Das globale iobTH
-     * bleibt auch im MEAL-Profil eine harte Obergrenze im selben min().
+     * CENTRAL-only-Neufassung des frueheren Profil-IOB-Deckel-Tests: einen
+     * NUR-Kanal-Deckel gibt es nicht mehr - die Kontextgrenze ist der
+     * GEMEINSAME Raum von Kanal und Normalpfad (P1-Fix). Liegt sie unter
+     * dem Bestand, stoppt ALLES als EXPOSURE (T12-neu); das globale iobTH
+     * bleibt im selben min() eine harte Obergrenze, auch wenn die
+     * Kontextgrenze offen ist (T13, unveraendert).
      */
     @Test
-    fun `profil-iob-deckel nullt nur den kanal und global iobth bleibt hart`(@TempDir dir: File) {
-        // CORRECTION-Deckel 20% von maxIOB 8 = 1,6 U; bolusIobU 4,5 der Lage
-        // liegt DARUEBER -> Kanal-Headroom 0, Denial NO_HEADROOM.
-        corrIobDeckel = 20.0; mealIobDeckel = 60.0
+    fun `die kontextgrenze deckelt kanal und normalpfad gemeinsam und global iobth bleibt hart`(@TempDir dir: File) {
+        // T12-neu: Kontextgrenze 1,6 U unter dem Lage-IOB 4,5 -> kein
+        // positives Insulin aus KEINER Quelle; typisiert STOP/EXPOSURE.
         livenessLage(dir)
-        var gedeckelt: FuseCycleRunner.Outcome? = null
-        // Verlangt wird ein Zyklus, in dem der NORMALPFAD liefert (Saegezahn
-        // im Lauf) UND der Kanal am Profil-Deckel haengt - nur dort ist
-        // beweisbar, dass der Deckel NUR den Kanalanteil nullt (Test 12;
-        // 0==0 im stillen Deadlock waere blind fuer die Mutation).
+        corrExpLimit = 1.6; mealExpLimit = 4.8
+        var geblockt: FuseCycleRunner.Outcome? = null
         repeat(90) {
             val o = cycle()
-            if (o.livenessDenial == "NO_HEADROOM" && (o.livenessNormalSmbU ?: 0.0) > 0.0 && gedeckelt == null) gedeckelt = o
+            assertEquals(0.0, o.decision.smbU, 1e-9, "unter der Kontextgrenze fliesst nichts")
+            assertEquals(0.0, o.livenessLiftU, 1e-9, "auch der Kanal nicht")
+            // Viele Zyklen stoppt schon der Schwanz (STOP/TAIL, ehrlich);
+            // gesucht ist ein Zyklus, in dem ein POSITIVER Vorschlag erst
+            // an der Endpruefung scheitert - dort heisst der Stop EXPOSURE.
+            if (o.exposureGateBlocked == true && geblockt == null) geblockt = o
         }
-        val g = gedeckelt ?: error("der Profil-Deckel muss in einem Saegezahn-Zyklus greifen")
-        assertEquals(0.0, g.livenessLiftU, 1e-9, "nur der Kanalanteil wird null")
-        assertTrue(g.livenessNormalSmbU!! > 0.0, "der Normalpfad liefert in diesem Zyklus")
-        assertEquals(g.livenessNormalSmbU!!, g.decision.smbU, 1e-9, "die Entscheidung IST der Normalpfad")
-        assertEquals(20.0 / 100.0 * 8.0, g.livenessProfileIobLimitU!!, 1e-9)
+        val g12 = geblockt ?: error("die Endpruefung muss mindestens einen positiven Vorschlag blocken")
+        assertEquals("STOP", g12.smbState)
+        assertEquals("EXPOSURE", g12.smbStopReason)
 
-        // T13: MEAL-Deckel 90% waere offen, aber das globale iobTH (hier
-        // via iobTH-Prozent klein gestellt) bleibt im min() hart.
+        // T13: MEAL-Grenze offen (7,2), aber das globale iobTH (40 % = 3,2 U
+        // < bolusIobU 4,5) bleibt im min() hart.
         transportReset()
-        corrIobDeckel = 80.0; mealIobDeckel = 90.0
-        iobThPct = 40 // iobTH = 3,2 U < bolusIobU 4,5 -> global bindet
+        iobThPct = 40
         livenessLage(File(dir, "global"))
         markerAt = clock
         var global: FuseCycleRunner.Outcome? = null
@@ -10455,8 +10243,9 @@ class TransportWiringTest : TestBaseWithProfile() {
     @Test
     fun `liveness ratio-deckel kappt die geschwindigkeit und nennt sich als grenze`(@TempDir dir: File) {
         fun laufMit(cap: Double, name: String): List<FuseCycleRunner.Outcome> {
-            livenessRatioDeckel = cap
             livenessLage(File(dir, name))
+            corrRatioCapZ = cap
+            mealRatioCapZ = kotlin.math.max(cap, 0.35)
             return (0 until 30).map { cycle() }
         }
         val offen = laufMit(1.0, "offen")
@@ -10472,10 +10261,10 @@ class TransportWiringTest : TestBaseWithProfile() {
         assertTrue(sEng < sOffen - 0.049, "Cap muss die Lieferrate druecken: eng=$sEng offen=$sOffen")
         // 2. Der Cap NENNT sich als Grenze (Tonis Vertrag: Binding
         //    livenessRatioCap, wenn er begrenzt).
-        assertTrue(engHub.any { it.decision.bindingLimit == "liveness:livenessRatioCap" },
+        assertTrue(engHub.any { it.decision.bindingLimit == "liveness:demandRatioCap" },
             "Binding muss den Cap nennen: " + engHub.map { it.decision.bindingLimit }.distinct())
-        assertTrue(offen.none { it.decision.bindingLimit == "liveness:livenessRatioCap" },
-            "Default 1.0 darf nie als Grenze auftauchen")
+        assertTrue(offen.none { it.decision.bindingLimit == "liveness:demandRatioCap" },
+            "Cap 1.0 darf nie als Grenze auftauchen")
         // 3. Export: liveRatio ist im gekappten Lauf der Cap, im offenen die
         //    Basis-Ratio des Profils (v26: ohne Marker die Korrektur-Ratio).
         assertTrue(engHub.all { (it.livenessLiveRatio ?: 9.9) <= 0.05 + 1e-9 }, "liveRatio == Cap im gekappten Lauf")
@@ -10517,9 +10306,9 @@ class TransportWiringTest : TestBaseWithProfile() {
         // wird damit als DECKEL-Wechsel messbar - gleiche Rampenbasis,
         // engere Kappe (Tonis v27-Korrektur). maxSMB offen, sonst bindet es
         // vor dem Ratio-Deckel und traegt dessen Namen davon.
-        corrRatioDeckel = 0.20
         maxSmbU = 1.0
         livenessLage(dir)
+        corrRatioCapZ = 0.20
         steigungProMin = 0.9
         knickAbMin = 55
         steigungNachKnick = 1.2
@@ -10551,7 +10340,7 @@ class TransportWiringTest : TestBaseWithProfile() {
             assertTrue(o.livenessBaseRatio!! >= 0.20, "die Rampe muss real heben: ${o.livenessBaseRatio}")
             // Pflichttest 5: M-Cap Default 1,0 = kein zusaetzlicher Deckel.
             assertEquals(o.livenessBaseRatio!!, o.livenessLiveRatio!!, 1e-9)
-            assertTrue(o.livenessBinding != "livenessRatioCap", "Default 1,0 bindet nie")
+            assertTrue(o.livenessBinding != "demandRatioCap", "Default 1,0 bindet nie")
             // Endmenge bleibt der rasterisierte Kanal-Kandidat.
             assertEquals(LivenessChannel.quantize(o.livenessCandidateU, 0.05), o.decision.smbU, 1e-9)
         }
@@ -10573,7 +10362,7 @@ class TransportWiringTest : TestBaseWithProfile() {
             assertEquals(erwartet, it.livenessBaseRatio!!, 1e-9, "K-Profil: dieselbe Rampenbasis")
             assertTrue(it.livenessBaseRatio!! > 0.20 + 1e-9, "die Basis steht ueber dem K-Deckel: ${it.livenessBaseRatio}")
             assertEquals(0.20, it.livenessLiveRatio!!, 1e-9, "der K-Deckel 0,20 kappt ab der Frist")
-            assertEquals("livenessRatioCap", it.livenessBinding, "und nennt sich als Grenze")
+            assertEquals("demandRatioCap", it.livenessBinding, "und nennt sich als Grenze")
         }
 
         // Abnahme c: gemessenes Fallen bleibt im MEAL-Vertragssinn ein
@@ -10605,9 +10394,9 @@ class TransportWiringTest : TestBaseWithProfile() {
         whenever(preferences.get(FuseDoubleKey.RiseRampHighR)).thenReturn(3.0)
         whenever(preferences.get(FuseBooleanKey.OnsetChannelEnabled)).thenReturn(false)
         fun laufMit(kCap: Double, name: String): List<FuseCycleRunner.Outcome> {
-            corrRatioDeckel = kCap; mealRatioDeckel = kotlin.math.max(kCap, 0.30)
             maxSmbU = 1.0 // sonst bindet maxSMB vor dem Ratio-Deckel
             livenessLage(File(dir, name))
+            corrRatioCapZ = kCap; mealRatioCapZ = kotlin.math.max(kCap, 0.30)
             steigungProMin = 0.9
             knickAbMin = 55
             steigungNachKnick = 1.2
@@ -10623,7 +10412,7 @@ class TransportWiringTest : TestBaseWithProfile() {
             )
             assertEquals(erwartet, o.livenessBaseRatio!!, 1e-9, "Basis == Rampe auch im K-Profil")
             assertEquals(0.10, o.livenessLiveRatio!!, 1e-9, "der enge K-Deckel kappt")
-            assertEquals("livenessRatioCap", o.livenessBinding, "und nennt sich als Grenze")
+            assertEquals("demandRatioCap", o.livenessBinding, "und nennt sich als Grenze")
         }
         // Der Gegenbeweis braucht ein r IN der Rampe - sonst prueft der
         // Test nichts (spaete Zyklen: Steigung 1,2 + Aktivitaetshub).
@@ -10643,7 +10432,7 @@ class TransportWiringTest : TestBaseWithProfile() {
         spaet.forEach { o ->
             assertEquals(o.livenessBaseRatio!!, o.livenessLiveRatio!!, 1e-9, "unter dem Deckel folgt die Ratio der Rampe")
             assertTrue(o.livenessLiveRatio!! > 0.15 + 1e-9, "und skaliert ueber 0,15 hinaus: ${o.livenessLiveRatio}")
-            assertTrue(o.livenessBinding != "livenessRatioCap", "der offene Deckel bindet nicht")
+            assertTrue(o.livenessBinding != "demandRatioCap", "der offene Deckel bindet nicht")
         }
     }
 
@@ -10658,11 +10447,11 @@ class TransportWiringTest : TestBaseWithProfile() {
         whenever(preferences.get(FuseDoubleKey.RiseRampLowR)).thenReturn(1.5)
         whenever(preferences.get(FuseDoubleKey.RiseRampHighR)).thenReturn(3.0)
         whenever(preferences.get(FuseBooleanKey.OnsetChannelEnabled)).thenReturn(false)
-        mealRatioDeckel = 0.20; corrRatioDeckel = 0.15
         // maxSMB offen, sonst bindet es VOR dem Ratio-Deckel (0,20 x
         // ~2,5 U Bedarf > 0,3) und der Test saehe nie den Cap als Grenze.
         maxSmbU = 1.0
         livenessLage(dir)
+        mealRatioCapZ = 0.20; corrRatioCapZ = 0.15
         steigungProMin = 0.9
         knickAbMin = 55
         steigungNachKnick = 1.2
@@ -10678,7 +10467,7 @@ class TransportWiringTest : TestBaseWithProfile() {
             assertEquals("MEAL", o.livenessProfile)
             assertTrue(o.livenessBaseRatio!! >= 0.20 + 1e-9, "die Basis liegt ueber dem Cap: ${o.livenessBaseRatio}")
             assertEquals(0.20, o.livenessLiveRatio!!, 1e-9, "der M-Cap kappt die Rampenbasis")
-            assertEquals("livenessRatioCap", o.livenessBinding, "und nennt sich als Grenze")
+            assertEquals("demandRatioCap", o.livenessBinding, "und nennt sich als Grenze")
         }
     }
 

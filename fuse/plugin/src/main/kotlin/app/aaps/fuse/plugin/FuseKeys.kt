@@ -308,70 +308,28 @@ enum class FuseDoubleKey(
     MarkerPrimeDescentHorizonMin("fuse_marker_prime_descent_horizon_min", 60.0, 30.0, 120.0),
 
     /**
-     * EIGENER Deckel des Liveness-Kanals als PROZENT von maxIOB (P0, Codex
-     * 22.08.): ausdruecklich NICHT das globale iobTH - das begrenzt auch
-     * Korrektur, Prime und Fundament, und eine globale Senkung wuerde die
-     * fruehe Mahlzeitenversorgung aushungern. Die strengste Grenze
-     * (globales iobTH, dieser Deckel, maxIOB) gewinnt immer. 50 ist der
-     * konservative Replay-Startwert; 60-70 sind spaetere Pruefkandidaten
-     * (Tonis autoISF-Erfahrung).
-     */
-    LivenessIobCapPercent("fuse_liveness_iob_cap_percent", 50.0, 20.0, 90.0),
-
-    /**
-     * RATIO-DECKEL DES LIVENESS-KANALS (Tonis Vertrag 23.08. spaet):
-     * liveRatio = min(effectiveRatio, Cap) - begrenzt die GESCHWINDIGKEIT
-     * je Zyklus, waehrend [LivenessIobCapPercent] die GESAMTMENGE deckelt
-     * und die gemessenen Abwaerts-Exits den Lauf beenden. Alle drei sind
-     * komplementaer; keiner ersetzt einen anderen.
+     * DIE VIER ZENTRALEN PROFILWERTE (Bauauftrag 7.1; CENTRAL-only seit
+     * dem Legacy-Cleanup 29.08. nachts - es gibt keinen Modusschalter und
+     * keine Legacy-Kanaldeckel mehr).
      *
-     * GEMESSENER ANLASS: die 15:33-Episode vom 23.08. lieferte 3,85 U in
-     * 23 min (0,17 U/min) bis an den Kanaldeckel, Min90 danach 64 - bei
-     * 10-20 min Wirklatenz ist der Bedarf bei einem Forecast-Miss
-     * ausgeliefert, bevor ein gemessener Exit greifen KANN. Der Cap
-     * streckt die Lieferung und gibt den Exits Zeit.
+     * ECHTE Runtime- UND Migrationsdefaults (Tonis begruendeter Startsatz
+     * aus den Messfaellen, keine physiologische Garantie): ein altes
+     * Backup ohne diese Schluessel erhaelt sie; ausdruecklich gesetzte
+     * Werte ueberschreibt kein Update. Exposure intern in kanonischen U;
+     * relational fail-closed CORRECTION nie offener als MEAL.
      *
-     * DEFAULT 1.0 = NICHT BINDEND (effectiveRatio ist stets kleiner):
-     * das Update ist dosierneutral. Der NORMALE Ratio-Pfad (Anteil
-     * Korrektur/Anstieg, Rampe) bleibt in jedem Fall unberuehrt.
+     * Startsatz-Begruendung (29.08.): CORR 3,0 U haette den 27.08.-Burst
+     * auf ~1,15 U begrenzt (2,5 -> 0,45 war der scharfe Kandidat);
+     * MEAL 7,0 U laesst nach ~1 U Alt-IOB + 5 U Direktdosis noch
+     * Nachsteuerraum; CORR-Ratio 0,20 bewahrt die bisherige
+     * Korrektur-Drossel auch fuer den RISE-Pfad; MEAL-Ratio 0,35 gibt
+     * unter Vollmacht die konfigurierte Anstiegsratio frei (wirksam
+     * bleibt min(Basisrampe, Cap) - nichts wird kuenstlich erhoeht).
      */
-    LivenessRatioCap("fuse_liveness_ratio_cap", 1.0, 0.05, 1.0),
-
-    /**
-     * MEAL-/CORRECTION-PROFIL des Liveness-Kanals (Bauauftrag Toni 23.08.
-     * nachts): EIN Kanal, zwei Mengenprofile. Innerhalb der
-     * Marker-Leistungsfrist gelten die MEAL-Caps, danach die CORRECTION-
-     * Caps; alle uebrigen Schutzregeln (BG-Min Tag/Nacht, Druckschwelle,
-     * Re-Arm, maxSMB, Modellpruefung, gemessene Riegel) bleiben gemeinsam.
-     *
-     * LESE-MIGRATION: solange ein Schluessel nie gesetzt wurde, gilt der
-     * bisherige GLOBALE Kanalwert ([LivenessRatioCap] bzw.
-     * [LivenessIobCapPercent]) - das Update ist dosierneutral, die
-     * Trennung wird erst mit bewusst verschiedenen Werten wirksam.
-     * RELATIONAL, fail-closed validiert: CORRECTION nie offener als MEAL.
-     */
-    LivenessMealRatioCap("fuse_liveness_meal_ratio_cap", 1.0, 0.05, 1.0),
-    LivenessMealIobCapPercent("fuse_liveness_meal_iob_cap_percent", 50.0, 20.0, 90.0),
-    LivenessCorrectionRatioCap("fuse_liveness_corr_ratio_cap", 1.0, 0.05, 1.0),
-    LivenessCorrectionIobCapPercent("fuse_liveness_corr_iob_cap_percent", 50.0, 20.0, 90.0),
-
-    /**
-     * DIE VIER ZENTRALEN PROFILWERTE (Bauauftrag 7.1 + 7.5.7, Schritt A4).
-     *
-     * KANDIDATEN, solange [FuseBooleanKey.CentralProfilesEnabled] aus ist:
-     * sie werden gelesen, validiert und exportiert, aber von KEINEM
-     * Dosierpfad konsumiert (das ist Schritt B). Unkonfiguriert = null im
-     * Config-Bau (getIfExists, Grenzen-Klammer wie bei der Nachtschwelle) -
-     * es gibt KEINE Lese-Migration aus Legacy-Werten und keinen stillen
-     * Default: vor der Aktivierung muessen alle vier ausdruecklich gueltig
-     * gesetzt sein (typisierte Ablehnung sonst). Exposure intern in
-     * kanonischen U; relational fail-closed CORRECTION nie offener als MEAL.
-     * Die Bildschirm-Defaults sind reine Anzeige vor dem ersten Setzen.
-     */
-    CorrectionExposureLimitU("fuse_correction_exposure_limit_u", 5.0, 0.5, 20.0),
-    MealExposureLimitU("fuse_meal_exposure_limit_u", 5.0, 0.5, 20.0),
-    CorrectionDemandRatioCap("fuse_correction_demand_ratio_cap", 1.0, 0.05, 1.0),
-    MealDemandRatioCap("fuse_meal_demand_ratio_cap", 1.0, 0.05, 1.0),
+    CorrectionExposureLimitU("fuse_correction_exposure_limit_u", 3.0, 0.5, 20.0),
+    MealExposureLimitU("fuse_meal_exposure_limit_u", 7.0, 0.5, 20.0),
+    CorrectionDemandRatioCap("fuse_correction_demand_ratio_cap", 0.20, 0.05, 1.0),
+    MealDemandRatioCap("fuse_meal_demand_ratio_cap", 0.35, 0.05, 1.0),
 
     /**
      * BG-Schwelle der Druckbedingung des Liveness-Kanals am TAG [mg/dl].
@@ -382,7 +340,7 @@ enum class FuseDoubleKey(
      * SCHLUESSEL bleibt der alte Einzelwert-Schluessel, damit ein bereits
      * eingestellter Wert das Update ueberlebt.
      */
-    LivenessBgMinDayMgdl("fuse_liveness_bg_min_mgdl", 160.0, 100.0, 250.0),
+    LivenessBgMinDayMgdl("fuse_liveness_bg_min_mgdl", 140.0, 100.0, 250.0),
 
     /**
      * BG-Schwelle der Druckbedingung in der NACHT [mg/dl] (v20, Toni/Codex
@@ -416,7 +374,7 @@ enum class FuseDoubleKey(
      * davon unberuehrt absolut. KEIN Live-Default durch diesen Bau -
      * Toni setzt.
      */
-    LivenessBgMinMealMgdl("fuse_liveness_bg_min_meal_mgdl", 140.0, 80.0, 250.0),
+    LivenessBgMinMealMgdl("fuse_liveness_bg_min_meal_mgdl", 110.0, 80.0, 250.0),
 
     /** Totband der NACHT [mg/dl ueber Ziel]: darunter kein SMB im Nachtfenster.
      *  0 = aus. Ein erklaerter Marker hebt es auf (Toni 09.08.). */
@@ -506,7 +464,7 @@ enum class FuseIntKey(
      * nichts, erst ein bewusst gesetzter kleinerer Wert beschleunigt.
      * Keine Wahl des Live-Werts vor Schritt C - Toni setzt.
      */
-    MealArmCycles("fuse_meal_arm_cycles", 3, 1, 10),
+    MealArmCycles("fuse_meal_arm_cycles", 1, 1, 10),
 
     /**
      * MARKER-LEISTUNGSFRIST [min] (Bauauftrag Toni 23.08. nachts): so lange
@@ -983,23 +941,13 @@ enum class FuseBooleanKey(
      * r >= 1,0 ueber drei Zyklen, Guard/Tail sperren den Normalpfad) den
      * bereits erkannten Mittelbahn-Bedarf dosierbar - final = max(normal,
      * liveness), nie Addition; Tail ist im Kanal weder Veto noch Kappe;
-     * kumulativ begrenzt durch min(globales iobTH,
-     * [FuseDoubleKey.LivenessIobCapPercent] x maxIOB, maxIOB). Gemessene
+     * kumulativ begrenzt durch min(globales iobTH, Kontext-Exposure-Limit
+     * des Dosierprofils, maxIOB). Gemessene
      * Riegel (Fallen, Tief, Rebound, Hold) bleiben absolut; Exit bei
      * bestaetigter Wende oder manueller Intervention mit restartfester
      * Sperre [FuseIntKey.LivenessReArmMin].
      */
     LivenessChannelEnabled("fuse_liveness_channel_enabled", false),
-
-    /**
-     * policyMode-Schalter (Bauauftrag 7.5.7, Toni 29.08.): false = LEGACY
-     * (heutige Settings gelten unveraendert), true = CENTRAL_PROFILES.
-     * HART entweder/oder - keine min(alt,neu)-Mischgrenzen. Default AUS:
-     * ein Update veraendert nichts still. Die Aktivierung verlangt alle
-     * vier Profilwerte gueltig gesetzt (validate, typisierte Ablehnung).
-     * In Schritt A ohne jeden Dosier-Konsumenten (reine Struktur).
-     */
-    CentralProfilesEnabled("fuse_central_profiles_enabled", false),
 
     /**
      * WIEDEREINSTIEG NACH CGM-FUNKLUECKE (Toni 25.08. abends).

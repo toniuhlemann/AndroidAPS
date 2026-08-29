@@ -44,12 +44,7 @@ internal val fuseEinstellbareKeys: Set<String> = setOf(
     FuseBooleanKey.LivenessChannelEnabled.key,
     FuseBooleanKey.SignalRejoinEnabled.key,
     FuseIntKey.LivenessMealPowerMin.key,
-    FuseDoubleKey.LivenessMealRatioCap.key,
-    FuseDoubleKey.LivenessMealIobCapPercent.key,
-    FuseDoubleKey.LivenessCorrectionRatioCap.key,
-    FuseDoubleKey.LivenessCorrectionIobCapPercent.key,
     // A4 (Bauauftrag 7.5.7): policyMode + die vier zentralen Kandidaten.
-    FuseBooleanKey.CentralProfilesEnabled.key,
     FuseDoubleKey.CorrectionExposureLimitU.key,
     FuseDoubleKey.MealExposureLimitU.key,
     FuseDoubleKey.CorrectionDemandRatioCap.key,
@@ -130,28 +125,6 @@ object FuseSettingsReport {
         fun zahl(k: FuseDoubleKey, label: String, einheit: String) = FuseScreenModel.SettingRow(
             key = k.key, label = label, value = "${f2(preferences.get(k))} $einheit".trim(),
             standard = f2(k.defaultValue).takeIf { abweicht(preferences.get(k), k.defaultValue) }?.let { "$it $einheit".trim() },
-        )
-
-        // LEGACY-CLEANUP (Toni 29.08. spaet, ersetzt den A5-Stand
-        // "ignoriert (zentrale Profile)"): im Zentralmodus sind die
-        // Legacy-Profilcaps wirkungslos (P1-Fix) und erscheinen deshalb
-        // GAR NICHT mehr - auch eine als "ignoriert" beschriftete Zeile
-        // liess eine Altgrenze wie einen Teil der wirksamen Politik
-        // aussehen. Der Modus selbst steht als policyMode-Zeile im
-        // Bericht; die Rueckkehr zu LEGACY bringt die Zeilen zurueck.
-        fun legacyCap(k: FuseDoubleKey, label: String, einheit: String): FuseScreenModel.SettingRow? =
-            if (preferences.get(FuseBooleanKey.CentralProfilesEnabled)) null
-            else zahl(k, label, einheit)
-
-        // A4: ein KANDIDAT zeigt "unkonfiguriert", solange er nie gesetzt
-        // wurde - die Grenzen-Klammer zaehlt Ausreisser als nie gesetzt
-        // (dieselbe Regel wie im Config-Bau).
-        fun kandidat(k: FuseDoubleKey, label: String, einheit: String) = FuseScreenModel.SettingRow(
-            key = k.key, label = label,
-            value = preferences.getIfExists(k)
-                ?.takeIf { it.isFinite() && it in k.min..k.max }
-                ?.let { ("" + f2(it) + " " + einheit).trim() } ?: "unkonfiguriert",
-            standard = null,
         )
 
         fun ganz(k: FuseIntKey, label: String, einheit: String) = FuseScreenModel.SettingRow(
@@ -249,53 +222,18 @@ object FuseSettingsReport {
                     schalter(FuseBooleanKey.LivenessChannelEnabled, "Liveness-Kanal"),
                     schalter(FuseBooleanKey.SignalRejoinEnabled, "Wiedereinstieg nach Funkluecke"),
                     ganz(FuseIntKey.LivenessMealPowerMin, "M-Frist", "min"),
-                    legacyCap(FuseDoubleKey.LivenessMealRatioCap, "M-Ratio-Deckel", ""),
-                    legacyCap(FuseDoubleKey.LivenessMealIobCapPercent, "M-Kanaldeckel", "%"),
-                    legacyCap(FuseDoubleKey.LivenessCorrectionRatioCap, "K-Ratio-Deckel", ""),
-                    legacyCap(FuseDoubleKey.LivenessCorrectionIobCapPercent, "K-Kanaldeckel", "%"),
-                    // A4: policyMode + Kandidaten. UNKONFIGURIERT wird
-                    // ausdruecklich so genannt (Bauauftrag 7.1) - der
-                    // Bildschirm-Default waere eine Falschaussage.
-                    FuseScreenModel.SettingRow(
-                        key = FuseBooleanKey.CentralProfilesEnabled.key,
-                        label = "policyMode",
-                        value = if (preferences.get(FuseBooleanKey.CentralProfilesEnabled)) "CENTRAL_PROFILES" else "LEGACY",
-                        standard = "LEGACY".takeIf { preferences.get(FuseBooleanKey.CentralProfilesEnabled) },
-                    ),
-                    kandidat(FuseDoubleKey.MealExposureLimitU, "MEAL Exposure-Limit", "U"),
-                    kandidat(FuseDoubleKey.CorrectionExposureLimitU, "CORR Exposure-Limit", "U"),
-                    kandidat(FuseDoubleKey.MealDemandRatioCap, "MEAL Demand-Ratio-Cap", ""),
-                    kandidat(FuseDoubleKey.CorrectionDemandRatioCap, "CORR Demand-Ratio-Cap", ""),
+                    // CENTRAL-only: die vier Profilwerte sind normale
+                    // Einstellwerte mit echten Defaults - policyMode ist
+                    // eine Export-Konstante, keine Einstellung mehr.
+                    zahl(FuseDoubleKey.MealExposureLimitU, "MEAL Exposure-Limit", "U"),
+                    zahl(FuseDoubleKey.CorrectionExposureLimitU, "CORR Exposure-Limit", "U"),
+                    zahl(FuseDoubleKey.MealDemandRatioCap, "MEAL Demand-Ratio-Cap", ""),
+                    zahl(FuseDoubleKey.CorrectionDemandRatioCap, "CORR Demand-Ratio-Cap", ""),
                     zahl(FuseDoubleKey.LivenessBgMinDayMgdl, "Druck-Schwelle Tag", "mg/dl"),
-                    // Die Nachtschwelle EHRLICH anzeigen: solange sie nie
-                    // gesetzt wurde, folgt sie zur Laufzeit der Tagesschwelle
-                    // (Lese-Migration v20) - der Bildschirm-Default 160 waere
-                    // dann eine Falschaussage.
-                    preferences.getIfExists(FuseDoubleKey.LivenessBgMinNightMgdl)
-                        ?.takeIf { it.isFinite() && it in FuseDoubleKey.LivenessBgMinNightMgdl.min..FuseDoubleKey.LivenessBgMinNightMgdl.max }
-                        .let { nacht ->
-                        FuseScreenModel.SettingRow(
-                            key = FuseDoubleKey.LivenessBgMinNightMgdl.key,
-                            label = "Druck-Schwelle Nacht",
-                            value = nacht?.let { "${f2(it)} mg/dl" }
-                                ?: "folgt Tag (${f2(preferences.get(FuseDoubleKey.LivenessBgMinDayMgdl))} mg/dl)",
-                            standard = nacht?.takeIf { abweicht(it, FuseDoubleKey.LivenessBgMinNightMgdl.defaultValue) }
-                                ?.let { "${f2(FuseDoubleKey.LivenessBgMinNightMgdl.defaultValue)} mg/dl" },
-                        )
-                    },
-                    // M1: die MEAL-Schwelle EHRLICH anzeigen - ungesetzt
-                    // folgt sie zur Laufzeit der Tag-/Nachtschwelle.
-                    preferences.getIfExists(FuseDoubleKey.LivenessBgMinMealMgdl)
-                        ?.takeIf { it.isFinite() && it in FuseDoubleKey.LivenessBgMinMealMgdl.min..FuseDoubleKey.LivenessBgMinMealMgdl.max }
-                        .let { meal ->
-                            FuseScreenModel.SettingRow(
-                                key = FuseDoubleKey.LivenessBgMinMealMgdl.key,
-                                label = "Druck-Schwelle MEAL",
-                                value = meal?.let { "${f2(it)} mg/dl" }
-                                    ?: "folgt Tag/Nacht",
-                                standard = null,
-                            )
-                        },
+                    // CENTRAL-Startsatz: Nacht- und MEAL-Schwelle sind
+                    // normale Werte mit echten Defaults (160 / 110).
+                    zahl(FuseDoubleKey.LivenessBgMinNightMgdl, "Druck-Schwelle Nacht", "mg/dl"),
+                    zahl(FuseDoubleKey.LivenessBgMinMealMgdl, "Druck-Schwelle MEAL", "mg/dl"),
                     ganz(FuseIntKey.MealArmCycles, "Bewaffnung MEAL", "Zyklen"),
                     ganz(FuseIntKey.LivenessReArmMin, "Re-Arm-Sperre", "min"),
                 ),

@@ -26,7 +26,7 @@ class FuseStateExportTest {
     private val BUILD = FuseStateJson.Build("3.4.2.5+fuse1.0.2-toni", "abc1234", true)
 
     private val cfg = FuseCycleRunner.Config(
-        smbRatio = 0.2, smbRatioRise = 0.35, sharedMaxIobU = 7.0, riseRampLowR = 0.5, riseRampHighR = 2.0, bolusShareLambda = 1.0, onsetChannelEnabled = true, onsetEnvelopeU = 1.5, primeReleaseEnabled = true, primeWindowMin = 15, primeEnvelopeU = 1.2, maxSmbU = 0.3, guardFloorMgdl = 70.0, lowGateMinBenefitMgdl = 5.0, zeroLatchEnabled = false, zeroLatchCalmExitMin = 20, zeroLatchCalmDistanceMgdl = 30.0, reversalGuardEnabled = false, reversalFallUkf = 2.0, reversalLookbackMin = 20, reversalReboundUkf = 1.0, reversalConfirmCycles = 2, correctionRearmEnabled = false, rearmHoldMin = 5, rearmConfirmCycles = 2, rearmUpUkf = 0.3, lowGateHorizonMin = 120.0, positiveDescentHorizonMin = 30.0, deferredPrimeEnabled = false, markerPrimeDescentHorizonMin = 60.0, deferredPrimeEndMin = 120, livenessChannelEnabled = false, livenessMealPowerMin = 120, livenessMealRatioCap = 1.0, livenessMealIobCapPercent = 50.0, livenessCorrectionRatioCap = 1.0, livenessCorrectionIobCapPercent = 50.0, centralProfilesEnabled = false, correctionExposureLimitU = null, mealExposureLimitU = null, correctionDemandRatioCap = null, mealDemandRatioCap = null, livenessBgMinDayMgdl = 160.0, livenessBgMinNightMgdl = 160.0, livenessBgMinMealMgdl = null, mealArmCycles = 3, livenessReArmMin = 10, iobThPercent = 100,
+        smbRatio = 0.2, smbRatioRise = 0.35, sharedMaxIobU = 7.0, riseRampLowR = 0.5, riseRampHighR = 2.0, bolusShareLambda = 1.0, onsetChannelEnabled = true, onsetEnvelopeU = 1.5, primeReleaseEnabled = true, primeWindowMin = 15, primeEnvelopeU = 1.2, maxSmbU = 0.3, guardFloorMgdl = 70.0, lowGateMinBenefitMgdl = 5.0, zeroLatchEnabled = false, zeroLatchCalmExitMin = 20, zeroLatchCalmDistanceMgdl = 30.0, reversalGuardEnabled = false, reversalFallUkf = 2.0, reversalLookbackMin = 20, reversalReboundUkf = 1.0, reversalConfirmCycles = 2, correctionRearmEnabled = false, rearmHoldMin = 5, rearmConfirmCycles = 2, rearmUpUkf = 0.3, lowGateHorizonMin = 120.0, positiveDescentHorizonMin = 30.0, deferredPrimeEnabled = false, markerPrimeDescentHorizonMin = 60.0, deferredPrimeEndMin = 120, livenessChannelEnabled = false, livenessMealPowerMin = 120, correctionExposureLimitU = 3.0, mealExposureLimitU = 7.0, correctionDemandRatioCap = 0.20, mealDemandRatioCap = 0.35, livenessBgMinDayMgdl = 140.0, livenessBgMinNightMgdl = 160.0, livenessBgMinMealMgdl = 110.0, mealArmCycles = 1, livenessReArmMin = 10, iobThPercent = 100,
         releaseHorizonMin = 30, liabilityHorizonMin = 120, driveTauMin = 60, signalRejoinEnabled = false, theilSenWindowMin = 18, absorptionCreditWindowMin = 60, markerBoostMaxMin = 45, evidenceReboundOverrideMaxMin = 120, nightStartMin = 1380, nightEndMin = 420, nightDeadbandMgdl = 45.0, nightDeadbandEnabled = true, reboundDeadbandMgdl = 25.0, reboundDeadbandEnabled = true, reboundWindowMin = 45,
         driveLowerQuantilePct = 50, tailGuardEnabled = false, conditionalTailEnabled = true, markerAuthorized = false, mealFoundationEnabled = false, mealFoundationPhaseAShare = 1.0, mealFoundationPhaseAUpfrontShare = 0.0, mealFoundationEndMin = 60, tailFloorMgdl = 70.0, tailRecoveryU = 0.0, fastRestraintEnabled = true, endZeroWhenReasonGone = true,
     )
@@ -520,14 +520,13 @@ class FuseStateExportTest {
         // bewegen - sonst erbte ein 120-Minuten-Lauf die Erwartungen
         // eines 45-Minuten-Laufs.
         assertTrue(FuseStateJson.hashOf(cfg.copy(reboundWindowMin = 120)) != h)
-        // v23: der Ratio-Deckel des Liveness-Kanals - MUTATIONSPROBE fuer
-        // den Fingerprint (Tonis Vertrag: Aufnahme in Policy-Hash).
-        // v24: die vier Profil-Caps und die gepinnte Frist - jede einzeln
-        // eine Mutationsprobe fuer den Fingerprint (Bauauftrag §8).
-        assertTrue(FuseStateJson.hashOf(cfg.copy(livenessMealRatioCap = 0.2, livenessCorrectionRatioCap = 0.2)) != h)
-        assertTrue(FuseStateJson.hashOf(cfg.copy(livenessCorrectionRatioCap = 0.2)) != h)
-        assertTrue(FuseStateJson.hashOf(cfg.copy(livenessMealIobCapPercent = 60.0)) != h)
-        assertTrue(FuseStateJson.hashOf(cfg.copy(livenessCorrectionIobCapPercent = 40.0)) != h)
+        // v44 (CENTRAL-only): die vier Profilwerte und die gepinnte Frist
+        // - jede einzeln eine Mutationsprobe fuer den Fingerprint.
+        assertTrue(FuseStateJson.hashOf(cfg.copy(correctionExposureLimitU = 2.5)) != h)
+        assertTrue(FuseStateJson.hashOf(cfg.copy(mealExposureLimitU = 6.0)) != h)
+        assertTrue(FuseStateJson.hashOf(cfg.copy(correctionDemandRatioCap = 0.15)) != h)
+        assertTrue(FuseStateJson.hashOf(cfg.copy(mealDemandRatioCap = 0.30)) != h)
+        assertTrue(FuseStateJson.hashOf(cfg.copy(livenessBgMinMealMgdl = 120.0)) != h)
         assertTrue(FuseStateJson.hashOf(cfg.copy(livenessMealPowerMin = 60)) != h)
         // v25: der Zero-Latch - Schalter, Ruhe-Zyklen und Ruhe-Abstand.
         assertTrue(FuseStateJson.hashOf(cfg.copy(zeroLatchEnabled = true)) != h)
@@ -798,67 +797,27 @@ class FuseStateExportTest {
         // v43 P1-Fix: der Liveness-Kanaldeckel ist im Zentralmodus die
         // Kontextgrenze; die Legacy-Prozentdeckel sind dort wirkungslos
         // (vorher versteckte Parallelarchitektur ausserhalb des Hashs).
-        assertEquals(43, FuseStateJson.RULE_SET_VERSION)
+        // v44 CENTRAL-only: LEGACY-Pfad, Modusschalter und die sechs
+        // Liveness-Cap-Keys entfernt; vier Profilwerte mit echten
+        // Startsatz-Defaults; policyMode = Export-Konstante.
+        assertEquals(44, FuseStateJson.RULE_SET_VERSION)
         assertTrue(
             FuseStateJson.hashOf(cfg)!!.isNotEmpty(),
             "und der Hash bleibt berechenbar",
         )
     }
 
-    /**
-     * A5-ABSCHLUSS (Toni 29.08.): die Hash-Eingaenge sind MODUSABHAENGIG -
-     * in BEIDE Richtungen. Im LEGACY-Modus darf die blosse VORBEREITUNG
-     * eines Kandidaten offene Erwartungen nicht entwerten; im Zentralmodus
-     * darf ein ignorierter Legacy-Cap den Hash nicht bewegen.
-     */
+    /** CENTRAL-only: alle vier Profilwerte und die MEAL-Schwelle bewegen
+     *  den Hash einzeln - zwei Laeufe mit verschiedener Politik tragen nie
+     *  denselben Fingerprint. */
     @Test
-    fun `die Hash-Eingaenge sind modusabhaengig - beide Richtungen`() {
-        val legacy = cfg
-        // LEGACY: ein vorbereiteter Kandidat aendert den Hash NICHT ...
-        assertEquals(
-            FuseStateJson.hashOf(legacy),
-            FuseStateJson.hashOf(legacy.copy(mealExposureLimitU = 6.0)),
-            "Kandidaten-Vorbereitung entwertet keine Erwartungen",
-        )
-        // ... ein wirksamer Legacy-Cap sehr wohl.
-        org.junit.jupiter.api.Assertions.assertNotEquals(
-            FuseStateJson.hashOf(legacy),
-            FuseStateJson.hashOf(legacy.copy(livenessMealRatioCap = 0.5)),
-            "wirksame Legacy-Caps zaehlen im LEGACY-Modus",
-        )
-        val central = legacy.copy(
-            centralProfilesEnabled = true,
-            correctionExposureLimitU = 3.0, mealExposureLimitU = 6.0,
-            correctionDemandRatioCap = 0.15, mealDemandRatioCap = 0.35,
-        )
-        // Der Modus selbst ist immer Teil des Hashes (zwei Regler).
-        org.junit.jupiter.api.Assertions.assertNotEquals(
-            FuseStateJson.hashOf(legacy), FuseStateJson.hashOf(central),
-        )
-        // ZENTRAL: ein ignorierter Legacy-Cap aendert den Hash NICHT ...
-        assertEquals(
-            FuseStateJson.hashOf(central),
-            FuseStateJson.hashOf(central.copy(livenessMealRatioCap = 0.5)),
-            "ignorierte Legacy-Caps zaehlen im Zentralmodus nicht",
-        )
-        // ... und zwar AUCH die IOB-Prozentdeckel (P1-Fix 29.08. spaet:
-        // eine Regression, die sie in den zentralen Hash-Zweig
-        // zuruecknimmt, faellt hier auf - der Laufzeittest deckt nur das
-        // Zyklusverhalten).
-        assertEquals(
-            FuseStateJson.hashOf(central),
-            FuseStateJson.hashOf(central.copy(
-                livenessMealIobCapPercent = 25.0,
-                livenessCorrectionIobCapPercent = 22.0,
-            )),
-            "ignorierte Legacy-IOB-Deckel zaehlen im Zentralmodus nicht",
-        )
-        // ... ein wirksamer Profilwert sehr wohl.
-        org.junit.jupiter.api.Assertions.assertNotEquals(
-            FuseStateJson.hashOf(central),
-            FuseStateJson.hashOf(central.copy(mealExposureLimitU = 7.0)),
-            "wirksame Profilwerte zaehlen im Zentralmodus",
-        )
+    fun `jeder Profilwert bewegt den Policy-Hash`() {
+        val basis = FuseStateJson.hashOf(cfg)
+        org.junit.jupiter.api.Assertions.assertNotEquals(basis, FuseStateJson.hashOf(cfg.copy(correctionExposureLimitU = 2.5)))
+        org.junit.jupiter.api.Assertions.assertNotEquals(basis, FuseStateJson.hashOf(cfg.copy(mealExposureLimitU = 6.0)))
+        org.junit.jupiter.api.Assertions.assertNotEquals(basis, FuseStateJson.hashOf(cfg.copy(correctionDemandRatioCap = 0.15)))
+        org.junit.jupiter.api.Assertions.assertNotEquals(basis, FuseStateJson.hashOf(cfg.copy(mealDemandRatioCap = 0.30)))
+        org.junit.jupiter.api.Assertions.assertNotEquals(basis, FuseStateJson.hashOf(cfg.copy(livenessBgMinMealMgdl = 120.0)))
     }
 
     @Test

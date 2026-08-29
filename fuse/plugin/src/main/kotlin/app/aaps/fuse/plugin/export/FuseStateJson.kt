@@ -316,7 +316,18 @@ object FuseStateJson {
     // Exposure-Limits statt der ignorierten Deckel;
     // selectedIobCapPercent exportiert im Zentralmodus null. Im
     // LEGACY-Modus bitgleich.
-    const val RULE_SET_VERSION = 43
+    // v44 (29.08. nachts, Tonis CENTRAL-only-Vertrag): der LEGACY-Pfad
+    // ist ENTFERNT - Modusschalter, Legacy-Runtime und die sechs alten
+    // Liveness-Cap-/Ratio-Keys existieren nicht mehr. Die vier
+    // Profilwerte tragen ECHTE Defaults (3,0 / 7,0 / 0,20 / 0,35 -
+    // Startsatz aus den Messfaellen); CORRECTION ist der Grundzustand,
+    // MEAL kommt aus der Markervollmacht. policyMode bleibt als
+    // Export-KONSTANTE CENTRAL_PROFILES. Globale Sicherheitsgrenzen
+    // (iobTH, maxIOB, maxSMB, Gefahren-Gates) und die MEAL-Regler
+    // (Frist, Druckschwellen, Armierung, Re-Arm, Fundament A/B)
+    // unveraendert. Fuer bisher-LEGACY-Geraete ist der Flash der
+    // BEWUSSTE Architekturwechsel auf die zentrale Politik.
+    const val RULE_SET_VERSION = 44
 
     /** Schema des Trail-Datensatzes - s. die Notiz an der Schreibstelle. */
     const val SCHEMA_VERSION = 4
@@ -1790,25 +1801,24 @@ object FuseStateJson {
         .put("deferredPrimeEnabled", p.deferredPrimeEnabled)
         .put("markerPrimeDescentHorizonMin", fin(p.markerPrimeDescentHorizonMin))
         .put("deferredPrimeEndMin", p.deferredPrimeEndMin)
-        // v18: der Liveness-Kanal - alle drei Stellgroessen.
+        // v18: der Liveness-Kanal. Seine Mengengrenzen sind CENTRAL-only
+        // die Profilwerte unten; die frueheren Kanal-Deckel sind mit dem
+        // LEGACY-Pfad entfernt.
         .put("livenessChannelEnabled", p.livenessChannelEnabled)
         .put("mealPowerMin", p.livenessMealPowerMin)
-        .put("mealRatioCap", fin(p.livenessMealRatioCap))
-        .put("mealIobCapPercent", fin(p.livenessMealIobCapPercent))
-        .put("correctionRatioCap", fin(p.livenessCorrectionRatioCap))
-        .put("correctionIobCapPercent", fin(p.livenessCorrectionIobCapPercent))
-        // A4 (Bauauftrag 7.5.7): policyMode + die vier zentralen Kandidaten.
-        // Unkonfiguriert ist NULL - nie eine erfundene 0. Im LEGACY-Modus
-        // sind das reine Kandidaten ohne Dosier-Konsumenten.
-        .put("policyMode", if (p.centralProfilesEnabled) "CENTRAL_PROFILES" else "LEGACY")
+        // CENTRAL-only (Legacy-Cleanup 29.08. nachts): policyMode bleibt
+        // als KONSTANTE im Export, damit Viewer und alte Trails eindeutig
+        // interpretierbar bleiben - LEGACY existiert nur noch in
+        // historischen Aufzeichnungen.
+        .put("policyMode", "CENTRAL_PROFILES")
         // M1: die MEAL-Druckschwelle (null = unkonfiguriert = Altpfad).
-        .put("livenessBgMinMealMgdl", p.livenessBgMinMealMgdl?.let { fin(it) } ?: JSONObject.NULL)
+        .put("livenessBgMinMealMgdl", fin(p.livenessBgMinMealMgdl))
         // M3: Bewaffnungszyklen unter MEAL-Vollmacht (3 = Altbestand).
         .put("mealArmCycles", p.mealArmCycles)
-        .put("correctionExposureLimitU", p.correctionExposureLimitU?.let { fin(it) } ?: JSONObject.NULL)
-        .put("mealExposureLimitU", p.mealExposureLimitU?.let { fin(it) } ?: JSONObject.NULL)
-        .put("correctionDemandRatioCap", p.correctionDemandRatioCap?.let { fin(it) } ?: JSONObject.NULL)
-        .put("mealDemandRatioCap", p.mealDemandRatioCap?.let { fin(it) } ?: JSONObject.NULL)
+        .put("correctionExposureLimitU", fin(p.correctionExposureLimitU))
+        .put("mealExposureLimitU", fin(p.mealExposureLimitU))
+        .put("correctionDemandRatioCap", fin(p.correctionDemandRatioCap))
+        .put("mealDemandRatioCap", fin(p.mealDemandRatioCap))
         .put("zeroLatchEnabled", p.zeroLatchEnabled)
         .put("zeroLatchCalmExitMin", p.zeroLatchCalmExitMin)
         .put("zeroLatchCalmDistanceMgdl", fin(p.zeroLatchCalmDistanceMgdl))
@@ -1941,31 +1951,19 @@ object FuseStateJson {
         )
         if (doubles.any { !it.isFinite() }) return null
         // v38-ABSCHLUSS (A5-Neutralitaet, Toni 29.08.): die Hash-Eingaenge
-        // sind MODUSABHAENGIG. Im LEGACY-Modus zaehlen die wirksamen
-        // Liveness-Profil-Caps; die vier wirkungslosen Kandidaten zaehlen
-        // NICHT - ihre blosse Vorbereitung darf offene Erwartungen nicht
-        // entwerten. Im Zentralmodus umgekehrt: die ignorierten Legacy-Caps
-        // sind eine Konstante, die vier Profilwerte zaehlen. Der Modus
-        // selbst steht immer im Hash (zwei verschiedene Regler).
-        val modusTeile = if (p.centralProfilesEnabled) listOf(
+        // sind CENTRAL-only die vier Profilwerte (+ die MEAL-Schwelle als
+        // eigener Zustand). Der Konstanten-Marker "legacyProfileCaps:
+        // ignored" bleibt zeichenstabil zum v43-Stand - so entwertet der
+        // Cleanup selbst keine offenen Erwartungen.
+        val modusTeile = listOf(
             "legacyProfileCaps:ignored",
-            p.correctionExposureLimitU?.let { Sha.lossless(it) } ?: "unset",
-            p.mealExposureLimitU?.let { Sha.lossless(it) } ?: "unset",
-            p.correctionDemandRatioCap?.let { Sha.lossless(it) } ?: "unset",
-            p.mealDemandRatioCap?.let { Sha.lossless(it) } ?: "unset",
-        ) + listOf(
-            // M1: dosierwirksam sobald gesetzt, MODUSUNABHAENGIG (haengt an
-            // der Markervollmacht, nicht am policyMode) - immer im Hash,
-            // "unset" als eigener Zustand.
-            p.livenessBgMinMealMgdl?.let { Sha.lossless(it) } ?: "mealBgMin:unset",
-        ) else listOf(
-            Sha.lossless(p.livenessMealRatioCap),
-            Sha.lossless(p.livenessMealIobCapPercent),
-            Sha.lossless(p.livenessCorrectionRatioCap),
-            Sha.lossless(p.livenessCorrectionIobCapPercent),
-            "centralCandidates:inactive",
-        ) + listOf(
-            p.livenessBgMinMealMgdl?.let { Sha.lossless(it) } ?: "mealBgMin:unset",
+            Sha.lossless(p.correctionExposureLimitU),
+            Sha.lossless(p.mealExposureLimitU),
+            Sha.lossless(p.correctionDemandRatioCap),
+            Sha.lossless(p.mealDemandRatioCap),
+            // M1: dosierwirksam sobald gesetzt (haengt an der
+            // Markervollmacht), "unset" als eigener Zustand.
+            Sha.lossless(p.livenessBgMinMealMgdl),
         )
         val parts = listOf("fuse-policy-v$RULE_SET_VERSION") +
             doubles.map { Sha.lossless(it) } +
@@ -2017,10 +2015,10 @@ object FuseStateJson {
                 // v40 (M3): dosierwirksam unter MEAL-Vollmacht, sobald
                 // kleiner 3 gesetzt - modusunabhaengig immer im Hash.
                 p.mealArmCycles,
-                // v38: der policyMode selbst - LEGACY und
-                // CENTRAL_PROFILES sind verschiedene Regler. Die
-                // Wertemengen dazu stehen MODUSABHAENGIG in `modusTeile`.
-                p.centralProfilesEnabled,
+                // v38/v44: der policyMode ist CENTRAL-only eine Konstante
+                // (zeichenstabil "true" wie der fruehere aktive Modus -
+                // kein unnoetiger Hash-Wechsel fuer zentrale Bestaende).
+                true,
                 // v25: der Zero-Latch (Schalter + Ruhe-Zyklen).
                 p.zeroLatchEnabled,
                 p.zeroLatchCalmExitMin,
