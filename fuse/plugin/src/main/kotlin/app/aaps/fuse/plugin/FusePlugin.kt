@@ -2150,7 +2150,8 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
             .store(FuseDoubleKey.LivenessMealIobCapPercent, preferences)
             .store(FuseDoubleKey.LivenessCorrectionRatioCap, preferences)
             .store(FuseDoubleKey.LivenessCorrectionIobCapPercent, preferences)
-            .store(FuseIntKey.MealArmCycles, preferences)
+            // MealArmCycles laeuft im Helper mit (Alt-Backup ohne den
+            // Schluessel stellt den neutralen Altwert 3 wieder her).
             // A5-Abschluss: fehlender policyMode im Backup fuehrt SICHER
             // zu LEGACY, fehlende Kandidaten werden ENTFERNT statt auf den
             // Default gesetzt - "unkonfiguriert" ueberlebt den Rundlauf.
@@ -2350,7 +2351,26 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
             addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.LivenessMealIobCapPercent, dialogMessage = R.string.fuse_liveness_meal_iob_summary, title = R.string.fuse_liveness_meal_iob_title))
             addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.LivenessCorrectionRatioCap, dialogMessage = R.string.fuse_liveness_corr_ratio_summary, title = R.string.fuse_liveness_corr_ratio_title))
             addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.LivenessCorrectionIobCapPercent, dialogMessage = R.string.fuse_liveness_corr_iob_summary, title = R.string.fuse_liveness_corr_iob_title))
-            addPreference(AdaptiveSwitchPreference(ctx = context, booleanKey = FuseBooleanKey.CentralProfilesEnabled, summary = R.string.fuse_central_profiles_summary, title = R.string.fuse_central_profiles_title))
+            addPreference(
+                AdaptiveSwitchPreference(ctx = context, booleanKey = FuseBooleanKey.CentralProfilesEnabled, summary = R.string.fuse_central_profiles_summary, title = R.string.fuse_central_profiles_title).also { schalter ->
+                    // AKTIVIERUNGSSPERRE (Toni 29.08.): der Wechsel auf
+                    // CENTRAL_PROFILES ist nur mit vier vollstaendig
+                    // gueltigen, relational korrekten Werten erlaubt -
+                    // sonst braeche jeder Folgezyklus fail-closed ab. Die
+                    // Laufzeitvalidierung bleibt als letzte Sicherung.
+                    schalter.setOnPreferenceChangeListener { _, neu ->
+                        if (neu != true) return@setOnPreferenceChangeListener true
+                        val fehler = FuseCentralProfileBackup.aktivierungsFehler(preferences)
+                        if (fehler != null) {
+                            app.aaps.core.ui.toast.ToastUtils.warnToast(
+                                context, "Zentrale Profile nicht aktivierbar: $fehler",
+                            )
+                            return@setOnPreferenceChangeListener false
+                        }
+                        true
+                    }
+                }
+            )
             addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.MealExposureLimitU, dialogMessage = R.string.fuse_meal_exposure_limit_summary, title = R.string.fuse_meal_exposure_limit_title))
             addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.CorrectionExposureLimitU, dialogMessage = R.string.fuse_corr_exposure_limit_summary, title = R.string.fuse_corr_exposure_limit_title))
             addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.MealDemandRatioCap, dialogMessage = R.string.fuse_meal_demand_ratio_summary, title = R.string.fuse_meal_demand_ratio_title))

@@ -67,19 +67,78 @@ class FuseCentralProfileBackupTest {
     }
 
     @Test
-    fun `ein gesetzter Modus reist mit`() {
-        val prefs = mock<Preferences>()
-        val json = JSONObject().put(FuseBooleanKey.CentralProfilesEnabled.key, true)
-        FuseCentralProfileBackup.lese(json, prefs)
-        verify(prefs).put(FuseBooleanKey.CentralProfilesEnabled, true)
-    }
-
-    @Test
     fun `ein Ausreisser im Backup zaehlt als nie gesetzt`() {
         val prefs = mock<Preferences>()
         val json = JSONObject().put(FuseDoubleKey.MealExposureLimitU.key, 99.0)
         FuseCentralProfileBackup.lese(json, prefs)
         verify(prefs).remove(FuseDoubleKey.MealExposureLimitU)
         assertTrue(true)
+    }
+
+    /** M3-Migration (Toni 29.08.): ein ALTES Backup ohne MealArmCycles
+     *  stellt den neutralen Altwert wieder her - ein bereits gespeicherter
+     *  Wert 1 darf den Restore nicht ueberleben. */
+    @Test
+    fun `ein altes Backup ohne MealArmCycles stellt den Altwert her`() {
+        val prefs = mock<Preferences>()
+        // Geraetestand: Wert 1 gespeichert - das Backup kennt den Key nicht.
+        FuseCentralProfileBackup.lese(JSONObject(), prefs)
+        verify(prefs).remove(FuseIntKey.MealArmCycles)
+    }
+
+    /** Und der Rundlauf eines NEUEN Backups mit Wert 1 bleibt 1. */
+    @Test
+    fun `ein neues Backup mit MealArmCycles 1 bleibt 1`() {
+        val prefs = mock<Preferences>()
+        val json = JSONObject().put(FuseIntKey.MealArmCycles.key, 1)
+        FuseCentralProfileBackup.lese(json, prefs)
+        verify(prefs).put(FuseIntKey.MealArmCycles, 1)
+        verify(prefs, never()).remove(FuseIntKey.MealArmCycles)
+    }
+
+    /** Ein Ausreisser (99) zaehlt als nie gesetzt. */
+    @Test
+    fun `ein MealArmCycles-Ausreisser im Backup wird entfernt`() {
+        val prefs = mock<Preferences>()
+        val json = JSONObject().put(FuseIntKey.MealArmCycles.key, 99)
+        FuseCentralProfileBackup.lese(json, prefs)
+        verify(prefs).remove(FuseIntKey.MealArmCycles)
+    }
+
+    /** AKTIVIERUNGSSPERRE beim Restore: ein Backup mit CENTRAL_PROFILES
+     *  aber unvollstaendigen Werten darf den Modus NICHT hinterlassen. */
+    @Test
+    fun `ein unvollstaendiges CENTRAL-Backup faellt auf LEGACY zurueck`() {
+        val prefs = mock<Preferences>()
+        val json = JSONObject()
+            .put(FuseBooleanKey.CentralProfilesEnabled.key, true)
+            .put(FuseDoubleKey.MealExposureLimitU.key, 6.0)
+        FuseCentralProfileBackup.lese(json, prefs)
+        verify(prefs).put(FuseBooleanKey.CentralProfilesEnabled, false)
+    }
+
+    /** Ein VOLLSTAENDIGES CENTRAL-Backup darf den Modus behalten. */
+    @Test
+    fun `ein vollstaendiges CENTRAL-Backup bleibt CENTRAL`() {
+        val prefs = mock<Preferences>()
+        val json = JSONObject()
+            .put(FuseBooleanKey.CentralProfilesEnabled.key, true)
+            .put(FuseDoubleKey.CorrectionExposureLimitU.key, 3.0)
+            .put(FuseDoubleKey.MealExposureLimitU.key, 6.0)
+            .put(FuseDoubleKey.CorrectionDemandRatioCap.key, 0.15)
+            .put(FuseDoubleKey.MealDemandRatioCap.key, 0.35)
+        FuseCentralProfileBackup.lese(json, prefs)
+        verify(prefs).put(FuseBooleanKey.CentralProfilesEnabled, true)
+    }
+
+    /** DER GEMEINSAME VALIDATOR: abgelehnte und erfolgreiche Aktivierung
+     *  (UI-Schalter und Restore teilen exakt diese Regel). */
+    @Test
+    fun `der Aktivierungs-Validator nennt Fehlen und Relation beim Namen`() {
+        assertEquals(null, FuseCentralProfileBackup.aktivierungsFehler(3.0, 6.0, 0.15, 0.35))
+        assertTrue(FuseCentralProfileBackup.aktivierungsFehler(null, 6.0, 0.15, 0.35)!!.contains("CORR Exposure"))
+        assertTrue(FuseCentralProfileBackup.aktivierungsFehler(3.0, 6.0, 0.15, null)!!.contains("MEAL Demand"))
+        assertTrue(FuseCentralProfileBackup.aktivierungsFehler(7.0, 6.0, 0.15, 0.35)!!.contains("groesser als MEAL"))
+        assertTrue(FuseCentralProfileBackup.aktivierungsFehler(3.0, 6.0, 0.5, 0.35)!!.contains("groesser als MEAL"))
     }
 }
