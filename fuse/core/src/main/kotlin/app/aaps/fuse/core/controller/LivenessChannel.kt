@@ -31,11 +31,14 @@ import kotlin.math.min
  * ausschliesslich den normalen Pfad: im Kanal ist der Tail WEDER Veto NOCH
  * Mengenkappe - sonst reproduziert der Kanal exakt den Saegezahn.
  *
- * P0 (Codex): der Kanaldeckel ist ein EIGENER Prozentsatz
- * (LivenessIobCapPercent), NICHT das globale iobTH - das begrenzt auch
- * Korrektur, Prime und Fundament, und eine globale Senkung wuerde
- * ausgerechnet die fruehe Mahlzeitenversorgung aushungern. Ist das globale
- * iobTH niedriger, gewinnt selbstverstaendlich die strengere Grenze.
+ * P0 (Codex): der Kanaldeckel ist eine EIGENE Grenze, NICHT das globale
+ * iobTH - das begrenzt auch Korrektur, Prime und Fundament, und eine
+ * globale Senkung wuerde ausgerechnet die fruehe Mahlzeitenversorgung
+ * aushungern. Woher der Deckel kommt, ist MODUSABHAENGIG (P1-Fix 29.08.):
+ * LEGACY der Profil-Prozentsatz (Liveness*IobCapPercent x maxIOB),
+ * zentral die Kontextgrenze (contextExposureLimit) - der Kern bekommt ihn
+ * fertig als livenessCapU. Ist das globale iobTH niedriger, gewinnt
+ * selbstverstaendlich die strengere Grenze.
  *
  * ABSOLUT BLEIBEN (beide Pfade): gemessenes Fallen (30er-Risiko, gepinnter
  * Marker-Horizont, Latch), gemessenes Tief, Rebound, Signalfehler,

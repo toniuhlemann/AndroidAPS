@@ -148,7 +148,9 @@ class FuseFragment : DaggerFragment() {
             when (dashboard.smbStatusTone) {
                 "FREE" -> 0xFF66BB6A.toInt()
                 "STOP" -> 0xFFEF5350.toInt()
-                else -> binding.fuseOverviewGate.currentTextColor
+                // FESTE Neutralfarbe - nicht die Laufzeitfarbe einer
+                // anderen Zeile erben (Verifikationshinweis 29.08.).
+                else -> 0xFF9CA3AF.toInt()
             }
         )
         binding.fuseOverviewReason.text = dashboard.decisionReason

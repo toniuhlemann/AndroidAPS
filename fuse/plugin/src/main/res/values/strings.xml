@@ -1,7 +1,7 @@
 <resources>
     <string name="fuse">FUSE</string>
     <string name="fuse_shortname">FUSE</string>
-    <string name="description_fuse">Full-loop Unannounced-disturbance Safety &amp; Exposure Controller. Alpha: aktuiert nur gegen die VirtualPump und den belegten Medtrum Nano.</string>
+    <string name="description_fuse">Vollständige Loop-Regelung mit zentralen CORRECTION- und MEAL-Dosierprofilen sowie gemeinsamer Exposure- und Sicherheitsprüfung.</string>
 
     <string name="fuse_settings">FUSE</string>
 

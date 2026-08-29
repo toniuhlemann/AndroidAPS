@@ -360,14 +360,25 @@ class FuseCycleRunner(
             // Grenze - ein Unsinnswert (0 %, 500 %) darf nie stillschweigend
             // rechnen, sondern muss den Zyklus benannt abbrechen.
             require(it.livenessMealPowerMin in FuseIntKey.LivenessMealPowerMin.min..FuseIntKey.LivenessMealPowerMin.max) { "livenessMealPowerMin=${it.livenessMealPowerMin}" }
-            require(it.livenessMealRatioCap.isFinite() && it.livenessMealRatioCap in FuseDoubleKey.LivenessMealRatioCap.min..FuseDoubleKey.LivenessMealRatioCap.max) { "livenessMealRatioCap=${it.livenessMealRatioCap}" }
-            require(it.livenessMealIobCapPercent.isFinite() && it.livenessMealIobCapPercent in FuseDoubleKey.LivenessMealIobCapPercent.min..FuseDoubleKey.LivenessMealIobCapPercent.max) { "livenessMealIobCapPercent=${it.livenessMealIobCapPercent}" }
-            require(it.livenessCorrectionRatioCap.isFinite() && it.livenessCorrectionRatioCap in FuseDoubleKey.LivenessCorrectionRatioCap.min..FuseDoubleKey.LivenessCorrectionRatioCap.max) { "livenessCorrectionRatioCap=${it.livenessCorrectionRatioCap}" }
-            require(it.livenessCorrectionIobCapPercent.isFinite() && it.livenessCorrectionIobCapPercent in FuseDoubleKey.LivenessCorrectionIobCapPercent.min..FuseDoubleKey.LivenessCorrectionIobCapPercent.max) { "livenessCorrectionIobCapPercent=${it.livenessCorrectionIobCapPercent}" }
-            // RELATIONAL, FAIL-CLOSED (Bauauftrag §1): CORRECTION darf nie
-            // offener sein als MEAL - nicht tauschen, nicht klemmen, ablehnen.
-            require(it.livenessCorrectionRatioCap <= it.livenessMealRatioCap) { "livenessCorrectionRatioCap=${it.livenessCorrectionRatioCap} > meal ${it.livenessMealRatioCap}" }
-            require(it.livenessCorrectionIobCapPercent <= it.livenessMealIobCapPercent) { "livenessCorrectionIobCapPercent=${it.livenessCorrectionIobCapPercent} > meal ${it.livenessMealIobCapPercent}" }
+            // NUR IM LEGACY-MODUS (Verifikations-P2, 29.08. spaet): im
+            // Zentralmodus sind die vier Legacy-Deckel wirkungslos UND
+            // unsichtbar - ein kaputter Altwert (z.B. ein roh restaurierter
+            // Basis-Key ausserhalb der Klammer) darf dort nicht jeden
+            // Zyklus abbrechen, waehrend der Nutzer die Ursache weder sehen
+            // noch korrigieren kann. Im LEGACY-Modus bleiben die requires
+            // fail-closed wie gehabt (dort sind die Werte wirksam UND
+            // sichtbar).
+            if (!it.centralProfilesEnabled) {
+                require(it.livenessMealRatioCap.isFinite() && it.livenessMealRatioCap in FuseDoubleKey.LivenessMealRatioCap.min..FuseDoubleKey.LivenessMealRatioCap.max) { "livenessMealRatioCap=${it.livenessMealRatioCap}" }
+                require(it.livenessMealIobCapPercent.isFinite() && it.livenessMealIobCapPercent in FuseDoubleKey.LivenessMealIobCapPercent.min..FuseDoubleKey.LivenessMealIobCapPercent.max) { "livenessMealIobCapPercent=${it.livenessMealIobCapPercent}" }
+                require(it.livenessCorrectionRatioCap.isFinite() && it.livenessCorrectionRatioCap in FuseDoubleKey.LivenessCorrectionRatioCap.min..FuseDoubleKey.LivenessCorrectionRatioCap.max) { "livenessCorrectionRatioCap=${it.livenessCorrectionRatioCap}" }
+                require(it.livenessCorrectionIobCapPercent.isFinite() && it.livenessCorrectionIobCapPercent in FuseDoubleKey.LivenessCorrectionIobCapPercent.min..FuseDoubleKey.LivenessCorrectionIobCapPercent.max) { "livenessCorrectionIobCapPercent=${it.livenessCorrectionIobCapPercent}" }
+                // RELATIONAL, FAIL-CLOSED (Bauauftrag §1): CORRECTION darf
+                // nie offener sein als MEAL - nicht tauschen, nicht
+                // klemmen, ablehnen.
+                require(it.livenessCorrectionRatioCap <= it.livenessMealRatioCap) { "livenessCorrectionRatioCap=${it.livenessCorrectionRatioCap} > meal ${it.livenessMealRatioCap}" }
+                require(it.livenessCorrectionIobCapPercent <= it.livenessMealIobCapPercent) { "livenessCorrectionIobCapPercent=${it.livenessCorrectionIobCapPercent} > meal ${it.livenessMealIobCapPercent}" }
+            }
             // A4 (Bauauftrag 7.5.7): die zentrale Politik aktiviert NUR mit
             // vollstaendig gueltig gesetzten Profilwerten - typisierte
             // Ablehnung statt stiller Teilaktivierung oder Rueckfall.
@@ -1026,9 +1037,10 @@ class FuseCycleRunner(
         val livenessBaseRatio: Double? = null,
         /** Die im Kanal WIRKSAME Ratio = min(baseRatio, Cap). Nur
          *  gesetzt, wenn die Kandidatenrechnung lief; zusammen mit
-         *  baseRatio und policy.livenessRatioCap ist die
-         *  Kappung offline vollstaendig nachrechenbar (Vertrag: Export von
-         *  baseRatio, liveRatio und Cap). */
+         *  baseRatio und dem modusabhaengigen Cap (LEGACY: Liveness-
+         *  Profil-Cap, zentral: Kontext-Cap - exportiert als
+         *  selectedRatioCap) ist die Kappung offline vollstaendig
+         *  nachrechenbar (Vertrag: Export von baseRatio, liveRatio, Cap). */
         val livenessLiveRatio: Double? = null,
         /** Die in DIESEM Zyklus wirksame Druck-Schwelle und ihre Quelle
          *  (DAY|NIGHT, v20) - fuer die Anzeige "Live wartet - BG 151/160". */

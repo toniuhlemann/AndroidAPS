@@ -103,7 +103,7 @@
                     android:layout_marginTop="6dp"
                     android:textColor="?android:attr/textColorSecondary"
                     android:textSize="12sp"
-                    tools:text="Gate VPUMP_ALPHA | Ledger frei" />
+                    tools:text="Gate ALLOWED | Ledger frei" />
             </LinearLayout>
         </com.google.android.material.card.MaterialCardView>
 

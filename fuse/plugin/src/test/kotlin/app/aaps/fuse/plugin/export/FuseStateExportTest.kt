@@ -841,6 +841,18 @@ class FuseStateExportTest {
             FuseStateJson.hashOf(central.copy(livenessMealRatioCap = 0.5)),
             "ignorierte Legacy-Caps zaehlen im Zentralmodus nicht",
         )
+        // ... und zwar AUCH die IOB-Prozentdeckel (P1-Fix 29.08. spaet:
+        // eine Regression, die sie in den zentralen Hash-Zweig
+        // zuruecknimmt, faellt hier auf - der Laufzeittest deckt nur das
+        // Zyklusverhalten).
+        assertEquals(
+            FuseStateJson.hashOf(central),
+            FuseStateJson.hashOf(central.copy(
+                livenessMealIobCapPercent = 25.0,
+                livenessCorrectionIobCapPercent = 22.0,
+            )),
+            "ignorierte Legacy-IOB-Deckel zaehlen im Zentralmodus nicht",
+        )
         // ... ein wirksamer Profilwert sehr wohl.
         org.junit.jupiter.api.Assertions.assertNotEquals(
             FuseStateJson.hashOf(central),
