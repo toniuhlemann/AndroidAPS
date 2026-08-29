@@ -174,6 +174,7 @@ class TransportWiringTest : TestBaseWithProfile() {
     private var livenessRatioDeckel = 1.0
     private var mealPowerMin = 120
     private var mealArmZyklen = 3
+    private var mealBgMin: Double? = null
     private var centralAn = false
     private var corrExpLimit: Double? = null
     private var mealExpLimit: Double? = null
@@ -565,6 +566,7 @@ class TransportWiringTest : TestBaseWithProfile() {
         whenever(preferences.get(FuseDoubleKey.LivenessRatioCap)).thenAnswer { livenessRatioDeckel }
         whenever(preferences.get(FuseIntKey.LivenessMealPowerMin)).thenAnswer { mealPowerMin }
         whenever(preferences.get(FuseIntKey.MealArmCycles)).thenAnswer { mealArmZyklen }
+        whenever(preferences.getIfExists(FuseDoubleKey.LivenessBgMinMealMgdl)).thenAnswer { mealBgMin }
         whenever(preferences.get(FuseBooleanKey.CentralProfilesEnabled)).thenAnswer { centralAn }
         whenever(preferences.getIfExists(FuseDoubleKey.CorrectionExposureLimitU)).thenAnswer { corrExpLimit }
         whenever(preferences.getIfExists(FuseDoubleKey.MealExposureLimitU)).thenAnswer { mealExpLimit }
@@ -8649,6 +8651,20 @@ class TransportWiringTest : TestBaseWithProfile() {
             nachtStartMin = i("nightStartMin", nachtStartMin)
             nachtEndeMin = i("nightEndMin", nachtEndeMin)
             nightDeadband = if (nightDeadbandAus) false else b("nightDeadbandEnabled", nightDeadband)
+            // B3 (Bauauftrag 7.5.7-Migration): policyMode + ALLE zentralen
+            // Kandidaten + M1/M3. Bewusst SELBST-RESETTEND gegen das
+            // Hebel-Leck: fehlt der Schluessel (Trails vor v38/v39/v40),
+            // gilt LEGACY/unset/Altbestand - ein fehlendes Feld wird NIE
+            // als 0 gelesen (optDouble auf JSON-null ist NaN -> takeIf).
+            // KEIN optString fuer policyMode (die Android-optString-Falle
+            // macht aus JSON-null den String "null").
+            centralAn = (pol?.opt("policyMode") as? String) == "CENTRAL_PROFILES"
+            corrExpLimit = pol?.optDouble("correctionExposureLimitU")?.takeIf { it.isFinite() }
+            mealExpLimit = pol?.optDouble("mealExposureLimitU")?.takeIf { it.isFinite() }
+            corrRatioCapZ = pol?.optDouble("correctionDemandRatioCap")?.takeIf { it.isFinite() }
+            mealRatioCapZ = pol?.optDouble("mealDemandRatioCap")?.takeIf { it.isFinite() }
+            mealBgMin = pol?.optDouble("livenessBgMinMealMgdl")?.takeIf { it.isFinite() }
+            mealArmZyklen = i("mealArmCycles", 3)
             // Diese drei sind im Rig FESTE Stubs - fuer den Replay auf die
             // aufgezeichnete Politik umgebogen (22.08.: Rampe 2,5, Rebound-
             // Totband 40, Prime-Fenster 20).
@@ -8657,6 +8673,29 @@ class TransportWiringTest : TestBaseWithProfile() {
             whenever(preferences.get(FuseIntKey.PrimeWindowMin)).thenReturn(i("primeWindowMin", 15))
             whenever(preferences.get(FuseDoubleKey.SmbRatio)).thenReturn(d("smbRatioCorrection", 0.15))
             whenever(preferences.get(FuseDoubleKey.SmbRatioRise)).thenReturn(d("smbRatioRise", 0.35))
+        }
+        // B3: ein expliziter Dosierkontext-Kandidat der Matrix. Er schaltet
+        // den zentralen Modus AN und verlangt ALLE vier Kandidaten - eine
+        // halbe Variante wuerde von validate je Zyklus abgelehnt und
+        // erschiene als Abort-Rauschen statt als klare Fehlermeldung.
+        fun dosingKandidatAnwenden(text: String) {
+            centralAn = true
+            text.split(",").forEach { teil ->
+                val kv = teil.trim().split("=", limit = 2)
+                require(kv.size == 2) { "Dosierkontext-Teil ohne '=': $teil" }
+                when (kv[0].trim()) {
+                    "corrExp" -> corrExpLimit = kv[1].toDouble()
+                    "mealExp" -> mealExpLimit = kv[1].toDouble()
+                    "corrRatio" -> corrRatioCapZ = kv[1].toDouble()
+                    "mealRatio" -> mealRatioCapZ = kv[1].toDouble()
+                    "mealBgMin" -> mealBgMin = kv[1].toDouble()
+                    "mealArm" -> mealArmZyklen = kv[1].toInt()
+                    else -> error("unbekannter Dosierkontext-Schluessel: ${kv[0]}")
+                }
+            }
+            require(corrExpLimit != null && mealExpLimit != null && corrRatioCapZ != null && mealRatioCapZ != null) {
+                "Dosierkontext-Kandidat unvollstaendig: corrExp/mealExp/corrRatio/mealRatio sind Pflicht ($text)"
+            }
         }
         // Der Marker-Schalter steht NICHT in den alten Policy-Exporten -
         // Toni faehrt ihn konstant AN (Marker-Knopf ist sein Werkzeug).
@@ -8715,7 +8754,7 @@ class TransportWiringTest : TestBaseWithProfile() {
             }
         }
 
-        fun lauf(name: String, fensterMs: Long?, trendRegel: String? = null, fenster: Int = 18, ratioCap: Double = 1.0, livenessStart: Boolean = true, profilCapsBehalten: Boolean = false, upfrontStart: Double? = null, guardsStart: Boolean = false, reversalConfirm: Int = 2, gapBreakMs: Long? = null, reifeTag: String? = null, rejoin: Boolean = false, ruhe: app.aaps.fuse.core.controller.UpfrontRecovery.Params = app.aaps.fuse.core.controller.UpfrontRecovery.Params.OFF): File {
+        fun lauf(name: String, fensterMs: Long?, trendRegel: String? = null, fenster: Int = 18, ratioCap: Double = 1.0, livenessStart: Boolean = true, profilCapsBehalten: Boolean = false, upfrontStart: Double? = null, guardsStart: Boolean = false, reversalConfirm: Int = 2, gapBreakMs: Long? = null, reifeTag: String? = null, rejoin: Boolean = false, ruhe: app.aaps.fuse.core.controller.UpfrontRecovery.Params = app.aaps.fuse.core.controller.UpfrontRecovery.Params.OFF, dosingKandidat: String? = null): File {
             transportReset()
             boluses = emptyList()
             markerAt = 0L
@@ -8785,9 +8824,20 @@ class TransportWiringTest : TestBaseWithProfile() {
             forecastShadowAn = false // Replay braucht die Matrizen nicht - Tempo
             livenessRatioDeckel = ratioCap // v23: aufgezeichnete v22-Politik traegt den Schluessel nicht - der Hebel gilt
             theilSenFensterMin = fenster // W18-Trails tragen den Schluessel nicht - der Hebel gilt
+            // B3, dieselbe Leck-Regel fuer den zentralen Modus samt
+            // Kandidaten und M1/M3: jeder Lauf startet auf LEGACY/unset;
+            // traegt die Politik-Zeile die Schluessel, setzt
+            // politikAnwenden sie ohnehin selbst (selbst-resettend) -
+            // dieser Block deckt Trails OHNE jede Politik-Zeile.
+            centralAn = false
+            corrExpLimit = null; mealExpLimit = null
+            corrRatioCapZ = null; mealRatioCapZ = null
+            mealBgMin = null
+            mealArmZyklen = 3
             politikAnwenden(zyklen.firstNotNullOfOrNull { it.policy })
             theilSenFensterMin = fenster // die erste Politik darf den Matrixwert nicht ueberschreiben (W10-Live-Trails tragen 10)
             upfrontStart?.let { upfrontAnteil = it }   // derselbe Vorrang fuer den Sofortanteil
+            dosingKandidat?.let { dosingKandidatAnwenden(it) } // B3: die Matrix schlaegt die Aufzeichnung
             val adapter = FuseLedgerAdapter().also { it.loadOnce(File(dir, name).also(File::mkdirs), "test-epoch", zyklen.first().ts) }
             // EIN EXPLIZITER TREIBER-OVERRIDE SCHLAEGT DIE POLITIK, sonst gilt
             // die aufgezeichnete Einstellung. Vor dem 28.08. stand hier
@@ -8799,7 +8849,7 @@ class TransportWiringTest : TestBaseWithProfile() {
             neuerRunner(adapter, fensterMs = fensterMs, trendRegel = trendRegel, gapPolitik = gapPolitik, reifePolitik = reifePolitik, wiedereinstieg = rejoinPolitik, ruheParams = ruheWirksam)
             val outFile = File(outDir, "replay_$name.csv")
             outFile.printWriter().use { w ->
-                w.println("ts;smbU;block;binding;insulinReq;liftU;needU;abort;phase;fastD;slowD;trend;raw;recSmbU;recBlock;profil;restMin;tbr;latch;lvDenial;lvExit;lvStreak;lvHead;transC;revGrund;rearmGrund;ctxGrund;basis;gapBreakMs;samplesUsed;gapBeforeMin;r;bandN;matP;matS;iob;rejoin;rejoinGrund;gapMs;vollreifeTs;regimeGrund;regimeTs;regimeSegTs;vorReif;ruheModus;ruheStreak;ruheDenial;gefahr;guardAbst;grantU;vorFloor;nachFloor;nachRiegel;rtAngefordert;upfrontState;upfrontPendingU;riskAktiv;latchAktiv;latchGrund;iobAnkerFehlt;iobFehltAnkerKum;iobFehltHistKum;upfrontShare;q1;ukf;aktivitaet;bolusIobU;totalIobU;guardBoden;abstandBoden;minToFloor;ueberdeckung;fallrate;lowVerdikt;riskDenial;recoveryZyklen;horizontMin;aufschubGrund")
+                w.println("ts;smbU;block;binding;insulinReq;liftU;needU;abort;phase;fastD;slowD;trend;raw;recSmbU;recBlock;profil;restMin;tbr;latch;lvDenial;lvExit;lvStreak;lvHead;transC;revGrund;rearmGrund;ctxGrund;basis;gapBreakMs;samplesUsed;gapBeforeMin;r;bandN;matP;matS;iob;rejoin;rejoinGrund;gapMs;vollreifeTs;regimeGrund;regimeTs;regimeSegTs;vorReif;ruheModus;ruheStreak;ruheDenial;gefahr;guardAbst;grantU;vorFloor;nachFloor;nachRiegel;rtAngefordert;upfrontState;upfrontPendingU;riskAktiv;latchAktiv;latchGrund;iobAnkerFehlt;iobFehltAnkerKum;iobFehltHistKum;upfrontShare;q1;ukf;aktivitaet;bolusIobU;totalIobU;guardBoden;abstandBoden;minToFloor;ueberdeckung;fallrate;lowVerdikt;riskDenial;recoveryZyklen;horizontMin;aufschubGrund;dosingProfil;dosingGrund;expoSource;expoBind;expoBlock;expoBinding;expoHeadU;expoLimitU;bgMinQuelle")
                 // DER VORGEFUNDENE MARKER IST KEIN BEOBACHTETER DRUCK
                 // (Toni 25.08. spaet). `prevMarker = 0` liess den ersten
                 // Zyklus jeden schon laufenden Marker als frisch gedrueckt
@@ -8832,6 +8882,10 @@ class TransportWiringTest : TestBaseWithProfile() {
                     z.policy?.toString()?.takeIf { it != polText }?.let {
                         polText = it
                         politikAnwenden(z.policy)
+                        // B3: der Matrix-Kandidat gilt fuer den GANZEN Lauf -
+                        // sonst wuerde die erste Politik-Zeile ihn auf die
+                        // aufgezeichnete LEGACY-Politik zuruecksetzen.
+                        dosingKandidat?.let { k -> dosingKandidatAnwenden(k) }
                     }
                     if (z.marker != prevMarker && z.marker > 0L) markerAt = z.marker
                     prevMarker = z.marker
@@ -8937,6 +8991,21 @@ class TransportWiringTest : TestBaseWithProfile() {
                         o.descentRecoveryCycles.toString(),
                         aufschubHorizontMin.toString(),
                         o.upfrontChain?.recoveryDenial ?: "",
+                        // B3-ATTRIBUTION: Kontext, Endpruefung, Quellen-
+                        // Provenienz und M1-Schwellenquelle je Zyklus -
+                        // getrennt lesbar, damit eine Divergenz dem
+                        // richtigen Baustein zugeordnet werden kann
+                        // (Kontext / Exposure / Ratio / Quellenberechtigung
+                        // / pressureThreshold).
+                        o.dosingContextProfile ?: "",
+                        o.dosingContextReason ?: "",
+                        o.exposureFinalSource ?: "",
+                        o.exposureGateBindet?.let { if (it) "1" else "0" } ?: "",
+                        o.exposureGateBlocked?.let { if (it) "1" else "0" } ?: "",
+                        o.exposureGateBinding ?: "",
+                        o.exposureGateHeadroomU?.let { "%.3f".format(java.util.Locale.US, it) } ?: "",
+                        o.exposureGateEffectiveLimitU?.let { "%.3f".format(java.util.Locale.US, it) } ?: "",
+                        o.livenessBgMinSource ?: "",
                     ).joinToString(";"))
                 }
             }
@@ -9186,6 +9255,23 @@ class TransportWiringTest : TestBaseWithProfile() {
                 lauf("reb%03d".format(d), null, fenster = 10)
             }
             reboundFensterMin = 45
+            return
+        }
+        val ctxEnv = System.getenv("FUSE_REPLAY_DOSING_CONTEXT")
+        if (ctxEnv != null) {
+            // B3: ZENTRALE DOSIERPROFILE OFFLINE. ctxbase ist die
+            // Aufzeichnung (LEGACY, wie am Geraet gefahren); je Variante
+            // ein Lauf mit vollem Kandidatensatz, z.B.
+            //   FUSE_REPLAY_DOSING_CONTEXT=corrExp=2.5,mealExp=6.0,corrRatio=1.0,mealRatio=1.0;corrExp=3.0,...
+            // (mealBgMin=/mealArm= optional je Variante). Rueckkopplungs-
+            // blind: nach der ersten Dosisdivergenz sind Summen nur
+            // Obergrenzen; belastbar sind ZEITPUNKT, RICHTUNG und die
+            // CSV-Attribution (dosingProfil/expo*/bgMinQuelle) der ersten
+            // Abweichung.
+            lauf("ctxbase", null, fenster = 10)
+            ctxEnv.split(";").forEachIndexed { idx, variante ->
+                lauf("ctx%02d".format(idx + 1), null, fenster = 10, dosingKandidat = variante.trim())
+            }
             return
         }
         val capsEnv = System.getenv("FUSE_REPLAY_CAPS")
