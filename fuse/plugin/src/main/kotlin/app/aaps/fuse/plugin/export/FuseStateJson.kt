@@ -550,6 +550,25 @@ object FuseStateJson {
             // von mealFoundation.preFoundationBlock (der misst NACH
             // PrimeRelease.lift). null = Fallback-Pfad ohne Kandidatensuche.
             .put("underlyingNormalBlock", outcome.underlyingNormalBlock ?: JSONObject.NULL)
+            // A3 (Bauauftrag §8): die gemeinsame Expositionssicht als reine
+            // Diagnose. ALLE Zahlen stammen aus ExposureView/State - hier
+            // wird nur abgeschrieben, nie gerechnet. Bezugsgroessen und
+            // NULL-Regeln (Bedarf 0 -> Prozentwert null; fehlende Eingabe ->
+            // unbekannt) stehen in ExposureView.coverage. `source` ist die
+            // capsStage der Entscheidung - das vorhandene Herkunftslabel,
+            // keine zweite Wahrheit.
+            .put("exposure", outcome.exposureOccupiedU?.let { occ ->
+                JSONObject()
+                    .put("occupiedExposureU", fin(occ))
+                    .put("pendingExposureU", outcome.exposurePendingU?.let { fin(it) } ?: JSONObject.NULL)
+                    .put("capIobU", outcome.exposureCapIobU?.let { fin(it) } ?: JSONObject.NULL)
+                    .put("bolusIobU", outcome.exposureBolusIobU?.let { fin(it) } ?: JSONObject.NULL)
+                    .put("basalIobU", outcome.exposureBasalIobU?.let { fin(it) } ?: JSONObject.NULL)
+                    .put("staticCorrectionNeedU", outcome.exposureStaticNeedU?.let { fin(it) } ?: JSONObject.NULL)
+                    .put("coveragePct", outcome.exposureCoveragePct?.let { fin(it) } ?: JSONObject.NULL)
+                    .put("excessU", outcome.exposureExcessU?.let { fin(it) } ?: JSONObject.NULL)
+                    .put("source", outcome.decision.capsStage)
+            } ?: JSONObject.NULL)
             // A1: der zentrale Dosierkontext (Bauauftrag §4) mit den vier
             // Pflichtfeldern; policyGeneration = der bestehende Policy-Hash
             // (Tonis Entscheid: keine neue Generation erfinden). Optionaler

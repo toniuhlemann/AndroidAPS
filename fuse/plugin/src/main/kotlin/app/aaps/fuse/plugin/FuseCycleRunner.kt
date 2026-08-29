@@ -1073,6 +1073,19 @@ class FuseCycleRunner(
         val dosingContextReason: String? = null,
         val dosingContextAuthorizationId: Long? = null,
         val dosingContextAuthorizationExpiresAt: Long? = null,
+        /** A3 (Bauauftrag §8): die gemeinsame Expositionssicht als
+         *  DIAGNOSE - alle Werte stammen aus ExposureView/State, der
+         *  Exporter schreibt nur ab. null = Zyklus ohne Hauptpfad
+         *  (Abbruch/Fallback) bzw. unbekannte Eingabe - nie eine
+         *  erfundene 0. */
+        val exposureOccupiedU: Double? = null,
+        val exposurePendingU: Double? = null,
+        val exposureCapIobU: Double? = null,
+        val exposureBolusIobU: Double? = null,
+        val exposureBasalIobU: Double? = null,
+        val exposureStaticNeedU: Double? = null,
+        val exposureCoveragePct: Double? = null,
+        val exposureExcessU: Double? = null,
         val evidenceReason: String? = null,
         /** Der Kredit, der in DIESEM Zyklus die Sicherheitskante gehoben hat
          *  [mg/dl/min]. `null` = kein Evidenzkern gelaufen. */
@@ -2665,6 +2678,11 @@ class FuseCycleRunner(
         val exposure = app.aaps.fuse.core.controller.ExposureView.of(
             iobThU = state.iobThU, maxIobU = state.maxIobU,
             capIobU = state.capIobU, transportU = transportModelledU,
+        )
+        // A3: die §8-Diagnose aus DERSELBEN Sicht (Bezugsgroessen: q1 am
+        // Anker, aktuelles Ziel, ISF am Anker - s. ExposureView.coverage).
+        val exposureCoverage = exposure.coverage(
+            q1Mgdl = signal.q1, targetMgdl = state.targetMgdl, isfMgdlPerU = state.isfMgdlPerU,
         )
         val candidateBand = CandidateSearch.Band(
             releaseTargetLowMgdl = target - CandidateGate.RELEASE_LOW_MARGIN_MGDL,
@@ -5024,6 +5042,14 @@ class FuseCycleRunner(
             evidenceReason = evidenz?.noInflow?.name,
             evidenceCreditMgdlPerMin = evidenz?.creditMgdlPerMin,
             underlyingNormalBlock = underlyingNormalBlock.name,
+            exposureOccupiedU = exposure.occupiedU,
+            exposurePendingU = exposure.transportU,
+            exposureCapIobU = exposure.capIobU,
+            exposureBolusIobU = state.bolusIobU,
+            exposureBasalIobU = state.basalIobU,
+            exposureStaticNeedU = exposureCoverage.staticCorrectionNeedU,
+            exposureCoveragePct = exposureCoverage.coveragePct,
+            exposureExcessU = exposureCoverage.excessU,
             dosingContextProfile = dosingCtx.profile.name,
             dosingContextReason = dosingCtx.reason.name,
             dosingContextAuthorizationId = dosingCtx.authorizationId.takeIf { it > 0L },

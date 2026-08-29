@@ -45,12 +45,51 @@ data class ExposureView(
     val transportU: Double,
 ) {
 
+    /** §5 occupiedExposure: belegter Mengenraum einschliesslich der noch
+     *  nicht im IOB erfassten Transporthaftung. REINE Diagnosegroesse (A3) -
+     *  die Dosier-Headrooms unten behalten ihre eigene, bitgleiche
+     *  Ausdrucksreihenfolge und lesen NICHT ueber diese Summe. */
+    val occupiedU: Double = capIobU + transportU
+
     /** Rest unter der iobTH-Grenze (Grenze des schnellen Kanals) -
      *  UNGEKLEMMT: ein negativer Wert IST die Information "schon drueber". */
     val iobThHeadroomU: Double = iobThU - capIobU - transportU
 
     /** Rest unter maxIOB (der Gesamtdeckel) - ungeklemmt wie oben. */
     val maxIobHeadroomU: Double = maxIobU - capIobU - transportU
+
+    /**
+     * §8-COVERAGE-DIAGNOSE (A3) - reine Beobachtung, KEINE Dosieranweisung,
+     * und ausdruecklich noch keine aktive Regel (Coverage bleibt offen).
+     *
+     * Bezugsgroessen, eindeutig benannt (§8): BG = gefilterter q1 am
+     * Signalanker; Ziel = aktuelles targetMgdl des Zyklus; ISF = isfMgdlPerU
+     * am Anker; Einheiten mg/dl bzw. U; Zeitbezug = computeTs des Zyklus.
+     *
+     * Regeln: fehlende oder unbrauchbare Eingaben -> UNBEKANNT (null), nie
+     * eine erfundene 0. Bedarf 0 -> Prozentwert NICHT definiert (null, kein
+     * Ersatznenner); excessU bleibt definiert (= occupied). KEIN erneuter
+     * IOB-Abzug von prognosebasiertem insulinReq - der statische Bedarf ist
+     * bewusst die rohe Distanzrechnung.
+     */
+    data class Coverage(
+        val staticCorrectionNeedU: Double?,
+        val coveragePct: Double?,
+        val excessU: Double?,
+    )
+
+    fun coverage(q1Mgdl: Double?, targetMgdl: Double?, isfMgdlPerU: Double?): Coverage {
+        if (q1Mgdl == null || targetMgdl == null || isfMgdlPerU == null ||
+            !q1Mgdl.isFinite() || !targetMgdl.isFinite() ||
+            !isfMgdlPerU.isFinite() || isfMgdlPerU <= 0.0 || !occupiedU.isFinite()
+        ) return Coverage(null, null, null)
+        val needU = kotlin.math.max(0.0, (q1Mgdl - targetMgdl) / isfMgdlPerU)
+        return Coverage(
+            staticCorrectionNeedU = needU,
+            coveragePct = if (needU > 0.0) 100.0 * occupiedU / needU else null,
+            excessU = occupiedU - needU,
+        )
+    }
 
     companion object {
         fun of(iobThU: Double, maxIobU: Double, capIobU: Double, transportU: Double) =

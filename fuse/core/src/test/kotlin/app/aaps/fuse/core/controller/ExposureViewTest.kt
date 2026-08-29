@@ -35,6 +35,44 @@ class ExposureViewTest {
         assertEquals(4.0 - 4.5 - 0.1, v.iobThHeadroomU)
     }
 
+    /** §8: occupiedExposure = capIob + Transport, und die Diagnose kommt
+     *  aus DERSELBEN Sicht - kein zweiter Rechenweg im Exporter. */
+    @Test
+    fun `die Coverage-Diagnose rechnet auf der eigenen Belegung`() {
+        val v = ExposureView.of(iobThU = 4.8, maxIobU = 8.0, capIobU = 3.0, transportU = 0.5)
+        assertEquals(3.5, v.occupiedU)
+        val c = v.coverage(q1Mgdl = 190.0, targetMgdl = 100.0, isfMgdlPerU = 90.0)
+        assertEquals(1.0, c.staticCorrectionNeedU!!, 1e-12)
+        assertEquals(350.0, c.coveragePct!!, 1e-9)
+        assertEquals(2.5, c.excessU!!, 1e-12)
+    }
+
+    /** Bedarf 0: der Prozentwert ist NICHT definiert - null, kein
+     *  Ersatznenner, keine erfundene 0 %. excessU bleibt definiert. */
+    @Test
+    fun `bei Bedarf null gibt es keinen Prozentwert`() {
+        val v = ExposureView.of(iobThU = 4.8, maxIobU = 8.0, capIobU = 2.0, transportU = 0.0)
+        val c = v.coverage(q1Mgdl = 95.0, targetMgdl = 100.0, isfMgdlPerU = 90.0)
+        assertEquals(0.0, c.staticCorrectionNeedU!!, 1e-12)
+        assertTrue(c.coveragePct == null, "kein Ersatznenner")
+        assertEquals(2.0, c.excessU!!, 1e-12)
+    }
+
+    /** Fehlende oder unbrauchbare Eingaben: UNBEKANNT, nie 0. */
+    @Test
+    fun `fehlende Eingaben bleiben unbekannt`() {
+        val v = ExposureView.of(iobThU = 4.8, maxIobU = 8.0, capIobU = 2.0, transportU = 0.0)
+        for (c in listOf(
+            v.coverage(null, 100.0, 90.0),
+            v.coverage(120.0, null, 90.0),
+            v.coverage(120.0, 100.0, null),
+            v.coverage(120.0, 100.0, 0.0),
+            v.coverage(Double.NaN, 100.0, 90.0),
+        )) {
+            assertTrue(c.staticCorrectionNeedU == null && c.coveragePct == null && c.excessU == null)
+        }
+    }
+
     /** C3-02-Richtung: mehr Transporthaftung macht die Headrooms NIE
      *  weiter - die konservative Doppelung in die engere Richtung bleibt
      *  konstruktiv erlaubt, raumSCHAFFEND ist sie nie. */
