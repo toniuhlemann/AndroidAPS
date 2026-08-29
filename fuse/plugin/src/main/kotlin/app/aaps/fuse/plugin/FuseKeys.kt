@@ -398,6 +398,26 @@ enum class FuseDoubleKey(
      */
     LivenessBgMinNightMgdl("fuse_liveness_bg_min_night_mgdl", 160.0, 100.0, 250.0),
 
+    /**
+     * ERWEITERUNG M1 (Bauauftrag 7.5.1, Toni 29.08.): eigene Druckschwelle
+     * des Liveness-Kanals unter GUELTIGER MEAL-Vollmacht [mg/dl, ABSOLUT].
+     *
+     * Beleg: 55 min Verzug am Abend 28.08. und 35 min am Fruehstueck
+     * 29.08. - die Korrektur-Schwelle (140/160) verhinderte unter stehender
+     * Marker-Autorisierung jede Druckzaehlung, waehrend r laengst >= 1 lief
+     * und der Normalpfad GUARD-gedeckelt war.
+     *
+     * UNKONFIGURIERT folgt die MEAL-Schwelle der bisherigen wirksamen
+     * Tag-/Nachtschwelle (neutraler Altpfad, getIfExists-null im
+     * Config-Bau - der Default hier ist reine Anzeige). CORRECTION behaelt
+     * Tag/Nacht IMMER. Untergrenze 80: unter der Vollmacht darf die
+     * Schwelle nahe an den Zielbereich, aber nie unter den Guard-Boden-
+     * Bereich - die gemessenen Riegel (Tief, Fallen, Rebound) bleiben
+     * davon unberuehrt absolut. KEIN Live-Default durch diesen Bau -
+     * Toni setzt.
+     */
+    LivenessBgMinMealMgdl("fuse_liveness_bg_min_meal_mgdl", 140.0, 80.0, 250.0),
+
     /** Totband der NACHT [mg/dl ueber Ziel]: darunter kein SMB im Nachtfenster.
      *  0 = aus. Ein erklaerter Marker hebt es auf (Toni 09.08.). */
     NightDeadbandMgdl("fuse_night_deadband_mgdl", 45.0, 0.0, 100.0),

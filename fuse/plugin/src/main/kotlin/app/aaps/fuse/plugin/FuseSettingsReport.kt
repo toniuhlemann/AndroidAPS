@@ -68,6 +68,7 @@ internal val fuseEinstellbareKeys: Set<String> = setOf(
     FuseDoubleKey.RearmUpUkf.key,
     FuseDoubleKey.LivenessBgMinDayMgdl.key,
     FuseDoubleKey.LivenessBgMinNightMgdl.key,
+    FuseDoubleKey.LivenessBgMinMealMgdl.key,
     FuseIntKey.LivenessReArmMin.key,
     FuseDoubleKey.TailFloorMgdl.key,
     FuseDoubleKey.TailRecoveryU.key,
@@ -281,6 +282,19 @@ object FuseSettingsReport {
                                 ?.let { "${f2(FuseDoubleKey.LivenessBgMinNightMgdl.defaultValue)} mg/dl" },
                         )
                     },
+                    // M1: die MEAL-Schwelle EHRLICH anzeigen - ungesetzt
+                    // folgt sie zur Laufzeit der Tag-/Nachtschwelle.
+                    preferences.getIfExists(FuseDoubleKey.LivenessBgMinMealMgdl)
+                        ?.takeIf { it.isFinite() && it in FuseDoubleKey.LivenessBgMinMealMgdl.min..FuseDoubleKey.LivenessBgMinMealMgdl.max }
+                        .let { meal ->
+                            FuseScreenModel.SettingRow(
+                                key = FuseDoubleKey.LivenessBgMinMealMgdl.key,
+                                label = "Druck-Schwelle MEAL",
+                                value = meal?.let { "${f2(it)} mg/dl" }
+                                    ?: "folgt Tag/Nacht",
+                                standard = null,
+                            )
+                        },
                     ganz(FuseIntKey.LivenessReArmMin, "Re-Arm-Sperre", "min"),
                 ),
                 "Schutz und Prognose" to listOf(

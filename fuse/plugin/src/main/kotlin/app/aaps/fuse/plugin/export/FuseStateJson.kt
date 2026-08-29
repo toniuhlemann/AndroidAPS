@@ -274,7 +274,14 @@ object FuseStateJson {
     // selbst ist bei Default AUS dosierneutral, aber die Hash-Eingaben
     // wechseln (offene Erwartungen werden wie bei v22/v24 einmalig
     // entwertet - gewollt).
-    const val RULE_SET_VERSION = 38
+    // v39 (29.08., M1 aus Bauauftrag 7.5.1): eigene MEAL-Druckschwelle des
+    // Liveness-Kanals unter gueltiger Markervollmacht (absolut, mg/dl).
+    // Unkonfiguriert = bisherige Tag-/Nachtschwelle (neutraler Altpfad,
+    // Default-bitgleich); gesetzt ist sie DOSIERWIRKSAM: die 55-min-
+    // (Abend 28.08.) und 35-min-Loecher (Fruehstueck 29.08.) entstanden
+    // aus der Korrektur-Schwelle unter stehender MEAL-Vollmacht.
+    // bgMinSource kennt jetzt MEAL; Profilwechsel ist KEIN CONFIG_CHANGED.
+    const val RULE_SET_VERSION = 39
 
     /** Schema des Trail-Datensatzes - s. die Notiz an der Schreibstelle. */
     const val SCHEMA_VERSION = 4
@@ -1723,6 +1730,8 @@ object FuseStateJson {
         // Unkonfiguriert ist NULL - nie eine erfundene 0. Im LEGACY-Modus
         // sind das reine Kandidaten ohne Dosier-Konsumenten.
         .put("policyMode", if (p.centralProfilesEnabled) "CENTRAL_PROFILES" else "LEGACY")
+        // M1: die MEAL-Druckschwelle (null = unkonfiguriert = Altpfad).
+        .put("livenessBgMinMealMgdl", p.livenessBgMinMealMgdl?.let { fin(it) } ?: JSONObject.NULL)
         .put("correctionExposureLimitU", p.correctionExposureLimitU?.let { fin(it) } ?: JSONObject.NULL)
         .put("mealExposureLimitU", p.mealExposureLimitU?.let { fin(it) } ?: JSONObject.NULL)
         .put("correctionDemandRatioCap", p.correctionDemandRatioCap?.let { fin(it) } ?: JSONObject.NULL)
@@ -1871,12 +1880,19 @@ object FuseStateJson {
             p.mealExposureLimitU?.let { Sha.lossless(it) } ?: "unset",
             p.correctionDemandRatioCap?.let { Sha.lossless(it) } ?: "unset",
             p.mealDemandRatioCap?.let { Sha.lossless(it) } ?: "unset",
+        ) + listOf(
+            // M1: dosierwirksam sobald gesetzt, MODUSUNABHAENGIG (haengt an
+            // der Markervollmacht, nicht am policyMode) - immer im Hash,
+            // "unset" als eigener Zustand.
+            p.livenessBgMinMealMgdl?.let { Sha.lossless(it) } ?: "mealBgMin:unset",
         ) else listOf(
             Sha.lossless(p.livenessMealRatioCap),
             Sha.lossless(p.livenessMealIobCapPercent),
             Sha.lossless(p.livenessCorrectionRatioCap),
             Sha.lossless(p.livenessCorrectionIobCapPercent),
             "centralCandidates:inactive",
+        ) + listOf(
+            p.livenessBgMinMealMgdl?.let { Sha.lossless(it) } ?: "mealBgMin:unset",
         )
         val parts = listOf("fuse-policy-v$RULE_SET_VERSION") +
             doubles.map { Sha.lossless(it) } +

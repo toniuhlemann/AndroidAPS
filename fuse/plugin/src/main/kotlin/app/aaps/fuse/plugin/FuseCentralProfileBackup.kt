@@ -25,6 +25,9 @@ object FuseCentralProfileBackup {
         FuseDoubleKey.MealExposureLimitU,
         FuseDoubleKey.CorrectionDemandRatioCap,
         FuseDoubleKey.MealDemandRatioCap,
+        // M1: dieselbe Rundlauf-Regel - eine unkonfigurierte MEAL-Schwelle
+        // darf ein Restore nicht in eine gesetzte 140 verwandeln.
+        FuseDoubleKey.LivenessBgMinMealMgdl,
     )
 
     fun schreibe(json: JSONObject, preferences: Preferences) {

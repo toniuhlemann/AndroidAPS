@@ -7589,6 +7589,93 @@ class TransportWiringTest : TestBaseWithProfile() {
     }
 
     /**
+     * M1 (Bauauftrag 7.5.1): unter GUELTIGER MEAL-Vollmacht gilt die eigene
+     * MEAL-Druckschwelle - der Kanal bewaffnet UNTERHALB der Tagesschwelle.
+     * Beleg: 55-min-Loch am Abend 28.08., 35 min am Fruehstueck 29.08. -
+     * die Korrektur-Schwelle blockte die Druckzaehlung unter stehender
+     * Vollmacht. Die Prime-Drip-Zyklen des offenen Markerfensters maskieren
+     * dank M2 (underlyingNormalBlock) nicht mehr.
+     */
+    @Test
+    fun `M1 - die MEAL-Schwelle bewaffnet unterhalb der Tagesschwelle`(@TempDir dir: File) {
+        livenessAn = true
+        livenessCapPct = 90.0
+        livenessBgMin = 160.0
+        livenessReArmMin = 10
+        tailGuard = true
+        markerAuthorized = true
+        whenever(preferences.get(FuseIntKey.PrimeWindowMin)).thenReturn(20)
+        whenever(preferences.getIfExists(FuseDoubleKey.LivenessBgMinMealMgdl)).thenReturn(120.0)
+        flach = 100.0
+        steigungProMin = 0.3
+        knickAbMin = 12
+        steigungNachKnick = 1.2
+        knick2AbMin = null
+        bolusIobU = 4.5
+        clock = start
+        transportReset()
+        val adapter = FuseLedgerAdapter().also { it.loadOnce(dir.also(File::mkdirs), "test-epoch", start) }
+        neuerRunner(adapter)
+
+        // Erst gesunde Zyklen, DANN der Druck (vorgefundene Marker pinnen nie).
+        repeat(7) { cycle() }
+        markerAt = clock + 60_000L
+
+        var armZyklus: FuseCycleRunner.Outcome? = null
+        repeat(40) {
+            val o = cycle()
+            if (armZyklus == null && o.livenessActive) armZyklus = o
+        }
+        assertTrue(armZyklus != null, "der Kanal MUSS unter der Vollmacht bewaffnen")
+        val arm = armZyklus!!
+        assertTrue(
+            arm.signal!!.q1 < 160.0,
+            "und zwar UNTERHALB der Tagesschwelle: q1=${arm.signal!!.q1}",
+        )
+        assertEquals("MEAL", arm.livenessBgMinSource, "die wirksame Schwelle ist die MEAL-Schwelle")
+        assertEquals(120.0, arm.livenessBgMinEffectiveMgdl!!, 1e-9)
+    }
+
+    /** GEGENPROBE: ohne Vollmacht bleibt die Tagesschwelle - dieselbe Lage
+     *  ohne Markerdruck bewaffnet nie (q1 bleibt unter 160). Eine Mutation,
+     *  die die MEAL-Schwelle in CORRECTION wirken laesst, macht diesen
+     *  Test rot. */
+    @Test
+    fun `M1 - ohne Vollmacht gilt die Tagesschwelle weiter`(@TempDir dir: File) {
+        livenessAn = true
+        livenessCapPct = 90.0
+        livenessBgMin = 160.0
+        livenessReArmMin = 10
+        tailGuard = true
+        markerAuthorized = true
+        whenever(preferences.get(FuseIntKey.PrimeWindowMin)).thenReturn(20)
+        whenever(preferences.getIfExists(FuseDoubleKey.LivenessBgMinMealMgdl)).thenReturn(120.0)
+        flach = 100.0
+        steigungProMin = 0.3
+        knickAbMin = 12
+        steigungNachKnick = 1.2
+        knick2AbMin = null
+        bolusIobU = 4.5
+        clock = start
+        markerAt = 0L
+        transportReset()
+        val adapter = FuseLedgerAdapter().also { it.loadOnce(dir.also(File::mkdirs), "test-epoch", start) }
+        neuerRunner(adapter)
+
+        var druckGesehen = false
+        repeat(47) {
+            val o = cycle()
+            assertTrue(!o.livenessActive, "ohne Vollmacht darf unter 160 nie bewaffnet werden")
+            if (o.livenessStreak > 0) druckGesehen = true
+            if (o.livenessBgMinSource != null) assertTrue(
+                o.livenessBgMinSource != "MEAL",
+                "ohne Vollmacht darf die MEAL-Schwelle nie wirksam sein",
+            )
+        }
+        assertTrue(!druckGesehen, "q1 bleibt unter der Tagesschwelle - kein Druckzyklus")
+    }
+
+    /**
      * Fall 1 - die 22.08.-Tagesform: im Schwanz-Deadlock liefert der Kanal
      * die MENGENLINIE, nicht den Saegezahn. Scharf gegen die Mutation
      * "Tail-Kappe versehentlich noch aktiv": in jedem Hub-Zyklus ist die

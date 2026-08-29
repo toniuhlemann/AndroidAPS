@@ -385,6 +385,9 @@ class FuseCycleRunner(
             require(it.livenessReArmMin in FuseIntKey.LivenessReArmMin.min..FuseIntKey.LivenessReArmMin.max) { "livenessReArmMin=${it.livenessReArmMin}" }
             require(it.livenessBgMinDayMgdl.isFinite() && it.livenessBgMinDayMgdl in FuseDoubleKey.LivenessBgMinDayMgdl.min..FuseDoubleKey.LivenessBgMinDayMgdl.max) { "livenessBgMinDayMgdl=${it.livenessBgMinDayMgdl}" }
             require(it.livenessBgMinNightMgdl.isFinite() && it.livenessBgMinNightMgdl in FuseDoubleKey.LivenessBgMinNightMgdl.min..FuseDoubleKey.LivenessBgMinNightMgdl.max) { "livenessBgMinNightMgdl=${it.livenessBgMinNightMgdl}" }
+            it.livenessBgMinMealMgdl?.let { v ->
+                require(v.isFinite() && v in FuseDoubleKey.LivenessBgMinMealMgdl.min..FuseDoubleKey.LivenessBgMinMealMgdl.max) { "livenessBgMinMealMgdl=$v" }
+            }
         }
 
         /** Raster des selbst gebauten IOB-Arrays. 5 min wie in AAPS — feiner
@@ -4310,6 +4313,12 @@ class FuseCycleRunner(
             // regulaerer Tag/Nacht-Wechsel ist KEIN CONFIG_CHANGED (v20).
             val cfgJetzt = cfg.livenessBgMinDayMgdl.toString() + "|" +
                 cfg.livenessBgMinNightMgdl + "|" +
+                // M1: auch die KONFIGURIERTE MEAL-Schwelle - eine Aenderung
+                // waehrend eines Laufs ist eine Bedienhandlung und beendet
+                // ihn (CONFIG_CHANGED, ohne Sperre). Der PROFILwechsel
+                // selbst wechselt nur die WIRKSAME Schwelle und ist wie
+                // Tag/Nacht KEIN CONFIG_CHANGED.
+                cfg.livenessBgMinMealMgdl + "|" +
                 cfg.livenessMealRatioCap + "|" + cfg.livenessMealIobCapPercent + "|" +
                 cfg.livenessCorrectionRatioCap + "|" + cfg.livenessCorrectionIobCapPercent + "|" +
                 cfg.livenessReArmMin
@@ -4326,9 +4335,21 @@ class FuseCycleRunner(
             val nachtFenster = NightWindow.isNight(
                 MidnightUtils.secondsFromMidnight(signal.sourceTs), cfg.nightStartMin, cfg.nightEndMin,
             )
-            val bgMinWirksam = if (nachtFenster) cfg.livenessBgMinNightMgdl else cfg.livenessBgMinDayMgdl
+            val tagNachtMin = if (nachtFenster) cfg.livenessBgMinNightMgdl else cfg.livenessBgMinDayMgdl
+            // M1 (Bauauftrag 7.5.1): unter GUELTIGER MEAL-Vollmacht gilt die
+            // eigene MEAL-Druckschwelle (absolut); unkonfiguriert folgt sie
+            // der bisherigen wirksamen Schwelle - neutraler Altpfad.
+            // CORRECTION behaelt Tag/Nacht unveraendert. Gemessene Riegel
+            // (Tief, Fallen, Rebound, Descent) stehen unveraendert VOR der
+            // Druckpruefung.
+            val mealMin = if (dosingCtx.mealAuthorized) cfg.livenessBgMinMealMgdl else null
+            val bgMinWirksam = mealMin ?: tagNachtMin
             livenessBgMinEffective = bgMinWirksam
-            livenessBgMinSource = if (nachtFenster) "NIGHT" else "DAY"
+            livenessBgMinSource = when {
+                mealMin != null -> "MEAL"
+                nachtFenster -> "NIGHT"
+                else -> "DAY"
+            }
             fun sperren(grund: String): FuseController.Decision {
                 livenessExit = grund
                 livenessActive = false
@@ -6386,6 +6407,9 @@ class FuseCycleRunner(
         val mealDemandRatioCap: Double?,
         val livenessBgMinDayMgdl: Double,
         val livenessBgMinNightMgdl: Double,
+        /** M1: MEAL-Druckschwelle; null = unkonfiguriert -> wirksame
+         *  Tag-/Nachtschwelle (neutraler Altpfad). */
+        val livenessBgMinMealMgdl: Double?,
         val livenessReArmMin: Int,
         val primeWindowMin: Int,
         /** Die Null sofort verlassen, sobald ihr Schutzgrund weg ist. */
@@ -6526,6 +6550,9 @@ class FuseCycleRunner(
         livenessBgMinNightMgdl = preferences.getIfExists(FuseDoubleKey.LivenessBgMinNightMgdl)
             ?.takeIf { it.isFinite() && it in FuseDoubleKey.LivenessBgMinNightMgdl.min..FuseDoubleKey.LivenessBgMinNightMgdl.max }
             ?: preferences.get(FuseDoubleKey.LivenessBgMinDayMgdl),
+        // M1: unkonfiguriert bleibt null - der Altpfad (Tag/Nacht) gilt.
+        livenessBgMinMealMgdl = preferences.getIfExists(FuseDoubleKey.LivenessBgMinMealMgdl)
+            ?.takeIf { it.isFinite() && it in FuseDoubleKey.LivenessBgMinMealMgdl.min..FuseDoubleKey.LivenessBgMinMealMgdl.max },
         livenessReArmMin = preferences.get(FuseIntKey.LivenessReArmMin),
         // Ein ungesetzter Wert (0) ist kein Konfigurationsfehler, sondern ein
         // Speicher, der den Schluessel noch nicht kennt - dann gilt die
