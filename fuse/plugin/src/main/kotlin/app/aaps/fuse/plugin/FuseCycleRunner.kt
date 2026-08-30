@@ -4503,7 +4503,15 @@ class FuseCycleRunner(
                 treatmentView == null -> "VIEW_UNREADABLE"
                 livenessModelReject != null -> "MODEL_UNAVAILABLE"
                 ledgerView.hold -> "LEDGER_HOLD"
-                reboundRaw -> "REBOUND_ACTIVE"
+                // P1 v45 (Eis-Livefall 30.08. 13:50): das ROHE Rebound-
+                // Fenster sperrt den Kanal nur, wenn das markergebundene
+                // Sonderrecht NICHT gilt - DIESELBE Wahrheit wie im Regler
+                // (evidenceMayOverrideRebound), keine zweite Rechnung.
+                // Vorher: Normalpfad per Evidenz entwaffnet und dann GUARD-
+                // geschlossen, der Kanal las das Rohsignal und blieb
+                // EXCLUDED/REBOUND_ACTIVE - serielle Blockade bei q1 172,
+                // r +4,8 und 3,68 U freiem MEAL-Headroom.
+                reboundRaw && !reboundOverrideErlaubt -> "REBOUND_ACTIVE"
                 measuredLow -> "MEASURED_LOW"
                 descentRisk.active -> "DESCENT_RISK"
                 risk60?.active == true -> "DESCENT_RISK_MARKER"

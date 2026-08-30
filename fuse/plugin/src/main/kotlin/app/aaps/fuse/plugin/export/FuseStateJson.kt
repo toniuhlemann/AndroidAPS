@@ -327,7 +327,19 @@ object FuseStateJson {
     // (Frist, Druckschwellen, Armierung, Re-Arm, Fundament A/B)
     // unveraendert. Fuer bisher-LEGACY-Geraete ist der Flash der
     // BEWUSSTE Architekturwechsel auf die zentrale Politik.
-    const val RULE_SET_VERSION = 44
+    // v45 (30.08., P1 Eis-Livefall 13:50): die MEAL-/Evidenz-Entwaffnung
+    // des Rebound-Totbands gilt auch im HARTEN Liveness-Tor. Vorher las
+    // das Tor das rohe Fenster (reboundRaw) und blieb EXCLUDED/
+    // REBOUND_ACTIVE, waehrend der Normalpfad laengst per
+    // evidenceMayOverrideRebound entwaffnet war und nach 3,05 U mit
+    // GUARD_FLOOR schloss - serielle Blockade trotz 3,68 U freiem
+    // MEAL-Headroom. Jetzt sperrt reboundRaw nur noch bei NICHT geltendem
+    // Sonderrecht (dieselbe typisierte Rechnung, NightWindow.
+    // evidenceMayOverrideRebound: Kredit + passender Pin + Frist, nie
+    // widerrufen). Alle anderen harten Riegel (Signal, Sicht, Modell,
+    // Ledger, Low, Descent, Latch, EXCLUDED_LAGE, FALLING) und alle
+    // Mengen-/Endpruefungen unveraendert.
+    const val RULE_SET_VERSION = 45
 
     /** Schema des Trail-Datensatzes - s. die Notiz an der Schreibstelle. */
     const val SCHEMA_VERSION = 4

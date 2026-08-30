@@ -800,7 +800,11 @@ class FuseStateExportTest {
         // v44 CENTRAL-only: LEGACY-Pfad, Modusschalter und die sechs
         // Liveness-Cap-Keys entfernt; vier Profilwerte mit echten
         // Startsatz-Defaults; policyMode = Export-Konstante.
-        assertEquals(44, FuseStateJson.RULE_SET_VERSION)
+        // v45 P1 Eis-Livefall: die MEAL-/Evidenz-Entwaffnung des Rebound-
+        // Totbands gilt auch im harten Liveness-Tor (reboundRaw sperrt nur
+        // noch ohne geltendes Sonderrecht) - dieselbe typisierte Rechnung,
+        // keine neuen Keys, kein Backup-/Migrationsbedarf.
+        assertEquals(45, FuseStateJson.RULE_SET_VERSION)
         assertTrue(
             FuseStateJson.hashOf(cfg)!!.isNotEmpty(),
             "und der Hash bleibt berechenbar",

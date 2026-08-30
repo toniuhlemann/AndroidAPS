@@ -216,6 +216,12 @@ class TransportWiringTest : TestBaseWithProfile() {
     /** Rebound-Fensterdauer [min] - Replay-Hebel fuer die Matrix 26.08. */
     private var reboundFensterMin = 45
 
+    /** Frist des Rebound-Sonderrechts [min]. Default 0 = KEIN Sonderrecht -
+     *  das entspricht dem bisherigen (unmockten) Rig-Verhalten aller
+     *  Alt-Tests; Produktion traegt 120 (FuseIntKey-Default). Nur die
+     *  P1-v45-Rigs stellen die Frist scharf. */
+    private var reboundOverrideMaxMin = 0
+
     /**
      * DIE RUHEPARAMETER AUS DER AUFGEZEICHNETEN POLITIK (Befund Toni 28.08.).
      *
@@ -585,6 +591,7 @@ class TransportWiringTest : TestBaseWithProfile() {
         whenever(preferences.get(FuseIntKey.DriveLowerQuantilePct)).thenAnswer { quantilePct }
         whenever(preferences.get(FuseIntKey.TheilSenWindowMin)).thenAnswer { theilSenFensterMin }
         whenever(preferences.get(FuseIntKey.ReboundWindowMin)).thenAnswer { reboundFensterMin }
+        whenever(preferences.get(FuseIntKey.EvidenceReboundOverrideMaxMin)).thenAnswer { reboundOverrideMaxMin }
         whenever(preferences.get(FuseBooleanKey.TailGuardEnabled)).thenAnswer { tailGuard }
         whenever(preferences.get(FuseBooleanKey.ConditionalTailEnabled)).thenAnswer { conditionalTail }
         whenever(preferences.get(FuseBooleanKey.MarkerAuthorisesRelease)).thenAnswer { markerAuthorized }
@@ -7775,6 +7782,234 @@ class TransportWiringTest : TestBaseWithProfile() {
         }
         assertTrue(armZyklus != null, "die Lage muss ueberhaupt bewaffnen (sonst prueft der Fall nichts)")
         assertEquals(3, armZyklus!!.livenessStreak)
+    }
+
+    // ---- P1 v45: Rebound-Sonderrecht auch im Liveness-Tor ----------------
+
+    /**
+     * P1-Aufbau (Eis-Livefall 30.08. 13:50): Low-Dip unter 75 oeffnet das
+     * ROHE Rebound-Fenster (45 min), der Marker wird IM Fenster gedrueckt
+     * (beide Pins: Power + Rebound-Sonderrecht), danach der steile Anstieg
+     * (r weit ueber 1, q1 ueber der MEAL-Schwelle 120), Guard-Deadlock des
+     * Normalpfads per Bolus-IOB. Sonderrechtsfrist wie in Produktion
+     * (120 min), MealArmCycles = 1.
+     *
+     * @param druecken false = Marker wird VORGEFUNDEN (vor dem ersten
+     *   Zyklus gesetzt) - pinnt nie, Sonderrecht entsteht nie.
+     */
+    private fun reboundOverrideLage(dir: File, druecken: Boolean = true): FuseLedgerAdapter {
+        livenessAn = true
+        corrExpLimit = 3.0; mealExpLimit = 7.0 // der Startsatz des Livefalls
+        livenessBgMin = 160.0
+        mealBgMin = 120.0
+        mealArmZyklen = 1
+        livenessReArmMin = 10
+        reboundOverrideMaxMin = 120
+        tailGuard = true
+        markerAuthorized = true
+        fundamentAn = false
+        aufschubAn = false
+        whenever(preferences.get(FuseIntKey.PrimeWindowMin)).thenReturn(20)
+        // Livefall: Marker BEWUSST ohne Direktdosis - und nur so bleibt der
+        // Evidenz-Topf im Rig ueberhaupt positiv (jede fruehe Abgabe zehrt
+        // als Abzug am Bestand, bevor der Kredit je fliessen kann).
+        whenever(preferences.get(FuseLongKey.MealMarkerNoPrime)).thenReturn(1L)
+        flach = 80.0
+        steigungProMin = -2.0   // Tal 68 bei min 6: Dip auf VERARBEITETEN
+        knickAbMin = 6          // Zyklen (Warmup-Zyklen setzen lastLowTs nie)
+        steigungNachKnick = 2.5 // der Eis-Anstieg
+        knick2AbMin = null
+        bolusIobU = 4.5         // Guard-/Schwanz-Deadlock des Normalpfads
+        clock = start
+        if (!druecken) {
+            markerAt = start + 60_000L
+            markerPress = 0L // der Druck stammt aus einem FRUEHEREN Prozess
+        }
+        transportReset()
+        val adapter = FuseLedgerAdapter().also { it.loadOnce(dir.also(File::mkdirs), "test-epoch", start) }
+        neuerRunner(adapter)
+        if (druecken) {
+            // Erst gesunde Zyklen, DANN der Druck (vorgefundene pinnen nie).
+            repeat(7) { cycle() }
+            markerAt = clock + 60_000L
+        }
+        return adapter
+    }
+
+    /**
+     * P1 v45, Positivfall: das markergebundene Rebound-Sonderrecht
+     * entwaffnet auch das HARTE Liveness-Tor. Vorher blieb der Kanal in
+     * genau dieser Lage jeden Zyklus `EXCLUDED/REBOUND_ACTIVE`, waehrend
+     * der Normalpfad laengst entwaffnet und dann GUARD-geschlossen war -
+     * die serielle Blockade des Livefalls (q1 172, r +4,8, 3,68 U freier
+     * MEAL-Headroom, keine Abgabe). Die Mutation `reboundRaw ->
+     * REBOUND_ACTIVE` (ohne Sonderrechtspruefung) macht diesen Test rot.
+     */
+    @Test
+    fun `P1 - das Rebound-Sonderrecht entwaffnet auch das Liveness-Tor`(@TempDir dir: File) {
+        val adapter = reboundOverrideLage(dir)
+        var armZyklus: FuseCycleRunner.Outcome? = null
+        var liftZyklus: FuseCycleRunner.Outcome? = null
+        repeat(60) {
+            val o = cycle()
+            // Solange das Sonderrecht gilt, darf das Tor nie mit dem ROHEN
+            // Fenster sperren - der Kern des Fixvertrags.
+            if (o.evidenceMayOverrideRebound) assertTrue(
+                o.livenessProfileReason != "REBOUND_ACTIVE",
+                "Tor liest das Rohsignal statt des Sonderrechts (Zyklus $it)",
+            )
+            if (armZyklus == null && o.livenessActive) armZyklus = o
+            if (liftZyklus == null && o.livenessLiftU > 0.0) liftZyklus = o
+        }
+        val arm = armZyklus ?: throw AssertionError("der Kanal MUSS unter dem Sonderrecht bewaffnen")
+        assertTrue(arm.evidenceMayOverrideRebound, "die Bewaffnung steht auf dem Sonderrecht")
+        assertTrue(
+            (arm.state?.reboundRestMin ?: 0) > 0,
+            "und zwar IM rohen Rebound-Fenster - sonst prueft der Fall nichts",
+        )
+        assertTrue(adapter.episodes.markerPowerPinnedFor > 0L, "der MEAL-Pin steht")
+        val lift = liftZyklus ?: throw AssertionError("ein positiver Liveness-Lift MUSS entstehen")
+        assertEquals(
+            LivenessChannel.quantize(lift.livenessCandidateU, 0.05), lift.decision.smbU, 1e-9,
+            "der Kanal-Kandidat traegt die Endmenge",
+        )
+        assertEquals("LIVENESS", lift.exposureRequestedSource, "typisierte Quelle der Endmenge")
+    }
+
+    /** Gegenproben 1+8: OHNE Marker (CORRECTION, kein Kredit, kein Pin)
+     *  bleibt das Tor im ganzen rohen Fenster scharf - Druck hin oder her.
+     *  Tagesschwelle hier 140, damit Druckzyklen INS Fenster fallen. */
+    @Test
+    fun `P1 - ohne Vollmacht bleibt das Rebound-Tor scharf`(@TempDir dir: File) {
+        reboundOverrideLage(dir, druecken = true)
+        markerAt = 0L // Druck zuruecknehmen, BEVOR ein Zyklus lief: kein Marker
+        livenessBgMin = 140.0
+        repeat(60) {
+            val o = cycle()
+            // NACH dem Fensterende ist Bewaffnung legitim - die Behauptung
+            // gilt IM rohen Fenster.
+            if ((o.state?.reboundRestMin ?: 0) > 0) {
+                assertTrue(!o.livenessActive, "ohne Sonderrecht darf im Fenster nie bewaffnet werden")
+                assertEquals(
+                    "REBOUND_ACTIVE", o.livenessProfileReason,
+                    "das rohe Fenster muss ohne Sonderrecht sperren (Zyklus $it)",
+                )
+            }
+        }
+    }
+
+    /** Gegenprobe 3: ein VORGEFUNDENER Marker pinnt nie - kein Sonderrecht,
+     *  das Tor bleibt scharf, der Power-Pin bleibt leer. */
+    @Test
+    fun `P1 - ein vorgefundener Marker oeffnet das Rebound-Tor nicht`(@TempDir dir: File) {
+        val adapter = reboundOverrideLage(dir, druecken = false)
+        repeat(60) {
+            val o = cycle()
+            assertTrue(!o.evidenceMayOverrideRebound, "vorgefunden erzeugt kein Sonderrecht")
+            if ((o.state?.reboundRestMin ?: 0) > 0) {
+                assertTrue(!o.livenessActive, "vorgefunden darf im Fenster nie bewaffnen")
+                assertEquals(
+                    "REBOUND_ACTIVE", o.livenessProfileReason,
+                    "das rohe Fenster muss sperren (Zyklus $it)",
+                )
+            }
+        }
+        assertEquals(0L, adapter.episodes.markerPowerPinnedFor, "der Power-Pin bleibt leer")
+    }
+
+    /** Gegenprobe 2: nach ABLAUF der Sonderrechtsfrist sperrt das rohe
+     *  Fenster wieder - auch wenn der Kredit weiter fliesst. Frist 12 min:
+     *  der Druck (q1 > 120) entsteht erst NACH dem Ablauf. */
+    @Test
+    fun `P1 - nach Fristablauf sperrt das Rebound-Tor wieder`(@TempDir dir: File) {
+        reboundOverrideLage(dir)
+        reboundOverrideMaxMin = 15
+        var sonderrechtGesehen = false
+        var wiederGesperrt = false
+        repeat(60) {
+            val o = cycle()
+            if (o.evidenceMayOverrideRebound) sonderrechtGesehen = true
+            if (!o.evidenceMayOverrideRebound && (o.state?.reboundRestMin ?: 0) > 0 &&
+                o.livenessProfileReason == "REBOUND_ACTIVE"
+            ) wiederGesperrt = true
+            // NACH dem Fensterende ist Bewaffnung legitim - die Behauptung
+            // gilt IM rohen Fenster (dort ist das Sonderrecht abgelaufen).
+            if ((o.state?.reboundRestMin ?: 0) > 0 && !o.evidenceMayOverrideRebound)
+                assertTrue(!o.livenessActive, "nach Fristablauf darf im Fenster nie bewaffnet werden")
+        }
+        assertTrue(sonderrechtGesehen, "die Frist muss erst einmal GELTEN (sonst prueft der Fall nichts)")
+        assertTrue(wiederGesperrt, "nach dem Ablauf muss das rohe Fenster wieder sperren")
+    }
+
+    /** Gegenprobe 4: die RUECKNAHME beendet das Sonderrecht sofort - der
+     *  Kanal entwaffnet und das rohe Fenster sperrt wieder. */
+    @Test
+    fun `P1 - die Ruecknahme schliesst das Rebound-Tor sofort`(@TempDir dir: File) {
+        reboundOverrideLage(dir)
+        var armZyklus: FuseCycleRunner.Outcome? = null
+        repeat(60) {
+            if (armZyklus == null) {
+                val o = cycle()
+                if (o.livenessActive) armZyklus = o
+            }
+        }
+        assertTrue(armZyklus != null, "die Lage muss erst bewaffnen (sonst prueft der Fall nichts)")
+        markerAt = 0L // Ruecknahme
+        val o = cycle()
+        assertTrue(!o.livenessActive, "die Ruecknahme muss den Kanal sofort entwaffnen")
+        assertTrue(!o.evidenceMayOverrideRebound, "das Sonderrecht endet mit der Ruecknahme")
+        if ((o.state?.reboundRestMin ?: 0) > 0) assertEquals(
+            "REBOUND_ACTIVE", o.livenessProfileReason,
+            "das rohe Fenster sperrt wieder",
+        )
+    }
+
+    /**
+     * Sicherheitsproben 5+6: das Sonderrecht entwaffnet NUR das Rebound-Tor.
+     * Faellt die Kurve nach der Bewaffnung steil, beenden die GEMESSENEN
+     * Riegel (FALLING/DESCENT/LOW/LATCH/TURN) den Lauf trotz gueltigem
+     * Sonderrecht - kein Zyklus im Fall traegt einen Liveness-Lift.
+     * (MODEL_UNAVAILABLE/LEDGER_HOLD/SIGNAL/VIEW stehen in der when-Kette
+     * VOR der Rebound-Zeile und sind damit strukturell unumgehbar; sie sind
+     * aus diesem Rig nicht organisch ausloesbar - dieselbe dokumentierte
+     * Grenze wie bei den Predictor-Ablehnungen.)
+     */
+    @Test
+    fun `P1 - das Sonderrecht entwaffnet nur das Rebound-Tor, nicht die Gefahrenriegel`(@TempDir dir: File) {
+        val adapter = reboundOverrideLage(dir)
+        // Sanfter Fall VOR der Bewaffnungsschwelle 120 (Peak ~113): kein
+        // Lift-Abzug verfaelscht den Topf, und die Messriegel zuenden im
+        // Fall nacheinander (FALLING, dann Low-Naehe).
+        knick2AbMin = 24
+        steigungNachKnick2 = -0.8
+        repeat(15) { cycle() }
+        // Topf VORLADEN (etabliertes Rig-Idiom, wie der vorgeladene
+        // Prime-Verbrauch): organisch stirbt der einnahmegespeiste Kredit
+        // an der Wende FRUEHER, als die Messriegel zuenden - im Leben
+        // traegt ein grosser Mahlzeiten-Topf den Kredit ueber die Wende
+        // (Eis-Fall: Sonderrecht stand bei T+52 trotz 3,05 U Abzug). Der
+        // Test braucht genau diesen Ueberlapp: Sonderrecht GILT, und die
+        // Gefahrenriegel muessen trotzdem greifen.
+        adapter.episodes.evidenceState = adapter.episodes.evidenceState.copy(stockMgdl = 60.0)
+        val fallRiegel = setOf(
+            "FALLING", "DESCENT_RISK", "DESCENT_RISK_MARKER", "MEASURED_LOW", "LATCH_ACTIVE",
+        )
+        var riegelTrotzSonderrecht = false
+        repeat(45) {
+            val o = cycle()
+            if (o.evidenceMayOverrideRebound &&
+                (o.livenessProfileReason in fallRiegel || o.livenessExit in fallRiegel ||
+                    o.livenessExit == "TURN_EXIT")
+            ) riegelTrotzSonderrecht = true
+            if (o.livenessProfileReason in fallRiegel || o.livenessDenial in fallRiegel) assertTrue(
+                o.livenessLiftU == 0.0,
+                "unter einem Gefahrenriegel darf nie ein Lift entstehen (Zyklus $it)",
+            )
+        }
+        assertTrue(
+            riegelTrotzSonderrecht,
+            "mindestens ein gemessener Riegel muss TROTZ gueltigem Sonderrecht greifen",
+        )
     }
 
     /** B1-Aufbau: zentrale Profile aktiv, offener Normalpfad (kein Guard-
