@@ -621,6 +621,19 @@ class FuseCycleRunner(
          */
         val tbrChanged: Boolean?,
         /**
+         * DAS TYPISIERTE IobTotal DIESES ZYKLUS (Fixvertrag Toni 30.08.).
+         *
+         * Das Plugin uebernimmt es in `APSResult.iobData`, damit der
+         * DeviceStatus den `openaps.iob`-Block traegt (netto/basaliob/
+         * activity/time). Ohne ihn faellt Nightscout auf eine EIGENE
+         * Rechnung aus den Bolus-Treatments zurueck (Befund: 4,90 U bei
+         * echtem Netto-IOB 0,07) und der Bolus-Assistent rechnet falsch.
+         * KEINE zweite Semantik aus RT.IOB - genau das hier ist das im
+         * Zyklus gerechnete, valid-geprueft Original. `null` = Abbruch,
+         * bevor ein gueltiges IOB vorlag.
+         */
+        val iobTotal: app.aaps.core.interfaces.aps.IobTotal? = null,
+        /**
          * DIE LAGE DIESES ZYKLUS fuer den Erwartungs-Ledger.
          *
          * Hier gebildet und nicht im Plugin nachgebaut: alle sechs Groessen
@@ -1323,15 +1336,19 @@ class FuseCycleRunner(
             val maxIob = runCatching { constraintsChecker.getMaxIOBAllowed().value() }.getOrNull()
             val iobTh = if (policy != null && maxIob != null)
                 runCatching { IobThreshold.fromPercent(policy.iobThPercent.toDouble(), maxIob) }.getOrNull() else null
-            val iob = runCatching {
+            val iobTotalAbbruch = runCatching {
                 // Auch die reine ANZEIGE im Abbruchbericht darf keine
                 // erfundene Null zeigen - null heisst hier "nicht bekannt".
                 profileFunction.getProfile(computeTs)
                     ?.let { p -> iobCobCalculator.calculateFromTreatmentsAndTemps(computeTs, p) }
-                    ?.takeIf { it.valid }?.iob
+                    ?.takeIf { it.valid }
             }.getOrNull()
+            val iob = iobTotalAbbruch?.iob
             return Outcome(
                 decision = FuseController.noInput(reason), tbr = cancelTbr,
+                // Dasselbe valid-geprueft gelesene IobTotal wie die
+                // Abbruch-Anreicherung darueber - keine zweite Rechnung.
+                iobTotal = iobTotalAbbruch,
                 // Der Abbruchpfad hat keinen Regellauf, aber sehr wohl eine
                 // TBR-Wirkung (FuseAbortTbr). Sie muss gestempelt werden wie
                 // jede andere - sonst waere ausgerechnet der Notausgang der
@@ -5114,6 +5131,9 @@ class FuseCycleRunner(
         )
         return Outcome(
             configGeneration = app.aaps.fuse.plugin.export.FuseStateJson.hashOf(cfg).orEmpty(),
+            // Fixvertrag 30.08.: das typisierte Zyklus-IOB fuer
+            // APSResult.iobData / DeviceStatus openaps.iob.
+            iobTotal = iobTotal,
             expectationSituation = ExpectationLedger.situationOf(
                 mealMarkerActive = mealMarkerActive,
                 evidenceEpisodeId = episodes.evidenceEpisodeId,
@@ -6039,6 +6059,9 @@ class FuseCycleRunner(
         return Outcome(
             decision = combined.decision,
             tbr = combined.request,
+            // Fixvertrag 30.08.: derselbe typisierte IOB-Stand wie im
+            // Hauptpfad - der Fallback bekommt ihn als Parameter.
+            iobTotal = iobTotal,
             tbrChanged = tbrAktuation(
                 // Der Marker-Rueckfall hat keine eigene TBR-Sicht gelesen -
                 // hier faellt der einzige Lesevorgang dieses Pfades an.

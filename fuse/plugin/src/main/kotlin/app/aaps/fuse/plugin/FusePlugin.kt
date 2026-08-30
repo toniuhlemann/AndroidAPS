@@ -1353,7 +1353,16 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
             )
         }
 
-        lastAPSResult = apsResultProvider.get().with(publishRt)
+        lastAPSResult = apsResultProvider.get().with(publishRt).also { r ->
+            // Fixvertrag 30.08.: ohne iobData fehlt dem DeviceStatus der
+            // openaps.iob-Block (LoopPlugin liest lastRun.request?.iob), und
+            // Nightscout faellt auf eine EIGENE Rechnung aus den Bolus-
+            // Treatments zurueck (Befund: 4,90 U bei echtem Netto 0,07 -
+            // Bolus-Assistent unbrauchbar). Hier steht das im Zyklus
+            // gerechnete typisierte IobTotal - keine zweite Semantik aus
+            // RT.IOB.
+            outcome?.iobTotal?.takeIf { it.valid }?.let { r.iobData = arrayOf(it) }
+        }
         lastAPSRun = dateUtil.now()
         aapsLogger.debug(LTag.APS, "FUSE result: ${publishRt.reason}")
         rxBus.send(EventAPSCalculationFinished())

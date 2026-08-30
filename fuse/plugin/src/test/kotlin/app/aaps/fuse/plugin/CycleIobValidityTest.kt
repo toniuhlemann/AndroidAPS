@@ -21,6 +21,7 @@ import app.aaps.core.keys.BooleanKey
 import app.aaps.core.keys.DoubleKey
 import app.aaps.core.keys.LongKey
 import app.aaps.core.objects.constraints.ConstraintObject
+import app.aaps.core.objects.extensions.json
 import app.aaps.fuse.plugin.ledger.FuseLedgerAdapter
 import app.aaps.plugins.insulin.InsulinLyumjevPlugin
 import app.aaps.shared.tests.TestBaseWithProfile
@@ -285,6 +286,35 @@ class CycleIobValidityTest : TestBaseWithProfile() {
 
         bolusIobValid = true
         assertThat(cycle().abortReason).isNull()
+    }
+
+    /**
+     * FIXVERTRAG 30.08. (Nightscout `openaps.iob`): der Zyklus traegt sein
+     * typisiertes IobTotal im Outcome, und die DS.iob-Serialisierung daraus
+     * enthaelt netto/basaliob/activity/time. Ohne diese Uebergabe blieb
+     * `APSResult.iobData` null, der DeviceStatus verlor den openaps.iob-
+     * Block, und Nightscout rechnete aus den Bolus-Treatments 4,90 U bei
+     * echtem Netto-IOB 0,07 - der NS-Bolus-Assistent war unbrauchbar.
+     */
+    @Test
+    fun `Outcome traegt das typisierte IobTotal bis zum DS-iob-JSON`() {
+        val o = driveUntilDose()
+        val iob = o.iobTotal
+        assertNotNull(iob)
+        assertTrue(iob!!.valid)
+        // Dieselbe Serialisierung, die LoopPlugin als DS.iob speichert und
+        // Nightscout als openaps.iob liest.
+        val ds = iob.json(dateUtil)
+        assertEquals(iob.iob, ds.getDouble("iob"), 1e-9)
+        assertEquals(iob.basaliob, ds.getDouble("basaliob"), 1e-9)
+        assertTrue(ds.has("activity"))
+        assertTrue(ds.has("time"))
+
+        // Ungueltiges IOB -> der Abbruch traegt KEIN IobTotal: in den
+        // DeviceStatus wandern nie erfundene Werte.
+        iobValid = false
+        assertThat(cycle().iobTotal).isNull()
+        iobValid = true
     }
 
     @Test
