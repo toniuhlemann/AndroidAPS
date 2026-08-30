@@ -8012,6 +8012,71 @@ class TransportWiringTest : TestBaseWithProfile() {
         )
     }
 
+    /**
+     * FLASH-RELEVANTE WECHSELWIRKUNG (Tonis Review 30.08., ausdruecklich
+     * akzeptiert): mit v45 darf die Wiederbewaffnung nach einem manuellen
+     * NORMAL-Bolus bereits WAEHREND des entwaffneten Rebound-Fensters
+     * erfolgen, nicht erst nach dessen Ende - der Livefall 14:43 (4 U
+     * manuell, kurze Sperre, 15:19 weitere 0,55 U bei 5,52 U Bolus-IOB).
+     * Drei Zusagen in einem Lauf:
+     *  1. innerhalb ReArmMin: MANUAL_INTERVENTION, kein Hub;
+     *  2. nach ReArmMin: Bewaffnung grundsaetzlich erlaubt - im noch
+     *     LAUFENDEN rohen Fenster (restMin > 0), unter geltendem
+     *     Sonderrecht;
+     *  3. das manuelle Bolus-IOB steht VOLLSTAENDIG im 7-U-MEAL-CAP:
+     *     der freie Kanalraum ist hoechstens 7,0 - capIob.
+     */
+    @Test
+    fun `P1 - Manualbolus im entwaffneten Fenster sperrt, dann traegt das CAP die Wiederbewaffnung`(@TempDir dir: File) {
+        reboundOverrideLage(dir)
+        var armZyklus: FuseCycleRunner.Outcome? = null
+        var zyklen = 0
+        while (zyklen < 45 && armZyklus == null) {
+            val o = cycle(); zyklen++
+            if (o.livenessActive) armZyklus = o
+        }
+        assertTrue(armZyklus != null, "die Lage muss erst bewaffnen (sonst prueft der Fall nichts)")
+        // Der Nutzer uebernimmt: 4 U NORMAL (Livefall 14:43); der statische
+        // Rig-IOB uebernimmt die Rolle des gewachsenen Bolus-IOB (5,5 wie
+        // die 5,52 U des Livefalls). GEMESSEN (Rig-Debug): der Manualbolus
+        // bucht NICHT in den Evidenz-Topf - er wirkt ueber IOB und
+        // Deckungs-Abschlag; das Sonderrecht kann ihn daher ueberleben.
+        boluses = listOf(BS(timestamp = clock, amount = 4.0, type = BS.Type.NORMAL))
+        bolusIobU = 5.5
+        // 1. Innerhalb ReArmMin: nie bewaffnet, kein Hub - und der manuelle
+        // Riegel muss unter GELTENDEM Sonderrecht sichtbar greifen (nicht
+        // vom Rebound-Riegel maskiert; genau das prueft, dass die
+        // when-Kette den Manual-Check noch erreicht).
+        var manualRiegelGesehen = false
+        repeat(livenessReArmMin - 1) {
+            val x = cycle()
+            assertTrue(!x.livenessActive, "innerhalb ReArmMin darf nicht bewaffnet werden (Zyklus $it)")
+            assertEquals(0.0, x.livenessLiftU, 1e-9, "innerhalb ReArmMin kein Hub (Zyklus $it)")
+            if (x.evidenceMayOverrideRebound &&
+                (x.livenessDenial == "MANUAL_INTERVENTION" || x.livenessExit == "MANUAL_INTERVENTION")
+            ) manualRiegelGesehen = true
+        }
+        assertTrue(
+            manualRiegelGesehen,
+            "der manuelle Riegel muss unter geltendem Sonderrecht greifen",
+        )
+        // 2.+3. Nach ReArmMin: Wiederbewaffnung grundsaetzlich erlaubt -
+        // IM noch laufenden rohen Fenster (die ausdruecklich akzeptierte
+        // v45-Folge), und der freie Kanalraum traegt das manuelle
+        // Bolus-IOB vollstaendig im 7-U-MEAL-CAP.
+        var wieder: FuseCycleRunner.Outcome? = null
+        repeat(14) { val x = cycle(); if (wieder == null && x.livenessActive) wieder = x }
+        val w = wieder ?: throw AssertionError("nach ReArmMin muss die Bewaffnung grundsaetzlich erlaubt sein")
+        assertTrue((w.state?.reboundRestMin ?: 0) > 0, "und zwar IM noch laufenden rohen Fenster")
+        assertTrue(w.evidenceMayOverrideRebound, "unter geltendem Sonderrecht")
+        val frei = w.livenessHeadroomU ?: throw AssertionError("der Kanalraum muss beziffert sein")
+        assertTrue(
+            frei <= 7.0 - 5.5 + 1e-6,
+            "das manuelle Bolus-IOB steht vollstaendig im 7-U-CAP: frei $frei",
+        )
+        assertTrue(w.livenessLiftU <= frei + 1e-9, "kein Hub ueber den freien Raum")
+    }
+
     /** B1-Aufbau: zentrale Profile aktiv, offener Normalpfad (kein Guard-
      *  Deadlock, kein Tail, keine Liveness) - die Endmenge kommt aus der
      *  normalen Ratio und trifft NUR auf die neue Kontextgrenze. */
