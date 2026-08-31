@@ -5,8 +5,8 @@ import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
 /**
- * DAS 25-MIN-FUNDAMENT-FENSTER ALS EIN-VARIABLEN-TEST (Bauauftrag Toni
- * 31.08., Schritt C).
+ * DAS 25-MIN-FUNDAMENT-FENSTER ALS EIN-VARIABLEN-TEST (Bauauftrag
+ * Schritt C).
  *
  * Der Kandidat aendert GENAU EINE Groesse gegenueber dem Livestand:
  *
@@ -135,12 +135,12 @@ class FoundationWindow25Test {
     @Test
     fun `das 1-U-Restbudget ist spaetestens bei T+25 verbraucht`() {
         val (geliefert, letztePositive) = durchlauf(auth(FENSTER_MIN), 40)
-        // Tonis Kandidat geht exakt auf: 20 min x 0,05 U/min = 1,00 U.
+        // Der Kandidat geht exakt auf: 20 min x 0,05 U/min = 1,00 U.
         assertEquals(1.0, geliefert, 1e-9, "das ganze Phase-B-Budget fliesst")
         assertTrue(letztePositive <= FENSTER_MIN) {
             "ZEITABSCHLUSS verletzt: letzte Freigabe bei T+$letztePositive > T+$FENSTER_MIN"
         }
-        // Nach dem Fenster VERFAELLT der Rest - kein Carry (Tonis Auflage).
+        // Nach dem Fenster VERFAELLT der Rest - kein Carry (Auflage).
         val danach = plan(auth(FENSTER_MIN), FENSTER_MIN + 1.0, geliefert, 4.0 + geliefert)
         assertEquals(MealFoundation.Binding.AFTER_WINDOW, danach.binding)
         assertEquals(0.0, danach.dueU, 1e-9, "nach dem Fenster wird nichts mehr frei")

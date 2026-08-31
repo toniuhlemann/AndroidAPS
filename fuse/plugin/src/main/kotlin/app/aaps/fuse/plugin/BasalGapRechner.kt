@@ -3,17 +3,18 @@ package app.aaps.fuse.plugin
 import app.aaps.fuse.core.controller.TbrPolicy
 
 /**
- * DIE NULLPHASEN-RECHNUNG DER BASALLUECKE (Bauauftrag 31.08., Schritt B).
+ * DIE NULLPHASEN-RECHNUNG DER BASALLUECKE (Bauauftrag Schritt B).
  *
- * Anlass: das Fruehstueck vom 31.08. traf auf eine Schutz-Nullphase
- * (~07:28-08:57, Basal-IOB am Marker -0,635 U). Beim Markerdruck soll die
+ * Anlass war ein gemessener Livefall: eine Mahlzeit traf auf eine
+ * laufende Schutz-Nullphase, das Basal-IOB am Marker war negativ.
+ * Beim Markerdruck soll die
  * Lage EINMALIG typisiert eingefroren werden - REIN BEOBACHTEND, damit
  * Trail und Viewer die Basalluecke ausweisen koennen. Keine Kompensation,
  * kein Headroom, kein Auto-Bolus.
  *
  * Diese Funktion ist PUR und rechnet auf Zeitscheiben, die der Runner aus
  * der echten TBR-Historie (ProcessedTbrEbData-Range) und den
- * Zeitpunkt-Profilen baut. Ehrlichkeitsgrenzen (Tonis Vertrag): lieber
+ * Zeitpunkt-Profilen baut. Ehrlichkeitsgrenzen (Vertrag): lieber
  * typisiert `null` als eine Schaetzung aus unvollstaendiger Historie -
  * fehlt einem Slice der Nullphase das Profil, faellt NUR omittedU auf
  * null, das Alter bleibt belegt; laeuft am Marker gar keine Null, gibt es

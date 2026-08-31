@@ -485,8 +485,8 @@ object LedgerCodec {
                 .put("latchedAtTs", e.zeroLatch.latchedAtTs)
                 .put("sawMeasuredLow", e.zeroLatch.sawMeasuredLow),
         )
-        // Die beim Markerdruck eingefrorene Basalluecken-Lage (Schritt B,
-        // 31.08.) - additiv ohne Schema-Bump, Altdatei ohne Objekt heisst
+        // Die beim Markerdruck eingefrorene Basalluecken-Lage (Schritt B)
+        // - additiv ohne Schema-Bump, Altdatei ohne Objekt heisst
         // "nie gelatcht"; die nullbaren Felder bleiben null-treu (nicht 0).
         .apply {
             e.basalGap?.let { g ->

@@ -804,7 +804,7 @@ class FuseStateExportTest {
         // Totbands gilt auch im harten Liveness-Tor (reboundRaw sperrt nur
         // noch ohne geltendes Sonderrecht) - dieselbe typisierte Rechnung,
         // keine neuen Keys, kein Backup-/Migrationsbedarf.
-        // v46 P0 Fruehstuecks-Livefall: Episodenstatistik bucht bis zur
+        // v46 P0 (gemessener Livefall): Episodenstatistik bucht bis zur
         // MEAL-Deadline (DosingContext.mealAuthorized) statt nur 90 min -
         // dosierneutral, nur mealStats/mealDeliveries.
         // v47 Schritt B: Basalluecken-Kontext (basalGap-Block), rein

@@ -6629,8 +6629,8 @@ class TransportWiringTest : TestBaseWithProfile() {
     }
 
     /**
-     * DAS 25-MIN-FUNDAMENT-FENSTER UNTER BINDENDEM GUARD (Bauauftrag Toni
-     * 31.08., Schritt C) - der e2e-Zwilling zum puren
+     * DAS 25-MIN-FUNDAMENT-FENSTER UNTER BINDENDEM GUARD (Bauauftrag
+     * Schritt C) - der e2e-Zwilling zum puren
      * [FoundationWindow25Test]: dieselbe Guard-Lage wie im Risikolauf, nur
      * das Fenster variiert (Ein-Variablen-Absicherung; das Fenster bleibt
      * eine Preference, hier wird der 25er-WERT abgesichert).
@@ -8157,7 +8157,7 @@ class TransportWiringTest : TestBaseWithProfile() {
     // ---- P0 v46: Episodenstatistik bis zur MEAL-Deadline ------------------
 
     /**
-     * Lage fuer den Fruehstuecks-P0 (31.08.): Vollmacht 120 min, Kanal
+     * Lage fuer den Episodenstatistik-P0: Vollmacht 120 min, Kanal
      * dosiert dauerhaft (statisches Rig-IOB, weite Grenzen), Serie steigt
      * endlos - Buchungen entstehen vor UND nach T+90 sowie nach T+120
      * (CORRECTION). Prime aus, damit der Verlauf deterministisch bleibt.
@@ -8189,10 +8189,10 @@ class TransportWiringTest : TestBaseWithProfile() {
     }
 
     /**
-     * P0 v46 (Fruehstuecks-Livefall 31.08.): mealDeliveries buchte nur im
+     * P0 v46 (gemessener Livefall): mealDeliveries buchte nur im
      * 90-min-Onset-Fenster, der MEAL-Kontext laeuft aber 120 min - die
-     * 2,90 U zwischen T+90 und T+115 fehlten in der Episodensumme (8,80
-     * statt 11,70). Jetzt bucht die Statistik im halb offenen Fenster bis
+     * zwischen T+90 und der Deadline publizierte Menge fehlte in der
+     * Episodensumme. Jetzt bucht die Statistik im halb offenen Fenster bis
      * authorizationExpiresAt; ab der Deadline zaehlt CORRECTION. Die
      * Mutation (Buchung zurueck auf mealMarkerActive) macht genau diesen
      * Test rot.
@@ -8269,7 +8269,7 @@ class TransportWiringTest : TestBaseWithProfile() {
     // ---- Schritt B v47: Basalluecken-Latch --------------------------------
 
     /**
-     * Schritt B (31.08.): der beobachtete Markerdruck friert die
+     * Schritt B: der beobachtete Markerdruck friert die
      * Basalluecken-Lage EINMALIG ein (Pin-Identitaet), restartfest; ein
      * neuer Druck ueberschreibt. Im Rig laeuft keine TBR - zeroTbrActive
      * false, Alter/Menge typisiert null (die Nullphasen-Rechnung selbst

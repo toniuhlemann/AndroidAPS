@@ -5,9 +5,9 @@ import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Test
 
 /**
- * Schritt B (31.08.): die pure Nullphasen-Rechnung der Basalluecke.
- * Referenzfall = Fruehstueck 31.08.: Null seit ~84 min beim Marker,
- * Profil ~0,46 U/h -> ausgelassenes Basal ~0,64 U.
+ * Schritt B: die pure Nullphasen-Rechnung der Basalluecke.
+ * Synthetischer Referenzfall: Null seit 84 min beim Marker,
+ * Profil 0,46 U/h -> ausgelassenes Basal ~0,64 U.
  */
 class BasalGapRechnerTest {
 
@@ -21,7 +21,7 @@ class BasalGapRechnerTest {
         (0 until n).map { BasalGapRechner.Slice(it * stepMs, tbr(it), profil(it)) }
 
     @Test
-    fun `Referenzfall 31-08 - 84 Minuten Null ergeben rund 0,64 U Luecke`() {
+    fun `Referenzfall - 84 Minuten Null ergeben rund 0,64 U Luecke`() {
         // 360-min-Fenster: vorher Profil (keine TBR), letzte 84 Slices Null.
         val s = slices(360, tbr = { if (it >= 276) 0.0 else null })
         val phase = BasalGapRechner.nullphase(s, basalStepUph = 0.05, stepMs = stepMs)!!

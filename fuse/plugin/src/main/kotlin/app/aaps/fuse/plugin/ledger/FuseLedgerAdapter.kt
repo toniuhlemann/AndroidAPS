@@ -76,8 +76,8 @@ class EpisodeBudgets {
      * WARUM NICHT `mealDeliveries` summiert, was naheliegend waere: das
      * sammelt nur, solange Onset-Fenster (90 min) oder MEAL-Vollmacht
      * (seit P0 v46: bis authorizationExpiresAt, i.d.R. 120 min) laufen.
-     * Eine Episode darf bis 240 min gehen, und der gemessene Lauf vom
-     * 11.08. war nach 205 Minuten noch aktiv - danach waere die Bezahlung
+     * Eine Episode darf bis 240 min gehen, und ein gemessener Lauf
+     * war nach 205 Minuten noch aktiv - danach waere die Bezahlung
      * stillschweigend ausgefallen und der Bestand haette weiter lizenziert.
      *
      * ALLE Kanaele zahlen darauf ein: Prime, Onset, Rest-Zaehler und die
@@ -211,7 +211,7 @@ class EpisodeBudgets {
 
     /**
      * DIE BEIM MARKERDRUCK EINGEFRORENE BASALLUECKEN-LAGE (Bauauftrag
-     * 31.08., Schritt B) - REIN BEOBACHTEND fuer Trail und Viewer.
+     * Schritt B) - REIN BEOBACHTEND fuer Trail und Viewer.
      *
      * Einmal je beobachtetem Druck gelatcht (Pin-Identitaet wie die
      * anderen Markergroessen), restartfest, ein neuer Marker ueberschreibt.
@@ -219,7 +219,8 @@ class EpisodeBudgets {
      * Hoehe der Luecke, und ein rueckwaerts laufendes Basal-IOB oeffnet
      * kein Budget - im Dosierpfad liest NIEMAND diese Werte (Neutralitaets-
      * Rig haelt das). `null`-Felder heissen "nicht belastbar bestimmbar",
-     * nie 0 (Fruehstuecks-Livefall: -0,635 U Basal-IOB, Null seit ~84 min).
+     * nie 0 - im Livefall war das Basal-IOB negativ bei laenger
+     * laufender Nullphase.
      */
     data class BasalGapLatch(
         val pinnedFor: Long,

@@ -989,7 +989,7 @@ class FuseCycleRunner(
          *  behauptet, wenn es eine modellkonsistente Groesse gibt. */
         val livenessPressureActive: Boolean? = null,
         val markerPowerPinnedFor: Long = 0L,
-        /** Schritt B (31.08.): die beim Druck eingefrorene Basalluecken-
+        /** Schritt B: die beim Druck eingefrorene Basalluecken-
          *  Lage - rein beobachtend (s. EpisodeBudgets.BasalGapLatch). */
         val basalGap: app.aaps.fuse.plugin.ledger.EpisodeBudgets.BasalGapLatch? = null,
         /** Laeuft in DIESEM Zyklus eine Null-TBR? null = Pfad ohne
@@ -2102,7 +2102,7 @@ class FuseCycleRunner(
             episodes.markerPowerPinnedFor = markerTs
             episodes.markerPowerDeadlineTs = markerTs + cfg.livenessMealPowerMin * 60_000L
             markerPowerLastSeenTs = markerTs
-            // Schritt B (31.08.): der frisch beobachtete Druck friert die
+            // Schritt B: der frisch beobachtete Druck friert die
             // Basalluecken-Lage ein - befuellt wird NACH der einen
             // TBR-Lesung dieses Zyklus (Ein-Sicht-Disziplin), s. unten.
             basalGapLatchPending = true
@@ -3790,7 +3790,7 @@ class FuseCycleRunner(
             )
         }
 
-        // ---- SCHRITT B (31.08.): BASALLUECKEN-LATCH ----------------------
+        // ---- SCHRITT B: BASALLUECKEN-LATCH -------------------------------
         // REIN BEOBACHTEND (Vertrag: nie Headroom, kein Auto-Bolus, kein
         // Budget aus rueckwaerts laufendem Basal-IOB - im Dosierpfad liest
         // niemand diese Werte). Genau EINMAL je beobachtetem Druck, und
@@ -5194,7 +5194,7 @@ class FuseCycleRunner(
             // Fixvertrag 30.08.: das typisierte Zyklus-IOB fuer
             // APSResult.iobData / DeviceStatus openaps.iob.
             iobTotal = iobTotal,
-            // Schritt B (31.08.): Basalluecken-Kontext, rein beobachtend.
+            // Schritt B: Basalluecken-Kontext, rein beobachtend.
             basalGap = episodes.basalGap,
             currentZeroTbrActive = laeuftNull,
             expectationSituation = ExpectationLedger.situationOf(
@@ -5543,13 +5543,13 @@ class FuseCycleRunner(
         onsetActive: Boolean,
         mealMarkerActive: Boolean,
         /**
-         * P0 v46 (Fruehstuecks-Livefall 31.08.): die MEAL-Vollmacht des
+         * P0 v46 (gemessener Livefall): die MEAL-Vollmacht des
          * Zyklus (DosingContext.mealAuthorized) - dieselbe halb offene
          * Fensterwahrheit mit Pin-Identitaet, KEIN zweiter Fensterbegriff.
          * Die Episodenstatistik bucht damit bis authorizationExpiresAt
-         * (120 min), nicht nur im 90-min-Onset-Fenster: am 31.08. fehlten
-         * die 2,90 U zwischen T+90 und T+115 in mealStats (8,80 statt
-         * 11,70 publiziert). Onset-/Markerfenster selbst unveraendert.
+         * (120 min), nicht nur im 90-min-Onset-Fenster: im Livefall
+         * fehlte die gesamte Spaetphasen-Menge zwischen T+90 und der
+         * Deadline in mealStats. Onset-/Markerfenster selbst unveraendert.
          */
         mealPowerActive: Boolean = false,
         sourceTs: Long,
