@@ -5064,7 +5064,8 @@ class FuseCycleRunner(
         // (Zaehlfalle rowId, 06.08.).
         val actuatedU = if (gate.allowed) combined.decision.smbU else 0.0
         val buchung = buche(
-            episodes, actuatedU, primeWindowOpen, onset.active, mealMarkerActive, signal.sourceTs,
+            episodes, actuatedU, primeWindowOpen, onset.active, mealMarkerActive,
+            mealPowerActive = dosingCtx.mealAuthorized, sourceTs = signal.sourceTs,
             evidenceEpisodeId = evidenceEpisodeId, computeTs = computeTs,
             deferredReleaseU = deferredReleaseU,
             manualBolusAfterMarkerU = manualBolusAfterMarkerU,
@@ -5487,6 +5488,16 @@ class FuseCycleRunner(
         primeWindowOpen: Boolean,
         onsetActive: Boolean,
         mealMarkerActive: Boolean,
+        /**
+         * P0 v46 (Fruehstuecks-Livefall 31.08.): die MEAL-Vollmacht des
+         * Zyklus (DosingContext.mealAuthorized) - dieselbe halb offene
+         * Fensterwahrheit mit Pin-Identitaet, KEIN zweiter Fensterbegriff.
+         * Die Episodenstatistik bucht damit bis authorizationExpiresAt
+         * (120 min), nicht nur im 90-min-Onset-Fenster: am 31.08. fehlten
+         * die 2,90 U zwischen T+90 und T+115 in mealStats (8,80 statt
+         * 11,70 publiziert). Onset-/Markerfenster selbst unveraendert.
+         */
+        mealPowerActive: Boolean = false,
         sourceTs: Long,
         /** Identitaet der laufenden Mahlzeitenepisode; 0 = keine. */
         evidenceEpisodeId: Long,
@@ -5587,12 +5598,19 @@ class FuseCycleRunner(
             }
         }
 
-        // FIX-PASS 4 Nr. 19: nur im AKTIVEN Marker-Fenster sammeln (ein
+        // FIX-PASS 4 Nr. 19: nur in einem AKTIVEN Fenster sammeln (ein
         // verwaister markerTs sammelte sonst unbegrenzt weiter) und hart bei
         // 400 kappen - der Lade-Validator lehnt Dateien > 500 ab, der
         // Schreiber muss strikt darunter bleiben, sonst sperrt FUSE sich
         // selbst per recoveryHold aus der eigenen Datei aus.
-        val mealGebucht = mealMarkerActive && actuatedU > 0.0
+        // P0 v46: Fenster = Onset (90 min) ODER MEAL-Vollmacht (halb offen
+        // bis authorizationExpiresAt; exakt an der Deadline zaehlt bereits
+        // CORRECTION). Die Summe heisst weiterhin ehrlich "publiziert" -
+        // das Publikationsgate dreht sie bei Verwurf zurueck (resolve/
+        // revoke), pumpenbestaetigt ist sie nicht. Der Absorptions-Kredit
+        // (:1905) liest dieselbe Liste, aber nur unter markerBoost
+        // (<= 45 min) - Buchungen nach T+90 erreichen ihn nie.
+        val mealGebucht = (mealMarkerActive || mealPowerActive) && actuatedU > 0.0
         if (mealGebucht) {
             episodes.mealDeliveries.addLast(
                 app.aaps.fuse.plugin.ledger.EpisodeBudgets.MealDelivery(sourceTs, actuatedU),
@@ -6025,7 +6043,8 @@ class FuseCycleRunner(
             computeTs - maxOf(markerTs, episodes.primeWindowStartTs) < cfg.primeWindowMin * 60_000L &&
             computeTs - markerTs < PrimeRelease.WALL_CEILING_MIN * 60_000L
         val buchung = buche(
-            episodes, actuatedU, primeWindowOpen, onset.active, mealMarkerActive, signal.sourceTs,
+            episodes, actuatedU, primeWindowOpen, onset.active, mealMarkerActive,
+            mealPowerActive = fallbackCtx.mealAuthorized, sourceTs = signal.sourceTs,
             evidenceEpisodeId = evidenceEpisodeId, computeTs = computeTs,
             // OHNE diesen Parameter rechnete die Aufschub-Huelle fail-closed
             // 0 und clampToHull klemmte einen frisch verschobenen

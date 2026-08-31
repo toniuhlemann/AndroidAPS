@@ -804,7 +804,10 @@ class FuseStateExportTest {
         // Totbands gilt auch im harten Liveness-Tor (reboundRaw sperrt nur
         // noch ohne geltendes Sonderrecht) - dieselbe typisierte Rechnung,
         // keine neuen Keys, kein Backup-/Migrationsbedarf.
-        assertEquals(45, FuseStateJson.RULE_SET_VERSION)
+        // v46 P0 Fruehstuecks-Livefall: Episodenstatistik bucht bis zur
+        // MEAL-Deadline (DosingContext.mealAuthorized) statt nur 90 min -
+        // dosierneutral, nur mealStats/mealDeliveries.
+        assertEquals(46, FuseStateJson.RULE_SET_VERSION)
         assertTrue(
             FuseStateJson.hashOf(cfg)!!.isNotEmpty(),
             "und der Hash bleibt berechenbar",

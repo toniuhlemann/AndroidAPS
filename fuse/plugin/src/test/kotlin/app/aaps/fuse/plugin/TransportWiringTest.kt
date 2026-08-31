@@ -8077,6 +8077,118 @@ class TransportWiringTest : TestBaseWithProfile() {
         assertTrue(w.livenessLiftU <= frei + 1e-9, "kein Hub ueber den freien Raum")
     }
 
+    // ---- P0 v46: Episodenstatistik bis zur MEAL-Deadline ------------------
+
+    /**
+     * Lage fuer den Fruehstuecks-P0 (31.08.): Vollmacht 120 min, Kanal
+     * dosiert dauerhaft (statisches Rig-IOB, weite Grenzen), Serie steigt
+     * endlos - Buchungen entstehen vor UND nach T+90 sowie nach T+120
+     * (CORRECTION). Prime aus, damit der Verlauf deterministisch bleibt.
+     */
+    private fun mealStatsLage(dir: File): FuseLedgerAdapter {
+        livenessAn = true
+        corrExpLimit = 7.2; mealExpLimit = 7.2
+        livenessBgMin = 160.0
+        mealBgMin = 120.0
+        mealArmZyklen = 1
+        livenessReArmMin = 10
+        tailGuard = true
+        markerAuthorized = true
+        whenever(preferences.get(FuseIntKey.PrimeWindowMin)).thenReturn(20)
+        whenever(preferences.get(FuseLongKey.MealMarkerNoPrime)).thenReturn(1L)
+        flach = 100.0
+        steigungProMin = 0.3
+        knickAbMin = 12
+        steigungNachKnick = 1.2
+        knick2AbMin = null
+        bolusIobU = 4.5
+        clock = start
+        transportReset()
+        val adapter = FuseLedgerAdapter().also { it.loadOnce(dir.also(File::mkdirs), "test-epoch", start) }
+        neuerRunner(adapter)
+        repeat(7) { cycle() }
+        markerAt = clock + 60_000L
+        return adapter
+    }
+
+    /**
+     * P0 v46 (Fruehstuecks-Livefall 31.08.): mealDeliveries buchte nur im
+     * 90-min-Onset-Fenster, der MEAL-Kontext laeuft aber 120 min - die
+     * 2,90 U zwischen T+90 und T+115 fehlten in der Episodensumme (8,80
+     * statt 11,70). Jetzt bucht die Statistik im halb offenen Fenster bis
+     * authorizationExpiresAt; ab der Deadline zaehlt CORRECTION. Die
+     * Mutation (Buchung zurueck auf mealMarkerActive) macht genau diesen
+     * Test rot.
+     */
+    @Test
+    fun `P0 - die Episodensumme zaehlt bis zur MEAL-Deadline`(@TempDir dir: File) {
+        mealStatsLage(dir)
+        val t0 = markerAt
+        // MUTATIONSSCHARFE Baender: die Basislinie faellt NACH dem Ende des
+        // 90-min-Onset-Fensters (T+90,5) - eine Buchung bei T+89,x zaehlt in
+        // BEIDEN Regimen und darf den Nachweis nicht tragen. Wachstum wird
+        // erst ab T+92 verlangt, wo nur noch die Vollmacht bucht.
+        var statsFrueh = -1.0; var statsEndeOnset = -1.0; var statsSpaet = -1.0; var statsNachDeadline = -1.0
+        var pubBis89 = 0.0; var pub92bis119 = 0.0; var pubAb120 = 0.0
+        repeat(140) {
+            val o = cycle()
+            val m = (o.computeTs - t0) / 60_000.0
+            val pub = o.smbPublishedU ?: 0.0
+            when {
+                m < 0 -> Unit
+                m <= 89 -> { pubBis89 += pub; o.mealStats?.let { statsFrueh = it.totalU } }
+                m <= 90.5 -> o.mealStats?.let { statsEndeOnset = it.totalU }
+                m < 120 -> { if (m >= 92) pub92bis119 += pub; o.mealStats?.let { statsSpaet = it.totalU } }
+                m <= 132 -> { pubAb120 += pub; o.mealStats?.let { statsNachDeadline = it.totalU } }
+            }
+        }
+        assertTrue(pubBis89 > 0 && statsFrueh > 0, "fruehe Buchungen muessen stehen: pub=$pubBis89 stats=$statsFrueh")
+        assertTrue(pub92bis119 > 0, "die Lage muss zwischen T+92 und T+119 liefern (sonst prueft der Fall nichts)")
+        assertTrue(
+            statsSpaet > statsEndeOnset + 1e-9,
+            "Abgaben nach dem Onset-Ende zaehlen in die Episodensumme (P0): $statsEndeOnset -> $statsSpaet",
+        )
+        assertTrue(pubAb120 > 0, "die Lage muss auch nach der Deadline liefern (CORRECTION-Gegenprobe)")
+        assertEquals(statsSpaet, statsNachDeadline, 1e-9, "ab T+120 zaehlt CORRECTION - die Summe friert ein")
+    }
+
+    /** P0-Vertragsrest: Publikations-Verwurf entlastet die Summe, der
+     *  Neustart verliert keine Buchung, ein neuer Marker trennt sauber. */
+    @Test
+    fun `P0 - Rollback, Neustart und neuer Marker halten die Summe ehrlich`(@TempDir dir: File) {
+        val adapter = mealStatsLage(dir)
+        val t0 = markerAt
+        var spaet: FuseCycleRunner.Outcome? = null
+        repeat(140) {
+            if (spaet == null) {
+                val o = cycle()
+                val m = (o.computeTs - t0) / 60_000.0
+                if (m in 91.0..118.0 && (o.smbPublishedU ?: 0.0) > 0) spaet = o
+            }
+        }
+        val o = spaet ?: throw AssertionError("die Lage muss eine spaete Buchung erzeugen")
+        val vorher = o.mealStats!!.totalU
+        // 5. Publikations-Gate verwirft die Abgabe dieses Zyklus vollstaendig.
+        adapter.resolveReservation(o.computeTs, 0.0, "p0-test")
+        val nachRollback = FuseCycleRunner.mealStatsOf(adapter.episodes, t0, o.computeTs)!!.totalU
+        assertEquals(vorher - (o.smbPublishedU ?: 0.0), nachRollback, 1e-9, "Verwurf entlastet auch die spaete Buchung")
+        // 6. Neustart verliert keine gebuchte Abgabe.
+        assertTrue(adapter.persistVerified(dir), "der Zustand muss versiegelt sein")
+        assertEquals(
+            nachRollback,
+            FuseCycleRunner.mealStatsOf(nachNeustart(dir), t0, o.computeTs)!!.totalU, 1e-9,
+            "die Ledger-Datei traegt die Buchungen restartfest",
+        )
+        // 4. Ein neuer Marker trennt die Episoden sauber.
+        markerAt = clock + 60_000L
+        var statsNeu = Double.MAX_VALUE
+        repeat(4) { cycle().mealStats?.let { statsNeu = it.totalU } }
+        assertTrue(
+            statsNeu < nachRollback && statsNeu < 1.5,
+            "neue Episode beginnt mit frischer Summe: $statsNeu (alt $nachRollback)",
+        )
+    }
+
     /** B1-Aufbau: zentrale Profile aktiv, offener Normalpfad (kein Guard-
      *  Deadlock, kein Tail, keine Liveness) - die Endmenge kommt aus der
      *  normalen Ratio und trifft NUR auf die neue Kontextgrenze. */

@@ -339,7 +339,19 @@ object FuseStateJson {
     // widerrufen). Alle anderen harten Riegel (Signal, Sicht, Modell,
     // Ledger, Low, Descent, Latch, EXCLUDED_LAGE, FALLING) und alle
     // Mengen-/Endpruefungen unveraendert.
-    const val RULE_SET_VERSION = 45
+    // v46 (31.08., P0 Fruehstuecks-Livefall): die EPISODENSTATISTIK
+    // (mealStats/mealDeliveries) bucht MEAL-Abgaben im halb offenen
+    // Fenster bis authorizationExpiresAt (120 min), nicht mehr nur im
+    // 90-min-Onset-Fenster - am 31.08. fehlten 2,90 U zwischen T+90 und
+    // T+115 (Anzeige 8,80 statt 11,70 publiziert). Traeger ist die
+    // MEAL-Vollmacht des Zyklus (DosingContext.mealAuthorized, Pin-
+    // Identitaet, exakt an der Deadline zaehlt CORRECTION). Onset-/
+    // Markerfenster, Huellen-, Evidenz-, Foundation-Zaehler und der
+    // Absorptions-Kredit unveraendert; Publikations-Rollback korrigiert
+    // die Statistik weiter (resolve/revoke). DOSIERNEUTRAL: der einzige
+    // dosierwirksame Leser der Liste (Absorptions-Kredit) laeuft nur
+    // unter markerBoost (<= 45 min) und sieht spaete Buchungen nie.
+    const val RULE_SET_VERSION = 46
 
     /** Schema des Trail-Datensatzes - s. die Notiz an der Schreibstelle. */
     const val SCHEMA_VERSION = 4

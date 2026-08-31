@@ -74,10 +74,11 @@ class EpisodeBudgets {
      * des Stoerungsbestands (s. `EvidenceStock`).
      *
      * WARUM NICHT `mealDeliveries` summiert, was naheliegend waere: das
-     * sammelt nur, solange der MARKER laeuft (90 min). Eine Episode darf
-     * bis 240 min gehen, und der gemessene Lauf vom 11.08. war nach 205
-     * Minuten noch aktiv - ab Minute 90 waere die Bezahlung stillschweigend
-     * ausgefallen und der Bestand haette weiter lizenziert.
+     * sammelt nur, solange Onset-Fenster (90 min) oder MEAL-Vollmacht
+     * (seit P0 v46: bis authorizationExpiresAt, i.d.R. 120 min) laufen.
+     * Eine Episode darf bis 240 min gehen, und der gemessene Lauf vom
+     * 11.08. war nach 205 Minuten noch aktiv - danach waere die Bezahlung
+     * stillschweigend ausgefallen und der Bestand haette weiter lizenziert.
      *
      * ALLE Kanaele zahlen darauf ein: Prime, Onset, Rest-Zaehler und die
      * gewoehnliche Korrektur wirken gegen DIESELBE Stoerung. Keine
