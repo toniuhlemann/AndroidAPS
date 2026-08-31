@@ -6474,6 +6474,9 @@ class TransportWiringTest : TestBaseWithProfile() {
         val bgImLift: List<Double>,
         val gesundImmer: Boolean,
         val ursachen: Set<String>,
+        /** Der Fundament-Stand des LETZTEN Zyklus - fuer die ehrliche
+         *  Abschlussbilanz des Fensters (geliefert + verfallen = Erlaubnis). */
+        val stand: MealFoundation.Snapshot,
     )
 
     private fun risikoLauf(
@@ -6481,10 +6484,11 @@ class TransportWiringTest : TestBaseWithProfile() {
         anteil: Double,
         aktivitaetsWert: Double,
         tailAn: Boolean,
+        fensterMin: Int = 60,
     ): RisikoLauf {
         fundamentAn = true
         fundamentAnteil = anteil
-        fundamentEndeMin = 60
+        fundamentEndeMin = fensterMin
         markerAuthorized = true
         primeHuelleU = 3.0
         // Deutlich ueber dem Boden (70) - das gemessene Tief soll NICHT die
@@ -6516,8 +6520,10 @@ class TransportWiringTest : TestBaseWithProfile() {
         // ueber die Risikolage. Die erste Fassung prueft den Vorlauf mit und
         // war deshalb rot, ohne dass etwas falsch war.
         var gesundImmer = true
+        var stand = MealFoundation.Snapshot.none()
         for (i in 0..75) {
             val o = transport(dir)
+            stand = o.mealFoundation
             if (o.foundationLiftU > 0.0) {
                 if (o.health != Health.READY) gesundImmer = false
                 lifts += Lift(
@@ -6534,7 +6540,7 @@ class TransportWiringTest : TestBaseWithProfile() {
                 o.preFoundationBindingLimit?.takeIf { it != "NONE" }?.let { ursachen += it }
             }
         }
-        return RisikoLauf(anteil, lifts, bgImLift, gesundImmer, ursachen)
+        return RisikoLauf(anteil, lifts, bgImLift, gesundImmer, ursachen, stand)
     }
 
     private fun berichte(kopf: String, r: RisikoLauf) {
@@ -6620,6 +6626,77 @@ class TransportWiringTest : TestBaseWithProfile() {
                     "${r.ursachen}",
             )
         }
+    }
+
+    /**
+     * DAS 25-MIN-FUNDAMENT-FENSTER UNTER BINDENDEM GUARD (Bauauftrag Toni
+     * 31.08., Schritt C) - der e2e-Zwilling zum puren
+     * [FoundationWindow25Test]: dieselbe Guard-Lage wie im Risikolauf, nur
+     * das Fenster variiert (Ein-Variablen-Absicherung; das Fenster bleibt
+     * eine Preference, hier wird der 25er-WERT abgesichert).
+     *
+     * MENGENGLEICHHEIT WIRD HIER BEWUSST NICHT BEHAUPTET: mit der
+     * Rig-Uebergabe bei T+15 hat der 25er nur 10 Minuten Phase B, und ein
+     * Pumpenschritt je Zyklus traegt hoechstens 0,05 U/min - was nicht mehr
+     * floss, muss stattdessen EHRLICH als Rueckstand ausgewiesen sein
+     * (Nachweis 3, Lapse-Zweig). Die exakte Livekonstellation (Uebergabe
+     * T+5, 1 U in 20 min) geht im puren Test vollstaendig auf.
+     *
+     * KEINE BG-BEHAUPTUNG (Nachweis 7): der Lauf ist rueckkopplungsblind.
+     */
+    @Test
+    fun `Fundament-Fenster 25 - Zeitabschluss und Bilanz unter bindendem Guard`(@TempDir dir: File) {
+        val r25 = risikoLauf(File(dir, "f25"), 0.80, aktivitaetsWert = 0.02, tailAn = false, fensterMin = 25)
+        val r45 = risikoLauf(File(dir, "f45"), 0.80, aktivitaetsWert = 0.02, tailAn = false, fensterMin = 45)
+
+        // Die Vorbedingungen des Guard-Laufs muessen auch hier gelten -
+        // sonst prueft der Lauf eine andere Lage.
+        for (r in listOf(r25, r45)) {
+            assertTrue(r.gesundImmer, "das Signal MUSS durchgehend READY sein")
+            assertTrue(r.lifts.isNotEmpty(), "das Fundament MUSS angehoben haben")
+            assertTrue(r.bgImLift.all { it > 75.0 }, "der reale Zucker bleibt klar ueber dem Boden")
+            assertTrue(
+                r.ursachen.contains(FuseController.Block.GUARD_FLOOR.name) ||
+                    r.ursachen.any { it.contains("guard", ignoreCase = true) },
+                "vor dem Fundament MUSS Guard gebunden haben: ${r.ursachen}",
+            )
+        }
+
+        // NACHWEIS 1 (e2e-Seite): das Fenster aendert an Phase A nichts.
+        assertEquals(r45.stand.phaseABudgetU, r25.stand.phaseABudgetU, 1e-9)
+        assertEquals(r45.stand.phaseBAllowanceU, r25.stand.phaseBAllowanceU, 1e-9)
+
+        // NACHWEIS 3+6 (ZEITABSCHLUSS, Mutationsziel): kein Fundament-Lift
+        // nach T+25 - was dann offen ist, verfaellt statt nachzulaufen.
+        assertTrue(r25.lifts.all { it.min <= 25 }) {
+            "ZEITABSCHLUSS verletzt - Lifts nach T+25: " +
+                r25.lifts.filter { it.min > 25 }.joinToString { "T+${it.min}" }
+        }
+        assertEquals(MealFoundation.Binding.AFTER_WINDOW, r25.stand.binding, "nach dem Lauf ist das Fenster zu")
+
+        // NACHWEIS 5: der 45er-Zwilling liefert dieselbe Mechanik, nur
+        // spaeter - er MUSS Lifts nach T+25 haben (sonst misst der
+        // 25er-Test gar kein Fenster).
+        assertTrue(r45.lifts.any { it.min > 25 }) {
+            "der 45er muss nach T+25 weiterliefern - Lifts: " +
+                r45.lifts.joinToString { "T+${it.min}" }
+        }
+        assertTrue(r45.lifts.all { it.min <= 45 })
+
+        // NACHWEIS 3 (Lapse-Zweig) + 4: die Bilanz schliesst EHRLICH -
+        // geliefert plus ausgewiesener Rueckstand ergibt die Erlaubnis,
+        // und geliefert bleibt unter ihr (Budget nie ueberschritten).
+        val geliefert25 = r25.stand.deliveredSinceHandoverU
+        assertTrue(geliefert25 <= r25.stand.phaseBAllowanceU + 1e-9)
+        assertEquals(
+            r25.stand.phaseBAllowanceU, geliefert25 + r25.stand.backlogU, 1e-9,
+            "was nicht floss, steht als Rueckstand da - nichts verschwindet still",
+        )
+        assertTrue(r45.stand.deliveredSinceHandoverU <= r45.stand.phaseBAllowanceU + 1e-9)
+        // Und der 45er holt mit seinem laengeren Fenster mindestens so viel
+        // ab wie der 25er - die Verschiebung kostet Menge nur im Rig-Takt,
+        // nie umgekehrt.
+        assertTrue(r45.stand.deliveredSinceHandoverU + 1e-9 >= geliefert25)
     }
 
 
