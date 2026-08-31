@@ -807,7 +807,9 @@ class FuseStateExportTest {
         // v46 P0 Fruehstuecks-Livefall: Episodenstatistik bucht bis zur
         // MEAL-Deadline (DosingContext.mealAuthorized) statt nur 90 min -
         // dosierneutral, nur mealStats/mealDeliveries.
-        assertEquals(46, FuseStateJson.RULE_SET_VERSION)
+        // v47 Schritt B: Basalluecken-Kontext (basalGap-Block), rein
+        // beobachtend - beim Druck gelatcht, unsichere Groessen null.
+        assertEquals(47, FuseStateJson.RULE_SET_VERSION)
         assertTrue(
             FuseStateJson.hashOf(cfg)!!.isNotEmpty(),
             "und der Hash bleibt berechenbar",

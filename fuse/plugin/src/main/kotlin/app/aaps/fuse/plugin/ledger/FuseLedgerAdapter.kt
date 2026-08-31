@@ -210,6 +210,29 @@ class EpisodeBudgets {
         app.aaps.fuse.core.controller.DescentRecoveryLatch.State()
 
     /**
+     * DIE BEIM MARKERDRUCK EINGEFRORENE BASALLUECKEN-LAGE (Bauauftrag
+     * 31.08., Schritt B) - REIN BEOBACHTEND fuer Trail und Viewer.
+     *
+     * Einmal je beobachtetem Druck gelatcht (Pin-Identitaet wie die
+     * anderen Markergroessen), restartfest, ein neuer Marker ueberschreibt.
+     * VERTRAG: nie als Exposure-Headroom, kein automatischer Bolus in
+     * Hoehe der Luecke, und ein rueckwaerts laufendes Basal-IOB oeffnet
+     * kein Budget - im Dosierpfad liest NIEMAND diese Werte (Neutralitaets-
+     * Rig haelt das). `null`-Felder heissen "nicht belastbar bestimmbar",
+     * nie 0 (Fruehstuecks-Livefall: -0,635 U Basal-IOB, Null seit ~84 min).
+     */
+    data class BasalGapLatch(
+        val pinnedFor: Long,
+        val preMarkerBasalIobU: Double,
+        val zeroTbrActive: Boolean,
+        val zeroTbrAgeMin: Int?,
+        val scheduledBasalUph: Double,
+        val omittedBasalU: Double?,
+    )
+
+    var basalGap: BasalGapLatch? = null
+
+    /**
      * DER SOFORT-BATCH IST AUFGESCHOBEN (Nachtrag Toni 25.08. mittags):
      * Zeitpunkt des ERSTEN Sicherheitsaufschubs dieser Autorisierung,
      * 0 = nie aufgeschoben.

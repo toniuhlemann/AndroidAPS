@@ -8189,6 +8189,64 @@ class TransportWiringTest : TestBaseWithProfile() {
         )
     }
 
+    // ---- Schritt B v47: Basalluecken-Latch --------------------------------
+
+    /**
+     * Schritt B (31.08.): der beobachtete Markerdruck friert die
+     * Basalluecken-Lage EINMALIG ein (Pin-Identitaet), restartfest; ein
+     * neuer Druck ueberschreibt. Im Rig laeuft keine TBR - zeroTbrActive
+     * false, Alter/Menge typisiert null (die Nullphasen-Rechnung selbst
+     * beweist BasalGapRechnerTest).
+     */
+    @Test
+    fun `B - der Markerdruck friert die Basalluecken-Lage einmalig ein`(@TempDir dir: File) {
+        val adapter = mealStatsLage(dir)
+        val press = cycle()
+        val latch = adapter.episodes.basalGap ?: throw AssertionError("der Druck muss latchen")
+        assertEquals(markerAt, latch.pinnedFor, "Pin-Identitaet des Drucks")
+        assertEquals(press.state!!.basalIobU, latch.preMarkerBasalIobU, 1e-9, "dasselbe Basal-IOB wie der Zyklus")
+        assertEquals(false, latch.zeroTbrActive, "im Rig laeuft keine TBR")
+        assertEquals(null, latch.zeroTbrAgeMin)
+        assertEquals(null, latch.omittedBasalU)
+        assertTrue(latch.scheduledBasalUph >= 0.0)
+        assertEquals(false, press.currentZeroTbrActive, "zyklusaktueller Nullstatus exportiert")
+        // Latch-once: spaetere Zyklen (auch mit anderem IOB) aendern nichts.
+        bolusIobU = 6.0
+        repeat(5) { cycle() }
+        assertEquals(latch, adapter.episodes.basalGap, "einmal gelatcht, nie nachgezogen")
+        // Restartfest ueber die Ledger-Datei.
+        assertTrue(adapter.persistVerified(dir), "der Zustand muss versiegelt sein")
+        assertEquals(latch, nachNeustart(dir).basalGap, "der Latch ueberlebt den Neustart")
+        // Ein neuer beobachteter Druck erzeugt einen neuen Kontext.
+        markerAt = clock + 60_000L
+        cycle()
+        assertEquals(markerAt, adapter.episodes.basalGap!!.pinnedFor, "neuer Marker, neuer Latch")
+    }
+
+    /**
+     * Schritt-B-Vertrag: der Latch ist DOSIERUNGSNEUTRAL - nie Headroom,
+     * kein Auto-Bolus, kein Budget aus rueckwaerts laufendem Basal-IOB.
+     * Zwillingslauf: identische Lage, einmal mit absurdem vorgesetztem
+     * Latch - jede Entscheidung muss identisch bleiben.
+     */
+    @Test
+    fun `B - der Basalluecken-Latch ist dosierungsneutral`(@TempDir dir: File) {
+        fun lauf(name: String, praeparieren: (FuseLedgerAdapter) -> Unit): List<Pair<Double, String>> {
+            val adapter = mealStatsLage(File(dir, name))
+            markerAt = 0L // Latch-Variable isolieren: kein Druck in diesem Lauf
+            praeparieren(adapter)
+            return (0 until 45).map { val o = cycle(); o.decision.smbU to o.decision.block.name }
+        }
+        val basis = lauf("a") {}
+        val mitLatch = lauf("b") {
+            it.episodes.basalGap = EpisodeBudgets.BasalGapLatch(
+                pinnedFor = 1L, preMarkerBasalIobU = -5.0, zeroTbrActive = true,
+                zeroTbrAgeMin = 240, scheduledBasalUph = 1.0, omittedBasalU = 9.9,
+            )
+        }
+        assertEquals(basis, mitLatch, "kein Dosierpfad darf den Latch lesen")
+    }
+
     /** B1-Aufbau: zentrale Profile aktiv, offener Normalpfad (kein Guard-
      *  Deadlock, kein Tail, keine Liveness) - die Endmenge kommt aus der
      *  normalen Ratio und trifft NUR auf die neue Kontextgrenze. */

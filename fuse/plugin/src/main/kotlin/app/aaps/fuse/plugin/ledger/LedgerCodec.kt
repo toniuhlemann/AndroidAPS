@@ -485,6 +485,23 @@ object LedgerCodec {
                 .put("latchedAtTs", e.zeroLatch.latchedAtTs)
                 .put("sawMeasuredLow", e.zeroLatch.sawMeasuredLow),
         )
+        // Die beim Markerdruck eingefrorene Basalluecken-Lage (Schritt B,
+        // 31.08.) - additiv ohne Schema-Bump, Altdatei ohne Objekt heisst
+        // "nie gelatcht"; die nullbaren Felder bleiben null-treu (nicht 0).
+        .apply {
+            e.basalGap?.let { g ->
+                put(
+                    "basalGap",
+                    JSONObject()
+                        .put("pinnedFor", g.pinnedFor)
+                        .put("preMarkerBasalIobU", g.preMarkerBasalIobU)
+                        .put("zeroTbrActive", g.zeroTbrActive)
+                        .put("zeroTbrAgeMin", g.zeroTbrAgeMin ?: JSONObject.NULL)
+                        .put("scheduledBasalUph", g.scheduledBasalUph)
+                        .put("omittedBasalU", g.omittedBasalU ?: JSONObject.NULL),
+                )
+            }
+        }
         // DER RUHE-BEOBACHTUNGSZUSTAND des Phase-A-Sofortbatches (Toni
         // 25.08. spaet). Persistiert wird AUSSCHLIESSLICH die Beobachtung -
         // niemals ein bereits gefaelltes CALM_RECOVERED- oder
@@ -779,6 +796,21 @@ object LedgerCodec {
                     latchedAtTs = requireTs("zeroLatch.latchedAtTs", latch.getLong("latchedAtTs")),
                     sawMeasuredLow = latch.optBoolean("sawMeasuredLow", false),
                 ) ?: error("invalid zero latch")
+        }
+        if (o.has("basalGap")) {
+            val g = o.getJSONObject("basalGap")
+            e.basalGap = EpisodeBudgets.BasalGapLatch(
+                pinnedFor = requireTs("basalGap.pinnedFor", g.getLong("pinnedFor")),
+                preMarkerBasalIobU = g.getDouble("preMarkerBasalIobU")
+                    .also { require(it.isFinite()) { "basalGap.preMarkerBasalIobU not finite" } },
+                zeroTbrActive = g.getBoolean("zeroTbrActive"),
+                zeroTbrAgeMin = if (g.isNull("zeroTbrAgeMin")) null
+                else g.getInt("zeroTbrAgeMin").also { require(it in 0..24 * 60) { "basalGap.zeroTbrAgeMin out of range" } },
+                scheduledBasalUph = g.getDouble("scheduledBasalUph")
+                    .also { require(it.isFinite() && it >= 0.0) { "basalGap.scheduledBasalUph invalid" } },
+                omittedBasalU = if (g.isNull("omittedBasalU")) null
+                else g.getDouble("omittedBasalU").also { require(it.isFinite() && it in 0.0..25.0) { "basalGap.omittedBasalU invalid" } },
+            )
         }
         // Fail-closed: `ofPersisted` prueft die Identitaeten und liefert bei
         // jeder unvollstaendigen oder widerspruechlichen Kombination den

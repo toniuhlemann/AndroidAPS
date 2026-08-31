@@ -351,7 +351,17 @@ object FuseStateJson {
     // die Statistik weiter (resolve/revoke). DOSIERNEUTRAL: der einzige
     // dosierwirksame Leser der Liste (Absorptions-Kredit) laeuft nur
     // unter markerBoost (<= 45 min) und sieht spaete Buchungen nie.
-    const val RULE_SET_VERSION = 46
+    // v47 (31.08., Schritt B): BASALLUECKEN-KONTEXT, rein beobachtend.
+    // Beim beobachteten Markerdruck friert der Zyklus die Lage ein
+    // (preMarkerBasalIobU, laufende Null-TBR ja/nein, Nullphasen-Alter
+    // und ausgelassenes Profilbasal aus der echten TBR-/Profilhistorie -
+    // unsichere Groessen typisiert null, nie geschaetzt) und exportiert
+    // sie restartfest als basalGap-Block samt zyklusaktuellem Basal-IOB/
+    // Nullstatus. Fruehstuecks-Referenz 31.08.: -0,635 U, Null seit
+    // ~84 min. KEIN Dosierpfad liest diese Werte (Neutralitaets-Rig):
+    // nie Exposure-Headroom, kein Auto-Bolus, kein Budget aus
+    // rueckwaertslaufendem Basal-IOB.
+    const val RULE_SET_VERSION = 47
 
     /** Schema des Trail-Datensatzes - s. die Notiz an der Schreibstelle. */
     const val SCHEMA_VERSION = 4
@@ -1015,6 +1025,20 @@ object FuseStateJson {
                 // v29: der Ausloese-Zaehler des Fall-Verdikts (2 zuenden).
                 .put("armStreak", outcome.zeroLatchArmStreak)
                 .put("overrode", outcome.zeroLatchOverrode),
+        )
+        // Schritt B v47 (31.08.): die Basalluecken-Lage - beim Markerdruck
+        // gelatcht (preMarker*, Pin-Identitaet) plus zyklusaktuell. REIN
+        // BEOBACHTEND; null heisst "nicht belastbar bestimmbar", nie 0.
+        o.put(
+            "basalGap", JSONObject()
+                .put("currentBasalIobU", fin(outcome.state?.basalIobU))
+                .put("currentZeroTbrActive", outcome.currentZeroTbrActive ?: JSONObject.NULL)
+                .put("pinnedFor", outcome.basalGap?.pinnedFor ?: JSONObject.NULL)
+                .put("preMarkerBasalIobU", fin(outcome.basalGap?.preMarkerBasalIobU))
+                .put("preMarkerZeroTbrActive", outcome.basalGap?.zeroTbrActive ?: JSONObject.NULL)
+                .put("preMarkerZeroTbrAgeMin", outcome.basalGap?.zeroTbrAgeMin ?: JSONObject.NULL)
+                .put("preMarkerScheduledBasalUph", fin(outcome.basalGap?.scheduledBasalUph))
+                .put("preMarkerOmittedBasalU", fin(outcome.basalGap?.omittedBasalU)),
         )
         // Korrekturpfad-Riegel (v30, 25.08.): beide Urteile vollstaendig -
         // auch in Zyklen, in denen NICHT geblockt wurde (das Replay braucht

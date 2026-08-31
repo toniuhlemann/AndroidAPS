@@ -989,6 +989,12 @@ class FuseCycleRunner(
          *  behauptet, wenn es eine modellkonsistente Groesse gibt. */
         val livenessPressureActive: Boolean? = null,
         val markerPowerPinnedFor: Long = 0L,
+        /** Schritt B (31.08.): die beim Druck eingefrorene Basalluecken-
+         *  Lage - rein beobachtend (s. EpisodeBudgets.BasalGapLatch). */
+        val basalGap: app.aaps.fuse.plugin.ledger.EpisodeBudgets.BasalGapLatch? = null,
+        /** Laeuft in DIESEM Zyklus eine Null-TBR? null = Pfad ohne
+         *  TBR-Bewertung (Abbruch/Fallback). */
+        val currentZeroTbrActive: Boolean? = null,
         val markerPowerDeadlineTs: Long = 0L,
         /** ZERO-TBR-LATCH: verriegelte Null, Grund des Zyklus, Ruhe-
          *  Zaehler und ob der Latch die TBR dieses Zyklus uebersteuert hat
@@ -2082,6 +2088,9 @@ class FuseCycleRunner(
         // predictorfreier Zyklus die Frist (dieselben Werte, nur frueher:
         // die Deadline haengt allein an markerTs). Das ist die A1-Zusage
         // "derselbe zentrale Kontext auch im predictorfreien Pfad".
+        // Schritt B: zykluslokales Signal "frischer Druck in DIESEM Zyklus" -
+        // der Latch selbst wird erst nach der TBR-Lesung befuellt.
+        var basalGapLatchPending = false
         if (episodeGate.creditRevoked || markerTs <= 0L) {
             // Ruecknahme loescht Identitaet und Frist SOFORT.
             episodes.markerPowerPinnedFor = 0L
@@ -2093,6 +2102,10 @@ class FuseCycleRunner(
             episodes.markerPowerPinnedFor = markerTs
             episodes.markerPowerDeadlineTs = markerTs + cfg.livenessMealPowerMin * 60_000L
             markerPowerLastSeenTs = markerTs
+            // Schritt B (31.08.): der frisch beobachtete Druck friert die
+            // Basalluecken-Lage ein - befuellt wird NACH der einen
+            // TBR-Lesung dieses Zyklus (Ein-Sicht-Disziplin), s. unten.
+            basalGapLatchPending = true
         }
         // ---- ZENTRALER DOSIERKONTEXT (Bauauftrag §4, Schritt A1) ---------
         // UNBEDINGT je Zyklus, unabhaengig vom Liveness-Schalter.
@@ -3777,6 +3790,44 @@ class FuseCycleRunner(
             )
         }
 
+        // ---- SCHRITT B (31.08.): BASALLUECKEN-LATCH ----------------------
+        // REIN BEOBACHTEND (Vertrag: nie Headroom, kein Auto-Bolus, kein
+        // Budget aus rueckwaerts laufendem Basal-IOB - im Dosierpfad liest
+        // niemand diese Werte). Genau EINMAL je beobachtetem Druck, und
+        // erst HIER, weil die eine TBR-Lesung des Zyklus (oben) gebraucht
+        // wird - eine zweite Lesung verbietet die Ein-Sicht-Disziplin.
+        if (basalGapLatchPending) {
+            basalGapLatchPending = false
+            val nullLaeuft = currentTbr != null &&
+                TbrPolicy.isZeroRate(currentTbr.absoluteRateUPerH, pumpe.basalStepUPerH)
+            // Nullphasen-Alter und ausgelassenes Basal aus der ECHTEN
+            // TBR-/Profilhistorie; jede Unsicherheit wird typisiert null
+            // (nie eine Schaetzung aus unvollstaendiger Historie).
+            val phase = if (nullLaeuft) runCatching {
+                val stepMs = 60_000L
+                val karte = processedTbrEbData.getTempBasalIncludingConvertedExtendedForRange(
+                    computeTs - 6L * 3_600_000L, computeTs, stepMs,
+                )
+                val slices = karte.entries.sortedBy { it.key }.map { (t, tb) ->
+                    val p = profileFunction.getProfile(t)
+                    BasalGapRechner.Slice(
+                        tsMs = t,
+                        tbrAbsUph = if (tb != null && p != null) tb.convertedToAbsolute(t, p) else null,
+                        profilUph = p?.getBasal(t),
+                    )
+                }
+                BasalGapRechner.nullphase(slices, pumpe.basalStepUPerH, stepMs)
+            }.getOrNull() else null
+            episodes.basalGap = app.aaps.fuse.plugin.ledger.EpisodeBudgets.BasalGapLatch(
+                pinnedFor = markerTs,
+                preMarkerBasalIobU = iobTotal.basaliob,
+                zeroTbrActive = nullLaeuft,
+                zeroTbrAgeMin = phase?.ageMin,
+                scheduledBasalUph = profile.getBasal(computeTs),
+                omittedBasalU = phase?.omittedU,
+            )
+        }
+
         // DIE BASAL-GRUNDREGEL SITZT SEIT DEM 17.08. IM REGELKERN, nicht mehr
         // hier: [LowThreatGate] entscheidet VOR der Kategorie, ob eine
         // Zero-TBR ueberhaupt zulaessig ist, statt eine gesetzte Null
@@ -5143,6 +5194,9 @@ class FuseCycleRunner(
             // Fixvertrag 30.08.: das typisierte Zyklus-IOB fuer
             // APSResult.iobData / DeviceStatus openaps.iob.
             iobTotal = iobTotal,
+            // Schritt B (31.08.): Basalluecken-Kontext, rein beobachtend.
+            basalGap = episodes.basalGap,
+            currentZeroTbrActive = laeuftNull,
             expectationSituation = ExpectationLedger.situationOf(
                 mealMarkerActive = mealMarkerActive,
                 evidenceEpisodeId = episodes.evidenceEpisodeId,
@@ -6089,6 +6143,9 @@ class FuseCycleRunner(
             // Fixvertrag 30.08.: derselbe typisierte IOB-Stand wie im
             // Hauptpfad - der Fallback bekommt ihn als Parameter.
             iobTotal = iobTotal,
+            // Schritt B: der gelatchte Kontext auch im Fallback sichtbar;
+            // eine eigene TBR-Bewertung hat dieser Pfad nicht (null).
+            basalGap = episodes.basalGap,
             tbrChanged = tbrAktuation(
                 // Der Marker-Rueckfall hat keine eigene TBR-Sicht gelesen -
                 // hier faellt der einzige Lesevorgang dieses Pfades an.
