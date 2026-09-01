@@ -7,45 +7,47 @@ import kotlin.math.min
  * DER LEBENSZYKLUS DER EIGENEN TEIL-TBR.
  *
  * ===================================================================
- * WARUM EIN EINZELNER NACHWEIS NICHT REICHTE (Review-Race)
+ * WARUM EIN EINZIGER DATENSATZ NICHT REICHT (Review-P0-1)
  * ===================================================================
- * Die erste Fassung schrieb den Nachweis beim ANFORDERN und loeschte
- * ihn, sobald die aktuelle Pumpensicht nicht dazu passte. Damit gab es
- * ein Zeitfenster, in dem alles schieflaeuft:
+ * Die Vorfassung fuehrte EINEN Datensatz mit Rate, Phase und einem
+ * `everRunning`-Merker. Damit ging beim Ratenwechsel die BESTAETIGTE
+ * alte Identitaet verloren:
  *
- *     Zyklus N   Teilrate angefordert, Nachweis geschrieben
- *     Zyklus N+1 Pumpe hat sie noch nicht uebernommen, der Riegel
- *                loest -> `current` passt nicht -> Nachweis GELOESCHT
- *     Zyklus N+2 Pumpe uebernimmt verspaetet -> die eigene Teilrate
- *                gilt als FREMD und laeuft bis zum Ablauf weiter,
- *                waehrend FUSE die normale Freigabe meldet
+ *     0,85 laeuft bestaetigt   -> confirmed = 0,85
+ *     Guard fordert 1,00       -> Datensatz = 1,00 REQUESTED
+ *     Pumpe zeigt weiter 0,85  -> passt nicht zur neuen Kennung
+ *     Latch-Ende               -> "autoritativ weg" -> Besitz GELOESCHT
+ *                                 obwohl unsere 0,85 weiterlaeuft
+ *     -> kein Abbruch, SMB wieder offen
  *
- * Dazu kam eine zweite Verwechslung: `current == null` hiess sowohl
- * "nachgewiesen laeuft keine TBR" als auch "ich habe gerade keine
- * brauchbare Sicht". NUR das erste darf einen Nachweis bestaetigen
- * oder loeschen - deshalb ist die Sicht jetzt TYPISIERT ([View]).
+ * `everRunning` machte es zusaetzlich schlimmer: es liess den
+ * Timeout-/Retry-Pfad einer FEHLGESCHLAGENEN Ratenaenderung ausfallen,
+ * weil "war schon mal bestaetigt" die Bestaetigungsfrist uebersprang.
+ * Und die blosse Erneuerung DERSELBEN Rate setzte `setAtTs` neu, blieb
+ * aber RUNNING - meldete die Pumpe noch die alte Restlaufzeit, passte
+ * gar nichts mehr und der Besitz verschwand.
+ *
+ * DIE TRENNUNG IST DIE LOESUNG: was NACHWEISLICH LAEUFT und was
+ * ANGEFORDERT IST, sind zwei verschiedene Dinge und werden getrennt
+ * gefuehrt ([State.confirmedRunning] / [State.pendingRequest]). Beide
+ * sind restartfest; der Besitz endet erst, wenn KEINES von beiden mehr
+ * auf einen autoritativen Snapshot passt.
  *
  * ===================================================================
- * DIE PHASEN
+ * WAS AAPS AUS EINEM KOMMANDO MACHT (Review-P0-2)
  * ===================================================================
- *     REQUESTED --(autoritativ bestaetigt)--> RUNNING
- *         |                                      |
- *         |                                      | Stufe vorbei / Schalter aus
- *         +--------------> ENDING <--------------+
- *                             |
- *          (autoritativ: laeuft nicht mehr) -> geloescht
+ * `LoopPlugin.applyAPSRequest` behandelt eine Rate innerhalb EINES
+ * Basalschritts um `pump.baseBasalRate` als **Abbruch**, nicht als
+ * Setzen. Die Guard-Suche darf aber exakt Profilbasal liefern (im
+ * Mehrnaechte-Rig war das die Mehrheit der Teilstufen-Zyklen). Ein
+ * solcher Wunsch als "erwartete positive 30-min-TBR" gebucht, waere
+ * eine Kennung fuer etwas, das nie laeuft - und der Besitz haenge
+ * daran fest, bis die Frist ablaeuft.
  *
- *  - [Phase.REQUESTED] Setzen angefordert, Bestaetigung offen. Eine
- *    begrenzte Frist ([CONFIRM_WINDOW_MIN]) haelt den Nachweis, damit
- *    verspaetetes Auftauchen noch als EIGEN erkannt wird.
- *  - [Phase.RUNNING] Rate und erwartete Restlaufzeit sind AUTORITATIV
- *    bestaetigt.
- *  - [Phase.ENDING] Abbruch gewollt. Der SMB bleibt gesperrt, und das
- *    Kommando geht mit BACKOFF raus, nicht jeden Zyklus.
- *  - Geloescht wird ausschliesslich, wenn ein AUTORITATIVER Snapshot
- *    zeigt, dass nichts Passendes mehr laeuft - oder wenn die
- *    Bestaetigungsfrist ohne jedes Auftauchen verstrichen ist, und das
- *    dann mit benanntem Grund ([Reason.CONFIRM_TIMEOUT]), nicht still.
+ * Gebucht wird deshalb die EFFEKTIVE Wirkung ([Wirkung]), und nur
+ * eine, die auch wirklich zur Ausgabe zugelassen wurde: ein vom
+ * Aktuationstor verworfener Wunsch ist [Wirkung.NO_REQUEST] und
+ * aendert nichts.
  *
  * ===================================================================
  * DIE FEHLERRICHTUNGEN SIND NICHT GLEICH SCHLIMM
@@ -57,58 +59,54 @@ import kotlin.math.min
  */
 object PartialTbrOwnership {
 
-    enum class Phase { REQUESTED, RUNNING, ENDING }
-
-    /**
-     * Was FUSE zuletzt als eigene Teil-TBR angefordert hat, samt Phase.
-     * Restartfest zu halten - ginge er beim Neustart verloren, waere die
-     * eigene laufende Absenkung danach "fremd".
-     */
-    data class Own(
+    /** Eine angeforderte oder laufende eigene TBR - Rate plus Uhr. */
+    data class Identity(
         val rateUPerH: Double,
         /** Zeitpunkt der ANFORDERUNG, nicht der Bestaetigung. */
         val setAtTs: Long,
         val durationMin: Int,
-        val phase: Phase,
-        /** Beginn der aktuellen Phase - Grundlage von Frist und Backoff. */
-        val phaseSinceTs: Long,
-        /** Gesendete Abbruchkommandos in [Phase.ENDING]. */
-        val endAttempts: Int = 0,
-        /** Zeitpunkt des letzten gesendeten Abbruchs. */
-        val lastEndRequestTs: Long = 0L,
-        /**
-         * WURDE SIE JE AUTORITATIV BESTAETIGT?
-         *
-         * Ohne dieses Feld ging die Information beim Uebergang nach
-         * [Phase.ENDING] verloren, und ein autoritatives "laeuft nicht
-         * mehr" wurde faelschlich als "noch nie aufgetaucht, Frist laeuft"
-         * gelesen - der Nachweis blieb dann bis zum Fristende haengen und
-         * der SMB mit ihm. Vom E2E-Runnertest gefunden.
-         *
-         * Die Bestaetigungsfrist gilt AUSSCHLIESSLICH fuer eine Anforderung,
-         * die noch NIE sichtbar war.
-         */
-        val everRunning: Boolean = false,
-        /** Gesendete SETZ-Kommandos fuer diese Anforderung. */
-        val setAttempts: Int = 0,
-        /** Zeitpunkt des letzten gesendeten Setzkommandos. */
-        val lastSetRequestTs: Long = 0L,
     ) {
 
         val valid: Boolean
-            get() = rateUPerH.isFinite() && rateUPerH > 0.0 &&
-                setAtTs > 0L && durationMin > 0 && phaseSinceTs > 0L &&
-                endAttempts >= 0 && lastEndRequestTs >= 0L &&
-                setAttempts >= 0 && lastSetRequestTs >= 0L
+            get() = rateUPerH.isFinite() && rateUPerH > 0.0 && setAtTs > 0L && durationMin > 0
     }
 
+    /** Der Abbruchzustand - Versuche und Backoff. */
+    data class Ending(
+        val sinceTs: Long,
+        val attempts: Int = 0,
+        val lastRequestTs: Long = 0L,
+    )
+
     /**
-     * DIE PUMPENSICHT, TYPISIERT.
-     *
-     * Der Unterschied traegt die halbe Sicherheit dieses Zustandsautomaten:
-     * "ich sehe nachweislich keine TBR" und "ich sehe gerade nichts
-     * Brauchbares" sind NICHT dasselbe.
+     * DER PERSISTENTE ZUSTAND. Restartfest zu halten: ginge er beim
+     * Neustart verloren, waere die eigene laufende Absenkung danach
+     * "fremd" und bliebe bis zum Ablauf stehen, waehrend FUSE die
+     * normale Freigabe meldet.
      */
+    data class State(
+        /** Die zuletzt AUTORITATIV BESTAETIGTE eigene TBR. */
+        val confirmedRunning: Identity? = null,
+        /** Die zuletzt zur Ausgabe ZUGELASSENE Anforderung, noch offen. */
+        val pendingRequest: Identity? = null,
+        /** Gesendete Setzkommandos fuer [pendingRequest]. */
+        val pendingAttempts: Int = 0,
+        val ending: Ending? = null,
+    ) {
+
+        val leer: Boolean get() = confirmedRunning == null && pendingRequest == null
+
+        /**
+         * Solange irgendetwas von uns laeuft oder angefordert ist, bleibt
+         * der schnelle Kanal zu. Waehrend des Abbruchs erst recht: der
+         * Abbruch HEBT die Rate aufs Profilbasal, und "anheben plus SMB"
+         * darf denselben Zyklus nicht verlassen.
+         */
+        val smbBlocked: Boolean get() = !leer
+    }
+
+    /** Die Sicht auf die Pumpe - typisiert, weil "nichts da" und "nichts
+     *  gesehen" NICHT dasselbe sind. */
     sealed interface View {
 
         /** Belastbare Sicht. `current == null` heisst NACHGEWIESEN keine TBR. */
@@ -118,132 +116,102 @@ object PartialTbrOwnership {
         data object Unknown : View
     }
 
+    /**
+     * WAS AAPS AUS DEM KOMMANDO TATSAECHLICH MACHT.
+     *
+     * Nicht was FUSE gerne haette, sondern was `LoopPlugin` ausfuehrt.
+     */
+    enum class Wirkung {
+        /** Eine echte abgesenkte TBR - die einzige, die Besitz begruendet. */
+        SET_PARTIAL,
+
+        /**
+         * NACH DIESEM KOMMANDO LAEUFT KEINE EIGENE TEILRATE MEHR.
+         *
+         * Drei Faelle: der ausdrueckliche Abbruch (Rate 0, Dauer 0), eine
+         * Rate innerhalb eines Basalschritts um das Profilbasal (dafuer
+         * ruft `LoopPlugin` `cancelTempBasal`) und die Schutz-Null (Rate 0
+         * ueber volle Dauer - sie ersetzt unsere Teilrate). Eine Kennung
+         * dafuer waere eine Kennung fuer nichts.
+         */
+        CANCEL_TO_PROFILE,
+
+        /** Nichts ging raus: kein Wunsch, Aktuationstor zu, Pumpe belegt. */
+        NO_REQUEST,
+    }
+
     enum class Reason {
-        /** Kein Nachweis vorhanden. */
         NONE,
-
-        /** In diesem Zyklus neu angefordert. */
-        REQUESTED_NEW,
-
-        /** Angefordert, noch nicht sichtbar - Frist laeuft. */
         WAITING_CONFIRM,
-
-        /** Autoritativ bestaetigt: unsere Rate laeuft. */
         CONFIRMED_RUNNING,
-
-        /** Sicht unbrauchbar - Zustand GEHALTEN, nichts abgebrochen. */
         VIEW_UNKNOWN_HELD,
-
-        /** Abbruch in diesem Zyklus gesendet. */
         END_REQUESTED,
-
-        /** Wiederholter Abbruch nach Backoff. */
         END_RETRY,
-
-        /** Abbruch gewollt, aber der Backoff laeuft noch. */
         END_BACKOFF_WAIT,
-
-        /** Deckel erreicht - kein weiteres Kommando, Nachweis bleibt. */
         END_GIVEN_UP,
-
-        /** Autoritativ bestaetigt: laeuft nicht mehr. Erst hier faellt die SMB-Sperre. */
         CLEARED_CONFIRMED,
-
-        /** Frist ohne jedes Auftauchen verstrichen - benannt, nicht still. */
         CONFIRM_TIMEOUT,
-
-        /** Dieselbe Rate ist schon angefordert und die Frist laeuft -
-         *  kein zweites Kommando, und die Frist beginnt NICHT neu. */
         SET_SUPPRESSED_DUPLICATE,
-
-        /** Eine NIEDRIGERE Rate ersetzt die offene Anforderung sofort. */
         SET_LOWERED,
-
-        /** Eine HOEHERE Rate wartet, bis die offene Anforderung geklaert ist. */
         SET_HELD_HIGHER,
-
-        /** Frist abgelaufen: benannter Neuversuch nach Backoff. */
         SET_RETRY,
-
-        /** Frist abgelaufen, aber der Backoff laeuft noch. */
-        SET_BACKOFF_WAIT,
-
-        /** Versuchsdeckel erreicht - kein weiteres Setzkommando. */
         SET_GIVEN_UP,
     }
 
-    /** Das Ergebnis eines Zyklus - der einzige Weg, den Zustand fortzuschreiben. */
     data class Step(
-        val own: Own?,
-        /**
-         * Solange ein Nachweis lebt, bleibt der SMB gesperrt. Waehrend
-         * REQUESTED/RUNNING ueber `PARTIAL_RECOVERY`, waehrend ENDING ueber
-         * `PARTIAL_ENDING` - der Abbruch HEBT die Rate aufs Profilbasal, und
-         * "anheben plus SMB" darf denselben Zyklus nicht verlassen.
-         */
+        val state: State,
         val smbBlocked: Boolean,
-        /** In diesem Zyklus ein Abbruchkommando senden? */
         val sendCancel: Boolean,
-        /**
-         * DARF IN DIESEM ZYKLUS EIN SETZKOMMANDO RAUS?
-         *
-         * `false` heisst NICHT "keine Teilstufe", sondern "die laufende
-         * Anforderung ist noch offen". Ohne diese Berechtigung forderte
-         * `TbrPolicy.partialBasal` bei unsichtbarer TBR jede Minute erneut
-         * an: die Bestaetigungsfrist begann immer neu, CONFIRM_TIMEOUT kam
-         * nie zum Zug, das Kommando ging minuetlich raus, und eine
-         * verspaetet sichtbare Rate wurde immer wieder auf 30 min
-         * verlaengert.
-         */
         val allowSet: Boolean,
         val reason: Reason,
     )
 
     /**
      * Wieviele Minuten eine Anforderung ohne Sichtbarkeit gehalten wird.
-     * Danach wird sie mit benanntem Grund verworfen - nicht still, und
-     * ohne je eine fremde Absenkung anzufassen.
+     *
+     * DIESES FENSTER IST ZUGLEICH DER TAKT DER SETZVERSUCHE: ein
+     * Neuversuch ist erst nach seinem Ablauf zulaessig und eroeffnet dann
+     * ein neues. Ein zusaetzlicher 3-min-Setz-Backoff lag dahinter und war
+     * damit toter Zustand - er ist entfernt, nicht bloss ungenutzt
+     * stehengeblieben. Der ABBRUCH-Backoff bleibt: dort gibt es kein
+     * solches Fenster.
      */
     const val CONFIRM_WINDOW_MIN = 5
 
     /** Mindestabstand zwischen zwei Abbruchkommandos [min]. */
     const val END_BACKOFF_MIN = 3
 
-    /** Mindestabstand zwischen zwei Setzversuchen NACH Fristablauf [min]. */
-    const val SET_BACKOFF_MIN = 3
-
-    /** Deckel der Setzversuche fuer dieselbe Anforderung. */
-    const val SET_MAX_ATTEMPTS = 3
-
     /** Deckel der Abbruchversuche - dieselbe Idee wie beim Medtrum-Backoff
      *  der Null: ohne ihn wiederholt FUSE das Kommando minuetlich. */
     const val END_MAX_ATTEMPTS = 3
+
+    /** Deckel der Setzversuche fuer dieselbe Anforderung. */
+    const val SET_MAX_ATTEMPTS = 3
 
     /**
      * Toleranz der Restlaufzeit nach UNTEN [min] - Rundung und
      * Zyklusversatz. Nach OBEN gilt statt dessen die bisher verstrichene
      * Wartezeit (gedeckelt auf [CONFIRM_WINDOW_MIN]): die Pumpe kann nur
-     * SPAETER starten als angefordert, nie frueher, und je kuerzer wir
-     * warten, desto enger ist das Band.
+     * SPAETER starten als angefordert, nie frueher.
      */
     const val REMAINING_TOLERANCE_MIN = 3
 
-    /** Passen Rate UND Restlaufzeit zu unserer Anforderung? */
+    /** Passen Rate UND Restlaufzeit zu dieser Kennung? */
     fun matches(
-        own: Own?,
+        id: Identity?,
         current: TbrPolicy.Current?,
         nowTs: Long,
         basalStepUPerH: Double,
     ): Boolean {
-        if (own == null || !own.valid) return false
+        if (id == null || !id.valid) return false
         if (current == null || current.violation() != null) return false
         // Ein als TBR gelesener Extended Bolus ist nie unsere Teilrate.
         if (current.sourceType != TbrPolicy.SourceType.TEMP_BASAL) return false
         if (!basalStepUPerH.isFinite() || basalStepUPerH <= 0.0) return false
-        if (nowTs < own.setAtTs) return false
-        if (abs(current.absoluteRateUPerH - own.rateUPerH) > basalStepUPerH / 2.0) return false
-        val wartenMin = (nowTs - own.setAtTs) / 60_000.0
-        val erwartetRest = own.durationMin - wartenMin
+        if (nowTs < id.setAtTs) return false
+        if (abs(current.absoluteRateUPerH - id.rateUPerH) > basalStepUPerH / 2.0) return false
+        val wartenMin = (nowTs - id.setAtTs) / 60_000.0
+        val erwartetRest = id.durationMin - wartenMin
         if (erwartetRest <= 0.0) return false
         val verspaetungMax = min(wartenMin, CONFIRM_WINDOW_MIN.toDouble())
         return current.remainingMin >= erwartetRest - REMAINING_TOLERANCE_MIN &&
@@ -251,170 +219,190 @@ object PartialTbrOwnership {
     }
 
     /**
-     * DIE EINZIGE FORTSCHREIBUNG DES ZUSTANDS.
+     * DIE EFFEKTIVE WIRKUNG EINES KOMMANDOS - so, wie AAPS sie ausfuehrt.
      *
-     * Gibt BERECHTIGUNGEN zurueck, keine vollzogenen Tatsachen: was
-     * tatsaechlich in die Queue ging, buchen erst [registerSet] und
-     * [registerCancel]. Nur so aendert sich `setAtTs` ausschliesslich bei
-     * einem wirklich zugelassenen und wirklich gesendeten Versuch - und
-     * nicht schon dadurch, dass jemand einen Wunsch geaeussert hat.
-     *
-     * @param wunschRate die in diesem Zyklus gewuenschte Teilrate [U/h],
-     *                   `null` = keine Teilstufe
-     * @param wantEnd    die Teilstufe ist vorbei oder der Schalter ist aus
+     * @param ausgegeben hat das Kommando das Aktuationstor passiert und
+     *                   steht wirklich in der APSResult-Ausgabe?
+     */
+    fun klassifiziere(
+        rateUPerH: Double?,
+        durationMin: Int?,
+        scheduledBasalUPerH: Double,
+        basalStepUPerH: Double,
+        ausgegeben: Boolean,
+    ): Wirkung {
+        if (!ausgegeben || rateUPerH == null || durationMin == null) return Wirkung.NO_REQUEST
+        if (!rateUPerH.isFinite() || rateUPerH < 0.0 || durationMin < 0) return Wirkung.NO_REQUEST
+        // EINE RATE 0 IST NIE EINE TEILRATE - auch nicht mit voller Dauer.
+        // Das ist die Schutz-Null, und fuer die Besitzfrage bedeutet sie
+        // dasselbe wie ein Abbruch: danach laeuft KEINE eigene Teilrate
+        // mehr. (Vom Runner-Ausgabetest gefunden: sonst wurde eine
+        // Schutz-Null als erwartete Teilrate mit Rate 0 gebucht.)
+        if (rateUPerH == 0.0) return Wirkung.CANCEL_TO_PROFILE
+        if (!scheduledBasalUPerH.isFinite() || !basalStepUPerH.isFinite() || basalStepUPerH <= 0.0)
+            return Wirkung.NO_REQUEST
+        // GENAU die Bedingung aus LoopPlugin.applyAPSRequest - ein GANZER
+        // Basalschritt, nicht ein halber.
+        if (abs(rateUPerH - scheduledBasalUPerH) < basalStepUPerH) return Wirkung.CANCEL_TO_PROFILE
+        if (durationMin == 0) return Wirkung.CANCEL_TO_PROFILE
+        return Wirkung.SET_PARTIAL
+    }
+
+    /**
+     * DIE FORTSCHREIBUNG DES ZUSTANDS - Berechtigungen, keine Tatsachen.
+     * Was tatsaechlich hinausging, bucht [buche].
      */
     fun advance(
-        own: Own?,
+        state: State,
         view: View,
         nowTs: Long,
         basalStepUPerH: Double,
         wunschRate: Double? = null,
         wantEnd: Boolean = false,
     ): Step {
-        if (own == null || !own.valid) {
-            // Ohne Nachweis ist ein Setzwunsch immer zulaessig - erst das
-            // tatsaechliche Kommando legt den Nachweis an.
-            val neu = wunschRate != null && wunschRate.isFinite() && wunschRate > 0.0 && !wantEnd
-            return Step(null, smbBlocked = false, sendCancel = false, allowSet = neu, reason = Reason.NONE)
-        }
+        val wunsch = wunschRate?.takeIf { it.isFinite() && it > 0.0 }
+        if (state.leer && state.ending == null)
+            return Step(state, smbBlocked = false, sendCancel = false, allowSet = wunsch != null && !wantEnd, reason = Reason.NONE)
 
-        // (1) UNBRAUCHBARE SICHT SAGT NICHTS. Zustand halten, nichts
-        //     abbrechen, nichts neu setzen, SMB gesperrt lassen. Genau hier
-        //     stuerzte die erste Fassung ab, weil sie `current == null` als
-        //     Beweis las.
+        // (1) UNBRAUCHBARE SICHT SAGT NICHTS. Halten, nichts abbrechen,
+        //     nichts setzen, SMB gesperrt lassen.
         val current = when (view) {
-            is View.Unknown       -> return Step(own, smbBlocked = true, sendCancel = false, allowSet = false, reason = Reason.VIEW_UNKNOWN_HELD)
+            is View.Unknown       -> return Step(state, smbBlocked = true, sendCancel = false, allowSet = false, reason = Reason.VIEW_UNKNOWN_HELD)
             is View.Authoritative -> view.current
         }
-        val passt = matches(own, current, nowTs, basalStepUPerH)
+        val pendingPasst = matches(state.pendingRequest, current, nowTs, basalStepUPerH)
+        val confirmedPasst = matches(state.confirmedRunning, current, nowTs, basalStepUPerH)
 
-        // (2) BEENDEN GEWOLLT ODER SCHON IM GANG - schlaegt jeden Setzwunsch.
-        if (wantEnd || own.phase == Phase.ENDING) {
-            val e = if (own.phase == Phase.ENDING) own
-            else own.copy(phase = Phase.ENDING, phaseSinceTs = nowTs, endAttempts = 0, lastEndRequestTs = 0L)
-            if (!passt) {
-                // Nur eine NIE bestaetigte Anforderung geniesst die Frist.
-                // War sie schon einmal sichtbar, ist ein autoritatives
-                // "nicht mehr da" die Bestaetigung des Endes.
-                return if (!own.everRunning && nowTs - own.setAtTs <= CONFIRM_WINDOW_MIN * 60_000L)
-                    Step(e, smbBlocked = true, sendCancel = false, allowSet = false, reason = Reason.WAITING_CONFIRM)
-                else Step(null, smbBlocked = false, sendCancel = false, allowSet = false, reason = Reason.CLEARED_CONFIRMED)
+        // (2) BEFOERDERUNG UND VERFALL - getrennt, das ist der ganze Punkt.
+        var s = state
+        if (pendingPasst)
+            s = s.copy(confirmedRunning = s.pendingRequest, pendingRequest = null, pendingAttempts = 0)
+        else if (s.confirmedRunning != null && !confirmedPasst)
+        // Die bestaetigte Rate ist autoritativ weg. Eine noch offene
+        // Anforderung bleibt davon UNBERUEHRT - sie hat ihre eigene Frist.
+            s = s.copy(confirmedRunning = null)
+        val laeuftEigenes = pendingPasst || confirmedPasst
+
+        // (3) BEENDEN GEWOLLT ODER SCHON IM GANG - schlaegt jeden Setzwunsch.
+        if (wantEnd || s.ending != null) {
+            val e = s.ending ?: Ending(sinceTs = nowTs)
+            s = s.copy(ending = e)
+            if (!laeuftEigenes) {
+                // Eine offene Anforderung kann noch verspaetet auftauchen.
+                val offen = s.pendingRequest
+                val nochInFrist = offen != null && nowTs - offen.setAtTs <= CONFIRM_WINDOW_MIN * 60_000L
+                return if (nochInFrist)
+                    Step(s, smbBlocked = true, sendCancel = false, allowSet = false, reason = Reason.WAITING_CONFIRM)
+                else Step(State(), smbBlocked = false, sendCancel = false, allowSet = false, reason = Reason.CLEARED_CONFIRMED)
             }
-            if (e.endAttempts >= END_MAX_ATTEMPTS)
-                return Step(e, smbBlocked = true, sendCancel = false, allowSet = false, reason = Reason.END_GIVEN_UP)
-            val darfAbbrechen = e.lastEndRequestTs == 0L ||
-                nowTs - e.lastEndRequestTs >= END_BACKOFF_MIN * 60_000L
+            if (e.attempts >= END_MAX_ATTEMPTS)
+                return Step(s, smbBlocked = true, sendCancel = false, allowSet = false, reason = Reason.END_GIVEN_UP)
+            val darfAbbrechen = e.lastRequestTs == 0L ||
+                nowTs - e.lastRequestTs >= END_BACKOFF_MIN * 60_000L
             return if (darfAbbrechen)
                 Step(
-                    e, smbBlocked = true, sendCancel = true, allowSet = false,
-                    reason = if (e.endAttempts == 0) Reason.END_REQUESTED else Reason.END_RETRY,
+                    s, smbBlocked = true, sendCancel = true, allowSet = false,
+                    reason = if (e.attempts == 0) Reason.END_REQUESTED else Reason.END_RETRY,
                 )
-            else Step(e, smbBlocked = true, sendCancel = false, allowSet = false, reason = Reason.END_BACKOFF_WAIT)
+            else Step(s, smbBlocked = true, sendCancel = false, allowSet = false, reason = Reason.END_BACKOFF_WAIT)
         }
 
-        // (3) AUTORITATIV BESTAETIGT
-        if (passt) {
-            val r = if (own.phase == Phase.RUNNING) own.copy(everRunning = true)
-            else own.copy(phase = Phase.RUNNING, phaseSinceTs = nowTs, everRunning = true)
-            // Eine bestaetigt LAUFENDE Rate darf erneuert, gesenkt und
-            // angehoben werden - die Tabelle entscheidet ueber die
-            // Erneuerung selbst (ALREADY_RUNNING/RENEW), und gebucht wird
-            // erst, was sie tatsaechlich sendet.
-            val setzen = wunschRate != null && wunschRate.isFinite() && wunschRate > 0.0
-            return Step(r, smbBlocked = true, sendCancel = false, allowSet = setzen, reason = Reason.CONFIRMED_RUNNING)
-        }
-
-        // (4) PASST NICHT - der Fall, in dem die zweite Race sass.
-        return when (own.phase) {
-            Phase.REQUESTED -> {
-                val fristOffen = nowTs - own.setAtTs <= CONFIRM_WINDOW_MIN * 60_000L
-                if (!fristOffen && !own.everRunning) {
-                    // Frist verstrichen. KEIN stiller Neubeginn: entweder ein
-                    // benannter Neuversuch nach Backoff, oder Schluss.
-                    val gleich = wunschRate != null && abs(wunschRate - own.rateUPerH) <= basalStepUPerH / 2.0
-                    return when {
-                        wunschRate == null || !wunschRate.isFinite() || wunschRate <= 0.0 ->
-                            Step(null, smbBlocked = false, sendCancel = false, allowSet = false, reason = Reason.CONFIRM_TIMEOUT)
-                        !gleich && wunschRate < own.rateUPerH ->
-                            Step(own, smbBlocked = true, sendCancel = false, allowSet = true, reason = Reason.SET_LOWERED)
-                        own.setAttempts >= SET_MAX_ATTEMPTS ->
-                            Step(own, smbBlocked = true, sendCancel = false, allowSet = false, reason = Reason.SET_GIVEN_UP)
-                        own.lastSetRequestTs != 0L && nowTs - own.lastSetRequestTs < SET_BACKOFF_MIN * 60_000L ->
-                            Step(own, smbBlocked = true, sendCancel = false, allowSet = false, reason = Reason.SET_BACKOFF_WAIT)
-                        else ->
-                            Step(own, smbBlocked = true, sendCancel = false, allowSet = true, reason = Reason.SET_RETRY)
+        // (4) EINE OFFENE ANFORDERUNG REGELT DAS SETZEN.
+        val offen = s.pendingRequest
+        if (offen != null) {
+            val fristOffen = nowTs - offen.setAtTs <= CONFIRM_WINDOW_MIN * 60_000L
+            return when {
+                wunsch == null ->
+                    if (fristOffen) Step(s, smbBlocked = true, sendCancel = false, allowSet = false, reason = Reason.WAITING_CONFIRM)
+                    // Frist verstrichen und niemand will mehr: verwerfen, aber
+                    // BENANNT - und nie eine fremde Absenkung anfassen. Eine
+                    // bestaetigt laufende Rate bleibt davon unberuehrt.
+                    else s.copy(pendingRequest = null, pendingAttempts = 0).let {
+                        Step(it, smbBlocked = !it.leer, sendCancel = false, allowSet = false, reason = Reason.CONFIRM_TIMEOUT)
                     }
-                }
-                // Frist offen: die Anforderung steht. Ein Setzwunsch wird
-                // NUR dann durchgelassen, wenn er SICHERER ist.
-                when {
-                    wunschRate == null || !wunschRate.isFinite() || wunschRate <= 0.0 ->
-                        Step(own, smbBlocked = true, sendCancel = false, allowSet = false, reason = Reason.WAITING_CONFIRM)
-                    wunschRate < own.rateUPerH - basalStepUPerH / 2.0 ->
-                        Step(own, smbBlocked = true, sendCancel = false, allowSet = true, reason = Reason.SET_LOWERED)
-                    wunschRate > own.rateUPerH + basalStepUPerH / 2.0 ->
-                        Step(own, smbBlocked = true, sendCancel = false, allowSet = false, reason = Reason.SET_HELD_HIGHER)
-                    else ->
-                        // DIE ZWEITE RACE: hier ging bisher jede Minute ein
-                        // neues Kommando raus und die Frist begann neu.
-                        Step(own, smbBlocked = true, sendCancel = false, allowSet = false, reason = Reason.SET_SUPPRESSED_DUPLICATE)
-                }
+
+                // SICHERER GEHT SOFORT - aber nur, wenn wirklich etwas
+                // von uns LAEUFT, das gesenkt werden koennte. Nimmt die
+                // Pumpe gar nichts an, hat ein niedrigerer Wunsch keinen
+                // Sicherheitswert; er waere bloss ein weiterer Versuch und
+                // wuerde den Deckel aushebeln, sobald die Guard-Rate
+                // wandert (vom Runner-Ausgabetest gefunden: 34 Kommandos
+                // statt 3).
+                s.confirmedRunning != null && wunsch < offen.rateUPerH - basalStepUPerH / 2.0 ->
+                    Step(s, smbBlocked = true, sendCancel = false, allowSet = true, reason = Reason.SET_LOWERED)
+
+                fristOffen && wunsch > offen.rateUPerH + basalStepUPerH / 2.0 ->
+                    Step(s, smbBlocked = true, sendCancel = false, allowSet = false, reason = Reason.SET_HELD_HIGHER)
+
+                fristOffen ->
+                    // DIE RACE: hier ging bisher jede Minute ein Kommando
+                    // raus und die Frist begann neu.
+                    Step(s, smbBlocked = true, sendCancel = false, allowSet = false, reason = Reason.SET_SUPPRESSED_DUPLICATE)
+
+                // Der Deckel gilt fuer die offene Anforderung als GANZES,
+                // nicht je Rate - sonst setzt eine wandernde Rate ihn
+                // jedes Mal zurueck.
+                s.pendingAttempts >= SET_MAX_ATTEMPTS ->
+                    Step(s, smbBlocked = true, sendCancel = false, allowSet = false, reason = Reason.SET_GIVEN_UP)
+
+                else ->
+                    Step(s, smbBlocked = true, sendCancel = false, allowSet = true, reason = Reason.SET_RETRY)
             }
-            // Lief bestaetigt und ist autoritativ weg.
-            Phase.RUNNING   -> Step(null, smbBlocked = false, sendCancel = false, allowSet = false, reason = Reason.CLEARED_CONFIRMED)
-            Phase.ENDING    -> error("in (2) behandelt")
         }
+
+        // (5) NICHTS OFFEN.
+        if (laeuftEigenes)
+        // Eine bestaetigt laufende Rate darf erneuert, gesenkt und
+        // angehoben werden; ueber die Erneuerung selbst entscheidet die
+        // Tabelle (ALREADY_RUNNING/RENEW).
+            return Step(s, smbBlocked = true, sendCancel = false, allowSet = wunsch != null, reason = Reason.CONFIRMED_RUNNING)
+        return Step(
+            State(), smbBlocked = false, sendCancel = false, allowSet = wunsch != null,
+            reason = if (state.leer) Reason.NONE else Reason.CLEARED_CONFIRMED,
+        )
     }
 
     /**
-     * BUCHT EIN TATSAECHLICH GESENDETES SETZKOMMANDO.
-     *
-     * Nur hier bewegt sich `setAtTs` - nicht schon beim Wunsch und nicht
-     * bei einem unterdrueckten Duplikat.
+     * BUCHT, WAS TATSAECHLICH HINAUSGING - nach [Wirkung], nicht nach
+     * Wunsch. Nur hier bewegen sich Kennungen und Zaehler.
      */
-    fun registerSet(
-        own: Own?,
+    fun buche(
+        state: State,
+        wirkung: Wirkung,
         rateUPerH: Double,
         durationMin: Int,
         nowTs: Long,
         basalStepUPerH: Double,
-    ): Own {
-        val gleicheRate = own != null && own.valid &&
-            abs(own.rateUPerH - rateUPerH) <= basalStepUPerH / 2.0
-        // Eine ERNEUERUNG derselben bestaetigt laufenden Rate bleibt RUNNING -
-        // sonst faellt eine laufende Stufe bei jeder Erneuerung in die Frist
-        // zurueck.
-        if (gleicheRate && own!!.phase == Phase.RUNNING)
-            return own.copy(setAtTs = nowTs, durationMin = durationMin, lastSetRequestTs = nowTs)
-        // Derselbe Neuversuch fuer dieselbe Anforderung zaehlt hoch.
-        if (gleicheRate && own!!.phase == Phase.REQUESTED)
-            return own.copy(
-                setAtTs = nowTs, durationMin = durationMin, phaseSinceTs = nowTs,
-                setAttempts = own.setAttempts + 1, lastSetRequestTs = nowTs,
-            )
-        // Andere Rate oder gar kein Nachweis: eine NEUE Anforderung.
-        //
-        // `everRunning` WANDERT MIT, wenn schon eine eigene Rate bestaetigt
-        // lief. Sonst ginge beim Anheben (der Guard gibt mehr frei, sobald
-        // die Bahn steigt) das Wissen verloren, dass ueberhaupt etwas von
-        // uns laeuft - und ein autoritatives "nichts da" fiele danach in
-        // die Bestaetigungsfrist statt den Besitz zu beenden.
-        return Own(
-            rateUPerH = rateUPerH, setAtTs = nowTs, durationMin = durationMin,
-            phase = Phase.REQUESTED, phaseSinceTs = nowTs,
-            setAttempts = 1, lastSetRequestTs = nowTs,
-            everRunning = own?.everRunning == true,
-        )
-    }
+    ): State = when (wirkung) {
+        // Nichts ging raus: nichts aendert sich. Ein vom Aktuationstor
+        // verworfener Wunsch darf setAtTs und Zaehler NICHT bewegen.
+        Wirkung.NO_REQUEST -> state
 
-    /** Bucht ein tatsaechlich gesendetes Abbruchkommando. */
-    fun registerCancel(own: Own?, nowTs: Long): Own? {
-        if (own == null || !own.valid) return own
-        return own.copy(
-            phase = Phase.ENDING,
-            phaseSinceTs = if (own.phase == Phase.ENDING) own.phaseSinceTs else nowTs,
-            endAttempts = own.endAttempts + 1,
-            lastEndRequestTs = nowTs,
-        )
+        // AAPS bricht ab. Danach laeuft nichts von uns - eine Kennung
+        // dafuer waere eine Kennung fuer nichts. Der Abbruchversuch wird
+        // gezaehlt, damit Backoff und Deckel greifen.
+        Wirkung.CANCEL_TO_PROFILE ->
+            if (state.leer && state.ending == null) State()
+            else {
+                val e = state.ending ?: Ending(sinceTs = nowTs)
+                state.copy(
+                    pendingRequest = null, pendingAttempts = 0,
+                    ending = e.copy(attempts = e.attempts + 1, lastRequestTs = nowTs),
+                )
+            }
+
+        Wirkung.SET_PARTIAL -> {
+            // Der Zaehler laeuft fuer die offene ANFORDERUNG, nicht je
+            // Rate: eine wandernde Guard-Rate darf ihn nicht bei jedem
+            // Versuch zuruecksetzen. Neu beginnt er erst, wenn wieder
+            // etwas BESTAETIGT laeuft - dann ist die vorige Anforderung
+            // geklaert.
+            val neuBeginnen = state.pendingRequest == null || state.confirmedRunning != null
+            state.copy(
+                pendingRequest = Identity(rateUPerH, nowTs, durationMin),
+                pendingAttempts = if (neuBeginnen) 1 else state.pendingAttempts + 1,
+                ending = null,
+            )
+        }
     }
 }

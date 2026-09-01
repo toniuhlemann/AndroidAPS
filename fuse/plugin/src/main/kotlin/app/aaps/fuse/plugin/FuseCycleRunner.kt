@@ -5340,7 +5340,7 @@ class FuseCycleRunner(
         val tbrSicht = if (tempBasalFallback) PartialTbrOwnership.View.Unknown
         else PartialTbrOwnership.View.Authoritative(currentTbr)
         val ownStep = PartialTbrOwnership.advance(
-            own = episodes.ownPartialTbr,
+            state = episodes.ownPartialTbr,
             view = tbrSicht,
             nowTs = computeTs,
             basalStepUPerH = pumpe.basalStepUPerH,
@@ -5371,7 +5371,7 @@ class FuseCycleRunner(
             // Nachweis vom Ergebnis desselben Zyklus abgehangen, den er
             // mitbestimmt.
             endOwnPartial = ownStep.sendCancel,
-            ownPartialHeld = ownStep.own != null,
+            ownPartialHeld = ownStep.smbBlocked,
             suppressPartialSet = !ownStep.allowSet,
             cfg = TbrPolicy.Config(
                 basalStepUPerH = pumpe.basalStepUPerH,
@@ -5409,18 +5409,27 @@ class FuseCycleRunner(
         // daran haengt, dass die Bestaetigungsfrist ueberhaupt ablaufen
         // kann und CONFIRM_TIMEOUT je greift.
         episodes.ownPartialTbr = run {
-            val req = combined.request ?: return@run ownStep.own
-            when {
-                decision.tbr == FuseController.TbrAction.PARTIAL_BASAL &&
-                    req.rateUPerH > 0.0 && req.durationMin > 0 ->
-                    PartialTbrOwnership.registerSet(
-                        ownStep.own, req.rateUPerH, req.durationMin, computeTs, pumpe.basalStepUPerH)
-
-                combined.reason.contains(TbrPolicy.KEEP_END_OWN_PARTIAL_REASON) ->
-                    PartialTbrOwnership.registerCancel(ownStep.own, computeTs)
-
-                else -> ownStep.own
-            }
+            val req = combined.request
+            // DIE EFFEKTIVE WIRKUNG, nicht der Wunsch (Review-P0-2):
+            //  - `gate.allowed` entscheidet, ob das Kommando ueberhaupt in
+            //    die APSResult-Ausgabe kommt (FuseRtBuilder streicht es
+            //    sonst) - ein gestrichener Wunsch darf nichts bewegen;
+            //  - eine Rate innerhalb eines Basalschritts um das Profilbasal
+            //    fuehrt LoopPlugin als ABBRUCH aus, nicht als Setzen. Die
+            //    Guard-Suche liefert genau das haeufig, weil sie am
+            //    Profilbasal gedeckelt ist.
+            val wirkung = PartialTbrOwnership.klassifiziere(
+                rateUPerH = req?.rateUPerH,
+                durationMin = req?.durationMin,
+                scheduledBasalUPerH = profile.getBasal(computeTs),
+                basalStepUPerH = pumpe.basalStepUPerH,
+                ausgegeben = gate.allowed && req != null,
+            )
+            PartialTbrOwnership.buche(
+                ownStep.state, wirkung,
+                req?.rateUPerH ?: 0.0, req?.durationMin ?: 0,
+                computeTs, pumpe.basalStepUPerH,
+            )
         }
 
         // ---- LAUFENDE NULLPHASEN-BILANZ (rein beobachtend) ---------------

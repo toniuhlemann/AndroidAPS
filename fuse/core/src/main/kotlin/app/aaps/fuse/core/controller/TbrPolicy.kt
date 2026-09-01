@@ -476,6 +476,24 @@ object TbrPolicy {
         // darstellbar - dann gilt weiter die Schutz-Null.
         if (isZeroRate(rate, schritt))
             return safetyZero(current, cfg).let { it.copy(reason = "PARTIAL_BELOW_STEP|" + it.reason) }
+        // TRAEGT DIE BAHN DAS VOLLE PROFILBASAL, ist das keine Teilstufe,
+        // sondern der Normalzustand - und der wird als ABBRUCH gestellt,
+        // nicht als positive TBR.
+        //
+        // `LoopPlugin.applyAPSRequest` fuehrt eine Rate innerhalb eines
+        // Basalschritts um `pump.baseBasalRate` ohnehin als
+        // `cancelTempBasal` aus. Sie trotzdem als 30-min-TBR zu stellen
+        // hiess: FUSE erwartet eine laufende Teilrate, die Pumpe hat aber
+        // keine - und weil `current` dann leer bleibt, forderte die
+        // Tabelle sie in JEDEM Folgezyklus erneut an (im Ausgabetest 34
+        // Kommandos in 40 Zyklen). Der Abbruch sagt dasselbe eindeutig und
+        // genau einmal.
+        if (abs(rate - scheduledBasalUPerH) < schritt) {
+            val zurueck = Outcome.Request(0.0, 0)
+            return if (current == null)
+                Decision(Outcome.NoRequest, PARTIAL_ALREADY_AT_PROFILE_REASON, alarm = false, smbBlockCause = ursache)
+            else Decision(zurueck, PARTIAL_TO_PROFILE_REASON, alarm = false, smbBlockCause = ursache)
+        }
         val req = Outcome.Request(rate, cfg.defaultDurationMin)
         if (current == null) return Decision(req, "PARTIAL_NEW", alarm = false, smbBlockCause = ursache)
         val laeuftSchon = abs(current.absoluteRateUPerH - rate) <= schritt / 2.0
@@ -518,6 +536,12 @@ object TbrPolicy {
      *  unterscheiden, sonst sieht eine wartende Anforderung aus wie ein
      *  Zyklus ohne Teilstufe. */
     const val PARTIAL_SET_SUPPRESSED_REASON = "PARTIAL_SET_SUPPRESSED"
+
+    /** Die Bahn traegt das volle Profilbasal: Abbruch statt positiver TBR. */
+    const val PARTIAL_TO_PROFILE_REASON = "PARTIAL_TO_PROFILE"
+
+    /** Dasselbe, aber es laeuft ohnehin nichts - kein Kommando noetig. */
+    const val PARTIAL_ALREADY_AT_PROFILE_REASON = "PARTIAL_ALREADY_AT_PROFILE"
 
     /** Der Cancel wurde unterdrueckt, weil er in diesem Fenster schon zu oft
      *  scheiterte - s. [Config.endZeroMaxAttempts]. */

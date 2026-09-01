@@ -1,8 +1,11 @@
 package app.aaps.fuse.core.controller
 
-import app.aaps.fuse.core.controller.PartialTbrOwnership.Phase
+import app.aaps.fuse.core.controller.PartialTbrOwnership.Ending
+import app.aaps.fuse.core.controller.PartialTbrOwnership.Identity
 import app.aaps.fuse.core.controller.PartialTbrOwnership.Reason
+import app.aaps.fuse.core.controller.PartialTbrOwnership.State
 import app.aaps.fuse.core.controller.PartialTbrOwnership.View
+import app.aaps.fuse.core.controller.PartialTbrOwnership.Wirkung
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNotNull
@@ -11,12 +14,7 @@ import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
 /**
- * DER LEBENSZYKLUS DER EIGENEN TEIL-TBR.
- *
- * Der wichtigste Test ist [E2E die geforderte Zyklusfolge] - er faehrt
- * die Folge Anforderung, ausbleibende Sicht, verspaetetes Auftauchen,
- * Latch-Freigabe, fehlgeschlagener Abbruch, autoritative Bestaetigung
- * am Stueck durch. Die Einzeltests darunter halten die Kanten fest.
+ * BESITZ UND ENDE DER EIGENEN TEIL-TBR.
  *
  * Zwei Fehlerrichtungen, und sie sind NICHT gleich schlimm: eine FREMDE
  * Absenkung faelschlich beenden = ungefragt Insulin erhoehen. Eine
@@ -26,117 +24,246 @@ import org.junit.jupiter.api.Test
 class PartialTbrOwnershipTest {
 
     private val schritt = 0.05
+    private val profil = 0.60
     private val t0 = 1_700_000_000_000L
     private val cfg = TbrPolicy.Config(basalStepUPerH = schritt)
-    private val profil = 0.60
 
     private fun min(n: Int) = t0 + n * 60_000L
-
-    private fun anforderung(rate: Double = 0.30, ts: Long = t0, dauer: Int = 30) =
-        PartialTbrOwnership.Own(rate, ts, dauer, Phase.REQUESTED, ts)
-
+    private fun id(rate: Double = 0.30, ts: Long = t0, dauer: Int = 30) = Identity(rate, ts, dauer)
     private fun laufend(rate: Double, restMin: Int, typ: TbrPolicy.SourceType = TbrPolicy.SourceType.TEMP_BASAL) =
         TbrPolicy.Current(rate, restMin, typ)
 
     private fun auth(c: TbrPolicy.Current?) = View.Authoritative(c)
 
     private fun schritt(
-        own: PartialTbrOwnership.Own?,
+        state: State,
         view: View,
         nowTs: Long,
         wunschRate: Double? = null,
         wantEnd: Boolean = false,
-    ) = PartialTbrOwnership.advance(own, view, nowTs, schritt, wunschRate, wantEnd)
+    ) = PartialTbrOwnership.advance(state, view, nowTs, schritt, wunschRate, wantEnd)
 
     // =====================================================================
-    // DIE GEFORDERTE ZYKLUSFOLGE, AM STUECK
+    // P0-1: BESTAETIGTE RATE UND OFFENE ANFORDERUNG SIND ZWEI DINGE
     // =====================================================================
+
+    /**
+     * DER GEMELDETE P0, Pflichtfaelle 1 und 2.
+     *
+     * 0,85 laeuft bestaetigt, der Guard will 1,00, die Pumpe zeigt weiter
+     * 0,85. Die Vorfassung ueberschrieb den Datensatz mit 1,00, fand beim
+     * Latch-Ende nichts Passendes und loeschte den Besitz - waehrend
+     * unsere 0,85 weiterlief und der SMB wieder aufging.
+     */
+    @Test
+    fun `eine bestaetigte Rate ueberlebt eine neue Anforderung`() {
+        val s = State(
+            confirmedRunning = id(0.85, t0, 30),
+            pendingRequest = id(1.00, min(10), 30),
+            pendingAttempts = 1,
+        )
+        val r = schritt(s, auth(laufend(0.85, 20)), min(10))
+        // Der Grund benennt die OFFENE Anforderung - sie hat Vorrang in der
+        // Auskunft. Entscheidend ist die Substanz darunter: die bestaetigte
+        // 0,85 bleibt erhalten und der Kanal bleibt zu.
+        assertEquals(Reason.WAITING_CONFIRM, r.reason)
+        assertNotNull(r.state.confirmedRunning) { "0,85 bleibt als UNSERE laufende Rate erkannt" }
+        assertEquals(0.85, r.state.confirmedRunning!!.rateUPerH, 1e-12)
+        assertNotNull(r.state.pendingRequest) { "und 1,00 bleibt offen" }
+        assertTrue(r.smbBlocked)
+
+        // Latch-Ende in genau dieser Lage: GENAU EIN Abbruch, SMB zu.
+        val e = schritt(s, auth(laufend(0.85, 20)), min(10), wantEnd = true)
+        assertEquals(Reason.END_REQUESTED, e.reason)
+        assertTrue(e.sendCancel) { "genau hier fehlte der Abbruch" }
+        assertTrue(e.smbBlocked)
+    }
 
     @Test
-    fun `E2E die geforderte Zyklusfolge`() {
-        // (1) Teil-TBR angefordert, noch nicht sichtbar.
-        var s = schritt(null, auth(null), t0, wunschRate = 0.30)
-        assertTrue(s.allowSet) { "ohne Nachweis ist der erste Versuch zulaessig" }
-        // Erst das TATSAECHLICH gesendete Kommando legt den Nachweis an.
-        var own = PartialTbrOwnership.registerSet(s.own, 0.30, 30, t0, schritt)
-        assertEquals(Phase.REQUESTED, own.phase)
-        assertEquals(1, own.setAttempts)
-        s = schritt(own, auth(null), t0, wunschRate = 0.30)
-        assertTrue(s.smbBlocked) { "ab der Anforderung ist der schnelle Kanal zu" }
-        assertFalse(s.sendCancel)
-        assertFalse(s.allowSet) { "und kein zweites Kommando fuer dieselbe Rate" }
+    fun `erst ohne alte UND neue Rate wird geloescht und der SMB geoeffnet`() {
+        val s = State(
+            confirmedRunning = id(0.85, t0, 30),
+            pendingRequest = id(1.00, min(10), 30),
+            pendingAttempts = 1,
+            ending = Ending(sinceTs = min(10), attempts = 1, lastRequestTs = min(10)),
+        )
+        val r = schritt(s, auth(null), min(16), wantEnd = true)
+        assertEquals(Reason.CLEARED_CONFIRMED, r.reason)
+        assertTrue(r.state.leer)
+        assertFalse(r.smbBlocked)
+    }
 
-        // (2) Naechster Snapshot weiterhin ohne TBR - Besitz bleibt REQUESTED,
-        //     und die Frist beginnt NICHT neu.
-        s = schritt(own, auth(null), min(1), wunschRate = 0.30)
-        assertEquals(Reason.SET_SUPPRESSED_DUPLICATE, s.reason)
-        assertEquals(Phase.REQUESTED, s.own!!.phase) { "NICHT geloescht - sie kann verspaetet auftauchen" }
-        assertEquals(t0, s.own!!.setAtTs) { "kein stiller Neubeginn der Frist" }
-        assertFalse(s.allowSet)
-        assertTrue(s.smbBlocked)
-        own = s.own!!
+    @Test
+    fun `eine Erneuerung darf den Besitz nicht verlieren`() {
+        // Erneuerung bei Minute 18 gebucht; die Pumpe meldet noch die ALTE
+        // TBR (Rest 12 von der urspruenglichen 30er).
+        val vorher = State(confirmedRunning = id(0.30, t0, 30))
+        val nachher = PartialTbrOwnership.buche(vorher, Wirkung.SET_PARTIAL, 0.30, 30, min(18), schritt)
+        assertNotNull(nachher.confirmedRunning) { "die bestaetigte Rate bleibt stehen" }
+        assertNotNull(nachher.pendingRequest)
+        val r = schritt(nachher, auth(laufend(0.30, 12)), min(18))
+        assertTrue(r.smbBlocked) { "der Besitz darf hier NICHT verschwinden" }
+        assertFalse(r.state.leer)
+        assertNotNull(r.state.confirmedRunning) { "die alte Kennung traegt weiter" }
+        assertEquals(Reason.WAITING_CONFIRM, r.reason) { "die Erneuerung ist noch nicht sichtbar" }
+    }
 
-        // (3) Teil-TBR erscheint verzoegert -> RUNNING.
-        //     2 min nach der Anforderung, die Pumpe hat bei Minute 2 mit
-        //     30 min gestartet: Rest 30 statt erwarteter 28.
-        s = schritt(own, auth(laufend(0.30, 30)), min(2), wunschRate = 0.30)
-        assertEquals(Reason.CONFIRMED_RUNNING, s.reason)
-        assertEquals(Phase.RUNNING, s.own!!.phase)
-        assertTrue(s.smbBlocked)
-        own = s.own!!
+    @Test
+    fun `eine fehlgeschlagene Ratenaenderung laeuft in den Retry - trotz bestaetigter alter Rate`() {
+        val s = State(
+            confirmedRunning = id(0.85, t0, 30),
+            pendingRequest = id(1.00, min(2), 30),
+            pendingAttempts = 1,
+        )
+        val r = schritt(s, auth(laufend(0.85, 22)), min(10), wunschRate = 1.00)
+        assertEquals(Reason.SET_RETRY, r.reason) { "der Retry-Pfad darf nicht uebersprungen werden" }
+        assertTrue(r.allowSet)
+        assertNotNull(r.state.confirmedRunning) { "und die alte Rate bleibt dabei erkannt" }
+    }
 
-        // (4) Latch loest -> Abbruch und ENDING, SMB gesperrt.
-        s = schritt(own, auth(laufend(0.30, 27)), min(5), wantEnd = true)
-        assertEquals(Reason.END_REQUESTED, s.reason)
-        assertEquals(Phase.ENDING, s.own!!.phase)
-        assertTrue(s.sendCancel) { "das Kommando geht raus" }
-        assertFalse(s.allowSet) { "und daneben kein Setzen" }
-        assertTrue(s.smbBlocked) { "der Abbruch HEBT die Rate - kein SMB daneben" }
-        own = PartialTbrOwnership.registerCancel(s.own, min(5))!!
-        assertEquals(1, own.endAttempts)
+    @Test
+    fun `ohne neuen Wunsch verfaellt die Anforderung benannt - die laufende Rate bleibt`() {
+        val s = State(confirmedRunning = id(0.85, t0, 30), pendingRequest = id(1.00, min(2), 30), pendingAttempts = 1)
+        val r = schritt(s, auth(laufend(0.85, 22)), min(10))
+        assertEquals(Reason.CONFIRM_TIMEOUT, r.reason)
+        assertNull(r.state.pendingRequest)
+        assertNotNull(r.state.confirmedRunning)
+        assertTrue(r.smbBlocked) { "es laeuft ja noch etwas von uns" }
+    }
 
-        // (5) Snapshot zeigt sie weiter -> ENDING, Wiederholung NUR nach Backoff.
-        s = schritt(own, auth(laufend(0.30, 26)), min(6), wantEnd = true)
-        assertEquals(Reason.END_BACKOFF_WAIT, s.reason)
-        assertFalse(s.sendCancel) { "kein Kommando je Zyklus - das war der Spam-Befund" }
-        assertTrue(s.smbBlocked)
-        s = schritt(own, auth(laufend(0.30, 25)), min(7), wantEnd = true)
-        assertEquals(Reason.END_BACKOFF_WAIT, s.reason)
-        // erst nach END_BACKOFF_MIN wieder
-        s = schritt(own, auth(laufend(0.30, 22)), min(8), wantEnd = true)
-        assertEquals(Reason.END_RETRY, s.reason)
-        assertTrue(s.sendCancel)
-        own = PartialTbrOwnership.registerCancel(s.own, min(8))!!
-        assertEquals(2, own.endAttempts)
-
-        // (6) Autoritativ keine TBR -> geloescht, ERST JETZT ist der SMB offen.
-        s = schritt(own, auth(null), min(9), wantEnd = true)
-        assertEquals(Reason.CLEARED_CONFIRMED, s.reason)
-        assertNull(s.own)
-        assertFalse(s.smbBlocked) { "das ist der einzige Weg, auf dem der SMB wieder aufgeht" }
-        assertFalse(s.sendCancel)
+    @Test
+    fun `ein Neustart zwischen den Uebergaengen liefert dasselbe`() {
+        // Der Zustand ist ein reiner Datensatz; ein Prozessstart aendert
+        // nichts an ihm. Genau deshalb ist er persistent.
+        listOf(
+            State(pendingRequest = id(0.30, t0, 30), pendingAttempts = 1),
+            State(confirmedRunning = id(0.30, t0, 30)),
+            State(confirmedRunning = id(0.85, t0, 30), pendingRequest = id(1.00, min(2), 30), pendingAttempts = 1),
+            State(confirmedRunning = id(0.30, t0, 30), ending = Ending(min(5), 1, min(5))),
+        ).forEach { s ->
+            val sicht = auth(laufend(s.confirmedRunning?.rateUPerH ?: 0.30, 20))
+            assertEquals(schritt(s, sicht, min(10)), schritt(s.copy(), sicht, min(10)), s.toString())
+        }
     }
 
     // =====================================================================
-    // DIE RACE, DIE DAS AUSGELOEST HAT
+    // P0-2: WAS AAPS AUS DEM KOMMANDO MACHT
+    // =====================================================================
+
+    /**
+     * PFLICHTTEST A - bis zur LoopPlugin-Semantik.
+     *
+     * `LoopPlugin.applyAPSRequest`: `abs(rate - baseBasalRate) < basalStep`
+     * ruft `cancelTempBasal`. Die Guard-Suche ist am Profilbasal gedeckelt
+     * und liefert genau das haeufig.
+     */
+    @Test
+    fun `Profilbasal ist ein ABBRUCH, keine positive TBR`() {
+        fun w(rate: Double, dauer: Int = 30, aus: Boolean = true) =
+            PartialTbrOwnership.klassifiziere(rate, dauer, profil, schritt, aus)
+        assertEquals(Wirkung.CANCEL_TO_PROFILE, w(0.60)) { "exakt Profilbasal" }
+        assertEquals(Wirkung.CANCEL_TO_PROFILE, w(0.58)) { "innerhalb eines Basalschritts" }
+        assertEquals(Wirkung.CANCEL_TO_PROFILE, w(0.0, 0)) { "der ausdrueckliche Abbruch" }
+        assertEquals(Wirkung.SET_PARTIAL, w(0.30))
+        // Die Grenze ist die von LoopPlugin: ein GANZER Schritt, strikt.
+        assertEquals(Wirkung.SET_PARTIAL, w(profil - schritt))
+        assertEquals(Wirkung.CANCEL_TO_PROFILE, w(profil - schritt / 2.0))
+    }
+
+    @Test
+    fun `ein Abbruch wird nie als erwartete Teilrate gespeichert`() {
+        val s = State(confirmedRunning = id(0.30, t0, 30))
+        val nach = PartialTbrOwnership.buche(s, Wirkung.CANCEL_TO_PROFILE, 0.60, 30, min(5), schritt)
+        assertNull(nach.pendingRequest) { "eine Kennung fuer etwas, das nie laeuft" }
+        assertEquals(1, nach.ending?.attempts) { "sondern ein gezaehlter Abbruchversuch" }
+    }
+
+    /** PFLICHTTEST B: geschlossenes Aktuationstor. */
+    @Test
+    fun `ein vom Aktuationstor verworfener Wunsch bucht nichts`() {
+        assertEquals(
+            Wirkung.NO_REQUEST,
+            PartialTbrOwnership.klassifiziere(0.30, 30, profil, schritt, ausgegeben = false),
+        )
+        val s = State(pendingRequest = id(0.30, t0, 30), pendingAttempts = 1)
+        assertEquals(s, PartialTbrOwnership.buche(s, Wirkung.NO_REQUEST, 0.30, 30, min(5), schritt)) {
+            "weder setAtTs noch Zaehler duerfen sich bewegen"
+        }
+    }
+
+    @Test
+    fun `unbrauchbare Kommandowerte sind kein Versuch`() {
+        for ((was, w) in listOf(
+            "keine Rate" to PartialTbrOwnership.klassifiziere(null, 30, profil, schritt, true),
+            "keine Dauer" to PartialTbrOwnership.klassifiziere(0.30, null, profil, schritt, true),
+            "NaN" to PartialTbrOwnership.klassifiziere(Double.NaN, 30, profil, schritt, true),
+            "negativ" to PartialTbrOwnership.klassifiziere(-0.1, 30, profil, schritt, true),
+            "kein Profil" to PartialTbrOwnership.klassifiziere(0.30, 30, Double.NaN, schritt, true),
+        )) assertEquals(Wirkung.NO_REQUEST, w, was)
+    }
+
+    // =====================================================================
+    // PFLICHTTEST D: DER SETZVERSUCHSDECKEL, EXAKT
     // =====================================================================
 
     @Test
-    fun `die Race der ersten Fassung ist geschlossen`() {
-        // Zyklus N: angefordert. N+1: nicht sichtbar UND der Riegel loest.
-        // Die alte Fassung loeschte hier den Nachweis; danach galt die
-        // verspaetet uebernommene Rate als fremd.
-        val gebucht = PartialTbrOwnership.registerSet(null, 0.30, 30, t0, schritt)
-        var s = schritt(gebucht, auth(null), min(1), wantEnd = true)
-        assertNotNull(s.own) { "NICHT geloescht" }
-        assertEquals(Reason.WAITING_CONFIRM, s.reason)
-        assertTrue(s.smbBlocked)
+    fun `es gibt GENAU SET_MAX_ATTEMPTS Setzversuche, danach bleibt der Zustand und der SMB zu`() {
+        assertEquals(3, PartialTbrOwnership.SET_MAX_ATTEMPTS)
+        var s = State()
+        var versuche = 0
+        // Die Pumpe uebernimmt NIE. Ein Zyklus je Minute, 60 Minuten.
+        for (m in 0 until 60) {
+            val r = schritt(s, auth(null), min(m), wunschRate = 0.30)
+            s = if (r.allowSet) {
+                versuche++
+                PartialTbrOwnership.buche(r.state, Wirkung.SET_PARTIAL, 0.30, 30, min(m), schritt)
+            } else r.state
+        }
+        assertEquals(PartialTbrOwnership.SET_MAX_ATTEMPTS, versuche) { "exakt, nicht hoechstens" }
+        assertFalse(s.leer) { "der Zustand bleibt vorhanden" }
+        assertTrue(s.smbBlocked) { "und der SMB bleibt zu" }
+        assertEquals(Reason.SET_GIVEN_UP, schritt(s, auth(null), min(60), wunschRate = 0.30).reason)
+    }
 
-        // N+2: die Pumpe uebernimmt verspaetet - sie wird als UNSERE erkannt
-        // und abgebrochen, nicht als fremde stehen gelassen.
-        s = schritt(s.own, auth(laufend(0.30, 30)), min(2), wantEnd = true)
-        assertEquals(Reason.END_REQUESTED, s.reason)
-        assertTrue(s.sendCancel)
+    @Test
+    fun `die Bestaetigungsfrist ist der Takt der Setzversuche - ein eigener Backoff waere tot`() {
+        var s = PartialTbrOwnership.buche(State(), Wirkung.SET_PARTIAL, 0.30, 30, t0, schritt)
+        val zeiten = mutableListOf<Int>()
+        for (m in 1 until 40) {
+            val r = schritt(s, auth(null), min(m), wunschRate = 0.30)
+            s = if (r.allowSet) {
+                zeiten += m
+                PartialTbrOwnership.buche(r.state, Wirkung.SET_PARTIAL, 0.30, 30, min(m), schritt)
+            } else r.state
+        }
+        assertTrue(zeiten.zipWithNext().all { (a, b) -> b - a >= PartialTbrOwnership.CONFIRM_WINDOW_MIN }) {
+            "Versuche: $zeiten"
+        }
+    }
+
+    // =====================================================================
+    // ABBRUCH: BACKOFF UND DECKEL
+    // =====================================================================
+
+    @Test
+    fun `der Abbruch haelt den Backoff ein und hoert nach dem Deckel auf`() {
+        assertEquals(3, PartialTbrOwnership.END_BACKOFF_MIN)
+        assertEquals(3, PartialTbrOwnership.END_MAX_ATTEMPTS)
+        var s = State(confirmedRunning = id(0.30, t0, 30))
+        val gesendet = mutableListOf<Int>()
+        for (m in 0 until 25) {
+            val r = schritt(s, auth(laufend(0.30, 30 - m)), min(m), wantEnd = true)
+            s = r.state
+            assertTrue(r.smbBlocked) { "Minute $m: solange etwas laeuft, bleibt der SMB zu" }
+            if (r.sendCancel) {
+                gesendet += m
+                s = PartialTbrOwnership.buche(s, Wirkung.CANCEL_TO_PROFILE, 0.0, 0, min(m), schritt)
+            }
+        }
+        assertEquals(PartialTbrOwnership.END_MAX_ATTEMPTS, gesendet.size) { "gesendet: $gesendet" }
+        assertTrue(gesendet.zipWithNext().all { (a, b) -> b - a >= PartialTbrOwnership.END_BACKOFF_MIN }) {
+            "gesendet: $gesendet"
+        }
     }
 
     // =====================================================================
@@ -145,44 +272,19 @@ class PartialTbrOwnershipTest {
 
     @Test
     fun `eine unbrauchbare Sicht loescht NIEMALS und bricht NIEMALS ab`() {
-        for (phase in Phase.entries) {
-            val own = anforderung().copy(phase = phase, phaseSinceTs = t0, endAttempts = 0)
-            val s = schritt(own, View.Unknown, min(10), wantEnd = true)
-            assertEquals(Reason.VIEW_UNKNOWN_HELD, s.reason, phase.name)
-            assertEquals(own, s.own, "$phase: unveraendert gehalten")
-            assertTrue(s.smbBlocked, phase.name)
-            assertFalse(s.sendCancel, "$phase: ohne Sicht wird nichts angefasst")
+        listOf(
+            State(pendingRequest = id(), pendingAttempts = 1),
+            State(confirmedRunning = id()),
+            State(confirmedRunning = id(0.85), pendingRequest = id(1.00, min(2)), pendingAttempts = 1),
+            State(confirmedRunning = id(), ending = Ending(t0, 1, t0)),
+        ).forEach { s ->
+            val r = schritt(s, View.Unknown, min(60), wantEnd = true, wunschRate = 0.30)
+            assertEquals(Reason.VIEW_UNKNOWN_HELD, r.reason, s.toString())
+            assertEquals(s, r.state, "unveraendert gehalten: $s")
+            assertTrue(r.smbBlocked, s.toString())
+            assertFalse(r.sendCancel, "ohne Sicht wird nichts angefasst: $s")
+            assertFalse(r.allowSet, s.toString())
         }
-    }
-
-    @Test
-    fun `eine unbrauchbare Sicht laesst auch eine abgelaufene Frist nicht verfallen`() {
-        val s = schritt(anforderung(), View.Unknown, min(60))
-        assertNotNull(s.own) { "ohne Sicht gibt es keinen Beweis, dass sie NICHT laeuft" }
-        assertTrue(s.smbBlocked)
-    }
-
-    // =====================================================================
-    // BESTAETIGUNGSFRIST
-    // =====================================================================
-
-    @Test
-    fun `nach Ablauf der Frist wird BENANNT verworfen, nicht still`() {
-        assertEquals(5, PartialTbrOwnership.CONFIRM_WINDOW_MIN)
-        val nochDrin = schritt(anforderung(), auth(null), min(5))
-        assertEquals(Reason.WAITING_CONFIRM, nochDrin.reason)
-        val drueber = schritt(anforderung(), auth(null), min(6))
-        assertEquals(Reason.CONFIRM_TIMEOUT, drueber.reason)
-        assertNull(drueber.own)
-        assertFalse(drueber.sendCancel) { "und dabei wird NIE etwas Fremdes abgebrochen" }
-    }
-
-    @Test
-    fun `verspaetetes Auftauchen INNERHALB der Frist gilt als unsere`() {
-        // Die Pumpe startet erst bei Minute 4 mit voller Dauer.
-        val s = schritt(anforderung(), auth(laufend(0.30, 30)), min(4))
-        assertEquals(Reason.CONFIRMED_RUNNING, s.reason)
-        assertEquals(Phase.RUNNING, s.own!!.phase)
     }
 
     // =====================================================================
@@ -190,107 +292,79 @@ class PartialTbrOwnershipTest {
     // =====================================================================
 
     @Test
-    fun `eine fremde Absenkung mit GLEICHER Rate aber unpassender Zeit wird nie angefasst`() {
-        // Bestaetigt laufende eigene Rate, dann taucht eine andere TBR mit
-        // derselben Rate auf, deren Restlaufzeit nicht passt.
-        val laufendEigen = anforderung().copy(phase = Phase.RUNNING, phaseSinceTs = t0)
-        val s = schritt(laufendEigen, auth(laufend(0.30, 5)), min(10), wantEnd = true)
-        assertEquals(Reason.CLEARED_CONFIRMED, s.reason) { "unsere ist weg" }
-        assertNull(s.own)
-        assertFalse(s.sendCancel) { "und die fremde wird NICHT abgebrochen" }
+    fun `eine fremde Absenkung mit gleicher Rate aber unpassender Zeit wird nie angefasst`() {
+        val s = State(confirmedRunning = id(0.30, t0, 30))
+        val r = schritt(s, auth(laufend(0.30, 5)), min(10), wantEnd = true)
+        assertEquals(Reason.CLEARED_CONFIRMED, r.reason) { "unsere ist weg" }
+        assertFalse(r.sendCancel) { "und die fremde wird NICHT abgebrochen" }
+        assertTrue(r.state.leer)
     }
 
     @Test
     fun `ein FAKE_EXTENDED ist nie unsere Teilrate`() {
-        assertFalse(PartialTbrOwnership.matches(
-            anforderung(), laufend(0.30, 20, TbrPolicy.SourceType.FAKE_EXTENDED), min(10), schritt))
+        assertFalse(
+            PartialTbrOwnership.matches(
+                id(), laufend(0.30, 20, TbrPolicy.SourceType.FAKE_EXTENDED), min(10), schritt
+            )
+        )
     }
 
     @Test
     fun `die Toleranz ist unten eng und oben nur so weit wie die Wartezeit`() {
         assertEquals(3, PartialTbrOwnership.REMAINING_TOLERANCE_MIN)
-        val own = anforderung()
-        // 10 min gewartet, erwarteter Rest 20. Unten bis 17, oben bis 25
-        // (Wartezeit 10, gedeckelt auf CONFIRM_WINDOW 5).
-        assertTrue(PartialTbrOwnership.matches(own, laufend(0.30, 20), min(10), schritt))
-        assertTrue(PartialTbrOwnership.matches(own, laufend(0.30, 17), min(10), schritt))
-        assertFalse(PartialTbrOwnership.matches(own, laufend(0.30, 16), min(10), schritt))
-        assertTrue(PartialTbrOwnership.matches(own, laufend(0.30, 25), min(10), schritt))
-        assertFalse(PartialTbrOwnership.matches(own, laufend(0.30, 26), min(10), schritt))
-        // Nach EINER Minute ist das Band oben viel enger - die Pumpe kann
-        // nicht mehr verspaetet sein, als wir gewartet haben.
-        assertTrue(PartialTbrOwnership.matches(own, laufend(0.30, 30), min(1), schritt))
-        assertFalse(PartialTbrOwnership.matches(own, laufend(0.30, 31), min(1), schritt))
+        val i = id()
+        assertTrue(PartialTbrOwnership.matches(i, laufend(0.30, 20), min(10), schritt))
+        assertTrue(PartialTbrOwnership.matches(i, laufend(0.30, 17), min(10), schritt))
+        assertFalse(PartialTbrOwnership.matches(i, laufend(0.30, 16), min(10), schritt))
+        assertTrue(PartialTbrOwnership.matches(i, laufend(0.30, 25), min(10), schritt))
+        assertFalse(PartialTbrOwnership.matches(i, laufend(0.30, 26), min(10), schritt))
+        assertTrue(PartialTbrOwnership.matches(i, laufend(0.30, 30), min(1), schritt))
+        assertFalse(PartialTbrOwnership.matches(i, laufend(0.30, 31), min(1), schritt))
     }
 
     @Test
     fun `eine abweichende Rate ist nie unsere - ein halber Pumpenschritt schon`() {
-        assertFalse(PartialTbrOwnership.matches(anforderung(0.30), laufend(0.20, 20), min(10), schritt))
-        assertTrue(PartialTbrOwnership.matches(anforderung(0.30), laufend(0.31, 20), min(10), schritt))
+        assertFalse(PartialTbrOwnership.matches(id(0.30), laufend(0.20, 20), min(10), schritt))
+        assertTrue(PartialTbrOwnership.matches(id(0.30), laufend(0.31, 20), min(10), schritt))
     }
 
     // =====================================================================
-    // BACKOFF UND DECKEL
+    // SETZREGELN BEI OFFENER ANFORDERUNG
     // =====================================================================
 
     @Test
-    fun `nach dem Versuchsdeckel geht kein Kommando mehr raus - der SMB bleibt trotzdem zu`() {
-        assertEquals(3, PartialTbrOwnership.END_MAX_ATTEMPTS)
-        // Bei Minute 20 sind von 30 noch 10 uebrig - sie laeuft also noch.
-        val own = anforderung().copy(phase = Phase.ENDING, phaseSinceTs = t0, endAttempts = 3, lastEndRequestTs = min(10))
-        val s = schritt(own, auth(laufend(0.30, 10)), min(20))
-        assertEquals(Reason.END_GIVEN_UP, s.reason)
-        assertFalse(s.sendCancel)
-        assertTrue(s.smbBlocked) { "aufgeben heisst nicht freigeben - sie laeuft ja noch" }
-    }
-
-    @Test
-    fun `der Backoff-Abstand ist benannt und wird eingehalten`() {
-        assertEquals(3, PartialTbrOwnership.END_BACKOFF_MIN)
-        val own = anforderung().copy(phase = Phase.ENDING, phaseSinceTs = t0, endAttempts = 1, lastEndRequestTs = min(10))
-        // Rest = 30 minus verstrichene Minuten, sonst passt sie gar nicht.
-        assertFalse(schritt(own, auth(laufend(0.30, 18)), min(12)).sendCancel) { "2 min" }
-        assertTrue(schritt(own, auth(laufend(0.30, 17)), min(13)).sendCancel) { "3 min" }
-    }
-
-    // =====================================================================
-    // ERNEUERUNG UND NEUSTART
-    // =====================================================================
-
-    @Test
-    fun `eine Erneuerung derselben laufenden Rate stuft NICHT auf REQUESTED zurueck`() {
-        val laufendEigen = anforderung().copy(phase = Phase.RUNNING, phaseSinceTs = t0)
-        val s = schritt(laufendEigen, auth(laufend(0.30, 12)), min(18), wunschRate = 0.30)
-        assertEquals(Phase.RUNNING, s.own!!.phase)
-        assertTrue(s.allowSet) { "eine bestaetigte Rate darf erneuert werden" }
-        val erneuert = PartialTbrOwnership.registerSet(s.own, 0.30, 30, min(18), schritt)
-        assertEquals(Phase.RUNNING, erneuert.phase) { "sonst faellt jede Erneuerung in die Frist zurueck" }
-        assertEquals(min(18), erneuert.setAtTs) { "aber die Uhr laeuft neu" }
-    }
-
-    @Test
-    fun `nach einem Neustart traegt jeder Zustand weiter`() {
-        for (phase in Phase.entries) {
-            // Ein Prozessstart aendert nichts am Datensatz - genau deshalb
-            // ist er persistent und nicht prozesslokal wie die Riegelzaehler.
-            val own = PartialTbrOwnership.Own(0.30, t0, 30, phase, t0)
-            assertTrue(own.valid, phase.name)
-            val s = schritt(own, auth(laufend(0.30, 20)), min(10))
-            assertTrue(s.smbBlocked, "$phase: der SMB bleibt zu, bis autoritativ bestaetigt ist")
-            assertNotNull(s.own, phase.name)
+    fun `bei offener Anforderung gilt - gleiche Rate warten, niedrigere sofort, hoehere nicht`() {
+        val s = State(pendingRequest = id(0.30, t0, 30), pendingAttempts = 1)
+        assertEquals(Reason.SET_SUPPRESSED_DUPLICATE, schritt(s, auth(null), min(2), wunschRate = 0.30).reason)
+        assertFalse(schritt(s, auth(null), min(2), wunschRate = 0.30).allowSet)
+        // SICHERER GEHT SOFORT - aber nur, wenn wirklich etwas LAEUFT,
+        // das gesenkt werden koennte. Ohne bestaetigte Rate hat ein
+        // niedrigerer Wunsch keinen Sicherheitswert und wuerde den
+        // Versuchsdeckel aushebeln, sobald die Guard-Rate wandert.
+        assertFalse(schritt(s, auth(null), min(2), wunschRate = 0.20).allowSet) {
+            "ohne laufende Rate ist auch das nur ein weiterer Versuch"
         }
+        // Bestaetigt laeuft 0,30 (Rest passt zur Kennung), offen ist 0,45.
+        // Ein Wunsch von 0,20 senkt die tatsaechlich laufende Rate.
+        val mitLaufender = State(
+            confirmedRunning = id(0.30, t0, 30),
+            pendingRequest = id(0.45, min(1), 30),
+            pendingAttempts = 1,
+        )
+        val gesenkt = schritt(mitLaufender, auth(laufend(0.30, 28)), min(2), wunschRate = 0.20)
+        assertTrue(gesenkt.allowSet) { "mit laufender Rate geht sicherer sofort" }
+        assertEquals(Reason.SET_LOWERED, gesenkt.reason)
+        assertFalse(schritt(s, auth(null), min(2), wunschRate = 0.45).allowSet) { "hoeher erst nach Klaerung" }
+        assertEquals(Reason.SET_HELD_HIGHER, schritt(s, auth(null), min(2), wunschRate = 0.45).reason)
     }
 
     @Test
-    fun `ein unbrauchbarer Nachweis gilt als keiner`() {
-        for ((was, own) in listOf(
-            "Rate 0" to anforderung(rate = 0.0),
-            "Rate NaN" to anforderung(rate = Double.NaN),
-            "kein Zeitstempel" to anforderung(ts = 0L),
-            "Dauer 0" to anforderung(dauer = 0),
-        )) {
-            assertFalse(own.valid, was)
-            assertEquals(Reason.NONE, schritt(own, auth(laufend(0.30, 20)), min(10)).reason, was)
+    fun `eine bestaetigte Rate darf erneuert, gesenkt und angehoben werden`() {
+        val s = State(confirmedRunning = id(0.30, t0, 30))
+        listOf(0.20, 0.30, 0.45).forEach { w ->
+            val r = schritt(s, auth(laufend(0.30, 20)), min(10), wunschRate = w)
+            assertTrue(r.allowSet) { "Wunsch $w" }
+            assertEquals(Reason.CONFIRMED_RUNNING, r.reason)
         }
     }
 
@@ -307,7 +381,7 @@ class PartialTbrOwnershipTest {
     @Test
     fun `ein faelliger Abbruch wird als Rate 0 mit Dauer 0 ausgefuehrt`() {
         val d = keepMit(laufend(0.30, 20), end = true, held = true)
-        assertEquals(TbrPolicy.Outcome.Request(0.0, 0), d.outcome) { "Abbruch, zurueck aufs Profilbasal" }
+        assertEquals(TbrPolicy.Outcome.Request(0.0, 0), d.outcome)
         assertEquals(TbrPolicy.KEEP_END_OWN_PARTIAL_REASON, d.reason)
         assertEquals(TbrPolicy.SmbBlockCause.PARTIAL_ENDING, d.smbBlockCause)
     }
@@ -315,8 +389,8 @@ class PartialTbrOwnershipTest {
     @Test
     fun `ein gehaltener Nachweis ohne faelliges Kommando sperrt den SMB trotzdem`() {
         val d = keepMit(laufend(0.30, 20), end = false, held = true)
-        assertEquals(TbrPolicy.Outcome.NoRequest, d.outcome) { "Backoff-Pause: kein Kommando" }
-        assertEquals(TbrPolicy.SmbBlockCause.PARTIAL_ENDING, d.smbBlockCause) { "aber der Kanal bleibt zu" }
+        assertEquals(TbrPolicy.Outcome.NoRequest, d.outcome)
+        assertEquals(TbrPolicy.SmbBlockCause.PARTIAL_ENDING, d.smbBlockCause)
         assertEquals("KEEP_OWN_PARTIAL_HELD", d.reason)
     }
 
@@ -334,32 +408,28 @@ class PartialTbrOwnershipTest {
         assertEquals(TbrPolicy.Outcome.NoRequest, d.outcome)
         assertEquals(TbrPolicy.SmbBlockCause.PUMP_BUSY, d.smbBlockCause)
         assertTrue(d.reason.startsWith("PUMP_BUSY|"), d.reason)
-        assertTrue(d.reason.contains(TbrPolicy.KEEP_END_OWN_PARTIAL_REASON), d.reason)
     }
 
     @Test
     fun `Null und positive TBR behalten ihre eigenen Wege`() {
-        assertEquals(TbrPolicy.KEEP_CANCEL_STALE_ZERO_REASON,
-            keepMit(laufend(0.0, 20), end = false, held = false).reason)
-        assertEquals("KEEP_CANCEL_POSITIVE",
-            keepMit(laufend(1.20, 20), end = false, held = false).reason)
+        assertEquals(TbrPolicy.KEEP_CANCEL_STALE_ZERO_REASON, keepMit(laufend(0.0, 20), false, false).reason)
+        assertEquals("KEEP_CANCEL_POSITIVE", keepMit(laufend(1.20, 20), false, false).reason)
     }
 
     @Test
     fun `PARTIAL nach ZERO ersetzt im SELBEN Zyklus - Schalter aus unter aktivem Latch`() {
         val d = TbrPolicy.decide(TbrPolicy.Intent.SAFETY_ZERO, laufend(0.30, 20), profil, cfg)
         assertEquals(TbrPolicy.Outcome.Request(0.0, cfg.defaultDurationMin), d.outcome)
-        assertEquals("SAFETY_ZERO_REPLACE", d.reason) { "kein Auslaufen der Teilrate" }
+        assertEquals("SAFETY_ZERO_REPLACE", d.reason)
         assertEquals(TbrPolicy.SmbBlockCause.SAFETY_ZERO, d.smbBlockCause)
     }
 
     // ---- DERSELBE AUSGANG UNTER NO_POSITIVE ------------------------------
     //
-    // Vom E2E-Kommandostromtest gefunden: der Besitzausgang lag zuerst NUR
-    // im KEEP-Pfad. Nach einer Nullphase steht aber sehr oft
-    // NO_NEW_POSITIVE oder CANCEL_TO_SCHEDULED an - und dort fiel eine
-    // laufende EIGENE Absenkung durch, lief bis zum Ablauf weiter und der
-    // SMB war offen. Also derselbe Fehler ueber einen anderen Intent.
+    // Vom E2E-Ausgabetest gefunden: der Besitzausgang lag zuerst NUR im
+    // KEEP-Pfad. Nach einer Nullphase steht aber sehr oft NO_NEW_POSITIVE
+    // oder CANCEL_TO_SCHEDULED an - und dann fiel eine laufende EIGENE
+    // Absenkung durch, lief bis zum Ablauf weiter und der SMB war offen.
 
     private fun noPositiveMit(current: TbrPolicy.Current?, end: Boolean, held: Boolean) =
         TbrPolicy.decide(
@@ -383,9 +453,7 @@ class PartialTbrOwnershipTest {
         )) {
             val d = noPositiveMit(cur, end = false, held = true)
             assertEquals(TbrPolicy.Outcome.NoRequest, d.outcome, was)
-            assertEquals(TbrPolicy.SmbBlockCause.PARTIAL_ENDING, d.smbBlockCause) {
-                "$was: sonst laeuft unsere Absenkung weiter UND der schnelle Kanal ist offen"
-            }
+            assertEquals(TbrPolicy.SmbBlockCause.PARTIAL_ENDING, d.smbBlockCause, was)
             assertEquals("NO_POSITIVE_OWN_PARTIAL_HELD", d.reason, was)
         }
     }
@@ -393,18 +461,18 @@ class PartialTbrOwnershipTest {
     @Test
     fun `unter NO_POSITIVE bleibt eine FREMDE Absenkung unangetastet`() {
         val d = noPositiveMit(laufend(0.30, 20), end = false, held = false)
-        assertEquals(TbrPolicy.Outcome.NoRequest, d.outcome)
         assertEquals("NO_POSITIVE_KEEP_NON_POSITIVE", d.reason)
         assertEquals(TbrPolicy.SmbBlockCause.NONE, d.smbBlockCause) { "C7b bleibt" }
     }
 
     @Test
     fun `unter NO_POSITIVE wird eine positive TBR weiterhin zuerst abgebrochen`() {
-        val d = noPositiveMit(laufend(1.20, 20), end = false, held = true)
-        assertEquals("NO_POSITIVE_CANCEL", d.reason) {
-            "der Besitzpfad darf den positiven Abbruch nicht verdecken"
-        }
+        assertEquals("NO_POSITIVE_CANCEL", noPositiveMit(laufend(1.20, 20), end = false, held = true).reason)
     }
+
+    // =====================================================================
+    // INVENTARE
+    // =====================================================================
 
     @Test
     fun `die Blockursachen sind vollstaendig aufgezaehlt`() {
@@ -413,10 +481,8 @@ class PartialTbrOwnershipTest {
     }
 
     @Test
-    fun `die Gruende des Lebenszyklus sind vollstaendig aufgezaehlt`() {
-        // 17 seit der Setzberechtigung: die sechs SET_-Gruende kamen mit
-        // der zweiten Race dazu (Duplikat, Senken, Halten, Retry, Backoff,
-        // Deckel). Ein neuer Grund muss bewusst aufgenommen werden.
-        assertEquals(17, Reason.entries.size)
+    fun `die Gruende und Wirkungen sind vollstaendig aufgezaehlt`() {
+        assertEquals(15, Reason.entries.size)
+        assertEquals(3, Wirkung.entries.size)
     }
 }

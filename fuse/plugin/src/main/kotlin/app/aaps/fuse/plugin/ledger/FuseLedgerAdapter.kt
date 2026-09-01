@@ -218,7 +218,8 @@ class EpisodeBudgets {
      * FUSE bereits die normale Freigabe meldete. Die konservative
      * Richtung ist hier also GERADE die Persistenz.
      */
-    var ownPartialTbr: app.aaps.fuse.core.controller.PartialTbrOwnership.Own? = null
+    var ownPartialTbr: app.aaps.fuse.core.controller.PartialTbrOwnership.State =
+        app.aaps.fuse.core.controller.PartialTbrOwnership.State()
 
     /**
      * DIE BEIM MARKERDRUCK EINGEFRORENE BASALLUECKEN-LAGE (Bauauftrag

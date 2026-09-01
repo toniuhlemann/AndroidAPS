@@ -483,18 +483,27 @@ object LedgerCodec {
         // und das ist die Richtung, die nichts Fremdes anfasst.
         .put(
             "ownPartialTbr",
-            e.ownPartialTbr?.let {
+            e.ownPartialTbr.takeIf { !it.leer || it.ending != null }?.let { s ->
+                fun id(i: app.aaps.fuse.core.controller.PartialTbrOwnership.Identity?) =
+                    i?.let {
+                        JSONObject()
+                            .put("rateUPerH", it.rateUPerH)
+                            .put("setAtTs", it.setAtTs)
+                            .put("durationMin", it.durationMin)
+                    } ?: JSONObject.NULL
                 JSONObject()
-                    .put("rateUPerH", it.rateUPerH)
-                    .put("setAtTs", it.setAtTs)
-                    .put("durationMin", it.durationMin)
-                    .put("phase", it.phase.name)
-                    .put("phaseSinceTs", it.phaseSinceTs)
-                    .put("endAttempts", it.endAttempts)
-                    .put("lastEndRequestTs", it.lastEndRequestTs)
-                    .put("everRunning", it.everRunning)
-                    .put("setAttempts", it.setAttempts)
-                    .put("lastSetRequestTs", it.lastSetRequestTs)
+                    .put("confirmedRunning", id(s.confirmedRunning))
+                    .put("pendingRequest", id(s.pendingRequest))
+                    .put("pendingAttempts", s.pendingAttempts)
+                    .put(
+                        "ending",
+                        s.ending?.let {
+                            JSONObject()
+                                .put("sinceTs", it.sinceTs)
+                                .put("attempts", it.attempts)
+                                .put("lastRequestTs", it.lastRequestTs)
+                        } ?: JSONObject.NULL,
+                    )
             } ?: JSONObject.NULL,
         )
         .put(
@@ -830,26 +839,30 @@ object LedgerCodec {
         }
         if (o.has("ownPartialTbr") && !o.isNull("ownPartialTbr")) {
             val own = o.getJSONObject("ownPartialTbr")
-            val phase = own.optString("phase")
-                .let { n -> app.aaps.fuse.core.controller.PartialTbrOwnership.Phase.entries.firstOrNull { it.name == n } }
-            val kandidat = phase?.let {
-                app.aaps.fuse.core.controller.PartialTbrOwnership.Own(
-                    rateUPerH = own.getDouble("rateUPerH"),
-                    setAtTs = requireTs("ownPartialTbr.setAtTs", own.getLong("setAtTs")),
-                    durationMin = own.getInt("durationMin"),
-                    phase = it,
-                    phaseSinceTs = requireTs("ownPartialTbr.phaseSinceTs", own.getLong("phaseSinceTs")),
-                    endAttempts = own.optInt("endAttempts", 0),
-                    lastEndRequestTs = own.optLong("lastEndRequestTs", 0L),
-                    everRunning = own.optBoolean("everRunning", false),
-                    setAttempts = own.optInt("setAttempts", 0),
-                    lastSetRequestTs = own.optLong("lastSetRequestTs", 0L),
-                )
+            fun id(k: String): app.aaps.fuse.core.controller.PartialTbrOwnership.Identity? {
+                if (!own.has(k) || own.isNull(k)) return null
+                val j = own.getJSONObject(k)
+                // Ein unbrauchbarer Nachweis wird VERWORFEN, nicht
+                // repariert: dann gilt die laufende Absenkung als fremd,
+                // und das ist die Richtung, die nichts Fremdes anfasst.
+                return app.aaps.fuse.core.controller.PartialTbrOwnership.Identity(
+                    rateUPerH = j.getDouble("rateUPerH"),
+                    setAtTs = requireTs("ownPartialTbr.$k.setAtTs", j.getLong("setAtTs")),
+                    durationMin = j.getInt("durationMin"),
+                ).takeIf { it.valid }
             }
-            // Ein unbrauchbarer Nachweis wird VERWORFEN, nicht repariert:
-            // dann gilt die laufende Absenkung als fremd, und das ist die
-            // Richtung, die nichts Fremdes anfasst.
-            e.ownPartialTbr = kandidat?.takeIf { it.valid }
+            e.ownPartialTbr = app.aaps.fuse.core.controller.PartialTbrOwnership.State(
+                confirmedRunning = id("confirmedRunning"),
+                pendingRequest = id("pendingRequest"),
+                pendingAttempts = own.optInt("pendingAttempts", 0),
+                ending = own.optJSONObject("ending")?.let {
+                    app.aaps.fuse.core.controller.PartialTbrOwnership.Ending(
+                        sinceTs = requireTs("ownPartialTbr.ending.sinceTs", it.getLong("sinceTs")),
+                        attempts = it.optInt("attempts", 0),
+                        lastRequestTs = it.optLong("lastRequestTs", 0L),
+                    )
+                },
+            )
         }
         if (o.has("zeroLatch")) {
             val latch = o.getJSONObject("zeroLatch")
