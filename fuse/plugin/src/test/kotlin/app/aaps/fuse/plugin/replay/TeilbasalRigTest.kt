@@ -205,4 +205,102 @@ class TeilbasalRigTest : TestBase() {
         val e = TeilbasalRig.lauf((0..4).map { z(it) }, { null })
         assertTrue(e.all { it.second.zustand == TeilbasalRig.Zustand.ZERO })
     }
+    // ---- OHNE UKF-TOR (Review-Variante) ----------------------------------
+
+    @Test
+    fun `ohne UKF-Tor bleiben ALLE anderen Schutzbedingungen bestehen`() {
+        // Der Fall, den Toni ausdruecklich mitgemessen haben will: kein
+        // zusaetzliches UKF-Tor, aber LowThreat NONE, kein Abwaertsrisiko,
+        // kein gemessenes Tief, Health READY und die volle Suche bleiben.
+        val steilFallend = (0..4).map { z(it, ukf = -0.80) }
+        assertEquals(
+            List(5) { TeilbasalRig.Zustand.ZERO },
+            TeilbasalRig.lauf(steilFallend, ::kernel).map { it.second.zustand },
+        ) { "mit dem gebauten Tor bleibt es bei ZERO" }
+        val ohne = TeilbasalRig.lauf(steilFallend, ::kernel, ukfSchwelle = null)
+        assertEquals(TeilbasalRig.Zustand.PARTIAL, ohne[4].second.zustand) { "ohne UKF-Tor traegt die Bahn" }
+
+        // aber JEDE andere Bedingung sperrt weiterhin
+        for ((was, stoerer) in listOf<Pair<String, (Int) -> TeilbasalRig.RigZyklus>>(
+            "Verdikt" to { m -> z(m, ukf = -0.80, verdictNone = false) },
+            "Health" to { m -> z(m, ukf = -0.80, gesund = false) },
+            "Tief" to { m -> z(m, ukf = -0.80, tief = true) },
+            "Abwaertsrisiko" to { m -> z(m, ukf = -0.80, abwaerts = true) },
+            "Bahn unter Boden" to { m -> z(m, ukf = -0.80, minLower = 60.0) },
+        )) {
+            val e = TeilbasalRig.lauf((0..4).map(stoerer), ::kernel, ukfSchwelle = null)
+            assertTrue(e.all { it.second.zustand == TeilbasalRig.Zustand.ZERO }, was)
+        }
+        // und ein FEHLENDER UKF sperrt dann NICHT mehr - das ist der Preis
+        val ohneWert = TeilbasalRig.lauf((0..4).map { z(it, ukf = null) }, ::kernel, ukfSchwelle = null)
+        assertEquals(TeilbasalRig.Zustand.PARTIAL, ohneWert[4].second.zustand) {
+            "ohne UKF-Tor ist ein fehlender UKF kein Hindernis mehr - bewusst so gemessen"
+        }
+    }
+
+    // ---- ERSATZDECKEL -----------------------------------------------------
+
+    @Test
+    fun `ohne Profilbasal gibt es nur mit ausdruecklichem Ersatzdeckel ein Ergebnis`() {
+        val ohneProfil = z(0, profil = null)
+        assertNull(TeilbasalRig.rate(ohneProfil, ::kernel, 0.05, 30)) { "ohne Deckel keine Aussage" }
+        val r = TeilbasalRig.rate(ohneProfil, ::kernel, 0.05, 30, null, 3.0)
+        assertNotNull(r)
+        assertTrue(r!!.rateUPerH > 0.0)
+        assertEquals(3.0, r.profildeckelUPerH, 1e-9) { "der Ersatzdeckel steht im Ergebnis - nachpruefbar" }
+    }
+
+    @Test
+    fun `ein vorhandenes Profilbasal schlaegt den Ersatzdeckel`() {
+        val r = TeilbasalRig.rate(z(0, profil = 0.30), ::kernel, 0.05, 30, null, 3.0)
+        assertEquals(0.30, r!!.profildeckelUPerH, 1e-9) { "der Ersatzdeckel darf ein echtes Profil nie ueberschreiben" }
+    }
+
+    // ---- AKTUATIONSKANTEN NACH KOMMANDO-UNTERDRUECKUNG --------------------
+
+    @Test
+    fun `eine gleichbleibende Rate kostet erst nach 20 Minuten ein neues Kommando`() {
+        // TBR 30 min, Erneuerung ab Restlaufzeit unter 10 min: das erste
+        // Kommando bei Minute 0, das naechste bei Minute 20.
+        val lauf = (0..44).map { m ->
+            z(m) to TeilbasalRig.RigErgebnis(TeilbasalRig.Zustand.PARTIAL, 0.30, 3, true, null)
+        }
+        val b = TeilbasalRig.bilanz(lauf, 0.05, 30)
+        assertEquals(3, b.kanten) { "Minute 0, 20 und 40 - nicht 45 Kommandos" }
+    }
+
+    @Test
+    fun `jeder Ratenwechsel und jeder Rueckfall auf Null ist eine Kante`() {
+        val zust = listOf(0.30, 0.30, 0.35, 0.35, 0.0, 0.0, 0.35)
+        val lauf = zust.mapIndexed { m, r ->
+            z(m) to TeilbasalRig.RigErgebnis(
+                if (r > 0.0) TeilbasalRig.Zustand.PARTIAL else TeilbasalRig.Zustand.ZERO, r, 3, true, null)
+        }
+        val b = TeilbasalRig.bilanz(lauf, 0.05, 30)
+        assertEquals(4, b.kanten) { "0,30 | 0,35 | Null | 0,35" }
+        assertEquals(2, b.eintritte)
+        assertEquals(1, b.rueckfaelle)
+    }
+
+    @Test
+    fun `ein Ratensprung unter einem halben Pumpenschritt ist KEINE Kante`() {
+        val lauf = listOf(0.30, 0.31, 0.30).mapIndexed { m, r ->
+            z(m) to TeilbasalRig.RigErgebnis(TeilbasalRig.Zustand.PARTIAL, r, 3, true, null)
+        }
+        assertEquals(1, TeilbasalRig.bilanz(lauf, 0.05, 30).kanten) {
+            "die Pumpe kann 0,01 gar nicht darstellen - das darf kein Kommando ausloesen"
+        }
+    }
+
+    @Test
+    fun `die Menge ist ohne Profilbasal ausdruecklich nicht ausgewiesen`() {
+        val mitProfil = (0..3).map { m ->
+            z(m) to TeilbasalRig.RigErgebnis(TeilbasalRig.Zustand.PARTIAL, 0.60, 3, true, null)
+        }
+        assertNotNull(TeilbasalRig.bilanz(mitProfil).basalU)
+        val ohne = (0..3).map { m ->
+            z(m, profil = null) to TeilbasalRig.RigErgebnis(TeilbasalRig.Zustand.PARTIAL, 0.60, 3, true, null)
+        }
+        assertNull(TeilbasalRig.bilanz(ohne).basalU) { "ohne Profil darf keine Mengenzahl entstehen" }
+    }
 }

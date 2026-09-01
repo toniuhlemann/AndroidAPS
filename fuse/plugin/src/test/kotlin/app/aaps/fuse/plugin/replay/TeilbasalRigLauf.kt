@@ -153,9 +153,13 @@ class TeilbasalRigLauf : TestBase() {
             .format(minZero, minPartial, minReleased))
         println("WIEDERHERGESTELLTES BASAL  %.3f U".format(basalU))
 
-        // ---- SMB: MUSS 0 SEIN --------------------------------------------
-        println("SMB-SUMME in PARTIAL-Zyklen: %.4f U".format(smbInPartial))
-        assertEquals(0.0, smbInPartial, 1e-9) { "In der Teilstufe darf kein SMB stehen" }
+        // ---- SMB: WAS DIE TEILSTUFE UNTERDRUECKT HAETTE -----------------
+        //
+        // KEINE Zusicherung auf 0: eine laufende Schutz-Null sperrt den
+        // schnellen Kanal NICHT von sich aus. Was hier steht, ist die
+        // Menge, die die AUFZEICHNUNG in genau diesen Zyklen abgab und die
+        // die Teilstufe aufgeben wuerde - eine Kostengroesse.
+        println("SMB, den die Teilstufe unterdrueckt haette: %.4f U".format(smbInPartial))
 
         // ---- EINTRITTE, RUECKFAELLE, RATENWECHSEL ------------------------
         var vorher = TeilbasalRig.Zustand.KEINE_NULL

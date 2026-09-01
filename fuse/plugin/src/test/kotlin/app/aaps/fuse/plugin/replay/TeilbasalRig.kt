@@ -134,13 +134,17 @@ object TeilbasalRig {
      * ist der Produktionswert; ein anderer Wert misst eine ANDERE Regel
      * und muss als solcher ausgewiesen werden.
      */
-    fun torOffen(z: RigZyklus, ukfSchwelle: Double = UKF_SCHWELLE): Boolean =
+    fun torOffen(z: RigZyklus, ukfSchwelle: Double? = UKF_SCHWELLE): Boolean =
         z.zeroActive &&
             !z.measuredLow &&
             !z.descentRiskActive &&
             z.signalHealthy &&
             z.verdictNone &&
-            z.ukfRatePerMin != null && z.ukfRatePerMin.isFinite() && z.ukfRatePerMin >= ukfSchwelle
+            // `null` = KEIN zusaetzliches UKF-Tor. Alle uebrigen Bedingungen
+            // bleiben, und die vollstaendige BasalRecoverySearch ebenfalls -
+            // der Guard ist dann die einzige Fallpruefung statt der zweiten.
+            (ukfSchwelle == null ||
+                (z.ukfRatePerMin != null && z.ukfRatePerMin.isFinite() && z.ukfRatePerMin >= ukfSchwelle))
 
     /**
      * Die FLACHGELEGTE Bahn auf Niveau [minLower] - siehe Klassenkopf.
@@ -171,12 +175,26 @@ object TeilbasalRig {
         basalStepUPerH: Double,
         tbrDauerMin: Int,
         horizontMin: Int? = null,
+        /**
+         * ERSATZDECKEL fuer Trails OHNE Profilbasal (alles vor rs47).
+         *
+         * Das ist AUSDRUECKLICH KEIN PROFIL, sondern eine bewusst hoch
+         * gesetzte Schranke, damit die Suche ueberhaupt laufen kann. Nur
+         * Ergebnisse mit `begrenzung == GUARD` sind dann Ratenaussagen -
+         * und auch die nur unter der Annahme, dass das echte Profilbasal
+         * mindestens so hoch lag. Alles mit `begrenzung == PROFIL` heisst
+         * hier NUR "der Guard haette mehr als den Ersatzdeckel getragen"
+         * und ist KEINE Rate.
+         */
+        ersatzdeckelUPerH: Double? = null,
     ): BasalRecoverySearch.Ergebnis? {
         val l0 = z.minLowerMgdl ?: return null
         val floor = z.guardFloorMgdl ?: return null
         val isf = z.isfMgdlPerU?.takeIf { it.isFinite() && it > 0.0 } ?: return null
         val h = horizontMin ?: z.liabilityHorizonMin ?: return null
-        val profil = z.profilbasalUph?.takeIf { it.isFinite() && it > 0.0 } ?: return null
+        val profil = z.profilbasalUph?.takeIf { it.isFinite() && it > 0.0 }
+            ?: ersatzdeckelUPerH?.takeIf { it.isFinite() && it > 0.0 }
+            ?: return null
         val kernel = kernelFuer(z.computeTs) ?: return null
         val anker = z.computeTs
         val band = CandidateSearch.Band(
@@ -209,8 +227,9 @@ object TeilbasalRig {
         basalStepUPerH: Double = 0.05,
         tbrDauerMin: Int = 30,
         horizontMin: Int? = null,
-        ukfSchwelle: Double = UKF_SCHWELLE,
+        ukfSchwelle: Double? = UKF_SCHWELLE,
         eintrittZyklen: Int = EINTRITT_ZYKLEN,
+        ersatzdeckelUPerH: Double? = null,
     ): List<Pair<RigZyklus, RigErgebnis>> {
         var streak = 0
         var letzterSourceTs = 0L
@@ -228,7 +247,7 @@ object TeilbasalRig {
             } else 0
             if (offen) letzterSourceTs = z.sourceTs
             val suche = if (offen && streak >= eintrittZyklen)
-                rate(z, kernelFuer, basalStepUPerH, tbrDauerMin, horizontMin) else null
+                rate(z, kernelFuer, basalStepUPerH, tbrDauerMin, horizontMin, ersatzdeckelUPerH) else null
             val aktiv = suche != null && suche.reject == null && suche.rateUPerH > 0.0
             z to RigErgebnis(
                 zustand = if (aktiv) Zustand.PARTIAL else Zustand.ZERO,
@@ -236,5 +255,133 @@ object TeilbasalRig {
                 streak = streak, torOffen = offen, suche = suche,
             )
         }
+    }
+    // =====================================================================
+    // DIE BILANZ
+    // =====================================================================
+
+    /** Die Erneuerungsregel der Produktion (`TbrPolicy.Config`). */
+    const val ERNEUERN_AB_RESTMIN = 10
+
+    data class Bilanz(
+        val nullphasen: List<Double>,
+        val minZero: Double,
+        val minPartial: Double,
+        val minReleased: Double,
+        /** `null` = kein Profilbasal im Trail, also KEINE Mengenaussage. */
+        val basalU: Double?,
+        val raten: List<Double>,
+        val zyklenProfilbegrenzt: Int,
+        val zyklenGuardbegrenzt: Int,
+        val eintritte: Int,
+        val rueckfaelle: Int,
+        /**
+         * AKTUATIONSKANTEN nach Kommando-Unterdrueckung - gezaehlt mit
+         * derselben Regel wie `TbrPolicy`: gleiche Rate (plus/minus halber
+         * Pumpenschritt) UND Restlaufzeit >= 10 min ergibt KEIN Kommando.
+         * Gezaehlt werden Teilraten UND die Rueckfaelle auf Null, denn
+         * beide sind Pumpenkommandos.
+         */
+        val kanten: Int,
+        val bindendeOffsets: Map<Int, Int>,
+        val ablehnungen: Map<String, Int>,
+        val ohneSuche: Int,
+        /**
+         * DIE SMB-MENGE, DIE DIE TEILSTUFE UNTERDRUECKT HAETTE - also was
+         * die AUFZEICHNUNG in genau den Zyklen abgab, die zu PARTIAL
+         * wuerden.
+         *
+         * DAS IST NICHT NULL, und die Annahme, es muesse null sein, war
+         * falsch: eine laufende Schutz-Null sperrt den schnellen Kanal
+         * NICHT von sich aus (`decision.smbU` bleibt unangetastet, solange
+         * keine Teilstufe laeuft). Erst die Teilstufe sperrt ihn - ueber
+         * die Blockursache PARTIAL_RECOVERY im Uebersetzer und zusaetzlich
+         * ueber die harte Nullung im Runner.
+         *
+         * Diese Zahl ist deshalb eine KOSTENGROESSE, keine Pruefgroesse:
+         * so viel schneller Kanal gibt die Teilstufe auf, um langsames
+         * Basal zurueckzuholen. Sie gehoert neben die zurueckgeholte
+         * Basalmenge, nicht in eine Zusicherung.
+         */
+        val smbUnterdruecktU: Double,
+    )
+
+    fun bilanz(
+        lauf: List<Pair<RigZyklus, RigErgebnis>>,
+        basalStepUPerH: Double = 0.05,
+        tbrDauerMin: Int = 30,
+        maxLueckeMin: Double = 5.0,
+    ): Bilanz {
+        fun dauer(i: Int): Double {
+            val bis = lauf.getOrNull(i + 1)?.first?.computeTs ?: return 0.0
+            val dt = (bis - lauf[i].first.computeTs) / 60_000.0
+            return if (dt in 0.0..maxLueckeMin) dt else 0.0
+        }
+        var mz = 0.0; var mp = 0.0; var mr = 0.0
+        var menge = 0.0; var mengeBekannt = true; var smb = 0.0
+        var ein = 0; var rueck = 0; var kanten = 0
+        var profilBegrenzt = 0; var guardBegrenzt = 0; var ohneSuche = 0
+        val raten = mutableListOf<Double>()
+        val offsets = mutableMapOf<Int, Int>()
+        val ablehnungen = mutableMapOf<String, Int>()
+        val phasen = mutableListOf<Double>()
+        var phaseVon = 0L
+        var vor = Zustand.KEINE_NULL
+        // Der Zustand der PUMPE, nicht der des Reglers
+        var laufendeRate = Double.NaN
+        var laufendSeit = 0L
+        lauf.forEachIndexed { i, (z, e) ->
+            val m = dauer(i)
+            when (e.zustand) {
+                Zustand.ZERO -> mz += m
+                Zustand.PARTIAL -> {
+                    mp += m
+                    raten += e.rateUPerH
+                    if (z.profilbasalUph == null) mengeBekannt = false
+                    menge += e.rateUPerH * m / 60.0
+                    smb += z.smbPublishedU
+                    when (e.suche?.begrenzung) {
+                        BasalRecoverySearch.Begrenzung.PROFIL -> profilBegrenzt++
+                        BasalRecoverySearch.Begrenzung.GUARD  -> guardBegrenzt++
+                        else                                  -> Unit
+                    }
+                    e.suche?.bindenderOffsetMin?.let { offsets[it] = (offsets[it] ?: 0) + 1 }
+                }
+                Zustand.KEINE_NULL -> mr += m
+            }
+            e.suche?.reject?.name?.let { ablehnungen[it] = (ablehnungen[it] ?: 0) + 1 }
+            if (e.torOffen && e.streak >= EINTRITT_ZYKLEN && e.suche == null) ohneSuche++
+            if (z.zeroActive && phaseVon == 0L) phaseVon = z.computeTs
+            if (!z.zeroActive && phaseVon != 0L) {
+                phasen += (lauf[i - 1].first.computeTs - phaseVon) / 60_000.0; phaseVon = 0L
+            }
+            if (e.zustand == Zustand.PARTIAL && vor != Zustand.PARTIAL) ein++
+            if (vor == Zustand.PARTIAL && e.zustand != Zustand.PARTIAL) rueck++
+            // KOMMANDO-UNTERDRUECKUNG, exakt wie TbrPolicy
+            val gewuenscht = when (e.zustand) {
+                Zustand.PARTIAL    -> e.rateUPerH
+                Zustand.ZERO       -> 0.0
+                Zustand.KEINE_NULL -> Double.NaN     // dort steuert dieser Rig nicht
+            }
+            if (!gewuenscht.isNaN()) {
+                val restMin = if (laufendeRate.isNaN()) -1.0
+                else tbrDauerMin - (z.computeTs - laufendSeit) / 60_000.0
+                val gleich = !laufendeRate.isNaN() &&
+                    kotlin.math.abs(laufendeRate - gewuenscht) <= basalStepUPerH / 2.0
+                if (!(gleich && restMin >= ERNEUERN_AB_RESTMIN)) {
+                    kanten++; laufendeRate = gewuenscht; laufendSeit = z.computeTs
+                }
+            } else { laufendeRate = Double.NaN; laufendSeit = 0L }
+            vor = e.zustand
+        }
+        if (phaseVon != 0L) phasen += (lauf.last().first.computeTs - phaseVon) / 60_000.0
+        return Bilanz(
+            nullphasen = phasen, minZero = mz, minPartial = mp, minReleased = mr,
+            basalU = if (mengeBekannt) menge else null,
+            raten = raten, zyklenProfilbegrenzt = profilBegrenzt, zyklenGuardbegrenzt = guardBegrenzt,
+            eintritte = ein, rueckfaelle = rueck, kanten = kanten,
+            bindendeOffsets = offsets.toSortedMap(), ablehnungen = ablehnungen,
+            ohneSuche = ohneSuche, smbUnterdruecktU = smb,
+        )
     }
 }

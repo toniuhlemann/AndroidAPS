@@ -381,4 +381,60 @@ class FuseTbrTranslatorTest {
                 c.name,
             )
     }
+    // ---- DIE TEILSTUFE HAENGT AN DER SMB-NULLUNG (Luecke aus dem Rig) ----
+
+    /**
+     * DER TRAGENDE FALL, DER BISHER UNGEPRUEFT WAR - und der eine fruehere
+     * Behauptung von mir korrigiert.
+     *
+     * BEHAUPTET HATTE ICH: die SMB-Nullung im Runner sei Voraussetzung,
+     * weil C7a die anhebende Teilbasal-Anforderung sonst verwerfe.
+     * TATSAECHLICH: `PARTIAL_BASAL` traegt `SmbBlockCause.PARTIAL_RECOVERY`,
+     * und `applyBlock` nullt die Menge damit BEVOR C7a ueberhaupt rechnet.
+     * `ends` ist dann false, und die Anforderung ueberlebt. Die Nullung im
+     * Runner ist Verteidigung in der Tiefe, NICHT der tragende Grund.
+     *
+     * Die Zusage, die wirklich gilt und hier festgehalten wird: eine
+     * Teilstufe und ein SMB koennen den Zyklus nicht gemeinsam verlassen -
+     * und zwar ueber ZWEI unabhaengige Wege (Runner-Nullung, Blockursache
+     * im Uebersetzer). Faellt einer weg, faellt es nicht sofort auf.
+     *
+     * Der Anlass ist gemessen: im Mehrnaechte-Rig trug ein aufgezeichneter
+     * Zyklus mit laufender Null und offenem Tor eine entschiedene
+     * SMB-Menge. Eine laufende Schutz-Null sperrt den schnellen Kanal
+     * eben NICHT von sich aus - das tut erst die Teilstufe.
+     */
+    @Test
+    fun `PARTIAL_BASAL nullt den SMB und die Anforderung ueberlebt trotzdem`() {
+        val r = FuseTbrTranslator.combine(
+            decision(0.05, FuseController.TbrAction.PARTIAL_BASAL), running(0.0), scheduled, cfg,
+            partialRateUPerH = 0.30,
+        )
+        assertEquals(0.0, r.decision.smbU, 1e-12) { "die Blockursache nullt die Menge" }
+        assertEquals(0.30, r.request?.rateUPerH ?: -1.0, 1e-12) { "und genau deshalb greift C7a nicht" }
+        assertTrue(r.reason.contains("PARTIAL"), "der Grund weist die Teilstufe aus: " + r.reason)
+    }
+
+    @Test
+    fun `ohne die Blockursache wuerde C7a die Teilstufe still verwerfen`() {
+        // Der Gegenbeweis, warum die Nullung nicht wegfallen darf: dieselbe
+        // ANHEBUNG ueber die laufende Null, aber mit einer Menge, die kein
+        // Block genullt hat - dann verwirft das gemeinsame Veto, und die
+        // Teilstufe verschwindet ohne Fehler und ohne Meldung.
+        val r = FuseTbrTranslator.combine(
+            decision(0.05, FuseController.TbrAction.KEEP_CURRENT), running(0.0), scheduled, cfg,
+        )
+        assertNull(r.request)
+        assertTrue(r.reason.startsWith(FuseTbrTranslator.C7A_REASON), r.reason)
+    }
+
+    @Test
+    fun `PARTIAL_BASAL ohne SMB ist unveraendert die Teilrate`() {
+        val r = FuseTbrTranslator.combine(
+            decision(0.0, FuseController.TbrAction.PARTIAL_BASAL), running(0.0), scheduled, cfg,
+            partialRateUPerH = 0.30,
+        )
+        assertEquals(0.30, r.request?.rateUPerH ?: -1.0, 1e-12)
+        assertEquals(0.0, r.decision.smbU, 1e-12)
+    }
 }
