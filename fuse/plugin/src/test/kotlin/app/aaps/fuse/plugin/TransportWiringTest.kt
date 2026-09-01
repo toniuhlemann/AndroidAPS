@@ -187,6 +187,9 @@ class TransportWiringTest : TestBaseWithProfile() {
     private var zeroLatchRuheAbstand = 30.0
     /** Variante 1 des Nullphasen-Vergleichs; 0 = AUS = Produktionsstand. */
     private var zeroLatchGrundWegZyklen = 0
+    /** Variante 2; 0 = AUS = Produktionsstand. */
+    private var serienDeckelU = 0.0
+    private var serienFensterMin = 30
     private var livenessBgMin = 160.0
 
     /** Nachtschwelle des Kanals; null = nie gesetzt -> folgt der Tagesschwelle. */
@@ -577,6 +580,11 @@ class TransportWiringTest : TestBaseWithProfile() {
         whenever(preferences.get(FuseDoubleKey.MealDemandRatioCap)).thenAnswer { mealRatioCapZ }
         whenever(preferences.get(FuseBooleanKey.ZeroLatchEnabled)).thenAnswer { zeroLatchAn }
         whenever(preferences.get(FuseIntKey.ZeroLatchCalmExitMin)).thenAnswer { zeroLatchRuheZyklen }
+        // Nullphasen-Varianten: Default AUS bzw. gueltiges Fenster -
+        // ungemockt liefert Mockito 0, und die Config-Validierung
+        // weist ein 0-Fenster zu Recht ab.
+        whenever(preferences.get(FuseDoubleKey.CorrectionSeriesCapU)).thenAnswer { serienDeckelU }
+        whenever(preferences.get(FuseIntKey.CorrectionSeriesWindowMin)).thenAnswer { serienFensterMin }
         whenever(preferences.get(FuseDoubleKey.ZeroLatchCalmDistanceMgdl)).thenAnswer { zeroLatchRuheAbstand }
         whenever(preferences.get(FuseIntKey.ZeroLatchReasonGoneExitCycles)).thenAnswer { zeroLatchGrundWegZyklen }
         whenever(preferences.get(FuseDoubleKey.LivenessBgMinDayMgdl)).thenAnswer { livenessBgMin }
@@ -10225,6 +10233,157 @@ class TransportWiringTest : TestBaseWithProfile() {
         // Null und Abbruch; dieser Test friert das fuer die Variante ein.
         val raten = kand.mapNotNull { it.tbr?.rateUPerH }.filter { it > 0.0 }
         assertTrue(raten.isEmpty()) { "keine positive TBR erlaubt, gemessen: $raten" }
+    }
+
+    // ==== VARIANTE 2: DER SERIEN-DECKEL, IM ECHTEN RUNNER ==================
+
+    @Test
+    fun `Variante 2 - der Serien-Deckel begrenzt die markerlose Korrekturserie`(@TempDir dir: File) {
+        // BASISLINIE: markerlose Korrekturlage, Deckel aus.
+        serienDeckelU = 0.0
+        serienFensterMin = 30
+        korrekturSerienLage(File(dir, "basisSerie"))
+        val basis = (0 until 30).map { transport(dir) }
+        val summeBasis = basis.sumOf { it.decision.smbU }
+        assertTrue(summeBasis > 0.4) {
+            "der Aufbau MUSS eine Serie erzeugen, sonst prueft der Test nichts: $summeBasis"
+        }
+
+        // KANDIDAT: derselbe Verlauf mit Deckel deutlich unter der Serie.
+        transportReset()
+        serienDeckelU = 0.20
+        serienFensterMin = 30
+        korrekturSerienLage(File(dir, "kandSerie"))
+        val kand = (0 until 30).map { transport(dir) }
+        val summeKand = kand.sumOf { it.decision.smbU }
+
+        assertTrue(summeKand < summeBasis) {
+            "der Deckel MUSS die Serie begrenzen: $summeKand statt $summeBasis"
+        }
+        assertTrue(summeKand <= 0.20 + 1e-9) {
+            "und zwar auf den Deckel: $summeKand > 0,20"
+        }
+        // Der Bindungsname muss die Ursache nennen - sonst zeigte der Trail
+        // eine Kontextgrenze, waehrend der Serien-Deckel gekappt hat.
+        assertTrue(kand.any { it.exposureGateBinding == "correctionSeriesCap" }) {
+            "die Bindung MUSS benannt sein: " +
+                kand.mapNotNull { it.exposureGateBinding }.distinct()
+        }
+    }
+
+    @Test
+    fun `Variante 2 greift nur ueber das Exposure-Gate, nie in eine TBR-Regel`(@TempDir dir: File) {
+        // WAS HIER EHRLICH BEWEISBAR IST - und was nicht. Eine kleinere
+        // SMB-Menge aendert das IOB, und ueber das IOB fallen SPAETERE
+        // Entscheidungen anders aus; "gleiche TBR je Zyklus" ist deshalb
+        // schon ab dem ersten Binden unzulaessig (gemessen: Zyklus 5
+        // KEEP_CURRENT vs NO_NEW_POSITIVE - eine Folge der Regelung, kein
+        // Eingriff in die Basalachse).
+        //
+        // Beweisbar ist: der Deckel bindet AUSSCHLIESSLICH im
+        // Exposure-Gate, stellt nie eine Entscheidungs-Bindung, und
+        // erzeugt keine Schutz-Null, die es ohne ihn nicht gaebe.
+        serienDeckelU = 0.0
+        korrekturSerienLage(File(dir, "basisTbr"))
+        val basis = (0 until 30).map { transport(dir) }
+        transportReset()
+        serienDeckelU = 0.20
+        korrekturSerienLage(File(dir, "kandTbr"))
+        val kand = (0 until 30).map { transport(dir) }
+
+        assertTrue(kand.any { it.exposureGateBinding == "correctionSeriesCap" }) {
+            "der Deckel MUSS in diesem Aufbau binden"
+        }
+        // Er erscheint als MENGENbindung in der Entscheidung - wie jede
+        // andere Exposure-Grenze auch. Das ist erwartet und gehoert in den
+        // Trail; entscheidend ist, dass er nie als TBR-Grund auftaucht.
+        assertTrue(kand.any { it.decision.bindingLimit?.contains("correctionSeriesCap") == true }) {
+            "die Mengenbindung MUSS benannt sein: " +
+                kand.mapNotNull { it.decision.bindingLimit }.distinct()
+        }
+        // ... und nie als TBR: in dieser Lage wird keine kommandiert.
+        assertTrue(kand.all { it.tbr == null }) {
+            "der Deckel darf keine TBR ausloesen: " + kand.mapNotNull { it.tbr }.distinct()
+        }
+        assertEquals(
+            basis.count { it.decision.tbr == FuseController.TbrAction.ZERO_TEMP },
+            kand.count { it.decision.tbr == FuseController.TbrAction.ZERO_TEMP },
+            "und keine zusaetzliche Schutz-Null",
+        )
+    }
+
+    @Test
+    fun `Variante 2 bucht nur den markerlosen Korrekturpfad`(@TempDir dir: File) {
+        // DIE ZUSAGE AN DER QUELLE geprueft: die Buchung liest DIESELBE
+        // Groesse wie das Gate (mealAuthorized), nicht die engere
+        // Onset-Bedingung der Mahlzeitenliste.
+        //
+        // DER BAUFEHLER, DEN DAS GEFANGEN HAT: zuerst stand hier
+        // `!mealGebucht`. Das verlangt zusaetzlich das Onset-Fenster - ein
+        // Zyklus unter MEAL-Vollmacht ausserhalb davon waere als
+        // markerlose Korrektur gebucht worden, und der Deckel haette eine
+        // autorisierte Mahlzeit begrenzt (gemessen: die Mahlzeit lief
+        // exakt auf den 0,05-Deckel). Die MEAL-Ausnahme selbst traegt
+        // zusaetzlich das Gate - s. ExposureGateTest.
+        serienDeckelU = 0.0   // aus: die Buchung laeuft unabhaengig vom Deckel
+        serienFensterMin = 30
+        val l = FuseLedgerAdapter().also {
+            it.loadOnce(File(dir, "buchung").also(File::mkdirs), "test-epoch", start)
+        }
+        zeroLatchAn = false; livenessAn = false; markerAuthorized = false
+        fundamentAn = false; markerAt = 0L
+        flach = 150.0; steigungProMin = 2.0; knickAbMin = null; bolusIobU = 0.0
+        clock = start
+        transportReset()
+        neuerRunner(l)
+        val outs = (0 until 20).map { transport(dir) }
+        val dosiert = outs.filter { it.decision.smbU > 0.0 }
+        assertTrue(dosiert.isNotEmpty(), "der Aufbau MUSS dosieren")
+        assertTrue(dosiert.all { it.dosingContextProfile == "CORRECTION" }) {
+            "und zwar markerlos: " + dosiert.map { it.dosingContextProfile }.distinct()
+        }
+        assertTrue(l.episodes.correctionDeliveries.isNotEmpty()) {
+            "die markerlose Serie MUSS gebucht werden, sonst deckelt der Deckel nie"
+        }
+        assertEquals(
+            dosiert.sumOf { it.decision.smbU },
+            l.episodes.correctionDeliveries.sumOf { it.amountU }, 1e-9,
+            "und zwar vollstaendig - Buchung und Dosis muessen uebereinstimmen",
+        )
+    }
+
+    /** Wie [mahlzeit], gibt aber den Ledger zurueck - fuer Pruefungen an
+     *  den Buchungslisten selbst. */
+    private fun mahlzeitMitLedger(dir: File): FuseLedgerAdapter {
+        fundamentAn = true
+        flach = 180.0
+        steigungProMin = 2.5
+        markerAuthorized = true
+        markerAt = start + 2 * 60_000L
+        clock = start
+        transportReset()
+        val l = FuseLedgerAdapter().also { it.loadOnce(dir.also(File::mkdirs), "test-epoch", start) }
+        neuerRunner(l)
+        return l
+    }
+
+    /** Markerlose Korrekturlage mit steigendem Zucker: der Normalpfad
+     *  dosiert Zyklus um Zyklus - genau die Serie, die der Deckel
+     *  begrenzen soll. */
+    private fun korrekturSerienLage(dir: File) {
+        zeroLatchAn = false
+        livenessAn = false
+        markerAuthorized = false
+        fundamentAn = false
+        markerAt = 0L
+        flach = 150.0
+        steigungProMin = 2.0
+        knickAbMin = null
+        bolusIobU = 0.0
+        clock = start
+        transportReset()
+        val l = FuseLedgerAdapter().also { it.loadOnce(dir.also(File::mkdirs), "test-epoch", start) }
+        neuerRunner(l)
     }
 
     @Test

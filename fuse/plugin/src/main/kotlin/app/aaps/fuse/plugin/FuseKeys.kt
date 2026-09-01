@@ -287,6 +287,25 @@ enum class FuseDoubleKey(
     ZeroLatchCalmDistanceMgdl("fuse_zero_latch_calm_distance_mgdl", 30.0, 10.0, 60.0),
 
     /**
+     * VARIANTE 2 des Nullphasen-Vergleichs: DECKEL DER MARKERLOSEN
+     * KORREKTURSERIE [U] im rollierenden Fenster
+     * [FuseIntKey.CorrectionSeriesWindowMin]. 0 = AUS.
+     *
+     * Gemessener Anlass: eine markerlose Korrekturserie schuettete in
+     * einer halben Stunde ein Mehrfaches des statischen Korrekturbedarfs
+     * aus, und die lange Schutz-Null danach war die Gegenreaktion darauf.
+     * Der Deckel begrenzt die SERIE, nicht den einzelnen SMB.
+     *
+     * ER FASST DIE BASALACHSE NICHT AN: er wirkt ausschliesslich im
+     * Exposure-Gate, das nur SMB-Mengen begrenzt. Null-TBR, Zero-Latch und
+     * Schutzgruende laufen unveraendert.
+     *
+     * GEZAEHLT WIRD, WAS DEN TRANSPORT UEBERSTANDEN HAT: die Buchung wird
+     * bei Verwurf und bei bewiesenem Nicht-Senden zurueckgedreht.
+     */
+    CorrectionSeriesCapU("fuse_correction_series_cap_u", 0.0, 0.0, 5.0),
+
+    /**
      * Nahhorizont des harten Endriegels fuer NEUES positives Insulin [min].
      * Getrennt vom 120-minuetigen TBR-Nutzenfenster: Basal rechtzeitig
      * zurueckhalten und einen Mahlzeiten-SMB hart verbieten sind zwei
@@ -507,6 +526,10 @@ enum class FuseIntKey(
      * Nachholen ausgelassener Basalmenge findet ausdruecklich NICHT statt.
      */
     ZeroLatchReasonGoneExitCycles("fuse_zero_latch_reason_gone_exit_cycles", 0, 0, 60),
+
+    /** Rollierendes Fenster [min] des Serien-Deckels
+     *  [FuseDoubleKey.CorrectionSeriesCapU]. Ohne Deckel wirkungslos. */
+    CorrectionSeriesWindowMin("fuse_correction_series_window_min", 30, 10, 120),
 
     /** V-Reversal-Schutz: Rueckblickfenster [min], in dem das
      *  Fall-Minimum den Riegel traegt (Pflichtfall: Minimum 11 min vor

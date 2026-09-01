@@ -377,7 +377,22 @@ object FuseStateJson {
     // Ergaenzung im Ergebnisobjekt (einziger Leser ist der Export),
     // die Verdikte selbst sind unveraendert. omittedU ist KEIN Budget -
     // die fehlende Basalwirkung steht bereits im negativen Basal-IOB.
-    const val RULE_SET_VERSION = 48
+    // v49: ZWEI SCHALTBARE NULLPHASEN-VARIANTEN, beide Default AUS.
+    // V1 Grund-Weg-Ausgang des Zero-Latch
+    // (ZeroLatchReasonGoneExitCycles): loest die verriegelte Null, wenn
+    // das LowThreat-Verdikt ueber N zusammenhaengende Zyklen NONE ist UND
+    // die Erholung bestaetigt ist. Er beendet NUR die Verriegelung -
+    // danach gilt wieder das Profilbasal; eine Rate darueber existiert im
+    // Aktuationsraum nicht, ein Nachholen ausgelassener Basalmenge findet
+    // nicht statt.
+    // V2 Serien-Deckel des markerlosen Korrekturpfads
+    // (CorrectionSeriesCapU/CorrectionSeriesWindowMin): begrenzt die
+    // SERIE statt des einzelnen SMB, ueber eine rollierende, restartfeste
+    // Liste; Headroom = Deckel - im Fenster Geflossenes - offene
+    // Transportmenge. Gebucht wird nur, was den Transport uebersteht
+    // (Rollback bei Verwurf und bei bewiesenem Nicht-Senden). Er wirkt
+    // ausschliesslich im Exposure-Gate und fasst die Basalachse nicht an.
+    const val RULE_SET_VERSION = 49
 
     /** Schema des Trail-Datensatzes - s. die Notiz an der Schreibstelle. */
     const val SCHEMA_VERSION = 4
@@ -1893,6 +1908,12 @@ object FuseStateJson {
         .put("zeroLatchEnabled", p.zeroLatchEnabled)
         .put("zeroLatchCalmExitMin", p.zeroLatchCalmExitMin)
         .put("zeroLatchCalmDistanceMgdl", fin(p.zeroLatchCalmDistanceMgdl))
+        // Nullphasen-Varianten (beide Default aus): Variante 1 zaehlt
+        // Zyklen mit weggefallenem Schutzgrund, Variante 2 deckelt die
+        // markerlose Korrekturserie im rollierenden Fenster.
+        .put("zeroLatchReasonGoneExitCycles", p.zeroLatchReasonGoneExitCycles)
+        .put("correctionSeriesCapU", fin(p.correctionSeriesCapU))
+        .put("correctionSeriesWindowMin", p.correctionSeriesWindowMin)
         // v30: die Korrekturpfad-Riegel (V-Reversal + Freigabe-Nachlauf).
         .put("reversalGuardEnabled", p.reversalGuardEnabled)
         .put("reversalFallUkf", fin(p.reversalFallUkf))
@@ -2093,6 +2114,13 @@ object FuseStateJson {
                 // v25: der Zero-Latch (Schalter + Ruhe-Zyklen).
                 p.zeroLatchEnabled,
                 p.zeroLatchCalmExitMin,
+                // v49: beide Nullphasen-Varianten sind dosierwirksam,
+                // sobald sie gesetzt sind - sie gehoeren in den Hash,
+                // sonst saehen zwei Laeufe mit verschiedenen Kandidaten
+                // im Replay gleich aus.
+                p.zeroLatchReasonGoneExitCycles,
+                p.correctionSeriesCapU,
+                p.correctionSeriesWindowMin,
                 p.reversalGuardEnabled,
                 p.reversalLookbackMin,
                 p.reversalConfirmCycles,

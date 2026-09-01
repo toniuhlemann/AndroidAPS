@@ -178,6 +178,12 @@
     <string name="fuse_zero_latch_enabled_title">Zero-Latch aktiv</string>
     <string name="fuse_zero_latch_enabled_summary">Eine vom Low-Tor berechtigt eroeffnete Zero-TBR bleibt fuer die Dauer der Fall-Episode verriegelt - ein punktuell zu kleiner Nutzenwert wirft sie nicht mehr weg. Geloest erst nach belegter Erholung (UKF mind. +0,20 und q1 nicht weiter fallend, 3 lueckenlose Zyklen; nach bestaetigtem Tief genuegt einer) oder ueber den Ruhe-Ausgang. Wirkt NUR auf die Basalachse; SMBs bleiben unberuehrt.</string>
     <string name="fuse_zero_latch_calm_min_title">Zero-Latch Ruhe-Zyklen</string>
+    <string name="fuse_zero_latch_reason_gone_title">Zero-Latch Grund-weg-Zyklen</string>
+    <string name="fuse_zero_latch_reason_gone_summary">Variante 1: Zusammenhaengende Zyklen ohne anliegenden Schutzgrund und mit bestaetigter Erholung, nach denen die verriegelte Null endet. 0 = aus. Beendet nur die Verriegelung - danach gilt wieder das Profilbasal, es wird nichts nachgeholt.</string>
+    <string name="fuse_correction_series_cap_title">Korrekturserie Deckel (U)</string>
+    <string name="fuse_correction_series_cap_summary">Variante 2: Obergrenze der SMB-Menge im markerlosen Korrekturpfad innerhalb des Serien-Fensters. 0 = aus. Gezaehlt wird, was den Transport ueberstanden hat; Mahlzeiten bleiben unberuehrt.</string>
+    <string name="fuse_correction_series_window_title">Korrekturserie Fenster (min)</string>
+    <string name="fuse_correction_series_window_summary">Rollierendes Fenster des Serien-Deckels. Ohne Deckel wirkungslos.</string>
     <string name="fuse_zero_latch_calm_min_summary">Zweiter Freigabepfad gegen die Zero-Falle: so viele Zyklen stabil nicht fallend, ausreichend Abstand zum Boden und ohne Bolus-Ueberdeckung loesen die verriegelte Null auch ohne Anstieg.</string>
     <string name="fuse_zero_latch_calm_dist_title">Zero-Latch Ruhe-Abstand [mg/dl]</string>
     <string name="fuse_zero_latch_calm_dist_summary">Mindestabstand des q1 ueber dem Guard-Boden, damit ein Ruhe-Zyklus fuer den zweiten Freigabepfad zaehlt.</string>

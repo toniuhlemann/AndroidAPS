@@ -257,6 +257,15 @@ class FuseCycleRunner(
     companion object {
 
         /**
+         * Wie lange die Serienliste des Korrekturpfads Eintraege haelt
+         * [ms] - bewusst laenger als das groesste einstellbare Fenster
+         * (120 min), damit ein Hochstellen des Fensters keine Historie
+         * findet, die schon weggeworfen wurde. Die Fensterung selbst
+         * passiert beim Lesen.
+         */
+        const val CORRECTION_SERIES_KEEP_MS = 4L * 3_600_000L
+
+        /**
          * Der Mahlzeitenstand als ABLEITUNG aus den Episodenbudgets.
          *
          * Als Funktion und nicht als Schnappschuss im Runner, weil die Zahlen
@@ -347,6 +356,8 @@ class FuseCycleRunner(
             }
             require(it.zeroLatchCalmExitMin in FuseIntKey.ZeroLatchCalmExitMin.min..FuseIntKey.ZeroLatchCalmExitMin.max) { "zeroLatchCalmExitMin=${it.zeroLatchCalmExitMin}" }
             require(it.zeroLatchReasonGoneExitCycles in FuseIntKey.ZeroLatchReasonGoneExitCycles.min..FuseIntKey.ZeroLatchReasonGoneExitCycles.max) { "zeroLatchReasonGoneExitCycles=${it.zeroLatchReasonGoneExitCycles}" }
+            require(it.correctionSeriesCapU in FuseDoubleKey.CorrectionSeriesCapU.min..FuseDoubleKey.CorrectionSeriesCapU.max) { "correctionSeriesCapU=${it.correctionSeriesCapU}" }
+            require(it.correctionSeriesWindowMin in FuseIntKey.CorrectionSeriesWindowMin.min..FuseIntKey.CorrectionSeriesWindowMin.max) { "correctionSeriesWindowMin=${it.correctionSeriesWindowMin}" }
             require(it.zeroLatchCalmDistanceMgdl.isFinite() && it.zeroLatchCalmDistanceMgdl in FuseDoubleKey.ZeroLatchCalmDistanceMgdl.min..FuseDoubleKey.ZeroLatchCalmDistanceMgdl.max) { "zeroLatchCalmDistanceMgdl=${it.zeroLatchCalmDistanceMgdl}" }
             require(it.tailFloorMgdl.isFinite() && it.tailFloorMgdl in FuseDoubleKey.TailFloorMgdl.min..FuseDoubleKey.TailFloorMgdl.max) { "tailFloorMgdl=${it.tailFloorMgdl}" }
             require(it.tailRecoveryU.isFinite() && it.tailRecoveryU in FuseDoubleKey.TailRecoveryU.min..FuseDoubleKey.TailRecoveryU.max) { "tailRecoveryU=${it.tailRecoveryU}" }
@@ -1623,6 +1634,18 @@ class FuseCycleRunner(
         // Schwanz). Sie ist per Vertrag >= ledgerView.transportCommitmentU -
         // die Kappen koennen dadurch nur enger werden, nie weiter.
         val transportModelledU = transport.sumOf { it.amountU }
+        // ---- VARIANTE 2: DER SERIEN-HEADROOM (Default aus) ---------------
+        //
+        // Deckel MINUS was im Fenster schon geflossen ist MINUS die noch
+        // offene Transportmenge. Der Transportabzug steht hier, weil eine
+        // publizierte, aber noch nicht bestaetigte Menge sonst zweimal
+        // ausgegeben werden koennte: einmal jetzt und einmal, wenn sie
+        // spaeter doch bestaetigt in der Liste steht.
+        //
+        // `null` = kein Deckel. Das ist der Default und laesst das Gate
+        // bitgleich zum bisherigen Stand rechnen.
+        val serienHeadroomU: Double? =
+            serienHeadroom(cfg, episodes, signal.sourceTs, transportModelledU)
         // Der Kern wird weiterhin TRAEGE gebaut: ohne Posten faellt der Aufwand
         // (~540 Modellabfragen) ganz weg.
         val pending: List<PendingInsulinEffect> =
@@ -4885,6 +4908,7 @@ class FuseCycleRunner(
                     capIobU = state.capIobU,
                     transportU = transportModelledU,
                     pumpIncrementU = bolusStep,
+                    correctionSeriesHeadroomU = serienHeadroomU,
                 )
                 exposureGateResult = g
                 when {
@@ -5223,6 +5247,7 @@ class FuseCycleRunner(
                 prime = primeWindowOpen,
                 onset = onset.active,
                 mealTs = if (buchung.mealGebucht) signal.sourceTs else 0L,
+                correctionTs = if (buchung.korrekturGebucht) signal.sourceTs else 0L,
                 foundationPhase = buchung.phase,
             ) else null
         val mealStats = mealStatsOf(episodes, markerTs, computeTs)
@@ -5760,7 +5785,34 @@ class FuseCycleRunner(
             )
             while (episodes.mealDeliveries.size > 400) episodes.mealDeliveries.removeFirst()
         }
-        return Buchung(mealGebucht, phase, klemmung.vorU, klemmung.huelleU,
+        // VARIANTE 2: die Serienliste des MARKERLOSEN Korrekturpfads.
+        // Genau komplementaer zur Mahlzeitenbuchung - was dort gebucht
+        // wird, gehoert hier nicht hinein und umgekehrt. Sie ROLLIERT:
+        // Eintraege ausserhalb des Fensters fallen beim Buchen heraus,
+        // damit die Liste ohne Episode nicht unbegrenzt waechst.
+        // DIESELBE WAHRHEIT WIE DAS GATE, nicht die Buchungsbedingung
+        // der Mahlzeitenliste. `mealGebucht` verlangt zusaetzlich das
+        // Onset-Fenster; ein Zyklus unter MEAL-Vollmacht ausserhalb davon
+        // waere sonst als "markerlose Korrektur" gebucht worden - und der
+        // Deckel haette eine autorisierte Mahlzeit begrenzt. Gemessen im
+        // Rig: die Mahlzeit lief exakt auf den Korrektur-Deckel.
+        val korrekturGebucht = !mealPowerActive && actuatedU > 0.0
+        if (korrekturGebucht) {
+            episodes.correctionDeliveries.addLast(
+                app.aaps.fuse.plugin.ledger.EpisodeBudgets.CorrectionDelivery(sourceTs, actuatedU),
+            )
+        }
+        // Rollieren IMMER (auch ohne neue Buchung), sonst waechst die
+        // Liste ohne Episode unbegrenzt. Gekappt wird an einer FESTEN
+        // Obergrenze, nicht am eingestellten Fenster: die Fensterung
+        // passiert beim LESEN, und eine Liste, die knapp am Fenster
+        // abschneidet, verlaere beim Hochstellen des Fensters still
+        // Historie.
+        while (episodes.correctionDeliveries.firstOrNull()
+                ?.let { sourceTs - it.ts > CORRECTION_SERIES_KEEP_MS } == true
+        ) episodes.correctionDeliveries.removeFirst()
+        while (episodes.correctionDeliveries.size > 400) episodes.correctionDeliveries.removeFirst()
+        return Buchung(mealGebucht, korrekturGebucht, phase, klemmung.vorU, klemmung.huelleU,
                        klemmung.wegU, klemmung.grund, klemmung.ts)
     }
 
@@ -5784,6 +5836,8 @@ class FuseCycleRunner(
 
     private data class Buchung(
         val mealGebucht: Boolean,
+        /** Variante 2: in [EpisodeBudgets.correctionDeliveries] gebucht. */
+        val korrekturGebucht: Boolean = false,
         val phase: MealFoundation.Phase,
         /**
          * DAS KLEMMEREIGNIS DIESES ZYKLUS - lokal zurueckgegeben, nicht in
@@ -6132,6 +6186,10 @@ class FuseCycleRunner(
                     capIobU = state.capIobU,
                     transportU = transportModelledU,
                     pumpIncrementU = pumpe.bolusStepU,
+                    // Derselbe Deckel wie im Hauptpfad - der Fallback ist
+                    // ein Notausgang, kein Freibrief.
+                    correctionSeriesHeadroomU =
+                        serienHeadroom(cfg, episodes, signal.sourceTs, transportModelledU),
                 )
                 fallbackGateResult = g
                 when {
@@ -6203,6 +6261,7 @@ class FuseCycleRunner(
                 prime = primeWindowOpen,
                 onset = onset.active,
                 mealTs = if (buchung.mealGebucht) signal.sourceTs else 0L,
+                correctionTs = if (buchung.korrekturGebucht) signal.sourceTs else 0L,
                 foundationPhase = buchung.phase,
             ) else null
 
@@ -6581,6 +6640,33 @@ class FuseCycleRunner(
      *  Neustart beginnt bei 0, also in der konservativen Richtung
      *  (die Null haelt laenger, nicht kuerzer). */
     private var zeroReasonGoneStreak = 0
+
+    /**
+     * DER SERIEN-HEADROOM DES MARKERLOSEN KORREKTURPFADS (Variante 2).
+     *
+     * Deckel MINUS was im Fenster schon geflossen ist MINUS die noch
+     * offene Transportmenge. Der Transportabzug steht hier, weil eine
+     * publizierte, aber noch nicht bestaetigte Menge sonst zweimal
+     * ausgegeben werden koennte - einmal jetzt und einmal, wenn sie
+     * spaeter bestaetigt in der Liste steht.
+     *
+     * `null` = kein Deckel (Default). Dann rechnet das Gate bitgleich zum
+     * bisherigen Stand.
+     */
+    private fun serienHeadroom(
+        cfg: Config,
+        episodes: app.aaps.fuse.plugin.ledger.EpisodeBudgets,
+        nowTs: Long,
+        transportU: Double,
+    ): Double? = cfg.correctionSeriesCapU
+        .takeIf { it > 0.0 }
+        ?.let { deckel ->
+            val fensterMs = cfg.correctionSeriesWindowMin * 60_000L
+            val imFenster = episodes.correctionDeliveries
+                .filter { nowTs - it.ts <= fensterMs }
+                .sumOf { it.amountU }
+            (deckel - imFenster - transportU).coerceAtLeast(0.0)
+        }
     /** AUSLOESE-Zaehler des Fall-Verdikts (v29): zwei aufeinanderfolgende
      *  qualifizierende Zyklen zuenden, Unterbrechung nullt. Prozesslokal
      *  wie die Erholungs-Runtime - ein Neustart im Anlauf beginnt neu. */
@@ -6755,6 +6841,8 @@ class FuseCycleRunner(
         val zeroLatchEnabled: Boolean,
         val zeroLatchCalmExitMin: Int,
         val zeroLatchReasonGoneExitCycles: Int,
+        val correctionSeriesCapU: Double,
+        val correctionSeriesWindowMin: Int,
         val zeroLatchCalmDistanceMgdl: Double,
         /** V-Reversal-Schutz im Korrekturkontext - s.
          *  [CorrectionReversalGuard] und FuseKeys (Default AUS). */
@@ -6914,6 +7002,8 @@ class FuseCycleRunner(
         zeroLatchEnabled = preferences.get(FuseBooleanKey.ZeroLatchEnabled),
         zeroLatchCalmExitMin = preferences.get(FuseIntKey.ZeroLatchCalmExitMin),
         zeroLatchReasonGoneExitCycles = preferences.get(FuseIntKey.ZeroLatchReasonGoneExitCycles),
+        correctionSeriesCapU = preferences.get(FuseDoubleKey.CorrectionSeriesCapU),
+        correctionSeriesWindowMin = preferences.get(FuseIntKey.CorrectionSeriesWindowMin),
         zeroLatchCalmDistanceMgdl = preferences.get(FuseDoubleKey.ZeroLatchCalmDistanceMgdl),
         reversalGuardEnabled = preferences.get(FuseBooleanKey.CorrectionReversalGuardEnabled),
         reversalFallUkf = preferences.get(FuseDoubleKey.ReversalFallUkf),

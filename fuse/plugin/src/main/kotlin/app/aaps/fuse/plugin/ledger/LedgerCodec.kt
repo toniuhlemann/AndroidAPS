@@ -593,6 +593,19 @@ object LedgerCodec {
                 }
             )
         )
+        // Die Serienliste des markerlosen Korrekturpfads (Variante 2) -
+        // gleiche Tripel-Form, damit der Rollback nach einem Neustart
+        // dieselbe Zeile findet. Ohne sie begaenne der Deckel nach jedem
+        // Neustart wieder bei voll, und die Serie liefe erneut an.
+        // Additiv: eine Altdatei ohne das Feld ergibt eine leere Liste.
+        .put(
+            "correctionDeliveries",
+            JSONArray(
+                e.correctionDeliveries.map { d ->
+                    JSONArray(listOf(d.ts, d.amountU, d.proposalId ?: JSONObject.NULL))
+                }
+            )
+        )
         .apply { encodeFoundation(e)?.let { put("foundation", it) } }
 
     /**
@@ -960,6 +973,29 @@ object LedgerCodec {
                 }
             }
             e.mealDeliveries.addLast(EpisodeBudgets.MealDelivery(ts, u, id))
+        }
+        if (o.has("correctionDeliveries")) {
+            val cd = o.getJSONArray("correctionDeliveries")
+            require(cd.length() <= MAX_MEAL_DELIVERIES) { "correctionDeliveries size ${cd.length()}" }
+            for (i in 0 until cd.length()) {
+                val t = cd.getJSONArray(i)
+                val ts = requireTs("correctionDeliveries[$i].ts", t.getLong(0))
+                val u = t.getDouble(1)
+                require(u.isFinite() && u > 0.0 && u <= MAX_MEAL_DELIVERY_U) {
+                    "correctionDeliveries[$i].u out of range: $u"
+                }
+                val id = if (t.length() > 2 && !t.isNull(2)) t.getString(2) else null
+                if (id != null) {
+                    require(id.isNotBlank()) { "correctionDeliveries[$i].proposalId leer" }
+                    require(id.length <= MAX_PROPOSAL_ID_LEN) {
+                        "correctionDeliveries[$i].proposalId zu lang: ${id.length}"
+                    }
+                    require(e.correctionDeliveries.none { it.proposalId == id }) {
+                        "correctionDeliveries[$i].proposalId doppelt: $id"
+                    }
+                }
+                e.correctionDeliveries.addLast(EpisodeBudgets.CorrectionDelivery(ts, u, id))
+            }
         }
         return e
     }

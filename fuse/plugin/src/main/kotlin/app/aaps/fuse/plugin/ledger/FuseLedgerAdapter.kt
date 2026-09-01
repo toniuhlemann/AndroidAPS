@@ -278,6 +278,31 @@ class EpisodeBudgets {
         val gapCappedMin: Double,
     )
 
+    /**
+     * DIE ROLLIERENDE SERIENLISTE DES MARKERLOSEN KORREKTURPFADS
+     * (Variante 2 des Nullphasen-Vergleichs).
+     *
+     * Gleiche Bauform wie [mealDeliveries] - und derselbe Rollback: die
+     * Menge wird beim Publizieren gebucht und ueber die Kennung
+     * zurueckgedreht, wenn das Publikationsgate sie verwirft oder ein
+     * Nicht-Sende-Beweis vorliegt. Damit steht in der Liste am Ende NUR,
+     * was den Transport ueberstanden hat - angeforderte und
+     * fehlgeschlagene Dosen gehoeren ausdruecklich nicht hinein.
+     *
+     * DER UNTERSCHIED ZU [mealDeliveries]: diese Liste ROLLIERT wirklich.
+     * Das Mahlzeiten-Vorbild sammelt bis zum Episodenende und fenstert
+     * erst beim Lesen; hier gibt es keine Episode, an der die Liste
+     * haengen koennte - alte Eintraege fallen deshalb beim Buchen aus dem
+     * Fenster.
+     *
+     * NUR MARKERLOSE KORREKTUR: eine autorisierte Mahlzeit hat eigene
+     * Grenzen und darf von diesem Deckel weder etwas abbekommen noch
+     * etwas hineinbuchen.
+     */
+    class CorrectionDelivery(val ts: Long, val amountU: Double, var proposalId: String? = null)
+
+    val correctionDeliveries: ArrayDeque<CorrectionDelivery> = ArrayDeque()
+
     /** Die laufende Nullphase; null = gerade keine. */
     var zeroTally: ZeroPhaseTally? = null
 
@@ -647,6 +672,9 @@ class EpisodeBudgets {
         val prime: Boolean,
         val onset: Boolean,
         val mealTs: Long,
+        /** 0 = nicht in [correctionDeliveries] gebucht (symmetrisch zu
+         *  [mealTs]). */
+        val correctionTs: Long = 0L,
         val foundationPhase: app.aaps.fuse.core.controller.MealFoundation.Phase,
     )
 
@@ -659,6 +687,9 @@ class EpisodeBudgets {
         val prime: Boolean,
         val onset: Boolean,
         val mealTs: Long,
+        /** 0 = nicht in [correctionDeliveries] gebucht. Symmetrisch zu
+         *  [mealTs]: genau eine der beiden Listen traegt einen Zyklus. */
+        val correctionTs: Long = 0L,
         /**
          * EINMAL BESTIMMT, NICHT BEIM AUFLOESEN GERATEN. Die Phase haengt am
          * Uebergabeanker, und der kann sich zwischen Buchung und Aufloesung
@@ -1685,6 +1716,11 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
                     true
                 } else false
             } else true   // ohne Mahlzeitenzeile gibt es nichts nachzutragen
+        if (proposalId != null && bleibt > 0.0 && r.correctionTs > 0L) {
+            val ci = episodes.correctionDeliveries
+                .indexOfLast { it.ts == r.correctionTs && it.proposalId == null }
+            if (ci >= 0) episodes.correctionDeliveries[ci].proposalId = proposalId
+        }
 
         // KEINE ABLAGE OHNE NACHGETRAGENE KENNUNG (Toni 19.08.).
         //
@@ -1701,7 +1737,8 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
         episodes.settled =
             if (proposalId != null && bleibt > 0.0 && nachgetragen) EpisodeBudgets.Settled(
                 proposalId = proposalId, amountU = bleibt, prime = r.prime,
-                onset = r.onset, mealTs = r.mealTs, foundationPhase = r.foundationPhase,
+                onset = r.onset, mealTs = r.mealTs, correctionTs = r.correctionTs,
+                foundationPhase = r.foundationPhase,
             ) else null
 
         val frei = (r.amountU - (if (publishedU.isFinite()) publishedU else r.amountU)).coerceAtLeast(0.0)
@@ -1756,6 +1793,22 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
                     episodes.mealDeliveries[idx] =
                         EpisodeBudgets.MealDelivery(r.mealTs, rest, episodes.mealDeliveries[idx].proposalId)
                 else episodes.mealDeliveries.removeAt(idx)
+            }
+        }
+        // DIESELBE KORREKTUR FUER DIE SERIENLISTE (Variante 2). Ohne sie
+        // stuende eine verworfene Menge weiter im Deckel und machte den
+        // Kanal frueher dicht, als er es darf - der Deckel soll das
+        // GEFLOSSENE begrenzen, nicht das Angeforderte.
+        if (frei > 1e-9 && r.correctionTs > 0L) {
+            val ci = episodes.correctionDeliveries.indexOfLast { it.ts == r.correctionTs }
+            if (ci >= 0) {
+                val rest = episodes.correctionDeliveries[ci].amountU - frei
+                if (rest > 1e-9)
+                    episodes.correctionDeliveries[ci] =
+                        EpisodeBudgets.CorrectionDelivery(
+                            r.correctionTs, rest, episodes.correctionDeliveries[ci].proposalId,
+                        )
+                else episodes.correctionDeliveries.removeAt(ci)
             }
         }
     }
@@ -1834,6 +1887,14 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
         if (s.foundationPhase == app.aaps.fuse.core.controller.MealFoundation.Phase.PHASE_B)
             episodes.deliveredSinceHandoverU =
                 (episodes.deliveredSinceHandoverU - menge).coerceAtLeast(0.0)
+        // DIE SERIENZEILE FAELLT MIT (Variante 2): ein bewiesenes
+        // Nicht-Senden darf den Deckel nicht weiter belasten. Gesucht wird
+        // ueber die KENNUNG, nicht ueber den Zeitstempel - eine Stufe
+        // spaeter ist er nicht mehr eindeutig.
+        if (s.correctionTs > 0L) {
+            val ci = episodes.correctionDeliveries.indexOfFirst { it.proposalId == proposalId }
+            if (ci >= 0) episodes.correctionDeliveries.removeAt(ci)
+        }
 
         // ---- UND DER UEBERTRAG FUER PHASE B (Toni 19.08.) -----------------
         //
