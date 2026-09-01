@@ -35,8 +35,17 @@ class NullphasenReplayLauf {
     private val uhr = SimpleDateFormat("HH:mm")
     private fun hm(ts: Long) = uhr.format(Date(ts))
 
-    private fun lies(datei: File): List<NullphasenReplay.Zyklus> =
-        datei.readLines().mapNotNull { zeile ->
+    /**
+     * Der Leser leitet `q1NotFalling` aus ZWEI aufeinanderfolgenden
+     * q1-Werten ab (Produktionsregel: q1 >= vorher - 0,01) und uebergibt
+     * nur das Boolean - im Analyzer landet kein Glukosewert.
+     *
+     * FAIL-CLOSED bei fehlender Angabe: `measuredLow`/`descentRiskActive`
+     * gelten dann als true (Gefahr angenommen), `q1NotFalling` als false.
+     */
+    private fun lies(datei: File): List<NullphasenReplay.Zyklus> {
+        var vorigesQ1: Double? = null
+        return datei.readLines().mapNotNull { zeile ->
             if (!zeile.trimStart().startsWith("{")) return@mapNotNull null
             runCatching {
                 val o = JSONObject(zeile)
@@ -47,6 +56,7 @@ class NullphasenReplayLauf {
                 val bg = o.optJSONObject("basalGap")
                 val st = o.optJSONObject("state")
                 val verdikt = lt?.optString("verdict")?.takeIf { it.isNotBlank() && it != "null" }
+                val q1 = s?.takeIf { it.has("q1") }?.optDouble("q1")?.takeIf { it.isFinite() }
                 NullphasenReplay.Zyklus(
                     tsMs = o.getLong("computeTs"),
                     zeroActive = o.optJSONObject("zeroLatch")?.optBoolean("active") == true,
@@ -60,9 +70,16 @@ class NullphasenReplayLauf {
                         ?.optDouble("scheduledBasalUph")?.takeIf { it.isFinite() && it > 0.0 },
                     publishedU = smb?.optDouble("publishedU", 0.0)?.takeIf { it.isFinite() } ?: 0.0,
                     mealAuthorized = dc?.optString("profile") == "MEAL",
-                )
+                    measuredLow = lt?.optString("verdict") == "MEASURED_LOW" ||
+                        (lt == null),   // fail-closed: ohne Urteil Gefahr annehmen
+                    descentRiskActive = o.optBoolean("descentRiskActive", true),
+                    q1NotFalling = q1?.let { jetzt ->
+                        vorigesQ1?.let { jetzt >= it - 0.01 } ?: true
+                    } ?: false,         // fail-closed: ohne q1 keine Erholung
+                ).also { if (q1 != null) vorigesQ1 = q1 }
             }.getOrNull()
         }
+    }
 
     @Test
     fun `Entscheidungsvergleich der Nullphasen-Varianten`() {
@@ -91,8 +108,8 @@ class NullphasenReplayLauf {
             println(
                 "N=%d: %d/%d Phasen betroffen | weggefallen %.0f min / %.3f U | ".format(
                     n, r.betroffenePhasen, ph.size, r.weggefalleneMin, r.weggefallenesBasalU,
-                ) + "zusaetzliche Kommandos %d | laengste Ruhe bis erneutem Grund %s".format(
-                    r.zusaetzlicheKommandos,
+                ) + "potenzielle Aktuationskanten %d | laengste Ruhe bis erneutem Grund %s".format(
+                    r.potenzielleAktuationskanten,
                     r.laengsteRuheMin?.let { "%.0f min".format(it) } ?: "kein erneuter Grund",
                 )
             )
@@ -118,6 +135,13 @@ class NullphasenReplayLauf {
             )
         }
         println("   (ein Deckel OBERHALB des Maximums kann im jeweiligen Fenster nie binden)")
+        val ser = NullphasenReplay.serien(zyklen)
+        println("")
+        println("   Serien (Ruhetrennung %d min, publizierte Mengen): %d Stueck".format(
+            NullphasenReplay.RUHE_TRENNUNG_MIN, ser.size))
+        ser.sortedByDescending { it.summeU }.take(8).forEach {
+            println("     %s-%s  %2d Dosen  %.2f U".format(hm(it.vonMs), hm(it.bisMs), it.dosen, it.summeU))
+        }
         // WO LIEGT EINE BESTIMMTE SERIE? Optional per FUSE_REPLAY_MARK
         // als "HH:mm-HH:mm" (lokale Zeit des Trails). Liegt sie im
         // Mittelfeld, trifft jeder Deckel, der sie erwischt, sehr viel
@@ -135,8 +159,8 @@ class NullphasenReplayLauf {
                     fenster.forEach { f ->
                         val e = NullphasenReplay.einordnung(zyklen, f, von, bis)
                         println(
-                            "   Fenster %2d min: Serie max %.2f U = Perzentil %.0f%% (Gesamtmax %.2f U)".format(
-                                f, e.serieMaxU, e.perzentil * 100, e.gesamtMaxU,
+                            "   Fenster %2d min: Serie max %.2f U = Rang %.0f%% unter dosisbeendeten Rollfenstern (Gesamtmax %.2f U)".format(
+                                f, e.serieMaxU, e.rangUnterRollfenstern * 100, e.gesamtMaxU,
                             )
                         )
                     }

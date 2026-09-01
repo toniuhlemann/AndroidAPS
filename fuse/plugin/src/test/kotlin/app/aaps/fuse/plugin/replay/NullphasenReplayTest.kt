@@ -23,10 +23,15 @@ class NullphasenReplayTest {
         basal: Double? = 0.6,
         pub: Double = 0.0,
         meal: Boolean = false,
+        low: Boolean = false,
+        descent: Boolean = false,
+        nichtFallend: Boolean = true,
+        gesund: Boolean = true,
     ) = NullphasenReplay.Zyklus(
         tsMs = t0 + min(minute), zeroActive = zero, schutzgrund = grund,
-        ukfRatePerMin = rate, signalHealthy = true, scheduledBasalUph = basal,
+        ukfRatePerMin = rate, signalHealthy = gesund, scheduledBasalUph = basal,
         publishedU = pub, mealAuthorized = meal,
+        measuredLow = low, descentRiskActive = descent, q1NotFalling = nichtFallend,
     )
 
     // ---- PHASEN ----------------------------------------------------------
@@ -94,13 +99,13 @@ class NullphasenReplayTest {
     }
 
     @Test
-    fun `zusaetzliche Kommandos zaehlen Ausgang und erneutes Zuenden`() {
+    fun `potenzielle Aktuationskanten zaehlen Ausgang und erneutes Zuenden`() {
         val mitWieder = (0..19).map { z(it.toDouble(), grund = it <= 3 || it >= 11) }
         val ohneWieder = (0..19).map { z(it.toDouble(), grund = it <= 3) }
-        assertEquals(2, NullphasenReplay.variante1(mitWieder, 3).zusaetzlicheKommandos) {
-            "ein Abbruch plus ein erneutes Null-Kommando"
+        assertEquals(2, NullphasenReplay.variante1(mitWieder, 3).potenzielleAktuationskanten) {
+            "eine Abbruchkante plus eine Null-Kante - KEINE bewiesenen Pumpenkommandos"
         }
-        assertEquals(1, NullphasenReplay.variante1(ohneWieder, 3).zusaetzlicheKommandos)
+        assertEquals(1, NullphasenReplay.variante1(ohneWieder, 3).potenzielleAktuationskanten)
         assertEquals(5.0, NullphasenReplay.variante1(mitWieder, 3).laengsteRuheMin!!, 1e-9)
     }
 
@@ -188,5 +193,106 @@ class NullphasenReplayTest {
         val r = NullphasenReplay.variante2(zyklen, deckelU = 0.40, fensterMin = 30)
         assertEquals(0.30, r.kanten[0].sprungU, 1e-9)
         assertEquals(0.10, r.kanten[1].sprungU, 1e-9, "von 0,30 floss nur 0,10")
+    }
+
+    // ---- DIE DREI NACHGEZOGENEN SCHUTZBEDINGUNGEN -----------------------
+    //
+    // Sie fehlten in der ersten Fassung des Analyzers. Dadurch konnten die
+    // gemeldeten Ausgaenge FRUEHER liegen als in der Produktion - und ein
+    // Befund wie "N=5 greift nur eine Phase" waere nicht belastbar
+    // gewesen. Jeder Fall hier ist eine Gegenprobe: die Bedingung allein
+    // muss den Ausgang verhindern.
+
+    @Test
+    fun `ein gemessenes Tief verhindert den Ausgang`() {
+        val ohne = (0..19).map { z(it.toDouble(), grund = it <= 3) }
+        val mit = (0..19).map { z(it.toDouble(), grund = it <= 3, low = it in 4..8) }
+        assertEquals(min(6.0), NullphasenReplay.variante1(ohne, 3).phasen.single().ausgangMs)
+        assertEquals(min(11.0), NullphasenReplay.variante1(mit, 3).phasen.single().ausgangMs) {
+            "waehrend des Tiefs zaehlt nichts - erst 9,10,11 tragen"
+        }
+    }
+
+    @Test
+    fun `ein aktives Abwaertsrisiko verhindert den Ausgang`() {
+        val mit = (0..19).map { z(it.toDouble(), grund = it <= 3, descent = it in 4..8) }
+        assertEquals(min(11.0), NullphasenReplay.variante1(mit, 3).phasen.single().ausgangMs)
+    }
+
+    @Test
+    fun `ein fallendes q1 verhindert den Ausgang`() {
+        val mit = (0..19).map { z(it.toDouble(), grund = it <= 3, nichtFallend = it !in 4..8) }
+        assertEquals(min(11.0), NullphasenReplay.variante1(mit, 3).phasen.single().ausgangMs)
+    }
+
+    @Test
+    fun `eine dauerhaft gesetzte Schutzbedingung verhindert jeden Ausgang`() {
+        for (zyklen in listOf(
+            (0..19).map { z(it.toDouble(), low = true) },
+            (0..19).map { z(it.toDouble(), descent = true) },
+            (0..19).map { z(it.toDouble(), nichtFallend = false) },
+            (0..19).map { z(it.toDouble(), gesund = false) },
+        )) assertNull(NullphasenReplay.variante1(zyklen, 3).phasen.single().ausgangMs)
+    }
+
+    // ---- DER ANSCHLUSS ---------------------------------------------------
+
+    @Test
+    fun `90 Sekunden Abstand halten den Streak, 91 nullen ihn`() {
+        // Genau die Produktionsgrenze. Zwei ruhige Zyklen, dann die Luecke,
+        // dann ein dritter - bei <= 90 s ist das ein Streak von 3.
+        // Aufbau: Grund bei 0, dann ruhige Zyklen 1 und 2, dann die
+        // Luecke, dann zwei weitere ruhige. Bei <= 90 s ist der Zyklus
+        // nach der Luecke der DRITTE zusammenhaengende; bei 91 s beginnt
+        // der Zaehler dort neu und der dritte kommt einen Zyklus spaeter.
+        fun lauf(lueckeSek: Double): Long? {
+            val nachLuecke = 2.0 + lueckeSek / 60.0
+            val zyklen = listOf(
+                z(0.0, grund = true), z(1.0), z(2.0),
+                z(nachLuecke), z(nachLuecke + 1.0), z(nachLuecke + 2.0),
+            )
+            return NullphasenReplay.variante1(zyklen, 3).phasen.single().ausgangMs
+        }
+        assertEquals(min(2.0 + 90.0 / 60.0), lauf(90.0), "90 s = Anschluss, der dritte zaehlt")
+        assertEquals(min(2.0 + 91.0 / 60.0 + 2.0), lauf(91.0)) {
+            "91 s nullt - erst die drei NACH der Luecke tragen"
+        }
+    }
+
+    // ---- QUANTISIERUNG UND SERIEN ---------------------------------------
+
+    @Test
+    fun `die Kappung rastert auf den Pumpenschritt`() {
+        // Deckel 0,47: die erste Dose passt ganz (0,30), der Rest ist
+        // 0,17 - und davon kann die Pumpe nur 0,15 abgeben. Ohne
+        // Rasterung stuenden hier 0,47.
+        val zyklen = listOf(
+            z(0.0, zero = false, pub = 0.30), z(3.0, zero = false, pub = 0.30),
+        )
+        val r = NullphasenReplay.variante2(zyklen, deckelU = 0.47, fensterMin = 30)
+        assertEquals(0.45, r.geflossenU, 1e-9, "0,30 + 0,15 statt 0,30 + 0,17")
+        assertEquals(0.15, r.gekapptU, 1e-9, "von der zweiten Dose blieben 0,15 liegen")
+    }
+
+    @Test
+    fun `Serien werden an der dokumentierten Ruhepause getrennt`() {
+        val zyklen = listOf(
+            z(0.0, zero = false, pub = 0.20), z(5.0, zero = false, pub = 0.20),
+            // Pause laenger als die Trennung
+            z(40.0, zero = false, pub = 0.30),
+        )
+        val s = NullphasenReplay.serien(zyklen)
+        assertEquals(2, s.size)
+        assertEquals(0.40, s[0].summeU, 1e-9)
+        assertEquals(2, s[0].dosen)
+        assertEquals(0.30, s[1].summeU, 1e-9)
+    }
+
+    @Test
+    fun `eine dichte Folge bleibt EINE Serie`() {
+        val zyklen = (0..20).map { z(it.toDouble(), zero = false, pub = 0.05) }
+        val s = NullphasenReplay.serien(zyklen)
+        assertEquals(1, s.size)
+        assertEquals(21, s[0].dosen)
     }
 }

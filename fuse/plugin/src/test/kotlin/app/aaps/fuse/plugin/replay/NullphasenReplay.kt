@@ -41,10 +41,39 @@ object NullphasenReplay {
         /** Gemessene Rate; null = keine Aussage (zaehlt nie als Erholung). */
         val ukfRatePerMin: Double?,
         val signalHealthy: Boolean,
+        /**
+         * DIE DREI SCHUTZBEDINGUNGEN, die der Produktionsausgang
+         * zusaetzlich verlangt. Sie fehlten in der ersten Fassung, und
+         * damit konnten die gemeldeten Ausgaenge ZU FRUEH sein.
+         *
+         * FAIL-CLOSED: fehlt die Information im Trail, gilt sie als
+         * ungueltig - `measuredLow`/`descentRiskActive` als `true`
+         * (Gefahr angenommen) und `q1NotFalling` als `false` (keine
+         * Erholung angenommen). Eine fehlende Angabe darf nie zu einem
+         * Ausgang fuehren, den die Produktion nicht gehabt haette.
+         */
+        val measuredLow: Boolean,
+        val descentRiskActive: Boolean,
+        /**
+         * q1 dieses Zyklus >= q1 des vorigen - 0,01 (Produktionsregel
+         * `q1NichtFallend`). Der lokale Leser leitet das aus zwei
+         * aufeinanderfolgenden Werten ab und uebergibt NUR das Boolean -
+         * im Analyzer liegt kein Glukosewert.
+         */
+        val q1NotFalling: Boolean,
         /** Laufendes Profilbasal [U/h]; null = unbekannt, dann waechst nur
          *  die Zeit, nicht die Menge. */
         val scheduledBasalUph: Double?,
-        /** Publizierte Menge dieses Zyklus [U]. */
+        /**
+         * PUBLIZIERTE Menge dieses Zyklus [U] - was FUSE nach allen Toren
+         * an AAPS uebergab.
+         *
+         * NICHT pumpenbestaetigt. Der Trail traegt je Zyklus keine
+         * Bestaetigung (die entsteht erst spaeter ueber die
+         * IOB-Reconciliation und ist keinem Zyklus zugeordnet). Die ganze
+         * V2-Auswertung laeuft deshalb ausdruecklich auf PUBLIZIERTEN
+         * Mengen; wo "geflossen" steht, ist "publiziert" gemeint.
+         */
         val publishedU: Double,
         /** Lief der Zyklus unter MEAL-Vollmacht? Dann gehoert er nicht in
          *  den markerlosen Korrekturpfad. */
@@ -54,8 +83,21 @@ object NullphasenReplay {
     /** Dieselbe Schwelle wie im Produktionscode. */
     const val FLAT_RATE = -0.03
 
+    /** Der Anschluss-Abstand des Produktionscodes: eine Luecke > 90 s
+     *  nullt den Streak (dort zaehlt er ZYKLEN, keine Wanduhrminuten). */
+    const val ANSCHLUSS_MAX_MS = 90_000L
+
+    /**
+     * ALLE FUENF Freigabebedingungen des Produktionsausgangs - nicht nur
+     * Signalgesundheit und Rate. Die ersten drei fehlten, wodurch
+     * gemeldete Ausgaenge zu frueh sein konnten.
+     */
     private fun erholung(z: Zyklus) =
-        z.signalHealthy && z.ukfRatePerMin != null && z.ukfRatePerMin >= FLAT_RATE
+        z.signalHealthy &&
+            !z.measuredLow &&
+            !z.descentRiskActive &&
+            z.ukfRatePerMin != null && z.ukfRatePerMin >= FLAT_RATE &&
+            z.q1NotFalling
 
     // ---- PHASEN ---------------------------------------------------------
 
@@ -108,12 +150,16 @@ object NullphasenReplay {
         val weggefallenesBasalU get() = phasen.sumOf { it.weggefallenesBasalU }
 
         /**
-         * Jeder Ausgang ist ein zusaetzliches Abbruch-Kommando an die
-         * Pumpe, jedes erneute Zuenden im unveraenderten Signal ein
-         * zusaetzliches Null-Kommando. Die Summe ist die Zahl der
-         * ZUSAETZLICHEN Aktuationen gegenueber der Basislinie.
+         * POTENZIELLE Aktuationskanten - ausdruecklich KEINE Pumpenkommandos.
+         *
+         * Jeder Ausgang waere eine Abbruchkante, jedes erneute Zuenden im
+         * unveraenderten Signal eine Null-Kante. OB daraus ein Kommando
+         * entsteht, haengt am TBR-Zustand, am Pumpengate und an der
+         * tatsaechlich publizierten TBR-Aktion - nichts davon bildet
+         * dieser Analyzer nach. Wer die Zahl als "Pumpenkommandos" liest,
+         * behauptet mehr, als hier steht.
          */
-        val zusaetzlicheKommandos
+        val potenzielleAktuationskanten
             get() = phasen.count { it.ausgangMs != null } +
                 phasen.count { it.erneuterGrundNachMin != null }
 
@@ -126,8 +172,13 @@ object NullphasenReplay {
         val out = phasen(zyklen).map { p ->
             var streak = 0
             var idx: Int? = null
+            var letzterTs = 0L
             for ((i, z) in p.zyklen.withIndex()) {
-                streak = if (!z.schutzgrund && erholung(z)) streak + 1 else 0
+                // ZUSAMMENHAENGEND heisst zusammenhaengend: eine Luecke
+                // ueber 90 s nullt den Zaehler wie in der Produktion.
+                val anschluss = letzterTs > 0L && z.tsMs - letzterTs <= ANSCHLUSS_MAX_MS
+                streak = if (!z.schutzgrund && erholung(z)) (if (anschluss) streak + 1 else 1) else 0
+                letzterTs = z.tsMs
                 if (streak >= n) { idx = i; break }
             }
             if (idx == null) {
@@ -197,8 +248,19 @@ object NullphasenReplay {
         val fensterMin: Int,
         /** Groesste rollierende Summe INNERHALB des markierten Bereichs. */
         val serieMaxU: Double,
-        /** Anteil aller Fenstersummen, die kleiner sind [0..1]. */
-        val perzentil: Double,
+        /**
+         * RANG UNTER DOSISBEENDETEN, UEBERLAPPENDEN ROLLFENSTERN [0..1] -
+         * ausdruecklich KEIN Perzentil einer Verteilung unabhaengiger
+         * Serien.
+         *
+         * Gebildet wird je DOSIS ein Fenster, das an ihr endet; benachbarte
+         * Fenster ueberlappen also stark und eine dichte Dosenfolge ist
+         * mehrfach vertreten. Aus einem Rang von 70 % folgt deshalb NICHT,
+         * dass "70 % der Serien kleiner waren" - nur, dass 70 % der
+         * dosisbeendeten Fenster kleiner waren. Fuer die Serienfrage ist
+         * [serien] die richtige Groesse.
+         */
+        val rangUnterRollfenstern: Double,
         val gesamtMaxU: Double,
     )
 
@@ -221,6 +283,50 @@ object NullphasenReplay {
             if (summen.isEmpty()) 0.0 else kleiner.toDouble() / summen.size,
             summen.maxOfOrNull { it.second } ?: 0.0,
         )
+    }
+
+    /**
+     * EINE SERIE - zusammenhaengende markerlose Dosen, getrennt durch
+     * eine RUHEPAUSE.
+     *
+     * Die Trennung ist eine dokumentierte Wahl, keine Messung:
+     * [RUHE_TRENNUNG_MIN] Minuten ohne markerlose Dosis beenden eine
+     * Serie. Der Wert ist bewusst gleich dem kuerzesten betrachteten
+     * Deckelfenster - eine laengere Pause bedeutet, dass ein rollierender
+     * Deckel dieser Laenge zwischendurch vollstaendig frei geworden waere.
+     * Wer eine andere Trennung waehlt, bekommt andere Serien; deshalb
+     * steht sie hier und nicht implizit im Auswertungsskript.
+     */
+    const val RUHE_TRENNUNG_MIN = 15
+
+    data class Serie(
+        val vonMs: Long,
+        val bisMs: Long,
+        val dosen: Int,
+        /** Summe der PUBLIZIERTEN Mengen dieser Serie [U]. */
+        val summeU: Double,
+    )
+
+    /** Gruppiert die markerlosen Dosen zu Serien - die Groesse, nach der
+     *  ein Serien-Deckel eigentlich fragt. */
+    fun serien(zyklen: List<Zyklus>, trennungMin: Int = RUHE_TRENNUNG_MIN): List<Serie> {
+        val dosen = korrekturDosen(zyklen)
+        if (dosen.isEmpty()) return emptyList()
+        val luecke = trennungMin * 60_000L
+        val out = mutableListOf<Serie>()
+        var von = dosen.first().first
+        var letzte = von
+        var n = 0
+        var summe = 0.0
+        for ((ts, u) in dosen) {
+            if (ts - letzte > luecke) {
+                out.add(Serie(von, letzte, n, summe))
+                von = ts; n = 0; summe = 0.0
+            }
+            letzte = ts; n++; summe += u
+        }
+        out.add(Serie(von, letzte, n, summe))
+        return out
     }
 
     data class Fensterkante(
@@ -252,7 +358,14 @@ object NullphasenReplay {
      * mit weniger IOB andere Mengen angefordert. Alles hier sind
      * MENGENOBERGRENZEN.
      */
-    fun variante2(zyklen: List<Zyklus>, deckelU: Double, fensterMin: Int): V2Ergebnis {
+    fun variante2(
+        zyklen: List<Zyklus>,
+        deckelU: Double,
+        fensterMin: Int,
+        /** Die Produktionskappung rastert auf den Pumpenschritt - eine
+         *  beliebige Teilmenge kann die Pumpe gar nicht abgeben. */
+        pumpenschrittU: Double = 0.05,
+    ): V2Ergebnis {
         val fenster = fensterMin * 60_000L
         val geflossen = mutableListOf<Pair<Long, Double>>()
         var gekappt = 0.0
@@ -260,7 +373,12 @@ object NullphasenReplay {
         var erste: Long? = null
         for ((ts, u) in korrekturDosen(zyklen)) {
             val imFenster = geflossen.filter { it.first in (ts - fenster + 1)..ts }.sumOf { it.second }
-            val erlaubt = minOf(u, (deckelU - imFenster).coerceAtLeast(0.0))
+            val roh = minOf(u, (deckelU - imFenster).coerceAtLeast(0.0))
+            // Auf den Pumpenschritt abrunden (wie ExposureGate): was nicht
+            // auf das Raster passt, kann nicht abgegeben werden.
+            val erlaubt =
+                if (pumpenschrittU > 0.0) Math.floor(roh / pumpenschrittU + 1e-9) * pumpenschrittU
+                else roh
             if (erlaubt < u - 1e-9) {
                 gekappt += u - erlaubt
                 betroffen++
