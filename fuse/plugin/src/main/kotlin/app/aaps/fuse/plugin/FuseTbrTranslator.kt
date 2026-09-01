@@ -156,6 +156,9 @@ object FuseTbrTranslator {
         endOwnPartial: Boolean = false,
         /** Lebt ein Nachweis der eigenen Teil-TBR? Dann SMB gesperrt. */
         ownPartialHeld: Boolean = false,
+        /** Ist ein Setzkommando fuer die Teilrate unterdrueckt (offene
+         *  Anforderung, Backoff, Versuchsdeckel)? */
+        suppressPartialSet: Boolean = false,
         /** s. [reasonGone]. Default false = Verhalten wie vor dem 15.08. */
         protectionCleared: Boolean = false,
         /** Bisher erfolglose Abbruchversuche in Folge (Medtrum-Backoff). */
@@ -173,6 +176,7 @@ object FuseTbrTranslator {
             partialRateUPerH = partialRateUPerH,
             endOwnPartial = endOwnPartial,
             ownPartialHeld = ownPartialHeld,
+            suppressPartialSet = suppressPartialSet,
             endZeroAttempts = endZeroAttempts,
             // C8 UNABHAENGIG VOM INTENT (Toni 17.08.): seit das Fundament auch
             // in unsicherer Lage stehen bleibt, traegt der Intent die

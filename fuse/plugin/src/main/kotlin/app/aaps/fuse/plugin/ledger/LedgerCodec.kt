@@ -493,6 +493,8 @@ object LedgerCodec {
                     .put("endAttempts", it.endAttempts)
                     .put("lastEndRequestTs", it.lastEndRequestTs)
                     .put("everRunning", it.everRunning)
+                    .put("setAttempts", it.setAttempts)
+                    .put("lastSetRequestTs", it.lastSetRequestTs)
             } ?: JSONObject.NULL,
         )
         .put(
@@ -840,6 +842,8 @@ object LedgerCodec {
                     endAttempts = own.optInt("endAttempts", 0),
                     lastEndRequestTs = own.optLong("lastEndRequestTs", 0L),
                     everRunning = own.optBoolean("everRunning", false),
+                    setAttempts = own.optInt("setAttempts", 0),
+                    lastSetRequestTs = own.optLong("lastSetRequestTs", 0L),
                 )
             }
             // Ein unbrauchbarer Nachweis wird VERWORFEN, nicht repariert:

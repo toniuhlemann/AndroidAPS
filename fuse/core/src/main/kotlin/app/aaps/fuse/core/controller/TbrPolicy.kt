@@ -267,9 +267,17 @@ object TbrPolicy {
          * unbrauchbare Sicht, Versuchsdeckel).
          */
         ownPartialHeld: Boolean = false,
+        /**
+         * Ist ein SETZKOMMANDO fuer die Teilrate in diesem Zyklus
+         * unterdrueckt? Entschieden in [PartialTbrOwnership.advance] -
+         * dort liegen Bestaetigungsfrist, Backoff und Versuchsdeckel.
+         * Ohne diese Sperre forderte [partialBasal] bei unsichtbarer TBR
+         * jede Minute erneut an.
+         */
+        suppressPartialSet: Boolean = false,
         unsafeSituation: Boolean = false,
     ): Decision {
-        val base = decideIgnoringPump(intent, current, scheduledBasalUPerH, cfg, fault, protectionCleared, partialRateUPerH, endZeroAttempts, endOwnPartial, ownPartialHeld, unsafeSituation)
+        val base = decideIgnoringPump(intent, current, scheduledBasalUPerH, cfg, fault, protectionCleared, partialRateUPerH, endZeroAttempts, endOwnPartial, ownPartialHeld, suppressPartialSet, unsafeSituation)
         if (!pumpBusy) return base
         // Eine arbeitende Pumpe bekommt keine zweite Anweisung — aber der
         // Safety-Grund und sein Alarm bleiben erhalten. Unterdrueckt wird die
@@ -294,6 +302,7 @@ object TbrPolicy {
         endZeroAttempts: Int = 0,
         endOwnPartial: Boolean = false,
         ownPartialHeld: Boolean = false,
+        suppressPartialSet: Boolean = false,
         unsafeSituation: Boolean = false,
     ): Decision {
         // Ungueltige Eingaben werden nicht geworfen, sondern fail-closed
@@ -350,8 +359,10 @@ object TbrPolicy {
                 current, scheduledBasalUPerH, cfg,
                 protectionCleared = protectionCleared && fault == FaultCode.NONE,
                 endZeroAttempts = endZeroAttempts,
+                endOwnPartial = endOwnPartial,
+                ownPartialHeld = ownPartialHeld,
             )
-            Intent.PARTIAL_BASAL -> partialBasal(current, scheduledBasalUPerH, cfg, partialRateUPerH)
+            Intent.PARTIAL_BASAL -> partialBasal(current, scheduledBasalUPerH, cfg, partialRateUPerH, suppressPartialSet)
             Intent.KEEP        -> keep(current, scheduledBasalUPerH, cfg, endOwnPartial, ownPartialHeld)
         }
         return if (fault == FaultCode.NONE) base
@@ -443,8 +454,14 @@ object TbrPolicy {
         scheduledBasalUPerH: Double,
         cfg: Config,
         vorgabeUPerH: Double,
+        suppressPartialSet: Boolean = false,
     ): Decision {
         val ursache = SmbBlockCause.PARTIAL_RECOVERY
+        // DIE OFFENE ANFORDERUNG STEHT NOCH. Kein zweites Kommando - aber
+        // die Stufe laeuft weiter, der SMB bleibt gesperrt, und die
+        // Bestaetigungsfrist beginnt NICHT neu.
+        if (suppressPartialSet)
+            return Decision(Outcome.NoRequest, PARTIAL_SET_SUPPRESSED_REASON, alarm = false, smbBlockCause = ursache)
         if (!vorgabeUPerH.isFinite() || vorgabeUPerH <= 0.0 ||
             !scheduledBasalUPerH.isFinite() || scheduledBasalUPerH <= 0.0
         ) return safetyZero(current, cfg).let { it.copy(reason = "PARTIAL_INVALID_INPUT|" + it.reason) }
@@ -497,6 +514,11 @@ object TbrPolicy {
      *  beendeter Fremdeingriff im Trail nie so aussieht wie dieser. */
     const val KEEP_END_OWN_PARTIAL_REASON = "KEEP_END_OWN_PARTIAL"
 
+    /** Das unterdrueckte Duplikat - im Trail von "keine Stufe" zu
+     *  unterscheiden, sonst sieht eine wartende Anforderung aus wie ein
+     *  Zyklus ohne Teilstufe. */
+    const val PARTIAL_SET_SUPPRESSED_REASON = "PARTIAL_SET_SUPPRESSED"
+
     /** Der Cancel wurde unterdrueckt, weil er in diesem Fenster schon zu oft
      *  scheiterte - s. [Config.endZeroMaxAttempts]. */
     const val END_ZERO_BACKOFF_REASON = "NO_POSITIVE_END_ZERO_BACKOFF"
@@ -507,8 +529,28 @@ object TbrPolicy {
         cfg: Config,
         protectionCleared: Boolean = false,
         endZeroAttempts: Int = 0,
+        endOwnPartial: Boolean = false,
+        ownPartialHeld: Boolean = false,
     ): Decision {
-        if (current == null) return Decision(Outcome.NoRequest, "NO_POSITIVE_NOTHING_RUNNING", alarm = false, smbBlockCause = SmbBlockCause.NONE)
+        // DER AUSGANG DER EIGENEN TEILRATE GILT AUCH HIER.
+        //
+        // Vom E2E-Kommandostromtest gefunden: er lag zuerst NUR im
+        // KEEP-Pfad. Nach einer Nullphase steht aber sehr oft
+        // NO_NEW_POSITIVE oder CANCEL_TO_SCHEDULED an, und dann fiel eine
+        // laufende EIGENE Absenkung in "NO_POSITIVE_KEEP_NON_POSITIVE" -
+        // sie lief bis zum Ablauf weiter, der SMB war offen, und FUSE
+        // meldete die normale Freigabe. Also genau der Fehler, gegen den
+        // der ganze Besitznachweis gebaut wurde, nur ueber einen anderen
+        // Intent.
+        if (endOwnPartial)
+            return Decision(
+                Outcome.Request(0.0, 0), KEEP_END_OWN_PARTIAL_REASON,
+                alarm = false, smbBlockCause = SmbBlockCause.PARTIAL_ENDING,
+            )
+        val gehalten = Decision(Outcome.NoRequest, "NO_POSITIVE_OWN_PARTIAL_HELD", alarm = false, smbBlockCause = SmbBlockCause.PARTIAL_ENDING)
+        if (current == null)
+            return if (ownPartialHeld) gehalten
+            else Decision(Outcome.NoRequest, "NO_POSITIVE_NOTHING_RUNNING", alarm = false, smbBlockCause = SmbBlockCause.NONE)
         val dir = classify(current.absoluteRateUPerH, scheduledBasalUPerH, cfg.basalStepUPerH)
         if (dir == Direction.POSITIVE)
         // Cancel: rate 0, duration 0 — eindeutig, kein "zurueck auf Profilbasal
@@ -555,6 +597,9 @@ object TbrPolicy {
             return Decision(Outcome.Request(0.0, 0), END_ZERO_REASON, alarm = false, smbBlockCause = SmbBlockCause.NONE)
         }
 
+        // Nachweis lebt, aber kein Kommando faellig (Backoff, unbrauchbare
+        // Sicht, Versuchsdeckel): SMB bleibt zu.
+        if (ownPartialHeld) return gehalten
         return Decision(Outcome.NoRequest, "NO_POSITIVE_KEEP_NON_POSITIVE", alarm = false, smbBlockCause = SmbBlockCause.NONE)
     }
 }

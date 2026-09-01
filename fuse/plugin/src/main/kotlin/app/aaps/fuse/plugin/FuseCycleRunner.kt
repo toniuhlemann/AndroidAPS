@@ -5344,6 +5344,11 @@ class FuseCycleRunner(
             view = tbrSicht,
             nowTs = computeTs,
             basalStepUPerH = pumpe.basalStepUPerH,
+            // Der WUNSCH dieses Zyklus - der Lebenszyklus entscheidet, ob
+            // daraus ein Kommando werden darf. Ohne diese Sperre forderte
+            // die Tabelle bei unsichtbarer TBR jede Minute erneut an, und
+            // die Bestaetigungsfrist begann jedes Mal neu.
+            wunschRate = if (partialAktiv) partialRateUPerH else null,
             // Die Teilstufe ist vorbei, sobald sie in diesem Zyklus nicht
             // mehr aktiv ist - egal ob durch Rueckfall, Latch-Freigabe oder
             // ausgeschalteten Schalter.
@@ -5367,6 +5372,7 @@ class FuseCycleRunner(
             // mitbestimmt.
             endOwnPartial = ownStep.sendCancel,
             ownPartialHeld = ownStep.own != null,
+            suppressPartialSet = !ownStep.allowSet,
             cfg = TbrPolicy.Config(
                 basalStepUPerH = pumpe.basalStepUPerH,
                 // Toni 15.08.: die Null sofort verlassen, sobald ihr Grund weg
@@ -5396,33 +5402,24 @@ class FuseCycleRunner(
         //                             blockieren)
         val laeuftNull = currentTbr?.let { TbrPolicy.isZeroRate(it.absoluteRateUPerH, pumpe.basalStepUPerH) } == true
 
-        // ---- PHASE 2 DES LEBENSZYKLUS: die eigene Anforderung buchen -----
+        // ---- PHASE 2: BUCHEN, WAS TATSAECHLICH IN DIE QUEUE GING --------
         //
-        // Erst hier steht fest, ob die Tabelle wirklich eine Teilrate
-        // angefordert hat. Gebucht wird die ANGEFORDERTE Rate als
-        // REQUESTED - NICHT als bestaetigter Besitz: die Bestaetigung
-        // kommt frueherstens im naechsten Zyklus aus einem autoritativen
-        // Snapshot.
-        run {
-            val angefordert = combined.request
-            if (decision.tbr == FuseController.TbrAction.PARTIAL_BASAL &&
-                angefordert != null && angefordert.rateUPerH > 0.0 && angefordert.durationMin > 0
-            ) {
-                episodes.ownPartialTbr = PartialTbrOwnership.advance(
-                    own = ownStep.own,
-                    view = tbrSicht,
-                    nowTs = computeTs,
-                    basalStepUPerH = pumpe.basalStepUPerH,
-                    setRequest = PartialTbrOwnership.Own(
-                        rateUPerH = angefordert.rateUPerH,
-                        setAtTs = computeTs,
-                        durationMin = angefordert.durationMin,
-                        phase = PartialTbrOwnership.Phase.REQUESTED,
-                        phaseSinceTs = computeTs,
-                    ),
-                ).own
-            } else {
-                episodes.ownPartialTbr = ownStep.own
+        // Nicht der Wunsch bewegt den Zustand, sondern das Kommando. Ein
+        // unterdruecktes Duplikat aendert `setAtTs` deshalb NICHT - genau
+        // daran haengt, dass die Bestaetigungsfrist ueberhaupt ablaufen
+        // kann und CONFIRM_TIMEOUT je greift.
+        episodes.ownPartialTbr = run {
+            val req = combined.request ?: return@run ownStep.own
+            when {
+                decision.tbr == FuseController.TbrAction.PARTIAL_BASAL &&
+                    req.rateUPerH > 0.0 && req.durationMin > 0 ->
+                    PartialTbrOwnership.registerSet(
+                        ownStep.own, req.rateUPerH, req.durationMin, computeTs, pumpe.basalStepUPerH)
+
+                combined.reason.contains(TbrPolicy.KEEP_END_OWN_PARTIAL_REASON) ->
+                    PartialTbrOwnership.registerCancel(ownStep.own, computeTs)
+
+                else -> ownStep.own
             }
         }
 

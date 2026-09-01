@@ -1039,6 +1039,19 @@ class TransportWiringTest : TestBaseWithProfile() {
     private fun quelleMeldet(tb: TB?) =
         whenever(processedTbrEbData.getTempBasalIncludingConvertedExtended(any())) doReturn tb
 
+    /**
+     * Eine TBR, die vor [vorMin] Minuten mit 30 min Dauer gestartet wurde.
+     *
+     * WANDUHR, nicht die injizierte Uhr: `TB.plannedRemainingMinutes`
+     * rechnet gegen `System.currentTimeMillis()`. Ohne diesen Bezug meldet
+     * jede gemockte TBR Restlaufzeit 0, und ein Test misst dann nur, dass
+     * eine abgelaufene TBR nicht passt.
+     */
+    private fun laufendSeit(rate: Double, vorMin: Int) = TB(
+        timestamp = System.currentTimeMillis() - vorMin * 60_000L,
+        duration = 30 * 60_000L, rate = rate, isAbsolute = true, type = TB.Type.NORMAL,
+    )
+
     private fun laufendeTbr(rate: Double, typ: TB.Type = TB.Type.NORMAL) = TB(
         timestamp = start, duration = 30 * 60_000L,
         rate = rate, isAbsolute = true, type = typ,
@@ -13011,9 +13024,9 @@ class TransportWiringTest : TestBaseWithProfile() {
         quelleMeldet(TB(timestamp = System.currentTimeMillis(), duration = 30 * 60_000L,
                         rate = 0.0, isAbsolute = true, type = TB.Type.NORMAL))
         var zuendung: FuseCycleRunner.Outcome? = null
-        repeat(80) {
+        for (i in 0 until 80) {
             val o = cycle()
-            if (o.partialRecoveryActive) { zuendung = o; return@repeat }
+            if (o.partialRecoveryActive) { zuendung = o; break }
         }
         val gezuendet = zuendung
         assumeTrue(gezuendet != null, "Aufbau erzeugt in diesem Rig keine Teilstufe - Rest ungeprueft")
@@ -13031,26 +13044,37 @@ class TransportWiringTest : TestBaseWithProfile() {
         val rate = nachAnforderung.rateUPerH
         assertTrue(rate > 0.0)
 
-        // (3) Naechster Snapshot weiterhin ohne unsere Rate - NICHT geloescht.
-        cycle()
-        assertNotNull(ledger.episodes.ownPartialTbr) { "genau das war die Race" }
+        // (3) Naechster Snapshot weiterhin ohne unsere Rate - NICHT geloescht
+        //     und KEIN zweites Setzkommando (die zweite Race).
+        val setAtNachAnforderung = nachAnforderung.setAtTs
+        val o3 = cycle()
+        assertNotNull(ledger.episodes.ownPartialTbr) { "genau das war die erste Race" }
+        assertNull(o3.tbr) { "und das war die zweite: minuetliches Nachsetzen" }
+        assertEquals(setAtNachAnforderung, ledger.episodes.ownPartialTbr?.setAtTs)
 
-        // (4) Die Teilrate erscheint verzoegert -> RUNNING.
-        // ACHTUNG, HARNESS-EIGENHEIT: `TB.plannedRemainingMinutes` rechnet
-        // gegen `System.currentTimeMillis()`, NICHT gegen die injizierte
-        // Uhr. Damit die Restlaufzeit ueberhaupt ungleich 0 ist, muss der
-        // Zeitstempel auf der WANDUHR liegen. In Produktion faellt das
-        // zusammen; hier nicht, und ohne diese Zeile misst der Test nur,
-        // dass eine abgelaufene TBR nicht passt.
-        quelleMeldet(
-            TB(timestamp = System.currentTimeMillis(), duration = 30 * 60_000L,
-               rate = rate, isAbsolute = true, type = TB.Type.NORMAL)
-        )
-        cycle()
-        assertEquals(PartialTbrOwnership.Phase.RUNNING, ledger.episodes.ownPartialTbr?.phase) {
-            "bestaetigt werden muss ein autoritativer Snapshot mit passender Rate und Restlaufzeit; " +
-                "Nachweis=${ledger.episodes.ownPartialTbr}"
+        // (4) Die Teilrate erscheint verzoegert -> RUNNING. Die Pumpe hat
+        //     sie zwei Minuten nach der Anforderung uebernommen.
+        // Die Guard-Rate WANDERT, solange sich die Bahn bewegt - eine
+        // hoehere Rate darf aus RUNNING heraus nachgesetzt werden, und
+        // dann beginnt der Nachweis fuer die neue Rate wieder bei
+        // REQUESTED. Fuer die Bestaetigungspruefung wird deshalb erst
+        // abgewartet, bis die Rate steht (sie laeuft in den Profildeckel).
+        var stabil = ledger.episodes.ownPartialTbr!!.rateUPerH
+        repeat(12) {
+            cycle()
+            val jetzt = ledger.episodes.ownPartialTbr?.rateUPerH ?: 0.0
+            stabil = jetzt
         }
+        val nachweisVorher = ledger.episodes.ownPartialTbr!!
+        val alterMin = ((clock - nachweisVorher.setAtTs) / 60_000L).toInt()
+        quelleMeldet(laufendSeit(nachweisVorher.rateUPerH, alterMin + 1))
+        val oC = cycle()
+        val n0 = ledger.episodes.ownPartialTbr
+        assertEquals(PartialTbrOwnership.Phase.RUNNING, n0?.phase) {
+            "Nachweis=$n0 vorher=$nachweisVorher stabil=$stabil grund=${oC.reason?.take(60)}"
+        }
+        assertTrue(n0!!.everRunning) { "und die Bestaetigung ist gemerkt" }
+
 
         // (5) Schalter aus (dieselbe Wirkung wie eine Latch-Freigabe fuer die
         //     Stufe): der Ausgang muss ENDING erzeugen und den SMB sperren.
@@ -13095,9 +13119,7 @@ class TransportWiringTest : TestBaseWithProfile() {
         neuerRunner(FuseLedgerAdapter().also { it.loadOnce(dir.also(File::mkdirs), "test-epoch", start) })
         quelleMeldet(laufendeTbr(0.0))
         var da = false
-        repeat(80) {
-            if (cycle().partialRecoveryActive) { da = true; return@repeat }
-        }
+        for (i in 0 until 80) if (cycle().partialRecoveryActive) { da = true; break }
         assumeTrue(da, "Aufbau erzeugt in diesem Rig keine Teilstufe - Rest ungeprueft")
         assertNotNull(ledger.episodes.ownPartialTbr)
 
@@ -13111,6 +13133,233 @@ class TransportWiringTest : TestBaseWithProfile() {
         assertNotNull(ledger.episodes.ownPartialTbr) {
             "eine Ersatzquellen-Sicht ist KEIN Beweis, dass nichts laeuft"
         }
+    }
+
+    // =====================================================================
+    // E2E MIT AUFGEZEICHNETEM KOMMANDOSTROM
+    // =====================================================================
+
+    /**
+     * WAS HIER GEZAEHLT WIRD, und was nicht: `Outcome.tbr` ist die
+     * TBR-Anforderung, die der Runner AUSGIBT und die das Plugin
+     * unveraendert weiterreicht (`FusePlugin: tbr = outcome.tbr`). Das ist
+     * der Kommandostrom in Richtung Pumpe. NICHT geprueft wird, was die
+     * AAPS-CommandQueue daraus macht - das liegt hinter dem Plugin.
+     */
+    private data class TbrKommando(val rateUPerH: Double, val durationMin: Int, val grund: String)
+
+    private fun zyklusMitKommando(): Pair<FuseCycleRunner.Outcome, TbrKommando?> {
+        val o = cycle()
+        return o to o.tbr?.let { TbrKommando(it.rateUPerH, it.durationMin, o.reason ?: "") }
+    }
+
+    /**
+     * DIE VOM REVIEW GEFORDERTE QUEUE-FOLGE.
+     *
+     * Der Vorgaengertest sah die Ledgerphasen, zaehlte aber die Kommandos
+     * nicht - und uebersah damit die zweite Race: solange die Teil-TBR
+     * nicht im Snapshot erschien, forderte `partialBasal` sie JEDE MINUTE
+     * erneut an, die Bestaetigungsfrist begann jedes Mal neu, und eine
+     * verspaetet sichtbare Rate waere immer wieder auf 30 min verlaengert
+     * worden.
+     */
+    @Test
+    fun `E2E der Kommandostrom der Teilbasal-Stufe`(@TempDir dir: File) {
+        zeroLatchAn = true
+        teilbasalAn = true
+        flach = 140.0
+        steigungProMin = -1.2
+        knickAbMin = 25
+        steigungNachKnick = 0.0
+        bolusIobU = 2.5
+        clock = start
+        transportReset()
+        neuerRunner(FuseLedgerAdapter().also { it.loadOnce(dir.also(File::mkdirs), "test-epoch", start) })
+        quelleMeldet(TB(timestamp = System.currentTimeMillis(), duration = 30 * 60_000L,
+                        rate = 0.0, isAbsolute = true, type = TB.Type.NORMAL))
+
+        // ---- (1) Eintritt: GENAU EIN Teil-TBR-Setzkommando --------------
+        // ACHTUNG: `return@repeat` ist ein CONTINUE, kein break - eine
+        // Vorfassung dieses Tests lief deshalb alle 80 Zyklen durch und
+        // zaehlte 4 statt 1. Hier ein echter `break`.
+        var setz = 0
+        var ersteRate = 0.0
+        var da = false
+        for (i in 0 until 80) {
+            val (o, k) = zyklusMitKommando()
+            // Eine ANHEBENDE TBR mit positiver Dauer kann in diesem Aufbau
+            // nur die Teilrate sein; Schutz-Null ist Rate 0, Abbruch Dauer 0.
+            if (k != null && k.rateUPerH > 0.0 && k.durationMin > 0) { setz++; ersteRate = k.rateUPerH }
+            if (o.partialRecoveryActive) { da = true; break }
+        }
+        assumeTrue(da, "Aufbau erzeugt in diesem Rig keine Teilstufe - Rest ungeprueft")
+        assertEquals(1, setz) { "der Eintritt kostet genau EIN Setzkommando" }
+        val nachEintritt = ledger.episodes.ownPartialTbr
+        assertEquals(PartialTbrOwnership.Phase.REQUESTED, nachEintritt!!.phase)
+        assertEquals(1, nachEintritt.setAttempts)
+        val setAtNachEintritt = nachEintritt.setAtTs
+
+        // ---- (2) Fuenf autoritative Snapshots OHNE sichtbare TBR --------
+        //          Kein Minutentakt-Setzen, setAtTs unveraendert.
+        quelleMeldet(null)
+        var weitereSetz = 0
+        repeat(5) {
+            val (_, k) = zyklusMitKommando()
+            if (k != null && k.rateUPerH > 0.0 && k.durationMin > 0) weitereSetz++
+        }
+        assertEquals(0, weitereSetz) { "DAS war die zweite Race: minuetliches Nachsetzen" }
+        assertEquals(setAtNachEintritt, ledger.episodes.ownPartialTbr?.setAtTs) {
+            "ein unterdruecktes Duplikat darf die Frist nicht neu starten"
+        }
+        assertEquals(1, ledger.episodes.ownPartialTbr?.setAttempts)
+
+        // ---- (3) VERSPAETETE SICHTBARKEIT -------------------------------
+        //
+        // Die Pumpe wendet ab jetzt an, was wir anfordern. `spiegele()`
+        // baut die Sicht aus dem NACHWEIS - Rate und Alter -, statt sie zu
+        // raten; damit ist der Snapshot genau das, was eine Pumpe melden
+        // wuerde, die unser letztes Kommando uebernommen hat.
+        fun spiegele() {
+            val n = ledger.episodes.ownPartialTbr ?: return
+            quelleMeldet(laufendSeit(n.rateUPerH, ((clock - n.setAtTs) / 60_000L).toInt() + 1))
+        }
+        spiegele()
+        val (o3, _) = zyklusMitKommando()
+        assertTrue(ledger.episodes.ownPartialTbr?.everRunning == true) {
+            "die Bestaetigung muss haften: Nachweis=${ledger.episodes.ownPartialTbr} " +
+                "grund=${o3.reason?.take(60)}"
+        }
+
+        // Die Guard-Rate WANDERT, solange die Bahn sich bewegt; eine
+        // hoehere Rate darf aus RUNNING heraus nachgesetzt werden. Erst
+        // wenn sie im Profildeckel steht, ist der Zustand ruhig - und dann
+        // darf auch kein Kommando mehr kommen.
+        repeat(12) { spiegele(); cycle() }
+        spiegele()
+        val (_, kRuhe) = zyklusMitKommando()
+        assertNull(kRuhe) { "eine bestaetigte, unveraenderte Rate wird nicht neu gesetzt" }
+        assertEquals(PartialTbrOwnership.Phase.RUNNING, ledger.episodes.ownPartialTbr?.phase)
+
+        // ---- (4) SCHALTER AUS UNTER AKTIVEM LATCH -----------------------
+        //
+        // Der Riegel laeuft noch, also ist die richtige Antwort die NULL -
+        // nicht der Abbruch. Sie verdraengt die Teilrate im selben Zyklus
+        // (SAFETY_ZERO_REPLACE); das ist die geforderte Regel "Schalter aus
+        // unter aktivem Latch: zurueck auf Zero". Der Abbruch der eigenen
+        // Teilrate kommt erst NACH der Latch-Freigabe.
+        teilbasalAn = false
+        spiegele()
+        val (o4, k4) = zyklusMitKommando()
+        assertNotNull(k4) { "der Ausgang muss ein Kommando erzeugen" }
+        assertEquals(0.0, k4!!.rateUPerH, 1e-12)
+        assertEquals(30, k4.durationMin) { "eine Schutz-Null, kein Abbruch" }
+        assertEquals(0.0, o4.decision.smbU, 1e-12) { "und dabei kein SMB" }
+        assertEquals(PartialTbrOwnership.Phase.ENDING, ledger.episodes.ownPartialTbr?.phase) {
+            "der Besitz weiss, dass er enden soll"
+        }
+
+
+        // ---- (5) DIE NULL VERDRAENGT, SIE BRICHT NICHT AB ---------------
+        //
+        // Die Pumpe nimmt die Null jetzt an - der Spiegel bildet ab, was
+        // ZULETZT KOMMANDIERT wurde, nicht was wir gerne haetten. Damit
+        // passt unsere Teilrate nicht mehr auf die laufende TBR, und der
+        // autoritative Snapshot beendet den Besitz. EIN ABBRUCHKOMMANDO
+        // BRAUCHT ES DAFUER NICHT: die Null hat die Teilrate bereits
+        // ersetzt.
+        quelleMeldet(TB(timestamp = System.currentTimeMillis(), duration = 30 * 60_000L,
+                        rate = 0.0, isAbsolute = true, type = TB.Type.NORMAL))
+        var weitere = 0
+        for (i in 0 until 5) {
+            val (_, k) = zyklusMitKommando()
+            if (k != null) weitere++
+            if (ledger.episodes.ownPartialTbr == null) break
+        }
+        assertNull(ledger.episodes.ownPartialTbr) {
+            "ein autoritativer Snapshot ohne unsere Rate beendet den Besitz"
+        }
+        assertTrue(weitere <= 1) { "und dabei entsteht kein Kommandoschwall: $weitere" }
+
+        // WAS DIESER TEST NICHT ZEIGT, ausdruecklich: den Abbruch der
+        // eigenen Teilrate MIT Backoff. Der entsteht nur, wenn der Riegel
+        // freigibt, WAEHREND unsere Teilrate laeuft - in diesem Aufbau
+        // haelt das Verdikt durchgehend, und die Null verdraengt die
+        // Teilrate vorher. Diese Strecke ist im Lebenszyklus-Test
+        // abgedeckt (Backoff, Deckel, Wiederholung), nicht hier.
+
+    }
+
+
+    /**
+     * (8) DAS ZERO-KOMMANDO GEWINNT gegen eine offene Teilbasal-Anforderung.
+     *
+     * Kehrt das Risiko zurueck, waehrend die Teilrate noch REQUESTED ist,
+     * darf danach KEIN Teilbasal-Kommando mehr folgen - die Schutz-Null
+     * ist die staerkere Aussage.
+     */
+    @Test
+    fun `E2E ein zurueckkehrendes Risiko verdraengt die offene Teilbasal-Anforderung`(@TempDir dir: File) {
+        zeroLatchAn = true
+        teilbasalAn = true
+        flach = 140.0
+        steigungProMin = -1.2
+        knickAbMin = 25
+        steigungNachKnick = 0.0
+        bolusIobU = 2.5
+        clock = start
+        transportReset()
+        neuerRunner(FuseLedgerAdapter().also { it.loadOnce(dir.also(File::mkdirs), "test-epoch", start) })
+        quelleMeldet(TB(timestamp = System.currentTimeMillis(), duration = 30 * 60_000L,
+                        rate = 0.0, isAbsolute = true, type = TB.Type.NORMAL))
+        var da = false
+        for (i in 0 until 80) if (cycle().partialRecoveryActive) { da = true; break }
+        assumeTrue(da, "Aufbau erzeugt in diesem Rig keine Teilstufe - Rest ungeprueft")
+        assertNotNull(ledger.episodes.ownPartialTbr)
+
+        // Das Risiko kehrt zurueck: der Verlauf faellt wieder.
+        steigungNachKnick = -1.2
+        val kommandos = (0 until 6).map { zyklusMitKommando().second }
+        val teilbasal = kommandos.filterNotNull().filter { it.rateUPerH > 0.0 && it.durationMin > 0 }
+        assertTrue(teilbasal.isEmpty()) {
+            "nach dem Risiko darf keine Teilrate mehr gesetzt werden: $teilbasal"
+        }
+        // Und die Stufe laeuft nicht weiter.
+        assertFalse(cycle().partialRecoveryActive)
+    }
+
+    /**
+     * (9) VERSUCHSDECKEL: kein Kommando-Spam, und der SMB bleibt zu, bis
+     * autoritativ geklaert ist.
+     */
+    @Test
+    fun `E2E der Versuchsdeckel begrenzt die Setzkommandos`(@TempDir dir: File) {
+        zeroLatchAn = true
+        teilbasalAn = true
+        flach = 140.0
+        steigungProMin = -1.2
+        knickAbMin = 25
+        steigungNachKnick = 0.0
+        bolusIobU = 2.5
+        clock = start
+        transportReset()
+        neuerRunner(FuseLedgerAdapter().also { it.loadOnce(dir.also(File::mkdirs), "test-epoch", start) })
+        quelleMeldet(TB(timestamp = System.currentTimeMillis(), duration = 30 * 60_000L,
+                        rate = 0.0, isAbsolute = true, type = TB.Type.NORMAL))
+        var da = false
+        for (i in 0 until 80) if (cycle().partialRecoveryActive) { da = true; break }
+        assumeTrue(da, "Aufbau erzeugt in diesem Rig keine Teilstufe - Rest ungeprueft")
+
+        // Die Pumpe uebernimmt NIE. 40 Zyklen lang.
+        quelleMeldet(null)
+        var setz = 0
+        repeat(40) {
+            val (_, k) = zyklusMitKommando()
+            if (k != null && k.rateUPerH > 0.0 && k.durationMin > 0) setz++
+        }
+        assertTrue(setz <= PartialTbrOwnership.SET_MAX_ATTEMPTS) {
+            "hoechstens ${PartialTbrOwnership.SET_MAX_ATTEMPTS} Versuche, gezaehlt: $setz"
+        }
+        assertTrue(setz < 40) { "und ganz sicher kein Minutentakt" }
     }
 
 }
