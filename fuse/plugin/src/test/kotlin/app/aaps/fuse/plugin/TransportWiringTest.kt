@@ -13252,4 +13252,47 @@ class TransportWiringTest : TestBaseWithProfile() {
         assertTrue(setz < 40) { "und ganz sicher kein Minutentakt" }
     }
 
+    /**
+     * DERSELBE P0 DURCH DEN RUNNER: laeuft der Zyklus mit
+     * `tempBasalFallback = true`, ist die TBR-Sicht eine Ersatzquelle -
+     * dann darf KEINE TBR-Anforderung den Zyklus verlassen, auch wenn die
+     * Teilstufe gerade eine Rate wollte.
+     */
+    @Test
+    fun `E2E bei Ersatzquellen-Sicht verlaesst keine TBR-Anforderung den Zyklus`(@TempDir dir: File) {
+        zeroLatchAn = true
+        teilbasalAn = true
+        flach = 140.0
+        steigungProMin = -1.2
+        knickAbMin = 25
+        steigungNachKnick = 0.0
+        bolusIobU = 2.5
+        clock = start
+        transportReset()
+        neuerRunner(FuseLedgerAdapter().also { it.loadOnce(dir.also(File::mkdirs), "test-epoch", start) })
+        quelleMeldet(TB(timestamp = System.currentTimeMillis(), duration = 30 * 60_000L,
+                        rate = 0.0, isAbsolute = true, type = TB.Type.NORMAL))
+
+        // Bis kurz VOR den Eintritt fahren, damit die Stufe im naechsten
+        // Zyklus eine Rate wollen wuerde.
+        var streak = 0
+        for (i in 0 until 80) {
+            val o = cycle()
+            streak = o.partialRecoveryStreak
+            if (streak >= PartialRecoveryGate.ENTRY_CYCLES - 1) break
+        }
+        assumeTrue(streak >= PartialRecoveryGate.ENTRY_CYCLES - 1, "Eintritt kommt in diesem Rig nicht zustande")
+
+        // Jetzt Ersatzquellen-Sicht: die TBR-Sicht sagt nichts.
+        var kommandos = 0
+        repeat(6) {
+            clock += taktMs
+            if (runner.run(true, testPumpe()).tbr != null) kommandos++
+        }
+        assertEquals(0, kommandos) {
+            "ohne belastbare Sicht darf keine TBR gestellt werden - C7b kann nicht schuetzen, was es nicht sieht"
+        }
+        assertTrue(besitz().leer) { "und es wird auch nichts gebucht: ${besitz()}" }
+    }
+
 }

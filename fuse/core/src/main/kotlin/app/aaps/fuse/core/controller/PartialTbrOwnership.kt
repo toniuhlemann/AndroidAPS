@@ -396,13 +396,30 @@ object PartialTbrOwnership {
         sicherheitsDeckelUPerH: Double = Double.NaN,
     ): Step {
         val wunsch = wunschRate?.takeIf { it.isFinite() && it > 0.0 }
-        if (state.leer && state.ending == null && !wantProfile)
-            return Step(state, smbBlocked = false, sendCancel = false, allowSet = wunsch != null && !wantEnd, reason = Reason.NONE)
+        // DER SCHNELLPFAD GILT NUR OHNE SETZWUNSCH.
+        //
+        // Er lag frueher VOR der Sichtpruefung, und damit konnte bei
+        // leerem Besitz, unbrauchbarer Sicht und einem neuen
+        // Teilratenwunsch `allowSet = true` entstehen (Review-P0):
+        // `TEMP_BASAL_FALLBACK` sperrt zwar den SMB, entfernt die
+        // TBR-Anforderung aber nicht - FUSE haette eine Teilrate gesetzt,
+        // ohne eine moeglicherweise laufende FREMDE TBR zu kennen. C7b
+        // kann nicht schuetzen, was es nicht sieht.
+        //
+        // Ohne Wunsch bleibt der Pfad ein neutraler No-op, damit der
+        // normale Altpfad unveraendert bleibt.
+        if (state.leer && state.ending == null && !wantProfile && wunsch == null)
+            return Step(state, smbBlocked = false, sendCancel = false, allowSet = false, reason = Reason.NONE)
 
         // (1) UNBRAUCHBARE SICHT SAGT NICHTS. Halten, nichts abbrechen,
-        //     nichts setzen, SMB gesperrt lassen.
+        //     nichts setzen, SMB gesperrt lassen. Auch ein NEUER Wunsch
+        //     wartet hier - und sperrt den schnellen Kanal mit, weil FUSE
+        //     gleich etwas stellen will, ohne die Lage zu kennen.
         val current = when (view) {
-            is View.Unknown       -> return Step(state, smbBlocked = state.smbBlocked, sendCancel = false, allowSet = false, reason = Reason.VIEW_UNKNOWN_HELD)
+            is View.Unknown       -> return Step(
+                state, smbBlocked = state.smbBlocked || wunsch != null,
+                sendCancel = false, allowSet = false, reason = Reason.VIEW_UNKNOWN_HELD,
+            )
             is View.Authoritative -> view.current
         }
         val pendingPasst = matches(state.pendingRequest, current, nowTs, basalStepUPerH)
@@ -441,11 +458,15 @@ object PartialTbrOwnership {
                 )
                 return Step(
                     ohne, smbBlocked = ohne.smbBlocked, sendCancel = false, allowSet = false,
+                    // DIE REIHENFOLGE ZAEHLT: solange eine Anforderung
+                    // GEHALTEN wird, ist das die Auskunft - nicht
+                    // "beendet". `CLEARED_CONFIRMED` kommt erst, wenn
+                    // nichts mehr aussteht UND vorher etwas von uns da war.
                     reason = when {
-                        current == null                    -> Reason.CLEARED_CONFIRMED
-                        pendingAbgelaufen                  -> Reason.CONFIRM_TIMEOUT
-                        ohne.leer                          -> Reason.NONE
-                        else                               -> Reason.WAITING_CONFIRM
+                        ohne.pendingRequest != null -> Reason.WAITING_CONFIRM
+                        pendingAbgelaufen           -> Reason.CONFIRM_TIMEOUT
+                        current == null && !state.leer -> Reason.CLEARED_CONFIRMED
+                        else                        -> Reason.NONE
                     },
                 )
             }

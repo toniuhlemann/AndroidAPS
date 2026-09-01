@@ -907,4 +907,75 @@ class PartialTbrOwnershipTest {
         assertNull(PartialTbrOwnership.anzeigeZiel(State(), null, 0.80))
     }
 
+    // =====================================================================
+    // EINE NEUE TEILRATE UMGEHT DIE UNBEKANNTE SICHT NICHT
+    // =====================================================================
+
+    /**
+     * DER GEMELDETE P0: der Leerzustands-Schnellpfad lag VOR der
+     * Sichtpruefung. Bei leerem Besitz, unbrauchbarer Sicht und einem
+     * neuen Teilratenwunsch entstand `allowSet = true` - und
+     * `TEMP_BASAL_FALLBACK` sperrt zwar den SMB, entfernt die
+     * TBR-Anforderung aber nicht. FUSE haette eine Teilrate gesetzt, ohne
+     * eine moeglicherweise laufende FREMDE TBR zu kennen; C7b kann nicht
+     * schuetzen, was es nicht sieht.
+     */
+    @Test
+    fun `bei unbrauchbarer Sicht wird auch eine NEUE Teilrate nicht gesetzt`() {
+        val r = schritt(State(), View.Unknown, min(2), wunschRate = 0.30)
+        assertFalse(r.allowSet) { "ohne Sicht wird nichts gestellt" }
+        assertFalse(r.sendCancel)
+        assertTrue(r.smbBlocked) { "und der schnelle Kanal bleibt zu" }
+        assertEquals(Reason.VIEW_UNKNOWN_HELD, r.reason)
+        assertEquals(PartialTbrOwnership.Anzeige.VIEW_UNKNOWN, PartialTbrOwnership.anzeige(r))
+    }
+
+    @Test
+    fun `ohne Wunsch bleibt der leere Zustand ein neutraler No-op`() {
+        // Der Altpfad darf sich nicht aendern: kein Besitz, kein Wunsch,
+        // egal welche Sicht - nichts passiert, nichts wird gesperrt.
+        for (view in listOf(View.Unknown, auth(null), auth(laufend(0.30, 20)))) {
+            val r = schritt(State(), view, min(2))
+            assertFalse(r.allowSet, view.toString())
+            assertFalse(r.sendCancel, view.toString())
+            assertFalse(r.smbBlocked, view.toString())
+        }
+        // Auch mit wantEnd - ein leeres Ledger hat nichts zu beenden.
+        val e = schritt(State(), View.Unknown, min(2), wantEnd = true)
+        assertFalse(e.sendCancel)
+        assertFalse(e.smbBlocked)
+    }
+
+    @Test
+    fun `bei brauchbarer Sicht bleibt eine neue Teilrate zulaessig`() {
+        val r = schritt(State(), auth(laufend(0.0, 20)), min(2), wunschRate = 0.30)
+        assertTrue(r.allowSet) { "ueber einer Null ist die Rueckkehr der Sinn der Stufe" }
+    }
+
+    // =====================================================================
+    // DIE REIHENFOLGE DER GRUENDE IM PROFIL-ZWEIG
+    // =====================================================================
+
+    @Test
+    fun `eine gehaltene Anforderung meldet WAITING_CONFIRM, nicht CLEARED`() {
+        val s = State(pendingRequest = id(0.30, t0, 30), pendingAttempts = 1)
+        // Autoritativ nichts sichtbar, aber die Frist laeuft noch: die
+        // Anforderung wird GEHALTEN - das ist die Auskunft, nicht "beendet".
+        val inFrist = schritt(s, auth(null), min(3), wantProfile = true, deckel = 0.50)
+        assertEquals(Reason.WAITING_CONFIRM, inFrist.reason)
+        assertNotNull(inFrist.state.pendingRequest)
+        assertTrue(inFrist.smbBlocked)
+
+        val nachFrist = schritt(s, auth(null), min(7), wantProfile = true, deckel = 0.50)
+        assertEquals(Reason.CONFIRM_TIMEOUT, nachFrist.reason)
+        assertNull(nachFrist.state.pendingRequest)
+
+        // Und erst ohne alles: beendet - aber nur, wenn vorher etwas da war.
+        val beendet = schritt(
+            State(confirmedRunning = id(0.30, t0, 30)), auth(null), min(7), wantProfile = true, deckel = 0.50)
+        assertEquals(Reason.CLEARED_CONFIRMED, beendet.reason)
+        val nieWas = schritt(State(), auth(null), min(7), wantProfile = true, deckel = 0.50)
+        assertEquals(Reason.NONE, nieWas.reason) { "was nie da war, wird nicht beendet" }
+    }
+
 }
