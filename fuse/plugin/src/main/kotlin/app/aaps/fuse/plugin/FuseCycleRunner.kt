@@ -53,6 +53,7 @@ import app.aaps.fuse.core.predictor.DriveDecayModel
 import app.aaps.fuse.core.controller.CandidateGate
 import app.aaps.fuse.core.controller.BasalRecoverySearch
 import app.aaps.fuse.core.controller.PartialRecoveryGate
+import app.aaps.fuse.core.controller.PartialTbrOwnership
 import app.aaps.fuse.core.profile.ProfileSlots
 import app.aaps.fuse.core.controller.CandidateSearch
 import app.aaps.fuse.core.controller.EvidenceStock
@@ -5204,6 +5205,19 @@ class FuseCycleRunner(
             // Die Bedingung steht in [PartialRecoveryGate] - EINE Stelle,
             // die auch das Auswertungs-Rig ruft, damit dort nicht eine
             // zweite Fassung derselben Regel gemessen wird.
+            // Die BOLUSUNABHAENGIGE Bodenannaeherung (Review-P1.2). Sie
+            // schliesst die Luecke, die `measuredDescentRisk` laesst: das
+            // verlangt ausdruecklich eine Bolusueberdeckung und sieht einen
+            // steilen Fall ohne Bolus deshalb nicht. Bezugsgroesse ist
+            // DERSELBE Nahhorizont wie beim gemessenen Abwaertsrisiko -
+            // nicht das 120-min-Fenster.
+            val bodenNah = PartialRecoveryGate.floorApproachBlocks(
+                signalHealthy = step.health == Health.READY,
+                bgMgdl = signal.q1,
+                fallRatePerMin = signal.ukfRatePerMin,
+                guardFloorMgdl = cfg.guardFloorMgdl,
+                horizonMin = cfg.positiveDescentHorizonMin,
+            )
             val partialMoeglich = PartialRecoveryGate.open(
                 enabled = cfg.partialRecoveryEnabled,
                 zeroLatchActive = episodes.zeroLatch.active,
@@ -5211,6 +5225,7 @@ class FuseCycleRunner(
                 descentRiskActive = descentRisk.active,
                 healthReady = step.health == Health.READY,
                 verdictNone = lowThreatResult.verdict == LowThreatGate.Verdict.NONE,
+                floorApproaching = bodenNah,
             )
             partialStreak = PartialRecoveryGate.streak(
                 partialMoeglich, partialStreak, partialLastTs, signal.sourceTs)
@@ -5323,6 +5338,14 @@ class FuseCycleRunner(
             // Der Anteil gilt NUR in der Teilstufe; sonst 0, und die
             // Tabelle rechnet dann bitgleich wie bisher.
             partialRateUPerH = if (partialAktiv) partialRateUPerH else 0.0,
+            // DER BESITZNACHWEIS (Review-P1.1). Ohne ihn laesst `keep` eine
+            // eigene abgesenkte TBR bis zum Ablauf stehen, waehrend FUSE
+            // schon die normale Freigabe meldet. Ein VERFALLENER Nachweis
+            // wird gar nicht erst uebergeben - sonst koennte eine spaetere
+            // fremde Absenkung mit derselben Rate als unsere gelesen werden.
+            ownPartial = episodes.ownPartialTbr
+                ?.takeIf { !PartialTbrOwnership.expired(it, computeTs) },
+            nowTs = computeTs,
             cfg = TbrPolicy.Config(
                 basalStepUPerH = pumpe.basalStepUPerH,
                 // Toni 15.08.: die Null sofort verlassen, sobald ihr Grund weg
@@ -5351,6 +5374,45 @@ class FuseCycleRunner(
         //                             den naechsten echten Anlauf nicht
         //                             blockieren)
         val laeuftNull = currentTbr?.let { TbrPolicy.isZeroRate(it.absoluteRateUPerH, pumpe.basalStepUPerH) } == true
+
+        // ---- DER BESITZNACHWEIS DER EIGENEN TEIL-TBR (Review-P1.1) -------
+        //
+        // Drei Ereignisse, in dieser Reihenfolge:
+        //
+        //  (a) WIR SETZEN EINE TEILRATE -> mitschreiben, was wir gesetzt
+        //      haben. Ohne diesen Eintrag ist sie im naechsten Zyklus von
+        //      einer fremden Absenkung nicht zu unterscheiden und bliebe
+        //      bis zum Ablauf stehen.
+        //  (b) SIE LAEUFT NACHWEISLICH NICHT MEHR -> Nachweis loeschen.
+        //      Das ist die BESTAETIGUNG, an der die SMB-Freigabe haengt:
+        //      solange der Nachweis passt, sperrt `keep` den SMB ueber
+        //      PARTIAL_ENDING weiter.
+        //  (c) DER NACHWEIS IST VERFALLEN -> loeschen, sonst wuerde eine
+        //      spaetere fremde Absenkung mit derselben Rate faelschlich als
+        //      unsere gelesen.
+        //
+        // Geschrieben wird die ANGEFORDERTE Rate, nicht die gemessene: die
+        // Bestaetigung kommt erst im naechsten Zyklus, und bis dahin muss
+        // der Nachweis schon stehen.
+        run {
+            val angefordert = combined.request
+            val setztTeilrate = decision.tbr == FuseController.TbrAction.PARTIAL_BASAL &&
+                angefordert != null && angefordert.rateUPerH > 0.0 && angefordert.durationMin > 0
+            when {
+                setztTeilrate ->
+                    episodes.ownPartialTbr = PartialTbrOwnership.Own(
+                        rateUPerH = angefordert!!.rateUPerH,
+                        setAtTs = computeTs,
+                        durationMin = angefordert.durationMin,
+                    )
+
+                episodes.ownPartialTbr != null &&
+                    (PartialTbrOwnership.expired(episodes.ownPartialTbr, computeTs) ||
+                        !PartialTbrOwnership.isOurs(
+                            episodes.ownPartialTbr, currentTbr, computeTs, pumpe.basalStepUPerH)) ->
+                    episodes.ownPartialTbr = null
+            }
+        }
 
         // ---- LAUFENDE NULLPHASEN-BILANZ (rein beobachtend) ---------------
         // Vertrag Punkt 1 des Recovery-Bauauftrags: waehrend JEDER Nullphase

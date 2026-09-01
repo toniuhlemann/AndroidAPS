@@ -30,7 +30,8 @@ class PartialRecoveryGateTest {
         abwaerts: Boolean = false,
         ready: Boolean = true,
         verdictNone: Boolean = true,
-    ) = PartialRecoveryGate.open(enabled, zero, tief, abwaerts, ready, verdictNone)
+        bodenNah: Boolean = false,
+    ) = PartialRecoveryGate.open(enabled, zero, tief, abwaerts, ready, verdictNone, bodenNah)
 
     // =====================================================================
     // DER STEILE FALL DURCH DIE ECHTE KETTE
@@ -155,6 +156,97 @@ class PartialRecoveryGateTest {
         assertFalse(offen(abwaerts = true)) { "Abwaertsrisiko" }
         assertFalse(offen(ready = false)) { "Signal nicht READY" }
         assertFalse(offen(verdictNone = false)) { "Schutzgrund liegt an" }
+        assertFalse(offen(bodenNah = true)) { "Bodenannaeherung im Nahhorizont" }
+    }
+
+    // =====================================================================
+    // DIE BOLUSUNABHAENGIGE BODENANNAEHERUNG (Review-P1.2)
+    // =====================================================================
+
+    /**
+     * DIE LUECKE, DIE DIESE PRUEFUNG SCHLIESST - durch die ECHTE Kette
+     * belegt: `measuredDescentRisk` verlangt eine Bolusueberdeckung und
+     * sieht einen steilen Fall OHNE Bolus deshalb nicht. Genau dort
+     * greift jetzt die Bodenannaeherung.
+     */
+    @Test
+    fun `starker Fall OHNE Bolusueberdeckung - die echte Kette sieht nichts, die Bodenannaeherung sperrt`() {
+        val risiko = LowThreatGate.measuredDescentRisk(
+            signalHealthy = true, bgMgdl = 100.0, fallRatePerMin = -2.0,
+            bolusIobU = 0.0, isfMgdlPerU = isf, guardFloorMgdl = guardFloor,
+        )
+        assertFalse(risiko.active) { "ohne Bolus keine Ueberdeckung: ${risiko.denial}" }
+        val urteil = LowThreatGate.evaluate(
+            measuredLow = false, signalHealthy = true, bgMgdl = 100.0,
+            fallRatePerMin = -2.0, bolusIobU = 0.0, isfMgdlPerU = isf,
+            guardFloorMgdl = guardFloor, scheduledBasalUPerH = 0.60,
+            remainingEffect = { 1.0 },
+        )
+        assertEquals(LowThreatGate.Verdict.NONE, urteil.verdict) { "auch kein Verdikt" }
+
+        // 30 mg/dl bis zum Boden bei 2 je min = 15 min, im 30-min-Horizont.
+        val nah = PartialRecoveryGate.floorApproachBlocks(
+            signalHealthy = true, bgMgdl = 100.0, fallRatePerMin = -2.0,
+            guardFloorMgdl = guardFloor, horizonMin = 30.0,
+        )
+        assertTrue(nah) { "genau hier muss die bolusunabhaengige Pruefung greifen" }
+        assertFalse(
+            offen(abwaerts = risiko.active,
+                  verdictNone = urteil.verdict == LowThreatGate.Verdict.NONE,
+                  bodenNah = nah)
+        ) { "und das Tor muss dann zu sein" }
+    }
+
+    @Test
+    fun `ein milder Restabfall ausserhalb des Nahhorizonts kommt bis zur Guard-Suche`() {
+        val risiko = LowThreatGate.measuredDescentRisk(
+            signalHealthy = true, bgMgdl = 140.0, fallRatePerMin = -0.15,
+            bolusIobU = 0.0, isfMgdlPerU = isf, guardFloorMgdl = guardFloor,
+        )
+        val nah = PartialRecoveryGate.floorApproachBlocks(
+            signalHealthy = true, bgMgdl = 140.0, fallRatePerMin = -0.15,
+            guardFloorMgdl = guardFloor, horizonMin = 30.0,
+        )
+        assertFalse(nah) { "70 mg/dl bei 0,15 je min = 467 min - weit ausserhalb" }
+        assertTrue(offen(abwaerts = risiko.active, bodenNah = nah)) {
+            "der Fall, fuer den die Stufe gebaut ist, darf bis zur Bahnpruefung kommen"
+        }
+    }
+
+    @Test
+    fun `die Bodenannaeherung ist KEINE Flachheitsschwelle - der Abstand entscheidet mit`() {
+        // Dieselbe steile Rate, zwei Abstaende: nah sperrt, fern nicht.
+        // Genau das konnte das alte UKF-Tor nicht unterscheiden.
+        fun nah(bg: Double, rate: Double) = PartialRecoveryGate.floorApproachBlocks(
+            signalHealthy = true, bgMgdl = bg, fallRatePerMin = rate,
+            guardFloorMgdl = guardFloor, horizonMin = 30.0,
+        )
+        assertTrue(nah(100.0, -2.0)) { "15 min bis zum Boden" }
+        assertFalse(nah(200.0, -2.0)) { "65 min - hier uebernimmt die Bahnpruefung" }
+        assertFalse(nah(200.0, -0.05)) { "das alte Tor haette hier gesperrt, ohne jeden Anlass" }
+        assertTrue(nah(100.0, -1.0)) { "genau 30 min ist noch im Horizont" }
+        assertFalse(nah(101.0, -1.0)) { "31 min nicht mehr" }
+    }
+
+    @Test
+    fun `steigende oder fehlende Rate sperrt hier nicht - dafuer sind Health und LowThreat da`() {
+        fun nah(rate: Double?, gesund: Boolean = true) = PartialRecoveryGate.floorApproachBlocks(
+            signalHealthy = gesund, bgMgdl = 100.0, fallRatePerMin = rate,
+            guardFloorMgdl = guardFloor, horizonMin = 30.0,
+        )
+        assertFalse(nah(+2.0)) { "steigend" }
+        assertFalse(nah(0.0)) { "flach" }
+        assertFalse(nah(null)) { "kein Messwert - eine Sperre hier waere das alte Tor durch die Hintertuer" }
+        assertFalse(nah(Double.NaN))
+        assertFalse(nah(-2.0, gesund = false)) { "ohne gesundes Signal urteilt diese Pruefung nicht" }
+    }
+
+    @Test
+    fun `steht der Boden schon ueber uns, sperrt die Annaeherung erst recht`() {
+        assertTrue(PartialRecoveryGate.floorApproachBlocks(
+            signalHealthy = true, bgMgdl = 65.0, fallRatePerMin = -0.5,
+            guardFloorMgdl = guardFloor, horizonMin = 30.0,
+        )) { "negative Restzeit ist im Horizont enthalten" }
     }
 
     /**
@@ -194,12 +286,14 @@ class PartialRecoveryGateTest {
                 for (ab in listOf(true, false))
                     for (rd in listOf(true, false))
                         for (vn in listOf(true, false)) {
-                            assertFalse(PartialRecoveryGate.open(false, zero, tief, ab, rd, vn)) {
-                                "aus muss aus bleiben: zero=$zero tief=$tief ab=$ab ready=$rd verdictNone=$vn"
+                            for (bn in listOf(true, false)) {
+                                assertFalse(PartialRecoveryGate.open(false, zero, tief, ab, rd, vn, bn)) {
+                                    "aus muss aus bleiben: zero=$zero tief=$tief ab=$ab ready=$rd verdictNone=$vn bodenNah=$bn"
+                                }
+                                geprueft++
                             }
-                            geprueft++
                         }
-        assertEquals(32, geprueft)
+        assertEquals(64, geprueft)
     }
 
     // =====================================================================

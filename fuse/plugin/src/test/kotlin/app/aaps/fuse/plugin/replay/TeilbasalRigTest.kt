@@ -72,6 +72,7 @@ class TeilbasalRigTest : TestBase() {
         computeTs = anchor + min * 60_000L, sourceTs = anchor + min * 60_000L,
         zeroActive = zero, verdictNone = verdictNone, signalHealthy = gesund,
         measuredLow = tief, descentRiskActive = abwaerts, ukfRatePerMin = ukf,
+        q1Mgdl = 200.0, positiveDescentHorizonMin = 30.0,
         minLowerMgdl = minLower, baselineBindenderOffsetMin = 120, timeToFloorMin = null,
         guardFloorMgdl = 70.0, isfMgdlPerU = 77.0, liabilityHorizonMin = 120,
         profilbasalUph = profil, smbPublishedU = smb,

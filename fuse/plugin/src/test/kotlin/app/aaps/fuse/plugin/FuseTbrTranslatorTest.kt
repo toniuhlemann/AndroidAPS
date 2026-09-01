@@ -370,10 +370,12 @@ class FuseTbrTranslatorTest {
      */
     @Test
     fun `die Blockursachen sind vollstaendig aufgezaehlt`() {
-        // 8 seit PARTIAL_RECOVERY: waehrend der Teilbasal-Stufe ist die
-        // SMB-Achse gesperrt - und das ist zugleich die Voraussetzung
-        // dafuer, dass die anhebende TBR-Anforderung C7a passiert.
-        assertEquals(8, TbrPolicy.SmbBlockCause.entries.size)
+        // 9 seit PARTIAL_ENDING. Die Teilbasal-Stufe braucht ZWEI
+        // Ursachen, nicht eine: PARTIAL_RECOVERY sperrt, WAEHREND die
+        // Teilrate laeuft; PARTIAL_ENDING sperrt, waehrend sie BEENDET
+        // wird. Der Abbruch hebt die Rate zurueck aufs Profilbasal - eine
+        // Anhebung, die neben einem SMB von C7a still verworfen wuerde.
+        assertEquals(9, TbrPolicy.SmbBlockCause.entries.size)
         for (c in TbrPolicy.SmbBlockCause.entries)
             assertEquals(
                 c != TbrPolicy.SmbBlockCause.NONE,

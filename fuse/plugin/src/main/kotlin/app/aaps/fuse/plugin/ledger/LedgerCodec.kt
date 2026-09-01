@@ -478,6 +478,18 @@ object LedgerCodec {
                 .put("latchedAtTs", e.descentRecoveryLatch.latchedAtTs)
                 .put("sawMeasuredLow", e.descentRecoveryLatch.sawMeasuredLow),
         )
+        // DER NACHWEIS DER EIGENEN TEIL-TBR - restartfest, s.
+        // PartialTbrOwnership. Altdatei ohne Feld heisst "kein Nachweis",
+        // und das ist die Richtung, die nichts Fremdes anfasst.
+        .put(
+            "ownPartialTbr",
+            e.ownPartialTbr?.let {
+                JSONObject()
+                    .put("rateUPerH", it.rateUPerH)
+                    .put("setAtTs", it.setAtTs)
+                    .put("durationMin", it.durationMin)
+            } ?: JSONObject.NULL,
+        )
         .put(
             "zeroLatch",
             JSONObject()
@@ -808,6 +820,18 @@ object LedgerCodec {
                     // volle Drei-Zyklen-Bestaetigung und ist konservativ.
                     sawMeasuredLow = latch.optBoolean("sawMeasuredLow", false),
                 ) ?: error("invalid descent recovery latch")
+        }
+        if (o.has("ownPartialTbr") && !o.isNull("ownPartialTbr")) {
+            val own = o.getJSONObject("ownPartialTbr")
+            val kandidat = app.aaps.fuse.core.controller.PartialTbrOwnership.Own(
+                rateUPerH = own.getDouble("rateUPerH"),
+                setAtTs = requireTs("ownPartialTbr.setAtTs", own.getLong("setAtTs")),
+                durationMin = own.getInt("durationMin"),
+            )
+            // Ein unbrauchbarer Nachweis wird VERWORFEN, nicht repariert:
+            // dann gilt die laufende Absenkung als fremd, und das ist die
+            // Richtung, die nichts Fremdes anfasst.
+            e.ownPartialTbr = kandidat.takeIf { it.valid }
         }
         if (o.has("zeroLatch")) {
             val latch = o.getJSONObject("zeroLatch")

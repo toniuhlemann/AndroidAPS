@@ -96,6 +96,8 @@ class TeilbasalRigLauf : TestBase() {
                         measuredLow = safety?.let { it == setOf("LOW") } ?: true,
                         descentRiskActive = j.optBoolean("descentRiskActive", true),
                         ukfRatePerMin = d(sig, "ukfRatePerMin"),
+                        q1Mgdl = d(sig, "q1"),
+                        positiveDescentHorizonMin = d(pol, "positiveDescentHorizonMin"),
                         minLowerMgdl = d(dec, "minLowerMgdl"),
                         baselineBindenderOffsetMin = i(dec, "timeToMinSafetyLowerCombinedMin"),
                         timeToFloorMin = i(dec, "timeToFloorMin"),

@@ -27,6 +27,7 @@ package app.aaps.fuse.core.controller
  *    Bolusueberdeckung und Bodenkontakt im Fenster) -> `descentRisk`,
  *  - [LowThreatGate.evaluate] -> `verdict != NONE`,
  *  - das gemessene Tief,
+ *  - [floorApproachBlocks] - die BOLUSUNABHAENGIGE Bodenannaeherung,
  *  - und die vollstaendige [BasalRecoverySearch], die eine Rate nur
  *    freigibt, wenn die Bahn MIT ihr den Boden noch traegt.
  *
@@ -62,13 +63,63 @@ object PartialRecoveryGate {
         descentRiskActive: Boolean,
         healthReady: Boolean,
         verdictNone: Boolean,
+        /** s. [floorApproachBlocks] - die bolusunabhaengige Sperre. */
+        floorApproaching: Boolean,
     ): Boolean =
         enabled &&
             zeroLatchActive &&
             !measuredLow &&
             !descentRiskActive &&
             healthReady &&
-            verdictNone
+            verdictNone &&
+            !floorApproaching
+
+    /**
+     * DIE BOLUSUNABHAENGIGE BODENANNAEHERUNG - die Luecke, die das
+     * Entfernen des UKF-Tors hinterlassen haette.
+     *
+     * [LowThreatGate.measuredDescentRisk] verlangt AUSDRUECKLICH eine
+     * Bolusueberdeckung (`bolus * ISF > Abstand zum Boden`); ohne sie
+     * liefert es kein Risiko, egal wie steil der Verlauf faellt. Genau
+     * dieser Fall - starker Fall ohne Bolusdeckung - fiel nach dem
+     * Entfernen des Flachheitstors allein auf die Bahnpruefung zurueck.
+     *
+     * Diese Pruefung ist NICHT das alte `UKF >= -0,03` in neuer Form. Der
+     * Unterschied ist der Bezug: die alte Schwelle war eine reine
+     * FLACHHEITSforderung ohne jeden Bezug zum Boden und sperrte deshalb
+     * auch bei BG 200 und -0,05 mg/dl je min. Hier wird gefragt, ob der
+     * GEMESSENE Verlauf den Boden im NAHHORIZONT ueberhaupt erreichte:
+     *
+     *     minutesToFloor = (BG - Guardboden) / |Fallrate|
+     *
+     * Beispiele mit Boden 70 und Horizont 30 min:
+     *  - BG 100, -2,0/min  -> 15 min  -> GESPERRT (das ist der Fall)
+     *  - BG 100, -0,15/min -> 200 min -> offen
+     *  - BG 200, -2,0/min  -> 65 min  -> offen (die Bahnpruefung uebernimmt)
+     *
+     * Gesperrt wird nur bei ALLEN drei Bedingungen zugleich: gesundes
+     * Signal, gemessene NEGATIVE Rate und Bodenkontakt im Horizont. Fehlt
+     * die Rate, sperrt DIESE Pruefung nicht - dafuer sind Health und
+     * LowThreat zustaendig; eine Sperre bei fehlendem Messwert waere die
+     * Rueckkehr zum alten Tor durch die Hintertuer.
+     */
+    fun floorApproachBlocks(
+        signalHealthy: Boolean,
+        bgMgdl: Double?,
+        fallRatePerMin: Double?,
+        guardFloorMgdl: Double,
+        horizonMin: Double,
+    ): Boolean {
+        if (!signalHealthy) return false
+        if (bgMgdl == null || !bgMgdl.isFinite()) return false
+        if (fallRatePerMin == null || !fallRatePerMin.isFinite() || fallRatePerMin >= 0.0) return false
+        if (!guardFloorMgdl.isFinite() || !horizonMin.isFinite() || horizonMin <= 0.0) return false
+        // Steht der Boden schon unter uns, ist die Annaeherung negativ und
+        // damit erst recht im Horizont.
+        val minutesToFloor = (bgMgdl - guardFloorMgdl) / kotlin.math.abs(fallRatePerMin)
+        if (!minutesToFloor.isFinite()) return false
+        return minutesToFloor <= horizonMin
+    }
 
     /**
      * Der Streak-Anschluss auf der SIGNAL-Uhr: streng steigend und

@@ -119,6 +119,8 @@ class TeilbasalMehrNaechte : TestBase() {
                         measuredLow = safety?.let { it == setOf("LOW") } ?: true,
                         descentRiskActive = j.optBoolean("descentRiskActive", true),
                         ukfRatePerMin = d(sig, "ukfRatePerMin"),
+                        q1Mgdl = d(sig, "q1"),
+                        positiveDescentHorizonMin = d(pv, "positiveDescentHorizonMin"),
                         minLowerMgdl = d(dec, "minLowerMgdl"),
                         baselineBindenderOffsetMin = i(dec, "timeToMinSafetyLowerCombinedMin"),
                         timeToFloorMin = i(dec, "timeToFloorMin"),
@@ -449,6 +451,15 @@ class TeilbasalMehrNaechte : TestBase() {
             "Signal nicht READY" to { z -> !z.signalHealthy },
             "gemessenes Tief" to { z -> z.measuredLow },
             "Abwaertsrisiko" to { z -> z.descentRiskActive },
+            "Bodenannaeherung" to { z ->
+                if (z.q1Mgdl == null || z.positiveDescentHorizonMin == null) true
+                else PartialRecoveryGate.floorApproachBlocks(
+                    signalHealthy = z.signalHealthy, bgMgdl = z.q1Mgdl,
+                    fallRatePerMin = z.ukfRatePerMin,
+                    guardFloorMgdl = z.guardFloorMgdl ?: 70.0,
+                    horizonMin = z.positiveDescentHorizonMin,
+                )
+            },
         )
         gruende.forEach { (was, f) ->
             val n = alleNull.count(f)
@@ -456,6 +467,9 @@ class TeilbasalMehrNaechte : TestBase() {
             println("  %-22s %5d von %d (%2.0f%%)   ALLEINIGER Grund: %d"
                 .format(was, n, alleNull.size, 100.0 * n / alleNull.size, allein))
         }
+        println("  (\"ALLEINIGER Grund\" = ohne diese Bedingung waere das Tor offen gewesen.")
+        println("   Bei der Bodenannaeherung ist genau diese Zahl der Zugewinn der neuen")
+        println("   Pruefung gegenueber dem Stand ohne sie.)")
         println("  Ohne das UKF-Tor bleiben als Sperren: Schutzgrund, Tief, Abwaertsrisiko,")
         println("  Health - und die Suche selbst (Bahnminimum unter Boden in %d Zyklen)."
             .format(alleNull.count { z -> (z.minLowerMgdl ?: -999.0) < (z.guardFloorMgdl ?: 70.0) }))

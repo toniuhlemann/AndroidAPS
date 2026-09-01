@@ -151,6 +151,12 @@ object FuseTbrTranslator {
         /** Die fertige Teilbasal-Rate [U/h] aus BasalRecoverySearch;
          *  0 = keine Teilstufe (Default = bisheriges Verhalten). */
         partialRateUPerH: Double = 0.0,
+        /** Der restartfeste Nachweis der EIGENEN Teil-TBR. `null` = kein
+         *  Nachweis, dann gilt jede laufende Absenkung als fremd und wird
+         *  nicht angetastet (s. PartialTbrOwnership). */
+        ownPartial: app.aaps.fuse.core.controller.PartialTbrOwnership.Own? = null,
+        /** Jetzt-Zeitpunkt fuer die Besitzpruefung. */
+        nowTs: Long = 0L,
         /** s. [reasonGone]. Default false = Verhalten wie vor dem 15.08. */
         protectionCleared: Boolean = false,
         /** Bisher erfolglose Abbruchversuche in Folge (Medtrum-Backoff). */
@@ -166,6 +172,8 @@ object FuseTbrTranslator {
             intentOf(decision.tbr), current, scheduledBasalUPerH, cfg, fault, pumpBusy,
             protectionCleared = protectionCleared,
             partialRateUPerH = partialRateUPerH,
+            ownPartial = ownPartial,
+            nowTs = nowTs,
             endZeroAttempts = endZeroAttempts,
             // C8 UNABHAENGIG VOM INTENT (Toni 17.08.): seit das Fundament auch
             // in unsicherer Lage stehen bleibt, traegt der Intent die

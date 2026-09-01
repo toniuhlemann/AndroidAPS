@@ -210,6 +210,17 @@ class EpisodeBudgets {
         app.aaps.fuse.core.controller.DescentRecoveryLatch.State()
 
     /**
+     * DER NACHWEIS DER EIGENEN TEIL-TBR - anders als der Zaehler des
+     * Riegels AUSDRUECKLICH NICHT prozesslokal.
+     *
+     * Ginge er beim Neustart verloren, waere die eigene laufende
+     * Absenkung danach "fremd" und bliebe bis zum Ablauf stehen, waehrend
+     * FUSE bereits die normale Freigabe meldete. Die konservative
+     * Richtung ist hier also GERADE die Persistenz.
+     */
+    var ownPartialTbr: app.aaps.fuse.core.controller.PartialTbrOwnership.Own? = null
+
+    /**
      * DIE BEIM MARKERDRUCK EINGEFRORENE BASALLUECKEN-LAGE (Bauauftrag
      * Schritt B) - REIN BEOBACHTEND fuer Trail und Viewer.
      *

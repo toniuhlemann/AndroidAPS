@@ -103,6 +103,10 @@ object TeilbasalRig {
         val measuredLow: Boolean,
         val descentRiskActive: Boolean,
         val ukfRatePerMin: Double?,
+        /** Der gemessene BG dieses Zyklus - fuer die Bodenannaeherung. */
+        val q1Mgdl: Double?,
+        /** Der Nahhorizont der Bodenannaeherung [min] aus der Politik. */
+        val positiveDescentHorizonMin: Double?,
         /** L0: das aufgezeichnete Bahnminimum ueber den Haftungshorizont. */
         val minLowerMgdl: Double?,
         /** Wo dieses Minimum liegt (`timeToMinSafetyLowerCombinedMin`). */
@@ -168,6 +172,18 @@ object TeilbasalRig {
             descentRiskActive = z.descentRiskActive,
             healthReady = z.signalHealthy,
             verdictNone = z.verdictNone,
+            // FAIL-CLOSED: fehlt BG oder Nahhorizont im Trail, laesst sich
+            // die produktive Pruefung nicht nachvollziehen - dann gilt der
+            // Zyklus als gesperrt, statt eine Teilstufe zu behaupten, die
+            // die Produktion vielleicht gar nicht gehabt haette.
+            floorApproaching = if (z.q1Mgdl == null || z.positiveDescentHorizonMin == null) true
+            else PartialRecoveryGate.floorApproachBlocks(
+                signalHealthy = z.signalHealthy,
+                bgMgdl = z.q1Mgdl,
+                fallRatePerMin = z.ukfRatePerMin,
+                guardFloorMgdl = z.guardFloorMgdl ?: 70.0,
+                horizonMin = z.positiveDescentHorizonMin,
+            ),
         ) && (ukfSchwelle == null ||
             (z.ukfRatePerMin != null && z.ukfRatePerMin.isFinite() && z.ukfRatePerMin >= ukfSchwelle))
 
