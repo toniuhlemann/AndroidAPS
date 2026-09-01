@@ -964,6 +964,25 @@ enum class FuseBooleanKey(
     MealFoundationEnabled("fuse_meal_foundation_enabled", false),
 
     /**
+     * STUFENWEISE BASALRUECKKEHR aus einer Schutz-Null (AUS = bisheriges
+     * Verhalten, bitgleich).
+     *
+     * Statt binaer zwischen voller Null und vollem Profilbasal zu
+     * springen, laeuft nach drei zusammenhaengenden ruhigen Zyklen ein
+     * ANTEIL des Profilbasals weiter
+     * (aus BasalRecoverySearch: die groesste Rate, die die Schutzbahn
+     * noch traegt), waehrend die Verriegelung
+     * sicherheitswirksam bestehen bleibt. Kehrt ein Schutzgrund zurueck,
+     * gilt im selben Zyklus wieder die volle Null.
+     *
+     * WAS ES NICHT IST: keine positive TBR, kein Ausgleich der
+     * ausgelassenen Menge, kein Uebertrag - und waehrend der Teilstufe
+     * fliesst KEIN SMB. Die volle Rueckkehr bleibt am strengeren
+     * Ruhe-Ausgang.
+     */
+    PartialRecoveryEnabled("fuse_partial_recovery_enabled", false),
+
+    /**
      * DER MARKER-PRIME-AUFSCHUB - DEFAULT AUS (Punkt 6, Bau-GO Toni 22.08.,
      * KEIN Aktivierungs-GO).
      *

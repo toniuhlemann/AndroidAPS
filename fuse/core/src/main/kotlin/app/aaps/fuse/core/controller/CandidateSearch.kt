@@ -485,4 +485,21 @@ object CandidateSearch {
      *  pessimistisch ist hier also schlicht der kleinere der beiden Anker. */
     private fun safetyAnchor(prediction: PredictorResult, restraint: PredictorResult?): Double =
         minOf(prediction.bgAtAnchor, restraint?.bgAtAnchor ?: Double.MAX_VALUE)
+
+    /**
+     * DIESELBEN ZWEI BAHN-HELFER FUER [BasalRecoverySearch] - und
+     * ausdruecklich NUR sie.
+     *
+     * Die Basalrueckkehr braucht die pessimistische Bahn und ihren Anker,
+     * NICHT die Kandidatensuche: die traegt SMB-Bedarfstore, Budgets und
+     * die Annahme einer Einzeldosis. Zwei Kopien derselben Bahnauswahl
+     * waeren die zweite Wahrheit, an der frueher schon einmal Guard und
+     * TBR-Antwort auseinanderliefen - deshalb werden hier nur diese
+     * beiden Zeilen geoeffnet, nicht die Suche.
+     */
+    internal fun safetyLowerAtForRecovery(prediction: PredictorResult, restraint: PredictorResult?, i: Int): Double =
+        safetyLowerAt(prediction, restraint, i)
+
+    internal fun safetyAnchorForRecovery(prediction: PredictorResult, restraint: PredictorResult?): Double =
+        safetyAnchor(prediction, restraint)
 }

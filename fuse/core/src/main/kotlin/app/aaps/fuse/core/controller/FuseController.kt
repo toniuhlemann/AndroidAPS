@@ -326,7 +326,23 @@ object FuseController {
         Phase.REARMING, Phase.ARMED, Phase.TURN         -> Context.CORRECTION
     }
 
-    enum class TbrAction { KEEP_CURRENT, CANCEL_TO_SCHEDULED, ZERO_TEMP, NO_NEW_POSITIVE }
+    enum class TbrAction {
+        KEEP_CURRENT,
+        CANCEL_TO_SCHEDULED,
+        ZERO_TEMP,
+        /**
+         * STUFENWEISE BASALRUECKKEHR aus einer verriegelten Schutz-Null:
+         * ein ANTEIL des Profilbasals statt gar nichts. Gesetzt wird sie
+         * ausschliesslich vom Runner (Zero-Latch-Uebersteuerung), nie von
+         * der Kandidatensuche - die Modellkette kennt diesen Zustand
+         * nicht.
+         *
+         * Die Rate ist immer KLEINER als das Profilbasal; es ist keine
+         * positive TBR.
+         */
+        PARTIAL_BASAL,
+        NO_NEW_POSITIVE,
+    }
 
     /**
      * Konkrete TBR-Antwort. AAPS setzt die TBR in JEDEM Zyklus VOR dem SMB — ein
@@ -360,6 +376,11 @@ object FuseController {
         // Kein neues POSITIVES Temp — eine bereits laufende Absenkung darf
         // bleiben, weil sie in die sichere Richtung wirkt.
         TbrAction.NO_NEW_POSITIVE     -> null
+        // Die Teilstufe bildet ihre Rate NICHT hier: sie braucht den
+        // Pumpenschritt und die laufende TBR, die diese Funktion nicht
+        // kennt. Sie entsteht in TbrPolicy.partialBasal - und diese
+        // Funktion hat im Produktivpfad ohnehin keine Aufrufstelle.
+        TbrAction.PARTIAL_BASAL       -> null
     }
 
     enum class Block {

@@ -37,6 +37,7 @@ internal val fuseEinstellbareKeys: Set<String> = setOf(
     // CALM_BATCH - er gehoert damit in den Bericht des Reiters, sonst
     // waere eine Einstellung verstellbar, die im Bericht fehlt.
     FuseBooleanKey.CalmRecoveryEnabled.key,
+    FuseBooleanKey.PartialRecoveryEnabled.key,
     FuseIntKey.CalmRecoveryCycles.key,
     FuseIntKey.CalmTreatmentMode.key,
     FuseDoubleKey.CalmRecoveryMinUkf.key,
@@ -256,6 +257,7 @@ object FuseSettingsReport {
                     // heisst ehrlich "Zyk" - gezaehlt werden Zyklen.
                     ganz(FuseIntKey.ZeroLatchReasonGoneExitCycles, "Latch-Grund-weg", "Zyk"),
                     ganz(FuseIntKey.CorrectionSeriesWindowMin, "Serien-Fenster", "min"),
+                    schalter(FuseBooleanKey.PartialRecoveryEnabled, "Teilbasal-Rueckkehr"),
                     zahl(FuseDoubleKey.ZeroLatchCalmDistanceMgdl, "Latch-Abstand", "mg/dl"),
                     zahl(FuseDoubleKey.CorrectionSeriesCapU, "Serien-Deckel", "U"),
                     schalter(FuseBooleanKey.CorrectionReversalGuardEnabled, "V-Reversal-Schutz"),

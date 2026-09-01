@@ -392,7 +392,24 @@ object FuseStateJson {
     // Transportmenge. Gebucht wird nur, was den Transport uebersteht
     // (Rollback bei Verwurf und bei bewiesenem Nicht-Senden). Er wirkt
     // ausschliesslich im Exposure-Gate und fasst die Basalachse nicht an.
-    const val RULE_SET_VERSION = 49
+    // v50: STUFENWEISE BASALRUECKKEHR (Default AUS, bitgleich).
+    // Eine verriegelte Schutz-Null kennt jetzt drei Aktuationszustaende:
+    // ZERO (unveraendert), PARTIAL_RECOVERY (ein Anteil des Profilbasals
+    // laeuft weiter, waehrend der Latch sicherheitswirksam aktiv bleibt)
+    // und RELEASED (unveraendert am strengeren Ruhe-Ausgang - die
+    // Teilstufe ersetzt ihn NICHT). Eintritt nach drei zusammenhaengenden
+    // frischen Zyklen ohne Schutzgrund, mit gesundem Signal, ohne
+    // measuredLow, ohne descentRisk und mit UKF >= -0,03; bewusst OHNE
+    // q1NichtFallend, weil gerade der milde Restabfall der Anlassfall ist.
+    // Die Rate ist IMMER kleiner als das Profilbasal (neue TbrAction
+    // PARTIAL_BASAL -> TbrPolicy.Intent.PARTIAL_BASAL, nach unten auf den
+    // Basalschritt gerastert): keine positive TBR, kein Ausgleich der
+    // ausgelassenen Menge, kein Uebertrag. Waehrend der Teilstufe ist die
+    // SMB-Achse hart genullt - das ist zugleich die Voraussetzung dafuer,
+    // dass die Anforderung ueberhaupt durchkommt (C7a verwirft eine
+    // anhebende TBR, wenn im selben Zyklus ein SMB positiv ist).
+    // Kehrt ein Schutzgrund zurueck, gilt im SELBEN Zyklus wieder ZERO.
+    const val RULE_SET_VERSION = 50
 
     /** Schema des Trail-Datensatzes - s. die Notiz an der Schreibstelle. */
     const val SCHEMA_VERSION = 4
@@ -1064,6 +1081,8 @@ object FuseStateJson {
             "basalGap", JSONObject()
                 .put("currentBasalIobU", fin(outcome.state?.basalIobU))
                 .put("currentZeroTbrActive", outcome.currentZeroTbrActive ?: JSONObject.NULL)
+                .put("partialRecoveryActive", outcome.partialRecoveryActive)
+                .put("partialRecoveryStreak", outcome.partialRecoveryStreak)
                 .put("pinnedFor", outcome.basalGap?.pinnedFor ?: JSONObject.NULL)
                 .put("preMarkerBasalIobU", fin(outcome.basalGap?.preMarkerBasalIobU))
                 .put("preMarkerZeroTbrActive", outcome.basalGap?.zeroTbrActive ?: JSONObject.NULL)
@@ -1914,6 +1933,8 @@ object FuseStateJson {
         .put("zeroLatchReasonGoneExitCycles", p.zeroLatchReasonGoneExitCycles)
         .put("correctionSeriesCapU", fin(p.correctionSeriesCapU))
         .put("correctionSeriesWindowMin", p.correctionSeriesWindowMin)
+        // Stufenweise Basalrueckkehr (Default aus).
+        .put("partialRecoveryEnabled", p.partialRecoveryEnabled)
         // v30: die Korrekturpfad-Riegel (V-Reversal + Freigabe-Nachlauf).
         .put("reversalGuardEnabled", p.reversalGuardEnabled)
         .put("reversalFallUkf", fin(p.reversalFallUkf))
@@ -2121,6 +2142,9 @@ object FuseStateJson {
                 p.zeroLatchReasonGoneExitCycles,
                 p.correctionSeriesCapU,
                 p.correctionSeriesWindowMin,
+                // v50: die Teilbasal-Stufe ist dosierwirksam, sobald sie
+                // an ist - Schalter UND Anteil gehoeren in den Hash.
+                p.partialRecoveryEnabled,
                 p.reversalGuardEnabled,
                 p.reversalLookbackMin,
                 p.reversalConfirmCycles,

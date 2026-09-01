@@ -26,6 +26,7 @@ object FuseTbrTranslator {
     /** Die Kategorie des Reglers wird zur Absicht der Tabelle. */
     fun intentOf(action: FuseController.TbrAction): TbrPolicy.Intent = when (action) {
         FuseController.TbrAction.ZERO_TEMP -> TbrPolicy.Intent.SAFETY_ZERO
+        FuseController.TbrAction.PARTIAL_BASAL -> TbrPolicy.Intent.PARTIAL_BASAL
         // Beide bedeuten "nichts Positives mehr" — der Unterschied lag nur in
         // der v0.1-Kodierung des Abbruchs, die v0.2 ersetzt hat.
         FuseController.TbrAction.NO_NEW_POSITIVE,
@@ -147,6 +148,9 @@ object FuseTbrTranslator {
         cfg: TbrPolicy.Config,
         fault: TbrPolicy.FaultCode = TbrPolicy.FaultCode.NONE,
         pumpBusy: Boolean = false,
+        /** Die fertige Teilbasal-Rate [U/h] aus BasalRecoverySearch;
+         *  0 = keine Teilstufe (Default = bisheriges Verhalten). */
+        partialRateUPerH: Double = 0.0,
         /** s. [reasonGone]. Default false = Verhalten wie vor dem 15.08. */
         protectionCleared: Boolean = false,
         /** Bisher erfolglose Abbruchversuche in Folge (Medtrum-Backoff). */
@@ -161,6 +165,7 @@ object FuseTbrTranslator {
         val tbr = TbrPolicy.decide(
             intentOf(decision.tbr), current, scheduledBasalUPerH, cfg, fault, pumpBusy,
             protectionCleared = protectionCleared,
+            partialRateUPerH = partialRateUPerH,
             endZeroAttempts = endZeroAttempts,
             // C8 UNABHAENGIG VOM INTENT (Toni 17.08.): seit das Fundament auch
             // in unsicherer Lage stehen bleibt, traegt der Intent die

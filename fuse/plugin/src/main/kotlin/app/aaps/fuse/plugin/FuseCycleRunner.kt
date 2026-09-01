@@ -51,6 +51,7 @@ import app.aaps.fuse.core.signal.PairSlopeBand
 import app.aaps.fuse.core.predictor.ActualTrajectoryFactory
 import app.aaps.fuse.core.predictor.DriveDecayModel
 import app.aaps.fuse.core.controller.CandidateGate
+import app.aaps.fuse.core.controller.BasalRecoverySearch
 import app.aaps.fuse.core.controller.CandidateSearch
 import app.aaps.fuse.core.controller.EvidenceStock
 import app.aaps.fuse.core.controller.MarkerFallback
@@ -264,6 +265,14 @@ class FuseCycleRunner(
          * passiert beim Lesen.
          */
         const val CORRECTION_SERIES_KEEP_MS = 4L * 3_600_000L
+
+        /**
+         * Zusammenhaengende frische Zyklen bis zum Eintritt in die
+         * Teilbasal-Stufe. Fest, nicht einstellbar: der Auftrag verlangt
+         * einen festen Eintritt, damit im Rig-Vergleich nur der ANTEIL
+         * variiert.
+         */
+        const val PARTIAL_RECOVERY_ENTRY_CYCLES = 3
 
         /**
          * Der Mahlzeitenstand als ABLEITUNG aus den Episodenbudgets.
@@ -1072,6 +1081,9 @@ class FuseCycleRunner(
          *  zu sehen, wie nah der Ausgang war - und ein Test kann den
          *  Zaehler nicht pruefen, sondern nur sein Ergebnis. */
         val zeroLatchReasonGoneStreak: Int = 0,
+        /** Teilbasal-Stufe: laeuft sie, und wie weit ist der Eintritt? */
+        val partialRecoveryActive: Boolean = false,
+        val partialRecoveryStreak: Int = 0,
         /** v29: Ausloese-Zaehler des Fall-Verdikts (2 aufeinanderfolgende
          *  qualifizierende Zyklen zuenden; Unterbrechung nullt). */
         val zeroLatchArmStreak: Int = 0,
@@ -2901,6 +2913,32 @@ class FuseCycleRunner(
             releaseHorizonMin = cfg.releaseHorizonMin,
             liabilityHorizonMin = cfg.liabilityHorizonMin,
         )
+        // ---- DIE HOECHSTE TRAGBARE BASALRATE (Teilbasal-Rueckkehr) -----
+        //
+        // HIER, weil hier Bahn, Kern, ISF-Slots und Band beieinander
+        // stehen - der Latch-Block weiter unten liest nur das Ergebnis.
+        // Gerechnet wird nur, wenn die Stufe eingeschaltet ist; sonst
+        // bleibt es bei 0 und die Tabelle rechnet bitgleich wie bisher.
+        partialRateUPerH = 0.0
+        partialReject = null
+        if (cfg.partialRecoveryEnabled) {
+            val pk = kernel()
+            if (pk == null) partialReject = "KERNEL_MISSING"
+            else {
+                val rr = BasalRecoverySearch.hoechsteSichereRate(
+                    prediction = prediction,
+                    kernel = pk,
+                    isfSlots = built.input.isfSlots,
+                    band = candidateBand,
+                    scheduledBasalUPerH = profile.getBasal(computeTs),
+                    basalStepUPerH = pumpe.basalStepUPerH,
+                    tbrDurationMin = TbrPolicy.Config(basalStepUPerH = pumpe.basalStepUPerH).defaultDurationMin,
+                    restraint = restraint,
+                )
+                partialRateUPerH = rr.rateUPerH
+                partialReject = rr.reject?.name
+            }
+        }
         // Der Kern steht jetzt WEITER OBEN (C3) und wird hier nur abgerufen -
         // gebaut wird er beim ersten Verbraucher, gemerkt fuer alle weiteren.
         val vetted = if (baseDecision.smbU <= 0.0) baseDecision else {
@@ -5122,11 +5160,64 @@ class FuseCycleRunner(
                 zeroCalmStreak = 0
                 zeroReasonGoneStreak = 0
             }
+            // ---- DER DRITTE AKTUATIONSZUSTAND: PARTIAL_RECOVERY ------
+            //
+            // Zwischen ZERO und RELEASED. Der Latch bleibt sicherheits-
+            // wirksam aktiv; nur die AKTUATION wird von "gar kein Basal"
+            // auf "ein Anteil des Profilbasals" gemildert. Die volle
+            // Rueckkehr bleibt am strengeren Ruhe-Ausgang - diese Stufe
+            // ersetzt ihn NICHT.
+            //
+            // Eintritt: N zusammenhaengende frische Zyklen ohne
+            // Schutzgrund, mit gesundem Signal, ohne gemessenes Tief, ohne
+            // Abwaertsrisiko und mit UKF >= -0,03. Bewusst OHNE
+            // q1NichtFallend - gerade der milde Restabfall ist der Fall,
+            // fuer den die Teilstufe gebaut ist.
+            //
+            // Rueckfall: sobald eine dieser Bedingungen faellt, gilt im
+            // SELBEN Zyklus wieder ZERO (der Streak wird genullt).
+            val partialMoeglich = cfg.partialRecoveryEnabled &&
+                episodes.zeroLatch.active &&
+                !measuredLow && !descentRisk.active &&
+                step.health == Health.READY &&
+                lowThreatResult.verdict == LowThreatGate.Verdict.NONE &&
+                signal.ukfRatePerMin.isFinite() && signal.ukfRatePerMin >= -0.03
+            partialStreak = if (partialMoeglich) {
+                // Derselbe Anschluss wie beim Ruhe-Zaehler: die SIGNAL-Uhr
+                // muss streng steigen und darf hoechstens 90 s Abstand
+                // haben, sonst beginnt der Zaehler neu.
+                val anschluss = partialLastTs > 0L &&
+                    signal.sourceTs > partialLastTs &&
+                    signal.sourceTs - partialLastTs <= 90_000L
+                if (anschluss) partialStreak + 1 else 1
+            } else 0
+            if (partialMoeglich) partialLastTs = signal.sourceTs
+            // Ohne tragbare Rate gibt es keine Teilstufe - eine nicht
+            // auswertbare Bahn oder ein auf 0 gerasteter Wert bedeutet:
+            // es bleibt bei der Schutz-Null (fail-closed).
+            partialAktiv = partialStreak >= PARTIAL_RECOVERY_ENTRY_CYCLES &&
+                partialRateUPerH > 0.0 && partialReject == null
             if (episodes.zeroLatch.active &&
                 decisionVorZeroLatch.tbr != FuseController.TbrAction.ZERO_TEMP
             ) {
                 zeroLatchUebersteuert = true
-                decisionVorZeroLatch.copy(tbr = FuseController.TbrAction.ZERO_TEMP)
+                decisionVorZeroLatch.copy(
+                    tbr = if (partialAktiv) FuseController.TbrAction.PARTIAL_BASAL
+                    else FuseController.TbrAction.ZERO_TEMP,
+                    // WAEHREND DER TEILSTUFE FLIESST KEIN SMB. Das ist
+                    // nicht nur eine Sicherheitsauflage: die C7a-Pruefung
+                    // im Translator verwirft eine ANHEBENDE TBR-
+                    // Anforderung genau dann, wenn im selben Zyklus ein
+                    // SMB positiv ist - ohne diese Nullung verschwaende
+                    // die Teilbasal-Anforderung still.
+                    smbU = if (partialAktiv) 0.0 else decisionVorZeroLatch.smbU,
+                )
+            } else if (partialAktiv) {
+                zeroLatchUebersteuert = true
+                decisionVorZeroLatch.copy(
+                    tbr = FuseController.TbrAction.PARTIAL_BASAL,
+                    smbU = 0.0,
+                )
             } else decisionVorZeroLatch
         }
 
@@ -5206,6 +5297,9 @@ class FuseCycleRunner(
             current = currentTbr,
             latchZeroOnly = zeroLatchUebersteuert,
             scheduledBasalUPerH = profile.getBasal(computeTs),
+            // Der Anteil gilt NUR in der Teilstufe; sonst 0, und die
+            // Tabelle rechnet dann bitgleich wie bisher.
+            partialRateUPerH = if (partialAktiv) partialRateUPerH else 0.0,
             cfg = TbrPolicy.Config(
                 basalStepUPerH = pumpe.basalStepUPerH,
                 // Toni 15.08.: die Null sofort verlassen, sobald ihr Grund weg
@@ -5428,6 +5522,8 @@ class FuseCycleRunner(
             zeroLatchReason = zeroLatchGrund,
             zeroLatchCalmStreak = zeroCalmStreak,
             zeroLatchReasonGoneStreak = zeroReasonGoneStreak,
+            partialRecoveryActive = partialAktiv,
+            partialRecoveryStreak = partialStreak,
             zeroLatchArmStreak = zeroArmStreak,
             correctionReversal = reversal,
             correctionRearm = rearm,
@@ -6691,6 +6787,24 @@ class FuseCycleRunner(
     private var zeroCalmStreak = 0
     private var zeroCalmLastTs = 0L
 
+    /**
+     * DIE TEILBASAL-STUFE (PARTIAL_RECOVERY) - prozesslokal.
+     *
+     * NACH EINEM NEUSTART BEI 0: ein alter Erholungs-Streak darf nicht
+     * uebernommen werden, sonst begaenne die Teilstufe sofort nach einem
+     * Prozessstart, ohne dass DIESER Prozess die Erholung gesehen hat.
+     * Die konservative Richtung ist "wieder von vorn zaehlen".
+     */
+    private var partialStreak = 0
+    private var partialLastTs = 0L
+    private var partialAktiv = false
+
+    /** Die in DIESEM Zyklus tragbare Teilbasal-Rate [U/h] und - falls
+     *  keine bestimmbar war - der typisierte Grund. Beides rein
+     *  zyklusbezogen, kein Zustand ueber Zyklen hinweg. */
+    private var partialRateUPerH = 0.0
+    private var partialReject: String? = null
+
     /** Variante 1: zusammenhaengende Zyklen mit weggefallenem Schutzgrund
      *  UND bestaetigter Erholung. Prozesslokal wie der Ruhe-Zaehler - ein
      *  Neustart beginnt bei 0, also in der konservativen Richtung
@@ -6872,6 +6986,7 @@ class FuseCycleRunner(
         val zeroLatchEnabled: Boolean,
         val zeroLatchCalmExitMin: Int,
         val zeroLatchReasonGoneExitCycles: Int,
+        val partialRecoveryEnabled: Boolean,
         val correctionSeriesCapU: Double,
         val correctionSeriesWindowMin: Int,
         val zeroLatchCalmDistanceMgdl: Double,
@@ -7033,6 +7148,7 @@ class FuseCycleRunner(
         zeroLatchEnabled = preferences.get(FuseBooleanKey.ZeroLatchEnabled),
         zeroLatchCalmExitMin = preferences.get(FuseIntKey.ZeroLatchCalmExitMin),
         zeroLatchReasonGoneExitCycles = preferences.get(FuseIntKey.ZeroLatchReasonGoneExitCycles),
+        partialRecoveryEnabled = preferences.get(FuseBooleanKey.PartialRecoveryEnabled),
         correctionSeriesCapU = preferences.get(FuseDoubleKey.CorrectionSeriesCapU),
         correctionSeriesWindowMin = preferences.get(FuseIntKey.CorrectionSeriesWindowMin),
         zeroLatchCalmDistanceMgdl = preferences.get(FuseDoubleKey.ZeroLatchCalmDistanceMgdl),

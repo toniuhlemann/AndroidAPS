@@ -30,7 +30,21 @@ object TbrPolicy {
      * gerade beschaeftigt" war nicht darstellbar, und mit ihm verschwand der
      * Alarmgrund (R79-F6). Ausfuehrbarkeit ist eine eigene Achse.
      */
-    enum class Intent { SAFETY_ZERO, NO_POSITIVE, KEEP }
+    enum class Intent {
+        SAFETY_ZERO,
+        /**
+         * STUFENWEISE BASALRUECKKEHR: eine ABSENKENDE Rate zwischen 0 und
+         * dem Profilbasal, waehrend die Schutz-Null verriegelt bleibt.
+         *
+         * Ausdruecklich KEINE positive TBR: die Rate liegt immer unter dem
+         * Profilbasal, gibt also weniger als der Normalzustand. Sie holt
+         * nichts nach und traegt kein Budget - sie mildert nur die binaere
+         * Null.
+         */
+        PARTIAL_BASAL,
+        NO_POSITIVE,
+        KEEP,
+    }
 
     /**
      * Fehlerachse, GETRENNT von der TBR-Kategorie (v0.3 §12).
@@ -126,6 +140,14 @@ object TbrPolicy {
         /** Schutz-Null wegen Tief/Sicherheitsbahn - der EINZIGE Grund, den
          *  eine ausdrueckliche manuelle Autorisierung ueberstimmen darf. */
         SAFETY_ZERO,
+        /**
+         * Teilbasal-Rueckkehr laeuft - waehrenddessen ist die SMB-Achse
+         * gesperrt. Das ist nicht nur Vorsicht: die C7a-Pruefung in
+         * FuseTbrTranslator verwirft eine anhebende TBR-Anforderung genau
+         * dann, wenn im selben Zyklus ein SMB positiv ist. Ohne diese
+         * Sperre verschwaende die Teilbasal-Anforderung still.
+         */
+        PARTIAL_RECOVERY,
         PUMP_BUSY,
         INVALID_INPUT,
         SAFETY_SNAPSHOT_MISSING,
@@ -195,6 +217,16 @@ object TbrPolicy {
          * Aufrufer gefuehrt (s. FuseTbrTranslator.reasonGone).
          */
         protectionCleared: Boolean = false,
+        /**
+         * Die fertige Teilbasal-RATE [U/h] fuer [Intent.PARTIAL_BASAL].
+         *
+         * Sie kommt aus `BasalRecoverySearch` - der groessten Rate, die
+         * die Schutzbahn noch traegt -, NICHT aus einem festen Anteil. Ein
+         * Prozentsatz weiss nichts ueber die Bahn; diese Rate ist gegen
+         * genau den Guard geprueft, der die Null ausgeloest hat.
+         * 0 = keine Teilstufe.
+         */
+        partialRateUPerH: Double = 0.0,
         /** Bisher erfolglose Abbruchversuche in Folge (Backoff). */
         endZeroAttempts: Int = 0,
         /**
@@ -213,7 +245,7 @@ object TbrPolicy {
          */
         unsafeSituation: Boolean = false,
     ): Decision {
-        val base = decideIgnoringPump(intent, current, scheduledBasalUPerH, cfg, fault, protectionCleared, endZeroAttempts, unsafeSituation)
+        val base = decideIgnoringPump(intent, current, scheduledBasalUPerH, cfg, fault, protectionCleared, partialRateUPerH, endZeroAttempts, unsafeSituation)
         if (!pumpBusy) return base
         // Eine arbeitende Pumpe bekommt keine zweite Anweisung — aber der
         // Safety-Grund und sein Alarm bleiben erhalten. Unterdrueckt wird die
@@ -234,6 +266,7 @@ object TbrPolicy {
         cfg: Config,
         fault: FaultCode,
         protectionCleared: Boolean = false,
+        partialRateUPerH: Double = 0.0,
         endZeroAttempts: Int = 0,
         unsafeSituation: Boolean = false,
     ): Decision {
@@ -292,6 +325,7 @@ object TbrPolicy {
                 protectionCleared = protectionCleared && fault == FaultCode.NONE,
                 endZeroAttempts = endZeroAttempts,
             )
+            Intent.PARTIAL_BASAL -> partialBasal(current, scheduledBasalUPerH, cfg, partialRateUPerH)
             Intent.KEEP        -> keep(current, scheduledBasalUPerH, cfg)
         }
         return if (fault == FaultCode.NONE) base
@@ -340,6 +374,50 @@ object TbrPolicy {
         if (classify(current.absoluteRateUPerH, scheduledBasalUPerH, cfg.basalStepUPerH) == Direction.POSITIVE)
             return cancel("KEEP_CANCEL_POSITIVE")
         return keep
+    }
+
+    /**
+     * DIE TEILBASAL-RATE - abgesenkt, nie angehoben.
+     *
+     * `anteil x Profilbasal`, auf den Pumpen-Basalschritt NACH UNTEN
+     * gerastert (was die Pumpe nicht darstellen kann, wird nicht behauptet)
+     * und hart am Profilbasal gedeckelt. Ein unbrauchbarer Anteil oder ein
+     * unbrauchbares Profil ergibt die Schutz-Null - fail-closed in die
+     * Richtung, die WENIGER Insulin gibt.
+     *
+     * KEIN KOMMANDO-SPAM: laeuft die Zielrate schon und reicht die
+     * Restdauer, wird nichts gesendet; erneuert wird nur vor dem Ablauf -
+     * dieselbe Regel wie bei der Schutz-Null.
+     */
+    private fun partialBasal(
+        current: Current?,
+        scheduledBasalUPerH: Double,
+        cfg: Config,
+        vorgabeUPerH: Double,
+    ): Decision {
+        val ursache = SmbBlockCause.PARTIAL_RECOVERY
+        if (!vorgabeUPerH.isFinite() || vorgabeUPerH <= 0.0 ||
+            !scheduledBasalUPerH.isFinite() || scheduledBasalUPerH <= 0.0
+        ) return safetyZero(current, cfg).let { it.copy(reason = "PARTIAL_INVALID_INPUT|" + it.reason) }
+        // Die Suche rastert bereits; die Wiederholung hier ist
+        // Verteidigung in der Tiefe, und die Klemme am Profilbasal ist die
+        // harte Zusage, dass nie mehr als der Normalzustand laeuft.
+        val schritt = cfg.basalStepUPerH
+        val gerastert =
+            if (schritt > 0.0) kotlin.math.floor(vorgabeUPerH / schritt + 1e-9) * schritt else vorgabeUPerH
+        val rate = gerastert.coerceIn(0.0, scheduledBasalUPerH)
+        // Rastert der Anteil auf 0 herunter, ist die Teilstufe nicht
+        // darstellbar - dann gilt weiter die Schutz-Null.
+        if (isZeroRate(rate, schritt))
+            return safetyZero(current, cfg).let { it.copy(reason = "PARTIAL_BELOW_STEP|" + it.reason) }
+        val req = Outcome.Request(rate, cfg.defaultDurationMin)
+        if (current == null) return Decision(req, "PARTIAL_NEW", alarm = false, smbBlockCause = ursache)
+        val laeuftSchon = abs(current.absoluteRateUPerH - rate) <= schritt / 2.0
+        if (laeuftSchon)
+            return if (current.remainingMin >= cfg.tbrRenewMinRemainingMin)
+                Decision(Outcome.NoRequest, "PARTIAL_ALREADY_RUNNING", alarm = false, smbBlockCause = ursache)
+            else Decision(req, "PARTIAL_RENEW", alarm = false, smbBlockCause = ursache)
+        return Decision(req, "PARTIAL_SET", alarm = false, smbBlockCause = ursache)
     }
 
     private fun safetyZero(current: Current?, cfg: Config): Decision {

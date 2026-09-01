@@ -28,8 +28,12 @@ class FuseTbrTranslatorTest {
         assertEquals(TbrPolicy.Intent.NO_POSITIVE, FuseTbrTranslator.intentOf(FuseController.TbrAction.NO_NEW_POSITIVE))
         assertEquals(TbrPolicy.Intent.NO_POSITIVE, FuseTbrTranslator.intentOf(FuseController.TbrAction.CANCEL_TO_SCHEDULED))
         assertEquals(TbrPolicy.Intent.KEEP, FuseTbrTranslator.intentOf(FuseController.TbrAction.KEEP_CURRENT))
+        // Die Teilbasal-Rueckkehr hat eine EIGENE Absicht - sie darf weder
+        // als Schutz-Null (die ersetzt sofort mit 0) noch als NO_POSITIVE
+        // (das fordert gar nichts an) durchgereicht werden.
+        assertEquals(TbrPolicy.Intent.PARTIAL_BASAL, FuseTbrTranslator.intentOf(FuseController.TbrAction.PARTIAL_BASAL))
         // vollstaendig - eine neue Kategorie faellt beim Kompilieren auf
-        assertEquals(4, FuseController.TbrAction.entries.size)
+        assertEquals(5, FuseController.TbrAction.entries.size)
     }
 
     @Test
@@ -366,7 +370,10 @@ class FuseTbrTranslatorTest {
      */
     @Test
     fun `die Blockursachen sind vollstaendig aufgezaehlt`() {
-        assertEquals(7, TbrPolicy.SmbBlockCause.entries.size)
+        // 8 seit PARTIAL_RECOVERY: waehrend der Teilbasal-Stufe ist die
+        // SMB-Achse gesperrt - und das ist zugleich die Voraussetzung
+        // dafuer, dass die anhebende TBR-Anforderung C7a passiert.
+        assertEquals(8, TbrPolicy.SmbBlockCause.entries.size)
         for (c in TbrPolicy.SmbBlockCause.entries)
             assertEquals(
                 c != TbrPolicy.SmbBlockCause.NONE,

@@ -184,6 +184,8 @@
     <string name="fuse_correction_series_cap_summary">Variante 2: Obergrenze der SMB-Menge im markerlosen Korrekturpfad innerhalb des Serien-Fensters. 0 = aus. Gezaehlt wird, was den Transport ueberstanden hat; Mahlzeiten bleiben unberuehrt.</string>
     <string name="fuse_correction_series_window_title">Korrekturserie Fenster (min)</string>
     <string name="fuse_correction_series_window_summary">Rollierendes Fenster des Serien-Deckels. Ohne Deckel wirkungslos.</string>
+    <string name="fuse_partial_recovery_title">Stufenweise Basalrueckkehr</string>
+    <string name="fuse_partial_recovery_summary">Statt binaer zwischen voller Null und vollem Profilbasal zu springen, laeuft nach drei ruhigen Zyklen ein Anteil des Profilbasals weiter - die Schutz-Null bleibt dabei verriegelt. Kehrt ein Schutzgrund zurueck, gilt sofort wieder die volle Null. Kein Nachholen ausgelassener Menge, waehrend der Teilstufe kein SMB. AUS = bisheriges Verhalten.</string>
     <string name="fuse_zero_latch_calm_min_summary">Zweiter Freigabepfad gegen die Zero-Falle: so viele Zyklen stabil nicht fallend, ausreichend Abstand zum Boden und ohne Bolus-Ueberdeckung loesen die verriegelte Null auch ohne Anstieg.</string>
     <string name="fuse_zero_latch_calm_dist_title">Zero-Latch Ruhe-Abstand [mg/dl]</string>
     <string name="fuse_zero_latch_calm_dist_summary">Mindestabstand des q1 ueber dem Guard-Boden, damit ein Ruhe-Zyklus fuer den zweiten Freigabepfad zaehlt.</string>
