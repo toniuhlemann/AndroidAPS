@@ -506,7 +506,7 @@ enum class FuseIntKey(
      * darueber hinauszugehen, weil FUSE keine positive TBR kennt. Ein
      * Nachholen ausgelassener Basalmenge findet ausdruecklich NICHT statt.
      */
-    ZeroLatchReasonGoneExitMin("fuse_zero_latch_reason_gone_exit_min", 0, 0, 60),
+    ZeroLatchReasonGoneExitCycles("fuse_zero_latch_reason_gone_exit_cycles", 0, 0, 60),
 
     /** V-Reversal-Schutz: Rueckblickfenster [min], in dem das
      *  Fall-Minimum den Riegel traegt (Pflichtfall: Minimum 11 min vor

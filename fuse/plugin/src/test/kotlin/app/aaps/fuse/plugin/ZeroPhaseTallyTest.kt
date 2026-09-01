@@ -148,21 +148,24 @@ class ZeroPhaseTallyTest {
         assertTrue(f.gapCappedMin > 0.0, "der 5-min-Schritt muss als Luecke sichtbar sein")
     }
 
-    /** Eine fertige Phase bauen, ohne 30 Ticks zu schreiben. */
-    private fun phase(minuten: Double, basal: Double, ohneGrund: Double, flach: Double) =
+    /** Eine fertige Phase bauen, ohne 30 Ticks zu schreiben. `beginnMin`
+     *  ist die KENNUNG der Phase - verschiedene Phasen muessen
+     *  verschiedene `sinceTs` haben, sonst prueft der Identitaetstest
+     *  nichts. */
+    private fun phase(beginnMin: Double, minuten: Double, basal: Double, ohneGrund: Double, flach: Double) =
         EpisodeBudgets.ZeroPhaseTally(
-            sinceTs = t0, lastTickTs = min(minuten), minutes = minuten,
+            sinceTs = min(beginnMin), lastTickTs = min(beginnMin + minuten), minutes = minuten,
             omittedU = basal * minuten / 60.0,
             reasonAbsentMin = ohneGrund, flatAbsentMin = flach, gapCappedMin = 0.0,
         )
 
     /** Die vier abgeschlossenen Nachtphasen und die fuenfte, laufende -
-     *  dieselben Groessenordnungen wie die gemessene Nacht. */
-    private val p1 = phase(32.0, 0.45, 16.0, 3.0)
-    private val p2 = phase(22.0, 0.50, 13.0, 3.0)
-    private val p3 = phase(27.0, 0.50, 25.0, 6.0)
-    private val p4 = phase(97.0, 0.65, 66.0, 12.0)
-    private val p5 = phase(46.0, 0.55, 27.0, 0.0)
+     *  dieselben Groessenordnungen und Abstaende wie die gemessene Nacht. */
+    private val p1 = phase(26.0, 32.0, 0.45, 16.0, 3.0)
+    private val p2 = phase(93.0, 22.0, 0.50, 13.0, 3.0)
+    private val p3 = phase(242.0, 27.0, 0.50, 25.0, 6.0)
+    private val p4 = phase(354.0, 97.0, 0.65, 66.0, 12.0)
+    private val p5 = phase(529.0, 46.0, 0.55, 27.0, 0.0)
 
     @Test
     fun `ein Aggregat traegt seine Phasenzahl - vier und fuenf Phasen sind nicht verwechselbar`() {
@@ -214,6 +217,29 @@ class ZeroPhaseTallyTest {
             "die Mischung MUSS auffallen - sonst faengt der Test sie nicht"
         }
         assertEquals(p5.minutes, gemischt - vier.minutes, 1e-9, "die Differenz ist genau P5")
+    }
+
+    @Test
+    fun `gleiche Anzahl, andere Phasen - der Fingerprint trennt sie`() {
+        // DIE ZWEITE FORM DESSELBEN FEHLERS (Review-Befund): P1..P4 und
+        // P2..P5 haben BEIDE vier Phasen. Eine blosse Anzahl haelt sie
+        // fuer vergleichbar; die Kennungen tun es nicht.
+        val a = BasalGapRechner.aggregat(listOf(p1, p2, p3, p4))
+        val b = BasalGapRechner.aggregat(listOf(p2, p3, p4, p5))
+        assertEquals(a.phasen, b.phasen, "gleiche ANZAHL - daran ist nichts zu erkennen")
+        assertTrue(a.fingerprint != b.fingerprint) {
+            "verschiedene Phasenmengen muessen verschiedene Fingerprints haben: " +
+                "${a.fingerprint} vs ${b.fingerprint}"
+        }
+        assertTrue(a.phasenIds != b.phasenIds)
+    }
+
+    @Test
+    fun `der Fingerprint haengt nicht an der Reihenfolge der Eingabe`() {
+        val vorwaerts = BasalGapRechner.aggregat(listOf(p1, p2, p3))
+        val rueckwaerts = BasalGapRechner.aggregat(listOf(p3, p2, p1))
+        assertEquals(vorwaerts.fingerprint, rueckwaerts.fingerprint)
+        assertEquals(vorwaerts.minutes, rueckwaerts.minutes, 1e-12)
     }
 
     @Test

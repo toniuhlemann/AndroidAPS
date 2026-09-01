@@ -109,8 +109,15 @@ object BasalGapRechner {
      * vergleichbar, und das steht dann im Ergebnis selbst.
      */
     data class Aggregat(
-        /** Wieviele Phasen eingeflossen sind - die Identitaet der Menge. */
-        val phasen: Int,
+        /**
+         * DIE PHASEN SELBST, nicht nur ihre Anzahl (Review-Befund): eine
+         * blosse Zahl unterscheidet P1..P4 nicht von P2..P5, und genau
+         * diese Verschiebung ist die zweite Form desselben
+         * Auswertungsfehlers. Die `sinceTs` sind die stabilen Kennungen
+         * der Phasen - aufsteigend sortiert, damit die Reihenfolge der
+         * Eingabe die Identitaet nicht veraendert.
+         */
+        val phasenIds: List<Long>,
         val minutes: Double,
         val omittedU: Double,
         /** A: mit anliegendem Schutzgrund. */
@@ -120,7 +127,18 @@ object BasalGapRechner {
         /** C: ohne Grund und nicht fallend. */
         val flatAbsentMin: Double,
         val gapCappedMin: Double,
-    )
+    ) {
+
+        /** Wieviele Phasen eingeflossen sind. */
+        val phasen: Int get() = phasenIds.size
+
+        /**
+         * Ein stabiler Fingerprint GENAU DIESER Phasenmenge. Zwei
+         * Aggregate sind nur vergleichbar, wenn er uebereinstimmt - das
+         * ist die Pruefung, die die blosse Anzahl nicht leisten kann.
+         */
+        val fingerprint: String get() = phasenIds.joinToString("-")
+    }
 
     /**
      * Fasst Phasen zusammen. ALLE Kennzahlen stammen aus derselben Liste -
@@ -128,7 +146,7 @@ object BasalGapRechner {
      * anderen Menge zu nehmen.
      */
     fun aggregat(phasen: List<EpisodeBudgets.ZeroPhaseTally>) = Aggregat(
-        phasen = phasen.size,
+        phasenIds = phasen.map { it.sinceTs }.sorted(),
         minutes = phasen.sumOf { it.minutes },
         omittedU = phasen.sumOf { it.omittedU },
         withReasonMin = phasen.sumOf { it.minutes - it.reasonAbsentMin },

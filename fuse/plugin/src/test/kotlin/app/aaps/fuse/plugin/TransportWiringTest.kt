@@ -578,7 +578,7 @@ class TransportWiringTest : TestBaseWithProfile() {
         whenever(preferences.get(FuseBooleanKey.ZeroLatchEnabled)).thenAnswer { zeroLatchAn }
         whenever(preferences.get(FuseIntKey.ZeroLatchCalmExitMin)).thenAnswer { zeroLatchRuheZyklen }
         whenever(preferences.get(FuseDoubleKey.ZeroLatchCalmDistanceMgdl)).thenAnswer { zeroLatchRuheAbstand }
-        whenever(preferences.get(FuseIntKey.ZeroLatchReasonGoneExitMin)).thenAnswer { zeroLatchGrundWegZyklen }
+        whenever(preferences.get(FuseIntKey.ZeroLatchReasonGoneExitCycles)).thenAnswer { zeroLatchGrundWegZyklen }
         whenever(preferences.get(FuseDoubleKey.LivenessBgMinDayMgdl)).thenAnswer { livenessBgMin }
         whenever(preferences.get(FuseDoubleKey.LivenessBgMinNightMgdl)).thenAnswer { livenessBgMinNacht ?: livenessBgMin }
         whenever(preferences.getIfExists(FuseDoubleKey.LivenessBgMinNightMgdl)).thenAnswer { livenessBgMinNacht }
@@ -10225,6 +10225,81 @@ class TransportWiringTest : TestBaseWithProfile() {
         // Null und Abbruch; dieser Test friert das fuer die Variante ein.
         val raten = kand.mapNotNull { it.tbr?.rateUPerH }.filter { it > 0.0 }
         assertTrue(raten.isEmpty()) { "keine positive TBR erlaubt, gemessen: $raten" }
+    }
+
+    @Test
+    fun `Variante 1 - eine neue Nullphase erbt keinen Streak der vorigen`(@TempDir dir: File) {
+        // DER REVIEW-BEFUND: der `else`-Zweig setzte nur den Ruhe-Zaehler
+        // zurueck. Endete eine Phase auf einem ANDEREN Pfad, stand der
+        // Grund-Weg-Zaehler noch - und weil der Zeitanschluss nur 90 s
+        // Abstand verlangt, konnte die naechste Phase ihn erben und im
+        // ERSTEN geeigneten Zyklus sofort loesen.
+        //
+        // Aufbau: ein hoher Schalter (5), den die erste Phase nie
+        // erreicht, aber Zyklen sammelt; danach endet der Latch, eine
+        // neue Phase beginnt dicht dahinter. Faellt der Zaehler nicht,
+        // loest die zweite Phase zu frueh.
+        grundWegLage(File(dir, "erbe"), variante = 5)
+        val outs = mutableListOf<FuseCycleRunner.Outcome>()
+        // Phase 1 bis kurz vor die Schwelle.
+        repeat(30) { outs += cycle() }
+        val ersteZuendung = outs.indexOfFirst { it.zeroLatchActive }
+        assertTrue(ersteZuendung >= 0, "die Lage muss zuenden")
+        // Latch beenden: eine klare Aufwaertswende beendet ihn ueber den
+        // regulaeren Erholungspfad, nicht ueber den neuen Ausgang.
+        flach = 150.0
+        steigungProMin = 1.5
+        knickAbMin = null
+        bolusIobU = 0.0
+        repeat(12) { outs += cycle() }
+        assertTrue(outs.last().zeroLatchActive.not()) {
+            "die erste Phase muss enden: " + outs.takeLast(6).map { it.zeroLatchReason }
+        }
+        val vorZweiter = outs.size
+        // Neue Abwaertslage DICHT dahinter - der Zeitanschluss (90 s)
+        // waere erfuellt, wenn ein Zaehler stehengeblieben waere.
+        flach = 140.0
+        steigungProMin = -1.2
+        bolusIobU = 2.5
+        val zweite = (0 until 20).map { cycle() }
+        outs += zweite
+        val zweiteZuendung = zweite.indexOfFirst { it.zeroLatchActive }
+        assertTrue(zweiteZuendung >= 0) {
+            "die zweite Phase muss zuenden: " + zweite.map { it.zeroLatchReason }.take(12)
+        }
+        // DIE SCHARFE PRUEFUNG - am ZAEHLER, nicht an seinem Ergebnis.
+        //
+        // Ein Test, der nur "loest nicht zu frueh" prueft, ist gruen, sobald
+        // der Aufbau die Loesung ohnehin nicht erreicht - er haette den
+        // Fehler nicht gefangen (gemessen: die Mutation blieb gruen).
+        // Entscheidend ist, dass der Zaehler die Phasengrenze NICHT
+        // ueberschreitet.
+        val vorPhase1Ende = outs.take(vorZweiter)
+        val maxStreakPhase1 = vorPhase1Ende.maxOf { it.zeroLatchReasonGoneStreak }
+        assertTrue(maxStreakPhase1 > 0) {
+            "der Aufbau MUSS in Phase 1 Grund-Weg-Zyklen sammeln - sonst " +
+                "prueft der Test die Vererbung gar nicht (max=$maxStreakPhase1)"
+        }
+        // Zwischen den Phasen muss er auf 0 gefallen sein ...
+        val zwischen = outs.subList(ersteZuendung, vorZweiter).filter { !it.zeroLatchActive }
+        assertTrue(zwischen.isNotEmpty(), "es muss latchfreie Zyklen zwischen den Phasen geben")
+        assertTrue(zwischen.all { it.zeroLatchReasonGoneStreak == 0 }) {
+            "ohne laufenden Latch MUSS der Zaehler 0 sein, gemessen: " +
+                zwischen.map { it.zeroLatchReasonGoneStreak }.distinct()
+        }
+        // ... und der erste Zyklus der zweiten Phase beginnt bei hoechstens 1.
+        val ersterZweiter = zweite[zweiteZuendung]
+        assertTrue(ersterZweiter.zeroLatchReasonGoneStreak <= 1) {
+            "die neue Phase beginnt bei 0/1, geerbt waere mehr: " +
+                "${ersterZweiter.zeroLatchReasonGoneStreak}"
+        }
+        // Und als Folge davon loest sie nicht sofort.
+        val fruehLoesung = zweite.drop(zweiteZuendung).take(4)
+            .indexOfFirst { it.zeroLatchReason == "REASON_GONE_RECOVERED" }
+        assertEquals(-1, fruehLoesung) {
+            "kein Erben eines alten Streaks - Gruende: " +
+                zweite.drop(zweiteZuendung).take(6).map { it.zeroLatchReason }
+        }
     }
 
     @Test
