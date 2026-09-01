@@ -57,21 +57,31 @@ class NullphasenReplayLauf {
                 val st = o.optJSONObject("state")
                 val verdikt = lt?.optString("verdict")?.takeIf { it.isNotBlank() && it != "null" }
                 val q1 = s?.takeIf { it.has("q1") }?.optDouble("q1")?.takeIf { it.isFinite() }
+                val obs = o.optJSONObject("observer")
+                // measuredLow EXAKT wie die Produktion: safetyReasons ist
+                // GENAU {LOW} - nicht "enthaelt LOW". Fehlt der Block, gilt
+                // fail-closed die Gefahr als angenommen.
+                val safety = obs?.optJSONArray("safetyReasons")
+                    ?.let { a -> (0 until a.length()).map { a.optString(it) }.toSet() }
                 NullphasenReplay.Zyklus(
-                    tsMs = o.getLong("computeTs"),
+                    computeTs = o.getLong("computeTs"),
+                    // Fehlt der Signalzeitstempel, ist der Anschluss NICHT
+                    // belegbar: 0 laesst den Streak nie wachsen.
+                    sourceTs = o.optLong("sourceTs", 0L).takeIf { it > 0L }
+                        ?: s?.optLong("sourceTs", 0L)?.takeIf { it > 0L } ?: 0L,
                     zeroActive = o.optJSONObject("zeroLatch")?.optBoolean("active") == true,
                     schutzgrund = verdikt != null && verdikt != "NONE",
                     ukfRatePerMin = s?.takeIf { it.has("ukfRatePerMin") }?.optDouble("ukfRatePerMin")
                         ?.takeIf { it.isFinite() },
-                    signalHealthy = (st?.optString("health") ?: "READY") == "READY",
+                    // FEHLENDES health IST NICHT READY (fail-closed).
+                    signalHealthy = st?.optString("health") == "READY",
                     // Das laufende Profilbasal gibt es erst ab rs48; aeltere
                     // Trails liefern null, dann waechst nur die Zeit.
                     scheduledBasalUph = bg?.takeIf { it.has("scheduledBasalUph") }
                         ?.optDouble("scheduledBasalUph")?.takeIf { it.isFinite() && it > 0.0 },
                     publishedU = smb?.optDouble("publishedU", 0.0)?.takeIf { it.isFinite() } ?: 0.0,
                     mealAuthorized = dc?.optString("profile") == "MEAL",
-                    measuredLow = lt?.optString("verdict") == "MEASURED_LOW" ||
-                        (lt == null),   // fail-closed: ohne Urteil Gefahr annehmen
+                    measuredLow = safety?.let { it == setOf("LOW") } ?: true,
                     descentRiskActive = o.optBoolean("descentRiskActive", true),
                     q1NotFalling = q1?.let { jetzt ->
                         vorigesQ1?.let { jetzt >= it - 0.01 } ?: true
@@ -87,7 +97,7 @@ class NullphasenReplayLauf {
         assumeTrue(pfad != null) { "FUSE_REPLAY_TRAIL nicht gesetzt - Lauf uebersprungen" }
         val datei = File(pfad!!)
         assumeTrue(datei.isFile) { "Trail nicht lesbar: $pfad" }
-        val zyklen = lies(datei).sortedBy { it.tsMs }
+        val zyklen = lies(datei).sortedBy { it.computeTs }
         println("== Zyklen: ${zyklen.size} ==")
         println("HINWEIS: Entscheidungsvergleich unter festgehaltenem Signal.")
         println("Keine Aussage ueber Glukoseverlauf, Sicherheit oder TIR.")
@@ -96,7 +106,7 @@ class NullphasenReplayLauf {
         println("\n-- Basislinie: ${ph.size} Nullphasen --")
         ph.forEach { p ->
             val basal = p.zyklen.zipWithNext().sumOf { (a, b) ->
-                val dt = ((b.tsMs - a.tsMs) / 60_000.0).coerceIn(0.0, 3.0)
+                val dt = ((b.computeTs - a.computeTs) / 60_000.0).coerceIn(0.0, 3.0)
                 (a.scheduledBasalUph ?: 0.0) * dt / 60.0
             }
             println("   %s-%s  %5.1f min  %.3f U".format(hm(p.vonMs), hm(p.bisMs), p.dauerMin, basal))
@@ -149,7 +159,7 @@ class NullphasenReplayLauf {
         System.getenv("FUSE_REPLAY_MARK")?.let { mark ->
             val teile = mark.split("-")
             if (teile.size == 2 && zyklen.isNotEmpty()) {
-                val tag = SimpleDateFormat("yyyy-MM-dd").format(Date(zyklen.first().tsMs))
+                val tag = SimpleDateFormat("yyyy-MM-dd").format(Date(zyklen.first().computeTs))
                 val voll = SimpleDateFormat("yyyy-MM-dd HH:mm")
                 val von = voll.parse("$tag ${teile[0]}")?.time
                 val bis = voll.parse("$tag ${teile[1]}")?.time

@@ -27,8 +27,12 @@ class NullphasenReplayTest {
         descent: Boolean = false,
         nichtFallend: Boolean = true,
         gesund: Boolean = true,
+        /** Signalzeitstempel; null = derselbe wie computeTs. */
+        quelle: Double? = null,
     ) = NullphasenReplay.Zyklus(
-        tsMs = t0 + min(minute), zeroActive = zero, schutzgrund = grund,
+        computeTs = t0 + min(minute),
+        sourceTs = t0 + min(quelle ?: minute),
+        zeroActive = zero, schutzgrund = grund,
         ukfRatePerMin = rate, signalHealthy = gesund, scheduledBasalUph = basal,
         publishedU = pub, mealAuthorized = meal,
         measuredLow = low, descentRiskActive = descent, q1NotFalling = nichtFallend,
@@ -294,5 +298,69 @@ class NullphasenReplayTest {
         val s = NullphasenReplay.serien(zyklen)
         assertEquals(1, s.size)
         assertEquals(21, s[0].dosen)
+    }
+
+    // ---- PARITAET: ZWEI UHREN -------------------------------------------
+    //
+    // computeTs treibt Dauer und Bilanz, sourceTs den Streak-Anschluss.
+    // Wer beide vermengt, laesst einen wiederholten Messpunkt einen Streak
+    // wachsen, den die Produktion nicht haette.
+
+    @Test
+    fun `ein wiederholter Messpunkt erhoeht den Streak nicht`() {
+        // Die Zyklen laufen weiter (computeTs steigt), das SIGNAL steht.
+        // Streng steigend ist verletzt -> der Streak faellt auf 1 zurueck.
+        val zyklen = listOf(
+            z(0.0, grund = true),
+            z(1.0, quelle = 1.0), z(2.0, quelle = 1.0), z(3.0, quelle = 1.0),
+            z(4.0, quelle = 1.0), z(5.0, quelle = 1.0),
+        )
+        assertNull(NullphasenReplay.variante1(zyklen, 3).phasen.single().ausgangMs) {
+            "ein stehendes Signal darf keinen Ausgang erzeugen"
+        }
+    }
+
+    @Test
+    fun `ein rueckwaerts springender Messpunkt erhoeht den Streak nicht`() {
+        val zyklen = listOf(
+            z(0.0, grund = true),
+            z(1.0, quelle = 3.0), z(2.0, quelle = 2.0), z(3.0, quelle = 1.0),
+        )
+        assertNull(NullphasenReplay.variante1(zyklen, 3).phasen.single().ausgangMs)
+    }
+
+    @Test
+    fun `ein fehlender Messpunkt erhoeht den Streak nicht`() {
+        // sourceTs = 0 (im Leser: Feld fehlt) - kein Anschluss belegbar.
+        val ohne = NullphasenReplay.Zyklus(
+            computeTs = t0 + min(1.0), sourceTs = 0L, zeroActive = true, schutzgrund = false,
+            ukfRatePerMin = 0.1, signalHealthy = true, scheduledBasalUph = 0.6,
+            publishedU = 0.0, mealAuthorized = false,
+            measuredLow = false, descentRiskActive = false, q1NotFalling = true,
+        )
+        val zyklen = listOf(z(0.0, grund = true), ohne, ohne.copy(computeTs = t0 + min(2.0)),
+                            ohne.copy(computeTs = t0 + min(3.0)))
+        assertNull(NullphasenReplay.variante1(zyklen, 3).phasen.single().ausgangMs)
+    }
+
+    @Test
+    fun `die Dauer folgt der Entscheidungsuhr, nicht dem Signal`() {
+        // Signal steht ab Minute 2, die Zyklen laufen bis 10 weiter.
+        val zyklen = (0..10).map { z(it.toDouble(), quelle = kotlin.math.min(it, 2).toDouble()) }
+        val p = NullphasenReplay.phasen(zyklen).single()
+        assertEquals(10.0, p.dauerMin, 1e-9, "10 min Entscheidungszeit trotz stehendem Signal")
+    }
+
+    @Test
+    fun `das Serienfenster folgt der Signaluhr`() {
+        // Zwei Dosen: computeTs 40 min auseinander, sourceTs nur 5.
+        val zyklen = listOf(
+            z(0.0, zero = false, pub = 0.30, quelle = 0.0),
+            z(40.0, zero = false, pub = 0.30, quelle = 5.0),
+        )
+        val v = NullphasenReplay.verteilung(zyklen, 30)
+        assertEquals(0.60, v.maxU, 1e-9) {
+            "nach der SIGNAL-Uhr liegen beide im 30-min-Fenster"
+        }
     }
 }

@@ -33,7 +33,17 @@ object NullphasenReplay {
      * auch nicht versehentlich behaupten.
      */
     data class Zyklus(
-        val tsMs: Long,
+        /**
+         * ZWEI UHREN, GETRENNT GEFUEHRT - und die Trennung ist nicht
+         * kosmetisch: `computeTs` ist der Entscheidungszeitpunkt (daran
+         * haengen Phasendauer und Basalbilanz), `sourceTs` der Zeitstempel
+         * des SIGNALS (daran haengen Streak-Anschluss und Serienfenster,
+         * genau wie in der Produktion). Ein wiederholter oder
+         * zurueckspringender Messpunkt darf einen Streak nicht wachsen
+         * lassen, auch wenn der Zyklus selbst weiterlaeuft.
+         */
+        val computeTs: Long,
+        val sourceTs: Long,
         /** Lief in diesem Zyklus eine Null-TBR? */
         val zeroActive: Boolean,
         /** Liegt ein LowThreat-Schutzgrund an (Verdikt != NONE)? */
@@ -47,7 +57,7 @@ object NullphasenReplay {
          * damit konnten die gemeldeten Ausgaenge ZU FRUEH sein.
          *
          * FAIL-CLOSED: fehlt die Information im Trail, gilt sie als
-         * ungueltig - `measuredLow`/`descentRiskActive` als `true`
+         * ungueltig - `measuredLow`/`descentRiskActive` als `z.sourceTs - letzterSourceTs <= ANSCHLUSS_MAX_MS`
          * (Gefahr angenommen) und `q1NotFalling` als `false` (keine
          * Erholung angenommen). Eine fehlende Angabe darf nie zu einem
          * Ausgang fuehren, den die Produktion nicht gehabt haette.
@@ -102,8 +112,9 @@ object NullphasenReplay {
     // ---- PHASEN ---------------------------------------------------------
 
     data class Phase(val zyklen: List<Zyklus>) {
-        val vonMs get() = zyklen.first().tsMs
-        val bisMs get() = zyklen.last().tsMs
+        // Dauer und Bilanz an der ENTSCHEIDUNGS-Uhr.
+        val vonMs get() = zyklen.first().computeTs
+        val bisMs get() = zyklen.last().computeTs
         val dauerMin get() = (bisMs - vonMs) / 60_000.0
     }
 
@@ -172,28 +183,34 @@ object NullphasenReplay {
         val out = phasen(zyklen).map { p ->
             var streak = 0
             var idx: Int? = null
-            var letzterTs = 0L
+            var letzterSourceTs = 0L
             for ((i, z) in p.zyklen.withIndex()) {
-                // ZUSAMMENHAENGEND heisst zusammenhaengend: eine Luecke
-                // ueber 90 s nullt den Zaehler wie in der Produktion.
-                val anschluss = letzterTs > 0L && z.tsMs - letzterTs <= ANSCHLUSS_MAX_MS
+                // DER ANSCHLUSS EXAKT WIE IN DER PRODUKTION: der
+                // SIGNAL-Zeitstempel muss STRENG STEIGEN und hoechstens
+                // 90 s Abstand haben. Ein gleicher, ein zurueckspringender
+                // oder ein fehlender sourceTs erhoeht den Streak NIE - er
+                // beginnt dann bei 1 (der Zyklus selbst zaehlt) bzw. bleibt
+                // 0, wenn die Bedingungen nicht erfuellt sind.
+                val anschluss = letzterSourceTs > 0L &&
+                    z.sourceTs > letzterSourceTs &&
+                    true
                 streak = if (!z.schutzgrund && erholung(z)) (if (anschluss) streak + 1 else 1) else 0
-                letzterTs = z.tsMs
+                if (z.sourceTs > 0L) letzterSourceTs = z.sourceTs
                 if (streak >= n) { idx = i; break }
             }
             if (idx == null) {
                 V1Phase(p.vonMs, p.bisMs, p.dauerMin, null, 0.0, 0.0, null)
             } else {
                 val rest = p.zyklen.subList(idx, p.zyklen.size)
-                val weg = (p.bisMs - rest.first().tsMs) / 60_000.0
+                val weg = (p.bisMs - rest.first().computeTs) / 60_000.0
                 val basal = rest.zipWithNext().sumOf { (a, b) ->
-                    val dt = ((b.tsMs - a.tsMs) / 60_000.0).coerceIn(0.0, 3.0)
+                    val dt = ((b.computeTs - a.computeTs) / 60_000.0).coerceIn(0.0, 3.0)
                     (a.scheduledBasalUph ?: 0.0) * dt / 60.0
                 }
                 val wieder = rest.drop(1).firstOrNull { it.schutzgrund }
                 V1Phase(
-                    p.vonMs, p.bisMs, p.dauerMin, rest.first().tsMs, weg, basal,
-                    wieder?.let { (it.tsMs - rest.first().tsMs) / 60_000.0 },
+                    p.vonMs, p.bisMs, p.dauerMin, rest.first().computeTs, weg, basal,
+                    wieder?.let { (it.computeTs - rest.first().computeTs) / 60_000.0 },
                 )
             }
         }
@@ -205,7 +222,8 @@ object NullphasenReplay {
     /** Die markerlosen Publikationen - nur sie belasten den Serien-Deckel. */
     fun korrekturDosen(zyklen: List<Zyklus>): List<Pair<Long, Double>> =
         zyklen.filter { !it.mealAuthorized && it.publishedU > 0.0 }
-            .map { it.tsMs to it.publishedU }
+            // Serienfenster an der SIGNAL-Uhr, wie die Produktionsbuchung.
+            .map { it.sourceTs to it.publishedU }
 
     data class Verteilung(
         val fensterMin: Int,
