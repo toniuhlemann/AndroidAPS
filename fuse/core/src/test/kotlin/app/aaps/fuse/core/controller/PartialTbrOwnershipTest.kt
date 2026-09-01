@@ -42,7 +42,8 @@ class PartialTbrOwnershipTest {
         wunschRate: Double? = null,
         wantEnd: Boolean = false,
         wantProfile: Boolean = false,
-    ) = PartialTbrOwnership.advance(state, view, nowTs, schritt, wunschRate, wantEnd, wantProfile)
+        deckel: Double = profil,
+    ) = PartialTbrOwnership.advance(state, view, nowTs, schritt, wunschRate, wantEnd, wantProfile, deckel)
 
     // =====================================================================
     // P0-1: BESTAETIGTE RATE UND OFFENE ANFORDERUNG SIND ZWEI DINGE
@@ -694,6 +695,97 @@ class PartialTbrOwnershipTest {
             PartialTbrOwnership.Anzeige.NONE,
             PartialTbrOwnership.anzeige(schritt(State(), auth(null), min(1))),
         )
+    }
+
+    // =====================================================================
+    // P0-1: EIN UNBESTAETIGTER ABBRUCH SPERRT DEN SMB - AUCH BLIND
+    // =====================================================================
+
+    /**
+     * Ein Profil-Abbruch hinterlaesst einen Zustand, in dem NUR `ending`
+     * gesetzt ist - `leer` ist dann true. Wird die Pumpensicht im
+     * naechsten Zyklus unbrauchbar, weiss niemand, ob der Abbruch
+     * angekommen ist. Der SMB muss dann zu bleiben.
+     */
+    @Test
+    fun `ein unbestaetigter Abbruch sperrt den SMB auch bei unbrauchbarer Sicht`() {
+        val nurEnding = State(ending = Ending(sinceTs = t0, attempts = 1, lastRequestTs = t0))
+        assertTrue(nurEnding.leer) { "genau das ist die Falle: leer, aber nicht fertig" }
+        assertTrue(nurEnding.smbBlocked) { "trotzdem gesperrt" }
+
+        val r = schritt(nurEnding, View.Unknown, min(2), wantProfile = true)
+        assertEquals(Reason.VIEW_UNKNOWN_HELD, r.reason)
+        assertFalse(r.sendCancel) { "ohne Sicht wird nichts geschickt" }
+        assertTrue(r.smbBlocked) { "und der schnelle Kanal bleibt zu" }
+        assertEquals(PartialTbrOwnership.Anzeige.VIEW_UNKNOWN, PartialTbrOwnership.anzeige(r))
+    }
+
+    // =====================================================================
+    // P0-2: DER PROFIL-ABBRUCH FASST KEINE FREMDE ABSENKUNG AN
+    // =====================================================================
+
+    /**
+     * DER SCHARFE GEGENFALL: Profil und Pumpenbasis 0,50, laufende FREMDE
+     * TBR 0,30, Guard-Ziel 0,50, kein eigener Besitz. Vorher wurde daraus
+     * ein Abbruch auf 0,50 - fremdes abgesenktes Basal ANGEHOBEN.
+     */
+    @Test
+    fun `der Profil-Abbruch laesst eine fremde Absenkung stehen`() {
+        val r = schritt(State(), auth(laufend(0.30, 20)), min(2), wantProfile = true, deckel = 0.50)
+        assertFalse(r.sendCancel) { "0,30 gehoert uns nicht - abbrechen hiesse anheben" }
+
+        // Und in der Tabelle ebenso, unabhaengig vom Lebenszyklus.
+        val d = TbrPolicy.decide(
+            TbrPolicy.Intent.PARTIAL_BASAL, laufend(0.30, 20), 0.50, cfg,
+            partialRateUPerH = 0.50, pumpBaseBasalUPerH = 0.50,
+        )
+        assertEquals(TbrPolicy.Outcome.NoRequest, d.outcome)
+        assertEquals(TbrPolicy.PARTIAL_FOREIGN_REDUCTION_KEPT_REASON, d.reason)
+    }
+
+    @Test
+    fun `der Profil-Abbruch gilt fuer Null, eigene Rate und positive TBR`() {
+        // echte Null
+        assertTrue(schritt(State(), auth(laufend(0.0, 20)), min(2), wantProfile = true, deckel = 0.50).sendCancel)
+        // eigene bestaetigte Rate
+        val eigen = State(confirmedRunning = id(0.30, t0, 30))
+        assertTrue(schritt(eigen, auth(laufend(0.30, 20)), min(10), wantProfile = true, deckel = 0.50).sendCancel)
+        // positive TBR - ihr Abbruch SENKT Insulin
+        assertTrue(schritt(State(), auth(laufend(1.20, 20)), min(2), wantProfile = true, deckel = 0.50).sendCancel)
+    }
+
+    // =====================================================================
+    // P1: SICHERHEITSDECKEL UND AAPS-AKTIONSBASIS SIND ZWEI ZAHLEN
+    // =====================================================================
+
+    /**
+     * Therapieprofil 0,50, `pump.baseBasalRate` 0,70, Guard-Ziel 0,50.
+     * 0,50 ist der sichere Deckel - fuer AAPS aber KEIN Abbruch, sondern
+     * eine echte abgesenkte TBR. Gegen den Deckel gemessen waere die
+     * Rueckkehr ausgefallen.
+     */
+    @Test
+    fun `am Sicherheitsdeckel unter der Pumpenbasis entsteht eine echte Teilrate`() {
+        val d = TbrPolicy.decide(
+            TbrPolicy.Intent.PARTIAL_BASAL, laufend(0.0, 20), 0.50, cfg,
+            partialRateUPerH = 0.50, pumpBaseBasalUPerH = 0.70,
+        )
+        assertEquals(0.50, (d.outcome as TbrPolicy.Outcome.Request).rateUPerH, 1e-9) {
+            "0,50 liegt vier Schritte unter 0,70 - AAPS setzt das, es bricht nicht ab"
+        }
+        assertEquals("PARTIAL_SET", d.reason.substringBefore("|"))
+    }
+
+    @Test
+    fun `der Sicherheitsdeckel bleibt das Minimum aus beiden`() {
+        // Pumpenbasis 0,40 unter dem Profil 0,60: mehr als 0,40 wird nie
+        // angefordert, auch wenn der Guard 0,60 traegt.
+        val d = TbrPolicy.decide(
+            TbrPolicy.Intent.PARTIAL_BASAL, laufend(0.0, 20), 0.60, cfg,
+            partialRateUPerH = 0.60, pumpBaseBasalUPerH = 0.40,
+        )
+        // 0,40 ist zugleich die AAPS-Basis -> Abbruch.
+        assertEquals(TbrPolicy.PARTIAL_TO_PROFILE_REASON, d.reason)
     }
 
 }

@@ -13042,8 +13042,10 @@ class TransportWiringTest : TestBaseWithProfile() {
         // statt 1. Hier ein echter `break`.
         var setz = 0
         var da = false
+        val lauf = mutableListOf<FuseCycleRunner.Outcome>()
         for (i in 0 until 80) {
             val (o, k) = zyklusMitKommando()
+            lauf += o
             // Eine ANHEBENDE TBR mit positiver Dauer kann in diesem Aufbau
             // nur die Teilrate sein; Schutz-Null ist Rate 0, Abbruch Dauer 0.
             if (k != null && k.rateUPerH > 0.0 && k.durationMin > 0) setz++
@@ -13051,6 +13053,26 @@ class TransportWiringTest : TestBaseWithProfile() {
         }
         assumeTrue(da, "Aufbau erzeugt in diesem Rig keine Teilstufe - Rest ungeprueft")
         assertEquals(1, setz) { "der Eintritt kostet genau EIN Setzkommando" }
+
+        // ---- DER EXPORT BESCHREIBT DENSELBEN ZYKLUS ---------------------
+        //
+        // Vorher kam er aus dem Zustand VOR der Buchung: im Aktionszyklus
+        // stand `Action=SET_PARTIAL` neben `Phase=NONE, Attempts=0`, beim
+        // ersten Abbruch `Attempts=0` statt 1. Aktion, Phase, Ziel und
+        // Zaehler muessen zusammenpassen.
+        val eintritt = lauf.last()
+        assertEquals("SET_PARTIAL", eintritt.partialRecoveryAction)
+        assertEquals("PENDING", eintritt.partialRecoveryPhase) {
+            "eine gerade erst angeforderte Rate ist PENDING, nicht NONE"
+        }
+        assertEquals(1, eintritt.partialRecoveryAttempts) { "der erste Versuch ist 1, nicht 0" }
+        assertEquals(PartialTbrOwnership.SET_MAX_ATTEMPTS, eintritt.partialRecoveryMaxAttempts)
+        assertNotNull(eintritt.partialRecoveryTargetUPerH) { "und die Zielrate steht" }
+        // IST und ABSICHT getrennt: die laufende Null steht daneben.
+        assertEquals("AUTHORITATIVE", eintritt.partialRecoveryView)
+        assertEquals(0.0, eintritt.partialRecoveryObservedUPerH ?: -1.0, 1e-9) {
+            "links die tatsaechlich laufende Rate - hier die Schutz-Null"
+        }
         assertNotNull(besitz().pendingRequest) { "und er ist als OFFENE Anforderung gebucht" }
         assertNull(besitz().confirmedRunning) { "nicht als bestaetigter Besitz" }
         assertEquals(1, besitz().pendingAttempts)

@@ -1101,6 +1101,13 @@ class FuseCycleRunner(
         val partialRecoveryAttempts: Int = 0,
         val partialRecoveryMaxAttempts: Int = 0,
         val partialRecoveryEntryCycles: Int = 0,
+        /** Die TATSAECHLICH laufende Pumpenrate dieses Zyklus - der IST
+         *  neben der Absicht. `null` = keine TBR sichtbar. */
+        val partialRecoveryObservedUPerH: Double? = null,
+        val partialRecoveryObservedRemainingMin: Int? = null,
+        /** Ist die Pumpensicht belastbar? `UNKNOWN` heisst: der IST-Wert
+         *  ist KEINE Aussage. */
+        val partialRecoveryView: String? = null,
         /** v29: Ausloese-Zaehler des Fall-Verdikts (2 aufeinanderfolgende
          *  qualifizierende Zyklen zuenden; Unterbrechung nullt). */
         val zeroLatchArmStreak: Int = 0,
@@ -5357,11 +5364,21 @@ class FuseCycleRunner(
         // Traegt die Bahn das VOLLE Profilbasal, ist das keine Teilstufe,
         // sondern die Rueckkehr zum Normalzustand - und die wird als
         // ABBRUCH gestellt. Gemessen gegen dieselbe Basis wie AAPS.
+        // ZWEI ZAHLEN, ZWEI FRAGEN (Review-P1):
+        //  - der SICHERHEITSDECKEL ist min(Therapieprofil, Pumpenbasis) und
+        //    begrenzt, was die Stufe ueberhaupt anfordern darf;
+        //  - die AAPS-AKTIONSBASIS ist `pump.baseBasalRate` ALLEIN und
+        //    entscheidet, ob daraus ein Setzen oder ein Abbruch wird.
+        val aapsBasis = if (pumpe.baseBasalRateUPerH.isFinite() && pumpe.baseBasalRateUPerH > 0.0)
+            pumpe.baseBasalRateUPerH else profile.getBasal(computeTs)
+        val sicherheitsDeckel = minOf(profile.getBasal(computeTs), aapsBasis)
+        // Geklemmt wird VOR der Klassifikation - sonst urteilt der Runner
+        // ueber eine Rate, die die Tabelle so nie stellt.
+        val wunschGeklemmt = partialRateUPerH.coerceIn(0.0, sicherheitsDeckel)
         val wunschIstProfil = partialAktiv && PartialTbrOwnership.klassifiziere(
-            rateUPerH = partialRateUPerH,
+            rateUPerH = wunschGeklemmt,
             durationMin = TbrPolicy.Config(basalStepUPerH = pumpe.basalStepUPerH).defaultDurationMin,
-            scheduledBasalUPerH = if (pumpe.baseBasalRateUPerH.isFinite() && pumpe.baseBasalRateUPerH > 0.0)
-                pumpe.baseBasalRateUPerH else profile.getBasal(computeTs),
+            scheduledBasalUPerH = aapsBasis,
             basalStepUPerH = pumpe.basalStepUPerH,
             ausgegeben = true,
         ) == PartialTbrOwnership.Wirkung.CANCEL_TO_PROFILE
@@ -5371,6 +5388,7 @@ class FuseCycleRunner(
             nowTs = computeTs,
             basalStepUPerH = pumpe.basalStepUPerH,
             wantProfile = wunschIstProfil,
+            sicherheitsDeckelUPerH = sicherheitsDeckel,
             // Der WUNSCH dieses Zyklus - der Lebenszyklus entscheidet, ob
             // daraus ein Kommando werden darf. Ohne diese Sperre forderte
             // die Tabelle bei unsichtbarer TBR jede Minute erneut an, und
@@ -5454,8 +5472,7 @@ class FuseCycleRunner(
                 durationMin = req?.durationMin,
                 // DIESELBE Basis wie AAPS und wie die Tabelle - sonst
                 // urteilen Klassifikation und Ausfuehrung verschieden.
-                scheduledBasalUPerH = if (pumpe.baseBasalRateUPerH.isFinite() && pumpe.baseBasalRateUPerH > 0.0)
-                    pumpe.baseBasalRateUPerH else profile.getBasal(computeTs),
+                scheduledBasalUPerH = aapsBasis,
                 basalStepUPerH = pumpe.basalStepUPerH,
                 ausgegeben = gate.allowed && req != null,
             )
@@ -5665,16 +5682,29 @@ class FuseCycleRunner(
             // ANZEIGEVERTRAG: die Zielrate ist die ANGEFORDERTE bzw.
             // laufende - der Viewer stellt sie NEBEN die tatsaechliche
             // Pumpenrate, nie an ihre Stelle.
-            partialRecoveryTargetUPerH = (ownStep.state.pendingRequest
-                ?: ownStep.state.confirmedRunning)?.rateUPerH
-                ?: partialRateUPerH.takeIf { partialAktiv && it > 0.0 },
-            partialRecoveryPhase = PartialTbrOwnership.anzeige(ownStep).name,
+            // AUS DEM NACHGEBUCHTEN ZUSTAND, nicht aus `ownStep` (Review-P1):
+            // sonst stuenden im Aktionszyklus `Action=SET_PARTIAL` neben
+            // `Phase=NONE, Attempts=0`, und beim ersten Abbruch `Attempts=0`
+            // statt 1. Phase, Ziel und Zaehler beschreiben denselben Zyklus
+            // wie die Aktion.
+            partialRecoveryTargetUPerH = (episodes.ownPartialTbr.pendingRequest
+                ?: episodes.ownPartialTbr.confirmedRunning)?.rateUPerH
+                ?: wunschGeklemmt.takeIf { partialAktiv && it > 0.0 },
+            partialRecoveryPhase = PartialTbrOwnership.anzeige(
+                ownStep.copy(state = episodes.ownPartialTbr)).name,
             partialRecoveryAction = letzteWirkung?.name,
-            partialRecoveryAttempts = ownStep.state.ending?.attempts
-                ?: ownStep.state.pendingAttempts,
-            partialRecoveryMaxAttempts = if (ownStep.state.ending != null)
+            partialRecoveryAttempts = episodes.ownPartialTbr.ending?.attempts
+                ?: episodes.ownPartialTbr.pendingAttempts,
+            partialRecoveryMaxAttempts = if (episodes.ownPartialTbr.ending != null)
                 PartialTbrOwnership.END_MAX_ATTEMPTS else PartialTbrOwnership.SET_MAX_ATTEMPTS,
             partialRecoveryEntryCycles = PartialRecoveryGate.ENTRY_CYCLES,
+            // DER IST-ZUSTAND, atomar im selben Zyklus: was die Pumpe
+            // GERADE faehrt. Ohne ihn muesste der Viewer die laufende Rate
+            // aus einer anderen Datei holen und koennte IST und ABSICHT
+            // nicht zeitgleich zeigen.
+            partialRecoveryObservedUPerH = currentTbr?.absoluteRateUPerH,
+            partialRecoveryObservedRemainingMin = currentTbr?.remainingMin,
+            partialRecoveryView = if (tbrSicht is PartialTbrOwnership.View.Unknown) "UNKNOWN" else "AUTHORITATIVE",
             zeroLatchArmStreak = zeroArmStreak,
             correctionReversal = reversal,
             correctionRearm = rearm,

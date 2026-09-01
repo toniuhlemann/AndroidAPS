@@ -102,7 +102,15 @@ object PartialTbrOwnership {
          * Abbruch HEBT die Rate aufs Profilbasal, und "anheben plus SMB"
          * darf denselben Zyklus nicht verlassen.
          */
-        val smbBlocked: Boolean get() = !leer
+        /**
+         * ACHTUNG, EIGENE ZEILE FUER `ending`: ein Profil-Abbruch kann
+         * einen Zustand hinterlassen, in dem NUR `ending` gesetzt ist -
+         * dann ist [leer] true. Ohne den zweiten Term waere der SMB in
+         * genau dem Zyklus offen, in dem ein UNBESTAETIGTER Abbruch
+         * laeuft; wird die Pumpensicht dabei unbrauchbar, weiss niemand,
+         * ob die Rate noch steht.
+         */
+        val smbBlocked: Boolean get() = !leer || ending != null
     }
 
     /** Die Sicht auf die Pumpe - typisiert, weil "nichts da" und "nichts
@@ -256,6 +264,36 @@ object PartialTbrOwnership {
      */
     const val REMAINING_TOLERANCE_MIN = 3
 
+    /**
+     * DARF EINE LAUFENDE TBR ZUM PROFILBASAL ABGEBROCHEN WERDEN?
+     *
+     * NICHT jede: eine FREMDE nicht-nullende Absenkung abzubrechen hiesse,
+     * fremdes abgesenktes Basal anzuheben - das ist C7b, und es gilt hier
+     * genauso wie im KEEP- und NO_POSITIVE-Pfad. Erlaubt ist der Abbruch
+     * nur, wo er kein Insulin hinzufuegt, das niemand angeordnet hat:
+     *
+     *  - echte NULL: das ist die Rueckkehr, um die es geht,
+     *  - unsere BESTAETIGTE Teilrate: sie gehoert uns,
+     *  - POSITIVE TBR: ihr Abbruch SENKT Insulin.
+     */
+    fun profilCancelZulaessig(
+        state: State,
+        current: TbrPolicy.Current?,
+        nowTs: Long,
+        basalStepUPerH: Double,
+        sicherheitsDeckelUPerH: Double,
+    ): Boolean {
+        if (current == null) return false
+        if (!basalStepUPerH.isFinite() || basalStepUPerH <= 0.0) return false
+        if (abs(current.absoluteRateUPerH) <= basalStepUPerH / 2.0) return true
+        if (matches(state.confirmedRunning, current, nowTs, basalStepUPerH)) return true
+        if (matches(state.pendingRequest, current, nowTs, basalStepUPerH)) return true
+        if (sicherheitsDeckelUPerH.isFinite() &&
+            current.absoluteRateUPerH > sicherheitsDeckelUPerH + basalStepUPerH / 2.0
+        ) return true
+        return false
+    }
+
     /** Passen Rate UND Restlaufzeit zu dieser Kennung? */
     fun matches(
         id: Identity?,
@@ -329,18 +367,31 @@ object PartialTbrOwnership {
          * nicht.
          */
         wantProfile: Boolean = false,
+        /** Der Sicherheitsdeckel `min(Therapieprofil, pump.baseBasalRate)` -
+         *  nur fuer die Frage, ob eine laufende TBR POSITIV ist. */
+        sicherheitsDeckelUPerH: Double = Double.NaN,
     ): Step {
         val wunsch = wunschRate?.takeIf { it.isFinite() && it > 0.0 }
         // DER PROFIL-ABBRUCH hat seinen eigenen Zweig, weil er auch bei
-        // LEEREM Besitz gilt: abgebrochen wird dann eine fremde bzw. die
-        // Schutz-Null, nicht etwas von uns.
+        // LEEREM Besitz gilt: abgebrochen wird dann die Schutz-Null oder
+        // eine positive TBR, nicht etwas von uns.
         if (wantProfile && !wantEnd) {
-            val laeuftWas = (view as? View.Authoritative)?.current != null
             if (view is View.Unknown)
                 return Step(state, smbBlocked = state.smbBlocked, sendCancel = false, allowSet = false, reason = Reason.VIEW_UNKNOWN_HELD)
-            if (!laeuftWas)
-            // Es laeuft nichts mehr: das Profil ist erreicht.
-                return Step(State(), smbBlocked = false, sendCancel = false, allowSet = false, reason = Reason.CLEARED_CONFIRMED)
+            val cur = (view as View.Authoritative).current
+            // C7b: eine FREMDE nicht-nullende Absenkung wird NICHT
+            // abgebrochen - das waere eine Insulin-Erhoehung ohne Auftrag.
+            // Der Zweig lief bisher davor und brach jede sichtbare TBR ab.
+            val zulaessig = profilCancelZulaessig(state, cur, nowTs, basalStepUPerH, sicherheitsDeckelUPerH)
+            if (!zulaessig)
+            // Nichts abzubrechen (oder nichts, das uns zusteht): der
+            // Zustand faellt weg, sofern nichts von uns mehr aussteht.
+                return Step(
+                    if (state.ending != null) state.copy(ending = null) else state,
+                    smbBlocked = state.smbBlocked && state.ending == null,
+                    sendCancel = false, allowSet = false,
+                    reason = if (cur == null) Reason.CLEARED_CONFIRMED else Reason.NONE,
+                )
             val e = state.ending ?: Ending(sinceTs = nowTs)
             val s2 = state.copy(ending = e)
             if (e.attempts >= END_MAX_ATTEMPTS)

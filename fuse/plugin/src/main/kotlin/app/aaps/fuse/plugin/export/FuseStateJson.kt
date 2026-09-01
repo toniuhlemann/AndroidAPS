@@ -1100,6 +1100,17 @@ object FuseStateJson {
                 .put("partialRecoveryAttempts", outcome.partialRecoveryAttempts)
                 .put("partialRecoveryMaxAttempts", outcome.partialRecoveryMaxAttempts)
                 .put("partialRecoveryEntryCycles", outcome.partialRecoveryEntryCycles)
+                // DER IST-ZUSTAND desselben Zyklus - damit die TBR-Zeile
+                // links die laufende Pumpenrate und rechts Ziel, Phase,
+                // Aktion und Versuche zeigen kann, ohne eine zweite Datei
+                // zu brauchen. `partialRecoveryView` sagt, ob der IST-Wert
+                // ueberhaupt eine Aussage ist.
+                .put("partialRecoveryObservedUPerH", fin(outcome.partialRecoveryObservedUPerH))
+                .put(
+                    "partialRecoveryObservedRemainingMin",
+                    outcome.partialRecoveryObservedRemainingMin ?: JSONObject.NULL,
+                )
+                .put("partialRecoveryView", outcome.partialRecoveryView ?: JSONObject.NULL)
                 .put("pinnedFor", outcome.basalGap?.pinnedFor ?: JSONObject.NULL)
                 .put("preMarkerBasalIobU", fin(outcome.basalGap?.preMarkerBasalIobU))
                 .put("preMarkerZeroTbrActive", outcome.basalGap?.zeroTbrActive ?: JSONObject.NULL)

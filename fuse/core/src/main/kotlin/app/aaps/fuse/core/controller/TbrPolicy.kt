@@ -484,13 +484,21 @@ object TbrPolicy {
         val schritt = cfg.basalStepUPerH
         val gerastert =
             if (schritt > 0.0) kotlin.math.floor(vorgabeUPerH / schritt + 1e-9) * schritt else vorgabeUPerH
-        // DIE OBERGRENZE IST DAS MINIMUM AUS BEIDEN BASEN.
+        // ZWEI VERSCHIEDENE FRAGEN, ZWEI VERSCHIEDENE ZAHLEN.
         //
-        // Der Deckel darf nie ueber dem Therapieprofil liegen (mehr als
-        // der Normalzustand gibt die Stufe nie frei), und er darf nie
-        // gegen eine ANDERE Zahl entschieden werden als der Vergleich
-        // "ist das schon Profilbasal?" - sonst klemmt die Tabelle gegen
-        // das Profil, waehrend AAPS gegen `pump.baseBasalRate` ausfuehrt.
+        //  (a) SICHERHEITSDECKEL = min(Therapieprofil, Pumpenbasis). Mehr
+        //      als den Normalzustand gibt die Stufe nie frei - und "der
+        //      Normalzustand" ist der kleinere der beiden, solange sie
+        //      auseinanderlaufen.
+        //  (b) AAPS-AKTIONSBASIS = AUSSCHLIESSLICH `pump.baseBasalRate`.
+        //      Daran entscheidet `LoopPlugin`, ob ein Kommando ein Setzen
+        //      oder ein Abbruch ist.
+        //
+        // Beides zu koppeln war falsch (Review-P1): bei Profil 0,50 und
+        // Pumpenbasis 0,70 ist 0,50 der sichere Deckel, fuer AAPS aber
+        // KEIN Abbruch, sondern eine echte abgesenkte TBR. Gegen den
+        // Deckel gemessen haette die Tabelle einen Abbruch zurueckgehalten
+        // und die Rueckkehr waere ausgefallen.
         val aapsBasis = if (pumpBaseBasalUPerH.isFinite() && pumpBaseBasalUPerH > 0.0)
             pumpBaseBasalUPerH else scheduledBasalUPerH
         val deckel = kotlin.math.min(scheduledBasalUPerH, aapsBasis)
@@ -511,30 +519,42 @@ object TbrPolicy {
         // Tabelle sie in JEDEM Folgezyklus erneut an (im Ausgabetest 34
         // Kommandos in 40 Zyklen). Der Abbruch sagt dasselbe eindeutig und
         // genau einmal.
-        // Gemessen wird gegen DENSELBEN Deckel, gegen den auch geklemmt
-        // wurde - s. oben.
-        if (abs(rate - deckel) < schritt) {
+        // ---- C7b ZUERST: EINE FREMDE ABSENKUNG WIRD NIE ANGEHOBEN ------
+        //
+        // Diese Pruefung stand frueher HINTER dem Profil-Abbruch, und der
+        // brach jede sichtbare TBR ab. Scharfer Gegenfall (Review-P0):
+        // Profil und Pumpenbasis 0,50, laufende FREMDE TBR 0,30,
+        // Guard-Ziel 0,50, kein eigener Besitz - daraus wurde ein Abbruch
+        // auf 0,50, also fremdes abgesenktes Basal ANGEHOBEN.
+        //
+        // Eine fremde Absenkung darf hoechstens weiter gesenkt werden,
+        // derselbe Vertrag wie im KEEP- und NO_POSITIVE-Pfad.
+        val fremdeAbsenkung = current != null &&
+            !isZeroRate(current.absoluteRateUPerH, schritt) &&
+            !ownPartialConfirmed &&
+            classify(current.absoluteRateUPerH, deckel, schritt) == Direction.NEGATIVE
+        if (fremdeAbsenkung && rate > current!!.absoluteRateUPerH + schritt / 2.0)
+            return Decision(Outcome.NoRequest, PARTIAL_FOREIGN_REDUCTION_KEPT_REASON, alarm = false, smbBlockCause = ursache)
+
+        // ---- WAS AAPS DARAUS MACHT ------------------------------------
+        //
+        // Gemessen wird gegen `pump.baseBasalRate` ALLEIN - das ist die
+        // Zahl, an der `LoopPlugin.applyAPSRequest` Setzen und Abbruch
+        // unterscheidet. NICHT gegen den Sicherheitsdeckel: der ist eine
+        // andere Frage (s. oben).
+        if (abs(rate - aapsBasis) < schritt) {
             if (current == null)
                 return Decision(Outcome.NoRequest, PARTIAL_ALREADY_AT_PROFILE_REASON, alarm = false, smbBlockCause = ursache)
-            // Backoff und Deckel liegen im Lebenszyklus; hier wird nur
-            // ausgefuehrt, was er erlaubt.
+            // Eine fremde Absenkung bleibt auch hier stehen - ihr Abbruch
+            // waere die Anhebung, die C7b verbietet.
+            if (fremdeAbsenkung)
+                return Decision(Outcome.NoRequest, PARTIAL_FOREIGN_REDUCTION_KEPT_REASON, alarm = false, smbBlockCause = ursache)
+            // Backoff und Versuchsdeckel liegen im Lebenszyklus; hier wird
+            // nur ausgefuehrt, was er erlaubt.
             return if (allowProfileCancel)
                 Decision(Outcome.Request(0.0, 0), PARTIAL_TO_PROFILE_REASON, alarm = false, smbBlockCause = ursache)
             else Decision(Outcome.NoRequest, PARTIAL_TO_PROFILE_HELD_REASON, alarm = false, smbBlockCause = ursache)
         }
-        // ---- C7b AUCH HIER: EINE FREMDE ABSENKUNG WIRD NIE ANGEHOBEN ----
-        //
-        // Erlaubt ist die Teilrate nur ueber einer echten NULL (das ist die
-        // Rueckkehr, um die es geht) oder ueber der eigenen bestaetigten
-        // Rate (Anpassung). Eine FREMDE Absenkung darf hoechstens weiter
-        // gesenkt werden - sie anzuheben waere eine Insulin-Erhoehung ohne
-        // Auftrag, derselbe Vertrag wie im KEEP- und NO_POSITIVE-Pfad.
-        if (current != null &&
-            !isZeroRate(current.absoluteRateUPerH, schritt) &&
-            !ownPartialConfirmed &&
-            classify(current.absoluteRateUPerH, scheduledBasalUPerH, schritt) == Direction.NEGATIVE &&
-            rate > current.absoluteRateUPerH + schritt / 2.0
-        ) return Decision(Outcome.NoRequest, PARTIAL_FOREIGN_REDUCTION_KEPT_REASON, alarm = false, smbBlockCause = ursache)
         // ERST JETZT die Setz-Unterdrueckung: sie regelt das SETZEN, nicht
         // den Abbruch. Stuende sie davor, verdeckte eine wartende
         // Anforderung den Profil-Abbruch - und der ist der zentrale Fall
