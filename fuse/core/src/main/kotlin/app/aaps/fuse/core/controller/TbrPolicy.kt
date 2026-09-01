@@ -275,9 +275,18 @@ object TbrPolicy {
          * jede Minute erneut an.
          */
         suppressPartialSet: Boolean = false,
+        /** Laeuft eine BESTAETIGTE eigene Teilrate? Nur dann darf die
+         *  Teilstufe eine laufende Absenkung anpassen. */
+        ownPartialConfirmed: Boolean = false,
+        /** Darf der Abbruch "zurueck aufs Profilbasal" in diesem Zyklus
+         *  raus? Backoff und Deckel liegen im Lebenszyklus. */
+        allowProfileCancel: Boolean = true,
+        /** Die Basis, gegen die AAPS entscheidet (`pump.baseBasalRate`);
+         *  NaN = nicht lesbar, dann gilt das Profilbasal. */
+        pumpBaseBasalUPerH: Double = Double.NaN,
         unsafeSituation: Boolean = false,
     ): Decision {
-        val base = decideIgnoringPump(intent, current, scheduledBasalUPerH, cfg, fault, protectionCleared, partialRateUPerH, endZeroAttempts, endOwnPartial, ownPartialHeld, suppressPartialSet, unsafeSituation)
+        val base = decideIgnoringPump(intent, current, scheduledBasalUPerH, cfg, fault, protectionCleared, partialRateUPerH, endZeroAttempts, endOwnPartial, ownPartialHeld, suppressPartialSet, ownPartialConfirmed, allowProfileCancel, pumpBaseBasalUPerH, unsafeSituation)
         if (!pumpBusy) return base
         // Eine arbeitende Pumpe bekommt keine zweite Anweisung — aber der
         // Safety-Grund und sein Alarm bleiben erhalten. Unterdrueckt wird die
@@ -303,6 +312,9 @@ object TbrPolicy {
         endOwnPartial: Boolean = false,
         ownPartialHeld: Boolean = false,
         suppressPartialSet: Boolean = false,
+        ownPartialConfirmed: Boolean = false,
+        allowProfileCancel: Boolean = true,
+        pumpBaseBasalUPerH: Double = Double.NaN,
         unsafeSituation: Boolean = false,
     ): Decision {
         // Ungueltige Eingaben werden nicht geworfen, sondern fail-closed
@@ -362,7 +374,10 @@ object TbrPolicy {
                 endOwnPartial = endOwnPartial,
                 ownPartialHeld = ownPartialHeld,
             )
-            Intent.PARTIAL_BASAL -> partialBasal(current, scheduledBasalUPerH, cfg, partialRateUPerH, suppressPartialSet)
+            Intent.PARTIAL_BASAL -> partialBasal(
+                current, scheduledBasalUPerH, cfg, partialRateUPerH,
+                suppressPartialSet, ownPartialConfirmed, allowProfileCancel, pumpBaseBasalUPerH,
+            )
             Intent.KEEP        -> keep(current, scheduledBasalUPerH, cfg, endOwnPartial, ownPartialHeld)
         }
         return if (fault == FaultCode.NONE) base
@@ -455,13 +470,11 @@ object TbrPolicy {
         cfg: Config,
         vorgabeUPerH: Double,
         suppressPartialSet: Boolean = false,
+        ownPartialConfirmed: Boolean = false,
+        allowProfileCancel: Boolean = true,
+        pumpBaseBasalUPerH: Double = Double.NaN,
     ): Decision {
         val ursache = SmbBlockCause.PARTIAL_RECOVERY
-        // DIE OFFENE ANFORDERUNG STEHT NOCH. Kein zweites Kommando - aber
-        // die Stufe laeuft weiter, der SMB bleibt gesperrt, und die
-        // Bestaetigungsfrist beginnt NICHT neu.
-        if (suppressPartialSet)
-            return Decision(Outcome.NoRequest, PARTIAL_SET_SUPPRESSED_REASON, alarm = false, smbBlockCause = ursache)
         if (!vorgabeUPerH.isFinite() || vorgabeUPerH <= 0.0 ||
             !scheduledBasalUPerH.isFinite() || scheduledBasalUPerH <= 0.0
         ) return safetyZero(current, cfg).let { it.copy(reason = "PARTIAL_INVALID_INPUT|" + it.reason) }
@@ -471,7 +484,17 @@ object TbrPolicy {
         val schritt = cfg.basalStepUPerH
         val gerastert =
             if (schritt > 0.0) kotlin.math.floor(vorgabeUPerH / schritt + 1e-9) * schritt else vorgabeUPerH
-        val rate = gerastert.coerceIn(0.0, scheduledBasalUPerH)
+        // DIE OBERGRENZE IST DAS MINIMUM AUS BEIDEN BASEN.
+        //
+        // Der Deckel darf nie ueber dem Therapieprofil liegen (mehr als
+        // der Normalzustand gibt die Stufe nie frei), und er darf nie
+        // gegen eine ANDERE Zahl entschieden werden als der Vergleich
+        // "ist das schon Profilbasal?" - sonst klemmt die Tabelle gegen
+        // das Profil, waehrend AAPS gegen `pump.baseBasalRate` ausfuehrt.
+        val aapsBasis = if (pumpBaseBasalUPerH.isFinite() && pumpBaseBasalUPerH > 0.0)
+            pumpBaseBasalUPerH else scheduledBasalUPerH
+        val deckel = kotlin.math.min(scheduledBasalUPerH, aapsBasis)
+        val rate = gerastert.coerceIn(0.0, deckel)
         // Rastert der Anteil auf 0 herunter, ist die Teilstufe nicht
         // darstellbar - dann gilt weiter die Schutz-Null.
         if (isZeroRate(rate, schritt))
@@ -488,12 +511,36 @@ object TbrPolicy {
         // Tabelle sie in JEDEM Folgezyklus erneut an (im Ausgabetest 34
         // Kommandos in 40 Zyklen). Der Abbruch sagt dasselbe eindeutig und
         // genau einmal.
-        if (abs(rate - scheduledBasalUPerH) < schritt) {
-            val zurueck = Outcome.Request(0.0, 0)
-            return if (current == null)
-                Decision(Outcome.NoRequest, PARTIAL_ALREADY_AT_PROFILE_REASON, alarm = false, smbBlockCause = ursache)
-            else Decision(zurueck, PARTIAL_TO_PROFILE_REASON, alarm = false, smbBlockCause = ursache)
+        // Gemessen wird gegen DENSELBEN Deckel, gegen den auch geklemmt
+        // wurde - s. oben.
+        if (abs(rate - deckel) < schritt) {
+            if (current == null)
+                return Decision(Outcome.NoRequest, PARTIAL_ALREADY_AT_PROFILE_REASON, alarm = false, smbBlockCause = ursache)
+            // Backoff und Deckel liegen im Lebenszyklus; hier wird nur
+            // ausgefuehrt, was er erlaubt.
+            return if (allowProfileCancel)
+                Decision(Outcome.Request(0.0, 0), PARTIAL_TO_PROFILE_REASON, alarm = false, smbBlockCause = ursache)
+            else Decision(Outcome.NoRequest, PARTIAL_TO_PROFILE_HELD_REASON, alarm = false, smbBlockCause = ursache)
         }
+        // ---- C7b AUCH HIER: EINE FREMDE ABSENKUNG WIRD NIE ANGEHOBEN ----
+        //
+        // Erlaubt ist die Teilrate nur ueber einer echten NULL (das ist die
+        // Rueckkehr, um die es geht) oder ueber der eigenen bestaetigten
+        // Rate (Anpassung). Eine FREMDE Absenkung darf hoechstens weiter
+        // gesenkt werden - sie anzuheben waere eine Insulin-Erhoehung ohne
+        // Auftrag, derselbe Vertrag wie im KEEP- und NO_POSITIVE-Pfad.
+        if (current != null &&
+            !isZeroRate(current.absoluteRateUPerH, schritt) &&
+            !ownPartialConfirmed &&
+            classify(current.absoluteRateUPerH, scheduledBasalUPerH, schritt) == Direction.NEGATIVE &&
+            rate > current.absoluteRateUPerH + schritt / 2.0
+        ) return Decision(Outcome.NoRequest, PARTIAL_FOREIGN_REDUCTION_KEPT_REASON, alarm = false, smbBlockCause = ursache)
+        // ERST JETZT die Setz-Unterdrueckung: sie regelt das SETZEN, nicht
+        // den Abbruch. Stuende sie davor, verdeckte eine wartende
+        // Anforderung den Profil-Abbruch - und der ist der zentrale Fall
+        // der Stufe (im Runner-Ausgabetest: 0 statt 3 Abbrueche).
+        if (suppressPartialSet)
+            return Decision(Outcome.NoRequest, PARTIAL_SET_SUPPRESSED_REASON, alarm = false, smbBlockCause = ursache)
         val req = Outcome.Request(rate, cfg.defaultDurationMin)
         if (current == null) return Decision(req, "PARTIAL_NEW", alarm = false, smbBlockCause = ursache)
         val laeuftSchon = abs(current.absoluteRateUPerH - rate) <= schritt / 2.0
@@ -542,6 +589,12 @@ object TbrPolicy {
 
     /** Dasselbe, aber es laeuft ohnehin nichts - kein Kommando noetig. */
     const val PARTIAL_ALREADY_AT_PROFILE_REASON = "PARTIAL_ALREADY_AT_PROFILE"
+
+    /** Der Profil-Abbruch wartet auf seinen Backoff. */
+    const val PARTIAL_TO_PROFILE_HELD_REASON = "PARTIAL_TO_PROFILE_HELD"
+
+    /** C7b in der Teilstufe: eine fremde Absenkung wird nicht angehoben. */
+    const val PARTIAL_FOREIGN_REDUCTION_KEPT_REASON = "PARTIAL_FOREIGN_REDUCTION_KEPT"
 
     /** Der Cancel wurde unterdrueckt, weil er in diesem Fenster schon zu oft
      *  scheiterte - s. [Config.endZeroMaxAttempts]. */

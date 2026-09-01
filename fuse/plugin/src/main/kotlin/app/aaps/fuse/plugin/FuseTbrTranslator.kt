@@ -159,6 +159,12 @@ object FuseTbrTranslator {
         /** Ist ein Setzkommando fuer die Teilrate unterdrueckt (offene
          *  Anforderung, Backoff, Versuchsdeckel)? */
         suppressPartialSet: Boolean = false,
+        /** Laeuft eine BESTAETIGTE eigene Teilrate? */
+        ownPartialConfirmed: Boolean = false,
+        /** Darf der Abbruch "zurueck aufs Profil" in diesem Zyklus raus? */
+        allowProfileCancel: Boolean = true,
+        /** `pump.baseBasalRate` - die Basis, gegen die AAPS entscheidet. */
+        pumpBaseBasalUPerH: Double = Double.NaN,
         /** s. [reasonGone]. Default false = Verhalten wie vor dem 15.08. */
         protectionCleared: Boolean = false,
         /** Bisher erfolglose Abbruchversuche in Folge (Medtrum-Backoff). */
@@ -177,6 +183,9 @@ object FuseTbrTranslator {
             endOwnPartial = endOwnPartial,
             ownPartialHeld = ownPartialHeld,
             suppressPartialSet = suppressPartialSet,
+            ownPartialConfirmed = ownPartialConfirmed,
+            allowProfileCancel = allowProfileCancel,
+            pumpBaseBasalUPerH = pumpBaseBasalUPerH,
             endZeroAttempts = endZeroAttempts,
             // C8 UNABHAENGIG VOM INTENT (Toni 17.08.): seit das Fundament auch
             // in unsicherer Lage stehen bleibt, traegt der Intent die

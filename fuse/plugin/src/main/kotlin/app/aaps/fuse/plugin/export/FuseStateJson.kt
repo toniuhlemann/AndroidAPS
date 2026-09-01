@@ -1083,6 +1083,23 @@ object FuseStateJson {
                 .put("currentZeroTbrActive", outcome.currentZeroTbrActive ?: JSONObject.NULL)
                 .put("partialRecoveryActive", outcome.partialRecoveryActive)
                 .put("partialRecoveryStreak", outcome.partialRecoveryStreak)
+                // ---- ANZEIGEVERTRAG DER TEILSTUFE (Viewer) -------------
+                //
+                // IST und ABSICHT getrennt: die tatsaechlich laufende
+                // Pumpenrate steht anderswo im Trail, hier steht, was FUSE
+                // WILL. Eine bloss angeforderte Teilrate darf nie wie eine
+                // laufende aussehen - deshalb ist die Zielrate ein eigenes
+                // Feld und die Phase typisiert.
+                //
+                // `null` heisst "keine Teilstufe im Spiel", nicht 0.
+                // Altexporte ohne diese Felder bleiben lesbar; der Viewer
+                // faellt dort auf die bisherige TBR-Zeile zurueck.
+                .put("partialRecoveryTargetUPerH", fin(outcome.partialRecoveryTargetUPerH))
+                .put("partialRecoveryPhase", outcome.partialRecoveryPhase ?: JSONObject.NULL)
+                .put("partialRecoveryAction", outcome.partialRecoveryAction ?: JSONObject.NULL)
+                .put("partialRecoveryAttempts", outcome.partialRecoveryAttempts)
+                .put("partialRecoveryMaxAttempts", outcome.partialRecoveryMaxAttempts)
+                .put("partialRecoveryEntryCycles", outcome.partialRecoveryEntryCycles)
                 .put("pinnedFor", outcome.basalGap?.pinnedFor ?: JSONObject.NULL)
                 .put("preMarkerBasalIobU", fin(outcome.basalGap?.preMarkerBasalIobU))
                 .put("preMarkerZeroTbrActive", outcome.basalGap?.zeroTbrActive ?: JSONObject.NULL)

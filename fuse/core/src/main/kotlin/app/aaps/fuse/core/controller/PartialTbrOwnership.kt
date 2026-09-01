@@ -136,6 +136,17 @@ object PartialTbrOwnership {
          */
         CANCEL_TO_PROFILE,
 
+        /**
+         * EINE ECHTE ZERO-TBR (Rate 0 ueber positive Dauer).
+         *
+         * Bei AAPS ist das KEIN Abbruch, sondern eine gesetzte Null - sie
+         * ersetzt eine laufende Teilrate, aber sie ist kein Abbruchversuch.
+         * Beides zu vermischen hiesse: drei erfolglose Zero-Ersetzungen
+         * verbrauchen den Deckel, und der spaeter noetige ECHTE Abbruch
+         * kaeme nie mehr raus.
+         */
+        REPLACE_WITH_ZERO,
+
         /** Nichts ging raus: kein Wunsch, Aktuationstor zu, Pumpe belegt. */
         NO_REQUEST,
     }
@@ -156,6 +167,55 @@ object PartialTbrOwnership {
         SET_HELD_HIGHER,
         SET_RETRY,
         SET_GIVEN_UP,
+    }
+
+    /**
+     * DER ZUSTAND FUER ANZEIGE UND TRAIL.
+     *
+     * Der Viewer muss IST und ABSICHT trennen koennen: links die
+     * tatsaechlich laufende Pumpenrate, rechts was FUSE will. Ohne diese
+     * Trennung sieht eine bloss ANGEFORDERTE Teilrate aus wie eine
+     * laufende.
+     */
+    enum class Anzeige {
+        /** Keine Teilstufe im Spiel. */
+        NONE,
+
+        /** Angefordert, Bestaetigung steht aus. */
+        PENDING,
+
+        /** Autoritativ bestaetigt: unsere Teilrate laeuft. */
+        RUNNING,
+
+        /** Abbruch angefordert. */
+        ENDING,
+
+        /** Abbruch oder Setzen wartet auf seinen Backoff. */
+        BACKOFF,
+
+        /** Versuchsdeckel erreicht - kein weiteres Kommando. */
+        GIVEN_UP,
+
+        /** Die Pumpensicht ist unbrauchbar - der Zustand ist GEHALTEN,
+         *  nicht bestaetigt. Ein eigener Zustand, kein "laeuft". */
+        VIEW_UNKNOWN,
+    }
+
+    /** Der Anzeigezustand zu einem [Step] - eine Stelle, nicht drei. */
+    fun anzeige(step: Step): Anzeige = when (step.reason) {
+        Reason.VIEW_UNKNOWN_HELD                              -> Anzeige.VIEW_UNKNOWN
+        Reason.END_GIVEN_UP, Reason.SET_GIVEN_UP              -> Anzeige.GIVEN_UP
+        Reason.END_BACKOFF_WAIT                               -> Anzeige.BACKOFF
+        Reason.END_REQUESTED, Reason.END_RETRY                -> Anzeige.ENDING
+        Reason.CONFIRMED_RUNNING                              -> Anzeige.RUNNING
+        Reason.WAITING_CONFIRM, Reason.SET_SUPPRESSED_DUPLICATE,
+        Reason.SET_HELD_HIGHER, Reason.SET_RETRY,
+        Reason.SET_LOWERED                                    -> Anzeige.PENDING
+        Reason.NONE, Reason.CLEARED_CONFIRMED,
+        Reason.CONFIRM_TIMEOUT                                ->
+            if (step.state.confirmedRunning != null) Anzeige.RUNNING
+            else if (step.state.pendingRequest != null) Anzeige.PENDING
+            else Anzeige.NONE
     }
 
     data class Step(
@@ -233,12 +293,11 @@ object PartialTbrOwnership {
     ): Wirkung {
         if (!ausgegeben || rateUPerH == null || durationMin == null) return Wirkung.NO_REQUEST
         if (!rateUPerH.isFinite() || rateUPerH < 0.0 || durationMin < 0) return Wirkung.NO_REQUEST
-        // EINE RATE 0 IST NIE EINE TEILRATE - auch nicht mit voller Dauer.
-        // Das ist die Schutz-Null, und fuer die Besitzfrage bedeutet sie
-        // dasselbe wie ein Abbruch: danach laeuft KEINE eigene Teilrate
-        // mehr. (Vom Runner-Ausgabetest gefunden: sonst wurde eine
-        // Schutz-Null als erwartete Teilrate mit Rate 0 gebucht.)
-        if (rateUPerH == 0.0) return Wirkung.CANCEL_TO_PROFILE
+        // Der AUSDRUECKLICHE Abbruch zuerst - Rate 0 UND Dauer 0.
+        if (rateUPerH == 0.0 && durationMin == 0) return Wirkung.CANCEL_TO_PROFILE
+        // Eine Rate 0 mit positiver Dauer ist eine GESETZTE Null: sie
+        // ersetzt unsere Teilrate, ist aber kein Abbruchversuch.
+        if (rateUPerH == 0.0) return Wirkung.REPLACE_WITH_ZERO
         if (!scheduledBasalUPerH.isFinite() || !basalStepUPerH.isFinite() || basalStepUPerH <= 0.0)
             return Wirkung.NO_REQUEST
         // GENAU die Bedingung aus LoopPlugin.applyAPSRequest - ein GANZER
@@ -259,8 +318,39 @@ object PartialTbrOwnership {
         basalStepUPerH: Double,
         wunschRate: Double? = null,
         wantEnd: Boolean = false,
+        /**
+         * ZURUECK AUFS PROFILBASAL - der zentrale Fall der Stufe: die Bahn
+         * traegt das volle Profilbasal, also soll die laufende Null enden.
+         *
+         * Das ist ein ABBRUCH und braucht denselben Backoff wie der
+         * Abbruch der eigenen Teilrate. Ohne ihn ginge er jeden Zyklus
+         * erneut raus, solange die Pumpe ihn nicht annimmt - und der
+         * Besitz ist dabei LEER, also griff die bisherige Buchhaltung
+         * nicht.
+         */
+        wantProfile: Boolean = false,
     ): Step {
         val wunsch = wunschRate?.takeIf { it.isFinite() && it > 0.0 }
+        // DER PROFIL-ABBRUCH hat seinen eigenen Zweig, weil er auch bei
+        // LEEREM Besitz gilt: abgebrochen wird dann eine fremde bzw. die
+        // Schutz-Null, nicht etwas von uns.
+        if (wantProfile && !wantEnd) {
+            val laeuftWas = (view as? View.Authoritative)?.current != null
+            if (view is View.Unknown)
+                return Step(state, smbBlocked = state.smbBlocked, sendCancel = false, allowSet = false, reason = Reason.VIEW_UNKNOWN_HELD)
+            if (!laeuftWas)
+            // Es laeuft nichts mehr: das Profil ist erreicht.
+                return Step(State(), smbBlocked = false, sendCancel = false, allowSet = false, reason = Reason.CLEARED_CONFIRMED)
+            val e = state.ending ?: Ending(sinceTs = nowTs)
+            val s2 = state.copy(ending = e)
+            if (e.attempts >= END_MAX_ATTEMPTS)
+                return Step(s2, smbBlocked = true, sendCancel = false, allowSet = false, reason = Reason.END_GIVEN_UP)
+            val darf = e.lastRequestTs == 0L || nowTs - e.lastRequestTs >= END_BACKOFF_MIN * 60_000L
+            return if (darf)
+                Step(s2, smbBlocked = true, sendCancel = true, allowSet = false,
+                     reason = if (e.attempts == 0) Reason.END_REQUESTED else Reason.END_RETRY)
+            else Step(s2, smbBlocked = true, sendCancel = false, allowSet = false, reason = Reason.END_BACKOFF_WAIT)
+        }
         if (state.leer && state.ending == null)
             return Step(state, smbBlocked = false, sendCancel = false, allowSet = wunsch != null && !wantEnd, reason = Reason.NONE)
 
@@ -381,15 +471,23 @@ object PartialTbrOwnership {
         // AAPS bricht ab. Danach laeuft nichts von uns - eine Kennung
         // dafuer waere eine Kennung fuer nichts. Der Abbruchversuch wird
         // gezaehlt, damit Backoff und Deckel greifen.
-        Wirkung.CANCEL_TO_PROFILE ->
-            if (state.leer && state.ending == null) State()
-            else {
-                val e = state.ending ?: Ending(sinceTs = nowTs)
-                state.copy(
-                    pendingRequest = null, pendingAttempts = 0,
-                    ending = e.copy(attempts = e.attempts + 1, lastRequestTs = nowTs),
-                )
-            }
+        // Der Abbruchversuch wird IMMER gezaehlt - auch bei leerem Besitz.
+        // Genau dort sass die Luecke: der zentrale Fall "aktive Null ->
+        // Profilbasal" bricht etwas ab, das uns nicht gehoert, und ohne
+        // Buchung ginge das Kommando jeden Zyklus erneut raus.
+        Wirkung.CANCEL_TO_PROFILE -> {
+            val e = state.ending ?: Ending(sinceTs = nowTs)
+            state.copy(
+                pendingRequest = null, pendingAttempts = 0,
+                ending = e.copy(attempts = e.attempts + 1, lastRequestTs = nowTs),
+            )
+        }
+
+        // Eine gesetzte Null ersetzt unsere Teilrate - aber sie ist KEIN
+        // Abbruchversuch und verbraucht keinen. Die offene Anforderung ist
+        // damit erledigt; ob die bestaetigte Rate noch laeuft, sagt der
+        // naechste autoritative Snapshot.
+        Wirkung.REPLACE_WITH_ZERO -> state.copy(pendingRequest = null, pendingAttempts = 0)
 
         Wirkung.SET_PARTIAL -> {
             // Der Zaehler laeuft fuer die offene ANFORDERUNG, nicht je
@@ -397,10 +495,16 @@ object PartialTbrOwnership {
             // Versuch zuruecksetzen. Neu beginnt er erst, wenn wieder
             // etwas BESTAETIGT laeuft - dann ist die vorige Anforderung
             // geklaert.
-            val neuBeginnen = state.pendingRequest == null || state.confirmedRunning != null
+            // NUR eine leere Anforderung beginnt eine neue Serie.
+            //
+            // Frueher stand hier zusaetzlich `|| confirmedRunning != null` -
+            // damit setzte jeder Retry der offenen Anforderung den Zaehler
+            // auf 1 zurueck, solange die ALTE bestaetigte Rate weiterlief,
+            // und der Dreierdeckel griff nie. Eine bestaetigte alte Rate
+            // bestaetigt die offene NEUE Anforderung nicht.
             state.copy(
                 pendingRequest = Identity(rateUPerH, nowTs, durationMin),
-                pendingAttempts = if (neuBeginnen) 1 else state.pendingAttempts + 1,
+                pendingAttempts = if (state.pendingRequest == null) 1 else state.pendingAttempts + 1,
                 ending = null,
             )
         }

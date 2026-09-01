@@ -41,7 +41,8 @@ class PartialTbrOwnershipTest {
         nowTs: Long,
         wunschRate: Double? = null,
         wantEnd: Boolean = false,
-    ) = PartialTbrOwnership.advance(state, view, nowTs, schritt, wunschRate, wantEnd)
+        wantProfile: Boolean = false,
+    ) = PartialTbrOwnership.advance(state, view, nowTs, schritt, wunschRate, wantEnd, wantProfile)
 
     // =====================================================================
     // P0-1: BESTAETIGTE RATE UND OFFENE ANFORDERUNG SIND ZWEI DINGE
@@ -164,6 +165,9 @@ class PartialTbrOwnershipTest {
         assertEquals(Wirkung.CANCEL_TO_PROFILE, w(0.60)) { "exakt Profilbasal" }
         assertEquals(Wirkung.CANCEL_TO_PROFILE, w(0.58)) { "innerhalb eines Basalschritts" }
         assertEquals(Wirkung.CANCEL_TO_PROFILE, w(0.0, 0)) { "der ausdrueckliche Abbruch" }
+        assertEquals(Wirkung.REPLACE_WITH_ZERO, w(0.0, 30)) {
+            "eine gesetzte Null ist KEIN Abbruch - sonst verbraucht sie Abbruchversuche"
+        }
         assertEquals(Wirkung.SET_PARTIAL, w(0.30))
         // Die Grenze ist die von LoopPlugin: ein GANZER Schritt, strikt.
         assertEquals(Wirkung.SET_PARTIAL, w(profil - schritt))
@@ -483,6 +487,213 @@ class PartialTbrOwnershipTest {
     @Test
     fun `die Gruende und Wirkungen sind vollstaendig aufgezaehlt`() {
         assertEquals(15, Reason.entries.size)
-        assertEquals(3, Wirkung.entries.size)
+        assertEquals(4, Wirkung.entries.size)
     }
+
+    // =====================================================================
+    // (1) DER RETRY-ZAEHLER LAEUFT AUCH MIT ALTER BESTAETIGTER RATE
+    // =====================================================================
+
+    /**
+     * DER GEMELDETE FEHLER: `neuBeginnen` enthielt zusaetzlich
+     * `|| confirmedRunning != null`. Solange die alte 0,85 bestaetigt
+     * weiterlief, setzte JEDER Retry der offenen 1,00-Anforderung den
+     * Zaehler auf 1 zurueck - der Dreierdeckel griff nie.
+     */
+    @Test
+    fun `der Setzdeckel greift AUCH wenn eine alte Rate bestaetigt weiterlaeuft`() {
+        // 0,85 laeuft bestaetigt und bleibt sichtbar; 1,00 kommt nie an.
+        var s = State(confirmedRunning = id(0.85, t0, 30))
+        val zaehler = mutableListOf<Int>()
+        var versuche = 0
+        for (m in 0 until 60) {
+            // Die alte Rate bleibt die ganze Zeit sichtbar und passend.
+            val sicht = auth(laufend(0.85, 30 - ((min(m) - t0) / 60_000L).toInt()))
+            val r = schritt(s, sicht, min(m), wunschRate = 1.00)
+            s = if (r.allowSet) {
+                versuche++
+                PartialTbrOwnership.buche(r.state, Wirkung.SET_PARTIAL, 1.00, 30, min(m), schritt)
+                    .also { zaehler += it.pendingAttempts }
+            } else r.state
+        }
+        assertEquals(listOf(1, 2, 3), zaehler) { "1 -> 2 -> 3, dann Schluss" }
+        assertEquals(PartialTbrOwnership.SET_MAX_ATTEMPTS, versuche)
+        // Waehrend der Versuche war die alte Rate durchgehend erkannt -
+        // am Ende der 60 Minuten ist sie schlicht abgelaufen.
+        val waehrend = schritt(
+            State(confirmedRunning = id(0.85, t0, 30), pendingRequest = id(1.00, min(2), 30), pendingAttempts = 3),
+            auth(laufend(0.85, 20)), min(10), wunschRate = 1.00,
+        )
+        assertNotNull(waehrend.state.confirmedRunning) { "die alte Rate bleibt dabei erkannt" }
+        assertEquals(Reason.SET_GIVEN_UP, waehrend.reason)
+    }
+
+    // =====================================================================
+    // (2) ZERO-ERSETZUNG VERBRAUCHT KEINE ABBRUCHVERSUCHE
+    // =====================================================================
+
+    @Test
+    fun `eine gesetzte Null verbraucht keinen Abbruchversuch`() {
+        val s = State(confirmedRunning = id(0.30, t0, 30), pendingRequest = id(0.45, min(1), 30), pendingAttempts = 1)
+        val nach = PartialTbrOwnership.buche(s, Wirkung.REPLACE_WITH_ZERO, 0.0, 30, min(2), schritt)
+        assertNull(nach.ending) { "kein Abbruchzustand - es war keiner" }
+        assertNull(nach.pendingRequest) { "aber die offene Anforderung ist erledigt" }
+        assertNotNull(nach.confirmedRunning) { "ob die alte noch laeuft, sagt der naechste Snapshot" }
+    }
+
+    @Test
+    fun `drei Zero-Ersetzungen blockieren den spaeteren echten Abbruch nicht`() {
+        var s = State(confirmedRunning = id(0.30, t0, 30))
+        repeat(3) { s = PartialTbrOwnership.buche(s, Wirkung.REPLACE_WITH_ZERO, 0.0, 30, min(it), schritt) }
+        assertNull(s.ending)
+        val r = schritt(s, auth(laufend(0.30, 25)), min(5), wantEnd = true)
+        assertTrue(r.sendCancel) { "der echte Abbruch muss danach noch moeglich sein" }
+    }
+
+    // =====================================================================
+    // (2b) DER ZENTRALE FALL: AKTIVE NULL -> PROFILBASAL
+    // =====================================================================
+
+    /**
+     * Der Besitz ist LEER (die Null gehoert uns nicht als Teilrate), und
+     * trotzdem braucht der Abbruch Backoff und Deckel - sonst ginge er
+     * jeden Zyklus erneut raus, solange die Pumpe ihn nicht annimmt.
+     */
+    @Test
+    fun `der Abbruch zurueck aufs Profil hat Backoff und Deckel - auch bei leerem Besitz`() {
+        var s = State()
+        val gesendet = mutableListOf<Int>()
+        for (m in 0 until 25) {
+            // Die Null bleibt sichtbar: die Pumpe nimmt den Abbruch nicht an.
+            val r = schritt(s, auth(laufend(0.0, 25)), min(m), wantProfile = true)
+            s = r.state
+            assertTrue(r.smbBlocked) { "Minute $m: waehrend des Abbruchs kein SMB" }
+            if (r.sendCancel) {
+                gesendet += m
+                s = PartialTbrOwnership.buche(s, Wirkung.CANCEL_TO_PROFILE, 0.0, 0, min(m), schritt)
+            }
+        }
+        assertEquals(PartialTbrOwnership.END_MAX_ATTEMPTS, gesendet.size) { "gesendet: $gesendet" }
+        assertEquals(0, gesendet.first()) { "sofort einer" }
+        assertTrue(gesendet.zipWithNext().all { (a, c) -> c - a >= PartialTbrOwnership.END_BACKOFF_MIN }) {
+            "gesendet: $gesendet"
+        }
+        // Autoritativ keine TBR mehr -> Zustand geloescht, SMB offen.
+        val fertig = schritt(s, auth(null), min(30), wantProfile = true)
+        assertTrue(fertig.state.leer)
+        assertFalse(fertig.smbBlocked)
+    }
+
+    @Test
+    fun `eine unbrauchbare Sicht haelt auch den Profil-Abbruch an`() {
+        val r = schritt(State(), View.Unknown, min(5), wantProfile = true)
+        assertEquals(Reason.VIEW_UNKNOWN_HELD, r.reason)
+        assertFalse(r.sendCancel)
+    }
+
+    // =====================================================================
+    // (5) FREMDSCHUTZ IN DER TEILSTUFE
+    // =====================================================================
+
+    private fun partialMit(
+        current: TbrPolicy.Current?,
+        wunsch: Double,
+        confirmed: Boolean = false,
+        pumpBasis: Double = profil,
+    ) = TbrPolicy.decide(
+        TbrPolicy.Intent.PARTIAL_BASAL, current, profil, cfg,
+        partialRateUPerH = wunsch, ownPartialConfirmed = confirmed,
+        pumpBaseBasalUPerH = pumpBasis,
+    )
+
+    @Test
+    fun `eine fremde Absenkung wird in der Teilstufe nie angehoben`() {
+        val d = partialMit(laufend(0.30, 20), wunsch = 0.45)
+        assertEquals(TbrPolicy.Outcome.NoRequest, d.outcome)
+        assertEquals(TbrPolicy.PARTIAL_FOREIGN_REDUCTION_KEPT_REASON, d.reason) {
+            "C7b gilt auch hier: anheben waere eine Insulin-Erhoehung ohne Auftrag"
+        }
+    }
+
+    @Test
+    fun `eine fremde Absenkung darf weiter gesenkt werden`() {
+        val d = partialMit(laufend(0.45, 20), wunsch = 0.30)
+        assertEquals(0.30, (d.outcome as TbrPolicy.Outcome.Request).rateUPerH, 1e-9)
+    }
+
+    @Test
+    fun `ueber einer echten Null ist die Teilrate die Rueckkehr, um die es geht`() {
+        val d = partialMit(laufend(0.0, 20), wunsch = 0.30)
+        assertEquals(0.30, (d.outcome as TbrPolicy.Outcome.Request).rateUPerH, 1e-9)
+    }
+
+    @Test
+    fun `die eigene bestaetigte Rate darf angepasst werden`() {
+        val d = partialMit(laufend(0.30, 20), wunsch = 0.45, confirmed = true)
+        assertEquals(0.45, (d.outcome as TbrPolicy.Outcome.Request).rateUPerH, 1e-9)
+    }
+
+    // =====================================================================
+    // (3) DIESELBE BASIS WIE AAPS
+    // =====================================================================
+
+    @Test
+    fun `entschieden wird gegen pump baseBasalRate, nicht gegen das Profil`() {
+        // Die Pumpe faehrt 0,50, das Profil sagt 0,60 (Profilwechsel noch
+        // nicht uebernommen). Ein Wunsch von 0,60 ist fuer AAPS ein
+        // ABBRUCH - gegen das Profil allein gemessen waere es eine
+        // gesetzte Teilrate gewesen, die die Pumpe nie so ausfuehrt.
+        val d = partialMit(laufend(0.0, 20), wunsch = 0.60, pumpBasis = 0.50)
+        assertEquals(TbrPolicy.PARTIAL_TO_PROFILE_REASON, d.reason)
+        // Und eine echte Absenkung darunter bleibt eine Teilrate.
+        val e = partialMit(laufend(0.0, 20), wunsch = 0.30, pumpBasis = 0.50)
+        assertEquals(0.30, (e.outcome as TbrPolicy.Outcome.Request).rateUPerH, 1e-9)
+
+        // DER FALL, DER DIE BEIDEN BASEN UNTERSCHEIDET: Wunsch 0,55 liegt
+        // GENAU einen Schritt unter dem Profil (0,60), aber UEBER der
+        // Pumpenbasis (0,50). Gegen das Profil allein waere das eine
+        // gesetzte Teilrate von 0,55 - AAPS wuerde sie als Abbruch
+        // ausfuehren, weil sie ueber `baseBasalRate` liegt. Der Deckel ist
+        // deshalb das MINIMUM aus beiden.
+        val f = partialMit(laufend(0.0, 20), wunsch = 0.50, pumpBasis = 0.40)
+        assertEquals(TbrPolicy.PARTIAL_TO_PROFILE_REASON, f.reason) {
+            "gegen das Profil allein gemessen waere hier eine 0,55er TBR gestellt worden"
+        }
+    }
+
+    @Test
+    fun `der Profil-Abbruch wartet, wenn der Lebenszyklus ihn nicht erlaubt`() {
+        val d = TbrPolicy.decide(
+            TbrPolicy.Intent.PARTIAL_BASAL, laufend(0.0, 20), profil, cfg,
+            partialRateUPerH = 0.60, allowProfileCancel = false, pumpBaseBasalUPerH = profil,
+        )
+        assertEquals(TbrPolicy.Outcome.NoRequest, d.outcome)
+        assertEquals(TbrPolicy.PARTIAL_TO_PROFILE_HELD_REASON, d.reason)
+    }
+
+    // =====================================================================
+    // ANZEIGEVERTRAG
+    // =====================================================================
+
+    @Test
+    fun `der Anzeigezustand trennt angefordert von laufend`() {
+        val offen = State(pendingRequest = id(0.30, t0, 30), pendingAttempts = 1)
+        assertEquals(
+            PartialTbrOwnership.Anzeige.PENDING,
+            PartialTbrOwnership.anzeige(schritt(offen, auth(null), min(2), wunschRate = 0.30)),
+        ) { "eine angeforderte Rate darf nie wie eine laufende aussehen" }
+        assertEquals(
+            PartialTbrOwnership.Anzeige.RUNNING,
+            PartialTbrOwnership.anzeige(schritt(State(confirmedRunning = id(0.30, t0, 30)), auth(laufend(0.30, 20)), min(10))),
+        )
+        assertEquals(
+            PartialTbrOwnership.Anzeige.VIEW_UNKNOWN,
+            PartialTbrOwnership.anzeige(schritt(State(confirmedRunning = id()), View.Unknown, min(10))),
+        ) { "eine unbrauchbare Sicht ist ein EIGENER Zustand, nicht 'laeuft'" }
+        assertEquals(
+            PartialTbrOwnership.Anzeige.NONE,
+            PartialTbrOwnership.anzeige(schritt(State(), auth(null), min(1))),
+        )
+    }
+
 }

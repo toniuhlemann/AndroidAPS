@@ -72,6 +72,16 @@ data class FuseActivePump(
     /** Basalschritt fuer die TBR-Quantisierung, `NaN` = nicht lesbar. */
     val basalStepUPerH: Double = Double.NaN,
     /**
+     * DIE BASIS, GEGEN DIE AAPS ENTSCHEIDET - einmal gelesen.
+     *
+     * `LoopPlugin.applyAPSRequest` vergleicht die angeforderte Rate gegen
+     * `pump.baseBasalRate`, NICHT gegen das Therapieprofil. Bei einem
+     * Profilwechsel oder einer verzoegerten Pumpenuebernahme koennen beide
+     * auseinanderlaufen - dann urteilte FUSEs Klassifikation anders als
+     * AAPS' Ausfuehrung. `NaN` heisst nicht lesbar (nicht 0.0, s. oben).
+     */
+    val baseBasalRateUPerH: Double = Double.NaN,
+    /**
      * Der kanonische Serial-Hash, EINMAL gelesen. `null` heisst unbekannt oder
      * leer.
      *
@@ -207,6 +217,10 @@ data class FuseActivePump(
                 tempBasalCapable = beschreibung?.isTempBasalCapable ?: false,
                 bolusStepU = beschreibung?.bolusStep ?: Double.NaN,
                 basalStepUPerH = beschreibung?.basalStep ?: Double.NaN,
+                // DIESELBE Lesung wie alles andere hier - zweimal fragen
+                // hiesse, zwei moeglicherweise verschiedene Antworten in
+                // denselben Snapshot zu schreiben.
+                baseBasalRateUPerH = runCatching { pump.baseBasalRate }.getOrDefault(Double.NaN),
                 // Die kanonische Serialform haengt vom Pumpentyp ab (F7) -
                 // deshalb beides aus DERSELBEN Lesung.
                 serialHash = runCatching { LedgerFacts.serialHashOf(pump.serialNumber(), typName) }.getOrNull(),

@@ -13064,69 +13064,53 @@ class TransportWiringTest : TestBaseWithProfile() {
             if (k != null && k.rateUPerH > 0.0 && k.durationMin > 0) weitereSetz++
         }
         assertEquals(0, weitereSetz) { "DAS war die Race: minuetliches Nachsetzen" }
-        assertEquals(setAtNachEintritt, besitz().pendingRequest?.setAtTs) {
-            "ein unterdruecktes Duplikat darf die Frist nicht neu starten"
+        // Solange die Anforderung offen IST, darf ihre Frist nicht neu
+        // beginnen. Erreicht die Guard-Rate zwischendurch das Profilbasal,
+        // ist die richtige Antwort ein ABBRUCH und die Anforderung damit
+        // erledigt - dann gibt es nichts mehr, dessen Frist laufen koennte.
+        besitz().pendingRequest?.let {
+            assertEquals(setAtNachEintritt, it.setAtTs) {
+                "ein unterdruecktes Duplikat darf die Frist nicht neu starten"
+            }
+            assertEquals(1, besitz().pendingAttempts)
         }
-        assertEquals(1, besitz().pendingAttempts)
-
-        // ---- (3) Verspaetete Sichtbarkeit -> bestaetigter Besitz --------
+        // ---- (3) BIS ZUR RUECKKEHR AUFS PROFILBASAL ---------------------
         //
-        // Die Pumpe wendet ab jetzt an, was wir anfordern. `spiegele()`
-        // baut die Sicht aus dem BESITZ - Rate und Alter -, statt sie zu
-        // raten.
-        fun spiegele() {
-            val i = besitz().pendingRequest ?: besitz().confirmedRunning ?: return
-            quelleMeldet(laufendSeit(i.rateUPerH, ((clock - i.setAtTs) / 60_000L).toInt() + 1))
-        }
-        spiegele()
-        val (o3, _) = zyklusMitKommando()
-        assertNotNull(besitz().confirmedRunning) {
-            "ein autoritativer Snapshot bestaetigt: Besitz=${besitz()} grund=${o3.reason?.take(60)}"
-        }
-
-        // Die Guard-Rate WANDERT, solange die Bahn sich bewegt; eine
-        // hoehere Rate darf aus bestaetigtem Zustand nachgesetzt werden.
-        // Erst im Profildeckel ist der Zustand ruhig - und dann darf auch
-        // kein Kommando mehr kommen.
-        repeat(12) { spiegele(); cycle() }
-        spiegele()
-        val (_, kRuhe) = zyklusMitKommando()
-        assertNull(kRuhe) { "eine bestaetigte, unveraenderte Rate wird nicht neu gesetzt" }
-        assertNotNull(besitz().confirmedRunning)
-
-        // ---- (4) SCHALTER AUS UNTER AKTIVEM LATCH -----------------------
+        // Die Guard-Rate steigt mit der Bahn und laeuft in den
+        // Profildeckel. DORT ist die richtige Antwort kein Setzen mehr,
+        // sondern der ABBRUCH der laufenden Null - `LoopPlugin` wuerde
+        // eine Rate auf Profilbasal ohnehin als `cancelTempBasal`
+        // ausfuehren. Das ist der zentrale Fall der ganzen Stufe.
         //
-        // Der Riegel laeuft noch, also ist die richtige Antwort die NULL -
-        // nicht der Abbruch. Sie verdraengt die Teilrate im selben Zyklus
-        // (SAFETY_ZERO_REPLACE); das ist die Regel "Schalter aus unter
-        // aktivem Latch: zurueck auf Zero".
-        teilbasalAn = false
-        spiegele()
-        val (o4, k4) = zyklusMitKommando()
-        assertNotNull(k4) { "der Ausgang muss ein Kommando erzeugen" }
-        assertEquals(0.0, k4!!.rateUPerH, 1e-12)
-        assertEquals(30, k4.durationMin) { "eine Schutz-Null, kein Abbruch" }
-        assertEquals(0.0, o4.decision.smbU, 1e-12) { "und dabei kein SMB" }
-        assertNotNull(besitz().ending) { "der Besitz weiss, dass er enden soll" }
-
-        // ---- (5) DIE NULL VERDRAENGT, SIE BRICHT NICHT AB ---------------
-        //
-        // Die Pumpe nimmt die Null an. Damit passt weder die bestaetigte
-        // noch eine offene Rate, und der autoritative Snapshot beendet den
-        // Besitz. EIN ABBRUCHKOMMANDO BRAUCHT ES DAFUER NICHT.
+        // Die Pumpe nimmt den Abbruch NICHT an: die Null bleibt sichtbar.
         quelleMeldet(TB(timestamp = System.currentTimeMillis(), duration = 30 * 60_000L,
                         rate = 0.0, isAbsolute = true, type = TB.Type.NORMAL))
-        var weitere = 0
-        for (i in 0 until 8) {
-            val (_, k) = zyklusMitKommando()
-            if (k != null) weitere++
-            if (besitz().leer) break
+        val abbrueche = mutableListOf<Long>()
+        for (i in 0 until 30) {
+            val (o, k) = zyklusMitKommando()
+            assertEquals(0.0, o.decision.smbU, 1e-12) { "waehrend des Abbruchs nie ein SMB" }
+            if (k != null && k.rateUPerH == 0.0 && k.durationMin == 0) abbrueche += clock / 60_000L
         }
-        assertTrue(besitz().leer) {
-            "ein autoritativer Snapshot ohne unsere Rate beendet den Besitz: ${besitz()}"
+
+        // ---- (4) SOFORT EINER, DANN BACKOFF, DANN DECKEL ----------------
+        assertEquals(PartialTbrOwnership.END_MAX_ATTEMPTS, abbrueche.size) {
+            "genau END_MAX_ATTEMPTS Abbrueche, gezaehlt: $abbrueche"
         }
-        assertTrue(weitere <= 1) { "und dabei entsteht kein Kommandoschwall: $weitere" }
+        assertTrue(abbrueche.zipWithNext().all { (a, c) -> c - a >= PartialTbrOwnership.END_BACKOFF_MIN }) {
+            "jeder Wiederholversuch haelt den Backoff ein: $abbrueche"
+        }
+        assertNotNull(besitz().ending) { "und der Abbruchzustand steht" }
+
+        // ---- (5) AUTORITATIV KEINE TBR -> ZUSTAND GELOESCHT -------------
+        quelleMeldet(null)
+        for (i in 0 until 5) {
+            cycle()
+            if (besitz().leer && besitz().ending == null) break
+        }
+        assertTrue(besitz().leer) { "ein autoritativer Snapshot ohne TBR beendet den Zustand: ${besitz()}" }
     }
+
+
 
     /**
      * Ein zurueckkehrendes Risiko verdraengt die offene Teilbasal-

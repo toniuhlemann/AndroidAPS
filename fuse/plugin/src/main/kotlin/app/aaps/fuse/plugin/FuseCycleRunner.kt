@@ -1086,6 +1086,21 @@ class FuseCycleRunner(
         /** Teilbasal-Stufe: laeuft sie, und wie weit ist der Eintritt? */
         val partialRecoveryActive: Boolean = false,
         val partialRecoveryStreak: Int = 0,
+        /**
+         * DIE ANZEIGEFELDER DER TEILSTUFE (Viewer-Vertrag).
+         *
+         * Der Viewer trennt IST und ABSICHT: links die tatsaechlich
+         * laufende Pumpenrate, rechts der FUSE-Zustand samt Zielrate. Eine
+         * bloss ANGEFORDERTE Teilrate darf nie wie eine laufende aussehen -
+         * deshalb ist die Zielrate ein eigenes Feld und der Zustand
+         * typisiert.
+         */
+        val partialRecoveryTargetUPerH: Double? = null,
+        val partialRecoveryPhase: String? = null,
+        val partialRecoveryAction: String? = null,
+        val partialRecoveryAttempts: Int = 0,
+        val partialRecoveryMaxAttempts: Int = 0,
+        val partialRecoveryEntryCycles: Int = 0,
         /** v29: Ausloese-Zaehler des Fall-Verdikts (2 aufeinanderfolgende
          *  qualifizierende Zyklen zuenden; Unterbrechung nullt). */
         val zeroLatchArmStreak: Int = 0,
@@ -5339,11 +5354,23 @@ class FuseCycleRunner(
         // Fassung.
         val tbrSicht = if (tempBasalFallback) PartialTbrOwnership.View.Unknown
         else PartialTbrOwnership.View.Authoritative(currentTbr)
+        // Traegt die Bahn das VOLLE Profilbasal, ist das keine Teilstufe,
+        // sondern die Rueckkehr zum Normalzustand - und die wird als
+        // ABBRUCH gestellt. Gemessen gegen dieselbe Basis wie AAPS.
+        val wunschIstProfil = partialAktiv && PartialTbrOwnership.klassifiziere(
+            rateUPerH = partialRateUPerH,
+            durationMin = TbrPolicy.Config(basalStepUPerH = pumpe.basalStepUPerH).defaultDurationMin,
+            scheduledBasalUPerH = if (pumpe.baseBasalRateUPerH.isFinite() && pumpe.baseBasalRateUPerH > 0.0)
+                pumpe.baseBasalRateUPerH else profile.getBasal(computeTs),
+            basalStepUPerH = pumpe.basalStepUPerH,
+            ausgegeben = true,
+        ) == PartialTbrOwnership.Wirkung.CANCEL_TO_PROFILE
         val ownStep = PartialTbrOwnership.advance(
             state = episodes.ownPartialTbr,
             view = tbrSicht,
             nowTs = computeTs,
             basalStepUPerH = pumpe.basalStepUPerH,
+            wantProfile = wunschIstProfil,
             // Der WUNSCH dieses Zyklus - der Lebenszyklus entscheidet, ob
             // daraus ein Kommando werden darf. Ohne diese Sperre forderte
             // die Tabelle bei unsichtbarer TBR jede Minute erneut an, und
@@ -5373,6 +5400,9 @@ class FuseCycleRunner(
             endOwnPartial = ownStep.sendCancel,
             ownPartialHeld = ownStep.smbBlocked,
             suppressPartialSet = !ownStep.allowSet,
+            ownPartialConfirmed = ownStep.state.confirmedRunning != null,
+            allowProfileCancel = ownStep.sendCancel,
+            pumpBaseBasalUPerH = pumpe.baseBasalRateUPerH,
             cfg = TbrPolicy.Config(
                 basalStepUPerH = pumpe.basalStepUPerH,
                 // Toni 15.08.: die Null sofort verlassen, sobald ihr Grund weg
@@ -5408,6 +5438,7 @@ class FuseCycleRunner(
         // unterdruecktes Duplikat aendert `setAtTs` deshalb NICHT - genau
         // daran haengt, dass die Bestaetigungsfrist ueberhaupt ablaufen
         // kann und CONFIRM_TIMEOUT je greift.
+        var letzteWirkung: PartialTbrOwnership.Wirkung? = null
         episodes.ownPartialTbr = run {
             val req = combined.request
             // DIE EFFEKTIVE WIRKUNG, nicht der Wunsch (Review-P0-2):
@@ -5421,10 +5452,14 @@ class FuseCycleRunner(
             val wirkung = PartialTbrOwnership.klassifiziere(
                 rateUPerH = req?.rateUPerH,
                 durationMin = req?.durationMin,
-                scheduledBasalUPerH = profile.getBasal(computeTs),
+                // DIESELBE Basis wie AAPS und wie die Tabelle - sonst
+                // urteilen Klassifikation und Ausfuehrung verschieden.
+                scheduledBasalUPerH = if (pumpe.baseBasalRateUPerH.isFinite() && pumpe.baseBasalRateUPerH > 0.0)
+                    pumpe.baseBasalRateUPerH else profile.getBasal(computeTs),
                 basalStepUPerH = pumpe.basalStepUPerH,
                 ausgegeben = gate.allowed && req != null,
             )
+            letzteWirkung = wirkung.takeIf { it != PartialTbrOwnership.Wirkung.NO_REQUEST }
             PartialTbrOwnership.buche(
                 ownStep.state, wirkung,
                 req?.rateUPerH ?: 0.0, req?.durationMin ?: 0,
@@ -5627,6 +5662,19 @@ class FuseCycleRunner(
             zeroLatchReasonGoneStreak = zeroReasonGoneStreak,
             partialRecoveryActive = partialAktiv,
             partialRecoveryStreak = partialStreak,
+            // ANZEIGEVERTRAG: die Zielrate ist die ANGEFORDERTE bzw.
+            // laufende - der Viewer stellt sie NEBEN die tatsaechliche
+            // Pumpenrate, nie an ihre Stelle.
+            partialRecoveryTargetUPerH = (ownStep.state.pendingRequest
+                ?: ownStep.state.confirmedRunning)?.rateUPerH
+                ?: partialRateUPerH.takeIf { partialAktiv && it > 0.0 },
+            partialRecoveryPhase = PartialTbrOwnership.anzeige(ownStep).name,
+            partialRecoveryAction = letzteWirkung?.name,
+            partialRecoveryAttempts = ownStep.state.ending?.attempts
+                ?: ownStep.state.pendingAttempts,
+            partialRecoveryMaxAttempts = if (ownStep.state.ending != null)
+                PartialTbrOwnership.END_MAX_ATTEMPTS else PartialTbrOwnership.SET_MAX_ATTEMPTS,
+            partialRecoveryEntryCycles = PartialRecoveryGate.ENTRY_CYCLES,
             zeroLatchArmStreak = zeroArmStreak,
             correctionReversal = reversal,
             correctionRearm = rearm,
