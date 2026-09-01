@@ -9,6 +9,7 @@ import app.aaps.fuse.core.insulin.KernelOutcome
 import app.aaps.fuse.core.insulin.UnitInsulinKernel
 import app.aaps.fuse.core.insulin.UnitInsulinKernelBuilder
 import app.aaps.fuse.core.predictor.InsulinModelProvenance
+import app.aaps.fuse.core.controller.PartialRecoveryGate
 import app.aaps.fuse.plugin.AapsUnitInsulinSampler
 import app.aaps.plugins.insulin.InsulinLyumjevPlugin
 import app.aaps.plugins.insulin.InsulinOrefRapidActingPlugin
@@ -16,6 +17,7 @@ import app.aaps.plugins.insulin.InsulinOrefUltraRapidActingPlugin
 import app.aaps.shared.tests.TestBase
 import org.json.JSONObject
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Assumptions.assumeTrue
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
@@ -255,20 +257,26 @@ class TeilbasalMehrNaechte : TestBase() {
         }
         assumeTrue(brauchbar.isNotEmpty(), "keine auswertbare Nacht")
 
-        // ---- SCHRITT 1+2: UKF-TOR BEI FESTEM EINTRITT 3 ------------------
+        // =================================================================
+        // WAS IN WELCHER KLASSE GILT (Review-Ruecknahme)
+        // =================================================================
+        // Klasse B hat KEIN Profilbasal. Der Ersatzdeckel laesst Raten zu,
+        // die in Produktion aufs Profil geklemmt wuerden - und Klemmen
+        // VERSCHMILZT benachbarte Raten zu einer konstanten, wodurch
+        // Ratenwechsel und damit Pumpenkommandos verschwaenden. Deshalb
+        // gelten dort NUR Toroffenheit, Eintrittsserien und die Minuten;
+        // Mengen, Raten, Profilbegrenzung und Aktuationskanten
+        // AUSSCHLIESSLICH in Klasse A.
         val kern = kernelBauer(
             alle.firstOrNull { it.insulin != "?" }?.insulin ?: "OREF_LYUMJEV",
             alle.firstOrNull { it.dia > 0.0 }?.dia ?: 9.0,
         )
-        // Die BASISZEILE: ein Tor, das nie aufgeht. Ohne sie sind die
-        // Aktuationskanten nicht lesbar - die allermeisten stammen aus der
-        // Erneuerung der laufenden NULL alle 20 min, nicht aus der
-        // Teilstufe. Erst die Differenz zu dieser Zeile ist der Preis.
         val basis = listOf<Pair<String, Double?>>("BASIS ohne Stufe" to Double.MAX_VALUE)
         val tore = listOf<Pair<String, Double?>>(
-            "-0.03 (gebaut)" to -0.03, "-0.10" to -0.10, "-0.20" to -0.20, "ohne UKF-Tor" to null,
+            "-0.03 (alt)" to -0.03, "-0.10" to -0.10, "-0.20" to -0.20, "ohne UKF-Tor" to null,
         )
         val dok = listOf<Pair<String, Double?>>("-0.40 (nur Doku)" to -0.40)
+        val alleTore = basis + tore + dok
 
         fun auswerten(n: Nacht, ukf: Double?, eintritt: Int): TeilbasalRig.Bilanz {
             val ers = if (n.hatProfil) null else ersatz
@@ -277,145 +285,164 @@ class TeilbasalMehrNaechte : TestBase() {
             return TeilbasalRig.bilanz(l, schritt, dauer)
         }
 
-        fun kopf(titel: String) {
+        val nurA = brauchbar.filter { it.klasse == "A" }
+        val nurB = brauchbar.filter { it.klasse == "B" }
+
+        // ---- KLASSE B: NUR TOR, EINTRITTE UND MINUTEN --------------------
+        if (nurB.isNotEmpty()) {
             println()
-            println("=".repeat(112))
-            println(titel)
-            println("=".repeat(112))
-            println("%-7s %-3s %-15s %7s %8s %8s %8s %7s %7s %6s %8s %8s %7s"
-                .format("Nacht", "Kl", "UKF-Tor", "Phasen", "ZERO", "PARTIAL", "Basal U",
-                        "Eintr", "Rueckf", "Kant", "Guard-Z", "Profil-Z", "SMB-weg"))
-        }
-
-        fun zeile(n: Nacht, was: String, b: TeilbasalRig.Bilanz) {
-            println("%-7s %-3s %-15s %7d %8.1f %8.1f %8s %7d %7d %6d %8d %8d %7.3f".format(
-                n.name, n.klasse, was, b.nullphasen.size, b.minZero, b.minPartial,
-                b.basalU?.let { "%.3f".format(it) } ?: "n.a.",
-                b.eintritte, b.rueckfaelle, b.kanten,
-                b.zyklenGuardbegrenzt, b.zyklenProfilbegrenzt, b.smbUnterdruecktU))
-        }
-
-        kopf("SCHRITT 1+2  EIN-VARIABLEN-VERGLEICH DES UKF-TORS, Eintritt FEST bei 3 Zyklen")
-        val summe = LinkedHashMap<String, MutableList<TeilbasalRig.Bilanz>>()
-        brauchbar.forEach { n ->
-            (basis + tore + dok).forEach { (was, ukf) ->
-                val b = auswerten(n, ukf, 3)
-                zeile(n, was, b)
-                summe.getOrPut(was) { mutableListOf() } += b
+            println("=".repeat(96))
+            println("KLASSE B - NUR TOROFFENHEIT, EINTRITTE UND MINUTEN")
+            println("Kein Profilbasal im Trail. Mengen, Raten, Profilbegrenzung und")
+            println("Aktuationskanten sind hier NICHT produktionsaequivalent und werden")
+            println("deshalb nicht ausgewiesen. Die Minuten schon: die Einstufung als")
+            println("Teilstufe braucht nur 'Rate > 0', und das ist gegen jedes")
+            println("Profilbasal >= einem Pumpenschritt dieselbe Aussage.")
+            println("=".repeat(96))
+            println("%-7s %-15s %7s %9s %9s %8s %8s".format(
+                "Nacht", "UKF-Tor", "Phasen", "ZERO min", "PART min", "Eintr", "Rueckf"))
+            nurB.forEach { n ->
+                (tore + dok).forEach { (was, ukf) ->
+                    val b = auswerten(n, ukf, PartialRecoveryGate.ENTRY_CYCLES)
+                    println("%-7s %-15s %7d %9.1f %9.1f %8d %8d".format(
+                        n.name, was, b.nullphasen.size, b.minZero, b.minPartial, b.eintritte, b.rueckfaelle))
+                }
+                println("-".repeat(96))
             }
-            println("-".repeat(112))
-        }
-
-        fun gesamt(titel: String, m: Map<String, List<TeilbasalRig.Bilanz>>, klasseA: Boolean) {
-            println()
-            println(titel)
-            println("%-15s %7s %8s %8s %9s %7s %7s %6s %9s %9s %9s"
-                .format("UKF-Tor", "Phasen", "ZERO", "PARTIAL", "Basal U", "Eintr", "Rueckf", "Kant", "Guard-Z", "Profil-Z", "SMB-weg"))
-            m.forEach { (was, bs) ->
-                val menge = if (klasseA) bs.mapNotNull { it.basalU }.sum().let { "%.3f".format(it) } else "n.a."
-                println("%-15s %7d %8.1f %8.1f %9s %7d %7d %6d %9d %9d %9.3f".format(
-                    was, bs.sumOf { it.nullphasen.size }, bs.sumOf { it.minZero }, bs.sumOf { it.minPartial },
-                    menge, bs.sumOf { it.eintritte }, bs.sumOf { it.rueckfaelle }, bs.sumOf { it.kanten },
-                    bs.sumOf { it.zyklenGuardbegrenzt }, bs.sumOf { it.zyklenProfilbegrenzt },
-                    bs.sumOf { it.smbUnterdruecktU }))
+            println("SUMME KLASSE B (${nurB.joinToString(",") { it.name }}):")
+            println("%-15s %7s %9s %9s %8s %8s %13s".format(
+                "UKF-Tor", "Phasen", "ZERO min", "PART min", "Eintr", "Rueckf", "min/Eintritt"))
+            (tore + dok).forEach { (was, ukf) ->
+                val bs = nurB.map { auswerten(it, ukf, PartialRecoveryGate.ENTRY_CYCLES) }
+                val mp = bs.sumOf { it.minPartial }; val ei = bs.sumOf { it.eintritte }
+                println("%-15s %7d %9.1f %9.1f %8d %8d %13s".format(
+                    was, bs.sumOf { it.nullphasen.size }, bs.sumOf { it.minZero }, mp,
+                    ei, bs.sumOf { it.rueckfaelle }, if (ei > 0) "%.1f".format(mp / ei) else "-"))
             }
         }
-        gesamt("GESAMT ueber alle auswertbaren Naechte (Menge NUR aus Klasse A):", summe, false)
-        val basisKanten = summe["BASIS ohne Stufe"]?.sumOf { it.kanten } ?: 0
-        println()
-        println("ZUSAETZLICHE AKTUATIONSKANTEN gegenueber der Basis ($basisKanten Kommandos, fast alles")
-        println("Erneuerung der laufenden Null alle 20 min) - das ist der eigentliche Preis:")
-        println("%-15s %10s %10s %14s".format("UKF-Tor", "Kanten", "zusaetzl", "je PARTIAL-min"))
-        summe.forEach { (was, bs) ->
-            val k = bs.sumOf { it.kanten }; val mp = bs.sumOf { it.minPartial }
-            println("%-15s %10d %10d %14s".format(was, k, k - basisKanten,
-                if (mp > 0.0) "%.2f".format((k - basisKanten) / mp) else "-"))
+
+        // ---- KLASSE A: ALLES ---------------------------------------------
+        if (nurA.isNotEmpty()) {
+            println()
+            println("=".repeat(96))
+            println("KLASSE A (${nurA.joinToString(",") { it.name }}) - HIER GELTEN MENGEN, RATEN UND KANTEN")
+            println("=".repeat(96))
+            println("%-15s %-9s %7s %9s %9s %9s %7s %7s %6s %8s %8s".format(
+                "UKF-Tor", "Eintritt", "Phasen", "ZERO min", "PART min", "Basal U",
+                "Eintr", "Rueckf", "Kant", "Guard-Z", "Profil-Z"))
+            listOf(3, 5).forEach { e ->
+                alleTore.forEach { (was, ukf) ->
+                    val bs = nurA.map { auswerten(it, ukf, e) }
+                    println("%-15s %-9d %7d %9.1f %9.1f %9.3f %7d %7d %6d %8d %8d".format(
+                        was, e, bs.sumOf { it.nullphasen.size }, bs.sumOf { it.minZero },
+                        bs.sumOf { it.minPartial }, bs.mapNotNull { it.basalU }.sum(),
+                        bs.sumOf { it.eintritte }, bs.sumOf { it.rueckfaelle }, bs.sumOf { it.kanten },
+                        bs.sumOf { it.zyklenGuardbegrenzt }, bs.sumOf { it.zyklenProfilbegrenzt }))
+                }
+                println("-".repeat(96))
+            }
+            val basisKanten = nurA.sumOf { auswerten(it, Double.MAX_VALUE, 5).kanten }
+            println("ZUSAETZLICHE AKTUATIONSKANTEN gegenueber der Basis ($basisKanten Kommandos,")
+            println("fast alles Erneuerung der laufenden Null alle 20 min) - nur Klasse A:")
+            println("%-15s %-9s %8s %10s %14s".format("UKF-Tor", "Eintritt", "Kanten", "zusaetzl", "je PART-min"))
+            listOf(3, 5).forEach { e ->
+                (tore + dok).forEach { (was, ukf) ->
+                    val bs = nurA.map { auswerten(it, ukf, e) }
+                    val k = bs.sumOf { it.kanten }; val mp = bs.sumOf { it.minPartial }
+                    println("%-15s %-9d %8d %10d %14s".format(was, e, k, k - basisKanten,
+                        if (mp > 0.0) "%.2f".format((k - basisKanten) / mp) else "-"))
+                }
+            }
+            println()
+            println("RATENVERTEILUNG (Eintritt ${PartialRecoveryGate.ENTRY_CYCLES}) - echte Raten, Profilbasal bekannt:")
+            (tore + dok).forEach { (was, ukf) ->
+                val r = nurA.flatMap { auswerten(it, ukf, PartialRecoveryGate.ENTRY_CYCLES).raten }
+                if (r.isNotEmpty()) println("  %-15s n=%3d  %s".format(was, r.size,
+                    r.groupingBy { it }.eachCount().toSortedMap()
+                        .map { (k, v) -> "%.2f:%d".format(k, v) }.joinToString(" ")))
+            }
+            println("  SMB, den die Teilstufe unterdrueckt haette: " +
+                (tore + dok).joinToString("  ") { (was, ukf) ->
+                    "%s=%.3f U".format(was, nurA.sumOf {
+                        auswerten(it, ukf, PartialRecoveryGate.ENTRY_CYCLES).smbUnterdruecktU
+                    })
+                })
         }
-        // ROBUSTHEITSPROBE: dieselbe Rechnung ohne die Naechte, in denen
-        // der Regelstand WECHSELT. Kippt die Ordnung hier, ist der Befund
-        // ein Artefakt der Vermischung und keine Eigenschaft des Tors.
+
+        // ---- ROBUSTHEIT: NUR REGELSTANDSREINE NAECHTE (Minuten) ----------
         val rein = brauchbar.filter { it.rs.size == 1 }
         if (rein.isNotEmpty() && rein.size < brauchbar.size) {
-            val mR = LinkedHashMap<String, List<TeilbasalRig.Bilanz>>()
-            (basis + tore + dok).forEach { (was, ukf) -> mR[was] = rein.map { auswerten(it, ukf, 3) } }
-            gesamt("ROBUSTHEIT: nur Naechte mit EINEM Regelstand (${rein.joinToString(",") { "${it.name}/rs${it.rs.first()}" }}):", mR, false)
+            println()
+            println("ROBUSTHEIT - nur Naechte mit EINEM Regelstand (${rein.joinToString(",") { "${it.name}/rs${it.rs.first()}" }}),")
+            println("nur Minuten und Eintritte (klassenuebergreifend zulaessig):")
+            println("%-15s %9s %9s %8s %13s".format("UKF-Tor", "ZERO min", "PART min", "Eintr", "min/Eintritt"))
+            (tore + dok).forEach { (was, ukf) ->
+                val bs = rein.map { auswerten(it, ukf, PartialRecoveryGate.ENTRY_CYCLES) }
+                val mp = bs.sumOf { it.minPartial }; val ei = bs.sumOf { it.eintritte }
+                println("%-15s %9.1f %9.1f %8d %13s".format(
+                    was, bs.sumOf { it.minZero }, mp, ei, if (ei > 0) "%.1f".format(mp / ei) else "-"))
+            }
         }
 
-        // Naechte, in denen KEIN Tor etwas oeffnet - der Grund gehoert benannt.
-        println()
+        // ---- NAECHTE OHNE JEDE TEILSTUFE ---------------------------------
         brauchbar.forEach { n ->
-            val b0 = auswerten(n, null, 3)
+            val b0 = auswerten(n, null, PartialRecoveryGate.ENTRY_CYCLES)
             if (b0.minPartial <= 0.0) {
                 val nz = n.zyklen.map { it.z }.filter { it.zeroActive }
-                println("OHNE JEDE TEILSTUFE: ${n.name} (auch ohne UKF-Tor 0 min). Gruende in den ${nz.size} Nullzyklen: " +
-                    "Schutzgrund=%d  Tief=%d  Abwaerts=%d  nicht READY=%d  Bahn unter Boden=%d".format(
+                println()
+                println("OHNE JEDE TEILSTUFE: ${n.name} (auch ohne UKF-Tor 0 min). Gruende in ${nz.size} Nullzyklen: " +
+                    "Schutzgrund=%d  Tief=%d  Abwaerts=%d  nicht READY=%d  Bahnminimum unter Boden=%d".format(
                         nz.count { !it.verdictNone }, nz.count { it.measuredLow },
                         nz.count { it.descentRiskActive }, nz.count { !it.signalHealthy },
                         nz.count { z -> (z.minLowerMgdl ?: -999.0) < (z.guardFloorMgdl ?: 70.0) }))
             }
         }
 
-        val nurA = brauchbar.filter { it.klasse == "A" }
-        if (nurA.isNotEmpty()) {
-            val mA = LinkedHashMap<String, List<TeilbasalRig.Bilanz>>()
-            (basis + tore + dok).forEach { (was, ukf) -> mA[was] = nurA.map { auswerten(it, ukf, 3) } }
-            gesamt("GESAMT nur Klasse A (${nurA.joinToString(",") { it.name }}) - hier ist die Menge belegt:", mA, true)
-            println()
-            println("RATENVERTEILUNG NUR KLASSE A - nur hier sind es echte Raten (Profilbasal bekannt).")
-            println("In Klasse B laeuft die Suche gegen einen ERSATZDECKEL; ihre Zahlen ueber dem")
-            println("echten Profilbasal sind KEINE Raten, sondern nur 'der Guard haette mehr getragen'.")
-            (tore + dok).forEach { (was, ukf) ->
-                val r = nurA.flatMap { auswerten(it, ukf, 3).raten }
-                if (r.isNotEmpty()) println("  %-15s n=%3d  %s".format(was, r.size,
-                    r.groupingBy { it }.eachCount().toSortedMap().map { (k, v) -> "%.2f:%d".format(k, v) }.joinToString(" ")))
-            }
+        // ---- DER HORIZONT: NUR DIE ECHTE TRAIL-VERTEILUNG ----------------
+        println()
+        println("=".repeat(96))
+        println("HORIZONT - AUSSCHLIESSLICH die aufgezeichnete Verteilung")
+        println("=".repeat(96))
+        println("`decision.timeToMinSafetyLowerCombinedMin` ueber ALLE Nullzyklen. Das ist die")
+        println("einzige zulaessige Quelle. Der bindende Punkt der RIG-Kandidaten ist dagegen")
+        println("ein Artefakt der flachgelegten Bahn (konstante Baseline + monoton wachsende")
+        println("Senkung => Minimum immer am letzten Punkt) und wird hier NICHT verwendet.")
+        val alleNull = brauchbar.flatMap { it.zyklen }.map { it.z }.filter { it.zeroActive }
+        val verteilung = alleNull.mapNotNull { it.baselineBindenderOffsetMin }
+            .groupingBy { it }.eachCount().toSortedMap()
+        val h = alleNull.firstOrNull()?.liabilityHorizonMin ?: 120
+        println()
+        println("  n=${verteilung.values.sum()} von ${alleNull.size} Nullzyklen mit Angabe")
+        println("  am Horizontende ($h min): ${verteilung[h] ?: 0}   davor: ${verteilung.filterKeys { it < h }.values.sum()}")
+        println("  Verteilung davor: " + verteilung.filterKeys { it < h }.toString().take(88))
+        brauchbar.forEach { n ->
+            val nz = n.zyklen.map { it.z }.filter { it.zeroActive }
+            val v = nz.mapNotNull { it.baselineBindenderOffsetMin }
+            if (v.isNotEmpty()) println("    %-7s n=%4d  am Ende=%4d (%3.0f%%)  davor=%d"
+                .format(n.name, v.size, v.count { it >= h }, 100.0 * v.count { it >= h } / v.size, v.count { it < h }))
+        }
+        println()
+        println("  GUARD BESTANDEN nach Horizont (aus `timeToFloorMin`: bestanden genau dann,")
+        println("  wenn der Boden im Fenster nie unterschritten wird). Nur bestanden/nicht -")
+        println("  die RATE bei kuerzerem Horizont braucht das Bahnniveau dort und ist im")
+        println("  Trail NICHT enthalten:")
+        listOf(30, 45, 60, 90, h).distinct().sorted().forEach { hh ->
+            val ok = alleNull.count { z -> z.timeToFloorMin?.let { it > hh } ?: true }
+            println("    Horizont %3d min: %4d von %d (%3.0f%%)".format(hh, ok, alleNull.size, 100.0 * ok / alleNull.size))
         }
 
-        // ---- SCHRITT 3: EINTRITT 3 GEGEN 5 -------------------------------
-        println()
-        println("=".repeat(112))
-        println("SCHRITT 3  EINTRITT 3 GEGEN 5 ZYKLEN, je UKF-Kandidat")
-        println("=".repeat(112))
-        println("%-15s %-9s %8s %9s %7s %7s %6s %11s"
-            .format("UKF-Tor", "Eintritt", "PARTIAL", "Basal U", "Eintr", "Rueckf", "Kant", "min/Eintritt"))
-        (basis + tore).forEach { (was, ukf) ->
-            listOf(3, 5).forEach { e ->
-                val bs = brauchbar.map { auswerten(it, ukf, e) }
-                val bsA = nurA.map { auswerten(it, ukf, e) }
-                val mp = bs.sumOf { it.minPartial }; val ei = bs.sumOf { it.eintritte }
-                println("%-15s %-9d %8.1f %9s %7d %7d %6d %11s".format(
-                    was, e, mp,
-                    bsA.mapNotNull { it.basalU }.sum().let { "%.3f".format(it) },
-                    ei, bs.sumOf { it.rueckfaelle }, bs.sumOf { it.kanten },
-                    if (ei > 0) "%.1f".format(mp / ei) else "-"))
-            }
+        // ---- SELBSTPRUEFUNG DER KONSTRUKTION -----------------------------
+        val synth = nurA.map { auswerten(it, null, PartialRecoveryGate.ENTRY_CYCLES) }
+            .flatMap { it.bindendeOffsetsSynthetisch.keys }.toSet()
+        assertTrue(synth.all { it == h } || synth.isEmpty()) {
+            "der synthetische Bindepunkt MUSS am Horizontende liegen - sonst stimmt die Flachlegung nicht: $synth"
         }
 
-        // ---- BINDENDER HORIZONT UND ABLEHNUNGEN --------------------------
+        // ---- WORAN DAS TOR SCHEITERT -------------------------------------
         println()
-        println("=".repeat(112))
-        println("BINDENDER HORIZONT UND ABLEHNUNGEN (ueber alle auswertbaren Naechte, Eintritt 3)")
-        println("=".repeat(112))
-        tore.forEach { (was, ukf) ->
-            val bs = brauchbar.map { auswerten(it, ukf, 3) }
-            val off = bs.flatMap { it.bindendeOffsets.entries }
-                .groupBy({ it.key }, { it.value }).mapValues { it.value.sum() }.toSortedMap()
-            val abl = bs.flatMap { it.ablehnungen.entries }
-                .groupBy({ it.key }, { it.value }).mapValues { it.value.sum() }
-            val raten = bs.flatMap { it.raten }
-            println("%-15s bindend[min]=%s".format(was, off.toString().take(70)))
-            println("%-15s Ablehnungen=%s  ohne Suche=%d".format(
-                "", abl.ifEmpty { "keine" }, bs.sumOf { it.ohneSuche }))
-            if (raten.isNotEmpty()) println("%-15s Raten n=%d min=%.2f median=%.2f max=%.2f".format(
-                "", raten.size, raten.min(), raten.sorted()[raten.size / 2], raten.max()))
-        }
-
-        // ---- DAS TOR SELBST ----------------------------------------------
-        println()
-        println("=".repeat(112))
-        println("WORAN DAS TOR SCHEITERT - ueber alle Nullzyklen der auswertbaren Naechte")
-        println("=".repeat(112))
-        val nz = brauchbar.flatMap { it.zyklen }.map { it.z }.filter { it.zeroActive }
+        println("=".repeat(96))
+        println("WORAN DAS TOR SCHEITERT - alle Nullzyklen der auswertbaren Naechte")
+        println("=".repeat(96))
         val gruende = listOf<Pair<String, (TeilbasalRig.RigZyklus) -> Boolean>>(
             "UKF < -0,03 / fehlt" to { z -> !(z.ukfRatePerMin?.isFinite() == true && z.ukfRatePerMin >= -0.03) },
             "Schutzgrund liegt an" to { z -> !z.verdictNone },
@@ -424,14 +451,14 @@ class TeilbasalMehrNaechte : TestBase() {
             "Abwaertsrisiko" to { z -> z.descentRiskActive },
         )
         gruende.forEach { (was, f) ->
-            val n = nz.count(f)
-            val allein = nz.count { z -> gruende.count { it.second(z) } == 1 && f(z) }
+            val n = alleNull.count(f)
+            val allein = alleNull.count { z -> gruende.count { it.second(z) } == 1 && f(z) }
             println("  %-22s %5d von %d (%2.0f%%)   ALLEINIGER Grund: %d"
-                .format(was, n, nz.size, 100.0 * n / nz.size, allein))
+                .format(was, n, alleNull.size, 100.0 * n / alleNull.size, allein))
         }
-        println("  UKF-Verteilung in Nullzyklen: " + listOf(-0.03, -0.10, -0.20, -0.40).joinToString("  ") { s ->
-            "%.2f:%d".format(s, nz.count { it.ukfRatePerMin?.let { u -> u >= s } == true })
-        } + "  von ${nz.size}")
-        println("=".repeat(112))
+        println("  Ohne das UKF-Tor bleiben als Sperren: Schutzgrund, Tief, Abwaertsrisiko,")
+        println("  Health - und die Suche selbst (Bahnminimum unter Boden in %d Zyklen)."
+            .format(alleNull.count { z -> (z.minLowerMgdl ?: -999.0) < (z.guardFloorMgdl ?: 70.0) }))
+        println("=".repeat(96))
     }
 }

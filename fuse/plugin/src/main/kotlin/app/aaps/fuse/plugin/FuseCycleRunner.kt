@@ -52,6 +52,7 @@ import app.aaps.fuse.core.predictor.ActualTrajectoryFactory
 import app.aaps.fuse.core.predictor.DriveDecayModel
 import app.aaps.fuse.core.controller.CandidateGate
 import app.aaps.fuse.core.controller.BasalRecoverySearch
+import app.aaps.fuse.core.controller.PartialRecoveryGate
 import app.aaps.fuse.core.profile.ProfileSlots
 import app.aaps.fuse.core.controller.CandidateSearch
 import app.aaps.fuse.core.controller.EvidenceStock
@@ -273,7 +274,6 @@ class FuseCycleRunner(
          * einen festen Eintritt, damit im Rig-Vergleich nur der ANTEIL
          * variiert.
          */
-        const val PARTIAL_RECOVERY_ENTRY_CYCLES = 3
 
         /**
          * Der Mahlzeitenstand als ABLEITUNG aus den Episodenbudgets.
@@ -5188,33 +5188,37 @@ class FuseCycleRunner(
             // ersetzt ihn NICHT.
             //
             // Eintritt: N zusammenhaengende frische Zyklen ohne
-            // Schutzgrund, mit gesundem Signal, ohne gemessenes Tief, ohne
-            // Abwaertsrisiko und mit UKF >= -0,03. Bewusst OHNE
-            // q1NichtFallend - gerade der milde Restabfall ist der Fall,
-            // fuer den die Teilstufe gebaut ist.
+            // Schutzgrund, mit gesundem Signal, ohne gemessenes Tief und
+            // ohne Abwaertsrisiko. Bewusst OHNE q1NichtFallend - gerade der
+            // milde Restabfall ist der Fall, fuer den die Teilstufe gebaut
+            // ist - und seit der Mehrnaechte-Auswertung auch OHNE eigenes
+            // UKF-Tor: das war die SCHAERFERE Flachheitsforderung neben dem
+            // weggelassenen q1NichtFallend und schloss in 633 von 1526
+            // Nullzyklen als EINZIGER Grund. Ein steiler Fall wird von
+            // descentRisk, LowThreat und der Suche selbst gefangen; die
+            // Begruendung steht bei [PartialRecoveryGate].
             //
             // Rueckfall: sobald eine dieser Bedingungen faellt, gilt im
             // SELBEN Zyklus wieder ZERO (der Streak wird genullt).
-            val partialMoeglich = cfg.partialRecoveryEnabled &&
-                episodes.zeroLatch.active &&
-                !measuredLow && !descentRisk.active &&
-                step.health == Health.READY &&
-                lowThreatResult.verdict == LowThreatGate.Verdict.NONE &&
-                signal.ukfRatePerMin.isFinite() && signal.ukfRatePerMin >= -0.03
-            partialStreak = if (partialMoeglich) {
-                // Derselbe Anschluss wie beim Ruhe-Zaehler: die SIGNAL-Uhr
-                // muss streng steigen und darf hoechstens 90 s Abstand
-                // haben, sonst beginnt der Zaehler neu.
-                val anschluss = partialLastTs > 0L &&
-                    signal.sourceTs > partialLastTs &&
-                    signal.sourceTs - partialLastTs <= 90_000L
-                if (anschluss) partialStreak + 1 else 1
-            } else 0
+            //
+            // Die Bedingung steht in [PartialRecoveryGate] - EINE Stelle,
+            // die auch das Auswertungs-Rig ruft, damit dort nicht eine
+            // zweite Fassung derselben Regel gemessen wird.
+            val partialMoeglich = PartialRecoveryGate.open(
+                enabled = cfg.partialRecoveryEnabled,
+                zeroLatchActive = episodes.zeroLatch.active,
+                measuredLow = measuredLow,
+                descentRiskActive = descentRisk.active,
+                healthReady = step.health == Health.READY,
+                verdictNone = lowThreatResult.verdict == LowThreatGate.Verdict.NONE,
+            )
+            partialStreak = PartialRecoveryGate.streak(
+                partialMoeglich, partialStreak, partialLastTs, signal.sourceTs)
             if (partialMoeglich) partialLastTs = signal.sourceTs
             // Ohne tragbare Rate gibt es keine Teilstufe - eine nicht
             // auswertbare Bahn oder ein auf 0 gerasteter Wert bedeutet:
             // es bleibt bei der Schutz-Null (fail-closed).
-            partialAktiv = partialStreak >= PARTIAL_RECOVERY_ENTRY_CYCLES &&
+            partialAktiv = partialStreak >= PartialRecoveryGate.ENTRY_CYCLES &&
                 partialRateUPerH > 0.0 && partialReject == null
             if (episodes.zeroLatch.active &&
                 decisionVorZeroLatch.tbr != FuseController.TbrAction.ZERO_TEMP

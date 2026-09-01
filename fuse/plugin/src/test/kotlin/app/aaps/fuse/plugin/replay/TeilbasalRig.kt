@@ -2,6 +2,7 @@ package app.aaps.fuse.plugin.replay
 
 import app.aaps.fuse.core.controller.BasalRecoverySearch
 import app.aaps.fuse.core.controller.CandidateSearch
+import app.aaps.fuse.core.controller.PartialRecoveryGate
 import app.aaps.fuse.core.insulin.UnitInsulinKernel
 import app.aaps.fuse.core.predictor.IsfSlot
 import app.aaps.fuse.core.predictor.PredictorResult
@@ -11,6 +12,30 @@ import app.aaps.fuse.core.profile.BasalSlot
 /**
  * DER RIG FUER DIE TEILBASAL-RUECKKEHR - was die Guard-Umkehr in den
  * aufgezeichneten Nullphasen freigegeben HAETTE.
+ *
+ * ===================================================================
+ * ZWEI GROESSEN, DIE DIESER RIG NICHT MESSEN KANN (Review-Ruecknahme)
+ * ===================================================================
+ * 1. **Der bindende Bahnpunkt ist hier eine TAUTOLOGIE, kein Befund.**
+ *    Auf der flachgelegten Bahn ist `basis[i]` ueberall gleich, und die
+ *    Senkung `s[i]` waechst monoton. Also liegt das Minimum von
+ *    `L0 - r*s[i]` bei jeder Rate > 0 ZWANGSLAEUFIG am letzten Punkt.
+ *    Dass "alle Kandidaten bei 120/120 binden", folgt aus der
+ *    Konstruktion und sagt NICHTS ueber den Horizont. Die einzige
+ *    zulaessige Quelle dafuer ist die aufgezeichnete Verteilung von
+ *    `decision.timeToMinSafetyLowerCombinedMin` - sie steht in
+ *    [RigZyklus.baselineBindenderOffsetMin] und wird GETRENNT
+ *    ausgewiesen, nie mit dem synthetischen Punkt vermischt.
+ * 2. **Ohne echtes Profilbasal sind Raten, Ratenwechsel,
+ *    Aktuationskanten, Profilbegrenzung und Mengen nicht
+ *    produktionsaequivalent.** Der Ersatzdeckel laesst Raten zu, die in
+ *    Produktion aufs Profil geklemmt wuerden - und Klemmen VERSCHMILZT
+ *    benachbarte Raten zu einer konstanten, was Wechsel und damit
+ *    Kommandos verschwinden liesse. Diese Groessen gelten nur fuer
+ *    Klasse A. Belastbar bleiben ohne Profil: Toroffenheit,
+ *    Eintrittsserien und die Frage, OB eine positive Teilrate tragbar
+ *    gewesen waere (die Klassifikation braucht nur `Rate > 0`, und das
+ *    ist gegen jedes Profil >= einem Pumpenschritt dasselbe).
  *
  * ===================================================================
  * DIE EINE EINSCHRAENKUNG, DIE ALLES ANDERE EINRAHMT
@@ -116,35 +141,35 @@ object TeilbasalRig {
         val suche: BasalRecoverySearch.Ergebnis?,
     )
 
-    /** Derselbe Eintrittszaehler wie in der Produktion. */
-    const val EINTRITT_ZYKLEN = 3
+    /** Der Eintrittszaehler der Produktion - nicht nachgebaut. */
+    const val EINTRITT_ZYKLEN = PartialRecoveryGate.ENTRY_CYCLES
 
-    /** Derselbe Anschlussabstand wie in der Produktion. */
-    const val ANSCHLUSS_MAX_MS = 90_000L
+    /** Der Anschlussabstand der Produktion - nicht nachgebaut. */
+    const val ANSCHLUSS_MAX_MS = PartialRecoveryGate.ANSCHLUSS_MAX_MS
 
-    /** Die produktive UKF-Schwelle des Eintrittstors [mg/dl je min]. */
+    /** Die frueher eingebaute UKF-Schwelle - nur noch fuer den Vergleich. */
     const val UKF_SCHWELLE = -0.03
 
     /**
-     * Das produktive Eintrittstor, Feld fuer Feld - ausdruecklich OHNE
-     * `q1NichtFallend`: der milde Restabfall ist der Fall, fuer den die
-     * Teilstufe gebaut ist.
+     * Das Eintrittstor. Die Bedingungen kommen aus [PartialRecoveryGate],
+     * also aus dem PRODUKTIONSCODE - es gibt keine zweite Fassung mehr.
      *
-     * [ukfSchwelle] ist NUR fuer die Messung parametrisiert. Der Standard
-     * ist der Produktionswert; ein anderer Wert misst eine ANDERE Regel
-     * und muss als solcher ausgewiesen werden.
+     * [ukfSchwelle] ist AUSSCHLIESSLICH die Vergleichsachse dieser
+     * Auswertung und in der Produktion nicht mehr vorhanden: `null` = das
+     * heutige Tor, jede Zahl = die frueher zusaetzlich geforderte
+     * Flachheit. Ein anderer Wert als `null` misst also eine ANDERE Regel
+     * als die gefahrene und muss so ausgewiesen werden.
      */
-    fun torOffen(z: RigZyklus, ukfSchwelle: Double? = UKF_SCHWELLE): Boolean =
-        z.zeroActive &&
-            !z.measuredLow &&
-            !z.descentRiskActive &&
-            z.signalHealthy &&
-            z.verdictNone &&
-            // `null` = KEIN zusaetzliches UKF-Tor. Alle uebrigen Bedingungen
-            // bleiben, und die vollstaendige BasalRecoverySearch ebenfalls -
-            // der Guard ist dann die einzige Fallpruefung statt der zweiten.
-            (ukfSchwelle == null ||
-                (z.ukfRatePerMin != null && z.ukfRatePerMin.isFinite() && z.ukfRatePerMin >= ukfSchwelle))
+    fun torOffen(z: RigZyklus, ukfSchwelle: Double? = null): Boolean =
+        PartialRecoveryGate.open(
+            enabled = true,
+            zeroLatchActive = z.zeroActive,
+            measuredLow = z.measuredLow,
+            descentRiskActive = z.descentRiskActive,
+            healthReady = z.signalHealthy,
+            verdictNone = z.verdictNone,
+        ) && (ukfSchwelle == null ||
+            (z.ukfRatePerMin != null && z.ukfRatePerMin.isFinite() && z.ukfRatePerMin >= ukfSchwelle))
 
     /**
      * Die FLACHGELEGTE Bahn auf Niveau [minLower] - siehe Klassenkopf.
@@ -227,7 +252,10 @@ object TeilbasalRig {
         basalStepUPerH: Double = 0.05,
         tbrDauerMin: Int = 30,
         horizontMin: Int? = null,
-        ukfSchwelle: Double? = UKF_SCHWELLE,
+        // DERSELBE Default wie das Produktionstor: kein UKF-Tor. Ein
+        // abweichender Default hier waere die gefaehrlichste Art von
+        // zweiter Wahrheit - der Rig maesse dann still eine andere Regel.
+        ukfSchwelle: Double? = null,
         eintrittZyklen: Int = EINTRITT_ZYKLEN,
         ersatzdeckelUPerH: Double? = null,
     ): List<Pair<RigZyklus, RigErgebnis>> {
@@ -239,12 +267,7 @@ object TeilbasalRig {
                 return@map z to RigErgebnis(Zustand.KEINE_NULL, 0.0, 0, false, null)
             }
             val offen = torOffen(z, ukfSchwelle)
-            streak = if (offen) {
-                val anschluss = letzterSourceTs > 0L &&
-                    z.sourceTs > letzterSourceTs &&
-                    z.sourceTs - letzterSourceTs <= ANSCHLUSS_MAX_MS
-                if (anschluss) streak + 1 else 1
-            } else 0
+            streak = PartialRecoveryGate.streak(offen, streak, letzterSourceTs, z.sourceTs)
             if (offen) letzterSourceTs = z.sourceTs
             val suche = if (offen && streak >= eintrittZyklen)
                 rate(z, kernelFuer, basalStepUPerH, tbrDauerMin, horizontMin, ersatzdeckelUPerH) else null
@@ -283,7 +306,28 @@ object TeilbasalRig {
          * beide sind Pumpenkommandos.
          */
         val kanten: Int,
-        val bindendeOffsets: Map<Int, Int>,
+        /**
+         * ARTEFAKT DER FLACHLEGUNG, kein Befund: auf konstanter Baseline
+         * mit monoton wachsender Senkung liegt das Minimum bei jeder Rate
+         * > 0 zwangsläufig am letzten Punkt. Bleibt nur als
+         * Selbstpruefung stehen (weicht ein Wert ab, stimmt die
+         * Konstruktion nicht) und darf NICHT als Horizontbefund gelesen
+         * werden.
+         */
+        val bindendeOffsetsSynthetisch: Map<Int, Int>,
+        /**
+         * DIE ECHTE MESSUNG: `decision.timeToMinSafetyLowerCombinedMin`
+         * aus dem Trail, ueber ALLE Nullzyklen der Nacht. Diese Verteilung
+         * beschreibt die AUFGEZEICHNETE Bahn und ist von der Flachlegung
+         * unberuehrt.
+         */
+        val trailBindendeOffsets: Map<Int, Int>,
+        /**
+         * `true` = Profilbasal in ALLEN Teilstufen-Zyklen belegt. Nur dann
+         * sind [basalU], [raten], [kanten], [zyklenProfilbegrenzt] und
+         * [zyklenGuardbegrenzt] produktionsaequivalent.
+         */
+        val mengenGueltig: Boolean,
         val ablehnungen: Map<String, Int>,
         val ohneSuche: Int,
         /**
@@ -323,6 +367,7 @@ object TeilbasalRig {
         var profilBegrenzt = 0; var guardBegrenzt = 0; var ohneSuche = 0
         val raten = mutableListOf<Double>()
         val offsets = mutableMapOf<Int, Int>()
+        val trailOffsets = mutableMapOf<Int, Int>()
         val ablehnungen = mutableMapOf<String, Int>()
         val phasen = mutableListOf<Double>()
         var phaseVon = 0L
@@ -332,6 +377,11 @@ object TeilbasalRig {
         var laufendSeit = 0L
         lauf.forEachIndexed { i, (z, e) ->
             val m = dauer(i)
+            // Die ECHTE Verteilung, ueber ALLE Nullzyklen - unabhaengig
+            // davon, ob eine Teilstufe zustande kaeme.
+            if (z.zeroActive) z.baselineBindenderOffsetMin?.let {
+                trailOffsets[it] = (trailOffsets[it] ?: 0) + 1
+            }
             when (e.zustand) {
                 Zustand.ZERO -> mz += m
                 Zustand.PARTIAL -> {
@@ -380,7 +430,10 @@ object TeilbasalRig {
             basalU = if (mengeBekannt) menge else null,
             raten = raten, zyklenProfilbegrenzt = profilBegrenzt, zyklenGuardbegrenzt = guardBegrenzt,
             eintritte = ein, rueckfaelle = rueck, kanten = kanten,
-            bindendeOffsets = offsets.toSortedMap(), ablehnungen = ablehnungen,
+            bindendeOffsetsSynthetisch = offsets.toSortedMap(),
+            trailBindendeOffsets = trailOffsets.toSortedMap(),
+            mengenGueltig = mengeBekannt,
+            ablehnungen = ablehnungen,
             ohneSuche = ohneSuche, smbUnterdruecktU = smb,
         )
     }

@@ -126,56 +126,67 @@ class TeilbasalRigTest : TestBase() {
     // ---- DAS EINTRITTSTOR -------------------------------------------------
 
     @Test
-    fun `drei zusammenhaengende offene Zyklen oeffnen die Teilstufe - zwei nicht`() {
-        val e = TeilbasalRig.lauf((0..4).map { z(it) }, ::kernel)
+    fun `der Eintritt kostet genau so viele Zyklen wie die Produktion verlangt`() {
+        val n = TeilbasalRig.EINTRITT_ZYKLEN
+        val e = TeilbasalRig.lauf((0 until n + 2).map { z(it) }, ::kernel)
         assertEquals(
-            listOf(TeilbasalRig.Zustand.ZERO, TeilbasalRig.Zustand.ZERO, TeilbasalRig.Zustand.PARTIAL,
-                   TeilbasalRig.Zustand.PARTIAL, TeilbasalRig.Zustand.PARTIAL),
+            List(n - 1) { TeilbasalRig.Zustand.ZERO } + List(3) { TeilbasalRig.Zustand.PARTIAL },
             e.map { it.second.zustand },
-        )
+        ) { "Eintritt=$n" }
     }
 
     @Test
     fun `jede einzelne Schutzbedingung faellt im SELBEN Zyklus auf ZERO zurueck`() {
+        // UKF ist hier KEINE Sperre mehr - das Tor ist entfernt. Die
+        // Liste enthaelt genau die verbliebenen Bedingungen; kaeme eine
+        // Flachheitsschwelle zurueck, faellt der Waechter-Test in
+        // PartialRecoveryGateTest.
         for ((was, stoerer) in listOf<Pair<String, (Int) -> TeilbasalRig.RigZyklus>>(
             "Verdikt zurueck" to { m -> z(m, verdictNone = false) },
             "Signal krank" to { m -> z(m, gesund = false) },
             "gemessenes Tief" to { m -> z(m, tief = true) },
             "Abwaertsrisiko" to { m -> z(m, abwaerts = true) },
-            "UKF faellt" to { m -> z(m, ukf = -0.20) },
-            "UKF fehlt" to { m -> z(m, ukf = null) },
         )) {
-            val zyklen = (0..3).map { z(it) } + stoerer(4) + (5..7).map { z(it) }
+            val n = TeilbasalRig.EINTRITT_ZYKLEN
+            // n offene Zyklen (0..n-1), dann der Stoerer, dann wieder n offene
+            val zyklen = (0 until n).map { z(it) } + stoerer(n) + (n + 1..2 * n).map { z(it) }
             val e = TeilbasalRig.lauf(zyklen, ::kernel)
-            assertEquals(TeilbasalRig.Zustand.PARTIAL, e[3].second.zustand, was)
-            assertEquals(TeilbasalRig.Zustand.ZERO, e[4].second.zustand, "$was: Rueckfall im selben Zyklus")
-            assertEquals(0, e[4].second.streak, "$was: der Streak wird genullt")
-            assertEquals(TeilbasalRig.Zustand.ZERO, e[6].second.zustand, "$was: und der Wiedereintritt kostet drei Zyklen")
-            assertEquals(TeilbasalRig.Zustand.PARTIAL, e[7].second.zustand, was)
+            assertEquals(TeilbasalRig.Zustand.PARTIAL, e[n - 1].second.zustand, was)
+            assertEquals(TeilbasalRig.Zustand.ZERO, e[n].second.zustand, "$was: Rueckfall im selben Zyklus")
+            assertEquals(0, e[n].second.streak, "$was: der Streak wird genullt")
+            assertEquals(TeilbasalRig.Zustand.ZERO, e[2 * n - 1].second.zustand,
+                "$was: der Wiedereintritt kostet wieder volle $n Zyklen")
+            assertEquals(TeilbasalRig.Zustand.PARTIAL, e[2 * n].second.zustand, was)
         }
     }
 
     @Test
     fun `eine Luecke ueber 90 Sekunden auf der Signaluhr nullt den Streak`() {
-        val zyklen = listOf(z(0), z(1), z(2).copy(sourceTs = anchor + 4 * 60_000L), z(5), z(6))
-        val e = TeilbasalRig.lauf(zyklen, ::kernel)
-        assertEquals(1, e[2].second.streak) { "3 min Abstand ist kein Anschluss" }
-        assertEquals(TeilbasalRig.Zustand.ZERO, e[2].second.zustand)
-        assertEquals(TeilbasalRig.Zustand.PARTIAL, e[4].second.zustand) { "danach kostet der Eintritt wieder drei" }
+        val n = TeilbasalRig.EINTRITT_ZYKLEN
+        // Erst n-1 zusammenhaengende, dann eine 3-min-Luecke, dann n weitere.
+        val vor = (0 until n - 1).map { z(it) }
+        val luecke = listOf(z(n - 1).copy(sourceTs = anchor + (n + 2) * 60_000L))
+        val nach = (n + 3 until n + 3 + n).map { z(it) }
+        val e = TeilbasalRig.lauf(vor + luecke + nach, ::kernel)
+        assertEquals(1, e[n - 1].second.streak) { "3 min Abstand ist kein Anschluss" }
+        assertEquals(TeilbasalRig.Zustand.ZERO, e[n - 1].second.zustand)
+        assertEquals(TeilbasalRig.Zustand.PARTIAL, e.last().second.zustand) {
+            "danach kostet der Eintritt wieder volle $n"
+        }
     }
 
     @Test
     fun `eine ZURUECKSPRINGENDE Signaluhr nullt den Streak ebenfalls`() {
         // Der Zyklus laeuft weiter, aber der Messpunkt ist derselbe oder
         // aelter - dann ist es kein neuer Beleg, sondern derselbe zweimal.
-        // Die SIGNAL-Uhr steht still, die Zyklusuhr laeuft: 0,1,1,2,3.
-        val zyklen = listOf(0, 1, 1, 2, 3).mapIndexed { i, s ->
-            z(i).copy(sourceTs = anchor + s * 60_000L)
-        }
+        // Die SIGNAL-Uhr steht bei Index 2 still, die Zyklusuhr laeuft.
+        val n = TeilbasalRig.EINTRITT_ZYKLEN
+        val quellen = listOf(0, 1, 1) + (2 until 2 + n).toList()
+        val zyklen = quellen.mapIndexed { i, s -> z(i).copy(sourceTs = anchor + s * 60_000L) }
         val e = TeilbasalRig.lauf(zyklen, ::kernel)
         assertEquals(1, e[2].second.streak) { "nicht streng steigend = kein Anschluss" }
         assertEquals(TeilbasalRig.Zustand.ZERO, e[2].second.zustand)
-        assertEquals(TeilbasalRig.Zustand.PARTIAL, e[4].second.zustand)
+        assertEquals(TeilbasalRig.Zustand.PARTIAL, e.last().second.zustand)
     }
 
     @Test
@@ -207,20 +218,52 @@ class TeilbasalRigTest : TestBase() {
     }
     // ---- OHNE UKF-TOR (Review-Variante) ----------------------------------
 
+    /**
+     * DER UNTERSCHIED ZWISCHEN TOR UND SUCHE - und er ist nicht kosmetisch.
+     *
+     * Eine TORBEDINGUNG nullt den Streak: der Wiedereintritt kostet wieder
+     * volle fuenf Zyklen. Eine ABLEHNENDE SUCHE tut das NICHT: das Tor
+     * blieb ja offen, nur die Bahn trug gerade nichts. Sobald sie wieder
+     * traegt, greift die Stufe SOFORT, ohne erneute Wartezeit.
+     *
+     * Das ist die Produktionsregel (`partialStreak` haengt am Tor,
+     * `partialAktiv` zusaetzlich an Rate und Ablehnung) und gehoert
+     * festgehalten, weil beide Faelle von aussen gleich aussehen: es
+     * laeuft weiter die Null.
+     */
     @Test
-    fun `ohne UKF-Tor bleiben ALLE anderen Schutzbedingungen bestehen`() {
-        // Der Fall, den Toni ausdruecklich mitgemessen haben will: kein
-        // zusaetzliches UKF-Tor, aber LowThreat NONE, kein Abwaertsrisiko,
-        // kein gemessenes Tief, Health READY und die volle Suche bleiben.
-        val steilFallend = (0..4).map { z(it, ukf = -0.80) }
-        assertEquals(
-            List(5) { TeilbasalRig.Zustand.ZERO },
-            TeilbasalRig.lauf(steilFallend, ::kernel).map { it.second.zustand },
-        ) { "mit dem gebauten Tor bleibt es bei ZERO" }
-        val ohne = TeilbasalRig.lauf(steilFallend, ::kernel, ukfSchwelle = null)
-        assertEquals(TeilbasalRig.Zustand.PARTIAL, ohne[4].second.zustand) { "ohne UKF-Tor traegt die Bahn" }
+    fun `eine ablehnende Suche haelt den Streak - anders als eine Torbedingung`() {
+        val n = TeilbasalRig.EINTRITT_ZYKLEN
+        // Bahn unter dem Boden: Tor offen, Suche gibt nichts frei.
+        val tief = TeilbasalRig.lauf((0 until n + 1).map { z(it, minLower = 60.0) }, ::kernel)
+        assertTrue(tief.all { it.second.zustand == TeilbasalRig.Zustand.ZERO }) { "keine Rate, also keine Stufe" }
+        assertTrue(tief.all { it.second.torOffen }) { "das TOR war dabei offen" }
+        assertEquals(n + 1, tief.last().second.streak) { "und der Streak lief weiter" }
 
-        // aber JEDE andere Bedingung sperrt weiterhin
+        // Sobald die Bahn wieder traegt, greift es im NAECHSTEN Zyklus.
+        val gemischt = (0 until n).map { z(it, minLower = 60.0) } + listOf(z(n))
+        assertEquals(TeilbasalRig.Zustand.PARTIAL,
+            TeilbasalRig.lauf(gemischt, ::kernel).last().second.zustand) {
+            "ohne erneute Wartezeit - das Tor war durchgehend offen"
+        }
+    }
+
+    @Test
+    fun `das UKF-Tor ist weg - die Vergleichsachse zeigt genau das`() {
+        val n = TeilbasalRig.EINTRITT_ZYKLEN
+        val steilFallend = (0 until n).map { z(it, ukf = -0.80) }
+        // HEUTE (Default = Produktionstor): die Bahn traegt, also Teilstufe.
+        assertEquals(TeilbasalRig.Zustand.PARTIAL,
+            TeilbasalRig.lauf(steilFallend, ::kernel).last().second.zustand) {
+            "ohne UKF-Tor entscheidet die Bahn"
+        }
+        // FRUEHER (Vergleichsachse -0,03): dieselbe Lage blieb ZERO.
+        assertTrue(
+            TeilbasalRig.lauf(steilFallend, ::kernel, ukfSchwelle = -0.03)
+                .all { it.second.zustand == TeilbasalRig.Zustand.ZERO }
+        ) { "das war die alte Regel - die Achse muss sie noch abbilden koennen" }
+
+        // JEDE andere Bedingung sperrt weiterhin, auch heute.
         for ((was, stoerer) in listOf<Pair<String, (Int) -> TeilbasalRig.RigZyklus>>(
             "Verdikt" to { m -> z(m, ukf = -0.80, verdictNone = false) },
             "Health" to { m -> z(m, ukf = -0.80, gesund = false) },
@@ -228,13 +271,13 @@ class TeilbasalRigTest : TestBase() {
             "Abwaertsrisiko" to { m -> z(m, ukf = -0.80, abwaerts = true) },
             "Bahn unter Boden" to { m -> z(m, ukf = -0.80, minLower = 60.0) },
         )) {
-            val e = TeilbasalRig.lauf((0..4).map(stoerer), ::kernel, ukfSchwelle = null)
+            val e = TeilbasalRig.lauf((0 until n).map(stoerer), ::kernel)
             assertTrue(e.all { it.second.zustand == TeilbasalRig.Zustand.ZERO }, was)
         }
-        // und ein FEHLENDER UKF sperrt dann NICHT mehr - das ist der Preis
-        val ohneWert = TeilbasalRig.lauf((0..4).map { z(it, ukf = null) }, ::kernel, ukfSchwelle = null)
-        assertEquals(TeilbasalRig.Zustand.PARTIAL, ohneWert[4].second.zustand) {
-            "ohne UKF-Tor ist ein fehlender UKF kein Hindernis mehr - bewusst so gemessen"
+        // Ein FEHLENDER UKF sperrt nicht mehr - benannter Preis der Entfernung.
+        assertEquals(TeilbasalRig.Zustand.PARTIAL,
+            TeilbasalRig.lauf((0 until n).map { z(it, ukf = null) }, ::kernel).last().second.zustand) {
+            "ohne UKF-Tor ist ein fehlender UKF kein Hindernis mehr"
         }
     }
 
