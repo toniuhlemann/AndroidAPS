@@ -458,6 +458,49 @@ class FuseCycleRunner(
          * keine Wirkung, wuerde aber den Schwanz-Vermerk unnoetig auf
          * `transportBounded` ziehen.
          */
+        /**
+         * DER SERIEN-HEADROOM DES MARKERLOSEN KORREKTURPFADS (Variante 2).
+         *
+         * Deckel MINUS was im Fenster schon gebucht ist MINUS die offene
+         * Transportmenge - aber JEDE PROPOSAL-MENGE NUR EINMAL.
+         *
+         * DER FEHLER, GEGEN DEN DIE ID-PRUEFUNG STEHT (Review-Befund): die
+         * Liste wird beim Publizieren angelegt, nicht erst bei der
+         * Pumpenbestaetigung. Eine publizierte, noch offene Dosis steht
+         * damit GLEICHZEITIG in der Liste und im Transport. Ein pauschaler
+         * skalarer Abzug zieht sie zweimal ab - bei Deckel 1,00 und einer
+         * offenen Korrektur von 0,30 blieben 0,40 statt 0,70 uebrig. Die
+         * Richtung ist konservativ, aber sie verfaelscht den
+         * Variantenvergleich und schliesst den Kanal zu frueh.
+         *
+         * Deshalb zaehlt der Transport nur Posten, deren Kennung NICHT
+         * schon in der Liste steht. Ein Posten ohne nachgetragene Kennung
+         * in der Liste kann nicht zugeordnet werden - dann bleibt es beim
+         * doppelten Abzug, und das ist die sichere Richtung. Genau
+         * deswegen ist das Nachtragen der Kennung Pflicht
+         * (s. `resolveReservation`).
+         *
+         * `null` = kein Deckel (Default). Dann rechnet das Gate bitgleich
+         * zum bisherigen Stand.
+         */
+        internal fun serienHeadroom(
+            capU: Double,
+            fensterMin: Int,
+            gebucht: Collection<app.aaps.fuse.plugin.ledger.EpisodeBudgets.CorrectionDelivery>,
+            transport: List<TransportDose>,
+            nowTs: Long,
+        ): Double? {
+            if (!(capU > 0.0)) return null
+            val fensterMs = fensterMin * 60_000L
+            val imFenster = gebucht.filter { nowTs - it.ts <= fensterMs }
+            val vertreten = imFenster.mapNotNull { it.proposalId }.toSet()
+            val gebuchtU = imFenster.sumOf { it.amountU }
+            val transportU = transport
+                .filter { it.proposalId !in vertreten }
+                .sumOf { it.amountU }
+            return (capU - gebuchtU - transportU).coerceAtLeast(0.0)
+        }
+
         internal fun transportDoses(
             items: List<OpenTransportItem>,
             witness: TransportInclusion.IobSnapshotWitness?,
@@ -1644,8 +1687,13 @@ class FuseCycleRunner(
         //
         // `null` = kein Deckel. Das ist der Default und laesst das Gate
         // bitgleich zum bisherigen Stand rechnen.
-        val serienHeadroomU: Double? =
-            serienHeadroom(cfg, episodes, signal.sourceTs, transportModelledU)
+        val serienHeadroomU: Double? = serienHeadroom(
+            capU = cfg.correctionSeriesCapU,
+            fensterMin = cfg.correctionSeriesWindowMin,
+            gebucht = episodes.correctionDeliveries,
+            transport = transport,
+            nowTs = signal.sourceTs,
+        )
         // Der Kern wird weiterhin TRAEGE gebaut: ohne Posten faellt der Aufwand
         // (~540 Modellabfragen) ganz weg.
         val pending: List<PendingInsulinEffect> =
@@ -2429,7 +2477,7 @@ class FuseCycleRunner(
             if (kernel() == null)
                 return abort("$warum | noFallback=${kernelReject ?: "KERNEL_UNAVAILABLE"}", signal, cfg, step, evidenz = evidenz)
             return markerFallbackCycle(
-                rejected, warum, signal, step, cfg, state, profile, pumpe, tempBasalFallback,
+                rejected, transport, warum, signal, step, cfg, state, profile, pumpe, tempBasalFallback,
                 computeTs, markerTs, mealMarkerActive, measuredLow, descentRisk, descentLatch,
                 descentCarryEligibility, manualBolusAfterMarkerU, treatmentView, evidenceEpisodeId,
                 episodeGate.denial?.name, episodeGate.creditRevoked, evidenz,
@@ -5918,6 +5966,9 @@ class FuseCycleRunner(
     @Suppress("LongParameterList")
     private fun markerFallbackCycle(
         rejected: PredictorOutcome.Rejected,
+        /** Dieselbe Transportsicht wie im Hauptpfad - fuer den ID-Abgleich
+         *  des Serien-Deckels. KEINE zweite Ledger-Lesung. */
+        transportDosen: List<TransportDose>,
         warum: String,
         signal: FuseSignalSource.Signal,
         step: ObserverStep,
@@ -6188,8 +6239,13 @@ class FuseCycleRunner(
                     pumpIncrementU = pumpe.bolusStepU,
                     // Derselbe Deckel wie im Hauptpfad - der Fallback ist
                     // ein Notausgang, kein Freibrief.
-                    correctionSeriesHeadroomU =
-                        serienHeadroom(cfg, episodes, signal.sourceTs, transportModelledU),
+                    correctionSeriesHeadroomU = serienHeadroom(
+                        capU = cfg.correctionSeriesCapU,
+                        fensterMin = cfg.correctionSeriesWindowMin,
+                        gebucht = episodes.correctionDeliveries,
+                        transport = transportDosen,
+                        nowTs = signal.sourceTs,
+                    ),
                 )
                 fallbackGateResult = g
                 when {
@@ -6641,32 +6697,7 @@ class FuseCycleRunner(
      *  (die Null haelt laenger, nicht kuerzer). */
     private var zeroReasonGoneStreak = 0
 
-    /**
-     * DER SERIEN-HEADROOM DES MARKERLOSEN KORREKTURPFADS (Variante 2).
-     *
-     * Deckel MINUS was im Fenster schon geflossen ist MINUS die noch
-     * offene Transportmenge. Der Transportabzug steht hier, weil eine
-     * publizierte, aber noch nicht bestaetigte Menge sonst zweimal
-     * ausgegeben werden koennte - einmal jetzt und einmal, wenn sie
-     * spaeter bestaetigt in der Liste steht.
-     *
-     * `null` = kein Deckel (Default). Dann rechnet das Gate bitgleich zum
-     * bisherigen Stand.
-     */
-    private fun serienHeadroom(
-        cfg: Config,
-        episodes: app.aaps.fuse.plugin.ledger.EpisodeBudgets,
-        nowTs: Long,
-        transportU: Double,
-    ): Double? = cfg.correctionSeriesCapU
-        .takeIf { it > 0.0 }
-        ?.let { deckel ->
-            val fensterMs = cfg.correctionSeriesWindowMin * 60_000L
-            val imFenster = episodes.correctionDeliveries
-                .filter { nowTs - it.ts <= fensterMs }
-                .sumOf { it.amountU }
-            (deckel - imFenster - transportU).coerceAtLeast(0.0)
-        }
+
     /** AUSLOESE-Zaehler des Fall-Verdikts (v29): zwei aufeinanderfolgende
      *  qualifizierende Zyklen zuenden, Unterbrechung nullt. Prozesslokal
      *  wie die Erholungs-Runtime - ein Neustart im Anlauf beginnt neu. */

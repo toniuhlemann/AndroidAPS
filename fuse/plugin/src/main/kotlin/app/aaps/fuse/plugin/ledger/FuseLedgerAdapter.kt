@@ -1716,11 +1716,22 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
                     true
                 } else false
             } else true   // ohne Mahlzeitenzeile gibt es nichts nachzutragen
-        if (proposalId != null && bleibt > 0.0 && r.correctionTs > 0L) {
-            val ci = episodes.correctionDeliveries
-                .indexOfLast { it.ts == r.correctionTs && it.proposalId == null }
-            if (ci >= 0) episodes.correctionDeliveries[ci].proposalId = proposalId
-        }
+
+        // DIESELBE PFLICHT FUER DIE SERIENZEILE (Review-Befund). Ohne die
+        // Kennung kann der Serien-Headroom die Zeile nicht gegen den
+        // Transport abgleichen (dann zaehlt dieselbe Menge doppelt), und
+        // [revokeSettled] faende sie spaeter nicht - eine Ablage, die
+        // widerrufbar AUSSIEHT, es aber nicht ist. Schlaegt das Nachtragen
+        // fehl, entsteht deshalb gar keine Ablage.
+        val korrekturNachgetragen =
+            if (proposalId != null && bleibt > 0.0 && r.correctionTs > 0L) {
+                val ci = episodes.correctionDeliveries
+                    .indexOfLast { it.ts == r.correctionTs && it.proposalId == null }
+                if (ci >= 0) {
+                    episodes.correctionDeliveries[ci].proposalId = proposalId
+                    true
+                } else false
+            } else true   // ohne Serienzeile gibt es nichts nachzutragen
 
         // KEINE ABLAGE OHNE NACHGETRAGENE KENNUNG (Toni 19.08.).
         //
@@ -1735,7 +1746,7 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
         // ist "gar keine Entlastung" der richtige Ausgang: die Buchung bleibt
         // stehen, FUSE liefert spaeter zu wenig statt zu viel.
         episodes.settled =
-            if (proposalId != null && bleibt > 0.0 && nachgetragen) EpisodeBudgets.Settled(
+            if (proposalId != null && bleibt > 0.0 && nachgetragen && korrekturNachgetragen) EpisodeBudgets.Settled(
                 proposalId = proposalId, amountU = bleibt, prime = r.prime,
                 onset = r.onset, mealTs = r.mealTs, correctionTs = r.correctionTs,
                 foundationPhase = r.foundationPhase,
