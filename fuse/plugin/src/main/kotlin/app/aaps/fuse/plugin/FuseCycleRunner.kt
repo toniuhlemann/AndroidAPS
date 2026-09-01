@@ -1105,6 +1105,13 @@ class FuseCycleRunner(
          *  neben der Absicht. `null` = keine TBR sichtbar. */
         val partialRecoveryObservedUPerH: Double? = null,
         val partialRecoveryObservedRemainingMin: Int? = null,
+        /**
+         * WOHER die beobachtete Rate stammt. `FAKE_EXTENDED` ist ein als
+         * TBR gelesener Extended Bolus - FUSE darf ihn NICHT steuern.
+         * Ohne dieses Feld saehe der Viewer eine laufende Rate und wuesste
+         * nicht, dass sie ausserhalb der Reichweite liegt.
+         */
+        val partialRecoveryObservedSource: String? = null,
         /** Ist die Pumpensicht belastbar? `UNKNOWN` heisst: der IST-Wert
          *  ist KEINE Aussage. */
         val partialRecoveryView: String? = null,
@@ -5687,9 +5694,15 @@ class FuseCycleRunner(
             // `Phase=NONE, Attempts=0`, und beim ersten Abbruch `Attempts=0`
             // statt 1. Phase, Ziel und Zaehler beschreiben denselben Zyklus
             // wie die Aktion.
-            partialRecoveryTargetUPerH = (episodes.ownPartialTbr.pendingRequest
-                ?: episodes.ownPartialTbr.confirmedRunning)?.rateUPerH
-                ?: wunschGeklemmt.takeIf { partialAktiv && it > 0.0 },
+            // Die Regel steht in PartialTbrOwnership.anzeigeZiel - EINE
+            // Stelle, und dort auch pruefbar: waehrend eines Abbruchs ist
+            // das Ziel die RUECKKEHRBASIS, nicht die Rate, die gerade
+            // beendet wird.
+            partialRecoveryTargetUPerH = PartialTbrOwnership.anzeigeZiel(
+                state = episodes.ownPartialTbr,
+                wunschGeklemmtUPerH = wunschGeklemmt.takeIf { partialAktiv },
+                rueckkehrBasisUPerH = aapsBasis,
+            ),
             partialRecoveryPhase = PartialTbrOwnership.anzeige(
                 ownStep.copy(state = episodes.ownPartialTbr)).name,
             partialRecoveryAction = letzteWirkung?.name,
@@ -5705,6 +5718,7 @@ class FuseCycleRunner(
             partialRecoveryObservedUPerH = currentTbr?.absoluteRateUPerH,
             partialRecoveryObservedRemainingMin = currentTbr?.remainingMin,
             partialRecoveryView = if (tbrSicht is PartialTbrOwnership.View.Unknown) "UNKNOWN" else "AUTHORITATIVE",
+            partialRecoveryObservedSource = currentTbr?.sourceType?.name,
             zeroLatchArmStreak = zeroArmStreak,
             correctionReversal = reversal,
             correctionRearm = rearm,

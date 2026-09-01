@@ -13108,8 +13108,10 @@ class TransportWiringTest : TestBaseWithProfile() {
         quelleMeldet(TB(timestamp = System.currentTimeMillis(), duration = 30 * 60_000L,
                         rate = 0.0, isAbsolute = true, type = TB.Type.NORMAL))
         val abbrueche = mutableListOf<Long>()
+        val lauf2 = mutableListOf<FuseCycleRunner.Outcome>()
         for (i in 0 until 30) {
             val (o, k) = zyklusMitKommando()
+            lauf2 += o
             assertEquals(0.0, o.decision.smbU, 1e-12) { "waehrend des Abbruchs nie ein SMB" }
             if (k != null && k.rateUPerH == 0.0 && k.durationMin == 0) abbrueche += clock / 60_000L
         }
@@ -13122,6 +13124,24 @@ class TransportWiringTest : TestBaseWithProfile() {
             "jeder Wiederholversuch haelt den Backoff ein: $abbrueche"
         }
         assertNotNull(besitz().ending) { "und der Abbruchzustand steht" }
+
+        // ---- ANZEIGEVERTRAG WAEHREND DES ABBRUCHS ----------------------
+        //
+        // Als ZIEL steht dort die RUECKKEHRBASIS, nicht die alte eigene
+        // Teilrate - sonst zeigte die Zeile als Ziel genau die Rate, die
+        // gerade beendet wird. Und die Quelle der beobachteten Rate ist
+        // benannt: FUSE darf einen FAKE_EXTENDED gar nicht steuern.
+        val letzter = lauf2.last { it.tbr != null }
+        assertTrue(letzter.partialRecoveryPhase in listOf("ENDING", "BACKOFF", "GIVEN_UP")) {
+            "Phase=${letzter.partialRecoveryPhase}"
+        }
+        assertEquals("TEMP_BASAL", letzter.partialRecoveryObservedSource)
+        assertEquals(0.0, letzter.partialRecoveryObservedUPerH ?: -1.0, 1e-9) {
+            "links die laufende Null"
+        }
+        letzter.partialRecoveryTargetUPerH?.let {
+            assertTrue(it > 0.0) { "das Ziel ist die Rueckkehrbasis, nicht die beendete Rate" }
+        }
 
         // ---- (5) AUTORITATIV KEINE TBR -> ZUSTAND GELOESCHT -------------
         quelleMeldet(null)

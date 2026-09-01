@@ -788,4 +788,123 @@ class PartialTbrOwnershipTest {
         assertEquals(TbrPolicy.PARTIAL_TO_PROFILE_REASON, d.reason)
     }
 
+    // =====================================================================
+    // DIE DREI PFLICHTSEQUENZEN NACH DEM CANCEL
+    // =====================================================================
+
+    /**
+     * (1) Eigene Rate, Abbruch gesendet, dann autoritativ NICHTS mehr.
+     *
+     * Vorher entfernte der `wantProfile`-Zweig nur `ending` und liess
+     * `confirmedRunning` stehen - waehrend derselbe Step `smbBlocked=false`
+     * meldete. Zustand, Phase und SMB widersprachen sich.
+     */
+    @Test
+    fun `nach erfolgreichem Cancel ist der Zustand vollstaendig leer`() {
+        val s = State(
+            confirmedRunning = id(0.30, t0, 30),
+            ending = Ending(sinceTs = min(5), attempts = 1, lastRequestTs = min(5)),
+        )
+        val r = schritt(s, auth(null), min(6), wantProfile = true, deckel = 0.50)
+        assertTrue(r.state.leer) { "Zustand=${r.state}" }
+        assertNull(r.state.ending)
+        assertFalse(r.smbBlocked)
+        assertEquals(PartialTbrOwnership.Anzeige.NONE, PartialTbrOwnership.anzeige(r))
+        assertEquals(Reason.CLEARED_CONFIRMED, r.reason)
+    }
+
+    /**
+     * (2) Eigene Rate, Abbruch gesendet, dann steht dort eine FREMDE
+     * Absenkung. Die bleibt - und unsere Kennung verschwindet.
+     */
+    @Test
+    fun `nach dem Cancel verschwindet die eigene Kennung, die fremde TBR bleibt`() {
+        val s = State(
+            confirmedRunning = id(0.30, t0, 30),
+            ending = Ending(sinceTs = min(5), attempts = 1, lastRequestTs = min(5)),
+        )
+        // 0,45 passt weder zu Rate noch zu Restlaufzeit unserer Kennung.
+        val r = schritt(s, auth(laufend(0.45, 12)), min(6), wantProfile = true, deckel = 0.50)
+        assertTrue(r.state.leer) { "die eigene Kennung ist weg: ${r.state}" }
+        assertFalse(r.sendCancel) { "und die fremde Absenkung wird NICHT angefasst" }
+        assertFalse(r.smbBlocked)
+    }
+
+    /**
+     * (3) Offene Anforderung neben einer fremden TBR: bis zur Frist
+     * halten, danach sauber auslaufen - und NIE die fremde abbrechen.
+     */
+    @Test
+    fun `eine offene Anforderung neben fremder TBR laeuft sauber aus`() {
+        val s = State(pendingRequest = id(0.30, t0, 30), pendingAttempts = 1)
+        val fremd = auth(laufend(0.45, 12))
+
+        val inFrist = schritt(s, fremd, min(3), wantProfile = true, deckel = 0.50)
+        assertFalse(inFrist.sendCancel) { "die fremde TBR wird nie abgebrochen" }
+        assertNotNull(inFrist.state.pendingRequest) { "bis zur Frist gehalten" }
+        assertTrue(inFrist.smbBlocked)
+        assertEquals(Reason.WAITING_CONFIRM, inFrist.reason)
+
+        val nachFrist = schritt(s, fremd, min(7), wantProfile = true, deckel = 0.50)
+        assertNull(nachFrist.state.pendingRequest) { "danach verfaellt sie" }
+        assertTrue(nachFrist.state.leer)
+        assertFalse(nachFrist.sendCancel)
+        assertFalse(nachFrist.smbBlocked)
+        assertEquals(Reason.CONFIRM_TIMEOUT, nachFrist.reason)
+    }
+
+    // =====================================================================
+    // DIE HARTE ZERO-TOLERANZ
+    // =====================================================================
+
+    /**
+     * Bei einem Basalschritt von 0,10 waere `step/2 = 0,05` - eine FREMDE
+     * Rate von 0,04 haette damit als "Null" gegolten und haette
+     * abgebrochen werden duerfen. `TbrPolicy.isZeroRate` deckelt hart.
+     */
+    @Test
+    fun `eine fremde 0_04er Rate gilt bei grobem Basalschritt NICHT als Null`() {
+        val grob = 0.10
+        assertFalse(TbrPolicy.isZeroRate(0.04, grob)) { "der harte Deckel greift" }
+        assertFalse(
+            PartialTbrOwnership.profilCancelZulaessig(
+                State(), laufend(0.04, 20), min(2), grob, 0.50,
+            )
+        ) { "und damit wird sie nicht abgebrochen" }
+        // Eine echte Null bleibt eine Null.
+        assertTrue(
+            PartialTbrOwnership.profilCancelZulaessig(
+                State(), laufend(0.0, 20), min(2), grob, 0.50,
+            )
+        )
+    }
+
+    @Test
+    fun `waehrend des Abbruchs ist das Ziel die Rueckkehrbasis, nicht die beendete Rate`() {
+        // Unterscheidbare Zahlen: laufende eigene 0,30, Rueckkehrbasis 0,80.
+        val imAbbruch = State(
+            confirmedRunning = id(0.30, t0, 30),
+            ending = Ending(sinceTs = t0, attempts = 1, lastRequestTs = t0),
+        )
+        assertEquals(
+            0.80,
+            PartialTbrOwnership.anzeigeZiel(imAbbruch, wunschGeklemmtUPerH = 0.30, rueckkehrBasisUPerH = 0.80)!!,
+            1e-9,
+        ) { "sonst zeigte die Zeile als Ziel genau die Rate, die gerade beendet wird" }
+
+        // Ohne Abbruch gilt die angeforderte bzw. laufende Rate.
+        assertEquals(
+            0.45,
+            PartialTbrOwnership.anzeigeZiel(
+                State(pendingRequest = id(0.45, t0, 30)), 0.30, 0.80)!!, 1e-9,
+        )
+        assertEquals(
+            0.30,
+            PartialTbrOwnership.anzeigeZiel(State(confirmedRunning = id(0.30, t0, 30)), null, 0.80)!!, 1e-9,
+        )
+        // Und ohne alles der geklemmte Wunsch - oder gar nichts.
+        assertEquals(0.25, PartialTbrOwnership.anzeigeZiel(State(), 0.25, 0.80)!!, 1e-9)
+        assertNull(PartialTbrOwnership.anzeigeZiel(State(), null, 0.80))
+    }
+
 }

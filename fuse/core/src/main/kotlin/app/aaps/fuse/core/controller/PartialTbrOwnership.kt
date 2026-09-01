@@ -209,6 +209,27 @@ object PartialTbrOwnership {
         VIEW_UNKNOWN,
     }
 
+    /**
+     * DIE ZIELRATE FUER DIE ANZEIGE - eine Stelle, nicht im Runner verstreut.
+     *
+     * WAEHREND EINES ABBRUCHS ist das Ziel die RUECKKEHRBASIS, nicht die
+     * Rate, die gerade beendet wird. Sonst zeigte die Zeile als "Ziel"
+     * genau das, was verschwinden soll.
+     *
+     * `null` heisst "kein Ziel" - nicht 0.
+     */
+    fun anzeigeZiel(
+        state: State,
+        wunschGeklemmtUPerH: Double?,
+        rueckkehrBasisUPerH: Double,
+    ): Double? {
+        if (state.ending != null)
+            return rueckkehrBasisUPerH.takeIf { it.isFinite() && it > 0.0 }
+        state.pendingRequest?.let { return it.rateUPerH }
+        state.confirmedRunning?.let { return it.rateUPerH }
+        return wunschGeklemmtUPerH?.takeIf { it.isFinite() && it > 0.0 }
+    }
+
     /** Der Anzeigezustand zu einem [Step] - eine Stelle, nicht drei. */
     fun anzeige(step: Step): Anzeige = when (step.reason) {
         Reason.VIEW_UNKNOWN_HELD                              -> Anzeige.VIEW_UNKNOWN
@@ -285,7 +306,10 @@ object PartialTbrOwnership {
     ): Boolean {
         if (current == null) return false
         if (!basalStepUPerH.isFinite() || basalStepUPerH <= 0.0) return false
-        if (abs(current.absoluteRateUPerH) <= basalStepUPerH / 2.0) return true
+        // DIE HART GEDECKELTE Fassung der Tabelle, nicht `step/2`: bei
+        // einem Basalschritt von 0,10 galte sonst eine FREMDE Rate von
+        // 0,04 als Null und duerfte abgebrochen werden.
+        if (TbrPolicy.isZeroRate(current.absoluteRateUPerH, basalStepUPerH)) return true
         if (matches(state.confirmedRunning, current, nowTs, basalStepUPerH)) return true
         if (matches(state.pendingRequest, current, nowTs, basalStepUPerH)) return true
         if (sicherheitsDeckelUPerH.isFinite() &&
@@ -372,49 +396,26 @@ object PartialTbrOwnership {
         sicherheitsDeckelUPerH: Double = Double.NaN,
     ): Step {
         val wunsch = wunschRate?.takeIf { it.isFinite() && it > 0.0 }
-        // DER PROFIL-ABBRUCH hat seinen eigenen Zweig, weil er auch bei
-        // LEEREM Besitz gilt: abgebrochen wird dann die Schutz-Null oder
-        // eine positive TBR, nicht etwas von uns.
-        if (wantProfile && !wantEnd) {
-            if (view is View.Unknown)
-                return Step(state, smbBlocked = state.smbBlocked, sendCancel = false, allowSet = false, reason = Reason.VIEW_UNKNOWN_HELD)
-            val cur = (view as View.Authoritative).current
-            // C7b: eine FREMDE nicht-nullende Absenkung wird NICHT
-            // abgebrochen - das waere eine Insulin-Erhoehung ohne Auftrag.
-            // Der Zweig lief bisher davor und brach jede sichtbare TBR ab.
-            val zulaessig = profilCancelZulaessig(state, cur, nowTs, basalStepUPerH, sicherheitsDeckelUPerH)
-            if (!zulaessig)
-            // Nichts abzubrechen (oder nichts, das uns zusteht): der
-            // Zustand faellt weg, sofern nichts von uns mehr aussteht.
-                return Step(
-                    if (state.ending != null) state.copy(ending = null) else state,
-                    smbBlocked = state.smbBlocked && state.ending == null,
-                    sendCancel = false, allowSet = false,
-                    reason = if (cur == null) Reason.CLEARED_CONFIRMED else Reason.NONE,
-                )
-            val e = state.ending ?: Ending(sinceTs = nowTs)
-            val s2 = state.copy(ending = e)
-            if (e.attempts >= END_MAX_ATTEMPTS)
-                return Step(s2, smbBlocked = true, sendCancel = false, allowSet = false, reason = Reason.END_GIVEN_UP)
-            val darf = e.lastRequestTs == 0L || nowTs - e.lastRequestTs >= END_BACKOFF_MIN * 60_000L
-            return if (darf)
-                Step(s2, smbBlocked = true, sendCancel = true, allowSet = false,
-                     reason = if (e.attempts == 0) Reason.END_REQUESTED else Reason.END_RETRY)
-            else Step(s2, smbBlocked = true, sendCancel = false, allowSet = false, reason = Reason.END_BACKOFF_WAIT)
-        }
-        if (state.leer && state.ending == null)
+        if (state.leer && state.ending == null && !wantProfile)
             return Step(state, smbBlocked = false, sendCancel = false, allowSet = wunsch != null && !wantEnd, reason = Reason.NONE)
 
         // (1) UNBRAUCHBARE SICHT SAGT NICHTS. Halten, nichts abbrechen,
         //     nichts setzen, SMB gesperrt lassen.
         val current = when (view) {
-            is View.Unknown       -> return Step(state, smbBlocked = true, sendCancel = false, allowSet = false, reason = Reason.VIEW_UNKNOWN_HELD)
+            is View.Unknown       -> return Step(state, smbBlocked = state.smbBlocked, sendCancel = false, allowSet = false, reason = Reason.VIEW_UNKNOWN_HELD)
             is View.Authoritative -> view.current
         }
         val pendingPasst = matches(state.pendingRequest, current, nowTs, basalStepUPerH)
         val confirmedPasst = matches(state.confirmedRunning, current, nowTs, basalStepUPerH)
 
-        // (2) BEFOERDERUNG UND VERFALL - getrennt, das ist der ganze Punkt.
+        // (2) DER AUTORITATIVE ABGLEICH - EINMAL, FUER ALLE PFADE.
+        //
+        // Er stand frueher HINTER dem Profil-Abbruch, und der hatte einen
+        // eigenen, unvollstaendigen Abgleich. Folge (Review-P0): nach
+        // einem erfolgreichen Cancel wurde nur `ending` entfernt, die
+        // bestaetigte Kennung blieb stehen - waehrend derselbe Step
+        // `smbBlocked=false` meldete. Zustand, Phase und SMB-Freigabe
+        // widersprachen sich.
         var s = state
         if (pendingPasst)
             s = s.copy(confirmedRunning = s.pendingRequest, pendingRequest = null, pendingAttempts = 0)
@@ -423,8 +424,52 @@ object PartialTbrOwnership {
         // Anforderung bleibt davon UNBERUEHRT - sie hat ihre eigene Frist.
             s = s.copy(confirmedRunning = null)
         val laeuftEigenes = pendingPasst || confirmedPasst
+        // Eine offene Anforderung, die nie aufgetaucht ist, verfaellt nach
+        // ihrer Frist - auch hier gemeinsam, nicht je Zweig.
+        val pendingAbgelaufen = !pendingPasst && s.pendingRequest != null &&
+            nowTs - s.pendingRequest!!.setAtTs > CONFIRM_WINDOW_MIN * 60_000L
 
-        // (3) BEENDEN GEWOLLT ODER SCHON IM GANG - schlaegt jeden Setzwunsch.
+        // (3) ZURUECK AUFS PROFILBASAL - erst NACH dem Abgleich.
+        if (wantProfile && !wantEnd) {
+            // C7b: eine FREMDE nicht-nullende Absenkung wird NICHT
+            // abgebrochen - das waere eine Insulin-Erhoehung ohne Auftrag.
+            if (!profilCancelZulaessig(s, current, nowTs, basalStepUPerH, sicherheitsDeckelUPerH)) {
+                val ohne = s.copy(
+                    ending = null,
+                    pendingRequest = if (pendingAbgelaufen) null else s.pendingRequest,
+                    pendingAttempts = if (pendingAbgelaufen) 0 else s.pendingAttempts,
+                )
+                return Step(
+                    ohne, smbBlocked = ohne.smbBlocked, sendCancel = false, allowSet = false,
+                    reason = when {
+                        current == null                    -> Reason.CLEARED_CONFIRMED
+                        pendingAbgelaufen                  -> Reason.CONFIRM_TIMEOUT
+                        ohne.leer                          -> Reason.NONE
+                        else                               -> Reason.WAITING_CONFIRM
+                    },
+                )
+            }
+            val e = s.ending ?: Ending(sinceTs = nowTs)
+            val s2 = s.copy(ending = e)
+            if (e.attempts >= END_MAX_ATTEMPTS)
+                return Step(s2, smbBlocked = true, sendCancel = false, allowSet = false, reason = Reason.END_GIVEN_UP)
+            val darf = e.lastRequestTs == 0L || nowTs - e.lastRequestTs >= END_BACKOFF_MIN * 60_000L
+            return if (darf)
+                Step(s2, smbBlocked = true, sendCancel = true, allowSet = false,
+                     reason = if (e.attempts == 0) Reason.END_REQUESTED else Reason.END_RETRY)
+            else Step(s2, smbBlocked = true, sendCancel = false, allowSet = false, reason = Reason.END_BACKOFF_WAIT)
+        }
+        if (s.leer && s.ending == null)
+        // Der Grund bleibt lesbar: war vorher etwas von uns da, ist es
+        // JETZT autoritativ beendet - das ist eine andere Auskunft als
+        // "war nie etwas".
+            return Step(
+                s, smbBlocked = false, sendCancel = false,
+                allowSet = wunsch != null && !wantEnd,
+                reason = if (state.leer) Reason.NONE else Reason.CLEARED_CONFIRMED,
+            )
+
+        // (4) BEENDEN GEWOLLT ODER SCHON IM GANG - schlaegt jeden Setzwunsch.
         if (wantEnd || s.ending != null) {
             val e = s.ending ?: Ending(sinceTs = nowTs)
             s = s.copy(ending = e)

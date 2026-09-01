@@ -1111,6 +1111,7 @@ object FuseStateJson {
                     outcome.partialRecoveryObservedRemainingMin ?: JSONObject.NULL,
                 )
                 .put("partialRecoveryView", outcome.partialRecoveryView ?: JSONObject.NULL)
+                .put("partialRecoveryObservedSource", outcome.partialRecoveryObservedSource ?: JSONObject.NULL)
                 .put("pinnedFor", outcome.basalGap?.pinnedFor ?: JSONObject.NULL)
                 .put("preMarkerBasalIobU", fin(outcome.basalGap?.preMarkerBasalIobU))
                 .put("preMarkerZeroTbrActive", outcome.basalGap?.zeroTbrActive ?: JSONObject.NULL)
