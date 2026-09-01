@@ -92,6 +92,51 @@ object BasalGapRechner {
         )
     }
 
+    /**
+     * DIE ZUSAMMENFASSUNG MEHRERER NULLPHASEN - als EIN Ergebnis aus EINER
+     * Eingabemenge.
+     *
+     * WARUM ES DIESEN TYP GIBT, und der Anlass ist ein Auswertungsfehler,
+     * kein Codefehler: Dauer, ausgelassene Menge und die drei Zeitklassen
+     * wurden von Hand aus zwei verschiedenen Laeufen zusammengetragen - der
+     * eine ueber vier Phasen, der andere ueber fuenf. Beide Zahlenreihen
+     * waren fuer sich richtig und ergaben nebeneinander 178 gegen 202
+     * Minuten. Die algebraische Identitaet INNERHALB einer Phase haette das
+     * nicht bemerkt; sie galt in beiden Reihen.
+     *
+     * Ein Aggregat, das seine Phasenzahl MITFUEHRT, macht die Verwechslung
+     * sichtbar: zwei Ergebnisse mit verschiedenem [phasen] sind nicht
+     * vergleichbar, und das steht dann im Ergebnis selbst.
+     */
+    data class Aggregat(
+        /** Wieviele Phasen eingeflossen sind - die Identitaet der Menge. */
+        val phasen: Int,
+        val minutes: Double,
+        val omittedU: Double,
+        /** A: mit anliegendem Schutzgrund. */
+        val withReasonMin: Double,
+        /** B: ohne Grund, aber weiter fallend (die Hysterese). */
+        val absentFallingMin: Double,
+        /** C: ohne Grund und nicht fallend. */
+        val flatAbsentMin: Double,
+        val gapCappedMin: Double,
+    )
+
+    /**
+     * Fasst Phasen zusammen. ALLE Kennzahlen stammen aus derselben Liste -
+     * es gibt keinen Weg, die Dauer aus einer und die Klassen aus einer
+     * anderen Menge zu nehmen.
+     */
+    fun aggregat(phasen: List<EpisodeBudgets.ZeroPhaseTally>) = Aggregat(
+        phasen = phasen.size,
+        minutes = phasen.sumOf { it.minutes },
+        omittedU = phasen.sumOf { it.omittedU },
+        withReasonMin = phasen.sumOf { it.minutes - it.reasonAbsentMin },
+        absentFallingMin = phasen.sumOf { it.reasonAbsentMin - it.flatAbsentMin },
+        flatAbsentMin = phasen.sumOf { it.flatAbsentMin },
+        gapCappedMin = phasen.sumOf { it.gapCappedMin },
+    )
+
     /** Ein Zeitscheiben-Blick; Slices AUFSTEIGEND, letzter = Markermoment. */
     data class Slice(
         val tsMs: Long,

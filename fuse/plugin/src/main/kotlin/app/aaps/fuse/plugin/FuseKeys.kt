@@ -486,6 +486,28 @@ enum class FuseIntKey(
      *  konservative Richtung. Die UI sagt ehrlich "Ruhe-Zyklen". */
     ZeroLatchCalmExitMin("fuse_zero_latch_calm_exit_min", 20, 5, 120),
 
+    /**
+     * VARIANTE 1 des Nullphasen-Vergleichs: der GRUND-WEG-AUSGANG.
+     * Zusammenhaengende Zyklen, in denen (a) das LowThreat-Verdikt
+     * ausdruecklich NONE ist - der Schutzgrund, der die Null ausgeloest
+     * hat, liegt also nicht mehr an - und (b) die Erholung bestaetigt ist
+     * (nicht fallend, gesundes Signal, kein Tief/Descent). 0 = AUS, dann
+     * gilt unveraendert nur der bisherige Ruhe-Ausgang.
+     *
+     * ER IST NICHT DER RUHE-AUSGANG. Der loest gegen die "Zero-Falle" bei
+     * dauerhaft flachem BG und verlangt zusaetzlich Abstand zum Boden UND
+     * das vollstaendige Verschwinden der Bolus-Ueberdeckung. Gemessen hat
+     * genau diese Ueberdeckungs-Bedingung die Null nach dem Wegfall des
+     * Grundes weitergehalten - der neue Ausgang prueft stattdessen, ob der
+     * AUSLOESER selbst noch besteht.
+     *
+     * WAS ER BEWIRKT UND WAS NICHT: er beendet die verriegelte Null,
+     * mehr nicht. Danach gilt wieder das Profilbasal - es gibt keinen Weg,
+     * darueber hinauszugehen, weil FUSE keine positive TBR kennt. Ein
+     * Nachholen ausgelassener Basalmenge findet ausdruecklich NICHT statt.
+     */
+    ZeroLatchReasonGoneExitMin("fuse_zero_latch_reason_gone_exit_min", 0, 0, 60),
+
     /** V-Reversal-Schutz: Rueckblickfenster [min], in dem das
      *  Fall-Minimum den Riegel traegt (Pflichtfall: Minimum 11 min vor
      *  der ersten fraglichen Dosis). */

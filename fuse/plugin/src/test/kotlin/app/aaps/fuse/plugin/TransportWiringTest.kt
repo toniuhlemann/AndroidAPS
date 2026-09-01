@@ -185,6 +185,8 @@ class TransportWiringTest : TestBaseWithProfile() {
     private var zeroLatchAn = false
     private var zeroLatchRuheZyklen = 20
     private var zeroLatchRuheAbstand = 30.0
+    /** Variante 1 des Nullphasen-Vergleichs; 0 = AUS = Produktionsstand. */
+    private var zeroLatchGrundWegZyklen = 0
     private var livenessBgMin = 160.0
 
     /** Nachtschwelle des Kanals; null = nie gesetzt -> folgt der Tagesschwelle. */
@@ -576,6 +578,7 @@ class TransportWiringTest : TestBaseWithProfile() {
         whenever(preferences.get(FuseBooleanKey.ZeroLatchEnabled)).thenAnswer { zeroLatchAn }
         whenever(preferences.get(FuseIntKey.ZeroLatchCalmExitMin)).thenAnswer { zeroLatchRuheZyklen }
         whenever(preferences.get(FuseDoubleKey.ZeroLatchCalmDistanceMgdl)).thenAnswer { zeroLatchRuheAbstand }
+        whenever(preferences.get(FuseIntKey.ZeroLatchReasonGoneExitMin)).thenAnswer { zeroLatchGrundWegZyklen }
         whenever(preferences.get(FuseDoubleKey.LivenessBgMinDayMgdl)).thenAnswer { livenessBgMin }
         whenever(preferences.get(FuseDoubleKey.LivenessBgMinNightMgdl)).thenAnswer { livenessBgMinNacht ?: livenessBgMin }
         whenever(preferences.getIfExists(FuseDoubleKey.LivenessBgMinNightMgdl)).thenAnswer { livenessBgMinNacht }
@@ -9912,6 +9915,7 @@ class TransportWiringTest : TestBaseWithProfile() {
      *  mit der Null passiert, wenn das Verdikt zwischendurch wegfaellt. */
     private fun latchLage(dir: File, an: Boolean, knick2: Double? = null, knick2Ab: Int? = null): FuseLedgerAdapter {
         zeroLatchAn = an
+        zeroLatchGrundWegZyklen = 0
         zeroLatchRuheZyklen = 60
         zeroLatchRuheAbstand = 40.0
         livenessAn = false
@@ -10144,6 +10148,104 @@ class TransportWiringTest : TestBaseWithProfile() {
         assertTrue(outs2.any { it.zeroLatchActive })
         assertTrue(outs2.none { it.zeroLatchReason == "CALM_RECOVERED" },
             "mit zu kleinem Abstand darf der Ruhe-Ausgang nicht loesen")
+    }
+
+    // ==== VARIANTENVERGLEICH NULLPHASEN - VARIANTE 1: GRUND-WEG-AUSGANG ====
+    //
+    // WAS HIER VERGLICHEN WIRD und was ausdruecklich nicht: zwei ECHTE
+    // Regelvarianten laufen nacheinander durch dieselbe Lage, und verglichen
+    // werden ihre ENTSCHEIDUNGEN (wann endet die Verriegelung, welche
+    // Mengen gehen hinaus). Der Zucker ist in beiden Laeufen derselbe feste
+    // Verlauf - er reagiert nicht. Aus diesem Rig folgt deshalb KEINE
+    // Aussage darueber, wie der Zucker mit der Variante verlaufen waere.
+    //
+    // Es gibt keinen mitlaufenden Beobachter: der Schalter waehlt EINE
+    // Variante, und der Lauf ist ihre einzige Spur.
+
+    /** Die gemessene Nachtlage in Kurzform: berechtigte Zuendung aus einer
+     *  Bolus-Ueberdeckung, danach faellt der Grund weg, waehrend der Zucker
+     *  flach bleibt und die Ueberdeckung NOCH BESTEHT - genau die
+     *  Konstellation, in der der Ruhe-Ausgang nicht greift. */
+    private fun grundWegLage(dir: File, variante: Int) {
+        latchLage(dir, an = true)
+        zeroLatchGrundWegZyklen = variante
+        // Der Ruhe-Ausgang bleibt bewusst unerreichbar (60 Zyklen), damit
+        // der Vergleich EINE Variable hat: nur der neue Ausgang wirkt.
+        zeroLatchRuheZyklen = 60
+    }
+
+    @Test
+    fun `Variante 1 - der Grund-Weg-Ausgang loest frueher, die Basislinie bleibt unveraendert`(@TempDir dir: File) {
+        // BASISLINIE (Schalter aus = heutiger Produktionsstand).
+        grundWegLage(File(dir, "basis"), variante = 0)
+        val basis = (0 until 45).map { cycle() }
+        val zuendungB = basis.indexOfFirst { it.zeroLatchActive }
+        assertTrue(zuendungB >= 0, "die Lage muss zuenden")
+        val endeB = basis.indexOfFirst { it.zeroLatchReason == "REASON_GONE_RECOVERED" }
+        assertEquals(-1, endeB, "ohne Schalter darf der neue Ausgang NIE feuern")
+
+        // KANDIDAT (Schalter an, 3 zusammenhaengende Zyklen).
+        transportReset()
+        grundWegLage(File(dir, "kandidat"), variante = 3)
+        val kand = (0 until 45).map { cycle() }
+        val zuendungK = kand.indexOfFirst { it.zeroLatchActive }
+        assertEquals(zuendungB, zuendungK, "die ZUENDUNG ist unveraendert - die Variante fasst nur das Ende an")
+        val endeK = kand.indexOfFirst { it.zeroLatchReason == "REASON_GONE_RECOVERED" }
+        assertTrue(endeK > 0) {
+            "der Grund-Weg-Ausgang muss loesen: " +
+                kand.mapIndexed { i, o -> "$i:${o.zeroLatchReason}" }.drop(zuendungK).take(20).joinToString(" ")
+        }
+        // Die Nullzeit wird KUERZER, nicht laenger.
+        val nullB = basis.count { it.zeroLatchActive }
+        val nullK = kand.count { it.zeroLatchActive }
+        assertTrue(nullK < nullB) { "Nullzyklen Kandidat $nullK muss unter Basislinie $nullB liegen" }
+        // Und nach dem Loesen bleibt sie gelöst (kein Flattern in den
+        // naechsten Zyklen derselben Lage).
+        assertTrue(kand.drop(endeK + 1).take(5).none { it.zeroLatchActive }, "kein Wiederverriegeln direkt danach")
+    }
+
+    @Test
+    fun `Variante 1 gibt kein Insulin - sie stellt hoechstens das Profilbasal wieder her`(@TempDir dir: File) {
+        // DIE ZENTRALE SICHERHEITSZUSAGE. Das Ende der Verriegelung darf
+        // NICHTS ausschuetten: keine SMB-Menge, keine positive Rate, kein
+        // Nachholen der ausgelassenen Basalmenge. Geprueft wird das gegen
+        // die Basislinie - bitgleich auf der Insulinachse.
+        grundWegLage(File(dir, "basis2"), variante = 0)
+        val basis = (0 until 45).map { cycle() }
+        transportReset()
+        grundWegLage(File(dir, "kand2"), variante = 3)
+        val kand = (0 until 45).map { cycle() }
+
+        assertEquals(
+            basis.sumOf { it.decision.smbU }, kand.sumOf { it.decision.smbU }, 1e-9,
+            "die SMB-Summe MUSS bitgleich bleiben - die Variante fasst nur die Basalachse an",
+        )
+        assertTrue(kand.all { it.decision.smbU <= 0.0 }, "in dieser Lage fliesst ohnehin kein SMB")
+        // KEINE RATE UEBER DEM PROFIL. Der ganze Aktuationsraum kennt nur
+        // Null und Abbruch; dieser Test friert das fuer die Variante ein.
+        val raten = kand.mapNotNull { it.tbr?.rateUPerH }.filter { it > 0.0 }
+        assertTrue(raten.isEmpty()) { "keine positive TBR erlaubt, gemessen: $raten" }
+    }
+
+    @Test
+    fun `Variante 1 loest NICHT, solange der Schutzgrund noch anliegt`(@TempDir dir: File) {
+        // Die Gegenprobe zur Wirksamkeit: waehrend das Verdikt anliegt,
+        // zaehlt der Streak nicht - der Ausgang kann die Massnahme selbst
+        // nicht abkuerzen. Ein Ein-Zyklus-Schalter macht den Test scharf:
+        // greift die Grund-Bedingung nicht, muesste er sofort loesen.
+        grundWegLage(File(dir, "grundAn"), variante = 1)
+        val outs = (0 until 12).map { cycle() }
+        val zuendung = outs.indexOfFirst { it.zeroLatchActive }
+        assertTrue(zuendung >= 0)
+        // In den Zyklen unmittelbar nach der Zuendung liegt der Grund noch
+        // an (die Bahn faellt weiter) - dort darf nichts loesen.
+        val mitGrund = outs.drop(zuendung)
+            .takeWhile { it.lowThreat?.verdict != null && it.lowThreat!!.verdict.name != "NONE" }
+        assertTrue(mitGrund.isNotEmpty(), "der Aufbau muss Zyklen MIT Grund haben")
+        assertTrue(mitGrund.none { it.zeroLatchReason == "REASON_GONE_RECOVERED" }) {
+            "solange der Grund anliegt, darf der Ausgang nicht feuern: " +
+                mitGrund.map { "${it.lowThreat?.verdict}/${it.zeroLatchReason}" }.joinToString(" ")
+        }
     }
 
     /**

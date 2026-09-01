@@ -346,6 +346,7 @@ class FuseCycleRunner(
                 "theilSenWindowMin=${it.theilSenWindowMin}"
             }
             require(it.zeroLatchCalmExitMin in FuseIntKey.ZeroLatchCalmExitMin.min..FuseIntKey.ZeroLatchCalmExitMin.max) { "zeroLatchCalmExitMin=${it.zeroLatchCalmExitMin}" }
+            require(it.zeroLatchReasonGoneExitMin in FuseIntKey.ZeroLatchReasonGoneExitMin.min..FuseIntKey.ZeroLatchReasonGoneExitMin.max) { "zeroLatchReasonGoneExitMin=${it.zeroLatchReasonGoneExitMin}" }
             require(it.zeroLatchCalmDistanceMgdl.isFinite() && it.zeroLatchCalmDistanceMgdl in FuseDoubleKey.ZeroLatchCalmDistanceMgdl.min..FuseDoubleKey.ZeroLatchCalmDistanceMgdl.max) { "zeroLatchCalmDistanceMgdl=${it.zeroLatchCalmDistanceMgdl}" }
             require(it.tailFloorMgdl.isFinite() && it.tailFloorMgdl in FuseDoubleKey.TailFloorMgdl.min..FuseDoubleKey.TailFloorMgdl.max) { "tailFloorMgdl=${it.tailFloorMgdl}" }
             require(it.tailRecoveryU.isFinite() && it.tailRecoveryU in FuseDoubleKey.TailRecoveryU.min..FuseDoubleKey.TailRecoveryU.max) { "tailRecoveryU=${it.tailRecoveryU}" }
@@ -4987,7 +4988,28 @@ class FuseCycleRunner(
                     signal.sourceTs - zeroCalmLastTs <= 90_000L
                 zeroCalmStreak = if (ruhig) (if (anschluss) zeroCalmStreak + 1 else 1) else 0
                 zeroCalmLastTs = signal.sourceTs
-                if (zeroCalmStreak >= cfg.zeroLatchCalmExitMin) {
+                // VARIANTE 1 - DER GRUND-WEG-AUSGANG (Default AUS).
+                //
+                // Er prueft, ob der AUSLOESER der Null noch besteht, statt
+                // wie der Ruhe-Ausgang auf das vollstaendige Verschwinden
+                // der Bolus-Ueberdeckung zu warten. Gemessen hat genau
+                // diese Ueberdeckungs-Bedingung die Null nach dem Wegfall
+                // des Grundes weitergehalten.
+                //
+                // ER GIBT KEIN INSULIN. Das Ende der Verriegelung stellt
+                // hoechstens das Profilbasal wieder her; eine Rate darueber
+                // existiert im ganzen Aktuationsraum nicht.
+                val grundWeg = lowThreatResult.verdict == LowThreatGate.Verdict.NONE
+                val erholungBestaetigt = step.health == Health.READY && !measuredLow &&
+                    !descentRisk.active && signal.ukfRatePerMin.isFinite() &&
+                    signal.ukfRatePerMin >= -0.03 && q1NichtFallend
+                zeroReasonGoneStreak = if (grundWeg && erholungBestaetigt) {
+                    if (anschluss) zeroReasonGoneStreak + 1 else 1
+                } else 0
+                val grundWegAusgang = cfg.zeroLatchReasonGoneExitMin > 0 &&
+                    zeroReasonGoneStreak >= cfg.zeroLatchReasonGoneExitMin
+                val ruheAusgang = zeroCalmStreak >= cfg.zeroLatchCalmExitMin
+                if (ruheAusgang || grundWegAusgang) {
                     // Auch der Ruhe-Ausgang ist eine Freigabe-Kante.
                     episodes.correctionRearm = PositiveCorrectionRearm.anker(
                         episodes.correctionRearm, signal.sourceTs,
@@ -4995,8 +5017,16 @@ class FuseCycleRunner(
                     )
                     episodes.zeroLatch = DescentRecoveryLatch.State()
                     zeroLatchRuntime = DescentRecoveryLatch.Runtime()
+                    // BEIDE Zaehler zurueck: der Latch ist weg, ein
+                    // stehengebliebener Streak wuerde die naechste Phase
+                    // sofort wieder oeffnen.
                     zeroCalmStreak = 0
-                    zeroLatchGrund = "CALM_RECOVERED"
+                    zeroReasonGoneStreak = 0
+                    // Der bisherige Ausgang behaelt seinen Namen, wenn er
+                    // ohnehin getragen haette - sonst waere im Trail nicht
+                    // zu sehen, ob die Variante ueberhaupt etwas geaendert
+                    // hat.
+                    zeroLatchGrund = if (ruheAusgang) "CALM_RECOVERED" else "REASON_GONE_RECOVERED"
                 }
             } else zeroCalmStreak = 0
             if (episodes.zeroLatch.active &&
@@ -6523,6 +6553,12 @@ class FuseCycleRunner(
     private var zeroLatchRuntime = DescentRecoveryLatch.Runtime()
     private var zeroCalmStreak = 0
     private var zeroCalmLastTs = 0L
+
+    /** Variante 1: zusammenhaengende Zyklen mit weggefallenem Schutzgrund
+     *  UND bestaetigter Erholung. Prozesslokal wie der Ruhe-Zaehler - ein
+     *  Neustart beginnt bei 0, also in der konservativen Richtung
+     *  (die Null haelt laenger, nicht kuerzer). */
+    private var zeroReasonGoneStreak = 0
     /** AUSLOESE-Zaehler des Fall-Verdikts (v29): zwei aufeinanderfolgende
      *  qualifizierende Zyklen zuenden, Unterbrechung nullt. Prozesslokal
      *  wie die Erholungs-Runtime - ein Neustart im Anlauf beginnt neu. */
@@ -6696,6 +6732,7 @@ class FuseCycleRunner(
         /** Zero-TBR-Latch - s. FuseKeys.ZeroLatchEnabled. */
         val zeroLatchEnabled: Boolean,
         val zeroLatchCalmExitMin: Int,
+        val zeroLatchReasonGoneExitMin: Int,
         val zeroLatchCalmDistanceMgdl: Double,
         /** V-Reversal-Schutz im Korrekturkontext - s.
          *  [CorrectionReversalGuard] und FuseKeys (Default AUS). */
@@ -6854,6 +6891,7 @@ class FuseCycleRunner(
         lowGateMinBenefitMgdl = preferences.get(FuseDoubleKey.LowGateMinBenefitMgdl),
         zeroLatchEnabled = preferences.get(FuseBooleanKey.ZeroLatchEnabled),
         zeroLatchCalmExitMin = preferences.get(FuseIntKey.ZeroLatchCalmExitMin),
+        zeroLatchReasonGoneExitMin = preferences.get(FuseIntKey.ZeroLatchReasonGoneExitMin),
         zeroLatchCalmDistanceMgdl = preferences.get(FuseDoubleKey.ZeroLatchCalmDistanceMgdl),
         reversalGuardEnabled = preferences.get(FuseBooleanKey.CorrectionReversalGuardEnabled),
         reversalFallUkf = preferences.get(FuseDoubleKey.ReversalFallUkf),
