@@ -5330,6 +5330,26 @@ class FuseCycleRunner(
         // TbrPolicy (nur lesen, nie ersetzen; C8-SMB-Sperre) erreichbar.
         // Gelesen wird sie OBEN vor der Basal-Grundregel - eine Sicht, ein
         // Zyklus.
+        // ---- PHASE 1 DES LEBENSZYKLUS (Review-P1.1) ---------------------
+        //
+        // Die Pumpensicht wird TYPISIERT uebergeben: eine Sicht aus einer
+        // Ersatzquelle sagt NICHTS ueber die laufende TBR und darf deshalb
+        // weder bestaetigen noch loeschen. Genau diese Verwechslung -
+        // `current == null` als Beweis zu lesen - war die Race der ersten
+        // Fassung.
+        val tbrSicht = if (tempBasalFallback) PartialTbrOwnership.View.Unknown
+        else PartialTbrOwnership.View.Authoritative(currentTbr)
+        val ownStep = PartialTbrOwnership.advance(
+            own = episodes.ownPartialTbr,
+            view = tbrSicht,
+            nowTs = computeTs,
+            basalStepUPerH = pumpe.basalStepUPerH,
+            // Die Teilstufe ist vorbei, sobald sie in diesem Zyklus nicht
+            // mehr aktiv ist - egal ob durch Rueckfall, Latch-Freigabe oder
+            // ausgeschalteten Schalter.
+            wantEnd = !partialAktiv,
+        )
+
         val combined = FuseTbrTranslator.combine(
             decision = decision,
             current = currentTbr,
@@ -5338,14 +5358,15 @@ class FuseCycleRunner(
             // Der Anteil gilt NUR in der Teilstufe; sonst 0, und die
             // Tabelle rechnet dann bitgleich wie bisher.
             partialRateUPerH = if (partialAktiv) partialRateUPerH else 0.0,
-            // DER BESITZNACHWEIS (Review-P1.1). Ohne ihn laesst `keep` eine
-            // eigene abgesenkte TBR bis zum Ablauf stehen, waehrend FUSE
-            // schon die normale Freigabe meldet. Ein VERFALLENER Nachweis
-            // wird gar nicht erst uebergeben - sonst koennte eine spaetere
-            // fremde Absenkung mit derselben Rate als unsere gelesen werden.
-            ownPartial = episodes.ownPartialTbr
-                ?.takeIf { !PartialTbrOwnership.expired(it, computeTs) },
-            nowTs = computeTs,
+            // DER LEBENSZYKLUS DER EIGENEN TEIL-TBR (Review-P1.1).
+            //
+            // ZWEIPHASIG, und die Reihenfolge ist der Punkt: erst wird der
+            // Zustand fortgeschrieben (Bestaetigung, Frist, Backoff), DANN
+            // fuehrt die Tabelle das Ergebnis aus. Umgekehrt haette der
+            // Nachweis vom Ergebnis desselben Zyklus abgehangen, den er
+            // mitbestimmt.
+            endOwnPartial = ownStep.sendCancel,
+            ownPartialHeld = ownStep.own != null,
             cfg = TbrPolicy.Config(
                 basalStepUPerH = pumpe.basalStepUPerH,
                 // Toni 15.08.: die Null sofort verlassen, sobald ihr Grund weg
@@ -5375,42 +5396,33 @@ class FuseCycleRunner(
         //                             blockieren)
         val laeuftNull = currentTbr?.let { TbrPolicy.isZeroRate(it.absoluteRateUPerH, pumpe.basalStepUPerH) } == true
 
-        // ---- DER BESITZNACHWEIS DER EIGENEN TEIL-TBR (Review-P1.1) -------
+        // ---- PHASE 2 DES LEBENSZYKLUS: die eigene Anforderung buchen -----
         //
-        // Drei Ereignisse, in dieser Reihenfolge:
-        //
-        //  (a) WIR SETZEN EINE TEILRATE -> mitschreiben, was wir gesetzt
-        //      haben. Ohne diesen Eintrag ist sie im naechsten Zyklus von
-        //      einer fremden Absenkung nicht zu unterscheiden und bliebe
-        //      bis zum Ablauf stehen.
-        //  (b) SIE LAEUFT NACHWEISLICH NICHT MEHR -> Nachweis loeschen.
-        //      Das ist die BESTAETIGUNG, an der die SMB-Freigabe haengt:
-        //      solange der Nachweis passt, sperrt `keep` den SMB ueber
-        //      PARTIAL_ENDING weiter.
-        //  (c) DER NACHWEIS IST VERFALLEN -> loeschen, sonst wuerde eine
-        //      spaetere fremde Absenkung mit derselben Rate faelschlich als
-        //      unsere gelesen.
-        //
-        // Geschrieben wird die ANGEFORDERTE Rate, nicht die gemessene: die
-        // Bestaetigung kommt erst im naechsten Zyklus, und bis dahin muss
-        // der Nachweis schon stehen.
+        // Erst hier steht fest, ob die Tabelle wirklich eine Teilrate
+        // angefordert hat. Gebucht wird die ANGEFORDERTE Rate als
+        // REQUESTED - NICHT als bestaetigter Besitz: die Bestaetigung
+        // kommt frueherstens im naechsten Zyklus aus einem autoritativen
+        // Snapshot.
         run {
             val angefordert = combined.request
-            val setztTeilrate = decision.tbr == FuseController.TbrAction.PARTIAL_BASAL &&
+            if (decision.tbr == FuseController.TbrAction.PARTIAL_BASAL &&
                 angefordert != null && angefordert.rateUPerH > 0.0 && angefordert.durationMin > 0
-            when {
-                setztTeilrate ->
-                    episodes.ownPartialTbr = PartialTbrOwnership.Own(
-                        rateUPerH = angefordert!!.rateUPerH,
+            ) {
+                episodes.ownPartialTbr = PartialTbrOwnership.advance(
+                    own = ownStep.own,
+                    view = tbrSicht,
+                    nowTs = computeTs,
+                    basalStepUPerH = pumpe.basalStepUPerH,
+                    setRequest = PartialTbrOwnership.Own(
+                        rateUPerH = angefordert.rateUPerH,
                         setAtTs = computeTs,
                         durationMin = angefordert.durationMin,
-                    )
-
-                episodes.ownPartialTbr != null &&
-                    (PartialTbrOwnership.expired(episodes.ownPartialTbr, computeTs) ||
-                        !PartialTbrOwnership.isOurs(
-                            episodes.ownPartialTbr, currentTbr, computeTs, pumpe.basalStepUPerH)) ->
-                    episodes.ownPartialTbr = null
+                        phase = PartialTbrOwnership.Phase.REQUESTED,
+                        phaseSinceTs = computeTs,
+                    ),
+                ).own
+            } else {
+                episodes.ownPartialTbr = ownStep.own
             }
         }
 

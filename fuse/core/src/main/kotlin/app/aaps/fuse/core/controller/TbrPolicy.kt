@@ -255,18 +255,21 @@ object TbrPolicy {
          * gleichzeitig zusaetzliches Insulin geben.
          */
         /**
-         * DIE ZULETZT VON FUSE GESETZTE TEIL-TBR, restartfest gefuehrt.
-         *
-         * Nur damit ist eine laufende ABGESENKTE TBR als unsere erkennbar
-         * (s. [PartialTbrOwnership]). `null` heisst "kein Nachweis" - dann
-         * gilt jede laufende Absenkung als FREMD und bleibt stehen.
+         * Soll in DIESEM Zyklus der Abbruch der eigenen Teil-TBR gesendet
+         * werden? Die Entscheidung faellt in [PartialTbrOwnership.advance]
+         * - dort liegen Phase, Bestaetigungsfrist und Backoff. Die Tabelle
+         * fuehrt sie nur aus; sie kennt weder Nachweis noch Pumpensicht.
          */
-        ownPartial: PartialTbrOwnership.Own? = null,
-        /** Jetzt-Zeitpunkt fuer die Besitzpruefung. */
-        nowTs: Long = 0L,
+        endOwnPartial: Boolean = false,
+        /**
+         * Lebt ein Nachweis der eigenen Teil-TBR? Dann bleibt der SMB
+         * gesperrt, AUCH wenn gerade kein Kommando rausgeht (Backoff-Pause,
+         * unbrauchbare Sicht, Versuchsdeckel).
+         */
+        ownPartialHeld: Boolean = false,
         unsafeSituation: Boolean = false,
     ): Decision {
-        val base = decideIgnoringPump(intent, current, scheduledBasalUPerH, cfg, fault, protectionCleared, partialRateUPerH, endZeroAttempts, ownPartial, nowTs, unsafeSituation)
+        val base = decideIgnoringPump(intent, current, scheduledBasalUPerH, cfg, fault, protectionCleared, partialRateUPerH, endZeroAttempts, endOwnPartial, ownPartialHeld, unsafeSituation)
         if (!pumpBusy) return base
         // Eine arbeitende Pumpe bekommt keine zweite Anweisung — aber der
         // Safety-Grund und sein Alarm bleiben erhalten. Unterdrueckt wird die
@@ -289,8 +292,8 @@ object TbrPolicy {
         protectionCleared: Boolean = false,
         partialRateUPerH: Double = 0.0,
         endZeroAttempts: Int = 0,
-        ownPartial: PartialTbrOwnership.Own? = null,
-        nowTs: Long = 0L,
+        endOwnPartial: Boolean = false,
+        ownPartialHeld: Boolean = false,
         unsafeSituation: Boolean = false,
     ): Decision {
         // Ungueltige Eingaben werden nicht geworfen, sondern fail-closed
@@ -349,7 +352,7 @@ object TbrPolicy {
                 endZeroAttempts = endZeroAttempts,
             )
             Intent.PARTIAL_BASAL -> partialBasal(current, scheduledBasalUPerH, cfg, partialRateUPerH)
-            Intent.KEEP        -> keep(current, scheduledBasalUPerH, cfg, ownPartial, nowTs)
+            Intent.KEEP        -> keep(current, scheduledBasalUPerH, cfg, endOwnPartial, ownPartialHeld)
         }
         return if (fault == FaultCode.NONE) base
         else base.copy(reason = "${fault.name}|${base.reason}", smbBlockCause = SmbBlockCause.FAULT)
@@ -390,11 +393,22 @@ object TbrPolicy {
         current: Current?,
         scheduledBasalUPerH: Double,
         cfg: Config,
-        ownPartial: PartialTbrOwnership.Own?,
-        nowTs: Long,
+        endOwnPartial: Boolean,
+        ownPartialHeld: Boolean,
     ): Decision {
         val keep = Decision(Outcome.NoRequest, "KEEP", alarm = false, smbBlockCause = SmbBlockCause.NONE)
-        if (current == null) return keep
+        // DER ABBRUCH DER EIGENEN TEILRATE GEHT VOR - auch wenn gerade gar
+        // keine TBR sichtbar ist. Ob er faellig ist, hat der Lebenszyklus
+        // entschieden; hier wird er nur ausgefuehrt.
+        if (endOwnPartial)
+            return Decision(
+                Outcome.Request(0.0, 0), KEEP_END_OWN_PARTIAL_REASON,
+                alarm = false, smbBlockCause = SmbBlockCause.PARTIAL_ENDING,
+            )
+        // Nachweis lebt, aber kein Kommando faellig (Backoff, unbrauchbare
+        // Sicht, Versuchsdeckel): kein Kommando, aber SMB bleibt zu.
+        val gehalten = Decision(Outcome.NoRequest, "KEEP_OWN_PARTIAL_HELD", alarm = false, smbBlockCause = SmbBlockCause.PARTIAL_ENDING)
+        if (current == null) return if (ownPartialHeld) gehalten else keep
         fun cancel(reason: String) = Decision(Outcome.Request(0.0, 0), reason, alarm = false, smbBlockCause = SmbBlockCause.NONE)
         if (isZeroRate(current.absoluteRateUPerH, cfg.basalStepUPerH)) return cancel(KEEP_CANCEL_STALE_ZERO_REASON)
         // Ueber Profilbasal: derselbe Abbruch wie unter NO_POSITIVE. Waehrend
@@ -402,21 +416,10 @@ object TbrPolicy {
         // mitlaufende Insulinquelle (H3: die Aktion ist SMB PLUS TBR).
         if (classify(current.absoluteRateUPerH, scheduledBasalUPerH, cfg.basalStepUPerH) == Direction.POSITIVE)
             return cancel("KEEP_CANCEL_POSITIVE")
-        // DIE EIGENE TEILRATE WIRD BEENDET, DIE FREMDE NIE.
-        //
-        // Ohne diesen Zweig liefe nach `PARTIAL -> RELEASED` die eigene
-        // Absenkung bis zum Ablauf weiter, waehrend FUSE bereits die
-        // normale Freigabe meldete und den SMB wieder oeffnete. Der
-        // Abbruch ist eine ANHEBUNG aufs Profilbasal, deshalb bleibt der
-        // SMB in genau diesem Zyklus gesperrt - s. [SmbBlockCause.
-        // PARTIAL_ENDING]. Eine FREMDE Absenkung faellt hier durch und
-        // bleibt unangetastet (C7b).
-        if (PartialTbrOwnership.isOurs(ownPartial, current, nowTs, cfg.basalStepUPerH))
-            return Decision(
-                Outcome.Request(0.0, 0), KEEP_END_OWN_PARTIAL_REASON,
-                alarm = false, smbBlockCause = SmbBlockCause.PARTIAL_ENDING,
-            )
-        return keep
+        // Eine FREMDE Absenkung faellt hier durch und bleibt unangetastet
+        // (C7b) - erkennbar daran, dass der Lebenszyklus KEINEN Abbruch
+        // faellig gestellt hat.
+        return if (ownPartialHeld) gehalten else keep
     }
 
     /**

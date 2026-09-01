@@ -26,6 +26,9 @@ import app.aaps.fuse.plugin.ledger.EpisodeBudgets
 import app.aaps.fuse.core.observer.Health
 import kotlin.math.max
 import kotlin.math.min
+import app.aaps.fuse.core.controller.PartialRecoveryGate
+import app.aaps.fuse.core.controller.PartialTbrOwnership
+import org.junit.jupiter.api.Assumptions.assumeTrue
 import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Assertions.assertNull
 import app.aaps.core.interfaces.aps.RT
@@ -183,6 +186,8 @@ class TransportWiringTest : TestBaseWithProfile() {
     private var mealRatioCapZ: Double = 1.0
     /** null = Migration: der Wert folgt dem alten Globalhebel. */
     private var zeroLatchAn = false
+    /** Der Schalter der Teilbasal-Rueckkehr - Default AUS wie in Produktion. */
+    private var teilbasalAn = false
     private var zeroLatchRuheZyklen = 20
     private var zeroLatchRuheAbstand = 30.0
     /** Variante 1 des Nullphasen-Vergleichs; 0 = AUS = Produktionsstand. */
@@ -579,6 +584,7 @@ class TransportWiringTest : TestBaseWithProfile() {
         whenever(preferences.get(FuseDoubleKey.CorrectionDemandRatioCap)).thenAnswer { corrRatioCapZ }
         whenever(preferences.get(FuseDoubleKey.MealDemandRatioCap)).thenAnswer { mealRatioCapZ }
         whenever(preferences.get(FuseBooleanKey.ZeroLatchEnabled)).thenAnswer { zeroLatchAn }
+        whenever(preferences.get(FuseBooleanKey.PartialRecoveryEnabled)).thenAnswer { teilbasalAn }
         whenever(preferences.get(FuseIntKey.ZeroLatchCalmExitMin)).thenAnswer { zeroLatchRuheZyklen }
         // Nullphasen-Varianten: Default AUS bzw. gueltiges Fenster -
         // ungemockt liefert Mockito 0, und die Config-Validierung
@@ -12967,6 +12973,143 @@ class TransportWiringTest : TestBaseWithProfile() {
         assertTrue(budgets.size <= 2) {
             "das Phase-B-Budget darf sich durch den manuellen Bolus nicht " +
                 "veraendern, sah aber: $budgets"
+        }
+    }
+
+    // =====================================================================
+    // E2E: DER LEBENSZYKLUS DER EIGENEN TEIL-TBR DURCH DEN ECHTEN RUNNER
+    // =====================================================================
+
+    /**
+     * DIE VOM REVIEW GEFORDERTE ZYKLUSFOLGE, durch den PRODUKTIVEN Runner
+     * gefahren - nicht gegen die pure Funktion, sondern gegen die
+     * Verdrahtung: Tor, Suche, Uebersetzer, Tabelle, Ledger.
+     *
+     * Der Aufbau ist derselbe wie beim Endpfad: ein gemessener Fall mit
+     * Bolusdeckung zuendet den Riegel, danach knickt der Verlauf auf flach
+     * ab. Genau dann faellt der Schutzgrund weg, waehrend die Null
+     * weiterlaeuft - die Lage, fuer die die Teilstufe gebaut ist.
+     *
+     * Geprueft wird die PHASE im Ledger, nicht ein abgeleiteter Anzeigewert:
+     * sie ist der Zustand, an dem SMB-Freigabe und Pumpenkommando haengen.
+     */
+    @Test
+    fun `E2E der Teilbasal-Lebenszyklus durch den echten Runner`(@TempDir dir: File) {
+        zeroLatchAn = true
+        teilbasalAn = true
+        flach = 140.0
+        steigungProMin = -1.2
+        knickAbMin = 25
+        steigungNachKnick = 0.0
+        bolusIobU = 2.5
+        clock = start
+        transportReset()
+        neuerRunner(FuseLedgerAdapter().also { it.loadOnce(dir.also(File::mkdirs), "test-epoch", start) })
+
+        // (1) Bis die Teilstufe zuendet. Die Pumpensicht meldet dabei die
+        //     laufende Null - so wie sie es waehrend eines Riegels tut.
+        quelleMeldet(TB(timestamp = System.currentTimeMillis(), duration = 30 * 60_000L,
+                        rate = 0.0, isAbsolute = true, type = TB.Type.NORMAL))
+        var zuendung: FuseCycleRunner.Outcome? = null
+        repeat(80) {
+            val o = cycle()
+            if (o.partialRecoveryActive) { zuendung = o; return@repeat }
+        }
+        val gezuendet = zuendung
+        assumeTrue(gezuendet != null, "Aufbau erzeugt in diesem Rig keine Teilstufe - Rest ungeprueft")
+
+        // Der Eintritt kostet die geforderten Zyklen, nicht weniger.
+        assertTrue(gezuendet!!.partialRecoveryStreak >= PartialRecoveryGate.ENTRY_CYCLES) {
+            "Streak ${gezuendet.partialRecoveryStreak}"
+        }
+        // (2) Angefordert, aber die Pumpe zeigt sie NOCH NICHT: REQUESTED.
+        val nachAnforderung = ledger.episodes.ownPartialTbr
+        assertNotNull(nachAnforderung) { "die Anforderung muss gebucht sein" }
+        assertEquals(PartialTbrOwnership.Phase.REQUESTED, nachAnforderung!!.phase) {
+            "beim Anfordern wird KEIN bestaetigter Besitz behauptet"
+        }
+        val rate = nachAnforderung.rateUPerH
+        assertTrue(rate > 0.0)
+
+        // (3) Naechster Snapshot weiterhin ohne unsere Rate - NICHT geloescht.
+        cycle()
+        assertNotNull(ledger.episodes.ownPartialTbr) { "genau das war die Race" }
+
+        // (4) Die Teilrate erscheint verzoegert -> RUNNING.
+        // ACHTUNG, HARNESS-EIGENHEIT: `TB.plannedRemainingMinutes` rechnet
+        // gegen `System.currentTimeMillis()`, NICHT gegen die injizierte
+        // Uhr. Damit die Restlaufzeit ueberhaupt ungleich 0 ist, muss der
+        // Zeitstempel auf der WANDUHR liegen. In Produktion faellt das
+        // zusammen; hier nicht, und ohne diese Zeile misst der Test nur,
+        // dass eine abgelaufene TBR nicht passt.
+        quelleMeldet(
+            TB(timestamp = System.currentTimeMillis(), duration = 30 * 60_000L,
+               rate = rate, isAbsolute = true, type = TB.Type.NORMAL)
+        )
+        cycle()
+        assertEquals(PartialTbrOwnership.Phase.RUNNING, ledger.episodes.ownPartialTbr?.phase) {
+            "bestaetigt werden muss ein autoritativer Snapshot mit passender Rate und Restlaufzeit; " +
+                "Nachweis=${ledger.episodes.ownPartialTbr}"
+        }
+
+        // (5) Schalter aus (dieselbe Wirkung wie eine Latch-Freigabe fuer die
+        //     Stufe): der Ausgang muss ENDING erzeugen und den SMB sperren.
+        teilbasalAn = false
+        val beendend = cycle()
+        assertEquals(PartialTbrOwnership.Phase.ENDING, ledger.episodes.ownPartialTbr?.phase)
+        assertEquals(0.0, beendend.decision.smbU, 1e-12) { "waehrend des Abbruchs kein SMB" }
+
+        // (6) Die Rate ist weiterhin sichtbar: ENDING bleibt, und das
+        //     Kommando wiederholt sich NICHT jeden Zyklus.
+        val vorher = ledger.episodes.ownPartialTbr!!.endAttempts
+        cycle()
+        val jetzt = ledger.episodes.ownPartialTbr
+        assertEquals(PartialTbrOwnership.Phase.ENDING, jetzt?.phase)
+        assertEquals(vorher, jetzt?.endAttempts) { "Backoff: kein Kommando je Zyklus" }
+
+        // (7) Autoritativ keine TBR mehr -> geloescht, erst jetzt ist der
+        //     Zustand wieder normal.
+        quelleMeldet(null)
+        cycle()
+        assertNull(ledger.episodes.ownPartialTbr) {
+            "erst ein autoritativer Snapshot beendet den Besitz"
+        }
+    }
+
+    /**
+     * EINE UNBRAUCHBARE SICHT DARF DEN BESITZ NIE LOESCHEN - durch den
+     * Runner gefahren. `run(tempBasalFallback = true)` ist genau der Fall:
+     * die TBR-Sicht stammt aus einer Ersatzquelle und sagt nichts.
+     */
+    @Test
+    fun `E2E eine Ersatzquellen-Sicht loescht den Besitz nicht`(@TempDir dir: File) {
+        zeroLatchAn = true
+        teilbasalAn = true
+        flach = 140.0
+        steigungProMin = -1.2
+        knickAbMin = 25
+        steigungNachKnick = 0.0
+        bolusIobU = 2.5
+        clock = start
+        transportReset()
+        neuerRunner(FuseLedgerAdapter().also { it.loadOnce(dir.also(File::mkdirs), "test-epoch", start) })
+        quelleMeldet(laufendeTbr(0.0))
+        var da = false
+        repeat(80) {
+            if (cycle().partialRecoveryActive) { da = true; return@repeat }
+        }
+        assumeTrue(da, "Aufbau erzeugt in diesem Rig keine Teilstufe - Rest ungeprueft")
+        assertNotNull(ledger.episodes.ownPartialTbr)
+
+        // Jetzt eine Sicht aus der Ersatzquelle, dazu gar keine TBR gemeldet.
+        // Ohne Typisierung waere das der Loeschfall gewesen.
+        quelleMeldet(null)
+        repeat(3) {
+            clock += taktMs
+            runner.run(true, testPumpe())
+        }
+        assertNotNull(ledger.episodes.ownPartialTbr) {
+            "eine Ersatzquellen-Sicht ist KEIN Beweis, dass nichts laeuft"
         }
     }
 

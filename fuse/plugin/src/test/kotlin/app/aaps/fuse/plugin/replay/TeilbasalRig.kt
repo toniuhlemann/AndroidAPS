@@ -155,8 +155,24 @@ object TeilbasalRig {
     const val UKF_SCHWELLE = -0.03
 
     /**
-     * Das Eintrittstor. Die Bedingungen kommen aus [PartialRecoveryGate],
-     * also aus dem PRODUKTIONSCODE - es gibt keine zweite Fassung mehr.
+     * Das Eintrittstor.
+     *
+     * DIE GENAUE ZUSAGE, nicht mehr und nicht weniger (Review):
+     *
+     *     produktives Tor + KONSERVATIVE Trail-Vollstaendigkeitspruefung
+     *
+     * Die Bedingungen kommen aus [PartialRecoveryGate], also aus dem
+     * Produktionscode - insoweit gibt es keine zweite Fassung. Aber
+     * DARUEBER liegt hier eine zusaetzliche Sperre, die die Produktion
+     * NICHT hat: fehlt im Trail der BG oder der Nahhorizont, gilt der
+     * Zyklus als gesperrt. Produktiv sperrt [PartialRecoveryGate.
+     * floorApproachBlocks] bei fehlendem Messwert ausdruecklich NICHT.
+     *
+     * Das ist als Auswertungsregel richtig - eine Teilstufe behaupten,
+     * die die Produktion vielleicht gar nicht gehabt haette, waere die
+     * falsche Richtung -, aber es ist eben KEINE Torgleichheit. Die
+     * Zahlen dieses Rigs sind deshalb auch von dieser Seite untere
+     * Schranken.
      *
      * [ukfSchwelle] ist AUSSCHLIESSLICH die Vergleichsachse dieser
      * Auswertung und in der Produktion nicht mehr vorhanden: `null` = das
@@ -172,10 +188,11 @@ object TeilbasalRig {
             descentRiskActive = z.descentRiskActive,
             healthReady = z.signalHealthy,
             verdictNone = z.verdictNone,
-            // FAIL-CLOSED: fehlt BG oder Nahhorizont im Trail, laesst sich
-            // die produktive Pruefung nicht nachvollziehen - dann gilt der
-            // Zyklus als gesperrt, statt eine Teilstufe zu behaupten, die
-            // die Produktion vielleicht gar nicht gehabt haette.
+            // ZUSAETZLICHE AUSWERTUNGSSPERRE, NICHT die Produktionsregel:
+            // fehlt BG oder Nahhorizont im Trail, laesst sich die produktive
+            // Pruefung nicht nachvollziehen, und der Zyklus gilt hier als
+            // gesperrt. Produktiv sperrt ein fehlender Messwert an dieser
+            // Stelle NICHT - s. Klassenkopf von torOffen.
             floorApproaching = if (z.q1Mgdl == null || z.positiveDescentHorizonMin == null) true
             else PartialRecoveryGate.floorApproachBlocks(
                 signalHealthy = z.signalHealthy,

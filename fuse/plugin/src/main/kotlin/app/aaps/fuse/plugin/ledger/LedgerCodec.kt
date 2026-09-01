@@ -488,6 +488,11 @@ object LedgerCodec {
                     .put("rateUPerH", it.rateUPerH)
                     .put("setAtTs", it.setAtTs)
                     .put("durationMin", it.durationMin)
+                    .put("phase", it.phase.name)
+                    .put("phaseSinceTs", it.phaseSinceTs)
+                    .put("endAttempts", it.endAttempts)
+                    .put("lastEndRequestTs", it.lastEndRequestTs)
+                    .put("everRunning", it.everRunning)
             } ?: JSONObject.NULL,
         )
         .put(
@@ -823,15 +828,24 @@ object LedgerCodec {
         }
         if (o.has("ownPartialTbr") && !o.isNull("ownPartialTbr")) {
             val own = o.getJSONObject("ownPartialTbr")
-            val kandidat = app.aaps.fuse.core.controller.PartialTbrOwnership.Own(
-                rateUPerH = own.getDouble("rateUPerH"),
-                setAtTs = requireTs("ownPartialTbr.setAtTs", own.getLong("setAtTs")),
-                durationMin = own.getInt("durationMin"),
-            )
+            val phase = own.optString("phase")
+                .let { n -> app.aaps.fuse.core.controller.PartialTbrOwnership.Phase.entries.firstOrNull { it.name == n } }
+            val kandidat = phase?.let {
+                app.aaps.fuse.core.controller.PartialTbrOwnership.Own(
+                    rateUPerH = own.getDouble("rateUPerH"),
+                    setAtTs = requireTs("ownPartialTbr.setAtTs", own.getLong("setAtTs")),
+                    durationMin = own.getInt("durationMin"),
+                    phase = it,
+                    phaseSinceTs = requireTs("ownPartialTbr.phaseSinceTs", own.getLong("phaseSinceTs")),
+                    endAttempts = own.optInt("endAttempts", 0),
+                    lastEndRequestTs = own.optLong("lastEndRequestTs", 0L),
+                    everRunning = own.optBoolean("everRunning", false),
+                )
+            }
             // Ein unbrauchbarer Nachweis wird VERWORFEN, nicht repariert:
             // dann gilt die laufende Absenkung als fremd, und das ist die
             // Richtung, die nichts Fremdes anfasst.
-            e.ownPartialTbr = kandidat.takeIf { it.valid }
+            e.ownPartialTbr = kandidat?.takeIf { it.valid }
         }
         if (o.has("zeroLatch")) {
             val latch = o.getJSONObject("zeroLatch")
