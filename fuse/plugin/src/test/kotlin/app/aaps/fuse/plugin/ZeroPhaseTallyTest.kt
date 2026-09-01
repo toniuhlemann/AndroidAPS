@@ -113,6 +113,42 @@ class ZeroPhaseTallyTest {
     }
 
     @Test
+    fun `die Summenidentitaet haelt ueber jeden Verlauf - A plus B plus C ist die Dauer`() {
+        // DER AUSWERTUNGSFEHLER, DEN DIESER TEST VERHINDERT: die drei
+        // Klassen werden aus zwei gespeicherten Zaehlern abgeleitet
+        // (A = minutes - reasonAbsent, B = reasonAbsent - flatAbsent,
+        // C = flatAbsent). Wer sie aus verschiedenen Laeufen oder ueber
+        // verschiedene Phasenmengen zusammentraegt, bekommt Summen, die
+        // nicht mehr zur Dauer passen - genau so ist eine Auswertung
+        // entstanden, in der 178 Minuten Nullzeit als 202 erschienen.
+        var s = tick(null, 0.0)
+        var m = 0.0
+        // Ein bewusst gemischter Verlauf: Grund an/aus, Rate fallend/flach,
+        // dazwischen eine Luecke und ein Uhrsprung zurueck.
+        val muster = listOf(
+            Triple(true, -0.9, 1.0), Triple(true, -0.5, 1.0), Triple(false, -0.4, 1.0),
+            Triple(false, 0.2, 1.0), Triple(false, null, 1.0), Triple(true, -0.1, 5.0),
+            Triple(false, 0.0, 1.0), Triple(false, -0.02, 1.0),
+        )
+        for ((grund, rate, dt) in muster) {
+            m += dt
+            s = BasalGapRechner.zeroTally(s, min(m), true, 0.6, grund, rate)
+        }
+        val f = s!!
+        val a = f.minutes - f.reasonAbsentMin
+        val b = f.reasonAbsentMin - f.flatAbsentMin
+        val c = f.flatAbsentMin
+        assertEquals(f.minutes, a + b + c, 1e-9, "A + B + C MUSS die gezaehlte Dauer ergeben")
+        assertTrue(a >= 0.0 && b >= 0.0 && c >= 0.0, "keine Klasse kann negativ werden")
+        assertTrue(f.reasonAbsentMin <= f.minutes, "ohne Grund kann nie mehr sein als gesamt")
+        assertTrue(f.flatAbsentMin <= f.reasonAbsentMin, "flach ist eine Teilmenge von ohne Grund")
+        // Und die Menge folgt DERSELBEN gezaehlten Zeit, nicht der rohen:
+        // die gekappte Luecke darf nicht als Basal verbucht sein.
+        assertEquals(0.6 * f.minutes / 60.0, f.omittedU, 1e-9)
+        assertTrue(f.gapCappedMin > 0.0, "der 5-min-Schritt muss als Luecke sichtbar sein")
+    }
+
+    @Test
     fun `die Bilanz ist keine Anspruchsgrundlage - sie kennt nur Zeit und Menge`() {
         // Waechter gegen den Fehler, gegen den der Vertrag ausdruecklich
         // warnt: die Klasse traegt KEIN Budget-, Recovery- oder
