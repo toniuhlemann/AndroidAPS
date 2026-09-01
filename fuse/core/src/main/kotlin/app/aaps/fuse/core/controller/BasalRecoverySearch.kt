@@ -3,6 +3,7 @@ package app.aaps.fuse.core.controller
 import app.aaps.fuse.core.insulin.UnitInsulinKernel
 import app.aaps.fuse.core.predictor.IsfSlot
 import app.aaps.fuse.core.predictor.PredictorResult
+import app.aaps.fuse.core.profile.BasalSlot
 import app.aaps.fuse.core.profile.ProfileSlots
 import kotlin.math.floor
 
@@ -57,6 +58,19 @@ object BasalRecoverySearch {
         NON_FINITE,
     }
 
+    /** Was die Rate letztlich begrenzt hat. */
+    enum class Begrenzung {
+        /** Der naechsthoehere Tick verletzt den Guard. */
+        GUARD,
+        /** Das Profilbasal ist erreicht - der Guard bindet gar nicht. */
+        PROFIL,
+        /** Schon der erste Tick verletzt den Guard (oder die Baseline liegt
+         *  selbst unter dem Boden): es bleibt bei der Null. */
+        KEINE_RATE,
+        /** Die Bahn war nicht auswertbar. */
+        ABLEHNUNG,
+    }
+
     data class Ergebnis(
         /**
          * Die groesste Rate auf dem Pumpenraster, die die Bahn traegt
@@ -78,14 +92,40 @@ object BasalRecoverySearch {
          * ist die gewaehlte Rate nachweislich die groesste tragbare.
          */
         val minLowerNaechsterTick: Double,
+        /**
+         * Das Minimum der Sicherheitsbahn OHNE jede Teilrate. Liegt es
+         * schon unter dem Guard-Boden, kann keine Rate tragen - und dann
+         * ist die Ursache nicht die Teilstufe, sondern die Bahn selbst.
+         */
+        val baselineMinLowerMgdl: Double,
+        /**
+         * WO das bindende Minimum liegt [min nach dem Anker], gerechnet
+         * fuer den gewaehlten Tick (bei Rate 0 fuer die Baseline);
+         * -1 = der Anker selbst war das Minimum.
+         *
+         * DIESE ZAHL BEANTWORTET DIE HORIZONTFRAGE (Review-P1): liegt der
+         * bindende Punkt weit hinten, hat eine FERNE tiefe Bahn die Rate
+         * verhindert, obwohl der akute Schutzgrund laengst weg ist. Ohne
+         * sie waere im Replay nicht zu sehen, welcher Horizont tatsaechlich
+         * bindet - und jede Horizontwahl bliebe eine Behauptung.
+         */
+        val bindenderOffsetMin: Int,
+        /** Bis wohin geprueft wurde [min] - explizit, nie implizit. */
+        val pruefHorizontMin: Int,
+        val begrenzung: Begrenzung,
+        /** Der wirksame Profildeckel [U/h]: das KLEINSTE Profilbasal im
+         *  TBR-Fenster, nicht das am Entscheidungszeitpunkt. */
+        val profildeckelUPerH: Double,
     ) {
 
         /** Der naechste Tick lag ueber dem Profilbasal - die Rate ist
          *  durch das PROFIL begrenzt, nicht durch den Guard. */
-        val durchProfilBegrenzt: Boolean get() = minLowerNaechsterTick.isNaN() && reject == null
+        val durchProfilBegrenzt: Boolean get() = begrenzung == Begrenzung.PROFIL
     }
 
-    private fun ab(reject: Reject) = Ergebnis(0.0, reject, 0, Double.NaN, Double.NaN)
+    private fun ab(reject: Reject) = Ergebnis(
+        0.0, reject, 0, Double.NaN, Double.NaN, Double.NaN, -1, 0, Begrenzung.ABLEHNUNG, 0.0,
+    )
 
     /**
      * @param kernel der Einheitskern. Er traegt seinen eigenen
@@ -101,19 +141,40 @@ object BasalRecoverySearch {
         kernel: UnitInsulinKernel,
         isfSlots: List<IsfSlot>,
         band: CandidateSearch.Band,
-        scheduledBasalUPerH: Double,
+        /**
+         * DAS PROFILBASAL UEBER DAS GANZE TBR-FENSTER, nicht nur am
+         * Entscheidungszeitpunkt (Review-P1).
+         *
+         * Faellt das Profil innerhalb der laufenden TBR, laege eine
+         * absolute Rate, die am Anfang noch unter dem Profil lag, spaeter
+         * DARUEBER - und aus der Milderung einer Absenkung wuerde eine
+         * Anhebung. Gedeckelt wird deshalb auf das KLEINSTE Profilbasal
+         * im Fenster.
+         */
+        basalSlots: List<BasalSlot>,
         basalStepUPerH: Double,
         tbrDurationMin: Int,
+        /**
+         * Bis wohin die Bahn geprueft wird [min]. AUSDRUECKLICH OHNE
+         * DEFAULT (Review-P1): der Zero-Latch entsteht aus dem
+         * LowThreatGate (extrapolierte Bodenzeit aus Fallrate und
+         * Bolus-IOB), diese Suche urteilt dagegen ueber die MODELLIERTE
+         * Bahn. Beide tragen heute zufaellig die Zahl 120, meinen aber
+         * Verschiedenes. Welcher Horizont fuer die Teilbasal-Rueckkehr
+         * gelten soll, ist eine Entscheidung - sie darf hier nicht still
+         * getroffen werden, und `bindenderOffsetMin` im Ergebnis zeigt,
+         * wo sie tatsaechlich greift.
+         */
+        pruefHorizontMin: Int,
         restraint: PredictorResult? = null,
     ): Ergebnis {
-        if (!scheduledBasalUPerH.isFinite() || scheduledBasalUPerH <= 0.0) return ab(Reject.INVALID_INPUT)
         if (!basalStepUPerH.isFinite() || basalStepUPerH <= 0.0) return ab(Reject.INVALID_INPUT)
-        if (tbrDurationMin <= 0) return ab(Reject.INVALID_INPUT)
+        if (tbrDurationMin <= 0 || pruefHorizontMin <= 0) return ab(Reject.INVALID_INPUT)
         if (band.violation() != null) return ab(Reject.INVALID_BAND)
 
         val points = prediction.points
         if (points.isEmpty()) return ab(Reject.HORIZON_MISSING)
-        val liabilityIdx = points.indexOfFirst { it.offsetMin == band.liabilityHorizonMin }
+        val liabilityIdx = points.indexOfFirst { it.offsetMin == pruefHorizontMin }
         if (liabilityIdx < 0) return ab(Reject.HORIZON_MISSING)
         val anchorTs = prediction.predictionAnchorTs
         if (!prediction.bgAtAnchor.isFinite()) return ab(Reject.GRID_INCONSISTENT)
@@ -123,6 +184,26 @@ object BasalRecoverySearch {
             val p = points[i]
             if (p.offsetMin != i + 1 || p.tsMs != anchorTs + (i + 1) * 60_000L) return ab(Reject.GRID_INCONSISTENT)
         }
+
+        // ---- DER PROFILDECKEL UEBER DAS GANZE TBR-FENSTER ----------------
+        //
+        // Nicht `profile.getBasal(jetzt)`: faellt das Profil waehrend der
+        // TBR, waere die Rate danach eine ANHEBUNG. Gedeckelt wird auf das
+        // kleinste Profilbasal im Fenster; deckt das Profil das Fenster
+        // nicht, wird abgelehnt statt geraten.
+        val fensterEndeTs = anchorTs + tbrDurationMin * 60_000L
+        if (!ProfileSlots.basalCovers(basalSlots, anchorTs, fensterEndeTs)) return ab(Reject.INVALID_INPUT)
+        var profildeckel = Double.MAX_VALUE
+        run {
+            var t = anchorTs
+            while (t <= fensterEndeTs) {
+                val b = ProfileSlots.basalAt(basalSlots, minOf(t, fensterEndeTs - 1)) ?: return ab(Reject.INVALID_INPUT)
+                if (!b.isFinite() || b < 0.0) return ab(Reject.INVALID_INPUT)
+                if (b < profildeckel) profildeckel = b
+                t += 60_000L
+            }
+        }
+        if (!profildeckel.isFinite() || profildeckel <= 0.0) return ab(Reject.INVALID_INPUT)
 
         // ---- DIE VERTEILTE MENGE, EINMAL VORBERECHNET --------------------
         //
@@ -167,13 +248,15 @@ object BasalRecoverySearch {
         val ankerMin = CandidateSearch.safetyAnchorForRecovery(prediction, restraint)
         if (!ankerMin.isFinite()) return ab(Reject.NON_FINITE)
 
-        fun minLowerBei(rate: Double): Double {
+        /** Minimum der Bahn bei [rate] - und WO es liegt (-1 = Anker). */
+        fun minLowerBei(rate: Double): Pair<Double, Int> {
             var min = ankerMin
+            var wo = -1
             for (i in 0..liabilityIdx) {
                 val v = basis[i] - rate * senkungProUPerH[i]
-                if (v < min) min = v
+                if (v < min) { min = v; wo = points[i].offsetMin }
             }
-            return min
+            return min to wo
         }
 
         // ---- DIE RASTERSUCHE ---------------------------------------------
@@ -182,24 +265,34 @@ object BasalRecoverySearch {
         // [0, Profilbasal]. Gesucht ist der GROESSTE tragbare Tick; der
         // naechsthoehere muss den Guard verletzen (oder ueber dem Profil
         // liegen) - genau das weist das Ergebnis aus.
-        val maxTicks = floor(scheduledBasalUPerH / basalStepUPerH + 1e-9).toInt()
+        val maxTicks = floor(profildeckel / basalStepUPerH + 1e-9).toInt()
+        val baseline = minLowerBei(0.0)
+        if (!baseline.first.isFinite()) return ab(Reject.NON_FINITE)
         var bester = 0
-        var minLowerBester = Double.NaN
+        var besteBahn = baseline
         for (t in 1..maxTicks) {
-            val rate = t * basalStepUPerH
-            val m = minLowerBei(rate)
-            if (!m.isFinite()) return ab(Reject.NON_FINITE)
-            if (m >= band.guardFloorMgdl) { bester = t; minLowerBester = m } else break
+            val m = minLowerBei(t * basalStepUPerH)
+            if (!m.first.isFinite()) return ab(Reject.NON_FINITE)
+            if (m.first >= band.guardFloorMgdl) { bester = t; besteBahn = m } else break
         }
         val naechster = bester + 1
         val minLowerNaechster =
-            if (naechster <= maxTicks) minLowerBei(naechster * basalStepUPerH) else Double.NaN
+            if (naechster <= maxTicks) minLowerBei(naechster * basalStepUPerH).first else Double.NaN
         return Ergebnis(
             rateUPerH = bester * basalStepUPerH,
             reject = null,
             gepruefteTicks = maxTicks,
-            minLowerBeiRate = if (bester > 0) minLowerBester else minLowerBei(0.0),
+            minLowerBeiRate = besteBahn.first,
             minLowerNaechsterTick = minLowerNaechster,
+            baselineMinLowerMgdl = baseline.first,
+            bindenderOffsetMin = besteBahn.second,
+            pruefHorizontMin = pruefHorizontMin,
+            begrenzung = when {
+                bester == 0 -> Begrenzung.KEINE_RATE
+                naechster > maxTicks -> Begrenzung.PROFIL
+                else -> Begrenzung.GUARD
+            },
+            profildeckelUPerH = profildeckel,
         )
     }
 }

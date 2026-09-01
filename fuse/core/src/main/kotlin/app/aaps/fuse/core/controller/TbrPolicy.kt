@@ -379,11 +379,14 @@ object TbrPolicy {
     /**
      * DIE TEILBASAL-RATE - abgesenkt, nie angehoben.
      *
-     * `anteil x Profilbasal`, auf den Pumpen-Basalschritt NACH UNTEN
-     * gerastert (was die Pumpe nicht darstellen kann, wird nicht behauptet)
-     * und hart am Profilbasal gedeckelt. Ein unbrauchbarer Anteil oder ein
-     * unbrauchbares Profil ergibt die Schutz-Null - fail-closed in die
-     * Richtung, die WENIGER Insulin gibt.
+     * Die Rate kommt FERTIG aus `BasalRecoverySearch` - der groessten
+     * Rate, die die Schutzbahn noch traegt. Hier wird sie nur noch auf den
+     * Pumpen-Basalschritt NACH UNTEN gerastert (was die Pumpe nicht
+     * darstellen kann, wird nicht behauptet) und hart am Profilbasal
+     * gedeckelt; beides ist Verteidigung in der Tiefe, die Suche tut es
+     * bereits. Eine unbrauchbare Vorgabe oder ein unbrauchbares Profil
+     * ergibt die Schutz-Null - fail-closed in die Richtung, die WENIGER
+     * Insulin gibt.
      *
      * KEIN KOMMANDO-SPAM: laeuft die Zielrate schon und reicht die
      * Restdauer, wird nichts gesendet; erneuert wird nur vor dem Ablauf -

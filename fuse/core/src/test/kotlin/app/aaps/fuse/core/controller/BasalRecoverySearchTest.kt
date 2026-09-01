@@ -7,10 +7,12 @@ import app.aaps.fuse.core.insulin.UnitInsulinKernelBuilder
 import app.aaps.fuse.core.insulin.UnitInsulinSampler
 import app.aaps.fuse.core.predictor.InsulinModelProvenance
 import app.aaps.fuse.core.predictor.IsfSlot
+import app.aaps.fuse.core.profile.BasalSlot
 import app.aaps.fuse.core.predictor.PredictorResult
 import app.aaps.fuse.core.predictor.TrajectoryPoint
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNull
+import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
@@ -63,15 +65,22 @@ class BasalRecoverySearchTest {
         releaseHorizonMin = 30, liabilityHorizonMin = 120,
     )
 
+    /** Ein konstantes Profilbasal ueber das ganze Fenster und darueber hinaus. */
+    private fun flach(rate: Double) =
+        listOf(BasalSlot(anchor - 3_600_000L, anchor + 24 * 3_600_000L, rate))
+
     private fun suche(
         bahn: PredictorResult,
         profil: Double = 0.60,
         schritt: Double = 0.05,
         dauer: Int = 30,
         k: UnitInsulinKernel = kernel(),
+        slots: List<BasalSlot> = flach(profil),
+        horizont: Int = band.liabilityHorizonMin,
     ) = BasalRecoverySearch.hoechsteSichereRate(
         prediction = bahn, kernel = k, isfSlots = isfSlots, band = band,
-        scheduledBasalUPerH = profil, basalStepUPerH = schritt, tbrDurationMin = dauer,
+        basalSlots = slots, basalStepUPerH = schritt, tbrDurationMin = dauer,
+        pruefHorizontMin = horizont,
     )
 
     // ---- DER VERTRAG -----------------------------------------------------
@@ -113,6 +122,76 @@ class BasalRecoverySearchTest {
     fun `eine Bahn UNTER dem Boden traegt erst recht nichts`() {
         val r = suche(prediction { 60.0 })
         assertEquals(0.0, r.rateUPerH, 1e-12)
+    }
+
+    // ---- DER PROFILWECHSEL IM TBR-FENSTER (Review-P1) --------------------
+
+    @Test
+    fun `faellt das Profilbasal in der TBR, gilt der KLEINSTE Wert im Fenster`() {
+        // 0,60 U/h bis zur 10. Minute, danach 0,20 U/h. Eine TBR von 0,60
+        // waere ab Minute 10 eine ANHEBUNG - genau das darf nicht passieren.
+        val kante = anchor + 10 * 60_000L
+        val fallend = listOf(
+            BasalSlot(anchor - 3_600_000L, kante, 0.60),
+            BasalSlot(kante, anchor + 24 * 3_600_000L, 0.20),
+        )
+        val grosszuegig = prediction { 300.0 }
+        assertEquals(0.60, suche(grosszuegig).rateUPerH, 1e-9, "flach: das Profil deckelt bei 0,60")
+
+        val r = suche(grosszuegig, slots = fallend)
+        assertNull(r.reject)
+        assertEquals(0.20, r.rateUPerH, 1e-9) { "der kleinste Wert im Fenster deckelt, nicht der am Entscheidungszeitpunkt" }
+        assertEquals(0.20, r.profildeckelUPerH, 1e-9)
+        assertEquals(BasalRecoverySearch.Begrenzung.PROFIL, r.begrenzung)
+    }
+
+    @Test
+    fun `ein steigendes Profil hebt den Deckel NICHT - der Anfangswert bindet`() {
+        val kante = anchor + 10 * 60_000L
+        val steigend = listOf(
+            BasalSlot(anchor - 3_600_000L, kante, 0.20),
+            BasalSlot(kante, anchor + 24 * 3_600_000L, 0.60),
+        )
+        val r = suche(prediction { 300.0 }, slots = steigend)
+        assertEquals(0.20, r.rateUPerH, 1e-9) { "auch hier das Minimum - eine Rate ist EINE Zahl fuer das ganze Fenster" }
+    }
+
+    @Test
+    fun `ein Profil, das das TBR-Fenster nicht deckt, wird abgelehnt statt geraten`() {
+        val zuKurz = listOf(BasalSlot(anchor - 3_600_000L, anchor + 5 * 60_000L, 0.60))
+        val r = suche(prediction { 300.0 }, slots = zuKurz)
+        assertEquals(BasalRecoverySearch.Reject.INVALID_INPUT, r.reject)
+        assertEquals(0.0, r.rateUPerH, 1e-12)
+    }
+
+    // ---- DER HORIZONT (Review-P1) ----------------------------------------
+
+    @Test
+    fun `das Ergebnis weist aus, WO das Minimum bindet - die Horizontfrage`() {
+        // Die Bahn ist vorne hoch und faellt erst spaet ab. Bindet der Punkt
+        // weit hinten, hat eine FERNE tiefe Bahn die Rate begrenzt, obwohl
+        // der akute Schutzgrund laengst weg ist - genau das muss sichtbar
+        // sein, statt in einer Zahl zu verschwinden.
+        val spaetTief = prediction { off -> if (off >= 100) 78.0 else 200.0 }
+        val r = suche(spaetTief)
+        assertNull(r.reject)
+        assertTrue(r.bindenderOffsetMin >= 100) { "gebunden hat ein spaeter Punkt, nicht der Anker" }
+        assertEquals(BasalRecoverySearch.Begrenzung.GUARD, r.begrenzung)
+        assertTrue(r.baselineMinLowerMgdl > r.minLowerBeiRate) { "die Rate senkt die Bahn - die Baseline liegt darueber" }
+        assertEquals(120, r.pruefHorizontMin)
+    }
+
+    @Test
+    fun `ein kuerzerer Pruefhorizont blendet den spaeten Tiefpunkt aus - und gibt mehr frei`() {
+        // KEINE Empfehlung, sondern der Nachweis, dass der Horizont eine
+        // ENTSCHEIDUNG ist: dieselbe Bahn, zwei Horizonte, zwei Raten.
+        val spaetTief = prediction { off -> if (off >= 100) 78.0 else 200.0 }
+        val lang = suche(spaetTief, horizont = 120)
+        val kurz = suche(spaetTief, horizont = 60)
+        assertNull(kurz.reject)
+        assertTrue(kurz.rateUPerH > lang.rateUPerH) { "der kurze Horizont sieht den spaeten Tiefpunkt nicht" }
+        assertEquals(60, kurz.pruefHorizontMin)
+        assertTrue(kurz.bindenderOffsetMin <= 60)
     }
 
     // ---- DIE ZEITVERTEILUNG (Review-P0) ----------------------------------
@@ -175,12 +254,19 @@ class BasalRecoverySearchTest {
         val bahn = prediction { 200.0 }
         for ((was, r) in listOf(
             "Profil 0" to suche(bahn, profil = 0.0),
-            "Profil NaN" to suche(bahn, profil = Double.NaN),
+            "kein Profil" to suche(bahn, slots = emptyList()),
             "Schritt 0" to suche(bahn, schritt = 0.0),
             "Dauer 0" to suche(bahn, dauer = 0),
+            "Horizont 0" to suche(bahn, horizont = 0),
         )) {
             assertEquals(0.0, r.rateUPerH, 1e-12, was)
             assertEquals(BasalRecoverySearch.Reject.INVALID_INPUT, r.reject, was)
+        }
+        // Ein NaN-Profil kann diese Suche gar nicht erreichen - der Slot-Typ
+        // selbst laesst es nicht zu. Das ist die staerkere Zusage, aber sie
+        // gilt nur, solange sie geprueft wird.
+        assertThrows(IllegalArgumentException::class.java) {
+            BasalSlot(anchor, anchor + 60_000L, Double.NaN)
         }
     }
 
@@ -207,7 +293,8 @@ class BasalRecoverySearchTest {
         val engesBand = band.copy(liabilityHorizonMin = 999)
         val r = BasalRecoverySearch.hoechsteSichereRate(
             prediction = prediction { 200.0 }, kernel = kernel(), isfSlots = isfSlots,
-            band = engesBand, scheduledBasalUPerH = 0.6, basalStepUPerH = 0.05, tbrDurationMin = 30,
+            band = engesBand, basalSlots = flach(0.6), basalStepUPerH = 0.05, tbrDurationMin = 30,
+            pruefHorizontMin = engesBand.liabilityHorizonMin,
         )
         assertEquals(BasalRecoverySearch.Reject.HORIZON_MISSING, r.reject)
     }
@@ -216,7 +303,8 @@ class BasalRecoverySearchTest {
     fun `fehlende ISF-Slots ergeben ISF_SLOT_MISSING`() {
         val r = BasalRecoverySearch.hoechsteSichereRate(
             prediction = prediction { 200.0 }, kernel = kernel(), isfSlots = emptyList(),
-            band = band, scheduledBasalUPerH = 0.6, basalStepUPerH = 0.05, tbrDurationMin = 30,
+            band = band, basalSlots = flach(0.6), basalStepUPerH = 0.05, tbrDurationMin = 30,
+            pruefHorizontMin = band.liabilityHorizonMin,
         )
         assertEquals(BasalRecoverySearch.Reject.ISF_SLOT_MISSING, r.reject)
     }

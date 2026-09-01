@@ -52,6 +52,7 @@ import app.aaps.fuse.core.predictor.ActualTrajectoryFactory
 import app.aaps.fuse.core.predictor.DriveDecayModel
 import app.aaps.fuse.core.controller.CandidateGate
 import app.aaps.fuse.core.controller.BasalRecoverySearch
+import app.aaps.fuse.core.profile.ProfileSlots
 import app.aaps.fuse.core.controller.CandidateSearch
 import app.aaps.fuse.core.controller.EvidenceStock
 import app.aaps.fuse.core.controller.MarkerFallback
@@ -2925,18 +2926,36 @@ class FuseCycleRunner(
             val pk = kernel()
             if (pk == null) partialReject = "KERNEL_MISSING"
             else {
+                val dauer = TbrPolicy.Config(basalStepUPerH = pumpe.basalStepUPerH).defaultDurationMin
+                // Das Profilbasal ueber das GANZE TBR-Fenster, minutenweise
+                // abgetastet: faellt das Profil waehrend der TBR, muss der
+                // Deckel dem folgen (Review-P1).
+                val basalSlots = ProfileSlots.compressBasal(
+                    LongArray(dauer + 1) { computeTs + it * 60_000L },
+                    DoubleArray(dauer + 1) { profile.getBasal(computeTs + it * 60_000L) },
+                    computeTs + (dauer + 1) * 60_000L,
+                )
                 val rr = BasalRecoverySearch.hoechsteSichereRate(
                     prediction = prediction,
                     kernel = pk,
                     isfSlots = built.input.isfSlots,
                     band = candidateBand,
-                    scheduledBasalUPerH = profile.getBasal(computeTs),
+                    basalSlots = basalSlots,
                     basalStepUPerH = pumpe.basalStepUPerH,
-                    tbrDurationMin = TbrPolicy.Config(basalStepUPerH = pumpe.basalStepUPerH).defaultDurationMin,
+                    tbrDurationMin = dauer,
+                    // Vorerst der Haftungshorizont - dieselbe Strecke, gegen
+                    // die auch ein SMB geprueft wird. Ob das der richtige
+                    // Horizont ist, entscheidet der Rig-Vergleich; das
+                    // Ergebnis weist mit bindenderOffsetMin aus, wo es
+                    // tatsaechlich bindet.
+                    pruefHorizontMin = cfg.liabilityHorizonMin,
                     restraint = restraint,
                 )
                 partialRateUPerH = rr.rateUPerH
                 partialReject = rr.reject?.name
+                partialBindenderOffsetMin = rr.bindenderOffsetMin
+                partialBegrenzung = rr.begrenzung.name
+                partialBaselineMinLower = rr.baselineMinLowerMgdl
             }
         }
         // Der Kern steht jetzt WEITER OBEN (C3) und wird hier nur abgerufen -
@@ -6804,6 +6823,13 @@ class FuseCycleRunner(
      *  zyklusbezogen, kein Zustand ueber Zyklen hinweg. */
     private var partialRateUPerH = 0.0
     private var partialReject: String? = null
+
+    /** Diagnose der Ratensuche - beantwortet im Replay die Horizontfrage:
+     *  wo bindet das Minimum, was hat begrenzt, wie tief lag die Bahn ohne
+     *  jede Teilrate. */
+    private var partialBindenderOffsetMin = -1
+    private var partialBegrenzung: String? = null
+    private var partialBaselineMinLower = Double.NaN
 
     /** Variante 1: zusammenhaengende Zyklen mit weggefallenem Schutzgrund
      *  UND bestaetigter Erholung. Prozesslokal wie der Ruhe-Zaehler - ein
