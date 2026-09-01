@@ -57,7 +57,7 @@ object NullphasenReplay {
          * damit konnten die gemeldeten Ausgaenge ZU FRUEH sein.
          *
          * FAIL-CLOSED: fehlt die Information im Trail, gilt sie als
-         * ungueltig - `measuredLow`/`descentRiskActive` als `z.sourceTs - letzterSourceTs <= ANSCHLUSS_MAX_MS`
+         * ungueltig - `measuredLow`/`descentRiskActive` als `true`
          * (Gefahr angenommen) und `q1NotFalling` als `false` (keine
          * Erholung angenommen). Eine fehlende Angabe darf nie zu einem
          * Ausgang fuehren, den die Produktion nicht gehabt haette.
@@ -193,7 +193,7 @@ object NullphasenReplay {
                 // 0, wenn die Bedingungen nicht erfuellt sind.
                 val anschluss = letzterSourceTs > 0L &&
                     z.sourceTs > letzterSourceTs &&
-                    true
+                    z.sourceTs - letzterSourceTs <= ANSCHLUSS_MAX_MS
                 streak = if (!z.schutzgrund && erholung(z)) (if (anschluss) streak + 1 else 1) else 0
                 if (z.sourceTs > 0L) letzterSourceTs = z.sourceTs
                 if (streak >= n) { idx = i; break }
