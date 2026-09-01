@@ -809,7 +809,11 @@ class FuseStateExportTest {
         // dosierneutral, nur mealStats/mealDeliveries.
         // v47 Schritt B: Basalluecken-Kontext (basalGap-Block), rein
         // beobachtend - beim Druck gelatcht, unsichere Groessen null.
-        assertEquals(47, FuseStateJson.RULE_SET_VERSION)
+        // v48 Messgrundlage der Nullphasen, rein beobachtend:
+        // scheduledBasalUph je Zyklus, overcoverageMarginMgdl auch ohne
+        // Verdikt, zeroTally/lastZeroTally (drei Zeitklassen, restartfest).
+        // Kein Dosierpfad liest die Felder; die Verdikte sind unveraendert.
+        assertEquals(48, FuseStateJson.RULE_SET_VERSION)
         assertTrue(
             FuseStateJson.hashOf(cfg)!!.isNotEmpty(),
             "und der Hash bleibt berechenbar",

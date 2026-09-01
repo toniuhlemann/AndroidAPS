@@ -264,6 +264,16 @@ object LowThreatGate {
 
         val strecke = bgMgdl - guardFloorMgdl
 
+        // DIE UEBERDECKUNGSMARGE IMMER, NICHT NUR AUF DEM RISIKOPFAD.
+        //
+        // Sie ist reine Messgroesse (einziger Leser: der Export) und stand
+        // bisher nur in den Ergebnissen MIT anliegendem Risiko. Genau in der
+        // Zeit, in der der Riegel OHNE anliegenden Grund weiterhaelt - der
+        // Groesse, um die es bei der Frage "war der Halt noch marginal
+        // gedeckt?" geht -, war sie deshalb null und die Frage unmessbar.
+        // Die Rechnung ist dieselbe wie unten; sie steuert nichts.
+        val margeImmer = (bolusIobU ?: 0.0) * isfMgdlPerU - strecke
+
         // SCHRITTE 1-3 SIND DAS GEMESSENE ABWAERTSRISIKO und stehen seit dem
         // 19.08. in [measuredDescentRisk] - EINE Implementierung, hier nur
         // gerufen. Zwei Kopien wuerden auseinanderlaufen, und dann sperrte der
@@ -280,6 +290,7 @@ object LowThreatGate {
         if (!risiko.active) return Result(
             Verdict.NONE, fallRatePerMin, risiko.bolusIobU, strecke,
             risiko.minutesToFloor, denial = risiko.denial,
+            overcoverageMarginMgdl = margeImmer,
         )
         val bolus = risiko.bolusIobU
         val minutenBisBoden = risiko.minutesToFloor!!

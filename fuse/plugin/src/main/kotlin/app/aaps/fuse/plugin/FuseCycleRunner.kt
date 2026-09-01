@@ -995,6 +995,15 @@ class FuseCycleRunner(
         /** Laeuft in DIESEM Zyklus eine Null-TBR? null = Pfad ohne
          *  TBR-Bewertung (Abbruch/Fallback). */
         val currentZeroTbrActive: Boolean? = null,
+        /** DAS LAUFENDE PROFILBASAL [U/h] dieses Zyklus - nicht der
+         *  Marker-Schnappschuss in [basalGap]. Ohne dieses Feld ist jede
+         *  Mengenbilanz ueber den Trail ein Modellfit; mit ihm ist sie
+         *  eine Ablesung. */
+        val scheduledBasalUph: Double? = null,
+        /** Laufende bzw. zuletzt abgeschlossene Nullphasen-Bilanz - rein
+         *  beobachtend (s. EpisodeBudgets.ZeroPhaseTally). */
+        val zeroTally: app.aaps.fuse.plugin.ledger.EpisodeBudgets.ZeroPhaseTally? = null,
+        val lastZeroTally: app.aaps.fuse.plugin.ledger.EpisodeBudgets.ZeroPhaseTally? = null,
         val markerPowerDeadlineTs: Long = 0L,
         /** ZERO-TBR-LATCH: verriegelte Null, Grund des Zyklus, Ruhe-
          *  Zaehler und ob der Latch die TBR dieses Zyklus uebersteuert hat
@@ -5102,6 +5111,31 @@ class FuseCycleRunner(
         //                             den naechsten echten Anlauf nicht
         //                             blockieren)
         val laeuftNull = currentTbr?.let { TbrPolicy.isZeroRate(it.absoluteRateUPerH, pumpe.basalStepUPerH) } == true
+
+        // ---- LAUFENDE NULLPHASEN-BILANZ (rein beobachtend) ---------------
+        // Vertrag Punkt 1 des Recovery-Bauauftrags: waehrend JEDER Nullphase
+        // das tatsaechlich ausgelassene Profilbasal erfassen - markerlos, mit
+        // den drei Zeitklassen (gesamt / ohne Schutzgrund / ohne Grund und
+        // nicht fallend). Kein Dosierpfad liest das; insbesondere ist
+        // omittedU KEIN Budget - die fehlende Basalwirkung steht bereits im
+        // negativen Basal-IOB, eine zweite Verwendung waere Doppelzaehlung.
+        run {
+            val grundLiegtAn = lowThreatResult.verdict != LowThreatGate.Verdict.NONE
+            val neu = BasalGapRechner.zeroTally(
+                vorher = episodes.zeroTally,
+                nowTs = computeTs,
+                zeroActive = laeuftNull,
+                scheduledBasalUph = profile.getBasal(computeTs),
+                reasonPresent = grundLiegtAn,
+                fallRatePerMin = lowThreatResult.fallRatePerMin,
+            )
+            // Das ENDE der Phase konserviert die Bilanz: der interessante
+            // Vergleich (wieviel lief ohne Grund) ist erst danach moeglich,
+            // und der laufende Stand ist dann schon weg.
+            if (neu == null) episodes.zeroTally?.let { episodes.lastZeroTally = it }
+            episodes.zeroTally = neu
+        }
+
         endZeroFehlversuche = when {
             !laeuftNull                                         -> 0
             combined.reason.contains(TbrPolicy.END_ZERO_REASON) -> endZeroFehlversuche + 1
@@ -5197,6 +5231,9 @@ class FuseCycleRunner(
             // Schritt B: Basalluecken-Kontext, rein beobachtend.
             basalGap = episodes.basalGap,
             currentZeroTbrActive = laeuftNull,
+            scheduledBasalUph = profile.getBasal(computeTs),
+            zeroTally = episodes.zeroTally,
+            lastZeroTally = episodes.lastZeroTally,
             expectationSituation = ExpectationLedger.situationOf(
                 mealMarkerActive = mealMarkerActive,
                 evidenceEpisodeId = episodes.evidenceEpisodeId,

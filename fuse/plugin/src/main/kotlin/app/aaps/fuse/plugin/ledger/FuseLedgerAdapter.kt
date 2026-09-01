@@ -234,6 +234,59 @@ class EpisodeBudgets {
     var basalGap: BasalGapLatch? = null
 
     /**
+     * DIE LAUFENDE NULLPHASEN-BILANZ - REIN BEOBACHTEND (Bauauftrag
+     * "BasalGap-Recovery", Vertrag Punkt 1: "waehrend jeder FUSE-Nullphase
+     * tatsaechlich ausgelassenes Profilbasal erfassen").
+     *
+     * SIE IST NICHT DER MARKER-LATCH. [BasalGapLatch] friert die Lage beim
+     * MARKERDRUCK ein und ist markerbezogen; diese Bilanz laeuft mit JEDER
+     * Nullphase, unabhaengig von Mahlzeiten, und wird beim Ende der Phase
+     * geschlossen. Beide getrennt zu halten ist Absicht - eine gemeinsame
+     * Groesse haette zwei Lebensdauern und damit zwei Wahrheiten.
+     *
+     * WARUM MINUTENWEISE FORTGESCHRIEBEN statt am Ende aus der Historie
+     * gerechnet: die Bilanz muss einen Neustart MITTEN in der Phase
+     * ueberleben, und sie darf keine zweite TBR-Lesung kosten
+     * (Ein-Sicht-Disziplin). Der Preis ist, dass eine Zyklusluecke die
+     * Bilanz unterschaetzt - deshalb wird die tatsaechlich verstrichene
+     * Zeit gezaehlt und [gapCappedMin] weist aus, wieviel davon aus
+     * uebergrossen Schritten stammt.
+     *
+     * DREI ZEITKLASSEN, weil "Null lief" allein nichts erklaert:
+     *   [minutes]          alle Nullminuten,
+     *   [reasonAbsentMin]  davon OHNE anliegenden Schutzgrund,
+     *   [flatAbsentMin]    davon ohne Grund UND ohne weiter fallenden Zucker.
+     * Nur die letzte Klasse ist ohne Gegenrede vermeidbar; die mittlere ist
+     * die Hysterese, fuer die der Riegel gebaut wurde. Ohne diese Trennung
+     * wird jede Auswertung die drei verwechseln.
+     *
+     * VERTRAG: kein Dosierpfad liest diese Felder. Sie sind weder Budget
+     * noch Anspruch - insbesondere darf [omittedU] NIE auf einen Bedarf
+     * addiert werden: die fehlende Basalwirkung steckt bereits im
+     * (negativen) Basal-IOB, eine zweite Verwendung waere Doppelzaehlung.
+     */
+    data class ZeroPhaseTally(
+        val sinceTs: Long,
+        val lastTickTs: Long,
+        val minutes: Double,
+        val omittedU: Double,
+        val reasonAbsentMin: Double,
+        val flatAbsentMin: Double,
+        /** Minuten, die aus Schritten > [ZERO_TALLY_MAX_STEP_MIN] stammen
+         *  (Zyklusluecke/Neustart) - macht eine unterschaetzte Bilanz
+         *  sichtbar, statt sie stillschweigend zu glaetten. */
+        val gapCappedMin: Double,
+    )
+
+    /** Die laufende Nullphase; null = gerade keine. */
+    var zeroTally: ZeroPhaseTally? = null
+
+    /** Die zuletzt ABGESCHLOSSENE Nullphase - sie ueberdauert das Ende,
+     *  weil der interessante Vergleich (Bilanz vs. was danach geschah)
+     *  erst nach dem Ende moeglich ist. */
+    var lastZeroTally: ZeroPhaseTally? = null
+
+    /**
      * DER SOFORT-BATCH IST AUFGESCHOBEN (Nachtrag Toni 25.08. mittags):
      * Zeitpunkt des ERSTEN Sicherheitsaufschubs dieser Autorisierung,
      * 0 = nie aufgeschoben.

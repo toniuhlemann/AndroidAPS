@@ -1,6 +1,7 @@
 package app.aaps.fuse.plugin
 
 import app.aaps.fuse.core.controller.TbrPolicy
+import app.aaps.fuse.plugin.ledger.EpisodeBudgets
 
 /**
  * DIE NULLPHASEN-RECHNUNG DER BASALLUECKE (Bauauftrag Schritt B).
@@ -21,6 +22,75 @@ import app.aaps.fuse.core.controller.TbrPolicy
  * keine Phase.
  */
 object BasalGapRechner {
+
+    /**
+     * Groesster Zeitschritt [min], den ein einzelner Tick der laufenden
+     * Bilanz zuschreibt. Ein Zyklus dauert rund eine Minute; alles darueber
+     * ist eine Luecke (Zyklusausfall, Neustart, Uhrsprung). Die
+     * ueberschiessende Zeit wird NICHT gezaehlt - eine Bilanz, die eine
+     * halbe Stunde Prozesspause als Nullbasal verbucht, waere schlimmer als
+     * eine, die zu wenig zeigt. Was dabei verloren geht, weist
+     * `gapCappedMin` aus.
+     */
+    const val ZERO_TALLY_MAX_STEP_MIN = 3.0
+
+    /** Ab welcher UKF-Rate [mg/dl/min] eine Lage nicht mehr als "faellt
+     *  weiter" gilt. Bewusst leicht negativ: exakt 0 gibt es im Rauschen
+     *  nicht, und ein Hauch Abwaertsdrift ist noch kein Fall. */
+    const val ZERO_TALLY_FLAT_RATE = -0.03
+
+    /**
+     * EIN TICK DER LAUFENDEN NULLPHASEN-BILANZ - pur, ohne Zustand, ohne Uhr.
+     *
+     * @param vorher der Stand des letzten Zyklus; null = es lief keine Phase.
+     * @param zeroActive laeuft in DIESEM Zyklus eine Null-TBR (Pumpensicht)?
+     * @param scheduledBasalUph das LAUFENDE Profilbasal; null = unbekannt,
+     *   dann waechst die Zeit weiter, die MENGE aber nicht (lieber eine
+     *   unvollstaendige Menge als eine geschaetzte).
+     * @param reasonPresent liegt in diesem Zyklus ein Schutzgrund an
+     *   (LowThreat-Verdikt)? Steuert die Zeitklassen, sonst nichts.
+     * @param fallRatePerMin die gemessene Rate; null = keine Aussage, dann
+     *   zaehlt der Zyklus NICHT als flach (fail-closed fuer die Klasse, die
+     *   spaeter als "vermeidbar" gelesen wird).
+     * @return der neue Stand, oder null wenn keine Phase (mehr) laeuft.
+     */
+    fun zeroTally(
+        vorher: EpisodeBudgets.ZeroPhaseTally?,
+        nowTs: Long,
+        zeroActive: Boolean,
+        scheduledBasalUph: Double?,
+        reasonPresent: Boolean,
+        fallRatePerMin: Double?,
+    ): EpisodeBudgets.ZeroPhaseTally? {
+        if (!zeroActive || nowTs <= 0L) return null
+        if (vorher == null) {
+            // Der ERSTE Zyklus einer Phase traegt keine Zeit: die Null hat
+            // gerade erst begonnen, und rueckwaerts zu raten, wie lange sie
+            // vor diesem Zyklus schon lief, waere eine Erfindung.
+            return EpisodeBudgets.ZeroPhaseTally(
+                sinceTs = nowTs, lastTickTs = nowTs, minutes = 0.0, omittedU = 0.0,
+                reasonAbsentMin = 0.0, flatAbsentMin = 0.0, gapCappedMin = 0.0,
+            )
+        }
+        val rohMin = (nowTs - vorher.lastTickTs) / 60_000.0
+        // Rueckwaerts laufende Uhr schreibt nichts fort (und dreht nichts
+        // zurueck): der Zeitstempel wandert mit, die Bilanz bleibt stehen.
+        if (rohMin <= 0.0) return vorher.copy(lastTickTs = nowTs)
+        val dt = minOf(rohMin, ZERO_TALLY_MAX_STEP_MIN)
+        val flach = !reasonPresent && fallRatePerMin != null &&
+            fallRatePerMin.isFinite() && fallRatePerMin >= ZERO_TALLY_FLAT_RATE
+        val menge = scheduledBasalUph
+            ?.takeIf { it.isFinite() && it > 0.0 }
+            ?.let { it * dt / 60.0 } ?: 0.0
+        return vorher.copy(
+            lastTickTs = nowTs,
+            minutes = vorher.minutes + dt,
+            omittedU = vorher.omittedU + menge,
+            reasonAbsentMin = vorher.reasonAbsentMin + if (reasonPresent) 0.0 else dt,
+            flatAbsentMin = vorher.flatAbsentMin + if (flach) dt else 0.0,
+            gapCappedMin = vorher.gapCappedMin + (rohMin - dt),
+        )
+    }
 
     /** Ein Zeitscheiben-Blick; Slices AUFSTEIGEND, letzter = Markermoment. */
     data class Slice(

@@ -4,6 +4,7 @@ import app.aaps.core.interfaces.aps.RT
 import app.aaps.fuse.core.util.Sha
 import app.aaps.fuse.plugin.FuseCycleRunner
 import app.aaps.fuse.core.controller.TurnResponseShadow
+import app.aaps.fuse.plugin.ledger.EpisodeBudgets
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -360,7 +361,23 @@ object FuseStateJson {
     // Nullstatus. KEIN Dosierpfad liest diese Werte (Neutralitaets-Rig):
     // nie Exposure-Headroom, kein Auto-Bolus, kein Budget aus
     // rueckwaertslaufendem Basal-IOB.
-    const val RULE_SET_VERSION = 47
+    // v48: MESSGRUNDLAGE DER NULLPHASEN, rein beobachtend. Drei
+    // Ergaenzungen, die eine Mengenbilanz ueber den Trail erst
+    // moeglich machen: (a) scheduledBasalUph = das LAUFENDE
+    // Profilbasal je Zyklus - der Marker-Schnappschuss in basalGap
+    // ist Stunden alt, und ohne diesen Wert ist jede Auswertung ein
+    // Modellfit; (b) overcoverageMarginMgdl jetzt auch OHNE
+    // anliegendes Verdikt - bisher war die Groesse genau in der Zeit
+    // null, in der der Riegel ohne Grund weiterhielt, also genau dort
+    // unmessbar, wo die Frage sitzt; (c) zeroTally/lastZeroTally =
+    // laufende Bilanz jeder Nullphase mit DREI Zeitklassen (gesamt /
+    // ohne Schutzgrund / ohne Grund und nicht fallend) plus
+    // ausgelassenem Profilbasal, restartfest im Ledger.
+    // DOSIERNEUTRAL: kein Pfad liest diese Felder; (b) ist eine reine
+    // Ergaenzung im Ergebnisobjekt (einziger Leser ist der Export),
+    // die Verdikte selbst sind unveraendert. omittedU ist KEIN Budget -
+    // die fehlende Basalwirkung steht bereits im negativen Basal-IOB.
+    const val RULE_SET_VERSION = 48
 
     /** Schema des Trail-Datensatzes - s. die Notiz an der Schreibstelle. */
     const val SCHEMA_VERSION = 4
@@ -1037,7 +1054,14 @@ object FuseStateJson {
                 .put("preMarkerZeroTbrActive", outcome.basalGap?.zeroTbrActive ?: JSONObject.NULL)
                 .put("preMarkerZeroTbrAgeMin", outcome.basalGap?.zeroTbrAgeMin ?: JSONObject.NULL)
                 .put("preMarkerScheduledBasalUph", fin(outcome.basalGap?.scheduledBasalUph))
-                .put("preMarkerOmittedBasalU", fin(outcome.basalGap?.omittedBasalU)),
+                .put("preMarkerOmittedBasalU", fin(outcome.basalGap?.omittedBasalU))
+                // DAS LAUFENDE PROFILBASAL - der Marker-Schnappschuss oben
+                // ist STUNDEN alt und beschreibt die aktuelle Stufe nicht.
+                // Ohne dieses Feld ist jede Mengenbilanz ueber den Trail ein
+                // Modellfit; mit ihm ist sie eine Ablesung.
+                .put("scheduledBasalUph", fin(outcome.scheduledBasalUph))
+                .put("zeroTally", tallyJson(outcome.zeroTally))
+                .put("lastZeroTally", tallyJson(outcome.lastZeroTally)),
         )
         // Korrekturpfad-Riegel (v30, 25.08.): beide Urteile vollstaendig -
         // auch in Zyklen, in denen NICHT geblockt wurde (das Replay braucht
@@ -2091,6 +2115,23 @@ object FuseStateJson {
     }
 
     private fun fin(d: Double?): Any = if (d != null && d.isFinite()) d else JSONObject.NULL
+
+    /**
+     * Die Nullphasen-Bilanz als Objekt; null = keine Phase. Die drei
+     * Zeitklassen stehen NEBENEINANDER und werden nicht verrechnet - wer
+     * sie zusammenzieht, verwechselt Massnahme, Hysterese und vermeidbare
+     * Haltezeit.
+     */
+    private fun tallyJson(t: EpisodeBudgets.ZeroPhaseTally?): Any =
+        t?.let {
+            JSONObject()
+                .put("sinceTs", it.sinceTs)
+                .put("minutes", fin(it.minutes))
+                .put("omittedU", fin(it.omittedU))
+                .put("reasonAbsentMin", fin(it.reasonAbsentMin))
+                .put("flatAbsentMin", fin(it.flatAbsentMin))
+                .put("gapCappedMin", fin(it.gapCappedMin))
+        } ?: JSONObject.NULL
 
     private fun putOrGap(o: JSONObject, key: String, v: Long?, gaps: JSONArray, reason: String) {
         if (v == null) {

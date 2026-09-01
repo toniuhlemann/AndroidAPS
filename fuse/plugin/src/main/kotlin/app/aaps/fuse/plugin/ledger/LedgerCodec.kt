@@ -502,6 +502,14 @@ object LedgerCodec {
                 )
             }
         }
+        // Die LAUFENDE Nullphasen-Bilanz muss den Neustart ueberleben -
+        // sonst begaenne sie mitten in einer Phase bei 0 und wiese die
+        // Haltezeit systematisch zu kurz aus. Die zuletzt abgeschlossene
+        // faehrt mit, weil der Vergleich erst nach dem Ende moeglich ist.
+        .apply {
+            e.zeroTally?.let { put("zeroTally", tallyJson(it)) }
+            e.lastZeroTally?.let { put("lastZeroTally", tallyJson(it)) }
+        }
         // DER RUHE-BEOBACHTUNGSZUSTAND des Phase-A-Sofortbatches (Toni
         // 25.08. spaet). Persistiert wird AUSSCHLIESSLICH die Beobachtung -
         // niemals ein bereits gefaelltes CALM_RECOVERED- oder
@@ -812,6 +820,8 @@ object LedgerCodec {
                 else g.getDouble("omittedBasalU").also { require(it.isFinite() && it in 0.0..25.0) { "basalGap.omittedBasalU invalid" } },
             )
         }
+        if (o.has("zeroTally")) e.zeroTally = tallyOf(o.getJSONObject("zeroTally"), "zeroTally")
+        if (o.has("lastZeroTally")) e.lastZeroTally = tallyOf(o.getJSONObject("lastZeroTally"), "lastZeroTally")
         // Fail-closed: `ofPersisted` prueft die Identitaeten und liefert bei
         // jeder unvollstaendigen oder widerspruechlichen Kombination den
         // leeren Track. Ein fortgesetzter Zaehler kann mehr Insulin
@@ -1482,4 +1492,33 @@ object LedgerCodec {
     }
 
     private fun JSONArray.objects(): List<JSONObject> = (0 until length()).map { getJSONObject(it) }
+
+    private fun tallyJson(t: EpisodeBudgets.ZeroPhaseTally): JSONObject = JSONObject()
+        .put("sinceTs", t.sinceTs)
+        .put("lastTickTs", t.lastTickTs)
+        .put("minutes", t.minutes)
+        .put("omittedU", t.omittedU)
+        .put("reasonAbsentMin", t.reasonAbsentMin)
+        .put("flatAbsentMin", t.flatAbsentMin)
+        .put("gapCappedMin", t.gapCappedMin)
+
+    /**
+     * FAIL-CLOSED wie die anderen Ledger-Bloecke: eine unplausible Bilanz
+     * wird nicht geradegebogen, sondern verworfen. Die Obergrenzen sind
+     * grosszuegig (48 h, 50 U) - sie fangen kaputte Dateien, nicht
+     * ungewoehnliche Naechte.
+     */
+    private fun tallyOf(o: JSONObject, pfad: String): EpisodeBudgets.ZeroPhaseTally {
+        fun zahl(k: String, max: Double): Double = o.getDouble(k)
+            .also { require(it.isFinite() && it in 0.0..max) { "$pfad.$k invalid" } }
+        return EpisodeBudgets.ZeroPhaseTally(
+            sinceTs = requireTs("$pfad.sinceTs", o.getLong("sinceTs")),
+            lastTickTs = requireTs("$pfad.lastTickTs", o.getLong("lastTickTs")),
+            minutes = zahl("minutes", 48 * 60.0),
+            omittedU = zahl("omittedU", 50.0),
+            reasonAbsentMin = zahl("reasonAbsentMin", 48 * 60.0),
+            flatAbsentMin = zahl("flatAbsentMin", 48 * 60.0),
+            gapCappedMin = zahl("gapCappedMin", 48 * 60.0),
+        )
+    }
 }
