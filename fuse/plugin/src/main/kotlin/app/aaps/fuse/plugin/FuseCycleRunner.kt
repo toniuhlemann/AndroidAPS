@@ -1237,6 +1237,22 @@ class FuseCycleRunner(
         val smbCappedU: Double? = null,
         /** Publizierte Anforderung dieses Zyklus [U] (= decision.smbU). */
         val smbPublishedU: Double? = null,
+        /**
+         * DIE MENGE, DIE WIRKLICH HINAUSGEHT - nach `applyBlock` und nach
+         * dem Pumpen-Gate. `smbPublishedU` traegt den Stand DAVOR und ist
+         * damit eine Diagnose, keine Abgabe: eine nachgelagerte Sperre
+         * (Teilstufe, C7a) senkt sie, ohne dass es dort sichtbar waere.
+         * Genau diese Verwechslung liess "SMB FREI" ueber einer gesperrten
+         * Dosis stehen.
+         */
+        val smbActuatedU: Double? = null,
+        /**
+         * DER LETZTE GRUND, AN DEM DIE MENGE GESCHEITERT IST - oder `null`,
+         * wenn sie durchkam. Der SMB-Status wird VOR dem letzten Riegel
+         * gebildet und meldete deshalb "frei", obwohl `applyBlock` die
+         * Menge danach nullte. Diese Zahl macht den Unterschied sichtbar.
+         */
+        val smbFinalBlock: String? = null,
         val exposureGateBindet: Boolean? = null,
         val exposureGateBlocked: Boolean? = null,
         val exposureGateHeadroomU: Double? = null,
@@ -5856,6 +5872,14 @@ class FuseCycleRunner(
             smbRequestedU = decisionVorEndpruefung.smbU,
             smbCappedU = decisionVorZeroLatch.smbU,
             smbPublishedU = decision.smbU,
+            smbActuatedU = actuatedU,
+            smbFinalBlock = when {
+                // Der Regler wollte nichts - kein Riegel, keine Meldung.
+                decisionVorEndpruefung.smbU <= 0.0 -> null
+                actuatedU > 0.0                    -> null
+                !gate.allowed                      -> "PUMP_GATE"
+                else                               -> combined.smbBlockCause.name
+            },
             exposureGateBindet = exposureGateResult?.bindet,
             exposureGateBlocked = exposureGateResult?.blocked,
             exposureGateHeadroomU = exposureGateResult?.headroomU,
@@ -6750,6 +6774,21 @@ class FuseCycleRunner(
             smbRequestedU = heldVorEndpruefung.smbU,
             smbCappedU = heldMitRiegel.smbU,
             smbPublishedU = heldMitRiegel.smbU,
+            // DERSELBE VOLLSTAENDIGE EXPORTVERTRAG WIE IM HAUPTPFAD. Fehlten
+            // die Felder hier, fiele der Viewer auch bei einem NEUEN Export
+            // auf `publishedU` zurueck - und machte damit stillschweigend
+            // einen Zwischenstand zur finalen Menge. Das ist keine
+            // Altexport-Vertraeglichkeit, sondern eine Luecke.
+            //
+            // Den letzten Wert setzt ohnehin das Publikations-Gate im Plugin;
+            // hier steht der Stand nach Riegel und Pumpen-Gate.
+            smbActuatedU = actuatedU,
+            smbFinalBlock = when {
+                heldVorEndpruefung.smbU <= 0.0 -> null
+                actuatedU > 0.0                -> null
+                !gate.allowed                  -> "PUMP_GATE"
+                else                           -> combined.smbBlockCause.name
+            },
             exposureGateBindet = fallbackGateResult?.bindet,
             exposureGateBlocked = fallbackGateResult?.blocked,
             exposureGateHeadroomU = fallbackGateResult?.headroomU,

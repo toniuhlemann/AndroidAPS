@@ -13387,9 +13387,15 @@ class TransportWiringTest : TestBaseWithProfile() {
         assertTrue(o.decision.smbU > 0.0) {
             "DER FEHLER: der Grant wurde von einer Teilstufe genullt, die nichts anfordert"
         }
-        assertTrue((o.smbPublishedU ?: 0.0) > 0.0) {
-            "und er muss die Ausgabekette erreichen, nicht nur die Entscheidung"
+        // DIE FINALE MENGE, nicht die vor dem letzten Riegel.
+        // `smbPublishedU` traegt den Stand VOR `applyBlock` - darauf zu
+        // pruefen war eine Luecke: die Sperre der Tabelle haette danach
+        // noch nullen koennen, und der Test haette es nicht gemerkt.
+        assertTrue((o.smbActuatedU ?: 0.0) > 0.0) {
+            "die Menge muss die FINALE Ausgabe erreichen (actuated), " +
+                "published=${o.smbPublishedU} actuated=${o.smbActuatedU}"
         }
+        assertNull(o.smbFinalBlock) { "und kein Riegel darf sie am Ende halten" }
     }
 
     /**
@@ -13411,7 +13417,7 @@ class TransportWiringTest : TestBaseWithProfile() {
                 // NUR die Zyklen zaehlen, in denen ueberhaupt ein Grant
                 // vorlag - "nichts abgegeben" ohne Grant beweist nichts.
                 if (o.decision.markerAuthorizedU > 0.0) mitGrant++
-                assertEquals(0.0, o.smbPublishedU ?: 0.0, 1e-12) {
+                assertEquals(0.0, o.smbActuatedU ?: 0.0, 1e-12) {
                     "eine echte Teilstufe neben einer laufenden Null gibt nichts aus"
                 }
             }
@@ -13434,7 +13440,7 @@ class TransportWiringTest : TestBaseWithProfile() {
             val o = runner.run(true, testPumpe())
             if (o.partialRecoveryActive) {
                 if (o.decision.markerAuthorizedU > 0.0) mitGrant++
-                assertEquals(0.0, o.smbPublishedU ?: 0.0, 1e-12) {
+                assertEquals(0.0, o.smbActuatedU ?: 0.0, 1e-12) {
                     "UNKNOWN traegt die Feststellung nicht - nichts geht hinaus"
                 }
             }

@@ -53,6 +53,13 @@ object FuseTbrTranslator {
         val decision: FuseController.Decision,
         val reason: String,
         val alarm: Boolean,
+        /**
+         * DER RIEGEL, DER HIER TATSAECHLICH GEGRIFFEN HAT - `NONE`, wenn
+         * keiner griff. Ohne diese Weitergabe kennt der Runner nur den
+         * Zustand VOR `applyBlock` und meldet "SMB frei" ueber einer
+         * nachgelagert gesperrten Dosis.
+         */
+        val smbBlockCause: TbrPolicy.SmbBlockCause = TbrPolicy.SmbBlockCause.NONE,
     )
 
     /**
@@ -206,12 +213,11 @@ object FuseTbrTranslator {
             // Anlauf dieses Fixes gescheitert.
             unsafeSituation = decision.unsafeSituation,
         )
-        val effective = applyBlock(
-            decision,
+        val wirksamerGrund =
             if (latchZeroOnly && tbr.smbBlockCause == TbrPolicy.SmbBlockCause.SAFETY_ZERO)
                 TbrPolicy.SmbBlockCause.NONE
-            else tbr.smbBlockCause,
-        )
+            else tbr.smbBlockCause
+        val effective = applyBlock(decision, wirksamerGrund)
         // C7a — GEMEINSAMES ZERTIFIKAT (Codex-Adjudication H3, D-Tabelle C7).
         val ends = effective.smbU > 0.0 && endsWithholding(tbr.outcome, current, scheduledBasalUPerH, cfg)
         // C7c — DIE AUTORISIERUNG ZERTIFIZIERT BEIDE GEMEINSAM (Toni 17.08.).
@@ -250,6 +256,11 @@ object FuseTbrTranslator {
                 else          -> tbr.reason
             },
             alarm = tbr.alarm,
+            // C7A ist auch ein Riegel - er verwirft die TBR, aber die
+            // Menge bleibt; nur wenn sie am Ende null ist, war ein Riegel
+            // ursaechlich. Der Runner entscheidet das anhand von
+            // `actuatedU`, hier steht nur, WELCHER griff.
+            smbBlockCause = wirksamerGrund,
         )
     }
 

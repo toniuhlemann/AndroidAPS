@@ -753,6 +753,14 @@ object FuseStateJson {
                     .put("requestedU", outcome.smbRequestedU?.let { fin(it) } ?: JSONObject.NULL)
                     .put("cappedU", outcome.smbCappedU?.let { fin(it) } ?: JSONObject.NULL)
                     .put("publishedU", outcome.smbPublishedU?.let { fin(it) } ?: JSONObject.NULL)
+                    // DREI VERSCHIEDENE ZAHLEN, DREI VERSCHIEDENE FRAGEN:
+                    // `requestedU` was der Regler wollte, `publishedU` was
+                    // nach der Endpruefung uebrig war - und `actuatedU` was
+                    // nach dem letzten Riegel und dem Pumpen-Gate wirklich
+                    // hinausgeht. Ohne die dritte Zahl stand "SMB FREI"
+                    // ueber einer nachgelagert gesperrten Dosis.
+                    .put("actuatedU", outcome.smbActuatedU?.let { fin(it) } ?: JSONObject.NULL)
+                    .put("finalBlock", outcome.smbFinalBlock ?: JSONObject.NULL)
             } ?: JSONObject.NULL)
             // A1: der zentrale Dosierkontext (Bauauftrag §4) mit den vier
             // Pflichtfeldern; policyGeneration = der bestehende Policy-Hash

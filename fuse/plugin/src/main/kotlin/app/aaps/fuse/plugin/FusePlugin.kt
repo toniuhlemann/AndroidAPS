@@ -1344,12 +1344,38 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
         // dieses Zyklus, also die Zahlen, an denen die Mahlzeit ausgewertet
         // wird. Dieselbe Funktion wie im Runner, keine zweite Fassung.
         val exportOutcome = outcome?.let { o ->
+            // ---- DIE ENDGUELTIGE MENGE KOMMT VON HIER, NICHT AUS DEM RUNNER --
+            //
+            // Die Kette ist Runner -> applyBlock -> Pumpen-Gate ->
+            // PUBLIKATIONS-GATE -> APSResult. Der Runner bildet
+            // `smbActuatedU` VOR dem letzten Tor; entfernt das
+            // Publikations-Gate die Zeile danach, uebergibt FUSE gar keinen
+            // SMB an AAPS - der Export zeigte trotzdem eine positive Menge,
+            // und das Widget daneben "FREI".
+            //
+            // `publishRt.units` ist die Zahl, die AAPS tatsaechlich bekommt.
+            // "AN AAPS UEBERGEBEN" heisst weiterhin NICHT "von der Pumpe
+            // bestaetigt" - das ist die naechste Grenze und eine andere Zahl.
+            // Die Entscheidung selbst steht in [FuseFinalDelivery] - hier
+            // nur der Aufruf. `invoke()` hat keinen Testrahmen; als reine
+            // Funktion ist der Vertrag pruefbar, und es gibt keine zweite
+            // Fassung derselben Regel.
+            val endstand = FuseFinalDelivery.bestimme(
+                runnerActuatedU = o.smbActuatedU,
+                runnerFinalBlock = o.smbFinalBlock,
+                publishedUnits = publishRt.units,
+                gateAllowed = publication.allowed,
+                angeforderteZeileVorhanden = rt.units != null,
+                gateReason = publication.reason,
+            )
             o.copy(
                 mealStats = FuseCycleRunner.mealStatsOf(
                     ledgerAdapter.episodes,
                     o.state?.markerArmedTs ?: 0L,
                     o.computeTs,
-                )
+                ),
+                smbActuatedU = endstand.actuatedU,
+                smbFinalBlock = endstand.finalBlock,
             )
         }
 
