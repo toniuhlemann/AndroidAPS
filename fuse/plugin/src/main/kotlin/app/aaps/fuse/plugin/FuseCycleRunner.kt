@@ -1248,6 +1248,17 @@ class FuseCycleRunner(
          */
         val smbActuatedU: Double? = null,
         /**
+         * DER VERBRAUCH DIESER AUTORISIERUNG [U], NACH der Buchung dieses
+         * Zyklus. `primeSpentU` wird beim Bewaffnen genullt und gehoert
+         * damit zur Autorisierung - anders als `mealStats.totalU`, das die
+         * ganze Episode summiert und bei einer Neuautorisierung innerhalb
+         * derselben Episode ausdruecklich NICHT geleert wird.
+         *
+         * "VERBUCHT", nicht "abgegeben": an AAPS uebergeben, nicht von der
+         * Pumpe bestaetigt.
+         */
+        val primeSpentU: Double? = null,
+        /**
          * DER LETZTE GRUND, AN DEM DIE MENGE GESCHEITERT IST - oder `null`,
          * wenn sie durchkam. Der SMB-Status wird VOR dem letzten Riegel
          * gebildet und meldete deshalb "frei", obwohl `applyBlock` die
@@ -1329,7 +1340,15 @@ class FuseCycleRunner(
         // Hier braucht es nur Uhr, Preference und Ledger; nichts davon haengt
         // an Signal oder Profil. Damit tragen ALLE Ausgaenge den Zustand,
         // auch die Abbrueche.
-        val markerTs = preferences.get(FuseLongKey.MealMarkerArmedTs).takeIf { it > 0L }
+        // DERSELBE ABGLEICH WIE IM PLUGIN. Endete der Prozess zwischen dem
+        // Widerruf im Ledger und dem Leeren der Preference, stuende hier ein
+        // Marker, den es nicht mehr gibt - und der Runner haette ihn weiter
+        // gelesen. Beide Leser rufen dieselbe Funktion, damit sie nicht zu
+        // verschiedenen Antworten kommen.
+        val markerTs = preferences.get(FuseLongKey.MealMarkerArmedTs)
+            .takeIf { it > 0L && !MarkerReauthorization.widerrufen(
+                it, ledger.episodes.markerAuth, ledger.episodes.markerRevocation,
+            ) }
             ?: (preferences.get(FuseLongKey.MealMarkerStamp).takeIf { it > 0L }?.div(10L) ?: 0L)
         // Die Episoden-Wahl "ohne Vorschuss" (s. FuseOverviewSource.fuseMarkerToggle):
         // sie unterdrueckt NUR das markerfinanzierte Insulin (Sofort-Freigabe
@@ -5656,6 +5675,10 @@ class FuseCycleRunner(
                 mealTs = if (buchung.mealGebucht) signal.sourceTs else 0L,
                 correctionTs = if (buchung.korrekturGebucht) signal.sourceTs else 0L,
                 foundationPhase = buchung.phase,
+                // MIT DER AUTORISIERUNG: ein spaeter bewiesenes Nicht-Senden
+                // aus einer widerrufenen Autorisierung darf die neue Huelle
+                // nicht entlasten.
+                authId = episodes.markerAuth?.id,
             ) else null
         val mealStats = mealStatsOf(episodes, markerTs, computeTs)
         // NACH `buche`, nicht davor: dort wird der Uebergang gelatcht und
@@ -5894,6 +5917,8 @@ class FuseCycleRunner(
             smbCappedU = decisionVorZeroLatch.smbU,
             smbPublishedU = decision.smbU,
             smbActuatedU = actuatedU,
+            // NACH der Buchung - `verbuche` lief oben.
+            primeSpentU = episodes.primeSpentU,
             smbFinalBlock = when {
                 // Der Regler wollte nichts - kein Riegel, keine Meldung.
                 decisionVorEndpruefung.smbU <= 0.0 -> null
@@ -6726,6 +6751,10 @@ class FuseCycleRunner(
                 mealTs = if (buchung.mealGebucht) signal.sourceTs else 0L,
                 correctionTs = if (buchung.korrekturGebucht) signal.sourceTs else 0L,
                 foundationPhase = buchung.phase,
+                // MIT DER AUTORISIERUNG: ein spaeter bewiesenes Nicht-Senden
+                // aus einer widerrufenen Autorisierung darf die neue Huelle
+                // nicht entlasten.
+                authId = episodes.markerAuth?.id,
             ) else null
 
         val fallbackRequestedSourceWert = when {
@@ -6804,6 +6833,8 @@ class FuseCycleRunner(
             // Den letzten Wert setzt ohnehin das Publikations-Gate im Plugin;
             // hier steht der Stand nach Riegel und Pumpen-Gate.
             smbActuatedU = actuatedU,
+            // NACH der Buchung - `verbuche` lief oben.
+            primeSpentU = episodes.primeSpentU,
             smbFinalBlock = when {
                 heldVorEndpruefung.smbU <= 0.0 -> null
                 actuatedU > 0.0                -> null

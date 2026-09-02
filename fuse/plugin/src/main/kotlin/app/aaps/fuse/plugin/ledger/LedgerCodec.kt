@@ -471,7 +471,8 @@ object LedgerCodec {
                 .put("consumedByAuthId", it.consumedByAuthId ?: JSONObject.NULL)
         } ?: JSONObject.NULL)
         .put("foundationArmedByAuthId", e.foundationArmedByAuthId ?: JSONObject.NULL)
-        .put("lastMarkerEventId", e.lastMarkerEventId ?: JSONObject.NULL)
+        .put("lastMarkerEventOrdnung", e.lastMarkerEventOrdnung)
+        .put("markerEventSeq", e.markerEventSeq)
         .put("onsetSpentU", e.onsetSpentU)
         .put("onsetQuietMin", e.onsetQuietMin)
         .put("mealArmedTs", e.mealArmedTs)
@@ -837,8 +838,8 @@ object LedgerCodec {
         }
         e.foundationArmedByAuthId = o.optString("foundationArmedByAuthId")
             .takeIf { it.isNotBlank() && it != "null" }
-        e.lastMarkerEventId = o.optString("lastMarkerEventId")
-            .takeIf { it.isNotBlank() && it != "null" }
+        e.lastMarkerEventOrdnung = requireTs("lastMarkerEventOrdnung", o.optLong("lastMarkerEventOrdnung", 0L))
+        e.markerEventSeq = requireTs("markerEventSeq", o.optLong("markerEventSeq", 0L))
         e.onsetSpentU = requireAmount("onsetSpentU", o.getDouble("onsetSpentU"))
         e.onsetQuietMin = o.getInt("onsetQuietMin").also { require(it >= 0) { "negative onsetQuietMin $it" } }
         e.mealArmedTs = requireTs("mealArmedTs", o.getLong("mealArmedTs"))

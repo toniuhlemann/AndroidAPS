@@ -13408,6 +13408,43 @@ class TransportWiringTest : TestBaseWithProfile() {
         assertEquals("auth-2", l.episodes.foundationArmedByAuthId)
     }
 
+    /**
+     * B) LEDGER UND PREFERENCES GEMEINSAM - der Absturzfall.
+     *
+     * Der Widerruf wurde geschrieben, dann endete der Prozess VOR dem
+     * Leeren der Preference. Dort steht also noch ein Marker, den es nicht
+     * mehr gibt. Der Runner darf ihn nicht weiter lesen - sonst waere der
+     * Widerruf folgenlos, und die alte Autorisierung liefe weiter.
+     */
+    @Test
+    fun `B ein im Ledger widerrufener Marker wirkt trotz alter Preference nicht mehr`(@TempDir dir: File) {
+        fundamentAn = true
+        markerAuthorized = true
+        markerAt = start + 2 * 60_000L
+        clock = start
+        transportReset()
+        val l = FuseLedgerAdapter().also { it.loadOnce(dir.also(File::mkdirs), "test-epoch", start) }
+        neuerRunner(l)
+        repeat(6) { cycle() }
+        assertTrue(l.episodes.foundation.valid) { "Ausgangslage: die Autorisierung steht" }
+
+        // Der Absturzzustand: Widerruf im Ledger, Preference unveraendert.
+        l.episodes.markerRevocation = MarkerReauthorization.widerrufe(
+            MarkerReauthorization.Authorization("auth-1", markerAt), clock,
+        )
+        l.episodes.markerAuth = null
+        val verbrauchtVorher = l.episodes.primeSpentU
+
+        val o = cycle()
+        assertEquals(0L, o.state?.markerArmedTs ?: 0L) {
+            "der Runner MUSS den widerrufenen Marker als abwesend lesen"
+        }
+        // UND DIE BUCHHALTUNG BLEIBT: ein Widerruf storniert nichts.
+        assertEquals(verbrauchtVorher, l.episodes.primeSpentU, 1e-12) {
+            "der Widerruf darf keinen Verbrauch loeschen"
+        }
+    }
+
     @Test
     fun `A eine autorisierte Mahlzeitendosis ueberlebt eine Teilstufe ohne Aktion`(@TempDir dir: File) {
         quelleMeldet(null)                 // autoritativ KEINE laufende TBR

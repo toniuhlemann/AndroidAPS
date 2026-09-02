@@ -94,12 +94,69 @@ class MarkerReauthorizationTest {
         }
     }
 
+    /**
+     * DIE FOLGE, DIE EIN LETZTVERGLEICH DURCHGELASSEN HAETTE:
+     * Start E1 -> Abbruch E2 -> verspaeteter Rueckruf E1. E1 ist nicht E2,
+     * also haette ein Vergleich mit dem zuletzt verarbeiteten Ereignis
+     * erneut umgeschaltet - nach dem Abbruch moeglicherweise mit einer
+     * weiteren vollen Huelle.
+     */
     @Test
-    fun `ein wiederholtes Bedienereignis wird erkannt`() {
-        assertTrue(MarkerReauthorization.schonVerarbeitet("ev-1", "ev-1"))
-        assertFalse(MarkerReauthorization.schonVerarbeitet("ev-2", "ev-1"))
-        assertFalse(MarkerReauthorization.schonVerarbeitet(null, "ev-1")) {
-            "ohne Kennung gibt es keine Wiederholungserkennung - dann gilt der Toggle"
+    fun `ein verspaeteter Rueckruf nach einem neueren Ereignis wirkt nicht`() {
+        val e1 = MarkerReauthorization.ordnungVon(MarkerReauthorization.ereignisKennung(1L))!!
+        val e2 = MarkerReauthorization.ordnungVon(MarkerReauthorization.ereignisKennung(2L))!!
+        assertTrue(MarkerReauthorization.ereignisWirkt(e1, zuletztAngewandt = 0L))
+        assertTrue(MarkerReauthorization.ereignisWirkt(e2, zuletztAngewandt = e1))
+        assertFalse(MarkerReauthorization.ereignisWirkt(e1, zuletztAngewandt = e2)) {
+            "der verspaetete E1 darf nach E2 nicht mehr umschalten"
         }
+    }
+
+    @Test
+    fun `dasselbe Ereignis zweimal wirkt nur einmal`() {
+        assertTrue(MarkerReauthorization.ereignisWirkt(1L, 0L))
+        assertFalse(MarkerReauthorization.ereignisWirkt(1L, 1L))
+    }
+
+    /**
+     * DER ABGLEICH ZWISCHEN LEDGER UND PREFERENCES.
+     *
+     * Endet der Prozess nach dem Widerruf im Ledger, aber vor dem Leeren
+     * der Preference, steht dort ein Marker, den es nicht mehr gibt.
+     * Beide Leser - `mealMarkerArmedTs()` und der Runner - rufen diese
+     * Funktion, damit sie nicht zu verschiedenen Antworten kommen.
+     */
+    @Test
+    fun `ein widerrufener Marker bleibt widerrufen, auch wenn die Preference ihn noch traegt`() {
+        val marke = Revocation(authId = "auth-1", markerTs = t0, atTs = t0 + 1_000L)
+        assertTrue(MarkerReauthorization.widerrufen(t0, auth = null, revocation = marke)) {
+            "sonst waere der Widerruf folgenlos"
+        }
+    }
+
+    @Test
+    fun `eine neue Autorisierung fuer denselben Zeitpunkt hebt den Widerruf auf`() {
+        val marke = Revocation("auth-1", t0, t0 + 1_000L, consumedByAuthId = "auth-2")
+        val neu = Authorization("auth-2", markerTs = t0)
+        assertFalse(MarkerReauthorization.widerrufen(t0, neu, marke)) {
+            "nach dem Abbruch wurde neu autorisiert - der Marker gilt wieder"
+        }
+    }
+
+    @Test
+    fun `ein anderer Marker ist von einem fremden Widerruf nicht betroffen`() {
+        val marke = Revocation("auth-1", markerTs = t0, atTs = t0)
+        assertFalse(MarkerReauthorization.widerrufen(t0 + 999_999L, null, marke))
+        assertFalse(MarkerReauthorization.widerrufen(t0, null, revocation = null))
+        assertFalse(MarkerReauthorization.widerrufen(0L, null, marke))
+    }
+
+    @Test
+    fun `ohne Kennung bleibt das bisherige Umschalten`() {
+        assertTrue(MarkerReauthorization.ereignisWirkt(null, 42L)) {
+            "ein Aufrufer ohne Kennung soll nicht stillschweigend wirkungslos werden"
+        }
+        assertNull(MarkerReauthorization.ordnungVon(null))
+        assertNull(MarkerReauthorization.ordnungVon("kaputt"))
     }
 }

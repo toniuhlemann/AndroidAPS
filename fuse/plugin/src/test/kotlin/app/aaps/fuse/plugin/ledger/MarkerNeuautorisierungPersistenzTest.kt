@@ -97,6 +97,78 @@ class MarkerNeuautorisierungPersistenzTest {
         }
     }
 
+    /**
+     * DER MENGENFEHLER, DEN ERST DIE NEUAUTORISIERUNG MOEGLICH MACHT.
+     *
+     * Alter Auftrag 0,30 U -> Abbruch -> neue Autorisierung, darin 0,40 U
+     * verbucht -> erst JETZT kommt der Nicht-Sende-Beweis des alten
+     * Auftrags. Ohne Zuordnung zieht die Rueckbuchung vom AKTUELLEN
+     * `primeSpentU` ab: aus 0,40 wuerden 0,10, und die neue Huelle waere um
+     * eine fremde Menge entlastet.
+     *
+     * Die alte GLOBALE Belastung muss trotzdem aufgeloest werden.
+     */
+    @Test
+    fun `eine alte Rueckbuchung entlastet die neue Huelle nicht`(@TempDir dir: File) {
+        val a = geladen(dir)
+        val e = a.episodes
+        // Die alte Autorisierung hat 0,30 gebucht und festgeschrieben.
+        e.markerAuthSeq = 1L
+        e.markerAuth = MarkerReauthorization.Authorization("auth-1", t0)
+        e.settled = EpisodeBudgets.Settled(
+            proposalId = "p-alt", amountU = 0.30, prime = true, onset = false,
+            // mealTs 0: dieser Test prueft die ZUORDNUNG, nicht die Lieferliste.
+            mealTs = 0L, foundationPhase = app.aaps.fuse.core.controller.MealFoundation.Phase.PHASE_B,
+            authId = "auth-1",
+        )
+        e.evidenceCommittedU = 0.70
+        // Abbruch, neuer Marker, neue Autorisierung - und darin 0,40 verbucht.
+        val marke = MarkerReauthorization.widerrufe(e.markerAuth, t0 + 60_000L)!!
+        val neu = MarkerReauthorization.autorisiere(2L, t0 + 120_000L, marke)
+        e.markerAuthSeq = 2L
+        e.markerAuth = neu.auth
+        e.markerRevocation = neu.revocation
+        e.primeSpentU = 0.40
+        e.deliveredSinceHandoverU = 0.40
+
+        val ergebnis = a.revokeSettled("p-alt")
+
+        assertEquals(0.40, e.primeSpentU, 1e-9) {
+            "die NEUE Autorisierung muss bei 0,40 bleiben - die 0,30 gehoerten der alten"
+        }
+        assertEquals(0.40, e.deliveredSinceHandoverU, 1e-9) {
+            "und aus einem alten Auftrag entsteht in der neuen Huelle kein Phase-B-Uebertrag"
+        }
+        // Die GLOBALE Belastung wird trotzdem aufgeloest.
+        assertEquals(0.40, e.evidenceCommittedU, 1e-9) {
+            "die alte Belastung war echt und muss verschwinden: $ergebnis"
+        }
+    }
+
+    @Test
+    fun `eine Rueckbuchung der LAUFENDEN Autorisierung entlastet weiterhin`(@TempDir dir: File) {
+        val a = geladen(dir)
+        val e = a.episodes
+        e.markerAuthSeq = 2L
+        e.markerAuth = MarkerReauthorization.Authorization("auth-2", t0)
+        e.settled = EpisodeBudgets.Settled(
+            proposalId = "p-neu", amountU = 0.30, prime = true, onset = false,
+            // mealTs 0: dieser Test prueft die ZUORDNUNG, nicht die Lieferliste.
+            mealTs = 0L, foundationPhase = app.aaps.fuse.core.controller.MealFoundation.Phase.PHASE_B,
+            authId = "auth-2",
+        )
+        e.primeSpentU = 0.40
+        e.deliveredSinceHandoverU = 0.40
+        e.evidenceCommittedU = 0.70
+
+        a.revokeSettled("p-neu")
+
+        assertEquals(0.10, e.primeSpentU, 1e-9) {
+            "hier gehoert die Buchung zur laufenden Autorisierung - sie entlastet"
+        }
+        assertEquals(0.10, e.deliveredSinceHandoverU, 1e-9)
+    }
+
     @Test
     fun `Altbestand ohne die neuen Felder liest sich als keine Autorisierung`(@TempDir dir: File) {
         // Eine Datei aus der Zeit vor diesem Vertrag: die Felder fehlen.

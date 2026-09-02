@@ -43,6 +43,8 @@ class FuseDashboardModelTest {
         health: Health = Health.READY,
         abort: String? = null,
         prime: PrimeRelease.Plan? = null,
+        mealStats: FuseCycleRunner.MealStats? = null,
+        primeSpentU: Double? = null,
     ) = FuseCycleRunner.Outcome(
         tbrChanged = false,
         decision = FuseController.Decision(
@@ -73,7 +75,8 @@ class FuseDashboardModelTest {
         candidate = null,
         candidateGap = null,
         computeDurationMs = 5L,
-        mealStats = null,
+        mealStats = mealStats,
+        primeSpentU = primeSpentU,
         policy = null,
         state = state(),
         step = null,
@@ -195,10 +198,17 @@ class FuseDashboardModelTest {
     }
 
     @Test
-    fun `Marker zeigt konfiguriert verbraucht verfuegbar und das Freigabefenster`() {
+    fun `Marker zeigt abgegeben und frei aus DEMSELBEN Buchungsstand`() {
         val markerTs = now - 3 * 60_000L
         val v = FuseDashboardModel.build(
-            outcome(prime = PrimeRelease.Plan(true, 0.2, 2.4, "PRIME")),
+            outcome(
+                prime = PrimeRelease.Plan(true, 0.2, 2.4, "PRIME"),
+                // Der GEBUCHTE Stand dieser Autorisierung.
+                // Die EPISODE traegt 1.30 - eine alte Autorisierung hat schon
+                // gebucht. Der Verbrauch DIESER Autorisierung ist 0.30.
+                mealStats = FuseCycleRunner.MealStats(3, 1.30, 1.30, 1.30),
+                primeSpentU = 0.30,
+            ),
             null,
             now,
             // Zwei UHREN: 90 min Marker, 25 min Freigabe. Die Anzeige hat sie
@@ -211,8 +221,20 @@ class FuseDashboardModelTest {
             null,
         )
         assertTrue(v.marker.contains("AKTIV seit 3/90 min")) { v.marker }
-        assertTrue(v.marker.contains("publiziert 0.60 U"))
-        assertTrue(v.marker.contains("verfuegbar 2.40 U"))
+        // EIN BUCHUNGSSTAND: aus dem Prime-Rest (0.2 von 3.0) haette die
+        // alte Fassung 2.80 gerechnet - eine andere Zahl aus einem anderen
+        // Moment als die Episodenzeile darunter.
+        assertTrue(v.marker.contains("Autorisierung:")) { v.marker }
+        assertTrue(v.marker.contains("verbucht 0.30 U")) { v.marker }
+        assertTrue(v.marker.contains("frei 2.70 U")) { v.marker }
+        assertFalse(v.marker.contains("publiziert")) { "alter Mischstand: " + v.marker }
+        assertFalse(v.marker.contains("abgegeben")) {
+            "ohne Pumpennachweis ist \"abgegeben\" zu stark: " + v.marker
+        }
+        // DIE EPISODE STEHT GETRENNT - sonst laese man ihre Summe als
+        // Verbrauch dieser Autorisierung.
+        assertTrue(v.marker.contains("Episode 1.30 U")) { v.marker }
+        assertTrue(v.marker.contains("frei 2.70 U")) { v.marker }
         assertTrue(v.marker.contains("3/25 min Freigabe")) { v.marker }
     }
 

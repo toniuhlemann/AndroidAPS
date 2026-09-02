@@ -337,12 +337,35 @@ object FuseDashboardModel {
 
         val elapsed = ((nowMs - marker.armedTs).coerceAtLeast(0L) / 60_000L).toInt()
         if (elapsed >= marker.windowMin) return "Abgelaufen seit ${elapsed - marker.windowMin} min  |  Huelle ${u(marker.envelopeU)} konfiguriert"
-        val rest = outcome?.prime?.remainingU?.coerceIn(0.0, marker.envelopeU)
-        val published = rest?.let { (marker.envelopeU - it).coerceAtLeast(0.0) }
-            ?: outcome?.mealStats?.totalU?.coerceAtLeast(0.0)
-        val available = published?.let { (marker.envelopeU - it).coerceAtLeast(0.0) }
-        val amount = if (published == null || available == null) "Huelle ${u(marker.envelopeU)}"
-        else "Huelle ${u(marker.envelopeU)}  |  publiziert ${u(published)}  |  verfuegbar ${u(available)}"
+        // ---- EIN BUCHUNGSSTAND FUER DIE GANZE ZEILE ---------------------
+        //
+        // Hier stand `envelopeU - prime.remainingU`: der Prime-Rest VOR der
+        // Buchung dieses Zyklus. Die Episodenzeile darunter zeigte den Stand
+        // DANACH - die neueste Abgabe fehlte oben und stand unten schon
+        // drin. Zwei Buchungsstaende in einer Anzeige lesen sich wie ein
+        // Widerspruch, und man sieht nicht, welcher gilt.
+        //
+        // `mealStats.totalU` ist die gebuchte Summe DIESER Autorisierung -
+        // derselbe Stand, aus dem auch die Episodenzeile kommt.
+        // `mealStats.totalU` waere der falsche Bezug: es summiert die ganze
+        // EPISODE, und die Lieferliste wird bei einer Neuautorisierung
+        // innerhalb derselben Episode ausdruecklich nicht geleert. Nach
+        // "alte Autorisierung 1 U, dann neue volle Huelle" haette die Zeile
+        // vor der ersten Anforderung schon 1 U verbraucht gemeldet.
+        //
+        // `primeSpentU` wird beim Bewaffnen genullt und gehoert damit zur
+        // AUTORISIERUNG - hier in der Fassung NACH der Buchung.
+        val verbucht = outcome?.primeSpentU?.coerceAtLeast(0.0)
+        val verfuegbar = verbucht?.let { (marker.envelopeU - it).coerceAtLeast(0.0) }
+        // "VERBUCHT", nicht "abgegeben": an AAPS uebergeben, nicht von der
+        // Pumpe bestaetigt. Der Runner haelt denselben Unterschied.
+        val amount = if (verbucht == null || verfuegbar == null) "Huelle ${u(marker.envelopeU)}"
+        else "Huelle ${u(marker.envelopeU)}  |  verbucht ${u(verbucht)}  |  frei ${u(verfuegbar)}"
+        // Die EPISODE laeuft eigen weiter und wird GETRENNT genannt - sonst
+        // liest sich ihre Summe wie der Verbrauch dieser Autorisierung.
+        val episodeSumme = outcome?.mealStats?.totalU
+            ?.takeIf { verbucht == null || kotlin.math.abs(it - verbucht) > 0.005 }
+            ?.let { "  |  Episode ${u(it)}" } ?: ""
         // GEGEN DIE EINSTELLUNG, nicht gegen die Vorgabe-Konstante. Hier stand
         // `PrimeRelease.WINDOW_MIN` (15); bei Tonis 25-Minuten-Fenster ergab
         // das "15/15 min Freigabe" - abgelaufen - direkt ueber der Zeile
@@ -351,7 +374,10 @@ object FuseDashboardModel {
         val release = marker.primeWindowMin?.let { w ->
             "${elapsed.coerceAtMost(w)}/$w min Freigabe"
         } ?: "Freigabe-Fenster unbekannt"
-        return "AKTIV seit $elapsed/${marker.windowMin} min  |  $amount\n$release"
+        // DIE HUELLE GEHOERT ZUR AUTORISIERUNG, die Episode laeuft eigen
+        // weiter - beide Zahlen nebeneinander ohne Etikett lasen sich,
+        // als waere die eine der Rest der anderen.
+        return "AKTIV seit $elapsed/${marker.windowMin} min  |  Autorisierung: $amount$episodeSumme\n$release"
     }
 
     private fun iobLine(outcome: FuseCycleRunner.Outcome): String {

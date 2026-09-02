@@ -120,13 +120,52 @@ object MarkerReauthorization {
     }
 
     /**
-     * IST DIESES BEDIENEREIGNIS SCHON VERARBEITET?
+     * DARF DIESES BEDIENEREIGNIS NOCH WIRKEN?
      *
-     * Ein wiederholter oder verspaeteter Dialog-Rueckruf traegt dieselbe
-     * Ereigniskennung. Ohne diese Pruefung wuerde er den Zustand ein
-     * zweites Mal umschalten - aus einem Abbruch wuerde ein neuer Marker
-     * oder umgekehrt.
+     * Ein Vergleich mit dem ZULETZT verarbeiteten Ereignis reicht nicht.
+     * Die Folge
+     *
+     *     Start E1  ->  Abbruch E2  ->  verspaeteter Rueckruf E1
+     *
+     * kaeme damit durch: E1 ist nicht E2, also wuerde erneut umgeschaltet -
+     * nach dem Abbruch moeglicherweise mit einer weiteren vollen Huelle.
+     *
+     * Deshalb ist die Ereigniskennung GEORDNET: nur ein Ereignis, das ECHT
+     * JUENGER ist als das zuletzt angewandte, wirkt noch. Der verspaetete
+     * E1 traegt eine kleinere Ordnung und faellt heraus.
+     *
+     * Die Ordnung ist eine Folge, keine Uhr - eine zurueckspringende Uhr
+     * darf einen alten Rueckruf nicht wieder gueltig machen.
      */
-    fun schonVerarbeitet(ereignisId: String?, zuletztVerarbeitet: String?): Boolean =
-        ereignisId != null && ereignisId == zuletztVerarbeitet
+    fun ereignisWirkt(ordnung: Long?, zuletztAngewandt: Long): Boolean =
+        ordnung == null || ordnung > zuletztAngewandt
+
+    /** Aus der Kennung `"i<n>"` die Ordnung; `null` = keine Kennung. */
+    fun ordnungVon(ereignisId: String?): Long? =
+        ereignisId?.removePrefix("i")?.toLongOrNull()
+
+    fun ereignisKennung(ordnung: Long): String = "i$ordnung"
+
+    /**
+     * IST DIESER MARKER DAUERHAFT WIDERRUFEN?
+     *
+     * Der Widerruf steht im Ledger, der Markerzeitpunkt in den
+     * Preferences. Endet der Prozess zwischen beiden Schreibvorgaengen,
+     * bleibt in den Preferences ein Marker stehen, den es nicht mehr gibt.
+     * Ohne diesen Abgleich laesen ihn `mealMarkerArmedTs()` und der Runner
+     * einfach weiter - der Widerruf waere folgenlos.
+     *
+     * Der Ledger ist die Wahrheit: nennt seine Marke genau diesen
+     * Zeitpunkt und gibt es keine laufende Autorisierung dafuer, ist der
+     * Marker weg. Beide Leser rufen DIESE Funktion, damit sie nicht zu
+     * verschiedenen Antworten kommen.
+     */
+    fun widerrufen(markerTs: Long, auth: Authorization?, revocation: Revocation?): Boolean {
+        if (markerTs <= 0L) return false
+        val marke = revocation ?: return false
+        if (marke.markerTs != markerTs) return false
+        // Eine laufende Autorisierung fuer GENAU diesen Zeitpunkt hebt den
+        // Widerruf auf - dann wurde nach dem Abbruch neu autorisiert.
+        return auth?.markerTs != markerTs
+    }
 }

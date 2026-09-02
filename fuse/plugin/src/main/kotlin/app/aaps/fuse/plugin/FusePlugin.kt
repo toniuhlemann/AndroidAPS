@@ -628,8 +628,13 @@ class FusePlugin @Inject constructor(
         ereignisId: String? = null,
     ): Boolean {
         val armed = mealMarkerActive(now)
-        if (MarkerReauthorization.schonVerarbeitet(ereignisId, ledgerAdapter.episodes.lastMarkerEventId))
+        val ordnung = MarkerReauthorization.ordnungVon(ereignisId)
+        // VERALTETE RUECKRUFE FALLEN HERAUS. Nur ein echt juengeres
+        // Ereignis wirkt noch; die Folge Start E1 -> Abbruch E2 ->
+        // verspaeteter E1 haette einen blossen Letztvergleich passiert.
+        if (!MarkerReauthorization.ereignisWirkt(ordnung, ledgerAdapter.episodes.lastMarkerEventOrdnung))
             return armed
+        val vorher = EpisodeAutorisierung(ledgerAdapter.episodes)
         if (armed) {
             // Die Beobachtung stirbt mit der Ruecknahme. Bliebe sie stehen,
             // koennte ein spaeter aus den Preferences gelesener Marker sie
@@ -657,9 +662,9 @@ class FusePlugin @Inject constructor(
             ledgerAdapter.episodes.let { e ->
                 MarkerReauthorization.widerrufe(e.markerAuth, now)?.let { e.markerRevocation = it }
                 e.markerAuth = null
-                if (ereignisId != null) e.lastMarkerEventId = ereignisId
+                if (ordnung != null) e.lastMarkerEventOrdnung = ordnung
             }
-            persistiereMarkerZustand()
+            persistiereMarkerZustand(vorher)
             preferences.put(FuseLongKey.MealMarkerArmedTs, 0L)
             // Die Episoden-Wahl stirbt mit dem Marker - ein spaeterer Druck
             // beginnt immer bei der vollen Huelle.
@@ -682,15 +687,43 @@ class FusePlugin @Inject constructor(
         // Druck bekommt dann KEINE zusaetzliche Huelle. Das ist die
         // konservative Richtung; die umgekehrte Reihenfolge koennte eine
         // Huelle zweimal oeffnen.
+        // ---- ABBRUCH UND START SIND NICHT DASSELBE ----------------------
+        //
+        // Beim ABBRUCH gilt: lieber ohne Widerrufsvermerk abbrechen als gar
+        // nicht abbrechen - ein nicht ausgefuehrter Abbruch waere
+        // gefaehrlicher als ein verlorener Huellenanspruch.
+        //
+        // Beim START gilt das Gegenteil. Eine Autorisierung, deren dauerhafte
+        // Speicherung unbestaetigt ist, darf nicht als erfolgreich aktiviert
+        // werden: nach einem Neustart stuende dann ein Marker ohne Kennung
+        // da, und die Wiederholungssperre haette nichts zu vergleichen.
+        //
+        // UND: `persistVerified == false` heisst NICHT "Platte unveraendert".
+        // Der Ledger kann schon geschrieben und erst das Entfernen des
+        // Sicherungsmarkers gescheitert sein. Das Zurueckkopieren des
+        // Speicherzustands beweist also keine Uebereinstimmung - deshalb
+        // wird hier NICHT zurueckkopiert, sondern der vorhandene
+        // Hold-Vertrag gezogen: der Ledger geht in den Haltezustand, und
+        // der Marker wird gar nicht erst aktiviert.
         ledgerAdapter.episodes.let { e ->
             val seq = e.markerAuthSeq + 1L
             val neu = MarkerReauthorization.autorisiere(seq, now, e.markerRevocation)
             e.markerAuthSeq = seq
             e.markerAuth = neu.auth
             neu.revocation?.let { e.markerRevocation = it }
-            if (ereignisId != null) e.lastMarkerEventId = ereignisId
+            if (ordnung != null) e.lastMarkerEventOrdnung = ordnung
         }
-        persistiereMarkerZustand()
+        if (!persistiereMarkerZustand(vorher = null)) {
+            aapsLogger.error(
+                LTag.APS,
+                "FUSE Marker NICHT aktiviert - die Autorisierung ist nicht dauerhaft gespeichert",
+            )
+            // Der vorhandene Hold-Vertrag: `persistVerified` hat den
+            // Ledger bereits gesperrt (`persistFailed`, sticky bis zum
+            // naechsten Erfolg). Der Marker wird zusaetzlich gar nicht erst
+            // aktiviert - die Preferences bleiben unveraendert.
+            return false
+        }
         preferences.put(FuseLongKey.MealMarkerArmedTs, now)
         preferences.put(FuseLongKey.MealMarkerNoPrime, if (ohneVorschuss) 1L else 0L)
         // DER EINZIGE ORT, an dem ein Druck als BEOBACHTET gilt. Er steht
@@ -718,22 +751,84 @@ class FusePlugin @Inject constructor(
      */
     fun mealMarkerArmedTs(): Long {
         val ts = preferences.get(FuseLongKey.MealMarkerArmedTs)
+        // DER LEDGER IST DIE WAHRHEIT. Endete der Prozess zwischen dem
+        // Widerruf und dem Leeren der Preference, stuende hier ein Marker,
+        // den es nicht mehr gibt. Der Abgleich raeumt ihn auf, damit ein
+        // widerrufener Marker nicht ueber eine alte Preference wieder
+        // wirksam wird - und repariert die Preference gleich mit.
+        if (ts > 0L && MarkerReauthorization.widerrufen(
+                ts, ledgerAdapter.episodes.markerAuth, ledgerAdapter.episodes.markerRevocation,
+            )
+        ) {
+            preferences.put(FuseLongKey.MealMarkerArmedTs, 0L)
+            preferences.put(FuseLongKey.MealMarkerStamp, 0L)
+            return 0L
+        }
         if (ts > 0L) return ts
         val legacy = preferences.get(FuseLongKey.MealMarkerStamp)
         return if (legacy > 0L) legacy / 10L else 0L
     }
 
     /**
-     * Den Marker-Autorisierungszustand festschreiben.
+     * Den Marker-Autorisierungszustand festschreiben - MIT Ergebnis.
      *
-     * Schlaegt das Schreiben fehl, bleibt der Zustand im Speicher stehen -
-     * ein spaeterer Zyklus schreibt ihn mit. Ein fehlgeschlagener
-     * Schreibvorgang darf das Bedienereignis nicht abbrechen: der Nutzer
-     * hat gedrueckt, und die Preferences folgen gleich.
+     * `persistVerified` meldet einen Fehlschlag als `false`, nicht als
+     * Ausnahme. Den Rueckgabewert zu ignorieren hiess: die Preferences
+     * wurden trotzdem geaendert, und der Zustand auf der Platte passte
+     * nicht mehr zu dem im Speicher.
+     *
+     * Das Bedienereignis wird deshalb NICHT abgebrochen - der Nutzer hat
+     * gedrueckt, und ein nicht ausgefuehrter Abbruch waere schlimmer als
+     * ein verlorener Huellenanspruch. Stattdessen wird der
+     * Autorisierungsteil im Speicher ZURUECKGENOMMEN, damit beide Seiten
+     * dasselbe sagen: kein Widerruf vermerkt, keine neue Kennung, also
+     * beim naechsten Druck auch KEINE zusaetzliche Huelle. Die
+     * konservative Richtung.
      */
-    private fun persistiereMarkerZustand() {
-        runCatching { ledgerAdapter.persistVerified(ledgerDir()) }
+    private fun persistiereMarkerZustand(vorher: EpisodeAutorisierung?): Boolean {
+        val ok = runCatching { ledgerAdapter.persistVerified(ledgerDir()) }
             .onFailure { aapsLogger.error(LTag.APS, "FUSE Marker-Autorisierung nicht geschrieben: $it") }
+            .getOrDefault(false)
+        if (!ok && vorher != null) {
+            // NUR fuer den ABBRUCH: dort ist die Ruecknahme die konservative
+            // Richtung (kein Widerrufsvermerk -> keine zusaetzliche Huelle).
+            // Beim START entscheidet der Aufrufer anders, s. dort.
+            aapsLogger.error(
+                LTag.APS,
+                "FUSE Marker-Autorisierung nicht festgeschrieben - Zustand zurueckgenommen, " +
+                    "der naechste Druck eroeffnet keine zusaetzliche Huelle",
+            )
+            vorher.zurueck(ledgerAdapter.episodes)
+        }
+        return ok
+    }
+
+    /** Der Autorisierungsteil des Episodenzustands - fuer die Ruecknahme,
+     *  wenn das Festschreiben scheitert. Nur diese Felder; Buchhaltung,
+     *  Verbrauch und offene Posten werden NIE zurueckgesetzt. */
+    private class EpisodeAutorisierung(e: app.aaps.fuse.plugin.ledger.EpisodeBudgets) {
+        private val seq = e.markerAuthSeq
+        private val auth = e.markerAuth
+        private val revocation = e.markerRevocation
+        private val eventOrdnung = e.lastMarkerEventOrdnung
+        fun zurueck(e: app.aaps.fuse.plugin.ledger.EpisodeBudgets) {
+            e.markerAuthSeq = seq
+            e.markerAuth = auth
+            e.markerRevocation = revocation
+            e.lastMarkerEventOrdnung = eventOrdnung
+        }
+    }
+
+    /**
+     * Eine Ereignis-Ordnung ausgeben - beim ANZEIGEN der Rueckfrage.
+     *
+     * Wird sie erst beim Bestaetigen vergeben, traegt ein spaet
+     * bestaetigter alter Dialog eine ZU NEUE Ordnung und wirkt doch.
+     */
+    fun markerEreignisKennung(): String {
+        val e = ledgerAdapter.episodes
+        e.markerEventSeq += 1L
+        return MarkerReauthorization.ereignisKennung(e.markerEventSeq)
     }
 
     /** Die EINE Huelle [U] - fuer den Lieferstand im Tab. S. [toggleMealMarker]. */
@@ -884,7 +979,10 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
         }
     }
 
-    override fun fuseMarkerToggle(now: Long, ohneVorschuss: Boolean): Boolean = toggleMealMarker(now, ohneVorschuss)
+    override fun fuseMarkerToggle(now: Long, ohneVorschuss: Boolean, ereignisId: String?): Boolean =
+        toggleMealMarker(now, ohneVorschuss, ereignisId)
+
+    override fun fuseMarkerEreignis(): String = markerEreignisKennung()
 
     /** Die im Dialog getroffene Episoden-Wahl - nur mit stehendem Marker wahr. */
     fun mealMarkerNoPrime(now: Long): Boolean =

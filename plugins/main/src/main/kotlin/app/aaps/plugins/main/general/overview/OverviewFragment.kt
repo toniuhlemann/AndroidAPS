@@ -463,9 +463,17 @@ class OverviewFragment : DaggerFragment(), View.OnClickListener, OnLongClickList
      */
     private fun onFuseMealButton(activity: androidx.fragment.app.FragmentActivity) {
         val now = dateUtil.now()
+        // DIE KENNUNG WIRD HIER VERGEBEN, beim ANZEIGEN der Rueckfrage -
+        // nicht beim Bestaetigen. Ein spaet bestaetigter alter Dialog traegt
+        // dann die aeltere Ordnung und faellt heraus. BEIDE Wege des Dialogs
+        // bekommen dieselbe Kennung: es ist EIN Bedienereignis.
+        //
+        // Ohne sie liefe dieser Bildschirm im ungeschuetzten Pfad - der
+        // FUSE-Tab war angebunden, dieser hier nicht.
+        val ereignis = fuseOverviewSource.fuseMarkerEreignis()
         val fakten = fuseOverviewSource.fuseMarkerPrompt(now)
         val umschalten = Runnable {
-            fuseOverviewSource.fuseMarkerToggle(now)
+            fuseOverviewSource.fuseMarkerToggle(now, ereignisId = ereignis)
             processButtonsVisibility()
         }
         // null heisst: ohne Rueckfrage - das ist die RUECKNAHME, und die kann
@@ -479,7 +487,7 @@ class OverviewFragment : DaggerFragment(), View.OnClickListener, OnLongClickList
         app.aaps.core.ui.dialogs.FuseMarkerDialog.show(
             activity, rh, fakten, umschalten,
             Runnable {
-                fuseOverviewSource.fuseMarkerToggle(now, ohneVorschuss = true)
+                fuseOverviewSource.fuseMarkerToggle(now, ohneVorschuss = true, ereignisId = ereignis)
                 processButtonsVisibility()
             },
         )

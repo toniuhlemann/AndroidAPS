@@ -119,5 +119,23 @@ interface FuseOverviewSource {
      * Einheiten jetzt zuviel waeren" - z.B. reichlich aktiver Bolus vor der
      * Mahlzeit), nicht in den Einstellungen.
      */
-    fun fuseMarkerToggle(now: Long, ohneVorschuss: Boolean = false): Boolean
+    fun fuseMarkerToggle(
+        now: Long,
+        ohneVorschuss: Boolean = false,
+        /**
+         * Kennung des BEDIENEREIGNISSES, ausgegeben von
+         * [fuseMarkerEreignis] beim ANZEIGEN der Rueckfrage. Ein
+         * wiederholter oder verspaeteter Rueckruf traegt eine aeltere
+         * Ordnung und wirkt dann nicht mehr - ohne sie bliebe dieser Pfad
+         * ungeschuetzt.
+         */
+        ereignisId: String? = null,
+    ): Boolean
+
+    /**
+     * Eine Ereignis-Kennung ausgeben - beim ANZEIGEN der Rueckfrage, nicht
+     * beim Bestaetigen. Wird sie erst beim Bestaetigen vergeben, traegt ein
+     * spaet bestaetigter alter Dialog eine zu neue Ordnung und wirkt doch.
+     */
+    fun fuseMarkerEreignis(): String
 }

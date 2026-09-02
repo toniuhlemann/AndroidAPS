@@ -62,13 +62,24 @@ class FuseFragment : DaggerFragment() {
         // abhaengen, welchen der beiden Knoepfe man erwischt.
         binding.fuseMealMarker.setOnClickListener {
             val now = dateUtil.now()
-            val umschalten = Runnable { fusePlugin.toggleMealMarker(now); update() }
+            // DIE KENNUNG WIRD HIER VERGEBEN, beim ANZEIGEN der Rueckfrage -
+            // nicht beim Bestaetigen. Wird ein alter Dialog spaet
+            // bestaetigt, traegt er die aeltere Ordnung und faellt heraus;
+            // beim Bestaetigen vergeben waere sie zu neu und wirkte doch.
+            //
+            // BEIDE Wege bekommen dieselbe Kennung: die Rueckfrage ist EIN
+            // Bedienereignis, egal welchen Knopf man darin drueckt.
+            val ereignis = fusePlugin.markerEreignisKennung()
+            val umschalten = Runnable { fusePlugin.toggleMealMarker(now, ereignisId = ereignis); update() }
             val fakten = fusePlugin.fuseMarkerPrompt(now)
             val act = activity
             if (fakten == null || act == null) umschalten.run()
             else app.aaps.core.ui.dialogs.FuseMarkerDialog.show(
                 act, rh, fakten, umschalten,
-                Runnable { fusePlugin.toggleMealMarker(now, ohneVorschuss = true); update() },
+                Runnable {
+                    fusePlugin.toggleMealMarker(now, ohneVorschuss = true, ereignisId = ereignis)
+                    update()
+                },
             )
         }
         binding.fuseDetailsToggle.setOnClickListener {

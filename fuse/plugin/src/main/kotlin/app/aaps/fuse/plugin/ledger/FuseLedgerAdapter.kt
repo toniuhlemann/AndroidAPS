@@ -58,9 +58,19 @@ class EpisodeBudgets {
      *  die Wiederholungsfestigkeit haengt an diesem Vergleich. */
     var foundationArmedByAuthId: String? = null
 
-    /** Das zuletzt verarbeitete Bedienereignis - gegen doppelte und
-     *  verspaetete Dialog-Rueckrufe. */
-    var lastMarkerEventId: String? = null
+    /**
+     * Die ORDNUNG des zuletzt angewandten Bedienereignisses - gegen doppelte
+     * UND verspaetete Dialog-Rueckrufe.
+     *
+     * Bewusst eine Ordnung und keine Kennung: ein blosser Vergleich
+     * "ist es dasselbe wie zuletzt?" laesst die Folge
+     * Start E1 -> Abbruch E2 -> verspaeteter Rueckruf E1 durch, weil E1
+     * nicht E2 ist. Nur ein ECHT juengeres Ereignis wirkt noch.
+     */
+    var lastMarkerEventOrdnung: Long = 0L
+
+    /** Der Zaehler, aus dem die Ereigniskennungen entstehen. */
+    var markerEventSeq: Long = 0L
     var onsetSpentU: Double = 0.0
     var onsetQuietMin: Int = 0
     var mealArmedTs: Long = 0L
@@ -717,6 +727,8 @@ class EpisodeBudgets {
          *  [mealTs]). */
         val correctionTs: Long = 0L,
         val foundationPhase: app.aaps.fuse.core.controller.MealFoundation.Phase,
+        /** s. [Reservation.authId] - die Zuordnung ueberlebt bis zum Beweis. */
+        val authId: String? = null,
     )
 
     /** @param mealTs 0 = nicht in [mealDeliveries] gebucht. */
@@ -731,6 +743,14 @@ class EpisodeBudgets {
         /** 0 = nicht in [correctionDeliveries] gebucht. Symmetrisch zu
          *  [mealTs]: genau eine der beiden Listen traegt einen Zyklus. */
         val correctionTs: Long = 0L,
+        /**
+         * DIE AUTORISIERUNG, ZU DER DIESE BUCHUNG GEHOERT - `null` bei
+         * Buchungen ohne Mahlzeitenautorisierung. Seit die Folge "Abbruch ->
+         * neuer Marker" eine NEUE volle Huelle eroeffnet, ist die Zuordnung
+         * dosisrelevant: eine spaet bewiesene Nicht-Sendung aus der ALTEN
+         * Autorisierung darf die NEUE nicht entlasten.
+         */
+        val authId: String? = null,
         /**
          * EINMAL BESTIMMT, NICHT BEIM AUFLOESEN GERATEN. Die Phase haengt am
          * Uebergabeanker, und der kann sich zwischen Buchung und Aufloesung
@@ -1791,6 +1811,9 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
                 proposalId = proposalId, amountU = bleibt, prime = r.prime,
                 onset = r.onset, mealTs = r.mealTs, correctionTs = r.correctionTs,
                 foundationPhase = r.foundationPhase,
+                // Die Zuordnung wandert MIT - der Beweis kommt spaeter, und
+                // dann ist womoeglich schon eine andere Autorisierung aktiv.
+                authId = r.authId,
             ) else null
 
         val frei = (r.amountU - (if (publishedU.isFinite()) publishedU else r.amountU)).coerceAtLeast(0.0)
@@ -1926,7 +1949,21 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
 
         // EXAKT DIESELBEN ZAEHLER wie beim Reject einer Reservierung - der
         // Vorgang ist derselbe, nur eine Stufe spaeter bewiesen.
-        if (s.prime) episodes.primeSpentU = (episodes.primeSpentU - menge).coerceAtLeast(0.0)
+        // ---- GEHOERT DIESE BUCHUNG NOCH ZUR LAUFENDEN AUTORISIERUNG? ----
+        //
+        // `primeSpentU`, `deliveredSinceHandoverU` und der Phase-B-Uebertrag
+        // gehoeren zur AUTORISIERUNG: sie werden beim Bewaffnen genullt.
+        // Seit die Folge "Abbruch -> neuer Marker" eine neue volle Huelle
+        // eroeffnet, kann der Nicht-Sende-Beweis eines ALTEN Auftrags
+        // eintreffen, waehrend die NEUE Huelle schon belastet ist - und
+        // haette sie entlastet: aus 0,40 verbucht wuerden 0,10.
+        //
+        // Die GLOBALEN Buecher (`onsetSpentU`, `evidenceCommittedU`, die
+        // Serienzeile) werden weiterhin aufgeloest: die alte Belastung war
+        // echt und muss verschwinden.
+        val gehoertZurLaufenden = s.authId == null || s.authId == episodes.markerAuth?.id
+        if (s.prime && gehoertZurLaufenden)
+            episodes.primeSpentU = (episodes.primeSpentU - menge).coerceAtLeast(0.0)
         if (s.onset) episodes.onsetSpentU = (episodes.onsetSpentU - menge).coerceAtLeast(0.0)
         run {
             val vorherCommitted = episodes.evidenceCommittedU
@@ -1936,9 +1973,10 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
             if (episodes.evidenceCommittedU < vorherCommitted - 1e-12)
                 episodes.evidenceCommitmentRevision += 1
         }
-        if (s.foundationPhase == app.aaps.fuse.core.controller.MealFoundation.Phase.PHASE_B)
-            episodes.deliveredSinceHandoverU =
-                (episodes.deliveredSinceHandoverU - menge).coerceAtLeast(0.0)
+        if (s.foundationPhase == app.aaps.fuse.core.controller.MealFoundation.Phase.PHASE_B &&
+            gehoertZurLaufenden
+        ) episodes.deliveredSinceHandoverU =
+            (episodes.deliveredSinceHandoverU - menge).coerceAtLeast(0.0)
         // DIE SERIENZEILE FAELLT MIT (Variante 2): ein bewiesenes
         // Nicht-Senden darf den Deckel nicht weiter belasten. Gesucht wird
         // ueber die KENNUNG, nicht ueber den Zeitstempel - eine Stufe
@@ -1978,6 +2016,10 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
             // Ohne das Zurueckdrehen bliebe der Phase-A-Rueckstand 0, und der
             // gerade entstandene Uebertrag waere auf der Stelle wirkungslos:
             // der effektive Rest ist das MINIMUM aus Zaehler und Rueckstand.
+            // AUCH DER UEBERTRAG GEHOERT ZUR AUTORISIERUNG: aus einem alten,
+            // nicht gesendeten Auftrag darf in der NEUEN Huelle kein
+            // Phase-B-Uebertrag entstehen.
+            if (!gehoertZurLaufenden) return RevokeResult.NONE
             episodes.deliveredPhaseAU = (episodes.deliveredPhaseAU - menge).coerceAtLeast(0.0)
             val deckel = episodes.foundation.let { if (it.valid) it.totalBudgetU else 0.0 }
             episodes.confirmedNotSentPhaseAU =
