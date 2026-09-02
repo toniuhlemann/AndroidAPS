@@ -245,6 +245,11 @@ object TeilbasalRig {
          * und ist KEINE Rate.
          */
         ersatzdeckelUPerH: Double? = null,
+        /** REPRODUKTION DES 02.09.-FEHLERS: Profil-Slots beginnen an der
+         *  RECHENZEIT und decken TBR+1 min - wie der Runner vor dem Fix.
+         *  Mit dem Anker auf der Sensorzeit sieht die Suche dann dieselbe
+         *  Luecke wie auf dem Geraet. Default: die korrigierte Form. */
+        slotsAbRechenzeit: Boolean = false,
     ): BasalRecoverySearch.Ergebnis? {
         val l0 = z.minLowerMgdl ?: return null
         val floor = z.guardFloorMgdl ?: return null
@@ -254,7 +259,11 @@ object TeilbasalRig {
             ?: ersatzdeckelUPerH?.takeIf { it.isFinite() && it > 0.0 }
             ?: return null
         val kernel = kernelFuer(z.computeTs) ?: return null
-        val anker = z.computeTs
+        // DER ANKER IST DIE SENSORZEIT - wie in der Produktion
+        // (`signal.sourceTs`). Bisher stand hier die Rechenzeit; damit
+        // fielen beide Achsen zusammen und das Rig konnte die Luecke, an
+        // der die Produktion 77 Zyklen lang scheiterte, nicht sehen.
+        val anker = if (z.sourceTs > 0L) z.sourceTs else z.computeTs
         val band = CandidateSearch.Band(
             releaseTargetLowMgdl = 100.0, releaseTargetHighMgdl = 140.0,
             demandDeadbandMgdl = 10.0, guardFloorMgdl = floor,
@@ -266,7 +275,9 @@ object TeilbasalRig {
             kernel = kernel,
             isfSlots = listOf(IsfSlot(anker - spanne, anker + spanne, isf)),
             band = band,
-            basalSlots = listOf(BasalSlot(anker - spanne, anker + spanne, profil)),
+            basalSlots = if (slotsAbRechenzeit)
+                listOf(BasalSlot(z.computeTs, z.computeTs + (tbrDauerMin + 1) * 60_000L, profil))
+            else listOf(BasalSlot(anker - spanne, anker + spanne, profil)),
             basalStepUPerH = basalStepUPerH,
             tbrDurationMin = tbrDauerMin,
             pruefHorizontMin = h,
@@ -291,6 +302,7 @@ object TeilbasalRig {
         ukfSchwelle: Double? = null,
         eintrittZyklen: Int = EINTRITT_ZYKLEN,
         ersatzdeckelUPerH: Double? = null,
+        slotsAbRechenzeit: Boolean = false,
     ): List<Pair<RigZyklus, RigErgebnis>> {
         var streak = 0
         var letzterSourceTs = 0L
@@ -303,7 +315,7 @@ object TeilbasalRig {
             streak = PartialRecoveryGate.streak(offen, streak, letzterSourceTs, z.sourceTs)
             if (offen) letzterSourceTs = z.sourceTs
             val suche = if (offen && streak >= eintrittZyklen)
-                rate(z, kernelFuer, basalStepUPerH, tbrDauerMin, horizontMin, ersatzdeckelUPerH) else null
+                rate(z, kernelFuer, basalStepUPerH, tbrDauerMin, horizontMin, ersatzdeckelUPerH, slotsAbRechenzeit) else null
             val aktiv = suche != null && suche.reject == null && suche.rateUPerH > 0.0
             z to RigErgebnis(
                 zustand = if (aktiv) Zustand.PARTIAL else Zustand.ZERO,

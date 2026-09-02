@@ -1112,6 +1112,14 @@ object FuseStateJson {
                 )
                 .put("partialRecoveryView", outcome.partialRecoveryView ?: JSONObject.NULL)
                 .put("partialRecoveryObservedSource", outcome.partialRecoveryObservedSource ?: JSONObject.NULL)
+                // DIE SUCHE SELBST (02.09.): ohne diese Felder war im Trail
+                // nicht zu sehen, WARUM 77 eintrittsberechtigte Zyklen nie
+                // aktiv wurden - Datenluecke oder Guard sahen gleich aus.
+                .put("partialRecoverySearchRateUPerH", fin(outcome.partialRecoverySearchRateUPerH))
+                .put("partialRecoverySearchReject", outcome.partialRecoverySearchReject ?: JSONObject.NULL)
+                .put("partialRecoverySearchLimit", outcome.partialRecoverySearchLimit ?: JSONObject.NULL)
+                .put("partialRecoveryBindingOffsetMin", outcome.partialRecoveryBindingOffsetMin ?: JSONObject.NULL)
+                .put("partialRecoveryBaselineMinLowerMgdl", fin(outcome.partialRecoveryBaselineMinLowerMgdl))
                 .put("pinnedFor", outcome.basalGap?.pinnedFor ?: JSONObject.NULL)
                 .put("preMarkerBasalIobU", fin(outcome.basalGap?.preMarkerBasalIobU))
                 .put("preMarkerZeroTbrActive", outcome.basalGap?.zeroTbrActive ?: JSONObject.NULL)

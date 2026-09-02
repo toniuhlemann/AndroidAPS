@@ -398,6 +398,39 @@ class FuseStateExportTest {
         assertEquals(JSONObject.NULL, j.get("rate"))
     }
 
+    /**
+     * 02.09.: 77 eintrittsberechtigte Zyklen, keiner aktiv - und der Trail
+     * konnte nicht sagen, ob der Guard keine Rate erlaubte oder die Suche
+     * an einer Datenluecke scheiterte. Beides muss unterscheidbar sein.
+     */
+    @Test
+    fun `Datenluecke und Guard-Null der Teilratensuche sind im Trail unterscheidbar`() {
+        val luecke = record(outcome().copy(
+            partialRecoveryStreak = 7, partialRecoveryActive = false,
+            partialRecoverySearchRateUPerH = 0.0, partialRecoverySearchReject = "INVALID_INPUT",
+            partialRecoverySearchLimit = "ABLEHNUNG",
+        )).getJSONObject("basalGap")
+        assertEquals("INVALID_INPUT", luecke.getString("partialRecoverySearchReject"))
+        assertEquals("ABLEHNUNG", luecke.getString("partialRecoverySearchLimit"))
+        assertEquals(7, luecke.getInt("partialRecoveryStreak"))
+
+        val guard = record(outcome().copy(
+            partialRecoveryStreak = 7, partialRecoveryActive = false,
+            partialRecoverySearchRateUPerH = 0.0, partialRecoverySearchReject = null,
+            partialRecoverySearchLimit = "KEINE_RATE", partialRecoveryBindingOffsetMin = 41,
+            partialRecoveryBaselineMinLowerMgdl = 72.5,
+        )).getJSONObject("basalGap")
+        assertEquals(JSONObject.NULL, guard.get("partialRecoverySearchReject"))
+        assertEquals("KEINE_RATE", guard.getString("partialRecoverySearchLimit"))
+        assertEquals(41, guard.getInt("partialRecoveryBindingOffsetMin"))
+        assertEquals(72.5, guard.getDouble("partialRecoveryBaselineMinLowerMgdl"), 1e-9)
+
+        // Stufe aus: die Suche laeuft nicht, die Felder sagen das - nicht 0.
+        val aus = record(outcome()).getJSONObject("basalGap")
+        assertEquals(JSONObject.NULL, aus.get("partialRecoverySearchRateUPerH"))
+        assertEquals(JSONObject.NULL, aus.get("partialRecoverySearchReject"))
+    }
+
     @Test
     fun `Entscheidung, Blockgrund und bindende Grenze sind benannt`() {
         val d = record().getJSONObject("decision")

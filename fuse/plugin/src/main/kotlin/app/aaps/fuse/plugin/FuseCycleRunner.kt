@@ -1086,6 +1086,15 @@ class FuseCycleRunner(
         /** Teilbasal-Stufe: laeuft sie, und wie weit ist der Eintritt? */
         val partialRecoveryActive: Boolean = false,
         val partialRecoveryStreak: Int = 0,
+        /** DIE SUCHE SELBST, unabhaengig davon, ob die Stufe aktiv wurde:
+         *  "Eintritt erfuellt, aber Datenluecke" (reject gesetzt) muss von
+         *  "Guard erlaubt keine Rate" (reject null, limit KEINE_RATE)
+         *  unterscheidbar sein. Genau diese Unterscheidung fehlte am 02.09. */
+        val partialRecoverySearchRateUPerH: Double? = null,
+        val partialRecoverySearchReject: String? = null,
+        val partialRecoverySearchLimit: String? = null,
+        val partialRecoveryBindingOffsetMin: Int? = null,
+        val partialRecoveryBaselineMinLowerMgdl: Double? = null,
         /**
          * DIE ANZEIGEFELDER DER TEILSTUFE (Viewer-Vertrag).
          *
@@ -2960,10 +2969,25 @@ class FuseCycleRunner(
                 // Das Profilbasal ueber das GANZE TBR-Fenster, minutenweise
                 // abgetastet: faellt das Profil waehrend der TBR, muss der
                 // Deckel dem folgen (Review-P1).
+                //
+                // AUF DER ZEITACHSE DER SUCHE, NICHT DER RECHNUNG (02.09.).
+                // Die Suche prueft das Fenster [Prognoseanker, Anker + TBR]
+                // und verlangt dort lueckenlose Profilabdeckung. Der Anker
+                // ist die SENSORZEIT (`signal.sourceTs`), die Rechnung laeuft
+                // ~5 s spaeter. Das Grid begann hier am Rechenzeitpunkt -
+                // die Suche sah eine 5-Sekunden-Luecke VOR dem ersten Slot,
+                // meldete INVALID_INPUT und kam nie bis zur eigentlichen
+                // Frage. Ergebnis am 02.09. frueh: 81 Zyklen offenes Tor,
+                // 77 davon eintrittsberechtigt, kein einziger aktiv - bei
+                // 88 min Schutz-Null auf flacher Bahn. Das Rig sah es nicht,
+                // weil dort Sensor- und Rechenzeit zusammenfielen.
+                //
+                // Die Lueckenpruefung bleibt; sie hat den Fehler ja gezeigt.
+                val ankerTs = prediction.predictionAnchorTs
                 val basalSlots = ProfileSlots.compressBasal(
-                    LongArray(dauer + 1) { computeTs + it * 60_000L },
-                    DoubleArray(dauer + 1) { profile.getBasal(computeTs + it * 60_000L) },
-                    computeTs + (dauer + 1) * 60_000L,
+                    LongArray(dauer + 1) { ankerTs + it * 60_000L },
+                    DoubleArray(dauer + 1) { profile.getBasal(ankerTs + it * 60_000L) },
+                    ankerTs + (dauer + 1) * 60_000L,
                 )
                 val rr = BasalRecoverySearch.hoechsteSichereRate(
                     prediction = prediction,
@@ -5686,6 +5710,11 @@ class FuseCycleRunner(
             zeroLatchReasonGoneStreak = zeroReasonGoneStreak,
             partialRecoveryActive = partialAktiv,
             partialRecoveryStreak = partialStreak,
+            partialRecoverySearchRateUPerH = if (cfg.partialRecoveryEnabled) partialRateUPerH else null,
+            partialRecoverySearchReject = partialReject,
+            partialRecoverySearchLimit = partialBegrenzung,
+            partialRecoveryBindingOffsetMin = partialBindenderOffsetMin.takeIf { it >= 0 },
+            partialRecoveryBaselineMinLowerMgdl = partialBaselineMinLower.takeIf { it.isFinite() },
             // ANZEIGEVERTRAG: die Zielrate ist die ANGEFORDERTE bzw.
             // laufende - der Viewer stellt sie NEBEN die tatsaechliche
             // Pumpenrate, nie an ihre Stelle.

@@ -113,6 +113,15 @@ class TransportWiringTest : TestBaseWithProfile() {
     private val start = 1_700_000_000_000L / 60_000L * 60_000L
 
     /**
+     * SENSORZEIT VOR RECHENZEIT (02.09.). Auf dem Geraet liegt der letzte
+     * CGM-Wert ~5 s vor dem Rechenzeitpunkt; im Rig fielen beide bisher
+     * exakt zusammen. Genau in dieser Luecke scheiterte die Teilratensuche
+     * 77 Zyklen lang (Profil-Slots ab Rechenzeit, Fenster ab Sensorzeit).
+     * Positiv: die Serie liegt um so viele ms VOR der Uhr.
+     */
+    private var quellVersatzMs = 0L
+
+    /**
      * Testschalter, um den SCHWANZ-Kanal abzuschalten.
      *
      * Die offene Transportmenge erreicht die Entscheidung ueber DREI Wege:
@@ -342,7 +351,7 @@ class TransportWiringTest : TestBaseWithProfile() {
                     sourceSensor = SourceSensor.UNKNOWN, trendArrow = TrendArrow.FLAT
                 )
             }.toList()
-        } ?: generateSequence(start) { it + taktMs }
+        } ?: generateSequence(start - quellVersatzMs) { it + taktMs }
             .takeWhile { it <= untilTs }
             .filter { ts ->
                 val von = lueckeVonMin ?: return@filter true
@@ -13158,6 +13167,62 @@ class TransportWiringTest : TestBaseWithProfile() {
      * Ein zurueckkehrendes Risiko verdraengt die offene Teilbasal-
      * Anforderung: danach darf KEIN Teilbasal-Kommando mehr folgen.
      */
+    /**
+     * DER 02.09.-FEHLER ALS TEST. Dieselbe Bahn wie im Kommandostrom-E2E,
+     * aber die Sensorzeit liegt 5 s vor der Rechenzeit - wie auf dem Geraet.
+     * Vor dem Fix: das Profil-Grid begann an der Rechenzeit, die Suche sah
+     * vor dem ersten Slot eine Luecke, INVALID_INPUT in jedem Zyklus, die
+     * Stufe wurde nie aktiv. Jetzt muss eine Teilrate den Ausgabepfad
+     * erreichen, und kein eintrittsberechtigter Zyklus darf eine
+     * Datenluecke melden.
+     */
+    @Test
+    fun `E2E die Teilbasal-Stufe greift auch mit Sensorzeit vor Rechenzeit`(@TempDir dir: File) {
+        quellVersatzMs = 5_000L
+        zeroLatchAn = true
+        teilbasalAn = true
+        flach = 140.0
+        steigungProMin = -1.2
+        knickAbMin = 25
+        steigungNachKnick = 0.0
+        bolusIobU = 2.5
+        clock = start
+        transportReset()
+        neuerRunner(FuseLedgerAdapter().also { it.loadOnce(dir.also(File::mkdirs), "test-epoch", start) })
+        quelleMeldet(TB(timestamp = System.currentTimeMillis(), duration = 30 * 60_000L,
+                        rate = 0.0, isAbsolute = true, type = TB.Type.NORMAL))
+        var setz: TbrKommando? = null
+        var aktiv: FuseCycleRunner.Outcome? = null
+        val luecken = mutableListOf<String>()
+        var berechtigt = 0
+        var versatzGesehen = false
+        for (i in 0 until 80) {
+            val (o, k) = zyklusMitKommando()
+            // Der Versatz ist REAL, nicht nur eingestellt: Sensorzeit 5 s
+            // vor der Uhr. Ohne diese Zeile koennte der Test den Fall
+            // verfehlen, den er beweisen soll.
+            if (o.sourceTs == clock - 5_000L) versatzGesehen = true
+            if (o.partialRecoveryStreak >= PartialRecoveryGate.ENTRY_CYCLES) {
+                berechtigt++
+                o.partialRecoverySearchReject?.let { luecken += "${clock / 60_000L}: $it" }
+            }
+            if (k != null && k.rateUPerH > 0.0 && k.durationMin > 0 && setz == null) setz = k
+            if (o.partialRecoveryActive) { aktiv = o; break }
+        }
+        assertTrue(versatzGesehen) { "die Serie muss tatsaechlich 5 s vor der Uhr liegen" }
+        assertTrue(berechtigt > 0) { "der Aufbau muss ueberhaupt eintrittsberechtigte Zyklen erzeugen" }
+        assertTrue(luecken.isEmpty()) {
+            "kein eintrittsberechtigter Zyklus darf an einer Datenluecke scheitern: $luecken"
+        }
+        assertNotNull(aktiv) { "die Teilstufe muss trotz Versatz aktiv werden" }
+        assertNotNull(setz) { "und eine Teilrate muss den Ausgabepfad erreichen" }
+        assertTrue(setz!!.rateUPerH > 0.0)
+        assertNull(aktiv!!.partialRecoverySearchReject)
+        assertTrue((aktiv.partialRecoverySearchRateUPerH ?: 0.0) > 0.0) {
+            "die Suche selbst traegt die Rate: ${aktiv.partialRecoverySearchRateUPerH}"
+        }
+    }
+
     @Test
     fun `E2E ein zurueckkehrendes Risiko verdraengt die offene Teilbasal-Anforderung`(@TempDir dir: File) {
         zeroLatchAn = true

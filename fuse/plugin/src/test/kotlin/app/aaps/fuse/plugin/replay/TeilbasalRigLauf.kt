@@ -104,7 +104,10 @@ class TeilbasalRigLauf : TestBase() {
                         guardFloorMgdl = d(pol, "guardFloorMgdl"),
                         isfMgdlPerU = d(st, "isfMgdlPerU"),
                         liabilityHorizonMin = i(pol, "liabilityHorizonMin"),
-                        profilbasalUph = d(o(j, "basalGap"), "preMarkerScheduledBasalUph"),
+                        // Das LAUFENDE Profilbasal (rs47+); der Marker-Schnappschuss
+                        // ist Stunden alt und nur Rueckfall fuer aeltere Trails.
+                        profilbasalUph = d(o(j, "basalGap"), "scheduledBasalUph")
+                            ?: d(o(j, "basalGap"), "preMarkerScheduledBasalUph"),
                         smbPublishedU = d(o(j, "smb"), "publishedU") ?: 0.0,
                     )
                 }.getOrNull()
@@ -129,6 +132,23 @@ class TeilbasalRigLauf : TestBase() {
         val kern = kernelBauer(typ, dia)
 
         val lauf = TeilbasalRig.lauf(zyklen, kern, schritt, dauer)
+        // ---- VOR FIX / NACH FIX (02.09.) ----------------------------------
+        // Dieselben Zyklen, einmal mit Profil-Slots ab Rechenzeit (so lief
+        // die Produktion), einmal korrigiert. Ausgewiesen wird NUR, was die
+        // Suche liefert - keine Aussage ueber einen anderen BG-Verlauf.
+        val vorFix = TeilbasalRig.lauf(zyklen, kern, schritt, dauer, slotsAbRechenzeit = true)
+        fun bilanz(name: String, l: List<Pair<TeilbasalRig.RigZyklus, TeilbasalRig.RigErgebnis>>) {
+            val berechtigt = l.filter { it.second.torOffen && it.second.streak >= TeilbasalRig.EINTRITT_ZYKLEN }
+            val rejects = berechtigt.mapNotNull { it.second.suche?.reject?.name }.groupingBy { it }.eachCount()
+            val aktiv = berechtigt.count { it.second.zustand == TeilbasalRig.Zustand.PARTIAL }
+            val keineRate = berechtigt.count { it.second.suche?.let { s -> s.reject == null && s.rateUPerH <= 0.0 } == true }
+            println("%-9s eintrittsberechtigt %3d | aktiv %3d | Guard erlaubt keine Rate %3d | Datenluecke %s"
+                .format(name, berechtigt.size, aktiv, keineRate, rejects.ifEmpty { mapOf("-" to 0) }))
+        }
+        println("=".repeat(70))
+        println("ZEITACHSEN-VERGLEICH (Anker = Sensorzeit, wie in der Produktion)")
+        bilanz("VOR FIX", vorFix)
+        bilanz("NACH FIX", lauf)
 
         println("=".repeat(70))
         println("TEILBASAL-RIG  Zyklen=${zyklen.size}  Modell=$typ DIA=$dia  Schritt=$schritt  TBR=${dauer}min")
