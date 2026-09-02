@@ -705,6 +705,7 @@ class FusePlugin @Inject constructor(
         // wird hier NICHT zurueckkopiert, sondern der vorhandene
         // Hold-Vertrag gezogen: der Ledger geht in den Haltezustand, und
         // der Marker wird gar nicht erst aktiviert.
+        val vorDemStart = EpisodeAutorisierung(ledgerAdapter.episodes)
         ledgerAdapter.episodes.let { e ->
             val seq = e.markerAuthSeq + 1L
             val neu = MarkerReauthorization.autorisiere(seq, now, e.markerRevocation)
@@ -713,7 +714,7 @@ class FusePlugin @Inject constructor(
             neu.revocation?.let { e.markerRevocation = it }
             if (ordnung != null) e.lastMarkerEventOrdnung = ordnung
         }
-        if (!persistiereMarkerZustand(vorher = null)) {
+        if (!persistiereMarkerZustand(vorher = vorDemStart)) {
             aapsLogger.error(
                 LTag.APS,
                 "FUSE Marker NICHT aktiviert - die Autorisierung ist nicht dauerhaft gespeichert",
@@ -722,6 +723,12 @@ class FusePlugin @Inject constructor(
             // Ledger bereits gesperrt (`persistFailed`, sticky bis zum
             // naechsten Erfolg). Der Marker wird zusaetzlich gar nicht erst
             // aktiviert - die Preferences bleiben unveraendert.
+            //
+            // UND DIE WIDERRUFSMARKE BLEIBT OFFEN. `persistiereMarkerZustand`
+            // hat den Autorisierungsteil zurueckgenommen; ohne das haette
+            // dieser gescheiterte Druck die Marke im Speicher als
+            // "verbraucht" markiert, und der naechste - erfolgreiche - Druck
+            // haette keine neue volle Huelle mehr eroeffnet.
             return false
         }
         preferences.put(FuseLongKey.MealMarkerArmedTs, now)
@@ -790,13 +797,23 @@ class FusePlugin @Inject constructor(
             .onFailure { aapsLogger.error(LTag.APS, "FUSE Marker-Autorisierung nicht geschrieben: $it") }
             .getOrDefault(false)
         if (!ok && vorher != null) {
-            // NUR fuer den ABBRUCH: dort ist die Ruecknahme die konservative
-            // Richtung (kein Widerrufsvermerk -> keine zusaetzliche Huelle).
-            // Beim START entscheidet der Aufrufer anders, s. dort.
+            // BEIDE WEGE NEHMEN DEN AUTORISIERUNGSTEIL ZURUECK, und beide
+            // Male ist das die konservative Richtung - nur mit
+            // verschiedenen Folgen:
+            //
+            // ABBRUCH: ohne Widerrufsvermerk gibt es spaeter keine
+            //   zusaetzliche Huelle. Der Abbruch selbst wird trotzdem
+            //   ausgefuehrt (der Aufrufer bricht nicht ab).
+            // START: der Marker wird gar nicht aktiviert, und die
+            //   Widerrufsmarke bleibt OFFEN - sonst haette dieser
+            //   gescheiterte Druck sie im Speicher verbraucht und der
+            //   naechste, erfolgreiche, faende keine mehr vor.
+            //
+            // Die Buchhaltung wird in keinem Fall angefasst.
             aapsLogger.error(
                 LTag.APS,
-                "FUSE Marker-Autorisierung nicht festgeschrieben - Zustand zurueckgenommen, " +
-                    "der naechste Druck eroeffnet keine zusaetzliche Huelle",
+                "FUSE Marker-Autorisierung nicht festgeschrieben - Autorisierungsteil " +
+                    "zurueckgenommen, Buchhaltung unveraendert",
             )
             vorher.zurueck(ledgerAdapter.episodes)
         }
