@@ -165,6 +165,13 @@ object FuseTbrTranslator {
         allowProfileCancel: Boolean = true,
         /** `pump.baseBasalRate` - die Basis, gegen die AAPS entscheidet. */
         pumpBaseBasalUPerH: Double = Double.NaN,
+        /**
+         * Die Teilstufe erzeugt in diesem Zyklus KEIN Kommando (Profil
+         * laeuft, autoritativ keine TBR, kein eigener Vorgang). Dann faellt
+         * der SMB-Riegel der Stufe weg - es gibt nichts zu verdraengen.
+         * Alle uebrigen Tore bleiben unveraendert wirksam.
+         */
+        ohneAktion: Boolean = false,
         /** s. [reasonGone]. Default false = Verhalten wie vor dem 15.08. */
         protectionCleared: Boolean = false,
         /** Bisher erfolglose Abbruchversuche in Folge (Medtrum-Backoff). */
@@ -186,6 +193,7 @@ object FuseTbrTranslator {
             ownPartialConfirmed = ownPartialConfirmed,
             allowProfileCancel = allowProfileCancel,
             pumpBaseBasalUPerH = pumpBaseBasalUPerH,
+            ohneAktion = ohneAktion,
             endZeroAttempts = endZeroAttempts,
             // C8 UNABHAENGIG VOM INTENT (Toni 17.08.): seit das Fundament auch
             // in unsicherer Lage stehen bleibt, traegt der Intent die

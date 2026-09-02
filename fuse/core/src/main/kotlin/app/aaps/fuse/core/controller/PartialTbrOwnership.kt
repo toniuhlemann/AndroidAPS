@@ -346,6 +346,57 @@ object PartialTbrOwnership {
      * @param ausgegeben hat das Kommando das Aktuationstor passiert und
      *                   steht wirklich in der APSResult-Ausgabe?
      */
+    /**
+     * ERZEUGT DIE TEILSTUFE IN DIESEM ZYKLUS UEBERHAUPT EINE BASALAKTION?
+     *
+     * ===================================================================
+     * WARUM DIESE FRAGE VOR DER BOLUSFRAGE STEHEN MUSS
+     * ===================================================================
+     * Traegt die Bahn bereits das VOLLE Profilbasal, laeuft autoritativ
+     * keine TBR und steht kein eigener Vorgang offen, dann kommt aus der
+     * Teilstufe in diesem Zyklus GAR KEIN Kommando - die Tabelle antwortet
+     * mit `PARTIAL_ALREADY_AT_PROFILE` und fordert nichts an.
+     *
+     * Der Runner hat den Bolus trotzdem genullt, WEIL das Teilstufen-Flag
+     * gesetzt war, und erst danach festgestellt, dass gar nichts zu tun
+     * ist. Eine autorisierte Mahlzeitendosis verschwand damit ohne
+     * Basalgrund. Die Nullung hat einen technischen Zweck (C7a verwirft
+     * eine ANHEBENDE TBR-Anforderung neben einem positiven SMB) - aber wo
+     * keine Anforderung entsteht, gibt es auch nichts zu schuetzen.
+     *
+     * ===================================================================
+     * WAS HIER AUSDRUECKLICH NICHT GILT
+     * ===================================================================
+     * Eine echt laufende Teilrate, eine offene Anforderung, ein
+     * unbestaetigter Abbruch und eine unbrauchbare Pumpensicht sind
+     * EIGENE Faelle und liefern hier `false`. Diese Funktion ist keine
+     * "Mahlzeit darf immer"-Ausnahme, sondern die Feststellung, dass in
+     * diesem Zyklus keine Basalaktion existiert, die zu schuetzen waere.
+     */
+    fun ohneAktion(
+        wunschRateUPerH: Double,
+        aapsBasisUPerH: Double,
+        basalStepUPerH: Double,
+        durationMin: Int,
+        view: View,
+        state: State,
+    ): Boolean {
+        // Ein eigener Vorgang - bestaetigt, offen oder im Abbruch - ist ein
+        // eigener Fall und behaelt seinen Schutz.
+        if (!state.leer || state.ending != null) return false
+        // Nur eine BEWIESENE Abwesenheit zaehlt. `View.Unknown` heisst
+        // "nicht belastbar bekannt" und traegt diese Feststellung nicht.
+        val sicht = view as? View.Authoritative ?: return false
+        if (sicht.current != null) return false
+        return klassifiziere(
+            rateUPerH = wunschRateUPerH,
+            durationMin = durationMin,
+            scheduledBasalUPerH = aapsBasisUPerH,
+            basalStepUPerH = basalStepUPerH,
+            ausgegeben = true,
+        ) == Wirkung.CANCEL_TO_PROFILE
+    }
+
     fun klassifiziere(
         rateUPerH: Double?,
         durationMin: Int?,

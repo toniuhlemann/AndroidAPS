@@ -13296,6 +13296,154 @@ class TransportWiringTest : TestBaseWithProfile() {
         assertNull(danach.partialRecoveryBaselineMinLowerMgdl)
     }
 
+    /**
+     * A) PROFIL BEREITS ERREICHT - DER BEOBACHTETE FEHLER.
+     *
+     * Alter Latch aktiv, die Suche traegt bis zum vollen Profilbasal,
+     * autoritativ KEINE TBR, leerer Besitzzustand, gueltiger
+     * Mahlzeitengrant, alle uebrigen Tore offen. Die Teilstufe fordert in
+     * diesem Zyklus GAR NICHTS an (`PARTIAL_ALREADY_AT_PROFILE`) - der
+     * Grant darf trotzdem nicht genullt werden.
+     *
+     * Vor dem Fix nullte das Teilstufen-Flag den Bolus, BEVOR feststand,
+     * dass es nichts zu tun gibt; die Tabelle setzte danach zusaetzlich
+     * den Blockgrund, und `applyBlock` nullte ein zweites Mal.
+     */
+    /**
+     * Die Lage, in der der Fehler entstand: die Teilstufe laeuft SCHON,
+     * dann kommt der Marker. Bahn wie im Kommandostrom-E2E (faellt, knickt
+     * flach ab) - das erzeugt Latch und Stufe; die Mahlzeitenautorisierung
+     * kommt erst danach dazu.
+     */
+    private fun teilstufeDannMarker(dir: File) {
+        zeroLatchAn = true
+        teilbasalAn = true
+        flach = 140.0
+        steigungProMin = -1.2
+        knickAbMin = 25
+        steigungNachKnick = 0.0
+        bolusIobU = 2.5
+        fundamentAn = true
+        fundamentAnteil = 0.8
+        upfrontAnteil = 1.0
+        primeHuelleU = 3.75
+        aufschubAn = true
+        markerAuthorized = true
+        markerAt = 0L                      // noch KEIN Marker
+        clock = start
+        transportReset()
+        neuerRunner(FuseLedgerAdapter().also { it.loadOnce(dir.also(File::mkdirs), "test-epoch", start) })
+        for (i in 0 until 60) {
+            val o = cycle()
+            if (o.partialRecoveryActive) {
+                // Jetzt der Markerdruck - wie am Geraet mitten in der Stufe.
+                markerAt = clock + taktMs
+                return
+            }
+        }
+        // HART, NICHT UEBERSPRUNGEN. Ein `assumeTrue` haette diese feste
+        // synthetische Regression stillgelegt, sobald eine spaetere
+        // Aenderung den Aufbau nicht mehr in die Teilstufe fuehrt - und
+        // genau dann braucht man sie.
+        throw AssertionError("der Aufbau MUSS die Teilstufe erreichen")
+    }
+
+    @Test
+    fun `A eine autorisierte Mahlzeitendosis ueberlebt eine Teilstufe ohne Aktion`(@TempDir dir: File) {
+        quelleMeldet(null)                 // autoritativ KEINE laufende TBR
+        teilstufeDannMarker(dir)
+        var gesehen: FuseCycleRunner.Outcome? = null
+        var grantGesehen = false
+        var profilGesehen = false
+        var leerGesehen = false
+        for (i in 0 until 90) {
+            // VOR dem Zyklus - genau die Sicht, mit der der Runner urteilt.
+            val leer = besitz().leer && besitz().ending == null
+            val o = cycle()
+            if (o.decision.markerAuthorizedU > 0.0) grantGesehen = true
+            if ((o.reason ?: "").contains("ALREADY_AT_PROFILE")) profilGesehen = true
+            if (leer) leerGesehen = true
+            // GENAU DER BEOBACHTETE ZUSTAND: Profil erreicht, autoritativ
+            // keine TBR, LEERER Besitz - und ein gueltiger Grant. Ein noch
+            // offener eigener Vorgang ist ein ANDERER Fall und behaelt
+            // seinen Riegel (Gegenfaelle unten).
+            if (o.partialRecoveryActive && o.tbr == null && leer &&
+                (o.reason ?: "").contains("ALREADY_AT_PROFILE") &&
+                o.decision.markerAuthorizedU > 0.0
+            ) { gesehen = o; break }
+        }
+        // Jede Vorbedingung EINZELN und HART - sonst verschwindet der
+        // Nachweis lautlos, wenn der Aufbau ihn nicht mehr erreicht.
+        assertTrue(grantGesehen) { "der Aufbau MUSS einen Mahlzeitengrant erzeugen" }
+        assertTrue(profilGesehen) { "der Aufbau MUSS den Profilzustand erreichen" }
+        assertTrue(leerGesehen) { "der Aufbau MUSS einen leeren Besitzzustand erreichen" }
+        assertNotNull(gesehen) {
+            "der Aufbau MUSS alle drei im SELBEN Zyklus erreichen - das ist der Fall"
+        }
+        val o = gesehen!!
+        assertTrue(o.decision.markerAuthorizedU > 0.0) {
+            "der Aufbau muss ueberhaupt einen Mahlzeitengrant erzeugen"
+        }
+        assertTrue(o.decision.smbU > 0.0) {
+            "DER FEHLER: der Grant wurde von einer Teilstufe genullt, die nichts anfordert"
+        }
+        assertTrue((o.smbPublishedU ?: 0.0) > 0.0) {
+            "und er muss die Ausgabekette erreichen, nicht nur die Entscheidung"
+        }
+    }
+
+    /**
+     * C) SCHUTZGEGENFAELLE - jeder behaelt seinen Riegel.
+     *
+     * Dieselbe Bahn, aber mit einer ECHT laufenden Schutz-Null: dann ist
+     * die Stufe eine echte Aktion, und der Bolus bleibt gesperrt. Ohne
+     * diesen Gegenfall waere der Fix eine "Mahlzeit darf immer"-Ausnahme.
+     */
+    @Test
+    fun `C bei laufender Schutz-Null bleibt der Riegel trotz Mahlzeitengrant`(@TempDir dir: File) {
+        quelleMeldet(TB(timestamp = System.currentTimeMillis(), duration = 30 * 60_000L,
+                        rate = 0.0, isAbsolute = true, type = TB.Type.NORMAL))
+        teilstufeDannMarker(dir)
+        var mitGrant = 0
+        for (i in 0 until 40) {
+            val o = cycle()
+            if (o.partialRecoveryActive) {
+                // NUR die Zyklen zaehlen, in denen ueberhaupt ein Grant
+                // vorlag - "nichts abgegeben" ohne Grant beweist nichts.
+                if (o.decision.markerAuthorizedU > 0.0) mitGrant++
+                assertEquals(0.0, o.smbPublishedU ?: 0.0, 1e-12) {
+                    "eine echte Teilstufe neben einer laufenden Null gibt nichts aus"
+                }
+            }
+        }
+        assertTrue(mitGrant > 0) {
+            "der Gegenfall MUSS Zyklen mit aktiver Teilstufe UND gueltigem Grant erzeugen - " +
+                "sonst zeigt er nur, dass ohne Grant nichts fliesst"
+        }
+    }
+
+    /** C) Unbekannte Pumpensicht ist kein Beweis - der Riegel bleibt. */
+    @Test
+    fun `C bei unbekannter Pumpensicht bleibt der Riegel`(@TempDir dir: File) {
+        quelleMeldet(null)
+        teilstufeDannMarker(dir)
+        var mitGrant = 0
+        for (i in 0 until 40) {
+            // Ersatzquelle: `tempBasalFallback = true` macht die Sicht UNKNOWN.
+            clock += taktMs
+            val o = runner.run(true, testPumpe())
+            if (o.partialRecoveryActive) {
+                if (o.decision.markerAuthorizedU > 0.0) mitGrant++
+                assertEquals(0.0, o.smbPublishedU ?: 0.0, 1e-12) {
+                    "UNKNOWN traegt die Feststellung nicht - nichts geht hinaus"
+                }
+            }
+        }
+        assertTrue(mitGrant > 0) {
+            "der Gegenfall MUSS Zyklen mit aktiver Teilstufe UND gueltigem Grant erzeugen"
+        }
+    }
+
     @Test
     fun `E2E ein zurueckkehrendes Risiko verdraengt die offene Teilbasal-Anforderung`(@TempDir dir: File) {
         zeroLatchAn = true

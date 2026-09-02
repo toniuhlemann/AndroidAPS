@@ -284,9 +284,11 @@ object TbrPolicy {
         /** Die Basis, gegen die AAPS entscheidet (`pump.baseBasalRate`);
          *  NaN = nicht lesbar, dann gilt das Profilbasal. */
         pumpBaseBasalUPerH: Double = Double.NaN,
+        /** s. [partialBasal] - die Stufe erzeugt in diesem Zyklus kein Kommando. */
+        ohneAktion: Boolean = false,
         unsafeSituation: Boolean = false,
     ): Decision {
-        val base = decideIgnoringPump(intent, current, scheduledBasalUPerH, cfg, fault, protectionCleared, partialRateUPerH, endZeroAttempts, endOwnPartial, ownPartialHeld, suppressPartialSet, ownPartialConfirmed, allowProfileCancel, pumpBaseBasalUPerH, unsafeSituation)
+        val base = decideIgnoringPump(intent, current, scheduledBasalUPerH, cfg, fault, protectionCleared, partialRateUPerH, endZeroAttempts, endOwnPartial, ownPartialHeld, suppressPartialSet, ownPartialConfirmed, allowProfileCancel, pumpBaseBasalUPerH, ohneAktion, unsafeSituation)
         if (!pumpBusy) return base
         // Eine arbeitende Pumpe bekommt keine zweite Anweisung — aber der
         // Safety-Grund und sein Alarm bleiben erhalten. Unterdrueckt wird die
@@ -315,6 +317,8 @@ object TbrPolicy {
         ownPartialConfirmed: Boolean = false,
         allowProfileCancel: Boolean = true,
         pumpBaseBasalUPerH: Double = Double.NaN,
+        /** s. [partialBasal] - die Stufe erzeugt in diesem Zyklus kein Kommando. */
+        ohneAktion: Boolean = false,
         unsafeSituation: Boolean = false,
     ): Decision {
         // Ungueltige Eingaben werden nicht geworfen, sondern fail-closed
@@ -377,6 +381,7 @@ object TbrPolicy {
             Intent.PARTIAL_BASAL -> partialBasal(
                 current, scheduledBasalUPerH, cfg, partialRateUPerH,
                 suppressPartialSet, ownPartialConfirmed, allowProfileCancel, pumpBaseBasalUPerH,
+                ohneAktion,
             )
             Intent.KEEP        -> keep(current, scheduledBasalUPerH, cfg, endOwnPartial, ownPartialHeld)
         }
@@ -473,6 +478,15 @@ object TbrPolicy {
         ownPartialConfirmed: Boolean = false,
         allowProfileCancel: Boolean = true,
         pumpBaseBasalUPerH: Double = Double.NaN,
+        /**
+         * Die Stufe erzeugt in diesem Zyklus nachweislich KEIN Kommando:
+         * Profil laeuft bereits, autoritativ keine TBR, kein eigener
+         * Vorgang offen. Dann gibt es keine Anforderung, die ein SMB
+         * verdraengen koennte - der Riegel entfaellt. NUR in diesem Fall;
+         * jede laufende Teilrate, offene Anforderung, unbestaetigte
+         * Abbruchphase und unbrauchbare Pumpensicht behaelt ihn.
+         */
+        ohneAktion: Boolean = false,
     ): Decision {
         val ursache = SmbBlockCause.PARTIAL_RECOVERY
         if (!vorgabeUPerH.isFinite() || vorgabeUPerH <= 0.0 ||
@@ -544,7 +558,14 @@ object TbrPolicy {
         // andere Frage (s. oben).
         if (abs(rate - aapsBasis) < schritt) {
             if (current == null)
-                return Decision(Outcome.NoRequest, PARTIAL_ALREADY_AT_PROFILE_REASON, alarm = false, smbBlockCause = ursache)
+                return Decision(
+                    Outcome.NoRequest, PARTIAL_ALREADY_AT_PROFILE_REASON, alarm = false,
+                    // KEIN KOMMANDO, KEIN RIEGEL: hier geht nichts hinaus,
+                    // also kann auch nichts verdraengt werden. Ohne diese
+                    // Zeile bliebe die Sperre im Translator stehen und der
+                    // Fix im Runner waere wirkungslos.
+                    smbBlockCause = if (ohneAktion) SmbBlockCause.NONE else ursache,
+                )
             // Eine fremde Absenkung bleibt auch hier stehen - ihr Abbruch
             // waere die Anhebung, die C7b verbietet.
             if (fremdeAbsenkung)

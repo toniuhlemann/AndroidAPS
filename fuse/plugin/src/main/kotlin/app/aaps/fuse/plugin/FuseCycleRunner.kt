@@ -5061,6 +5061,45 @@ class FuseCycleRunner(
         // in der Grant-Bildung, gleiche Zyklus-Eingaben) - die Endpruefung
         // faengt die stufenuebergreifenden Hebungen (SubStep,
         // DeferredPrime-Release, Liveness).
+        // ---- DER WIRKSAME BASALZUSTAND, BEVOR ER UEBER DEN BOLUS URTEILT --
+        //
+        // Diese Werte standen frueher ERST hinter der Latch-Uebersteuerung.
+        // Dort nullte das Teilstufen-Flag den Bolus, und erst danach stellte
+        // sich heraus, ob die Stufe ueberhaupt eine Basalaktion erzeugt. Eine
+        // autorisierte Mahlzeitendosis konnte so ohne Basalgrund
+        // verschwinden. Reihenfolge umgedreht: erst der Basalzustand, dann
+        // die Bolusfrage.
+        //
+        // Die Pumpensicht wird TYPISIERT uebergeben: eine Sicht aus einer
+        // Ersatzquelle sagt NICHTS ueber die laufende TBR und darf deshalb
+        // weder bestaetigen noch loeschen.
+        val tbrSicht = if (tempBasalFallback) PartialTbrOwnership.View.Unknown
+        else PartialTbrOwnership.View.Authoritative(currentTbr)
+        // ZWEI ZAHLEN, ZWEI FRAGEN (Review-P1):
+        //  - der SICHERHEITSDECKEL ist min(Therapieprofil, Pumpenbasis) und
+        //    begrenzt, was die Stufe ueberhaupt anfordern darf;
+        //  - die AAPS-AKTIONSBASIS ist `pump.baseBasalRate` ALLEIN und
+        //    entscheidet, ob daraus ein Setzen oder ein Abbruch wird.
+        val aapsBasis = if (pumpe.baseBasalRateUPerH.isFinite() && pumpe.baseBasalRateUPerH > 0.0)
+            pumpe.baseBasalRateUPerH else profile.getBasal(computeTs)
+        val sicherheitsDeckel = minOf(profile.getBasal(computeTs), aapsBasis)
+        // Geklemmt wird VOR der Klassifikation - sonst urteilt der Runner
+        // ueber eine Rate, die die Tabelle so nie stellt.
+        val wunschGeklemmt = partialRateUPerH.coerceIn(0.0, sicherheitsDeckel)
+        // Traegt die Bahn schon das volle Profilbasal, laeuft autoritativ
+        // keine TBR und steht kein eigener Vorgang offen? Dann entsteht in
+        // diesem Zyklus KEIN Kommando - und damit auch nichts, wofuer der
+        // Bolus weichen muesste. Die Bedingung steht in
+        // [PartialTbrOwnership.ohneAktion] - eine Stelle, die auch der Test
+        // ruft, damit hier keine zweite Fassung derselben Regel entsteht.
+        val teilstufeOhneAktionMoeglich = PartialTbrOwnership.ohneAktion(
+            wunschRateUPerH = wunschGeklemmt,
+            aapsBasisUPerH = aapsBasis,
+            basalStepUPerH = pumpe.basalStepUPerH,
+            durationMin = TbrPolicy.Config(basalStepUPerH = pumpe.basalStepUPerH).defaultDurationMin,
+            view = tbrSicht,
+            state = episodes.ownPartialTbr,
+        )
         var exposureGateResult: app.aaps.fuse.core.controller.ExposureGate.Result? = null
         val decisionVorZeroLatch =
             run {
@@ -5295,6 +5334,12 @@ class FuseCycleRunner(
             // es bleibt bei der Schutz-Null (fail-closed).
             partialAktiv = partialStreak >= PartialRecoveryGate.ENTRY_CYCLES &&
                 partialRateUPerH > 0.0 && partialReject == null
+            // KEINE AKTION, KEIN RIEGEL. Ist die Stufe zwar "aktiv", erzeugt
+            // aber nachweislich kein Kommando (Profil laeuft bereits, keine
+            // TBR, kein eigener Vorgang), dann gibt es nichts zu schuetzen -
+            // und eine sonst zulaessige Mahlzeitendosis darf nicht allein am
+            // Flag scheitern. Alle uebrigen Tore gelten unveraendert weiter.
+            teilstufeOhneAktion = partialAktiv && teilstufeOhneAktionMoeglich
             if (episodes.zeroLatch.active &&
                 decisionVorZeroLatch.tbr != FuseController.TbrAction.ZERO_TEMP
             ) {
@@ -5308,13 +5353,17 @@ class FuseCycleRunner(
                     // Anforderung genau dann, wenn im selben Zyklus ein
                     // SMB positiv ist - ohne diese Nullung verschwaende
                     // die Teilbasal-Anforderung still.
-                    smbU = if (partialAktiv) 0.0 else decisionVorZeroLatch.smbU,
+                    // ENTFAELLT, WENN GAR KEINE ANFORDERUNG ENTSTEHT: wo
+                    // kein Kommando hinausgeht, kann auch keines verschwinden
+                    // (s. `teilstufeOhneAktion`).
+                    smbU = if (partialAktiv && !teilstufeOhneAktion) 0.0
+                    else decisionVorZeroLatch.smbU,
                 )
             } else if (partialAktiv) {
                 zeroLatchUebersteuert = true
                 decisionVorZeroLatch.copy(
                     tbr = FuseController.TbrAction.PARTIAL_BASAL,
-                    smbU = 0.0,
+                    smbU = if (teilstufeOhneAktion) decisionVorZeroLatch.smbU else 0.0,
                 )
             } else decisionVorZeroLatch
         }
@@ -5392,27 +5441,9 @@ class FuseCycleRunner(
         // Zyklus.
         // ---- PHASE 1 DES LEBENSZYKLUS (Review-P1.1) ---------------------
         //
-        // Die Pumpensicht wird TYPISIERT uebergeben: eine Sicht aus einer
-        // Ersatzquelle sagt NICHTS ueber die laufende TBR und darf deshalb
-        // weder bestaetigen noch loeschen. Genau diese Verwechslung -
-        // `current == null` als Beweis zu lesen - war die Race der ersten
-        // Fassung.
-        val tbrSicht = if (tempBasalFallback) PartialTbrOwnership.View.Unknown
-        else PartialTbrOwnership.View.Authoritative(currentTbr)
-        // Traegt die Bahn das VOLLE Profilbasal, ist das keine Teilstufe,
-        // sondern die Rueckkehr zum Normalzustand - und die wird als
-        // ABBRUCH gestellt. Gemessen gegen dieselbe Basis wie AAPS.
-        // ZWEI ZAHLEN, ZWEI FRAGEN (Review-P1):
-        //  - der SICHERHEITSDECKEL ist min(Therapieprofil, Pumpenbasis) und
-        //    begrenzt, was die Stufe ueberhaupt anfordern darf;
-        //  - die AAPS-AKTIONSBASIS ist `pump.baseBasalRate` ALLEIN und
-        //    entscheidet, ob daraus ein Setzen oder ein Abbruch wird.
-        val aapsBasis = if (pumpe.baseBasalRateUPerH.isFinite() && pumpe.baseBasalRateUPerH > 0.0)
-            pumpe.baseBasalRateUPerH else profile.getBasal(computeTs)
-        val sicherheitsDeckel = minOf(profile.getBasal(computeTs), aapsBasis)
-        // Geklemmt wird VOR der Klassifikation - sonst urteilt der Runner
-        // ueber eine Rate, die die Tabelle so nie stellt.
-        val wunschGeklemmt = partialRateUPerH.coerceIn(0.0, sicherheitsDeckel)
+        // `tbrSicht`, `aapsBasis`, `sicherheitsDeckel` und `wunschGeklemmt`
+        // stehen jetzt WEITER OBEN - der Basalzustand muss feststehen, bevor
+        // das Teilstufen-Flag ueber den Bolus urteilt.
         val wunschIstProfil = partialAktiv && PartialTbrOwnership.klassifiziere(
             rateUPerH = wunschGeklemmt,
             durationMin = TbrPolicy.Config(basalStepUPerH = pumpe.basalStepUPerH).defaultDurationMin,
@@ -5455,6 +5486,10 @@ class FuseCycleRunner(
             // mitbestimmt.
             endOwnPartial = ownStep.sendCancel,
             ownPartialHeld = ownStep.smbBlocked,
+            // Ohne diese Weitergabe bliebe der Riegel im Translator stehen:
+            // `applyBlock` nullt den SMB anhand des Blockgrundes, und den
+            // setzt die Tabelle. Der Fix im Runner allein waere wirkungslos.
+            ohneAktion = teilstufeOhneAktion,
             suppressPartialSet = !ownStep.allowSet,
             ownPartialConfirmed = ownStep.state.confirmedRunning != null,
             allowProfileCancel = ownStep.sendCancel,
@@ -7035,6 +7070,11 @@ class FuseCycleRunner(
      *  zyklusbezogen, kein Zustand ueber Zyklen hinweg. */
     private var partialRateUPerH = 0.0
     private var partialReject: String? = null
+
+    /** Die Teilstufe ist aktiv, erzeugt in diesem Zyklus aber nachweislich
+     *  kein Kommando (Profil laeuft, keine TBR, kein eigener Vorgang).
+     *  Rein zyklusbezogen, kein Zustand ueber Zyklen hinweg. */
+    private var teilstufeOhneAktion = false
 
     /** Diagnose der Ratensuche - beantwortet im Replay die Horizontfrage:
      *  wo bindet das Minimum, was hat begrenzt, wie tief lag die Bahn ohne
