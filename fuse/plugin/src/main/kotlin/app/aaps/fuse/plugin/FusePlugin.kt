@@ -1393,6 +1393,12 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
                         LTag.APS,
                         "FUSE: Episodenzaehler um ${zurueck.amountU} U zurueckgedreht " +
                             "($grund, $id, Phase ${zurueck.foundationPhase}, " +
+                            // OB DIE HUELLE MITGING: bei einer Buchung aus einer
+                            // anderen oder unbewiesenen Autorisierung wird global
+                            // vollstaendig zurueckgedreht, die laufende Huelle
+                            // aber nicht entlastet.
+                            (if (zurueck.fundamentEntlastet) "Huelle entlastet, "
+                            else "Huelle NICHT entlastet - fremde Autorisierung, ") +
                             "Uebertrag jetzt ${ledgerAdapter.episodes.confirmedNotSentPhaseAU} U)",
                     )
                 }

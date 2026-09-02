@@ -145,6 +145,207 @@ class MarkerNeuautorisierungPersistenzTest {
         }
     }
 
+    /**
+     * DERSELBE MENGENFEHLER MIT ECHTER LIEFERZEILE, BEIDE PHASEN.
+     *
+     * Der erste Anlauf setzte `mealTs = 0` und prueft damit ausdruecklich
+     * KEINE Lieferzeile - genau deshalb entging ihm, dass die Rueckbuchung
+     * bei fremder Autorisierung mitten im Vorgang abbrach: `settled` war
+     * entfernt, die globalen Zaehler gesenkt, die Mahlzeitenzeile aber blieb
+     * stehen, und der Rueckgabewert meldete "nichts geschehen".
+     *
+     * Hier laeuft der volle Vorgang. Geprueft wird in BEIDEN Phasen:
+     *   - die neue Huelle und ihr Phase-B-Uebertrag bleiben unveraendert,
+     *   - die alte Menge verschwindet vollstaendig aus den globalen Buechern
+     *     UND aus der Lieferliste,
+     *   - der Rueckgabewert entspricht dem, was wirklich geschah.
+     *
+     * Alle Werte sind synthetisch.
+     */
+    @Test
+    fun `fremde Phase-A-Buchung - global vollstaendig, Huelle unberuehrt`(@TempDir dir: File) {
+        val a = geladen(dir)
+        val e = a.episodes
+        val altTs = t0 - 600_000L
+        e.markerAuth = MarkerReauthorization.Authorization("auth-2", t0)
+        e.settled = EpisodeBudgets.Settled(
+            proposalId = "p-alt", amountU = 0.30, prime = true, onset = true,
+            mealTs = altTs,
+            foundationPhase = app.aaps.fuse.core.controller.MealFoundation.Phase.PHASE_A,
+            authId = "auth-1",
+        )
+        e.mealDeliveries.add(EpisodeBudgets.MealDelivery(altTs, 0.30, "p-alt"))
+        e.mealDeliveries.add(EpisodeBudgets.MealDelivery(t0 + 60_000L, 0.40, "p-neu"))
+        // Die NEUE Autorisierung: 0,40 verbucht, Phase-A-Seite belastet.
+        e.primeSpentU = 0.40
+        e.deliveredPhaseAU = 0.40
+        e.deliveredSinceHandoverU = 0.0
+        e.confirmedNotSentPhaseAU = 0.0
+        e.onsetSpentU = 0.70
+        e.evidenceCommittedU = 0.70
+
+        val ergebnis = a.revokeSettled("p-alt")
+
+        // ---- DIE NEUE HUELLE BLEIBT, WIE SIE WAR ------------------------
+        assertEquals(0.40, e.primeSpentU, 1e-9) { "fremde Menge darf nicht entlasten" }
+        assertEquals(0.40, e.deliveredPhaseAU, 1e-9)
+        assertEquals(0.0, e.confirmedNotSentPhaseAU, 1e-9) {
+            "aus einem fremden Auftrag entsteht KEIN Phase-B-Uebertrag"
+        }
+
+        // ---- GLOBAL VOLLSTAENDIG, EINSCHLIESSLICH LIEFERZEILE -----------
+        assertEquals(0.40, e.evidenceCommittedU, 1e-9)
+        assertEquals(0.40, e.onsetSpentU, 1e-9)
+        assertNull(e.settled)
+        assertEquals(1, e.mealDeliveries.size) {
+            "die alte Lieferzeile muss verschwinden - sonst widersprechen sich " +
+                "globale Zaehler und Mahlzeitensumme: " +
+                e.mealDeliveries.joinToString { "${it.proposalId}=${it.amountU}" }
+        }
+        assertEquals("p-neu", e.mealDeliveries.first().proposalId)
+
+        // ---- DER RUECKGABEWERT SAGT, WAS GESCHAH ------------------------
+        assertEquals(0.30, ergebnis.amountU, 1e-9) {
+            "es WURDE zurueckgedreht - NONE waere eine falsche Auskunft"
+        }
+        assertFalse(ergebnis.fundamentEntlastet) {
+            "und zwar nur global, nicht in der laufenden Huelle"
+        }
+    }
+
+    /** Dieselbe Folge in Phase B - dort darf der Uebergabezaehler nicht sinken. */
+    @Test
+    fun `fremde Phase-B-Buchung - global vollstaendig, Huelle unberuehrt`(@TempDir dir: File) {
+        val a = geladen(dir)
+        val e = a.episodes
+        val altTs = t0 - 600_000L
+        e.markerAuth = MarkerReauthorization.Authorization("auth-2", t0)
+        e.settled = EpisodeBudgets.Settled(
+            proposalId = "p-alt", amountU = 0.30, prime = true, onset = false,
+            mealTs = altTs,
+            foundationPhase = app.aaps.fuse.core.controller.MealFoundation.Phase.PHASE_B,
+            authId = "auth-1",
+        )
+        e.mealDeliveries.add(EpisodeBudgets.MealDelivery(altTs, 0.30, "p-alt"))
+        e.primeSpentU = 0.40
+        e.deliveredSinceHandoverU = 0.40
+        e.evidenceCommittedU = 0.70
+
+        val ergebnis = a.revokeSettled("p-alt")
+
+        assertEquals(0.40, e.primeSpentU, 1e-9)
+        assertEquals(0.40, e.deliveredSinceHandoverU, 1e-9)
+        assertEquals(0.40, e.evidenceCommittedU, 1e-9)
+        assertTrue(e.mealDeliveries.isEmpty()) { "die Lieferzeile muss auch hier fallen" }
+        assertEquals(0.30, ergebnis.amountU, 1e-9)
+        assertFalse(ergebnis.fundamentEntlastet)
+    }
+
+    /**
+     * FEHLENDE KENNUNG IST KEINE FREIGABE.
+     *
+     * Altbestand aus einer Datei vor der Zuordnung traegt keine Kennung.
+     * Solange eine Autorisierung laeuft, ist unbewiesen, ob die Buchung zu
+     * ihr gehoert - und unbewiesen heisst: nicht entlasten. Global wird
+     * trotzdem vollstaendig zurueckgedreht.
+     */
+    @Test
+    fun `eine Buchung ohne Kennung entlastet die laufende Huelle nicht`(@TempDir dir: File) {
+        val a = geladen(dir)
+        val e = a.episodes
+        val altTs = t0 - 600_000L
+        e.markerAuth = MarkerReauthorization.Authorization("auth-2", t0)
+        e.settled = EpisodeBudgets.Settled(
+            proposalId = "p-alt", amountU = 0.30, prime = true, onset = false,
+            mealTs = altTs,
+            foundationPhase = app.aaps.fuse.core.controller.MealFoundation.Phase.PHASE_A,
+            authId = null,
+        )
+        e.mealDeliveries.add(EpisodeBudgets.MealDelivery(altTs, 0.30, "p-alt"))
+        e.primeSpentU = 0.40
+        e.deliveredPhaseAU = 0.40
+        e.evidenceCommittedU = 0.70
+
+        val ergebnis = a.revokeSettled("p-alt")
+
+        assertEquals(0.40, e.primeSpentU, 1e-9) {
+            "ohne Kennung ist die Zugehoerigkeit unbewiesen"
+        }
+        assertEquals(0.40, e.deliveredPhaseAU, 1e-9)
+        assertEquals(0.0, e.confirmedNotSentPhaseAU, 1e-9)
+        assertEquals(0.40, e.evidenceCommittedU, 1e-9) { "global trotzdem vollstaendig" }
+        assertTrue(e.mealDeliveries.isEmpty())
+        assertFalse(ergebnis.fundamentEntlastet)
+    }
+
+    /**
+     * DER EINE BELEGBARE FALL OHNE KENNUNG: es laeuft gar keine
+     * Autorisierung. Dann gibt es keine fremde Huelle, die entlastet werden
+     * koennte - die Zaehler gehoeren niemandem, und das Zurueckdrehen stellt
+     * den Stand vor der Buchung wieder her.
+     */
+    @Test
+    fun `ohne laufende Autorisierung entlastet auch eine Buchung ohne Kennung`(@TempDir dir: File) {
+        val a = geladen(dir)
+        val e = a.episodes
+        e.markerAuth = null
+        e.settled = EpisodeBudgets.Settled(
+            proposalId = "p-alt", amountU = 0.30, prime = true, onset = false,
+            mealTs = 0L,
+            foundationPhase = app.aaps.fuse.core.controller.MealFoundation.Phase.PHASE_B,
+            authId = null,
+        )
+        e.primeSpentU = 0.40
+        e.deliveredSinceHandoverU = 0.40
+        e.evidenceCommittedU = 0.70
+
+        val ergebnis = a.revokeSettled("p-alt")
+
+        assertEquals(0.10, e.primeSpentU, 1e-9)
+        assertEquals(0.10, e.deliveredSinceHandoverU, 1e-9)
+        assertTrue(ergebnis.fundamentEntlastet)
+    }
+
+    /**
+     * UND DIE PASSENDE ZUORDNUNG IN PHASE A FUNKTIONIERT WEITERHIN - mit
+     * echter Lieferzeile und dem Uebertrag, um den es dort geht.
+     */
+    @Test
+    fun `die eigene Phase-A-Buchung entlastet und erzeugt den Uebertrag`(@TempDir dir: File) {
+        val a = geladen(dir)
+        val e = a.episodes
+        val ts = t0 - 300_000L
+        e.markerAuth = MarkerReauthorization.Authorization("auth-2", t0)
+        e.foundation = app.aaps.fuse.core.controller.MealFoundation.arm(
+            markerTs = t0, foundationEnabled = true, totalBudgetU = 4.0, phaseAShare = 0.75,
+            phaseAUpfrontShare = 0.0, primeWindowMin = 15, wallCeilingMin = 45,
+            phaseBUntilMin = 60, pressObservedInThisProcess = true,
+            primeDeclinedByUser = false, markerAuthorized = true,
+        )
+        e.settled = EpisodeBudgets.Settled(
+            proposalId = "p-eigen", amountU = 0.30, prime = true, onset = false,
+            mealTs = ts,
+            foundationPhase = app.aaps.fuse.core.controller.MealFoundation.Phase.PHASE_A,
+            authId = "auth-2",
+        )
+        e.mealDeliveries.add(EpisodeBudgets.MealDelivery(ts, 0.30, "p-eigen"))
+        e.primeSpentU = 0.40
+        e.deliveredPhaseAU = 0.40
+        e.evidenceCommittedU = 0.70
+
+        val ergebnis = a.revokeSettled("p-eigen")
+
+        assertEquals(0.10, e.primeSpentU, 1e-9)
+        assertEquals(0.10, e.deliveredPhaseAU, 1e-9)
+        assertEquals(0.30, e.confirmedNotSentPhaseAU, 1e-9) {
+            "der Phase-A-Uebertrag entsteht genau hier"
+        }
+        assertEquals(0.40, e.evidenceCommittedU, 1e-9)
+        assertTrue(e.mealDeliveries.isEmpty())
+        assertEquals(0.30, ergebnis.amountU, 1e-9)
+        assertTrue(ergebnis.fundamentEntlastet)
+    }
+
     @Test
     fun `eine Rueckbuchung der LAUFENDEN Autorisierung entlastet weiterhin`(@TempDir dir: File) {
         val a = geladen(dir)

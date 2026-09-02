@@ -792,10 +792,17 @@ data class RetiredBoundId(val temporaryId: Long?, val pumpId: Long?)
  * @param foundationPhase die beim BUCHEN festgehaltene Phase - nicht eine
  *   jetzt neu abgeleitete. Zwischen Buchung und Beweis kann eine CLEARANCE
  *   den Uebergabeanker verschoben haben.
+ * @param fundamentEntlastet ob AUCH die autorisierungsgebundenen Buecher
+ *   mitgingen. Bei einer Buchung aus einer anderen (oder unbewiesenen)
+ *   Autorisierung wird global vollstaendig zurueckgedreht, die laufende
+ *   Huelle aber nicht entlastet - dann ist [amountU] positiv und dieses
+ *   Feld false. Ohne die Unterscheidung liesse sich aus dem Ergebnis nicht
+ *   ablesen, ob der Phase-A-Uebertrag entstanden ist.
  */
 data class RevokeResult(
     val amountU: Double,
     val foundationPhase: app.aaps.fuse.core.controller.MealFoundation.Phase,
+    val fundamentEntlastet: Boolean = false,
 ) {
 
     companion object {
@@ -1961,7 +1968,26 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
         // Die GLOBALEN Buecher (`onsetSpentU`, `evidenceCommittedU`, die
         // Serienzeile) werden weiterhin aufgeloest: die alte Belastung war
         // echt und muss verschwinden.
-        val gehoertZurLaufenden = s.authId == null || s.authId == episodes.markerAuth?.id
+        //
+        // FEHLENDE KENNUNG IST KEINE FREIGABE. Hier stand
+        // `s.authId == null || ...` - eine nicht zuordenbare Buchung durfte
+        // damit jede beliebige Huelle entlasten, und die Kennung im Runner
+        // zu setzen schloss diesen Rueckfall nicht: Altbestand aus einer
+        // Datei vor dieser Aenderung traegt keine.
+        //
+        // Ohne Kennung gibt es genau EINEN belegbaren Fall: es existiert
+        // ueberhaupt keine laufende Autorisierung. Dann gibt es auch keine
+        // fremde Huelle, die entlastet werden koennte - die Zaehler gehoeren
+        // niemandem, und sie zurueckzudrehen stellt den Stand vor der
+        // Buchung wieder her. Sobald eine Autorisierung laeuft, ist die
+        // Zuordnung unbewiesen, und unbewiesen heisst hier: nicht entlasten.
+        //
+        // Die Fehlrichtung ist damit "zu viel gebucht" - FUSE liefert
+        // spaeter zu wenig statt zu viel. Das ist dieselbe Wahl wie beim
+        // Nicht-Sende-Beweis selbst.
+        val gehoertZurLaufenden =
+            if (s.authId != null) s.authId == episodes.markerAuth?.id
+            else episodes.markerAuth == null
         if (s.prime && gehoertZurLaufenden)
             episodes.primeSpentU = (episodes.primeSpentU - menge).coerceAtLeast(0.0)
         if (s.onset) episodes.onsetSpentU = (episodes.onsetSpentU - menge).coerceAtLeast(0.0)
@@ -2019,11 +2045,24 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
             // AUCH DER UEBERTRAG GEHOERT ZUR AUTORISIERUNG: aus einem alten,
             // nicht gesendeten Auftrag darf in der NEUEN Huelle kein
             // Phase-B-Uebertrag entstehen.
-            if (!gehoertZurLaufenden) return RevokeResult.NONE
-            episodes.deliveredPhaseAU = (episodes.deliveredPhaseAU - menge).coerceAtLeast(0.0)
-            val deckel = episodes.foundation.let { if (it.valid) it.totalBudgetU else 0.0 }
-            episodes.confirmedNotSentPhaseAU =
-                (episodes.confirmedNotSentPhaseAU + menge).coerceIn(0.0, deckel)
+            //
+            // ABER NICHT MIT `return`. Hier stand ein vorzeitiges Ende - und
+            // das brach den Vorgang MITTEN DRIN ab: `settled` war entfernt,
+            // die globalen Zaehler und die Serienzeile waren schon gesenkt,
+            // die MAHLZEITENZEILE aber blieb stehen. Genau das
+            // Auseinanderlaufen der Buecher, gegen das dieser ganze Block
+            // gebaut ist - und obendrein meldete die Funktion
+            // [RevokeResult.NONE], also "nichts geschehen", nachdem sie
+            // Werte veraendert hatte.
+            //
+            // Uebersprungen wird deshalb NUR das, was zur Autorisierung
+            // gehoert. Die globale Rueckbuchung laeuft in jedem Fall zu Ende.
+            if (gehoertZurLaufenden) {
+                episodes.deliveredPhaseAU = (episodes.deliveredPhaseAU - menge).coerceAtLeast(0.0)
+                val deckel = episodes.foundation.let { if (it.valid) it.totalBudgetU else 0.0 }
+                episodes.confirmedNotSentPhaseAU =
+                    (episodes.confirmedNotSentPhaseAU + menge).coerceIn(0.0, deckel)
+            }
         }
         // Der Index steht schon fest - gesucht wurde UEBER DIE KENNUNG, nicht
         // ueber den Zeitstempel: zum Zeitpunkt dieses Aufrufs hat der Runner
@@ -2037,7 +2076,11 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
         // und beim naechsten Lesen waere unklar, welche der beiden Stellen
         // die Wahrheit sagt.
         if (idx >= 0) episodes.mealDeliveries.removeAt(idx)
-        return RevokeResult(menge, s.foundationPhase)
+        // DER RUECKGABEWERT SAGT BEIDES: die global zurueckgedrehte Menge -
+        // die ist immer die volle - UND ob die autorisierungsgebundenen
+        // Buecher mitgingen. Ohne das zweite Feld liesse sich aus dem
+        // Ergebnis nicht ablesen, ob der Phase-A-Uebertrag entstanden ist.
+        return RevokeResult(menge, s.foundationPhase, fundamentEntlastet = gehoertZurLaufenden)
     }
 
     fun onPublished(
