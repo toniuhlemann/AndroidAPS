@@ -4,6 +4,8 @@ import app.aaps.core.data.model.BS
 import app.aaps.core.interfaces.aps.APSResult
 import app.aaps.core.interfaces.aps.RT
 import app.aaps.fuse.core.controller.InterventionStamp
+import app.aaps.fuse.core.controller.MealFoundation
+import app.aaps.fuse.plugin.FuseCycleRunner
 import app.aaps.fuse.plugin.FuseFinalDelivery
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNotNull
@@ -109,5 +111,66 @@ class PublikationsgrenzeExportTest {
         )
         assertEquals(0.30, endstand.actuatedU, 1e-12)
         assertNull(endstand.finalBlock) { "kein Riegel, der gegriffen haette" }
+    }
+
+    /**
+     * PFLICHTFALL GATE-VERWURF MIT ANSCHLIESSENDER ANZEIGE.
+     *
+     * Der Runner bildet die Huellenzahlen VOR dem Publikations-Gate. Streicht
+     * das Gate die Zeile, gibt `resolveReservation` die Belastung wieder frei -
+     * das Plugin ruft es (FusePlugin ~1486) VOR dem Export. Die eingefrorene
+     * Fassung des Runners meldete danach eine Menge als verbraucht, die nie
+     * hinausging, und daneben stand die richtige, gesunkene Episodensumme.
+     *
+     * Hier laeuft die ECHTE Kette: echtes Gate -> echte Rueckdrehung im
+     * Ledger -> dieselbe Produktionsfunktion, die auch der Runner benutzt.
+     * Alle Werte sind synthetisch.
+     */
+    @Test
+    fun `nach dem Gate-Verwurf sinkt der Huellenverbrauch wieder`(@TempDir dir: File) {
+        val a = adapter(dir)
+        // Eine bewaffnete Autorisierung ueber 4 U, davon 0,50 U schon
+        // geflossen; dieser Zyklus bucht 0,30 U in Phase B dazu.
+        a.episodes.foundation = MealFoundation.arm(
+            markerTs = t0, foundationEnabled = true, totalBudgetU = 4.0, phaseAShare = 0.75,
+            phaseAUpfrontShare = 0.0, primeWindowMin = 15, wallCeilingMin = 45,
+            phaseBUntilMin = 60, pressObservedInThisProcess = true,
+            primeDeclinedByUser = false, markerAuthorized = true,
+        )
+        a.episodes.deliveredPhaseAU = 0.50
+        a.episodes.deliveredSinceHandoverU = 0.30
+        a.episodes.pendingReservation = EpisodeBudgets.Reservation(
+            computeTs = t0, amountU = 0.30, prime = false, onset = false,
+            // Ohne Mahlzeitenzeile: dieser Test misst die Huelle, nicht die
+            // Serienbuchhaltung - und `resolveReservation` steigt sonst aus,
+            // wenn es die genannte Zeile nicht findet.
+            mealTs = 0L, correctionTs = 0L,
+            foundationPhase = MealFoundation.Phase.PHASE_B,
+        )
+
+        val vorher = FuseCycleRunner.envelopeUseOf(a.episodes, livePrimeEnvelopeU = 4.0)
+        assertEquals(0.80, vorher.spentU, 1e-9) { "Ausgangslage: der Runner-Stand" }
+
+        // ---- DAS ECHTE GATE STREICHT ------------------------------------
+        val rt = rtMitSmb()
+        val out = LedgerPublicationGate.publish(
+            rt, a, unschreibbar(dir), bucht,
+            published = InterventionStamp.Published(smbU = null, tbrChanged = false),
+            events = { a.onPublished("p1", 0.30, t0, 0L, 0.05) },
+        )
+        assertNull(out.rt.units) { "Ausgangslage: das Gate hat die Zeile entfernt" }
+
+        // ---- WAS DAS PLUGIN DANACH TUT ----------------------------------
+        a.resolveReservation(t0, out.rt.units ?: 0.0, proposalId = "p1")
+
+        val nachher = FuseCycleRunner.envelopeUseOf(a.episodes, livePrimeEnvelopeU = 4.0)
+        assertEquals(0.50, nachher.spentU, 1e-9) {
+            "die gestrichenen 0,30 U duerfen nicht als verbraucht stehenbleiben"
+        }
+        assertEquals(3.50, nachher.freeU, 1e-9)
+        assertEquals(4.0, nachher.envelopeU, 1e-9)
+        assertTrue(nachher.spentU < vorher.spentU) {
+            "ohne Neurechnung nach dem Gate zeigte die Zeile den Vorstand"
+        }
     }
 }

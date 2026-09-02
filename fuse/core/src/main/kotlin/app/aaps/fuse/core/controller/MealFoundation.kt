@@ -895,6 +895,66 @@ object MealFoundation {
     fun primeBudgetU(auth: Authorization, liveTotalBudgetU: Double): Double =
         if (auth.valid) auth.phaseABudgetU else liveTotalBudgetU
 
+    /**
+     * DIE HUELLE DIESER AUTORISIERUNG UND IHR VERBRAUCH - fuer die Anzeige.
+     *
+     * ===================================================================
+     * WARUM NICHT `primeBudgetU` UND `primeSpentU`
+     * ===================================================================
+     * Beide sind fuer die Huellenzeile die falschen Zahlen, und zwar aus
+     * zwei verschiedenen Gruenden:
+     *
+     * - [primeBudgetU] gibt bei bewaffnetem Fundament das PHASE-A-Budget
+     *   zurueck, nicht die Huelle. Das ist dort richtig - Prime soll nicht
+     *   die ganze Huelle ausgeben -, als "Huelle" beschriftet ist es zu
+     *   klein.
+     * - `primeSpentU` waechst nur, solange das Prime-Fenster offen ist.
+     *   Nach der Uebergabe an Phase B laeuft die Abgabe weiter, der Zaehler
+     *   nicht: die Zeile meldete danach dauerhaft zu wenig verbraucht und
+     *   damit zu viel frei.
+     *
+     * Hier steht deshalb GENAU DIE RECHNUNG, mit der das Budget selbst
+     * arbeitet: `deliveredFromBudgetU` gegen `totalBudgetU` - dieselbe
+     * Paarung, an der [planFrom] die Erschoepfung feststellt. Eine zweite
+     * Fassung dieser Rechnung waere genau die zweite Wahrheit, die das
+     * Fundament bei den Teilbudgets schon einmal 3,75 U aus einer
+     * 3-U-Autorisierung sehen liess.
+     *
+     * OHNE bewaffnetes Fundament gibt es keine Phasen und keinen
+     * Uebertrag; dann sind Live-Huelle und `primeSpentU` die richtige und
+     * einzige Paarung.
+     *
+     * "VERBUCHT", nicht "abgegeben": beide Zaehler stehen fuer an AAPS
+     * uebergebene Mengen, nicht fuer pumpenbestaetigte.
+     */
+    data class EnvelopeUse(
+        val envelopeU: Double,
+        val spentU: Double,
+        /** Ob die Zahlen aus einer bewaffneten Autorisierung stammen. */
+        val armed: Boolean,
+    ) {
+        val freeU: Double get() = (envelopeU - spentU).coerceAtLeast(0.0)
+    }
+
+    fun envelopeUse(
+        auth: Authorization,
+        primeSpentU: Double,
+        deliveredPhaseAU: Double,
+        deliveredSinceHandoverU: Double,
+        livePrimeEnvelopeU: Double,
+    ): EnvelopeUse = if (auth.valid) EnvelopeUse(
+        envelopeU = auth.totalBudgetU,
+        // DIESELBE SUMME, die der Runner als `deliveredFromBudgetU` in die
+        // Budgetrechnung gibt. Beide Zaehler werden beim Bewaffnen genullt
+        // und gehoeren damit zur Autorisierung.
+        spentU = (deliveredPhaseAU + deliveredSinceHandoverU).coerceAtLeast(0.0),
+        armed = true,
+    ) else EnvelopeUse(
+        envelopeU = livePrimeEnvelopeU,
+        spentU = primeSpentU.coerceAtLeast(0.0),
+        armed = false,
+    )
+
     private fun unusable() = Plan(0.0, 0.0, 0.0, Binding.UNUSABLE_INPUT)
 
     /**

@@ -1531,6 +1531,21 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
                 angeforderteZeileVorhanden = rt.units != null,
                 gateReason = publication.reason,
             )
+            // ---- AUCH DIE HUELLENZAHLEN GEHOEREN HIERHER ------------------
+            //
+            // Der Runner bildet sie VOR dem Publikations-Gate. Dreht das Gate
+            // die Reservierung zurueck, sinken `deliveredPhaseAU` und
+            // `deliveredSinceHandoverU` wieder - die eingefrorene Fassung
+            // meldete dann eine Menge als verbraucht, die nie hinausging,
+            // und daneben stand die richtige, gesunkene Episodensumme.
+            //
+            // DIESELBE Funktion wie im Runner, nur ein zweites Mal auf den
+            // jetzt gueltigen Ledger angewandt. `envelopeCfgU` ist die
+            // eingestellte Huelle dieses Zyklus; fehlt sie, gibt es auch
+            // keine belastbaren Zahlen und die Zeile bleibt beim Vorstand.
+            val huellenStand = o.envelopeCfgU?.let {
+                FuseCycleRunner.envelopeUseOf(ledgerAdapter.episodes, it)
+            }
             o.copy(
                 mealStats = FuseCycleRunner.mealStatsOf(
                     ledgerAdapter.episodes,
@@ -1539,6 +1554,8 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
                 ),
                 smbActuatedU = endstand.actuatedU,
                 smbFinalBlock = endstand.finalBlock,
+                envelopeU = huellenStand?.envelopeU ?: o.envelopeU,
+                envelopeSpentU = huellenStand?.spentU ?: o.envelopeSpentU,
             )
         }
 

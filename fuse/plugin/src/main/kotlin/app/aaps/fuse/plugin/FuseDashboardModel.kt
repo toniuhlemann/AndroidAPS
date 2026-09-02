@@ -345,22 +345,29 @@ object FuseDashboardModel {
         // drin. Zwei Buchungsstaende in einer Anzeige lesen sich wie ein
         // Widerspruch, und man sieht nicht, welcher gilt.
         //
-        // `mealStats.totalU` ist die gebuchte Summe DIESER Autorisierung -
-        // derselbe Stand, aus dem auch die Episodenzeile kommt.
         // `mealStats.totalU` waere der falsche Bezug: es summiert die ganze
         // EPISODE, und die Lieferliste wird bei einer Neuautorisierung
         // innerhalb derselben Episode ausdruecklich nicht geleert. Nach
         // "alte Autorisierung 1 U, dann neue volle Huelle" haette die Zeile
         // vor der ersten Anforderung schon 1 U verbraucht gemeldet.
         //
-        // `primeSpentU` wird beim Bewaffnen genullt und gehoert damit zur
-        // AUTORISIERUNG - hier in der Fassung NACH der Buchung.
-        val verbucht = outcome?.primeSpentU?.coerceAtLeast(0.0)
-        val verfuegbar = verbucht?.let { (marker.envelopeU - it).coerceAtLeast(0.0) }
+        // Hier stand `primeSpentU` gegen die eingestellte Huelle. Beides war
+        // zu klein gedacht: der Zaehler waechst NUR im Prime-Fenster und
+        // stand nach der Uebergabe an Phase B still, waehrend die Abgabe
+        // weiterlief - die Zeile meldete dauerhaft zu viel "frei". Jetzt
+        // kommen Huelle UND Verbrauch aus [MealFoundation.envelopeUse],
+        // also aus der Rechnung, mit der das Budget selbst arbeitet, und
+        // zwar in der Fassung NACH dem Publikations-Gate.
+        //
+        // Die Huelle ist damit auch die GEPINNTE: eine nach dem Markerdruck
+        // geaenderte Einstellung verschiebt die laufende Autorisierung nicht.
+        val huelle = outcome?.envelopeU ?: marker.envelopeU
+        val verbucht = outcome?.envelopeSpentU?.coerceAtLeast(0.0)
+        val verfuegbar = verbucht?.let { (huelle - it).coerceAtLeast(0.0) }
         // "VERBUCHT", nicht "abgegeben": an AAPS uebergeben, nicht von der
         // Pumpe bestaetigt. Der Runner haelt denselben Unterschied.
-        val amount = if (verbucht == null || verfuegbar == null) "Huelle ${u(marker.envelopeU)}"
-        else "Huelle ${u(marker.envelopeU)}  |  verbucht ${u(verbucht)}  |  frei ${u(verfuegbar)}"
+        val amount = if (verbucht == null || verfuegbar == null) "Huelle ${u(huelle)}"
+        else "Huelle ${u(huelle)}  |  verbucht ${u(verbucht)}  |  frei ${u(verfuegbar)}"
         // Die EPISODE laeuft eigen weiter und wird GETRENNT genannt - sonst
         // liest sich ihre Summe wie der Verbrauch dieser Autorisierung.
         val episodeSumme = outcome?.mealStats?.totalU

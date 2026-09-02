@@ -44,7 +44,8 @@ class FuseDashboardModelTest {
         abort: String? = null,
         prime: PrimeRelease.Plan? = null,
         mealStats: FuseCycleRunner.MealStats? = null,
-        primeSpentU: Double? = null,
+        envelopeU: Double? = null,
+        envelopeSpentU: Double? = null,
     ) = FuseCycleRunner.Outcome(
         tbrChanged = false,
         decision = FuseController.Decision(
@@ -76,7 +77,8 @@ class FuseDashboardModelTest {
         candidateGap = null,
         computeDurationMs = 5L,
         mealStats = mealStats,
-        primeSpentU = primeSpentU,
+        envelopeU = envelopeU,
+        envelopeSpentU = envelopeSpentU,
         policy = null,
         state = state(),
         step = null,
@@ -207,7 +209,10 @@ class FuseDashboardModelTest {
                 // Die EPISODE traegt 1.30 - eine alte Autorisierung hat schon
                 // gebucht. Der Verbrauch DIESER Autorisierung ist 0.30.
                 mealStats = FuseCycleRunner.MealStats(3, 1.30, 1.30, 1.30),
-                primeSpentU = 0.30,
+                // Huelle UND Verbrauch aus der Budgetrechnung dieser
+                // Autorisierung - nicht `primeSpentU` gegen die Einstellung.
+                envelopeU = 3.0,
+                envelopeSpentU = 0.30,
             ),
             null,
             now,

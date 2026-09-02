@@ -294,6 +294,26 @@ class FuseCycleRunner(
          * 30 min" - die Werte wachsen bis zur Marke und frieren dann von
          * selbst ein.
          */
+        /**
+         * DIE HUELLENZAHLEN DIESES ZYKLUS - eine Funktion, zwei Aufrufer.
+         *
+         * Der Runner bildet sie VOR dem Publikations-Gate, das Plugin
+         * danach noch einmal aus demselben Ledger - genau wie [mealStatsOf].
+         * Wird die Reservierung vom Gate zurueckgedreht, sinken die Zaehler,
+         * und die Anzeige DIESES Zyklus muss den gesunkenen Stand zeigen;
+         * sonst meldet sie eine Menge verbraucht, die nie hinausging.
+         */
+        fun envelopeUseOf(
+            episodes: app.aaps.fuse.plugin.ledger.EpisodeBudgets,
+            livePrimeEnvelopeU: Double,
+        ): MealFoundation.EnvelopeUse = MealFoundation.envelopeUse(
+            auth = episodes.foundation,
+            primeSpentU = episodes.primeSpentU,
+            deliveredPhaseAU = episodes.deliveredPhaseAU,
+            deliveredSinceHandoverU = episodes.deliveredSinceHandoverU,
+            livePrimeEnvelopeU = livePrimeEnvelopeU,
+        )
+
         fun mealStatsOf(
             episodes: app.aaps.fuse.plugin.ledger.EpisodeBudgets,
             markerTs: Long,
@@ -1248,16 +1268,30 @@ class FuseCycleRunner(
          */
         val smbActuatedU: Double? = null,
         /**
-         * DER VERBRAUCH DIESER AUTORISIERUNG [U], NACH der Buchung dieses
-         * Zyklus. `primeSpentU` wird beim Bewaffnen genullt und gehoert
-         * damit zur Autorisierung - anders als `mealStats.totalU`, das die
-         * ganze Episode summiert und bei einer Neuautorisierung innerhalb
-         * derselben Episode ausdruecklich NICHT geleert wird.
+         * DIE HUELLE DIESER AUTORISIERUNG UND IHR VERBRAUCH [U], NACH der
+         * Buchung dieses Zyklus und - im Export - NACH dem Publikations-Gate.
+         *
+         * Beide Zahlen stammen aus [MealFoundation.envelopeUse], also aus
+         * der Rechnung, mit der das Budget selbst arbeitet. Frueher stand
+         * hier `primeSpentU` gegen das Phase-A-Budget: der Zaehler waechst
+         * nur im Prime-Fenster und stand nach der Uebergabe an Phase B
+         * still, waehrend die Abgabe weiterlief.
+         *
+         * Sie gehoeren zur AUTORISIERUNG - anders als `mealStats.totalU`,
+         * das die ganze Episode summiert und bei einer Neuautorisierung
+         * innerhalb derselben Episode ausdruecklich NICHT geleert wird.
          *
          * "VERBUCHT", nicht "abgegeben": an AAPS uebergeben, nicht von der
          * Pumpe bestaetigt.
          */
-        val primeSpentU: Double? = null,
+        val envelopeU: Double? = null,
+        val envelopeSpentU: Double? = null,
+        /**
+         * Die eingestellte Prime-Huelle dieses Zyklus - nur, damit das
+         * Plugin nach dem Publikations-Gate DIESELBE Rechnung noch einmal
+         * ausfuehren kann. Ohne bewaffnetes Fundament ist sie die Huelle.
+         */
+        val envelopeCfgU: Double? = null,
         /**
          * DER LETZTE GRUND, AN DEM DIE MENGE GESCHEITERT IST - oder `null`,
          * wenn sie durchkam. Der SMB-Status wird VOR dem letzten Riegel
@@ -5729,6 +5763,10 @@ class FuseCycleRunner(
             headroomBinding = exposureGateResult?.binding
                 ?: if (exposure.iobThHeadroomU <= exposure.maxIobHeadroomU) "iobThHeadroom" else "maxIobHeadroom",
         )
+        // NACH der Buchung dieses Zyklus - die Anzeige darf nicht den Stand
+        // davor zeigen. Das Plugin rechnet dasselbe nach dem Publikations-Gate
+        // noch einmal, falls die Reservierung dort zurueckgedreht wird.
+        val huellenStand = envelopeUseOf(episodes, cfg.primeEnvelopeU)
         return Outcome(
             configGeneration = app.aaps.fuse.plugin.export.FuseStateJson.hashOf(cfg).orEmpty(),
             // Fixvertrag 30.08.: das typisierte Zyklus-IOB fuer
@@ -5918,7 +5956,9 @@ class FuseCycleRunner(
             smbPublishedU = decision.smbU,
             smbActuatedU = actuatedU,
             // NACH der Buchung - `verbuche` lief oben.
-            primeSpentU = episodes.primeSpentU,
+            envelopeU = huellenStand.envelopeU,
+            envelopeSpentU = huellenStand.spentU,
+            envelopeCfgU = cfg.primeEnvelopeU,
             smbFinalBlock = when {
                 // Der Regler wollte nichts - kein Riegel, keine Meldung.
                 decisionVorEndpruefung.smbU <= 0.0 -> null
@@ -6777,6 +6817,10 @@ class FuseCycleRunner(
             freeHeadroomU = fallbackGateResult?.headroomU,
             headroomBinding = fallbackGateResult?.binding,
         )
+        // NACH der Buchung dieses Zyklus - die Anzeige darf nicht den Stand
+        // davor zeigen. Das Plugin rechnet dasselbe nach dem Publikations-Gate
+        // noch einmal, falls die Reservierung dort zurueckgedreht wird.
+        val huellenStand = envelopeUseOf(episodes, cfg.primeEnvelopeU)
         return Outcome(
             decision = combined.decision,
             tbr = combined.request,
@@ -6834,7 +6878,9 @@ class FuseCycleRunner(
             // hier steht der Stand nach Riegel und Pumpen-Gate.
             smbActuatedU = actuatedU,
             // NACH der Buchung - `verbuche` lief oben.
-            primeSpentU = episodes.primeSpentU,
+            envelopeU = huellenStand.envelopeU,
+            envelopeSpentU = huellenStand.spentU,
+            envelopeCfgU = cfg.primeEnvelopeU,
             smbFinalBlock = when {
                 heldVorEndpruefung.smbU <= 0.0 -> null
                 actuatedU > 0.0                -> null
