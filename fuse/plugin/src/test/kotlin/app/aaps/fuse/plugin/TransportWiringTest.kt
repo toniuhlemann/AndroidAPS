@@ -1557,6 +1557,47 @@ class TransportWiringTest : TestBaseWithProfile() {
         )
     }
 
+    /**
+     * DIE BUCHUNG TRAEGT DIE KENNUNG IHRER AUTORISIERUNG - VERDRAHTET.
+     *
+     * `MarkerNeuautorisierungPersistenzTest` beweist, was eine Buchung OHNE
+     * passende Kennung nicht mehr entlasten darf. Er baut seine Buchungen
+     * aber selbst; ob der Runner die Kennung ueberhaupt mitgibt, stand dort
+     * nicht drin - eine Mutation, die `authId = null` setzt, blieb gruen.
+     *
+     * Hier laeuft der echte Runner: nach einem Zyklus mit Abgabe muss die
+     * Reservierung die Kennung der laufenden Autorisierung tragen. Ohne sie
+     * gilt jede spaete Rueckbuchung als "gehoert zur laufenden" und
+     * entlastet die neue Huelle.
+     */
+    @Test
+    fun `die Reservierung traegt die Kennung der laufenden Autorisierung`(@TempDir dir: File) {
+        flach = 140.0
+        steigungProMin = 0.0
+
+        val l = FuseLedgerAdapter().also { it.loadOnce(dir.also(File::mkdirs), "test-epoch", start) }
+        neuerRunner(l)
+        l.episodes.markerAuth = app.aaps.fuse.core.controller.MarkerReauthorization.Authorization(
+            id = "auth-7", markerTs = start + 2 * 60_000L,
+        )
+
+        markerAuthorized = true
+        markerAt = start + 2 * 60_000L
+        clock = start
+
+        var gesehen: app.aaps.fuse.plugin.ledger.EpisodeBudgets.Reservation? = null
+        repeat(12) {
+            cycle()
+            if (gesehen == null) gesehen = l.episodes.pendingReservation
+        }
+        assertNotNull(gesehen) {
+            "Voraussetzung: es muss ueberhaupt eine Reservierung entstehen"
+        }
+        assertEquals("auth-7", gesehen!!.authId) {
+            "ohne Kennung entlastet eine spaete Rueckbuchung die neue Huelle"
+        }
+    }
+
     /** Und nach Ablauf des 90-min-Fensters ist es wirklich eine neue Mahlzeit. */
     @Test
     fun `nach Ablauf des Markerfensters beginnt die Buchung neu`(@TempDir dir: File) {
