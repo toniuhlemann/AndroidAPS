@@ -455,6 +455,23 @@ object LedgerCodec {
         .put("evidenceRevoked", e.evidenceRevoked)
         .put("evidenceState", encodeEvidence(e.evidenceState))
         .put("primeArmedTs", e.primeArmedTs)
+        // Abbruch/Neuautorisierung - restartfest, s. EpisodeBudgets.
+        .put("markerAuthSeq", e.markerAuthSeq)
+        .put("markerAuth", e.markerAuth?.let {
+            JSONObject()
+                .put("id", it.id)
+                .put("markerTs", it.markerTs)
+                .put("consumedRevocationAuthId", it.consumedRevocationAuthId ?: JSONObject.NULL)
+        } ?: JSONObject.NULL)
+        .put("markerRevocation", e.markerRevocation?.let {
+            JSONObject()
+                .put("authId", it.authId)
+                .put("markerTs", it.markerTs)
+                .put("atTs", it.atTs)
+                .put("consumedByAuthId", it.consumedByAuthId ?: JSONObject.NULL)
+        } ?: JSONObject.NULL)
+        .put("foundationArmedByAuthId", e.foundationArmedByAuthId ?: JSONObject.NULL)
+        .put("lastMarkerEventId", e.lastMarkerEventId ?: JSONObject.NULL)
         .put("onsetSpentU", e.onsetSpentU)
         .put("onsetQuietMin", e.onsetQuietMin)
         .put("mealArmedTs", e.mealArmedTs)
@@ -797,6 +814,31 @@ object LedgerCodec {
             e.evidenceState = decodeEvidence(o.getJSONObject("evidenceState"))
         }
         e.primeArmedTs = requireTs("primeArmedTs", o.getLong("primeArmedTs"))
+        // Dateien VOR diesem Feld lesen sich als "keine Autorisierung, kein
+        // Widerruf" - die konservative Richtung: dann eroeffnet der naechste
+        // Druck keine zusaetzliche Huelle.
+        e.markerAuthSeq = requireTs("markerAuthSeq", o.optLong("markerAuthSeq", 0L))
+        e.markerAuth = o.optJSONObject("markerAuth")?.let { a ->
+            app.aaps.fuse.core.controller.MarkerReauthorization.Authorization(
+                id = a.getString("id"),
+                markerTs = requireTs("markerAuth.markerTs", a.getLong("markerTs")),
+                consumedRevocationAuthId = a.optString("consumedRevocationAuthId")
+                    .takeIf { it.isNotBlank() && it != "null" },
+            )
+        }
+        e.markerRevocation = o.optJSONObject("markerRevocation")?.let { r ->
+            app.aaps.fuse.core.controller.MarkerReauthorization.Revocation(
+                authId = r.getString("authId"),
+                markerTs = requireTs("markerRevocation.markerTs", r.getLong("markerTs")),
+                atTs = requireTs("markerRevocation.atTs", r.getLong("atTs")),
+                consumedByAuthId = r.optString("consumedByAuthId")
+                    .takeIf { it.isNotBlank() && it != "null" },
+            )
+        }
+        e.foundationArmedByAuthId = o.optString("foundationArmedByAuthId")
+            .takeIf { it.isNotBlank() && it != "null" }
+        e.lastMarkerEventId = o.optString("lastMarkerEventId")
+            .takeIf { it.isNotBlank() && it != "null" }
         e.onsetSpentU = requireAmount("onsetSpentU", o.getDouble("onsetSpentU"))
         e.onsetQuietMin = o.getInt("onsetQuietMin").also { require(it >= 0) { "negative onsetQuietMin $it" } }
         e.mealArmedTs = requireTs("mealArmedTs", o.getLong("mealArmedTs"))

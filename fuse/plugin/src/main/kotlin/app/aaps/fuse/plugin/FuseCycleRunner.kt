@@ -38,6 +38,7 @@ import app.aaps.fuse.plugin.ledger.OpenTransportItem
 import app.aaps.fuse.plugin.ledger.TransportInclusion
 import app.aaps.fuse.core.controller.IobThreshold
 import app.aaps.fuse.core.controller.MarkerEpisode
+import app.aaps.fuse.core.controller.MarkerReauthorization
 import app.aaps.fuse.core.controller.MarkerEpisodeGate
 import app.aaps.fuse.core.controller.TailLiability
 import app.aaps.fuse.core.controller.TbrPolicy
@@ -1873,7 +1874,24 @@ class FuseCycleRunner(
             nowMs = computeTs,
             windowMin = OnsetChannel.MARKER_WINDOW_MIN,
         )
-        if (neueEpisode) {
+        // ---- DIE NEUAUTORISIERUNG NACH EINEM ABBRUCH --------------------
+        //
+        // Die Fensterregel oben sagt "derselbe Marker, dieselbe Episode" -
+        // richtig gegen doppeltes Druecken, aber sie traf auch die Folge
+        // "abgebrochen, dann bewusst neu markiert". Danach fehlte die
+        // Phase A ganz, und statt der Direktdosis liefen nur einzelne
+        // Prime-SMBs.
+        //
+        // Die Bedingung steht in [MarkerReauthorization.neueHuelle] und
+        // haengt an der KENNUNG der Autorisierung, nicht am Zeitstempel:
+        // dieselbe Autorisierung erneut zu sehen - naechster Zyklus,
+        // doppelter Rueckruf, App-Neustart - findet dieselbe Kennung vor
+        // und oeffnet nichts.
+        val neuNachWiderruf = MarkerReauthorization.neueHuelle(
+            auth = episodes.markerAuth,
+            fundamentBewaffnetFuer = episodes.foundationArmedByAuthId,
+        )
+        if (neueEpisode || neuNachWiderruf) {
             // Wirklich eine neue Episode: die vorige ist abgelaufen.
             episodes.primeArmedTs = markerTs
             episodes.primeSpentU = 0.0
@@ -1917,6 +1935,9 @@ class FuseCycleRunner(
                 pressObservedInThisProcess = markerPressObserved() == markerTs,
                 primeDeclinedByUser = markerNoPrime,
             )
+            // Die Kennung MIT festhalten - sie ist die Wiederholungssperre:
+            // derselbe Druck bewaffnet nur einmal.
+            episodes.foundationArmedByAuthId = episodes.markerAuth?.id
             // Eine neue Autorisierung beginnt mit unbezahlter Phase B.
             episodes.deliveredSinceHandoverU = 0.0
             episodes.deliveredPhaseAU = 0.0

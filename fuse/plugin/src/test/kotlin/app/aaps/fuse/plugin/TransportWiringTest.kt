@@ -26,6 +26,7 @@ import app.aaps.fuse.plugin.ledger.EpisodeBudgets
 import app.aaps.fuse.core.observer.Health
 import kotlin.math.max
 import kotlin.math.min
+import app.aaps.fuse.core.controller.MarkerReauthorization
 import app.aaps.fuse.core.controller.PartialRecoveryGate
 import app.aaps.fuse.core.controller.PartialTbrOwnership
 import org.junit.jupiter.api.Assumptions.assumeTrue
@@ -13346,6 +13347,65 @@ class TransportWiringTest : TestBaseWithProfile() {
         // Aenderung den Aufbau nicht mehr in die Teilstufe fuehrt - und
         // genau dann braucht man sie.
         throw AssertionError("der Aufbau MUSS die Teilstufe erreichen")
+    }
+
+    /**
+     * B) NACH ABBRUCH UND NEUEM MARKER MUSS DAS FUNDAMENT NEU BEWAFFNET
+     * WERDEN - innerhalb des Markerfensters, in dem die Fensterregel es
+     * bisher verhindert hat.
+     *
+     * Der Aufbau setzt den Autorisierungszustand so, wie ihn das
+     * Bedienereignis hinterlaesst (Kennung + verbrauchte Widerrufsmarke);
+     * die Folge Druck -> Abbruch -> Druck selbst liegt in `FusePlugin`
+     * und ist dort durch die reinen Vertragstests abgedeckt.
+     */
+    @Test
+    fun `B ein neuer Marker nach Abbruch bewaffnet das Fundament neu`(@TempDir dir: File) {
+        fundamentAn = true
+        upfrontAnteil = 1.0
+        primeHuelleU = 3.75
+        fundamentAnteil = 0.8
+        markerAuthorized = true
+        markerAt = start + 2 * 60_000L
+        clock = start
+        transportReset()
+        val l = FuseLedgerAdapter().also { it.loadOnce(dir.also(File::mkdirs), "test-epoch", start) }
+        neuerRunner(l)
+        repeat(6) { cycle() }
+        assertTrue(l.episodes.foundation.valid) { "Ausgangslage: die erste Huelle steht" }
+        val ersteArmierung = l.episodes.primeArmedTs
+        // Etwas ist bereits verbraucht - das darf der Abbruch NICHT loeschen.
+        l.episodes.primeSpentU = 1.0
+
+        // ---- Abbruch, dann NEUER Druck im selben Fenster ----------------
+        // Genau das, was `toggleMealMarker` hinterlaesst.
+        val alt = MarkerReauthorization.Authorization("auth-1", markerAt)
+        val marke = MarkerReauthorization.widerrufe(alt, clock)!!
+        val neuerDruck = clock + taktMs                       // weit INNERHALB der 90 min
+        val neu = MarkerReauthorization.autorisiere(2L, neuerDruck, marke)
+        l.episodes.markerAuthSeq = 2L
+        l.episodes.markerAuth = neu.auth
+        l.episodes.markerRevocation = neu.revocation
+        markerAt = neuerDruck
+
+        val vorher = l.episodes.foundationArmedByAuthId
+        repeat(4) { cycle() }
+        assertTrue(l.episodes.primeArmedTs != ersteArmierung) {
+            "die Fensterregel haette hier NICHT neu bewaffnet - genau das war der Fehler"
+        }
+        assertEquals("auth-2", l.episodes.foundationArmedByAuthId) {
+            "die Kennung muss mitgeschrieben sein, sonst greift die Wiederholungssperre nicht"
+        }
+        assertTrue(l.episodes.foundation.valid) { "und die neue Autorisierung steht" }
+        assertTrue(vorher != l.episodes.foundationArmedByAuthId)
+
+        // ---- WIEDERHOLUNG: derselbe Druck, weitere Zyklen ---------------
+        val nachErster = l.episodes.primeArmedTs
+        repeat(8) { cycle() }
+        assertEquals(nachErster, l.episodes.primeArmedTs) {
+            "dieselbe Autorisierung darf nur EINMAL bewaffnen"
+        }
+        assertEquals("auth-2", l.episodes.foundationArmedByAuthId)
     }
 
     @Test

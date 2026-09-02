@@ -32,6 +32,35 @@ class EpisodeBudgets {
 
     var primeSpentU: Double = 0.0
     var primeArmedTs: Long = 0L
+
+    // ---- ABBRUCH UND NEUAUTORISIERUNG DER MAHLZEIT ------------------------
+    //
+    // Die Folge "Abbruch -> ausdruecklich neuer Marker" autorisiert eine
+    // neue volle Huelle. Damit das genau EINMAL passiert - und nicht noch
+    // einmal nach einem Neustart, einem doppelten Rueckruf oder einem
+    // erneuten Zyklus -, haengen Kennung und Widerrufsmarke am Ledger und
+    // ueberleben den Prozess. Der Vertrag steht in
+    // [app.aaps.fuse.core.controller.MarkerReauthorization].
+    //
+    // NICHTS DAVON SETZT BUCHHALTUNG ZURUECK: `primeSpentU`, offene
+    // Auftraege, Transportreservierungen und die globalen Grenzen bleiben.
+
+    /** Fortlaufende Kennungsnummer - eine Folge, keine Uhr. */
+    var markerAuthSeq: Long = 0L
+
+    /** Die laufende Mahlzeitenautorisierung, `null` = keine. */
+    var markerAuth: app.aaps.fuse.core.controller.MarkerReauthorization.Authorization? = null
+
+    /** Der letzte Widerruf samt Zuordnung, wer ihn verbraucht hat. */
+    var markerRevocation: app.aaps.fuse.core.controller.MarkerReauthorization.Revocation? = null
+
+    /** Fuer WELCHE Autorisierung das Fundament zuletzt bewaffnet wurde -
+     *  die Wiederholungsfestigkeit haengt an diesem Vergleich. */
+    var foundationArmedByAuthId: String? = null
+
+    /** Das zuletzt verarbeitete Bedienereignis - gegen doppelte und
+     *  verspaetete Dialog-Rueckrufe. */
+    var lastMarkerEventId: String? = null
     var onsetSpentU: Double = 0.0
     var onsetQuietMin: Int = 0
     var mealArmedTs: Long = 0L
