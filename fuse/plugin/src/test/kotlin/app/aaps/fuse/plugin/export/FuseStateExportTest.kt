@@ -399,9 +399,9 @@ class FuseStateExportTest {
     }
 
     /**
-     * 02.09.: 77 eintrittsberechtigte Zyklen, keiner aktiv - und der Trail
-     * konnte nicht sagen, ob der Guard keine Rate erlaubte oder die Suche
-     * an einer Datenluecke scheiterte. Beides muss unterscheidbar sein.
+     * Eintritt erfuellt, Stufe trotzdem nie aktiv - und der Trail konnte
+     * nicht sagen, ob der Guard keine Rate erlaubte oder die Suche an einer
+     * Datenluecke scheiterte. Beides muss unterscheidbar sein.
      */
     @Test
     fun `Datenluecke und Guard-Null der Teilratensuche sind im Trail unterscheidbar`() {

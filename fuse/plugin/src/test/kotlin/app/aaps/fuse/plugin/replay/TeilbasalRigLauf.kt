@@ -120,7 +120,14 @@ class TeilbasalRigLauf : TestBase() {
         assumeTrue(pfad != null && File(pfad).isFile, "FUSE_RIG_TRAIL nicht gesetzt - uebersprungen")
         val schritt = System.getenv("FUSE_RIG_STEP")?.toDoubleOrNull() ?: 0.05
         val dauer = System.getenv("FUSE_RIG_DAUER")?.toIntOrNull() ?: 30
+        // AUSWERTUNGSABSCHNITT eindeutig: ohne Fenster laeuft das Rig ueber
+        // den GANZEN Trail (alle darin liegenden Nullphasen). Mit
+        // `FUSE_RIG_VON` / `FUSE_RIG_BIS` (Epoch-ms) nur ueber den Abschnitt -
+        // sonst sind Zaehlungen aus zwei Laeufen nicht vergleichbar.
+        val von = System.getenv("FUSE_RIG_VON")?.toLongOrNull() ?: Long.MIN_VALUE
+        val bis = System.getenv("FUSE_RIG_BIS")?.toLongOrNull() ?: Long.MAX_VALUE
         val zyklen = lies(File(pfad!!)).sortedBy { it.computeTs }
+            .filter { it.computeTs in von..bis }
         assumeTrue(zyklen.isNotEmpty(), "keine lesbaren Zyklen")
 
         // Insulinmodell aus dem Trail - eine Zeile reicht, es ist Konfiguration.
@@ -132,7 +139,7 @@ class TeilbasalRigLauf : TestBase() {
         val kern = kernelBauer(typ, dia)
 
         val lauf = TeilbasalRig.lauf(zyklen, kern, schritt, dauer)
-        // ---- VOR FIX / NACH FIX (02.09.) ----------------------------------
+        // ---- VOR FIX / NACH FIX (Zeitachsen-Fehler) -----------------------
         // Dieselben Zyklen, einmal mit Profil-Slots ab Rechenzeit (so lief
         // die Produktion), einmal korrigiert. Ausgewiesen wird NUR, was die
         // Suche liefert - keine Aussage ueber einen anderen BG-Verlauf.
@@ -147,6 +154,11 @@ class TeilbasalRigLauf : TestBase() {
         }
         println("=".repeat(70))
         println("ZEITACHSEN-VERGLEICH (Anker = Sensorzeit, wie in der Produktion)")
+        println("Abschnitt: " + (if (von == Long.MIN_VALUE && bis == Long.MAX_VALUE) "GANZER TRAIL"
+            else "${hm(zyklen.first().computeTs)}-${hm(zyklen.last().computeTs)}") +
+            "  (${zyklen.size} Zyklen)")
+        println("VEREINFACHTE SUCHERGEBNISSE: flachgelegte Bahn, untere Schranke -")
+        println("keine nachgewiesene Pumpenabgabe, keine Aussage ueber einen anderen BG-Verlauf.")
         bilanz("VOR FIX", vorFix)
         bilanz("NACH FIX", lauf)
 

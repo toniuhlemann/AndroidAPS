@@ -245,7 +245,7 @@ object TeilbasalRig {
          * und ist KEINE Rate.
          */
         ersatzdeckelUPerH: Double? = null,
-        /** REPRODUKTION DES 02.09.-FEHLERS: Profil-Slots beginnen an der
+        /** REPRODUKTION DES ZEITACHSEN-FEHLERS: Profil-Slots beginnen an der
          *  RECHENZEIT und decken TBR+1 min - wie der Runner vor dem Fix.
          *  Mit dem Anker auf der Sensorzeit sieht die Suche dann dieselbe
          *  Luecke wie auf dem Geraet. Default: die korrigierte Form. */
@@ -262,7 +262,7 @@ object TeilbasalRig {
         // DER ANKER IST DIE SENSORZEIT - wie in der Produktion
         // (`signal.sourceTs`). Bisher stand hier die Rechenzeit; damit
         // fielen beide Achsen zusammen und das Rig konnte die Luecke, an
-        // der die Produktion 77 Zyklen lang scheiterte, nicht sehen.
+        // der die Produktion im Feld scheiterte, nicht sehen.
         val anker = if (z.sourceTs > 0L) z.sourceTs else z.computeTs
         val band = CandidateSearch.Band(
             releaseTargetLowMgdl = 100.0, releaseTargetHighMgdl = 140.0,

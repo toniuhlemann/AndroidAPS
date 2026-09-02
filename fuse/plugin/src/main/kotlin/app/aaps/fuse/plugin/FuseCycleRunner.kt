@@ -1089,7 +1089,7 @@ class FuseCycleRunner(
         /** DIE SUCHE SELBST, unabhaengig davon, ob die Stufe aktiv wurde:
          *  "Eintritt erfuellt, aber Datenluecke" (reject gesetzt) muss von
          *  "Guard erlaubt keine Rate" (reject null, limit KEINE_RATE)
-         *  unterscheidbar sein. Genau diese Unterscheidung fehlte am 02.09. */
+         *  unterscheidbar sein - genau diese Unterscheidung fehlte bisher. */
         val partialRecoverySearchRateUPerH: Double? = null,
         val partialRecoverySearchReject: String? = null,
         val partialRecoverySearchLimit: String? = null,
@@ -2961,6 +2961,13 @@ class FuseCycleRunner(
         // bleibt es bei 0 und die Tabelle rechnet bitgleich wie bisher.
         partialRateUPerH = 0.0
         partialReject = null
+        // ALLE Diagnosen der Suche, nicht nur Rate und Reject (Review-P1):
+        // sonst traegt ein Zyklus ohne Suche (Schalter aus, Kern fehlt) noch
+        // Begrenzung, bindenden Punkt und Basisbahn der VORIGEN Suche in den
+        // Trail - eine Diagnose, die zu einem anderen Zyklus gehoert.
+        partialBindenderOffsetMin = null
+        partialBegrenzung = null
+        partialBaselineMinLower = Double.NaN
         if (cfg.partialRecoveryEnabled) {
             val pk = kernel()
             if (pk == null) partialReject = "KERNEL_MISSING"
@@ -2970,17 +2977,17 @@ class FuseCycleRunner(
                 // abgetastet: faellt das Profil waehrend der TBR, muss der
                 // Deckel dem folgen (Review-P1).
                 //
-                // AUF DER ZEITACHSE DER SUCHE, NICHT DER RECHNUNG (02.09.).
+                // AUF DER ZEITACHSE DER SUCHE, NICHT DER RECHNUNG.
                 // Die Suche prueft das Fenster [Prognoseanker, Anker + TBR]
                 // und verlangt dort lueckenlose Profilabdeckung. Der Anker
-                // ist die SENSORZEIT (`signal.sourceTs`), die Rechnung laeuft
-                // ~5 s spaeter. Das Grid begann hier am Rechenzeitpunkt -
-                // die Suche sah eine 5-Sekunden-Luecke VOR dem ersten Slot,
-                // meldete INVALID_INPUT und kam nie bis zur eigentlichen
-                // Frage. Ergebnis am 02.09. frueh: 81 Zyklen offenes Tor,
-                // 77 davon eintrittsberechtigt, kein einziger aktiv - bei
-                // 88 min Schutz-Null auf flacher Bahn. Das Rig sah es nicht,
-                // weil dort Sensor- und Rechenzeit zusammenfielen.
+                // ist die SENSORZEIT (`signal.sourceTs`); die Rechnung laeuft
+                // einige Sekunden spaeter. Das Grid begann frueher am
+                // Rechenzeitpunkt - die Suche sah eine Luecke VOR dem ersten
+                // Slot, meldete INVALID_INPUT und kam nie bis zur eigentlichen
+                // Frage, welche Rate die Bahn traegt. Im Feld blieb die Stufe
+                // damit ueber eine ganze Nullphase hinweg wirkungslos, obwohl
+                // das Tor offen und der Eintritt erfuellt war. Das Rig sah es
+                // nicht, weil dort Sensor- und Rechenzeit zusammenfielen.
                 //
                 // Die Lueckenpruefung bleibt; sie hat den Fehler ja gezeigt.
                 val ankerTs = prediction.predictionAnchorTs
@@ -5713,7 +5720,7 @@ class FuseCycleRunner(
             partialRecoverySearchRateUPerH = if (cfg.partialRecoveryEnabled) partialRateUPerH else null,
             partialRecoverySearchReject = partialReject,
             partialRecoverySearchLimit = partialBegrenzung,
-            partialRecoveryBindingOffsetMin = partialBindenderOffsetMin.takeIf { it >= 0 },
+            partialRecoveryBindingOffsetMin = partialBindenderOffsetMin,
             partialRecoveryBaselineMinLowerMgdl = partialBaselineMinLower.takeIf { it.isFinite() },
             // ANZEIGEVERTRAG: die Zielrate ist die ANGEFORDERTE bzw.
             // laufende - der Viewer stellt sie NEBEN die tatsaechliche
@@ -7032,7 +7039,9 @@ class FuseCycleRunner(
     /** Diagnose der Ratensuche - beantwortet im Replay die Horizontfrage:
      *  wo bindet das Minimum, was hat begrenzt, wie tief lag die Bahn ohne
      *  jede Teilrate. */
-    private var partialBindenderOffsetMin = -1
+    // NULL = keine Suche in diesem Zyklus. -1 ist KEIN Sentinel, sondern ein
+    // gueltiges Ergebnis ("der Anker selbst war das Minimum") - Review-P2.
+    private var partialBindenderOffsetMin: Int? = null
     private var partialBegrenzung: String? = null
     private var partialBaselineMinLower = Double.NaN
 

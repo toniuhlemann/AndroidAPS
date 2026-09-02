@@ -113,10 +113,10 @@ class TransportWiringTest : TestBaseWithProfile() {
     private val start = 1_700_000_000_000L / 60_000L * 60_000L
 
     /**
-     * SENSORZEIT VOR RECHENZEIT (02.09.). Auf dem Geraet liegt der letzte
-     * CGM-Wert ~5 s vor dem Rechenzeitpunkt; im Rig fielen beide bisher
+     * SENSORZEIT VOR RECHENZEIT. Auf dem Geraet liegt der letzte CGM-Wert
+     * einige Sekunden vor dem Rechenzeitpunkt; im Rig fielen beide bisher
      * exakt zusammen. Genau in dieser Luecke scheiterte die Teilratensuche
-     * 77 Zyklen lang (Profil-Slots ab Rechenzeit, Fenster ab Sensorzeit).
+     * im Feld (Profil-Slots ab Rechenzeit, Fenster ab Sensorzeit).
      * Positiv: die Serie liegt um so viele ms VOR der Uhr.
      */
     private var quellVersatzMs = 0L
@@ -13168,7 +13168,7 @@ class TransportWiringTest : TestBaseWithProfile() {
      * Anforderung: danach darf KEIN Teilbasal-Kommando mehr folgen.
      */
     /**
-     * DER 02.09.-FEHLER ALS TEST. Dieselbe Bahn wie im Kommandostrom-E2E,
+     * DER ZEITACHSEN-FEHLER ALS TEST. Dieselbe Bahn wie im Kommandostrom-E2E,
      * aber die Sensorzeit liegt 5 s vor der Rechenzeit - wie auf dem Geraet.
      * Vor dem Fix: das Profil-Grid begann an der Rechenzeit, die Suche sah
      * vor dem ersten Slot eine Luecke, INVALID_INPUT in jedem Zyklus, die
@@ -13221,6 +13221,79 @@ class TransportWiringTest : TestBaseWithProfile() {
         assertTrue((aktiv.partialRecoverySearchRateUPerH ?: 0.0) > 0.0) {
             "die Suche selbst traegt die Rate: ${aktiv.partialRecoverySearchRateUPerH}"
         }
+    }
+
+    /**
+     * Fuehrt die Versatz-Bahn bis zur ersten ERFOLGREICHEN Suche (Rate > 0,
+     * Begrenzung benannt) und gibt den Outcome dieses Zyklus zurueck.
+     */
+    private fun bisZurErfolgreichenSuche(dir: File): FuseCycleRunner.Outcome {
+        quellVersatzMs = 5_000L
+        zeroLatchAn = true
+        teilbasalAn = true
+        flach = 140.0
+        steigungProMin = -1.2
+        knickAbMin = 25
+        steigungNachKnick = 0.0
+        bolusIobU = 2.5
+        clock = start
+        transportReset()
+        neuerRunner(FuseLedgerAdapter().also { it.loadOnce(dir.also(File::mkdirs), "test-epoch", start) })
+        quelleMeldet(TB(timestamp = System.currentTimeMillis(), duration = 30 * 60_000L,
+                        rate = 0.0, isAbsolute = true, type = TB.Type.NORMAL))
+        for (i in 0 until 80) {
+            val o = cycle()
+            if ((o.partialRecoverySearchRateUPerH ?: 0.0) > 0.0 && o.partialRecoverySearchLimit != null) return o
+        }
+        throw AssertionError("der Aufbau erreicht keine erfolgreiche Suche")
+    }
+
+    /**
+     * SEQUENZ 1 (Review-P1): erfolgreiche Suche, dann faellt der Kern aus.
+     * Bisher wurden je Zyklus nur Rate und Reject genullt - Begrenzung,
+     * bindender Punkt und Basisbahn der VORIGEN Suche standen im naechsten
+     * Trailzyklus weiter, als gehoerten sie zu ihm.
+     */
+    @Test
+    fun `Suchdiagnosen der vorigen Suche ueberleben keinen Kernausfall`(@TempDir dir: File) {
+        val erfolg = bisZurErfolgreichenSuche(dir)
+        assertNotNull(erfolg.partialRecoverySearchLimit)
+        assertNotNull(erfolg.partialRecoveryBindingOffsetMin)
+        assertNotNull(erfolg.partialRecoveryBaselineMinLowerMgdl)
+
+        // Der Kern faellt aus: ein Insulinmodell, dessen IOB NaN liefert.
+        val kaputt = org.mockito.kotlin.mock<Insulin>()
+        whenever(kaputt.id).thenReturn(insulin.id)
+        whenever(kaputt.peak).thenReturn(45)
+        whenever(kaputt.iobCalcForTreatment(any(), any(), any()))
+            .thenAnswer { app.aaps.core.data.iob.Iob().apply { iobContrib = Double.NaN } }
+        whenever(activePlugin.activeInsulin).thenReturn(kaputt)
+
+        val danach = cycle()
+        assertEquals("KERNEL_MISSING", danach.partialRecoverySearchReject)
+        assertNull(danach.partialRecoverySearchLimit) { "Begrenzung der vorigen Suche darf nicht stehenbleiben" }
+        assertNull(danach.partialRecoveryBindingOffsetMin) { "bindender Punkt der vorigen Suche darf nicht stehenbleiben" }
+        assertNull(danach.partialRecoveryBaselineMinLowerMgdl) { "Basisbahn der vorigen Suche darf nicht stehenbleiben" }
+        assertEquals(0.0, danach.partialRecoverySearchRateUPerH ?: -1.0, 1e-12)
+    }
+
+    /** SEQUENZ 2 (Review-P1): erfolgreiche Suche, dann Schalter aus. */
+    @Test
+    fun `Suchdiagnosen der vorigen Suche ueberleben kein Ausschalten`(@TempDir dir: File) {
+        val erfolg = bisZurErfolgreichenSuche(dir)
+        // ALLE drei Vorbedingungen - sonst bestuende die Nullpruefung unten
+        // fuer einen Wert, der nie gesetzt war, ohne etwas zu beweisen.
+        assertNotNull(erfolg.partialRecoverySearchLimit)
+        assertNotNull(erfolg.partialRecoveryBindingOffsetMin)
+        assertNotNull(erfolg.partialRecoveryBaselineMinLowerMgdl)
+
+        teilbasalAn = false
+        val danach = cycle()
+        assertNull(danach.partialRecoverySearchRateUPerH) { "Stufe aus: keine Suche, keine Rate - auch keine 0" }
+        assertNull(danach.partialRecoverySearchReject)
+        assertNull(danach.partialRecoverySearchLimit)
+        assertNull(danach.partialRecoveryBindingOffsetMin)
+        assertNull(danach.partialRecoveryBaselineMinLowerMgdl)
     }
 
     @Test
