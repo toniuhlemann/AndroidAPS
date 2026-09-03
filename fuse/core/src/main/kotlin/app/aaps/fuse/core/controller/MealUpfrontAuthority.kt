@@ -50,10 +50,13 @@ package app.aaps.fuse.core.controller
  *    frueher armierte. `activeMarkerTs` ist im Runner bereits gegen die
  *    WIDERRUFSMARKE im Ledger abgeglichen; ein zurueckgenommener Marker
  *    kommt hier also gar nicht an.
- *  - `pressObservedForTs == activeMarkerTs` - GENAU DIESER Druck wurde
- *    in DIESEM Prozess beobachtet. Der Merker ist bewusst nicht
- *    persistent: nach einem Neustart gilt die Ausnahme erst wieder ab
- *    einem neuen Druck.
+ *  - DER BEWUSSTE DRUCK, auf zwei Wegen nachweisbar: entweder wurde
+ *    GENAU DIESER Marker in DIESEM Prozess gedrueckt, oder das Fundament
+ *    ist persistent unter der laufenden Kennung armiert - und armiert
+ *    wird nur mit beobachtetem Druck. Der fluechtige Merker allein
+ *    haette eine bestehende Autorisierung nach jedem AAPS-Neustart
+ *    ausgesperrt, und der einzige Ausweg waere ein NEUER Druck gewesen -
+ *    also eine neue volle Huelle. S. die Begruendung an [holds].
  *  - `foundationArmedByAuthId == currentAuthId`, beide NICHT leer -
  *    die belastbare Zuordnung zur laufenden Autorisierung. Eine
  *    FEHLENDE Kennung ist keine Zustimmung: Altbestand aus einer
@@ -96,11 +99,47 @@ object MealUpfrontAuthority {
         if (!auth.valid) return false
         if (!auth.pinnedMarkerAuthorized) return false
         if (auth.armedTs != activeMarkerTs) return false
-        if (pressObservedForTs != activeMarkerTs) return false
-        // Beide Kennungen muessen DA sein und uebereinstimmen - fehlende
-        // Identitaet ist keine Freigabe.
+
+        // ---- DIE ZUORDNUNG - IMMER PFLICHT ------------------------------
+        //
+        // Beide Kennungen muessen DA sein und uebereinstimmen; eine
+        // fehlende Identitaet ist keine Freigabe (Altbestand traegt keine).
         val id = currentAuthId
-        if (id.isNullOrEmpty() || foundationArmedByAuthId != id) return false
+        val zuordnungBelegt = !id.isNullOrEmpty() && foundationArmedByAuthId == id
+        if (!zuordnungBelegt) return false
+
+        // ---- DER BEWUSSTE DRUCK - ZWEI WEGE, DERSELBE NACHWEIS ----------
+        //
+        // (1) LIVE: in DIESEM Prozess wurde genau dieser Marker gedrueckt.
+        // (2) PERSISTENT: das Fundament ist unter GENAU der Kennung
+        //     armiert, die jetzt laeuft.
+        //
+        // WARUM (2) DENSELBEN NACHWEIS TRAEGT: die Zuordnung entsteht
+        // ausschliesslich im Armierungsblock des Runners, und dort armiert
+        // [MealFoundation.arm] nur mit beobachtetem Druck - ohne ihn bleibt
+        // eine [MealFoundation.Authorization.none] zurueck, die schon an
+        // `auth.valid` scheitert. Eine gueltige Autorisierung UNTER DER
+        // LAUFENDEN KENNUNG kann es also ohne bewussten Druck nicht geben.
+        // Fundament, Kennung, Widerrufsstand, Marker und die verbrauchten
+        // Mengen liegen alle im Ledger und ueberleben den Prozess.
+        //
+        // WARUM DER LIVE-MERKER ALLEIN NICHT REICHT: `markerPressObservedTs`
+        // ist absichtlich fluechtig und steht nach einem AAPS-Neustart
+        // wieder auf 0. Verlangte man ihn weiter, sperrte das rohe
+        // Rebound-Fenster eine laengst gueltige Direktdosis erneut - und der
+        // einzige Ausweg waere ein NEUER Druck. Der oeffnet nach dem
+        // Neuautorisierungs-Vertrag aber eine NEUE VOLLE HUELLE
+        // ([MarkerReauthorization]); ein Neustart darf nicht in eine
+        // zusaetzliche Autorisierung draengen.
+        //
+        // Fuer das ERSTMALIGE Bewaffnen bleibt der beobachtete Druck
+        // erforderlich - das erzwingt [MealFoundation.arm], nicht diese
+        // Stelle. Hier wird nur eine BESTEHENDE Autorisierung weitergefuehrt:
+        // keine neue Huelle, kein zurueckgesetzter Verbrauch. Wie viel noch
+        // gehen darf, sagt unveraendert die Bilanz.
+        val druckBelegt = pressObservedForTs == activeMarkerTs || zuordnungBelegt
+        if (!druckBelegt) return false
+
         // Ohne gewaehlte Direktdosis gibt es nichts zu entsperren.
         return auth.phaseAUpfrontU.isFinite() && auth.phaseAUpfrontU > 0.0
     }

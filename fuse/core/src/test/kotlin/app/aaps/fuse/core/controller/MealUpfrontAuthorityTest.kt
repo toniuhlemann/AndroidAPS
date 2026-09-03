@@ -86,8 +86,38 @@ class MealUpfrontAuthorityTest {
     @Test
     fun `eine fremde Markeridentitaet traegt nicht`() {
         assertFalse(holds(auth(markerTs = t0 - 3_600_000L))) { "armedTs passt nicht" }
-        assertFalse(holds(druckFuer = t0 - 3_600_000L)) { "der Druck galt einem anderen Marker" }
-        assertFalse(holds(druckFuer = 0L)) { "nach einem Neustart ist kein Druck beobachtet" }
+    }
+
+    /**
+     * DER PROZESSNEUSTART - die Kante, die Toni am 03.09. gefunden hat.
+     *
+     * `markerPressObservedTs` ist absichtlich fluechtig und steht nach
+     * einem AAPS-Neustart wieder auf 0. Verlangte man ihn weiter, sperrte
+     * das rohe Rebound-Fenster eine laengst gueltige Direktdosis erneut -
+     * und der einzige Ausweg waere ein NEUER Druck. Der oeffnet nach dem
+     * Neuautorisierungs-Vertrag aber eine NEUE VOLLE HUELLE; ein Neustart
+     * darf niemanden in eine zusaetzliche Autorisierung draengen.
+     *
+     * Die persistierte Zuordnung traegt den Nachweis: armiert wird nur mit
+     * beobachtetem Druck, eine gueltige Autorisierung unter der laufenden
+     * Kennung kann es ohne ihn also gar nicht geben.
+     */
+    @Test
+    fun `nach einem Prozessneustart traegt die persistierte Zuordnung`() {
+        assertTrue(holds(druckFuer = 0L)) { "kein Druck im neuen Prozess" }
+        assertTrue(holds(druckFuer = t0 - 3_600_000L)) { "ein alter Druck steht noch herum" }
+    }
+
+    /**
+     * UND SIE TRAEGT NUR ZUSAMMEN MIT DER ZUORDNUNG. Ohne Druck UND ohne
+     * belastbare Kennung bleibt geschlossen - sonst waere die Neustart-
+     * Oeffnung ein Freibrief fuer Altbestand.
+     */
+    @Test
+    fun `ohne Druck und ohne Zuordnung bleibt es gesperrt`() {
+        assertFalse(holds(druckFuer = 0L, armedBy = null, aktuelleKennung = null))
+        assertFalse(holds(druckFuer = 0L, armedBy = "auth-2"))
+        assertFalse(holds(druckFuer = 0L, aktuelleKennung = null))
     }
 
     /**

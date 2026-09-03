@@ -4197,6 +4197,119 @@ class TransportWiringTest : TestBaseWithProfile() {
         }
     }
 
+    /**
+     * PFLICHTFALL 8 - DIE AUTORISIERUNG UEBERLEBT DEN PROZESSNEUSTART.
+     *
+     * `markerPressObservedTs` ist absichtlich fluechtig. Verlangte die
+     * Rebound-Ausnahme ihn weiter, sperrte das rohe Fenster nach jedem
+     * AAPS-Neustart eine laengst gueltige Direktdosis erneut - und der
+     * einzige Ausweg waere ein NEUER Druck. Der oeffnet nach dem
+     * Neuautorisierungs-Vertrag aber eine NEUE VOLLE HUELLE; ein Neustart
+     * darf niemanden dorthin draengen.
+     *
+     * Der Lauf geht durch den ECHTEN Codec: Ledger schreiben, frisch von
+     * der Platte laden, neuen Runner mit `markerPress = 0` bauen. Die
+     * Nachweise, die tragen sollen, werden vor dem zweiten Teil HART
+     * geprueft - sonst koennte der Test an einem leeren Zustand bestehen.
+     */
+    @Test
+    fun `nach einem Prozessneustart traegt die Autorisierung die Direktdosis weiter`(@TempDir dir: File) {
+        maxSmbU = 0.30
+        reboundMahlzeit(dir)
+
+        // (1) EINE AKTUELLE GEFAHR haelt den Sofortanteil zurueck - so ist
+        // beim Neustart noch etwas offen, das die Ausnahme tragen muss.
+        flach = 150.0
+        steigungProMin = -3.0
+        bolusIobU = 2.0
+        val vorher = (0 until 10).map { transport(dir) }
+        assertTrue(vorher.all { it.phaseAUpfrontRequestedU == 0.0 }) {
+            "Vorbedingung: vor dem Neustart fliesst nichts"
+        }
+        // Ein Teil der Huelle ist regulaer verbraucht.
+        ledger.episodes.deliveredPhaseAU += 1.00
+        transport(dir)   // schreibt den Stand durch das echte Gate
+
+        // (2) DER NEUSTART: frisch von der Platte, ohne beobachteten Druck.
+        val neu = FuseLedgerAdapter().also { it.loadOnce(dir, "test-epoch", clock) }
+        assertEquals("auth-9", neu.episodes.markerAuth?.id) {
+            "Vorbedingung: die Kennung muss den Codec ueberleben"
+        }
+        assertEquals("auth-9", neu.episodes.foundationArmedByAuthId) {
+            "Vorbedingung: und die Zuordnung des Fundaments ebenso"
+        }
+        assertTrue(neu.episodes.foundation.valid) { "Vorbedingung: das Fundament ist gueltig" }
+        assertTrue(neu.episodes.deliveredPhaseAU >= 1.00 - 1e-9) {
+            "Vorbedingung: der Verbrauch ist persistiert - ${neu.episodes.deliveredPhaseAU}"
+        }
+        markerPress = 0L               // der neue Prozess hat nichts gesehen
+        neuerRunner(neu)
+        assertEquals(0L, markerPress) { "Vorbedingung: kein beobachteter Druck" }
+        // Das Rebound-Fenster wird im neuen Prozess wie produktiv aus der
+        // Historie rekonstruiert.
+        runner.primeLastLowTs(clock - 5 * 60_000L)
+
+        // (3) DIE GEFAHR FAELLT WEG, das Fenster steht.
+        steigungProMin = 0.8
+        flach = 130.0 - 0.8 * ((clock - start) / 60_000.0)
+        knickAbMin = null
+        bolusIobU = null
+        val nachher = (0 until 12).map { transport(dir) }
+
+        assertTrue(nachher.any { it.state?.reboundSuppressedByMarker == true }) {
+            "Vorbedingung: das rohe Fenster liegt im neuen Prozess an"
+        }
+        assertFalse(reboundGesehen(nachher)) {
+            "die persistierte Zuordnung muss die Ausnahme tragen - " +
+                nachher.mapNotNull { it.upfrontChain?.currentHazard }.distinct().joinToString(" ")
+        }
+
+        // (4) UND HOECHSTENS DIE PERSISTIERTE RESTMENGE.
+        val idx = nachher.indexOfFirst { it.phaseAUpfrontRequestedU > 0.0 }
+        assertTrue(idx >= 0) {
+            "die Direktdosis muss nach dem Neustart kommen - " +
+                nachher.joinToString(" ") { "${it.phaseAUpfrontRequestedU}/${it.phaseAUpfrontState}" }
+        }
+        val batch = nachher[idx]
+        assertEquals(batch.phaseAUpfrontPendingU, batch.phaseAUpfrontRequestedU, 1e-9) {
+            "genau der offene Rest desselben Zyklus"
+        }
+        assertTrue(batch.phaseAUpfrontRequestedU <= 3.20 - 1.00 + 1e-9) {
+            "die schon verbrauchte Einheit darf nicht wieder auftauchen: " +
+                "${batch.phaseAUpfrontRequestedU}"
+        }
+        // KEINE ZWEITE HUELLE: die Autorisierung ist dieselbe geblieben.
+        assertEquals("auth-9", ledger.episodes.markerAuth?.id)
+        assertEquals("auth-9", ledger.episodes.foundationArmedByAuthId)
+    }
+
+    /**
+     * GEGENFALL ZUM NEUSTART: ohne beobachteten Druck UND ohne belastbare
+     * Zuordnung bleibt gesperrt. Sonst waere die Neustart-Oeffnung ein
+     * Freibrief fuer Altbestand ohne Kennung.
+     */
+    @Test
+    fun `nach einem Neustart ohne Kennung bleibt die Direktdosis gesperrt`(@TempDir dir: File) {
+        maxSmbU = 0.30
+        reboundMahlzeit(dir, kennung = null)
+
+        val vorher = (0 until 6).map { transport(dir) }
+        assertTrue(vorher.isNotEmpty())
+
+        val neu = FuseLedgerAdapter().also { it.loadOnce(dir, "test-epoch", clock) }
+        assertEquals(null, neu.episodes.markerAuth?.id) { "Vorbedingung: Altbestand ohne Kennung" }
+        markerPress = 0L
+        neuerRunner(neu)
+        runner.primeLastLowTs(clock - 5 * 60_000L)
+
+        val nachher = (0 until 10).map { transport(dir) }
+        assertTrue(reboundGesehen(nachher)) {
+            "ohne Kennung MUSS das Fenster weiter sperren - " +
+                nachher.mapNotNull { it.upfrontChain?.currentHazard }.distinct().joinToString(" ")
+        }
+        assertTrue(nachher.all { it.phaseAUpfrontRequestedU == 0.0 })
+    }
+
     /** Armierter Marker in RUHIGER Lage: der Normalpfad fordert nichts
      *  (NO_DEMAND), die Sofortdosis kommt allein aus der Autorisierung -
      *  der Bauauftrags-Kernfall "kein normaler Korrekturbedarf noetig". */
