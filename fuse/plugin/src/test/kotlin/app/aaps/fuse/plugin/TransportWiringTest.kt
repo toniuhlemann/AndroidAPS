@@ -4128,6 +4128,75 @@ class TransportWiringTest : TestBaseWithProfile() {
         }
     }
 
+    /**
+     * DIE BEIDEN NACHGELAGERTEN REBOUND-STELLEN DERSELBEN KETTE.
+     *
+     * Ausser dem Aufschub-Tor und der Wiederfreigabe lasen zwei weitere
+     * Stellen das rohe Kennzeichen - beide geben Phase-A-Rueckstand frei,
+     * beide haetten den Aufschub eine Stufe spaeter wiederholt:
+     *
+     *  - `DescentDeferredCarry.eligibility` - der Sicherheitsuebertrag in
+     *    Phase B.
+     *  - `DeferredPrime.releaseStep` - die aufgeschobene Prime-Freigabe,
+     *    in die der Sofortanteil beim Phasenwechsel uebergeht.
+     *
+     * Beide Urteile werden typisiert exportiert, der Test liest sie also
+     * und raet nicht aus einer Menge. Jeder Zweig bekommt eine HARTE
+     * Vorbedingung: ohne offenen Rueckstand waere die Rebound-Zeile gar
+     * nicht erreicht und der Test bestuende leer.
+     */
+    @Test
+    fun `auch Uebertrag und aufgeschobene Prime-Freigabe sehen den Rebound nicht mehr`(@TempDir dir: File) {
+        maxSmbU = 0.30
+        reboundMahlzeit(dir)
+
+        // (1) AUFSCHUB DURCH EINE AKTUELLE GEFAHR, laenger als das
+        // Prime-Fenster - so faellt der Phasenwechsel in die Riegelzeit und
+        // der Sofortanteil geht in die aufgeschobene Prime-Freigabe ueber.
+        flach = 150.0
+        steigungProMin = -3.0
+        bolusIobU = 2.0
+        val imRiegel = (0 until 24).map { transport(dir) }
+        assertTrue(imRiegel.any { it.phaseAUpfrontState == "TRANSFERRED_TO_DEFERRED" }) {
+            "Vorbedingung: der Rest muss beim Phasenwechsel uebergehen - " +
+                imRiegel.mapNotNull { it.phaseAUpfrontState }.distinct().joinToString(" ")
+        }
+        // Und ein Sicherheitsuebertrag, der etwas zu uebertragen hat.
+        ledger.episodes.descentDeferredPhaseAU = 0.40
+
+        // (2) DIE GEFAHR FAELLT WEG - das Rebound-Fenster steht weiter.
+        steigungProMin = 0.8
+        flach = 130.0 - 0.8 * ((clock - start) / 60_000.0)
+        knickAbMin = null
+        bolusIobU = null
+        val nachher = (0 until 14).map { transport(dir) }
+
+        assertTrue(nachher.any { it.state?.reboundSuppressedByMarker == true }) {
+            "Vorbedingung: das Fenster steht bis zuletzt"
+        }
+
+        // ---- STELLE 1: DER SICHERHEITSUEBERTRAG -------------------------
+        val eignungen = nachher.map { it.mealFoundation.descentCarryEligibility.name }
+        assertTrue(eignungen.any { it != "NO_DEFERRED" && it != "NOT_PHASE_B" }) {
+            "Vorbedingung: der Uebertrag muss ueberhaupt beurteilt werden - " +
+                eignungen.distinct().joinToString(" ")
+        }
+        assertFalse(eignungen.any { it == "REBOUND_ACTIVE" }) {
+            "der Uebertrag darf am historischen Fenster nicht mehr scheitern - " +
+                eignungen.distinct().joinToString(" ")
+        }
+
+        // ---- STELLE 2: DIE AUFGESCHOBENE PRIME-FREIGABE -----------------
+        val gruende = nachher.mapNotNull { it.deferredPrimeDenial }
+        assertTrue(nachher.any { it.deferredPrimeDenial != null || it.deferredPrimeReleasedU > 0.0 }) {
+            "Vorbedingung: die aufgeschobene Freigabe muss laufen"
+        }
+        assertFalse(gruende.any { it == "REBOUND_ACTIVE" }) {
+            "auch sie darf am historischen Fenster nicht mehr scheitern - " +
+                gruende.distinct().joinToString(" ")
+        }
+    }
+
     /** Armierter Marker in RUHIGER Lage: der Normalpfad fordert nichts
      *  (NO_DEMAND), die Sofortdosis kommt allein aus der Autorisierung -
      *  der Bauauftrags-Kernfall "kein normaler Korrekturbedarf noetig". */
