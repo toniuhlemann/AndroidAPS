@@ -36,13 +36,11 @@ class MealUpfrontAuthorityTest {
         a: MealFoundation.Authorization = auth(),
         markerTs: Long = t0,
         aktiv: Boolean = true,
-        druckFuer: Long = t0,
         armedBy: String? = id,
         aktuelleKennung: String? = id,
     ) = MealUpfrontAuthority.holds(
         auth = a, activeMarkerTs = markerTs, markerActive = aktiv,
-        pressObservedForTs = druckFuer, foundationArmedByAuthId = armedBy,
-        currentAuthId = aktuelleKennung,
+        foundationArmedByAuthId = armedBy, currentAuthId = aktuelleKennung,
     )
 
     /** DER FALL, UM DEN ES GEHT. */
@@ -89,41 +87,22 @@ class MealUpfrontAuthorityTest {
     }
 
     /**
-     * DER PROZESSNEUSTART - die Kante, die Toni am 03.09. gefunden hat.
+     * DIE ZUORDNUNG IST DER FORTFUEHRUNGSNACHWEIS - und der einzige.
      *
-     * `markerPressObservedTs` ist absichtlich fluechtig und steht nach
-     * einem AAPS-Neustart wieder auf 0. Verlangte man ihn weiter, sperrte
-     * das rohe Rebound-Fenster eine laengst gueltige Direktdosis erneut -
-     * und der einzige Ausweg waere ein NEUER Druck. Der oeffnet nach dem
-     * Neuautorisierungs-Vertrag aber eine NEUE VOLLE HUELLE; ein Neustart
-     * darf niemanden in eine zusaetzliche Autorisierung draengen.
+     * Der Live-Druckmerker wird hier ABSICHTLICH nicht gelesen: er ist
+     * fluechtig und stuende nach einem AAPS-Neustart wieder auf 0. Die
+     * Druckpflicht liegt beim erstmaligen [MealFoundation.arm], das ohne
+     * beobachteten Druck `none()` liefert - deshalb genuegt hier die
+     * persistierte Zuordnung, und deshalb hat [MealUpfrontAuthority.holds]
+     * gar keinen Druckparameter mehr.
      *
-     * Die persistierte Zuordnung traegt den Nachweis: armiert wird nur mit
-     * beobachtetem Druck, eine gueltige Autorisierung unter der laufenden
-     * Kennung kann es ohne ihn also gar nicht geben.
-     */
-    @Test
-    fun `nach einem Prozessneustart traegt die persistierte Zuordnung`() {
-        assertTrue(holds(druckFuer = 0L)) { "kein Druck im neuen Prozess" }
-        assertTrue(holds(druckFuer = t0 - 3_600_000L)) { "ein alter Druck steht noch herum" }
-    }
-
-    /**
-     * UND SIE TRAEGT NUR ZUSAMMEN MIT DER ZUORDNUNG. Ohne Druck UND ohne
-     * belastbare Kennung bleibt geschlossen - sonst waere die Neustart-
-     * Oeffnung ein Freibrief fuer Altbestand.
-     */
-    @Test
-    fun `ohne Druck und ohne Zuordnung bleibt es gesperrt`() {
-        assertFalse(holds(druckFuer = 0L, armedBy = null, aktuelleKennung = null))
-        assertFalse(holds(druckFuer = 0L, armedBy = "auth-2"))
-        assertFalse(holds(druckFuer = 0L, aktuelleKennung = null))
-    }
-
-    /**
-     * FEHLENDE KENNUNG IST KEINE ZUSTIMMUNG - dieselbe Wahl wie in der
-     * Rueckbuchung. Altbestand traegt keine, und unbewiesen darf hier nicht
-     * dosieren duerfen.
+     * Den ECHTEN Neustart - schreiben, frisch laden, neuer Runner mit
+     * `markerPress = 0` - prueft `TransportWiringTest`; hier steht der
+     * Vertrag, dort die Verdrahtung.
+     *
+     * FEHLENDE KENNUNG IST KEINE ZUSTIMMUNG, dieselbe Wahl wie in der
+     * Rueckbuchung: Altbestand traegt keine, und unbewiesen darf hier
+     * nicht dosieren duerfen.
      */
     @Test
     fun `ohne belastbare Zuordnung traegt sie nicht`() {

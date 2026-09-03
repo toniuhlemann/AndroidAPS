@@ -2102,7 +2102,10 @@ class FuseCycleRunner(
             auth = episodes.foundation,
             activeMarkerTs = markerTs,
             markerActive = mealMarkerActive,
-            pressObservedForTs = markerPressObserved(),
+            // KEIN Live-Druckmerker: `markerPressObserved()` ist fluechtig
+            // und wuerde die Autorisierung nach jedem Prozessneustart
+            // aussperren. Der Druck ist beim Armieren geprueft, s.
+            // [MealUpfrontAuthority].
             foundationArmedByAuthId = episodes.foundationArmedByAuthId,
             currentAuthId = episodes.markerAuth?.id,
         )

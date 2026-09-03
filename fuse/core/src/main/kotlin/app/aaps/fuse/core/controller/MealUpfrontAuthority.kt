@@ -50,16 +50,27 @@ package app.aaps.fuse.core.controller
  *    frueher armierte. `activeMarkerTs` ist im Runner bereits gegen die
  *    WIDERRUFSMARKE im Ledger abgeglichen; ein zurueckgenommener Marker
  *    kommt hier also gar nicht an.
- *  - DER BEWUSSTE DRUCK, auf zwei Wegen nachweisbar: entweder wurde
- *    GENAU DIESER Marker in DIESEM Prozess gedrueckt, oder das Fundament
- *    ist persistent unter der laufenden Kennung armiert - und armiert
- *    wird nur mit beobachtetem Druck. Der fluechtige Merker allein
- *    haette eine bestehende Autorisierung nach jedem AAPS-Neustart
- *    ausgesperrt, und der einzige Ausweg waere ein NEUER Druck gewesen -
- *    also eine neue volle Huelle. S. die Begruendung an [holds].
  *  - `foundationArmedByAuthId == currentAuthId`, beide NICHT leer -
- *    die belastbare Zuordnung zur laufenden Autorisierung. Eine
- *    FEHLENDE Kennung ist keine Zustimmung: Altbestand aus einer
+ *    die belastbare Zuordnung zur laufenden Autorisierung, und zugleich
+ *    der FORTFUEHRUNGSNACHWEIS des bewussten Drucks. Sie entsteht
+ *    ausschliesslich im Armierungsblock des Runners, und dort armiert
+ *    [MealFoundation.arm] nur mit einem in DIESEM Prozess beobachteten
+ *    Druck - ohne ihn bleibt eine [MealFoundation.Authorization.none]
+ *    zurueck, die schon an `valid` scheitert. Eine GUELTIGE
+ *    Autorisierung unter der LAUFENDEN Kennung kann es ohne bewussten
+ *    Druck also nicht geben.
+ *
+ *    DER LIVE-MERKER WIRD HIER BEWUSST NICHT GELESEN.
+ *    `markerPressObservedTs` ist fluechtig und steht nach einem
+ *    AAPS-Neustart wieder auf 0. Verlangte man ihn, sperrte das rohe
+ *    Rebound-Fenster eine laengst gueltige Direktdosis erneut - und der
+ *    einzige Ausweg waere ein NEUER Druck, der nach dem
+ *    Neuautorisierungs-Vertrag eine NEUE VOLLE HUELLE oeffnet
+ *    ([MarkerReauthorization]). Ein Neustart darf niemanden in eine
+ *    zusaetzliche Autorisierung draengen. Die Druckpflicht liegt
+ *    deshalb dort, wo sie hingehoert: beim erstmaligen Armieren.
+ *
+ *    Eine fehlende Kennung ist KEINE Zustimmung: Altbestand aus einer
  *    aelteren Fassung traegt keine, und "unbewiesen" darf hier nicht
  *    dosieren duerfen. Dieselbe Wahl wie in der Rueckbuchung.
  *  - `phaseAUpfrontU > 0` - es wurde ueberhaupt eine Direktdosis
@@ -81,8 +92,6 @@ object MealUpfrontAuthority {
      * @param activeMarkerTs der AKTIVE Markerzeitpunkt des Runners -
      *   bereits gegen die Widerrufsmarke abgeglichen.
      * @param markerActive ob der Marker in seinem Fenster laeuft.
-     * @param pressObservedForTs fuer welchen Zeitpunkt ein Druck in
-     *   DIESEM Prozess beobachtet wurde (0 = keiner).
      * @param foundationArmedByAuthId die Kennung, unter der das
      *   Fundament armiert wurde.
      * @param currentAuthId die Kennung der laufenden Autorisierung.
@@ -91,7 +100,6 @@ object MealUpfrontAuthority {
         auth: MealFoundation.Authorization,
         activeMarkerTs: Long,
         markerActive: Boolean,
-        pressObservedForTs: Long,
         foundationArmedByAuthId: String?,
         currentAuthId: String?,
     ): Boolean {
@@ -100,46 +108,25 @@ object MealUpfrontAuthority {
         if (!auth.pinnedMarkerAuthorized) return false
         if (auth.armedTs != activeMarkerTs) return false
 
-        // ---- DIE ZUORDNUNG - IMMER PFLICHT ------------------------------
+        // ---- DIE ZUORDNUNG IST DER FORTFUEHRUNGSNACHWEIS ----------------
         //
-        // Beide Kennungen muessen DA sein und uebereinstimmen; eine
-        // fehlende Identitaet ist keine Freigabe (Altbestand traegt keine).
+        // Beide Kennungen muessen DA sein und uebereinstimmen. Das ist
+        // zugleich der Nachweis des bewussten Drucks - s. die Begruendung
+        // im Kopf: armiert wird nur mit beobachtetem Druck, und ohne ihn
+        // scheitert die Autorisierung schon an `valid`.
+        //
+        // Hier stand einmal zusaetzlich ein `druckBelegt`-Zweig mit dem
+        // fluechtigen Live-Merker als Alternative. Er war nach dieser
+        // Pruefung algebraisch immer wahr, also tot - und er beschrieb den
+        // Vertrag falsch, als gaebe es zwei gleichwertige Drucknachweise.
+        // Es gibt genau einen, und er liegt in [MealFoundation.arm].
         val id = currentAuthId
-        val zuordnungBelegt = !id.isNullOrEmpty() && foundationArmedByAuthId == id
-        if (!zuordnungBelegt) return false
+        if (id.isNullOrEmpty() || foundationArmedByAuthId != id) return false
 
-        // ---- DER BEWUSSTE DRUCK - ZWEI WEGE, DERSELBE NACHWEIS ----------
+        // Hier wird nur eine BESTEHENDE Autorisierung weitergefuehrt: keine
+        // neue Huelle, kein zurueckgesetzter Verbrauch. Wie viel noch gehen
+        // darf, sagt unveraendert die Bilanz.
         //
-        // (1) LIVE: in DIESEM Prozess wurde genau dieser Marker gedrueckt.
-        // (2) PERSISTENT: das Fundament ist unter GENAU der Kennung
-        //     armiert, die jetzt laeuft.
-        //
-        // WARUM (2) DENSELBEN NACHWEIS TRAEGT: die Zuordnung entsteht
-        // ausschliesslich im Armierungsblock des Runners, und dort armiert
-        // [MealFoundation.arm] nur mit beobachtetem Druck - ohne ihn bleibt
-        // eine [MealFoundation.Authorization.none] zurueck, die schon an
-        // `auth.valid` scheitert. Eine gueltige Autorisierung UNTER DER
-        // LAUFENDEN KENNUNG kann es also ohne bewussten Druck nicht geben.
-        // Fundament, Kennung, Widerrufsstand, Marker und die verbrauchten
-        // Mengen liegen alle im Ledger und ueberleben den Prozess.
-        //
-        // WARUM DER LIVE-MERKER ALLEIN NICHT REICHT: `markerPressObservedTs`
-        // ist absichtlich fluechtig und steht nach einem AAPS-Neustart
-        // wieder auf 0. Verlangte man ihn weiter, sperrte das rohe
-        // Rebound-Fenster eine laengst gueltige Direktdosis erneut - und der
-        // einzige Ausweg waere ein NEUER Druck. Der oeffnet nach dem
-        // Neuautorisierungs-Vertrag aber eine NEUE VOLLE HUELLE
-        // ([MarkerReauthorization]); ein Neustart darf nicht in eine
-        // zusaetzliche Autorisierung draengen.
-        //
-        // Fuer das ERSTMALIGE Bewaffnen bleibt der beobachtete Druck
-        // erforderlich - das erzwingt [MealFoundation.arm], nicht diese
-        // Stelle. Hier wird nur eine BESTEHENDE Autorisierung weitergefuehrt:
-        // keine neue Huelle, kein zurueckgesetzter Verbrauch. Wie viel noch
-        // gehen darf, sagt unveraendert die Bilanz.
-        val druckBelegt = pressObservedForTs == activeMarkerTs || zuordnungBelegt
-        if (!druckBelegt) return false
-
         // Ohne gewaehlte Direktdosis gibt es nichts zu entsperren.
         return auth.phaseAUpfrontU.isFinite() && auth.phaseAUpfrontU > 0.0
     }
