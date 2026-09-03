@@ -3897,6 +3897,237 @@ class TransportWiringTest : TestBaseWithProfile() {
     // upfrontFloorU-Bilanztest ist der frische Boden die Folge, keine
     // eigene Mechanik.
 
+    // ---- DAS HISTORISCHE REBOUND-FENSTER UND DIE DIREKTDOSIS ------------
+    //
+    // BEFUND (Livezyklus 02.09.): markerBoost und reboundSuppressedByMarker
+    // true, reboundWindow false - und trotzdem recoveryDenial=CURRENT_HAZARD
+    // mit currentHazard=rebound bei phaseAUpfrontRequestedU=0, waehrend
+    // dieselbe Mahlzeit nebenher einzelne SMBs anforderte. Die Marker-
+    // Ausnahme galt nur der Heuristik-Bremse, nicht der Direktdosis-Kette.
+    //
+    // Das Rebound-Fenster wird hier UEBER DEN ECHTEN MERKER gesetzt
+    // (`primeLastLowTs`), nicht ueber einen Zuckerverlauf unter 75: sonst
+    // liefe zugleich ein gemessenes Tief mit, und der Test koennte nicht
+    // mehr sagen, WELCHER Riegel greift.
+
+    /** Der gemeinsame Aufbau: armierte Direktdosis, gesunde steigende Lage,
+     *  ein historisches Tief im Ruecken. */
+    private fun reboundMahlzeit(dir: File, anteil: Double = 1.0, kennung: String? = "auth-9") {
+        whenever(preferences.get(FuseIntKey.PrimeWindowMin)).thenReturn(20)
+        upfrontAnteil = anteil
+        primeHuelleU = 4.0
+        fundamentAnteil = 0.8
+        aufschubAn = true
+        mahlzeit(dir)
+        // Die Autorisierungskennung wie produktiv VOR der Armierung setzen -
+        // `toggleMealMarker` schreibt sie am Bedienereignis.
+        kennung?.let {
+            ledger.episodes.markerAuth =
+                app.aaps.fuse.core.controller.MarkerReauthorization.Authorization(it, markerAt)
+        }
+        // DAS HISTORISCHE FENSTER: ein Tief funf Minuten vor dem Start.
+        runner.primeLastLowTs(start - 5 * 60_000L)
+        // Gesunde, steigende Lage weit ueber jedem Tief - kein gemessenes
+        // Tief, kein Abwaertsrisiko, kein Latch.
+        flach = 150.0
+        steigungProMin = 2.0
+    }
+
+    private fun reboundGesehen(zyklen: List<FuseCycleRunner.Outcome>): Boolean =
+        zyklen.any { it.upfrontChain?.currentHazard?.contains("rebound") == true }
+
+    /**
+     * PFLICHTFALL 1 - POSITIV, DURCH DEN ECHTEN RUNNER UND DIE ECHTE AUSGABE.
+     *
+     * Gueltige Direktdosisautorisierung + historisches Rebound-Fenster + alle
+     * anderen Pruefungen bestanden: die Direktdosis wird nicht allein durch
+     * Rebound verworfen und erreicht die tatsaechliche Ausgabekette.
+     *
+     * TESTGRENZE: `transport` fuehrt Runner, ECHTES Publikations-Gate und
+     * Nicht-Sende-Beweis zusammen; `letzteMengeU` ist die Menge NACH dem
+     * Gate. Eine Pumpenbestaetigung ist das nicht - die liegt jenseits
+     * dieses Rahmens.
+     */
+    @Test
+    fun `die autorisierte Direktdosis ueberlebt das historische Rebound-Fenster`(@TempDir dir: File) {
+        reboundMahlzeit(dir)
+
+        // Die publizierte Menge JE ZYKLUS mitschreiben - der Sofortanteil
+        // geht frueh hinaus, `letzteMengeU` am Ende des Laufs waere schon
+        // wieder null und der Nachweis ginge verloren.
+        val ausgaben = mutableListOf<Double?>()
+        val zyklen = (0 until 10).map { i ->
+            val o = transport(dir)
+            ausgaben += letzteMengeU
+            o
+        }
+
+        assertTrue(zyklen.any { it.state?.reboundSuppressedByMarker == true }) {
+            "Voraussetzung: das rohe Fenster liegt an und der Marker laeuft"
+        }
+        assertFalse(reboundGesehen(zyklen)) {
+            "die Kette darf 'rebound' nicht mehr als aktuelle Gefahr fuehren - " +
+                zyklen.mapNotNull { it.upfrontChain?.currentHazard }.distinct().joinToString(" ")
+        }
+        assertTrue(zyklen.any { it.phaseAUpfrontRequestedU > 0.0 }) {
+            "die Direktdosis muss angefordert werden - " +
+                zyklen.joinToString(" ") { "${it.phaseAUpfrontRequestedU}/${it.phaseAUpfrontState}" }
+        }
+        // UND SIE MUSS HINAUSGEHEN: derselbe Lauf, nach dem echten Gate.
+        assertTrue(ausgaben.any { it != null && it > 0.0 }) {
+            "die finale Ausgabe traegt nichts: $ausgaben"
+        }
+    }
+
+    /**
+     * PFLICHTFALL 2 - OHNE GUELTIGE AUTORISIERUNG BLEIBT DER SCHUTZ.
+     *
+     * Isoliert genau die Zuordnung: identischer Aufbau, nur ohne
+     * Autorisierungskennung. Eine fehlende Kennung ist keine Zustimmung.
+     */
+    @Test
+    fun `ohne Autorisierungskennung sperrt das Rebound-Fenster die Direktdosis weiter`(@TempDir dir: File) {
+        reboundMahlzeit(dir, kennung = null)
+
+        val zyklen = (0 until 10).map { transport(dir) }
+
+        assertTrue(reboundGesehen(zyklen)) {
+            "ohne belastbare Zuordnung MUSS 'rebound' weiter sperren - " +
+                zyklen.mapNotNull { it.upfrontChain?.currentHazard }.distinct().joinToString(" ")
+        }
+        assertTrue(zyklen.all { it.phaseAUpfrontRequestedU == 0.0 }) {
+            "und nichts aus dem Sofortanteil fliessen - " +
+                zyklen.joinToString(" ") { "${it.phaseAUpfrontRequestedU}" }
+        }
+    }
+
+    /** PFLICHTFALL 3 - Marker ohne Direktdosiswahl bekommt keine. */
+    @Test
+    fun `ein Marker ohne Direktdosiswahl erhaelt durch die Ausnahme keine`(@TempDir dir: File) {
+        reboundMahlzeit(dir, anteil = 0.0)
+
+        val zyklen = (0 until 10).map { transport(dir) }
+
+        assertTrue(zyklen.all { it.phaseAUpfrontRequestedU == 0.0 }) {
+            "ohne gewaehlten Sofortanteil entsteht keiner - " +
+                zyklen.joinToString(" ") { "${it.phaseAUpfrontRequestedU}" }
+        }
+    }
+
+    /**
+     * PFLICHTFALL 4 - EINE WEITERHIN ZWINGENDE GEFAHR SPERRT AUCH MIT MARKER.
+     *
+     * Gemessenes Abwaertsrisiko unter Ueberdeckung: dieselbe Autorisierung,
+     * derselbe Rebound - aber der Sofortanteil bleibt vollstaendig liegen.
+     */
+    @Test
+    fun `ein aktuelles Abwaertsrisiko sperrt die Direktdosis auch mit Marker`(@TempDir dir: File) {
+        reboundMahlzeit(dir)
+        flach = 150.0
+        steigungProMin = -3.0
+        bolusIobU = 2.0
+
+        val zyklen = (0 until 12).map { transport(dir) }
+
+        assertTrue(zyklen.all { it.phaseAUpfrontRequestedU == 0.0 }) {
+            "die aktuelle Gefahr bleibt absolut - " +
+                zyklen.joinToString(" ") { "${it.phaseAUpfrontRequestedU}/${it.phaseAUpfrontState}" }
+        }
+        assertTrue(zyklen.any { it.upfrontChain?.currentHazard?.contains("descentRisk") == true }) {
+            "und sie muss als GEFAHR benannt sein - " +
+                zyklen.mapNotNull { it.upfrontChain?.currentHazard }.distinct().joinToString(" ")
+        }
+    }
+
+    /**
+     * PFLICHTFALL 5 - SIGNALFEHLER SPERRT AUCH MIT MARKER.
+     *
+     * Zweite weiterhin zwingende Sperre, anderer Kanal: ein abgelehntes
+     * Modell. Sie steht getrennt, damit nicht EINE Mutation beide Faelle
+     * gleichzeitig gruen faerben kann.
+     */
+    @Test
+    fun `ein Modellfehler sperrt die Direktdosis auch mit Marker`(@TempDir dir: File) {
+        reboundMahlzeit(dir)
+        predictReject = PredictorReason.PENDING_MODEL_TOO_SHORT
+
+        val zyklen = (0 until 8).map { transport(dir) }
+
+        assertTrue(zyklen.all { it.phaseAUpfrontRequestedU == 0.0 }) {
+            "ohne brauchbares Modell fliesst nichts - " +
+                zyklen.joinToString(" ") { "${it.phaseAUpfrontRequestedU}" }
+        }
+    }
+
+    /**
+     * PFLICHTFALL 6+7 - AUFSCHUB, DANN FREIGABE AUS DER RESTMENGE, MIT
+     * DURCHGEHEND STEHENDEM REBOUND-FENSTER.
+     *
+     * Zwei Dinge zusammen, weil sie derselbe Vorgang sind:
+     *
+     *  - Nach dem Aufschub darf KEIN weiterer Rebound-Riegel denselben
+     *    erlaubten Pfad nachgelagert blockieren. Das Fenster steht hier vom
+     *    ersten bis zum letzten Zyklus; aufgeschoben wird ausschliesslich
+     *    durch die AKTUELLE Gefahr, und mit ihr faellt der Aufschub.
+     *  - Freigegeben wird nur die nach der Buchhaltung noch verfuegbare
+     *    RESTMENGE, nie erneut die urspruengliche volle Direktdosis.
+     *
+     * Die Ausnahme autorisiert also keine Menge - sie hebt einen Riegel auf.
+     */
+    @Test
+    fun `nach dem Aufschub kommt nur die Restmenge und kein zweiter Rebound-Riegel`(@TempDir dir: File) {
+        maxSmbU = 0.30   // darf den Batch nicht zerteilen
+        reboundMahlzeit(dir)
+
+        // (1) AUFSCHUB DURCH DIE AKTUELLE GEFAHR - nicht durch den Rebound.
+        flach = 150.0
+        steigungProMin = -3.0
+        bolusIobU = 2.0
+        val imRiegel = (0 until 13).map { transport(dir) }
+        assertTrue(imRiegel.all { it.phaseAUpfrontRequestedU == 0.0 }) {
+            "im Riegel fliesst nichts - " +
+                imRiegel.joinToString(" ") { "${it.phaseAUpfrontRequestedU}/${it.phaseAUpfrontState}" }
+        }
+        assertTrue(imRiegel.any { it.phaseAUpfrontState == "DEFERRED_UPFRONT_BATCH" }) {
+            "der Aufschub muss entstehen - " +
+                imRiegel.mapNotNull { it.phaseAUpfrontState }.distinct().joinToString(" ")
+        }
+
+        // (2) EIN TEIL DER HUELLE IST SCHON VERBRAUCHT - regulaer in Phase A.
+        ledger.episodes.deliveredPhaseAU += 0.60
+
+        // (3) DIE GEFAHR FAELLT WEG, das Rebound-Fenster steht weiter.
+        steigungProMin = 0.8
+        flach = 130.0 - 0.8 * ((clock - start) / 60_000.0)
+        knickAbMin = null
+        bolusIobU = null
+        val nachher = (0 until 12).map { transport(dir) }
+
+        assertTrue(nachher.any { it.state?.reboundSuppressedByMarker == true }) {
+            "Voraussetzung: das Fenster steht bis zuletzt"
+        }
+        assertFalse(reboundGesehen(nachher)) {
+            "nachgelagert darf kein zweiter Rebound-Riegel greifen - " +
+                nachher.mapNotNull { it.upfrontChain?.currentHazard }.distinct().joinToString(" ")
+        }
+
+        val idx = nachher.indexOfFirst { it.phaseAUpfrontRequestedU > 0.0 }
+        assertTrue(idx >= 0) {
+            "die Freigabe muss kommen - " +
+                nachher.joinToString(" ") { "${it.phaseAUpfrontRequestedU}/${it.phaseAUpfrontState}" }
+        }
+        val batch = nachher[idx]
+        // GENAU DER OFFENE REST DESSELBEN ZYKLUS - die Bilanz, nicht die
+        // urspruengliche Menge.
+        assertEquals(batch.phaseAUpfrontPendingU, batch.phaseAUpfrontRequestedU, 1e-9) {
+            "freigegeben wird der offene Rest, nicht die volle Direktdosis"
+        }
+        assertTrue(batch.phaseAUpfrontRequestedU < 3.20 - 1e-9) {
+            "die schon verbrauchten 0,60 duerfen nicht wieder auftauchen: " +
+                "${batch.phaseAUpfrontRequestedU}"
+        }
+    }
+
     /** Armierter Marker in RUHIGER Lage: der Normalpfad fordert nichts
      *  (NO_DEMAND), die Sofortdosis kommt allein aus der Autorisierung -
      *  der Bauauftrags-Kernfall "kein normaler Korrekturbedarf noetig". */

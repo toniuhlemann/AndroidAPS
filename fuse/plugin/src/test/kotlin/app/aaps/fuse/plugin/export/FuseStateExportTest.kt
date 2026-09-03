@@ -1558,12 +1558,19 @@ class FuseStateExportTest {
             allowedDropMgdl = 2.21,
             acceptedSustainedFallMgdlPerMin = 2.0 / 4.5,
             stabilityConfirmedCycles = 3,
+            // Getrennt von der Heuristik-Bremse: hier steht, ob die
+            // ausdrueckliche Autorisierung die DIREKTDOSIS traegt.
+            reboundExemptByAuthority = true,
         )
         val c = record(outcome(upfrontChain = kette)).optJSONObject("upfrontChain")
         assertNotNull(c, "die Endkette fehlt im Trail")
         assertEquals("CALM_RECOVERED", c!!.optString("recoveryMode"))
         assertEquals("CALM_BATCH", c.optString("calmTreatment"))
         assertEquals(3, c.optInt("recoveryStreak"))
+        // Der Trail muss die beiden Aussagen getrennt tragen: die
+        // Heuristik-Bremse steht in `state.reboundSuppressedByMarker`,
+        // die Direktdosis-Kette hier.
+        assertTrue(c.optBoolean("reboundExemptByAuthority")) { c.toString() }
         assertEquals("HISTORICAL_LATCH", c.optString("descentGateCause"))
         assertEquals("MEAL_UPFRONT", c.optString("grantSource"))
         assertEquals(3.6, c.optDouble("requestedRtU"), 1e-9)

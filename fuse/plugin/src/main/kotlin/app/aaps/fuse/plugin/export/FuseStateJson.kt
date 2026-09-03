@@ -2030,6 +2030,12 @@ object FuseStateJson {
                     .put("recoveryDenial", c.recoveryDenial)
                     .put("recoveryTrackReset", c.recoveryTrackReset)
                     .put("currentHazard", c.currentHazard)
+                    // Getrennt von `state.reboundSuppressedByMarker`: das dort
+                    // ist die HEURISTIK-Bremse, das hier die Direktdosis-Kette.
+                    .put(
+                        "reboundExemptByAuthority",
+                        c.reboundExemptByAuthority ?: JSONObject.NULL,
+                    )
                     // DER STABILITAETSNACHWEIS. `stabilisation` traegt die
                     // Freigabe; `stabilityVerdict` beschreibt das groessere
                     // Fenster und darf davon abweichen.

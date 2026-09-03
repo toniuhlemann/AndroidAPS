@@ -60,6 +60,7 @@ import app.aaps.fuse.core.controller.CandidateSearch
 import app.aaps.fuse.core.controller.EvidenceStock
 import app.aaps.fuse.core.controller.MarkerFallback
 import app.aaps.fuse.core.controller.MealFoundation
+import app.aaps.fuse.core.controller.MealUpfrontAuthority
 import app.aaps.fuse.core.controller.MarkerFloor
 import app.aaps.fuse.core.controller.CorrectionReversalGuard
 import app.aaps.fuse.core.controller.DescentRecoveryLatch
@@ -587,6 +588,20 @@ class FuseCycleRunner(
         val recoveryRequired: Int,
         val recoveryDenial: String?,
         val currentHazard: String,
+        /**
+         * OB DAS HISTORISCHE REBOUND-FENSTER DIESE DIREKTDOSIS NOCH SPERRT.
+         *
+         * Zwei verschiedene Aussagen, die nicht verwechselt werden duerfen:
+         * `state.reboundSuppressedByMarker` sagt, dass die HEURISTIK-Bremse
+         * durch den Boost entwaffnet ist; dieses Feld sagt, ob die
+         * ausdrueckliche Autorisierung DIESE Kette traegt
+         * ([MealUpfrontAuthority]). Die Anzeige hat beides bis 02.09. in
+         * einen Satz gezogen und damit eine Freigabe behauptet, die im
+         * Direktdosis-Pfad nicht galt.
+         *
+         * `null` = es lag ueberhaupt kein Rebound-Fenster an.
+         */
+        val reboundExemptByAuthority: Boolean?,
         /**
          * DER STABILITAETSNACHWEIS, wie er die Freigabe getragen oder
          * gehalten hat. Ohne diese Felder ist am Geraet nicht erkennbar,
@@ -2067,6 +2082,35 @@ class FuseCycleRunner(
         val reboundWindow = reboundRaw && !markerBoost
         val reboundSuppressedByMarker = reboundRaw && markerBoost
 
+        // ---- DIE DIREKTDOSIS UND DAS HISTORISCHE REBOUND-FENSTER ---------
+        //
+        // `reboundSuppressedByMarker` oben entwaffnet nur die HEURISTIK-
+        // Bremse und haengt am BOOST-Fenster. Die Direktdosis-Kette las
+        // dagegen weiter das rohe `reboundRaw` - Livebefund: markerBoost und
+        // reboundSuppressedByMarker true, reboundWindow false, und trotzdem
+        // `recoveryDenial=CURRENT_HAZARD / currentHazard=rebound` bei
+        // `phaseAUpfrontRequestedU=0`, waehrend dieselbe Mahlzeit nebenher
+        // einzelne SMBs anforderte.
+        //
+        // Das ist eine EIGENE Frage und deshalb eine eigene Entscheidung:
+        // nicht "ist der Boost aktiv?", sondern "traegt die ausdrueckliche
+        // Autorisierung diese Direktdosis?". Sie steht in
+        // [MealUpfrontAuthority] und fuehrt nur BESTEHENDE Regeln zusammen -
+        // Gueltigkeit, gepinnte Zusage, Markeridentitaet, beobachteter
+        // Druck, Autorisierungskennung und die gewaehlte Sofortmenge.
+        val direktdosisAutorisiert = MealUpfrontAuthority.holds(
+            auth = episodes.foundation,
+            activeMarkerTs = markerTs,
+            markerActive = mealMarkerActive,
+            pressObservedForTs = markerPressObserved(),
+            foundationArmedByAuthId = episodes.foundationArmedByAuthId,
+            currentAuthId = episodes.markerAuth?.id,
+        )
+        // DER RIEGEL DER KETTE - eine Stelle, vier Tore. Ueberall sonst
+        // bleibt `reboundRaw` unveraendert in Kraft.
+        val upfrontReboundSperrt =
+            MealUpfrontAuthority.reboundBlocks(reboundRaw, direktdosisAutorisiert)
+
         val onset = OnsetChannel.evaluate(
             OnsetChannel.Input(
                 enabled = cfg.onsetChannelEnabled,
@@ -2485,7 +2529,11 @@ class FuseCycleRunner(
             latchBlocksPositive = descentLatch.blocksPositive,
             signalHealthy = step.health == Health.READY,
             measuredLow = step.safetyReasons.isNotEmpty(),
-            reboundRaw = reboundRaw,
+            // NACHGELAGERTE STELLE DERSELBEN KETTE: der Uebertrag gibt den
+            // aufgeschobenen Phase-A-RUECKSTAND in Phase B frei. Ihn weiter
+            // am rohen Kennzeichen zu haengen haette den Aufschub nur eine
+            // Stufe spaeter wiederholt.
+            reboundRaw = upfrontReboundSperrt,
             manualBolusAfterMarkerU = manualBolusAfterMarkerU,
         )
 
@@ -3501,8 +3549,15 @@ class FuseCycleRunner(
         // Einheiten lagen still. Die Zero-TBR selbst bleibt unberuehrt: sie
         // darf waehrend der Mahlzeitenfreigabe weiterlaufen, ihre Ein- und
         // Ausstiegslogik ist nicht angefasst.
+        //
+        // UND DAS HISTORISCHE REBOUND-FENSTER SCHIEBT NICHT MEHR ALLEIN AUF,
+        // wenn die ausdrueckliche Mahlzeitenautorisierung diese Direktdosis
+        // traegt (s. [MealUpfrontAuthority]). Dieselbe Trennung wie beim
+        // Zero-Latch darueber: ein historisch gehaltener Schutz ist keine
+        // AKTUELLE Gefahr. Die aktuellen Gefahren stehen unveraendert
+        // daneben und schieben weiter auf.
         val upfrontRisikoAufschub = lowThreatResult.verdict != LowThreatGate.Verdict.NONE ||
-            reboundRaw ||
+            upfrontReboundSperrt ||
             descentRisk.active ||
             descentLatch.blocksPositive ||
             upfrontTechReject
@@ -3649,7 +3704,12 @@ class FuseCycleRunner(
                 // STATT des 120-Minuten-Basalverdikts: der am Marker gepinnte
                 // Abwaertsrisiko-Vertrag dieser Mahlzeit.
                 pinnedMealRisk = batchRisikoSperrt,
-                rebound = reboundRaw,
+                // DIESELBE Entscheidung wie am Aufschub-Tor. Stuende hier
+                // weiter `reboundRaw`, waere der Aufschub zwar nie
+                // entstanden, aber ein spaeter eintretendes Rebound-Fenster
+                // haette die Wiederfreigabe erneut verworfen - genau der
+                // gemessene Livefall.
+                rebound = upfrontReboundSperrt,
                 signalUnhealthy = step.health != Health.READY,
                 technical = upfrontTechReject,
                 ledgerHold = ledgerView.hold,
@@ -4364,6 +4424,9 @@ class FuseCycleRunner(
             recoveryRequired = ruheBlockiert?.requiredCycles ?: (upfrontRecoveryParams ?: cfg.calmParams).calmCycles,
             recoveryDenial = ruheBlockiert?.denial?.name,
             currentHazard = upfrontRecovery.hazards,
+            // Nur wenn ueberhaupt ein Fenster anliegt, ist die Aussage
+            // ueberhaupt eine - sonst gibt es nichts zu entwaffnen.
+            reboundExemptByAuthority = direktdosisAutorisiert.takeIf { reboundRaw },
             stabilisation = upfrontStabilitaet.stabilisation.name,
             stabilityVerdict = upfrontStabilitaet.verdict.name,
             stabilityReason = upfrontStabilitaet.reason.name,
@@ -4608,7 +4671,11 @@ class FuseCycleRunner(
                 recoveryConfirmed = deferredRecoveryStreak >= DescentRecoveryLatch.REQUIRED_CONSECUTIVE_CYCLES,
                 signalHealthy = step.health == Health.READY,
                 measuredLow = measuredLow,
-                reboundRaw = reboundRaw,
+                // Auch hier die gemeinsame Entscheidung: die aufgeschobene
+                // Prime-Freigabe gehoert zu DERSELBEN Autorisierung. Ohne
+                // gewaehlte Direktdosis traegt sie nicht, dann bleibt der
+                // Rebound-Schutz hier unveraendert wirksam.
+                reboundRaw = upfrontReboundSperrt,
                 descentRiskActive = risk60?.active == true || descentRisk.active,
                 manualBolusAfterMarkerU = manualBolusAfterMarkerU,
                 pumpStepU = bolusStep,
