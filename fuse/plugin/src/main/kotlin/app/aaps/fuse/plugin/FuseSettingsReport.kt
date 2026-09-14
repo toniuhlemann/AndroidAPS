@@ -43,6 +43,7 @@ internal val fuseEinstellbareKeys: Set<String> = setOf(
     FuseDoubleKey.CalmRecoveryMinUkf.key,
     FuseDoubleKey.CalmRecoveryGuardDistanceMgdl.key,
     FuseBooleanKey.LivenessChannelEnabled.key,
+    FuseBooleanKey.LivenessReboundEvidenceExceptionEnabled.key,
     FuseBooleanKey.SignalRejoinEnabled.key,
     FuseIntKey.LivenessMealPowerMin.key,
     // Die vier zentralen Profilwerte (CENTRAL-only, echte Defaults).
@@ -224,6 +225,7 @@ object FuseSettingsReport {
                     // Marker (Toni 22.08.): er ist markerunabhaengig und
                     // mengenbasiert - seine Grenzen sind Dosiergrenzen.
                     schalter(FuseBooleanKey.LivenessChannelEnabled, "Liveness-Kanal"),
+                    schalter(FuseBooleanKey.LivenessReboundEvidenceExceptionEnabled, "Rebound-Evidenz-Ausnahme"),
                     schalter(FuseBooleanKey.SignalRejoinEnabled, "Wiedereinstieg nach Funkluecke"),
                     ganz(FuseIntKey.LivenessMealPowerMin, "M-Frist", "min"),
                     // CENTRAL-only: die vier Profilwerte sind normale

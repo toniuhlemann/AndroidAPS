@@ -409,7 +409,15 @@ object FuseStateJson {
     // dass die Anforderung ueberhaupt durchkommt (C7a verwirft eine
     // anhebende TBR, wenn im selben Zyklus ein SMB positiv ist).
     // Kehrt ein Schutzgrund zurueck, gilt im SELBEN Zyklus wieder ZERO.
-    const val RULE_SET_VERSION = 50
+    // v51: REBOUND-EVIDENZ-AUSNAHME AM LIVENESS-TOR (Default AUS, bitgleich).
+    // Eingeschaltet sperrt das rohe Rebound-Fenster den Kanal nicht mehr
+    // allein, weil Buchungen den versiegelten Kredit verbraucht haben:
+    // MEAL-Vollmacht + gepinntes, nicht abgelaufenes Sonderrecht DIESES
+    // Markers + Tief vor dem Druck + Evidenzbestand ACTIVE/PENDING_SEAL +
+    // gemessen stabile Rohreihe. Nur dieses eine Tor; Normalpfad,
+    // Totbaender, Direktdosis, Mengen und Gates unveraendert. Dazu
+    // dosierneutral liveness.noLiftReason (NO_HEADROOM aufgeschluesselt).
+    const val RULE_SET_VERSION = 51
 
     /** Schema des Trail-Datensatzes - s. die Notiz an der Schreibstelle. */
     const val SCHEMA_VERSION = 4
@@ -875,7 +883,23 @@ object FuseStateJson {
                     .put("denial", outcome.livenessDenial ?: JSONObject.NULL)
                     .put("exit", outcome.livenessExit ?: JSONObject.NULL)
                     .put("modelReject", outcome.livenessModelReject ?: JSONObject.NULL)
-                    .put("reArmUntilTs", outcome.livenessReArmUntilTs),
+                    .put("reArmUntilTs", outcome.livenessReArmUntilTs)
+                    // v51: WARUM der bewaffnete Kanal nichts hebt - dosierneutral,
+                    // `denial` bleibt zeichengleich.
+                    .put("noLiftReason", outcome.livenessNoLiftReason ?: JSONObject.NULL)
+                    // v51: die Rebound-Evidenz-Ausnahme. `allowed` = die
+                    // Bedingungen gelten; `vetoLifted` = sie hat das rohe Veto in
+                    // diesem Zyklus TATSAECHLICH aufgehoben. Bestand (Phase im
+                    // evidenceEpisode-Block), frischer Zufluss und Messlage stehen
+                    // getrennt - Bestand ist kein Anstiegsnachweis.
+                    .put(
+                        "reboundEvidenceException", JSONObject()
+                            .put("allowed", outcome.livenessReboundExceptionAllowed ?: JSONObject.NULL)
+                            .put("denial", outcome.livenessReboundExceptionDenial ?: JSONObject.NULL)
+                            .put("vetoLifted", outcome.livenessReboundVetoLifted)
+                            .put("evidenceInflowMgdl", fin(outcome.livenessEvidenceInflowMgdl))
+                            .put("measuredStability", outcome.livenessMeasuredStability ?: JSONObject.NULL),
+                    ),
             )
             .put(
                 "reboundOverrideRestMin",
@@ -1955,6 +1979,8 @@ object FuseStateJson {
         // die Profilwerte unten; die frueheren Kanal-Deckel sind mit dem
         // LEGACY-Pfad entfernt.
         .put("livenessChannelEnabled", p.livenessChannelEnabled)
+        // v51: die Rebound-Evidenz-Ausnahme am Liveness-Tor.
+        .put("livenessReboundEvidenceExceptionEnabled", p.livenessReboundEvidenceExceptionEnabled)
         .put("mealPowerMin", p.livenessMealPowerMin)
         // CENTRAL-only (Legacy-Cleanup 29.08. nachts): policyMode bleibt
         // als KONSTANTE im Export, damit Viewer und alte Trails eindeutig
@@ -2176,6 +2202,10 @@ object FuseStateJson {
                 // nach Wenden verschieden schnell wieder.
                 p.livenessChannelEnabled,
                 p.livenessReArmMin,
+                // v51: die Rebound-Evidenz-Ausnahme. AUS und EIN sind zwei
+                // verschiedene Regler, sobald ein Marker nach einem Tief
+                // gedrueckt wird.
+                p.livenessReboundEvidenceExceptionEnabled,
                 // v40 (M3): dosierwirksam unter MEAL-Vollmacht, sobald
                 // kleiner 3 gesetzt - modusunabhaengig immer im Hash.
                 p.mealArmCycles,

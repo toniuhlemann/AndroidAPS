@@ -852,7 +852,11 @@ class FuseStateExportTest {
         // v50 stufenweise Basalrueckkehr (Default aus): dritter
         // Aktuationszustand PARTIAL_RECOVERY zwischen ZERO und RELEASED,
         // Rate immer unter Profilbasal, SMB waehrenddessen hart 0.
-        assertEquals(50, FuseStateJson.RULE_SET_VERSION)
+        // v51 Rebound-Evidenz-Ausnahme am Liveness-Tor (Default aus): das
+        // rohe Rebound-Veto faellt dort auch bei verbrauchtem Kredit, wenn
+        // Vollmacht, Sonderrechts-Pin und -Frist, Tief vor dem Druck,
+        // Evidenzbestand und stabile Rohreihe tragen.
+        assertEquals(51, FuseStateJson.RULE_SET_VERSION)
         assertTrue(
             FuseStateJson.hashOf(cfg)!!.isNotEmpty(),
             "und der Hash bleibt berechenbar",

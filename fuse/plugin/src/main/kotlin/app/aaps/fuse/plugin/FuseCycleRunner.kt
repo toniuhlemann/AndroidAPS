@@ -1204,6 +1204,17 @@ class FuseCycleRunner(
         val livenessBinding: String? = null,
         val livenessDenial: String? = null,
         val livenessExit: String? = null,
+        /** Rebound-Evidenz-Ausnahme: zugelassen (null = nicht ausgewertet). */
+        val livenessReboundExceptionAllowed: Boolean? = null,
+        val livenessReboundExceptionDenial: String? = null,
+        /** Hat sie das rohe Rebound-Veto in DIESEM Zyklus tatsaechlich aufgehoben? */
+        val livenessReboundVetoLifted: Boolean = false,
+        /** Frischer Evidenzzufluss dieses Zyklus [mg/dl] - Groesse b) des Vertrags. */
+        val livenessEvidenceInflowMgdl: Double? = null,
+        /** Stabilitaetsurteil der rohen Reihe - Groesse c) des Vertrags. */
+        val livenessMeasuredStability: String? = null,
+        /** Dosierneutraler Grund, warum der bewaffnete Kanal nichts hebt. */
+        val livenessNoLiftReason: String? = null,
         /** Der TYPISIERTE Grund des Modell-Tors (CandidateSearch.Reject)
          *  dieses Zyklus - null, wenn die Integritaetskette bestanden ist.
          *  Nur im Hauptpfad gefuellt. */
@@ -4758,6 +4769,15 @@ class FuseCycleRunner(
         var livenessStaticCorrectionNeedU: Double? = null
         var livenessCoverageState: String? = null
         var livenessPressureActive: Boolean? = null
+        // Rebound-Evidenz-Ausnahme (Toni 14.09.): zugelassen ist nicht
+        // aufgehoben - beides steht getrennt im Trail. null = nicht
+        // ausgewertet (Kanal aus).
+        var livenessReboundExceptionAllowed: Boolean? = null
+        var livenessReboundExceptionDenial: String? = null
+        var livenessReboundVetoLifted = false
+        var livenessEvidenceInflowMgdl: Double? = null
+        var livenessMeasuredStability: String? = null
+        var livenessNoLiftReason: String? = null
 
         // Marker-Leistungsfrist + zentraler Dosierkontext: seit B2 VOR der
         // State-Konstruktion bestimmt (Kontextgrenze in der Grant-Bildung,
@@ -4913,6 +4933,32 @@ class FuseCycleRunner(
             // Die GEMESSENEN Riegel - fuer Lauf UND Bewaffnung. Waehrend
             // eines Laufs beenden sie ihn MIT Sperre; davor verhindern sie
             // die Bewaffnung und setzen den Streak zurueck.
+            // ---- REBOUND-EVIDENZ-AUSNAHME (Toni 14.09., Variante A) ------
+            // Vertrag s. [MealReboundEvidenceException]. Sie ersetzt am
+            // Liveness-Tor NUR die Bedingung "versiegelter Kredit > 0" des
+            // bestehenden Sonderrechts; Normalpfad, Totbaender und
+            // Direktdosis-Kette lesen weiter `reboundOverrideErlaubt`.
+            // Die Messlage ist DERSELBE Stabilitaetsnachweis auf der rohen
+            // Reihe wie bei der Direktdosis (eine Wahrheit je Zyklus).
+            val reboundAusnahme = app.aaps.fuse.core.controller.MealReboundEvidenceException.decide(
+                app.aaps.fuse.core.controller.MealReboundEvidenceException.Input(
+                    enabled = cfg.livenessReboundEvidenceExceptionEnabled,
+                    computeTs = computeTs,
+                    markerTs = markerTs,
+                    mealAuthorized = dosingCtx.mealAuthorized,
+                    reboundOverridePinnedForTs = episodes.markerReboundOverridePinnedFor,
+                    reboundOverrideDeadlineTs = episodes.markerReboundOverrideDeadlineTs,
+                    lastLowTs = lastLowTs,
+                    evidencePhase = evidenz?.phase,
+                    measuredVerdict = upfrontStabilitaet.verdict,
+                ),
+            )
+            livenessReboundExceptionAllowed = reboundAusnahme.allowed
+            livenessReboundExceptionDenial = reboundAusnahme.denial?.name
+            livenessReboundVetoLifted = app.aaps.fuse.core.controller.MealReboundEvidenceException
+                .vetoLifted(reboundRaw, reboundOverrideErlaubt, reboundAusnahme)
+            livenessEvidenceInflowMgdl = evidenz?.inflowMgdl
+            livenessMeasuredStability = upfrontStabilitaet.verdict.name
             val hart = when {
                 step.health != Health.READY -> "SIGNAL_UNHEALTHY"
                 treatmentView == null -> "VIEW_UNREADABLE"
@@ -4926,7 +4972,10 @@ class FuseCycleRunner(
                 // geschlossen, der Kanal las das Rohsignal und blieb
                 // EXCLUDED/REBOUND_ACTIVE - serielle Blockade bei q1 172,
                 // r +4,8 und 3,68 U freiem MEAL-Headroom.
-                reboundRaw && !reboundOverrideErlaubt -> "REBOUND_ACTIVE"
+                // Seit 14.09. zusaetzlich die Rebound-Evidenz-Ausnahme (Default
+                // AUS -> exakt die bisherige Bedingung).
+                app.aaps.fuse.core.controller.MealReboundEvidenceException
+                    .gateBlocks(reboundRaw, reboundOverrideErlaubt, reboundAusnahme) -> "REBOUND_ACTIVE"
                 measuredLow -> "MEASURED_LOW"
                 descentRisk.active -> "DESCENT_RISK"
                 risk60?.active == true -> "DESCENT_RISK_MARKER"
@@ -5193,6 +5242,12 @@ class FuseCycleRunner(
                 // `max` heisst: der Kanal hebt nur, er ersetzt nie nach
                 // unten - liefert der Normalpfad mehr, bleibt der Normalpfad.
                 livenessDenial = if (liveU <= 0.0) "NO_HEADROOM" else "NORMAL_COVERS"
+                // Dosierneutral: WARUM nichts gehoben wird (Bedarf, Raster,
+                // Deckel, Normalpfad) - der Denial bleibt zeichengleich.
+                livenessNoLiftReason = app.aaps.fuse.core.controller.LivenessNoLiftReason.of(
+                    needU = bedarfU, candidateU = livenessCandidateU, headroomU = head.headroomU,
+                    liveU = liveU, normalU = nachAufschub.smbU,
+                )?.name
                 return@run nachAufschub
             }
             livenessLiftU = liveU - nachAufschub.smbU
@@ -5973,6 +6028,12 @@ class FuseCycleRunner(
             livenessBinding = livenessBinding,
             livenessDenial = livenessDenial,
             livenessExit = livenessExit,
+            livenessReboundExceptionAllowed = livenessReboundExceptionAllowed,
+            livenessReboundExceptionDenial = livenessReboundExceptionDenial,
+            livenessReboundVetoLifted = livenessReboundVetoLifted,
+            livenessEvidenceInflowMgdl = livenessEvidenceInflowMgdl,
+            livenessMeasuredStability = livenessMeasuredStability,
+            livenessNoLiftReason = livenessNoLiftReason,
             livenessModelReject = livenessModelReject,
             livenessReArmUntilTs = episodes.livenessReArmUntilTs,
             preFoundationSmbU = preFoundationSmbU,
@@ -7571,6 +7632,9 @@ class FuseCycleRunner(
         /** Liveness-Kanal (Bauvertrag 22.08. nachts) - s.
          *  [FuseBooleanKey.LivenessChannelEnabled]. */
         val livenessChannelEnabled: Boolean,
+        /** Rebound-Evidenz-Ausnahme am Liveness-Tor (Toni 14.09.), Default
+         *  AUS - s. [FuseBooleanKey.LivenessReboundEvidenceExceptionEnabled]. */
+        val livenessReboundEvidenceExceptionEnabled: Boolean = false,
         /** MEAL/CORRECTION (Bauauftrag 23.08. nachts) - s. FuseKeys.
          *  Werte sind bereits LESE-MIGRIERT (ungesetzt = alter Globalwert). */
         val livenessMealPowerMin: Int,
@@ -7692,6 +7756,7 @@ class FuseCycleRunner(
         markerPrimeDescentHorizonMin = preferences.get(FuseDoubleKey.MarkerPrimeDescentHorizonMin),
         deferredPrimeEndMin = preferences.get(FuseIntKey.DeferredPrimeEndMin),
         livenessChannelEnabled = preferences.get(FuseBooleanKey.LivenessChannelEnabled),
+        livenessReboundEvidenceExceptionEnabled = preferences.get(FuseBooleanKey.LivenessReboundEvidenceExceptionEnabled),
         // MEAL/CORRECTION-LESE-MIGRATION (Bauauftrag §7): ungesetzte neue
         // Schluessel folgen dem bisherigen Globalwert - das Update ist
         // dosierneutral; die Grenzen-Klammer zaehlt Ausreisser als "nie

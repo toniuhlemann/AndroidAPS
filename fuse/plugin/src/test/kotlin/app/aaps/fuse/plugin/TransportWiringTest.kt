@@ -181,6 +181,9 @@ class TransportWiringTest : TestBaseWithProfile() {
     /** Liveness-Kanal-Hebel: Schalter, Kanaldeckel [%], Re-Arm-Sperre [min]. */
     private var livenessAn = false
 
+    /** Rebound-Evidenz-Ausnahme am Liveness-Tor - Default AUS wie in Produktion. */
+    private var livenessAusnahmeAn = false
+
     /** Masterschalter der Prognose-Shadows (Default AN wie in Produktion). */
     private var forecastShadowAn = true
     private var mealPowerMin = 120
@@ -584,6 +587,7 @@ class TransportWiringTest : TestBaseWithProfile() {
         whenever(preferences.get(FuseDoubleKey.MarkerPrimeDescentHorizonMin)).thenAnswer { aufschubHorizontMin }
         whenever(preferences.get(FuseIntKey.DeferredPrimeEndMin)).thenAnswer { aufschubFristMin }
         whenever(preferences.get(FuseBooleanKey.LivenessChannelEnabled)).thenAnswer { livenessAn }
+        whenever(preferences.get(FuseBooleanKey.LivenessReboundEvidenceExceptionEnabled)).thenAnswer { livenessAusnahmeAn }
         whenever(preferences.get(FuseBooleanKey.ForecastShadowCollectionEnabled)).thenAnswer { forecastShadowAn }
         whenever(preferences.get(FuseIntKey.LivenessMealPowerMin)).thenAnswer { mealPowerMin }
         whenever(preferences.get(FuseIntKey.MealArmCycles)).thenAnswer { mealArmZyklen }
@@ -14136,6 +14140,493 @@ class TransportWiringTest : TestBaseWithProfile() {
             "ohne belastbare Sicht darf keine TBR gestellt werden - C7b kann nicht schuetzen, was es nicht sieht"
         }
         assertTrue(besitz().leer) { "und es wird auch nichts gebucht: ${besitz()}" }
+    }
+
+    // ---- Rechenspur fuer Fehlermeldungen der Rebound-Evidenz-Ausnahme ----------
+
+    private fun zeile(o: FuseCycleRunner.Outcome): String = listOf(
+        "t=" + (o.computeTs - start) / 60_000L,
+        "q1=" + "%.1f".format(o.signal?.q1 ?: Double.NaN),
+        "raw=" + "%.1f".format(o.signal?.rawBg ?: Double.NaN),
+        "ukf=" + "%.2f".format(o.signal?.ukfRatePerMin ?: Double.NaN),
+        "rb=" + (o.state?.reboundRestMin ?: -1),
+        "ovr=" + o.evidenceMayOverrideRebound,
+        "cr=" + "%.3f".format(o.evidenceCreditMgdlPerMin ?: Double.NaN),
+        "ph=" + o.evidencePhase,
+        "inf=" + o.livenessEvidenceInflowMgdl?.let { "%.2f".format(it) },
+        "stab=" + o.livenessMeasuredStability,
+        "exc=" + o.livenessReboundExceptionAllowed + "/" + o.livenessReboundExceptionDenial,
+        "lift=" + o.livenessReboundVetoLifted,
+        "act=" + o.livenessActive,
+        "rsn=" + o.livenessProfileReason,
+        "den=" + o.livenessDenial,
+        "exit=" + o.livenessExit,
+        "cand=" + "%.2f".format(o.livenessCandidateU),
+        "liftU=" + "%.2f".format(o.livenessLiftU),
+        "smb=" + "%.2f".format(o.decision.smbU),
+        "nl=" + o.livenessNoLiftReason,
+        "turn=" + o.turnResponseShadow?.classification?.phase,
+        "abort=" + o.abortReason,
+    ).joinToString(" ")
+
+    // ==== REBOUND-EVIDENZ-AUSNAHME: PFLICHTFAELLE (Toni 14.09.) ==============
+    //
+    // Alles ueber die echte Runner-Kette, wo verlangt mit dem echten
+    // Publikations-Gate. Jede Behauptung hat eine harte Vorbedingung gegen
+    // leeres Bestehen; `zeile` oben liefert die Rechenspur fuer Fehlermeldungen.
+
+    /**
+     * Die P1-Lage (Tief bis etwa Minute 11, Anstieg 2,5/min, Guard-Deadlock),
+     * aber der Marker wird erst bei Minute 14 gedrueckt - NACH dem Tief.
+     * maxSMB 0,05: die eigenen Lifts zehren den Bestand nicht in einem Zug auf,
+     * die Lage erreicht PENDING_SEAL bei verbrauchtem Kredit (gemessen: der
+     * frische Zufluss steht, der versiegelte Rest ist abgebucht).
+     */
+    private fun ausnahmeLage(dir: File, an: Boolean = true): FuseLedgerAdapter {
+        markerAt = 0L
+        val a = reboundOverrideLage(dir)
+        markerAt = start + 14 * 60_000L
+        livenessAusnahmeAn = an
+        maxSmbU = 0.05
+        return a
+    }
+
+    private fun rb(o: FuseCycleRunner.Outcome) = o.state?.reboundRestMin ?: 0
+
+    private val bestandPhasen = setOf("ACTIVE", "PENDING_SEAL")
+
+    /** Das echte Publikations-Gate fuer einen bereits gerechneten Zyklus. */
+    private fun veroeffentliche(o: FuseCycleRunner.Outcome, persistDir: File) =
+        (o.decision.smbU.takeIf { it > 0.0 }).let { units ->
+            val id = "e2e#${o.computeTs}"
+            val rt = RT(
+                algorithm = APSResult.Algorithm.FUSE, timestamp = o.computeTs,
+                rate = null, duration = null, units = units, deliverAt = units?.let { o.computeTs },
+            )
+            val expected = LedgerPublicationGate.commitmentOf(units = rt.units, treatmentViewPresent = true, proposalId = id)
+            val p = LedgerPublicationGate.publish(
+                rt = rt, adapter = ledger, dir = persistDir, expected = expected,
+                published = InterventionStamp.Published(smbU = rt.units, tbrChanged = o.tbrChanged),
+                events = {
+                    if (expected is LedgerPublicationGate.Commitment.Proposal && rt.units != null)
+                        ledger.onPublished(
+                            proposalId = id, unitsU = rt.units!!, decisionTs = o.computeTs,
+                            latestBolusTs = clock, bolusStepU = 0.05,
+                        )
+                },
+            )
+            ledger.resolveReservation(o.computeTs, p.rt.units ?: 0.0, proposalId = id)
+            p
+        }
+
+    /** Pflichtfall 1: frueher bestaetigter Anstieg, gueltige Autorisierung,
+     *  Kandidat ueber dem Normalpfad, ausschliesslich historischer Rebound. */
+    @Test
+    fun `Ausnahme 1 - PENDING_SEAL mit verbrauchtem Kredit traegt den laufenden Kanal`(@TempDir dir: File) {
+        ausnahmeLage(dir)
+        val o = (1..60).map { cycle() }
+        val aufgehoben = o.filter { it.livenessReboundVetoLifted }
+        val beleg = aufgehoben.firstOrNull {
+            it.livenessLiftU > 0.0 && !it.evidenceMayOverrideRebound &&
+                (it.evidenceCreditMgdlPerMin ?: 0.0) == 0.0 && it.evidencePhase == "PENDING_SEAL" && rb(it) > 0
+        } ?: throw AssertionError("kein Aufhebungszyklus mit PENDING_SEAL, Kredit 0 und Lift:\n" + o.joinToString("\n") { zeile(it) })
+        assertEquals("MARKER_POWER", beleg.livenessProfileReason)
+        assertEquals("MEAL", beleg.dosingContextProfile)
+        aufgehoben.forEach {
+            assertTrue(it.livenessProfileReason != "REBOUND_ACTIVE" && it.livenessExit != "REBOUND_ACTIVE") { zeile(it) }
+            // Wirkungsbereich: nur im rohen Fenster und vor der Frist.
+            assertTrue(rb(it) > 0 && it.computeTs < it.reboundOverrideDeadlineTs) { zeile(it) }
+        }
+        // Max-Verknuepfung, nie Addition.
+        o.filter { it.livenessActive }.forEach {
+            val normal = it.livenessNormalSmbU ?: 0.0
+            val live = LivenessChannel.quantize(it.livenessCandidateU, 0.05)
+            assertTrue(it.decision.smbU <= maxOf(normal, live) + 1e-9) { "Summe statt Maximum: ${zeile(it)}" }
+        }
+    }
+
+    /** Gegenprobe: derselbe Aufbau ohne Schalter endet am Rebound-Veto. */
+    @Test
+    fun `Ausnahme 1b - ohne Schalter endet dieselbe Lage am Rebound-Veto`(@TempDir dir: File) {
+        ausnahmeLage(dir, an = false)
+        val o = (1..60).map { cycle() }
+        assertTrue(o.none { it.livenessReboundVetoLifted })
+        assertTrue(o.all { it.livenessReboundExceptionDenial == null || it.livenessReboundExceptionDenial == "DISABLED" })
+        assertTrue(o.any { it.livenessExit == "REBOUND_ACTIVE" && it.evidencePhase in bestandPhasen }) {
+            "die Lage muss ohne Schalter mit Bestand am Veto enden:\n" + o.joinToString("\n") { zeile(it) }
+        }
+    }
+
+    /** Pflichtfall 2: wiederholte Buchungen unter PENDING_SEAL - die Buchhaltung
+     *  bleibt korrekt, kein Kredit wird erstattet, jede Entscheidung folgt dem
+     *  Vertrag. Mit dem echten Publikations-Gate. */
+    @Test
+    fun `Ausnahme 2 - wiederholte Buchungen unter PENDING_SEAL, Buchhaltung und Vertrag`(@TempDir dir: File) {
+        val adapter = ausnahmeLage(dir)
+        val startCommitted = adapter.episodes.evidenceCommittedU
+        var publiziert = 0.0
+        var letzterCommitted = startCommitted
+        val o = (1..60).map {
+            val z = transport(dir)
+            publiziert += letzteMengeU ?: 0.0
+            assertTrue(ledger.episodes.evidenceCommittedU >= letzterCommitted - 1e-9) { "Evidenzbuchung sank: ${zeile(z)}" }
+            letzterCommitted = ledger.episodes.evidenceCommittedU
+            z
+        }
+        val gehoben = o.filter { it.livenessReboundVetoLifted && it.livenessLiftU > 0.0 && it.evidencePhase == "PENDING_SEAL" }
+        assertTrue(gehoben.size >= 2) { "es braucht WIEDERHOLTE Buchungen unter PENDING_SEAL:\n" + o.joinToString("\n") { zeile(it) } }
+        gehoben.forEach { assertEquals(0.0, it.evidenceCreditMgdlPerMin ?: 0.0, 1e-12, "kein Kredit erstattet: ${zeile(it)}") }
+        assertEquals(publiziert, ledger.episodes.evidenceCommittedU - startCommitted, 1e-9, "jede publizierte Menge genau einmal im Evidenzzaehler")
+        // Jede ausgewertete Entscheidung folgt dem Vertrag (Lage: Tief vor dem Druck, Pin passt).
+        o.filter { it.livenessReboundExceptionAllowed != null }.forEach {
+            val erwartet = it.dosingContextProfile == "MEAL" && it.evidencePhase in bestandPhasen &&
+                it.livenessMeasuredStability == "STABLE" && it.computeTs < it.reboundOverrideDeadlineTs
+            assertEquals(erwartet, it.livenessReboundExceptionAllowed, zeile(it))
+        }
+    }
+
+    /** Pflichtfall 3a: Kandidat unter dem Pumpenraster - keine Abgabe, typisiert. */
+    @Test
+    fun `Ausnahme 3a - Kandidat unter dem Raster gibt nichts ab`(@TempDir dir: File) {
+        ausnahmeLage(dir)
+        maxSmbU = 0.04
+        val o = (1..60).map { cycle() }
+        val raster = o.filter { it.livenessActive && it.livenessNoLiftReason == "BELOW_PUMP_STEP" }
+        assertTrue(raster.isNotEmpty()) { o.joinToString("\n") { zeile(it) } }
+        raster.forEach {
+            assertEquals(0.0, it.livenessLiftU, 1e-12)
+            assertEquals("NO_HEADROOM", it.livenessDenial, "Denial bleibt zeichengleich")
+            assertEquals(it.livenessNormalSmbU ?: 0.0, it.decision.smbU, 1e-9)
+        }
+    }
+
+    /** Pflichtfall 3b + 6: ausgeschoepfter Deckel - zugelassen ist nicht Menge. */
+    @Test
+    fun `Ausnahme 3b - ausgeschoepfter Deckel gibt nichts ab`(@TempDir dir: File) {
+        ausnahmeLage(dir)
+        maxSmbU = 0.3
+        mealExpLimit = 3.0 // Bolus-IOB 4,5 U steht ueber der Kontextgrenze
+        val o = (1..60).map { cycle() }
+        val deckel = o.filter { it.livenessActive && it.livenessNoLiftReason == "CAP_EXHAUSTED" }
+        assertTrue(deckel.isNotEmpty()) { o.joinToString("\n") { zeile(it) } }
+        assertTrue(o.none { it.livenessLiftU > 0.0 }) { "unter erschoepftem Deckel darf der Kanal nie heben" }
+    }
+
+    /** Pflichtfall 4a: ohne Marker keine Ausnahme. */
+    @Test
+    fun `Ausnahme 4a - ohne Marker keine Ausnahme`(@TempDir dir: File) {
+        ausnahmeLage(dir)
+        markerAt = 0L
+        val o = (1..60).map { cycle() }
+        assertTrue(o.none { it.livenessReboundVetoLifted || it.livenessReboundExceptionAllowed == true })
+        assertTrue(o.any { it.livenessReboundExceptionDenial == "NOT_MEAL_AUTHORIZED" })
+        o.filter { rb(it) > 0 }.forEach { assertEquals(0.0, it.livenessLiftU, 1e-12, zeile(it)) }
+    }
+
+    /** Pflichtfall 4b: fremde Zuordnung - ein ohne beobachteten Druck geaenderter
+     *  Marker bekommt kein Rebound-Sonderrecht und damit keine Ausnahme. */
+    @Test
+    fun `Ausnahme 4b - fremder Marker ohne Druck oeffnet nichts`(@TempDir dir: File) {
+        ausnahmeLage(dir)
+        var n = 0
+        while (n < 60) { n++; if (cycle().livenessReboundVetoLifted) break }
+        assertTrue(n < 60, "die Lage muss erst einmal aufheben (sonst prueft der Fall nichts)")
+        markerAt = clock
+        markerPress = 0L // geaendert, aber in diesem Prozess nie gedrueckt
+        val o = (1..20).map { cycle() }
+        assertTrue(o.none { it.livenessReboundVetoLifted || it.livenessReboundExceptionAllowed == true }) { o.joinToString("\n") { zeile(it) } }
+        assertTrue(o.any { it.livenessReboundExceptionDenial == "OVERRIDE_PIN_MISMATCH" || it.livenessReboundExceptionDenial == "NOT_MEAL_AUTHORIZED" })
+    }
+
+    /** Pflichtfall 4c: die Ruecknahme schliesst die Ausnahme sofort. */
+    @Test
+    fun `Ausnahme 4c - Ruecknahme schliesst sofort`(@TempDir dir: File) {
+        ausnahmeLage(dir)
+        var n = 0
+        while (n < 60) { n++; if (cycle().livenessReboundVetoLifted) break }
+        assertTrue(n < 60, "die Lage muss erst einmal aufheben")
+        markerAt = 0L
+        val o = cycle()
+        assertTrue(!o.livenessReboundVetoLifted && o.livenessReboundExceptionAllowed == false && !o.livenessActive, zeile(o))
+        assertEquals("NOT_MEAL_AUTHORIZED", o.livenessReboundExceptionDenial)
+        assertEquals(0.0, o.livenessLiftU, 1e-12)
+    }
+
+    /** Pflichtfall 4d: nach Ablauf der Rebound-Frist keine Ausnahme. */
+    @Test
+    fun `Ausnahme 4d - abgelaufene Frist oeffnet nichts`(@TempDir dir: File) {
+        ausnahmeLage(dir)
+        reboundOverrideMaxMin = 21 // beim Druck (Minute 14) gepinnt: Frist Minute 35
+        val frist = start + 35 * 60_000L
+        val o = (1..60).map { cycle() }
+        // Vor der Frist darf die Ausnahme gelten - danach nie.
+        o.filter { it.computeTs >= frist }.forEach {
+            assertTrue(!it.livenessReboundVetoLifted && it.livenessReboundExceptionAllowed != true, zeile(it))
+        }
+        assertTrue(o.any { it.livenessReboundExceptionDenial == "OVERRIDE_EXPIRED" && rb(it) > 0 && it.evidencePhase in bestandPhasen && it.computeTs >= frist }) {
+            "die Frist muss IM rohen Fenster bei vorhandenem Bestand ablaufen:\n" + o.joinToString("\n") { zeile(it) }
+        }
+    }
+
+    /** Pflichtfall 5: echter Codec-Neustart - Pins und Evidenz aus der Datei,
+     *  der wiederholte Messpunkt dosiert nicht, keine neue Huelle, keine
+     *  doppelte Evidenzverwertung. */
+    @Test
+    fun `Ausnahme 5 - Neustart ueber den Codec`(@TempDir dir: File) {
+        val adapter = ausnahmeLage(dir)
+        var beleg: FuseCycleRunner.Outcome? = null
+        var n = 0
+        while (beleg == null && n < 60) {
+            val o = transport(dir); n++
+            if (o.livenessReboundVetoLifted && o.livenessLiftU > 0.0) beleg = o
+        }
+        assertTrue(beleg != null, "die Lage muss unter der Ausnahme heben")
+        val datei = nachNeustart(dir)
+        assertEquals(adapter.episodes.evidenceCommittedU, datei.evidenceCommittedU, 1e-12, "der Aufhebungszyklus steht versiegelt auf Platte")
+        assertEquals(adapter.episodes.evidenceState, datei.evidenceState)
+        assertEquals(markerAt, datei.markerReboundOverridePinnedFor)
+        assertEquals(markerAt, datei.markerPowerPinnedFor)
+        val huelleVorher = Triple(datei.foundation.valid, datei.foundation.armedTs, datei.foundation.phaseAUpfrontU)
+        val primeVorher = datei.primeSpentU
+
+        // Prozessneustart: neuer Adapter aus der Datei, neuer Runner, kein Druck im Prozess.
+        neuerRunner(FuseLedgerAdapter().also { it.loadOnce(dir, "test-epoch", clock) })
+        markerPress = 0L
+        // Derselbe Messpunkt noch einmal: der Neustart-Dedupe verwirft ihn.
+        val wiederholt = runner.run(false, testPumpe())
+        assertTrue(wiederholt.abortReason?.contains("already consumed") == true, zeile(wiederholt))
+        assertEquals(0.0, wiederholt.decision.smbU, 1e-12)
+
+        val committedNachLaden = ledger.episodes.evidenceCommittedU
+        var publiziert = 0.0
+        val danach = (1..8).map { transport(dir).also { publiziert += letzteMengeU ?: 0.0 } }
+        // Der erste neue Zyklus rechnet genau EIN Intervall ab dem gespeicherten Anker.
+        val erster = danach.first()
+        assertTrue((erster.livenessEvidenceInflowMgdl ?: 0.0) <= (beleg!!.livenessEvidenceInflowMgdl ?: 0.0) + 0.5) {
+            "kein Nachholen ueber den Neustart: ${zeile(erster)} vs ${zeile(beleg!!)}"
+        }
+        assertEquals(publiziert, ledger.episodes.evidenceCommittedU - committedNachLaden, 1e-9)
+        assertEquals(
+            huelleVorher,
+            Triple(ledger.episodes.foundation.valid, ledger.episodes.foundation.armedTs, ledger.episodes.foundation.phaseAUpfrontU),
+            "keine neue Huelle",
+        )
+        assertEquals(primeVorher, ledger.episodes.primeSpentU, 1e-12)
+        danach.filter { it.livenessReboundExceptionAllowed == true }.forEach {
+            assertTrue(it.evidencePhase in bestandPhasen && it.livenessMeasuredStability == "STABLE") { zeile(it) }
+        }
+    }
+
+    /** Pflichtfall Persistenz: scheitert der Persist im Aufhebungszyklus, geht
+     *  keine Menge hinaus, der Evidenzstand rollt zurueck, und der Neustart
+     *  sieht weder Buchung noch Evidenzverbrauch dieses Zyklus. */
+    @Test
+    fun `Ausnahme 6 - gescheiterter Persist publiziert nichts und verliert nichts`(@TempDir dir: File) {
+        ausnahmeLage(dir)
+        val blockiert = File(dir, "datei-statt-verzeichnis").also { it.writeText("x") }
+        var geprueft = false
+        var n = 0
+        while (!geprueft && n < 60) {
+            n++
+            val vorEvidenz = ledger.episodes.evidenceState
+            val vorCommitted = ledger.episodes.evidenceCommittedU
+            val o = cycle()
+            if (o.livenessReboundVetoLifted && o.decision.smbU > 0.0) {
+                val p = veroeffentliche(o, File(blockiert, "unter"))
+                assertTrue(!p.sealed, "der Persist muss scheitern")
+                assertEquals(null, p.rt.units, "ohne Siegel keine SMB-Publikation")
+                ledger.sealCycleState(p.sealed, vorEvidenz)
+                assertEquals(vorEvidenz, ledger.episodes.evidenceState, "Evidenz rollt auf den versiegelten Stand zurueck")
+                // Absturz direkt danach: die Datei kennt den Zyklus nicht.
+                val datei = nachNeustart(dir)
+                assertEquals(vorCommitted, datei.evidenceCommittedU, 1e-12)
+                assertEquals(vorEvidenz, datei.evidenceState)
+                assertTrue(!FuseLedgerAdapter().also { it.loadOnce(dir, "test-epoch", clock) }.hasOpenProposal("e2e#${o.computeTs}"))
+                geprueft = true
+            } else assertTrue(veroeffentliche(o, dir).sealed, "vorlaufende Zyklen muessen sauber versiegeln")
+        }
+        assertTrue(geprueft, "es muss einen Aufhebungszyklus mit Menge geben")
+    }
+
+    /**
+     * Pflicht-Gegenfall: RAW faellt bereits, UKF noch nicht, bereinigte Evidenz
+     * positiv - der Messverlauf verweigert die Ausnahme.
+     *
+     * Organisch leert der Rig-Fall im ersten Fallzyklus zugleich den Bestand und
+     * loest die Wende aus (gemessen). Deshalb wird der Topf VORGELADEN
+     * (etabliertes Idiom, s. P1-Sicherheitsproben) und die ENTSCHEIDUNG selbst
+     * geprueft: sie muss mit MEASURED_NOT_STABLE verweigern, obwohl
+     * Autorisierung und Bestand tragen und UKF noch ueber dem Fallboden liegt.
+     */
+    @Test
+    fun `Ausnahme 7 - RAW faellt waehrend UKF und Evidenz noch positiv sind`(@TempDir dir: File) {
+        val adapter = ausnahmeLage(dir)
+        knick2AbMin = 36
+        steigungNachKnick2 = -3.0
+        repeat(27) { cycle() } // bis Minute 34, der Rohfall beginnt nach Minute 36
+        adapter.episodes.evidenceState = adapter.episodes.evidenceState.copy(stockMgdl = 60.0)
+        val o = (1..20).map { cycle() }
+        val gegenfall = o.filter {
+            it.livenessMeasuredStability == "FALLING" && rb(it) > 0 &&
+                (it.signal?.ukfRatePerMin ?: -9.0) >= LivenessChannel.UKF_FLOOR_MGDL_PER_MIN &&
+                it.evidencePhase in bestandPhasen && it.dosingContextProfile == "MEAL" &&
+                it.computeTs < it.reboundOverrideDeadlineTs
+        }
+        assertTrue(gegenfall.isNotEmpty()) {
+            "Vorbedingung: fallende Rohreihe, UKF ueber dem Boden, Bestand, Vollmacht:\n" + o.joinToString("\n") { zeile(it) }
+        }
+        gegenfall.forEach {
+            assertEquals(false, it.livenessReboundExceptionAllowed, zeile(it))
+            assertEquals("MEASURED_NOT_STABLE", it.livenessReboundExceptionDenial, zeile(it))
+            assertTrue(!it.livenessReboundVetoLifted, zeile(it))
+            if (!it.evidenceMayOverrideRebound) assertEquals(0.0, it.livenessLiftU, 1e-12, zeile(it))
+        }
+    }
+
+    /** Pflicht-Gegenfall Wende: frueher Anstieg, dann Wende - keine fortgesetzte
+     *  Freigabe aus dem frueheren Anstieg, alle Fall-Riegel greifen. */
+    @Test
+    fun `Ausnahme 8 - nach der Wende keine Freigabe aus dem frueheren Anstieg`(@TempDir dir: File) {
+        ausnahmeLage(dir)
+        knick2AbMin = 38
+        steigungNachKnick2 = -0.8
+        val o = (1..60).map { cycle() }
+        val ersteAufhebung = o.indexOfFirst { it.livenessReboundVetoLifted }
+        assertTrue(ersteAufhebung >= 0, "vor der Wende muss die Ausnahme gegolten haben")
+        val fallRiegel = setOf("FALLING", "DESCENT_RISK", "DESCENT_RISK_MARKER", "MEASURED_LOW", "LATCH_ACTIVE")
+        var riegel = 0
+        o.forEach {
+            val wende = it.turnResponseShadow?.classification?.phase == app.aaps.fuse.core.controller.TurnResponseShadow.Phase.TURNING_DOWN
+            if (wende || it.livenessMeasuredStability == "FALLING" || it.livenessProfileReason in fallRiegel ||
+                it.livenessExit == "TURN_EXIT"
+            ) {
+                riegel++
+                assertEquals(0.0, it.livenessLiftU, 1e-12, zeile(it))
+                assertTrue(!it.livenessReboundVetoLifted || !wende) { zeile(it) }
+            }
+        }
+        assertTrue(riegel > 0) { "die Wende muss im Lauf liegen:\n" + o.joinToString("\n") { zeile(it) } }
+    }
+
+    /** Pflicht-Gegenfall Sensorbruch: nach einer CGM-Luecke gilt die Ausnahme
+     *  nicht, bis Messbasis und Messlage wieder stehen. */
+    @Test
+    fun `Ausnahme 9 - Sensorbruch schliesst die Ausnahme`(@TempDir dir: File) {
+        ausnahmeLage(dir)
+        lueckeVonMin = 38
+        lueckeBisMin = 43
+        val o = (1..60).map { cycle() }
+        assertTrue(o.any { it.livenessReboundVetoLifted && it.computeTs < start + 38 * 60_000L }) {
+            "vor der Luecke muss die Ausnahme gegolten haben:\n" + o.joinToString("\n") { zeile(it) }
+        }
+        val nachLuecke = o.first { it.abortReason == null && it.computeTs >= start + 43 * 60_000L }
+        assertTrue(!nachLuecke.livenessReboundVetoLifted && nachLuecke.livenessLiftU == 0.0, zeile(nachLuecke))
+        assertTrue(nachLuecke.livenessReboundExceptionAllowed != true, zeile(nachLuecke))
+    }
+
+    /** Wirkungsbereich + Gegen-KH: ein neues Tief NACH dem Markerdruck nimmt
+     *  der Ausnahme die Grundlage - fuer den Rest des Markerfensters. */
+    @Test
+    fun `Ausnahme 10 - neues Tief nach dem Marker, Gegen-KH danach, keine Ausnahme`(@TempDir dir: File) {
+        ausnahmeLage(dir)
+        rohSerie = (0..120).map { m ->
+            val v = when {
+                m <= 6 -> 80.0 - 2.0 * m
+                m <= 30 -> 68.0 + 2.5 * (m - 6)
+                m <= 45 -> 128.0 - 4.0 * (m - 30)
+                m <= 50 -> 68.0 - 2.0 * (m - 45)
+                else -> 58.0 + 3.0 * (m - 50)
+            }
+            (start + m * 60_000L) to v
+        }
+        val o = (1..100).map { cycle() }
+        val zweitesTief = o.indexOfFirst { it.computeTs > markerAt && (it.signal?.q1 ?: 999.0) < 75.0 }
+        assertTrue(zweitesTief > 0, "das neue Tief muss nach dem Marker liegen")
+        val danach = o.drop(zweitesTief + 1)
+        assertTrue(danach.none { it.livenessReboundVetoLifted || it.livenessReboundExceptionAllowed == true }) {
+            danach.joinToString("\n") { zeile(it) }
+        }
+        val nurReihenfolge = danach.filter {
+            it.dosingContextProfile == "MEAL" && it.evidencePhase in bestandPhasen &&
+                it.livenessMeasuredStability == "STABLE" && rb(it) > 0
+        }
+        assertTrue(nurReihenfolge.isNotEmpty()) { "Vorbedingung: Gegen-KH-Anstieg mit Bestand und stabiler Messlage im Fenster:\n" + danach.joinToString("\n") { zeile(it) } }
+        nurReihenfolge.forEach { assertEquals("LOW_AFTER_AUTHORIZATION", it.livenessReboundExceptionDenial, zeile(it)) }
+        danach.filter { rb(it) > 0 && !it.evidenceMayOverrideRebound }.forEach { assertEquals(0.0, it.livenessLiftU, 1e-12, zeile(it)) }
+    }
+
+    /** Pflichtfall: groesserer adaptiver Kandidat mit Foundation - korrekt
+     *  verbucht, Foundation nicht zusaetzlich addiert. */
+    @Test
+    fun `Ausnahme 11 - groesserer Kandidat wird verbucht, Foundation nicht addiert`(@TempDir dir: File) {
+        ausnahmeLage(dir)
+        maxSmbU = 0.3
+        fundamentAn = true
+        whenever(preferences.get(FuseLongKey.MealMarkerNoPrime)).thenReturn(0L)
+        val o = (1..60).map { z ->
+            transport(dir).also { r ->
+                if (r.decision.smbU > 0.0) assertEquals(
+                    r.decision.smbU, ledger.publishedAmountOf("e2e#${r.computeTs}") ?: -1.0, 1e-9, "publiziert = gebucht: ${zeile(r)}",
+                )
+            }
+        }
+        assertTrue(o.any { it.livenessReboundVetoLifted && it.livenessLiftU > 0.0 }) { o.joinToString("\n") { zeile(it) } }
+        o.filter { it.livenessActive }.forEach {
+            val normal = it.livenessNormalSmbU ?: 0.0
+            val live = LivenessChannel.quantize(it.livenessCandidateU, 0.05)
+            assertTrue(it.decision.smbU <= maxOf(normal, live) + 1e-9) { "Foundation addiert: ${zeile(it)}" }
+        }
+    }
+
+    // ---- BITGLEICH-AUFZEICHNUNG (nur mit FUSE_BITGLEICH_OUT) ----------------
+    //
+    // Schreibt je Szenario die Dosierentscheidungen Zyklus fuer Zyklus. Derselbe
+    // Code laeuft gegen den Vorgaengerstand; der Dateivergleich belegt, dass der
+    // Stand mit ausgeschaltetem Schalter dieselben Entscheidungen trifft. Ohne
+    // die Umgebungsvariable wird nichts ausgefuehrt.
+
+    private fun bitgleichZeile(o: FuseCycleRunner.Outcome): String = listOf(
+        (o.computeTs - start) / 1000L, o.abortReason, o.decision.smbU, o.decision.block, o.tbr,
+        o.livenessActive, o.livenessStreak, o.livenessDenial, o.livenessExit, o.livenessLiftU,
+        o.livenessCandidateU, o.livenessProfileReason, o.livenessReArmUntilTs, o.evidencePhase,
+        o.evidenceCreditMgdlPerMin, o.evidenceMayOverrideRebound, o.exposureRequestedSource,
+    ).joinToString("|")
+
+    private fun bitgleich(name: String, zyklen: Int, aufbau: () -> Unit) {
+        val out = System.getenv("FUSE_BITGLEICH_OUT")
+        org.junit.jupiter.api.Assumptions.assumeTrue(out != null)
+        aufbau()
+        val zeilen = (1..zyklen).map { bitgleichZeile(cycle()) }
+        File(out!!).also(File::mkdirs).resolve("$name.txt").writeText(zeilen.joinToString("\n"))
+    }
+
+    @Test
+    fun `BITGLEICH rebound gedrueckt`(@TempDir dir: File) = bitgleich("rebound_gedrueckt", 60) { reboundOverrideLage(dir) }
+
+    @Test
+    fun `BITGLEICH rebound vorgefunden`(@TempDir dir: File) = bitgleich("rebound_vorgefunden", 60) { reboundOverrideLage(dir, druecken = false) }
+
+    @Test
+    fun `BITGLEICH rebound mit Fundament`(@TempDir dir: File) = bitgleich("rebound_fundament", 60) {
+        reboundOverrideLage(dir)
+        fundamentAn = true
+        whenever(preferences.get(FuseLongKey.MealMarkerNoPrime)).thenReturn(0L)
+    }
+
+    @Test
+    fun `BITGLEICH rebound mit Fall`(@TempDir dir: File) = bitgleich("rebound_fall", 60) {
+        reboundOverrideLage(dir)
+        knick2AbMin = 26
+        steigungNachKnick2 = -3.0
+    }
+
+    @Test
+    fun `BITGLEICH liveness`(@TempDir dir: File) = bitgleich("liveness", 45) { livenessLage(dir) }
+
+    @Test
+    fun `BITGLEICH mahlzeit mit Kanal`(@TempDir dir: File) = bitgleich("mahlzeit_kanal", 60) {
+        mahlzeit(dir)
+        livenessAn = true
     }
 
 }

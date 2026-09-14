@@ -1014,6 +1014,18 @@ enum class FuseBooleanKey(
     LivenessChannelEnabled("fuse_liveness_channel_enabled", false),
 
     /**
+     * REBOUND-EVIDENZ-AUSNAHME AM LIVENESS-TOR - DEFAULT AUS (Toni 14.09.,
+     * kein Aktivierungs-GO). DOSIERWIRKSAM: eingeschaltet darf das rohe
+     * Rebound-Fenster den Kanal auch dann nicht mehr sperren, wenn der
+     * versiegelte Evidenzkredit durch Buchungen verbraucht ist - vorausgesetzt
+     * MEAL-Vollmacht, gepinntes und nicht abgelaufenes Rebound-Sonderrecht
+     * DIESES Markers, Tief VOR dem Markerdruck, Evidenzbestand ACTIVE oder
+     * PENDING_SEAL und gemessen stabile Rohreihe. Keine Menge, kein anderer
+     * Pfad; alle Riegel, Deckel und das Publikations-Gate bleiben.
+     */
+    LivenessReboundEvidenceExceptionEnabled("fuse_liveness_rebound_evidence_exception_enabled", false),
+
+    /**
      * WIEDEREINSTIEG NACH CGM-FUNKLUECKE (Toni 25.08. abends).
      *
      * Eingeschaltet reift der Antriebsschaetzer NUR nach einer eindeutig
