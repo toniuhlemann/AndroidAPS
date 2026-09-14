@@ -903,7 +903,8 @@ object FuseStateJson {
                             .put("denial", outcome.livenessReboundExceptionDenial ?: JSONObject.NULL)
                             .put("vetoLifted", outcome.livenessReboundVetoLifted)
                             .put("evidenceInflowMgdl", fin(outcome.livenessEvidenceInflowMgdl))
-                            .put("measuredStability", outcome.livenessMeasuredStability ?: JSONObject.NULL),
+                            .put("measuredStability", outcome.livenessMeasuredStability ?: JSONObject.NULL)
+                            .put("lossCause", outcome.livenessEvidenceLossCause ?: JSONObject.NULL),
                     ),
             )
             .put(
@@ -944,6 +945,9 @@ object FuseStateJson {
                     .put("creditRevoked", outcome.evidenceCreditRevoked)
                     .put("phase", outcome.evidencePhase ?: JSONObject.NULL)
                     .put("stockMgdl", outcome.evidenceStockMgdl?.let { fin(it) } ?: JSONObject.NULL)
+                    // Diagnose (Toni 14.09.): Buchungsabzug und Bestand ohne ihn.
+                    .put("deductionMgdl", outcome.evidenceDeductionMgdl?.let { fin(it) } ?: JSONObject.NULL)
+                    .put("stockBeforeDeductionMgdl", outcome.evidenceStockBeforeDeductionMgdl?.let { fin(it) } ?: JSONObject.NULL)
                     .put("reason", outcome.evidenceReason ?: JSONObject.NULL)
                     .put("creditMgdlPerMin", outcome.evidenceCreditMgdlPerMin?.let { fin(it) } ?: JSONObject.NULL)
                     // Widerrufs-Revision + Rebase-Kennzeichen (Toni 29.08.):

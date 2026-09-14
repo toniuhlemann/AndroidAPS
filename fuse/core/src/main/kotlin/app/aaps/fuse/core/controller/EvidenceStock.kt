@@ -434,6 +434,15 @@ object EvidenceStock {
          * Export (Rebase-Grund), nie fuer eine Dosierentscheidung.
          */
         val revokeRebased: Boolean = false,
+        /**
+         * DIAGNOSE, NIE DOSIERWIRKSAM (Toni 14.09.): der Buchungsabzug dieses
+         * Zyklus [mg/dl] und der Bestand, der OHNE ihn stuende (nach Verfall,
+         * Zufluss und Rueckgang, unter der Schwelle abgeschnitten). Nur so ist
+         * ein leerer Bestand nachvollziehbar zuzuordnen: eigene Buchung oder
+         * Verfall/Rueckgang. null = nicht berechnet (Sperr-/Fehlerpfade).
+         */
+        val deductionMgdl: Double? = null,
+        val stockBeforeDeductionMgdl: Double? = null,
     )
 
     /**
@@ -616,6 +625,8 @@ object EvidenceStock {
                         .let { if (it <= 0.0) 0.0 else min(it / cfg.releaseWindowMin, it) }
                 else 0.0,
                 inflowMgdl = 0.0,
+                deductionMgdl = abzug,
+                stockBeforeDeductionMgdl = max(0.0, nachVerfall).let { if (it < cfg.stockFloorMgdl) 0.0 else it },
                 noInflow = if (nurWiederholung) NoInflow.NO_NEW_SAMPLE else NoInflow.SEGMENT_BREAK,
                 phase = when {
                     nurWiederholung && max(0.0, nachVerfall - abzug) >= cfg.stockFloorMgdl -> Phase.ACTIVE
@@ -677,6 +688,9 @@ object EvidenceStock {
             // 30 mg/dl/min werden.
             creditMgdlPerMin = if (versiegelt <= 0.0) 0.0 else min(versiegelt / cfg.releaseWindowMin, versiegelt),
             inflowMgdl = zufluss,
+            deductionMgdl = abzug,
+            stockBeforeDeductionMgdl = max(0.0, nachVerfall + zufluss - rueckgang)
+                .let { if (it < cfg.stockFloorMgdl) 0.0 else it },
             noInflow = grund,
             // ACTIVE HEISST "DARF JETZT KREDIT LIEFERN" - haengt also am
             // VERSIEGELTEN Bestand, nicht am eben zugeflossenen. Der erste

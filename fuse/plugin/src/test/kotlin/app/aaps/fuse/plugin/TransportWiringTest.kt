@@ -383,8 +383,9 @@ class TransportWiringTest : TestBaseWithProfile() {
                     else -> flach + steigungProMin * k + steigungNachKnick * (k2 - k) +
                         steigungNachKnick2 * (min - k2)
                 }
+                val vr = if (rueckfuehrung) v - abgabeGlukoseWirkung(ts) else v
                 GV(
-                    timestamp = ts, value = v, raw = v, noise = 0.0,
+                    timestamp = ts, value = vr, raw = vr, noise = 0.0,
                     sourceSensor = SourceSensor.UNKNOWN, trendArrow = TrendArrow.FLAT
                 )
             }
@@ -400,7 +401,8 @@ class TransportWiringTest : TestBaseWithProfile() {
             val nah = listOfNotNull(unter, ueber).minByOrNull { e -> kotlin.math.abs(e.key - atTs) }
             nah?.takeIf { e -> kotlin.math.abs(e.key - atTs) <= 90_000L }?.value
         }
-        val gesamt = karte?.first ?: bolusIobU ?: 0.0
+        val rueck = if (rueckfuehrung) abgabeWirkung(atTs) else null
+        val gesamt = (karte?.first ?: bolusIobU ?: 0.0) + (rueck?.first ?: 0.0)
         // DIE BOLUS-IOB IST NICHT DIE GESAMT-IOB (Rig-Befund 25.08. spaet).
         // `basaliob = 0` machte aus jeder negativen Gesamt-IOB eine negative
         // BOLUS-IOB - und die bricht als Integritaetsbefund den ganzen
@@ -453,7 +455,7 @@ class TransportWiringTest : TestBaseWithProfile() {
         // traegt (am Anker immer). Sonst 0 - das ist die alte, ungenaue
         // Naeherung und ausdruecklich eine Baustelle, kein Vertrag.
         it.basaliob = bolusAusTrail?.let { gesamt - it } ?: 0.0
-        it.activity = karte?.second ?: aktivitaet; it.valid = iobGueltig
+        it.activity = (karte?.second ?: aktivitaet) + (rueck?.second ?: 0.0); it.valid = iobGueltig
     }
 
     /** Ungueltige IOB-Daten -> keine Aktivitaet -> ACTIVITY_MISSING, das
@@ -498,6 +500,42 @@ class TransportWiringTest : TestBaseWithProfile() {
     /** Die BOLUS-IOB je Zeitpunkt aus dem Trail. */
     private var bolusIobProTs: java.util.TreeMap<Long, Double>? = null
     private var boluses: List<BS> = emptyList()
+
+    /**
+     * RUECKFUEHRUNG DER ABGABEN (Tonis Review 14.09.). Aus heisst: das Rig
+     * bleibt offen (statisches IOB, feste Messreihe) wie bisher.
+     *
+     * An heisst: jede FUSE-Abgabe wird eine Behandlung. Ihr IOB und ihre
+     * Aktivitaet kommen aus dem aktiven Insulinmodell (Profil-DIA), und ihre
+     * Glukosewirkung (abgeflossene Menge x ISF des Zyklus) wird von der
+     * gemessenen Reihe abgezogen - damit sehen Guard, BGI-Bereinigung und
+     * Evidenz dieselbe Insulinwirkung. Eine Abgabe mit `wirktAufReihe = false`
+     * ist ein VORBOLUS, dessen Wirkung schon in der vorgegebenen Kurve steckt:
+     * er traegt IOB und Aktivitaet, veraendert die Reihe aber nicht.
+     *
+     * GRENZE: es gibt kein Kohlenhydratmodell - die Kurve IST die Stoerung.
+     * Das Rig quantifiziert damit weder reale Unterversorgung noch den
+     * spaeteren Insulinbedarf.
+     */
+    private var rueckfuehrung = false
+
+    private data class Abgabe(val ts: Long, val u: Double, val wirktAufReihe: Boolean)
+
+    private val abgaben = mutableListOf<Abgabe>()
+    private var rueckIsf = 61.0
+
+    /** Vor der Abgabe liefert das Modell keine Null (t < td ohne t >= 0) - hier schon. */
+    private fun einzelWirkung(a: Abgabe, atTs: Long): app.aaps.core.data.iob.Iob =
+        if (atTs < a.ts) app.aaps.core.data.iob.Iob()
+        else insulin.iobCalcForTreatment(BS(timestamp = a.ts, amount = a.u, type = BS.Type.SMB), atTs, validProfile.dia)
+
+    private fun abgabeWirkung(atTs: Long): Pair<Double, Double> =
+        abgaben.fold(0.0 to 0.0) { (iob, akt), a ->
+            einzelWirkung(a, atTs).let { (iob + it.iobContrib) to (akt + it.activityContrib) }
+        }
+
+    private fun abgabeGlukoseWirkung(ts: Long): Double =
+        abgaben.filter { it.wirktAufReihe && it.ts <= ts }.sumOf { (it.u - einzelWirkung(it, ts).iobContrib) * rueckIsf }
 
     private fun roundUp(t: Long) = if (t % 60_000L == 0L) t else (t / 60_000L + 1) * 60_000L
 
@@ -655,7 +693,12 @@ class TransportWiringTest : TestBaseWithProfile() {
 
     private fun cycle(): FuseCycleRunner.Outcome {
         clock += taktMs
-        return runner.run(false, testPumpe())
+        val o = runner.run(false, testPumpe())
+        if (rueckfuehrung) {
+            o.isfMgdlPerU?.takeIf { it.isFinite() && it > 0.0 }?.let { rueckIsf = it }
+            if (o.decision.smbU > 0.0) abgaben += Abgabe(o.computeTs, o.decision.smbU, wirktAufReihe = true)
+        }
+        return o
     }
 
     /**
@@ -14169,6 +14212,116 @@ class TransportWiringTest : TestBaseWithProfile() {
         "abort=" + o.abortReason,
     ).joinToString(" ")
 
+    // ---- ERKUNDUNG Rueckfuehrung und Sperrzeit (nur mit FUSE_ERKUNDUNG_OUT) --
+
+    @Test
+    fun `ERKUNDUNG Rueckfuehrung und Sperrzeit`(@TempDir dir: File) {
+        val out = System.getenv("FUSE_ERKUNDUNG_OUT")
+        org.junit.jupiter.api.Assumptions.assumeTrue(out != null)
+        val zeilen = mutableListOf(
+            "v,t,q1,raw,iob,akt,rb,ovr,cr,ph,stock,vorAbzug,abzug,inf,stab,exc,loss,vL,aktiv,rsn,den,exit,normal,fundament,shNeed,shCand,shHead,cand,lift,smb,sperreBis," +
+                "primeAktiv,primeBoden,primeRest,primeGrund,mfLift,grantQuelle,fPhase,fFaellig,fSeitUebergabe,fPhaseBFrei," +
+                "normalBlock,tailHeadroom,preFoundation,upfrontState,fArmed,recoveryDenial,hazard,authOk",
+        )
+        // "U" = Foundation mit Sofortanteil 1,0 wie am Geraet: nur dann traegt
+        // MealUpfrontAuthority, und die Foundation-Kette ist im rohen
+        // Rebound-Fenster nicht gesperrt. Schluessel: U<Steigung>_h<Huelle>_a<Anteil>.
+        // "G" = die Geraetekonstellation der Abendpruefung: Huelle 5 U,
+        // Phase-A-Anteil 0,80, Sofortanteil 1,00, Uebergabe T+5, Fensterende
+        // 25 -> Phase B 1,0 U ueber 20 min, ein 0,05er-Schritt je Zyklus.
+        // Tail-Riegel als Variante: der Foundation-Lift wird vom Tail-
+        // Deckelrest gekappt, der Prime-Boden setzt sich ueber MarkerFloor durch.
+        // Ausgewertet und berichtet ist Lage B (grosser Lift, fortbestehender
+        // Anstieg) mit 10 und 5 min Sperre, mit und ohne Rueckfuehrung. Die
+        // Varianten F/U/G/R waren Versuche, eine Foundation-Ueberlappung zu
+        // erzeugen; keiner hob die Foundation in Phase B (Befund 14.09.). Sie
+        // bleiben als benannte Aufbauten stehen, laufen hier aber nicht mit.
+        val lagen = listOf("B")
+        for (lage in lagen) for (sperre in listOf(10, 5)) for (rueck in listOf(false, true)) {
+            val name = "${lage}_sperre${sperre}_rueck$rueck"
+            val d = File(dir, name).also(File::mkdirs)
+            fundamentAn = false; primeHuelleU = 1.2; fundamentAnteil = 0.75; upfrontAnteil = 0.0; fundamentEndeMin = 60
+            knick2AbMin = null; lueckeVonMin = null; lueckeBisMin = null; rohSerie = null
+            abgaben.clear(); rueckfuehrung = false; rueckIsf = 61.0; bolusIobU = 4.5
+            aufschubAn = false
+            if (lage.startsWith("R")) {
+                val s = lage.drop(1).substringBefore("_iob").toDouble()
+                val iob = lage.substringAfter("_iob").toDouble()
+                reboundMahlzeit(d)
+                livenessAn = true; livenessAusnahmeAn = true; maxSmbU = 0.3
+                whenever(preferences.get(FuseIntKey.PrimeWindowMin)).thenReturn(5)
+                primeHuelleU = 5.0; fundamentAnteil = 0.8; fundamentEndeMin = 25; upfrontAnteil = 1.0
+                livenessReArmMin = sperre; reboundOverrideMaxMin = 120
+                mealBgMin = 120.0; livenessBgMin = 160.0; mealArmZyklen = 1
+                corrExpLimit = 3.0; mealExpLimit = 7.0; tailGuard = true
+                steigungProMin = s; knickAbMin = null
+                bolusIobU = iob
+            } else {
+            ausnahmeLage(d)
+            maxSmbU = 0.3
+            livenessReArmMin = sperre
+            if (lage.startsWith("G")) {
+                fundamentAn = true; upfrontAnteil = 1.0; fundamentAnteil = 0.80; primeHuelleU = 5.0
+                fundamentEndeMin = 25
+                // Wie produktiv: die Autorisierungskennung steht VOR der
+                // Armierung (toggleMealMarker schreibt sie beim Druck), und
+                // der Marker-Prime-Aufschub ist an - sonst traegt die
+                // Direktdosis-Kette das rohe Rebound-Fenster nicht.
+                aufschubAn = true
+                ledger.episodes.markerAuth =
+                    app.aaps.fuse.core.controller.MarkerReauthorization.Authorization("auth-g", markerAt)
+                whenever(preferences.get(FuseIntKey.PrimeWindowMin)).thenReturn(5)
+                steigungNachKnick = lage.drop(1).substringBefore("_").toDouble()
+                tailGuard = lage.endsWith("tailtrue")
+                whenever(preferences.get(FuseLongKey.MealMarkerNoPrime)).thenReturn(0L)
+            } else if (lage.startsWith("U")) {
+                val teile = lage.drop(1).split("_")
+                fundamentAn = true; upfrontAnteil = 1.0
+                steigungNachKnick = teile[0].toDouble()
+                primeHuelleU = teile[1].drop(1).toDouble()
+                fundamentAnteil = teile[2].drop(1).toDouble()
+                whenever(preferences.get(FuseLongKey.MealMarkerNoPrime)).thenReturn(0L)
+            } else if (lage.startsWith("F")) {
+                // Foundation-Tropf wie im M2-Rig: Huelle 4,0, Anteil 0,5 ->
+                // Phase B (ab Marker +20 = Minute 34) mit einem Schritt je
+                // Zyklus, ueberlappend mit dem rohen Rebound-Fenster.
+                fundamentAn = true; fundamentAnteil = 0.5; primeHuelleU = 4.0
+                steigungNachKnick = lage.drop(1).toDouble()
+                whenever(preferences.get(FuseLongKey.MealMarkerNoPrime)).thenReturn(0L)
+            } else steigungNachKnick = 2.5
+            }
+            if (rueck) {
+                // Vor-IOB als echter Bolus 30 min vor Start: ~4,5 U IOB zu Beginn,
+                // mit Aktivitaet; seine Wirkung steckt bereits in der Kurve.
+                val vorIob = bolusIobU ?: 4.5
+                bolusIobU = null
+                abgaben += Abgabe(start - 30 * 60_000L, vorIob / 0.9, wirktAufReihe = false)
+                rueckfuehrung = true
+            }
+            repeat(70) {
+                val o = cycle()
+                zeilen += listOf(
+                    name, (o.computeTs - start) / 60_000L, o.signal?.q1, o.signal?.rawBg, o.iobU, o.signal?.activityAtAnchor,
+                    rb(o), o.evidenceMayOverrideRebound, o.evidenceCreditMgdlPerMin, o.evidencePhase, o.evidenceStockMgdl,
+                    o.evidenceStockBeforeDeductionMgdl, o.evidenceDeductionMgdl, o.livenessEvidenceInflowMgdl,
+                    o.livenessMeasuredStability, o.livenessReboundExceptionDenial, o.livenessEvidenceLossCause,
+                    o.livenessReboundVetoLifted, o.livenessActive, o.livenessProfileReason, o.livenessDenial, o.livenessExit,
+                    o.livenessNormalSmbU, o.foundationLiftU, o.livenessShadowNeedU, o.livenessShadowCandidateU,
+                    o.livenessShadowHeadroomU, o.livenessCandidateU, o.livenessLiftU, o.decision.smbU,
+                    (o.livenessReArmUntilTs - start) / 60_000L,
+                    o.prime?.active, o.prime?.floorU, o.prime?.remainingU, o.prime?.reason?.replace(",", ";"),
+                    o.upfrontChain?.markerFloorLiftU, o.upfrontChain?.grantSource,
+                    o.mealFoundation.phase, o.mealFoundation.dueU, o.mealFoundation.deliveredSinceHandoverU,
+                    o.mealFoundation.phaseBAllowanceU,
+                    o.underlyingNormalBlock, o.decision.tail?.headroomU, o.preFoundationSmbU,
+                    o.phaseAUpfrontState, o.mealFoundation.armed, o.upfrontChain?.recoveryDenial,
+                    o.upfrontChain?.currentHazard?.toString()?.replace(",", ";"), o.upfrontChain?.reboundExemptByAuthority,
+                ).joinToString(",")
+            }
+        }
+        File(out!!).also { it.parentFile?.mkdirs() }.writeText(zeilen.joinToString("\n"))
+    }
+
     // ==== REBOUND-EVIDENZ-AUSNAHME: PFLICHTFAELLE (Toni 14.09.) ==============
     //
     // Alles ueber die echte Runner-Kette, wo verlangt mit dem echten
@@ -14567,9 +14720,17 @@ class TransportWiringTest : TestBaseWithProfile() {
 
     /**
      * WIRKSAMKEITSNACHWEIS (Tonis Review 14.09.): in EINEM Zyklus zugleich
-     * Foundation positiv, die neue Ausnahme hebt das Rebound-Veto tatsaechlich
-     * auf, der adaptive Kandidat liegt ueber der Foundation, und die groessere
-     * Menge passiert das echte Publikations-Gate und wird genau so gebucht.
+     * ein positiver autorisierter Normalbeitrag, die neue Ausnahme hebt das
+     * Rebound-Veto tatsaechlich auf, der adaptive Kandidat liegt darueber, und
+     * die groessere Menge passiert das echte Publikations-Gate und wird genau
+     * so gebucht.
+     *
+     * KORREKTUR 14.09. abends: der Normalbeitrag ist hier der PRIME-BODEN
+     * (MarkerFloor, Grant PRIME, Phase A), nicht die Foundation - die erste
+     * Fassung nannte ihn faelschlich Foundation. Eine Ueberlappung mit echter
+     * Foundation (Phase B, foundationLiftU > 0) liess sich im Rig nicht
+     * erzeugen: die Foundation bleibt dort in Phase B trotz faelliger Menge
+     * stumm, waehrend sie am Geraet unter MarkerFloor-Grant FOUNDATION lief.
      *
      * Die Lage ist ORGANISCH, ohne Vorladen: Zufluss knapp ueber dem
      * Foundation-Abzug (0,05 U x ISF 61 = 3,05 mg/dl je Zyklus, Anstieg
@@ -14580,7 +14741,7 @@ class TransportWiringTest : TestBaseWithProfile() {
      * GENAU diesen Zyklus rot (0,35 statt 0,30).
      */
     @Test
-    fun `Ausnahme 12 - Foundation positiv, Ausnahme hebt, groesserer Kandidat passiert das Gate`(@TempDir dir: File) {
+    fun `Ausnahme 12 - Prime-Boden positiv, Ausnahme hebt, groesserer Kandidat passiert das Gate`(@TempDir dir: File) {
         ausnahmeLage(dir)
         maxSmbU = 0.3
         fundamentAn = true
@@ -14589,7 +14750,14 @@ class TransportWiringTest : TestBaseWithProfile() {
         whenever(preferences.get(FuseLongKey.MealMarkerNoPrime)).thenReturn(0L)
         val o = (1..60).map { transport(dir) }
         val beleg = o.firstOrNull {
-            (it.livenessNormalSmbU ?: 0.0) > 0.0 && it.livenessReboundVetoLifted &&
+            // DIE HERKUNFT DES NORMALBEITRAGS IST HART BELEGT (Tonis Review
+            // 14.09.) - und sie ist NICHT die Foundation: gemessen traegt ihn
+            // der Prime-Boden ueber MarkerFloor (Grant PRIME, Phase A),
+            // foundationLiftU ist 0. Ein Foundation-Beitrag ist damit NICHT
+            // nachgewiesen (s. Befund im Bericht 14.09.).
+            it.upfrontChain?.grantSource == "PRIME" && (it.upfrontChain?.markerFloorLiftU ?: 0.0) > 0.0 &&
+                it.foundationLiftU == 0.0 &&
+                (it.livenessNormalSmbU ?: 0.0) > 0.0 && it.livenessReboundVetoLifted &&
                 it.decision.smbU > (it.livenessNormalSmbU ?: 0.0) + 1e-9 && it.evidencePhase == "PENDING_SEAL" &&
                 !it.evidenceMayOverrideRebound
         } ?: throw AssertionError("Vorbedingung: Foundation > 0, Ausnahme hebt, Kandidat darueber:\n" + o.joinToString("\n") { zeile(it) })
@@ -14615,6 +14783,13 @@ class TransportWiringTest : TestBaseWithProfile() {
      * Zyklus auf 0; dieser eine DORMANT-Zyklus beendet den Lauf mit
      * REBOUND_ACTIVE und 10 min Wiederbewaffnungssperre, obwohl der Bestand
      * danach sofort wieder waechst und der Schattenbedarf steigt.
+     *
+     * GRENZEN (Tonis Review 14.09.): 10 min Sperre (die untersuchte
+     * Abendkonfiguration hatte 5), statisches IOB ohne Rueckfuehrung der
+     * Abgaben in IOB, Aktivitaet und Messreihe. Der Test zeigt wiederholte
+     * Sperren unter SEINEN Eingaben; er quantifiziert weder reale
+     * Unterversorgung noch den spaeteren Insulinbedarf, und seine Zyklenzahlen
+     * sind nicht auf den Abend uebertragbar.
      */
     @Test
     fun `Ausnahme 13 - Folgeverlauf nach grossem fruehem Lift ist vollstaendig erklaert`(@TempDir dir: File) {
