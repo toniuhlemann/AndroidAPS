@@ -14457,6 +14457,16 @@ class TransportWiringTest : TestBaseWithProfile() {
      * (etabliertes Idiom, s. P1-Sicherheitsproben) und die ENTSCHEIDUNG selbst
      * geprueft: sie muss mit MEASURED_NOT_STABLE verweigern, obwohl
      * Autorisierung und Bestand tragen und UKF noch ueber dem Fallboden liegt.
+     *
+     * ZWEI PFADE, GETRENNT ZU LESEN (Tonis Review 14.09.):
+     *  - NEUE AUSNAHME: verweigert hier nachweislich. Organisch (ohne
+     *    Vorladen) leert der Rohfall zuerst den Bestand, die Verweigerung
+     *    lautet dann NO_EVIDENCE_STOCK - in keinem Rasterzyklus ein Lift.
+     *  - ALTES KREDIT-SONDERRECHT (v45, hier durch das Vorladen aktiv): es
+     *    prueft die Rohreihe NICHT. Dass der Kanal im Raster trotzdem nichts
+     *    hob, lag an Wiederbewaffnungssperre und Wende-Exit, nicht an einem
+     *    RAW-Schutz. Deshalb gilt die Lift-Zusicherung unten nur OHNE Kredit;
+     *    eine globale RAW-Schutzwirkung des Kanals ist damit NICHT belegt.
      */
     @Test
     fun `Ausnahme 7 - RAW faellt waehrend UKF und Evidenz noch positiv sind`(@TempDir dir: File) {
@@ -14553,6 +14563,82 @@ class TransportWiringTest : TestBaseWithProfile() {
         assertTrue(nurReihenfolge.isNotEmpty()) { "Vorbedingung: Gegen-KH-Anstieg mit Bestand und stabiler Messlage im Fenster:\n" + danach.joinToString("\n") { zeile(it) } }
         nurReihenfolge.forEach { assertEquals("LOW_AFTER_AUTHORIZATION", it.livenessReboundExceptionDenial, zeile(it)) }
         danach.filter { rb(it) > 0 && !it.evidenceMayOverrideRebound }.forEach { assertEquals(0.0, it.livenessLiftU, 1e-12, zeile(it)) }
+    }
+
+    /**
+     * WIRKSAMKEITSNACHWEIS (Tonis Review 14.09.): in EINEM Zyklus zugleich
+     * Foundation positiv, die neue Ausnahme hebt das Rebound-Veto tatsaechlich
+     * auf, der adaptive Kandidat liegt ueber der Foundation, und die groessere
+     * Menge passiert das echte Publikations-Gate und wird genau so gebucht.
+     *
+     * Die Lage ist ORGANISCH, ohne Vorladen: Zufluss knapp ueber dem
+     * Foundation-Abzug (0,05 U x ISF 61 = 3,05 mg/dl je Zyklus, Anstieg
+     * 3,5 mg/dl/min) - nur in diesem Band bleibt der Bestand bei verbrauchtem
+     * Kredit positiv (gemessen im Raster 3,1..4,0: einziger Treffer). Liegt der
+     * Zufluss darunter, leert die Foundation selbst den Bestand (DORMANT);
+     * deutlich darueber oeffnet der Normalpfad. Die Additionsmutation macht
+     * GENAU diesen Zyklus rot (0,35 statt 0,30).
+     */
+    @Test
+    fun `Ausnahme 12 - Foundation positiv, Ausnahme hebt, groesserer Kandidat passiert das Gate`(@TempDir dir: File) {
+        ausnahmeLage(dir)
+        maxSmbU = 0.3
+        fundamentAn = true
+        primeHuelleU = 1.2
+        steigungNachKnick = 3.5
+        whenever(preferences.get(FuseLongKey.MealMarkerNoPrime)).thenReturn(0L)
+        val o = (1..60).map { transport(dir) }
+        val beleg = o.firstOrNull {
+            (it.livenessNormalSmbU ?: 0.0) > 0.0 && it.livenessReboundVetoLifted &&
+                it.decision.smbU > (it.livenessNormalSmbU ?: 0.0) + 1e-9 && it.evidencePhase == "PENDING_SEAL" &&
+                !it.evidenceMayOverrideRebound
+        } ?: throw AssertionError("Vorbedingung: Foundation > 0, Ausnahme hebt, Kandidat darueber:\n" + o.joinToString("\n") { zeile(it) })
+        val normal = beleg.livenessNormalSmbU!!
+        val live = LivenessChannel.quantize(beleg.livenessCandidateU, 0.05)
+        assertTrue(live > normal + 1e-9, "der adaptive Kandidat liegt ueber der Foundation: ${zeile(beleg)}")
+        assertEquals(maxOf(normal, live), beleg.decision.smbU, 1e-9, "Maximum, nie Summe: ${zeile(beleg)}")
+        assertEquals(beleg.decision.smbU, ledger.publishedAmountOf("e2e#${beleg.computeTs}") ?: -1.0, 1e-9, "die groessere Menge ist publiziert und gebucht")
+        assertEquals(beleg.decision.smbU - normal, beleg.livenessLiftU, 1e-9)
+    }
+
+    /**
+     * FOLGEVERLAUF NACH GROSSEM FRUEHEM LIFT (Tonis Review 14.09.). BEOBACHTUNG,
+     * KEINE ERWARTETE FREIGABE: gemessen wird, ob der weiter steigende Bedarf
+     * bedient wird oder eine neue DORMANT-/Rebound-Sackgasse entsteht. Der Test
+     * erzwingt keine Mengen; er sichert nur, dass JEDER unbediente Zyklus mit
+     * Bedarf, Bestand, Kandidat und bindendem Sperrgrund exportiert ist, und
+     * dass kein Lift unter einem Sperrgrund entsteht. Die Rechenspur steht in
+     * der Testausgabe.
+     *
+     * Befund dieses Aufbaus (14.09.): nach jedem 0,30-U-Lift zieht der
+     * Buchungsabzug (0,30 x 61 = 18,3 mg/dl) den GESAMTEN Bestand fuer einen
+     * Zyklus auf 0; dieser eine DORMANT-Zyklus beendet den Lauf mit
+     * REBOUND_ACTIVE und 10 min Wiederbewaffnungssperre, obwohl der Bestand
+     * danach sofort wieder waechst und der Schattenbedarf steigt.
+     */
+    @Test
+    fun `Ausnahme 13 - Folgeverlauf nach grossem fruehem Lift ist vollstaendig erklaert`(@TempDir dir: File) {
+        ausnahmeLage(dir)
+        maxSmbU = 0.3
+        val o = (1..60).map { cycle() }
+        println("Ausnahme 13 Verlauf:\n" + o.joinToString("\n") {
+            zeile(it) + " stock=${it.evidenceStockMgdl} shNeed=${it.livenessShadowNeedU} shCand=${it.livenessShadowCandidateU} shHead=${it.livenessShadowHeadroomU} normal=${it.livenessNormalSmbU}"
+        })
+        val sperrgruende = setOf("REBOUND_ACTIVE", "REARM_BLOCKED", "NOT_CONFIRMED", "TURN_STANDING", "NORMAL_PATH_OPEN")
+        assertTrue(o.count { it.livenessLiftU > 0.0 } >= 2, "es muss mindestens einen grossen Lift und einen Folgeverlauf geben")
+        o.forEach {
+            assertTrue(it.livenessShadowNeedU != null && it.livenessShadowCandidateU != null && it.livenessShadowHeadroomU != null) {
+                "Schattenbedarf fehlt: ${zeile(it)}"
+            }
+            if (it.livenessProfileReason in sperrgruende || it.livenessDenial in sperrgruende)
+                assertEquals(0.0, it.livenessLiftU, 1e-12, zeile(it))
+            val unbedient = rb(it) > 0 && it.dosingContextProfile == "MEAL" &&
+                LivenessChannel.quantize(it.livenessShadowCandidateU ?: 0.0, 0.05) > it.decision.smbU + 1e-9
+            if (unbedient) assertTrue(
+                it.evidencePhase != null &&
+                    (it.livenessProfileReason != "MARKER_POWER" || it.livenessDenial != null || it.livenessExit != null || it.livenessNoLiftReason != null),
+            ) { "unbedienter Zyklus ohne benannten Grund: ${zeile(it)}" }
+        }
     }
 
     /** Pflichtfall: groesserer adaptiver Kandidat mit Foundation - korrekt

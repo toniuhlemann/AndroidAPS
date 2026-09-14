@@ -1215,6 +1215,10 @@ class FuseCycleRunner(
         val livenessMeasuredStability: String? = null,
         /** Dosierneutraler Grund, warum der bewaffnete Kanal nichts hebt. */
         val livenessNoLiftReason: String? = null,
+        /** Schattenrechnung vor den Toren (dosierneutral) - s. Runner. */
+        val livenessShadowNeedU: Double? = null,
+        val livenessShadowCandidateU: Double? = null,
+        val livenessShadowHeadroomU: Double? = null,
         /** Der TYPISIERTE Grund des Modell-Tors (CandidateSearch.Reject)
          *  dieses Zyklus - null, wenn die Integritaetskette bestanden ist.
          *  Nur im Hauptpfad gefuellt. */
@@ -4778,6 +4782,12 @@ class FuseCycleRunner(
         var livenessEvidenceInflowMgdl: Double? = null
         var livenessMeasuredStability: String? = null
         var livenessNoLiftReason: String? = null
+        // Schattenrechnung VOR den Toren (dosierneutral): Bedarf, Kandidat und
+        // Deckelrest auch in Zyklen, die ein Tor vor der Kandidatenrechnung
+        // beendet. null = keine Release-Bahn oder Kanal aus.
+        var livenessShadowNeedU: Double? = null
+        var livenessShadowCandidateU: Double? = null
+        var livenessShadowHeadroomU: Double? = null
 
         // Marker-Leistungsfrist + zentraler Dosierkontext: seit B2 VOR der
         // State-Konstruktion bestimmt (Kontextgrenze in der Grant-Bildung,
@@ -4869,6 +4879,32 @@ class FuseCycleRunner(
                 mealMin != null -> "MEAL"
                 nachtFenster -> "NIGHT"
                 else -> "DAY"
+            }
+            // ---- SCHATTEN-BEDARF VOR DEN TOREN (Toni 14.09., dosierneutral) --
+            // DIESELBEN reinen Funktionen wie die Kandidatenrechnung unten, mit
+            // denselben Zyklus-Eingaben - nur ohne Tore, ohne Zustand, ohne
+            // Wirkung. Ohne sie steht in genau den gesperrten Zyklen, um die es
+            // bei einer Sackgasse geht, "Bedarf unbekannt".
+            prediction.points.firstOrNull { it.offsetMin == cfg.releaseHorizonMin }?.meanBg?.let { schattenRelease ->
+                val schattenRatio = kotlin.math.min(
+                    LivenessChannel.baseRatio(
+                        smbRatioCorrection = state.smbRatioCorrection,
+                        smbRatioRise = state.smbRatioRise,
+                        rSignedMgdlPerMin = state.rSignedMgdlPerMin,
+                        riseRampLowRPerMin = state.riseRampLowRPerMin,
+                        riseRampHighRPerMin = state.riseRampHighRPerMin,
+                    ),
+                    profilRatioCap,
+                )
+                livenessShadowNeedU = kotlin.math.max(0.0, (schattenRelease - target) / isf)
+                livenessShadowCandidateU = LivenessChannel.candidateU(
+                    releaseMeanMgdl = schattenRelease, targetMgdl = target, isfMgdlPerU = isf,
+                    smbRatio = schattenRatio, maxSmbU = cfg.maxSmbU,
+                )
+                livenessShadowHeadroomU = LivenessChannel.headroomU(
+                    globalIobThU = state.iobThU, livenessCapU = kanalDeckelU, maxIobU = state.maxIobU,
+                    capIobU = state.capIobU, transportU = transportModelledU,
+                ).headroomU
             }
             fun sperren(grund: String): FuseController.Decision {
                 livenessExit = grund
@@ -6034,6 +6070,9 @@ class FuseCycleRunner(
             livenessEvidenceInflowMgdl = livenessEvidenceInflowMgdl,
             livenessMeasuredStability = livenessMeasuredStability,
             livenessNoLiftReason = livenessNoLiftReason,
+            livenessShadowNeedU = livenessShadowNeedU,
+            livenessShadowCandidateU = livenessShadowCandidateU,
+            livenessShadowHeadroomU = livenessShadowHeadroomU,
             livenessModelReject = livenessModelReject,
             livenessReArmUntilTs = episodes.livenessReArmUntilTs,
             preFoundationSmbU = preFoundationSmbU,

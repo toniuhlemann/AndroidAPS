@@ -887,6 +887,11 @@ object FuseStateJson {
                     // v51: WARUM der bewaffnete Kanal nichts hebt - dosierneutral,
                     // `denial` bleibt zeichengleich.
                     .put("noLiftReason", outcome.livenessNoLiftReason ?: JSONObject.NULL)
+                    // Schattenrechnung VOR den Toren - Bedarf, Kandidat und
+                    // Deckelrest auch in gesperrten Zyklen. Dosierneutral.
+                    .put("shadowNeedU", fin(outcome.livenessShadowNeedU))
+                    .put("shadowCandidateU", fin(outcome.livenessShadowCandidateU))
+                    .put("shadowHeadroomU", fin(outcome.livenessShadowHeadroomU))
                     // v51: die Rebound-Evidenz-Ausnahme. `allowed` = die
                     // Bedingungen gelten; `vetoLifted` = sie hat das rohe Veto in
                     // diesem Zyklus TATSAECHLICH aufgehoben. Bestand (Phase im
