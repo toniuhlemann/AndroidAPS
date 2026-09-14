@@ -904,7 +904,11 @@ object FuseStateJson {
                             .put("vetoLifted", outcome.livenessReboundVetoLifted)
                             .put("evidenceInflowMgdl", fin(outcome.livenessEvidenceInflowMgdl))
                             .put("measuredStability", outcome.livenessMeasuredStability ?: JSONObject.NULL)
-                            .put("lossCause", outcome.livenessEvidenceLossCause ?: JSONObject.NULL),
+                            .put("lossCause", outcome.livenessEvidenceLossCause ?: JSONObject.NULL)
+                            // lossCause allein heisst nicht "keine Gefahr": die
+                            // Gefahren stehen unabhaengig von der Torreihenfolge daneben.
+                            .put("concurrentHazards", outcome.livenessConcurrentHazards?.let { org.json.JSONArray(it) } ?: JSONObject.NULL)
+                            .put("bookingWithoutHazard", outcome.livenessBookingWithoutHazard),
                     ),
             )
             .put(
@@ -948,6 +952,7 @@ object FuseStateJson {
                     // Diagnose (Toni 14.09.): Buchungsabzug und Bestand ohne ihn.
                     .put("deductionMgdl", outcome.evidenceDeductionMgdl?.let { fin(it) } ?: JSONObject.NULL)
                     .put("stockBeforeDeductionMgdl", outcome.evidenceStockBeforeDeductionMgdl?.let { fin(it) } ?: JSONObject.NULL)
+                    .put("declineMgdl", outcome.evidenceDeclineMgdl?.let { fin(it) } ?: JSONObject.NULL)
                     .put("reason", outcome.evidenceReason ?: JSONObject.NULL)
                     .put("creditMgdlPerMin", outcome.evidenceCreditMgdlPerMin?.let { fin(it) } ?: JSONObject.NULL)
                     // Widerrufs-Revision + Rebase-Kennzeichen (Toni 29.08.):

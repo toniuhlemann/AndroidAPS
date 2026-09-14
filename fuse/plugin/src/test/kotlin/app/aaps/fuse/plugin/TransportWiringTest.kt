@@ -516,12 +516,26 @@ class TransportWiringTest : TestBaseWithProfile() {
      * GRENZE: es gibt kein Kohlenhydratmodell - die Kurve IST die Stoerung.
      * Das Rig quantifiziert damit weder reale Unterversorgung noch den
      * spaeteren Insulinbedarf.
+     *
+     * NUR BESTAETIGTE ABGABEN (Tonis Review 14.09. spaet): zurueckgefuehrt
+     * wird erst in [transport], NACH dem echten Publikations-Gate, und nur
+     * die Menge, die das Gate versiegelt hinausgelassen hat UND deren
+     * simulierter Ausgang GESENDET ist. Entfernte, nie kommandierte, auf 0
+     * gekappte oder unklare Mengen erzeugen keine Wirkung. Die Abgabe landet
+     * zugleich als SMB in der Behandlungsliste. Ein reiner [cycle] fuehrt
+     * nichts zurueck.
+     *
+     * VERGANGENHEIT BLEIBT: jede Abgabe traegt den ISF ihres Zyklus. Ein
+     * spaeterer ISF-Wechsel veraendert die bereits erzeugte Glukosewirkung
+     * frueherer Messpunkte nicht.
      */
     private var rueckfuehrung = false
 
-    private data class Abgabe(val ts: Long, val u: Double, val wirktAufReihe: Boolean)
+    private data class Abgabe(val ts: Long, val u: Double, val wirktAufReihe: Boolean, val isfMgdlPerU: Double)
 
     private val abgaben = mutableListOf<Abgabe>()
+
+    /** ISF des zuletzt gerechneten Zyklus - wird der naechsten bestaetigten Abgabe mitgegeben. */
     private var rueckIsf = 61.0
 
     /** Vor der Abgabe liefert das Modell keine Null (t < td ohne t >= 0) - hier schon. */
@@ -535,7 +549,7 @@ class TransportWiringTest : TestBaseWithProfile() {
         }
 
     private fun abgabeGlukoseWirkung(ts: Long): Double =
-        abgaben.filter { it.wirktAufReihe && it.ts <= ts }.sumOf { (it.u - einzelWirkung(it, ts).iobContrib) * rueckIsf }
+        abgaben.filter { it.wirktAufReihe && it.ts <= ts }.sumOf { (it.u - einzelWirkung(it, ts).iobContrib) * it.isfMgdlPerU }
 
     private fun roundUp(t: Long) = if (t % 60_000L == 0L) t else (t / 60_000L + 1) * 60_000L
 
@@ -694,10 +708,9 @@ class TransportWiringTest : TestBaseWithProfile() {
     private fun cycle(): FuseCycleRunner.Outcome {
         clock += taktMs
         val o = runner.run(false, testPumpe())
-        if (rueckfuehrung) {
-            o.isfMgdlPerU?.takeIf { it.isFinite() && it > 0.0 }?.let { rueckIsf = it }
-            if (o.decision.smbU > 0.0) abgaben += Abgabe(o.computeTs, o.decision.smbU, wirktAufReihe = true)
-        }
+        // Nur den ISF merken - die Abgabe selbst fuehrt erst `transport` nach
+        // dem Gate zurueck (nicht publizierte Mengen wirken nicht).
+        if (rueckfuehrung) o.isfMgdlPerU?.takeIf { it.isFinite() && it > 0.0 }?.let { rueckIsf = it }
         return o
     }
 
@@ -3805,6 +3818,8 @@ class TransportWiringTest : TestBaseWithProfile() {
         dir: File,
         ausgang: Ausgang = Ausgang.GESENDET,
         kennungVerbiegen: (String) -> String = { it },
+        /** Persist-Ort, gewaehlt NACH dem gerechneten Zyklus - fuer "Persist scheitert genau im Mengenzyklus". */
+        persistNach: (FuseCycleRunner.Outcome) -> File = { dir },
     ): FuseCycleRunner.Outcome {
         // (1) DER BELEG UEBER DEN VORIGEN ZYKLUS - vor dem Lauf gebildet,
         // solange die published*-Felder noch den Vorgaenger beschreiben.
@@ -3851,7 +3866,7 @@ class TransportWiringTest : TestBaseWithProfile() {
             units = rt.units, treatmentViewPresent = true, proposalId = cycleId,
         )
         val publication = LedgerPublicationGate.publish(
-            rt = rt, adapter = ledger, dir = dir, expected = expected,
+            rt = rt, adapter = ledger, dir = persistNach(o), expected = expected,
             published = InterventionStamp.Published(smbU = rt.units, tbrChanged = o.tbrChanged),
             events = {
                 // ZUERST entlasten, DANN die neue Menge buchen - die
@@ -3871,6 +3886,13 @@ class TransportWiringTest : TestBaseWithProfile() {
         // (4) DIE RESERVIERUNG AUFLOESEN - nach dem Gate, mit der publizierten
         // Menge.
         ledger.resolveReservation(o.computeTs, publication.rt.units ?: 0.0, proposalId = cycleId)
+
+        // (4b) RUECKFUEHRUNG NUR DER BESTAETIGTEN ABGABE (s. `rueckfuehrung`).
+        val bestaetigtU = publication.rt.units?.takeIf { publication.sealed && ausgang == Ausgang.GESENDET && it > 0.0 }
+        if (rueckfuehrung && bestaetigtU != null) {
+            abgaben += Abgabe(o.computeTs, bestaetigtU, wirktAufReihe = true, isfMgdlPerU = rueckIsf)
+            boluses = boluses + BS(timestamp = o.computeTs, amount = bestaetigtU, type = BS.Type.SMB)
+        }
 
         // (5) DEN ZUSTAND FUER DEN NAECHSTEN ZYKLUS FORTSCHREIBEN.
         pPropId = cycleId.takeIf { ledger.hasOpenProposal(it) }
@@ -14221,7 +14243,7 @@ class TransportWiringTest : TestBaseWithProfile() {
         val zeilen = mutableListOf(
             "v,t,q1,raw,iob,akt,rb,ovr,cr,ph,stock,vorAbzug,abzug,inf,stab,exc,loss,vL,aktiv,rsn,den,exit,normal,fundament,shNeed,shCand,shHead,cand,lift,smb,sperreBis," +
                 "primeAktiv,primeBoden,primeRest,primeGrund,mfLift,grantQuelle,fPhase,fFaellig,fSeitUebergabe,fPhaseBFrei," +
-                "normalBlock,tailHeadroom,preFoundation,upfrontState,fArmed,recoveryDenial,hazard,authOk",
+                "normalBlock,tailHeadroom,preFoundation,upfrontState,fArmed,recoveryDenial,hazard,authOk,rueckgang,gefahren,buchungOhneGefahr",
         )
         // "U" = Foundation mit Sofortanteil 1,0 wie am Geraet: nur dann traegt
         // MealUpfrontAuthority, und die Foundation-Kette ist im rohen
@@ -14242,7 +14264,7 @@ class TransportWiringTest : TestBaseWithProfile() {
             val d = File(dir, name).also(File::mkdirs)
             fundamentAn = false; primeHuelleU = 1.2; fundamentAnteil = 0.75; upfrontAnteil = 0.0; fundamentEndeMin = 60
             knick2AbMin = null; lueckeVonMin = null; lueckeBisMin = null; rohSerie = null
-            abgaben.clear(); rueckfuehrung = false; rueckIsf = 61.0; bolusIobU = 4.5
+            abgaben.clear(); boluses = emptyList(); rueckfuehrung = false; rueckIsf = 61.0; bolusIobU = 4.5
             aufschubAn = false
             if (lage.startsWith("R")) {
                 val s = lage.drop(1).substringBefore("_iob").toDouble()
@@ -14295,11 +14317,11 @@ class TransportWiringTest : TestBaseWithProfile() {
                 // mit Aktivitaet; seine Wirkung steckt bereits in der Kurve.
                 val vorIob = bolusIobU ?: 4.5
                 bolusIobU = null
-                abgaben += Abgabe(start - 30 * 60_000L, vorIob / 0.9, wirktAufReihe = false)
+                abgaben += Abgabe(start - 30 * 60_000L, vorIob / 0.9, wirktAufReihe = false, isfMgdlPerU = 61.0)
                 rueckfuehrung = true
             }
             repeat(70) {
-                val o = cycle()
+                val o = transport(d)
                 zeilen += listOf(
                     name, (o.computeTs - start) / 60_000L, o.signal?.q1, o.signal?.rawBg, o.iobU, o.signal?.activityAtAnchor,
                     rb(o), o.evidenceMayOverrideRebound, o.evidenceCreditMgdlPerMin, o.evidencePhase, o.evidenceStockMgdl,
@@ -14316,6 +14338,101 @@ class TransportWiringTest : TestBaseWithProfile() {
                     o.underlyingNormalBlock, o.decision.tail?.headroomU, o.preFoundationSmbU,
                     o.phaseAUpfrontState, o.mealFoundation.armed, o.upfrontChain?.recoveryDenial,
                     o.upfrontChain?.currentHazard?.toString()?.replace(",", ";"), o.upfrontChain?.reboundExemptByAuthority,
+                    o.evidenceDeclineMgdl, o.livenessConcurrentHazards?.joinToString("|"), o.livenessBookingWithoutHazard,
+                ).joinToString(",")
+            }
+        }
+        File(out!!).also { it.parentFile?.mkdirs() }.writeText(zeilen.joinToString("\n"))
+    }
+
+    /**
+     * Die Geraetekette fuer eine echte Foundation-Ueberlappung: in diesem
+     * Prozess gedrueckter Marker (MEAL- und Rebound-Pin), Autorisierungskennung
+     * vor der Armierung, Direktdosis in Phase A, Foundation in Phase B, Tief vor
+     * dem Druck, Guard-/Schwanz-Deadlock des Normalpfads.
+     */
+    private fun foundationUeberlappungLage(
+        dir: File, sofortAnteil: Double, mealSchwelle: Double, steigung: Double, rueck: Boolean,
+    ): FuseLedgerAdapter {
+        val a = ausnahmeLage(dir)
+        // RIG-FALLE (Befund 14.09. spaet): `ausnahmeLage` stempelt den Marker
+        // auf Minute 14, waehrend die Uhr erst bei Minute 7 steht. Der erste
+        // Zyklus sieht den Druck dann VOR dem Markerzeitpunkt, der Marker ist
+        // dort noch nicht aktiv - und das Fundament wird mit
+        // pinnedMarkerAuthorized = false armiert. Hier deshalb wie produktiv:
+        // erst bis kurz vor dem Druck laufen, dann auf den naechsten Zyklus
+        // stempeln.
+        markerAt = 0L
+        maxSmbU = 0.3
+        fundamentAn = true
+        aufschubAn = true
+        upfrontAnteil = sofortAnteil
+        primeHuelleU = 4.0
+        fundamentAnteil = 0.5
+        fundamentEndeMin = 60
+        mealBgMin = mealSchwelle
+        steigungNachKnick = steigung
+        whenever(preferences.get(FuseIntKey.PrimeWindowMin)).thenReturn(20)
+        whenever(preferences.get(FuseLongKey.MealMarkerNoPrime)).thenReturn(0L)
+        while (clock < start + 13 * 60_000L) cycle()
+        a.episodes.markerAuth = app.aaps.fuse.core.controller.MarkerReauthorization.Authorization("auth-fu", clock + 60_000L)
+        markerAt = clock + 60_000L
+        if (rueck) {
+            abgaben += Abgabe(start - 30 * 60_000L, 4.5 / 0.9, wirktAufReihe = false, isfMgdlPerU = 61.0)
+            bolusIobU = null
+            rueckfuehrung = true
+        }
+        return a
+    }
+
+    @Test
+    fun `ERKUNDUNG Gefahren beim Bestandsverlust`(@TempDir dir: File) {
+        val out = System.getenv("FUSE_ERKUNDUNG_OUT")
+        org.junit.jupiter.api.Assumptions.assumeTrue(out != null)
+        val zeilen = mutableListOf("v,zeile,loss,haz,bwh,rueckgang,abzug,vorAbzug,descentRisk,sperreBis")
+        for (knick in listOf<Int?>(38, 39)) for (s2 in listOf(-1.0, -2.0, -4.0, -8.0)) {
+            val name = "k${knick}_s$s2"
+            val d = File(dir, name).also(File::mkdirs)
+            abgaben.clear(); boluses = emptyList(); rueckfuehrung = false; bolusIobU = 4.5
+            lueckeVonMin = null; lueckeBisMin = null; rohSerie = null
+            ausnahmeLage(d)
+            maxSmbU = 0.3
+            knick2AbMin = knick
+            steigungNachKnick2 = s2
+            repeat(60) {
+                val o = transport(d)
+                zeilen += listOf(
+                    name, zeile(o).replace(",", ";"), o.livenessEvidenceLossCause, o.livenessConcurrentHazards?.joinToString("|"),
+                    o.livenessBookingWithoutHazard, o.evidenceDeclineMgdl, o.evidenceDeductionMgdl, o.evidenceStockBeforeDeductionMgdl,
+                    o.descentRiskActive, (o.livenessReArmUntilTs - start) / 60_000L,
+                ).joinToString(",")
+            }
+        }
+        File(out!!).also { it.parentFile?.mkdirs() }.writeText(zeilen.joinToString("\n"))
+    }
+
+    @Test
+    fun `ERKUNDUNG Foundation-Ueberlappung`(@TempDir dir: File) {
+        val out = System.getenv("FUSE_ERKUNDUNG_OUT")
+        org.junit.jupiter.api.Assumptions.assumeTrue(out != null)
+        val zeilen = mutableListOf("v,zeile,fPhase,fDue,fLift,grant,mfLift,normal,upState,upReq,stock,abzug,rueckgang,haz,bwh,preBlock,preLimit,fRest,fAuth,shHead,recDen,curHaz,finalLimit")
+        for (rueck in listOf(false, true)) for (schwelle in listOf(170.0, 190.0, 210.0)) for (s in listOf(3.5, 4.0)) {
+            val sofort = 1.0
+            val name = "u${sofort}_m${schwelle}_s${s}_r$rueck"
+            val d = File(dir, name).also(File::mkdirs)
+            abgaben.clear(); boluses = emptyList(); rueckfuehrung = false; bolusIobU = 4.5
+            knick2AbMin = null; lueckeVonMin = null; lueckeBisMin = null; rohSerie = null
+            foundationUeberlappungLage(d, sofort, schwelle, s, rueck = rueck)
+            repeat(70) {
+                val o = transport(d)
+                zeilen += listOf(
+                    name, zeile(o).replace(",", ";"), o.mealFoundation.phase, o.mealFoundation.dueU, o.foundationLiftU,
+                    o.upfrontChain?.grantSource, o.upfrontChain?.markerFloorLiftU, o.livenessNormalSmbU,
+                    o.phaseAUpfrontState, o.phaseAUpfrontRequestedU, o.evidenceStockMgdl, o.evidenceDeductionMgdl,
+                    o.evidenceDeclineMgdl, o.livenessConcurrentHazards?.joinToString("|"), o.livenessBookingWithoutHazard,
+                    o.preFoundationBlock, o.preFoundationBindingLimit?.replace(",", ";"), o.mealFoundation.remainingInWindowU,
+                    o.mealFoundation.markerAuthorized, o.livenessShadowHeadroomU, o.upfrontChain?.recoveryDenial,
+                    o.upfrontChain?.currentHazard?.toString()?.replace(",", ";"), o.decision.bindingLimit?.replace(",", ";"),
                 ).joinToString(",")
             }
         }
@@ -14837,6 +14954,275 @@ class TransportWiringTest : TestBaseWithProfile() {
             val live = LivenessChannel.quantize(it.livenessCandidateU, 0.05)
             assertTrue(it.decision.smbU <= maxOf(normal, live) + 1e-9) { "Foundation addiert: ${zeile(it)}" }
         }
+    }
+
+    // ==== NACHWEISE DRITTE RUNDE (Tonis Review 14.09. spaet) ==================
+
+    /** Rueckfuehrung scharf: Vor-IOB als Vorbolus, dessen Wirkung schon in der Kurve steckt. */
+    private fun rueckfuehrungAn(vorIobU: Double = 4.5) {
+        abgaben += Abgabe(start - 30 * 60_000L, vorIobU / 0.9, wirktAufReihe = false, isfMgdlPerU = 61.0)
+        bolusIobU = null
+        rueckfuehrung = true
+    }
+
+    /** Die Kurve OHNE jede zurueckgefuehrte Abgabe - der Vergleichswert. */
+    private fun reiheOhneAbgaben(untilTs: Long): List<Double> {
+        val gemerkt = abgaben.toList()
+        abgaben.removeAll { it.wirktAufReihe }
+        return series(untilTs).map { it.value }.also { abgaben.clear(); abgaben += gemerkt }
+    }
+
+    /**
+     * RIG-VERTRAG 1: nur die bestaetigte Abgabe wirkt. Publiziert, aber nie
+     * kommandiert, auf 0 gekappt, unklar oder unkorreliert - und erst recht
+     * vom Gate entfernt (gescheiterter Persist): keine Behandlung, kein IOB,
+     * keine Glukosewirkung.
+     */
+    @Test
+    fun `Rueckfuehrung 1 - nur bestaetigte Abgaben wirken`(@TempDir dir: File) {
+        for (ausgang in listOf(Ausgang.NIE_KOMMANDIERT, Ausgang.CONSTRAINT_NULL, Ausgang.UNKLAR, Ausgang.UNKORRELIERT)) {
+            val d = File(dir, ausgang.name).also(File::mkdirs)
+            abgaben.clear(); boluses = emptyList()
+            ausnahmeLage(d)
+            maxSmbU = 0.3
+            rueckfuehrungAn()
+            val iobVorbolus = abgabeWirkung(start + 70 * 60_000L).first
+            var publiziert = 0.0
+            repeat(60) { transport(d, ausgang = ausgang); publiziert += letzteMengeU ?: 0.0 }
+            assertTrue(publiziert > 0.0, "$ausgang: Vorbedingung - es muss publizierte Mengen geben")
+            assertTrue(abgaben.none { it.wirktAufReihe }, "$ausgang: keine Rueckfuehrung ohne Bestaetigung")
+            assertTrue(boluses.isEmpty(), "$ausgang: keine Behandlung ohne Bestaetigung")
+            assertEquals(iobVorbolus, abgabeWirkung(start + 70 * 60_000L).first, 1e-12, "$ausgang: IOB unveraendert")
+            assertEquals(reiheOhneAbgaben(clock), series(clock).map { it.value }, "$ausgang: Reihe unveraendert")
+        }
+
+        // Gescheiterter Persist: das Gate entfernt die Menge - keine Wirkung.
+        val d = File(dir, "persist").also(File::mkdirs)
+        abgaben.clear(); boluses = emptyList()
+        ausnahmeLage(d)
+        maxSmbU = 0.3
+        rueckfuehrungAn()
+        val blockiert = File(d, "datei-statt-verzeichnis").also { it.writeText("x") }
+        var entfernt = 0
+        var n = 0
+        // Vorlaufende Zyklen versiegeln sauber; genau im ersten Mengenzyklus scheitert der Persist.
+        while (entfernt == 0 && n < 60) {
+            n++
+            val o = transport(d, persistNach = { z -> if (z.decision.smbU > 0.0) File(blockiert, "unter") else d })
+            if (o.decision.smbU > 0.0) { entfernt++; assertEquals(null, letzteMengeU, "ohne Siegel keine Ausgabe") }
+        }
+        assertTrue(entfernt > 0, "Vorbedingung: das Gate muss eine beschlossene Menge entfernt haben")
+        assertTrue(abgaben.none { it.wirktAufReihe } && boluses.isEmpty(), "entfernte Mengen wirken nicht")
+
+        // Gegenprobe GESENDET: genau die publizierten Mengen, als Behandlung und Wirkung.
+        val g = File(dir, "gesendet").also(File::mkdirs)
+        abgaben.clear(); boluses = emptyList()
+        ausnahmeLage(g)
+        maxSmbU = 0.3
+        rueckfuehrungAn()
+        val gesendet = mutableListOf<Pair<Long, Double>>()
+        repeat(60) { val o = transport(g); letzteMengeU?.let { gesendet += o.computeTs to it } }
+        assertTrue(gesendet.isNotEmpty())
+        assertEquals(gesendet, abgaben.filter { it.wirktAufReihe }.map { it.ts to it.u })
+        assertEquals(gesendet, boluses.map { it.timestamp to it.amount })
+        assertTrue(series(clock).last().value < reiheOhneAbgaben(clock).last() - 1e-6, "bestaetigte Abgaben senken die Reihe")
+    }
+
+    /** RIG-VERTRAG 2: vergangene Messpunkte bleiben unveraendert - auch bei spaeteren Abgaben mit anderem ISF. */
+    @Test
+    fun `Rueckfuehrung 2 - vergangene Messpunkte bleiben unveraendert`(@TempDir dir: File) {
+        ausnahmeLage(dir)
+        maxSmbU = 0.3
+        rueckfuehrungAn()
+        var n = 0
+        while (abgaben.none { it.wirktAufReihe } && n < 60) { transport(dir); n++ }
+        assertTrue(abgaben.any { it.wirktAufReihe }, "Vorbedingung: eine bestaetigte Abgabe")
+        val stichtag = clock
+        val vorher = series(stichtag).map { it.timestamp to it.value }
+        repeat(20) { transport(dir) }
+        // Eine spaetere Abgabe mit ANDEREM ISF - sie darf die Vergangenheit nicht umschreiben.
+        abgaben += Abgabe(clock, 1.0, wirktAufReihe = true, isfMgdlPerU = 30.0)
+        assertEquals(vorher, series(stichtag).map { it.timestamp to it.value }, "die Vergangenheit ist fest")
+        val spaeter = clock + 30 * 60_000L
+        val mitSpaeterer = series(spaeter).last().value
+        abgaben.removeAt(abgaben.lastIndex)
+        assertTrue(mitSpaeterer < series(spaeter).last().value - 1e-6, "die spaetere Abgabe wirkt nur nach vorn")
+    }
+
+    /**
+     * ECHTE PHASE-B-FOUNDATION + ABGESCHLOSSENE DIREKTDOSIS + GROESSERER
+     * ADAPTIVER KANDIDAT IM SELBEN ZYKLUS (Tonis Review 14.09. spaet, Punkt 1).
+     *
+     * Aufbau wie am Geraet (`foundationUeberlappungLage`): Marker in diesem
+     * Prozess gedrueckt und auf den naechsten Zyklus gestempelt, Direktdosis
+     * 2,0 U in Phase A, danach Foundation-Tropf unter FOUNDATION-Grant,
+     * Kanal bewaffnet im rohen Rebound-Fenster. Rueckfuehrung NUR der
+     * bestaetigten Abgaben.
+     *
+     * BEFUND: nach der abgeschlossenen Direktdosis baut sich der Bestand bis
+     * Phase B wieder auf; der versiegelte Kredit bleibt waehrend des
+     * Foundation-Tropfs positiv, und DAS ALTE KREDIT-SONDERRECHT traegt das
+     * Tor - in keiner der gezielten Varianten die neue Ausnahme. Der Test
+     * erzwingt die Ausnahme nicht, er haelt den Pfad fest.
+     */
+    @Test
+    fun `Ausnahme 14 - Foundation Phase B mit abgeschlossener Direktdosis und groesserem Kandidaten`(@TempDir dir: File) {
+        foundationUeberlappungLage(dir, sofortAnteil = 1.0, mealSchwelle = 170.0, steigung = 4.0, rueck = true)
+        val o = (1..60).map { transport(dir) }
+        val direkt = o.firstOrNull { it.upfrontChain?.grantSource == "MEAL_UPFRONT" && it.decision.smbU > 0.0 }
+            ?: throw AssertionError("Vorbedingung: Direktdosis ausgegeben:\n" + o.joinToString("\n") { zeile(it) })
+        assertEquals(direkt.decision.smbU, ledger.publishedAmountOf("e2e#${direkt.computeTs}") ?: -1.0, 1e-9)
+        val beleg = o.firstOrNull {
+            it.computeTs > direkt.computeTs && it.phaseAUpfrontState.toString() == "COVERED" &&
+                it.mealFoundation.phase == MealFoundation.Phase.PHASE_B && it.foundationLiftU > 0.0 &&
+                it.upfrontChain?.grantSource == "FOUNDATION" && it.livenessActive && it.livenessLiftU > 0.0 && rb(it) > 0
+        } ?: throw AssertionError("Vorbedingung: Phase-B-Foundation und Kanal-Lift im selben Zyklus:\n" + o.joinToString("\n") { zeile(it) })
+        val normal = beleg.livenessNormalSmbU ?: 0.0
+        val live = LivenessChannel.quantize(beleg.livenessCandidateU, 0.05)
+        assertEquals(beleg.foundationLiftU, normal, 1e-9, "der Normalbeitrag IST der Foundation-Schritt: ${zeile(beleg)}")
+        assertTrue(live > normal + 1e-9, "Kandidat ueber der Foundation: ${zeile(beleg)}")
+        assertEquals(maxOf(normal, live), beleg.decision.smbU, 1e-9, "Maximum, nie Summe: ${zeile(beleg)}")
+        assertEquals(beleg.decision.smbU, ledger.publishedAmountOf("e2e#${beleg.computeTs}") ?: -1.0, 1e-9, "publiziert = gebucht")
+        assertTrue(abgaben.any { it.wirktAufReihe && it.ts == beleg.computeTs && kotlin.math.abs(it.u - beleg.decision.smbU) < 1e-9 }) { "bestaetigt zurueckgefuehrt" }
+        // Welcher Pfad das Rebound-Tor traegt, steht fest (s. KDoc).
+        assertTrue(beleg.evidenceMayOverrideRebound && !beleg.livenessReboundVetoLifted, "Pfad: altes Kredit-Sonderrecht: ${zeile(beleg)}")
+    }
+
+    /**
+     * ECHTE PHASE-B-FOUNDATION, DIE AUSNAHME HEBT DAS VETO, GROESSERER
+     * KANDIDAT IM SELBEN ZYKLUS - ohne Direktdosis (Sofortanteil 0). Nur hier
+     * wird die neue Ausnahme im Rig entscheidend: der Foundation-Tropf zehrt
+     * den versiegelten Rest auf (PENDING_SEAL, Kredit 0).
+     */
+    @Test
+    fun `Ausnahme 15 - Foundation Phase B, Ausnahme hebt, groesserer Kandidat passiert Gate und Buchung`(@TempDir dir: File) {
+        foundationUeberlappungLage(dir, sofortAnteil = 0.0, mealSchwelle = 120.0, steigung = 3.5, rueck = true)
+        val o = (1..60).map { transport(dir) }
+        val beleg = o.firstOrNull {
+            it.mealFoundation.phase == MealFoundation.Phase.PHASE_B && it.foundationLiftU > 0.0 &&
+                it.upfrontChain?.grantSource == "FOUNDATION" && it.livenessReboundVetoLifted && !it.evidenceMayOverrideRebound &&
+                it.evidencePhase == "PENDING_SEAL" && it.livenessLiftU > 0.0 && rb(it) > 0
+        } ?: throw AssertionError("Vorbedingung: Foundation > 0 in Phase B, Ausnahme hebt, Kanal-Lift:\n" + o.joinToString("\n") { zeile(it) + " f=${it.mealFoundation.phase}/${it.foundationLiftU}/${it.upfrontChain?.grantSource}" })
+        val normal = beleg.livenessNormalSmbU ?: 0.0
+        val live = LivenessChannel.quantize(beleg.livenessCandidateU, 0.05)
+        assertEquals(beleg.foundationLiftU, normal, 1e-9, "der Normalbeitrag IST der Foundation-Schritt: ${zeile(beleg)}")
+        assertTrue(live > normal + 1e-9, "Kandidat ueber der Foundation: ${zeile(beleg)}")
+        assertEquals(maxOf(normal, live), beleg.decision.smbU, 1e-9, "Maximum, nie Summe: ${zeile(beleg)}")
+        assertEquals(beleg.decision.smbU - normal, beleg.livenessLiftU, 1e-9)
+        assertEquals(beleg.decision.smbU, ledger.publishedAmountOf("e2e#${beleg.computeTs}") ?: -1.0, 1e-9, "publiziert = gebucht")
+        assertTrue(abgaben.any { it.wirktAufReihe && it.ts == beleg.computeTs && kotlin.math.abs(it.u - beleg.decision.smbU) < 1e-9 }) { "bestaetigt zurueckgefuehrt" }
+    }
+
+    /**
+     * GEFAHREN UNABHAENGIG VON DER TORREIHENFOLGE (Punkt 2). Im Tief vor dem
+     * Druck meldet das Tor REBOUND_ACTIVE - und verdeckt damit Tief,
+     * Abwaertsrisiko, Riegel und Fallen. Die Gefahrenliste fuehrt sie trotzdem.
+     * Dazu die Konsistenz jeder einzelnen Gefahr mit ihrer Quelle in JEDEM
+     * Zyklus, und "buchungsbedingt ohne Gefahr" nur ohne jede Gefahr.
+     */
+    @Test
+    fun `Gefahren 1 - erfasst unabhaengig von Tor- und Ablehnungsreihenfolge`(@TempDir dir: File) {
+        ausnahmeLage(dir)
+        maxSmbU = 0.3
+        rueckfuehrungAn()
+        val o = (1..60).map { transport(dir) }
+        val verdeckt = o.filter {
+            it.livenessProfileReason == "REBOUND_ACTIVE" &&
+                it.livenessConcurrentHazards.orEmpty().containsAll(listOf("MEASURED_LOW", "DESCENT_RISK", "LATCH_ACTIVE", "FALLING"))
+        }
+        assertTrue(verdeckt.isNotEmpty()) { "Vorbedingung: Tor REBOUND_ACTIVE bei gleichzeitigen Abwaertsgefahren:\n" + o.joinToString("\n") { zeile(it) + " haz=${it.livenessConcurrentHazards}" } }
+        o.filter { it.livenessConcurrentHazards != null }.forEach {
+            val h = it.livenessConcurrentHazards!!
+            val kontext = zeile(it) + " haz=$h"
+            assertEquals((it.evidenceDeclineMgdl ?: 0.0) > 0.0, "EVIDENCE_DECLINE" in h, kontext)
+            assertEquals(it.livenessMeasuredStability != "STABLE", "MEASURED_NOT_STABLE" in h, kontext)
+            assertEquals(it.descentRiskActive, "DESCENT_RISK" in h, kontext)
+            val ukf = it.signal?.ukfRatePerMin ?: Double.NaN
+            assertEquals(!ukf.isFinite() || ukf < LivenessChannel.UKF_FLOOR_MGDL_PER_MIN, "FALLING" in h, kontext)
+            assertEquals(it.livenessEvidenceLossCause == "BOOKING_DEDUCTION" && h.isEmpty(), it.livenessBookingWithoutHazard, kontext)
+        }
+    }
+
+    /**
+     * BUCHUNG PLUS RUECKGANG UND INSTABILE MESSREIHE (Punkt 2). Organisch: der
+     * Lift bei Minute 39 zieht im Folgezyklus den Bestand unter die Schwelle
+     * (ohne Abzug stuende er darueber -> BOOKING_DEDUCTION), und genau ab
+     * Minute 39 faellt die Reihe steil. Die Ursache heisst weiter Buchung, aber
+     * Rueckgang und Messlage stehen daneben - "buchungsbedingt ohne Gefahr" gilt
+     * NICHT. Rig ohne Rueckfuehrung (die Lage stammt aus dem Erkundungslauf).
+     */
+    @Test
+    fun `Gefahren 2 - Buchung plus Rueckgang und instabile Messreihe ist nicht gefahrlos`(@TempDir dir: File) {
+        ausnahmeLage(dir)
+        maxSmbU = 0.3
+        knick2AbMin = 39
+        steigungNachKnick2 = -8.0
+        val o = (1..60).map { transport(dir) }
+        val beleg = o.firstOrNull {
+            it.livenessEvidenceLossCause == "BOOKING_DEDUCTION" &&
+                it.livenessConcurrentHazards.orEmpty().containsAll(listOf("EVIDENCE_DECLINE", "MEASURED_NOT_STABLE"))
+        } ?: throw AssertionError("Vorbedingung: Buchungsverlust mit Rueckgang und instabiler Messreihe:\n" +
+            o.joinToString("\n") { zeile(it) + " loss=${it.livenessEvidenceLossCause} haz=${it.livenessConcurrentHazards} decl=${it.evidenceDeclineMgdl}" })
+        assertTrue((beleg.evidenceDeclineMgdl ?: 0.0) > 0.0 && (beleg.evidenceDeductionMgdl ?: 0.0) > 0.0, zeile(beleg))
+        assertFalse(beleg.livenessBookingWithoutHazard, "Buchung plus Gefahr ist nicht gefahrlos: ${zeile(beleg)}")
+        assertEquals(0.0, beleg.livenessLiftU, 1e-12, zeile(beleg))
+    }
+
+    /**
+     * AKTIVER ABSTIEGSSCHUTZ HINTER DEM REBOUND-TOR (Punkt 2). Organisch nach
+     * steilem Fall: Tor REBOUND_ACTIVE, zugleich DESCENT_RISK - der Bestand ist
+     * dort durch Rueckgang leer, nicht durch Buchung. Eine Kombination
+     * "Buchung plus Abstiegsschutz" trat in den gezielten Lagen nicht auf; sie
+     * ist in der reinen Diagnose (Kern) geprueft.
+     */
+    @Test
+    fun `Gefahren 3 - Abstiegsschutz wird hinter dem Rebound-Tor erfasst`(@TempDir dir: File) {
+        ausnahmeLage(dir)
+        maxSmbU = 0.3
+        knick2AbMin = 38
+        steigungNachKnick2 = -4.0
+        val o = (1..60).map { transport(dir) }
+        val verdeckt = o.filter {
+            it.computeTs > markerAt && it.livenessProfileReason == "REBOUND_ACTIVE" && it.descentRiskActive &&
+                "DESCENT_RISK" in it.livenessConcurrentHazards.orEmpty()
+        }
+        assertTrue(verdeckt.isNotEmpty()) { "Vorbedingung: Abstiegsschutz aktiv hinter REBOUND_ACTIVE:\n" +
+            o.joinToString("\n") { zeile(it) + " dr=${it.descentRiskActive} haz=${it.livenessConcurrentHazards}" } }
+        verdeckt.forEach {
+            assertFalse(it.livenessBookingWithoutHazard, zeile(it))
+            assertEquals(0.0, it.livenessLiftU, 1e-12, zeile(it))
+        }
+    }
+
+    /**
+     * PUNKT 4, BEOBACHTUNG - KEINE REGELAENDERUNG: loest reine
+     * Bestandserschoepfung OHNE Gefahr eine Wiederanlaufsperre aus?
+     * Abendkonfiguration 5 min Sperre, Rueckfuehrung nur bestaetigter Abgaben.
+     * Gesichert wird nur, was geschieht und dass es vollstaendig benannt ist:
+     * ein REBOUND_ACTIVE-Ausgang mit buchungsbedingtem Verlust und leerer
+     * Gefahrenliste, danach Sperrzyklen, in denen die Ausnahme wieder gilt und
+     * keine Gefahr anliegt. Evidenzabzug und alle Tore bleiben unveraendert;
+     * die Zyklenzahlen sind Rig-Werte, nicht auf den Abend uebertragbar.
+     */
+    @Test
+    fun `Ausnahme 16 - reine Bestandserschoepfung ohne Gefahr fuehrt in die Sperre (Beobachtung)`(@TempDir dir: File) {
+        ausnahmeLage(dir)
+        maxSmbU = 0.3
+        livenessReArmMin = 5
+        rueckfuehrungAn()
+        val o = (1..60).map { transport(dir) }
+        val exit = o.indexOfFirst {
+            it.livenessExit == "REBOUND_ACTIVE" && it.livenessEvidenceLossCause == "BOOKING_DEDUCTION" &&
+                it.livenessBookingWithoutHazard && it.livenessConcurrentHazards.orEmpty().isEmpty()
+        }
+        assertTrue(exit >= 0) { "Vorbedingung: buchungsbedingter Ausgang ohne Gefahr:\n" + o.joinToString("\n") { zeile(it) + " loss=${it.livenessEvidenceLossCause} haz=${it.livenessConcurrentHazards}" } }
+        val sperre = o.drop(exit + 1).takeWhile { it.livenessDenial == "REARM_BLOCKED" }
+        assertTrue(sperre.isNotEmpty(), "nach dem Ausgang folgt die Sperre")
+        assertTrue(sperre.any { it.livenessReboundExceptionAllowed == true && it.livenessConcurrentHazards.orEmpty().isEmpty() }) {
+            "in der Sperre gilt die Ausnahme wieder ohne Gefahr:\n" + sperre.joinToString("\n") { zeile(it) + " haz=${it.livenessConcurrentHazards}" }
+        }
+        sperre.forEach { assertEquals(0.0, it.livenessLiftU, 1e-12, zeile(it)) }
+        println("Ausnahme 16: Ausgang t=${(o[exit].computeTs - start) / 60_000L}, Sperrzyklen=${sperre.size}, davon ohne Gefahr=${sperre.count { it.livenessConcurrentHazards.orEmpty().isEmpty() }}")
     }
 
     // ---- BITGLEICH-AUFZEICHNUNG (nur mit FUSE_BITGLEICH_OUT) ----------------

@@ -443,6 +443,14 @@ object EvidenceStock {
          */
         val deductionMgdl: Double? = null,
         val stockBeforeDeductionMgdl: Double? = null,
+        /**
+         * DIAGNOSE, NIE DOSIERWIRKSAM (Tonis Review 14.09. spaet): der
+         * Rueckgang dieses Zyklus [mg/dl] - ein gleichzeitig fallender
+         * Messverlauf kann an einem leeren Bestand beteiligt sein, auch wenn
+         * der Buchungsabzug allein schon gereicht haette. null = nicht
+         * berechnet.
+         */
+        val declineMgdl: Double? = null,
     )
 
     /**
@@ -691,6 +699,7 @@ object EvidenceStock {
             deductionMgdl = abzug,
             stockBeforeDeductionMgdl = max(0.0, nachVerfall + zufluss - rueckgang)
                 .let { if (it < cfg.stockFloorMgdl) 0.0 else it },
+            declineMgdl = rueckgang,
             noInflow = grund,
             // ACTIVE HEISST "DARF JETZT KREDIT LIEFERN" - haengt also am
             // VERSIEGELTEN Bestand, nicht am eben zugeflossenen. Der erste

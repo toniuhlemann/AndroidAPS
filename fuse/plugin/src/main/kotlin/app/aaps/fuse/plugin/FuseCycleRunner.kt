@@ -1221,6 +1221,10 @@ class FuseCycleRunner(
         val livenessShadowHeadroomU: Double? = null,
         /** BOOKING_DEDUCTION / DECAY_OR_DECLINE, wenn die Ausnahme am Bestand scheitert. */
         val livenessEvidenceLossCause: String? = null,
+        /** Gleichzeitige Gefahren, unabhaengig von der Torreihenfolge (null = Kanal aus). */
+        val livenessConcurrentHazards: List<String>? = null,
+        /** Buchungsbedingter Bestandsverlust UND keine gleichzeitige Gefahr. Diagnose. */
+        val livenessBookingWithoutHazard: Boolean = false,
         /** Der TYPISIERTE Grund des Modell-Tors (CandidateSearch.Reject)
          *  dieses Zyklus - null, wenn die Integritaetskette bestanden ist.
          *  Nur im Hauptpfad gefuellt. */
@@ -1259,6 +1263,8 @@ class FuseCycleRunner(
         /** Diagnose: Buchungsabzug dieses Zyklus und Bestand ohne ihn [mg/dl]. */
         val evidenceDeductionMgdl: Double? = null,
         val evidenceStockBeforeDeductionMgdl: Double? = null,
+        /** Diagnose: Rueckgang dieses Zyklus [mg/dl]. */
+        val evidenceDeclineMgdl: Double? = null,
         /** Widerrufs-Revision der Episode + ob DIESER Zyklus einen legalen
          *  Widerruf-Rebase verbucht hat (Toni 29.08.; reine Beobachtung). */
         val evidenceCommitmentRevision: Long = 0L,
@@ -1611,6 +1617,7 @@ class FuseCycleRunner(
                 evidenceStockMgdl = evidenz?.state?.stockMgdl,
             evidenceDeductionMgdl = evidenz?.deductionMgdl,
             evidenceStockBeforeDeductionMgdl = evidenz?.stockBeforeDeductionMgdl,
+            evidenceDeclineMgdl = evidenz?.declineMgdl,
                 evidenceRevokeRebased = evidenz?.revokeRebased,
                 evidenceReason = evidenz?.noInflow?.name,
                 evidenceCreditMgdlPerMin = evidenz?.creditMgdlPerMin,
@@ -4798,6 +4805,10 @@ class FuseCycleRunner(
         // Warum die Ausnahme am Bestand scheitert (Diagnose): eigene Buchung
         // oder Verfall/Rueckgang. null = sie scheitert nicht am Bestand.
         var livenessEvidenceLossCause: String? = null
+        // Gleichzeitige Gefahren, UNABHAENGIG von Tor- und Ablehnungsreihenfolge
+        // erfasst (Tonis Review 14.09. spaet). null = Kanal aus.
+        var livenessConcurrentHazards: List<String>? = null
+        var livenessBookingWithoutHazard = false
 
         // Marker-Leistungsfrist + zentraler Dosierkontext: seit B2 VOR der
         // State-Konstruktion bestimmt (Kontextgrenze in der Grant-Bildung,
@@ -5008,14 +5019,32 @@ class FuseCycleRunner(
             // DORMANT allein unterscheidet nicht (Tonis Review 14.09.): ein
             // Bestand verschwindet auch durch Verfall oder Rueckgang. Eigene
             // Buchung ist es nur, wenn er OHNE den Abzug dieses Zyklus ueber
-            // der Schwelle gestanden haette. Rein beschreibend.
-            livenessEvidenceLossCause = if (
-                reboundAusnahme.denial == app.aaps.fuse.core.controller.MealReboundEvidenceException.Denial.NO_EVIDENCE_STOCK &&
-                evidenz?.phase == EvidenceStock.Phase.DORMANT
-            ) {
-                if ((evidenz.deductionMgdl ?: 0.0) > 0.0 && (evidenz.stockBeforeDeductionMgdl ?: 0.0) >= evidenceConfig.stockFloorMgdl)
-                    "BOOKING_DEDUCTION" else "DECAY_OR_DECLINE"
-            } else null
+            // der Schwelle gestanden haette. Und auch dann kann eine Gefahr
+            // zugleich anliegen, die Tor- und Ablehnungsreihenfolge verdecken -
+            // deshalb getrennt erfasst. Rein beschreibend.
+            val verlustUrsache = app.aaps.fuse.core.controller.EvidenceLossDiagnosis.cause(
+                reboundAusnahme.denial, evidenz?.phase, evidenz?.deductionMgdl,
+                evidenz?.stockBeforeDeductionMgdl, evidenceConfig.stockFloorMgdl,
+            )
+            livenessEvidenceLossCause = verlustUrsache?.name
+            val gefahren = app.aaps.fuse.core.controller.EvidenceLossDiagnosis.hazards(
+                app.aaps.fuse.core.controller.EvidenceLossDiagnosis.Observation(
+                    signalHealthy = step.health == Health.READY,
+                    ledgerHold = ledgerView.hold,
+                    measuredLow = measuredLow,
+                    descentRisk = descentRisk.active,
+                    descentRiskMarker = risk60?.active == true,
+                    latchBlocksPositive = descentLatch.blocksPositive,
+                    ukfRatePerMin = signal.ukfRatePerMin,
+                    ukfFloorPerMin = LivenessChannel.UKF_FLOOR_MGDL_PER_MIN,
+                    measuredVerdict = upfrontStabilitaet.verdict,
+                    declineMgdl = evidenz?.declineMgdl,
+                    turningDown = turnClassification.phase == TurnResponseShadow.Phase.TURNING_DOWN,
+                ),
+            )
+            livenessConcurrentHazards = gefahren.map { it.name }
+            livenessBookingWithoutHazard =
+                app.aaps.fuse.core.controller.EvidenceLossDiagnosis.bookingWithoutHazard(verlustUrsache, gefahren)
             val hart = when {
                 step.health != Health.READY -> "SIGNAL_UNHEALTHY"
                 treatmentView == null -> "VIEW_UNREADABLE"
@@ -6095,6 +6124,8 @@ class FuseCycleRunner(
             livenessShadowCandidateU = livenessShadowCandidateU,
             livenessShadowHeadroomU = livenessShadowHeadroomU,
             livenessEvidenceLossCause = livenessEvidenceLossCause,
+            livenessConcurrentHazards = livenessConcurrentHazards,
+            livenessBookingWithoutHazard = livenessBookingWithoutHazard,
             livenessModelReject = livenessModelReject,
             livenessReArmUntilTs = episodes.livenessReArmUntilTs,
             preFoundationSmbU = preFoundationSmbU,
@@ -6130,6 +6161,7 @@ class FuseCycleRunner(
             evidenceStockMgdl = evidenz?.state?.stockMgdl,
             evidenceDeductionMgdl = evidenz?.deductionMgdl,
             evidenceStockBeforeDeductionMgdl = evidenz?.stockBeforeDeductionMgdl,
+            evidenceDeclineMgdl = evidenz?.declineMgdl,
             evidenceRevokeRebased = evidenz?.revokeRebased,
             evidenceReason = evidenz?.noInflow?.name,
             evidenceCreditMgdlPerMin = evidenz?.creditMgdlPerMin,
@@ -7049,6 +7081,7 @@ class FuseCycleRunner(
             evidenceStockMgdl = evidenz?.state?.stockMgdl,
             evidenceDeductionMgdl = evidenz?.deductionMgdl,
             evidenceStockBeforeDeductionMgdl = evidenz?.stockBeforeDeductionMgdl,
+            evidenceDeclineMgdl = evidenz?.declineMgdl,
             evidenceRevokeRebased = evidenz?.revokeRebased,
             evidenceReason = evidenz?.noInflow?.name,
             evidenceCreditMgdlPerMin = evidenz?.creditMgdlPerMin,
