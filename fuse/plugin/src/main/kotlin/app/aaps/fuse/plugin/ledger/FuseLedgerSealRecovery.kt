@@ -38,8 +38,12 @@ import java.util.concurrent.atomic.AtomicReference
  *    Vorgang), eine unterbrochene Reparatur hinterlaesst
  *    [FuseLedgerStore.REPAIR_PENDING_NAME] (-> Hold), und die Schema-Migration
  *    schreibt unter einem Marker nicht (Adapter, und keine Generation darf eine
- *    Migration verlangen). Ohne `.tmp` ist der Zielname MEHRDEUTIG - er kann den
- *    aelteren oder den neuen Stand tragen -> Hold.
+ *    Migration verlangen). Ohne `.tmp` bleibt der Zielname grundsaetzlich
+ *    MEHRDEUTIG. Einziger enger Zusatznachweis: target ist exakt Marker-Revision
+ *    R, `.bak` exakt R-1 und der vollstaendige JSON-Vergleich belegt genau einen
+ *    kurzen, monotonen und haftungsneutralen Pumpen-Vollsicht-Takt. Jede andere
+ *    Aenderung (insbesondere Buchung, Menge, Haftung, Autorisierung, Zustellung,
+ *    Identitaet, Hash oder Fehler) -> Hold.
  *
  * ## Absturzfester Ablauf ([perform])
  *
@@ -107,6 +111,8 @@ object FuseLedgerSealRecovery {
         val decodable: Boolean,
         val migrationRequired: String?,
     )
+
+    private data class JsonChange(val path: String, val old: Any?, val new: Any?)
 
     data class Proof(val sourceName: String, val content: String, val sha256: String, val revision: Long, val basis: String)
 
@@ -242,10 +248,19 @@ object FuseLedgerSealRecovery {
             else -> {
                 val tmp = kandidaten.first { it.name == TMP }
                 when {
-                    !tmp.exists -> held(
-                        "Altmarker ohne Pruefsumme und ohne .tmp: der Zielname kann den aelteren oder den " +
-                            "unterbrochenen Stand tragen - nicht unterscheidbar"
-                    )
+                    !tmp.exists -> {
+                        val fortschreibung = altmarkerVollsichtFortschreibung(marker, kandidaten)
+                        if (fortschreibung == null) held(
+                            "Altmarker ohne Pruefsumme und ohne .tmp: der Zielname kann den aelteren oder den " +
+                                "unterbrochenen Stand tragen - nicht unterscheidbar"
+                        ) else proven(
+                            fortschreibung.content!!,
+                            fortschreibung.name,
+                            "Altmarker: Zielgeneration ist gegen .bak als genau eine haftungsneutrale " +
+                                "Vollsicht-Fortschreibung belegt (rev=${marker.revision})",
+                            resume = false,
+                        )
+                    }
                     tmp.revision != marker.revision -> held(".tmp traegt rev=${tmp.revision}, der Altmarker rev=${marker.revision} - nicht zuzuordnen")
                     else -> proven(
                         tmp.content!!, tmp.name,
@@ -255,6 +270,92 @@ object FuseLedgerSealRecovery {
                 }
             }
         }
+    }
+
+    /**
+     * Enger Ausgang fuer einen v1-Altmarker ohne `.tmp`: Das ist ausdruecklich
+     * KEIN "neuere Revision gewinnt". Ziel und Backup muessen sich als genau
+     * EIN akzeptierter Pumpen-Vollsicht-Takt erweisen. Aendern duerfen sich nur
+     * dessen Ordnungs-/Beobachtungszeiten und die daraus abgeleiteten,
+     * monotonen Zaehler. Jede Buchung, Menge, Haftung, Autorisierung,
+     * Zustellung, Identitaet, Hash- oder Fehleraenderung faellt durch den
+     * vollstaendigen JSON-Vergleich fail-closed heraus.
+     *
+     * Entweder ist der Zielname schon der unterbrochene Stand, oder er ist der
+     * letzte sauber versiegelte Stand vor einem Abbruch noch vor `.tmp`. Im
+     * zweiten Fall wurde wegen des fehlgeschlagenen Persist-Gates kein neuer
+     * Pumpenauftrag publiziert. Der Zielstand verliert gegenueber `.bak` keine
+     * Haftung und traegt bereits die naechste vollstaendige Pumpensicht.
+     */
+    private fun altmarkerVollsichtFortschreibung(marker: SealMarker, kandidaten: List<Candidate>): Candidate? {
+        val ziel = kandidaten.firstOrNull { it.name == FuseLedgerStore.FILE_NAME && it.decodable && it.content != null }
+            ?: return null
+        val bak = kandidaten.firstOrNull { it.name == BAK && it.decodable && it.content != null }
+            ?: return null
+        if (ziel.revision != marker.revision || bak.revision != marker.revision - 1L) return null
+
+        val alt = JSONObject(bak.content!!)
+        val neu = JSONObject(ziel.content!!)
+        val aenderungen = mutableListOf<JsonChange>()
+        jsonChanges("$", alt, neu, aenderungen)
+        if (aenderungen.isEmpty() || aenderungen.size > 10_000) return null
+
+        val altOrder = alt.optJSONObject("state")?.optJSONObject("lastSnapshotOrder") ?: return null
+        val neuOrder = neu.optJSONObject("state")?.optJSONObject("lastSnapshotOrder") ?: return null
+        val altCalc = altOrder.optLong("calculatedAt", Long.MIN_VALUE)
+        val neuCalc = neuOrder.optLong("calculatedAt", Long.MIN_VALUE)
+        val altGen = altOrder.optLong("calculatorGeneration", Long.MIN_VALUE)
+        val neuGen = neuOrder.optLong("calculatorGeneration", Long.MIN_VALUE)
+        if (altCalc <= 0L || neuCalc <= altCalc || neuCalc - altCalc > 5 * 60_000L) return null
+        if (altGen < 0L || neuGen != altGen + 1L) return null
+        if (altOrder.optString("sourceEpochId") != neuOrder.optString("sourceEpochId")) return null
+
+        fun number(v: Any?): Double? = (v as? Number)?.toDouble()?.takeIf { it.isFinite() }
+        fun increasingTime(c: JsonChange): Boolean {
+            val a = (c.old as? Number)?.toLong() ?: return false
+            val n = (c.new as? Number)?.toLong() ?: return false
+            return a > 0L && n > a && n - a <= 5 * 60_000L
+        }
+        fun nonDecreasing(c: JsonChange, maxDelta: Double): Boolean {
+            val a = number(c.old) ?: return false
+            val n = number(c.new) ?: return false
+            return n >= a && n - a <= maxDelta
+        }
+
+        val entryReconcile = Regex("""^\$.state\.entries\[\d+]\.lastReconciledAtTs$""")
+        val erlaubt = aenderungen.all { c ->
+            when {
+                c.path == "$.revision" ->
+                    (c.old as? Number)?.toLong() == marker.revision - 1L &&
+                        (c.new as? Number)?.toLong() == marker.revision
+                c.path == "$.state.lastSnapshotOrder.calculatorGeneration" ->
+                    (c.old as? Number)?.toLong() == altGen && (c.new as? Number)?.toLong() == neuGen
+                c.path == "$.state.lastSnapshotOrder.calculatedAt" ->
+                    (c.old as? Number)?.toLong() == altCalc && (c.new as? Number)?.toLong() == neuCalc
+                c.path == "$.episodes.lastAcceptedSourceTs" ->
+                    increasingTime(c) && (c.new as Number).toLong() <= neuCalc
+                c.path == "$.episodes.evidenceState.lastDecayTs" ||
+                    c.path == "$.episodes.zeroTally.lastTickTs" ->
+                    (c.old as? Number)?.toLong() == altCalc && (c.new as? Number)?.toLong() == neuCalc
+                c.path == "$.episodes.zeroTally.minutes" -> nonDecreasing(c, 5.0)
+                c.path == "$.episodes.zeroTally.omittedU" -> nonDecreasing(c, 0.10)
+                entryReconcile.matches(c.path) ->
+                    (c.old as? Number)?.toLong() == altCalc && (c.new as? Number)?.toLong() == neuCalc
+                else -> false
+            }
+        }
+        if (!erlaubt) return null
+
+        // Nur ein vollstaendiger Folgetakt zaehlt; ein isoliertes Zaehler- oder
+        // Revisionsupdate ist kein technischer Nachweis.
+        val pflicht = setOf(
+            "$.revision",
+            "$.episodes.lastAcceptedSourceTs",
+            "$.state.lastSnapshotOrder.calculatorGeneration",
+            "$.state.lastSnapshotOrder.calculatedAt",
+        )
+        if (!aenderungen.mapTo(mutableSetOf()) { it.path }.containsAll(pflicht)) return null
+        return ziel
     }
 
     /**
@@ -389,6 +490,34 @@ object FuseLedgerSealRecovery {
     }
 
     private fun f3(v: Double): String = "%.3f".format(java.util.Locale.US, v)
+
+    /** Vollstaendiger maschinenlesbarer Vergleich fuer den Recovery-Nachweis. */
+    private fun jsonChanges(path: String, alt: Any?, neu: Any?, out: MutableList<JsonChange>) {
+        if (alt is JSONObject && neu is JSONObject) {
+            val keys = (alt.keys().asSequence().toSet() + neu.keys().asSequence().toSet()).sorted()
+            for (key in keys) {
+                val a = if (alt.has(key)) alt.opt(key) else FEHLT
+                val n = if (neu.has(key)) neu.opt(key) else FEHLT
+                jsonChanges("$path.$key", a, n, out)
+            }
+            return
+        }
+        if (alt is JSONArray && neu is JSONArray) {
+            val max = maxOf(alt.length(), neu.length())
+            for (i in 0 until max) {
+                jsonChanges(
+                    "$path[$i]",
+                    if (i < alt.length()) alt.opt(i) else FEHLT,
+                    if (i < neu.length()) neu.opt(i) else FEHLT,
+                    out,
+                )
+            }
+            return
+        }
+        val a = normalisiere(alt)
+        val n = normalisiere(neu)
+        if (a != n) out += JsonChange(path, a, n)
+    }
 
     private fun jsonDiff(path: String, alt: Any?, neu: Any?, out: MutableList<String>, limit: Int) {
         if (out.size >= limit) return

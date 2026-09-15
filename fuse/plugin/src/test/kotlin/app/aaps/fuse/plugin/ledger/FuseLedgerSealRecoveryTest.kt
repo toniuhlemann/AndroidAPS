@@ -64,6 +64,53 @@ class FuseLedgerSealRecoveryTest {
         File(dir, target).writeText(s)
     }
 
+    /**
+     * Zwei gueltige Generationen, die sich genau wie ein einzelner akzeptierter
+     * Vollsicht-Takt unterscheiden. Alle Mengen, Haftungen, Autorisierungen,
+     * Hashes und Identitaeten bleiben bytegleich in ihren JSON-Feldern.
+     */
+    private fun vollsichtFortschreibung(basis: String): Pair<String, String> {
+        val altCalc = t0 + 60_000L
+        val neuCalc = t0 + 120_000L
+        val altSource = altCalc - 5_000L
+        val neuSource = neuCalc - 5_000L
+        val basisRev = rev(basis)
+
+        fun stand(calc: Long, source: Long, generation: Long, revision: Long, minutes: Double, omittedU: Double): String {
+            val o = org.json.JSONObject(basis).put("revision", revision)
+            val state = o.getJSONObject("state")
+            state.put(
+                "lastSnapshotOrder",
+                org.json.JSONObject()
+                    .put("sourceEpochId", "epoch-vollsicht")
+                    .put("calculatorGeneration", generation)
+                    .put("calculatedAt", calc),
+            )
+            val entries = state.getJSONArray("entries")
+            for (i in 0 until entries.length()) entries.getJSONObject(i).put("lastReconciledAtTs", calc)
+            val episodes = o.getJSONObject("episodes")
+                .put("lastAcceptedSourceTs", source)
+            episodes.getJSONObject("evidenceState").put("lastDecayTs", calc)
+            episodes.put(
+                "zeroTally",
+                org.json.JSONObject()
+                    .put("sinceTs", t0)
+                    .put("lastTickTs", calc)
+                    .put("minutes", minutes)
+                    .put("omittedU", omittedU)
+                    .put("reasonAbsentMin", 0.0)
+                    .put("flatAbsentMin", 0.0)
+                    .put("gapCappedMin", 0.0),
+            )
+            val text = o.toString()
+            assertNotNull(LedgerCodec.decode(org.json.JSONObject(text)), "Vorbedingung: Vollsicht-Generation decodierbar")
+            return text
+        }
+
+        return stand(altCalc, altSource, 41L, basisRev, 17.0, 0.14) to
+            stand(neuCalc, neuSource, 42L, basisRev + 1L, 18.0, 0.148,)
+    }
+
     private fun geladen(dir: File) = FuseLedgerAdapter().also { it.loadOnce(dir, "r-b", t0 + 60_000L, echt) }
 
     private fun schnappschuss(dir: File) = dir.listFiles()!!.filter { it.isFile }.associate { it.name to it.readText() }
@@ -156,6 +203,105 @@ class FuseLedgerSealRecoveryTest {
         assertTrue(lage.diagnostics.contains("sha256="))
         assertTrue(lage.diagnostics.contains("$.episodes.livenessReArmUntilTs")) {
             "der sicherheitsrelevante Feldunterschied muss sichtbar sein: ${lage.diagnostics}"
+        }
+    }
+
+    @Test
+    fun `Altmarker ohne tmp - genau eine haftungsneutrale Vollsicht-Fortschreibung ist Nachweis`(@TempDir dir: File) {
+        val (basis, _) = lage(dir)
+        val (p, s) = vollsichtFortschreibung(basis)
+        markerAlt(dir, s)
+        absturzNachUmbenennen(dir, p, s)
+
+        val vorher = LedgerCodec.decode(org.json.JSONObject(s))
+        val lage = FuseLedgerSealRecovery.inspect(dir)
+        assertTrue(lage.recoverable, lage.why)
+        assertEquals(target, lage.proof!!.sourceName)
+        assertEquals(FuseLedgerStore.sha256(s), lage.proof!!.sha256)
+        assertEquals(vorher.state.openEntries.size, lage.openEntries)
+        assertEquals(vorher.state.openEntries.sumOf { it.grossLiabilityU }, lage.grossLiabilityU!!, 1e-12)
+
+        val r = FuseLedgerSealRecovery.perform(dir, t0 + 180_000L, "test", "haftungsneutrale Vollsicht")
+        assertTrue(r is FuseLedgerSealRecovery.Result.Done, "$r")
+        assertFalse(FuseLedgerStore.sealPendingExists(dir))
+        val gewaehlt = FuseLedgerStore().readNewestValid(dir) { runCatching { rev(it) }.getOrNull() }
+        assertEquals(FuseLedgerStore.sha256(s), gewaehlt.content?.let { FuseLedgerStore.sha256(it) })
+        val nachher = LedgerCodec.decode(org.json.JSONObject(gewaehlt.content!!))
+        assertEquals(vorher.state, nachher.state, "Buchungen und Vollsicht bleiben exakt erhalten")
+        assertEquals(vorher.episodes.foundation.armedTs, nachher.episodes.foundation.armedTs, "Mahlzeiten-Huelle bleibt exakt erhalten")
+        assertEquals(vorher.episodes.foundation.totalBudgetU, nachher.episodes.foundation.totalBudgetU, 1e-12)
+        assertEquals(vorher.episodes.foundationArmedByAuthId, nachher.episodes.foundationArmedByAuthId, "Autorisierung bleibt exakt erhalten")
+        assertEquals(vorher.episodes.deliveredPhaseAU, nachher.episodes.deliveredPhaseAU, 1e-12, "Zustellmenge bleibt exakt erhalten")
+        assertEquals(vorher.episodes.evidenceCommittedU, nachher.episodes.evidenceCommittedU, 1e-12, "Evidenzbestand bleibt exakt erhalten")
+        assertEquals(vorher.retiredBoundIds, nachher.retiredBoundIds, "Genau-einmal-Riegel bleibt exakt erhalten")
+    }
+
+    @Test
+    fun `Altmarker Vollsicht-Ausgang ist bei jeder dosier- oder haftungswirksamen Aenderung gesperrt`(@TempDir root: File) {
+        val quelle = File(root, "quelle").also { it.mkdirs() }
+        val (basis, _) = lage(quelle)
+        val (p, s0) = vollsichtFortschreibung(basis)
+        val mutationen = listOf<Pair<String, (org.json.JSONObject) -> Unit>>(
+            "Buchungsmenge" to { o ->
+                val amounts = o.getJSONObject("state").getJSONArray("entries").getJSONObject(0).getJSONObject("amounts")
+                amounts.put("proposedU", amounts.getDouble("proposedU") + 0.05)
+            },
+            "Genau-einmal-Riegel" to { o ->
+                o.getJSONArray("retiredBoundIds").put(
+                    org.json.JSONObject().put("temporaryId", 424_242L).put("pumpId", org.json.JSONObject.NULL),
+                )
+            },
+            "Autorisierung" to { o -> o.getJSONObject("episodes").put("foundationArmedByAuthId", "fremd") },
+            "Budgetverbrauch" to { o ->
+                val e = o.getJSONObject("episodes")
+                e.put("primeSpentU", e.getDouble("primeSpentU") + 0.05)
+            },
+            "Wiederanlaufsperre" to { o ->
+                val e = o.getJSONObject("episodes")
+                e.put("livenessReArmUntilTs", e.getLong("livenessReArmUntilTs") + 60_000L)
+            },
+            "Snapshot-Hash" to { o -> o.getJSONObject("state").put("lastSnapshotViewHash", "anderer-hash") },
+        )
+
+        for ((name, mutate) in mutationen) {
+            val dir = File(root, name).also { it.mkdirs() }
+            val s = org.json.JSONObject(s0).also(mutate).toString()
+            assertNotNull(LedgerCodec.decode(org.json.JSONObject(s)), "Vorbedingung $name")
+            assertTrue(FuseLedgerStore.writeSentinel(dir))
+            markerAlt(dir, s)
+            absturzNachUmbenennen(dir, p, s)
+            val vorher = schnappschuss(dir)
+            val lage = FuseLedgerSealRecovery.inspect(dir)
+            assertFalse(lage.recoverable, "$name darf den Altmarker-Ausgang nicht oeffnen: ${lage.why}")
+            assertTrue(FuseLedgerSealRecovery.perform(dir, t0 + 1, "test", name) is FuseLedgerSealRecovery.Result.Refused)
+            assertEquals(vorher, schnappschuss(dir), "$name: nichts veraendert")
+        }
+    }
+
+    @Test
+    fun `Altmarker Vollsicht-Ausgang verlangt genau einen kurzen monotonen Folgetakt`(@TempDir root: File) {
+        val quelle = File(root, "quelle").also { it.mkdirs() }
+        val (basis, _) = lage(quelle)
+        val (p, s0) = vollsichtFortschreibung(basis)
+        val mutationen = listOf<Pair<String, (org.json.JSONObject) -> Unit>>(
+            "Revisionssprung" to { it.put("revision", rev(p) + 2L) },
+            "Generationssprung" to {
+                it.getJSONObject("state").getJSONObject("lastSnapshotOrder").put("calculatorGeneration", 44L)
+            },
+            "Zeitfenster" to {
+                it.getJSONObject("state").getJSONObject("lastSnapshotOrder").put("calculatedAt", t0 + 10 * 60_000L)
+            },
+            "rueckwaerts-Zaehler" to { it.getJSONObject("episodes").getJSONObject("zeroTally").put("minutes", 16.0) },
+            "zu-viel-ausgelassen" to { it.getJSONObject("episodes").getJSONObject("zeroTally").put("omittedU", 0.50) },
+        )
+        for ((name, mutate) in mutationen) {
+            val dir = File(root, name).also { it.mkdirs() }
+            val s = org.json.JSONObject(s0).also(mutate).toString()
+            assertNotNull(LedgerCodec.decode(org.json.JSONObject(s)), "Vorbedingung $name")
+            assertTrue(FuseLedgerStore.writeSentinel(dir))
+            markerAlt(dir, s)
+            absturzNachUmbenennen(dir, p, s)
+            assertFalse(FuseLedgerSealRecovery.inspect(dir).recoverable, name)
         }
     }
 
