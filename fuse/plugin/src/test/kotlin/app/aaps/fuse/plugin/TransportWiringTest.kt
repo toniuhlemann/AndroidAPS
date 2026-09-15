@@ -16283,6 +16283,7 @@ class TransportWiringTest : TestBaseWithProfile() {
             mealArmZyklen = 2
             val alle = mutableListOf<FuseCycleRunner.Outcome>()
             var runden = 0
+            var geprueft = 0
             var nachLaden: MutableList<FuseCycleRunner.Outcome>? = null
             repeat(90) {
                 val sperreVorher = ledger.episodes.livenessReArmUntilTs
@@ -16294,7 +16295,7 @@ class TransportWiringTest : TestBaseWithProfile() {
                     assertEquals(sperreVorher, ledger.episodes.livenessReArmUntilTs, "(a) keine Sperre im Speicher: $k")
                     if (neustarts) {
                         // Vorherige Runde auswerten, bevor die naechste beginnt.
-                        nachLaden?.let { pruefeWiederanlauf(it, runden) }
+                        nachLaden?.let { pruefeWiederanlauf(it, runden); geprueft++ }
                         val sperreImSpeicher = ledger.episodes.livenessReArmUntilTs
                         neuerRunner(FuseLedgerAdapter().also { it.loadOnce(d, "test-epoch", clock) })
                         // Tief-Gedaechtnis wie der Produktionsstart aus der Historie.
@@ -16311,6 +16312,22 @@ class TransportWiringTest : TestBaseWithProfile() {
                     assertFalse(o.livenessBookingExitSkipReArm, "(d) ${sperrZeile(o)}")
                 }
             }
+            // LETZTE RUNDE (Tonis Review zu 4914842d86): sie endet nicht an einem
+            // weiteren Ausgang und blieb bisher ungeprueft. Weiterlaufen bis zur
+            // Wiederbewaffnung (hoechstens 30 Zyklen), dann dieselben Zusagen.
+            // Die Mengen-Gegenprobe bleibt auf den ersten 90 Zyklen.
+            nachLaden?.let { letzte ->
+                var extra = 0
+                while (letzte.none { it.livenessActive } && extra < 30) {
+                    val o = transport(d)
+                    letzte += o
+                    extra++
+                    if (o.livenessConcurrentHazards.orEmpty().isNotEmpty()) assertEquals(0.0, o.livenessLiftU, 1e-12, "(d) ${sperrZeile(o)}")
+                }
+                pruefeWiederanlauf(letzte, runden)
+                geprueft++
+            }
+            if (neustarts) assertEquals(runden, geprueft, "jede Runde nach einem Neustart ist geprueft, auch die letzte")
             return alle to runden
         }
         val (mit, runden) = lauf("mit_neustart", neustarts = true)
