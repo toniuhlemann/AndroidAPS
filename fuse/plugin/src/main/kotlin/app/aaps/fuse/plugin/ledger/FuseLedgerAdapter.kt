@@ -1567,7 +1567,14 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
         // (s. LedgerCodec.migrateToCurrent). Gelingt er nachweislich, gibt es
         // keinen Grund mehr fuer den Hold; misslingt er in irgendeinem
         // Schritt, bleibt alles wie es war und der Hold greift.
-        val migriert = readable?.takeIf { it.migrationRequired != null }?.let { alt ->
+        // KEINE MIGRATION UNTER EINEM WRITE-AHEAD-MARKER (15.09.): sie schriebe
+        // eine `.tmp`, und die Wiederherstellung nach unterbrochenem Speichern
+        // koennte deren Herkunft nicht mehr vom unterbrochenen Vorgang
+        // unterscheiden. Die Generation bleibt dann ungemigriert - der
+        // Migrations-Hold unten greift ohnehin, zusaetzlich zum Marker-Hold.
+        val unterMarker = FuseLedgerStore.sealPendingExists(dir) || FuseLedgerStore.repairPendingExists(dir) ||
+            FuseLedgerStore.recoveryPendingExists(dir)
+        val migriert = readable?.takeIf { it.migrationRequired != null && !unterMarker }?.let { alt ->
             migriere(alt, dir, nowTs, activePump, log)
         }
         val decoded = migriert ?: readable?.takeIf { it.migrationRequired == null }
@@ -1626,6 +1633,14 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
                 "FUSE ledger RECOVERY_HOLD: ${FuseLedgerStore.REPAIR_PENDING_NAME} vorhanden - eine Reparatur " +
                     "wurde unterbrochen; die Generationen koennen unvollstaendig sein. Erneute Reparatur " +
                     "noetig (dir=$dir)"
+            )
+        }
+        if (FuseLedgerStore.recoveryPendingExists(dir)) {
+            recoveryHold = true
+            log(
+                "FUSE ledger RECOVERY_HOLD: ${FuseLedgerStore.RECOVERY_PENDING_NAME} vorhanden - eine " +
+                    "Wiederherstellung nach unterbrochenem Speichern wurde nicht abgeschlossen; erneut " +
+                    "vormerken, sie setzt am Beleg fort. Aktuation bleibt zu (dir=$dir)"
             )
         }
         if (FuseLedgerStore.sealPendingExists(dir)) {
@@ -2754,20 +2769,33 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
         // Marker geprueft wird). Ihn jetzt zu schreiben hiesse, genau den
         // unklaren Stand zu beglaubigen. Also: nichts anfassen, weder Marker
         // noch Generationen - die Reparatur braucht die Spur unveraendert.
-        if (FuseLedgerStore.sealPendingExists(dir) || FuseLedgerStore.repairPendingExists(dir)) {
+        if (FuseLedgerStore.sealPendingExists(dir) || FuseLedgerStore.repairPendingExists(dir) ||
+            FuseLedgerStore.recoveryPendingExists(dir)
+        ) {
             persistFailed = true
             return false
         }
-        if (!store.markSealPending(dir, "SEAL_PENDING rev=$revision")) {
+        // MARKER v2 (15.09.): der Inhalt wird VOR dem Marker gebildet, damit der
+        // Marker seine Pruefsumme tragen kann - nur sie belegt spaeter, dass eine
+        // Generation GENAU diesen Stand traegt (die Revision allein nicht).
+        // Laesst sich der Inhalt nicht bilden, wird der Marker trotzdem gesetzt
+        // (sha256=none) und bleibt stehen: dieselbe Sperre wie bisher, aber nie
+        // wiederherstellbar.
+        val inhalt = runCatching {
+            LedgerCodec.encode(state, episodes, revision, interventionStamp, retiredBoundIds.toList(), proposalPumpEpochs.toMap()).toString()
+        }.getOrNull()
+        val tx = java.util.UUID.randomUUID().toString().take(8)
+        if (!store.markSealPending(dir, FuseLedgerStore.sealMarkerContent(tx, revision, inhalt))) {
+            persistFailed = true
+            return false
+        }
+        if (inhalt == null) {
             persistFailed = true
             return false
         }
 
         val ok = writeHoldMarkerIfPending(dir) && runCatching {
-            store.writeVerified(
-                dir,
-                LedgerCodec.encode(state, episodes, revision, interventionStamp, retiredBoundIds.toList(), proposalPumpEpochs.toMap()).toString(),
-            )
+            store.writeVerified(dir, inhalt)
         }.getOrDefault(false) && FuseLedgerStore.writeSentinel(dir)
         persistFailed = !ok
 

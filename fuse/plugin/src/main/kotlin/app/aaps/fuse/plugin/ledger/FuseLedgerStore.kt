@@ -146,6 +146,42 @@ class FuseLedgerStore(private val durability: Durability = Durability.ANDROID) {
         fun repairPendingExists(dir: File): Boolean =
             runCatching { File(dir, REPAIR_PENDING_NAME).isFile }.getOrDefault(false)
 
+        /**
+         * TRANSAKTIONSMARKER DER WIEDERHERSTELLUNG nach unterbrochenem Speichern
+         * ([FuseLedgerSealRecovery]). Er sperrt beim Laden wie [SEAL_PENDING_NAME]
+         * und traegt den Beleg, an dem eine abgebrochene Wiederherstellung
+         * fortgesetzt wird.
+         */
+        const val RECOVERY_PENDING_NAME = "fuse_ledger.recoverypending"
+
+        fun recoveryPendingExists(dir: File): Boolean =
+            runCatching { File(dir, RECOVERY_PENDING_NAME).isFile }.getOrDefault(false)
+
+        /** Inhalt des Versiegelungsmarkers, `null` wenn keiner liegt oder er unlesbar ist. */
+        fun readSealPending(dir: File): String? =
+            runCatching { File(dir, SEAL_PENDING_NAME).takeIf { it.isFile }?.readText(Charsets.UTF_8) }.getOrNull()
+
+        fun readRecoveryPending(dir: File): String? =
+            runCatching { File(dir, RECOVERY_PENDING_NAME).takeIf { it.isFile }?.readText(Charsets.UTF_8) }.getOrNull()
+
+        fun sha256(content: String): String =
+            java.security.MessageDigest.getInstance("SHA-256")
+                .digest(content.toByteArray(Charsets.UTF_8))
+                .joinToString("") { "%02x".format(it) }
+
+        /**
+         * MARKERINHALT v2 (15.09.): Transaktionskennung, Revision, Pruefsumme und
+         * Bytezahl des Inhalts, der geschrieben werden SOLL. Die Revision allein
+         * belegt keinen Inhalt - sie steigt nicht bei jeder Aenderung von
+         * Episoden oder Eingriffsstempel. Nur die Pruefsumme erlaubt spaeter den
+         * Nachweis, dass eine Generation GENAU den unterbrochenen Stand traegt.
+         * `content == null` (Inhalt nicht bildbar) ergibt `sha256=none`: der
+         * Marker sperrt, ein Nachweis ist dann nie moeglich.
+         */
+        fun sealMarkerContent(tx: String, revision: Long, content: String?): String =
+            if (content == null) "SEAL_PENDING v2 tx=$tx rev=$revision sha256=none bytes=0"
+            else "SEAL_PENDING v2 tx=$tx rev=$revision sha256=${sha256(content)} bytes=${content.toByteArray(Charsets.UTF_8).size}"
+
         /** NUR FUER TESTS: einen unterbrochenen Persist nachstellen. */
         fun markSealPendingForTest(dir: File): Boolean =
             runCatching { File(dir, SEAL_PENDING_NAME).also { it.writeText("test") }.isFile }.getOrDefault(false)
@@ -362,6 +398,46 @@ class FuseLedgerStore(private val durability: Durability = Durability.ANDROID) {
         if (f.isFile && !f.delete()) return@runCatching false
         durability.syncDirectory(dir)
         !f.exists()
+    }.getOrDefault(false)
+
+    /** Wiederherstellungs-Transaktionsmarker durabel setzen - NICHT ueberschreibend:
+     *  ein vorhandener gehoert einer unterbrochenen Wiederherstellung und traegt deren Beleg. */
+    fun markRecoveryPending(dir: File, content: String): Boolean = runCatching {
+        if (!dir.exists() && !dir.mkdirs() && !dir.exists()) return@runCatching false
+        val f = File(dir, RECOVERY_PENDING_NAME)
+        if (f.exists()) return@runCatching false
+        FileOutputStream(f).use { out ->
+            out.write(content.toByteArray(Charsets.UTF_8))
+            out.flush()
+            durability.syncFile(out.fd)
+        }
+        durability.syncDirectory(dir)
+        f.isFile && f.readText(Charsets.UTF_8) == content
+    }.getOrDefault(false)
+
+    fun clearRecoveryPending(dir: File): Boolean = runCatching {
+        val f = File(dir, RECOVERY_PENDING_NAME)
+        if (f.isFile && !f.delete()) return@runCatching false
+        durability.syncDirectory(dir)
+        !f.exists()
+    }.getOrDefault(false)
+
+    /**
+     * Eine NEUE Nachbardatei durabel schreiben (Belegkopie der Wiederherstellung).
+     * Nie ueberschreibend, Erfolg heisst: Inhalt fsync'd, Verzeichnis synchronisiert,
+     * Rueckleseprobe gleich.
+     */
+    fun writeDurableNewFile(dir: File, name: String, content: String): Boolean = runCatching {
+        if (!dir.exists() && !dir.mkdirs() && !dir.exists()) return@runCatching false
+        val f = File(dir, name)
+        if (f.exists()) return@runCatching false
+        FileOutputStream(f).use { out ->
+            out.write(content.toByteArray(Charsets.UTF_8))
+            out.flush()
+            durability.syncFile(out.fd)
+        }
+        durability.syncDirectory(dir)
+        f.isFile && f.readText(Charsets.UTF_8) == content
     }.getOrDefault(false)
 
     fun markSealPending(dir: File, content: String): Boolean = runCatching {

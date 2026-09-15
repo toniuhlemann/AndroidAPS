@@ -179,6 +179,10 @@ class FusePlugin @Inject constructor(
      * (s. [app.aaps.fuse.plugin.ledger.FuseRepairScheduler]).
      */
     private val reparaturAuftrag = app.aaps.fuse.plugin.ledger.FuseRepairScheduler()
+
+    /** Vorgemerkte Wiederherstellung nach unterbrochenem Speichern - verwirft nichts,
+     *  deshalb ohne Pumpensperre; ausgefuehrt an derselben Grenze wie die Reparatur. */
+    private val wiederherstellungsAuftrag = app.aaps.fuse.plugin.ledger.FuseSealRecoveryScheduler()
     private val holdQuittung = app.aaps.fuse.plugin.ledger.FuseHoldQuittungScheduler()
 
     /**
@@ -1110,6 +1114,9 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
             // gerechnet oder geschrieben. Genau daran scheiterte der erste
             // Entwurf, der die Dateien vom UI-Thread aus umraeumte.
             fuehreReparaturAus(roherSnapshot)
+            // Dieselbe Grenze: DATEIEN, vor dem Laden, kein Zyklus dieses
+            // Durchlaufs hat gerechnet oder geschrieben.
+            fuehreWiederherstellungAus()
             ledgerAdapter.noteMigrationDone()
             // B3: der PUMPENKONTEXT gehoert zum Laden. Die Migration braucht
             // ihn, weil eine v1-Zeile gar keinen Pin hat - ob sie gefahrlos
@@ -2034,6 +2041,87 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
         }
     }
 
+    /**
+     * WIEDERHERSTELLUNG NACH UNTERBROCHENEM SPEICHERN ausfuehren - nur vorgemerkt,
+     * nur mit technischem Nachweis ([app.aaps.fuse.plugin.ledger.FuseLedgerSealRecovery]).
+     * Nach `Done` wird der Adapter NEU gebaut und laedt im selben Zyklus den
+     * wiederhergestellten Stand; nach einer Verweigerung bleibt alles, inklusive Hold.
+     */
+    private fun fuehreWiederherstellungAus() {
+        val r = runCatching { wiederherstellungsAuftrag.runIfDue(ledgerDir(), dateUtil.now()) }
+            .getOrElse {
+                aapsLogger.error(LTag.APS, "FUSE Wiederherstellung warf - Hold bleibt", it)
+                null
+            } ?: return
+        when (r) {
+            is app.aaps.fuse.plugin.ledger.FuseLedgerSealRecovery.Result.Done    -> {
+                ledgerAdapter = app.aaps.fuse.plugin.ledger.FuseLedgerAdapter()
+                runner = null
+                holdAlarm.vergessen()
+                runCatching { uiInteraction.dismissNotification(Notification.FUSE_LEDGER_HOLD) }
+                aapsLogger.warn(
+                    LTag.APS,
+                    "FUSE LEDGER WIEDERHERGESTELLT (${r.record.reason}): Quelle ${r.record.source}, rev=${r.record.revision}, " +
+                        "sha256=${r.record.sha256.take(12)}, offene Zeilen ${r.record.openEntries}, " +
+                        "Bruttohaftung ${r.record.grossLiabilityU} U - nichts verworfen, fortgesetzt=${r.resumed}"
+                )
+            }
+
+            is app.aaps.fuse.plugin.ledger.FuseLedgerSealRecovery.Result.Refused -> {
+                aapsLogger.warn(LTag.APS, "FUSE Wiederherstellung abgelehnt: ${r.why} - Zustand unveraendert")
+                runCatching {
+                    uiInteraction.addNotification(
+                        id = Notification.FUSE_REPAIR_REFUSED,
+                        text = "FUSE-Wiederherstellung nicht ausgefuehrt: ${r.why}. Der Hold bleibt unveraendert.",
+                        level = Notification.NORMAL,
+                    )
+                }
+            }
+        }
+    }
+
+    /** Die Bedienhandlung: zeigt den Nachweis VOR der Zustimmung; ohne Nachweis gibt es nichts vorzumerken. */
+    private fun wiederherstellungDialog(context: Context) {
+        val lage = runCatching { app.aaps.fuse.plugin.ledger.FuseLedgerSealRecovery.inspect(ledgerDir()) }.getOrNull()
+        val kandidaten = lage?.candidates?.joinToString("\n") { "  $it" }.orEmpty()
+        if (lage == null || !lage.recoverable) {
+            hinweis(
+                context, "Wiederherstellung",
+                "Nicht moeglich: ${lage?.why ?: "Lage nicht feststellbar"}.\n\n" +
+                    (if (kandidaten.isNotEmpty()) "Vorgefundene Generationen:\n$kandidaten\n\n" else "") +
+                    "Ohne technischen Nachweis bleibt der Hold bestehen - eine Zustimmung ersetzt den Nachweis nicht."
+            )
+            return
+        }
+        app.aaps.core.ui.dialogs.AlertDialogHelper.Builder(context)
+            .setCustomTitle(app.aaps.core.ui.dialogs.AlertDialogHelper.buildCustomTitle(context, "Nach unterbrochenem Speichern wiederherstellen?"))
+            .setMessage(
+                "Nachweis: ${lage.why}\n\n" +
+                    "Uebernommen wird genau dieser Stand - NICHTS wird verworfen:\n" +
+                    "  offene Zeilen      ${lage.openEntries ?: "unbekannt"}\n" +
+                    "  Bruttohaftung      ${lage.grossLiabilityU?.let { "%.2f U".format(it) } ?: "unbekannt"}\n\n" +
+                    "Vorgefundene Generationen:\n$kandidaten\n\n" +
+                    "Offene Buchungen und der Genau-einmal-Riegel bleiben erhalten und werden regulaer " +
+                    "abgeglichen. Es wird nichts gesendet. Der Vorgang wird dauerhaft protokolliert."
+            )
+            .setNegativeButton("Abbrechen", null)
+            .setPositiveButton("Vormerken") { _, _ ->
+                val angenommen = wiederherstellungsAuftrag.request(
+                    app.aaps.fuse.plugin.ledger.FuseLedgerSealRecovery.RecoveryRequest(
+                        by = "Bediener (FUSE-Einstellungen)",
+                        reason = lage.why,
+                    )
+                )
+                hinweis(
+                    context, "Wiederherstellung",
+                    if (!angenommen) "Es steht bereits eine Wiederherstellung aus - sie wird beim naechsten Zyklus ausgefuehrt."
+                    else "Vorgemerkt. Ausgefuehrt wird sie zu Beginn des naechsten Zyklus; der Nachweis wird dabei " +
+                        "ERNEUT geprueft. Fehlt er dann, passiert nichts und der Hold bleibt."
+                )
+            }
+            .show()
+    }
+
     private fun letzteReparatur(): app.aaps.fuse.plugin.ledger.FuseLedgerRepair.ResetRecord? {
         if (!reparaturGelesen) {
             reparaturCache = runCatching {
@@ -2720,6 +2808,15 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
                         "stehen. Anders als die Reparatur auch an einer echten Pumpe zulaessig."
                 isPersistent = false
                 setOnPreferenceClickListener { runCatching { holdQuittungDialog(context) }; true }
+            })
+            addPreference(Preference(context).apply {
+                title = "Nach unterbrochenem Speichern wiederherstellen"
+                summary =
+                    "Fuer einen Hold durch einen unterbrochenen Speichervorgang: uebernimmt genau den " +
+                        "unterbrochenen Stand, wenn er technisch nachgewiesen vorliegt - nichts wird verworfen. " +
+                        "Ohne Nachweis bleibt der Hold. Auch an einer echten Pumpe zulaessig."
+                isPersistent = false
+                setOnPreferenceClickListener { runCatching { wiederherstellungDialog(context) }; true }
             })
             addPreference(Preference(context).apply {
                 title = "Ledger reparieren"

@@ -4478,6 +4478,194 @@ class TransportWiringTest : TestBaseWithProfile() {
         assertEquals("auth-9", ledger.episodes.foundationArmedByAuthId)
     }
 
+    // ---- WIEDERHERSTELLUNG NACH UNTERBROCHENEM SPEICHERN, DURCH DEN RUNNER --
+    //
+    // Die Dateiprotokoll-Nachweise stehen in FuseLedgerSealRecoveryTest. Hier
+    // die Folge im Betrieb: unterbrochenes Versiegeln -> Hold -> Wiederherstellung
+    // -> frischer Adapter und Runner (neuer Prozess, markerPress = 0) -> echtes
+    // Publikations-Gate. Nachgestellt als Dateizustand: v2-Marker mit der
+    // Pruefsumme des unterbrochenen Stands S, vollstaendige .tmp = S, Zielname
+    // = zuletzt versiegelter Stand P (gleiche Revision).
+
+    private fun unterbrochenesVersiegeln(dir: File, a: FuseLedgerAdapter): String {
+        val s = app.aaps.fuse.plugin.ledger.LedgerCodec.encode(
+            a.state, a.episodes, a.revision, a.interventionStamp, a.retiredBoundIds.toList(), a.proposalPumpEpochs.toMap(),
+        ).toString()
+        val store = app.aaps.fuse.plugin.ledger.FuseLedgerStore()
+        assertTrue(store.markSealPending(dir, app.aaps.fuse.plugin.ledger.FuseLedgerStore.sealMarkerContent("t-int", a.revision, s)))
+        File(dir, "${app.aaps.fuse.plugin.ledger.FuseLedgerStore.FILE_NAME}.tmp").writeText(s)
+        return s
+    }
+
+    private fun wiederherstellen(dir: File) {
+        val lage = app.aaps.fuse.plugin.ledger.FuseLedgerSealRecovery.inspect(dir)
+        assertTrue(lage.recoverable) { "Vorbedingung: nachweisbar - ${lage.why}" }
+        val r = app.aaps.fuse.plugin.ledger.FuseLedgerSealRecovery.perform(dir, clock, "test", "Integrationstest")
+        assertTrue(r is app.aaps.fuse.plugin.ledger.FuseLedgerSealRecovery.Result.Done) { "$r" }
+    }
+
+    /**
+     * PFLICHTFALL: Mahlzeit mit publizierten, offenen Auftraegen und teilweise
+     * verbrauchter Huelle. Nach der Wiederherstellung veroeffentlicht der frische
+     * Runner keinen alten Auftrag erneut, oeffnet keine neue Huelle, und die
+     * offene Haftung geht in die Exposition des ersten Zyklus ein.
+     *
+     * TESTGRENZE wie `transport`: Gate und Buchung, keine Pumpenbestaetigung.
+     */
+    private data class NachAbbruch(
+        val vorherIds: Set<String>,
+        val alt: Set<String>,
+        val altMengen: Map<String, Double?>,
+        val altMengenDanach: Map<String, Double?>,
+        val haftung: Double,
+        val geliefertS: Double,
+        val geliefertEnde: Double,
+        val ersterPending: Double?,
+        val angefordert: List<Double>,
+        val ausgaben: List<Double?>,
+        val neueIds: Set<String>,
+        val authEnde: String?,
+        val armiertEnde: String?,
+    )
+
+    /**
+     * Ein Lauf bis zum unterbrochenen Versiegeln, drei Zyklen im Hold, dann
+     * [wiederherstellung] = true: FuseLedgerSealRecovery; false: KONTROLLE - das
+     * Versiegeln endet ungestoert (Zielname = S, Sentinel, kein Marker). Danach
+     * in beiden Faellen derselbe neue Prozess durch das echte Gate.
+     */
+    private fun nachAbbruch(dir: File, wiederherstellung: Boolean): NachAbbruch {
+        maxSmbU = 0.30
+        reboundMahlzeit(dir)
+        val vorher = (0 until 10).map { transport(dir) }
+        assertTrue(vorher.any { it.phaseAUpfrontRequestedU > 0.0 }) { "Vorbedingung: vor dem Abbruch floss eine Direktdosis" }
+
+        val alt = ledger.state.openEntries.map { it.proposalId }.toSet()
+        assertTrue(alt.isNotEmpty()) { "Vorbedingung: publizierte, offene Auftraege" }
+        val altMengen = alt.associateWith { ledger.publishedAmountOf(it) }
+        val haftung = ledger.view().transportCommitmentU
+        assertTrue(haftung > 0.0) { "Vorbedingung: offene Haftung" }
+
+        // DER UNTERBROCHENE STAND S traegt mehr Huellenverbrauch als der
+        // versiegelte P (gleiche Revision) - uebernommen werden muss S.
+        ledger.episodes.deliveredPhaseAU += 0.40
+        val geliefertS = ledger.episodes.deliveredPhaseAU
+        val s = unterbrochenesVersiegeln(dir, ledger)
+
+        // (1) IM HOLD: das Gate laesst keine Menge durch, der Marker bleibt.
+        val gehalten = FuseLedgerAdapter().also { it.loadOnce(dir, "test-epoch", clock) }
+        assertTrue(gehalten.recoveryHold)
+        markerPress = 0L
+        neuerRunner(gehalten)
+        runner.primeLastLowTs(clock - 5 * 60_000L)
+        transportReset()
+        val imHold = (0 until 3).map { transport(dir); letzteMengeU }
+        assertTrue(imHold.all { it == null || it == 0.0 }) { "unter dem Hold geht nichts hinaus: $imHold" }
+        assertTrue(app.aaps.fuse.plugin.ledger.FuseLedgerStore.sealPendingExists(dir)) { "der Hold-Lauf hat den Marker nicht angetastet" }
+
+        // (2) ABSCHLUSS und neuer Prozess.
+        if (wiederherstellung) wiederherstellen(dir) else {
+            File(dir, app.aaps.fuse.plugin.ledger.FuseLedgerStore.SEAL_PENDING_NAME).delete()
+            File(dir, "${app.aaps.fuse.plugin.ledger.FuseLedgerStore.FILE_NAME}.tmp").delete()
+            File(dir, app.aaps.fuse.plugin.ledger.FuseLedgerStore.FILE_NAME).writeText(s)
+            assertTrue(app.aaps.fuse.plugin.ledger.FuseLedgerStore.writeSentinel(dir))
+        }
+        val neu = FuseLedgerAdapter().also { it.loadOnce(dir, "test-epoch", clock) }
+        assertFalse(neu.recoveryHold)
+        assertEquals(geliefertS, neu.episodes.deliveredPhaseAU, 1e-9) { "der unterbrochene Stand S ist uebernommen" }
+        assertEquals("auth-9", neu.episodes.markerAuth?.id)
+        assertEquals("auth-9", neu.episodes.foundationArmedByAuthId)
+        assertEquals(alt, neu.state.openEntries.map { it.proposalId }.toSet()) { "dieselben offenen Auftraege" }
+        assertEquals(haftung, neu.view().transportCommitmentU, 1e-9) { "die Haftung ist erhalten" }
+
+        markerPress = 0L
+        neuerRunner(neu)
+        runner.primeLastLowTs(clock - 5 * 60_000L)
+        transportReset()
+        val ausgaben = mutableListOf<Double?>()
+        val nachher = (0 until 12).map { transport(dir).also { ausgaben += letzteMengeU } }
+        return NachAbbruch(
+            vorherIds = vorher.map { "e2e#${it.computeTs}" }.toSet(),
+            alt = alt,
+            altMengen = altMengen,
+            altMengenDanach = alt.associateWith { if (ledger.state.entries.containsKey(it)) ledger.publishedAmountOf(it) else Double.NaN },
+            haftung = haftung,
+            geliefertS = geliefertS,
+            geliefertEnde = ledger.episodes.deliveredPhaseAU,
+            ersterPending = nachher.first().exposurePendingU,
+            angefordert = nachher.map { it.phaseAUpfrontRequestedU },
+            ausgaben = ausgaben,
+            neueIds = ledger.state.entries.keys - alt,
+            authEnde = ledger.episodes.markerAuth?.id,
+            armiertEnde = ledger.episodes.foundationArmedByAuthId,
+        )
+    }
+
+    @Test
+    fun `nach der Wiederherstellung veroeffentlicht der frische Runner nichts Altes erneut und oeffnet keine neue Huelle`(@TempDir dir: File) {
+        val r = nachAbbruch(File(dir, "wiederhergestellt"), wiederherstellung = true)
+        val k = nachAbbruch(File(dir, "kontrolle"), wiederherstellung = false)
+
+        // (3) OFFENE HAFTUNG WIRKSAM: sie belegt die Exposition des ersten Zyklus.
+        assertTrue(r.ersterPending != null && r.ersterPending >= r.haftung - 1e-9) {
+            "die wiederhergestellte Haftung muss in die Exposition eingehen: ${r.ersterPending} < ${r.haftung}"
+        }
+
+        // (4) KEINE ERNEUTE VEROEFFENTLICHUNG: kein alter Auftrag neu gebucht oder vergroessert.
+        assertEquals(r.altMengen, r.altMengenDanach) { "alte Auftraege bleiben mit ihrer Menge im Buch" }
+        assertTrue(r.neueIds.none { it in r.vorherIds }) { "keine Kennung eines Zyklus vor dem Abbruch taucht neu auf: ${r.neueIds}" }
+
+        // (5) KEINE ERNEUERTE HUELLE.
+        assertTrue(r.geliefertEnde >= r.geliefertS - 1e-9) { "der Verbrauch wird nicht zurueckgesetzt" }
+        assertEquals("auth-9", r.authEnde)
+        assertEquals("auth-9", r.armiertEnde)
+
+        // (6) WIE NACH UNGESTOERTEM VERSIEGELN: dieselben Anforderungen und Ausgaben.
+        assertEquals(k.angefordert, r.angefordert) { "Direktdosis-Anforderungen wie in der Kontrolle" }
+        assertEquals(k.ausgaben, r.ausgaben) { "Gate-Ausgaben wie in der Kontrolle" }
+        assertEquals(k.geliefertEnde, r.geliefertEnde, 1e-9)
+        assertEquals(k.neueIds, r.neueIds)
+    }
+
+    /**
+     * PFLICHTFALL: DIE WIEDERHERGESTELLTE HAFTUNG BINDET die Dosis - gemessen an
+     * der Sub-Step-Kante (s. `die Sub-Step-Freigabe faellt weg ...`): ohne
+     * Haftung ist "subStep" frei, mit 0,08 U wiederhergestellter Haftung nicht.
+     */
+    @Test
+    fun `die wiederhergestellte offene Haftung bindet die Dosis wie nach ungestoertem Neustart`(@TempDir dir: File) {
+        tailGuard = false
+        maxIobU = 0.25
+
+        fun lauf(unter: File, haftungU: Double, unterbrechen: Boolean): FuseCycleRunner.Outcome? {
+            unter.mkdirs()
+            val a = FuseLedgerAdapter().also { it.loadOnce(unter, "test-epoch", start) }
+            if (haftungU > 0.0) a.onPublished("vorlauf", haftungU, start, 0L, 0.05, PumpType.GENERIC_AAPS.name, Sha.of("vs"))
+            assertTrue(a.persistVerified(unter))
+            clock = start
+            if (unterbrechen) {
+                a.episodes.deliveredPhaseAU += 0.01
+                unterbrochenesVersiegeln(unter, a)
+                assertTrue(FuseLedgerAdapter().also { it.loadOnce(unter, "test-epoch", start) }.recoveryHold)
+                wiederherstellen(unter)
+            }
+            val b = FuseLedgerAdapter().also { it.loadOnce(unter, "test-epoch-2", start) }
+            assertFalse(b.recoveryHold)
+            assertEquals(haftungU, b.view().transportCommitmentU, 1e-9)
+            neuerRunner(b)
+            clock = start
+            var best: FuseCycleRunner.Outcome? = null
+            repeat(60) { val o = cycle(); if (o.decision.smbU > (best?.decision?.smbU ?: 0.0)) best = o }
+            return best
+        }
+
+        val ohne = lauf(File(dir, "ohne"), 0.0, unterbrechen = true)!!
+        assertThat(ohne.decision.bindingLimit).contains("subStep")
+        val mit = lauf(File(dir, "mit"), 0.08, unterbrechen = true)!!
+        assertThat(mit.decision.bindingLimit).doesNotContain("subStep")
+        assertThat(mit.decision.smbU).isAtMost(maxIobU - 0.08 + 1e-9)
+    }
+
     /**
      * GEGENFALL ZUM NEUSTART: ohne beobachteten Druck UND ohne belastbare
      * Zuordnung bleibt gesperrt. Sonst waere die Neustart-Oeffnung ein
