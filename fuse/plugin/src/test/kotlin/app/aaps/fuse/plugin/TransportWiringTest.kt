@@ -395,6 +395,16 @@ class TransportWiringTest : TestBaseWithProfile() {
             .toList()
 
     private fun iob(atTs: Long) = IobTotal(roundUp(atTs)).also {
+        // Zeitpunkttreuer Replay: ausschliesslich Behandlungen, die bis zum
+        // Rechenzeitpunkt bekannt waren - keine Trail-Karte (s. `asOf`).
+        if (asOf != null) {
+            val (bolus, basal, akt) = asOfIob(clock, atTs, nurBolus = false)
+            it.iob = bolus + basal
+            it.basaliob = basal
+            it.activity = akt
+            it.valid = iobGueltig
+            return@also
+        }
         // BOLUS-IOB = iob - basaliob. Das Rig stellte beide auf 0, damit war
         // eine Bolus-Ueberdeckung nie darstellbar - der Riegel gegen
         // gemessenes Abwaertsrisiko haette hier nie greifen koennen.
@@ -549,6 +559,90 @@ class TransportWiringTest : TestBaseWithProfile() {
     /** ISF des zuletzt gerechneten Zyklus - wird der naechsten bestaetigten Abgabe mitgegeben. */
     private var rueckIsf = 61.0
 
+    /**
+     * ZEITPUNKTTREUE BEHANDLUNGEN FUER DEN REPLAY (Fruehstuecksrekonstruktion,
+     * Tonis Auftrag 15.09.).
+     *
+     * Der Runner fragt fuer JEDEN historischen Zyklus IOB und Aktivitaet auch an
+     * kuenftigen Prognosepunkten ab. Die bisherige Trail-Karte kannte Werte nur an
+     * den Trail-Zeitpunkten - fuer kuenftige Punkte fehlte die Insulinwirkung.
+     * Spaeter aufgezeichnete Werte duerfen sie NICHT ersetzen: sie enthalten
+     * Insulin, das erst spaeter abgegeben wurde (Blick in die Zukunft).
+     *
+     * Deshalb die AAPS-Logik nachgebildet, mit "jetzt" = Rechenzeitpunkt des
+     * Zyklus: Boli nur mit Pumpen-Zeitstempel <= jetzt; temporaere Basalraten nur,
+     * wenn sie bis jetzt begonnen haben, beendet am geplanten Ende, am bis jetzt
+     * bekannten Folgebeginn oder Abbruch und spaetestens JETZT (wie
+     * `calculateIobToTimeFromTempBasalsIncludingConvertedExtended`: laufende Rate
+     * wird auf now gekuerzt, danach Profilbasal); Abfragezeit auf die Minute
+     * aufgerundet (`roundUpTime`); Stuecke von etwa 5 min gegen den Basalplan.
+     * Lokal gegen die aufgezeichneten Anker validiert (Bolus-/Basal-IOB <= 0,0005 U,
+     * Aktivitaet <= 0,0001 U/min, 07:00-09:33).
+     */
+    private class AsOfBolus(val ts: Long, val u: Double)
+    private class AsOfTbr(val start: Long, val dauerMs: Long, val rate: Double, val absolut: Boolean)
+    private class AsOfBehandlungen(
+        val boli: List<AsOfBolus>, val tbr: List<AsOfTbr>, val abbrueche: List<Long>,
+        val basalSek: List<Pair<Int, Double>>, val diaStunden: Double,
+    )
+
+    private var asOf: AsOfBehandlungen? = null
+
+    private fun asOfLaden(datei: File): AsOfBehandlungen {
+        val o = org.json.JSONObject(datei.readText())
+        fun arr(k: String) = o.getJSONArray(k)
+        val boli = (0 until arr("boli").length()).map { i -> arr("boli").getJSONObject(i).let { AsOfBolus(it.getLong("ts"), it.getDouble("u")) } }
+        val tbr = (0 until arr("tbr").length()).map { i ->
+            arr("tbr").getJSONObject(i).let { AsOfTbr(it.getLong("start"), it.getLong("dauerMs"), it.getDouble("rate"), it.getBoolean("absolut")) }
+        }.sortedBy { it.start }
+        val abbrueche = (0 until arr("tbrAbbruchTs").length()).map { arr("tbrAbbruchTs").getLong(it) }.sorted()
+        val basal = (0 until arr("basalPlan").length()).map { i -> arr("basalPlan").getJSONObject(i).let { it.getInt("sek") to it.getDouble("rate") } }.sortedBy { it.first }
+        return AsOfBehandlungen(boli, tbr, abbrueche, basal, o.getDouble("diaStunden"))
+    }
+
+    private fun asOfBasal(b: AsOfBehandlungen, ts: Long): Double {
+        val sek = app.aaps.core.utils.MidnightUtils.secondsFromMidnight(ts)
+        return b.basalSek.lastOrNull { it.first <= sek }?.second ?: b.basalSek.first().second
+    }
+
+    /** (Bolus-IOB, Basal-IOB, Aktivitaet) zum Zeitpunkt [atTs], wie AAPS sie bei [jetzt] kannte. */
+    private fun asOfIob(jetzt: Long, atTs: Long, nurBolus: Boolean, runden: Boolean = true): Triple<Double, Double, Double> {
+        val b = asOf ?: return Triple(0.0, 0.0, 0.0)
+        val q = if (runden) roundUp(atTs) else atTs
+        val dia = b.diaStunden
+        var iobBolus = 0.0
+        var iobBasal = 0.0
+        var akt = 0.0
+        b.boli.forEach { x ->
+            if (x.ts <= jetzt && x.ts <= q) {
+                val r = insulin.iobCalcForTreatment(BS(timestamp = x.ts, amount = x.u, type = BS.Type.SMB), q, dia)
+                iobBolus += r.iobContrib
+                akt += r.activityContrib
+            }
+        }
+        if (!nurBolus) b.tbr.forEachIndexed { i, t ->
+            if (t.start > jetzt || t.start > q) return@forEachIndexed
+            var ende = t.start + t.dauerMs
+            b.tbr.getOrNull(i + 1)?.takeIf { it.start <= jetzt }?.let { ende = minOf(ende, it.start) }
+            b.abbrueche.firstOrNull { it > t.start && it <= jetzt }?.let { ende = minOf(ende, it) }
+            ende = minOf(ende, jetzt)
+            val real = Math.round((minOf(q, ende) - t.start) / 60_000.0).toInt()
+            if (real <= 0) return@forEachIndexed
+            val n = kotlin.math.ceil(real / 5.0).toInt()
+            val sp = real / n.toDouble()
+            for (j in 0 until n) {
+                val cd = (t.start + j * sp * 60_000 + 0.5 * sp * 60_000).toLong()
+                val netto = if (t.absolut) t.rate - asOfBasal(b, cd) else (t.rate - 100) / 100.0 * asOfBasal(b, cd)
+                if (cd > q - dia * 3_600_000 && cd <= q) {
+                    val r = insulin.iobCalcForTreatment(BS(timestamp = cd, amount = netto * sp / 60.0, type = BS.Type.NORMAL), q, dia)
+                    iobBasal += r.iobContrib
+                    akt += r.activityContrib
+                }
+            }
+        }
+        return Triple(iobBolus, iobBasal, akt)
+    }
+
     /** Vor der Abgabe liefert das Modell keine Null (t < td ohne t >= 0) - hier schon. */
     private fun einzelWirkung(a: Abgabe, atTs: Long): app.aaps.core.data.iob.Iob =
         if (atTs < a.ts) app.aaps.core.data.iob.Iob()
@@ -581,7 +675,15 @@ class TransportWiringTest : TestBaseWithProfile() {
         whenever(ads.getBgReadingsDataTableCopy()).thenAnswer { series(clock) }
         whenever(iobCobCalculator.calculateFromTreatmentsAndTemps(any(), any()))
             .thenAnswer { inv -> iob(inv.getArgument(0)) }
-        whenever(iobCobCalculator.calculateIobFromBolus()).thenAnswer { iob(clock) }
+        whenever(iobCobCalculator.calculateIobFromBolus()).thenAnswer {
+            // Zeitpunkttreu: nur der Bolusanteil zum Rechenzeitpunkt (AAPS rechnet hier ohne Aufrunden).
+            if (asOf != null) IobTotal(clock).also { t ->
+                val (bolus, _, akt) = asOfIob(clock, clock, nurBolus = true, runden = false)
+                t.iob = bolus
+                t.activity = akt
+                t.valid = iobGueltig
+            } else iob(clock)
+        }
 
         whenever(constraintsChecker.getMaxIOBAllowed()).thenAnswer { ConstraintObject(maxIobU, aapsLogger) }
         whenever(commandQueue.bolusInQueue()).thenReturn(false)
@@ -9768,6 +9870,10 @@ class TransportWiringTest : TestBaseWithProfile() {
             /** Die BOLUS-IOB des Geraets - getrennt von der Gesamt-IOB. */
             val bolusIobU: Double?,
             val smbU: Double, val block: String?, val policy: org.json.JSONObject?,
+            /** Rechenzeitpunkt des Geraets - "jetzt" fuer den zeitpunkttreuen Replay. */
+            val computeTs: Long = 0L,
+            /** Die vom Geraet in diesem Zyklus publizierte SMB-Menge (rt.units), null = keine. */
+            val publishedU: Double? = null,
         )
         val zyklen = ArrayList<Zyklus>()
         File(quelle).forEachLine { line ->
@@ -9790,6 +9896,8 @@ class TransportWiringTest : TestBaseWithProfile() {
                     dec?.optDouble("smbU")?.takeIf { it.isFinite() } ?: 0.0,
                     dec?.optString("block")?.takeIf { it.isNotBlank() },
                     o.optJSONObject("policy")?.optJSONObject("values"),
+                    o.optLong("computeTs"),
+                    o.optJSONObject("rt")?.optDouble("units")?.takeIf { it.isFinite() && it > 0.0 },
                 ))
             }
         }
@@ -9932,6 +10040,35 @@ class TransportWiringTest : TestBaseWithProfile() {
         whenever(profileFunction.getProfile()).thenReturn(replayProfil)
         whenever(profileFunction.getProfile(any())).thenReturn(replayProfil)
 
+        // ZEITPUNKTTREUE BEHANDLUNGEN (15.09.): ersetzen die Trail-IOB-Karte ganz -
+        // sie kannte kuenftige Prognosepunkte nicht und darf spaeter aufgezeichnete
+        // Werte nicht in eine fruehere Prognose tragen. Datei lokal, nie im Repo.
+        System.getenv("FUSE_REPLAY_BEHANDLUNGEN")?.let { pfad ->
+            asOf = asOfLaden(File(pfad))
+            iobProTs = null
+            bolusIobProTs = null
+            whenever(replayProfil.dia).thenReturn(asOf!!.diaStunden)
+            println("REPLAY zeitpunkttreu: ${asOf!!.boli.size} Boli, ${asOf!!.tbr.size} TBR, ${asOf!!.abbrueche.size} Abbrueche, DIA ${asOf!!.diaStunden}")
+            // DAS PROFILZIEL DES GERAETS (Aequivalenzbefund 15.09.): das Rig-Profil
+            // rechnete mit 103,5 statt 98 - Bedarf und Kandidat lagen dadurch
+            // systematisch neben der Aufzeichnung.
+            val zielPlan = org.json.JSONObject(File(pfad).readText()).optJSONArray("zielPlan")?.let { a ->
+                (0 until a.length()).map { i -> a.getJSONObject(i).let { it.getInt("sek") to it.getDouble("ziel") } }.sortedBy { it.first }
+            }
+            if (zielPlan != null && zielPlan.isNotEmpty()) whenever(replayProfil.getTargetMgdl()).thenAnswer {
+                val sek = app.aaps.core.utils.MidnightUtils.secondsFromMidnight(clock)
+                zielPlan.lastOrNull { it.first <= sek }?.second ?: zielPlan.first().second
+            }
+        }
+        // VOLLSTAENDIGE CGM-REIHE (15.09.): der Trail traegt nur einen Rohwert je
+        // Zyklus; waehrend der Direktdosis liefen keine Zyklen, dem Replay fehlten
+        // dort Messwerte. Die AAPS-Logs tragen jeden empfangenen Wert.
+        System.getenv("FUSE_REPLAY_CGM")?.let { pfad ->
+            val a = org.json.JSONArray(File(pfad).readText())
+            rohSerie = (0 until a.length()).map { i -> a.getJSONObject(i).let { it.getLong("ts") to it.getDouble("bg") } }.sortedBy { it.first }
+            println("REPLAY CGM aus Logs: ${rohSerie!!.size} Werte")
+        }
+
         // Der Spy bekommt die vom Runner errechneten LOKALEN Sekunden und
         // die Karte ist seit dem Zeitzonen-Fix oben ebenfalls lokal gefuellt
         // - eine Uhr fuer beide Seiten.
@@ -10051,7 +10188,7 @@ class TransportWiringTest : TestBaseWithProfile() {
             neuerRunner(adapter, fensterMs = fensterMs, trendRegel = trendRegel, gapPolitik = gapPolitik, reifePolitik = reifePolitik, wiedereinstieg = rejoinPolitik, ruheParams = ruheWirksam)
             val outFile = File(outDir, "replay_$name.csv")
             outFile.printWriter().use { w ->
-                w.println("ts;smbU;block;binding;insulinReq;liftU;needU;abort;phase;fastD;slowD;trend;raw;recSmbU;recBlock;profil;restMin;tbr;latch;lvDenial;lvExit;lvStreak;lvHead;transC;revGrund;rearmGrund;ctxGrund;basis;gapBreakMs;samplesUsed;gapBeforeMin;r;bandN;matP;matS;iob;rejoin;rejoinGrund;gapMs;vollreifeTs;regimeGrund;regimeTs;regimeSegTs;vorReif;ruheModus;ruheStreak;ruheDenial;gefahr;guardAbst;grantU;vorFloor;nachFloor;nachRiegel;rtAngefordert;upfrontState;upfrontPendingU;riskAktiv;latchAktiv;latchGrund;iobAnkerFehlt;iobFehltAnkerKum;iobFehltHistKum;upfrontShare;q1;ukf;aktivitaet;bolusIobU;totalIobU;guardBoden;abstandBoden;minToFloor;ueberdeckung;fallrate;lowVerdikt;riskDenial;recoveryZyklen;horizontMin;aufschubGrund;dosingProfil;dosingGrund;expoSource;expoBind;expoBlock;expoBinding;expoHeadU;expoLimitU;bgMinQuelle;expoReqSource;smbState;smbStop;reqU;capU;releaseMean;candU;shNeedU;shCandU;shHeadU;noLift;rSigned")
+                w.println("ts;smbU;block;binding;insulinReq;liftU;needU;abort;phase;fastD;slowD;trend;raw;recSmbU;recBlock;profil;restMin;tbr;latch;lvDenial;lvExit;lvStreak;lvHead;transC;revGrund;rearmGrund;ctxGrund;basis;gapBreakMs;samplesUsed;gapBeforeMin;r;bandN;matP;matS;iob;rejoin;rejoinGrund;gapMs;vollreifeTs;regimeGrund;regimeTs;regimeSegTs;vorReif;ruheModus;ruheStreak;ruheDenial;gefahr;guardAbst;grantU;vorFloor;nachFloor;nachRiegel;rtAngefordert;upfrontState;upfrontPendingU;riskAktiv;latchAktiv;latchGrund;iobAnkerFehlt;iobFehltAnkerKum;iobFehltHistKum;upfrontShare;q1;ukf;aktivitaet;bolusIobU;totalIobU;guardBoden;abstandBoden;minToFloor;ueberdeckung;fallrate;lowVerdikt;riskDenial;recoveryZyklen;horizontMin;aufschubGrund;dosingProfil;dosingGrund;expoSource;expoBind;expoBlock;expoBinding;expoHeadU;expoLimitU;bgMinQuelle;expoReqSource;smbState;smbStop;reqU;capU;releaseMean;candU;shNeedU;shCandU;shHeadU;noLift;rSigned;ledgerTransportU")
                 // DER VORGEFUNDENE MARKER IST KEIN BEOBACHTETER DRUCK
                 // (Toni 25.08. spaet). `prevMarker = 0` liess den ersten
                 // Zyklus jeden schon laufenden Marker als frisch gedrueckt
@@ -10091,9 +10228,17 @@ class TransportWiringTest : TestBaseWithProfile() {
                     }
                     if (z.marker != prevMarker && z.marker > 0L) markerAt = z.marker
                     prevMarker = z.marker
-                    clock = z.ts
+                    // Zeitpunkttreu: "jetzt" ist der Rechenzeitpunkt des Geraets, und
+                    // die Behandlungssicht enthaelt nur bis dahin bekannte Boli.
+                    clock = asOf?.let { _ -> z.computeTs.takeIf { it >= z.ts } } ?: z.ts
+                    asOf?.let { b -> boluses = b.boli.filter { it.ts <= clock }.map { BS(timestamp = it.ts, amount = it.u, type = BS.Type.SMB) } }
                     bolusIobAnkerFehltJetzt = false
                     val o = runner.run(false, testPumpe())
+                    // KEIN REFERENZFALL-LEDGER (Befund 15.09.): nachtraeglich gebuchte
+                    // Geraetepublikationen werden im Replay nie gegen die Pumpen-Boli
+                    // aufgeloest und liessen den Transport auf mehrere Einheiten
+                    // anwachsen. Der Transportterm fehlt dem Replay deshalb; die
+                    // Auswertung weist die Geraete-Transportmenge je Zyklus als Grenze aus.
                     val klass = o.turnResponseShadow?.classification
                     w.println(listOf(
                         z.ts, "%.3f".format(java.util.Locale.US, o.decision.smbU), o.decision.block,
@@ -10223,6 +10368,7 @@ class TransportWiringTest : TestBaseWithProfile() {
                         o.livenessShadowHeadroomU?.let { "%.4f".format(java.util.Locale.US, it) } ?: "",
                         o.livenessNoLiftReason ?: "",
                         o.signal?.rSigned?.let { "%.4f".format(java.util.Locale.US, it) } ?: "",
+                        runCatching { "%.3f".format(java.util.Locale.US, ledger.view().transportCommitmentU) }.getOrDefault(""),
                     ).joinToString(";"))
                 }
             }
