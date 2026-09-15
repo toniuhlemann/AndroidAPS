@@ -15512,6 +15512,11 @@ class TransportWiringTest : TestBaseWithProfile() {
     fun `Buchungsausgang 6 - Neustart nach dem Ausgang`(@TempDir dir: File) {
         val d = File(dir, "neustart").also(File::mkdirs)
         buchungsLage(d, an = true)
+        // ZWEI Bestaetigungszyklen (Tonis Review 15.09.): mit einem faellt die
+        // Bewaffnung mit dem Lift in denselben Zyklus, und eine FRISCH aufgebaute
+        // Serie waere nicht von einer uebernommenen zu unterscheiden. Vor dem
+        // Druck gesetzt - kein Konfigurationswechsel waehrend eines Laufs.
+        mealArmZyklen = 2
         var ausgang: FuseCycleRunner.Outcome? = null
         var n = 0
         while (ausgang == null && n < 60) { n++; transport(d).takeIf { it.livenessBookingExitSkipReArm }?.let { ausgang = it } }
@@ -15522,10 +15527,26 @@ class TransportWiringTest : TestBaseWithProfile() {
         assertEquals(sperreImSpeicher, ledger.episodes.livenessReArmUntilTs, "die Datei kennt keine Sperre aus dem Ausgang")
         assertTrue(sperreImSpeicher < a.computeTs + livenessReArmMin * 60_000L, "keine Sperre aus diesem Ausgang")
         transportReset()
-        val danach = (1..15).map { transport(d) }
-        val erster = danach.indexOfFirst { it.livenessLiftU > 0.0 }
-        if (erster >= 0) assertTrue(danach[erster].livenessActive && danach[erster].livenessStreak >= 1, "Lift nur nach frischer Bewaffnung: ${sperrZeile(danach[erster])}")
+        val danach = (1..25).map { transport(d) }
+        val kontext = danach.joinToString("\n") { sperrZeile(it) + " streak=${it.livenessStreak}" }
         danach.forEach { assertTrue(it.livenessDenial != "REARM_BLOCKED" || it.livenessReArmUntilTs > sperreImSpeicher, sperrZeile(it)) }
+        // (a) Zurueckgesetzt nach dem Laden: kein laufender Lauf, keine uebernommene Serie.
+        assertFalse(danach.first().livenessActive, "nach dem Laden laeuft kein Lauf:\n$kontext")
+        assertTrue(danach.first().livenessStreak <= 1, "nach dem Laden keine uebernommene Serie:\n$kontext")
+        // (b) Ein tatsaechlicher Wiederanlauf ist PFLICHT - der Test besteht nicht ohne ihn.
+        val wiederanlauf = danach.indexOfFirst { it.livenessActive && it.livenessLiftU > 0.0 }
+        assertTrue(wiederanlauf >= 1) { "ein tatsaechlicher Wiederanlauf nach Bestaetigung muss beobachtet werden:\n$kontext" }
+        // (c) Kein vorzeitiger Lift.
+        danach.take(wiederanlauf).forEach {
+            assertEquals(0.0, it.livenessLiftU, 1e-12, sperrZeile(it))
+            assertFalse(it.livenessActive, sperrZeile(it))
+        }
+        // (d) Frisch aufgebaute Bestaetigung: unmittelbar vor dem Wiederanlauf
+        // ein unbestaetigter Druckzyklus mit Serie 1, im Wiederanlauf Serie 2.
+        val vorher = danach[wiederanlauf - 1]
+        assertEquals(1, vorher.livenessStreak, "Serie beginnt neu: ${sperrZeile(vorher)}")
+        assertEquals("NOT_CONFIRMED", vorher.livenessDenial, sperrZeile(vorher))
+        assertEquals(2, danach[wiederanlauf].livenessStreak, "bewaffnet erst nach zwei frischen Bestaetigungen: ${sperrZeile(danach[wiederanlauf])}")
     }
 
     /** GEGENFALL: wiederholte Erschoepfung, danach Fall - kein Lift unter Gefahr, Gefahrenausgaenge sperren. */

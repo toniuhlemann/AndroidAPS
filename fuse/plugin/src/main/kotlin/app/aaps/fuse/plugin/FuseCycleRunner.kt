@@ -5156,6 +5156,21 @@ class FuseCycleRunner(
                         ukfRatePerMin = signal.ukfRatePerMin,
                         cause = verlustUrsache,
                         hazards = gefahren,
+                        // IM HEUTIGEN CODE AEQUIVALENT ZU null, wenn diese Pruefung
+                        // erreicht wird (Mutation N16 ausgefuehrt und gruen; statisch
+                        // eingeordnet, Tonis Review 15.09.). Vollstaendige Fallunterscheidung:
+                        //  - hartVorRebound != null  -> hart ist nicht REBOUND_ACTIVE
+                        //    -> NOT_REBOUND_EXIT greift vorher.
+                        //  - MEASURED_LOW, DESCENT_RISK, DESCENT_RISK_MARKER,
+                        //    LATCH_ACTIVE, FALLING -> dieselben Bedingungen stehen als
+                        //    erfasste Gefahren in `gefahren` -> CAPTURED_HAZARD vorher.
+                        //  - Reversal-/Rearm-Riegel verlangen !markerPowerActive;
+                        //    markerPowerActive IST dosingCtx.mealAuthorized, und
+                        //    NO_EVIDENCE_STOCK setzt eine bestandene MEAL-Vollmacht
+                        //    voraus -> dort nie aktiv.
+                        //  - EXCLUDED_LAGE (evidenz null, SUSPENDED, UNKNOWN) -> der
+                        //    Vertrag verlangt DORMANT -> DIAGNOSIS_INCOMPLETE vorher.
+                        // Bleibt als Schutz fuer kuenftig hinzukommende Torgruende.
                         otherBlockCause = hartVorRebound ?: hartNachRebound,
                         manualIntervention = manualTs != null && (
                             manualTs >= livenessStreakStartTs ||
