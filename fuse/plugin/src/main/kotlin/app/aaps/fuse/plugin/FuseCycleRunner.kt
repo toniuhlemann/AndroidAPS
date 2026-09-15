@@ -1219,12 +1219,12 @@ class FuseCycleRunner(
         val livenessShadowNeedU: Double? = null,
         val livenessShadowCandidateU: Double? = null,
         val livenessShadowHeadroomU: Double? = null,
-        /** BOOKING_DEDUCTION / DECAY_OR_DECLINE, wenn die Ausnahme am Bestand scheitert. */
-        val livenessEvidenceLossCause: String? = null,
-        /** Gleichzeitige Gefahren, unabhaengig von der Torreihenfolge (null = Kanal aus). */
-        val livenessConcurrentHazards: List<String>? = null,
-        /** Buchungsbedingter Bestandsverlust UND keine der ERFASSTEN Gefahren. Diagnose, kein Freigabenachweis. */
-        val livenessBookingWithoutCapturedHazard: Boolean = false,
+        /**
+         * Verlustdiagnose und Buchungsausgang als EIN Parameter - s.
+         * [LivenessBookingDiagnosis]. Die Einzelnamen stehen als abgeleitete
+         * Eigenschaften im Klassenrumpf.
+         */
+        val livenessBookingDiagnosis: LivenessBookingDiagnosis = LivenessBookingDiagnosis(),
         /** Der TYPISIERTE Grund des Modell-Tors (CandidateSearch.Reject)
          *  dieses Zyklus - null, wenn die Integritaetskette bestanden ist.
          *  Nur im Hauptpfad gefuellt. */
@@ -1369,6 +1369,36 @@ class FuseCycleRunner(
          *  bleiben konservativ stehen. Default, damit Abbruchpfade und Tests
          *  unveraendert konstruieren. */
         val treatmentView: TreatmentView? = null,
+    ) {
+        /** BOOKING_DEDUCTION / DECAY_OR_DECLINE, wenn die Ausnahme am Bestand scheitert. */
+        val livenessEvidenceLossCause: String? get() = livenessBookingDiagnosis.lossCause
+
+        /** Gleichzeitige Gefahren, unabhaengig von der Torreihenfolge (null = Kanal aus). */
+        val livenessConcurrentHazards: List<String>? get() = livenessBookingDiagnosis.concurrentHazards
+
+        /** Buchungsbedingter Bestandsverlust UND keine der ERFASSTEN Gefahren. Diagnose, kein Freigabenachweis. */
+        val livenessBookingWithoutCapturedHazard: Boolean get() = livenessBookingDiagnosis.bookingWithoutCapturedHazard
+
+        /** Der Lauf endete ohne neue Wiederanlaufsperre ([BookingExhaustionExit]). */
+        val livenessBookingExitSkipReArm: Boolean get() = livenessBookingDiagnosis.exitSkipReArm
+
+        /** Warum die Sonderbehandlung nicht galt; null = nicht ausgewertet. */
+        val livenessBookingExitDenial: String? get() = livenessBookingDiagnosis.exitDenial
+    }
+
+    /**
+     * VERLUSTDIAGNOSE UND BUCHUNGSAUSGANG EINES ZYKLUS, gebuendelt.
+     *
+     * WARUM EIN UNTEROBJEKT: [Outcome] stiess mit v52 an die JVM-Grenze von
+     * 255 Konstruktorparametern ("Too many arguments in method signature" -
+     * die Klasse liess sich nicht mehr laden). Dosierneutral.
+     */
+    data class LivenessBookingDiagnosis(
+        val lossCause: String? = null,
+        val concurrentHazards: List<String>? = null,
+        val bookingWithoutCapturedHazard: Boolean = false,
+        val exitSkipReArm: Boolean = false,
+        val exitDenial: String? = null,
     )
 
     /**
@@ -4809,6 +4839,10 @@ class FuseCycleRunner(
         // erfasst (Tonis Review 14.09. spaet). null = Kanal aus.
         var livenessConcurrentHazards: List<String>? = null
         var livenessBookingWithoutCapturedHazard = false
+        // Buchungsbedingter Ausgang ohne neue Sperre (Toni 15.09.). Denial null =
+        // nicht ausgewertet (kein laufender Lauf, den das Tor beendet).
+        var livenessBookingExitSkipReArm = false
+        var livenessBookingExitDenial: String? = null
 
         // Marker-Leistungsfrist + zentraler Dosierkontext: seit B2 VOR der
         // State-Konstruktion bestimmt (Kontextgrenze in der Grant-Bildung,
@@ -5045,23 +5079,30 @@ class FuseCycleRunner(
             livenessConcurrentHazards = gefahren.map { it.name }
             livenessBookingWithoutCapturedHazard =
                 app.aaps.fuse.core.controller.EvidenceLossDiagnosis.bookingWithoutCapturedHazard(verlustUrsache, gefahren)
-            val hart = when {
+            // DAS HARTE TOR, IN DREI TEILEN (Tonis Vertrag 15.09.): vor der
+            // Rebound-Zeile, die Rebound-Zeile, danach. `hart` ist exakt die
+            // bisherige `when`-Kette; getrennt, damit "gaebe es OHNE Rebound
+            // eine andere Sperrursache?" eine eigene, unverdeckte Antwort hat.
+            val hartVorRebound = when {
                 step.health != Health.READY -> "SIGNAL_UNHEALTHY"
                 treatmentView == null -> "VIEW_UNREADABLE"
                 livenessModelReject != null -> "MODEL_UNAVAILABLE"
                 ledgerView.hold -> "LEDGER_HOLD"
-                // P1 v45 (Eis-Livefall 30.08. 13:50): das ROHE Rebound-
-                // Fenster sperrt den Kanal nur, wenn das markergebundene
-                // Sonderrecht NICHT gilt - DIESELBE Wahrheit wie im Regler
-                // (evidenceMayOverrideRebound), keine zweite Rechnung.
-                // Vorher: Normalpfad per Evidenz entwaffnet und dann GUARD-
-                // geschlossen, der Kanal las das Rohsignal und blieb
-                // EXCLUDED/REBOUND_ACTIVE - serielle Blockade bei q1 172,
-                // r +4,8 und 3,68 U freiem MEAL-Headroom.
-                // Seit 14.09. zusaetzlich die Rebound-Evidenz-Ausnahme (Default
-                // AUS -> exakt die bisherige Bedingung).
-                app.aaps.fuse.core.controller.MealReboundEvidenceException
-                    .gateBlocks(reboundRaw, reboundOverrideErlaubt, reboundAusnahme) -> "REBOUND_ACTIVE"
+                else -> null
+            }
+            // P1 v45 (Eis-Livefall 30.08. 13:50): das ROHE Rebound-
+            // Fenster sperrt den Kanal nur, wenn das markergebundene
+            // Sonderrecht NICHT gilt - DIESELBE Wahrheit wie im Regler
+            // (evidenceMayOverrideRebound), keine zweite Rechnung.
+            // Vorher: Normalpfad per Evidenz entwaffnet und dann GUARD-
+            // geschlossen, der Kanal las das Rohsignal und blieb
+            // EXCLUDED/REBOUND_ACTIVE - serielle Blockade bei q1 172,
+            // r +4,8 und 3,68 U freiem MEAL-Headroom.
+            // Seit 14.09. zusaetzlich die Rebound-Evidenz-Ausnahme (Default
+            // AUS -> exakt die bisherige Bedingung).
+            val reboundSperrt = app.aaps.fuse.core.controller.MealReboundEvidenceException
+                .gateBlocks(reboundRaw, reboundOverrideErlaubt, reboundAusnahme)
+            val hartNachRebound = when {
                 measuredLow -> "MEASURED_LOW"
                 descentRisk.active -> "DESCENT_RISK"
                 risk60?.active == true -> "DESCENT_RISK_MARKER"
@@ -5087,9 +5128,55 @@ class FuseCycleRunner(
                     signal.ukfRatePerMin < LivenessChannel.UKF_FLOOR_MGDL_PER_MIN -> "FALLING"
                 else -> null
             }
+            val hart = hartVorRebound ?: (if (reboundSperrt) "REBOUND_ACTIVE" else hartNachRebound)
+            // Manuelle Intervention - EINMAL gelesen, unten fuer Lauf-Ende und
+            // Bewaffnungssperre verwendet, hier fuer den Buchungsausgang.
+            // Safe-Call statt Smart-Cast: die Null ist oben ein harter Riegel
+            // (VIEW_UNREADABLE), hierher kommt nur eine Sicht.
+            val manualTs = treatmentView?.boluses
+                ?.filter { it.isValid && it.type == BS.Type.NORMAL }
+                ?.maxOfOrNull { it.timestamp }
+            // ---- BUCHUNGSBEDINGTER AUSGANG OHNE NEUE SPERRE (Toni 15.09.) ----
+            // Vertrag s. [BookingExhaustionExit]. Nur fuer einen LAUFENDEN Lauf,
+            // den das Rebound-Tor gerade beendet. Der Lauf endet trotzdem; es
+            // entsteht nur keine NEUE Sperre (bestehende bleiben, sie werden hier
+            // nicht angefasst). Der Zustand wird wie jeder andere persistiert.
+            if (hart != null && livenessActive) {
+                val buchungsAusgang = app.aaps.fuse.core.controller.BookingExhaustionExit.decide(
+                    app.aaps.fuse.core.controller.BookingExhaustionExit.Input(
+                        enabled = cfg.livenessBookingExitWithoutReArmEnabled,
+                        runActive = livenessActive,
+                        gateReason = hart,
+                        exceptionDenial = reboundAusnahme.denial,
+                        evidencePhase = evidenz?.phase,
+                        deductionMgdl = evidenz?.deductionMgdl,
+                        stockBeforeDeductionMgdl = evidenz?.stockBeforeDeductionMgdl,
+                        declineMgdl = evidenz?.declineMgdl,
+                        measuredVerdict = upfrontStabilitaet.verdict,
+                        ukfRatePerMin = signal.ukfRatePerMin,
+                        cause = verlustUrsache,
+                        hazards = gefahren,
+                        otherBlockCause = hartVorRebound ?: hartNachRebound,
+                        manualIntervention = manualTs != null && (
+                            manualTs >= livenessStreakStartTs ||
+                                manualTs + cfg.livenessReArmMin * 60_000L > computeTs
+                            ),
+                        configChanged = cfgGeaendert,
+                    ),
+                )
+                livenessBookingExitSkipReArm = buchungsAusgang.skipReArm
+                livenessBookingExitDenial = buchungsAusgang.denial?.name
+            }
             if (hart != null) {
                 livenessProfil = "EXCLUDED"
                 livenessProfilGrund = hart
+                if (livenessActive && livenessBookingExitSkipReArm) {
+                    // Ende OHNE neue Sperre - Vertragspunkte 1-3.
+                    livenessExit = hart
+                    livenessActive = false
+                    livenessStreak = 0
+                    return@run nachAufschub
+                }
                 if (livenessActive) return@run sperren(hart)
                 livenessStreak = 0
                 livenessDenial = hart
@@ -5103,11 +5190,7 @@ class FuseCycleRunner(
             // Manuelle Intervention beendet den Lauf (Vertrag): ein
             // NORMAL-Bolus nach der Bewaffnung heisst, der Nutzer hat
             // uebernommen - der Kanal draengelt nicht daneben weiter.
-            // Safe-Call statt Smart-Cast: die Null ist oben bereits ein
-            // harter Riegel (VIEW_UNREADABLE), hierher kommt nur eine Sicht.
-            val manualTs = treatmentView?.boluses
-                ?.filter { it.isValid && it.type == BS.Type.NORMAL }
-                ?.maxOfOrNull { it.timestamp }
+            // `manualTs` ist oben vor dem Tor gelesen (eine Lesung je Zyklus).
             // Aktiver Lauf: massgeblich ist der BEGINN des Bewaffnungs-
             // Streaks, nicht der Bewaffnungsmoment - ein Bolus aus dem
             // Bewaffnungsfenster, der erst NACH der Bewaffnung in der Sicht
@@ -6123,9 +6206,13 @@ class FuseCycleRunner(
             livenessShadowNeedU = livenessShadowNeedU,
             livenessShadowCandidateU = livenessShadowCandidateU,
             livenessShadowHeadroomU = livenessShadowHeadroomU,
-            livenessEvidenceLossCause = livenessEvidenceLossCause,
-            livenessConcurrentHazards = livenessConcurrentHazards,
-            livenessBookingWithoutCapturedHazard = livenessBookingWithoutCapturedHazard,
+            livenessBookingDiagnosis = LivenessBookingDiagnosis(
+                lossCause = livenessEvidenceLossCause,
+                concurrentHazards = livenessConcurrentHazards,
+                bookingWithoutCapturedHazard = livenessBookingWithoutCapturedHazard,
+                exitSkipReArm = livenessBookingExitSkipReArm,
+                exitDenial = livenessBookingExitDenial,
+            ),
             livenessModelReject = livenessModelReject,
             livenessReArmUntilTs = episodes.livenessReArmUntilTs,
             preFoundationSmbU = preFoundationSmbU,
@@ -7733,6 +7820,9 @@ class FuseCycleRunner(
         /** Rebound-Evidenz-Ausnahme am Liveness-Tor (Toni 14.09.), Default
          *  AUS - s. [FuseBooleanKey.LivenessReboundEvidenceExceptionEnabled]. */
         val livenessReboundEvidenceExceptionEnabled: Boolean = false,
+        /** Buchungsbedingter Ausgang ohne neue Wiederanlaufsperre (Toni 15.09.),
+         *  Default AUS - s. [FuseBooleanKey.LivenessBookingExitWithoutReArmEnabled]. */
+        val livenessBookingExitWithoutReArmEnabled: Boolean = false,
         /** MEAL/CORRECTION (Bauauftrag 23.08. nachts) - s. FuseKeys.
          *  Werte sind bereits LESE-MIGRIERT (ungesetzt = alter Globalwert). */
         val livenessMealPowerMin: Int,
@@ -7855,6 +7945,7 @@ class FuseCycleRunner(
         deferredPrimeEndMin = preferences.get(FuseIntKey.DeferredPrimeEndMin),
         livenessChannelEnabled = preferences.get(FuseBooleanKey.LivenessChannelEnabled),
         livenessReboundEvidenceExceptionEnabled = preferences.get(FuseBooleanKey.LivenessReboundEvidenceExceptionEnabled),
+        livenessBookingExitWithoutReArmEnabled = preferences.get(FuseBooleanKey.LivenessBookingExitWithoutReArmEnabled),
         // MEAL/CORRECTION-LESE-MIGRATION (Bauauftrag §7): ungesetzte neue
         // Schluessel folgen dem bisherigen Globalwert - das Update ist
         // dosierneutral; die Grenzen-Klammer zaehlt Ausreisser als "nie

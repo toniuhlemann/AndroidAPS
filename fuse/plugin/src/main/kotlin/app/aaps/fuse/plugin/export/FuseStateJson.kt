@@ -417,7 +417,13 @@ object FuseStateJson {
     // gemessen stabile Rohreihe. Nur dieses eine Tor; Normalpfad,
     // Totbaender, Direktdosis, Mengen und Gates unveraendert. Dazu
     // dosierneutral liveness.noLiftReason (NO_HEADROOM aufgeschluesselt).
-    const val RULE_SET_VERSION = 51
+    // v52: BUCHUNGSBEDINGTER AUSGANG OHNE NEUE SPERRE (Default AUS, bitgleich).
+    // Beendet das Rebound-Tor einen laufenden Lauf wegen buchungsbedingter
+    // Evidenzerschoepfung, endet der Lauf ohne NEUE Wiederanlaufsperre - nur
+    // ohne erfasste Gefahr, ohne weitere Torsperre, ohne manuelle Intervention,
+    // ohne Konfigurationswechsel, mit vollstaendiger Diagnose. Bestehende
+    // Sperren, Mengen und alle Tore unveraendert.
+    const val RULE_SET_VERSION = 52
 
     /** Schema des Trail-Datensatzes - s. die Notiz an der Schreibstelle. */
     const val SCHEMA_VERSION = 4
@@ -911,6 +917,12 @@ object FuseStateJson {
                             // NUR die erfassten Gefahren - kein Freigabenachweis: Sicht,
                             // Modell, manuelle Intervention u. a. prueft der Runner getrennt.
                             .put("bookingWithoutCapturedHazard", outcome.livenessBookingWithoutCapturedHazard),
+                    )
+                    // v52: endete der Lauf ohne neue Sperre - und wenn nicht, warum.
+                    .put(
+                        "bookingExit", JSONObject()
+                            .put("skipReArm", outcome.livenessBookingExitSkipReArm)
+                            .put("denial", outcome.livenessBookingExitDenial ?: JSONObject.NULL),
                     ),
             )
             .put(
@@ -1997,6 +2009,8 @@ object FuseStateJson {
         .put("livenessChannelEnabled", p.livenessChannelEnabled)
         // v51: die Rebound-Evidenz-Ausnahme am Liveness-Tor.
         .put("livenessReboundEvidenceExceptionEnabled", p.livenessReboundEvidenceExceptionEnabled)
+        // v52: buchungsbedingter Ausgang ohne neue Sperre.
+        .put("livenessBookingExitWithoutReArmEnabled", p.livenessBookingExitWithoutReArmEnabled)
         .put("mealPowerMin", p.livenessMealPowerMin)
         // CENTRAL-only (Legacy-Cleanup 29.08. nachts): policyMode bleibt
         // als KONSTANTE im Export, damit Viewer und alte Trails eindeutig
@@ -2222,6 +2236,9 @@ object FuseStateJson {
                 // verschiedene Regler, sobald ein Marker nach einem Tief
                 // gedrueckt wird.
                 p.livenessReboundEvidenceExceptionEnabled,
+                // v52: AUS und EIN unterscheiden sich nach einem grossen Lift
+                // in der Wiederanlaufsperre.
+                p.livenessBookingExitWithoutReArmEnabled,
                 // v40 (M3): dosierwirksam unter MEAL-Vollmacht, sobald
                 // kleiner 3 gesetzt - modusunabhaengig immer im Hash.
                 p.mealArmCycles,

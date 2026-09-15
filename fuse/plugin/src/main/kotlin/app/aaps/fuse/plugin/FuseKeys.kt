@@ -1026,6 +1026,18 @@ enum class FuseBooleanKey(
     LivenessReboundEvidenceExceptionEnabled("fuse_liveness_rebound_evidence_exception_enabled", false),
 
     /**
+     * BUCHUNGSBEDINGTER AUSGANG OHNE NEUE WIEDERANLAUFSPERRE - DEFAULT AUS
+     * (Tonis Vertrag 15.09., Experiment, kein Aktivierungs-GO). Beendet das
+     * Rebound-Tor einen laufenden Liveness-Lauf, weil der eigene Buchungsabzug
+     * den Evidenzbestand erschoepft hat, endet der Lauf weiterhin - es entsteht
+     * nur keine NEUE zeitliche Sperre. Nur ohne erfasste Gefahr, ohne jede
+     * weitere Torsperre, ohne manuelle Intervention, ohne Konfigurationswechsel
+     * und mit vollstaendiger Diagnose; bestehende Sperren bleiben. Keine Menge,
+     * kein anderes Tor.
+     */
+    LivenessBookingExitWithoutReArmEnabled("fuse_liveness_booking_exit_without_rearm_enabled", false),
+
+    /**
      * WIEDEREINSTIEG NACH CGM-FUNKLUECKE (Toni 25.08. abends).
      *
      * Eingeschaltet reift der Antriebsschaetzer NUR nach einer eindeutig

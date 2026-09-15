@@ -184,6 +184,9 @@ class TransportWiringTest : TestBaseWithProfile() {
     /** Rebound-Evidenz-Ausnahme am Liveness-Tor - Default AUS wie in Produktion. */
     private var livenessAusnahmeAn = false
 
+    /** Buchungsbedingter Ausgang ohne neue Sperre - Default AUS wie in Produktion. */
+    private var buchungsAusgangAn = false
+
     /** Masterschalter der Prognose-Shadows (Default AN wie in Produktion). */
     private var forecastShadowAn = true
     private var mealPowerMin = 120
@@ -648,6 +651,7 @@ class TransportWiringTest : TestBaseWithProfile() {
         whenever(preferences.get(FuseIntKey.DeferredPrimeEndMin)).thenAnswer { aufschubFristMin }
         whenever(preferences.get(FuseBooleanKey.LivenessChannelEnabled)).thenAnswer { livenessAn }
         whenever(preferences.get(FuseBooleanKey.LivenessReboundEvidenceExceptionEnabled)).thenAnswer { livenessAusnahmeAn }
+        whenever(preferences.get(FuseBooleanKey.LivenessBookingExitWithoutReArmEnabled)).thenAnswer { buchungsAusgangAn }
         whenever(preferences.get(FuseBooleanKey.ForecastShadowCollectionEnabled)).thenAnswer { forecastShadowAn }
         whenever(preferences.get(FuseIntKey.LivenessMealPowerMin)).thenAnswer { mealPowerMin }
         whenever(preferences.get(FuseIntKey.MealArmCycles)).thenAnswer { mealArmZyklen }
@@ -15356,6 +15360,190 @@ class TransportWiringTest : TestBaseWithProfile() {
             "gefahrZyklen=${o.count { it.livenessConcurrentHazards.orEmpty().isNotEmpty() && it.computeTs > markerAt }}, " +
             "tief=${o.count { it.livenessConcurrentHazards.orEmpty().contains("MEASURED_LOW") && it.computeTs > markerAt }}"
         println("Experiment Sperre: erster Unterschied t=${(b.computeTs - start) / 60_000L}\n" + verlauf("basis", basis, basisPub) + "\n" + verlauf("gegen", gegen, gegenPub))
+    }
+
+    // ==== BUCHUNGSBEDINGTER AUSGANG OHNE NEUE SPERRE (Vertrag Toni 15.09.) =====
+    //
+    // Gemeinsame Lage: korrekt gestempelter Marker, grosser Lift (maxSMB 0,30),
+    // 5 min Sperre, Rueckfuehrung nur bestaetigter Abgaben, Schalter per Parameter.
+
+    private fun buchungsLage(dir: File, an: Boolean) {
+        abgaben.clear(); boluses = emptyList(); rueckIsf = 61.0; rueckfuehrung = false
+        ausnahmeLage(dir)
+        maxSmbU = 0.3
+        livenessReArmMin = 5
+        rueckfuehrungAn()
+        buchungsAusgangAn = an
+    }
+
+    /** Zeitpunkt des ersten Ausgangs ohne neue Sperre im unveraenderten Lauf (Schalter AN). */
+    private fun ersterBuchungsAusgang(dir: File): Long {
+        buchungsLage(File(dir, "sonde").also(File::mkdirs), an = true)
+        val d = File(dir, "sonde")
+        val o = (1..60).map { transport(d) }
+        return o.firstOrNull { it.livenessBookingExitSkipReArm }?.computeTs
+            ?: throw AssertionError("Vorbedingung: ein Ausgang ohne neue Sperre:\n" + o.joinToString("\n") { zeile(it) + " be=${it.livenessBookingExitDenial}" })
+    }
+
+    private fun sperrZeile(o: FuseCycleRunner.Outcome) =
+        zeile(o) + " skip=${o.livenessBookingExitSkipReArm} be=${o.livenessBookingExitDenial} haz=${o.livenessConcurrentHazards} sperreBis=${(o.livenessReArmUntilTs - start) / 60_000L}"
+
+    /**
+     * POSITIV + GLEICHWERTIGKEIT: Schalter AN verhaelt sich zyklusgleich zum
+     * Rig-Gegenstueck des Experiments (Sperre nach dem Zyklus zurueckgenommen) -
+     * aber OHNE nachtraegliches Zuruecksetzen: die Sperre entsteht gar nicht,
+     * und der persistierte Stand ist derselbe wie im Speicher. Im Ausgangszyklus
+     * bleibt die Ausnahme verweigert, es wird nicht gehoben (Vertrag 1 und 2).
+     */
+    @Test
+    fun `Buchungsausgang 1 - Schalter an entspricht dem Gegenstueck und persistiert konsistent`(@TempDir dir: File) {
+        val dAn = File(dir, "an").also(File::mkdirs)
+        buchungsLage(dAn, an = true)
+        val an = (1..60).map {
+            val sperreVorher = ledger.episodes.livenessReArmUntilTs
+            val o = transport(dAn)
+            if (o.livenessBookingExitSkipReArm) {
+                val k = sperrZeile(o)
+                assertEquals("REBOUND_ACTIVE", o.livenessExit, k)
+                assertFalse(o.livenessActive, k)
+                assertEquals(0, o.livenessStreak, k)
+                assertEquals(false, o.livenessReboundExceptionAllowed, k)
+                assertEquals(0.0, o.livenessLiftU, 1e-12, k)
+                assertEquals(sperreVorher, ledger.episodes.livenessReArmUntilTs, "keine neue Sperre: $k")
+                assertEquals(ledger.episodes.livenessReArmUntilTs, nachNeustart(dAn).livenessReArmUntilTs, "persistiert wie im Speicher: $k")
+                assertTrue(o.livenessConcurrentHazards.orEmpty().isEmpty() && o.livenessEvidenceLossCause == "BOOKING_DEDUCTION", k)
+            }
+            o
+        }
+        assertTrue(an.count { it.livenessBookingExitSkipReArm } >= 1) { an.joinToString("\n") { sperrZeile(it) } }
+
+        val dGegen = File(dir, "gegen").also(File::mkdirs)
+        buchungsLage(dGegen, an = false)
+        val gegen = (1..60).map {
+            val sperreVorher = ledger.episodes.livenessReArmUntilTs
+            val z = transport(dGegen)
+            if (z.livenessExit == "REBOUND_ACTIVE" && z.livenessBookingWithoutCapturedHazard) ledger.episodes.livenessReArmUntilTs = sperreVorher
+            z
+        }
+        an.zip(gegen).forEach { (a, g) ->
+            val k = "an: ${sperrZeile(a)}\ngegen: ${sperrZeile(g)}"
+            assertEquals(g.decision.smbU, a.decision.smbU, 1e-12, k)
+            assertEquals(g.livenessDenial, a.livenessDenial, k)
+            assertEquals(g.livenessExit, a.livenessExit, k)
+            assertEquals(g.evidenceStockMgdl, a.evidenceStockMgdl, k)
+        }
+    }
+
+    /** GEGENFALL: neue Gefahr unmittelbar nach dem Ausgang - kein Lift unter Gefahr, jeder Gefahrenausgang sperrt. */
+    @Test
+    fun `Buchungsausgang 2 - neue Gefahr unmittelbar danach`(@TempDir dir: File) {
+        val tE = ersterBuchungsAusgang(dir)
+        val d = File(dir, "fall").also(File::mkdirs)
+        buchungsLage(d, an = true)
+        knick2AbMin = ((tE - start) / 60_000L).toInt()
+        steigungNachKnick2 = -8.0
+        val o = (1..60).map { transport(d) }
+        val ausgang = o.first { it.computeTs == tE }
+        assertTrue(ausgang.livenessBookingExitSkipReArm, "der Ausgang selbst liegt vor dem Fall: ${sperrZeile(ausgang)}")
+        val danach = o.filter { it.computeTs > tE }
+        assertTrue(danach.any { it.livenessConcurrentHazards.orEmpty().isNotEmpty() }) { "Vorbedingung: Gefahr danach\n" + danach.joinToString("\n") { sperrZeile(it) } }
+        danach.filter { it.livenessConcurrentHazards.orEmpty().isNotEmpty() }.forEach { assertEquals(0.0, it.livenessLiftU, 1e-12, sperrZeile(it)) }
+        danach.filter { it.livenessExit != null && it.livenessConcurrentHazards.orEmpty().isNotEmpty() }.forEach {
+            assertFalse(it.livenessBookingExitSkipReArm, sperrZeile(it))
+        }
+    }
+
+    /** GEGENFALL: eine bestehende aeltere Sperre bleibt unveraendert und wirkt. */
+    @Test
+    fun `Buchungsausgang 3 - bestehende aeltere Sperre bleibt`(@TempDir dir: File) {
+        val tE = ersterBuchungsAusgang(dir)
+        val d = File(dir, "alt").also(File::mkdirs)
+        buchungsLage(d, an = true)
+        var alteSperre = 0L
+        val o = (1..60).map {
+            if (clock + taktMs == tE) {
+                alteSperre = clock + 20 * 60_000L
+                ledger.episodes.livenessReArmUntilTs = alteSperre
+            }
+            transport(d)
+        }
+        val ausgang = o.first { it.computeTs == tE }
+        assertTrue(ausgang.livenessBookingExitSkipReArm, sperrZeile(ausgang))
+        assertEquals(alteSperre, ausgang.livenessReArmUntilTs, "weder verlaengert noch verkuerzt")
+        o.filter { it.computeTs in (tE + 1)..(alteSperre - 1) }.forEach {
+            assertEquals(0.0, it.livenessLiftU, 1e-12, sperrZeile(it))
+            assertFalse(it.livenessActive, sperrZeile(it))
+        }
+    }
+
+    /** GEGENFALL: manuelle Intervention - die Sonderbehandlung gilt nicht, die Sperre entsteht. */
+    @Test
+    fun `Buchungsausgang 4 - manuelle Intervention verweigert`(@TempDir dir: File) {
+        val tE = ersterBuchungsAusgang(dir)
+        val d = File(dir, "manuell").also(File::mkdirs)
+        buchungsLage(d, an = true)
+        val o = (1..60).map {
+            if (clock + taktMs == tE) boluses = boluses + BS(timestamp = tE - 30_000L, amount = 1.0, type = BS.Type.NORMAL)
+            transport(d)
+        }
+        val ausgang = o.first { it.computeTs == tE }
+        assertFalse(ausgang.livenessBookingExitSkipReArm, sperrZeile(ausgang))
+        assertEquals("MANUAL_INTERVENTION", ausgang.livenessBookingExitDenial, sperrZeile(ausgang))
+        assertTrue(ausgang.livenessReArmUntilTs >= tE + livenessReArmMin * 60_000L, "die Sperre entsteht: ${sperrZeile(ausgang)}")
+    }
+
+    /** GEGENFALL: Markerwechsel im Ausgangszyklus - keine Sonderbehandlung. */
+    @Test
+    fun `Buchungsausgang 5 - Markerwechsel`(@TempDir dir: File) {
+        val tE = ersterBuchungsAusgang(dir)
+        val d = File(dir, "marker").also(File::mkdirs)
+        buchungsLage(d, an = true)
+        val o = (1..60).map {
+            if (clock + taktMs == tE) markerAt = tE
+            transport(d)
+        }
+        val ausgang = o.first { it.computeTs == tE }
+        assertFalse(ausgang.livenessBookingExitSkipReArm, sperrZeile(ausgang))
+        assertTrue(ausgang.livenessExit != "REBOUND_ACTIVE" || ausgang.livenessBookingExitDenial != null, sperrZeile(ausgang))
+    }
+
+    /** GEGENFALL: Neustart direkt nach dem Ausgang - Stand aus der Datei, keine Sperre nachtraeglich, frische Bewaffnung noetig. */
+    @Test
+    fun `Buchungsausgang 6 - Neustart nach dem Ausgang`(@TempDir dir: File) {
+        val d = File(dir, "neustart").also(File::mkdirs)
+        buchungsLage(d, an = true)
+        var ausgang: FuseCycleRunner.Outcome? = null
+        var n = 0
+        while (ausgang == null && n < 60) { n++; transport(d).takeIf { it.livenessBookingExitSkipReArm }?.let { ausgang = it } }
+        val a = ausgang ?: throw AssertionError("Vorbedingung: Ausgang ohne neue Sperre")
+        val sperreImSpeicher = ledger.episodes.livenessReArmUntilTs
+        neuerRunner(FuseLedgerAdapter().also { it.loadOnce(d, "test-epoch", clock) })
+        markerPress = 0L
+        assertEquals(sperreImSpeicher, ledger.episodes.livenessReArmUntilTs, "die Datei kennt keine Sperre aus dem Ausgang")
+        assertTrue(sperreImSpeicher < a.computeTs + livenessReArmMin * 60_000L, "keine Sperre aus diesem Ausgang")
+        transportReset()
+        val danach = (1..15).map { transport(d) }
+        val erster = danach.indexOfFirst { it.livenessLiftU > 0.0 }
+        if (erster >= 0) assertTrue(danach[erster].livenessActive && danach[erster].livenessStreak >= 1, "Lift nur nach frischer Bewaffnung: ${sperrZeile(danach[erster])}")
+        danach.forEach { assertTrue(it.livenessDenial != "REARM_BLOCKED" || it.livenessReArmUntilTs > sperreImSpeicher, sperrZeile(it)) }
+    }
+
+    /** GEGENFALL: wiederholte Erschoepfung, danach Fall - kein Lift unter Gefahr, Gefahrenausgaenge sperren. */
+    @Test
+    fun `Buchungsausgang 7 - wiederholte Erschoepfung mit anschliessendem Fall`(@TempDir dir: File) {
+        val d = File(dir, "serie").also(File::mkdirs)
+        buchungsLage(d, an = true)
+        knick2AbMin = 52
+        steigungNachKnick2 = -6.0
+        val o = (1..60).map { transport(d) }
+        val vorFall = o.filter { it.computeTs <= start + 52 * 60_000L }
+        assertTrue(vorFall.count { it.livenessBookingExitSkipReArm } >= 2) { "Vorbedingung: wiederholte Ausgaenge ohne neue Sperre\n" + o.joinToString("\n") { sperrZeile(it) } }
+        val nachFall = o.filter { it.computeTs > start + 52 * 60_000L }
+        assertTrue(nachFall.any { it.livenessConcurrentHazards.orEmpty().isNotEmpty() }) { "Vorbedingung: Gefahr nach dem Fall\n" + nachFall.joinToString("\n") { sperrZeile(it) } }
+        nachFall.filter { it.livenessConcurrentHazards.orEmpty().isNotEmpty() }.forEach {
+            assertEquals(0.0, it.livenessLiftU, 1e-12, sperrZeile(it))
+            assertFalse(it.livenessBookingExitSkipReArm, sperrZeile(it))
+        }
     }
 
     // ---- BITGLEICH-AUFZEICHNUNG (nur mit FUSE_BITGLEICH_OUT) ----------------

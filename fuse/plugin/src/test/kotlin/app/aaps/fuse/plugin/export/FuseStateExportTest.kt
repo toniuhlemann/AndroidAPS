@@ -856,7 +856,8 @@ class FuseStateExportTest {
         // rohe Rebound-Veto faellt dort auch bei verbrauchtem Kredit, wenn
         // Vollmacht, Sonderrechts-Pin und -Frist, Tief vor dem Druck,
         // Evidenzbestand und stabile Rohreihe tragen.
-        assertEquals(51, FuseStateJson.RULE_SET_VERSION)
+        // v52 buchungsbedingter Ausgang ohne neue Wiederanlaufsperre (Default aus).
+        assertEquals(52, FuseStateJson.RULE_SET_VERSION)
         assertTrue(
             FuseStateJson.hashOf(cfg)!!.isNotEmpty(),
             "und der Hash bleibt berechenbar",
