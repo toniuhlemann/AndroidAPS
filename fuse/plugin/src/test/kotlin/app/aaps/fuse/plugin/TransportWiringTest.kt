@@ -16207,11 +16207,16 @@ class TransportWiringTest : TestBaseWithProfile() {
         // Druck gesetzt - kein Konfigurationswechsel waehrend eines Laufs.
         mealArmZyklen = 2
         var ausgang: FuseCycleRunner.Outcome? = null
+        val vorAusgang = mutableListOf<FuseCycleRunner.Outcome>()
         var n = 0
-        while (ausgang == null && n < 60) { n++; transport(d).takeIf { it.livenessBookingExitSkipReArm }?.let { ausgang = it } }
+        while (ausgang == null && n < 60) { n++; transport(d).also { vorAusgang += it }.takeIf { it.livenessBookingExitSkipReArm }?.let { ausgang = it } }
         val a = ausgang ?: throw AssertionError("Vorbedingung: Ausgang ohne neue Sperre")
         val sperreImSpeicher = ledger.episodes.livenessReArmUntilTs
         neuerRunner(FuseLedgerAdapter().also { it.loadOnce(d, "test-epoch", clock) })
+        // Wie der Produktionsstart (FusePlugin -> FuseLowMemory): das juengste
+        // gemessene Tief aus der Historie laden - sonst liefe der Wiederanlauf
+        // ohne Rebound-Fenster und damit milder als am Geraet.
+        letztesTief(lageVorlauf + vorAusgang)?.let { runner.primeLastLowTs(it) }
         markerPress = 0L
         assertEquals(sperreImSpeicher, ledger.episodes.livenessReArmUntilTs, "die Datei kennt keine Sperre aus dem Ausgang")
         assertTrue(sperreImSpeicher < a.computeTs + livenessReArmMin * 60_000L, "keine Sperre aus diesem Ausgang")
@@ -16254,6 +16259,90 @@ class TransportWiringTest : TestBaseWithProfile() {
             assertEquals(0.0, it.livenessLiftU, 1e-12, sperrZeile(it))
             assertFalse(it.livenessBookingExitSkipReArm, sperrZeile(it))
         }
+    }
+
+    /**
+     * OFFENER PRUEFPUNKT VOR DER AKTIVIERUNG (Tonis Review zu cbcbc794a8):
+     * WIEDERHOLTES STOPPEN UND WIEDERANLAUFEN. Jeder Ausgang ohne neue Sperre
+     * wird von einem Prozessneustart gefolgt, ueber mehrere Runden. Zusagen je
+     * Runde:
+     *  (a) der Ausgang erzeugt keine Sperre - weder im Speicher noch in der Datei,
+     *  (b) nach dem Laden laeuft kein Lauf und es gibt keine uebernommene Serie,
+     *  (c) jede Wiederbewaffnung wird FRISCH bestaetigt (Serie 1 NOT_CONFIRMED
+     *      direkt davor, Serie 2 im Wiederanlauf), kein Lift davor,
+     *  (d) unter erfasster Gefahr nie ein Lift, Gefahrenausgaenge sperren.
+     * Zusaetzlich: dieselbe Lage ohne Neustarts - die Neustarts duerfen die
+     * abgegebene Menge nicht erhoehen (ein Neustart kostet Bewaffnung, er schenkt
+     * keine).
+     */
+    @Test
+    fun `Buchungsausgang 8 - wiederholtes Stoppen und Wiederanlaufen mit Neustart`(@TempDir dir: File) {
+        fun lauf(name: String, neustarts: Boolean): Pair<List<FuseCycleRunner.Outcome>, Int> {
+            val d = File(dir, name).also(File::mkdirs)
+            buchungsLage(d, an = true)
+            mealArmZyklen = 2
+            val alle = mutableListOf<FuseCycleRunner.Outcome>()
+            var runden = 0
+            var nachLaden: MutableList<FuseCycleRunner.Outcome>? = null
+            repeat(90) {
+                val sperreVorher = ledger.episodes.livenessReArmUntilTs
+                val o = transport(d)
+                alle += o
+                nachLaden?.add(o)
+                if (o.livenessBookingExitSkipReArm) {
+                    val k = sperrZeile(o)
+                    assertEquals(sperreVorher, ledger.episodes.livenessReArmUntilTs, "(a) keine Sperre im Speicher: $k")
+                    if (neustarts) {
+                        // Vorherige Runde auswerten, bevor die naechste beginnt.
+                        nachLaden?.let { pruefeWiederanlauf(it, runden) }
+                        val sperreImSpeicher = ledger.episodes.livenessReArmUntilTs
+                        neuerRunner(FuseLedgerAdapter().also { it.loadOnce(d, "test-epoch", clock) })
+                        // Tief-Gedaechtnis wie der Produktionsstart aus der Historie.
+                        letztesTief(lageVorlauf + alle)?.let { runner.primeLastLowTs(it) }
+                        markerPress = 0L
+                        transportReset()
+                        assertEquals(sperreImSpeicher, ledger.episodes.livenessReArmUntilTs, "(a) keine Sperre in der Datei: $k")
+                        runden++
+                        nachLaden = mutableListOf()
+                    }
+                }
+                if (o.livenessConcurrentHazards.orEmpty().isNotEmpty()) {
+                    assertEquals(0.0, o.livenessLiftU, 1e-12, "(d) ${sperrZeile(o)}")
+                    assertFalse(o.livenessBookingExitSkipReArm, "(d) ${sperrZeile(o)}")
+                }
+            }
+            return alle to runden
+        }
+        val (mit, runden) = lauf("mit_neustart", neustarts = true)
+        val (ohne, _) = lauf("ohne_neustart", neustarts = false)
+        val mitU = mit.sumOf { it.decision.smbU }
+        val ohneU = ohne.sumOf { it.decision.smbU }
+        println(
+            "Buchungsausgang 8: Runden mit Neustart $runden, Ausgaenge ohne Sperre ${mit.count { it.livenessBookingExitSkipReArm }} / " +
+                "${ohne.count { it.livenessBookingExitSkipReArm }}, abgegeben ${"%.2f".format(mitU)} U / ${"%.2f".format(ohneU)} U, " +
+                "Wiederanlaeufe ${mit.zipWithNext().count { (a, b) -> !a.livenessActive && b.livenessActive }}",
+        )
+        assertTrue(runden >= 2) { "Vorbedingung: mindestens zwei Runden Ausgang + Neustart\n" + mit.joinToString("\n") { sperrZeile(it) + " streak=${it.livenessStreak}" } }
+        assertTrue(mitU <= ohneU + 1e-9, "Neustarts erhoehen die abgegebene Menge nicht: $mitU vs $ohneU")
+    }
+
+    /** Juengstes gemessenes Tief (q1 unter der Rebound-Schwelle) einer Zyklusfolge -
+     *  dieselbe Groesse, die FuseLowMemory beim Start aus dem Trail zurueckholt. */
+    private fun letztesTief(l: List<FuseCycleRunner.Outcome>): Long? =
+        l.lastOrNull { (it.signal?.q1 ?: Double.MAX_VALUE) < FuseController.REBOUND_LOW_MGDL }?.signal?.sourceTs
+
+    /** Zusagen (b) und (c) fuer die Zyklen nach einem Laden bis zum naechsten Ausgang. */
+    private fun pruefeWiederanlauf(danach: List<FuseCycleRunner.Outcome>, runde: Int) {
+        if (danach.isEmpty()) return
+        val kontext = "Runde $runde:\n" + danach.joinToString("\n") { sperrZeile(it) + " streak=${it.livenessStreak}" }
+        assertFalse(danach.first().livenessActive, "(b) nach dem Laden laeuft kein Lauf\n$kontext")
+        assertTrue(danach.first().livenessStreak <= 1, "(b) keine uebernommene Serie\n$kontext")
+        val wiederanlauf = danach.indexOfFirst { it.livenessActive }
+        assertTrue(wiederanlauf >= 1, "(c) ein Wiederanlauf nach frischer Bestaetigung\n$kontext")
+        danach.take(wiederanlauf).forEach { assertEquals(0.0, it.livenessLiftU, 1e-12, "(c) kein Lift vor der Bewaffnung\n$kontext") }
+        assertEquals(1, danach[wiederanlauf - 1].livenessStreak, "(c) Serie 1 direkt davor\n$kontext")
+        assertEquals("NOT_CONFIRMED", danach[wiederanlauf - 1].livenessDenial, "(c) unbestaetigt direkt davor\n$kontext")
+        assertEquals(2, danach[wiederanlauf].livenessStreak, "(c) Serie 2 im Wiederanlauf\n$kontext")
     }
 
     // ---- BITGLEICH-AUFZEICHNUNG (nur mit FUSE_BITGLEICH_OUT) ----------------
