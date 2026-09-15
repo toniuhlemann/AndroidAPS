@@ -1,6 +1,7 @@
 package app.aaps.fuse.plugin.ledger
 
 import org.json.JSONObject
+import org.json.JSONArray
 import java.io.File
 import java.util.concurrent.atomic.AtomicReference
 
@@ -121,6 +122,9 @@ object FuseLedgerSealRecovery {
         val openEntries: Int?,
         val grossLiabilityU: Double?,
         val candidates: List<String>,
+        /** Rein lesender Vergleich fuer den Altmarker-Fall. Enthaelt keine
+         *  Freigabeentscheidung und veraendert keine Datei. */
+        val diagnostics: String,
     )
 
     data class RecoveryRequest(val by: String, val reason: String)
@@ -180,9 +184,11 @@ object FuseLedgerSealRecovery {
         val recoveryPending = FuseLedgerStore.recoveryPendingExists(dir)
         val kandidaten = lese(dir)
         val liste = kandidaten.filter { it.exists }.map { k ->
-            if (k.decodable) "${k.name}: rev=${k.revision}${k.migrationRequired?.let { m -> " migration=$m" } ?: ""}" else "${k.name}: unlesbar"
+            if (k.decodable) "${k.name}: rev=${k.revision}, bytes=${k.content!!.toByteArray(Charsets.UTF_8).size}, sha256=${k.sha256!!.take(16)}...${k.migrationRequired?.let { m -> ", migration=$m" } ?: ""}"
+            else "${k.name}: unlesbar"
         }
-        fun held(why: String) = Inspection(false, why, null, false, null, null, liste)
+        val diagnose = diagnose(dir, kandidaten)
+        fun held(why: String) = Inspection(false, why, null, false, null, null, liste, diagnose)
 
         if (!sealPending && !recoveryPending) return held("kein unterbrochenes Speichern - nichts wiederherzustellen")
         if (FuseLedgerStore.repairPendingExists(dir)) return held("eine Reparatur wurde unterbrochen - dafuer ist dieser Weg nicht zustaendig")
@@ -195,7 +201,7 @@ object FuseLedgerSealRecovery {
             val offen = d.state.openEntries
             return Inspection(
                 true, basis, Proof(source, content, FuseLedgerStore.sha256(content), d.revision, basis), resume,
-                offen.size, offen.sumOf { it.grossLiabilityU }, liste,
+                offen.size, offen.sumOf { it.grossLiabilityU }, liste, diagnose,
             )
         }
 
@@ -332,6 +338,91 @@ object FuseLedgerSealRecovery {
         val d = text?.let { t -> runCatching { LedgerCodec.decode(JSONObject(t)) }.getOrNull() }
         Candidate(name, exists, text, text?.let { FuseLedgerStore.sha256(it) }, d?.revision, d != null, d?.migrationRequired)
     }
+
+    /**
+     * Diagnose fuer Altmarker ohne Pruefsumme. Sie zeigt die sicherheitsrelevanten
+     * Unterschiede der Generationen, entscheidet aber absichtlich NICHT ueber eine
+     * Wiederherstellung. Auch eine plausibel neuere Generation bleibt ohne weiteren
+     * Vertrag gesperrt.
+     */
+    private fun diagnose(dir: File, kandidaten: List<Candidate>): String {
+        val marker = FuseLedgerStore.readSealPending(dir)?.trim() ?: "fehlt"
+        val gueltig = kandidaten.filter { it.decodable && it.content != null }
+        return buildString {
+            append("Marker: ").append(marker).append('\n')
+            for (k in gueltig) {
+                val d = LedgerCodec.decode(JSONObject(k.content!!))
+                val e = d.episodes
+                append(k.name).append(": rev=").append(d.revision)
+                    .append(", bytes=").append(k.content.toByteArray(Charsets.UTF_8).size)
+                    .append(", sha256=").append(k.sha256!!.take(16)).append("...\n")
+                append("  offen=").append(d.state.openEntries.size)
+                    .append(", bruttoU=").append(f3(d.state.openEntries.sumOf { it.grossLiabilityU }))
+                    .append(", transportU=").append(f3(d.state.transportCommitmentU))
+                    .append(", retiredIds=").append(d.retiredBoundIds.size)
+                    .append(", pumpEpochs=").append(d.pumpEpochs.size).append('\n')
+                append("  stamp=").append(d.interventionStamp?.epochId ?: "fehlt")
+                    .append('#').append(d.interventionStamp?.sequence ?: -1L)
+                    .append(", auth=").append(e.markerAuth?.id ?: "keine")
+                    .append(", foundationAuth=").append(e.foundationArmedByAuthId ?: "keine").append('\n')
+                append("  foundation=").append(e.foundation.armedTs)
+                    .append("/").append(f3(e.foundation.totalBudgetU)).append("U")
+                    .append(", phaseA=").append(f3(e.deliveredPhaseAU))
+                    .append(", seitUebergabe=").append(f3(e.deliveredSinceHandoverU))
+                    .append(", evidenz=").append(f3(e.evidenceCommittedU))
+                    .append('@').append(e.evidenceCommitmentRevision).append('\n')
+                append("  sourceTs=").append(e.lastAcceptedSourceTs)
+                    .append(", turnTs=").append(e.markerTurnTs)
+                    .append(", riseSeen=").append(e.markerRiseSeen)
+                    .append(", rearmUntil=").append(e.livenessReArmUntilTs).append('\n')
+            }
+            val target = gueltig.firstOrNull { it.name == FuseLedgerStore.FILE_NAME }
+            val bak = gueltig.firstOrNull { it.name == BAK }
+            if (target != null && bak != null) {
+                val diffs = mutableListOf<String>()
+                jsonDiff("$", JSONObject(bak.content!!), JSONObject(target.content!!), diffs, 80)
+                append("Vergleich bak -> json: ").append(diffs.size)
+                    .append(if (diffs.size >= 80) " oder mehr" else "").append(" Unterschied(e)\n")
+                diffs.forEach { append("  ").append(it).append('\n') }
+            }
+        }.trimEnd()
+    }
+
+    private fun f3(v: Double): String = "%.3f".format(java.util.Locale.US, v)
+
+    private fun jsonDiff(path: String, alt: Any?, neu: Any?, out: MutableList<String>, limit: Int) {
+        if (out.size >= limit) return
+        if (alt is JSONObject && neu is JSONObject) {
+            val keys = (alt.keys().asSequence().toSet() + neu.keys().asSequence().toSet()).sorted()
+            for (key in keys) {
+                if (out.size >= limit) return
+                val a = if (alt.has(key)) alt.opt(key) else FEHLT
+                val n = if (neu.has(key)) neu.opt(key) else FEHLT
+                jsonDiff("$path.$key", a, n, out, limit)
+            }
+            return
+        }
+        if (alt is JSONArray && neu is JSONArray) {
+            val max = maxOf(alt.length(), neu.length())
+            for (i in 0 until max) {
+                if (out.size >= limit) return
+                jsonDiff("$path[$i]", if (i < alt.length()) alt.opt(i) else FEHLT, if (i < neu.length()) neu.opt(i) else FEHLT, out, limit)
+            }
+            return
+        }
+        val a = normalisiere(alt)
+        val n = normalisiere(neu)
+        if (a != n) out += "$path: ${kurz(a)} -> ${kurz(n)}"
+    }
+
+    private fun normalisiere(v: Any?): Any? = if (v == JSONObject.NULL) null else v
+    private fun kurz(v: Any?): String {
+        if (v === FEHLT) return "<fehlt>"
+        val s = v?.toString() ?: "null"
+        return if (s.length <= 80) s else s.take(77) + "..."
+    }
+
+    private val FEHLT = Any()
 
     private fun freierName(dir: File, basis: String): String {
         var name = basis

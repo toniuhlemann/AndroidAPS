@@ -150,6 +150,23 @@ class FuseLedgerSealRecoveryTest {
         absturzNachUmbenennen(dir, p, s)
         val lage = FuseLedgerSealRecovery.inspect(dir)
         assertFalse(lage.recoverable, "Zielname = S ist ohne Pruefsumme nicht von P unterscheidbar: ${lage.why}")
+        assertTrue(lage.diagnostics.contains("Marker: SEAL_PENDING rev="))
+        assertTrue(lage.diagnostics.contains("fuse_ledger.json: rev="))
+        assertTrue(lage.diagnostics.contains("fuse_ledger.json.bak: rev="))
+        assertTrue(lage.diagnostics.contains("sha256="))
+        assertTrue(lage.diagnostics.contains("$.episodes.livenessReArmUntilTs")) {
+            "der sicherheitsrelevante Feldunterschied muss sichtbar sein: ${lage.diagnostics}"
+        }
+    }
+
+    @Test
+    fun `Diagnose veraendert im abgelehnten Altmarker-Fall keine Datei`(@TempDir dir: File) {
+        val (p, s) = lage(dir)
+        markerAlt(dir, s)
+        absturzNachUmbenennen(dir, p, s)
+        val vorher = schnappschuss(dir)
+        repeat(3) { assertFalse(FuseLedgerSealRecovery.inspect(dir).recoverable) }
+        assertEquals(vorher, schnappschuss(dir))
     }
 
     // ---- Altmarker --------------------------------------------------------

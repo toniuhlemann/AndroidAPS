@@ -2094,11 +2094,13 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
     private fun wiederherstellungDialog(context: Context) {
         val lage = runCatching { app.aaps.fuse.plugin.ledger.FuseLedgerSealRecovery.inspect(ledgerDir()) }.getOrNull()
         val kandidaten = lage?.candidates?.joinToString("\n") { "  $it" }.orEmpty()
+        val diagnose = lage?.diagnostics.orEmpty()
         if (lage == null || !lage.recoverable) {
             hinweis(
                 context, "Wiederherstellung",
                 "Nicht moeglich: ${lage?.why ?: "Lage nicht feststellbar"}.\n\n" +
                     (if (kandidaten.isNotEmpty()) "Vorgefundene Generationen:\n$kandidaten\n\n" else "") +
+                    (if (diagnose.isNotEmpty()) "Strukturvergleich (rein lesend):\n$diagnose\n\n" else "") +
                     "Ohne technischen Nachweis bleibt der Hold bestehen - eine Zustimmung ersetzt den Nachweis nicht."
             )
             return
@@ -2111,6 +2113,7 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
                     "  offene Zeilen      ${lage.openEntries ?: "unbekannt"}\n" +
                     "  Bruttohaftung      ${lage.grossLiabilityU?.let { "%.2f U".format(it) } ?: "unbekannt"}\n\n" +
                     "Vorgefundene Generationen:\n$kandidaten\n\n" +
+                    "Strukturvergleich (rein lesend):\n$diagnose\n\n" +
                     "Offene Buchungen und der Genau-einmal-Riegel bleiben erhalten und werden regulaer " +
                     "abgeglichen. Es wird nichts gesendet. Der Vorgang wird dauerhaft protokolliert."
             )
