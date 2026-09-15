@@ -9873,6 +9873,10 @@ class TransportWiringTest : TestBaseWithProfile() {
             // aufgezeichnete Politik umgebogen (22.08.: Rampe 2,5, Rebound-
             // Totband 40, Prime-Fenster 20).
             whenever(preferences.get(FuseDoubleKey.RiseRampHighR)).thenReturn(d("riseRampHighR", 2.0))
+            // HEBEL-LECK (Fruehstuecksrekonstruktion 15.09.): die UNTERE Rampe
+            // fehlte - der Replay lief mit dem Rig-Wert 0,5, das Geraet mit 1,5.
+            // Sie bestimmt Liveness-Ratio und Onset-Schwelle.
+            riseRampLowRWert = d("riseRampLowR", riseRampLowRWert)
             whenever(preferences.get(FuseDoubleKey.ReboundDeadbandMgdl)).thenReturn(d("reboundDeadbandMgdl", 25.0))
             whenever(preferences.get(FuseIntKey.PrimeWindowMin)).thenReturn(i("primeWindowMin", 15))
             whenever(preferences.get(FuseDoubleKey.SmbRatio)).thenReturn(d("smbRatioCorrection", 0.15))
@@ -10047,7 +10051,7 @@ class TransportWiringTest : TestBaseWithProfile() {
             neuerRunner(adapter, fensterMs = fensterMs, trendRegel = trendRegel, gapPolitik = gapPolitik, reifePolitik = reifePolitik, wiedereinstieg = rejoinPolitik, ruheParams = ruheWirksam)
             val outFile = File(outDir, "replay_$name.csv")
             outFile.printWriter().use { w ->
-                w.println("ts;smbU;block;binding;insulinReq;liftU;needU;abort;phase;fastD;slowD;trend;raw;recSmbU;recBlock;profil;restMin;tbr;latch;lvDenial;lvExit;lvStreak;lvHead;transC;revGrund;rearmGrund;ctxGrund;basis;gapBreakMs;samplesUsed;gapBeforeMin;r;bandN;matP;matS;iob;rejoin;rejoinGrund;gapMs;vollreifeTs;regimeGrund;regimeTs;regimeSegTs;vorReif;ruheModus;ruheStreak;ruheDenial;gefahr;guardAbst;grantU;vorFloor;nachFloor;nachRiegel;rtAngefordert;upfrontState;upfrontPendingU;riskAktiv;latchAktiv;latchGrund;iobAnkerFehlt;iobFehltAnkerKum;iobFehltHistKum;upfrontShare;q1;ukf;aktivitaet;bolusIobU;totalIobU;guardBoden;abstandBoden;minToFloor;ueberdeckung;fallrate;lowVerdikt;riskDenial;recoveryZyklen;horizontMin;aufschubGrund;dosingProfil;dosingGrund;expoSource;expoBind;expoBlock;expoBinding;expoHeadU;expoLimitU;bgMinQuelle;expoReqSource;smbState;smbStop;reqU;capU")
+                w.println("ts;smbU;block;binding;insulinReq;liftU;needU;abort;phase;fastD;slowD;trend;raw;recSmbU;recBlock;profil;restMin;tbr;latch;lvDenial;lvExit;lvStreak;lvHead;transC;revGrund;rearmGrund;ctxGrund;basis;gapBreakMs;samplesUsed;gapBeforeMin;r;bandN;matP;matS;iob;rejoin;rejoinGrund;gapMs;vollreifeTs;regimeGrund;regimeTs;regimeSegTs;vorReif;ruheModus;ruheStreak;ruheDenial;gefahr;guardAbst;grantU;vorFloor;nachFloor;nachRiegel;rtAngefordert;upfrontState;upfrontPendingU;riskAktiv;latchAktiv;latchGrund;iobAnkerFehlt;iobFehltAnkerKum;iobFehltHistKum;upfrontShare;q1;ukf;aktivitaet;bolusIobU;totalIobU;guardBoden;abstandBoden;minToFloor;ueberdeckung;fallrate;lowVerdikt;riskDenial;recoveryZyklen;horizontMin;aufschubGrund;dosingProfil;dosingGrund;expoSource;expoBind;expoBlock;expoBinding;expoHeadU;expoLimitU;bgMinQuelle;expoReqSource;smbState;smbStop;reqU;capU;releaseMean;candU;shNeedU;shCandU;shHeadU;noLift;rSigned")
                 // DER VORGEFUNDENE MARKER IST KEIN BEOBACHTETER DRUCK
                 // (Toni 25.08. spaet). `prevMarker = 0` liess den ersten
                 // Zyklus jeden schon laufenden Marker als frisch gedrueckt
@@ -10209,6 +10213,16 @@ class TransportWiringTest : TestBaseWithProfile() {
                         o.smbStopReason ?: "",
                         o.smbRequestedU?.let { "%.3f".format(java.util.Locale.US, it) } ?: "",
                         o.smbCappedU?.let { "%.3f".format(java.util.Locale.US, it) } ?: "",
+                        // REKONSTRUKTION (15.09.): Mittelbahn und Kandidat, wo der
+                        // Kanal rechnet; Schattenwerte vor den Toren auch dort, wo
+                        // er nicht rechnet. Dosierneutral.
+                        o.livenessReleaseMeanMgdl?.let { "%.3f".format(java.util.Locale.US, it) } ?: "",
+                        "%.4f".format(java.util.Locale.US, o.livenessCandidateU),
+                        o.livenessShadowNeedU?.let { "%.4f".format(java.util.Locale.US, it) } ?: "",
+                        o.livenessShadowCandidateU?.let { "%.4f".format(java.util.Locale.US, it) } ?: "",
+                        o.livenessShadowHeadroomU?.let { "%.4f".format(java.util.Locale.US, it) } ?: "",
+                        o.livenessNoLiftReason ?: "",
+                        o.signal?.rSigned?.let { "%.4f".format(java.util.Locale.US, it) } ?: "",
                     ).joinToString(";"))
                 }
             }
@@ -10468,6 +10482,15 @@ class TransportWiringTest : TestBaseWithProfile() {
         // FUSE_REPLAY_CAPS (v23-Ratio-Matrix des Alt-Deckels) ist mit dem
         // CENTRAL-only-Cleanup entfernt - Ratio-Kandidaten laufen ueber
         // FUSE_REPLAY_DOSING_CONTEXT (corrRatio=/mealRatio=).
+        if (System.getenv("FUSE_REPLAY_REKON") != null) {
+            // FRUEHSTUECKSREKONSTRUKTION (Toni 15.09.): EIN Lauf mit der
+            // aufgezeichneten Politik (W10, Korrekturpfad-Riegel wie am Geraet).
+            // Zweck: die in gesperrten Zyklen nicht ausgefuehrte
+            // Kandidatenrechnung auf identischen Eingaengen nachholen. Ergebnis
+            // sind Entscheidungsgroessen, kein Glukoseverlauf.
+            lauf("rekon", null, fenster = 10, guardsStart = true)
+            return
+        }
         run {
             lauf("w18", null, livenessStart = false) // Tor: aufzeichnungstreu (22.08. hatte bis 21:50 keinen Kanal)
             lauf("w10ref", null, fenster = 10)
