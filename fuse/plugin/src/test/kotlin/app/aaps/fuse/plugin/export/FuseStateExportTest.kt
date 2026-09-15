@@ -386,6 +386,38 @@ class FuseStateExportTest {
         val errs = l.getJSONArray("activeErrors")
         assertEquals(1, errs.length())
         assertEquals("UNKNOWN_PROPOSAL", errs.getJSONObject(0).getString("error"))
+        assertTrue(errs.getJSONObject(0).getBoolean("blocking")) { "UNKNOWN_PROPOSAL sperrt" }
+    }
+
+    /** Diagnosekorrektur 15.09.: `hold` ist die zusammengesetzte Sperre - ein
+     *  Seal-Hold exportierte bisher `hold: false`. Begleitfehler als nicht sperrend markiert. */
+    @Test
+    fun `der Export fuehrt die zusammengesetzte Sperre mit allen Quellen`() {
+        val lcfg = app.aaps.fuse.core.ledger.LedgerConfig(bolusStepU = 0.05)
+        val state = app.aaps.fuse.core.ledger.LedgerState()
+        assertFalse(state.holdActuation) { "Vorbedingung: der Zustand selbst sperrt nicht" }
+        val view = app.aaps.fuse.plugin.ledger.LedgerView(
+            hold = true, transportCommitmentU = 0.0, holdReason = "LEDGER_PERSIST_FAILED",
+            holdSources = listOf("LEDGER_PERSIST_FAILED", "LEDGER_RECOVERY_HOLD:SEAL_PENDING"),
+        )
+        val j = FuseStateJson.record(
+            "s#1", outcome(), rt(), cfg, BUILD, 0L, null,
+            ledger = FuseStateJson.LedgerSnapshot(1L, state, view = view),
+        ) { 5_000_000L }
+        val l = j.getJSONObject("ledger")
+        assertTrue(l.getBoolean("hold"))
+        assertFalse(l.getBoolean("holdActuation"))
+        assertEquals("LEDGER_PERSIST_FAILED", l.getString("holdReason"))
+        assertEquals("LEDGER_RECOVERY_HOLD:SEAL_PENDING", l.getJSONArray("holdSources").getString(1))
+        assertEquals(5, j.getInt("schemaVersion"))
+
+        // Ohne uebergebene Sicht: Rueckfall auf den Zustand, keine erfundenen Quellen.
+        val ohne = FuseStateJson.record(
+            "s#1", outcome(), rt(), cfg, BUILD, 0L, null,
+            ledger = FuseStateJson.LedgerSnapshot(1L, state),
+        ) { 5_000_000L }.getJSONObject("ledger")
+        assertFalse(ohne.getBoolean("hold"))
+        assertTrue(ohne.isNull("holdSources"))
     }
 
     /** Die vier Felder, ueber die AAPS ueberhaupt aktuiert (R89). */

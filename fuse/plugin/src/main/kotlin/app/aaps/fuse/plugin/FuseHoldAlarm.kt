@@ -150,8 +150,72 @@ object FuseHoldAlarm {
     fun rumpf(kennung: Kennung, ursachen: Map<String, Int>): String {
         val grund = kennung.reason ?: "Grund unbekannt"
         val details = if (ursachen.isEmpty()) ""
-        else " (" + ursachen.entries.sortedByDescending { it.value }
-            .joinToString(", ") { "${it.key} x${it.value}" } + ")"
+        else " (" + liste(ursachen) + ")"
         return "FUSE gibt nichts ab: $grund$details."
+    }
+
+    private fun liste(m: Map<String, Int>) =
+        m.entries.sortedByDescending { it.value }.joinToString(", ") { "${it.key} x${it.value}" }
+
+    /**
+     * DER BEFUND MIT ALLEN SPERRQUELLEN - Ursache und Begleitinfo getrennt
+     * (Diagnosekorrektur 15.09.).
+     *
+     * Am Geraet stand `LEDGER_PERSIST_FAILED (SNAPSHOT_EPOCH_REBASED x1)`: der
+     * einzige genannte Fehler sperrt gar nicht (der dokumentierte Neustartfall),
+     * und der tatsaechliche Grund - der Seal-Marker - fehlte. Deshalb:
+     * [quellen] vollstaendig, [sperrend] nur Fehler aus
+     * `LedgerState.FAIL_CLOSED_ERRORS`, [hinweise] ausdruecklich als nicht sperrend.
+     */
+    fun befund(quellen: List<String>, sperrend: Map<String, Int>, hinweise: Map<String, Int>): String {
+        val q = if (quellen.isEmpty()) "Grund unbekannt" else quellen.joinToString(" + ")
+        val s = if (sperrend.isEmpty()) "" else " Sperrende Fehler: ${liste(sperrend)}."
+        val h = if (hinweise.isEmpty()) "" else " Hinweis, sperrt nicht: ${liste(hinweise)}."
+        return "FUSE gibt nichts ab: $q.$s$h"
+    }
+
+    private fun speichernUnterbrochen(q: String) =
+        q.endsWith(":SEAL_PENDING") || q.endsWith(":RECOVERY_PENDING")
+
+    private fun zustandsHold(q: String) =
+        q.startsWith("LEDGER_STATE_HOLD") || q.startsWith("LEDGER_GLOBAL_HOLD")
+
+    /**
+     * DER WEGWEISER JE SPERRQUELLE - mit Leading-Space, wie bisher an [rumpf] gehaengt.
+     *
+     * Jede Quelle bekommt den Weg, der sie tatsaechlich loest, oder wird als nicht
+     * ueber die Bedienoberflaeche loesbar benannt. Ein pauschaler Wegweiser war
+     * zweimal falsch: "Reparatur" an einer echten Pumpe (16.08.) und "kein Ausweg"
+     * bei unterbrochenem Speichern, seit es die Wiederherstellung gibt. "Hold
+     * quittieren" loest nur Zustands-Holds, keine Persistenz- oder Ladesperre.
+     *
+     * @param quittierbar es liegen quittierbare Zeilenfehler an
+     * @param darfReparieren die Reparatur ist an dieser Pumpe zulaessig (nur VirtualPump)
+     */
+    fun ausweg(quellen: List<String>, quittierbar: Boolean, darfReparieren: Boolean): String {
+        val speichern = quellen.filter(::speichernUnterbrochen)
+        val zustand = quellen.filter(::zustandsHold)
+        val persist = quellen.contains("LEDGER_PERSIST_FAILED")
+        val rest = quellen.filter { !speichernUnterbrochen(it) && !zustandsHold(it) && it != "LEDGER_PERSIST_FAILED" }
+
+        val wege = mutableListOf<String>()
+        if (speichern.isNotEmpty())
+            wege += "Einstellungen -> FUSE -> Nach unterbrochenem Speichern wiederherstellen (nur mit technischem Nachweis, sonst bleibt der Hold)"
+        if (zustand.isNotEmpty() && quittierbar) wege += "Einstellungen -> FUSE -> Hold quittieren"
+        val reparaturNoetig = rest.isNotEmpty() || (zustand.isNotEmpty() && !quittierbar)
+        if (reparaturNoetig && darfReparieren) wege += "Einstellungen -> FUSE -> Ledger reparieren"
+
+        val offen = if (darfReparieren) emptyList()
+        else rest + (if (quittierbar) emptyList() else zustand)
+
+        val teile = mutableListOf<String>()
+        if (wege.isNotEmpty()) teile += "Ausweg: " + wege.joinToString("; ") + "."
+        if (persist && speichern.isEmpty() && wege.isEmpty() && offen.isEmpty())
+            teile += "Das Speichern wird im naechsten Zyklus erneut versucht."
+        if (offen.isNotEmpty())
+            teile += "Nicht ueber die Bedienoberflaeche loesbar: " + offen.joinToString(", ") +
+                (if (wege.isNotEmpty()) " - bleibt nach dem Ausweg bestehen." else ".")
+        if (teile.isEmpty()) teile += "Kein Ausweg ueber die Bedienoberflaeche."
+        return " " + teile.joinToString(" ")
     }
 }

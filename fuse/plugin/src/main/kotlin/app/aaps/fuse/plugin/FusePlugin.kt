@@ -1705,7 +1705,7 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
                 nowNs = System::nanoTime,
                 // Die Sicht NACH den Buchungen dieses Zyklus - genau der
                 // Zustand, mit dem der naechste Zyklus rechnen wird.
-                ledger = FuseStateJson.LedgerSnapshot(ledgerAdapter.revision, ledgerAdapter.state, ledgerAdapter.lastPersistStats),
+                ledger = FuseStateJson.LedgerSnapshot(ledgerAdapter.revision, ledgerAdapter.state, ledgerAdapter.lastPersistStats, ledgerAdapter.view()),
                 publicationGate = publicationGate,
                 // B3: die Diagnose neben dem Sperrgrund. Der Grund steht im
                 // Publikationsgate, das WARUM steht hier.
@@ -1766,17 +1766,31 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
         val s = ledgerAdapter.state
         val v = ledgerAdapter.view()
         val offen = s.openEntries
+        val (sperrend, hinweise) = fehlerNachWirkung(s)
         return FuseScreenModel.LedgerInfo(
             hold = v.hold,
             holdReason = v.holdReason,
             holdGeneration = s.holdGeneration,
-            activeErrors = s.errors.filter { it.active }.groupingBy { it.error.name }.eachCount(),
+            activeErrors = sperrend,
             openEntries = offen.size,
             grossLiabilityU = offen.sumOf { it.grossLiabilityU },
             transportCommitmentU = v.transportCommitmentU,
             lastRepairTs = letzteReparatur()?.ts,
+            holdSources = v.holdSources,
+            nonBlockingErrors = hinweise,
+            ausweg = letzterLedgerAusweg,
         )
     }
+
+    /** Aktive Fehler getrennt nach sperrend (`FAIL_CLOSED_ERRORS`) und nur begleitend. */
+    private fun fehlerNachWirkung(s: app.aaps.fuse.core.ledger.LedgerState): Pair<Map<String, Int>, Map<String, Int>> {
+        val (sperrend, hinweise) = s.errors.filter { it.active }
+            .partition { it.error in app.aaps.fuse.core.ledger.LedgerState.FAIL_CLOSED_ERRORS }
+        return sperrend.groupingBy { it.error.name }.eachCount() to hinweise.groupingBy { it.error.name }.eachCount()
+    }
+
+    /** Der zuletzt bestimmte Wegweiser - im Zyklus gebildet, wo die Pumpe bekannt ist. */
+    @Volatile private var letzterLedgerAusweg: String? = null
 
     /** Profilwert fuer die kompakte Betriebssicht. Die Reglerwerte Ziel und
      * ISF kommen weiter aus dem Outcome; nur das dort nicht enthaltene
@@ -1924,26 +1938,22 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
         val s = ledgerAdapter.state
         // `view()` und nicht `state`: die Sperre ist zusammengesetzt (S1).
         val v = ledgerAdapter.view()
-        val ursachen = s.errors.filter { it.active }.groupingBy { it.error.name }.eachCount()
-        // DER WEGWEISER MUSS STIMMEN. Bis 16.08. nannte der Text pauschal die
-        // Reparatur - die auf einer echten Pumpe verweigert wird. Hier ist der
-        // einzige Ort, an dem beides bekannt ist: die anliegenden Fehler und
-        // (ueber den Zyklus-Snapshot) die Pumpe.
+        // URSACHE UND BEGLEITINFO GETRENNT (15.09.): am Geraet stand der nicht
+        // sperrende SNAPSHOT_EPOCH_REBASED als einzige "Ursache", der Seal-Marker fehlte.
+        val (sperrend, hinweise) = fehlerNachWirkung(s)
+        // DER WEGWEISER MUSS STIMMEN - je Sperrquelle (FuseHoldAlarm.ausweg). Hier
+        // ist der einzige Ort, an dem Fehler, Quellen und Pumpe zusammen bekannt sind.
         val quittierbar = runCatching { ledgerAdapter.quittierbareHoldFehler() }.getOrNull().orEmpty()
         val darfReparieren = pumpe.repairAllowed == true
-        val ausweg = when {
-            quittierbar.isNotEmpty() -> " Ausweg: Einstellungen -> FUSE -> Hold quittieren."
-            darfReparieren           -> " Ausweg: Einstellungen -> FUSE -> Ledger reparieren."
-            // KEIN Weg im Programm - und das gehoert gesagt statt verschwiegen.
-            else                     ->
-                " Kein Ausweg ueber die Bedienoberflaeche: die Fehler sind nicht quittierbar und die " +
-                    "Reparatur ist an dieser Pumpe gesperrt."
-        }
+        val ausweg = if (v.hold) FuseHoldAlarm.ausweg(v.holdSources, quittierbar.isNotEmpty(), darfReparieren) else null
+        letzterLedgerAusweg = ausweg
         val a = holdAlarm.verarbeite(
             hold = v.hold,
-            kennung = FuseHoldAlarm.Kennung(s.holdGeneration, v.holdReason),
-            ursachen = ursachen,
-            textBauer = { k, u -> FuseHoldAlarm.rumpf(k, u) + ausweg },
+            // Die Quellen gehoeren zur Kennung: kommt eine hinzu oder faellt eine weg,
+            // meldet sich der Hold mit dem neuen Befund.
+            kennung = FuseHoldAlarm.Kennung(s.holdGeneration, v.holdSources.takeIf { it.isNotEmpty() }?.joinToString(" + ") ?: v.holdReason),
+            ursachen = sperrend,
+            textBauer = { _, _ -> FuseHoldAlarm.befund(v.holdSources, sperrend, hinweise) + (ausweg ?: "") },
             melden = { text ->
                 // ATOMAR ersetzen statt Zuruecknehmen + Melden: die beiden
                 // Einzelereignisse laufen ueber ZWEI Rx-Streams ohne
@@ -2801,20 +2811,36 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
             info("Pumpen-Gate", "Aktuation ist nur fuer die VirtualPump und den belegten Medtrum Nano freigegeben. Der aktuelle Gate-Grund steht oben im FUSE-Reiter.")
             info("Ledger", "Offene Transporthaftung wird von iobTH- und maxIOB-Spielraum abgezogen. Hold, offene Zeilen und Haftung stehen im Reiter.")
             addPreference(Preference(context).apply {
+                title = "Aktuelle Ledger-Sperre"
+                // Stand beim Oeffnen der Einstellungen - ALLE Quellen, nicht nur die erste.
+                val v = runCatching { ledgerAdapter.view() }.getOrNull()
+                summary = when {
+                    v == null -> "nicht lesbar"
+                    !v.hold   -> "keine"
+                    else      -> v.holdSources.joinToString(" + ").ifEmpty { v.holdReason ?: "Grund unbekannt" } +
+                        (letzterLedgerAusweg?.let { "\n" + it.trim() } ?: "")
+                }
+                isSelectable = false
+                isPersistent = false
+            })
+            addPreference(Preference(context).apply {
                 title = "Hold quittieren"
                 summary =
-                    "Der SANFTE Ausgang aus einem Ledger-Hold: nimmt einer benannten Zeile ihre " +
-                        "Fehler, laesst Haftung, Mahlzeiten-Huelle und den Genau-einmal-Riegel " +
-                        "stehen. Anders als die Reparatur auch an einer echten Pumpe zulaessig."
+                    "Der SANFTE Ausgang aus einem Ledger-Hold durch Zeilenfehler: nimmt einer benannten " +
+                        "Zeile ihre Fehler, laesst Haftung, Mahlzeiten-Huelle und den Genau-einmal-Riegel " +
+                        "stehen. Auch an einer echten Pumpe zulaessig. Loest KEINE Sperre durch " +
+                        "unterbrochenes Speichern, Lade-/Recovery-Hold oder ausstehende Migration."
                 isPersistent = false
                 setOnPreferenceClickListener { runCatching { holdQuittungDialog(context) }; true }
             })
             addPreference(Preference(context).apply {
                 title = "Nach unterbrochenem Speichern wiederherstellen"
                 summary =
-                    "Fuer einen Hold durch einen unterbrochenen Speichervorgang: uebernimmt genau den " +
-                        "unterbrochenen Stand, wenn er technisch nachgewiesen vorliegt - nichts wird verworfen. " +
-                        "Ohne Nachweis bleibt der Hold. Auch an einer echten Pumpe zulaessig."
+                    "Fuer einen Hold durch einen unterbrochenen Speichervorgang (Quelle SEAL_PENDING oder " +
+                        "RECOVERY_PENDING): uebernimmt genau den unterbrochenen Stand, wenn er technisch " +
+                        "nachgewiesen vorliegt - nichts wird verworfen. Ohne Nachweis bleibt der Hold. Auch an " +
+                        "einer echten Pumpe zulaessig. Weitere Sperren (etwa eine Migrations-Hold-Datei) loest " +
+                        "dieser Weg nicht."
                 isPersistent = false
                 setOnPreferenceClickListener { runCatching { wiederherstellungDialog(context) }; true }
             })
@@ -2823,7 +2849,8 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
                 summary =
                     "Oeffnet einen dauerhaften Hold, aus dem es sonst keinen Ausgang gibt " +
                         "(nicht quittierbare Fehler). Der bisherige Ledger wird nicht geloescht, " +
-                        "sondern in Quarantaene gelegt und protokolliert. Kein 'Ledger leeren'."
+                        "sondern in Quarantaene gelegt und protokolliert. Kein 'Ledger leeren'. " +
+                        "Nur an der VirtualPump zulaessig - an einer echten Pumpe gesperrt."
                 isPersistent = false
                 setOnPreferenceClickListener { runCatching { ledgerReparaturDialog(context) }; true }
             })

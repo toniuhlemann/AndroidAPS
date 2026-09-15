@@ -83,6 +83,13 @@ object FuseScreenModel {
          *  den wirksamen iobTH-/maxIOB-Spielraeumen ebenfalls abgezogen. */
         val transportCommitmentU: Double = 0.0,
         val lastRepairTs: Long?,
+        /** Alle aktiven Sperrquellen; [holdReason] nennt nur die erste. */
+        val holdSources: List<String> = emptyList(),
+        /** Aktive, aber NICHT sperrende Fehler (z.B. SNAPSHOT_EPOCH_REBASED) - getrennt
+         *  von [activeErrors], damit eine Begleitinfo nicht als Ursache gelesen wird. */
+        val nonBlockingErrors: Map<String, Int> = emptyMap(),
+        /** Der Wegweiser aus [FuseHoldAlarm.ausweg]; `null` = noch nicht bestimmt. */
+        val ausweg: String? = null,
     )
 
     /** Eine Zeile des Einstellungs-Berichts. `key` wird nicht gerendert -
@@ -133,14 +140,17 @@ object FuseScreenModel {
         ledger?.let { l ->
             if (l.hold) {
                 row(b, "!! LEDGER", "HOLD - FUSE GIBT NICHTS AB")
-                row(b, "  Quelle", l.holdReason ?: "unbekannt")
+                row(b, "  Quelle", l.holdSources.takeIf { it.isNotEmpty() }?.joinToString(" + ") ?: l.holdReason ?: "unbekannt")
                 val fehler = if (l.activeErrors.isEmpty()) "keine benannt"
                 else l.activeErrors.entries.sortedByDescending { it.value }
                     .joinToString(", ") { "${it.key} x${it.value}" }
                 row(b, "  Ursache", fehler)
+                if (l.nonBlockingErrors.isNotEmpty())
+                    row(b, "  Hinweis", l.nonBlockingErrors.entries.sortedByDescending { it.value }
+                        .joinToString(", ") { "${it.key} x${it.value}" } + " (sperrt nicht)")
                 row(b, "  Generation", l.holdGeneration.toString())
                 row(b, "  offen", "${l.openEntries} Zeilen, ${f2(l.grossLiabilityU)} U Haftung")
-                row(b, "  Ausweg", "Einstellungen -> FUSE -> Reparatur")
+                row(b, "  Ausweg", l.ausweg?.trim() ?: "siehe FUSE-Meldung")
             } else {
                 row(b, "Ledger", "frei - ${l.openEntries} offen, ${f2(l.grossLiabilityU)} U")
             }

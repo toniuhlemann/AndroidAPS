@@ -972,7 +972,13 @@ data class LedgerPumpBindingContext(
 
 /** Was der Zyklus vom Ledger sieht: Sperre (mit Grund fuer Anzeige/Trail)
  *  und gebundene Transportmenge. */
-data class LedgerView(val hold: Boolean, val transportCommitmentU: Double, val holdReason: String? = null)
+data class LedgerView(
+    val hold: Boolean,
+    val transportCommitmentU: Double,
+    val holdReason: String? = null,
+    /** Alle aktiven Sperrquellen ([FuseLedgerAdapter.holdSources]); [holdReason] nennt nur die erste. */
+    val holdSources: List<String> = emptyList(),
+)
 
 /**
  * EIN offener Transport-Posten - Menge UND eigener Zeitstempel (C3-01, Codex
@@ -1325,6 +1331,14 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
          * ist ein globaler Hold nur sichtbar, nicht aufloesbar.
          */
         const val HOLD_REASON_GLOBAL = "LEDGER_GLOBAL_HOLD"
+
+        /** Konkrete Ursachen eines [HOLD_REASON_RECOVERY] - in [holdSources] als
+         *  `LEDGER_RECOVERY_HOLD:<ursache>`. Die Ladeursachen (etwa
+         *  `SCHEMA_MIGRATION_REQUIRED`) stehen dort unter ihrem eigenen Namen. */
+        const val CAUSE_SEAL_PENDING = "SEAL_PENDING"
+        const val CAUSE_RECOVERY_PENDING = "RECOVERY_PENDING"
+        const val CAUSE_REPAIR_PENDING = "REPAIR_PENDING"
+        const val CAUSE_HOLD_MARKER = "HOLD_MARKER"
     }
 
     var state: LedgerState = LedgerState()
@@ -1429,6 +1443,10 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
     var recoveryHold: Boolean = false
         private set
 
+    /** WARUM [recoveryHold] steht - jede beim Laden gefundene Ursache, in
+     *  Fundreihenfolge. Nur Diagnose; gesperrt wird ueber [recoveryHold]. */
+    private val recoveryHoldCauses = mutableListOf<String>()
+
     /**
      * Inhalt des noch NICHT durabel geschriebenen Hold-Markers (C8d).
      *
@@ -1478,21 +1496,42 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
      *  im pauschalen [HOLD_REASON_STATE] zu verschwinden. Ein Weg, sie zu
      *  quittieren, entsteht dadurch NICHT (s. [HOLD_REASON_GLOBAL]). */
     fun view(): LedgerView {
-        val globalErrors = state.activeHoldErrors.filter { it.proposalId == null }
         val reason = when {
             migrationPending    -> HOLD_REASON_MIGRATION
             persistFailed       -> HOLD_REASON_PERSIST_FAILED
             recoveryHold        -> HOLD_REASON_RECOVERY
-            state.holdActuation && globalErrors.isNotEmpty() ->
-                HOLD_REASON_GLOBAL + ":" + globalErrors.joinToString(",") { it.error.name }
-            state.holdActuation -> HOLD_REASON_STATE
+            state.holdActuation -> zustandsGrund()
             else                -> null
         }
         return LedgerView(
             state.holdActuation || persistFailed || recoveryHold || migrationPending,
             state.transportCommitmentU,
             reason,
+            holdSources(),
         )
+    }
+
+    private fun zustandsGrund(): String {
+        val globalErrors = state.activeHoldErrors.filter { it.proposalId == null }
+        return if (globalErrors.isNotEmpty()) HOLD_REASON_GLOBAL + ":" + globalErrors.joinToString(",") { it.error.name }
+        else HOLD_REASON_STATE
+    }
+
+    /**
+     * ALLE aktiven Sperrquellen, nicht nur die handlungsleitende aus
+     * [LedgerView.holdReason] (Diagnosekorrektur 15.09.): am Geraet stand
+     * `LEDGER_PERSIST_FAILED`, waehrend der Seal-Marker der eigentliche und nach
+     * einem Neustart einzige Grund war. Leer genau dann, wenn nicht gesperrt.
+     */
+    fun holdSources(): List<String> = buildList {
+        if (migrationPending) add(HOLD_REASON_MIGRATION)
+        if (persistFailed) add(HOLD_REASON_PERSIST_FAILED)
+        if (recoveryHold) {
+            val ursachen = recoveryHoldCauses.distinct()
+            if (ursachen.isEmpty()) add(HOLD_REASON_RECOVERY)
+            else ursachen.forEach { add("$HOLD_REASON_RECOVERY:$it") }
+        }
+        if (state.holdActuation) add(zustandsGrund())
     }
 
     /**
@@ -1629,6 +1668,7 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
         // uebernehmen.
         if (FuseLedgerStore.repairPendingExists(dir)) {
             recoveryHold = true
+            recoveryHoldCauses += CAUSE_REPAIR_PENDING
             log(
                 "FUSE ledger RECOVERY_HOLD: ${FuseLedgerStore.REPAIR_PENDING_NAME} vorhanden - eine Reparatur " +
                     "wurde unterbrochen; die Generationen koennen unvollstaendig sein. Erneute Reparatur " +
@@ -1637,6 +1677,7 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
         }
         if (FuseLedgerStore.recoveryPendingExists(dir)) {
             recoveryHold = true
+            recoveryHoldCauses += CAUSE_RECOVERY_PENDING
             log(
                 "FUSE ledger RECOVERY_HOLD: ${FuseLedgerStore.RECOVERY_PENDING_NAME} vorhanden - eine " +
                     "Wiederherstellung nach unterbrochenem Speichern wurde nicht abgeschlossen; erneut " +
@@ -1645,6 +1686,7 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
         }
         if (FuseLedgerStore.sealPendingExists(dir)) {
             recoveryHold = true
+            recoveryHoldCauses += CAUSE_SEAL_PENDING
             log(
                 "FUSE ledger RECOVERY_HOLD: ${FuseLedgerStore.SEAL_PENDING_NAME} vorhanden - der letzte " +
                     "Versiegelungsvorgang hat nicht sauber geendet; der Zielname oder .tmp koennen einen " +
@@ -1653,6 +1695,12 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
         }
         if (FuseLedgerStore.holdExists(dir)) {
             recoveryHold = true
+            // Der Grund aus dem Marker selbst - "Hold-Marker" allein sagt nicht,
+            // ob eine Migration, ein Generationsverlust oder anderes dahintersteht.
+            val grund = runCatching {
+                JSONObject(File(dir, FuseLedgerStore.HOLD_NAME).readText(Charsets.UTF_8)).optString("reason", "")
+            }.getOrDefault("")
+            recoveryHoldCauses += if (grund.isBlank()) CAUSE_HOLD_MARKER else "$CAUSE_HOLD_MARKER:$grund"
             log(
                 "FUSE ledger RECOVERY_HOLD: Hold-Marker ${FuseLedgerStore.HOLD_NAME} vorhanden - " +
                     "ein frueherer Lauf hat einen Verlust festgestellt; Aktuation bleibt zu, bis der " +
@@ -1713,6 +1761,7 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
         }
         if (cause != null) {
             recoveryHold = true
+            recoveryHoldCauses += cause
             // C8d (1) QUARANTAENE: die ungueltigen Generationen SOFORT aus dem
             // Weg der Rotation nehmen. Bleiben sie unter ihrem
             // Generationsnamen liegen, ueberschreibt sie der naechste

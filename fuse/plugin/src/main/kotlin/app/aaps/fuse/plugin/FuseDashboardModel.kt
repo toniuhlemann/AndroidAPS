@@ -167,7 +167,7 @@ object FuseDashboardModel {
         val d = outcome.decision
         val decisionReason = when {
             outcome.abortReason != null -> "Abbruch: ${outcome.abortReason}"
-            ledger?.hold == true        -> "Ledger-Hold: ${ledger.holdReason ?: "unbekannt"}"
+            ledger?.hold == true        -> "Ledger-Hold: ${ledgerQuellen(ledger) ?: "unbekannt"}"
             d.block != FuseController.Block.NONE -> "${blockLabel(d.block)}  (${kurz(d.bindingLimit)})"
             berechnet > 0.0             -> "freigegeben  |  Grenze ${limitLabel(d.bindingLimit)}"
             else                        -> "kein zusaetzlicher Bedarf  (${kurz(d.bindingLimit)})"
@@ -175,7 +175,7 @@ object FuseDashboardModel {
 
         val hard = mutableListOf<String>()
         if (!outcome.gate.allowed) hard += "Pumpengate ${outcome.gate.reason}"
-        if (ledger?.hold == true) hard += "Ledger ${ledger.holdReason ?: "HOLD"}"
+        if (ledger?.hold == true) hard += "Ledger ${ledgerQuellen(ledger) ?: "HOLD"}"
         if (outcome.abortReason != null) hard += "Eingabe/Zyklus ${outcome.abortReason}"
         if (d.block == FuseController.Block.PUMP_BUSY) hard += "Pumpe belegt"
         val gate = if (hard.isEmpty())
@@ -473,6 +473,10 @@ object FuseDashboardModel {
     /** Rohe Grenz-Tokens tragen volle Double-Praezision
      *  ("tailHeadroom=-0.4432277446939927", Geraetefund 15.08.) - fuer die
      *  Karte auf 2 Nachkommastellen kuerzen, das Token selbst bleibt. */
+    /** Alle Sperrquellen, sonst der Einzelgrund - `null` = nichts bekannt. */
+    private fun ledgerQuellen(l: FuseScreenModel.LedgerInfo): String? =
+        l.holdSources.takeIf { it.isNotEmpty() }?.joinToString(" + ") ?: l.holdReason
+
     private fun kurz(t: String): String =
         t.replace(Regex("""-?\d+\.\d{3,}""")) { m ->
             m.value.toDoubleOrNull()?.let { String.format(Locale.US, "%.2f", it) } ?: m.value

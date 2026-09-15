@@ -20,7 +20,28 @@ class FuseScreenModelTest {
             hold = hold, holdReason = if (hold) "LEDGER_GLOBAL_HOLD" else null, holdGeneration = if (hold) 47L else 0L,
             activeErrors = if (hold) fehler else emptyMap(),
             openEntries = 6, grossLiabilityU = 0.85, lastRepairTs = null,
+            ausweg = if (hold) " Ausweg: Einstellungen -> FUSE -> Ledger reparieren." else null,
         )
+
+    /** Diagnosekorrektur 15.09.: alle Quellen, Begleitinfo getrennt, Ausweg aus dem Befund. */
+    @Test
+    fun `der Reiter nennt alle Sperrquellen und die Begleitinfo getrennt`() {
+        val t = FuseScreenModel.render(
+            outcome(), null, now, null,
+            FuseScreenModel.LedgerInfo(
+                hold = true, holdReason = "LEDGER_PERSIST_FAILED", holdGeneration = 0L, activeErrors = emptyMap(),
+                openEntries = 1, grossLiabilityU = 0.3, lastRepairTs = null,
+                holdSources = listOf("LEDGER_PERSIST_FAILED", "LEDGER_RECOVERY_HOLD:SEAL_PENDING"),
+                nonBlockingErrors = mapOf("SNAPSHOT_EPOCH_REBASED" to 1),
+                ausweg = " Ausweg: Einstellungen -> FUSE -> Nach unterbrochenem Speichern wiederherstellen.",
+            ),
+        )
+        assertTrue(t.contains("LEDGER_PERSIST_FAILED + LEDGER_RECOVERY_HOLD:SEAL_PENDING")) { t }
+        assertTrue(t.contains("keine benannt")) { "SNAPSHOT_EPOCH_REBASED ist keine Ursache: $t" }
+        assertTrue(t.contains("SNAPSHOT_EPOCH_REBASED x1 (sperrt nicht)")) { t }
+        assertTrue(t.contains("Nach unterbrochenem Speichern wiederherstellen")) { t }
+        assertFalse(t.contains("-> Reparatur")) { "kein pauschaler Reparaturhinweis mehr: $t" }
+    }
 
     /**
      * DER SCHIRM MUSS DEM KOPF WIDERSPRECHEN, WENN DER LEDGER HAELT.
@@ -39,7 +60,7 @@ class FuseScreenModelTest {
         val t = FuseScreenModel.render(outcome(), null, now, null, ledger(hold = true))
         assertTrue(t.contains("HOLD - FUSE GIBT NICHTS AB")) { "der Hold muss beim Namen genannt werden" }
         assertTrue(t.contains("IDENTITY_CONFLICT x47")) { "und mit Ursache, sonst weiss niemand wohin" }
-        assertTrue(t.contains("Reparatur")) { "ein Ausweg gehoert dazu" }
+        assertTrue(t.contains("Ledger reparieren")) { "ein Ausweg gehoert dazu" }
 
         val holdPos = t.indexOf("LEDGER")
         val healthPos = t.indexOf("Health")

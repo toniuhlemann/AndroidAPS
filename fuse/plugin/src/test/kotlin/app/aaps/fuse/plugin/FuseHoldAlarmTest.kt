@@ -156,6 +156,67 @@ class FuseHoldAlarmTest {
         ) { "haeufigste Ursache zuerst" }
     }
 
+    // ---- Diagnosekorrektur 15.09.: alle Quellen, Ursache vs. Begleitinfo --
+
+    /** Der Geraetebefund: nicht sperrender SNAPSHOT_EPOCH_REBASED stand als einzige
+     *  "Ursache" da, der Seal-Marker fehlte. */
+    @Test
+    fun `der Befund nennt alle Quellen und trennt Begleitinfo von Ursache`() {
+        val t = FuseHoldAlarm.befund(
+            listOf("LEDGER_PERSIST_FAILED", "LEDGER_RECOVERY_HOLD:SEAL_PENDING"),
+            sperrend = emptyMap(),
+            hinweise = mapOf("SNAPSHOT_EPOCH_REBASED" to 1),
+        )
+        assertTrue(t.contains("LEDGER_PERSIST_FAILED + LEDGER_RECOVERY_HOLD:SEAL_PENDING")) { t }
+        assertTrue(t.contains("Hinweis, sperrt nicht: SNAPSHOT_EPOCH_REBASED x1")) { t }
+        assertFalse(t.contains("Sperrende Fehler")) { "ohne sperrenden Fehler keine Ursachenliste: $t" }
+        val mit = FuseHoldAlarm.befund(listOf("LEDGER_GLOBAL_HOLD:IDENTITY_CONFLICT"), mapOf("IDENTITY_CONFLICT" to 2), emptyMap())
+        assertTrue(mit.contains("Sperrende Fehler: IDENTITY_CONFLICT x2")) { mit }
+        assertFalse(mit.contains("Hinweis")) { mit }
+    }
+
+    @Test
+    fun `unterbrochenes Speichern an echter Pumpe verweist auf die Wiederherstellung`() {
+        val t = FuseHoldAlarm.ausweg(
+            listOf("LEDGER_PERSIST_FAILED", "LEDGER_RECOVERY_HOLD:SEAL_PENDING"),
+            quittierbar = false, darfReparieren = false,
+        )
+        assertTrue(t.contains("Nach unterbrochenem Speichern wiederherstellen")) { t }
+        assertFalse(t.contains("Kein Ausweg")) { t }
+        assertFalse(t.contains("Hold quittieren")) { "Quittieren loest keine Persistenzsperre: $t" }
+        assertFalse(t.contains("reparieren")) { t }
+        assertTrue(FuseHoldAlarm.ausweg(listOf("LEDGER_RECOVERY_HOLD:RECOVERY_PENDING"), false, false)
+            .contains("Nach unterbrochenem Speichern wiederherstellen"))
+    }
+
+    /** Toni 15.09.: eine zusaetzliche Migrations-Hold-Datei loest der neue Weg nicht -
+     *  das muss dastehen, statt als erledigt zu wirken. */
+    @Test
+    fun `eine zusaetzliche Ladesperre bleibt als nicht loesbar benannt`() {
+        val t = FuseHoldAlarm.ausweg(
+            listOf("LEDGER_RECOVERY_HOLD:SEAL_PENDING", "LEDGER_RECOVERY_HOLD:SCHEMA_MIGRATION_REQUIRED"),
+            quittierbar = false, darfReparieren = false,
+        )
+        assertTrue(t.contains("Nach unterbrochenem Speichern wiederherstellen")) { t }
+        assertTrue(t.contains("Nicht ueber die Bedienoberflaeche loesbar: LEDGER_RECOVERY_HOLD:SCHEMA_MIGRATION_REQUIRED")) { t }
+        assertTrue(t.contains("bleibt nach dem Ausweg bestehen")) { t }
+        val virtuell = FuseHoldAlarm.ausweg(listOf("LEDGER_RECOVERY_HOLD:SCHEMA_MIGRATION_REQUIRED"), false, darfReparieren = true)
+        assertTrue(virtuell.contains("Ledger reparieren")) { virtuell }
+        assertFalse(virtuell.contains("Nicht ueber")) { virtuell }
+    }
+
+    @Test
+    fun `Zustands-Hold quittierbar, Persistenz allein wiederholt, sonst kein Ausweg`() {
+        val q = FuseHoldAlarm.ausweg(listOf("LEDGER_STATE_HOLD"), quittierbar = true, darfReparieren = false)
+        assertTrue(q.contains("Hold quittieren")) { q }
+        assertFalse(q.contains("Nicht ueber")) { q }
+        val p = FuseHoldAlarm.ausweg(listOf("LEDGER_PERSIST_FAILED"), false, false)
+        assertTrue(p.contains("naechsten Zyklus erneut versucht")) { p }
+        val g = FuseHoldAlarm.ausweg(listOf("LEDGER_GLOBAL_HOLD:SNAPSHOT_ORDER_CONFLICT"), false, false)
+        assertTrue(g.contains("Nicht ueber die Bedienoberflaeche loesbar")) { g }
+        assertTrue(FuseHoldAlarm.ausweg(emptyList(), false, false).contains("Kein Ausweg"))
+    }
+
     // ---- Der Vertrag ans Absetzen ----------------------------------------
 
     /**

@@ -435,7 +435,7 @@ object FuseStateJson {
     const val RULE_SET_VERSION = 54
 
     /** Schema des Trail-Datensatzes - s. die Notiz an der Schreibstelle. */
-    const val SCHEMA_VERSION = 4
+    const val SCHEMA_VERSION = 5
 
     /** Gruende fuer fehlende Felder. Benannt statt weggelassen. */
     const val GAP_NO_LEDGER = "LEDGER_NOT_WIRED"
@@ -464,6 +464,9 @@ object FuseStateJson {
         /** Messwerte des letzten Schreibvorgangs; `null` = in diesem
          *  Prozess noch nicht geschrieben. */
         val persist: app.aaps.fuse.plugin.ledger.FuseLedgerStore.PersistStats? = null,
+        /** Die ZUSAMMENGESETZTE Sperre des Adapters; `null` = nicht uebergeben,
+         *  dann faellt `hold` auf `state.holdActuation` zurueck. */
+        val view: app.aaps.fuse.plugin.ledger.LedgerView? = null,
     )
 
     /**
@@ -1806,7 +1809,13 @@ object FuseStateJson {
                 "ledger", JSONObject()
                     .put("revision", ledger.revision)
                     .put("transportCommitmentU", fin(ls.transportCommitmentU))
-                    .put("hold", ls.holdActuation)
+                    // `hold` ist die SPERRE (zusammengesetzt, Diagnosekorrektur
+                    // 15.09.) - bisher stand hier nur `state.holdActuation`, und
+                    // ein Seal-/Recovery-Hold exportierte "hold": false.
+                    .put("hold", ledger.view?.hold ?: ls.holdActuation)
+                    .put("holdActuation", ls.holdActuation)
+                    .put("holdReason", ledger.view?.holdReason ?: JSONObject.NULL)
+                    .put("holdSources", ledger.view?.let { JSONArray(it.holdSources) } ?: JSONObject.NULL)
                     .put("holdGeneration", ls.holdGeneration)
                     // Die R89-Mengenbilanz ueber die OFFENEN Zeilen:
                     // gross - accounted = residual (= transportCommitment,
@@ -1850,6 +1859,8 @@ object FuseStateJson {
                         JSONObject()
                             .put("proposalId", r.proposalId ?: JSONObject.NULL)
                             .put("error", r.error.name)
+                            // Sperrt dieser Fehler? SNAPSHOT_EPOCH_REBASED etwa ist aktiv, aber nicht sperrend.
+                            .put("blocking", r.error in app.aaps.fuse.core.ledger.LedgerState.FAIL_CLOSED_ERRORS)
                             .put("occurrences", r.occurrences)
                             .put("lastDetail", r.lastDetail)
                     }))
@@ -1909,6 +1920,9 @@ object FuseStateJson {
         //  3 = ab 11.08.: MainMin/CombinedMin, minMean* getrennt, capsStage
         //  4 = ab 11.08.: priorActuation (fusePublished/afterBolusConstraints/
         //      aapsConstrained des VORIGEN Zyklus) + Post-Gap-Felder
+        //  5 = ab 15.09.: `ledger.hold` ist die ZUSAMMENGESETZTE Sperre (bis 4:
+        //      nur state.holdActuation, jetzt `ledger.holdActuation`), dazu
+        //      holdReason, holdSources und `activeErrors[].blocking`
         o.put("schemaVersion", SCHEMA_VERSION)
         // SCHEIBE 1: der Ausgang des VORIGEN Zyklus.
         //

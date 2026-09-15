@@ -212,6 +212,33 @@ class FuseLedgerAdapterTest {
         assertEquals(FuseLedgerAdapter.HOLD_REASON_RECOVERY, b.view().holdReason)
     }
 
+    /** Diagnosekorrektur 15.09.: ALLE Sperrquellen mit konkretem Marker, nicht nur
+     *  die erste. Am Geraet stand LEDGER_PERSIST_FAILED, der Seal-Marker fehlte. */
+    @Test
+    fun `holdSources nennt jede aktive Quelle mit konkreter Ursache`(@TempDir dir: File) {
+        val a = loadedAdapter(dir)
+        a.onPublished("p1", 0.30, t0, 0L, 0.05)
+        assertTrue(a.persistVerified(dir))
+        assertTrue(a.holdSources().isEmpty())
+        assertTrue(a.view().holdSources.isEmpty())
+
+        assertTrue(FuseLedgerStore().markSealPending(dir, "SEAL_PENDING rev=1"))
+        assertTrue(FuseLedgerStore.writeHoldVerified(dir, org.json.JSONObject().put("v", 1).put("reason", "SCHEMA_MIGRATION_REQUIRED").toString()))
+        val b = FuseLedgerAdapter().also { it.loadOnce(dir, "epoch-b", t0 + 60_000L, FuseActivePump(PumpType.GENERIC_AAPS.name, false)) }
+        assertTrue(b.view().hold)
+        assertEquals(FuseLedgerAdapter.HOLD_REASON_RECOVERY, b.view().holdReason) { "der Einzelgrund bleibt kompatibel" }
+        assertEquals(
+            listOf("LEDGER_RECOVERY_HOLD:SEAL_PENDING", "LEDGER_RECOVERY_HOLD:HOLD_MARKER:SCHEMA_MIGRATION_REQUIRED"),
+            b.view().holdSources,
+        )
+        // Persist unter dem Marker scheitert - die Quelle kommt DAZU, die Markerquelle bleibt.
+        assertFalse(b.persistVerified(dir))
+        assertEquals(
+            listOf("LEDGER_PERSIST_FAILED", "LEDGER_RECOVERY_HOLD:SEAL_PENDING", "LEDGER_RECOVERY_HOLD:HOLD_MARKER:SCHEMA_MIGRATION_REQUIRED"),
+            b.view().holdSources,
+        )
+    }
+
     /** Echter Erststart (kein Kandidat existiert): KEIN Hold - sonst waere
      *  jede Neuinstallation dauerhaft gesperrt. */
     @Test
