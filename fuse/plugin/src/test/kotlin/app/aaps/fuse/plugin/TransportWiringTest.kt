@@ -15060,8 +15060,15 @@ class TransportWiringTest : TestBaseWithProfile() {
         var n = 0
         while (abgaben.none { it.wirktAufReihe } && n < 60) { transport(dir); n++ }
         assertTrue(abgaben.any { it.wirktAufReihe }, "Vorbedingung: eine bestaetigte Abgabe")
+        // STICHTAG HINTER DEN ABGABEN (Mutationsbefund 15.09.): am Abgabezeitpunkt
+        // selbst ist die Wirkung noch 0 - ein Stichtag dort enthielte keinen Punkt,
+        // den ein ISF-Wechsel veraendern koennte, und die Rueckmutation blieb gruen.
+        repeat(15) { transport(dir) }
         val stichtag = clock
         val vorher = series(stichtag).map { it.timestamp to it.value }
+        assertTrue(vorher.zip(reiheOhneAbgaben(stichtag)).any { (p, ohne) -> kotlin.math.abs(p.second - ohne) > 0.5 }) {
+            "Vorbedingung: die Historie traegt schon eine Wirkung der Abgaben"
+        }
         repeat(20) { transport(dir) }
         assertTrue(abgaben.count { it.wirktAufReihe && it.ts <= stichtag } >= 1)
         // DER URSPRUENGLICHE FEHLER: der GLOBALE ISF aendert sich (Profilwechsel).
