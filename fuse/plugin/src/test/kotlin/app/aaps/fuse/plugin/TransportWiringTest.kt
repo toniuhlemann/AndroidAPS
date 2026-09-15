@@ -10188,7 +10188,7 @@ class TransportWiringTest : TestBaseWithProfile() {
             neuerRunner(adapter, fensterMs = fensterMs, trendRegel = trendRegel, gapPolitik = gapPolitik, reifePolitik = reifePolitik, wiedereinstieg = rejoinPolitik, ruheParams = ruheWirksam)
             val outFile = File(outDir, "replay_$name.csv")
             outFile.printWriter().use { w ->
-                w.println("ts;smbU;block;binding;insulinReq;liftU;needU;abort;phase;fastD;slowD;trend;raw;recSmbU;recBlock;profil;restMin;tbr;latch;lvDenial;lvExit;lvStreak;lvHead;transC;revGrund;rearmGrund;ctxGrund;basis;gapBreakMs;samplesUsed;gapBeforeMin;r;bandN;matP;matS;iob;rejoin;rejoinGrund;gapMs;vollreifeTs;regimeGrund;regimeTs;regimeSegTs;vorReif;ruheModus;ruheStreak;ruheDenial;gefahr;guardAbst;grantU;vorFloor;nachFloor;nachRiegel;rtAngefordert;upfrontState;upfrontPendingU;riskAktiv;latchAktiv;latchGrund;iobAnkerFehlt;iobFehltAnkerKum;iobFehltHistKum;upfrontShare;q1;ukf;aktivitaet;bolusIobU;totalIobU;guardBoden;abstandBoden;minToFloor;ueberdeckung;fallrate;lowVerdikt;riskDenial;recoveryZyklen;horizontMin;aufschubGrund;dosingProfil;dosingGrund;expoSource;expoBind;expoBlock;expoBinding;expoHeadU;expoLimitU;bgMinQuelle;expoReqSource;smbState;smbStop;reqU;capU;releaseMean;candU;shNeedU;shCandU;shHeadU;noLift;rSigned;ledgerTransportU")
+                w.println("ts;smbU;block;binding;insulinReq;liftU;needU;abort;phase;fastD;slowD;trend;raw;recSmbU;recBlock;profil;restMin;tbr;latch;lvDenial;lvExit;lvStreak;lvHead;transC;revGrund;rearmGrund;ctxGrund;basis;gapBreakMs;samplesUsed;gapBeforeMin;r;bandN;matP;matS;iob;rejoin;rejoinGrund;gapMs;vollreifeTs;regimeGrund;regimeTs;regimeSegTs;vorReif;ruheModus;ruheStreak;ruheDenial;gefahr;guardAbst;grantU;vorFloor;nachFloor;nachRiegel;rtAngefordert;upfrontState;upfrontPendingU;riskAktiv;latchAktiv;latchGrund;iobAnkerFehlt;iobFehltAnkerKum;iobFehltHistKum;upfrontShare;q1;ukf;aktivitaet;bolusIobU;totalIobU;guardBoden;abstandBoden;minToFloor;ueberdeckung;fallrate;lowVerdikt;riskDenial;recoveryZyklen;horizontMin;aufschubGrund;dosingProfil;dosingGrund;expoSource;expoBind;expoBlock;expoBinding;expoHeadU;expoLimitU;bgMinQuelle;expoReqSource;smbState;smbStop;reqU;capU;releaseMean;candU;shNeedU;shCandU;shHeadU;noLift;rSigned;ledgerTransportU;anker;mean60;drive60;bgi60;transport60;driveMin1;driveMin60")
                 // DER VORGEFUNDENE MARKER IST KEIN BEOBACHTETER DRUCK
                 // (Toni 25.08. spaet). `prevMarker = 0` liess den ersten
                 // Zyklus jeden schon laufenden Marker als frisch gedrueckt
@@ -10369,6 +10369,21 @@ class TransportWiringTest : TestBaseWithProfile() {
                         o.livenessNoLiftReason ?: "",
                         o.signal?.rSigned?.let { "%.4f".format(java.util.Locale.US, it) } ?: "",
                         runCatching { "%.3f".format(java.util.Locale.US, ledger.view().transportCommitmentU) }.getOrDefault(""),
+                        // ZERLEGUNG AM 60-MINUTEN-HORIZONT (15.09.): der exportierte Hub
+                        // gilt fuer 120 min. Aus den Minutenpunkten der Mittelbahn:
+                        // mean60 ~= Anker + Stoerung(1..60) + Insulin(1..60) + Transport.
+                        *run {
+                            val p = o.prediction
+                            val bis60 = p?.points?.filter { it.offsetMin in 1..60 }.orEmpty()
+                            if (p == null || bis60.size < 60) Array(7) { "" } else {
+                                val mean60 = bis60.last().meanBg
+                                val drive60 = bis60.sumOf { it.driveMean }
+                                val bgi60 = bis60.sumOf { it.bgiRate }
+                                val anker = p.bgAtAnchor
+                                arrayOf(anker, mean60, drive60, bgi60, mean60 - anker - drive60 - bgi60, bis60.first().driveMean, bis60.last().driveMean)
+                                    .map { "%.3f".format(java.util.Locale.US, it) }.toTypedArray()
+                            }
+                        },
                     ).joinToString(";"))
                 }
             }
