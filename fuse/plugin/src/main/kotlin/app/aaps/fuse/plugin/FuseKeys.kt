@@ -1038,6 +1038,18 @@ enum class FuseBooleanKey(
     LivenessBookingExitWithoutReArmEnabled("fuse_liveness_booking_exit_without_rearm_enabled", false),
 
     /**
+     * HALTE-ANHEBUNG DES STOERUNGSTERMS IM LIVENESS-BEDARF - DEFAULT AUS
+     * (Tonis Auftrag 15.09., Experiment, kein Aktivierungs-GO). DOSIERWIRKSAM:
+     * eingeschaltet haelt der laufende, bereits bewaffnete Kanal den positiven
+     * Modellantrieb fuer die Bedarfsrechnung 20 min, bevor er mit dem
+     * konfigurierten tau abklingt - nur wenn die gemessene bereinigte Rate ihn
+     * zwei Zyklen in Folge erreicht, nie im Rebound-Fenster, Anhebung hoechstens
+     * 40 mg/dl. Keine Bewaffnung, kein Tor, kein Deckel und keine Grenze aendert
+     * sich - s. [app.aaps.fuse.core.controller.LivenessDriveHold].
+     */
+    LivenessDriveHoldEnabled("fuse_liveness_drive_hold_enabled", false),
+
+    /**
      * WIEDEREINSTIEG NACH CGM-FUNKLUECKE (Toni 25.08. abends).
      *
      * Eingeschaltet reift der Antriebsschaetzer NUR nach einer eindeutig

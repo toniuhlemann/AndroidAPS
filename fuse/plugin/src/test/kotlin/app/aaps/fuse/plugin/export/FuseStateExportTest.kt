@@ -857,7 +857,8 @@ class FuseStateExportTest {
         // Vollmacht, Sonderrechts-Pin und -Frist, Tief vor dem Druck,
         // Evidenzbestand und stabile Rohreihe tragen.
         // v52 buchungsbedingter Ausgang ohne neue Wiederanlaufsperre (Default aus).
-        assertEquals(52, FuseStateJson.RULE_SET_VERSION)
+        // v53 Halte-Anhebung des Stoerungsterms im Liveness-Bedarf (Default aus).
+        assertEquals(53, FuseStateJson.RULE_SET_VERSION)
         assertTrue(
             FuseStateJson.hashOf(cfg)!!.isNotEmpty(),
             "und der Hash bleibt berechenbar",

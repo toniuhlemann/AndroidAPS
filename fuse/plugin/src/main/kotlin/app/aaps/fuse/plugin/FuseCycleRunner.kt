@@ -1219,6 +1219,8 @@ class FuseCycleRunner(
         val livenessShadowNeedU: Double? = null,
         val livenessShadowCandidateU: Double? = null,
         val livenessShadowHeadroomU: Double? = null,
+        /** Halte-Anhebung im Liveness-Bedarf - s. [LivenessHoldDiagnosis]. */
+        val livenessHold: LivenessHoldDiagnosis = LivenessHoldDiagnosis(),
         /**
          * Verlustdiagnose und Buchungsausgang als EIN Parameter - s.
          * [LivenessBookingDiagnosis]. Die Einzelnamen stehen als abgeleitete
@@ -1402,6 +1404,19 @@ class FuseCycleRunner(
     )
 
     /**
+     * HALTE-ANHEBUNG EINES ZYKLUS ([app.aaps.fuse.core.controller.LivenessDriveHold]),
+     * gebuendelt wegen der 255-Parameter-Grenze von [Outcome].
+     * `upliftMgdl` null = nicht ausgewertet (kein Kandidat gerechnet); der
+     * exportierte `releaseMeanMgdl` bleibt die unangehobene Bahn, `needU`
+     * enthaelt die Anhebung.
+     */
+    data class LivenessHoldDiagnosis(
+        val upliftMgdl: Double? = null,
+        val streak: Int = 0,
+        val denial: String? = null,
+    )
+
+    /**
      * Vollsicht-Vertrag (R93-F3): ALLE gueltigen Boli des IOB-Fensters PLUS
      * jeder Fakt, der an eine offene Ledger-Zeile gebunden ist - auch wenn er
      * aus dem DIA-Fenster herausgealtert ist. "Fehlt in der Sicht" muss
@@ -1432,6 +1447,10 @@ class FuseCycleRunner(
     fun run(tempBasalFallback: Boolean, pumpe: FuseActivePump): Outcome {
         val computeTs = dateUtil.now()
         val gate = pumpe.gate
+        // Halte-Anhebung: die Bestaetigungsfolge gilt nur ueber Zyklen, die sie
+        // ERNEUT bestaetigen - jeder fruehe Ausstieg dieses Zyklus beginnt neu.
+        val holdVorzyklus = livenessHoldStreak
+        livenessHoldStreak = 0
 
         // ---- Marker und Evidenz-Episode: GANZ VORNE ------------------------
         //
@@ -4843,6 +4862,9 @@ class FuseCycleRunner(
         // nicht ausgewertet (kein laufender Lauf, den das Tor beendet).
         var livenessBookingExitSkipReArm = false
         var livenessBookingExitDenial: String? = null
+        // Halte-Anhebung (Toni 15.09.). null = nicht ausgewertet.
+        var livenessHoldUpliftMgdl: Double? = null
+        var livenessHoldDenial: String? = null
 
         // Marker-Leistungsfrist + zentraler Dosierkontext: seit B2 VOR der
         // State-Konstruktion bestimmt (Kontextgrenze in der Grant-Bildung,
@@ -5348,7 +5370,27 @@ class FuseCycleRunner(
             // Basisberechnung angewendet - 1,0 heisst weiterhin nur "kein
             // zusaetzlicher Deckel", nie Ratio 1,0.
             val liveRatio = kotlin.math.min(baseRatio, profilRatioCap)
-            val bedarfU = kotlin.math.max(0.0, (releaseMean - target) / isf)
+            // ---- HALTE-ANHEBUNG (Experiment 15.09., Default AUS) ---------
+            // NUR der Bedarf dieses Kanals: `releaseMean` bleibt die Bahn des
+            // Reglers, der Schattenrechnung und des Exports.
+            val halt = app.aaps.fuse.core.controller.LivenessDriveHold.decide(
+                app.aaps.fuse.core.controller.LivenessDriveHold.Input(
+                    enabled = cfg.livenessDriveHoldEnabled,
+                    livenessActive = livenessActive,
+                    driveMeanMgdlPerMin = built.input.drive.meanMgdlPerMin,
+                    fastDriveMgdlPerMin = fastDrive(signal),
+                    decay = built.input.decay,
+                    decayNegativeDrive = built.input.decayNegativeDrive,
+                    baselineTauMin = cfg.driveTauMin,
+                    releaseHorizonMin = cfg.releaseHorizonMin,
+                    previousStreak = holdVorzyklus,
+                ),
+            )
+            livenessHoldStreak = halt.streak
+            livenessHoldUpliftMgdl = halt.upliftMgdl
+            livenessHoldDenial = halt.denial?.name
+            val bedarfsMean = releaseMean + halt.upliftMgdl
+            val bedarfU = kotlin.math.max(0.0, (bedarfsMean - target) / isf)
             // ---- COVERAGE-VORBEREITUNG (Toni 23.08. nachts) --------------
             // HIER ist der Anschlusspunkt des spaeteren, AUSSCHLIESSLICH im
             // CORRECTION-Profil wirkenden Coverage-Riegels:
@@ -5383,7 +5425,7 @@ class FuseCycleRunner(
             livenessReleaseMeanMgdl = releaseMean
             livenessLiveRatio = liveRatio
             livenessCandidateU = LivenessChannel.candidateU(
-                releaseMeanMgdl = releaseMean,
+                releaseMeanMgdl = bedarfsMean,
                 targetMgdl = target,
                 isfMgdlPerU = isf,
                 smbRatio = liveRatio,
@@ -6221,6 +6263,11 @@ class FuseCycleRunner(
             livenessShadowNeedU = livenessShadowNeedU,
             livenessShadowCandidateU = livenessShadowCandidateU,
             livenessShadowHeadroomU = livenessShadowHeadroomU,
+            livenessHold = LivenessHoldDiagnosis(
+                upliftMgdl = livenessHoldUpliftMgdl,
+                streak = livenessHoldStreak,
+                denial = livenessHoldDenial,
+            ),
             livenessBookingDiagnosis = LivenessBookingDiagnosis(
                 lossCause = livenessEvidenceLossCause,
                 concurrentHazards = livenessConcurrentHazards,
@@ -7498,6 +7545,11 @@ class FuseCycleRunner(
      *  manueller Bolus WAEHREND der Bewaffnung fiel (Codex 22.08.). */
     private var livenessStreakStartTs = 0L
 
+    /** Bestaetigte Zyklen der Halte-Anhebung ([LivenessDriveHold]). Nur im
+     *  Speicher und am Zyklusbeginn genullt: jeder Zyklus ohne erneute
+     *  Bestaetigung - auch ein Abbruch oder Neustart - beginnt die Folge neu. */
+    private var livenessHoldStreak = 0
+
     /** Fingerprint ALLER drei Kanal-Stellgroessen (Schwelle, Kanaldeckel,
      *  Re-Arm-Zeit), unter denen Streak und Lauf gezaehlt wurden. null =
      *  noch nie gesehen (Prozessstart). JEDE Aenderung beendet einen
@@ -7838,6 +7890,9 @@ class FuseCycleRunner(
         /** Buchungsbedingter Ausgang ohne neue Wiederanlaufsperre (Toni 15.09.),
          *  Default AUS - s. [FuseBooleanKey.LivenessBookingExitWithoutReArmEnabled]. */
         val livenessBookingExitWithoutReArmEnabled: Boolean = false,
+        /** Halte-Anhebung des Stoerungsterms im Liveness-Bedarf (Toni 15.09.),
+         *  Default AUS - s. [FuseBooleanKey.LivenessDriveHoldEnabled]. */
+        val livenessDriveHoldEnabled: Boolean = false,
         /** MEAL/CORRECTION (Bauauftrag 23.08. nachts) - s. FuseKeys.
          *  Werte sind bereits LESE-MIGRIERT (ungesetzt = alter Globalwert). */
         val livenessMealPowerMin: Int,
@@ -7961,6 +8016,7 @@ class FuseCycleRunner(
         livenessChannelEnabled = preferences.get(FuseBooleanKey.LivenessChannelEnabled),
         livenessReboundEvidenceExceptionEnabled = preferences.get(FuseBooleanKey.LivenessReboundEvidenceExceptionEnabled),
         livenessBookingExitWithoutReArmEnabled = preferences.get(FuseBooleanKey.LivenessBookingExitWithoutReArmEnabled),
+        livenessDriveHoldEnabled = preferences.get(FuseBooleanKey.LivenessDriveHoldEnabled),
         // MEAL/CORRECTION-LESE-MIGRATION (Bauauftrag §7): ungesetzte neue
         // Schluessel folgen dem bisherigen Globalwert - das Update ist
         // dosierneutral; die Grenzen-Klammer zaehlt Ausreisser als "nie

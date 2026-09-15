@@ -45,6 +45,7 @@ internal val fuseEinstellbareKeys: Set<String> = setOf(
     FuseBooleanKey.LivenessChannelEnabled.key,
     FuseBooleanKey.LivenessReboundEvidenceExceptionEnabled.key,
     FuseBooleanKey.LivenessBookingExitWithoutReArmEnabled.key,
+    FuseBooleanKey.LivenessDriveHoldEnabled.key,
     FuseBooleanKey.SignalRejoinEnabled.key,
     FuseIntKey.LivenessMealPowerMin.key,
     // Die vier zentralen Profilwerte (CENTRAL-only, echte Defaults).
@@ -228,6 +229,7 @@ object FuseSettingsReport {
                     schalter(FuseBooleanKey.LivenessChannelEnabled, "Liveness-Kanal"),
                     schalter(FuseBooleanKey.LivenessReboundEvidenceExceptionEnabled, "Rebound-Evidenz-Ausnahme"),
                     schalter(FuseBooleanKey.LivenessBookingExitWithoutReArmEnabled, "Buchungsausgang ohne Sperre"),
+                    schalter(FuseBooleanKey.LivenessDriveHoldEnabled, "Halte-Anhebung im Kanalbedarf"),
                     schalter(FuseBooleanKey.SignalRejoinEnabled, "Wiedereinstieg nach Funkluecke"),
                     ganz(FuseIntKey.LivenessMealPowerMin, "M-Frist", "min"),
                     // CENTRAL-only: die vier Profilwerte sind normale

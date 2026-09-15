@@ -187,6 +187,9 @@ class TransportWiringTest : TestBaseWithProfile() {
     /** Buchungsbedingter Ausgang ohne neue Sperre - Default AUS wie in Produktion. */
     private var buchungsAusgangAn = false
 
+    /** Halte-Anhebung im Liveness-Bedarf - Default AUS wie in Produktion. */
+    private var halteAnhebungAn = false
+
     /** Masterschalter der Prognose-Shadows (Default AN wie in Produktion). */
     private var forecastShadowAn = true
     private var mealPowerMin = 120
@@ -386,7 +389,8 @@ class TransportWiringTest : TestBaseWithProfile() {
                     else -> flach + steigungProMin * k + steigungNachKnick * (k2 - k) +
                         steigungNachKnick2 * (min - k2)
                 }
-                val vr = if (rueckfuehrung) v - abgabeGlukoseWirkung(ts) else v
+                val vf = v + (formZusatz?.invoke(min) ?: 0.0)
+                val vr = if (rueckfuehrung) vf - abgabeGlukoseWirkung(ts) else vf
                 GV(
                     timestamp = ts, value = vr, raw = vr, noise = 0.0,
                     sourceSensor = SourceSensor.UNKNOWN, trendArrow = TrendArrow.FLAT
@@ -484,6 +488,10 @@ class TransportWiringTest : TestBaseWithProfile() {
     /** PHASE-2-REPLAY (23.08.): aufgezeichnete Rohserie statt synthetischer
      *  Kurve. null = normale Rig-Kurve. */
     private var rohSerie: List<Pair<Long, Double>>? = null
+
+    /** Additiver Formzusatz der erzeugten Bahn [mg/dl] je Minute seit `start` -
+     *  fuer Dip/Wiederanstieg und Sensorartefakte MIT Rueckfuehrung. null = keiner. */
+    private var formZusatz: ((Double) -> Double)? = null
 
     /** Schalter des Wiedereinstiegs nach Funkluecke (Default AUS wie am Geraet). */
     private var rejoinAn = false
@@ -754,6 +762,7 @@ class TransportWiringTest : TestBaseWithProfile() {
         whenever(preferences.get(FuseBooleanKey.LivenessChannelEnabled)).thenAnswer { livenessAn }
         whenever(preferences.get(FuseBooleanKey.LivenessReboundEvidenceExceptionEnabled)).thenAnswer { livenessAusnahmeAn }
         whenever(preferences.get(FuseBooleanKey.LivenessBookingExitWithoutReArmEnabled)).thenAnswer { buchungsAusgangAn }
+        whenever(preferences.get(FuseBooleanKey.LivenessDriveHoldEnabled)).thenAnswer { halteAnhebungAn }
         whenever(preferences.get(FuseBooleanKey.ForecastShadowCollectionEnabled)).thenAnswer { forecastShadowAn }
         whenever(preferences.get(FuseIntKey.LivenessMealPowerMin)).thenAnswer { mealPowerMin }
         whenever(preferences.get(FuseIntKey.MealArmCycles)).thenAnswer { mealArmZyklen }
@@ -8191,6 +8200,208 @@ class TransportWiringTest : TestBaseWithProfile() {
         assertTrue(liftZyklen >= 4, "der Kanal muss den Guard-Deadlock tragen: $liftZyklen")
     }
 
+    // ==== HALTE-ANHEBUNG IM KANALBEDARF (Tonis Auftrag 15.09.) ================
+    //
+    // Jede Form laeuft ZWEIMAL auf derselben Lage - Schalter AUS und AN - mit
+    // geschlossener Rueckfuehrung (nur bestaetigte Abgaben wirken auf die
+    // Reihe). Synthetische Bahnen, keine Messwerte. Die Parameter der
+    // Anhebung (20 min, 40 mg/dl, 2 Zyklen) stehen fest; hier wird nur
+    // geprueft, nicht abgestimmt. UKF-Reaktion: nach einem Formwechsel sind
+    // hoechstens REAKTION_MIN Minuten ohne Aussage.
+
+    private val halteReaktionMin = 5
+
+    private fun minuteVon(o: FuseCycleRunner.Outcome) = (o.computeTs - start) / 60_000L
+
+    private fun halteLauf(dir: File, name: String, an: Boolean, zyklen: Int, form: () -> Unit): List<FuseCycleRunner.Outcome> {
+        val d = File(dir, name + if (an) "_an" else "_aus").also(File::mkdirs)
+        abgaben.clear(); boluses = emptyList(); rueckfuehrung = false
+        lueckeVonMin = null; lueckeBisMin = null; rohSerie = null; formZusatz = null
+        livenessLage(d)
+        steigungNachKnick = 2.0
+        form()
+        halteAnhebungAn = an
+        abgaben += Abgabe(start - 30 * 60_000L, 4.5 / 0.9, wirktAufReihe = false, isfMgdlPerU = 61.0)
+        bolusIobU = null
+        rueckfuehrung = true
+        return (1..zyklen).map { transport(d) }.also { formZusatz = null; halteAnhebungAn = false }
+    }
+
+    /** Gemeinsame Zusagen jedes Laufs: AUS hebt nie; AN hebt nur bewaffnet, bestaetigt und gekappt. */
+    private fun halteGrundzusagen(aus: List<FuseCycleRunner.Outcome>, an: List<FuseCycleRunner.Outcome>) {
+        for (o in aus) assertTrue((o.livenessHold.upliftMgdl ?: 0.0) == 0.0, "AUS hebt nie: min ${minuteVon(o)}")
+        for (o in an) {
+            val up = o.livenessHold.upliftMgdl ?: continue
+            if (up <= 0.0) continue
+            assertTrue(o.livenessActive, "Anhebung nur im bewaffneten Lauf: min ${minuteVon(o)}")
+            assertTrue(o.livenessHold.streak >= app.aaps.fuse.core.controller.LivenessDriveHold.CONFIRM_CYCLES)
+            assertTrue(up <= app.aaps.fuse.core.controller.LivenessDriveHold.UPLIFT_CAP_MGDL + 1e-9)
+        }
+    }
+
+    private fun summeAb(l: List<FuseCycleRunner.Outcome>, abMin: Long) =
+        l.filter { minuteVon(it) >= abMin }.sumOf { it.decision.smbU }
+
+    private fun halteZeilen(name: String, aus: List<FuseCycleRunner.Outcome>, an: List<FuseCycleRunner.Outcome>) {
+        println("HALTE $name: AUS ${"%.2f".format(aus.sumOf { it.decision.smbU })} U, AN ${"%.2f".format(an.sumOf { it.decision.smbU })} U")
+        for ((a, b) in aus.zip(an)) println(
+            "HALTE $name min ${minuteVon(b)} q1 ${"%.0f".format(a.signal?.q1 ?: Double.NaN)}/${"%.0f".format(b.signal?.q1 ?: Double.NaN)} " +
+                "smb ${a.decision.smbU}/${b.decision.smbU} aktiv ${a.livenessActive}/${b.livenessActive} " +
+                "up ${"%.1f".format(b.livenessHold.upliftMgdl ?: Double.NaN)} streak ${b.livenessHold.streak} ${b.livenessHold.denial}"
+        )
+    }
+
+    @Test
+    fun `Halte-Anhebung 1 - anhaltender Anstieg hebt bestaetigt und gekappt`(@TempDir dir: File) {
+        val aus = halteLauf(dir, "anstieg", false, 45) {}
+        val an = halteLauf(dir, "anstieg", true, 45) {}
+        halteZeilen("anstieg", aus, an)
+        halteGrundzusagen(aus, an)
+        assertTrue(aus.count { it.livenessActive } >= 5, "Vorbedingung: der Kanal ist im AUS-Lauf bewaffnet")
+        val hebend = an.count { (it.livenessHold.upliftMgdl ?: 0.0) > 0.0 }
+        assertTrue(hebend >= 3, "positiver Nachweis: die Anhebung wirkt im anhaltenden Anstieg ($hebend Zyklen)")
+        // Export-Vertrag: needU enthaelt die Anhebung, releaseMeanMgdl nicht.
+        for (o in an.filter { hebt(it) }) {
+            val erwartet = kotlin.math.max(0.0, (o.livenessReleaseMeanMgdl!! + o.livenessHold.upliftMgdl!! - o.targetMgdl!!) / o.isfMgdlPerU!!)
+            assertEquals(erwartet, o.livenessNeedU!!, 1e-9, "needU traegt die Anhebung: min ${minuteVon(o)}")
+        }
+        assertTrue(an.sumOf { it.decision.smbU } > aus.sumOf { it.decision.smbU } + 1e-9, "und sie erreicht die Menge")
+        // Obergrenze der Mehrmenge: je hebendem Zyklus hoechstens Ratio 0,35 x Kappe / ISF plus ein Rasterschritt.
+        val isf = an.mapNotNull { it.isfMgdlPerU }.minOrNull()!!
+        val grenze = hebend * (0.35 * app.aaps.fuse.core.controller.LivenessDriveHold.UPLIFT_CAP_MGDL / isf + 0.05)
+        assertTrue(an.sumOf { it.decision.smbU } - aus.sumOf { it.decision.smbU } <= grenze + 1e-9, "Mehrmenge begrenzt")
+    }
+
+    // Formwechsel bei min 18 - MITTEN in der aktiven Anhebung des Anstiegs
+    // (dort min 12-23 gehoben). Ein spaeterer Wechsel waere vakuos: ab min 24
+    // hebt der Anstieg selbst nicht mehr, ab ~32 ist der Kanal aus.
+    private val halteWechselMin = 18L
+
+    private fun hebt(o: FuseCycleRunner.Outcome) = (o.livenessHold.upliftMgdl ?: 0.0) > 0.0
+
+    /** Mehrmenge AN minus AUS in [von, bis]. */
+    private fun mehrmenge(aus: List<FuseCycleRunner.Outcome>, an: List<FuseCycleRunner.Outcome>, von: Long, bis: Long) =
+        an.filter { minuteVon(it) in von..bis }.sumOf { it.decision.smbU } -
+            aus.filter { minuteVon(it) in von..bis }.sumOf { it.decision.smbU }
+
+    /** Vorbedingung gegen vakuose Pruefung: unmittelbar vor dem Wechsel hebt AN. */
+    private fun heberVorWechsel(an: List<FuseCycleRunner.Outcome>) =
+        assertTrue(an.any { minuteVon(it) == halteWechselMin - 1 && hebt(it) }, "Vorbedingung: Anhebung aktiv vor dem Wechsel")
+
+    /** Formen, die NACH dem Wechsel nicht weiter anhaltend steigen: Anhebung endet binnen Reaktionszeit, danach nie mehr. */
+    private fun endetNachWechsel(name: String, an: List<FuseCycleRunner.Outcome>, bisMin: Long = 60L) {
+        val nach = an.filter { minuteVon(it) in halteWechselMin..bisMin && hebt(it) }.map { minuteVon(it) }
+        println("HALTE $name: Anhebung nach dem Wechsel in Minuten $nach")
+        assertTrue(nach.all { it < halteWechselMin + halteReaktionMin }, "$name: Anhebung nach Reaktionszeit $nach")
+    }
+
+    @Test
+    fun `Halte-Anhebung 2 - Plateau beendet die Anhebung`(@TempDir dir: File) {
+        val form = { knick2AbMin = halteWechselMin.toInt(); steigungNachKnick2 = 0.0 }
+        val aus = halteLauf(dir, "plateau", false, 60, form)
+        val an = halteLauf(dir, "plateau", true, 60, form)
+        halteZeilen("plateau", aus, an)
+        halteGrundzusagen(aus, an)
+        heberVorWechsel(an)
+        endetNachWechsel("plateau", an)
+        assertTrue(mehrmenge(aus, an, halteWechselMin + halteReaktionMin, 60L) <= 1e-9, "im Plateau keine Mehrmenge")
+    }
+
+    @Test
+    fun `Halte-Anhebung 3 - Dip und Wiederanstieg brauchen neue Bestaetigung`(@TempDir dir: File) {
+        // Netto: bis 18 +2, 18-26 -2, ab 26 wieder +2 mg/dl/min.
+        val w = halteWechselMin.toDouble()
+        val form = { formZusatz = { m: Double -> if (m < w) 0.0 else if (m < w + 8.0) -(m - w) * 4.0 else -32.0 } }
+        val aus = halteLauf(dir, "dip", false, 60, form)
+        val an = halteLauf(dir, "dip", true, 60, form)
+        halteZeilen("dip", aus, an)
+        halteGrundzusagen(aus, an)
+        heberVorWechsel(an)
+        endetNachWechsel("dip", an, bisMin = halteWechselMin + 8)
+        // Nach dem Dip: jede neue Anhebung steht auf einer frischen Folge - irgendwo
+        // zwischen Dip und ihr liegt ein Zyklus mit Folge 1 (NOT_CONFIRMED).
+        val erste = an.firstOrNull { minuteVon(it) > halteWechselMin + 8 && hebt(it) }
+        println("HALTE dip: erste Anhebung nach dem Dip ${erste?.let { minuteVon(it) }}")
+        if (erste != null) assertTrue(
+            an.any { minuteVon(it) in (halteWechselMin + 1)..<minuteVon(erste) && it.livenessHold.denial == "NOT_CONFIRMED" },
+            "Wiederanstieg hebt erst nach neuer Bestaetigung",
+        )
+    }
+
+    @Test
+    fun `Halte-Anhebung 4 - nachhaltiges Fallen hebt nie`(@TempDir dir: File) {
+        val form = { knick2AbMin = halteWechselMin.toInt(); steigungNachKnick2 = -1.5 }
+        val aus = halteLauf(dir, "fallen", false, 60, form)
+        val an = halteLauf(dir, "fallen", true, 60, form)
+        halteZeilen("fallen", aus, an)
+        halteGrundzusagen(aus, an)
+        heberVorWechsel(an)
+        endetNachWechsel("fallen", an)
+        assertTrue(mehrmenge(aus, an, halteWechselMin + halteReaktionMin, 60L) <= 1e-9, "beim Fallen keine Mehrmenge")
+    }
+
+    /**
+     * Artefakte auf dem ANHALTENDEN Anstieg, gemessen gegen denselben Anstieg
+     * ohne Artefakt: die Mehrmenge AN-AUS darf im Artefaktfenster nicht
+     * groesser sein als ohne Artefakt.
+     *  A  Ausreisser +30 mg/dl bei min 28 - dort hebt der Anstieg NICHT
+     *     (Folge 0 seit min 24): der Ausreisser darf keine Anhebung starten.
+     *  B  Kompressionstief -35 mg/dl bei min 15-16 - mitten in der Anhebung.
+     */
+    @Test
+    fun `Halte-Anhebung 5 - Sensorartefakte heben nicht`(@TempDir dir: File) {
+        val refAus = halteLauf(dir, "ref", false, 45) {}
+        val refAn = halteLauf(dir, "ref", true, 45) {}
+
+        assertTrue(refAn.none { minuteVon(it) in 28L..34L && hebt(it) }, "Vorbedingung: ohne Artefakt keine Anhebung im Fenster")
+
+        // A1 grosser Ausreisser: die BESTEHENDE Schutzfunktion beendet den Lauf
+        // sofort (im Rig gesehen) - geprueft wird nur, dass die Anhebung dem
+        // nichts hinzufuegt. Das ist kein Nachweis ueber die Anhebung selbst.
+        val spike = { formZusatz = { m: Double -> if (m >= 28.0 && m < 29.0) 30.0 else 0.0 } }
+        val aAus = halteLauf(dir, "ausreisser", false, 45, spike)
+        val aAn = halteLauf(dir, "ausreisser", true, 45, spike)
+        halteZeilen("ausreisser", aAus, aAn)
+        halteGrundzusagen(aAus, aAn)
+        assertTrue(aAus.none { minuteVon(it) == 28L && it.livenessActive }, "Vorbedingung A1: der Schutz beendet den Lauf")
+        assertTrue(aAn.none { minuteVon(it) in 28L..34L && hebt(it) }, "A1: keine Anhebung")
+        assertTrue(mehrmenge(aAus, aAn, 28L, 45L) <= mehrmenge(refAus, refAn, 28L, 45L) + 1e-9, "A1: keine Mehrmenge")
+
+
+        val kompression = { formZusatz = { m: Double -> if (m >= 15.0 && m < 17.0) -35.0 else 0.0 } }
+        val kAus = halteLauf(dir, "kompression", false, 45, kompression)
+        val kAn = halteLauf(dir, "kompression", true, 45, kompression)
+        halteZeilen("kompression", kAus, kAn)
+        halteGrundzusagen(kAus, kAn)
+        assertTrue(kAn.any { minuteVon(it) == 14L && hebt(it) }, "Vorbedingung: Anhebung aktiv vor der Kompression")
+        assertTrue(mehrmenge(kAus, kAn, 15L, 45L) <= mehrmenge(refAus, refAn, 15L, 45L) + 1e-9, "Kompression: keine Mehrmenge")
+    }
+
+    /**
+     * BEFUND, KEIN VERTRAG (15.09.): ein kleiner Sprung (+8 mg/dl, zwei
+     * Messwerte) UNTER der Schutzschwelle startet die Anhebung - die
+     * Zwei-Zyklen-Bestaetigung ueber die UKF-Rate haelt einem Sprungartefakt
+     * nicht stand. Die geforderte Zusage "Sensorartefakte heben nicht" ist fuer
+     * diesen Kandidaten damit NICHT erfuellt; er ist nicht aktivierungsreif.
+     * Parameter werden nicht nachtraeglich auf diesen Test abgestimmt. Wird der
+     * Test rot, hat sich das Verhalten geaendert - dann den Vertrag pruefen
+     * und ihn in `Halte-Anhebung 5` ueberfuehren.
+     */
+    @Test
+    fun `Halte-Anhebung Befund - kleiner Sensorsprung startet die Anhebung`(@TempDir dir: File) {
+        val sprung = { formZusatz = { m: Double -> if (m >= 28.0 && m < 30.0) 8.0 else 0.0 } }
+        val refAn = halteLauf(dir, "ref", true, 45) {}
+        val sAus = halteLauf(dir, "sprung", false, 45, sprung)
+        val sAn = halteLauf(dir, "sprung", true, 45, sprung)
+        halteZeilen("sprung", sAus, sAn)
+        halteGrundzusagen(sAus, sAn)
+        assertTrue(sAus.count { minuteVon(it) in 28L..30L && it.livenessActive } == 3, "Vorbedingung: Kanal bewaffnet, als der Sprung kommt")
+        assertTrue(refAn.none { minuteVon(it) in 28L..34L && hebt(it) }, "Vorbedingung: ohne Sprung keine Anhebung im Fenster")
+        val sprungHebt = sAn.filter { minuteVon(it) in 28L..34L && hebt(it) }.map { minuteVon(it) }
+        println("HALTE sprung: Anhebung im Fenster $sprungHebt, Mehrmenge 28-45 ${"%.2f".format(mehrmenge(sAus, sAn, 28L, 45L))} U")
+        assertTrue(sprungHebt.isNotEmpty(), "Befund: der kleine Sprung startet die Anhebung")
+    }
+
     private fun livenessLage(dir: File): FuseLedgerAdapter {
         livenessAn = true
         // Kanaldeckel 90 %: der Spielraum (7,2 - 4,5 = 2,7 U) liegt WEIT
@@ -10188,7 +10399,7 @@ class TransportWiringTest : TestBaseWithProfile() {
             neuerRunner(adapter, fensterMs = fensterMs, trendRegel = trendRegel, gapPolitik = gapPolitik, reifePolitik = reifePolitik, wiedereinstieg = rejoinPolitik, ruheParams = ruheWirksam)
             val outFile = File(outDir, "replay_$name.csv")
             outFile.printWriter().use { w ->
-                w.println("ts;smbU;block;binding;insulinReq;liftU;needU;abort;phase;fastD;slowD;trend;raw;recSmbU;recBlock;profil;restMin;tbr;latch;lvDenial;lvExit;lvStreak;lvHead;transC;revGrund;rearmGrund;ctxGrund;basis;gapBreakMs;samplesUsed;gapBeforeMin;r;bandN;matP;matS;iob;rejoin;rejoinGrund;gapMs;vollreifeTs;regimeGrund;regimeTs;regimeSegTs;vorReif;ruheModus;ruheStreak;ruheDenial;gefahr;guardAbst;grantU;vorFloor;nachFloor;nachRiegel;rtAngefordert;upfrontState;upfrontPendingU;riskAktiv;latchAktiv;latchGrund;iobAnkerFehlt;iobFehltAnkerKum;iobFehltHistKum;upfrontShare;q1;ukf;aktivitaet;bolusIobU;totalIobU;guardBoden;abstandBoden;minToFloor;ueberdeckung;fallrate;lowVerdikt;riskDenial;recoveryZyklen;horizontMin;aufschubGrund;dosingProfil;dosingGrund;expoSource;expoBind;expoBlock;expoBinding;expoHeadU;expoLimitU;bgMinQuelle;expoReqSource;smbState;smbStop;reqU;capU;releaseMean;candU;shNeedU;shCandU;shHeadU;noLift;rSigned;ledgerTransportU;anker;mean60;drive60;bgi60;transport60;driveMin1;driveMin60")
+                w.println("ts;smbU;block;binding;insulinReq;liftU;needU;abort;phase;fastD;slowD;trend;raw;recSmbU;recBlock;profil;restMin;tbr;latch;lvDenial;lvExit;lvStreak;lvHead;transC;revGrund;rearmGrund;ctxGrund;basis;gapBreakMs;samplesUsed;gapBeforeMin;r;bandN;matP;matS;iob;rejoin;rejoinGrund;gapMs;vollreifeTs;regimeGrund;regimeTs;regimeSegTs;vorReif;ruheModus;ruheStreak;ruheDenial;gefahr;guardAbst;grantU;vorFloor;nachFloor;nachRiegel;rtAngefordert;upfrontState;upfrontPendingU;riskAktiv;latchAktiv;latchGrund;iobAnkerFehlt;iobFehltAnkerKum;iobFehltHistKum;upfrontShare;q1;ukf;aktivitaet;bolusIobU;totalIobU;guardBoden;abstandBoden;minToFloor;ueberdeckung;fallrate;lowVerdikt;riskDenial;recoveryZyklen;horizontMin;aufschubGrund;dosingProfil;dosingGrund;expoSource;expoBind;expoBlock;expoBinding;expoHeadU;expoLimitU;bgMinQuelle;expoReqSource;smbState;smbStop;reqU;capU;releaseMean;candU;shNeedU;shCandU;shHeadU;noLift;rSigned;ledgerTransportU;anker;mean60;drive60;bgi60;transport60;driveMin1;driveMin60;holdUp;holdStreak;holdDenial;fastDrive")
                 // DER VORGEFUNDENE MARKER IST KEIN BEOBACHTETER DRUCK
                 // (Toni 25.08. spaet). `prevMarker = 0` liess den ersten
                 // Zyklus jeden schon laufenden Marker als frisch gedrueckt
@@ -10384,6 +10595,10 @@ class TransportWiringTest : TestBaseWithProfile() {
                                     .map { "%.3f".format(java.util.Locale.US, it) }.toTypedArray()
                             }
                         },
+                        o.livenessHold.upliftMgdl?.let { "%.3f".format(java.util.Locale.US, it) } ?: "",
+                        o.livenessHold.streak,
+                        o.livenessHold.denial ?: "",
+                        o.signal?.let { s -> "%.4f".format(java.util.Locale.US, s.ukfRatePerMin + s.activityAtAnchor * s.isfAtAnchor) } ?: "",
                     ).joinToString(";"))
                 }
             }
@@ -10650,6 +10865,13 @@ class TransportWiringTest : TestBaseWithProfile() {
             // Kandidatenrechnung auf identischen Eingaengen nachholen. Ergebnis
             // sind Entscheidungsgroessen, kein Glukoseverlauf.
             lauf("rekon", null, fenster = 10, guardsStart = true)
+            // Halte-Anhebung (15.09.) OFFEN gegen den echten Verlauf: zeigt, was
+            // der Kanal je Zyklus bei gleicher Vorgeschichte gerechnet haette.
+            // Keine Rueckkopplung - Glukose und Behandlungen bleiben die echten.
+            if (System.getenv("FUSE_REPLAY_HALTE") != null) {
+                halteAnhebungAn = true
+                try { lauf("rekon_halte", null, fenster = 10, guardsStart = true) } finally { halteAnhebungAn = false }
+            }
             return
         }
         run {
