@@ -1043,8 +1043,9 @@ enum class FuseBooleanKey(
      * eingeschaltet haelt der laufende, bereits bewaffnete Kanal NUR unter
      * gueltiger MEAL-Autorisierung (CORRECTION nie) den positiven
      * Modellantrieb fuer die Bedarfsrechnung 20 min, bevor er mit dem
-     * konfigurierten tau abklingt - nur wenn die gemessene bereinigte Rate ihn
-     * zwei Zyklen in Folge erreicht, nie im Rebound-Fenster, Anhebung hoechstens
+     * konfigurierten tau abklingt - nur mit Messbestaetigung (zwei frische
+     * Rohwert-Bloecke mit neuem Hoch, Bedarf je Block einmal), nie im
+     * Rebound-Fenster, Anhebung hoechstens
      * 40 mg/dl. Keine Bewaffnung, kein Tor, kein Deckel und keine Grenze aendert
      * sich - s. [app.aaps.fuse.core.controller.LivenessDriveHold].
      */

@@ -1412,8 +1412,13 @@ class FuseCycleRunner(
      */
     data class LivenessHoldDiagnosis(
         val upliftMgdl: Double? = null,
+        /** Bestaetigende Messbloecke in Folge ([app.aaps.fuse.core.controller.MeasuredRiseEvidence]). */
         val streak: Int = 0,
         val denial: String? = null,
+        /** Warum die Messbestaetigung (noch) nicht traegt; null = bestaetigt oder Schalter aus. */
+        val evidenceDenial: String? = null,
+        /** Median des juengsten Messblocks [mg/dl]. */
+        val evidenceBlockMedianMgdl: Double? = null,
     )
 
     /**
@@ -1447,12 +1452,6 @@ class FuseCycleRunner(
     fun run(tempBasalFallback: Boolean, pumpe: FuseActivePump): Outcome {
         val computeTs = dateUtil.now()
         val gate = pumpe.gate
-        // Halte-Anhebung: die Bestaetigungsfolge gilt nur ueber Zyklen, die sie
-        // ERNEUT bestaetigen - jeder fruehe Ausstieg dieses Zyklus beginnt neu.
-        val holdVorzyklus = livenessHoldStreak
-        val holdAuthVorzyklus = livenessHoldAuthId
-        livenessHoldStreak = 0
-        livenessHoldAuthId = 0L
 
         // ---- Marker und Evidenz-Episode: GANZ VORNE ------------------------
         //
@@ -2475,6 +2474,25 @@ class FuseCycleRunner(
             deadlineTs = episodes.markerPowerDeadlineTs,
         )
         val markerPowerActive = dosingCtx.mealAuthorized
+        // ---- HALTE-ANHEBUNG: MESSBESTAETIGUNG (Toni 15.09. abends) ----------
+        // JEDEN Zyklus mit Signal und Bahn fortgeschrieben, auch vor der
+        // Bewaffnung - verbraucht werden nur neue Rohwerte, ein weiterer Lauf
+        // ueber dieselben Daten bringt nichts. Schalter AUS: kein Zustand,
+        // keine Rechnung.
+        val holdBeleg = if (!cfg.livenessDriveHoldEnabled) null else
+            app.aaps.fuse.core.controller.MeasuredRiseEvidence.step(
+                livenessHoldEvidence,
+                app.aaps.fuse.core.controller.MeasuredRiseEvidence.Input(
+                    enabled = true,
+                    mealAuthorized = dosingCtx.mealAuthorized,
+                    authorizationId = dosingCtx.authorizationId,
+                    measured = signal.measured,
+                    needMet = app.aaps.fuse.core.controller.LivenessDriveHold.needMet(
+                        built.input.drive.meanMgdlPerMin, fastDrive(signal),
+                    ),
+                ),
+            )
+        livenessHoldEvidence = holdBeleg?.state ?: app.aaps.fuse.core.controller.MeasuredRiseEvidence.State.EMPTY
         // ---- B1: DIE KONTEXTGRENZE DIESES ZYKLUS -------------------------
         // MealExposureLimit unter gueltiger Vollmacht, sonst
         // CorrectionExposureLimit (CENTRAL-only: es gibt keinen anderen
@@ -5380,19 +5398,15 @@ class FuseCycleRunner(
                     enabled = cfg.livenessDriveHoldEnabled,
                     livenessActive = livenessActive,
                     mealAuthorized = dosingCtx.mealAuthorized,
-                    authorizationId = dosingCtx.authorizationId,
-                    previousAuthorizationId = holdAuthVorzyklus,
                     driveMeanMgdlPerMin = built.input.drive.meanMgdlPerMin,
                     fastDriveMgdlPerMin = fastDrive(signal),
                     decay = built.input.decay,
                     decayNegativeDrive = built.input.decayNegativeDrive,
                     baselineTauMin = cfg.driveTauMin,
                     releaseHorizonMin = cfg.releaseHorizonMin,
-                    previousStreak = holdVorzyklus,
+                    measuredConfirmed = holdBeleg?.confirmed == true,
                 ),
             )
-            livenessHoldStreak = halt.streak
-            livenessHoldAuthId = halt.authorizationId
             livenessHoldUpliftMgdl = halt.upliftMgdl
             livenessHoldDenial = halt.denial?.name
             val bedarfsMean = releaseMean + halt.upliftMgdl
@@ -6271,8 +6285,10 @@ class FuseCycleRunner(
             livenessShadowHeadroomU = livenessShadowHeadroomU,
             livenessHold = LivenessHoldDiagnosis(
                 upliftMgdl = livenessHoldUpliftMgdl,
-                streak = livenessHoldStreak,
+                streak = livenessHoldEvidence.confirmations,
                 denial = livenessHoldDenial,
+                evidenceDenial = holdBeleg?.denial?.name,
+                evidenceBlockMedianMgdl = livenessHoldEvidence.blocks.lastOrNull()?.medianMgdl,
             ),
             livenessBookingDiagnosis = LivenessBookingDiagnosis(
                 lossCause = livenessEvidenceLossCause,
@@ -7551,13 +7567,10 @@ class FuseCycleRunner(
      *  manueller Bolus WAEHREND der Bewaffnung fiel (Codex 22.08.). */
     private var livenessStreakStartTs = 0L
 
-    /** Bestaetigte Zyklen der Halte-Anhebung ([LivenessDriveHold]). Nur im
-     *  Speicher und am Zyklusbeginn genullt: jeder Zyklus ohne erneute
-     *  Bestaetigung - auch ein Abbruch oder Neustart - beginnt die Folge neu. */
-    private var livenessHoldStreak = 0
-
-    /** MEAL-Autorisierung, unter der [livenessHoldStreak] bestaetigt wurde (0 = keine). */
-    private var livenessHoldAuthId = 0L
+    /** Messbestaetigung der Halte-Anhebung ([app.aaps.fuse.core.controller.MeasuredRiseEvidence]).
+     *  Nur im Speicher: ein Neustart beginnt die Bestaetigung neu (konservativ).
+     *  Epoche, Autorisierung und frische Werte prueft die Rechnung selbst. */
+    private var livenessHoldEvidence = app.aaps.fuse.core.controller.MeasuredRiseEvidence.State.EMPTY
 
     /** Fingerprint ALLER drei Kanal-Stellgroessen (Schwelle, Kanaldeckel,
      *  Re-Arm-Zeit), unter denen Streak und Lauf gezaehlt wurden. null =

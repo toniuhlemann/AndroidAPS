@@ -428,7 +428,11 @@ object FuseStateJson {
     // gehaltener positiver Antrieb, zwei Zyklen gemessen bestaetigt, nie im
     // Rebound-Fenster, hoechstens 40 mg/dl. Tore, Bewaffnung, Deckel, Grenzen
     // und die exportierte Release-Bahn unveraendert.
-    const val RULE_SET_VERSION = 53
+    // v54 (Toni 15.09. abends, Schalter weiter AUS): die Halte-Anhebung gilt nur
+    // unter gueltiger MEAL-Autorisierung und bestaetigt ueber frische
+    // Rohwert-Bloecke mit neuem Hoch, Bedarf je Block einmal - die fruehere
+    // Zwei-Zyklen-Bestaetigung ueber die Rate allein ist entfallen.
+    const val RULE_SET_VERSION = 54
 
     /** Schema des Trail-Datensatzes - s. die Notiz an der Schreibstelle. */
     const val SCHEMA_VERSION = 4
@@ -929,7 +933,10 @@ object FuseStateJson {
                         "driveHold", JSONObject()
                             .put("upliftMgdl", fin(outcome.livenessHold.upliftMgdl))
                             .put("streak", outcome.livenessHold.streak)
-                            .put("denial", outcome.livenessHold.denial ?: JSONObject.NULL),
+                            .put("denial", outcome.livenessHold.denial ?: JSONObject.NULL)
+                            // v54: Messbestaetigung (frische Rohwert-Bloecke).
+                            .put("evidenceDenial", outcome.livenessHold.evidenceDenial ?: JSONObject.NULL)
+                            .put("evidenceBlockMedianMgdl", fin(outcome.livenessHold.evidenceBlockMedianMgdl)),
                     )
                     // v52: endete der Lauf ohne neue Sperre - und wenn nicht, warum.
                     .put(

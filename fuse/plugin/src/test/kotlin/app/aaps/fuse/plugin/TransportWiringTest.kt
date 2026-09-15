@@ -361,7 +361,7 @@ class TransportWiringTest : TestBaseWithProfile() {
                     sourceSensor = SourceSensor.UNKNOWN, trendArrow = TrendArrow.FLAT
                 )
             }.toList()
-        } ?: generateSequence(start - quellVersatzMs) { it + taktMs }
+        } ?: generateSequence(start - quellVersatzMs) { it + (messTaktMs ?: taktMs) }
             .takeWhile { it <= untilTs }
             .filter { ts ->
                 val von = lueckeVonMin ?: return@filter true
@@ -492,6 +492,9 @@ class TransportWiringTest : TestBaseWithProfile() {
     /** Additiver Formzusatz der erzeugten Bahn [mg/dl] je Minute seit `start` -
      *  fuer Dip/Wiederanstieg und Sensorartefakte MIT Rueckfuehrung. null = keiner. */
     private var formZusatz: ((Double) -> Double)? = null
+
+    /** Takt der erzeugten CGM-Werte, getrennt vom Loop-Takt; null = gleich [taktMs]. */
+    private var messTaktMs: Long? = null
 
     /** Schalter des Wiedereinstiegs nach Funkluecke (Default AUS wie am Geraet). */
     private var rejoinAn = false
@@ -8227,12 +8230,12 @@ class TransportWiringTest : TestBaseWithProfile() {
      */
     private fun halteLauf(
         dir: File, name: String, an: Boolean, zyklen: Int, meal: Boolean = true,
-        vorZyklus: (Int) -> Unit = {}, form: () -> Unit,
+        vorZyklus: (Int) -> Unit = {}, loopTaktMs: Long = 60_000L, form: () -> Unit,
     ): List<FuseCycleRunner.Outcome> {
-        val d = File(dir, name + (if (meal) "" else "_korr") + if (an) "_an" else "_aus").also(File::mkdirs)
+        val d = File(dir, name + (if (meal) "" else "_korr") + (if (loopTaktMs != 60_000L) "_t$loopTaktMs" else "") + if (an) "_an" else "_aus").also(File::mkdirs)
         abgaben.clear(); boluses = emptyList(); rueckfuehrung = false
         lueckeVonMin = null; lueckeBisMin = null; rohSerie = null; formZusatz = null
-        markerAt = 0L; mealPowerMin = 120
+        markerAt = 0L; mealPowerMin = 120; kalibrierStart = -1L; messTaktMs = null; taktMs = 60_000L
         livenessLage(d)
         steigungNachKnick = 2.0
         form()
@@ -8240,11 +8243,21 @@ class TransportWiringTest : TestBaseWithProfile() {
         abgaben += Abgabe(start - 30 * 60_000L, 4.5 / 0.9, wirktAufReihe = false, isfMgdlPerU = 61.0)
         bolusIobU = null
         rueckfuehrung = true
-        return (1..zyklen).map { i ->
-            if (meal && i == halteMarkerZyklus) markerAt = clock + taktMs
-            vorZyklus(i)
+        // Loop-Takt getrennt vom Messtakt: die CGM-Werte bleiben im 60-s-Takt.
+        messTaktMs = 60_000L
+        taktMs = loopTaktMs
+        var gedrueckt = false
+        val anzahl = (zyklen * 60_000L / loopTaktMs).toInt()
+        return (1..anzahl).map { i ->
+            if (meal && !gedrueckt && clock + taktMs >= start + halteMarkerZyklus * 60_000L) {
+                markerAt = clock + taktMs; gedrueckt = true
+            }
+            vorZyklus(((clock + taktMs - start) / 60_000L).toInt())
             transport(d)
-        }.also { formZusatz = null; halteAnhebungAn = false; markerAt = 0L; mealPowerMin = 120 }
+        }.also {
+            formZusatz = null; halteAnhebungAn = false; markerAt = 0L; mealPowerMin = 120
+            kalibrierStart = -1L; messTaktMs = null; taktMs = 60_000L; lueckeVonMin = null; lueckeBisMin = null
+        }
     }
 
     /** Gemeinsame Zusagen jedes Laufs: AUS hebt nie; AN hebt nur bewaffnet, bestaetigt und gekappt. */
@@ -8254,7 +8267,8 @@ class TransportWiringTest : TestBaseWithProfile() {
             val up = o.livenessHold.upliftMgdl ?: continue
             if (up <= 0.0) continue
             assertTrue(o.livenessActive, "Anhebung nur im bewaffneten Lauf: min ${minuteVon(o)}")
-            assertTrue(o.livenessHold.streak >= app.aaps.fuse.core.controller.LivenessDriveHold.CONFIRM_CYCLES)
+            assertTrue(o.livenessHold.streak >= app.aaps.fuse.core.controller.MeasuredRiseEvidence.CONFIRM_BLOCKS, "Anhebung nur messbestaetigt: min ${minuteVon(o)}")
+            assertEquals("MEAL", o.livenessProfile, "Anhebung nur unter MEAL: min ${minuteVon(o)}")
             assertTrue(up <= app.aaps.fuse.core.controller.LivenessDriveHold.UPLIFT_CAP_MGDL + 1e-9)
         }
     }
@@ -8268,6 +8282,7 @@ class TransportWiringTest : TestBaseWithProfile() {
             "HALTE $name min ${minuteVon(b)} q1 ${"%.0f".format(a.signal?.q1 ?: Double.NaN)}/${"%.0f".format(b.signal?.q1 ?: Double.NaN)} " +
                 "smb ${a.decision.smbU}/${b.decision.smbU} aktiv ${a.livenessActive}/${b.livenessActive} " +
                 "up ${"%.1f".format(b.livenessHold.upliftMgdl ?: Double.NaN)} streak ${b.livenessHold.streak} ${b.livenessHold.denial} " +
+                "beleg ${b.livenessHold.evidenceDenial}/${b.livenessHold.evidenceBlockMedianMgdl?.let { "%.0f".format(it) }} " +
                 "profil ${b.livenessProfile}/${b.livenessProfileReason} lv ${b.livenessDenial}/${b.livenessExit}"
         )
     }
@@ -8302,8 +8317,8 @@ class TransportWiringTest : TestBaseWithProfile() {
     }
 
     // Formwechsel bei min 18 - MITTEN in der aktiven Anhebung des Anstiegs
-    // (dort min 12-23 gehoben). Ein spaeterer Wechsel waere vakuos: ab min 24
-    // hebt der Anstieg selbst nicht mehr, ab ~32 ist der Kanal aus.
+    // (mit Messbestaetigung dort min 17-23 gehoben). Ein spaeterer Wechsel
+    // waere vakuos: ab min 24 hebt der Anstieg selbst nicht mehr.
     private val halteWechselMin = 18L
 
     private fun hebt(o: FuseCycleRunner.Outcome) = (o.livenessHold.upliftMgdl ?: 0.0) > 0.0
@@ -8352,7 +8367,7 @@ class TransportWiringTest : TestBaseWithProfile() {
         val erste = an.firstOrNull { minuteVon(it) > halteWechselMin + 8 && hebt(it) }
         println("HALTE dip: erste Anhebung nach dem Dip ${erste?.let { minuteVon(it) }}")
         if (erste != null) assertTrue(
-            an.any { minuteVon(it) in (halteWechselMin + 1)..<minuteVon(erste) && it.livenessHold.denial == "NOT_CONFIRMED" },
+            an.any { minuteVon(it) in (halteWechselMin + 1)..<minuteVon(erste) && it.livenessHold.streak < app.aaps.fuse.core.controller.MeasuredRiseEvidence.CONFIRM_BLOCKS },
             "Wiederanstieg hebt erst nach neuer Bestaetigung",
         )
     }
@@ -8397,13 +8412,14 @@ class TransportWiringTest : TestBaseWithProfile() {
         assertTrue(mehrmenge(aAus, aAn, 28L, 45L) <= mehrmenge(refAus, refAn, 28L, 45L) + 1e-9, "A1: keine Mehrmenge")
 
 
-        val kompression = { formZusatz = { m: Double -> if (m >= 15.0 && m < 17.0) -35.0 else 0.0 } }
+        // Kompression mitten in der messbestaetigten Anhebung (min 17-23).
+        val kompression = { formZusatz = { m: Double -> if (m >= 19.0 && m < 21.0) -35.0 else 0.0 } }
         val kAus = halteLauf(dir, "kompression", false, 45, form = kompression)
         val kAn = halteLauf(dir, "kompression", true, 45, form = kompression)
         halteZeilen("kompression", kAus, kAn)
         halteGrundzusagen(kAus, kAn)
-        assertTrue(kAn.any { minuteVon(it) == 14L && hebt(it) }, "Vorbedingung: Anhebung aktiv vor der Kompression")
-        assertTrue(mehrmenge(kAus, kAn, 15L, 45L) <= mehrmenge(refAus, refAn, 15L, 45L) + 1e-9, "Kompression: keine Mehrmenge")
+        assertTrue(kAn.any { minuteVon(it) == 18L && hebt(it) }, "Vorbedingung: Anhebung aktiv vor der Kompression")
+        assertTrue(mehrmenge(kAus, kAn, 19L, 45L) <= mehrmenge(refAus, refAn, 19L, 45L) + 1e-9, "Kompression: keine Mehrmenge")
     }
 
     // ---- GEGENFAELLE ZUM UMFANG (Tonis Review 15.09.): nur MEAL ----------
@@ -8473,24 +8489,33 @@ class TransportWiringTest : TestBaseWithProfile() {
         val erste = an.firstOrNull { minuteVon(it) > halteWechselMin && hebt(it) }
         println("HALTE wechsel: Wechselzyklus hold=${beimWechsel.livenessHold.denial} exit=${beimWechsel.livenessExit}, erste Anhebung danach ${erste?.let { minuteVon(it) }}")
         if (erste != null) assertTrue(
-            an.any { minuteVon(it) in halteWechselMin..<minuteVon(erste) && it.livenessHold.denial == "NOT_CONFIRMED" },
+            an.any { minuteVon(it) in halteWechselMin..<minuteVon(erste) && it.livenessHold.streak < app.aaps.fuse.core.controller.MeasuredRiseEvidence.CONFIRM_BLOCKS },
             "nach dem Wechsel erst neue Bestaetigung",
         )
     }
 
+    // ---- MESSBESTAETIGUNG (Tonis Vertrag 15.09. abends) --------------------
+
+    /** Bedarf dieses Zyklus erfuellt (bewaffnet, MEAL, bereinigte Rate >= Antrieb) - unabhaengig von der Messbestaetigung. */
+    private fun bedarfErfuellt(o: FuseCycleRunner.Outcome) =
+        o.livenessActive && o.livenessProfile == "MEAL" &&
+            (o.livenessHold.denial == null || o.livenessHold.denial == "MEASURED_NOT_CONFIRMED")
+
+    /** Minute, ab der die FRUEHERE Regel (Bedarf in zwei Zyklen in Folge) gehoben haette.
+     *  Gueltig bis zur ersten Anhebung des Laufs - bis dahin sind AN und AUS gleich. */
+    private fun alteRegelAb(l: List<FuseCycleRunner.Outcome>, von: Long = 0L, bis: Long = Long.MAX_VALUE) =
+        l.indices.firstOrNull { minuteVon(l[it]) in von..bis && it > 0 && bedarfErfuellt(l[it]) && bedarfErfuellt(l[it - 1]) }
+            ?.let { minuteVon(l[it]) }
+
     /**
-     * GEGENBEFUND, NICHT BEHOBEN (15.09.): ein kleiner Sprung (+8 mg/dl, zwei
-     * Messwerte) UNTER der Schutzschwelle startet die Anhebung. Die
-     * Bestaetigung ueber die BGI-bereinigte UKF-Rate ist kein unabhaengiger
-     * Nachweis eines tatsaechlichen Anstiegs. Dieser Test DOKUMENTIERT die
-     * Schwaeche - sein Gruen heisst nicht, dass sie behoben ist. v53 bleibt AUS
-     * und ist nicht aktivierungsreif. Keine Zyklenzahl wird auf ihn abgestimmt;
-     * eine robustere Bestaetigung braucht zuerst einen Vertrag (Bericht 5.10).
-     * Wird der Test rot, hat sich das Verhalten geaendert - dann den Vertrag
-     * pruefen und ihn in `Halte-Anhebung 5` ueberfuehren.
+     * GEGENBEFUND, DOKUMENTIERT (15.09.): ein kleiner Sprung (+8 mg/dl, zwei
+     * Messwerte) UNTER der Schutzschwelle traegt den BGI-bereinigten Bedarf in
+     * zwei Zyklen hintereinander - die fruehere Ratenbestaetigung hob damit
+     * (min 29). Die Schwaeche der RATE bleibt hier sichtbar festgehalten;
+     * geprueft wird zusaetzlich, dass die Messbestaetigung ihn abweist.
      */
     @Test
-    fun `Halte-Anhebung Gegenbefund - kleiner Sensorsprung startet die Anhebung`(@TempDir dir: File) {
+    fun `Halte-Anhebung Gegenbefund - kleiner Sensorsprung traegt den Bedarf, die Messbestaetigung weist ihn ab`(@TempDir dir: File) {
         val sprung = { formZusatz = { m: Double -> if (m >= 28.0 && m < 30.0) 8.0 else 0.0 } }
         val refAn = halteLauf(dir, "ref", true, 45) {}
         val sAus = halteLauf(dir, "sprung", false, 45, form = sprung)
@@ -8498,10 +8523,166 @@ class TransportWiringTest : TestBaseWithProfile() {
         halteZeilen("sprung", sAus, sAn)
         halteGrundzusagen(sAus, sAn)
         assertTrue(sAus.count { minuteVon(it) in 28L..30L && it.livenessActive } == 3, "Vorbedingung: Kanal bewaffnet, als der Sprung kommt")
-        assertTrue(refAn.none { minuteVon(it) in 28L..34L && hebt(it) }, "Vorbedingung: ohne Sprung keine Anhebung im Fenster")
+        assertTrue(alteRegelAb(refAn, 28L, 34L) == null, "Vorbedingung: ohne Sprung traegt der Bedarf im Fenster nicht")
+        val alt = alteRegelAb(sAn, 28L, 34L)
+        assertTrue(alt != null, "Gegenbefund: der Sprung traegt den Bedarf zwei Zyklen in Folge")
         val sprungHebt = sAn.filter { minuteVon(it) in 28L..34L && hebt(it) }.map { minuteVon(it) }
-        println("HALTE sprung: Anhebung im Fenster $sprungHebt, Mehrmenge 28-45 ${"%.2f".format(mehrmenge(sAus, sAn, 28L, 45L))} U")
-        assertTrue(sprungHebt.isNotEmpty(), "Befund: der kleine Sprung startet die Anhebung")
+        println("HALTE sprung: alte Regel haette ab min $alt gehoben, Messbestaetigung hebt in $sprungHebt")
+        assertTrue(sprungHebt.isEmpty(), "die Messbestaetigung weist den kleinen Sprung ab")
+    }
+
+    /**
+     * Verzoegerung bei ECHTEN Anstiegen: erste Anhebung mit Messbestaetigung
+     * gegen die Minute, ab der die fruehere Ratenregel gehoben haette. Eine
+     * Bestaetigung, die den fruehen Nutzen verliert, erfuellt das Ziel nicht -
+     * deshalb wird die Verzoegerung gemessen und ausgegeben, nicht versteckt.
+     */
+    @Test
+    fun `Halte-Anhebung Messbestaetigung 1 - Verzoegerung bei echten Anstiegen`(@TempDir dir: File) {
+        val faelle = listOf<Pair<String, () -> Unit>>(
+            "anstieg" to {},
+            "langsam" to { steigungNachKnick = 1.2 },
+            "rauschen" to { formZusatz = { m: Double -> if (kotlin.math.floor(m).toInt() % 2 == 0) 1.5 else -1.5 } },
+        )
+        var mitAnhebung = 0
+        for ((name, form) in faelle) {
+            val aus = halteLauf(dir, "verz_$name", false, 45, form = form)
+            val an = halteLauf(dir, "verz_$name", true, 45, form = form)
+            halteZeilen("verz_$name", aus, an)
+            halteGrundzusagen(aus, an)
+            val alt = alteRegelAb(an)
+            val neu = an.firstOrNull { hebt(it) }?.let { minuteVon(it) }
+            println(
+                "HALTE verzoegerung $name: alte Ratenregel ab min $alt, Messbestaetigung ab min $neu, " +
+                    "Verzoegerung ${if (alt != null && neu != null) neu - alt else null} min, hebende Zyklen ${an.count { hebt(it) }}, " +
+                    "Mehrmenge bis min 30 ${"%.2f".format(mehrmenge(aus, an, 0L, 30L))} U, gesamt ${"%.2f".format(mehrmenge(aus, an, 0L, 45L))} U",
+            )
+            if (neu != null) {
+                mitAnhebung++
+                assertTrue(alt != null && neu >= alt, "$name: die Messbestaetigung hebt nie frueher als die alte Regel")
+            }
+        }
+        assertTrue(mitAnhebung >= 1, "positiver Nachweis: mindestens ein echter Anstieg hebt mit Messbestaetigung")
+    }
+
+    /**
+     * Artefakte auf dem anhaltenden Anstieg im Fenster, in dem der Bedarf ohne
+     * Artefakt NICHT traegt (ab min 24). Vergleich jeweils AUS/AN und gegen die
+     * artefaktfreie Referenz. Zwei Klassen:
+     *  - ABZUWEISEN: Kompressionserholung (Tief -25, Rueckkehr ueber 5 min) -
+     *    waehrend der Rueckkehr keine Anhebung,
+     *  - NICHT UNTERSCHEIDBAR (dokumentiert, nicht als abgewiesen behauptet):
+     *    mehrstufiger Sprung im Blocktakt und langsame Artefaktrampe - sie
+     *    bilden neue Hochs wie ein echter Anstieg. Geprueft wird nur, dass die
+     *    Mehrmenge durch die Kappe begrenzt bleibt.
+     */
+    @Test
+    fun `Halte-Anhebung Messbestaetigung 2 - mehrstufige Spruenge, Artefaktrampe, Kompressionserholung`(@TempDir dir: File) {
+        val refAus = halteLauf(dir, "art_ref", false, 45) {}
+        val refAn = halteLauf(dir, "art_ref", true, 45) {}
+        assertTrue(refAn.none { minuteVon(it) in 27L..40L && hebt(it) }, "Vorbedingung: ohne Artefakt keine Anhebung im Fenster")
+
+        fun lauf(name: String, zusatz: (Double) -> Double): Pair<List<FuseCycleRunner.Outcome>, List<FuseCycleRunner.Outcome>> {
+            val aus = halteLauf(dir, name, false, 45) { formZusatz = zusatz }
+            val an = halteLauf(dir, name, true, 45) { formZusatz = zusatz }
+            halteZeilen(name, aus, an)
+            halteGrundzusagen(aus, an)
+            val hebend = an.filter { minuteVon(it) in 27L..45L && hebt(it) }.map { minuteVon(it) }
+            println(
+                "HALTE $name: alte Ratenregel ab min ${alteRegelAb(an, 27L, 45L)}, Anhebung in $hebend, " +
+                    "Mehrmenge 27-45 ${"%.2f".format(mehrmenge(aus, an, 27L, 45L))} U (Referenz ${"%.2f".format(mehrmenge(refAus, refAn, 27L, 45L))} U), " +
+                    "Kanal aktiv ${aus.count { minuteVon(it) in 27L..45L && it.livenessActive }} Zyklen",
+            )
+            return aus to an
+        }
+
+        // Kompressionserholung GROSS (-25 bei min 28-29, Rueckkehr min 30-35): im Rig
+        // beendet der bestehende Schutz den Kanal - kein Nachweis ueber die Anhebung.
+        val (kAus, kAn) = lauf("kompr_erholung") { m ->
+            when {
+                m < 28.0 -> 0.0
+                m < 30.0 -> -25.0
+                m < 35.0 -> -25.0 + (m - 30.0) * 5.0
+                else -> 0.0
+            }
+        }
+        assertTrue(kAn.none { minuteVon(it) in 30L..35L && hebt(it) }, "keine Anhebung waehrend der Kompressionserholung")
+        assertTrue(mehrmenge(kAus, kAn, 27L, 45L) <= mehrmenge(refAus, refAn, 27L, 45L) + 1e-9, "Kompressionserholung: keine Mehrmenge")
+        // Kompressionserholung KLEIN (-10 bei min 28-29, Rueckkehr min 30-35). Auch hier
+        // beendet der bestehende Wendeausstieg den Kanal (TURN_EXIT, Sperre bis ~min 37) -
+        // die Anhebung selbst wird nicht erreicht. Geprueft wird deshalb die
+        // MESSBESTAETIGUNG direkt, die unabhaengig vom Kanal fortgeschrieben wird: waehrend
+        // Tief und Erholung bis unter das alte Niveau keine Bestaetigung. Danach (neues Hoch
+        // durch den weiterlaufenden echten Anstieg) ist sie nicht zu trennen - dokumentiert.
+        val (kkAus, kkAn) = lauf("kompr_klein") { m ->
+            when {
+                m < 28.0 -> 0.0
+                m < 30.0 -> -10.0
+                m < 35.0 -> -10.0 + (m - 30.0) * 2.0
+                else -> 0.0
+            }
+        }
+        val bestaetigung = app.aaps.fuse.core.controller.MeasuredRiseEvidence.CONFIRM_BLOCKS
+        assertTrue(kkAn.count { minuteVon(it) in 28L..34L && it.livenessHold.evidenceDenial != null } >= 5, "Vorbedingung: die Messbestaetigung wird im Fenster ausgewertet")
+        assertTrue(kkAn.none { minuteVon(it) in 28L..34L && it.livenessHold.streak >= bestaetigung }, "kleine Kompression: keine Messbestaetigung waehrend Tief und Erholung")
+        println("HALTE kompr_klein: Messbestaetigung ab min ${kkAn.firstOrNull { minuteVon(it) > 34L && it.livenessHold.streak >= bestaetigung }?.let { minuteVon(it) }} (nicht unterscheidbar: neues Hoch durch den echten Anstieg), Kanal-Exits ${kkAus.mapNotNull { it.livenessExit }.distinct()}")
+        assertTrue(mehrmenge(kkAus, kkAn, 27L, 45L) <= kkAn.count { hebt(it) } * (0.35 * app.aaps.fuse.core.controller.LivenessDriveHold.UPLIFT_CAP_MGDL / refAn.mapNotNull { it.isfMgdlPerU }.minOrNull()!! + 0.05) + 1e-9, "kleine Kompression: Mehrmenge durch die Kappe begrenzt")
+
+        val isf = refAn.mapNotNull { it.isfMgdlPerU }.minOrNull()!!
+        val proZyklus = 0.35 * app.aaps.fuse.core.controller.LivenessDriveHold.UPLIFT_CAP_MGDL / isf + 0.05
+        // NICHT UNTERSCHEIDBAR: gehaltene Stufen +5/+10/+15 im 3-min-Blocktakt.
+        val (sAus, sAn) = lauf("stufen_blocktakt") { m -> if (m < 27.0) 0.0 else if (m < 30.0) 5.0 else if (m < 33.0) 10.0 else 15.0 }
+        assertTrue(mehrmenge(sAus, sAn, 27L, 45L) <= sAn.count { hebt(it) } * proZyklus + 1e-9, "Stufen: Mehrmenge durch die Kappe begrenzt")
+        // NICHT UNTERSCHEIDBAR: langsame Artefaktrampe +1 mg/dl/min ueber 12 min, dann gehalten.
+        val (rAus, rAn) = lauf("artefaktrampe") { m -> if (m < 27.0) 0.0 else if (m < 39.0) m - 27.0 else 12.0 }
+        assertTrue(mehrmenge(rAus, rAn, 27L, 45L) <= rAn.count { hebt(it) } * proZyklus + 1e-9, "Rampe: Mehrmenge durch die Kappe begrenzt")
+    }
+
+    /** Luecke (> 3 min) und Kalibrierwechsel mitten in der Anhebung beginnen die Bestaetigung neu. */
+    @Test
+    fun `Halte-Anhebung Messbestaetigung 3 - Luecke und Kalibrierwechsel beginnen neu`(@TempDir dir: File) {
+        fun pruefe(name: String, an: List<FuseCycleRunner.Outcome>, bruchMin: Long) {
+            halteZeilen(name, an, an)
+            assertTrue(an.any { minuteVon(it) == bruchMin - 1 && hebt(it) }, "$name Vorbedingung: Anhebung vor dem Bruch")
+            val nach = an.filter { minuteVon(it) >= bruchMin }
+            // Nach dem Bruch braucht die Bestaetigung zwei frische Bloecke ueber einem neuen Bezug:
+            // mindestens neun neue Werte - vorher keine Anhebung.
+            val erste = nach.firstOrNull { hebt(it) }?.let { minuteVon(it) }
+            println("HALTE $name: erste Anhebung nach dem Bruch bei min $erste, Belege ${nach.take(12).map { it.livenessHold.evidenceDenial }}")
+            assertTrue(nach.filter { minuteVon(it) < bruchMin + 6 }.none { hebt(it) }, "$name: keine Anhebung vor neuer Bestaetigung")
+            assertTrue(nach.any { it.livenessHold.streak == 0 }, "$name: die Folge beginnt neu")
+        }
+        // Bruch bei min 19 - mitten in der messbestaetigten Anhebung des Anstiegs (min 17-23).
+        val luecke = halteLauf(dir, "luecke", true, 45) { lueckeVonMin = 19; lueckeBisMin = 24 }
+        pruefe("luecke", luecke, 19L)
+        val kalib = halteLauf(dir, "kalibrierung", true, 45, vorZyklus = { m -> if (m == 19 && kalibrierStart < 0L) kalibrierStart = clock }) {}
+        pruefe("kalibrierung", kalib, 19L)
+    }
+
+    /** Doppelt so viele Loop-Laeufe ueber dieselben CGM-Werte bestaetigen nicht frueher. */
+    @Test
+    fun `Halte-Anhebung Messbestaetigung 4 - zusaetzliche Loop-Laeufe mit denselben Daten zaehlen nicht`(@TempDir dir: File) {
+        val einfach = halteLauf(dir, "takt", true, 45) {}
+        val doppelt = halteLauf(dir, "takt", true, 45, loopTaktMs = 30_000L) {}
+        halteZeilen("takt30", doppelt, doppelt)
+        fun bestaetigtAb(l: List<FuseCycleRunner.Outcome>) =
+            l.firstOrNull { it.livenessHold.streak >= app.aaps.fuse.core.controller.MeasuredRiseEvidence.CONFIRM_BLOCKS }
+                ?.let { (it.computeTs - start) / 1000L }
+        val e = bestaetigtAb(einfach)
+        val d = bestaetigtAb(doppelt)
+        println("HALTE takt: bestaetigt ab s $e (60-s-Loop) / $d (30-s-Loop)")
+        assertTrue(e != null && d != null, "Vorbedingung: beide Laeufe bestaetigen")
+        assertTrue(d!! >= e!!, "der doppelte Loop-Takt bestaetigt nicht frueher")
+        // Im Rig bricht der Runner Laeufe ohne neuen CGM-Wert bereits vorher ab (keine
+        // Auswertung) - die Zaehlung der Messbestaetigung selbst prueft der Kerntest.
+        // Hier: die Folge waechst nur mit abgeschlossenen Bloecken, also frueestens alle
+        // drei CGM-Werte - auch wenn doppelt so oft gerechnet wird.
+        val gerechnet = doppelt.filter { it.livenessHold.evidenceDenial != null || it.livenessHold.streak > 0 }
+        val zuwachsTs = gerechnet.zipWithNext().filter { (a, b) -> b.livenessHold.streak > a.livenessHold.streak }.map { it.second.computeTs }
+        val abstaende = zuwachsTs.zipWithNext { a, b -> (b - a) / 1000L }
+        println("HALTE takt: Zuwachs-Abstaende s $abstaende, ausgewertete Laeufe ${gerechnet.size} von ${doppelt.size}")
+        assertTrue(zuwachsTs.isNotEmpty(), "Vorbedingung: die Folge waechst im doppelten Takt")
+        assertTrue(abstaende.all { it >= 3 * 60L - 1 }, "Zuwachs hoechstens je drei neue CGM-Werte: $abstaende")
     }
 
     private fun livenessLage(dir: File): FuseLedgerAdapter {

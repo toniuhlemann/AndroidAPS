@@ -858,7 +858,8 @@ class FuseStateExportTest {
         // Evidenzbestand und stabile Rohreihe tragen.
         // v52 buchungsbedingter Ausgang ohne neue Wiederanlaufsperre (Default aus).
         // v53 Halte-Anhebung des Stoerungsterms im Liveness-Bedarf (Default aus).
-        assertEquals(53, FuseStateJson.RULE_SET_VERSION)
+        // v54 MEAL-Bindung und Messbestaetigung der Halte-Anhebung (Default aus).
+        assertEquals(54, FuseStateJson.RULE_SET_VERSION)
         assertTrue(
             FuseStateJson.hashOf(cfg)!!.isNotEmpty(),
             "und der Hash bleibt berechenbar",
