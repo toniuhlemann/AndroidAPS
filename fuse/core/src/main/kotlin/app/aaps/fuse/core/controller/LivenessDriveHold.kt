@@ -21,6 +21,10 @@ import kotlin.math.min
  * Liveness-Bedarf gelegt.
  *
  * ENG BEGRENZT:
+ *  - nur unter GUELTIGER MEAL-Autorisierung (Tonis Review 15.09.: der
+ *    Kandidat ist ein Mahlzeitenkandidat - CORRECTION hebt nie). Verlust der
+ *    Autorisierung oder eine andere Autorisierungsidentitaet (Markerwechsel)
+ *    setzt die Bestaetigung zurueck,
  *  - nur ein laufender, bereits bewaffneter Liveness-Lauf (alle Tore davor
  *    unveraendert; keine Bewaffnung wird dadurch frueher),
  *  - nur der produktive Zerfall (ExponentialDecay mit dem konfigurierten tau,
@@ -49,6 +53,7 @@ object LivenessDriveHold {
     enum class Denial {
         DISABLED,
         NOT_ACTIVE,
+        NOT_MEAL_AUTHORIZED,
         DECAY_NOT_BASELINE,
         HORIZON_INVALID,
         DRIVE_NOT_POSITIVE,
@@ -61,6 +66,12 @@ object LivenessDriveHold {
         val enabled: Boolean,
         /** Der Liveness-Lauf ist bewaffnet und rechnet in diesem Zyklus einen Kandidaten. */
         val livenessActive: Boolean,
+        /** Gueltige MEAL-Autorisierung in diesem Zyklus ([DosingContext.Decision.mealAuthorized]). */
+        val mealAuthorized: Boolean,
+        /** Identitaet der Autorisierung ([DosingContext.Decision.authorizationId]); 0 = keine. */
+        val authorizationId: Long,
+        /** Identitaet, unter der [previousStreak] bestaetigt wurde; 0 = keine. */
+        val previousAuthorizationId: Long,
         /** Modellantrieb der Mittelbahn [mg/dl/min] (vor dem Zerfall). */
         val driveMeanMgdlPerMin: Double,
         /** Gemessene BGI-bereinigte Rate [mg/dl/min]; null = nicht berechenbar. */
@@ -74,8 +85,11 @@ object LivenessDriveHold {
         val previousStreak: Int,
     )
 
-    /** [upliftMgdl] >= 0; [streak] ist der Stand fuer den naechsten Zyklus. */
-    data class Result(val upliftMgdl: Double, val streak: Int, val denial: Denial?)
+    /**
+     * [upliftMgdl] >= 0; [streak] ist der Stand fuer den naechsten Zyklus und
+     * gilt NUR fuer [authorizationId] (0 bei jeder Ablehnung vor der Bestaetigung).
+     */
+    data class Result(val upliftMgdl: Double, val streak: Int, val denial: Denial?, val authorizationId: Long = 0L)
 
     /** Zusatzgewicht der Halte- gegenueber der reinen Exponentialbahn bis [horizonMin]. */
     fun extraWeight(horizonMin: Int, tauMin: Double, holdMin: Int = HOLD_MIN): Double {
@@ -88,6 +102,7 @@ object LivenessDriveHold {
     fun decide(i: Input): Result {
         if (!i.enabled) return Result(0.0, 0, Denial.DISABLED)
         if (!i.livenessActive) return Result(0.0, 0, Denial.NOT_ACTIVE)
+        if (!i.mealAuthorized || i.authorizationId <= 0L) return Result(0.0, 0, Denial.NOT_MEAL_AUTHORIZED)
         val tau = (i.decay as? DriveDecayModel.ExponentialDecay)?.tauMin
         if (tau == null || tau != i.baselineTauMin.toDouble() || i.decayNegativeDrive != null)
             return Result(0.0, 0, Denial.DECAY_NOT_BASELINE)
@@ -97,9 +112,11 @@ object LivenessDriveHold {
         val fast = i.fastDriveMgdlPerMin
         if (fast == null || !fast.isFinite()) return Result(0.0, 0, Denial.FAST_DRIVE_MISSING)
         if (fast < drive) return Result(0.0, 0, Denial.FAST_BELOW_DRIVE)
-        val streak = minOf(i.previousStreak.coerceAtLeast(0) + 1, 99)
-        if (streak < CONFIRM_CYCLES) return Result(0.0, streak, Denial.NOT_CONFIRMED)
+        // Eine Bestaetigung unter einer ANDEREN Autorisierung zaehlt nicht.
+        val vorher = if (i.previousAuthorizationId == i.authorizationId) i.previousStreak.coerceAtLeast(0) else 0
+        val streak = minOf(vorher + 1, 99)
+        if (streak < CONFIRM_CYCLES) return Result(0.0, streak, Denial.NOT_CONFIRMED, i.authorizationId)
         val uplift = min(UPLIFT_CAP_MGDL, drive * extraWeight(i.releaseHorizonMin, tau))
-        return Result(uplift.coerceAtLeast(0.0), streak, null)
+        return Result(uplift.coerceAtLeast(0.0), streak, null, i.authorizationId)
     }
 }

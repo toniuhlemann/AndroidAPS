@@ -1450,7 +1450,9 @@ class FuseCycleRunner(
         // Halte-Anhebung: die Bestaetigungsfolge gilt nur ueber Zyklen, die sie
         // ERNEUT bestaetigen - jeder fruehe Ausstieg dieses Zyklus beginnt neu.
         val holdVorzyklus = livenessHoldStreak
+        val holdAuthVorzyklus = livenessHoldAuthId
         livenessHoldStreak = 0
+        livenessHoldAuthId = 0L
 
         // ---- Marker und Evidenz-Episode: GANZ VORNE ------------------------
         //
@@ -5377,6 +5379,9 @@ class FuseCycleRunner(
                 app.aaps.fuse.core.controller.LivenessDriveHold.Input(
                     enabled = cfg.livenessDriveHoldEnabled,
                     livenessActive = livenessActive,
+                    mealAuthorized = dosingCtx.mealAuthorized,
+                    authorizationId = dosingCtx.authorizationId,
+                    previousAuthorizationId = holdAuthVorzyklus,
                     driveMeanMgdlPerMin = built.input.drive.meanMgdlPerMin,
                     fastDriveMgdlPerMin = fastDrive(signal),
                     decay = built.input.decay,
@@ -5387,6 +5392,7 @@ class FuseCycleRunner(
                 ),
             )
             livenessHoldStreak = halt.streak
+            livenessHoldAuthId = halt.authorizationId
             livenessHoldUpliftMgdl = halt.upliftMgdl
             livenessHoldDenial = halt.denial?.name
             val bedarfsMean = releaseMean + halt.upliftMgdl
@@ -7549,6 +7555,9 @@ class FuseCycleRunner(
      *  Speicher und am Zyklusbeginn genullt: jeder Zyklus ohne erneute
      *  Bestaetigung - auch ein Abbruch oder Neustart - beginnt die Folge neu. */
     private var livenessHoldStreak = 0
+
+    /** MEAL-Autorisierung, unter der [livenessHoldStreak] bestaetigt wurde (0 = keine). */
+    private var livenessHoldAuthId = 0L
 
     /** Fingerprint ALLER drei Kanal-Stellgroessen (Schwelle, Kanaldeckel,
      *  Re-Arm-Zeit), unter denen Streak und Lauf gezaehlt wurden. null =

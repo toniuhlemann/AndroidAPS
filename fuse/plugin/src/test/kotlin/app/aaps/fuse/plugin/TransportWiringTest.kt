@@ -8213,10 +8213,26 @@ class TransportWiringTest : TestBaseWithProfile() {
 
     private fun minuteVon(o: FuseCycleRunner.Outcome) = (o.computeTs - start) / 60_000L
 
-    private fun halteLauf(dir: File, name: String, an: Boolean, zyklen: Int, form: () -> Unit): List<FuseCycleRunner.Outcome> {
-        val d = File(dir, name + if (an) "_an" else "_aus").also(File::mkdirs)
+    /** Zyklus, in dem der Mahlzeiten-Marker gedrueckt wird (Minute = Zyklusnummer).
+     *  NACH dem Signal-Anlauf: ein waehrend der Abbruchzyklen gesetzter Marker
+     *  wird beim ersten vollstaendigen Zyklus nur VORGEFUNDEN (MARKER_NOT_PINNED)
+     *  und traegt keine MEAL-Vollmacht - im Rig gesehen. */
+    private val halteMarkerZyklus = 8
+
+    /**
+     * @param meal true = Marker in Zyklus [halteMarkerZyklus] gedrueckt (MEAL-Vollmacht),
+     *   false = kein Marker (CORRECTION).
+     * @param vorZyklus wird VOR dem Zyklus mit dieser Nummer aufgerufen - fuer
+     *   Markerwechsel u. a. mitten im Lauf.
+     */
+    private fun halteLauf(
+        dir: File, name: String, an: Boolean, zyklen: Int, meal: Boolean = true,
+        vorZyklus: (Int) -> Unit = {}, form: () -> Unit,
+    ): List<FuseCycleRunner.Outcome> {
+        val d = File(dir, name + (if (meal) "" else "_korr") + if (an) "_an" else "_aus").also(File::mkdirs)
         abgaben.clear(); boluses = emptyList(); rueckfuehrung = false
         lueckeVonMin = null; lueckeBisMin = null; rohSerie = null; formZusatz = null
+        markerAt = 0L; mealPowerMin = 120
         livenessLage(d)
         steigungNachKnick = 2.0
         form()
@@ -8224,7 +8240,11 @@ class TransportWiringTest : TestBaseWithProfile() {
         abgaben += Abgabe(start - 30 * 60_000L, 4.5 / 0.9, wirktAufReihe = false, isfMgdlPerU = 61.0)
         bolusIobU = null
         rueckfuehrung = true
-        return (1..zyklen).map { transport(d) }.also { formZusatz = null; halteAnhebungAn = false }
+        return (1..zyklen).map { i ->
+            if (meal && i == halteMarkerZyklus) markerAt = clock + taktMs
+            vorZyklus(i)
+            transport(d)
+        }.also { formZusatz = null; halteAnhebungAn = false; markerAt = 0L; mealPowerMin = 120 }
     }
 
     /** Gemeinsame Zusagen jedes Laufs: AUS hebt nie; AN hebt nur bewaffnet, bestaetigt und gekappt. */
@@ -8247,7 +8267,8 @@ class TransportWiringTest : TestBaseWithProfile() {
         for ((a, b) in aus.zip(an)) println(
             "HALTE $name min ${minuteVon(b)} q1 ${"%.0f".format(a.signal?.q1 ?: Double.NaN)}/${"%.0f".format(b.signal?.q1 ?: Double.NaN)} " +
                 "smb ${a.decision.smbU}/${b.decision.smbU} aktiv ${a.livenessActive}/${b.livenessActive} " +
-                "up ${"%.1f".format(b.livenessHold.upliftMgdl ?: Double.NaN)} streak ${b.livenessHold.streak} ${b.livenessHold.denial}"
+                "up ${"%.1f".format(b.livenessHold.upliftMgdl ?: Double.NaN)} streak ${b.livenessHold.streak} ${b.livenessHold.denial} " +
+                "profil ${b.livenessProfile}/${b.livenessProfileReason} lv ${b.livenessDenial}/${b.livenessExit}"
         )
     }
 
@@ -8265,7 +8286,15 @@ class TransportWiringTest : TestBaseWithProfile() {
             val erwartet = kotlin.math.max(0.0, (o.livenessReleaseMeanMgdl!! + o.livenessHold.upliftMgdl!! - o.targetMgdl!!) / o.isfMgdlPerU!!)
             assertEquals(erwartet, o.livenessNeedU!!, 1e-9, "needU traegt die Anhebung: min ${minuteVon(o)}")
         }
-        assertTrue(an.sumOf { it.decision.smbU } > aus.sumOf { it.decision.smbU } + 1e-9, "und sie erreicht die Menge")
+        // Unter MEAL zieht die Anhebung Abgabe VOR (kumuliert zeitweise mehr),
+        // die Gesamtmenge bleibt durch Raster und Deckel begrenzt - im Rig gesehen.
+        var kumAn = 0.0; var kumAus = 0.0; var vorsprung = 0.0
+        for ((a, b) in aus.zip(an)) {
+            kumAus += a.decision.smbU; kumAn += b.decision.smbU
+            vorsprung = kotlin.math.max(vorsprung, kumAn - kumAus)
+        }
+        println("HALTE anstieg: groesster kumulierter Vorsprung ${"%.2f".format(vorsprung)} U")
+        assertTrue(vorsprung > 1e-9, "und sie erreicht die Menge frueher")
         // Obergrenze der Mehrmenge: je hebendem Zyklus hoechstens Ratio 0,35 x Kappe / ISF plus ein Rasterschritt.
         val isf = an.mapNotNull { it.isfMgdlPerU }.minOrNull()!!
         val grenze = hebend * (0.35 * app.aaps.fuse.core.controller.LivenessDriveHold.UPLIFT_CAP_MGDL / isf + 0.05)
@@ -8298,8 +8327,8 @@ class TransportWiringTest : TestBaseWithProfile() {
     @Test
     fun `Halte-Anhebung 2 - Plateau beendet die Anhebung`(@TempDir dir: File) {
         val form = { knick2AbMin = halteWechselMin.toInt(); steigungNachKnick2 = 0.0 }
-        val aus = halteLauf(dir, "plateau", false, 60, form)
-        val an = halteLauf(dir, "plateau", true, 60, form)
+        val aus = halteLauf(dir, "plateau", false, 60, form = form)
+        val an = halteLauf(dir, "plateau", true, 60, form = form)
         halteZeilen("plateau", aus, an)
         halteGrundzusagen(aus, an)
         heberVorWechsel(an)
@@ -8312,8 +8341,8 @@ class TransportWiringTest : TestBaseWithProfile() {
         // Netto: bis 18 +2, 18-26 -2, ab 26 wieder +2 mg/dl/min.
         val w = halteWechselMin.toDouble()
         val form = { formZusatz = { m: Double -> if (m < w) 0.0 else if (m < w + 8.0) -(m - w) * 4.0 else -32.0 } }
-        val aus = halteLauf(dir, "dip", false, 60, form)
-        val an = halteLauf(dir, "dip", true, 60, form)
+        val aus = halteLauf(dir, "dip", false, 60, form = form)
+        val an = halteLauf(dir, "dip", true, 60, form = form)
         halteZeilen("dip", aus, an)
         halteGrundzusagen(aus, an)
         heberVorWechsel(an)
@@ -8331,8 +8360,8 @@ class TransportWiringTest : TestBaseWithProfile() {
     @Test
     fun `Halte-Anhebung 4 - nachhaltiges Fallen hebt nie`(@TempDir dir: File) {
         val form = { knick2AbMin = halteWechselMin.toInt(); steigungNachKnick2 = -1.5 }
-        val aus = halteLauf(dir, "fallen", false, 60, form)
-        val an = halteLauf(dir, "fallen", true, 60, form)
+        val aus = halteLauf(dir, "fallen", false, 60, form = form)
+        val an = halteLauf(dir, "fallen", true, 60, form = form)
         halteZeilen("fallen", aus, an)
         halteGrundzusagen(aus, an)
         heberVorWechsel(an)
@@ -8359,8 +8388,8 @@ class TransportWiringTest : TestBaseWithProfile() {
         // sofort (im Rig gesehen) - geprueft wird nur, dass die Anhebung dem
         // nichts hinzufuegt. Das ist kein Nachweis ueber die Anhebung selbst.
         val spike = { formZusatz = { m: Double -> if (m >= 28.0 && m < 29.0) 30.0 else 0.0 } }
-        val aAus = halteLauf(dir, "ausreisser", false, 45, spike)
-        val aAn = halteLauf(dir, "ausreisser", true, 45, spike)
+        val aAus = halteLauf(dir, "ausreisser", false, 45, form = spike)
+        val aAn = halteLauf(dir, "ausreisser", true, 45, form = spike)
         halteZeilen("ausreisser", aAus, aAn)
         halteGrundzusagen(aAus, aAn)
         assertTrue(aAus.none { minuteVon(it) == 28L && it.livenessActive }, "Vorbedingung A1: der Schutz beendet den Lauf")
@@ -8369,30 +8398,103 @@ class TransportWiringTest : TestBaseWithProfile() {
 
 
         val kompression = { formZusatz = { m: Double -> if (m >= 15.0 && m < 17.0) -35.0 else 0.0 } }
-        val kAus = halteLauf(dir, "kompression", false, 45, kompression)
-        val kAn = halteLauf(dir, "kompression", true, 45, kompression)
+        val kAus = halteLauf(dir, "kompression", false, 45, form = kompression)
+        val kAn = halteLauf(dir, "kompression", true, 45, form = kompression)
         halteZeilen("kompression", kAus, kAn)
         halteGrundzusagen(kAus, kAn)
         assertTrue(kAn.any { minuteVon(it) == 14L && hebt(it) }, "Vorbedingung: Anhebung aktiv vor der Kompression")
         assertTrue(mehrmenge(kAus, kAn, 15L, 45L) <= mehrmenge(refAus, refAn, 15L, 45L) + 1e-9, "Kompression: keine Mehrmenge")
     }
 
+    // ---- GEGENFAELLE ZUM UMFANG (Tonis Review 15.09.): nur MEAL ----------
+
+    /** CORRECTION, sonst dieselbe Lage: keine Anhebung, Entscheidungen AN == AUS zeichengleich. */
+    @Test
+    fun `Halte-Anhebung Umfang 1 - CORRECTION hebt nie`(@TempDir dir: File) {
+        val mealAn = halteLauf(dir, "umfang", true, 45) {}
+        val aus = halteLauf(dir, "umfang", false, 45, meal = false) {}
+        val an = halteLauf(dir, "umfang", true, 45, meal = false) {}
+        halteZeilen("korrektur", aus, an)
+        halteGrundzusagen(aus, an)
+        assertTrue(mealAn.any { hebt(it) }, "Vorbedingung: dieselbe Form hebt unter MEAL")
+        val aktiv = an.filter { it.livenessActive && it.livenessHold.upliftMgdl != null }
+        assertTrue(aktiv.size >= 5, "Vorbedingung: der Kanal rechnet im Korrekturprofil")
+        aktiv.forEach {
+            assertEquals("CORRECTION", it.livenessProfile)
+            assertEquals("NOT_MEAL_AUTHORIZED", it.livenessHold.denial, "min ${minuteVon(it)}")
+        }
+        assertTrue(an.none { hebt(it) }, "CORRECTION hebt nie")
+        assertEquals(aus.map { bitgleichZeile(it) }, an.map { bitgleichZeile(it) }, "AN == AUS im Korrekturprofil")
+    }
+
     /**
-     * BEFUND, KEIN VERTRAG (15.09.): ein kleiner Sprung (+8 mg/dl, zwei
-     * Messwerte) UNTER der Schutzschwelle startet die Anhebung - die
-     * Zwei-Zyklen-Bestaetigung ueber die UKF-Rate haelt einem Sprungartefakt
-     * nicht stand. Die geforderte Zusage "Sensorartefakte heben nicht" ist fuer
-     * diesen Kandidaten damit NICHT erfuellt; er ist nicht aktivierungsreif.
-     * Parameter werden nicht nachtraeglich auf diesen Test abgestimmt. Wird der
-     * Test rot, hat sich das Verhalten geaendert - dann den Vertrag pruefen
-     * und ihn in `Halte-Anhebung 5` ueberfuehren.
+     * Autorisierungsverlust mitten in der Anhebung, zwei Wege:
+     *  a) Frist endet: Marker min 8 + kleinste zulaessige Frist 15 min -> min 23
+     *     (die Anhebung des Anstiegs laeuft bis min 23),
+     *  b) Ruecknahme des Markers bei min 18.
+     * Ab dem Verlust keine Anhebung; wo die Anhebung ausgewertet wird, steht
+     * NOT_MEAL_AUTHORIZED mit Folge 0.
      */
     @Test
-    fun `Halte-Anhebung Befund - kleiner Sensorsprung startet die Anhebung`(@TempDir dir: File) {
+    fun `Halte-Anhebung Umfang 2 - Autorisierungsverlust setzt zurueck`(@TempDir dir: File) {
+        fun pruefe(name: String, l: List<FuseCycleRunner.Outcome>, verlustMin: Long) {
+            halteZeilen(name, l, l)
+            assertTrue(l.any { minuteVon(it) == verlustMin - 1 && hebt(it) }, "$name Vorbedingung: Anhebung vor dem Verlust")
+            val nach = l.filter { minuteVon(it) >= verlustMin }
+            assertTrue(nach.none { hebt(it) }, "$name: nach dem Verlust keine Anhebung")
+            val rechnend = nach.filter { it.livenessHold.upliftMgdl != null }
+            rechnend.forEach {
+                assertEquals("NOT_MEAL_AUTHORIZED", it.livenessHold.denial, "$name min ${minuteVon(it)}")
+                assertEquals(0, it.livenessHold.streak)
+            }
+            println("HALTE $name: rechnende Zyklen nach dem Verlust ${rechnend.size}, Profile ${nach.map { it.livenessProfileReason }.distinct()}")
+        }
+        val frist = halteLauf(dir, "frist", true, 40) { mealPowerMin = 15 }
+        pruefe("frist", frist, halteMarkerZyklus + 15L)
+        val ruecknahme = halteLauf(dir, "ruecknahme", true, 40, vorZyklus = { i -> if (i == halteWechselMin.toInt()) markerAt = 0L }) {}
+        pruefe("ruecknahme", ruecknahme, halteWechselMin)
+    }
+
+    /** Markerwechsel (neuer Druck bei min 18, mitten in der Anhebung): die Folge beginnt neu. */
+    @Test
+    fun `Halte-Anhebung Umfang 3 - Markerwechsel setzt die Bestaetigung zurueck`(@TempDir dir: File) {
+        val an = halteLauf(dir, "wechsel", true, 40, vorZyklus = { i -> if (i == halteWechselMin.toInt()) markerAt = clock + taktMs }) {}
+        halteZeilen("wechsel", an, an)
+        assertTrue(an.any { minuteVon(it) == halteWechselMin - 1 && hebt(it) }, "Vorbedingung: Anhebung vor dem Wechsel")
+        val beimWechsel = an.first { minuteVon(it) == halteWechselMin }
+        assertEquals(beimWechsel.computeTs, beimWechsel.markerPowerPinnedFor, "Vorbedingung: der neue Marker ist gepinnt")
+        assertTrue(!hebt(beimWechsel), "im Wechselzyklus keine Anhebung")
+        assertTrue(beimWechsel.livenessHold.streak <= 1, "Folge neu: ${beimWechsel.livenessHold.streak}")
+        // Im Rig beendet der Markerwechsel den Liveness-Lauf selbst (Exit
+        // MARKER_CHANGED), die Anhebung wird im Wechselzyklus gar nicht
+        // ausgewertet - die Folge ist schon durch das Nullen am Zyklusbeginn
+        // weg. Der Identitaetsvergleich ist hier zweite Sicherung; direkt
+        // geprueft wird er im Kerntest.
+        val erste = an.firstOrNull { minuteVon(it) > halteWechselMin && hebt(it) }
+        println("HALTE wechsel: Wechselzyklus hold=${beimWechsel.livenessHold.denial} exit=${beimWechsel.livenessExit}, erste Anhebung danach ${erste?.let { minuteVon(it) }}")
+        if (erste != null) assertTrue(
+            an.any { minuteVon(it) in halteWechselMin..<minuteVon(erste) && it.livenessHold.denial == "NOT_CONFIRMED" },
+            "nach dem Wechsel erst neue Bestaetigung",
+        )
+    }
+
+    /**
+     * GEGENBEFUND, NICHT BEHOBEN (15.09.): ein kleiner Sprung (+8 mg/dl, zwei
+     * Messwerte) UNTER der Schutzschwelle startet die Anhebung. Die
+     * Bestaetigung ueber die BGI-bereinigte UKF-Rate ist kein unabhaengiger
+     * Nachweis eines tatsaechlichen Anstiegs. Dieser Test DOKUMENTIERT die
+     * Schwaeche - sein Gruen heisst nicht, dass sie behoben ist. v53 bleibt AUS
+     * und ist nicht aktivierungsreif. Keine Zyklenzahl wird auf ihn abgestimmt;
+     * eine robustere Bestaetigung braucht zuerst einen Vertrag (Bericht 5.10).
+     * Wird der Test rot, hat sich das Verhalten geaendert - dann den Vertrag
+     * pruefen und ihn in `Halte-Anhebung 5` ueberfuehren.
+     */
+    @Test
+    fun `Halte-Anhebung Gegenbefund - kleiner Sensorsprung startet die Anhebung`(@TempDir dir: File) {
         val sprung = { formZusatz = { m: Double -> if (m >= 28.0 && m < 30.0) 8.0 else 0.0 } }
         val refAn = halteLauf(dir, "ref", true, 45) {}
-        val sAus = halteLauf(dir, "sprung", false, 45, sprung)
-        val sAn = halteLauf(dir, "sprung", true, 45, sprung)
+        val sAus = halteLauf(dir, "sprung", false, 45, form = sprung)
+        val sAn = halteLauf(dir, "sprung", true, 45, form = sprung)
         halteZeilen("sprung", sAus, sAn)
         halteGrundzusagen(sAus, sAn)
         assertTrue(sAus.count { minuteVon(it) in 28L..30L && it.livenessActive } == 3, "Vorbedingung: Kanal bewaffnet, als der Sprung kommt")

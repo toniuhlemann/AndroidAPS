@@ -19,7 +19,33 @@ class LivenessDriveHoldTest {
         decayNeg: DriveDecayModel? = null,
         horizon: Int = 60,
         prev: Int = 1,
-    ) = LivenessDriveHold.Input(enabled, active, drive, fast, decay, decayNeg, 60, horizon, prev)
+        meal: Boolean = true,
+        auth: Long = 1_000L,
+        prevAuth: Long = 1_000L,
+    ) = LivenessDriveHold.Input(enabled, active, meal, auth, prevAuth, drive, fast, decay, decayNeg, 60, horizon, prev)
+
+    @Test
+    fun `ohne MEAL-Autorisierung hebt nichts - CORRECTION ist ausgeschlossen`() {
+        for (i in listOf(input(meal = false, prev = 5), input(auth = 0L, prevAuth = 0L, prev = 5))) {
+            val r = LivenessDriveHold.decide(i)
+            assertEquals(LivenessDriveHold.Denial.NOT_MEAL_AUTHORIZED, r.denial)
+            assertEquals(0, r.streak)
+            assertEquals(0.0, r.upliftMgdl, 0.0)
+        }
+    }
+
+    @Test
+    fun `eine andere Autorisierung setzt die Bestaetigung zurueck`() {
+        val r = LivenessDriveHold.decide(input(prev = 7, auth = 2_000L, prevAuth = 1_000L))
+        assertEquals(LivenessDriveHold.Denial.NOT_CONFIRMED, r.denial)
+        assertEquals(1, r.streak)
+        assertEquals(2_000L, r.authorizationId)
+        assertEquals(0.0, r.upliftMgdl, 0.0)
+        // Dieselbe Autorisierung fuehrt die Folge fort.
+        val weiter = LivenessDriveHold.decide(input(prev = r.streak, auth = 2_000L, prevAuth = r.authorizationId))
+        assertNull(weiter.denial)
+        assertEquals(2, weiter.streak)
+    }
 
     @Test
     fun `das Zusatzgewicht ist die Differenz Halten minus Abklingen`() {

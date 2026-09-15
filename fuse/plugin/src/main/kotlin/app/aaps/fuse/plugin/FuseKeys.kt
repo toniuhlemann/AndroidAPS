@@ -1040,7 +1040,8 @@ enum class FuseBooleanKey(
     /**
      * HALTE-ANHEBUNG DES STOERUNGSTERMS IM LIVENESS-BEDARF - DEFAULT AUS
      * (Tonis Auftrag 15.09., Experiment, kein Aktivierungs-GO). DOSIERWIRKSAM:
-     * eingeschaltet haelt der laufende, bereits bewaffnete Kanal den positiven
+     * eingeschaltet haelt der laufende, bereits bewaffnete Kanal NUR unter
+     * gueltiger MEAL-Autorisierung (CORRECTION nie) den positiven
      * Modellantrieb fuer die Bedarfsrechnung 20 min, bevor er mit dem
      * konfigurierten tau abklingt - nur wenn die gemessene bereinigte Rate ihn
      * zwei Zyklen in Folge erreicht, nie im Rebound-Fenster, Anhebung hoechstens
