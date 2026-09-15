@@ -150,13 +150,13 @@ class MealReboundEvidenceExceptionTest {
     @Test
     fun `Buchung plus Gefahr ist nicht buchungsbedingt ohne Gefahr`() {
         val buchung = ursache(18.3, 12.0)
-        assertTrue(EvidenceLossDiagnosis.bookingWithoutHazard(buchung, emptyList()))
+        assertTrue(EvidenceLossDiagnosis.bookingWithoutCapturedHazard(buchung, emptyList()))
         for (g in listOf(
             keineGefahr.copy(declineMgdl = 2.0),
             keineGefahr.copy(measuredVerdict = GlucoseStability.Verdict.FALLING),
             keineGefahr.copy(descentRisk = true),
-        )) assertFalse(EvidenceLossDiagnosis.bookingWithoutHazard(buchung, EvidenceLossDiagnosis.hazards(g)), "$g")
-        assertFalse(EvidenceLossDiagnosis.bookingWithoutHazard(ursache(0.0, 12.0), emptyList()))
-        assertFalse(EvidenceLossDiagnosis.bookingWithoutHazard(null, emptyList()))
+        )) assertFalse(EvidenceLossDiagnosis.bookingWithoutCapturedHazard(buchung, EvidenceLossDiagnosis.hazards(g)), "$g")
+        assertFalse(EvidenceLossDiagnosis.bookingWithoutCapturedHazard(ursache(0.0, 12.0), emptyList()))
+        assertFalse(EvidenceLossDiagnosis.bookingWithoutCapturedHazard(null, emptyList()))
     }
 }

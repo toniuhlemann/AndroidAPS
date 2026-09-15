@@ -525,6 +525,14 @@ class TransportWiringTest : TestBaseWithProfile() {
      * zugleich als SMB in der Behandlungsliste. Ein reiner [cycle] fuehrt
      * nichts zurueck.
      *
+     * GRENZE DIESER ANNAHME (Tonis Review 15.09.): UNKLAR und UNKORRELIERT
+     * ohne Wirkung sind eine SZENARIOANNAHME dieses Rigs, kein
+     * Sicherheitsvertrag. Unbekannte Lieferung ist keine bewiesene
+     * Nichtlieferung; fuer Transport-Sicherheit waeren "nichts geliefert",
+     * "geliefert, Bestaetigung verspaetet" und "teilweise geliefert" getrennte
+     * Faelle, und die unbekannte Exposition bleibt bis zur Klaerung in der
+     * Haftung (Produktion: Ledger/NotSentProof). Das Rig bildet nur den ersten ab.
+     *
      * VERGANGENHEIT BLEIBT: jede Abgabe traegt den ISF ihres Zyklus. Ein
      * spaeterer ISF-Wechsel veraendert die bereits erzeugte Glukosewirkung
      * frueherer Messpunkte nicht.
@@ -14338,7 +14346,7 @@ class TransportWiringTest : TestBaseWithProfile() {
                     o.underlyingNormalBlock, o.decision.tail?.headroomU, o.preFoundationSmbU,
                     o.phaseAUpfrontState, o.mealFoundation.armed, o.upfrontChain?.recoveryDenial,
                     o.upfrontChain?.currentHazard?.toString()?.replace(",", ";"), o.upfrontChain?.reboundExemptByAuthority,
-                    o.evidenceDeclineMgdl, o.livenessConcurrentHazards?.joinToString("|"), o.livenessBookingWithoutHazard,
+                    o.evidenceDeclineMgdl, o.livenessConcurrentHazards?.joinToString("|"), o.livenessBookingWithoutCapturedHazard,
                 ).joinToString(",")
             }
         }
@@ -14403,7 +14411,7 @@ class TransportWiringTest : TestBaseWithProfile() {
                 val o = transport(d)
                 zeilen += listOf(
                     name, zeile(o).replace(",", ";"), o.livenessEvidenceLossCause, o.livenessConcurrentHazards?.joinToString("|"),
-                    o.livenessBookingWithoutHazard, o.evidenceDeclineMgdl, o.evidenceDeductionMgdl, o.evidenceStockBeforeDeductionMgdl,
+                    o.livenessBookingWithoutCapturedHazard, o.evidenceDeclineMgdl, o.evidenceDeductionMgdl, o.evidenceStockBeforeDeductionMgdl,
                     o.descentRiskActive, (o.livenessReArmUntilTs - start) / 60_000L,
                 ).joinToString(",")
             }
@@ -14429,7 +14437,7 @@ class TransportWiringTest : TestBaseWithProfile() {
                     name, zeile(o).replace(",", ";"), o.mealFoundation.phase, o.mealFoundation.dueU, o.foundationLiftU,
                     o.upfrontChain?.grantSource, o.upfrontChain?.markerFloorLiftU, o.livenessNormalSmbU,
                     o.phaseAUpfrontState, o.phaseAUpfrontRequestedU, o.evidenceStockMgdl, o.evidenceDeductionMgdl,
-                    o.evidenceDeclineMgdl, o.livenessConcurrentHazards?.joinToString("|"), o.livenessBookingWithoutHazard,
+                    o.evidenceDeclineMgdl, o.livenessConcurrentHazards?.joinToString("|"), o.livenessBookingWithoutCapturedHazard,
                     o.preFoundationBlock, o.preFoundationBindingLimit?.replace(",", ";"), o.mealFoundation.remainingInWindowU,
                     o.mealFoundation.markerAuthorized, o.livenessShadowHeadroomU, o.upfrontChain?.recoveryDenial,
                     o.upfrontChain?.currentHazard?.toString()?.replace(",", ";"), o.decision.bindingLimit?.replace(",", ";"),
@@ -14455,11 +14463,22 @@ class TransportWiringTest : TestBaseWithProfile() {
     private fun ausnahmeLage(dir: File, an: Boolean = true): FuseLedgerAdapter {
         markerAt = 0L
         val a = reboundOverrideLage(dir)
-        markerAt = start + 14 * 60_000L
         livenessAusnahmeAn = an
         maxSmbU = 0.05
+        // KORREKT GESTEMPELT (Tonis Review 15.09.): bis Minute 13 ohne Marker
+        // laufen, dann auf den naechsten Zyklus druecken - wie produktiv. Die
+        // fruehere Fassung stempelte Minute 14 bei Uhr Minute 7; der Marker lag
+        // beim Armieren in der Zukunft, das Fundament wurde unautorisiert
+        // armiert (s. `Rig-Falle - Zukunftsmarker`).
+        markerAt = 0L
+        lageVorlauf.clear()
+        while (clock < start + 13 * 60_000L) lageVorlauf += cycle()
+        markerAt = clock + 60_000L
         return a
     }
+
+    /** Die Zyklen, die `ausnahmeLage` vor dem Druck faehrt (Tief, Rebound-Beginn) - fuer Auswertungen, die sie brauchen. */
+    private val lageVorlauf = mutableListOf<FuseCycleRunner.Outcome>()
 
     private fun rb(o: FuseCycleRunner.Outcome) = o.state?.reboundRestMin ?: 0
 
@@ -14743,7 +14762,7 @@ class TransportWiringTest : TestBaseWithProfile() {
         val adapter = ausnahmeLage(dir)
         knick2AbMin = 36
         steigungNachKnick2 = -3.0
-        repeat(27) { cycle() } // bis Minute 34, der Rohfall beginnt nach Minute 36
+        while (clock < start + 34 * 60_000L) cycle() // bis Minute 34, der Rohfall beginnt nach Minute 36
         adapter.episodes.evidenceState = adapter.episodes.evidenceState.copy(stockMgdl = 60.0)
         val o = (1..20).map { cycle() }
         val gegenfall = o.filter {
@@ -14937,10 +14956,9 @@ class TransportWiringTest : TestBaseWithProfile() {
      *  verbucht, Foundation nicht zusaetzlich addiert. */
     @Test
     fun `Ausnahme 11 - groesserer Kandidat wird verbucht, Foundation nicht addiert`(@TempDir dir: File) {
-        ausnahmeLage(dir)
-        maxSmbU = 0.3
-        fundamentAn = true
-        whenever(preferences.get(FuseLongKey.MealMarkerNoPrime)).thenReturn(0L)
+        // Die Lage mit autorisiertem Fundament (korrekt gestempelter Marker, Phase B
+        // waehrend des rohen Fensters) - in Lage B lief die Foundation nie zugleich mit dem Kanal.
+        foundationUeberlappungLage(dir, sofortAnteil = 0.0, mealSchwelle = 120.0, steigung = 3.5, rueck = false)
         val o = (1..60).map { z ->
             transport(dir).also { r ->
                 if (r.decision.smbU > 0.0) assertEquals(
@@ -14949,6 +14967,11 @@ class TransportWiringTest : TestBaseWithProfile() {
             }
         }
         assertTrue(o.any { it.livenessReboundVetoLifted && it.livenessLiftU > 0.0 }) { o.joinToString("\n") { zeile(it) } }
+        // NICHT LEER (Tonis Review 15.09.): mit korrekt gestempeltem Marker ist das
+        // Fundament autorisiert und hebt waehrend des laufenden Kanals wirklich.
+        assertTrue(o.any { it.livenessActive && it.foundationLiftU > 0.0 && it.upfrontChain?.grantSource == "FOUNDATION" }) {
+            "Vorbedingung: echte Foundation bei laufendem Kanal:\n" + o.joinToString("\n") { zeile(it) + " f=${it.mealFoundation.phase}/${it.foundationLiftU}/${it.upfrontChain?.grantSource}" }
+        }
         o.filter { it.livenessActive }.forEach {
             val normal = it.livenessNormalSmbU ?: 0.0
             val live = LivenessChannel.quantize(it.livenessCandidateU, 0.05)
@@ -15040,6 +15063,14 @@ class TransportWiringTest : TestBaseWithProfile() {
         val stichtag = clock
         val vorher = series(stichtag).map { it.timestamp to it.value }
         repeat(20) { transport(dir) }
+        assertTrue(abgaben.count { it.wirktAufReihe && it.ts <= stichtag } >= 1)
+        // DER URSPRUENGLICHE FEHLER: der GLOBALE ISF aendert sich (Profilwechsel).
+        // Die historischen Punkte werden neu berechnet und muessen gleich bleiben -
+        // eine Rueckmutation auf den globalen ISF macht genau diese Zeile rot.
+        val isfVorher = rueckIsf
+        rueckIsf = isfVorher / 2.0
+        assertEquals(vorher, series(stichtag).map { it.timestamp to it.value }, "Profil-ISF-Wechsel schreibt die Vergangenheit nicht um")
+        rueckIsf = isfVorher
         // Eine spaetere Abgabe mit ANDEREM ISF - sie darf die Vergangenheit nicht umschreiben.
         abgaben += Abgabe(clock, 1.0, wirktAufReihe = true, isfMgdlPerU = 30.0)
         assertEquals(vorher, series(stichtag).map { it.timestamp to it.value }, "die Vergangenheit ist fest")
@@ -15067,7 +15098,7 @@ class TransportWiringTest : TestBaseWithProfile() {
      */
     @Test
     fun `Ausnahme 14 - Foundation Phase B mit abgeschlossener Direktdosis und groesserem Kandidaten`(@TempDir dir: File) {
-        foundationUeberlappungLage(dir, sofortAnteil = 1.0, mealSchwelle = 170.0, steigung = 4.0, rueck = true)
+        foundationUeberlappungLage(dir, sofortAnteil = 1.0, mealSchwelle = 170.0, steigung = 3.5, rueck = true)
         val o = (1..60).map { transport(dir) }
         val direkt = o.firstOrNull { it.upfrontChain?.grantSource == "MEAL_UPFRONT" && it.decision.smbU > 0.0 }
             ?: throw AssertionError("Vorbedingung: Direktdosis ausgegeben:\n" + o.joinToString("\n") { zeile(it) })
@@ -15081,7 +15112,11 @@ class TransportWiringTest : TestBaseWithProfile() {
         val live = LivenessChannel.quantize(beleg.livenessCandidateU, 0.05)
         assertEquals(beleg.foundationLiftU, normal, 1e-9, "der Normalbeitrag IST der Foundation-Schritt: ${zeile(beleg)}")
         assertTrue(live > normal + 1e-9, "Kandidat ueber der Foundation: ${zeile(beleg)}")
-        assertEquals(maxOf(normal, live), beleg.decision.smbU, 1e-9, "Maximum, nie Summe: ${zeile(beleg)}")
+        // Hier kappt der Kontextdeckel den Kanal-Lift (Endmenge unter dem Kandidaten):
+        // groesser als die Foundation, nie ueber dem Maximum, und der Lift ist genau
+        // die Differenz - nie Foundation plus Kandidat.
+        assertTrue(beleg.decision.smbU > normal + 1e-9 && beleg.decision.smbU <= maxOf(normal, live) + 1e-9, "Maximum, nie Summe: ${zeile(beleg)}")
+        assertEquals(beleg.decision.smbU - normal, beleg.livenessLiftU, 1e-9, zeile(beleg))
         assertEquals(beleg.decision.smbU, ledger.publishedAmountOf("e2e#${beleg.computeTs}") ?: -1.0, 1e-9, "publiziert = gebucht")
         assertTrue(abgaben.any { it.wirktAufReihe && it.ts == beleg.computeTs && kotlin.math.abs(it.u - beleg.decision.smbU) < 1e-9 }) { "bestaetigt zurueckgefuehrt" }
         // Welcher Pfad das Rebound-Tor traegt, steht fest (s. KDoc).
@@ -15125,7 +15160,8 @@ class TransportWiringTest : TestBaseWithProfile() {
         ausnahmeLage(dir)
         maxSmbU = 0.3
         rueckfuehrungAn()
-        val o = (1..60).map { transport(dir) }
+        // Der Vorlauf vor dem Druck gehoert dazu: dort liegt das Tief.
+        val o = lageVorlauf.toList() + (1..60).map { transport(dir) }
         val verdeckt = o.filter {
             it.livenessProfileReason == "REBOUND_ACTIVE" &&
                 it.livenessConcurrentHazards.orEmpty().containsAll(listOf("MEASURED_LOW", "DESCENT_RISK", "LATCH_ACTIVE", "FALLING"))
@@ -15139,7 +15175,7 @@ class TransportWiringTest : TestBaseWithProfile() {
             assertEquals(it.descentRiskActive, "DESCENT_RISK" in h, kontext)
             val ukf = it.signal?.ukfRatePerMin ?: Double.NaN
             assertEquals(!ukf.isFinite() || ukf < LivenessChannel.UKF_FLOOR_MGDL_PER_MIN, "FALLING" in h, kontext)
-            assertEquals(it.livenessEvidenceLossCause == "BOOKING_DEDUCTION" && h.isEmpty(), it.livenessBookingWithoutHazard, kontext)
+            assertEquals(it.livenessEvidenceLossCause == "BOOKING_DEDUCTION" && h.isEmpty(), it.livenessBookingWithoutCapturedHazard, kontext)
         }
     }
 
@@ -15164,7 +15200,7 @@ class TransportWiringTest : TestBaseWithProfile() {
         } ?: throw AssertionError("Vorbedingung: Buchungsverlust mit Rueckgang und instabiler Messreihe:\n" +
             o.joinToString("\n") { zeile(it) + " loss=${it.livenessEvidenceLossCause} haz=${it.livenessConcurrentHazards} decl=${it.evidenceDeclineMgdl}" })
         assertTrue((beleg.evidenceDeclineMgdl ?: 0.0) > 0.0 && (beleg.evidenceDeductionMgdl ?: 0.0) > 0.0, zeile(beleg))
-        assertFalse(beleg.livenessBookingWithoutHazard, "Buchung plus Gefahr ist nicht gefahrlos: ${zeile(beleg)}")
+        assertFalse(beleg.livenessBookingWithoutCapturedHazard, "Buchung plus Gefahr ist nicht gefahrlos: ${zeile(beleg)}")
         assertEquals(0.0, beleg.livenessLiftU, 1e-12, zeile(beleg))
     }
 
@@ -15189,7 +15225,7 @@ class TransportWiringTest : TestBaseWithProfile() {
         assertTrue(verdeckt.isNotEmpty()) { "Vorbedingung: Abstiegsschutz aktiv hinter REBOUND_ACTIVE:\n" +
             o.joinToString("\n") { zeile(it) + " dr=${it.descentRiskActive} haz=${it.livenessConcurrentHazards}" } }
         verdeckt.forEach {
-            assertFalse(it.livenessBookingWithoutHazard, zeile(it))
+            assertFalse(it.livenessBookingWithoutCapturedHazard, zeile(it))
             assertEquals(0.0, it.livenessLiftU, 1e-12, zeile(it))
         }
     }
@@ -15213,7 +15249,7 @@ class TransportWiringTest : TestBaseWithProfile() {
         val o = (1..60).map { transport(dir) }
         val exit = o.indexOfFirst {
             it.livenessExit == "REBOUND_ACTIVE" && it.livenessEvidenceLossCause == "BOOKING_DEDUCTION" &&
-                it.livenessBookingWithoutHazard && it.livenessConcurrentHazards.orEmpty().isEmpty()
+                it.livenessBookingWithoutCapturedHazard && it.livenessConcurrentHazards.orEmpty().isEmpty()
         }
         assertTrue(exit >= 0) { "Vorbedingung: buchungsbedingter Ausgang ohne Gefahr:\n" + o.joinToString("\n") { zeile(it) + " loss=${it.livenessEvidenceLossCause} haz=${it.livenessConcurrentHazards}" } }
         val sperre = o.drop(exit + 1).takeWhile { it.livenessDenial == "REARM_BLOCKED" }
@@ -15223,6 +15259,96 @@ class TransportWiringTest : TestBaseWithProfile() {
         }
         sperre.forEach { assertEquals(0.0, it.livenessLiftU, 1e-12, zeile(it)) }
         println("Ausnahme 16: Ausgang t=${(o[exit].computeTs - start) / 60_000L}, Sperrzyklen=${sperre.size}, davon ohne Gefahr=${sperre.count { it.livenessConcurrentHazards.orEmpty().isEmpty() }}")
+    }
+
+    /**
+     * RIG-FALLE ALS FEHLERFALL ERHALTEN (Tonis Review 15.09.): ein Marker, der
+     * beim ersten Zyklus in der ZUKUNFT liegt, armiert das Fundament ohne
+     * Autorisierung - es hebt dann nie. Produktiv kann das nicht entstehen (der
+     * Druck stempelt die Wanduhr); produktiv gemeinte Rig-Faelle duerfen diese
+     * Stempelung deshalb nicht verwenden.
+     */
+    @Test
+    fun `Rig-Falle - Zukunftsmarker armiert das Fundament ohne Autorisierung`(@TempDir dir: File) {
+        markerAt = 0L
+        reboundOverrideLage(dir)
+        livenessAusnahmeAn = true
+        maxSmbU = 0.3
+        fundamentAn = true
+        whenever(preferences.get(FuseLongKey.MealMarkerNoPrime)).thenReturn(0L)
+        markerAt = start + 14 * 60_000L // Uhr steht bei Minute 7
+        val o = (1..60).map { transport(dir) }
+        val phaseB = o.filter { it.mealFoundation.phase == MealFoundation.Phase.PHASE_B }
+        assertTrue(phaseB.isNotEmpty(), "Vorbedingung: das Fundament ist armiert und erreicht Phase B")
+        phaseB.forEach { assertFalse(it.mealFoundation.markerAuthorized, zeile(it)) }
+        assertTrue(o.none { it.foundationLiftU > 0.0 }, "ohne Autorisierung hebt das Fundament nie")
+    }
+
+    /**
+     * EXPERIMENT WIEDERANLAUFSPERRE - GETRENNT, NUR IM RIG (Tonis Review 15.09.).
+     *
+     * Kein Produktionscode wird geaendert. Zwei Laeufe mit identischen Eingaben
+     * (korrekt gestempelter Marker, 5 min Sperre, Rueckfuehrung nur bestaetigter
+     * Abgaben). Im Gegenstueck wird NACH einem Zyklus, der mit REBOUND_ACTIVE
+     * endete und buchungsbedingt ohne ERFASSTE Gefahr war, genau die Sperre
+     * dieses Zyklus zurueckgenommen (auf den Stand davor - aeltere Sperren
+     * bleiben). Evidenzabzug, Bewaffnung, Wende, alle Gefahren- und Mengentore
+     * laufen unveraendert.
+     *
+     * Nachweis: bis zum ersten Unterschied sind beide Laeufe zyklusgleich; im
+     * ersten abweichenden Zyklus sperrt der Basislauf mit REARM_BLOCKED, und das
+     * Gegenstueck gibt einen groesseren Kandidaten tatsaechlich ab (Gate, Buchung),
+     * ohne erfasste Gefahr und mit geltender Ausnahme. Danach wird der Verlauf
+     * beider Laeufe nur AUSGEGEBEN - kein Nutzen wird behauptet.
+     */
+    @Test
+    fun `Experiment Sperre - buchungsbedingter Ausgang ohne Sperre, gleicher Zustand`(@TempDir dir: File) {
+        fun lauf(name: String, gegenstueck: Boolean): Pair<List<FuseCycleRunner.Outcome>, List<Double>> {
+            val d = File(dir, name).also(File::mkdirs)
+            abgaben.clear(); boluses = emptyList(); rueckIsf = 61.0; rueckfuehrung = false
+            ausnahmeLage(d)
+            maxSmbU = 0.3
+            livenessReArmMin = 5
+            rueckfuehrungAn()
+            val pub = mutableListOf<Double>()
+            val o = (1..60).map {
+                val sperreVorher = ledger.episodes.livenessReArmUntilTs
+                val z = transport(d)
+                pub += letzteMengeU ?: 0.0
+                if (gegenstueck && z.livenessExit == "REBOUND_ACTIVE" && z.livenessBookingWithoutCapturedHazard)
+                    ledger.episodes.livenessReArmUntilTs = sperreVorher
+                z
+            }
+            return o to pub
+        }
+        val (basis, basisPub) = lauf("basis", gegenstueck = false)
+        val (gegen, gegenPub) = lauf("gegen", gegenstueck = true)
+        fun gleich(a: FuseCycleRunner.Outcome, b: FuseCycleRunner.Outcome) =
+            a.decision.smbU == b.decision.smbU && a.livenessDenial == b.livenessDenial && a.livenessExit == b.livenessExit &&
+                a.evidenceStockMgdl == b.evidenceStockMgdl && a.signal?.q1 == b.signal?.q1
+        val i = basis.indices.firstOrNull { !gleich(basis[it], gegen[it]) }
+            ?: throw AssertionError("die Laeufe unterscheiden sich nie:\n" + basis.joinToString("\n") { zeile(it) })
+        val ausgang = basis.subList(0, i).indexOfLast { it.livenessExit == "REBOUND_ACTIVE" && it.livenessBookingWithoutCapturedHazard }
+        assertTrue(ausgang >= 0, "vor dem Unterschied liegt ein buchungsbedingter Ausgang ohne erfasste Gefahr")
+        val b = basis[i]
+        val g = gegen[i]
+        val kontext = "basis: ${zeile(b)} haz=${b.livenessConcurrentHazards}\ngegen: ${zeile(g)} haz=${g.livenessConcurrentHazards}"
+        assertEquals("REARM_BLOCKED", b.livenessDenial, kontext)
+        assertEquals(0.0, b.livenessLiftU, 1e-12, kontext)
+        assertTrue(g.livenessLiftU > 0.0 && g.decision.smbU > b.decision.smbU + 1e-9, kontext)
+        assertEquals(g.decision.smbU, gegenPub[i], 1e-9, "das Gegenstueck gibt die Menge tatsaechlich ab: $kontext")
+        assertTrue(g.livenessReboundExceptionAllowed == true || g.evidenceMayOverrideRebound, kontext)
+        assertTrue(b.livenessConcurrentHazards.orEmpty().isEmpty() && g.livenessConcurrentHazards.orEmpty().isEmpty(), kontext)
+        // Nur die Sperre war verschieden: Eingaben und Bestand im Entscheidungszyklus gleich.
+        assertEquals(b.signal?.q1, g.signal?.q1)
+        assertEquals(b.evidenceStockMgdl, g.evidenceStockMgdl)
+        assertEquals(b.livenessShadowCandidateU, g.livenessShadowCandidateU)
+        fun verlauf(n: String, o: List<FuseCycleRunner.Outcome>, p: List<Double>) = "$n: abgegeben=${"%.2f".format(p.sum())} U, " +
+            "q1max=${"%.1f".format(o.mapNotNull { it.signal?.q1 }.maxOrNull())}, q1min(ab Marker)=${"%.1f".format(o.filter { it.computeTs > markerAt }.mapNotNull { it.signal?.q1 }.minOrNull())}, " +
+            "reboundExits=${o.count { it.livenessExit == "REBOUND_ACTIVE" }}, rearm=${o.count { it.livenessDenial == "REARM_BLOCKED" }}, " +
+            "gefahrZyklen=${o.count { it.livenessConcurrentHazards.orEmpty().isNotEmpty() && it.computeTs > markerAt }}, " +
+            "tief=${o.count { it.livenessConcurrentHazards.orEmpty().contains("MEASURED_LOW") && it.computeTs > markerAt }}"
+        println("Experiment Sperre: erster Unterschied t=${(b.computeTs - start) / 60_000L}\n" + verlauf("basis", basis, basisPub) + "\n" + verlauf("gegen", gegen, gegenPub))
     }
 
     // ---- BITGLEICH-AUFZEICHNUNG (nur mit FUSE_BITGLEICH_OUT) ----------------

@@ -15,8 +15,15 @@ import app.aaps.fuse.core.signal.GlucoseStability
  *    Ablehnungskette verdeckt also gleichzeitige Gefahren.
  *
  * Deshalb werden Ursache und Gefahren UNABHAENGIG von beiden Reihenfolgen
- * erfasst. Das Label allein darf keine Wiederanlaufsperre aufheben; ob eine
- * Lage "nur Buchung, keine Gefahr" ist, sagt erst [bookingWithoutHazard].
+ * erfasst. Das Label allein darf keine Wiederanlaufsperre aufheben.
+ *
+ * BEGRENZT (Tonis Review 15.09.): [bookingWithoutCapturedHazard] heisst nur
+ * "keine der HIER erfassten Gefahren". Nicht enthalten sind u. a. unlesbare
+ * Behandlungssicht, Modell-Integritaet, manuelle Intervention, Konfigurations-
+ * wechsel, Markerwechsel und bestehende Sperren - die prueft der Runner
+ * getrennt. Die Groesse ist eine Diagnose, KEIN eigenstaendiger
+ * Freigabenachweis: jede spaetere Sperraenderung muss alle uebrigen
+ * Voraussetzungen weiterhin unabhaengig verlangen.
  */
 object EvidenceLossDiagnosis {
 
@@ -83,7 +90,7 @@ object EvidenceLossDiagnosis {
         if (o.turningDown) add(Hazard.TURNING_DOWN)
     }
 
-    /** Buchungsbedingter Verlust UND keine einzige gleichzeitige Gefahr. */
-    fun bookingWithoutHazard(cause: Cause?, hazards: List<Hazard>): Boolean =
+    /** Buchungsbedingter Verlust UND keine der erfassten Gefahren - s. Begrenzung oben. */
+    fun bookingWithoutCapturedHazard(cause: Cause?, hazards: List<Hazard>): Boolean =
         cause == Cause.BOOKING_DEDUCTION && hazards.isEmpty()
 }

@@ -1223,8 +1223,8 @@ class FuseCycleRunner(
         val livenessEvidenceLossCause: String? = null,
         /** Gleichzeitige Gefahren, unabhaengig von der Torreihenfolge (null = Kanal aus). */
         val livenessConcurrentHazards: List<String>? = null,
-        /** Buchungsbedingter Bestandsverlust UND keine gleichzeitige Gefahr. Diagnose. */
-        val livenessBookingWithoutHazard: Boolean = false,
+        /** Buchungsbedingter Bestandsverlust UND keine der ERFASSTEN Gefahren. Diagnose, kein Freigabenachweis. */
+        val livenessBookingWithoutCapturedHazard: Boolean = false,
         /** Der TYPISIERTE Grund des Modell-Tors (CandidateSearch.Reject)
          *  dieses Zyklus - null, wenn die Integritaetskette bestanden ist.
          *  Nur im Hauptpfad gefuellt. */
@@ -4808,7 +4808,7 @@ class FuseCycleRunner(
         // Gleichzeitige Gefahren, UNABHAENGIG von Tor- und Ablehnungsreihenfolge
         // erfasst (Tonis Review 14.09. spaet). null = Kanal aus.
         var livenessConcurrentHazards: List<String>? = null
-        var livenessBookingWithoutHazard = false
+        var livenessBookingWithoutCapturedHazard = false
 
         // Marker-Leistungsfrist + zentraler Dosierkontext: seit B2 VOR der
         // State-Konstruktion bestimmt (Kontextgrenze in der Grant-Bildung,
@@ -5043,8 +5043,8 @@ class FuseCycleRunner(
                 ),
             )
             livenessConcurrentHazards = gefahren.map { it.name }
-            livenessBookingWithoutHazard =
-                app.aaps.fuse.core.controller.EvidenceLossDiagnosis.bookingWithoutHazard(verlustUrsache, gefahren)
+            livenessBookingWithoutCapturedHazard =
+                app.aaps.fuse.core.controller.EvidenceLossDiagnosis.bookingWithoutCapturedHazard(verlustUrsache, gefahren)
             val hart = when {
                 step.health != Health.READY -> "SIGNAL_UNHEALTHY"
                 treatmentView == null -> "VIEW_UNREADABLE"
@@ -6125,7 +6125,7 @@ class FuseCycleRunner(
             livenessShadowHeadroomU = livenessShadowHeadroomU,
             livenessEvidenceLossCause = livenessEvidenceLossCause,
             livenessConcurrentHazards = livenessConcurrentHazards,
-            livenessBookingWithoutHazard = livenessBookingWithoutHazard,
+            livenessBookingWithoutCapturedHazard = livenessBookingWithoutCapturedHazard,
             livenessModelReject = livenessModelReject,
             livenessReArmUntilTs = episodes.livenessReArmUntilTs,
             preFoundationSmbU = preFoundationSmbU,

@@ -908,7 +908,9 @@ object FuseStateJson {
                             // lossCause allein heisst nicht "keine Gefahr": die
                             // Gefahren stehen unabhaengig von der Torreihenfolge daneben.
                             .put("concurrentHazards", outcome.livenessConcurrentHazards?.let { org.json.JSONArray(it) } ?: JSONObject.NULL)
-                            .put("bookingWithoutHazard", outcome.livenessBookingWithoutHazard),
+                            // NUR die erfassten Gefahren - kein Freigabenachweis: Sicht,
+                            // Modell, manuelle Intervention u. a. prueft der Runner getrennt.
+                            .put("bookingWithoutCapturedHazard", outcome.livenessBookingWithoutCapturedHazard),
                     ),
             )
             .put(
