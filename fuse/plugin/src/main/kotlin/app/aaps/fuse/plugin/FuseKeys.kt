@@ -691,7 +691,8 @@ enum class FuseIntKey(
      * [app.aaps.fuse.core.controller.EarlyAdaptiveMealNeed]. Wirksam sind nur
      * 0, 6, 8 und 10; jeder andere Wert (auch ein alter oder fehlender
      * Schluessel) wirkt als 0. Theil-Sen-Fenster, Release-, Prognose- und
-     * Sicherheitshorizonte bleiben unveraendert.
+     * Sicherheitshorizonte bleiben unveraendert. Der Dialog bietet nur diese
+     * vier Werte an (Auswahlliste, [EarlyAdaptiveMealHorizonText]).
      *
      * DOSIERWIRKSAM: steht im Politik-Hash (v55), in policyValues, Backup und
      * Report; der Trail traegt konfigurierten und wirksamen Wert.

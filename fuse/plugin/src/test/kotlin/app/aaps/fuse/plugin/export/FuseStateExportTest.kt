@@ -589,7 +589,9 @@ class FuseStateExportTest {
         assertEquals(7, werte.getInt("earlyAdaptiveMealHorizonConfiguredMin"))
         val early = record(outcome()).getJSONObject("liveness").getJSONObject("earlyAdaptiveMeal")
         assertEquals(0, early.getInt("horizonMin"))
-        assertFalse(early.getBoolean("active"))
+        assertFalse(early.getBoolean("eligible"))
+        assertFalse(early.getBoolean("selected"))
+        assertFalse(early.has("active"), "kein mehrdeutiges active mehr")
         assertTrue(early.isNull("source"))
         // Rampe: Aenderung von Unter- oder Oberkante bewegt den Politik-Hash, und der
         // Trail traegt die im Zyklus verwendeten Werte (Nichtstandardwerte).
@@ -604,6 +606,37 @@ class FuseStateExportTest {
         assertEquals(0.8, trail.getDouble("riseRampLowR"), 0.0)
         assertEquals(2.2, trail.getDouble("riseRampHighR"), 0.0)
         assertEquals(1.3, trail.getDouble("ratioDriveMgdlPerMin"), 0.0)
+    }
+
+    /** H8-Diagnose (Review 18.09.): Eignung, Auswahl und Kanalangebot stehen
+     *  getrennt im Trail; geeignet ohne Auswahl traegt keine Quelle, und eine
+     *  gewaehlte Bahn kann ein Kanalangebot von 0 haben. */
+    @Test
+    fun `H8 - Trail trennt Eignung, Auswahl und Kanalangebot`() {
+        fun trail(d: app.aaps.fuse.plugin.FuseCycleRunner.EarlyAdaptiveMealDiagnosis) =
+            record(outcome().copy(earlyAdaptiveMeal = d)).getJSONObject("liveness").getJSONObject("earlyAdaptiveMeal")
+        val nurGeeignet = trail(
+            app.aaps.fuse.plugin.FuseCycleRunner.EarlyAdaptiveMealDiagnosis(
+                horizonMin = 8, eligible = true, selected = false,
+                earlyReleaseMeanMgdl = 118.0, productionReleaseMeanMgdl = 126.0, effectiveReleaseMeanMgdl = 126.0,
+                candidateAfterHeadroomU = 0.1,
+            ),
+        )
+        assertTrue(nurGeeignet.getBoolean("eligible"))
+        assertFalse(nurGeeignet.getBoolean("selected"))
+        assertTrue(nurGeeignet.isNull("source"))
+        assertEquals(0.1, nurGeeignet.getDouble("candidateAfterHeadroomU"), 0.0)
+        val gewaehltGesperrt = trail(
+            app.aaps.fuse.plugin.FuseCycleRunner.EarlyAdaptiveMealDiagnosis(
+                horizonMin = 8, eligible = true, selected = true,
+                earlyReleaseMeanMgdl = 140.0, productionReleaseMeanMgdl = 126.0, effectiveReleaseMeanMgdl = 140.0,
+                candidateAfterHeadroomU = 0.0, source = "EARLY_ADAPTIVE_MEAL_H8",
+            ),
+        )
+        assertTrue(gewaehltGesperrt.getBoolean("eligible"))
+        assertTrue(gewaehltGesperrt.getBoolean("selected"))
+        assertEquals("EARLY_ADAPTIVE_MEAL_H8", gewaehltGesperrt.getString("source"))
+        assertEquals(0.0, gewaehltGesperrt.getDouble("candidateAfterHeadroomU"), 0.0)
     }
 
     @Test

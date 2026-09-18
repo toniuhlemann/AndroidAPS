@@ -166,6 +166,16 @@ object FuseSettingsReport {
             )
         }
 
+        /**
+         * H8 WIE IM DIALOG, nicht als nackte Zahl (Review 18.09.): wirksam sind
+         * nur 0/6/8/10. Ein anderer gespeicherter Wert (Altbestand, Backup)
+         * steht ausdruecklich als "wirkt als AUS" da, statt still als "7 min".
+         */
+        fun horizont(k: FuseIntKey, label: String) = FuseScreenModel.SettingRow(
+            key = k.key, label = label, value = EarlyAdaptiveMealHorizonText.zustand(preferences.get(k)),
+            standard = EarlyAdaptiveMealHorizonText.eintrag(k.defaultValue).takeIf { preferences.get(k) != k.defaultValue },
+        )
+
         fun schalter(k: FuseBooleanKey, label: String) = FuseScreenModel.SettingRow(
             key = k.key, label = label, value = if (preferences.get(k)) "an" else "aus",
             standard = (if (k.defaultValue) "an" else "aus").takeIf { preferences.get(k) != k.defaultValue },
@@ -231,7 +241,7 @@ object FuseSettingsReport {
                     schalter(FuseBooleanKey.LivenessReboundEvidenceExceptionEnabled, "Rebound-Evidenz-Ausnahme"),
                     schalter(FuseBooleanKey.LivenessBookingExitWithoutReArmEnabled, "Buchungsausgang ohne Sperre"),
                     schalter(FuseBooleanKey.LivenessDriveHoldEnabled, "Halte-Anhebung im Kanalbedarf"),
-                    ganz(FuseIntKey.EarlyAdaptiveMealHorizonMin, "Frueher MEAL-Horizont", "min"),
+                    horizont(FuseIntKey.EarlyAdaptiveMealHorizonMin, "Frueher MEAL-Horizont"),
                     schalter(FuseBooleanKey.SignalRejoinEnabled, "Wiedereinstieg nach Funkluecke"),
                     ganz(FuseIntKey.LivenessMealPowerMin, "M-Frist", "min"),
                     // CENTRAL-only: die vier Profilwerte sind normale

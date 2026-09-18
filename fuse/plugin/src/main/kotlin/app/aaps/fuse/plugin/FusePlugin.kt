@@ -5,6 +5,7 @@ import app.aaps.fuse.plugin.expectation.FuseExpectationRecorder
 import app.aaps.fuse.core.controller.ExpectationLedger
 import android.content.Context
 import android.os.Environment
+import androidx.preference.ListPreference
 import androidx.preference.Preference
 import androidx.preference.PreferenceCategory
 import androidx.preference.PreferenceManager
@@ -2691,8 +2692,28 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
             addPreference(AdaptiveSwitchPreference(ctx = context, booleanKey = FuseBooleanKey.LivenessReboundEvidenceExceptionEnabled, summary = R.string.fuse_liveness_rebound_evidence_summary, title = R.string.fuse_liveness_rebound_evidence_title))
             addPreference(AdaptiveSwitchPreference(ctx = context, booleanKey = FuseBooleanKey.LivenessBookingExitWithoutReArmEnabled, summary = R.string.fuse_liveness_booking_exit_summary, title = R.string.fuse_liveness_booking_exit_title))
             addPreference(AdaptiveSwitchPreference(ctx = context, booleanKey = FuseBooleanKey.LivenessDriveHoldEnabled, summary = R.string.fuse_liveness_drive_hold_summary, title = R.string.fuse_liveness_drive_hold_title))
-            // H8 (Toni 18.09.): 0 = AUS; nur 6, 8 und 10 wirken, jeder andere Wert als 0.
-            addPreference(AdaptiveIntPreference(ctx = context, intKey = FuseIntKey.EarlyAdaptiveMealHorizonMin, dialogMessage = R.string.fuse_early_adaptive_meal_horizon_summary, title = R.string.fuse_early_adaptive_meal_horizon_title))
+            // H8 (Toni 18.09.): FESTE AUSWAHL AUS/6/8/10 statt freiem Zahlenfeld
+            // (Review 18.09.: eine 7 waere still AUS gewesen). Die Zeile zeigt den
+            // gespeicherten Zustand, auch einen unzulaessigen Altwert als "wirkt
+            // als AUS". KEINE dialogMessage: bei einer Liste verdraengt die
+            // Nachricht im Dialog die Auswahl - die Erklaerung steht deshalb in
+            // der Zusammenfassung. Gespeichert wird wie bei der Ruhe-Behandlung
+            // als Text; der Int-Key liest ihn ueber die Zahlen-Rueckfallstufe.
+            addPreference(
+                AdaptiveListIntPreference(
+                    ctx = context, intKey = FuseIntKey.EarlyAdaptiveMealHorizonMin,
+                    title = R.string.fuse_early_adaptive_meal_horizon_title,
+                    entries = EarlyAdaptiveMealHorizonText.auswahl.map<Int, CharSequence> { EarlyAdaptiveMealHorizonText.eintrag(it) }.toTypedArray(),
+                    entryValues = EarlyAdaptiveMealHorizonText.auswahl.map<Int, CharSequence> { it.toString() }.toTypedArray(),
+                ).apply {
+                    val erklaerung = rh.gs(R.string.fuse_early_adaptive_meal_horizon_summary)
+                    summaryProvider = Preference.SummaryProvider<ListPreference> { p ->
+                        "Aktuell: " + EarlyAdaptiveMealHorizonText.zustand(
+                            p.value?.toIntOrNull() ?: FuseIntKey.EarlyAdaptiveMealHorizonMin.defaultValue,
+                        ) + "\n" + erklaerung
+                    }
+                },
+            )
             addPreference(AdaptiveIntPreference(ctx = context, intKey = FuseIntKey.LivenessMealPowerMin, dialogMessage = R.string.fuse_liveness_meal_power_summary, title = R.string.fuse_liveness_meal_power_title))
             // CENTRAL-ONLY (Legacy-Cleanup, Tonis Vertrag 29.08. nachts):
             // es gibt keinen Modusschalter und keine Legacy-Kanaldeckel

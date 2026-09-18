@@ -10962,7 +10962,8 @@ class TransportWiringTest : TestBaseWithProfile() {
                     }
                     h8Zeilen += listOf(
                         z.ts, o.earlyAdaptiveMeal.configuredHorizonMin, o.earlyAdaptiveMeal.horizonMin,
-                        if (o.earlyAdaptiveMeal.active) "1" else "0", o.earlyAdaptiveMeal.denial ?: "",
+                        if (o.earlyAdaptiveMeal.eligible) "1" else "0", if (o.earlyAdaptiveMeal.selected) "1" else "0",
+                        o.earlyAdaptiveMeal.denial ?: "",
                         o.earlyAdaptiveMeal.markerAgeMin?.let { "%.2f".format(java.util.Locale.US, it) } ?: "",
                         o.earlyAdaptiveMeal.w10DriveMgdlPerMin?.let { "%.4f".format(java.util.Locale.US, it) } ?: "",
                         o.earlyAdaptiveMeal.ukfRatePerMin?.let { "%.4f".format(java.util.Locale.US, it) } ?: "",
@@ -11144,7 +11145,7 @@ class TransportWiringTest : TestBaseWithProfile() {
             // H8-Diagnose getrennt, damit die Haupt-CSV zeichengleich zum
             // Codex-Format bleibt (Kontroll-SHA).
             File(outDir, "replay_${name}_h8.csv").writeText(
-                "ts;h8Configured;h8Horizon;h8Active;h8Denial;markerAgeMin;w10;ukf;earlyRelease;prodRelease;effRelease;needU;candU;candAfterHeadroomU;headroomU;smbU;liftU;lvBinding;binding;raw;source\n" +
+                "ts;h8Configured;h8Horizon;h8Eligible;h8Selected;h8Denial;markerAgeMin;w10;ukf;earlyRelease;prodRelease;effRelease;needU;candU;candAfterHeadroomU;headroomU;smbU;liftU;lvBinding;binding;raw;source\n" +
                     h8Zeilen.joinToString("\n") + "\n",
             )
             println("$name -> ${outFile.absolutePath}")
@@ -16702,7 +16703,7 @@ class TransportWiringTest : TestBaseWithProfile() {
             val e = b.earlyAdaptiveMeal
             println(
                 "H8 $name min ${minuteVon(b)} q1 ${"%.0f".format(b.signal?.q1 ?: Double.NaN)} smb ${a.decision.smbU}/${b.decision.smbU} " +
-                    "aktiv ${e.active} ${e.denial} alter ${e.markerAgeMin?.let { "%.1f".format(it) }} w10 ${e.w10DriveMgdlPerMin?.let { "%.2f".format(it) }} " +
+                    "geeignet ${e.eligible} gewaehlt ${e.selected} ${e.denial} alter ${e.markerAgeMin?.let { "%.1f".format(it) }} w10 ${e.w10DriveMgdlPerMin?.let { "%.2f".format(it) }} " +
                     "ukf ${e.ukfRatePerMin?.let { "%.2f".format(it) }} frueh ${e.earlyReleaseMeanMgdl?.let { "%.0f".format(it) }} " +
                     "prod ${e.productionReleaseMeanMgdl?.let { "%.0f".format(it) }} eff ${e.effectiveReleaseMeanMgdl?.let { "%.0f".format(it) }} " +
                     "kand ${b.livenessCandidateU} nachDeckel ${e.candidateAfterHeadroomU} head ${b.livenessHeadroomU?.let { "%.2f".format(it) }} " +
@@ -16723,7 +16724,7 @@ class TransportWiringTest : TestBaseWithProfile() {
         assertEquals(aus.map { bitgleichZeile(it) }, sieben.map { bitgleichZeile(it) }, "7 ist AUS")
         assertEquals(aus.map { bitgleichZeile(it) }, sechzig.map { bitgleichZeile(it) }, "60 ist AUS")
         for (o in aus + sieben + sechzig) {
-            assertTrue(!o.earlyAdaptiveMeal.active, "min ${minuteVon(o)}")
+            assertTrue(!o.earlyAdaptiveMeal.eligible, "min ${minuteVon(o)}")
             assertEquals(0, o.earlyAdaptiveMeal.horizonMin)
             if (o.abortReason == null) assertEquals("DISABLED", o.earlyAdaptiveMeal.denial)
             o.earlyAdaptiveMeal.effectiveReleaseMeanMgdl?.let {
@@ -16741,7 +16742,7 @@ class TransportWiringTest : TestBaseWithProfile() {
         val aus = fruehLauf(dir, "b", 0, 70)
         val an = fruehLauf(dir, "b", 8, 70)
         fruehZeilen("b", aus, an)
-        val aktiv = an.filter { it.earlyAdaptiveMeal.active }
+        val aktiv = an.filter { it.earlyAdaptiveMeal.eligible }
         assertTrue(aktiv.size >= 5, "positiver Nachweis: H8 wird im Fenster gebildet (${aktiv.size})")
         for (o in aktiv) {
             val alter = fruehAlterMin(o)!!
@@ -16749,7 +16750,8 @@ class TransportWiringTest : TestBaseWithProfile() {
             assertEquals("MEAL", o.dosingContextProfile, "min ${minuteVon(o)}")
             assertTrue(o.earlyAdaptiveMeal.w10DriveMgdlPerMin!! >= LivenessChannel.R_MIN_MGDL_PER_MIN)
             assertTrue(o.earlyAdaptiveMeal.ukfRatePerMin!! >= 0.0)
-            assertEquals("EARLY_ADAPTIVE_MEAL_H8", o.earlyAdaptiveMeal.source)
+            // Quelle nur, wenn die H8-Bahn die Mittelbahn gestellt hat (Review 18.09.).
+            assertEquals(if (o.earlyAdaptiveMeal.selected) "EARLY_ADAPTIVE_MEAL_H8" else null, o.earlyAdaptiveMeal.source)
         }
         for (o in an.filter { o -> fruehAlterMin(o)?.let { it < 10.0 } == true && o.abortReason == null })
             assertEquals("MARKER_TOO_YOUNG", o.earlyAdaptiveMeal.denial, "min ${minuteVon(o)}")
@@ -16758,14 +16760,14 @@ class TransportWiringTest : TestBaseWithProfile() {
         // Vor dem Marker und im CORRECTION-Profil nie; dort ist AN == AUS.
         val korrAus = fruehLauf(dir, "b", 0, 70, meal = false)
         val korrAn = fruehLauf(dir, "b", 8, 70, meal = false)
-        assertTrue(korrAn.none { it.earlyAdaptiveMeal.active }, "CORRECTION bildet nie")
+        assertTrue(korrAn.none { it.earlyAdaptiveMeal.eligible }, "CORRECTION bildet nie")
         assertEquals(korrAus.map { bitgleichZeile(it) }, korrAn.map { bitgleichZeile(it) }, "CORRECTION: AN == AUS")
         // Fallende Form ab Marker +15: negative UKF sperrt.
         val fallAn = fruehLauf(dir, "bfall", 8, 50) { knick2AbMin = halteMarkerZyklus + 15; steigungNachKnick2 = -3.0 }
         val negativ = fallAn.filter { it.earlyAdaptiveMeal.ukfRatePerMin?.let { u -> u < 0.0 } == true && it.abortReason == null &&
             fruehAlterMin(it)?.let { a -> a in 10.0..45.0 } == true }
         assertTrue(negativ.isNotEmpty(), "Vorbedingung: negative UKF im Fenster")
-        negativ.forEach { assertTrue(!it.earlyAdaptiveMeal.active, "negative UKF sperrt: min ${minuteVon(it)}") }
+        negativ.forEach { assertTrue(!it.earlyAdaptiveMeal.eligible, "negative UKF sperrt: min ${minuteVon(it)}") }
     }
 
     /** C: target + W10 x 8, max mit der produktiven Bahn, danach alle bestehenden Grenzen. */
@@ -16775,7 +16777,7 @@ class TransportWiringTest : TestBaseWithProfile() {
         val aus = fruehLauf(dir, "c", 0, 60, form = weit)
         val an = fruehLauf(dir, "c", 8, 60, form = weit)
         fruehZeilen("c", aus, an)
-        val gerechnet = an.filter { it.earlyAdaptiveMeal.active && it.earlyAdaptiveMeal.effectiveReleaseMeanMgdl != null }
+        val gerechnet = an.filter { it.earlyAdaptiveMeal.eligible && it.earlyAdaptiveMeal.effectiveReleaseMeanMgdl != null }
         assertTrue(gerechnet.size >= 3, "Vorbedingung: der Kanal rechnet mit H8 (${gerechnet.size})")
         for (o in gerechnet) {
             val e = o.earlyAdaptiveMeal
@@ -16822,7 +16824,7 @@ class TransportWiringTest : TestBaseWithProfile() {
         val aus = fruehLauf(dir, "cf", 0, 60, form = form)
         val an = fruehLauf(dir, "cf", 8, 60, form = form)
         fruehZeilen("cf", aus, an)
-        val ersetzt = an.filter { it.earlyAdaptiveMeal.active && it.livenessLiftU > 0.0 && it.livenessNormalSmbU != null && it.livenessNormalSmbU!! > 0.0 }
+        val ersetzt = an.filter { it.earlyAdaptiveMeal.eligible && it.livenessLiftU > 0.0 && it.livenessNormalSmbU != null && it.livenessNormalSmbU!! > 0.0 }
         println("H8 cf: Zyklen mit Normal-/Fundamentmenge und Kanalhub: ${ersetzt.map { "${minuteVon(it)}:${it.livenessNormalSmbU}->${it.decision.smbU}" }}")
         for (o in ersetzt) {
             assertEquals(o.earlyAdaptiveMeal.candidateAfterHeadroomU!!, o.decision.smbU, 1e-9, "max, nie Summe: min ${minuteVon(o)}")
@@ -16832,7 +16834,7 @@ class TransportWiringTest : TestBaseWithProfile() {
         // den 0,05-U-Fundamentschritt, und der groessere adaptive Kandidat ERSETZT
         // ihn (Endmenge = Kandidat, nie Schritt + Kandidat).
         val durchH8 = an.filter { b ->
-            b.earlyAdaptiveMeal.active && b.livenessNormalSmbU != null &&
+            b.earlyAdaptiveMeal.eligible && b.livenessNormalSmbU != null &&
                 kotlin.math.abs(b.livenessNormalSmbU!! - 0.05) < 1e-9 &&
                 b.earlyAdaptiveMeal.effectiveReleaseMeanMgdl != null &&
                 b.earlyAdaptiveMeal.effectiveReleaseMeanMgdl!! > b.earlyAdaptiveMeal.productionReleaseMeanMgdl!! + 1e-9 &&
@@ -16856,7 +16858,7 @@ class TransportWiringTest : TestBaseWithProfile() {
     fun `H8 C - MEAL-Ratio-Deckel bindet auch unter der H8-Bahn`(@TempDir dir: File) {
         val an = fruehLauf(dir, "cr", 8, 60, form = { mealExpLimit = 12.0; corrRatioCapZ = 0.15; mealRatioCapZ = 0.2 })
         fruehZeilen("cr", an, an)
-        val h8 = an.filter { it.earlyAdaptiveMeal.active && it.livenessBaseRatio != null && it.earlyAdaptiveMeal.effectiveReleaseMeanMgdl != null }
+        val h8 = an.filter { it.earlyAdaptiveMeal.eligible && it.livenessBaseRatio != null && it.earlyAdaptiveMeal.effectiveReleaseMeanMgdl != null }
         val capRelevant = h8.filter { it.livenessBaseRatio!! > it.livenessSelectedRatioCap!! + 1e-9 }
         println("H8 cr: Basis ueber dem Cap in Minuten ${capRelevant.map { "${minuteVon(it)}:${it.livenessBaseRatio}>${it.livenessSelectedRatioCap}" }}")
         assertTrue(capRelevant.isNotEmpty(), "Vorbedingung: die Rampen-Ratio liegt unter H8 ueber dem MEAL-Cap")
@@ -16881,14 +16883,14 @@ class TransportWiringTest : TestBaseWithProfile() {
     fun `H8 D - eigene Abgaben begrenzen ueber die vorhandenen Grenzen`(@TempDir dir: File) {
         val an = fruehLauf(dir, "d", 8, 60, form = { mealExpLimit = 12.0 })
         fruehZeilen("d", an, an)
-        val fenster = an.filter { it.earlyAdaptiveMeal.active && it.earlyAdaptiveMeal.effectiveReleaseMeanMgdl != null }
+        val fenster = an.filter { it.earlyAdaptiveMeal.eligible && it.earlyAdaptiveMeal.effectiveReleaseMeanMgdl != null }
         // (1) H8 stellt die Bahn: der Bruttokandidat stammt aus target + W10 x 8.
         val h8Bahn = fenster.filter { it.earlyAdaptiveMeal.effectiveReleaseMeanMgdl!! > it.earlyAdaptiveMeal.productionReleaseMeanMgdl!! + 1e-9 }
         assertTrue(h8Bahn.size >= 3, "Vorbedingung: H8 stellt die Bahn (${h8Bahn.size})")
         // (2) Jede Abgabe im Fenster erscheint im Folgezyklus in IOB und Deckelrest.
         var geprueft = 0
         for ((a, b) in an.zipWithNext()) {
-            if (a.decision.smbU <= 0.0 || !a.earlyAdaptiveMeal.active) continue
+            if (a.decision.smbU <= 0.0 || !a.earlyAdaptiveMeal.eligible) continue
             if (a.iobU == null || b.iobU == null || a.livenessHeadroomU == null || b.livenessHeadroomU == null) continue
             assertTrue(b.iobU!! > a.iobU!! + 0.5 * a.decision.smbU - 0.05, "IOB traegt die Abgabe: min ${minuteVon(b)}")
             assertTrue(b.livenessHeadroomU!! < a.livenessHeadroomU!! - 0.5 * a.decision.smbU + 0.05, "Deckelrest sinkt: min ${minuteVon(b)}")
@@ -16903,7 +16905,7 @@ class TransportWiringTest : TestBaseWithProfile() {
         // (5) Keine unkontrollierte Zusatzabgabe: die IOB bleibt unter der bindenden
         // Grenze (plus ein Rasterschritt), und jede Zunahme ist durch die eigene
         // publizierte Menge des Vorzyklus gedeckt (genau einmal, keine Doppelbuchung).
-        for (o in an.filter { it.earlyAdaptiveMeal.active }) {
+        for (o in an.filter { it.earlyAdaptiveMeal.eligible }) {
             val grenze = minOf(o.iobThU ?: Double.MAX_VALUE, 12.0)
             assertTrue(o.iobU!! <= grenze + 0.05 + 1e-9, "IOB ${o.iobU} ueber der Grenze $grenze: min ${minuteVon(o)}")
         }
@@ -16911,6 +16913,43 @@ class TransportWiringTest : TestBaseWithProfile() {
             if (a.iobU == null || b.iobU == null) continue
             assertTrue(b.iobU!! <= a.iobU!! + a.decision.smbU + 1e-6, "Zunahme nur aus der eigenen Abgabe: min ${minuteVon(b)}")
         }
+    }
+
+    /**
+     * J (Review 18.09.): die Diagnose trennt Eignung, Auswahl und Kanalangebot.
+     * `eligible` heisst nicht "H8 stellt die Bahn", `selected` heisst nicht
+     * "abgegeben". Lage wie D - dort sperrt der Deckelrest den Kandidaten
+     * zeitweise ganz.
+     */
+    @Test
+    fun `H8 J - Diagnose trennt Eignung, Auswahl und Kanalangebot`(@TempDir dir: File) {
+        val an = fruehLauf(dir, "j", 8, 60, form = { mealExpLimit = 12.0 })
+        for (o in an) {
+            val e = o.earlyAdaptiveMeal
+            val m = "min ${minuteVon(o)}"
+            if (e.selected) assertTrue(e.eligible, "gewaehlt setzt Eignung voraus: $m")
+            val prod = e.productionReleaseMeanMgdl
+            if (prod == null) {
+                assertFalse(e.selected, "ohne Kanalrechnung keine Auswahl: $m")
+            } else {
+                val frueh = e.earlyReleaseMeanMgdl
+                assertEquals(e.eligible && frueh != null && frueh > prod, e.selected, "gewaehlt = echt ueber der produktiven Bahn: $m")
+                assertEquals(if (e.selected) frueh!! else prod, e.effectiveReleaseMeanMgdl!!, 0.0, "wirksame Bahn folgt der Auswahl: $m")
+            }
+            assertEquals(if (e.selected) "EARLY_ADAPTIVE_MEAL_H8" else null, e.source, "Quelle nur bei Auswahl: $m")
+        }
+        val nurGeeignet = an.filter { it.earlyAdaptiveMeal.eligible && !it.earlyAdaptiveMeal.selected }
+        val gewaehltOhneHub = an.filter { it.earlyAdaptiveMeal.selected && it.livenessLiftU == 0.0 }
+        println(
+            "H8 j: geeignet ohne Auswahl ${nurGeeignet.map { "${minuteVon(it)}:${it.livenessDenial ?: "prod>=frueh"}" }}; " +
+                "gewaehlt ohne Hub ${gewaehltOhneHub.map { "${minuteVon(it)}:${it.earlyAdaptiveMeal.candidateAfterHeadroomU}/${it.livenessDenial}" }}",
+        )
+        assertTrue(an.any { it.earlyAdaptiveMeal.selected }, "positiver Nachweis: H8 stellt die Bahn")
+        assertTrue(nurGeeignet.isNotEmpty(), "geeignet ist nicht gewaehlt")
+        assertTrue(
+            gewaehltOhneHub.any { it.earlyAdaptiveMeal.candidateAfterHeadroomU == 0.0 },
+            "gewaehlt ist nicht abgegeben: der Deckelrest sperrt den Kandidaten ganz",
+        )
     }
 
     /**
@@ -16926,7 +16965,7 @@ class TransportWiringTest : TestBaseWithProfile() {
         val an = fruehLauf(dir, "f", 8, 60, schwanzU = 2.0, form = flacherAnstieg)
         fruehZeilen("f", an, an)
         val zwischen = an.filter {
-            it.earlyAdaptiveMeal.active && it.earlyAdaptiveMeal.w10DriveMgdlPerMin!! < it.earlyAdaptiveMeal.riseRampLowR!!
+            it.earlyAdaptiveMeal.eligible && it.earlyAdaptiveMeal.w10DriveMgdlPerMin!! < it.earlyAdaptiveMeal.riseRampLowR!!
         }
         println("H8 f: aktiv mit 1,0 <= W10 < 1,5 in Minuten ${zwischen.map { "${minuteVon(it)}:${"%.2f".format(it.earlyAdaptiveMeal.w10DriveMgdlPerMin)}" }}")
         assertTrue(zwischen.isNotEmpty(), "positiver Nachweis: H8 aktiv zwischen 1,0 und riseRampLowR")
@@ -16952,8 +16991,8 @@ class TransportWiringTest : TestBaseWithProfile() {
             flacherAnstieg(); steigungNachKnick = 1.2; riseRampLowRWert = rampe
         }
         val tief = lauf(0.5); val live = lauf(1.5); val hoch = lauf(1.9)
-        fun zeile(o: FuseCycleRunner.Outcome) = listOf(minuteVon(o), o.earlyAdaptiveMeal.active, o.earlyAdaptiveMeal.denial, o.earlyAdaptiveMeal.earlyReleaseMeanMgdl)
-        assertTrue(live.any { it.earlyAdaptiveMeal.active && it.earlyAdaptiveMeal.w10DriveMgdlPerMin!! < it.earlyAdaptiveMeal.riseRampLowR!! },
+        fun zeile(o: FuseCycleRunner.Outcome) = listOf(minuteVon(o), o.earlyAdaptiveMeal.eligible, o.earlyAdaptiveMeal.denial, o.earlyAdaptiveMeal.earlyReleaseMeanMgdl)
+        assertTrue(live.any { it.earlyAdaptiveMeal.eligible && it.earlyAdaptiveMeal.w10DriveMgdlPerMin!! < it.earlyAdaptiveMeal.riseRampLowR!! },
             "Vorbedingung: H8 aktiv unterhalb der Rampen-Unterkante")
         assertEquals(live.map { zeile(it) }, tief.map { zeile(it) }, "Rampe 0,5 aendert den Eintritt nicht")
         assertTrue(hoch.none { it.abortReason != null && minuteVon(it) > 8 }, "Vorbedingung: gueltige Rampe 1,9")
@@ -16986,7 +17025,7 @@ class TransportWiringTest : TestBaseWithProfile() {
             flacherAnstieg(); riseRampLowRWert = 0.8; riseRampHighRWert = 2.2
         }
         fruehZeilen("h", an, an)
-        val aktiv = an.filter { it.earlyAdaptiveMeal.active }
+        val aktiv = an.filter { it.earlyAdaptiveMeal.eligible }
         assertTrue(aktiv.isNotEmpty(), "Vorbedingung: H8 aktiv")
         aktiv.forEach {
             assertEquals(0.8, it.earlyAdaptiveMeal.riseRampLowR!!, 0.0, "Trail traegt die Zyklus-Rampe")
@@ -17014,7 +17053,7 @@ class TransportWiringTest : TestBaseWithProfile() {
             flacherAnstieg(); riseRampLowRWert = 2.0; riseRampHighRWert = 4.0
         }
         fruehZeilen("i", flach, flach)
-        val unter = flach.filter { it.earlyAdaptiveMeal.active && it.earlyAdaptiveMeal.ratioDriveMgdlPerMin!! < 2.0 }
+        val unter = flach.filter { it.earlyAdaptiveMeal.eligible && it.earlyAdaptiveMeal.ratioDriveMgdlPerMin!! < 2.0 }
         assertTrue(unter.isNotEmpty(), "Vorbedingung: H8 aktiv mit Antrieb unter 2,0")
         unter.forEach { assertTrue(it.earlyAdaptiveMeal.w10DriveMgdlPerMin!! >= LivenessChannel.R_MIN_MGDL_PER_MIN) }
         unter.filter { it.livenessBaseRatio != null }.also { assertTrue(it.isNotEmpty(), "Vorbedingung: Kanal rechnet") }.forEach {
@@ -17025,7 +17064,7 @@ class TransportWiringTest : TestBaseWithProfile() {
             flacherAnstieg(); steigungNachKnick = 2.0; riseRampLowRWert = 2.0; riseRampHighRWert = 4.0
         }
         fruehZeilen("isteil", steil, steil)
-        val inRampe = steil.filter { it.earlyAdaptiveMeal.active && it.livenessBaseRatio != null &&
+        val inRampe = steil.filter { it.earlyAdaptiveMeal.eligible && it.livenessBaseRatio != null &&
             it.earlyAdaptiveMeal.ratioDriveMgdlPerMin!! > 2.0 + 0.05 && it.earlyAdaptiveMeal.ratioDriveMgdlPerMin!! < 4.0 }
         println("H8 isteil: Ratio in der Rampe ${inRampe.map { "${minuteVon(it)}:${"%.2f".format(it.earlyAdaptiveMeal.ratioDriveMgdlPerMin)}->${"%.3f".format(it.livenessBaseRatio)}" }}")
         assertTrue(inRampe.isNotEmpty(), "Vorbedingung: Antrieb zwischen 2,0 und 4,0 im Kanal")
@@ -17049,10 +17088,11 @@ class TransportWiringTest : TestBaseWithProfile() {
             if (i == neustartMin) neuerRunner(FuseLedgerAdapter().also { it.loadOnce(File(dir, "eneu_h8"), "test-epoch", clock) })
         })
         val vergleich = ungestoert.zip(mitNeustart).filter { (a, _) -> minuteVon(a) >= neustartMin }
-        assertTrue(vergleich.any { it.first.earlyAdaptiveMeal.active }, "Vorbedingung: H8 aktiv nach dem Neustartzeitpunkt")
+        assertTrue(vergleich.any { it.first.earlyAdaptiveMeal.eligible }, "Vorbedingung: H8 aktiv nach dem Neustartzeitpunkt")
         for ((a, b) in vergleich) {
             val x = a.earlyAdaptiveMeal; val y = b.earlyAdaptiveMeal
-            assertEquals(x.active, y.active, "aktiv min ${minuteVon(a)}")
+            assertEquals(x.eligible, y.eligible, "geeignet min ${minuteVon(a)}")
+            assertEquals(x.selected, y.selected, "gewaehlt min ${minuteVon(a)}")
             assertEquals(x.denial, y.denial, "Grund min ${minuteVon(a)}")
             assertEquals(x.markerAgeMin, y.markerAgeMin, "Alter min ${minuteVon(a)}")
             assertEquals(a.markerPowerPinnedFor, b.markerPowerPinnedFor, "Autorisierung min ${minuteVon(a)}")

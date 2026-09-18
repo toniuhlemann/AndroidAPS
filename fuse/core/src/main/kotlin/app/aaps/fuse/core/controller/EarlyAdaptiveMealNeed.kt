@@ -104,11 +104,14 @@ object EarlyAdaptiveMealNeed {
     )
 
     /**
-     * [active] true = Bruttobedarf gebildet ([earlyReleaseMeanMgdl] gesetzt).
+     * [eligible] true = die Eintrittsbedingungen sind erfuellt und die
+     * Bruttobahn ist gebildet ([earlyReleaseMeanMgdl] gesetzt). Das heisst
+     * NICHT, dass die H8-Bahn die Freigabebahn stellt ([selected]), und erst
+     * recht nicht, dass etwas abgegeben wurde.
      * [markerAgeMin] ist gesetzt, sobald ein Markeralter bestimmbar war.
      */
     data class Decision(
-        val active: Boolean,
+        val eligible: Boolean,
         val denial: Denial?,
         val markerAgeMin: Double?,
         val earlyReleaseMeanMgdl: Double?,
@@ -134,15 +137,26 @@ object EarlyAdaptiveMealNeed {
         if (i.ukfRatePerMin < 0.0) return no(Denial.UKF_NEGATIVE, ageMin)
         if (!i.targetMgdl.isFinite() || i.targetMgdl <= 0.0) return no(Denial.TARGET_INVALID, ageMin)
         return Decision(
-            active = true,
+            eligible = true,
             denial = null,
             markerAgeMin = ageMin,
             earlyReleaseMeanMgdl = i.targetMgdl + drive * i.horizonMin,
         )
     }
 
-    /** `max`, nie Addition: ohne aktiven Bedarf bleibt die produktive Bahn bitgleich. */
+    /** `max`, nie Addition: ohne gebildeten Bedarf bleibt die produktive Bahn bitgleich. */
     fun effectiveReleaseMean(productionReleaseMeanMgdl: Double, d: Decision): Double =
-        d.earlyReleaseMeanMgdl?.takeIf { d.active }?.let { maxOf(productionReleaseMeanMgdl, it) }
+        d.earlyReleaseMeanMgdl?.takeIf { d.eligible }?.let { maxOf(productionReleaseMeanMgdl, it) }
             ?: productionReleaseMeanMgdl
+
+    /**
+     * Die H8-Bahn STELLT die Freigabe-Mittelbahn: geeignet und echt ueber der
+     * produktiven Bahn. Bei Gleichstand bleibt es die produktive Bahn.
+     * Gewaehlt heisst nicht abgegeben - danach folgen Ratio, Deckelrest,
+     * maxSMB, der Vergleich mit dem Normalpfad und die Endpruefung.
+     */
+    fun selected(productionReleaseMeanMgdl: Double, d: Decision): Boolean {
+        val early = d.earlyReleaseMeanMgdl ?: return false
+        return d.eligible && early > productionReleaseMeanMgdl
+    }
 }

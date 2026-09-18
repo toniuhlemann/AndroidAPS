@@ -956,7 +956,11 @@ object FuseStateJson {
                         "earlyAdaptiveMeal", JSONObject()
                             .put("configuredHorizonMin", outcome.earlyAdaptiveMeal.configuredHorizonMin)
                             .put("horizonMin", outcome.earlyAdaptiveMeal.horizonMin)
-                            .put("active", outcome.earlyAdaptiveMeal.active)
+                            // Eignung, Auswahl und Kanalangebot getrennt (Review 18.09.):
+                            // eligible = Eintritt erfuellt, selected = H8-Bahn stellte die
+                            // Mittelbahn; abgegeben ist, was liftU und die Entscheidung zeigen.
+                            .put("eligible", outcome.earlyAdaptiveMeal.eligible)
+                            .put("selected", outcome.earlyAdaptiveMeal.selected)
                             .put("denial", outcome.earlyAdaptiveMeal.denial ?: JSONObject.NULL)
                             .put("markerAgeMin", fin(outcome.earlyAdaptiveMeal.markerAgeMin))
                             .put("w10DriveMgdlPerMin", fin(outcome.earlyAdaptiveMeal.w10DriveMgdlPerMin))

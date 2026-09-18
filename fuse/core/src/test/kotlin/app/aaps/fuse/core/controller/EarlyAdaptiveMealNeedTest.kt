@@ -117,7 +117,7 @@ class EarlyAdaptiveMealNeedTest {
     @Test
     fun `Bruttobahn ist target plus W10 mal H`() {
         val d = EarlyAdaptiveMealNeed.decide(input(w10 = 2.5, target = 100.0))
-        assertTrue(d.active)
+        assertTrue(d.eligible)
         assertEquals(120.0, d.earlyReleaseMeanMgdl!!, 1e-12)
         assertEquals(20.0, d.markerAgeMin!!, 1e-12)
         // H6 und H10 sind dieselbe Formel mit anderem Horizont.
@@ -140,5 +140,28 @@ class EarlyAdaptiveMealNeedTest {
         assertEquals(116.0, d.earlyReleaseMeanMgdl!!, 1e-12)
         // Ein Rueckfall auf 60 min ergaebe 220 mg/dl.
         assertTrue(d.earlyReleaseMeanMgdl!! < 100.0 + 2.0 * 60 - 1.0)
+    }
+
+    // ---- Diagnose: Eignung ist nicht Auswahl (Review 18.09.) -----------------
+
+    @Test
+    fun `gewaehlt nur, wenn die H8-Bahn echt ueber der produktiven liegt`() {
+        val d = EarlyAdaptiveMealNeed.decide(input(w10 = 2.5, target = 100.0)) // Bahn 120
+        assertTrue(d.eligible)
+        assertTrue(EarlyAdaptiveMealNeed.selected(119.9, d))
+        // Gleichstand und hoehere produktive Bahn: geeignet, aber nicht gewaehlt.
+        assertFalse(EarlyAdaptiveMealNeed.selected(120.0, d))
+        assertFalse(EarlyAdaptiveMealNeed.selected(130.0, d))
+        // Nicht geeignet: nie gewaehlt.
+        assertFalse(EarlyAdaptiveMealNeed.selected(95.0, EarlyAdaptiveMealNeed.decide(input(horizon = 0))))
+        assertFalse(EarlyAdaptiveMealNeed.selected(95.0, d.copy(eligible = false)))
+        // Auswahl und wirksame Bahn sind dieselbe Aussage.
+        for (prod in listOf(95.0, 119.9, 120.0, 130.0)) {
+            assertEquals(
+                EarlyAdaptiveMealNeed.effectiveReleaseMean(prod, d) > prod,
+                EarlyAdaptiveMealNeed.selected(prod, d),
+                "produktiv $prod",
+            )
+        }
     }
 }

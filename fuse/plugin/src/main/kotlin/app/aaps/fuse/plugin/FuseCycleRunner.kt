@@ -1430,7 +1430,20 @@ class FuseCycleRunner(
      * FRUEHER ADAPTIVER MEAL-BEDARF EINES ZYKLUS
      * ([app.aaps.fuse.core.controller.EarlyAdaptiveMealNeed], Toni 18.09., H8),
      * gebuendelt wegen der Parametergrenze von [Outcome]. Rein beschreibend.
-     * `active` false und alle Bahnen null = nicht gebildet ([denial]).
+     *
+     * DREI GETRENNTE AUSSAGEN (Review 18.09.: "aktiv" las sich wie "H8 hat
+     * dosiert"):
+     *  - [eligible]: die Eintrittsbedingungen sind erfuellt. Dann lesen
+     *    Ratio-Rampe und Kanaldruck den W10-Antrieb, und die H8-Bahn nimmt am
+     *    `max` teil. false und alle Bahnen null = nicht gebildet ([denial]).
+     *  - [selected]: die H8-Bahn lag echt ueber der produktiven und STELLTE
+     *    die Freigabe-Mittelbahn des Kanals. Nur moeglich, wenn der Kanal in
+     *    diesem Zyklus gerechnet hat.
+     *  - [candidateAfterHeadroomU]: das Angebot des Kanals nach Deckelrest und
+     *    Raster. Ob daraus eine Abgabe wurde, entscheiden danach der
+     *    Normalpfad-Vergleich und die Endpruefung - das steht in
+     *    `liveness.liftU` und in der Entscheidung, nicht hier.
+     * [source] ist nur bei [selected] gesetzt.
      * `productionReleaseMeanMgdl`/`effectiveReleaseMeanMgdl`/`candidateAfterHeadroomU`
      * sind nur gesetzt, wenn der Liveness-Kanal in diesem Zyklus einen Kandidaten
      * gerechnet hat.
@@ -1438,7 +1451,8 @@ class FuseCycleRunner(
     data class EarlyAdaptiveMealDiagnosis(
         val configuredHorizonMin: Int = 0,
         val horizonMin: Int = 0,
-        val active: Boolean = false,
+        val eligible: Boolean = false,
+        val selected: Boolean = false,
         val denial: String? = null,
         val markerAgeMin: Double? = null,
         val w10DriveMgdlPerMin: Double? = null,
@@ -2509,13 +2523,15 @@ class FuseCycleRunner(
         )
         val markerPowerActive = dosingCtx.mealAuthorized
         // ---- FRUEHER ADAPTIVER MEAL-BEDARF (Toni 18.09., H8, Default AUS) ---
-        // EINE Entscheidung je Zyklus, VOR der State-Konstruktion. Ist sie
-        // aktiv, lesen genau drei Stellen den robusten W10-Antrieb statt der
-        // W18-Bahn - der im Replay vom 18.09. gepruefte Vertrag: die Ratio-
-        // Rampe, der Druck des Liveness-Kanals und dessen Freigabe-Mittelbahn
-        // (`max(produktiv, target + W10 * H)`, nie Summe). Tore, Deckel,
-        // Grenzen, Raster, Reversal-/Safety-Bahn und Horizonte bleiben. Bei 0
-        // wird nichts gebildet; alle drei Stellen sind bitgleich.
+        // EINE Entscheidung je Zyklus, VOR der State-Konstruktion. Ist H8
+        // geeignet (`eligible`), lesen genau drei Stellen den robusten
+        // W10-Antrieb statt der W18-Bahn - der im Replay vom 18.09. gepruefte
+        // Vertrag: die Ratio-Rampe, der Druck des Liveness-Kanals und dessen
+        // Freigabe-Mittelbahn (`max(produktiv, target + W10 * H)`, nie Summe).
+        // Ob die H8-Bahn diese Mittelbahn tatsaechlich stellt, ist eine
+        // zweite, spaetere Aussage (`selected`). Tore, Deckel, Grenzen,
+        // Raster, Reversal-/Safety-Bahn und Horizonte bleiben. Bei 0 wird
+        // nichts gebildet; alle drei Stellen sind bitgleich.
         val fruehMeal = app.aaps.fuse.core.controller.EarlyAdaptiveMealNeed.decide(
             app.aaps.fuse.core.controller.EarlyAdaptiveMealNeed.Input(
                 horizonMin = cfg.earlyAdaptiveMealHorizonMin,
@@ -2538,7 +2554,7 @@ class FuseCycleRunner(
         )
         // Ratio-Antrieb: produktiv die W18-Bahn, im H8-Fenster der W10-Antrieb;
         // der Onset-Kanal hebt in beiden Faellen wie bisher.
-        val ratioDrive = if (fruehMeal.active) {
+        val ratioDrive = if (fruehMeal.eligible) {
             onset.driveMgdlPerMin?.takeIf { onset.active }
                 ?.let { dd -> maxOf(band.mean, dd) } ?: band.mean
         } else {
@@ -4960,6 +4976,9 @@ class FuseCycleRunner(
         var livenessProductionReleaseMeanMgdl: Double? = null
         var livenessEffectiveReleaseMeanMgdl: Double? = null
         var livenessCandidateAfterHeadroomU: Double? = null
+        // true = die H8-Bahn lag ueber der produktiven und STELLTE die
+        // Freigabe-Mittelbahn des Kanals (nicht: "H8 hat abgegeben").
+        var livenessEarlySelected = false
 
         // Marker-Leistungsfrist + zentraler Dosierkontext: seit B2 VOR der
         // State-Konstruktion bestimmt (Kontextgrenze in der Grant-Bildung,
@@ -5370,7 +5389,7 @@ class FuseCycleRunner(
             // H8: im frueh autorisierten Fenster traegt der robuste W10-Antrieb
             // den Druck; Schwelle (BG ueber der wirksamen Schwelle, r >= 1,0)
             // und Bewaffnungsregel bleiben unveraendert.
-            val rSig = if (fruehMeal.active) band.mean else signal.rSigned
+            val rSig = if (fruehMeal.eligible) band.mean else signal.rSigned
             val druck = signal.q1 > bgMinWirksam &&
                 rSig != null && rSig.isFinite() && rSig >= LivenessChannel.R_MIN_MGDL_PER_MIN
             if (livenessActive && !druck) {
@@ -5448,6 +5467,8 @@ class FuseCycleRunner(
                 .effectiveReleaseMean(produktivesReleaseMean, fruehMeal)
             livenessProductionReleaseMeanMgdl = produktivesReleaseMean
             livenessEffectiveReleaseMeanMgdl = releaseMean
+            livenessEarlySelected = app.aaps.fuse.core.controller.EarlyAdaptiveMealNeed
+                .selected(produktivesReleaseMean, fruehMeal)
             // ---- BASIS-RATIO AUS DER RAMPE (Toni 24.08., v27-Korrektur) --
             // Nicht state.effectiveSmbRatio: die faellt ausserhalb des
             // Normalpfad-Mahlzeitfensters auf die Korrektur-Ratio zurueck,
@@ -6380,7 +6401,8 @@ class FuseCycleRunner(
             earlyAdaptiveMeal = EarlyAdaptiveMealDiagnosis(
                 configuredHorizonMin = cfg.earlyAdaptiveMealHorizonConfiguredMin,
                 horizonMin = cfg.earlyAdaptiveMealHorizonMin,
-                active = fruehMeal.active,
+                eligible = fruehMeal.eligible,
+                selected = livenessEarlySelected,
                 denial = fruehMeal.denial?.name,
                 markerAgeMin = fruehMeal.markerAgeMin,
                 w10DriveMgdlPerMin = band.mean,
@@ -6389,7 +6411,8 @@ class FuseCycleRunner(
                 productionReleaseMeanMgdl = livenessProductionReleaseMeanMgdl,
                 effectiveReleaseMeanMgdl = livenessEffectiveReleaseMeanMgdl,
                 candidateAfterHeadroomU = livenessCandidateAfterHeadroomU,
-                source = if (fruehMeal.active)
+                // Quelle nur, wenn die H8-Bahn die Mittelbahn gestellt hat.
+                source = if (livenessEarlySelected)
                     app.aaps.fuse.core.controller.EarlyAdaptiveMealNeed.sourceId(cfg.earlyAdaptiveMealHorizonMin)
                 else null,
                 ratioDriveMgdlPerMin = ratioDrive,
