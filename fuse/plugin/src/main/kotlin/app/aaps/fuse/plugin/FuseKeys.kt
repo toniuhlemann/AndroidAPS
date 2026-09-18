@@ -680,6 +680,25 @@ enum class FuseIntKey(
     TheilSenWindowMin("fuse_theil_sen_window_min", 18, 8, 18),
 
     /**
+     * FRUEHER ADAPTIVER MEAL-HORIZONT [min] - DEFAULT 0 = AUS (Bauauftrag Toni
+     * 18.09., Kandidat H8, kein Aktivierungs-GO).
+     *
+     * Eingeschaltet bildet FUSE im frueh autorisierten Mahlzeitenfenster
+     * (Marker +10..+45 min) aus dem robusten W10-Anstieg (ab der Liveness-
+     * Druckschwelle 1,0 mg/dl/min, UKF >= 0) einen kurzen
+     * Bruttobedarf `target + W10 * H` und fuehrt ihn per `max` mit der
+     * produktiven Freigabe-Mittelbahn zusammen - s.
+     * [app.aaps.fuse.core.controller.EarlyAdaptiveMealNeed]. Wirksam sind nur
+     * 0, 6, 8 und 10; jeder andere Wert (auch ein alter oder fehlender
+     * Schluessel) wirkt als 0. Theil-Sen-Fenster, Release-, Prognose- und
+     * Sicherheitshorizonte bleiben unveraendert.
+     *
+     * DOSIERWIRKSAM: steht im Politik-Hash (v55), in policyValues, Backup und
+     * Report; der Trail traegt konfigurierten und wirksamen Wert.
+     */
+    EarlyAdaptiveMealHorizonMin("fuse_early_adaptive_meal_horizon_min", 0, 0, 10),
+
+    /**
      * DIE DAUER DES REBOUND-FENSTERS [min] nach dem juengsten Tief
      * (signal.q1 unter [FuseController.REBOUND_LOW_MGDL]). War bis 26.08.
      * fest; [FuseController.REBOUND_WINDOW_MIN] ist nur noch der Default.

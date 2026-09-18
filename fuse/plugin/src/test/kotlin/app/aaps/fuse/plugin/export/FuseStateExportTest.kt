@@ -573,6 +573,39 @@ class FuseStateExportTest {
 
     // ---- Politik ---------------------------------------------------------
 
+    /** v55 (H8): der WIRKSAME Horizont steht in Politik und Hash; ein unzulaessiger
+     *  konfigurierter Wert wirkt als 0 und bewegt den Hash nicht. */
+    @Test
+    fun `H8 - frueher MEAL-Horizont in Politik, Hash und Trail`() {
+        // Produktionsdefault AUS - Schluessel und Konfiguration.
+        assertEquals(0, app.aaps.fuse.plugin.FuseIntKey.EarlyAdaptiveMealHorizonMin.defaultValue)
+        assertEquals(0, cfg.earlyAdaptiveMealHorizonMin)
+        val h = FuseStateJson.hashOf(cfg)!!
+        assertTrue(FuseStateJson.hashOf(cfg.copy(earlyAdaptiveMealHorizonMin = 8, earlyAdaptiveMealHorizonConfiguredMin = 8)) != h)
+        assertTrue(FuseStateJson.hashOf(cfg.copy(earlyAdaptiveMealHorizonMin = 6)) != FuseStateJson.hashOf(cfg.copy(earlyAdaptiveMealHorizonMin = 10)))
+        assertEquals(h, FuseStateJson.hashOf(cfg.copy(earlyAdaptiveMealHorizonConfiguredMin = 7)))
+        val werte = FuseStateJson.policyValues(cfg.copy(earlyAdaptiveMealHorizonMin = 0, earlyAdaptiveMealHorizonConfiguredMin = 7))
+        assertEquals(0, werte.getInt("earlyAdaptiveMealHorizonMin"))
+        assertEquals(7, werte.getInt("earlyAdaptiveMealHorizonConfiguredMin"))
+        val early = record(outcome()).getJSONObject("liveness").getJSONObject("earlyAdaptiveMeal")
+        assertEquals(0, early.getInt("horizonMin"))
+        assertFalse(early.getBoolean("active"))
+        assertTrue(early.isNull("source"))
+        // Rampe: Aenderung von Unter- oder Oberkante bewegt den Politik-Hash, und der
+        // Trail traegt die im Zyklus verwendeten Werte (Nichtstandardwerte).
+        assertTrue(FuseStateJson.hashOf(cfg.copy(riseRampLowR = 0.8)) != h)
+        assertTrue(FuseStateJson.hashOf(cfg.copy(riseRampHighR = 4.0)) != h)
+        val mitRampe = outcome().copy(
+            earlyAdaptiveMeal = app.aaps.fuse.plugin.FuseCycleRunner.EarlyAdaptiveMealDiagnosis(
+                horizonMin = 8, riseRampLowR = 0.8, riseRampHighR = 2.2, ratioDriveMgdlPerMin = 1.3,
+            ),
+        )
+        val trail = record(mitRampe).getJSONObject("liveness").getJSONObject("earlyAdaptiveMeal")
+        assertEquals(0.8, trail.getDouble("riseRampLowR"), 0.0)
+        assertEquals(2.2, trail.getDouble("riseRampHighR"), 0.0)
+        assertEquals(1.3, trail.getDouble("ratioDriveMgdlPerMin"), 0.0)
+    }
+
     @Test
     fun `der Politik-Hash aendert sich mit jeder Stellgroesse`() {
         val h = FuseStateJson.hashOf(cfg)!!
@@ -891,7 +924,8 @@ class FuseStateExportTest {
         // v52 buchungsbedingter Ausgang ohne neue Wiederanlaufsperre (Default aus).
         // v53 Halte-Anhebung des Stoerungsterms im Liveness-Bedarf (Default aus).
         // v54 MEAL-Bindung und Messbestaetigung der Halte-Anhebung (Default aus).
-        assertEquals(54, FuseStateJson.RULE_SET_VERSION)
+        // v55 frueher adaptiver MEAL-Bedarf H8 (Default 0 = aus).
+        assertEquals(55, FuseStateJson.RULE_SET_VERSION)
         assertTrue(
             FuseStateJson.hashOf(cfg)!!.isNotEmpty(),
             "und der Hash bleibt berechenbar",

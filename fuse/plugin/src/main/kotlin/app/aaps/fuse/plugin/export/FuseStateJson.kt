@@ -432,7 +432,14 @@ object FuseStateJson {
     // unter gueltiger MEAL-Autorisierung und bestaetigt ueber frische
     // Rohwert-Bloecke mit neuem Hoch, Bedarf je Block einmal - die fruehere
     // Zwei-Zyklen-Bestaetigung ueber die Rate allein ist entfallen.
-    const val RULE_SET_VERSION = 54
+    // v55 (Toni 18.09., Kandidat H8, Default 0 = AUS): frueher adaptiver
+    // MEAL-Bedarf. Nur unter gueltiger MEAL-Autorisierung, Marker +10..+45 min,
+    // reifem Signal, W10 >= 1,0 (Liveness-Druckschwelle R_MIN) und UKF >= 0 -
+    // riseRampLowR bleibt allein Unterkante der Ratio-Rampe: die Freigabe-Mittelbahn
+    // des Liveness-Kanals wird max(produktiv, target + W10 * H) (nie Summe),
+    // Ratio-Rampe und Kanaldruck lesen in diesen Zyklen den W10-Antrieb. Tore,
+    // Deckel, Grenzen, Raster, Horizonte und Reversal-/Safety-Bahn unveraendert.
+    const val RULE_SET_VERSION = 55
 
     /** Schema des Trail-Datensatzes - s. die Notiz an der Schreibstelle. */
     const val SCHEMA_VERSION = 5
@@ -940,6 +947,29 @@ object FuseStateJson {
                             // v54: Messbestaetigung (frische Rohwert-Bloecke).
                             .put("evidenceDenial", outcome.livenessHold.evidenceDenial ?: JSONObject.NULL)
                             .put("evidenceBlockMedianMgdl", fin(outcome.livenessHold.evidenceBlockMedianMgdl)),
+                    )
+                    // v55: frueher adaptiver MEAL-Bedarf (H8). Dosierneutrale
+                    // Beschreibung; aeltere Leser ignorieren das Objekt.
+                    // releaseMeanMgdl oben bleibt die produktive Bahn, needU
+                    // und candidateU rechnen mit effectiveReleaseMeanMgdl.
+                    .put(
+                        "earlyAdaptiveMeal", JSONObject()
+                            .put("configuredHorizonMin", outcome.earlyAdaptiveMeal.configuredHorizonMin)
+                            .put("horizonMin", outcome.earlyAdaptiveMeal.horizonMin)
+                            .put("active", outcome.earlyAdaptiveMeal.active)
+                            .put("denial", outcome.earlyAdaptiveMeal.denial ?: JSONObject.NULL)
+                            .put("markerAgeMin", fin(outcome.earlyAdaptiveMeal.markerAgeMin))
+                            .put("w10DriveMgdlPerMin", fin(outcome.earlyAdaptiveMeal.w10DriveMgdlPerMin))
+                            .put("ukfRatePerMin", fin(outcome.earlyAdaptiveMeal.ukfRatePerMin))
+                            .put("earlyReleaseMeanMgdl", fin(outcome.earlyAdaptiveMeal.earlyReleaseMeanMgdl))
+                            .put("productionReleaseMeanMgdl", fin(outcome.earlyAdaptiveMeal.productionReleaseMeanMgdl))
+                            .put("effectiveReleaseMeanMgdl", fin(outcome.earlyAdaptiveMeal.effectiveReleaseMeanMgdl))
+                            .put("candidateAfterHeadroomU", fin(outcome.earlyAdaptiveMeal.candidateAfterHeadroomU))
+                            .put("source", outcome.earlyAdaptiveMeal.source ?: JSONObject.NULL)
+                            // Die in diesem Zyklus verwendete Ratio-Rampe (cfg) und ihr Antrieb.
+                            .put("ratioDriveMgdlPerMin", fin(outcome.earlyAdaptiveMeal.ratioDriveMgdlPerMin))
+                            .put("riseRampLowR", fin(outcome.earlyAdaptiveMeal.riseRampLowR))
+                            .put("riseRampHighR", fin(outcome.earlyAdaptiveMeal.riseRampHighR)),
                     )
                     // v52: endete der Lauf ohne neue Sperre - und wenn nicht, warum.
                     .put(
@@ -2047,6 +2077,9 @@ object FuseStateJson {
         .put("livenessBookingExitWithoutReArmEnabled", p.livenessBookingExitWithoutReArmEnabled)
         // v53: Halte-Anhebung im Liveness-Bedarf.
         .put("livenessDriveHoldEnabled", p.livenessDriveHoldEnabled)
+        // v55: frueher adaptiver MEAL-Horizont - wirksam und wie konfiguriert.
+        .put("earlyAdaptiveMealHorizonMin", p.earlyAdaptiveMealHorizonMin)
+        .put("earlyAdaptiveMealHorizonConfiguredMin", p.earlyAdaptiveMealHorizonConfiguredMin)
         .put("mealPowerMin", p.livenessMealPowerMin)
         // CENTRAL-only (Legacy-Cleanup 29.08. nachts): policyMode bleibt
         // als KONSTANTE im Export, damit Viewer und alte Trails eindeutig
@@ -2277,6 +2310,9 @@ object FuseStateJson {
                 p.livenessBookingExitWithoutReArmEnabled,
                 // v53: dosierwirksam im bewaffneten Kanal.
                 p.livenessDriveHoldEnabled,
+                // v55: der WIRKSAME fruehe MEAL-Horizont (0/6/8/10) - H6, H8
+                // und H10 sind verschiedene Regler.
+                p.earlyAdaptiveMealHorizonMin,
                 // v40 (M3): dosierwirksam unter MEAL-Vollmacht, sobald
                 // kleiner 3 gesetzt - modusunabhaengig immer im Hash.
                 p.mealArmCycles,

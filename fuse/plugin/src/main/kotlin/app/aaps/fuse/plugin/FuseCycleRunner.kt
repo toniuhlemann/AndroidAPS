@@ -384,6 +384,9 @@ class FuseCycleRunner(
             require(it.driveLowerQuantilePct in PairSlopeBand.MIN_PCT..PairSlopeBand.MAX_PCT) {
                 "driveLowerQuantile=${it.driveLowerQuantilePct}"
             }
+            require(it.earlyAdaptiveMealHorizonMin in app.aaps.fuse.core.controller.EarlyAdaptiveMealNeed.ALLOWED_HORIZONS_MIN) {
+                "earlyAdaptiveMealHorizonMin=${it.earlyAdaptiveMealHorizonMin}"
+            }
             require(it.theilSenWindowMin in FuseIntKey.TheilSenWindowMin.min..FuseIntKey.TheilSenWindowMin.max) {
                 "theilSenWindowMin=${it.theilSenWindowMin}"
             }
@@ -1221,6 +1224,8 @@ class FuseCycleRunner(
         val livenessShadowHeadroomU: Double? = null,
         /** Halte-Anhebung im Liveness-Bedarf - s. [LivenessHoldDiagnosis]. */
         val livenessHold: LivenessHoldDiagnosis = LivenessHoldDiagnosis(),
+        /** Frueher adaptiver MEAL-Bedarf (H8) - s. [EarlyAdaptiveMealDiagnosis]. */
+        val earlyAdaptiveMeal: EarlyAdaptiveMealDiagnosis = EarlyAdaptiveMealDiagnosis(),
         /**
          * Verlustdiagnose und Buchungsausgang als EIN Parameter - s.
          * [LivenessBookingDiagnosis]. Die Einzelnamen stehen als abgeleitete
@@ -1419,6 +1424,35 @@ class FuseCycleRunner(
         val evidenceDenial: String? = null,
         /** Median des juengsten Messblocks [mg/dl]. */
         val evidenceBlockMedianMgdl: Double? = null,
+    )
+
+    /**
+     * FRUEHER ADAPTIVER MEAL-BEDARF EINES ZYKLUS
+     * ([app.aaps.fuse.core.controller.EarlyAdaptiveMealNeed], Toni 18.09., H8),
+     * gebuendelt wegen der Parametergrenze von [Outcome]. Rein beschreibend.
+     * `active` false und alle Bahnen null = nicht gebildet ([denial]).
+     * `productionReleaseMeanMgdl`/`effectiveReleaseMeanMgdl`/`candidateAfterHeadroomU`
+     * sind nur gesetzt, wenn der Liveness-Kanal in diesem Zyklus einen Kandidaten
+     * gerechnet hat.
+     */
+    data class EarlyAdaptiveMealDiagnosis(
+        val configuredHorizonMin: Int = 0,
+        val horizonMin: Int = 0,
+        val active: Boolean = false,
+        val denial: String? = null,
+        val markerAgeMin: Double? = null,
+        val w10DriveMgdlPerMin: Double? = null,
+        val ukfRatePerMin: Double? = null,
+        val earlyReleaseMeanMgdl: Double? = null,
+        val productionReleaseMeanMgdl: Double? = null,
+        val effectiveReleaseMeanMgdl: Double? = null,
+        val candidateAfterHeadroomU: Double? = null,
+        val source: String? = null,
+        /** Antrieb der Ratio-Rampe in diesem Zyklus (mit H8 W10, sonst W18; Onset hebt). */
+        val ratioDriveMgdlPerMin: Double? = null,
+        /** Die in DIESEM Zyklus gelesene Rampe (cfg, eine Lesung je Zyklus). */
+        val riseRampLowR: Double? = null,
+        val riseRampHighR: Double? = null,
     )
 
     /**
@@ -2474,6 +2508,43 @@ class FuseCycleRunner(
             deadlineTs = episodes.markerPowerDeadlineTs,
         )
         val markerPowerActive = dosingCtx.mealAuthorized
+        // ---- FRUEHER ADAPTIVER MEAL-BEDARF (Toni 18.09., H8, Default AUS) ---
+        // EINE Entscheidung je Zyklus, VOR der State-Konstruktion. Ist sie
+        // aktiv, lesen genau drei Stellen den robusten W10-Antrieb statt der
+        // W18-Bahn - der im Replay vom 18.09. gepruefte Vertrag: die Ratio-
+        // Rampe, der Druck des Liveness-Kanals und dessen Freigabe-Mittelbahn
+        // (`max(produktiv, target + W10 * H)`, nie Summe). Tore, Deckel,
+        // Grenzen, Raster, Reversal-/Safety-Bahn und Horizonte bleiben. Bei 0
+        // wird nichts gebildet; alle drei Stellen sind bitgleich.
+        val fruehMeal = app.aaps.fuse.core.controller.EarlyAdaptiveMealNeed.decide(
+            app.aaps.fuse.core.controller.EarlyAdaptiveMealNeed.Input(
+                horizonMin = cfg.earlyAdaptiveMealHorizonMin,
+                mealAuthorized = dosingCtx.mealAuthorized,
+                authorizationId = dosingCtx.authorizationId,
+                markerTs = markerTs,
+                authorizationExpiresAtMs = dosingCtx.authorizationExpiresAt,
+                nowMs = computeTs,
+                signalReady = step.health == Health.READY,
+                // Strenge Reife: keine gelockerte Wiedereinstiegsreife, und
+                // dieses Segment hat die volle Reife bereits erreicht.
+                signalMature = !signal.rejoin.active && signal.fullMaturityTs > 0L,
+                w10DriveMgdlPerMin = band.mean,
+                ukfRatePerMin = signal.ukfRatePerMin,
+                // Eintritt = bestehende Druckschwelle des Liveness-Kanals (1,0),
+                // wie im bewerteten Replay. riseRampLowR bleibt Rampen-Unterkante.
+                eligibilityThresholdMgdlPerMin = LivenessChannel.R_MIN_MGDL_PER_MIN,
+                targetMgdl = target,
+            ),
+        )
+        // Ratio-Antrieb: produktiv die W18-Bahn, im H8-Fenster der W10-Antrieb;
+        // der Onset-Kanal hebt in beiden Faellen wie bisher.
+        val ratioDrive = if (fruehMeal.active) {
+            onset.driveMgdlPerMin?.takeIf { onset.active }
+                ?.let { dd -> maxOf(band.mean, dd) } ?: band.mean
+        } else {
+            onset.driveMgdlPerMin?.takeIf { onset.active }
+                ?.let { dd -> maxOf(signal.rSigned ?: dd, dd) } ?: signal.rSigned
+        }
         // ---- HALTE-ANHEBUNG: MESSBESTAETIGUNG (Toni 15.09. abends) ----------
         // JEDEN Zyklus mit Signal und Bahn fortgeschrieben, auch vor der
         // Bewaffnung - verbraucht werden nur neue Rohwerte, ein weiterer Lauf
@@ -2550,8 +2621,7 @@ class FuseCycleRunner(
                     markerNoPrime = markerNoPrime,
                     reboundSuppressedByMarker = reboundSuppressedByMarker,
                     mealWindow = mealWindow,
-                    rSignedMgdlPerMin = onset.driveMgdlPerMin?.takeIf { onset.active }
-                        ?.let { d -> maxOf(signal.rSigned ?: d, d) } ?: signal.rSigned,
+                    rSignedMgdlPerMin = ratioDrive,
                     riseRampLowRPerMin = cfg.riseRampLowR,
                     riseRampHighRPerMin = cfg.riseRampHighR,
                     pumpIncrementU = bolusStep,
@@ -4885,6 +4955,11 @@ class FuseCycleRunner(
         // Halte-Anhebung (Toni 15.09.). null = nicht ausgewertet.
         var livenessHoldUpliftMgdl: Double? = null
         var livenessHoldDenial: String? = null
+        // Frueher adaptiver MEAL-Bedarf (Toni 18.09.): Bahnen des Kanals. null =
+        // der Kanal hat in diesem Zyklus keinen Kandidaten gerechnet.
+        var livenessProductionReleaseMeanMgdl: Double? = null
+        var livenessEffectiveReleaseMeanMgdl: Double? = null
+        var livenessCandidateAfterHeadroomU: Double? = null
 
         // Marker-Leistungsfrist + zentraler Dosierkontext: seit B2 VOR der
         // State-Konstruktion bestimmt (Kontextgrenze in der Grant-Bildung,
@@ -5292,7 +5367,10 @@ class FuseCycleRunner(
             // bewaffnen. Faellt der Druck waehrend eines Laufs weg, endet er
             // OHNE Sperre: die Wiederbewaffnung braucht ohnehin drei neue
             // Druckzyklen, das ist die Hysterese.
-            val rSig = signal.rSigned
+            // H8: im frueh autorisierten Fenster traegt der robuste W10-Antrieb
+            // den Druck; Schwelle (BG ueber der wirksamen Schwelle, r >= 1,0)
+            // und Bewaffnungsregel bleiben unveraendert.
+            val rSig = if (fruehMeal.active) band.mean else signal.rSigned
             val druck = signal.q1 > bgMinWirksam &&
                 rSig != null && rSig.isFinite() && rSig >= LivenessChannel.R_MIN_MGDL_PER_MIN
             if (livenessActive && !druck) {
@@ -5361,9 +5439,15 @@ class FuseCycleRunner(
                 }
             }
             // AKTIV: Kandidat rechnen, `final = max(normal, live)`.
-            val releaseMean = prediction.points
+            val produktivesReleaseMean = prediction.points
                 .firstOrNull { it.offsetMin == cfg.releaseHorizonMin }?.meanBg
                 ?: return@run sperren("NO_RELEASE_MEAN")
+            // H8: `max(produktiv, target + W10 * H)` - nie Summe, keine zweite
+            // Buchung. Ohne aktiven Bedarf exakt die produktive Bahn.
+            val releaseMean = app.aaps.fuse.core.controller.EarlyAdaptiveMealNeed
+                .effectiveReleaseMean(produktivesReleaseMean, fruehMeal)
+            livenessProductionReleaseMeanMgdl = produktivesReleaseMean
+            livenessEffectiveReleaseMeanMgdl = releaseMean
             // ---- BASIS-RATIO AUS DER RAMPE (Toni 24.08., v27-Korrektur) --
             // Nicht state.effectiveSmbRatio: die faellt ausserhalb des
             // Normalpfad-Mahlzeitfensters auf die Korrektur-Ratio zurueck,
@@ -5442,7 +5526,9 @@ class FuseCycleRunner(
             // null = Rechnung nicht ausgefuehrt; 0.0 = ausgefuehrt, kein
             // positiver Bedarf.
             livenessNeedU = bedarfU
-            livenessReleaseMeanMgdl = releaseMean
+            // Die exportierte Bahn bleibt die produktive (wie v53); die mit H8
+            // gewaehlte Bahn steht getrennt in `earlyAdaptiveMeal`.
+            livenessReleaseMeanMgdl = produktivesReleaseMean
             livenessLiveRatio = liveRatio
             livenessCandidateU = LivenessChannel.candidateU(
                 releaseMeanMgdl = bedarfsMean,
@@ -5471,6 +5557,7 @@ class FuseCycleRunner(
             val liveU = LivenessChannel.quantize(
                 kotlin.math.min(livenessCandidateU, head.headroomU), bolusStep,
             )
+            livenessCandidateAfterHeadroomU = liveU
             // Die bindende Grenze wird IMMER benannt (P0): erst die Deckel,
             // dann maxSMB, sonst war die Ratio selbst das Mass.
             livenessBinding = when {
@@ -6289,6 +6376,25 @@ class FuseCycleRunner(
                 denial = livenessHoldDenial,
                 evidenceDenial = holdBeleg?.denial?.name,
                 evidenceBlockMedianMgdl = livenessHoldEvidence.blocks.lastOrNull()?.medianMgdl,
+            ),
+            earlyAdaptiveMeal = EarlyAdaptiveMealDiagnosis(
+                configuredHorizonMin = cfg.earlyAdaptiveMealHorizonConfiguredMin,
+                horizonMin = cfg.earlyAdaptiveMealHorizonMin,
+                active = fruehMeal.active,
+                denial = fruehMeal.denial?.name,
+                markerAgeMin = fruehMeal.markerAgeMin,
+                w10DriveMgdlPerMin = band.mean,
+                ukfRatePerMin = signal.ukfRatePerMin,
+                earlyReleaseMeanMgdl = fruehMeal.earlyReleaseMeanMgdl,
+                productionReleaseMeanMgdl = livenessProductionReleaseMeanMgdl,
+                effectiveReleaseMeanMgdl = livenessEffectiveReleaseMeanMgdl,
+                candidateAfterHeadroomU = livenessCandidateAfterHeadroomU,
+                source = if (fruehMeal.active)
+                    app.aaps.fuse.core.controller.EarlyAdaptiveMealNeed.sourceId(cfg.earlyAdaptiveMealHorizonMin)
+                else null,
+                ratioDriveMgdlPerMin = ratioDrive,
+                riseRampLowR = cfg.riseRampLowR,
+                riseRampHighR = cfg.riseRampHighR,
             ),
             livenessBookingDiagnosis = LivenessBookingDiagnosis(
                 lossCause = livenessEvidenceLossCause,
@@ -7915,6 +8021,11 @@ class FuseCycleRunner(
         /** Halte-Anhebung des Stoerungsterms im Liveness-Bedarf (Toni 15.09.),
          *  Default AUS - s. [FuseBooleanKey.LivenessDriveHoldEnabled]. */
         val livenessDriveHoldEnabled: Boolean = false,
+        /** Frueher adaptiver MEAL-Horizont (Toni 18.09., H8), WIRKSAMER Wert:
+         *  nur 0, 6, 8, 10 - 0 = AUS. s. [FuseIntKey.EarlyAdaptiveMealHorizonMin]. */
+        val earlyAdaptiveMealHorizonMin: Int = 0,
+        /** Derselbe Schluessel, wie konfiguriert (Trail: konfiguriert vs. wirksam). */
+        val earlyAdaptiveMealHorizonConfiguredMin: Int = 0,
         /** MEAL/CORRECTION (Bauauftrag 23.08. nachts) - s. FuseKeys.
          *  Werte sind bereits LESE-MIGRIERT (ungesetzt = alter Globalwert). */
         val livenessMealPowerMin: Int,
@@ -8039,6 +8150,10 @@ class FuseCycleRunner(
         livenessReboundEvidenceExceptionEnabled = preferences.get(FuseBooleanKey.LivenessReboundEvidenceExceptionEnabled),
         livenessBookingExitWithoutReArmEnabled = preferences.get(FuseBooleanKey.LivenessBookingExitWithoutReArmEnabled),
         livenessDriveHoldEnabled = preferences.get(FuseBooleanKey.LivenessDriveHoldEnabled),
+        // H8 (Toni 18.09.): nur 0/6/8/10 wirken, jeder andere Wert ist AUS.
+        earlyAdaptiveMealHorizonMin = app.aaps.fuse.core.controller.EarlyAdaptiveMealNeed
+            .effectiveHorizonMin(preferences.get(FuseIntKey.EarlyAdaptiveMealHorizonMin)),
+        earlyAdaptiveMealHorizonConfiguredMin = preferences.get(FuseIntKey.EarlyAdaptiveMealHorizonMin),
         // MEAL/CORRECTION-LESE-MIGRATION (Bauauftrag §7): ungesetzte neue
         // Schluessel folgen dem bisherigen Globalwert - das Update ist
         // dosierneutral; die Grenzen-Klammer zaehlt Ausreisser als "nie

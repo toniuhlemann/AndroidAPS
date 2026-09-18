@@ -189,6 +189,8 @@ class TransportWiringTest : TestBaseWithProfile() {
 
     /** Halte-Anhebung im Liveness-Bedarf - Default AUS wie in Produktion. */
     private var halteAnhebungAn = false
+    /** Frueher adaptiver MEAL-Horizont (H8, Toni 18.09.) - Rig-Hebel, Default 0 = AUS. */
+    private var fruehHorizont = 0
 
     /** Masterschalter der Prognose-Shadows (Default AN wie in Produktion). */
     private var forecastShadowAn = true
@@ -403,9 +405,10 @@ class TransportWiringTest : TestBaseWithProfile() {
         // Rechenzeitpunkt bekannt waren - keine Trail-Karte (s. `asOf`).
         if (asOf != null) {
             val (bolus, basal, akt) = asOfIob(clock, atTs, nurBolus = false)
-            it.iob = bolus + basal
+            val rueck = if (rueckfuehrung) abgabeWirkung(atTs) else null
+            it.iob = bolus + basal + (rueck?.first ?: 0.0)
             it.basaliob = basal
-            it.activity = akt
+            it.activity = akt + (rueck?.second ?: 0.0)
             it.valid = iobGueltig
             return@also
         }
@@ -471,7 +474,10 @@ class TransportWiringTest : TestBaseWithProfile() {
         // basalIOB = totalIOB - exportiertes bolusIOB, wo der Trail es
         // traegt (am Anker immer). Sonst 0 - das ist die alte, ungenaue
         // Naeherung und ausdruecklich eine Baustelle, kein Vertrag.
-        it.basaliob = bolusAusTrail?.let { gesamt - it } ?: 0.0
+        val bolusOverlayU = if (gegenfaktualBolusOverlay) rueck?.first ?: 0.0 else 0.0
+        it.basaliob = bolusAusTrail?.let { historischBolus ->
+            gesamt - (historischBolus + bolusOverlayU)
+        } ?: 0.0
         it.activity = (karte?.second ?: aktivitaet) + (rueck?.second ?: 0.0); it.valid = iobGueltig
     }
 
@@ -562,6 +568,14 @@ class TransportWiringTest : TestBaseWithProfile() {
      * frueherer Messpunkte nicht.
      */
     private var rueckfuehrung = false
+
+    /**
+     * Nur fuer den historischen Entscheidungs-Replay (Codex 18.09.): [abgaben]
+     * sind hier die Differenz zwischen gegenfaktualer und historisch
+     * publizierter Bolusmenge. Sie muessen deshalb auch die exportierte
+     * Bolus-IOB korrigieren; die Basal-IOB des Trails bleibt unveraendert.
+     */
+    private var gegenfaktualBolusOverlay = false
 
     private data class Abgabe(val ts: Long, val u: Double, val wirktAufReihe: Boolean, val isfMgdlPerU: Double)
 
@@ -744,7 +758,7 @@ class TransportWiringTest : TestBaseWithProfile() {
         whenever(preferences.get(FuseDoubleKey.SmbRatioRise)).thenReturn(0.35)
         whenever(preferences.get(DoubleKey.ApsSmbMaxIob)).thenAnswer { maxIobU }
         whenever(preferences.get(FuseDoubleKey.RiseRampLowR)).thenAnswer { riseRampLowRWert }
-        whenever(preferences.get(FuseDoubleKey.RiseRampHighR)).thenReturn(2.0)
+        whenever(preferences.get(FuseDoubleKey.RiseRampHighR)).thenAnswer { riseRampHighRWert }
         whenever(preferences.get(FuseDoubleKey.MaxSmbU)).thenAnswer { maxSmbU }
         whenever(preferences.get(FuseDoubleKey.GuardFloorMgdl)).thenAnswer { guardBodenMgdl }
         // DIESE BEIDEN FEHLTEN. Ohne sie liefert der Mock 0.0, und das
@@ -766,6 +780,7 @@ class TransportWiringTest : TestBaseWithProfile() {
         whenever(preferences.get(FuseBooleanKey.LivenessReboundEvidenceExceptionEnabled)).thenAnswer { livenessAusnahmeAn }
         whenever(preferences.get(FuseBooleanKey.LivenessBookingExitWithoutReArmEnabled)).thenAnswer { buchungsAusgangAn }
         whenever(preferences.get(FuseBooleanKey.LivenessDriveHoldEnabled)).thenAnswer { halteAnhebungAn }
+        whenever(preferences.get(FuseIntKey.EarlyAdaptiveMealHorizonMin)).thenAnswer { fruehHorizont }
         whenever(preferences.get(FuseBooleanKey.ForecastShadowCollectionEnabled)).thenAnswer { forecastShadowAn }
         whenever(preferences.get(FuseIntKey.LivenessMealPowerMin)).thenAnswer { mealPowerMin }
         whenever(preferences.get(FuseIntKey.MealArmCycles)).thenAnswer { mealArmZyklen }
@@ -867,6 +882,8 @@ class TransportWiringTest : TestBaseWithProfile() {
      *  Pflichtfall-Tests brauchen den Geraetewert, sonst liegt die
      *  Kontextgrenze eine Kurvenphase zu frueh. */
     private var riseRampLowRWert = 0.5
+    /** Oberkante der Ratio-Rampe - Rig-Hebel, Default wie bisher 2,0. */
+    private var riseRampHighRWert = 2.0
 
     /** Aufwaerts-Schwelle des Freigabe-Nachlaufs. Als Hebel, weil eine
      *  Erholung, die die Rampen-Unterkante erreicht, das
@@ -10602,6 +10619,9 @@ class TransportWiringTest : TestBaseWithProfile() {
             iobThPct = i("iobThPercent", iobThPct)
             quantilePct = i("driveLowerQuantilePct", quantilePct)
             theilSenFensterMin = i("theilSenWindowMin", theilSenFensterMin)
+            // v55: aeltere Trails tragen den Schluessel nicht - dann bleibt der
+            // Laufwert (Start 0 = AUS, bzw. der Matrix-Override).
+            fruehHorizont = i("earlyAdaptiveMealHorizonMin", fruehHorizont)
             // Aeltere Trails (vor RuleSet 33) tragen das Feld nicht - dann
             // bleibt der Default 45 stehen, also exakt das aufgezeichnete
             // Verhalten. Ein fehlendes Feld darf nie als "0" gelesen werden.
@@ -10780,9 +10800,19 @@ class TransportWiringTest : TestBaseWithProfile() {
             }
         }
 
-        fun lauf(name: String, fensterMs: Long?, trendRegel: String? = null, fenster: Int = 18, livenessStart: Boolean = true, upfrontStart: Double? = null, guardsStart: Boolean = false, reversalConfirm: Int = 2, gapBreakMs: Long? = null, reifeTag: String? = null, rejoin: Boolean = false, ruhe: app.aaps.fuse.core.controller.UpfrontRecovery.Params = app.aaps.fuse.core.controller.UpfrontRecovery.Params.OFF, dosingKandidat: String? = null): File {
+        fun lauf(name: String, fensterMs: Long?, trendRegel: String? = null, fenster: Int = 18, livenessStart: Boolean = true, upfrontStart: Double? = null, guardsStart: Boolean = false, reversalConfirm: Int = 2, gapBreakMs: Long? = null, reifeTag: String? = null, rejoin: Boolean = false, ruhe: app.aaps.fuse.core.controller.UpfrontRecovery.Params = app.aaps.fuse.core.controller.UpfrontRecovery.Params.OFF, dosingKandidat: String? = null, fruehOverride: Int? = null, counterfactualIobFeedback: Boolean = false): File {
             transportReset()
             boluses = emptyList()
+            // Gegenfaktuelle Rueckfuehrung (Codex-Harness 18.09.): jeder Lauf
+            // startet ohne Overlay; die Zaehler gelten je Lauf.
+            abgaben.clear()
+            rueckfuehrung = counterfactualIobFeedback
+            gegenfaktualBolusOverlay = counterfactualIobFeedback
+            bolusIobFehltAnker = 0
+            bolusIobFehltHistorisch = 0
+            bolusIobAnkerFehltJetzt = false
+            // H8 (v55): jeder Lauf startet AUS; Politik oder Override setzen ihn.
+            fruehHorizont = 0
             markerAt = 0L
             // HEBEL-LECK GESCHLOSSEN (23.08. spaet): v16-Trails tragen den
             // livenessChannelEnabled-Schluessel nicht - der Hebel behielt
@@ -10859,6 +10889,7 @@ class TransportWiringTest : TestBaseWithProfile() {
             theilSenFensterMin = fenster // die erste Politik darf den Matrixwert nicht ueberschreiben (W10-Live-Trails tragen 10)
             upfrontStart?.let { upfrontAnteil = it }   // derselbe Vorrang fuer den Sofortanteil
             dosingKandidat?.let { dosingKandidatAnwenden(it) } // B3: die Matrix schlaegt die Aufzeichnung
+            fruehOverride?.let { fruehHorizont = it } // H8-Matrix schlaegt die Aufzeichnung
             val adapter = FuseLedgerAdapter().also { it.loadOnce(File(dir, name).also(File::mkdirs), "test-epoch", zyklen.first().ts) }
             // EIN EXPLIZITER TREIBER-OVERRIDE SCHLAEGT DIE POLITIK, sonst gilt
             // die aufgezeichnete Einstellung. Vor dem 28.08. stand hier
@@ -10869,8 +10900,9 @@ class TransportWiringTest : TestBaseWithProfile() {
             ruheParameterPruefen(name, ruheWirksam)
             neuerRunner(adapter, fensterMs = fensterMs, trendRegel = trendRegel, gapPolitik = gapPolitik, reifePolitik = reifePolitik, wiedereinstieg = rejoinPolitik, ruheParams = ruheWirksam)
             val outFile = File(outDir, "replay_$name.csv")
+            val h8Zeilen = mutableListOf<String>()
             outFile.printWriter().use { w ->
-                w.println("ts;smbU;block;binding;insulinReq;liftU;needU;abort;phase;fastD;slowD;trend;raw;recSmbU;recBlock;profil;restMin;tbr;latch;lvDenial;lvExit;lvStreak;lvHead;transC;revGrund;rearmGrund;ctxGrund;basis;gapBreakMs;samplesUsed;gapBeforeMin;r;bandN;matP;matS;iob;rejoin;rejoinGrund;gapMs;vollreifeTs;regimeGrund;regimeTs;regimeSegTs;vorReif;ruheModus;ruheStreak;ruheDenial;gefahr;guardAbst;grantU;vorFloor;nachFloor;nachRiegel;rtAngefordert;upfrontState;upfrontPendingU;riskAktiv;latchAktiv;latchGrund;iobAnkerFehlt;iobFehltAnkerKum;iobFehltHistKum;upfrontShare;q1;ukf;aktivitaet;bolusIobU;totalIobU;guardBoden;abstandBoden;minToFloor;ueberdeckung;fallrate;lowVerdikt;riskDenial;recoveryZyklen;horizontMin;aufschubGrund;dosingProfil;dosingGrund;expoSource;expoBind;expoBlock;expoBinding;expoHeadU;expoLimitU;bgMinQuelle;expoReqSource;smbState;smbStop;reqU;capU;releaseMean;candU;shNeedU;shCandU;shHeadU;noLift;rSigned;ledgerTransportU;anker;mean60;drive60;bgi60;transport60;driveMin1;driveMin60;holdUp;holdStreak;holdDenial;fastDrive")
+                w.println("ts;smbU;block;binding;insulinReq;liftU;needU;abort;phase;fastD;slowD;trend;raw;recSmbU;recBlock;profil;restMin;tbr;latch;lvDenial;lvExit;lvStreak;lvHead;transC;revGrund;rearmGrund;ctxGrund;basis;gapBreakMs;samplesUsed;gapBeforeMin;r;bandN;matP;matS;iob;rejoin;rejoinGrund;gapMs;vollreifeTs;regimeGrund;regimeTs;regimeSegTs;vorReif;ruheModus;ruheStreak;ruheDenial;gefahr;guardAbst;grantU;vorFloor;nachFloor;nachRiegel;rtAngefordert;upfrontState;upfrontPendingU;riskAktiv;latchAktiv;latchGrund;iobAnkerFehlt;iobFehltAnkerKum;iobFehltHistKum;upfrontShare;q1;ukf;aktivitaet;bolusIobU;totalIobU;guardBoden;abstandBoden;minToFloor;ueberdeckung;fallrate;lowVerdikt;riskDenial;recoveryZyklen;horizontMin;aufschubGrund;dosingProfil;dosingGrund;expoSource;expoBind;expoBlock;expoBinding;expoHeadU;expoLimitU;bgMinQuelle;expoReqSource;smbState;smbStop;reqU;capU;releaseMean;candU;shNeedU;shCandU;shHeadU;noLift;rSigned;ledgerTransportU;anker;mean60;drive60;bgi60;transport60;driveMin1;driveMin60;holdUp;holdStreak;holdDenial;fastDrive;cfIobBeforeU;cfDeltaU")
                 // DER VORGEFUNDENE MARKER IST KEIN BEOBACHTETER DRUCK
                 // (Toni 25.08. spaet). `prevMarker = 0` liess den ersten
                 // Zyklus jeden schon laufenden Marker als frisch gedrueckt
@@ -10907,6 +10939,7 @@ class TransportWiringTest : TestBaseWithProfile() {
                         // sonst wuerde die erste Politik-Zeile ihn auf die
                         // aufgezeichnete LEGACY-Politik zuruecksetzen.
                         dosingKandidat?.let { k -> dosingKandidatAnwenden(k) }
+                        fruehOverride?.let { fruehHorizont = it }
                     }
                     if (z.marker != prevMarker && z.marker > 0L) markerAt = z.marker
                     prevMarker = z.marker
@@ -10916,6 +10949,35 @@ class TransportWiringTest : TestBaseWithProfile() {
                     asOf?.let { b -> boluses = b.boli.filter { it.ts <= clock }.map { BS(timestamp = it.ts, amount = it.u, type = BS.Type.SMB) } }
                     bolusIobAnkerFehltJetzt = false
                     val o = runner.run(false, testPumpe())
+                    // Gegenfaktuelle Buchhaltung bei FESTER historischer CGM-Reihe
+                    // (Codex-Harness 18.09.): nur die Abweichung zur tatsaechlich
+                    // publizierten SMB wird ab dem Folgezyklus in IOB/Aktivitaet
+                    // zurueckgefuehrt. Historische Lieferung wird weder doppelt
+                    // gezaehlt, noch beeinflusst die Dosis ihre eigene Entscheidung.
+                    val cfIobBeforeU = if (counterfactualIobFeedback) abgabeWirkung(o.computeTs).first else 0.0
+                    val historicalPublishedU = z.publishedU ?: 0.0
+                    val cfDeltaU = if (counterfactualIobFeedback) o.decision.smbU - historicalPublishedU else 0.0
+                    if (counterfactualIobFeedback && kotlin.math.abs(cfDeltaU) > 1e-12) {
+                        abgaben += Abgabe(ts = o.computeTs, u = cfDeltaU, wirktAufReihe = false, isfMgdlPerU = z.isf)
+                    }
+                    h8Zeilen += listOf(
+                        z.ts, o.earlyAdaptiveMeal.configuredHorizonMin, o.earlyAdaptiveMeal.horizonMin,
+                        if (o.earlyAdaptiveMeal.active) "1" else "0", o.earlyAdaptiveMeal.denial ?: "",
+                        o.earlyAdaptiveMeal.markerAgeMin?.let { "%.2f".format(java.util.Locale.US, it) } ?: "",
+                        o.earlyAdaptiveMeal.w10DriveMgdlPerMin?.let { "%.4f".format(java.util.Locale.US, it) } ?: "",
+                        o.earlyAdaptiveMeal.ukfRatePerMin?.let { "%.4f".format(java.util.Locale.US, it) } ?: "",
+                        o.earlyAdaptiveMeal.earlyReleaseMeanMgdl?.let { "%.3f".format(java.util.Locale.US, it) } ?: "",
+                        o.earlyAdaptiveMeal.productionReleaseMeanMgdl?.let { "%.3f".format(java.util.Locale.US, it) } ?: "",
+                        o.earlyAdaptiveMeal.effectiveReleaseMeanMgdl?.let { "%.3f".format(java.util.Locale.US, it) } ?: "",
+                        o.livenessNeedU?.let { "%.3f".format(java.util.Locale.US, it) } ?: "",
+                        "%.3f".format(java.util.Locale.US, o.livenessCandidateU),
+                        o.earlyAdaptiveMeal.candidateAfterHeadroomU?.let { "%.3f".format(java.util.Locale.US, it) } ?: "",
+                        o.livenessHeadroomU?.let { "%.3f".format(java.util.Locale.US, it) } ?: "",
+                        "%.3f".format(java.util.Locale.US, o.decision.smbU),
+                        "%.3f".format(java.util.Locale.US, o.livenessLiftU),
+                        o.livenessBinding ?: "", o.decision.bindingLimit ?: "",
+                        "%.1f".format(java.util.Locale.US, z.raw), o.earlyAdaptiveMeal.source ?: "",
+                    ).joinToString(";")
                     // KEIN REFERENZFALL-LEDGER (Befund 15.09.): nachtraeglich gebuchte
                     // Geraetepublikationen werden im Replay nie gegen die Pumpen-Boli
                     // aufgeloest und liessen den Transport auf mehrere Einheiten
@@ -11043,7 +11105,11 @@ class TransportWiringTest : TestBaseWithProfile() {
                         // REKONSTRUKTION (15.09.): Mittelbahn und Kandidat, wo der
                         // Kanal rechnet; Schattenwerte vor den Toren auch dort, wo
                         // er nicht rechnet. Dosierneutral.
-                        o.livenessReleaseMeanMgdl?.let { "%.3f".format(java.util.Locale.US, it) } ?: "",
+                        // Spalte releaseMean = die Bahn, aus der der Kanal rechnet: mit
+                        // H8 die wirksame max-Bahn (wie im Codex-Replay 18.09., dort trug
+                        // livenessReleaseMeanMgdl sie), ohne H8 identisch zur produktiven.
+                        (o.earlyAdaptiveMeal.effectiveReleaseMeanMgdl ?: o.livenessReleaseMeanMgdl)
+                            ?.let { "%.3f".format(java.util.Locale.US, it) } ?: "",
                         "%.4f".format(java.util.Locale.US, o.livenessCandidateU),
                         o.livenessShadowNeedU?.let { "%.4f".format(java.util.Locale.US, it) } ?: "",
                         o.livenessShadowCandidateU?.let { "%.4f".format(java.util.Locale.US, it) } ?: "",
@@ -11070,9 +11136,17 @@ class TransportWiringTest : TestBaseWithProfile() {
                         o.livenessHold.streak,
                         o.livenessHold.denial ?: "",
                         o.signal?.let { s -> "%.4f".format(java.util.Locale.US, s.ukfRatePerMin + s.activityAtAnchor * s.isfAtAnchor) } ?: "",
+                        "%.4f".format(java.util.Locale.US, cfIobBeforeU),
+                        "%.3f".format(java.util.Locale.US, cfDeltaU),
                     ).joinToString(";"))
                 }
             }
+            // H8-Diagnose getrennt, damit die Haupt-CSV zeichengleich zum
+            // Codex-Format bleibt (Kontroll-SHA).
+            File(outDir, "replay_${name}_h8.csv").writeText(
+                "ts;h8Configured;h8Horizon;h8Active;h8Denial;markerAgeMin;w10;ukf;earlyRelease;prodRelease;effRelease;needU;candU;candAfterHeadroomU;headroomU;smbU;liftU;lvBinding;binding;raw;source\n" +
+                    h8Zeilen.joinToString("\n") + "\n",
+            )
             println("$name -> ${outFile.absolutePath}")
             return outFile
         }
@@ -11270,6 +11344,23 @@ class TransportWiringTest : TestBaseWithProfile() {
             tsEnv.split(",").forEachIndexed { idx, w ->
                 val n = w.trim().toInt()
                 lauf("ts%d-w%02d".format(idx, n), null, fenster = n)
+            }
+            return
+        }
+        val earlyNeedIobEnv = System.getenv("FUSE_REPLAY_EARLY_NEED_IOB")
+        if (earlyNeedIobEnv != null) {
+            // H8-Matrix (Bauauftrag 18.09.) mit der PRODUKTIVEN Einstellung
+            // fuse_early_adaptive_meal_horizon_min: 0 ist die Kontrollspur,
+            // eine zweite 0 am Ende die Blindprobe gegen Reihenfolge und
+            // Zustandsleck. Geschlossene Eigeninsulin-Buchhaltung wie im
+            // Codex-Replay: Kandidat minus historische Publikation wirkt ab
+            // dem Folgezyklus auf IOB und Aktivitaet; die CGM-Reihe bleibt fest.
+            earlyNeedIobEnv.split(",").forEachIndexed { idx, value ->
+                val n = value.trim().toInt()
+                lauf(
+                    "earlyIob%d-h%02d".format(idx, n), null, fenster = 10,
+                    fruehOverride = n, counterfactualIobFeedback = true,
+                )
             }
             return
         }
@@ -16556,6 +16647,417 @@ class TransportWiringTest : TestBaseWithProfile() {
     // Code laeuft gegen den Vorgaengerstand; der Dateivergleich belegt, dass der
     // Stand mit ausgeschaltetem Schalter dieselben Entscheidungen trifft. Ohne
     // die Umgebungsvariable wird nichts ausgefuehrt.
+
+    // ==== FRUEHER ADAPTIVER MEAL-BEDARF H8 (Bauauftrag Toni 18.09.) ===========
+    //
+    // Dieselbe Lage wie die Halte-Anhebung (Liveness-Rig, Schwanzlast, Marker
+    // in Zyklus [halteMarkerZyklus]), mit Tonis Live-Werten fuer W10 und die
+    // untere Rise-Schwelle 1,5. Jede Form laeuft mit geschlossener
+    // Rueckfuehrung: nur publizierte Abgaben wirken auf IOB und Reihe.
+    // Synthetische Bahnen, keine Messwerte.
+
+    private fun fruehLauf(
+        dir: File, name: String, horizont: Int, zyklen: Int, meal: Boolean = true,
+        vorZyklus: (Int) -> Unit = {}, schwanzU: Double = 4.5 / 0.9, rueck: Boolean = true,
+        form: () -> Unit = {},
+    ): List<FuseCycleRunner.Outcome> {
+        val d = File(dir, name + (if (meal) "" else "_korr") + "_h$horizont").also(File::mkdirs)
+        abgaben.clear(); boluses = emptyList(); rueckfuehrung = false
+        lueckeVonMin = null; lueckeBisMin = null; rohSerie = null; formZusatz = null
+        markerAt = 0L; mealPowerMin = 120; kalibrierStart = -1L; messTaktMs = null; taktMs = 60_000L
+        livenessLage(d)
+        theilSenFensterMin = 10
+        riseRampLowRWert = 1.5
+        // Frueher Mahlzeiten-Deadlock: BG nahe Ziel, Anstieg ab dem Marker,
+        // MEAL-Druckschwelle 110 wie live. Die Schwanzlast haelt die
+        // produktive 60-min-Bahn niedrig, waehrend W10 den Anstieg zeigt.
+        mealBgMin = 110.0
+        flach = 120.0
+        steigungProMin = 0.2
+        knickAbMin = halteMarkerZyklus
+        steigungNachKnick = 2.5
+        form()
+        fruehHorizont = horizont
+        abgaben += Abgabe(start - 30 * 60_000L, schwanzU, wirktAufReihe = false, isfMgdlPerU = 61.0)
+        bolusIobU = null
+        rueckfuehrung = rueck
+        messTaktMs = 60_000L
+        var gedrueckt = false
+        return (1..zyklen).map {
+            if (meal && !gedrueckt && clock + taktMs >= start + halteMarkerZyklus * 60_000L) {
+                markerAt = clock + taktMs; gedrueckt = true
+            }
+            vorZyklus(((clock + taktMs - start) / 60_000L).toInt())
+            transport(d)
+        }.also {
+            fruehHorizont = 0; theilSenFensterMin = 18; riseRampLowRWert = 0.5; riseRampHighRWert = 2.0; mealBgMin = 160.0
+            formZusatz = null; markerAt = 0L; mealPowerMin = 120
+            kalibrierStart = -1L; messTaktMs = null; taktMs = 60_000L; lueckeVonMin = null; lueckeBisMin = null
+        }
+    }
+
+    private fun fruehZeilen(name: String, aus: List<FuseCycleRunner.Outcome>, an: List<FuseCycleRunner.Outcome>) {
+        println("H8 $name: AUS ${"%.2f".format(aus.sumOf { it.decision.smbU })} U, AN ${"%.2f".format(an.sumOf { it.decision.smbU })} U")
+        for ((a, b) in aus.zip(an)) {
+            val e = b.earlyAdaptiveMeal
+            println(
+                "H8 $name min ${minuteVon(b)} q1 ${"%.0f".format(b.signal?.q1 ?: Double.NaN)} smb ${a.decision.smbU}/${b.decision.smbU} " +
+                    "aktiv ${e.active} ${e.denial} alter ${e.markerAgeMin?.let { "%.1f".format(it) }} w10 ${e.w10DriveMgdlPerMin?.let { "%.2f".format(it) }} " +
+                    "ukf ${e.ukfRatePerMin?.let { "%.2f".format(it) }} frueh ${e.earlyReleaseMeanMgdl?.let { "%.0f".format(it) }} " +
+                    "prod ${e.productionReleaseMeanMgdl?.let { "%.0f".format(it) }} eff ${e.effectiveReleaseMeanMgdl?.let { "%.0f".format(it) }} " +
+                    "kand ${b.livenessCandidateU} nachDeckel ${e.candidateAfterHeadroomU} head ${b.livenessHeadroomU?.let { "%.2f".format(it) }} " +
+                    "iob ${b.iobU?.let { "%.2f".format(it) }} lv ${a.livenessDenial}/${b.livenessDenial} ${b.livenessBinding} profil ${b.livenessProfile}"
+            )
+        }
+    }
+
+    private fun fruehAlterMin(o: FuseCycleRunner.Outcome) =
+        o.markerPowerPinnedFor.takeIf { it > 0L }?.let { (o.computeTs - it) / 60_000.0 }
+
+    /** A: Schalter 0 und jeder unzulaessige Wert sind Zyklus fuer Zyklus dasselbe AUS. */
+    @Test
+    fun `H8 A - Schalter 0 und unzulaessige Werte sind bitgleich AUS`(@TempDir dir: File) {
+        val aus = fruehLauf(dir, "a", 0, 60)
+        val sieben = fruehLauf(dir, "a", 7, 60)
+        val sechzig = fruehLauf(dir, "a", 60, 60)
+        assertEquals(aus.map { bitgleichZeile(it) }, sieben.map { bitgleichZeile(it) }, "7 ist AUS")
+        assertEquals(aus.map { bitgleichZeile(it) }, sechzig.map { bitgleichZeile(it) }, "60 ist AUS")
+        for (o in aus + sieben + sechzig) {
+            assertTrue(!o.earlyAdaptiveMeal.active, "min ${minuteVon(o)}")
+            assertEquals(0, o.earlyAdaptiveMeal.horizonMin)
+            if (o.abortReason == null) assertEquals("DISABLED", o.earlyAdaptiveMeal.denial)
+            o.earlyAdaptiveMeal.effectiveReleaseMeanMgdl?.let {
+                assertEquals(o.earlyAdaptiveMeal.productionReleaseMeanMgdl!!, it, 0.0, "AUS: wirksame Bahn = produktive Bahn")
+                assertEquals(o.livenessReleaseMeanMgdl!!, it, 0.0)
+            }
+        }
+        assertEquals(7, sieben.last().earlyAdaptiveMeal.configuredHorizonMin, "der Trail traegt den konfigurierten Wert")
+        assertTrue(aus.any { it.livenessActive }, "Vorbedingung: der Kanal arbeitet in dieser Lage")
+    }
+
+    /** B: H8 wirkt ausschliesslich unter MEAL, Marker +10..+45, W10 >= 1,5 und UKF >= 0. */
+    @Test
+    fun `H8 B - nur im frueh autorisierten MEAL-Fenster`(@TempDir dir: File) {
+        val aus = fruehLauf(dir, "b", 0, 70)
+        val an = fruehLauf(dir, "b", 8, 70)
+        fruehZeilen("b", aus, an)
+        val aktiv = an.filter { it.earlyAdaptiveMeal.active }
+        assertTrue(aktiv.size >= 5, "positiver Nachweis: H8 wird im Fenster gebildet (${aktiv.size})")
+        for (o in aktiv) {
+            val alter = fruehAlterMin(o)!!
+            assertTrue(alter in 10.0..45.0, "Alter $alter")
+            assertEquals("MEAL", o.dosingContextProfile, "min ${minuteVon(o)}")
+            assertTrue(o.earlyAdaptiveMeal.w10DriveMgdlPerMin!! >= LivenessChannel.R_MIN_MGDL_PER_MIN)
+            assertTrue(o.earlyAdaptiveMeal.ukfRatePerMin!! >= 0.0)
+            assertEquals("EARLY_ADAPTIVE_MEAL_H8", o.earlyAdaptiveMeal.source)
+        }
+        for (o in an.filter { o -> fruehAlterMin(o)?.let { it < 10.0 } == true && o.abortReason == null })
+            assertEquals("MARKER_TOO_YOUNG", o.earlyAdaptiveMeal.denial, "min ${minuteVon(o)}")
+        for (o in an.filter { o -> fruehAlterMin(o)?.let { it > 45.0 } == true && o.abortReason == null })
+            assertEquals("MARKER_TOO_OLD", o.earlyAdaptiveMeal.denial, "min ${minuteVon(o)}")
+        // Vor dem Marker und im CORRECTION-Profil nie; dort ist AN == AUS.
+        val korrAus = fruehLauf(dir, "b", 0, 70, meal = false)
+        val korrAn = fruehLauf(dir, "b", 8, 70, meal = false)
+        assertTrue(korrAn.none { it.earlyAdaptiveMeal.active }, "CORRECTION bildet nie")
+        assertEquals(korrAus.map { bitgleichZeile(it) }, korrAn.map { bitgleichZeile(it) }, "CORRECTION: AN == AUS")
+        // Fallende Form ab Marker +15: negative UKF sperrt.
+        val fallAn = fruehLauf(dir, "bfall", 8, 50) { knick2AbMin = halteMarkerZyklus + 15; steigungNachKnick2 = -3.0 }
+        val negativ = fallAn.filter { it.earlyAdaptiveMeal.ukfRatePerMin?.let { u -> u < 0.0 } == true && it.abortReason == null &&
+            fruehAlterMin(it)?.let { a -> a in 10.0..45.0 } == true }
+        assertTrue(negativ.isNotEmpty(), "Vorbedingung: negative UKF im Fenster")
+        negativ.forEach { assertTrue(!it.earlyAdaptiveMeal.active, "negative UKF sperrt: min ${minuteVon(it)}") }
+    }
+
+    /** C: target + W10 x 8, max mit der produktiven Bahn, danach alle bestehenden Grenzen. */
+    @Test
+    fun `H8 C - Mengenvertrag max statt Summe und alle Grenzen`(@TempDir dir: File) {
+        val weit = { mealExpLimit = 12.0 }
+        val aus = fruehLauf(dir, "c", 0, 60, form = weit)
+        val an = fruehLauf(dir, "c", 8, 60, form = weit)
+        fruehZeilen("c", aus, an)
+        val gerechnet = an.filter { it.earlyAdaptiveMeal.active && it.earlyAdaptiveMeal.effectiveReleaseMeanMgdl != null }
+        assertTrue(gerechnet.size >= 3, "Vorbedingung: der Kanal rechnet mit H8 (${gerechnet.size})")
+        for (o in gerechnet) {
+            val e = o.earlyAdaptiveMeal
+            val target = o.targetMgdl!!
+            val isf = o.isfMgdlPerU!!
+            assertEquals(target + e.w10DriveMgdlPerMin!! * 8, e.earlyReleaseMeanMgdl!!, 1e-9, "target + W10 x 8")
+            assertEquals(maxOf(e.productionReleaseMeanMgdl!!, e.earlyReleaseMeanMgdl!!), e.effectiveReleaseMeanMgdl!!, 1e-9, "max")
+            assertEquals(e.productionReleaseMeanMgdl!!, o.livenessReleaseMeanMgdl!!, 0.0, "Export bleibt die produktive Bahn")
+            assertEquals(kotlin.math.max(0.0, (e.effectiveReleaseMeanMgdl!! - target) / isf), o.livenessNeedU!!, 1e-9, "Bedarf aus der gewaehlten Bahn")
+            val nachDeckel = e.candidateAfterHeadroomU!!
+            assertEquals(LivenessChannel.quantize(kotlin.math.min(o.livenessCandidateU, o.livenessHeadroomU!!), 0.05), nachDeckel, 1e-9, "Deckelrest und Raster")
+            assertTrue(o.livenessCandidateU <= o.livenessLiveRatio!! * o.livenessNeedU!! + 1e-9, "Ratio-Deckel")
+            assertTrue(o.livenessLiveRatio!! <= o.livenessSelectedRatioCap!! + 1e-9, "MEAL-Demand-Ratio-Cap bindet: min ${minuteVon(o)}")
+            val schritte = o.decision.smbU / 0.05
+            assertEquals(Math.round(schritte).toDouble(), schritte, 1e-6, "Pumpenraster: ${o.decision.smbU}")
+            if (o.livenessLiftU > 0.0) {
+                assertEquals(nachDeckel, o.decision.smbU, 1e-9, "Endmenge = Kanalkandidat, nie normal + Kanal")
+                assertTrue(o.decision.smbU <= o.livenessHeadroomU!! + 1e-9, "Headroom")
+            }
+        }
+        assertTrue(gerechnet.any { it.earlyAdaptiveMeal.effectiveReleaseMeanMgdl!! > it.earlyAdaptiveMeal.productionReleaseMeanMgdl!! + 1e-9 },
+            "positiver Nachweis: die fruehe Bahn uebersteigt die produktive mindestens einmal")
+        // Wirkung gegen AUS: H8 gibt im Fenster frueher mehr (Vorsprung > 0).
+        var kumAn = 0.0; var kumAus = 0.0; var vorsprung = 0.0
+        for ((a, b) in aus.zip(an)) { kumAus += a.decision.smbU; kumAn += b.decision.smbU; vorsprung = maxOf(vorsprung, kumAn - kumAus) }
+        println("H8 c: groesster kumulierter Vorsprung ${"%.2f".format(vorsprung)} U")
+        assertTrue(vorsprung > 1e-9, "H8 zieht Abgabe vor")
+    }
+
+    /**
+     * C, Foundation: ein 0,05-U-Fundamentschritt wird durch den groesseren
+     * adaptiven Kandidaten ERSETZT, nie ergaenzt.
+     */
+    @Test
+    fun `H8 C - Foundation wird ersetzt, nie addiert`(@TempDir dir: File) {
+        val form = {
+            fundamentAn = true; fundamentAnteil = 0.5; upfrontAnteil = 0.0; primeHuelleU = 4.0; fundamentEndeMin = 60
+            markerAuthorized = true
+            whenever(preferences.get(FuseIntKey.PrimeWindowMin)).thenReturn(20)
+            // Deckelraum, damit H8 sichtbar werden kann (sonst bindet iobTH vor H8).
+            mealExpLimit = 12.0; iobThPct = 100
+            Unit
+        }
+        val aus = fruehLauf(dir, "cf", 0, 60, form = form)
+        val an = fruehLauf(dir, "cf", 8, 60, form = form)
+        fruehZeilen("cf", aus, an)
+        val ersetzt = an.filter { it.earlyAdaptiveMeal.active && it.livenessLiftU > 0.0 && it.livenessNormalSmbU != null && it.livenessNormalSmbU!! > 0.0 }
+        println("H8 cf: Zyklen mit Normal-/Fundamentmenge und Kanalhub: ${ersetzt.map { "${minuteVon(it)}:${it.livenessNormalSmbU}->${it.decision.smbU}" }}")
+        for (o in ersetzt) {
+            assertEquals(o.earlyAdaptiveMeal.candidateAfterHeadroomU!!, o.decision.smbU, 1e-9, "max, nie Summe: min ${minuteVon(o)}")
+            assertTrue(o.decision.smbU > o.livenessNormalSmbU!!)
+        }
+        // Der Fall aus dem Auftrag: H8 stellt die Bahn, der Normalpfad liefert nur
+        // den 0,05-U-Fundamentschritt, und der groessere adaptive Kandidat ERSETZT
+        // ihn (Endmenge = Kandidat, nie Schritt + Kandidat).
+        val durchH8 = an.filter { b ->
+            b.earlyAdaptiveMeal.active && b.livenessNormalSmbU != null &&
+                kotlin.math.abs(b.livenessNormalSmbU!! - 0.05) < 1e-9 &&
+                b.earlyAdaptiveMeal.effectiveReleaseMeanMgdl != null &&
+                b.earlyAdaptiveMeal.effectiveReleaseMeanMgdl!! > b.earlyAdaptiveMeal.productionReleaseMeanMgdl!! + 1e-9 &&
+                b.decision.smbU > 0.05 + 1e-9
+        }
+        println("H8 cf: H8-Bahn ersetzt den Fundamentschritt ${durchH8.map { "${minuteVon(it)}: 0,05 -> ${it.decision.smbU}" }}")
+        assertTrue(durchH8.isNotEmpty(), "positiver Nachweis: unter der H8-Bahn ersetzt der Kandidat den 0,05-U-Schritt")
+        for (b in durchH8) {
+            assertEquals(b.earlyAdaptiveMeal.candidateAfterHeadroomU!!, b.decision.smbU, 1e-9, "Endmenge = Kandidat")
+            assertTrue(kotlin.math.abs(b.decision.smbU - (b.earlyAdaptiveMeal.candidateAfterHeadroomU!! + 0.05)) > 1e-9, "nie Schritt + Kandidat")
+        }
+    }
+
+    /**
+     * C, MEAL-Demand-Ratio-Cap: auch unter der H8-Bahn begrenzt der Kontext-Cap die
+     * Kanal-Ratio. Cap 0,2 unter einer Rampen-Ratio bis 0,35 (Korrektur-Cap 0,15 -
+     * K nie offener als M), sonst Lage wie C. Mutationsprobe M11b (Cap umgangen)
+     * muss hier rot werden.
+     */
+    @Test
+    fun `H8 C - MEAL-Ratio-Deckel bindet auch unter der H8-Bahn`(@TempDir dir: File) {
+        val an = fruehLauf(dir, "cr", 8, 60, form = { mealExpLimit = 12.0; corrRatioCapZ = 0.15; mealRatioCapZ = 0.2 })
+        fruehZeilen("cr", an, an)
+        val h8 = an.filter { it.earlyAdaptiveMeal.active && it.livenessBaseRatio != null && it.earlyAdaptiveMeal.effectiveReleaseMeanMgdl != null }
+        val capRelevant = h8.filter { it.livenessBaseRatio!! > it.livenessSelectedRatioCap!! + 1e-9 }
+        println("H8 cr: Basis ueber dem Cap in Minuten ${capRelevant.map { "${minuteVon(it)}:${it.livenessBaseRatio}>${it.livenessSelectedRatioCap}" }}")
+        assertTrue(capRelevant.isNotEmpty(), "Vorbedingung: die Rampen-Ratio liegt unter H8 ueber dem MEAL-Cap")
+        for (o in h8) {
+            assertEquals(0.2, o.livenessSelectedRatioCap!!, 1e-12, "MEAL-Cap des Kontexts: min ${minuteVon(o)}")
+            assertEquals(kotlin.math.min(o.livenessBaseRatio!!, o.livenessSelectedRatioCap!!), o.livenessLiveRatio!!, 1e-12, "liveRatio = min(Basis, Cap): min ${minuteVon(o)}")
+            assertTrue(o.livenessCandidateU <= o.livenessLiveRatio!! * o.livenessNeedU!! + 1e-9, "Kandidat unter Cap-Ratio: min ${minuteVon(o)}")
+        }
+        assertTrue(capRelevant.any { it.livenessBinding == "demandRatioCap" || it.livenessBinding?.contains("Limit") == true || it.livenessBinding == "globalIobTh" || it.livenessBinding == "maxSmb" },
+            "die bindende Grenze ist benannt")
+    }
+
+    /**
+     * D (korrigiert, Toni 18.09.): H8 bildet einen Bruttokandidaten, der nach
+     * einer Abgabe bestehen bleiben darf. Die publizierte Menge erscheint im
+     * Folgezyklus in IOB und im Deckelrest; die vorhandenen mengenabhaengigen
+     * Grenzen reduzieren oder sperren den freigegebenen Kandidaten, und die
+     * Gesamt-IOB ueberschreitet die bindende Grenze nie. Lage wie C: H8 stellt
+     * die Bahn, der globale iobTH bindet.
+     */
+    @Test
+    fun `H8 D - eigene Abgaben begrenzen ueber die vorhandenen Grenzen`(@TempDir dir: File) {
+        val an = fruehLauf(dir, "d", 8, 60, form = { mealExpLimit = 12.0 })
+        fruehZeilen("d", an, an)
+        val fenster = an.filter { it.earlyAdaptiveMeal.active && it.earlyAdaptiveMeal.effectiveReleaseMeanMgdl != null }
+        // (1) H8 stellt die Bahn: der Bruttokandidat stammt aus target + W10 x 8.
+        val h8Bahn = fenster.filter { it.earlyAdaptiveMeal.effectiveReleaseMeanMgdl!! > it.earlyAdaptiveMeal.productionReleaseMeanMgdl!! + 1e-9 }
+        assertTrue(h8Bahn.size >= 3, "Vorbedingung: H8 stellt die Bahn (${h8Bahn.size})")
+        // (2) Jede Abgabe im Fenster erscheint im Folgezyklus in IOB und Deckelrest.
+        var geprueft = 0
+        for ((a, b) in an.zipWithNext()) {
+            if (a.decision.smbU <= 0.0 || !a.earlyAdaptiveMeal.active) continue
+            if (a.iobU == null || b.iobU == null || a.livenessHeadroomU == null || b.livenessHeadroomU == null) continue
+            assertTrue(b.iobU!! > a.iobU!! + 0.5 * a.decision.smbU - 0.05, "IOB traegt die Abgabe: min ${minuteVon(b)}")
+            assertTrue(b.livenessHeadroomU!! < a.livenessHeadroomU!! - 0.5 * a.decision.smbU + 0.05, "Deckelrest sinkt: min ${minuteVon(b)}")
+            geprueft++
+        }
+        assertTrue(geprueft >= 2, "Vorbedingung: Abgaben im H8-Fenster ($geprueft)")
+        // (3) + (4) Der Bruttobedarf besteht weiter, freigegeben wird weniger oder nichts.
+        val begrenzt = h8Bahn.filter { it.livenessNeedU!! > 0.0 && it.earlyAdaptiveMeal.candidateAfterHeadroomU!! < it.livenessCandidateU - 1e-9 }
+        println("H8 d: Bruttobedarf besteht, Grenze reduziert/sperrt in Minuten ${begrenzt.map { "${minuteVon(it)}:${it.livenessBinding}" }}")
+        assertTrue(begrenzt.size >= 3, "die vorhandenen Grenzen reduzieren oder sperren den H8-Kandidaten")
+        assertTrue(begrenzt.any { it.earlyAdaptiveMeal.candidateAfterHeadroomU!! == 0.0 }, "und sperren ihn zeitweise ganz")
+        // (5) Keine unkontrollierte Zusatzabgabe: die IOB bleibt unter der bindenden
+        // Grenze (plus ein Rasterschritt), und jede Zunahme ist durch die eigene
+        // publizierte Menge des Vorzyklus gedeckt (genau einmal, keine Doppelbuchung).
+        for (o in an.filter { it.earlyAdaptiveMeal.active }) {
+            val grenze = minOf(o.iobThU ?: Double.MAX_VALUE, 12.0)
+            assertTrue(o.iobU!! <= grenze + 0.05 + 1e-9, "IOB ${o.iobU} ueber der Grenze $grenze: min ${minuteVon(o)}")
+        }
+        for ((a, b) in an.zipWithNext()) {
+            if (a.iobU == null || b.iobU == null) continue
+            assertTrue(b.iobU!! <= a.iobU!! + a.decision.smbU + 1e-6, "Zunahme nur aus der eigenen Abgabe: min ${minuteVon(b)}")
+        }
+    }
+
+    /**
+     * Rollen der Schwellen (Tonis Korrektur 18.09.): H8 darf ab W10 >= 1,0 aktiv
+     * werden; zwischen 1,0 und riseRampLowR (hier 1,5 wie live) bleibt die Ratio
+     * am unteren Rampenwert (Korrektur-Ratio 0,15 im Rig). Kleine Schwanzlast und
+     * flacher Anstieg: W10 liegt im Fenster zwischen 1,0 und 1,5 bei UKF >= 0.
+     */
+    private val flacherAnstieg = { flach = 125.0; steigungProMin = 0.1; steigungNachKnick = 0.5 }
+
+    @Test
+    fun `H8 F - Eintritt ab 1,0, Ratio bis riseRampLowR am unteren Rampenwert`(@TempDir dir: File) {
+        val an = fruehLauf(dir, "f", 8, 60, schwanzU = 2.0, form = flacherAnstieg)
+        fruehZeilen("f", an, an)
+        val zwischen = an.filter {
+            it.earlyAdaptiveMeal.active && it.earlyAdaptiveMeal.w10DriveMgdlPerMin!! < it.earlyAdaptiveMeal.riseRampLowR!!
+        }
+        println("H8 f: aktiv mit 1,0 <= W10 < 1,5 in Minuten ${zwischen.map { "${minuteVon(it)}:${"%.2f".format(it.earlyAdaptiveMeal.w10DriveMgdlPerMin)}" }}")
+        assertTrue(zwischen.isNotEmpty(), "positiver Nachweis: H8 aktiv zwischen 1,0 und riseRampLowR")
+        zwischen.forEach { assertTrue(it.earlyAdaptiveMeal.w10DriveMgdlPerMin!! >= LivenessChannel.R_MIN_MGDL_PER_MIN) }
+        val mitRatio = zwischen.filter { it.livenessBaseRatio != null }
+        println("H8 f: Kanal-Ratio in diesen Zyklen ${mitRatio.map { "${minuteVon(it)}:${it.livenessBaseRatio}" }}")
+        mitRatio.forEach { rampeGilt(it) }
+        mitRatio.forEach { assertEquals(0.15, it.livenessBaseRatio!!, 1e-9, "unterer Rampenwert (Korrektur-Ratio des Rigs): min ${minuteVon(it)}") }
+        val unter = an.filter { it.abortReason == null && it.earlyAdaptiveMeal.denial == "DRIVE_BELOW_THRESHOLD" }
+        unter.forEach { assertTrue(it.earlyAdaptiveMeal.w10DriveMgdlPerMin!! < LivenessChannel.R_MIN_MGDL_PER_MIN, "min ${minuteVon(it)}") }
+    }
+
+    /**
+     * riseRampLowR verschiebt die H8-Eintrittsschwelle nicht: dieselbe Lage ohne
+     * Rueckfuehrung (weder Schwanz noch Abgaben wirken auf die Reihe; W10 ist der
+     * gemessene Anstieg 1,2 und in allen Laeufen gleich) mit Rampen-Unterkante 0,5,
+     * 1,5 und 1,9 (Rig-Oberkante 2,0) - Eignung, Grund und Bruttobahn sind je
+     * Zyklus identisch.
+     */
+    @Test
+    fun `H8 G - riseRampLowR verschiebt die Eintrittsschwelle nicht`(@TempDir dir: File) {
+        fun lauf(rampe: Double) = fruehLauf(dir, "g$rampe", 8, 60, rueck = false) {
+            flacherAnstieg(); steigungNachKnick = 1.2; riseRampLowRWert = rampe
+        }
+        val tief = lauf(0.5); val live = lauf(1.5); val hoch = lauf(1.9)
+        fun zeile(o: FuseCycleRunner.Outcome) = listOf(minuteVon(o), o.earlyAdaptiveMeal.active, o.earlyAdaptiveMeal.denial, o.earlyAdaptiveMeal.earlyReleaseMeanMgdl)
+        assertTrue(live.any { it.earlyAdaptiveMeal.active && it.earlyAdaptiveMeal.w10DriveMgdlPerMin!! < it.earlyAdaptiveMeal.riseRampLowR!! },
+            "Vorbedingung: H8 aktiv unterhalb der Rampen-Unterkante")
+        assertEquals(live.map { zeile(it) }, tief.map { zeile(it) }, "Rampe 0,5 aendert den Eintritt nicht")
+        assertTrue(hoch.none { it.abortReason != null && minuteVon(it) > 8 }, "Vorbedingung: gueltige Rampe 1,9")
+        assertEquals(live.map { zeile(it) }, hoch.map { zeile(it) }, "Rampe 1,9 aendert den Eintritt nicht")
+    }
+
+    /**
+     * Die Kanal-Ratio folgt der im Zyklus gelesenen Rampe: Basis = Rampe(Antrieb,
+     * riseRampLowR, riseRampHighR) mit Korrektur-Ratio 0,15 und Rise-Ratio 0,35 des
+     * Rigs. Rechnet mit den exportierten Werten, nie mit Literalen fuer die Rampe.
+     */
+    private fun rampeGilt(o: FuseCycleRunner.Outcome) {
+        val e = o.earlyAdaptiveMeal
+        val erwartet = LivenessChannel.baseRatio(
+            smbRatioCorrection = 0.15, smbRatioRise = 0.35, rSignedMgdlPerMin = e.ratioDriveMgdlPerMin,
+            riseRampLowRPerMin = e.riseRampLowR!!, riseRampHighRPerMin = e.riseRampHighR!!,
+        )
+        assertEquals(erwartet, o.livenessBaseRatio!!, 1e-9, "Ratio folgt der Zyklus-Rampe: min ${minuteVon(o)}")
+    }
+
+    /**
+     * Nichtstandard-Rampe 0,8 bis 2,2 (Tonis Klarstellung 18.09.): der Eintritt folgt
+     * weiter der Liveness-Schwelle 1,0; die Ratio rampt ab 0,8 - bei W10 zwischen 1,0
+     * und 2,2 liegt sie ueber der Korrektur-Ratio. Ein hartkodiertes 1,5 hielte sie dort
+     * auf dem unteren Wert.
+     */
+    @Test
+    fun `H8 H - Rampe 0,8 bis 2,2 - Eintritt ab 1,0, Ratio ab 0,8`(@TempDir dir: File) {
+        val an = fruehLauf(dir, "h", 8, 60, schwanzU = 2.0) {
+            flacherAnstieg(); riseRampLowRWert = 0.8; riseRampHighRWert = 2.2
+        }
+        fruehZeilen("h", an, an)
+        val aktiv = an.filter { it.earlyAdaptiveMeal.active }
+        assertTrue(aktiv.isNotEmpty(), "Vorbedingung: H8 aktiv")
+        aktiv.forEach {
+            assertEquals(0.8, it.earlyAdaptiveMeal.riseRampLowR!!, 0.0, "Trail traegt die Zyklus-Rampe")
+            assertEquals(2.2, it.earlyAdaptiveMeal.riseRampHighR!!, 0.0)
+            assertTrue(it.earlyAdaptiveMeal.w10DriveMgdlPerMin!! >= LivenessChannel.R_MIN_MGDL_PER_MIN)
+        }
+        val gerampt = aktiv.filter { it.livenessBaseRatio != null && it.earlyAdaptiveMeal.ratioDriveMgdlPerMin!! > 0.8 + 0.05 &&
+            it.earlyAdaptiveMeal.ratioDriveMgdlPerMin!! < 2.2 }
+        println("H8 h: Ratio in der Rampe ${gerampt.map { "${minuteVon(it)}:${"%.2f".format(it.earlyAdaptiveMeal.ratioDriveMgdlPerMin)}->${"%.3f".format(it.livenessBaseRatio)}" }}")
+        assertTrue(gerampt.isNotEmpty(), "Vorbedingung: Kanal rechnet mit Antrieb innerhalb der Rampe")
+        gerampt.forEach {
+            rampeGilt(it)
+            assertTrue(it.livenessBaseRatio!! > 0.15 + 1e-9, "die Rampe hat bei 0,8 begonnen: min ${minuteVon(it)}")
+        }
+    }
+
+    /**
+     * Nichtstandard-Rampe 2,0 bis 4,0: H8 kann ab der Liveness-Schwelle 1,0 aktiv
+     * sein, bleibt unter 2,0 aber auf der unteren Ratio; der Anstieg beginnt erst bei
+     * 2,0 (zweiter, steilerer Lauf mit Antrieb zwischen 2,0 und 4,0).
+     */
+    @Test
+    fun `H8 I - Rampe 2,0 bis 4,0 - H8 ab 1,0, Rampe erst ab 2,0`(@TempDir dir: File) {
+        val flach = fruehLauf(dir, "i", 8, 60, schwanzU = 2.0) {
+            flacherAnstieg(); riseRampLowRWert = 2.0; riseRampHighRWert = 4.0
+        }
+        fruehZeilen("i", flach, flach)
+        val unter = flach.filter { it.earlyAdaptiveMeal.active && it.earlyAdaptiveMeal.ratioDriveMgdlPerMin!! < 2.0 }
+        assertTrue(unter.isNotEmpty(), "Vorbedingung: H8 aktiv mit Antrieb unter 2,0")
+        unter.forEach { assertTrue(it.earlyAdaptiveMeal.w10DriveMgdlPerMin!! >= LivenessChannel.R_MIN_MGDL_PER_MIN) }
+        unter.filter { it.livenessBaseRatio != null }.also { assertTrue(it.isNotEmpty(), "Vorbedingung: Kanal rechnet") }.forEach {
+            rampeGilt(it)
+            assertEquals(0.15, it.livenessBaseRatio!!, 1e-9, "unter 2,0 unterer Rampenwert: min ${minuteVon(it)}")
+        }
+        val steil = fruehLauf(dir, "isteil", 8, 60, schwanzU = 2.0) {
+            flacherAnstieg(); steigungNachKnick = 2.0; riseRampLowRWert = 2.0; riseRampHighRWert = 4.0
+        }
+        fruehZeilen("isteil", steil, steil)
+        val inRampe = steil.filter { it.earlyAdaptiveMeal.active && it.livenessBaseRatio != null &&
+            it.earlyAdaptiveMeal.ratioDriveMgdlPerMin!! > 2.0 + 0.05 && it.earlyAdaptiveMeal.ratioDriveMgdlPerMin!! < 4.0 }
+        println("H8 isteil: Ratio in der Rampe ${inRampe.map { "${minuteVon(it)}:${"%.2f".format(it.earlyAdaptiveMeal.ratioDriveMgdlPerMin)}->${"%.3f".format(it.livenessBaseRatio)}" }}")
+        assertTrue(inRampe.isNotEmpty(), "Vorbedingung: Antrieb zwischen 2,0 und 4,0 im Kanal")
+        inRampe.forEach {
+            rampeGilt(it)
+            assertTrue(it.livenessBaseRatio!! > 0.15 + 1e-9, "ab 2,0 steigt die Ratio: min ${minuteVon(it)}")
+        }
+    }
+
+    /**
+     * E: kein neuer Laufzustand - nach einem Prozessneustart rekonstruiert der
+     * Runner die H8-Eignung allein aus persistierter Autorisierung und
+     * Behandlungen: Entscheidung, Grund, Alter und Bahn sind je Zyklus
+     * dieselben wie im ungestoerten Lauf.
+     */
+    @Test
+    fun `H8 E - Neustart rekonstruiert die Eignung aus persistierten Daten`(@TempDir dir: File) {
+        val ungestoert = fruehLauf(dir, "e", 8, 50)
+        val neustartMin = halteMarkerZyklus + 20
+        val mitNeustart = fruehLauf(dir, "eneu", 8, 50, vorZyklus = { i ->
+            if (i == neustartMin) neuerRunner(FuseLedgerAdapter().also { it.loadOnce(File(dir, "eneu_h8"), "test-epoch", clock) })
+        })
+        val vergleich = ungestoert.zip(mitNeustart).filter { (a, _) -> minuteVon(a) >= neustartMin }
+        assertTrue(vergleich.any { it.first.earlyAdaptiveMeal.active }, "Vorbedingung: H8 aktiv nach dem Neustartzeitpunkt")
+        for ((a, b) in vergleich) {
+            val x = a.earlyAdaptiveMeal; val y = b.earlyAdaptiveMeal
+            assertEquals(x.active, y.active, "aktiv min ${minuteVon(a)}")
+            assertEquals(x.denial, y.denial, "Grund min ${minuteVon(a)}")
+            assertEquals(x.markerAgeMin, y.markerAgeMin, "Alter min ${minuteVon(a)}")
+            assertEquals(a.markerPowerPinnedFor, b.markerPowerPinnedFor, "Autorisierung min ${minuteVon(a)}")
+        }
+    }
 
     private fun bitgleichZeile(o: FuseCycleRunner.Outcome): String = listOf(
         (o.computeTs - start) / 1000L, o.abortReason, o.decision.smbU, o.decision.block, o.tbr,
