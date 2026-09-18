@@ -16953,6 +16953,40 @@ class TransportWiringTest : TestBaseWithProfile() {
     }
 
     /**
+     * K (Toni 18.09., Geraetebefund): auch ein Abbruchzyklus zeigt den
+     * konfigurierten und den wirksamen H8-Horizont, mit dem ausdruecklichen Grund
+     * NOT_EVALUATED - nach der Konfiguration (NO_INPUT nach einer CGM-Luecke) wie
+     * davor (Neustart-Dublette). Dosierneutral.
+     */
+    @Test
+    fun `H8 K - Abbruchzyklen tragen konfigurierten und wirksamen Horizont`(@TempDir dir: File) {
+        fun pruefe(o: FuseCycleRunner.Outcome, konfiguriert: Int, wirksam: Int) {
+            val e = o.earlyAdaptiveMeal
+            val m = "min ${minuteVon(o)} ${o.abortReason}"
+            assertEquals(konfiguriert, e.configuredHorizonMin, "konfiguriert: $m")
+            assertEquals(wirksam, e.horizonMin, "wirksam: $m")
+            assertEquals(FuseCycleRunner.EarlyAdaptiveMealDiagnosis.NOT_EVALUATED, e.denial, m)
+            assertTrue(!e.eligible && !e.selected && e.source == null && e.earlyReleaseMeanMgdl == null, m)
+        }
+        val luecke = { lueckeVonMin = halteMarkerZyklus + 12; lueckeBisMin = halteMarkerZyklus + 20 }
+        for ((name, h, wirksam) in listOf(Triple("k8", 8, 8), Triple("k7", 7, 0))) {
+            // Nach readConfig: nach der Luecke ist der Antrieb einige Zyklen nicht schaetzbar.
+            val lauf = fruehLauf(dir, name, h, 45, form = luecke)
+            val spaet = lauf.filter { it.abortReason?.startsWith("drive not estimable") == true }
+            println("H8 k $name: spaete Abbrueche in Minuten ${spaet.map { minuteVon(it) }}")
+            assertTrue(spaet.isNotEmpty(), "Vorbedingung: Abbruch nach der Konfiguration ($name)")
+            spaet.forEach { pruefe(it, h, wirksam) }
+            // Die regulaeren Zyklen desselben Laufs sind unberuehrt: dort ist der Grund nie NOT_EVALUATED.
+            assertTrue(lauf.filter { it.abortReason == null }.none { it.earlyAdaptiveMeal.denial == FuseCycleRunner.EarlyAdaptiveMealDiagnosis.NOT_EVALUATED })
+            // Vor readConfig: derselbe Laufname teilt das Ledger, jeder Zyklus ist eine Neustart-Dublette.
+            val dublette = fruehLauf(dir, name, h, 5, form = luecke)
+            val frueh = dublette.filter { it.abortReason?.contains("restart dedupe") == true }
+            assertTrue(frueh.isNotEmpty(), "Vorbedingung: Neustart-Dublette ($name)")
+            frueh.forEach { pruefe(it, h, wirksam) }
+        }
+    }
+
+    /**
      * Rollen der Schwellen (Tonis Korrektur 18.09.): H8 darf ab W10 >= 1,0 aktiv
      * werden; zwischen 1,0 und riseRampLowR (hier 1,5 wie live) bleibt die Ratio
      * am unteren Rampenwert (Korrektur-Ratio 0,15 im Rig). Kleine Schwanzlast und

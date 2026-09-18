@@ -1444,6 +1444,9 @@ class FuseCycleRunner(
      *    Normalpfad-Vergleich und die Endpruefung - das steht in
      *    `liveness.liftU` und in der Entscheidung, nicht hier.
      * [source] ist nur bei [selected] gesetzt.
+     * IM ABBRUCHZYKLUS (NO_INPUT, Neustart-Dublette, ...) wird H8 nicht bewertet:
+     * konfigurierter und wirksamer Horizont stehen trotzdem da, [denial] ist
+     * [NOT_EVALUATED], alles Weitere bleibt leer (Toni 18.09.).
      * `productionReleaseMeanMgdl`/`effectiveReleaseMeanMgdl`/`candidateAfterHeadroomU`
      * sind nur gesetzt, wenn der Liveness-Kanal in diesem Zyklus einen Kandidaten
      * gerechnet hat.
@@ -1467,7 +1470,12 @@ class FuseCycleRunner(
         /** Die in DIESEM Zyklus gelesene Rampe (cfg, eine Lesung je Zyklus). */
         val riseRampLowR: Double? = null,
         val riseRampHighR: Double? = null,
-    )
+    ) {
+        companion object {
+            /** Abbruchzyklus: H8 wurde nicht bewertet; die Horizonte stehen trotzdem da. */
+            const val NOT_EVALUATED = "NOT_EVALUATED"
+        }
+    }
 
     /**
      * Vollsicht-Vertrag (R93-F3): ALLE gueltigen Boli des IOB-Fensters PLUS
@@ -1680,6 +1688,14 @@ class FuseCycleRunner(
                     ?.takeIf { it.valid }
             }.getOrNull()
             val iob = iobTotalAbbruch?.iob
+            // H8 AUCH IM ABBRUCH (Toni 18.09.): konfigurierter und wirksamer
+            // Horizont bleiben sichtbar - aus der Politik dieses Zyklus, sonst
+            // (Abbruch vor readConfig, z. B. Neustart-Dublette) tolerant direkt
+            // gelesen. Bewertet wird nichts, die Bahnfelder bleiben leer.
+            val h8Konfiguriert = policy?.earlyAdaptiveMealHorizonConfiguredMin
+                ?: runCatching { preferences.get(FuseIntKey.EarlyAdaptiveMealHorizonMin) }.getOrNull()
+            val h8Wirksam = policy?.earlyAdaptiveMealHorizonMin
+                ?: h8Konfiguriert?.let { app.aaps.fuse.core.controller.EarlyAdaptiveMealNeed.effectiveHorizonMin(it) }
             return Outcome(
                 decision = FuseController.noInput(reason), tbr = cancelTbr,
                 // Dasselbe valid-geprueft gelesene IobTotal wie die
@@ -1726,6 +1742,11 @@ class FuseCycleRunner(
                 descentLatchReason = if (episodes.descentRecoveryLatch.active) "ABORT_UNCHANGED" else null,
                 descentRecoveryCycles = episodes.descentRecoveryRuntime.consecutiveRecoveryCycles,
                 descentLatchedAtTs = episodes.descentRecoveryLatch.latchedAtTs,
+                earlyAdaptiveMeal = EarlyAdaptiveMealDiagnosis(
+                    configuredHorizonMin = h8Konfiguriert ?: 0,
+                    horizonMin = h8Wirksam ?: 0,
+                    denial = EarlyAdaptiveMealDiagnosis.NOT_EVALUATED,
+                ),
             )
         }
 
