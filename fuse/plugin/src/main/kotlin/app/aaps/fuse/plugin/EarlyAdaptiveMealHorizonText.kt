@@ -23,4 +23,8 @@ object EarlyAdaptiveMealHorizonText {
     fun zustand(konfiguriertMin: Int): String =
         if (konfiguriertMin in EarlyAdaptiveMealNeed.ALLOWED_HORIZONS_MIN) eintrag(konfiguriertMin)
         else "$konfiguriertMin min - unzulaessig, wirkt als AUS"
+
+    /** Die Zeile im Einstellungsbildschirm: Zustand, darunter die Erklaerung. */
+    fun zusammenfassung(konfiguriertMin: Int, erklaerung: String): String =
+        "Aktuell: " + zustand(konfiguriertMin) + "\n" + erklaerung
 }

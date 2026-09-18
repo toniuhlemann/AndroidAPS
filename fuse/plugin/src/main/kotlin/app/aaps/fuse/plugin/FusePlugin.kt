@@ -5,7 +5,6 @@ import app.aaps.fuse.plugin.expectation.FuseExpectationRecorder
 import app.aaps.fuse.core.controller.ExpectationLedger
 import android.content.Context
 import android.os.Environment
-import androidx.preference.ListPreference
 import androidx.preference.Preference
 import androidx.preference.PreferenceCategory
 import androidx.preference.PreferenceManager
@@ -2517,6 +2516,27 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
             .store(FuseIntKey.PrimeWindowMin, preferences)
     }
 
+    /**
+     * ZUSAMMENFASSUNG DER H8-AUSWAHL AUF DEM HAUSWEG (Geraetefund 18.09.).
+     *
+     * MyPreferenceFragment setzt beim Aufbau und nach jeder Aenderung die
+     * Zusammenfassung von Listen selbst (`pref.summary = pref.entry`) und ruft
+     * danach diesen Haken jedes Plugins. Ein an der Preference gesetzter
+     * Zusammenfassungs-Provider laesst genau diese Zuweisung mit
+     * IllegalStateException scheitern - der FUSE-Bildschirm stuerzte beim
+     * Oeffnen ab, der Loop lief weiter. Hier wird aus dem Eintrag Zustand plus
+     * Erklaerung, auch fuer einen unzulaessigen Altwert ("wirkt als AUS").
+     */
+    override fun updatePreferenceSummary(pref: Preference) {
+        super.updatePreferenceSummary(pref)
+        if (pref.key == FuseIntKey.EarlyAdaptiveMealHorizonMin.key) {
+            pref.summary = EarlyAdaptiveMealHorizonText.zusammenfassung(
+                preferences.get(FuseIntKey.EarlyAdaptiveMealHorizonMin),
+                rh.gs(R.string.fuse_early_adaptive_meal_horizon_summary),
+            )
+        }
+    }
+
     override fun addPreferenceScreen(preferenceManager: PreferenceManager, parent: PreferenceScreen, context: Context, requiredKey: String?) {
         // Overview-Muster: der Aufruf kommt auch fuer Unterbildschirme -
         // dann bauen wir dieselbe Struktur und das Framework zieht den
@@ -2693,26 +2713,20 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
             addPreference(AdaptiveSwitchPreference(ctx = context, booleanKey = FuseBooleanKey.LivenessBookingExitWithoutReArmEnabled, summary = R.string.fuse_liveness_booking_exit_summary, title = R.string.fuse_liveness_booking_exit_title))
             addPreference(AdaptiveSwitchPreference(ctx = context, booleanKey = FuseBooleanKey.LivenessDriveHoldEnabled, summary = R.string.fuse_liveness_drive_hold_summary, title = R.string.fuse_liveness_drive_hold_title))
             // H8 (Toni 18.09.): FESTE AUSWAHL AUS/6/8/10 statt freiem Zahlenfeld
-            // (Review 18.09.: eine 7 waere still AUS gewesen). Die Zeile zeigt den
-            // gespeicherten Zustand, auch einen unzulaessigen Altwert als "wirkt
-            // als AUS". KEINE dialogMessage: bei einer Liste verdraengt die
-            // Nachricht im Dialog die Auswahl - die Erklaerung steht deshalb in
-            // der Zusammenfassung. Gespeichert wird wie bei der Ruhe-Behandlung
-            // als Text; der Int-Key liest ihn ueber die Zahlen-Rueckfallstufe.
+            // (Review 18.09.: eine 7 waere still AUS gewesen). KEINE dialogMessage:
+            // bei einer Liste verdraengt die Nachricht im Dialog die Auswahl. Die
+            // Zeile zeigt Zustand und Erklaerung ueber [updatePreferenceSummary] -
+            // den Hausweg. Ein eigener Zusammenfassungs-Provider liess den ganzen
+            // Bildschirm abstuerzen (Geraetefund 18.09.), s. dort. Gespeichert
+            // wird wie bei der Ruhe-Behandlung als Text; der Int-Key liest ihn
+            // ueber die Zahlen-Rueckfallstufe.
             addPreference(
                 AdaptiveListIntPreference(
                     ctx = context, intKey = FuseIntKey.EarlyAdaptiveMealHorizonMin,
                     title = R.string.fuse_early_adaptive_meal_horizon_title,
                     entries = EarlyAdaptiveMealHorizonText.auswahl.map<Int, CharSequence> { EarlyAdaptiveMealHorizonText.eintrag(it) }.toTypedArray(),
                     entryValues = EarlyAdaptiveMealHorizonText.auswahl.map<Int, CharSequence> { it.toString() }.toTypedArray(),
-                ).apply {
-                    val erklaerung = rh.gs(R.string.fuse_early_adaptive_meal_horizon_summary)
-                    summaryProvider = Preference.SummaryProvider<ListPreference> { p ->
-                        "Aktuell: " + EarlyAdaptiveMealHorizonText.zustand(
-                            p.value?.toIntOrNull() ?: FuseIntKey.EarlyAdaptiveMealHorizonMin.defaultValue,
-                        ) + "\n" + erklaerung
-                    }
-                },
+                ),
             )
             addPreference(AdaptiveIntPreference(ctx = context, intKey = FuseIntKey.LivenessMealPowerMin, dialogMessage = R.string.fuse_liveness_meal_power_summary, title = R.string.fuse_liveness_meal_power_title))
             // CENTRAL-ONLY (Legacy-Cleanup, Tonis Vertrag 29.08. nachts):

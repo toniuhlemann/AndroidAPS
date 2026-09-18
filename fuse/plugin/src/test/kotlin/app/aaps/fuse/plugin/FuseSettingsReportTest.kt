@@ -81,6 +81,9 @@ class FuseSettingsReportTest {
         assertEquals(listOf(0, 6, 8, 10), EarlyAdaptiveMealHorizonText.auswahl)
         assertEquals(app.aaps.fuse.core.controller.EarlyAdaptiveMealNeed.ALLOWED_HORIZONS_MIN, EarlyAdaptiveMealHorizonText.auswahl.toSet())
         assertEquals(listOf("AUS", "6 min", "8 min", "10 min"), EarlyAdaptiveMealHorizonText.auswahl.map(EarlyAdaptiveMealHorizonText::eintrag))
+        // Die Zeile im Bildschirm (updatePreferenceSummary) sagt dasselbe wie der Bericht.
+        assertEquals("Aktuell: AUS\nErklaerung", EarlyAdaptiveMealHorizonText.zusammenfassung(0, "Erklaerung"))
+        assertEquals("Aktuell: 7 min - unzulaessig, wirkt als AUS\nErklaerung", EarlyAdaptiveMealHorizonText.zusammenfassung(7, "Erklaerung"))
     }
 
     @Test

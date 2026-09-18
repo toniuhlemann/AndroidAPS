@@ -59,6 +59,16 @@ pruefe 'android.app.ProgressDialog(' \
     'Plattform-Fortschrittsdialog in FUSE' \
     'ein Material-Dialog aus core:ui'
 
+# Geraetefund 18.09.: MyPreferenceFragment setzt die Zusammenfassung von Listen
+# und Textfeldern selbst; ein gesetzter Provider laesst den Bildschirm abstuerzen.
+pruefe 'summaryProvider =' \
+    'Zusammenfassungs-Provider an einer FUSE-Einstellung' \
+    'updatePreferenceSummary(pref) im Plugin - der Hausweg, den MyPreferenceFragment nach seiner eigenen Zuweisung ruft'
+
+pruefe 'setSummaryProvider(' \
+    'Zusammenfassungs-Provider an einer FUSE-Einstellung' \
+    'updatePreferenceSummary(pref) im Plugin'
+
 if [ "$FEHLER" -eq 0 ]; then
     echo "OK: FUSE benutzt die Dialog-Hausmittel der App."
     exit 0

@@ -167,6 +167,26 @@ class FuseScreenInventarWaechterTest {
     }
 
     /**
+     * GERAETEFUND 18.09.: ein Zusammenfassungs-Provider an einer FUSE-Einstellung
+     * laesst den ganzen Einstellungsbildschirm abstuerzen. MyPreferenceFragment
+     * setzt die Zusammenfassung von Listen und Textfeldern selbst, und androidx
+     * verweigert das, sobald ein Provider gesetzt ist ("Preference already has a
+     * SummaryProvider set"). Der Hausweg ist updatePreferenceSummary im Plugin.
+     * Kein Test ausser diesem sieht das - die Suite lief gruen, der Absturz kam
+     * erst am Geraet.
+     */
+    @Test
+    fun `keine FUSE-Einstellung setzt einen Zusammenfassungs-Provider`() {
+        val code = pluginQuelle().lines()
+            .map { it.substringBefore("//").trim() }
+            .filterNot { it.startsWith("*") || it.startsWith("/*") }
+        val treffer = code.filter { it.contains("SummaryProvider", ignoreCase = true) }
+        assertTrue(treffer.isEmpty()) {
+            "Zusammenfassungs-Provider im FUSE-Bildschirm - stuerzt beim Oeffnen ab: $treffer"
+        }
+    }
+
+    /**
      * SELBSTPRUEFUNG DES WAECHTERS. Ein statischer Test, der nichts findet,
      * weil sein Muster ins Leere greift, ist schlimmer als keiner - er meldet
      * dann fuer immer "gruen". Ein Vertrag mit ueber zwanzig Eintraegen muss
