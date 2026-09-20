@@ -254,7 +254,7 @@ Since 29.08.2026 the controller runs one central dosing policy and no other ([`D
 - **CORRECTION** is the ordinary state - no precondition, nothing to switch on.
 - **MEAL** exists only while a marker press has pinned a meal power authorization, and only for the period frozen at the press (default 120 min, configurable). The pin is persisted; a marker merely found at process start does not create retroactive MEAL. The interval is half open: at the deadline the cycle is already CORRECTION again - no mode switch, no cleanup duty.
 
-Kinematic windows, a high drive, a running rise or a still-living evidence episode deliberately do NOT reach MEAL. The measured counter-example is the correction burst of 27.08.2026: it ran on a kinematic-only window with an empty authorization and delivered 2.5 U in twelve tail-headroom cycles, precisely because no context-dependent ceiling existed in the normal path while iobTH and maxIOB still left 4-6 U of room.
+Kinematic windows, a high drive, a running rise or a still-living evidence episode deliberately do NOT reach MEAL. The measured counter-example is a correction burst observed in field operation: it ran on a kinematic-only window with an empty authorization and repeated the same delivery over a dozen consecutive tail-headroom cycles, precisely because no context-dependent ceiling existed in the normal path while iobTH and maxIOB still left room.
 
 The profile decides two numbers:
 
@@ -269,7 +269,7 @@ The four profile values (two exposure limits, two ratio caps) ship as real runti
 
 Relevant code: [`LivenessChannel.kt`](fuse/core/src/main/kotlin/app/aaps/fuse/core/controller/LivenessChannel.kt).
 
-The measured motivation (22.08.2026): at high glucose after meals, the carbohydrate-free pessimistic curve and the DIA tail rationed or zeroed every delivery while the main path itself kept recognising 1.8-2.1 U of demand - in 93 of 93 deadlock cycles that day, the certified lower path lay a median of 97 mg/dl below the minimum that actually occurred, and 90 of the day's 116 minutes above 180 were blocked minutes with RECOGNISED demand.
+The measured motivation, taken from a single observed day in field operation: at high glucose after meals, the carbohydrate-free pessimistic curve and the DIA tail rationed or zeroed every delivery while the main path itself kept recognising demand. In every deadlock cycle of that day the certified lower path lay far below the minimum that actually occurred, and the large majority of the day's minutes above target were blocked minutes with RECOGNISED demand.
 
 The channel makes that already-recognised mid-path demand deliverable instead of inventing its own: `final = max(normal, liveness)` - never an addition - where the liveness candidate passes its own ratio cap, the profile exposure limit as its channel ceiling, global iobTH and maxIOB, transport liability and the pump raster. Guard and tail stay fully in force for the normal path and remain visible in the export; inside the channel they are neither veto nor cap, because that would reproduce exactly the sawtooth the channel exists to break. Measured falling, a measured low, rebound windows, signal faults, ledger holds and the pump and transport gates remain absolute for both paths. The channel arms only after a persistent pressure condition (configurable day/night/meal glucose thresholds), exits on a confirmed downward turn and on every manual intervention, and then holds a restart-safe re-arm lock. It is switchable and ships off.
 
