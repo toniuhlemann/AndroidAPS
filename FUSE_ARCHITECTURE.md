@@ -621,7 +621,7 @@ CI runs the FUSE modules plus the AAPS modules containing unavoidable core chang
 
 ## 18. Branch discipline
 
-`fuse-dev` is the moving integration branch. `3.4.2.5+fuse1.0.0-toni` is the PRODUCTION line: it is what loops on the real pump. `3.4.2.5+fuse0.1.0-toni` remains the frozen earlier line. Neither moving branch is immutable, and a branch name is not a version: the repository currently builds `3.4.2.5+fuse1.0.2-toni`. Only a Git tag identifies a frozen source commit, and a valid run additionally requires one exported `build.head` with `build.committed = true` for the entire measurement window.
+`fuse-dev` is the moving integration branch. `3.4.2.5+fuse1.0.0-toni` is the PRODUCTION line: it is what loops on the real pump. The earlier line is frozen under the tag `fuse-0.1.0-beta`; its branch has been removed, because its history is fully contained in the production line. Neither moving branch is immutable, and a branch name is not a version: the repository currently builds `3.4.2.5+fuse1.0.2-toni`. Only a Git tag identifies a frozen source commit, and a valid run additionally requires one exported `build.head` with `build.committed = true` for the entire measurement window.
 
 Two carriers exist and must not be confused in a measurement: a development device with VirtualPump, and the production device with the real pump. A run from the development carrier cannot be quoted as real-pump behaviour, and in a two-device setup the evidence stock is quantitatively unusable (chapter 8.1).
 
