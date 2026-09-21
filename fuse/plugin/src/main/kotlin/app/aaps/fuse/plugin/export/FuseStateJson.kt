@@ -2128,6 +2128,15 @@ object FuseStateJson {
         // aufgefallen ist (basalIobU, MarkerAuthorisesRelease). Ein Schalter,
         // der das Aktuationsverhalten aendert, gehoert in den Trail.
         .put("endZeroWhenReasonGone", p.endZeroWhenReasonGone)
+        // KI-141 (21.09.2026): drei Stellgroessen, die das Verhalten aendern und
+        // bis hierher im Trail fehlten. Die Frist des Rebound-Sonderrechts steht
+        // seit v12 im Hash, war aber nicht ablesbar - ein Replay musste sie aus
+        // der Restzeit zurueckrechnen. Die beiden Schalter standen weder hier noch
+        // im Hash; MarkerAuthorisesRelease ist die zweite Luecke aus der Notiz
+        // oben, die damals nicht geschlossen wurde.
+        .put("evidenceReboundOverrideMaxMin", p.evidenceReboundOverrideMaxMin)
+        .put("conditionalTailEnabled", p.conditionalTailEnabled)
+        .put("markerAuthorisesRelease", p.markerAuthorized)
 
     /**
      * `null` bei nicht-endlichen Eingaben. [Sha.lossless] WIRFT bei NaN/Inf,
@@ -2354,6 +2363,17 @@ object FuseStateJson {
                 // mit laengerem Fenster darf die Erwartungen des kuerzeren
                 // nicht erben.
                 p.reboundWindowMin,
+                // KI-141 (21.09.2026): zwei Schalter, die das Verhalten aendern
+                // und bis hierher nicht im Hash standen - zwei Laeufe mit
+                // verschiedener Stellung trugen denselben Hash, und ein gleicher
+                // Hash belegte ihre Stellung nicht. Bewusst OHNE Anhebung von
+                // RULE_SET_VERSION: das Regelwerk selbst ist unveraendert, und die
+                // Version steckt auch im Fingerprint der Ruhe-Erholung - eine
+                // Anhebung wuerde dort beim Flash einen laufenden Ruhe-Streak
+                // zuruecksetzen, also die Dosierung beruehren. Der Hash wechselt
+                // trotzdem einmalig, weil zwei Eingaenge hinzukommen.
+                p.conditionalTailEnabled,
+                p.markerAuthorized,
             ).map { it.toString() } + modusTeile
         return Sha.of(parts.joinToString("|"))
     }

@@ -608,6 +608,41 @@ class FuseStateExportTest {
         assertEquals(1.3, trail.getDouble("ratioDriveMgdlPerMin"), 0.0)
     }
 
+    /** KI-141 (21.09.2026): die Frist des Rebound-Sonderrechts und die beiden
+     *  Schalter stehen im Export; die Schalter bewegen den Hash, die
+     *  Regelsatzversion bleibt. Ohne das belegte ein gleicher Hash die Stellung
+     *  der Schalter nicht, und ein Replay musste die Frist zurueckrechnen. */
+    @Test
+    fun `KI-141 - Rebound-Frist und zwei Schalter in Export und Hash`() {
+        // Produktionsvoreinstellungen - der Test prueft, dass beide Richtungen zaehlen.
+        assertTrue(app.aaps.fuse.plugin.FuseBooleanKey.ConditionalTailEnabled.defaultValue)
+        assertFalse(app.aaps.fuse.plugin.FuseBooleanKey.MarkerAuthorisesRelease.defaultValue)
+
+        val werte = FuseStateJson.policyValues(cfg)
+        assertEquals(cfg.evidenceReboundOverrideMaxMin, werte.getInt("evidenceReboundOverrideMaxMin"))
+        assertEquals(cfg.conditionalTailEnabled, werte.getBoolean("conditionalTailEnabled"))
+        assertEquals(cfg.markerAuthorized, werte.getBoolean("markerAuthorisesRelease"))
+        // Der Export gibt den WIRKSAMEN Wert wieder, nicht nur die Voreinstellung.
+        val umgelegt = FuseStateJson.policyValues(
+            cfg.copy(conditionalTailEnabled = !cfg.conditionalTailEnabled,
+                     markerAuthorized = !cfg.markerAuthorized,
+                     evidenceReboundOverrideMaxMin = cfg.evidenceReboundOverrideMaxMin + 15))
+        assertEquals(!cfg.conditionalTailEnabled, umgelegt.getBoolean("conditionalTailEnabled"))
+        assertEquals(!cfg.markerAuthorized, umgelegt.getBoolean("markerAuthorisesRelease"))
+        assertEquals(cfg.evidenceReboundOverrideMaxMin + 15, umgelegt.getInt("evidenceReboundOverrideMaxMin"))
+
+        val h = FuseStateJson.hashOf(cfg)!!
+        val ohneTail = FuseStateJson.hashOf(cfg.copy(conditionalTailEnabled = !cfg.conditionalTailEnabled))!!
+        val mitMarker = FuseStateJson.hashOf(cfg.copy(markerAuthorized = !cfg.markerAuthorized))!!
+        assertTrue(ohneTail != h, "bedingter Tail muss den Hash bewegen")
+        assertTrue(mitMarker != h, "Marker-Freigabe muss den Hash bewegen")
+        assertTrue(ohneTail != mitMarker, "die beiden Schalter duerfen sich im Hash nicht gegenseitig vertreten")
+        // Die Frist bewegte den Hash schon vorher; das bleibt so.
+        assertTrue(FuseStateJson.hashOf(cfg.copy(evidenceReboundOverrideMaxMin = cfg.evidenceReboundOverrideMaxMin + 15)) != h)
+        // Regelsatzversion bewusst unveraendert (Fingerprint der Ruhe-Erholung).
+        assertEquals(55, FuseStateJson.RULE_SET_VERSION)
+    }
+
     /** H8-Diagnose (Review 18.09.): Eignung, Auswahl und Kanalangebot stehen
      *  getrennt im Trail; geeignet ohne Auswahl traegt keine Quelle, und eine
      *  gewaehlte Bahn kann ein Kanalangebot von 0 haben. */
