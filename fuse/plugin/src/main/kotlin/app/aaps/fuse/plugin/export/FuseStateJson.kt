@@ -558,6 +558,11 @@ object FuseStateJson {
          */
         priorActuation: app.aaps.fuse.plugin.FusePlugin.PriorActuation? = null,
         /**
+         * KI-171: was dieser Zyklus von den AAPS-Ablagen "Pumpe nie
+         * angesprochen" sah und welche Zeilen daraus entlastet werden.
+         */
+        pumpNeverCalled: app.aaps.fuse.plugin.FusePlugin.PumpNeverCalledTrace? = null,
+        /**
          * DER ERWARTUNGS-LEDGER - reine Beobachtung, keine Zahl davon wird
          * gelesen.
          */
@@ -1984,6 +1989,17 @@ object FuseStateJson {
                 .put("afterBolusConstraintsU", fin(p.afterBolusConstraintsU))
                 .put("aapsConstrainedU", fin(p.aapsConstrainedU))
         } ?: JSONObject.NULL)
+        // KI-171: Beleg D. `claimed` sind die Zeilen, die DIESER Zyklus
+        // entlastet; der Ledger fuehrt sie danach mit queueReject OTHER (der
+        // Name bleibt rueckflashfest). `matched` ohne `claimed` heisst: Zeile
+        // schon zu, schon ueber A bis C belegt oder Mengen passten nicht.
+        o.put("pumpNeverCalled", pumpNeverCalled?.let { t ->
+            JSONObject()
+                .put("recordsVisible", t.recordsVisible)
+                .put("matched", JSONArray(t.matched))
+                .put("claimed", JSONArray(t.claimed))
+                .put("alreadyClosed", JSONArray(t.alreadyClosed))
+        } ?: JSONObject.NULL)
         o.put("r89Complete", ledger != null)
         return o
     }
@@ -2250,6 +2266,13 @@ object FuseStateJson {
             p.reversalFallUkf,
             p.reversalReboundUkf,
             p.rearmUpUkf,
+            // KI-170 (29.09.2026): exportiert und dosierwirksam, aber bis hierher
+            // nicht im Hash - zwei Laeufe mit verschiedenem maxIOB oder
+            // verschiedenen Totbaendern trugen denselben Fingerprint. Der
+            // Kommentar an sharedMaxIobU sagte das seit Fix-Pass 4 selbst.
+            p.sharedMaxIobU,
+            p.nightDeadbandMgdl,
+            p.reboundDeadbandMgdl,
         )
         if (doubles.any { !it.isFinite() }) return null
         // v38-ABSCHLUSS (A5-Neutralitaet, Toni 29.08.): die Hash-Eingaenge
@@ -2374,6 +2397,20 @@ object FuseStateJson {
                 // trotzdem einmalig, weil zwei Eingaenge hinzukommen.
                 p.conditionalTailEnabled,
                 p.markerAuthorized,
+                // KI-170 (29.09.2026): Nachtfenster, beide Totband-Schalter,
+                // Kreditfenster der erklaerten Absorption und die Marker-
+                // Leistungsdauer - alle dosierwirksam, alle bisher nur im
+                // Export. Wie bei KI-141 bewusst OHNE Anhebung von
+                // RULE_SET_VERSION (Fingerprint der Ruhe-Erholung); der Hash
+                // wechselt einmalig. Der KONFIGURIERTE H8-Horizont bleibt
+                // draussen: ein unzulaessiger Wert wirkt als 0, im Hash steht
+                // der wirksame (v55).
+                p.nightStartMin,
+                p.nightEndMin,
+                p.nightDeadbandEnabled,
+                p.reboundDeadbandEnabled,
+                p.absorptionCreditWindowMin,
+                p.markerBoostMaxMin,
             ).map { it.toString() } + modusTeile
         return Sha.of(parts.joinToString("|"))
     }

@@ -17,6 +17,14 @@ interface PumpEnactResult {
     var bolusDelivered: Double // real value of delivered insulin
     var queued: Boolean
 
+    /**
+     * FUSE KI-171: true ONLY when the request was rejected on a path that
+     * provably never reached the pump driver (loop or queue rejected it before
+     * `deliverTreatment`). Never set after a pump call, never on a timeout or
+     * cancel: there the pump may have delivered. Default false = nothing proven.
+     */
+    var notSentToPump: Boolean
+
     fun success(success: Boolean): PumpEnactResult
     fun enacted(enacted: Boolean): PumpEnactResult
     fun comment(comment: String): PumpEnactResult
@@ -28,4 +36,5 @@ interface PumpEnactResult {
     fun isTempCancel(isTempCancel: Boolean): PumpEnactResult
     fun bolusDelivered(bolusDelivered: Double): PumpEnactResult
     fun queued(queued: Boolean): PumpEnactResult
+    fun notSentToPump(notSentToPump: Boolean): PumpEnactResult
 }

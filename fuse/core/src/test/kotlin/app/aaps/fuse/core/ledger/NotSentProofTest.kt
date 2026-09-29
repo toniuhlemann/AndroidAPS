@@ -124,4 +124,56 @@ class NotSentProofTest {
         assertNull(NotSentProof.reasonFor(beobachtung(aapsConstrainedU = null, smbSetByPumpPresent = false)))
         assertNull(NotSentProof.reasonFor(beobachtung(aapsConstrainedU = Double.NaN, smbSetByPumpPresent = false)))
     }
+
+    // ---- Beleg D (KI-171): AAPS hat die Pumpe nie angesprochen ------------
+
+    private fun nieGesendet(
+        identityMatched: Boolean = true,
+        ledgerPublishedU: Double? = 0.35,
+        requestedU: Double? = 0.35,
+    ) = NotSentProof.PumpNeverCalled(identityMatched, ledgerPublishedU, requestedU)
+
+    /** DER GEMESSENE FALL der Nacht 25./26.09.: 0,35 U publiziert, von AAPS
+     *  als "too old" verworfen, die Pumpe nie angesprochen. */
+    @Test
+    fun `eine nie an die Pumpe gegangene SMB entlastet ihre Zeile`() {
+        assertEquals(NotSentProof.PUMP_NEVER_CALLED, NotSentProof.reasonForPumpNeverCalled(nieGesendet()))
+    }
+
+    /** Der Grund wird als OTHER persistiert - ein aelterer Build kann ihn lesen. */
+    @Test
+    fun `der Grund bleibt rueckflashfest`() {
+        assertEquals(QueueRejectReason.OTHER, NotSentProof.PUMP_NEVER_CALLED)
+    }
+
+    /** OHNE IDENTITAET GAR NICHTS: eine Ablehnung, die nicht per Referenz zu
+     *  dieser RT-Instanz gehoert, beschreibt womoeglich eine ganz andere Zeile. */
+    @Test
+    fun `ohne Identitaet wird nie entlastet`() {
+        assertNull(NotSentProof.reasonForPumpNeverCalled(nieGesendet(identityMatched = false)))
+    }
+
+    @Test
+    fun `ohne gebuchte oder angeforderte Menge passiert nichts`() {
+        for (m in listOf(null, 0.0, -0.1, Double.NaN, Double.POSITIVE_INFINITY)) {
+            assertNull(NotSentProof.reasonForPumpNeverCalled(nieGesendet(ledgerPublishedU = m)))
+            assertNull(NotSentProof.reasonForPumpNeverCalled(nieGesendet(requestedU = m)))
+        }
+    }
+
+    /** AAPS darf nach seinen Constraints WENIGER senden wollen - dann ist fuer
+     *  diese RT trotzdem nichts geflossen, die ganze Zeile wird frei. */
+    @Test
+    fun `eine von AAPS gekuerzte Anforderung entlastet die ganze Zeile`() {
+        assertEquals(
+            NotSentProof.PUMP_NEVER_CALLED,
+            NotSentProof.reasonForPumpNeverCalled(nieGesendet(ledgerPublishedU = 0.35, requestedU = 0.30)),
+        )
+    }
+
+    /** MEHR als publiziert passt nicht zu dieser Zeile: dann nichts beweisen. */
+    @Test
+    fun `eine groessere Anforderung als publiziert beweist nichts`() {
+        assertNull(NotSentProof.reasonForPumpNeverCalled(nieGesendet(ledgerPublishedU = 0.35, requestedU = 0.40)))
+    }
 }

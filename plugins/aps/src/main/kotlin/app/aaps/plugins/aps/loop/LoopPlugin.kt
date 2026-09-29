@@ -650,6 +650,19 @@ class LoopPlugin @Inject constructor(
                                                     lastRun.lastSMBEnact = dateUtil.now()
                                                     scheduleBuildAndStoreDeviceStatus("applySMBRequest")
                                                 } else {
+                                                    // FUSE KI-171: keep a PROVEN non-delivery with the identity of
+                                                    // this request - it may arrive after newer runs overwrote
+                                                    // lastRun. Nothing else is recorded: a failure after a pump
+                                                    // call may still have delivered.
+                                                    if (result.notSentToPump)
+                                                        lastRun.recordSmbNotSent(
+                                                            Loop.SmbNotSent(
+                                                                request = resultAfterConstraints.rawData(),
+                                                                requestedU = resultAfterConstraints.smb,
+                                                                atMs = dateUtil.now(),
+                                                                reason = result.comment,
+                                                            )
+                                                        )
                                                     handler?.postDelayed({ invoke("tempBasalFallback", allowNotification, true) }, 1000)
                                                 }
                                                 rxBus.send(EventLoopUpdateGui())
@@ -874,23 +887,26 @@ class LoopPlugin @Inject constructor(
         val lastBolusTime = persistenceLayer.getNewestBolus()?.timestamp ?: 0L
         // 15s tolerance — same rationale as the constraints gate above (match determine's gate;
         // absorbs the ~10s enact offset so SMBInterval=1 truly allows every-minute delivery).
+        // FUSE KI-171: the three early returns below never reach the queue, so
+        // the pump is provably not called for this request (notSentToPump).
         if (lastBolusTime != 0L && lastBolusTime + T.mins(preferences.get(IntKey.ApsMaxSmbFrequency).toLong()).msecs() - T.secs(15).msecs() > dateUtil.now()) {
             aapsLogger.debug(LTag.APS, "SMB requested but still in ${preferences.get(IntKey.ApsMaxSmbFrequency)} min interval")
             callback?.result(
                 pumpEnactResultProvider.get()
                     .comment(R.string.smb_frequency_exceeded)
                     .enacted(false).success(false)
+                    .notSentToPump(true)
             )?.run()
             return
         }
         if (!pump.isInitialized()) {
             aapsLogger.debug(LTag.APS, "applySMBRequest: " + rh.gs(R.string.pump_not_initialized))
-            callback?.result(pumpEnactResultProvider.get().comment(R.string.pump_not_initialized).enacted(false).success(false))?.run()
+            callback?.result(pumpEnactResultProvider.get().comment(R.string.pump_not_initialized).enacted(false).success(false).notSentToPump(true))?.run()
             return
         }
         if (runningMode.isSuspended()) {
             aapsLogger.debug(LTag.APS, "applySMBRequest: " + rh.gs(app.aaps.core.ui.R.string.pumpsuspended))
-            callback?.result(pumpEnactResultProvider.get().comment(app.aaps.core.ui.R.string.pumpsuspended).enacted(false).success(false))?.run()
+            callback?.result(pumpEnactResultProvider.get().comment(app.aaps.core.ui.R.string.pumpsuspended).enacted(false).success(false).notSentToPump(true))?.run()
             return
         }
         aapsLogger.debug(LTag.APS, "applySMBRequest: $request")

@@ -643,6 +643,57 @@ class FuseStateExportTest {
         assertEquals(55, FuseStateJson.RULE_SET_VERSION)
     }
 
+    /**
+     * KI-170 (29.09.2026): exportierte, dosierwirksame Politikwerte, die bis
+     * hierher NICHT im Hash standen. Jede Zeile ist eine Mutationsprobe - fehlt
+     * ein Wert im Hash, bleibt er gleich und der Test faellt. Der konfigurierte
+     * H8-Horizont bleibt bewusst draussen (s. H8-Test oben), die Regelsatz-
+     * version bleibt (Fingerprint der Ruhe-Erholung).
+     */
+    @Test
+    fun `KI-170 - Nachtfenster, Totbaender, maxIOB und Markerfenster bewegen den Hash`() {
+        val h = FuseStateJson.hashOf(cfg)!!
+        val proben = mapOf(
+            "sharedMaxIobU" to cfg.copy(sharedMaxIobU = cfg.sharedMaxIobU + 1.0),
+            "nightStartMin" to cfg.copy(nightStartMin = cfg.nightStartMin - 60),
+            "nightEndMin" to cfg.copy(nightEndMin = cfg.nightEndMin + 60),
+            "nightDeadbandMgdl" to cfg.copy(nightDeadbandMgdl = cfg.nightDeadbandMgdl + 10.0),
+            "nightDeadbandEnabled" to cfg.copy(nightDeadbandEnabled = !cfg.nightDeadbandEnabled),
+            "reboundDeadbandMgdl" to cfg.copy(reboundDeadbandMgdl = cfg.reboundDeadbandMgdl + 10.0),
+            "reboundDeadbandEnabled" to cfg.copy(reboundDeadbandEnabled = !cfg.reboundDeadbandEnabled),
+            "absorptionCreditWindowMin" to cfg.copy(absorptionCreditWindowMin = cfg.absorptionCreditWindowMin + 15),
+            "markerBoostMaxMin" to cfg.copy(markerBoostMaxMin = cfg.markerBoostMaxMin + 15),
+        )
+        val hashes = proben.mapValues { (_, c) -> FuseStateJson.hashOf(c)!! }
+        for ((name, wert) in hashes) assertTrue(wert != h, "$name muss den Politik-Hash bewegen")
+        assertEquals(hashes.size, hashes.values.toSet().size, "die Schluessel duerfen sich im Hash nicht gegenseitig vertreten")
+        // Die beiden Totband-Schalter stehen auch im Export (Klartext neben dem Hash).
+        val werte = FuseStateJson.policyValues(cfg)
+        assertEquals(cfg.nightDeadbandEnabled, werte.getBoolean("nightDeadbandEnabled"))
+        assertEquals(cfg.reboundDeadbandEnabled, werte.getBoolean("reboundDeadbandEnabled"))
+        assertEquals(55, FuseStateJson.RULE_SET_VERSION)
+    }
+
+    /** KI-171: der Trail zeigt, was ein Zyklus von den AAPS-Ablagen sah - und
+     *  ohne Messung steht ein ausdrueckliches null, keine leere Behauptung. */
+    @Test
+    fun `KI-171 - der Trail fuehrt sichtbare, zugeordnete und entlastete Zeilen`() {
+        val o = outcome()
+        val mit = FuseStateJson.record(
+            "s#1", o, rt(), o.policy, BUILD, 0L, null,
+            pumpNeverCalled = app.aaps.fuse.plugin.FusePlugin.PumpNeverCalledTrace(
+                recordsVisible = 2, matched = listOf("s#0", "s#-1"),
+                claimed = listOf("s#0"), alreadyClosed = listOf("s#-1"),
+            ),
+        ) { 5_000_000L }
+        val t = mit.getJSONObject("pumpNeverCalled")
+        assertEquals(2, t.getInt("recordsVisible"))
+        assertEquals(listOf("s#0", "s#-1"), (0 until t.getJSONArray("matched").length()).map { t.getJSONArray("matched").getString(it) })
+        assertEquals("s#0", t.getJSONArray("claimed").getString(0))
+        assertEquals("s#-1", t.getJSONArray("alreadyClosed").getString(0))
+        assertTrue(record().isNull("pumpNeverCalled"))
+    }
+
     /** H8-Diagnose (Review 18.09.): Eignung, Auswahl und Kanalangebot stehen
      *  getrennt im Trail; geeignet ohne Auswahl traegt keine Quelle, und eine
      *  gewaehlte Bahn kann ein Kanalangebot von 0 haben. */

@@ -42,6 +42,13 @@ enum class QueueRejectReason {
     TREATMENT_CHANGED,   // v0.3.1 C5: lastKnownBolusTime-Guard
     BOLUS_IN_QUEUE,
     GATE_BLOCKED,
+    /**
+     * Seit KI-171 (29.09.2026) AUCH: AAPS hat die SMB verworfen, ohne die
+     * Pumpe anzusprechen ([NotSentProof.PUMP_NEVER_CALLED]). Der Name bleibt
+     * OTHER, weil der Ledger ihn persistiert und `valueOf` eines aelteren
+     * Builds einen neuen Namen nicht lesen kann - ein Rueckflash stuende dann
+     * mit unlesbarem Ledger im Hold. Die genaue Art steht im Trail.
+     */
     OTHER,
 }
 

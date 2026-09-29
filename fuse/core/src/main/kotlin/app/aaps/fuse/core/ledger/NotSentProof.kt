@@ -98,4 +98,63 @@ object NotSentProof {
 
         return null
     }
+
+    /**
+     * (D) KI-171: AAPS HAT DIE SMB VERWORFEN, OHNE DIE PUMPE ANZUSPRECHEN.
+     *
+     * DER GEMESSENE ANLASS (Forschung, 29.09.2026): Die Pumpe war 77 s nicht
+     * erreichbar. Danach verwarf `CommandSMBBolus` die SMB als "too old",
+     * ohne `deliverTreatment` aufzurufen. Der Loop behielt nur seinen
+     * Platzhalter, das Fehlergebnis landete nirgends. A bis C konnten deshalb
+     * nicht greifen, und die nie gelieferte Menge haftete rund elf Stunden
+     * als frische Dosis. In den AAPS-Protokollen vom 22.08. bis 21.09. geschah
+     * das etwa jeden zweiten Tag.
+     *
+     * DER BELEG IST POSITIV, nie eine Abwesenheit: AAPS kennzeichnet die
+     * Zweige, die vor dem Pumpentreiber enden (Loop-Tore, Warteschlangen-
+     * Ablehnung, "too old", Intervall), mit `notSentToPump` und legt sie mit
+     * der Identitaet der Anforderung ab (`Loop.LastRun.smbNotSent`). Timeout,
+     * `cancel()` und jeder Fehler NACH einem Pumpenaufruf tragen die Marke
+     * nie - dort kann die Pumpe geliefert haben.
+     *
+     * Die Marke kann Minuten nach der Anforderung eintreffen. Deshalb gilt die
+     * Identitaetsprobe hier nicht dem VORIGEN Zyklus, sondern der RT-Instanz
+     * der Zeile, die der Aufrufer ueber eine kurze Liste eigener
+     * Publikationen findet.
+     *
+     * KEIN SCHALTER (Toni 29.09.2026): eine nie gelieferte SMB darf FUSE nicht
+     * als Insulin fuehren - das ist Grundfunktion wie Beleg A bis C, keine
+     * zuschaltbare Funktion.
+     *
+     * @param identityMatched die abgelehnte Anforderung ist per REFERENZ
+     *   dieselbe RT-Instanz, die diese Zeile publiziert hat.
+     * @param ledgerPublishedU die publizierte Menge der offenen Zeile.
+     * @param requestedU die Menge, die AAPS nach seinen Constraints senden
+     *   wollte. Sie kann kleiner sein als die publizierte, nie groesser.
+     */
+    data class PumpNeverCalled(
+        val identityMatched: Boolean,
+        val ledgerPublishedU: Double?,
+        val requestedU: Double?,
+    )
+
+    /** Der Grund fuer Beleg D - persistiert als OTHER, s. [QueueRejectReason.OTHER]. */
+    val PUMP_NEVER_CALLED: QueueRejectReason = QueueRejectReason.OTHER
+
+    /** Toleranz fuer den Mengenvergleich - Rundungsrauschen, kein Pumpenschritt. */
+    private const val MENGEN_EPS_U = 1e-6
+
+    /** `null` = nichts bewiesen, die Zeile haftet weiter (der sichere Ausgang). */
+    fun reasonForPumpNeverCalled(o: PumpNeverCalled): QueueRejectReason? {
+        // OHNE IDENTITAET GAR NICHTS - dieselbe Regel wie bei A bis C.
+        if (!o.identityMatched) return null
+        val menge = o.ledgerPublishedU ?: return null
+        if (!menge.isFinite() || menge <= 0.0) return null
+        // Die abgelehnte Menge gehoert zu genau dieser Zeile. Wollte AAPS MEHR
+        // senden, als die Zeile publiziert hat, passt der Beleg nicht zu ihr.
+        val angefordert = o.requestedU ?: return null
+        if (!angefordert.isFinite() || angefordert <= 0.0) return null
+        if (angefordert > menge + MENGEN_EPS_U) return null
+        return PUMP_NEVER_CALLED
+    }
 }

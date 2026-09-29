@@ -21,8 +21,11 @@ class PumpEnactResultObject @Inject constructor(private val rh: ResourceHelper) 
     override var bolusDelivered = 0.0 // real value of delivered insulin
     override var queued = false
 
+    // FUSE KI-171: set only on paths that never reached the pump driver.
+    override var notSentToPump = false
+
     override fun toString() =
-        "PumpEnactResultObject(success=$success,enacted=$enacted,comment=$comment,duration=$duration,absolute=$absolute,percent=$percent,isPercent=$isPercent,isTempCancel=$isTempCancel,bolusDelivered=$bolusDelivered,queued=$queued)"
+        "PumpEnactResultObject(success=$success,enacted=$enacted,comment=$comment,duration=$duration,absolute=$absolute,percent=$percent,isPercent=$isPercent,isTempCancel=$isTempCancel,bolusDelivered=$bolusDelivered,queued=$queued,notSentToPump=$notSentToPump)"
 
     override fun success(success: Boolean): PumpEnactResultObject = this.also { this.success = success }
     override fun enacted(enacted: Boolean): PumpEnactResultObject = this.also { it.enacted = enacted }
@@ -35,4 +38,5 @@ class PumpEnactResultObject @Inject constructor(private val rh: ResourceHelper) 
     override fun isTempCancel(isTempCancel: Boolean): PumpEnactResultObject = this.also { it.isTempCancel = isTempCancel }
     override fun bolusDelivered(bolusDelivered: Double): PumpEnactResultObject = this.also { it.bolusDelivered = bolusDelivered }
     override fun queued(queued: Boolean): PumpEnactResultObject = this.also { it.queued = queued }
+    override fun notSentToPump(notSentToPump: Boolean): PumpEnactResultObject = this.also { it.notSentToPump = notSentToPump }
 }

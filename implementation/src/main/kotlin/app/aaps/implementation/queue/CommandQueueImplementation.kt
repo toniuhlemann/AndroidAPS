@@ -315,21 +315,25 @@ class CommandQueueImplementation @Inject constructor(
         }
         val type = if (detailedBolusInfo.bolusType == BS.Type.SMB) CommandType.SMB_BOLUS else CommandType.BOLUS
         if (type == CommandType.SMB_BOLUS) {
+            // FUSE KI-171: these SMB rejections return before the command is
+            // queued, so this request never reaches the pump driver.
             if (bolusInQueue()) {
                 aapsLogger.debug(LTag.PUMPQUEUE, "Rejecting SMB since a bolus is queue/running")
-                callback?.result(pumpEnactResultProvider.get().enacted(false).success(false))?.run()
+                callback?.result(pumpEnactResultProvider.get().enacted(false).success(false).notSentToPump(true))?.run()
                 return false
             }
             val lastBolusTime = persistenceLayer.getNewestBolus()?.timestamp ?: 0L
             if (detailedBolusInfo.lastKnownBolusTime < lastBolusTime) {
                 aapsLogger.debug(LTag.PUMPQUEUE, "Rejecting bolus, another bolus was issued since request time")
-                callback?.result(pumpEnactResultProvider.get().enacted(false).success(false))?.run()
+                callback?.result(pumpEnactResultProvider.get().enacted(false).success(false).notSentToPump(true))?.run()
                 return false
             }
             removeAll(CommandType.SMB_BOLUS)
         }
         if (isRunning(type)) {
-            callback?.result(executingNowError())?.run()
+            // FUSE KI-171: the NEW request is rejected before queueing; only
+            // marked for SMB, where FUSE reads the mark.
+            callback?.result(executingNowError().also { if (type == CommandType.SMB_BOLUS) it.notSentToPump = true })?.run()
             return false
         }
         // remove all unfinished boluses

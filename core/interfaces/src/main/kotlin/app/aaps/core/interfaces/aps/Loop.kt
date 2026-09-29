@@ -32,7 +32,42 @@ interface Loop {
         var lastTBRRequest: Long = 0
         var lastSMBRequest: Long = 0
         var lastOpenModeAccept: Long = 0
+
+        /**
+         * FUSE KI-171: SMB requests that were rejected WITHOUT reaching the pump
+         * driver (PumpEnactResult.notSentToPump). Such a rejection can arrive
+         * minutes after the request (queue waiting for Bluetooth), when this
+         * LastRun already describes a newer run - so each entry carries the
+         * identity of its own request instead of relying on the current one.
+         *
+         * Bounded (newest last) and replaced as a whole: written from the queue
+         * thread, read by the APS plugin in its next run.
+         */
+        @Volatile var smbNotSent: List<SmbNotSent> = emptyList()
+
+        fun recordSmbNotSent(entry: SmbNotSent) {
+            synchronized(this) { smbNotSent = (smbNotSent + entry).takeLast(SMB_NOT_SENT_MAX) }
+        }
+
+        companion object {
+
+            const val SMB_NOT_SENT_MAX = 32
+        }
     }
+
+    /**
+     * FUSE KI-171: one SMB request that provably never reached the pump.
+     *
+     * @param request identity key - `APSResult.rawData()` of the rejected
+     *   request, compared by REFERENCE by the APS plugin that produced it.
+     * @param requestedU the amount AAPS tried to deliver (after constraints).
+     */
+    class SmbNotSent(
+        val request: Any?,
+        val requestedU: Double,
+        val atMs: Long,
+        val reason: String,
+    )
 
     /**
      * Last APS run result

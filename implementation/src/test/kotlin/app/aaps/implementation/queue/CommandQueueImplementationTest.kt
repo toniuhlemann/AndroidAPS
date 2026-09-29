@@ -386,6 +386,54 @@ class CommandQueueImplementationTest : TestBaseWithProfile() {
         assertThat(commandQueue.size()).isEqualTo(0)
     }
 
+    // FUSE KI-171: an SMB rejected before it is queued never reaches the pump
+    // driver, and the result says so. A normally queued SMB carries no mark.
+    @Test
+    fun smbRejectedBecauseABolusIsQueuedIsMarkedNotSentToPump() {
+        var received: PumpEnactResult? = null
+        commandQueue.bolus(DetailedBolusInfo(), null)
+        val smb = DetailedBolusInfo()
+        smb.bolusType = BS.Type.SMB
+        commandQueue.bolus(smb, object : Callback() {
+            override fun run() {
+                received = result
+            }
+        })
+        assertThat(received).isNotNull()
+        assertThat(received!!.success).isFalse()
+        assertThat(received!!.notSentToPump).isTrue()
+    }
+
+    @Test
+    fun smbRejectedForOutdatedLastKnownBolusIsMarkedNotSentToPump() {
+        var received: PumpEnactResult? = null
+        val bolus = DetailedBolusInfo()
+        bolus.bolusType = BS.Type.SMB
+        bolus.lastKnownBolusTime = 0
+        commandQueue.bolus(bolus, object : Callback() {
+            override fun run() {
+                received = result
+            }
+        })
+        assertThat(received).isNotNull()
+        assertThat(received!!.notSentToPump).isTrue()
+    }
+
+    @Test
+    fun aQueuedSmbGetsNoCallbackAndNoMark() {
+        var called = false
+        val smb = DetailedBolusInfo()
+        smb.lastKnownBolusTime = System.currentTimeMillis()
+        smb.bolusType = BS.Type.SMB
+        val queued = commandQueue.bolus(smb, object : Callback() {
+            override fun run() {
+                called = true
+            }
+        })
+        assertThat(queued).isTrue()
+        assertThat(called).isFalse()
+    }
+
     @Test
     fun isCustomCommandRunning() {
         // given

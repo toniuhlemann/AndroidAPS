@@ -45,13 +45,18 @@ class CommandSMBBolus(
         aapsLogger.debug(LTag.PUMPQUEUE, "Last bolus: $lastBolusTime ${dateUtil.dateAndTimeAndSecondsString(lastBolusTime)}")
         // 15s tolerance to match the determine gate (DetermineBasalAutoISF: lastBolusAge > SMBInterval-15);
         // absorbs the ~10s enact offset so SMBInterval=1 truly allows every-minute delivery.
+        // FUSE KI-171: both rejecting branches return BEFORE deliverTreatment, so
+        // the pump was provably never called - marked as notSentToPump. The
+        // pump branch is never marked, whatever its result.
         if (lastBolusTime != 0L && lastBolusTime + T.mins(preferences.get(IntKey.ApsMaxSmbFrequency).toLong()).msecs() - T.secs(15).msecs() > dateUtil.now()) {
             aapsLogger.debug(LTag.APS, "SMB requested but still in ${preferences.get(IntKey.ApsMaxSmbFrequency)} min interval")
             r = pumpEnactResultProvider.get().enacted(false).success(false).comment("SMB requested but still in ${preferences.get(IntKey.ApsMaxSmbFrequency)} min interval")
+                .notSentToPump(true)
         } else if (detailedBolusInfo.deliverAtTheLatest != 0L && detailedBolusInfo.deliverAtTheLatest + T.mins(1).msecs() > System.currentTimeMillis()) {
             r = activePlugin.activePump.deliverTreatment(detailedBolusInfo)
         } else {
             r = pumpEnactResultProvider.get().enacted(false).success(false).comment("SMB request too old")
+                .notSentToPump(true)
             aapsLogger.debug(LTag.PUMPQUEUE, "SMB bolus canceled. deliverAt: " + dateUtil.dateAndTimeString(detailedBolusInfo.deliverAtTheLatest))
         }
         aapsLogger.debug(LTag.PUMPQUEUE, "Result success: ${r.success} enacted: ${r.enacted}")

@@ -376,6 +376,42 @@ class FusePlugin @Inject constructor(
     @Volatile private var notSentClaim: Pair<String, app.aaps.fuse.core.ledger.QueueRejectReason>? = null
 
     /**
+     * KI-171: DIE ZULETZT PUBLIZIERTEN RT-INSTANZEN MIT IHRER LEDGER-ZEILE.
+     *
+     * AAPS legt eine ohne Pumpenaufruf verworfene SMB mit der Identitaet ihrer
+     * Anforderung ab (`Loop.LastRun.smbNotSent`). Diese Ablage kann Minuten
+     * spaeter kommen (Warteschlange wartet auf Bluetooth) - dann beschreiben
+     * [publishedRt] und [publishedProposalId] laengst einen neueren Zyklus.
+     * Zugeordnet wird deshalb ueber diese Liste, per REFERENZ auf die RT.
+     *
+     * Begrenzt auf [RECENT_PUBLICATIONS_MAX] Publikationen mit Menge. Nicht
+     * persistent: nach einem Neustart fehlt die Zuordnung, und die Zeile
+     * haftet weiter - der konservative Ausgang.
+     */
+    private val recentPublications = ArrayDeque<Pair<RT, String>>()
+
+    /** Eine Stunde bei Minutentakt - laenger als jede Bluetooth-Wartezeit, nach
+     *  der AAPS eine SMB noch als "too old" verwirft. */
+    private val RECENT_PUBLICATIONS_MAX = 60
+
+    /** KI-171: die in diesem Zyklus gebildeten Belege D, gebucht im events-Block. */
+    @Volatile private var pumpNeverCalledClaims: List<Pair<String, app.aaps.fuse.core.ledger.QueueRejectReason>> = emptyList()
+
+    /** KI-171: was dieser Zyklus von den Ablagen sah - reine Messung fuer den Trail. */
+    @Volatile private var pumpNeverCalledTrace: PumpNeverCalledTrace? = null
+
+    /**
+     * KI-171, fuer den Trail: sichtbare Ablagen, zugeordnete Zeilen, die
+     * gebildeten Belege und Zeilen, die schon geschlossen waren.
+     */
+    class PumpNeverCalledTrace(
+        val recordsVisible: Int,
+        val matched: List<String>,
+        val claimed: List<String>,
+        val alreadyClosed: List<String>,
+    )
+
+    /**
      * Die drei Werte der beobachtbaren Stufe, plus die Herkunft.
      *
      * DIE ACHSE IST FUENFTEILIG, nicht vierteilig (Review 11.08.):
@@ -1069,6 +1105,46 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
                 )?.let { grund -> id to grund }
             }
 
+        // KI-171: BELEG D. AAPS hat eine SMB verworfen, ohne die Pumpe
+        // anzusprechen, und die Ablage traegt die RT-Instanz der Anforderung.
+        // Zugeordnet wird ueber die eigenen Publikationen, per Referenz - der
+        // Beleg kann Zyklen spaeter kommen. Reine Messung wie oben; gebucht
+        // wird im events-Block, zusammen mit notSentClaim.
+        run {
+            val ablagen = runCatching { loop.get().lastRun?.smbNotSent }.getOrNull().orEmpty()
+            val zugeordnet = mutableListOf<String>()
+            val geschlossen = mutableListOf<String>()
+            val belege = mutableListOf<Pair<String, app.aaps.fuse.core.ledger.QueueRejectReason>>()
+            for (a in ablagen) {
+                val id = synchronized(recentPublications) {
+                    recentPublications.firstOrNull { it.first === a.request }?.second
+                } ?: continue
+                if (id in zugeordnet) continue
+                zugeordnet += id
+                // A bis C haben dieselbe Zeile schon: ein zweiter Grund waere ein
+                // Widerspruch im Reducer (PHASE_VIOLATION), also nur einer.
+                if (id == notSentClaim?.first) continue
+                if (!ledgerAdapter.hasOpenProposal(id)) {
+                    geschlossen += id
+                    continue
+                }
+                app.aaps.fuse.core.ledger.NotSentProof.reasonForPumpNeverCalled(
+                    app.aaps.fuse.core.ledger.NotSentProof.PumpNeverCalled(
+                        identityMatched = true,
+                        ledgerPublishedU = ledgerAdapter.publishedAmountOf(id),
+                        requestedU = a.requestedU,
+                    )
+                )?.let { grund -> belege += id to grund }
+            }
+            pumpNeverCalledClaims = belege.toList()
+            pumpNeverCalledTrace = PumpNeverCalledTrace(
+                recordsVisible = ablagen.size,
+                matched = zugeordnet.toList(),
+                claimed = belege.map { it.first },
+                alreadyClosed = geschlossen.toList(),
+            )
+        }
+
         // ---- EIN Lesen der aktiven Pumpe je Zyklus --------------------------
         //
         // Alles Weitere wird HIERAUS abgeleitet: Typ, Emulationsflag,
@@ -1368,8 +1444,19 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
                 // ein Abbruchzyklus ohne eigenen Vorschlag muss das koennen,
                 // deshalb bewusst AUSSERHALB von outcome?.let und VOR der
                 // Buchung der neuen Menge.
-                notSentClaim?.let { (id, grund) ->
-                    if (ledgerAdapter.hasOpenProposal(id)) ledgerAdapter.onProvenNotSent(id, grund)
+                //
+                // KI-171: dazu die Belege D - aeltere Zeilen, fuer die AAPS
+                // inzwischen "Pumpe nie angesprochen" abgelegt hat. Dieselbe
+                // Buchung, derselbe Weg; eine Zeile hoechstens einmal. Fuer eine
+                // aeltere Zeile findet revokeSettled keine Ablage mehr - die
+                // Episodenzaehler bleiben dann belastet (konservativ), frei wird
+                // die Haftung.
+                (listOfNotNull(notSentClaim) + pumpNeverCalledClaims).distinctBy { it.first }.forEach { (id, grund) ->
+                    if (ledgerAdapter.hasOpenProposal(id)) {
+                        ledgerAdapter.onProvenNotSent(id, grund)
+                        if (pumpNeverCalledClaims.any { it.first == id })
+                            aapsLogger.debug(LTag.APS, "FUSE KI-171: Haftung $id entlastet - AAPS hat die Pumpe nie angesprochen")
+                    }
                     // UND DIE EPISODENZAEHLER MIT (Toni 19.08., P0).
                     //
                     // Die Ledger-Zeile allein reicht nicht: primeSpentU,
@@ -1410,6 +1497,7 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
                     )
                 }
                 notSentClaim = null
+                pumpNeverCalledClaims = emptyList()
                 outcome?.let { o ->
                     // Gebucht wird NUR, wenn das Gate diese Zeile auch
                     // ERWARTET - sonst entstuende eine Haftung fuer eine Menge,
@@ -1528,6 +1616,16 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
         publishedGateStripped = !publication.allowed && rt.units != null
         publishedGateSealed = publication.sealed
         publishedGatePersistFailed = !publication.sealed
+        // KI-171: dieselbe RT-Instanz mit ihrer Zeile merken, damit ein spaeter
+        // Nie-gesendet-Beleg aus AAPS sie noch findet. Nur mit offener Zeile und
+        // publizierter Menge - ohne Menge gibt es keine SMB, die AAPS verwerfen
+        // koennte.
+        publishedProposalId?.let { id ->
+            if ((publishRt.units ?: 0.0) > 0.0) synchronized(recentPublications) {
+                recentPublications.addLast(publishRt to id)
+                while (recentPublications.size > RECENT_PUBLICATIONS_MAX) recentPublications.removeFirst()
+            }
+        }
 
         // MEALSTATS NACH der Aufloesung neu rechnen (Review 11.08.). Der Runner
         // hat sie VOR dem Publikationsgate gebildet; wurde die Reservierung
@@ -1717,6 +1815,7 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
                 // unbenutzter aus.
                 ledgerReset = letzteReparatur(),
             priorActuation = priorActuation,
+            pumpNeverCalled = pumpNeverCalledTrace,
             // Der Erwartungs-Ledger. `runCatching`, weil ein Messbaustein den
             // Export eines Regelzyklus nicht kosten darf - fehlt der Block,
             // sagt das genau so viel wie eine Zahl darin.
