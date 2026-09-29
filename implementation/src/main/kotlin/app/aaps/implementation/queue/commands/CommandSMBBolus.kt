@@ -67,8 +67,11 @@ class CommandSMBBolus(
     override fun status(): String = rh.gs(app.aaps.core.ui.R.string.smb_bolus_u, detailedBolusInfo.insulin)
 
     override fun log(): String = "SMB BOLUS ${rh.gs(app.aaps.core.ui.R.string.format_insulin_units, detailedBolusInfo.insulin)}"
+    // FUSE KI-171: in this fork cancel() is only called by CommandQueueImplementation.clear()
+    // for commands still WAITING in the queue - the performing command is never cancelled
+    // (QueueWorker, Codex B0b). A cancelled SMB therefore never reached the pump.
     override fun cancel() {
         aapsLogger.debug(LTag.PUMPQUEUE, "Result cancel")
-        callback?.result(pumpEnactResultProvider.get().success(false).comment(app.aaps.core.ui.R.string.connectiontimedout))?.run()
+        callback?.result(pumpEnactResultProvider.get().success(false).comment(app.aaps.core.ui.R.string.connectiontimedout).notSentToPump(true))?.run()
     }
 }

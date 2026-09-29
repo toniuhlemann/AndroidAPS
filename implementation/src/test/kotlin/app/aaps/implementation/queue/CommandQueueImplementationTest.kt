@@ -127,6 +127,7 @@ class CommandQueueImplementationTest : TestBaseWithProfile() {
                 it.aapsLogger = aapsLogger
                 it.rh = rh
                 it.activePlugin = activePlugin
+                it.pumpEnactResultProvider = pumpEnactResultProvider
             }
             if (it is CommandCustomCommand) {
                 it.aapsLogger = aapsLogger
@@ -431,6 +432,45 @@ class CommandQueueImplementationTest : TestBaseWithProfile() {
             }
         })
         assertThat(queued).isTrue()
+        assertThat(called).isFalse()
+    }
+
+    // FUSE KI-171: clear() cancels only commands still waiting in the queue. Such an
+    // SMB never reached the pump, and its cancel result says so.
+    @Test
+    fun clearingAWaitingSmbReportsItAsNotSentToPump() {
+        var received: PumpEnactResult? = null
+        val smb = DetailedBolusInfo()
+        smb.lastKnownBolusTime = System.currentTimeMillis()
+        smb.bolusType = BS.Type.SMB
+        val queued = commandQueue.bolus(smb, object : Callback() {
+            override fun run() {
+                received = result
+            }
+        })
+        assertThat(queued).isTrue()
+        commandQueue.clear()
+        assertThat(received).isNotNull()
+        assertThat(received!!.success).isFalse()
+        assertThat(received!!.notSentToPump).isTrue()
+        assertThat(commandQueue.size()).isEqualTo(0)
+    }
+
+    // The mark in CommandSMBBolus.cancel() rests on this: the command already picked up
+    // is never cancelled by clear() - its outcome is unknown, it gets no invented result.
+    @Test
+    fun clearDoesNotCancelThePerformingSmb() {
+        var called = false
+        val smb = DetailedBolusInfo()
+        smb.lastKnownBolusTime = System.currentTimeMillis()
+        smb.bolusType = BS.Type.SMB
+        commandQueue.bolus(smb, object : Callback() {
+            override fun run() {
+                called = true
+            }
+        })
+        commandQueue.pickup()
+        commandQueue.clear()
         assertThat(called).isFalse()
     }
 

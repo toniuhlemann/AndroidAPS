@@ -675,6 +675,19 @@ class LoopPlugin @Inject constructor(
                                 } else {
                                     lastRun.tbrSetByPump = result
                                     lastRun.lastTBRRequest = lastRun.lastAPSRun
+                                    // FUSE KI-171: with a failed TBR the SMB of this run is never
+                                    // applied (applySMBRequest is not called at all), so a requested
+                                    // SMB provably never reached the pump. The TBR callback runs once:
+                                    // the queue cancels only commands it never picked up.
+                                    if (resultAfterConstraints.isBolusRequested)
+                                        lastRun.recordSmbNotSent(
+                                            Loop.SmbNotSent(
+                                                request = resultAfterConstraints.rawData(),
+                                                requestedU = resultAfterConstraints.smb,
+                                                atMs = dateUtil.now(),
+                                                reason = "SMB not applied, TBR failed: " + result.comment,
+                                            )
+                                        )
                                 }
                                 rxBus.send(EventLoopUpdateGui())
                             }
