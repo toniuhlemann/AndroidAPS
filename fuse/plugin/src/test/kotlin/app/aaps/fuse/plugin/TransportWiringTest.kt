@@ -2192,6 +2192,38 @@ class TransportWiringTest : TestBaseWithProfile() {
     }
 
     /**
+     * KI-174: der praediktorfreie Markerpfad kehrt zurueck, BEVOR der Hauptpfad
+     * die Sofortbatch-Kette setzt. Das Feld wurde nie geleert - ein
+     * Fallbackzyklus exportierte deshalb die Kette des letzten
+     * Hauptpfadzyklus, etwa dessen Grant. Keine Dosiswirkung, aber jede
+     * Auswertung, die Kettenfelder liest, las dort einen fremden Zyklus.
+     *
+     * Die Vorbedingung ist Teil des Tests: ohne eine Kette aus dem Hauptpfad
+     * gaebe es nichts, was der Fallback faelschlich weitertragen koennte.
+     */
+    @Test
+    fun `KI-174 ein Fallbackzyklus traegt keine Sofortbatch-Kette eines frueheren Zyklus`() {
+        tailGuard = false
+        flach = 105.0
+        steigungProMin = -0.9
+        markerAt = start + 2 * 60_000L
+        markerAuthorized = true
+
+        clock = start
+        val haupt = (0 until 6).map { cycle() }
+        assertTrue(haupt.any { !it.markerFallbackUsed && it.upfrontChain != null }) {
+            "Vorbedingung: der Hauptpfad muss eine Kette exportieren - sonst prueft der Test nichts"
+        }
+
+        predictReject = PredictorReason.PENDING_MODEL_TOO_SHORT
+        val fallback = (0 until 6).map { cycle() }.filter { it.markerFallbackUsed }
+        assertTrue(fallback.isNotEmpty(), "der Lauf muss den Fallbackpfad treffen")
+        fallback.forEachIndexed { i, o ->
+            assertNull(o.upfrontChain, "Fallbackzyklus $i traegt die Kette eines frueheren Zyklus")
+        }
+    }
+
+    /**
      * DIE BUCHFUEHRUNG IST DIESELBE, und das war bis zum 11.08. eine
      * Behauptung: der Fallback hatte eine KOPIE, der der Onset-Ablauf fehlte
      * (onsetQuietMin hochzaehlen und nach REARM_QUIET_MIN neu bewaffnen).

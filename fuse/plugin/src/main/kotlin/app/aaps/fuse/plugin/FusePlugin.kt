@@ -1079,7 +1079,32 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
      * Das Override entfaellt ersatzlos; die Basisklasse liefert `true`.
      */
 
+    /**
+     * EIN FUSE-LAUF ZUR ZEIT, gleich wer aufruft.
+     *
+     * Zwei Laeufe teilen Ledger, Publikationen und die Felder des Vorzyklus
+     * (`published*`, Belege A bis D) und duerfen sich nie ueberlappen. Die
+     * regulaeren Ausloeser kommen alle ueber `LoopPlugin.invoke`, das
+     * `@Synchronized` ist. `OpenAPSFragment` ruft `activeAPS.invoke` dagegen
+     * direkt, am Lock des Loop vorbei - seine Ansicht gibt es nur, solange ein
+     * OpenAPS-Plugin aktiv ist, bei aktivem FUSE also nicht. Diese Sperre macht
+     * die Zusage unabhaengig davon: ein zweiter Aufrufer wartet, bis der erste
+     * fertig ist.
+     *
+     * Ein eigenes Objekt statt `@Synchronized`, damit niemand, der von aussen
+     * auf dem Plugin synchronisiert, in diese Sperre greift. Im Lauf wird kein
+     * Monitor genommen, der seinerseits auf diese Sperre wartet (vom Loop nur
+     * `lastRun`, ein einfaches Feld); die Reihenfolge ist immer Loop-Lock vor
+     * dieser Sperre.
+     */
+    private val laufSperre = Any()
+
     override fun invoke(initiator: String, tempBasalFallback: Boolean) {
+        synchronized(laufSperre) { invokeUnterSperre(initiator, tempBasalFallback) }
+    }
+
+    /** Der eigentliche Lauf. Nur ueber [invoke] erreichbar, also nur unter [laufSperre]. */
+    private fun invokeUnterSperre(initiator: String, tempBasalFallback: Boolean) {
         aapsLogger.debug(LTag.APS, "invoke from $initiator tempBasalFallback: $tempBasalFallback")
         lastAPSResult = null
         // Scheibe 1: den Ausgang des VORIGEN Zyklus lesen, BEVOR dieser Lauf

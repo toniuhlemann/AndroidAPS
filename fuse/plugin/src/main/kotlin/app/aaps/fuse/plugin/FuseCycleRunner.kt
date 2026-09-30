@@ -238,7 +238,8 @@ class FuseCycleRunner(
 
     // BEIDE Verbraucher bekommen DIESELBE Politik - das ist die eine
     // Wahrheit, und sie ist hier sichtbar an genau einer Stelle.
-    /** Die Stationen des Sofortbatch-Endpfads dieses Zyklus. */
+    /** Die Stationen des Sofortbatch-Endpfads dieses Zyklus. Zu Beginn jedes
+     *  Laufs geleert (KI-174), s. [run]. */
     private var upfrontChainThisCycle: UpfrontChain? = null
 
     /** q1 des Vorzyklus - nur fuer die Ruhepruefung des Sofortbatches. */
@@ -1506,6 +1507,12 @@ class FuseCycleRunner(
      * damit ohne Patchpruefung bindet (Auditbefund 10.08.2026).
      */
     fun run(tempBasalFallback: Boolean, pumpe: FuseActivePump): Outcome {
+        // KI-174: die Sofortbatch-Kette gilt nur fuer DIESEN Zyklus. Der
+        // Hauptpfad setzt sie neu; der praediktorfreie Markerpfad kehrt vorher
+        // zurueck und exportierte ohne dieses Leeren die Kette des letzten
+        // Hauptpfadzyklus (etwa dessen Grant). Nur Export - kein Dosierpfad
+        // liest das Feld zurueck.
+        upfrontChainThisCycle = null
         val computeTs = dateUtil.now()
         val gate = pumpe.gate
 
