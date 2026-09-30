@@ -6,9 +6,9 @@ import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
 /**
- * Der Freigabe-Nachlauf als reine Rechnung - Pflichtfall 25.08.: die
- * Nachtband-Kante um 08:00 oeffnete in der ERSTEN Minute 0,10 U und bis
- * 08:03 insgesamt 0,35 U, direkt nach einer Stunde verriegelter Null.
+ * Der Freigabe-Nachlauf als reine Rechnung - Pflichtfall aus dem Replay:
+ * die Nachtband-Kante oeffnete schon in der ERSTEN Minute Korrektur-SMBs,
+ * direkt nach einer laengeren verriegelten Null.
  */
 class PositiveCorrectionRearmTest {
 
@@ -35,7 +35,7 @@ class PositiveCorrectionRearmTest {
         var track = PositiveCorrectionRearm.anker(
             PositiveCorrectionRearm.Track(), t0, PositiveCorrectionRearm.Source.NIGHT_END,
         )
-        // 08:00-08:03-artig: Aufwaertslage steht, aber die Frist traegt.
+        // Wie im Pflichtfall: Aufwaertslage steht, aber die Frist traegt.
         for ((min, ukf) in listOf(0 to 0.84, 1 to 0.89, 2 to 0.83, 3 to 0.65, 4 to 0.45)) {
             val (t, res) = schritt(track, min, ukf)
             track = t
@@ -108,11 +108,11 @@ class PositiveCorrectionRearmTest {
 
     @Test
     fun `ein nie bestaetigter anker haengt nicht unbegrenzt nach`() {
-        // Gemessen am 25.08.: die Kante lag 08:00, die Lage war danach
-        // sechs Minuten lang Mahlzeit (kinematisches Fenster), und der
-        // nie freigegebene Anker riegelte erst 08:23-08:26 - in einer
-        // voellig anderen Lage. Nach Ablauf der Frist beendet ein
-        // Nicht-Korrektur-Zyklus den Anker.
+        // Im Pflichtfall war die Lage nach der Kante einige Minuten lang
+        // Mahlzeit (kinematisches Fenster), und der nie freigegebene
+        // Anker riegelte erst deutlich spaeter - in einer voellig anderen
+        // Lage. Nach Ablauf der Frist beendet ein Nicht-Korrektur-Zyklus
+        // den Anker.
         var track = PositiveCorrectionRearm.anker(
             PositiveCorrectionRearm.Track(), t0, PositiveCorrectionRearm.Source.NIGHT_END,
         )
@@ -134,9 +134,9 @@ class PositiveCorrectionRearmTest {
 
     @Test
     fun `der nachlauf endet spaetestens nach der hoechstdauer`() {
-        // Gemessen am 25.08.: die Kante lag 08:00, die Aufwaertslage
-        // blieb unbestaetigt, und der Anker riegelte noch 08:23-08:26.
-        // Nach dem Dreifachen der Frist ist ein Kanteneffekt vorbei.
+        // Im Pflichtfall blieb die Aufwaertslage unbestaetigt, und der
+        // Anker riegelte noch lange nach der Kante. Nach dem Dreifachen
+        // der Frist ist ein Kanteneffekt vorbei.
         var track = PositiveCorrectionRearm.anker(
             PositiveCorrectionRearm.Track(), t0, PositiveCorrectionRearm.Source.NIGHT_END,
         )

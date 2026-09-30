@@ -129,12 +129,12 @@ class NotSentProofTest {
 
     private fun nieGesendet(
         identityMatched: Boolean = true,
-        ledgerPublishedU: Double? = 0.35,
-        requestedU: Double? = 0.35,
+        ledgerPublishedU: Double? = 0.30,
+        requestedU: Double? = 0.30,
     ) = NotSentProof.PumpNeverCalled(identityMatched, ledgerPublishedU, requestedU)
 
-    /** DER GEMESSENE FALL der Nacht 25./26.09.: 0,35 U publiziert, von AAPS
-     *  als "too old" verworfen, die Pumpe nie angesprochen. */
+    /** DER GRUNDFALL (KI-171): publiziert, von AAPS als "too old" verworfen,
+     *  die Pumpe nie angesprochen. */
     @Test
     fun `eine nie an die Pumpe gegangene SMB entlastet ihre Zeile`() {
         assertEquals(NotSentProof.PUMP_NEVER_CALLED, NotSentProof.reasonForPumpNeverCalled(nieGesendet()))
@@ -167,13 +167,13 @@ class NotSentProofTest {
     fun `eine von AAPS gekuerzte Anforderung entlastet die ganze Zeile`() {
         assertEquals(
             NotSentProof.PUMP_NEVER_CALLED,
-            NotSentProof.reasonForPumpNeverCalled(nieGesendet(ledgerPublishedU = 0.35, requestedU = 0.30)),
+            NotSentProof.reasonForPumpNeverCalled(nieGesendet(ledgerPublishedU = 0.30, requestedU = 0.25)),
         )
     }
 
     /** MEHR als publiziert passt nicht zu dieser Zeile: dann nichts beweisen. */
     @Test
     fun `eine groessere Anforderung als publiziert beweist nichts`() {
-        assertNull(NotSentProof.reasonForPumpNeverCalled(nieGesendet(ledgerPublishedU = 0.35, requestedU = 0.40)))
+        assertNull(NotSentProof.reasonForPumpNeverCalled(nieGesendet(ledgerPublishedU = 0.30, requestedU = 0.35)))
     }
 }

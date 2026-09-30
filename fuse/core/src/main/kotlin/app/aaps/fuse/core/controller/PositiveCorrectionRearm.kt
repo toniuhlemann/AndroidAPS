@@ -4,12 +4,11 @@ package app.aaps.fuse.core.controller
  * FREIGABE-NACHLAUF NACH ZERO-LATCH-LOESUNG UND NACHTENDE (Bauauftrag
  * Toni 25.08.), NUR IM KORREKTURKONTEXT.
  *
- * DER GEMESSENE ANLASS (Pflicht-Replay, 25.08. frueh): die Zero-TBR lief
- * bis 07:58; um 07:59 (BG 115, noch Nacht) war derselbe Bedarf 0,51 U vom
- * Nachtband gesperrt - um 08:00, EINE Minute spaeter, oeffnete das
- * Nachtende und bis 08:03 flossen 0,35 U. Danach fiel der BG 117 -> 106.
- * Eine harte Kante darf nicht in der naechsten Minute positive
- * Korrektur-SMBs oeffnen.
+ * DER ANLASS (Pflicht-Replay): die Zero-TBR lief bis kurz vor Nachtende;
+ * in der letzten Nachtminute war derselbe Bedarf vom Nachtband gesperrt -
+ * EINE Minute spaeter oeffnete das Nachtende, und in den folgenden Minuten
+ * flossen Korrektur-SMBs. Danach fiel der BG. Eine harte Kante darf nicht
+ * in der naechsten Minute positive Korrektur-SMBs oeffnen.
  *
  * DIE REGEL (Tonis Spezifikation): nach dem Ende einer verriegelten Null
  * (Zero-Latch loest) oder dem Ende des Nachtfensters gilt ein kurzer

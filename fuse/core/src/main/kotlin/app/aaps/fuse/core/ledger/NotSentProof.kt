@@ -3,16 +3,14 @@ package app.aaps.fuse.core.ledger
 /**
  * DER BEWEIS "ES GING NIE EIN BOLUS-KOMMANDO HINAUS".
  *
- * DER GEMESSENE ANLASS (Toni, 15.08.2026, erste Produktiv-Mahlzeit): FUSE hatte
- * um 19:07 einen SMB ueber 0,20 U beschlossen und gebucht. Das AAPS-Log zeigt
- * fuer diesen Zyklus KEINEN Eintrag in der Kommando-Warteschlange - die Adds
- * sind lueckenlos 19:00..19:06 und 19:08, dazwischen steht zweimal
- * "Medtrum connect - reason: Connection needed". Der Bolus wurde also
+ * DER ANLASS (erste Produktiv-Mahlzeit): FUSE hatte einen SMB beschlossen
+ * und gebucht. Das AAPS-Log zeigt fuer diesen Zyklus KEINEN Eintrag in der
+ * Kommando-Warteschlange - davor und danach sind die Adds lueckenlos,
+ * dazwischen steht nur der Verbindungsaufbau zur Pumpe. Der Bolus wurde also
  * angefordert und nie ausgefuehrt. Der Ledger hatte fuer diese Tatsache
  * KEINEN EINGANG: die Zeile blieb als Haftung stehen und wurde erst nach
- * DIA + 2 h (bei DIA 9 also elf Stunden) durch den Zeitverfall abgeschrieben.
- * Bis dahin rechnete FUSE mit Insulin, das nie geflossen ist, und dosierte
- * entsprechend zu wenig.
+ * DIA + 2 h durch den Zeitverfall abgeschrieben. Bis dahin rechnete FUSE mit
+ * Insulin, das nie geflossen ist, und dosierte entsprechend zu wenig.
  *
  * WARUM EIN EIGENER BEWEIS UND NICHT EINFACH EIN KUERZERER VERFALL: die
  * Richtungen sind nicht symmetrisch. Zu viel Haftung heisst "FUSE dosiert zu
@@ -102,13 +100,12 @@ object NotSentProof {
     /**
      * (D) KI-171: AAPS HAT DIE SMB VERWORFEN, OHNE DIE PUMPE ANZUSPRECHEN.
      *
-     * DER GEMESSENE ANLASS (Forschung, 29.09.2026): Die Pumpe war 77 s nicht
-     * erreichbar. Danach verwarf `CommandSMBBolus` die SMB als "too old",
-     * ohne `deliverTreatment` aufzurufen. Der Loop behielt nur seinen
-     * Platzhalter, das Fehlergebnis landete nirgends. A bis C konnten deshalb
-     * nicht greifen, und die nie gelieferte Menge haftete rund elf Stunden
-     * als frische Dosis. In den AAPS-Protokollen vom 22.08. bis 21.09. geschah
-     * das etwa jeden zweiten Tag.
+     * DER ANLASS (KI-171): Nach einem Verbindungsabbruch zur Pumpe verwarf
+     * `CommandSMBBolus` die SMB als "too old", ohne `deliverTreatment`
+     * aufzurufen. Der Loop behielt nur seinen Platzhalter, das Fehlergebnis
+     * landete nirgends. A bis C konnten deshalb nicht greifen, und die nie
+     * gelieferte Menge haftete bis DIA + 2 h als frische Dosis. Das kam in den
+     * AAPS-Protokollen wiederholt vor.
      *
      * DER BELEG IST POSITIV, nie eine Abwesenheit: AAPS kennzeichnet die
      * Zweige, die vor dem Pumpentreiber enden (Loop-Tore, Warteschlangen-
