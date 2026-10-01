@@ -14558,6 +14558,57 @@ class TransportWiringTest : TestBaseWithProfile() {
     private fun besitz() = ledger.episodes.ownPartialTbr
 
     /**
+     * KI-179: DER SCHALTER AUS BEENDET AUCH DIE TEILSTUFE.
+     *
+     * Die Felder der Teilstufe wurden nur im Zweig "Zero-Latch an" neu
+     * berechnet. Schaltete man den Latch waehrend einer aktiven Teilstufe aus,
+     * blieb ihr Flag stehen. Im flachen Abschnitt danach (Schwanz-Sperre,
+     * NO_POSITIVE) beendete der Lebenszyklus der eigenen Teil-TBR die laufende
+     * Schutz-Null ("zurueck aufs Profilbasal", KEEP_END_OWN_PARTIAL) - die
+     * gefaehrliche Richtung. Das Szenario stammt aus dem Sondierungstest der
+     * Forschung.
+     *
+     * Erwartet nach dem Ausschalten: kein Zyklus mit aktiver Teilstufe und im
+     * flachen Abschnitt kein Abbruch der Null aus dem Teilstufen-Lebenszyklus.
+     */
+    @Test
+    fun `KI-179 Zero-Latch aus beendet die Teilstufe und laesst die Schutz-Null stehen`(@TempDir dir: File) {
+        zeroLatchAn = true
+        teilbasalAn = true
+        flach = 140.0
+        steigungProMin = -1.2
+        knickAbMin = 25
+        steigungNachKnick = 0.0
+        bolusIobU = 2.5
+        clock = start
+        transportReset()
+        neuerRunner(FuseLedgerAdapter().also { it.loadOnce(dir.also(File::mkdirs), "test-epoch", start) })
+        quelleMeldet(TB(timestamp = System.currentTimeMillis(), duration = 30 * 60_000L,
+                        rate = 0.0, isAbsolute = true, type = TB.Type.NORMAL))
+
+        var aktiv = false
+        for (i in 0 until 80) {
+            if (cycle().partialRecoveryActive) { aktiv = true; break }
+        }
+        assertTrue(aktiv, "Vorbedingung: der Aufbau muss eine aktive Teilstufe erzeugen - sonst prueft der Test nichts")
+
+        zeroLatchAn = false
+        val flach6 = (0 until 6).map { zyklusMitKommando() }       // Schwanz-Sperre, NO_POSITIVE
+        steigungNachKnick = -1.2
+        val fall8 = (0 until 8).map { zyklusMitKommando() }        // erneuter Fall
+        val bericht = (flach6 + fall8).joinToString("\n") { (o, k) ->
+            "flag=${o.partialRecoveryActive} intent=${o.decision.tbr} block=${o.decision.block} " +
+                "kmd=${k?.let { "${it.rateUPerH}/${it.durationMin}" }} grund=${o.reason}"
+        }
+        assertTrue((flach6 + fall8).none { it.first.partialRecoveryActive }) {
+            "KI-179: die Teilstufe steht nach dem Ausschalten des Latch\n$bericht"
+        }
+        assertTrue(flach6.none { (o, k) ->
+            k?.durationMin == 0 && o.reason == app.aaps.fuse.core.controller.TbrPolicy.KEEP_END_OWN_PARTIAL_REASON
+        }) { "KI-179: der Teilstufen-Lebenszyklus beendet die Schutz-Null\n$bericht" }
+    }
+
+    /**
      * DIE VOM REVIEW GEFORDERTE SETZ-FOLGE.
      *
      * Der Vorgaengertest sah nur die Ledgerphasen und uebersah, dass die

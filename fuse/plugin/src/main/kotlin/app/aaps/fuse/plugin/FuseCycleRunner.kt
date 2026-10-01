@@ -5768,6 +5768,18 @@ class FuseCycleRunner(
                 zeroArmStreak = 0
                 zeroArmLastTs = 0L
                 zeroLatchLastQ1 = Double.NaN
+                // KI-179: AUCH DIE TEILSTUFE GEHOERT ZUM RIEGEL. Ihre Felder
+                // werden nur unten im eingeschalteten Zweig neu berechnet;
+                // ohne diese Zeilen blieb das Flag nach dem Ausschalten bis
+                // zum naechsten Prozessstart auf dem letzten Wert stehen. Der
+                // Lebenszyklus der eigenen Teil-TBR las es weiter - mit
+                // stehendem Flag ging "zurueck aufs Profilbasal" hinaus und
+                // beendete eine laufende Schutz-Null. Mit partialAktiv = false
+                // greift das vorgesehene Ende (wantEnd, s. Lebenszyklus unten).
+                partialStreak = 0
+                partialLastTs = 0L
+                partialAktiv = false
+                teilstufeOhneAktion = false
                 return@run decisionVorZeroLatch
             }
             val q1NichtFallend = zeroLatchLastQ1.isNaN() || signal.q1 >= zeroLatchLastQ1 - 0.01
