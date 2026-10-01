@@ -53,6 +53,46 @@ class FusePluginLaufSperreWaechterTest {
     }
 
     /**
+     * KI-177: DER MARKER-DRUCK schreibt den Ledger ausserhalb des Zyklus. Er
+     * muss den GANZEN Umschaltvorgang unter derselben Sperre fuehren - nicht
+     * nur das Speichern, denn die Episodenfelder aendert er vorher.
+     */
+    @Test
+    fun `der Marker-Druck laeuft ganz unter der Laufsperre`() {
+        val code = quelle()
+        val oeffentlich = MARKER_OEFFENTLICH.find(code)?.range?.first ?: -1
+        val privat = MARKER_DEKLARATION.find(code)?.range?.first ?: -1
+        assertTrue(oeffentlich >= 0 && privat > oeffentlich) { "toggleMealMarker und toggleMealMarkerUnterSperre nicht gefunden" }
+        val huelle = code.substring(oeffentlich, privat)
+        val sperre = huelle.indexOf("synchronized(laufSperre)")
+        val aufruf = MARKER_AUFRUF.find(huelle)?.range?.first ?: -1
+        assertTrue(sperre >= 0 && aufruf > sperre) {
+            "toggleMealMarker ruft den Umschaltvorgang nicht mehr unter synchronized(laufSperre) auf."
+        }
+        assertEquals(1, MARKER_AUFRUF.findAll(code).count()) {
+            "toggleMealMarkerUnterSperre darf genau einmal aufgerufen werden - in toggleMealMarker."
+        }
+    }
+
+    /**
+     * Das Speichern des Markerzustands darf nur INNERHALB des gesperrten
+     * Umschaltvorgangs stehen. Ein zweiter Aufrufer von persistiereMarkerZustand
+     * waere wieder ein Schreiber an der Sperre vorbei.
+     */
+    @Test
+    fun `der Markerzustand wird nur im gesperrten Umschaltvorgang gespeichert`() {
+        val code = quelle()
+        val start = MARKER_DEKLARATION.find(code)?.range?.first ?: -1
+        assertTrue(start >= 0) { "toggleMealMarkerUnterSperre nicht gefunden" }
+        val ende = NAECHSTE_FUNKTION.find(code, start + 1)?.range?.first ?: code.length
+        val aufrufe = PERSIST_AUFRUF.findAll(code).map { it.range.first }.toList()
+        assertTrue(aufrufe.isNotEmpty()) { "persistiereMarkerZustand wird gar nicht aufgerufen - greift der Waechter?" }
+        assertTrue(aufrufe.all { it in start until ende }) {
+            "persistiereMarkerZustand wird ausserhalb von toggleMealMarkerUnterSperre aufgerufen."
+        }
+    }
+
+    /**
      * SELBSTPRUEFUNG. Ein statischer Test, dessen Muster ins Leere greift,
      * meldet fuer immer gruen.
      */
@@ -62,6 +102,9 @@ class FusePluginLaufSperreWaechterTest {
         assertTrue(SPERROBJEKT.containsMatchIn(code)) { "Sperrobjekt laufSperre nicht gefunden" }
         assertTrue(DEKLARATION.containsMatchIn(code)) { "Lauf-Funktion invokeUnterSperre nicht gefunden" }
         assertTrue(AUFRUF.containsMatchIn(code)) { "Aufruf-Muster findet nichts" }
+        assertTrue(MARKER_OEFFENTLICH.containsMatchIn(code)) { "toggleMealMarker nicht gefunden" }
+        assertTrue(MARKER_DEKLARATION.containsMatchIn(code)) { "toggleMealMarkerUnterSperre nicht gefunden" }
+        assertTrue(PERSIST_AUFRUF.containsMatchIn(code)) { "persistiereMarkerZustand-Aufruf nicht gefunden" }
     }
 
     private companion object {
@@ -78,5 +121,17 @@ class FusePluginLaufSperreWaechterTest {
         val DEKLARATION = Regex("""private\s+fun\s+invokeUnterSperre\s*\(""")
 
         val SPERROBJEKT = Regex("""private\s+val\s+laufSperre\s*=\s*Any\s*\(\s*\)""")
+
+        /** Die oeffentliche Huelle des Marker-Drucks (nicht die private Funktion). */
+        val MARKER_OEFFENTLICH = Regex("""(?<!private\s)\bfun\s+toggleMealMarker\s*\(""")
+
+        val MARKER_DEKLARATION = Regex("""private\s+fun\s+toggleMealMarkerUnterSperre\s*\(""")
+
+        val MARKER_AUFRUF = Regex("""(?<!fun\s)\btoggleMealMarkerUnterSperre\s*\(""")
+
+        val PERSIST_AUFRUF = Regex("""(?<!fun\s)\bpersistiereMarkerZustand\s*\(""")
+
+        /** Beginn der naechsten Funktion auf Klassenebene (vier Leerzeichen eingerueckt). */
+        val NAECHSTE_FUNKTION = Regex("""\n {4}(?:(?:private|override|internal|public)\s+)?fun\s""")
     }
 }

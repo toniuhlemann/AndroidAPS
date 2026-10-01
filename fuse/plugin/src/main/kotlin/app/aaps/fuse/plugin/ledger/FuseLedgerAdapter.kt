@@ -1292,6 +1292,20 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
 
     companion object {
 
+        /**
+         * EIN SCHREIBVORGANG ZUR ZEIT, prozessweit (KI-177).
+         *
+         * Das Siegel des Write-ahead-Protokolls ist kein Riegel zwischen zwei
+         * gleichzeitigen Schreibern: beide konnten die Pruefung "kein Siegel"
+         * passieren und dann dieselben Dateien beschreiben. Seit KI-177 laufen
+         * zwar alle bekannten Schreiber unter der Laufsperre des Plugins; diese
+         * Sperre haelt die Zusage auch fuer jeden kuenftigen Aufrufer. Sie liegt
+         * im Begleitobjekt, weil Reparatur und Wiederherstellung den Adapter
+         * austauschen - eine Sperre je Instanz trennte den alten nicht vom neuen.
+         * Unter ihr wird kein anderer Monitor genommen.
+         */
+        private val SCHREIB_SPERRE = Any()
+
         /** Bindungsfenster ohne juengeren Vorschlag [ms]: der Loop liefert
          *  einen SMB Sekunden nach invoke() aus und verwirft ihn nach ~1 min
          *  (deliverAt-Regel). 5 min sind grosszuegig fuer eine zaehe Queue,
@@ -2789,7 +2803,10 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
         return true
     }
 
-    fun persistVerified(dir: File): Boolean {
+    /** Unter [SCHREIB_SPERRE]: ein zweiter Schreiber wartet, statt am Siegel des ersten zu scheitern. */
+    fun persistVerified(dir: File): Boolean = synchronized(SCHREIB_SPERRE) { persistVerifiedUnterSperre(dir) }
+
+    private fun persistVerifiedUnterSperre(dir: File): Boolean {
         if (!loaded) {
             persistFailed = true
             return false

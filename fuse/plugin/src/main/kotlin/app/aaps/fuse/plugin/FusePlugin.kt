@@ -667,6 +667,24 @@ class FusePlugin @Inject constructor(
          */
         ereignisId: String? = null,
     ): Boolean {
+        // KI-177: UNTER DER LAUFSPERRE. Der Druck aendert Episodenfelder des
+        // Ledgers und schreibt ihn; ohne Sperre konnte er das mitten in einem
+        // Zyklus tun, der denselben Adapter rechnet und speichert. Geschuetzt
+        // ist der GANZE Vorgang (Ereignisordnung, Widerruf, Autorisierung,
+        // Speichern samt Ruecknahme), nicht nur das Schreiben. Die Bedienung
+        // wartet hoechstens bis zum Ende des laufenden Zyklus; eine lange
+        // Wartezeit wird gemeldet, damit sie am Geraet sichtbar ist.
+        val warteBeginn = System.nanoTime()
+        return synchronized(laufSperre) {
+            val gewartetMs = (System.nanoTime() - warteBeginn) / 1_000_000L
+            if (gewartetMs >= markerWartenMeldenMs)
+                aapsLogger.warn(LTag.APS, "FUSE Marker wartete $gewartetMs ms auf den laufenden Zyklus")
+            toggleMealMarkerUnterSperre(now, ohneVorschuss, ereignisId)
+        }
+    }
+
+    /** Der eigentliche Umschaltvorgang. Nur ueber [toggleMealMarker] erreichbar, also nur unter [laufSperre]. */
+    private fun toggleMealMarkerUnterSperre(now: Long, ohneVorschuss: Boolean, ereignisId: String?): Boolean {
         val armed = mealMarkerActive(now)
         val ordnung = MarkerReauthorization.ordnungVon(ereignisId)
         // VERALTETE RUECKRUFE FALLEN HERAUS. Nur ein echt juengeres
@@ -1096,8 +1114,18 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
      * Monitor genommen, der seinerseits auf diese Sperre wartet (vom Loop nur
      * `lastRun`, ein einfaches Feld); die Reihenfolge ist immer Loop-Lock vor
      * dieser Sperre.
+     *
+     * SEIT KI-177 AUCH DER MARKER-DRUCK ([toggleMealMarker]): er ist der einzige
+     * Ledger-Schreiber ausserhalb des Zyklus (die Reparatur laeuft schon am
+     * Zyklusanfang, s. FuseRepairScheduler). Er nimmt nur diese Sperre und
+     * darunter hoechstens `markerPressRing` - dieselbe Reihenfolge wie im Lauf,
+     * und der Lauf wartet nie auf die Bedienung.
      */
     private val laufSperre = Any()
+
+    /** Ab dieser Wartezeit auf [laufSperre] meldet der Marker-Druck sich im Log
+     *  (eine Sekunde; ein Zyklus dauert am Geraet deutlich darunter). */
+    private val markerWartenMeldenMs = 1_000L
 
     override fun invoke(initiator: String, tempBasalFallback: Boolean) {
         synchronized(laufSperre) { invokeUnterSperre(initiator, tempBasalFallback) }

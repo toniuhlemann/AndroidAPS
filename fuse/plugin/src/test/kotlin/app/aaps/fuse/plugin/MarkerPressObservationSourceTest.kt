@@ -48,11 +48,14 @@ class MarkerPressObservationSourceTest {
             zuweisung.containsMatchIn(z) && !z.contains("private var $feld")
         }
 
-        val inToggle = schreiber.filter { (i, _) -> imBlock(zeilen, i, "fun toggleMealMarker(") }
+        // Seit KI-177 steht der Umschaltvorgang in toggleMealMarkerUnterSperre;
+        // toggleMealMarker nimmt nur die Laufsperre und ruft ihn auf. Dass er
+        // nur auf diesem Weg erreichbar ist, haelt FusePluginLaufSperreWaechterTest.
+        val inToggle = schreiber.filter { (i, _) -> imBlock(zeilen, i, "private fun toggleMealMarkerUnterSperre(") }
         val fremde = schreiber - inToggle.toSet()
 
         assertTrue(fremde.isEmpty()) {
-            "$feld darf nur in toggleMealMarker geschrieben werden - sonst kann " +
+            "$feld darf nur im Umschaltvorgang des Markers geschrieben werden - sonst kann " +
                 "ein Druck aus einem frueheren Prozess als beobachtet gelten. " +
                 "Gefunden ausserhalb: " + fremde.joinToString { "Zeile ${it.index + 1}: ${it.value.trim()}" }
         }

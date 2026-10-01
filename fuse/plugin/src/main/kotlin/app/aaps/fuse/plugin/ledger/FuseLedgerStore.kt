@@ -405,7 +405,8 @@ class FuseLedgerStore(private val durability: Durability = Durability.ANDROID) {
     fun markRecoveryPending(dir: File, content: String): Boolean = runCatching {
         if (!dir.exists() && !dir.mkdirs() && !dir.exists()) return@runCatching false
         val f = File(dir, RECOVERY_PENDING_NAME)
-        if (f.exists()) return@runCatching false
+        // Atomar wie [markSealPending] (KI-177).
+        if (!f.createNewFile()) return@runCatching false
         FileOutputStream(f).use { out ->
             out.write(content.toByteArray(Charsets.UTF_8))
             out.flush()
@@ -430,7 +431,8 @@ class FuseLedgerStore(private val durability: Durability = Durability.ANDROID) {
     fun writeDurableNewFile(dir: File, name: String, content: String): Boolean = runCatching {
         if (!dir.exists() && !dir.mkdirs() && !dir.exists()) return@runCatching false
         val f = File(dir, name)
-        if (f.exists()) return@runCatching false
+        // Atomar wie [markSealPending] (KI-177).
+        if (!f.createNewFile()) return@runCatching false
         FileOutputStream(f).use { out ->
             out.write(content.toByteArray(Charsets.UTF_8))
             out.flush()
@@ -451,7 +453,12 @@ class FuseLedgerStore(private val durability: Durability = Durability.ANDROID) {
         // danach abgeraeumt - beim zweiten Neustart saehe alles sauber aus.
         // Nur der Marker, den GENAU DIESER Aufruf neu anlegt, darf spaeter
         // wieder entfernt werden.
-        if (f.exists()) return@runCatching false
+        //
+        // ATOMAR ANLEGEN (KI-177): erst `exists()` und dann oeffnen liess ein
+        // Fenster, in dem zwei Schreiber beide "kein Marker" sahen und beide
+        // weitermachten. `createNewFile()` legt nur an, wenn es die Datei noch
+        // nicht gibt - in einem Schritt.
+        if (!f.createNewFile()) return@runCatching false
         FileOutputStream(f).use { out ->
             out.write(content.toByteArray(Charsets.UTF_8))
             out.flush()
