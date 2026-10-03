@@ -531,6 +531,54 @@ class TransportWiringTest : TestBaseWithProfile() {
     private var bolusIobProTs: java.util.TreeMap<Long, Double>? = null
     private var boluses: List<BS> = emptyList()
 
+    // ---- AUFNAHMENACHWEIS (03.10.2026): AAPS-NAHES IOB -------------------
+    /**
+     * IOB wie `calculateFromTreatmentsAndTemps`, nur der Bolusanteil, aus
+     * [boluses]: gueltige Boli in [Schluessel - DIA, Schluessel), Schluessel =
+     * aufgerundete Minute, je mit dem aktiven Insulinmodell, auf 0,001
+     * gerundet. Vergangene Schluessel (Testuhr) landen in [aapsCache] - nur so
+     * laesst sich ein aelterer Eintrag ueberhaupt darstellen. Die Bolus-Lesung
+     * liefert dann wie die DAO nur gueltige Datensaetze. Aus = die bisherigen
+     * Hebel.
+     */
+    private var aapsNah = false
+    private val aapsCache = HashMap<Long, IobTotal>()
+
+    /** Laeuft vor JEDER IOB-Abfrage - der Ort fuer Aenderungen zwischen den
+     *  beiden Bolus-Lesungen eines Zyklus. */
+    private var vorIobAbfrage: (() -> Unit)? = null
+
+    private fun aapsNahIob(atTs: Long, zwischenspeichern: Boolean = true): IobTotal {
+        vorIobAbfrage?.invoke()
+        val key = if (zwischenspeichern) roundUp(atTs) else atTs
+        if (zwischenspeichern) aapsCache[key]?.let { return it }
+        val dia = validProfile.dia
+        var iob = 0.0
+        var akt = 0.0
+        for (b in boluses) if (b.isValid && b.timestamp < key && b.timestamp >= key - (dia * 3_600_000.0).toLong()) {
+            val r = insulin.iobCalcForTreatment(b, key, dia)
+            iob += r.iobContrib
+            akt += r.activityContrib
+        }
+        val ergebnis = IobTotal(key).also {
+            it.iob = app.aaps.core.interfaces.utils.Round.roundTo(iob, 0.001)
+            it.basaliob = 0.0
+            it.activity = app.aaps.core.interfaces.utils.Round.roundTo(akt, 0.0001)
+            it.valid = true
+        }
+        if (zwischenspeichern && key <= clock) aapsCache[key] = ergebnis
+        return ergebnis
+    }
+
+    /** Behandlungen aendern wie AAPS: der Cache verliert die Eintraege nach dem
+     *  fruehesten betroffenen Zeitpunkt (newHistoryData). [entwerten] = false
+     *  bildet das Entprellfenster ab, in dem ein aelterer Eintrag noch gilt. */
+    private fun boliSetzen(neu: List<BS>, entwerten: Boolean = true) {
+        val betroffen = (boluses.filter { it !in neu } + neu.filter { it !in boluses }).minOfOrNull { it.timestamp }
+        boluses = neu
+        if (entwerten && betroffen != null) aapsCache.keys.removeAll { it > betroffen }
+    }
+
     /**
      * RUECKFUEHRUNG DER ABGABEN (Tonis Review 14.09.). Aus heisst: das Rig
      * bleibt offen (statisches IOB, feste Messreihe) wie bisher.
@@ -699,7 +747,7 @@ class TransportWiringTest : TestBaseWithProfile() {
         whenever(ads.roundUpTime(any())).thenAnswer { inv -> roundUp(inv.getArgument(0)) }
         whenever(ads.getBgReadingsDataTableCopy()).thenAnswer { series(clock) }
         whenever(iobCobCalculator.calculateFromTreatmentsAndTemps(any(), any()))
-            .thenAnswer { inv -> iob(inv.getArgument(0)) }
+            .thenAnswer { inv -> if (aapsNah) aapsNahIob(inv.getArgument(0)) else iob(inv.getArgument(0)) }
         whenever(iobCobCalculator.calculateIobFromBolus()).thenAnswer {
             // Zeitpunkttreu: nur der Bolusanteil zum Rechenzeitpunkt (AAPS rechnet hier ohne Aufrunden).
             if (asOf != null) IobTotal(clock).also { t ->
@@ -707,7 +755,7 @@ class TransportWiringTest : TestBaseWithProfile() {
                 t.iob = bolus
                 t.activity = akt
                 t.valid = iobGueltig
-            } else iob(clock)
+            } else if (aapsNah) aapsNahIob(clock, zwischenspeichern = false) else iob(clock)
         }
 
         whenever(constraintsChecker.getMaxIOBAllowed()).thenAnswer { ConstraintObject(maxIobU, aapsLogger) }
@@ -719,7 +767,7 @@ class TransportWiringTest : TestBaseWithProfile() {
         whenever(persistenceLayer.getBolusesFromTimeToTime(any(), any(), any())).thenAnswer { inv ->
             val from = inv.getArgument<Long>(0)
             val to = inv.getArgument<Long>(1)
-            boluses.filter { it.timestamp in from..to }
+            boluses.filter { it.timestamp in from..to && (!aapsNah || it.isValid) }
         }
         whenever(processedTbrEbData.getTempBasalIncludingConvertedExtended(any())).thenReturn(null)
 
@@ -17352,4 +17400,130 @@ class TransportWiringTest : TestBaseWithProfile() {
         }
     }
 
+    // ---- AUFNAHMENACHWEIS DER TRANSPORTMENGE (03.10.2026) -------------------
+    //
+    // Die Pflicht-Gegenproben der Codex-Pruefung, durch den echten Runner: ein
+    // offener, ungebuchter Posten aus dem Vorzyklus, sein Bolusdatensatz, wie
+    // AAPS ihn nach der Lieferung fuehrt, und ein IOB, das wie AAPS aus genau
+    // diesen Datensaetzen rechnet und vergangene Schluessel zwischenspeichert.
+
+    private val aufnahmeMengeU = 0.30
+
+    /** Die Lage: Posten "vorzyklus" (ungebunden, ungebucht) und sein Bolus. */
+    private fun aufnahmeLage(dir: File, mitBolus: Boolean = true, bolusId: Long = 7001L): BS {
+        aapsNah = true
+        aapsCache.clear()
+        vorIobAbfrage = null
+        boluses = emptyList()
+        flach = 180.0
+        steigungProMin = 1.0
+        clock = start + 30 * 60_000L
+        val l = FuseLedgerAdapter().also { it.loadOnce(dir, "test-epoch", start) }
+        neuerRunner(l)
+        val entscheidung = clock - 60_000L
+        l.onPublished("vorzyklus", aufnahmeMengeU, entscheidung, 0L, 0.05, PumpType.GENERIC_AAPS.name, Sha.of("vs"))
+        val bolus = BS(
+            id = bolusId, version = 0, timestamp = entscheidung + 10_000L, amount = aufnahmeMengeU, type = BS.Type.SMB,
+            ids = app.aaps.core.data.model.IDs(pumpType = PumpType.GENERIC_AAPS, pumpSerial = "vs", temporaryId = 424_242L),
+        )
+        if (mitBolus) boliSetzen(listOf(bolus))
+        return bolus
+    }
+
+    /** Einmal, an der ersten IOB-Abfrage des Zyklus - also NACH Lesung 1. */
+    private fun nachLesung1(aktion: () -> Unit) {
+        var offen = true
+        vorIobAbfrage = { if (offen) { offen = false; aktion() } }
+    }
+
+    private fun bolusIob(o: FuseCycleRunner.Outcome) = o.iobTotal!!.let { it.iob - it.basaliob }
+
+    @Test
+    fun `Aufnahmenachweis - die gelieferte SMB zaehlt genau einmal, die Grenzen bleiben`(@TempDir dir: File) {
+        // Mit Nachweis.
+        aufnahmeLage(File(dir, "mit").also(File::mkdirs))
+        val mit = cycle()
+        assertNull(mit.abortReason, mit.abortReason)
+        val a = mit.transportSicht!!.aufnahme
+        assertEquals(1, a.kandidaten)
+        assertEquals(mapOf("vorzyklus" to aufnahmeMengeU), a.aufgenommenU)
+        assertNull(a.grund)
+        assertEquals(0.0, mit.transportSicht!!.modelliertU, 1e-12)
+
+        // Gegenprobe: derselbe Bolus ohne Datensatzkennung ist kein Beleg -
+        // die Menge steht dann im IOB UND im Transport.
+        aufnahmeLage(File(dir, "ohne").also(File::mkdirs), bolusId = 0L)
+        val ohne = cycle()
+        assertNull(ohne.abortReason, ohne.abortReason)
+        assertEquals(aufnahmeMengeU, ohne.transportSicht!!.modelliertU, 1e-12)
+
+        // In beiden Faellen traegt das IOB die Lieferung - mit Nachweis zaehlt
+        // sie also genau einmal, ohne doppelt.
+        assertTrue(bolusIob(mit) > 0.25) { "IOB ohne die Lieferung: ${mit.iobTotal}" }
+        assertEquals(bolusIob(mit), bolusIob(ohne), 1e-9)
+
+        // Die Grenzen wirken weiter: keine Abgabe ueber maxIOB minus Bestand
+        // minus Transport, mit Nachweis wie ohne.
+        listOf(mit, ohne).forEach { o ->
+            assertTrue(o.decision.smbU <= maxIobU - o.state!!.capIobU - o.transportSicht!!.modelliertU + 1e-9) { o.decision.toString() }
+        }
+    }
+
+    @Test
+    fun `Aufnahmenachweis - nach Lesung 1 ungueltig geworden, der Transport bleibt`(@TempDir dir: File) {
+        val bolus = aufnahmeLage(dir)
+        nachLesung1 { boliSetzen(listOf(bolus.copy(isValid = false, version = 1))) }
+        val o = cycle()
+        assertNull(o.abortReason, o.abortReason)
+        assertEquals(1, o.transportSicht!!.aufnahme.kandidaten, "Lesung 1 sah ihn noch")
+        assertTrue(o.transportSicht!!.aufnahme.aufgenommenU.isEmpty())
+        assertEquals("VERAENDERT", o.transportSicht!!.aufnahme.grund)
+        assertEquals(aufnahmeMengeU, o.transportSicht!!.modelliertU, 1e-12)
+        // Die IOB-Sicht traegt ihn nicht mehr - ohne Transport waere er in KEINER.
+        assertTrue(bolusIob(o) < 1e-9) { "${o.iobTotal}" }
+    }
+
+    @Test
+    fun `Aufnahmenachweis - Menge oder Zeit nach Lesung 1 geaendert, der Transport bleibt`(@TempDir dir: File) {
+        listOf<(BS) -> BS>(
+            { it.copy(amount = 0.25, version = 1) },
+            { it.copy(timestamp = it.timestamp + 20_000L, version = 1) },
+        ).forEachIndexed { i, aendern ->
+            val bolus = aufnahmeLage(File(dir, "f$i").also(File::mkdirs))
+            nachLesung1 { boliSetzen(listOf(aendern(bolus))) }
+            val o = cycle()
+            assertNull(o.abortReason, o.abortReason)
+            assertTrue(o.transportSicht!!.aufnahme.aufgenommenU.isEmpty()) { "Fall $i" }
+            assertEquals("VERAENDERT", o.transportSicht!!.aufnahme.grund, "Fall $i")
+            assertEquals(aufnahmeMengeU, o.transportSicht!!.modelliertU, 1e-12)
+        }
+    }
+
+    @Test
+    fun `Aufnahmenachweis - ein aelterer Cacheeintrag ohne den Bolus, der Transport bleibt`(@TempDir dir: File) {
+        val bolus = aufnahmeLage(dir, mitBolus = false)
+        // Ein fremder Schreiber legte den Eintrag am Ankerschluessel ab, BEVOR
+        // der Bolus gebucht war, und die Entwertung ist noch nicht gelaufen.
+        val anker = clock + taktMs
+        aapsCache[anker] = IobTotal(anker).also { it.iob = 0.0; it.basaliob = 0.0; it.activity = 0.0; it.valid = true }
+        boliSetzen(listOf(bolus), entwerten = false)
+        val o = cycle()
+        assertNull(o.abortReason, o.abortReason)
+        assertEquals(1, o.transportSicht!!.aufnahme.kandidaten, "Lesung 1 sah ihn")
+        assertTrue(o.transportSicht!!.aufnahme.aufgenommenU.isEmpty())
+        assertEquals("CACHE_ABWEICHUNG", o.transportSicht!!.aufnahme.grund)
+        assertEquals(aufnahmeMengeU, o.transportSicht!!.modelliertU, 1e-12)
+    }
+
+    @Test
+    fun `Aufnahmenachweis - erst nach Lesung 1 gebucht, der Transport bleibt`(@TempDir dir: File) {
+        val bolus = aufnahmeLage(dir, mitBolus = false)
+        nachLesung1 { boliSetzen(listOf(bolus)) }
+        val o = cycle()
+        assertNull(o.abortReason, o.abortReason)
+        assertEquals(0, o.transportSicht!!.aufnahme.kandidaten)
+        assertEquals(aufnahmeMengeU, o.transportSicht!!.modelliertU, 1e-12)
+        // Die IOB-Sicht traegt ihn schon: konservativ doppelt, nie in keiner.
+        assertTrue(bolusIob(o) > 0.25) { "${o.iobTotal}" }
+    }
 }

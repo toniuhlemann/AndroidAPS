@@ -601,6 +601,22 @@ object FuseStateJson {
             // trotzdem gruen, weil der Replay den Outcome direkt liest -
             // genau die Art Luecke, die ein Viewer als Erstes findet.
             .put("upfrontChain", outcome.upfrontChain?.let { upfrontChainJson(it) })
+            // DER AUFNAHMENACHWEIS DER TRANSPORTMENGE (03.10.2026, s.
+            // TransportAufnahme): wieviele ungebundene Posten die Zuordnung
+            // traf, wieviele davon belegt den Transport verliessen und mit
+            // welcher Menge; sonst der erste Grund, warum nicht. Ohne dieses
+            // Feld waere ein entlasteter Zyklus von einem doppelt zaehlenden
+            // im Trail nicht zu unterscheiden. `null` = vor dem Nachweis
+            // abgebrochen.
+            .put("transportInclusion", outcome.transportSicht?.let { s ->
+                JSONObject()
+                    .put("candidates", s.aufnahme.kandidaten)
+                    .put("proven", s.aufnahme.aufgenommenU.size)
+                    .put("provenU", fin(s.aufnahme.belegtU))
+                    .put("reason", s.aufnahme.grund ?: JSONObject.NULL)
+                    // Die Transportmenge, mit der der Zyklus danach rechnete.
+                    .put("modelledU", fin(s.modelliertU))
+            })
             .put("mealFoundation", outcome.mealFoundation.let { f ->
                 JSONObject()
                     .put("armed", f.armed)

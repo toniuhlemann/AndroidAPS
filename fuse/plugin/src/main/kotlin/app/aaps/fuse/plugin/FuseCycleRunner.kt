@@ -11,9 +11,11 @@ import app.aaps.core.interfaces.queue.Command
 import app.aaps.core.interfaces.queue.CommandQueue
 import app.aaps.core.interfaces.utils.DateUtil
 import app.aaps.core.interfaces.utils.HardLimits
+import app.aaps.core.interfaces.utils.Round
 import app.aaps.core.keys.LongKey
 import app.aaps.core.keys.interfaces.Preferences
 import app.aaps.core.objects.extensions.convertedToAbsolute
+import app.aaps.core.objects.extensions.iobCalc
 import app.aaps.core.objects.extensions.plannedRemainingMinutes
 import app.aaps.core.objects.extensions.target
 import app.aaps.core.utils.MidnightUtils
@@ -35,6 +37,7 @@ import app.aaps.fuse.core.ledger.AccountedTreatment
 import app.aaps.fuse.plugin.ledger.FuseLedgerAdapter
 import app.aaps.fuse.plugin.ledger.LedgerFacts
 import app.aaps.fuse.plugin.ledger.OpenTransportItem
+import app.aaps.fuse.plugin.ledger.TransportAufnahme
 import app.aaps.fuse.plugin.ledger.TransportInclusion
 import app.aaps.fuse.core.controller.IobThreshold
 import app.aaps.fuse.core.controller.MarkerEpisode
@@ -241,6 +244,10 @@ class FuseCycleRunner(
     /** Die Stationen des Sofortbatch-Endpfads dieses Zyklus. Zu Beginn jedes
      *  Laufs geleert (KI-174), s. [run]. */
     private var upfrontChainThisCycle: UpfrontChain? = null
+
+    /** Aufnahmenachweis und Transportmenge DIESES Zyklus fuer den Export. Wie
+     *  die Sofortbatch-Kette am Zyklusanfang geleert (KI-174). */
+    private var transportSichtThisCycle: TransportSicht? = null
 
     /** q1 des Vorzyklus - nur fuer die Ruhepruefung des Sofortbatches. */
     /**
@@ -574,8 +581,10 @@ class FuseCycleRunner(
             items: List<OpenTransportItem>,
             witness: TransportInclusion.IobSnapshotWitness?,
             computeTs: Long,
+            /** Nachgewiesen aufgenommene Mengen ungebuchter Posten (TransportAufnahme). */
+            aufgenommen: Map<String, Double> = emptyMap(),
         ): List<TransportDose> = items.mapNotNull { item ->
-            val u = TransportInclusion.modelledU(item, witness)
+            val u = TransportInclusion.modelledU(item, witness, aufgenommen[item.proposalId])
             if (!(u > 0.0)) null else {
                 val earliest = transportAnchorTs(item.bestKnownTs, computeTs)
                 TransportDose(item.proposalId, u, earliest, transportAnchorLatestTs(earliest, computeTs))
@@ -978,6 +987,9 @@ class FuseCycleRunner(
          * also nichts darueber, was am Ende herauskommt.
          */
         val upfrontChain: UpfrontChain? = null,
+        /** Aufnahmenachweis und Transportmenge dieses Zyklus (s.
+         *  [TransportSicht]); `null` = vor dem Nachweis abgebrochen. */
+        val transportSicht: TransportSicht? = null,
         /** Die WIRKSAME Segmentgrenze dieses Zyklus [ms] - s. GapPolicy. */
         val rSegmentBreakMs: Long = app.aaps.fuse.core.signal.GapPolicy.DEFAULT_R_SEGMENT_BREAK_MS,
         /** Die WIRKSAME Reifebedingung dieses Zyklus - s. MaturityPolicy. */
@@ -1545,6 +1557,7 @@ class FuseCycleRunner(
         // Hauptpfadzyklus (etwa dessen Grant). Nur Export - kein Dosierpfad
         // liest das Feld zurueck.
         upfrontChainThisCycle = null
+        transportSichtThisCycle = null
         val computeTs = dateUtil.now()
         val gate = pumpe.gate
 
@@ -1832,11 +1845,27 @@ class FuseCycleRunner(
         // Behauptung ueber sie, und die Richtung ist konservativ - ein frueher
         // gelesener Zeuge sieht WENIGER, also bleiben MEHR Posten Transport.
         //
-        // Keine zusaetzliche Abfrage: dasselbe Buchungs-Tor wie vorher.
+        // LESUNG 1 (03.10.2026, s. TransportAufnahme): EINE Bolus-Lesung an
+        // dieser Stelle fuer zwei Zwecke - den Zeugen gebuchter Posten (C3-02,
+        // unveraendert) und die vorlaeufige Zuordnung ungebuchter Posten.
+        // Gelesen wird nur, wenn es etwas zu entscheiden gibt: eine Buchung
+        // (wie vorher) oder ein ungebundener, fehlerfreier Posten.
         val transportItems = ledger.openTransportItems()
-        val iobWitness =
-            if (transportItems.none { it.accountedAmountU > 0.0 }) null
-            else runCatching { iobSnapshotWitness(computeTs, profile.dia) }.getOrNull()
+        val gebuchtDa = transportItems.any { it.accountedAmountU > 0.0 }
+        val ungebundenDa = transportItems.any {
+            it.accountedAmountU <= 0.0 && it.temporaryId == null && it.pumpId == null && it.fehlerfrei
+        }
+        val lesung1 = if (!gebuchtDa && !ungebundenDa) null
+            else runCatching { zeugenLesung(computeTs, profile.dia) }.getOrNull()
+        val iobWitness = if (!gebuchtDa) null else lesung1?.let { (from, boli) ->
+            TransportInclusion.witnessOf(boli.map { LedgerFacts.fact(it) }, fromTs = from, readAtTs = computeTs)
+        }
+        // ZUORDNUNG, nicht Aufnahme: welcher Bolus zu welchem ungebuchten Posten
+        // gehoert, mit DERSELBEN Funktion wie die Bindung des Ledgers. Ob seine
+        // Menge in den benutzten IOB-Werten steckt, entscheidet erst der
+        // Nachweis nach den IOB-Abfragen.
+        val vorlaeufig: Map<String, BS> = if (!ungebundenDa) emptyMap()
+            else lesung1?.let { (_, boli) -> runCatching { ledger.vorlaeufigeZuordnung(boli) }.getOrNull() }.orEmpty()
 
         // ---- 1 Signal ------------------------------------------------------
         // Der Schalter entscheidet nur EIN/AUS; die Parameter kommen aus
@@ -1965,65 +1994,10 @@ class FuseCycleRunner(
             return kernelCache
         }
 
-        // C3: DIE TRANSPORTMENGE ALS SYNTHETISCHE DOSIS.
-        //
-        // Bisher wurde sie nur von den Headrooms abgezogen. Das begrenzt, was
-        // NOCH angefordert werden darf - es macht die Bahn aber nicht wahr:
-        // gemessen (765 Medtrum-SMBs) liegt die Sichtbarkeits-Latenz bei p50
-        // 15 s, p90 56 s, p99 175 s, MAX 854 s. In diesen 1 bis ~15 Zyklen
-        // glaubten Guard und Schwanz, die Menge habe keine Zukunftswirkung.
-        //
-        // Ohne Kern gibt es keine synthetische Dosis - die Bahn ist dann zu
-        // optimistisch. Das bleibt folgenlos, weil OHNE Kern ohnehin keine
-        // positive Menge den Zyklus verlaesst (finalVeto -> MODEL_HORIZON_TOO_
-        // SHORT); der Schwanz rechnet in diesem Fall mit der vollen Menge
-        // (TailLiability.Dose ohne Restwirkung), statt sie zu vergessen.
-        //
-        // C3-01 (P0, Codex Fix-Pass-5-Closure G.2): JEDER OFFENE POSTEN
-        // EINZELN. Vorher stand hier die SUMME am AELTESTEN offenen
-        // Zeitstempel - fuer die Resthaftung am Horizont die unterschaetzende
-        // Wahl (Codex' Gegenprobe: 0,2925 U getrennt gegen 0,2800 U
-        // aggregiert). Menge und Anker kommen jetzt je Zeile aus dem Ledger.
-        //
-        // C3-02 (P0, G.3): und die Menge je Posten entscheidet der
-        // INCLUSION-VERTRAG, nicht der Ledgerwert allein. Der Zeuge ist eine
-        // Bolus-Lesung, die dem Bau der IOB-Arrays VORAUSGEHT (die Arrays
-        // entstehen erst in buildPredictorInput weiter unten). Was der Zeuge
-        // sah, war beim Arraybau in der Datenbank; was er nicht sah, ist
-        // UNENTSCHEIDBAR und bleibt deshalb voll als Transport modelliert -
-        // konservativ doppelt statt in keiner der beiden Sichten.
-        //
-        // Der Zeuge wird nur gelesen, wenn ueberhaupt eine Zeile eine Buchung
-        // traegt: ohne Buchung gibt es nichts zu entscheiden, und die
-        // zusaetzliche Datenbankabfrage entfaellt.
-        val transport = transportDoses(transportItems, iobWitness, computeTs)
-        // EINE Zahl fuer alle Verbraucher dieses Zyklus (Bahn, Headrooms,
-        // Schwanz). Sie ist per Vertrag >= ledgerView.transportCommitmentU -
-        // die Kappen koennen dadurch nur enger werden, nie weiter.
-        val transportModelledU = transport.sumOf { it.amountU }
-        // ---- VARIANTE 2: DER SERIEN-HEADROOM (Default aus) ---------------
-        //
-        // Deckel MINUS was im Fenster schon geflossen ist MINUS die noch
-        // offene Transportmenge. Der Transportabzug steht hier, weil eine
-        // publizierte, aber noch nicht bestaetigte Menge sonst zweimal
-        // ausgegeben werden koennte: einmal jetzt und einmal, wenn sie
-        // spaeter doch bestaetigt in der Liste steht.
-        //
-        // `null` = kein Deckel. Das ist der Default und laesst das Gate
-        // bitgleich zum bisherigen Stand rechnen.
-        val serienHeadroomU: Double? = serienHeadroom(
-            capU = cfg.correctionSeriesCapU,
-            fensterMin = cfg.correctionSeriesWindowMin,
-            gebucht = episodes.correctionDeliveries,
-            transport = transport,
-            nowTs = signal.sourceTs,
-        )
-        // Der Kern wird weiterhin TRAEGE gebaut: ohne Posten faellt der Aufwand
-        // (~540 Modellabfragen) ganz weg.
-        val pending: List<PendingInsulinEffect> =
-            if (transport.isEmpty()) emptyList()
-            else kernel()?.let { k -> transport.map { KernelPendingInsulin(k, it.amountU, it.earliestTs) } }
-                ?: emptyList()
+        // C3: DIE TRANSPORTMENGE steht seit 03.10.2026 weiter unten, NACH den
+        // IOB-Abfragen ("IOB-ABFRAGEN VOR DER TRANSPORTMENGE"): erst dann ist
+        // entscheidbar, ob eine zugeordnete Lieferung in den benutzten Werten
+        // steckt (TransportAufnahme).
 
         // ---- FENSTERWECHSEL = MODELLWECHSEL (Toni-Vertrag 23.08., Pkt. 5) --
         // Der Evidenz-Bestand wurde unter dem ALTEN Schaetzer verdient und
@@ -2388,7 +2362,86 @@ class FuseCycleRunner(
             windowMin = cfg.absorptionCreditWindowMin.toDouble(),
         ) else 0.0
 
-        val builtVorTrend = when (val b = CoreInputGuard.build { buildPredictorInput(signal, profile, cfg, band, bolusActivityUPerMin, if (onset.active) onset.driveMgdlPerMin else null, reboundWindow, markerBoost, declaredDrive, pending) }) {
+        // ---- IOB-ABFRAGEN VOR DER TRANSPORTMENGE (03.10.2026) --------------
+        // Alle IOB-Werte, die die Transportverbraucher benutzen - die Arrays fuer
+        // Bahn und Schwanz, das Gesamt-IOB fuer die Kappen -, werden JETZT
+        // gelesen, vor Lesung 2. Erst danach entscheidet der Aufnahmenachweis,
+        // ob eine zugeordnete Lieferung den Transport verlassen darf
+        // (TransportAufnahme). Die Bolus-IOB oben speist nur den Abschlag.
+        val iobArrays = when (val a = CoreInputGuard.build { fetchIobArrays(signal, cfg) }) {
+            is CoreInputGuard.Outcome.Built  -> a.value ?: return abort("input incomplete", signal, cfg, step)
+            is CoreInputGuard.Outcome.Failed -> return abort("input: ${a.failure.detail}", signal, cfg, step)
+        }
+        val iobTotalVorLesung2 = runCatching { iobCobCalculator.calculateFromTreatmentsAndTemps(computeTs, profile) }.getOrNull()
+        // Aus dem Cache moeglich, wenn der Zeitschluessel vor der Wanduhr NACH dem
+        // Aufruf liegt - dieselbe Bedingung wie in AAPS, konservativ spaet gelesen.
+        val iobTotalCacheMoeglich = runCatching {
+            iobCobCalculator.ads.roundUpTime(computeTs) < System.currentTimeMillis()
+        }.getOrDefault(true)
+        val aufnahme = transportAufnahme(vorlaeufig, transportItems, iobArrays, iobTotalVorLesung2, iobTotalCacheMoeglich, computeTs)
+
+        // C3: DIE TRANSPORTMENGE ALS SYNTHETISCHE DOSIS.
+        //
+        // Bisher wurde sie nur von den Headrooms abgezogen. Das begrenzt, was
+        // NOCH angefordert werden darf - es macht die Bahn aber nicht wahr:
+        // gemessen (765 Medtrum-SMBs) liegt die Sichtbarkeits-Latenz bei p50
+        // 15 s, p90 56 s, p99 175 s, MAX 854 s. In diesen 1 bis ~15 Zyklen
+        // glaubten Guard und Schwanz, die Menge habe keine Zukunftswirkung.
+        //
+        // Ohne Kern gibt es keine synthetische Dosis - die Bahn ist dann zu
+        // optimistisch. Das bleibt folgenlos, weil OHNE Kern ohnehin keine
+        // positive Menge den Zyklus verlaesst (finalVeto -> MODEL_HORIZON_TOO_
+        // SHORT); der Schwanz rechnet in diesem Fall mit der vollen Menge
+        // (TailLiability.Dose ohne Restwirkung), statt sie zu vergessen.
+        //
+        // C3-01 (P0, Codex Fix-Pass-5-Closure G.2): JEDER OFFENE POSTEN
+        // EINZELN. Vorher stand hier die SUMME am AELTESTEN offenen
+        // Zeitstempel - fuer die Resthaftung am Horizont die unterschaetzende
+        // Wahl (Codex' Gegenprobe: 0,2925 U getrennt gegen 0,2800 U
+        // aggregiert). Menge und Anker kommen jetzt je Zeile aus dem Ledger.
+        //
+        // C3-02 (P0, G.3): und die Menge je Posten entscheidet der
+        // INCLUSION-VERTRAG, nicht der Ledgerwert allein. Der Zeuge ist eine
+        // Bolus-Lesung, die dem Bau der IOB-Arrays VORAUSGEHT (Lesung 1 vor
+        // der Signalstufe; die Arrays holt fetchIobArrays direkt oben). Was der Zeuge
+        // sah, war beim Arraybau in der Datenbank; was er nicht sah, ist
+        // UNENTSCHEIDBAR und bleibt deshalb voll als Transport modelliert -
+        // konservativ doppelt statt in keiner der beiden Sichten.
+        //
+        // Der Zeuge wird nur gelesen, wenn ueberhaupt eine Zeile eine Buchung
+        // traegt; fuer ungebuchte Zeilen entscheidet der Aufnahmenachweis
+        // (03.10.2026): ohne ihn bleiben sie voll Transport.
+        val transport = transportDoses(transportItems, iobWitness, computeTs, aufnahme.aufgenommenU)
+        // EINE Zahl fuer alle Verbraucher dieses Zyklus (Bahn, Headrooms,
+        // Schwanz). Sie ist per Vertrag >= ledgerView.transportCommitmentU -
+        // die Kappen koennen dadurch nur enger werden, nie weiter.
+        val transportModelledU = transport.sumOf { it.amountU }
+        transportSichtThisCycle = TransportSicht(aufnahme, transportModelledU)
+        // ---- VARIANTE 2: DER SERIEN-HEADROOM (Default aus) ---------------
+        //
+        // Deckel MINUS was im Fenster schon geflossen ist MINUS die noch
+        // offene Transportmenge. Der Transportabzug steht hier, weil eine
+        // publizierte, aber noch nicht bestaetigte Menge sonst zweimal
+        // ausgegeben werden koennte: einmal jetzt und einmal, wenn sie
+        // spaeter doch bestaetigt in der Liste steht.
+        //
+        // `null` = kein Deckel. Das ist der Default und laesst das Gate
+        // bitgleich zum bisherigen Stand rechnen.
+        val serienHeadroomU: Double? = serienHeadroom(
+            capU = cfg.correctionSeriesCapU,
+            fensterMin = cfg.correctionSeriesWindowMin,
+            gebucht = episodes.correctionDeliveries,
+            transport = transport,
+            nowTs = signal.sourceTs,
+        )
+        // Der Kern wird weiterhin TRAEGE gebaut: ohne Posten faellt der Aufwand
+        // (~540 Modellabfragen) ganz weg.
+        val pending: List<PendingInsulinEffect> =
+            if (transport.isEmpty()) emptyList()
+            else kernel()?.let { k -> transport.map { KernelPendingInsulin(k, it.amountU, it.earliestTs) } }
+                ?: emptyList()
+
+        val builtVorTrend = when (val b = CoreInputGuard.build { buildPredictorInput(signal, profile, cfg, band, bolusActivityUPerMin, if (onset.active) onset.driveMgdlPerMin else null, reboundWindow, markerBoost, declaredDrive, pending, iobArrays) }) {
             is CoreInputGuard.Outcome.Built  -> b.value ?: return abort("input incomplete", signal, cfg, step)
             is CoreInputGuard.Outcome.Failed -> return abort("input: ${b.failure.detail}", signal, cfg, step)
         }
@@ -2502,7 +2555,10 @@ class FuseCycleRunner(
         if (!bolusStep.isFinite() || bolusStep <= 0.0) return abort("bolusStep=$bolusStep", signal, cfg, step, predictionOrNull, restraint)
 
         val maxIobU = constraintsChecker.getMaxIOBAllowed().value()
-        val iobTotal = iobCobCalculator.calculateFromTreatmentsAndTemps(computeTs, profile)
+        // Seit 03.10.2026 VOR Lesung 2 gelesen (s. IOB-ABFRAGEN) - dieselbe
+        // Abfrage; hier bleibt die Gueltigkeitspruefung. Scheiterte sie oben,
+        // entlastete der Aufnahmenachweis nichts, und es wird wie bisher gelesen.
+        val iobTotal = iobTotalVorLesung2 ?: iobCobCalculator.calculateFromTreatmentsAndTemps(computeTs, profile)
         // UNBEKANNT IST NICHT NULL (Codex Combined Closure b6dbb490, P0). Aus
         // dieser Lesung kommen capIob, netIob und der Bolusanteil - also die
         // Groessen, an denen JEDE Mengenkappe haengt. Eine erfundene Null
@@ -6634,6 +6690,7 @@ class FuseCycleRunner(
             abortReason = null,
             rSegmentBreakMs = gapPolicy.rSegmentBreakMs,
             upfrontChain = upfrontChainThisCycle,
+            transportSicht = transportSichtThisCycle,
             maturity = maturityPolicy,
             // runCatching: eine scheiternde DB-Abfrage darf den Zyklus nicht
             // kosten - dann faellt nur der Ledger-Abgleich dieses Zyklus aus
@@ -7602,6 +7659,7 @@ class FuseCycleRunner(
             abortReason = null,
             rSegmentBreakMs = gapPolicy.rSegmentBreakMs,
             upfrontChain = upfrontChainThisCycle,
+            transportSicht = transportSichtThisCycle,
             maturity = maturityPolicy,
             predictorRejected = true,
             predictorReason = rejected.reason.name,
@@ -7648,22 +7706,79 @@ class FuseCycleRunner(
      * Er wird gelesen, BEVOR dieser Zyklus IRGENDEINE IOB-Lesung macht -
      * insbesondere vor der Signalstufe, die den Eintrag fuer Punkt 0 selbst
      * schreibt (C3-02).
-     * Genau daran haengt der Nachweis: die Behandlungstabelle waechst
-     * innerhalb eines Zyklus nur, also war alles, was der Zeuge sah, beim
-     * Arraybau in der Datenbank. Ein Fakt, den er NICHT sah, gilt als
-     * unentscheidbar - und ein unentscheidbarer Posten bleibt in voller Hoehe
-     * Transport, statt aus beiden Sichten zu verschwinden.
+     * Fuer GEBUCHTE Posten haengt der Nachweis daran: ein Fakt, den der
+     * Zeuge NICHT sah, gilt als unentscheidbar - und ein unentscheidbarer
+     * Posten bleibt in voller Hoehe Transport, statt aus beiden Sichten zu
+     * verschwinden. Dass die Behandlungstabelle innerhalb eines Zyklus nur
+     * waechst, gilt dagegen NICHT allgemein (Invalidate- und
+     * Sync-Transaktionen, Codex 03.10.2026): fuer UNGEBUCHTE Posten ist diese
+     * Lesung deshalb nur Lesung 1 der Zuordnung, die Aufnahme belegt erst
+     * [TransportAufnahme] mit einer zweiten Lesung nach allen IOB-Abfragen.
      *
-     * BEWUSST EINE ZWEITE LESUNG statt der spaeteren [buildTreatmentView]:
+     * BEWUSST EINE EIGENE LESUNG statt der spaeteren [buildTreatmentView]:
      * jene traegt mit `latestBolusTs` den C5-Guard der Identitaetsbindung, und
      * ein frueher gelesener Wert wuerde diesen Guard aufweichen. Die Abfrage
-     * laeuft nur, wenn ueberhaupt ein Posten eine Buchung traegt.
+     * laeuft nur, wenn ein Posten eine Buchung traegt oder ein ungebundener,
+     * fehlerfreier Posten offen ist.
      */
-    private fun iobSnapshotWitness(computeTs: Long, diaHours: Double): TransportInclusion.IobSnapshotWitness {
+    private fun zeugenLesung(computeTs: Long, diaHours: Double): Pair<Long, List<BS>> {
         val from = treatmentWindowStart(computeTs, diaHours)
         val boluses = persistenceLayer.getBolusesFromTimeToTime(from, computeTs, true)
             .filter { it.isValid && it.type != BS.Type.PRIMING }
-        return TransportInclusion.witnessOf(boluses.map { LedgerFacts.fact(it) }, fromTs = from, readAtTs = computeTs)
+        return from to boluses
+    }
+
+    /**
+     * Der Aufnahmenachweis dieses Zyklus (s. [TransportAufnahme]).
+     *
+     * Benutzte Werte: jeder Arraypunkt und das Gesamt-IOB, jeweils der
+     * Bolusanteil (iob - basaliob) am gelieferten Zeitschluessel. Lesung 2
+     * liest das Fenster, das die Nachrechnung braucht: vom fruehesten
+     * Schluessel minus Wirkdauer bis zum spaetesten nachzurechnenden
+     * Schluessel, mindestens eine Minute ueber den Rechenzeitpunkt hinaus.
+     * Jeder Fehler auf diesem Weg heisst: kein Nachweis, nicht Abbruch.
+     */
+    private fun transportAufnahme(
+        kandidaten: Map<String, BS>,
+        posten: List<OpenTransportItem>,
+        arrays: IobArrays,
+        iobTotal: app.aaps.core.interfaces.aps.IobTotal?,
+        iobTotalCacheMoeglich: Boolean,
+        computeTs: Long,
+    ): TransportAufnahme.Ergebnis {
+        if (kandidaten.isEmpty()) return TransportAufnahme.Ergebnis.LEER
+        if (iobTotal == null || !iobTotal.valid) return TransportAufnahme.Ergebnis(emptyMap(), kandidaten.size, "IOB_UNBEKANNT")
+        return try {
+            // DIESELBE Wirkdauer wie AAPS: das aktuelle Profil, nicht das des Slots.
+            val dia = profileFunction.getProfile()?.dia
+                ?: return TransportAufnahme.Ergebnis(emptyMap(), kandidaten.size, "PROFIL_FEHLT")
+            val rangeMs = (dia * 3_600_000.0).toLong()
+            val werte = ArrayList<TransportAufnahme.BenutzterWert>(arrays.times.size + 1)
+            for (i in arrays.times.indices)
+                werte += TransportAufnahme.BenutzterWert(arrays.times[i], arrays.iob[i] - arrays.basalIob[i], arrays.cacheMoeglich[i])
+            werte += TransportAufnahme.BenutzterWert(iobTotal.time, iobTotal.iob - iobTotal.basaliob, iobTotalCacheMoeglich)
+            val ab = minOf(werte.minOf { it.zeitTs }, kandidaten.values.minOf { it.timestamp }) - rangeMs
+            val bis = maxOf(computeTs + 60_000L, werte.filter { it.ausCacheMoeglich }.maxOfOrNull { it.zeitTs } ?: 0L)
+            val lesung2 = runCatching { persistenceLayer.getBolusesFromTimeToTime(ab, bis, true) }.getOrNull()
+            TransportAufnahme.pruefe(kandidaten, posten, lesung2, werte) { t ->
+                lesung2?.let { l -> runCatching { bolusIobWieAaps(t, l, dia, rangeMs) }.getOrNull() }
+            }
+        } catch (_: Exception) {
+            TransportAufnahme.Ergebnis(emptyMap(), kandidaten.size, "FEHLER")
+        }
+    }
+
+    /**
+     * Die Bolus-IOB zum Zeitschluessel [t], gerechnet wie
+     * `IobCobCalculatorPlugin.calculateIobFromBolusToTime`: gueltige Boli mit
+     * Zeit in [t - Wirkdauer, t), je `BS.iobCalc`, auf 0,001 gerundet.
+     * Verlaengerte Boli rechnet AAPS zusaetzlich mit - gibt es sie, weicht die
+     * Nachrechnung ab, und der Nachweis scheitert (sichere Richtung).
+     */
+    private fun bolusIobWieAaps(t: Long, boli: List<BS>, dia: Double, rangeMs: Long): Double {
+        var s = 0.0
+        for (b in boli) if (b.isValid && b.timestamp < t && b.timestamp >= t - rangeMs) s += b.iobCalc(activePlugin, t, dia).iobContrib
+        return Round.roundTo(s, 0.001)
     }
 
     /** Die Treatment-Vollsicht fuer den Ledger-Abgleich - s. [TreatmentView]. */
@@ -8305,6 +8420,65 @@ class FuseCycleRunner(
      *  stehen ohnehin in den Arrays. */
     private class Built(val input: PredictorInput, val iobAtH: Double, val isfTail: Double, val discount: DriveDiscount.Applied)
 
+    /**
+     * Der Aufnahmenachweis ([TransportAufnahme]) und die Transportmenge, mit
+     * der der Zyklus danach rechnete [U] - fuer Export und Tests.
+     *
+     * EIN Feld im [Outcome] statt zwei: der Outcome steht an der
+     * Parametergrenze der JVM (255 Slots im Konstruktor mit Vorgabewerten).
+     * Ein weiteres Einzelfeld brach am 03.10.2026 das Laden der Klasse
+     * (ClassFormatError: Too many arguments in method signature).
+     */
+    data class TransportSicht(val aufnahme: TransportAufnahme.Ergebnis, val modelliertU: Double)
+
+    /**
+     * Die IOB-Arrays EINES Zyklus, getrennt vom Bahnbau geholt (03.10.2026):
+     * der Aufnahmenachweis braucht sie VOR der Transportmenge, der Bahnbau
+     * danach. [cacheMoeglich] je Punkt: der Zeitschluessel lag vor der
+     * Wanduhr nach dem Aufruf - dann kann AAPS den Wert aus dem Cache
+     * geliefert haben (`calculateFromTreatmentsAndTemps`).
+     */
+    private class IobArrays(
+        val times: LongArray,
+        val iob: DoubleArray,
+        val activity: DoubleArray,
+        val basalIob: DoubleArray,
+        val isfValues: DoubleArray,
+        val cacheMoeglich: BooleanArray,
+    )
+
+    private fun fetchIobArrays(signal: FuseSignalSource.Signal, cfg: Config): IobArrays? {
+        val anchor = signal.sourceTs
+        val steps = ((cfg.liabilityHorizonMin + IOB_MARGIN_MIN) * 60_000L / IOB_GRID_MS).toInt()
+        val times = LongArray(steps + 1)
+        val iob = DoubleArray(steps + 1)
+        val activity = DoubleArray(steps + 1)
+        val basalIob = DoubleArray(steps + 1)
+        val isfValues = DoubleArray(steps + 1)
+        val cacheMoeglich = BooleanArray(steps + 1)
+        for (i in 0..steps) {
+            val t = anchor + i * IOB_GRID_MS
+            // Das EFFEKTIVE Profil zu diesem Zeitpunkt, nicht das von jetzt:
+            // `getBasal(t)`/`getIsf...` rechnen mit Prozentsatz und Timeshift des
+            // UEBERGEBENEN Objekts und wechseln nicht selbst, wenn ein Profile
+            // Switch im Horizont ablaeuft.
+            val slotProfile = profileFunction.getProfile(t) ?: return null
+            val v = iobCobCalculator.calculateFromTreatmentsAndTemps(t, slotProfile)
+            // UNBEKANNT IST NICHT NULL: ein genullter Punkt im Array traegt
+            // weder IOB noch Aktivitaet und macht die Bahn optimistischer,
+            // ohne dass irgendeine Endlichkeitspruefung anschlaegt. Der Bau
+            // schlaegt fehl, der Zyklus bricht benannt ab.
+            if (!v.valid) return null
+            cacheMoeglich[i] = runCatching { iobCobCalculator.ads.roundUpTime(t) < System.currentTimeMillis() }.getOrDefault(true)
+            times[i] = v.time
+            iob[i] = v.iob
+            activity[i] = v.activity
+            basalIob[i] = v.basaliob
+            isfValues[i] = slotProfile.getIsfMgdlTimeFromMidnight(MidnightUtils.secondsFromMidnight(t))
+        }
+        return IobArrays(times, iob, activity, basalIob, isfValues, cacheMoeglich)
+    }
+
     private fun buildPredictorInput(
         signal: FuseSignalSource.Signal,
         profile: Profile,
@@ -8330,35 +8504,17 @@ class FuseCycleRunner(
          *  synthetische Dosen - EINE JE OFFENEM POSTEN, mit eigenem Anker.
          *  Leer = nichts unterwegs (oder kein Einheitskern). */
         pending: List<PendingInsulinEffect> = emptyList(),
+        /** Die vorab geholten Arrays (s. [fetchIobArrays]). */
+        arrays: IobArrays,
     ): Built? {
         val liabilityHorizonMin = cfg.liabilityHorizonMin
         val anchor = signal.sourceTs
-        val steps = ((liabilityHorizonMin + IOB_MARGIN_MIN) * 60_000L / IOB_GRID_MS).toInt()
-
-        val times = LongArray(steps + 1)
-        val iob = DoubleArray(steps + 1)
-        val activity = DoubleArray(steps + 1)
-        val basalIob = DoubleArray(steps + 1)
-        val isfValues = DoubleArray(steps + 1)
-        for (i in 0..steps) {
-            val t = anchor + i * IOB_GRID_MS
-            // Das EFFEKTIVE Profil zu diesem Zeitpunkt, nicht das von jetzt:
-            // `getBasal(t)`/`getIsf...` rechnen mit Prozentsatz und Timeshift des
-            // UEBERGEBENEN Objekts und wechseln nicht selbst, wenn ein Profile
-            // Switch im Horizont ablaeuft.
-            val slotProfile = profileFunction.getProfile(t) ?: return null
-            val v = iobCobCalculator.calculateFromTreatmentsAndTemps(t, slotProfile)
-            // UNBEKANNT IST NICHT NULL: ein genullter Punkt im Array traegt
-            // weder IOB noch Aktivitaet und macht die Bahn optimistischer,
-            // ohne dass irgendeine Endlichkeitspruefung anschlaegt. Der Bau
-            // schlaegt fehl, der Zyklus bricht benannt ab.
-            if (!v.valid) return null
-            times[i] = v.time
-            iob[i] = v.iob
-            activity[i] = v.activity
-            basalIob[i] = v.basaliob
-            isfValues[i] = slotProfile.getIsfMgdlTimeFromMidnight(MidnightUtils.secondsFromMidnight(t))
-        }
+        val times = arrays.times
+        val iob = arrays.iob
+        val activity = arrays.activity
+        val basalIob = arrays.basalIob
+        val isfValues = arrays.isfValues
+        val steps = times.size - 1
 
         // Die Slots laufen ueber `times`, nicht ueber die angeforderten
         // Zeitpunkte: `calculateFromTreatmentsAndTemps` rundet intern auf die

@@ -1788,4 +1788,30 @@ class FuseStateExportTest {
         }
     }
 
+    /**
+     * DER AUFNAHMENACHWEIS DER TRANSPORTMENGE steht im Trail (03.10.2026):
+     * ohne ihn waere ein entlasteter Zyklus von einem doppelt zaehlenden nicht
+     * zu unterscheiden.
+     */
+    @Test
+    fun `der Aufnahmenachweis steht im Export`() {
+        val j = record(outcome().copy(
+            transportSicht = FuseCycleRunner.TransportSicht(
+                app.aaps.fuse.plugin.ledger.TransportAufnahme.Ergebnis(mapOf("p1" to 0.3), 2, "VERAENDERT"), 0.2,
+            ),
+        )).getJSONObject("transportInclusion")
+        assertEquals(2, j.getInt("candidates"))
+        assertEquals(1, j.getInt("proven"))
+        assertEquals(0.3, j.getDouble("provenU"), 1e-12)
+        assertEquals("VERAENDERT", j.getString("reason"))
+        assertEquals(0.2, j.getDouble("modelledU"), 1e-12)
+        // Ohne Grund steht null, kein leerer Text.
+        val leer = record(outcome().copy(
+            transportSicht = FuseCycleRunner.TransportSicht(app.aaps.fuse.plugin.ledger.TransportAufnahme.Ergebnis.LEER, 0.0),
+        )).getJSONObject("transportInclusion")
+        assertTrue(leer.isNull("reason"))
+        assertEquals(0, leer.getInt("candidates"))
+        // Vor dem Nachweis abgebrochen: kein Abschnitt.
+        assertTrue(record(outcome()).optJSONObject("transportInclusion") == null)
+    }
 }

@@ -13,6 +13,7 @@ import app.aaps.fuse.core.ledger.QueueRejectReason
 import app.aaps.fuse.core.ledger.LedgerEvent
 import app.aaps.fuse.core.ledger.LedgerReducer
 import app.aaps.fuse.core.ledger.LedgerState
+import app.aaps.fuse.core.ledger.ProposalEntry
 import app.aaps.fuse.core.util.Sha
 import org.json.JSONObject
 import java.io.File
@@ -1011,6 +1012,11 @@ data class OpenTransportItem(
     /** Beweisbar floss nichts (bestaetigte Null bzw. unbestrittener Rueckzug).
      *  Dann haftet die Zeile in KEINER Sicht. */
     val settledZero: Boolean,
+    /** Die Zeile traegt keinen Fehler und ist nicht fail-closed. Nur solche
+     *  Zeilen darf ein Aufnahmenachweis entlasten ([TransportAufnahme]);
+     *  Fehler- und Holdpfade gehen vor. Vorgabe `false`: ohne ausdrueckliche
+     *  Angabe entlastet nichts. */
+    val fehlerfrei: Boolean = false,
 )
 
 /**
@@ -1110,14 +1116,23 @@ object TransportInclusion {
     /**
      * Die Menge, die dieser Posten in diesem Zyklus als Transport traegt [U].
      *
-     * Ergebnis liegt IMMER in `[commitmentU, grossLiabilityU]` - die
-     * Modellierung kann also nie unter den Ledgerwert fallen (kein Weg an
-     * Haftung vorbei) und nie ueber die konservativ moegliche Gesamtmenge
-     * steigen (keine erfundene Haftung).
+     * Ergebnis liegt in `[commitmentU, grossLiabilityU]` - die Modellierung
+     * faellt nie unter den Ledgerwert (kein Weg an Haftung vorbei) und steigt
+     * nie ueber die konservativ moegliche Gesamtmenge (keine erfundene
+     * Haftung). EINE Ausnahme nach unten, seit 03.10.2026: ein ungebuchter
+     * Posten mit [TransportAufnahme]-Nachweis traegt `commitmentU` minus die
+     * nachgewiesen aufgenommene Menge, nie weniger als 0. Der Nachweis erfuellt
+     * dieselbe Kernregel wie eine Buchung: die Menge steckt nachweislich in
+     * den IOB-Werten, die dieser Zyklus benutzt.
      */
-    fun modelledU(item: OpenTransportItem, witness: IobSnapshotWitness?): Double = when {
+    fun modelledU(item: OpenTransportItem, witness: IobSnapshotWitness?, aufgenommenU: Double? = null): Double = when {
         // Es floss beweisbar nichts - dann haftet auch nichts.
         item.settledZero                                    -> 0.0
+        // Ungebucht, aber die Aufnahme ist nachgewiesen (TransportAufnahme):
+        // nur die belegte Menge verlaesst den Transport, ein Rest bleibt.
+        aufgenommenU != null && aufgenommenU > 0.0 && item.accountedAmountU <= 0.0 &&
+            item.temporaryId == null && item.pumpId == null && item.fehlerfrei ->
+            (item.commitmentU - aufgenommenU).coerceAtLeast(0.0)
         // Nichts gebucht: der Ledgerwert IST die volle Haftung, es gibt gar
         // keine Menge, die in die IOB-Sicht abgewandert sein koennte.
         item.accountedAmountU <= 0.0                        -> item.commitmentU
@@ -1127,6 +1142,126 @@ object TransportInclusion {
         inSnapshot(item, witness)                           -> item.commitmentU
         // Nicht entscheidbar: konservativ doppelt statt unsichtbar.
         else                                                -> item.grossLiabilityU
+    }
+}
+
+/**
+ * DER AUFNAHMENACHWEIS fuer ungebuchte Posten (03.10.2026; Codex-Pruefung des
+ * Entwurfs zur Transport-Doppelzaehlung, P1 und P2).
+ *
+ * PROBLEM. Eine gelieferte SMB steht im Folgezyklus schon im IOB von AAPS, ihr
+ * Posten traegt aber noch weder Identitaet noch Buchung - beides entsteht erst
+ * NACH dem Zyklus. [TransportInclusion] fuehrt sie deshalb zusaetzlich voll als
+ * Transport: Bahn, Schwanz und Headrooms zaehlen sie doppelt, und im
+ * Ein-Minuten-Takt sperrt das den Zyklus nach jeder groesseren SMB.
+ *
+ * ZWEI AUSSAGEN, GETRENNT:
+ * - ZUORDNUNG: welcher Bolus gehoert zu welchem Posten? Dieselbe Zuordnung wie
+ *   der Ledger ([FuseLedgerAdapter.vorlaeufigeZuordnung]), aus der Lesung VOR
+ *   der Signalstufe ("Lesung 1").
+ * - AUFNAHME: steckt seine Menge in genau den IOB-Werten, die dieser Zyklus
+ *   benutzt? Ein Treffer in Lesung 1 beweist das NICHT. Ein Bolus kann danach
+ *   ungueltig werden oder Zeit, Menge und Typ aendern (Invalidate- und
+ *   Sync-Transaktionen), und AAPS liefert vergangene Zeitschluessel aus seinem
+ *   Cache, der aelter sein kann als Lesung 1.
+ *
+ * DER NACHWEIS - nur wenn ALLES traegt, sonst bleibt es beim Bisherigen:
+ * 1. Lesung 2 NACH allen IOB-Abfragen, deren Werte die Transportverbraucher
+ *    benutzen. Der Bolus steht dort unveraendert: Kennung (nicht 0), Version,
+ *    gueltig, Zeit, Menge, Typ, Pumpenkennungen. Die Version zaehlt jede
+ *    Aenderung, eine Ungueltigsetzung ist endgueltig. Was ZWISCHEN den beiden
+ *    Lesungen frisch gerechnet wurde, enthielt ihn also unveraendert.
+ * 2. Jeder benutzte Wert, der aus dem Cache stammen KANN (Zeitschluessel vor
+ *    der Wanduhr nach dem Aufruf), wird aus Lesung 2 nachgerechnet - dieselbe
+ *    Rechnung wie AAPS. Weicht EIN Wert ab, ist seine Herkunft unbekannt; dann
+ *    entlastet in diesem Zyklus nichts.
+ * 3. Entlastet wird hoechstens die Bolusmenge und nie mehr, als der Posten
+ *    offen hat; ein Rest bleibt Transport. Nur fehlerfreie, ungebuchte Posten
+ *    ohne Identitaet.
+ * 4. Eine Lieferung entlastet hoechstens EINEN Posten. Die Zuordnung vergibt
+ *    jede Kennung nur einmal; traegt die Eingabe denselben Datensatz oder
+ *    dieselbe Pumpenkennung trotzdem fuer zwei Posten, entlastet keiner.
+ *
+ * Ohne vollstaendigen Nachweis bleibt es konservativ doppelt.
+ */
+object TransportAufnahme {
+
+    /** Ein IOB-Wert, den der Zyklus benutzt: [bolusIobU] = iob - basaliob, wie
+     *  AAPS ihn geliefert hat, zum gelieferten Zeitschluessel [zeitTs]. */
+    data class BenutzterWert(val zeitTs: Long, val bolusIobU: Double, val ausCacheMoeglich: Boolean)
+
+    data class Ergebnis(
+        /** proposalId -> nachgewiesen aufgenommene Menge [U]. Leer = nichts. */
+        val aufgenommenU: Map<String, Double>,
+        /** Wieviele Posten die vorlaeufige Zuordnung traf. */
+        val kandidaten: Int,
+        /** null = jeder Kandidat belegt (oder keiner da); sonst der erste Grund. */
+        val grund: String?,
+    ) {
+        val belegtU: Double get() = aufgenommenU.values.sum()
+
+        companion object {
+            val LEER = Ergebnis(emptyMap(), 0, null)
+        }
+    }
+
+    /** Toleranz der Nachrechnung [U]: AAPS rundet Bolus- und Basal-IOB je auf
+     *  0,001; die Differenz traegt also hoechstens rund 0,0015 Rundung. Eine
+     *  SMB von einem Pumpenschritt liegt weit darueber. */
+    const val CACHE_EPS_U = 0.003
+
+    fun pruefe(
+        kandidaten: Map<String, BS>,
+        posten: List<OpenTransportItem>,
+        lesung2: List<BS>?,
+        werte: List<BenutzterWert>,
+        nachrechnen: (Long) -> Double?,
+    ): Ergebnis {
+        if (kandidaten.isEmpty()) return Ergebnis.LEER
+        val geeignet = kandidaten.filter { (id, b) ->
+            b.id != 0L && posten.any {
+                it.proposalId == id && it.fehlerfrei && it.accountedAmountU <= 0.0 &&
+                    it.temporaryId == null && it.pumpId == null && it.commitmentU > 0.0
+            }
+        }
+        if (geeignet.isEmpty()) return Ergebnis(emptyMap(), kandidaten.size, "NICHT_GEEIGNET")
+        if (lesung2 == null) return Ergebnis(emptyMap(), kandidaten.size, "LESUNG2_FEHLT")
+        // (4) Einmalvergabe, unabhaengig von der Herkunft der Eingabe: jede
+        // Kennung (Datensatz, temporaere, Pumpe) darf nur EINEM Kandidaten
+        // gehoeren, sonst faellt jeder Beteiligte heraus.
+        val kennungen = geeignet.mapValues { (_, b) ->
+            listOfNotNull("db" to b.id, b.ids.temporaryId?.let { "tmp" to it }, b.ids.pumpId?.let { "pump" to it })
+        }
+        val zaehler = kennungen.values.flatten().groupingBy { it }.eachCount()
+        val mehrfach = kennungen.filterValues { ks -> ks.any { zaehler.getValue(it) > 1 } }.keys
+        // (2) Herkunft jedes Werts, der aus dem Cache stammen kann. Ein einziger
+        // unbelegter Wert macht JEDE Entlastung unbelegt: welche Menge in ihm
+        // fehlt, ist von hier aus nicht zuzuordnen.
+        for (w in werte) {
+            if (!w.ausCacheMoeglich) continue
+            val nach = nachrechnen(w.zeitTs) ?: return Ergebnis(emptyMap(), kandidaten.size, "NACHRECHNUNG_UNMOEGLICH")
+            if (!w.bolusIobU.isFinite() || abs(nach - w.bolusIobU) > CACHE_EPS_U)
+                return Ergebnis(emptyMap(), kandidaten.size, "CACHE_ABWEICHUNG")
+        }
+        // (1) Unveraendert in Lesung 2.
+        val belegt = mutableMapOf<String, Double>()
+        var grund: String? = if (geeignet.size < kandidaten.size) "NICHT_GEEIGNET" else null
+        for ((id, b1) in geeignet) {
+            if (id in mehrfach) {
+                grund = grund ?: "MEHRFACH"
+                continue
+            }
+            val b2 = lesung2.firstOrNull { it.id == b1.id }
+            val unveraendert = b2 != null && b2.version == b1.version && b1.isValid && b2.isValid &&
+                b2.timestamp == b1.timestamp && b2.amount == b1.amount && b2.type == b1.type &&
+                b2.ids.temporaryId == b1.ids.temporaryId && b2.ids.pumpId == b1.ids.pumpId
+            if (!unveraendert) {
+                grund = grund ?: "VERAENDERT"
+                continue
+            }
+            belegt[id] = b2!!.amount
+        }
+        return Ergebnis(belegt, kandidaten.size, grund)
     }
 }
 
@@ -2336,8 +2471,47 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
      * haelt konservativ ihre volle Haftung.
      */
     fun bindIdentities(boluses: List<BS>) {
+        for ((entry, b) in zuordnung(boluses)) {
+            reduce(
+                LedgerEvent.PumpIdentityBound(
+                    proposalId = entry.proposalId,
+                    temporaryId = b.ids.temporaryId,
+                    pumpId = b.ids.pumpId,
+                    pumpType = LedgerFacts.pumpTypeName(b) ?: "UNKNOWN",
+                    pumpSerialHash = LedgerFacts.serialHash(b) ?: "none",
+                    treatmentTimestamp = b.timestamp,
+                )
+            )
+        }
+    }
+
+    /**
+     * Die VORLAEUFIGE Zuordnung fuer den laufenden Zyklus (Transport-Aufnahme,
+     * s. [TransportAufnahme]): DIESELBE Zuordnung wie [bindIdentities], aber
+     * ohne zu binden. Liest den Zustand, schreibt nichts.
+     *
+     * Eine Funktion fuer beide Verwender, damit es keine zweite, abweichende
+     * Zuordnung gibt: dieselben Fenster aus ALLEN Entscheidungszeiten, dieselbe
+     * Einmalvergabe ueber alle Zeilen (beide Kennungen werden nach jedem Treffer
+     * reserviert), dieselben Ausschluesse gebundener und geprunter Kennungen,
+     * derselbe Pumpenkontext.
+     */
+    fun vorlaeufigeZuordnung(boluses: List<BS>): Map<String, BS> =
+        zuordnung(boluses).associate { (entry, b) -> entry.proposalId to b }
+
+    /**
+     * Die Zuordnung Bolus -> offene Zeile ohne Identitaet, rein lesend.
+     *
+     * Bis 03.10.2026 stand diese Schleife direkt in [bindIdentities] und band
+     * je Treffer sofort. Das Binden aendert nichts, was die Schleife danach
+     * liest (Zeilenliste und Entscheidungszeiten stehen vorher fest, die
+     * Ausschlussmengen sind lokal) - die Trennung in "zuordnen" und "binden"
+     * ist deshalb verhaltensgleich.
+     */
+    private fun zuordnung(boluses: List<BS>): List<Pair<ProposalEntry, BS>> {
         val unbound = state.entries.values.filter { it.identity == null && !it.closed }
-        if (unbound.isEmpty()) return
+        if (unbound.isEmpty()) return emptyList()
+        val paare = mutableListOf<Pair<ProposalEntry, BS>>()
         val decisionTimes = state.entries.values.map { it.decisionTs }.sorted()
         // Fix 6 (NEU-BS-02): auch die Identitaeten GEPRUNTER Zeilen bleiben
         // ausgeschlossen - sonst wuerde ein prune die Ausschlussmenge leeren
@@ -2375,17 +2549,9 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
             val b = hits[0]
             b.ids.temporaryId?.let { boundTemp += it }
             b.ids.pumpId?.let { boundPump += it }
-            reduce(
-                LedgerEvent.PumpIdentityBound(
-                    proposalId = entry.proposalId,
-                    temporaryId = b.ids.temporaryId,
-                    pumpId = b.ids.pumpId,
-                    pumpType = LedgerFacts.pumpTypeName(b) ?: "UNKNOWN",
-                    pumpSerialHash = LedgerFacts.serialHash(b) ?: "none",
-                    treatmentTimestamp = b.timestamp,
-                )
-            )
+            paare += entry to b
         }
+        return paare
     }
 
     /** Die Vollsicht dieses Zyklus abgleichen. Ordnung: Prozess-Epoch plus
@@ -2598,6 +2764,7 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
                 temporaryId = e.identity?.temporaryId,
                 pumpId = e.identity?.pumpId,
                 settledZero = e.confirmedZeroEffective || e.debtReleaseEffective,
+                fehlerfrei = e.errors.isEmpty() && !e.failClosed,
             )
         }
         .filter { it.grossLiabilityU > 0.0 && !it.settledZero }
