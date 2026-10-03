@@ -444,6 +444,38 @@ class FuseCycleRunner(
         const val TAIL_VETO_EPS_U = 1e-9
 
         /**
+         * KUERZEN STATT VERWERFEN: die groesste Menge in ganzen
+         * Pumpenschritten UNTER [startU], die [besteht]; 0, wenn keine besteht.
+         *
+         * Die Kappe des Schwanzes rechnet "1 U kostet 1 U Spielraum". Die
+         * Schlusspruefung rechnet dieselbe Menge mit ihrer Wirkung bis zum
+         * Horizont (in mg/dl, mit dem ISF davor) UND ihrer Restwirkung danach -
+         * liegt der ISF hinter dem Horizont tiefer, kostet 1 U mehr als 1 U
+         * Spielraum. Eine auf die Kappe
+         * zugeschnittene Menge fiel dann durch und wurde GANZ verworfen,
+         * obwohl ein kleinerer Schritt dieselbe Pruefung bestand: im
+         * Mahlzeitenanstieg ein erzwungener Nullzyklus nach dem anderen.
+         *
+         * Die Pruefung selbst bleibt die Instanz: jede Stufe geht durch
+         * [besteht], keine Grenze wird abgeschaltet oder geschaetzt. Beide
+         * Pruefungen (Guard-Bahn und Schwanz) werden mit kleinerer Menge nur
+         * leichter, deshalb ist die erste bestehende Stufe von oben die
+         * groesste.
+         */
+        internal fun groessteBestehendeMenge(startU: Double, schrittU: Double, besteht: (Double) -> Boolean): Double {
+            if (!(startU > 0.0) || !(schrittU > 0.0) || !startU.isFinite() || !schrittU.isFinite()) return 0.0
+            // startU selbst ist schon verworfen: erst der naechste ganze
+            // Schritt darunter (dieselbe Rasterung wie die Freigabe).
+            var n = kotlin.math.ceil(startU / schrittU - 1e-9).toLong() - 1
+            while (n >= 1) {
+                val u = Math.round(n * schrittU * 1_000_000.0) / 1_000_000.0
+                if (besteht(u)) return u
+                n--
+            }
+            return 0.0
+        }
+
+        /**
          * Wie weit der Lieferanker der Transportmenge zurueckreichen darf [min]
          * (C3).
          *
@@ -4292,10 +4324,19 @@ class FuseCycleRunner(
                     // auch der aufgeschobene Rest nicht mehr gewollt (Tonis
                     // Vertrag: bei Nichtlieferung KEINE automatische Gutschrift).
                     subStepCarryU = 0.0
-                    withCarry.copy(
+                    val grund = finalVeto(withCarry.smbU)
+                    // KUERZEN STATT VERWERFEN: besteht ein kleinerer
+                    // Pumpenschritt DIESELBE Pruefung, geht er hinaus statt null.
+                    // Der Rest ist eine Absage aus einer Sicherheitsgrenze und
+                    // wird nicht gesammelt (s. Rest-Zaehler oben).
+                    val gekuerzt = groessteBestehendeMenge(withCarry.smbU, bolusStep) { finalVeto(it) == null }
+                    if (gekuerzt > 0.0) withCarry.copy(
+                        smbU = gekuerzt,
+                        bindingLimit = withCarry.bindingLimit + "|finalShortened:$grund",
+                    ) else withCarry.copy(
                         smbU = 0.0,
                         block = FuseController.Block.CANDIDATE,
-                        bindingLimit = "finalVerify:${finalVeto(withCarry.smbU)}",
+                        bindingLimit = "finalVerify:$grund",
                     )
                 }
             }
@@ -6009,7 +6050,9 @@ class FuseCycleRunner(
                 )
                 shadowDownCarryU = laneStep.carryU
                 val roh = lane.smbU + laneStep.releaseU
-                if (roh > 0.0 && finalVeto(roh) != null) 0.0 else roh
+                // Dieselbe Endpruefung wie produktiv, also auch dasselbe
+                // Kuerzen statt Verwerfen.
+                if (roh > 0.0 && finalVeto(roh) != null) groessteBestehendeMenge(roh, bolusStep) { finalVeto(it) == null } else roh
             }
             downVariants.map { v ->
                 when {

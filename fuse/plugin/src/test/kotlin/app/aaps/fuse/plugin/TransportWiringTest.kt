@@ -17260,4 +17260,96 @@ class TransportWiringTest : TestBaseWithProfile() {
         livenessAn = true
     }
 
+    /**
+     * KUERZEN STATT VERWERFEN: die Endpruefung prueft Stufe fuer
+     * Stufe nach unten und nimmt die groesste, die besteht.
+     */
+    @Test
+    fun `groessteBestehendeMenge nimmt die groesste bestehende Stufe unter dem Start`() {
+        val gefragt = mutableListOf<Double>()
+        val u = FuseCycleRunner.groessteBestehendeMenge(0.40, 0.05) { m -> gefragt += m; m <= 0.30 + 1e-9 }
+        assertEquals(0.30, u, 1e-12)
+        assertEquals(listOf(0.35, 0.30), gefragt, "von oben, und die verworfene Startmenge selbst nie")
+        // Ein einziger Schritt war schon verworfen - darunter gibt es nichts.
+        assertEquals(0.0, FuseCycleRunner.groessteBestehendeMenge(0.05, 0.05) { true }, 0.0)
+        // Keine Stufe besteht.
+        assertEquals(0.0, FuseCycleRunner.groessteBestehendeMenge(0.40, 0.05) { false }, 0.0)
+        // Rasterung wie die Freigabe: 0,15 als Double knapp ueber 0,15.
+        assertEquals(0.10, FuseCycleRunner.groessteBestehendeMenge(0.15000000000000002, 0.05) { true }, 1e-12)
+        // Unbrauchbare Eingaben liefern nichts.
+        assertEquals(0.0, FuseCycleRunner.groessteBestehendeMenge(Double.NaN, 0.05) { true }, 0.0)
+        assertEquals(0.0, FuseCycleRunner.groessteBestehendeMenge(0.40, 0.0) { true }, 0.0)
+    }
+
+    /**
+     * KUERZEN STATT VERWERFEN IM ZYKLUS.
+     *
+     * Die Kappe des Schwanzes rechnet "1 U kostet 1 U Spielraum", die
+     * Endpruefung rechnet dieselbe Menge mit ihrer Wirkung bis zum Horizont
+     * und ihrer Restwirkung danach. Liegt der ISF hinter dem Horizont tiefer
+     * als davor (ein Zeitprofil mit tieferem ISF spaeter am Tag), kostet 1 U
+     * dort mehr als 1 U Spielraum. Die zugeschnittene Menge fiel dann durch und
+     * wurde GANZ verworfen, obwohl ein kleinerer Schritt dieselbe Pruefung
+     * bestand: im Anstieg ein erzwungener Nullzyklus nach dem anderen. Das
+     * gilt auch, wenn nicht die Schwanzkappe, sondern eine andere Kappe die
+     * Menge zugeschnitten hat - die Endpruefung rechnet sie trotzdem teurer.
+     *
+     * Erwartet: jede gekuerzte Menge ist ein ganzer Pumpenschritt unter der
+     * zugeschnittenen Menge, und der Zyklus gibt ab. Verworfen wird nur noch,
+     * wo die zugeschnittene Menge ein einziger Schritt war. Ohne das Kuerzen
+     * gibt es keinen einzigen gekuerzten Zyklus.
+     */
+    @Test
+    fun `Schwanz-Endpruefung kuerzt statt zu verwerfen`() {
+        val startTod = app.aaps.core.utils.MidnightUtils.secondsFromMidnight(start) / 60
+        val profil = org.mockito.kotlin.spy(validProfile)
+        org.mockito.kotlin.doAnswer { inv ->
+            val min = (inv.getArgument<Int>(0) / 60) % 1440
+            val nachStart = ((min - startTod) % 1440 + 1440) % 1440
+            // synthetisch: vor dem Horizont hoeher als dahinter
+            if (nachStart <= 100) 72.0 else 48.0
+        }.whenever(profil).getIsfMgdlTimeFromMidnight(org.mockito.kotlin.any())
+        whenever(profileFunction.getProfile()).thenReturn(profil)
+        whenever(profileFunction.getProfile(any())).thenReturn(profil)
+        tailGuard = true
+        maxSmbU = 0.5
+        flach = 140.0
+        steigungProMin = 1.0
+        bolusIobU = 2.5
+        corrExpLimit = 3.0
+        mealExpLimit = 7.0
+        corrRatioCapZ = 0.2
+        mealRatioCapZ = 0.35
+        mealBgMin = 110.0
+        clock = start
+        transportReset()
+        neuerRunner(FuseLedgerAdapter())
+        markerAt = start + 2 * 60_000L
+
+        val outs = (0 until 30).map { cycle() }
+        val bericht = outs.withIndex().joinToString("\n") { (i, o) ->
+            "$i smb=${o.decision.smbU} block=${o.decision.block} bind=${o.decision.bindingLimit} " +
+                "kappen=${o.decision.caps.joinToString { c -> "${c.name}=${c.valueU}" }}"
+        }
+        fun zugeschnitten(d: FuseController.Decision): Double? =
+            d.caps.minOfOrNull { it.valueU }?.let { kotlin.math.floor(it / 0.05 + 1e-9) * 0.05 }
+
+        val gekuerzt = outs.filter { it.decision.bindingLimit.contains("|finalShortened:${FuseCycleRunner.TAIL_VETO}") }
+        assertTrue(gekuerzt.isNotEmpty()) {
+            "kein Zyklus gekuerzt - die Endpruefung verwirft die Menge wieder ganz\n$bericht"
+        }
+        gekuerzt.forEach { o ->
+            val d = o.decision
+            assertEquals(FuseController.Block.NONE, d.block, "der Zyklus gibt ab")
+            assertEquals(0.0, d.smbU / 0.05 - kotlin.math.round(d.smbU / 0.05), 1e-6, "ganzer Pumpenschritt: ${d.smbU}")
+            // Ohne Kappenliste (Rest-Zaehler-Stufe) gibt es keine Vergleichsmenge.
+            val z = zugeschnitten(d) ?: return@forEach
+            assertTrue(d.smbU > 0.0 && d.smbU < z - 1e-9) { "ein Schritt UNTER der zugeschnittenen Menge: $d" }
+        }
+        outs.filter { it.decision.bindingLimit == "finalVerify:${FuseCycleRunner.TAIL_VETO}" }.forEach { o ->
+            val z = zugeschnitten(o.decision) ?: return@forEach
+            assertTrue(z < 0.10 - 1e-9) { "verworfen, obwohl ein kleinerer Schritt moeglich war: ${o.decision}\n$bericht" }
+        }
+    }
+
 }
