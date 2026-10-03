@@ -11,12 +11,13 @@ import app.aaps.core.interfaces.queue.Command
 import app.aaps.core.interfaces.queue.CommandQueue
 import app.aaps.core.interfaces.utils.DateUtil
 import app.aaps.core.interfaces.utils.HardLimits
-import app.aaps.core.interfaces.utils.Round
 import app.aaps.core.keys.LongKey
 import app.aaps.core.keys.interfaces.Preferences
+import app.aaps.core.objects.extensions.combine
 import app.aaps.core.objects.extensions.convertedToAbsolute
 import app.aaps.core.objects.extensions.iobCalc
 import app.aaps.core.objects.extensions.plannedRemainingMinutes
+import app.aaps.core.objects.extensions.round
 import app.aaps.core.objects.extensions.target
 import app.aaps.core.utils.MidnightUtils
 import app.aaps.core.data.model.BS
@@ -7731,8 +7732,8 @@ class FuseCycleRunner(
     /**
      * Der Aufnahmenachweis dieses Zyklus (s. [TransportAufnahme]).
      *
-     * Benutzte Werte: jeder Arraypunkt und das Gesamt-IOB, jeweils der
-     * Bolusanteil (iob - basaliob) am gelieferten Zeitschluessel. Lesung 2
+     * Benutzte Werte: jeder Arraypunkt und das Gesamt-IOB, je mit den drei
+     * Groessen, die FUSE daraus liest (IOB, Basal-IOB, Aktivitaet). Lesung 2
      * liest das Fenster, das die Nachrechnung braucht: vom fruehesten
      * Schluessel minus Wirkdauer bis zum spaetesten nachzurechnenden
      * Schluessel, mindestens eine Minute ueber den Rechenzeitpunkt hinaus.
@@ -7755,13 +7756,17 @@ class FuseCycleRunner(
             val rangeMs = (dia * 3_600_000.0).toLong()
             val werte = ArrayList<TransportAufnahme.BenutzterWert>(arrays.times.size + 1)
             for (i in arrays.times.indices)
-                werte += TransportAufnahme.BenutzterWert(arrays.times[i], arrays.iob[i] - arrays.basalIob[i], arrays.cacheMoeglich[i])
-            werte += TransportAufnahme.BenutzterWert(iobTotal.time, iobTotal.iob - iobTotal.basaliob, iobTotalCacheMoeglich)
+                werte += TransportAufnahme.BenutzterWert(
+                    arrays.times[i], arrays.iob[i], arrays.basalIob[i], arrays.activity[i], arrays.cacheMoeglich[i],
+                )
+            werte += TransportAufnahme.BenutzterWert(
+                iobTotal.time, iobTotal.iob, iobTotal.basaliob, iobTotal.activity, iobTotalCacheMoeglich,
+            )
             val ab = minOf(werte.minOf { it.zeitTs }, kandidaten.values.minOf { it.timestamp }) - rangeMs
             val bis = maxOf(computeTs + 60_000L, werte.filter { it.ausCacheMoeglich }.maxOfOrNull { it.zeitTs } ?: 0L)
             val lesung2 = runCatching { persistenceLayer.getBolusesFromTimeToTime(ab, bis, true) }.getOrNull()
             TransportAufnahme.pruefe(kandidaten, posten, lesung2, werte) { t ->
-                lesung2?.let { l -> runCatching { bolusIobWieAaps(t, l, dia, rangeMs) }.getOrNull() }
+                lesung2?.let { l -> runCatching { nachrechnungWieAaps(t, l, dia, rangeMs) }.getOrNull() }
             }
         } catch (_: Exception) {
             TransportAufnahme.Ergebnis(emptyMap(), kandidaten.size, "FEHLER")
@@ -7769,16 +7774,29 @@ class FuseCycleRunner(
     }
 
     /**
-     * Die Bolus-IOB zum Zeitschluessel [t], gerechnet wie
-     * `IobCobCalculatorPlugin.calculateIobFromBolusToTime`: gueltige Boli mit
-     * Zeit in [t - Wirkdauer, t), je `BS.iobCalc`, auf 0,001 gerundet.
-     * Verlaengerte Boli rechnet AAPS zusaetzlich mit - gibt es sie, weicht die
-     * Nachrechnung ab, und der Nachweis scheitert (sichere Richtung).
+     * Was AAPS fuer den Zeitschluessel [t] JETZT rechnen wuerde, ohne Cache -
+     * dieselbe Rechnung wie `IobCobCalculatorPlugin.calculateFromTreatmentsAndTemps`:
+     * - Bolusanteil wie `calculateIobFromBolusToTime`: gueltige Boli aus
+     *   Lesung 2 mit Zeit in [t - Wirkdauer, t), je `BS.iobCalc` (IOB UND
+     *   Aktivitaet), in der Reihenfolge der DAO;
+     * - Basalanteil ueber die oeffentliche
+     *   `calculateIobToTimeFromTempBasalsIncludingConvertedExtended` (sie
+     *   liest keinen Cache);
+     * - beide gerundet, kombiniert und noch einmal gerundet wie dort.
+     * Verlaengerte Boli ausserhalb der TBR-Emulation rechnet AAPS zusaetzlich
+     * in den Bolusanteil - gibt es sie, weicht die Nachrechnung ab, und es
+     * entlastet nichts (sichere Richtung).
      */
-    private fun bolusIobWieAaps(t: Long, boli: List<BS>, dia: Double, rangeMs: Long): Double {
-        var s = 0.0
-        for (b in boli) if (b.isValid && b.timestamp < t && b.timestamp >= t - rangeMs) s += b.iobCalc(activePlugin, t, dia).iobContrib
-        return Round.roundTo(s, 0.001)
+    private fun nachrechnungWieAaps(t: Long, boli: List<BS>, dia: Double, rangeMs: Long): TransportAufnahme.Nachrechnung {
+        val bolus = app.aaps.core.interfaces.aps.IobTotal(t)
+        for (b in boli) if (b.isValid && b.timestamp < t && b.timestamp >= t - rangeMs) {
+            val r = b.iobCalc(activePlugin, t, dia)
+            bolus.iob += r.iobContrib
+            bolus.activity += r.activityContrib
+        }
+        val basal = iobCobCalculator.calculateIobToTimeFromTempBasalsIncludingConvertedExtended(t).round()
+        val gesamt = app.aaps.core.interfaces.aps.IobTotal.combine(bolus.round(), basal).round()
+        return TransportAufnahme.Nachrechnung(gesamt.iob, gesamt.basaliob, gesamt.activity)
     }
 
     /** Die Treatment-Vollsicht fuer den Ledger-Abgleich - s. [TreatmentView]. */

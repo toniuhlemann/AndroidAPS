@@ -120,7 +120,12 @@ class TransportAufnahmeTest {
         bestKnownTs = t0, temporaryId = tempId, pumpId = pumpId, settledZero = false, fehlerfrei = fehlerfrei,
     )
 
-    private val frisch = listOf(TransportAufnahme.BenutzterWert(t0 + 60_000L, 0.30, ausCacheMoeglich = false))
+    private fun wert(ts: Long, iob: Double, akt: Double, basal: Double = 0.0, cache: Boolean) =
+        TransportAufnahme.BenutzterWert(ts, iob, basal, akt, cache)
+
+    private fun nach(iob: Double, akt: Double, basal: Double = 0.0) = TransportAufnahme.Nachrechnung(iob, basal, akt)
+
+    private val frisch = listOf(wert(t0 + 60_000L, 0.30, 0.0001, cache = false))
     private val b = smb(11, t0 + 20_000L, 0.30, pumpId = 501, tempId = 9001)
 
     private fun pruefe(
@@ -128,7 +133,7 @@ class TransportAufnahmeTest {
         kandidaten: Map<String, BS> = mapOf("p1" to b),
         posten: List<OpenTransportItem> = listOf(posten("p1", 0.30)),
         werte: List<TransportAufnahme.BenutzterWert> = frisch,
-        nachrechnen: (Long) -> Double? = { null },
+        nachrechnen: (Long) -> TransportAufnahme.Nachrechnung? = { null },
     ) = TransportAufnahme.pruefe(kandidaten, posten, lesung2, werte, nachrechnen)
 
     @Test
@@ -169,38 +174,79 @@ class TransportAufnahmeTest {
     }
 
     @Test
-    fun `ein cachefaehiger Wert wird nachgerechnet - stimmt er, ist die Menge belegt`() {
-        val werte = listOf(TransportAufnahme.BenutzterWert(t0 + 60_000L, 0.297, ausCacheMoeglich = true))
-        assertEquals(mapOf("p1" to 0.30), pruefe(listOf(b), werte = werte, nachrechnen = { 0.297 }).aufgenommenU)
-        // Rundung von AAPS (je 0,001 fuer Bolus- und Basalanteil) ist kein Befund.
-        assertEquals(mapOf("p1" to 0.30), pruefe(listOf(b), werte = werte, nachrechnen = { 0.2985 }).aufgenommenU)
+    fun `ein cachefaehiger Wert wird nachgerechnet - stimmen alle Groessen, ist die Menge belegt`() {
+        val werte = listOf(wert(t0 + 60_000L, 0.297, 0.0021, basal = -0.012, cache = true))
+        val genau = pruefe(listOf(b), werte = werte, nachrechnen = { nach(0.297, 0.0021, basal = -0.012) })
+        assertEquals(mapOf("p1" to 0.30), genau.aufgenommenU)
+        // Weniger als ein halber Rundungsschritt ist Darstellung, kein Befund.
+        val knapp = pruefe(listOf(b), werte = werte, nachrechnen = { nach(0.2974, 0.00213, basal = -0.0118) })
+        assertEquals(mapOf("p1" to 0.30), knapp.aufgenommenU)
+    }
+
+    /**
+     * DER CODEX-GEGENZEUGE (03.10.2026): gleiche IOB-Summe, andere Aktivitaet.
+     * Eine veraltete Bolusliste kann dieselbe Summe ergeben; der Zyklus benutzt
+     * aber auch die Aktivitaet und das Basal-IOB. Jede dieser Groessen allein
+     * genuegt fuer die Ablehnung, schon ab einem ganzen Rundungsschritt.
+     */
+    @Test
+    fun `gleiche IOB-Summe, andere Aktivitaet oder anderes Basal-IOB - nichts belegt`() {
+        val cache = listOf(wert(t0 + 60_000L, 0.904, 0.0003, cache = true))
+        val e = pruefe(listOf(b), werte = cache, nachrechnen = { nach(0.904, 0.0069) })
+        assertTrue(e.aufgenommenU.isEmpty())
+        assertEquals("CACHE_ABWEICHUNG", e.grund)
+        listOf(
+            nach(0.904, 0.0003, basal = 0.002),
+            nach(0.905, 0.0003),
+            nach(0.904, 0.0004),
+        ).forEach { n ->
+            val r = pruefe(listOf(b), werte = cache, nachrechnen = { n })
+            assertTrue(r.aufgenommenU.isEmpty()) { "belegt trotz $n" }
+            assertEquals("CACHE_ABWEICHUNG", r.grund)
+        }
     }
 
     @Test
     fun `ein aelterer Cacheeintrag ohne den Bolus - nichts belegt, auch fuer andere Posten`() {
         val b2 = smb(12, t0 + 80_000L, 0.20, tempId = 9002)
         val werte = listOf(
-            TransportAufnahme.BenutzterWert(t0 + 60_000L, 0.0, ausCacheMoeglich = true), // ohne den Bolus
-            TransportAufnahme.BenutzterWert(t0 + 120_000L, 0.49, ausCacheMoeglich = false),
+            wert(t0 + 60_000L, 0.0, 0.0, cache = true), // ohne den Bolus
+            wert(t0 + 120_000L, 0.49, 0.0004, cache = false),
         )
         val e = pruefe(
             listOf(b, b2), kandidaten = mapOf("p1" to b, "p2" to b2),
             posten = listOf(posten("p1", 0.30), posten("p2", 0.20)),
-            werte = werte, nachrechnen = { 0.297 },
+            werte = werte, nachrechnen = { nach(0.297, 0.0021) },
         )
         assertTrue(e.aufgenommenU.isEmpty())
         assertEquals("CACHE_ABWEICHUNG", e.grund)
         assertEquals(2, e.kandidaten)
     }
 
+    /** Codex P2-1: auch eine NICHT ENDLICHE NACHRECHNUNG darf nichts belegen -
+     *  vorher fiel sie im Vergleich offen durch. */
     @Test
-    fun `ohne Nachrechnung oder mit unendlichem Wert - nichts belegt`() {
-        val werte = listOf(TransportAufnahme.BenutzterWert(t0 + 60_000L, 0.297, ausCacheMoeglich = true))
+    fun `ohne Nachrechnung oder nicht endlich auf einer der beiden Seiten - nichts belegt`() {
+        val werte = listOf(wert(t0 + 60_000L, 0.297, 0.0021, cache = true))
         assertEquals("NACHRECHNUNG_UNMOEGLICH", pruefe(listOf(b), werte = werte, nachrechnen = { null }).grund)
-        val nan = listOf(TransportAufnahme.BenutzterWert(t0 + 60_000L, Double.NaN, ausCacheMoeglich = true))
-        val e = pruefe(listOf(b), werte = nan, nachrechnen = { 0.297 })
-        assertTrue(e.aufgenommenU.isEmpty())
-        assertEquals("CACHE_ABWEICHUNG", e.grund)
+        listOf(
+            wert(t0 + 60_000L, Double.NaN, 0.0021, cache = true),
+            wert(t0 + 60_000L, 0.297, Double.NaN, cache = true),
+            wert(t0 + 60_000L, 0.297, 0.0021, basal = Double.POSITIVE_INFINITY, cache = true),
+        ).forEach { w ->
+            val r = pruefe(listOf(b), werte = listOf(w), nachrechnen = { nach(0.297, 0.0021) })
+            assertTrue(r.aufgenommenU.isEmpty()) { "belegt mit $w" }
+            assertEquals("CACHE_ABWEICHUNG", r.grund)
+        }
+        listOf(
+            nach(Double.NaN, 0.0021),
+            nach(0.297, Double.NaN),
+            nach(0.297, 0.0021, basal = Double.NaN),
+        ).forEach { n ->
+            val r = pruefe(listOf(b), werte = werte, nachrechnen = { n })
+            assertTrue(r.aufgenommenU.isEmpty()) { "belegt mit Nachrechnung $n" }
+            assertEquals("CACHE_ABWEICHUNG", r.grund)
+        }
     }
 
     @Test

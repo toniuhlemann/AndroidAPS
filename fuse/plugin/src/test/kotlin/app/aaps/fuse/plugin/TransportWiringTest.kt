@@ -20,6 +20,8 @@ import app.aaps.core.keys.BooleanKey
 import app.aaps.core.keys.DoubleKey
 import app.aaps.core.keys.LongKey
 import app.aaps.core.objects.constraints.ConstraintObject
+import app.aaps.core.objects.extensions.combine
+import app.aaps.core.objects.extensions.round
 import app.aaps.fuse.core.util.Sha
 import app.aaps.fuse.plugin.ledger.FuseLedgerAdapter
 import app.aaps.fuse.plugin.ledger.EpisodeBudgets
@@ -548,6 +550,11 @@ class TransportWiringTest : TestBaseWithProfile() {
      *  beiden Bolus-Lesungen eines Zyklus. */
     private var vorIobAbfrage: (() -> Unit)? = null
 
+    /** Der Basalanteil des AAPS-nahen IOB (Vorgabe: keiner). Dieselbe Funktion
+     *  beantwortet `calculateIobToTimeFromTempBasalsIncludingConvertedExtended`
+     *  - so muss die Nachrechnung des Aufnahmenachweises ihn treffen. */
+    private var aapsNahBasal: (Long) -> IobTotal = { t -> IobTotal(t) }
+
     private fun aapsNahIob(atTs: Long, zwischenspeichern: Boolean = true): IobTotal {
         vorIobAbfrage?.invoke()
         val key = if (zwischenspeichern) roundUp(atTs) else atTs
@@ -560,12 +567,10 @@ class TransportWiringTest : TestBaseWithProfile() {
             iob += r.iobContrib
             akt += r.activityContrib
         }
-        val ergebnis = IobTotal(key).also {
-            it.iob = app.aaps.core.interfaces.utils.Round.roundTo(iob, 0.001)
-            it.basaliob = 0.0
-            it.activity = app.aaps.core.interfaces.utils.Round.roundTo(akt, 0.0001)
-            it.valid = true
-        }
+        // Wie calculateFromTreatmentsAndTemps: Bolus- und Basalanteil je
+        // gerundet, kombiniert, noch einmal gerundet.
+        val bolus = IobTotal(key).also { it.iob = iob; it.activity = akt }.round()
+        val ergebnis = IobTotal.combine(bolus, aapsNahBasal(key).round()).round().also { it.valid = true }
         if (zwischenspeichern && key <= clock) aapsCache[key] = ergebnis
         return ergebnis
     }
@@ -757,6 +762,10 @@ class TransportWiringTest : TestBaseWithProfile() {
                 t.valid = iobGueltig
             } else if (aapsNah) aapsNahIob(clock, zwischenspeichern = false) else iob(clock)
         }
+        // Basalanteil fuer die Nachrechnung des Aufnahmenachweises. Das Rig
+        // fuehrt kein Basal-IOB (auch aapsNah setzt basaliob = 0).
+        whenever(iobCobCalculator.calculateIobToTimeFromTempBasalsIncludingConvertedExtended(any()))
+            .thenAnswer { inv -> aapsNahBasal(inv.getArgument(0)) }
 
         whenever(constraintsChecker.getMaxIOBAllowed()).thenAnswer { ConstraintObject(maxIobU, aapsLogger) }
         whenever(commandQueue.bolusInQueue()).thenReturn(false)
@@ -17525,5 +17534,68 @@ class TransportWiringTest : TestBaseWithProfile() {
         assertEquals(aufnahmeMengeU, o.transportSicht!!.modelliertU, 1e-12)
         // Die IOB-Sicht traegt ihn schon: konservativ doppelt, nie in keiner.
         assertTrue(bolusIob(o) > 0.25) { "${o.iobTotal}" }
+    }
+
+    /**
+     * DER CODEX-GEGENZEUGE DURCH DEN RUNNER (03.10.2026): gleiche IOB-Summe,
+     * andere Aktivitaet. Der Cacheeintrag am Ankerschluessel entstand mit einem
+     * anderen Bolus B, so alt wie der Kandidat, ohne den Kandidaten. Noch vor
+     * Lesung 1 bekam B einen korrigierten Zeitstempel (60 min frueher), und der
+     * Kandidat wurde sichtbar. Die Menge von B ist so gewaehlt, dass die
+     * IOB-Summe am Schluessel gleich bleibt - der fruehere Vergleich der Summe
+     * allein haette entlastet, obwohl die Bahn eine veraltete Aktivitaet nutzt.
+     */
+    @Test
+    fun `Aufnahmenachweis - gleiche IOB-Summe, andere Aktivitaet im Cache, der Transport bleibt`(@TempDir dir: File) {
+        val kandidat = aufnahmeLage(dir, mitBolus = false)
+        val anker = clock + taktMs
+        val dia = validProfile.dia
+        fun proEinheit(ts: Long) = insulin.iobCalcForTreatment(BS(timestamp = ts, amount = 1.0, type = BS.Type.SMB), anker, dia)
+        val jung = proEinheit(kandidat.timestamp)
+        val alt = proEinheit(kandidat.timestamp - 60 * 60_000L)
+        val mengeB = aufnahmeMengeU * jung.iobContrib / (jung.iobContrib - alt.iobContrib)
+        val gerundet = { x: Double, s: Double -> app.aaps.core.interfaces.utils.Round.roundTo(x, s) }
+        // Der Cacheeintrag aus der alten Liste: nur B, so alt wie der Kandidat.
+        val cacheIob = gerundet(mengeB * jung.iobContrib, 0.001)
+        val cacheAkt = gerundet(mengeB * jung.activityContrib, 0.0001)
+        aapsCache[anker] = IobTotal(anker).also { it.iob = cacheIob; it.basaliob = 0.0; it.activity = cacheAkt; it.valid = true }
+        // Der aktuelle Stand: B mit korrigiertem Zeitstempel (neue Version), dazu der Kandidat.
+        val b = BS(
+            id = 7002L, version = 1, timestamp = kandidat.timestamp - 60 * 60_000L, amount = mengeB, type = BS.Type.SMB,
+            ids = app.aaps.core.data.model.IDs(pumpType = PumpType.GENERIC_AAPS, pumpSerial = "vs", temporaryId = 424_243L),
+        )
+        boliSetzen(listOf(b, kandidat), entwerten = false)
+        // Vorbedingung des Gegenzeugen: Summe gleich, Aktivitaet nicht.
+        val frischIob = gerundet(mengeB * alt.iobContrib + aufnahmeMengeU * jung.iobContrib, 0.001)
+        val frischAkt = gerundet(mengeB * alt.activityContrib + aufnahmeMengeU * jung.activityContrib, 0.0001)
+        assertEquals(cacheIob, frischIob, 1e-9) { "die IOB-Summen muessen gleich sein" }
+        assertTrue(kotlin.math.abs(cacheAkt - frischAkt) >= 0.0002) { "Aktivitaet $cacheAkt gegen $frischAkt" }
+
+        val o = cycle()
+        assertNull(o.abortReason, o.abortReason)
+        val s = o.transportSicht!!
+        assertEquals(1, s.aufnahme.kandidaten, "Lesung 1 sah den Kandidaten")
+        assertTrue(s.aufnahme.aufgenommenU.isEmpty()) { "${s.aufnahme}" }
+        assertEquals("CACHE_ABWEICHUNG", s.aufnahme.grund)
+        assertEquals(aufnahmeMengeU, s.modelliertU, 1e-12)
+    }
+
+    /**
+     * DIE NACHRECHNUNG TRIFFT AUCH DEN BASALANTEIL: mit einer (synthetischen)
+     * laufenden Basalabweichung wird weiter genau einmal gezaehlt. Fehlte der
+     * Basalanteil in der Nachrechnung, wiche jeder cachefaehige Wert ab, und
+     * der Nachweis entlastete nie.
+     */
+    @Test
+    fun `Aufnahmenachweis - mit Basalanteil wird weiter genau einmal gezaehlt`(@TempDir dir: File) {
+        aapsNahBasal = { t -> IobTotal(t).also { it.basaliob = -0.05; it.activity = -0.0003 } }
+        aufnahmeLage(dir)
+        val o = cycle()
+        assertNull(o.abortReason, o.abortReason)
+        assertEquals(-0.05, o.iobTotal!!.basaliob, 1e-9)
+        val s = o.transportSicht!!
+        assertEquals(mapOf("vorzyklus" to aufnahmeMengeU), s.aufnahme.aufgenommenU)
+        assertNull(s.aufnahme.grund)
+        assertEquals(0.0, s.modelliertU, 1e-12)
     }
 }

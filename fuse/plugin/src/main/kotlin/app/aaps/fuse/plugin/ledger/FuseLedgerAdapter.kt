@@ -1172,8 +1172,16 @@ object TransportInclusion {
  *    Aenderung, eine Ungueltigsetzung ist endgueltig. Was ZWISCHEN den beiden
  *    Lesungen frisch gerechnet wurde, enthielt ihn also unveraendert.
  * 2. Jeder benutzte Wert, der aus dem Cache stammen KANN (Zeitschluessel vor
- *    der Wanduhr nach dem Aufruf), wird aus Lesung 2 nachgerechnet - dieselbe
- *    Rechnung wie AAPS. Weicht EIN Wert ab, ist seine Herkunft unbekannt; dann
+ *    der Wanduhr nach dem Aufruf), wird VOLLSTAENDIG nachgerechnet -
+ *    Bolusanteil aus Lesung 2, Basalanteil ueber die oeffentliche
+ *    AAPS-Funktion, kombiniert und gerundet wie AAPS - und in GENAU den
+ *    Groessen verglichen, die der Zyklus benutzt: IOB, Basal-IOB, Aktivitaet.
+ *    Eine gleiche IOB-Summe allein beweist nichts: eine veraltete Bolusliste
+ *    kann dieselbe Summe mit anderer Aktivitaet ergeben (Codex-Gegenzeuge
+ *    03.10.2026). Stimmen dagegen alle benutzten Groessen mit der Rechnung
+ *    aus dem aktuellen Stand ueberein, rechnet der Zyklus mit den richtigen
+ *    Zahlen - gleich, woher der Eintrag stammt. Weicht EINE Groesse um mehr
+ *    als einen halben Rundungsschritt ab oder ist eine Seite nicht endlich,
  *    entlastet in diesem Zyklus nichts.
  * 3. Entlastet wird hoechstens die Bolusmenge und nie mehr, als der Posten
  *    offen hat; ein Rest bleibt Transport. Nur fehlerfreie, ungebuchte Posten
@@ -1186,9 +1194,20 @@ object TransportInclusion {
  */
 object TransportAufnahme {
 
-    /** Ein IOB-Wert, den der Zyklus benutzt: [bolusIobU] = iob - basaliob, wie
-     *  AAPS ihn geliefert hat, zum gelieferten Zeitschluessel [zeitTs]. */
-    data class BenutzterWert(val zeitTs: Long, val bolusIobU: Double, val ausCacheMoeglich: Boolean)
+    /** Ein IOB-Wert, den der Zyklus benutzt, genau wie AAPS ihn geliefert hat:
+     *  die drei Groessen, die FUSE daraus liest, zum gelieferten
+     *  Zeitschluessel [zeitTs]. */
+    data class BenutzterWert(
+        val zeitTs: Long,
+        val iobU: Double,
+        val basalIobU: Double,
+        val aktivitaetUProMin: Double,
+        val ausCacheMoeglich: Boolean,
+    )
+
+    /** Was AAPS fuer denselben Zeitschluessel JETZT rechnen wuerde - dieselben
+     *  drei Groessen (s. Runner, `nachrechnungWieAaps`). */
+    data class Nachrechnung(val iobU: Double, val basalIobU: Double, val aktivitaetUProMin: Double)
 
     data class Ergebnis(
         /** proposalId -> nachgewiesen aufgenommene Menge [U]. Leer = nichts. */
@@ -1205,17 +1224,30 @@ object TransportAufnahme {
         }
     }
 
-    /** Toleranz der Nachrechnung [U]: AAPS rundet Bolus- und Basal-IOB je auf
-     *  0,001; die Differenz traegt also hoechstens rund 0,0015 Rundung. Eine
-     *  SMB von einem Pumpenschritt liegt weit darueber. */
-    const val CACHE_EPS_U = 0.003
+    /** Toleranzen des Vergleichs: je ein HALBER Rundungsschritt von AAPS (IOB
+     *  auf 0,001, Aktivitaet auf 0,0001 je Minute). Die Nachrechnung ist
+     *  dieselbe Arithmetik in derselben Reihenfolge; eine echte Abweichung
+     *  zeigt sich als mindestens ein ganzer Schritt. Was darunter bleibt, ist
+     *  die Rundung von AAPS selbst. */
+    const val IOB_EPS_U = 0.0005
+    const val AKTIVITAET_EPS_U_PRO_MIN = 0.00005
+
+    /** Stimmen ALLE benutzten Groessen? Nicht endlich auf einer der beiden
+     *  Seiten heisst: nein. */
+    internal fun passt(w: BenutzterWert, n: Nachrechnung): Boolean {
+        val alle = doubleArrayOf(w.iobU, w.basalIobU, w.aktivitaetUProMin, n.iobU, n.basalIobU, n.aktivitaetUProMin)
+        if (alle.any { !it.isFinite() }) return false
+        return abs(w.iobU - n.iobU) <= IOB_EPS_U &&
+            abs(w.basalIobU - n.basalIobU) <= IOB_EPS_U &&
+            abs(w.aktivitaetUProMin - n.aktivitaetUProMin) <= AKTIVITAET_EPS_U_PRO_MIN
+    }
 
     fun pruefe(
         kandidaten: Map<String, BS>,
         posten: List<OpenTransportItem>,
         lesung2: List<BS>?,
         werte: List<BenutzterWert>,
-        nachrechnen: (Long) -> Double?,
+        nachrechnen: (Long) -> Nachrechnung?,
     ): Ergebnis {
         if (kandidaten.isEmpty()) return Ergebnis.LEER
         val geeignet = kandidaten.filter { (id, b) ->
@@ -1234,14 +1266,13 @@ object TransportAufnahme {
         }
         val zaehler = kennungen.values.flatten().groupingBy { it }.eachCount()
         val mehrfach = kennungen.filterValues { ks -> ks.any { zaehler.getValue(it) > 1 } }.keys
-        // (2) Herkunft jedes Werts, der aus dem Cache stammen kann. Ein einziger
-        // unbelegter Wert macht JEDE Entlastung unbelegt: welche Menge in ihm
-        // fehlt, ist von hier aus nicht zuzuordnen.
+        // (2) Jeder Wert, der aus dem Cache stammen kann, in allen benutzten
+        // Groessen. Ein einziger unbelegter Wert macht JEDE Entlastung unbelegt:
+        // welche Menge in ihm fehlt, ist von hier aus nicht zuzuordnen.
         for (w in werte) {
             if (!w.ausCacheMoeglich) continue
             val nach = nachrechnen(w.zeitTs) ?: return Ergebnis(emptyMap(), kandidaten.size, "NACHRECHNUNG_UNMOEGLICH")
-            if (!w.bolusIobU.isFinite() || abs(nach - w.bolusIobU) > CACHE_EPS_U)
-                return Ergebnis(emptyMap(), kandidaten.size, "CACHE_ABWEICHUNG")
+            if (!passt(w, nach)) return Ergebnis(emptyMap(), kandidaten.size, "CACHE_ABWEICHUNG")
         }
         // (1) Unveraendert in Lesung 2.
         val belegt = mutableMapOf<String, Double>()
