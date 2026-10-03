@@ -1182,7 +1182,11 @@ object TransportInclusion {
  *    aus dem aktuellen Stand ueberein, rechnet der Zyklus mit den richtigen
  *    Zahlen - gleich, woher der Eintrag stammt. Weicht EINE Groesse um mehr
  *    als einen halben Rundungsschritt ab oder ist eine Seite nicht endlich,
- *    entlastet in diesem Zyklus nichts.
+ *    entlastet in diesem Zyklus nichts. Das setzt eine VOLLSTAENDIGE
+ *    Nachrechnung voraus: fehlt in ihr ein Anteil (verlaengerte Boli, s.
+ *    Runner), kann diese Auslassung eine Auslassung im Cache zahlenmaessig
+ *    ausgleichen (Codex-Nachpruefung 03.10.2026). Ist sie nicht vollstaendig,
+ *    entlastet ebenfalls nichts.
  * 3. Entlastet wird hoechstens die Bolusmenge und nie mehr, als der Posten
  *    offen hat; ein Rest bleibt Transport. Nur fehlerfreie, ungebuchte Posten
  *    ohne Identitaet.
@@ -1247,6 +1251,9 @@ object TransportAufnahme {
         posten: List<OpenTransportItem>,
         lesung2: List<BS>?,
         werte: List<BenutzterWert>,
+        /** Kann die Nachrechnung alle Anteile treffen, die AAPS rechnet? Nur
+         *  gefragt, wenn ein Wert nachzurechnen ist - und dann genau einmal. */
+        nachrechnungVollstaendig: () -> Boolean = { true },
         nachrechnen: (Long) -> Nachrechnung?,
     ): Ergebnis {
         if (kandidaten.isEmpty()) return Ergebnis.LEER
@@ -1269,8 +1276,13 @@ object TransportAufnahme {
         // (2) Jeder Wert, der aus dem Cache stammen kann, in allen benutzten
         // Groessen. Ein einziger unbelegter Wert macht JEDE Entlastung unbelegt:
         // welche Menge in ihm fehlt, ist von hier aus nicht zuzuordnen.
+        var vollstaendigGeprueft = false
         for (w in werte) {
             if (!w.ausCacheMoeglich) continue
+            if (!vollstaendigGeprueft) {
+                if (!nachrechnungVollstaendig()) return Ergebnis(emptyMap(), kandidaten.size, "NACHRECHNUNG_UNVOLLSTAENDIG")
+                vollstaendigGeprueft = true
+            }
             val nach = nachrechnen(w.zeitTs) ?: return Ergebnis(emptyMap(), kandidaten.size, "NACHRECHNUNG_UNMOEGLICH")
             if (!passt(w, nach)) return Ergebnis(emptyMap(), kandidaten.size, "CACHE_ABWEICHUNG")
         }

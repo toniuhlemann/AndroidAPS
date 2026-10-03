@@ -7765,7 +7765,22 @@ class FuseCycleRunner(
             val ab = minOf(werte.minOf { it.zeitTs }, kandidaten.values.minOf { it.timestamp }) - rangeMs
             val bis = maxOf(computeTs + 60_000L, werte.filter { it.ausCacheMoeglich }.maxOfOrNull { it.zeitTs } ?: 0L)
             val lesung2 = runCatching { persistenceLayer.getBolusesFromTimeToTime(ab, bis, true) }.getOrNull()
-            TransportAufnahme.pruefe(kandidaten, posten, lesung2, werte) { t ->
+            // VERLAENGERTE BOLI (Codex-Nachpruefung 03.10.2026): AAPS rechnet sie
+            // ausserhalb der TBR-Emulation privat in den Bolusanteil
+            // (`calculateIobToTimeFromExtendedBoluses`); die Nachrechnung kennt sie
+            // nicht. Diese Auslassung kann eine Auslassung im Cache zahlenmaessig
+            // ausgleichen: alter Cache mit einem verlaengerten Bolus, Nachrechnung
+            // mit einer gleich wirkenden neuen SMB - alle Groessen passen, die
+            // vollstaendige Rechnung haette beide. Steht im Fenster der
+            // Nachrechnung IRGENDEIN verlaengerter Bolus, gilt sie deshalb als
+            // unvollstaendig - bewusst auch unter der Emulation, wo die oeffentliche
+            // Basalfunktion ihn traegt: die einfachere Regel braucht keinen
+            // ungeprueften Zweig. Ein Lesefehler heisst: unvollstaendig.
+            val vollstaendig = {
+                runCatching { persistenceLayer.getExtendedBolusesStartingFromTimeToTime(ab, bis, true).isEmpty() }
+                    .getOrDefault(false)
+            }
+            TransportAufnahme.pruefe(kandidaten, posten, lesung2, werte, vollstaendig) { t ->
                 lesung2?.let { l -> runCatching { nachrechnungWieAaps(t, l, dia, rangeMs) }.getOrNull() }
             }
         } catch (_: Exception) {
@@ -7784,8 +7799,10 @@ class FuseCycleRunner(
      *   liest keinen Cache);
      * - beide gerundet, kombiniert und noch einmal gerundet wie dort.
      * Verlaengerte Boli ausserhalb der TBR-Emulation rechnet AAPS zusaetzlich
-     * in den Bolusanteil - gibt es sie, weicht die Nachrechnung ab, und es
-     * entlastet nichts (sichere Richtung).
+     * in den Bolusanteil; sie fehlen hier. Dass das von selbst zur Ablehnung
+     * fuehre, stimmt NICHT (Codex-Nachpruefung 03.10.2026) - deshalb sperrt
+     * der Aufrufer die Entlastung, sobald ein verlaengerter Bolus im Fenster
+     * steht.
      */
     private fun nachrechnungWieAaps(t: Long, boli: List<BS>, dia: Double, rangeMs: Long): TransportAufnahme.Nachrechnung {
         val bolus = app.aaps.core.interfaces.aps.IobTotal(t)

@@ -555,6 +555,9 @@ class TransportWiringTest : TestBaseWithProfile() {
      *  - so muss die Nachrechnung des Aufnahmenachweises ihn treffen. */
     private var aapsNahBasal: (Long) -> IobTotal = { t -> IobTotal(t) }
 
+    /** Verlaengerte Boli, wie die DAO sie nach Startzeit liefert (Vorgabe: keine). */
+    private var verlaengerteBoli: List<app.aaps.core.data.model.EB> = emptyList()
+
     private fun aapsNahIob(atTs: Long, zwischenspeichern: Boolean = true): IobTotal {
         vorIobAbfrage?.invoke()
         val key = if (zwischenspeichern) roundUp(atTs) else atTs
@@ -766,6 +769,11 @@ class TransportWiringTest : TestBaseWithProfile() {
         // fuehrt kein Basal-IOB (auch aapsNah setzt basaliob = 0).
         whenever(iobCobCalculator.calculateIobToTimeFromTempBasalsIncludingConvertedExtended(any()))
             .thenAnswer { inv -> aapsNahBasal(inv.getArgument(0)) }
+        whenever(persistenceLayer.getExtendedBolusesStartingFromTimeToTime(any(), any(), any())).thenAnswer { inv ->
+            val von = inv.getArgument<Long>(0)
+            val bis = inv.getArgument<Long>(1)
+            verlaengerteBoli.filter { it.timestamp in von..bis }
+        }
 
         whenever(constraintsChecker.getMaxIOBAllowed()).thenAnswer { ConstraintObject(maxIobU, aapsLogger) }
         whenever(commandQueue.bolusInQueue()).thenReturn(false)
@@ -17597,5 +17605,38 @@ class TransportWiringTest : TestBaseWithProfile() {
         assertEquals(mapOf("vorzyklus" to aufnahmeMengeU), s.aufnahme.aufgenommenU)
         assertNull(s.aufnahme.grund)
         assertEquals(0.0, s.modelliertU, 1e-12)
+    }
+
+    /**
+     * CODEX-NACHPRUEFUNG DURCH DEN RUNNER (03.10.2026): ein verlaengerter Bolus E
+     * im Fenster. Der alte Cacheeintrag am Ankerschluessel enthaelt nur E, und E
+     * wirkt dort genau wie die neue SMB A (AAPS zerlegt E in Anteile wie eine
+     * SMB). Die Nachrechnung kennt E nicht und enthaelt A: alle drei Groessen
+     * passen, die vollstaendige Rechnung haette aber A UND E. Ohne Schutz wuerde
+     * A entlastet, obwohl der benutzte Cachewert A nicht enthaelt.
+     */
+    @Test
+    fun `Aufnahmenachweis - verlaengerter Bolus im Fenster, der Transport bleibt`(@TempDir dir: File) {
+        val a = aufnahmeLage(dir, mitBolus = false)
+        val anker = clock + taktMs
+        // Der alte Cacheeintrag: zahlenmaessig genau der Beitrag von A - so wirkt E dort.
+        val r = insulin.iobCalcForTreatment(a, anker, validProfile.dia)
+        aapsCache[anker] = IobTotal(anker).also {
+            it.iob = app.aaps.core.interfaces.utils.Round.roundTo(r.iobContrib, 0.001)
+            it.activity = app.aaps.core.interfaces.utils.Round.roundTo(r.activityContrib, 0.0001)
+            it.valid = true
+        }
+        verlaengerteBoli = listOf(
+            app.aaps.core.data.model.EB(timestamp = a.timestamp - 30_000L, duration = 60_000L, amount = aufnahmeMengeU),
+        )
+        boliSetzen(listOf(a), entwerten = false)
+
+        val o = cycle()
+        assertNull(o.abortReason, o.abortReason)
+        val s = o.transportSicht!!
+        assertEquals(1, s.aufnahme.kandidaten, "Lesung 1 sah den Kandidaten")
+        assertTrue(s.aufnahme.aufgenommenU.isEmpty()) { "${s.aufnahme}" }
+        assertEquals("NACHRECHNUNG_UNVOLLSTAENDIG", s.aufnahme.grund)
+        assertEquals(aufnahmeMengeU, s.modelliertU, 1e-12)
     }
 }

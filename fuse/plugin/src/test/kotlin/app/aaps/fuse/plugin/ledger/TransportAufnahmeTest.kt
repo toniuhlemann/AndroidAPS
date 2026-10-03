@@ -134,7 +134,7 @@ class TransportAufnahmeTest {
         posten: List<OpenTransportItem> = listOf(posten("p1", 0.30)),
         werte: List<TransportAufnahme.BenutzterWert> = frisch,
         nachrechnen: (Long) -> TransportAufnahme.Nachrechnung? = { null },
-    ) = TransportAufnahme.pruefe(kandidaten, posten, lesung2, werte, nachrechnen)
+    ) = TransportAufnahme.pruefe(kandidaten, posten, lesung2, werte, nachrechnen = nachrechnen)
 
     @Test
     fun `unveraendert in Lesung 2 und frisch gerechnet - die Menge ist belegt`() {
@@ -247,6 +247,37 @@ class TransportAufnahmeTest {
             assertTrue(r.aufgenommenU.isEmpty()) { "belegt mit Nachrechnung $n" }
             assertEquals("CACHE_ABWEICHUNG", r.grund)
         }
+    }
+
+    /**
+     * CODEX-NACHPRUEFUNG (03.10.2026): ist die Nachrechnung nicht vollstaendig
+     * (verlaengerter Bolus im Fenster), entlastet nichts - auch wenn alle
+     * Groessen passen. Gefragt wird nur, wenn ein Wert nachzurechnen ist.
+     */
+    @Test
+    fun `unvollstaendige Nachrechnung - nichts belegt, auch wenn alle Groessen passen`() {
+        val werte = listOf(wert(t0 + 60_000L, 0.297, 0.0021, cache = true))
+        var gefragt = 0
+        val e = TransportAufnahme.pruefe(
+            mapOf("p1" to b), listOf(posten("p1", 0.30)), listOf(b), werte, { gefragt++; false },
+        ) { nach(0.297, 0.0021) }
+        assertTrue(e.aufgenommenU.isEmpty())
+        assertEquals("NACHRECHNUNG_UNVOLLSTAENDIG", e.grund)
+        assertEquals(1, gefragt)
+        // Mit zwei cachefaehigen Werten wird trotzdem nur einmal gefragt.
+        gefragt = 0
+        TransportAufnahme.pruefe(
+            mapOf("p1" to b), listOf(posten("p1", 0.30)), listOf(b),
+            werte + wert(t0 + 120_000L, 0.29, 0.0023, cache = true), { gefragt++; true },
+        ) { nach(if (it == t0 + 60_000L) 0.297 else 0.29, if (it == t0 + 60_000L) 0.0021 else 0.0023) }
+        assertEquals(1, gefragt)
+        // Nur frisch gerechnete Werte: keine Nachrechnung, also auch keine Frage.
+        gefragt = 0
+        val frischOk = TransportAufnahme.pruefe(
+            mapOf("p1" to b), listOf(posten("p1", 0.30)), listOf(b), frisch, { gefragt++; false },
+        ) { null }
+        assertEquals(mapOf("p1" to 0.30), frischOk.aufgenommenU)
+        assertEquals(0, gefragt)
     }
 
     @Test
