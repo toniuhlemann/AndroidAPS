@@ -420,6 +420,30 @@ class FuseStateExportTest {
         assertTrue(ohne.isNull("holdSources"))
     }
 
+    /**
+     * Toni 04.10.: eine Marker-Ruecknahme muss im Trail stehen. NO_MARKER
+     * allein unterscheidet sie nicht von einem Ablauf oder vom Zustand vor
+     * jedem Marker.
+     */
+    @Test
+    fun `das letzte Marker-Ereignis steht im Datensatz und fehlt ohne Ereignis`() {
+        val e = FuseStateJson.MarkerEvent("WITHDRAWN", 1_700_000_000_000L, "Uebersicht", 1_699_999_000_000L)
+        val m = FuseStateJson.record("s#1", outcome(), rt(), cfg, BUILD, 0L, null, markerEvent = e) { 5_000_000L }
+            .getJSONObject("markerEvent")
+        assertEquals("WITHDRAWN", m.getString("type"))
+        assertEquals(1_700_000_000_000L, m.getLong("ts"))
+        assertEquals("Uebersicht", m.getString("source"))
+        assertEquals(1_699_999_000_000L, m.getLong("markerTs"))
+        assertTrue(m.isNull("dueTs"))
+        val vorgemerkt = FuseStateJson.record(
+            "s#1", outcome(), rt(), cfg, BUILD, 0L, null,
+            markerEvent = e.copy(type = "WITHDRAWAL_PENDING", dueTs = 1_700_000_010_000L),
+        ) { 5_000_000L }.getJSONObject("markerEvent")
+        assertEquals(1_700_000_010_000L, vorgemerkt.getLong("dueTs"))
+        // Ohne Ereignis seit Prozessstart: kein Block und keine Luecke.
+        assertFalse(record().has("markerEvent"))
+    }
+
     /** Die vier Felder, ueber die AAPS ueberhaupt aktuiert (R89). */
     @Test
     fun `die vier Aktuatorfelder stehen vollstaendig im Datensatz`() {

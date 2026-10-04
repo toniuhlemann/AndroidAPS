@@ -478,8 +478,24 @@ class OverviewFragment : DaggerFragment(), View.OnClickListener, OnLongClickList
         }
         // null heisst: ohne Rueckfrage - das ist die RUECKNAHME, und die kann
         // nur Insulin sparen.
+        //
+        // RUECKGAENGIG-FRIST (Toni 04.10.): die Ruecknahme wird nur VORGEMERKT
+        // und erst nach der Frist ausgefuehrt. Ein versehentlicher Tipp mitten
+        // in der Mahlzeit kostete sonst die ganze Vollmacht - und ein neuer
+        // Druck waere eine neue Autorisierung mit voller Huelle.
         if (fakten == null) {
-            umschalten.run()
+            val faellig = fuseOverviewSource.fuseMarkerRuecknahmeVormerken(now, ereignis)
+            // KEIN Rueckfall auf umschalten: ohne laufenden Marker wuerde das
+            // einen NEUEN setzen, ohne jede Rueckfrage.
+            if (faellig == null) {
+                processButtonsVisibility()
+                return
+            }
+            app.aaps.core.ui.dialogs.FuseMarkerRuecknahmeLeiste.zeige(
+                binding.root, rh, faellig - now,
+                rueckgaengig = { fuseOverviewSource.fuseMarkerRuecknahmeRueckgaengig(dateUtil.now()) },
+                aktualisieren = { if (_binding != null) processButtonsVisibility() },
+            )
             return
         }
         // DER TEXT STEHT IN core:ui, nicht hier: derselbe Dialog erscheint im

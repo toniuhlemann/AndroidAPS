@@ -70,14 +70,29 @@ class FuseFragment : DaggerFragment() {
             // BEIDE Wege bekommen dieselbe Kennung: die Rueckfrage ist EIN
             // Bedienereignis, egal welchen Knopf man darin drueckt.
             val ereignis = fusePlugin.markerEreignisKennung()
-            val umschalten = Runnable { fusePlugin.toggleMealMarker(now, ereignisId = ereignis); update() }
+            val quelle = app.aaps.fuse.core.controller.MarkerRuecknahme.Quelle.FUSE_TAB
+            val umschalten = Runnable { fusePlugin.toggleMealMarker(now, ereignisId = ereignis, quelle = quelle.text); update() }
             val fakten = fusePlugin.fuseMarkerPrompt(now)
             val act = activity
-            if (fakten == null || act == null) umschalten.run()
+            if (fakten == null) {
+                // RUECKGAENGIG-FRIST (Toni 04.10.), wie auf der Uebersicht: die
+                // Ruecknahme nur vormerken. KEIN Rueckfall auf umschalten -
+                // ohne laufenden Marker wuerde das einen neuen setzen.
+                val faellig = fusePlugin.markerRuecknahmeVormerken(now, ereignis, quelle)
+                if (faellig == null) {
+                    update()
+                    return@setOnClickListener
+                }
+                app.aaps.core.ui.dialogs.FuseMarkerRuecknahmeLeiste.zeige(
+                    binding.root, rh, faellig - now,
+                    rueckgaengig = { fusePlugin.markerRuecknahmeRueckgaengig(dateUtil.now(), quelle) },
+                    aktualisieren = { if (_binding != null) update() },
+                )
+            } else if (act == null) umschalten.run()
             else app.aaps.core.ui.dialogs.FuseMarkerDialog.show(
                 act, rh, fakten, umschalten,
                 Runnable {
-                    fusePlugin.toggleMealMarker(now, ohneVorschuss = true, ereignisId = ereignis)
+                    fusePlugin.toggleMealMarker(now, ohneVorschuss = true, ereignisId = ereignis, quelle = quelle.text)
                     update()
                 },
             )

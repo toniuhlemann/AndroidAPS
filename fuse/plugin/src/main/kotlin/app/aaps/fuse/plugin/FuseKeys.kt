@@ -804,6 +804,20 @@ enum class FuseLongKey(
      * Markerfenster (45 min) ist der Schluessel bedeutungslos und kann weg.
      */
     MealMarkerStamp("fuse_meal_marker_stamp", 0, 0, exportable = false),
+
+    /**
+     * EPISODENZUSTAND, kein Setting: eine VORGEMERKTE Ruecknahme
+     * ([app.aaps.fuse.core.controller.MarkerRuecknahme]). Faelligkeit 0 =
+     * keine. Persistiert, damit ein Prozessende in der Frist die gewollte
+     * Ruecknahme nicht verschluckt - der naechste Zyklus fuehrt sie aus.
+     */
+    MealMarkerWithdrawDueTs("fuse_meal_marker_withdraw_due_ts", 0, 0, exportable = false),
+    /** Der Marker, dem die Vormerkung gilt - ein anderer verwirft sie. */
+    MealMarkerWithdrawForTs("fuse_meal_marker_withdraw_for_ts", 0, 0, exportable = false),
+    /** Ereignisordnung des Tipps (0 = keine Kennung). */
+    MealMarkerWithdrawOrdnung("fuse_meal_marker_withdraw_ordnung", 0, 0, exportable = false),
+    /** Quelle des Tipps als Code ([app.aaps.fuse.core.controller.MarkerRuecknahme.Quelle]). */
+    MealMarkerWithdrawQuelle("fuse_meal_marker_withdraw_quelle", 0, 0, exportable = false),
 }
 
 enum class FuseBooleanKey(

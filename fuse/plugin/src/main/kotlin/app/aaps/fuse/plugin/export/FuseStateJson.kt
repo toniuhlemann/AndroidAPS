@@ -530,6 +530,27 @@ object FuseStateJson {
         val applicable: Boolean? = null,
     )
 
+    /**
+     * DAS LETZTE BEDIENEREIGNIS AM MAHLZEITEN-MARKER (Toni 04.10.).
+     *
+     * `dosingContext.reason` sagt nach einer Ruecknahme nur NO_MARKER - genau
+     * wie vor jedem Marker. Ob der Marker ablief, zurueckgenommen oder vom
+     * Ledger-Abgleich entfernt wurde, war im Trail nicht zu unterscheiden.
+     * Der Block steht in JEDEM Zyklus nach dem Ereignis (wie ledgerReset),
+     * bis ein neues kommt oder der Prozess endet.
+     *
+     * @param type ARMED | WITHDRAWAL_PENDING | WITHDRAWAL_UNDONE |
+     *        WITHDRAWAL_DROPPED | WITHDRAWN | RECONCILED
+     * @param dueTs Faelligkeit einer vorgemerkten Ruecknahme, sonst null.
+     */
+    data class MarkerEvent(
+        val type: String,
+        val ts: Long,
+        val source: String,
+        val markerTs: Long,
+        val dueTs: Long? = null,
+    )
+
     fun record(
         cycleId: String,
         outcome: FuseCycleRunner.Outcome,
@@ -567,6 +588,8 @@ object FuseStateJson {
          * gelesen.
          */
         expectation: Expectation? = null,
+        /** Das letzte Bedienereignis am Marker, s. [MarkerEvent]. */
+        markerEvent: MarkerEvent? = null,
         nowNs: () -> Long,
     ): JSONObject {
         val gaps = JSONArray()
@@ -1386,6 +1409,18 @@ object FuseStateJson {
         // und keine fehlende Angabe. Eine Luecke hier wuerde die echten
         // Luecken im Rauschen ertraenken.
         ledgerReset?.let { o.put("ledgerReset", app.aaps.fuse.plugin.ledger.FuseLedgerRepair.encode(it)) }
+
+        // Ebenso ohne Luecke: "kein Ereignis seit Prozessstart" ist normal.
+        markerEvent?.let { e ->
+            o.put(
+                "markerEvent", JSONObject()
+                    .put("type", e.type)
+                    .put("ts", e.ts)
+                    .put("source", e.source)
+                    .put("markerTs", e.markerTs)
+                    .put("dueTs", e.dueTs ?: JSONObject.NULL)
+            )
+        }
 
         if (publicationGate == null) gap("publicationGate", "NOT_REPORTED")
         else o.put(

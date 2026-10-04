@@ -188,10 +188,17 @@
     <string name="overview_fuse_meal_confirm_low">Zucker ist TIEF.</string>
     <string name="overview_fuse_meal_confirm_foreign">Achtung: %1$.2f U manueller Bolus in der letzten Stunde. Die Hülle wird davon NICHT gekürzt — beides zusammen wirkt.</string>
     <string name="overview_fuse_meal_confirm_episode">Evidenz-Fenster läuft in %1$d min ab — danach ohne Mahlzeiten-Kredit.</string>
+    <!-- RUECKNAHME MIT RUECKGAENGIG-FRIST (Toni 04.10.): ein Tipp auf den
+         laufenden Marker nimmt ihn erst nach der Frist zurueck; bis dahin
+         bleibt er wirksam und laesst sich rueckgaengig machen. -->
+    <string name="fuse_meal_withdraw_pending">Mahlzeiten-Marker wird in %1$d s zurückgenommen</string>
+    <string name="fuse_meal_withdraw_undo">Rückgängig</string>
+    <string name="fuse_meal_withdraw_undone">Rücknahme abgebrochen – der Marker läuft weiter</string>
+    <string name="fuse_meal_withdraw_too_late">Zu spät – der Marker ist bereits zurückgenommen</string>
     <string name="overview_show_fuse_meal_button">Mahlzeiten-Knopf (FUSE)</string>
     <string name="overview_show_fuse_meal_button_summary">Zeigt den FUSE-Mahlzeitenknopf auf dem Uebersichtsschirm. Er erscheint nur, wenn FUSE der aktive Algorithmus ist.
 
-Ein Druck kuendigt eine Mahlzeit an: FUSE gibt ab sofort Insulin ab, ohne auf einen Anstieg im CGM zu warten. Erneutes Druecken nimmt die Ankuendigung zurueck und stoppt weitere Abgaben - bereits abgegebenes Insulin holt es NICHT zurueck.</string>
+Ein Druck kuendigt eine Mahlzeit an: FUSE gibt ab sofort Insulin ab, ohne auf einen Anstieg im CGM zu warten. Erneutes Druecken nimmt die Ankuendigung nach 10 Sekunden zurueck und stoppt weitere Abgaben; bis dahin laesst sich die Ruecknahme rueckgaengig machen. Bereits abgegebenes Insulin holt sie NICHT zurueck.</string>
     <string name="stoptemptarget">Stop temp target</string>
     <string name="closedloop">Closed Loop</string>
     <string name="openloop">Open Loop</string>

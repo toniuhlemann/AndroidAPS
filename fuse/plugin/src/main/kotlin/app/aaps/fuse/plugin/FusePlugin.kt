@@ -12,6 +12,7 @@ import androidx.preference.PreferenceScreen
 import app.aaps.fuse.core.controller.InterventionStamp
 import app.aaps.fuse.core.controller.MarkerPrompt
 import app.aaps.fuse.core.controller.MarkerReauthorization
+import app.aaps.fuse.core.controller.MarkerRuecknahme
 import app.aaps.fuse.core.controller.MarkerTimeline
 import app.aaps.fuse.core.controller.MealFoundation
 import app.aaps.fuse.core.controller.PrimeRelease
@@ -43,6 +44,7 @@ import app.aaps.core.interfaces.queue.CommandQueue
 import app.aaps.core.interfaces.resources.ResourceHelper
 import app.aaps.core.interfaces.rx.bus.RxBus
 import app.aaps.core.interfaces.rx.events.EventAPSCalculationFinished
+import app.aaps.core.interfaces.rx.events.EventRefreshOverview
 import app.aaps.core.interfaces.utils.DateUtil
 import app.aaps.core.interfaces.utils.HardLimits
 import app.aaps.core.keys.DoubleKey
@@ -666,6 +668,8 @@ class FusePlugin @Inject constructor(
          * Umschalten unveraendert.
          */
         ereignisId: String? = null,
+        /** Woher der Druck kam - nur fuer Log und Trail ([FuseStateJson.MarkerEvent]). */
+        quelle: String = MarkerRuecknahme.Quelle.UNBEKANNT.text,
     ): Boolean {
         // KI-177: UNTER DER LAUFSPERRE. Der Druck aendert Episodenfelder des
         // Ledgers und schreibt ihn; ohne Sperre konnte er das mitten in einem
@@ -679,12 +683,12 @@ class FusePlugin @Inject constructor(
             val gewartetMs = (System.nanoTime() - warteBeginn) / 1_000_000L
             if (gewartetMs >= markerWartenMeldenMs)
                 aapsLogger.warn(LTag.APS, "FUSE Marker wartete $gewartetMs ms auf den laufenden Zyklus")
-            toggleMealMarkerUnterSperre(now, ohneVorschuss, ereignisId)
+            toggleMealMarkerUnterSperre(now, ohneVorschuss, ereignisId, quelle)
         }
     }
 
     /** Der eigentliche Umschaltvorgang. Nur ueber [toggleMealMarker] erreichbar, also nur unter [laufSperre]. */
-    private fun toggleMealMarkerUnterSperre(now: Long, ohneVorschuss: Boolean, ereignisId: String?): Boolean {
+    private fun toggleMealMarkerUnterSperre(now: Long, ohneVorschuss: Boolean, ereignisId: String?, quelle: String): Boolean {
         val armed = mealMarkerActive(now)
         val ordnung = MarkerReauthorization.ordnungVon(ereignisId)
         // VERALTETE RUECKRUFE FALLEN HERAUS. Nur ein echt juengeres
@@ -702,8 +706,9 @@ class FusePlugin @Inject constructor(
             // der Druck folgenlos, verschwindet er auch aus dem Graphen. Vorher
             // stand dort eine Mahlzeitenlinie ohne Mahlzeit und ohne Insulin.
             val geliefert = lastOutcome?.mealStats?.totalU ?: 0.0
+            val zurueckgenommenTs = mealMarkerArmedTs()
             synchronized(markerPressRing) {
-                MarkerTimeline.retract(markerPressRing, mealMarkerArmedTs(), geliefert)
+                MarkerTimeline.retract(markerPressRing, zurueckgenommenTs, geliefert)
             }
             // ---- DER WIDERRUF, GESCHRIEBEN AM BEDIENEREIGNIS -------------
             //
@@ -731,6 +736,17 @@ class FusePlugin @Inject constructor(
             // liesse der Lese-Ruecktausch unten einen zurueckgenommenen
             // Marker wieder auferstehen.
             preferences.put(FuseLongKey.MealMarkerStamp, 0L)
+            // DIE RUECKNAHME WIRD PROTOKOLLIERT (Toni 04.10.): vorher schrieb
+            // sie weder Log noch Trail, und eine Ruecknahme mitten in der
+            // Mahlzeit war von einem Ablauf nicht zu unterscheiden.
+            aapsLogger.info(
+                LTag.APS,
+                "FUSE Marker zurueckgenommen: quelle=$quelle marker=$zurueckgenommenTs " +
+                    "markerAlterMin=${(now - zurueckgenommenTs) / 60_000L} geliefertU=$geliefert",
+            )
+            markerEreignis("WITHDRAWN", now, quelle, zurueckgenommenTs)
+            // Eine noch offene Vormerkung ist damit erledigt.
+            speichereRuecknahmeVormerkung(null)
             return false
         }
         // ---- DIE NEUE AUTORISIERUNG, IN EINEM SCHRITT -------------------
@@ -803,7 +819,133 @@ class FusePlugin @Inject constructor(
         // dieser Version ist der Schluessel endgueltig leer.
         preferences.put(FuseLongKey.MealMarkerStamp, 0L)
         synchronized(markerPressRing) { MarkerTimeline.add(markerPressRing, now) }
+        aapsLogger.info(LTag.APS, "FUSE Marker gesetzt: quelle=$quelle marker=$now ohneVorschuss=$ohneVorschuss")
+        markerEreignis("ARMED", now, quelle, now)
+        // Eine Vormerkung galt dem alten Marker - der neue beginnt ohne.
+        speichereRuecknahmeVormerkung(null)
         return true
+    }
+
+    // ---- RUECKNAHME MIT RUECKGAENGIG-FRIST (Toni 04.10.) -------------------
+    //
+    // Ein Tipp auf den laufenden Marker nimmt ihn nicht mehr sofort zurueck,
+    // sondern merkt die Ruecknahme vor; ausgefuehrt wird sie nach der Frist
+    // ueber den gewohnten Umschaltvorgang. Warum aufgeschoben statt
+    // wiederhergestellt: s. [MarkerRuecknahme].
+
+    /** Das letzte Bedienereignis am Marker - fuer den Trail, s. [FuseStateJson.MarkerEvent]. */
+    @Volatile private var letztesMarkerEreignis: FuseStateJson.MarkerEvent? = null
+
+    /** Faellige Vormerkungen fuehrt ein eigener Zeitgeber aus; der Zyklus faengt den Rest (Neustart). */
+    private val ruecknahmeZeitgeber by lazy {
+        java.util.concurrent.Executors.newSingleThreadScheduledExecutor { r ->
+            Thread(r, "FUSE-Marker-Ruecknahme").apply { isDaemon = true }
+        }
+    }
+
+    private fun markerEreignis(typ: String, ts: Long, quelle: String, markerTs: Long, faelligTs: Long? = null) {
+        letztesMarkerEreignis = FuseStateJson.MarkerEvent(typ, ts, quelle, markerTs, faelligTs)
+    }
+
+    private fun ladeRuecknahmeVormerkung(): MarkerRuecknahme.Vormerkung? {
+        val faellig = preferences.get(FuseLongKey.MealMarkerWithdrawDueTs)
+        if (faellig <= 0L) return null
+        return MarkerRuecknahme.Vormerkung(
+            faelligTs = faellig,
+            markerTs = preferences.get(FuseLongKey.MealMarkerWithdrawForTs),
+            ordnung = preferences.get(FuseLongKey.MealMarkerWithdrawOrdnung),
+            quelle = MarkerRuecknahme.Quelle.von(preferences.get(FuseLongKey.MealMarkerWithdrawQuelle)),
+        )
+    }
+
+    private fun speichereRuecknahmeVormerkung(v: MarkerRuecknahme.Vormerkung?) {
+        preferences.put(FuseLongKey.MealMarkerWithdrawDueTs, v?.faelligTs ?: 0L)
+        preferences.put(FuseLongKey.MealMarkerWithdrawForTs, v?.markerTs ?: 0L)
+        preferences.put(FuseLongKey.MealMarkerWithdrawOrdnung, v?.ordnung ?: 0L)
+        preferences.put(FuseLongKey.MealMarkerWithdrawQuelle, v?.quelle?.code ?: 0L)
+    }
+
+    /**
+     * Die Ruecknahme VORMERKEN statt sofort auszufuehren.
+     *
+     * @return Faelligkeit [ms] oder `null`: kein laufender Marker oder ein
+     *         veraltetes Ereignis. Dann darf der Aufrufer NICHT umschalten -
+     *         ein Umschalten ohne laufenden Marker wuerde einen neuen setzen.
+     */
+    fun markerRuecknahmeVormerken(now: Long, ereignisId: String?, quelle: MarkerRuecknahme.Quelle): Long? {
+        val faellig = synchronized(laufSperre) {
+            val ordnung = MarkerReauthorization.ordnungVon(ereignisId)
+            if (!MarkerReauthorization.ereignisWirkt(ordnung, ledgerAdapter.episodes.lastMarkerEventOrdnung)) return null
+            val bestehend = ladeRuecknahmeVormerkung()
+            val v = MarkerRuecknahme.vormerken(
+                now, mealMarkerArmedTs(), mealMarkerActive(now), ordnung, quelle, bestehend,
+            ) ?: return null
+            if (v !== bestehend) {
+                speichereRuecknahmeVormerkung(v)
+                markerEreignis("WITHDRAWAL_PENDING", now, quelle.text, v.markerTs, v.faelligTs)
+                aapsLogger.info(
+                    LTag.APS,
+                    "FUSE Marker-Ruecknahme vorgemerkt: quelle=${quelle.text} marker=${v.markerTs} faellig=${v.faelligTs}",
+                )
+            }
+            v.faelligTs
+        }
+        ruecknahmeZeitgeber.schedule(
+            { runCatching { if (faelligeRuecknahme(dateUtil.now())) rxBus.send(EventRefreshOverview("FUSE Marker", true)) } },
+            (faellig - now).coerceAtLeast(0L) + RUECKNAHME_NACHLAUF_MS,
+            java.util.concurrent.TimeUnit.MILLISECONDS,
+        )
+        return faellig
+    }
+
+    /** Die vorgemerkte Ruecknahme aufheben. @return false, wenn keine (mehr) offen war. */
+    fun markerRuecknahmeRueckgaengig(now: Long, quelle: MarkerRuecknahme.Quelle): Boolean {
+        val aufgehoben = synchronized(laufSperre) {
+            val v = ladeRuecknahmeVormerkung() ?: return false
+            speichereRuecknahmeVormerkung(null)
+            markerEreignis("WITHDRAWAL_UNDONE", now, quelle.text, v.markerTs, v.faelligTs)
+            aapsLogger.info(LTag.APS, "FUSE Marker-Ruecknahme rueckgaengig gemacht: quelle=${quelle.text} marker=${v.markerTs}")
+            true
+        }
+        if (aufgehoben) rxBus.send(EventRefreshOverview("FUSE Marker", true))
+        return aufgehoben
+    }
+
+    /**
+     * Eine faellige Vormerkung ausfuehren oder eine gegenstandslose verwerfen.
+     * Aufgerufen vom Zeitgeber UND zu Beginn jedes Zyklus - der Zyklus deckt
+     * ein Prozessende in der Frist ab.
+     *
+     * @return ob sich am Marker etwas getan hat.
+     */
+    private fun faelligeRuecknahme(now: Long): Boolean {
+        synchronized(laufSperre) {
+            val v = ladeRuecknahmeVormerkung() ?: return false
+            return when (val e = MarkerRuecknahme.pruefe(now, v, mealMarkerArmedTs(), mealMarkerActive(now))) {
+                MarkerRuecknahme.Entscheid.Nichts -> false
+                is MarkerRuecknahme.Entscheid.Verwerfen -> {
+                    speichereRuecknahmeVormerkung(null)
+                    markerEreignis("WITHDRAWAL_DROPPED", now, v.quelle.text, v.markerTs, v.faelligTs)
+                    aapsLogger.info(LTag.APS, "FUSE Marker-Ruecknahme verworfen: grund=${e.grund} marker=${v.markerTs}")
+                    true
+                }
+                is MarkerRuecknahme.Entscheid.Ausfuehren -> {
+                    // Der GEWOHNTE Umschaltvorgang, mit der Ereignisordnung des
+                    // Tipps: ein inzwischen neueres Ereignis laesst ihn verfallen.
+                    val laeuftNoch = toggleMealMarker(
+                        now,
+                        ereignisId = v.ordnung.takeIf { it > 0L }?.let { MarkerReauthorization.ereignisKennung(it) },
+                        quelle = "${v.quelle.text} nach Frist",
+                    )
+                    if (laeuftNoch) {
+                        speichereRuecknahmeVormerkung(null)
+                        markerEreignis("WITHDRAWAL_DROPPED", now, v.quelle.text, v.markerTs, v.faelligTs)
+                        aapsLogger.warn(LTag.APS, "FUSE Marker-Ruecknahme nicht ausgefuehrt: Ereignis veraltet, marker=${v.markerTs}")
+                    }
+                    true
+                }
+            }
+        }
     }
 
     /**
@@ -827,6 +969,9 @@ class FusePlugin @Inject constructor(
         ) {
             preferences.put(FuseLongKey.MealMarkerArmedTs, 0L)
             preferences.put(FuseLongKey.MealMarkerStamp, 0L)
+            // Auch dieser Weg entfernt einen Marker - er muss im Log stehen.
+            aapsLogger.warn(LTag.APS, "FUSE Marker durch Ledger-Abgleich entfernt: marker=$ts")
+            markerEreignis("RECONCILED", dateUtil.now(), "Ledger-Abgleich", ts)
             return 0L
         }
         if (ts > 0L) return ts
@@ -1055,7 +1200,13 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
     }
 
     override fun fuseMarkerToggle(now: Long, ohneVorschuss: Boolean, ereignisId: String?): Boolean =
-        toggleMealMarker(now, ohneVorschuss, ereignisId)
+        toggleMealMarker(now, ohneVorschuss, ereignisId, quelle = MarkerRuecknahme.Quelle.UEBERSICHT.text)
+
+    override fun fuseMarkerRuecknahmeVormerken(now: Long, ereignisId: String?): Long? =
+        markerRuecknahmeVormerken(now, ereignisId, MarkerRuecknahme.Quelle.UEBERSICHT)
+
+    override fun fuseMarkerRuecknahmeRueckgaengig(now: Long): Boolean =
+        markerRuecknahmeRueckgaengig(now, MarkerRuecknahme.Quelle.UEBERSICHT)
 
     override fun fuseMarkerEreignis(): String = markerEreignisKennung()
 
@@ -1127,6 +1278,9 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
      *  (eine Sekunde; ein Zyklus dauert am Geraet deutlich darunter). */
     private val markerWartenMeldenMs = 1_000L
 
+    /** Der Zeitgeber laeuft knapp NACH der Faelligkeit - vorher waere die Vormerkung noch nicht faellig. */
+    private val RUECKNAHME_NACHLAUF_MS = 200L
+
     override fun invoke(initiator: String, tempBasalFallback: Boolean) {
         synchronized(laufSperre) { invokeUnterSperre(initiator, tempBasalFallback) }
     }
@@ -1134,6 +1288,11 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
     /** Der eigentliche Lauf. Nur ueber [invoke] erreichbar, also nur unter [laufSperre]. */
     private fun invokeUnterSperre(initiator: String, tempBasalFallback: Boolean) {
         aapsLogger.debug(LTag.APS, "invoke from $initiator tempBasalFallback: $tempBasalFallback")
+        // Eine faellige Marker-Ruecknahme VOR dem Lauf: endete der Prozess in
+        // der Frist, holt der erste Zyklus sie nach, statt sie zu verschlucken.
+        // Nie auf Kosten des Zyklus: ein Fehler hier bricht den Lauf nicht ab.
+        runCatching { if (faelligeRuecknahme(dateUtil.now())) rxBus.send(EventRefreshOverview("FUSE Marker", true)) }
+            .onFailure { aapsLogger.error(LTag.APS, "FUSE Marker-Ruecknahme im Zyklus fehlgeschlagen", it) }
         lastAPSResult = null
         // Scheibe 1: den Ausgang des VORIGEN Zyklus lesen, BEVOR dieser Lauf
         // `publishedRt` ueberschreibt. Reine Messung.
@@ -1882,6 +2041,7 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
                     minSafetyMarginMgdl = ExpectationLedger.EXPORT_SAFETY_MARGIN_MGDL,
                 )
             }.getOrNull(),
+            markerEvent = letztesMarkerEreignis,
             )
             // Die Android-Aufloesung des Verzeichnisses passiert AUSSCHLIESSLICH
             // hier — der Schreiber selbst kennt kein Environment und bleibt

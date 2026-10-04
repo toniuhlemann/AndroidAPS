@@ -138,4 +138,18 @@ interface FuseOverviewSource {
      * spaet bestaetigter alter Dialog eine zu neue Ordnung und wirkt doch.
      */
     fun fuseMarkerEreignis(): String
+
+    /**
+     * RUECKNAHME MIT RUECKGAENGIG-FRIST (Toni 04.10.): statt den laufenden
+     * Marker sofort zurueckzunehmen, wird die Ruecknahme vorgemerkt und erst
+     * nach der Frist ausgefuehrt; bis dahin bleibt der Marker wirksam.
+     *
+     * @return Faelligkeit [ms] oder `null` - dann gibt es keinen laufenden
+     *         Marker (oder die Quelle kennt keine Frist) und der Aufrufer
+     *         schaltet wie bisher direkt um.
+     */
+    fun fuseMarkerRuecknahmeVormerken(now: Long, ereignisId: String?): Long? = null
+
+    /** Die vorgemerkte Ruecknahme aufheben. @return ob eine aufgehoben wurde. */
+    fun fuseMarkerRuecknahmeRueckgaengig(now: Long): Boolean = false
 }
