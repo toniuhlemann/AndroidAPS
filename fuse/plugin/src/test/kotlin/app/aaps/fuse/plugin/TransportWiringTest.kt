@@ -17251,4 +17251,92 @@ class TransportWiringTest : TestBaseWithProfile() {
         assertEquals("NACHRECHNUNG_UNVOLLSTAENDIG", s.aufnahme.grund)
         assertEquals(aufnahmeMengeU, s.modelliertU, 1e-12)
     }
+
+    // ==== KI-210: Versuchsdeckel des Null-Abbruchs ueber den Runner ========
+    //
+    // Bis hierher lief der Null-Ende-Pfad in keinem Runner-Test: das Rig liess
+    // "Null-Basal sofort beenden" aus. Der Policy-Test (TbrEndZeroTest) prueft
+    // den Deckel ohne Zaehler - der Zaehler lebt im Runner, und genau dort sass
+    // der Fehler (Backoff-Zyklus setzte zurueck, belegte Pumpe zaehlte mit).
+
+    /** Nachtfenster (Rig-Uhr) mit Nachtband, flacher BG unter Ziel + Band,
+     *  keine Mahlzeit, Schalter an, und eine laufende Null, die die Quelle
+     *  unveraendert weiter meldet: die Pumpe nimmt den Abbruch nicht an. */
+    private fun nullOhneAnnahme(dir: File) {
+        whenever(preferences.get(FuseBooleanKey.TbrEndZeroWhenReasonGone)).thenReturn(true)
+        nightDeadband = true
+        flach = 110.0
+        steigungProMin = 0.0
+        val l = FuseLedgerAdapter().also { it.loadOnce(dir.also(File::mkdirs), "test-epoch", start) }
+        neuerRunner(l)
+        clock = start
+        quelleMeldet(laufendSeit(0.0, vorMin = 1))
+    }
+
+    private fun istNullAbbruch(o: FuseCycleRunner.Outcome) = o.abortReason == null && o.tbr != null &&
+        (o.reason ?: "").contains(app.aaps.fuse.core.controller.TbrPolicy.END_ZERO_REASON)
+
+    private fun istNullBackoff(o: FuseCycleRunner.Outcome) = o.abortReason == null && o.tbr == null &&
+        (o.reason ?: "").contains(app.aaps.fuse.core.controller.TbrPolicy.END_ZERO_BACKOFF_REASON)
+
+    private fun volleZyklen(n: Int) = (1..n).map { cycle() }.filter { it.abortReason == null }
+
+    /** KI-210, Gegenprobe 1: nach ausgeschoepften Versuchen bleibt die Pause
+     *  bestehen - kein erneuter Abbruch, solange dieselbe Null laeuft. */
+    @Test
+    fun `KI-210 nach ausgeschoepften Abbruchversuchen bleibt die Null stehen`(@TempDir dir: File) {
+        nullOhneAnnahme(dir)
+        val voll = volleZyklen(90)
+        assertTrue(voll.size >= 20) { "zu wenige volle Zyklen: ${voll.size}" }
+        val abbrueche = voll.count { istNullAbbruch(it) }
+        assertTrue(abbrueche > 0) {
+            "Vorbedingung: der Null-Ende-Pfad muss greifen, Gruende ${voll.map { it.reason }.distinct()}"
+        }
+        assertEquals(3, abbrueche) { "genau der Versuchsdeckel, Gruende ${voll.map { it.reason }}" }
+        val nachDemDritten = voll.drop(voll.indexOfLast { istNullAbbruch(it) } + 1)
+        assertTrue(nachDemDritten.size >= 5) { "zu kurze Beobachtung nach dem Deckel: ${nachDemDritten.size}" }
+        assertTrue(nachDemDritten.all { istNullBackoff(it) }) {
+            "nach dem Deckel nur noch Backoff, Gruende ${nachDemDritten.map { it.reason }}"
+        }
+    }
+
+    /** KI-210, Gegenprobe 2: eine belegte Pumpe ist kein ausgefuehrter Versuch,
+     *  auch wenn ihr Grundtext den Null-Abbruch traegt. */
+    @Test
+    fun `KI-210 eine belegte Pumpe zaehlt nicht als Abbruchversuch`(@TempDir dir: File) {
+        nullOhneAnnahme(dir)
+        whenever(commandQueue.bolusInQueue()).thenReturn(true)
+        val belegt = volleZyklen(90)
+        val busyAbbruch = belegt.filter {
+            (it.reason ?: "").startsWith("PUMP_BUSY|") &&
+                (it.reason ?: "").contains(app.aaps.fuse.core.controller.TbrPolicy.END_ZERO_REASON)
+        }
+        assertTrue(busyAbbruch.size >= 4) { "Vorbedingung: belegte Zyklen mit Abbruchgrund, ${belegt.map { it.reason }}" }
+        assertTrue(belegt.none { it.tbr != null }) { "bei belegter Pumpe geht kein Kommando hinaus" }
+        assertTrue(belegt.none { (it.reason ?: "").contains(app.aaps.fuse.core.controller.TbrPolicy.END_ZERO_BACKOFF_REASON) }) {
+            "belegte Zyklen duerfen den Deckel nicht fuellen: ${belegt.map { it.reason }}"
+        }
+        whenever(commandQueue.bolusInQueue()).thenReturn(false)
+        val frei = volleZyklen(30)
+        assertEquals(3, frei.count { istNullAbbruch(it) }) { "danach die vollen Versuche, ${frei.map { it.reason }}" }
+        assertTrue(frei.drop(frei.indexOfLast { istNullAbbruch(it) } + 1).all { istNullBackoff(it) })
+    }
+
+    /** KI-210, Gegenprobe 3: ist die Null wirklich vorbei, beginnt eine neue
+     *  Null wieder mit vollen Versuchen - der Deckel haelt nicht ueber sie hinaus. */
+    @Test
+    fun `KI-210 nach beendeter Null beginnt eine neue Versuchsreihe`(@TempDir dir: File) {
+        nullOhneAnnahme(dir)
+        val erste = volleZyklen(90)
+        assertEquals(3, erste.count { istNullAbbruch(it) })
+        assertTrue(istNullBackoff(erste.last())) { "erste Null steht im Backoff: ${erste.last().reason}" }
+        quelleMeldet(null)
+        val ohne = volleZyklen(4)
+        assertTrue(ohne.isNotEmpty() && ohne.none { istNullAbbruch(it) || istNullBackoff(it) }) {
+            "ohne laufende Null weder Abbruch noch Backoff: ${ohne.map { it.reason }}"
+        }
+        quelleMeldet(laufendSeit(0.0, vorMin = 1))
+        val zweite = volleZyklen(30)
+        assertEquals(3, zweite.count { istNullAbbruch(it) }) { "neue Null, neue Reihe: ${zweite.map { it.reason }}" }
+    }
 }

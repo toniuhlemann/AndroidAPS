@@ -5912,10 +5912,22 @@ class FuseCycleRunner(
             episodes.zeroTally = neu
         }
 
+        // KI-210: gezaehlt wird nur ein TATSAECHLICH ausgegebener Abbruch, und
+        // der Deckel haelt fuer die laufende Null. Vorher setzte der
+        // Backoff-Zyklus selbst den Zaehler zurueck (sein Grund ist nicht
+        // END_ZERO_REASON) - danach folgten wieder volle Versuchsreihen; und
+        // ein Zyklus mit belegter Pumpe zaehlte ueber den angehaengten
+        // Grundtext ("PUMP_BUSY|...") als Versuch, obwohl kein Kommando
+        // hinausging. Belegte Pumpe und Backoff lassen den Zaehler stehen; ein
+        // anderer Grund beginnt wie bisher eine neue Folge, eine beendete Null
+        // setzt ihn zurueck.
         endZeroFehlversuche = when {
-            !laeuftNull                                         -> 0
-            combined.reason.contains(TbrPolicy.END_ZERO_REASON) -> endZeroFehlversuche + 1
-            else                                                -> 0
+            !laeuftNull -> 0
+            combined.request != null && combined.reason.contains(TbrPolicy.END_ZERO_REASON) ->
+                endZeroFehlversuche + 1
+            combined.reason.contains(TbrPolicy.END_ZERO_REASON) ||
+                combined.reason.contains(TbrPolicy.END_ZERO_BACKOFF_REASON) -> endZeroFehlversuche
+            else -> 0
         }
 
         // GATE-WIRKSAME Menge (Audit R95, Fix 3): Huellen und Bilanz belasten
