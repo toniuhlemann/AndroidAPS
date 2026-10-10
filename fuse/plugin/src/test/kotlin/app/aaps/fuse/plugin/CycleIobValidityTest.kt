@@ -225,8 +225,6 @@ class CycleIobValidityTest : TestBaseWithProfile() {
         // Nullphasen-Varianten: Default AUS bzw. gueltiges Fenster -
         // ungemockt liefert Mockito 0, und die Config-Validierung
         // weist ein 0-Fenster zu Recht ab.
-        whenever(preferences.get(FuseDoubleKey.CorrectionSeriesCapU)).thenReturn(0.0)
-        whenever(preferences.get(FuseIntKey.CorrectionSeriesWindowMin)).thenReturn(30)
         whenever(preferences.get(FuseDoubleKey.ZeroLatchCalmDistanceMgdl)).thenReturn(30.0)
         whenever(preferences.get(FuseDoubleKey.LivenessBgMinDayMgdl)).thenReturn(160.0)
         whenever(preferences.get(FuseIntKey.LivenessReArmMin)).thenReturn(10)

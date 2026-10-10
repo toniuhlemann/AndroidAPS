@@ -401,8 +401,6 @@ class FuseCycleRunner(
             }
             require(it.zeroLatchCalmExitMin in FuseIntKey.ZeroLatchCalmExitMin.min..FuseIntKey.ZeroLatchCalmExitMin.max) { "zeroLatchCalmExitMin=${it.zeroLatchCalmExitMin}" }
             require(it.zeroLatchReasonGoneExitCycles in FuseIntKey.ZeroLatchReasonGoneExitCycles.min..FuseIntKey.ZeroLatchReasonGoneExitCycles.max) { "zeroLatchReasonGoneExitCycles=${it.zeroLatchReasonGoneExitCycles}" }
-            require(it.correctionSeriesCapU in FuseDoubleKey.CorrectionSeriesCapU.min..FuseDoubleKey.CorrectionSeriesCapU.max) { "correctionSeriesCapU=${it.correctionSeriesCapU}" }
-            require(it.correctionSeriesWindowMin in FuseIntKey.CorrectionSeriesWindowMin.min..FuseIntKey.CorrectionSeriesWindowMin.max) { "correctionSeriesWindowMin=${it.correctionSeriesWindowMin}" }
             require(it.zeroLatchCalmDistanceMgdl.isFinite() && it.zeroLatchCalmDistanceMgdl in FuseDoubleKey.ZeroLatchCalmDistanceMgdl.min..FuseDoubleKey.ZeroLatchCalmDistanceMgdl.max) { "zeroLatchCalmDistanceMgdl=${it.zeroLatchCalmDistanceMgdl}" }
             require(it.tailFloorMgdl.isFinite() && it.tailFloorMgdl in FuseDoubleKey.TailFloorMgdl.min..FuseDoubleKey.TailFloorMgdl.max) { "tailFloorMgdl=${it.tailFloorMgdl}" }
             require(it.tailRecoveryU.isFinite() && it.tailRecoveryU in FuseDoubleKey.TailRecoveryU.min..FuseDoubleKey.TailRecoveryU.max) { "tailRecoveryU=${it.tailRecoveryU}" }
@@ -535,49 +533,10 @@ class FuseCycleRunner(
          * keine Wirkung, wuerde aber den Schwanz-Vermerk unnoetig auf
          * `transportBounded` ziehen.
          */
-        /**
-         * DER SERIEN-HEADROOM DES MARKERLOSEN KORREKTURPFADS (Variante 2).
-         *
-         * Deckel MINUS was im Fenster schon gebucht ist MINUS die offene
-         * Transportmenge - aber JEDE PROPOSAL-MENGE NUR EINMAL.
-         *
-         * DER FEHLER, GEGEN DEN DIE ID-PRUEFUNG STEHT (Review-Befund): die
-         * Liste wird beim Publizieren angelegt, nicht erst bei der
-         * Pumpenbestaetigung. Eine publizierte, noch offene Dosis steht
-         * damit GLEICHZEITIG in der Liste und im Transport. Ein pauschaler
-         * skalarer Abzug zieht sie zweimal ab - bei Deckel 1,00 und einer
-         * offenen Korrektur von 0,30 blieben 0,40 statt 0,70 uebrig. Die
-         * Richtung ist konservativ, aber sie verfaelscht den
-         * Variantenvergleich und schliesst den Kanal zu frueh.
-         *
-         * Deshalb zaehlt der Transport nur Posten, deren Kennung NICHT
-         * schon in der Liste steht. Ein Posten ohne nachgetragene Kennung
-         * in der Liste kann nicht zugeordnet werden - dann bleibt es beim
-         * doppelten Abzug, und das ist die sichere Richtung. Genau
-         * deswegen ist das Nachtragen der Kennung Pflicht
-         * (s. `resolveReservation`).
-         *
-         * `null` = kein Deckel (Default). Dann rechnet das Gate bitgleich
-         * zum bisherigen Stand.
-         */
-        internal fun serienHeadroom(
-            capU: Double,
-            fensterMin: Int,
-            gebucht: Collection<app.aaps.fuse.plugin.ledger.EpisodeBudgets.CorrectionDelivery>,
-            transport: List<TransportDose>,
-            nowTs: Long,
-        ): Double? {
-            if (!(capU > 0.0)) return null
-            val fensterMs = fensterMin * 60_000L
-            val imFenster = gebucht.filter { nowTs - it.ts <= fensterMs }
-            val vertreten = imFenster.mapNotNull { it.proposalId }.toSet()
-            val gebuchtU = imFenster.sumOf { it.amountU }
-            val transportU = transport
-                .filter { it.proposalId !in vertreten }
-                .sumOf { it.amountU }
-            return (capU - gebuchtU - transportU).coerceAtLeast(0.0)
-        }
-
+        // 2.0 (Stufe 1, K2): der Serien-Deckel der Variante 2 (serienHeadroom)
+        // ist entfernt. Die Serienliste `correctionDeliveries` wird weiter
+        // gebucht, damit der Zustand fuer den Rueckweg auf 1.x vollstaendig
+        // bleibt; 2.0 liest sie nicht.
         internal fun transportDoses(
             items: List<OpenTransportItem>,
             witness: TransportInclusion.IobSnapshotWitness?,
@@ -2418,23 +2377,6 @@ class FuseCycleRunner(
         // die Kappen koennen dadurch nur enger werden, nie weiter.
         val transportModelledU = transport.sumOf { it.amountU }
         transportSichtThisCycle = TransportSicht(aufnahme, transportModelledU)
-        // ---- VARIANTE 2: DER SERIEN-HEADROOM (Default aus) ---------------
-        //
-        // Deckel MINUS was im Fenster schon geflossen ist MINUS die noch
-        // offene Transportmenge. Der Transportabzug steht hier, weil eine
-        // publizierte, aber noch nicht bestaetigte Menge sonst zweimal
-        // ausgegeben werden koennte: einmal jetzt und einmal, wenn sie
-        // spaeter doch bestaetigt in der Liste steht.
-        //
-        // `null` = kein Deckel. Das ist der Default und laesst das Gate
-        // bitgleich zum bisherigen Stand rechnen.
-        val serienHeadroomU: Double? = serienHeadroom(
-            capU = cfg.correctionSeriesCapU,
-            fensterMin = cfg.correctionSeriesWindowMin,
-            gebucht = episodes.correctionDeliveries,
-            transport = transport,
-            nowTs = signal.sourceTs,
-        )
         // Der Kern wird weiterhin TRAEGE gebaut: ohne Posten faellt der Aufwand
         // (~540 Modellabfragen) ganz weg.
         val pending: List<PendingInsulinEffect> =
@@ -2976,7 +2918,7 @@ class FuseCycleRunner(
             if (kernel() == null)
                 return abort("$warum | noFallback=${kernelReject ?: "KERNEL_UNAVAILABLE"}", signal, cfg, step, evidenz = evidenz)
             return markerFallbackCycle(
-                rejected, transport, warum, signal, step, cfg, state, profile, pumpe, tempBasalFallback,
+                rejected, warum, signal, step, cfg, state, profile, pumpe, tempBasalFallback,
                 computeTs, markerTs, mealMarkerActive, measuredLow, descentRisk, descentLatch,
                 descentCarryEligibility, manualBolusAfterMarkerU, treatmentView, evidenceEpisodeId,
                 episodeGate.denial?.name, episodeGate.creditRevoked, evidenz,
@@ -5814,7 +5756,6 @@ class FuseCycleRunner(
                     capIobU = state.capIobU,
                     transportU = transportModelledU,
                     pumpIncrementU = bolusStep,
-                    correctionSeriesHeadroomU = serienHeadroomU,
                 )
                 exposureGateResult = g
                 when {
@@ -6979,6 +6920,9 @@ class FuseCycleRunner(
             while (episodes.mealDeliveries.size > 400) episodes.mealDeliveries.removeFirst()
         }
         // VARIANTE 2: die Serienliste des MARKERLOSEN Korrekturpfads.
+        // 2.0 (Stufe 1, K2): der Deckel, der sie las, ist entfernt; gebucht
+        // wird sie weiter, damit der Zustand fuer den Rueckweg auf 1.x
+        // vollstaendig bleibt.
         // Genau komplementaer zur Mahlzeitenbuchung - was dort gebucht
         // wird, gehoert hier nicht hinein und umgekehrt. Sie ROLLIERT:
         // Eintraege ausserhalb des Fensters fallen beim Buchen heraus,
@@ -7111,9 +7055,6 @@ class FuseCycleRunner(
     @Suppress("LongParameterList")
     private fun markerFallbackCycle(
         rejected: PredictorOutcome.Rejected,
-        /** Dieselbe Transportsicht wie im Hauptpfad - fuer den ID-Abgleich
-         *  des Serien-Deckels. KEINE zweite Ledger-Lesung. */
-        transportDosen: List<TransportDose>,
         warum: String,
         signal: FuseSignalSource.Signal,
         step: ObserverStep,
@@ -7382,15 +7323,6 @@ class FuseCycleRunner(
                     capIobU = state.capIobU,
                     transportU = transportModelledU,
                     pumpIncrementU = pumpe.bolusStepU,
-                    // Derselbe Deckel wie im Hauptpfad - der Fallback ist
-                    // ein Notausgang, kein Freibrief.
-                    correctionSeriesHeadroomU = serienHeadroom(
-                        capU = cfg.correctionSeriesCapU,
-                        fensterMin = cfg.correctionSeriesWindowMin,
-                        gebucht = episodes.correctionDeliveries,
-                        transport = transportDosen,
-                        nowTs = signal.sourceTs,
-                    ),
                 )
                 fallbackGateResult = g
                 when {
@@ -8177,8 +8109,8 @@ class FuseCycleRunner(
         val zeroLatchCalmExitMin: Int,
         val zeroLatchReasonGoneExitCycles: Int,
         val partialRecoveryEnabled: Boolean,
-        val correctionSeriesCapU: Double,
-        val correctionSeriesWindowMin: Int,
+        // 2.0 (Stufe 1, K2): der Serien-Deckel (correctionSeriesCapU,
+        // correctionSeriesWindowMin) steht nicht mehr hier.
         val zeroLatchCalmDistanceMgdl: Double,
         /** V-Reversal-Schutz im Korrekturkontext - s.
          *  [CorrectionReversalGuard] und FuseKeys (Default AUS). */
@@ -8352,8 +8284,6 @@ class FuseCycleRunner(
         zeroLatchCalmExitMin = preferences.get(FuseIntKey.ZeroLatchCalmExitMin),
         zeroLatchReasonGoneExitCycles = preferences.get(FuseIntKey.ZeroLatchReasonGoneExitCycles),
         partialRecoveryEnabled = preferences.get(FuseBooleanKey.PartialRecoveryEnabled),
-        correctionSeriesCapU = preferences.get(FuseDoubleKey.CorrectionSeriesCapU),
-        correctionSeriesWindowMin = preferences.get(FuseIntKey.CorrectionSeriesWindowMin),
         zeroLatchCalmDistanceMgdl = preferences.get(FuseDoubleKey.ZeroLatchCalmDistanceMgdl),
         reversalGuardEnabled = preferences.get(FuseBooleanKey.CorrectionReversalGuardEnabled),
         reversalFallUkf = preferences.get(FuseDoubleKey.ReversalFallUkf),

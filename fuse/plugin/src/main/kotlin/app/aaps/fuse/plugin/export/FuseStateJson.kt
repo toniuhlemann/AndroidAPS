@@ -2175,8 +2175,11 @@ object FuseStateJson {
         // Zyklen mit weggefallenem Schutzgrund, Variante 2 deckelt die
         // markerlose Korrekturserie im rollierenden Fenster.
         .put("zeroLatchReasonGoneExitCycles", p.zeroLatchReasonGoneExitCycles)
-        .put("correctionSeriesCapU", fin(p.correctionSeriesCapU))
-        .put("correctionSeriesWindowMin", p.correctionSeriesWindowMin)
+        // 2.0 (Stufe 1, K2): der Serien-Deckel ist entfernt. Wirksam ist
+        // "kein Deckel" (0 wie bisher fuer AUS) und damit auch kein Fenster
+        // (null). Die Felder bleiben, damit Leser des Trails sie finden.
+        .put("correctionSeriesCapU", 0.0)
+        .put("correctionSeriesWindowMin", JSONObject.NULL)
         // Stufenweise Basalrueckkehr (Default aus).
         .put("partialRecoveryEnabled", p.partialRecoveryEnabled)
         // v30: die Korrekturpfad-Riegel (V-Reversal + Freigabe-Nachlauf).
@@ -2422,8 +2425,13 @@ object FuseStateJson {
                 // sonst saehen zwei Laeufe mit verschiedenen Kandidaten
                 // im Replay gleich aus.
                 p.zeroLatchReasonGoneExitCycles,
-                p.correctionSeriesCapU,
-                p.correctionSeriesWindowMin,
+                // 2.0 (Stufe 1, K2): Variante 2 ist entfernt. Der Deckel steht
+                // als wirksame Konstante 0.0 (zeichengleich mit AUS); das
+                // Fenster wirkt ohne Deckel nicht und faellt aus dem Hash.
+                // Folge: der Hash wechselt einmalig, wo bisher ein anderes
+                // Fenster gespeichert war als hier - offene Erwartungen des
+                // Beobachters werden dann wie bei v22/v24/v38 entwertet.
+                0.0,
                 // v50: die Teilbasal-Stufe ist dosierwirksam, sobald sie
                 // an ist - Schalter UND Anteil gehoeren in den Hash.
                 p.partialRecoveryEnabled,

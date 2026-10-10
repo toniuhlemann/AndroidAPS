@@ -61,13 +61,38 @@ class SerienDeckelLedgerTest {
 
     /** Der Headroom aus den ECHTEN Ledgersichten - kein synthetisches Paar. */
     private fun restAus(a: FuseLedgerAdapter, nowTs: Long = t0 + 60_000L): Double? =
-        FuseCycleRunner.serienHeadroom(
+        serienRestWie1x(
             capU = deckel,
             fensterMin = 30,
             gebucht = a.episodes.correctionDeliveries,
             transport = FuseCycleRunner.transportDoses(a.openTransportItems(), null, nowTs),
             nowTs = nowTs,
         )
+
+    /**
+     * 2.0 (Stufe 1, K2): der Serien-Deckel ist aus dem Regler entfernt, die
+     * Serienliste wird aber fuer den Rueckweg auf 1.x weiter gebucht. Dieser
+     * Test prueft deshalb weiter die BUCHUNG - gelesen mit genau der Rechnung,
+     * mit der 1.x sie auswertet (bis 2.0 FuseCycleRunner.serienHeadroom):
+     * jede Proposal-Menge zaehlt einmal.
+     */
+    private fun serienRestWie1x(
+        capU: Double,
+        fensterMin: Int,
+        gebucht: Collection<EpisodeBudgets.CorrectionDelivery>,
+        transport: List<app.aaps.fuse.plugin.TransportDose>,
+        nowTs: Long,
+    ): Double? {
+        if (!(capU > 0.0)) return null
+        val fensterMs = fensterMin * 60_000L
+        val imFenster = gebucht.filter { nowTs - it.ts <= fensterMs }
+        val vertreten = imFenster.mapNotNull { it.proposalId }.toSet()
+        val gebuchtU = imFenster.sumOf { it.amountU }
+        val transportU = transport
+            .filter { it.proposalId !in vertreten }
+            .sumOf { it.amountU }
+        return (capU - gebuchtU - transportU).coerceAtLeast(0.0)
+    }
 
     @Test
     fun `Schritte 1 bis 5 am echten Ledger`(@TempDir dir: File) {

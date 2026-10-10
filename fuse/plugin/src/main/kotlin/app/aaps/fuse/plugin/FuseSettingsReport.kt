@@ -57,9 +57,9 @@ internal val fuseEinstellbareKeys: Set<String> = setOf(
     FuseBooleanKey.ZeroLatchEnabled.key,
     FuseIntKey.ZeroLatchCalmExitMin.key,
     FuseIntKey.ZeroLatchReasonGoneExitCycles.key,
-    FuseIntKey.CorrectionSeriesWindowMin.key,
+    // 2.0 (Stufe 1, K2): CorrectionSeriesWindowMin und CorrectionSeriesCapU
+    // sind nicht mehr einstellbar (Variante 2 entfernt).
     FuseDoubleKey.ZeroLatchCalmDistanceMgdl.key,
-    FuseDoubleKey.CorrectionSeriesCapU.key,
     FuseBooleanKey.CorrectionReversalGuardEnabled.key,
     FuseDoubleKey.ReversalFallUkf.key,
     FuseIntKey.ReversalLookbackMin.key,
@@ -272,10 +272,8 @@ object FuseSettingsReport {
                     // Nullphasen-Varianten: beide Default aus. Die Einheit
                     // heisst ehrlich "Zyk" - gezaehlt werden Zyklen.
                     ganz(FuseIntKey.ZeroLatchReasonGoneExitCycles, "Latch-Grund-weg", "Zyk"),
-                    ganz(FuseIntKey.CorrectionSeriesWindowMin, "Serien-Fenster", "min"),
                     schalter(FuseBooleanKey.PartialRecoveryEnabled, "Teilbasal-Rueckkehr"),
                     zahl(FuseDoubleKey.ZeroLatchCalmDistanceMgdl, "Latch-Abstand", "mg/dl"),
-                    zahl(FuseDoubleKey.CorrectionSeriesCapU, "Serien-Deckel", "U"),
                     schalter(FuseBooleanKey.CorrectionReversalGuardEnabled, "V-Reversal-Schutz"),
                     zahl(FuseDoubleKey.ReversalFallUkf, "Reversal-Fall", "mg/dl/min"),
                     ganz(FuseIntKey.ReversalLookbackMin, "Reversal-Rueckblick", "min"),

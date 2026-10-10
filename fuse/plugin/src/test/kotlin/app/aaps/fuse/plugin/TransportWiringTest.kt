@@ -216,8 +216,6 @@ class TransportWiringTest : TestBaseWithProfile() {
     /** Variante 1 des Nullphasen-Vergleichs; 0 = AUS = Produktionsstand. */
     private var zeroLatchGrundWegZyklen = 0
     /** Variante 2; 0 = AUS = Produktionsstand. */
-    private var serienDeckelU = 0.0
-    private var serienFensterMin = 30
     private var livenessBgMin = 160.0
 
     /** Nachtschwelle des Kanals; null = nie gesetzt -> folgt der Tagesschwelle. */
@@ -861,8 +859,6 @@ class TransportWiringTest : TestBaseWithProfile() {
         // Nullphasen-Varianten: Default AUS bzw. gueltiges Fenster -
         // ungemockt liefert Mockito 0, und die Config-Validierung
         // weist ein 0-Fenster zu Recht ab.
-        whenever(preferences.get(FuseDoubleKey.CorrectionSeriesCapU)).thenAnswer { serienDeckelU }
-        whenever(preferences.get(FuseIntKey.CorrectionSeriesWindowMin)).thenAnswer { serienFensterMin }
         whenever(preferences.get(FuseDoubleKey.ZeroLatchCalmDistanceMgdl)).thenAnswer { zeroLatchRuheAbstand }
         whenever(preferences.get(FuseIntKey.ZeroLatchReasonGoneExitCycles)).thenAnswer { zeroLatchGrundWegZyklen }
         whenever(preferences.get(FuseDoubleKey.LivenessBgMinDayMgdl)).thenAnswer { livenessBgMin }
@@ -11865,82 +11861,10 @@ class TransportWiringTest : TestBaseWithProfile() {
         assertTrue(raten.isEmpty()) { "keine positive TBR erlaubt, gemessen: $raten" }
     }
 
-    // ==== VARIANTE 2: DER SERIEN-DECKEL, IM ECHTEN RUNNER ==================
-
-    @Test
-    fun `Variante 2 - der Serien-Deckel begrenzt die markerlose Korrekturserie`(@TempDir dir: File) {
-        // BASISLINIE: markerlose Korrekturlage, Deckel aus.
-        serienDeckelU = 0.0
-        serienFensterMin = 30
-        korrekturSerienLage(File(dir, "basisSerie"))
-        val basis = (0 until 30).map { transport(dir) }
-        val summeBasis = basis.sumOf { it.decision.smbU }
-        assertTrue(summeBasis > 0.4) {
-            "der Aufbau MUSS eine Serie erzeugen, sonst prueft der Test nichts: $summeBasis"
-        }
-
-        // KANDIDAT: derselbe Verlauf mit Deckel deutlich unter der Serie.
-        transportReset()
-        serienDeckelU = 0.20
-        serienFensterMin = 30
-        korrekturSerienLage(File(dir, "kandSerie"))
-        val kand = (0 until 30).map { transport(dir) }
-        val summeKand = kand.sumOf { it.decision.smbU }
-
-        assertTrue(summeKand < summeBasis) {
-            "der Deckel MUSS die Serie begrenzen: $summeKand statt $summeBasis"
-        }
-        assertTrue(summeKand <= 0.20 + 1e-9) {
-            "und zwar auf den Deckel: $summeKand > 0,20"
-        }
-        // Der Bindungsname muss die Ursache nennen - sonst zeigte der Trail
-        // eine Kontextgrenze, waehrend der Serien-Deckel gekappt hat.
-        assertTrue(kand.any { it.exposureGateBinding == "correctionSeriesCap" }) {
-            "die Bindung MUSS benannt sein: " +
-                kand.mapNotNull { it.exposureGateBinding }.distinct()
-        }
-    }
-
-    @Test
-    fun `Variante 2 greift nur ueber das Exposure-Gate, nie in eine TBR-Regel`(@TempDir dir: File) {
-        // WAS HIER EHRLICH BEWEISBAR IST - und was nicht. Eine kleinere
-        // SMB-Menge aendert das IOB, und ueber das IOB fallen SPAETERE
-        // Entscheidungen anders aus; "gleiche TBR je Zyklus" ist deshalb
-        // schon ab dem ersten Binden unzulaessig (gemessen: Zyklus 5
-        // KEEP_CURRENT vs NO_NEW_POSITIVE - eine Folge der Regelung, kein
-        // Eingriff in die Basalachse).
-        //
-        // Beweisbar ist: der Deckel bindet AUSSCHLIESSLICH im
-        // Exposure-Gate, stellt nie eine Entscheidungs-Bindung, und
-        // erzeugt keine Schutz-Null, die es ohne ihn nicht gaebe.
-        serienDeckelU = 0.0
-        korrekturSerienLage(File(dir, "basisTbr"))
-        val basis = (0 until 30).map { transport(dir) }
-        transportReset()
-        serienDeckelU = 0.20
-        korrekturSerienLage(File(dir, "kandTbr"))
-        val kand = (0 until 30).map { transport(dir) }
-
-        assertTrue(kand.any { it.exposureGateBinding == "correctionSeriesCap" }) {
-            "der Deckel MUSS in diesem Aufbau binden"
-        }
-        // Er erscheint als MENGENbindung in der Entscheidung - wie jede
-        // andere Exposure-Grenze auch. Das ist erwartet und gehoert in den
-        // Trail; entscheidend ist, dass er nie als TBR-Grund auftaucht.
-        assertTrue(kand.any { it.decision.bindingLimit?.contains("correctionSeriesCap") == true }) {
-            "die Mengenbindung MUSS benannt sein: " +
-                kand.mapNotNull { it.decision.bindingLimit }.distinct()
-        }
-        // ... und nie als TBR: in dieser Lage wird keine kommandiert.
-        assertTrue(kand.all { it.tbr == null }) {
-            "der Deckel darf keine TBR ausloesen: " + kand.mapNotNull { it.tbr }.distinct()
-        }
-        assertEquals(
-            basis.count { it.decision.tbr == FuseController.TbrAction.ZERO_TEMP },
-            kand.count { it.decision.tbr == FuseController.TbrAction.ZERO_TEMP },
-            "und keine zusaetzliche Schutz-Null",
-        )
-    }
+    // ==== VARIANTE 2: DIE SERIENBUCHUNG ======================================
+    // 2.0 (Stufe 1, K2): der Serien-Deckel ist entfernt; die Serienliste wird fuer
+    // den Rueckweg auf 1.x weiter gebucht. Die Tests des Deckels selbst sind
+    // entfallen, die Buchung bleibt geprueft.
 
     @Test
     fun `Variante 2 bucht nur den markerlosen Korrekturpfad`(@TempDir dir: File) {
@@ -11955,8 +11879,6 @@ class TransportWiringTest : TestBaseWithProfile() {
         // autorisierte Mahlzeit begrenzt (gemessen: die Mahlzeit lief
         // exakt auf den 0,05-Deckel). Die MEAL-Ausnahme selbst traegt
         // zusaetzlich das Gate - s. ExposureGateTest.
-        serienDeckelU = 0.0   // aus: die Buchung laeuft unabhaengig vom Deckel
-        serienFensterMin = 30
         val l = FuseLedgerAdapter().also {
             it.loadOnce(File(dir, "buchung").also(File::mkdirs), "test-epoch", start)
         }
@@ -11973,7 +11895,7 @@ class TransportWiringTest : TestBaseWithProfile() {
             "und zwar markerlos: " + dosiert.map { it.dosingContextProfile }.distinct()
         }
         assertTrue(l.episodes.correctionDeliveries.isNotEmpty()) {
-            "die markerlose Serie MUSS gebucht werden, sonst deckelt der Deckel nie"
+            "die markerlose Serie MUSS gebucht werden (Rueckweg auf 1.x)"
         }
         assertEquals(
             dosiert.sumOf { it.decision.smbU },
@@ -11995,25 +11917,6 @@ class TransportWiringTest : TestBaseWithProfile() {
         val l = FuseLedgerAdapter().also { it.loadOnce(dir.also(File::mkdirs), "test-epoch", start) }
         neuerRunner(l)
         return l
-    }
-
-    /** Markerlose Korrekturlage mit steigendem Zucker: der Normalpfad
-     *  dosiert Zyklus um Zyklus - genau die Serie, die der Deckel
-     *  begrenzen soll. */
-    private fun korrekturSerienLage(dir: File) {
-        zeroLatchAn = false
-        livenessAn = false
-        markerAuthorized = false
-        fundamentAn = false
-        markerAt = 0L
-        flach = 150.0
-        steigungProMin = 2.0
-        knickAbMin = null
-        bolusIobU = 0.0
-        clock = start
-        transportReset()
-        val l = FuseLedgerAdapter().also { it.loadOnce(dir.also(File::mkdirs), "test-epoch", start) }
-        neuerRunner(l)
     }
 
     @Test

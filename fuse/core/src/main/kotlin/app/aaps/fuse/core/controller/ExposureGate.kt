@@ -87,22 +87,8 @@ object ExposureGate {
         capIobU: Double,
         transportU: Double,
         pumpIncrementU: Double,
-        /**
-         * VARIANTE 2 des Nullphasen-Vergleichs: der SERIEN-DECKEL des
-         * markerlosen Korrekturpfads [U] - was in einem rollenden Fenster
-         * noch offen ist. `null` = kein Deckel (Default = heutiger Stand).
-         *
-         * WARUM HIER: das Gate nimmt ohnehin das Minimum ueber die
-         * Grenzenliste, und diese Stelle sieht die EINE finale Menge. Ein
-         * eigener Riegel weiter vorne waere ein zweiter Kanal mit eigener
-         * Buchfuehrung.
-         *
-         * WAS ER NICHT ANFASST: die Basalachse. Das Gate begrenzt
-         * ausschliesslich die SMB-Menge; Null-TBR, Latch und Schutzgruende
-         * laufen voellig unberuehrt weiter. Die Trennung ist strukturell,
-         * nicht bloss beabsichtigt.
-         */
-        correctionSeriesHeadroomU: Double? = null,
+        // 2.0 (Stufe 1, K2): der Serien-Deckel der Variante 2
+        // (correctionSeriesHeadroomU) ist entfernt.
     ): Result {
         val kontext = if (mealAuthorized) mealLimitU else correctionLimitU
         val kontextName = if (mealAuthorized) "mealExposureLimit" else "correctionExposureLimit"
@@ -114,18 +100,7 @@ object ExposureGate {
         val (name, grenze) = grenzen.minByOrNull { it.second }!!
         // Dieselbe Belegungs-Semantik wie die Dosier-Headrooms (A2):
         // Grenze - capIob - transport, dann der Boden bei 0.
-        val basisHeadroom = max(0.0, grenze - capIobU - transportU)
-        // DER SERIEN-DECKEL IST BEREITS EIN REST, keine absolute Grenze -
-        // er darf deshalb NICHT durch die Belegungsrechnung
-        // (Grenze - capIob - transport) laufen, sonst waere dieselbe Menge
-        // zweimal abgezogen. Er greift als eigenes Minimum hinterher, und
-        // nur im markerlosen Korrekturpfad: eine autorisierte Mahlzeit hat
-        // eigene Grenzen und bekommt davon nichts ab.
-        val serienRest = correctionSeriesHeadroomU
-            ?.takeIf { !mealAuthorized && it.isFinite() }
-            ?.coerceAtLeast(0.0)
-        val headroom = if (serienRest != null) min(basisHeadroom, serienRest) else basisHeadroom
-        val serienBindet = serienRest != null && serienRest < basisHeadroom - 1e-12
+        val headroom = max(0.0, grenze - capIobU - transportU)
         // Dieselbe tickEps-Rasterung wie AuthorizedLift - ohne sie macht
         // die Gleitkomma-Darstellung aus 0,30/0,05 ein floor(5,999...) = 5.
         val erlaubt =
@@ -140,10 +115,7 @@ object ExposureGate {
             effectiveLimitU = grenze,
             contextLimitU = kontext,
             headroomU = headroom,
-            // Der Name folgt der Groesse, die TATSAECHLICH gebunden hat -
-            // sonst zeigte der Trail eine Kontextgrenze, waehrend der
-            // Serien-Deckel gekappt hat.
-            binding = if (serienBindet) "correctionSeriesCap" else name,
+            binding = name,
         )
     }
 }

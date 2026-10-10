@@ -302,6 +302,10 @@ enum class FuseDoubleKey(
      *
      * GEZAEHLT WIRD, WAS DEN TRANSPORT UEBERSTANDEN HAT: die Buchung wird
      * bei Verwurf und bei bewiesenem Nicht-Senden zurueckgedreht.
+     *
+     * 2.0 (Stufe 1, K2): NICHT MEHR GELESEN - Variante 2 ist entfernt. Der
+     * Schluessel bleibt registriert (gespeicherter Wert, Sicherung, Rueckweg
+     * auf 1.x); die Serienliste wird fuer diesen Rueckweg weiter gebucht.
      */
     CorrectionSeriesCapU("fuse_correction_series_cap_u", 0.0, 0.0, 5.0),
 
@@ -528,7 +532,10 @@ enum class FuseIntKey(
     ZeroLatchReasonGoneExitCycles("fuse_zero_latch_reason_gone_exit_cycles", 0, 0, 60),
 
     /** Rollierendes Fenster [min] des Serien-Deckels
-     *  [FuseDoubleKey.CorrectionSeriesCapU]. Ohne Deckel wirkungslos. */
+     *  [FuseDoubleKey.CorrectionSeriesCapU]. Ohne Deckel wirkungslos.
+     *
+     *  2.0 (Stufe 1, K2): NICHT MEHR GELESEN - Variante 2 ist entfernt; der
+     *  Schluessel bleibt registriert (gespeicherter Wert, Rueckweg auf 1.x). */
     CorrectionSeriesWindowMin("fuse_correction_series_window_min", 30, 10, 120),
 
     /** V-Reversal-Schutz: Rueckblickfenster [min], in dem das

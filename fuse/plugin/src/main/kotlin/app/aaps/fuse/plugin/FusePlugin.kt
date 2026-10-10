@@ -3082,8 +3082,8 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
             addPreference(AdaptiveSwitchPreference(ctx = context, booleanKey = FuseBooleanKey.ZeroLatchEnabled, summary = R.string.fuse_zero_latch_enabled_summary, title = R.string.fuse_zero_latch_enabled_title))
             addPreference(AdaptiveIntPreference(ctx = context, intKey = FuseIntKey.ZeroLatchCalmExitMin, dialogMessage = R.string.fuse_zero_latch_calm_min_summary, title = R.string.fuse_zero_latch_calm_min_title))
             addPreference(AdaptiveIntPreference(ctx = context, intKey = FuseIntKey.ZeroLatchReasonGoneExitCycles, dialogMessage = R.string.fuse_zero_latch_reason_gone_summary, title = R.string.fuse_zero_latch_reason_gone_title))
-            addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.CorrectionSeriesCapU, dialogMessage = R.string.fuse_correction_series_cap_summary, title = R.string.fuse_correction_series_cap_title))
-            addPreference(AdaptiveIntPreference(ctx = context, intKey = FuseIntKey.CorrectionSeriesWindowMin, dialogMessage = R.string.fuse_correction_series_window_summary, title = R.string.fuse_correction_series_window_title))
+            // 2.0 (Stufe 1, K2): Serien-Deckel und Serien-Fenster (Variante 2)
+            // sind entfernt; die Schluessel bleiben registriert.
             addPreference(AdaptiveSwitchPreference(ctx = context, booleanKey = FuseBooleanKey.PartialRecoveryEnabled, summary = R.string.fuse_partial_recovery_summary, title = R.string.fuse_partial_recovery_title))
             addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.ZeroLatchCalmDistanceMgdl, dialogMessage = R.string.fuse_zero_latch_calm_dist_summary, title = R.string.fuse_zero_latch_calm_dist_title))
             // Die Korrekturpfad-Riegel (25.08.) direkt dahinter - dieselbe
