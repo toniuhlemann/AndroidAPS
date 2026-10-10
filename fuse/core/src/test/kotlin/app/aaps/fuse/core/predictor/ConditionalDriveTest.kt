@@ -27,11 +27,11 @@ class ConditionalDriveTest {
     // ---- Fall 1: Bremse dominiert -----------------------------------------
 
     /**
-     * DER LIVEFALL VOM 11.08.: die Bremsbahn ist die bindende. Gemessen waren
-     * Haupt 114,5 gegen kombiniert 91,8 - das Minimum kam aus der Bremse.
+     * DER ANLASSFALL: die Bremsbahn ist die bindende. Die Hauptbahn lag
+     * deutlich ueber der kombinierten - das Minimum kam aus der Bremse.
      *
      * Wird nur die Hauptbahn gehoben, aendert sich am Minimum NICHTS, und
-     * genau so lief es 14 Minuten lang weiter, waehrend der BG von 139 auf 163
+     * genau so lief es minutenlang weiter, waehrend der BG deutlich
      * stieg. Der Test verlangt deshalb ausdruecklich, dass die BREMSBAHN
      * gehoben wird.
      */

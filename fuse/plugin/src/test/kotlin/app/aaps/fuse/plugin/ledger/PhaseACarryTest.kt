@@ -22,7 +22,7 @@ import org.junit.jupiter.api.Test
  *
  * KEINE GRUNDLISTE, und das ist eine Korrektur am ersten Bauauftrag. Der
  * nannte `CONSTRAINT_ZERO` und `GATE_BLOCKED` - und haette damit ausgerechnet
- * den GEMESSENEN Anlass verfehlt: Tonis 19:07-Fall ist `BOLUS_IN_QUEUE`
+ * den eigentlichen Anlass verfehlt: der Anlassfall ist `BOLUS_IN_QUEUE`
  * (Menge nach Constraints positiv, Apply-Block nie betreten). Der Mechanismus
  * haette seinen eigenen Ausloeser nicht geloest.
  *
@@ -78,12 +78,12 @@ class PhaseACarryTest {
         return a
     }
 
-    // ---- Der gemessene Fall, ganze Kette -----------------------------------
+    // ---- Der Anlassfall, ganze Kette ---------------------------------------
 
     /**
-     * DER 19:07-FALL, von der Beobachtung bis zum Uebertrag.
+     * DER ANLASSFALL, von der Beobachtung bis zum Uebertrag.
      *
-     * Die Beobachtung ist die gemessene: AAPS liess nach seinen Constraints
+     * Die Beobachtung: AAPS liess nach seinen Constraints
      * eine positive Menge stehen, hat den Apply-Block aber nie betreten.
      * [NotSentProof] nennt das `BOLUS_IN_QUEUE` - der Grund, den die urspruengliche
      * Grundliste NICHT enthielt.

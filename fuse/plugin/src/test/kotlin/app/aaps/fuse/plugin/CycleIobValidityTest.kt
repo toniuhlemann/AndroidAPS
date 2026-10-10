@@ -164,7 +164,7 @@ class CycleIobValidityTest : TestBaseWithProfile() {
         )
     }
 
-    /** Die Politik des Test-Rigs vom 09.08. - bewusst die LIVE-Werte, damit
+    /** Die Politik des Test-Rigs - bewusst die Werte des Messlaufs, damit
      *  der Beweis an derselben Konfiguration haengt wie die Messung. */
     private fun stubPolicy() {
         // AUFFANG ZUERST (Codex-Re-Review 10.08.). Mockito laesst den ZULETZT
@@ -295,8 +295,8 @@ class CycleIobValidityTest : TestBaseWithProfile() {
      * typisiertes IobTotal im Outcome, und die DS.iob-Serialisierung daraus
      * enthaelt netto/basaliob/activity/time. Ohne diese Uebergabe blieb
      * `APSResult.iobData` null, der DeviceStatus verlor den openaps.iob-
-     * Block, und Nightscout rechnete aus den Bolus-Treatments 4,90 U bei
-     * echtem Netto-IOB 0,07 - der NS-Bolus-Assistent war unbrauchbar.
+     * Block, und Nightscout rechnete aus den Bolus-Treatments mehrere Einheiten bei
+     * echtem Netto-IOB nahe null - der NS-Bolus-Assistent war unbrauchbar.
      */
     @Test
     fun `Outcome traegt das typisierte IobTotal bis zum DS-iob-JSON`() {

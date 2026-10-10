@@ -8,8 +8,8 @@ import org.junit.jupiter.api.Test
 /**
  * DER UEBERTRAG DER BELEGTEN PHASE-A-LUECKE (Toni 19.08.).
  *
- * DER GEMESSENE ANLASS. Am 19.08. forderte FUSE 20 x 0,15 U an, die
- * Pumpendatenbank zeigte 2,70 U - zwei Schritte hatte AAPS am Intervalltor
+ * DER ANLASS. FUSE forderte eine Serie gleich grosser SMBs an, die
+ * Pumpendatenbank zeigte weniger - zwei Schritte hatte AAPS am Intervalltor
  * verworfen. Der Nicht-Sende-Beweis dreht diese 0,30 U inzwischen aus allen
  * Buechern zurueck; damit sind sie nicht mehr FALSCH gebucht, geflossen sind
  * sie aber trotzdem nicht.
@@ -39,7 +39,7 @@ class MealFoundationCarryTest {
     private val B_BIS = 60
     private val STEP = 0.05
 
-    /** 25 % von 3,00 U - die Aufteilung aus Tonis Replay-Kandidat. */
+    /** 25 % von 3,00 U - die Aufteilung eines Replay-Kandidaten. */
     private val B_BUDGET = 0.75
 
     private fun plan(
@@ -66,7 +66,7 @@ class MealFoundationCarryTest {
     // ---- Die Erlaubnis ----------------------------------------------------
 
     /**
-     * DER GEMESSENE FALL, in seiner kleinsten Form.
+     * DER ANLASSFALL, in seiner kleinsten Form.
      *
      * Prime wollte 2,25 U, 0,30 U hat das Intervalltor verworfen und der
      * Beweis hat sie zurueckgedreht: gebucht sind 1,95 U, der Uebertrag steht

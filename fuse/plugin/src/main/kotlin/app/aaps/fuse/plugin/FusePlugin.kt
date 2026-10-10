@@ -1089,9 +1089,9 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
         // fest verdrahtetes 15-Minuten-Fenster mehr.
         //
         // WARUM DAS NOETIG WAR: der Dialog nannte den Zyklusanteil der
-        // alten Prime-Schrittrechnung ("0,27 U"), waehrend bei
-        // Sofortanteil 1,0 in Wahrheit der ganze Phase-A-Betrag sofort
-        // angefordert wird (3,20 U bei Huelle 4,0 und Phase-A-Anteil 0,8).
+        // alten Prime-Schrittrechnung (einen kleinen Bruchteil), waehrend bei
+        // vollem Sofortanteil (1,0) in Wahrheit der ganze Phase-A-Betrag sofort
+        // angefordert wird (Huelle mal Phase-A-Anteil, also mehrere Einheiten).
         val fensterMin = preferences.get(FuseIntKey.PrimeWindowMin)
         val fundamentEndeMin = preferences.get(FuseIntKey.MealFoundationEndMin)
         val vorschau = MealFoundation.arm(
@@ -1382,7 +1382,7 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
         // Adapter haelt diesen Lauf wie unter recoveryHold an - kein positiver
         // SMB, solange die Vorgeschichte nicht sicher uebernommen ist. Der
         // naechste invoke versucht den Umzug erneut.
-        // TIEF-GEDAECHTNIS VOR DEM LAUF (Vorfall 15.08., s. FuseLowMemory).
+        // TIEF-GEDAECHTNIS VOR DEM LAUF (frueherer Vorfall, s. FuseLowMemory).
         // Hier und nicht bei warmGraphRingOnce: das laeuft NACH dem Zyklus,
         // und der erste Zyklus nach einem Flash ist genau der, in dem der
         // Rebound-Schutz fehlte. Ein Lesefehler bleibt folgenlos - dann gilt
@@ -1675,10 +1675,10 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
                     // mealDeliveries, evidenceCommittedU, onsetSpentU und
                     // deliveredSinceHandoverU stehen daneben und zaehlten
                     // bisher die PUBLIZIERTE Menge - also die vor dem
-                    // AAPS-Intervalltor. Am 19.08. hiess das: 3,00 U in der
-                    // Buchfuehrung, 2,70 U in der Pumpendatenbank. FUSE hielt
+                    // AAPS-Intervalltor. In einem echten Fall hiess das: die ganze Huelle in der
+                    // Buchfuehrung, zwei Schritte weniger in der Pumpendatenbank. FUSE hielt
                     // die Huelle fuer geliefert, meldete WINDOW_OVER und holte
-                    // die fehlenden 0,30 U nie nach.
+                    // die fehlenden zwei Schritte nie nach.
                     //
                     // Bewusst NEBEN onProvenNotSent und mit demselben Beweis:
                     // zwei Buecher ueber denselben Vorgang muessen gemeinsam
@@ -1744,8 +1744,8 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
                             latestBolusTs = o.treatmentView.latestBolusTs,
                             bolusStepU = o.state?.pumpIncrementU ?: Double.NaN,
                             pumpTypeName = pumpTypeName,
-                            // LEER IST NICHT "EIN ANDERES GERAET" (Live-Befund
-                            // 09.08., s. LedgerFacts.serialHashOf): direkt nach
+                            // LEER IST NICHT "EIN ANDERES GERAET" (Live-Befund,
+                            // s. LedgerFacts.serialHashOf): direkt nach
                             // einem Prozessstart liefert serialNumber() den
                             // leeren String, weil InstanceId auf die
                             // asynchrone Firebase-Antwort wartet. Ohne diese
@@ -1903,7 +1903,7 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
             // Fixvertrag 30.08.: ohne iobData fehlt dem DeviceStatus der
             // openaps.iob-Block (LoopPlugin liest lastRun.request?.iob), und
             // Nightscout faellt auf eine EIGENE Rechnung aus den Bolus-
-            // Treatments zurueck (Befund: 4,90 U bei echtem Netto 0,07 -
+            // Treatments zurueck (Befund: mehrere Einheiten bei echtem Netto nahe null -
             // Bolus-Assistent unbrauchbar). Hier steht das im Zyklus
             // gerechnete typisierte IobTotal - keine zweite Semantik aus
             // RT.IOB.
@@ -2626,7 +2626,7 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
      * NICHT `android.app.AlertDialog`: der Plattform-Dialog erbt das Thema des
      * uebergebenen Contexts nicht so, wie man erwartet - im dunklen
      * AAPS-Einstellungsbildschirm kam ein WEISSES Fenster mit weisser Schrift
-     * heraus, also ein leerer Kasten (Toni, 10.08. am Geraet). Der Dialog war
+     * heraus, also ein leerer Kasten (am Geraet gesehen). Der Dialog war
      * da, man konnte ihn nur nicht lesen.
      *
      * [AlertDialogHelper] legt genau dafuer einen `ContextThemeWrapper` unter
@@ -2829,7 +2829,7 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
     }
 
     /**
-     * ZUSAMMENFASSUNG DER H8-AUSWAHL AUF DEM HAUSWEG (Geraetefund 18.09.).
+     * ZUSAMMENFASSUNG DER H8-AUSWAHL AUF DEM HAUSWEG (Geraetefund).
      *
      * MyPreferenceFragment setzt beim Aufbau und nach jeder Aenderung die
      * Zusammenfassung von Listen selbst (`pref.summary = pref.entry`) und ruft
@@ -2859,7 +2859,7 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
         // Hier stand eine handgeschriebene Liste neben den `cat()`-Aufrufen.
         // Beim Ergaenzen der Reparatur-Kategorie habe ich sie nicht mitgezogen:
         // die Wache brach fuer `fuse_repair` ab, es wurde nichts gebaut, und
-        // der Unterbildschirm kam SCHWARZ (Toni, 10.08. am Geraet). Kein
+        // der Unterbildschirm kam SCHWARZ (am Geraet gesehen). Kein
         // Absturz, keine Meldung - genau die Sorte Fehler, die zwei Listen
         // erzeugen, sobald eine von beiden vergessen wird.
         //
@@ -2929,7 +2929,7 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
             addPreference(AdaptiveSwitchPreference(ctx = context, booleanKey = FuseBooleanKey.PrimeReleaseEnabled, summary = R.string.fuse_prime_release_summary, title = R.string.fuse_prime_release_title))
             addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.PrimeEnvelopeU, dialogMessage = R.string.fuse_prime_envelope_summary, title = R.string.fuse_prime_envelope_title))
             // Direkt unter der Huelle, weil beide nur ZUSAMMEN einen Sinn
-            // ergeben: 4 U in 10 Minuten sind etwas anderes als 4 U in 30.
+            // ergeben: dieselbe Huelle in 10 Minuten ist etwas anderes als in 30.
             addPreference(AdaptiveIntPreference(ctx = context, intKey = FuseIntKey.PrimeWindowMin, dialogMessage = R.string.fuse_prime_window_summary, title = R.string.fuse_prime_window_title))
             // DAS MAHLZEITENFUNDAMENT, direkt unter Huelle und Fenster: es
             // verteilt genau diese Huelle zeitlich. Drei Zeilen, weil alle
@@ -3029,7 +3029,7 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
             // bei einer Liste verdraengt die Nachricht im Dialog die Auswahl. Die
             // Zeile zeigt Zustand und Erklaerung ueber [updatePreferenceSummary] -
             // den Hausweg. Ein eigener Zusammenfassungs-Provider liess den ganzen
-            // Bildschirm abstuerzen (Geraetefund 18.09.), s. dort. Gespeichert
+            // Bildschirm abstuerzen (Geraetefund), s. dort. Gespeichert
             // wird wie bei der Ruhe-Behandlung als Text; der Int-Key liest ihn
             // ueber die Zahlen-Rueckfallstufe.
             addPreference(

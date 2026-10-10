@@ -9,9 +9,9 @@ import kotlin.math.abs
  *  Low-Schutzmassnahme und darf nur aus einem eigenen, positiv nachgewiesenen
  *  Low-Tor entstehen."
  *
- * DER BEFUND, der das ausgeloest hat: an einem vollen Tag lief die Null 677
- * von 1129 Zyklen - 60 % der Zeit ohne Fundament, bei einem BG zwischen 53
- * und 270. Ursache war die Kette `minLower < guardFloor -> ZERO_TEMP`
+ * DER BEFUND, der das ausgeloest hat: an einem vollen Tag lief die Null in
+ * der Mehrzahl der Zyklen - die meiste Zeit ohne Fundament, bei einem BG zwischen Tief
+ * und deutlichem Hoch. Ursache war die Kette `minLower < guardFloor -> ZERO_TEMP`
  * (FuseController): eine langfristige, kohlenhydratfrei gerechnete Modellbahn
  * durfte die Grundversorgung vollstaendig entfernen. Das Muster danach war
  * immer dasselbe - Basal fehlt, BG hebt ab, FUSE laeuft mit SMBs hinterher.
@@ -92,13 +92,13 @@ object LowThreatGate {
         /**
          * UEBERDECKUNGSSTAERKE [mg/dl]: bolusIobU x ISF minus Abstand zum
          * Boden - wie weit die Bolusdeckung ueber den Fall hinausreicht
-         * (v29, Toni 24.08. nacht: der 21:58-Grenzfall trug nur +0,55).
+         * (v29, Toni 24.08. nacht: der Grenzfall dahinter trug nur eine knappe Marge).
          * REINES MESSFELD fuer Export und Replay; eine Mindestmarge wird
          * erst nach Replay-Auswertung festgelegt, nicht geraten.
          */
         val overcoverageMarginMgdl: Double? = null,
         /** Abstand des Bodenkontakts zur Horizontkante [min] - wie knapp das
-         *  120-Minuten-Fenster den Fall noch fasst (21:58: nur 2,8 min).
+         *  120-Minuten-Fenster den Fall noch fasst (im Grenzfall nur wenige Minuten).
          *  Reines Messfeld, dieselbe Regel wie oben. */
         val horizonMarginMin: Double? = null,
         /** WORAN es gescheitert ist; `null` bei offenem Tor. */
@@ -133,20 +133,20 @@ object LowThreatGate {
      * [Verdict.FALLING_WITH_BOLUS_OVERCOVERAGE] - und dieses Verdikt steuerte
      * ausschliesslich die TBR. Fuer den SMB-Pfad war es kein Riegel.
      *
-     * Daraus wurde am Abend des 19.08. eine widerspruechliche Antwort:
+     * Daraus wurde an einem realen Abend eine widerspruechliche Antwort:
      *
      *     gemessene Lage   fallend und durch Bolus ueberdeckt
      *     Basalpfad        ZERO_TEMP
-     *     SMB-Pfad         Marker hebt GUARD_FLOOR -> weitere 0,15 U
+     *     SMB-Pfad         Marker hebt GUARD_FLOOR -> weitere SMBs
      *
-     * Vier Minuten Zero-TBR halten bei 0,50 U/h rund 0,033 U zurueck, waehrend
-     * gleichzeitig 0,60 U SMB dazukamen. Das ist keine Kompensation, das ist
-     * eine Groessenordnung daneben. Gemessen: Marker 17:49, danach 24 positive
-     * Zyklen mit 3,70 U; ab 17:55 meldete FUSE bereits
-     * FALLING_WITH_BOLUS_OVERCOVERAGE und trotzdem gingen noch 19 SMBs mit
-     * 2,95 U hinaus; Minimum 58,2 mg/dl um 18:47 bei 3,20 U IOB.
+     * Vier Minuten Zero-TBR halten nur einen winzigen Bruchteil einer Einheit zurueck, waehrend
+     * gleichzeitig ein Vielfaches als SMB dazukam. Das ist keine Kompensation, das ist
+     * eine Groessenordnung daneben. Gemessen: nach dem Marker viele positive
+     * Zyklen mit mehreren Einheiten; wenige Minuten spaeter meldete FUSE bereits
+     * FALLING_WITH_BOLUS_OVERCOVERAGE und trotzdem gingen noch viele SMBs mit
+     * zusammen mehreren Einheiten hinaus; es folgte ein Tief bei hohem IOB.
      *
-     * UND UM 18:13 WURDE ES DEUTLICHER: die Zero-TBR galt wegen
+     * UND KURZ DARAUF WURDE ES DEUTLICHER: die Zero-TBR galt wegen
      * BENEFIT_BELOW_THRESHOLD als zu spaet und nutzlos. Daraus folgte
      * faktisch, dass zusaetzliche SMBs wieder erlaubt waren. "Basal
      * zurueckhalten hilft nicht mehr" und "mehr Bolus ist sicher" sind aber
@@ -292,7 +292,7 @@ object LowThreatGate {
         val minutenBisBoden = risiko.minutesToFloor!!
         // Die beiden GRENZFALL-Messgroessen (v29): wie robust die
         // Ueberdeckung und wie knapp die Horizontkante war. Sie STEUERN
-        // nichts - sie machen den 21:58-Grenzfall im Trail beziffbar.
+        // nichts - sie machen einen solchen Grenzfall im Trail beziffbar.
         val ueberdeckungsMarge = (bolus ?: 0.0) * isfMgdlPerU - strecke
         val horizontMarge = horizonMin - minutenBisBoden
 

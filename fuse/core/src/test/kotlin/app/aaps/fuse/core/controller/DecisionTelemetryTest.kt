@@ -70,7 +70,7 @@ class DecisionTelemetryTest {
     // ---- K2: die vollstaendige Kappenliste --------------------------------
 
     /**
-     * DER FALL, DER K2 AUSGELOEST HAT - und er ist auf diesem Geraet der
+     * DER FALL, DER K2 AUSGELOEST HAT - und er ist bei `IobThPercent = 100` der
      * Normalzustand, nicht der Randfall.
      *
      * `iobThU = percent/100 * maxIobU`; bei `IobThPercent = 100` sind beide
@@ -84,7 +84,7 @@ class DecisionTelemetryTest {
      */
     @Test
     fun `bei gleichem iobTH und maxIOB fuehrt die Kappenliste beide als aktiv`() {
-        // iobTh == maxIob: genau die Live-Einstellung IobThPercent = 100.
+        // iobTh == maxIob: genau die Einstellung IobThPercent = 100.
         val d = FuseController.decide(state(iobTh = 2.0, maxIob = 2.0, netIob = 1.9), flat(), evidenceCreditActive = false, evidenceMayOverrideRebound = false, lowThreat = LowThreatGate.Verdict.NONE)
 
         val byName = d.caps.associateBy { it.name }
@@ -272,7 +272,7 @@ class DecisionTelemetryTest {
     // ---- I16: der Zeitindex gehoert zur ENTSCHIEDENEN Bahn ----------------
 
     /**
-     * DER LIVE-WIDERSPRUCH VOM 10.08., als Test festgehalten.
+     * DER WIDERSPRUCH IM TRAIL, als Test festgehalten.
      *
      * Im Trail stand `minLower = 71,17` bei Anker ~90,61 und Zeitindex 0.
      * Beide Zahlen waren richtig - die HAUPTbahn hatte ihr Minimum wirklich am

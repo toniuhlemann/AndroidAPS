@@ -236,8 +236,8 @@ class TbrPolicyTest {
     // ---- Die eigene Null zuruecknehmen -----------------------------------
 
     /**
-     * GEMESSEN am 06.08.: FUSE setzte 13:01 eine 30-min-Null aus einem falschen
-     * GUARD_FLOOR, gab ab 13:14 wieder SMBs und liess die Null bis 13:31
+     * DER ANLASS: FUSE setzte eine 30-min-Null aus einem falschen
+     * GUARD_FLOOR, gab kurz darauf wieder SMBs und liess die Null bis zum Ende
      * laufen. Basal aus und schneller Kanal offen — gleichzeitig.
      */
     @Test

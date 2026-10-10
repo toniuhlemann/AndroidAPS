@@ -161,8 +161,8 @@ enum class FuseDoubleKey(
     // OBERGRENZE 6,0 (Toni 25.08. abends, zuvor 4,0): der Stellbereich,
     // nicht der Wert. Der Default bleibt 1,2; die groesseren Huellen
     // entstehen erst durch bewusstes Stellen. Hintergrund ist die
-    // Liveness-Deadlock-Messung: eine Mahlzeit braucht 5-7 U, waehrend
-    // die Huelle bei 3,75/60 min deckelte.
+    // Liveness-Deadlock-Messung: eine Mahlzeit brauchte deutlich mehr Insulin, als
+    // die damalige Huelle je Stunde freigab.
     PrimeEnvelopeU("fuse_prime_envelope_u", 1.2, 0.0, 6.0),
 
     /**
@@ -202,15 +202,15 @@ enum class FuseDoubleKey(
     MealFoundationPhaseAUpfrontShare("fuse_meal_foundation_phase_a_upfront_share", 0.0, 0.0, 1.0),
 
     /**
-     * V-REVERSAL-SCHUTZ (Bauauftrag Toni 25.08., Pflichtfall 06:27): die
+     * V-REVERSAL-SCHUTZ (Bauauftrag Toni 25.08.): die
      * Fall-Schwelle [mg/dl/min] - so tief muss das UKF-Minimum im
-     * Rueckblick gelegen haben, damit "steiler Fall" gilt (Pflichtfall:
-     * -2,81). Nur Korrekturkontext; s. CorrectionReversalGuard.
+     * Rueckblick gelegen haben, damit "steiler Fall" gilt (der Pflichtfall
+     * lag deutlich tiefer). Nur Korrekturkontext; s. CorrectionReversalGuard.
      */
     ReversalFallUkf("fuse_reversal_fall_ukf", 2.0, 0.5, 5.0),
 
     /** Gegenbewegungs-Schwelle [mg/dl/min] - ab dieser schnellen
-     *  Erholungsrate greift der Riegel (Pflichtfall: +4,0). */
+     *  Erholungsrate greift der Riegel (der Pflichtfall lag weit darueber). */
     ReversalReboundUkf("fuse_reversal_rebound_ukf", 1.0, 0.2, 5.0),
 
     /** Nachlauf-Bestaetigung: UKF-Schwelle der Aufwaertslage nach
@@ -311,9 +311,9 @@ enum class FuseDoubleKey(
      * Nahhorizont des harten Endriegels fuer NEUES positives Insulin [min].
      * Getrennt vom 120-minuetigen TBR-Nutzenfenster: Basal rechtzeitig
      * zurueckhalten und einen Mahlzeiten-SMB hart verbieten sind zwei
-     * verschiedene Entscheidungen. Der Live-Replay vom 21.08. laesst bei
+     * verschiedene Entscheidungen. Der Live-Replay des Anlassfalls laesst bei
      * 30 min noch vier fruehe Schritte zu und sperrt vor der akuten Kante;
-     * 120 min sperrte die komplette Phase A bereits bei BG 88.
+     * 120 min sperrte die komplette Phase A bereits bei normalem BG.
      */
     PositiveDescentHorizonMin("fuse_positive_descent_horizon_min", 30.0, 15.0, 60.0),
 
@@ -339,9 +339,9 @@ enum class FuseDoubleKey(
      * Werte ueberschreibt kein Update. Exposure intern in kanonischen U;
      * relational fail-closed CORRECTION nie offener als MEAL.
      *
-     * Startsatz-Begruendung (29.08.): CORR 3,0 U haette den 27.08.-Burst
-     * auf ~1,15 U begrenzt (2,5 -> 0,45 war der scharfe Kandidat);
-     * MEAL 7,0 U laesst nach ~1 U Alt-IOB + 5 U Direktdosis noch
+     * Startsatz-Begruendung (29.08.): CORR 3,0 U haette einen gemessenen Korrektur-Burst
+     * deutlich begrenzt (2,5 U war der schaerfere Kandidat);
+     * MEAL 7,0 U laesst nach etwas Alt-IOB und einer typischen Direktdosis noch
      * Nachsteuerraum; CORR-Ratio 0,20 bewahrt die bisherige
      * Korrektur-Drossel auch fuer den RISE-Pfad; MEAL-Ratio 0,35 gibt
      * unter Vollmacht die konfigurierte Anstiegsratio frei (wirksam
@@ -366,7 +366,7 @@ enum class FuseDoubleKey(
     /**
      * BG-Schwelle der Druckbedingung in der NACHT [mg/dl] (v20, Toni/Codex
      * 22.08. spaet): die Nacht darf konservativer beginnen - Profilziel +
-     * Nacht-Totband liegt bei ~143, eine eigene Nachtschwelle (Kandidat
+     * Nacht-Totband liegt darunter, eine eigene Nachtschwelle (Kandidat
      * 160) greift auch dann, wenn das Totband ueberschritten oder
      * entwaffnet ist. Rebound und gemessene Riegel bleiben unberuehrt.
      *
@@ -381,8 +381,8 @@ enum class FuseDoubleKey(
      * ERWEITERUNG M1 (Bauauftrag 7.5.1, Toni 29.08.): eigene Druckschwelle
      * des Liveness-Kanals unter GUELTIGER MEAL-Vollmacht [mg/dl, ABSOLUT].
      *
-     * Beleg: 55 min Verzug am Abend 28.08. und 35 min am Fruehstueck
-     * 29.08. - die Korrektur-Schwelle (140/160) verhinderte unter stehender
+     * Beleg: 55 min Verzug bei einer Mahlzeit am Abend und 35 min bei einem
+     * Fruehstueck - die Korrektur-Schwelle (140/160) verhinderte unter stehender
      * Marker-Autorisierung jede Druckzaehlung, waehrend r laengst >= 1 lief
      * und der Normalpfad GUARD-gedeckelt war.
      *
@@ -471,7 +471,7 @@ enum class FuseIntKey(
      * nach jedem Exit (bestaetigte Abwaertswende, harter Riegel, manuelle
      * Intervention) darf der Kanal so lange nicht neu bewaffnen. Der
      * wirksamste Einzelhebel gegen Oszillations-Re-Arming im Replay
-     * (Risiko 1,85 -> 1,35 U im 21.08.-Gegenfenster).
+     * (deutlich weniger Risiko-Insulin im Gegenfenster).
      */
     LivenessReArmMin("fuse_liveness_rearm_min", 10, 0, 60),
 
@@ -543,12 +543,12 @@ enum class FuseIntKey(
 
     /** V-Reversal-Schutz: so viele ZUSAMMENHAENGENDE Zyklen muss das
      *  robuste r positiv sein, bevor die Erholung als echter Anstieg
-     *  gilt (90-s-Anschluss; Pflichtfall: r -0,82 im Dosierzyklus). */
+     *  gilt (90-s-Anschluss; Pflichtfall: r im Dosierzyklus noch negativ). */
     ReversalConfirmCycles("fuse_reversal_confirm_cycles", 2, 1, 6),
 
     /** Freigabe-Nachlauf: Mindestdauer [min] nach Zero-Latch-Loesung
      *  bzw. Nachtende, in der positive Korrektur-SMBs zu bleiben
-     *  (Pflichtfall: 0,35 U in den ersten 4 Minuten nach der Kante). */
+     *  (Pflichtfall: ein SMB in den ersten 4 Minuten nach der Kante). */
     RearmHoldMin("fuse_rearm_hold_min", 5, 1, 30),
 
     /** Freigabe-Nachlauf: so viele zusammenhaengende Aufwaertszyklen
@@ -602,9 +602,9 @@ enum class FuseIntKey(
      *
      * ZWEITER REGLER NEBEN DER MENGE (Toni 16.08.): "also zusaetzlich zur
      * Huellengroesse, das Fenster ueber welches das Insulin abgegeben werden
-     * soll - so waere man flexibel". Anlass war das Haferflocken-Fruehstueck:
-     * die vollen 3,0 U flossen in ZEHN Minuten ab, danach sperrte der Guard
-     * bei IOB 3,70 zwei Stunden - genau als die Resorption lief. Dieselbe
+     * soll - so waere man flexibel". Anlass war ein langsam resorbiertes Fruehstueck:
+     * die volle Huelle floss in ZEHN Minuten ab, danach sperrte der Guard
+     * bei hohem IOB zwei Stunden - genau als die Resorption lief. Dieselbe
      * Menge ueber 25 Minuten haette denselben Vorlauf bei kleinerer
      * IOB-Spitze zum Resorptionszeitpunkt.
      *
@@ -624,9 +624,9 @@ enum class FuseIntKey(
      * WIE LANGE DIE EVIDENZ EIN AKTIVES REBOUND-TOTBAND ENTWAFFNEN DARF [min],
      * gerechnet ab dem MARKERDRUCK (Toni 19.08.).
      *
-     * DER GEMESSENE ANLASS: 19.08., 13:41 - Marker 287 min alt, Rebound noch
-     * 32 min offen, Evidenz wieder ACTIVE mit +0,42 mg/dl/min, BG 109,8 gegen
-     * eine Schwelle von 138. Fuenf Zyklen, 0,35 U, die das Totband ohne die
+     * DER GEMESSENE ANLASS: Marker 287 min alt, Rebound noch
+     * 32 min offen, Evidenz wieder ACTIVE mit leichtem Anstieg, BG unter
+     * der Totband-Schwelle. Eine Handvoll kleiner SMBs, die das Totband ohne die
      * damals UNBEFRISTETE Kredit-Ausnahme geblockt haette.
      *
      * NICHT DIE EVIDENZ WIRD BESCHNITTEN, nur ihr Sonderrecht: die Episode
@@ -668,12 +668,12 @@ enum class FuseIntKey(
      * FENSTER DES THEIL-SEN-HAUPTSCHAETZERS [min] (Toni-Vertrag 23.08.).
      *
      * Bisher fest 18 (Candidate-Lock R58). Der Zwei-Tage-Replay durch den
-     * echten Runner (22.08. Problemtag / 21.08. Kontrolltag, TZ-korrigiert)
+     * echten Runner (ein Problemtag und ein Kontrolltag, TZ-korrigiert)
      * zeigt: W10 weicht am Normaltag praktisch nie ab, entriegelt am
-     * Problemtag aber Onset und Abendessen-Deadlock ueber den NORMALPFAD
-     * (Erstabweichungen 09:50 und 17:49). 18 = bisheriges Verhalten,
+     * Problemtag aber Onset und den Deadlock am Abend ueber den NORMALPFAD
+     * (Erstabweichungen vormittags und abends). 18 = bisheriges Verhalten,
      * bitgleich. Struktureller Informations-Lag ~Fenster/2; kuerzer heisst
-     * aktueller UND rauschanfaelliger (+55% Ruhe-Flips bei W12, Phase 1).
+     * aktueller UND rauschanfaelliger (deutlich mehr Ruhe-Flips bei W12, Phase 1).
      *
      * DOSIERWIRKSAM: steht im Politik-Hash (v22), in policyValues, Backup,
      * Report und in der Methoden-Kennung TS-PS-...-W<min>-.... Ein
@@ -709,13 +709,13 @@ enum class FuseIntKey(
      * (signal.q1 unter [FuseController.REBOUND_LOW_MGDL]). War bis 26.08.
      * fest; [FuseController.REBOUND_WINDOW_MIN] ist nur noch der Default.
      *
-     * DER GEMESSENE ANLASS (Toni, 26.08.). Tief um 12:07, Nadir q1 66,1,
-     * Rescue-KH, Anstieg. Das Totband liess unter Ziel+Band exakt 0,00 U
-     * durch - es funktionierte. Um 13:10:37 endete das 45-Minuten-Fenster,
-     * und im SELBEN Zyklus sprang die Ratio von 0,15 auf 0,325 und der SMB
-     * von 0,10 auf 0,50 U. Bis zum naechsten Tief flossen danach 3,45 U,
-     * davon 1,85 U aus dem Liveness-Kanal, der im Fenster gesperrt gewesen
-     * waere. Um 15:15 fiel der BG erneut, Nadir q1 54,6.
+     * DER GEMESSENE ANLASS: ein Tief, Rescue-KH, danach Anstieg. Das Totband
+     * liess unter Ziel+Band nichts durch - es funktionierte. Mit dem Ende
+     * des 45-Minuten-Fensters sprang im SELBEN Zyklus die Ratio vom
+     * Korrektur- auf den Anstiegswert und der SMB auf ein Vielfaches.
+     * Bis zum naechsten Tief flossen danach mehrere Einheiten, gut die
+     * Haelfte aus dem Liveness-Kanal, der im Fenster gesperrt gewesen
+     * waere. Dann fiel der BG erneut, tiefer als beim ersten Tief.
      *
      * WAS EINE LAENGERE DAUER TUT UND WAS NICHT: sie verlaengert nicht das
      * Totband allein, sondern ALLES, was am Rebound-Fenster haengt - den
@@ -852,7 +852,7 @@ enum class FuseBooleanKey(
      * DEFAULT FALSE, und das ist eine bewusste Entscheidung gegen den ersten
      * Reflex. Rechnung mit den Defaults: lowerBgAtH 120, Schwanzuntergrenze 70,
      * ISF 50 ergeben ein Budget von 1,0 U. Das IOB am 120-min-Horizont liegt
-     * bei DIA 9 im FCL regelmaessig darueber - der Guard wuerde den schnellen
+     * bei langer DIA im FCL regelmaessig darueber - der Guard wuerde den schnellen
      * Kanal also nicht gelegentlich bremsen, sondern weitgehend schliessen. Ob
      * das so ist, ist NICHT gemessen; ein Default, der die Dosierung
      * flaechendeckend stilllegt, waere eine unbeschlossene Norm.
@@ -868,7 +868,7 @@ enum class FuseBooleanKey(
      * Der Schwanz rechnet sein Budget aus der PRIOR-FREIEN Bahn - also aus
      * einem Verlauf OHNE Kohlenhydrate. Auf flacher Kurve mit Insulin an Bord
      * ist sie niedrig, das Budget klein, der Spielraum negativ: er sperrt.
-     * Gemessen am 10.08.: 25 Minuten am Stueck, waehrend der BG stieg.
+     * Gemessen: 25 Minuten am Stueck, waehrend der BG stieg.
      *
      * Das ist ein Zirkelschluss - er widerlegt die Ankuendigung mit einem
      * Modell, das die Ankuendigung nicht kennt. Mit dieser Einstellung darf
@@ -949,12 +949,12 @@ enum class FuseBooleanKey(
     ForecastShadowCollectionEnabled("fuse_forecast_shadow_collection_enabled", true),
 
     /**
-     * ZERO-TBR-LATCH (Bauauftrag Toni 24.08. abends). Der Befund vom
-     * selben Tag: zwischen 16:41 und 18:15 eroeffnete das Low-Tor
-     * FUENFMAL eine berechtigte Zero-TBR, und der punktuelle Nutzenwert
+     * ZERO-TBR-LATCH (Bauauftrag Toni 24.08. abends). Der Befund dazu:
+     * binnen rund anderthalb Stunden eroeffnete das Low-Tor
+     * MEHRFACH eine berechtigte Zero-TBR, und der punktuelle Nutzenwert
      * (benefit < 5) warf sie jeweils binnen Minuten wieder weg - ~79 min
-     * Profilbasal (~0,79 U) liefen in einen vorhersehbaren, langsamen
-     * Fall bis zum Nadir 62. Der Latch verriegelt eine EINMAL berechtigt
+     * Profilbasal liefen in einen vorhersehbaren, langsamen
+     * Fall bis in ein Tief. Der Latch verriegelt eine EINMAL berechtigt
      * eroeffnete Null (Verdikt FALLING_WITH_BOLUS_OVERCOVERAGE oder
      * MEASURED_LOW) fuer die Dauer der Fall-Episode:
      * BENEFIT_BELOW_THRESHOLD / FLOOR_BEYOND_HORIZON / NOT_FALLING
@@ -971,8 +971,8 @@ enum class FuseBooleanKey(
 
     /**
      * V-REVERSAL-SCHUTZ, nur im Korrekturkontext (Bauauftrag Toni 25.08.,
-     * Pflichtfall 06:27-06:33: 1,75 U auf die Erholung eines Sensor-V bei
-     * robustem r -0,82). Nach steilem Fall loest eine schnelle
+     * Pflichtfall: Korrektur-SMBs auf die Erholung eines Sensor-V bei
+     * negativem robustem r). Nach steilem Fall loest eine schnelle
      * Gegenbewegung keine Korrektur-SMBs aus, solange das robuste r
      * negativ oder unbestaetigt ist. Kein Carry; Mahlzeitenpfade
      * (Marker/Prime/Fundament/Liveness-MEAL) bleiben unberuehrt.
@@ -982,8 +982,8 @@ enum class FuseBooleanKey(
 
     /**
      * FREIGABE-NACHLAUF nach Zero-Latch-Loesung/Nachtende, nur im
-     * Korrekturkontext (Pflichtfall 08:00-08:03: 0,35 U in der ersten
-     * Minute nach der Nachtband-Kante, BG fiel danach auf 106). Die Kante
+     * Korrekturkontext (Pflichtfall: ein SMB in der ersten
+     * Minute nach der Nachtband-Kante, danach fiel der BG). Die Kante
      * oeffnet positive Korrektur-SMBs erst nach Mindestdauer UND
      * zusammenhaengend bestaetigter Aufwaertslage. Der Zero-Latch bleibt
      * als zweite Schutzlinie unveraendert. Default AUS.
@@ -1104,8 +1104,8 @@ enum class FuseBooleanKey(
      * Kalibrierung, Eingangssprung oder wenn die Reihe gar nicht
      * unterbrochen war (Schleifenpause).
      *
-     * DOSIERWIRKUNG: gemessen ueber 9 echte Luecken der Woche 20.-25.08.
-     * rund zwei gesparte Minuten je Luecke bei +0,050 U ueber einen
+     * DOSIERWIRKUNG: gemessen ueber 9 echte Luecken einer Woche
+     * rund zwei gesparte Minuten je Luecke bei vernachlaessigbarer Mehrmenge ueber einen
      * ganzen Tag. Der Wiedereinstieg erlaubt wieder eine ENTSCHEIDUNG -
      * er umgeht kein Sicherheitsgate: Guards, Low-/Descent-Riegel, Tail
      * und die technischen Tore gelten unveraendert. In drei von fuenf
@@ -1155,9 +1155,9 @@ enum class FuseBooleanKey(
      * kann damit keine Dosis erhoehen und keinen bestehenden Block entfernen —
      * nur zusaetzlich zurueckhalten.
      *
-     * Gemessen am 06.08.: FUSE gab nach dem Wendepunkt noch 2,20 U in 14 SMBs,
-     * bei bis zu -3,7 mg/dl/min FALLENDER Glukose, weil `rSigned` dort noch
-     * +5,8 sagte. Genau diese Zyklen faengt die Bremse.
+     * Gemessen: FUSE gab nach dem Wendepunkt noch eine ganze Serie von SMBs,
+     * bei schnell FALLENDER Glukose, weil `rSigned` dort noch
+     * einen steilen Anstieg sagte. Genau diese Zyklen faengt die Bremse.
      *
      * 2.0 (Stufe 1, K3): NICHT MEHR GELESEN - die Bremsbahn ist fest an. Der
      * Schluessel bleibt registriert (gespeicherter Wert, Sicherung, Rueckweg
@@ -1189,9 +1189,9 @@ enum class FuseBooleanKey(
      * DEFAULT AN (Toni 15.08.), und der Anlass ist gemessen: der einzige
      * aktive Ausgang war bis dahin KEEP_CANCEL_STALE_ZERO, und der verlangt
      * einen Zyklus, der bis BELOW_PUMP_INCREMENT durchlaeuft - hinter Guard,
-     * Schwanz oder Totband entsteht der nie. Im 4-Tage-Trail standen 497
-     * gesetzten Nullen 43 Abbrueche gegenueber (nachts 147 zu 6); die Null
-     * ueberdauerte ihren Grund rund 100 Minuten je Nacht. Das zurueckgehaltene
+     * Schwanz oder Totband entsteht der nie. Im mehrtaegigen Trail wurde nur
+     * ein kleiner Bruchteil der gesetzten Nullen abgebrochen (nachts fast keine); die Null
+     * ueberdauerte ihren Grund je Nacht deutlich mehr als eine Stunde. Das zurueckgehaltene
      * Basal finanziert ueber die Bedarfsseite die Morgen-SMBs.
      *
      * AUS = Verhalten wie vor dem 15.08., bitgleich. Der Schalter bleibt, weil

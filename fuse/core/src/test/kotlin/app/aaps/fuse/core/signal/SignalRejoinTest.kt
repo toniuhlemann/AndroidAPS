@@ -155,9 +155,9 @@ class SignalRejoinTest {
      * PFLICHTFALL 2 - DER KERN DER NACHBESSERUNG: Kalibrierung, danach
      * vollstaendige 5x8-Reife, SPAETER eine Funkluecke -> Rejoin.
      *
-     * Tonis Beispiel: 12:00 Kalibrierung, 12:05-12:06 neues Signal reif,
-     * 13:00 kurze Funkluecke, 13:04 Rejoin erlaubt. Der erste Wurf haette
-     * hier bis etwa 15:00 gesperrt, weil die Grenze noch im
+     * Tonis Beispiel: Kalibrierung, rund fuenf Minuten spaeter neues Signal reif,
+     * eine Stunde danach kurze Funkluecke, vier Minuten spaeter Rejoin erlaubt. Der erste Wurf haette
+     * hier bis etwa drei Stunden nach der Kalibrierung gesperrt, weil die Grenze noch im
      * 180-min-Puffer lag - das verwechselte die historische Fenstergrenze
      * mit der Ursache des aktuellen Segmentbruchs.
      */

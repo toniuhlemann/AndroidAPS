@@ -89,7 +89,7 @@ object MarkerFallback {
      *
      * KEIN gemessenes Tief in dieser Liste, und das ist eine Korrektur vom
      * 11.08.: es war nie eine Voraussetzung der Autorisierung, sondern nur
-     * der Anlass, an dem sie zuerst auffiel. Ein Marker bei BG 105 mit
+     * der Anlass, an dem sie zuerst auffiel. Ein Marker bei normalem BG mit
      * fallender Bahn ist der HAUPTFALL einer Mahlzeit.
      */
     fun denial(

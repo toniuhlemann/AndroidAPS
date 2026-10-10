@@ -22,9 +22,9 @@ class OnsetChannelTest {
         spent: Double = 0.0,
     ) = OnsetChannel.Input(enabled, samples, r, threshold, outlier, marker, envelope, spent)
 
-    // ---- Die drei gemessenen Lagen ----------------------------------------
+    // ---- Die drei Pflichtlagen --------------------------------------------
 
-    /** Fruehstueck 07.08., 09:11-09:13: ukfRate 0,94 / 1,59 / 1,84 bei r 0,43.
+    /** Ein Fruehstuecks-Onset: ukfRate 0,94 / 1,59 / 1,84 bei r 0,43.
      *  Genau hier soll der Kanal oeffnen - zwei bis sechs Minuten vor der
      *  Rampe. */
     @Test
@@ -35,7 +35,7 @@ class OnsetChannelTest {
         assertEquals("OPEN", res.reason)
     }
 
-    /** Die Nacht 06./07.08.: fastDrive ~3 durch eigene Aktivitaet, rohe Rate
+    /** Eine Nacht: fastDrive ~3 durch eigene Aktivitaet, rohe Rate
      *  um NULL. Das kinematische Gate laesst die Rueckkopplung nicht durch -
      *  Insulin kann die rohe Rate nicht heben. */
     @Test
@@ -48,7 +48,7 @@ class OnsetChannelTest {
         assertEquals("UKF_BELOW_THR", res.reason)
     }
 
-    /** 16:08 am 06.08. (Wiederanstieg bei IOB): r war laengst ueber der
+    /** Ein Wiederanstieg bei IOB: r war laengst ueber der
      *  Schwelle - der Kanal ist SCHLAFEND, die normale Rampe traegt. Die
      *  Huelle wird fuer bestaetigte Anstiege nicht verbraucht. */
     @Test
@@ -117,7 +117,7 @@ class OnsetChannelTest {
 
     // ---- Mahlzeiten-Marker ------------------------------------------------
 
-    /** Gemessen 07.08.: Marker 08:50, erste CGM-Regung 08:51 - mit Marker
+    /** Erste CGM-Regung eine Minute nach dem Marker - mit Marker
      *  reicht EIN Wert ueber der Schwelle. */
     @Test
     fun `mit Marker reicht ein einziger Wert ueber der Schwelle`() {

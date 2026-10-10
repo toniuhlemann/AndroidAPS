@@ -7,8 +7,8 @@ package app.aaps.fuse.core.signal
  * hierher keine Reihe, auf der sich Glukose-Stabilitaet beurteilen laesst.
  * Die einzige punktweise Reihe war [BgiAdjustedSeries.AdjustedSeries], und die
  * traegt `q1 - cumulativeBgi`, also den BGI-BEREINIGTEN ANTRIEB. Bei
- * Fruehstuecksaktivitaet sind das rund +0,7 mg/dl/min Versatz gegenueber der
- * Glukose - das Fuenfzigfache der Rate, um die es bei der Frage "faellt der
+ * Fruehstuecksaktivitaet ist das ein deutlicher Versatz gegenueber der
+ * Glukose - ein Vielfaches der Rate, um die es bei der Frage "faellt der
  * Zucker noch?" geht. Ein Stabilitaetsnachweis darauf wuerde einen
  * INSULINGETRIEBENEN echten Abfall als ruhig lesen. Genau deshalb bleibt die
  * bereinigte Reihe unberuehrt und bekommt diese hier NEBEN sich.
@@ -17,7 +17,7 @@ package app.aaps.fuse.core.signal
  * 28.08.): `q1` ist bereits UKF-Ausgabe, keine Messung. Wer nur q1 durchreicht,
  * hat "gemessene und gefilterte Entwicklung" nicht erfuellt, sondern zweimal
  * dieselbe gefilterte Sicht. Der Rohwert ist ganzzahlig (gemessen: 155 von 155
- * Werten am 28.08., kleinster beobachteter Schritt 1 mg/dl) - seine Aufloesung
+ * Werten, kleinster beobachteter Schritt 1 mg/dl) - seine Aufloesung
  * ist damit bekannt und nachpruefbar, waehrend q1 stetig ist.
  *
  * WAS DIESE KLASSE NICHT TUT: sie bewertet nichts. Sie traegt Punkte, Zeit und

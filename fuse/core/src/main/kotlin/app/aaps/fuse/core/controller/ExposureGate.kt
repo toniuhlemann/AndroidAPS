@@ -18,8 +18,8 @@ import kotlin.math.min
  * Einbaustellen - Hauptpfad NACH dem Liveness-Merge und Fallback-Pfad
  * NACH dessen MeasuredDescentGate - und nach ihr veraendert KEINE Stufe
  * die Menge mehr nach oben (MarkerFloor laeuft nie erneut; danach nur
- * Reduzierer). Anlass: der Korrektur-Burst vom 27.08. (2,50 U in 12
- * tailHeadroom-Zyklen, waehrend iobTH/maxIOB 4-6 U Luft liessen - eine
+ * Reduzierer). Anlass: ein realer Korrektur-Burst (mehrere Einheiten in einer kurzen Serie von
+ * tailHeadroom-Zyklen, waehrend iobTH/maxIOB noch reichlich Luft liessen - eine
  * kontextabhaengige Grenze existierte im Normalpfad nicht).
  *
  * VERTRAGSPUNKTE:

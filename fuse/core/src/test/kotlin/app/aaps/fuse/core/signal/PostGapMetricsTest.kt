@@ -10,7 +10,7 @@ class PostGapMetricsTest {
     private fun min(n: Double) = t0 + (n * 60_000).toLong()
 
     /**
-     * DIE ECHTE SEQUENZ VOM 10.08., als Pflichtgegenprobe.
+     * DIE LUECKEN-SEQUENZ, als Pflichtgegenprobe.
      *
      *   105  ->  35-min-Luecke  ->  90  ->  3 min spaeter 105
      *
@@ -66,8 +66,8 @@ class PostGapMetricsTest {
     }
 
     /**
-     * Ein MAHLZEITENKOPF darf nicht wie der Luecken-Fall aussehen. Tonis
-     * gemessene 4,85 mg/dl/min - dieselbe Rate wie der Ruecksprung oben, aber
+     * Ein MAHLZEITENKOPF darf nicht wie der Luecken-Fall aussehen. Ein Anstieg
+     * mit 4,85 mg/dl/min - dieselbe Rate wie der Ruecksprung oben, aber
      * mit reifem Segment.
      */
     @Test

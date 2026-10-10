@@ -85,9 +85,9 @@ object PrimeRelease {
     /**
      * Absolute Wanduhr-Kappe ab Knopfdruck [min].
      *
-     * GEMESSEN 09.08. (Schoko-Muesli, L-Marker): der Knopfdruck um 10:46 fiel
+     * GEMESSEN an einer realen Mahlzeit (L-Marker): der Knopfdruck fiel
      * in ein CLEARANCE-Nein, das 15 Minuten lang stand - danach war das
-     * Fenster VORBEI und die gesamte 2,00-U-Huelle verfallen, ohne dass sie
+     * Fenster VORBEI und die gesamte Huelle verfallen, ohne dass sie
      * je erteilbar gewesen waere. Eine Freigabe, die abgelaufen ist, weil sie
      * nie erteilt werden KONNTE, ist keine Sicherheitsentscheidung, sondern
      * ein Buchungsfehler.
@@ -111,11 +111,11 @@ object PrimeRelease {
      * MARKER-PRIOR (08.08., Antwort auf Tonis Vorrang-Frage): Der Knopf ist
      * eine bewusste ERKLAERUNG "Kohlenhydrate kommen" - FUSE ist COB-blind,
      * seine Waechterbahn rechnet also das Worst-Case "es kommen KEINE Carbs",
-     * das im Marker-Fenster nachweislich falsch ist (Abendessen 07.08.:
+     * das im Marker-Fenster nachweislich falsch ist (ein reales Abendessen:
      * 58 min GUARD_FLOOR + 12 min CLEARANCE gegen die deklarierte Mahlzeit,
      * Kopf 33 min zu spaet). Der Prior schreibt der UNTEREN Bahn einen
-     * minimalen deklarierten Carb-Antrieb gut (~10-15 g ueber 45 min bei
-     * ISF 80) - Gates bleiben souveraen, rechnen aber mit korrekten Fakten.
+     * minimalen deklarierten Carb-Antrieb gut (eine kleine Kohlenhydratmenge
+     * ueber 45 min) - Gates bleiben souveraen, rechnen aber mit korrekten Fakten.
      * Gekappt an der Mittelbahn (lower <= mean bleibt erhalten).
      *
      * ENTZIRKULARISIERT SEIT C2 (Codex H2 "a marker may create demand evidence,
@@ -188,8 +188,8 @@ object PrimeRelease {
          *
          * Der Aufrufer hat geprueft, dass die Einstellung an ist UND ein Marker
          * laeuft. NICHT, dass ein Tief vorliegt: hier stand "trotz gemessenem
-         * Tief", und diese Verschraenkung war der Fehler, den ein Livefall am
-         * 11.08. aufgedeckt hat (BG 105 fallend, alle Tore frei, 0 U).
+         * Tief", und diese Verschraenkung war der Fehler, den ein Livefall
+         * aufgedeckt hat (BG normal und fallend, alle Tore frei, 0 U).
          */
         val markerAuthorized: Boolean = false,
         /** Die Episoden-Wahl "ohne Vorschuss" aus dem Marker-Dialog (Toni
@@ -202,9 +202,9 @@ object PrimeRelease {
          * Ueber wieviele Minuten die Huelle verteilt wird (Toni 16.08.).
          *
          * WARUM EINSTELLBAR: dieselbe Menge wirkt anders, je nachdem wie
-         * schnell sie kommt. Beim Haferflocken-Fruehstueck floss die volle
-         * Huelle in zehn Minuten ab; danach sperrte der Guard bei IOB 3,70
-         * zwei Stunden, genau als die Resorption lief. Ueber 25 Minuten
+         * schnell sie kommt. Bei einem realen Fruehstueck floss die volle
+         * Huelle in zehn Minuten ab; danach sperrte der Guard bei hohem IOB
+         * zwei Stunden, genau als die Resorption lief. Ueber laengere Zeit
          * verteilt haette derselbe Vorlauf eine kleinere IOB-Spitze zum
          * Resorptionszeitpunkt - gleiche Menge, andere Kante.
          *
@@ -269,10 +269,10 @@ object PrimeRelease {
         // (Tonis Entscheidung 09.08. nach dem gemessenen Fall).
         //
         // WAS SCHIEF WAR: das Tor verlangte Reserve fuer die gesamte
-        // Resthuelle. Bei einer Huelle von 2,0 U sind das 0,2 x 2,0 x 90 = 36 mg/dl, also
-        // minLower >= 106 bei einem BG von 141 - die SCHNELLSTE Mahlzeit bekam
+        // Resthuelle: 0,2 x Huelle x ISF, bei einer grossen Huelle mehrere Dutzend mg/dl - also
+        // ein minLower weit ueber dem Boden, auch bei erhoehtem BG - die SCHNELLSTE Mahlzeit bekam
         // damit den SCHWERSTEN Start, obwohl sie den Vorschuss am dringendsten
-        // braucht. Am 09.08. fehlten so 4 mg/dl und die komplette Huelle
+        // braucht. Im gemessenen Fall fehlten so nur wenige mg/dl und die komplette Huelle
         // verfiel ungenutzt.
         //
         // WAS DIE AUSSAGE JETZT IST, ehrlich benannt: gedeckt ist die Dosis

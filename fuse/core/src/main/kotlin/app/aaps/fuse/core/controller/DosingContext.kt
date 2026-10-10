@@ -11,7 +11,7 @@ package app.aaps.fuse.core.controller
  * Foundation-/Upfront-/Deferred-Fristen begrenzen ihre QUELLEN, definieren
  * aber nie den Kontext. Kinematische Fenster, hoher r, RISE oder eine noch
  * lebende Evidenzepisode reichen fuer MEAL ausdruecklich NICHT (§4.1;
- * Livefall 27.08.: der Korrektur-Burst lief auf einem KINEMATIC_ONLY-
+ * im Livefall lief ein Korrektur-Burst auf einem KINEMATIC_ONLY-
  * Fenster mit Rise-Rampe bei leerer Autorisierungslage - genau dieser Fall
  * darf nie ins MEAL-Profil rutschen). `ExpectationLedger.classify` ist als
  * Profilquelle ungeeignet, weil es das kinematische Fenster als MEAL

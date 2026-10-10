@@ -20,8 +20,8 @@ class ReboundWindowTest {
         reboundWindow = rebound, mealWindow = true,
     )
 
-    /** DER 16:28-FALL vom 07.08.: elf Minuten nach q1<75 stand r auf 3,3 und
-     *  die Rampe auf 0,35 - 1,65 U in die zweite Senke. Mit Fenster: 0,15. */
+    /** DER REBOUND-FALL: elf Minuten nach q1<75 stand r auf 3,3 und
+     *  die Rampe auf 0,35 - reichlich Insulin in die zweite Senke. Mit Fenster: 0,15. */
     @Test
     fun `im Rebound-Fenster bleibt die Rampe auf dem Korrektur-Anteil`() {
         assertEquals(0.15, state(rebound = true, r = 3.32).effectiveSmbRatio, 0.0)
@@ -65,10 +65,10 @@ class ReboundWindowTest {
     )
 
     /**
-     * DER 00:26-FALL (Vorfall #5, eingefroren): Rebound-Fenster aktiv, Anker
+     * DER NACHTFALL (Vorfall #5, eingefroren): Rebound-Fenster aktiv, Anker
      * 107 bei Ziel 98 - r-aufgeblaehte Bahn meldet Bedarf, aber die Erholung
-     * bis Ziel+25 ist ERWUENSCHT: Totband nullt die Dosis. 14 solcher Zyklen
-     * gaben in der Nacht 07./08.08. zusammen 1,05 U.
+     * bis Ziel+25 ist ERWUENSCHT: Totband nullt die Dosis. Viele solcher Zyklen
+     * gaben in einer Nacht zusammen eine nennenswerte Menge.
      */
     @Test
     fun `im Rebound-Fenster nullt das Totband unterhalb von Ziel plus 25`() {
@@ -95,7 +95,7 @@ class ReboundWindowTest {
     // dass ein Test es sah. Dieses Paar macht die MITTLERE Schicht
     // mutationsfest.
 
-    /** Identische Lage wie der 00:26-Fall oben - nur fliesst jetzt Kredit:
+    /** Identische Lage wie der Nachtfall oben - nur fliesst jetzt Kredit:
      *  das Totband ist entwaffnet und die Dosis kommt. */
     @Test
     fun `mit Evidenzkredit ist das Rebound-Totband entwaffnet`() {

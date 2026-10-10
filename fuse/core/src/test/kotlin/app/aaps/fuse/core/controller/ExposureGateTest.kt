@@ -12,7 +12,7 @@ import org.junit.jupiter.api.Test
  */
 class ExposureGateTest {
 
-    /** Anlassfall 27.08. in Zahlen: iobTH/maxIOB liessen 4-6 U Luft, die
+    /** Anlassfall als Testlage: iobTH/maxIOB liessen mehrere Einheiten Luft, die
      *  Kontextgrenze haette gebunden - sie ist das min und traegt ihren
      *  Namen. */
     @Test

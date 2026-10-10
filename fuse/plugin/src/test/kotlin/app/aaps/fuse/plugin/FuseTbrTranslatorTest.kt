@@ -159,10 +159,10 @@ class FuseTbrTranslatorTest {
     // ---- C7c: die Autorisierung zertifiziert beide gemeinsam (17.08.) -----
 
     /**
-     * DER ANLASSFALL VOM 17.08.: Mahlzeitenmarker aktiv, Huelle liefert
-     * 0,15 U je Minute, eine modellbedingte Null laeuft aus dem Vorzyklus.
+     * DER ANLASSFALL: Mahlzeitenmarker aktiv, Huelle liefert
+     * je Minute einen kleinen SMB, eine modellbedingte Null laeuft aus dem Vorzyklus.
      * C7a hielt die Null in JEDEM Zyklus, weil immer ein SMB fiel - der
-     * Abbruch kam nie zur Ausfuehrung, selbst Tonis manueller TBR-Abbruch am
+     * Abbruch kam nie zur Ausfuehrung, selbst ein manueller TBR-Abbruch am
      * Geraet wurde im Folgezyklus wieder ueberschrieben.
      *
      * Unter der Autorisierung ist das Profilbasal die vertragliche
@@ -199,9 +199,9 @@ class FuseTbrTranslatorTest {
     /**
      * DER ZWEITE TRAEGER: die Basal-Grundregel der Mahlzeit
      * (`basalFloorProtected`, gestempelt vom BasalFloorGuard). Sie deckt die
-     * Absorptionsphase NACH dem Prime-Fenster - am 17.08. war die Huelle um
-     * 19:21 leer, `markerAuthorizedU` damit 0, die Evidenzepisode lief aber
-     * noch, und um 19:30 wurde die Null aus einer unreifen Reihe erneuert.
+     * Absorptionsphase NACH dem Prime-Fenster - im Anlassfall war die Huelle
+     * aufgebraucht, `markerAuthorizedU` damit 0, die Evidenzepisode lief aber
+     * noch, und wenige Minuten spaeter wurde die Null aus einer unreifen Reihe erneuert.
      */
     @Test
     fun `C7c auch die Basal-Grundregel gibt den Abbruch frei`() {

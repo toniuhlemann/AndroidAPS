@@ -28,7 +28,7 @@ package app.aaps.fuse.core.controller
  * EINTRITTSSCHWELLE (Tonis Korrektur 18.09.): der W10-Antrieb muss die
  * bestehende Druckschwelle des Liveness-Kanals erreichen,
  * [LivenessChannel.R_MIN_MGDL_PER_MIN] = 1,0 mg/dl/min - genau die Bedingung
- * des bewerteten Codex-Replays. `riseRampLowR` (live 1,5) ist davon getrennt
+ * des bewerteten Codex-Replays. `riseRampLowR` (live darueber eingestellt) ist davon getrennt
  * und bleibt ausschliesslich Unterkante der SMB-Ratio-Rampe: zwischen 1,0 und
  * riseRampLowR darf H8 aktiv sein, die Ratio bleibt am unteren Rampenwert.
  *

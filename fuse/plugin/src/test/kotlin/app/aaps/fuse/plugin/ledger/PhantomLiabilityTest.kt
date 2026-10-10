@@ -12,9 +12,9 @@ import java.io.File
 /**
  * PHANTOMHAFTUNG (Kontroll-Audit 09.08.2026).
  *
- * Gemessener Anlass: drei Posten vom Vorabend, 16-20 h alt, banden am 09.08.
- * um 11:52 zusammen 0,35 U als Transport - 0,086 U davon im Schwanzbudget,
- * das Siebenfache des damals verbliebenen Headrooms. `prune` entfernte sie
+ * Anlass: drei Posten vom Vorabend, 16-20 h alt, banden am Folgetag
+ * zusammen 0,35 U als Transport - ein Teil davon im Schwanzbudget,
+ * ein Vielfaches des damals verbliebenen Headrooms. `prune` entfernte sie
  * nicht, weil es nur GESCHLOSSENE Zeilen kennt.
  *
  * Die Regel prueft AUSDRUECKLICH nicht "geliefert", sondern "kann nicht mehr

@@ -13,7 +13,7 @@ import java.io.File
  * typisierte IobTotal deshalb beim Publizieren in `iobData` uebernehmen -
  * faellt die Zuweisung einem Refactoring zum Opfer, verliert Nightscout
  * den Block STILL und rechnet aus den Bolus-Treatments ein eigenes IOB
- * (Befund 30.08.: 4,90 U bei echtem Netto-IOB 0,07; NS-Bolus-Assistent
+ * (Befund: mehrere Einheiten bei echtem Netto-IOB nahe null; NS-Bolus-Assistent
  * unbrauchbar). Kein Unit-Test faehrt FusePlugin bis zu dieser Zeile,
  * darum haelt sie dieser Waechter - dasselbe Idiom wie
  * LoopPluginAnnahmeWaechterTest.

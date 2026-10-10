@@ -8,9 +8,9 @@ import kotlin.math.abs
  * DER ANLASS (Toni 28.08.). Der autorisierte Mahlzeiten-Sofortanteil wartete
  * bei praktisch flachem Zucker minutenlang, weil zwei NULLTOLERANZEN ihn
  * hielten: `ukfRatePerMin < 0` und "q1 ist gegenueber dem Vorzyklus gefallen".
- * Am Fruehstueck des 28.08. lag q1 von 09:22 bis 09:32 zwischen 94,3 und 95,5
- * mg/dl - flacher geht kaum -, aber die Filterrate blieb knapp negativ
- * (zuletzt -0,0133) und q1 wackelte um 0,1 bis 0,3. Vier autorisierte
+ * An einem realen Fruehstueck lag q1 zehn Minuten lang nahezu konstant -
+ * flacher geht kaum -, aber die Filterrate blieb knapp negativ
+ * und q1 wackelte nur um wenige Zehntel. Mehrere autorisierte
  * Einheiten lagen still.
  *
  * DIE TOLERANZ WAECHST MIT DER INTERVALLAENGE. Das ist der Kern, und er ist
@@ -18,8 +18,8 @@ import kotlin.math.abs
  * die Intervallaenge als SCHALTER statt als MASSSTAB zu behandeln:
  *
  *   Entwurf 1 verbot jedem Abschnitt ab 2 Minuten eine Rate unter
- *   -0,1 mg/dl/min. Toni rechnete nach: der Schritt 95 -> 94 zwischen 09:27
- *   und 09:29 ergibt ueber zwei Minuten -0,49 und haette bis 09:37 gesperrt,
+ *   -0,1 mg/dl/min. Toni rechnete nach: ein einzelner Schritt um 1 mg/dl
+ *   ergibt ueber zwei Minuten rund -0,5 und haette noch Minuten laenger gesperrt,
  *   also LAENGER als der Zustand vorher. Zu streng.
  *
  *   Entwurf 2 ueberging Abschnitte unter 5 Minuten ganz. Toni rechnete
@@ -148,7 +148,7 @@ object GlucoseStability {
      *   trennschaerfer und traeger.
      * @param noiseAllowanceMgdl Von der Dauer UNABHAENGIGE Zugabe [mg/dl].
      *   WAHL, KANDIDAT: sie deckt Quantisierung und Zucken. Der Rohwert ist
-     *   ganzzahlig (gemessen: 155 von 155 Werten am 28.08.), ein Schritt
+     *   ganzzahlig (gemessen: 155 von 155 Werten), ein Schritt
      *   kostet also immer genau 1 - unabhaengig davon, ueber welche Zeit er
      *   auftritt. Zwei Schritte sind die Zugabe; das ist eine
      *   Sicherheitsentscheidung und gehoert abgenommen, nicht hergeleitet.
@@ -264,8 +264,8 @@ object GlucoseStability {
          * verlassen hat - gerade faellt nichts mehr.
          *
          * Getrennt auszuweisen (Toni 28.08.), weil es zwei verschiedene Lagen
-         * sind: am Fruehstueck des 28.08. hielt von 09:24 bis 09:26 ein
-         * Rueckgang, der um 09:23 bereits beendet war. Diese Klasse handelt
+         * sind: an einem realen Fruehstueck hielt noch einige Minuten ein
+         * Rueckgang, der bereits beendet war. Diese Klasse handelt
          * NICHT unterschiedlich danach - sie sagt nur, welcher Fall vorliegt.
          */
         val bindingEndsAtNewest: Boolean,
@@ -516,10 +516,10 @@ object GlucoseStability {
      * WIE VIELE ZYKLEN WAR ES SCHON STABIL - aus der vorhandenen Reihe.
      *
      * DER ANLASS (Toni 28.08.): der Nachweis las zwar die Vorgeschichte,
-     * aber der BESTAETIGUNGSZAEHLER begann nach dem Marker wieder bei 1. Am
-     * Fruehstueck hiess das: 09:22 stabil (1/3), 09:23-09:26 ein alter
-     * Rueckgang setzt zurueck, 09:27 wieder 1/3, Freigabe erst 09:29:22 -
-     * also 7 min 25 s nach dem Marker. Die Wartezeit kam aus der
+     * aber der BESTAETIGUNGSZAEHLER begann nach dem Marker wieder bei 1. An
+     * einem realen Fruehstueck hiess das: erst stabil (1/3), dann setzte ein alter
+     * Rueckgang minutenlang zurueck, danach wieder 1/3; die Freigabe kam erst
+     * gut sieben Minuten nach dem Marker. Die Wartezeit kam aus der
      * unvollstaendigen Nutzung der Historie, nicht aus einer
      * Sicherheitsbedingung.
      *

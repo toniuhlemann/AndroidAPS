@@ -5,9 +5,9 @@ import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Test
 
 /**
- * DER VORFALL VOM 15.08. ALS TEST - mit den echten Zahlen aus dem
- * Produktiv-Trail (q1 fiel von 75,9 auf 70,2 und stieg wieder ueber 75; der
- * Flash um 17:56 loeschte das Gedaechtnis, obwohl das Fenster bis 18:35 lief).
+ * DER ANLASSFALL ALS TESTLAGE:
+ * q1 faellt von 75,9 auf 70,2 und steigt wieder ueber 75; ein Flash
+ * loescht das Gedaechtnis, obwohl das Rebound-Fenster noch laeuft.
  */
 class FuseLowMemoryTest {
 
@@ -25,7 +25,7 @@ class FuseLowMemoryTest {
     private fun liesMit(fensterMin: Int, vararg zeilen: String) =
         FuseLowMemory.lastLowTsFromTrail(zeilen.asSequence(), jetzt, fensterMin)
 
-    /** Die gemessene Reihe: das juengste Tief war 11 min alt. */
+    /** Die Testreihe: das juengste Tief ist 11 min alt. */
     @Test
     fun `das juengste Tief im Fenster wird zurueckgeholt`() {
         val ts = lies(

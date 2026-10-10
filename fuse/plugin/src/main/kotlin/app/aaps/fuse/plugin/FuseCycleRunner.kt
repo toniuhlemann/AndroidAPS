@@ -695,7 +695,7 @@ class FuseCycleRunner(
          *
          * Das ist der Vertrag vom 11.08. (Vetos duerfen den markerfinanzierten
          * Anteil senken, aber nicht unter ihn) und keine Umgehung. Es ist aber
-         * auch genau die Form des Abendfalls vom 25.08. - deshalb steht die
+         * auch genau die Form des gemessenen Abendfalls - deshalb steht die
          * Zahl hier im Export und wird in der Endpfadprobe ausdruecklich
          * behauptet, statt nebenbei zu passieren.
          */
@@ -733,8 +733,8 @@ class FuseCycleRunner(
          * Das Plugin uebernimmt es in `APSResult.iobData`, damit der
          * DeviceStatus den `openaps.iob`-Block traegt (netto/basaliob/
          * activity/time). Ohne ihn faellt Nightscout auf eine EIGENE
-         * Rechnung aus den Bolus-Treatments zurueck (Befund: 4,90 U bei
-         * echtem Netto-IOB 0,07) und der Bolus-Assistent rechnet falsch.
+         * Rechnung aus den Bolus-Treatments zurueck (Befund: mehrere Einheiten bei
+         * echtem Netto-IOB nahe null) und der Bolus-Assistent rechnet falsch.
          * KEINE zweite Semantik aus RT.IOB - genau das hier ist das im
          * Zyklus gerechnete, valid-geprueft Original. `null` = Abbruch,
          * bevor ein gueltiges IOB vorlag.
@@ -796,8 +796,8 @@ class FuseCycleRunner(
          */
         val tailLowerUnconditionalMgdl: Double? = null,
         val tailLowerConditionalMgdl: Double? = null,
-        /** Je Bahn EINZELN, bedingt und unbedingt. Ohne sie war am
-         *  11.08. nicht zu sehen, dass die Hebung der Hauptbahn von der
+        /** Je Bahn EINZELN, bedingt und unbedingt. Ohne sie war im
+         *  Live-Trail nicht zu sehen, dass die Hebung der Hauptbahn von der
          *  unbedingten Bremsbahn vollstaendig kassiert wurde - die
          *  kombinierten Werte sahen schlicht gleich aus. */
         val tailLowerMainUncondMgdl: Double? = null,
@@ -1022,9 +1022,9 @@ class FuseCycleRunner(
          * was seit dem Marker floss, INKLUSIVE manueller NORMAL-Boli.
          *
          * Er wird jeden Zyklus ausgewiesen, nicht nur bei einer Klemmung.
-         * Der Grund ist gemessen: am 25.08. sank der Rest um 18:29 mit
-         * einem manuellen 4-U-Bolus auf 0,50 U, waehrend der Export sieben
-         * Minuten lang weiter `openU = 3,60` zeigte - `clampToHull` laeuft
+         * Der Grund ist gemessen: an einem Abend sank der Rest mit
+         * einem manuellen Bolus fast vollstaendig, waehrend der Export sieben
+         * Minuten lang weiter den alten Wert von `openU` zeigte - `clampToHull` laeuft
          * laut Vertrag erst NACH der naechsten Lieferung. Ohne diese Spalte
          * sieht dieses Fenster aus wie ein Bestand, den es nicht mehr gibt.
          */
@@ -1047,7 +1047,7 @@ class FuseCycleRunner(
         /**
          * Warum geklemmt wurde. `MANUAL_BOLUS_COVERAGE` heisst: der
          * manuelle Bolus allein haette den Bestand schon nicht mehr
-         * gedeckt - genau der Abendfall des 25.08.
+         * gedeckt - genau der gemessene Abendfall.
          */
         val deferredClampReason: String? = null,
         val deferredPrimePinnedForTs: Long = 0L,
@@ -2159,7 +2159,7 @@ class FuseCycleRunner(
         //
         // LAENGER ALS `mealMarkerActive`: das Fenster der Sonderrechte endet
         // nach 90 Minuten, die Episode darf bis zum harten Deckel laufen. Der
-        // gemessene Lauf vom 11.08. war nach 205 Minuten noch aktiv, mit einer
+        // gemessene Anlasslauf war nach 205 Minuten noch aktiv, mit einer
         // zweiten Welle ab T+120 - endete die Identitaet bei 90, begaenne dort
         // eine neue Episode mit frischem Deckel und frischem Zaehler.
         //
@@ -2174,7 +2174,7 @@ class FuseCycleRunner(
         // Doppelfinanzierung, gegen die die Episodenbudgets ueberhaupt
         // existieren.
         //
-        // GAS-VOR-BREMSE NUR FUER ERKLAERTES WISSEN (08.08., Fruehstueckstest):
+        // GAS-VOR-BREMSE NUR FUER ERKLAERTES WISSEN (aus einem Fruehstueckstest):
         // das Rebound-Fenster schuetzt vor dem Jagen UNANGEKUENDIGTER Hypo-
         // Gegenesser. Ein gedrueckter Marker IST die Ankuendigung - er
         // entwaffnet die Heuristik-Bremse (Ratio-Deckel, Totband, tau-
@@ -2182,12 +2182,12 @@ class FuseCycleRunner(
         // Fix 7 (Audit R95 NEU-01/02, Tonis Entscheid "bis zur Wende, max
         // 45 min"): die Marker-SONDERRECHTE (Rebound-Entwaffnung, Prior,
         // Marker-Zweig des Fensters) enden mit der nachhaltigen Wende oder
-        // nach MarkerScope.BOOST_MAX_MIN - der Fruehstueckssturz vom 08.08.
+        // nach MarkerScope.BOOST_MAX_MIN - der gemessene Fruehstueckssturz
         // fiel sonst noch in die entwaffnete Zone. KONTEXT (Freigabe-Huelle,
         // Onset-Evidenz, Anzeige) behaelt die vollen 90 min.
         // Fix-Pass 2 Nr. 4 (NEU-BS-05): eine Wende zaehlt erst NACH einer
         // Anstiegsphase. Sonst verriegelte der Marker-Druck IM FALL (Essen
-        // im Tief - der Fruehstuecksfall vom 08.08.!) die Sonderrechte
+        // im Tief - genau der gemessene Fruehstuecksfall!) die Sonderrechte
         // sofort, und Gas-vor-Bremse waere genau dort tot, wofuer es
         // gebaut wurde.
         if (mealMarkerActive && !episodes.markerRiseSeen &&
@@ -2524,7 +2524,7 @@ class FuseCycleRunner(
             guardFloorMgdl = cfg.guardFloorMgdl,
             // NICHT das 120-minuetige TBR-Nutzenfenster. Ein Basalstopp kann
             // weit voraus sinnvoll sein; ein harter SMB-Endriegel muss eine
-            // akute, gemessene Gefahr meinen. Die Kopplung hat am 21.08. die
+            // akute, gemessene Gefahr meinen. Die Kopplung hat einmal die
             // komplette Phase A eines Fruehstuecks gesperrt.
             horizonMin = cfg.positiveDescentHorizonMin,
         )
@@ -2582,7 +2582,7 @@ class FuseCycleRunner(
         // ---- FRUEHER ADAPTIVER MEAL-BEDARF (Toni 18.09., H8, Default AUS) ---
         // EINE Entscheidung je Zyklus, VOR der State-Konstruktion. Ist H8
         // geeignet (`eligible`), lesen genau drei Stellen den robusten
-        // W10-Antrieb statt der W18-Bahn - der im Replay vom 18.09. gepruefte
+        // W10-Antrieb statt der W18-Bahn - der im Replay gepruefte
         // Vertrag: die Ratio-Rampe, der Druck des Liveness-Kanals und dessen
         // Freigabe-Mittelbahn (`max(produktiv, target + W10 * H)`, nie Summe).
         // Ob die H8-Bahn diese Mittelbahn tatsaechlich stellt, ist eine
@@ -2724,8 +2724,8 @@ class FuseCycleRunner(
         //
         // Ich hatte das gemessene Tief zur VORAUSSETZUNG der Autorisierung
         // gemacht. Es war aber nur der Anlass, an dem sie zuerst auffiel.
-        // Gemessen am 11.08.: BG 105 fallend, Marker seit 3 min, alle
-        // technischen Tore frei, iobTH/maxIOB je 8 U - und trotzdem 0 U,
+        // Gemessen: normaler BG, fallend, Marker seit 3 min, alle
+        // technischen Tore frei, iobTH/maxIOB nicht bindend - und trotzdem keine Abgabe,
         // weil `safetyReasons` leer war. Das ist der HAUPTFALL einer
         // Mahlzeit (normaler BG, Bahn faellt), nicht der Randfall.
         //
@@ -2952,7 +2952,7 @@ class FuseCycleRunner(
         // Der Schwanz rechnet sein Budget aus der PRIOR-FREIEN Bahn, also aus
         // einem Verlauf ohne Kohlenhydrate. Er verbietet damit genau das
         // Insulin, das die angekuendigte Mahlzeit rechtfertigt - ein
-        // Zirkelschluss, gemessen am 10.08. als 25 Minuten Sperre bei
+        // Zirkelschluss, gemessen als 25 Minuten Sperre bei
         // steigendem BG.
         //
         // Die bedingte Bahn ist DIESELBE Rechnung mit EINER Aenderung: der
@@ -3199,7 +3199,7 @@ class FuseCycleRunner(
             // Fliessender Kredit entwaffnet die Totbaender - eine
             // markereroeffnete Episode mit versiegelter unbezahlter Stoerung
             // ist keine unangekuendigte Abweichung. Abschluss-Audit 15.08.:
-            // diese Zeile FEHLTE, der Default false verdeckte das - 81
+            // diese Zeile FEHLTE, der Default false verdeckte das - viele
             // Zyklen im 2-Tage-Trail blieben trotz Kredit im Totband.
             evidenceCreditActive = evidenzKredit > 0.0,
             evidenceMayOverrideRebound = reboundOverrideErlaubt,
@@ -3362,9 +3362,9 @@ class FuseCycleRunner(
         // Deckel gewinnen in PrimeRelease.lift unveraendert.
 
         // DER HERKUNFTS-STEMPEL haengt dagegen NICHT am Basisblock, und genau
-        // daran ist die Einstellung am 11.08. gescheitert. Gemessen am Geraet:
-        // `block=NONE bind=primeRelease prime=true floor=0.10 smb=0.0` - der
-        // Regler hatte gar nicht blockiert, der Prime-Kanal hatte 0,10 U
+        // daran ist die Einstellung zunaechst gescheitert. Gemessen am Geraet:
+        // `block=NONE bind=primeRelease prime=true`, positiver Boden, `smb=0.0` - der
+        // Regler hatte gar nicht blockiert, der Prime-Kanal hatte einen kleinen Schritt
         // freigegeben, und die Menge starb erst am Schutz-Nullstrom im
         // Translator, weil ihr niemand ansah, dass sie autorisiert war.
         //
@@ -3511,10 +3511,10 @@ class FuseCycleRunner(
         // DER ZERO-LATCH SCHIEBT NICHT MEHR AUF (Toni 28.08.). Er stand hier
         // als `cfg.zeroLatchEnabled && episodes.zeroLatch.active` und war
         // der einzige Term, der keine aktuelle Gefahr misst, sondern einen
-        // historisch gehaltenen Basalschutz. Am Fruehstueck des 28.08. war
-        // er von 09:22 bis 09:36 der EINZIGE Blocker der Kette, bei
-        // gesundem Signal und ohne Abwaertsrisiko - vier autorisierte
-        // Einheiten lagen still. Die Zero-TBR selbst bleibt unberuehrt: sie
+        // historisch gehaltenen Basalschutz. An einem Fruehstueck war
+        // er ueber viele Minuten der EINZIGE Blocker der Kette, bei
+        // gesundem Signal und ohne Abwaertsrisiko - die autorisierte
+        // Menge lag still. Die Zero-TBR selbst bleibt unberuehrt: sie
         // darf waehrend der Mahlzeitenfreigabe weiterlaufen, ihre Ein- und
         // Ausstiegslogik ist nicht angefasst.
         //
@@ -3533,11 +3533,11 @@ class FuseCycleRunner(
         //
         // WAS SICH GEAENDERT HAT: der zurueckgehaltene Sofortanteil wandert
         // NICHT mehr in den generischen `DeferredPrime`. Der gibt bauartbe-
-        // dingt hoechstens EINEN Pumpenschritt je Zyklus frei - gemessen am
-        // 25.08. kam der als 3,20 U geplante Sofortanteil danach als
-        // 0,20/0,15/0,25 U heraus, und weil der Aufschub nur seine eigenen
-        // 0,05er abzog, meldete er 3,10 U offen, obwohl nach 0,60 U
-        // Phase-A-Lieferung hoechstens 2,60 U offen sein konnten.
+        // dingt hoechstens EINEN Pumpenschritt je Zyklus frei - gemessen kam
+        // ein geplanter Sofortanteil von mehreren Einheiten danach nur in
+        // kleinen Einzelschritten heraus, und weil der Aufschub nur seine eigenen
+        // Pumpenschritte abzog, meldete er mehr offen, als nach der bereits
+        // erfolgten Phase-A-Lieferung ueberhaupt offen sein konnte.
         //
         // STATTDESSEN: der Rueckstand ergibt sich allein aus der Bilanz
         // (`remainingUpfrontU`), und ein persistenter MERKER haelt fest,
@@ -3606,8 +3606,8 @@ class FuseCycleRunner(
         // ---- DER STABILITAETSNACHWEIS AUF DER GEMESSENEN REIHE ----------
         //
         // Er ersetzt die beiden Nulltoleranzen (UKF < 0 und "q1 gegenueber dem
-        // Vorzyklus gefallen"), die am 28.08. vier autorisierte Einheiten
-        // minutenlang hielten, obwohl q1 zwischen 94,3 und 95,5 lag.
+        // Vorzyklus gefallen"), die an einem Fruehstueck die autorisierte Menge
+        // minutenlang hielten, obwohl q1 praktisch flach lag.
         //
         // GUELTIGE VORGESCHICHTE ZAEHLT: die Reihe reicht ueber den
         // Markerzeitpunkt zurueck. War die Lage schon vorher stabil, traegt
@@ -3698,8 +3698,8 @@ class FuseCycleRunner(
         // `liftUpfront`-Pfad erreicht wie die bestaetigte schnelle Erholung,
         // dort einen `MEAL_UPFRONT`-Grant gestempelt - und [MarkerFloor]
         // haette ihn nach dem `finalVerify` auf die volle autorisierte Menge
-        // angehoben. Am Abendfall des 25.08. waeren das 3,60 U bei BG 78 und
-        // acht mg/dl Abstand zum Guard-Boden gewesen, in einem Zyklus, in dem
+        // angehoben. Am gemessenen Abendfall waeren das mehrere Einheiten bei
+        // niedrigem BG knapp ueber dem Guard-Boden gewesen, in einem Zyklus, in dem
         // der Regler selbst `insulinReq <= 0` sah.
         //
         // NUR [Decision.FullBatchEligible] darf deshalb `liftUpfront`
@@ -3890,8 +3890,8 @@ class FuseCycleRunner(
         // C4b: DIE WIRKUNG DER BESCHLOSSENEN MENGE GEHOERT IN DIESELBE
         // GLEICHUNG WIE DIE HAFTUNG.
         //
-        // Der Guard prueft bis liabilityHorizonMin (Default 120 min), Tonis
-        // Insulin wirkt ueber DIA 9 h - die zweite Wirkhaelfte bewertet nur der
+        // Der Guard prueft bis liabilityHorizonMin (Default 120 min), das
+        // Insulin wirkt bei langer DIA deutlich laenger - die zweite Wirkhaelfte bewertet nur der
         // Schwanz. Der kannte den Kandidaten bisher nicht (`noCandidate`), weil
         // der Aufrufer ihn erst nach der Wahl kennt. Geloest wird das mit ZWEI
         // BEWERTUNGEN DESSELBEN SCHWANZES statt einer zweiten API: oben die
@@ -4196,7 +4196,7 @@ class FuseCycleRunner(
         // DER ENDRIEGEL - und die EINZIGE Ausnahme, die er kennt.
         //
         // Er sitzt bewusst so spaet, damit keine Autorisierung ihn mehr
-        // heben kann; genau so entstand der Abendfall vom 19.08. Der
+        // heben kann; genau so entstand der gemessene Abendfall. Der
         // dosierwirksame Ruhemodus ist die ausdrueckliche Produkt-
         // entscheidung dagegen (Toni 25.08. spaet) - und sie ist beweisbar
         // auf EINEN Bestandteil begrenzt:
@@ -4456,9 +4456,9 @@ class FuseCycleRunner(
         //      nach dem Review vom 25.08. abends) -------------------------
         //
         // ZWEI getrennte, Default-AUS-Schutzlinien fuer den REINEN
-        // Korrekturkontext - Pflichtfall 25.08. frueh: (1) 1,75 U ab 06:27
-        // auf die Erholung eines Sensor-V (UKF +4,0 bei robustem r -0,82);
-        // (2) 0,35 U ab 08:00 in der ersten Minute nach der
+        // Korrekturkontext - Pflichtfaelle: (1) Korrektur-SMBs
+        // auf die Erholung eines Sensor-V (schnelle UKF-Erholung bei noch negativem robustem r);
+        // (2) ein SMB in der ersten Minute nach der
         // Nachtband-Kante, direkt nach einer Stunde verriegelter Null.
         //
         // KONTEXT AUS DER AUTORITATIVEN FUNKTION (Review-P0.2): dieselbe
@@ -4496,7 +4496,7 @@ class FuseCycleRunner(
         //   Kontext EXCLUDED              -> NIE (keine auswertbare Lage)
         //
         // Der Unterschied zur Vorfassung ist der Vorfallskern: sie nahm
-        // JEDES `MEAL` heraus und konnte den 25.08. deshalb konstruktiv
+        // JEDES `MEAL` heraus und konnte den Pflichtfall deshalb konstruktiv
         // nicht verhindern. Die Basis wird SELBSTAENDIG bestimmt, damit
         // eine Evidenzepisode nicht hinter ONSET_ACTIVE/MEAL_WINDOW_OPEN
         // verschwindet (Maskierungsfall).
@@ -4684,9 +4684,9 @@ class FuseCycleRunner(
         // NACH dem Aufschub, VOR der Publikation - dieselbe Stelle wie die
         // beiden Endriegel. Der Kanal ist MENGENBASIERT (autoISF-Prinzip):
         // Guard-Unterkante und DIA-Schwanz sind hier weder Veto noch Kappe -
-        // deren Fehlzertifikate SIND der gemessene Anlass (22.08.: 93/93
-        // Deadlock-Zyklen mit Unterkante median +97 mg/dl unter dem real
-        // eingetretenen 120-min-Minimum; 90 der 116 Minuten ueber 180 waren
+        // deren Fehlzertifikate SIND der gemessene Anlass (durchgehend falsche
+        // Unterkanten in den Deadlock-Zyklen, weit unter dem real
+        // eingetretenen 120-min-Minimum; die meisten Minuten ueber 180 waren
         // blockierte Minuten mit ERKANNTEM Bedarf). Was stattdessen traegt:
         //
         //   GEMESSENE Riegel absolut: Signal, Sicht, Hold, Rebound, Low,
@@ -5016,7 +5016,7 @@ class FuseCycleRunner(
                 ledgerView.hold -> "LEDGER_HOLD"
                 else -> null
             }
-            // P1 v45 (Livefall nach Eis): das ROHE Rebound-
+            // P1 v45 (Livefall): das ROHE Rebound-
             // Fenster sperrt den Kanal nur, wenn das markergebundene
             // Sonderrecht NICHT gilt - DIESELBE Wahrheit wie im Regler
             // (evidenceMayOverrideRebound), keine zweite Rechnung.
@@ -5262,7 +5262,7 @@ class FuseCycleRunner(
             // ---- BASIS-RATIO AUS DER RAMPE (Toni 24.08., v27-Korrektur) --
             // Nicht state.effectiveSmbRatio: die faellt ausserhalb des
             // Normalpfad-Mahlzeitfensters auf die Korrektur-Ratio zurueck,
-            // und der Livefall (Marker +115 min, r 2,69, mealWindow false)
+            // und der Livefall (spaet nach dem Marker, steiler Anstieg, mealWindow false)
             // lief als "Live M" unsichtbar auf 0,15. BEIDE Profile rampen
             // (gleiche geteilte Mathematik, gleiche State-Eingaben); der
             // Unterschied MEAL/CORRECTION ist AUSSCHLIESSLICH der unten
@@ -5331,7 +5331,7 @@ class FuseCycleRunner(
             // eine echte, modellkonsistente Stoerungsgroesse existiert.
             livenessPressureActive = druck
             // Codex 22.08. spaet: der ROHE Kanalbedarf gehoert in den Export.
-            // Ohne ihn stand im Viewer "Bedarf -", waehrend der Kanal 0,10 U
+            // Ohne ihn stand im Viewer "Bedarf -", waehrend der Kanal eine Menge
             // anforderte (decision.insulinReqU ist im Deadlock null, und
             // candidateU/ratio ist bei maxSMB-Bindung nicht invertierbar).
             // null = Rechnung nicht ausgefuehrt; 0.0 = ausgefuehrt, kein
@@ -5497,10 +5497,10 @@ class FuseCycleRunner(
                 }
             }
         // ---- ZERO-TBR-LATCH (Bauauftrag Toni 24.08. abends) ---------------
-        // Befund desselben Tages: das Low-Tor eroeffnete 16:41-17:53 FUENF
+        // Befund: das Low-Tor eroeffnete binnen gut einer Stunde MEHRFACH
         // berechtigte Zero-TBRs, und der punktuelle Nutzenwert (benefit < 5)
         // warf sie jeweils binnen Minuten weg - ~79 min Profilbasal liefen
-        // in einen vorhersehbaren, langsamen Fall (Nadir 62). Der Latch
+        // in einen vorhersehbaren, langsamen Fall bis in ein Tief. Der Latch
         // verriegelt eine EINMAL berechtigt eroeffnete Null fuer die Dauer
         // der Fall-Episode: riskActive ist das VERDIKT des Low-Tors (nicht
         // die Nutzenprobe); solange es positiv ist, haelt der Riegel
@@ -5663,7 +5663,7 @@ class FuseCycleRunner(
             // milde Restabfall ist der Fall, fuer den die Teilstufe gebaut
             // ist - und seit der Mehrnaechte-Auswertung auch OHNE eigenes
             // UKF-Tor: das war die SCHAERFERE Flachheitsforderung neben dem
-            // weggelassenen q1NichtFallend und schloss in 633 von 1526
+            // weggelassenen q1NichtFallend und schloss in einem grossen Teil der
             // Nullzyklen als EINZIGER Grund. Ein steiler Fall wird von
             // descentRisk, LowThreat und der Suche selbst gefangen; die
             // Begruendung steht bei [PartialRecoveryGate].
@@ -6528,8 +6528,8 @@ class FuseCycleRunner(
                 episodes.deferredPrime, huelleRest,
             )
             val weg = (vorKlemmung - episodes.deferredPrime.openU).coerceAtLeast(0.0)
-            // DIE DOMINANTE URSACHE, nicht die ausschliessliche. Am 25.08.
-            // wirkten um 18:36 vier Einheiten manuell UND 0,05 U automatisch
+            // DIE DOMINANTE URSACHE, nicht die ausschliessliche. Am gemessenen
+            // Abendfall wirkten ein manueller Bolus UND ein kleiner SMB
             // zugleich; `MANUAL_BOLUS_COVERAGE` ist richtig, weil der
             // manuelle Bolus ALLEIN die Klemmung schon erklaert - nicht,
             // weil nichts anderes beigetragen haette.
@@ -7444,10 +7444,10 @@ class FuseCycleRunner(
     /**
      * Die SCHNELLE Rate fuer die Bremsbahn.
      *
-     * `ukfRatePerMin` und nicht die rohe Sekante: der Kalman-Zustand ist am
-     * 06.08. an der Wende korrekt ins Negative gedreht (-1,65), waehrend
-     * `rSigned` noch +5,41 sagte — er ist also richtungstreu. Die rohe Sekante
-     * war am selben Tag zwischen +2,2 und +5,95 unruhig; ueber einen Horizont
+     * `ukfRatePerMin` und nicht die rohe Sekante: der Kalman-Zustand ist in
+     * einem gemessenen Fall an der Wende korrekt ins Negative gedreht, waehrend
+     * `rSigned` noch einen steilen Anstieg sagte - er ist also richtungstreu. Die rohe Sekante
+     * war im selben Verlauf stark unruhig; ueber einen Horizont
      * mit Zerfallssumme ~51 wuerde dieses Rauschen um zwei Groessenordnungen
      * verstaerkt.
      *
@@ -7465,8 +7465,8 @@ class FuseCycleRunner(
     // Ledger-Adapter (s. EpisodeBudgets).
 
     /** Letztes q1 < REBOUND_LOW_MGDL. Wird nach einem Neustart aus dem Trail
-     *  zurueckgeholt (s. [primeLastLowTs]) - der Verlust hat am 15.08. real
-     *  zugeschlagen und den Rebound-Schutz elf Minuten nach einem Tief von 70
+     *  zurueckgeholt (s. [primeLastLowTs]) - der Verlust hat einmal real
+     *  zugeschlagen und den Rebound-Schutz elf Minuten nach einem Tief
      *  geoeffnet. */
     private var lastLowTs = 0L
 

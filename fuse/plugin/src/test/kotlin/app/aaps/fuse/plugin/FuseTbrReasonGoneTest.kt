@@ -59,7 +59,7 @@ class FuseTbrReasonGoneTest {
     }
 
     /**
-     * REBOUND-AUFLAGE (Replay 15.08.): nach einem Tief ist der Guard formal
+     * REBOUND-AUFLAGE (aus einem Replay): nach einem Tief ist der Guard formal
      * frei, inhaltlich nicht - das aufgeblaehte r ist genau der Grund, warum
      * das Fenster existiert. Ohne diese Bedingung fiel der Abbruch in den
      * ersten Zyklus nach dem SafetyHold, waehrend das Rebound-Totband noch
@@ -81,7 +81,7 @@ class FuseTbrReasonGoneTest {
     /**
      * Das NACHT-Totband ist ausdruecklich NICHT ausgeschlossen - es traegt
      * NO_DEMAND, und genau dieser Fall ist der gemessene Anlass der ganzen
-     * Aenderung (~100 min konservierte Null je Nacht).
+     * Aenderung (eine lange konservierte Null je Nacht).
      */
     @Test
     fun `das Nacht-Totband bleibt ein gueltiger Nachweis`() {

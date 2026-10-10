@@ -36,7 +36,7 @@ internal object FuseLowMemory {
      * weiter [FuseController.REBOUND_WINDOW_MIN], kappte ein Neustart ein
      * laenger eingestelltes Fenster still auf 45 Minuten - der Schutz waere
      * ausgerechnet nach einem Flash am kuerzesten, also genau dort, wo der
-     * Vorfall vom 15.08. ihn schon einmal verloren hat.
+     * oben beschriebene Vorfall ihn schon einmal verloren hat.
      *
      * @param reboundWindowMin Dauer des Fensters [min]. Werte kleiner gleich 0
      *   werden auf [FuseController.REBOUND_WINDOW_MIN] gehoben - ein

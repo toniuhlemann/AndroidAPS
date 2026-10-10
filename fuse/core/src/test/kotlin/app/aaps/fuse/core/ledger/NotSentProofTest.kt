@@ -27,7 +27,7 @@ class NotSentProofTest {
         gatePersistFailed, aapsConstrainedU, smbSetByPumpPresent,
     )
 
-    /** DER GEMESSENE FALL: 19:07, Menge stand, Apply-Block nie betreten. */
+    /** DER ANLASSFALL: Menge stand, Apply-Block nie betreten. */
     @Test
     fun `ein nie betretener Apply-Block beweist die Nichtausfuehrung`() {
         val o = beobachtung(smbSetByPumpPresent = false, aapsConstrainedU = 0.20)

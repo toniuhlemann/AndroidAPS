@@ -83,7 +83,7 @@ class MealFoundationReplayTest {
 
     private val mahlzeiten = listOf(
         Mahlzeit("Prime schoepft aus", primeU = gleichmaessig(0, 15, 0.15)),
-        // DER GEMESSENE FALL vom 06.08.: Prime bleibt bei 1,40 U stehen -
+        // DER PFLICHTFALL: Prime bleibt bei 1,40 U stehen -
         // unter jedem Phase-A-Budget, also von der Deckelung unberuehrt. Das
         // macht ihn zur saubersten Vergleichsmahlzeit.
         Mahlzeit("Prime bleibt zurueck", primeU = gleichmaessig(0, 14, 0.10)),

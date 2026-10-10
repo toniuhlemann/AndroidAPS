@@ -92,7 +92,7 @@ object FuseDashboardModel {
         }
         // CAP ist die WIRKSAME Grenze = min(Profil-Exposure, iobTH, maxIOB)
         // (Tonis P1-Anzeigefix 29.08. nachts): contextLimitU als "CAP" zu
-        // beschriften haette bei iobTH 4 < MEAL-Limit 6 falsche 6 U gezeigt.
+        // beschriften haette bei iobTH unter dem MEAL-Limit faelschlich das MEAL-Limit gezeigt.
         // Die Profilgrenze erscheint ZUSAETZLICH, wenn sie abweicht.
         val cap = o.exposureGateEffectiveLimitU?.let { "CAP ${u(it)}" }
         val profilCap = o.exposureGateContextLimitU?.takeIf { ctx ->
@@ -290,8 +290,8 @@ object FuseDashboardModel {
      * DER SOFORT-BATCH IN VIER GETRENNTEN GROESSEN (Nachtrag Toni 25.08.,
      * Punkt 9): geplant, aktuell aufgeschoben, bereits geliefert und der
      * verbleibende Batch. Vorher stand keine dieser Groessen in der
-     * Oberflaeche - der Feldbefund (3,20 geplant, in Haeppchen geliefert,
-     * 3,10 statt 2,60 gemeldet) war nur im Trail sichtbar.
+     * Oberflaeche - der Feldbefund (Sofortmenge geplant, in Haeppchen geliefert,
+     * falsche Liefermenge gemeldet) war nur im Trail sichtbar.
      *
      * Kein zweiter Rechenweg: `geliefert` ist dieselbe Formel wie im
      * Export, `verbleibend` ist die Bilanzgroesse des Reglers.
@@ -374,9 +374,9 @@ object FuseDashboardModel {
             ?.takeIf { verbucht == null || kotlin.math.abs(it - verbucht) > 0.005 }
             ?.let { "  |  Episode ${u(it)}" } ?: ""
         // GEGEN DIE EINSTELLUNG, nicht gegen die Vorgabe-Konstante. Hier stand
-        // `PrimeRelease.WINDOW_MIN` (15); bei Tonis 25-Minuten-Fenster ergab
+        // `PrimeRelease.WINDOW_MIN` (15); bei einem laenger eingestellten Fenster ergab
         // das "15/15 min Freigabe" - abgelaufen - direkt ueber der Zeile
-        // "Prime 1,15 U offen". Die Anzeige widersprach sich selbst, weil sie
+        // mit offener Prime-Restmenge. Die Anzeige widersprach sich selbst, weil sie
         // eine andere Uhr las als der Regler.
         val release = marker.primeWindowMin?.let { w ->
             "${elapsed.coerceAtMost(w)}/$w min Freigabe"
@@ -471,7 +471,7 @@ object FuseDashboardModel {
     }
 
     /** Rohe Grenz-Tokens tragen volle Double-Praezision
-     *  ("tailHeadroom=-0.4432277446939927", Geraetefund 15.08.) - fuer die
+     *  ("tailHeadroom=" mit allen Nachkommastellen, Geraetefund) - fuer die
      *  Karte auf 2 Nachkommastellen kuerzen, das Token selbst bleibt. */
     /** Alle Sperrquellen, sonst der Einzelgrund - `null` = nichts bekannt. */
     private fun ledgerQuellen(l: FuseScreenModel.LedgerInfo): String? =

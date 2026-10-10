@@ -31,7 +31,7 @@ class FuseStateExporter(
         const val FILE_NAME = "fuse_state_history.jsonl"
 
         /**
-         * GEMESSEN am ersten Geraetelauf (06.08.): ~2,2 kB je Datensatz bei
+         * GEMESSEN am ersten Geraetelauf: ~2,2 kB je Datensatz bei
          * 1-min-Kadenz, also rund 3,2 MB am Tag. Die vorherigen 8 MB haetten
          * damit nur zweieinhalb Tage getragen — zu wenig fuer einen
          * Mehrtageslauf, und die Rotation haette ausgerechnet die Nacht

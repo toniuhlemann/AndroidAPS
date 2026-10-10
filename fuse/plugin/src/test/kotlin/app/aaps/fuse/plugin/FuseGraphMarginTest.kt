@@ -20,7 +20,7 @@ class FuseGraphMarginTest {
     }
 
     /**
-     * DER GEMESSENE FALL (Trail 15.08., 73 von 131 Bloecken): der
+     * DER GEMESSENE FALL (die Mehrzahl der Schwanz-Bloecke im Trail): der
      * unphysiologische Ausgang liefert `headroomU = -existing` und
      * `isfTailMgdlPerU = NaN`. Er SPERRT - eine Luecke waere die
      * gefaehrliche Richtung des Irrtums.

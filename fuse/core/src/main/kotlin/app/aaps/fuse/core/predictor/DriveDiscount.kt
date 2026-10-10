@@ -7,14 +7,14 @@ import kotlin.math.roundToInt
 /**
  * Bolus-Deckungs-Abschlag fuer die UNTERE Bahn.
  *
- * GEMESSEN, Nacht 06./07.08.2026 (fuse_state_history.jsonl, 22:00-08:00):
- * 108 SMBs, 8,50 U, bei q1 83-190, Serien bis 21 Minuten. Mechanik: `r` ist
+ * GEMESSEN in einer realen Nacht (fuse_state_history.jsonl, ganze Nacht):
+ * sehr viele SMBs, zusammen mehrere Einheiten, Serien bis 21 Minuten. Mechanik: `r` ist
  * die BGI-bereinigte Steigung, also naeherungsweise
  *
  *     r = roher Trend + Insulinaktivitaet x ISF.
  *
- * Um 03:00 stand der rohe Trend bei ~0 und die eigene Aktivitaet bei
- * ~3 mg/dl/min -> r ~3,2 -> volle Anstiegs-Ratio -> naechste Dosis -> mehr
+ * Mitten in der Nacht stand der rohe Trend bei ~0, die eigene Aktivitaet aber
+ * deutlich positiv -> r hoch -> volle Anstiegs-Ratio -> naechste Dosis -> mehr
  * Aktivitaet -> hoeheres r. Der Regler liest seine eigene Reaktion als Beweis
  * einer groesseren Stoerung. Arithmetisch korrekt, strategisch falsch.
  *
@@ -26,7 +26,7 @@ import kotlin.math.roundToInt
  *
  * BEWUSST nur die BOLUS-Aktivitaet: die Basal-Aktivitaet deckt im
  * Gleichgewicht die EGP. Sie mit abzuziehen wuerde jede ruhige Nacht in einen
- * GUARD_FLOOR-Zero-Temp treiben (q1 95, Basal-IOB ~0,4 U, ISF 80 -> Bahn ~55).
+ * GUARD_FLOOR-Zero-Temp treiben (schon wenig Basal-IOB zoege die Bahn unter den Boden).
  *
  * EINSEITIGKEIT, tragend: der Term ist >= 0 und wirkt ausschliesslich auf
  * `lower`. Die Mittelbahn - und damit `insulinReq` und jede Dosis - bleibt

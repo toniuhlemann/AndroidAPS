@@ -157,8 +157,8 @@ object FuseStateJson {
     // Unterschied MEAL/CORRECTION ist AUSSCHLIESSLICH der ausgewaehlte
     // Ratio-Deckel. v26 liess CORRECTION fest auf der Korrektur-Ratio
     // stehen; damit wurde ein K-Deckel 0,20 nur als Obergrenze einer
-    // festen 0,15 gelesen und konnte nie skalieren (Beispiele: r 1,76 ->
-    // Basis 0,185 unter dem Deckel; r 2,69 -> Basis 0,31, K-Deckel kappt
+    // festen 0,15 gelesen und konnte nie skalieren (Beispiele: maessiges r ->
+    // Basis knapp ueber 0,15 unter dem Deckel; steiles r -> Basis ueber dem Deckel, K-Deckel kappt
     // auf 0,20). Der normale Nicht-Liveness-Pfad behaelt sein
     // mealWindow-Gate und bleibt bitgleich.
     // v28 (24.08. spaet, DOSIERWIRKSAM bei gesetztem Anteil): der
@@ -326,7 +326,7 @@ object FuseStateJson {
     // (Frist, Druckschwellen, Armierung, Re-Arm, Fundament A/B)
     // unveraendert. Fuer bisher-LEGACY-Geraete ist der Flash der
     // BEWUSSTE Architekturwechsel auf die zentrale Politik.
-    // v45 (30.08., P1 Livefall nach Eis): die MEAL-/Evidenz-Entwaffnung
+    // v45 (30.08., P1 Livefall): die MEAL-/Evidenz-Entwaffnung
     // des Rebound-Totbands gilt auch im HARTEN Liveness-Tor. Vorher las
     // das Tor das rohe Fenster (reboundRaw) und blieb EXCLUDED/
     // REBOUND_ACTIVE, waehrend der Normalpfad laengst per
@@ -885,7 +885,7 @@ object FuseStateJson {
                 // DIE HUELLE UND IHRE KLEMMUNG. Ohne diese vier Felder
                 // sieht ein durch einen manuellen Bolus gedeckter
                 // Bestand aus wie ein stilles Verschwinden - genau die
-                // Fehldeutung, die der Abendfall des 25.08. provoziert hat.
+                // Fehldeutung, die ein gemessener Abendfall provoziert hat.
                 .put("hullRemainingU", fin(outcome.deferredHullRemainingU))
                 .put("openBeforeClampU", fin(outcome.deferredOpenBeforeClampU))
                 .put("clampReductionU", fin(outcome.deferredClampReductionU))
@@ -1032,7 +1032,7 @@ object FuseStateJson {
                     ?: JSONObject.NULL,
             )
             // Und ob ein Rebound-Band in DIESEM Zyklus wegen der
-            // Evidenz geschwiegen hat - die Frage, die der 13:41-Fall
+            // Evidenz geschwiegen hat - die Frage, die der Anlassfall der Rebound-Frist
             // aufgeworfen hat.
             .put(
                 "reboundSuppressedByEvidence",
@@ -1122,10 +1122,10 @@ object FuseStateJson {
                 // der Bahn, gegen die der Regler ENTSCHEIDET (Haupt UND Bremse)
                 // - also der Partner von `minLowerMgdl`.
                 //
-                // Ein einzelnes Feld war widerspruechlich: am 10.08. stand live
-                // minLower 71,17 bei Anker ~90,61 und Index 0. Beide Zahlen
+                // Ein einzelnes Feld war widerspruechlich: live stand ein
+                // minLower deutlich unter dem Anker bei Index 0. Beide Zahlen
                 // waren richtig - die Hauptbahn hatte ihr Minimum wirklich am
-                // Anker, die 71,17 kamen aus der Bremsbahn -, aber nebeneinander
+                // Anker, das tiefere Minimum kam aus der Bremsbahn -, aber nebeneinander
                 // ergaben sie eine unmoegliche Bahn.
                 .put("timeToMinSafetyLowerMainMin", outcome.prediction?.timeToMinSafetyLowerMin ?: JSONObject.NULL)
                 .put("timeToMinSafetyLowerCombinedMin", d.timeToMinCombinedMin ?: JSONObject.NULL)
@@ -1148,7 +1148,7 @@ object FuseStateJson {
                     }
                 })
                 // FEHLTE bis 08.08. - der Schirm zeigte die Schwanz-Kosten,
-                // der Trail nicht (18 bindende Zyklen der Nacht alle "0").
+                // der Trail nicht (alle bindenden Zyklen einer Nacht "0").
                 .put("tailCostU", fin(d.tailCostU))
                 // `reason` traegt die TBR-AKTION im Klartext - SAFETY_ZERO_NEW,
                 // SAFETY_ZERO_RENEW, SAFETY_ZERO_ALREADY_RUNNING,
@@ -1347,7 +1347,7 @@ object FuseStateJson {
                     // verhindert haette. Unter der Schwelle ist sie keine
                     // Massnahme, sondern nur ein Basalverlust.
                     .put("benefitMgdl", fin(lt.benefitMgdl))
-                    // v29: die Grenzfall-Messgroessen des 21:58-Falls -
+                    // v29: die Grenzfall-Messgroessen des v29-Anlassfalls -
                     // Ueberdeckungsstaerke und Abstand zur Horizontkante.
                     // Reine Messfelder; eine Mindestmarge wird erst nach
                     // Replay-Auswertung festgelegt.
@@ -1459,11 +1459,11 @@ object FuseStateJson {
                 // erste Punkt nach einer Luecke fragwuerdig und wurde er kurz
                 // darauf stark revidiert?
                 //
-                // Am 10.08. stand nach 37 min Luecke eine 90 mit FRISCHEM
-                // Zeitstempel im Datensatz, drei Minuten spaeter 105 - FUSE las
-                // +4,21 mg/dl/min und gab 0,85 U in ein Nicht-Ereignis. Eine
+                // Gemessen stand nach langer Luecke ein Wert mit FRISCHEM
+                // Zeitstempel im Datensatz, drei Minuten spaeter ein deutlich hoeherer - FUSE las
+                // einen steilen Anstieg und gab eine Korrekturmenge in ein Nicht-Ereignis. Eine
                 // reine Ratenpruefung sieht das nicht: der erste Punkt hat
-                // (90-105)/35 = -0,43, voellig unauffaellig. Erst
+                // gegen den Wert vor der Luecke eine voellig unauffaellige Rate. Erst
                 // `postGapIndex` ZUSAMMEN mit `stepFromLastMgdl` zeigt es.
                 .put("gapBeforeMin", fin(s.gapBeforeMin))
                 // DER WIRKSAME Wert dieses Laufs (Bauauftrag Toni 25.08.):
@@ -1775,7 +1775,7 @@ object FuseStateJson {
         // DIE KOSTEN DER ZIRKULARITAET, beziffert (11.08.).
         //
         // `unconditional` ist die Kante ohne Kohlenhydrate - gegen sie hat der
-        // Schwanz bisher immer gerechnet und am 10.08. 25 Minuten am Stueck
+        // Schwanz bisher immer gerechnet und gemessen 25 Minuten am Stueck
         // gesperrt. `conditional` ist dieselbe Kante MIT der Ankuendigung.
         // Ihre Differenz geteilt durch den Schwanz-ISF ist das Budget, das die
         // Ankuendigung verschafft - die Zahl, an der sich die bedingte Bahn
@@ -1786,7 +1786,7 @@ object FuseStateJson {
             "tailLower", JSONObject()
                 .put("unconditionalMgdl", fin(outcome.tailLowerUnconditionalMgdl))
                 .put("conditionalMgdl", fin(outcome.tailLowerConditionalMgdl))
-                // JE BAHN EINZELN (Livebefund 11.08.). Nur die kombinierten
+                // JE BAHN EINZELN (Livebefund). Nur die kombinierten
                 // Werte zu zeigen war zu wenig: die Hebung der Hauptbahn wurde
                 // von der unbedingten Bremsbahn kassiert, und im Export sahen
                 // beide Zahlen einfach gleich aus - ohne Hinweis darauf, WO die
@@ -2314,8 +2314,8 @@ object FuseStateJson {
                 p.theilSenWindowMin,
                 // v31: der Wiedereinstieg nach Funkluecke. Mit Schalter
                 // entstehen Entscheidungen, die ohne ihn als "drive not
-                // estimable" gestorben waeren (gemessen 26 -> 21 blinde
-                // Zyklen, +0,050 U je Tag). AUS und EIN sind zwei
+                // estimable" gestorben waeren (gemessen: weniger blinde
+                // Zyklen bei vernachlaessigbarer Mehrmenge). AUS und EIN sind zwei
                 // verschiedene Regler.
                 p.signalRejoinEnabled,
                 // v32: der Ruhe-Ausgang aus Phase A. DOSIERWIRKSAM, sobald

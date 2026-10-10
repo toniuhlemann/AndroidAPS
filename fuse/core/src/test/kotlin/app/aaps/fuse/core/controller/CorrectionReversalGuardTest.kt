@@ -8,7 +8,7 @@ import org.junit.jupiter.api.Test
 
 /**
  * Der V-Reversal-Schutz als reine Rechnung - die Zahlen sind der
- * PFLICHTFALL vom 25.08. frueh (06:12-06:33): Fall auf UKF -2,81, dann
+ * PFLICHTFALL: Fall auf UKF -2,81, dann
  * Erholung UKF +4,0 bei robustem r -0,82, erst danach bestaetigt sich r.
  */
 class CorrectionReversalGuardTest {
@@ -33,7 +33,7 @@ class CorrectionReversalGuardTest {
     @Test
     fun `der pflichtfall - block bei negativem und unbestaetigtem r, frei nach bestaetigung`() {
         var track = CorrectionReversalGuard.Track()
-        // Der Fall: 06:14-06:18-artig, Minimum -2,81.
+        // Der Fall: vier Zyklen steiler Abfall, Minimum -2,81.
         for ((min, ukf, r) in listOf(
             Triple(0, -1.28, -0.22), Triple(1, -2.44, -0.26),
             Triple(2, -2.81, -0.94), Triple(3, -2.68, -1.93),
@@ -42,7 +42,7 @@ class CorrectionReversalGuardTest {
             track = t
             assertFalse(res.blocks, "im Fall selbst blockt nichts (min $min)")
         }
-        // Die Gegenbewegung: 06:27-artig, UKF +4,0 bei r -0,82.
+        // Die Gegenbewegung: UKF +4,0 bei r -0,82.
         val (t1, r1) = schritt(track, 11, 4.00, -0.82)
         track = t1
         assertTrue(r1.blocks, "die V-Erholung traegt keinen Korrektur-SMB")
@@ -63,9 +63,9 @@ class CorrectionReversalGuardTest {
 
     @Test
     fun `die episode haelt auch nach abgeflachter gegenbewegung`() {
-        // Der 06:30-Kern des Vorfalls: die UKF-Spitze war vorbei (BG flach
-        // bei 147-149), aber die Prognose trug die Erholung noch und r war
-        // weiter negativ - dort flossen real 06:30-06:33 weitere ~1,0 U.
+        // Der Kern des Pflichtfalls: die UKF-Spitze war vorbei (BG flach),
+        // aber die Prognose trug die Erholung noch und r war
+        // weiter negativ - ohne Riegel floss genau dort weiteres Insulin.
         var track = CorrectionReversalGuard.Track()
         track = schritt(track, 0, -2.8, -0.9).first
         val (t1, zuend) = schritt(track, 4, 4.0, -0.8)

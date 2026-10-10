@@ -6,7 +6,7 @@ package app.aaps.fuse.core.signal
  *
  * DIE FRAGE, DIE DIESE KLASSE MESSBAR MACHT: nach einer echten CGM-Luecke
  * wartet FUSE heute ~5-6 Minuten, bis wieder ein r existiert. Gemessen
- * wurde am 25.08., dass diese Wartezeit NICHT von der Lueckenlaenge
+ * wurde, dass diese Wartezeit NICHT von der Lueckenlaenge
  * abhaengt - sie ist die Theil-Sen-Reifebedingung selbst. Eine
  * verschobene Segmentgrenze (s. [GapPolicy]) beseitigt nur die kurzen
  * Grenzfaelle; alles darueber wartet weiter.
@@ -39,7 +39,7 @@ class MaturityPolicy private constructor(
     /**
      * VOR diesem Zeitpunkt gilt die Produktion; 0 = immer diese Politik.
      *
-     * DER ANLASS ist ein gemessenes Replay-Artefakt (25.08. abends): ein
+     * DER ANLASS ist ein gemessenes Replay-Artefakt: ein
      * Replay startet KALT. In den ersten Minuten seines Fensters ist die
      * Referenz blind, weil noch keine Reihe da ist - nicht, weil das
      * Geraet blind war. Am Geraet lief die Reihe durch.

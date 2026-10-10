@@ -18,7 +18,7 @@ import java.io.File
  * Nur hatte dieser Zustand bisher ueberhaupt keinen Ausgang. Der Kommentar am
  * Hold-Marker verwies auf einen "noch nicht gebauten Reparatur-Workflow" - und
  * solange der fehlte, war ein einmal gehaltener Ledger dauerhaft tot. Genau das
- * ist am 10.08.2026 auf dem Testtraeger eingetreten: die Kanonisierung der
+ * ist schon einmal auf dem Testtraeger eingetreten: die Kanonisierung der
  * Seriennummer (F7) aenderte die Berechnung der Identitaets-Hashes, jede vorher
  * gespeicherte Identitaet passte nicht mehr zu ihrem eigenen Fakt, und 47
  * Konflikte legten den Ledger still.

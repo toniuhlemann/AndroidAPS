@@ -10,7 +10,7 @@ package app.aaps.fuse.core.signal
  * die Theil-Sen-Reifebedingung [MaturityPolicy.PRODUCTION] (5 Punkte /
  * 8 Paare, real 6 Punkte). Der Replay ueber 9 echte Luecken ergab fuer
  * 4x3 rund zwei gesparte Minuten bei einem Medianfehler von 0,19 und
- * +0,05 U ueber einen ganzen Tag.
+ * einer kaum messbaren Mehrmenge ueber einen ganzen Tag.
  *
  * WARUM DAS NICHT DIE GLOBALE REIFE AENDERT (Tonis Auflage): 5x8 gilt
  * weiterhin nach Kaltstart, Sensorwechsel, Kalibrierung und
@@ -54,7 +54,7 @@ class RejoinPolicy private constructor(
         const val FLOOR_POINTS = 4
         const val FLOOR_SLOPES = 3
 
-        /** Die Kandidatenwahl aus dem Replay vom 25.08.: 4 Punkte, 3 Paare. */
+        /** Die Kandidatenwahl aus dem Reife-Replay: 4 Punkte, 3 Paare. */
         val DEFAULT_MATURITY: MaturityPolicy = MaturityPolicy.of(FLOOR_POINTS, FLOOR_SLOPES)
 
         /**

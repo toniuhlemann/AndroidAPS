@@ -11,8 +11,8 @@ import kotlin.math.exp
  *     gilt weiter fuer das volle MARKER_WINDOW von 90 min.
  *  2. SONDERRECHTE (Rebound-Entwaffnung, Marker-Prior auf der unteren Bahn,
  *     Marker-Zweig des Mahlzeit-Fensters): die decken sonst nachweislich die
- *     Post-Peak-Hypo-Phase ab - beim Fruehstueckstest 08.08. fiel der Sturz
- *     auf 117 bei 1,6 U IOB noch in die 90 Marker-Minuten, waehrend alle
+ *     Post-Peak-Hypo-Phase ab - bei einem realen Fruehstueckstest fiel der Sturz
+ *     bei noch reichlich IOB in die 90 Marker-Minuten, waehrend alle
  *     drei Nacht-Bremsen entwaffnet und der Guard-Boden angehoben waren.
  *
  * Sonderrechte enden deshalb mit der NACHHALTIGEN WENDE (ukf unter die
@@ -43,9 +43,9 @@ object MarkerScope {
         // gelatchte Zeitpunkt plotzlich in der "Zukunft", die Bedingung wird
         // falsch, und die Sonderrechte LEBEN WIEDER AUF. Sie entwaffnen dann
         // Rebound- UND Nacht-Totband, und zwar ausgerechnet in der fallenden
-        // Phase nach dem Gipfel - genau der Lage, fuer die dieser Latch am
-        // 08.08. ueberhaupt gebaut wurde (Fruehstueckssturz auf 117 bei
-        // 1,6 U IOB, alle drei Nachtbremsen entwaffnet).
+        // Phase nach dem Gipfel - genau der Lage, fuer die dieser Latch
+        // ueberhaupt gebaut wurde (ein Sturz nach dem Fruehstueck bei noch
+        // reichlich IOB, alle drei Nachtbremsen entwaffnet).
         //
         // Eine Wende, die einmal stattgefunden hat, findet nicht dadurch nicht
         // mehr statt, dass die Uhr korrigiert wird. Der Latch ist eine
@@ -99,7 +99,7 @@ object MarkerScope {
      * Kohlenhydrate nicht. Der Marker wirkt deshalb dort, wo er hingehoert:
      * auf der MITTELBAHN, als erwarteter Anstieg. Er erzeugt BEDARF; das Veto
      * der (prior-freien) Guardbahn bleibt unangetastet - bei vollem
-     * Insulinbuch bleibt die Freigabe zu, genau wie am Abend des 08.08.
+     * Insulinbuch bleibt die Freigabe zu, genau wie an einem gemessenen Abend.
      *
      * SELBSTBEGRENZUNG (loest zugleich das Audit-Finding "keine Episoden-
      * Gesamthuelle"): der Kredit rechnet mit dem REST der Freigabe-Huelle. Was

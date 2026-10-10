@@ -50,8 +50,8 @@ class MarkerTimelineTest {
      * EIN ZURUECKGENOMMENER MARKER BLEIBT SICHTBAR - Absicht, keine Panne.
      *
      * Der zweite Druck setzt `armedTs` auf 0, entfernt den Druck aber nicht aus
-     * dem Ring. Der Graph ist ein Protokoll dessen, was passiert ist: wer um
-     * 18:55 gedrueckt hat, hat um 18:55 gedrueckt. Wuerde man die Spur loeschen,
+     * dem Ring. Der Graph ist ein Protokoll dessen, was passiert ist: wer
+     * gedrueckt hat, hat gedrueckt. Wuerde man die Spur loeschen,
      * waere eine Ruecknahme im Nachhinein nicht mehr von "nie gedrueckt" zu
      * unterscheiden - die schlechtere Fehlerrichtung.
      */
@@ -109,9 +109,9 @@ class MarkerTimelineTest {
     }
 
     /**
-     * DER ECHTE ABLAUF VOM 10.08., als Test.
+     * DER ABLAUF MEHRERER FLASHES, als Test.
      *
-     * Marker um 18:55 gedrueckt, danach vier Flashes an einem Abend. Vor dem
+     * Ein Marker gedrueckt, danach vier Flashes an einem Abend. Vor dem
      * Trail-Warmstart blieb nach jedem Flash genau ein Symbol uebrig; mit ihm
      * sind alle Druecke der letzten 24 h wieder da.
      */

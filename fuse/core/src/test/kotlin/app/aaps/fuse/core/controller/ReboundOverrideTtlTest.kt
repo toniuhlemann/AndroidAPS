@@ -9,16 +9,16 @@ import org.junit.jupiter.api.Test
 /**
  * DIE FRIST DES REBOUND-SONDERRECHTS (Toni 19.08.).
  *
- * DER GEMESSENE ANLASS, aus dem frisch gezogenen Trail:
+ * DER ANLASS, als Ablauf:
  *
- *     letzter Marker   ~08:54
- *     13:41            Markeralter 287 min, Rebound noch 32 min offen
- *                      Evidenz wieder ACTIVE, Kredit +0,42 mg/dl/min
+ *     letzter Marker   T+0
+ *     T+287            Markeralter 287 min, Rebound noch offen
+ *                      Evidenz wieder ACTIVE, Kredit positiv
  *                      BG 109,8 gegen Rebound-Schwelle 98 + 40 = 138
- *     13:41-13:45      fuenf veroeffentlichte SMBs, zusammen 0,35 U
+ *     ab T+287         eine Handvoll veroeffentlichter SMBs, zusammen eine kleine Menge
  *
  * Ohne die damals UNBEFRISTETE Kredit-Ausnahme haette das Rebound-Totband
- * diese fuenf Zyklen geblockt. Ab 13:46 lag der Zucker ueber 138 - dort
+ * diese Zyklen geblockt. Wenige Minuten spaeter lag der Zucker ueber 138 - dort
  * bremst die neue Regel nicht mehr. Die Aenderung ist also eng begrenzt.
  *
  * WAS SIE NICHT ANFASST, und das ist der Kern der Bauform: die Evidenzepisode
@@ -86,10 +86,10 @@ class ReboundOverrideTtlTest {
         assertEquals(40.0, band(reboundOverride = false), 1e-9, "das Band ist wieder scharf")
     }
 
-    // ---- 3 + 4: der reproduzierte 13:41-Fall -----------------------------
+    // ---- 3 + 4: der reproduzierte Anlassfall -----------------------------
 
     /**
-     * DER GEMESSENE FALL. 287 Minuten nach dem Marker, Kredit fliesst,
+     * DER ANLASSFALL. 287 Minuten nach dem Marker, Kredit fliesst,
      * Rebound offen, BG 109,8 unter der Schwelle 138 - es darf nichts mehr
      * durchkommen.
      */
@@ -105,7 +105,7 @@ class ReboundOverrideTtlTest {
     }
 
     /**
-     * UND DIE GEGENPROBE AB 13:46: derselbe spaete Zustand, aber der Zucker
+     * UND DIE GEGENPROBE: derselbe spaete Zustand, aber der Zucker
      * ueber der Schwelle. Dort bremst das Totband ohnehin nicht, und die
      * Evidenz bleibt uneingeschraenkt nutzbar - die Aenderung ist eng
      * begrenzt und schaltet die spaete Evidenz NICHT ab.

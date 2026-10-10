@@ -248,7 +248,7 @@ class MarkerEpisodeGateTest {
      * Der Unterschied steht im Zeitpunkt selbst: bei Ablauf bleibt er stehen
      * und nur `active` wird falsch; bei Ruecknahme wird er genullt. Genau
      * dafuer wurde die Episode vom 90-Minuten-Fenster geloest - der gemessene
-     * Lauf vom 11.08. war nach 205 Minuten noch aktiv.
+     * Lauf war nach weit mehr als 90 Minuten noch aktiv.
      */
     @Test
     fun `natuerlicher Ablauf widerruft den Kredit nicht`() {

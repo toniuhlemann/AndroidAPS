@@ -39,8 +39,8 @@ object FuseScreenModel {
      *   EINSTELLUNG. Zwei verschiedene Uhren, und die Anzeige hat sie bis
      *   17.08.2026 vermischt: sie zeigte die Freigabe gegen die KONSTANTE
      *   `PrimeRelease.WINDOW_MIN` (15) statt gegen den eingestellten Wert.
-     *   Bei Tonis 25-Minuten-Fenster stand deshalb "15/15 min Freigabe" -
-     *   also abgelaufen - waehrend darunter "Prime 1,15 U offen" zu lesen war.
+     *   Bei einem laenger eingestellten Fenster stand deshalb "15/15 min Freigabe" -
+     *   also abgelaufen - waehrend darunter noch eine offene Prime-Menge stand.
      *   `null` = unbekannt, dann nennt die Zeile keine Dauer.
      */
     data class MarkerInfo(
@@ -56,7 +56,7 @@ object FuseScreenModel {
      *
      * Health ist der Zustand des BEOBACHTERS. Der kann tadellos READY sein,
      * waehrend der Ledger die Aktuation haelt und FUSE nichts mehr abgibt -
-     * genau so stand es am 10.08.2026 auf dem Schirm: `Health READY` oben,
+     * genau so stand es schon einmal auf dem Schirm: `Health READY` oben,
      * `Kandidat LEDGER_HOLD - erlaubt 0.00 U` zwanzig Zeilen tiefer, und
      * dazwischen nichts, was die Kopfzeile widerlegt haette.
      *
@@ -217,7 +217,7 @@ object FuseScreenModel {
         // IMMER, und ausdruecklich AUSSERHALB des Markerblocks: der hat drei
         // Ausgaenge, an denen die Zeile sonst verlorenginge - kein Marker,
         // armedTs 0 nach Ruecknahme, und das `return@let` nach 210 Minuten.
-        // Genau der letzte Fall stand am 12.08. auf dem Testgeraet: Marker von
+        // Genau der letzte Fall stand schon einmal auf dem Testgeraet: Marker von
         // gestern, Episode abgelehnt, und die Begruendung unsichtbar.
         evidenceZeilen(b, outcome)
         outcome.mealStats?.let { ms ->
@@ -232,7 +232,7 @@ object FuseScreenModel {
         outcome.prime?.let { pr ->
             primeText(pr)?.let { txt ->
                 // Die Episoden-Wahl gehoert VOR den Lieferstand: ein
-                // "0,00/3,00 U geliefert" saehe aus wie eine Stoerung, dabei
+                // "0,00/x,xx U geliefert" saehe aus wie eine Stoerung, dabei
                 // ist es die Wahl des Drucks.
                 val stand = when {
                     marker?.takeIf { it.armedTs > 0 }?.noPrime == true -> "  [ohne Vorschuss - Wahl beim Druck]"
@@ -291,8 +291,8 @@ object FuseScreenModel {
             // bei stark negativem Basal-Delta gehen sie weit auseinander.
             row(b, "", "Bolus ${f2(it.bolusIobU)} | Basal ${f2(it.basalIobU)} | cap ${f2(it.capIobU)}")
             row(b, "iobTH / maxIOB", "${f2(it.iobThU)} / ${f2(it.maxIobU)} U")
-            // roundToInt statt toInt (30.08.): (0,35-0,25)/1,25 ist binaer
-            // 7,999... - Abschneiden zeigte 7 %, gemeint sind 8 %. Der
+            // roundToInt statt toInt (30.08.): ein rechnerisch glatter Anteil wie 8 % ist binaer
+            // oft 7,999... - Abschneiden zeigte 7 %, gemeint sind 8 %. Der
             // Viewer rechnet dieselbe Zeile ("Rampe x %") jetzt identisch.
             val rampPct = it.rSignedMgdlPerMin?.let { r ->
                 (((r - it.riseRampLowRPerMin) / (it.riseRampHighRPerMin - it.riseRampLowRPerMin))
@@ -346,7 +346,7 @@ object FuseScreenModel {
         // fuenf Gruppen, jede Zeile mit aktuellem Wert. Zeilen, die vom
         // Standard abweichen, tragen ein `*` und den Standardwert - DAS sind
         // die Zeilen, die ins Auge fallen sollen (ein nach einem Testlauf
-        // stehen gebliebenes maxSmb 0,55 zum Beispiel).
+        // stehen gebliebenes erhoehtes maxSmb zum Beispiel).
         settings?.let { s ->
             sec(b, "Einstellungen")
             for ((gruppe, zeilen) in s.gruppen) {
@@ -434,7 +434,7 @@ object FuseScreenModel {
     private fun row(b: StringBuilder, label: String, value: String) {
         // DIE SPALTENBREITE IST EINE ZUSICHERUNG UEBER DIE BESCHRIFTUNGEN,
         // nicht ueber diese Zeile: `padEnd(16)` liefert bei genau 16 Zeichen
-        // gar keinen Abstand, und am 12.08. stand deshalb
+        // gar keinen Abstand, und deshalb stand einmal
         // "Evidence-EpisodeNICHT eroeffnet" auf dem Geraet. Kein Test sah es -
         // alle suchten den WERT, und der stimmte.
         //

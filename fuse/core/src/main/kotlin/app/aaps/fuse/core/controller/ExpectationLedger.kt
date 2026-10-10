@@ -9,7 +9,7 @@ import kotlin.math.abs
  * DIESE KLASSE ENTSCHEIDET NICHTS - sie misst nur. Die spaetere
  * lambda-Adaption haengt an ihr, aber sie selbst kann keine Dosis aendern.
  *
- * DER ANLASS: FUSE stand am 17.08. 89 Zyklen lang bei 0,00 U und BG 169-216.
+ * DER ANLASS: FUSE stand einmal viele Zyklen lang bei 0,00 U und deutlich erhoehtem BG.
  * Ursache ist keine falsche Arithmetik, sondern eine pessimistische ANNAHME
  * ohne Korrekturschleife - `r` ist bereits BGI-bereinigt (r = D), der
  * Bolus-Deckungs-Abschlag zieht die Insulinwirkung mit lambda = 1 ein
@@ -142,7 +142,7 @@ object ExpectationLedger {
      * KINEMATISCH VERMUTETE (r und UKF ueber der Rampen-Unterkante,
      * also "sieht aus wie ein Anstieg"). Genau in die zweite Sorte faellt
      * die Erholung eines Sensor-V - und ein Korrekturschutz, der jedes
-     * `MEAL` ausnimmt, kann den Vorfall vom 25.08. konstruktiv NIE
+     * `MEAL` ausnimmt, kann einen solchen Vorfall konstruktiv NIE
      * verhindern.
      *
      * WARUM NICHT AUS [ContextReason] ABLEITBAR: `classify` priorisiert
@@ -1234,7 +1234,7 @@ object ExpectationLedger {
             // OHNE GUELTIGE HERKUNFT IST EIN EINTRAG UNBRAUCHBAR. Ein leerer
             // Epochenname waere eine Wildcard, die auf jede fremde Epoche
             // passt - genau der Freibrief, den der Ledger schon einmal beim
-            // leeren Pumpen-Serial hatte (Live-Befund 09.08.). Die Pruefung
+            // leeren Pumpen-Serial hatte (ein Live-Befund). Die Pruefung
             // steht HIER und nicht im Codec, weil `restore` mehr als einen
             // Aufrufer hat.
             !e.interventionStamp.valid                                  ->

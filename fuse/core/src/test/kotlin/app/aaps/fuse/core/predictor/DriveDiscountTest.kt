@@ -11,9 +11,9 @@ class DriveDiscountTest {
     // ---- Die Nacht, die den Abschlag erzwungen hat ------------------------
 
     /**
-     * GEMESSEN 07.08. ~03:00 (fuse_state_history.jsonl): roher Trend ~0,
+     * DIE NACHTLAGE: roher Trend ~0,
      * r = +3,2 - davon ~3,0 eigene Insulinaktivitaet. effectiveSmbRatio stand
-     * auf 0,35; Folge der Nacht: 108 SMBs / 8,50 U bei q1 83-190.
+     * auf dem vollen Anstiegsanteil; Folge: eine Nacht voller SMBs, zusammen mehrere Einheiten.
      * Mit dem Abschlag faellt die UNTERE Bahn auf den sichtbaren Trend zurueck.
      */
     @Test

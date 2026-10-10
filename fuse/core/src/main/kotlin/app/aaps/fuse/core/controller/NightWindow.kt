@@ -3,13 +3,13 @@ package app.aaps.fuse.core.controller
 /**
  * NACHTFENSTER mit eigenem Totband (Tonis Vorschlag 09.08.).
  *
- * Warum ueberhaupt: die gemessene Nacht 08./09.08. zeigt den Fehlermodus in
- * Reinform - zwischen 05:25 und 06:24 dosierte FUSE 1,10 U bei BG 89 bis 116
+ * Warum ueberhaupt: eine gemessene Nacht zeigt den Fehlermodus in
+ * Reinform - gegen Morgen dosierte FUSE eine Stunde lang mehrere SMBs bei normalem BG
  * mit r um NULL und negativem Basal-IOB. Der Bedarf kam nicht von einer
  * Stoerung, sondern aus dem zurueckgehaltenen Basal: das Modell erwartet
  * einen Anstieg, weil Insulin fehlt, das es selbst zurueckgehalten hat.
  * Nachts ist niemand wach, der das korrigiert - und die Rueckholkapazitaet
- * ist mit ~0,3 U je 30 min die kleinste des Tages.
+ * ist mit einem Bruchteil einer Einheit je 30 min die kleinste des Tages.
  *
  * Warum als TOTBAND und nicht als Ratio-Deckel: dasselbe Muster hat schon
  * die Rebound-Naechte gerettet (s. [FuseController.REBOUND_DEADBAND_MGDL]).
@@ -53,7 +53,7 @@ object NightWindow {
      * Der 2-Tage-Lauf hat die Luecke belegt: die Marker-Sonderrechte enden
      * nach 45/90 Minuten, die Evidenz-Episode laeuft bis 360 - dazwischen
      * blockten Nacht- und Rebound-Totband Zyklen, in denen die Episode ACTIVE
-     * war und gemessene, unbezahlte Stoerung auswies (81 Live-Zyklen).
+     * war und gemessene, unbezahlte Stoerung auswies (zahlreiche Live-Zyklen).
      *
      * Warum das die Begruendung der Totbaender nicht aushoehlt: beide
      * schuetzen vor dem Jagen UNANGEKUENDIGTER kleiner Abweichungen (Dawn,
@@ -81,8 +81,8 @@ object NightWindow {
          * ungewollt auch die Nacht getroffen.
          *
          * OHNE DEFAULT, wie bisher: ein vergessener Anschluss hielte die
-         * Baender still scharf. Genau dieser Fehler lief am 15.08. zwei Tage
-         * lang auf dem Geraet (81 geblockte Kreditzyklen, waehrend die
+         * Baender still scharf. Genau dieser Fehler lief einmal zwei Tage
+         * lang auf dem Geraet (zahlreiche geblockte Kreditzyklen, waehrend die
          * Commit-Botschaft die Verdrahtung behauptete).
          */
         reboundOverrideByEvidence: Boolean,
@@ -97,11 +97,11 @@ object NightWindow {
     /**
      * DIE FRIST DES REBOUND-SONDERRECHTS (Toni 19.08.).
      *
-     * DER GEMESSENE ANLASS. Am 19.08. um 13:41 war der Marker 287 Minuten alt,
+     * DER GEMESSENE ANLASS. In einem realen Fall war der Marker 287 Minuten alt,
      * das Rebound-Fenster lief noch 32 Minuten, die Evidenzepisode war wieder
-     * ACTIVE mit +0,42 mg/dl/min Kredit - und der Zucker stand bei 109,8 gegen
-     * eine Rebound-Schwelle von 138. Zwischen 13:41 und 13:45 gingen fuenf
-     * SMBs ueber 0,35 U hinaus, die das Totband ohne die unbefristete
+     * ACTIVE mit kleinem positivem Kredit - und der Zucker stand deutlich unter
+     * der Rebound-Schwelle. Binnen weniger Minuten gingen mehrere
+     * SMBs hinaus, die das Totband ohne die unbefristete
      * Kredit-Ausnahme geblockt haette.
      *
      * DAS PROBLEM IST NICHT DIE EVIDENZ, SONDERN IHRE DAUER. Die Episode darf

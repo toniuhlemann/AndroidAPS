@@ -3,13 +3,13 @@ package app.aaps.fuse.core.signal
 /**
  * Vier Zahlen ueber den RAND einer Datenluecke.
  *
- * WOZU: am 10.08. stand nach einer 37-Minuten-Luecke ein Wert von 90 mit
- * FRISCHEM Zeitstempel im Datensatz, drei Minuten spaeter 105. FUSE las daraus
- * +4,21 mg/dl/min und gab 0,85 U in ein Ereignis, das es nicht gab.
+ * WOZU: nach einer 37-Minuten-Luecke stand ein Wert mit
+ * FRISCHEM Zeitstempel im Datensatz, drei Minuten spaeter ein deutlich hoeherer. FUSE las daraus
+ * einen steilen Anstieg und gab Insulin in ein Ereignis, das es nicht gab.
  *
  * WARUM VIER UND NICHT EINE: die naheliegende Pruefung - "war die Rate
  * auffaellig" - findet genau diesen Fall NICHT. Der erste Punkt nach der Luecke
- * hat `(90-105)/35 = -0,43` mg/dl/min, voellig unauffaellig. Der SPRUNG kommt
+ * hat ueber die Luecke gerechnet nur eine kleine Rate, voellig unauffaellig. Der SPRUNG kommt
  * drei Minuten spaeter, und dann ist die Luecke schon nicht mehr frisch. Es
  * braucht den ABSTAND zur Luecke ([postGapIndex]) zusammen mit dem SCHRITT.
  *
@@ -17,8 +17,8 @@ package app.aaps.fuse.core.signal
  * `profileFunction` und `iobCobCalculator` und ist praktisch nicht pruefbar.
  * Diese Rechnung braucht nichts als Zeitstempel und Werte.
  *
- * KEINE REGEL, KEINE SCHWELLE. Tonis eigener Messwert steht dagegen:
- * 4,85 mg/dl/min im Mahlzeitenkopf - ein Plausibilitaetszaun bei 5 haette
+ * KEINE REGEL, KEINE SCHWELLE. Ein realer Messwert steht dagegen:
+ * ein Mahlzeitenkopf knapp unter 5 mg/dl/min - ein Plausibilitaetszaun bei 5 haette
  * keinen Abstand und traefe echte Mahlzeiten. Ob aus diesen Zahlen je eine
  * Regel wird, entscheiden Daten.
  */

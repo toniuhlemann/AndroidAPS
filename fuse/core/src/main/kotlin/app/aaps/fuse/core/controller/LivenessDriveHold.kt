@@ -32,8 +32,8 @@ import kotlin.math.min
  *  - nur mit [MeasuredRiseEvidence]-Bestaetigung (frische Rohwerte, Bloecke mit
  *    neuem Hoch, Bedarf je Block einmal - Tonis Vertrag 15.09. abends). Die
  *    fruehere Zwei-Zyklen-Bestaetigung ueber die Rate allein ist entfallen,
- *  - Anhebung hoechstens [UPLIFT_CAP_MGDL] - bei ISF 80 und Ratio 0,35 also
- *    hoechstens ~0,18 U Kandidat je Zyklus,
+ *  - Anhebung hoechstens [UPLIFT_CAP_MGDL] - bei ueblichem ISF und Ratio 0,35 also
+ *    hoechstens ein Bruchteil einer Einheit Kandidat je Zyklus,
  *  - nur der Bedarf: untere Bahnen, Guard, Tail, Ratio, maxSMB, Kanaldeckel,
  *    Expositionsgrenze, Transporthaftung und Pumpenraster bleiben.
  */

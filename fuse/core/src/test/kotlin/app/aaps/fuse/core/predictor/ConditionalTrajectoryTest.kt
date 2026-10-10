@@ -10,8 +10,8 @@ import org.junit.jupiter.api.Test
  *
  * Der Schwanz-Guard rechnet sein Budget aus der prior-freien Bahn - einem
  * Verlauf OHNE Kohlenhydrate. Er verbietet damit genau das Insulin, das die
- * angekuendigte Mahlzeit rechtfertigt. Gemessen am 10.08.: 25 Minuten Sperre am
- * Stueck, waehrend der BG von 115 auf 125 stieg und danach auf 193 weiterlief.
+ * angekuendigte Mahlzeit rechtfertigt. Im Anlassfall: eine lange Sperre am
+ * Stueck, waehrend der BG stieg und danach weit in den Hochbereich weiterlief.
  *
  * Die bedingte Bahn hebt den ERKLAERTEN Antrieb auf die Sicherheitskante. Diese
  * Datei haelt fest, was dabei NICHT passieren darf.

@@ -11,20 +11,20 @@ package app.aaps.fuse.core.controller
  * [DescentRecoveryLatch], und der verlangt drei Zyklen mit mindestens
  * +0,20 mg/dl/min.
  *
- * DIE MESSUNG am Abendessen des 25.08., 18:07-18:27 (20 Zyklen Phase A):
+ * DIE MESSUNG an einem realen Abendessen (ueber die ganze Phase A):
  *
- *   descentLatchActive   23 von 23 Zyklen
- *   descentRiskActive    10 von 23 - die letzten NEUN durchgehend false,
- *                        `NOT_FALLING`, Rate STEIGEND (+0,070 .. +0,196)
- *   Batch                3,60 U geplant, 0 angefordert, 0 publiziert
+ *   descentLatchActive   in jedem Zyklus
+ *   descentRiskActive    nur anfangs - die letzten Zyklen durchgehend false,
+ *                        `NOT_FALLING`, Rate leicht STEIGEND
+ *   Batch                mehrere Einheiten geplant, 0 angefordert, 0 publiziert
  *
- * Der blockierende Grund war also abgestanden. ABER: BG 76-78 bei einem
- * Guard-Boden von 70 - sechs bis acht mg/dl Abstand -, und unmittelbar
+ * Der blockierende Grund war also abgestanden. ABER: BG knapp ueber dem
+ * Guard-Boden - nur wenige mg/dl Abstand -, und unmittelbar
  * nach Phase A meldete der Regler selbst `NO_DEMAND` mit
  * `insulinReq <= 0`. Ein Ruhe-Ausgang, der nur den Latch loest, haette
  * also nichts freigegeben - aber [MarkerFloor] liest keinen Bedarf,
- * sondern eine Autorisierung. Aus "Block entfaellt" waeren 3,60 U bei
- * BG 78 geworden.
+ * sondern eine Autorisierung. Aus "Block entfaellt" waere der volle Batch
+ * knapp ueber dem Boden geworden.
  *
  * ZWEI GETRENNTE FRAGEN, und ihre Vermischung war der Fehler:
  *
@@ -73,7 +73,7 @@ object UpfrontRecovery {
          * BEDARFSBEGRENZT: hoechstens das, was der normale Pfad VOR
          * [MarkerFloor] tatsaechlich verlangt. Kein `MEAL_UPFRONT`-Grant
          * wird gestempelt, also kann der Boden nichts wiederherstellen.
-         * Im Abendfall des 25.08. liefert dieser Weg NICHTS, weil der
+         * Im gemessenen Abendfall liefert dieser Weg NICHTS, weil der
          * Regler dort `insulinReq <= 0` sah - das ist kein Mangel des
          * Weges, sondern sein Zweck.
          */
@@ -82,8 +82,8 @@ object UpfrontRecovery {
         /**
          * KONTROLLIERT VERSCHOBEN: der offene Sofortanteil geht in den
          * schrittweisen [DeferredPrime]-Pfad, statt zu verfallen oder als
-         * Vollbatch auszuzahlen. Bewahrt die Menge, ohne 3,60 U bei BG 78
-         * auf einmal freizugeben.
+         * Vollbatch auszuzahlen. Bewahrt die Menge, ohne den vollen Batch
+         * knapp ueber dem Boden auf einmal freizugeben.
          */
         SHIFT_TO_DEFERRED,
 
@@ -92,7 +92,7 @@ object UpfrontRecovery {
          *
          * WARUM ER NOETIG IST. Die beiden anderen Wege loesen das
          * eigentliche Problem nicht: [DEMAND_LIMITED] laesst nur
-         * vorhandenen Normalbedarf durch - am Abendfall des 25.08. war der
+         * vorhandenen Normalbedarf durch - im gemessenen Abendfall war der
          * 0 -, und [SHIFT_TO_DEFERRED] bewahrt die Menge, gibt sie aber
          * schrittweise. Der volle Batch blieb bisher allein
          * [Decision.FullBatchEligible] vorbehalten, also der schnellen
@@ -236,10 +236,10 @@ object UpfrontRecovery {
      *
      * DER ZERO-LATCH STEHT HIER NICHT MEHR (Toni 28.08.). Er war der
      * einzige Eintrag, der KEINE aktuelle Gefahr beschreibt, sondern einen
-     * historisch gehaltenen Basalschutz - gemessen am Fruehstueck des
-     * 28.08.: von 09:22 bis 09:36 meldete die Kette `currentHazard
+     * historisch gehaltenen Basalschutz - gemessen an einem realen
+     * Fruehstueck: eine Viertelstunde lang meldete die Kette `currentHazard
      * zeroLatch` als EINZIGEN Blocker, bei `descentRiskActive=false`,
-     * `lowThreat=NONE`, `rebound=false` und gesundem Signal. Vier
+     * `lowThreat=NONE`, `rebound=false` und gesundem Signal. Mehrere
      * autorisierte Einheiten blieben liegen, weil das Basal verriegelt war.
      * Basalschutz und Mahlzeitenfreigabe sind zwei Entscheidungen.
      *
@@ -274,7 +274,7 @@ object UpfrontRecovery {
          * die Frage "ist diese Mahlzeitendosis gefaehrlich?". Der 120er ist
          * VIERMAL so lang wie der SMB-Riegel (30) und DOPPELT so lang wie der
          * markerbezogene (60); ein Bodenkontakt zwischen 60 und 120 Minuten
-         * fiel nur in das Basalfenster. Genau so lag der 28.08.
+         * fiel nur in das Basalfenster. Genau so lag der gemessene Fall.
          *
          * FEHLENDER ODER UNGUELTIGER PIN IST KEINE ENTWARNUNG: der Aufrufer
          * muss dann `true` uebergeben. Das steht hier, weil man es an einem
@@ -539,7 +539,7 @@ object UpfrontRecovery {
          * "freigegeben bis", kein `eligibleU`. Wer hier ein Mengenfeld
          * ergaenzt, oeffnet den Weg, auf dem [MarkerFloor] die volle
          * Autorisierung wiederherstellt - genau die Kante, die der
-         * Abendfall des 25.08. sichtbar gemacht hat. Der Aufrufer muss
+         * gemessene Abendfall sichtbar gemacht hat. Der Aufrufer muss
          * ueber [treatment] entscheiden, was geschieht, und darf dabei
          * KEINEN `MEAL_UPFRONT`-Grant stempeln.
          */
@@ -645,10 +645,10 @@ object UpfrontRecovery {
         // HIER STANDEN ZWEI NULLTOLERANZEN (bis 28.08.):
         //   ukfRatePerMin < params.minUkf  ->  STILL_FALLING
         //   q1Falling                      ->  Q1_FALLING
-        // Am Fruehstueck des 28.08. hielten sie vier autorisierte Einheiten
-        // minutenlang fest, obwohl q1 zwischen 94,3 und 95,5 lag: die
-        // Filterrate blieb knapp negativ (zuletzt -0,0133) und q1 wackelte um
-        // 0,1 bis 0,3. Ein nachlaufender Filter und ein einzelner Wackler
+        // An einem realen Fruehstueck hielten sie mehrere autorisierte Einheiten
+        // minutenlang fest, obwohl q1 praktisch flach lag: die
+        // Filterrate blieb knapp negativ und q1 wackelte nur um wenige
+        // Zehntel. Ein nachlaufender Filter und ein einzelner Wackler
         // waren damit staerker als die gemessene Lage.
         //
         // Der Nachweis laeuft jetzt ueber die GEMESSENE Reihe. Er ist
@@ -682,7 +682,7 @@ object UpfrontRecovery {
         //
         // Hier stand `else 1`: nach jedem Markerwechsel begann die Zaehlung
         // wieder bei eins, obwohl die gemessene Reihe laengst belegte, dass
-        // die Lage seit mehreren Zyklen ruhig ist. Am Fruehstueck des 28.08.
+        // die Lage seit mehreren Zyklen ruhig ist. An einem realen Fruehstueck
         // kostete das allein rund vier Minuten - eine Wartezeit aus
         // unvollstaendiger Nutzung der Historie, nicht aus einer
         // Sicherheitsbedingung.

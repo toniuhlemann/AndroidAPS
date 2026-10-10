@@ -70,7 +70,7 @@ object FuseTbrTranslator {
      * darueber vier Tore im Regler - und diese Zeile nullte die Menge trotzdem,
      * weil der Schutz-Nullstrom bei Tief zwangslaeufig mitkommt. Die Einstellung
      * war wirkungslos, gemessen am Geraet: `block=NONE bind=primeRelease
-     * floor=0.10 smb=0.0`.
+     * floor>0 smb=0.0`.
      *
      * `smbBlocked = false` waere die falsche Reparatur gewesen: dasselbe Bit
      * schuetzt bei belegter Pumpe, fehlendem Sicherheits-Schnappschuss,
@@ -117,7 +117,7 @@ object FuseTbrTranslator {
      *  - der LEDGER-HOLD ist aus dem Block nicht ablesbar (LedgerHoldGate
      *    ueberschreibt ihn bei smbU <= 0 nicht) und kommt deshalb getrennt
      *    herein.
-     *  - das REBOUND-FENSTER (Auflage aus dem Replay 15.08.): dort ist der
+     *  - das REBOUND-FENSTER (Auflage aus einem Replay): dort ist der
      *    Guard formal frei, inhaltlich aber nicht - das aufgeblaehte r nach
      *    einem Tief ist genau der Grund, warum das Fenster existiert. Ein
      *    Abbruch faellt sonst in den ersten Zyklus nach dem SafetyHold,
@@ -128,7 +128,7 @@ object FuseTbrTranslator {
      *
      * Das NACHT-Totband ist ausdruecklich NICHT ausgeschlossen: es traegt
      * NO_DEMAND, und genau dieser Fall ist der gemessene Anlass (Null
-     * ueberdauert ihren Grund ~100 min je Nacht).
+     * ueberdauert ihren Grund nachts regelmaessig deutlich).
      */
     fun reasonGone(
         decision: FuseController.Decision,
@@ -205,7 +205,7 @@ object FuseTbrTranslator {
             // C8 UNABHAENGIG VOM INTENT (Toni 17.08.): seit das Fundament auch
             // in unsicherer Lage stehen bleibt, traegt der Intent die
             // Unsicherheit nicht mehr. Ohne diese Zeile gab ein Guard-Zyklus
-            // unter FAKE_EXTENDED wieder Insulin frei (gemessen: 0,1 U statt 0).
+            // unter FAKE_EXTENDED wieder Insulin frei (gemessen: ein kleiner SMB statt 0).
             //
             // Gelesen wird das TYPISIERTE Feld, nicht `decision.block`: der
             // Block ist hier laengst ueberschrieben - `finalVeto` setzt
@@ -227,8 +227,8 @@ object FuseTbrTranslator {
         // Mahlzeiten-/Absorptionslage kehrt sich das um: das Profilbasal IST
         // die autorisierte Grundlinie des Vertrags ("Profilbasal bleibt
         // erhalten"), und die Huelle wurde unter der Annahme bemessen, dass es
-        // laeuft. Gemessen am 17.08.: 3,45 U Huelle geliefert, 0,35 U Basal
-        // per Null einbehalten - vorne Gas, hinten Bremse, netto 3,10 U.
+        // laeuft. Gemessen in einem echten Fall: die Huelle geliefert, ein Teil des Basals
+        // per Null einbehalten - vorne Gas, hinten Bremse, netto weniger als die Huelle.
         //
         // Abbruch der Null und SMB verlassen den Zyklus deshalb als EINE
         // gemeinsam autorisierte Entscheidung. Der Traeger ist TYPISIERT -
@@ -280,8 +280,8 @@ object FuseTbrTranslator {
      * gegen eine Bahn geprueft, in der die aktuelle - oft FUSE-eigene -
      * Null-TBR steckt. Beendet die TBR-Achse diese Null im SELBEN Zyklus
      * (KEEP_CANCEL_STALE_ZERO), laeuft Profilbasal wieder an, das im Zeugnis
-     * nicht enthalten war: zurueckgehaltene 0,30 U sind bei ISF 80 bis zu
-     * 24 mg/dl zusaetzliche modellierte Wirkung. Zeugnis und ausgefuehrte
+     * nicht enthalten war: zurueckgehaltene Zehntel-Einheiten sind ueber den ISF schnell
+     * zweistellige mg/dl zusaetzliche modellierte Wirkung. Zeugnis und ausgefuehrte
      * Aktion beschreiben dann zwei verschiedene Zukuenfte.
      *
      * AUFLOESUNG (konservativ, nicht symmetrisch): beides darf nicht gelten,

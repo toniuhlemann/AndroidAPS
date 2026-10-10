@@ -31,8 +31,8 @@ package app.aaps.fuse.core.controller
  *
  * ER STEIGT BEIM PUBLIZIEREN, NICHT BEI DER BESTAETIGUNG. Eine Ablehnung der
  * Pumpe beweist NICHT, dass nichts geflossen ist. Die
- * Medtrum-Lebenszyklusmessung (765 Zyklen, 09.08.) zeigt eine Sichtbarkeit von
- * p90 56 s und im Maximum 854 s - in diesem Fenster ist ein Auftrag unterwegs,
+ * Lebenszyklusmessung an einer Medtrum-Pumpe zeigt die Sichtbarkeit meist
+ * binnen einer Minute, im Extrem viel spaeter - in diesem Fenster ist ein Auftrag unterwegs,
  * ohne dass irgendeine Abfrage ihn sieht. Wuerde erst die Bestaetigung zaehlen,
  * entstuende aus genau diesen Faellen eine MISSED-Evidenz fuer eine Strecke, in
  * der sehr wohl Insulin gewirkt hat.

@@ -6,14 +6,14 @@ import kotlin.math.min
 /**
  * DER LIVENESS-KANAL (Bauvertrag Toni + Codex, 22.08. nachts).
  *
- * DER GEMESSENE ANLASS: Fruehstueck und Abendessen am 22.08. - dieselbe
- * Signatur. Fruehe Versorgung ok (~3 U/30 min), danach der Deadlock: die
- * Mittelbahn meldet 1,8-2,1 U Bedarf bei BG 217-233 und r +3,2-3,5, aber die
- * KOHLENHYDRATFREIE Unterkante (bis -1 mg/dl zertifiziert) und der
- * DIA-Schwanz nullen bzw. rationieren jede Abgabe (Tail-Saegezahn: 0,05-0,30
- * je Zyklus, dann TAIL-Null). In 93 von 93 Deadlock-Zyklen des Tages lag die
- * zertifizierte Unterkante um median +97 mg/dl unter dem real eingetretenen
- * 120-min-Minimum. 90 der 116 Minuten ueber 180 waren blockierte Minuten mit
+ * DER GEMESSENE ANLASS: ein Fruehstueck und ein Abendessen desselben Tages - dieselbe
+ * Signatur. Fruehe Versorgung ok, danach der Deadlock: die
+ * Mittelbahn meldet deutlichen Bedarf bei hohem BG und kraeftigem r, aber die
+ * KOHLENHYDRATFREIE Unterkante (bis ins Unphysiologische zertifiziert) und der
+ * DIA-Schwanz nullen bzw. rationieren jede Abgabe (Tail-Saegezahn: kleine Schritte
+ * je Zyklus, dann TAIL-Null). In allen Deadlock-Zyklen des Tages lag die
+ * zertifizierte Unterkante weit unter dem real eingetretenen
+ * 120-min-Minimum. Der Grossteil der Minuten ueber 180 war blockiert, und zwar mit
  * ERKANNTEM Bedarf.
  *
  * DIE ARCHITEKTUR-ANTWORT (Tonis autoISF-Referenz): Sicherheit fuer diesen
@@ -72,8 +72,8 @@ object LivenessChannel {
      * stehen; damit wurde ein K-Deckel 0,20 nur als Obergrenze einer
      * festen 0,15 gelesen und konnte NIE skalieren. Tonis Vertrag: die
      * Liveness-Basis kommt in beiden Profilen aus der Rampe, der K-Deckel
-     * ist die Skalierungsgrenze der Korrektur (z.B. r 1,76 -> Basis 0,185
-     * unter dem Deckel; r 2,69 -> Basis 0,31, K-Deckel 0,20 kappt).
+     * ist die Skalierungsgrenze der Korrektur (z.B. maessiges r -> Basis
+     * unter dem Deckel; hohes r -> Basis darueber, der K-Deckel 0,20 kappt).
      *
      * `state.effectiveSmbRatio` bleibt trotzdem die FALSCHE Quelle: sie
      * faellt ausserhalb des Normalpfad-Mahlzeitfensters auf die

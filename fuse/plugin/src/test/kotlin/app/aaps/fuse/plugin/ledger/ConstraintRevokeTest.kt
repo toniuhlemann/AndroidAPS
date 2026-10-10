@@ -11,12 +11,12 @@ import java.io.File
 
 /**
  * DIE BUCHFUEHRUNG ZAEHLT NUR, WAS DIE PUMPE AUCH BEKOMMEN HAT
- * (Toni 19.08., P0 - am Geraet gemessen).
+ * (Toni 19.08., P0).
  *
  * DER BEFUND. FUSE forderte 20 x 0,15 U an, die Pumpendatenbank zeigte
  * 2,70 U. AAPS hatte zwei Schritte am Intervalltor verworfen ("SMB requested
  * but still in 1 min interval"), weil eine verspaetet fertig gewordene
- * Medtrum-Abgabe den Abstand unter die erlaubten 45 s drueckte.
+ * Pumpenabgabe den Abstand unter die erlaubten 45 s drueckte.
  *
  * Die Episodenzaehler standen trotzdem auf 3,00 U. FUSE hielt die Huelle
  * fuer vollstaendig geliefert, meldete ab T+20 `WINDOW_OVER` und holte die
@@ -63,7 +63,7 @@ class ConstraintRevokeTest {
         return a
     }
 
-    // ---- Der gemessene Fall ------------------------------------------------
+    // ---- Der Anlassfall ----------------------------------------------------
 
     /**
      * DAS AAPS-INTERVALLTOR HAT DIE MENGE VERWORFEN - alle fuenf Zaehler
@@ -153,7 +153,7 @@ class ConstraintRevokeTest {
     }
 
     /**
-     * DER GANZE GEMESSENE ABLAUF: 20 Schritte, zwei davon verworfen - jetzt
+     * DER GANZE ABLAUF DES ANLASSFALLS: 20 Schritte, zwei davon verworfen - jetzt
      * in der ECHTEN Reihenfolge.
      *
      * Am Ende muessen 2,70 U in den Buechern stehen, dieselbe Zahl wie in der

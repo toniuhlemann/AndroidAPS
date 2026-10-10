@@ -42,8 +42,8 @@ class PrimeReleaseTest {
 
     // ---- Das Fenster ------------------------------------------------------
 
-    /** Der Fruehstuecksfall 07.08.: Marker 08:50, BG 106 flach, Bahn ~100.
-     *  Die Freigabe beginnt SOFORT - nicht erst bei der CGM-Regung 09:09. */
+    /** Ein Fruehstuecksfall: Marker gesetzt, BG flach, Bahn ~100.
+     *  Die Freigabe beginnt SOFORT - nicht erst bei der spaeteren CGM-Regung. */
     @Test
     fun `am Marker beginnt die Freigabe sofort`() {
         val p = PrimeRelease.plan(input())

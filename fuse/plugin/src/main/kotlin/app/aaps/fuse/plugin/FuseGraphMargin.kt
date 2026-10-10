@@ -8,9 +8,9 @@ package app.aaps.fuse.plugin
  * dem Trail-JSON. Zwei Umrechnungen nebeneinander waeren zwei Wahrheiten, und
  * die Graph-Linie muss in beiden Faellen dasselbe bedeuten.
  *
- * DER FALL, DER DIESE FUNKTION NOETIG MACHT (Trail-Messung 15.08.): von 131
- * `tail`-Bloecken der ersten Produktivstunden trugen 73 einen GUELTIGEN
- * `headroomU` (-0,498 U, also gesperrt), aber KEINEN ISF-Nenner - der
+ * DER FALL, DER DIESE FUNKTION NOETIG MACHT (Trail-Messung): von den
+ * `tail`-Bloecken der ersten Produktivstunden trug mehr als die Haelfte einen GUELTIGEN
+ * `headroomU` (negativ, also gesperrt), aber KEINEN ISF-Nenner - der
  * unphysiologische Ausgang des Reports setzt `budgetU = 0` und
  * `headroomU = -existing`, laesst `isfTailMgdlPerU` aber auf NaN. Eine naive
  * Multiplikation ergibt NaN und damit eine LUECKE in der Linie: der Graph
@@ -36,7 +36,7 @@ internal object FuseGraphMargin {
     const val UPPER_MGDL = 150.0
 
     /**
-     * ZWEITER RIEGEL gegen die Android-optString-Falle (Geraetebefund 15.08.):
+     * ZWEITER RIEGEL gegen die Android-optString-Falle (Geraetebefund):
      * `optString` liefert dort fuer ein JSON-null den String "null", waehrend
      * dieselbe API auf der JVM den Default liefert. Ein Aufrufer, der das
      * uebersieht, wuerde jede Zeile fuer ungueltig halten - deshalb gelten

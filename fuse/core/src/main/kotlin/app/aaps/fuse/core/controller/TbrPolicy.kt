@@ -393,9 +393,9 @@ object TbrPolicy {
      * KEEP heisst "der Regler dosiert" — und dann darf keine eigene
      * Sicherheits-Null mehr laufen. Bis zur v0.3.1 gab es dafuer KEINEN Pfad:
      * `noPositive` behaelt eine nicht-positive TBR absichtlich, und KEEP
-     * forderte gar nichts an. Auf dem Geraet hat FUSE deshalb am 06.08. um
-     * 13:01 eine 30-min-Null aus einem FALSCHEN GUARD_FLOOR gesetzt, ab 13:14
-     * wieder SMBs gegeben und die Null trotzdem bis 13:31 laufen lassen: Basal
+     * forderte gar nichts an. Auf dem Geraet hat FUSE deshalb einmal
+     * eine 30-min-Null aus einem FALSCHEN GUARD_FLOOR gesetzt, wenige Minuten spaeter
+     * wieder SMBs gegeben und die Null trotzdem bis zum Ablauf laufen lassen: Basal
      * aus und schneller Kanal offen, gleichzeitig.
      *
      * Das ist ein Widerspruch in sich. Entweder ist die Lage unsicher, dann
@@ -678,12 +678,12 @@ object TbrPolicy {
         // ---- DIE NULL VERLASSEN, SOBALD IHR GRUND WEG IST (Toni 15.08.) ----
         //
         // Der Anlass ist gemessen, nicht theoretisch: eine Schutz-Null
-        // ueberdauerte ihren Grund im 4-Tage-Trail rund 100 Minuten je Nacht.
+        // ueberdauerte ihren Grund im 4-Tage-Trail Nacht fuer Nacht um lange Strecken.
         // Der einzige aktive Ausgang war bis dahin KEEP_CANCEL_STALE_ZERO, und
         // der braucht Intent.KEEP - also einen Zyklus, der bis
         // BELOW_PUMP_INCREMENT durchlaeuft. Hinter Guard, Schwanz oder Totband
-        // entsteht der nie: 497 gesetzte Nullen standen 43 Abbruechen
-        // gegenueber, nachts 147 zu 6. Das zurueckgehaltene Basal finanziert
+        // entsteht der nie: die gesetzten Nullen uebertrafen die Abbrueche um
+        // ein Vielfaches, nachts noch deutlicher. Das zurueckgehaltene Basal finanziert
         // dann ueber die Bedarfsseite die Morgen-SMBs (Brief D.1/D.4).
         //
         // DREI UND-BEDINGUNGEN, keine weglassbar:

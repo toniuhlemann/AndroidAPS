@@ -38,7 +38,7 @@ class GlucoseStabilityTest {
      * EINES negativen Paares als anhaltender Abfall gelten.
      *
      * Entwurf 1 verbot jedem Abschnitt ab 2 Minuten eine Rate unter -0,1. Der
-     * Schritt 95 -> 94 ergibt ueber zwei Minuten -0,49 und haette bis 09:37
+     * Schritt 95 -> 94 ergibt ueber zwei Minuten -0,49 und haette noch minutenlang
      * gesperrt - LAENGER als der Zustand vorher.
      */
     @Test
@@ -80,9 +80,9 @@ class GlucoseStabilityTest {
         assertTrue(!GlucoseStability.exceedsTolerance(-3.0, 10.0, p), "-3 in 10 min nicht")
     }
 
-    // ---- Der gemessene Fall -----------------------------------------------
+    // ---- Der Pflichtfall --------------------------------------------------
 
-    /** Die Rohwerte des Fruehstuecks vom 28.08., 09:21 bis 09:32. */
+    /** Ein flacher Fruehstuecksverlauf, zwoelf Minutenwerte. */
     @Test
     fun `der gemessene Fruehstuecksverlauf ist stabil`() {
         val s = reihe(96.0, 96.0, 95.0, 95.0, 95.0, 95.0, 95.0, 95.0, 94.0, 95.0, 95.0, 96.0)

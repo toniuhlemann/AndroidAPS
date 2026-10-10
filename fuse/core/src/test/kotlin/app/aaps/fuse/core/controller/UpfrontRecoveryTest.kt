@@ -16,8 +16,8 @@ import org.junit.jupiter.api.Test
  * Die Vorgaengerfassung gab `releases: Boolean` heraus. Damit erreichte eine
  * bestaetigte RUHE denselben `liftUpfront`-Pfad wie die bestaetigte schnelle
  * Erholung, stempelte dort einen `MEAL_UPFRONT`-Grant, und [MarkerFloor] hob
- * ihn nach dem `finalVerify` auf die volle autorisierte Menge an. Gemessen am
- * Abendfall des 25.08.2026: 3,60 U bei BG 78, acht mg/dl ueber dem Guard-Boden,
+ * ihn nach dem `finalVerify` auf die volle autorisierte Menge an. Der Anlass,
+ * eine Mahlzeit am Abend: mehrere Einheiten knapp ueber dem Guard-Boden,
  * in einem Zyklus mit `insulinReq <= 0`.
  *
  * Die Tests hier pruefen deshalb nicht nur, WANN freigegeben wird, sondern dass
@@ -234,7 +234,7 @@ class UpfrontRecoveryTest {
     /**
      * DER ALTE q1-RIEGEL IST ENTFALLEN (28.08.). Er verglich mit EINEM
      * Vorzykluswert und liess ein Wackeln von 0,1 mg/dl als "faellt weiter"
-     * gelten - genau das hielt am 28.08. vier autorisierte Einheiten fest.
+     * gelten - genau das hielt einmal mehrere autorisierte Einheiten fest.
      * Dieselbe Lage wird jetzt ueber die gemessene Reihe beurteilt, und ein
      * einzelner Wackler reisst deren laengenabhaengige Toleranz nicht.
      */
@@ -624,8 +624,8 @@ class UpfrontRecoveryTest {
 
     /**
      * DIE VORGESCHICHTE ZAEHLT AUCH ZEITLICH (Toni 28.08.). Ohne sie begann
-     * die Zaehlung nach jedem Marker wieder bei eins - am Fruehstueck des
-     * 28.08. kostete das rund vier Minuten, obwohl die Reihe die Ruhe
+     * die Zaehlung nach jedem Marker wieder bei eins - bei einem Fruehstueck
+     * kostete das mehrere Minuten, obwohl die Reihe die Ruhe
      * laengst belegte.
      */
     @Test

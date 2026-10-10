@@ -48,10 +48,10 @@ object PositiveCorrectionRearm {
     /**
      * HOECHSTDAUER des Nachlaufs als Vielfaches von `holdMin`.
      *
-     * GEMESSENER ANLASS (Replay 25.08.): bleibt die Aufwaertslage
+     * GEMESSENER ANLASS (Pflicht-Replay): bleibt die Aufwaertslage
      * dauerhaft unbestaetigt, haengt ein Anker unbegrenzt nach und
      * riegelt Minuten spaeter in einer voellig anderen Lage - die Kante
-     * lag 08:00, geriegelt wurde noch 08:23-08:26. Ein Kanteneffekt ist
+     * war laengst vorbei, geriegelt wurde noch gut 20 Minuten danach. Ein Kanteneffekt ist
      * nach dem Dreifachen der Frist vorbei; was dann noch dosiert werden
      * will, ist gewoehnliche Korrektur.
      *
@@ -121,8 +121,8 @@ object PositiveCorrectionRearm {
             // Bestaetigung, sobald die Lage keine reine Korrekturlage mehr
             // ist. Ohne diese Kante haengt ein nie bestaetigter Anker
             // unbegrenzt nach und riegelt Minuten spaeter in einer voellig
-            // anderen Lage (gemessen am 25.08.: Kante 08:00, Block erst
-            // 08:23-08:26). WAEHREND der Frist verfaellt nichts - sie ist
+            // anderen Lage (im Pflicht-Replay: Block erst gut 20 Minuten
+            // nach der Kante). WAEHREND der Frist verfaellt nichts - sie ist
             // der eigentliche Schutz.
             if (!imNachlauf) return Track() to Result(
                 false, source = track.quelle, upConfirmStreak = streak,

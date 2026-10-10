@@ -8,13 +8,13 @@ import java.io.File
 /**
  * DER WAECHTER GEGEN FESTE ZAHLEN IN TEXTEN, DIE VON EINSTELLUNGEN ABHAENGEN.
  *
- * ANLASS (Toni am Geraet, 17.08.2026): der Marker-Dialog sagte "0,23 U sofort,
- * bis 3,50 U in 15 min", waehrend das Freigabe-Fenster auf 25 Minuten stand.
+ * ANLASS (ein Geraetefund): der Marker-Dialog nannte die Freigabemenge "in 15 min",
+ * waehrend das Freigabe-Fenster deutlich laenger eingestellt war.
  * Die "15" stand fest im Ressourcen-String.
  *
  * WARUM DAS MEHR IST ALS EIN SCHOENHEITSFEHLER: der Satz nennt eine MENGE und
  * eine ZEIT. Stimmt die Zeit nicht, ist die genannte Menge im falschen Zeitraum
- * gedacht - 3,50 U in 15 Minuten sind etwas anderes als 3,50 U in 25. Und auf
+ * gedacht - eine Menge in 15 Minuten ist etwas anderes als in einem laengeren Fenster. Und auf
  * genau diesen Satz gruendet der Nutzer eine INSULIN-AUTORISIERUNG, die
  * Modell-Einwaende ueberstimmt.
  *
@@ -68,7 +68,7 @@ class DialogDauerWaechterTest {
     /**
      * DIE MENGEN SIND ANFORDERUNGEN, keine Zusagen (UI-P0 25.08.).
      *
-     * Der Dialog nannte "0,27 U" aus der alten Prime-Schrittrechnung,
+     * Der Dialog nannte eine kleine Menge aus der alten Prime-Schrittrechnung,
      * waehrend bei Sofortanteil 1,0 in Wahrheit der ganze Phase-A-Betrag
      * unmittelbar angefordert wird. Seither zeigt er die Anteile der
      * gepinnten Autorisierung - und der positive Knopf muss benennen,
@@ -116,8 +116,8 @@ class DialogDauerWaechterTest {
      * KEINE ANZEIGE DARF GEGEN DIE VORGABE-KONSTANTE RECHNEN.
      *
      * Zweiter Geraetefund am selben Tag: der FUSE-Reiter zeigte "15/15 min
-     * Freigabe" bei eingestelltem 25-Minuten-Fenster - und darunter in
-     * derselben Karte "Prime 1,15 U offen". Die Zeile widersprach sich selbst,
+     * Freigabe" bei laenger eingestelltem Fenster - und darunter in
+     * derselben Karte eine noch offene Prime-Menge. Die Zeile widersprach sich selbst,
      * weil sie `PrimeRelease.WINDOW_MIN` (die VORGABE) las, waehrend der
      * Regler die EINSTELLUNG benutzt.
      *

@@ -13,8 +13,8 @@ package app.aaps.fuse.core.predictor
  * genau so passiert ist:
  *
  * Der erste Anlauf hob nur die HAUPTbahn. Waehrend einer echten Mahlzeit war
- * aber die BREMSbahn die bindende (gemessen 11.08.: Haupt 114,5, kombiniert
- * 91,8), und das Minimum ueber beide blieb unveraendert. Die Hebung existierte
+ * aber die BREMSbahn die bindende (gemessen: die Hauptbahn lag deutlich ueber der
+ * Bremsbahn), und das Minimum ueber beide blieb unveraendert. Die Hebung existierte
  * und erreichte nie den Wert, der entscheidet. Fuenf gruene Tests standen
  * daneben - sie prueften EINZELNE Bahnen, der Fehler sass in der
  * ZUSAMMENSETZUNG.

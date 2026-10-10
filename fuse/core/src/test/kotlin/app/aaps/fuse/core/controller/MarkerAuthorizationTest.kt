@@ -288,7 +288,7 @@ class MarkerAuthorizationTest {
      * Diese Stelle liegt VOR allem anderen, und deshalb hilft kein Boden
      * weiter unten: der Lift ERZEUGT die Autorisierungsgrenze. Kappt der
      * Schwanz ihn hier auf 0, gibt es weiter unten nichts mehr zu schuetzen.
-     * Gemessen am 11.08. ist der Schwanz-Headroom bei BG 62 genau das: <= 0.
+     * In einer gemessenen Tieflage ist der Schwanz-Headroom genau das: <= 0.
      */
     @Test
     fun `der Schwanz-Headroom kappt den autorisierten Anteil nicht`() {

@@ -16,7 +16,7 @@ class EpisodeDeadlineTest {
     private val start = 1_786_000_000_000L
 
     /**
-     * DER ANLASSFALL VOM 16.08. Fruehstuecks-Marker 09:33 eroeffnet die
+     * DER ANLASSFALL: ein Marker zum Fruehstueck eroeffnet die
      * Episode, der Marker fuer die zweite Mahlzeit faellt 305 min spaeter.
      * Ohne Verlaengerung lief der Topf 55 min nach diesem Druck ab - mitten
      * in der Mahlzeit, kurz vor der Staerkewelle.

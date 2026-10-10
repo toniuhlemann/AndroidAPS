@@ -79,27 +79,27 @@ object FuseController {
     )
 
     /**
-     * REBOUND-FENSTER NACH TIEF (4x gemessen am 07.08.: 07:09, 15:0x, 16:28,
-     * ~17:3x): nach einem Tief liest der 18-min-Median die Erholungssteigung
-     * als grosse Stoerung (16:28: r 3,3 elf Minuten nach q1<75 -> 1,65 U in
+     * REBOUND-FENSTER NACH TIEF (an einem Tag mehrfach gemessen): nach einem
+     * Tief liest der 18-min-Median die Erholungssteigung als grosse Stoerung
+     * (r stark positiv elf Minuten nach q1<75 -> eine erhebliche SMB-Menge in
      * die zweite Senke). Die EINZIGE Information, die diese Lage von einem
      * Mahlzeitenbeginn unterscheidet, ist das juengste Tief selbst. War q1 in
      * den letzten [REBOUND_WINDOW_MIN] Minuten unter [REBOUND_LOW_MGDL],
      * bleibt die Rampe auf dem Korrektur-Anteil gedeckelt - egal wie hoch r
      * steigt. Beweisbar einseitig: der Deckel kann den Anteil nur senken.
-     * Konstanten PROVISORISCH (Toni-Konvention Tief-Schutz ~101/75, Fenster
+     * Konstanten PROVISORISCH (Tief-Schwelle nach Tonis Tief-Schutz-Konvention, Fenster
      * an die 45-min-Gerueststaffel angelehnt); Preferences erst nach Messung.
      */
     const val REBOUND_LOW_MGDL = 75.0
     const val REBOUND_WINDOW_MIN = 45
 
     /**
-     * REBOUND v2 - TOTBAND (Vorfaelle #5/#6, Nacht 07./08.08.: 1,05 U + 0,60 U
+     * REBOUND v2 - TOTBAND (Vorfaelle #5/#6 in einer Nacht: deutliche Rebound-Dosen
      * TROTZ Ratio-Deckel, Treiber war insulinReq aus der tau-60-Extrapolation
      * der Erholungssteigung): Im Rebound-Fenster ist die Rueckkehr bis leicht
      * UEBER das Ziel ERWUENSCHT - kein Bedarf, solange der Anker unter
-     * Ziel + [REBOUND_DEADBAND_MGDL] liegt. Haette in der Nacht alle 20
-     * Rebound-Dosen genullt (BG lief 65->121 bei Ziel 97).
+     * Ziel + [REBOUND_DEADBAND_MGDL] liegt. Haette in jener Nacht alle
+     * Rebound-Dosen genullt (BG lief aus dem Tief bis knapp unter Ziel + Totband).
      */
     const val REBOUND_DEADBAND_MGDL = 25.0
 
@@ -213,11 +213,11 @@ object FuseController {
         /**
          * MAHLZEIT-FENSTER (Fenster-Trio, 08.08.): offen durch Marker, offene
          * Onset-Episode ODER kinematische Persistenz - mit 10-min-Gedaechtnis
-         * gegen Plateau-Flattern (Abendessen 07.08.: echte langsame Mahlzeit
+         * gegen Plateau-Flattern (ein reales Abendessen: echte langsame Mahlzeit
          * war kinematisch schwach, der Marker-Zweig traegt sie). AUSSERHALB
          * gilt der Korrektur-Anteil, egal wie hoch r steht - r kann positiv
          * sein, waehrend BG faellt (insulinbereinigte Stoerung, GPT-Befund
-         * 07.08. bestaetigt: "BG faellt, r 0,98 -> Ratio 0,21" war semantisch
+         * 07.08. bestaetigt: "BG faellt, r positiv -> hoehere Ratio" war semantisch
          * falsch).
          */
         val mealWindow: Boolean = false,
@@ -265,8 +265,8 @@ object FuseController {
          * WARUM NICHT AN DIE PHASE: die Phasenschwelle ist `thr = 0,50
          * mg/dl/min` und erkennt "irgendetwas steigt", nicht "eine Mahlzeit
          * laeuft". Ein echter Onset liegt bei 3-5 mg/dl/min. Der erste
-         * Geraetelauf hat das sofort gezeigt: ein flacher Verlauf 100-105 mit
-         * r ~ 0,65 stand als RISE_ACTIVE da und haette mit einem binaeren
+         * Geraetelauf hat das sofort gezeigt: ein flacher Verlauf im Zielbereich mit
+         * r knapp ueber der Schwelle stand als RISE_ACTIVE da und haette mit einem binaeren
          * Schalter den vollen Mahlzeitenanteil bekommen. Eine Detektionsschwelle
          * als Verstaerkungsschalter zweckzuentfremden behauptet eine
          * Trennschaerfe, die sie nicht hat.
@@ -553,8 +553,8 @@ object FuseController {
          *
          * Gegenstueck zu [minLowerMgdl]. Der Zeitindex der EINZELNEN Bahn
          * (`PredictorResult.timeToMinSafetyLowerMin`) beschreibt einen anderen
-         * Zeitpunkt, sobald das Minimum aus der Bremsbahn stammt - live am
-         * 10.08.: minLower 71,17 bei Anker ~90,61 und Index 0. Beide Zahlen
+         * Zeitpunkt, sobald das Minimum aus der Bremsbahn stammt - live
+         * beobachtet: minLower klar unter dem Anker, aber Index 0. Beide Zahlen
          * waren richtig, nebeneinander ergaben sie eine unmoegliche Bahn.
          */
         val timeToMinCombinedMin: Int? = null,
@@ -562,7 +562,7 @@ object FuseController {
          * ALLE Mengengrenzen dieses Zyklus, nicht nur die bindende (S0, K2).
          *
          * `bindingLimit` nennt genau eine, und bei Gleichstand entscheidet die
-         * Listenreihenfolge. Auf diesem Geraet ist das kein Randfall: mit
+         * Listenreihenfolge. Im Standard ist das kein Randfall: mit
          * `IobThPercent = 100` ist `iobThU == maxIobU` bitgenau, also sind
          * `iobThHeadroom` und `maxIobHeadroom` IMMER gleich, und genannt wird
          * immer der erste — iobTH. Wer spaeter fragt "war maxIOB mit aktiv?",
@@ -661,8 +661,8 @@ object FuseController {
          * Null in DIESEM Zyklus (steht dann schon in `tbr`), und die
          * C7c-Freigabe im Translator, eine LAUFENDE Null aus einem
          * Vorzyklus neben einem SMB zu beenden - sonst hielte das C7a-Veto
-         * sie, solange die Mahlzeit dosiert, was am 17.08. exakt passiert
-         * ist (Null lief die vollen 30 min, Tonis manueller Abbruch wurde
+         * sie, solange die Mahlzeit dosiert, was im Betrieb exakt passiert
+         * ist (Null lief die vollen 30 min, ein manueller Abbruch wurde
          * im Folgezyklus ueberschrieben).
          */
         val basalFloorProtected: Boolean = false,
@@ -770,13 +770,13 @@ object FuseController {
          *
          * Warum eine reine Bremse und keine Ersetzung: `rSigned` ist der Median
          * ueber 18 Minuten und haengt an jedem Wendepunkt rund sechs Minuten
-         * nach. Am 06.08. gemessen, in BEIDE Richtungen:
+         * nach. An einem realen Tag gemessen, in BEIDE Richtungen:
          *
-         *   Onset 13:08   roh +1,00 mg/dl/min   r -0,60   -> zu spaet dosiert
-         *   Wende 14:05   roh -1,00             r +5,49   -> zu lange dosiert
+         *   Onset   roh deutlich steigend   r noch negativ         -> zu spaet dosiert
+         *   Wende   roh deutlich fallend    r noch stark positiv   -> zu lange dosiert
          *
-         * Die Wende kostete 2,20 U in 14 SMBs, abgegeben bei bis zu
-         * -3,7 mg/dl/min FALLENDER Glukose.
+         * Die Wende kostete eine erhebliche Menge in einer langen SMB-Serie, abgegeben bei
+         * deutlich FALLENDER Glukose.
          *
          * WARUM NUR BREMSEN, und nicht die naheliegende Asymmetrie: der erste
          * Entwurf lautete "Guard nimmt das MAXIMUM beider Bahnen, damit die
@@ -806,7 +806,7 @@ object FuseController {
          * Anlass: die erste Fassung trug `= false`, der einzige
          * Produktionsaufrufer vergass den Anschluss, und der Default hielt
          * die Totbaender kompilierfehlerfrei still scharf (Abschluss-Audit
-         * 15.08.: 81 Kreditzyklen im 2-Tage-Trail geblockt, waehrend die
+         * 15.08.: zahlreiche Kreditzyklen im 2-Tage-Trail geblockt, waehrend die
          * Commit-Botschaft die Verdrahtung behauptete). Ein Kompilierfehler
          * je Aufrufstelle ist billiger als genau dieser stille Ausfall.
          */
@@ -928,9 +928,9 @@ object FuseController {
                 //
                 // Bis hierher stand an dieser Stelle bedingungslos ZERO_TEMP,
                 // und genau daraus entstand der gemessene Betriebszustand: an
-                // einem vollen Tag lief die Null 677 von 1129 Zyklen - 60 %
-                // der Zeit ohne Grundversorgung, bei einem BG zwischen 53 und
-                // 270. Eine langfristige, KOHLENHYDRATFREI gerechnete Bahn
+                // einem vollen Tag lief die Null in der Mehrzahl der Zyklen -
+                // die meiste Zeit ohne Grundversorgung, bei einem BG zwischen
+                // Tief und deutlichem Hoch. Eine langfristige, KOHLENHYDRATFREI gerechnete Bahn
                 // durfte die Basis vollstaendig entfernen; das Muster danach
                 // war immer dasselbe - Basal fehlt, BG hebt ab, FUSE laeuft
                 // mit SMBs hinterher.
@@ -994,8 +994,8 @@ object FuseController {
         // vom aufgeblaehten r verzerrt, genau deshalb existiert das Fenster.
         // NACHT-TOTBAND (Toni 09.08.) laeuft ueber DENSELBEN Riegel: der
         // groessere der beiden Gruende gilt, zwei Schutzgruende duerfen sich
-        // nie gegenseitig aufweichen. Gemessener Anlass: 05:25-06:24 am
-        // 09.08. - 1,10 U bei BG 89-116, r um null, Bedarf allein aus
+        // nie gegenseitig aufweichen. Gemessener Anlass: ein realer frueher
+        // Morgen - mehrere SMBs bei BG im Normalbereich, r um null, Bedarf allein aus
         // negativem Basal-IOB.
         val deadbandMgdl = NightWindow.effectiveDeadbandMgdl(
             reboundWindow = state.reboundWindow,
@@ -1045,7 +1045,7 @@ object FuseController {
         val fastHeadroom = state.iobThU - state.capIobU
 
         // S0 (K2): DIE BEIDEN IOB-GRENZEN WERDEN ZUSAMMEN BERICHTET, auch wenn
-        // nur eine den Ausschlag gibt. Auf diesem Geraet ist
+        // nur eine den Ausschlag gibt. Im Standard ist
         // `iobThU = percent/100 * maxIobU` mit percent = 100, also sind beide
         // Spielraeume BITGENAU gleich - "welche hat gebunden" ist dann keine
         // Messung mehr, sondern die Reihenfolge einer Liste. Die

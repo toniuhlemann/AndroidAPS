@@ -300,7 +300,7 @@ class EvidenceStockTest {
      * Deshalb traegt die Eingabe eine Episoden-IDENTITAET und kein Bit
      * "aktiv": ein Wellental wuerde ein Bit auf false setzen, und die
      * naechste Welle begaenne als neue Episode mit frischen vier Stunden.
-     * Der gemessene Lauf vom 11.08. hatte genau so ein Tal bei T+105.
+     * Ein gemessener Lauf hatte genau so ein Tal.
      */
     @Test
     fun `eine zweite Welle startet den Episodendeckel nicht neu`() {
@@ -407,10 +407,10 @@ class EvidenceStockTest {
     }
 
     /**
-     * DER TYPISIERTE WIDERRUF-REBASE (Toni 29.08.). Livefall: ein regulaerer
+     * DER TYPISIERTE WIDERRUF-REBASE (Toni 29.08.). Anlass: ein regulaerer
      * Ledger-Widerruf (-0,10 U am Fensterende) verklemmte die Evidenz in
      * UNKNOWN ohne Selbstheilung, und EXCLUDED_LAGE nahm den Liveness-Kanal
-     * fuer den Episodenrest aus dem Spiel - bei noch 73 min gueltiger
+     * fuer den Episodenrest aus dem Spiel - bei noch laufender
      * Markervollmacht. Eine Absenkung MIT vorgerueckter Revision ist ein
      * legaler Widerruf: Marke runter, KEIN UNKNOWN, Bestand NICHT erstattet.
      */

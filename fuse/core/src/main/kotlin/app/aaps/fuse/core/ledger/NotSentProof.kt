@@ -89,7 +89,7 @@ object NotSentProof {
 
         // (C) DER APPLY-BLOCK WURDE NIE BETRETEN. Nur gueltig, wenn ueberhaupt
         // eine Menge uebrig war (sonst greift schon B) - und nur, wenn die
-        // Angabe auswertbar ist. Das ist Tonis 19:07-Fall.
+        // Angabe auswertbar ist. Das ist der beobachtete Abendfall.
         if (o.smbSetByPumpPresent == false && nachConstraints != null &&
             nachConstraints.isFinite() && nachConstraints > 0.0
         ) return QueueRejectReason.BOLUS_IN_QUEUE

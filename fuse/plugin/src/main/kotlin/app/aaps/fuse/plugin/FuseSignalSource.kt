@@ -134,20 +134,20 @@ class FuseSignalSource(
          * "war der erste Punkt nach einer Luecke fragwuerdig, und wurde er
          * kurz darauf stark revidiert?"
          *
-         * ANLASS: am 10.08. stand nach einer 37-min-Luecke ein Wert von 90
-         * mit FRISCHEM Zeitstempel im Datensatz, drei Minuten spaeter 105.
-         * FUSE las daraus +4,21 mg/dl/min und gab 0,85 U in ein Ereignis,
+         * ANLASS: nach einer laengeren Luecke stand ein Wert
+         * mit FRISCHEM Zeitstempel im Datensatz, drei Minuten spaeter ein deutlich hoeherer.
+         * FUSE las daraus einen steilen Anstieg und gab Insulin in ein Ereignis,
          * das es nicht gab.
          *
          * WARUM NICHT EINFACH EINE RATE: der erste Punkt nach der Luecke
-         * hat gar keine auffaellige Rate - (90-105)/35 min = -0,43. Der
+         * hat gar keine auffaellige Rate - ueber die Luecke gerechnet ist sie klein. Der
          * SPRUNG kommt drei Minuten spaeter, und dann ist die Luecke schon
          * nicht mehr frisch. Wer nur Rate ODER Luecke misst, sieht den Fall
          * nie. Es braucht den ABSTAND zur Luecke (postGapIndex) zusammen
          * mit dem SCHRITT.
          *
-         * KEINE REGEL, KEINE SCHWELLE. Tonis eigener Messwert steht dagegen:
-         * 4,85 mg/dl/min im Mahlzeitenkopf - ein Plausibilitaetszaun bei 5
+         * KEINE REGEL, KEINE SCHWELLE. Echte Messwerte stehen dagegen:
+         * ein steiler Mahlzeitenkopf steigt aehnlich schnell - ein Plausibilitaetszaun dort
          * haette keinen Abstand. Ob daraus je etwas wird, entscheiden Daten.
          */
         /** Minuten zwischen dem vorletzten und dem letzten Rohwert. 0 = kein

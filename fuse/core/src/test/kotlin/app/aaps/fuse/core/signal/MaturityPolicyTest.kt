@@ -46,8 +46,8 @@ class MaturityPolicyTest {
     /**
      * DIE KADENZ IST NICHT EXAKT EINE MINUTE - und das kostet einen Punkt.
      *
-     * Gemessen am Geraet (25.08., Zyklen 11:42:28, 11:43:26, 11:44:25,
-     * 11:45:24, ...): die Abstaende schwanken zwischen 58 und 62 s. Drei
+     * Gemessen am Geraet (Zyklenfolge auf die Sekunde, s. Test unten):
+     * die Abstaende schwanken zwischen 58 und 62 s. Drei
      * solche Punkte spannen 117 s und VERFEHLEN die 120-s-Paarschranke um
      * drei Sekunden. Die Tabelle in [MaturityPolicy] gilt fuer exakt
      * 60 s; real braucht jede Variante bis zu einen Punkt mehr.

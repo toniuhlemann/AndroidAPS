@@ -218,9 +218,9 @@ class FuseDashboardModelTest {
             now,
             // Zwei UHREN: 90 min Marker, 25 min Freigabe. Die Anzeige hat sie
             // bis 17.08.2026 vermischt und die Freigabe gegen die
-            // Vorgabe-Konstante gerechnet - bei Tonis 25-min-Fenster stand
-            // deshalb "15/15 min Freigabe" (abgelaufen) ueber "Prime 1,15 U
-            // offen". Der Test fuehrt die beiden jetzt ausdruecklich getrennt.
+            // Vorgabe-Konstante gerechnet - bei einem 25-min-Fenster stand
+            // deshalb "15/15 min Freigabe" (abgelaufen) ueber einer noch
+            // offenen Prime-Menge. Der Test fuehrt die beiden jetzt ausdruecklich getrennt.
             FuseScreenModel.MarkerInfo(markerTs, 90, 3.0, primeWindowMin = 25),
             ledger(),
             null,

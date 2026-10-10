@@ -11,7 +11,7 @@ import java.util.Locale
  * `addPreferenceScreen`), der Settings-Bericht im FUSE-Reiter (unten in den
  * technischen Details) und der Vollstaendigkeits-Test. Zwei von Hand
  * gepflegte Listen waren schon einmal die Ursache eines schwarzen
- * Unterbildschirms (10.08.) - deshalb lebt die Menge hier und nirgendwo
+ * Unterbildschirms - deshalb lebt die Menge hier und nirgendwo
  * sonst.
  */
 internal val fuseEinstellbareKeys: Set<String> = setOf(
@@ -109,8 +109,8 @@ internal val fuseEinstellbareKeys: Set<String> = setOf(
  * Der Sinn ist nicht Vollstaendigkeit um ihrer selbst willen, sondern der
  * schnelle Blick: WAS WEICHT VOM STANDARD AB. Abweichende Zeilen tragen
  * einen `*` und den Standardwert - ein maxSmb, das nach einem Testlauf auf
- * 0,55 stehen blieb, soll ins Auge springen, nicht in einer Elf-Kategorien-
- * Navigation versteckt sein (die Lehre aus dem Rig-Lauf, der mit 0,55 statt
+ * einem Testwert stehen blieb, soll ins Auge springen, nicht in einer Elf-Kategorien-
+ * Navigation versteckt sein (die Lehre aus dem Rig-Lauf, der mit erhoehtem Wert statt
  * 0,3 weiterlief).
  *
  * Gruppiert wie die fuenf Einstellungs-Einstiegspunkte, damit der Bericht
@@ -125,7 +125,7 @@ object FuseSettingsReport {
         // TOLERANZ statt ==: Double-Preferences kommen ueber eine
         // String-/Float-Konvertierung zurueck, und am Geraet stand "0.15
         // [Standard 0.15]" - dieselbe Zahl, faelschlich als Abweichung
-        // markiert (gesehen 15.08. auf raven). Eine Marke, die auf
+        // markiert. Eine Marke, die auf
         // Gleichem feuert, entwertet alle echten Marken.
         fun abweicht(wert: Double, standard: Double) = kotlin.math.abs(wert - standard) > 1e-6
 

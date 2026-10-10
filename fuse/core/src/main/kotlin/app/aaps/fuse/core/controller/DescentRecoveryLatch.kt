@@ -10,9 +10,9 @@ package app.aaps.fuse.core.controller
  * Hat der Observer waehrenddessen ein echtes Tief bestaetigt, genuegt nach
  * dessen eigener fuenfminuetiger Exit-Bestaetigung ein aktueller positiver
  * UKF-Zyklus; sonst wuerden zwei Hysteresen dieselbe Erholung bezahlen lassen.
- * Der Replay vom 17.-19.08. hat die DREI-ZYKLEN-Regel an den drei Gegenlagen
- * validiert (schneller Mahlzeitenanstieg nach anfaenglichem Fallen: Freigabe
- * 09:20; echte Wende nach dem Low: Freigabe 20:18; Abendsturz 17:55: keine
+ * Der Replay ueber mehrere reale Tage hat die DREI-ZYKLEN-Regel an den drei Gegenlagen
+ * validiert (schneller Mahlzeitenanstieg nach anfaenglichem Fallen: rechtzeitige
+ * Freigabe; echte Wende nach dem Low: Freigabe nach der Wende; Sturz am Abend: keine
  * Freigabe waehrend Tief oder Signalbruch). Der spaeter ergaenzte
  * Ein-Zyklus-Weg nach bestaetigtem Tief ist davon NICHT abgedeckt; ihn
  * rechtfertigt allein die bereits erbrachte fuenfminuetige Exit-Bestaetigung

@@ -10,7 +10,7 @@ import app.aaps.fuse.core.signal.MeasuredGlucose
  * ANLASS: die erste v53-Fassung bestaetigte ueber zwei Zyklen
  * `UKF-Rate + Aktivitaet x ISF >= Antrieb`. Das ist eine BGI-bereinigte
  * Stoerungsrate, kein Nachweis eines tatsaechlichen Anstiegs - ein kleiner
- * Sensorsprung (+8 mg/dl, zwei Werte) startete die Anhebung, weil derselbe
+ * Sensorsprung (wenige mg/dl, zwei Werte) startete die Anhebung, weil derselbe
  * Sprung die UKF-Rate in zwei Zyklen hintereinander trug.
  *
  * ZWEI GETRENNTE BEDINGUNGEN, KEINE UNABHAENGIGEN BELEGE: Bedarf (bereinigt)

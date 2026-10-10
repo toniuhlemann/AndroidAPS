@@ -6,16 +6,16 @@ import kotlin.math.min
 /**
  * DER STOERUNGSBESTAND - die Empfangsseite nach dem Markerprivileg.
  *
- * WAS ER SCHLIESST, gemessen am 11.08.2026: nach dem 15-Minuten-Prime-Fenster
- * gab es 41 Zyklen am Stueck NICHTS, waehrend der Zucker von 102 auf 168 stieg
- * und `r` bis 3,3 mg/dl/min zeigte. Nicht weil die Mahlzeit unerkannt war -
+ * WAS ER SCHLIESST, gemessen an einer realen Mahlzeit: nach dem 15-Minuten-Prime-Fenster
+ * gab es viele Zyklen am Stueck NICHTS, waehrend der Zucker deutlich stieg
+ * und `r` einen kraeftigen Anstieg zeigte. Nicht weil die Mahlzeit unerkannt war -
  * `mealWindow` stand auf true, die Ratio auf vollen 0,35 -, sondern weil die
- * Sicherheitsbahn unter dem Guard-Boden lag. Sie lag dort, WEIL gerade 3,0 U
+ * Sicherheitsbahn unter dem Guard-Boden lag. Sie lag dort, WEIL gerade mehrere Einheiten
  * hineingegangen waren. Die Fruehdosis macht FUSE blind fuer genau den
  * Anstieg, den sie vorwegnehmen sollte.
  *
  * WARUM KEINE DRITTE HUELLE: ein neuer Mengentopf hinter denselben Gates
- * wuerde genauso blockieren - in 45 der geblockten Zyklen lag auch die
+ * wuerde genauso blockieren - in vielen der geblockten Zyklen lag auch die
  * HAUPTbahn unter 70. Was fehlt, ist kein Budget, sondern eine andere
  * Stoerungsannahme. Dieser Bestand speist deshalb [ConditionalDrive], also die
  * BAHN, und laeuft danach unveraendert durch alle Mengengrenzen.
@@ -43,8 +43,8 @@ import kotlin.math.min
  * ACHTUNG, GILT NUR IM GESCHLOSSENEN KREIS: auf dem Zwei-Geraete-Testaufbau
  * fehlt das real wirkende Insulin des Produktivgeraets in der Bereinigung,
  * waehrend FUSEs eigene virtuelle Dosen darin stehen, ohne zu wirken. Dort
- * kuerzt sich nichts, und der Bestand ist quantitativ unbrauchbar (im Lauf vom
- * 11.08. um grob zwei Einheiten Wirkung zu niedrig). Struktur ja, Zahlen nein.
+ * kuerzt sich nichts, und der Bestand ist quantitativ unbrauchbar (in einem
+ * Lauf dort um ganze Einheiten Wirkung zu niedrig). Struktur ja, Zahlen nein.
  *
  * DREI VERTRAEGE SIND HIER STRUKTURELL ERZWUNGEN statt kommentiert, weil ein
  * Aufrufer sie sonst still falsch bedienen kann - und solche Fehler findet
@@ -134,8 +134,8 @@ object EvidenceStock {
          * genau nicht erledigt - der Fehler, den die drei Zustaende beheben
          * sollen, waere in anderer Gestalt zurueck.
          *
-         * 1,0 mg/dl entspricht bei ISF 90 rund 0,011 U - also etwa 22 % eines
-         * 0,05-U-Pumpenschritts. (Tonis Korrektur 12.08.: ich hatte zuvor durch
+         * 1,0 mg/dl entspricht bei einem ueblichen ISF rund 0,01-0,02 U - also 20 bis
+         * 40 % eines 0,05-U-Pumpenschritts. (Tonis Korrektur 12.08.: ich hatte zuvor durch
          * den Pumpenschritt statt durch ISF geteilt und "ein Zwanzigstel"
          * geschrieben.) Die Schwelle bleibt damit unter einem Schritt, ist aber
          * KEINE vernachlaessigbare Groesse - sie ist gewaehlt, damit DORMANT
@@ -159,7 +159,7 @@ object EvidenceStock {
          * und das stimmt nur fuer einen Teil): HERGELEITET ist allein die
          * Gleichgewichtsform `Zuflussrate x decayMin`. Die 5 mg/dl/min als
          * Obergrenze der Stoerung und der Faktor fuenf sind Alpha-Annahmen aus
-         * einem einzigen Lauf (11.08., r bis 3,3).
+         * einem einzigen Lauf (r blieb dort klar darunter).
          *
          * Mit decayMin 8 ergibt das rund 40 mg/dl; 200 ist das Fuenffache -
          * hoch genug, dass keine echte Mahlzeit dagegen laeuft, niedrig genug,
@@ -305,7 +305,7 @@ object EvidenceStock {
         /**
          * KUMULATIV in dieser Episode verbindlich zugesagtes Insulin [U] -
          * publiziert oder transportverbindlich, NICHT erst als sichtbares
-         * Treatment (gemessene Sichtbarkeitslatenz p90 56 s, max 854 s).
+         * Treatment (gemessene Sichtbarkeitslatenz meist unter einer Minute, im Extrem viele Minuten).
          *
          * JEDE FUSE-DOSIS DER EPISODE, nicht nur die des Empfaengers: Prime,
          * Onset, Rest-Zaehler und die gewoehnliche Korrektur wirken alle gegen
@@ -506,9 +506,9 @@ object EvidenceStock {
         // reaktiviert die Episode, sie startet die Uhr nicht neu.
         //
         // SEIT 16.08. KANN EIN FRISCHER MARKER IHN VERLAENGERN
-        // ([EpisodeDeadline]). Tonis zweite Mahlzeit erbte den Topf der ersten
-        // und verlor ihn 55 Minuten nach dem Druck - kurz vor der Staerkewelle
-        // der Nudeln. `capMsOverride` traegt den wirksamen Deckel; fehlt er,
+        // ([EpisodeDeadline]). Eine zweite Mahlzeit erbte den Topf der ersten
+        // und verlor ihn 55 Minuten nach dem Druck - kurz vor ihrer
+        // Staerkewelle. `capMsOverride` traegt den wirksamen Deckel; fehlt er,
         // gilt unveraendert der Basiswert aus der Config.
         val deckelMs = input.capMsOverride ?: (cfg.maxEpisodeMin * 60_000L)
         if (input.nowMs - start >= deckelMs)
@@ -533,7 +533,7 @@ object EvidenceStock {
         //
         //   (a) LEGALER LEDGER-WIDERRUF: eine publizierte, aber beweisbar
         //       nicht geflossene Dosis wurde zurueckgebucht - die Buecher
-        //       sind gerade ehrlicher geworden. Livefall 29.08.: -0,10 U am
+        //       sind gerade ehrlicher geworden. Livefall: ein kleiner Widerruf am
         //       Fensterende, das alte fail-closed UNKNOWN heilte nie
         //       (die Summe blieb unter der Marke, weil nichts mehr
         //       nachlieferte), und EXCLUDED_LAGE nahm den Liveness-Kanal

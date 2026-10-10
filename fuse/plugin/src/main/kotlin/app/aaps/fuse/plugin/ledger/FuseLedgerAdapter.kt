@@ -138,8 +138,8 @@ class EpisodeBudgets {
      * tatsaechlichen Absenkung des Zaehlers. EvidenceStock akzeptiert eine
      * gesunkene kumulative Summe NUR mit vorgerueckter Revision als legalen
      * Widerruf-Rebase; jede Absenkung ohne Revision bleibt fail-closed
-     * UNKNOWN (Schutz gegen verlorenen/vertauschten Zustand). Livefall
-     * 29.08.: ein regulaerer 0,10-U-Widerruf verklemmte die Evidenz sonst
+     * UNKNOWN (Schutz gegen verlorenen/vertauschten Zustand). Im Livefall
+     * verklemmte ein regulaerer kleiner Widerruf die Evidenz sonst
      * fuer den Episodenrest in UNKNOWN/EXCLUDED_LAGE.
      *
      * Episodenwechsel setzt Summe und Revision GEMEINSAM zurueck.
@@ -393,11 +393,11 @@ class EpisodeBudgets {
     /**
      * AM UEBERGANG VERFALLENE Sofortmenge [U] (Review 25.08. spaet, P1.2).
      *
-     * Klemmt die Huelle den Uebertrag - offen 2,60, gebucht nur 2,40 -,
-     * dann sind die restlichen 0,20 U weder uebertragen noch offen: sie
-     * sind ERLEDIGT. Frueher stand der ganze offene Betrag in
-     * [upfrontTransferredU], und der Trail meldete "2,60 uebertragen",
-     * obwohl nur 2,40 im schrittweisen Pfad ankamen. Dosierseitig war das
+     * Klemmt die Huelle den Uebertrag - offen ist mehr, als noch gebucht werden darf -,
+     * dann ist der Rest weder uebertragen noch offen: er
+     * ist ERLEDIGT. Frueher stand der ganze offene Betrag in
+     * [upfrontTransferredU], und der Trail meldete den ganzen Betrag als uebertragen,
+     * obwohl nur der gebuchte Teil im schrittweisen Pfad ankam. Dosierseitig war das
      * konservativ, aber die Aussage war falsch.
      *
      * Beide Posten zusammen schliessen die Bilanz: was nicht geliefert
@@ -488,9 +488,9 @@ class EpisodeBudgets {
      *
      * WARUM EIN EIGENER ZAEHLER UND NICHT `evidenceCommittedU - phaseABudget`.
      * Die Ableitung stimmt NUR, wenn Phase A restlos ausgeschoepft wurde. Ein
-     * gemessener Fall: 1,40 U in Phase A geflossen statt der erlaubten 2,25;
-     * die Ableitung meldete danach einen Rueckstand von 2,15 U statt 0,75 -
-     * fast das Dreifache, weil sie den nicht abgerufenen Rest von Phase A
+     * gemessener Fall: in Phase A floss deutlich weniger als erlaubt;
+     * die Ableitung meldete danach einen Rueckstand von fast dem Dreifachen
+     * des richtigen Werts, weil sie den nicht abgerufenen Rest von Phase A
      * dem Fundament als Schuld anlastete. Ein Test hat das gefunden.
      *
      * MINDESTVERSORGUNG, NICHT ADDITIV: hier zaehlt ALLES, was seit der
@@ -692,11 +692,11 @@ class EpisodeBudgets {
     /**
      * DIE ABGESCHLOSSENE BUCHUNG DES VORIGEN ZYKLUS (Toni 19.08., P0).
      *
-     * DER BEFUND, DER DAZU GEFUEHRT HAT. Am 19.08. forderte FUSE 20 x 0,15 U
-     * an, die Pumpendatenbank zeigte 2,70 U: AAPS hatte zwei Schritte am
+     * DER BEFUND, DER DAZU GEFUEHRT HAT. In einem echten Fall forderte FUSE eine
+     * Reihe gleich grosser Schritte an, der Pumpendatenbank fehlten zwei: AAPS hatte sie am
      * Intervalltor verworfen ("SMB requested but still in 1 min interval"),
      * weil eine verspaetet fertig gewordene Medtrum-Abgabe den Abstand unter
-     * 45 s drueckte. Die Episodenzaehler standen trotzdem auf 3,00 U - FUSE
+     * 45 s drueckte. Die Episodenzaehler standen trotzdem auf der vollen Menge - FUSE
      * hielt die Huelle fuer geliefert und den Evidenzbestand fuer bezahlt.
      *
      * [pendingReservation] konnte das nicht auffangen: sie wird aufgeloest,
@@ -1317,7 +1317,7 @@ object TransportAufnahme {
 object LedgerFacts {
 
     /**
-     * EIN LEERER SERIAL IST KEINE AUSSAGE UEBER DAS GERAET (Live-Befund 09.08.).
+     * EIN LEERER SERIAL IST KEINE AUSSAGE UEBER DAS GERAET (Live-Befund).
      *
      * `Sha.of("")` ist ein voellig normal aussehender Hash - und genau daran
      * ist die Reconciliation drei Tage lang blind vorbeigelaufen: es gab keinen
@@ -1347,7 +1347,7 @@ object LedgerFacts {
      * ---
      *
      * ZWEITE AUSPRAEGUNG DERSELBEN FEHLERKLASSE: DIE SCHREIBWEISE
-     * (Phase-A-Kartierung 09.08., am Produktivsystem gemessen).
+     * (Phase-A-Kartierung, am Produktivsystem gemessen).
      *
      * Derselbe Zahlenwert erreicht die beiden Vergleichsseiten in
      * VERSCHIEDENER Schreibweise, weil zwei Stellen des Medtrum-Treibers
@@ -2278,7 +2278,7 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
         //
         // KEINE GRUNDLISTE. Der erste Bauauftrag nannte `CONSTRAINT_ZERO` und
         // `GATE_BLOCKED`; das haette ausgerechnet den GEMESSENEN Anlass
-        // verfehlt - Tonis 19:07-Fall ist `BOLUS_IN_QUEUE` (Menge nach
+        // verfehlt - jener Livefall ist `BOLUS_IN_QUEUE` (Menge nach
         // Constraints positiv, Apply-Block nie betreten). Welcher Beweis es
         // war, ist fuer die MENGE ohne Bedeutung; entscheidend ist, DASS
         // [app.aaps.fuse.core.ledger.NotSentProof] einen sicheren geliefert
@@ -2757,8 +2757,8 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
      * abgleichsrelevant. Zwischen DIA+30 min (Regelfenster) und DIA+2 h
      * (Prune-Schnitt) fehlte ihr Fakt in der Sicht, der Reducer las das als
      * "Buchung verschwunden" und setzte MISSING_ACCOUNTED_TREATMENT auf eine
-     * voellig korrekt gebuchte Zeile. Bei DIA 9 h ist das rund 9,5 h nach dem
-     * ersten SMB - also an jedem normalen Tag.
+     * voellig korrekt gebuchte Zeile. Das geschieht schon DIA plus eine halbe
+     * Stunde nach dem ersten SMB - also an jedem normalen Tag.
      *
      * Massgeblich ist deshalb JEDE noch vorhandene Zeile - MIT EINER
      * AUSNAHME.
@@ -2824,9 +2824,9 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
 
         // PHANTOMHAFTUNG (Kontroll-Audit 09.08.): eine Zeile, die nach DIA plus
         // Spanne IMMER NOCH offen ist, band bisher unbegrenzt weiter Spielraum.
-        // Am 09.08. waren das 0,35 U aus drei Posten vom Vorabend - 19 Stunden
+        // Im gemessenen Fall waren das drei Posten vom Vorabend - 19 Stunden
         // alt, ueber `transportAnchorTs` auf 30 min zurueckgeklemmt und
-        // behandelt, als koennten sie jetzt noch liefern; 0,086 U davon landeten
+        // behandelt, als koennten sie jetzt noch liefern; ein Teil davon landete
         // im Schwanz, das Siebenfache des damals verbliebenen Headrooms.
         //
         // Es wird NICHT behauptet, sie seien geliefert worden - nur, dass sie

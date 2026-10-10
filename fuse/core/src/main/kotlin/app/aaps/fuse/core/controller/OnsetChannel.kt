@@ -7,11 +7,11 @@ import kotlin.math.min
  * Der oeffnende schnelle Kanal - die BRUECKE zwischen "der UKF sieht den
  * Anstieg" und "Theil-Sen bestaetigt ihn".
  *
- * GEMESSEN an vier Onsets (06.-07.08.2026): der 18-min-Median folgt einem
+ * GEMESSEN an vier realen Onsets: der 18-min-Median folgt einem
  * Steigungssprung mit 0 % bis Minute 5 und 100 % erst ab Minute 13; die
- * UKF-Rate ist gedaempft, aber richtungstreu. Fruehstueck 07.08.: dreimal
- * `ukfRate >= 0,5` in Folge war um 09:13 erreicht, `r` erst 09:14/09:15 -
- * beim langsamen Muesli-Onset am 06.08. laegen ~6 Minuten dazwischen. Fuer
+ * UKF-Rate ist gedaempft, aber richtungstreu. Bei einem Fruehstueck war dreimal
+ * `ukfRate >= 0,5` in Folge ein bis zwei Minuten vor `r` erreicht -
+ * bei einem langsamen Onset laegen ~6 Minuten dazwischen. Fuer
  * FCL zaehlt jede dieser Minuten, weil die Insulinwirkung selbst nochmal
  * ~40 min braucht.
  *
@@ -23,12 +23,12 @@ import kotlin.math.min
  *  - KINEMATISCHES GATE, tragend: geprueft wird die ROHE [Sample.ukfRatePerMin],
  *    nicht der bereinigte Antrieb. Insulinaktivitaet kann die rohe Rate nur
  *    SENKEN - eine positive rohe Rate heisst, BG steigt TROTZ Insulin. Damit
- *    kann die Rueckkopplung, die die Nacht 06./07.08. dominierte (fastDrive
+ *    kann die Rueckkopplung, die eine gemessene Nacht dominierte (fastDrive
  *    aufgeblaeht durch eigene Aktivitaet bei roh ~0), diesen Kanal
  *    strukturell nicht oeffnen.
  *  - HAFTUNGSHUELLE: hoechstens [Input.envelopeU] zusaetzliche Einheiten je
  *    Episode, solange Theil-Sen nicht bestaetigt hat. Zum Vergleich KC2-53:
- *    die Rueckholkapazitaet ueber 30 min betraegt 0,225-0,35 U - die Huelle
+ *    die Rueckholkapazitaet ueber 30 min betraegt nur einen Bruchteil einer Einheit - die Huelle
  *    ist also bewusst NICHT rueckholbar klein, sondern eine begrenzte Wette,
  *    deren Preis beziffert ist.
  *  - UEBERGABE: sobald `rSigned >= threshold`, ist der Kanal SCHLAFEND -
@@ -43,12 +43,12 @@ import kotlin.math.min
 object OnsetChannel {
 
     /** Drei aufeinanderfolgende Minuten. Zwei waeren ein Rauschpaar, vier
-     *  verschenken eine Minute gegen das gemessene 09:13-Fenster. */
+     *  verschenken eine Minute des gemessenen Vorsprungs vor `r`. */
     const val PERSIST_N = 3
 
     /** Mit gesetztem Mahlzeiten-Marker reicht EIN Wert ueber der Schwelle:
      *  der Nutzer hat die Vorinformation geliefert, die die Persistenz sonst
-     *  ersetzen muss. Gemessen 07.08.: die erste CGM-Regung kam 08:51, eine
+     *  ersetzen muss. Gemessen an einem Fruehstueck: die erste CGM-Regung kam eine
      *  Minute nach dem Marker - Persistenz 3 haette sie verworfen. */
     const val PERSIST_N_MARKER = 1
 

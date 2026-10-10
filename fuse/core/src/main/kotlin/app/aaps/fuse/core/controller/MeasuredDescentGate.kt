@@ -7,7 +7,7 @@ package app.aaps.fuse.core.controller
  * Prime- und Fundament-Lift, nach `finalVerify` und nach [MarkerFloor], aber
  * VOR der Publikation. Jeder frueher gesetzte Riegel koennte von einem
  * spaeteren Wiederherstellungspfad wieder geoeffnet werden - und genau so ist
- * der Abendfall vom 19.08. entstanden.
+ * ein gemessener Abendfall entstanden.
  *
  * WARUM ER EINE EIGENE FUNKTION IST (Codex 19.08.). Er stand zuerst zweimal
  * im Runner - einmal im Hauptpfad, einmal im Fallback; geteilt war nur die

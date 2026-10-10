@@ -16,7 +16,7 @@ class DosingContextTest {
     /** Pflichtfall "Hoher Rise ohne gueltige Autorisierung -> keine
      *  Hochstufung": der Kontext kennt strukturell nur den Pin - ohne Pin
      *  gibt es kein MEAL, egal was Kinematik oder Evidenz behaupten
-     *  (Livefall 27.08.: KINEMATIC_ONLY-Fenster bei leerer Lage). */
+     *  (Anlass: ein KINEMATIC_ONLY-Fenster bei leerer Lage). */
     @Test
     fun `ohne Marker gilt CORRECTION`() {
         val d = DosingContext.decide(nowMs = T0, markerTs = 0L, pinnedFor = 0L, deadlineTs = 0L)
@@ -41,7 +41,7 @@ class DosingContextTest {
 
     /** Pflichtfall "Marker-Power abgelaufen, Episode noch vorhanden ->
      *  CORRECTION, kein Wiederaufleben": HALB OFFEN - exakt an der Deadline
-     *  gilt bereits CORRECTION (Livefall 28.08.: Power-Ablauf 20:37 mitten
+     *  gilt bereits CORRECTION (Anlass: ein Power-Ablauf mitten
      *  im Anstieg schaltete korrekt auf die K-Caps). */
     @Test
     fun `exakt an der Deadline gilt bereits CORRECTION`() {

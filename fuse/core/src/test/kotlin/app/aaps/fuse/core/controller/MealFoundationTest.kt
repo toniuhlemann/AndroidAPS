@@ -1060,8 +1060,8 @@ class MealFoundationTest {
      * DER AUFSCHUB STEHT HIER NICHT MEHR (Nachtrag Toni 25.08. mittags):
      * frueher zog die Bilanz zusaetzlich `deferredPrime.openU` ab, weil der
      * Sicherheitsaufschub den Sofortanteil dort sammelte. Zwei Buecher fuer
-     * dieselbe Menge liefen auseinander - gemessen 3,10 U gemeldet, wo nach
-     * 0,60 U Lieferung hoechstens 2,60 U offen sein konnten.
+     * dieselbe Menge liefen auseinander - gemeldet wurde deutlich mehr, als nach
+     * 0,60 U Lieferung hoechstens offen sein konnte (2,60 U).
      */
     @Test
     fun `die sofort-bilanz senkt sich um lieferung und manuelles insulin`() {
@@ -1072,8 +1072,8 @@ class MealFoundationTest {
         assertEquals(0.0, MealFoundation.remainingUpfrontU(a, 4.5, 0.0), "nie negativ")
         assertEquals(1.0, MealFoundation.remainingUpfrontU(a, 0.0, 2.0), "manuelles Insulin senkt")
         assertEquals(0.5, MealFoundation.remainingUpfrontU(a, 1.5, 1.0), "beides zusammen")
-        // DER LIVEFALL vom 25.08.: Plan 3,20, davon 0,60 in Phase A
-        // geliefert -> genau 2,60 offen (gemeldet waren 3,10).
+        // DER PFLICHTFALL: Plan 3,20, davon 0,60 in Phase A
+        // geliefert -> genau 2,60 offen (gemeldet war mehr).
         val live = upfrontAuth(1.0, totalU = 4.0, phaseAShare = 0.8) // upfrontU = 3,20
         assertEquals(3.20, live.phaseAUpfrontU, 1e-9)
         assertEquals(2.60, MealFoundation.remainingUpfrontU(live, 0.60, 0.0)!!, 1e-9)

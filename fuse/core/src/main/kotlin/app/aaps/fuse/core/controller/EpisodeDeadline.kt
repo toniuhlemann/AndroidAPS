@@ -6,12 +6,12 @@ import kotlin.math.max
  * WIE LANGE EINE EVIDENZ-EPISODE WIEDERERKENNBAR BLEIBT - eine Regel, zwei
  * Verbraucher.
  *
- * ANLASS (Toni am Geraet, 16.08.2026). Sein Fruehstuecks-Marker um 09:33
- * eroeffnete die Episode; der Marker um 14:38 fuer eine ECHTE zweite Mahlzeit
+ * ANLASS (Live-Betrieb). Ein Fruehstuecks-Marker
+ * eroeffnete die Episode; der Marker fuer eine ECHTE zweite Mahlzeit
  * lag 305 Minuten spaeter, also innerhalb des 360-Minuten-Deckels, und erbte
  * den alten Topf samt Uhr ([MarkerEpisodeGate], Denial.MARKER_ALREADY_CONSUMED).
- * Um 15:33 lief dieser Topf ab - mitten in der zweiten Mahlzeit, T+55 Minuten,
- * kurz VOR der Staerkewelle der Nudeln. Danach: Phase.EXPIRED, "kein
+ * Dann lief dieser Topf ab - mitten in der zweiten Mahlzeit, T+55 Minuten,
+ * kurz VOR ihrer Staerkewelle. Danach: Phase.EXPIRED, "kein
  * Wiederaufleben".
  *
  * Tonis Einwand gegen die erste, schwaechere Antwort ("wir zeigen das Restalter

@@ -9,28 +9,28 @@ import org.junit.jupiter.api.Test
 /**
  * DER FINALE RIEGEL GEGEN NEUES POSITIVES INSULIN (Toni 19.08., P0).
  *
- * DER GEMESSENE ABEND, aus dem Trail:
+ * DER ANLASS, ein Abend als Ablauf:
  *
- *     17:49        Marker
- *     17:50-18:13  24 positive Zyklen, zusammen 3,70 U
- *     ab 17:55     FUSE meldet FALLING_WITH_BOLUS_OVERCOVERAGE
- *     danach       trotzdem 19 SMBs mit zusammen 2,95 U
- *     zeitweise    gleichzeitig TBR = ZERO_TEMP und SMB = 0,15 U
- *     18:13        BG 98, UKF -3,13/min, IOB 4,73 U - und nochmals 0,20 U
- *     18:47        Minimum 58,2 mg/dl bei 3,20 U IOB
+ *     T+0          Marker
+ *     danach       zwei Dutzend positive Zyklen, zusammen mehrere Einheiten
+ *     kurz darauf  FUSE meldet FALLING_WITH_BOLUS_OVERCOVERAGE
+ *     danach       trotzdem weiter SMBs, zusammen der Grossteil der Menge
+ *     zeitweise    gleichzeitig TBR = ZERO_TEMP und ein positiver SMB
+ *     spaeter      BG 98, UKF -3,13/min, IOB 4,73 U - und nochmals ein SMB
+ *     am Ende      ein Minimum klar unter dem Boden, bei noch hohem IOB
  *
- * DIE 3,70 U SPRENGTEN DIE HUELLE NICHT - der Build trug damals
- * `primeEnvelopeU = 3,90 U`. Das Problem ist also kein Budgetueberlauf,
+ * DIE MENGE SPRENGTE DIE HUELLE NICHT - der Build trug damals
+ * eine noch etwas groessere `primeEnvelopeU`. Das Problem ist also kein Budgetueberlauf,
  * sondern dass die Autorisierung trotz klar gemessener Abwaertslage fast
  * vollstaendig ausgeschoepft wurde.
  *
  * DER ARCHITEKTURFEHLER. [LowThreatGate.evaluate] beantwortete zwei Fragen in
  * einem Verdikt - "faellt es gemessen und ist es durch Bolus ueberdeckt?" und
  * "bringt eine Zero-TBR noch 5 mg/dl?" - und das Ergebnis steuerte NUR die
- * TBR. Vier Minuten Zero-TBR halten bei 0,50 U/h rund 0,033 U zurueck,
- * waehrend gleichzeitig 0,60 U SMB dazukamen.
+ * TBR. Ein paar Minuten Zero-TBR halten nur einen Bruchteil einer Einheit zurueck,
+ * waehrend gleichzeitig ein Vielfaches davon als SMB dazukam.
  *
- * Um 18:13 wurde es deutlicher: die Null galt wegen BENEFIT_BELOW_THRESHOLD
+ * Im schaerfsten Fall wurde es deutlicher: die Null galt wegen BENEFIT_BELOW_THRESHOLD
  * als nutzlos - und daraus folgte faktisch, dass zusaetzliche SMBs wieder
  * erlaubt waren. "Basal zurueckhalten hilft nicht mehr" und "mehr Bolus ist
  * sicher" sind zwei vollstaendig verschiedene Aussagen.
@@ -56,10 +56,10 @@ class MeasuredDescentRiskTest {
         horizonMin = horizon,
     )
 
-    // ---- Der gemessene Abend ---------------------------------------------
+    // ---- Der Abend als Testlage ------------------------------------------
 
     /**
-     * 17:54 - der Boden liegt NOCH ausserhalb des Nahhorizonts. Der Marker
+     * Kurz nach dem Marker liegt der Boden NOCH ausserhalb des Nahhorizonts. Der Marker
      * darf hier liefern; die Aenderung greift nicht zu frueh.
      */
     @Test
@@ -71,7 +71,7 @@ class MeasuredDescentRiskTest {
     }
 
     /**
-     * 17:55 - ab hier steht die Lage fest: gemessen fallend, vom Bolus
+     * Wenig spaeter steht die Lage fest: gemessen fallend, vom Bolus
      * ueberdeckt, Boden im Nahhorizont. Positives Insulin ist damit 0.
      */
     @Test
@@ -84,7 +84,7 @@ class MeasuredDescentRiskTest {
     }
 
     /**
-     * 18:13 - der schaerfste Fall. BG 98, UKF -3,13/min, IOB 4,73 U.
+     * Der schaerfste Fall. BG 98, UKF -3,13/min, IOB 4,73 U.
      *
      * HIER GILT DER RIEGEL AUCH DANN, wenn eine Zero-TBR nichts mehr bringt:
      * das Risiko haengt an den Schritten 1-3 und kennt den Basalnutzen gar
@@ -160,7 +160,7 @@ class MeasuredDescentRiskTest {
      * Derselbe Zustand, einmal mit wirksamer und einmal mit unwirksamer
      * Zero-TBR - das Risiko ist beide Male dasselbe. Waeren die Fragen noch
      * gekoppelt, koennte die zweite Lage den Riegel oeffnen, und genau das
-     * geschah um 18:13.
+     * geschah im schaerfsten Fall.
      */
     @Test
     fun `das Risiko ist unabhaengig vom Basalnutzen`() {
@@ -240,7 +240,7 @@ class MeasuredDescentRiskTest {
             Triple(210.0, -1.0, 4.0),    // Boden zu weit
             Triple(160.0, +2.5, 3.0),    // steigt
             Triple(200.0, -2.0, 1.0),    // nicht ueberdeckt
-            Triple(98.0, -3.13, 4.73),   // der 18:13-Fall
+            Triple(98.0, -3.13, 4.73),   // der schaerfste Fall
         )
         for ((bg, rate, bolus) in faelle) {
             val r = risiko(bg, rate, bolus)

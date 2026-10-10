@@ -3,13 +3,13 @@ package app.aaps.fuse.core.controller
 /**
  * V-REVERSAL-SCHUTZ, NUR IM KORREKTURKONTEXT (Bauauftrag Toni 25.08.).
  *
- * DER GEMESSENE ANLASS (Pflicht-Replay, 25.08. frueh): 06:12-06:20 fiel q1
- * von 135 auf 101 (UKF-Minimum -2,81 um 06:16) - ein schmales Sensor-/
- * Kompressions-V. Die Erholung sah die schnelle Bahn als Anstieg (06:27:
- * UKF +4,0), waehrend das ROBUSTE r noch -0,82 trug. Die Prognose lag
- * damit ~171 mg/dl zu hoch, und der reine Korrekturpfad gab ab 06:27
- * insgesamt 1,75 U auf eine Erholung statt auf echten Glukosedruck
- * (real: BG 132/121/111 nach 30/60/90 min).
+ * DER GEMESSENE ANLASS (Pflicht-Replay eines fruehen Morgens): binnen
+ * Minuten fiel q1 steil ab (UKF-Minimum stark negativ) - ein schmales Sensor-/
+ * Kompressions-V. Die Erholung sah die schnelle Bahn als steilen Anstieg,
+ * waehrend das ROBUSTE r noch negativ trug. Die Prognose lag
+ * damit weit zu hoch, und der reine Korrekturpfad gab danach
+ * mehrere Korrektur-SMBs auf eine Erholung statt auf echten Glukosedruck
+ * (real sank der BG in den folgenden 90 Minuten weiter).
  *
  * DIE REGEL (Tonis Spezifikation, woertlich umgesetzt): nach einem steilen
  * Fall darf eine schnelle Gegenbewegung KEINEN Korrektur-SMB ausloesen,
@@ -35,7 +35,7 @@ object CorrectionReversalGuard {
         /** Zeitpunkt, zu dem NACH diesem Fall-Minimum die schnelle
          *  Gegenbewegung beobachtet wurde; 0 = nicht gezuendet. Die
          *  Zuendung macht den Riegel zur EPISODE: er haelt auch, wenn das
-         *  momentane UKF wieder abflacht (der Vorfall dosierte 06:30-06:33
+         *  momentane UKF wieder abflacht (der Vorfall dosierte noch mehrere Zyklen
          *  bei laengst flachem BG - die Prognose trug die Erholung noch). */
         val reboundSeenTs: Long = 0L,
         val rPosStreak: Int = 0,
@@ -103,7 +103,7 @@ object CorrectionReversalGuard {
             nowTs - neuesMin.minUkfTs <= lookbackMs
         // Die Gegenbewegung ZUENDET die Episode (nur auf einen stehenden
         // Fall) - und die Episode haelt danach auch bei abgeflachtem UKF:
-        // der Vorfall dosierte 06:30-06:33 bei flachem BG, die Prognose
+        // der Vorfall dosierte noch mehrere Zyklen bei flachem BG, die Prognose
         // trug die Erholung noch. Ende NUR durch r-Bestaetigung oder den
         // Verfall des Fall-Minimums (die Ersetzung oben loescht mit).
         val zuendung = fallSteht && ukfNow.isFinite() && ukfNow >= reboundThresholdUkf

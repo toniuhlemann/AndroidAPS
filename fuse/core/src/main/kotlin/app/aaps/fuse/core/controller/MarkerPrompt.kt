@@ -50,12 +50,12 @@ object MarkerPrompt {
          * DIE DREI MENGEN DER GEPINNTEN AUTORISIERUNG (Tonis UI-P0 vom
          * 25.08. abends). Sie ersetzen den frueheren `firstStepU`.
          *
-         * DER BEFUND: der Dialog nannte "0,27 U" - den Zyklusanteil aus
-         * der alten Prime-Schrittrechnung -, waehrend bei Sofortanteil
-         * 1,0 tatsaechlich 3,20 U unmittelbar angefordert wurden. Der
+         * DER BEFUND: der Dialog nannte nur einen Bruchteil einer Einheit - den Zyklusanteil aus
+         * der alten Prime-Schrittrechnung -, waehrend bei vollem Sofortanteil
+         * tatsaechlich mehrere Einheiten unmittelbar angefordert wurden. Der
          * Nutzer bestaetigte also eine Groessenordnung, die der Dialog
          * nicht nannte. Zusaetzlich teilte der Ersatzweg durch feste 15
-         * Minuten, obwohl das Fenster auf 20 stand.
+         * Minuten, obwohl das Fenster anders eingestellt war.
          *
          * ALLE DREI SIND ANFORDERUNGEN, keine Zusagen: Sicherheitsriegel,
          * IOB-Spielraum, Aufschub und Pumpen-Gates koennen sie kuerzen
@@ -103,8 +103,8 @@ object MarkerPrompt {
          * einmal voreingestellte.
          *
          * Der Dialogtext trug sie bis 17.08.2026 als feste "15 min" im
-         * Ressourcen-String, waehrend die Einstellung auf 25 stand (Toni am
-         * Geraet: "Die Dauer ist nicht dynamisch entsprechend dem gewaehlten
+         * Ressourcen-String, waehrend die Einstellung anders stand (Tonis
+         * Rueckmeldung: "Die Dauer ist nicht dynamisch entsprechend dem gewaehlten
          * setting"). Der Satz nennt eine Menge UND eine Zeit; stimmt die Zeit
          * nicht, ist die genannte Menge im falschen Zeitraum gedacht - und
          * genau darauf gruendet der Nutzer seine Zustimmung.

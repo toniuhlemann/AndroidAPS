@@ -734,8 +734,8 @@ class FuseStateExportTest {
      * exportiert je Zyklus, aber nicht in der Kennung. Damit trugen zwei
      * messbar verschiedene Regler denselben `configGeneration`: mit
      * Schalter entstehen Entscheidungen, die ohne ihn als "drive not
-     * estimable" gestorben waeren (gemessen 26 -> 21 blinde Zyklen und
-     * +0,050 U ueber einen Tag). Der Erwartungs-Ledger trennt seine
+     * estimable" gestorben waeren (gemessen: weniger blinde Zyklen und
+     * etwas mehr Insulin ueber einen Tag). Der Erwartungs-Ledger trennt seine
      * Strecken nach genau diesem Hash - ihre Ergebnisse waeren in
      * denselben Topf gefallen.
      */
@@ -888,7 +888,7 @@ class FuseStateExportTest {
         // v14 der Sicherheitsaufschub, v15 der getrennte positive Horizont,
         // v16 die zwei Low-Tor-Stellgroessen im Fingerprint, v17 der
         // Marker-Prime-Aufschub (Punkt 6), v18 der Liveness-Kanal
-        // (mengenbasierter Zusatzkanal gegen den Tail-Deadlock, 22.08.),
+        // (mengenbasierter Zusatzkanal gegen den Tail-Deadlock),
         // v19 die streaknullende Re-Arm-Sperre (drei frische Druckzyklen
         // nach der Pause - live zaehlte er waehrend der Sperre weiter),
         // v20 die getrennte Tag-/Nacht-Druckschwelle des Liveness-Kanals,
@@ -896,7 +896,7 @@ class FuseStateExportTest {
         // zweier beliebig kleiner Rueckgaenge), v26 die Liveness-Basis-Ratio
         // nach Profil (MEAL traegt die R-Rampe selbst statt der
         // fenster-gegateten effectiveSmbRatio - der unsichtbare
-        // 0,15-Livefall bei Marker +115 min), v27 Tonis Korrektur dazu:
+        // Fall mit Korrekturanteil spaet nach dem Marker), v27 Tonis Korrektur dazu:
         // BEIDE Profile rampen, der Profilunterschied ist allein der
         // M-/K-Deckel (v26 liess den K-Deckel nie skalieren), v28 der
         // Phase-A-Sofortanteil nach iLet-Prinzip (Default 0,00 bitgleich;
@@ -907,41 +907,41 @@ class FuseStateExportTest {
         // mehr; MEASURED_LOW weiter sofort).
         // v30 die Korrekturpfad-Riegel (V-Reversal-Schutz + Freigabe-
         // Nachlauf nach Zero-Latch-/Nachtende, beide Default AUS, nur im
-        // reinen Korrekturkontext - Pflichtfall 25.08. frueh).
+        // reinen Korrekturkontext - Anlass war ein Pflichtfall am Morgen).
         // v31 der Wiedereinstieg nach Funkluecke (4x3-Rejoin, Default AUS).
         // v32 DER RUHE-AUSGANG AUS PHASE A. Dosierwirksam im Modus
         // CALM_BATCH: der zurueckgehaltene Sofortanteil verlaesst dann nach
         // N bestaetigten Ruhezyklen den HISTORISCHEN Latch - aktuelle
-        // Gefahren bleiben absolut. Anlass ist der Abendfall 25.08.:
-        // 3,60 U blieben die ganze Phase A blockiert, obwohl das gemessene
-        // Abwaertsrisiko seit neun Zyklen vorbei war. Default AUS.
+        // Gefahren bleiben absolut. Anlass ist eine Mahlzeit am Abend:
+        // mehrere Einheiten blieben die ganze Phase A blockiert, obwohl das gemessene
+        // Abwaertsrisiko seit mehreren Zyklen vorbei war. Default AUS.
         // v33 DIE EINSTELLBARE REBOUND-FENSTERDAUER. Die Frage, die dieser
         // Test erzwingt - ist die Aenderung wirklich dosierwirksam? - hat
         // hier eine dreifache Antwort: das Fenster beendet NICHT nur das
         // Totband, sondern gleichzeitig den SMB-Ratio-Deckel auf
-        // smbRatioCorrection und die Liveness-Sperre. Am gemessenen Tag
-        // (26.08.) sprang die Ratio im Zyklus nach Fensterende von 0,15 auf
-        // 0,325 und der SMB von 0,10 auf 0,50 U. Default 45 ist bitgleich
+        // smbRatioCorrection und die Liveness-Sperre. Im gemessenen Fall
+        // sprang die Ratio im Zyklus nach Fensterende auf mehr als das Doppelte
+        // und der SMB auf ein Mehrfaches. Default 45 ist bitgleich
         // zum bisherigen Verhalten, aber 45 und 120 sind zwei verschiedene
         // Regler - und ihre Erwartungen duerfen sich nicht vermischen.
         // DIESER TEST IST ABSICHTLICH STUR: er faellt bei jedem Bump um und
         // zwingt damit zu der Frage, ob die Aenderung wirklich dosierwirksam
         // war - ein stiller Bump waere so wertlos wie ein vergessener.
         // v34 DIE ENTKOPPLUNG DER PHASE-A-DIREKTDOSIS VOM ZERO-LATCH.
-        // Dosierwirksam ohne jeden Zweifel: derselbe Zustand, der am
-        // 28.08. von 09:22 bis 09:36 vier autorisierte Einheiten
+        // Dosierwirksam ohne jeden Zweifel: derselbe Zustand, der bei einem
+        // Fruehstueck eine Viertelstunde lang mehrere autorisierte Einheiten
         // zurueckhielt, gibt sie danach frei - der historische Basalschutz
         // ist kein Grund mehr gegen eine angekuendigte Mahlzeit. Aktuelle
         // Gefahren sind unveraendert absolut.
         // v35 DER FREIGABEVERTRAG DES SOFORTANTEILS. Die Frage, die dieser
         // Test erzwingt - wirklich dosierwirksam? - beantwortet der
-        // Fruehstuecksfall: dieselben 4,00 U wandern von 09:37/09:38 auf
-        // 09:22:21, also 25 Sekunden nach dem Marker. Der Nachweis auf der
+        // Fruehstuecksfall: dieselben Einheiten wandern um eine Viertelstunde nach vorn,
+        // auf 25 Sekunden nach dem Marker. Der Nachweis auf der
         // gemessenen Reihe ersetzt zwei Nulltoleranzen, das gemessene Tief
         // bekommt ein eigenes Gefahrenfeld, und das 120-Minuten-Basalverdikt
         // weicht dem am Marker gepinnten Abwaertsrisiko-Vertrag.
         // v36 DER TYPISIERTE WIDERRUF-REBASE. Dosierwirksam ueber die
-        // Evidenzphase: der 29.08.-Livefall stand ab 09:44 bis Datenende in
+        // Evidenzphase: der Anlassfall stand ab einem Ledger-Widerruf bis Datenende in
         // UNKNOWN/EXCLUDED_LAGE, obwohl die Markervollmacht lief - mit
         // Revision waere der Widerruf ein Rebase gewesen und der Kanal
         // verfuegbar geblieben.
@@ -968,7 +968,7 @@ class FuseStateExportTest {
         // v44 CENTRAL-only: LEGACY-Pfad, Modusschalter und die sechs
         // Liveness-Cap-Keys entfernt; vier Profilwerte mit echten
         // Startsatz-Defaults; policyMode = Export-Konstante.
-        // v45 P1 Eis-Livefall: die MEAL-/Evidenz-Entwaffnung des Rebound-
+        // v45 P1 Mahlzeiten-Fall: die MEAL-/Evidenz-Entwaffnung des Rebound-
         // Totbands gilt auch im harten Liveness-Tor (reboundRaw sperrt nur
         // noch ohne geltendes Sonderrecht) - dieselbe typisierte Rechnung,
         // keine neuen Keys, kein Backup-/Migrationsbedarf.

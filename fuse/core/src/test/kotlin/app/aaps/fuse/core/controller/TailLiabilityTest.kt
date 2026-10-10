@@ -157,8 +157,8 @@ class TailLiabilityTest {
     }
 
     /**
-     * GEMESSEN am 06.08.: bei 5,92 U an Bord projizierte die Bahn auf -31 mg/dl.
-     * Sperren ist richtig - aber (-31 - 70)/95 waere ein Budget, das jemand
+     * DER PFLICHTFALL: bei 5,92 U an Bord projiziert die Bahn auf -31 mg/dl.
+     * Sperren ist richtig - aber (-31 - 70)/ISF waere ein Budget, das jemand
      * spaeter als Zahl liest.
      */
     @Test

@@ -94,9 +94,9 @@ object MarkerAuthorization {
             // eigenen Insulin nach unten gerechnet werden - dieser hier
             // nicht.
             //
-            // Der gemessene Anlass ist der Abend des 19.08.: ab 17:55 stand
+            // Der gemessene Anlass ist ein realer Abend: bald nach dem Marker stand
             // die Abwaertslage fest, und trotzdem gingen ueber die
-            // Marker-Autorisierung noch 2,95 U hinaus.
+            // Marker-Autorisierung noch mehrere Einheiten hinaus.
             FuseController.Block.MEASURED_DESCENT_RISK -> false
 
             // MARKER_PRIME_DEFERRED ist derselbe gemessene Grund, nur fuer

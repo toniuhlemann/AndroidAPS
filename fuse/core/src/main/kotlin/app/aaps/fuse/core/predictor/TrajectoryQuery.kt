@@ -106,11 +106,11 @@ object TrajectoryQuery {
      * [PredictorResult.timeToMinSafetyLowerMin] gehoert einer EINZELNEN Bahn.
      * Der Guard rechnet aber gegen `minSafetyLowerOf(prediction, restraint)` -
      * und wenn das Minimum aus der Bremsbahn stammt, beschreibt der Index der
-     * Hauptbahn einen anderen Zeitpunkt. Live gesehen am 10.08.:
+     * Hauptbahn einen anderen Zeitpunkt. Live gesehen:
      *
-     *     minLower = 71,17    Anker ~ 90,61    timeToMin(Hauptbahn) = 0
+     *     minLower klar unter dem Anker    timeToMin(Hauptbahn) = 0
      *
-     * Die Hauptbahn hatte ihr Minimum wirklich am Anker; die 71,17 kamen aus
+     * Die Hauptbahn hatte ihr Minimum wirklich am Anker; das tiefere minLower kam aus
      * der Bremsbahn. Beide Zahlen stimmten - nebeneinander gelesen ergaben sie
      * eine unmoegliche Bahn.
      *

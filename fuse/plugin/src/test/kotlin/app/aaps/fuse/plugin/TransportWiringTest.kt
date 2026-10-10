@@ -425,9 +425,9 @@ class TransportWiringTest : TestBaseWithProfile() {
         // DIE BOLUS-IOB IST NICHT DIE GESAMT-IOB (Rig-Befund 25.08. spaet).
         // `basaliob = 0` machte aus jeder negativen Gesamt-IOB eine negative
         // BOLUS-IOB - und die bricht als Integritaetsbefund den ganzen
-        // Zyklus ab. Am 25.08. abends waren das 23 Zyklen im
-        // Phase-A-Fenster: Gesamt-IOB -0,33 bis -0,22 (Basal
-        // zurueckgehalten), Bolus-IOB am Geraet aber +0,10. Traegt der
+        // Zyklus ab. Im Replay waren das zahlreiche Zyklen im
+        // Phase-A-Fenster: Gesamt-IOB leicht negativ (Basal
+        // zurueckgehalten), Bolus-IOB am Geraet aber positiv. Traegt der
         // Trail die Bolus-IOB, wird `basaliob` so gesetzt, dass
         // `iob - basaliob` genau sie ergibt.
         val bolusAusTrail = bolusIobProTs?.let { k ->
@@ -442,7 +442,7 @@ class TransportWiringTest : TestBaseWithProfile() {
         // zweifacher Hinsicht falsch: die Bedingung traf Vergangenheit UND
         // Zukunft, und die abgefragten Punkte sind ueberwiegend BAHNPUNKTE
         // der Prognose (+127 bis +131 min). Der Prädiktor rechnet dort und
-        // lehnte folgerichtig mit NON_FINITE_INPUT ab - 350 von 373 Zyklen
+        // lehnte folgerichtig mit NON_FINITE_INPUT ab - fast alle Zyklen
         // brachen ab, der Replay war unbrauchbar.
         //
         // Die Tripwire hat damit ihren Zweck erfuellt und ist beendet: sie
@@ -655,7 +655,7 @@ class TransportWiringTest : TestBaseWithProfile() {
      * wird auf now gekuerzt, danach Profilbasal); Abfragezeit auf die Minute
      * aufgerundet (`roundUpTime`); Stuecke von etwa 5 min gegen den Basalplan.
      * Lokal gegen die aufgezeichneten Anker validiert (Bolus-/Basal-IOB <= 0,0005 U,
-     * Aktivitaet <= 0,0001 U/min, 07:00-09:33).
+     * Aktivitaet <= 0,0001 U/min, ueber gut zwei Stunden am Morgen).
      */
     private class AsOfBolus(val ts: Long, val u: Double)
     private class AsOfTbr(val start: Long, val dauerMs: Long, val rate: Double, val absolut: Boolean)
@@ -937,8 +937,8 @@ class TransportWiringTest : TestBaseWithProfile() {
     /** Die RAMPEN-UNTERKANTE. Sie ist zugleich die Schwelle des
      *  Onset-Kanals und der Mahlzeitenfenster-Kinematik und entscheidet
      *  damit, wann der autoritative Kontext von Korrektur auf Mahlzeit
-     *  kippt. Das Rig fuhr bisher 0,5; Toni faehrt am Geraet 1,5 - die
-     *  Pflichtfall-Tests brauchen den Geraetewert, sonst liegt die
+     *  kippt. Das Rig fuhr bisher 0,5; die Pflichtfall-Tests brauchen den
+     *  Wert ihrer Lage (1,5), sonst liegt die
      *  Kontextgrenze eine Kurvenphase zu frueh. */
     private var riseRampLowRWert = 0.5
     /** Oberkante der Ratio-Rampe - Rig-Hebel, Default wie bisher 2,0. */
@@ -1574,17 +1574,17 @@ class TransportWiringTest : TestBaseWithProfile() {
         }
     }
 
-    // ---- DER LIVEFALL VOM 11.08., im RUNNER --------------------------------
+    // ---- DER PFLICHTFALL, im RUNNER ----------------------------------------
 
     /**
      * DER HAUPTFALL EINER MAHLZEIT - und der Test, der genau hier zweimal
      * das Falsche behauptet hat.
      *
-     * WAS AM GERAET STAND: BG 105, fallend (r = -0,888 mg/dl/min), Marker seit
+     * DIE LAGE: BG 105, fallend (r deutlich negativ), Marker seit
      * 3 Minuten, Health READY, Ledger frei, Pumpen- und Publikationsgate
      * offen, iobTH und maxIOB je 8 U - also KEIN Mengendeckel. Ergebnis: 0 U.
      * Prime meldete CLEARANCE, die Entscheidung GUARD_FLOOR, der
-     * Schwanz-Headroom war bei -0,41 U.
+     * Schwanz-Headroom war negativ.
      *
      * WARUM ES 0 U WAREN: `safetyReasons` war leer, weil BG 105 kein
      * gemessenes Tief ist - und ich hatte das gemessene Tief zur
@@ -1609,7 +1609,7 @@ class TransportWiringTest : TestBaseWithProfile() {
     @Test
     fun `Marker bei normalem BG mit fallender Bahn gibt frei`() {
         flach = 105.0
-        steigungProMin = -0.9          // fallend wie am Geraet
+        steigungProMin = -0.9          // fallend wie im Pflichtfall
         aktivitaet = 0.02              // Bahn taucht unter den Guard-Boden
         tailGuard = true               // der Schwanz widerspricht MIT
         markerAt = start + 2 * 60_000L
@@ -1664,13 +1664,13 @@ class TransportWiringTest : TestBaseWithProfile() {
 
         // (4) VERTRAGSAENDERUNG (Toni 17.08.): bis dahin verlangte dieser
         // Punkt ZERO_TEMP ("Der Schutz laeuft daneben weiter"). Am Geraet
-        // hiess das: die Huelle gab vorne 0,15 U je Minute, die Null nahm
-        // hinten 0,35 U Basal weg - netto 3,10 statt der autorisierten 3,5 U,
+        // hiess das: die Huelle gab vorne Schritt fuer Schritt, die Null nahm
+        // hinten Basal weg - netto spuerbar weniger als autorisiert,
         // und das fehlende Insulin fehlte zeitversetzt im Resorptionsfenster.
         // Toni: "hier arbeiten 2 prinzipien gegeneinander."
         //
-        // Am selben Abend erweitert auf JEDE Lage: die Tagesmessung ergab 677
-        // von 1129 Zyklen mit laufender Null. Seither entsteht eine Null nur
+        // Am selben Abend erweitert auf JEDE Lage: die Tagesmessung ergab einen
+        // Grossteil der Zyklen mit laufender Null. Seither entsteht eine Null nur
         // noch aus dem LowThreatGate; hier ist es zu (kein gemessenes Tief -
         // Punkt 2 prueft das, und der Verlauf faellt zu schnell, als dass ein
         // Basalstopp noch etwas ausrichten koennte).
@@ -2819,7 +2819,7 @@ class TransportWiringTest : TestBaseWithProfile() {
      * DER NATUERLICHE ABLAUF widerruft NICHT.
      *
      * Nach 90 Minuten endet das Kontextfenster, die Episode laeuft bis 240
-     * weiter - der gemessene Lauf vom 11.08. war nach 205 Minuten noch aktiv.
+     * weiter - ein gemessener Lauf war nach 205 Minuten noch aktiv.
      * Wuerde der Ablauf widerrufen, waere genau die zweite Welle unbedient.
      */
     @Test
@@ -2885,13 +2885,13 @@ class TransportWiringTest : TestBaseWithProfile() {
     }
 
     /**
-     * TONIS FALL VOM 16.08. - die Marker-Verlaengerung des Episodendeckels.
+     * DER PFLICHTFALL - die Marker-Verlaengerung des Episodendeckels.
      *
-     * Fruehstuecks-Marker 09:33 eroeffnete die Episode; der Marker um 14:38
+     * Ein Fruehstuecks-Marker eroeffnete die Episode; der Marker
      * fuer eine ECHTE zweite Mahlzeit lag 305 Minuten spaeter, also INNERHALB
-     * des 360-Minuten-Deckels, und erbte den alten Topf samt Uhr. Um 15:33
-     * lief er ab - mitten in der zweiten Mahlzeit, T+55 min, kurz vor der
-     * Staerkewelle der Nudeln.
+     * des 360-Minuten-Deckels, und erbte den alten Topf samt Uhr. Am
+     * Deckelende lief er ab - mitten in der zweiten Mahlzeit, T+55 min, kurz vor der
+     * Staerkewelle der Mahlzeit.
      *
      * [EpisodeDeadline] traegt die Episode jetzt weiter, solange der Druck
      * innerhalb des Basisdeckels lag. Dieser Test prueft die VERDRAHTUNG, nicht
@@ -3291,9 +3291,9 @@ class TransportWiringTest : TestBaseWithProfile() {
         }
     }
     /**
-     * OPTION A AM TRAIL-FALL (13.08.): Druck 14:59 waehrend laufender
-     * Episode (09:19), Vorgaenger laeuft an den Deckel - frueher eroeffnete
-     * der geerbte Druck um 15:19 still eine neue Episode mit frischem
+     * OPTION A AM TRAIL-FALL: ein zweiter Druck waehrend laufender
+     * Episode, Vorgaenger laeuft an den Deckel - frueher eroeffnete
+     * der geerbte Druck am Deckelende still eine neue Episode mit frischem
      * Deckel. Jetzt ist er verbraucht: nach dem Deckelende gibt es KEINE
      * Folgeepisode, der Notaus ist hart. Ein NEUER bewusster Druck danach
      * eroeffnet weiterhin.
@@ -3314,7 +3314,7 @@ class TransportWiringTest : TestBaseWithProfile() {
         val anker = l.episodes.evidenceEpisodeId
         assertTrue(anker > 0L, "Episode steht")
 
-        // Zweiter Druck WAEHREND der laufenden Episode (der 14:59-Fall).
+        // Zweiter Druck WAEHREND der laufenden Episode (der Trail-Fall).
         clock += 30 * 60_000L
         val zweiterDruck = clock + 60_000L
         markerAt = zweiterDruck
@@ -3998,7 +3998,7 @@ class TransportWiringTest : TestBaseWithProfile() {
         /** AAPS hat nach seinen Constraints exakt 0 uebrig gelassen. */
         CONSTRAINT_NULL,
 
-        /** Menge positiv, Apply-Block nie betreten - Tonis 19:07-Fall. */
+        /** Menge positiv, Apply-Block nie betreten - Pflichtfall BOLUS_IN_QUEUE. */
         NIE_KOMMANDIERT,
 
         /** Kein auswertbarer Befund. Der sichere Ausgang: nichts gilt als
@@ -4202,7 +4202,7 @@ class TransportWiringTest : TestBaseWithProfile() {
 
     // ---- DAS HISTORISCHE REBOUND-FENSTER UND DIE DIREKTDOSIS ------------
     //
-    // BEFUND (Livezyklus 02.09.): markerBoost und reboundSuppressedByMarker
+    // BEFUND (aus einem Livezyklus): markerBoost und reboundSuppressedByMarker
     // true, reboundWindow false - und trotzdem recoveryDenial=CURRENT_HAZARD
     // mit currentHazard=rebound bei phaseAUpfrontRequestedU=0, waehrend
     // dieselbe Mahlzeit nebenher einzelne SMBs anforderte. Die Marker-
@@ -4816,14 +4816,14 @@ class TransportWiringTest : TestBaseWithProfile() {
     }
 
     /**
-     * DER LIVE-PFLICHTFALL DES SOFORT-BATCHES (Nachtrag Toni 25.08.
+     * DER PFLICHTFALL DES SOFORT-BATCHES (Nachtrag Toni 25.08.
      * mittags, Punkt 8): 3,20 geplant -> Riegel -> 0,60 normal geliefert
      * -> Erholung -> GENAU 2,60 als EIN Batch.
      *
-     * GEMESSEN WAR: 0,20 / 0,15 / 0,25 U in drei Zyklen - der
+     * GEMESSEN WAR: drei kleine Einzelabgaben in drei Zyklen - der
      * zurueckgehaltene Sofortanteil lag im generischen DeferredPrime, und
      * der gibt hoechstens einen Pumpenschritt je Zyklus frei. Dieselbe
-     * Messung zeigte den zweiten Fehler: der Aufschub meldete 3,10 U
+     * Messung zeigte den zweiten Fehler: der Aufschub meldete deutlich mehr
      * offen, obwohl nach 0,60 U Lieferung hoechstens 2,60 U offen sein
      * konnten - er zog nur seine eigenen Freigaben ab.
      *
@@ -4837,7 +4837,7 @@ class TransportWiringTest : TestBaseWithProfile() {
         // die Erholung und pruefte damit genau den kritischen Fall nicht.
         whenever(preferences.get(FuseIntKey.PrimeWindowMin)).thenReturn(20)
         upfrontAnteil = 1.0
-        primeHuelleU = 4.0       // Tonis Huelle -> Phase A 3,20, Fundament 0,80
+        primeHuelleU = 4.0       // Huelle des Pflichtfalls -> Phase A 3,20, Fundament 0,80
         fundamentAnteil = 0.8
         aufschubAn = true
         maxSmbU = 0.30           // darf den Batch NICHT zerteilen
@@ -4884,13 +4884,13 @@ class TransportWiringTest : TestBaseWithProfile() {
         val batch = nachher[batchIdx]
         // DIE INVARIANTE: angefordert wird GENAU der Rest, den der Zyklus
         // davor als offen ausgewiesen hat - in EINEM Zug. Die gemessene
-        // Haeppchenfolge 0,20/0,15/0,25 verfehlt das doppelt: jede einzelne
+        // Haeppchenfolge aus drei Kleinstabgaben verfehlt das doppelt: jede einzelne
         // Menge ist kleiner als der Rest, und es sind drei Zyklen.
         assertEquals(batch.phaseAUpfrontPendingU, batch.phaseAUpfrontRequestedU, 1e-9) {
             "der GANZE offene Rest desselben Zyklus in einem Zug - " +
                 nachher.joinToString(" ") { "%.2f".format(it.phaseAUpfrontRequestedU) }
         }
-        // Und der Groessenordnung nach ist es der Livefall: 3,20 geplant,
+        // Und der Groessenordnung nach ist es der Pflichtfall: 3,20 geplant,
         // 0,60 gebucht. Dass es 2,45 statt 2,60 sind, ist Vertrag 6 in
         // Aktion - zwischen Buchung und Batch flossen regulaer 0,15 U in
         // Phase A, und die verkleinern den Batch SOFORT.
@@ -5519,7 +5519,7 @@ class TransportWiringTest : TestBaseWithProfile() {
         //
         // Das ist der Vertrag vom 11.08. (ein Veto darf den markerfinanzierten
         // Anteil senken, aber nicht unter ihn) und arbeitet hier regelgerecht.
-        // Es ist aber auch die Form des Abendfalls vom 25.08. Wenn dieser
+        // Es ist aber auch die Form des Abendfalls. Wenn dieser
         // Vertrag fuer CALM_BATCH je eingeschraenkt wird, muss diese Probe
         // brechen - und nicht still weiterlaufen.
         assertEquals(0.0, k.normalNeedBeforeMarkerFloorU, 1e-9,
@@ -5825,10 +5825,10 @@ class TransportWiringTest : TestBaseWithProfile() {
      * und was dieser Test in derselben Lage mitprueft - ist sperren, solange
      * eine AKTUELLE Gefahr steht.
      *
-     * Gemessener Anlass: Fruehstueck 28.08., Marker 09:21:56. Von 09:22 bis
-     * 09:36 meldete die Kette `currentHazard zeroLatch` als EINZIGEN
+     * Gemessener Anlass: ein Fruehstueck. Ab dem Marker meldete die Kette
+     * rund eine Viertelstunde lang `currentHazard zeroLatch` als EINZIGEN
      * Blocker, bei `descentRiskActive=false`, `lowThreat=NONE`, gesundem
-     * Signal - und 4,00 autorisierte Einheiten lagen still.
+     * Signal - und mehrere autorisierte Einheiten lagen still.
      *
      * NACHWEIS 2 (Gefahr sperrt weiter) steht bewusst VOR Nachweis 1: waere
      * er rot, waere die Freigabe wertlos.
@@ -6103,7 +6103,7 @@ class TransportWiringTest : TestBaseWithProfile() {
     // ---- FALL 1: BOLUS_IN_QUEUE in Phase A --------------------------------
 
     /**
-     * TONIS 19:07-FALL, durch die ganze Kette.
+     * DER PFLICHTFALL BOLUS_IN_QUEUE, durch die ganze Kette.
      *
      * AAPS liess nach seinen Constraints eine positive Menge stehen, hat den
      * Apply-Block aber nie betreten. [NotSentProof] nennt das
@@ -6917,7 +6917,7 @@ class TransportWiringTest : TestBaseWithProfile() {
         fundamentAnteil = anteil
         fundamentEndeMin = 60
         markerAuthorized = true
-        // TONIS ECHTE HUELLE. Mit 1,2 U war das gemeinsame Budget schon in
+        // EINE REALISTISCHE HUELLE. Mit 1,2 U war das gemeinsame Budget schon in
         // Phase A erschoepft (gemessen: 3,6 U geflossen), und Phase B fand nur
         // noch BUDGET_EXHAUSTED - die Vorbedingung \ schlug deshalb
         // fehl, und das war richtig so.
@@ -7062,7 +7062,7 @@ class TransportWiringTest : TestBaseWithProfile() {
     @Test
     fun `Wende-Klassifikation erkennt die Plateau-Wende`() {
         // Erst klarer Anstieg, dann ein flacherer positiver Nachlauf. Das ist
-        // die Form des 11:33-Falls: fastDrive dreht bereits ab, r bleibt noch
+        // die Form der Plateau-Wende: fastDrive dreht bereits ab, r bleibt noch
         // hoch. Kein Marker, kein Fundament und kein Tail - die Lage bleibt
         // dieselbe wie vor 2.0 (Stufe 1, K1: die Tau-Matrix entfaellt).
         flach = 140.0
@@ -7095,7 +7095,7 @@ class TransportWiringTest : TestBaseWithProfile() {
      * DIE STABILE SIGNALEPOCHE (Toni 22.08.) - die Segment-Identitaet des
      * Erwartungs-Ledgers. Mit der gleitenden 18-min-Fensterkante als
      * Identitaet konnten sich Entry (Kante bei Ausstellung) und Probe (Kante
-     * 120 min spaeter) per Konstruktion NIE treffen: alle 1091 Outcomes des
+     * 120 min spaeter) per Konstruktion NIE treffen: saemtliche Outcomes des
      * ersten Messlaufs waren UNVERIFIABLE. Die Epoche steht still, bis ein
      * ECHTER Bruch kommt.
      */
@@ -7373,7 +7373,7 @@ class TransportWiringTest : TestBaseWithProfile() {
      * Rig-Uebergabe bei T+15 hat der 25er nur 10 Minuten Phase B, und ein
      * Pumpenschritt je Zyklus traegt hoechstens 0,05 U/min - was nicht mehr
      * floss, muss stattdessen EHRLICH als Rueckstand ausgewiesen sein
-     * (Nachweis 3, Lapse-Zweig). Die exakte Livekonstellation (Uebergabe
+     * (Nachweis 3, Lapse-Zweig). Die exakte Zielkonstellation (Uebergabe
      * T+5, 1 U in 20 min) geht im puren Test vollstaendig auf.
      *
      * KEINE BG-BEHAUPTUNG (Nachweis 7): der Lauf ist rueckkopplungsblind.
@@ -7439,8 +7439,8 @@ class TransportWiringTest : TestBaseWithProfile() {
     // ER SITZT NACH Prime-/Fundament-Lift, `finalVerify` und `MarkerFloor`,
     // aber VOR der Publikation. Ein frueher gesetzter Riegel koennte von einem
     // spaeteren Wiederherstellungspfad umgangen werden - genau so ist der
-    // Abendfall entstanden: ab 17:55 stand die Abwaertslage fest, und ueber
-    // die Marker-Autorisierung gingen danach noch 2,95 U hinaus.
+    // Abendfall entstanden: die Abwaertslage stand bereits fest, und ueber
+    // die Marker-Autorisierung gingen danach noch mehrere Einheiten hinaus.
     //
     // Diese Tests fahren den ECHTEN Runner. Ein Test auf `LowThreatGate`
     // allein wuerde nur die Rechnung pruefen, nicht ihre WIRKSAMKEIT am
@@ -7467,7 +7467,7 @@ class TransportWiringTest : TestBaseWithProfile() {
     }
 
     /**
-     * DER FRUEHSTUECKSFALL VOM 21.08.: q1 rund 113, UKF -0,49/min und
+     * DER PFLICHTFALL: q1 rund 113, UKF -0,49/min und
      * 1,21 U Bolus-IOB. Das alte gemeinsame 120-min-Fenster machte daraus
      * einen harten positiven Endriegel, obwohl die extrapolierte Bodenzeit
      * weit ausserhalb einer akuten SMB-Entscheidung lag. Mit dem eigenen
@@ -7756,7 +7756,7 @@ class TransportWiringTest : TestBaseWithProfile() {
         assertTrue(phaseBReached, "der minuetlich lueckenlose Lauf MUSS Phase B erreichen")
         assertTrue(ledger.episodes.foundation.valid, "die gepinnte Autorisierung MUSS stehen")
 
-        // Der gemessene Fruehstuecksfall: 3,00 U Phase-A-Soll, 1,35 U
+        // Die Pflichtfall-Lage: 3,00 U Phase-A-Soll, 1,35 U
         // geliefert, 1,65 U durch den harten Riegel unvermeidbar aufgeschoben.
         ledger.episodes.deliveredPhaseAU = 1.35
         ledger.episodes.deliveredSinceHandoverU = 0.0
@@ -7913,7 +7913,7 @@ class TransportWiringTest : TestBaseWithProfile() {
     //
     // Schalter default AUS, kein Aktivierungs-GO - diese Tests schalten ihn
     // im Geruest bewusst ein und fahren den ECHTEN Runner. Die Form ist der
-    // 18:19-Fall: maessiger Fall, Boden ZWISCHEN dem 30er-Korrekturriegel
+    // Replay-Fall 1: maessiger Fall, Boden ZWISCHEN dem 30er-Korrekturriegel
     // und dem gepinnten 60er-Marker-Horizont, Bolus-Ueberdeckung vorhanden.
 
     private fun punkt6Lage(dir: File, fristMin: Int = 120): FuseLedgerAdapter {
@@ -7938,11 +7938,11 @@ class TransportWiringTest : TestBaseWithProfile() {
         return adapter
     }
 
-    /** Replay-Fall 1 (18:19): vollstaendiger Aufschub, kein Insulin im Fall. */
+    /** Replay-Fall 1: vollstaendiger Aufschub, kein Insulin im Fall. */
     @Test
     fun `P6 Fall 1 - im gemessenen Fall geht trotz Marker nichts hinaus sondern in den Aufschub`(@TempDir dir: File) {
         punkt6Lage(dir)
-        // Der Marker faellt wie am 18:19 MITTEN in den laufenden Fall - die
+        // Der Marker faellt wie im Replay-Fall MITTEN in den laufenden Fall - die
         // Rate ist dann bereits gemessen konvergiert. Ein Marker in einen
         // noch kalten Filter hinein ist eine andere (mildere) Lage: dort
         // liegt der Boden gemessen noch jenseits des Horizonts.
@@ -7967,7 +7967,7 @@ class TransportWiringTest : TestBaseWithProfile() {
 
     /**
      * DIE POSITIVKONTROLLE des Schalters: dieselbe Lage mit Schalter AUS ist
-     * exakt der 18:19-Fehler - Insulin fliesst in den Fall. Sie beweist
+     * exakt der Fehler aus Replay-Fall 1 - Insulin fliesst in den Fall. Sie beweist
      * beides zugleich: der Default ist dosierneutral, und der Aufbau
      * erreicht wirklich den Mechanismus.
      */
@@ -7987,14 +7987,14 @@ class TransportWiringTest : TestBaseWithProfile() {
         assertEquals(0.0, withheld, 1e-9)
     }
 
-    /** Replay-Fall 2 (14:21/08:59): kein unnoetiger Aufschub beim langsamen Fall. */
+    /** Replay-Fall 2: kein unnoetiger Aufschub beim langsamen Fall. */
     @Test
     fun `P6 Fall 2 - der langsame Fall mit fernem Boden wird nicht aufgeschoben`(@TempDir dir: File) {
         punkt6Lage(dir)
-        // Die 08:59-Form: Boden erst in ~67 min - jenseits des 60er-Horizonts.
+        // Die langsame Form: Boden erst in ~67 min - jenseits des 60er-Horizonts.
         flach = 100.0
         steigungProMin = -0.45
-        // Wie am 08:59 gemessen: die Rate klingt ab, der Boden bleibt fern.
+        // Wie im Replay-Fall gemessen: die Rate klingt ab, der Boden bleibt fern.
         knickAbMin = 10
         steigungNachKnick = -0.05
         bolusIobU = 1.2
@@ -8200,7 +8200,7 @@ class TransportWiringTest : TestBaseWithProfile() {
     // ==== DER LIVENESS-KANAL (Bauvertrag Toni + Codex 22.08.) ==============
     //
     // Schalter default AUS, kein Aktivierungs-GO - die Tests schalten ihn im
-    // Geruest bewusst ein. Die Lage ist der 22.08.-Deadlock: anhaltender
+    // Geruest bewusst ein. Die Lage ist der Liveness-Deadlock: anhaltender
     // Hochdruck ueber der Schwelle, hohe Bolus-Haftung, der Schwanz nullt
     // jede Abgabe ueber viele Zyklen. Die fuenf von Toni geforderten
     // Mutationsfaenger plus die Grenztests der konfigurierbaren Schwelle:
@@ -8212,8 +8212,8 @@ class TransportWiringTest : TestBaseWithProfile() {
     //   Grenze   BG-Schwelle strikt, konfigurierbar, Aenderung beendet Lauf
 
     /**
-     * Fall 1b - der GUARD-Deadlock (die 22.08.-Fehlerklasse: Unterkante
-     * median +97 mg/dl zu tief zertifiziert): die aktivitaetsgetriebene
+     * Fall 1b - der GUARD-Deadlock (die bekannte Fehlerklasse: Unterkante
+     * im Median deutlich zu tief zertifiziert): die aktivitaetsgetriebene
      * carb-freie Unterkante taucht unter den Boden, der Normalpfad nullt
      * ueber GUARD_FLOOR - gemessen steigt der Zucker. Der Kanal MUSS hier
      * heben, und das Modell-Tor darf dabei NIE anschlagen: technisch ist
@@ -8756,7 +8756,7 @@ class TransportWiringTest : TestBaseWithProfile() {
         knick2AbMin = null
         // 4,5 U x ISF 54 = ~243 mg/dl Schwanzlast gegen den flachen
         // Anstieg: der Schwanz bleibt ueber ~25 Zyklen bindend - der
-        // ANHALTENDE 22.08.-Deadlock, nicht nur ein kurzes Fenster.
+        // ANHALTENDE Liveness-Deadlock, nicht nur ein kurzes Fenster.
         bolusIobU = 4.5
         clock = start
         transportReset()
@@ -8897,7 +8897,7 @@ class TransportWiringTest : TestBaseWithProfile() {
     /**
      * M1 (Bauauftrag 7.5.1): unter GUELTIGER MEAL-Vollmacht gilt die eigene
      * MEAL-Druckschwelle - der Kanal bewaffnet UNTERHALB der Tagesschwelle.
-     * Beleg: 55-min-Loch am Abend 28.08., 35 min am Fruehstueck 29.08. -
+     * Beleg: ein 55-min-Loch an einem Abend, 35 min an einem Fruehstueck -
      * die Korrektur-Schwelle blockte die Druckzaehlung unter stehender
      * Vollmacht. Die Prime-Drip-Zyklen des offenen Markerfensters maskieren
      * dank M2 (underlyingNormalBlock) nicht mehr.
@@ -9080,7 +9080,7 @@ class TransportWiringTest : TestBaseWithProfile() {
     // ---- P1 v45: Rebound-Sonderrecht auch im Liveness-Tor ----------------
 
     /**
-     * P1-Aufbau (Livefall nach Eis): Low-Dip unter 75 oeffnet das
+     * P1-Aufbau (Livefall nach einer Mahlzeit): Low-Dip unter 75 oeffnet das
      * ROHE Rebound-Fenster (45 min), der Marker wird IM Fenster gedrueckt
      * (beide Pins: Power + Rebound-Sonderrecht), danach der steile Anstieg
      * (r weit ueber 1, q1 ueber der MEAL-Schwelle 120), Guard-Deadlock des
@@ -9110,7 +9110,7 @@ class TransportWiringTest : TestBaseWithProfile() {
         flach = 80.0
         steigungProMin = -2.0   // Tal 68 bei min 6: Dip auf VERARBEITETEN
         knickAbMin = 6          // Zyklen (Warmup-Zyklen setzen lastLowTs nie)
-        steigungNachKnick = 2.5 // der Eis-Anstieg
+        steigungNachKnick = 2.5 // der steile Mahlzeitenanstieg
         knick2AbMin = null
         bolusIobU = 4.5         // Guard-/Schwanz-Deadlock des Normalpfads
         clock = start
@@ -9134,7 +9134,7 @@ class TransportWiringTest : TestBaseWithProfile() {
      * entwaffnet auch das HARTE Liveness-Tor. Vorher blieb der Kanal in
      * genau dieser Lage jeden Zyklus `EXCLUDED/REBOUND_ACTIVE`, waehrend
      * der Normalpfad laengst entwaffnet und dann GUARD-geschlossen war -
-     * die serielle Blockade des Livefalls (q1 172, r +4,8, 3,68 U freier
+     * die serielle Blockade des Livefalls (hoher q1, steiles r, reichlich freier
      * MEAL-Headroom, keine Abgabe). Die Mutation `reboundRaw ->
      * REBOUND_ACTIVE` (ohne Sonderrechtspruefung) macht diesen Test rot.
      */
@@ -9280,7 +9280,7 @@ class TransportWiringTest : TestBaseWithProfile() {
         // Prime-Verbrauch): organisch stirbt der einnahmegespeiste Kredit
         // an der Wende FRUEHER, als die Messriegel zuenden - im Leben
         // traegt ein grosser Mahlzeiten-Topf den Kredit ueber die Wende
-        // (Eis-Fall: Sonderrecht stand bei T+52 trotz 3,05 U Abzug). Der
+        // (im Livefall stand das Sonderrecht bei T+52 trotz mehrerer Einheiten Abzug). Der
         // Test braucht genau diesen Ueberlapp: Sonderrecht GILT, und die
         // Gefahrenriegel muessen trotzdem greifen.
         adapter.episodes.evidenceState = adapter.episodes.evidenceState.copy(stockMgdl = 60.0)
@@ -9309,8 +9309,8 @@ class TransportWiringTest : TestBaseWithProfile() {
      * FLASH-RELEVANTE WECHSELWIRKUNG (Tonis Review 30.08., ausdruecklich
      * akzeptiert): mit v45 darf die Wiederbewaffnung nach einem manuellen
      * NORMAL-Bolus bereits WAEHREND des entwaffneten Rebound-Fensters
-     * erfolgen, nicht erst nach dessen Ende - der Livefall 14:43 (4 U
-     * manuell, kurze Sperre, 15:19 weitere 0,55 U bei 5,52 U Bolus-IOB).
+     * erfolgen, nicht erst nach dessen Ende - so im Pflichtfall (4 U
+     * manuell, kurze Sperre, danach eine weitere kleine Abgabe bei hohem Bolus-IOB).
      * Drei Zusagen in einem Lauf:
      *  1. innerhalb ReArmMin: MANUAL_INTERVENTION, kein Hub;
      *  2. nach ReArmMin: Bewaffnung grundsaetzlich erlaubt - im noch
@@ -9329,9 +9329,9 @@ class TransportWiringTest : TestBaseWithProfile() {
             if (o.livenessActive) armZyklus = o
         }
         assertTrue(armZyklus != null, "die Lage muss erst bewaffnen (sonst prueft der Fall nichts)")
-        // Der Nutzer uebernimmt: 4 U NORMAL (Livefall 14:43); der statische
-        // Rig-IOB uebernimmt die Rolle des gewachsenen Bolus-IOB (5,5 wie
-        // die 5,52 U des Livefalls). GEMESSEN (Rig-Debug): der Manualbolus
+        // Der Nutzer uebernimmt: 4 U NORMAL (wie im Pflichtfall); der statische
+        // Rig-IOB uebernimmt die Rolle des gewachsenen Bolus-IOB (5,5 in der
+        // Groessenordnung des Pflichtfalls). GEMESSEN (Rig-Debug): der Manualbolus
         // bucht NICHT in den Evidenz-Topf - er wirkt ueber IOB und
         // Deckungs-Abschlag; das Sonderrecht kann ihn daher ueberleben.
         boluses = listOf(BS(timestamp = clock, amount = 4.0, type = BS.Type.NORMAL))
@@ -9567,8 +9567,8 @@ class TransportWiringTest : TestBaseWithProfile() {
     /**
      * B1, PFLICHTFALL 2 (Bauauftrag Paragraph 10, Zeile 2): der neue
      * Correction-Cap kann auch die NORMALE Endmenge begrenzen - genau die
-     * Verhaltensaenderung, die der 27.08.-Burst verlangt hat (2,50 U in 12
-     * Zyklen, waehrend iobTH/maxIOB 4-6 U Luft liessen). Die Mutation
+     * Verhaltensaenderung, die der Burst-Livefall verlangt hat (mehrere Einheiten in
+     * wenigen Zyklen, waehrend iobTH/maxIOB noch reichlich Luft liessen). Die Mutation
      * "Endgrenze entfernt" macht exakt diesen Test rot.
      */
     @Test
@@ -9928,7 +9928,7 @@ class TransportWiringTest : TestBaseWithProfile() {
     }
 
     /**
-     * Fall 1 - die 22.08.-Tagesform: im Schwanz-Deadlock liefert der Kanal
+     * Fall 1 - die Deadlock-Tagesform: im Schwanz-Deadlock liefert der Kanal
      * die MENGENLINIE, nicht den Saegezahn. Scharf gegen die Mutation
      * "Tail-Kappe versehentlich noch aktiv": in jedem Hub-Zyklus ist die
      * Endmenge der rasterisierte Kanal-Kandidat - eine noch wirkende
@@ -10065,7 +10065,7 @@ class TransportWiringTest : TestBaseWithProfile() {
     }
 
     /**
-     * Fall 4 - der P2-Exit und die 21.08.-Gegenform: bei Minute 26 knickt
+     * Fall 4 - der P2-Exit und die Gegen-Tagesform: bei Minute 26 knickt
      * der Drive nach unten. Die BESTAETIGTE Wende (declineStreak >= 2)
      * muss den Lauf beenden, BEVOR Druckverlust oder fallender UKF greifen
      * - der gemessene Drive reagiert vor den traegen Filtern. In die
@@ -10326,8 +10326,8 @@ class TransportWiringTest : TestBaseWithProfile() {
      * Scheinwende - Drive-Knick um nur 0,15 mg/dl/min (1,4 -> 1,25,
      * kumuliert UNTER der 0,20er-Magnitude der Schatten-Klassifikation),
      * Druck und Anstieg bleiben klar erhalten - beendet den Lauf NICHT
-     * mehr. Genau diese Kante entwaffnete den Kanal live fuer zehn Minuten
-     * (22:53), obwohl die Abflachung eines weiterhin starken Anstiegs
+     * mehr. Genau diese Kante entwaffnete den Kanal live fuer zehn Minuten,
+     * obwohl die Abflachung eines weiterhin starken Anstiegs
      * keine Wende ist. Der Kanal traegt die Abflachung durch; die
      * DEUTLICHE Wende prueft weiterhin Fall 4.
      */
@@ -10384,7 +10384,7 @@ class TransportWiringTest : TestBaseWithProfile() {
      * dann W10 und W8 ueber den Konstruktor-Override, der am Geraet
      * konstruktionsbedingt nicht setzbar ist. Gespeist wird alles aus dem
      * Trail: Roh-BG-Serie, IOB+Aktivitaet je Sample, ISF je Tagesminute,
-     * Ziel bleibt Rig-Profil (Toni faehrt ~98). GRENZE, ehrlich benannt:
+     * Ziel bleibt Rig-Profil (nicht das Geraeteziel). GRENZE, ehrlich benannt:
      * Budgets/Ledger starten frisch (der Trailausschnitt beginnt deshalb
      * an einer ruhigen Grenze), und der spaetere reale BG entstand unter
      * der W18-Dosierung - verglichen werden Entscheidungs-Gegenrechnungen,
@@ -10520,10 +10520,10 @@ class TransportWiringTest : TestBaseWithProfile() {
             pol?.optDouble("livenessBgMinMealMgdl")?.takeIf { it.isFinite() }?.let { mealBgMin = it }
             mealArmZyklen = i("mealArmCycles", 3)
             // Diese drei sind im Rig FESTE Stubs - fuer den Replay auf die
-            // aufgezeichnete Politik umgebogen (22.08.: Rampe 2,5, Rebound-
-            // Totband 40, Prime-Fenster 20).
+            // aufgezeichnete Politik umgebogen (Rampen-Oberkante, Rebound-
+            // Totband, Prime-Fenster).
             whenever(preferences.get(FuseDoubleKey.RiseRampHighR)).thenReturn(d("riseRampHighR", 2.0))
-            // HEBEL-LECK (Fruehstuecksrekonstruktion 15.09.): die UNTERE Rampe
+            // HEBEL-LECK (Fruehstuecksrekonstruktion): die UNTERE Rampe
             // fehlte - der Replay lief mit dem Rig-Wert 0,5, das Geraet mit 1,5.
             // Sie bestimmt Liveness-Ratio und Onset-Schwelle.
             riseRampLowRWert = d("riseRampLowR", riseRampLowRWert)
@@ -10555,7 +10555,7 @@ class TransportWiringTest : TestBaseWithProfile() {
             }
         }
         // Der Marker-Schalter steht NICHT in den alten Policy-Exporten -
-        // Toni faehrt ihn konstant AN (Marker-Knopf ist sein Werkzeug).
+        // am Geraet steht er konstant AN (der Marker-Knopf ist das Werkzeug des Nutzers).
         markerAuthorized = true
         politikAnwenden(zyklen.firstNotNullOfOrNull { it.policy })
 
@@ -10564,7 +10564,7 @@ class TransportWiringTest : TestBaseWithProfile() {
         iobProTs = java.util.TreeMap(zyklen.associate { it.ts to (it.iobU to it.act) })
         bolusIobProTs = java.util.TreeMap(zyklen.mapNotNull { z -> z.bolusIobU?.let { z.ts to it } }.toMap())
 
-        // ISF je Tagesminute aus dem Trail (Toni faehrt ein Zeitprofil).
+        // ISF je Tagesminute aus dem Trail (das Profil ist zeitabhaengig).
         val isfProMin = HashMap<Int, Double>()
         // DIESELBE FUNKTION AUF BEIDEN SEITEN (Toni 23.08. Abend): der Runner
         // fragt mit MidnightUtils.secondsFromMidnight - also fuellt die Karte
@@ -10592,7 +10592,7 @@ class TransportWiringTest : TestBaseWithProfile() {
             whenever(replayProfil.dia).thenReturn(asOf!!.diaStunden)
             println("REPLAY zeitpunkttreu: ${asOf!!.boli.size} Boli, ${asOf!!.tbr.size} TBR, ${asOf!!.abbrueche.size} Abbrueche, DIA ${asOf!!.diaStunden}")
             // DAS PROFILZIEL DES GERAETS (Aequivalenzbefund 15.09.): das Rig-Profil
-            // rechnete mit 103,5 statt 98 - Bedarf und Kandidat lagen dadurch
+            // rechnete mit 103,5 statt mit dem Geraeteziel - Bedarf und Kandidat lagen dadurch
             // systematisch neben der Aufzeichnung.
             val zielPlan = org.json.JSONObject(File(pfad).readText()).optJSONArray("zielPlan")?.let { a ->
                 (0 until a.length()).map { i -> a.getJSONObject(i).let { it.getInt("sek") to it.getDouble("ziel") } }.sortedBy { it.first }
@@ -10656,18 +10656,18 @@ class TransportWiringTest : TestBaseWithProfile() {
             markerAt = 0L
             // HEBEL-LECK GESCHLOSSEN (23.08. spaet): v16-Trails tragen den
             // livenessChannelEnabled-Schluessel nicht - der Hebel behielt
-            // dann den Stand des VORHERIGEN Laufs (der 22.08.-cap100-Lauf
+            // dann den Stand des VORHERIGEN Laufs (der cap100-Lauf
             // fuhr dadurch ohne Kanal, die Folgelaeufe mit). Jeder Lauf
             // startet jetzt explizit; Zeilen MIT Schluessel ueberschreiben
             // wie gehabt per politikAnwenden.
             livenessAn = livenessStart
-            // HEBEL-LECK TEIL 2 (24.08., Ermittler-Befund der 2,000-U-
+            // HEBEL-LECK TEIL 2 (24.08., Ermittler-Befund einer konstanten U-
             // Differenz): die vier Profil-Cap-Felder setzt politikAnwenden
             // NUR, wenn die Trail-Zeile den Schluessel traegt. Wechselt der
             // Trail mittags das Schema (alt livenessIobCapPercent -> v24-
             // Split), erbt Lauf 2 fuer die FRUEHEN Zyklen die SPAETEN Werte
-            // von Lauf 1: (65-40)% x maxIob 8 = exakt 2,000 U weniger
-            // Liveness-Headroom, 57 scheinbare SMB-Abweichungen im
+            // von Lauf 1: die Cap-Differenz x maxIob = konstant weniger
+            // Liveness-Headroom, zahlreiche scheinbare SMB-Abweichungen im
             // Latch-Vergleich. Jeder Lauf startet ungesetzt; NUR die
             // Profil-Matrix (FUSE_REPLAY_PROFILE) behaelt ihre bewusst
             // gesetzten Caps.
@@ -10745,7 +10745,7 @@ class TransportWiringTest : TestBaseWithProfile() {
                 // DER VORGEFUNDENE MARKER IST KEIN BEOBACHTETER DRUCK
                 // (Toni 25.08. spaet). `prevMarker = 0` liess den ersten
                 // Zyklus jeden schon laufenden Marker als frisch gedrueckt
-                // sehen: am 25.08. wurde der alte 11-Uhr-Marker um 16:30
+                // sehen: so wurde ein Stunden alter Marker zum Ausschnittsbeginn
                 // "gedrueckt", und damit entstanden Pinning, Batch und
                 // Resetfolge auf einer Vorgeschichte, die es am Geraet nie
                 // gab. Das Geraet kannte ihn seit Stunden - und
@@ -10765,7 +10765,7 @@ class TransportWiringTest : TestBaseWithProfile() {
                     // MOCKITO-INVOCATION-HYGIENE: ohne das sammelt Mockito
                     // ueber 5 Laeufe x >1400 Zyklen zig Millionen
                     // Aufruf-Records und der Test-Executor stirbt (beobachtet
-                    // am 21.08.-Tag nach ~20 min). Stubs bleiben erhalten,
+                    // bei einem Tages-Replay nach ~20 min). Stubs bleiben erhalten,
                     // nur die Aufzeichnung wird geleert.
                     if (zyklusNr++ % 200 == 0) org.mockito.Mockito.clearInvocations(
                         preferences, profileFunction, iobCobCalculator,
@@ -11022,7 +11022,7 @@ class TransportWiringTest : TestBaseWithProfile() {
             // (Mahlzeitenbasis statt jedes MEAL), kann dieser Parameter
             // ueberhaupt wirken - vorher band die Kontextgrenze frueher.
             // OHNE NACHTBAND: am Vorfallstag nullt das Nachtband dieselben
-            // Zyklen, in denen der V-Riegel steht (06:25-06:28) - eine
+            // Zyklen, in denen der V-Riegel steht (wenige Minuten) - eine
             // Doppelverteidigung, die die Riegelwirkung im Replay
             // unsichtbar macht. Dieser Lauf schaltet NUR das Nachtband in
             // BEIDEN Laeufen ab und misst den Riegel allein.
@@ -11277,7 +11277,7 @@ class TransportWiringTest : TestBaseWithProfile() {
             return
         }
         run {
-            lauf("w18", null, livenessStart = false) // Tor: aufzeichnungstreu (22.08. hatte bis 21:50 keinen Kanal)
+            lauf("w18", null, livenessStart = false) // Tor: aufzeichnungstreu (der Tag fuhr lange ohne Kanal)
             lauf("w10ref", null, fenster = 10)
             lauf("w10up", null, "UP", fenster = 10)
             lauf("w10p2", null, "DOWN_P2", fenster = 10)
@@ -11352,7 +11352,7 @@ class TransportWiringTest : TestBaseWithProfile() {
     }
 
     /**
-     * v29 (Tonis 21:58-Grenzfall): das Fall-Verdikt zuendet erst nach ZWEI
+     * v29 (der Sensorzacken-Grenzfall): das Fall-Verdikt zuendet erst nach ZWEI
      * aufeinanderfolgenden qualifizierenden Zyklen - der EINZELNE
      * Verdikt-Zyklus verriegelt nicht mehr (Sensorzacken-Schutz). Die
      * Grenzfall-Messgroessen (Ueberdeckungsmarge, Horizontkanten-Abstand)
@@ -11802,14 +11802,14 @@ class TransportWiringTest : TestBaseWithProfile() {
     }
 
     /**
-     * DIE GEMESSENE V-KURVE DES PFLICHTFALLS (25.08., 06:05-06:40), roh
-     * aus dem Geraete-Trail uebernommen: flach 137-139, Sturz auf 101
-     * (UKF-Minimum -2,81 um 06:16), steile Erholung auf 149, danach
-     * FLACH. Synthetische Formen taugen hier nicht: ein DAUER-Anstieg
+     * DIE V-KURVE DES PFLICHTFALLS, als Rohreihe vorgegeben:
+     * flach 137-139, Sturz auf 101
+     * (UKF-Minimum deutlich negativ), steile Erholung auf 149, danach
+     * FLACH. Glatte synthetische Formen taugen hier nicht: ein DAUER-Anstieg
      * erfuellt die Kinematik-Bedingung des Mahlzeitenfensters (r und
      * UKF beide ueber der Rampen-Unterkante) und nimmt dem Riegel den
-     * autoritativen Kontext - die echte Kurve traegt genau die Lage,
-     * um die es geht: UKF +4,0 bei robustem r noch -0,82.
+     * autoritativen Kontext - erst diese Kurvenform traegt genau die Lage,
+     * um die es geht: UKF stark positiv bei robustem r noch negativ.
      */
     private val vKurveRoh = listOf(
         137.0, 139.0, 139.0, 136.0, 132.0, 126.0, 120.0, 114.0, 111.0, 109.0,
@@ -11819,7 +11819,7 @@ class TransportWiringTest : TestBaseWithProfile() {
     )
 
     /**
-     * V-REVERSAL-LAGE: die gemessene Kurve, ohne Marker, ohne Fundament,
+     * V-REVERSAL-LAGE: die V-Kurve, ohne Marker, ohne Fundament,
      * IOB 0 (die Ueberdeckung soll NICHT der Grund fuers Nichtdosieren
      * sein). Der Vorlauf haelt den Rohpuffer gefuellt.
      */
@@ -11830,7 +11830,7 @@ class TransportWiringTest : TestBaseWithProfile() {
         markerAt = 0L
         fundamentAn = false
         tailGuard = true
-        // GERAETEPOLITIK des Pflichtfalls (aus dem Trail der Vorfallszeit):
+        // POLITIK des Pflichtfalls:
         // die Rampen-Unterkante setzt die Kontextgrenze, das W10-Fenster
         // die Geschwindigkeit, mit der das robuste r der Wende folgt. Mit
         // dem Rig-Default W18 traegt der Sturz so lange nach, dass
@@ -11840,11 +11840,11 @@ class TransportWiringTest : TestBaseWithProfile() {
         theilSenFensterMin = 10
         // Den Guard-Boden ausdruecklich OEFFNEN: er ist eine ANDERE
         // Verteidigung und wuerde in den Riegel-Zyklen mitbinden - dann
-        // waere die verhinderte Dosis nicht dem Riegel zuzuordnen. Am
-        // Geraet lag an derselben Stelle das Nachtband davor; die erste
-        // reale Dosis fiel 06:27 mit dessen Ende.
+        // waere die verhinderte Dosis nicht dem Riegel zuzuordnen. Im
+        // Pflichtfall lag an derselben Stelle das Nachtband davor; die erste
+        // Dosis fiel mit dessen Ende.
         guardBodenMgdl = 40.0
-        // 20 min flacher Vorlauf auf dem Startwert, dann die Messkurve.
+        // 20 min flacher Vorlauf auf dem Startwert, dann die V-Kurve.
         rohSerie = (0 until 20).map { min -> (start + min * 60_000L) to 137.0 } +
             vKurveRoh.mapIndexed { i, v -> (start + (20 + i) * 60_000L) to v }
         bolusIobU = 0.0
@@ -11855,7 +11855,7 @@ class TransportWiringTest : TestBaseWithProfile() {
     }
 
     /**
-     * v30-PFLICHTFALL 1 (06:27-06:33): nach dem steilen Fall traegt die
+     * v30-PFLICHTFALL 1: nach dem steilen Fall traegt die
      * schnelle Gegenbewegung keine Korrektur-SMBs, solange das robuste r
      * negativ oder unbestaetigt ist. NUR die Menge ohne Grant faellt; die
      * TBR-Achse ist in beiden Laeufen bitgleich. Nach der r-Bestaetigung
@@ -11882,7 +11882,7 @@ class TransportWiringTest : TestBaseWithProfile() {
             ohne.mapIndexed { i, o -> "$i:${"%.2f".format(o.decision.smbU)}" }.joinToString(" "))
 
         // Der Riegel muss in dieser Lage RECHNEN und BLOCKEN: schneller
-        // Gegenzug bei negativem/unbestaetigtem r - der 06:27-Kern.
+        // Gegenzug bei negativem/unbestaetigtem r - der Kern des Pflichtfalls.
         val blockZyklen = mit.indices.filter { mit[it].correctionReversal?.blocks == true }
         assertTrue(blockZyklen.isNotEmpty()) {
             "die V-Erholung muss den Riegel tragen - " + mit.indices.joinToString(" ") {
@@ -11915,8 +11915,8 @@ class TransportWiringTest : TestBaseWithProfile() {
 
         // FREIGABE: danach fliesst es auch im Guard-Lauf - kein Carry.
         // Der Ausgang ist entweder die r-Bestaetigung oder der
-        // Kontextwechsel (die gemessene Kurve nimmt den zweiten Weg:
-        // r 1,11 bei UKF 3,52 erfuellt die Kinematik des
+        // Kontextwechsel (die V-Kurve nimmt den zweiten Weg:
+        // r und UKF ueber der Rampenkante erfuellen die Kinematik des
         // Mahlzeitenfensters, s. Replay-Bericht).
         val frei = mit.indices.filter { it > blockZyklen.last() && mit[it].decision.smbU > 0.0 }
         assertTrue(frei.isNotEmpty()) {
@@ -11934,7 +11934,7 @@ class TransportWiringTest : TestBaseWithProfile() {
      * belegte Mahlzeit (Marker, Evidenz) und die bloss vermutete (r/UKF
      * ueber der Rampenkante) zusammen. Genau als vermutete Mahlzeit wird
      * die Erholung eines Sensor-V eingestuft - ein Schutz, der jedes
-     * `MEAL` ausnimmt, kann den Vorfall vom 25.08. konstruktiv nie
+     * `MEAL` ausnimmt, kann diesen Vorfall konstruktiv nie
      * verhindern. Der Riegel wird hier absichtlich lang scharf gestellt
      * (sechs Bestaetigungszyklen), damit die Kurve ins Fenster laeuft,
      * WAEHREND er noch traegt.
@@ -11986,7 +11986,7 @@ class TransportWiringTest : TestBaseWithProfile() {
      * Fenster nicht verdeckt` an der Klassifikation selbst; im Rig laesst
      * er sich nicht herstellen, weil eine Evidenzepisode ohne Marker eine
      * gewachsene Absorptionsgeschichte braucht. An ECHTEN Zyklen deckt
-     * ihn der Mahlzeiten-Gegenlauf ab (22.08.: 231 EVIDENCE_ACTIVE-Zyklen,
+     * ihn der Mahlzeiten-Gegenlauf ab (ein Mahlzeitentag: viele EVIDENCE_ACTIVE-Zyklen,
      * kein einziger Riegel-Tag).
      */
     @Test
@@ -12106,7 +12106,7 @@ class TransportWiringTest : TestBaseWithProfile() {
      * die diese Lage faelschlich als Korrektur gelesen haette.
      *
      * Der VOLLE Pfad ueber echte Zyklen liegt im Replay: der
-     * Mahlzeitentag 22.08. traegt 10:50-11:45 EVIDENCE_ACTIVE nach
+     * aufgezeichnete Mahlzeitentag traegt knapp eine Stunde EVIDENCE_ACTIVE nach
      * abgelaufener Markerfrist, und der Guards-Lauf setzt dort keinen
      * einzigen Riegel-Tag (s. guards_analyse).
      */
@@ -12219,7 +12219,7 @@ class TransportWiringTest : TestBaseWithProfile() {
     }
 
     /**
-     * v30-PFLICHTFALL 2 (08:00-08:03): die Zero-Latch-Loesung oeffnet
+     * v30-PFLICHTFALL 2: die Zero-Latch-Loesung oeffnet
      * positive Korrektur-SMBs erst nach der Mindestdauer UND bestaetigter
      * Aufwaertslage - nicht in der ersten Minute nach einer Stunde
      * verriegelter Null. Ohne Schalter fliesst es sofort (Vorbedingung).
@@ -12231,12 +12231,12 @@ class TransportWiringTest : TestBaseWithProfile() {
         nachtStartMin = 120
         nachtEndeMin = 480
         fun lauf(an: Boolean, unterDir: String): Pair<List<FuseCycleRunner.Outcome>, Int> {
-            // +0,45/min ist die 08:00-Form: genug fuer die Latch-Loesung,
+            // +0,45/min ist die Form des Pflichtfalls: genug fuer die Latch-Loesung,
             // aber UNTER der Rampen-Unterkante - der autoritative Kontext
             // bleibt Korrektur (eine steilere Erholung oeffnet das
             // Mahlzeitenfenster kinematisch und nimmt dem Riegel den
             // Kontext). Die Bestaetigungsschwelle liegt entsprechend
-            // darunter; am Geraet trug 08:00 UKF 0,84 bei r < 0,5.
+            // darunter; im Pflichtfall war die UKF deutlich positiv bei kleinem r.
             latchLage(File(dir, unterDir), an = true, knick2 = 0.45, knick2Ab = 26)
             rearmUpUkfWert = 0.15
             rearmAn = an
@@ -12266,7 +12266,7 @@ class TransportWiringTest : TestBaseWithProfile() {
         val (mit, geloestMit) = lauf(an = true, unterDir = "an")
         assertEquals(geloestOhne, geloestMit, "die Loesung selbst ist schalterunabhaengig")
         // Der Nachlauf traegt: im Fenster keine einzige positive Dosis -
-        // insbesondere NICHT in der ersten Minute nach der Kante (08:00-Kern).
+        // insbesondere NICHT in der ersten Minute nach der Kante (Kern des Pflichtfalls).
         ((geloestMit + 1)..(geloestMit + 4)).forEach { i ->
             assertEquals(0.0, mit[i].decision.smbU, 1e-9,
                 "Zyklus $i liegt im Nachlauf (binding=${mit[i].decision.bindingLimit})")
@@ -12488,7 +12488,7 @@ class TransportWiringTest : TestBaseWithProfile() {
      * der Rampen-Unterkante, Tail-Deadlock. Vorher uebernahm der Kanal
      * blind state.effectiveSmbRatio - die faellt ausserhalb des
      * Normalpfad-Fensters auf die Korrektur-Ratio, und "Live M" dosierte
-     * unsichtbar mit dem K-Tempo (Live-Trail: r 2,69, liveRatio 0,15).
+     * unsichtbar mit dem K-Tempo (Live-Trail: hohes r, liveRatio 0,15).
      * Jetzt rampt der Kanal fensterunabhaengig (Pflichttests 5/9), der
      * Normalpfad bleibt bitgleich auf der Korrektur-Ratio (Pflichttest
      * 10), an der Deadline gilt sofort das K-Profil - seit Tonis
@@ -12679,7 +12679,7 @@ class TransportWiringTest : TestBaseWithProfile() {
     /**
      * TRENDREGEL-VERTRAG (Toni 23.08. Abend), DOWN-Seite - MIT DEM
      * STRUKTURBEFUND, der beim Bau herauskam und den die Live-Daten
-     * bestaetigen (1719 getriggerte Lane-Zyklen im Shadow-Trail,
+     * bestaetigen (weit ueber tausend getriggerte Lane-Zyklen im Shadow-Trail,
      * avoidedSmbU exakt 0 in ALLEN): die Senkung min(mean, fast) ist
      * gegen die PRODUKTIVE BREMSBAHN redundant. FuseController bindet
      * den Bedarf ueber releaseMean = min(Hauptbahn, Bremsbahn), und die
@@ -12941,7 +12941,7 @@ class TransportWiringTest : TestBaseWithProfile() {
     }
 
     /**
-     * v19-Vertrag (Codex, Live-Trail 22:53-23:03): die Sperre NULLT den
+     * v19-Vertrag (Codex, aus einem Live-Trail): die Sperre NULLT den
      * Streak. Vorher zaehlte er waehrend der Pause weiter (live gemessen
      * 1->10), und der Kanal war nach Fristablauf SOFORT wieder scharf -
      * statt drei frische Druckzyklen zu verlangen. Der Exit laeuft hier
@@ -13030,7 +13030,7 @@ class TransportWiringTest : TestBaseWithProfile() {
      * Gegenprobe 8 (Audit 22.08.): eine TAKTLUECKE - Minuten ohne Zyklus
      * bei lueckenlos weiterlaufender CGM-Reihe (Pumpe belegt, Prozess
      * pausiert) - ueberbrueckt den Lauf nicht. BEWUSST OHNE Sperre: die
-     * Medtrum-Zyklen strecken sich real bis 854 s; eine Sperre je
+     * Pumpenzyklen strecken sich real bis 854 s; eine Sperre je
      * Streckung entwertete den Kanal. Aber die Bewaffnung ist neu zu
      * verdienen.
      */
@@ -13192,12 +13192,12 @@ class TransportWiringTest : TestBaseWithProfile() {
      * PFLICHTPROBE - TONIS BEISPIEL: eine ETABLIERTE Kalibrierung sperrt
      * NICHT mehr.
      *
-     *     12:00 Kalibrierung
-     *     12:05-12:06 neues Signal erreicht 5x8-Reife
-     *     13:00 kurze Funkluecke
-     *     13:04 4x3-Rejoin erlaubt
+     *     T+0      Kalibrierung
+     *     T+5..6   neues Signal erreicht 5x8-Reife
+     *     T+60     kurze Funkluecke
+     *     T+64     4x3-Rejoin erlaubt
      *
-     * Der erste Wurf haette hier bis etwa 15:00 gesperrt, weil die Grenze
+     * Der erste Wurf haette hier bis etwa T+180 gesperrt, weil die Grenze
      * noch im 180-min-Rueckblickpuffer lag. Das verwechselte die
      * historische Fenstergrenze mit der Ursache des aktuellen
      * Segmentbruchs.
@@ -13370,8 +13370,8 @@ class TransportWiringTest : TestBaseWithProfile() {
         // historische Latch war in diesem synthetischen Verlauf gar nicht
         // scharf - es gab also nichts zu entriegeln.
         //
-        // Die ECHTE Abendlage des 25.08. sah anders aus: descentLatchActive
-        // 23/23, alle 20 Phase-A-Zyklen 0 U mit MEASURED_DESCENT_RISK.
+        // Die ECHTE Abendlage sah anders aus: descentLatchActive
+        // durchgehend, alle Phase-A-Zyklen 0 U mit MEASURED_DESCENT_RISK.
         // Genau dort waere DEMAND_LIMITED wirksam - und genau die bildet
         // dieser Aufbau nicht ab.
         //
@@ -13475,7 +13475,7 @@ class TransportWiringTest : TestBaseWithProfile() {
         // CALM_RECOVERED IN DIESEM TESTAUFBAU keine zusaetzliche Menge
         // gegenueber Params.OFF erzeugt. Ueber die allgemeine
         // Produktsemantik sagt der Aufbau nichts. Im ECHTEN Abendverlauf
-        // des 25.08. forderte das Geraet in ALLEN 20 Phase-A-Zyklen 0 U
+        // forderte das Geraet in ALLEN Phase-A-Zyklen 0 U
         // mit MEASURED_DESCENT_RISK - diese Endgate-/Latch-Lage trifft der
         // synthetische Fall gerade nicht. Ob "Bedarf 0 -> requestedRtU 0"
         // im Produkt gilt, entscheidet erst der Replay des echten
@@ -13602,7 +13602,7 @@ class TransportWiringTest : TestBaseWithProfile() {
     /**
      * DER REALE ABENDFALL ALS NULLVERTRAG (Toni 25.08. spaet).
      *
-     * Die Geometrie des 25.08., 18:07-18:27, nachgestellt:
+     * Die Geometrie des Abendfalls, nachgestellt:
      *
      *   Sofortanteil offen, aktuelles Abwaertsrisiko beendet,
      *   NUR der historische Latch blockiert, Ruhe-Streak erreicht,
@@ -13612,22 +13612,22 @@ class TransportWiringTest : TestBaseWithProfile() {
      * `der Ruhe-Kandidat entriegelt genau den historischen Latch`. Hier
      * wird die andere Haelfte belegt: dass aus "der Riegel ist abgestanden"
      * eben NICHT die volle Autorisierung wird. Genau das waere passiert,
-     * haette der Ruhe-Ausgang den Vollbatchpfad erreicht: 3,60 U bei BG 78
-     * und acht mg/dl Abstand zum Boden, in einem Zyklus mit
+     * haette der Ruhe-Ausgang den Vollbatchpfad erreicht: mehrere Einheiten
+     * knapp ueber dem Guard-Boden, in einem Zyklus mit
      * `insulinReq <= 0`.
      */
     @Test
     fun `im Abendfall bleibt die Anforderung bei Bedarf 0 auch dann 0`(@TempDir dir: File) {
         // DIE ECHTE GEOMETRIE, nicht irgendeine fallende. Der erste Anlauf
-        // dieses Tests fiel von 150 mit -3,0/min - zehnmal steiler als der
-        // gemessene Abendverlauf (-0,29/min). Die Riegel-Ursachen stimmten
+        // dieses Tests fiel von 150 mit -3,0/min - viel steiler als der
+        // gemessene Abendverlauf. Die Riegel-Ursachen stimmten
         // dabei sogar (20x CURRENT_DESCENT_RISK, dann 20x HISTORICAL_LATCH),
         // aber CALM_RECOVERED entstand nie: nach einem so steilen Sturz
         // braucht die UKF viel zu lange, um ueber die Ruheschwelle zu
         // kommen.
         //
-        // Gemessen am echten Fall: BG 75-79, `lowThreat` durchgehend NONE,
-        // 13 von 23 Zyklen voellig ohne aktuelle Gefahr, Latchgrund
+        // Gemessen am echten Fall: BG knapp ueber dem Guard-Boden, `lowThreat` durchgehend NONE,
+        // viele Zyklen voellig ohne aktuelle Gefahr, Latchgrund
         // WAITING_RATE. Ein SANFTER Abstieg dicht ueber dem Guard-Boden
         // stellt genau das her - der Boden liegt im Horizont (das Risiko
         // feuert), und die Erholung ist flach genug, dass der Latch
@@ -14056,8 +14056,8 @@ class TransportWiringTest : TestBaseWithProfile() {
     fun `das Klemmereignis gilt nur fuer seinen eigenen Zyklus`(@TempDir dir: File) {
         // DER ABENDFALL VOLLSTAENDIG: nach der Wende ein manueller
         // 4-U-Ersatzbolus. Er senkt den Huellenrest unter den offenen
-        // Aufschub, und die naechste Lieferung klemmt - genau die Kette vom
-        // 25.08. (18:29 Bolus, 18:36 erste Lieferung, defOpen 3,60 -> 0,45).
+        // Aufschub, und die naechste Lieferung klemmt - genau die Kette des
+        // Abendfalls (Bolus, kurz darauf die erste, geklemmte Lieferung).
         val alle = ruheLauf(
             dir, app.aaps.fuse.core.controller.UpfrontRecovery.CalmTreatment.SHIFT_TO_DEFERRED,
             zyklen = 45, abstiegBg = 180.0, abstiegRate = -4.0, abstiegIob = 2.5,
@@ -14124,7 +14124,7 @@ class TransportWiringTest : TestBaseWithProfile() {
      *
      * Der Leerlauftest darueber beweist nur "kein Ereignis ohne Clamp". Was
      * er nicht beweist, sind die WERTE beim Clamp. Hier steht die Kette des
-     * echten Abendfalls mit denselben Groessen:
+     * Abendfalls, nachgestellt mit diesen Groessen:
      *
      *   Huelle 4,50, manueller NORMAL-Bolus 4,00  -> Huellenrest 0,50
      *   offener Aufschub 3,60, erste Abgabe 0,05  -> Rest 0,45
@@ -14986,10 +14986,10 @@ class TransportWiringTest : TestBaseWithProfile() {
                 "primeAktiv,primeBoden,primeRest,primeGrund,mfLift,grantQuelle,fPhase,fFaellig,fSeitUebergabe,fPhaseBFrei," +
                 "normalBlock,tailHeadroom,preFoundation,upfrontState,fArmed,recoveryDenial,hazard,authOk,rueckgang,gefahren,buchungOhneGefahr",
         )
-        // "U" = Foundation mit Sofortanteil 1,0 wie am Geraet: nur dann traegt
+        // "U" = Foundation mit Sofortanteil 1,0 wie in der Produktionslage: nur dann traegt
         // MealUpfrontAuthority, und die Foundation-Kette ist im rohen
         // Rebound-Fenster nicht gesperrt. Schluessel: U<Steigung>_h<Huelle>_a<Anteil>.
-        // "G" = die Geraetekonstellation der Abendpruefung: Huelle 5 U,
+        // "G" = eine produktionsnahe Konstellation: Huelle 5 U,
         // Phase-A-Anteil 0,80, Sofortanteil 1,00, Uebergabe T+5, Fensterende
         // 25 -> Phase B 1,0 U ueber 20 min, ein 0,05er-Schritt je Zyklus.
         // Tail-Riegel als Variante: der Foundation-Lift wird vom Tail-
@@ -16412,7 +16412,7 @@ class TransportWiringTest : TestBaseWithProfile() {
     // ==== FRUEHER ADAPTIVER MEAL-BEDARF H8 (Bauauftrag Toni 18.09.) ===========
     //
     // Dieselbe Lage wie die Halte-Anhebung (Liveness-Rig, Schwanzlast, Marker
-    // in Zyklus [halteMarkerZyklus]), mit Tonis Live-Werten fuer W10 und die
+    // in Zyklus [halteMarkerZyklus]), mit den Live-Werten fuer W10 und die
     // untere Rise-Schwelle 1,5. Jede Form laeuft mit geschlossener
     // Rueckfuehrung: nur publizierte Abgaben wirken auf IOB und Reihe.
     // Synthetische Bahnen, keine Messwerte.

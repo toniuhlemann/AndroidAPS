@@ -137,8 +137,8 @@ class MarkerFallbackTest {
      * einen Commit lang andersherum.
      *
      * Er verlangte `NO_MEASURED_LOW`, weil ich das Tief zur Voraussetzung der
-     * Autorisierung gemacht hatte. Es war nur der Anlass. Der Livefall vom
-     * 11.08. - BG 105 fallend, Marker seit 3 min, alle technischen Tore frei,
+     * Autorisierung gemacht hatte. Es war nur der Anlass. Der Pflichtfall
+     * - BG nahe dem Ziel und fallend, Marker seit 3 min, alle technischen Tore frei,
      * 0 U - ist der HAUPTFALL einer Mahlzeit, und er hatte keine
      * SafetyReason. Die Menge begrenzt jetzt die Huelle, nicht das Tief.
      */

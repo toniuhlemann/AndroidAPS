@@ -21,14 +21,14 @@ import kotlin.math.min
  *
  * TONIS REPLAY-KANDIDAT (18.08.), ausdruecklich KEIN Therapiewert:
  *
- *     Gesamtbudget  3,00 U (unveraendert)
- *     Phase A       2,25 U bis T+15 min   (75 %)
- *     Phase B       0,75 U von T+15 bis T+60 min (25 %)
- *                   pumpenschrittweise, bei 0,05 U etwa ein Schritt je 3 min
+ *     Gesamtbudget  die Huelle (unveraendert)
+ *     Phase A       75 % davon bis T+15 min
+ *     Phase B       25 % davon von T+15 bis T+60 min
+ *                   pumpenschrittweise, etwa ein Schritt alle paar Minuten
  *
- * Begruendung dieser Form, aus Tonis Messungen: die fruehen 3 U haben Peaks
+ * Begruendung dieser Form, aus realen Messungen: die fruehe volle Huelle hat Peaks
  * nachweislich gut begrenzt, also nicht drastisch reduzieren; zwei Mahlzeiten
- * landeten rund 0,45 U zu tief, eine Budgeterhoehung ist damit nicht
+ * landeten nur leicht zu tief, eine Budgeterhoehung ist damit nicht
  * begruendet; T+60 statt T+45 laesst mehr Regelreserve fuer den Fall, dass die
  * Absorption stark wird und EvidenceStock zusaetzlich freigeben darf.
  *
@@ -332,7 +332,7 @@ object MealFoundation {
     /**
      * DER VERBLEIBENDE SOFORT-BATCH - die eine Wahrheit des
      * Phase-A-Sofortanteils (iLet-Prinzip; Bauauftrag Toni 24.08.,
-     * korrigiert nach dem Feldbefund vom 25.08. mittags).
+     * korrigiert nach einem Feldbefund).
      *
      * KEIN EIGENER EINMAL-ZUSTAND, sondern eine BILANZ auf den bereits
      * persistierten, gate- und beweiskorrigierten Zaehlern:
@@ -356,8 +356,8 @@ object MealFoundation {
      * zusaetzlich `deferredPrime.openU` ab, weil der Sicherheitsaufschub
      * den zurueckgehaltenen Sofortanteil dort SAMMELTE. Damit gab es zwei
      * Buecher fuer dieselbe Menge, und sie liefen auseinander - gemessen
-     * am 25.08.: Plan 3,20 U, in Phase A geliefert 0,60 U, also hoechstens
-     * 2,60 U offen; der Aufschub meldete 3,10 U, weil er nur seine EIGENEN
+     * an einem realen Fall: der Aufschub meldete deutlich mehr offen, als nach
+     * den Phase-A-Lieferungen hoechstens offen sein konnte, weil er nur seine EIGENEN
      * 0,05er-Freigaben abzog, nicht die normalen Phase-A-Lieferungen.
      * Der Aufschub sammelt den Sofortanteil deshalb nicht mehr; der
      * Rueckstand ergibt sich allein aus dieser Bilanz.
@@ -627,8 +627,8 @@ object MealFoundation {
         /**
          * DIE BELEGTE PHASE-A-LUECKE, die Phase B nachholen darf (Toni 19.08.).
          *
-         * DER GEMESSENE ANLASS. Am 19.08. forderte FUSE 20 x 0,15 U an, die
-         * Pumpendatenbank zeigte 2,70 U: zwei Schritte hat AAPS am Intervalltor
+         * DER GEMESSENE ANLASS. In einem realen Fall forderte FUSE eine SMB-Serie an, die
+         * Pumpendatenbank zeigte weniger: zwei Schritte hat AAPS am Intervalltor
          * verworfen. Die Buchhaltung dreht das seit dem Nicht-Sende-Beweis
          * korrekt zurueck - aber damit ist die Menge nur nicht mehr FALSCH
          * gebucht, geflossen ist sie trotzdem nicht. Bemerkt Prime den Verlust
@@ -1016,7 +1016,7 @@ object MealFoundation {
      * DER FEHLER, DEN DAS BEHEBT. `confirmedNotSentPhaseAU` zaehlt HISTORISCH:
      * "diese Menge war in Phase A gebucht und ist bewiesen nie gesendet
      * worden". Holt Prime sie danach INNERHALB SEINES EIGENEN FENSTERS nach -
-     * und dafuer hat es oft Zeit, bei 75/25 braucht es nur 15 der 20
+     * und dafuer hat es oft Zeit, bei 75/25 braucht es nur drei Viertel der
      * Fensterminuten -, dann ist die Luecke geschlossen, der Zaehler steht
      * aber weiter.
      *

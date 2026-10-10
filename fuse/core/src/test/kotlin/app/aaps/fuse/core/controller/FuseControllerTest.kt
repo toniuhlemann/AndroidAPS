@@ -64,9 +64,9 @@ class FuseControllerTest {
 
     /**
      * DER BEFUND DES ERSTEN GERAETELAUFS, als Test festgehalten: ein flacher
-     * Verlauf 100-105 hatte r ~ 0,65 und stand damit als RISE_ACTIVE da. Mit
+     * Verlauf knapp ueber dem Ziel hatte r ~ 0,65 und stand damit als RISE_ACTIVE da. Mit
      * einem binaeren Schalter an der Phase haette er den vollen
-     * Mahlzeitenanteil bekommen — 0,9 U statt 0,35 U auf einem Drift.
+     * Mahlzeitenanteil bekommen - ein Mehrfaches der Korrekturmenge auf einem Drift.
      * Die Rampe muss dort praktisch beim Korrekturanteil bleiben.
      */
     @Test
@@ -191,9 +191,9 @@ class FuseControllerTest {
      * DER GUARD SPERRT DIE MENGE, NICHT DAS FUNDAMENT (Tonis Vertrag 17.08.).
      *
      * Dieser Test hielt bis zum 17.08. das Gegenteil fest. Der gemessene
-     * Betriebszustand, der zur Umstellung fuehrte: 677 von 1129 Zyklen mit
-     * laufender Null - 60 % eines Tages ohne Grundversorgung, bei einem BG
-     * zwischen 53 und 270. Ausgeloest von einer kohlenhydratfrei gerechneten
+     * Betriebszustand, der zur Umstellung fuehrte: in der Mehrzahl der Zyklen
+     * eines Tages lief eine Null - stundenlang ohne Grundversorgung, bei einem BG
+     * vom Tief- bis in den Hochbereich. Ausgeloest von einer kohlenhydratfrei gerechneten
      * Bahn, die waehrend jeder Insulinabgabe zwangslaeufig faellt.
      *
      * Jetzt gilt: eine Zero-TBR entsteht NUR aus dem [LowThreatGate]. Bleibt
@@ -504,8 +504,8 @@ class FuseControllerTest {
     }
 
     /**
-     * DER FALL VOM 06.08., 14:49: rSigned sagte +5,84, die rohe Steigung
-     * -3,73 — FUSE gab 0,15 U. Die Bremsbahn muss das verhindern.
+     * DER FALL AN DER WENDE: rSigned meldete noch einen steilen Anstieg, die rohe Steigung
+     * fiel bereits deutlich - FUSE gab trotzdem einen SMB. Die Bremsbahn muss das verhindern.
      */
     @Test
     fun `an der Wende bremst die schnelle Bahn`() {
