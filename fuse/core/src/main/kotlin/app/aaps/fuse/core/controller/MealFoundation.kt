@@ -1565,8 +1565,7 @@ object MealFoundation {
      *
      * Die Werte stehen jetzt in FuseDoubleKey.MealFoundationPhaseAShare und
      * FuseIntKey.MealFoundationEndMin; die Uebergabe ist FuseIntKey.
-     * PrimeWindowMin, also DIESELBE Grenze, an der Phase A endet. Tonis
-     * Replay-Kandidat (0,75 / 15 / 60) steht in den Kommentaren dort, aber der
+     * PrimeWindowMin, also DIESELBE Grenze, an der Phase A endet. Der
      * DEFAULT des Anteils ist 1.0: ein Flash darf das Verhalten nicht aendern.
      *
      * ABGELEITET, NICHT EINSTELLBAR bleiben die absoluten Mengen. Sie ergeben

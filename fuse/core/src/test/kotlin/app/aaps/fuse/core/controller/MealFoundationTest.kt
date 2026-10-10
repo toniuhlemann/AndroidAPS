@@ -10,7 +10,7 @@ import org.junit.jupiter.api.Test
 /**
  * DIE BAUVERTRAEGE DES MAHLZEITENFUNDAMENTS (Toni 18.08.).
  *
- * Gerechnet wird durchgehend mit seinem Replay-Kandidaten:
+ * Gerechnet wird durchgehend mit einem Replay-Kandidaten:
  *
  *     Budget 3,00 U | Phase A 75 % bis T+15 | Phase B 25 % bis T+60
  *     Pumpenschritt 0,05 U  ->  15 Schritte in 45 min, etwa einer je 3 min

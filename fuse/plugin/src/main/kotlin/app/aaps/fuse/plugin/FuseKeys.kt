@@ -168,11 +168,10 @@ enum class FuseDoubleKey(
     /**
      * ANTEIL VON PHASE A AM GEMEINSAMEN MAHLZEITENBUDGET.
      *
-     * 1.0 ist der HEUTIGE Stand: alles sofort, kein Fundament. Tonis
-     * Replay-Kandidat vom 18.08. ist 0.75; zu pruefen sind ausserdem 0.80 und
-     * 0.67. Der Default bleibt 1.0, damit ein Flash das Verhalten NICHT
-     * aendert - das Fundament ist eine eigene, spaeter zu treffende
-     * Therapieentscheidung.
+     * 1.0 ist der HEUTIGE Stand: alles sofort, kein Fundament. Die
+     * Replay-Kandidaten lagen darunter. Der Default bleibt 1.0, damit ein
+     * Flash das Verhalten NICHT aendert - das Fundament ist eine eigene,
+     * spaeter zu treffende Therapieentscheidung.
      *
      * NUR DER ANTEIL IST EINSTELLBAR, nicht die absoluten Mengen: die ergeben
      * sich aus [PrimeEnvelopeU]. Zwei Knoepfe fuer dieselbe Menge waeren zwei
@@ -841,77 +840,6 @@ enum class FuseBooleanKey(
 ) : BooleanPreferenceKey {
 
     /**
-     * Schwanz-Guard: bewertet die unvermeidbare Restwirkung HINTER dem
-     * Haftungshorizont.
-     *
-     * Er rechnet heute nur EINEN der drei Terme aus R79-F4 — die beiden
-     * anderen brauchen den Commitment-Ledger und den verdrahteten
-     * Einheitskern. Deshalb traegt jede seiner Zahlen einen
-     * Unvollstaendigkeitsvermerk.
-     *
-     * DEFAULT FALSE, und das ist eine bewusste Entscheidung gegen den ersten
-     * Reflex. Rechnung mit den Defaults: lowerBgAtH 120, Schwanzuntergrenze 70,
-     * ISF 50 ergeben ein Budget von 1,0 U. Das IOB am 120-min-Horizont liegt
-     * bei langer DIA im FCL regelmaessig darueber - der Guard wuerde den schnellen
-     * Kanal also nicht gelegentlich bremsen, sondern weitgehend schliessen. Ob
-     * das so ist, ist NICHT gemessen; ein Default, der die Dosierung
-     * flaechendeckend stilllegt, waere eine unbeschlossene Norm.
-     *
-     * Der Schalter macht aus dieser Unsicherheit eine Einstellung statt eines
-     * Flashs: einschalten kostet fuenf Sekunden am Geraet. Solange er aus ist,
-     * wird der Schwanz gar nicht erst bewertet - im Grund steht dann auch kein
-     * tail=-Abschnitt. Wer messen will, schaltet ihn ein.
-     */
-    /**
-     * BEDINGTE BAHN im Schwanz-Guard (11.08.).
-     *
-     * Der Schwanz rechnet sein Budget aus der PRIOR-FREIEN Bahn - also aus
-     * einem Verlauf OHNE Kohlenhydrate. Auf flacher Kurve mit Insulin an Bord
-     * ist sie niedrig, das Budget klein, der Spielraum negativ: er sperrt.
-     * Gemessen: 25 Minuten am Stueck, waehrend der BG stieg.
-     *
-     * Das ist ein Zirkelschluss - er widerlegt die Ankuendigung mit einem
-     * Modell, das die Ankuendigung nicht kennt. Mit dieser Einstellung darf
-     * der ERKLAERTE Antrieb auch auf die Sicherheitskante wirken, solange ein
-     * Markerkredit laeuft.
-     *
-     * SCHRANKE UND WIDERRUF GIBT ES BEREITS und sie sind nicht neu erfunden:
-     * der Kredit ist `(Huelle - geliefert) * ISF / Absorptionsfenster`, er
-     * schrumpft mit jeder Lieferung, endet mit den Sonderrechten und frueher
-     * bei erkannter Wende. Zusaetzlich deckelt die Invariante
-     * `priorFree <= lower` die Hebung auf die ANZEIGEBAHN - hoeher kommt die
-     * Sicherheitskante nie.
-     *
-     * AUS heisst: exakt das Verhalten von vorher. Der Schalter ist da, damit
-     * man ihn umlegen kann, nicht damit die Bahn spaeter wirkt.
-     */
-    /**
-     * DER MARKER AUTORISIERT INSULIN BEI GEMESSENEM TIEF (Tonis Entscheidung,
-     * 11.08.).
-     *
-     * Damit hoert der Mahlzeiten-Knopf auf, ein blosser Kontextmarker zu sein,
-     * und wird zu einer INSULIN-AUTORISIERENDEN Handlung. Das ist die
-     * folgenreichste Einstellung in FUSE.
-     *
-     * WAS SIE FREIGIBT: ausschliesslich den markerfinanzierten Anteil - also
-     * die Sofort-Freigabe aus der Marker-Huelle. Das ist keine zusaetzliche
-     * Regel, sondern strukturell: bei LOW ist die Basisentscheidung IMMER 0,
-     * also ist alles, was danach herauskommt, der Lift und nichts sonst. Eine
-     * normale Korrekturdosis kann diesen Weg nicht nehmen.
-     *
-     * WAS SIE NICHT ANFASST: Signalfehler, unbekanntes IOB, Ledger-Hold,
-     * Pumpen-Gates, Schwanz-Haftung. Und das schuetzende Zero-Temp laeuft
-     * unveraendert weiter - es wird nicht "LOW abgeschaltet", sondern eine
-     * bewusste manuelle Entscheidung praezise umgesetzt.
-     *
-     * DEFAULT AUS, und das gegen die sonstige Praxis in diesem Projekt
-     * (Schalter stehen hier auf AN, damit nichts still spaeter wirkt). Der
-     * Grund ist der einzige Unterschied, der zaehlt: ein versehentliches
-     * Mitwandern auf ein Geraet mit ECHTER Pumpe ist hier qualitativ etwas
-     * anderes als bei jedem anderen Schalter. Einmal umlegen ist genau die
-     * bewusste Handlung, um die es bei diesem Knopf ohnehin geht.
-     */
-    /**
      * DER ERWARTUNGS-LEDGER - reine Beobachtung, DEFAULT AUS (Toni 18.08.).
      *
      * Er kann keine Dosis veraendern; der Schalter schuetzt nicht davor,
@@ -1000,9 +928,11 @@ enum class FuseBooleanKey(
      * und danach genau EINE produktive Testvariable ohne gleichzeitige
      * lambda-Scharfschaltung.
      *
-     * Bei [MealFoundationPhaseAShare] = 1.0 ist der Schalter ohnehin
-     * wirkungslos - dann gibt es keine Phase B. Beides zusammen macht das
-     * Einschalten zu einer bewussten Entscheidung in zwei Schritten.
+     * Auch bei [FuseDoubleKey.MealFoundationPhaseAShare] = 1.0 (keine Phase B)
+     * ist der Schalter nicht wirkungslos: der Sofortanteil
+     * [FuseDoubleKey.MealFoundationPhaseAUpfrontShare] wird aus der
+     * Fundament-Autorisierung bemessen, und die entsteht nur bei
+     * eingeschaltetem Fundament.
      */
     MealFoundationEnabled("fuse_meal_foundation_enabled", false),
 
@@ -1123,13 +1053,82 @@ enum class FuseBooleanKey(
      */
     CalmRecoveryEnabled("fuse_calm_recovery_enabled", false),
 
+    /**
+     * DER MARKER AUTORISIERT INSULIN BEI GEMESSENEM TIEF (Tonis Entscheidung,
+     * 11.08.).
+     *
+     * Damit hoert der Mahlzeiten-Knopf auf, ein blosser Kontextmarker zu sein,
+     * und wird zu einer INSULIN-AUTORISIERENDEN Handlung. Das ist die
+     * folgenreichste Einstellung in FUSE.
+     *
+     * WAS SIE FREIGIBT: ausschliesslich den markerfinanzierten Anteil - also
+     * die Sofort-Freigabe aus der Marker-Huelle. Das ist keine zusaetzliche
+     * Regel, sondern strukturell: bei LOW ist die Basisentscheidung IMMER 0,
+     * also ist alles, was danach herauskommt, der Lift und nichts sonst. Eine
+     * normale Korrekturdosis kann diesen Weg nicht nehmen.
+     *
+     * WAS SIE NICHT ANFASST: Signalfehler, unbekanntes IOB, Ledger-Hold,
+     * Pumpen-Gates, Schwanz-Haftung. Und das schuetzende Zero-Temp laeuft
+     * unveraendert weiter - es wird nicht "LOW abgeschaltet", sondern eine
+     * bewusste manuelle Entscheidung praezise umgesetzt.
+     *
+     * DEFAULT AUS, und das gegen die sonstige Praxis in diesem Projekt
+     * (Schalter stehen hier auf AN, damit nichts still spaeter wirkt). Der
+     * Grund ist der einzige Unterschied, der zaehlt: ein versehentliches
+     * Mitwandern auf ein Geraet mit ECHTER Pumpe ist hier qualitativ etwas
+     * anderes als bei jedem anderen Schalter. Einmal umlegen ist genau die
+     * bewusste Handlung, um die es bei diesem Knopf ohnehin geht.
+     */
     MarkerAuthorisesRelease("fuse_marker_authorises_low", false),
 
-    /** 2.0 (Stufe 1, K3): NICHT MEHR GELESEN - die bedingte Schwanzkante ist
-     *  fest an. Der Schluessel bleibt registriert, damit gespeicherter Wert,
-     *  Sicherung und der Rueckweg auf 1.x erhalten bleiben. */
+    /**
+     * BEDINGTE BAHN im Schwanz-Guard (11.08.).
+     *
+     * Der Schwanz rechnet sein Budget aus der PRIOR-FREIEN Bahn - also aus
+     * einem Verlauf OHNE Kohlenhydrate. Auf flacher Kurve mit Insulin an Bord
+     * ist sie niedrig, das Budget klein, der Spielraum negativ: er sperrt.
+     * Gemessen: eine lange Sperre am Stueck, waehrend der BG stieg.
+     *
+     * Das ist ein Zirkelschluss - er widerlegt die Ankuendigung mit einem
+     * Modell, das die Ankuendigung nicht kennt. Mit der bedingten Bahn darf
+     * der ERKLAERTE Antrieb auch auf die Sicherheitskante wirken, solange ein
+     * Markerkredit laeuft.
+     *
+     * SCHRANKE UND WIDERRUF GIBT ES BEREITS und sie sind nicht neu erfunden:
+     * der Kredit ist `(Huelle - geliefert) * ISF / Absorptionsfenster`, er
+     * schrumpft mit jeder Lieferung, endet mit den Sonderrechten und frueher
+     * bei erkannter Wende. Zusaetzlich deckelt die Invariante
+     * `priorFree <= lower` die Hebung auf die ANZEIGEBAHN - hoeher kommt die
+     * Sicherheitskante nie.
+     *
+     * 2.0 (Stufe 1, K3): NICHT MEHR GELESEN - die bedingte Schwanzkante ist
+     * fest an. Der Schluessel bleibt registriert, damit gespeicherter Wert,
+     * Sicherung und der Rueckweg auf 1.x erhalten bleiben.
+     */
     ConditionalTailEnabled("fuse_conditional_tail_enabled", true),
 
+    /**
+     * Schwanz-Guard: bewertet die unvermeidbare Restwirkung HINTER dem
+     * Haftungshorizont.
+     *
+     * Er rechnet heute nur EINEN der drei Terme aus R79-F4 — die beiden
+     * anderen brauchen den Commitment-Ledger und den verdrahteten
+     * Einheitskern. Deshalb traegt jede seiner Zahlen einen
+     * Unvollstaendigkeitsvermerk.
+     *
+     * DEFAULT FALSE, und das ist eine bewusste Entscheidung gegen den ersten
+     * Reflex. Rechnung mit den Defaults: lowerBgAtH 120, Schwanzuntergrenze 70,
+     * ISF 50 ergeben ein Budget von 1,0 U. Das IOB am 120-min-Horizont liegt
+     * bei langer DIA im FCL regelmaessig darueber - der Guard wuerde den schnellen
+     * Kanal also nicht gelegentlich bremsen, sondern weitgehend schliessen. Ob
+     * das so ist, ist NICHT gemessen; ein Default, der die Dosierung
+     * flaechendeckend stilllegt, waere eine unbeschlossene Norm.
+     *
+     * Der Schalter macht aus dieser Unsicherheit eine Einstellung statt eines
+     * Flashs: einschalten kostet fuenf Sekunden am Geraet. Solange er aus ist,
+     * wird der Schwanz gar nicht erst bewertet - im Grund steht dann auch kein
+     * tail=-Abschnitt. Wer messen will, schaltet ihn ein.
+     */
     TailGuardEnabled("fuse_tail_guard_enabled", false),
 
     /** NACHT-TOTBAND aktiv (Toni 09.08.): im Nachtfenster kein SMB unterhalb
