@@ -3147,7 +3147,8 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
             // im Einstellungs-Vertrag fehlte: konsistent ueberall abwesend
             // statt inkonsistent halb vorhanden.
             addPreference(AdaptiveSwitchPreference(ctx = context, booleanKey = FuseBooleanKey.ExpectationLedgerEnabled, summary = R.string.fuse_expectation_ledger_summary, title = R.string.fuse_expectation_ledger_title))
-            addPreference(AdaptiveSwitchPreference(ctx = context, booleanKey = FuseBooleanKey.ForecastShadowCollectionEnabled, summary = R.string.fuse_forecast_shadow_summary, title = R.string.fuse_forecast_shadow_title))
+            // 2.0 (Stufe 1, K1): die Prognose-Sammler sind entfernt; der Schalter
+            // steht nicht mehr im Bildschirm, der Schluessel bleibt registriert.
         }
 
         // System-Wissen und der Reparatur-Eingriff teilen sich den letzten

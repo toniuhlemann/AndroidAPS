@@ -24,6 +24,11 @@ import kotlin.math.max
  *    fruehere harte 45-60-Matrix war dort keine Baseline (Review 22.08.).
  *    Die Ableitung steht im Runner an EINER Stelle: abgelesen aus dem
  *    produktiven PredictorInput, nicht nachgebaut.
+ *
+ * 2.0 (Stufe 1, K1): die Prognose-Sammler (Tau-Matrix R60/R55/R50/R45,
+ * ADAPTIVE-DOWN-Lanes) sind entfernt. Es bleibt die Klassifikation: der
+ * Liveness-Exit liest TURNING_DOWN, der Export traegt sie weiter. METHOD_ID
+ * nennt den letzten Stand der Sammler, damit alte Trails zuordenbar bleiben.
  */
 object TurnResponseShadow {
 
@@ -36,8 +41,6 @@ object TurnResponseShadow {
     const val MIN_TOTAL_CHANGE_MGDL_PER_MIN = 0.20
     const val MAIN_TAU_MIN = 60
     const val ADAPTIVE_RESTRAINT_TAU_MIN = 50
-
-    val STATIC_RESTRAINT_TAUS_MIN: List<Int> = listOf(60, 55, 50, 45)
 
     data class Sample(
         val tsMs: Long,
@@ -76,98 +79,6 @@ object TurnResponseShadow {
         val adaptiveRestraintTauMin: Int,
     )
 
-    data class Variant(
-        val name: String,
-        val requestedRestraintTauMin: Int,
-        /** Tatsaechlich gerechneter Tau: bei negativem Drive der produktive
-         *  Negativ-Tau, sonst min(angefragt, produktiver Positiv-Tau) - im
-         *  Rebound-Fenster also z. B. 15 statt der angefragten 45-60. */
-        val restraintTauMin: Int,
-        val adaptive: Boolean,
-        val predAtReleaseMgdl: Double?,
-        /** Sicherheits-Unterkante am Freigabehorizont, getrennt von der Mittelbahn. */
-        val safetyLowerAtReleaseMgdl: Double?,
-        val minSafetyLowerMgdl: Double?,
-        val tailHeadroomU: Double?,
-        val insulinReqU: Double?,
-        val ratioCapU: Double?,
-        /** Ergebnis der Kandidatensuche, VOR Prime/Foundation und Gates. */
-        val candidateSmbU: Double?,
-        val candidateBinding: String?,
-        val candidateReject: String?,
-    )
-
-    /**
-     * ADAPTIVE-DOWN als SCHATTEN (Toni 22.08.). Der 5b-Replay hat gezeigt:
-     * am Korrektur-AUSGANG ist nichts mehr zu holen (vier Bremskandidaten,
-     * 0,00 U ueber 39,5h - die Tuer ist durch Guard/SAFETY_HOLD/Riegel schon
-     * zu). Das Tief-Insulin fliesst FRUEHER, waehrend abbremsender Anstiege,
-     * lizenziert vom langsamen r gegen kollabierenden fastDrive (6,10 U in
-     * 39,5h; Schadensblock 20.08. 18:47 mit 2,90 U gegen den fast
-     * signaturgleichen Gutfall 21.08. 13:59 mit Peak 196 danach). Per Zyklus
-     * sind die beiden NICHT trennbar - nur der VERLAUF trennt sie. Deshalb
-     * drei Ausloese-Varianten derselben einseitigen Senkung, alle
-     * dosierneutral, zum Offline-Vergleich:
-     *
-     *   BASE  die aktuelle Mittelbahn (Referenz, keine Senkung)
-     *   NOW   min(r, fastDrive) sofort, sobald fast < slow
-     *   P2    dito, aber erst nach ZWEI zusammenhaengenden Rueckgaengen
-     *   P3    dito nach DREI Rueckgaengen
-     *
-     * Die bestehende Persistenzregel des Klassifikators (2 Rueckgaenge +
-     * 0,20-Gesamtabfall + slow >= Rampe) ist offline aus P2 und dem separat
-     * exportierten `phase` synthetisierbar - sie braucht keine eigene Zeile.
-     *
-     * AUTORITAET WIE BEIM UP-SPIEGEL, nur andersherum: gesenkt wird der
-     * BEDARF; die PRODUKTIVEN Zertifikate (Guard, Tail, Bremsbahn des
-     * Reglers) bleiben unangetastet. Innerhalb der Varianten-Zeile ziehen
-     * untere und prior-freie Kante mit der Mittelbahn mit (Bandordnung) -
-     * die Zeile rechnet ihren Guard damit auf der gesenkten Bahn und ist
-     * STRENGER als produktiv. [DownVariant.avoidedSmbU] ist deshalb eine
-     * OBERGRENZE; `candidateBinding` trennt offline Bedarfssenkung von
-     * Guard-Bindung, `insulinReqU` traegt die reine Bedarfsgroesse.
-     */
-    data class DownVariant(
-        val name: String,
-        /** War die Ausloesebedingung dieser Variante in diesem Zyklus wahr?
-         *  Bei false traegt die Zeile die Referenzwerte der Mittelbahn. */
-        val triggered: Boolean,
-        val declineStreak: Int,
-        /** Der Mittelantrieb dieser Zeile [mg/dl/min] - gesenkt nur bei
-         *  triggered. */
-        val midDriveMgdlPerMin: Double?,
-        /** Die MITTELBAHN am Freigabehorizont - absichtlich OHNE das min()
-         *  mit der Bremsbahn (anders als [Variant.predAtReleaseMgdl] und
-         *  `decision.predAtReleaseMgdl`): eine tief bindende Bremsbahn
-         *  wuerde die Senkung sonst unsichtbar machen, und gemessen werden
-         *  soll genau sie. */
-        val predAtReleaseMgdl: Double?,
-        val insulinReqU: Double?,
-        val candidateSmbU: Double?,
-        val candidateBinding: String?,
-        val candidateReject: String?,
-        /** Referenzkandidat minus Variantenkandidat, nie negativ - "was die
-         *  Senkung in diesem Zyklus vermieden haette" - auf KANDIDATENSTUFE.
-         *  Der 14:10-Livefall hat gezeigt, dass das zu frueh gemessen ist:
-         *  produktiv gingen 0,10 U hinaus (Kandidat + Sub-Step-Uebertrag),
-         *  die Zeile sah 0,05 und meldete avoided = 0. */
-        val avoidedSmbU: Double?,
-        /**
-         * DIE ENDMENGE DER ZEILE (Pruefauftrag 2, Toni 22.08.): Kandidat
-         * plus Lane-eigener Sub-Step-Uebertrag (dieselbe reine Funktion,
-         * eigener Uebertragszaehler je Lane), danach dieselbe
-         * Wirkungspruefung wie produktiv. Publikations- und Pumpengates
-         * wirken auf alle Lanes gleich und bleiben aussen vor.
-         */
-        val endU: Double? = null,
-        /** Tatsaechlich PUBLIZIERTE produktive Menge minus [endU], nie
-         *  negativ - "was die Senkung an der Endmenge vermieden haette".
-         *  Der Obergrenzen-Charakter bleibt (Lane-Guard rechnet auf der
-         *  gesenkten Bahn); fuer Entscheidungen weiterhin insulinReqU und
-         *  candidateBinding daneben lesen. */
-        val avoidedEndU: Double? = null,
-    )
-
     /**
      * Zusammenhaengende Rueckgaenge des schnellen Drives am Reihenende.
      * 0 = der letzte Schritt war kein Rueckgang. Eine Luecke > [MAX_GAP_MS]
@@ -187,14 +98,10 @@ object TurnResponseShadow {
         return n
     }
 
+    /** 2.0 (Stufe 1, K1): nur noch die Klassifikation - Varianten und
+     *  Rechenzeit der Matrix sind mit den Sammlern entfallen. */
     data class Report(
         val classification: Classification,
-        val variants: List<Variant>,
-        /** Reine Rechenzeit der Variantenmatrix, nicht des Regelpfads. */
-        val computeDurationMs: Double,
-        /** Leer, wenn die Senkung trivial waere (fast >= slow) oder kein
-         *  schneller Drive vorliegt. */
-        val downVariants: List<DownVariant> = emptyList(),
     )
 
     fun classify(

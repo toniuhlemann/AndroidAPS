@@ -943,6 +943,10 @@ enum class FuseBooleanKey(
      * Dosierregel. Keine Einzelschalter je Variante - eine im Code
      * versionierte Matrix (methodId) ist reproduzierbarer als
      * Schalter-Kombinatorik.
+     *
+     * 2.0 (Stufe 1, K1): NICHT MEHR GELESEN - die Sammler sind entfernt, der
+     * Export traegt enabled fest false. Der Schluessel bleibt registriert
+     * (gespeicherter Wert, Sicherung, Rueckweg auf 1.x).
      */
     ForecastShadowCollectionEnabled("fuse_forecast_shadow_collection_enabled", true),
 

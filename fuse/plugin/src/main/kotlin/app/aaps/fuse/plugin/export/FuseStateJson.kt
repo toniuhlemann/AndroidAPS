@@ -1548,16 +1548,16 @@ object FuseStateJson {
                 .put("signalEpochTs", s.signalEpochTs)
         )
 
-        // ---- DOSIERNEUTRALER WENDE-/TAU-SHADOW (Toni 20.08.) ------------
-        // Der produktive Pfad liest diese Sicht nirgends. Sie macht pro
-        // Zyklus dieselbe Matrix nachrechenbar: statisch R60/R55/R50/R45 und
-        // ein adaptiver Kandidat, dessen Aufwaertsseite nur die Mittelbahn
-        // hebt und dessen Abwaertsseite nur die Bremsbahn verschaerft.
+        // ---- WENDE-KLASSIFIKATION (frueher Wende-/Tau-Shadow, Toni 20.08.) -
+        // 2.0 (Stufe 1, K1): die Prognose-Sammler sind entfernt. Der Block
+        // bleibt mit der Klassifikation, die der Liveness-Exit liest; enabled
+        // ist fest false, die Listen sind leer - so wie bisher bei
+        // ausgeschaltetem Sammler.
         outcome.turnResponseShadow?.let { sh ->
             val c = sh.classification
             o.put(
                 "turnResponseShadow", JSONObject()
-                    .put("enabled", outcome.forecastShadowEnabled)
+                    .put("enabled", false)
                     .put("collectionEpoch", outcome.forecastShadowEpochTs)
                     .put("methodId", TurnResponseShadow.METHOD_ID)
                     .put("dosageNeutral", true)
@@ -1570,51 +1570,9 @@ object FuseStateJson {
                     .put("delta3MgdlPerMin", fin(c.delta3MgdlPerMin))
                     .put("upwardMeanDriveMgdlPerMin", fin(c.upwardMeanDriveMgdlPerMin))
                     .put("adaptiveRestraintTauMin", c.adaptiveRestraintTauMin)
-                    .put("computeDurationMs", fin(sh.computeDurationMs))
-                    .put("variants", JSONArray().apply {
-                        sh.variants.forEach { v ->
-                            put(
-                                JSONObject()
-                                    .put("name", v.name)
-                                    .put("requestedRestraintTauMin", v.requestedRestraintTauMin)
-                                    .put("effectiveRestraintTauMin", v.restraintTauMin)
-                                    .put("adaptive", v.adaptive)
-                                    .put("predAtReleaseMgdl", fin(v.predAtReleaseMgdl))
-                                    .put("safetyLowerAtReleaseMgdl", fin(v.safetyLowerAtReleaseMgdl))
-                                    .put("minSafetyLowerMgdl", fin(v.minSafetyLowerMgdl))
-                                    .put("tailHeadroomU", fin(v.tailHeadroomU))
-                                    .put("insulinReqU", fin(v.insulinReqU))
-                                    .put("ratioCapU", fin(v.ratioCapU))
-                                    .put("candidateSmbU", fin(v.candidateSmbU))
-                                    .put("candidateBinding", v.candidateBinding ?: JSONObject.NULL)
-                                    .put("candidateReject", v.candidateReject ?: JSONObject.NULL),
-                            )
-                        }
-                    })
-                    // ADAPTIVE-DOWN (Toni 22.08.): dieselbe einseitige
-                    // Senkung, drei Ausloeser. Leer, wenn fast >= slow.
-                    // Kontext (CORRECTION/MEAL) und Phase stehen je Zeile
-                    // schon im Datensatz; Peak/Nadir nach +60/90/120 rechnet
-                    // die Auswertung aus den Folgezeilen des Trails.
-                    .put("downVariants", JSONArray().apply {
-                        sh.downVariants.forEach { v ->
-                            put(
-                                JSONObject()
-                                    .put("name", v.name)
-                                    .put("triggered", v.triggered)
-                                    .put("declineStreak", v.declineStreak)
-                                    .put("midDriveMgdlPerMin", fin(v.midDriveMgdlPerMin))
-                                    .put("predAtReleaseMgdl", fin(v.predAtReleaseMgdl))
-                                    .put("insulinReqU", fin(v.insulinReqU))
-                                    .put("candidateSmbU", fin(v.candidateSmbU))
-                                    .put("candidateBinding", v.candidateBinding ?: JSONObject.NULL)
-                                    .put("candidateReject", v.candidateReject ?: JSONObject.NULL)
-                                    .put("avoidedSmbU", fin(v.avoidedSmbU))
-                                    .put("endU", fin(v.endU))
-                                    .put("avoidedEndU", fin(v.avoidedEndU)),
-                            )
-                        }
-                    }),
+                    .put("computeDurationMs", 0.0)
+                    .put("variants", JSONArray())
+                    .put("downVariants", JSONArray()),
             )
         } ?: gap("turnResponseShadow", "NO_SHADOW_THIS_CYCLE")
 

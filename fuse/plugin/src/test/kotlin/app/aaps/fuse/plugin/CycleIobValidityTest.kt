@@ -210,7 +210,6 @@ class CycleIobValidityTest : TestBaseWithProfile() {
         // Mockito-Default 0.0 laege ausserhalb 20..90 und wuerde jeden
         // Zyklus benannt abbrechen - deshalb hier echte Defaults.
         whenever(preferences.get(FuseBooleanKey.LivenessChannelEnabled)).thenReturn(false)
-        whenever(preferences.get(FuseBooleanKey.ForecastShadowCollectionEnabled)).thenReturn(true)
         whenever(preferences.get(FuseIntKey.LivenessMealPowerMin)).thenReturn(120)
         // CENTRAL-only: die Profilwerte und MEAL-Regler sind Pflicht-Config
         // (unstubbte Mocks liefern 0 -> validate braeche jeden Zyklus ab).

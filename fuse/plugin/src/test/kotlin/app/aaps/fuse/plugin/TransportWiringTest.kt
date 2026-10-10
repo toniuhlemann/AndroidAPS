@@ -195,7 +195,6 @@ class TransportWiringTest : TestBaseWithProfile() {
     private var fruehHorizont = 0
 
     /** Masterschalter der Prognose-Shadows (Default AN wie in Produktion). */
-    private var forecastShadowAn = true
     private var mealPowerMin = 120
     private var mealArmZyklen = 3
     // CENTRAL-only-Labor: die Profilwerte starten OFFEN (20/20/1/1) und
@@ -844,7 +843,6 @@ class TransportWiringTest : TestBaseWithProfile() {
         whenever(preferences.get(FuseBooleanKey.LivenessBookingExitWithoutReArmEnabled)).thenAnswer { buchungsAusgangAn }
         whenever(preferences.get(FuseBooleanKey.LivenessDriveHoldEnabled)).thenAnswer { halteAnhebungAn }
         whenever(preferences.get(FuseIntKey.EarlyAdaptiveMealHorizonMin)).thenAnswer { fruehHorizont }
-        whenever(preferences.get(FuseBooleanKey.ForecastShadowCollectionEnabled)).thenAnswer { forecastShadowAn }
         whenever(preferences.get(FuseIntKey.LivenessMealPowerMin)).thenAnswer { mealPowerMin }
         whenever(preferences.get(FuseIntKey.MealArmCycles)).thenAnswer { mealArmZyklen }
         whenever(preferences.get(FuseDoubleKey.LivenessBgMinMealMgdl)).thenAnswer { mealBgMin }
@@ -7062,11 +7060,11 @@ class TransportWiringTest : TestBaseWithProfile() {
 
 
     @Test
-    fun `Tau-Shadow erkennt die Plateau-Wende ohne den produktiven R60-Pfad umzuschreiben`() {
+    fun `Wende-Klassifikation erkennt die Plateau-Wende`() {
         // Erst klarer Anstieg, dann ein flacherer positiver Nachlauf. Das ist
         // die Form des 11:33-Falls: fastDrive dreht bereits ab, r bleibt noch
-        // hoch. Kein Marker, kein Fundament und kein Tail - damit ist R60
-        // direkt mit dem bestehenden Produktivpfad vergleichbar.
+        // hoch. Kein Marker, kein Fundament und kein Tail - die Lage bleibt
+        // dieselbe wie vor 2.0 (Stufe 1, K1: die Tau-Matrix entfaellt).
         flach = 140.0
         steigungProMin = 2.0
         knickAbMin = 18
@@ -7077,143 +7075,20 @@ class TransportWiringTest : TestBaseWithProfile() {
         clock = start
 
         var wende: FuseCycleRunner.Outcome? = null
-        var normaleShadowZyklen = 0
+        var normaleZyklen = 0
         for (i in 0 until 55) {
             val o = cycle()
             if (o.turnResponseShadow?.classification?.phase == TurnResponseShadow.Phase.TURNING_DOWN) {
                 wende = o
                 break
             }
-            o.turnResponseShadow?.let { sh ->
-                if (sh.classification.phase == TurnResponseShadow.Phase.ALIGNED) {
-                    assertTrue(sh.variants.isEmpty(), "ohne bestaetigte Wende darf die Matrix keine Loopzeit kosten")
-                    normaleShadowZyklen++
-                }
-            }
+            if (o.turnResponseShadow?.classification?.phase == TurnResponseShadow.Phase.ALIGNED) normaleZyklen++
         }
-        assertTrue(normaleShadowZyklen > 0, "der Aufbau muss auch den billigen Normalpfad durchlaufen")
+        assertTrue(normaleZyklen > 0, "der Aufbau muss auch den Normalpfad durchlaufen")
         val o = wende ?: throw AssertionError("der Aufbau hat keine positive Abwaertswende erzeugt")
         val sh = o.turnResponseShadow!!
         assertEquals(50, sh.classification.adaptiveRestraintTauMin)
         assertTrue(sh.classification.fastDriveMgdlPerMin!! > 0.0, "negative Drives duerfen R50 nie oeffnen")
-        val byName = sh.variants.associateBy { it.name }
-        assertEquals(setOf("R60", "R55", "R50", "R45", "ADAPTIVE"), byName.keys)
-
-        val r60 = byName.getValue("R60")
-        val adaptiv = byName.getValue("ADAPTIVE")
-        // R60 ist die Kontrollspur: dieselbe kombinierte Bahn und dieselben
-        // Kappen wie der produktive Regler. Damit kann das Berechnen der
-        // Matrix nicht unbemerkt die Referenzdefinition wechseln.
-        assertEquals(o.decision.predAtReleaseMgdl!!, r60.predAtReleaseMgdl!!, 1e-7)
-        assertEquals(o.decision.minLowerMgdl!!, r60.minSafetyLowerMgdl!!, 1e-7)
-        assertEquals(
-            o.decision.caps.first { it.name == "smbRatio" }.valueU,
-            r60.ratioCapU!!,
-            1e-7,
-        )
-        // Ein bestaetigter DOWN-Shadow darf nur restriktiver sein. Er muss
-        // keine andere Pumpenstufe treffen, darf R60 aber nie ueberbieten.
-        assertTrue((adaptiv.predAtReleaseMgdl ?: Double.MAX_VALUE) <= (r60.predAtReleaseMgdl ?: Double.MAX_VALUE) + 1e-9)
-        assertTrue(
-            adaptiv.predAtReleaseMgdl!! < r60.predAtReleaseMgdl!! - 1e-6,
-            "der Aufbau muss eine echte, nicht nur benannte Bremswirkung erzeugen",
-        )
-        assertTrue((adaptiv.candidateSmbU ?: 0.0) <= (r60.candidateSmbU ?: 0.0) + 1e-9)
-        assertEquals(50, adaptiv.restraintTauMin)
-    }
-
-    /**
-     * IM REBOUND-FENSTER IST DIE PRODUKTION DIE SCHAERFERE BREMSE (Review
-     * 22.08.). Sie faehrt min(driveTauMin, 15); die fruehere harte
-     * 45-60-Matrix ueberzeichnete dort jede Kandidatenzeile, und R60 war
-     * genau in dem Fenster KEINE Kontrollspur mehr, in dem eine unterdrueckte
-     * Bremsbahn am meisten zaehlt - 25% der Wendezyklen des ersten
-     * Messlaufs lagen dort.
-     */
-    @Test
-    fun `im Rebound-Fenster erbt die Matrix den produktiven Tau 15`() {
-        // Start am Tief: der Anstieg beginnt UNTER der Rebound-Schwelle, so
-        // dass auch nach dem Warmlauf des Gerists noch verarbeitete Zyklen
-        // mit q1 < 75 liegen und das 45-min-Fenster armieren. Danach dieselbe
-        // Form wie der Plateau-Fall: klarer Anstieg, flacher positiver
-        // Nachlauf.
-        flach = 55.0
-        steigungProMin = 2.0
-        knickAbMin = 18
-        steigungNachKnick = 0.35
-        tailGuard = false
-        markerAuthorized = false
-        fundamentAn = false
-        clock = start
-
-        var wende: FuseCycleRunner.Outcome? = null
-        for (i in 0 until 40) {
-            val o = cycle()
-            if (o.turnResponseShadow?.classification?.phase == TurnResponseShadow.Phase.TURNING_DOWN) {
-                wende = o
-                break
-            }
-        }
-        val o = wende ?: throw AssertionError("der Aufbau hat keine Wende im Rebound-Fenster erzeugt")
-        val byName = o.turnResponseShadow!!.variants.associateBy { it.name }
-        for (name in listOf("R60", "R55", "R50", "R45", "ADAPTIVE")) {
-            assertEquals(
-                15, byName.getValue(name).restraintTauMin,
-                "$name: die Produktion bremst im Rebound mit Tau 15 - eine Variante, " +
-                    "die laenger nachschiebt, waere keine Kuerzung, sondern eine Lockerung",
-            )
-        }
-        // Und die Kontrollspur-Zusicherung gilt AUCH hier: R60 (effektiv 15)
-        // ist bitgenau der produktive Pfad.
-        assertEquals(o.decision.predAtReleaseMgdl!!, byName.getValue("R60").predAtReleaseMgdl!!, 1e-7)
-    }
-
-    /**
-     * DIE BASELINE FOLGT driveTauMin, NICHT DER ZAHL 60. Mit einem legalen
-     * driveTauMin = 45 waere die alte Matrix (hart 60) eine LOCKERUNG der
-     * Produktion gewesen - der Kontrollspur-Test blieb nur gruen, weil das
-     * Geruest zufaellig 60 stubbt.
-     */
-    @Test
-    fun `bei fremdem driveTauMin bleibt R60 die produktive Kontrollspur`() {
-        whenever(preferences.get(FuseIntKey.DriveTauMin)).thenReturn(45)
-        // Die Form des 18:19-Falls: nach dem Knick faellt der ROHE Verlauf,
-        // waehrend Bolusaktivitaet den bereinigten Drive positiv haelt. So
-        // wird die abgeschlagene Unterkante NEGATIV, und auch der
-        // Negativ-Zerfall der Bremsbahn muss die produktive Spur sein - ein
-        // hart kodierter 60er dort waere im Sicherheitszeugnis sichtbar.
-        flach = 140.0
-        steigungProMin = 2.0
-        knickAbMin = 18
-        steigungNachKnick = -1.0
-        aktivitaet = 0.03
-        bolusIobU = 3.0
-        tailGuard = false
-        markerAuthorized = false
-        fundamentAn = false
-        clock = start
-
-        var wende: FuseCycleRunner.Outcome? = null
-        for (i in 0 until 55) {
-            val o = cycle()
-            if (o.turnResponseShadow?.classification?.phase == TurnResponseShadow.Phase.TURNING_DOWN) {
-                wende = o
-                break
-            }
-        }
-        val o = wende ?: throw AssertionError("der Aufbau hat keine positive Abwaertswende erzeugt")
-        val byName = o.turnResponseShadow!!.variants.associateBy { it.name }
-        assertEquals(45, byName.getValue("R60").restraintTauMin, "min(60, produktiv 45) = 45")
-        assertEquals(45, byName.getValue("R45").restraintTauMin)
-        assertEquals(o.decision.predAtReleaseMgdl!!, byName.getValue("R60").predAtReleaseMgdl!!, 1e-7)
-        // Auch das SICHERHEITSZEUGNIS ist die produktive Spur. EHRLICHE
-        // GRENZE dieser Zusicherung (Mutationsprobe 22.08.): das Zeugnis ist
-        // ein min() ueber Haupt- und Bremsbahn, und an bestaetigten Wenden
-        // dominiert die Hauptbahn die Unterkante - ein falscher NEGATIV-Tau
-        // der Bremsbahn ist hier deshalb nicht beobachtbar. Er ist ausserhalb
-        // von driveTauMin != 60 verhaltensgleich und irrt sonst nur in die
-        // konservative Richtung (tieferes Zeugnis, kleinere Kandidaten).
-        assertEquals(o.decision.minLowerMgdl!!, byName.getValue("R60").minSafetyLowerMgdl!!, 1e-7)
     }
 
     /**
@@ -7307,134 +7182,6 @@ class TransportWiringTest : TestBaseWithProfile() {
         // ebenso bleibt der Neustart eine Heuristik (eine lueckenlos
         // belegte Reihe darf die alte Epoche wiederherstellen - s. KDoc
         // von signalEpochTs).
-    }
-
-    /**
-     * ADAPTIVE-DOWN ALS SCHATTEN (Toni 22.08.). Der 5b-Replay: am
-     * Korrektur-AUSGANG haelt keine Bremse mehr etwas zurueck (0,00 U ueber
-     * 39,5h - Guard/SAFETY_HOLD/Riegel schliessen die Tuer laengst); das
-     * Tief-Insulin fliesst waehrend ABBREMSENDER ANSTIEGE, vom traegen r
-     * lizenziert. Die Antwort ist die einseitige Mittelbahn-Senkung - hier
-     * ihre Schatten-Zusicherungen: Referenzzeile = produktiver Pfad, Senkung
-     * nur nach Ausloeser, Ausloeser-Disziplin (P2/P3 ziehen erst mit
-     * Persistenz), vermiedene Menge nie negativ, Produktion unangetastet.
-     */
-    @Test
-    fun `ADAPTIVE-DOWN senkt im Schatten nur die Mittelbahn und nur nach Ausloeser`() {
-        // Die 18:47-Form: klarer Anstieg, dann flacher positiver Nachlauf -
-        // fastAdj kollabiert gegen das noch hohe r.
-        flach = 140.0
-        steigungProMin = 2.0
-        knickAbMin = 18
-        steigungNachKnick = 0.35
-        tailGuard = false
-        markerAuthorized = false
-        fundamentAn = false
-        clock = start
-
-        var gesenkt: FuseCycleRunner.Outcome? = null
-        var disziplin: FuseCycleRunner.Outcome? = null
-        var persistenz: FuseCycleRunner.Outcome? = null
-        repeat(55) {
-            val o = cycle()
-            val dv = o.turnResponseShadow?.downVariants ?: return@repeat
-            if (dv.isEmpty()) return@repeat
-            val now = dv.first { it.name == "NOW" }
-            val p3 = dv.first { it.name == "P3" }
-            // Vermiedene Menge ist NIE negativ - in jedem Zyklus.
-            dv.forEach { v ->
-                assertTrue(
-                    (v.avoidedSmbU ?: 0.0) >= -1e-9,
-                    "${v.name}: eine Senkung kann nichts hinzufuegen",
-                )
-            }
-            if (gesenkt == null && now.triggered &&
-                (now.predAtReleaseMgdl ?: Double.MAX_VALUE) <
-                (dv.first { it.name == "BASE" }.predAtReleaseMgdl ?: 0.0) - 1e-6
-            ) gesenkt = o
-            if (disziplin == null && now.triggered && !p3.triggered) disziplin = o
-            if (persistenz == null && p3.triggered) persistenz = o
-        }
-
-        val o = gesenkt ?: throw AssertionError("der Aufbau muss eine echte Senkung erzeugen")
-        val dv = o.turnResponseShadow!!.downVariants.associateBy { it.name }
-        val base = dv.getValue("BASE")
-        val now = dv.getValue("NOW")
-        // DIE REFERENZZEILE IST DER PRODUKTIVE PFAD: ohne Marker, Fundament
-        // und Riegel ist der publizierte SMB genau der Kandidat der Stufe,
-        // auf der auch die Varianten rechnen. Damit ist die Dosierneutralitaet
-        // auf DATENEBENE belegt, nicht nur behauptet. (predAtRelease wird
-        // absichtlich NICHT gegen decision verglichen: die Down-Zeilen
-        // tragen die reine Mittelbahn ohne das min() mit der Bremsbahn -
-        // s. KDoc von DownVariant.predAtReleaseMgdl.)
-        assertEquals(o.decision.smbU, base.candidateSmbU!!, 1e-9)
-        // Die Senkung senkt: Mittelbahn tiefer, Kandidat nie groesser, und
-        // die vermiedene Menge ist exakt die Differenz.
-        assertTrue(now.midDriveMgdlPerMin!! < base.midDriveMgdlPerMin!! - 1e-9)
-        assertTrue(now.candidateSmbU!! <= base.candidateSmbU!! + 1e-9)
-        assertEquals(base.candidateSmbU!! - now.candidateSmbU!!, now.avoidedSmbU!!, 1e-9)
-
-        // PRUEFAUFTRAG 2 (14:10-Livefall): die Zeile traegt ihre ENDMENGE
-        // (Lane-Sub-Step + Wirkungspruefung) und den Abstand zur tatsaechlich
-        // publizierten Menge - avoided misst nicht mehr nur den Vorkandidaten.
-        assertEquals(o.decision.smbU, base.endU!!, 1e-9, "BASE-Ende ist die publizierte Menge")
-        assertEquals(0.0, base.avoidedEndU!!, 1e-9)
-        assertTrue(now.endU != null, "die gesenkte Lane muss eine Endmenge tragen")
-        assertTrue(now.endU!! >= now.candidateSmbU!! - 1e-9, "der Uebertrag kann nur hinzufuegen")
-        assertEquals(
-            kotlin.math.max(0.0, o.decision.smbU - now.endU!!), now.avoidedEndU!!, 1e-9,
-            "avoidedEnd = publiziert minus Lane-Ende",
-        )
-
-        // AUSLOESER-DISZIPLIN: solange die Persistenz fehlt, traegt P3 die
-        // REFERENZ, nicht die Senkung - frueh bremsen ist genau der Fehler,
-        // den der 13:59-Gutfall (Peak 196 danach) verbietet.
-        val d = disziplin ?: throw AssertionError("der Aufbau muss einen Zyklus vor voller Persistenz treffen")
-        val dvd = d.turnResponseShadow!!.downVariants.associateBy { it.name }
-        assertEquals(false, dvd.getValue("P3").triggered)
-        assertEquals(dvd.getValue("BASE").candidateSmbU, dvd.getValue("P3").candidateSmbU)
-        // Und mit Persistenz zieht P3.
-        val p = persistenz ?: throw AssertionError("der Aufbau muss auch die volle Persistenz erreichen")
-        assertTrue(p.turnResponseShadow!!.downVariants.first { it.name == "P3" }.triggered)
-        assertTrue(p.turnResponseShadow!!.downVariants.first { it.name == "P3" }.declineStreak >= 3)
-    }
-
-    @Test
-    fun `Aufwaertswende hebt im Shadow nur die Mittelbahn nicht das Sicherheitszeugnis`() {
-        flach = 110.0
-        steigungProMin = 0.10
-        knickAbMin = 18
-        steigungNachKnick = 2.0
-        tailGuard = false
-        markerAuthorized = false
-        fundamentAn = false
-        clock = start
-
-        var wende: FuseCycleRunner.Outcome? = null
-        for (i in 0 until 55) {
-            val o = cycle()
-            if (o.turnResponseShadow?.classification?.phase == TurnResponseShadow.Phase.TURNING_UP) {
-                wende = o
-                break
-            }
-        }
-        val o = wende ?: throw AssertionError("der Aufbau hat keine Aufwaertswende erzeugt")
-        val byName = o.turnResponseShadow!!.variants.associateBy { it.name }
-        val r60 = byName.getValue("R60")
-        val adaptiv = byName.getValue("ADAPTIVE")
-
-        assertEquals(60, adaptiv.restraintTauMin, "Aufwaertsreaktion darf den Brems-Tau nicht kuerzen")
-        assertTrue(
-            adaptiv.predAtReleaseMgdl!! > r60.predAtReleaseMgdl!! + 1e-6,
-            "der Aufwaertskandidat muss den frueher sichtbaren Bedarf in der Mittelbahn zeigen",
-        )
-        assertEquals(
-            r60.safetyLowerAtReleaseMgdl!!,
-            adaptiv.safetyLowerAtReleaseMgdl!!,
-            1e-7,
-            "Aufwaerts-Shadow darf Guard und Tail kein guenstigeres Zeugnis geben",
-        )
-        assertTrue((adaptiv.candidateSmbU ?: 0.0) + 1e-9 >= (r60.candidateSmbU ?: 0.0))
     }
 
     // ==== DIE RISIKOLAEUFE (Toni/Codex 19.08.) =============================
@@ -10966,7 +10713,6 @@ class TransportWiringTest : TestBaseWithProfile() {
             val rejoinPolitik =
                 if (rejoin) app.aaps.fuse.core.signal.RejoinPolicy.enabled()
                 else app.aaps.fuse.core.signal.RejoinPolicy.OFF
-            forecastShadowAn = false // Replay braucht die Matrizen nicht - Tempo
             theilSenFensterMin = fenster // W18-Trails tragen den Schluessel nicht - der Hebel gilt
             // CENTRAL-only-Leck-Regel: jeder Lauf startet auf den ECHTEN
             // Produkt-Defaults (Tonis Startsatz); traegt die Politik-Zeile
@@ -13115,65 +12861,18 @@ class TransportWiringTest : TestBaseWithProfile() {
         assertEquals(18L, e.episodes.theilSenWindowLastMin, "der Stand ist danach gesetzt")
     }
 
-    /**
-     * Prognose-Shadow-Masterschalter (Toni/Codex 23.08.): AUS heisst leere
-     * Matrizen und enabled:false im Export - und die DOSIERUNG ist bitgleich
-     * zum AN-Lauf. Der Schalter wird nie von Dosierlogik gelesen; die
-     * Wende-KLASSIFIKATION laeuft weiter und speist den Liveness-Exit
-     * unveraendert (die Lage enthaelt absichtlich einen bestaetigten
-     * Wende-Exit, damit genau dieser Pfad im Vergleich steckt).
-     */
+    /** 2.0 (Stufe 1, K1): ohne Prognose-Sammler steht der Stand fest auf AUS - die
+     *  Sammel-Epoche bleibt stehen und restartfest, damit der Trail sie weiter fuehrt. */
     @Test
-    fun `Prognose-Shadow AUS laesst die Dosierung bitgleich und sammelt nichts`(@TempDir dir: File) {
-        livenessLage(dir)
-        knick2AbMin = 26
-        steigungNachKnick2 = -1.5
-        val an = ArrayList<Double>()
-        var anVarianten = 0
-        repeat(40) { val o = cycle()
-            an.add(o.decision.smbU)
-            anVarianten += (o.turnResponseShadow?.variants?.size ?: 0) +
-                (o.turnResponseShadow?.downVariants?.size ?: 0)
-        }
-        assertTrue(anVarianten > 0, "der AN-Lauf muss an der Wende Varianten gesammelt haben")
-
-        forecastShadowAn = false
-        clock = start
-        transportReset()
-        neuerRunner(FuseLedgerAdapter().also { it.loadOnce(File(dir, "aus").also(File::mkdirs), "test-epoch", start) })
-        val aus = ArrayList<Double>()
-        var ausVarianten = 0
-        repeat(40) { val o = cycle()
-            aus.add(o.decision.smbU)
-            ausVarianten += (o.turnResponseShadow?.variants?.size ?: 0) +
-                (o.turnResponseShadow?.downVariants?.size ?: 0)
-            // Abbruchzyklen (Signalaufbau) tragen die Outcome-Defaults -
-            // bewertet wird nur der Hauptpfad.
-            if (o.abortReason == null) assertEquals(false, o.forecastShadowEnabled)
-        }
-        assertEquals(0, ausVarianten, "AUS sammelt nichts")
-        assertEquals(an, aus, "die Dosierung haengt nicht am Sammler")
-    }
-
-    /** Jedes Umschalten eroeffnet eine neue, restartfeste Sammel-Epoche -
-     *  Auswertungen duerfen keine Messluecke ueberbruecken. */
-    @Test
-    fun `Prognose-Shadow Umschalten eroeffnet eine neue restartfeste Epoche`(@TempDir dir: File) {
+    fun `die Sammel-Epoche bleibt ohne Prognose-Sammler stehen und restartfest`(@TempDir dir: File) {
         val adapter = livenessLage(dir)
         // Signalaufbau: die ersten Zyklen brechen ab und tragen Defaults.
         repeat(6) { cycle() }
         val e1 = cycle().forecastShadowEpochTs
         assertTrue(e1 > 0L)
-        repeat(3) { assertEquals(e1, cycle().forecastShadowEpochTs, "ohne Umschalten bleibt die Epoche") }
-        forecastShadowAn = false
-        val e2 = cycle().forecastShadowEpochTs
-        assertTrue(e2 > e1, "AUS eroeffnet eine neue Epoche")
-        forecastShadowAn = true
-        val e3 = cycle().forecastShadowEpochTs
-        assertTrue(e3 > e2, "AN eroeffnet wieder eine neue")
-        repeat(2) { assertEquals(e3, cycle().forecastShadowEpochTs) }
+        repeat(5) { assertEquals(e1, cycle().forecastShadowEpochTs, "die Epoche bleibt stehen") }
         assertTrue(adapter.persistVerified(dir))
-        assertEquals(e3, nachNeustart(dir).forecastShadowEpochTs, "die Epoche steht in der Datei")
+        assertEquals(e1, nachNeustart(dir).forecastShadowEpochTs, "die Epoche steht in der Datei")
     }
 
     /**

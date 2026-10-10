@@ -92,12 +92,6 @@ class TurnResponseShadowTest {
         assertEquals(TurnResponseShadow.Reason.SIGNAL_UNHEALTHY, unhealthy.reason)
     }
 
-    @Test
-    fun `statische Matrix bleibt genau R60 R55 R50 R45`() {
-        assertEquals(listOf(60, 55, 50, 45), TurnResponseShadow.STATIC_RESTRAINT_TAUS_MIN)
-        assertTrue(TurnResponseShadow.STATIC_RESTRAINT_TAUS_MIN.zipWithNext().all { (a, b) -> b < a })
-    }
-
     // ---- declineStreak: die Persistenzzaehlung der ADAPTIVE-DOWN-Ausloeser -
 
     @Test
