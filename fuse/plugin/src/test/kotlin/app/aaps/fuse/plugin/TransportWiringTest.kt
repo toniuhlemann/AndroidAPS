@@ -789,7 +789,7 @@ class TransportWiringTest : TestBaseWithProfile() {
         neuerRunner(FuseLedgerAdapter())
     }
 
-    private fun neuerRunner(l: FuseLedgerAdapter, evidenz: EvidenceStock.Config = EvidenceStock.Config(), fensterMs: Long? = null, trendRegel: String? = null, wiedereinstieg: app.aaps.fuse.core.signal.RejoinPolicy = app.aaps.fuse.core.signal.RejoinPolicy.OFF, ruheParams: app.aaps.fuse.core.controller.UpfrontRecovery.Params = app.aaps.fuse.core.controller.UpfrontRecovery.Params.OFF, gapPolitik: app.aaps.fuse.core.signal.GapPolicy = app.aaps.fuse.core.signal.GapPolicy.PRODUCTION, reifePolitik: app.aaps.fuse.core.signal.MaturityPolicy = app.aaps.fuse.core.signal.MaturityPolicy.PRODUCTION) {
+    private fun neuerRunner(l: FuseLedgerAdapter, evidenz: EvidenceStock.Config = EvidenceStock.Config(), fensterMs: Long? = null, trendRegel: String? = null, wiedereinstieg: app.aaps.fuse.core.signal.RejoinPolicy = app.aaps.fuse.core.signal.RejoinPolicy.OFF, ruheParams: app.aaps.fuse.core.controller.UpfrontRecovery.Params? = app.aaps.fuse.core.controller.UpfrontRecovery.Params.OFF, gapPolitik: app.aaps.fuse.core.signal.GapPolicy = app.aaps.fuse.core.signal.GapPolicy.PRODUCTION, reifePolitik: app.aaps.fuse.core.signal.MaturityPolicy = app.aaps.fuse.core.signal.MaturityPolicy.PRODUCTION) {
         ledger = l
         runner = FuseCycleRunner(
             iobCobCalculator, profileFunction, activePlugin, constraintsChecker, commandQueue,
@@ -17338,5 +17338,47 @@ class TransportWiringTest : TestBaseWithProfile() {
         quelleMeldet(laufendSeit(0.0, vorMin = 1))
         val zweite = volleZyklen(30)
         assertEquals(3, zweite.count { istNullAbbruch(it) }) { "neue Null, neue Reihe: ${zweite.map { it.reason }}" }
+    }
+
+    // ---- Stufe 2: Ruhe-Ausgang im Produktionspfad ---------------------------
+    //
+    // Der Rig reichte bisher IMMER eine Uebersteuerung (`ruheParams`, Default
+    // OFF) - der Produktionspfad `upfrontRecoveryParams == null` ->
+    // `Config.calmParams` aus den Einstellungen lief in keinem Test.
+    // `ruheParams = null` nimmt jetzt diesen Pfad. Sichtbar wird er an
+    // `recoveryRequired`: in jedem Zyklus die Ruhezyklenzahl der WIRKSAMEN
+    // Parameter, bei ausgeschaltetem Ruhe-Ausgang 0.
+
+    private fun ruheErforderlich(
+        dir: File,
+        ruhe: app.aaps.fuse.core.controller.UpfrontRecovery.Params?,
+        an: Boolean,
+    ): List<Int?> {
+        whenever(preferences.get(FuseBooleanKey.CalmRecoveryEnabled)).thenReturn(an)
+        whenever(preferences.get(FuseIntKey.CalmRecoveryCycles)).thenReturn(7)
+        whenever(preferences.get(FuseDoubleKey.CalmRecoveryMinUkf)).thenReturn(0.0)
+        whenever(preferences.get(FuseDoubleKey.CalmRecoveryGuardDistanceMgdl)).thenReturn(12.0)
+        whenever(preferences.get(FuseIntKey.CalmTreatmentMode)).thenReturn(1)
+        flach = 110.0
+        steigungProMin = 0.0
+        val l = FuseLedgerAdapter().also { it.loadOnce(dir.also(File::mkdirs), "test-epoch", start) }
+        neuerRunner(l, ruheParams = ruhe)
+        clock = start
+        return volleZyklen(40).map { it.upfrontChain?.recoveryRequired }
+    }
+
+    @Test
+    fun `Stufe 2 Ruhe-Ausgang folgt im Produktionspfad den Einstellungen`(@TempDir dir: File) {
+        val aus = ruheErforderlich(File(dir, "aus"), ruhe = null, an = false)
+        val an = ruheErforderlich(File(dir, "an"), ruhe = null, an = true)
+        // Kontrolle: mit Uebersteuerung gilt sie, nicht die Einstellung.
+        val uebersteuert = ruheErforderlich(
+            File(dir, "uebersteuert"), ruhe = app.aaps.fuse.core.controller.UpfrontRecovery.Params.OFF, an = true,
+        )
+        for ((name, lauf) in listOf("aus" to aus, "an" to an, "uebersteuert" to uebersteuert))
+            assertTrue(lauf.size >= 10) { "$name: zu wenige volle Zyklen (${lauf.size})" }
+        assertTrue(aus.all { it == 0 }) { "aus: $aus" }
+        assertTrue(an.all { it == 7 }) { "an: $an" }
+        assertTrue(uebersteuert.all { it == 0 }) { "uebersteuert: $uebersteuert" }
     }
 }
