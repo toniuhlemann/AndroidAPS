@@ -1831,9 +1831,10 @@ class FuseCycleRunner(
         // der injizierten, unveraenderlichen Politik. Damit kann eine
         // Einstellung die Frage nicht in ein anderes Regime verschieben.
         // EINE Lesung. Das Signal wird VOR readConfig() geholt, deshalb
-        // steht sie hier - aber genau dieser Wert geht ueber `Config`
-        // spaeter in Kennung und policyValues ein. Zwei Lesungen koennten
-        // im selben Zyklus auseinanderlaufen.
+        // steht sie hier - und readConfig() bekommt genau diesen Wert
+        // uebergeben, damit er unveraendert ueber `Config` in Kennung und
+        // policyValues eingeht. Zwei Lesungen koennten im selben Zyklus
+        // auseinanderlaufen.
         val rejoinAnJetzt = preferences.get(FuseBooleanKey.SignalRejoinEnabled)
         val rejoinJetzt =
             if (rejoinAnJetzt) rejoinPolicy
@@ -1898,7 +1899,7 @@ class FuseCycleRunner(
         ledger.episodes.lastAcceptedSourceTs = signal.sourceTs
 
         // ---- 3 Bahn --------------------------------------------------------
-        val cfg = when (val c = CoreInputGuard.build { readConfig() }) {
+        val cfg = when (val c = CoreInputGuard.build { readConfig(signalRejoinAn = rejoinAnJetzt) }) {
             is CoreInputGuard.Outcome.Built  -> c.value
             is CoreInputGuard.Outcome.Failed -> return abort("config: ${c.failure.detail}", signal, step = step)
         }
@@ -7939,7 +7940,7 @@ class FuseCycleRunner(
      * Guard und Freigabe aendert, waere eine Entscheidung aus zwei verschiedenen
      * Konfigurationen.
      */
-    private fun readConfig() = Config(
+    private fun readConfig(signalRejoinAn: Boolean) = Config(
         smbRatio = preferences.get(FuseDoubleKey.SmbRatio),
         smbRatioRise = preferences.get(FuseDoubleKey.SmbRatioRise),
         sharedMaxIobU = preferences.get(app.aaps.core.keys.DoubleKey.ApsSmbMaxIob),
@@ -7978,7 +7979,7 @@ class FuseCycleRunner(
         reboundWindowMin = preferences.get(FuseIntKey.ReboundWindowMin),
         driveLowerQuantilePct = preferences.get(FuseIntKey.DriveLowerQuantilePct),
         theilSenWindowMin = preferences.get(FuseIntKey.TheilSenWindowMin),
-        signalRejoinEnabled = preferences.get(FuseBooleanKey.SignalRejoinEnabled),
+        signalRejoinEnabled = signalRejoinAn,
         tailGuardEnabled = preferences.get(FuseBooleanKey.TailGuardEnabled),
         markerAuthorized = preferences.get(FuseBooleanKey.MarkerAuthorisesRelease),
         tailFloorMgdl = preferences.get(FuseDoubleKey.TailFloorMgdl),
