@@ -8,8 +8,9 @@ import org.junit.jupiter.api.Test
  * C3 (Codex-Adjudication bae885f1, Abschnitt "C3 interpretation", K4 Punkt 17):
  * die TRANSPORTMENGE GEHOERT IN DIE BAHN, nicht nur ins Budget.
  *
- * Gemessen an Tonis Medtrum (765 SMBs): Sichtbarkeits-Latenz p50 15 s, p90 56 s,
- * p99 175 s, MAX 854 s. In diesen 1 bis ~15 Zyklen glaubten Guard und Schwanz,
+ * Gemessen an einer Medtrum-Pumpe: die Sichtbarkeits-Latenz liegt meist bei
+ * Sekunden bis einer Minute, im Extrem bei vielen Minuten. In diesen 1 bis etwa
+ * 15 Zyklen glaubten Guard und Schwanz,
  * die bereits publizierte Menge habe KEINE Zukunftswirkung - abgezogen war sie
  * nur von den Headrooms (Bestandskappe), nicht von der Bahn (Glukosezeugnis).
  *

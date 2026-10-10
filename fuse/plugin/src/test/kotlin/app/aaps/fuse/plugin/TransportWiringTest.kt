@@ -3063,7 +3063,7 @@ class TransportWiringTest : TestBaseWithProfile() {
     /**
      * DER 2-TAGE-BEFUND ALS TEST: nach Ablauf der Marker-Sonderrechte
      * blockte das Nacht-Totband Zyklen, in denen die Evidenz-Episode ACTIVE
-     * war und Kredit auswies (81 Live-Zyklen im Trail, z.B. 13.08. 22:40).
+     * war und Kredit auswies (viele Live-Zyklen im Trail).
      *
      * Aufbau: Nachtfenster deckt die Rig-Uhr ab, Totband 45 mg/dl, BG unter
      * Ziel+45. OHNE Kredit muss das Totband sperren (Gegenprobe), MIT
@@ -8769,7 +8769,7 @@ class TransportWiringTest : TestBaseWithProfile() {
      * M2 (Bauauftrag 7.5.2, Toni 29.08.): DER FOUNDATION-TROPF DARF DIE
      * BEWAFFNUNG NICHT MASKIEREN.
      *
-     * Livefall zweimal gemessen (28.08. 09:50, 29.08. 09:41): der 0,05er-
+     * Livefall zweimal gemessen (an zwei Fruehstuecken): der kleinste
      * Phase-B-Schritt (plus MarkerFloor-Restauration nach dem Guard-Veto)
      * machte aus GUARD_FLOOR ein publiziertes NONE, und das Bewaffnungstor
      * las NORMAL_PATH_OPEN - ausgerechnet im Streak-3-Zyklus. Dieses Rig
@@ -9080,7 +9080,7 @@ class TransportWiringTest : TestBaseWithProfile() {
     // ---- P1 v45: Rebound-Sonderrecht auch im Liveness-Tor ----------------
 
     /**
-     * P1-Aufbau (Eis-Livefall 30.08. 13:50): Low-Dip unter 75 oeffnet das
+     * P1-Aufbau (Livefall nach Eis): Low-Dip unter 75 oeffnet das
      * ROHE Rebound-Fenster (45 min), der Marker wird IM Fenster gedrueckt
      * (beide Pins: Power + Rebound-Sonderrecht), danach der steile Anstieg
      * (r weit ueber 1, q1 ueber der MEAL-Schwelle 120), Guard-Deadlock des
@@ -10570,7 +10570,7 @@ class TransportWiringTest : TestBaseWithProfile() {
         // fragt mit MidnightUtils.secondsFromMidnight - also fuellt die Karte
         // mit EXAKT dieser Funktion statt einer parallelen Calendar-Rechnung.
         // Konsistenz per Konstruktion; der fruehere UTC-Modulo verschob unter
-        // CEST um zwei Stunden (Abend-ISF 60 statt 72, zu aggressiv).
+        // CEST um zwei Stunden (falscher Abend-ISF, zu aggressiv).
         zyklen.forEach { z ->
             isfProMin[app.aaps.core.utils.MidnightUtils.secondsFromMidnight(z.ts) / 60] = z.isf
         }
@@ -10700,8 +10700,8 @@ class TransportWiringTest : TestBaseWithProfile() {
             // das Geraet blind war. Ohne diese Sperre dosiert eine
             // aggressive Variante in den Kaltstart hinein, und ueber
             // Ledger und Deckel verseucht das den ganzen Lauf (gemessen
-            // am Fall 25.08. 11:42: 3x1 dosierte dort 3 x 0,550 U im
-            // Kaltstart, die Haelfte der scheinbaren Mehrmenge).
+            // an einem Replay-Fall: eine aggressive Variante dosierte dort im
+            // Kaltstart mehrfach, rund die Haelfte der scheinbaren Mehrmenge).
             // 20 min sind reichlich: der Observer ist nach ~8 Zyklen
             // scharf, und der Vorlauf muss nur den Kaltstart abdecken.
             val reifeAbTs = zyklen.first().ts + 20L * 60_000L
@@ -13233,7 +13233,7 @@ class TransportWiringTest : TestBaseWithProfile() {
      * PFLICHTPROBE: KEIN SICHERHEITSGATE WIRD UMGANGEN.
      *
      * Dieselbe Funkluecke, aber im Tief und fallend - die Lage des
-     * Pflichtfalls 24.08. 18:09 (BG 76 -> 74). Der Wiedereinstieg gibt
+     * Pflichtfalls (BG knapp ueber dem Tief, fallend). Der Wiedereinstieg gibt
      * dort wieder eine ENTSCHEIDUNG frei, aber kein Insulin: die Menge
      * bleibt in jedem Zyklus null, und sie ist mit Schalter dieselbe wie
      * ohne.

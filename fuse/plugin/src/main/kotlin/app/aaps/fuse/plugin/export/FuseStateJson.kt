@@ -80,8 +80,8 @@ object FuseStateJson {
     // Wechsel in die Nacht unter der neuen Schwelle endet als
     // PRESSURE_GONE ohne Sperre.
     // v19 (22.08. spaet): die Re-Arm-Sperre des Liveness-Kanals NULLT den
-    // Bewaffnungs-Streak. Live gemessen (22:53-23:03) zaehlte er waehrend
-    // der Pause 1->10 weiter, und der Kanal war nach Fristablauf sofort
+    // Bewaffnungs-Streak. Live gemessen zaehlte er waehrend der Pause
+    // weiter, und der Kanal war nach Fristablauf sofort
     // wieder scharf - der Vertrag verlangt drei FRISCHE Druckzyklen nach
     // der Sperre.
     // v18 (22.08. nachts): der Liveness-Kanal (Bauvertrag Toni+Codex,
@@ -91,8 +91,8 @@ object FuseStateJson {
     // mengenbegrenzt (eigener Kanaldeckel, globales iobTH, maxIOB),
     // gemessene Riegel absolut, restartfeste Re-Arm-Sperre, BG-Schwelle
     // der Druckbedingung einstellbar (Default 160). Der gemessene
-    // Anlass: 93/93 falsche Unterkanten-Zertifikate und 90 blockierte
-    // Hyper-Minuten am 22.08.
+    // Anlass: durchgehend falsche Unterkanten-Zertifikate und lange
+    // blockierte Hyper-Phasen.
     // v17 (22.08. abends): der Marker-Prime-Aufschub (Punkt 6, Bau-GO Toni,
     // Schalter default AUS, KEIN Aktivierungs-GO). Eingeschaltet haelt er
     // markerautorisiertes Insulin bei gemessenem, ueberdecktem Fall mit
@@ -114,16 +114,16 @@ object FuseStateJson {
     // Fingerprint noch dieselbe Kennung tragen; ueber die configGeneration
     // entwertet der neue Hash zugleich alle offenen Erwartungen des alten
     // Fensters (Pkt. 5 des Vertrags). Belegt durch den Zwei-Tage-Replay
-    // (22.08. Problemtag: W10 entriegelt Onset+Deadlock; 21.08.
-    // Kontrolltag: W10 praktisch identisch zu W18).
+    // (Problemtag: W10 entriegelt Onset+Deadlock; Kontrolltag: W10
+    // praktisch identisch zu W18).
     // v23 (23.08. spaet): der Ratio-Deckel des Liveness-Kanals
     // (LivenessRatioCap, Default 1.0 = nicht bindend, damit der Bump selbst
     // dosierneutral ist). liveRatio = min(effectiveRatio, Cap) begrenzt die
     // Geschwindigkeit des Kanals je Zyklus; der Kanaldeckel begrenzt die
     // Menge, die gemessenen Exits beenden den Lauf - komplementaer, nichts
-    // ersetzt etwas. Gemessener Anlass: 3,85 U in 23 min (15:33-Episode
-    // 23.08., Min90 danach 64) - bei 10-20 min Wirklatenz war die Menge vor
-    // jedem moeglichen gemessenen Exit draussen. Zwei Laeufe mit
+    // ersetzt etwas. Gemessener Anlass: eine grosse Menge in kurzer Zeit mit
+    // anschliessendem Tief - bei der Wirklatenz war die Menge vor jedem
+    // moeglichen gemessenen Exit draussen. Zwei Laeufe mit
     // verschiedenem Cap dosieren im Kanal verschieden -> Hash+policyValues.
     // v24 (23.08. nachts): der Liveness-Kanal bekommt MEAL- und
     // CORRECTION-Mengenprofile (Bauauftrag Toni). Der Marker autorisiert
@@ -138,15 +138,14 @@ object FuseStateJson {
     // v25 (24.08. abends): der ZERO-TBR-LATCH (Bauauftrag Toni). Eine vom
     // Low-Tor berechtigt eroeffnete Zero-TBR bleibt fuer die Dauer der
     // Fall-Episode verriegelt - der punktuelle Nutzenwert darf sie nicht
-    // mehr wegwerfen (Befund 24.08.: fuenf eroeffnete Nullen in 94 min
-    // verworfen, ~0,79 U Profilbasal in einen vorhersehbaren Fall, Nadir
-    // 62). Geloest nur durch belegte Erholung (geteilte Descent-Semantik
+    // mehr wegwerfen (Befund: mehrere eroeffnete Nullen verworfen,
+    // Profilbasal floss in einen vorhersehbaren Fall, danach ein Tief). Geloest nur durch belegte Erholung (geteilte Descent-Semantik
     // +0,20 x 3 mit q1- und Risiko-Bedingung) oder den Ruhe-Ausgang.
     // Schalter Default AUS -> der Bump selbst ist dosierneutral. NUR die
     // Basalachse; der SMB-Pfad bleibt ueber latchZeroOnly unberuehrt.
     // v26 (24.08. abends, DOSIERWIRKSAM): das Liveness-MEAL-Profil traegt
-    // die R-Rampe SELBST (Befund im Live-Trail: Marker +115 min, r 2,69,
-    // mealWindow false -> state.effectiveSmbRatio fiel auf die
+    // die R-Rampe SELBST (Befund im Live-Trail: spaet nach dem Marker,
+    // steiler Anstieg, mealWindow false -> state.effectiveSmbRatio fiel auf die
     // Korrektur-Ratio 0,15, und "Live M" dosierte unsichtbar mit dem
     // K-Tempo; der Profildeckel als reine Obergrenze konnte nichts
     // anheben). Basis: MEAL = Rampe correction->rise ueber r (geteilte
@@ -187,8 +186,8 @@ object FuseStateJson {
     // die Pumpenrate lesen, nie verwerfen (90-s-Anschluss, Unterbrechung
     // nullt);
     // MEASURED_LOW verriegelt weiter sofort, ein aktiver Latch wird von
-    // jedem Fall-Verdikt gehalten. Anlass: der 21:58-Grenzfall (Ueberdeckung
-    // +0,55 mg/dl, Bodenkontakt 117,2/120 min) verriegelte als EINZELNER
+    // jedem Fall-Verdikt gehalten. Anlass: ein Grenzfall (knappe Ueberdeckung,
+    // Bodenkontakt knapp im Horizont) verriegelte als EINZELNER
     // Zyklus eine lange Null - ein Sensorzacken darf das nicht. Export:
     // lowThreat.overcoverageMarginMgdl/horizonMarginMin (Messfelder, keine
     // Mindestmarge geraten) + zeroLatch.armStreak.
@@ -196,11 +195,11 @@ object FuseStateJson {
     // Default AUS): die KORREKTURPFAD-RIEGEL. (1) CorrectionReversalGuard -
     // nach steilem Fall loest eine schnelle Gegenbewegung keine
     // Korrektur-SMBs aus, solange das robuste r negativ/unbestaetigt ist
-    // (Pflichtfall 06:27: 1,75 U auf ein Sensor-V bei r -0,82, Prognose
-    // ~171 mg/dl zu hoch). (2) PositiveCorrectionRearm - Zero-Latch-Loesung
+    // (Pflichtfall: Korrektur-SMBs auf ein Sensor-V bei negativem r,
+    // Prognose deutlich zu hoch). (2) PositiveCorrectionRearm - Zero-Latch-Loesung
     // und Nachtende oeffnen positive Korrektur-SMBs erst nach Mindestdauer
-    // UND zusammenhaengend bestaetigter Aufwaertslage (Pflichtfall 08:00:
-    // 0,35 U in der ersten Minute nach der Nachtband-Kante). NUR reiner
+    // UND zusammenhaengend bestaetigter Aufwaertslage (Pflichtfall: eine
+    // SMB in der ersten Minute nach der Nachtband-Kante). NUR reiner
     // Korrekturkontext - Marker/Prime/Fundament/MEAL-Frist bleiben
     // unberuehrt, r/UKF werden NICHT global haerter; kein Carry; der
     // Zero-Latch bleibt zweite Schutzlinie. Neun Stellgroessen in Hash und
@@ -218,11 +217,11 @@ object FuseStateJson {
     // ab der V-Zuendung.
     // v33 (26.08.): die REBOUND-FENSTERDAUER ist einstellbar
     // (FuseIntKey.ReboundWindowMin, 45..240, Default 45 = bitgleich zum
-    // bisherigen Verhalten). Anlass ist der gemessene Verlauf vom 26.08.:
-    // das Totband liess unter Ziel+Band 0,00 U durch, aber im Zyklus nach
-    // Fensterende sprang die Ratio von 0,15 auf 0,325 und der SMB von 0,10
-    // auf 0,50 U; bis zum naechsten Tief (Nadir q1 54,6) flossen 3,45 U,
-    // davon 1,85 U aus dem Liveness-Kanal. Die Dauer wirkt an DREI Stellen:
+    // bisherigen Verhalten). Anlass ist ein gemessener Verlauf: das Totband
+    // liess unter Ziel+Band nichts durch, aber im Zyklus nach Fensterende
+    // sprang die Ratio auf den Anstiegswert und der SMB deutlich nach oben;
+    // bis zum naechsten Tief floss eine grosse Menge, zum Teil aus dem
+    // Liveness-Kanal. Die Dauer wirkt an DREI Stellen:
     // Fenstertest und Restzeit im Runner sowie das Tief-Gedaechtnis in
     // FuseLowMemory, das nach einem Neustart alles aeltere verwirft - haette
     // man dort die Konstante stehen lassen, kappte jeder Flash ein laengeres
@@ -231,10 +230,10 @@ object FuseStateJson {
     // Ein historisch gehaltener Basalschutz blockiert die autorisierte
     // Mahlzeiten-Direktdosis nicht mehr; aktuelle Low-Gefahr, gemessenes
     // Abwaertsrisiko, Rebound sowie Signal-, Modell- und Ledger-Sperren
-    // bleiben unveraendert wirksam. Anlass ist das Fruehstueck des 28.08.:
-    // von 09:22 bis 09:36 war `zeroLatch` der EINZIGE Eintrag in
-    // `currentHazard`, bei descentRisk=false und gesundem Signal, und vier
-    // autorisierte Einheiten lagen still. Dosierwirksam, deshalb der Bump.
+    // bleiben unveraendert wirksam. Anlass ist ein Fruehstueck: ueber viele
+    // Minuten war `zeroLatch` der EINZIGE Eintrag in `currentHazard`, bei
+    // descentRisk=false und gesundem Signal, und die autorisierte Menge lag
+    // still. Dosierwirksam, deshalb der Bump.
     // Zwei Stellen mussten mit, beide KEINE Parameteraenderung: der
     // bedarfsbegrenzte Ruhekandidat fuehrt den Latch jetzt als eigene
     // Bedingung (sonst haette die Entkopplung die Korrekturbahn geoeffnet),
@@ -245,15 +244,14 @@ object FuseStateJson {
     // Stabilitaetsnachweis auf der gemessenen Reihe ersetzt; MEASURED_LOW ist
     // ein eigenes Gefahrenfeld; das 120-min-Basalverdikt ist durch den am
     // Marker gepinnten Abwaertsrisiko-Vertrag ersetzt; die Vorgeschichte
-    // zaehlt auch zeitlich. Am Fruehstueck des 28.08. verschiebt das die
-    // Anforderung von 09:37/09:38 auf 09:22:21 - dieselbe Menge, 25 s nach
-    // dem Marker. Dosierwirksam ohne jeden Zweifel.
+    // zaehlt auch zeitlich. Am selben Fruehstueck verschiebt das die
+    // Anforderung deutlich nach vorn - dieselbe Menge, Sekunden nach dem
+    // Marker. Dosierwirksam ohne jeden Zweifel.
     // v36 (29.08.): TYPISIERTER WIDERRUF-REBASE der Evidenzsumme. Ein
-    // regulaerer Ledger-Widerruf (-0,10 U am Fensterende des Fruehstuecks
-    // 29.08.) senkte `evidenceCommittedU`; EvidenceStock wertete das als
+    // regulaerer Ledger-Widerruf (am Fensterende eines Fruehstuecks) senkte `evidenceCommittedU`; EvidenceStock wertete das als
     // verlorenen Zustand (UNKNOWN ohne Selbstheilung), und EXCLUDED_LAGE
     // nahm den Liveness-Kanal fuer den Episodenrest aus dem Spiel - bei
-    // noch 73 min gueltiger Markervollmacht. Jetzt traegt der Ledger eine
+    // noch lange gueltiger Markervollmacht. Jetzt traegt der Ledger eine
     // monotone commitmentRevision, die NUR die beiden Widerrufspfade
     // atomar vorruecken; nur eine Absenkung MIT vorgerueckter Revision ist
     // ein legaler Rebase (Marke runter, keine Erstattung, Gefahren-Tore
@@ -264,8 +262,8 @@ object FuseStateJson {
     // vetted.block VOR liftUpfront) statt des publizierten Blocks.
     // Autorisierte Boeden (Foundation-Drip, Prime, Upfront) plus
     // MarkerFloor-Restauration machten aus GUARD_FLOOR ein NONE und
-    // verzoegerten die Bewaffnung um den Streak-3-Zyklus (28.08. 09:50,
-    // 29.08. 09:41 - je 1 Zyklus gemessen). Nur das Bewaffnungstor; alle
+    // verzoegerten die Bewaffnung um den Streak-3-Zyklus (an zwei
+    // Fruehstuecken je 1 Zyklus gemessen). Nur das Bewaffnungstor; alle
     // Gefahren-/Integritaetstore unveraendert. Dosierwirksam.
     // v38 (29.08., A4 aus Bauauftrag 7.5.7): policyMode (LEGACY |
     // CENTRAL_PROFILES) + die vier zentralen Profilwerte als KANDIDATEN in
@@ -278,9 +276,9 @@ object FuseStateJson {
     // v39 (29.08., M1 aus Bauauftrag 7.5.1): eigene MEAL-Druckschwelle des
     // Liveness-Kanals unter gueltiger Markervollmacht (absolut, mg/dl).
     // Unkonfiguriert = bisherige Tag-/Nachtschwelle (neutraler Altpfad,
-    // Default-bitgleich); gesetzt ist sie DOSIERWIRKSAM: die 55-min-
-    // (Abend 28.08.) und 35-min-Loecher (Fruehstueck 29.08.) entstanden
-    // aus der Korrektur-Schwelle unter stehender MEAL-Vollmacht.
+    // Default-bitgleich); gesetzt ist sie DOSIERWIRKSAM: lange Versorgungs-
+    // Loecher an einem Abend und einem Fruehstueck entstanden aus der
+    // Korrektur-Schwelle unter stehender MEAL-Vollmacht.
     // bgMinSource kennt jetzt MEAL; Profilwechsel ist KEIN CONFIG_CHANGED.
     // v40 (29.08., M3 aus Bauauftrag 7.5.5): konfigurierbare
     // Bewaffnungszyklen unter MEAL-Vollmacht (MealArmCycles, Default 3 =
@@ -328,12 +326,12 @@ object FuseStateJson {
     // (Frist, Druckschwellen, Armierung, Re-Arm, Fundament A/B)
     // unveraendert. Fuer bisher-LEGACY-Geraete ist der Flash der
     // BEWUSSTE Architekturwechsel auf die zentrale Politik.
-    // v45 (30.08., P1 Eis-Livefall 13:50): die MEAL-/Evidenz-Entwaffnung
+    // v45 (30.08., P1 Livefall nach Eis): die MEAL-/Evidenz-Entwaffnung
     // des Rebound-Totbands gilt auch im HARTEN Liveness-Tor. Vorher las
     // das Tor das rohe Fenster (reboundRaw) und blieb EXCLUDED/
     // REBOUND_ACTIVE, waehrend der Normalpfad laengst per
-    // evidenceMayOverrideRebound entwaffnet war und nach 3,05 U mit
-    // GUARD_FLOOR schloss - serielle Blockade trotz 3,68 U freiem
+    // evidenceMayOverrideRebound entwaffnet war und nach einer ersten Menge
+    // mit GUARD_FLOOR schloss - serielle Blockade trotz freiem
     // MEAL-Headroom. Jetzt sperrt reboundRaw nur noch bei NICHT geltendem
     // Sonderrecht (dieselbe typisierte Rechnung, NightWindow.
     // evidenceMayOverrideRebound: Kredit + passender Pin + Frist, nie
@@ -1740,7 +1738,7 @@ object FuseStateJson {
                 // aeltere Leser sehen das Feld nicht, neuere behandeln sein
                 // Fehlen als UNBEKANNT - nicht als "Fenster zu Ende".
                 .put("reboundRestMin", outcome.state?.reboundRestMin ?: JSONObject.NULL)
-                // NACHTFENSTER, bisher unsichtbar (Toni 15.08. 23:14): der
+                // NACHTFENSTER, bisher unsichtbar (Toni 15.08.): der
                 // Runner setzt es korrekt, aber im Trail stand es nirgends -
                 // ob das Nacht-Totband scharf war, liess sich nur aus der Uhr
                 // und der Konfiguration herleiten. Genau diese Herleitung will

@@ -3213,8 +3213,8 @@ class FuseCycleRunner(
             onsetCapU = if (onset.active) onset.remainingU else null,
         )
 
-        // KANDIDATENPRUEFUNG (Audit 07.08.: 0,30 U bei ISF 95 senken die Bahn
-        // 4,3 mg/dl @30 min / 21,6 @120 min - der Baseline-Guard sieht das
+        // KANDIDATENPRUEFUNG (Audit: schon eine kleine SMB senkt die Bahn
+        // messbar, nach 120 min deutlich - der Baseline-Guard sieht das
         // strukturell nicht). Der Ratio-Pfad hat VORGESCHLAGEN; die Suche
         // prueft den Vorschlag MIT seiner Wirkung und darf ihn ueber
         // CandidateGate nur beschneiden. Kernel-/Technik-Ausfaelle lassen die
@@ -3774,8 +3774,8 @@ class FuseCycleRunner(
         // Foundation) und die MarkerFloor-Restauration ueberschreiben
         // `block` mit NONE - das Bewaffnungstor der Liveness las damit
         // "Normalpfad offen", waehrend der modellbasierte Bedarf GUARD/TAIL-
-        // gedeckelt war. Gemessen je ein verlorener Bewaffnungszyklus am
-        // 28.08. 09:50 und 29.08. 09:41 (fndLift 0,05, preFoundationBlock
+        // gedeckelt war. Gemessen an zwei Fruehstuecken je ein verlorener
+        // Bewaffnungszyklus (kleinster Fundament-Lift, preFoundationBlock
         // GUARD_FLOOR, Denial NORMAL_PATH_OPEN bei erfuelltem Streak).
         // ZYKLUSLOKAL, nicht persistiert; `preFoundationBlock` bleibt als
         // eigene Messgroesse unveraendert (er misst NACH PrimeRelease.lift
@@ -5016,14 +5016,14 @@ class FuseCycleRunner(
                 ledgerView.hold -> "LEDGER_HOLD"
                 else -> null
             }
-            // P1 v45 (Eis-Livefall 30.08. 13:50): das ROHE Rebound-
+            // P1 v45 (Livefall nach Eis): das ROHE Rebound-
             // Fenster sperrt den Kanal nur, wenn das markergebundene
             // Sonderrecht NICHT gilt - DIESELBE Wahrheit wie im Regler
             // (evidenceMayOverrideRebound), keine zweite Rechnung.
             // Vorher: Normalpfad per Evidenz entwaffnet und dann GUARD-
             // geschlossen, der Kanal las das Rohsignal und blieb
-            // EXCLUDED/REBOUND_ACTIVE - serielle Blockade bei q1 172,
-            // r +4,8 und 3,68 U freiem MEAL-Headroom.
+            // EXCLUDED/REBOUND_ACTIVE - serielle Blockade bei hohem q1,
+            // steilem Anstieg und freiem MEAL-Headroom.
             // Seit 14.09. zusaetzlich die Rebound-Evidenz-Ausnahme (Default
             // AUS -> exakt die bisherige Bedingung).
             val reboundSperrt = app.aaps.fuse.core.controller.MealReboundEvidenceException
@@ -5195,8 +5195,8 @@ class FuseCycleRunner(
             if (!livenessActive) {
                 when {
                     computeTs < episodes.livenessReArmUntilTs -> {
-                        // v19 (Codex-Befund im Live-Trail 22.08. 22:53-23:03):
-                        // der Streak lief WAEHREND der Sperre weiter (1->10)
+                        // v19 (Codex-Befund im Live-Trail):
+                        // der Streak lief WAEHREND der Sperre weiter
                         // und der Kanal war nach Fristablauf sofort wieder
                         // scharf. Vertrag: die Sperre nullt den Streak jeden
                         // Zyklus - erst NACH Ablauf zaehlen drei frische
@@ -8210,8 +8210,8 @@ class FuseCycleRunner(
             // PRIOR-FREIEN Sicherheitsbahn per Knopfdruck. Genau das verbietet
             // H2 ("a marker may create demand evidence, not protection").
             //
-            // Der gemessene Anlass (09.08. 10:46, Guard sperrte die angesagte
-            // Mahlzeit um 0,9 mg/dl) bleibt gueltig - aber seine Ursache ist
+            // Der gemessene Anlass (der Guard sperrte eine angesagte Mahlzeit
+            // knapp) bleibt gueltig - aber seine Ursache ist
             // die COB-BLINDHEIT, nicht der Abschlag. Der Abschlag rechnet
             // korrekt: er kreditiert nur die Basal-Aktivitaet und laesst die
             // Bolus-Wirkung als real stehen. Das ist fuer einen Regler ohne

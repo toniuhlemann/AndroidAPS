@@ -246,16 +246,14 @@ enum class FuseDoubleKey(
      *
      * Gerechnet wird, was eine ab jetzt laufende Null bis zum erwarteten
      * Bodenkontakt an Absenkung VERHINDERT - integriert ueber die Wirkkurve,
-     * nicht "Rate mal Zeit". An Tonis Profil (0,60 U/h, ISF 63, Lyumjev
-     * peak 45 / DIA 9 h):
-     *
-     *     Vorlauf   20 min   30 min   60 min   90 min   120 min
-     *     Wirkung    0,4      1,1      6,2     15,8      28,7  mg/dl
+     * nicht "Rate mal Zeit". Die Wirkung waechst stark ueberproportional mit
+     * dem Vorlauf (Groessenordnungen an einem Beispielprofil in
+     * LowThreatGateTest).
      *
      * Der Default 5 liegt an der Messbarkeitsgrenze: darunter ist der Effekt
      * kleiner als das Sensorrauschen, und eine Massnahme, deren Erfolg man
-     * nicht sehen kann, ist keine. Praktisch heisst das rund 55 Minuten
-     * Vorlauf - Tonis Schaetzung "mindestens 1 Stunde" lag richtig.
+     * nicht sehen kann, ist keine. Praktisch heisst das einen Vorlauf in der
+     * Groessenordnung einer Stunde.
      *
      * GROESSER = SELTENER. Bei 0 ist die Nutzenprobe faktisch aus und das
      * Tor haengt nur noch an Fall und Ueberdeckung; die Obergrenze 40
@@ -323,10 +321,10 @@ enum class FuseDoubleKey(
      * Nahhorizont des Abwaertsriegels NUR fuer markerautorisiertes Insulin
      * [min] (Punkt 6, Toni 22.08.). Reine Korrekturen behalten
      * [PositiveDescentHorizonMin]; dieser Wert wird BEIM MARKER GEPINNT und
-     * gilt fuer dessen ganze Laufzeit. Der Replay der drei Markerfaelle:
-     * 60 schob am 21.08. 18:19 alle 1,20 U auf (Boden 36-61 min) und liess
-     * die Gutfaelle 14:21/08:59 unangetastet (Boden >= 63 min) - Marge nur
-     * 3-5 min bei n=3, darum konfigurierbar statt festgenagelt.
+     * gilt fuer dessen ganze Laufzeit. Im Replay der Markerfaelle schob der
+     * Standardwert die Menge des Problemfalls auf und liess die Gutfaelle
+     * unangetastet - bei sehr kleiner Fallzahl und knapper Marge, darum
+     * konfigurierbar statt festgenagelt.
      */
     MarkerPrimeDescentHorizonMin("fuse_marker_prime_descent_horizon_min", 60.0, 30.0, 120.0),
 
@@ -461,10 +459,10 @@ enum class FuseIntKey(
      * "ueberlebt das Fundamentfenster" heisst ausdruecklich NICHT
      * "bleibt unbegrenzt offen".
      *
-     * STARTWERT AUS DEM REPLAY: die Erholungen der drei Abfall-Marker
-     * (20.08. 20:22, 21.08. 09:46, 21.08. 18:19) lagen 34-71 min nach dem
-     * Druck, die spaeteste Mahlzeitenankunft bei 67 min - 120 deckt alle mit
-     * Reserve und bleibt weit unter der 360-min-Evidenzepisode.
+     * STARTWERT AUS DEM REPLAY: die Erholungen der Abfall-Marker und die
+     * spaeteste Mahlzeitenankunft lagen alle deutlich innerhalb von 120 min
+     * nach dem Druck - 120 deckt sie mit Reserve und bleibt weit unter der
+     * 360-min-Evidenzepisode.
      */
     DeferredPrimeEndMin("fuse_deferred_prime_end_min", 120, 45, 240),
 

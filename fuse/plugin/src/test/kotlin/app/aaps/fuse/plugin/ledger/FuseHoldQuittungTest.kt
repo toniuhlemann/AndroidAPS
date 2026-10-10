@@ -15,7 +15,7 @@ import org.junit.jupiter.api.Test
  * sogar neustartfest - es fehlte ausschliesslich ein ERZEUGER. `reduce` ist
  * privat, also konnte keine Oberflaeche das Ereignis einspeisen; die einzigen
  * Aufrufer von `HoldAcknowledged` im ganzen Repo standen in Tests. Der Hold war
- * damit an Tonis Medtrum eine Sackgasse, denn die Reparatur, auf die Meldung
+ * damit an einer Medtrum-Pumpe eine Sackgasse, denn die Reparatur, auf die Meldung
  * und Tab verwiesen, verweigert ohne nachgewiesene VirtualPump.
  *
  * DIE GEFAEHRLICHE SEITE ist nicht die Quittung, sondern WAS ANGEBOTEN WIRD.

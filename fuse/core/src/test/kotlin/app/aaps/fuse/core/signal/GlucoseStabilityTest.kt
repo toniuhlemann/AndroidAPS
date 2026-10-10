@@ -345,7 +345,7 @@ class GlucoseStabilityTest {
     }
 
     /**
-     * DIE GRENZE DER BEIDEN FLAGS, an Tonis Beispiel (28.08.).
+     * DIE GRENZE DER BEIDEN FLAGS, an einem Beispiel aus dem Betrieb.
      *
      * Dieser Test hiess einmal "meldet keinen frischen Abfall" und behauptete
      * dann `assertTrue(freshDropExists)` - Name und Zusicherung widersprachen

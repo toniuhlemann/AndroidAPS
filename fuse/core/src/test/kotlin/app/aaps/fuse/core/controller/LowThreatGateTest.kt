@@ -16,7 +16,7 @@ import kotlin.math.exp
  */
 class LowThreatGateTest {
 
-    /** Die oref-Kurve fuer Tonis Profil (peak 45, DIA 9 h) als
+    /** Die oref-Kurve des Beispielprofils (Parameter im Code) als
      *  Wirkungsanteil - dieselbe Parametrisierung wie der Einheitskern. */
     private val wirkung: (Double) -> Double = run {
         val td = 9.0 * 60; val tp = 45.0
@@ -170,7 +170,7 @@ class LowThreatGateTest {
         )
     }
 
-    /** Die gerechneten Groessenordnungen, an Tonis Profil festgehalten -
+    /** Die gerechneten Groessenordnungen, am Beispielprofil festgehalten -
      *  sie sind die Begruendung fuer die 5-mg/dl-Schwelle. */
     @Test
     fun `der Nutzen waechst stark ueberproportional mit dem Vorlauf`() {

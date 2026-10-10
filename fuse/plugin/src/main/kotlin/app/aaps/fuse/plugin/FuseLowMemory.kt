@@ -6,11 +6,11 @@ import org.json.JSONObject
 /**
  * DAS TIEF-GEDAECHTNIS UEBER EINEN NEUSTART RETTEN.
  *
- * DER VORFALL (Toni, 15.08. 18:15, produktiv gemessen): das Rebound-Totband
- * sperrte ab 17:42 jeden Zyklus (SAFETY_HOLD, q1 fiel bis 70,2). Um 17:56 lief
- * ein Flash - danach stand `lastLowTs` wieder auf 0, `reboundWindow` kippte auf
- * false, und ab 17:58 gab FUSE wieder SMBs ab, obwohl das juengste Tief elf
- * Minuten alt war und das Fenster regulaer bis 18:35 gelaufen waere.
+ * DER VORFALL (produktiv gemessen): das Rebound-Totband sperrte nach einem
+ * Tief jeden Zyklus (SAFETY_HOLD). Dann lief ein Flash - danach stand
+ * `lastLowTs` wieder auf 0, `reboundWindow` kippte auf false, und FUSE gab
+ * wenige Minuten spaeter wieder SMBs ab, obwohl das juengste Tief erst kurz
+ * zurueck lag und das Fenster regulaer noch lange gelaufen waere.
  *
  * Der Zustand war ausdruecklich als "fail-open, dokumentiert" vermerkt. Das ist
  * fuer einen SCHUTZ die falsche Richtung: der Verlust oeffnet den SMB-Kanal

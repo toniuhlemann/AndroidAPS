@@ -319,12 +319,11 @@ class SignalRejoinTest {
     // ---- DIE UEBRIGEN VERWEIGERUNGSFAELLE -------------------------------
 
     /**
-     * PFLICHTFALL "Schleifenpause 24.08. 18:49". Der Regler stand
-     * (Bolus), das CGM lief weiter - die MESSREIHE hat dann gar keine
-     * Luecke, auch wenn zwischen zwei Reglerzyklen 181 s liegen.
+     * PFLICHTFALL "Schleifenpause". Der Regler stand (Bolus), das CGM
+     * lief weiter - die MESSREIHE hat dann gar keine Luecke, auch wenn
+     * zwischen zwei Reglerzyklen rund drei Minuten liegen.
      *
-     * Genau so sah es am Geraet aus: gapBeforeMin 1,01 min, 18 Samples,
-     * r sofort +2,15.
+     * Genau so sah es am Geraet aus.
      */
     @Test
     fun `schleifenpause lockert nicht - die reihe hat keine luecke`() {

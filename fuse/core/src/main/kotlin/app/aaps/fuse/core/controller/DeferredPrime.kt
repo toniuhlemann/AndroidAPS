@@ -6,15 +6,15 @@ import kotlin.math.min
 /**
  * DER MARKER-PRIME-AUFSCHUB (Punkt 6, Tonis Bau-GO 22.08.).
  *
- * DER GEMESSENE FALL DAHINTER: 21.08. 18:19 - Abendessen-Marker bei fallendem,
- * bolus-ueberdecktem BG. Der Boden pendelte bei 36-61 min, also JENSEITS des
- * 30-min-Endriegels; markerautorisiert flossen 8x0,15 = 1,20 U in den Fall,
- * die Ueberdeckung wuchs von 51 auf 123 mg/dl, Nadir 58. Die Mahlzeit kam 67
- * Minuten nach dem Marker - das Insulin war RICHTIG autorisiert und nur zur
- * FALSCHEN ZEIT unterwegs. Der Replay: ein 60-min-Horizont NUR fuer
- * markerautorisiertes Insulin haette alle 1,20 U aufgeschoben, bei null
- * Fehlaufschub in beiden Gutfaellen (14:21, 08:59) - n=3, Marge 3-5 min,
- * darum bleibt die Grenze konfigurierbar und der Schalter default AUS.
+ * DER GEMESSENE ANLASS: ein Abendessen-Marker bei fallendem, bolus-
+ * ueberdecktem BG. Der Bodenkontakt lag JENSEITS des Endriegels;
+ * markerautorisiertes Insulin floss in den Fall, die Ueberdeckung wuchs, und
+ * es folgte ein Tief. Die Mahlzeit kam erst deutlich nach dem Marker - das
+ * Insulin war RICHTIG autorisiert und nur zur FALSCHEN ZEIT unterwegs. Der
+ * Replay: ein laengerer Horizont NUR fuer markerautorisiertes Insulin haette
+ * die Menge aufgeschoben, ohne Fehlaufschub in den Gutfaellen - bei sehr
+ * kleiner Fallzahl und knapper Marge, darum bleibt die Grenze konfigurierbar
+ * und der Schalter default AUS.
  *
  * WAS DER AUFSCHUB IST - UND WAS NICHT (Tonis Vertragsliste, woertlich):
  *  - Zurueckgehaltenes Insulin bleibt AUTORISIERUNG, keine garantierte

@@ -100,8 +100,8 @@ class MeasuredDescentRiskTest {
 
     @Test
     fun `Fruehstueck ist bei 30 Minuten noch nicht akut aber bei 120 voll gesperrt`() {
-        // Live 21.08. 09:18: q1 112,6, UKF -0,49, Bolus-IOB 1,21.
-        // Mit dem spaeteren q1 um 88 lag der lineare Bodenkontakt weiterhin
+        // Testlage nach einem Fruehstuecksfall aus dem Betrieb: bei q1 um 88
+        // lag der lineare Bodenkontakt weiterhin
         // jenseits 30, aber klar innerhalb 120 Minuten. Genau diese Kopplung
         // hat die ganze Phase A statt nur die akute Kante gesperrt.
         val nah = risiko(bg = 88.0, rate = -0.49, bolus = 1.21, horizon = 30.0)

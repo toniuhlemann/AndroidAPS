@@ -141,7 +141,7 @@ object FuseHoldAlarm {
      * Getrennt, weil der Ausweg von Dingen abhaengt, die dieser Zustandsautomat
      * nicht kennt: welche Fehler anliegen und welche Pumpe laeuft. Bis
      * 16.08.2026 stand hier fest "Ausweg: Einstellungen -> FUSE -> Reparatur" -
-     * und das war auf Tonis Medtrum nachweislich falsch: die Reparatur
+     * und das war auf einer Medtrum-Pumpe nachweislich falsch: die Reparatur
      * verweigert ohne nachgewiesene VirtualPump (`FuseRepairScheduler`), der
      * genannte Weg endet dort in einer Absage. Ein Wegweiser, der ins Leere
      * zeigt, ist schlimmer als keiner - er kostet Zeit in genau der Lage, in

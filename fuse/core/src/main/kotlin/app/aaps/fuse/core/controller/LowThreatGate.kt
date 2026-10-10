@@ -22,15 +22,11 @@ import kotlin.math.abs
  * kehrt die Beweislast um - eine Null braucht einen POSITIVEN Nachweis,
  * nicht das Ausbleiben eines Einwands.
  *
- * WAS DIE NULL UEBERHAUPT LEISTEN KANN, gerechnet an Tonis Profil
- * (0,60 U/h, ISF 63, Lyumjev peak 45 / DIA 9 h) - der Grund fuer die
- * Nutzenprobe:
- *
- *     Zeit bis Boden    20 min    30 min    60 min    90 min   120 min
- *     Wirkung            0,4       1,1       6,2      15,8      28,7  mg/dl
- *
- * Unter 30 Minuten Vorlauf liegt der Effekt bei einem Zehntel des
- * Sensorrauschens - die Null ist dort keine schwache Massnahme, sondern gar
+ * WAS DIE NULL UEBERHAUPT LEISTEN KANN - der Grund fuer die Nutzenprobe:
+ * die verhinderte Absenkung waechst stark ueberproportional mit dem Vorlauf
+ * bis zum Bodenkontakt (Groessenordnungen an einem Beispielprofil in
+ * LowThreatGateTest). Bei kurzem Vorlauf liegt der Effekt weit unter dem
+ * Sensorrauschen - die Null ist dort keine schwache Massnahme, sondern gar
  * keine. Toni: "0 tbr muss auch einen messbaren nutzen haben und eine sich
  * anbahnende hypo tatsaechlich rechnerisch ausbremsen koennen." Daraus folgt
  * die kontraintuitive, aber physikalisch richtige Umkehrung: beim SCHNELLEN

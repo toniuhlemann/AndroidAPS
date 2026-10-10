@@ -14,9 +14,9 @@ package app.aaps.fuse.core.controller
  * ZWEI KLASSEN von Ablehnungen, und die Trennung ist tragend:
  *  - INHALTLICH (Guard risse MIT Kandidat, kein Bedarf, Band, Headroom,
  *    Pumpenschritt): wird DURCHGESETZT - genau dafuer ist die Suche da.
- *    Quantitativ (Audit 07.08.): 0,30 U bei ISF 95 senken die Bahn um
- *    4,3 mg/dl @30 min und 21,6 @120 min - das prueft der Baseline-Guard
- *    strukturell nicht.
+ *    Quantitativ (Audit): schon eine kleine SMB senkt die Bahn messbar,
+ *    nach 120 min deutlich - das prueft der Baseline-Guard strukturell
+ *    nicht.
  *  - TECHNISCH (Raster, Horizont, Kernel, ISF-Slot): der PRUEFER
  *    ist ausgefallen, nicht die Dosis unsicher. Dann gilt die Basis
  *    unveraendert und der Ausfall steht als Luecke im Export. Ein Prüfer-

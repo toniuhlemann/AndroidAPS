@@ -79,7 +79,7 @@ class PrimeWindowDeliverableTest {
 
 /**
  * Clearance gegen den ZYKLUS-ANTEIL (Tonis Entscheidung 09.08.).
- * Der gemessene Fall: L-Huelle 2,0 U, ISF 90, Boden 70.
+ * Testlage: L-Huelle 2,0 U, ISF 90, Boden 70.
  */
 class PrimeClearancePerCycleTest {
 

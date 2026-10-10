@@ -57,8 +57,8 @@ class NightWindowTest {
         assertEquals(0.0, NightWindow.effectiveDeadbandMgdl(false, 0.0, true, -10.0, false, reboundOverrideByEvidence = false, nightOverrideByEvidence = false), 0.0)
     }
 
-    /** Der gemessene Anlass: 09.08. 05:25-06:24, BG 89-116 bei Ziel 98.
-     *  Mit 45er Totband liegt die Schwelle bei 143 - alle Abgaben faellig aus. */
+    /** Der gemessene Anlass: Abgaben am fruehen Morgen bei BG knapp ueber dem
+     *  Ziel. Mit 45er Totband waeren sie alle entfallen (Testwerte unten). */
     @Test
     fun `der gemessene Nachtfall waere gesperrt gewesen`() {
         val target = 98.0

@@ -45,7 +45,7 @@ class TbrActuationTest {
      * OHNE LAUFENDE TBR ZAEHLT JEDE ANFORDERUNG - auch eine auf Profilhoehe.
      *
      * Sie nagelt die Rate fuer ihre Laufzeit fest, auch gegen einen
-     * Profilwechsel; Tonis Profil wechselt stuendlich. Das Urteil darf dabei
+     * Profilwechsel; ein Profil kann stuendlich wechseln. Das Urteil darf dabei
      * NICHT von der Dauer abhaengen - genau das war der erste Wurf, in dem
      * zufaellig die Laufzeitregel entschied.
      */

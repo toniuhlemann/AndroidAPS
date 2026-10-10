@@ -65,8 +65,8 @@ object TailLiability {
      * Unterhalb dieses Werts ist die Bahn keine Blutglukose mehr, sondern eine
      * Extrapolation ins Unphysiologische.
      *
-     * Beobachtet am 06.08.: bei 5,92 U an Bord und ISF 95 projizierte die Bahn
-     * auf `minLower = -31 mg/dl`. Die ENTSCHEIDUNG war richtig (sperren), aber
+     * Beobachtet im Betrieb: bei hohem Insulin an Bord projizierte die Bahn auf
+     * einen deutlich negativen `minLower`. Die ENTSCHEIDUNG war richtig (sperren), aber
      * die ZAHL bedeutet nichts — und `budgetU = (lowerBgAtH - floor)/isf`
      * haette daraus ein ebenso bedeutungsloses Budget gerechnet, das spaeter
      * jemand als Messwert liest.

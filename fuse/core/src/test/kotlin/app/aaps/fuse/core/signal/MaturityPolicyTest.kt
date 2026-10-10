@@ -223,8 +223,8 @@ class MaturityPolicyTest {
      *
      * Ein Replay startet kalt: in den ersten Minuten seines Fensters ist
      * die Referenz blind, weil noch keine Reihe da ist, nicht weil das
-     * Geraet blind war. Im Fall 25.08. 11:42 dosierte 3x1 genau dort
-     * dreimal 0,550 U - die Haelfte der gemessenen "Mehrmenge" - und
+     * Geraet blind war. In einem Replay-Fall dosierte eine aggressive Variante
+     * genau dort mehrfach - rund die Haelfte der gemessenen "Mehrmenge" - und
      * verschob ueber Ledger und Deckel auch spaetere Zyklen.
      */
     @Test

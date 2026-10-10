@@ -8,14 +8,16 @@ import kotlin.math.min
  * Die Sofort-Freigabe am Mahlzeiten-Marker - verteilte Abgabe AB KNOPFDRUCK,
  * ohne auf CGM-Evidenz zu warten.
  *
- * WARUM ES SIE GIBT, gemessen am 07.08.2026: Essen 08:50 (Marker), CGM-Regung
- * 09:09, Peak 256 um ~09:50, danach reale Hypo < 70 - AUCH auf prod mit
- * Marker und TT74. Die ~19 Minuten zwischen Essen und CGM holt kein Schaetzer;
- * Insulin ab 08:50 wirkt maximal um ~09:35-09:45, also AM Peak statt danach.
+ * WARUM ES SIE GIBT, gemessen an einem Fruehstueck: zwischen Essen (Marker)
+ * und der ersten CGM-Regung vergingen viele Minuten, der Gipfel kam spaet,
+ * danach folgte ein reales Tief - AUCH auf prod mit Marker und Temp-Target.
+ * Diesen Verzug holt kein Schaetzer; Insulin ab dem Essen wirkt maximal etwa
+ * AM Gipfel statt danach.
  *
  * WAS SIE IST: eine BEZIFFERTE, RUECKHOLBARE Wette. Die Huelle ist nach dem
- * Reversibilitaetsmass KC2-53 bemessen: per Basal-Null sind an Tonis Profil
- * 0,9-1,4 U ueber 120 min zurueckholbar - Default 1,2 U. Ein Fehl-Marker ohne
+ * Reversibilitaetsmass KC2-53 bemessen: per Basal-Null ist ueber 120 min eine
+ * Menge in der Groessenordnung des Defaults zurueckholbar (Default 1,2 U).
+ * Ein Fehl-Marker ohne
  * Mahlzeit ist damit durch Zurueckhalten vollstaendig korrigierbar, WENN die
  * Wache frueh dreht. Das unterscheidet sie von tim2000s' Prime-Boli, die
  * Toni am Boost-Port bewusst NICHT uebernommen hatte: dort ungedeckelt am

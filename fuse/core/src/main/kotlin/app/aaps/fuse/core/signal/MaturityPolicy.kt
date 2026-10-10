@@ -44,8 +44,8 @@ class MaturityPolicy private constructor(
      * Referenz blind, weil noch keine Reihe da ist - nicht, weil das
      * Geraet blind war. Am Geraet lief die Reihe durch.
      *
-     * Ohne diese Sperre dosierte 3x1 im Kaltstart des Falls 25.08. 11:42
-     * dreimal 0,550 U = 1,65 U, und das war die Haelfte der gemessenen
+     * Ohne diese Sperre dosierte eine aggressive Variante im Kaltstart eines
+     * Replay-Falls mehrfach, und das war rund die Haelfte der gemessenen
      * "Mehrmenge". Schlimmer noch: diese Dosen wandern ueber Ledger,
      * Evidenz und Deckel in SPAETERE Zyklen, in denen alle Varianten
      * dasselbe r haben - der Kaltstart verseucht den ganzen Lauf.

@@ -74,8 +74,8 @@ object TbrActuation {
         //
         // Das sieht zunaechst zu streng aus (die Pumpe faehrt im selben
         // Moment gleich), ist es aber nicht: eine TBR nagelt die Rate fuer
-        // ihre Laufzeit FEST, auch gegen einen Profilwechsel. Tonis Profil
-        // wechselt stuendlich; eine 30-Minuten-TBR ueber eine solche Kante
+        // ihre Laufzeit FEST, auch gegen einen Profilwechsel. Ein Profil kann
+        // stuendlich wechseln; eine 30-Minuten-TBR ueber eine solche Kante
         // laesst die Pumpe danach anders fahren als ohne sie. Diesen Verlauf
         // kennt der Baustein nicht - also zaehlt er, statt zu raten.
         //

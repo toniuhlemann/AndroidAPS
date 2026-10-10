@@ -29,9 +29,10 @@ enum class PredictorReason {
  * WARUM DAS IN DIE BAHN GEHOERT und nicht nur ins Budget: die Transportmenge
  * wurde bisher nur von den Headrooms abgezogen (iobTH/maxIOB/Prime). Das
  * begrenzt, wieviel NOCH angefordert werden darf - es macht die untere
- * Glukosebahn aber nicht wahr. Gemessen an Tonis Medtrum (765 SMBs) betraegt die
- * Sichtbarkeits-Latenz p50 15 s, p90 56 s, p99 175 s, MAX 854 s: in 1 bis ~15
- * Zyklen glaubten Guard und Schwanz, diese Menge habe keine Zukunftswirkung.
+ * Glukosebahn aber nicht wahr. Gemessen an einer Medtrum-Pumpe betraegt die
+ * Sichtbarkeits-Latenz meist Sekunden bis eine Minute, im Extrem viele Minuten:
+ * in 1 bis etwa 15 Zyklen glaubten Guard und Schwanz, diese Menge habe keine
+ * Zukunftswirkung.
  *
  * DOPPELZAEHLUNG ist ueber GENAU EINE ZAHL geregelt: sobald die Behandlung im
  * IOB nachgewiesen ist, faellt `transportCommitmentU` im Ledger auf 0 - der
