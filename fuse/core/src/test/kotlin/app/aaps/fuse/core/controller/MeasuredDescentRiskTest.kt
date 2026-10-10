@@ -91,7 +91,7 @@ class MeasuredDescentRiskTest {
      * nicht. Genau diese Entkopplung ist der P0.
      */
     @Test
-    fun `der 18-13-Fall bleibt gesperrt, auch wenn die Null nichts mehr bringt`() {
+    fun `der schaerfste Fall bleibt gesperrt, auch wenn die Null nichts mehr bringt`() {
         val r = risiko(bg = 98.0, rate = -3.13, bolus = 4.73, horizon = 30.0)
         assertTrue(r.active, "gemessen fallend, ueberdeckt, Boden in ${r.minutesToFloor} min")
         // 28 mg/dl bis zum Boden bei 3,13/min: rund 9 Minuten.

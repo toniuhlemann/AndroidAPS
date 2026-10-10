@@ -89,7 +89,7 @@ class PhaseACarryTest {
      * Grundliste NICHT enthielt.
      */
     @Test
-    fun `der gemessene 19-07-Fall erzeugt den Uebertrag`() {
+    fun `der Anlassfall erzeugt den Uebertrag`() {
         val grund = NotSentProof.reasonFor(
             NotSentProof.Observation(
                 correlated = true,
@@ -139,7 +139,7 @@ class PhaseACarryTest {
         a.resolveReservation(ts + 60_000L, publishedU = 0.15, proposalId = "s#43")
         a.revokeSettled("s#43")
 
-        assertEquals(0.30, e.confirmedNotSentPhaseAU, 1e-9, "die gemessenen 0,30 U vom 19.08.")
+        assertEquals(0.30, e.confirmedNotSentPhaseAU, 1e-9, "die 0,30 U des Anlassfalls")
     }
 
     // ---- Was KEINEN Uebertrag erzeugt --------------------------------------

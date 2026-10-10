@@ -94,7 +94,7 @@ class ReboundOverrideTtlTest {
      * durchkommen.
      */
     @Test
-    fun `der 13-41-Fall wird jetzt gebremst`() {
+    fun `der Anlassfall wird jetzt gebremst`() {
         val darfNoch = darf(alterMin = 287)
         assertFalse(darfNoch, "nach 287 min gibt es kein Sonderrecht mehr")
 

@@ -19,7 +19,7 @@ class PostGapMetricsTest {
      * diesen Fall nie - und genau deshalb gibt es die vier Zahlen.
      */
     @Test
-    fun `die Sequenz vom 10 August - erster Punkt harmlos, Ruecksprung auffaellig`() {
+    fun `die Luecken-Sequenz - erster Punkt harmlos, Ruecksprung auffaellig`() {
         val ts = listOf(min(0.0), min(35.0))
         val v = listOf(105.0, 90.0)
         val bruch = min(35.0)          // segmentStart schneidet AUF den Punkt nach der Luecke

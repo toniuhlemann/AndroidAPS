@@ -200,7 +200,7 @@ class FuseScreenInventarWaechterTest {
                 "der Waechter waere blind. Erkannt: $gebaut"
         }
         assertTrue(FuseIntKey.PrimeWindowMin.key in gebaut) {
-            "Der Anlassfall vom 16.08. (Freigabe-Fenster) wird nicht erkannt"
+            "Der Anlassfall (Freigabe-Fenster) wird nicht erkannt"
         }
     }
 }

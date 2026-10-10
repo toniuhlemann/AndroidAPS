@@ -5,13 +5,13 @@ import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
 /**
- * Der gemessene Fall 09.08.: Knopfdruck 10:46, Clearance sperrt 15 min, die
- * 2,00-U-Huelle verfaellt ungenutzt. Das Fenster zaehlt jetzt LIEFERBARE
+ * Der Anlassfall: ab dem Knopfdruck sperrt die Clearance 15 min, die
+ * Huelle verfaellt ungenutzt. Das Fenster zaehlt jetzt LIEFERBARE
  * Minuten, mit absoluter Wanduhr-Kappe.
  */
 class PrimeWindowDeliverableTest {
 
-    private val t0 = 1_786_265_160_000L
+    private val t0 = 1_700_000_000_000L
 
     private fun input(nowMin: Long, windowStartMin: Long?, minLower: Double) = PrimeRelease.Input(
         enabled = true,
@@ -23,15 +23,15 @@ class PrimeWindowDeliverableTest {
         spentU = 0.0,
         safetyMinLowerMgdl = minLower,
         guardFloorMgdl = 70.0,
-        isfMgdlPerU = 90.0,
+        isfMgdlPerU = 80.0,
         pumpIncrementU = 0.05,
     )
 
     /** Clearance rechnet seit 09.08. gegen den ZYKLUS-ANTEIL: Huelle 1,2 auf
-     *  15 min -> 0,05 U, Bedarf 0,2*0,05*90 = 0,9 mg/dl. 70,5 - 0,9 < 70. */
+     *  15 min -> 0,05 U, Bedarf 0,2*0,05*80 = 0,8 mg/dl. 70,5 - 0,8 < 70. */
     private val blockt = 70.5
 
-    /** minLower 100 -> 78,4 >= 70 = frei. */
+    /** minLower 100 -> 80,8 >= 70 = frei. */
     private val frei = 100.0
 
     @Test
@@ -79,31 +79,31 @@ class PrimeWindowDeliverableTest {
 
 /**
  * Clearance gegen den ZYKLUS-ANTEIL (Tonis Entscheidung 09.08.).
- * Testlage: L-Huelle 2,0 U, ISF 90, Boden 70.
+ * Testlage: L-Huelle 2,5 U, ISF 80, Boden 70.
  */
 class PrimeClearancePerCycleTest {
 
-    private val t0 = 1_786_265_160_000L
+    private val t0 = 1_700_000_000_000L
 
-    private fun input(minLower: Double, envelope: Double = 2.0, nowMin: Long = 0) = PrimeRelease.Input(
+    private fun input(minLower: Double, envelope: Double = 2.5, nowMin: Long = 0) = PrimeRelease.Input(
         enabled = true, mealMarkerActive = true, armedTsMs = t0, windowStartTsMs = 0L,
         nowMs = t0 + nowMin * 60_000L, envelopeU = envelope, spentU = 0.0,
-        safetyMinLowerMgdl = minLower, guardFloorMgdl = 70.0, isfMgdlPerU = 90.0,
+        safetyMinLowerMgdl = minLower, guardFloorMgdl = 70.0, isfMgdlPerU = 80.0,
         pumpIncrementU = 0.05,
     )
 
     @Test
-    fun `der gemessene Fall vom 09_08 oeffnet jetzt`() {
-        // Alt: 0,2*2,0*90 = 36 -> minLower >= 106 noetig. Geschaetzte 102 fielen durch.
-        // Neu: Zyklusanteil 2,0/15 = 0,133 -> auf 0,05 gerundet 0,10 -> 0,2*0,10*90 = 1,8.
-        val p = PrimeRelease.plan(input(102.0))
+    fun `der Anlassfall mit grosser Huelle oeffnet jetzt`() {
+        // Alt: 0,2*2,5*80 = 40 -> minLower >= 110 noetig, 105 fiel durch.
+        // Neu: Zyklusanteil 2,5/15 = 0,167 -> auf 0,05 abgerundet 0,15 -> 0,2*0,15*80 = 2,4.
+        val p = PrimeRelease.plan(input(105.0))
         assertEquals("PRIME", p.reason)
-        assertEquals(0.10, p.floorU, 1e-9)
+        assertEquals(0.15, p.floorU, 1e-9)
     }
 
     @Test
     fun `nahe am Boden sperrt es weiterhin`() {
-        // minLower 71, Zyklusanteil 0,10 -> 71 - 1,8 = 69,2 < 70.
+        // minLower 71, Zyklusanteil 0,15 -> 71 - 2,4 = 68,6 < 70.
         assertEquals("CLEARANCE", PrimeRelease.plan(input(71.0)).reason)
     }
 
@@ -111,8 +111,8 @@ class PrimeClearancePerCycleTest {
     fun `die grosse Huelle bestraft den Start nicht mehr`() {
         // Kleine und grosse Huelle haben am Fensteranfang denselben Bedarf je
         // Zyklus-Schritt, nur die Schrittgroesse unterscheidet sich.
-        val klein = PrimeRelease.plan(input(102.0, envelope = 1.2))
-        val gross = PrimeRelease.plan(input(102.0, envelope = 2.0))
+        val klein = PrimeRelease.plan(input(105.0, envelope = 1.2))
+        val gross = PrimeRelease.plan(input(105.0, envelope = 2.5))
         assertEquals("PRIME", klein.reason)
         assertEquals("PRIME", gross.reason)
         assertTrue(gross.floorU >= klein.floorU) { "die groessere Huelle darf nicht WENIGER liefern" }

@@ -11,7 +11,7 @@ class SubStepAccumulatorTest {
     private val step = 0.05
 
     @Test
-    fun `Tonis Fall - 0,036 U je Zyklus werden zu einem Tropfen alle zwei Zyklen`() {
+    fun `ein Bedarf unter dem Pumpenschritt wird zu einem Tropfen alle zwei Zyklen`() {
         // insulinReq 0,24 * Ratio 0,15 = 0,036; gerastert 0,00.
         var carry = 0.0
         val releases = ArrayList<Double>()

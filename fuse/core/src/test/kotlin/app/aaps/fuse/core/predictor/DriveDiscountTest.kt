@@ -17,7 +17,7 @@ class DriveDiscountTest {
      * Mit dem Abschlag faellt die UNTERE Bahn auf den sichtbaren Trend zurueck.
      */
     @Test
-    fun `die Nachtlage 07-08 wird auf den sichtbaren Trend zurueckgefuehrt`() {
+    fun `die Nachtlage wird auf den sichtbaren Trend zurueckgefuehrt`() {
         val d = DriveDiscount.apply(
             meanMgdlPerMin = 3.2, bandLowerMgdlPerMin = 3.2,
             bolusActivityUPerMin = 0.0375, isfMgdlPerU = 80.0, // 3.0 mg/dl/min

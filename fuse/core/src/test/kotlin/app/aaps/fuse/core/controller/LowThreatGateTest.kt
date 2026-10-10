@@ -9,17 +9,17 @@ import kotlin.math.exp
 /**
  * DAS LOW-TOR, ohne Runner (Tonis Vertrag 17.08.).
  *
- * Der Anlass steht im Klassenkopf von [LowThreatGate]: 677 von 1129 Zyklen
- * mit laufender Null, 60 % eines Tages ohne Fundament. Jeder Testfall hier
+ * Der Anlass steht im Klassenkopf von [LowThreatGate]: ueber weite Teile
+ * eines Tages lief eine Null ohne Fundament. Jeder Testfall hier
  * ist eine Zeile aus dem Vertrag - und die Nutzenprobe ist an derselben
  * oref-Kurve gerechnet, mit der auch die Entscheidung faellt.
  */
 class LowThreatGateTest {
 
-    /** Die oref-Kurve des Beispielprofils (Parameter im Code) als
-     *  Wirkungsanteil - dieselbe Parametrisierung wie der Einheitskern. */
+    /** Die oref-Kurve des synthetischen Beispielprofils (peak 55, DIA 7 h)
+     *  als Wirkungsanteil - dieselbe Parametrisierung wie der Einheitskern. */
     private val wirkung: (Double) -> Double = run {
-        val td = 9.0 * 60; val tp = 45.0
+        val td = 7.0 * 60; val tp = 55.0
         val tau = tp * (1 - tp / td) / (1 - 2 * tp / td)
         val a = 2 * tau / td
         val s = 1 / (1 - a + (1 + a) * exp(-td / tau))
@@ -38,9 +38,9 @@ class LowThreatGateTest {
         bg: Double? = 130.0,
         rate: Double? = -1.0,
         bolus: Double? = 2.0,
-        isf: Double? = 63.0,
+        isf: Double? = 50.0,
         boden: Double = 70.0,
-        basal: Double = 0.60,
+        basal: Double = 0.90,
     ) = LowThreatGate.evaluate(
         measuredLow = measuredLow, signalHealthy = healthy, bgMgdl = bg,
         fallRatePerMin = rate, bolusIobU = bolus, isfMgdlPerU = isf,
@@ -55,8 +55,8 @@ class LowThreatGateTest {
         healthy: Boolean = true,
     ) = LowThreatGate.evaluate(
         measuredLow = false, signalHealthy = healthy, bgMgdl = bg,
-        fallRatePerMin = rate, bolusIobU = bolus, isfMgdlPerU = 63.0,
-        guardFloorMgdl = 70.0, scheduledBasalUPerH = 0.60, remainingEffect = wirkung,
+        fallRatePerMin = rate, bolusIobU = bolus, isfMgdlPerU = 50.0,
+        guardFloorMgdl = 70.0, scheduledBasalUPerH = 0.90, remainingEffect = wirkung,
     )
 
     // ---- Die Wirklichkeit zuerst -----------------------------------------
@@ -84,7 +84,7 @@ class LowThreatGateTest {
 
     /**
      * DER HAEUFIGSTE FALL DES ALTEN VERHALTENS: die Bahn sagt tief, der
-     * gemessene Verlauf steigt. Genau daraus entstand die 60-%-Nullzeit.
+     * gemessene Verlauf steigt. Genau daraus entstand die lange Nullzeit.
      *
      * DIESER TEST WAR IM ERSTEN WURF STUMPF, und die Mutationsprobe hat es
      * gezeigt: bei 0,0 faengt die Division (Infinity), bei +1,5 die
@@ -118,7 +118,7 @@ class LowThreatGateTest {
      */
     @Test
     fun `ohne Bolus-Ueberdeckung bleibt das Tor zu`() {
-        // Strecke zum Boden 60 mg/dl, Bolus 0,5 U x 63 = 31,5 -> deckt nicht
+        // Strecke zum Boden 60 mg/dl, Bolus 0,5 U x 50 = 25 -> deckt nicht
         assertEquals(LowThreatGate.Verdict.NONE, tor(bolus = 0.5))
         // unbekannt ist kein Nachweis
         assertEquals(LowThreatGate.Verdict.NONE, tor(bolus = null))
@@ -134,7 +134,7 @@ class LowThreatGateTest {
     @Test
     fun `die Ueberdeckung haengt am Bolusanteil`() {
         assertEquals(LowThreatGate.Verdict.FALLING_WITH_BOLUS_OVERCOVERAGE, tor(bolus = 2.0))
-        assertEquals(LowThreatGate.Verdict.NONE, tor(bolus = 0.9), "0,9 x 63 = 57 < 60 Strecke")
+        assertEquals(LowThreatGate.Verdict.NONE, tor(bolus = 1.15), "1,15 x 50 = 57,5 < 60 Strecke")
     }
 
     /** Liegt der Bodenkontakt jenseits des Fensters, ist es keine NAHE
@@ -158,7 +158,7 @@ class LowThreatGateTest {
      */
     @Test
     fun `beim schnellen Sturz lohnt die Null nicht, beim langsamen schon`() {
-        // BG 130, Strecke 60. Bei -3,0/min sind das 20 min -> ~0,4 mg/dl.
+        // BG 130, Strecke 60. Bei -3,0/min sind das 20 min -> ~0,3 mg/dl.
         assertEquals(
             LowThreatGate.Verdict.NONE, tor(bg = 130.0, rate = -3.0),
             "20 min Vorlauf bringen ein Zehntel des Sensorrauschens",
@@ -174,7 +174,7 @@ class LowThreatGateTest {
      *  sie sind die Begruendung fuer die 5-mg/dl-Schwelle. */
     @Test
     fun `der Nutzen waechst stark ueberproportional mit dem Vorlauf`() {
-        fun n(min: Double) = LowThreatGate.nutzenMgdl(min, 0.60, 63.0, wirkung)
+        fun n(min: Double) = LowThreatGate.nutzenMgdl(min, 0.90, 50.0, wirkung)
         assertTrue(n(20.0) < 1.0, "20 min: ${n(20.0)}")
         assertTrue(n(30.0) < 2.0, "30 min: ${n(30.0)}")
         assertTrue(n(60.0) in 5.0..8.0, "60 min: ${n(60.0)}")
@@ -200,8 +200,8 @@ class LowThreatGateTest {
     fun `ohne Wirkungskurve bleibt das Tor zu`() {
         val d = LowThreatGate.evaluate(
             measuredLow = false, signalHealthy = true, bgMgdl = 130.0,
-            fallRatePerMin = -0.6, bolusIobU = 2.0, isfMgdlPerU = 63.0,
-            guardFloorMgdl = 70.0, scheduledBasalUPerH = 0.60, remainingEffect = { 0.0 },
+            fallRatePerMin = -0.6, bolusIobU = 2.0, isfMgdlPerU = 50.0,
+            guardFloorMgdl = 70.0, scheduledBasalUPerH = 0.90, remainingEffect = { 0.0 },
         )
         assertEquals(LowThreatGate.Verdict.NONE, d.verdict)
         assertEquals(LowThreatGate.DENY_NO_BENEFIT, d.denial)
