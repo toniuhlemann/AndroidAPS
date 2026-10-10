@@ -90,7 +90,9 @@ internal val fuseEinstellbareKeys: Set<String> = setOf(
     FuseIntKey.LiabilityHorizonMin.key,
     FuseIntKey.NightStartMin.key,
     FuseIntKey.NightEndMin.key,
-    FuseBooleanKey.FastRestraintEnabled.key,
+    // 2.0 (Stufe 1, K3): FastRestraintEnabled, ConditionalTailEnabled,
+    // NightDeadbandEnabled und ReboundDeadbandEnabled sind nicht mehr
+    // einstellbar (Funktion fest an); die Schluessel bleiben registriert.
     FuseBooleanKey.OnsetChannelEnabled.key,
     FuseBooleanKey.PrimeReleaseEnabled.key,
     FuseBooleanKey.MealFoundationEnabled.key,
@@ -98,9 +100,6 @@ internal val fuseEinstellbareKeys: Set<String> = setOf(
     FuseBooleanKey.ForecastShadowCollectionEnabled.key,
     FuseBooleanKey.MarkerAuthorisesRelease.key,
     FuseBooleanKey.TailGuardEnabled.key,
-    FuseBooleanKey.ConditionalTailEnabled.key,
-    FuseBooleanKey.NightDeadbandEnabled.key,
-    FuseBooleanKey.ReboundDeadbandEnabled.key,
     FuseBooleanKey.TbrEndZeroWhenReasonGone.key,
 )
 
@@ -262,7 +261,6 @@ object FuseSettingsReport {
                 "Schutz und Prognose" to listOf(
                     zahl(FuseDoubleKey.GuardFloorMgdl, "Guard-Boden", "mg/dl"),
                     zahl(FuseDoubleKey.PositiveDescentHorizonMin, "SMB-Abwaerts-Horizont", "min"),
-                    schalter(FuseBooleanKey.FastRestraintEnabled, "Schnelle Bremsbahn"),
                     zahl(FuseDoubleKey.BolusShareLambda, "Bolus-Lambda", ""),
                     ganz(FuseIntKey.ReleaseHorizonMin, "Horizont", "min"),
                     ganz(FuseIntKey.DriveTauMin, "Tau", "min"),
@@ -288,17 +286,14 @@ object FuseSettingsReport {
                     ganz(FuseIntKey.RearmConfirmCycles, "Nachlauf-Zyklen", "Zyk"),
                     zahl(FuseDoubleKey.RearmUpUkf, "Nachlauf-Schwelle", "mg/dl/min"),
                     schalter(FuseBooleanKey.TailGuardEnabled, "Schwanz-Guard"),
-                    schalter(FuseBooleanKey.ConditionalTailEnabled, "Mahlzeit im Schwanz"),
                     ganz(FuseIntKey.LiabilityHorizonMin, "Haftung", "min"),
                     zahl(FuseDoubleKey.TailFloorMgdl, "Schwanz-Boden", "mg/dl"),
                     zahl(FuseDoubleKey.TailRecoveryU, "Schwanz-Erholung", "U"),
                 ),
                 "Nacht und Rebound" to listOf(
-                    schalter(FuseBooleanKey.NightDeadbandEnabled, "Nacht-Totband"),
                     zahl(FuseDoubleKey.NightDeadbandMgdl, "Nacht-Band", "mg/dl"),
                     zeit(FuseIntKey.NightStartMin, "Nacht Beginn"),
                     zeit(FuseIntKey.NightEndMin, "Nacht Ende"),
-                    schalter(FuseBooleanKey.ReboundDeadbandEnabled, "Rebound-Totband"),
                     zahl(FuseDoubleKey.ReboundDeadbandMgdl, "Rebound-Band", "mg/dl"),
                     ganz(FuseIntKey.ReboundWindowMin, "Rebound-Dauer", "min"),
                 ),

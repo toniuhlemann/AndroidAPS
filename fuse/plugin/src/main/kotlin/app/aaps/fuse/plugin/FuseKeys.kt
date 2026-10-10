@@ -1116,17 +1116,26 @@ enum class FuseBooleanKey(
 
     MarkerAuthorisesRelease("fuse_marker_authorises_low", false),
 
+    /** 2.0 (Stufe 1, K3): NICHT MEHR GELESEN - die bedingte Schwanzkante ist
+     *  fest an. Der Schluessel bleibt registriert, damit gespeicherter Wert,
+     *  Sicherung und der Rueckweg auf 1.x erhalten bleiben. */
     ConditionalTailEnabled("fuse_conditional_tail_enabled", true),
 
     TailGuardEnabled("fuse_tail_guard_enabled", false),
 
     /** NACHT-TOTBAND aktiv (Toni 09.08.): im Nachtfenster kein SMB unterhalb
      *  Ziel + Nacht-Totband. Schalter getrennt vom Wert, damit ein Abschalten
-     *  die eingestellte Schwelle nicht verliert. */
+     *  die eingestellte Schwelle nicht verliert.
+     *
+     *  2.0 (Stufe 1, K3): NICHT MEHR GELESEN - das Totband ist fest an. Der
+     *  Schluessel bleibt registriert (gespeicherter Wert, Rueckweg auf 1.x). */
     NightDeadbandEnabled("fuse_night_deadband_enabled", true),
 
     /** REBOUND-TOTBAND aktiv: nach einem Tief kein SMB unterhalb
-     *  Ziel + Rebound-Totband. War bis 09.08. fest eingebaut. */
+     *  Ziel + Rebound-Totband. War bis 09.08. fest eingebaut.
+     *
+     *  2.0 (Stufe 1, K3): NICHT MEHR GELESEN - wieder fest eingebaut. Der
+     *  Schluessel bleibt registriert (gespeicherter Wert, Rueckweg auf 1.x). */
     ReboundDeadbandEnabled("fuse_rebound_deadband_enabled", true),
 
     /**
@@ -1140,6 +1149,10 @@ enum class FuseBooleanKey(
      * Gemessen am 06.08.: FUSE gab nach dem Wendepunkt noch 2,20 U in 14 SMBs,
      * bei bis zu -3,7 mg/dl/min FALLENDER Glukose, weil `rSigned` dort noch
      * +5,8 sagte. Genau diese Zyklen faengt die Bremse.
+     *
+     * 2.0 (Stufe 1, K3): NICHT MEHR GELESEN - die Bremsbahn ist fest an. Der
+     * Schluessel bleibt registriert (gespeicherter Wert, Sicherung, Rueckweg
+     * auf 1.x).
      */
     FastRestraintEnabled("fuse_fast_restraint_enabled", true),
 

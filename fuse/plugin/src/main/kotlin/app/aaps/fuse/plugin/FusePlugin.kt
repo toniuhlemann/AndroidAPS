@@ -3065,7 +3065,8 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
             )
             addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.GuardFloorMgdl, dialogMessage = R.string.fuse_guard_floor_summary, title = R.string.fuse_guard_floor_title))
             addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.PositiveDescentHorizonMin, dialogMessage = R.string.fuse_positive_descent_horizon_summary, title = R.string.fuse_positive_descent_horizon_title))
-            addPreference(AdaptiveSwitchPreference(ctx = context, booleanKey = FuseBooleanKey.FastRestraintEnabled, summary = R.string.fuse_restraint_summary, title = R.string.fuse_restraint_title))
+            // 2.0 (Stufe 1, K3): die schnelle Bremsbahn ist fest an, ihr Schalter
+            // steht nicht mehr im Bildschirm; der Schluessel bleibt registriert.
             addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.BolusShareLambda, dialogMessage = R.string.fuse_bolus_share_lambda_summary, title = R.string.fuse_bolus_share_lambda_title))
             addPreference(AdaptiveIntPreference(ctx = context, intKey = FuseIntKey.ReleaseHorizonMin, dialogMessage = R.string.fuse_release_horizon_summary, title = R.string.fuse_release_horizon_title))
             addPreference(AdaptiveIntPreference(ctx = context, intKey = FuseIntKey.DriveTauMin, dialogMessage = R.string.fuse_drive_tau_summary, title = R.string.fuse_drive_tau_title))
@@ -3117,7 +3118,7 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
                 "Haftung fuer Insulin, das erst hinter dem Freigabe-Horizont wirkt."
             )
             addPreference(AdaptiveSwitchPreference(ctx = context, booleanKey = FuseBooleanKey.TailGuardEnabled, summary = R.string.fuse_tail_guard_summary, title = R.string.fuse_tail_guard_title))
-            addPreference(AdaptiveSwitchPreference(ctx = context, booleanKey = FuseBooleanKey.ConditionalTailEnabled, summary = R.string.fuse_conditional_tail_summary, title = R.string.fuse_conditional_tail_title))
+            // 2.0 (Stufe 1, K3): die bedingte Schwanzkante ist fest an.
             addPreference(AdaptiveIntPreference(ctx = context, intKey = FuseIntKey.LiabilityHorizonMin, dialogMessage = R.string.fuse_liability_horizon_summary, title = R.string.fuse_liability_horizon_title))
             addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.TailFloorMgdl, dialogMessage = R.string.fuse_tail_floor_summary, title = R.string.fuse_tail_floor_title))
             addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.TailRecoveryU, dialogMessage = R.string.fuse_tail_recovery_summary, title = R.string.fuse_tail_recovery_title))
@@ -3129,14 +3130,11 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
                 "Beide Totbaender sperren den SMB-Kanal. Eine laufende Basalabsenkung bleibt als Schutz bestehen; " +
                     "positive TBR verwendet FUSE derzeit nicht. Ein erklaerter Mahlzeitenmarker kann die Markerregeln oeffnen."
             )
-            addPreference(AdaptiveSwitchPreference(ctx = context, booleanKey = FuseBooleanKey.NightDeadbandEnabled, summary = R.string.fuse_night_deadband_enabled_summary, title = R.string.fuse_night_deadband_enabled_title))
+            // 2.0 (Stufe 1, K3): beide Totbaender sind fest an; einstellbar
+            // bleiben ihre Werte, das Nachtfenster und das Rebound-Fenster.
             addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.NightDeadbandMgdl, dialogMessage = R.string.fuse_night_deadband_summary, title = R.string.fuse_night_deadband_title))
             timeOfDay(FuseIntKey.NightStartMin, "Nacht Beginn", "Beginn des Nachtfensters; gleich dem Ende schaltet es aus")
             timeOfDay(FuseIntKey.NightEndMin, "Nacht Ende", "Ende des Nachtfensters (darf ueber Mitternacht gehen)")
-            addPreference(AdaptiveSwitchPreference(ctx = context, booleanKey = FuseBooleanKey.ReboundDeadbandEnabled, summary = R.string.fuse_rebound_deadband_enabled_summary, title = R.string.fuse_rebound_deadband_enabled_title))
-            // Der Wert DIREKT hinter seinem Schalter (Toni 23.08. spaet) -
-            // vorher sassen Beobachter und Prognose-Shadow dazwischen, und
-            // wer das Totband stellte, musste am Schalter vorbei scrollen.
             addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.ReboundDeadbandMgdl, dialogMessage = R.string.fuse_rebound_deadband_summary, title = R.string.fuse_rebound_deadband_title))
             addPreference(AdaptiveIntPreference(ctx = context, intKey = FuseIntKey.ReboundWindowMin, dialogMessage = R.string.fuse_rebound_window_summary, title = R.string.fuse_rebound_window_title))
             // DER ERWARTUNGS-BEOBACHTER (Toni 19.08.). Er war verdrahtet, aber

@@ -49,16 +49,18 @@ class FuseSettingsReportTest {
     fun `eine Abweichung traegt Marke und Standardwert`() {
         val p = standardPreferences()
         whenever(p.get(FuseDoubleKey.MaxSmbU)).thenReturn(0.55)
-        whenever(p.get(FuseBooleanKey.NightDeadbandEnabled)).thenReturn(false)
+        // 2.0 (Stufe 1, K3): das Nacht-Totband ist kein Schalter mehr; als Schalter
+        // mit Standard "an" dient jetzt das Null-Ende.
+        whenever(p.get(FuseBooleanKey.TbrEndZeroWhenReasonGone)).thenReturn(false)
         val rows = FuseSettingsReport.build(p).gruppen.flatMap { it.second }
 
         val maxSmb = rows.single { it.key == FuseDoubleKey.MaxSmbU.key }
         assertEquals("0.55 U", maxSmb.value)
         assertEquals("0.30 U", maxSmb.standard)
 
-        val nacht = rows.single { it.key == FuseBooleanKey.NightDeadbandEnabled.key }
-        assertEquals("aus", nacht.value)
-        assertEquals("an", nacht.standard)
+        val nullEnde = rows.single { it.key == FuseBooleanKey.TbrEndZeroWhenReasonGone.key }
+        assertEquals("aus", nullEnde.value)
+        assertEquals("an", nullEnde.standard)
     }
 
     /** H8 (Review 18.09.): der Bericht nennt den Horizont wie der Dialog, und ein

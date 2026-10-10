@@ -12214,6 +12214,12 @@ class TransportWiringTest : TestBaseWithProfile() {
      */
     @Test
     fun `correction-reversal-guard blockt die v-erholung bis r bestaetigt`(@TempDir dir: File) {
+        // 2.0 (Stufe 1, K3): das Nacht-Totband ist fest an. Diese Lage prueft den
+        // Riegel OHNE Nachtband (bisher ueber die Rig-Vorgabe nightDeadband = false);
+        // dafuer liegt das Nachtfenster jetzt nach der Rig-Uhr, die Lage selbst
+        // bleibt unveraendert.
+        nachtStartMin = 120
+        nachtEndeMin = 480
         reversalLage(File(dir, "aus"))
         reversalAn = false
         val ohne = (0 until 56).map { cycle() }
@@ -12571,6 +12577,10 @@ class TransportWiringTest : TestBaseWithProfile() {
      */
     @Test
     fun `positive-correction-rearm haelt die latch-loesung zurueck`(@TempDir dir: File) {
+        // 2.0 (Stufe 1, K3): wie beim Reversal-Riegel - die Lage prueft den Nachlauf
+        // OHNE Nachtband; das Nachtfenster liegt nach der Rig-Uhr.
+        nachtStartMin = 120
+        nachtEndeMin = 480
         fun lauf(an: Boolean, unterDir: String): Pair<List<FuseCycleRunner.Outcome>, Int> {
             // +0,45/min ist die 08:00-Form: genug fuer die Latch-Loesung,
             // aber UNTER der Rampen-Unterkante - der autoritative Kontext

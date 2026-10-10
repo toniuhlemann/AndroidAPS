@@ -54,10 +54,10 @@ class ConfigBoundsTest {
         releaseHorizonMin = 30, liabilityHorizonMin = 120, driveTauMin = 60, signalRejoinEnabled = false, theilSenWindowMin = 18,
         absorptionCreditWindowMin = 60, markerBoostMaxMin = 45, evidenceReboundOverrideMaxMin = 120,
         nightStartMin = 1380, nightEndMin = 420,
-        nightDeadbandMgdl = 45.0, nightDeadbandEnabled = true,
-        reboundDeadbandMgdl = 25.0, reboundDeadbandEnabled = true, reboundWindowMin = 45,
-        driveLowerQuantilePct = 50, tailGuardEnabled = false, conditionalTailEnabled = true, markerAuthorized = false,
-        mealFoundationEnabled = false, mealFoundationPhaseAShare = 1.0, mealFoundationPhaseAUpfrontShare = 0.0, mealFoundationEndMin = 60, tailFloorMgdl = 70.0, tailRecoveryU = 0.0, fastRestraintEnabled = true, endZeroWhenReasonGone = true,
+        nightDeadbandMgdl = 45.0,
+        reboundDeadbandMgdl = 25.0, reboundWindowMin = 45,
+        driveLowerQuantilePct = 50, tailGuardEnabled = false, markerAuthorized = false,
+        mealFoundationEnabled = false, mealFoundationPhaseAShare = 1.0, mealFoundationPhaseAUpfrontShare = 0.0, mealFoundationEndMin = 60, tailFloorMgdl = 70.0, tailRecoveryU = 0.0, endZeroWhenReasonGone = true,
     )
 
     private fun ok(cfg: FuseCycleRunner.Config, was: String) {

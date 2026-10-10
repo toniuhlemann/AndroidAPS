@@ -27,8 +27,8 @@ class FuseStateExportTest {
 
     private val cfg = FuseCycleRunner.Config(
         smbRatio = 0.2, smbRatioRise = 0.35, sharedMaxIobU = 7.0, riseRampLowR = 0.5, riseRampHighR = 2.0, bolusShareLambda = 1.0, onsetChannelEnabled = true, onsetEnvelopeU = 1.5, primeReleaseEnabled = true, primeWindowMin = 15, primeEnvelopeU = 1.2, maxSmbU = 0.3, guardFloorMgdl = 70.0, lowGateMinBenefitMgdl = 5.0, zeroLatchEnabled = false, zeroLatchCalmExitMin = 20, zeroLatchReasonGoneExitCycles = 0, correctionSeriesCapU = 0.0, correctionSeriesWindowMin = 30, partialRecoveryEnabled = false, zeroLatchCalmDistanceMgdl = 30.0, reversalGuardEnabled = false, reversalFallUkf = 2.0, reversalLookbackMin = 20, reversalReboundUkf = 1.0, reversalConfirmCycles = 2, correctionRearmEnabled = false, rearmHoldMin = 5, rearmConfirmCycles = 2, rearmUpUkf = 0.3, lowGateHorizonMin = 120.0, positiveDescentHorizonMin = 30.0, deferredPrimeEnabled = false, markerPrimeDescentHorizonMin = 60.0, deferredPrimeEndMin = 120, livenessChannelEnabled = false, livenessMealPowerMin = 120, correctionExposureLimitU = 3.0, mealExposureLimitU = 7.0, correctionDemandRatioCap = 0.20, mealDemandRatioCap = 0.35, livenessBgMinDayMgdl = 140.0, livenessBgMinNightMgdl = 160.0, livenessBgMinMealMgdl = 110.0, mealArmCycles = 1, livenessReArmMin = 10, iobThPercent = 100,
-        releaseHorizonMin = 30, liabilityHorizonMin = 120, driveTauMin = 60, signalRejoinEnabled = false, theilSenWindowMin = 18, absorptionCreditWindowMin = 60, markerBoostMaxMin = 45, evidenceReboundOverrideMaxMin = 120, nightStartMin = 1380, nightEndMin = 420, nightDeadbandMgdl = 45.0, nightDeadbandEnabled = true, reboundDeadbandMgdl = 25.0, reboundDeadbandEnabled = true, reboundWindowMin = 45,
-        driveLowerQuantilePct = 50, tailGuardEnabled = false, conditionalTailEnabled = true, markerAuthorized = false, mealFoundationEnabled = false, mealFoundationPhaseAShare = 1.0, mealFoundationPhaseAUpfrontShare = 0.0, mealFoundationEndMin = 60, tailFloorMgdl = 70.0, tailRecoveryU = 0.0, fastRestraintEnabled = true, endZeroWhenReasonGone = true,
+        releaseHorizonMin = 30, liabilityHorizonMin = 120, driveTauMin = 60, signalRejoinEnabled = false, theilSenWindowMin = 18, absorptionCreditWindowMin = 60, markerBoostMaxMin = 45, evidenceReboundOverrideMaxMin = 120, nightStartMin = 1380, nightEndMin = 420, nightDeadbandMgdl = 45.0, reboundDeadbandMgdl = 25.0, reboundWindowMin = 45,
+        driveLowerQuantilePct = 50, tailGuardEnabled = false, markerAuthorized = false, mealFoundationEnabled = false, mealFoundationPhaseAShare = 1.0, mealFoundationPhaseAUpfrontShare = 0.0, mealFoundationEndMin = 60, tailFloorMgdl = 70.0, tailRecoveryU = 0.0, endZeroWhenReasonGone = true,
     )
 
     private fun signal() = FuseSignalSource.Signal(
@@ -635,7 +635,9 @@ class FuseStateExportTest {
     /** KI-141 (21.09.2026): die Frist des Rebound-Sonderrechts und die beiden
      *  Schalter stehen im Export; die Schalter bewegen den Hash, die
      *  Regelsatzversion bleibt. Ohne das belegte ein gleicher Hash die Stellung
-     *  der Schalter nicht, und ein Replay musste die Frist zurueckrechnen. */
+     *  der Schalter nicht, und ein Replay musste die Frist zurueckrechnen.
+     *  2.0 (Stufe 1, K3): der bedingte Tail ist fest an und steht nur noch als
+     *  wirksamer Wert im Export; geprueft bleiben Marker-Freigabe und Frist. */
     @Test
     fun `KI-141 - Rebound-Frist und zwei Schalter in Export und Hash`() {
         // Produktionsvoreinstellungen - der Test prueft, dass beide Richtungen zaehlen.
@@ -644,23 +646,20 @@ class FuseStateExportTest {
 
         val werte = FuseStateJson.policyValues(cfg)
         assertEquals(cfg.evidenceReboundOverrideMaxMin, werte.getInt("evidenceReboundOverrideMaxMin"))
-        assertEquals(cfg.conditionalTailEnabled, werte.getBoolean("conditionalTailEnabled"))
+        // 2.0 (Stufe 1, K3): der bedingte Tail ist fest an; der Export traegt den wirksamen Wert.
+        assertTrue(werte.getBoolean("conditionalTailEnabled"))
         assertEquals(cfg.markerAuthorized, werte.getBoolean("markerAuthorisesRelease"))
         // Der Export gibt den WIRKSAMEN Wert wieder, nicht nur die Voreinstellung.
         val umgelegt = FuseStateJson.policyValues(
-            cfg.copy(conditionalTailEnabled = !cfg.conditionalTailEnabled,
-                     markerAuthorized = !cfg.markerAuthorized,
+            cfg.copy(markerAuthorized = !cfg.markerAuthorized,
                      evidenceReboundOverrideMaxMin = cfg.evidenceReboundOverrideMaxMin + 15))
-        assertEquals(!cfg.conditionalTailEnabled, umgelegt.getBoolean("conditionalTailEnabled"))
+        assertTrue(umgelegt.getBoolean("conditionalTailEnabled"))
         assertEquals(!cfg.markerAuthorized, umgelegt.getBoolean("markerAuthorisesRelease"))
         assertEquals(cfg.evidenceReboundOverrideMaxMin + 15, umgelegt.getInt("evidenceReboundOverrideMaxMin"))
 
         val h = FuseStateJson.hashOf(cfg)!!
-        val ohneTail = FuseStateJson.hashOf(cfg.copy(conditionalTailEnabled = !cfg.conditionalTailEnabled))!!
         val mitMarker = FuseStateJson.hashOf(cfg.copy(markerAuthorized = !cfg.markerAuthorized))!!
-        assertTrue(ohneTail != h, "bedingter Tail muss den Hash bewegen")
         assertTrue(mitMarker != h, "Marker-Freigabe muss den Hash bewegen")
-        assertTrue(ohneTail != mitMarker, "die beiden Schalter duerfen sich im Hash nicht gegenseitig vertreten")
         // Die Frist bewegte den Hash schon vorher; das bleibt so.
         assertTrue(FuseStateJson.hashOf(cfg.copy(evidenceReboundOverrideMaxMin = cfg.evidenceReboundOverrideMaxMin + 15)) != h)
         // Regelsatzversion bewusst unveraendert (Fingerprint der Ruhe-Erholung).
@@ -682,19 +681,17 @@ class FuseStateExportTest {
             "nightStartMin" to cfg.copy(nightStartMin = cfg.nightStartMin - 60),
             "nightEndMin" to cfg.copy(nightEndMin = cfg.nightEndMin + 60),
             "nightDeadbandMgdl" to cfg.copy(nightDeadbandMgdl = cfg.nightDeadbandMgdl + 10.0),
-            "nightDeadbandEnabled" to cfg.copy(nightDeadbandEnabled = !cfg.nightDeadbandEnabled),
             "reboundDeadbandMgdl" to cfg.copy(reboundDeadbandMgdl = cfg.reboundDeadbandMgdl + 10.0),
-            "reboundDeadbandEnabled" to cfg.copy(reboundDeadbandEnabled = !cfg.reboundDeadbandEnabled),
             "absorptionCreditWindowMin" to cfg.copy(absorptionCreditWindowMin = cfg.absorptionCreditWindowMin + 15),
             "markerBoostMaxMin" to cfg.copy(markerBoostMaxMin = cfg.markerBoostMaxMin + 15),
         )
         val hashes = proben.mapValues { (_, c) -> FuseStateJson.hashOf(c)!! }
         for ((name, wert) in hashes) assertTrue(wert != h, "$name muss den Politik-Hash bewegen")
         assertEquals(hashes.size, hashes.values.toSet().size, "die Schluessel duerfen sich im Hash nicht gegenseitig vertreten")
-        // Die beiden Totband-Schalter stehen auch im Export (Klartext neben dem Hash).
+        // 2.0 (Stufe 1, K3): beide Totbaender sind fest an; der Export traegt den wirksamen Wert.
         val werte = FuseStateJson.policyValues(cfg)
-        assertEquals(cfg.nightDeadbandEnabled, werte.getBoolean("nightDeadbandEnabled"))
-        assertEquals(cfg.reboundDeadbandEnabled, werte.getBoolean("reboundDeadbandEnabled"))
+        assertTrue(werte.getBoolean("nightDeadbandEnabled"))
+        assertTrue(werte.getBoolean("reboundDeadbandEnabled"))
         assertEquals(55, FuseStateJson.RULE_SET_VERSION)
     }
 

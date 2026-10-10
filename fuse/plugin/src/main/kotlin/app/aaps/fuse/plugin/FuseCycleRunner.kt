@@ -2529,7 +2529,10 @@ class FuseCycleRunner(
         // Bedingung wuerde ihr eigener Abbruch-Zweig den aufgeschobenen
         // Markerpfad ueberholen und den Zyklus mit einem Grund beenden, der
         // die eigentliche Ursache verdeckt.
-        val restraint = if (rejected != null || !cfg.fastRestraintEnabled) null else
+        //
+        // 2.0 (Stufe 1, K3): die Bremsbahn ist fest an, der fruehere Schalter
+        // FastRestraintEnabled wird nicht mehr gelesen.
+        val restraint = if (rejected != null) null else
             (fastDrive(signal) ?: return abort("fast restraint enabled but drive not computable", signal, cfg, step)).let { fast ->
                 val fi = built.input.copy(
                     // DERSELBE Abschlag wie auf der Hauptbahn: auch die schnelle
@@ -2744,11 +2747,13 @@ class FuseCycleRunner(
                         ((lastLowTs + cfg.reboundWindowMin * 60_000L - signal.sourceTs) / 60_000L)
                             .toInt().coerceAtLeast(0)
                     else null,
-                    reboundDeadbandMgdl = if (cfg.reboundDeadbandEnabled) cfg.reboundDeadbandMgdl else 0.0,
-                    nightWindow = cfg.nightDeadbandEnabled && NightWindow.isNight(
+                    // 2.0 (Stufe 1, K3): beide Totbaender sind fest an; die
+                    // frueheren Schalter werden nicht mehr gelesen.
+                    reboundDeadbandMgdl = cfg.reboundDeadbandMgdl,
+                    nightWindow = NightWindow.isNight(
                         MidnightUtils.secondsFromMidnight(signal.sourceTs), cfg.nightStartMin, cfg.nightEndMin
                     ),
-                    nightDeadbandMgdl = if (cfg.nightDeadbandEnabled) cfg.nightDeadbandMgdl else 0.0,
+                    nightDeadbandMgdl = cfg.nightDeadbandMgdl,
                     markerBoost = markerBoost,
                     markerArmedTs = markerTs,
                     markerNoPrime = markerNoPrime,
@@ -3143,8 +3148,9 @@ class FuseCycleRunner(
         val evidenzKredit = evidenz?.creditMgdlPerMin?.takeIf { it.isFinite() && it > 0.0 } ?: 0.0
         val bedingterKredit = maxOf(declaredDrive, evidenzKredit)
 
-        val lift = if (!cfg.conditionalTailEnabled) ConditionalDrive.Lift(null, null)
-        else ConditionalDrive.of(
+        // 2.0 (Stufe 1, K3): die bedingte Kante ist fest an, der fruehere
+        // Schalter ConditionalTailEnabled wird nicht mehr gelesen.
+        val lift = ConditionalDrive.of(
             mainDrive = built.input.drive,
             restraintMean = if (restraint == null) null else fastDrive(signal),
             restraintLower = if (restraint == null) null else
@@ -8200,13 +8206,12 @@ class FuseCycleRunner(
         /** Dauer der Marker-Sonderrechte ab Druck [min]; 0 = aus. */
         val markerBoostMaxMin: Int,
         val evidenceReboundOverrideMaxMin: Int,
-        /** Nachtfenster [min ab Mitternacht] + Totband; Schalter getrennt. */
+        /** Nachtfenster [min ab Mitternacht] + Totband. 2.0: beide Totbaender
+         *  sind fest an, ihre frueheren Schalter stehen nicht mehr hier. */
         val nightStartMin: Int,
         val nightEndMin: Int,
         val nightDeadbandMgdl: Double,
-        val nightDeadbandEnabled: Boolean,
         val reboundDeadbandMgdl: Double,
-        val reboundDeadbandEnabled: Boolean,
         /**
          * Dauer des Rebound-Fensters [min] - s. [FuseIntKey.ReboundWindowMin].
          * Wirkt auf Totband, Ratio-Deckel, Liveness-Sperre und tau-Kuerzung
@@ -8227,11 +8232,11 @@ class FuseCycleRunner(
          */
         val signalRejoinEnabled: Boolean,
         val tailGuardEnabled: Boolean,
-        val conditionalTailEnabled: Boolean,
+        // 2.0: bedingte Schwanzkante und schnelle Bremsbahn sind fest an; ihre
+        // frueheren Schalter stehen nicht mehr hier.
         val markerAuthorized: Boolean,
         val tailFloorMgdl: Double,
         val tailRecoveryU: Double,
-        val fastRestraintEnabled: Boolean,
         val bolusShareLambda: Double,
         val onsetChannelEnabled: Boolean,
         val onsetEnvelopeU: Double,
@@ -8371,19 +8376,15 @@ class FuseCycleRunner(
         nightStartMin = preferences.get(FuseIntKey.NightStartMin),
         nightEndMin = preferences.get(FuseIntKey.NightEndMin),
         nightDeadbandMgdl = preferences.get(FuseDoubleKey.NightDeadbandMgdl),
-        nightDeadbandEnabled = preferences.get(FuseBooleanKey.NightDeadbandEnabled),
         reboundDeadbandMgdl = preferences.get(FuseDoubleKey.ReboundDeadbandMgdl),
-        reboundDeadbandEnabled = preferences.get(FuseBooleanKey.ReboundDeadbandEnabled),
         reboundWindowMin = preferences.get(FuseIntKey.ReboundWindowMin),
         driveLowerQuantilePct = preferences.get(FuseIntKey.DriveLowerQuantilePct),
         theilSenWindowMin = preferences.get(FuseIntKey.TheilSenWindowMin),
         signalRejoinEnabled = preferences.get(FuseBooleanKey.SignalRejoinEnabled),
         tailGuardEnabled = preferences.get(FuseBooleanKey.TailGuardEnabled),
-        conditionalTailEnabled = preferences.get(FuseBooleanKey.ConditionalTailEnabled),
         markerAuthorized = preferences.get(FuseBooleanKey.MarkerAuthorisesRelease),
         tailFloorMgdl = preferences.get(FuseDoubleKey.TailFloorMgdl),
         tailRecoveryU = preferences.get(FuseDoubleKey.TailRecoveryU),
-        fastRestraintEnabled = preferences.get(FuseBooleanKey.FastRestraintEnabled),
         bolusShareLambda = preferences.get(FuseDoubleKey.BolusShareLambda),
         onsetChannelEnabled = preferences.get(FuseBooleanKey.OnsetChannelEnabled),
         onsetEnvelopeU = preferences.get(FuseDoubleKey.OnsetEnvelopeU),

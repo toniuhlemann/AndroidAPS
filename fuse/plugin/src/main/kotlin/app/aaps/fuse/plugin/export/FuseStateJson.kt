@@ -2086,9 +2086,11 @@ object FuseStateJson {
         .put("nightStartMin", p.nightStartMin)
         .put("nightEndMin", p.nightEndMin)
         .put("nightDeadbandMgdl", p.nightDeadbandMgdl)
-        .put("nightDeadbandEnabled", p.nightDeadbandEnabled)
+        // 2.0 (Stufe 1, K3): fest an. Das Feld bleibt mit dem WIRKSAMEN Wert,
+        // damit Viewer, Auswertungen und der 1.x-Rueckweg dasselbe lesen.
+        .put("nightDeadbandEnabled", true)
         .put("reboundDeadbandMgdl", p.reboundDeadbandMgdl)
-        .put("reboundDeadbandEnabled", p.reboundDeadbandEnabled)
+        .put("reboundDeadbandEnabled", true)
         .put("reboundWindowMin", p.reboundWindowMin)
         .put("driveLowerQuantilePct", p.driveLowerQuantilePct)
         .put("theilSenWindowMin", p.theilSenWindowMin)
@@ -2110,7 +2112,8 @@ object FuseStateJson {
         .put("tailGuardEnabled", p.tailGuardEnabled)
         .put("tailFloorMgdl", fin(p.tailFloorMgdl))
         .put("tailRecoveryU", fin(p.tailRecoveryU))
-        .put("fastRestraintEnabled", p.fastRestraintEnabled)
+        // 2.0 (Stufe 1, K3): fest an, wirksamer Wert.
+        .put("fastRestraintEnabled", true)
         .put("riseRampLowR", fin(p.riseRampLowR))
         .put("riseRampHighR", fin(p.riseRampHighR))
         .put("bolusShareLambda", fin(p.bolusShareLambda))
@@ -2202,7 +2205,8 @@ object FuseStateJson {
         // im Hash; MarkerAuthorisesRelease ist die zweite Luecke aus der Notiz
         // oben, die damals nicht geschlossen wurde.
         .put("evidenceReboundOverrideMaxMin", p.evidenceReboundOverrideMaxMin)
-        .put("conditionalTailEnabled", p.conditionalTailEnabled)
+        // 2.0 (Stufe 1, K3): fest an, wirksamer Wert.
+        .put("conditionalTailEnabled", true)
         .put("markerAuthorisesRelease", p.markerAuthorized)
 
     /**
@@ -2363,7 +2367,10 @@ object FuseStateJson {
                 p.calmRecoveryEnabled,
                 p.calmRecoveryCycles,
                 p.calmTreatmentMode,
-                p.tailGuardEnabled, p.fastRestraintEnabled, p.onsetChannelEnabled, p.primeReleaseEnabled,
+                // 2.0 (Stufe 1, K3): die schnelle Bremsbahn ist fest an. Der
+                // Eingang bleibt als Konstante "true" stehen - zeichengleich mit
+                // dem bisherigen eingeschalteten Stand, also kein Hash-Wechsel.
+                p.tailGuardEnabled, true, p.onsetChannelEnabled, p.primeReleaseEnabled,
                 // v3: der Null-Ausgang aendert das Aktuationsverhalten - zwei
                 // Laeufe mit verschiedener Stellung duerfen nicht denselben
                 // Hash tragen.
@@ -2446,7 +2453,8 @@ object FuseStateJson {
                 // Anhebung wuerde dort beim Flash einen laufenden Ruhe-Streak
                 // zuruecksetzen, also die Dosierung beruehren. Der Hash wechselt
                 // trotzdem einmalig, weil zwei Eingaenge hinzukommen.
-                p.conditionalTailEnabled,
+                // 2.0 (Stufe 1, K3): fest an, Konstante wie bei der Bremsbahn.
+                true,
                 p.markerAuthorized,
                 // KI-170 (29.09.2026): Nachtfenster, beide Totband-Schalter,
                 // Kreditfenster der erklaerten Absorption und die Marker-
@@ -2458,8 +2466,9 @@ object FuseStateJson {
                 // der wirksame (v55).
                 p.nightStartMin,
                 p.nightEndMin,
-                p.nightDeadbandEnabled,
-                p.reboundDeadbandEnabled,
+                // 2.0 (Stufe 1, K3): beide Totbaender fest an, Konstanten.
+                true,
+                true,
                 p.absorptionCreditWindowMin,
                 p.markerBoostMaxMin,
             ).map { it.toString() } + modusTeile
