@@ -568,6 +568,33 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
         assertTrue(danach.any { it.o.state!!.reboundWindow }) { "die Probe erreicht das Rebound-Fenster nicht" }
     }
 
+    /** K5 (Toni): stabiler Start, Anstieg, dann ein gemessenes Tief mitten in der Episode und Erholung. */
+    private val fTiefImFenster = Fuse20Folgen.Folge(
+        "TIEFIMFENSTER", 1_700_560_800_000L, -90, 240,
+        listOf(-90 to 120.0, -10 to 120.0, 0 to 122.0, 40 to 190.0, 70 to 56.0, 80 to 56.0, 100 to 112.0, 240 to 120.0),
+        markerMin = 0,
+    )
+
+    @Test
+    fun `ein gemessenes Tief in der Episode nimmt die Freigabe bis zur erneuten Strecke zurueck`(@TempDir dir: File) {
+        konfiguration(kontoAn = true)
+        val imFenster = lauf(fTiefImFenster, dir).filter { it.o.abortReason == null && it.o.erwartungskonto?.zyklus != null }
+        assertTrue(imFenster.first().o.erwartungskonto!!.zyklus!!.state.startStable) { "die Probe startet nicht stabil" }
+        val ruecknahme = imFenster.indexOfFirst { it.o.erwartungskonto!!.zyklus!!.eval.releaseRevoked }
+        assertTrue(ruecknahme >= 0) { "die Probe erreicht kein gemessenes Tief bei erteilter Freigabe" }
+        val wiederFrei = (ruecknahme until imFenster.size)
+            .firstOrNull { imFenster[it].o.erwartungskonto!!.zyklus!!.eval.released } ?: imFenster.size
+        for (z in imFenster.subList(ruecknahme, wiederFrei)) {
+            val x = z.o.erwartungskonto!!
+            assertEquals(0.0, x.zyklus!!.eval.restEffU, 0.0, "Minute ${z.minute}: Rest ohne Freigabe")
+            assertEquals(0.0, x.buchung?.split?.dErwU ?: 0.0, 0.0, "Minute ${z.minute}: d_erw ohne Freigabe")
+        }
+        if (wiederFrei < imFenster.size) {
+            val minuten = imFenster[wiederFrei].minute - imFenster[ruecknahme].minute
+            assertTrue(minuten >= FuseIntKey.ExpectationStabilityMin.defaultValue) { "zu frueh wieder frei: $minuten" }
+        }
+    }
+
     private companion object {
 
         /** Synthetisches maxIOB des Gestells. */

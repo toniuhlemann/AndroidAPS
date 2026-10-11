@@ -152,6 +152,37 @@ class ExpectationAccountTest {
         assertEquals(wartend.a0U, e2.restEffU, eps)
     }
 
+    /** K5 (Toni): ein gemessenes Tief in der Episode nimmt die Freigabe zurueck; vor weiterem d_erw gilt die Strecke erneut. */
+    @Test
+    fun `ein gemessenes Tief nimmt die Freigabe bis zur erneuten Strecke zurueck`() {
+        val (s1, e1) = ExpectationAccount.step(arm(), inputs(nach = 1))
+        assertTrue(e1.released)
+        assertFalse(e1.releaseRevoked)
+        // Auch wenn der Aufrufer im selben Zyklus Stabilitaet meldet: zurueckgenommen, kein Rest.
+        val (s2, e2) = ExpectationAccount.step(s1, inputs(nach = 2, stabil = true).copy(measuredLow = true))
+        assertTrue(e2.releaseRevoked)
+        assertFalse(e2.released)
+        assertEquals(0.0, e2.restEffU, eps)
+        assertEquals("WAITING_FOR_STABILITY", e2.status)
+        // Ohne Strecke bleibt es zurueckgenommen - gemeldet wird die Ruecknahme nur einmal.
+        val (s3, e3) = ExpectationAccount.step(s2, inputs(nach = 3, stabil = false))
+        assertFalse(e3.released)
+        assertFalse(e3.releaseRevoked)
+        assertEquals(0.0, e3.restEffU, eps)
+        // Erneute Strecke: wieder frei, mit demselben Rest (nie aufgefuellt).
+        val (_, e4) = ExpectationAccount.step(s3, inputs(nach = 4, stabil = true))
+        assertTrue(e4.released)
+        assertEquals(s3.restU, e4.restEffU, eps)
+    }
+
+    @Test
+    fun `ein Tief vor der Freigabe meldet keine Ruecknahme`() {
+        val wartend = arm(stabil = false, p = params(phiTief = 0.25))
+        val (_, e) = ExpectationAccount.step(wartend, inputs(nach = 1, stabil = true).copy(measuredLow = true))
+        assertFalse(e.released)
+        assertFalse(e.releaseRevoked)
+    }
+
     @Test
     fun `nach dem Fensterende gibt es weder Erwartung noch Rest`() {
         val (_, e) = ExpectationAccount.step(arm(), inputs(nach = 120))

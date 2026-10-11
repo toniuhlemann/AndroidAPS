@@ -3292,6 +3292,10 @@ class FuseCycleRunner(
                 "PUMP_BUSY".takeIf { state.pumpBusy },
                 "LEDGER_HOLD".takeIf { ledgerView.hold },
             ),
+            // K5: die gemessenen Tief-Befunde - Rohwert unter der Low-Grenze
+            // (SAFETY LOW) oder das Null-Tor MEASURED_LOW.
+            gemessenesTief = step.safetyReasons.isNotEmpty() ||
+                lowThreatResult.verdict == LowThreatGate.Verdict.MEASURED_LOW,
         )
         ekZyklusThisCycle = ekZyklus
         val baseDecision = FuseController.decide(
@@ -6844,6 +6848,8 @@ class FuseCycleRunner(
         faellt: Boolean,
         /** Signal-, Pumpen-, Ledger- und Bahnzustaende (Namen); leer = keine. */
         technisch: List<String>,
+        /** Gemessenes Tief in diesem Zyklus (K5): nimmt die Freigabe zurueck. */
+        gemessenesTief: Boolean,
     ): ErwartungskontoZyklus? {
         val gemesseneSperre = sperren.isNotEmpty()
         // Die Strecke: mit den GEPINNTEN Grenzen des laufenden Kontos, sonst
@@ -6899,6 +6905,7 @@ class FuseCycleRunner(
                 activityUPerMin = activityUPerMin,
                 paused = pausiert,
                 stableNow = stabil,
+                measuredLow = gemessenesTief,
             ),
         )
         // ABSCHALTEN WIRKT SOFORT UND FUER DIE GANZE EPISODE (Codex 11.10.,
@@ -7342,6 +7349,8 @@ class FuseCycleRunner(
             ),
             faellt = !signal.ukfRatePerMin.isFinite() || signal.ukfRatePerMin < LivenessChannel.UKF_FLOOR_MGDL_PER_MIN,
             technisch = listOf("NO_TRAJECTORY"),
+            // K5: ohne Bahn kein Null-Tor - der gemessene Rohwert-Befund genuegt.
+            gemessenesTief = step.safetyReasons.isNotEmpty(),
         )
         ekZyklusThisCycle = ekZyklus
         subStepCarryU = 0.0

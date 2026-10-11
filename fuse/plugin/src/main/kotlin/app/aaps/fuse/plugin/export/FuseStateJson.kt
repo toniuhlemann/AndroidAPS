@@ -2519,6 +2519,7 @@ object FuseStateJson {
                 .put("startStable", s.startStable)
                 .put("stable", z.stabil)
                 .put("released", s.released)
+                .put("releaseRevoked", e.releaseRevoked)
                 .put("paused", z.pausiert)
                 .put("pauseReasons", org.json.JSONArray(z.pausenGruende))
                 .put("frozen", s.frozen)

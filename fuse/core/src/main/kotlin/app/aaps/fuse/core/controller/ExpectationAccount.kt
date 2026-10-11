@@ -31,7 +31,7 @@ import kotlin.math.min
  * ausgewiesen - keine stille Ueberschreitung.
  *
  * WANN KEIN d_erw: vor erfuellter Stabilitaet (Start nach Tief oder im
- * Fallen), in jeder Pause (gemessene Sperre, Signal-, Pumpen- oder
+ * Fallen, und nach einem gemessenen Tief in der Episode erneut), in jeder Pause (gemessene Sperre, Signal-, Pumpen- oder
  * Ledgerzustand), bei eingefrorenem Rest (Ruecknahme bei ausbleibender
  * Stoerung) und nach dem Fensterende. Unverbrauchte Erlaubnis verpflichtet
  * nie zur Lieferung.
@@ -289,6 +289,8 @@ object ExpectationAccount {
         val paused: Boolean,
         /** Stabilitaetsbedingung ueber die geforderte Dauer erfuellt. */
         val stableNow: Boolean,
+        /** Gemessenes Tief in diesem Zyklus (K5): nimmt die Freigabe zurueck. */
+        val measuredLow: Boolean = false,
     )
 
     data class Evaluation(
@@ -305,6 +307,8 @@ object ExpectationAccount {
         val frozen: Boolean,
         /** Lesbarer Status fuer den Export. */
         val status: String,
+        /** In DIESEM Zyklus hat ein gemessenes Tief die Freigabe zurueckgenommen. */
+        val releaseRevoked: Boolean = false,
     )
 
     /**
@@ -333,8 +337,15 @@ object ExpectationAccount {
 
         val expired = inputs.nowTs >= s.windowEndTs
 
-        // 2 Stabilitaet nach Tief: einmal erreicht, bleibt die Freigabe.
-        if (!s.released && inputs.stableNow && !expired) s = s.copy(released = true)
+        // 2 Freigabe. Ein gemessenes Tief in der Episode nimmt sie zurueck (K5,
+        //   Toni): vor weiterem d_erw gilt die Strecke erneut - dieselbe Regel
+        //   wie am Druck; der gemessene Anteil fliesst weiter, nur der Vorgriff
+        //   wartet. Im Zyklus des Tiefs gibt es keine Wiederfreigabe, auch wenn
+        //   der Aufrufer (falsch) Stabilitaet meldet. Sonst bleibt sie, einmal
+        //   erreicht.
+        val zurueckgenommen = inputs.measuredLow && s.released && !expired
+        if (zurueckgenommen) s = s.copy(released = false)
+        if (!s.released && inputs.stableNow && !inputs.measuredLow && !expired) s = s.copy(released = true)
 
         // 3 Ruecknahme: bei +30 pruefen, danach Wiederfreigabe bei erreichter Schwelle.
         val bestaetigt = s.disturbanceValid && s.disturbanceU >= s.releaseThresholdU
@@ -365,6 +376,7 @@ object ExpectationAccount {
         return s to Evaluation(
             rMessU = rMess, phiZU = phiZ, rRohU = rRoh, requestU = request, restEffU = restEff,
             expired = expired, paused = inputs.paused, released = s.released, frozen = s.frozen, status = status,
+            releaseRevoked = zurueckgenommen,
         )
     }
 
