@@ -255,6 +255,9 @@ class TransportWiringTest : TestBaseWithProfile() {
      *  P1-v45-Rigs stellen die Frist scharf. */
     private var reboundOverrideMaxMin = 0
 
+    /** Tonis Rebound-Regel (Schalter, Default AUS wie in Produktion). */
+    private var reboundNieMahlzeit = false
+
     /**
      * DIE RUHEPARAMETER AUS DER AUFGEZEICHNETEN POLITIK (Befund Toni 28.08.).
      *
@@ -881,6 +884,7 @@ class TransportWiringTest : TestBaseWithProfile() {
         whenever(preferences.get(FuseIntKey.TheilSenWindowMin)).thenAnswer { theilSenFensterMin }
         whenever(preferences.get(FuseIntKey.ReboundWindowMin)).thenAnswer { reboundFensterMin }
         whenever(preferences.get(FuseIntKey.EvidenceReboundOverrideMaxMin)).thenAnswer { reboundOverrideMaxMin }
+        whenever(preferences.get(FuseBooleanKey.ReboundNeverBlocksMeal)).thenAnswer { reboundNieMahlzeit }
         whenever(preferences.get(FuseBooleanKey.TailGuardEnabled)).thenAnswer { tailGuard }
         whenever(preferences.get(FuseBooleanKey.ConditionalTailEnabled)).thenAnswer { conditionalTail }
         whenever(preferences.get(FuseBooleanKey.MarkerAuthorisesRelease)).thenAnswer { markerAuthorized }
@@ -9489,6 +9493,58 @@ class TransportWiringTest : TestBaseWithProfile() {
         }
         assertTrue(sonderrechtGesehen, "die Frist muss erst einmal GELTEN (sonst prueft der Fall nichts)")
         assertTrue(wiederGesperrt, "nach dem Ablauf muss das rohe Fenster wieder sperren")
+    }
+
+    /**
+     * TONIS REBOUND-REGEL, KANAL: dieselbe Lage wie die Gegenprobe "nach
+     * Fristablauf" - das Sonderrecht laeuft ab, das rohe Fenster liegt weiter
+     * an. Ohne Regel sperrt es den Kanal wieder (Gegenprobe oben); mit Regel
+     * sperrt es ihn im MEAL-Kontext nie.
+     */
+    @Test
+    fun `Rebound-Regel - im MEAL-Kontext sperrt das rohe Fenster den Kanal nie`(@TempDir dir: File) {
+        val adapter = reboundOverrideLage(dir)
+        reboundOverrideMaxMin = 15
+        reboundNieMahlzeit = true
+        var ohneSonderrechtImFenster = 0
+        repeat(60) {
+            val o = cycle()
+            if (o.dosingContextProfile == "MEAL" && (o.state?.reboundRestMin ?: 0) > 0 && !o.evidenceMayOverrideRebound) {
+                ohneSonderrechtImFenster++
+                assertTrue(o.livenessProfileReason != "REBOUND_ACTIVE", "das Fenster sperrt die Mahlzeit (Zyklus $it)")
+            }
+        }
+        assertTrue(ohneSonderrechtImFenster > 0, "die Probe erreicht das rohe Fenster ohne Sonderrecht nicht")
+        assertTrue(adapter.episodes.markerPowerPinnedFor > 0L, "der MEAL-Pin steht")
+    }
+
+    /**
+     * TONIS REBOUND-REGEL, HEURISTIK: die Rebound-Dauer der Probe reicht ueber
+     * das Ende der Sonderrechte hinaus - danach liegt das Fenster wieder an. Ohne Regel
+     * bremst es die laufende Mahlzeit (reboundWindow), mit Regel im
+     * MEAL-Kontext nie.
+     */
+    @Test
+    fun `Rebound-Regel - nach den Sonderrechten bremst die Heuristik die Mahlzeit nicht`(@TempDir dir: File) {
+        fun lauf(regel: Boolean, unter: String): List<FuseCycleRunner.Outcome> {
+            // Frischer Lauf: kein Marker aus dem vorigen (ein vorgefundener pinnt nie).
+            markerAt = 0L
+            markerPress = 0L
+            reboundOverrideLage(File(dir, unter))
+            reboundFensterMin = 90
+            reboundNieMahlzeit = regel
+            return (0 until 80).map { cycle() }
+        }
+        val ohne = lauf(false, "ohne").filter { it.dosingContextProfile == "MEAL" && it.state?.markerBoost == false }
+        assertTrue(ohne.any { it.state?.reboundWindow == true }) {
+            "ohne Regel muss das Fenster nach den Sonderrechten wieder bremsen - sonst prueft der Fall nichts"
+        }
+        val mit = lauf(true, "mit").filter { it.dosingContextProfile == "MEAL" }
+        assertTrue(mit.isNotEmpty()) { "kein MEAL-Kontext im Lauf mit Regel" }
+        assertTrue(mit.none { it.state?.reboundWindow == true }) { "mit Regel bremst das Fenster die Mahlzeit" }
+        assertTrue(mit.any { it.state?.markerBoost == false && it.state?.reboundSuppressedByMarker == true }) {
+            "die Probe erreicht die Zeit nach den Sonderrechten im Fenster nicht"
+        }
     }
 
     /** Gegenprobe 4: die RUECKNAHME beendet das Sonderrecht sofort - der

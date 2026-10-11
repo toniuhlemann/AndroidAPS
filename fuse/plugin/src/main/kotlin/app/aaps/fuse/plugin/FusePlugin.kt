@@ -2694,6 +2694,7 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
             .put(FuseIntKey.DriveLowerQuantilePct, preferences)
             .put(FuseIntKey.TheilSenWindowMin, preferences)
             .put(FuseIntKey.ReboundWindowMin, preferences)
+            .put(FuseBooleanKey.ReboundNeverBlocksMeal, preferences)
             .put(FuseBooleanKey.TailGuardEnabled, preferences)
             .put(FuseBooleanKey.ConditionalTailEnabled, preferences)
             .put(FuseBooleanKey.MarkerAuthorisesRelease, preferences)
@@ -2769,6 +2770,7 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
             .store(FuseIntKey.DriveLowerQuantilePct, preferences)
             .store(FuseIntKey.TheilSenWindowMin, preferences)
             .store(FuseIntKey.ReboundWindowMin, preferences)
+            .store(FuseBooleanKey.ReboundNeverBlocksMeal, preferences)
             .store(FuseBooleanKey.TailGuardEnabled, preferences)
             .store(FuseBooleanKey.ConditionalTailEnabled, preferences)
             .store(FuseBooleanKey.MarkerAuthorisesRelease, preferences)
@@ -3139,6 +3141,9 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
             // wer das Totband stellte, musste am Schalter vorbei scrollen.
             addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.ReboundDeadbandMgdl, dialogMessage = R.string.fuse_rebound_deadband_summary, title = R.string.fuse_rebound_deadband_title))
             addPreference(AdaptiveIntPreference(ctx = context, intKey = FuseIntKey.ReboundWindowMin, dialogMessage = R.string.fuse_rebound_window_summary, title = R.string.fuse_rebound_window_title))
+            // Tonis Rebound-Regel direkt hinter der Dauer: sie entscheidet, ob
+            // das Fenster eine autorisierte Mahlzeit ueberhaupt bremst.
+            addPreference(AdaptiveSwitchPreference(ctx = context, booleanKey = FuseBooleanKey.ReboundNeverBlocksMeal, summary = R.string.fuse_rebound_never_blocks_meal_summary, title = R.string.fuse_rebound_never_blocks_meal_title))
             // DER ERWARTUNGS-BEOBACHTER (Toni 19.08.). Er war verdrahtet, aber
             // der Schalter stand in KEINEM Screen - am Geraet also nicht
             // erreichbar. Ein Beobachter, den niemand einschalten kann, misst

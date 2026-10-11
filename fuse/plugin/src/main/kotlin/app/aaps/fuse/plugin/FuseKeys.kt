@@ -1130,6 +1130,20 @@ enum class FuseBooleanKey(
     ReboundDeadbandEnabled("fuse_rebound_deadband_enabled", true),
 
     /**
+     * TONIS REGEL: "Das Rebound-Fenster darf eine Mahlzeit nie blockieren."
+     *
+     * AN: solange die Mahlzeit per Marker autorisiert ist (MEAL-Kontext),
+     * bremst das Rebound-Fenster weder ueber die Heuristik (Totband,
+     * Ratio-Deckel, tau-Kuerzung) noch sperrt es den Liveness-Kanal - auch
+     * nach dem Ende der Marker-Sonderrechte. Die gemessenen Riegel (Tief,
+     * Abwaertsrisiko, Latch, LowThreat), Guard und Schwanz bleiben. Ausserhalb
+     * des MEAL-Kontexts (Korrektur, unangekuendigte Gegenesser) wirkt das
+     * Fenster unveraendert. AUS (Default): wie bisher. Dosierwirksam; im
+     * Politik-Hash nur bei AN.
+     */
+    ReboundNeverBlocksMeal("fuse_rebound_never_blocks_meal", false),
+
+    /**
      * Zweite Bahn aus der SCHNELLEN Rate, die ausschliesslich BREMSEN darf.
      *
      * DEFAULT AN, und anders als beim Schwanz-Guard ist das unkritisch: der

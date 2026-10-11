@@ -2090,6 +2090,7 @@ object FuseStateJson {
         .put("reboundDeadbandMgdl", p.reboundDeadbandMgdl)
         .put("reboundDeadbandEnabled", p.reboundDeadbandEnabled)
         .put("reboundWindowMin", p.reboundWindowMin)
+        .put("reboundNeverBlocksMeal", p.reboundNeverBlocksMeal)
         .put("driveLowerQuantilePct", p.driveLowerQuantilePct)
         .put("theilSenWindowMin", p.theilSenWindowMin)
         .put("signalRejoinEnabled", p.signalRejoinEnabled)
@@ -2462,7 +2463,11 @@ object FuseStateJson {
                 p.reboundDeadbandEnabled,
                 p.absorptionCreditWindowMin,
                 p.markerBoostMaxMin,
-            ).map { it.toString() } + modusTeile
+            ).map { it.toString() } + modusTeile +
+            // Tonis Rebound-Regel NUR bei AN: AUS bleibt der Hash bitgleich
+            // zum Stand vor dem Schalter - der Flash allein beginnt keinen
+            // neuen Auswerteabschnitt.
+            listOfNotNull("reboundNeverBlocksMeal".takeIf { p.reboundNeverBlocksMeal })
         return Sha.of(parts.joinToString("|"))
     }
 

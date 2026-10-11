@@ -2241,8 +2241,29 @@ class FuseCycleRunner(
         val markerBoost = mealMarkerActive &&
             MarkerScope.boostActive(markerTs, computeTs, episodes.markerTurnTs, cfg.markerBoostMaxMin)
 
-        val reboundWindow = reboundRaw && !markerBoost
-        val reboundSuppressedByMarker = reboundRaw && markerBoost
+        // TONIS REGEL "DAS REBOUND-FENSTER DARF EINE MAHLZEIT NIE BLOCKIEREN"
+        // (Schalter, Default AUS = bisher). Ohne sie entwaffnet der Marker die
+        // Heuristik-Bremse nur fuer die Sonderrechte (bis zur nachhaltigen
+        // Wende, hoechstens markerBoostMaxMin); liegt das juengste Tief dann
+        // noch im Rebound-Fenster, greifen Totband, Ratio-Deckel und
+        // tau-Kuerzung wieder und bremsen die laufende Mahlzeit. Mit ihr bleibt
+        // die Bremse entwaffnet, solange die Mahlzeit autorisiert ist
+        // (MEAL-Kontext). Der Kontext steht erst unten fest (Pin-Pflege); hier
+        // dieselbe Regel als Vorschau ohne Schreibzugriff. Sie weicht nur im
+        // Zyklus eines neuen Drucks ab (der neue Pin entsteht erst unten) -
+        // dort entwaffnet der Boost (ausser bei markerBoostMaxMin = 0: dann
+        // greift die Regel ab dem naechsten Zyklus).
+        val mahlzeitAutorisiertVorschau = cfg.reboundNeverBlocksMeal &&
+            !episodeGate.creditRevoked && markerTs > 0L &&
+            app.aaps.fuse.core.controller.DosingContext.decide(
+                nowMs = computeTs,
+                markerTs = markerTs,
+                pinnedFor = episodes.markerPowerPinnedFor,
+                deadlineTs = episodes.markerPowerDeadlineTs,
+            ).mealAuthorized
+        val reboundEntwaffnet = markerBoost || mahlzeitAutorisiertVorschau
+        val reboundWindow = reboundRaw && !reboundEntwaffnet
+        val reboundSuppressedByMarker = reboundRaw && reboundEntwaffnet
 
         // ---- DIE DIREKTDOSIS UND DAS HISTORISCHE REBOUND-FENSTER ---------
         //
@@ -5362,8 +5383,12 @@ class FuseCycleRunner(
             // r +4,8 und 3,68 U freiem MEAL-Headroom.
             // Seit 14.09. zusaetzlich die Rebound-Evidenz-Ausnahme (Default
             // AUS -> exakt die bisherige Bedingung).
-            val reboundSperrt = app.aaps.fuse.core.controller.MealReboundEvidenceException
-                .gateBlocks(reboundRaw, reboundOverrideErlaubt, reboundAusnahme)
+            // TONIS REBOUND-REGEL (Schalter, Default AUS): im MEAL-Kontext
+            // sperrt das Rebound-Fenster den Kanal nie - die Mahlzeit ist
+            // angekuendigt. Die gemessenen Riegel unten bleiben.
+            val reboundSperrt = !(cfg.reboundNeverBlocksMeal && dosingCtx.mealAuthorized) &&
+                app.aaps.fuse.core.controller.MealReboundEvidenceException
+                    .gateBlocks(reboundRaw, reboundOverrideErlaubt, reboundAusnahme)
             val hartNachRebound = when {
                 measuredLow -> "MEASURED_LOW"
                 descentRisk.active -> "DESCENT_RISK"
@@ -8225,6 +8250,8 @@ class FuseCycleRunner(
          * GEMEINSAM, nicht nur auf das Totband.
          */
         val reboundWindowMin: Int,
+        /** Tonis Rebound-Regel - s. [FuseBooleanKey.ReboundNeverBlocksMeal]. */
+        val reboundNeverBlocksMeal: Boolean = false,
         val driveLowerQuantilePct: Int,
         /** Fenster des Theil-Sen-Hauptschaetzers [min] - s. FuseKeys. */
         val theilSenWindowMin: Int,
@@ -8387,6 +8414,7 @@ class FuseCycleRunner(
         reboundDeadbandMgdl = preferences.get(FuseDoubleKey.ReboundDeadbandMgdl),
         reboundDeadbandEnabled = preferences.get(FuseBooleanKey.ReboundDeadbandEnabled),
         reboundWindowMin = preferences.get(FuseIntKey.ReboundWindowMin),
+        reboundNeverBlocksMeal = preferences.get(FuseBooleanKey.ReboundNeverBlocksMeal),
         driveLowerQuantilePct = preferences.get(FuseIntKey.DriveLowerQuantilePct),
         theilSenWindowMin = preferences.get(FuseIntKey.TheilSenWindowMin),
         signalRejoinEnabled = preferences.get(FuseBooleanKey.SignalRejoinEnabled),
