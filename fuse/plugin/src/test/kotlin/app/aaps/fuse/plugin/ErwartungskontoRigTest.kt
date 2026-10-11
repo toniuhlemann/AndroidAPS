@@ -548,6 +548,26 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
         assertTrue(rbHeute.any { it.o.state!!.reboundWindow }) { "EK-RBheute weicht von heute ab" }
     }
 
+    /**
+     * Frage der Forschung: nach einem Rueckfall steuert der heutige
+     * Pfad - dann darf auch die Rebound-Bremse nicht mehr am Konto haengen.
+     * Das Konto geht mitten in der Episode verloren; nach den Sonderrechten
+     * greift das Fenster wie heute.
+     */
+    @Test
+    fun `nach einem Rueckfall bremst das Rebound-Fenster wie heute`(@TempDir dir: File) {
+        konfiguration(kontoAn = true)
+        whenever(preferences.get(FuseIntKey.ReboundWindowMin)).thenReturn(REBOUND_FENSTER_MIN)
+        val zyklen = lauf(fReboundNachDruck, dir, FuseCycleRunner.Pruefarm.EK, vorZyklus = { m ->
+            if (m == 20) ledger.episodes.expectation = null
+        }).filter { it.o.abortReason == null && it.o.state != null }
+        val danach = zyklen.filter { it.minute in 50..90 && !it.o.state!!.markerBoost }
+        assertTrue(danach.isNotEmpty())
+        assertTrue(danach.all { it.o.erwartungskonto?.rueckfall == "ACCOUNT_LOST" }) { "der Rueckfall ist nicht ausgewiesen" }
+        assertTrue(danach.none { it.o.state!!.reboundSuppressedByMarker }) { "die Bremse haengt nach dem Rueckfall am Konto" }
+        assertTrue(danach.any { it.o.state!!.reboundWindow }) { "die Probe erreicht das Rebound-Fenster nicht" }
+    }
+
     private companion object {
 
         /** Synthetisches maxIOB des Gestells. */
