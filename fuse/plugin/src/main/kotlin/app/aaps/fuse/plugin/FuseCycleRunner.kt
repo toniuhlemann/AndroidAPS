@@ -2275,9 +2275,14 @@ class FuseCycleRunner(
             val konto = episodes.expectation
             // Ein laufendes Konto DIESER Autorisierung - oder ein bewusster,
             // in diesem Prozess beobachteter Druck, der jetzt eines bucht.
+            // NIE ZWEIMAL DIESELBE (Codex 11.10., Punkt 8): ist das Konto
+            // einer in diesem Prozess schon gebuchten Autorisierung verloren
+            // (verworfen, zurueckgesetzt), wird es nicht neu eroeffnet - die
+            // Mahlzeit laeuft dann ausgewiesen auf dem heutigen Pfad.
             (konto != null && konto.authId == ekVorschau.authorizationId && computeTs < konto.windowEndTs) ||
                 (manualMarkerAuthorized && ekVorschau.authorizationId == markerTs &&
-                    markerPressObserved() == markerTs && konto?.authId != markerTs)
+                    markerPressObserved() == markerTs && konto?.authId != markerTs &&
+                    ekArmiertFuerAuth != markerTs)
         }
 
         val onset = OnsetChannel.evaluate(
@@ -3252,11 +3257,26 @@ class FuseCycleRunner(
             computeTs = computeTs, markerNoPrime = markerNoPrime,
             bgMgdl = signal.q1, targetMgdl = state.targetMgdl, isfMgdlPerU = state.isfMgdlPerU,
             iobTotalU = iobTotal.iob + transportModelledU, activityUPerMin = iobTotal.activity,
-            // Auch die beiden Low-Befunde des Null-Tors sind Messungen.
-            gemesseneSperre = step.safetyReasons.isNotEmpty() || descentRisk.active || descentLatch.blocksPositive ||
-                lowThreatResult.verdict != LowThreatGate.Verdict.NONE,
+            // Gemessene Sperren: dieselben wie die des Kanals, dazu die beiden
+            // Low-Befunde des Null-Tors - und das spaete Abwaertsrisiko des
+            // Marker-Aufschubs, das sonst erst nach dem Regler bekannt waere
+            // (Codex 11.10., Punkt 5: Sperre nach ANTEIL, auf allen Wegen).
+            sperren = listOfNotNull(
+                "SAFETY".takeIf { step.safetyReasons.isNotEmpty() },
+                "DESCENT_RISK".takeIf { descentRisk.active },
+                "DESCENT_RISK_MARKER".takeIf {
+                    ekSpaetesAbwaertsrisiko(cfg, episodes, computeTs, markerTs, step, signal, iobTotal, isf)
+                },
+                "LATCH".takeIf { descentLatch.blocksPositive },
+                "LOW_THREAT".takeIf { lowThreatResult.verdict != LowThreatGate.Verdict.NONE },
+            ),
             faellt = !signal.ukfRatePerMin.isFinite() || signal.ukfRatePerMin < LivenessChannel.UKF_FLOOR_MGDL_PER_MIN,
-            pause = step.health != Health.READY || signal.rejoin.active || state.pumpBusy || ledgerView.hold,
+            technisch = listOfNotNull(
+                "HEALTH".takeIf { step.health != Health.READY },
+                "REJOIN".takeIf { signal.rejoin.active },
+                "PUMP_BUSY".takeIf { state.pumpBusy },
+                "LEDGER_HOLD".takeIf { ledgerView.hold },
+            ),
         )
         ekZyklusThisCycle = ekZyklus
         val baseDecision = FuseController.decide(
@@ -6188,6 +6208,7 @@ class FuseCycleRunner(
                 grundNormalpfad = vetted.candidateReason,
                 grundEnde = decision.candidateReason,
                 stabilSeitTs = ekStabilSeit,
+                rueckfall = ekRueckfall(ekZyklus, dosingCtx.mealAuthorized, dosingCtx.authorizationId, episodes),
             ),
             // Fixvertrag 30.08.: das typisierte Zyklus-IOB fuer
             // APSResult.iobData / DeviceStatus openaps.iob.
@@ -6707,6 +6728,8 @@ class FuseCycleRunner(
         val armiertInDiesemZyklus: Boolean,
         val stabil: Boolean,
         val pausiert: Boolean,
+        /** Warum pausiert (gemessene Sperren, Fallen, technische Gruende); leer = nicht pausiert. */
+        val pausenGruende: List<String> = emptyList(),
     )
 
     /** E-034: alles, was der Trail-Block des Kontos braucht - ein Zyklus. */
@@ -6728,6 +6751,13 @@ class FuseCycleRunner(
         /** Typisierter Grund der Endentscheidung. */
         val grundEnde: CandidateSearch.Reject?,
         val stabilSeitTs: Long?,
+        /**
+         * Codex 11.10. (Punkt 8): WARUM im Mahlzeitkontext kein Konto gilt -
+         * DROPPED_ON_LOAD, ACCOUNT_LOST, CONTEXT_MISMATCH, NO_ACCOUNT - oder
+         * null. Solche Zyklen laufen auf dem heutigen Pfad und gehoeren nicht
+         * still in eine EK-Bewertung.
+         */
+        val rueckfall: String? = null,
     )
 
     /** E-034: was dieser Zyklus im Konto gebucht hat. */
@@ -6778,10 +6808,13 @@ class FuseCycleRunner(
         isfMgdlPerU: Double,
         iobTotalU: Double,
         activityUPerMin: Double,
-        gemesseneSperre: Boolean,
+        /** Gemessene Sperren dieses Zyklus (Namen); leer = keine. */
+        sperren: List<String>,
         faellt: Boolean,
-        pause: Boolean,
+        /** Signal-, Pumpen-, Ledger- und Bahnzustaende (Namen); leer = keine. */
+        technisch: List<String>,
     ): ErwartungskontoZyklus? {
+        val gemesseneSperre = sperren.isNotEmpty()
         // Die Strecke: mit den GEPINNTEN Grenzen des laufenden Kontos, sonst
         // mit den eingestellten (die am naechsten Druck gepinnt werden).
         val laufend = episodes.expectation?.takeIf { ekGilt && it.authId == dosingCtx.authorizationId }
@@ -6819,8 +6852,10 @@ class FuseCycleRunner(
                 isfMgdlPerU = isfMgdlPerU,
             )
             armiert = true
+            ekArmiertFuerAuth = dosingCtx.authorizationId
         }
-        val pausiert = pause || gemesseneSperre || faellt
+        val pausenGruende = sperren + listOfNotNull("FALLING".takeIf { faellt }) + technisch
+        val pausiert = pausenGruende.isNotEmpty()
         val (neu, eval) = ExpectationAccount.step(
             konto,
             ExpectationAccount.Inputs(
@@ -6835,12 +6870,60 @@ class FuseCycleRunner(
                 stableNow = stabil,
             ),
         )
-        episodes.expectation = neu
+        // ABSCHALTEN WIRKT SOFORT UND FUER DIE GANZE EPISODE (Codex 11.10.,
+        // Punkt 9): einmal aus, ist das Recht dieser Autorisierung entzogen -
+        // wieder an gilt es erst ab dem naechsten Marker.
+        val gefuehrt = if (!cfg.expectationGuardException && neu.guardException) neu.copy(guardException = false) else neu
+        episodes.expectation = gefuehrt
         return ErwartungskontoZyklus(
-            state = neu, eval = eval,
-            guardAusnahme = neu.guardException && cfg.expectationGuardException,
+            state = gefuehrt, eval = eval,
+            guardAusnahme = gefuehrt.guardException,
             armiertInDiesemZyklus = armiert, stabil = stabil, pausiert = pausiert,
+            pausenGruende = pausenGruende,
         )
+    }
+
+    /**
+     * E-034: das spaete Abwaertsrisiko des Marker-Aufschubs schon VOR dem
+     * Regler - dieselbe reine Rechnung wie an der Aufschubstelle (gleiche
+     * Eingaben, dieselbe reine Ablaufpruefung des Aufschubs), damit es den
+     * Erwartungsanteil auf allen Wegen pausiert und nicht nur die Hebung.
+     */
+    private fun ekSpaetesAbwaertsrisiko(
+        cfg: Config,
+        episodes: app.aaps.fuse.plugin.ledger.EpisodeBudgets,
+        computeTs: Long,
+        markerTs: Long,
+        step: ObserverStep,
+        signal: FuseSignalSource.Signal,
+        iobTotal: app.aaps.core.interfaces.aps.IobTotal,
+        isf: Double,
+    ): Boolean {
+        val aufschub = DeferredPrime.expireIfDue(episodes.deferredPrime, computeTs)
+        if (!(cfg.deferredPrimeEnabled && aufschub.pinnedForMarkerTs > 0L && aufschub.pinnedForMarkerTs == markerTs)) return false
+        return LowThreatGate.measuredDescentRisk(
+            signalHealthy = step.health == Health.READY,
+            bgMgdl = signal.q1,
+            fallRatePerMin = signal.ukfRatePerMin,
+            bolusIobU = (iobTotal.iob - iobTotal.basaliob).takeIf { iobTotal.valid },
+            isfMgdlPerU = isf,
+            guardFloorMgdl = cfg.guardFloorMgdl,
+            horizonMin = aufschub.horizonMin.toDouble(),
+        ).active
+    }
+
+    /** E-034: warum im Mahlzeitkontext kein Konto gilt (s. [ErwartungskontoExport.rueckfall]). */
+    private fun ekRueckfall(
+        ekZyklus: ErwartungskontoZyklus?,
+        mealAuthorized: Boolean,
+        authorizationId: Long,
+        episodes: app.aaps.fuse.plugin.ledger.EpisodeBudgets,
+    ): String? = when {
+        ekZyklus != null || !mealAuthorized || authorizationId <= 0L -> null
+        episodes.expectationDroppedAuthId == authorizationId -> "DROPPED_ON_LOAD"
+        ekKontextAbweichungThisCycle -> "CONTEXT_MISMATCH"
+        ekArmiertFuerAuth == authorizationId -> "ACCOUNT_LOST"
+        else -> "NO_ACCOUNT"
     }
 
     /** E-034: die gesendete Menge dieses Zyklus im Konto buchen (s. Aufrufstelle). */
@@ -7218,9 +7301,16 @@ class FuseCycleRunner(
             computeTs = computeTs, markerNoPrime = markerNoPrime,
             bgMgdl = signal.q1, targetMgdl = state.targetMgdl, isfMgdlPerU = state.isfMgdlPerU,
             iobTotalU = iobTotal.iob + transportModelledU, activityUPerMin = iobTotal.activity,
-            gemesseneSperre = step.safetyReasons.isNotEmpty() || descentRisk.active || descentLatch.blocksPositive,
+            sperren = listOfNotNull(
+                "SAFETY".takeIf { step.safetyReasons.isNotEmpty() },
+                "DESCENT_RISK".takeIf { descentRisk.active },
+                "DESCENT_RISK_MARKER".takeIf {
+                    ekSpaetesAbwaertsrisiko(cfg, episodes, computeTs, markerTs, step, signal, iobTotal, isf)
+                },
+                "LATCH".takeIf { descentLatch.blocksPositive },
+            ),
             faellt = !signal.ukfRatePerMin.isFinite() || signal.ukfRatePerMin < LivenessChannel.UKF_FLOOR_MGDL_PER_MIN,
-            pause = true,
+            technisch = listOf("NO_TRAJECTORY"),
         )
         ekZyklusThisCycle = ekZyklus
         subStepCarryU = 0.0
@@ -7545,6 +7635,7 @@ class FuseCycleRunner(
                 grundNormalpfad = null,
                 grundEnde = combined.decision.candidateReason,
                 stabilSeitTs = ekStabilSeit,
+                rueckfall = ekRueckfall(ekZyklus, fallbackCtx.mealAuthorized, fallbackCtx.authorizationId, episodes),
             ),
             // Fixvertrag 30.08.: derselbe typisierte IOB-Stand wie im
             // Hauptpfad - der Fallback bekommt ihn als Parameter.
@@ -8004,6 +8095,10 @@ class FuseCycleRunner(
     /** E-034: letzte Fortschreibung der Strecke; eine laengere Luecke
      *  beendet sie (nicht beobachtet heisst nicht stabil). */
     private var ekStabilLetzteTs = 0L
+
+    /** E-034: die zuletzt IN DIESEM PROZESS gebuchte Autorisierung - sie wird
+     *  nie ein zweites Mal gebucht (Codex 11.10., Punkt 8). */
+    private var ekArmiertFuerAuth = 0L
 
     /** E-034: Konto-Zustand und Buchung DIESES Zyklus - nur fuer den Export. */
     internal var ekZyklusThisCycle: ErwartungskontoZyklus? = null

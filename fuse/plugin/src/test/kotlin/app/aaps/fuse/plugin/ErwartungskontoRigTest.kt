@@ -203,7 +203,13 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
     /** Ein Zyklus der Probe: das Ergebnis, das Konto danach und die gelieferte Menge. */
     private class Zyklus(val minute: Int, val o: FuseCycleRunner.Outcome, val konto: ExpectationAccount.State?, val geliefertU: Double)
 
-    private fun lauf(f: Fuse20Folgen.Folge, dir: File, arm: FuseCycleRunner.Pruefarm? = null): List<Zyklus> {
+    private fun lauf(
+        f: Fuse20Folgen.Folge,
+        dir: File,
+        arm: FuseCycleRunner.Pruefarm? = null,
+        /** Vor jedem Zyklus, mit seiner Minute - fuer Eingriffe mitten in der Folge. */
+        vorZyklus: (Int) -> Unit = {},
+    ): List<Zyklus> {
         folge = f
         clock = f.ts(f.vonMin)
         boluses = emptyList()
@@ -225,6 +231,7 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
         while (clock + 60_000L <= f.ts(f.bisMin)) {
             if (f.markerMin != null && clock + 60_000L == f.ts(f.markerMin)) druecken(clock + 60_000L)
             clock += 60_000L
+            vorZyklus(f.minute(clock))
             val evidenzVorLauf = ledger.episodes.evidenceState
             val o = runner.run(false, testPumpe())
             val units = o.decision.smbU.takeIf { it > 0.0 }
@@ -441,6 +448,66 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
         assertTrue(erw > 0.0) { "kein Erwartungsanteil" }
         assertTrue(erw <= konto.a0U + 1e-9)
         assertTrue(imFenster.all { it.geliefertU <= FuseDoubleKey.MaxSmbU.defaultValue + 1e-9 }) { "Schritt ueber maxSMB" }
+    }
+
+    /** Fallen nach dem Marker mit Prime-Insulin an Bord: das spaete Abwaertsrisiko des Aufschubs greift. */
+    private val fFall = Fuse20Folgen.Folge(
+        "FALL", 1_700_388_000_000L, -90, 240,
+        listOf(-90 to 150.0, -10 to 150.0, 0 to 152.0, 12 to 160.0, 45 to 98.0, 70 to 84.0, 120 to 95.0, 240 to 120.0),
+        markerMin = 0,
+    )
+
+    /** Codex 11.10., Punkt 9: einmal aus, bleibt die Ausnahme fuer diese Episode entzogen. */
+    @Test
+    fun `Abschalten der Guard-Ausnahme entzieht das Recht fuer die ganze Episode`(@TempDir dir: File) {
+        konfiguration(kontoAn = true)
+        val zyklen = lauf(fStabil, dir, vorZyklus = { m ->
+            if (m == 2) whenever(preferences.get(FuseBooleanKey.ExpectationGuardExceptionEnabled)).thenReturn(false)
+            if (m == 4) whenever(preferences.get(FuseBooleanKey.ExpectationGuardExceptionEnabled)).thenReturn(true)
+        }).filter { it.o.abortReason == null }
+        val mitKonto = zyklen.filter { it.o.erwartungskonto?.zyklus != null }
+        assertTrue(mitKonto.filter { it.minute < 2 }.all { it.o.erwartungskonto!!.zyklus!!.guardAusnahme })
+        for (z in mitKonto.filter { it.minute >= 2 }) {
+            assertFalse(z.o.erwartungskonto!!.zyklus!!.guardAusnahme, "Minute ${z.minute}: Ausnahme wieder an")
+            assertEquals(0.0, z.o.erwartungskonto!!.angehobenU, 0.0, "Minute ${z.minute}: Hebung ohne Recht")
+        }
+        assertFalse(zyklen.mapNotNull { it.konto }.last().guardException, "Entzug im Kontozustand")
+    }
+
+    /** Codex 11.10., Punkt 8: ein verlorenes Konto wird nicht neu eroeffnet, der Rueckfall ist ausgewiesen. */
+    @Test
+    fun `ein verlorenes Konto wird nicht neu eroeffnet und der Rueckfall ist ausgewiesen`(@TempDir dir: File) {
+        konfiguration(kontoAn = true)
+        val zyklen = lauf(fStabil, dir, vorZyklus = { m -> if (m == 10) ledger.episodes.expectation = null })
+            .filter { it.o.abortReason == null }
+        assertEquals(listOf(0), zyklen.filter { it.o.erwartungskonto?.zyklus?.armiertInDiesemZyklus == true }.map { it.minute })
+        val danach = zyklen.filter { it.minute in 10 until 120 }
+        assertTrue(danach.isNotEmpty())
+        for (z in danach) {
+            val x = z.o.erwartungskonto!!
+            assertFalse(x.gilt, "Minute ${z.minute}: Konto gilt wieder")
+            assertEquals("ACCOUNT_LOST", x.rueckfall, "Minute ${z.minute}: Rueckfall nicht ausgewiesen")
+            assertTrue(z.o.livenessDenial != "EXPECTATION_ACCOUNT", "Minute ${z.minute}: heutiger Pfad")
+        }
+        // Ausserhalb des Mahlzeitkontexts gibt es keinen Rueckfall.
+        assertTrue(zyklen.filter { it.minute < 0 || it.minute >= 125 }.all { it.o.erwartungskonto!!.rueckfall == null })
+    }
+
+    /** Codex 11.10., Punkt 5: das spaete Abwaertsrisiko pausiert den Erwartungsanteil nach ANTEIL, auf allen Wegen. */
+    @Test
+    fun `das spaete Abwaertsrisiko pausiert den Erwartungsanteil`(@TempDir dir: File) {
+        konfiguration(kontoAn = true)
+        whenever(preferences.get(FuseBooleanKey.DeferredPrimeEnabled)).thenReturn(true)
+        val zyklen = lauf(fFall, dir).filter { it.o.abortReason == null }
+        val gesperrt = zyklen.filter { it.o.erwartungskonto?.zyklus?.pausenGruende?.contains("DESCENT_RISK_MARKER") == true }
+        assertTrue(gesperrt.isNotEmpty()) { "die Probe erreicht das spaete Abwaertsrisiko nicht" }
+        for (z in gesperrt) {
+            val x = z.o.erwartungskonto!!
+            assertTrue(x.zyklus!!.pausiert)
+            assertEquals(0.0, x.zyklus.eval.restEffU, 0.0, "Minute ${z.minute}: Rest trotz Sperre")
+            assertEquals(0.0, x.buchung?.split?.dErwU ?: 0.0, 0.0, "Minute ${z.minute}: d_erw trotz Sperre")
+            assertEquals(0.0, x.angehobenU, 0.0, "Minute ${z.minute}: Hebung trotz Sperre")
+        }
     }
 
     private companion object {

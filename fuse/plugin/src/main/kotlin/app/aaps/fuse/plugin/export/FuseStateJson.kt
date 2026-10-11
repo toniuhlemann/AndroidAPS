@@ -2500,6 +2500,7 @@ object FuseStateJson {
             .put("blockNormal", x.blockNormalpfad?.name ?: JSONObject.NULL)
             .put("reasonNormal", x.grundNormalpfad?.name ?: JSONObject.NULL)
             .put("reasonFinal", x.grundEnde?.name ?: JSONObject.NULL)
+            .put("fallback", x.rueckfall ?: JSONObject.NULL)
         val z = x.zyklus
         if (z != null) {
             val s = z.state
@@ -2515,6 +2516,7 @@ object FuseStateJson {
                 .put("stable", z.stabil)
                 .put("released", s.released)
                 .put("paused", z.pausiert)
+                .put("pauseReasons", org.json.JSONArray(z.pausenGruende))
                 .put("frozen", s.frozen)
                 .put("releaseChecked", s.releaseChecked)
                 .put("disturbanceU", fin(s.disturbanceU))

@@ -90,9 +90,20 @@ class ExpectationAccountPersistTest {
             assertNull(zurueck.expectation, "Fall $i")
             assertTrue(zurueck.expectationDropped, "Fall $i")
         }
-        // Kein Objekt an der Stelle: ebenso verworfen.
+        // Kein Objekt an der Stelle: ebenso verworfen, Autorisierung unbekannt.
         val json = LedgerCodec.encodeEpisodes(episoden(konto())).put("expectation", 42)
         assertTrue(LedgerCodec.decodeEpisodes(json).expectationDropped)
+        assertEquals(0L, LedgerCodec.decodeEpisodes(json).expectationDroppedAuthId)
+    }
+
+    /** Codex 11.10., Punkt 8: die Autorisierung des verworfenen Kontos bleibt fuer den Rueckfall-Ausweis lesbar. */
+    @Test
+    fun `das verworfene Konto nennt seine Autorisierung`() {
+        val json = LedgerCodec.encodeEpisodes(episoden(konto()))
+        json.getJSONObject("expectation").put("bookedU", -1.0)
+        val zurueck = LedgerCodec.decodeEpisodes(json)
+        assertNull(zurueck.expectation)
+        assertEquals(t0, zurueck.expectationDroppedAuthId)
     }
 
     @Test

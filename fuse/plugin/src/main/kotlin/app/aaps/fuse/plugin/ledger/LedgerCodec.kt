@@ -1175,6 +1175,7 @@ object LedgerCodec {
             val konto = o.optJSONObject("expectation")?.let { decodeExpectation(it) }
             e.expectation = konto
             e.expectationDropped = konto == null
+            if (konto == null) e.expectationDroppedAuthId = o.optJSONObject("expectation")?.optLong("authId", 0L) ?: 0L
         }
         val md = o.getJSONArray("mealDeliveries")
         require(md.length() <= MAX_MEAL_DELIVERIES) { "mealDeliveries size ${md.length()}" }

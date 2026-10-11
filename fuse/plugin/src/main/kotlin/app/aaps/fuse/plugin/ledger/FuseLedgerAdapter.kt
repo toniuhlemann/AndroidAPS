@@ -491,6 +491,10 @@ class EpisodeBudgets {
      *  (s. [LedgerCodec.decodeExpectation]); nur im Speicher, fuer den Export. */
     var expectationDropped: Boolean = false
 
+    /** E-034: die Autorisierung des verworfenen Kontos, soweit lesbar (0 =
+     *  unbekannt); nur im Speicher, fuer den Rueckfall-Ausweis. */
+    var expectationDroppedAuthId: Long = 0L
+
     var foundation: app.aaps.fuse.core.controller.MealFoundation.Authorization =
         app.aaps.fuse.core.controller.MealFoundation.Authorization.none()
 
