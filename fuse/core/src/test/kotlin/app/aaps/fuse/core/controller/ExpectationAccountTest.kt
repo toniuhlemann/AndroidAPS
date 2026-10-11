@@ -178,28 +178,61 @@ class ExpectationAccountTest {
     }
 
     @Test
-    fun `die Buchung teilt nach Normalpfad und verbraucht nur d_erw`() {
+    fun `die Buchung teilt nach R_mess und verbraucht nur d_erw`() {
+        // R_mess = 0,5 U: die ersten 0,5 U jeder Lieferung sind d_mess.
         val (s0, e) = ExpectationAccount.step(arm(), inputs(nach = 1, bg = 125.0))
-        val (s1, split) = ExpectationAccount.book(s0, e, finalU = 0.8, normalPassedU = 0.5)
+        val (s1, split) = ExpectationAccount.book(s0, e, finalU = 0.8)
         assertEquals(0.5, split.dMessU, eps)
         assertEquals(0.3, split.dErwU, eps)
         assertEquals(0.0, split.violationU, eps)
         assertEquals(0.3, s1.bookedU, eps)
-        // Guard sperrte den Normalpfad: alles ist d_erw.
-        val (s2, split2) = ExpectationAccount.book(s1, e, finalU = 0.2, normalPassedU = 0.0)
-        assertEquals(0.2, split2.dErwU, eps)
-        assertEquals(0.5, s2.bookedU, eps)
+        // Unter R_mess ist alles d_mess und verbraucht nichts.
+        val (s2, split2) = ExpectationAccount.book(s1, e, finalU = 0.4)
+        assertEquals(0.4, split2.dMessU, eps)
+        assertEquals(0.0, split2.dErwU, eps)
+        assertEquals(0.3, s2.bookedU, eps)
+        // R_mess negativ (Insulin an Bord): jede Lieferung ist d_erw.
+        val (s3, e3) = ExpectationAccount.step(arm(), inputs(nach = 1, bg = 100.0, iob = 0.5))
+        val split3 = ExpectationAccount.book(s3, e3, finalU = 0.2).second
+        assertEquals(0.0, split3.dMessU, eps)
+        assertEquals(0.2, split3.dErwU, eps)
     }
 
     @Test
     fun `das Budget wird nie aufgefuellt und Ueberschreitung wird gemeldet`() {
-        var (s, e) = ExpectationAccount.step(arm(), inputs(nach = 1, bg = 125.0))
-        s = ExpectationAccount.book(s, e, finalU = e.restEffU, normalPassedU = 0.0).first
+        var (s, e) = ExpectationAccount.step(arm(), inputs(nach = 1, bg = 100.0))
+        s = ExpectationAccount.book(s, e, finalU = e.restEffU).first
         assertEquals(0.0, s.restU, eps)
-        val (s2, e2) = ExpectationAccount.step(s, inputs(nach = 2, bg = 125.0))
+        val (s2, e2) = ExpectationAccount.step(s, inputs(nach = 2, bg = 100.0))
         assertEquals(0.0, e2.restEffU, eps)
-        val split = ExpectationAccount.book(s2, e2, finalU = 0.3, normalPassedU = 0.0).second
+        val split = ExpectationAccount.book(s2, e2, finalU = 0.3).second
         assertEquals(0.3, split.violationU, eps)
+    }
+
+    @Test
+    fun `die Guard-Ausnahme gibt es nur, wenn der Normalpfad den gemessenen Anteil traegt`() {
+        // R_mess = 0,5 U, Rest 0,5 U (Huelle), Anforderung gross genug.
+        val (_, e) = ExpectationAccount.step(arm(huelle = 0.5), inputs(nach = 1, bg = 125.0))
+        assertEquals(1.0, ExpectationAccount.deliverableU(e), eps)
+        assertEquals(1.0, ExpectationAccount.guardExceptionFloorU(e, normalPassedU = 0.5), eps)
+        assertEquals(1.0, ExpectationAccount.guardExceptionFloorU(e, normalPassedU = 0.7), eps)
+        // Der Guard kuerzte schon den gemessenen Anteil: jede Einheit mehr waere d_mess.
+        assertEquals(0.0, ExpectationAccount.guardExceptionFloorU(e, normalPassedU = 0.45), eps)
+        // R_mess negativ: der gemessene Anteil ist 0, die Ausnahme greift auch bei gesperrtem Normalpfad.
+        val (_, e2) = ExpectationAccount.step(arm(huelle = 0.5), inputs(nach = 1, bg = 100.0, iob = 0.3))
+        assertEquals(ExpectationAccount.deliverableU(e2), ExpectationAccount.guardExceptionFloorU(e2, normalPassedU = 0.0), eps)
+        // Ohne Erwartungsanteil (Pause) gibt es keinen Boden.
+        val (_, e3) = ExpectationAccount.step(arm(huelle = 0.5), inputs(nach = 1, bg = 125.0, pause = true))
+        assertEquals(0.0, ExpectationAccount.guardExceptionFloorU(e3, normalPassedU = 0.5), eps)
+    }
+
+    @Test
+    fun `ein nicht berechenbares R_mess ergibt keine Menge`() {
+        val (s, e) = ExpectationAccount.step(arm(), inputs(nach = 1, bg = Double.NaN))
+        assertEquals(0.0, ExpectationAccount.deliverableU(e), eps)
+        assertEquals(0.0, ExpectationAccount.expectationShareU(e), eps)
+        assertEquals(0.0, ExpectationAccount.guardExceptionFloorU(e, normalPassedU = 0.0), eps)
+        assertEquals(0.2, ExpectationAccount.book(s, e, finalU = 0.2).second.dErwU, eps)
     }
 
     @Test

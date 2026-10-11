@@ -58,6 +58,10 @@ object ExposureGate {
     enum class FinalSource {
         NONE, NORMAL, NORMAL_SUBSTEP, PRIME, FOUNDATION, MEAL_UPFRONT,
         DEFERRED_RELEASE, LIVENESS, CALM_BATCH, CALM_DEMAND,
+
+        /** Die Guard-Ausnahme des Erwartungsanteils (E-034). Nur im
+         *  Speicher und im Export, nie persistiert. */
+        EXPECTATION,
     }
 
     data class Result(

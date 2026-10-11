@@ -21,9 +21,11 @@ import kotlin.math.min
  *
  * WAS ES BEGRENZT: Ein Erwartungsbudget A_0 = phi_0 * Z(0), hoechstens die
  * tatsaechliche Huelle der Episode (bei "ohne Vorschuss" also 0), wird EINMAL
- * am Marker gebucht und nur verbraucht, nie aufgefuellt. Jede Lieferung
- * teilt sich in d_mess (der Anteil, den der Normalpfad mit allen Pruefungen
- * freigegeben hat) und d_erw (der Rest); nur d_erw verbraucht das Budget. Die
+ * am Marker gebucht und nur verbraucht, nie aufgefuellt. Jede Lieferung d
+ * teilt sich in d_mess = min(d, max(0, R_mess)) und d_erw = d - d_mess
+ * (Autorisierungsentwurf Abschnitt 2); nur d_erw verbraucht das Budget, und
+ * nur d_erw darf die Guard-Ausnahme nutzen - d_mess laeuft ohne Ausnahme
+ * durch alle Pruefungen. Die
  * Direktdosis-Familie bucht voll auf das Konto; was sie ueber A_0 hinaus
  * liefert, ist durch die bestehende Markerautorisierung gedeckt und wird so
  * ausgewiesen - keine stille Ueberschreitung.
@@ -326,11 +328,14 @@ object ExpectationAccount {
         )
     }
 
+    /** Der gemessene Anteil max(0, R_mess); nicht berechenbar zaehlt als 0 (nie NaN in einer Menge). */
+    private fun messU(e: Evaluation): Double = if (e.rMessU.isFinite()) max(0.0, e.rMessU) else 0.0
+
     /** Hoechstmenge dieses Zyklus aus dem Konto: d_mess-Anteil plus d_erw bis Budgetrest. */
-    fun deliverableU(e: Evaluation): Double = min(e.requestU, max(0.0, e.rMessU) + e.restEffU)
+    fun deliverableU(e: Evaluation): Double = min(e.requestU, messU(e) + e.restEffU)
 
     /** Der Anteil, der nur als d_erw fliessen darf (und nur er nutzt die Guard-Ausnahme). */
-    fun expectationShareU(e: Evaluation): Double = min(e.restEffU, max(0.0, e.requestU - max(0.0, e.rMessU)))
+    fun expectationShareU(e: Evaluation): Double = min(e.restEffU, max(0.0, e.requestU - messU(e)))
 
     data class Split(
         val dMessU: Double,
@@ -340,13 +345,29 @@ object ExpectationAccount {
     )
 
     /**
-     * Bucht eine Lieferung aus dem Konto. [finalU] ist die Endmenge nach allen
-     * Pruefungen; [normalPassedU] die Menge, die der Normalpfad ohne Ausnahme
-     * freigegeben hatte. d_mess = min(final, normalPassed), d_erw = Rest.
+     * DER BODEN DER GUARD-AUSNAHME in diesem Zyklus - oder 0.
+     *
+     * [normalPassedU] ist die Menge, die der Normalpfad MIT Guard freigegeben
+     * hat. Gebucht wird jede Lieferung zuerst als d_mess bis max(0, R_mess);
+     * eine Einheit ueber dem Normalpfad waere also d_mess, solange dieser den
+     * gemessenen Anteil nicht vollstaendig traegt - und d_mess hat keine
+     * Ausnahme. Deshalb gibt es den Boden nur, wenn der Normalpfad den
+     * gemessenen Anteil schon freigegeben hat; dann reicht er bis zur
+     * lieferbaren Menge, und alles darueber ist d_erw.
      */
-    fun book(state: State, e: Evaluation, finalU: Double, normalPassedU: Double): Pair<State, Split> {
+    fun guardExceptionFloorU(e: Evaluation, normalPassedU: Double): Double {
+        if (!normalPassedU.isFinite() || expectationShareU(e) <= EPS_U) return 0.0
+        return if (normalPassedU + EPS_U >= messU(e)) deliverableU(e) else 0.0
+    }
+
+    /**
+     * Bucht eine Lieferung aus dem Konto. [finalU] ist die Endmenge nach allen
+     * Pruefungen (nach der Expositionsgrenze). d_mess = min(d, max(0, R_mess)),
+     * d_erw = d - d_mess (Autorisierungsentwurf Abschnitt 2).
+     */
+    fun book(state: State, e: Evaluation, finalU: Double): Pair<State, Split> {
         val fin = if (finalU.isFinite()) max(0.0, finalU) else 0.0
-        val dMess = min(fin, max(0.0, normalPassedU))
+        val dMess = min(fin, messU(e))
         val dErw = fin - dMess
         val violation = max(0.0, dErw - e.restEffU)
         val s = if (dErw > EPS_U) state.copy(bookedU = state.bookedU + dErw) else state

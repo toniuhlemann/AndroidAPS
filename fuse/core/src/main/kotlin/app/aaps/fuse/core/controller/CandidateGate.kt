@@ -78,6 +78,9 @@ object CandidateGate {
             smbU = result.smbU,
             block = if (result.smbU <= 0.0) FuseController.Block.CANDIDATE else base.block,
             bindingLimit = "candidate:" + (result.reject?.name ?: result.bindingLimit),
+            // E-034: derselbe Grund typisiert - er ueberlebt spaetere
+            // Anhebungen, die bindingLimit ueberschreiben.
+            candidateReason = result.reject ?: result.cutReason,
             // S0: die Menge stammt jetzt aus DIESER Suche, also auch die
             // Kappenliste. Wuerde die Basisliste stehenbleiben, zeigte der
             // Datensatz eine Grenze, die diese Menge nicht bestimmt hat -

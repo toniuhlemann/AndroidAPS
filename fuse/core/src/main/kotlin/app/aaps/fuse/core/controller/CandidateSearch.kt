@@ -55,6 +55,14 @@ object CandidateSearch {
         val guardFloorMgdl: Double,
         val releaseHorizonMin: Int,
         val liabilityHorizonMin: Int,
+        /**
+         * Zielband-Pruefung (Eintrittstor NO_DEMAND und `targetOk`) an? Nur
+         * das Erwartungskonto im Mahlzeitkontext schaltet sie ab
+         * (Vorregistrierung E-034: sein Bedarf ersetzt die Fortschreibung am
+         * Freigabehorizont, an der das Zielband misst). Guard, Raster und
+         * Mengengrenzen bleiben in jedem Modus.
+         */
+        val targetChecks: Boolean = true,
     ) {
 
         /** Kein `require`: eine Ausnahme aus dem Regelpfad wuerde im Loop
@@ -134,6 +142,14 @@ object CandidateSearch {
          * Leer, wenn die Suche vor dem Mengenraum abgebrochen ist.
          */
         val limits: List<Pair<String, Double>> = emptyList(),
+        /**
+         * WORAN die naechste Stufe einer gekuerzten Menge scheiterte -
+         * GUARD_FLOOR oder BELOW_TARGET_BAND -, typisiert neben dem Text in
+         * [bindingLimit] (E-034: die Guard-Ausnahme haengt nie an einem
+         * Grundtext). `null`, wenn eine Mengengrenze gebunden hat oder die
+         * Suche abgelehnt hat (dann steht der Grund in [reject]).
+         */
+        val cutReason: Reject? = null,
     )
 
     /**
@@ -373,7 +389,8 @@ object CandidateSearch {
 
         // 1. EINTRITTSTOR ohne Kandidat: liegt die Ausgangsbahn schon im Band,
         //    gibt es keinen Bedarf — unabhaengig davon, was ein Inkrement taete.
-        if (baselineMean <= band.releaseTargetHighMgdl + band.demandDeadbandMgdl)
+        //    Ohne Zielband-Pruefung (E-034) kommt der Bedarf nicht aus der Bahn.
+        if (band.targetChecks && baselineMean <= band.releaseTargetHighMgdl + band.demandDeadbandMgdl)
             return Result(
                 0.0, Reject.NO_DEMAND, "baselineMean<=targetHigh+deadband",
                 // Berichtet wird die SICHERHEITSBAHN (pessimistisch ueber beide,
@@ -432,18 +449,23 @@ object CandidateSearch {
             val minLower = minLowerWith(u)
             val meanWith = baselineMean - u * effectPerU[releaseIdx]
             val guardOk = minLower >= band.guardFloorMgdl
-            val targetOk = meanWith >= band.releaseTargetLowMgdl
+            val targetOk = !band.targetChecks || meanWith >= band.releaseTargetLowMgdl
             if (guardOk && targetOk) {
                 // Was die Menge WIRKLICH begrenzt hat. Beim groessten
                 // zulaessigen Kandidaten ist es die Mengengrenze; sonst die
                 // Bedingung, an der die naechste Stufe scheitert. Ein Export,
                 // der immer nur die kleinste Kappe nennt, wuerde die Ursache
                 // verschweigen.
-                val reason = if (ticks == maxTicks) binding.first else {
+                val cut = if (ticks == maxTicks) null else {
                     val next = (ticks + 1) * caps.pumpIncrementU
-                    if (minLowerWith(next) < band.guardFloorMgdl) "guardFloor" else "releaseTargetLow"
+                    if (minLowerWith(next) < band.guardFloorMgdl) Reject.GUARD_FLOOR else Reject.BELOW_TARGET_BAND
                 }
-                return Result(u, null, reason, baselineMean, meanWith, minLower, effectPerU[releaseIdx], evaluated, capLimits)
+                val reason = when (cut) {
+                    null -> binding.first
+                    Reject.GUARD_FLOOR -> "guardFloor"
+                    else -> "releaseTargetLow"
+                }
+                return Result(u, null, reason, baselineMean, meanWith, minLower, effectPerU[releaseIdx], evaluated, capLimits, cut)
             }
             if (ticks == 1) guardFailedAtSmallest = !guardOk
         }

@@ -5999,6 +5999,7 @@ class FuseCycleRunner(
                     app.aaps.fuse.core.controller.AuthorizedLift.Source.PRIME -> app.aaps.fuse.core.controller.ExposureGate.FinalSource.PRIME
                     app.aaps.fuse.core.controller.AuthorizedLift.Source.FOUNDATION -> app.aaps.fuse.core.controller.ExposureGate.FinalSource.FOUNDATION
                     app.aaps.fuse.core.controller.AuthorizedLift.Source.MEAL_UPFRONT -> app.aaps.fuse.core.controller.ExposureGate.FinalSource.MEAL_UPFRONT
+                    app.aaps.fuse.core.controller.AuthorizedLift.Source.EXPECTATION -> app.aaps.fuse.core.controller.ExposureGate.FinalSource.EXPECTATION
                 }
             subStep.releaseU > 0.0 -> app.aaps.fuse.core.controller.ExposureGate.FinalSource.NORMAL_SUBSTEP
             decisionVorEndpruefung.smbU > 0.0 -> app.aaps.fuse.core.controller.ExposureGate.FinalSource.NORMAL
@@ -7094,6 +7095,7 @@ class FuseCycleRunner(
                     app.aaps.fuse.core.controller.AuthorizedLift.Source.PRIME -> app.aaps.fuse.core.controller.ExposureGate.FinalSource.PRIME
                     app.aaps.fuse.core.controller.AuthorizedLift.Source.FOUNDATION -> app.aaps.fuse.core.controller.ExposureGate.FinalSource.FOUNDATION
                     app.aaps.fuse.core.controller.AuthorizedLift.Source.MEAL_UPFRONT -> app.aaps.fuse.core.controller.ExposureGate.FinalSource.MEAL_UPFRONT
+                    app.aaps.fuse.core.controller.AuthorizedLift.Source.EXPECTATION -> app.aaps.fuse.core.controller.ExposureGate.FinalSource.EXPECTATION
                 }
             heldVorEndpruefung.smbU > 0.0 -> app.aaps.fuse.core.controller.ExposureGate.FinalSource.NORMAL
             else -> app.aaps.fuse.core.controller.ExposureGate.FinalSource.NONE

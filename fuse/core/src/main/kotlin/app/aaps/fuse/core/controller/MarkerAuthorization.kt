@@ -175,6 +175,54 @@ object MarkerAuthorization {
         }
 
     /**
+     * DIE GUARD-AUSNAHME DES ERWARTUNGSANTEILS (Vorregistrierung E-034,
+     * Sicherheitsvertrag Abschnitt 3) - eine EIGENE Tabelle, weil sie enger
+     * ist als [lifts] und die Direktdosis-Familie unveraendert bleibt.
+     *
+     * Hebbar ist AUSSCHLIESSLICH das Guard-Urteil, in seinen drei
+     * Gestalten: der Baseline-Guard des Reglers (Block GUARD_FLOOR), die
+     * Ablehnung der Kandidatensuche (CANDIDATE mit typisiertem Grund
+     * GUARD_FLOOR) und ihre Kuerzung an der Guard-Kante (Menge > 0, Block
+     * NONE, Grund GUARD_FLOOR). Jede Gestalt nur mit Autorisierung.
+     *
+     * HART bleiben: TAIL (fuer d_erw nicht hebbar, anders als in [lifts]),
+     * CANDIDATE mit anderem oder unbekanntem Grund, die Totbaender
+     * (NO_DEMAND - Rebound-Fenster unveraendert wie heute) und alles, was
+     * [lifts] schon hart fuehrt. Ein Block ohne Guard-Urteil hat nichts, was
+     * die Ausnahme heben koennte: dort laeuft der Erwartungsanteil nur ueber
+     * den Normalpfad.
+     *
+     * Ein `when` ohne `else` aus demselben Grund wie in [lifts].
+     */
+    fun liftsExpectation(
+        block: FuseController.Block,
+        candidateReason: CandidateSearch.Reject?,
+        authorized: Boolean,
+    ): Boolean {
+        val guardGrund = candidateReason == CandidateSearch.Reject.GUARD_FLOOR
+        return when (block) {
+            FuseController.Block.GUARD_FLOOR           -> authorized
+            FuseController.Block.CANDIDATE             -> authorized && guardGrund
+            FuseController.Block.NONE                  -> authorized && guardGrund
+
+            FuseController.Block.NO_DEMAND             -> false
+            FuseController.Block.BELOW_PUMP_INCREMENT  -> false
+            FuseController.Block.TAIL                  -> false
+            FuseController.Block.SAFETY_HOLD           -> false
+            FuseController.Block.MEASURED_DESCENT_RISK -> false
+            FuseController.Block.MARKER_PRIME_DEFERRED -> false
+            FuseController.Block.HEALTH_NOT_READY      -> false
+            FuseController.Block.HORIZON_MISSING       -> false
+            FuseController.Block.NO_INPUT              -> false
+            FuseController.Block.IOB_TH_REACHED        -> false
+            FuseController.Block.MAX_IOB_REACHED       -> false
+            FuseController.Block.EXPOSURE_LIMIT        -> false
+            FuseController.Block.LEDGER_HOLD           -> false
+            FuseController.Block.PUMP_BUSY             -> false
+        }
+    }
+
+    /**
      * OHNE Autorisierung hebbar - abgeleitet, nicht zweitgefuehrt.
      */
     val LIFTABLE_WITHOUT_AUTHORIZATION: Set<FuseController.Block> =

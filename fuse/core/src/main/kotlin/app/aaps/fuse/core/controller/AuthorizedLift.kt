@@ -65,6 +65,16 @@ object AuthorizedLift {
          * und Pumpenraster bleiben unveraendert hart.
          */
         MEAL_UPFRONT,
+
+        /**
+         * DIE GUARD-AUSNAHME DES ERWARTUNGSANTEILS (Vorregistrierung E-034):
+         * der Boden ist die lieferbare Kontomenge, die ueber dem Normalpfad
+         * liegende Menge ist d_erw. QUELLENGEBUNDEN enger als die anderen:
+         * hebbar nur das Guard-Urteil ([MarkerAuthorization.liftsExpectation]),
+         * die Schwanzkappe bindet AUCH mit Autorisierung (TAIL hart fuer
+         * d_erw), maxSMB begrenzt die Einzeldosis.
+         */
+        EXPECTATION,
     }
 
     /**
@@ -114,12 +124,14 @@ object AuthorizedLift {
         Source.PRIME        -> "primeRelease"
         Source.FOUNDATION   -> "mealFoundation"
         Source.MEAL_UPFRONT -> "mealUpfront"
+        Source.EXPECTATION  -> "expectationAccount"
     }
 
     fun stageOf(source: Source): String = when (source) {
         Source.PRIME        -> FuseController.STAGE_PRIME
         Source.FOUNDATION   -> FuseController.STAGE_FOUNDATION
         Source.MEAL_UPFRONT -> FuseController.STAGE_UPFRONT
+        Source.EXPECTATION  -> FuseController.STAGE_EXPECTATION
     }
 
     /**
@@ -190,8 +202,12 @@ object AuthorizedLift {
         // die Feststellung, dass es nichts zu heben gibt.
         if (floorU <= 0.0) return base
 
-        // DIE POLITIK - eine Stelle fuer beide Phasen.
-        if (!MarkerAuthorization.lifts(base.block, authorized)) return base
+        // DIE POLITIK - eine Stelle fuer beide Phasen. Der Erwartungsanteil
+        // hat seine eigene, engere Tabelle (E-034).
+        val hebbar =
+            if (source == Source.EXPECTATION) MarkerAuthorization.liftsExpectation(base.block, base.candidateReason, authorized)
+            else MarkerAuthorization.lifts(base.block, authorized)
+        if (!hebbar) return base
 
         // ---- Die gemeinsamen harten Mengenkappen -------------------------
         //
@@ -229,8 +245,9 @@ object AuthorizedLift {
         contextExposureLimitU?.let {
             caps = min(caps, it - state.capIobU - transportCommitmentU)
         }
-        // Die Schwanzkappe bindet nur OHNE Autorisierung.
-        if (!authorized) tailHeadroomU?.let { caps = min(caps, it) }
+        // Die Schwanzkappe bindet nur OHNE Autorisierung - fuer den
+        // Erwartungsanteil immer (TAIL hart fuer d_erw, E-034).
+        if (!authorized || source == Source.EXPECTATION) tailHeadroomU?.let { caps = min(caps, it) }
         // Die phasenspezifische Zusatzkappe (Prime: Onset-Huelle).
         extraCapU?.let { caps = min(caps, it) }
 

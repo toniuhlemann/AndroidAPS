@@ -666,6 +666,19 @@ object FuseController {
          * im Folgezyklus ueberschrieben).
          */
         val basalFloorProtected: Boolean = false,
+        /**
+         * DER TYPISIERTE GRUND EINER KANDIDATEN-SPERRE ODER -KUERZUNG
+         * (Erwartungskonto, Vorregistrierung E-034) - oder `null`.
+         *
+         * Gesetzt von [CandidateGate] (Ablehnung der Suche, sonst der
+         * Kuerzungsgrund [CandidateSearch.Result.cutReason]) und von der
+         * Endpruefung im Runner. Er ueberlebt die spaeteren Stufen als Feld,
+         * weil autorisierte Anhebungen `bindingLimit` ueberschreiben. Die
+         * Guard-Ausnahme des Erwartungsanteils haengt ausschliesslich an
+         * diesem Feld, nie an einem Grundtext ([MarkerAuthorization.liftsExpectation]).
+         * Nur im Speicher, nie persistiert.
+         */
+        val candidateReason: CandidateSearch.Reject? = null,
     ) {
 
         /**
@@ -748,10 +761,12 @@ object FuseController {
         evidenceMayOverrideRebound: Boolean,
         lowThreat: LowThreatGate.Verdict,
         onsetCapU: Double? = null,
+        /** S. [decideInner]. `null` = heutiger Bedarf, bitgleich. */
+        expectationDemandU: Double? = null,
     ): Decision {
         val d = decideInner(
             state, prediction, limits, tail, restraint,
-            evidenceCreditActive, evidenceMayOverrideRebound, lowThreat, onsetCapU,
+            evidenceCreditActive, evidenceMayOverrideRebound, lowThreat, onsetCapU, expectationDemandU,
         )
         val geschuetzt = lowThreat == LowThreatGate.Verdict.NONE
         return if (d.basalFloorProtected == geschuetzt) d else d.copy(basalFloorProtected = geschuetzt)
@@ -841,6 +856,18 @@ object FuseController {
          *  OnsetChannel in diesem Zyklus die Mittelbahn gehoben hat - dann
          *  kappt er die Menge, die auf seiner eigenen Hebung beruht. */
         onsetCapU: Double? = null,
+        /**
+         * DER BEDARF AUS DEM ERWARTUNGSKONTO (Vorregistrierung E-034) [U] -
+         * die lieferbare Menge `min(max(0, R_roh), max(0, R_mess) + Rest)`.
+         *
+         * Nicht-null NUR im Mahlzeitkontext bei eingeschaltetem Konto. Dann
+         * ersetzt er den Bedarf aus der Fortschreibung am Freigabehorizont
+         * und die Ratio-Kandidaten (smbRatio, demandRatioCap): je Zyklus geht
+         * hoechstens maxSMB. Zustand, Guard, Schwanz, Totbaender und die
+         * IOB-Grenzen bleiben unveraendert. Nicht berechenbar zaehlt als 0
+         * (kein Bedarf), nie als Menge.
+         */
+        expectationDemandU: Double? = null,
     ): Decision {
         // Der Kontext gehoert an JEDEN Rueckgabepfad, nicht nur an den
         // Erfolgsfall. Gerade beim Blockieren ist die Frage "war das die
@@ -986,7 +1013,13 @@ object FuseController {
         }
 
         // Kein zweites "- iob": die IOB-Wirkung ist in predBG bereits enthalten.
-        val insulinReq = (releaseMean - state.targetMgdl) / state.isfMgdlPerU
+        // E-034: im Mahlzeitkontext mit Konto kommt der Bedarf aus dem Konto
+        // (dort steht das IOB ausdruecklich in R_mess).
+        val insulinReq = when {
+            expectationDemandU == null -> (releaseMean - state.targetMgdl) / state.isfMgdlPerU
+            expectationDemandU.isFinite() -> expectationDemandU
+            else -> 0.0
+        }
 
         // REBOUND-TOTBAND (v2): Nach einem Tief ist die Erholung bis leicht
         // ueber das Ziel das ZIEL der Traubenzucker-Aktion, keine Stoerung.
@@ -1073,7 +1106,14 @@ object FuseController {
             ).tele(iobCaps)
         }
 
-        val baseCandidates = listOfNotNull(
+        // E-034: der Kontobedarf ist schon die lieferbare Menge - kein
+        // Ratio-Anteil darauf; der Schritt je Zyklus ist maxSMB.
+        val baseCandidates = if (expectationDemandU != null) listOf(
+            "expectationDemand" to insulinReq,
+            "iobThHeadroom" to fastHeadroom,
+            "maxIobHeadroom" to maxIobHeadroom,
+            "maxSmb" to state.maxSmbU,
+        ) else listOfNotNull(
             "smbRatio" to insulinReq * state.effectiveSmbRatio,
             // B2 (Bauauftrag 7.2): effectiveDemandRatio = min(Basis, Kontext-
             // Cap) — als EIGENER Kandidat, nicht als Aenderung der Basis. Das
@@ -1209,4 +1249,7 @@ object FuseController {
 
     /** Der Phase-A-Sofortanteil (iLet-Prinzip, Bauauftrag Toni 24.08.). */
     const val STAGE_UPFRONT = "mealUpfront"
+
+    /** Die Guard-Ausnahme des Erwartungsanteils (Vorregistrierung E-034). */
+    const val STAGE_EXPECTATION = "expectationAccount"
 }
