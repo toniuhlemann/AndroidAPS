@@ -6659,17 +6659,20 @@ class FuseCycleRunner(
     }
 
     /**
-     * E-034: EIN ARM DES PRUEFPLANS (Abschnitt 5). Er uebersteuert nur, was
-     * den Arm ausmacht; Kurve, Stabilitaet, Ruecknahme und H kommen aus der
+     * E-034: EIN ARM DES PRUEFPLANS (K4, Abschnitt 5). Er uebersteuert nur,
+     * was den Arm ausmacht; Kurve, Strecke, Ruecknahme und H kommen aus der
      * Konfiguration des Pruefstands. `null` heisst: wie konfiguriert.
      */
     data class Pruefarm(
         val name: String,
         val kontoAn: Boolean,
         val phi0Stabil: Double? = null,
+        /** phi_0 bei "am Druck nicht stabil" (Schluessel ExpectationPhi0AfterLow). */
         val phi0Tief: Double? = null,
         val guardAusnahme: Boolean? = null,
         val ohneDirektdosis: Boolean = false,
+        /** Stabilitaets-BG-Grenze [mg/dl] fuer Pinnung und Freigabe. */
+        val stabilBg: Double? = null,
     ) {
         fun anwenden(c: Config): Config =
             if (!kontoAn) c.copy(
@@ -6688,6 +6691,7 @@ class FuseCycleRunner(
                 expectationPhi0Stable = phi0Stabil ?: c.expectationPhi0Stable,
                 expectationPhi0AfterLow = phi0Tief ?: c.expectationPhi0AfterLow,
                 expectationGuardException = guardAusnahme ?: c.expectationGuardException,
+                expectationStabilityBgMgdl = stabilBg ?: c.expectationStabilityBgMgdl,
                 expectationBenchNoDirectDose = ohneDirektdosis,
             )
 
@@ -6695,25 +6699,30 @@ class FuseCycleRunner(
             /** Kandidatenzweig mit Schalter aus. */
             val REF = Pruefarm("REF", kontoAn = false)
 
-            /** Hauptarm: phi_0 stabil 0,5, nach Tief 0. */
-            val EK = Pruefarm("EK", true, 0.5, 0.0, true)
+            /** Hauptarm (K4): phi_0 0,5 in beiden Ausgangslagen, BG-Grenze 80. */
+            val EK = Pruefarm("EK", true, 0.5, 0.5, true, stabilBg = 80.0)
 
             /** Ohne Guard-Ausnahme. */
-            val EK_OA = Pruefarm("EK-oA", true, 0.5, 0.0, false)
+            val EK_OA = Pruefarm("EK-oA", true, 0.5, 0.5, false, stabilBg = 80.0)
 
             /** phi_0 = 0: nur Anrechnung und Ersetzung. */
-            val EK_PHI0 = Pruefarm("EK-phi0", true, 0.0, 0.0, true)
+            val EK_PHI0 = Pruefarm("EK-phi0", true, 0.0, 0.0, true, stabilBg = 80.0)
 
-            /** Ganze Direktdosis-Familie aus, phi_0 = 1,0. */
-            val EK_S = Pruefarm("EK-S", true, 1.0, 0.0, true, ohneDirektdosis = true)
+            /** Ganze Direktdosis-Familie aus, phi_0 = 1,0 in beiden Ausgangslagen. */
+            val EK_S = Pruefarm("EK-S", true, 1.0, 1.0, true, ohneDirektdosis = true, stabilBg = 80.0)
 
-            /** Sensitivitaeten des Plans (offengelegt, verbessern kein Urteil). */
-            val EK_STABIL_025 = Pruefarm("EK-stabil0.25", true, 0.25, 0.0, true)
-            val EK_STABIL_100 = Pruefarm("EK-stabil1.0", true, 1.0, 0.0, true)
-            val EK_TIEF_025 = Pruefarm("EK-tief0.25", true, 0.5, 0.25, true)
-            val EK_S_050 = Pruefarm("EK-S-0.5", true, 0.5, 0.0, true, ohneDirektdosis = true)
+            /** Zuordnungsarme (K4): je eine Wertaenderung gegenueber K3 zurueck. */
+            val EK_K3 = Pruefarm("EK-K3", true, 0.5, 0.0, true, stabilBg = 90.0)
+            val EK_BG90 = Pruefarm("EK-BG90", true, 0.5, 0.5, true, stabilBg = 90.0)
 
-            val ALLE: List<Pruefarm> = listOf(REF, EK, EK_OA, EK_PHI0, EK_S, EK_STABIL_025, EK_STABIL_100, EK_TIEF_025, EK_S_050)
+            /** Sensitivitaeten des Plans (offengelegt, verbessern kein Urteil; beide Ausgangslagen gleich). */
+            val EK_STABIL_025 = Pruefarm("EK-stabil0.25", true, 0.25, 0.25, true, stabilBg = 80.0)
+            val EK_STABIL_100 = Pruefarm("EK-stabil1.0", true, 1.0, 1.0, true, stabilBg = 80.0)
+            val EK_S_050 = Pruefarm("EK-S-0.5", true, 0.5, 0.5, true, ohneDirektdosis = true, stabilBg = 80.0)
+
+            val ALLE: List<Pruefarm> = listOf(
+                REF, EK, EK_OA, EK_PHI0, EK_S, EK_K3, EK_BG90, EK_STABIL_025, EK_STABIL_100, EK_S_050,
+            )
 
             fun vonName(name: String): Pruefarm? = ALLE.firstOrNull { it.name == name }
         }
