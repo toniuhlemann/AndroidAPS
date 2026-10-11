@@ -479,6 +479,18 @@ class EpisodeBudgets {
      * Autorisierung, das Fundament faende sich unarmiert und Prime gaebe das
      * VOLLE Budget erneut frei - dieselbe Mahlzeit ein zweites Mal.
      */
+    /**
+     * DAS ERWARTUNGSKONTO DER LAUFENDEN MAHLZEIT (Testkandidat E-034) - oder
+     * `null`. Eines je Autorisierung: ein neuer bewusster Marker bucht ein
+     * neues Konto, der Rest des alten verfaellt. Gesetzt nur bei
+     * eingeschaltetem Konto; ohne Konto bleibt es `null`.
+     */
+    var expectation: app.aaps.fuse.core.controller.ExpectationAccount.State? = null
+
+    /** E-034: beim Laden lag ein ungueltiges Konto vor und wurde verworfen
+     *  (s. [LedgerCodec.decodeExpectation]); nur im Speicher, fuer den Export. */
+    var expectationDropped: Boolean = false
+
     var foundation: app.aaps.fuse.core.controller.MealFoundation.Authorization =
         app.aaps.fuse.core.controller.MealFoundation.Authorization.none()
 
@@ -730,6 +742,11 @@ class EpisodeBudgets {
         val foundationPhase: app.aaps.fuse.core.controller.MealFoundation.Phase,
         /** s. [Reservation.authId] - die Zuordnung ueberlebt bis zum Beweis. */
         val authId: String? = null,
+        /** E-034: die publizierten Konto-Anteile fuer den Storno beim Beweis
+         *  (s. [Reservation.ekAuthId]). */
+        val ekAuthId: Long = 0L,
+        val ekErwU: Double = 0.0,
+        val ekDirektU: Double = 0.0,
     )
 
     /** @param mealTs 0 = nicht in [mealDeliveries] gebucht. */
@@ -761,7 +778,17 @@ class EpisodeBudgets {
          */
         val foundationPhase: app.aaps.fuse.core.controller.MealFoundation.Phase =
             app.aaps.fuse.core.controller.MealFoundation.Phase.NONE,
-    )
+    ) {
+        /**
+         * E-034: die Anteile dieser Buchung im Erwartungskonto der
+         * Autorisierung [ekAuthId] (0 = nicht gebucht) - fuer den Storno, wenn
+         * die Menge nie gesendet wird. Gesetzt im selben Zyklus nach der
+         * Quellenzuordnung; nur im Speicher.
+         */
+        var ekAuthId: Long = 0L
+        var ekErwU: Double = 0.0
+        var ekDirektU: Double = 0.0
+    }
 }
 
 /**
@@ -2015,6 +2042,18 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
      * Wird sie NICHT gerufen (Absturz, Ausnahme, fremder Pfad), bleibt die
      * Belastung stehen. Das ist der gewollte Ausgang fuer UNKNOWN.
      */
+    /**
+     * E-034: Storno im Erwartungskonto - nur, wenn die Buchung zu GENAU dem
+     * laufenden Konto gehoert ([ekAuthId] = dessen Autorisierung). Eine
+     * spaete Gutschrift aus einer frueheren Mahlzeit entlastet kein neues
+     * Konto, aus demselben Grund wie bei der Huelle.
+     */
+    private fun stornoErwartungskonto(ekAuthId: Long, erwU: Double, direktU: Double) {
+        val konto = episodes.expectation ?: return
+        if (ekAuthId == 0L || konto.authId != ekAuthId) return
+        episodes.expectation = app.aaps.fuse.core.controller.ExpectationAccount.cancel(konto, erwU, direktU)
+    }
+
     fun resolveReservation(computeTs: Long, publishedU: Double, proposalId: String? = null) {
         val r = episodes.pendingReservation ?: return
         // Fremder Zyklus: nicht anfassen. Ohne diese Pruefung koennte ein
@@ -2077,6 +2116,11 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
                 // Die Zuordnung wandert MIT - der Beweis kommt spaeter, und
                 // dann ist womoeglich schon eine andere Autorisierung aktiv.
                 authId = r.authId,
+                // Die Konto-Anteile der PUBLIZIERTEN Menge: d_erw liegt oben,
+                // der nicht publizierte Rest nimmt ihn zuerst mit.
+                ekAuthId = r.ekAuthId,
+                ekErwU = (r.ekErwU - (r.amountU - bleibt)).coerceAtLeast(0.0),
+                ekDirektU = kotlin.math.min(r.ekDirektU, bleibt),
             ) else null
 
         val frei = (r.amountU - (if (publishedU.isFinite()) publishedU else r.amountU)).coerceAtLeast(0.0)
@@ -2084,6 +2128,11 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
 
         if (r.prime) episodes.primeSpentU = (episodes.primeSpentU - frei).coerceAtLeast(0.0)
         if (r.onset) episodes.onsetSpentU = (episodes.onsetSpentU - frei).coerceAtLeast(0.0)
+        // E-034: das Erwartungskonto derselben Autorisierung genauso - der nie
+        // gesendete oberste Teil ist zuerst d_erw (d_mess liegt unten).
+        stornoErwartungskonto(
+            r.ekAuthId, erwU = kotlin.math.min(r.ekErwU, frei), direktU = kotlin.math.min(r.ekDirektU, frei),
+        )
         // Der Evidenz-Zaehler wird IMMER zurueckgedreht, ohne Kanal-Bedingung:
         // er zaehlt jede Abgabe der Episode, also muss er auch jede
         // abgelehnte zurueckgeben.
@@ -2247,6 +2296,10 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
         if (s.prime && gehoertZurLaufenden)
             episodes.primeSpentU = (episodes.primeSpentU - menge).coerceAtLeast(0.0)
         if (s.onset) episodes.onsetSpentU = (episodes.onsetSpentU - menge).coerceAtLeast(0.0)
+        // E-034: das Konto nur, wenn die Buchung zu SEINER Autorisierung gehoert.
+        stornoErwartungskonto(
+            s.ekAuthId, erwU = kotlin.math.min(s.ekErwU, menge), direktU = kotlin.math.min(s.ekDirektU, menge),
+        )
         run {
             val vorherCommitted = episodes.evidenceCommittedU
             episodes.evidenceCommittedU = (vorherCommitted - menge).coerceAtLeast(0.0)

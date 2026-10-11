@@ -210,6 +210,8 @@ object ExpectationAccount {
         val expectationOn: Boolean = true,
         val stabilityBgMgdl: Double = MIN_STABILITY_BG_MGDL,
         val stabilityMin: Int = MAX_STABILITY_MIN,
+        /** Storniert: gebucht, aber nachweislich nie gesendet [U], nur steigend. */
+        val cancelledU: Double = 0.0,
     ) {
         val restU: Double get() = max(0.0, a0U - bookedU)
     }
@@ -424,6 +426,29 @@ object ExpectationAccount {
             bookedU = state.bookedU + amountU,
             directDoseU = state.directDoseU + amountU,
             coveredByMarkerAuthU = state.coveredByMarkerAuthU + ueber,
+        )
+    }
+
+    /**
+     * STORNO einer gebuchten, aber nachweislich nie gesendeten Menge
+     * (Gate-Reject oder Nicht-Sende-Beweis) - dieselbe Regel wie bei den
+     * uebrigen Buechern der Mahlzeit. Kein Auffuellen: A_0 bleibt, und
+     * zurueckgenommen wird nur, was nie geflossen ist. [erwU] ist der
+     * d_erw-Anteil, [directU] der Direktdosis-Anteil; die Summe steht in
+     * [State.cancelledU], damit jede Erhoehung des Rests erklaert ist.
+     */
+    fun cancel(state: State, erwU: Double, directU: Double): State {
+        val erw = if (erwU.isFinite()) max(0.0, erwU) else 0.0
+        val direkt = if (directU.isFinite()) min(max(0.0, directU), state.directDoseU) else 0.0
+        val zurueck = min(erw + direkt, state.bookedU)
+        if (zurueck <= EPS_U) return state
+        val booked = state.bookedU - zurueck
+        val directDose = state.directDoseU - direkt
+        return state.copy(
+            bookedU = booked,
+            directDoseU = directDose,
+            coveredByMarkerAuthU = min(directDose, max(0.0, booked - state.a0U)),
+            cancelledU = state.cancelledU + zurueck,
         )
     }
 

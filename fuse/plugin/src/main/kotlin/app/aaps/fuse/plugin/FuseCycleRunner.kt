@@ -73,6 +73,7 @@ import app.aaps.fuse.core.controller.DescentDeferredCarry
 import app.aaps.fuse.core.controller.MeasuredDescentGate
 import app.aaps.fuse.core.controller.OnsetChannel
 import app.aaps.fuse.core.controller.PrimeRelease
+import app.aaps.fuse.core.controller.ExpectationAccount
 import app.aaps.fuse.core.insulin.KernelOutcome
 import app.aaps.fuse.core.insulin.UnitInsulinKernel
 import app.aaps.fuse.core.insulin.UnitInsulinKernelBuilder
@@ -443,6 +444,18 @@ class FuseCycleRunner(
 
         /** Name des Schwanz-Vetos in `bindingLimit` (C4). */
         const val TAIL_VETO = "TAIL_LIABILITY"
+
+        /** Rasterluft des Erwartungs-Lifts - dieselbe wie bei Prime (E-034). */
+        const val EK_TICK_EPS = 1e-9
+
+        /** Die Direktdosis-Familie: sie bucht voll auf das Erwartungskonto (E-034, 3b). */
+        val EK_DIREKTDOSIS: Set<app.aaps.fuse.core.controller.ExposureGate.FinalSource> = setOf(
+            app.aaps.fuse.core.controller.ExposureGate.FinalSource.PRIME,
+            app.aaps.fuse.core.controller.ExposureGate.FinalSource.MEAL_UPFRONT,
+            app.aaps.fuse.core.controller.ExposureGate.FinalSource.DEFERRED_RELEASE,
+            app.aaps.fuse.core.controller.ExposureGate.FinalSource.CALM_BATCH,
+            app.aaps.fuse.core.controller.ExposureGate.FinalSource.CALM_DEMAND,
+        )
 
         /** Rundungsluft des Schwanz-Vetos [U]. Ein Spielraum von exakt 0 ist
          *  KEIN Vertragsbruch - er ist die Grenze, und die Menge wurde genau an
@@ -1517,6 +1530,9 @@ class FuseCycleRunner(
         // liest das Feld zurueck.
         upfrontChainThisCycle = null
         transportSichtThisCycle = null
+        ekBuchungThisCycle = null
+        ekZyklusThisCycle = null
+        ekKontextAbweichungThisCycle = false
         val computeTs = dateUtil.now()
         val gate = pumpe.gate
 
@@ -2235,9 +2251,29 @@ class FuseCycleRunner(
         val upfrontReboundSperrt =
             MealUpfrontAuthority.reboundBlocks(reboundRaw, direktdosisAutorisiert)
 
+        // ---- ERWARTUNGSKONTO (Testkandidat E-034): GILT ES IN DIESEM ZYKLUS? --
+        //
+        // VOR dem Onset-Kanal: der ist im Mahlzeitkontext des Kontos aus, und
+        // seine Wirkung geht schon in die Bahn. Der Dosierkontext steht erst
+        // weiter unten fest (Pin-Pflege); hier dieselbe Regel als Vorschau
+        // OHNE Schreibzugriff. Unten wird sie gegen den echten Kontext
+        // geprueft. Schalter aus: null - nichts gelesen, nichts geschrieben.
+        val ekVorschau = if (!cfg.expectationAccountEnabled) null else ekKontextVorschau(
+            computeTs, markerTs, episodeGate.creditRevoked, cfg.livenessMealPowerMin, episodes,
+        )
+        val ekGilt = ekVorschau != null && ekVorschau.mealAuthorized && run {
+            val konto = episodes.expectation
+            // Ein laufendes Konto DIESER Autorisierung - oder ein bewusster,
+            // in diesem Prozess beobachteter Druck, der jetzt eines bucht.
+            (konto != null && konto.authId == ekVorschau.authorizationId && computeTs < konto.windowEndTs) ||
+                (manualMarkerAuthorized && ekVorschau.authorizationId == markerTs &&
+                    markerPressObserved() == markerTs && konto?.authId != markerTs)
+        }
+
         val onset = OnsetChannel.evaluate(
             OnsetChannel.Input(
-                enabled = cfg.onsetChannelEnabled,
+                // E-034: im Mahlzeitkontext des Kontos ist der Onset-Kanal aus.
+                enabled = cfg.onsetChannelEnabled && !ekGilt,
                 samples = onsetRing.toList(),
                 rSignedMgdlPerMin = band.mean,
                 thresholdMgdlPerMin = cfg.riseRampLowR,
@@ -2592,7 +2628,8 @@ class FuseCycleRunner(
         // nichts gebildet; alle drei Stellen sind bitgleich.
         val fruehMeal = app.aaps.fuse.core.controller.EarlyAdaptiveMealNeed.decide(
             app.aaps.fuse.core.controller.EarlyAdaptiveMealNeed.Input(
-                horizonMin = cfg.earlyAdaptiveMealHorizonMin,
+                // E-034: im Mahlzeitkontext des Kontos ist H8 aus.
+                horizonMin = if (ekGilt) 0 else cfg.earlyAdaptiveMealHorizonMin,
                 mealAuthorized = dosingCtx.mealAuthorized,
                 authorizationId = dosingCtx.authorizationId,
                 markerTs = markerTs,
@@ -2921,6 +2958,7 @@ class FuseCycleRunner(
                 isf, target, targetSource, iobTotal,
                 maxIobU, transportModelledU, ledgerView, episodes, onset, band,
                 built.discount, built.input.trajectory.model, sensorEpoch, calibrationEpoch, gate,
+                ekGilt = ekGilt, ekVorschau = ekVorschau, markerNoPrime = markerNoPrime,
             )
         }
         // AB HIER ist die Bahn vorhanden. Einmal ausgepackt statt an dreissig
@@ -3192,6 +3230,25 @@ class FuseCycleRunner(
             pinnedForTs = episodes.markerReboundOverridePinnedFor,
             revoked = episodeGate.creditRevoked,
         )
+        // ---- E-034: KONTO BUCHEN UND FORTSCHREIBEN -----------------------
+        //
+        // Die Stabilitaetsstrecke laeuft bei eingeschaltetem Konto in JEDEM
+        // Zyklus mit (nur im Speicher): am Marker entscheidet sie ueber
+        // "stabil" oder "nach Tief". Gemessene Sperren und Fallen sind
+        // dieselben wie die Kanalsperren; R_mess rechnet mit q1, dem
+        // Geraete-IOB samt Transport und dem ISF dieses Zyklus.
+        val ekZyklus: ErwartungskontoZyklus? = if (!cfg.expectationAccountEnabled) null else erwartungskontoZyklus(
+            ekGilt = ekGilt, vorschau = ekVorschau, dosingCtx = dosingCtx, cfg = cfg, episodes = episodes,
+            computeTs = computeTs, markerNoPrime = markerNoPrime,
+            bgMgdl = signal.q1, targetMgdl = state.targetMgdl, isfMgdlPerU = state.isfMgdlPerU,
+            iobTotalU = iobTotal.iob + transportModelledU, activityUPerMin = iobTotal.activity,
+            // Auch die beiden Low-Befunde des Null-Tors sind Messungen.
+            gemesseneSperre = step.safetyReasons.isNotEmpty() || descentRisk.active || descentLatch.blocksPositive ||
+                lowThreatResult.verdict != LowThreatGate.Verdict.NONE,
+            faellt = !signal.ukfRatePerMin.isFinite() || signal.ukfRatePerMin < LivenessChannel.UKF_FLOOR_MGDL_PER_MIN,
+            pause = step.health != Health.READY || signal.rejoin.active || state.pumpBusy || ledgerView.hold,
+        )
+        ekZyklusThisCycle = ekZyklus
         val baseDecision = FuseController.decide(
             state, prediction,
             FuseController.Limits(guardFloorMgdl = cfg.guardFloorMgdl, releaseHorizonMin = cfg.releaseHorizonMin),
@@ -3212,6 +3269,8 @@ class FuseCycleRunner(
             // unterscheiden (Tonis Auflage vor dem Produktiv-Flash).
             lowThreat = lowThreatWirksam,
             onsetCapU = if (onset.active) onset.remainingU else null,
+            // E-034: im Mahlzeitkontext des Kontos kommt der Bedarf aus dem Konto.
+            expectationDemandU = ekZyklus?.let { ExpectationAccount.deliverableU(it.eval) },
         )
 
         // KANDIDATENPRUEFUNG (Audit: schon eine kleine SMB senkt die Bahn
@@ -3327,7 +3386,8 @@ class FuseCycleRunner(
                     prediction = prediction,
                     kernel = k,
                     isfSlots = built.input.isfSlots,
-                    band = candidateBand,
+                    // E-034: ohne Zielband-Pruefung im Mahlzeitkontext des Kontos.
+                    band = if (ekZyklus != null) candidateBand.copy(targetChecks = false) else candidateBand,
                     caps = CandidateSearch.Caps(
                         // Budgetpolicy bis KC2-53 offen: maxSmb als
                         // neutraler Platzhalter, bindet nie unterhalb der
@@ -3852,7 +3912,8 @@ class FuseCycleRunner(
         //
         // Die Autorisierung kommt aus dem GEPINNTEN Snapshot, nicht aus der
         // aktuellen Einstellung.
-        val lifted = MealFoundation.lift(
+        // E-034: im Mahlzeitkontext des Kontos ist Phase B aus.
+        val liftedVorKonto = if (ekZyklus != null) liftedPrime else MealFoundation.lift(
             base = liftedPrime,
             snapshot = foundationDecision,
             state = state,
@@ -3879,7 +3940,31 @@ class FuseCycleRunner(
         val preFoundationSmbU = liftedPrime.smbU
         val preFoundationBlock = liftedPrime.block
         val preFoundationBindingLimit = liftedPrime.bindingLimit
-        val foundationLiftU = kotlin.math.max(0.0, lifted.smbU - liftedPrime.smbU)
+        val foundationLiftU = kotlin.math.max(0.0, liftedVorKonto.smbU - liftedPrime.smbU)
+        // ---- E-034: DIE GUARD-AUSNAHME DES ERWARTUNGSANTEILS ---------------
+        //
+        // An der Stelle von Phase B, nach der Direktdosis-Familie. Der Boden
+        // ist die lieferbare Kontomenge - aber nur, wenn der Normalpfad den
+        // gemessenen Anteil schon MIT Guard freigegeben hat (sonst waere jede
+        // Einheit mehr d_mess, und d_mess hat keine Ausnahme). Hat in diesem
+        // Zyklus eine Direktdosis gehoben, hebt das Konto nicht: eine Menge,
+        // eine Quelle. Die Tabelle des Lifts hebt nur das Guard-Urteil, der
+        // Schwanz bleibt Kappe.
+        val ekBodenU = ekZyklus?.takeIf { it.guardAusnahme && liftedVorKonto.grant == null }
+            ?.let { ExpectationAccount.guardExceptionFloorU(it.eval, normalPassedU = vetted.smbU) }
+            ?: 0.0
+        val lifted = if (ekBodenU <= 0.0) liftedVorKonto else app.aaps.fuse.core.controller.AuthorizedLift.lift(
+            base = liftedVorKonto,
+            source = app.aaps.fuse.core.controller.AuthorizedLift.Source.EXPECTATION,
+            floorU = ekBodenU,
+            remainingU = ekBodenU,
+            state = state,
+            authorized = true,
+            tailHeadroomU = tail?.takeIf { it.usable }?.headroomU,
+            transportCommitmentU = transportModelledU,
+            contextExposureLimitU = kontextExposureLimitU,
+            tickEps = EK_TICK_EPS,
+        )
         // FIX-PASS 4 Nr. 4 (Codex R4-04, Control-Audit-Invariante): KEINE
         // finale positive Dosis ohne erfolgreiche Wirkungspruefung. Das
         // verallgemeinert Fix 6b: nicht nur die Prime-Anhebung, JEDE finale
@@ -4059,6 +4144,9 @@ class FuseCycleRunner(
                         smbU = 0.0,
                         block = FuseController.Block.CANDIDATE,
                         bindingLimit = "finalVerify:$grund",
+                        // E-034: derselbe Grund typisiert (Schwanz-Veto: kein
+                        // Such-Grund, bleibt null = hart).
+                        candidateReason = CandidateSearch.Reject.entries.firstOrNull { it.name == grund },
                     )
                 }
             }
@@ -4100,9 +4188,28 @@ class FuseCycleRunner(
         //
         // Der predictorfreie Markerpfad ist etwas anderes und bleibt: dort
         // fehlt die BAHN aus zwei Reichweiten-Gruenden, nicht das Modell.
+        // E-034: der Boden des Erwartungsanteils besteht die Endpruefung OHNE
+        // das Guard-Urteil (das ist die Ausnahme), aber MIT technischer
+        // Integritaet und hartem Schwanz: wiederhergestellt wird hoechstens
+        // der groesste Pumpenschritt, der beides traegt. Andere Quellen
+        // bleiben unveraendert.
+        fun ekEndpruefung(u: Double): String? {
+            if (kernelFinal == null) return CandidateSearch.Reject.MODEL_HORIZON_TOO_SHORT.name
+            CandidateSearch.verifyTechnicalIntegrity(
+                prediction, kernelFinal, built.input.isfSlots, candidateBand, u, restraint = restraint,
+            )?.let { return it.name }
+            tailWith(u)?.takeIf { it.usable && it.headroomU < -TAIL_VETO_EPS_U }?.let { return TAIL_VETO }
+            return null
+        }
+        val bodenGrant = lifted.grant?.let { g ->
+            if (g.source != app.aaps.fuse.core.controller.AuthorizedLift.Source.EXPECTATION || ekEndpruefung(g.amountU) == null) g
+            else app.aaps.fuse.core.controller.AuthorizedLift.AuthorizedGrant.of(
+                groessteBestehendeMenge(g.amountU, bolusStep) { ekEndpruefung(it) == null }, g.source,
+            )
+        }
         val autorisiert = MarkerFloor.apply(
             verified = verifiedLift,
-            grant = lifted.grant,
+            grant = bodenGrant,
             kernelValid = kernelFinal != null,
         )
 
@@ -4776,6 +4883,16 @@ class FuseCycleRunner(
         // Kontext-Ratio-Cap in der Kappenliste des Reglers) - s. oben.
         val livenessNormalSmbU = nachAufschub.smbU
         val decisionVorEndpruefung: FuseController.Decision = run {
+            // E-034: im Mahlzeitkontext des Kontos ist der Kanal aus - Lauf und
+            // Streak enden, bestehende Sperren bleiben. Im Korrekturkontext
+            // (nach dem Fenster) laeuft er wie bisher.
+            if (ekZyklus != null) {
+                if (livenessActive) livenessExit = "EXPECTATION_ACCOUNT"
+                livenessActive = false
+                livenessStreak = 0
+                livenessDenial = "EXPECTATION_ACCOUNT"
+                return@run nachAufschub
+            }
             if (!cfg.livenessChannelEnabled) {
                 // AUS heisst aus: Lauf und Streak enden, aber eine bereits
                 // gesetzte Sperre bleibt stehen (sie ist eine Zusage). Ein
@@ -6005,6 +6122,13 @@ class FuseCycleRunner(
             decisionVorEndpruefung.smbU > 0.0 -> app.aaps.fuse.core.controller.ExposureGate.FinalSource.NORMAL
             else -> app.aaps.fuse.core.controller.ExposureGate.FinalSource.NONE
         }
+        // ---- E-034: BUCHUNG IM ERWARTUNGSKONTO ---------------------------
+        // Auf die gesendete Endmenge nach der Endpruefung. Die
+        // Direktdosis-Familie bucht voll; jede andere Menge teilt sich in
+        // d_mess (bis max(0, R_mess)) und d_erw - nur d_erw verbraucht. Die
+        // Anteile stehen in der Reservierung, damit ein nie gesendeter Teil
+        // storniert wird wie in den uebrigen Buechern.
+        ekZyklus?.let { z -> ekBuchen(z, episodes, actuatedU, exposureRequestedSourceWert) }
         val smbVerdict = app.aaps.fuse.core.controller.SmbStatus.of(
             block = decision.block,
             smbU = decision.smbU,
@@ -6471,6 +6595,152 @@ class FuseCycleRunner(
         else -> "PLANNED"
     }
 
+    /** E-034: der Konto-Zustand eines Zyklus im Mahlzeitkontext. */
+    class ErwartungskontoZyklus(
+        val state: ExpectationAccount.State,
+        val eval: ExpectationAccount.Evaluation,
+        /** Gepinnt UND jetzt eingestellt - Abschalten wirkt sofort. */
+        val guardAusnahme: Boolean,
+        val armiertInDiesemZyklus: Boolean,
+        val stabil: Boolean,
+        val pausiert: Boolean,
+    )
+
+    /** E-034: was dieser Zyklus im Konto gebucht hat. */
+    class ErwartungskontoBuchung(
+        val authId: Long,
+        val direktdosisU: Double,
+        val split: ExpectationAccount.Split?,
+    )
+
+    /**
+     * E-034: der Dosierkontext dieses Zyklus als VORSCHAU - dieselbe Regel wie
+     * die Pin-Pflege vor [app.aaps.fuse.core.controller.DosingContext.decide],
+     * aber ohne Schreibzugriff (die Pins und der Prozess-Merker werden dort
+     * gesetzt, nicht hier).
+     */
+    private fun ekKontextVorschau(
+        computeTs: Long,
+        markerTs: Long,
+        revoked: Boolean,
+        livenessMealPowerMin: Int,
+        episodes: app.aaps.fuse.plugin.ledger.EpisodeBudgets,
+    ): app.aaps.fuse.core.controller.DosingContext.Decision {
+        val (pin, frist) = when {
+            revoked || markerTs <= 0L -> 0L to 0L
+            markerPowerLastSeenTs == -1L -> episodes.markerPowerPinnedFor to episodes.markerPowerDeadlineTs
+            markerTs != markerPowerLastSeenTs -> markerTs to markerTs + livenessMealPowerMin * 60_000L
+            else -> episodes.markerPowerPinnedFor to episodes.markerPowerDeadlineTs
+        }
+        return app.aaps.fuse.core.controller.DosingContext.decide(computeTs, markerTs, pin, frist)
+    }
+
+    /**
+     * E-034: Stabilitaetsstrecke fortschreiben, das Konto am bewussten Druck
+     * buchen und im Mahlzeitkontext einen Zyklus weiterrechnen. Ausserhalb des
+     * Mahlzeitkontexts nur die Strecke; dann `null`.
+     */
+    @Suppress("LongParameterList")
+    private fun erwartungskontoZyklus(
+        ekGilt: Boolean,
+        vorschau: app.aaps.fuse.core.controller.DosingContext.Decision?,
+        dosingCtx: app.aaps.fuse.core.controller.DosingContext.Decision,
+        cfg: Config,
+        episodes: app.aaps.fuse.plugin.ledger.EpisodeBudgets,
+        computeTs: Long,
+        markerNoPrime: Boolean,
+        bgMgdl: Double,
+        targetMgdl: Double,
+        isfMgdlPerU: Double,
+        iobTotalU: Double,
+        activityUPerMin: Double,
+        gemesseneSperre: Boolean,
+        faellt: Boolean,
+        pause: Boolean,
+    ): ErwartungskontoZyklus? {
+        // Die Strecke: mit den GEPINNTEN Grenzen des laufenden Kontos, sonst
+        // mit den eingestellten (die am naechsten Druck gepinnt werden).
+        val laufend = episodes.expectation?.takeIf { ekGilt && it.authId == dosingCtx.authorizationId }
+        val grenzeBg = laufend?.stabilityBgMgdl ?: cfg.expectationStabilityBgMgdl
+        val dauerMin = laufend?.stabilityMin ?: cfg.expectationStabilityMin
+        if (ekStabilLetzteTs > 0L && computeTs - ekStabilLetzteTs > ExpectationAccount.MAX_OBSERVATION_GAP_MIN * 60_000L)
+            ekStabilSeit = null
+        ekStabilLetzteTs = computeTs
+        ekStabilSeit = ExpectationAccount.Stability.since(
+            ekStabilSeit, computeTs, bgMgdl, grenzeBg, falling = faellt, measuredLock = gemesseneSperre,
+        )
+        val stabil = ExpectationAccount.Stability.stable(ekStabilSeit, computeTs, dauerMin)
+        if (!ekGilt || vorschau == null) return null
+        // Die Vorschau muss der echte Kontext sein - sonst gilt das Konto in
+        // diesem Zyklus nicht (Onset und H8 sind dann trotzdem schon aus).
+        if (!dosingCtx.mealAuthorized || dosingCtx.authorizationId != vorschau.authorizationId ||
+            dosingCtx.authorizationExpiresAt != vorschau.authorizationExpiresAt
+        ) {
+            ekKontextAbweichungThisCycle = true
+            return null
+        }
+        var konto = episodes.expectation
+        var armiert = false
+        if (konto == null || konto.authId != dosingCtx.authorizationId) {
+            // Die TATSAECHLICHE Huelle der Episode: 0 bei "ohne Vorschuss".
+            val huelle = if (markerNoPrime) 0.0 else MealFoundation.primeBudgetU(episodes.foundation, cfg.primeEnvelopeU)
+            konto = ExpectationAccount.arm(
+                authId = dosingCtx.authorizationId,
+                windowEndTs = dosingCtx.authorizationExpiresAt,
+                envelopeU = huelle,
+                params = cfg.expectationParams,
+                startStable = stabil,
+                nowTs = computeTs,
+                bgMgdl = bgMgdl,
+                isfMgdlPerU = isfMgdlPerU,
+            )
+            armiert = true
+        }
+        val pausiert = pause || gemesseneSperre || faellt
+        val (neu, eval) = ExpectationAccount.step(
+            konto,
+            ExpectationAccount.Inputs(
+                nowTs = computeTs,
+                ageMin = (computeTs - konto.authId) / 60_000.0,
+                bgMgdl = bgMgdl,
+                targetMgdl = targetMgdl,
+                isfMgdlPerU = isfMgdlPerU,
+                iobTotalU = iobTotalU,
+                activityUPerMin = activityUPerMin,
+                paused = pausiert,
+                stableNow = stabil,
+            ),
+        )
+        episodes.expectation = neu
+        return ErwartungskontoZyklus(
+            state = neu, eval = eval,
+            guardAusnahme = neu.guardException && cfg.expectationGuardException,
+            armiertInDiesemZyklus = armiert, stabil = stabil, pausiert = pausiert,
+        )
+    }
+
+    /** E-034: die gesendete Menge dieses Zyklus im Konto buchen (s. Aufrufstelle). */
+    private fun ekBuchen(
+        z: ErwartungskontoZyklus,
+        episodes: app.aaps.fuse.plugin.ledger.EpisodeBudgets,
+        actuatedU: Double,
+        quelle: app.aaps.fuse.core.controller.ExposureGate.FinalSource,
+    ) {
+        if (!(actuatedU > 0.0)) return
+        val konto = episodes.expectation?.takeIf { it.authId == z.state.authId } ?: return
+        val reservierung = episodes.pendingReservation
+        if (quelle in EK_DIREKTDOSIS) {
+            episodes.expectation = ExpectationAccount.bookDirectDose(konto, actuatedU)
+            reservierung?.apply { ekAuthId = konto.authId; ekDirektU = actuatedU }
+            ekBuchungThisCycle = ErwartungskontoBuchung(konto.authId, actuatedU, null)
+        } else {
+            val (neu, split) = ExpectationAccount.book(konto, z.eval, actuatedU)
+            episodes.expectation = neu
+            reservierung?.apply { ekAuthId = konto.authId; ekErwU = split.dErwU }
+            ekBuchungThisCycle = ErwartungskontoBuchung(konto.authId, 0.0, split)
+        }
+    }
+
     private fun buche(
         episodes: app.aaps.fuse.plugin.ledger.EpisodeBudgets,
         actuatedU: Double,
@@ -6798,6 +7068,10 @@ class FuseCycleRunner(
         sensorEpoch: Long?,
         calibrationEpoch: Long?,
         gate: FusePumpGate.Result,
+        /** E-034: gilt das Erwartungskonto in diesem Zyklus (s. Hauptpfad)? */
+        ekGilt: Boolean = false,
+        ekVorschau: app.aaps.fuse.core.controller.DosingContext.Decision? = null,
+        markerNoPrime: Boolean = false,
     ): Outcome {
         // A1: derselbe zentrale Kontext auch im predictorfreien Pfad -
         // ein Zyklus, EINE Entscheidung, egal welcher Weg ihn traegt.
@@ -6811,6 +7085,20 @@ class FuseCycleRunner(
         val fallbackKontextLimitU: Double =
             if (fallbackCtx.mealAuthorized) cfg.mealExposureLimitU
             else cfg.correctionExposureLimitU
+        // E-034: auch ohne Bahn wird das Konto am bewussten Druck gebucht und
+        // fortgeschrieben - aber PAUSIERT: ohne Bahn kein Guard, also kein
+        // Erwartungsanteil. Die Direktdosis bucht unten voll, sonst liefe sie
+        // in einem predictorfreien Zyklus am Konto vorbei.
+        val ekZyklus = if (!cfg.expectationAccountEnabled) null else erwartungskontoZyklus(
+            ekGilt = ekGilt, vorschau = ekVorschau, dosingCtx = fallbackCtx, cfg = cfg, episodes = episodes,
+            computeTs = computeTs, markerNoPrime = markerNoPrime,
+            bgMgdl = signal.q1, targetMgdl = state.targetMgdl, isfMgdlPerU = state.isfMgdlPerU,
+            iobTotalU = iobTotal.iob + transportModelledU, activityUPerMin = iobTotal.activity,
+            gemesseneSperre = step.safetyReasons.isNotEmpty() || descentRisk.active || descentLatch.blocksPositive,
+            faellt = !signal.ukfRatePerMin.isFinite() || signal.ukfRatePerMin < LivenessChannel.UKF_FLOOR_MGDL_PER_MIN,
+            pause = true,
+        )
+        ekZyklusThisCycle = ekZyklus
         subStepCarryU = 0.0
         // Codex 22.08.: ein Fallback-Zyklus laeuft OHNE die Kanalstufe -
         // weder Riegel noch Druck sind geprueft. Ein aktiver Liveness-Lauf
@@ -6960,7 +7248,8 @@ class FuseCycleRunner(
         //
         // Kein Schwanz-Headroom, aus demselben Grund wie beim Prime-Lift
         // darueber: ohne Bahn gibt es keinen.
-        val lifted = MealFoundation.lift(
+        // E-034: im Mahlzeitkontext des Kontos ist Phase B aus.
+        val lifted = if (ekZyklus != null) liftedPrime else MealFoundation.lift(
             base = liftedPrime,
             snapshot = MealFoundation.snapshot(
                 episodes.foundation, computeTs, episodes.primeWindowStartTs,
@@ -7100,6 +7389,8 @@ class FuseCycleRunner(
             heldVorEndpruefung.smbU > 0.0 -> app.aaps.fuse.core.controller.ExposureGate.FinalSource.NORMAL
             else -> app.aaps.fuse.core.controller.ExposureGate.FinalSource.NONE
         }
+        // E-034: dieselbe Buchung wie im Hauptpfad.
+        ekZyklus?.let { z -> ekBuchen(z, episodes, actuatedU, fallbackRequestedSourceWert) }
         val fallbackVerdict = app.aaps.fuse.core.controller.SmbStatus.of(
             block = heldMitRiegel.block,
             smbU = heldMitRiegel.smbU,
@@ -7566,6 +7857,23 @@ class FuseCycleRunner(
     /** Zuletzt IM PROZESS gesehener Marker-Zeitstempel; -1 = noch nie
      *  gesehen (Warmstart-Anker: der erste Blick pinnt NICHT). */
     private var markerPowerLastSeenTs = -1L
+
+    /** E-034: Beginn der laufenden Stabilitaetsstrecke oder null; nur im
+     *  Speicher - nach einem Neustart beginnt sie neu (konservativ: ein
+     *  Marker gleich danach gilt als "nach Tief"). */
+    private var ekStabilSeit: Long? = null
+
+    /** E-034: letzte Fortschreibung der Strecke; eine laengere Luecke
+     *  beendet sie (nicht beobachtet heisst nicht stabil). */
+    private var ekStabilLetzteTs = 0L
+
+    /** E-034: Konto-Zustand und Buchung DIESES Zyklus - nur fuer den Export. */
+    internal var ekZyklusThisCycle: ErwartungskontoZyklus? = null
+        private set
+    internal var ekBuchungThisCycle: ErwartungskontoBuchung? = null
+        private set
+    internal var ekKontextAbweichungThisCycle = false
+        private set
 
     /** Der Pin, unter dem der aktuelle Streak/Lauf begann - ein
      *  Markerwechsel tauscht Caps nie still in einem alten Lauf (§5). */

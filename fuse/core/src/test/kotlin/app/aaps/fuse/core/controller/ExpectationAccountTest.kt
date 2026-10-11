@@ -4,6 +4,7 @@ import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Assertions.assertNull
+import org.junit.jupiter.api.Assertions.assertSame
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
@@ -275,6 +276,27 @@ class ExpectationAccountTest {
         assertEquals(1.6, s.directDoseU, eps)
         assertEquals(0.6, s.coveredByMarkerAuthU, eps)
         assertEquals(0.0, s.restU, eps)
+    }
+
+    @Test
+    fun `der Storno nimmt nur zurueck, was nie geflossen ist`() {
+        // Budget 1,0; Direktdosis 1,6 gebucht (0,6 gedeckt), dann 0,4 davon nie gesendet.
+        val s = ExpectationAccount.bookDirectDose(arm(), 1.6)
+        val c = ExpectationAccount.cancel(s, erwU = 0.0, directU = 0.4)
+        assertEquals(1.2, c.bookedU, eps)
+        assertEquals(1.2, c.directDoseU, eps)
+        assertEquals(0.2, c.coveredByMarkerAuthU, eps)
+        assertEquals(0.4, c.cancelledU, eps)
+        assertEquals(1.0, c.a0U, eps, "A_0 bleibt")
+        // d_erw-Storno: der Rest waechst genau um den stornierten Anteil.
+        val (s2, e2) = ExpectationAccount.step(arm(), inputs(nach = 1, bg = 100.0))
+        val gebucht = ExpectationAccount.book(s2, e2, finalU = 0.3).first
+        val storno = ExpectationAccount.cancel(gebucht, erwU = 0.3, directU = 0.0)
+        assertEquals(gebucht.restU + 0.3, storno.restU, eps)
+        assertEquals(0.3, storno.cancelledU, eps)
+        // Mehr als gebucht kann nicht storniert werden.
+        assertEquals(0.3, ExpectationAccount.cancel(gebucht, erwU = 5.0, directU = 0.0).cancelledU, eps)
+        assertSame(gebucht, ExpectationAccount.cancel(gebucht, erwU = Double.NaN, directU = 0.0))
     }
 
     // ---- Stabilitaet ----------------------------------------------------------------

@@ -1,5 +1,6 @@
 package app.aaps.fuse.plugin.ledger
 
+import app.aaps.fuse.core.controller.ExpectationAccount
 import app.aaps.fuse.core.controller.InterventionStamp
 import app.aaps.fuse.core.ledger.AccountingState
 import app.aaps.fuse.core.ledger.AmountAxis
@@ -653,6 +654,8 @@ object LedgerCodec {
             )
         )
         .apply { encodeFoundation(e)?.let { put("foundation", it) } }
+        // E-034: optional - eine aeltere APK liest es nicht (Rueckweg 1.x).
+        .apply { encodeExpectation(e)?.let { put("expectation", it) } }
 
     /**
      * DIE MAHLZEITEN-AUTORISIERUNG UND IHRE BEZAHLUNG - ein Objekt, nicht
@@ -682,6 +685,125 @@ object LedgerCodec {
      * `null` heisst "keine laufende Autorisierung" - dann steht das Feld gar
      * nicht in der Datei, statt als Leerobjekt Platz zu belegen.
      */
+    // ---- ERWARTUNGSKONTO (Testkandidat E-034) ------------------------------
+
+    /**
+     * Das Konto der laufenden Mahlzeit als OPTIONALES Objekt, ohne
+     * Schemasprung: eine aeltere APK liest es nicht. Nur einfache Felder und
+     * keine Aufzaehlungswerte - nichts, woran ein Rueckweg scheitern koennte.
+     * Ein nicht endlicher Wert steht als null (org.json wirft sonst beim
+     * Schreiben, und ein Schreibfehler hier darf nie den ganzen Ledger
+     * treffen); beim Lesen ist null nur fuer die beiden Messwerte vom Marker
+     * zulaessig.
+     */
+    fun encodeExpectation(e: EpisodeBudgets): JSONObject? {
+        val s = e.expectation ?: return null
+        fun zahl(v: Double): Any = if (v.isFinite()) v else JSONObject.NULL
+        return JSONObject()
+            .put("authId", s.authId)
+            .put("windowEndTs", s.windowEndTs)
+            .put("startStable", s.startStable)
+            .put("phi0", zahl(s.phi0))
+            .put("a0U", zahl(s.a0U))
+            .put("bookedU", zahl(s.bookedU))
+            .put("directDoseU", zahl(s.directDoseU))
+            .put("coveredByMarkerAuthU", zahl(s.coveredByMarkerAuthU))
+            .put("cancelledU", zahl(s.cancelledU))
+            .put("released", s.released)
+            .put("frozen", s.frozen)
+            .put("releaseChecked", s.releaseChecked)
+            .put("disturbanceU", zahl(s.disturbanceU))
+            .put("disturbanceValid", s.disturbanceValid)
+            .put("lastObsTs", s.lastObsTs)
+            .put("lastBgMgdl", zahl(s.lastBgMgdl))
+            .put("isfAtMarkerMgdlPerU", zahl(s.isfAtMarkerMgdlPerU))
+            .put("horizonMin", s.horizonMin)
+            .put("releaseThresholdU", zahl(s.releaseThresholdU))
+            .put("guardException", s.guardException)
+            .put("curveValues", JSONArray(s.curveValues.map { zahl(it) }))
+            .put("expectationOn", s.expectationOn)
+            .put("stabilityBgMgdl", zahl(s.stabilityBgMgdl))
+            .put("stabilityMin", s.stabilityMin)
+    }
+
+    /**
+     * BEWUSSTE ABWEICHUNG vom Wurf-Prinzip dieses Codecs (s.
+     * [decodeFoundation]): ein ungueltiges Konto wird VERWORFEN - `null`,
+     * [EpisodeBudgets.expectationDropped] wird gesetzt und steht im Export -,
+     * die Generation bleibt gueltig.
+     *
+     * Der Grund ist die Fehlerrichtung. Ein systematischer Fehler in diesem
+     * neuen Block wuerde mit Wurf JEDE neue Generation ungueltig machen und
+     * den produktiven Regler in den Hold schicken. Verworfen gilt fuer die
+     * laufende Mahlzeit der heutige Pfad: das Konto wird ohne beobachteten
+     * Druck nicht neu gebucht, es fliesst kein Erwartungsanteil - weniger
+     * Insulin aus dem Konto, nie mehr.
+     */
+    fun decodeExpectation(o: JSONObject): ExpectationAccount.State? = runCatching {
+        fun zahl(name: String): Double {
+            require(o.has(name) && !o.isNull(name)) { "$name fehlt" }
+            return o.getDouble(name).also { require(it.isFinite()) { "$name nicht endlich" } }
+        }
+        fun messwert(name: String): Double {
+            require(o.has(name)) { "$name fehlt" }
+            return if (o.isNull(name)) Double.NaN else o.getDouble(name)
+        }
+        fun menge(name: String) = zahl(name).also { require(it in 0.0..MAX_AMOUNT_U) { "$name $it" } }
+        fun schalter(name: String): Boolean {
+            require(o.has(name)) { "$name fehlt" }
+            return o.getBoolean(name)
+        }
+        val authId = o.getLong("authId")
+        val windowEndTs = o.getLong("windowEndTs")
+        require(authId > 0L && windowEndTs > authId) { "Fenster $authId..$windowEndTs" }
+        val lastObsTs = o.getLong("lastObsTs")
+        require(lastObsTs >= authId) { "lastObsTs $lastObsTs" }
+        val phi0 = zahl("phi0").also { require(it in 0.0..1.0) { "phi0 $it" } }
+        val disturbance = zahl("disturbanceU").also { require(kotlin.math.abs(it) <= MAX_AMOUNT_U) { "disturbanceU $it" } }
+        val lastBg = messwert("lastBgMgdl")
+        val isf = messwert("isfAtMarkerMgdlPerU")
+        val horizon = o.getInt("horizonMin")
+        require(horizon in ExpectationAccount.MIN_HORIZON_MIN..ExpectationAccount.MAX_HORIZON_MIN) { "horizonMin $horizon" }
+        val schwelle = zahl("releaseThresholdU")
+            .also { require(it in 0.0..ExpectationAccount.MAX_RELEASE_THRESHOLD_U) { "releaseThresholdU $it" } }
+        val stabBg = zahl("stabilityBgMgdl").also {
+            require(it in ExpectationAccount.MIN_STABILITY_BG_MGDL..ExpectationAccount.MAX_STABILITY_BG_MGDL) { "stabilityBgMgdl $it" }
+        }
+        val stabMin = o.getInt("stabilityMin")
+        require(stabMin in ExpectationAccount.MIN_STABILITY_MIN..ExpectationAccount.MAX_STABILITY_MIN) { "stabilityMin $stabMin" }
+        val an = schalter("expectationOn")
+        val kurveRoh = o.getJSONArray("curveValues")
+        val kurve = (0 until kurveRoh.length()).map { i -> kurveRoh.getDouble(i) }
+        if (an) require(ExpectationAccount.Curve.of(kurve) != null) { "Kurve ungueltig" }
+        else require(kurve.isEmpty()) { "Kurve ohne Erwartung" }
+        ExpectationAccount.State(
+            authId = authId,
+            windowEndTs = windowEndTs,
+            startStable = schalter("startStable"),
+            phi0 = phi0,
+            a0U = menge("a0U"),
+            bookedU = menge("bookedU"),
+            directDoseU = menge("directDoseU"),
+            coveredByMarkerAuthU = menge("coveredByMarkerAuthU"),
+            released = schalter("released"),
+            frozen = schalter("frozen"),
+            releaseChecked = schalter("releaseChecked"),
+            disturbanceU = disturbance,
+            disturbanceValid = schalter("disturbanceValid"),
+            lastObsTs = lastObsTs,
+            lastBgMgdl = lastBg,
+            isfAtMarkerMgdlPerU = isf,
+            horizonMin = horizon,
+            releaseThresholdU = schwelle,
+            guardException = schalter("guardException"),
+            curveValues = kurve,
+            expectationOn = an,
+            stabilityBgMgdl = stabBg,
+            stabilityMin = stabMin,
+            cancelledU = menge("cancelledU"),
+        )
+    }.getOrNull()
+
     fun encodeFoundation(e: EpisodeBudgets): JSONObject? {
         val a = e.foundation
         if (!a.valid) return null
@@ -1046,6 +1168,14 @@ object LedgerCodec {
         // aus Budget und Anteil eine Autorisierung nachgebildet, entstuende
         // eine Insulinfreigabe, die niemand erteilt hat.
         if (o.has("foundation")) decodeFoundation(o.getJSONObject("foundation"), e)
+        // E-034: fehlt das Objekt, gibt es kein Konto (Altdatei oder Konto aus).
+        // Ist es da und ungueltig, wird NUR das Konto verworfen - s.
+        // [decodeExpectation].
+        if (o.has("expectation")) {
+            val konto = o.optJSONObject("expectation")?.let { decodeExpectation(it) }
+            e.expectation = konto
+            e.expectationDropped = konto == null
+        }
         val md = o.getJSONArray("mealDeliveries")
         require(md.length() <= MAX_MEAL_DELIVERIES) { "mealDeliveries size ${md.length()}" }
         for (i in 0 until md.length()) {
