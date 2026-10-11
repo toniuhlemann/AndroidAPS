@@ -1707,6 +1707,15 @@ class FuseCycleRunner(
             // dem alle diese Pfade vorbeikommen; hier zu verwerfen, deckt sie
             // alle ab, statt sie einzeln nachzupflegen.
             subStepCarryU = 0.0
+            // E-034 (Codex-Befund P0 zu K5b): ein gemessenes Tief in einem
+            // Abbruchzyklus bricht die Stabilitaetsstrecke und nimmt die
+            // Freigabe des Vorgriffs beim naechsten vollen Kontoschritt DIESER
+            // Autorisierung zurueck - sonst uebernaehme dieser nach der
+            // Erholung die alte Freigabe ohne neue Strecke.
+            if (step?.safetyReasons?.isNotEmpty() == true) {
+                ekStabilSeit = null
+                episodes.expectation?.takeIf { it.released }?.let { ekRuecknahmeOffenFuerAuth = it.authId }
+            }
             // Codex 22.08.: ein Abbruchzyklus ist fuer den Liveness-Kanal
             // ein unbeobachteter Zyklus - ein aktiver Lauf endet hier.
             val livenessLostExit = livenessObservationLost(episodes, computeTs, policy?.livenessReArmMin)
@@ -6765,6 +6774,8 @@ class FuseCycleRunner(
         val pausiert: Boolean,
         /** Warum pausiert (gemessene Sperren, Fallen, technische Gruende); leer = nicht pausiert. */
         val pausenGruende: List<String> = emptyList(),
+        /** Warum die Freigabe in DIESEM Zyklus zurueckgenommen wurde: LOW, LOW_ON_ABORT, RESTART; sonst null. */
+        val ruecknahmeGrund: String? = null,
     )
 
     /** E-034: alles, was der Trail-Block des Kontos braucht - ein Zyklus. */
@@ -6893,6 +6904,19 @@ class FuseCycleRunner(
         }
         val pausenGruende = sperren + listOfNotNull("FALLING".takeIf { faellt }) + technisch
         val pausiert = pausenGruende.isNotEmpty()
+        // RUECKNAHME DER FREIGABE (K5b; Codex-Befund P0): das gemessene Tief
+        // dieses Zyklus, ein Tief aus einem Abbruchzyklus dieser Autorisierung
+        // - oder ein Neustart, nach dem die Freigabe in diesem Prozess noch
+        // nicht bestaetigt ist (wie die Pinnung: nach einem Neustart beginnt
+        // die Strecke neu; so geht ein Tief aus Abbruchzyklen vor dem
+        // Neustart nie verloren).
+        val ruecknahmeGrund = when {
+            ekRuecknahmeOffenFuerAuth != 0L && ekRuecknahmeOffenFuerAuth == konto.authId -> "LOW_ON_ABORT"
+            gemessenesTief -> "LOW"
+            konto.released && !armiert && ekFreigabeBestaetigtFuerAuth != konto.authId -> "RESTART"
+            else -> null
+        }
+        ekRuecknahmeOffenFuerAuth = 0L
         val (neu, eval) = ExpectationAccount.step(
             konto,
             ExpectationAccount.Inputs(
@@ -6905,9 +6929,10 @@ class FuseCycleRunner(
                 activityUPerMin = activityUPerMin,
                 paused = pausiert,
                 stableNow = stabil,
-                measuredLow = gemessenesTief,
+                measuredLow = ruecknahmeGrund != null,
             ),
         )
+        if (neu.released) ekFreigabeBestaetigtFuerAuth = neu.authId
         // ABSCHALTEN WIRKT SOFORT UND FUER DIE GANZE EPISODE (Codex 11.10.,
         // Punkt 9): einmal aus, ist das Recht dieser Autorisierung entzogen -
         // wieder an gilt es erst ab dem naechsten Marker.
@@ -6918,6 +6943,7 @@ class FuseCycleRunner(
             guardAusnahme = gefuehrt.guardException,
             armiertInDiesemZyklus = armiert, stabil = stabil, pausiert = pausiert,
             pausenGruende = pausenGruende,
+            ruecknahmeGrund = ruecknahmeGrund.takeIf { eval.releaseRevoked },
         )
     }
 
@@ -7476,7 +7502,10 @@ class FuseCycleRunner(
         ) episodes.upfrontBatchDeferredSince = computeTs
         val upfrontPendingU = if (fallbackTransferNowU > 0.0) 0.0 else offenImFallbackU
         val upfrontRequestedU = 0.0
-        val liftedPrime = PrimeRelease.lift(
+        // EK-S (Codex-Befund P1 zu K5b): die ganze Direktdosis-Familie ist aus -
+        // auch der lineare Prime-Anteil des predictorfreien Pfads.
+        val ekOhneDirektdosisFallback = ekZyklus != null && cfg.expectationBenchNoDirectDose
+        val liftedPrime = if (ekOhneDirektdosisFallback) basis else PrimeRelease.lift(
             basis, primePlan, state,
             markerAuthorized = true,
             // Kein Schwanz-Headroom: es gibt keine Bahn, aus der einer
@@ -8131,6 +8160,17 @@ class FuseCycleRunner(
      *  Speicher - nach einem Neustart beginnt sie neu (konservativ: ein
      *  Marker gleich danach gilt als "nach Tief"). */
     private var ekStabilSeit: Long? = null
+
+    /** E-034 (Codex-Befund P0): die Freigabe dieser Autorisierung ist IN DIESEM
+     *  Prozess bestaetigt (stabiler Start beim Buchen oder erfuellte Strecke).
+     *  Nach einem Neustart 0 - eine noch freigegebene Episode braucht die
+     *  Strecke dann erneut. */
+    private var ekFreigabeBestaetigtFuerAuth = 0L
+
+    /** E-034 (Codex-Befund P0): ein gemessenes Tief in einem Abbruchzyklus -
+     *  die Ruecknahme wartet auf den naechsten vollen Kontoschritt DIESER
+     *  Autorisierung (0 = keine). */
+    private var ekRuecknahmeOffenFuerAuth = 0L
 
     /** E-034: letzte Fortschreibung der Strecke; eine laengere Luecke
      *  beendet sie (nicht beobachtet heisst nicht stabil). */

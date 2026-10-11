@@ -73,6 +73,9 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
     private var markerAt = 0L
     private var ohneVorschuss = false
 
+    /** Erzwungene Ablehnung der Bahn (predictorfreier Markerpfad), `null` = echte Bahn. */
+    private var predictReject: app.aaps.fuse.core.predictor.PredictorReason? = null
+
     private var boluses: List<BS> = emptyList()
     private var bolusId = 0L
     private var pumpe = Fuse20Folgen.Pumpe(Fuse20Folgen.BASAL_SCHRITT)
@@ -203,6 +206,23 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
     /** Ein Zyklus der Probe: das Ergebnis, das Konto danach und die gelieferte Menge. */
     private class Zyklus(val minute: Int, val o: FuseCycleRunner.Outcome, val konto: ExpectationAccount.State?, val geliefertU: Double)
 
+    private fun neuerRunner(arm: FuseCycleRunner.Pruefarm?) = FuseCycleRunner(
+        iobCobCalculator, profileFunction, activePlugin, constraintsChecker, commandQueue,
+        preferences, persistenceLayer, processedTbrEbData, dateUtil, ledger, "ek-session", { markerPress },
+        pruefarm = arm,
+        rejoinPolicy = app.aaps.fuse.core.signal.RejoinPolicy.enabled(),
+        predict = { input ->
+            predictReject?.let { app.aaps.fuse.core.predictor.PredictorOutcome.Rejected(it, "erzwungen") }
+                ?: app.aaps.fuse.core.predictor.TrajectoryCore.predict(input)
+        },
+    )
+
+    /** Prozess-Neustart mitten in der Folge: Ledger von der Platte, neuer Runner - der Speicherzustand ist weg. */
+    private fun neustart(dir: File, f: Fuse20Folgen.Folge, arm: FuseCycleRunner.Pruefarm?) {
+        ledger = FuseLedgerAdapter().also { it.loadOnce(File(dir, "ledger_${f.name}"), "ek-epoch", clock) }
+        runner = neuerRunner(arm)
+    }
+
     private fun lauf(
         f: Fuse20Folgen.Folge,
         dir: File,
@@ -220,12 +240,7 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
         markerPress = 0L
         val ledgerDir = File(dir, "ledger_${f.name}").also(File::mkdirs)
         ledger = FuseLedgerAdapter().also { it.loadOnce(ledgerDir, "ek-epoch", clock) }
-        runner = FuseCycleRunner(
-            iobCobCalculator, profileFunction, activePlugin, constraintsChecker, commandQueue,
-            preferences, persistenceLayer, processedTbrEbData, dateUtil, ledger, "ek-session", { markerPress },
-            pruefarm = arm,
-            rejoinPolicy = app.aaps.fuse.core.signal.RejoinPolicy.enabled(),
-        )
+        runner = neuerRunner(arm)
         val serialHash = LedgerFacts.serialHashOf(Fuse20Folgen.PUMPE_SERIAL, PumpType.GENERIC_AAPS.name)
         val ergebnis = ArrayList<Zyklus>()
         while (clock + 60_000L <= f.ts(f.bisMin)) {
@@ -568,31 +583,122 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
         assertTrue(danach.any { it.o.state!!.reboundWindow }) { "die Probe erreicht das Rebound-Fenster nicht" }
     }
 
-    /** K5 (Toni): stabiler Start, Anstieg, dann ein gemessenes Tief mitten in der Episode und Erholung. */
-    private val fTiefImFenster = Fuse20Folgen.Folge(
-        "TIEFIMFENSTER", 1_700_560_800_000L, -90, 240,
-        listOf(-90 to 120.0, -10 to 120.0, 0 to 122.0, 40 to 190.0, 70 to 56.0, 80 to 56.0, 100 to 112.0, 240 to 120.0),
+    /**
+     * K5b (Toni; Codex-Befunde P0/P2): stabiler Start, sofort ein Fall ins Tief
+     * (der Vorgriff pausiert im Fallen, das Budget bleibt), dann ein schneller
+     * stetiger Anstieg wie nach Rescue-KH - er besteht die Ruecknahme bei +30
+     * und erfuellt eine neue Strecke.
+     */
+    private val fTiefNachDruck = Fuse20Folgen.Folge(
+        "TIEFNACHDRUCK", 1_700_647_200_000L, -90, 240,
+        listOf(-90 to 120.0, 0 to 120.0, 6 to 60.0, 16 to 160.0, 90 to 175.0, 240 to 150.0),
         markerMin = 0,
     )
 
-    @Test
-    fun `ein gemessenes Tief in der Episode nimmt die Freigabe bis zur erneuten Strecke zurueck`(@TempDir dir: File) {
+    /**
+     * Gemeinsamer Ablauf der Tief-Proben: freigegeben vor dem Tief, Ruecknahme
+     * mit dem erwarteten Grund, PFLICHT-Wiederfreigabe erst nach einer vollen
+     * Strecke, die nach dem letzten Tief (und nach einem Neustart) beginnt, mit
+     * verfuegbarem Rest; dazwischen kein Rest und kein d_erw.
+     */
+    private fun pruefeTief(dir: File, abbruch: IntRange?, neustartMin: Int?, grund: String) {
         konfiguration(kontoAn = true)
-        val imFenster = lauf(fTiefImFenster, dir).filter { it.o.abortReason == null && it.o.erwartungskonto?.zyklus != null }
-        assertTrue(imFenster.first().o.erwartungskonto!!.zyklus!!.state.startStable) { "die Probe startet nicht stabil" }
-        val ruecknahme = imFenster.indexOfFirst { it.o.erwartungskonto!!.zyklus!!.eval.releaseRevoked }
-        assertTrue(ruecknahme >= 0) { "die Probe erreicht kein gemessenes Tief bei erteilter Freigabe" }
-        val wiederFrei = (ruecknahme until imFenster.size)
-            .firstOrNull { imFenster[it].o.erwartungskonto!!.zyklus!!.eval.released } ?: imFenster.size
-        for (z in imFenster.subList(ruecknahme, wiederFrei)) {
+        whenever(preferences.get(FuseDoubleKey.PrimeEnvelopeU)).thenReturn(HUELLE_PROBE)
+        val arm = FuseCycleRunner.Pruefarm.EK_S
+        val alle = lauf(fTiefNachDruck, dir, arm, vorZyklus = { m ->
+            whenever(preferences.get(FuseIntKey.ReboundWindowMin)).thenReturn(
+                if (abbruch != null && m in abbruch) UNGUELTIGE_REBOUND_DAUER else FuseIntKey.ReboundWindowMin.defaultValue,
+            )
+            if (m == neustartMin) neustart(dir, fTiefNachDruck, arm)
+        })
+        val tief = alle.filter { it.o.step?.safetyReasons?.isNotEmpty() == true }
+        assertTrue(tief.isNotEmpty()) { "die Probe erreicht kein gemessenes Tief" }
+        if (abbruch != null) {
+            // Der Fehlerpfad des Befunds: JEDES Tief faellt in einen Abbruchzyklus vor dem Kontoschritt.
+            assertTrue(tief.all { it.o.abortReason != null }) { "ein Tief-Zyklus lief bis zum Konto" }
+        }
+        val voll = alle.filter { it.o.abortReason == null && it.o.erwartungskonto?.zyklus != null }
+        assertTrue(voll.first().o.erwartungskonto!!.zyklus!!.state.startStable) { "die Probe startet nicht stabil" }
+        val ersterTiefTs = tief.minOf { it.o.computeTs }
+        assertTrue(voll.last { it.o.computeTs < ersterTiefTs }.o.erwartungskonto!!.zyklus!!.eval.released) {
+            "vor dem Tief nicht freigegeben - die Probe prueft keine Ruecknahme"
+        }
+        val ruecknahme = voll.first { it.o.erwartungskonto!!.zyklus!!.eval.releaseRevoked }
+        assertEquals(grund, ruecknahme.o.erwartungskonto!!.zyklus!!.ruecknahmeGrund)
+        val letztesTiefTs = tief.maxOf { it.o.computeTs }
+        val neustartTs = neustartMin?.let { fTiefNachDruck.ts(it) } ?: Long.MIN_VALUE
+        val wieder = voll.firstOrNull {
+            it.o.computeTs > ruecknahme.o.computeTs && it.o.erwartungskonto!!.zyklus!!.eval.released
+        } ?: throw AssertionError("keine Wiederfreigabe im Fenster")
+        val strecke = wieder.o.erwartungskonto!!.stabilSeitTs ?: throw AssertionError("Strecke unbekannt")
+        assertTrue(strecke > letztesTiefTs && strecke >= neustartTs) { "die Strecke beginnt vor dem Tief oder dem Neustart" }
+        assertTrue(wieder.o.computeTs - strecke >= FuseIntKey.ExpectationStabilityMin.defaultValue * 60_000L) {
+            "Wiederfreigabe ohne volle Strecke"
+        }
+        assertTrue(wieder.o.erwartungskonto!!.zyklus!!.eval.restEffU > 0.0) { "kein Rest bei der Wiederfreigabe" }
+        for (z in voll.filter { it.o.computeTs >= ruecknahme.o.computeTs && it.o.computeTs < wieder.o.computeTs }) {
             val x = z.o.erwartungskonto!!
-            assertEquals(0.0, x.zyklus!!.eval.restEffU, 0.0, "Minute ${z.minute}: Rest ohne Freigabe")
+            assertFalse(x.zyklus!!.eval.released, "Minute ${z.minute}: frei ohne Strecke")
+            assertEquals(0.0, x.zyklus.eval.restEffU, 0.0, "Minute ${z.minute}: Rest ohne Freigabe")
             assertEquals(0.0, x.buchung?.split?.dErwU ?: 0.0, 0.0, "Minute ${z.minute}: d_erw ohne Freigabe")
         }
-        if (wiederFrei < imFenster.size) {
-            val minuten = imFenster[wiederFrei].minute - imFenster[ruecknahme].minute
-            assertTrue(minuten >= FuseIntKey.ExpectationStabilityMin.defaultValue) { "zu frueh wieder frei: $minuten" }
+    }
+
+    @Test
+    fun `ein gemessenes Tief nimmt die Freigabe zurueck und verlangt eine volle neue Strecke`(@TempDir dir: File) =
+        pruefeTief(dir, abbruch = null, neustartMin = null, grund = "LOW")
+
+    /** Codex-Befund P0: das Tief faellt nur in Abbruchzyklen vor dem Kontoschritt. */
+    @Test
+    fun `ein Tief in Abbruchzyklen nimmt die Freigabe ebenso zurueck`(@TempDir dir: File) =
+        pruefeTief(dir, abbruch = 5..13, neustartMin = null, grund = "LOW_ON_ABORT")
+
+    /** Codex-Befund P0: Tief in Abbruchzyklen, danach ein Neustart - die Ruecknahme geht nicht verloren. */
+    @Test
+    fun `nach Tief im Abbruch und Neustart braucht die Freigabe eine Strecke im neuen Prozess`(@TempDir dir: File) =
+        pruefeTief(dir, abbruch = 5..13, neustartMin = 16, grund = "LOW_ON_ABORT")
+
+    /** Codex-Befund P0: auch ohne Tief verlangt eine nach dem Neustart noch freigegebene Episode die Strecke neu. */
+    @Test
+    fun `nach einem Neustart braucht eine freigegebene Episode die Strecke neu`(@TempDir dir: File) {
+        konfiguration(kontoAn = true)
+        val neustartMin = 30
+        val arm = FuseCycleRunner.Pruefarm.EK_S
+        val voll = lauf(fStabil, dir, arm, vorZyklus = { m -> if (m == neustartMin) neustart(dir, fStabil, arm) })
+            .filter { it.o.abortReason == null && it.o.erwartungskonto?.zyklus != null }
+        assertTrue(voll.last { it.minute < neustartMin }.o.erwartungskonto!!.zyklus!!.eval.released)
+        val erster = voll.first { it.minute >= neustartMin }
+        assertTrue(erster.o.erwartungskonto!!.zyklus!!.eval.releaseRevoked) { "nach dem Neustart nicht zurueckgenommen" }
+        assertEquals("RESTART", erster.o.erwartungskonto!!.zyklus!!.ruecknahmeGrund)
+        val wieder = voll.firstOrNull { it.minute > neustartMin && it.o.erwartungskonto!!.zyklus!!.eval.released }
+            ?: throw AssertionError("keine Wiederfreigabe nach dem Neustart")
+        assertTrue(wieder.o.computeTs - fStabil.ts(neustartMin) >= FuseIntKey.ExpectationStabilityMin.defaultValue * 60_000L) {
+            "Freigabe ohne volle Strecke nach dem Neustart"
         }
+        for (z in voll.filter { it.minute >= neustartMin && it.o.computeTs < wieder.o.computeTs }) {
+            assertEquals(0.0, z.o.erwartungskonto!!.buchung?.split?.dErwU ?: 0.0, 0.0, "Minute ${z.minute}: d_erw ohne Freigabe")
+        }
+    }
+
+    /** Codex-Befund P1: auch im predictorfreien Pfad liefert EK-S keinen Prime-Anteil. */
+    @Test
+    fun `EK-S liefert auch im predictorfreien Pfad keinen Prime-Anteil`(@TempDir dir: File) {
+        fun laufMit(arm: FuseCycleRunner.Pruefarm): List<Zyklus> {
+            konfiguration(kontoAn = true)
+            return lauf(fStabil, File(dir, arm.name).also(File::mkdirs), arm, vorZyklus = { m ->
+                predictReject = if (m in 0..10) app.aaps.fuse.core.predictor.PredictorReason.PENDING_MODEL_TOO_SHORT else null
+            }).filter { it.o.abortReason == null && it.o.markerFallbackUsed }
+        }
+        val prime = app.aaps.fuse.core.controller.AuthorizedLift.Source.PRIME
+        // Gegenprobe: im Hauptarm liefert der predictorfreie Pfad hier wirklich Prime.
+        val ek = laufMit(FuseCycleRunner.Pruefarm.EK)
+        assertTrue(ek.isNotEmpty()) { "kein predictorfreier Zyklus" }
+        assertTrue(ek.any { it.o.decision.grant?.source == prime && it.geliefertU > 0.0 }) {
+            "der Prime-Plan ist in der Probe nicht lieferfaehig - sonst prueft der Fall nichts"
+        }
+        val s = laufMit(FuseCycleRunner.Pruefarm.EK_S)
+        assertTrue(s.isNotEmpty()) { "kein predictorfreier Zyklus in EK-S" }
+        assertTrue(s.none { it.o.decision.grant?.source == prime }) { "EK-S liefert Prime im predictorfreien Pfad" }
     }
 
     private companion object {
@@ -602,5 +708,11 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
 
         /** Synthetische Rebound-Dauer der Probe [min]: das Tief reicht ueber das Ende der Sonderrechte. */
         const val REBOUND_FENSTER_MIN = 90
+
+        /** Unter der Kerngrenze: die Konfiguration scheitert, der Zyklus bricht NACH dem Observer-Schritt ab. */
+        const val UNGUELTIGE_REBOUND_DAUER = 10
+
+        /** Synthetische Huelle der Tief-Proben [U]: genug Budget, dass nach der Wiederfreigabe ein Rest bleibt. */
+        const val HUELLE_PROBE = 3.0
     }
 }
