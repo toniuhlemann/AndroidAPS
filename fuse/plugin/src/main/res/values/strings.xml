@@ -205,4 +205,23 @@
     <string name="fuse_rebound_deadband_summary">War bis 09.08. fest auf 25. Haette in der Nacht 07./08.08. alle 20 Rebound-Dosen genullt (BG lief 65 auf 121 bei Ziel 97).</string>
     <string name="fuse_evidence_rebound_override_title">Evidenz darf Rebound entwaffnen [min]</string>
     <string name="fuse_evidence_rebound_override_summary">Wie lange nach dem Mahlzeit-Marker die Evidenz ein aktives Rebound-Totband ausser Kraft setzen darf. Die Evidenzepisode selbst laeuft unveraendert weiter (bis 360 min) - nur dieses Sonderrecht endet. 0 = nie entwaffnen. Das Nacht-Totband ist davon nicht betroffen.</string>
+    <!-- Erwartungskonto (Testkandidat, Vorregistrierung E-034) -->
+    <string name="fuse_expectation_account_title">Erwartungskonto (Test)</string>
+    <string name="fuse_expectation_account_summary">Testkandidat E-034. An: im Mahlzeitkontext (bewusster Marker bis Fensterende) ersetzt das Konto den Bedarf von Normalpfad, H8, Onset-Kanal, Phase B und Liveness-Kanal - gemessener Bedarf (Zielabstand minus IOB) plus Vorgriff auf die erwartete Stoerung, mit einmal gebuchtem Budget. Direktdosis, gemessene Sperren, Schwanz und alle Mengengrenzen bleiben. Aus: wie bisher.</string>
+    <string name="fuse_expectation_guard_exception_title">Guard-Ausnahme des Erwartungsanteils</string>
+    <string name="fuse_expectation_guard_exception_summary">Rueckfallebene. An: nur der Erwartungsanteil darf das Guard-Urteil ueberstimmen, der Schwanz bleibt hart. Aus: der Erwartungsanteil fliesst nur ueber den Normalpfad mit Guard; Budget und Buchung unveraendert. Abschalten wirkt sofort, Einschalten ab dem naechsten Marker.</string>
+    <string name="fuse_expectation_phi0_stable_title">Vorgriff bei stabilem Start</string>
+    <string name="fuse_expectation_phi0_stable_summary">Anteil der erwarteten Stoerung (0 bis 1), der beim Marker als Budget gebucht wird, wenn der Start stabil ist - hoechstens die Huelle der Episode, nie aufgefuellt. 0 = keine Erwartung, nur Ersetzung. Gilt ab dem naechsten Marker.</string>
+    <string name="fuse_expectation_phi0_after_low_title">Vorgriff nach Tief</string>
+    <string name="fuse_expectation_phi0_after_low_summary">Derselbe Anteil bei Start nach Tief oder im Fallen. Der Erwartungsanteil fliesst dann erst nach erfuellter Stabilitaet. Gilt ab dem naechsten Marker.</string>
+    <string name="fuse_expectation_stability_bg_title">Stabilitaet: BG-Grenze [mg/dl]</string>
+    <string name="fuse_expectation_stability_bg_summary">Nach Tief oder im Fallen fliesst Erwartung erst, wenn BG ueber dieser Grenze liegt, nicht faellt und keine gemessene Sperre aktiv ist - ununterbrochen ueber die eingestellte Dauer. Gilt ab dem naechsten Marker.</string>
+    <string name="fuse_expectation_stability_min_title">Stabilitaet: Dauer [min]</string>
+    <string name="fuse_expectation_stability_min_summary">Wie lange die Stabilitaetsbedingung ununterbrochen gelten muss. Gilt ab dem naechsten Marker.</string>
+    <string name="fuse_expectation_release_threshold_title">Ruecknahme-Schwelle [U]</string>
+    <string name="fuse_expectation_release_threshold_summary">Bleibt die beobachtete Stoerung bis zur Pruefung eine halbe Stunde nach dem Marker unter dieser Menge, wird der Budgetrest eingefroren; erreicht sie sie spaeter im Fenster, wird er wieder frei. Gilt ab dem naechsten Marker.</string>
+    <string name="fuse_expectation_horizon_title">Vorschau H [min]</string>
+    <string name="fuse_expectation_horizon_summary">Wie weit die Erwartung vorausschaut: Z(a) = F(min(a + H, Ende)) - F(a). Das Fenster selbst folgt der Markerfrist. Gilt ab dem naechsten Marker.</string>
+    <string name="fuse_expectation_curve_title">Erwartungskurve</string>
+    <string name="fuse_expectation_curve_summary">Stuetzwerte F(5) bis F(120): kumulierte Stoerung ab Marker in U, getrennt durch Semikolon, Dezimalpunkt oder -komma. Leer oder ungueltig (Anzahl, Zahlwert, nicht monoton): Erwartung aus, nur Ersetzung. Gilt ab dem naechsten Marker.</string>
 </resources>

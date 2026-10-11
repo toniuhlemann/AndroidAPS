@@ -7924,7 +7924,42 @@ class FuseCycleRunner(
         val primeWindowMin: Int,
         /** Die Null sofort verlassen, sobald ihr Schutzgrund weg ist. */
         val endZeroWhenReasonGone: Boolean,
+        // ---- ERWARTUNGSKONTO (Testkandidat E-034), Default AUS -------------
+        /** Hauptschalter - s. [FuseBooleanKey.ExpectationAccountEnabled]. */
+        val expectationAccountEnabled: Boolean = false,
+        /** Die Guard-Ausnahme, wie JETZT eingestellt: Abschalten wirkt
+         *  sofort, Einschalten erst ab dem naechsten Marker (gepinnt). */
+        val expectationGuardException: Boolean = FuseBooleanKey.ExpectationGuardExceptionEnabled.defaultValue,
+        val expectationPhi0Stable: Double = FuseDoubleKey.ExpectationPhi0Stable.defaultValue,
+        val expectationPhi0AfterLow: Double = FuseDoubleKey.ExpectationPhi0AfterLow.defaultValue,
+        val expectationStabilityBgMgdl: Double = FuseDoubleKey.ExpectationStabilityBgMgdl.defaultValue,
+        val expectationStabilityMin: Int = FuseIntKey.ExpectationStabilityMin.defaultValue,
+        val expectationReleaseThresholdU: Double = FuseDoubleKey.ExpectationReleaseThresholdU.defaultValue,
+        val expectationHorizonMin: Int = FuseIntKey.ExpectationHorizonMin.defaultValue,
+        /** Die Kurve als Einstellungstext, unveraendert (Export: konfiguriert). */
+        val expectationCurveText: String = FuseStringKey.ExpectationCurve.defaultValue,
     ) {
+
+        /**
+         * DIE KONTO-PARAMETER, geprueft - an genau EINER Stelle. `null` heisst
+         * Erwartung aus (Kurve leer oder ein Wert ausserhalb der Grenzen); das
+         * Konto gilt dann als reine Ersetzung. Kein Ersatzwert und - anders
+         * als bei den uebrigen Schluesseln in [validate] - kein Abbruch: ein
+         * Testparameter darf den Regler nicht anhalten.
+         */
+        val expectationParams: app.aaps.fuse.core.controller.ExpectationAccount.Params?
+            get() = app.aaps.fuse.core.controller.ExpectationAccount.Curve.parse(expectationCurveText)?.let { kurve ->
+                app.aaps.fuse.core.controller.ExpectationAccount.Params.of(
+                    curveValues = kurve.values(),
+                    horizonMin = expectationHorizonMin,
+                    phi0Stable = expectationPhi0Stable,
+                    phi0AfterLow = expectationPhi0AfterLow,
+                    stabilityBgMgdl = expectationStabilityBgMgdl,
+                    stabilityMin = expectationStabilityMin,
+                    releaseThresholdU = expectationReleaseThresholdU,
+                    guardException = expectationGuardException,
+                )
+            }
 
         /**
          * DIE RUHEPARAMETER AUS DEN EINSTELLUNGEN - an genau EINER Stelle.
@@ -8056,7 +8091,27 @@ class FuseCycleRunner(
         primeWindowMin = preferences.get(FuseIntKey.PrimeWindowMin).takeIf { it > 0 }
             ?: PrimeRelease.WINDOW_MIN,
         endZeroWhenReasonGone = preferences.get(FuseBooleanKey.TbrEndZeroWhenReasonGone),
-    ).also { validate(it) }
+    ).let { mitErwartungskonto(it) }.also { validate(it) }
+
+    /**
+     * DIE KONTO-SCHLUESSEL NUR BEI EINGESCHALTETEM KONTO (E-034). Aus bleibt
+     * die Konfiguration auf den Standardwerten, gleich was gespeichert ist:
+     * kein Konto-Wert beruehrt einen Lauf ohne Konto, und die
+     * Gleichwertigkeitsprobe (GN-A) sieht dieselbe Konfiguration wie vorher.
+     */
+    private fun mitErwartungskonto(basis: Config): Config =
+        if (!preferences.get(FuseBooleanKey.ExpectationAccountEnabled)) basis
+        else basis.copy(
+            expectationAccountEnabled = true,
+            expectationGuardException = preferences.get(FuseBooleanKey.ExpectationGuardExceptionEnabled),
+            expectationPhi0Stable = preferences.get(FuseDoubleKey.ExpectationPhi0Stable),
+            expectationPhi0AfterLow = preferences.get(FuseDoubleKey.ExpectationPhi0AfterLow),
+            expectationStabilityBgMgdl = preferences.get(FuseDoubleKey.ExpectationStabilityBgMgdl),
+            expectationStabilityMin = preferences.get(FuseIntKey.ExpectationStabilityMin),
+            expectationReleaseThresholdU = preferences.get(FuseDoubleKey.ExpectationReleaseThresholdU),
+            expectationHorizonMin = preferences.get(FuseIntKey.ExpectationHorizonMin),
+            expectationCurveText = preferences.get(FuseStringKey.ExpectationCurve),
+        )
 
     /**
      * Baut die Predictor-Eingabe. Die beiden Zeitachsen-Gates sind hier

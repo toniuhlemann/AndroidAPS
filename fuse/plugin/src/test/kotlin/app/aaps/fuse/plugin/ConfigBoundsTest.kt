@@ -137,6 +137,61 @@ class ConfigBoundsTest {
         ok(mitte().copy(releaseHorizonMin = FuseIntKey.ReleaseHorizonMin.min), "releaseHorizon am Minimum")
     }
 
+    // ---- Erwartungskonto (Testkandidat E-034) -----------------------------
+
+    /** Eine synthetische, gueltige Kurve: 24 steigende Stuetzwerte. */
+    private val kurve = (1..24).joinToString(";") { (it * 0.1).toString() }
+
+    private fun konto() = mitte().copy(expectationAccountEnabled = true, expectationCurveText = kurve)
+
+    /**
+     * Dieselbe Richtung wie oben, nur mit anderer Folge: ein Dialogwert, den der
+     * Kern verwirft, wuerde die Erwartung still abschalten. Die Grenzen der
+     * Schluessel kommen deshalb aus dem Kern - hier wird jeder Rand geprobt.
+     */
+    @Test
+    fun `jeder Konto-Dialogwert an seinen Raendern ergibt gueltige Parameter`() {
+        assertTrue(mitte().expectationParams == null) { "ohne Kurve keine Erwartung" }
+        assertTrue(konto().expectationParams != null) { "gueltige Kurve, Standardwerte" }
+        val doubles = listOf<Pair<FuseDoubleKey, (FuseCycleRunner.Config, Double) -> FuseCycleRunner.Config>>(
+            FuseDoubleKey.ExpectationPhi0Stable to { c, v -> c.copy(expectationPhi0Stable = v) },
+            FuseDoubleKey.ExpectationPhi0AfterLow to { c, v -> c.copy(expectationPhi0AfterLow = v) },
+            FuseDoubleKey.ExpectationStabilityBgMgdl to { c, v -> c.copy(expectationStabilityBgMgdl = v) },
+            FuseDoubleKey.ExpectationReleaseThresholdU to { c, v -> c.copy(expectationReleaseThresholdU = v) },
+        )
+        for ((k, setze) in doubles) for (v in listOf(k.min, k.defaultValue, k.max)) {
+            val c = setze(konto(), v)
+            assertTrue(c.expectationParams != null) { "${k.name} = $v schaltet die Erwartung ab" }
+            ok(c, "${k.name} = $v")
+        }
+        val ints = listOf<Pair<FuseIntKey, (FuseCycleRunner.Config, Int) -> FuseCycleRunner.Config>>(
+            FuseIntKey.ExpectationStabilityMin to { c, v -> c.copy(expectationStabilityMin = v) },
+            FuseIntKey.ExpectationHorizonMin to { c, v -> c.copy(expectationHorizonMin = v) },
+        )
+        for ((k, setze) in ints) for (v in listOf(k.min, k.defaultValue, k.max)) {
+            val c = setze(konto(), v)
+            assertTrue(c.expectationParams != null) { "${k.name} = $v schaltet die Erwartung ab" }
+            ok(c, "${k.name} = $v")
+        }
+    }
+
+    /** Jenseits des Dialogs (Import) ist die Erwartung aus - der Regler laeuft weiter. */
+    @Test
+    fun `ungueltige Konto-Werte schalten nur die Erwartung ab`() {
+        for (c in listOf(
+            konto().copy(expectationPhi0Stable = 1.5),
+            konto().copy(expectationStabilityBgMgdl = Double.NaN),
+            konto().copy(expectationStabilityMin = 0),
+            konto().copy(expectationHorizonMin = FuseIntKey.ExpectationHorizonMin.max + 1),
+            konto().copy(expectationReleaseThresholdU = -0.1),
+            konto().copy(expectationCurveText = "0.1; 0.2"),
+            konto().copy(expectationCurveText = kurve.replaceFirst("0.1", "0.9")),
+        )) {
+            assertTrue(c.expectationParams == null) { "erwartet Erwartung aus: $c" }
+            ok(c, "ungueltiger Konto-Wert darf den Zyklus nicht abbrechen")
+        }
+    }
+
     // ---- Die Pruefung muss auch wirklich pruefen -------------------------
 
     /**

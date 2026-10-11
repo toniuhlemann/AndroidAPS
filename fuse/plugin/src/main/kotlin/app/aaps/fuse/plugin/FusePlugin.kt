@@ -51,9 +51,11 @@ import app.aaps.core.keys.DoubleKey
 import app.aaps.core.keys.interfaces.Preferences
 import app.aaps.core.objects.extensions.put
 import app.aaps.core.objects.extensions.store
+import app.aaps.core.validators.DefaultEditTextValidator
 import app.aaps.core.validators.preferences.AdaptiveDoublePreference
 import app.aaps.core.validators.preferences.AdaptiveIntPreference
 import app.aaps.core.validators.preferences.AdaptiveListIntPreference
+import app.aaps.core.validators.preferences.AdaptiveStringPreference
 import app.aaps.core.validators.preferences.AdaptiveSwitchPreference
 import app.aaps.fuse.plugin.export.FuseStateExporter
 import app.aaps.fuse.plugin.export.FuseStateJson
@@ -128,7 +130,7 @@ class FusePlugin @Inject constructor(
         .preferencesVisibleInSimpleMode(false)
         .showInList { config.APS }
         .description(R.string.description_fuse),
-    ownPreferences = listOf(FuseDoubleKey::class.java, FuseIntKey::class.java, FuseBooleanKey::class.java, FuseLongKey::class.java),
+    ownPreferences = listOf(FuseDoubleKey::class.java, FuseIntKey::class.java, FuseBooleanKey::class.java, FuseLongKey::class.java, FuseStringKey::class.java),
     aapsLogger, rh, preferences
 ), APS, PluginConstraints, app.aaps.core.interfaces.overview.FuseOverviewSource {
 
@@ -2847,6 +2849,13 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
                 rh.gs(R.string.fuse_early_adaptive_meal_horizon_summary),
             )
         }
+        // Die Erwartungskurve: nie der rohe Text, sondern was er bewirkt.
+        if (pref.key == FuseStringKey.ExpectationCurve.key) {
+            pref.summary = ExpectationCurveText.zusammenfassung(
+                preferences.get(FuseStringKey.ExpectationCurve),
+                rh.gs(R.string.fuse_expectation_curve_summary),
+            )
+        }
     }
 
     override fun addPreferenceScreen(preferenceManager: PreferenceManager, parent: PreferenceScreen, context: Context, requiredKey: String?) {
@@ -2986,6 +2995,31 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
                     "entschieden hast und FUSE sich darauf verlaesst. Im Zweifel aus lassen."
             )
             addPreference(AdaptiveSwitchPreference(ctx = context, booleanKey = FuseBooleanKey.MarkerAuthorisesRelease, summary = R.string.fuse_marker_low_summary, title = R.string.fuse_marker_low_title))
+        }
+
+        // DAS ERWARTUNGSKONTO (Testkandidat E-034) als EIGENER Abschnitt: ein
+        // Testschalter mit seinen Parametern, die je Marker festgehalten
+        // werden. Der Sicherheitsvertrag (Schwanz hart, gemessene Sperren,
+        // kein Erwartungsanteil in Pausen oder vor Stabilitaet) ist bewusst
+        // KEINE Einstellung. Die Kurvenzeile zeigt ihren Zustand ueber
+        // [updatePreferenceSummary] - den Hausweg.
+        cat("fuse_expectation", "Erwartungskonto (Test)") {
+            addPreference(AdaptiveSwitchPreference(ctx = context, booleanKey = FuseBooleanKey.ExpectationAccountEnabled, summary = R.string.fuse_expectation_account_summary, title = R.string.fuse_expectation_account_title))
+            addPreference(AdaptiveSwitchPreference(ctx = context, booleanKey = FuseBooleanKey.ExpectationGuardExceptionEnabled, summary = R.string.fuse_expectation_guard_exception_summary, title = R.string.fuse_expectation_guard_exception_title))
+            addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.ExpectationPhi0Stable, dialogMessage = R.string.fuse_expectation_phi0_stable_summary, title = R.string.fuse_expectation_phi0_stable_title))
+            addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.ExpectationPhi0AfterLow, dialogMessage = R.string.fuse_expectation_phi0_after_low_summary, title = R.string.fuse_expectation_phi0_after_low_title))
+            addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.ExpectationStabilityBgMgdl, dialogMessage = R.string.fuse_expectation_stability_bg_summary, title = R.string.fuse_expectation_stability_bg_title))
+            addPreference(AdaptiveIntPreference(ctx = context, intKey = FuseIntKey.ExpectationStabilityMin, dialogMessage = R.string.fuse_expectation_stability_min_summary, title = R.string.fuse_expectation_stability_min_title))
+            addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.ExpectationReleaseThresholdU, dialogMessage = R.string.fuse_expectation_release_threshold_summary, title = R.string.fuse_expectation_release_threshold_title))
+            addPreference(AdaptiveIntPreference(ctx = context, intKey = FuseIntKey.ExpectationHorizonMin, dialogMessage = R.string.fuse_expectation_horizon_summary, title = R.string.fuse_expectation_horizon_title))
+            // Leer ist erlaubt und der Standard: Erwartung aus.
+            addPreference(
+                AdaptiveStringPreference(
+                    ctx = context, stringKey = FuseStringKey.ExpectationCurve,
+                    dialogMessage = R.string.fuse_expectation_curve_summary, title = R.string.fuse_expectation_curve_title,
+                    validatorParams = DefaultEditTextValidator.Parameters(emptyAllowed = true),
+                ),
+            )
         }
 
         cat("fuse_dosing", "Dosierung und Grenzen") {
@@ -3223,7 +3257,7 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
         // Die sichtbare Reihenfolge folgt dem Nutzerweg: Mahlzeit zuerst,
         // System/Reparatur ganz zuletzt.
         val reihenfolge = listOf(
-            "fuse_meal", "fuse_dosing", "fuse_guard", "fuse_night_rebound", "fuse_system",
+            "fuse_meal", "fuse_expectation", "fuse_dosing", "fuse_guard", "fuse_night_rebound", "fuse_system",
         )
         require(reihenfolge.toSet() == abschnitte.keys) {
             "FUSE-Einstellungsabschnitte und sichtbare Reihenfolge sind auseinandergelaufen"

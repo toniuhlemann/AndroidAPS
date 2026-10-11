@@ -108,6 +108,24 @@ object ExpectationAccount {
                 if (values.last() <= 0.0) return null
                 return Curve(values.toDoubleArray())
             }
+
+            /**
+             * Die Kurve aus dem Einstellungstext: die Stuetzwerte F(5) bis
+             * F(120) [U] (oder zusaetzlich F(0) = 0 vorn), getrennt durch
+             * Semikolon oder Leerraum; Dezimaltrenner Punkt oder Komma.
+             * Leer oder ungueltig ergibt `null` - die Erwartung ist dann aus,
+             * es gibt keinen Ersatzwert.
+             */
+            fun parse(text: String): Curve? {
+                val teile = text.split(';', ' ', '\t', '\n', '\r').map { it.trim() }.filter { it.isNotEmpty() }
+                if (teile.isEmpty()) return null
+                val werte = teile.map { it.replace(',', '.').toDoubleOrNull() ?: return null }
+                return when (werte.size) {
+                    CURVE_POINTS - 1 -> of(listOf(0.0) + werte)
+                    CURVE_POINTS -> of(werte)
+                    else -> null
+                }
+            }
         }
     }
 
@@ -188,6 +206,10 @@ object ExpectationAccount {
         val releaseThresholdU: Double,
         val guardException: Boolean,
         val curveValues: List<Double>,
+        /** false: am Marker gab es keine gueltigen Parameter - nur Ersetzung, keine Erwartung. */
+        val expectationOn: Boolean = true,
+        val stabilityBgMgdl: Double = MIN_STABILITY_BG_MGDL,
+        val stabilityMin: Int = MAX_STABILITY_MIN,
     ) {
         val restU: Double get() = max(0.0, a0U - bookedU)
     }
@@ -195,18 +217,30 @@ object ExpectationAccount {
     /**
      * Bucht das Budget am Marker. [envelopeU] ist die tatsaechliche Huelle der
      * Episode; bei 0 ("ohne Vorschuss") bleibt das Budget 0, die Ersetzung
-     * des Bedarfs gilt trotzdem.
+     * des Bedarfs gilt trotzdem. Ohne gueltige [params] (leer oder ungueltig)
+     * ist die Erwartung fuer diese Episode aus: Vorgriff 0, Budget 0 - auch
+     * dann gilt nur die Ersetzung.
      */
     fun arm(
         authId: Long,
         windowEndTs: Long,
         envelopeU: Double,
-        params: Params,
+        params: Params?,
         startStable: Boolean,
         nowTs: Long,
         bgMgdl: Double,
         isfMgdlPerU: Double,
     ): State {
+        if (params == null) return State(
+            authId = authId, windowEndTs = windowEndTs, startStable = startStable,
+            phi0 = 0.0, a0U = 0.0, bookedU = 0.0, directDoseU = 0.0, coveredByMarkerAuthU = 0.0,
+            released = startStable, frozen = false, releaseChecked = false,
+            disturbanceU = 0.0,
+            disturbanceValid = bgMgdl.isFinite() && isfMgdlPerU.isFinite() && isfMgdlPerU > 0.0,
+            lastObsTs = nowTs, lastBgMgdl = bgMgdl, isfAtMarkerMgdlPerU = isfMgdlPerU,
+            horizonMin = MAX_HORIZON_MIN, releaseThresholdU = 0.0, guardException = false,
+            curveValues = emptyList(), expectationOn = false,
+        )
         val z0 = params.curve.remaining(0.0, params.horizonMin)
         val phi = if (startStable) params.phi0Stable else params.phi0AfterLow
         val env = if (envelopeU.isFinite()) max(0.0, envelopeU) else 0.0
@@ -232,6 +266,9 @@ object ExpectationAccount {
             releaseThresholdU = params.releaseThresholdU,
             guardException = params.guardException,
             curveValues = params.curve.values(),
+            expectationOn = true,
+            stabilityBgMgdl = params.stabilityBgMgdl,
+            stabilityMin = params.stabilityMin,
         )
     }
 
@@ -316,6 +353,7 @@ object ExpectationAccount {
         val restEff = if (expired || inputs.paused || !s.released || s.frozen) 0.0 else s.restU
         val status = when {
             expired -> "EXPIRED"
+            !s.expectationOn -> "EXPECTATION_OFF"
             !s.released -> "WAITING_FOR_STABILITY"
             inputs.paused -> "PAUSED"
             s.frozen -> "FROZEN"

@@ -71,6 +71,39 @@ class ExpectationAccountTest {
     }
 
     @Test
+    fun `der Einstellungstext ergibt die Kurve oder gar keine`() {
+        val ohneNull = kurve.drop(1)
+        assertEquals(kurve, ExpectationAccount.Curve.parse(ohneNull.joinToString("; "))!!.values())
+        assertEquals(kurve, ExpectationAccount.Curve.parse(kurve.joinToString(" "))!!.values(), "mit F(0) vorn")
+        val komma = ohneNull.joinToString(";") { it.toString().replace('.', ',') }
+        assertEquals(kurve, ExpectationAccount.Curve.parse(komma)!!.values(), "Dezimalkomma")
+        assertNull(ExpectationAccount.Curve.parse(""), "leer")
+        assertNull(ExpectationAccount.Curve.parse("   "), "nur Leerraum")
+        assertNull(ExpectationAccount.Curve.parse(ohneNull.drop(1).joinToString(";")), "ein Wert fehlt")
+        assertNull(ExpectationAccount.Curve.parse(ohneNull.joinToString(",")), "Komma als Trenner ist kein Trenner")
+        assertNull(ExpectationAccount.Curve.parse(ohneNull.reversed().joinToString(";")), "faellt")
+        assertNull(ExpectationAccount.Curve.parse(ohneNull.joinToString(";").replaceFirst("0", "x")), "kein Zahlwert")
+    }
+
+    @Test
+    fun `ohne gueltige Parameter gilt nur die Ersetzung`() {
+        val s = ExpectationAccount.arm(t0, t0 + 120 * min, 5.0, null, true, t0, 100.0, 50.0)
+        assertFalse(s.expectationOn)
+        assertEquals(0.0, s.a0U, eps)
+        val (_, e) = ExpectationAccount.step(s, inputs(nach = 1, bg = 150.0, iob = 0.4))
+        assertEquals(0.0, e.phiZU, eps)
+        assertEquals(0.0, e.restEffU, eps)
+        assertEquals(1.0 - 0.4, e.rMessU, eps)
+        assertEquals(e.rMessU, ExpectationAccount.deliverableU(e), eps)
+        assertEquals("EXPECTATION_OFF", e.status)
+        // Mit Parametern sind auch die Stabilitaetswerte gepinnt.
+        val p = arm()
+        assertTrue(p.expectationOn)
+        assertEquals(100.0, p.stabilityBgMgdl, eps)
+        assertEquals(10, p.stabilityMin)
+    }
+
+    @Test
     fun `ungueltige Einstellungen schalten die Erwartung ab`() {
         assertNull(ExpectationAccount.Params.of(kurve, 120, 1.5, 0.0, 100.0, 10, 0.2, true))
         assertNull(ExpectationAccount.Params.of(kurve, 20, 0.5, 0.0, 100.0, 10, 0.2, true))

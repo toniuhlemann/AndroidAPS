@@ -3,6 +3,7 @@ package app.aaps.fuse.plugin
 import app.aaps.core.keys.interfaces.BooleanPreferenceKey
 import app.aaps.core.keys.interfaces.DoublePreferenceKey
 import app.aaps.core.keys.interfaces.IntPreferenceKey
+import app.aaps.core.keys.interfaces.StringPreferenceKey
 
 /**
  * FUSEs EIGENE Einstellungen — einstellbar, nicht verdrahtet.
@@ -420,6 +421,44 @@ enum class FuseDoubleKey(
      * geraten.
      */
     TailRecoveryU("fuse_tail_recovery_u", 0.0, 0.0, 5.0),
+
+    // ---- ERWARTUNGSKONTO (Testkandidat, Vorregistrierung E-034) ------------
+    //
+    // Alle Werte werden je Mahlzeit beim Markerdruck festgehalten; eine
+    // spaetere Aenderung verschiebt eine laufende Episode nicht. Die Grenzen
+    // kommen aus dem Kern (ExpectationAccount), damit Dialog und Rechnung nie
+    // auseinanderlaufen. Ein ungueltiger Wert schaltet die ERWARTUNG ab (nur
+    // Ersetzung), er bricht keinen Zyklus ab und hat keinen Ersatzwert.
+
+    /**
+     * Anteil der erwarteten Stoerung bei STABILEM Start (phi_0). Budget
+     * A_0 = phi_0 * F(Ende), hoechstens die Huelle der Episode.
+     * Standard 0: keine Erwartung, nur Ersetzung.
+     */
+    ExpectationPhi0Stable("fuse_expectation_phi0_stable", 0.0, 0.0, 1.0),
+
+    /** Derselbe Anteil bei Start nach Tief oder im Fallen. Standard 0. */
+    ExpectationPhi0AfterLow("fuse_expectation_phi0_after_low", 0.0, 0.0, 1.0),
+
+    /**
+     * Stabilitaet nach Tief: BG ueber dieser Grenze, kein Fallen, keine
+     * gemessene Sperre - erst dann darf Erwartung fliessen.
+     */
+    ExpectationStabilityBgMgdl(
+        "fuse_expectation_stability_bg_mgdl", 90.0,
+        app.aaps.fuse.core.controller.ExpectationAccount.MIN_STABILITY_BG_MGDL,
+        app.aaps.fuse.core.controller.ExpectationAccount.MAX_STABILITY_BG_MGDL,
+    ),
+
+    /**
+     * Ruecknahme: bleibt die beobachtete Stoerung bis zur Pruefung unter
+     * dieser Menge, wird der Budgetrest eingefroren; erreicht sie sie
+     * spaeter im Fenster, wird er wieder frei.
+     */
+    ExpectationReleaseThresholdU(
+        "fuse_expectation_release_threshold_u", 0.3, 0.0,
+        app.aaps.fuse.core.controller.ExpectationAccount.MAX_RELEASE_THRESHOLD_U,
+    ),
 }
 
 enum class FuseIntKey(
@@ -755,6 +794,24 @@ enum class FuseIntKey(
      * ein unbekannter Wert ergibt den harmlosesten Modus.
      */
     CalmTreatmentMode("fuse_calm_treatment_mode", 0, 0, 2),
+
+    /** Erwartungskonto: Dauer der Stabilitaetsbedingung [min] (s. FuseDoubleKey). */
+    ExpectationStabilityMin(
+        "fuse_expectation_stability_min", 15,
+        app.aaps.fuse.core.controller.ExpectationAccount.MIN_STABILITY_MIN,
+        app.aaps.fuse.core.controller.ExpectationAccount.MAX_STABILITY_MIN,
+    ),
+
+    /**
+     * Erwartungskonto: Vorschau H [min] - Z(a) = F(min(a + H, Ende)) - F(a).
+     * Das Fenster selbst folgt der Markerfrist und hat keinen eigenen
+     * Schluessel.
+     */
+    ExpectationHorizonMin(
+        "fuse_expectation_horizon_min", 120,
+        app.aaps.fuse.core.controller.ExpectationAccount.MIN_HORIZON_MIN,
+        app.aaps.fuse.core.controller.ExpectationAccount.MAX_HORIZON_MIN,
+    ),
 }
 
 /**
@@ -1197,4 +1254,55 @@ enum class FuseBooleanKey(
      * er der Rueckweg ist: die Wirkung ist am Geraet noch ungemessen.
      */
     TbrEndZeroWhenReasonGone("fuse_tbr_end_zero_when_reason_gone", true),
+
+    /**
+     * DAS ERWARTUNGSKONTO (Testkandidat, Vorregistrierung E-034) - DEFAULT AUS.
+     *
+     * An: im Mahlzeitkontext (bewusster Marker bis Fensterende) ersetzt das
+     * Konto den Bedarf von Normalpfad, H8, Onset-Kanal, Phase B und
+     * Liveness-Kanal durch R_roh = R_mess + phi * Z mit einmal gebuchtem
+     * Budget. Die Direktdosis-Familie bleibt; gemessene Sperren, Schwanz und
+     * alle Mengengrenzen bleiben. Aus: bitgleich zum heutigen Stand.
+     *
+     * Nur fuer den Testzweig. Besteht der Kandidat, wird der Schalter mit dem
+     * Aufraeumplan entfernt; scheitert er, wird der Zweig geschlossen.
+     */
+    ExpectationAccountEnabled("fuse_expectation_account_enabled", false),
+
+    /**
+     * Die Guard-Ausnahme des Erwartungsanteils - Rueckfallebene, DEFAULT AN.
+     *
+     * Aus: der Erwartungsanteil fliesst nur ueber den Normalpfad mit Guard;
+     * Budget und Buchung bleiben unveraendert. Abschalten wirkt sofort,
+     * Einschalten erst ab dem naechsten Marker.
+     */
+    ExpectationGuardExceptionEnabled("fuse_expectation_guard_exception_enabled", true),
+}
+
+/**
+ * Texteinstellungen. Bisher nur die Erwartungskurve des Erwartungskontos -
+ * 24 Stuetzwerte als EIN Feld statt 24 Zahlenzeilen im Menue.
+ */
+enum class FuseStringKey(
+    override val key: String,
+    override val defaultValue: String,
+    override val defaultedBySM: Boolean = false,
+    override val showInApsMode: Boolean = true,
+    override val showInNsClientMode: Boolean = false,
+    override val showInPumpControlMode: Boolean = false,
+    override val dependency: BooleanPreferenceKey? = null,
+    override val negativeDependency: BooleanPreferenceKey? = null,
+    override val hideParentScreenIfHidden: Boolean = false,
+    override val isPassword: Boolean = false,
+    override val isPin: Boolean = false,
+    override val exportable: Boolean = true,
+) : StringPreferenceKey {
+
+    /**
+     * Die Erwartungskurve F(5) bis F(120) [U kumulierte Stoerung ab Marker],
+     * getrennt durch Semikolon oder Leerraum. Leer (Standard) oder ungueltig
+     * (Anzahl, Zahlwert, nicht monoton, Ende nicht positiv): Erwartung aus,
+     * nur Ersetzung. Persoenliche Werte stehen nur auf dem Geraet.
+     */
+    ExpectationCurve("fuse_expectation_curve", ""),
 }

@@ -70,6 +70,7 @@ class FuseScreenInventarWaechterTest {
         "FuseIntKey"     -> FuseIntKey.entries.firstOrNull { it.name == name }?.key
         "FuseDoubleKey"  -> FuseDoubleKey.entries.firstOrNull { it.name == name }?.key
         "FuseBooleanKey" -> FuseBooleanKey.entries.firstOrNull { it.name == name }?.key
+        "FuseStringKey"  -> FuseStringKey.entries.firstOrNull { it.name == name }?.key
         "IntKey"         -> IntKey.entries.firstOrNull { it.name == name }?.key
         "DoubleKey"      -> DoubleKey.entries.firstOrNull { it.name == name }?.key
         "BooleanKey"     -> BooleanKey.entries.firstOrNull { it.name == name }?.key
@@ -103,7 +104,7 @@ class FuseScreenInventarWaechterTest {
      * Waechter kostet einen Absturz am Geraet.
      */
     private val muster = Regex(
-        """(?:intKey|doubleKey|booleanKey)\s*=\s*(FuseIntKey|FuseDoubleKey|FuseBooleanKey|IntKey|DoubleKey|BooleanKey)\s*\.\s*(\w+)""" +
+        """(?:intKey|doubleKey|booleanKey|stringKey)\s*=\s*(FuseIntKey|FuseDoubleKey|FuseBooleanKey|FuseStringKey|IntKey|DoubleKey|BooleanKey)\s*\.\s*(\w+)""" +
             """|timeOfDay\s*\(\s*(FuseIntKey|IntKey)\s*\.\s*(\w+)"""
     )
 

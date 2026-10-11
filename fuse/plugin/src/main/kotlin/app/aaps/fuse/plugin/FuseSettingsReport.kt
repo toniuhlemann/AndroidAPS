@@ -101,6 +101,16 @@ internal val fuseEinstellbareKeys: Set<String> = setOf(
     FuseBooleanKey.MarkerAuthorisesRelease.key,
     FuseBooleanKey.TailGuardEnabled.key,
     FuseBooleanKey.TbrEndZeroWhenReasonGone.key,
+    // Das Erwartungskonto (Testkandidat E-034) - eigener Abschnitt.
+    FuseBooleanKey.ExpectationAccountEnabled.key,
+    FuseBooleanKey.ExpectationGuardExceptionEnabled.key,
+    FuseDoubleKey.ExpectationPhi0Stable.key,
+    FuseDoubleKey.ExpectationPhi0AfterLow.key,
+    FuseDoubleKey.ExpectationStabilityBgMgdl.key,
+    FuseIntKey.ExpectationStabilityMin.key,
+    FuseDoubleKey.ExpectationReleaseThresholdU.key,
+    FuseIntKey.ExpectationHorizonMin.key,
+    FuseStringKey.ExpectationCurve.key,
 )
 
 /**
@@ -180,6 +190,12 @@ object FuseSettingsReport {
             standard = (if (k.defaultValue) "an" else "aus").takeIf { preferences.get(k) != k.defaultValue },
         )
 
+        /** Die Erwartungskurve als Wirkung, nicht als Zahlenkette. */
+        fun kurve(k: FuseStringKey, label: String) = FuseScreenModel.SettingRow(
+            key = k.key, label = label, value = ExpectationCurveText.zustand(preferences.get(k)),
+            standard = ExpectationCurveText.zustand(k.defaultValue).takeIf { preferences.get(k) != k.defaultValue },
+        )
+
         val maxIob = FuseScreenModel.SettingRow(
             key = DoubleKey.ApsSmbMaxIob.key, label = "max Gesamt-IOB [U]",
             value = f2(preferences.get(DoubleKey.ApsSmbMaxIob)),
@@ -224,6 +240,19 @@ object FuseSettingsReport {
                         FuseDoubleKey.CalmRecoveryGuardDistanceMgdl,
                         "Ruhe: Bodenabstand", "mg/dl",
                     ),
+                ),
+                // Eigene Gruppe wie im Einstellungsbildschirm: ein Testschalter
+                // mit seinen je Marker festgehaltenen Parametern.
+                "Erwartungskonto (Test)" to listOf(
+                    schalter(FuseBooleanKey.ExpectationAccountEnabled, "Erwartungskonto"),
+                    schalter(FuseBooleanKey.ExpectationGuardExceptionEnabled, "Guard-Ausnahme Erwartungsanteil"),
+                    zahl(FuseDoubleKey.ExpectationPhi0Stable, "Vorgriff stabil", ""),
+                    zahl(FuseDoubleKey.ExpectationPhi0AfterLow, "Vorgriff nach Tief", ""),
+                    zahl(FuseDoubleKey.ExpectationStabilityBgMgdl, "Stabilitaet BG", "mg/dl"),
+                    ganz(FuseIntKey.ExpectationStabilityMin, "Stabilitaet Dauer", "min"),
+                    zahl(FuseDoubleKey.ExpectationReleaseThresholdU, "Ruecknahme-Schwelle", "U"),
+                    ganz(FuseIntKey.ExpectationHorizonMin, "Vorschau H", "min"),
+                    kurve(FuseStringKey.ExpectationCurve, "Erwartungskurve"),
                 ),
                 "Dosierung und Grenzen" to listOfNotNull(
                     zahl(FuseDoubleKey.SmbRatio, "Anteil Korrektur", ""),

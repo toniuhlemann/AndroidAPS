@@ -4,6 +4,7 @@ import app.aaps.core.keys.interfaces.BooleanPreferenceKey
 import app.aaps.core.keys.interfaces.DoublePreferenceKey
 import app.aaps.core.keys.interfaces.IntPreferenceKey
 import app.aaps.core.keys.interfaces.Preferences
+import app.aaps.core.keys.interfaces.StringPreferenceKey
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
@@ -26,6 +27,7 @@ class FuseSettingsReportTest {
         whenever(p.get(any<DoublePreferenceKey>())).thenAnswer { (it.arguments[0] as DoublePreferenceKey).defaultValue }
         whenever(p.get(any<IntPreferenceKey>())).thenAnswer { (it.arguments[0] as IntPreferenceKey).defaultValue }
         whenever(p.get(any<BooleanPreferenceKey>())).thenAnswer { (it.arguments[0] as BooleanPreferenceKey).defaultValue }
+        whenever(p.get(any<StringPreferenceKey>())).thenAnswer { (it.arguments[0] as StringPreferenceKey).defaultValue }
     }
 
     @Test
@@ -61,6 +63,25 @@ class FuseSettingsReportTest {
         val nullEnde = rows.single { it.key == FuseBooleanKey.TbrEndZeroWhenReasonGone.key }
         assertEquals("aus", nullEnde.value)
         assertEquals("an", nullEnde.standard)
+    }
+
+    /** Erwartungskonto (E-034): die Kurve steht als Wirkung im Bericht, nie
+     *  als Zahlenkette - leer und ungueltig heissen "Erwartung aus". */
+    @Test
+    fun `die Erwartungskurve zeigt ihre Wirkung`() {
+        fun zeile(text: String): FuseScreenModel.SettingRow {
+            val p = standardPreferences()
+            whenever(p.get(FuseStringKey.ExpectationCurve)).thenReturn(text)
+            return FuseSettingsReport.build(p).gruppen.flatMap { it.second }
+                .single { it.key == FuseStringKey.ExpectationCurve.key }
+        }
+        assertEquals("leer - Erwartung aus (nur Ersetzung)", zeile("").value)
+        assertEquals(null, zeile("").standard)
+        val ungueltig = zeile("0.1; 0.2")
+        assertEquals("ungueltig - Erwartung aus (nur Ersetzung)", ungueltig.value)
+        assertEquals("leer - Erwartung aus (nur Ersetzung)", ungueltig.standard)
+        val gueltig = zeile((1..24).joinToString(";") { (it * 0.1).toString() })
+        assertTrue(gueltig.value.startsWith("gueltig - 24 Stuetzwerte")) { gueltig.value }
     }
 
     /** H8 (Review 18.09.): der Bericht nennt den Horizont wie der Dialog, und ein
