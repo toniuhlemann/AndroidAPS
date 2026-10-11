@@ -94,6 +94,54 @@ object Fuse20Folgen {
     const val DATEI_ARM = "gn_arm.txt"
 
     /**
+     * E-034: die Replay-Spezifikation des Forschungswerkzeugs. Es reicht
+     * bewusst nur diese eine Datei durch (Umgebungsvariable fuer die
+     * Test-Worker, dazu die gleichnamige Eigenschaft); Umgebungsvariablen wie
+     * [KONFIG] kann es nicht setzen. Gelesen wird nur das Objekt
+     * [SPEC_OBJEKT] - eine Spezifikation fuer einen anderen Pruefstand
+     * loest diesen Lauf nicht aus. Pfadfelder heissen ...File/...Dir, damit
+     * der Wrapper sie gegen den privaten Bereich prueft.
+     */
+    const val SPEC_VAR = "FUSE_REPLAY_SPEC"
+    const val SPEC_PROP = "fuse.replay.spec"
+    const val SPEC_OBJEKT = "fuse20Gn"
+
+    /** Die Vorgaben eines Laufs: Konfiguration, frisches Ausgabeverzeichnis, optional Arm, Kurve und Kurven-SHA. */
+    class Vorgabe(
+        val konfigPfad: String,
+        val ausgabePfad: String,
+        val arm: String?,
+        val kurvePfad: String?,
+        val kurveSha: String?,
+    )
+
+    /**
+     * Woher der Lauf seine Vorgaben nimmt: zuerst Umgebungsvariablen oder
+     * Systemeigenschaften (bisheriger Weg), sonst das Objekt [SPEC_OBJEKT]
+     * der Replay-Spezifikation mit `configFile`, `outputDir`, `arm`,
+     * `curveFile`, `curveSha256`. `null` = kein Lauf (der Test wird
+     * uebersprungen).
+     */
+    fun vorgabe(): Vorgabe? {
+        fun wert(env: String, prop: String) = (System.getenv(env) ?: System.getProperty(prop))?.takeIf { it.isNotBlank() }
+        val konfig = wert(KONFIG, "fuse.gn.konfig")
+        val ausgabe = wert(AUSGABE, "fuse.gn.ausgabe")
+        if (konfig != null && ausgabe != null)
+            return Vorgabe(konfig, ausgabe, wert(ARM, "fuse.gn.arm"), wert(KURVE, "fuse.gn.kurve"), wert(KURVE_SHA, "fuse.gn.kurve.sha"))
+        val spec = wert(SPEC_VAR, SPEC_PROP) ?: return null
+        val o = JSONObject(File(spec).readText(Charsets.UTF_8).removePrefix("﻿")).optJSONObject(SPEC_OBJEKT) ?: return null
+        // Kein optString: ein JSON-null darf nicht als Text "null" durchgehen.
+        fun text(k: String) = if (o.has(k) && !o.isNull(k)) o.getString(k).takeIf { it.isNotBlank() } else null
+        return Vorgabe(
+            konfigPfad = requireNotNull(text("configFile")) { "$SPEC_OBJEKT.configFile fehlt" },
+            ausgabePfad = requireNotNull(text("outputDir")) { "$SPEC_OBJEKT.outputDir fehlt" },
+            arm = text("arm"),
+            kurvePfad = text("curveFile"),
+            kurveSha = text("curveSha256"),
+        )
+    }
+
+    /**
      * Die Erwartungskurve aus der CSV der Vorregistrierung: Spalten
      * `minuten_ab_marker` und `F_q25_U`, Stuetzwerte 0..120 alle 5 min. Die
      * Werte bleiben im privaten Bereich; hier entsteht nur der Text fuer
@@ -597,14 +645,14 @@ class Fuse20GleichwertigkeitTest : TestBaseWithProfile() {
 
     @Test
     fun `FUSE 2,0 Stufe 1 - GN-A und GN-B ueber feste Folgen mit der festgelegten Konfiguration`(@TempDir dir: File) {
-        val konfigPfad = (System.getenv(Fuse20Folgen.KONFIG) ?: System.getProperty("fuse.gn.konfig"))?.takeIf { it.isNotBlank() }
-        val ausgabePfad = (System.getenv(Fuse20Folgen.AUSGABE) ?: System.getProperty("fuse.gn.ausgabe"))?.takeIf { it.isNotBlank() }
+        val vorgabe = Fuse20Folgen.vorgabe()
         assumeTrue(
-            konfigPfad != null && ausgabePfad != null,
-            "nur mit ${Fuse20Folgen.KONFIG} und ${Fuse20Folgen.AUSGABE} (Konfiguration im privaten Bereich)",
+            vorgabe != null,
+            "nur mit ${Fuse20Folgen.KONFIG} und ${Fuse20Folgen.AUSGABE} oder einer Replay-Spezifikation " +
+                "(${Fuse20Folgen.SPEC_VAR}, Objekt ${Fuse20Folgen.SPEC_OBJEKT}) im privaten Bereich",
         )
-        val konfig = JSONObject(File(konfigPfad!!).readText().removePrefix("﻿"))
-        val out = File(ausgabePfad!!)
+        val konfig = JSONObject(File(vorgabe!!.konfigPfad).readText().removePrefix("﻿"))
+        val out = File(vorgabe.ausgabePfad)
         if (out.exists()) {
             require(out.isDirectory) { "Ausgabeziel ist kein Verzeichnis: ${out.name}" }
             check((out.listFiles()?.size ?: 0) == 0) { "Ausgabeverzeichnis ${out.name} ist nicht frisch" }
@@ -612,16 +660,14 @@ class Fuse20GleichwertigkeitTest : TestBaseWithProfile() {
         out.mkdirs()
         val ohneWert = stubKonfiguration(konfig.getJSONObject("werte"))
         // E-034, Stufe 1: optionaler Arm. Ohne ihn bleibt alles wie bisher.
-        val armName = (System.getenv(Fuse20Folgen.ARM) ?: System.getProperty("fuse.gn.arm"))?.takeIf { it.isNotBlank() }
-        arm = armName?.let { requireNotNull(FuseCycleRunner.Pruefarm.vonName(it)) { "unbekannter Arm $it" } }
+        arm = vorgabe.arm?.let { requireNotNull(FuseCycleRunner.Pruefarm.vonName(it)) { "unbekannter Arm $it" } }
         arm?.let { a ->
             val zeilenArm = mutableListOf("arm;${a.name}")
             if (a.kontoAn) {
-                val kurvePfad = (System.getenv(Fuse20Folgen.KURVE) ?: System.getProperty("fuse.gn.kurve"))?.takeIf { it.isNotBlank() }
-                requireNotNull(kurvePfad) { "Konto-Arm ${a.name} braucht ${Fuse20Folgen.KURVE}" }
+                val kurvePfad = requireNotNull(vorgabe.kurvePfad) { "Konto-Arm ${a.name} braucht eine Kurvendatei" }
                 val roh = File(kurvePfad).readBytes()
                 val sha = java.security.MessageDigest.getInstance("SHA-256").digest(roh).joinToString("") { "%02x".format(it) }
-                val soll = (System.getenv(Fuse20Folgen.KURVE_SHA) ?: System.getProperty("fuse.gn.kurve.sha"))?.takeIf { it.isNotBlank() }
+                val soll = vorgabe.kurveSha
                 require(soll == null || soll.equals(sha, ignoreCase = true)) { "Kurvendatei weicht vom Hash ab" }
                 whenever(preferences.get(FuseBooleanKey.ExpectationAccountEnabled)).thenReturn(true)
                 whenever(preferences.get(FuseStringKey.ExpectationCurve)).thenReturn(Fuse20Folgen.kurvenText(String(roh, Charsets.UTF_8)))
