@@ -2225,14 +2225,14 @@ class FuseCycleRunner(
         ) episodes.markerTurnTs = signal.sourceTs
         val markerBoost = mealMarkerActive &&
             MarkerScope.boostActive(markerTs, computeTs, episodes.markerTurnTs, cfg.markerBoostMaxMin)
-
-        val reboundWindow = reboundRaw && !markerBoost
-        val reboundSuppressedByMarker = reboundRaw && markerBoost
+        // `reboundWindow` und `reboundSuppressedByMarker` stehen weiter unten,
+        // nach der Frage, ob das Erwartungskonto gilt (E-034).
 
         // ---- DIE DIREKTDOSIS UND DAS HISTORISCHE REBOUND-FENSTER ---------
         //
-        // `reboundSuppressedByMarker` oben entwaffnet nur die HEURISTIK-
-        // Bremse und haengt am BOOST-Fenster. Die Direktdosis-Kette las
+        // `reboundSuppressedByMarker` (unten) entwaffnet nur die HEURISTIK-
+        // Bremse und haengt am BOOST-Fenster (gilt das Erwartungskonto: am
+        // ganzen gepinnten Fenster). Die Direktdosis-Kette las
         // dagegen weiter das rohe `reboundRaw` - Livebefund: markerBoost und
         // reboundSuppressedByMarker true, reboundWindow false, und trotzdem
         // `recoveryDenial=CURRENT_HAZARD / currentHazard=rebound` bei
@@ -2284,6 +2284,21 @@ class FuseCycleRunner(
                     markerPressObserved() == markerTs && konto?.authId != markerTs &&
                     ekArmiertFuerAuth != markerTs)
         }
+
+        // REBOUND UND MAHLZEIT (E-034, Tonis Regel: "Das Rebound-Fenster darf
+        // eine Mahlzeit nie blockieren"). Heute entwaffnet der Marker die
+        // Heuristik-Bremse nur fuer die Sonderrechte - bis zur nachhaltigen
+        // Wende, hoechstens markerBoostMaxMin. Liegt das juengste Tief dann
+        // noch im Rebound-Fenster, greifen Totband, Ratio-Deckel und
+        // tau-Kuerzung wieder und bremsen die laufende Mahlzeit. Gilt das
+        // Erwartungskonto, bleibt das Fenster fuer das ganze gepinnte Fenster
+        // entwaffnet; den Schutz nach einem Tief tragen dort die gemessenen
+        // Sperren, die Pausen und die Stabilitaetsstrecke des Kontos und der
+        // Guard fuer d_mess. Schalter aus (und Zuordnungsarm EK-RBheute): wie
+        // heute.
+        val reboundEntwaffnet = markerBoost || (ekGilt && !cfg.expectationBenchReboundToday)
+        val reboundWindow = reboundRaw && !reboundEntwaffnet
+        val reboundSuppressedByMarker = reboundRaw && reboundEntwaffnet
 
         val onset = OnsetChannel.evaluate(
             OnsetChannel.Input(
@@ -6673,6 +6688,8 @@ class FuseCycleRunner(
         val ohneDirektdosis: Boolean = false,
         /** Stabilitaets-BG-Grenze [mg/dl] fuer Pinnung und Freigabe. */
         val stabilBg: Double? = null,
+        /** Rebound im Mahlzeitkontext wie heute (nur Zuordnungsarm EK-RBheute). */
+        val reboundHeute: Boolean = false,
     ) {
         fun anwenden(c: Config): Config =
             if (!kontoAn) c.copy(
@@ -6686,6 +6703,7 @@ class FuseCycleRunner(
                 expectationHorizonMin = FuseIntKey.ExpectationHorizonMin.defaultValue,
                 expectationCurveText = FuseStringKey.ExpectationCurve.defaultValue,
                 expectationBenchNoDirectDose = false,
+                expectationBenchReboundToday = false,
             ) else c.copy(
                 expectationAccountEnabled = true,
                 expectationPhi0Stable = phi0Stabil ?: c.expectationPhi0Stable,
@@ -6693,6 +6711,7 @@ class FuseCycleRunner(
                 expectationGuardException = guardAusnahme ?: c.expectationGuardException,
                 expectationStabilityBgMgdl = stabilBg ?: c.expectationStabilityBgMgdl,
                 expectationBenchNoDirectDose = ohneDirektdosis,
+                expectationBenchReboundToday = reboundHeute,
             )
 
         companion object {
@@ -6715,13 +6734,16 @@ class FuseCycleRunner(
             val EK_K3 = Pruefarm("EK-K3", true, 0.5, 0.0, true, stabilBg = 90.0)
             val EK_BG90 = Pruefarm("EK-BG90", true, 0.5, 0.5, true, stabilBg = 90.0)
 
+            /** Zuordnungsarm fuer die Rebound-Regel (Vorschlag K5): Rebound im Mahlzeitkontext wie heute. */
+            val EK_RB_HEUTE = Pruefarm("EK-RBheute", true, 0.5, 0.5, true, stabilBg = 80.0, reboundHeute = true)
+
             /** Sensitivitaeten des Plans (offengelegt, verbessern kein Urteil; beide Ausgangslagen gleich). */
             val EK_STABIL_025 = Pruefarm("EK-stabil0.25", true, 0.25, 0.25, true, stabilBg = 80.0)
             val EK_STABIL_100 = Pruefarm("EK-stabil1.0", true, 1.0, 1.0, true, stabilBg = 80.0)
             val EK_S_050 = Pruefarm("EK-S-0.5", true, 0.5, 0.5, true, ohneDirektdosis = true, stabilBg = 80.0)
 
             val ALLE: List<Pruefarm> = listOf(
-                REF, EK, EK_OA, EK_PHI0, EK_S, EK_K3, EK_BG90, EK_STABIL_025, EK_STABIL_100, EK_S_050,
+                REF, EK, EK_OA, EK_PHI0, EK_S, EK_K3, EK_BG90, EK_RB_HEUTE, EK_STABIL_025, EK_STABIL_100, EK_S_050,
             )
 
             fun vonName(name: String): Pruefarm? = ALLE.firstOrNull { it.name == name }
@@ -8491,6 +8513,10 @@ class FuseCycleRunner(
         /** NUR Pruefstand (Arm EK-S): im Mahlzeitkontext des Kontos ist die
          *  ganze Direktdosis-Familie aus. Nie aus einer Einstellung. */
         val expectationBenchNoDirectDose: Boolean = false,
+        /** NUR Pruefstand (Zuordnungsarm EK-RBheute): im Mahlzeitkontext des
+         *  Kontos entwaffnet der Marker das Rebound-Fenster wie heute nur fuer
+         *  die Sonderrechte. Nie aus einer Einstellung. */
+        val expectationBenchReboundToday: Boolean = false,
     ) {
 
         /**

@@ -2326,6 +2326,10 @@ object FuseStateJson {
             // Nur der Pruefstand setzt ihn (Arm EK-S); er steht im Hash, weil
             // er die Lieferung aendert.
             if (p.expectationBenchNoDirectDose) "benchNoDirectDose" else "-",
+        ) + listOfNotNull(
+            // Zuordnungsarm EK-RBheute: nur wenn gesetzt - die Hashes der
+            // uebrigen Arme bleiben, wie sie waren.
+            "benchReboundToday".takeIf { p.expectationBenchReboundToday },
         ) + kontoZahlen.map { Sha.lossless(it) } + listOf(
             app.aaps.fuse.core.controller.ExpectationAccount.Curve.parse(p.expectationCurveText)
                 ?.values()?.joinToString(",") { Sha.lossless(it) } ?: "curve:none",

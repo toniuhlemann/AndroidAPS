@@ -510,9 +510,50 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
         }
     }
 
+    /**
+     * Tief kurz nach dem Druck, danach langer Anstieg ohne Wende: die
+     * Marker-Sonderrechte enden nach markerBoostMaxMin, das Tief liegt dann
+     * noch im Rebound-Fenster. Heute greift die Bremse dort wieder; im
+     * Mahlzeitkontext des Kontos nie (Tonis Regel).
+     */
+    private val fReboundNachDruck = Fuse20Folgen.Folge(
+        "REBOUND", 1_700_474_400_000L, -90, 180,
+        listOf(-90 to 110.0, -10 to 96.0, 0 to 88.0, 6 to 62.0, 14 to 62.0, 25 to 92.0, 110 to 196.0, 180 to 170.0),
+        markerMin = 0,
+    )
+
+    @Test
+    fun `das Rebound-Fenster blockiert die Mahlzeit im Kontokontext nie`(@TempDir dir: File) {
+        val nachSonderrechten = 50..90
+        fun laufMit(arm: FuseCycleRunner.Pruefarm): List<Zyklus> {
+            konfiguration(kontoAn = true)
+            whenever(preferences.get(FuseIntKey.ReboundWindowMin)).thenReturn(REBOUND_FENSTER_MIN)
+            return lauf(fReboundNachDruck, File(dir, arm.name).also(File::mkdirs), arm)
+                .filter { it.o.abortReason == null && it.o.state != null }
+        }
+        // Heute (Schalter aus): nach dem Ende der Sonderrechte greift das Fenster wieder.
+        val heute = laufMit(FuseCycleRunner.Pruefarm.REF).filter { it.minute in nachSonderrechten }
+        assertTrue(heute.isNotEmpty())
+        assertTrue(heute.none { it.o.state!!.markerBoost }) { "die Sonderrechte enden in der Probe nicht" }
+        assertTrue(heute.any { it.o.state!!.reboundWindow }) { "die Probe erreicht das Rebound-Fenster nicht" }
+        // Konto an: im ganzen gepinnten Fenster entwaffnet - die Bedingung lag an, gebremst wird nicht.
+        val imFenster = laufMit(FuseCycleRunner.Pruefarm.EK).filter { it.o.erwartungskonto?.gilt == true }
+        assertTrue(imFenster.any { it.minute in nachSonderrechten }) { "das Konto gilt dort nicht" }
+        assertTrue(imFenster.none { it.o.state!!.reboundWindow }) { "das Rebound-Fenster bremst im Kontokontext" }
+        assertTrue(
+            imFenster.filter { it.minute in nachSonderrechten }.any { it.o.state!!.reboundSuppressedByMarker },
+        ) { "die Rebound-Bedingung lag nicht an" }
+        // Zuordnungsarm EK-RBheute: wie heute.
+        val rbHeute = laufMit(FuseCycleRunner.Pruefarm.EK_RB_HEUTE).filter { it.minute in nachSonderrechten }
+        assertTrue(rbHeute.any { it.o.state!!.reboundWindow }) { "EK-RBheute weicht von heute ab" }
+    }
+
     private companion object {
 
         /** Synthetisches maxIOB des Gestells. */
         const val MAX_IOB = 7.0
+
+        /** Synthetische Rebound-Dauer der Probe [min]: das Tief reicht ueber das Ende der Sonderrechte. */
+        const val REBOUND_FENSTER_MIN = 90
     }
 }
