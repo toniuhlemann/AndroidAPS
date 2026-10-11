@@ -203,7 +203,7 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
     /** Ein Zyklus der Probe: das Ergebnis, das Konto danach und die gelieferte Menge. */
     private class Zyklus(val minute: Int, val o: FuseCycleRunner.Outcome, val konto: ExpectationAccount.State?, val geliefertU: Double)
 
-    private fun lauf(f: Fuse20Folgen.Folge, dir: File): List<Zyklus> {
+    private fun lauf(f: Fuse20Folgen.Folge, dir: File, arm: FuseCycleRunner.Pruefarm? = null): List<Zyklus> {
         folge = f
         clock = f.ts(f.vonMin)
         boluses = emptyList()
@@ -217,6 +217,7 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
         runner = FuseCycleRunner(
             iobCobCalculator, profileFunction, activePlugin, constraintsChecker, commandQueue,
             preferences, persistenceLayer, processedTbrEbData, dateUtil, ledger, "ek-session", { markerPress },
+            pruefarm = arm,
             rejoinPolicy = app.aaps.fuse.core.signal.RejoinPolicy.enabled(),
         )
         val serialHash = LedgerFacts.serialHashOf(Fuse20Folgen.PUMPE_SERIAL, PumpType.GENERIC_AAPS.name)
@@ -413,6 +414,33 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
         val frei = zyklen.firstOrNull { it.o.erwartungskonto?.zyklus?.state?.released == true }
         assertNotNull(frei, "keine Freigabe nach Stabilitaet")
         assertTrue(frei!!.minute >= 15) { "Freigabe zu frueh: Minute ${frei.minute}" }
+    }
+
+    @Test
+    fun `Arm REF ist der Kandidat mit Schalter aus`(@TempDir dir: File) {
+        konfiguration(kontoAn = true)
+        val zyklen = lauf(fStabil, dir, FuseCycleRunner.Pruefarm.REF)
+        assertTrue(zyklen.all { it.o.erwartungskonto == null && it.konto == null })
+        assertTrue(zyklen.none { it.o.livenessDenial == "EXPECTATION_ACCOUNT" })
+    }
+
+    @Test
+    fun `Arm EK-S liefert das Budget ohne Direktdosis-Familie`(@TempDir dir: File) {
+        konfiguration(kontoAn = true)
+        val zyklen = lauf(fStabil, dir, FuseCycleRunner.Pruefarm.EK_S).filter { it.o.abortReason == null }
+        val konto = zyklen.first { it.o.erwartungskonto!!.zyklus?.armiertInDiesemZyklus == true }.o.erwartungskonto!!.zyklus!!.state
+        // phi_0 = 1,0: A_0 = min(Huelle, F(120)).
+        assertEquals(minOf(FuseDoubleKey.PrimeEnvelopeU.defaultValue, 3.0), konto.a0U, 1e-9)
+        val imFenster = zyklen.filter { it.o.erwartungskonto!!.gilt }
+        assertTrue(imFenster.isNotEmpty())
+        // Keine Direktdosis im Fenster: weder Sofortanteil noch Prime, Aufschub oder Ruhe.
+        assertTrue(imFenster.all { (it.o.erwartungskonto!!.buchung?.direktdosisU ?: 0.0) == 0.0 }) { "Direktdosis im Fenster" }
+        assertTrue(imFenster.all { it.o.decision.grant?.source != app.aaps.fuse.core.controller.AuthorizedLift.Source.PRIME })
+        // Der Erwartungsanteil fliesst - in Schritten, nie ueber dem Rest.
+        val erw = imFenster.sumOf { it.o.erwartungskonto!!.buchung?.split?.dErwU ?: 0.0 }
+        assertTrue(erw > 0.0) { "kein Erwartungsanteil" }
+        assertTrue(erw <= konto.a0U + 1e-9)
+        assertTrue(imFenster.all { it.geliefertU <= FuseDoubleKey.MaxSmbU.defaultValue + 1e-9 }) { "Schritt ueber maxSMB" }
     }
 
     private companion object {

@@ -2323,6 +2323,9 @@ object FuseStateJson {
             p.expectationGuardException.toString(),
             p.expectationStabilityMin.toString(),
             p.expectationHorizonMin.toString(),
+            // Nur der Pruefstand setzt ihn (Arm EK-S); er steht im Hash, weil
+            // er die Lieferung aendert.
+            if (p.expectationBenchNoDirectDose) "benchNoDirectDose" else "-",
         ) + kontoZahlen.map { Sha.lossless(it) } + listOf(
             app.aaps.fuse.core.controller.ExpectationAccount.Curve.parse(p.expectationCurveText)
                 ?.values()?.joinToString(",") { Sha.lossless(it) } ?: "curve:none",

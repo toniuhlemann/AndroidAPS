@@ -148,6 +148,13 @@ class FuseCycleRunner(
      */
     private val markerPressObserved: () -> Long,
     /**
+     * PRUEFARM DER VORREGISTRIERUNG E-034 - eine Uebersteuerung fuer den
+     * Pruefstand, KEINE Einstellung (Pruefplan Abschnitt 4: "Pruefarme als
+     * Uebersteuerung im Runner-Konstruktor, nicht als Schluessel"). Im
+     * Produkt immer `null`.
+     */
+    private val pruefarm: Pruefarm? = null,
+    /**
      * NUR FUER DEN PHASE-2-FENSTER-REPLAY (Toni/Codex 23.08.): ersetzt das
      * Theil-Sen-Fenster der Antriebs-Schaetzung. Am Geraet ist der Wert
      * konstruktionsbedingt null - er ist KEIN Preference und die
@@ -3845,7 +3852,11 @@ class FuseCycleRunner(
         // eigene Messgroesse unveraendert (er misst NACH PrimeRelease.lift
         // und deckt Phase-A-Maskierungen nicht).
         val underlyingNormalBlock = vetted.block
+        // E-034, Arm EK-S: im Mahlzeitkontext des Kontos die ganze
+        // Direktdosis-Familie aus (Sofortanteil, Prime, Aufschub, Ruhe).
+        val ekOhneDirektdosis = ekZyklus != null && cfg.expectationBenchNoDirectDose
         val liftedUpfront = when {
+            ekOhneDirektdosis -> vetted
             upfrontOhneNetz || ledgerView.hold -> vetted
             // Sicherheitsriegel aktiv: der Batch bleibt VOLLSTAENDIG offen -
             // keine Miniabgaben aus diesem Bestand (Vertrag 5).
@@ -3888,7 +3899,7 @@ class FuseCycleRunner(
         val upfrontRequestedU =
             if (liftedUpfront.bindingLimit == "mealUpfront") liftedUpfront.smbU else 0.0
 
-        val liftedPrime = PrimeRelease.lift(
+        val liftedPrime = if (ekOhneDirektdosis) liftedUpfront else PrimeRelease.lift(
             liftedUpfront, primePlan, state,
             markerAuthorized = manualMarkerAuthorized,
             tailHeadroomU = tail?.takeIf { it.usable }?.headroomU,
@@ -4154,6 +4165,25 @@ class FuseCycleRunner(
                 }
             }
         }
+        // E-034: der Boden des Erwartungsanteils besteht die Endpruefung OHNE
+        // das Guard-Urteil (das ist die Ausnahme), aber MIT technischer
+        // Integritaet und hartem Schwanz: wiederhergestellt wird hoechstens
+        // der groesste Pumpenschritt, der beides traegt. Andere Quellen
+        // bleiben unveraendert.
+        fun ekEndpruefung(u: Double): String? {
+            if (kernelFinal == null) return CandidateSearch.Reject.MODEL_HORIZON_TOO_SHORT.name
+            CandidateSearch.verifyTechnicalIntegrity(
+                prediction, kernelFinal, built.input.isfSlots, candidateBand, u, restraint = restraint,
+            )?.let { return it.name }
+            tailWith(u)?.takeIf { it.usable && it.headroomU < -TAIL_VETO_EPS_U }?.let { return TAIL_VETO }
+            return null
+        }
+        val bodenGrant = lifted.grant?.let { g ->
+            if (g.source != app.aaps.fuse.core.controller.AuthorizedLift.Source.EXPECTATION || ekEndpruefung(g.amountU) == null) g
+            else app.aaps.fuse.core.controller.AuthorizedLift.AuthorizedGrant.of(
+                groessteBestehendeMenge(g.amountU, bolusStep) { ekEndpruefung(it) == null }, g.source,
+            )
+        }
         // DER BODEN DER MANUELLEN AUTORISIERUNG (Tonis Vertrag 11.08.).
         //
         // Modellbasierte Vetos duerfen den markerfinanzierten Anteil senken,
@@ -4191,25 +4221,6 @@ class FuseCycleRunner(
         //
         // Der predictorfreie Markerpfad ist etwas anderes und bleibt: dort
         // fehlt die BAHN aus zwei Reichweiten-Gruenden, nicht das Modell.
-        // E-034: der Boden des Erwartungsanteils besteht die Endpruefung OHNE
-        // das Guard-Urteil (das ist die Ausnahme), aber MIT technischer
-        // Integritaet und hartem Schwanz: wiederhergestellt wird hoechstens
-        // der groesste Pumpenschritt, der beides traegt. Andere Quellen
-        // bleiben unveraendert.
-        fun ekEndpruefung(u: Double): String? {
-            if (kernelFinal == null) return CandidateSearch.Reject.MODEL_HORIZON_TOO_SHORT.name
-            CandidateSearch.verifyTechnicalIntegrity(
-                prediction, kernelFinal, built.input.isfSlots, candidateBand, u, restraint = restraint,
-            )?.let { return it.name }
-            tailWith(u)?.takeIf { it.usable && it.headroomU < -TAIL_VETO_EPS_U }?.let { return TAIL_VETO }
-            return null
-        }
-        val bodenGrant = lifted.grant?.let { g ->
-            if (g.source != app.aaps.fuse.core.controller.AuthorizedLift.Source.EXPECTATION || ekEndpruefung(g.amountU) == null) g
-            else app.aaps.fuse.core.controller.AuthorizedLift.AuthorizedGrant.of(
-                groessteBestehendeMenge(g.amountU, bolusStep) { ekEndpruefung(it) == null }, g.source,
-            )
-        }
         val autorisiert = MarkerFloor.apply(
             verified = verifiedLift,
             grant = bodenGrant,
@@ -4442,6 +4453,7 @@ class FuseCycleRunner(
         //     den Tag, an dem der Kandidat anders gerechnet wird - genau
         //     dafuer steht er als eigene Stufe nach dem Merge.
         val ruheKandidatRohU = when {
+            ekOhneDirektdosis -> 0.0
             ruheRuhig == null -> 0.0
             ruheRuhig.treatment != app.aaps.fuse.core.controller.UpfrontRecovery.CalmTreatment.DEMAND_LIMITED -> 0.0
             // AUSSCHLIESSLICH der historische Latch. Aktuelles Risiko,
@@ -4733,7 +4745,21 @@ class FuseCycleRunner(
             val reineBasisU = if (vetted.smbU > 0.0 && !vetted.bindingLimit.contains("markerAuth"))
                 kotlin.math.min(vetted.smbU, nachRiegel.smbU) else 0.0
             val markerFinanziertU = kotlin.math.max(0.0, nachRiegel.smbU - reineBasisU)
-            if (markerFinanziertU <= 0.0) nachRiegel else {
+            if (markerFinanziertU <= 0.0) nachRiegel
+            // E-034: der Erwartungsanteil ist keine Huelle. Unter gemessenem
+            // Abwaertsrisiko faellt er weg, statt in den Aufschub zu wandern
+            // und spaeter als Direktdosis freigegeben zu werden.
+            else if (ekZyklus != null && nachRiegel.grant?.source == app.aaps.fuse.core.controller.AuthorizedLift.Source.EXPECTATION) {
+                if (reineBasisU > 0.0) nachRiegel.copy(
+                    smbU = reineBasisU,
+                    bindingLimit = nachRiegel.bindingLimit + "|expectationDescentRisk",
+                ) else nachRiegel.copy(
+                    smbU = 0.0,
+                    block = FuseController.Block.MEASURED_DESCENT_RISK,
+                    bindingLimit = "expectationDescentRisk",
+                    unsafeSituation = true,
+                )
+            } else {
                 episodes.deferredPrime = DeferredPrime.withhold(
                     episodes.deferredPrime, markerFinanziertU, deferredHullRestU,
                 )
@@ -4771,7 +4797,7 @@ class FuseCycleRunner(
             )
             deferredDenial = frei.denial?.name
             when {
-                frei.stepU <= 0.0 -> nachRiegel
+                frei.stepU <= 0.0 || ekOhneDirektdosis -> nachRiegel
                 finalVeto(nachRiegel.smbU + frei.stepU) != null -> {
                     deferredDenial = "VERIFY_FAILED"
                     nachRiegel
@@ -6611,6 +6637,67 @@ class FuseCycleRunner(
         else -> "PLANNED"
     }
 
+    /**
+     * E-034: EIN ARM DES PRUEFPLANS (Abschnitt 5). Er uebersteuert nur, was
+     * den Arm ausmacht; Kurve, Stabilitaet, Ruecknahme und H kommen aus der
+     * Konfiguration des Pruefstands. `null` heisst: wie konfiguriert.
+     */
+    data class Pruefarm(
+        val name: String,
+        val kontoAn: Boolean,
+        val phi0Stabil: Double? = null,
+        val phi0Tief: Double? = null,
+        val guardAusnahme: Boolean? = null,
+        val ohneDirektdosis: Boolean = false,
+    ) {
+        fun anwenden(c: Config): Config =
+            if (!kontoAn) c.copy(
+                expectationAccountEnabled = false,
+                expectationGuardException = FuseBooleanKey.ExpectationGuardExceptionEnabled.defaultValue,
+                expectationPhi0Stable = FuseDoubleKey.ExpectationPhi0Stable.defaultValue,
+                expectationPhi0AfterLow = FuseDoubleKey.ExpectationPhi0AfterLow.defaultValue,
+                expectationStabilityBgMgdl = FuseDoubleKey.ExpectationStabilityBgMgdl.defaultValue,
+                expectationStabilityMin = FuseIntKey.ExpectationStabilityMin.defaultValue,
+                expectationReleaseThresholdU = FuseDoubleKey.ExpectationReleaseThresholdU.defaultValue,
+                expectationHorizonMin = FuseIntKey.ExpectationHorizonMin.defaultValue,
+                expectationCurveText = FuseStringKey.ExpectationCurve.defaultValue,
+                expectationBenchNoDirectDose = false,
+            ) else c.copy(
+                expectationAccountEnabled = true,
+                expectationPhi0Stable = phi0Stabil ?: c.expectationPhi0Stable,
+                expectationPhi0AfterLow = phi0Tief ?: c.expectationPhi0AfterLow,
+                expectationGuardException = guardAusnahme ?: c.expectationGuardException,
+                expectationBenchNoDirectDose = ohneDirektdosis,
+            )
+
+        companion object {
+            /** Kandidatenzweig mit Schalter aus. */
+            val REF = Pruefarm("REF", kontoAn = false)
+
+            /** Hauptarm: phi_0 stabil 0,5, nach Tief 0. */
+            val EK = Pruefarm("EK", true, 0.5, 0.0, true)
+
+            /** Ohne Guard-Ausnahme. */
+            val EK_OA = Pruefarm("EK-oA", true, 0.5, 0.0, false)
+
+            /** phi_0 = 0: nur Anrechnung und Ersetzung. */
+            val EK_PHI0 = Pruefarm("EK-phi0", true, 0.0, 0.0, true)
+
+            /** Ganze Direktdosis-Familie aus, phi_0 = 1,0. */
+            val EK_S = Pruefarm("EK-S", true, 1.0, 0.0, true, ohneDirektdosis = true)
+
+            /** Sensitivitaeten des Plans (offengelegt, verbessern kein Urteil). */
+            val EK_STABIL_025 = Pruefarm("EK-stabil0.25", true, 0.25, 0.0, true)
+            val EK_STABIL_100 = Pruefarm("EK-stabil1.0", true, 1.0, 0.0, true)
+            val EK_TIEF_025 = Pruefarm("EK-tief0.25", true, 0.5, 0.25, true)
+            val EK_S_050 = Pruefarm("EK-S-0.5", true, 0.5, 0.0, true, ohneDirektdosis = true)
+
+            val ALLE: List<Pruefarm> = listOf(REF, EK, EK_OA, EK_PHI0, EK_S, EK_STABIL_025, EK_STABIL_100, EK_TIEF_025, EK_S_050)
+
+            fun vonName(name: String): Pruefarm? = ALLE.firstOrNull { it.name == name }
+        }
+    }
+
     /** E-034: der Konto-Zustand eines Zyklus im Mahlzeitkontext. */
     class ErwartungskontoZyklus(
         val state: ExpectationAccount.State,
@@ -8297,6 +8384,9 @@ class FuseCycleRunner(
         val expectationHorizonMin: Int = FuseIntKey.ExpectationHorizonMin.defaultValue,
         /** Die Kurve als Einstellungstext, unveraendert (Export: konfiguriert). */
         val expectationCurveText: String = FuseStringKey.ExpectationCurve.defaultValue,
+        /** NUR Pruefstand (Arm EK-S): im Mahlzeitkontext des Kontos ist die
+         *  ganze Direktdosis-Familie aus. Nie aus einer Einstellung. */
+        val expectationBenchNoDirectDose: Boolean = false,
     ) {
 
         /**
@@ -8450,7 +8540,7 @@ class FuseCycleRunner(
         primeWindowMin = preferences.get(FuseIntKey.PrimeWindowMin).takeIf { it > 0 }
             ?: PrimeRelease.WINDOW_MIN,
         endZeroWhenReasonGone = preferences.get(FuseBooleanKey.TbrEndZeroWhenReasonGone),
-    ).let { mitErwartungskonto(it) }.also { validate(it) }
+    ).let { mitErwartungskonto(it) }.let { pruefarm?.anwenden(it) ?: it }.also { validate(it) }
 
     /**
      * DIE KONTO-SCHLUESSEL NUR BEI EINGESCHALTETEM KONTO (E-034). Aus bleibt

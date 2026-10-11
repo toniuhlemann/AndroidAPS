@@ -77,6 +77,41 @@ object Fuse20Folgen {
     const val DATEI_POLITIK = "gn_politik.txt"
     const val DATEI_EXPORT = "gn_export.jsonl.gz"
 
+    /**
+     * E-034, Stufe 1: der Arm des Laufs (Umgebungsvariable oder
+     * Systemeigenschaft fuse.gn.arm), Name nach [FuseCycleRunner.Pruefarm].
+     * Fehlt er, laeuft der Pruefstand wie bisher (GN-A).
+     */
+    const val ARM = "FUSE_GN_ARM"
+
+    /** E-034: Pfad der gehashten Erwartungskurve (CSV im privaten Bereich), Pflicht fuer Konto-Arme. */
+    const val KURVE = "FUSE_GN_KURVE"
+
+    /** E-034: erwarteter SHA-256 der Kurvendatei; weicht er ab, laeuft nichts. */
+    const val KURVE_SHA = "FUSE_GN_KURVE_SHA"
+
+    /** E-034: Arm, Kurvenquelle und Kurven-Hash eines Arm-Laufs. */
+    const val DATEI_ARM = "gn_arm.txt"
+
+    /**
+     * Die Erwartungskurve aus der CSV der Vorregistrierung: Spalten
+     * `minuten_ab_marker` und `F_q25_U`, Stuetzwerte 0..120 alle 5 min. Die
+     * Werte bleiben im privaten Bereich; hier entsteht nur der Text fuer
+     * die Einstellung (F(5) bis F(120)).
+     */
+    fun kurvenText(csv: String): String {
+        val zeilen = csv.removePrefix("\uFEFF").lines().map { it.trim() }.filter { it.isNotEmpty() }
+        val kopf = zeilen.first().split(",")
+        val iMin = kopf.indexOf("minuten_ab_marker")
+        val iWert = kopf.indexOf("F_q25_U")
+        require(iMin >= 0 && iWert >= 0) { "Kurvendatei: Spalten fehlen ($kopf)" }
+        val punkte = zeilen.drop(1).map { z -> z.split(",").let { it[iMin].toInt() to it[iWert].toDouble() } }
+        require(punkte.map { it.first } == (0..120 step 5).toList()) { "Kurvendatei: Stuetzstellen nicht 0..120 alle 5 min" }
+        val text = punkte.drop(1).joinToString("; ") { it.second.toString() }
+        requireNotNull(app.aaps.fuse.core.controller.ExpectationAccount.Curve.parse(text)) { "Kurvendatei: keine gueltige Kurve" }
+        return text
+    }
+
     /** Seriennummer der Pruefpumpe, wie im Gestell der Forschung. */
     const val PUMPE_SERIAL = "replay-pumpe"
     const val BASAL_SCHRITT = 0.05
@@ -347,6 +382,9 @@ class Fuse20GleichwertigkeitTest : TestBaseWithProfile() {
     private lateinit var runner: FuseCycleRunner
 
     private var folge: Fuse20Folgen.Folge = Fuse20Folgen.F1
+
+    /** E-034: der Arm dieses Laufs; null = GN-A wie bisher. */
+    private var arm: FuseCycleRunner.Pruefarm? = null
     private var clock = 0L
     private var markerPress = 0L
 
@@ -489,6 +527,7 @@ class Fuse20GleichwertigkeitTest : TestBaseWithProfile() {
         runner = FuseCycleRunner(
             iobCobCalculator, profileFunction, activePlugin, constraintsChecker, commandQueue,
             preferences, persistenceLayer, processedTbrEbData, dateUtil, ledger, "gn-session", { markerPress },
+            pruefarm = arm,
             rejoinPolicy = app.aaps.fuse.core.signal.RejoinPolicy.enabled(),
         )
         val serialHash = LedgerFacts.serialHashOf(Fuse20Folgen.PUMPE_SERIAL, PumpType.GENERIC_AAPS.name)
@@ -572,6 +611,24 @@ class Fuse20GleichwertigkeitTest : TestBaseWithProfile() {
         }
         out.mkdirs()
         val ohneWert = stubKonfiguration(konfig.getJSONObject("werte"))
+        // E-034, Stufe 1: optionaler Arm. Ohne ihn bleibt alles wie bisher.
+        val armName = (System.getenv(Fuse20Folgen.ARM) ?: System.getProperty("fuse.gn.arm"))?.takeIf { it.isNotBlank() }
+        arm = armName?.let { requireNotNull(FuseCycleRunner.Pruefarm.vonName(it)) { "unbekannter Arm $it" } }
+        arm?.let { a ->
+            val zeilenArm = mutableListOf("arm;${a.name}")
+            if (a.kontoAn) {
+                val kurvePfad = (System.getenv(Fuse20Folgen.KURVE) ?: System.getProperty("fuse.gn.kurve"))?.takeIf { it.isNotBlank() }
+                requireNotNull(kurvePfad) { "Konto-Arm ${a.name} braucht ${Fuse20Folgen.KURVE}" }
+                val roh = File(kurvePfad).readBytes()
+                val sha = java.security.MessageDigest.getInstance("SHA-256").digest(roh).joinToString("") { "%02x".format(it) }
+                val soll = (System.getenv(Fuse20Folgen.KURVE_SHA) ?: System.getProperty("fuse.gn.kurve.sha"))?.takeIf { it.isNotBlank() }
+                require(soll == null || soll.equals(sha, ignoreCase = true)) { "Kurvendatei weicht vom Hash ab" }
+                whenever(preferences.get(FuseBooleanKey.ExpectationAccountEnabled)).thenReturn(true)
+                whenever(preferences.get(FuseStringKey.ExpectationCurve)).thenReturn(Fuse20Folgen.kurvenText(String(roh, Charsets.UTF_8)))
+                zeilenArm += "kurveSha;$sha"
+            }
+            File(out, Fuse20Folgen.DATEI_ARM).writeText(zeilenArm.joinToString("") { "$it\n" }, Charsets.UTF_8)
+        }
         val zeilen = ArrayList<List<String>>()
         val uebergaenge = Fuse20Folgen.Uebergaenge()
         val hashes = LinkedHashSet<String>()
@@ -582,7 +639,10 @@ class Fuse20GleichwertigkeitTest : TestBaseWithProfile() {
         Fuse20Folgen.schreiben(out, zeilen, abdeckung, ohneWert)
         File(out, Fuse20Folgen.DATEI_POLITIK).writeText(hashes.joinToString("") { "$it\n" }, Charsets.UTF_8)
         val fehlt = abdeckung.filter { !it.erfuellt }.map { it.name }
-        check(fehlt.isEmpty()) { "[AUFBAU] GN-A: Probe unvollstaendig, es fehlt $fehlt" }
+        // Die Abdeckung ist eine Eigenschaft von REF; ein Konto-Arm darf
+        // Punkte auslassen (etwa den Kanal im Mahlzeitkontext) - geschrieben
+        // wird sie trotzdem.
+        if (arm?.kontoAn != true) check(fehlt.isEmpty()) { "[AUFBAU] GN-A: Probe unvollstaendig, es fehlt $fehlt" }
     }
 
     private companion object {
