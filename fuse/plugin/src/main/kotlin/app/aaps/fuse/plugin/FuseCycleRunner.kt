@@ -1393,6 +1393,9 @@ class FuseCycleRunner(
          *  bleiben konservativ stehen. Default, damit Abbruchpfade und Tests
          *  unveraendert konstruieren. */
         val treatmentView: TreatmentView? = null,
+        /** E-034: der Konto-Zustand dieses Zyklus fuer den Export - `null` bei
+         *  ausgeschaltetem Konto; dann steht im Trail kein Block. */
+        val erwartungskonto: ErwartungskontoExport? = null,
     ) {
         /** BOOKING_DEDUCTION / DECAY_OR_DECLINE, wenn die Ausnahme am Bestand scheitert. */
         val livenessEvidenceLossCause: String? get() = livenessBookingDiagnosis.lossCause
@@ -6147,6 +6150,19 @@ class FuseCycleRunner(
         val huellenStand = envelopeUseOf(episodes, cfg.primeEnvelopeU)
         return Outcome(
             configGeneration = app.aaps.fuse.plugin.export.FuseStateJson.hashOf(cfg).orEmpty(),
+            erwartungskonto = if (!cfg.expectationAccountEnabled) null else ErwartungskontoExport(
+                gilt = ekGilt,
+                kontextAbweichung = ekKontextAbweichungThisCycle,
+                verworfenBeimLaden = episodes.expectationDropped,
+                zyklus = ekZyklus,
+                buchung = ekBuchungThisCycle,
+                bodenU = ekBodenU,
+                angehobenU = (lifted.smbU - liftedVorKonto.smbU).coerceAtLeast(0.0),
+                blockNormalpfad = vetted.block,
+                grundNormalpfad = vetted.candidateReason,
+                grundEnde = decision.candidateReason,
+                stabilSeitTs = ekStabilSeit,
+            ),
             // Fixvertrag 30.08.: das typisierte Zyklus-IOB fuer
             // APSResult.iobData / DeviceStatus openaps.iob.
             iobTotal = iobTotal,
@@ -6604,6 +6620,27 @@ class FuseCycleRunner(
         val armiertInDiesemZyklus: Boolean,
         val stabil: Boolean,
         val pausiert: Boolean,
+    )
+
+    /** E-034: alles, was der Trail-Block des Kontos braucht - ein Zyklus. */
+    class ErwartungskontoExport(
+        /** Gilt das Konto in diesem Zyklus (fruehe Entscheidung)? */
+        val gilt: Boolean,
+        val kontextAbweichung: Boolean,
+        val verworfenBeimLaden: Boolean,
+        val zyklus: ErwartungskontoZyklus?,
+        val buchung: ErwartungskontoBuchung?,
+        /** Boden der Guard-Ausnahme [U]; 0 = keine Ausnahme in diesem Zyklus. */
+        val bodenU: Double,
+        /** Was die Ausnahme ueber den Normalpfad gehoben hat [U]. */
+        val angehobenU: Double,
+        /** Block des Normalpfads nach der Kandidatenpruefung (vor jeder Anhebung). */
+        val blockNormalpfad: FuseController.Block?,
+        /** Typisierter Grund der Kandidatenpruefung im Normalpfad. */
+        val grundNormalpfad: CandidateSearch.Reject?,
+        /** Typisierter Grund der Endentscheidung. */
+        val grundEnde: CandidateSearch.Reject?,
+        val stabilSeitTs: Long?,
     )
 
     /** E-034: was dieser Zyklus im Konto gebucht hat. */
@@ -7408,6 +7445,20 @@ class FuseCycleRunner(
         return Outcome(
             decision = combined.decision,
             tbr = combined.request,
+            // E-034: im praediktorfreien Pfad ohne Ausnahme und ohne Suche.
+            erwartungskonto = if (!cfg.expectationAccountEnabled) null else ErwartungskontoExport(
+                gilt = ekGilt,
+                kontextAbweichung = ekKontextAbweichungThisCycle,
+                verworfenBeimLaden = episodes.expectationDropped,
+                zyklus = ekZyklus,
+                buchung = ekBuchungThisCycle,
+                bodenU = 0.0,
+                angehobenU = 0.0,
+                blockNormalpfad = null,
+                grundNormalpfad = null,
+                grundEnde = combined.decision.candidateReason,
+                stabilSeitTs = ekStabilSeit,
+            ),
             // Fixvertrag 30.08.: derselbe typisierte IOB-Stand wie im
             // Hauptpfad - der Fallback bekommt ihn als Parameter.
             iobTotal = iobTotal,

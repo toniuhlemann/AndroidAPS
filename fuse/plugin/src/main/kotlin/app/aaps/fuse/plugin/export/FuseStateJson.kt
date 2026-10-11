@@ -638,6 +638,8 @@ object FuseStateJson {
                     // Die Transportmenge, mit der der Zyklus danach rechnete.
                     .put("modelledU", fin(s.modelliertU))
             })
+            // E-034: nur bei eingeschaltetem Konto - aus bleibt der Datensatz bitgleich.
+            .apply { outcome.erwartungskonto?.let { put("expectationAccount", erwartungskontoJson(it)) } }
             .put("mealFoundation", outcome.mealFoundation.let { f ->
                 JSONObject()
                     .put("armed", f.armed)
@@ -2150,6 +2152,24 @@ object FuseStateJson {
         .put("rearmUpUkf", fin(p.rearmUpUkf))
         .put("livenessBgMinDayMgdl", fin(p.livenessBgMinDayMgdl))
         .put("livenessBgMinNightMgdl", fin(p.livenessBgMinNightMgdl))
+        // E-034: nur bei eingeschaltetem Konto - konfiguriert wie eingestellt,
+        // dazu, ob die Erwartung damit gilt.
+        .apply {
+            if (p.expectationAccountEnabled) put(
+                "expectationAccount",
+                JSONObject()
+                    .put("guardException", p.expectationGuardException)
+                    .put("phi0Stable", fin(p.expectationPhi0Stable))
+                    .put("phi0AfterLow", fin(p.expectationPhi0AfterLow))
+                    .put("stabilityBgMgdl", fin(p.expectationStabilityBgMgdl))
+                    .put("stabilityMin", p.expectationStabilityMin)
+                    .put("releaseThresholdU", fin(p.expectationReleaseThresholdU))
+                    .put("horizonMin", p.expectationHorizonMin)
+                    .put("curveVersion", app.aaps.fuse.core.controller.ExpectationAccount.Curve.parse(p.expectationCurveText)
+                        ?.let { app.aaps.fuse.core.controller.ExpectationAccount.curveVersion(it.values()) } ?: JSONObject.NULL)
+                    .put("expectationValid", p.expectationParams != null),
+            )
+        }
 
         .put("livenessReArmMin", p.livenessReArmMin)
         // Ohne diese Zeile waere hinterher nicht belegbar, OB der Schalter in
@@ -2289,6 +2309,24 @@ object FuseStateJson {
             p.reboundDeadbandMgdl,
         )
         if (doubles.any { !it.isFinite() }) return null
+        // E-034: die Konto-Schluessel NUR bei eingeschaltetem Konto - aus bleibt
+        // der Hash bitgleich (GN-A). Die Kurve geht als gepruefte Werte ein,
+        // nicht als Text: dieselbe Kurve mit anderem Leerraum ist dieselbe
+        // Politik.
+        val kontoZahlen = if (!p.expectationAccountEnabled) emptyList() else listOf(
+            p.expectationPhi0Stable, p.expectationPhi0AfterLow,
+            p.expectationStabilityBgMgdl, p.expectationReleaseThresholdU,
+        )
+        if (kontoZahlen.any { !it.isFinite() }) return null
+        val kontoTeile = if (!p.expectationAccountEnabled) emptyList() else listOf(
+            "expectationAccount:on",
+            p.expectationGuardException.toString(),
+            p.expectationStabilityMin.toString(),
+            p.expectationHorizonMin.toString(),
+        ) + kontoZahlen.map { Sha.lossless(it) } + listOf(
+            app.aaps.fuse.core.controller.ExpectationAccount.Curve.parse(p.expectationCurveText)
+                ?.values()?.joinToString(",") { Sha.lossless(it) } ?: "curve:none",
+        )
         // v38-ABSCHLUSS (A5-Neutralitaet, Toni 29.08.): die Hash-Eingaenge
         // sind CENTRAL-only die vier Profilwerte (+ die MEAL-Schwelle als
         // eigener Zustand). Der Konstanten-Marker "legacyProfileCaps:
@@ -2435,11 +2473,74 @@ object FuseStateJson {
                 true,
                 p.absorptionCreditWindowMin,
                 p.markerBoostMaxMin,
-            ).map { it.toString() } + modusTeile
+            ).map { it.toString() } + modusTeile + kontoTeile
         return Sha.of(parts.joinToString("|"))
     }
 
     private fun fin(d: Double?): Any = if (d != null && d.isFinite()) d else JSONObject.NULL
+
+    /**
+     * DER TRAIL-BLOCK DES ERWARTUNGSKONTOS (Testkandidat E-034) - die Felder,
+     * die der Pruefplan fuer Mechanismus und Bewertung braucht: Bedarf
+     * (R_mess, phi*Z, R_roh), Budget (A_0, gebucht, Rest, Storno),
+     * Zuordnung (d_mess, d_erw, Direktdosis), Ausnahme, Stabilitaet, Pause,
+     * typisierter Guard-Grund und Kurvenversion.
+     */
+    private fun erwartungskontoJson(x: FuseCycleRunner.ErwartungskontoExport): JSONObject {
+        val o = JSONObject()
+            .put("applies", x.gilt)
+            .put("contextMismatch", x.kontextAbweichung)
+            .put("droppedOnLoad", x.verworfenBeimLaden)
+            .put("stableSinceTs", x.stabilSeitTs ?: JSONObject.NULL)
+            .put("floorU", fin(x.bodenU))
+            .put("liftU", fin(x.angehobenU))
+            .put("blockNormal", x.blockNormalpfad?.name ?: JSONObject.NULL)
+            .put("reasonNormal", x.grundNormalpfad?.name ?: JSONObject.NULL)
+            .put("reasonFinal", x.grundEnde?.name ?: JSONObject.NULL)
+        val z = x.zyklus
+        if (z != null) {
+            val s = z.state
+            val e = z.eval
+            o.put("authId", s.authId)
+                .put("windowEndTs", s.windowEndTs)
+                .put("status", e.status)
+                .put("expectationOn", s.expectationOn)
+                .put("curveVersion", if (s.curveValues.isEmpty()) JSONObject.NULL
+                    else app.aaps.fuse.core.controller.ExpectationAccount.curveVersion(s.curveValues))
+                .put("armedThisCycle", z.armiertInDiesemZyklus)
+                .put("startStable", s.startStable)
+                .put("stable", z.stabil)
+                .put("released", s.released)
+                .put("paused", z.pausiert)
+                .put("frozen", s.frozen)
+                .put("releaseChecked", s.releaseChecked)
+                .put("disturbanceU", fin(s.disturbanceU))
+                .put("disturbanceValid", s.disturbanceValid)
+                .put("guardException", z.guardAusnahme)
+                .put("phi0", fin(s.phi0))
+                .put("a0U", fin(s.a0U))
+                .put("bookedU", fin(s.bookedU))
+                .put("restU", fin(s.restU))
+                .put("directDoseU", fin(s.directDoseU))
+                .put("coveredByMarkerAuthU", fin(s.coveredByMarkerAuthU))
+                .put("cancelledU", fin(s.cancelledU))
+                .put("rMessU", fin(e.rMessU))
+                .put("phiZU", fin(e.phiZU))
+                .put("rRohU", fin(e.rRohU))
+                .put("requestU", fin(e.requestU))
+                .put("restEffU", fin(e.restEffU))
+                .put("deliverableU", fin(app.aaps.fuse.core.controller.ExpectationAccount.deliverableU(e)))
+                .put("expectationShareU", fin(app.aaps.fuse.core.controller.ExpectationAccount.expectationShareU(e)))
+        }
+        val b = x.buchung
+        if (b != null) {
+            o.put("bookedDirectU", fin(b.direktdosisU))
+                .put("dMessU", fin(b.split?.dMessU ?: 0.0))
+                .put("dErwU", fin(b.split?.dErwU ?: 0.0))
+                .put("violationU", fin(b.split?.violationU ?: 0.0))
+        }
+        return o
+    }
 
     /**
      * Die Nullphasen-Bilanz als Objekt; null = keine Phase. Die drei
