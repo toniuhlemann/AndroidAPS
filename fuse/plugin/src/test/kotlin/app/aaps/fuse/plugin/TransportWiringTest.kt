@@ -9519,6 +9519,78 @@ class TransportWiringTest : TestBaseWithProfile() {
     }
 
     /**
+     * TONIS REBOUND-REGEL, ABGABEKETTE (Codex-Befund P2): dieselbe Lage nach
+     * Fristablauf, beide Stellungen. Ohne Regel liefert der Kanal im rohen
+     * Fenster nichts; mit Regel liefert er in der freien Lage WIRKLICH - die
+     * zusaetzliche Abgabe, die der Schalter oeffnet.
+     */
+    @Test
+    fun `Rebound-Regel - mit Regel liefert der Kanal nach Fristablauf wirklich, ohne nicht`(@TempDir dir: File) {
+        fun lauf(regel: Boolean, unter: String): List<FuseCycleRunner.Outcome> {
+            markerAt = 0L
+            markerPress = 0L
+            reboundOverrideLage(File(dir, unter))
+            reboundOverrideMaxMin = 15
+            reboundNieMahlzeit = regel
+            return (0 until 60).map { cycle() }
+        }
+        fun imFensterOhneSonderrecht(o: FuseCycleRunner.Outcome) =
+            o.dosingContextProfile == "MEAL" && (o.state?.reboundRestMin ?: 0) > 0 && !o.evidenceMayOverrideRebound
+        val ohne = lauf(false, "ohne").filter(::imFensterOhneSonderrecht)
+        assertTrue(ohne.isNotEmpty()) { "die Probe erreicht das rohe Fenster ohne Sonderrecht nicht" }
+        assertTrue(ohne.none { it.livenessLiftU > 0.0 }) { "ohne Regel liefert der Kanal im rohen Fenster" }
+        val mit = lauf(true, "mit").filter(::imFensterOhneSonderrecht)
+        assertTrue(mit.any { it.livenessLiftU > 0.0 && it.exposureRequestedSource == "LIVENESS" && it.decision.smbU > 0.0 }) {
+            "mit Regel liefert der Kanal in der freien Lage nicht - die zusaetzliche Abgabe ist nicht nachgewiesen"
+        }
+    }
+
+    /**
+     * TONIS REBOUND-REGEL, SPERRE (Codex-Befund P2): mit Regel, im rohen
+     * Fenster, liefert der Kanal erst - dann faellt der Zucker erneut. Die
+     * eigenen Riegel des Kanals muessen ihn sperren; das Rebound-Fenster tut
+     * es mit Regel nicht mehr.
+     */
+    @Test
+    fun `Rebound-Regel - ein erneuter Fall sperrt den Kanal trotz Regel`(@TempDir dir: File) {
+        reboundOverrideLage(dir)
+        reboundOverrideMaxMin = 15
+        reboundFensterMin = 90
+        reboundNieMahlzeit = true
+        knick2AbMin = 55
+        steigungNachKnick2 = -3.0
+        val zyklen = (0 until 80).map { cycle() }
+        fun minute(o: FuseCycleRunner.Outcome) = ((o.computeTs - start) / 60_000L).toInt()
+        assertTrue(zyklen.any { minute(it) < 55 && it.livenessLiftU > 0.0 }) {
+            "vor dem Fall liefert der Kanal nicht - die Probe zeigt keine Sperre"
+        }
+        val imFall = zyklen.filter { minute(it) >= 60 && (it.state?.reboundRestMin ?: 0) > 0 }
+        assertTrue(imFall.isNotEmpty()) { "der Fall liegt nicht im rohen Fenster" }
+        assertTrue(imFall.none { it.livenessLiftU > 0.0 }) { "der Kanal liefert in den Fall" }
+        assertTrue(imFall.none { it.livenessProfileReason == "REBOUND_ACTIVE" }) { "mit Regel sperrt der Rebound" }
+        val harteRiegel = setOf("FALLING", "DESCENT_RISK", "DESCENT_RISK_MARKER", "MEASURED_LOW", "LATCH_ACTIVE")
+        assertTrue(imFall.any { it.livenessProfileReason in harteRiegel }) {
+            "kein eigener Riegel des Kanals greift: " + imFall.map { it.livenessProfileReason }.distinct()
+        }
+    }
+
+    /**
+     * TONIS REBOUND-REGEL, DRUCKZYKLUS (Codex-Befund B2): ohne Sonderrechte
+     * (markerBoostMaxMin = 0) entwaffnet nichts als die Regel - und die muss
+     * schon im Zyklus des Drucks greifen, in dem der Pin erst entsteht.
+     */
+    @Test
+    fun `Rebound-Regel - greift schon im Druckzyklus ohne Sonderrechte`(@TempDir dir: File) {
+        reboundOverrideLage(dir)
+        whenever(preferences.get(FuseIntKey.MarkerBoostMaxMin)).thenReturn(0)
+        reboundNieMahlzeit = true
+        val druck = (0 until 10).map { cycle() }.first { it.dosingContextProfile == "MEAL" }
+        assertTrue(druck.state?.markerBoost == false) { "ohne Sonderrechte darf kein Boost anliegen" }
+        assertTrue(druck.state?.reboundSuppressedByMarker == true) { "das rohe Fenster liegt im Druckzyklus nicht an oder bremst" }
+        assertTrue(druck.state?.reboundWindow == false) { "im Druckzyklus bremst das Fenster trotz Regel" }
+    }
+
+    /**
      * TONIS REBOUND-REGEL, HEURISTIK: die Rebound-Dauer der Probe reicht ueber
      * das Ende der Sonderrechte hinaus - danach liegt das Fenster wieder an. Ohne Regel
      * bremst es die laufende Mahlzeit (reboundWindow), mit Regel im

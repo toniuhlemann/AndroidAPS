@@ -2249,18 +2249,22 @@ class FuseCycleRunner(
         // tau-Kuerzung wieder und bremsen die laufende Mahlzeit. Mit ihr bleibt
         // die Bremse entwaffnet, solange die Mahlzeit autorisiert ist
         // (MEAL-Kontext). Der Kontext steht erst unten fest (Pin-Pflege); hier
-        // dieselbe Regel als Vorschau ohne Schreibzugriff. Sie weicht nur im
-        // Zyklus eines neuen Drucks ab (der neue Pin entsteht erst unten) -
-        // dort entwaffnet der Boost (ausser bei markerBoostMaxMin = 0: dann
-        // greift die Regel ab dem naechsten Zyklus).
-        val mahlzeitAutorisiertVorschau = cfg.reboundNeverBlocksMeal &&
-            !episodeGate.creditRevoked && markerTs > 0L &&
+        // dieselbe Regel als Vorschau ohne Schreibzugriff - alle vier Zweige
+        // der Pin-Pflege mit denselben Eingaben, und dazwischen schreibt
+        // niemand die Pins. Damit ist die Vorschau in JEDEM Zyklus der echte
+        // Kontext, auch im Zyklus eines neuen Drucks (Codex-Befund B2: zuvor
+        // galt die Regel bei markerBoostMaxMin = 0 erst ab dem Folgezyklus).
+        val mahlzeitAutorisiertVorschau = cfg.reboundNeverBlocksMeal && run {
+            val (pin, frist) = when {
+                episodeGate.creditRevoked || markerTs <= 0L -> 0L to 0L
+                markerPowerLastSeenTs == -1L -> episodes.markerPowerPinnedFor to episodes.markerPowerDeadlineTs
+                markerTs != markerPowerLastSeenTs -> markerTs to markerTs + cfg.livenessMealPowerMin * 60_000L
+                else -> episodes.markerPowerPinnedFor to episodes.markerPowerDeadlineTs
+            }
             app.aaps.fuse.core.controller.DosingContext.decide(
-                nowMs = computeTs,
-                markerTs = markerTs,
-                pinnedFor = episodes.markerPowerPinnedFor,
-                deadlineTs = episodes.markerPowerDeadlineTs,
+                nowMs = computeTs, markerTs = markerTs, pinnedFor = pin, deadlineTs = frist,
             ).mealAuthorized
+        }
         val reboundEntwaffnet = markerBoost || mahlzeitAutorisiertVorschau
         val reboundWindow = reboundRaw && !reboundEntwaffnet
         val reboundSuppressedByMarker = reboundRaw && reboundEntwaffnet

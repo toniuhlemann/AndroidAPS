@@ -1135,11 +1135,15 @@ enum class FuseBooleanKey(
      * AN: solange die Mahlzeit per Marker autorisiert ist (MEAL-Kontext),
      * bremst das Rebound-Fenster weder ueber die Heuristik (Totband,
      * Ratio-Deckel, tau-Kuerzung) noch sperrt es den Liveness-Kanal - auch
-     * nach dem Ende der Marker-Sonderrechte. Die gemessenen Riegel (Tief,
-     * Abwaertsrisiko, Latch, LowThreat), Guard und Schwanz bleiben. Ausserhalb
-     * des MEAL-Kontexts (Korrektur, unangekuendigte Gegenesser) wirkt das
-     * Fenster unveraendert. AUS (Default): wie bisher. Dosierwirksam; im
-     * Politik-Hash nur bei AN.
+     * nach dem Ende der Marker-Sonderrechte. WAS DANN NOCH SCHUETZT, getrennt
+     * nach Pfad (Codex-Befund P2): den Normalpfad Guard und Schwanz; den
+     * Liveness-Kanal NICHT Guard und Schwanz (fuer ihn kein Veto), sondern
+     * seine eigenen Riegel - Signal, Sicht, Modell, Ledger-Hold, gemessenes
+     * Tief, Abwaertsrisiko, spaetes Abwaertsrisiko, Latch, Lage, Fallen - und
+     * die Mengengrenzen (MEAL-Exposition, iobTH, maxIOB, Bedarfsdeckel).
+     * Ausserhalb des MEAL-Kontexts (Korrektur, unangekuendigte Gegenesser)
+     * wirkt das Fenster unveraendert. AUS (Default): wie bisher.
+     * Dosierwirksam; im Politik-Hash nur bei AN.
      */
     ReboundNeverBlocksMeal("fuse_rebound_never_blocks_meal", false),
 
