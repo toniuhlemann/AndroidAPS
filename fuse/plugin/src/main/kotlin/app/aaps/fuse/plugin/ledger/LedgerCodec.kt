@@ -108,6 +108,9 @@ object LedgerCodec {
      *  Korruption zu erkennen, nicht Dosen zu begrenzen. */
     private const val MAX_AMOUNT_U = 50.0
 
+    /** v2: Obergrenze des Zeitraumbuchs (eine Portion je Minute ueber den laengsten Zeitraum, mit Reserve). */
+    private const val MAX_EARLY_PORTIONS = 64
+
     /** Obergrenze eines einzelnen Mahlzeit-Lieferpostens [U]. */
     private const val MAX_MEAL_DELIVERY_U = 25.0
 
@@ -655,7 +658,10 @@ object LedgerCodec {
         )
         .apply { encodeFoundation(e)?.let { put("foundation", it) } }
         // E-034: optional - eine aeltere APK liest es nicht (Rueckweg 1.x).
-        .apply { encodeExpectation(e)?.let { put("expectation", it) } }
+        // v2 (fruehe Versorgung) unter EIGENEM Schluessel: ein Stand ohne v2
+        // sieht dann gar kein Konto, statt ein Gesamtbudget als Huellenbudget
+        // zu lesen - weniger Insulin, nie mehr.
+        .apply { encodeExpectation(e)?.let { put(if (e.expectation?.early != null) "earlySupply" else "expectation", it) } }
 
     /**
      * DIE MAHLZEITEN-AUTORISIERUNG UND IHRE BEZAHLUNG - ein Objekt, nicht
@@ -724,6 +730,21 @@ object LedgerCodec {
             .put("expectationOn", s.expectationOn)
             .put("stabilityBgMgdl", zahl(s.stabilityBgMgdl))
             .put("stabilityMin", s.stabilityMin)
+            .apply {
+                val f = s.early ?: return@apply
+                put("early", JSONObject()
+                    .put("initialShare", zahl(f.initialShare))
+                    .put("maxPortionU", zahl(f.maxPortionU))
+                    .put("maxPerPeriodU", zahl(f.maxPerPeriodU))
+                    .put("periodMin", f.periodMin)
+                    .put("g1", f.switches.initialLiftsGuard)
+                    .put("g2", f.switches.initialLiftsTail)
+                    .put("g3", f.switches.guardWithExpectation)
+                    .put("g4", f.switches.tailWithExpectation)
+                    .put("withdrawn", f.withdrawn))
+                put("initialDone", s.initialDone)
+                put("portions", JSONArray(s.portions.map { JSONArray(listOf(it.ts, zahl(it.amountU))) }))
+            }
     }
 
     /**
@@ -739,7 +760,7 @@ object LedgerCodec {
      * Druck nicht neu gebucht, es fliesst kein Erwartungsanteil - weniger
      * Insulin aus dem Konto, nie mehr.
      */
-    fun decodeExpectation(o: JSONObject): ExpectationAccount.State? = runCatching {
+    fun decodeExpectation(o: JSONObject, early: Boolean = false): ExpectationAccount.State? = runCatching {
         fun zahl(name: String): Double {
             require(o.has(name) && !o.isNull(name)) { "$name fehlt" }
             return o.getDouble(name).also { require(it.isFinite()) { "$name nicht endlich" } }
@@ -758,7 +779,9 @@ object LedgerCodec {
         require(authId > 0L && windowEndTs > authId) { "Fenster $authId..$windowEndTs" }
         val lastObsTs = o.getLong("lastObsTs")
         require(lastObsTs >= authId) { "lastObsTs $lastObsTs" }
-        val phi0 = zahl("phi0").also { require(it in 0.0..1.0) { "phi0 $it" } }
+        // v2: phi0 ist der Skalierer der fruehen Versorgung (bis app.aaps.fuse.core.controller.EarlySupply.MAX_SCALE).
+        val phi0Max = if (early) app.aaps.fuse.core.controller.EarlySupply.MAX_SCALE else 1.0
+        val phi0 = zahl("phi0").also { require(it in 0.0..phi0Max) { "phi0 $it" } }
         val disturbance = zahl("disturbanceU").also { require(kotlin.math.abs(it) <= MAX_AMOUNT_U) { "disturbanceU $it" } }
         val lastBg = messwert("lastBgMgdl")
         val isf = messwert("isfAtMarkerMgdlPerU")
@@ -801,7 +824,42 @@ object LedgerCodec {
             stabilityBgMgdl = stabBg,
             stabilityMin = stabMin,
             cancelledU = menge("cancelledU"),
-        )
+        ).let { basis ->
+            if (!early) return@let basis
+            val f = o.getJSONObject("early")
+            fun anteil(name: String) = f.getDouble(name).also { require(it.isFinite() && it in 0.0..1.0) { "$name $it" } }
+            fun grenze(name: String, max: Double) =
+                f.getDouble(name).also { require(it.isFinite() && it in 0.0..max) { "$name $it" } }
+            val zeitraum = f.getInt("periodMin")
+            require(zeitraum in app.aaps.fuse.core.controller.EarlySupply.MIN_PERIOD_MIN..app.aaps.fuse.core.controller.EarlySupply.MAX_PERIOD_MIN) { "periodMin $zeitraum" }
+            val roh = o.getJSONArray("portions")
+            require(roh.length() <= MAX_EARLY_PORTIONS) { "portions ${roh.length()}" }
+            val portionen = (0 until roh.length()).map { i ->
+                val p = roh.getJSONArray(i)
+                app.aaps.fuse.core.controller.EarlySupply.Portion(
+                    ts = p.getLong(0).also { require(it >= basis.authId) { "portion ts $it" } },
+                    amountU = p.getDouble(1).also { require(it.isFinite() && it in 0.0..MAX_AMOUNT_U) { "portion $it" } },
+                )
+            }
+            require(!basis.guardException) { "v2 ohne Guard-Ausnahme" }
+            basis.copy(
+                early = app.aaps.fuse.core.controller.EarlySupply.Pins(
+                    initialShare = anteil("initialShare"),
+                    maxPortionU = grenze("maxPortionU", app.aaps.fuse.core.controller.EarlySupply.MAX_PORTION_U),
+                    maxPerPeriodU = grenze("maxPerPeriodU", app.aaps.fuse.core.controller.EarlySupply.MAX_PER_PERIOD_U),
+                    periodMin = zeitraum,
+                    switches = app.aaps.fuse.core.controller.EarlySupply.Switches(
+                        initialLiftsGuard = f.getBoolean("g1"),
+                        initialLiftsTail = f.getBoolean("g2"),
+                        guardWithExpectation = f.getBoolean("g3"),
+                        tailWithExpectation = f.getBoolean("g4"),
+                    ),
+                    withdrawn = f.getBoolean("withdrawn"),
+                ),
+                initialDone = schalter("initialDone"),
+                portions = portionen,
+            )
+        }
     }.getOrNull()
 
     fun encodeFoundation(e: EpisodeBudgets): JSONObject? {
@@ -1171,11 +1229,16 @@ object LedgerCodec {
         // E-034: fehlt das Objekt, gibt es kein Konto (Altdatei oder Konto aus).
         // Ist es da und ungueltig, wird NUR das Konto verworfen - s.
         // [decodeExpectation].
-        if (o.has("expectation")) {
-            val konto = o.optJSONObject("expectation")?.let { decodeExpectation(it) }
+        val kontoSchluessel = when {
+            o.has("earlySupply") -> "earlySupply"
+            o.has("expectation") -> "expectation"
+            else -> null
+        }
+        if (kontoSchluessel != null) {
+            val konto = o.optJSONObject(kontoSchluessel)?.let { decodeExpectation(it, early = kontoSchluessel == "earlySupply") }
             e.expectation = konto
             e.expectationDropped = konto == null
-            if (konto == null) e.expectationDroppedAuthId = o.optJSONObject("expectation")?.optLong("authId", 0L) ?: 0L
+            if (konto == null) e.expectationDroppedAuthId = o.optJSONObject(kontoSchluessel)?.optLong("authId", 0L) ?: 0L
         }
         val md = o.getJSONArray("mealDeliveries")
         require(md.length() <= MAX_MEAL_DELIVERIES) { "mealDeliveries size ${md.length()}" }

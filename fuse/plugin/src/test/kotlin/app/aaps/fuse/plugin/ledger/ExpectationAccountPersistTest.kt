@@ -106,6 +106,53 @@ class ExpectationAccountPersistTest {
         assertEquals(t0, zurueck.expectationDroppedAuthId)
     }
 
+    /** E-034 v2: das Konto der fruehen Versorgung - synthetische Einstellung, eine weitere Portion im Buch. */
+    private fun fruehesKonto(): ExpectationAccount.State {
+        val p = ExpectationAccount.Params.of(kurve, 120, 0.5, 0.0, 90.0, 15, 0.3, true)!!
+        val e = app.aaps.fuse.core.controller.EarlySupply.Settings.of(1.5, 0.5, 8.0, 0.5, 1.0, 2.0, 10)!!
+        val wirkung: (Double) -> Double = { t -> app.aaps.fuse.core.controller.EarlySupply.orefActionFraction(t, 45.0, 540.0) }
+        val g = app.aaps.fuse.core.controller.EarlySupply.Switches(true, false, true, false)
+        return ExpectationAccount.armEarly(t0, t0 + 120 * min, p, e, g, true, t0, 110.0, 50.0, wirkung).copy(
+            bookedU = 1.0, initialDone = true,
+            portions = listOf(app.aaps.fuse.core.controller.EarlySupply.Portion(t0 + 5 * min, 0.5)),
+        )
+    }
+
+    @Test
+    fun `das v2-Konto steht unter eigenem Schluessel und ueberlebt den Rundlauf`() {
+        val k = fruehesKonto()
+        val json = LedgerCodec.encodeEpisodes(episoden(k))
+        // Ein Stand ohne v2 liest nur "expectation" - er sieht gar kein Konto, statt das Gesamtbudget als
+        // Huellenbudget zu lesen.
+        assertFalse(json.has("expectation"))
+        assertTrue(json.has("earlySupply"))
+        val zurueck = LedgerCodec.decodeEpisodes(json)
+        assertEquals(k, zurueck.expectation)
+        assertFalse(zurueck.expectationDropped)
+    }
+
+    @Test
+    fun `ein ungueltiges v2-Konto wird verworfen und die Generation bleibt gueltig`() {
+        val faelle = listOf<(JSONObject) -> Unit>(
+            { it.put("phi0", 2.5) },
+            { it.getJSONObject("early").put("initialShare", 1.5) },
+            { it.getJSONObject("early").put("periodMin", 2) },
+            { it.getJSONObject("early").remove("g3") },
+            { it.getJSONObject("early").remove("withdrawn") },
+            { it.remove("portions") },
+            { it.getJSONArray("portions").put(org.json.JSONArray(listOf(t0 - 1, 0.5))) },
+            { it.put("guardException", true) },
+        )
+        for ((i, kaputt) in faelle.withIndex()) {
+            val json = LedgerCodec.encodeEpisodes(episoden(fruehesKonto()))
+            kaputt(json.getJSONObject("earlySupply"))
+            val zurueck = LedgerCodec.decodeEpisodes(json)
+            assertNull(zurueck.expectation, "Fall $i")
+            assertTrue(zurueck.expectationDropped, "Fall $i")
+            assertEquals(t0, zurueck.expectationDroppedAuthId, "Fall $i")
+        }
+    }
+
     @Test
     fun `das Konto geht durch die ganze Datei`() {
         val e = episoden(konto())

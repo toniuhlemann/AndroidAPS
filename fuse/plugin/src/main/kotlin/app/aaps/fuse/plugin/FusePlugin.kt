@@ -1230,9 +1230,49 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
     private fun nurErwartungBisU(huelleU: Double): Double? {
         if (!preferences.get(FuseBooleanKey.ExpectationAccountEnabled)) return null
         val kurve = app.aaps.fuse.core.controller.ExpectationAccount.Curve.parse(wirksameKurve().text) ?: return null
+        // E-034 v2: mit frueher Versorgung bucht "nur Erwartung" das Gesamtbudget.
+        if (preferences.get(FuseBooleanKey.EarlySupplyEnabled)) return fruehesBudgetU(kurve)
         val phi = preferences.get(FuseDoubleKey.ExpectationPhi0Stable)
         if (phi <= 0.0 || huelleU <= 0.0) return null
         return minOf(huelleU, phi * kurve.remaining(0.0, preferences.get(FuseIntKey.ExpectationHorizonMin)))
+    }
+
+    /**
+     * E-034 v2: das Gesamtbudget bei stabilem Start, wie der Regler es am
+     * Marker buchen wuerde - mit DEMSELBEN Einheitskern-Bau (aktives Insulin,
+     * Profil-DIA). `null` = keine fruehe Versorgung (Einstellung ungueltig,
+     * kein Profil oder Modell, Budget 0).
+     */
+    private fun fruehesBudgetU(kurve: app.aaps.fuse.core.controller.ExpectationAccount.Curve): Double? {
+        val einstellung = app.aaps.fuse.core.controller.EarlySupply.Settings.of(
+            scaleStable = preferences.get(FuseDoubleKey.EarlySupplyScaleStable),
+            scaleAfterLow = preferences.get(FuseDoubleKey.EarlySupplyScaleAfterLow),
+            budgetMaxU = preferences.get(FuseDoubleKey.EarlySupplyBudgetMaxU),
+            initialShare = preferences.get(FuseDoubleKey.EarlySupplyInitialShare),
+            maxPortionU = preferences.get(FuseDoubleKey.EarlySupplyMaxPortionU),
+            maxPerPeriodU = preferences.get(FuseDoubleKey.EarlySupplyMaxPerPeriodU),
+            periodMin = preferences.get(FuseIntKey.EarlySupplyPeriodMin),
+        ) ?: return null
+        val jetzt = dateUtil.now()
+        val profil = runCatching { profileFunction.getProfile(jetzt) }.getOrNull() ?: return null
+        val insulin = runCatching { activePlugin.activeInsulin }.getOrNull() ?: return null
+        val kern = runCatching {
+            app.aaps.fuse.core.insulin.UnitInsulinKernelBuilder.build(
+                sampler = AapsUnitInsulinSampler(insulin, profil.dia, jetzt),
+                deliveryTs = jetzt,
+                model = app.aaps.fuse.core.predictor.InsulinModelProvenance(
+                    insulinType = insulin.id.name,
+                    diaHours = profil.dia,
+                    peakMin = insulin.peak,
+                    codeProvenance = "activePlugin.activeInsulin",
+                ),
+                insulinPluginId = insulin.id.name,
+            )
+        }.getOrNull() as? app.aaps.fuse.core.insulin.KernelOutcome.Ok ?: return null
+        return app.aaps.fuse.core.controller.EarlySupply.budgetU(
+            kurve, preferences.get(FuseIntKey.ExpectationHorizonMin), einstellung.scaleStable, einstellung.budgetMaxU,
+            app.aaps.fuse.core.controller.EarlySupply.unitActionOf(kern.kernel),
+        ).takeIf { it > 0.0 }
     }
 
     override fun fuseMarkerRuecknahmeVormerken(now: Long, ereignisId: String?): Long? =
@@ -3064,6 +3104,24 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
                     validatorParams = DefaultEditTextValidator.Parameters(emptyAllowed = true),
                 ),
             )
+        }
+
+        // DIE FRUEHE VERSORGUNG (E-034 v2) als eigener Abschnitt direkt unter
+        // dem Konto, auf dem sie aufbaut. Die vier Aenderungen an Guard und
+        // Schwanz (G1..G4) stehen einzeln da - jede ist ein eigener Entscheid.
+        cat("fuse_early_supply", "Fruehe Versorgung (v2, Test)") {
+            addPreference(AdaptiveSwitchPreference(ctx = context, booleanKey = FuseBooleanKey.EarlySupplyEnabled, summary = R.string.fuse_early_supply_summary, title = R.string.fuse_early_supply_title))
+            addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.EarlySupplyBudgetMaxU, dialogMessage = R.string.fuse_early_supply_budget_max_summary, title = R.string.fuse_early_supply_budget_max_title))
+            addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.EarlySupplyScaleStable, dialogMessage = R.string.fuse_early_supply_scale_stable_summary, title = R.string.fuse_early_supply_scale_stable_title))
+            addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.EarlySupplyScaleAfterLow, dialogMessage = R.string.fuse_early_supply_scale_after_low_summary, title = R.string.fuse_early_supply_scale_after_low_title))
+            addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.EarlySupplyInitialShare, dialogMessage = R.string.fuse_early_supply_initial_share_summary, title = R.string.fuse_early_supply_initial_share_title))
+            addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.EarlySupplyMaxPortionU, dialogMessage = R.string.fuse_early_supply_max_portion_summary, title = R.string.fuse_early_supply_max_portion_title))
+            addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.EarlySupplyMaxPerPeriodU, dialogMessage = R.string.fuse_early_supply_max_per_period_summary, title = R.string.fuse_early_supply_max_per_period_title))
+            addPreference(AdaptiveIntPreference(ctx = context, intKey = FuseIntKey.EarlySupplyPeriodMin, dialogMessage = R.string.fuse_early_supply_period_summary, title = R.string.fuse_early_supply_period_title))
+            addPreference(AdaptiveSwitchPreference(ctx = context, booleanKey = FuseBooleanKey.EarlySupplyInitialLiftsGuard, summary = R.string.fuse_early_supply_g1_summary, title = R.string.fuse_early_supply_g1_title))
+            addPreference(AdaptiveSwitchPreference(ctx = context, booleanKey = FuseBooleanKey.EarlySupplyInitialLiftsTail, summary = R.string.fuse_early_supply_g2_summary, title = R.string.fuse_early_supply_g2_title))
+            addPreference(AdaptiveSwitchPreference(ctx = context, booleanKey = FuseBooleanKey.EarlySupplyGuardWithExpectation, summary = R.string.fuse_early_supply_g3_summary, title = R.string.fuse_early_supply_g3_title))
+            addPreference(AdaptiveSwitchPreference(ctx = context, booleanKey = FuseBooleanKey.EarlySupplyTailWithExpectation, summary = R.string.fuse_early_supply_g4_summary, title = R.string.fuse_early_supply_g4_title))
         }
 
         cat("fuse_dosing", "Dosierung und Grenzen") {

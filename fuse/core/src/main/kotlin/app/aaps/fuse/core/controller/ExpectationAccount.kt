@@ -235,6 +235,15 @@ object ExpectationAccount {
         val stabilityMin: Int = MAX_STABILITY_MIN,
         /** Storniert: gebucht, aber nachweislich nie gesendet [U], nur steigend. */
         val cancelledU: Double = 0.0,
+        /**
+         * E-034 v2: die fruehe Versorgung dieser Episode, am Marker festgehalten; `null` = Konto v1. Dann ist [a0U]
+         * das Gesamtbudget B, [phi0] der Skalierer (0..[EarlySupply.MAX_SCALE]) und die Guard-Ausnahme von v1 aus.
+         */
+        val early: EarlySupply.Pins? = null,
+        /** v2: die Anfangsportion ist vorbei - geliefert oder ihr Fenster abgelaufen. Nie zurueck. */
+        val initialDone: Boolean = false,
+        /** v2: die weiteren Portionen der letzten [EarlySupply.MAX_PERIOD_MIN] Minuten (Zeitraumbuch). */
+        val portions: List<EarlySupply.Portion> = emptyList(),
     ) {
         val restU: Double get() = max(0.0, a0U - bookedU)
     }
@@ -297,6 +306,56 @@ object ExpectationAccount {
         )
     }
 
+    /**
+     * E-034 v2: bucht am Marker das GESAMTBUDGET der fruehen Versorgung statt der Huelle -
+     * `B = min(B_max, scale * max_tau F(tau) / C(tau))` ([EarlySupply.budgetU]). Kurve, Vorschau, Stabilitaet und
+     * Ruecknahme kommen aus [params] wie in v1; der Skalierer nach Startlage aus [settings]. [unitAction] ist die
+     * zeitliche Wirkung einer jetzt gegebenen Einheit aus dem aktiven Insulinmodell. Die Guard-Ausnahme von v1 gilt
+     * fuer diese Episode nicht - an ihre Stelle treten G1..G4 aus [switches].
+     */
+    fun armEarly(
+        authId: Long,
+        windowEndTs: Long,
+        params: Params,
+        settings: EarlySupply.Settings,
+        switches: EarlySupply.Switches,
+        startStable: Boolean,
+        nowTs: Long,
+        bgMgdl: Double,
+        isfMgdlPerU: Double,
+        unitAction: (Double) -> Double,
+    ): State {
+        val scale = if (startStable) settings.scaleStable else settings.scaleAfterLow
+        val b = EarlySupply.budgetU(params.curve, params.horizonMin, scale, settings.budgetMaxU, unitAction)
+        return arm(authId, windowEndTs, 0.0, params, startStable, nowTs, bgMgdl, isfMgdlPerU).copy(
+            phi0 = scale,
+            a0U = if (b.isFinite()) max(0.0, b) else 0.0,
+            guardException = false,
+            early = EarlySupply.Pins(
+                initialShare = settings.initialShare,
+                maxPortionU = settings.maxPortionU,
+                maxPerPeriodU = settings.maxPerPeriodU,
+                periodMin = settings.periodMin,
+                switches = switches,
+            ),
+        )
+    }
+
+    /**
+     * E-034 v2: was die fruehe Versorgung je Zyklus aus dem Geraet braucht. Fehlt es (kein Insulinmodell), fliesst in
+     * diesem Zyklus kein Erwartungsanteil.
+     */
+    class EarlyInputs(
+        /** Gesamtes IOB samt Transport [U]. */
+        val iobU: Double,
+        /** Davon NICHT fuer den aktuellen Zielabstand gebunden [U] ([EarlySupply.freeIobU]). */
+        val freeIobU: Double,
+        /** Erwartete Wirkung des vorhandenen und ausstehenden Insulins von jetzt bis jetzt + tau [U]. */
+        val existingActionU: (Double) -> Double,
+        /** Wirkungsanteil einer jetzt gegebenen Einheit bis tau [min] (aktives Insulinmodell). */
+        val unitAction: (Double) -> Double,
+    )
+
     /** Was der Zyklus misst und was er darf. */
     data class Inputs(
         val nowTs: Long,
@@ -314,6 +373,20 @@ object ExpectationAccount {
         val stableNow: Boolean,
         /** Gemessenes Tief in diesem Zyklus (K5): nimmt die Freigabe zurueck. */
         val measuredLow: Boolean = false,
+        /** v2: die Geraetegroessen der fruehen Versorgung; `null` = in diesem Zyklus keine. */
+        val early: EarlyInputs? = null,
+    )
+
+    /** v2: was die fruehe Versorgung in diesem Zyklus rechnet (Export und Lieferweg). */
+    data class EarlyEvaluation(
+        /** X(a): aktuelle Anforderung der fruehen Versorgung [U] - nur die erwartete Mahlzeit, freies IOB angerechnet. */
+        val demandU: Double,
+        /** phi_eff: der Skalierer nach Anpassung an die Beobachtung. */
+        val scaleEff: Double,
+        /** true = Anfangsportion (G1/G2), false = weitere Portion (G3/G4). */
+        val initial: Boolean,
+        /** Rest der Menge je Zeitraum [U]. */
+        val periodLeftU: Double,
     )
 
     data class Evaluation(
@@ -332,6 +405,10 @@ object ExpectationAccount {
         val status: String,
         /** In DIESEM Zyklus hat ein gemessenes Tief die Freigabe zurueckgenommen. */
         val releaseRevoked: Boolean = false,
+        /** Zeitpunkt des Zyklus (fuer das Zeitraumbuch der fruehen Versorgung). */
+        val atTs: Long = 0L,
+        /** v2: die Rechnung der fruehen Versorgung; `null` = Konto v1. */
+        val early: EarlyEvaluation? = null,
     )
 
     /**
@@ -378,6 +455,8 @@ object ExpectationAccount {
             s = s.copy(frozen = false)
         }
 
+        s.early?.let { return stepEarly(s, inputs, it, expired, zurueckgenommen) }
+
         // 4 Bedarf.
         val curve = Curve.of(s.curveValues)
         val z = if (expired || curve == null) 0.0 else curve.remaining(inputs.ageMin, s.horizonMin)
@@ -403,8 +482,71 @@ object ExpectationAccount {
         )
     }
 
+    /**
+     * E-034 v2, Schritt 4 und 5: Bedarf und lieferbarer Erwartungsanteil der fruehen Versorgung.
+     *
+     *  - Gemessener Teil wie v1: `R_mess = (BG - Ziel)/ISF - IOB`, IOB voll angerechnet.
+     *  - Erwartungsteil X(a) ([EarlySupply.demandU]): nur die erwartete Mahlzeit, angerechnet nur das freie IOB.
+     *    Damit zaehlt kein IOB zweimal: solange R_mess > 0 ist, ist das ganze IOB fuer den Zielabstand gebunden.
+     *  - Anfrage = max(0, R_mess) + X; [Evaluation.rRohU] traegt in v2 genau diese Summe.
+     *  - Lieferbarer Erwartungsanteil: Anfangsportion `alpha * B` bis [EarlySupply.INITIAL_WINDOW_MIN], danach je Zyklus
+     *    `min(Budgetrest, maximale Portion, Rest der Menge je Zeitraum)`. Kein Ansparen: der Zeitraumrest kommt aus dem
+     *    tatsaechlich Gelieferten, nicht aus verpassten Zyklen. Pause, fehlende Freigabe, Ruecknahme oder Fensterende
+     *    = 0 (die Anforderung X bleibt sichtbar, verpflichtet aber nie).
+     */
+    private fun stepEarly(
+        state: State,
+        inputs: Inputs,
+        pins: EarlySupply.Pins,
+        expired: Boolean,
+        revoked: Boolean,
+    ): Pair<State, Evaluation> {
+        var s = state
+        if (!s.initialDone && inputs.ageMin >= EarlySupply.INITIAL_WINDOW_MIN) s = s.copy(initialDone = true)
+        val buch = s.portions.filter { it.ts <= inputs.nowTs && inputs.nowTs - it.ts < EarlySupply.MAX_PERIOD_MIN * 60_000L }
+        if (buch.size != s.portions.size) s = s.copy(portions = buch)
+        val imZeitraumU = buch.filter { inputs.nowTs - it.ts < pins.periodMin * 60_000L }.sumOf { it.amountU }
+        val zeitraumRestU = max(0.0, pins.maxPerPeriodU - imZeitraumU)
+
+        val curve = Curve.of(s.curveValues)
+        val scaleEff = if (curve == null) 0.0
+        else EarlySupply.effectiveScale(s.phi0, inputs.ageMin, s.disturbanceU, s.disturbanceValid, curve)
+        val e = inputs.early
+        val x = if (expired || curve == null || e == null) 0.0 else EarlySupply.demandU(
+            curve, s.horizonMin, inputs.ageMin, scaleEff, e.iobU, e.freeIobU, e.existingActionU, e.unitAction,
+        )
+        val rMess = (inputs.bgMgdl - inputs.targetMgdl) / inputs.isfMgdlPerU - inputs.iobTotalU
+        val mess = if (rMess.isFinite()) max(0.0, rMess) else 0.0
+        val anfang = !s.initialDone
+        val restEff = when {
+            expired || inputs.paused || !s.released || s.frozen || e == null || pins.withdrawn -> 0.0
+            anfang -> min(s.restU, pins.initialShare * s.a0U)
+            else -> min(min(s.restU, pins.maxPortionU), zeitraumRestU)
+        }
+        val status = when {
+            expired -> "EXPIRED"
+            pins.withdrawn -> "WITHDRAWN"
+            !s.released -> "WAITING_FOR_STABILITY"
+            inputs.paused -> "PAUSED"
+            s.frozen -> "FROZEN"
+            s.restU <= EPS_U -> "BUDGET_USED"
+            e == null -> "NO_MODEL"
+            anfang -> "INITIAL"
+            else -> "ACTIVE"
+        }
+        return s to Evaluation(
+            rMessU = rMess, phiZU = x, rRohU = mess + x, requestU = mess + x, restEffU = restEff,
+            expired = expired, paused = inputs.paused, released = s.released, frozen = s.frozen, status = status,
+            releaseRevoked = revoked, atTs = inputs.nowTs,
+            early = EarlyEvaluation(demandU = x, scaleEff = scaleEff, initial = anfang, periodLeftU = zeitraumRestU),
+        )
+    }
+
     /** Der gemessene Anteil max(0, R_mess); nicht berechenbar zaehlt als 0 (nie NaN in einer Menge). */
     private fun messU(e: Evaluation): Double = if (e.rMessU.isFinite()) max(0.0, e.rMessU) else 0.0
+
+    /** Der gemessene Anteil max(0, R_mess) - oeffentlich fuer den Boden der fruehen Versorgung (v2). */
+    fun measuredShareU(e: Evaluation): Double = messU(e)
 
     /** Hoechstmenge dieses Zyklus aus dem Konto: d_mess-Anteil plus d_erw bis Budgetrest. */
     fun deliverableU(e: Evaluation): Double = min(e.requestU, messU(e) + e.restEffU)
@@ -431,7 +573,7 @@ object ExpectationAccount {
      * lieferbaren Menge, und alles darueber ist d_erw.
      */
     fun guardExceptionFloorU(e: Evaluation, normalPassedU: Double): Double {
-        if (!normalPassedU.isFinite() || expectationShareU(e) <= EPS_U) return 0.0
+        if (e.early != null || !normalPassedU.isFinite() || expectationShareU(e) <= EPS_U) return 0.0
         return if (normalPassedU + EPS_U >= messU(e)) deliverableU(e) else 0.0
     }
 
@@ -440,12 +582,19 @@ object ExpectationAccount {
      * Pruefungen (nach der Expositionsgrenze). d_mess = min(d, max(0, R_mess)),
      * d_erw = d - d_mess (Autorisierungsentwurf Abschnitt 2).
      */
-    fun book(state: State, e: Evaluation, finalU: Double): Pair<State, Split> {
+    fun book(state: State, e: Evaluation, finalU: Double, measuredCapU: Double = Double.POSITIVE_INFINITY): Pair<State, Split> {
         val fin = if (finalU.isFinite()) max(0.0, finalU) else 0.0
-        val dMess = min(fin, messU(e))
+        // v2: hat eine Anhebung den Erwartungsanteil auf das gelegt, was der Normalpfad MIT Guard freigab, zaehlt als
+        // d_mess nur dieser freigegebene Teil - sonst verbuchte ein vom Guard gekuerzter gemessener Anteil
+        // Erwartungsinsulin als gemessen, und das Budget waere keine Grenze mehr.
+        val kappe = if (measuredCapU.isNaN() || measuredCapU < 0.0) 0.0 else measuredCapU
+        val dMess = min(fin, min(messU(e), kappe))
         val dErw = fin - dMess
         val violation = max(0.0, dErw - e.restEffU)
-        val s = if (dErw > EPS_U) state.copy(bookedU = state.bookedU + dErw) else state
+        var s = if (dErw > EPS_U) state.copy(bookedU = state.bookedU + dErw) else state
+        if (s.early != null && dErw > EPS_U) s =
+            if (e.early?.initial == true) s.copy(initialDone = true)
+            else s.copy(portions = s.portions + EarlySupply.Portion(e.atTs, dErw))
         return s to Split(dMess, dErw, if (violation > EPS_U) violation else 0.0)
     }
 

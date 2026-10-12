@@ -761,6 +761,243 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
         assertTrue(s.none { it.o.decision.grant?.source == prime }) { "EK-S liefert Prime im predictorfreien Pfad" }
     }
 
+    // ---- E-034 v2: FRUEHE VERSORGUNG - N1 (Mechanik), je mit Gegenprobe --------------
+
+    /**
+     * Synthetische v2-Einstellung: Konto an, "Nur Erwartung", Kurve wie oben, dazu die fruehe Versorgung. Die vier
+     * Schalter G1..G4 einzeln, damit jede Probe ihre Gegenprobe ohne genau diesen Schalter hat.
+     */
+    private fun fruehKonfiguration(
+        g1: Boolean = false, g2: Boolean = false, g3: Boolean = false, g4: Boolean = false,
+        anteil: Double = 0.5, portionU: Double = 1.0, zeitraumU: Double = 2.0, budgetU: Double = FRUEH_BUDGET_U,
+        skalaTief: Double = 1.0,
+    ) {
+        konfiguration(kontoAn = true, phi0Stabil = 1.0, phi0Tief = 1.0)
+        whenever(preferences.get(FuseBooleanKey.EarlySupplyEnabled)).thenReturn(true)
+        whenever(preferences.get(FuseDoubleKey.EarlySupplyScaleStable)).thenReturn(1.0)
+        whenever(preferences.get(FuseDoubleKey.EarlySupplyScaleAfterLow)).thenReturn(skalaTief)
+        whenever(preferences.get(FuseDoubleKey.EarlySupplyBudgetMaxU)).thenReturn(budgetU)
+        whenever(preferences.get(FuseDoubleKey.EarlySupplyInitialShare)).thenReturn(anteil)
+        whenever(preferences.get(FuseDoubleKey.EarlySupplyMaxPortionU)).thenReturn(portionU)
+        whenever(preferences.get(FuseDoubleKey.EarlySupplyMaxPerPeriodU)).thenReturn(zeitraumU)
+        whenever(preferences.get(FuseIntKey.EarlySupplyPeriodMin)).thenReturn(ZEITRAUM_MIN)
+        whenever(preferences.get(FuseBooleanKey.EarlySupplyInitialLiftsGuard)).thenReturn(g1)
+        whenever(preferences.get(FuseBooleanKey.EarlySupplyInitialLiftsTail)).thenReturn(g2)
+        whenever(preferences.get(FuseBooleanKey.EarlySupplyGuardWithExpectation)).thenReturn(g3)
+        whenever(preferences.get(FuseBooleanKey.EarlySupplyTailWithExpectation)).thenReturn(g4)
+    }
+
+    /** Ein v2-Lauf: nur volle Zyklen; "Nur Erwartung" ist waehrend des Laufs gewaehlt. */
+    private fun fruehLauf(
+        f: Fuse20Folgen.Folge, dir: File, vorZyklus: (Int) -> Unit = {}, einstellen: () -> Unit,
+    ): List<Zyklus> {
+        nurErwartung = true
+        try {
+            markerAt = 0L
+            markerPress = 0L
+            einstellen()
+            return lauf(f, dir, vorZyklus = vorZyklus).filter { it.o.abortReason == null }
+        } finally {
+            nurErwartung = false
+        }
+    }
+
+    private fun Zyklus.dErw() = o.erwartungskonto?.buchung?.split?.dErwU ?: 0.0
+    private fun Zyklus.frueh() = o.erwartungskonto?.zyklus?.eval?.early
+
+    /** Die Pflichten, die fuer JEDE Einstellung gelten (N1). */
+    private fun pruefeMechanik(zyklen: List<Zyklus>, anteil: Double, portionU: Double, zeitraumU: Double) {
+        val konto = zyklen.mapNotNull { it.konto }.last()
+        assertNotNull(konto.early) { "kein v2-Konto" }
+        assertFalse(konto.guardException, "v1-Ausnahme in v2")
+        assertTrue(zyklen.none { it.o.decision.grant?.source in direktQuellen }) { "Direktdosis-Quelle in v2" }
+        // Budget nie ueberschritten.
+        val summe = zyklen.sumOf { it.dErw() }
+        assertTrue(summe <= konto.a0U + 1e-9) { "Budget ueberschritten: $summe > ${konto.a0U}" }
+        assertTrue(zyklen.all { (it.o.erwartungskonto?.buchung?.split?.violationU ?: 0.0) == 0.0 }) { "Verstoss gebucht" }
+        // Anfangsportion hoechstens einmal, hoechstens alpha * B, nur im Fenster.
+        val anfang = zyklen.filter { it.frueh()?.initial == true && it.dErw() > 0.0 }
+        assertTrue(anfang.size <= 1) { "mehr als eine Anfangsportion: ${anfang.map { it.minute }}" }
+        anfang.forEach {
+            assertTrue(it.dErw() <= anteil * konto.a0U + 1e-9) { "Anfangsportion ueber dem Anteil" }
+            assertTrue(it.minute < app.aaps.fuse.core.controller.EarlySupply.INITIAL_WINDOW_MIN) { "Anfangsportion spaet" }
+        }
+        // Jede weitere Portion hoechstens p_max; je Zeitraum hoechstens q (gleitend).
+        val weitere = zyklen.filter { it.frueh()?.initial == false && it.dErw() > 0.0 }
+        weitere.forEach { assertTrue(it.dErw() <= portionU + 1e-9) { "Minute ${it.minute}: Portion ${it.dErw()} > $portionU" } }
+        for (z in weitere) {
+            val imZeitraum = weitere.filter { it.minute in (z.minute - ZEITRAUM_MIN + 1)..z.minute }.sumOf { it.dErw() }
+            assertTrue(imZeitraum <= zeitraumU + 1e-9) { "Minute ${z.minute}: $imZeitraum je Zeitraum > $zeitraumU" }
+        }
+        // Erwartungsanteil nur, wenn das Konto ihn erlaubt (nicht pausiert, freigegeben, nicht eingefroren).
+        for (z in zyklen.filter { it.dErw() > 0.0 }) {
+            val k = z.o.erwartungskonto!!.zyklus!!
+            assertFalse(k.pausiert, "Minute ${z.minute}: Portion in Pause ${k.pausenGruende}")
+            assertTrue(k.eval.released && !k.eval.frozen && !k.eval.expired) { "Minute ${z.minute}: Portion ohne Freigabe" }
+        }
+    }
+
+    @Test
+    fun `fruehe Versorgung - Budget aus Kurve und Insulinwirkung, Mechanik haelt fuer jede Probe`(@TempDir dir: File) {
+        val zyklen = fruehLauf(fStabil, dir) { fruehKonfiguration(g1 = true, g2 = true, g3 = true, g4 = true) }
+        val konto = zyklen.first { it.o.erwartungskonto?.zyklus?.armiertInDiesemZyklus == true }
+        assertEquals(0, konto.minute)
+        val s = konto.o.erwartungskonto!!.zyklus!!.state
+        // Insulin wirkt verzoegert: die fruehe Gabe ist groesser als die Kurve am Ende (3,0 U), gedeckelt bei B_max.
+        assertTrue(s.a0U > 3.0) { "Budget ${s.a0U} nicht ueber der Kurve" }
+        assertTrue(s.a0U <= FRUEH_BUDGET_U + 1e-9)
+        pruefeMechanik(zyklen, 0.5, 1.0, 2.0)
+        assertTrue(zyklen.sumOf { it.dErw() } > 0.0) { "kein Erwartungsanteil" }
+        // Export: der v2-Block traegt Budget und Anforderung.
+        assertTrue(zyklen.filter { it.o.erwartungskonto?.gilt == true }.all { it.frueh() != null })
+    }
+
+    @Test
+    fun `G1 und G2 heben die Anfangsportion - Gegenprobe ohne sie`(@TempDir dir: File) {
+        val mit = fruehLauf(fStabil, File(dir, "mit")) { fruehKonfiguration(g1 = true, g2 = true) }
+        pruefeMechanik(mit, 0.5, 1.0, 2.0)
+        val anfangMit = mit.single { it.frueh()?.initial == true && it.dErw() > 0.0 }
+        val x = anfangMit.o.erwartungskonto!!
+        assertEquals(true, x.fruehHebung?.guardLift)
+        assertEquals(true, x.fruehHebung?.tailLift)
+        assertTrue(anfangMit.geliefertU > FuseDoubleKey.MaxSmbU.defaultValue + 1e-9) { "Anfangsportion nur maxSMB" }
+
+        val ohne = fruehLauf(fStabil, File(dir, "ohne")) { fruehKonfiguration(g1 = false, g2 = false) }
+        pruefeMechanik(ohne, 0.5, 1.0, 2.0)
+        val gleicheMinute = ohne.single { it.minute == anfangMit.minute }
+        assertTrue(gleicheMinute.geliefertU < anfangMit.geliefertU - 1e-9) {
+            "ohne G1/G2 dieselbe Anfangsportion (${gleicheMinute.geliefertU}) - Probe zeigt nichts"
+        }
+        assertNotNull(gleicheMinute.o.erwartungskonto!!.fruehEndgrund) { "ohne G1/G2 ohne Prueferurteil" }
+    }
+
+    @Test
+    fun `weitere Portionen - G3 und G4 pruefen mit Erwartung, Gegenprobe ohne sie`(@TempDir dir: File) {
+        val mit = fruehLauf(fStabil, File(dir, "mit")) { fruehKonfiguration(anteil = 0.0, g3 = true, g4 = true) }
+        pruefeMechanik(mit, 0.0, 1.0, 2.0)
+        val weitereMit = mit.filter { it.frueh()?.initial == false && it.dErw() > 0.0 }
+        assertTrue(weitereMit.isNotEmpty()) { "keine weitere Portion mit G3/G4" }
+        assertTrue(weitereMit.all { it.o.erwartungskonto!!.fruehHebung?.guardLift == true })
+
+        val ohne = fruehLauf(fStabil, File(dir, "ohne")) { fruehKonfiguration(anteil = 0.0) }
+        pruefeMechanik(ohne, 0.0, 1.0, 2.0)
+        // Bis zur ersten Abweichung laufen beide Laeufe gleich; dort liefert der Lauf mit Erwartung mehr, und der
+        // Lauf ohne traegt das Urteil, das ihn begrenzt hat.
+        val erste = mit.zip(ohne).first { (a, b) -> kotlin.math.abs(a.geliefertU - b.geliefertU) > 1e-9 }
+        assertTrue(erste.first.geliefertU > erste.second.geliefertU) {
+            "Minute ${erste.first.minute}: mit G3/G4 ${erste.first.geliefertU}, ohne ${erste.second.geliefertU}"
+        }
+        assertNotNull(erste.second.o.erwartungskonto!!.fruehEndgrund) { "ohne G3/G4 ohne Prueferurteil" }
+    }
+
+    @Test
+    fun `harte Sperren - in der Pause keine Portion, nach der Pause kein Nachholstoss`(@TempDir dir: File) {
+        val zyklen = fruehLauf(fStabil, dir, vorZyklus = { m ->
+            whenever(commandQueue.bolusInQueue()).thenReturn(m in 3..17)
+        }) { fruehKonfiguration(anteil = 0.0, g3 = true, g4 = true) }
+        pruefeMechanik(zyklen, 0.0, 1.0, 2.0)
+        val pause = zyklen.filter { it.minute in 3..17 && it.o.erwartungskonto?.zyklus != null }
+        assertTrue(pause.isNotEmpty())
+        for (z in pause) {
+            val k = z.o.erwartungskonto!!.zyklus!!
+            assertTrue("PUMP_BUSY" in k.pausenGruende) { "Minute ${z.minute}: belegte Pumpe ohne Pause" }
+            assertEquals(0.0, k.eval.restEffU, 0.0)
+            assertEquals(0.0, z.dErw(), 0.0, "Minute ${z.minute}: Portion trotz Pause")
+        }
+        // Erste Portion nach der Pause: hoechstens eine Portion, kein Nachholen der verpassten Zyklen.
+        val danach = zyklen.firstOrNull { it.minute > 17 && it.dErw() > 0.0 }
+        assertNotNull(danach) { "nach der Pause keine Portion - Probe zeigt nichts" }
+        assertTrue(danach!!.dErw() <= 1.0 + 1e-9)
+    }
+
+    @Test
+    fun `der Hauptschalter entzieht die fruehe Versorgung fuer den Rest der Mahlzeit`(@TempDir dir: File) {
+        val zyklen = fruehLauf(fStabil, dir, vorZyklus = { m ->
+            whenever(preferences.get(FuseBooleanKey.EarlySupplyEnabled)).thenReturn(m !in 5..7)
+        }) { fruehKonfiguration(g1 = true, g2 = true, g3 = true, g4 = true) }
+        pruefeMechanik(zyklen, 0.5, 1.0, 2.0)
+        val danach = zyklen.filter { it.minute >= 5 && it.o.erwartungskonto?.zyklus != null }
+        assertTrue(danach.isNotEmpty())
+        for (z in danach) {
+            val k = z.o.erwartungskonto!!.zyklus!!
+            assertTrue("EARLY_SUPPLY_OFF" in k.pausenGruende) { "Minute ${z.minute}: wieder an nach Abschalten" }
+            assertEquals(0.0, z.dErw(), 0.0, "Minute ${z.minute}: Portion nach Abschalten")
+        }
+        assertTrue(zyklen.mapNotNull { it.konto }.last().early!!.withdrawn)
+    }
+
+    @Test
+    fun `das spaete Abwaertsrisiko sperrt jede Portion der fruehen Versorgung`(@TempDir dir: File) {
+        val zyklen = fruehLauf(fFall, dir) {
+            fruehKonfiguration(g1 = true, g2 = true, g3 = true, g4 = true)
+            whenever(preferences.get(FuseBooleanKey.DeferredPrimeEnabled)).thenReturn(true)
+        }
+        pruefeMechanik(zyklen, 0.5, 1.0, 2.0)
+        val gesperrt = zyklen.filter { it.o.erwartungskonto?.zyklus?.pausiert == true }
+        assertTrue(gesperrt.isNotEmpty()) { "die Probe erreicht keine Sperre" }
+        for (z in gesperrt) {
+            assertEquals(0.0, z.dErw(), 0.0, "Minute ${z.minute}: d_erw trotz Sperre")
+            assertEquals(0.0, z.o.erwartungskonto!!.fruehBodenU, 0.0, "Minute ${z.minute}: Boden trotz Sperre")
+        }
+    }
+
+    /**
+     * Die Mahlzeit bleibt aus: BG flach am Ziel. Das Gestell rechnet offen (BG reagiert nicht auf Insulin), also
+     * liefert diese Probe KEIN v2-Insulin - sonst saehe die Beobachtung das gelieferte Insulin als Mahlzeit. Dass
+     * eine eingefrorene Episode keine Portion liefert, prueft [pruefeMechanik] in jeder Probe.
+     */
+    private val fFlach = Fuse20Folgen.Folge(
+        "FLACH", 1_700_560_800_000L, -90, 180,
+        listOf(-90 to 100.0, 0 to 100.0, 180 to 100.0),
+        markerMin = 0,
+    )
+
+    @Test
+    fun `bleibt die Mahlzeit aus, friert die Ruecknahme bei +30 die fruehe Versorgung ein`(@TempDir dir: File) {
+        val zyklen = fruehLauf(fFlach, dir) { fruehKonfiguration(anteil = 0.0, portionU = 0.0, zeitraumU = 0.0) }
+        pruefeMechanik(zyklen, 0.0, 0.0, 0.0)
+        assertTrue(zyklen.filter { it.minute in 0..29 }.none { it.o.erwartungskonto?.zyklus?.eval?.frozen == true })
+        val nach30 = zyklen.filter { it.minute in 30..120 && it.o.erwartungskonto?.zyklus != null }
+        assertTrue(nach30.isNotEmpty())
+        assertTrue(nach30.all { it.o.erwartungskonto!!.zyklus!!.eval.frozen }) { "nicht eingefroren" }
+        assertTrue(nach30.all { it.o.erwartungskonto!!.zyklus!!.eval.restEffU == 0.0 })
+        // Die Anpassung nimmt den Skalierer ab +20 zurueck, nie ueber den eingestellten.
+        assertTrue(zyklen.filter { it.minute in 21..30 }.all { (it.frueh()?.scaleEff ?: 0.0) <= 1.0 + 1e-12 })
+    }
+
+    @Test
+    fun `nach Tief gibt es keine Anfangsportion ausserhalb ihres Fensters`(@TempDir dir: File) {
+        val zyklen = fruehLauf(fTief, dir) { fruehKonfiguration(g1 = true, g2 = true, g3 = true, g4 = true) }
+        pruefeMechanik(zyklen, 0.5, 1.0, 2.0)
+        val konto = zyklen.mapNotNull { it.konto }.last()
+        assertFalse(konto.startStable)
+        val ersteFreigabe = zyklen.first { it.o.erwartungskonto?.zyklus?.eval?.released == true }.minute
+        if (ersteFreigabe >= app.aaps.fuse.core.controller.EarlySupply.INITIAL_WINDOW_MIN)
+            assertTrue(zyklen.none { it.frueh()?.initial == true && it.dErw() > 0.0 }) { "spaete Anfangsportion" }
+        assertTrue(zyklen.filter { it.minute < ersteFreigabe }.all { it.dErw() == 0.0 }) { "Portion vor der Freigabe" }
+    }
+
+    @Test
+    fun `Abschalten von G3 wirkt sofort, Einschalten erst ab dem naechsten Marker`(@TempDir dir: File) {
+        val zyklen = fruehLauf(fStabil, dir, vorZyklus = { m ->
+            if (m == 8) whenever(preferences.get(FuseBooleanKey.EarlySupplyGuardWithExpectation)).thenReturn(false)
+            if (m == 12) whenever(preferences.get(FuseBooleanKey.EarlySupplyGuardWithExpectation)).thenReturn(true)
+        }) { fruehKonfiguration(anteil = 0.0, g3 = true, g4 = true) }
+        for (z in zyklen.filter { it.minute >= 8 && it.o.erwartungskonto?.zyklus != null }) {
+            assertEquals(false, z.o.erwartungskonto!!.zyklus!!.fruehSchalter?.guardWithExpectation, "Minute ${z.minute}")
+            assertTrue(z.o.erwartungskonto!!.fruehHebung?.guardLift != true) { "Minute ${z.minute}: G3 nach Abschalten" }
+        }
+    }
+
+    @Test
+    fun `ohne Nur Erwartung bleibt das Konto v1, auch mit eingeschalteter frueher Versorgung`(@TempDir dir: File) {
+        fruehKonfiguration(g1 = true, g2 = true, g3 = true, g4 = true)
+        val zyklen = lauf(fStabil, dir).filter { it.o.abortReason == null }
+        val konto = zyklen.mapNotNull { it.konto }.last()
+        assertNull(konto.early)
+        assertTrue(zyklen.all { it.o.erwartungskonto?.zyklus?.eval?.early == null })
+    }
+
     private companion object {
 
         /** Synthetisches maxIOB des Gestells. */
@@ -774,5 +1011,11 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
 
         /** Synthetische Huelle der Tief-Proben [U]: genug Budget, dass nach der Wiederfreigabe ein Rest bleibt. */
         const val HUELLE_PROBE = 3.0
+
+        /** Synthetische Obergrenze des v2-Budgets [U]. */
+        const val FRUEH_BUDGET_U = 5.0
+
+        /** Synthetischer Zeitraum der v2-Proben [min]. */
+        const val ZEITRAUM_MIN = 10
     }
 }

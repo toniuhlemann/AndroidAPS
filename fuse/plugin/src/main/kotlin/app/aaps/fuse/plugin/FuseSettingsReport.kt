@@ -115,6 +115,19 @@ internal val fuseEinstellbareKeys: Set<String> = setOf(
     FuseDoubleKey.ExpectationReleaseThresholdU.key,
     FuseIntKey.ExpectationHorizonMin.key,
     FuseStringKey.ExpectationCurve.key,
+    // Die fruehe Versorgung (E-034 v2) - eigener Abschnitt.
+    FuseBooleanKey.EarlySupplyEnabled.key,
+    FuseDoubleKey.EarlySupplyBudgetMaxU.key,
+    FuseDoubleKey.EarlySupplyScaleStable.key,
+    FuseDoubleKey.EarlySupplyScaleAfterLow.key,
+    FuseDoubleKey.EarlySupplyInitialShare.key,
+    FuseDoubleKey.EarlySupplyMaxPortionU.key,
+    FuseDoubleKey.EarlySupplyMaxPerPeriodU.key,
+    FuseIntKey.EarlySupplyPeriodMin.key,
+    FuseBooleanKey.EarlySupplyInitialLiftsGuard.key,
+    FuseBooleanKey.EarlySupplyInitialLiftsTail.key,
+    FuseBooleanKey.EarlySupplyGuardWithExpectation.key,
+    FuseBooleanKey.EarlySupplyTailWithExpectation.key,
 )
 
 /**
@@ -261,6 +274,20 @@ object FuseSettingsReport {
                     zahl(FuseDoubleKey.ExpectationReleaseThresholdU, "Ruecknahme-Schwelle", "U"),
                     ganz(FuseIntKey.ExpectationHorizonMin, "Vorschau H", "min"),
                     kurve(FuseStringKey.ExpectationCurve, "Expertenzeile Kurve"),
+                ),
+                "Fruehe Versorgung (v2, Test)" to listOf(
+                    schalter(FuseBooleanKey.EarlySupplyEnabled, "Fruehe Versorgung"),
+                    zahl(FuseDoubleKey.EarlySupplyBudgetMaxU, "Budget hoechstens", "U"),
+                    zahl(FuseDoubleKey.EarlySupplyScaleStable, "Skalierer stabil", ""),
+                    zahl(FuseDoubleKey.EarlySupplyScaleAfterLow, "Skalierer nach Tief", ""),
+                    zahl(FuseDoubleKey.EarlySupplyInitialShare, "Anfangsanteil", ""),
+                    zahl(FuseDoubleKey.EarlySupplyMaxPortionU, "Weitere Portion hoechstens", "U"),
+                    zahl(FuseDoubleKey.EarlySupplyMaxPerPeriodU, "Je Zeitraum hoechstens", "U"),
+                    ganz(FuseIntKey.EarlySupplyPeriodMin, "Zeitraum", "min"),
+                    schalter(FuseBooleanKey.EarlySupplyInitialLiftsGuard, "G1 Anfang hebt Guard"),
+                    schalter(FuseBooleanKey.EarlySupplyInitialLiftsTail, "G2 Anfang hebt Schwanz"),
+                    schalter(FuseBooleanKey.EarlySupplyGuardWithExpectation, "G3 Guard mit Erwartung"),
+                    schalter(FuseBooleanKey.EarlySupplyTailWithExpectation, "G4 Schwanz mit Erwartung"),
                 ),
                 "Dosierung und Grenzen" to listOfNotNull(
                     zahl(FuseDoubleKey.SmbRatio, "Anteil Korrektur", ""),

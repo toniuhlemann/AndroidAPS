@@ -73,9 +73,22 @@ object AuthorizedLift {
          * hebbar nur das Guard-Urteil ([MarkerAuthorization.liftsExpectation]),
          * die Schwanzkappe bindet AUCH mit Autorisierung (TAIL hart fuer
          * d_erw), maxSMB begrenzt die Einzeldosis.
+         *
+         * Mit [EarlyLift] (E-034 v2, fruehe Versorgung) gilt stattdessen
+         * [MarkerAuthorization.liftsEarlySupply]; die Einzeldosis begrenzt
+         * dann die Portion selbst ([remainingU] - Anfangsanteil bzw.
+         * maximale Portion), und die Schwanzkappe reicht der Aufrufer nach
+         * G2/G4 herein.
          */
         EXPECTATION,
     }
+
+    /**
+     * E-034 v2: die fuer DIESE Portion geltenden Hebungsschalter - G1/G2 bei
+     * der Anfangsportion, G3/G4 bei weiteren Portionen (s.
+     * [MarkerAuthorization.liftsEarlySupply]).
+     */
+    data class EarlyLift(val guardLift: Boolean, val tailLift: Boolean)
 
     /**
      * BETRAG UND QUELLE ALS EINE EINHEIT (Toni 18.08.).
@@ -171,6 +184,8 @@ object AuthorizedLift {
          *  reisst. null nur in Sonderpfaden ohne Kontext (Tests). */
         contextExposureLimitU: Double? = null,
         tickEps: Double,
+        /** E-034 v2: die Regeln der fruehen Versorgung; nur mit [Source.EXPECTATION]. */
+        early: EarlyLift? = null,
     ): FuseController.Decision {
         // ---- Eingaben pruefen, BEVOR gerechnet wird (Toni 18.08.) --------
         //
@@ -204,9 +219,14 @@ object AuthorizedLift {
 
         // DIE POLITIK - eine Stelle fuer beide Phasen. Der Erwartungsanteil
         // hat seine eigene, engere Tabelle (E-034).
-        val hebbar =
-            if (source == Source.EXPECTATION) MarkerAuthorization.liftsExpectation(base.block, base.candidateReason, authorized)
-            else MarkerAuthorization.lifts(base.block, authorized)
+        val frueh = early?.takeIf { source == Source.EXPECTATION }
+        val hebbar = when {
+            frueh != null -> MarkerAuthorization.liftsEarlySupply(
+                base.block, base.candidateReason, authorized, frueh.guardLift, frueh.tailLift,
+            )
+            source == Source.EXPECTATION -> MarkerAuthorization.liftsExpectation(base.block, base.candidateReason, authorized)
+            else -> MarkerAuthorization.lifts(base.block, authorized)
+        }
         if (!hebbar) return base
 
         // ---- Die gemeinsamen harten Mengenkappen -------------------------
@@ -226,7 +246,7 @@ object AuthorizedLift {
         // KEINE Erhoehung von maxSMB: Normal-, Liveness-, Prime- und
         // Fundamentpfad behalten die Einzeldosisgrenze unveraendert.
         val singleDoseCapU =
-            if (source == Source.MEAL_UPFRONT) remainingU
+            if (source == Source.MEAL_UPFRONT || frueh != null) remainingU
             else min(state.maxSmbU, remainingU)
         // A2: dieselbe gemeinsame Expositionssicht wie in der
         // Kandidatensuche und im SubStep - identische Ausdrucksreihenfolge,

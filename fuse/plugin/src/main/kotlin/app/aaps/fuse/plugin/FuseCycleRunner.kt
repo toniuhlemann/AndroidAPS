@@ -3286,6 +3286,16 @@ class FuseCycleRunner(
         val ekZyklus: ErwartungskontoZyklus? = if (!cfg.expectationAccountEnabled) null else erwartungskontoZyklus(
             ekGilt = ekGilt, vorschau = ekVorschau, dosingCtx = dosingCtx, cfg = cfg, episodes = episodes,
             computeTs = computeTs, markerNoPrime = markerNoPrime,
+            nurErwartung = markerNurErwartung,
+            // E-034 v2: die Geraetegroessen der fruehen Versorgung - aus DEMSELBEN
+            // Einheitskern und denselben IOB-Arrays wie Bahn und Kandidatensuche.
+            fruehEingabenVon = {
+                ekFruehEingaben(
+                    kern = kernel(), iob = iobArrays, pending = pending, jetztTs = computeTs,
+                    iobU = iobTotal.iob + transportModelledU, bgMgdl = signal.q1,
+                    zielMgdl = state.targetMgdl, isfMgdlPerU = state.isfMgdlPerU,
+                )
+            },
             bgMgdl = signal.q1, targetMgdl = state.targetMgdl, isfMgdlPerU = state.isfMgdlPerU,
             iobTotalU = iobTotal.iob + transportModelledU, activityUPerMin = iobTotal.activity,
             // Gemessene Sperren: dieselben wie die des Kanals, dazu die beiden
@@ -3305,7 +3315,10 @@ class FuseCycleRunner(
             technisch = listOfNotNull(
                 "HEALTH".takeIf { step.health != Health.READY },
                 "REJOIN".takeIf { signal.rejoin.active },
-                "PUMP_BUSY".takeIf { state.pumpBusy },
+                // Direkt gelesen: der Reglerzustand traegt pumpBusy bewusst
+                // immer false (es gehoert nur in die TBR-Tabelle) - ueber ihn
+                // konnte diese Pause nie greifen.
+                "PUMP_BUSY".takeIf { pumpBusy() },
                 "LEDGER_HOLD".takeIf { ledgerView.hold },
             ),
             // K5: die gemessenen Tief-Befunde - Rohwert unter der Low-Grenze
@@ -4024,18 +4037,81 @@ class FuseCycleRunner(
         val ekBodenU = ekZyklus?.takeIf { it.guardAusnahme && liftedVorKonto.grant == null }
             ?.let { ExpectationAccount.guardExceptionFloorU(it.eval, normalPassedU = vetted.smbU) }
             ?: 0.0
-        val lifted = if (ekBodenU <= 0.0) liftedVorKonto else app.aaps.fuse.core.controller.AuthorizedLift.lift(
-            base = liftedVorKonto,
-            source = app.aaps.fuse.core.controller.AuthorizedLift.Source.EXPECTATION,
-            floorU = ekBodenU,
-            remainingU = ekBodenU,
-            state = state,
-            authorized = true,
-            tailHeadroomU = tail?.takeIf { it.usable }?.headroomU,
-            transportCommitmentU = transportModelledU,
-            contextExposureLimitU = kontextExposureLimitU,
-            tickEps = EK_TICK_EPS,
+        // ---- E-034 v2: DIE FRUEHE VERSORGUNG -------------------------------
+        //
+        // An derselben Stelle wie die Guard-Ausnahme, die fuer v2-Episoden nie
+        // gilt. Der Boden: was der Normalpfad MIT Guard vom gemessenen Anteil
+        // freigab, plus der lieferbare Erwartungsanteil dieses Zyklus
+        // (Anfangsportion bzw. weitere Portion, s. ExpectationAccount).
+        // Welche Urteile die Portion heben darf, sagen G1/G2 (Anfang) bzw.
+        // G3/G4 (weitere); JEDE Menge laeuft danach durch die Endpruefung der
+        // fruehen Versorgung - G3/G4 heben nur, weil dort MIT der
+        // angekuendigten Mahlzeit geprueft wird.
+        val fruehZyklus = ekZyklus?.takeIf { it.eval.early != null && it.fruehSchalter != null && liftedVorKonto.grant == null }
+        val fruehAnfang = fruehZyklus?.eval?.early?.initial == true
+        val fruehGemessenFreiU = fruehZyklus?.let { kotlin.math.min(vetted.smbU, ExpectationAccount.measuredShareU(it.eval)) } ?: 0.0
+        val fruehAnteilU = fruehZyklus?.let { ExpectationAccount.expectationShareU(it.eval) } ?: 0.0
+        val fruehHebung = fruehZyklus?.fruehSchalter?.takeIf { fruehAnteilU > 0.0 && ekBodenU <= 0.0 }?.let { g ->
+            if (fruehAnfang) app.aaps.fuse.core.controller.AuthorizedLift.EarlyLift(guardLift = g.initialLiftsGuard, tailLift = g.initialLiftsTail)
+            else app.aaps.fuse.core.controller.AuthorizedLift.EarlyLift(guardLift = g.guardWithExpectation, tailLift = g.tailWithExpectation)
+        }
+        val fruehBodenU = if (fruehHebung != null) fruehGemessenFreiU + fruehAnteilU else 0.0
+        // G3/G4: Bahn und Schwanzkante MIT der angekuendigten Mahlzeit - nur
+        // fuer weitere Portionen und nur, wenn der jeweilige Schalter gilt.
+        // Die Kurve wirkt hoechstens wie eingestellt (Skala <= 1): die
+        // Skalierbarkeit gibt Guard und Schwanz nichts frei.
+        val fruehKurve = fruehZyklus?.takeIf { fruehHebung != null && !fruehAnfang }
+            ?.state?.curveValues?.let { ExpectationAccount.Curve.of(it) }
+        val fruehAlterAmAnkerMin = fruehZyklus?.let { (prediction.predictionAnchorTs - it.state.authId) / 60_000.0 } ?: 0.0
+        val fruehSkala = app.aaps.fuse.core.controller.EarlySupply.guardScale(fruehZyklus?.eval?.early?.scaleEff ?: 0.0)
+        val fruehIsf = fruehZyklus?.state?.isfAtMarkerMgdlPerU?.takeIf { it.isFinite() && it > 0.0 } ?: state.isfMgdlPerU
+        val fruehHorizontMin = fruehZyklus?.state?.horizonMin ?: ExpectationAccount.MAX_HORIZON_MIN
+        val predictionMitErwartung = if (fruehKurve == null || fruehHebung?.guardLift != true) null
+        else app.aaps.fuse.core.controller.EarlySupply.withExpectation(prediction, fruehAlterAmAnkerMin, fruehKurve, fruehHorizontMin, fruehSkala, fruehIsf)
+        val restraintMitErwartung = if (predictionMitErwartung == null) null
+        else restraint?.let { app.aaps.fuse.core.controller.EarlySupply.withExpectation(it, fruehAlterAmAnkerMin, fruehKurve!!, fruehHorizontMin, fruehSkala, fruehIsf) }
+        val tailBaseMitErwartung = if (fruehKurve == null || fruehHebung?.tailLift != true) null
+        else tailBase.copy(
+            lowerBgAtH = app.aaps.fuse.core.controller.EarlySupply.tailLowerWithExpectation(
+                tailBase.lowerBgAtH, prediction, fruehAlterAmAnkerMin, fruehKurve, fruehHorizontMin, fruehSkala, fruehIsf,
+            ),
         )
+        val tailMitErwartung = if (tail == null) null else tailBaseMitErwartung?.let { TailLiability.evaluate(it) }
+        val fruehSchwanzKappeU: Double? = when {
+            // G2: die Markerautorisierung hebt den Schwanz der Anfangsportion.
+            fruehAnfang && fruehHebung?.tailLift == true -> null
+            // G4: die Kappe ist der Spielraum MIT Erwartung.
+            !fruehAnfang && tailMitErwartung != null -> tailMitErwartung.takeIf { it.usable }?.headroomU
+            else -> tail?.takeIf { it.usable }?.headroomU
+        }
+        val lifted = when {
+            ekBodenU > 0.0 -> app.aaps.fuse.core.controller.AuthorizedLift.lift(
+                base = liftedVorKonto,
+                source = app.aaps.fuse.core.controller.AuthorizedLift.Source.EXPECTATION,
+                floorU = ekBodenU,
+                remainingU = ekBodenU,
+                state = state,
+                authorized = true,
+                tailHeadroomU = tail?.takeIf { it.usable }?.headroomU,
+                transportCommitmentU = transportModelledU,
+                contextExposureLimitU = kontextExposureLimitU,
+                tickEps = EK_TICK_EPS,
+            )
+            fruehHebung != null && fruehBodenU > 0.0 -> app.aaps.fuse.core.controller.AuthorizedLift.lift(
+                base = liftedVorKonto,
+                source = app.aaps.fuse.core.controller.AuthorizedLift.Source.EXPECTATION,
+                floorU = fruehBodenU,
+                remainingU = fruehBodenU,
+                state = state,
+                authorized = true,
+                tailHeadroomU = fruehSchwanzKappeU,
+                transportCommitmentU = transportModelledU,
+                contextExposureLimitU = kontextExposureLimitU,
+                tickEps = EK_TICK_EPS,
+                early = fruehHebung,
+            )
+            else -> liftedVorKonto
+        }
         // FIX-PASS 4 Nr. 4 (Codex R4-04, Control-Audit-Invariante): KEINE
         // finale positive Dosis ohne erfolgreiche Wirkungspruefung. Das
         // verallgemeinert Fix 6b: nicht nur die Prime-Anhebung, JEDE finale
@@ -4062,15 +4138,17 @@ class FuseCycleRunner(
         val candidateEffectAtHPerU = kernelFinal?.let {
             CandidateSearch.effectPerUAtLiabilityHorizon(prediction, it, built.input.isfSlots, candidateBand)
         }
-        fun tailWith(u: Double): TailLiability.Report? {
+        // E-034 v2: dieselbe Rechnung mit anderer Basis (Schwanz MIT
+        // Erwartung, G4) - eine Formel, zwei Eingaben, keine zweite Wahrheit.
+        fun tailAus(basis: TailLiability.Input, u: Double): TailLiability.Report? {
             if (tail == null) return null
             // Ohne berechenbare Wirkung ist die konservative Annahme, dass die
             // ganze Menge bis H auf die Bahn durchschlaegt UND am Horizont noch
             // haftet (Dose ohne Restwirkung) - NICHT, dass sie nichts tut.
-            val drop = if (u <= 0.0) 0.0 else candidateEffectAtHPerU?.times(u) ?: (u * tailBase.isfTailMgdlPerU)
+            val drop = if (u <= 0.0) 0.0 else candidateEffectAtHPerU?.times(u) ?: (u * basis.isfTailMgdlPerU)
             return TailLiability.evaluate(
-                tailBase.copy(
-                    lowerBgAtH = tailBase.lowerBgAtH - drop,
+                basis.copy(
+                    lowerBgAtH = basis.lowerBgAtH - drop,
                     candidate = TailLiability.Dose(
                         amountU = u,
                         residualAtHU = if (u > 0.0) kernelFinal?.iobAt(liabilityHorizonTs, u) else 0.0,
@@ -4078,6 +4156,7 @@ class FuseCycleRunner(
                 )
             )
         }
+        fun tailWith(u: Double): TailLiability.Report? = tailAus(tailBase, u)
 
         // C1/C2: DASSELBE Zeugnis wie in der Suche - beide Bahnen, prior-frei.
         // Das ist der Riegel, an dem KEINE positive Menge vorbeikommt: auch der
@@ -4235,10 +4314,40 @@ class FuseCycleRunner(
             tailWith(u)?.takeIf { it.usable && it.headroomU < -TAIL_VETO_EPS_U }?.let { return TAIL_VETO }
             return null
         }
+        // E-034 v2: DIE ENDPRUEFUNG DER FRUEHEN VERSORGUNG - jede Menge, jede
+        // Portion. Technische Integritaet immer. Guard: bei der Anfangsportion
+        // mit G1 durch die Markerautorisierung gehoben, bei weiteren Portionen
+        // mit G3 MIT Erwartung geprueft, sonst unveraendert. Schwanz dasselbe
+        // mit G2/G4. Wiederhergestellt wird hoechstens der groesste
+        // Pumpenschritt, der alles traegt.
+        fun fruehEndpruefung(u: Double): String? {
+            val k = kernelFinal ?: return CandidateSearch.Reject.MODEL_HORIZON_TOO_SHORT.name
+            val h = fruehHebung ?: return null
+            CandidateSearch.verifyTechnicalIntegrity(
+                prediction, k, built.input.isfSlots, candidateBand, u, restraint = restraint,
+            )?.let { return it.name }
+            if (!(fruehAnfang && h.guardLift)) {
+                val mitErwartung = !fruehAnfang && h.guardLift && predictionMitErwartung != null
+                CandidateSearch.verifyGuardFloor(
+                    if (mitErwartung) predictionMitErwartung!! else prediction, k, built.input.isfSlots, candidateBand, u,
+                    restraint = if (mitErwartung) restraintMitErwartung else restraint,
+                )?.let { return it.name }
+            }
+            if (!(fruehAnfang && h.tailLift)) {
+                val bericht = if (!fruehAnfang && h.tailLift && tailBaseMitErwartung != null) tailAus(tailBaseMitErwartung, u)
+                else tailWith(u)
+                bericht?.takeIf { it.usable && it.headroomU < -TAIL_VETO_EPS_U }?.let { return TAIL_VETO }
+            }
+            return null
+        }
+        val fruehGilt = fruehHebung != null && fruehBodenU > 0.0 && ekBodenU <= 0.0
+        fun kontoEndpruefung(u: Double): String? = if (fruehGilt) fruehEndpruefung(u) else ekEndpruefung(u)
+        val fruehEndgrund = lifted.grant?.takeIf { fruehGilt && it.source == app.aaps.fuse.core.controller.AuthorizedLift.Source.EXPECTATION }
+            ?.let { fruehEndpruefung(it.amountU) }
         val bodenGrant = lifted.grant?.let { g ->
-            if (g.source != app.aaps.fuse.core.controller.AuthorizedLift.Source.EXPECTATION || ekEndpruefung(g.amountU) == null) g
+            if (g.source != app.aaps.fuse.core.controller.AuthorizedLift.Source.EXPECTATION || kontoEndpruefung(g.amountU) == null) g
             else app.aaps.fuse.core.controller.AuthorizedLift.AuthorizedGrant.of(
-                groessteBestehendeMenge(g.amountU, bolusStep) { ekEndpruefung(it) == null }, g.source,
+                groessteBestehendeMenge(g.amountU, bolusStep) { kontoEndpruefung(it) == null }, g.source,
             )
         }
         // DER BODEN DER MANUELLEN AUTORISIERUNG (Tonis Vertrag 11.08.).
@@ -6214,7 +6323,12 @@ class FuseCycleRunner(
         // d_mess (bis max(0, R_mess)) und d_erw - nur d_erw verbraucht. Die
         // Anteile stehen in der Reservierung, damit ein nie gesendeter Teil
         // storniert wird wie in den uebrigen Buechern.
-        ekZyklus?.let { z -> ekBuchen(z, episodes, actuatedU, exposureRequestedSourceWert) }
+        ekZyklus?.let { z ->
+            ekBuchen(
+                z, episodes, actuatedU, exposureRequestedSourceWert,
+                gemessenKappeU = if (fruehGilt) fruehGemessenFreiU else Double.POSITIVE_INFINITY,
+            )
+        }
         val smbVerdict = app.aaps.fuse.core.controller.SmbStatus.of(
             block = decision.block,
             smbU = decision.smbU,
@@ -6246,6 +6360,10 @@ class FuseCycleRunner(
                 grundEnde = decision.candidateReason,
                 stabilSeitTs = ekStabilSeit,
                 rueckfall = ekRueckfall(ekZyklus, dosingCtx.mealAuthorized, dosingCtx.authorizationId, episodes),
+                fruehBodenU = fruehBodenU,
+                fruehGemessenFreiU = if (fruehGilt) fruehGemessenFreiU else 0.0,
+                fruehHebung = fruehHebung.takeIf { fruehGilt },
+                fruehEndgrund = fruehEndgrund,
             ),
             // Fixvertrag 30.08.: das typisierte Zyklus-IOB fuer
             // APSResult.iobData / DeviceStatus openaps.iob.
@@ -6712,6 +6830,12 @@ class FuseCycleRunner(
         val stabilBg: Double? = null,
         /** Rebound im Mahlzeitkontext wie heute (nur Zuordnungsarm EK-RBheute). */
         val reboundHeute: Boolean = false,
+        /**
+         * E-034 v2: der Pruefstand waehlt am Marker "Nur Erwartung" und schaltet
+         * die fruehe Versorgung ein; ihre Werte kommen aus der Konfiguration des
+         * Laufs (Einstellungsstufen fuer N2). Wirkt nur im Pruefstand.
+         */
+        val nurErwartung: Boolean = false,
     ) {
         fun anwenden(c: Config): Config =
             if (!kontoAn) c.copy(
@@ -6726,6 +6850,9 @@ class FuseCycleRunner(
                 expectationCurveText = FuseStringKey.ExpectationCurve.defaultValue,
                 expectationBenchNoDirectDose = false,
                 expectationBenchReboundToday = false,
+                earlySupplyEnabled = false,
+                earlySupplySettings = null,
+                earlySupplySwitches = app.aaps.fuse.core.controller.EarlySupply.Switches.NONE,
             ) else c.copy(
                 expectationAccountEnabled = true,
                 expectationPhi0Stable = phi0Stabil ?: c.expectationPhi0Stable,
@@ -6764,8 +6891,14 @@ class FuseCycleRunner(
             val EK_STABIL_100 = Pruefarm("EK-stabil1.0", true, 1.0, 1.0, true, stabilBg = 80.0)
             val EK_S_050 = Pruefarm("EK-S-0.5", true, 0.5, 0.5, true, ohneDirektdosis = true, stabilBg = 80.0)
 
+            /**
+             * E-034 v2: fruehe Versorgung mit "Nur Erwartung" am Marker. Kurve, Konto- und v2-Werte (Skalierer,
+             * Budget, Anteil, Portion, Zeitraum, G1..G4) aus der Konfiguration des Laufs - keine Uebersteuerung.
+             */
+            val V2 = Pruefarm("V2", kontoAn = true, nurErwartung = true)
+
             val ALLE: List<Pruefarm> = listOf(
-                REF, EK, EK_OA, EK_PHI0, EK_S, EK_K3, EK_BG90, EK_RB_HEUTE, EK_STABIL_025, EK_STABIL_100, EK_S_050,
+                REF, EK, EK_OA, EK_PHI0, EK_S, EK_K3, EK_BG90, EK_RB_HEUTE, EK_STABIL_025, EK_STABIL_100, EK_S_050, V2,
             )
 
             fun vonName(name: String): Pruefarm? = ALLE.firstOrNull { it.name == name }
@@ -6785,6 +6918,8 @@ class FuseCycleRunner(
         val pausenGruende: List<String> = emptyList(),
         /** Warum die Freigabe in DIESEM Zyklus zurueckgenommen wurde: LOW, LOW_ON_ABORT, RESTART; sonst null. */
         val ruecknahmeGrund: String? = null,
+        /** E-034 v2: G1..G4, die jetzt gelten; `null` = Konto v1. */
+        val fruehSchalter: app.aaps.fuse.core.controller.EarlySupply.Switches? = null,
     )
 
     /** E-034: alles, was der Trail-Block des Kontos braucht - ein Zyklus. */
@@ -6813,6 +6948,14 @@ class FuseCycleRunner(
          * still in eine EK-Bewertung.
          */
         val rueckfall: String? = null,
+        /** E-034 v2: Boden der fruehen Versorgung [U]; 0 = keine Portion in diesem Zyklus. */
+        val fruehBodenU: Double = 0.0,
+        /** v2: davon der vom Normalpfad MIT Guard freigegebene gemessene Teil [U]. */
+        val fruehGemessenFreiU: Double = 0.0,
+        /** v2: die fuer diese Portion geltenden Hebungen (Anfang G1/G2, sonst G3/G4); `null` = keine Portion. */
+        val fruehHebung: app.aaps.fuse.core.controller.AuthorizedLift.EarlyLift? = null,
+        /** v2: Endpruefung der Portion - `null` = bestanden, sonst der Grund. */
+        val fruehEndgrund: String? = null,
     )
 
     /** E-034: was dieser Zyklus im Konto gebucht hat. */
@@ -6870,7 +7013,16 @@ class FuseCycleRunner(
         technisch: List<String>,
         /** Gemessenes Tief in diesem Zyklus (K5): nimmt die Freigabe zurueck. */
         gemessenesTief: Boolean,
+        /** E-034 v2: "Nur Erwartung" am Marker - nur dann gilt die fruehe Versorgung. */
+        nurErwartung: Boolean = false,
+        /**
+         * v2: die Geraetegroessen dieses Zyklus; `null` = kein Insulinmodell.
+         * TRAEGE: gerechnet nur, wenn ein v2-Konto gebucht oder fortgeschrieben
+         * wird - der Einheitskern bleibt sonst ungebaut wie bisher.
+         */
+        fruehEingabenVon: () -> ExpectationAccount.EarlyInputs? = { null },
     ): ErwartungskontoZyklus? {
+        val fruehEingaben by lazy(LazyThreadSafetyMode.NONE) { fruehEingabenVon() }
         val gemesseneSperre = sperren.isNotEmpty()
         // Die Strecke: mit den GEPINNTEN Grenzen des laufenden Kontos, sonst
         // mit den eingestellten (die am naechsten Druck gepinnt werden).
@@ -6896,22 +7048,54 @@ class FuseCycleRunner(
         var konto = episodes.expectation
         var armiert = false
         if (konto == null || konto.authId != dosingCtx.authorizationId) {
-            // Die TATSAECHLICHE Huelle der Episode: 0 bei "ohne Vorschuss".
-            val huelle = if (markerNoPrime) 0.0 else MealFoundation.primeBudgetU(episodes.foundation, cfg.primeEnvelopeU)
-            konto = ExpectationAccount.arm(
-                authId = dosingCtx.authorizationId,
-                windowEndTs = dosingCtx.authorizationExpiresAt,
-                envelopeU = huelle,
-                params = cfg.expectationParams,
-                startStable = stabil,
-                nowTs = computeTs,
-                bgMgdl = bgMgdl,
-                isfMgdlPerU = isfMgdlPerU,
-            )
+            // E-034 v2: "Nur Erwartung" mit eingeschalteter frueher Versorgung
+            // bucht das Gesamtbudget statt der Huelle. Ungueltige Einstellungen
+            // schalten sie ab - dann gilt NICHT ersatzweise v1, sondern das
+            // Konto ohne Budget (nur Ersetzung): weniger Insulin, nie mehr.
+            val fruehGewollt = cfg.earlySupplyEnabled && nurErwartung
+            val frueh = cfg.earlySupplySettings?.takeIf { fruehGewollt }
+            val params = cfg.expectationParams
+            konto = if (frueh != null && params != null) {
+                // Das Budget braucht das Insulinmodell. Fehlt es, wird jetzt
+                // nicht gebucht (kein stiller Wechsel der Regel fuer die ganze
+                // Mahlzeit) - dieser Zyklus laeuft ohne Konto und ohne
+                // Direktdosis, gebucht wird im naechsten Zyklus mit Modell.
+                val wirkung = fruehEingaben?.unitAction ?: return null
+                ExpectationAccount.armEarly(
+                    authId = dosingCtx.authorizationId,
+                    windowEndTs = dosingCtx.authorizationExpiresAt,
+                    params = params,
+                    settings = frueh,
+                    switches = cfg.earlySupplySwitches,
+                    startStable = stabil,
+                    nowTs = computeTs,
+                    bgMgdl = bgMgdl,
+                    isfMgdlPerU = isfMgdlPerU,
+                    unitAction = wirkung,
+                )
+            } else {
+                // Die TATSAECHLICHE Huelle der Episode: 0 bei "ohne Vorschuss".
+                val huelle = if (markerNoPrime || fruehGewollt) 0.0
+                else MealFoundation.primeBudgetU(episodes.foundation, cfg.primeEnvelopeU)
+                ExpectationAccount.arm(
+                    authId = dosingCtx.authorizationId,
+                    windowEndTs = dosingCtx.authorizationExpiresAt,
+                    envelopeU = huelle,
+                    params = params,
+                    startStable = stabil,
+                    nowTs = computeTs,
+                    bgMgdl = bgMgdl,
+                    isfMgdlPerU = isfMgdlPerU,
+                )
+            }
             armiert = true
             ekArmiertFuerAuth = dosingCtx.authorizationId
         }
-        val pausenGruende = sperren + listOfNotNull("FALLING".takeIf { faellt }) + technisch
+        // v2: Hauptschalter aus (jetzt oder schon einmal in dieser Episode) =
+        // kein Erwartungsanteil mehr fuer diese Mahlzeit; der gemessene Anteil
+        // laeuft weiter.
+        val pausenGruende = sperren + listOfNotNull("FALLING".takeIf { faellt }) + technisch +
+            listOfNotNull("EARLY_SUPPLY_OFF".takeIf { konto.early?.let { it.withdrawn || !cfg.earlySupplyEnabled } == true })
         val pausiert = pausenGruende.isNotEmpty()
         // RUECKNAHME DER FREIGABE (K5b; Codex-Befund P0): das gemessene Tief
         // dieses Zyklus, ein Tief aus einem Abbruchzyklus dieser Autorisierung
@@ -6939,13 +7123,23 @@ class FuseCycleRunner(
                 paused = pausiert,
                 stableNow = stabil,
                 measuredLow = ruecknahmeGrund != null,
+                early = if (konto.early != null) fruehEingaben else null,
             ),
         )
         if (neu.released) ekFreigabeBestaetigtFuerAuth = neu.authId
         // ABSCHALTEN WIRKT SOFORT UND FUER DIE GANZE EPISODE (Codex 11.10.,
         // Punkt 9): einmal aus, ist das Recht dieser Autorisierung entzogen -
         // wieder an gilt es erst ab dem naechsten Marker.
-        val gefuehrt = if (!cfg.expectationGuardException && neu.guardException) neu.copy(guardException = false) else neu
+        val gefuehrtV1 = if (!cfg.expectationGuardException && neu.guardException) neu.copy(guardException = false) else neu
+        // E-034 v2: dieselbe Regel fuer die fruehe Versorgung - der
+        // Hauptschalter entzieht sie, ein einzelner Schalter G1..G4 sein Recht,
+        // jeweils fuer den Rest der Mahlzeit.
+        val gefuehrt = gefuehrtV1.early?.let { e ->
+            val schalter = e.switches.and(cfg.earlySupplySwitches)
+            val entzogen = e.withdrawn || !cfg.earlySupplyEnabled
+            if (schalter == e.switches && entzogen == e.withdrawn) gefuehrtV1
+            else gefuehrtV1.copy(early = e.copy(switches = schalter, withdrawn = entzogen))
+        } ?: gefuehrtV1
         episodes.expectation = gefuehrt
         return ErwartungskontoZyklus(
             state = gefuehrt, eval = eval,
@@ -6953,6 +7147,8 @@ class FuseCycleRunner(
             armiertInDiesemZyklus = armiert, stabil = stabil, pausiert = pausiert,
             pausenGruende = pausenGruende,
             ruecknahmeGrund = ruecknahmeGrund.takeIf { eval.releaseRevoked },
+            // G1..G4: festgehalten UND bisher nie abgeschaltet (s. oben).
+            fruehSchalter = gefuehrt.early?.switches,
         )
     }
 
@@ -6985,6 +7181,56 @@ class FuseCycleRunner(
         ).active
     }
 
+    /**
+     * E-034 v2: die Geraetegroessen der fruehen Versorgung. Die Einheitswirkung
+     * C(tau) kommt aus DEM Einheitskern dieses Zyklus, die Wirkung des
+     * vorhandenen Insulins aus DENSELBEN IOB-Arrays wie die Bahn (Abnahme des
+     * IOB zwischen jetzt und jetzt + tau) und aus den Transportposten. Ohne
+     * Kern `null`: dann wird v2 nicht gebucht und liefert keinen
+     * Erwartungsanteil.
+     */
+    @Suppress("LongParameterList")
+    private fun ekFruehEingaben(
+        kern: UnitInsulinKernel?,
+        iob: IobArrays,
+        pending: List<PendingInsulinEffect>,
+        jetztTs: Long,
+        iobU: Double,
+        bgMgdl: Double,
+        zielMgdl: Double,
+        isfMgdlPerU: Double,
+    ): ExpectationAccount.EarlyInputs? {
+        val einheit = app.aaps.fuse.core.controller.EarlySupply.unitActionOf(kern ?: return null)
+        fun iobBei(ts: Long): Double {
+            val t = iob.times
+            if (t.isEmpty()) return Double.NaN
+            if (ts <= t[0]) return iob.iob[0]
+            for (i in 1 until t.size) {
+                if (ts <= t[i]) {
+                    val f = (ts - t[i - 1]).toDouble() / (t[i] - t[i - 1]).coerceAtLeast(1L)
+                    return iob.iob[i - 1] + (iob.iob[i] - iob.iob[i - 1]) * f
+                }
+            }
+            return iob.iob[t.size - 1]
+        }
+        // Ein Transportposten vor seiner Lieferung zaehlt voll als ausstehend.
+        fun rest(p: PendingInsulinEffect, ts: Long): Double = if (ts < p.deliveryTs) p.amountU else p.iobAt(ts)
+        val iobJetzt = iobBei(jetztTs)
+        val vorhanden: (Double) -> Double = { tau ->
+            val bis = jetztTs + (tau * 60_000.0).toLong()
+            val ausArray = iobJetzt - iobBei(bis)
+            val ausTransport = pending.sumOf { p -> rest(p, jetztTs) - rest(p, bis) }
+            (if (ausArray.isFinite()) kotlin.math.max(0.0, ausArray) else 0.0) +
+                (if (ausTransport.isFinite()) kotlin.math.max(0.0, ausTransport) else 0.0)
+        }
+        return ExpectationAccount.EarlyInputs(
+            iobU = iobU,
+            freeIobU = app.aaps.fuse.core.controller.EarlySupply.freeIobU(iobU, bgMgdl, zielMgdl, isfMgdlPerU),
+            existingActionU = vorhanden,
+            unitAction = einheit,
+        )
+    }
+
     /** E-034: warum im Mahlzeitkontext kein Konto gilt (s. [ErwartungskontoExport.rueckfall]). */
     private fun ekRueckfall(
         ekZyklus: ErwartungskontoZyklus?,
@@ -7005,6 +7251,8 @@ class FuseCycleRunner(
         episodes: app.aaps.fuse.plugin.ledger.EpisodeBudgets,
         actuatedU: Double,
         quelle: app.aaps.fuse.core.controller.ExposureGate.FinalSource,
+        /** v2: hoechstens so viel zaehlt als gemessen ([ExpectationAccount.book]). */
+        gemessenKappeU: Double = Double.POSITIVE_INFINITY,
     ) {
         if (!(actuatedU > 0.0)) return
         val konto = episodes.expectation?.takeIf { it.authId == z.state.authId } ?: return
@@ -7014,7 +7262,7 @@ class FuseCycleRunner(
             reservierung?.apply { ekAuthId = konto.authId; ekDirektU = actuatedU }
             ekBuchungThisCycle = ErwartungskontoBuchung(konto.authId, actuatedU, null)
         } else {
-            val (neu, split) = ExpectationAccount.book(konto, z.eval, actuatedU)
+            val (neu, split) = ExpectationAccount.book(konto, z.eval, actuatedU, gemessenKappeU)
             episodes.expectation = neu
             reservierung?.apply { ekAuthId = konto.authId; ekErwU = split.dErwU }
             ekBuchungThisCycle = ErwartungskontoBuchung(konto.authId, 0.0, split)
@@ -7372,6 +7620,10 @@ class FuseCycleRunner(
         val ekZyklus = if (!cfg.expectationAccountEnabled) null else erwartungskontoZyklus(
             ekGilt = ekGilt, vorschau = ekVorschau, dosingCtx = fallbackCtx, cfg = cfg, episodes = episodes,
             computeTs = computeTs, markerNoPrime = markerNoPrime,
+            // v2 ohne Bahn: gebucht wird erst mit Insulinmodell im Hauptpfad,
+            // ein Erwartungsanteil fliesst hier nie (NO_TRAJECTORY pausiert).
+            nurErwartung = mealMarkerActive && !markerNoPrime &&
+                preferences.get(FuseLongKey.MealMarkerExpectationOnly) != 0L,
             bgMgdl = signal.q1, targetMgdl = state.targetMgdl, isfMgdlPerU = state.isfMgdlPerU,
             iobTotalU = iobTotal.iob + transportModelledU, activityUPerMin = iobTotal.activity,
             sperren = listOfNotNull(
@@ -8577,6 +8829,13 @@ class FuseCycleRunner(
          *  Kontos entwaffnet der Marker das Rebound-Fenster wie heute nur fuer
          *  die Sonderrechte. Nie aus einer Einstellung. */
         val expectationBenchReboundToday: Boolean = false,
+        // ---- FRUEHE VERSORGUNG (E-034 v2), Default AUS ---------------------
+        /** Hauptschalter - s. [FuseBooleanKey.EarlySupplyEnabled]; nur mit eingeschaltetem Konto. */
+        val earlySupplyEnabled: Boolean = false,
+        /** Mengen und Anteile, geprueft; `null` = ungueltig, dann keine fruehe Versorgung. */
+        val earlySupplySettings: app.aaps.fuse.core.controller.EarlySupply.Settings? = null,
+        /** G1..G4, wie JETZT eingestellt: Abschalten wirkt sofort, Einschalten ab dem naechsten Marker. */
+        val earlySupplySwitches: app.aaps.fuse.core.controller.EarlySupply.Switches = app.aaps.fuse.core.controller.EarlySupply.Switches.NONE,
     ) {
 
         /**
@@ -8757,6 +9016,32 @@ class FuseCycleRunner(
                 f90U = preferences.get(FuseDoubleKey.ExpectationCurveAt90U),
                 f120U = preferences.get(FuseDoubleKey.ExpectationCurveAt120U),
             ).text,
+        ).let { mitFrueherVersorgung(it) }
+
+    /**
+     * DIE FRUEHE VERSORGUNG (E-034 v2) NUR BEI EINGESCHALTETEM HAUPTSCHALTER -
+     * dasselbe Muster wie das Konto: aus bleibt die Konfiguration auf den
+     * Standardwerten, und GN-A sieht dieselbe Konfiguration wie vorher.
+     */
+    private fun mitFrueherVersorgung(basis: Config): Config =
+        if (!preferences.get(FuseBooleanKey.EarlySupplyEnabled)) basis
+        else basis.copy(
+            earlySupplyEnabled = true,
+            earlySupplySettings = app.aaps.fuse.core.controller.EarlySupply.Settings.of(
+                scaleStable = preferences.get(FuseDoubleKey.EarlySupplyScaleStable),
+                scaleAfterLow = preferences.get(FuseDoubleKey.EarlySupplyScaleAfterLow),
+                budgetMaxU = preferences.get(FuseDoubleKey.EarlySupplyBudgetMaxU),
+                initialShare = preferences.get(FuseDoubleKey.EarlySupplyInitialShare),
+                maxPortionU = preferences.get(FuseDoubleKey.EarlySupplyMaxPortionU),
+                maxPerPeriodU = preferences.get(FuseDoubleKey.EarlySupplyMaxPerPeriodU),
+                periodMin = preferences.get(FuseIntKey.EarlySupplyPeriodMin),
+            ),
+            earlySupplySwitches = app.aaps.fuse.core.controller.EarlySupply.Switches(
+                initialLiftsGuard = preferences.get(FuseBooleanKey.EarlySupplyInitialLiftsGuard),
+                initialLiftsTail = preferences.get(FuseBooleanKey.EarlySupplyInitialLiftsTail),
+                guardWithExpectation = preferences.get(FuseBooleanKey.EarlySupplyGuardWithExpectation),
+                tailWithExpectation = preferences.get(FuseBooleanKey.EarlySupplyTailWithExpectation),
+            ),
         )
 
     /**

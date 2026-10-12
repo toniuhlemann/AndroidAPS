@@ -223,6 +223,52 @@ object MarkerAuthorization {
     }
 
     /**
+     * DIE FRUEHE VERSORGUNG (E-034 v2) - eine eigene Tabelle fuer Anfangsportion und weitere Portionen.
+     *
+     * [guardLift] und [tailLift] sind die fuer DIESE Portion geltenden Schalter:
+     *  - Anfangsportion: G1/G2. Gehoben wird durch die Markerautorisierung, wie heute bei der Direktdosis.
+     *  - weitere Portion: G3/G4. Gehoben wird das Urteil OHNE Erwartung - zulaessig nur, weil die Endpruefung dieselbe
+     *    Menge MIT der angekuendigten Mahlzeit prueft (Guard bzw. Schwanz mit Erwartung). Ohne G3/G4 bleibt das
+     *    Urteil ohne Erwartung hart.
+     *
+     * NONE und BELOW_PUMP_INCREMENT sind hebbar, weil die Portion ueber maxSMB hinaus bis zur maximalen Portion
+     * reichen darf; die Endpruefung prueft auch dann jede Menge. HART bleiben alle gemessenen Befunde, alle
+     * Mengengrenzen, NO_DEMAND und CANDIDATE mit anderem oder unbekanntem Grund - wie in [lifts].
+     *
+     * Ein `when` ohne `else` aus demselben Grund wie in [lifts].
+     */
+    fun liftsEarlySupply(
+        block: FuseController.Block,
+        candidateReason: CandidateSearch.Reject?,
+        authorized: Boolean,
+        guardLift: Boolean,
+        tailLift: Boolean,
+    ): Boolean {
+        if (!authorized) return false
+        val guardGrund = candidateReason == CandidateSearch.Reject.GUARD_FLOOR
+        return when (block) {
+            FuseController.Block.NONE                  -> true
+            FuseController.Block.BELOW_PUMP_INCREMENT  -> true
+            FuseController.Block.GUARD_FLOOR           -> guardLift
+            FuseController.Block.CANDIDATE             -> guardLift && guardGrund
+            FuseController.Block.TAIL                  -> tailLift
+
+            FuseController.Block.NO_DEMAND             -> false
+            FuseController.Block.SAFETY_HOLD           -> false
+            FuseController.Block.MEASURED_DESCENT_RISK -> false
+            FuseController.Block.MARKER_PRIME_DEFERRED -> false
+            FuseController.Block.HEALTH_NOT_READY      -> false
+            FuseController.Block.HORIZON_MISSING       -> false
+            FuseController.Block.NO_INPUT              -> false
+            FuseController.Block.IOB_TH_REACHED        -> false
+            FuseController.Block.MAX_IOB_REACHED       -> false
+            FuseController.Block.EXPOSURE_LIMIT        -> false
+            FuseController.Block.LEDGER_HOLD           -> false
+            FuseController.Block.PUMP_BUSY             -> false
+        }
+    }
+
+    /**
      * OHNE Autorisierung hebbar - abgeleitet, nicht zweitgefuehrt.
      */
     val LIFTABLE_WITHOUT_AUTHORIZATION: Set<FuseController.Block> =

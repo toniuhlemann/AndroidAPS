@@ -1,0 +1,324 @@
+package app.aaps.fuse.core.controller
+
+import app.aaps.fuse.core.insulin.UnitInsulinKernel
+import app.aaps.fuse.core.predictor.PredictorResult
+import kotlin.math.exp
+import kotlin.math.max
+import kotlin.math.min
+
+/**
+ * DIE FRUEHE VERSORGUNG (E-034 v2, Entwurf Toni) - reine Rechnung, keine Verdrahtung.
+ *
+ * Vier Groessen, getrennt gehalten:
+ *  - die ERWARTUNGSKURVE F(t): erwartete Mahlzeitwirkung [U-Aequivalent] bis t ab Marker ([ExpectationAccount.Curve]);
+ *  - die ZEITLICHE INSULINWIRKUNG C(tau): Anteil der Wirkung einer JETZT gegebenen Einheit bis tau, aus dem aktiven
+ *    Insulinmodell (vom Aufrufer als Funktion, damit Rechnung und Geraet dasselbe Modell nutzen);
+ *  - das GESAMTBUDGET B: die eine fruehe Gabe, deren Wirkung F ab [MIN_COVER_MIN] rechtzeitig abdeckt, skaliert und
+ *    gedeckelt - am Marker gebucht, nur verbraucht;
+ *  - die LIEFERGESCHWINDIGKEIT: Anfangsanteil, maximale Portion, Menge je Zeitraum.
+ *
+ * Der aktuelle Zielabstand gehoert NICHT in diese Rechnung: er wird wie bisher "irgendwann" ueber den gemessenen
+ * Anteil korrigiert. In einer Deckung bis 30 min wuerde er sonst durch C(30) vervielfacht. Vorhandenes Insulin zaehlt
+ * hier nur mit dem Teil, der nicht schon fuer den Zielabstand gebraucht wird.
+ */
+object EarlySupply {
+
+    /** Ab hier muss die Insulinwirkung mit der Mahlzeit Schritt halten [min]; frueher ist es physikalisch nicht moeglich. */
+    const val MIN_COVER_MIN = 30
+
+    /** Raster der Deckungspruefung [min]. */
+    const val STEP_MIN = 5
+
+    /** Bis hierhin keine Anpassung an die Beobachtung [min] - vorher zeigt die Mahlzeit noch nichts. */
+    const val ADAPT_FROM_MIN = 20.0
+
+    /**
+     * Bis hierhin darf die Anfangsportion fliessen [min]. Danach traegt jede Menge die Pruefung mit Erwartung - eine
+     * spaete Anfangsportion ohne Guard waere genau das spaete Nachschieben, das v2 ersetzen soll.
+     */
+    const val INITIAL_WINDOW_MIN = ADAPT_FROM_MIN
+
+    // ---- Grenzen der Einstellungen (letzte Verteidigung im Kern) ------------
+    const val MAX_SCALE = 2.0
+    const val MAX_BUDGET_U = 20.0
+    const val MAX_PORTION_U = 10.0
+    const val MAX_PER_PERIOD_U = 20.0
+    const val MIN_PERIOD_MIN = 5
+    const val MAX_PERIOD_MIN = 30
+
+    private const val EPS = 1e-9
+
+    /** Die Einstellungen, geprueft. `null` = ungueltig: fruehe Versorgung aus. */
+    data class Settings(
+        val scaleStable: Double,
+        val scaleAfterLow: Double,
+        val budgetMaxU: Double,
+        val initialShare: Double,
+        val maxPortionU: Double,
+        val maxPerPeriodU: Double,
+        val periodMin: Int,
+    ) {
+        companion object {
+            fun of(
+                scaleStable: Double, scaleAfterLow: Double, budgetMaxU: Double, initialShare: Double,
+                maxPortionU: Double, maxPerPeriodU: Double, periodMin: Int,
+            ): Settings? {
+                fun inRange(x: Double, hi: Double) = x.isFinite() && x >= 0.0 && x <= hi
+                if (!inRange(scaleStable, MAX_SCALE) || !inRange(scaleAfterLow, MAX_SCALE)) return null
+                if (!inRange(budgetMaxU, MAX_BUDGET_U) || !inRange(initialShare, 1.0)) return null
+                if (!inRange(maxPortionU, MAX_PORTION_U) || !inRange(maxPerPeriodU, MAX_PER_PERIOD_U)) return null
+                if (periodMin !in MIN_PERIOD_MIN..MAX_PERIOD_MIN) return null
+                return Settings(scaleStable, scaleAfterLow, budgetMaxU, initialShare, maxPortionU, maxPerPeriodU, periodMin)
+            }
+        }
+    }
+
+    /**
+     * DIE VIER AENDERUNGEN AN GUARD UND SCHWANZ (Toni: einzeln benannt, einzeln abschaltbar; die
+     * Skalierbarkeit ist fuer sie keine pauschale Freigabe).
+     *
+     *  - G1 [initialLiftsGuard]: die Anfangsportion hebt das Guard-Urteil durch die Markerautorisierung - wie heute
+     *    die Direktdosis. Begrenzt durch den Anfangsanteil und [INITIAL_WINDOW_MIN].
+     *  - G2 [initialLiftsTail]: dasselbe fuer den Schwanz.
+     *  - G3 [guardWithExpectation]: weitere Portionen pruefen den Guard MIT der angekuendigten Mahlzeit als bekannter
+     *    Stoerung - keine Hebung, eine geaenderte Eingabe derselben Pruefung.
+     *  - G4 [tailWithExpectation]: dasselbe fuer den Schwanz.
+     *
+     * Aus heisst: die jeweilige Pruefung gilt unveraendert. Abschalten wirkt sofort, Einschalten ab dem naechsten
+     * Marker (die Werte werden am Marker festgehalten).
+     */
+    data class Switches(
+        val initialLiftsGuard: Boolean,
+        val initialLiftsTail: Boolean,
+        val guardWithExpectation: Boolean,
+        val tailWithExpectation: Boolean,
+    ) {
+        /** Was jetzt gilt: festgehalten UND jetzt eingeschaltet. */
+        fun and(now: Switches): Switches = Switches(
+            initialLiftsGuard && now.initialLiftsGuard,
+            initialLiftsTail && now.initialLiftsTail,
+            guardWithExpectation && now.guardWithExpectation,
+            tailWithExpectation && now.tailWithExpectation,
+        )
+
+        companion object {
+            /** Alle vier aus: Guard und Schwanz gelten unveraendert. */
+            val NONE = Switches(false, false, false, false)
+        }
+    }
+
+    /**
+     * Was eine Episode am Marker festhaelt (neben Kurve, Skalierer und Budget im Konto). [withdrawn]: der Hauptschalter
+     * war in dieser Episode aus - die fruehe Versorgung ist fuer den Rest der Mahlzeit entzogen (Abschalten wirkt
+     * sofort und fuer die ganze Episode, wie bei der v1-Ausnahme).
+     */
+    data class Pins(
+        val initialShare: Double,
+        val maxPortionU: Double,
+        val maxPerPeriodU: Double,
+        val periodMin: Int,
+        val switches: Switches,
+        val withdrawn: Boolean = false,
+    )
+
+    /** Eine weitere Portion im Zeitraumbuch: Zeitpunkt und Erwartungsanteil [U]. */
+    data class Portion(val ts: Long, val amountU: Double)
+
+    /** Die Skala, mit der Guard und Schwanz die Mahlzeit sehen: hoechstens die eingestellte Kurve, nie mehr. */
+    fun guardScale(scaleEff: Double): Double = if (scaleEff.isFinite()) min(1.0, max(0.0, scaleEff)) else 0.0
+
+    /**
+     * Erwarteter Anstieg [mg/dl] durch die angekuendigte Mahlzeit zwischen Markeralter [ageMin] und
+     * [ageMin] + [offsetMin], hoechstens bis zum Ende der Vorschau. Nie negativ; nicht berechenbar = 0.
+     */
+    fun expectedRiseMgdl(
+        curve: ExpectationAccount.Curve, horizonMin: Int, ageMin: Double, offsetMin: Double,
+        scaleGuard: Double, isfMgdlPerU: Double,
+    ): Double {
+        if (!ageMin.isFinite() || !offsetMin.isFinite() || !isfMgdlPerU.isFinite() || isfMgdlPerU <= 0.0) return 0.0
+        val ende = min(horizonMin.toDouble(), ExpectationAccount.CURVE_END_MIN.toDouble())
+        val von = min(max(0.0, ageMin), ende)
+        val bis = min(max(0.0, ageMin + offsetMin), ende)
+        val r = scaleGuard * max(0.0, curve.at(bis) - curve.at(von)) * isfMgdlPerU
+        return if (r.isFinite()) max(0.0, r) else 0.0
+    }
+
+    /**
+     * DIESELBE KANTE MIT ERWARTUNG: `max(v, min(v, io) + E)`.
+     *
+     * [insulinOnlyMgdl] ist die Bahn ohne jeden Antrieb (nur Insulin und Transport). Liegt die Kante darueber, hat sie
+     * schon einen positiven Antrieb - der zaehlt nicht zweimal, die Erwartung ersetzt ihn nur, wo sie groesser ist.
+     * Liegt sie darunter (gemessenes Fallen), bleibt das Fallen voll erhalten und die Erwartung kommt hinzu.
+     */
+    fun liftedEdge(edgeMgdl: Double, insulinOnlyMgdl: Double, riseMgdl: Double): Double =
+        if (!edgeMgdl.isFinite() || !insulinOnlyMgdl.isFinite() || !riseMgdl.isFinite() || riseMgdl <= 0.0) edgeMgdl
+        else max(edgeMgdl, min(edgeMgdl, insulinOnlyMgdl) + riseMgdl)
+
+    /**
+     * Die Bahn ohne Antrieb [mg/dl] je Punkt: Mittelbahn minus der aufsummierte Mittelbahn-Antrieb. Der Kern addiert
+     * je Minute `dMean + bgi + Transport`, also bleibt genau Insulin und Transport. Gleitkomma-genau bis ~1e-9.
+     */
+    fun insulinOnly(prediction: PredictorResult): DoubleArray {
+        var antrieb = 0.0
+        return DoubleArray(prediction.points.size) { i ->
+            antrieb += prediction.points[i].driveMean
+            prediction.points[i].meanBg - antrieb
+        }
+    }
+
+    /**
+     * G3: DIE BAHN MIT ERWARTUNG - jede Punktkante nach [liftedEdge] gehoben, der Anker unveraendert (dort ist der
+     * Anstieg 0). Die Kennzahlen werden aus den gehobenen Punkten neu gebildet, damit das Ergebnis in sich stimmt.
+     * Geprueft wird damit dieselbe Guard-Pruefung wie sonst ([CandidateSearch.verifyGuardFloor]); nur die Eingabe
+     * kennt die angekuendigte Mahlzeit.
+     */
+    fun withExpectation(
+        prediction: PredictorResult, ageAtAnchorMin: Double, curve: ExpectationAccount.Curve, horizonMin: Int,
+        scaleGuard: Double, isfMgdlPerU: Double,
+    ): PredictorResult {
+        val io = insulinOnly(prediction)
+        val punkte = prediction.points.mapIndexed { i, p ->
+            val e = expectedRiseMgdl(curve, horizonMin, ageAtAnchorMin, p.offsetMin.toDouble(), scaleGuard, isfMgdlPerU)
+            val sicher = liftedEdge(p.safetyLowerBg, io[i], e)
+            val unten = max(p.lowerBg, sicher)
+            p.copy(meanBg = max(p.meanBg, unten), lowerBg = unten, lowerBgPriorFree = sicher)
+        }
+        if (punkte.isEmpty()) return prediction
+        val anker = prediction.bgAtAnchor
+        val minMean = min(anker, punkte.minOf { it.meanBg })
+        val minUnten = min(anker, punkte.minOf { it.lowerBg })
+        val minSicher = min(anker, punkte.minOf { it.safetyLowerBg })
+        return prediction.copy(
+            points = punkte,
+            minMeanBg = minMean,
+            minLowerBg = minUnten,
+            bgAtHorizonMean = punkte.last().meanBg,
+            bgAtHorizonLower = punkte.last().lowerBg,
+            minLowerBgPriorFree = minSicher,
+            bgAtHorizonLowerPriorFree = punkte.last().safetyLowerBg,
+            timeToMinLowerMin = punkte.indexOfFirst { it.lowerBg == minUnten }.let { if (it < 0 || minUnten == anker) 0 else it + 1 },
+            timeToMinLowerPriorFreeMin = punkte.indexOfFirst { it.safetyLowerBg == minSicher }
+                .let { if (it < 0 || minSicher == anker) 0 else it + 1 },
+            // Die Zerlegung gehoert zur ungehobenen Bahn - sie hier stehen zu lassen, behauptete Summanden, die die
+            // gehobene Kante nicht hat.
+            hubAtHorizon = null,
+            hubAtMinSafetyLower = null,
+        )
+    }
+
+    /**
+     * G4: DIE SCHWANZKANTE AM HORIZONT MIT ERWARTUNG - dieselbe Regel wie [withExpectation] fuer den einen Wert, den
+     * der Schwanz liest. Nach dem Ende der Kurve rechnet der Schwanz keine Mahlzeit mehr (konservativ).
+     */
+    fun tailLowerWithExpectation(
+        lowerAtHorizonMgdl: Double, prediction: PredictorResult, ageAtAnchorMin: Double,
+        curve: ExpectationAccount.Curve, horizonMin: Int, scaleGuard: Double, isfMgdlPerU: Double,
+    ): Double {
+        val letzter = prediction.points.lastOrNull() ?: return lowerAtHorizonMgdl
+        val io = insulinOnly(prediction).last()
+        val e = expectedRiseMgdl(curve, horizonMin, ageAtAnchorMin, letzter.offsetMin.toDouble(), scaleGuard, isfMgdlPerU)
+        return liftedEdge(lowerAtHorizonMgdl, io, e)
+    }
+
+    /**
+     * Anteil der Wirkung einer jetzt gegebenen Einheit bis [tauMin] - das exponentielle oref-Modell, wie AAPS es fuer
+     * Insuline mit freiem Gipfel rechnet. Fuer Tests und als Rueckfall; im Geraet liefert der Aufrufer das Modell.
+     */
+    fun orefActionFraction(tauMin: Double, peakMin: Double, diaMin: Double): Double {
+        if (!tauMin.isFinite() || tauMin <= 0.0) return 0.0
+        if (tauMin >= diaMin) return 1.0
+        val tau = peakMin * (1 - peakMin / diaMin) / (1 - 2 * peakMin / diaMin)
+        val a = 2 * tau / diaMin
+        val s = 1 / (1 - a + (1 + a) * exp(-diaMin / tau))
+        val iob = 1 - s * (1 - a) * ((tauMin * tauMin / (tau * diaMin * (1 - a)) - tauMin / tau - 1) * exp(-tauMin / tau) + 1)
+        return min(1.0, max(0.0, 1 - iob))
+    }
+
+    /**
+     * C(tau) aus DEM Einheitskern des Zyklus: Anteil der Wirkung einer zum Kern-Lieferzeitpunkt gegebenen Einheit bis
+     * tau [min]. Jenseits des Modellhorizonts ist die Wirkung vollstaendig.
+     */
+    fun unitActionOf(kernel: UnitInsulinKernel): (Double) -> Double = { tau ->
+        if (!(tau > 0.0)) 0.0 else {
+            val ts = kernel.deliveryTs + (tau * 60_000.0).toLong()
+            if (!kernel.covers(ts)) 1.0 else 1.0 - kernel.iobAt(ts, 1.0)
+        }
+    }
+
+    /** Die Deckungszeitpunkte tau [min ab jetzt] fuer Markeralter [ageMin]: 30 .. Ende, im Raster. */
+    private fun deckung(ageMin: Double, horizonMin: Int): List<Int> {
+        val bis = (min(horizonMin.toDouble(), ExpectationAccount.CURVE_END_MIN.toDouble()) - ageMin).toInt()
+        if (bis < MIN_COVER_MIN) return emptyList()
+        return (MIN_COVER_MIN..bis step STEP_MIN).toList()
+    }
+
+    /**
+     * GESAMTBUDGET am Marker [U]: `min(budgetMax, scale * max_tau F(tau) / C(tau))` fuer tau ab 30 min - die eine
+     * fruehe Gabe, deren Wirkung die erwartete Mahlzeitwirkung rechtzeitig abdeckt. Nie negativ.
+     */
+    fun budgetU(curve: ExpectationAccount.Curve, horizonMin: Int, scale: Double, budgetMaxU: Double, action: (Double) -> Double): Double {
+        val bedarf = deckung(0.0, horizonMin).maxOfOrNull { t ->
+            val c = action(t.toDouble())
+            if (c > EPS) curve.at(t.toDouble()) / c else 0.0
+        } ?: 0.0
+        return max(0.0, min(budgetMaxU, scale * bedarf))
+    }
+
+    /**
+     * ANPASSUNG an die beobachtete Mahlzeit: bis [ADAPT_FROM_MIN] der eingestellte Skalierer; danach hoechstens er,
+     * verkleinert im Verhaeltnis beobachtet/erwartet. Groesser als erwartet erhoeht NICHT (das deckt der gemessene
+     * Anteil). Eine ungueltige Beobachtung aendert nichts - die Ruecknahme bei +30 bleibt eigens zustaendig.
+     */
+    fun effectiveScale(scale: Double, ageMin: Double, observedU: Double, observedValid: Boolean, curve: ExpectationAccount.Curve): Double {
+        if (ageMin < ADAPT_FROM_MIN || !observedValid || !observedU.isFinite()) return scale
+        val erwartet = curve.at(ageMin)
+        if (erwartet <= EPS) return scale
+        return scale * min(1.0, max(0.0, observedU) / erwartet)
+    }
+
+    /**
+     * Vorhandenes Insulin, das NICHT schon fuer den aktuellen Zielabstand gebraucht wird [U]:
+     * `max(0, IOB - max(0, (BG - Ziel) / ISF))`.
+     */
+    fun freeIobU(iobU: Double, bgMgdl: Double, targetMgdl: Double, isfMgdlPerU: Double): Double {
+        if (!iobU.isFinite() || !bgMgdl.isFinite() || !targetMgdl.isFinite() || !isfMgdlPerU.isFinite() || isfMgdlPerU <= 0.0)
+            return 0.0
+        return max(0.0, iobU - max(0.0, (bgMgdl - targetMgdl) / isfMgdlPerU))
+    }
+
+    /**
+     * AKTUELLE ANFORDERUNG der fruehen Versorgung [U] im Markeralter [ageMin], zeitbewusst:
+     *
+     *     X = max(0, max_tau [ scaleEff * (F(a + tau) - F(a)) - W_frei(tau) ] / C(tau)),  tau in 30 .. Ende - a
+     *
+     * [existingActionU] liefert die erwartete Wirkung des bereits gegebenen UND ausstehenden Insulins zwischen jetzt
+     * und jetzt + tau [U]; davon zaehlt der Anteil `freeIobU / iobU` (der Rest gehoert zum Zielabstand). Weniger als
+     * 30 min bis zum Ende: 0 - dann gibt es nichts mehr rechtzeitig abzudecken.
+     */
+    fun demandU(
+        curve: ExpectationAccount.Curve, horizonMin: Int, ageMin: Double, scaleEff: Double,
+        iobU: Double, freeIobU: Double, existingActionU: (Double) -> Double, action: (Double) -> Double,
+    ): Double {
+        val anteilFrei = if (iobU > EPS) min(1.0, max(0.0, freeIobU / iobU)) else 0.0
+        val fa = curve.at(ageMin)
+        val x = deckung(ageMin, horizonMin).maxOfOrNull { t ->
+            val c = action(t.toDouble())
+            if (c <= EPS) return@maxOfOrNull 0.0
+            val erwartet = scaleEff * (curve.at(ageMin + t) - fa)
+            val vorhanden = anteilFrei * max(0.0, existingActionU(t.toDouble()))
+            (erwartet - vorhanden) / c
+        } ?: 0.0
+        return if (x.isFinite()) max(0.0, x) else 0.0
+    }
+
+    /** Die Anfangsportion: hoechstens der Anfangsanteil des Budgets und nie mehr als die aktuelle Anforderung. */
+    fun initialPortionU(budgetU: Double, initialShare: Double, demandU: Double): Double =
+        max(0.0, min(initialShare * budgetU, demandU))
+
+    /**
+     * Jede weitere Portion: Anforderung, Budgetrest, maximale Portion, Rest der Menge je Zeitraum - das Kleinste.
+     * Es gibt kein Ansparen: der Zeitraumrest kommt aus dem tatsaechlich Gelieferten, nicht aus verpassten Zyklen.
+     */
+    fun portionU(demandU: Double, budgetLeftU: Double, maxPortionU: Double, periodLeftU: Double): Double =
+        max(0.0, min(min(demandU, budgetLeftU), min(maxPortionU, periodLeftU)))
+}

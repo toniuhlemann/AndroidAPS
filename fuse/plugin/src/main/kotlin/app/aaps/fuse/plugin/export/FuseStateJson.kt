@@ -2337,6 +2337,19 @@ object FuseStateJson {
             app.aaps.fuse.core.controller.ExpectationAccount.Curve.parse(p.expectationCurveText)
                 ?.values()?.joinToString(",") { Sha.lossless(it) } ?: "curve:none",
         )
+        // E-034 v2: die fruehe Versorgung nur, wenn sie gilt (Konto UND
+        // Hauptschalter) - sonst bleibt jeder bisherige Hash bitgleich. Die
+        // vier Schalter G1..G4 als eigene Zeichen: jeder ist ein anderer Regler.
+        val frueh = p.earlySupplySettings
+        val fruehTeile = if (!p.expectationAccountEnabled || !p.earlySupplyEnabled) emptyList()
+        else listOf("earlySupply:on") + (
+            if (frueh == null) listOf("earlySupply:invalid")
+            else listOf(frueh.scaleStable, frueh.scaleAfterLow, frueh.budgetMaxU, frueh.initialShare,
+                frueh.maxPortionU, frueh.maxPerPeriodU).map { Sha.lossless(it) } + frueh.periodMin.toString()
+            ) + p.earlySupplySwitches.let { g ->
+            listOf(g.initialLiftsGuard, g.initialLiftsTail, g.guardWithExpectation, g.tailWithExpectation)
+                .joinToString("", prefix = "G1-4:") { if (it) "1" else "0" }
+        }
         // v38-ABSCHLUSS (A5-Neutralitaet, Toni 29.08.): die Hash-Eingaenge
         // sind CENTRAL-only die vier Profilwerte (+ die MEAL-Schwelle als
         // eigener Zustand). Der Konstanten-Marker "legacyProfileCaps:
@@ -2483,7 +2496,7 @@ object FuseStateJson {
                 true,
                 p.absorptionCreditWindowMin,
                 p.markerBoostMaxMin,
-            ).map { it.toString() } + modusTeile + kontoTeile
+            ).map { it.toString() } + modusTeile + kontoTeile + fruehTeile
         return Sha.of(parts.joinToString("|"))
     }
 
@@ -2545,6 +2558,35 @@ object FuseStateJson {
                 .put("restEffU", fin(e.restEffU))
                 .put("deliverableU", fin(app.aaps.fuse.core.controller.ExpectationAccount.deliverableU(e)))
                 .put("expectationShareU", fin(app.aaps.fuse.core.controller.ExpectationAccount.expectationShareU(e)))
+            // E-034 v2: die fruehe Versorgung - nur bei v2-Episoden, sonst bleibt
+            // der Block bitgleich.
+            s.early?.let { f ->
+                fun g(sw: app.aaps.fuse.core.controller.EarlySupply.Switches?) = sw?.let {
+                    listOf(it.initialLiftsGuard, it.initialLiftsTail, it.guardWithExpectation, it.tailWithExpectation)
+                        .joinToString("") { b -> if (b) "1" else "0" }
+                } ?: JSONObject.NULL
+                o.put("earlySupply", JSONObject()
+                    .put("budgetU", fin(s.a0U))
+                    .put("scale", fin(s.phi0))
+                    .put("initialShare", fin(f.initialShare))
+                    .put("maxPortionU", fin(f.maxPortionU))
+                    .put("maxPerPeriodU", fin(f.maxPerPeriodU))
+                    .put("periodMin", f.periodMin)
+                    .put("switchesPinned", g(f.switches))
+                    .put("switchesNow", g(z.fruehSchalter))
+                    .put("withdrawn", f.withdrawn)
+                    .put("initialDone", s.initialDone)
+                    .put("portionsInBookU", fin(s.portions.sumOf { it.amountU }))
+                    .put("demandU", fin(e.early?.demandU ?: Double.NaN))
+                    .put("scaleEff", fin(e.early?.scaleEff ?: Double.NaN))
+                    .put("initial", e.early?.initial ?: JSONObject.NULL)
+                    .put("periodLeftU", fin(e.early?.periodLeftU ?: Double.NaN))
+                    .put("floorU", fin(x.fruehBodenU))
+                    .put("measuredPassedU", fin(x.fruehGemessenFreiU))
+                    .put("liftGuard", x.fruehHebung?.guardLift ?: JSONObject.NULL)
+                    .put("liftTail", x.fruehHebung?.tailLift ?: JSONObject.NULL)
+                    .put("endReason", x.fruehEndgrund ?: JSONObject.NULL))
+            }
         }
         val b = x.buchung
         if (b != null) {

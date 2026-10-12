@@ -696,6 +696,12 @@ class Fuse20GleichwertigkeitTest : TestBaseWithProfile() {
                 whenever(preferences.get(FuseStringKey.ExpectationCurve)).thenReturn(Fuse20Folgen.kurvenText(String(roh, Charsets.UTF_8)))
                 zeilenArm += "kurveSha;$sha"
             }
+            // E-034 v2: "Nur Erwartung" am Marker und die fruehe Versorgung an; ihre Werte aus der Konfiguration.
+            if (a.nurErwartung) {
+                whenever(preferences.get(FuseLongKey.MealMarkerExpectationOnly)).thenReturn(1L)
+                whenever(preferences.get(FuseBooleanKey.EarlySupplyEnabled)).thenReturn(true)
+                zeilenArm += "nurErwartung;1"
+            }
             File(out, Fuse20Folgen.DATEI_ARM).writeText(zeilenArm.joinToString("") { "$it\n" }, Charsets.UTF_8)
         }
         val zeilen = ArrayList<List<String>>()

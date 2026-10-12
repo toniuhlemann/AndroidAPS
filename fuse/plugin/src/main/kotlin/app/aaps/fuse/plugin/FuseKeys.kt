@@ -470,6 +470,30 @@ enum class FuseDoubleKey(
     ExpectationCurveAt60U("fuse_expectation_curve_60_u", 0.0, 0.0, app.aaps.fuse.core.controller.ExpectationAccount.MAX_CURVE_U),
     ExpectationCurveAt90U("fuse_expectation_curve_90_u", 0.0, 0.0, app.aaps.fuse.core.controller.ExpectationAccount.MAX_CURVE_U),
     ExpectationCurveAt120U("fuse_expectation_curve_120_u", 0.0, 0.0, app.aaps.fuse.core.controller.ExpectationAccount.MAX_CURVE_U),
+
+    // ---- FRUEHE VERSORGUNG (E-034 v2), nur mit Erwartungskonto und Hauptschalter ----
+    //
+    // Gilt nur fuer Mahlzeiten mit "Nur Erwartung" am Marker. Alle Mengen stehen
+    // ab Werk auf 0 (= keine fruehe Versorgung): persoenliche Werte stehen nur auf
+    // dem Geraet. Ein ungueltiger Wert schaltet die fruehe Versorgung ab.
+
+    /** Skalierer des Budgets bei stabilem Start (0..2): 1 = die Kurve, wie eingestellt. */
+    EarlySupplyScaleStable("fuse_early_supply_scale_stable", 1.0, 0.0, app.aaps.fuse.core.controller.EarlySupply.MAX_SCALE),
+
+    /** Derselbe Skalierer bei Start nach Tief oder im Fallen. Standard 0: dann keine fruehe Versorgung. */
+    EarlySupplyScaleAfterLow("fuse_early_supply_scale_after_low", 0.0, 0.0, app.aaps.fuse.core.controller.EarlySupply.MAX_SCALE),
+
+    /** Obergrenze des Gesamtbudgets je Mahlzeit [U]. Standard 0 = keine fruehe Versorgung. */
+    EarlySupplyBudgetMaxU("fuse_early_supply_budget_max_u", 0.0, 0.0, app.aaps.fuse.core.controller.EarlySupply.MAX_BUDGET_U),
+
+    /** Anfangsanteil (0..1) des Budgets, der am Druck ohne Guard fliessen darf (nur mit G1/G2). Standard 0. */
+    EarlySupplyInitialShare("fuse_early_supply_initial_share", 0.0, 0.0, 1.0),
+
+    /** Maximale weitere Portion je Zyklus [U]. Standard 0 = keine weiteren Portionen. */
+    EarlySupplyMaxPortionU("fuse_early_supply_max_portion_u", 0.0, 0.0, app.aaps.fuse.core.controller.EarlySupply.MAX_PORTION_U),
+
+    /** Hoechstmenge der weiteren Portionen je Zeitraum [U]. Standard 0 = keine weiteren Portionen. */
+    EarlySupplyMaxPerPeriodU("fuse_early_supply_max_per_period_u", 0.0, 0.0, app.aaps.fuse.core.controller.EarlySupply.MAX_PER_PERIOD_U),
 }
 
 enum class FuseIntKey(
@@ -823,6 +847,9 @@ enum class FuseIntKey(
         app.aaps.fuse.core.controller.ExpectationAccount.MIN_HORIZON_MIN,
         app.aaps.fuse.core.controller.ExpectationAccount.MAX_HORIZON_MIN,
     ),
+
+    /** Fruehe Versorgung: Laenge des Zeitraums fuer die Hoechstmenge der weiteren Portionen [min]. */
+    EarlySupplyPeriodMin("fuse_early_supply_period_min", 10, app.aaps.fuse.core.controller.EarlySupply.MIN_PERIOD_MIN, app.aaps.fuse.core.controller.EarlySupply.MAX_PERIOD_MIN),
 }
 
 /**
@@ -1293,6 +1320,27 @@ enum class FuseBooleanKey(
      * Einschalten erst ab dem naechsten Marker.
      */
     ExpectationGuardExceptionEnabled("fuse_expectation_guard_exception_enabled", true),
+
+    /**
+     * FRUEHE VERSORGUNG (E-034 v2), Default AUS. Nur mit eingeschaltetem
+     * Erwartungskonto und nur fuer Mahlzeiten mit "Nur Erwartung" am Marker:
+     * statt der Huelle ein Gesamtbudget aus Kurve, Insulinwirkung und
+     * Skalierer, geliefert als Anfangsportion und weitere Portionen. Aus:
+     * bitgleich zum Konto ohne fruehe Versorgung.
+     */
+    EarlySupplyEnabled("fuse_early_supply_enabled", false),
+
+    /** G1: die Anfangsportion hebt das Guard-Urteil durch die Markerautorisierung. Default AUS. */
+    EarlySupplyInitialLiftsGuard("fuse_early_supply_initial_lifts_guard", false),
+
+    /** G2: die Anfangsportion hebt die Schwanzpruefung durch die Markerautorisierung. Default AUS. */
+    EarlySupplyInitialLiftsTail("fuse_early_supply_initial_lifts_tail", false),
+
+    /** G3: weitere Portionen pruefen den Guard mit der angekuendigten Mahlzeit. Default AUS. */
+    EarlySupplyGuardWithExpectation("fuse_early_supply_guard_with_expectation", false),
+
+    /** G4: weitere Portionen pruefen den Schwanz mit der angekuendigten Mahlzeit. Default AUS. */
+    EarlySupplyTailWithExpectation("fuse_early_supply_tail_with_expectation", false),
 }
 
 /**
