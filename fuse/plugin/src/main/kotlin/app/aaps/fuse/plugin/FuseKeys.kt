@@ -459,6 +459,17 @@ enum class FuseDoubleKey(
         "fuse_expectation_release_threshold_u", 0.3, 0.0,
         app.aaps.fuse.core.controller.ExpectationAccount.MAX_RELEASE_THRESHOLD_U,
     ),
+    /**
+     * DIE ERWARTUNGSKURVE IN VIER ECKWERTEN (Toni): erwartete
+     * Mahlzeitwirkung [U] nach 30, 60, 90 und 120 min ab Marker, dazwischen
+     * linear. Vorrang vor der Expertenzeile [FuseStringKey.ExpectationCurve];
+     * alle vier 0 (Standard) = nicht gesetzt. Persoenliche Werte stehen nur
+     * auf dem Geraet.
+     */
+    ExpectationCurveAt30U("fuse_expectation_curve_30_u", 0.0, 0.0, app.aaps.fuse.core.controller.ExpectationAccount.MAX_CURVE_U),
+    ExpectationCurveAt60U("fuse_expectation_curve_60_u", 0.0, 0.0, app.aaps.fuse.core.controller.ExpectationAccount.MAX_CURVE_U),
+    ExpectationCurveAt90U("fuse_expectation_curve_90_u", 0.0, 0.0, app.aaps.fuse.core.controller.ExpectationAccount.MAX_CURVE_U),
+    ExpectationCurveAt120U("fuse_expectation_curve_120_u", 0.0, 0.0, app.aaps.fuse.core.controller.ExpectationAccount.MAX_CURVE_U),
 }
 
 enum class FuseIntKey(
@@ -850,6 +861,11 @@ enum class FuseLongKey(
      *  Als Long statt Boolean, damit er im selben Enum wohnt wie der Anker
      *  und nicht im Einstellungs-Vertrag (fuseEinstellbareKeys) auftaucht. */
     MealMarkerNoPrime("fuse_meal_marker_no_prime", 0, 0, exportable = false),
+    /** EPISODENZUSTAND, kein Setting: die im Marker-Dialog getroffene Wahl
+     *  "nur Erwartung" (Toni) - keine Direktdosis in DIESER Mahlzeit,
+     *  die Huelle bleibt fuer das Erwartungskonto. Lebt und stirbt mit
+     *  [MealMarkerArmedTs] wie [MealMarkerNoPrime]. */
+    MealMarkerExpectationOnly("fuse_meal_marker_expectation_only", 0, 0, exportable = false),
 
     /**
      * ALTBESTAND, nur noch LESEND: `armedTs*10 + Stufe`.

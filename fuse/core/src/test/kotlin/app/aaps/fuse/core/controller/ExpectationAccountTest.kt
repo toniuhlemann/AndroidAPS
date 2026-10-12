@@ -344,4 +344,25 @@ class ExpectationAccountTest {
         assertFalse(st.stable(t0, t0 + 9 * min, 10))
         assertTrue(st.stable(t0, t0 + 10 * min, 10))
     }
+
+    @Test
+    fun `die Kurve aus vier Eckwerten trifft die Ecken und rechnet dazwischen linear`() {
+        val k = requireNotNull(ExpectationAccount.Curve.ausEckwerten(0.6, 1.8, 3.0, 4.2))
+        assertEquals(0.0, k.at(0.0), 1e-12)
+        assertEquals(0.6, k.at(30.0), 1e-12)
+        assertEquals(1.8, k.at(60.0), 1e-12)
+        assertEquals(3.0, k.at(90.0), 1e-12)
+        assertEquals(4.2, k.endU, 0.0)
+        assertEquals(0.3, k.at(15.0), 1e-12)
+        assertEquals(2.4, k.at(75.0), 1e-12)
+        assertEquals(ExpectationAccount.CURVE_POINTS, k.values().size)
+    }
+
+    @Test
+    fun `vier Eckwerte - nicht gesetzt, fallend, negativ oder ohne Ende ergeben keine Kurve`() {
+        assertNull(ExpectationAccount.Curve.ausEckwerten(0.0, 0.0, 0.0, 0.0))
+        assertNull(ExpectationAccount.Curve.ausEckwerten(1.0, 0.8, 2.0, 3.0))
+        assertNull(ExpectationAccount.Curve.ausEckwerten(-0.1, 1.0, 2.0, 3.0))
+        assertNull(ExpectationAccount.Curve.ausEckwerten(0.5, 1.0, 1.0, 0.0))
+    }
 }

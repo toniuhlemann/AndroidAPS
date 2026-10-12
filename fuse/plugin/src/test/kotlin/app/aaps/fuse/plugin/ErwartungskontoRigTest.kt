@@ -72,6 +72,7 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
     private var markerPress = 0L
     private var markerAt = 0L
     private var ohneVorschuss = false
+    private var nurErwartung = false
 
     /** Erzwungene Ablehnung der Bahn (predictorfreier Markerpfad), `null` = echte Bahn. */
     private var predictReject: app.aaps.fuse.core.predictor.PredictorReason? = null
@@ -189,6 +190,7 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
         FuseLongKey.entries.forEach { k -> whenever(preferences.get(k)).thenReturn(0L) }
         whenever(preferences.get(FuseLongKey.MealMarkerArmedTs)).thenAnswer { markerAt }
         whenever(preferences.get(FuseLongKey.MealMarkerNoPrime)).thenAnswer { if (ohneVorschuss) 1L else 0L }
+        whenever(preferences.get(FuseLongKey.MealMarkerExpectationOnly)).thenAnswer { if (nurErwartung) 1L else 0L }
     }
 
     private fun druecken(t: Long) {
@@ -463,6 +465,64 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
         assertTrue(erw > 0.0) { "kein Erwartungsanteil" }
         assertTrue(erw <= konto.a0U + 1e-9)
         assertTrue(imFenster.all { it.geliefertU <= FuseDoubleKey.MaxSmbU.defaultValue + 1e-9 }) { "Schritt ueber maxSMB" }
+    }
+
+    /** Die Direktdosis-Familie, wie sie in der Entscheidung als Quelle erscheint. */
+    private val direktQuellen = setOf(
+        app.aaps.fuse.core.controller.AuthorizedLift.Source.PRIME,
+        app.aaps.fuse.core.controller.AuthorizedLift.Source.MEAL_UPFRONT,
+    )
+
+    /**
+     * TONIS DRITTER WEG: die Marker-Wahl "nur Erwartung" macht im
+     * Betrieb, was der Pruefstandsarm EK-S macht - keine Direktdosis, das
+     * Budget traegt die Mahlzeit, in Schritten und nie ueber dem Rest.
+     */
+    @Test
+    fun `nur Erwartung per Marker-Wahl liefert das Budget ohne Direktdosis`(@TempDir dir: File) {
+        nurErwartung = true
+        try {
+            konfiguration(kontoAn = true, phi0Stabil = 1.0, phi0Tief = 1.0)
+            val zyklen = lauf(fStabil, dir).filter { it.o.abortReason == null }
+            val konto = zyklen.first { it.o.erwartungskonto!!.zyklus?.armiertInDiesemZyklus == true }.o.erwartungskonto!!.zyklus!!.state
+            // Die Huelle bleibt fuer das Konto: A_0 = min(Huelle, F(120)), anders als "ohne Vorschuss".
+            assertEquals(minOf(FuseDoubleKey.PrimeEnvelopeU.defaultValue, 3.0), konto.a0U, 1e-9)
+            val imFenster = zyklen.filter { it.o.erwartungskonto!!.gilt }
+            assertTrue(imFenster.isNotEmpty())
+            assertTrue(imFenster.all { (it.o.erwartungskonto!!.buchung?.direktdosisU ?: 0.0) == 0.0 }) { "Direktdosis im Fenster" }
+            assertTrue(zyklen.none { it.o.decision.grant?.source in direktQuellen }) { "Direktdosis-Quelle trotz nur Erwartung" }
+            val erw = imFenster.sumOf { it.o.erwartungskonto!!.buchung?.split?.dErwU ?: 0.0 }
+            assertTrue(erw > 0.0) { "kein Erwartungsanteil" }
+            assertTrue(erw <= konto.a0U + 1e-9)
+            assertTrue(imFenster.all { it.geliefertU <= FuseDoubleKey.MaxSmbU.defaultValue + 1e-9 }) { "Schritt ueber maxSMB" }
+            // Die Wahl steht im Zustand (und damit im Trail).
+            assertTrue(imFenster.all { it.o.state?.markerExpectationOnly == true })
+        } finally {
+            nurErwartung = false
+        }
+    }
+
+    /**
+     * Die Wahl gilt die GANZE Mahlzeit, auch ohne Konto: faellt das Konto aus
+     * (hier: Schalter aus), gibt es trotzdem keine ueberraschende Direktdosis.
+     * Gegenprobe: ohne die Wahl liefert derselbe Lauf eine Direktdosis.
+     */
+    @Test
+    fun `nur Erwartung haelt die Direktdosis auch ohne Konto zurueck`(@TempDir dir: File) {
+        konfiguration(kontoAn = false)
+        val gegenprobe = lauf(fStabil, File(dir, "ohne")).filter { it.o.abortReason == null }
+        assertTrue(gegenprobe.any { it.o.decision.grant?.source in direktQuellen }) { "Gegenprobe ohne Direktdosis - Probe zeigt nichts" }
+        nurErwartung = true
+        try {
+            markerAt = 0L
+            markerPress = 0L
+            konfiguration(kontoAn = false)
+            val zyklen = lauf(fStabil, File(dir, "mit")).filter { it.o.abortReason == null }
+            assertTrue(zyklen.isNotEmpty())
+            assertTrue(zyklen.none { it.o.decision.grant?.source in direktQuellen }) { "Direktdosis trotz nur Erwartung ohne Konto" }
+        } finally {
+            nurErwartung = false
+        }
     }
 
     /** Fallen nach dem Marker mit Prime-Insulin an Bord: das spaete Abwaertsrisiko des Aufschubs greift. */

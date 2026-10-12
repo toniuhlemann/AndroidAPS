@@ -672,6 +672,8 @@ class FusePlugin @Inject constructor(
         ereignisId: String? = null,
         /** Woher der Druck kam - nur fuer Log und Trail ([FuseStateJson.MarkerEvent]). */
         quelle: String = MarkerRuecknahme.Quelle.UNBEKANNT.text,
+        /** Wahl "nur Erwartung" (Toni): keine Direktdosis, die Huelle traegt das Konto. */
+        nurErwartung: Boolean = false,
     ): Boolean {
         // KI-177: UNTER DER LAUFSPERRE. Der Druck aendert Episodenfelder des
         // Ledgers und schreibt ihn; ohne Sperre konnte er das mitten in einem
@@ -685,12 +687,14 @@ class FusePlugin @Inject constructor(
             val gewartetMs = (System.nanoTime() - warteBeginn) / 1_000_000L
             if (gewartetMs >= markerWartenMeldenMs)
                 aapsLogger.warn(LTag.APS, "FUSE Marker wartete $gewartetMs ms auf den laufenden Zyklus")
-            toggleMealMarkerUnterSperre(now, ohneVorschuss, ereignisId, quelle)
+            toggleMealMarkerUnterSperre(now, ohneVorschuss, ereignisId, quelle, nurErwartung)
         }
     }
 
     /** Der eigentliche Umschaltvorgang. Nur ueber [toggleMealMarker] erreichbar, also nur unter [laufSperre]. */
-    private fun toggleMealMarkerUnterSperre(now: Long, ohneVorschuss: Boolean, ereignisId: String?, quelle: String): Boolean {
+    private fun toggleMealMarkerUnterSperre(
+        now: Long, ohneVorschuss: Boolean, ereignisId: String?, quelle: String, nurErwartung: Boolean = false,
+    ): Boolean {
         val armed = mealMarkerActive(now)
         val ordnung = MarkerReauthorization.ordnungVon(ereignisId)
         // VERALTETE RUECKRUFE FALLEN HERAUS. Nur ein echt juengeres
@@ -734,6 +738,7 @@ class FusePlugin @Inject constructor(
             // Die Episoden-Wahl stirbt mit dem Marker - ein spaeterer Druck
             // beginnt immer bei der vollen Huelle.
             preferences.put(FuseLongKey.MealMarkerNoPrime, 0L)
+            preferences.put(FuseLongKey.MealMarkerExpectationOnly, 0L)
             // Der Altbestand-Stempel wird mitgeloescht: bliebe er stehen,
             // liesse der Lese-Ruecktausch unten einen zurueckgenommenen
             // Marker wieder auferstehen.
@@ -809,6 +814,8 @@ class FusePlugin @Inject constructor(
         }
         preferences.put(FuseLongKey.MealMarkerArmedTs, now)
         preferences.put(FuseLongKey.MealMarkerNoPrime, if (ohneVorschuss) 1L else 0L)
+        // "Ohne Vorschuss" geht vor: beide zugleich heisst ohne Vorschuss.
+        preferences.put(FuseLongKey.MealMarkerExpectationOnly, if (nurErwartung && !ohneVorschuss) 1L else 0L)
         // DER EINZIGE ORT, an dem ein Druck als BEOBACHTET gilt. Er steht
         // absichtlich hier und nicht beim Nachfuellen des Marker-Rings: der
         // liest den Trail und kennt Druecke von vor zwei Stunden.
@@ -821,7 +828,7 @@ class FusePlugin @Inject constructor(
         // dieser Version ist der Schluessel endgueltig leer.
         preferences.put(FuseLongKey.MealMarkerStamp, 0L)
         synchronized(markerPressRing) { MarkerTimeline.add(markerPressRing, now) }
-        aapsLogger.info(LTag.APS, "FUSE Marker gesetzt: quelle=$quelle marker=$now ohneVorschuss=$ohneVorschuss")
+        aapsLogger.info(LTag.APS, "FUSE Marker gesetzt: quelle=$quelle marker=$now ohneVorschuss=$ohneVorschuss nurErwartung=$nurErwartung")
         markerEreignis("ARMED", now, quelle, now)
         // Eine Vormerkung galt dem alten Marker - der neue beginnt ohne.
         speichereRuecknahmeVormerkung(null)
@@ -1197,12 +1204,36 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
                 foreignBolusU = it.foreignBolusU,
                 episodeRestMin = it.episodeRestMin,
                 windowMin = it.windowMin,
+                expectationOnlyMaxU = nurErwartungBisU(huelle),
             )
         }
     }
 
-    override fun fuseMarkerToggle(now: Long, ohneVorschuss: Boolean, ereignisId: String?): Boolean =
-        toggleMealMarker(now, ohneVorschuss, ereignisId, quelle = MarkerRuecknahme.Quelle.UEBERSICHT.text)
+    override fun fuseMarkerToggle(now: Long, ohneVorschuss: Boolean, ereignisId: String?, nurErwartung: Boolean): Boolean =
+        toggleMealMarker(now, ohneVorschuss, ereignisId, quelle = MarkerRuecknahme.Quelle.UEBERSICHT.text, nurErwartung = nurErwartung)
+
+    /** Welche Erwartungskurve gilt (Toni) - dieselbe Regel wie im Regler. */
+    private fun wirksameKurve(): ExpectationCurveText.Wirksam = ExpectationCurveText.wirksam(
+        zeile = preferences.get(FuseStringKey.ExpectationCurve),
+        f30U = preferences.get(FuseDoubleKey.ExpectationCurveAt30U),
+        f60U = preferences.get(FuseDoubleKey.ExpectationCurveAt60U),
+        f90U = preferences.get(FuseDoubleKey.ExpectationCurveAt90U),
+        f120U = preferences.get(FuseDoubleKey.ExpectationCurveAt120U),
+    )
+
+    /**
+     * Bis zu wie viel [U] die Wahl "nur Erwartung" am Marker vorab buchen kann
+     * (Vorgriff bei stabilem Start mal Kurve, hoechstens die Huelle) - `null`,
+     * wenn sie nicht angeboten wird: Konto aus, keine gueltige Kurve, kein
+     * Vorgriff oder keine Huelle.
+     */
+    private fun nurErwartungBisU(huelleU: Double): Double? {
+        if (!preferences.get(FuseBooleanKey.ExpectationAccountEnabled)) return null
+        val kurve = app.aaps.fuse.core.controller.ExpectationAccount.Curve.parse(wirksameKurve().text) ?: return null
+        val phi = preferences.get(FuseDoubleKey.ExpectationPhi0Stable)
+        if (phi <= 0.0 || huelleU <= 0.0) return null
+        return minOf(huelleU, phi * kurve.remaining(0.0, preferences.get(FuseIntKey.ExpectationHorizonMin)))
+    }
 
     override fun fuseMarkerRuecknahmeVormerken(now: Long, ereignisId: String?): Long? =
         markerRuecknahmeVormerken(now, ereignisId, MarkerRuecknahme.Quelle.UEBERSICHT)
@@ -2849,12 +2880,19 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
                 rh.gs(R.string.fuse_early_adaptive_meal_horizon_summary),
             )
         }
-        // Die Erwartungskurve: nie der rohe Text, sondern was er bewirkt.
-        if (pref.key == FuseStringKey.ExpectationCurve.key) {
-            pref.summary = ExpectationCurveText.zusammenfassung(
-                preferences.get(FuseStringKey.ExpectationCurve),
-                rh.gs(R.string.fuse_expectation_curve_summary),
+        // Die Erwartungskurve: nie der rohe Text, sondern was WIRKLICH gilt
+        // (Toni: vier Kurvenwerte mit Vorrang, die Zahlenzeile nur fuer
+        // Pruefstand und Forschung).
+        val kurvenSchluessel = listOf(
+            FuseDoubleKey.ExpectationCurveAt30U, FuseDoubleKey.ExpectationCurveAt60U,
+            FuseDoubleKey.ExpectationCurveAt90U, FuseDoubleKey.ExpectationCurveAt120U,
+        )
+        if (pref.key == FuseStringKey.ExpectationCurve.key || kurvenSchluessel.any { it.key == pref.key }) {
+            val erklaerung = rh.gs(
+                if (pref.key == FuseStringKey.ExpectationCurve.key) R.string.fuse_expectation_curve_summary
+                else R.string.fuse_expectation_curve_points_summary
             )
+            pref.summary = ExpectationCurveText.zusammenfassungWirksam(wirksameKurve(), erklaerung)
         }
     }
 
@@ -3006,6 +3044,12 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
         cat("fuse_expectation", "Erwartungskonto (Test)") {
             addPreference(AdaptiveSwitchPreference(ctx = context, booleanKey = FuseBooleanKey.ExpectationAccountEnabled, summary = R.string.fuse_expectation_account_summary, title = R.string.fuse_expectation_account_title))
             addPreference(AdaptiveSwitchPreference(ctx = context, booleanKey = FuseBooleanKey.ExpectationGuardExceptionEnabled, summary = R.string.fuse_expectation_guard_exception_summary, title = R.string.fuse_expectation_guard_exception_title))
+            // DIE KURVE IN VIER WERTEN (Toni): erwartete Mahlzeitwirkung
+            // nach 30, 60, 90 und 120 min - Vorrang vor der Expertenzeile unten.
+            addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.ExpectationCurveAt30U, dialogMessage = R.string.fuse_expectation_curve_points_summary, title = R.string.fuse_expectation_curve_30_title))
+            addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.ExpectationCurveAt60U, dialogMessage = R.string.fuse_expectation_curve_points_summary, title = R.string.fuse_expectation_curve_60_title))
+            addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.ExpectationCurveAt90U, dialogMessage = R.string.fuse_expectation_curve_points_summary, title = R.string.fuse_expectation_curve_90_title))
+            addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.ExpectationCurveAt120U, dialogMessage = R.string.fuse_expectation_curve_points_summary, title = R.string.fuse_expectation_curve_120_title))
             addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.ExpectationPhi0Stable, dialogMessage = R.string.fuse_expectation_phi0_stable_summary, title = R.string.fuse_expectation_phi0_stable_title))
             addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.ExpectationPhi0AfterLow, dialogMessage = R.string.fuse_expectation_phi0_after_low_summary, title = R.string.fuse_expectation_phi0_after_low_title))
             addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.ExpectationStabilityBgMgdl, dialogMessage = R.string.fuse_expectation_stability_bg_summary, title = R.string.fuse_expectation_stability_bg_title))

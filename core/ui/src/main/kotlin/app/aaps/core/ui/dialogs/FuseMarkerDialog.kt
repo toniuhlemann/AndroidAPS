@@ -54,6 +54,8 @@ object FuseMarkerDialog {
         facts: FuseOverviewSource.MarkerPromptFacts,
         onConfirm: Runnable,
         onConfirmNoPrime: Runnable? = null,
+        /** Toni: der dritte Weg "nur Erwartung" - nur, wenn FUSE ihn anbietet. */
+        onConfirmExpectationOnly: Runnable? = null,
     ) {
         // DIE MENGEN DER AUTORISIERUNG, die dieser Druck erzeugt - eine
         // Zeile je Anteil, Nullteile ausgeblendet (Tonis UI-P0 25.08.):
@@ -117,6 +119,14 @@ object FuseMarkerDialog {
             text.append("\n\n").append(rh.gs(R.string.overview_fuse_meal_confirm_episode, it))
         }
 
+        // DIE WAHL "NUR ERWARTUNG" (Toni) - nur, wenn FUSE sie anbietet
+        // (Konto an, gueltige Kurve, Vorgriff); die Groessenordnung steht vor
+        // dem Ja wie bei den anderen Wegen.
+        val nurErwartung = onConfirmExpectationOnly?.takeIf { facts.expectationOnlyMaxU != null }
+        if (nurErwartung != null) facts.expectationOnlyMaxU?.let {
+            text.append("\n\n").append(rh.gs(R.string.overview_fuse_meal_confirm_expectation_only, it))
+        }
+
         if (onConfirmNoPrime == null) {
             OKDialog.showConfirmation(
                 activity,
@@ -133,6 +143,39 @@ object FuseMarkerDialog {
             dialog.dismiss()
             SystemClock.sleep(100)
             activity.runOnUiThread(aktion)
+        }
+        if (nurErwartung != null) {
+            // VIER AUSGAENGE: drei Wege und Abbrechen. Ein Material-Dialog hat
+            // nur drei Knopfplaetze - die drei Wege stehen deshalb als Knoepfe
+            // untereinander unter dem Text, Abbrechen bleibt unten.
+            val dp = activity.resources.displayMetrics.density
+            val inhalt = android.widget.LinearLayout(activity).apply {
+                orientation = android.widget.LinearLayout.VERTICAL
+                setPadding((24 * dp).toInt(), (12 * dp).toInt(), (24 * dp).toInt(), 0)
+            }
+            val meldung = text.toString()
+            inhalt.addView(android.widget.TextView(activity).apply {
+                setText(meldung)
+                textSize = 16f
+            })
+            val dialog = MaterialAlertDialogBuilder(activity, R.style.DialogTheme)
+                .setCustomTitle(AlertDialogHelper.buildCustomTitle(activity, rh.gs(R.string.overview_fuse_meal_confirm_title)))
+                .setView(inhalt)
+                .setNegativeButton(android.R.string.cancel) { d: DialogInterface, _: Int ->
+                    if (!gewaehlt) { gewaehlt = true; d.dismiss() }
+                }
+                .create()
+            fun knopf(label: Int, aktion: Runnable) = com.google.android.material.button.MaterialButton(activity).apply {
+                setText(label)
+                isAllCaps = false
+                setOnClickListener { waehle(dialog, aktion) }
+            }
+            inhalt.addView(knopf(R.string.fuse_meal_confirm_release, onConfirm))
+            inhalt.addView(knopf(R.string.fuse_meal_confirm_expectation_only, nurErwartung))
+            onConfirmNoPrime?.let { inhalt.addView(knopf(R.string.fuse_meal_confirm_no_prime, it)) }
+            dialog.show()
+            dialog.setCanceledOnTouchOutside(false)
+            return
         }
         MaterialAlertDialogBuilder(activity, R.style.DialogTheme)
             .setMessage(text.toString())

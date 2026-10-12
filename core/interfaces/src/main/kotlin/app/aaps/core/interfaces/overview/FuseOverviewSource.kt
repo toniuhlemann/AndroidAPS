@@ -92,6 +92,13 @@ interface FuseOverviewSource {
         /** Laenge des Freigabe-Fensters [min] aus der EINSTELLUNG; `null` =
          *  unbekannt, dann nennt der Dialog keine Dauer statt einer falschen. */
         val windowMin: Int? = null,
+        /**
+         * Die Wahl "nur Erwartung" (Toni): keine Direktdosis, die
+         * Mahlzeit traegt das Erwartungskonto - bis zu dieser Menge [U] vorab
+         * nach Kurve. `null` = nicht angeboten (Konto aus, keine gueltige
+         * Kurve, kein Vorgriff).
+         */
+        val expectationOnlyMaxU: Double? = null,
     ) {
 
         /** Eine Mengenzeile der Rueckfrage. */
@@ -130,6 +137,8 @@ interface FuseOverviewSource {
          * ungeschuetzt.
          */
         ereignisId: String? = null,
+        /** Wahl "nur Erwartung" (Toni): keine Direktdosis in dieser Mahlzeit. */
+        nurErwartung: Boolean = false,
     ): Boolean
 
     /**

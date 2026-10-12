@@ -1759,6 +1759,9 @@ object FuseStateJson {
                 // 0 = kein Marker.
                 .put("markerArmedTs", outcome.state?.markerArmedTs ?: JSONObject.NULL)
                 .put("markerNoPrime", outcome.state?.markerNoPrime ?: JSONObject.NULL)
+                // Toni: die Wahl "nur Erwartung" - nur wenn getroffen,
+                // damit Laeufe ohne sie bitgleich bleiben.
+                .apply { if (outcome.state?.markerExpectationOnly == true) put("markerExpectationOnly", true) }
                 .put("markerBoost", outcome.state?.markerBoost ?: JSONObject.NULL)
                 .put("mealWindow", outcome.state?.mealWindow ?: JSONObject.NULL)
                 .put("smbRatioEffective", fin(outcome.state?.effectiveSmbRatio))

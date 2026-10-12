@@ -90,6 +90,12 @@ object Fuse20Folgen {
     /** E-034: erwarteter SHA-256 der Kurvendatei; weicht er ab, laeuft nichts. */
     const val KURVE_SHA = "FUSE_GN_KURVE_SHA"
 
+    /**
+     * Offline-Proben (Toni): Namen zusaetzlicher Folgen aus [ZUSATZ], durch Komma getrennt. Fehlt die Variable,
+     * laeuft nur [FOLGEN] - GN-A bleibt unveraendert.
+     */
+    const val ZUSATZ_VAR = "FUSE_GN_ZUSATZFOLGEN"
+
     /** E-034: Arm, Kurvenquelle und Kurven-Hash eines Arm-Laufs. */
     const val DATEI_ARM = "gn_arm.txt"
 
@@ -214,6 +220,23 @@ object Fuse20Folgen {
     )
 
     val FOLGEN: List<Folge> = listOf(F1, F2, F3)
+
+    /**
+     * ZUSATZFOLGE (Toni: "Mahlzeiten, die nach 60 Minuten durch sind"): ein kleiner, schneller Snack am Tag,
+     * Markerdruck in Minute 0. Laeuft NUR auf Anforderung ([ZUSATZ_VAR]).
+     */
+    val SNACK = Folge(
+        "SNACK", 1_700_215_200_000L, -60, 240,
+        listOf(-60 to 105.0, 0 to 105.0, 10 to 115.0, 30 to 160.0, 45 to 140.0, 60 to 108.0, 90 to 100.0, 240 to 100.0),
+        markerMin = 0,
+    )
+
+    val ZUSATZ: Map<String, Folge> = mapOf("SNACK" to SNACK)
+
+    /** Die angeforderten Zusatzfolgen ([ZUSATZ_VAR]); leer im Normalfall. */
+    fun zusatzFolgen(): List<Folge> = (System.getenv(ZUSATZ_VAR) ?: System.getProperty("fuse.gn.zusatzfolgen") ?: "")
+        .split(",").map { it.trim() }.filter { it.isNotEmpty() }
+        .map { requireNotNull(ZUSATZ[it]) { "unbekannte Zusatzfolge $it" } }
 
     /**
      * DIE IDEALE PUMPE nach den AAPS-Regeln, dieselbe Regel wie in der Treueprobe T1: eine TBR endet mit ihrer Dauer, dem naechsten
@@ -679,7 +702,7 @@ class Fuse20GleichwertigkeitTest : TestBaseWithProfile() {
         val uebergaenge = Fuse20Folgen.Uebergaenge()
         val hashes = LinkedHashSet<String>()
         java.util.zip.GZIPOutputStream(java.io.FileOutputStream(File(out, Fuse20Folgen.DATEI_EXPORT))).bufferedWriter(Charsets.UTF_8).use { export ->
-            Fuse20Folgen.FOLGEN.forEach { f -> lauf(f, dir, zeilen, uebergaenge, export, hashes) }
+            (Fuse20Folgen.FOLGEN + Fuse20Folgen.zusatzFolgen()).forEach { f -> lauf(f, dir, zeilen, uebergaenge, export, hashes) }
         }
         val abdeckung = Fuse20Folgen.abdeckung(zeilen, uebergaenge)
         Fuse20Folgen.schreiben(out, zeilen, abdeckung, ohneWert)

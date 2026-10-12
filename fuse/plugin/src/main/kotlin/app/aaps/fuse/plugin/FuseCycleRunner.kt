@@ -1574,6 +1574,12 @@ class FuseCycleRunner(
         // Totband-Oeffnung bleiben - die Mahlzeit ist ja erklaert. Ein
         // Altbestand-Stempel kennt die Wahl nicht und laeuft mit voller Huelle.
         val markerNoPrime = markerTs > 0L && preferences.get(FuseLongKey.MealMarkerNoPrime) != 0L
+        // Die Episoden-Wahl "nur Erwartung" (Toni): KEINE Direktdosis in
+        // dieser Mahlzeit - die ganze Familie (Sofortanteil, Prime, Aufschub,
+        // Ruhe) bleibt aus, auch wenn das Konto spaeter ausfaellt; die Huelle
+        // bleibt fuer das Erwartungskonto. "Ohne Vorschuss" geht vor.
+        val markerNurErwartung = markerTs > 0L && !markerNoPrime &&
+            preferences.get(FuseLongKey.MealMarkerExpectationOnly) != 0L
         val episodes = ledger.episodes
         // DER WIRKSAME EPISODENDECKEL (Toni 16.08., Fall 1 des Audit-Nachtrags).
         //
@@ -2771,6 +2777,7 @@ class FuseCycleRunner(
                     markerBoost = markerBoost,
                     markerArmedTs = markerTs,
                     markerNoPrime = markerNoPrime,
+                    markerExpectationOnly = markerNurErwartung,
                     reboundSuppressedByMarker = reboundSuppressedByMarker,
                     mealWindow = mealWindow,
                     rSignedMgdlPerMin = ratioDrive,
@@ -3901,8 +3908,10 @@ class FuseCycleRunner(
         // und deckt Phase-A-Maskierungen nicht).
         val underlyingNormalBlock = vetted.block
         // E-034, Arm EK-S: im Mahlzeitkontext des Kontos die ganze
-        // Direktdosis-Familie aus (Sofortanteil, Prime, Aufschub, Ruhe).
-        val ekOhneDirektdosis = ekZyklus != null && cfg.expectationBenchNoDirectDose
+        // Direktdosis-Familie aus (Sofortanteil, Prime, Aufschub, Ruhe) - auf
+        // dem Pruefstand per Schalter, im Betrieb per Marker-Wahl "nur
+        // Erwartung" (die gilt die ganze Mahlzeit, auch ohne Konto).
+        val ekOhneDirektdosis = markerNurErwartung || (ekZyklus != null && cfg.expectationBenchNoDirectDose)
         val liftedUpfront = when {
             ekOhneDirektdosis -> vetted
             upfrontOhneNetz || ledgerView.hold -> vetted
@@ -7388,6 +7397,8 @@ class FuseCycleRunner(
         // Dieselbe Episoden-Wahl wie im Hauptpfad - hier lokal gelesen, weil
         // dieser Pfad seine Eingaben als Parameter bekommt.
         val markerNoPrime = mealMarkerActive && preferences.get(FuseLongKey.MealMarkerNoPrime) != 0L
+        val markerNurErwartung = mealMarkerActive && !markerNoPrime &&
+            preferences.get(FuseLongKey.MealMarkerExpectationOnly) != 0L
 
         val primePlan = PrimeRelease.plan(
             PrimeRelease.Input(
@@ -7504,7 +7515,7 @@ class FuseCycleRunner(
         val upfrontRequestedU = 0.0
         // EK-S (Codex-Befund P1 zu K5b): die ganze Direktdosis-Familie ist aus -
         // auch der lineare Prime-Anteil des predictorfreien Pfads.
-        val ekOhneDirektdosisFallback = ekZyklus != null && cfg.expectationBenchNoDirectDose
+        val ekOhneDirektdosisFallback = markerNurErwartung || (ekZyklus != null && cfg.expectationBenchNoDirectDose)
         val liftedPrime = if (ekOhneDirektdosisFallback) basis else PrimeRelease.lift(
             basis, primePlan, state,
             markerAuthorized = true,
@@ -8738,7 +8749,14 @@ class FuseCycleRunner(
             expectationStabilityMin = preferences.get(FuseIntKey.ExpectationStabilityMin),
             expectationReleaseThresholdU = preferences.get(FuseDoubleKey.ExpectationReleaseThresholdU),
             expectationHorizonMin = preferences.get(FuseIntKey.ExpectationHorizonMin),
-            expectationCurveText = preferences.get(FuseStringKey.ExpectationCurve),
+            // Die wirksame Kurve (Toni): vier Eckwerte vor Expertenzeile.
+            expectationCurveText = ExpectationCurveText.wirksam(
+                zeile = preferences.get(FuseStringKey.ExpectationCurve),
+                f30U = preferences.get(FuseDoubleKey.ExpectationCurveAt30U),
+                f60U = preferences.get(FuseDoubleKey.ExpectationCurveAt60U),
+                f90U = preferences.get(FuseDoubleKey.ExpectationCurveAt90U),
+                f120U = preferences.get(FuseDoubleKey.ExpectationCurveAt120U),
+            ).text,
         )
 
     /**

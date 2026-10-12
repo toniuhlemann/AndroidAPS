@@ -95,6 +95,11 @@ class FuseFragment : DaggerFragment() {
                     fusePlugin.toggleMealMarker(now, ohneVorschuss = true, ereignisId = ereignis, quelle = quelle.text)
                     update()
                 },
+                // Toni: der dritte Weg "nur Erwartung" - erscheint nur, wenn FUSE ihn anbietet.
+                Runnable {
+                    fusePlugin.toggleMealMarker(now, ereignisId = ereignis, quelle = quelle.text, nurErwartung = true)
+                    update()
+                },
             )
         }
         binding.fuseDetailsToggle.setOnClickListener {

@@ -126,6 +126,29 @@ object ExpectationAccount {
                     else -> null
                 }
             }
+
+            /** Abstand der Eckwerte [min]: die Kurve in vier Werten bei 30, 60, 90 und 120 min. */
+            const val ECKEN_ABSTAND_MIN = 30
+
+            /**
+             * Die Kurve aus den VIER ECKWERTEN des Einstellungsbildschirms
+             * (Toni: eine Zeile voller Zahlen ist nicht verstaendlich):
+             * die erwartete Mahlzeitwirkung [U] nach 30, 60, 90 und 120 min ab
+             * Marker, dazwischen linear, F(0) = 0. Dieselbe Pruefung wie jede
+             * Kurve ([of]): fallend, negativ oder Ende 0 ergibt `null` -
+             * Erwartung aus. Alle vier 0 (Standard) heisst: nicht gesetzt.
+             */
+            fun ausEckwerten(f30U: Double, f60U: Double, f90U: Double, f120U: Double): Curve? {
+                val ecken = doubleArrayOf(0.0, f30U, f60U, f90U, f120U)
+                if (ecken.drop(1).all { it == 0.0 }) return null
+                val werte = (0 until CURVE_POINTS).map { i ->
+                    val t = i * CURVE_STEP_MIN
+                    val k = min(t / ECKEN_ABSTAND_MIN, ecken.size - 2)
+                    val w = (t - k * ECKEN_ABSTAND_MIN).toDouble() / ECKEN_ABSTAND_MIN
+                    if (w == 1.0) ecken[k + 1] else ecken[k] + (ecken[k + 1] - ecken[k]) * w
+                }
+                return of(werte)
+            }
         }
     }
 

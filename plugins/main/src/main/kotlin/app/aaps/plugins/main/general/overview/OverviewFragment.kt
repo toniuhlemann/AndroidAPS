@@ -506,6 +506,11 @@ class OverviewFragment : DaggerFragment(), View.OnClickListener, OnLongClickList
                 fuseOverviewSource.fuseMarkerToggle(now, ohneVorschuss = true, ereignisId = ereignis)
                 processButtonsVisibility()
             },
+            // Toni: der dritte Weg "nur Erwartung" - erscheint nur, wenn FUSE ihn anbietet.
+            Runnable {
+                fuseOverviewSource.fuseMarkerToggle(now, ereignisId = ereignis, nurErwartung = true)
+                processButtonsVisibility()
+            },
         )
     }
 

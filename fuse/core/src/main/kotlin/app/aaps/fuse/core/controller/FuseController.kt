@@ -204,6 +204,9 @@ object FuseController {
         /** Episoden-Wahl "ohne Vorschuss" aus dem Marker-Dialog: die
          *  Freigabe-Huelle und der Erklaerungs-Kredit dieser Episode sind 0. */
         val markerNoPrime: Boolean = false,
+        /** Episoden-Wahl "nur Erwartung" (Toni): keine Direktdosis in
+         *  dieser Mahlzeit, die Huelle traegt das Erwartungskonto. */
+        val markerExpectationOnly: Boolean = false,
         /** Rebound-Bedingung lag an, wurde aber durch einen aktiven Marker
          *  entwaffnet (Gas-vor-Bremse NUR fuer erklaertes Wissen, 08.08.):
          *  das Fenster schuetzt vor dem Jagen UNANGEKUENDIGTER Hypo-
