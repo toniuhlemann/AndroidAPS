@@ -908,6 +908,12 @@ enum class FuseLongKey(
      *  die Huelle bleibt fuer das Erwartungskonto. Lebt und stirbt mit
      *  [MealMarkerArmedTs] wie [MealMarkerNoPrime]. */
     MealMarkerExpectationOnly("fuse_meal_marker_expectation_only", 0, 0, exportable = false),
+    /** EPISODENZUSTAND, kein Setting (E-034 v2, Toni): die ausdrueckliche
+     *  Bestaetigung "Mahlzeit nach Tief" [ms]. Hebt die Tief-Sperre der
+     *  fruehen Versorgung auf, wenn sie nach Sperrbeginn kam und das Tief
+     *  vorbei ist; zaehlt nur fuer die Autorisierung, die nach ihr begann
+     *  oder sie umfasst (Zeitpunkt ab Marker). */
+    EarlySupplyLowConfirmTs("fuse_early_supply_low_confirm_ts", 0, 0, exportable = false),
 
     /**
      * ALTBESTAND, nur noch LESEND: `armedTs*10 + Stufe`.

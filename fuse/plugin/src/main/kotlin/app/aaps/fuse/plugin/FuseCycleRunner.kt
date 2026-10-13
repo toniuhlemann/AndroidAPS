@@ -1718,9 +1718,12 @@ class FuseCycleRunner(
             // Freigabe des Vorgriffs beim naechsten vollen Kontoschritt DIESER
             // Autorisierung zurueck - sonst uebernaehme dieser nach der
             // Erholung die alte Freigabe ohne neue Strecke.
+            // v2 (Bank N2, W3): auch VOR der Freigabe - das Tief sperrt dort die fruehe Versorgung; ohne den Vermerk
+            // hinterliess ein Tief im Abbruch (Safety-Halt) keine Spur, und der Anstieg durch die Rescue-KH galt nach
+            // der Freigabe als bestaetigte Mahlzeit. v1 bleibt unveraendert.
             if (step?.safetyReasons?.isNotEmpty() == true) {
                 ekStabilSeit = null
-                episodes.expectation?.takeIf { it.released }?.let { ekRuecknahmeOffenFuerAuth = it.authId }
+                episodes.expectation?.takeIf { it.released || it.early != null }?.let { ekRuecknahmeOffenFuerAuth = it.authId }
             }
             // Codex 22.08.: ein Abbruchzyklus ist fuer den Liveness-Kanal
             // ein unbeobachteter Zyklus - ein aktiver Lauf endet hier.
@@ -6923,6 +6926,10 @@ class FuseCycleRunner(
         val pausenGruende: List<String> = emptyList(),
         /** Warum die Freigabe in DIESEM Zyklus zurueckgenommen wurde: LOW, LOW_ON_ABORT, RESTART; sonst null. */
         val ruecknahmeGrund: String? = null,
+        /** v2: das gemessene Tief, das in DIESEM Zyklus die fruehe Versorgung sperrt (LOW, LOW_ON_ABORT); sonst null. */
+        val tiefGrund: String? = null,
+        /** v2: die fuer diese Mahlzeit geltende Bestaetigung nach einem Tief [ms]; 0 = keine. */
+        val bestaetigtNachTiefTs: Long = 0L,
         /** E-034 v2: G1..G4, die jetzt gelten; `null` = Konto v1. */
         val fruehSchalter: app.aaps.fuse.core.controller.EarlySupply.Switches? = null,
     )
@@ -7131,6 +7138,10 @@ class FuseCycleRunner(
             else -> null
         }
         ekRuecknahmeOffenFuerAuth = 0L
+        val tiefGrund = ruecknahmeGrund.takeIf { it == "LOW" || it == "LOW_ON_ABORT" }
+        // v2 (Toni): die ausdrueckliche Bestaetigung der Mahlzeit nach einem Tief - nur fuer DIESE Autorisierung.
+        val bestaetigtNachTief = if (konto.early == null) 0L
+        else preferences.get(FuseLongKey.EarlySupplyLowConfirmTs).takeIf { it >= konto.authId } ?: 0L
         val (neu, eval) = ExpectationAccount.step(
             konto,
             ExpectationAccount.Inputs(
@@ -7144,8 +7155,9 @@ class FuseCycleRunner(
                 paused = pausiert,
                 stableNow = stabil,
                 measuredLow = ruecknahmeGrund != null,
-                // v2: nur ein GEMESSENES Tief beendet die fruehe Versorgung - der Neustart nimmt nur die Freigabe.
-                lowEndsEarlySupply = ruecknahmeGrund == "LOW" || ruecknahmeGrund == "LOW_ON_ABORT",
+                // v2: nur ein GEMESSENES Tief sperrt die fruehe Versorgung - der Neustart nimmt nur die Freigabe.
+                lowLocksEarlySupply = tiefGrund != null,
+                confirmedAfterLowTs = bestaetigtNachTief,
                 early = if (konto.early != null) fruehEingaben else null,
             ),
         )
@@ -7170,6 +7182,8 @@ class FuseCycleRunner(
             armiertInDiesemZyklus = armiert, stabil = stabil, pausiert = pausiert,
             pausenGruende = pausenGruende,
             ruecknahmeGrund = ruecknahmeGrund.takeIf { eval.releaseRevoked },
+            tiefGrund = tiefGrund.takeIf { gefuehrt.early != null },
+            bestaetigtNachTiefTs = bestaetigtNachTief,
             // G1..G4: festgehalten UND bisher nie abgeschaltet (s. oben).
             fruehSchalter = gefuehrt.early?.switches,
         )

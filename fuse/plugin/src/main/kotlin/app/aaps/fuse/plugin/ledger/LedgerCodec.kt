@@ -748,7 +748,9 @@ object LedgerCodec {
                     .put("g4", f.switches.tailWithExpectation)
                     .put("withdrawn", f.withdrawn))
                 put("initialDone", s.initialDone)
-                put("endedByLow", s.earlyEndedByLow)
+                put("lowLocked", s.earlyLowLocked)
+                if (s.earlyLowLockSinceTs > 0L) put("lowLockSinceTs", s.earlyLowLockSinceTs)
+                put("afterLow", s.earlyAfterLow)
                 put("portions", JSONArray(s.portions.map { JSONArray(listOf(it.ts, zahl(it.amountU))) }))
             }
     }
@@ -872,8 +874,14 @@ object LedgerCodec {
                 ),
                 initialDone = schalter("initialDone"),
                 portions = portionen,
-                // Optional: ein v2-Stand vor dieser Regel kennt das Feld nicht.
-                earlyEndedByLow = o.optBoolean("endedByLow", false),
+                // Optional: aeltere v2-Staende kennen die Felder nicht. Ihr "endedByLow" (Ende fuer immer) wird zur
+                // Sperre seit dem Marker - aufheben kann sie dann nur eine Bestaetigung in dieser Mahlzeit.
+                earlyLowLocked = o.optBoolean("lowLocked", o.optBoolean("endedByLow", false)),
+                earlyLowLockSinceTs = o.optLong(
+                    "lowLockSinceTs",
+                    if (o.optBoolean("lowLocked", o.optBoolean("endedByLow", false))) basis.authId else 0L,
+                ).also { require(it == 0L || it >= basis.authId) { "lowLockSinceTs $it" } },
+                earlyAfterLow = o.optBoolean("afterLow", o.optBoolean("endedByLow", false)),
             )
         }
     }.getOrNull()

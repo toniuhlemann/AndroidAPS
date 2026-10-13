@@ -2580,7 +2580,12 @@ object FuseStateJson {
                     .put("switchesPinned", g(f.switches))
                     .put("switchesNow", g(z.fruehSchalter))
                     .put("withdrawn", f.withdrawn)
-                    .put("endedByLow", s.earlyEndedByLow)
+                    // Tief-Sperre (Toni): gesperrt seit, danach alles IOB angerechnet, Bestaetigung, Grund im Zyklus.
+                    .put("lowLocked", s.earlyLowLocked)
+                    .put("lowLockSinceTs", if (s.earlyLowLockSinceTs > 0L) s.earlyLowLockSinceTs else JSONObject.NULL)
+                    .put("afterLow", s.earlyAfterLow)
+                    .put("lowConfirmTs", if (z.bestaetigtNachTiefTs > 0L) z.bestaetigtNachTiefTs else JSONObject.NULL)
+                    .put("lowReason", z.tiefGrund ?: JSONObject.NULL)
                     .put("initialDone", s.initialDone)
                     .put("portionsInBookU", fin(s.portions.sumOf { it.amountU }))
                     .put("demandU", fin(e.early?.demandU ?: Double.NaN))

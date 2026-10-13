@@ -816,6 +816,8 @@ class FusePlugin @Inject constructor(
         preferences.put(FuseLongKey.MealMarkerNoPrime, if (ohneVorschuss) 1L else 0L)
         // "Ohne Vorschuss" geht vor: beide zugleich heisst ohne Vorschuss.
         preferences.put(FuseLongKey.MealMarkerExpectationOnly, if (nurErwartung && !ohneVorschuss) 1L else 0L)
+        // Eine Bestaetigung nach Tief gehoert zur vorigen Mahlzeit (sie zaehlt ohnehin nur ab Marker) - aufraeumen.
+        preferences.put(FuseLongKey.EarlySupplyLowConfirmTs, 0L)
         // DER EINZIGE ORT, an dem ein Druck als BEOBACHTET gilt. Er steht
         // absichtlich hier und nicht beim Nachfuellen des Marker-Rings: der
         // liest den Trail und kennt Druecke von vor zwei Stunden.
@@ -1282,6 +1284,25 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
         markerRuecknahmeRueckgaengig(now, MarkerRuecknahme.Quelle.UEBERSICHT)
 
     override fun fuseMarkerEreignis(): String = markerEreignisKennung()
+
+    /** E-034 v2 (Toni): die fruehe Versorgung der laufenden Mahlzeit ist durch ein gemessenes Tief gesperrt. */
+    fun fruehGesperrtNachTief(now: Long): Boolean =
+        mealMarkerActive(now) && ledgerAdapter.episodes.expectation?.let { it.early != null && it.earlyLowLocked } == true
+
+    /** Die Sperre ist schon bestaetigt (ab Sperrbeginn) - sie faellt, sobald das Tief vorbei und die Strecke erfuellt ist. */
+    fun fruehNachTiefBestaetigt(): Boolean {
+        val k = ledgerAdapter.episodes.expectation ?: return false
+        val t = preferences.get(FuseLongKey.EarlySupplyLowConfirmTs)
+        return k.earlyLowLocked && t > 0L && t >= k.earlyLowLockSinceTs
+    }
+
+    /**
+     * Toni: "Mahlzeit nach Tief bestaetigen" - die ausdrueckliche Wiederfreigabe. Kein neues Budget; die Sperre faellt
+     * erst, wenn das Tief vorbei und die Strecke erfuellt ist, und die weiteren Portionen rechnen alles IOB an.
+     */
+    fun bestaetigeMahlzeitNachTief(now: Long) {
+        if (fruehGesperrtNachTief(now)) preferences.put(FuseLongKey.EarlySupplyLowConfirmTs, now)
+    }
 
     /** Die im Dialog getroffene Episoden-Wahl - nur mit stehendem Marker wahr. */
     fun mealMarkerNoPrime(now: Long): Boolean =

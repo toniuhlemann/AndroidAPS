@@ -154,38 +154,117 @@ class ExpectationAccountEarlyTest {
         assertEquals(-LivenessChannel.UKF_FLOOR_MGDL_PER_MIN, konto().stabilityFallMgdlPerMin, 0.0)
     }
 
-    private fun mitRuecknahme(s: ExpectationAccount.State, min: Int, tief: Boolean, bg: Double = 120.0) = ExpectationAccount.step(
+    private fun ts(min: Int) = t0 + min * 60_000L
+
+    /** Ein Zyklus mit den Groessen der Tief-Regel: gemessenes Tief, Neustart, Strecke, Bestaetigung nach Tief. */
+    private fun zyklus(
+        s: ExpectationAccount.State, min: Int, bg: Double = 120.0, tief: Boolean = false, neustart: Boolean = false,
+        stabil: Boolean = true, bestaetigt: Long = 0L, early: ExpectationAccount.EarlyInputs? = eingaben(),
+    ) = ExpectationAccount.step(
         s,
         ExpectationAccount.Inputs(
-            nowTs = t0 + min * 60_000L, ageMin = min.toDouble(), bgMgdl = bg, targetMgdl = 100.0, isfMgdlPerU = 50.0,
-            iobTotalU = 0.0, activityUPerMin = 0.0, paused = false, stableNow = true,
-            measuredLow = true, lowEndsEarlySupply = tief, early = eingaben(),
+            nowTs = ts(min), ageMin = min.toDouble(), bgMgdl = bg, targetMgdl = 100.0, isfMgdlPerU = 50.0,
+            iobTotalU = early?.iobU ?: 0.0, activityUPerMin = 0.0, paused = false, stableNow = stabil,
+            measuredLow = tief || neustart, lowLocksEarlySupply = tief, confirmedAfterLowTs = bestaetigt, early = early,
         ),
     )
 
     @Test
-    fun `ein gemessenes Tief nach der Freigabe beendet die fruehe Versorgung, ein Neustart nicht`() {
+    fun `ein gemessenes Tief nach der Freigabe sperrt die fruehe Versorgung, ein Neustart nicht`() {
         var s = schritt(konto(), 0).first
         assertTrue(s.released)
         // Neustart: Freigabe weg, Versorgung bleibt - die naechste Strecke gibt sie zurueck.
-        val nachNeustart = mitRuecknahme(s, 5, tief = false).first
-        assertFalse(nachNeustart.earlyEndedByLow)
+        val nachNeustart = zyklus(s, 5, neustart = true).first
+        assertFalse(nachNeustart.earlyLowLocked)
         val (wieder, eW) = schritt(nachNeustart, 6)
         assertTrue(wieder.released)
         assertTrue(eW.restEffU > 0.0)
-        // Gemessenes Tief: beendet - auch nach neuer Strecke und steigendem Zucker (Rescue) kein Erwartungsanteil.
-        s = mitRuecknahme(s, 5, tief = true).first
-        assertTrue(s.earlyEndedByLow)
+        // Gemessenes Tief: gesperrt - auch nach neuer Strecke und steigendem Zucker (Rescue) kein Erwartungsanteil.
+        s = zyklus(s, 5, tief = true).first
+        assertTrue(s.earlyLowLocked && s.earlyAfterLow && s.initialDone)
+        assertEquals(ts(5), s.earlyLowLockSinceTs)
         for (m in 6..40) {
             val (s2, e) = schritt(s, m, bg = 100.0 + 3.0 * (m - 5))
             assertEquals(0.0, e.restEffU, 0.0, "Minute $m")
             assertEquals(0.0, e.early!!.guardScale, 0.0)
-            assertEquals("ENDED_BY_LOW", e.status)
+            assertEquals("LOCKED_BY_LOW", e.status)
             s = s2
         }
+        assertTrue(s.released) { "Probe zeigt nichts: die Strecke gibt die Freigabe zurueck, nur die Sperre haelt" }
         // v1-Konten kennen die Regel nicht.
         val v1 = ExpectationAccount.arm(t0, t0 + 120 * 60_000L, 3.0, params, true, t0, 100.0, 50.0)
-        assertFalse(mitRuecknahme(schritt(v1, 0).first, 5, tief = true).first.earlyEndedByLow)
+        assertFalse(zyklus(schritt(v1, 0).first, 5, tief = true).first.earlyLowLocked)
+    }
+
+    /** Bank N2, W3: das Tief kam, waehrend die Freigabe noch auf die Strecke wartete - es sperrte bisher nichts. */
+    @Test
+    fun `ein Tief vor der Freigabe sperrt ebenso - kein Anstieg allein gibt sie frei`() {
+        var s = zyklus(konto(stabil = false), 0, bg = 95.0, stabil = false).first
+        assertFalse(s.released)
+        s = zyklus(s, 5, bg = 60.0, tief = true, stabil = false).first
+        assertTrue(s.earlyLowLocked && s.initialDone)
+        for (m in 6..60) {
+            val (s2, e) = zyklus(s, m, bg = 60.0 + 2.0 * (m - 5))
+            assertEquals(0.0, e.restEffU, 0.0, "Minute $m")
+            assertEquals("LOCKED_BY_LOW", e.status)
+            s = s2
+        }
+        assertTrue(s.released) { "Probe zeigt nichts: ohne Sperre floesse der Rescue-Anstieg als Mahlzeit" }
+    }
+
+    @Test
+    fun `die Bestaetigung hebt die Sperre auf - erst nach dem Tief, ohne neues Budget und ohne Anfangsportion`() {
+        var s = zyklus(konto(stabil = false), 0, bg = 95.0, stabil = false).first
+        val budget = s.a0U
+        s = zyklus(s, 5, bg = 62.0, tief = true, stabil = false).first
+        // Bestaetigt waehrend des Tiefs: gesperrt, solange es misst ...
+        for (m in 6..8) {
+            val (s2, e) = zyklus(s, m, bg = 60.0, tief = true, stabil = false, bestaetigt = ts(6))
+            assertEquals(0.0, e.restEffU, 0.0, "Minute $m")
+            assertTrue(s2.earlyLowLocked)
+            s = s2
+        }
+        // ... und bis die Strecke erfuellt ist.
+        s = zyklus(s, 9, bg = 95.0, stabil = false, bestaetigt = ts(6)).first
+        assertTrue(s.earlyLowLocked)
+        val (frei, e) = zyklus(s, 10, bg = 130.0, bestaetigt = ts(6))
+        assertFalse(frei.earlyLowLocked)
+        assertTrue(e.restEffU > 0.0)
+        assertEquals("ACTIVE", e.status)
+        assertFalse(e.early!!.initial)
+        assertTrue(e.restEffU <= einstellung.maxPortionU + 1e-12)
+        assertEquals(budget, frei.a0U, 0.0)
+        // Nach einem Tief keine Anrechnung in Guard und Schwanz (G3/G4).
+        assertEquals(0.0, e.early!!.guardScale, 0.0)
+    }
+
+    @Test
+    fun `eine Bestaetigung vor dem Sperrbeginn zaehlt nicht - ein neues Tief sperrt erneut`() {
+        var s = zyklus(konto(stabil = false), 0, bg = 95.0, stabil = false).first
+        s = zyklus(s, 5, bg = 62.0, tief = true, stabil = false).first
+        s = zyklus(s, 10, bestaetigt = ts(6)).first
+        assertFalse(s.earlyLowLocked)
+        s = zyklus(s, 20, bg = 60.0, tief = true, bestaetigt = ts(6)).first
+        assertTrue(s.earlyLowLocked)
+        assertEquals(ts(20), s.earlyLowLockSinceTs)
+        // Die alte Bestaetigung liegt vor dem neuen Sperrbeginn.
+        for (m in 21..30) s = zyklus(s, m, bestaetigt = ts(6)).first.also { assertTrue(it.earlyLowLocked, "Minute $m") }
+        assertFalse(zyklus(s, 31, bestaetigt = ts(30)).first.earlyLowLocked)
+    }
+
+    @Test
+    fun `nach einem Tief rechnet die Anforderung alles vorhandene Insulin an`() {
+        val mitIob = ExpectationAccount.EarlyInputs(
+            iobU = 2.0, freeIobU = 0.5, existingActionU = { t -> 2.0 * wirkung(t) }, unitAction = wirkung,
+        )
+        var s = zyklus(konto(stabil = false), 0, bg = 95.0, stabil = false).first
+        s = zyklus(s, 5, bg = 62.0, tief = true, stabil = false).first
+        val (_, e) = zyklus(s, 10, bestaetigt = ts(6), early = mitIob)
+        val kurve = requireNotNull(ExpectationAccount.Curve.of(werte))
+        val alles = EarlySupply.demandU(kurve, 120, 10.0, e.early!!.scaleEff, 2.0, 2.0, mitIob.existingActionU, wirkung)
+        val nurFrei = EarlySupply.demandU(kurve, 120, 10.0, e.early!!.scaleEff, 2.0, 0.5, mitIob.existingActionU, wirkung)
+        assertEquals(alles, e.early!!.demandU, 1e-12)
+        assertTrue(alles < nurFrei) { "Probe zeigt nichts: alles = $alles, nur frei = $nurFrei" }
     }
 
     @Test

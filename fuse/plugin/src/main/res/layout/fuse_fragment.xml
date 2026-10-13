@@ -23,6 +23,17 @@
             android:layout_marginEnd="8dp"
             android:text="@string/fuse_marker_m" />
 
+        <!-- E-034 v2 (Toni): nur sichtbar, solange ein gemessenes Tief die
+             fruehe Versorgung der laufenden Mahlzeit sperrt. -->
+        <Button
+            android:id="@+id/fuse_early_low_confirm"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="8dp"
+            android:layout_marginEnd="8dp"
+            android:text="@string/fuse_early_low_confirm"
+            android:visibility="gone" />
+
         <!-- Karte 1: Betriebszustand. Bewusst OHNE fette Zwischentitel -
              die Inhaltszeilen tragen ihre Beschriftung selbst, und jede
              gesparte Zeile bringt die Mahlzeit-/Evidenzkarte weiter nach

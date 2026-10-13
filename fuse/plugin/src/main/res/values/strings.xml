@@ -224,6 +224,10 @@
     <string name="fuse_expectation_release_threshold_summary">Zeigt sich bis eine halbe Stunde nach dem Marker weniger Mahlzeitwirkung als diese Menge (in Insulin umgerechnet), wird der Rest des Vorgriffs eingefroren - die Mahlzeit kam noch nicht. Kommt sie spaeter im Fenster, wird er wieder frei. Ab dem naechsten Marker.</string>
     <string name="fuse_expectation_horizon_title">Vorschau [min]</string>
     <string name="fuse_early_supply_title">Fruehe Versorgung (v2, Test)</string>
+    <string name="fuse_early_low_confirm">Mahlzeit nach Tief bestaetigen</string>
+    <string name="fuse_early_low_confirm_waiting">Mahlzeit bestaetigt - wartet, bis das Tief vorbei ist</string>
+    <string name="fuse_early_low_confirm_title">Mahlzeit nach Tief</string>
+    <string name="fuse_early_low_confirm_message">Ein gemessenes Tief sperrt die fruehe Versorgung dieser Mahlzeit. Bestaetige nur, wenn du wirklich isst - nicht fuer Rescue-KH. Der Erwartungsanteil laeuft weiter, sobald das Tief vorbei und die Stabilitaetsstrecke erfuellt ist: kein neues Budget, keine Anfangsportion, alles vorhandene Insulin wird angerechnet.</string>
     <string name="fuse_early_supply_summary">Standard aus. Gilt nur mit eingeschaltetem Erwartungskonto und nur fuer Mahlzeiten, die am Marker mit \"Nur Erwartung\" bestaetigt werden. An: FUSE bucht am Marker ein Gesamtbudget - die fruehe Insulinmenge, deren Wirkung die Erwartungskurve rechtzeitig abdeckt. Weil Insulin verzoegert wirkt, ist sie groesser als der Kurvenwert am Ende. Geliefert wird als Anfangsportion und weitere Portionen; jede Portion wird neu geprueft. Gemessene Sperren (Tief, Fallen, Abwaertsrisiko), maxIOB, iobTH und die Expositionsgrenze bleiben immer hart. Ausschalten wirkt sofort.</string>
     <string name="fuse_early_supply_budget_max_title">Budget hoechstens (U)</string>
     <string name="fuse_early_supply_budget_max_summary">Obergrenze des Gesamtbudgets je Mahlzeit. 0 = keine fruehe Versorgung. Das Budget wird nur verbraucht, nie aufgefuellt, und es verpflichtet nie zur Abgabe: was die Pruefungen nicht freigeben, entfaellt. Ab dem naechsten Marker.</string>

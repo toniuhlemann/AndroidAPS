@@ -73,6 +73,8 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
     private var markerAt = 0L
     private var ohneVorschuss = false
     private var nurErwartung = false
+    /** E-034 v2: die Bestaetigung "Mahlzeit nach Tief" [ms]; 0 = keine. */
+    private var bestaetigtNachTief = 0L
 
     /** Erzwungene Ablehnung der Bahn (predictorfreier Markerpfad), `null` = echte Bahn. */
     private var predictReject: app.aaps.fuse.core.predictor.PredictorReason? = null
@@ -191,6 +193,7 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
         whenever(preferences.get(FuseLongKey.MealMarkerArmedTs)).thenAnswer { markerAt }
         whenever(preferences.get(FuseLongKey.MealMarkerNoPrime)).thenAnswer { if (ohneVorschuss) 1L else 0L }
         whenever(preferences.get(FuseLongKey.MealMarkerExpectationOnly)).thenAnswer { if (nurErwartung) 1L else 0L }
+        whenever(preferences.get(FuseLongKey.EarlySupplyLowConfirmTs)).thenAnswer { bestaetigtNachTief }
     }
 
     private fun druecken(t: Long) {
@@ -792,6 +795,7 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
         f: Fuse20Folgen.Folge, dir: File, vorZyklus: (Int) -> Unit = {}, einstellen: () -> Unit,
     ): List<Zyklus> {
         nurErwartung = true
+        bestaetigtNachTief = 0L
         try {
             markerAt = 0L
             markerPress = 0L
@@ -984,20 +988,110 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
         pruefeMechanik(locker, 0.5, 1.0, 2.0)
     }
 
-    /** Bank N2, W3: Rescue-KH nach einem Tief sind keine bestaetigte Mahlzeit - das Tief beendet die fruehe Versorgung. */
+    /** Bank N2, W3: Rescue-KH nach einem Tief sind keine bestaetigte Mahlzeit - das Tief sperrt die fruehe Versorgung. */
     @Test
-    fun `ein gemessenes Tief nach der Freigabe beendet die fruehe Versorgung der Mahlzeit`(@TempDir dir: File) {
+    fun `ein gemessenes Tief nach der Freigabe sperrt die fruehe Versorgung der Mahlzeit`(@TempDir dir: File) {
         val zyklen = fruehLauf(fTiefNachDruck, dir) { fruehKonfiguration(g1 = true, g2 = true, g3 = true, g4 = true) }
         pruefeMechanik(zyklen, 0.5, 1.0, 2.0)
         val tief = zyklen.firstOrNull { it.o.erwartungskonto?.zyklus?.ruecknahmeGrund == "LOW" }
         assertNotNull(tief) { "die Probe erreicht kein gemessenes Tief nach der Freigabe" }
         val danach = zyklen.filter { it.minute >= tief!!.minute && it.o.erwartungskonto?.zyklus != null }
-        assertTrue(danach.all { it.konto?.earlyEndedByLow == true }) { "nicht beendet" }
+        assertTrue(danach.all { it.konto?.earlyLowLocked == true }) { "nicht gesperrt" }
         assertEquals(0.0, danach.sumOf { it.dErw() }, 0.0)
         assertTrue(danach.filter { it.o.erwartungskonto!!.zyklus!!.eval.status != "EXPIRED" }
-            .all { it.o.erwartungskonto!!.zyklus!!.eval.status == "ENDED_BY_LOW" })
+            .all { it.o.erwartungskonto!!.zyklus!!.eval.status == "LOCKED_BY_LOW" })
         // Gegenprobe: die Strecke gibt die Freigabe zurueck - ohne die Regel floessen wieder Portionen.
         assertTrue(danach.any { it.o.erwartungskonto!!.zyklus!!.eval.released }) { "keine Wiederfreigabe - Probe zeigt nichts" }
+    }
+
+    /**
+     * Toni (Gegenfaelle der Tief-Sperre): fallender Start, also ohne Anfangsportion; ein Tief, WAEHREND die Freigabe
+     * noch auf die Strecke wartet; Rescue-Anstieg. Danach entweder die echte Mahlzeit ([fTiefDannMahlzeit]) oder nur
+     * die Hypo-Behandlung ([fTiefNurHypo]).
+     */
+    private val fTiefDannMahlzeit = Fuse20Folgen.Folge(
+        "TIEFDANNMAHLZEIT", 1_700_820_000_000L, -90, 240,
+        listOf(
+            -90 to 150.0, -20 to 115.0, 0 to 95.0, 10 to 62.0, 16 to 60.0, 24 to 95.0, 35 to 120.0,
+            75 to 200.0, 120 to 210.0, 180 to 160.0, 240 to 140.0,
+        ),
+        markerMin = 0,
+    )
+    private val fTiefNurHypo = Fuse20Folgen.Folge(
+        "TIEFNURHYPO", 1_700_906_400_000L, -90, 240,
+        listOf(
+            -90 to 150.0, -20 to 115.0, 0 to 95.0, 10 to 62.0, 16 to 60.0, 24 to 95.0, 35 to 120.0,
+            60 to 135.0, 120 to 125.0, 240 to 115.0,
+        ),
+        markerMin = 0,
+    )
+
+    /** Gemeinsame Pflichten beider Gegenfaelle: Sperre vor der Freigabe, keine Anfangsportion. */
+    private fun pruefeTiefVorFreigabe(zyklen: List<Zyklus>): Zyklus {
+        pruefeMechanik(zyklen, 0.5, 1.0, 2.0)
+        val start = zyklen.first { it.o.erwartungskonto?.zyklus?.armiertInDiesemZyklus == true }.o.erwartungskonto!!.zyklus!!
+        assertFalse(start.state.startStable) { "Probe zeigt nichts: der Start ist stabil" }
+        val sperre = zyklen.firstOrNull { it.konto?.earlyLowLocked == true }
+            ?: throw AssertionError("das Tief vor der Freigabe sperrt nicht")
+        assertFalse(zyklen.filter { it.minute < sperre.minute }.any { it.o.erwartungskonto?.zyklus?.eval?.released == true }) {
+            "die Freigabe kam vor dem Tief - die Probe prueft den Fall nicht"
+        }
+        assertTrue(zyklen.none { it.frueh()?.initial == true && it.dErw() > 0.0 }) { "Anfangsportion trotz Tief" }
+        return sperre
+    }
+
+    /** Gegenfall 1: Tief, dann echte Mahlzeit, ausdruecklich bestaetigt - sie bleibt versorgbar. */
+    @Test
+    fun `Gegenfall Tief mit anschliessender echter Mahlzeit bleibt nach Bestaetigung versorgbar`(@TempDir dir: File) {
+        val bestaetigungMin = 18
+        val zyklen = fruehLauf(fTiefDannMahlzeit, File(dir, "mit"), vorZyklus = { m ->
+            if (m == bestaetigungMin) bestaetigtNachTief = fTiefDannMahlzeit.ts(m)
+        }) { fruehKonfiguration(g1 = true, g2 = true, g3 = true, g4 = true) }
+        val sperre = pruefeTiefVorFreigabe(zyklen)
+        assertTrue(sperre.minute < bestaetigungMin) { "bestaetigt vor dem Sperrbeginn - die Probe prueft den Fall nicht" }
+        val frei = zyklen.firstOrNull { it.minute > sperre.minute && it.konto?.earlyLowLocked == false }
+            ?: throw AssertionError("die Bestaetigung hebt die Sperre nie auf")
+        // Waehrend des Tiefs und bis zur Wiederfreigabe kein Erwartungsanteil.
+        assertEquals(0.0, zyklen.filter { it.minute < frei.minute }.sumOf { it.dErw() }, 0.0)
+        assertTrue(zyklen.filter { it.o.step?.safetyReasons?.isNotEmpty() == true }.none { it.dErw() > 0.0 }) { "Portion im Tief" }
+        assertTrue(frei.o.step?.safetyReasons?.isEmpty() == true) { "frei, obwohl das Tief noch misst" }
+        // Versorgbar: die weiteren Portionen fliessen aus dem Rest des gebuchten Budgets.
+        val konto = zyklen.mapNotNull { it.konto }.last()
+        val nachher = zyklen.filter { it.minute >= frei.minute }.sumOf { it.dErw() }
+        assertTrue(nachher >= 1.0) { "nach der Bestaetigung nur $nachher U Erwartungsanteil" }
+        assertTrue(nachher <= konto.a0U + 1e-9)
+        assertTrue(konto.earlyAfterLow)
+        // Gegenprobe: dieselbe Folge OHNE Bestaetigung liefert keinen Erwartungsanteil.
+        val ohne = fruehLauf(fTiefDannMahlzeit, File(dir, "ohne")) { fruehKonfiguration(g1 = true, g2 = true, g3 = true, g4 = true) }
+        assertEquals(0.0, ohne.sumOf { it.dErw() }, 0.0)
+        assertTrue(ohne.any { it.o.erwartungskonto?.zyklus?.eval?.released == true }) { "Probe zeigt nichts: keine Strecke" }
+    }
+
+    /** Gegenfall 2: Tief, nur Hypo-Behandlung, keine Bestaetigung - keine erwartungsbasierte Abgabe. */
+    @Test
+    fun `Gegenfall Tief mit ausschliesslich Hypo-Behandlung loest keine erwartungsbasierte Abgabe aus`(@TempDir dir: File) {
+        val zyklen = fruehLauf(fTiefNurHypo, dir) { fruehKonfiguration(g1 = true, g2 = true, g3 = true, g4 = true) }
+        val sperre = pruefeTiefVorFreigabe(zyklen)
+        assertEquals(0.0, zyklen.sumOf { it.dErw() }, 0.0)
+        val danach = zyklen.filter { it.minute >= sperre.minute && it.o.erwartungskonto?.zyklus != null }
+        assertTrue(danach.all { it.konto?.earlyLowLocked == true }) { "die Sperre faellt ohne Bestaetigung" }
+        assertTrue(danach.any { it.o.erwartungskonto!!.zyklus!!.eval.released }) {
+            "Probe zeigt nichts: der Rescue-Anstieg erfuellt die Strecke nie"
+        }
+        // Derselbe Fall, das Tief nur in Abbruchzyklen (wie der Safety-Halt der Bank): der Vermerk sperrt auch vor der
+        // Freigabe - bisher hinterliess er dort keine Spur.
+        val abbruch = 5..40
+        val imAbbruch = fruehLauf(fTiefNurHypo, File(dir, "abbruch"), vorZyklus = { m ->
+            whenever(preferences.get(FuseIntKey.ReboundWindowMin)).thenReturn(
+                if (m in abbruch) UNGUELTIGE_REBOUND_DAUER else FuseIntKey.ReboundWindowMin.defaultValue,
+            )
+        }) { fruehKonfiguration(g1 = true, g2 = true, g3 = true, g4 = true) }
+        assertTrue(imAbbruch.none { it.minute in abbruch }) { "ein Zyklus im Abbruchbereich lief bis zum Konto" }
+        val erster = imAbbruch.first { it.minute > abbruch.last && it.o.erwartungskonto?.zyklus != null }
+        assertEquals("LOW_ON_ABORT", erster.o.erwartungskonto!!.zyklus!!.tiefGrund)
+        assertTrue(erster.konto?.earlyLowLocked == true) { "das Tief im Abbruch sperrt nicht" }
+        assertEquals(0.0, imAbbruch.sumOf { it.dErw() }, 0.0)
+        assertTrue(imAbbruch.any { it.o.erwartungskonto?.zyklus?.eval?.released == true }) { "Probe zeigt nichts: keine Strecke" }
     }
 
     @Test

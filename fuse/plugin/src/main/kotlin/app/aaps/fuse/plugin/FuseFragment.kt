@@ -102,6 +102,17 @@ class FuseFragment : DaggerFragment() {
                 },
             )
         }
+        // E-034 v2 (Toni): die ausdrueckliche Wiederfreigabe nach einem Tief - mit Rueckfrage, nie fuer Rescue-KH.
+        binding.fuseEarlyLowConfirm.setOnClickListener {
+            val act = activity ?: return@setOnClickListener
+            app.aaps.core.ui.dialogs.OKDialog.showConfirmation(
+                act, rh.gs(R.string.fuse_early_low_confirm_title), rh.gs(R.string.fuse_early_low_confirm_message),
+                Runnable {
+                    fusePlugin.bestaetigeMahlzeitNachTief(dateUtil.now())
+                    update()
+                },
+            )
+        }
         binding.fuseDetailsToggle.setOnClickListener {
             detailsExpanded = !detailsExpanded
             showDetailsState()
@@ -146,6 +157,14 @@ class FuseFragment : DaggerFragment() {
         // kein Binding mehr, und ein Zugriff waere ein Absturz im Beobachter.
         _binding ?: return
         val now = dateUtil.now()
+        val gesperrt = fusePlugin.fruehGesperrtNachTief(now)
+        binding.fuseEarlyLowConfirm.visibility = if (gesperrt) View.VISIBLE else View.GONE
+        if (gesperrt) {
+            val bestaetigt = fusePlugin.fruehNachTiefBestaetigt()
+            binding.fuseEarlyLowConfirm.isEnabled = !bestaetigt
+            binding.fuseEarlyLowConfirm.text =
+                rh.gs(if (bestaetigt) R.string.fuse_early_low_confirm_waiting else R.string.fuse_early_low_confirm)
+        }
         val marker = FuseScreenModel.MarkerInfo(
             armedTs = fusePlugin.mealMarkerArmedTs(),
             windowMin = app.aaps.fuse.core.controller.OnsetChannel.MARKER_WINDOW_MIN,

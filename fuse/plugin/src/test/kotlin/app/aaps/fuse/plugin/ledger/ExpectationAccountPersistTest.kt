@@ -132,12 +132,25 @@ class ExpectationAccountPersistTest {
     }
 
     @Test
-    fun `das Ende nach Tief ueberlebt den Rundlauf und fehlt es, gilt nicht beendet`() {
-        val beendet = fruehesKonto().copy(earlyEndedByLow = true)
-        val json = LedgerCodec.encodeEpisodes(episoden(beendet))
-        assertEquals(beendet, LedgerCodec.decodeEpisodes(json).expectation)
-        json.getJSONObject("earlySupply").remove("endedByLow")
-        assertEquals(false, LedgerCodec.decodeEpisodes(json).expectation!!.earlyEndedByLow)
+    fun `die Tief-Sperre ueberlebt den Rundlauf, fehlt sie, gilt nicht gesperrt, ein altes Ende wird zur Sperre`() {
+        val k = fruehesKonto()
+        val gesperrt = k.copy(earlyLowLocked = true, earlyLowLockSinceTs = k.authId + 300_000L, earlyAfterLow = true)
+        val json = LedgerCodec.encodeEpisodes(episoden(gesperrt))
+        assertEquals(gesperrt, LedgerCodec.decodeEpisodes(json).expectation)
+        // Wieder frei nach Bestaetigung: das "nach Tief" bleibt.
+        val frei = gesperrt.copy(earlyLowLocked = false)
+        assertEquals(frei, LedgerCodec.decodeEpisodes(LedgerCodec.encodeEpisodes(episoden(frei))).expectation)
+        val f = json.getJSONObject("earlySupply")
+        listOf("lowLocked", "lowLockSinceTs", "afterLow").forEach { f.remove(it) }
+        val ohne = LedgerCodec.decodeEpisodes(json).expectation!!
+        assertEquals(false, ohne.earlyLowLocked)
+        assertEquals(false, ohne.earlyAfterLow)
+        // Ein v2-Stand mit dem frueheren Ende fuer immer: gesperrt seit dem Marker, nur eine Bestaetigung hebt es auf.
+        f.put("endedByLow", true)
+        val alt = LedgerCodec.decodeEpisodes(json).expectation!!
+        assertEquals(true, alt.earlyLowLocked)
+        assertEquals(true, alt.earlyAfterLow)
+        assertEquals(alt.authId, alt.earlyLowLockSinceTs)
     }
 
     @Test
