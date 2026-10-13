@@ -213,6 +213,21 @@ class FuseScreenInventarWaechterTest {
             "in der Reihenfolge ohne Bau: ${reihenfolge.toSet() - gebaut}")
     }
 
+    /**
+     * UNTERSEITEN (Konsolidierung 2.0): eine zweite Ebene innerhalb eines Bereichs. AAPS findet sie ueber ihren
+     * Schluessel; ein doppelter oder mit einem Bereich gleichnamiger Schluessel liesse die falsche Seite oeffnen -
+     * die Laufzeitwache wirft dann erst am Geraet. Derselbe statische Blick wie oben.
+     */
+    @Test
+    fun `jede Unterseite hat einen eigenen Schluessel`() {
+        val block = bildschirmBlock()
+        val bereiche = Regex("""\bcat\(\s*"([a-z_]+)"""").findAll(block).map { it.groupValues[1] }.toList()
+        val seiten = Regex("""\bunterseite\(\s*"([a-z_]+)"""").findAll(block).map { it.groupValues[1] }.toList()
+        assertTrue(seiten.isNotEmpty()) { "keine Unterseite gefunden - Muster passt nicht mehr" }
+        assertEquals(seiten.size, seiten.toSet().size, "Unterseite doppelt: $seiten")
+        assertTrue(seiten.none { it in bereiche }) { "Unterseite gleichnamig mit einem Bereich: ${seiten.filter { it in bereiche }}" }
+    }
+
     @Test
     fun `der Waechter greift ueberhaupt`() {
         val gebaut = gebauteKeys()

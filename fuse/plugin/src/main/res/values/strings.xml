@@ -124,7 +124,11 @@
     <string name="fuse_liveness_drive_hold_summary">Default AUS, Experiment. Nur unter gueltiger Mahlzeiten-Autorisierung (nie im Korrekturprofil): im laufenden, bereits bewaffneten Kanal wird der positive Stoerungsantrieb fuer die Bedarfsrechnung 20 min gehalten, bevor er abklingt - nur mit Messbestaetigung aus frischen Sensorwerten (zwei Bloecke mit neuem Hoch, Bedarf je Block einmal), nie im Rebound-Fenster, hoechstens 40 mg/dl. Tore, Bewaffnung, Deckel, Expositionsgrenze und Raster bleiben.</string>
     <string name="fuse_liveness_rebound_evidence_summary">Default AUS. Eingeschaltet sperrt das Rebound-Fenster den Liveness-Kanal nicht mehr allein deshalb, weil Buchungen den versiegelten Evidenzkredit verbraucht haben. Nur mit Mahlzeitenmarker (Tief vor dem Druck, Frist laeuft), vorhandenem Evidenzbestand und gemessen stabiler Rohreihe. Alle Riegel, Deckel und das Publikations-Gate bleiben.</string>
     <string name="fuse_liveness_meal_power_title">Mahlzeiten-Frist [min]</string>
-    <string name="fuse_liveness_meal_power_summary">So lange nach dem letzten Marker faehrt der Liveness-Kanal die offenen MEAL-Caps; ab der Deadline gelten die Korrektur-Caps. Die Dauer wird beim Druck eingefroren - eine Aenderung wirkt erst auf den naechsten Marker. Evidenz verlaengert die Frist nicht.</string>
+    <string name="fuse_liveness_meal_power_summary">So lange nach dem letzten Marker gilt die Mahlzeit: das Erwartungskonto arbeitet in dieser Zeit (sein Fenster hat keine eigene Einstellung), und der Liveness-Kanal faehrt die offenen MEAL-Caps. Ab der Deadline gelten die Korrektur-Caps. Die Dauer wird beim Druck eingefroren - eine Aenderung wirkt erst auf den naechsten Marker. Evidenz verlaengert die Frist nicht.</string>
+    <string name="fuse_low_gate_min_benefit_title">Tieftor: Mindestnutzen [mg/dl]</string>
+    <string name="fuse_low_gate_min_benefit_summary">Die Basal-Null bei gemessener Abwaertslage mit Bolus-Ueberdeckung kommt nur, wenn sie bis zum erwarteten Bodenkontakt mindestens so viel Absenkung verhindert (ueber die Wirkkurve gerechnet). Groesser = seltener; 0 = Nutzenprobe aus, dann zaehlen nur Fall und Ueberdeckung.</string>
+    <string name="fuse_low_gate_horizon_title">Tieftor: Horizont [min]</string>
+    <string name="fuse_low_gate_horizon_summary">Liegt der Bodenkontakt bei linearer Fortschreibung der gemessenen Rate weiter weg als dieser Horizont, ist es keine nahe Gefahr und das Tieftor bleibt zu.</string>
     <string name="fuse_liveness_bg_min_meal_title">Druck-Schwelle MEAL [mg/dl]</string>
     <string name="fuse_liveness_bg_min_meal_summary">Eigene Druckschwelle des Liveness-Kanals, solange die MEAL-Vollmacht des Markers laeuft (absoluter Wert). Ungesetzt folgt sie der wirksamen Tag-/Nachtschwelle - der bisherige Weg bleibt dann unveraendert. CORRECTION behaelt immer Tag/Nacht. Gemessene Riegel (Tief, Fallen, Rebound) bleiben davor.</string>
     <string name="fuse_meal_arm_cycles_title">Bewaffnung MEAL [Zyklen]</string>
@@ -222,7 +226,7 @@
     <string name="fuse_expectation_stability_min_summary">Wie viele Minuten am Stueck die Stabilitaet gelten muss, bevor die Anfangsportion (oder ein gesperrter Vorgriff) fliesst. Aendert das Budget nicht. Ab dem naechsten Marker.</string>
     <string name="fuse_expectation_release_threshold_title">Schutz: Mahlzeit bleibt aus [U]</string>
     <string name="fuse_expectation_release_threshold_summary">Zeigt sich bis eine halbe Stunde nach dem Marker weniger Mahlzeitwirkung als diese Menge (in Insulin umgerechnet), wird der Rest des Vorgriffs eingefroren - die Mahlzeit kam noch nicht. Kommt sie spaeter im Fenster, wird er wieder frei. Ab dem naechsten Marker.</string>
-    <string name="fuse_expectation_horizon_title">Vorschau [min]</string>
+    <string name="fuse_expectation_horizon_title">Vorausschau auf die Kurve [min]</string>
     <string name="fuse_early_supply_title">Fruehe Versorgung (v2, Test)</string>
     <string name="fuse_early_low_confirm">Mahlzeit nach Tief bestaetigen</string>
     <string name="fuse_early_low_confirm_waiting">Mahlzeit bestaetigt - wartet, bis das Tief vorbei ist</string>
