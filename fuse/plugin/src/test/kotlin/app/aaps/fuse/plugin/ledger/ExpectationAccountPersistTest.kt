@@ -132,6 +132,15 @@ class ExpectationAccountPersistTest {
     }
 
     @Test
+    fun `das Ende nach Tief ueberlebt den Rundlauf und fehlt es, gilt nicht beendet`() {
+        val beendet = fruehesKonto().copy(earlyEndedByLow = true)
+        val json = LedgerCodec.encodeEpisodes(episoden(beendet))
+        assertEquals(beendet, LedgerCodec.decodeEpisodes(json).expectation)
+        json.getJSONObject("earlySupply").remove("endedByLow")
+        assertEquals(false, LedgerCodec.decodeEpisodes(json).expectation!!.earlyEndedByLow)
+    }
+
+    @Test
     fun `ein ungueltiges v2-Konto wird verworfen und die Generation bleibt gueltig`() {
         val faelle = listOf<(JSONObject) -> Unit>(
             { it.put("phi0", 2.5) },

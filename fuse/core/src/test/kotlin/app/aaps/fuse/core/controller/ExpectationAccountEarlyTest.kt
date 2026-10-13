@@ -154,6 +154,40 @@ class ExpectationAccountEarlyTest {
         assertEquals(-LivenessChannel.UKF_FLOOR_MGDL_PER_MIN, konto().stabilityFallMgdlPerMin, 0.0)
     }
 
+    private fun mitRuecknahme(s: ExpectationAccount.State, min: Int, tief: Boolean, bg: Double = 120.0) = ExpectationAccount.step(
+        s,
+        ExpectationAccount.Inputs(
+            nowTs = t0 + min * 60_000L, ageMin = min.toDouble(), bgMgdl = bg, targetMgdl = 100.0, isfMgdlPerU = 50.0,
+            iobTotalU = 0.0, activityUPerMin = 0.0, paused = false, stableNow = true,
+            measuredLow = true, lowEndsEarlySupply = tief, early = eingaben(),
+        ),
+    )
+
+    @Test
+    fun `ein gemessenes Tief nach der Freigabe beendet die fruehe Versorgung, ein Neustart nicht`() {
+        var s = schritt(konto(), 0).first
+        assertTrue(s.released)
+        // Neustart: Freigabe weg, Versorgung bleibt - die naechste Strecke gibt sie zurueck.
+        val nachNeustart = mitRuecknahme(s, 5, tief = false).first
+        assertFalse(nachNeustart.earlyEndedByLow)
+        val (wieder, eW) = schritt(nachNeustart, 6)
+        assertTrue(wieder.released)
+        assertTrue(eW.restEffU > 0.0)
+        // Gemessenes Tief: beendet - auch nach neuer Strecke und steigendem Zucker (Rescue) kein Erwartungsanteil.
+        s = mitRuecknahme(s, 5, tief = true).first
+        assertTrue(s.earlyEndedByLow)
+        for (m in 6..40) {
+            val (s2, e) = schritt(s, m, bg = 100.0 + 3.0 * (m - 5))
+            assertEquals(0.0, e.restEffU, 0.0, "Minute $m")
+            assertEquals(0.0, e.early!!.guardScale, 0.0)
+            assertEquals("ENDED_BY_LOW", e.status)
+            s = s2
+        }
+        // v1-Konten kennen die Regel nicht.
+        val v1 = ExpectationAccount.arm(t0, t0 + 120 * 60_000L, 3.0, params, true, t0, 100.0, 50.0)
+        assertFalse(mitRuecknahme(schritt(v1, 0).first, 5, tief = true).first.earlyEndedByLow)
+    }
+
     @Test
     fun `die v1-Ausnahme gilt in v2 nie`() {
         val (_, e) = schritt(konto(), 0)

@@ -984,6 +984,22 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
         pruefeMechanik(locker, 0.5, 1.0, 2.0)
     }
 
+    /** Bank N2, W3: Rescue-KH nach einem Tief sind keine bestaetigte Mahlzeit - das Tief beendet die fruehe Versorgung. */
+    @Test
+    fun `ein gemessenes Tief nach der Freigabe beendet die fruehe Versorgung der Mahlzeit`(@TempDir dir: File) {
+        val zyklen = fruehLauf(fTiefNachDruck, dir) { fruehKonfiguration(g1 = true, g2 = true, g3 = true, g4 = true) }
+        pruefeMechanik(zyklen, 0.5, 1.0, 2.0)
+        val tief = zyklen.firstOrNull { it.o.erwartungskonto?.zyklus?.ruecknahmeGrund == "LOW" }
+        assertNotNull(tief) { "die Probe erreicht kein gemessenes Tief nach der Freigabe" }
+        val danach = zyklen.filter { it.minute >= tief!!.minute && it.o.erwartungskonto?.zyklus != null }
+        assertTrue(danach.all { it.konto?.earlyEndedByLow == true }) { "nicht beendet" }
+        assertEquals(0.0, danach.sumOf { it.dErw() }, 0.0)
+        assertTrue(danach.filter { it.o.erwartungskonto!!.zyklus!!.eval.status != "EXPIRED" }
+            .all { it.o.erwartungskonto!!.zyklus!!.eval.status == "ENDED_BY_LOW" })
+        // Gegenprobe: die Strecke gibt die Freigabe zurueck - ohne die Regel floessen wieder Portionen.
+        assertTrue(danach.any { it.o.erwartungskonto!!.zyklus!!.eval.released }) { "keine Wiederfreigabe - Probe zeigt nichts" }
+    }
+
     @Test
     fun `das spaete Abwaertsrisiko sperrt jede Portion der fruehen Versorgung`(@TempDir dir: File) {
         val zyklen = fruehLauf(fFall, dir) {

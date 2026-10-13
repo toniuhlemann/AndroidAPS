@@ -2580,6 +2580,7 @@ object FuseStateJson {
                     .put("switchesPinned", g(f.switches))
                     .put("switchesNow", g(z.fruehSchalter))
                     .put("withdrawn", f.withdrawn)
+                    .put("endedByLow", s.earlyEndedByLow)
                     .put("initialDone", s.initialDone)
                     .put("portionsInBookU", fin(s.portions.sumOf { it.amountU }))
                     .put("demandU", fin(e.early?.demandU ?: Double.NaN))

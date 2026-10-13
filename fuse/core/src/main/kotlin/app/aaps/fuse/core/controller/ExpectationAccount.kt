@@ -260,6 +260,8 @@ object ExpectationAccount {
         val initialDone: Boolean = false,
         /** v2: die weiteren Portionen der letzten [EarlySupply.MAX_PERIOD_MIN] Minuten (Zeitraumbuch). */
         val portions: List<EarlySupply.Portion> = emptyList(),
+        /** v2: ein gemessenes Tief nach der Freigabe hat die fruehe Versorgung dieser Mahlzeit beendet. Nie zurueck. */
+        val earlyEndedByLow: Boolean = false,
     ) {
         val restU: Double get() = max(0.0, a0U - bookedU)
     }
@@ -390,6 +392,11 @@ object ExpectationAccount {
         val stableNow: Boolean,
         /** Gemessenes Tief in diesem Zyklus (K5): nimmt die Freigabe zurueck. */
         val measuredLow: Boolean = false,
+        /**
+         * v2: die Ruecknahme kommt aus einem GEMESSENEN Tief (nicht nur aus einem Neustart) - dann endet die fruehe
+         * Versorgung dieser Mahlzeit.
+         */
+        val lowEndsEarlySupply: Boolean = false,
         /** v2: die Geraetegroessen der fruehen Versorgung; `null` = in diesem Zyklus keine. */
         val early: EarlyInputs? = null,
     )
@@ -464,6 +471,11 @@ object ExpectationAccount {
         //   erreicht.
         val zurueckgenommen = inputs.measuredLow && s.released && !expired
         if (zurueckgenommen) s = s.copy(released = false)
+        // v2: ein gemessenes Tief nach der Freigabe beendet die fruehe Versorgung der Mahlzeit fuer immer. Danach
+        //   misst die Beobachtung auch die Rescue-Kohlenhydrate; sie als bestaetigte Mahlzeit zu lesen hiesse, gegen
+        //   die Rescue zu dosieren (Bank N2, W3). Der gemessene Anteil laeuft weiter wie bisher.
+        if (zurueckgenommen && inputs.lowEndsEarlySupply && s.early != null && !s.earlyEndedByLow)
+            s = s.copy(earlyEndedByLow = true)
         if (!s.released && inputs.stableNow && !inputs.measuredLow && !expired) s = s.copy(released = true)
 
         // 3 Ruecknahme: bei +30 pruefen, danach Wiederfreigabe bei erreichter Schwelle.
@@ -538,12 +550,13 @@ object ExpectationAccount {
         val mess = if (rMess.isFinite()) max(0.0, rMess) else 0.0
         val anfang = !s.initialDone
         val restEff = when {
-            expired || inputs.paused || !s.released || s.frozen || e == null || pins.withdrawn -> 0.0
+            expired || inputs.paused || !s.released || s.frozen || e == null || pins.withdrawn || s.earlyEndedByLow -> 0.0
             anfang -> min(s.restU, pins.initialShare * s.a0U)
             else -> min(min(s.restU, pins.maxPortionU), zeitraumRestU)
         }
         val status = when {
             expired -> "EXPIRED"
+            s.earlyEndedByLow -> "ENDED_BY_LOW"
             pins.withdrawn -> "WITHDRAWN"
             !s.released -> "WAITING_FOR_STABILITY"
             inputs.paused -> "PAUSED"
@@ -559,7 +572,7 @@ object ExpectationAccount {
             releaseRevoked = revoked, atTs = inputs.nowTs,
             early = EarlyEvaluation(
                 demandU = x, scaleEff = scaleEff, initial = anfang, periodLeftU = zeitraumRestU,
-                guardScale = if (curve == null || expired) 0.0
+                guardScale = if (curve == null || expired || s.earlyEndedByLow) 0.0
                 else EarlySupply.confirmedGuardScale(s.phi0, inputs.ageMin, s.disturbanceU, s.disturbanceValid, curve),
             ),
         )

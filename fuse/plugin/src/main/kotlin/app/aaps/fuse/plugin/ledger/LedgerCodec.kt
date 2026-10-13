@@ -748,6 +748,7 @@ object LedgerCodec {
                     .put("g4", f.switches.tailWithExpectation)
                     .put("withdrawn", f.withdrawn))
                 put("initialDone", s.initialDone)
+                put("endedByLow", s.earlyEndedByLow)
                 put("portions", JSONArray(s.portions.map { JSONArray(listOf(it.ts, zahl(it.amountU))) }))
             }
     }
@@ -871,6 +872,8 @@ object LedgerCodec {
                 ),
                 initialDone = schalter("initialDone"),
                 portions = portionen,
+                // Optional: ein v2-Stand vor dieser Regel kennt das Feld nicht.
+                earlyEndedByLow = o.optBoolean("endedByLow", false),
             )
         }
     }.getOrNull()

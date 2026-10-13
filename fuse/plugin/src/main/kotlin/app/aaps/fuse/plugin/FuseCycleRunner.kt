@@ -7144,6 +7144,8 @@ class FuseCycleRunner(
                 paused = pausiert,
                 stableNow = stabil,
                 measuredLow = ruecknahmeGrund != null,
+                // v2: nur ein GEMESSENES Tief beendet die fruehe Versorgung - der Neustart nimmt nur die Freigabe.
+                lowEndsEarlySupply = ruecknahmeGrund == "LOW" || ruecknahmeGrund == "LOW_ON_ABORT",
                 early = if (konto.early != null) fruehEingaben else null,
             ),
         )
