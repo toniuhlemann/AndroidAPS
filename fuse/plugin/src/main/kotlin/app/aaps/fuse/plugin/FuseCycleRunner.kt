@@ -3287,6 +3287,7 @@ class FuseCycleRunner(
             ekGilt = ekGilt, vorschau = ekVorschau, dosingCtx = dosingCtx, cfg = cfg, episodes = episodes,
             computeTs = computeTs, markerNoPrime = markerNoPrime,
             nurErwartung = markerNurErwartung,
+            tiefImReboundFenster = reboundRaw,
             // E-034 v2: die Geraetegroessen der fruehen Versorgung - aus DEMSELBEN
             // Einheitskern und denselben IOB-Arrays wie Bahn und Kandidatensuche.
             fruehEingabenVon = {
@@ -4058,12 +4059,14 @@ class FuseCycleRunner(
         val fruehBodenU = if (fruehHebung != null) fruehGemessenFreiU + fruehAnteilU else 0.0
         // G3/G4: Bahn und Schwanzkante MIT der angekuendigten Mahlzeit - nur
         // fuer weitere Portionen und nur, wenn der jeweilige Schalter gilt.
-        // Die Kurve wirkt hoechstens wie eingestellt (Skala <= 1): die
-        // Skalierbarkeit gibt Guard und Schwanz nichts frei.
+        // Angerechnet wird nur die BESTAETIGTE Erwartung (vor +20 min nichts,
+        // danach beobachtet/erwartet, hoechstens die Kurve): die
+        // Skalierbarkeit gibt Guard und Schwanz nichts frei, und auf die
+        // unbestaetigte Erwartung darf nur die Anfangsportion bauen.
         val fruehKurve = fruehZyklus?.takeIf { fruehHebung != null && !fruehAnfang }
             ?.state?.curveValues?.let { ExpectationAccount.Curve.of(it) }
         val fruehAlterAmAnkerMin = fruehZyklus?.let { (prediction.predictionAnchorTs - it.state.authId) / 60_000.0 } ?: 0.0
-        val fruehSkala = app.aaps.fuse.core.controller.EarlySupply.guardScale(fruehZyklus?.eval?.early?.scaleEff ?: 0.0)
+        val fruehSkala = fruehZyklus?.eval?.early?.guardScale ?: 0.0
         val fruehIsf = fruehZyklus?.state?.isfAtMarkerMgdlPerU?.takeIf { it.isFinite() && it > 0.0 } ?: state.isfMgdlPerU
         val fruehHorizontMin = fruehZyklus?.state?.horizonMin ?: ExpectationAccount.MAX_HORIZON_MIN
         val predictionMitErwartung = if (fruehKurve == null || fruehHebung?.guardLift != true) null
@@ -7021,6 +7024,13 @@ class FuseCycleRunner(
          * wird - der Einheitskern bleibt sonst ungebaut wie bisher.
          */
         fruehEingabenVon: () -> ExpectationAccount.EarlyInputs? = { null },
+        /**
+         * v2: ein gemessenes Tief liegt noch im Rebound-Fenster. Dann gilt der
+         * Start als "nach Tief", auch wenn die Stabilitaetsstrecke schon
+         * erfuellt ist (Bank N2, A1: die Strecke allein sah nur die letzten
+         * Minuten vor dem Druck).
+         */
+        tiefImReboundFenster: Boolean = false,
     ): ErwartungskontoZyklus? {
         val fruehEingaben by lazy(LazyThreadSafetyMode.NONE) { fruehEingabenVon() }
         val gemesseneSperre = sperren.isNotEmpty()
@@ -7067,7 +7077,7 @@ class FuseCycleRunner(
                     params = params,
                     settings = frueh,
                     switches = cfg.earlySupplySwitches,
-                    startStable = stabil,
+                    startStable = stabil && !tiefImReboundFenster,
                     nowTs = computeTs,
                     bgMgdl = bgMgdl,
                     isfMgdlPerU = isfMgdlPerU,

@@ -387,6 +387,8 @@ object ExpectationAccount {
         val initial: Boolean,
         /** Rest der Menge je Zeitraum [U]. */
         val periodLeftU: Double,
+        /** G3/G4: die bestaetigte Erwartung, die Guard und Schwanz anrechnen (0..1, [EarlySupply.confirmedGuardScale]). */
+        val guardScale: Double = 0.0,
     )
 
     data class Evaluation(
@@ -538,7 +540,11 @@ object ExpectationAccount {
             rMessU = rMess, phiZU = x, rRohU = mess + x, requestU = mess + x, restEffU = restEff,
             expired = expired, paused = inputs.paused, released = s.released, frozen = s.frozen, status = status,
             releaseRevoked = revoked, atTs = inputs.nowTs,
-            early = EarlyEvaluation(demandU = x, scaleEff = scaleEff, initial = anfang, periodLeftU = zeitraumRestU),
+            early = EarlyEvaluation(
+                demandU = x, scaleEff = scaleEff, initial = anfang, periodLeftU = zeitraumRestU,
+                guardScale = if (curve == null || expired) 0.0
+                else EarlySupply.confirmedGuardScale(s.phi0, inputs.ageMin, s.disturbanceU, s.disturbanceValid, curve),
+            ),
         )
     }
 

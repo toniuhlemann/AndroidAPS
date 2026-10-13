@@ -81,7 +81,8 @@ object EarlySupply {
      *    die Direktdosis. Begrenzt durch den Anfangsanteil und [INITIAL_WINDOW_MIN].
      *  - G2 [initialLiftsTail]: dasselbe fuer den Schwanz.
      *  - G3 [guardWithExpectation]: weitere Portionen pruefen den Guard MIT der angekuendigten Mahlzeit als bekannter
-     *    Stoerung - keine Hebung, eine geaenderte Eingabe derselben Pruefung.
+     *    Stoerung - keine Hebung, eine geaenderte Eingabe derselben Pruefung. Angerechnet wird nur die BESTAETIGTE
+     *    Erwartung ([confirmedGuardScale]): nur die Anfangsportion darf auf der unbestaetigten Erwartung beruhen.
      *  - G4 [tailWithExpectation]: dasselbe fuer den Schwanz.
      *
      * Aus heisst: die jeweilige Pruefung gilt unveraendert. Abschalten wirkt sofort, Einschalten ab dem naechsten
@@ -126,6 +127,25 @@ object EarlySupply {
 
     /** Die Skala, mit der Guard und Schwanz die Mahlzeit sehen: hoechstens die eingestellte Kurve, nie mehr. */
     fun guardScale(scaleEff: Double): Double = if (scaleEff.isFinite()) min(1.0, max(0.0, scaleEff)) else 0.0
+
+    /**
+     * G3/G4: WIE VIEL DER ANGEKUENDIGTEN MAHLZEIT GUARD UND SCHWANZ ANRECHNEN - nur, was die Beobachtung bestaetigt hat.
+     *
+     * Vor [ADAPT_FROM_MIN] nichts: die Mahlzeit zeigt sich noch nicht, und eine weitere Portion auf die unbestaetigte
+     * Erwartung waere eine zweite Anfangsportion ohne Autorisierung (Bank N2, A1: Anfangsportion und erste
+     * Zeitraummenge flossen vor jeder Pruefung der Mahlzeit; bei ausbleibender Mahlzeit fiel jede Stufe tief).
+     * Danach der Skalierer im Verhaeltnis beobachtet/erwartet, hoechstens die Kurve. Eine ungueltige Beobachtung
+     * bestaetigt nichts - anders als bei der Anforderung ([effectiveScale]), die dann unveraendert bleibt.
+     */
+    fun confirmedGuardScale(
+        scale: Double, ageMin: Double, observedU: Double, observedValid: Boolean, curve: ExpectationAccount.Curve,
+    ): Double {
+        if (!ageMin.isFinite() || ageMin < ADAPT_FROM_MIN || !observedValid || !observedU.isFinite() || !scale.isFinite())
+            return 0.0
+        val erwartet = curve.at(ageMin)
+        if (erwartet <= EPS) return 0.0
+        return min(1.0, max(0.0, scale) * min(1.0, max(0.0, observedU) / erwartet))
+    }
 
     /**
      * Erwarteter Anstieg [mg/dl] durch die angekuendigte Mahlzeit zwischen Markeralter [ageMin] und

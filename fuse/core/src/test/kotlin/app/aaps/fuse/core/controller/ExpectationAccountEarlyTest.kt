@@ -132,6 +132,18 @@ class ExpectationAccountEarlyTest {
     }
 
     @Test
+    fun `G3 und G4 bekommen vor +20 keine Anrechnung, danach die bestaetigte`() {
+        val (_, frueh) = schritt(konto(), 5)
+        assertEquals(0.0, frueh.early!!.guardScale, 0.0)
+        // BG steigt: die Beobachtung bestaetigt die Mahlzeit.
+        var s = konto()
+        for (m in 0..25) s = schritt(s, m, bg = 100.0 + 4.0 * m).first
+        val (_, spaet) = schritt(s, 26, bg = 204.0)
+        assertTrue(spaet.early!!.guardScale > 0.0)
+        assertTrue(spaet.early!!.guardScale <= 1.0)
+    }
+
+    @Test
     fun `die v1-Ausnahme gilt in v2 nie`() {
         val (_, e) = schritt(konto(), 0)
         assertEquals(0.0, ExpectationAccount.guardExceptionFloorU(e, normalPassedU = 10.0), 0.0)

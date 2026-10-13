@@ -2579,6 +2579,7 @@ object FuseStateJson {
                     .put("portionsInBookU", fin(s.portions.sumOf { it.amountU }))
                     .put("demandU", fin(e.early?.demandU ?: Double.NaN))
                     .put("scaleEff", fin(e.early?.scaleEff ?: Double.NaN))
+                    .put("guardScale", fin(e.early?.guardScale ?: Double.NaN))
                     .put("initial", e.early?.initial ?: JSONObject.NULL)
                     .put("periodLeftU", fin(e.early?.periodLeftU ?: Double.NaN))
                     .put("floorU", fin(x.fruehBodenU))

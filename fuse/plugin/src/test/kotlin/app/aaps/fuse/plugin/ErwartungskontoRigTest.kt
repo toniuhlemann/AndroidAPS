@@ -926,6 +926,40 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
         assertTrue(zyklen.mapNotNull { it.konto }.last().early!!.withdrawn)
     }
 
+    /** Bank N2, A1, Befund 2: auf die unbestaetigte Erwartung baut nur die Anfangsportion. */
+    @Test
+    fun `vor +20 rechnen Guard und Schwanz keine Erwartung an`(@TempDir dir: File) {
+        val zyklen = fruehLauf(fStabil, dir) { fruehKonfiguration(g1 = true, g2 = true, g3 = true, g4 = true) }
+        pruefeMechanik(zyklen, 0.5, 1.0, 2.0)
+        val frueh = zyklen.filter { it.minute in 0..19 && it.frueh() != null }
+        assertTrue(frueh.isNotEmpty())
+        assertTrue(frueh.all { it.frueh()!!.guardScale == 0.0 }) { "Anrechnung vor +20" }
+        // In der Probe steigt BG deutlich: danach wird die Mahlzeit bestaetigt.
+        assertTrue(zyklen.any { it.minute >= 20 && (it.frueh()?.guardScale ?: 0.0) > 0.0 }) { "nie bestaetigt" }
+    }
+
+    /** Tief 50 min vor dem Druck, danach schneller Anstieg ueber die Stabilitaetsgrenze. */
+    private val fTiefDavor = Fuse20Folgen.Folge(
+        "TIEF_DAVOR", 1_700_647_200_000L, -90, 180,
+        listOf(-90 to 110.0, -55 to 70.0, -50 to 60.0, -40 to 88.0, -25 to 112.0, 0 to 118.0, 60 to 190.0, 180 to 120.0),
+        markerMin = 0,
+    )
+
+    /** Bank N2, A1, Befund 3: ein Tief im Rebound-Fenster setzt die Startlage auf "nach Tief". */
+    @Test
+    fun `ein Tief im Rebound-Fenster vor dem Druck gilt als Start nach Tief`(@TempDir dir: File) {
+        val zyklen = fruehLauf(fTiefDavor, dir) {
+            fruehKonfiguration(g1 = true, g2 = true, skalaTief = 0.0)
+            whenever(preferences.get(FuseIntKey.ReboundWindowMin)).thenReturn(REBOUND_FENSTER_MIN)
+        }
+        val gebucht = zyklen.first { it.o.erwartungskonto?.zyklus?.armiertInDiesemZyklus == true }
+        val k = gebucht.o.erwartungskonto!!.zyklus!!
+        assertTrue(k.stabil) { "Probe zeigt nichts: die Strecke ist nicht erfuellt" }
+        assertFalse(k.state.startStable)
+        assertEquals(0.0, k.state.a0U, 0.0)
+        assertEquals(0.0, zyklen.sumOf { it.dErw() }, 0.0)
+    }
+
     @Test
     fun `das spaete Abwaertsrisiko sperrt jede Portion der fruehen Versorgung`(@TempDir dir: File) {
         val zyklen = fruehLauf(fFall, dir) {

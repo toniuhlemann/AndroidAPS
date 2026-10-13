@@ -150,6 +150,19 @@ class EarlySupplyTest {
     }
 
     @Test
+    fun `Guard und Schwanz rechnen nur die bestaetigte Erwartung an`() {
+        // Vor +20 nichts, auch mit grossem Skalierer.
+        assertEquals(0.0, EarlySupply.confirmedGuardScale(1.5, 10.0, 5.0, true, kurve), 0.0)
+        // Bei 30 min erwartet 1 U: beobachtet 0,5 U = halbe Anrechnung; mehr als erwartet = hoechstens die Kurve.
+        assertEquals(0.5, EarlySupply.confirmedGuardScale(1.0, 30.0, 0.5, true, kurve), 1e-12)
+        assertEquals(1.0, EarlySupply.confirmedGuardScale(1.5, 30.0, 3.0, true, kurve), 0.0)
+        // Ausbleibende Mahlzeit: nichts.
+        assertEquals(0.0, EarlySupply.confirmedGuardScale(1.0, 30.0, -0.2, true, kurve), 0.0)
+        // Ungueltige Beobachtung bestaetigt nichts.
+        assertEquals(0.0, EarlySupply.confirmedGuardScale(1.0, 30.0, 1.0, false, kurve), 0.0)
+    }
+
+    @Test
     fun `Einstellungen ausserhalb der Grenzen schalten die fruehe Versorgung aus`() {
         assertNotNull(EarlySupply.Settings.of(1.0, 0.5, 8.0, 0.5, 1.5, 4.0, 10))
         assertNull(EarlySupply.Settings.of(2.5, 0.5, 8.0, 0.5, 1.5, 4.0, 10))
