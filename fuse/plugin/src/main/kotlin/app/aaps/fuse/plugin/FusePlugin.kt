@@ -2920,20 +2920,193 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
                 rh.gs(R.string.fuse_early_adaptive_meal_horizon_summary),
             )
         }
-        // Die Erwartungskurve: nie der rohe Text, sondern was WIRKLICH gilt
-        // (Toni: vier Kurvenwerte mit Vorrang, die Zahlenzeile nur fuer
-        // Pruefstand und Forschung).
-        val kurvenSchluessel = listOf(
+        // ERWARTUNGSKONTO UND FRUEHE VERSORGUNG (Toni): je Feld nur der eigene
+        // Wert und seine Wirkung auf die Dosierung, die lange Erklaerung einmal
+        // je Block und im Eingabedialog. Das Framework frischt nach einer
+        // Aenderung nur das GEAENDERTE Feld auf - die Nachbarn zeigten sonst
+        // den alten Stand (Geraetefund: verschobene Kurvenwerte). Deshalb
+        // schreibt jede Aenderung im Block ALLE Felder beider Bloecke neu.
+        if (pref.key in kontoUndFruehSchluessel) {
+            val lage = runCatching { fruehLage() }.getOrNull()
+            for (key in kontoUndFruehSchluessel) {
+                val ziel = if (key == pref.key) pref else pref.preferenceManager?.findPreference<Preference>(key)
+                ziel ?: continue
+                lage?.let { l -> fruehZusammenfassung(key, l)?.let { ziel.summary = it } }
+            }
+        }
+    }
+
+    /** Die Schluessel beider Bloecke, deren Zusammenfassung gemeinsam neu entsteht. */
+    private val kontoUndFruehSchluessel: Set<String> by lazy {
+        setOf(
+            FuseBooleanKey.ExpectationAccountEnabled.key, FuseBooleanKey.ExpectationGuardExceptionEnabled.key,
+            FuseDoubleKey.ExpectationCurveAt30U.key, FuseDoubleKey.ExpectationCurveAt60U.key,
+            FuseDoubleKey.ExpectationCurveAt90U.key, FuseDoubleKey.ExpectationCurveAt120U.key,
+            FuseDoubleKey.ExpectationPhi0Stable.key, FuseDoubleKey.ExpectationPhi0AfterLow.key,
+            FuseDoubleKey.ExpectationStabilityBgMgdl.key, FuseIntKey.ExpectationStabilityMin.key,
+            FuseDoubleKey.ExpectationStabilityFallMgdlPerMin.key, FuseDoubleKey.ExpectationReleaseThresholdU.key,
+            FuseIntKey.ExpectationHorizonMin.key, FuseStringKey.ExpectationCurve.key,
+            FuseBooleanKey.EarlySupplyEnabled.key, FuseDoubleKey.EarlySupplyBudgetMaxU.key,
+            FuseDoubleKey.EarlySupplyScaleStable.key, FuseDoubleKey.EarlySupplyScaleAfterLow.key,
+            FuseDoubleKey.EarlySupplyInitialShare.key, FuseDoubleKey.EarlySupplyMaxPortionU.key,
+            FuseDoubleKey.EarlySupplyMaxPerPeriodU.key, FuseIntKey.EarlySupplyPeriodMin.key,
+            FuseBooleanKey.EarlySupplyInitialLiftsGuard.key, FuseBooleanKey.EarlySupplyInitialLiftsTail.key,
+            FuseBooleanKey.EarlySupplyGuardWithExpectation.key, FuseBooleanKey.EarlySupplyTailWithExpectation.key,
+        )
+    }
+
+    /** Die kompakte Zeile eines Feldes; `null` = Framework-Zusammenfassung bleibt. */
+    private fun fruehZusammenfassung(key: String, l: FruehVersorgungText.Lage): String? {
+        fun d(k: FuseDoubleKey) = preferences.get(k)
+        fun z(v: Double, stellen: Int) = String.format(java.util.Locale.GERMANY, "%.${stellen}f", v)
+        return when (key) {
+            FuseBooleanKey.ExpectationAccountEnabled.key ->
+                if (l.kontoAn) "An - Mahlzeiten laufen ueber das Konto" else "Aus - Mahlzeiten wie heute"
+            FuseBooleanKey.ExpectationGuardExceptionEnabled.key -> "Nur Mahlzeiten mit Direktdosis (altes Konto)"
+            FuseDoubleKey.ExpectationCurveAt30U.key -> FruehVersorgungText.kurvenpunkt(0, l)
+            FuseDoubleKey.ExpectationCurveAt60U.key -> FruehVersorgungText.kurvenpunkt(1, l)
+            FuseDoubleKey.ExpectationCurveAt90U.key -> FruehVersorgungText.kurvenpunkt(2, l)
+            FuseDoubleKey.ExpectationCurveAt120U.key -> FruehVersorgungText.kurvenpunkt(3, l)
+            FuseDoubleKey.ExpectationPhi0Stable.key, FuseDoubleKey.ExpectationPhi0AfterLow.key ->
+                z(d(if (key == FuseDoubleKey.ExpectationPhi0Stable.key) FuseDoubleKey.ExpectationPhi0Stable else FuseDoubleKey.ExpectationPhi0AfterLow), 2) +
+                    " - nur Mahlzeiten mit Direktdosis (altes Konto)"
+            FuseDoubleKey.ExpectationStabilityBgMgdl.key ->
+                z(d(FuseDoubleKey.ExpectationStabilityBgMgdl), 0) + " mg/dl - darunter gilt der Start als 'nach Tief'"
+            FuseIntKey.ExpectationStabilityMin.key ->
+                "${preferences.get(FuseIntKey.ExpectationStabilityMin)} min am Stueck ueber der Grenze, ohne Fallen und Sperre"
+            FuseDoubleKey.ExpectationStabilityFallMgdlPerMin.key ->
+                z(d(FuseDoubleKey.ExpectationStabilityFallMgdlPerMin), 1) + " mg/dl/min - schnellerer Rueckgang unterbricht die Strecke"
+            FuseDoubleKey.ExpectationReleaseThresholdU.key ->
+                z(d(FuseDoubleKey.ExpectationReleaseThresholdU), 2) + " U - zeigt sich bis +30 min weniger, friert der Rest ein"
+            FuseIntKey.ExpectationHorizonMin.key -> "${preferences.get(FuseIntKey.ExpectationHorizonMin)} min"
+            FuseStringKey.ExpectationCurve.key -> when {
+                l.ecken.any { it != 0.0 } -> "Ueberstimmt - die vier Kurvenwerte haben Vorrang"
+                preferences.get(FuseStringKey.ExpectationCurve).isBlank() -> "Leer - nur fuer Pruefstand und Forschung"
+                else -> "Gilt (keine Kurvenwerte gesetzt)"
+            }
+            FuseBooleanKey.EarlySupplyEnabled.key -> FruehVersorgungText.hauptschalter(l)
+            FuseDoubleKey.EarlySupplyBudgetMaxU.key -> FruehVersorgungText.budgetMax(d(FuseDoubleKey.EarlySupplyBudgetMaxU), l)
+            FuseDoubleKey.EarlySupplyScaleStable.key -> FruehVersorgungText.skalierer(d(FuseDoubleKey.EarlySupplyScaleStable), false, l)
+            FuseDoubleKey.EarlySupplyScaleAfterLow.key -> FruehVersorgungText.skalierer(d(FuseDoubleKey.EarlySupplyScaleAfterLow), true, l)
+            FuseDoubleKey.EarlySupplyInitialShare.key -> FruehVersorgungText.anfangsanteil(d(FuseDoubleKey.EarlySupplyInitialShare), l)
+            FuseDoubleKey.EarlySupplyMaxPortionU.key -> FruehVersorgungText.portion(d(FuseDoubleKey.EarlySupplyMaxPortionU), l)
+            FuseDoubleKey.EarlySupplyMaxPerPeriodU.key -> FruehVersorgungText.jeZeitraum(
+                d(FuseDoubleKey.EarlySupplyMaxPerPeriodU), preferences.get(FuseIntKey.EarlySupplyPeriodMin), d(FuseDoubleKey.EarlySupplyMaxPortionU),
+            )
+            FuseIntKey.EarlySupplyPeriodMin.key -> "${preferences.get(FuseIntKey.EarlySupplyPeriodMin)} min - das gleitende Fenster fuer 'je Zeitraum'"
+            FuseBooleanKey.EarlySupplyInitialLiftsGuard.key -> FruehVersorgungText.G1
+            FuseBooleanKey.EarlySupplyInitialLiftsTail.key -> FruehVersorgungText.G2
+            FuseBooleanKey.EarlySupplyGuardWithExpectation.key -> FruehVersorgungText.G3
+            FuseBooleanKey.EarlySupplyTailWithExpectation.key -> FruehVersorgungText.G4
+            else -> null
+        }
+    }
+
+    /** Einheitswirkung des aktiven Insulinmodells, gemerkt je Insulin und DIA (derselbe Kernbau wie im Regler). */
+    private var fruehWirkungCache: Pair<String, (Double) -> Double>? = null
+
+    /** Insulin, DIA und Gipfel des aktiven Modells - aendert sich einer, gilt die gemerkte Wirkung nicht mehr. */
+    private fun fruehModellSchluessel(): String? {
+        val profil = runCatching { profileFunction.getProfile(dateUtil.now()) }.getOrNull() ?: return null
+        val insulin = runCatching { activePlugin.activeInsulin }.getOrNull() ?: return null
+        return insulin.id.name + "|" + profil.dia + "|" + insulin.peak
+    }
+
+    private fun fruehEinheitswirkung(): ((Double) -> Double)? {
+        val jetzt = dateUtil.now()
+        val profil = runCatching { profileFunction.getProfile(jetzt) }.getOrNull() ?: return null
+        val insulin = runCatching { activePlugin.activeInsulin }.getOrNull() ?: return null
+        val schluessel = insulin.id.name + "|" + profil.dia + "|" + insulin.peak
+        fruehWirkungCache?.takeIf { it.first == schluessel }?.let { return it.second }
+        val kern = runCatching {
+            app.aaps.fuse.core.insulin.UnitInsulinKernelBuilder.build(
+                sampler = AapsUnitInsulinSampler(insulin, profil.dia, jetzt),
+                deliveryTs = jetzt,
+                model = app.aaps.fuse.core.predictor.InsulinModelProvenance(
+                    insulinType = insulin.id.name,
+                    diaHours = profil.dia,
+                    peakMin = insulin.peak,
+                    codeProvenance = "activePlugin.activeInsulin",
+                ),
+                insulinPluginId = insulin.id.name,
+            )
+        }.getOrNull() as? app.aaps.fuse.core.insulin.KernelOutcome.Ok ?: return null
+        val wirkung = app.aaps.fuse.core.controller.EarlySupply.unitActionOf(kern.kernel)
+        fruehWirkungCache = schluessel to wirkung
+        return wirkung
+    }
+
+    /** Gemerkte Lage je Eingabestand - ein Aufbau des Bildschirms rechnet sie einmal, nicht je Feld. */
+    private var fruehLageCache: Pair<String, FruehVersorgungText.Lage>? = null
+
+    /** Die Lage fuer die Zusammenfassungen, aus den JETZT gespeicherten Werten. */
+    private fun fruehLage(): FruehVersorgungText.Lage {
+        // Alle Eingaben der Lage, getypt gelesen (preferences.get(String) liefert die Schluesseldefinition, nicht den Wert).
+        val stand = listOf<Any>(
+            preferences.get(FuseBooleanKey.ExpectationAccountEnabled), preferences.get(FuseBooleanKey.EarlySupplyEnabled),
+            preferences.get(FuseDoubleKey.ExpectationCurveAt30U), preferences.get(FuseDoubleKey.ExpectationCurveAt60U),
+            preferences.get(FuseDoubleKey.ExpectationCurveAt90U), preferences.get(FuseDoubleKey.ExpectationCurveAt120U),
+            preferences.get(FuseStringKey.ExpectationCurve), preferences.get(FuseIntKey.ExpectationHorizonMin),
+            preferences.get(FuseDoubleKey.EarlySupplyScaleStable), preferences.get(FuseDoubleKey.EarlySupplyScaleAfterLow),
+            preferences.get(FuseDoubleKey.EarlySupplyBudgetMaxU), preferences.get(FuseDoubleKey.EarlySupplyInitialShare),
+            preferences.get(FuseDoubleKey.EarlySupplyMaxPortionU), preferences.get(FuseDoubleKey.EarlySupplyMaxPerPeriodU),
+            preferences.get(FuseIntKey.EarlySupplyPeriodMin), preferences.get(FuseDoubleKey.MealExposureLimitU),
+            fruehModellSchluessel() ?: "-",
+        ).joinToString("|")
+        fruehLageCache?.takeIf { it.first == stand }?.let { return it.second }
+        return fruehLageNeu().also { fruehLageCache = stand to it }
+    }
+
+    private fun fruehLageNeu(): FruehVersorgungText.Lage {
+        val ecken = listOf(
             FuseDoubleKey.ExpectationCurveAt30U, FuseDoubleKey.ExpectationCurveAt60U,
             FuseDoubleKey.ExpectationCurveAt90U, FuseDoubleKey.ExpectationCurveAt120U,
-        )
-        if (pref.key == FuseStringKey.ExpectationCurve.key || kurvenSchluessel.any { it.key == pref.key }) {
-            val erklaerung = rh.gs(
-                if (pref.key == FuseStringKey.ExpectationCurve.key) R.string.fuse_expectation_curve_summary
-                else R.string.fuse_expectation_curve_points_summary
-            )
-            pref.summary = ExpectationCurveText.zusammenfassungWirksam(wirksameKurve(), erklaerung)
+        ).map { preferences.get(it) }
+        val kurve = app.aaps.fuse.core.controller.ExpectationAccount.Curve.parse(wirksameKurve().text)
+        val horizont = preferences.get(FuseIntKey.ExpectationHorizonMin)
+        val wirkung = fruehEinheitswirkung()
+        val eckenGesetzt = ecken.any { it != 0.0 }
+        val rollen = (0..3).map { i ->
+            if (wirkung == null || !eckenGesetzt) null
+            else app.aaps.fuse.core.controller.EarlySupply.cornerRole(ecken.toDoubleArray(), i, horizont, wirkung)
         }
+        // Die Wirkung von +0,1 U am bestimmenden Punkt - exakt aus den Eckwerten, wie der Regler sie liest.
+        fun bedarfAus(e: DoubleArray): Double? = wirkung?.let { w ->
+            app.aaps.fuse.core.controller.ExpectationAccount.Curve.ausEckwerten(e[0], e[1], e[2], e[3])
+                ?.let { app.aaps.fuse.core.controller.EarlySupply.need(it, horizont, w)?.rawU }
+        }
+        val bedarfJetzt = if (eckenGesetzt) bedarfAus(ecken.toDoubleArray()) else null
+        val jeZehntel = (0..3).map { i ->
+            if (bedarfJetzt == null || rollen[i] != app.aaps.fuse.core.controller.EarlySupply.CornerRole.Binding) null
+            else bedarfAus(ecken.toDoubleArray().also { it[i] += 0.1 })?.let { it - bedarfJetzt }
+        }
+        return FruehVersorgungText.Lage(
+            kontoAn = preferences.get(FuseBooleanKey.ExpectationAccountEnabled),
+            fruehAn = preferences.get(FuseBooleanKey.EarlySupplyEnabled),
+            ecken = ecken,
+            kurveGueltig = kurve != null,
+            rollen = rollen,
+            bedarf = if (kurve == null || wirkung == null) null else app.aaps.fuse.core.controller.EarlySupply.need(kurve, horizont, wirkung),
+            bedarfJeZehntelU = jeZehntel,
+            einstellung = app.aaps.fuse.core.controller.EarlySupply.Settings.of(
+                scaleStable = preferences.get(FuseDoubleKey.EarlySupplyScaleStable),
+                scaleAfterLow = preferences.get(FuseDoubleKey.EarlySupplyScaleAfterLow),
+                budgetMaxU = preferences.get(FuseDoubleKey.EarlySupplyBudgetMaxU),
+                initialShare = preferences.get(FuseDoubleKey.EarlySupplyInitialShare),
+                maxPortionU = preferences.get(FuseDoubleKey.EarlySupplyMaxPortionU),
+                maxPerPeriodU = preferences.get(FuseDoubleKey.EarlySupplyMaxPerPeriodU),
+                periodMin = preferences.get(FuseIntKey.EarlySupplyPeriodMin),
+            ),
+            expositionU = preferences.get(FuseDoubleKey.MealExposureLimitU),
+        )
+    }
+
+    /** Die Erklaerung EINMAL je Block (Toni): ohne Schluessel, nicht waehlbar, nicht gespeichert. */
+    private fun blockBeschreibung(context: Context, text: String): Preference = Preference(context).apply {
+        summary = text
+        isSelectable = false
+        isPersistent = false
+        isIconSpaceReserved = false
     }
 
     override fun addPreferenceScreen(preferenceManager: PreferenceManager, parent: PreferenceScreen, context: Context, requiredKey: String?) {
@@ -3082,6 +3255,7 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
         // KEINE Einstellung. Die Kurvenzeile zeigt ihren Zustand ueber
         // [updatePreferenceSummary] - den Hausweg.
         cat("fuse_expectation", "Erwartungskonto (Test)") {
+            addPreference(blockBeschreibung(context, FruehVersorgungText.BLOCK_KONTO))
             addPreference(AdaptiveSwitchPreference(ctx = context, booleanKey = FuseBooleanKey.ExpectationAccountEnabled, summary = R.string.fuse_expectation_account_summary, title = R.string.fuse_expectation_account_title))
             addPreference(AdaptiveSwitchPreference(ctx = context, booleanKey = FuseBooleanKey.ExpectationGuardExceptionEnabled, summary = R.string.fuse_expectation_guard_exception_summary, title = R.string.fuse_expectation_guard_exception_title))
             // DIE KURVE IN VIER WERTEN (Toni): erwartete Mahlzeitwirkung
@@ -3111,6 +3285,7 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
         // dem Konto, auf dem sie aufbaut. Die vier Aenderungen an Guard und
         // Schwanz (G1..G4) stehen einzeln da - jede ist ein eigener Entscheid.
         cat("fuse_early_supply", "Fruehe Versorgung (v2, Test)") {
+            addPreference(blockBeschreibung(context, FruehVersorgungText.BLOCK_FRUEH))
             addPreference(AdaptiveSwitchPreference(ctx = context, booleanKey = FuseBooleanKey.EarlySupplyEnabled, summary = R.string.fuse_early_supply_summary, title = R.string.fuse_early_supply_title))
             addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.EarlySupplyBudgetMaxU, dialogMessage = R.string.fuse_early_supply_budget_max_summary, title = R.string.fuse_early_supply_budget_max_title))
             addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.EarlySupplyScaleStable, dialogMessage = R.string.fuse_early_supply_scale_stable_summary, title = R.string.fuse_early_supply_scale_stable_title))

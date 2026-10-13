@@ -284,6 +284,61 @@ object EarlySupply {
         return max(0.0, min(budgetMaxU, scale * bedarf))
     }
 
+    /** Der fruehe Bedarf ohne Skalierer und Deckel [U] und der Kurvenpunkt, der ihn bestimmt [min ab Marker]. */
+    data class Need(val rawU: Double, val bindingTauMin: Int)
+
+    /** Wie [budgetU], aber ungedeckelt und mit dem bestimmenden Punkt - fuer die Anzeige der Wirkung. `null` = keine Deckung. */
+    fun need(curve: ExpectationAccount.Curve, horizonMin: Int, action: (Double) -> Double): Need? {
+        var best: Need? = null
+        for (t in deckung(0.0, horizonMin)) {
+            val c = action(t.toDouble())
+            if (c <= EPS) continue
+            val r = curve.at(t.toDouble()) / c
+            if (r.isFinite() && (best == null || r > best.rawU + EPS)) best = Need(r, t)
+        }
+        return best
+    }
+
+    /** Was ein Eckpunkt der Kurve fuer den fruehen Bedarf bedeutet (Anzeige). */
+    sealed interface CornerRole {
+        /** Er bestimmt den Bedarf jetzt: jede Erhoehung erhoeht ihn. */
+        data object Binding : CornerRole
+
+        /** Er bestimmt ihn ab diesem Wert [U]. */
+        data class From(val valueU: Double) : CornerRole
+
+        /** Innerhalb einer gueltigen Kurve (bis zum naechsten Eckwert) nie. */
+        data object Never : CornerRole
+    }
+
+    /**
+     * Die Rolle eines Eckpunkts fuer den fruehen Bedarf - fuer die Anzeige "bestimmt das Budget (ab ...)".
+     * [corners] = Eckwerte nach 30/60/90/120 min, [corner] = 0..3. Der Bedarf ist im Eckwert monoton; gesucht wird per
+     * Halbierung der kleinste Wert, ab dem er waechst - hoechstens bis zum naechsten Eckwert, denn darueber waere die
+     * Kurve nicht mehr steigend. `null` = Kurve jetzt ungueltig.
+     */
+    fun cornerRole(corners: DoubleArray, corner: Int, horizonMin: Int, action: (Double) -> Double): CornerRole? {
+        fun bedarf(v: Double): Double? {
+            val e = corners.copyOf().also { it[corner] = v }
+            val k = ExpectationAccount.Curve.ausEckwerten(e[0], e[1], e[2], e[3]) ?: return null
+            return need(k, horizonMin, action)?.rawU
+        }
+        val jetzt = corners[corner]
+        val basis = bedarf(jetzt) ?: return null
+        val oben = if (corner < corners.size - 1) corners[corner + 1] else ExpectationAccount.MAX_CURVE_U
+        if (oben <= jetzt) return CornerRole.Never
+        val probe = min(oben, jetzt + 0.001)
+        if ((bedarf(probe) ?: return CornerRole.Never) > basis + 1e-9) return CornerRole.Binding
+        if ((bedarf(oben) ?: return CornerRole.Never) <= basis + 1e-9) return CornerRole.Never
+        var lo = jetzt
+        var hi = oben
+        repeat(40) {
+            val mid = (lo + hi) / 2
+            if ((bedarf(mid) ?: Double.MAX_VALUE) > basis + 1e-9) hi = mid else lo = mid
+        }
+        return CornerRole.From(hi)
+    }
+
     /**
      * ANPASSUNG an die beobachtete Mahlzeit: bis [ADAPT_FROM_MIN] der eingestellte Skalierer; danach hoechstens er,
      * verkleinert im Verhaeltnis beobachtet/erwartet. Groesser als erwartet erhoeht NICHT (das deckt der gemessene

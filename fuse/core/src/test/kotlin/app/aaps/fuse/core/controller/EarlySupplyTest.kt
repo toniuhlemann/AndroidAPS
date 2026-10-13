@@ -163,6 +163,35 @@ class EarlySupplyTest {
     }
 
     @Test
+    fun `Bedarf und bestimmender Punkt - und ab wann ein anderer Eckpunkt bestimmt`() {
+        // Synthetische Kurve, flacher Beginn: der 120er-Punkt bestimmt den Bedarf.
+        val ecken = doubleArrayOf(0.5, 2.0, 3.0, 4.0)
+        val k = requireNotNull(ExpectationAccount.Curve.ausEckwerten(0.5, 2.0, 3.0, 4.0))
+        val n = requireNotNull(EarlySupply.need(k, 120, wirkung))
+        assertEquals(120, n.bindingTauMin)
+        assertEquals(EarlySupply.budgetU(k, 120, 1.0, 20.0, wirkung), n.rawU, 1e-9)
+        assertEquals(EarlySupply.CornerRole.Binding, EarlySupply.cornerRole(ecken, 3, 120, wirkung))
+        // Der 30er-Punkt bestimmt erst, wenn er den 120er-Bedarf einholt.
+        val r30 = EarlySupply.cornerRole(ecken, 0, 120, wirkung)
+        assertTrue(r30 is EarlySupply.CornerRole.From) { "$r30" }
+        val ab = (r30 as EarlySupply.CornerRole.From).valueU
+        assertEquals(n.rawU * wirkung(30.0), ab, 1e-3)
+        val darueber = requireNotNull(ExpectationAccount.Curve.ausEckwerten(ab + 0.05, 2.0, 3.0, 4.0))
+        assertTrue(requireNotNull(EarlySupply.need(darueber, 120, wirkung)).rawU > n.rawU)
+        val darunter = requireNotNull(ExpectationAccount.Curve.ausEckwerten(ab - 0.05, 2.0, 3.0, 4.0))
+        assertEquals(n.rawU, requireNotNull(EarlySupply.need(darunter, 120, wirkung)).rawU, 1e-9)
+        // Steiler Beginn: der 30er-Punkt bestimmt, der 120er nicht mehr.
+        val steil = doubleArrayOf(1.0, 2.0, 3.0, 4.0)
+        assertEquals(30, requireNotNull(EarlySupply.need(kurve, 120, wirkung)).bindingTauMin)
+        assertEquals(EarlySupply.CornerRole.Binding, EarlySupply.cornerRole(steil, 0, 120, wirkung))
+        assertTrue(EarlySupply.cornerRole(steil, 3, 120, wirkung) is EarlySupply.CornerRole.From)
+        // Kann er bis zum naechsten Eckwert nie aufholen: nie.
+        assertEquals(EarlySupply.CornerRole.Never, EarlySupply.cornerRole(doubleArrayOf(0.1, 0.2, 3.0, 4.0), 0, 120, wirkung))
+        // Ungueltige Kurve (nicht steigend): keine Rolle.
+        assertNull(EarlySupply.cornerRole(doubleArrayOf(3.0, 2.0, 3.0, 4.0), 0, 120, wirkung))
+    }
+
+    @Test
     fun `Einstellungen ausserhalb der Grenzen schalten die fruehe Versorgung aus`() {
         assertNotNull(EarlySupply.Settings.of(1.0, 0.5, 8.0, 0.5, 1.5, 4.0, 10))
         assertNull(EarlySupply.Settings.of(2.5, 0.5, 8.0, 0.5, 1.5, 4.0, 10))
