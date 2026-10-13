@@ -105,7 +105,6 @@ internal val fuseEinstellbareKeys: Set<String> = setOf(
     FuseBooleanKey.TailGuardEnabled.key,
     FuseBooleanKey.TbrEndZeroWhenReasonGone.key,
     // Das Erwartungskonto (Testkandidat E-034) - eigener Abschnitt.
-    FuseBooleanKey.ExpectationAccountEnabled.key,
     FuseBooleanKey.ExpectationGuardExceptionEnabled.key,
     FuseDoubleKey.ExpectationCurveAt30U.key,
     FuseDoubleKey.ExpectationCurveAt60U.key,
@@ -256,7 +255,6 @@ object FuseSettingsReport {
                     horizont(FuseIntKey.EarlyAdaptiveMealHorizonMin, "Frueher MEAL-Horizont"),
                 ),
                 "Erwartungskonto" to listOf(
-                    schalter(FuseBooleanKey.ExpectationAccountEnabled, "Erwartungskonto"),
                     zahl(FuseDoubleKey.ExpectationCurveAt30U, "Kurve nach 30 min", "U"),
                     zahl(FuseDoubleKey.ExpectationCurveAt60U, "Kurve nach 60 min", "U"),
                     zahl(FuseDoubleKey.ExpectationCurveAt90U, "Kurve nach 90 min", "U"),

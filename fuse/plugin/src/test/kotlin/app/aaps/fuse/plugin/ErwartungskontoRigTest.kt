@@ -174,19 +174,26 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
         whenever(processedTbrEbData.getTempBasalIncludingConvertedExtended(any())).thenAnswer { inv -> pumpe.sicht(inv.getArgument(0), clock) }
     }
 
-    /** Synthetische Konfiguration: Standardwerte aller Schluessel, dazu die Ueberschreibungen dieser Probe. */
-    private fun konfiguration(kontoAn: Boolean, phi0Stabil: Double = 0.5, phi0Tief: Double = 0.25) {
+    /**
+     * Synthetische Konfiguration: Standardwerte aller Schluessel, dazu die Ueberschreibungen dieser Probe. Seit der
+     * Konsolidierung gilt das Konto mit gueltiger Kurve - "Konto aus" heisst hier: keine Kurve.
+     */
+    private fun konfiguration(
+        kontoAn: Boolean,
+        phi0Stabil: Double = 0.5,
+        phi0Tief: Double = 0.25,
+        markerAutorisiert: Boolean = true,
+    ) {
         whenever(preferences.get(anyOrNull<BooleanKey>())).thenReturn(false)
         FuseDoubleKey.entries.forEach { k -> whenever(preferences.get(k)).thenReturn(k.defaultValue) }
         FuseIntKey.entries.forEach { k -> whenever(preferences.get(k)).thenReturn(k.defaultValue) }
         FuseBooleanKey.entries.forEach { k -> whenever(preferences.get(k)).thenReturn(k.defaultValue) }
         FuseStringKey.entries.forEach { k -> whenever(preferences.get(k)).thenReturn(k.defaultValue) }
-        whenever(preferences.get(FuseBooleanKey.MarkerAuthorisesRelease)).thenReturn(true)
+        whenever(preferences.get(FuseBooleanKey.MarkerAuthorisesRelease)).thenReturn(markerAutorisiert)
         whenever(preferences.get(FuseBooleanKey.LivenessChannelEnabled)).thenReturn(true)
-        whenever(preferences.get(FuseBooleanKey.ExpectationAccountEnabled)).thenReturn(kontoAn)
         whenever(preferences.get(FuseDoubleKey.ExpectationPhi0Stable)).thenReturn(phi0Stabil)
         whenever(preferences.get(FuseDoubleKey.ExpectationPhi0AfterLow)).thenReturn(phi0Tief)
-        whenever(preferences.get(FuseStringKey.ExpectationCurve)).thenReturn(kurve)
+        whenever(preferences.get(FuseStringKey.ExpectationCurve)).thenReturn(if (kontoAn) kurve else "")
         whenever(preferences.get(DoubleKey.ApsSmbMaxIob)).thenReturn(MAX_IOB)
         whenever(constraintsChecker.getMaxIOBAllowed()).thenAnswer { ConstraintObject(MAX_IOB, aapsLogger) }
         whenever(preferences.get(LongKey.FslCalibrationStart)).thenReturn(-1L)
@@ -312,6 +319,28 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
         assertTrue(zyklen.all { it.o.erwartungskonto == null }) { "Konto aus: kein Exportblock" }
         assertTrue(zyklen.all { it.konto == null }) { "Konto aus: kein Kontozustand" }
         assertTrue(zyklen.none { it.o.livenessDenial == "EXPECTATION_ACCOUNT" })
+    }
+
+    /**
+     * KONSOLIDIERUNG (Toni: "Druck = Freigabe"): der Druck selbst oeffnet das Konto. Der Schalter
+     * Marker-Autorisierung entscheidet nur noch ueber die Modell-Einwaende der Direktdosis.
+     */
+    @Test
+    fun `das Konto oeffnet auch ohne Marker-Autorisierung`(@TempDir dir: File) {
+        konfiguration(kontoAn = true, markerAutorisiert = false)
+        val zyklen = lauf(fStabil, dir).filter { it.o.abortReason == null }
+        assertTrue(zyklen.filter { it.minute < 0 }.none { it.o.erwartungskonto!!.gilt }) { "Konto vor dem Druck" }
+        assertTrue(zyklen.any { it.minute >= 0 && it.o.erwartungskonto!!.gilt }) { "Konto ohne Autorisierung nicht eroeffnet" }
+        assertTrue(zyklen.any { it.o.erwartungskonto!!.zyklus?.armiertInDiesemZyklus == true }) { "keine Buchung am Druck" }
+    }
+
+    /** Ohne gueltige Kurve gilt kein Konto, auch wenn der alte Schalter noch gespeichert an ist. */
+    @Test
+    fun `ohne gueltige Kurve gilt kein Konto, gleich was der alte Schalter sagt`(@TempDir dir: File) {
+        konfiguration(kontoAn = false)
+        whenever(preferences.get(FuseBooleanKey.ExpectationAccountEnabled)).thenReturn(true)
+        val zyklen = lauf(Fuse20Folgen.F1, dir)
+        assertTrue(zyklen.all { it.o.erwartungskonto == null }) { "Konto ohne Kurve" }
     }
 
     @Test
@@ -508,7 +537,7 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
 
     /**
      * Die Wahl gilt die GANZE Mahlzeit, auch ohne Konto: faellt das Konto aus
-     * (hier: Schalter aus), gibt es trotzdem keine ueberraschende Direktdosis.
+     * (hier: keine Kurve), gibt es trotzdem keine ueberraschende Direktdosis.
      * Gegenprobe: ohne die Wahl liefert derselbe Lauf eine Direktdosis.
      */
     @Test

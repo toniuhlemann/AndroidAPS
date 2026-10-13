@@ -2297,8 +2297,11 @@ class FuseCycleRunner(
             // einer in diesem Prozess schon gebuchten Autorisierung verloren
             // (verworfen, zurueckgesetzt), wird es nicht neu eroeffnet - die
             // Mahlzeit laeuft dann ausgewiesen auf dem heutigen Pfad.
+            // DER DRUCK SELBST OEFFNET DAS KONTO (Konsolidierung, Toni: "Druck = Freigabe"): der Schalter
+            // Marker-Autorisierung entscheidet nur noch ueber die Modell-Einwaende der Direktdosis, nicht darueber,
+            // ob eine angekuendigte Mahlzeit ihr Konto bekommt.
             (konto != null && konto.authId == ekVorschau.authorizationId && computeTs < konto.windowEndTs) ||
-                (manualMarkerAuthorized && ekVorschau.authorizationId == markerTs &&
+                (mealMarkerActive && markerTs > 0 && ekVorschau.authorizationId == markerTs &&
                     markerPressObserved() == markerTs && konto?.authId != markerTs &&
                     ekArmiertFuerAuth != markerTs)
         }
@@ -8859,7 +8862,7 @@ class FuseCycleRunner(
         /** Die Null sofort verlassen, sobald ihr Schutzgrund weg ist. */
         val endZeroWhenReasonGone: Boolean,
         // ---- ERWARTUNGSKONTO (Testkandidat E-034), Default AUS -------------
-        /** Hauptschalter - s. [FuseBooleanKey.ExpectationAccountEnabled]. */
+        /** Das Konto gilt - seit der Konsolidierung genau dann, wenn eine gueltige Kurve eingetragen ist. */
         val expectationAccountEnabled: Boolean = false,
         /** Die Guard-Ausnahme, wie JETZT eingestellt: Abschalten wirkt
          *  sofort, Einschalten erst ab dem naechsten Marker (gepinnt). */
@@ -9045,14 +9048,24 @@ class FuseCycleRunner(
     ).let { mitErwartungskonto(it) }.let { pruefarm?.anwenden(it) ?: it }.also { validate(it) }
 
     /**
-     * DIE KONTO-SCHLUESSEL NUR BEI EINGESCHALTETEM KONTO (E-034). Aus bleibt
-     * die Konfiguration auf den Standardwerten, gleich was gespeichert ist:
-     * kein Konto-Wert beruehrt einen Lauf ohne Konto, und die
-     * Gleichwertigkeitsprobe (GN-A) sieht dieselbe Konfiguration wie vorher.
+     * DAS KONTO GILT, SOBALD EINE GUELTIGE KURVE EINGETRAGEN IST (Konsolidierung 2.0, Toni: das Konto ist der
+     * Mahlzeitenweg). Ein eigener Hauptschalter waere ueberfluessig: ohne gueltige Kurve hat das Konto nichts zu
+     * erwarten. Dann bleibt die Konfiguration auf den Standardwerten, gleich was gespeichert ist - kein Konto-Wert
+     * beruehrt einen Lauf ohne Kurve, und die Gleichwertigkeitsprobe sieht dieselbe Konfiguration wie vorher. Der
+     * alte Schalter [FuseBooleanKey.ExpectationAccountEnabled] bleibt registriert (Sicherungen, Rueckweg 1.x), wird
+     * aber nicht mehr gelesen.
      */
-    private fun mitErwartungskonto(basis: Config): Config =
-        if (!preferences.get(FuseBooleanKey.ExpectationAccountEnabled)) basis
-        else basis.copy(
+    private fun mitErwartungskonto(basis: Config): Config {
+        // Die wirksame Kurve (Toni): vier Eckwerte vor Expertenzeile.
+        val kurve = ExpectationCurveText.wirksam(
+            zeile = preferences.get(FuseStringKey.ExpectationCurve),
+            f30U = preferences.get(FuseDoubleKey.ExpectationCurveAt30U),
+            f60U = preferences.get(FuseDoubleKey.ExpectationCurveAt60U),
+            f90U = preferences.get(FuseDoubleKey.ExpectationCurveAt90U),
+            f120U = preferences.get(FuseDoubleKey.ExpectationCurveAt120U),
+        ).text
+        if (app.aaps.fuse.core.controller.ExpectationAccount.Curve.parse(kurve) == null) return basis
+        return basis.copy(
             expectationAccountEnabled = true,
             expectationGuardException = preferences.get(FuseBooleanKey.ExpectationGuardExceptionEnabled),
             expectationPhi0Stable = preferences.get(FuseDoubleKey.ExpectationPhi0Stable),
@@ -9062,15 +9075,9 @@ class FuseCycleRunner(
             expectationStabilityFallMgdlPerMin = preferences.get(FuseDoubleKey.ExpectationStabilityFallMgdlPerMin),
             expectationReleaseThresholdU = preferences.get(FuseDoubleKey.ExpectationReleaseThresholdU),
             expectationHorizonMin = preferences.get(FuseIntKey.ExpectationHorizonMin),
-            // Die wirksame Kurve (Toni): vier Eckwerte vor Expertenzeile.
-            expectationCurveText = ExpectationCurveText.wirksam(
-                zeile = preferences.get(FuseStringKey.ExpectationCurve),
-                f30U = preferences.get(FuseDoubleKey.ExpectationCurveAt30U),
-                f60U = preferences.get(FuseDoubleKey.ExpectationCurveAt60U),
-                f90U = preferences.get(FuseDoubleKey.ExpectationCurveAt90U),
-                f120U = preferences.get(FuseDoubleKey.ExpectationCurveAt120U),
-            ).text,
+            expectationCurveText = kurve,
         ).let { mitFrueherVersorgung(it) }
+    }
 
     /**
      * DIE FRUEHE VERSORGUNG (E-034 v2) NUR BEI EINGESCHALTETEM HAUPTSCHALTER -

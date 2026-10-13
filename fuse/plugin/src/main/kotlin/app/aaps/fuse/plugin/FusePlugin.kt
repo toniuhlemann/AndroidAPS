@@ -1231,7 +1231,6 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
      * Vorgriff oder keine Huelle.
      */
     private fun nurErwartungBisU(huelleU: Double): Double? {
-        if (!preferences.get(FuseBooleanKey.ExpectationAccountEnabled)) return null
         val kurve = app.aaps.fuse.core.controller.ExpectationAccount.Curve.parse(wirksameKurve().text) ?: return null
         // E-034 v2: mit frueher Versorgung bucht "nur Erwartung" das Gesamtbudget.
         if (preferences.get(FuseBooleanKey.EarlySupplyEnabled)) return fruehesBudgetU(kurve)
@@ -2961,7 +2960,7 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
     /** Die Schluessel beider Bloecke, deren Zusammenfassung gemeinsam neu entsteht. */
     private val kontoUndFruehSchluessel: Set<String> by lazy {
         setOf(
-            FuseBooleanKey.ExpectationAccountEnabled.key, FuseBooleanKey.ExpectationGuardExceptionEnabled.key,
+            FuseBooleanKey.ExpectationGuardExceptionEnabled.key,
             FuseDoubleKey.ExpectationCurveAt30U.key, FuseDoubleKey.ExpectationCurveAt60U.key,
             FuseDoubleKey.ExpectationCurveAt90U.key, FuseDoubleKey.ExpectationCurveAt120U.key,
             FuseDoubleKey.ExpectationPhi0Stable.key, FuseDoubleKey.ExpectationPhi0AfterLow.key,
@@ -2982,8 +2981,6 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
         fun d(k: FuseDoubleKey) = preferences.get(k)
         fun z(v: Double, stellen: Int) = String.format(java.util.Locale.GERMANY, "%.${stellen}f", v)
         return when (key) {
-            FuseBooleanKey.ExpectationAccountEnabled.key ->
-                if (l.kontoAn) "An - Mahlzeiten laufen ueber das Konto" else "Aus - Mahlzeiten wie heute"
             FuseBooleanKey.ExpectationGuardExceptionEnabled.key -> "Nur Mahlzeiten mit Direktdosis (altes Konto)"
             FuseDoubleKey.ExpectationCurveAt30U.key -> FruehVersorgungText.kurvenpunkt(0, l)
             FuseDoubleKey.ExpectationCurveAt60U.key -> FruehVersorgungText.kurvenpunkt(1, l)
@@ -3065,7 +3062,7 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
     private fun fruehLage(): FruehVersorgungText.Lage {
         // Alle Eingaben der Lage, getypt gelesen (preferences.get(String) liefert die Schluesseldefinition, nicht den Wert).
         val stand = listOf<Any>(
-            preferences.get(FuseBooleanKey.ExpectationAccountEnabled), preferences.get(FuseBooleanKey.EarlySupplyEnabled),
+            preferences.get(FuseBooleanKey.EarlySupplyEnabled),
             preferences.get(FuseDoubleKey.ExpectationCurveAt30U), preferences.get(FuseDoubleKey.ExpectationCurveAt60U),
             preferences.get(FuseDoubleKey.ExpectationCurveAt90U), preferences.get(FuseDoubleKey.ExpectationCurveAt120U),
             preferences.get(FuseStringKey.ExpectationCurve), preferences.get(FuseIntKey.ExpectationHorizonMin),
@@ -3103,7 +3100,8 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
             else bedarfAus(ecken.toDoubleArray().also { it[i] += 0.1 })?.let { it - bedarfJetzt }
         }
         return FruehVersorgungText.Lage(
-            kontoAn = preferences.get(FuseBooleanKey.ExpectationAccountEnabled),
+            // Das Konto gilt mit gueltiger Kurve - dieselbe Regel wie im Regler.
+            kontoAn = kurve != null,
             fruehAn = preferences.get(FuseBooleanKey.EarlySupplyEnabled),
             ecken = ecken,
             kurveGueltig = kurve != null,
@@ -3304,7 +3302,7 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
         // Kurvenzeile zeigt ihren Zustand ueber [updatePreferenceSummary] - den Hausweg.
         cat("fuse_expectation", "Erwartungskonto") {
             addPreference(blockBeschreibung(context, FruehVersorgungText.BLOCK_KONTO))
-            addPreference(AdaptiveSwitchPreference(ctx = context, booleanKey = FuseBooleanKey.ExpectationAccountEnabled, summary = R.string.fuse_expectation_account_summary, title = R.string.fuse_expectation_account_title))
+            info("Konto an", "Das Konto gilt, sobald eine gueltige Kurve eingetragen ist - ohne eigenen Schalter.")
             // DIE KURVE IN VIER WERTEN (Toni): erwartete Mahlzeitwirkung an den vier Stuetzstellen - Vorrang vor
             // der Expertenzeile unten.
             addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.ExpectationCurveAt30U, dialogMessage = R.string.fuse_expectation_curve_points_summary, title = R.string.fuse_expectation_curve_30_title))

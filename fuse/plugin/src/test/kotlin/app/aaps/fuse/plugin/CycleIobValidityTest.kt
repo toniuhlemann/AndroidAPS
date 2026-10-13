@@ -174,6 +174,9 @@ class CycleIobValidityTest : TestBaseWithProfile() {
         // auf true gesetzt werden. Das Rig lief damit nicht in der
         // Konfiguration, die es zu fahren behauptet.
         whenever(preferences.get(anyOrNull<BooleanKey>())).thenReturn(false)
+        // KONSOLIDIERUNG: das Konto gilt mit gueltiger Kurve, also liest readConfig die Kurve in jedem Zyklus. Ohne
+        // Stub liefert der Mock null statt des Standards "" - dieses Rig faehrt ohne Kurve, also ohne Konto.
+        whenever(preferences.get(FuseStringKey.ExpectationCurve)).thenReturn("")
         whenever(preferences.get(FuseDoubleKey.SmbRatio)).thenReturn(0.15)
         whenever(preferences.get(FuseDoubleKey.SmbRatioRise)).thenReturn(0.35)
         whenever(preferences.get(DoubleKey.ApsSmbMaxIob)).thenReturn(8.0)

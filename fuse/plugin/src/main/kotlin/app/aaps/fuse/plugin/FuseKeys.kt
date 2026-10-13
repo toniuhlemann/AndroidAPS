@@ -1331,6 +1331,8 @@ enum class FuseBooleanKey(
      * Nur fuer den Testzweig. Besteht der Kandidat, wird der Schalter mit dem
      * Aufraeumplan entfernt; scheitert er, wird der Zweig geschlossen.
      */
+    // Konsolidierung 2.0: nicht mehr gelesen - das Konto gilt mit gueltiger Kurve. Registriert fuer Sicherungen
+    // und den Rueckweg 1.x.
     ExpectationAccountEnabled("fuse_expectation_account_enabled", false),
 
     /**

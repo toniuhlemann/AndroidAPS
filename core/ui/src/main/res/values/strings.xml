@@ -169,7 +169,7 @@
     <string name="fuse_meal_confirm_no_prime">Nur Marker · 0 U</string>
     <string name="fuse_meal_confirm_release">Mit Insulinfreigabe</string>
     <string name="fuse_meal_confirm_expectation_only">Nur Erwartung · ohne Direktdosis</string>
-    <string name="overview_fuse_meal_confirm_expectation_only">Nur Erwartung: keine Direktdosis, bis %1$.2f U vorab nach Erwartungskurve, sobald der Zucker stabil ist.</string>
+    <string name="overview_fuse_meal_confirm_expectation_only">Nur Erwartung: keine Direktdosis. Bis %1$.2f U nach Erwartungskurve - am Anfang nur ein Teil, sobald der Zucker stabil ist; der Rest, wenn sich die Mahlzeit zeigt.</string>
     <string name="overview_fuse_meal_confirm_title">Mahlzeit ankuendigen?</string>
     <!-- EINE Zeile JE ANTEIL der Autorisierung, Nullteile entfallen. Alles,
          was man nur EINMAL lesen muss, steht in der

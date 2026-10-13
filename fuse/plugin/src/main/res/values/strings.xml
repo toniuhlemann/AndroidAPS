@@ -210,8 +210,6 @@
     <string name="fuse_evidence_rebound_override_title">Evidenz darf Rebound entwaffnen [min]</string>
     <string name="fuse_evidence_rebound_override_summary">Wie lange nach dem Mahlzeit-Marker die Evidenz ein aktives Rebound-Totband ausser Kraft setzen darf. Die Evidenzepisode selbst laeuft unveraendert weiter (bis 360 min) - nur dieses Sonderrecht endet. 0 = nie entwaffnen. Das Nacht-Totband ist davon nicht betroffen.</string>
     <!-- Erwartungskonto (Testkandidat, Vorregistrierung E-034) -->
-    <string name="fuse_expectation_account_title">Erwartungskonto (Test)</string>
-    <string name="fuse_expectation_account_summary">Neue Mahlzeiten-Steuerung (Test E-034). An: ab dem Mahlzeit-Marker steuert 120 Minuten lang das Konto die Mahlzeit. Es kennt die erwartete Mahlzeitwirkung (Kurve unten), dosiert einen Teil davon vorab (Vorgriff) und dazu, was der gemessene Zucker verlangt (Abstand zum Ziel minus aktives Insulin). Am Marker waehlst du je Mahlzeit: mit Direktdosis, nur Erwartung oder nur Marker. Gemessene Sperren (Tief, Fallen), Schwanz und alle Mengengrenzen bleiben. Ausserhalb von Mahlzeiten aendert sich nichts. Aus: wie bisher. Wirkt ab dem naechsten Marker.</string>
     <string name="fuse_expectation_guard_exception_title">Notbremse: Guard-Ausnahme</string>
     <string name="fuse_expectation_guard_exception_summary">Standard an. An: der vorab gebuchte Erwartungsanteil darf eine zu vorsichtige Guard-Vorhersage ueberstimmen - gemessene Sperren (Tief, Fallen) und der Schwanz bleiben hart. Aus: Erwartung fliesst nur, wenn auch der Guard es erlaubt. Ausschalten wirkt sofort, Einschalten ab dem naechsten Marker.</string>
     <string name="fuse_expectation_phi0_stable_title">Vorgriff bei stabilem Start (0 bis 1)</string>
