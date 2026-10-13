@@ -3360,7 +3360,8 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
         // Die sichtbare Reihenfolge folgt dem Nutzerweg: Mahlzeit zuerst,
         // System/Reparatur ganz zuletzt.
         val reihenfolge = listOf(
-            "fuse_meal", "fuse_expectation", "fuse_dosing", "fuse_guard", "fuse_night_rebound", "fuse_system",
+            "fuse_meal", "fuse_expectation", "fuse_early_supply", "fuse_dosing", "fuse_guard", "fuse_night_rebound",
+            "fuse_system",
         )
         require(reihenfolge.toSet() == abschnitte.keys) {
             "FUSE-Einstellungsabschnitte und sichtbare Reihenfolge sind auseinandergelaufen"

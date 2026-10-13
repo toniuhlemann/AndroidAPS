@@ -3,6 +3,7 @@ package app.aaps.fuse.plugin
 import app.aaps.core.keys.BooleanKey
 import app.aaps.core.keys.DoubleKey
 import app.aaps.core.keys.IntKey
+import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import java.io.File
@@ -193,6 +194,25 @@ class FuseScreenInventarWaechterTest {
      * dann fuer immer "gruen". Ein Vertrag mit ueber zwanzig Eintraegen muss
      * sich in ebenso vielen erkannten Zeilen wiederfinden.
      */
+    /**
+     * DER FUENFTE UI-FEHLER AM GERAET (E-034 v2, 13.10.): ein neuer Abschnitt `cat("fuse_early_supply", ...)` war
+     * vollstaendig gebaut, nur in der sichtbaren Reihenfolge fehlte er - die Wache in `addPreferenceScreen` warf
+     * beim Oeffnen der Einstellungen ("Abschnitte und sichtbare Reihenfolge sind auseinandergelaufen"). Derselbe
+     * statische Blick wie oben: jeder gebaute Abschnitt steht in der Reihenfolge und umgekehrt.
+     */
+    @Test
+    fun `jeder Abschnitt steht in der sichtbaren Reihenfolge`() {
+        val block = bildschirmBlock()
+        val gebaut = Regex("""\bcat\(\s*"([a-z_]+)"""").findAll(block).map { it.groupValues[1] }.toSet()
+        val liste = Regex("""val reihenfolge = listOf\(([^)]*)\)""", RegexOption.DOT_MATCHES_ALL).find(block)
+        assertTrue(liste != null) { "sichtbare Reihenfolge nicht gefunden - wurde sie umbenannt?" }
+        val reihenfolge = Regex(""""([a-z_]+)"""").findAll(liste!!.groupValues[1]).map { it.groupValues[1] }.toList()
+        assertTrue(gebaut.isNotEmpty()) { "keine Abschnitte gefunden - Muster passt nicht mehr" }
+        assertEquals(reihenfolge.size, reihenfolge.toSet().size, "Abschnitt doppelt in der Reihenfolge")
+        assertEquals(gebaut, reihenfolge.toSet(), "gebaut ohne Reihenfolge: ${gebaut - reihenfolge.toSet()}, " +
+            "in der Reihenfolge ohne Bau: ${reihenfolge.toSet() - gebaut}")
+    }
+
     @Test
     fun `der Waechter greift ueberhaupt`() {
         val gebaut = gebauteKeys()
