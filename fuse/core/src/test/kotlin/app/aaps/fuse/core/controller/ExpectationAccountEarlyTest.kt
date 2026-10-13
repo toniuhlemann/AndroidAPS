@@ -267,6 +267,28 @@ class ExpectationAccountEarlyTest {
         assertTrue(alles < nurFrei) { "Probe zeigt nichts: alles = $alles, nur frei = $nurFrei" }
     }
 
+    /** Toni: Freigabe und Skalierer sind zwei Fragen - ein Fallen bei hohem Zucker ist kein Start nach Tief. */
+    @Test
+    fun `Freigabe und Skalierer sind getrennt - nicht stabil heisst nicht nach Tief`() {
+        val kurve = requireNotNull(ExpectationAccount.Curve.of(werte))
+        fun arm(stabil: Boolean, nachTief: Boolean?) = if (nachTief == null) ExpectationAccount.armEarly(
+            t0, t0 + 120 * 60_000L, params, einstellung, alle, stabil, t0, 100.0, 50.0, wirkung,
+        ) else ExpectationAccount.armEarly(
+            t0, t0 + 120 * 60_000L, params, einstellung, alle, stabil, t0, 100.0, 50.0, wirkung, afterLow = nachTief,
+        )
+        // Nicht freigegeben (z. B. deutliches Fallen), aber nicht nach Tief: stabiler Skalierer, Freigabe wartet.
+        val fallend = arm(stabil = false, nachTief = false)
+        assertFalse(fallend.released)
+        assertEquals(einstellung.scaleStable, fallend.phi0, 0.0)
+        assertEquals(EarlySupply.budgetU(kurve, 120, einstellung.scaleStable, 8.0, wirkung), fallend.a0U, 1e-12)
+        // Unter der Grenze: Skalierer nach Tief.
+        val tief = arm(stabil = false, nachTief = true)
+        assertEquals(einstellung.scaleAfterLow, tief.phi0, 0.0)
+        // Ohne Angabe wie bisher: nicht stabil = nach Tief.
+        assertEquals(einstellung.scaleAfterLow, arm(stabil = false, nachTief = null).phi0, 0.0)
+        assertEquals(einstellung.scaleStable, arm(stabil = true, nachTief = null).phi0, 0.0)
+    }
+
     @Test
     fun `die v1-Ausnahme gilt in v2 nie`() {
         val (_, e) = schritt(konto(), 0)

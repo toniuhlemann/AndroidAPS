@@ -1028,8 +1028,9 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
     @Test
     fun `leichtes Fallen haelt die Anfangsportion nicht auf, danach und bei deutlichem Fallen bleibt es streng`(@TempDir dir: File) {
         val fallGrenze = 0.8
+        val skalaTief = 0.5
         fun v2(f: Fuse20Folgen.Folge, name: String) = fruehLauf(f, File(dir, name)) {
-            fruehKonfiguration(g1 = true, g2 = true, g3 = true, g4 = true)
+            fruehKonfiguration(g1 = true, g2 = true, g3 = true, g4 = true, skalaTief = skalaTief)
             whenever(preferences.get(FuseDoubleKey.ExpectationStabilityFallMgdlPerMin)).thenReturn(fallGrenze)
         }
         fun fruehe(z: List<Zyklus>) = z.filter { it.minute in 0..5 && it.o.erwartungskonto?.zyklus != null }
@@ -1057,7 +1058,11 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
         val deutlich = v2(fDeutlichFallend, "deutlich")
         pruefeMechanik(deutlich, 0.5, 1.0, 2.0)
         assertTrue(fruehe(deutlich).mapNotNull { it.o.signal?.ukfRatePerMin }.any { it < -fallGrenze }) { "Probe zeigt nichts: faellt nicht deutlich" }
-        assertFalse(deutlich.first { it.o.erwartungskonto?.zyklus?.armiertInDiesemZyklus == true }.o.erwartungskonto!!.zyklus!!.state.startStable)
+        val startDeutlich = deutlich.first { it.o.erwartungskonto?.zyklus?.armiertInDiesemZyklus == true }.o.erwartungskonto!!.zyklus!!.state
+        assertFalse(startDeutlich.startStable)
+        // Toni: ein Fallen bei hohem Zucker ist kein Start nach Tief - stabiler Skalierer, nur die Freigabe wartet.
+        assertEquals(1.0, startDeutlich.phi0, 0.0)
+        assertFalse(startDeutlich.released)
         val fallend = deutlich.filter { it.o.erwartungskonto?.zyklus?.pausenGruende?.contains("FALLING") == true }
         assertTrue(fallend.isNotEmpty()) { "deutliches Fallen pausiert nicht" }
         assertEquals(0.0, fallend.sumOf { it.dErw() }, 0.0)
@@ -1070,6 +1075,25 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
         }
         assertTrue(fruehe(v1).all { it.konto?.early == null }) { "v1-Probe hat ein v2-Konto" }
         assertTrue(fruehe(v1).any { "FALLING" in it.o.erwartungskonto!!.zyklus!!.pausenGruende }) { "v1 pausiert nicht mehr an der Kanalkonstante" }
+    }
+
+    /** Zucker am Druck knapp unter der Stabilitaetsgrenze, ohne gemessenes Tief. */
+    private val fUnterGrenze = Fuse20Folgen.Folge(
+        "UNTERGRENZE", 1_701_165_600_000L, -90, 180,
+        listOf(-90 to 96.0, -30 to 88.0, 0 to 86.0, 30 to 130.0, 90 to 190.0, 180 to 130.0),
+        markerMin = 0,
+    )
+
+    /** Toni: "nach Tief" gilt nur unter der Stabilitaetsgrenze (oder nach einem Tief im Rebound-Fenster). */
+    @Test
+    fun `unter der Stabilitaetsgrenze gilt der Start als nach Tief, auch ohne gemessenes Tief`(@TempDir dir: File) {
+        val zyklen = fruehLauf(fUnterGrenze, dir) { fruehKonfiguration(g1 = true, g2 = true, skalaTief = 0.5) }
+        pruefeMechanik(zyklen, 0.5, 1.0, 2.0)
+        val start = zyklen.first { it.o.erwartungskonto?.zyklus?.armiertInDiesemZyklus == true }
+        assertTrue(start.o.step?.safetyReasons?.isEmpty() == true) { "Probe zeigt nichts: gemessenes Tief am Druck" }
+        val bg = requireNotNull(start.o.signal?.q1)
+        assertTrue(bg < FuseDoubleKey.ExpectationStabilityBgMgdl.defaultValue) { "Probe zeigt nichts: $bg nicht unter der Grenze" }
+        assertEquals(0.5, start.o.erwartungskonto!!.zyklus!!.state.phi0, 0.0)
     }
 
     /**

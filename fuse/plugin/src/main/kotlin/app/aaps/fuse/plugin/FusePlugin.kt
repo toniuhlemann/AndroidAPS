@@ -2992,11 +2992,11 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
                 z(d(if (key == FuseDoubleKey.ExpectationPhi0Stable.key) FuseDoubleKey.ExpectationPhi0Stable else FuseDoubleKey.ExpectationPhi0AfterLow), 2) +
                     " - nur Mahlzeiten mit Direktdosis (altes Konto)"
             FuseDoubleKey.ExpectationStabilityBgMgdl.key ->
-                z(d(FuseDoubleKey.ExpectationStabilityBgMgdl), 0) + " mg/dl - darunter gilt der Start als 'nach Tief'"
+                z(d(FuseDoubleKey.ExpectationStabilityBgMgdl), 0) + " mg/dl - darunter gilt der Start als 'nach Tief', das Delta darueber nicht"
             FuseIntKey.ExpectationStabilityMin.key ->
-                "${preferences.get(FuseIntKey.ExpectationStabilityMin)} min am Stueck ueber der Grenze, ohne Fallen und Sperre"
+                "${preferences.get(FuseIntKey.ExpectationStabilityMin)} min am Stueck ueber der Grenze, ohne deutliches Fallen und Sperre - so lange wartet die Anfangsportion"
             FuseDoubleKey.ExpectationStabilityFallMgdlPerMin.key ->
-                z(d(FuseDoubleKey.ExpectationStabilityFallMgdlPerMin), 1) + " mg/dl/min - schnellerer Rueckgang unterbricht die Strecke"
+                z(d(FuseDoubleKey.ExpectationStabilityFallMgdlPerMin), 1) + " mg/dl/min - schnelleres Fallen verzoegert die Anfangsportion, aendert das Budget nicht"
             FuseDoubleKey.ExpectationReleaseThresholdU.key ->
                 z(d(FuseDoubleKey.ExpectationReleaseThresholdU), 2) + " U - zeigt sich bis +30 min weniger, friert der Rest ein"
             FuseIntKey.ExpectationHorizonMin.key -> "${preferences.get(FuseIntKey.ExpectationHorizonMin)} min"

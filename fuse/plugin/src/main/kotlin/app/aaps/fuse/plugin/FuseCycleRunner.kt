@@ -7104,6 +7104,9 @@ class FuseCycleRunner(
                     bgMgdl = bgMgdl,
                     isfMgdlPerU = isfMgdlPerU,
                     unitAction = wirkung,
+                    // Toni: "nach Tief" nur unter der Stabilitaetsgrenze oder nach einem gemessenen Tief im
+                    // Rebound-Fenster. Das Delta ueber der Grenze aendert das Budget nicht (nur den Zeitpunkt).
+                    afterLow = !(bgMgdl > grenzeBg) || tiefImReboundFenster,
                 )
             } else {
                 // Die TATSAECHLICHE Huelle der Episode: 0 bei "ohne Vorschuss".

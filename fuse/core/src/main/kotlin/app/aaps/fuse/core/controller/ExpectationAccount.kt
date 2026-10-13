@@ -339,9 +339,14 @@ object ExpectationAccount {
     /**
      * E-034 v2: bucht am Marker das GESAMTBUDGET der fruehen Versorgung statt der Huelle -
      * `B = min(B_max, scale * max_tau F(tau) / C(tau))` ([EarlySupply.budgetU]). Kurve, Vorschau, Stabilitaet und
-     * Ruecknahme kommen aus [params] wie in v1; der Skalierer nach Startlage aus [settings]. [unitAction] ist die
+     * Ruecknahme kommen aus [params] wie in v1; der Skalierer aus [settings]. [unitAction] ist die
      * zeitliche Wirkung einer jetzt gegebenen Einheit aus dem aktiven Insulinmodell. Die Guard-Ausnahme von v1 gilt
      * fuer diese Episode nicht - an ihre Stelle treten G1..G4 aus [switches].
+     *
+     * ZWEI GETRENNTE FRAGEN (Toni): [startStable] ist die Freigabe am Marker (Strecke erfuellt - sonst wartet die
+     * Anfangsportion); [afterLow] waehlt den Skalierer. "Nach Tief" ist nur ein Start unter der Stabilitaetsgrenze
+     * oder nach einem gemessenen Tief im Rebound-Fenster - ein Fallen bei hohem Zucker hat mit Tief nichts zu tun und
+     * verzoegert nur die Anfangsportion.
      */
     fun armEarly(
         authId: Long,
@@ -354,8 +359,9 @@ object ExpectationAccount {
         bgMgdl: Double,
         isfMgdlPerU: Double,
         unitAction: (Double) -> Double,
+        afterLow: Boolean = !startStable,
     ): State {
-        val scale = if (startStable) settings.scaleStable else settings.scaleAfterLow
+        val scale = if (afterLow) settings.scaleAfterLow else settings.scaleStable
         val b = EarlySupply.budgetU(params.curve, params.horizonMin, scale, settings.budgetMaxU, unitAction)
         return arm(authId, windowEndTs, 0.0, params, startStable, nowTs, bgMgdl, isfMgdlPerU).copy(
             phi0 = scale,
