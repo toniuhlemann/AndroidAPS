@@ -22,6 +22,7 @@ import app.aaps.core.objects.constraints.ConstraintObject
 import app.aaps.core.objects.extensions.combine
 import app.aaps.core.objects.extensions.round
 import app.aaps.fuse.core.controller.ExpectationAccount
+import app.aaps.fuse.core.controller.LivenessChannel
 import app.aaps.fuse.core.controller.InterventionStamp
 import app.aaps.fuse.core.controller.MarkerReauthorization
 import app.aaps.fuse.plugin.ledger.FuseLedgerAdapter
@@ -1002,6 +1003,73 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
             .all { it.o.erwartungskonto!!.zyklus!!.eval.status == "LOCKED_BY_LOW" })
         // Gegenprobe: die Strecke gibt die Freigabe zurueck - ohne die Regel floessen wieder Portionen.
         assertTrue(danach.any { it.o.erwartungskonto!!.zyklus!!.eval.released }) { "keine Wiederfreigabe - Probe zeigt nichts" }
+    }
+
+    /** Leichtes Fallen am Druck, weit ueber der Grenze: unter der Kanalkonstante, aber langsamer als die Fallgrenze. */
+    private val fLeichtFallend = Fuse20Folgen.Folge(
+        "LEICHTFALLEND", 1_700_992_800_000L, -90, 180,
+        listOf(-90 to 165.0, 0 to 135.0, 20 to 128.0, 60 to 200.0, 180 to 130.0),
+        markerMin = 0,
+    )
+
+    /** Deutliches Fallen am Druck, schneller als die Fallgrenze. */
+    private val fDeutlichFallend = Fuse20Folgen.Folge(
+        "DEUTLICHFALLEND", 1_701_079_200_000L, -90, 180,
+        listOf(-90 to 220.0, -30 to 200.0, 0 to 164.0, 15 to 146.0, 60 to 200.0, 180 to 130.0),
+        markerMin = 0,
+    )
+
+    /**
+     * Toni: der Blutzucker ist praktisch nie flach - zu Beginn der Mahlzeit ist ein kleines negatives Delta kein Grund zu
+     * warten. Die Anfangsportion pausiert deshalb nur bei Fallen ueber die (gepinnte) Fallgrenze. Danach, mit Insulin an
+     * Bord, stoppt schon leichtes Fallen die weiteren Portionen (kein Stacking); v1 bleibt bei der Kanalkonstante.
+     * Synthetische Fallgrenze.
+     */
+    @Test
+    fun `leichtes Fallen haelt die Anfangsportion nicht auf, danach und bei deutlichem Fallen bleibt es streng`(@TempDir dir: File) {
+        val fallGrenze = 0.8
+        fun v2(f: Fuse20Folgen.Folge, name: String) = fruehLauf(f, File(dir, name)) {
+            fruehKonfiguration(g1 = true, g2 = true, g3 = true, g4 = true)
+            whenever(preferences.get(FuseDoubleKey.ExpectationStabilityFallMgdlPerMin)).thenReturn(fallGrenze)
+        }
+        fun fruehe(z: List<Zyklus>) = z.filter { it.minute in 0..5 && it.o.erwartungskonto?.zyklus != null }
+        fun anfangMinute(z: List<Zyklus>) = z.firstOrNull { it.frueh()?.initial == true && it.dErw() > 0.0 }?.minute ?: Int.MAX_VALUE
+
+        // Leicht fallend: stabiler Start, die Anfangsportion fliesst sofort, keine Pause wegen Fallens.
+        val leicht = v2(fLeichtFallend, "leicht")
+        pruefeMechanik(leicht, 0.5, 1.0, 2.0)
+        val raten = fruehe(leicht).mapNotNull { it.o.signal?.ukfRatePerMin }
+        assertTrue(raten.isNotEmpty() && raten.all { it < LivenessChannel.UKF_FLOOR_MGDL_PER_MIN && it > -fallGrenze }) {
+            "Probe zeigt nichts: UKF-Steigung $raten nicht zwischen Kanalkonstante und Fallgrenze"
+        }
+        assertTrue(leicht.first { it.o.erwartungskonto?.zyklus?.armiertInDiesemZyklus == true }.o.erwartungskonto!!.zyklus!!.state.startStable)
+        assertTrue(fruehe(leicht).filter { it.minute <= anfangMinute(leicht) }.none { "FALLING" in it.o.erwartungskonto!!.zyklus!!.pausenGruende }) {
+            "Pause wegen leichten Fallens vor der Anfangsportion"
+        }
+        val anfang = leicht.first { it.frueh()?.initial == true && it.dErw() > 0.0 }
+        assertTrue(anfang.minute <= 5) { "Anfangsportion wartet trotz leichten Fallens bis Minute ${anfang.minute}" }
+        // Nach der Anfangsportion, mit Insulin an Bord: dasselbe leichte Fallen pausiert die weiteren Portionen.
+        val danach = leicht.filter { it.minute in (anfang.minute + 1)..15 && it.o.erwartungskonto?.zyklus != null }
+        assertTrue(danach.any { "FALLING" in it.o.erwartungskonto!!.zyklus!!.pausenGruende }) { "nach der Anfangsportion keine strenge Pause" }
+        assertEquals(0.0, danach.filter { "FALLING" in it.o.erwartungskonto!!.zyklus!!.pausenGruende }.sumOf { it.dErw() }, 0.0)
+
+        // Deutlich fallend: kein stabiler Start, Pause wegen Fallens, keine Portion, solange es faellt.
+        val deutlich = v2(fDeutlichFallend, "deutlich")
+        pruefeMechanik(deutlich, 0.5, 1.0, 2.0)
+        assertTrue(fruehe(deutlich).mapNotNull { it.o.signal?.ukfRatePerMin }.any { it < -fallGrenze }) { "Probe zeigt nichts: faellt nicht deutlich" }
+        assertFalse(deutlich.first { it.o.erwartungskonto?.zyklus?.armiertInDiesemZyklus == true }.o.erwartungskonto!!.zyklus!!.state.startStable)
+        val fallend = deutlich.filter { it.o.erwartungskonto?.zyklus?.pausenGruende?.contains("FALLING") == true }
+        assertTrue(fallend.isNotEmpty()) { "deutliches Fallen pausiert nicht" }
+        assertEquals(0.0, fallend.sumOf { it.dErw() }, 0.0)
+
+        // v1 ("Nur Erwartung" ohne fruehe Versorgung): dieselbe leichte Folge pausiert wie bisher an der Kanalkonstante.
+        val v1 = fruehLauf(fLeichtFallend, File(dir, "v1")) {
+            fruehKonfiguration()
+            whenever(preferences.get(FuseBooleanKey.EarlySupplyEnabled)).thenReturn(false)
+            whenever(preferences.get(FuseDoubleKey.ExpectationStabilityFallMgdlPerMin)).thenReturn(fallGrenze)
+        }
+        assertTrue(fruehe(v1).all { it.konto?.early == null }) { "v1-Probe hat ein v2-Konto" }
+        assertTrue(fruehe(v1).any { "FALLING" in it.o.erwartungskonto!!.zyklus!!.pausenGruende }) { "v1 pausiert nicht mehr an der Kanalkonstante" }
     }
 
     /**

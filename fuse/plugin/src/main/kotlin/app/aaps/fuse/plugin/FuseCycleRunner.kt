@@ -7024,8 +7024,12 @@ class FuseCycleRunner(
         /**
          * UKF-Trend dieses Zyklus [mg/dl/min] fuer die STABILITAETSSTRECKE - sie
          * hat eine eigene, einstellbare Fallgrenze. Die Pause beim Fallen
-         * ([faellt]) bleibt bei der Kanalkonstante: waehrend der Lieferung
-         * unveraendert streng.
+         * ([faellt]) bleibt fuer v1 bei der Kanalkonstante. v2 pausiert die
+         * ANFANGSPORTION nur bei DEUTLICHEM Fallen, mit derselben gepinnten
+         * Fallgrenze wie die Strecke (Toni: der Blutzucker ist praktisch nie
+         * flach - zu Beginn der Mahlzeit ist ein kleines negatives Delta kein
+         * Grund zu warten). Danach, mit Insulin an Bord, bleibt die Pause
+         * streng: eine Wende stoppt die weiteren Portionen (kein Stacking).
          */
         ukfRateMgdlPerMin: Double,
         /** Signal-, Pumpen-, Ledger- und Bahnzustaende (Namen); leer = keine. */
@@ -7122,7 +7126,12 @@ class FuseCycleRunner(
         // v2: Hauptschalter aus (jetzt oder schon einmal in dieser Episode) =
         // kein Erwartungsanteil mehr fuer diese Mahlzeit; der gemessene Anteil
         // laeuft weiter.
-        val pausenGruende = sperren + listOfNotNull("FALLING".takeIf { faellt }) + technisch +
+        // Gemessene Sperren (Tief, Abwaertsrisiko, Safety, Riegel) bleiben hart. Nur solange die Anfangsportion offen ist,
+        // gilt fuers Fallen die Fallgrenze; nach ihr (oder nach einem Tief) wieder die strenge Kanalkonstante.
+        val anfangOffen = konto.early != null && !konto.initialDone &&
+            computeTs - konto.authId < (app.aaps.fuse.core.controller.EarlySupply.INITIAL_WINDOW_MIN * 60_000.0).toLong()
+        val faelltFuerPause = if (anfangOffen) faelltFuerStrecke else faellt
+        val pausenGruende = sperren + listOfNotNull("FALLING".takeIf { faelltFuerPause }) + technisch +
             listOfNotNull("EARLY_SUPPLY_OFF".takeIf { konto.early?.let { it.withdrawn || !cfg.earlySupplyEnabled } == true })
         val pausiert = pausenGruende.isNotEmpty()
         // RUECKNAHME DER FREIGABE (K5b; Codex-Befund P0): das gemessene Tief
