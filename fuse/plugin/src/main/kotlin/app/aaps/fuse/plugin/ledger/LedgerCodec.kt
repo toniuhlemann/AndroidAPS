@@ -730,6 +730,11 @@ object LedgerCodec {
             .put("expectationOn", s.expectationOn)
             .put("stabilityBgMgdl", zahl(s.stabilityBgMgdl))
             .put("stabilityMin", s.stabilityMin)
+            // Nur abweichend geschrieben: ein Konto mit Standard bleibt bytegleich zu frueher.
+            .apply {
+                if (s.stabilityFallMgdlPerMin != ExpectationAccount.DEFAULT_STABILITY_FALL_MGDL_PER_MIN)
+                    put("stabilityFallMgdlPerMin", zahl(s.stabilityFallMgdlPerMin))
+            }
             .apply {
                 val f = s.early ?: return@apply
                 put("early", JSONObject()
@@ -794,6 +799,13 @@ object LedgerCodec {
         }
         val stabMin = o.getInt("stabilityMin")
         require(stabMin in ExpectationAccount.MIN_STABILITY_MIN..ExpectationAccount.MAX_STABILITY_MIN) { "stabilityMin $stabMin" }
+        // Optional: fehlt sie, galt der Standard (aelterer Stand).
+        val fallGrenze = if (!o.has("stabilityFallMgdlPerMin")) ExpectationAccount.DEFAULT_STABILITY_FALL_MGDL_PER_MIN
+        else zahl("stabilityFallMgdlPerMin").also {
+            require(it in ExpectationAccount.MIN_STABILITY_FALL_MGDL_PER_MIN..ExpectationAccount.MAX_STABILITY_FALL_MGDL_PER_MIN) {
+                "stabilityFallMgdlPerMin $it"
+            }
+        }
         val an = schalter("expectationOn")
         val kurveRoh = o.getJSONArray("curveValues")
         val kurve = (0 until kurveRoh.length()).map { i -> kurveRoh.getDouble(i) }
@@ -823,6 +835,7 @@ object LedgerCodec {
             expectationOn = an,
             stabilityBgMgdl = stabBg,
             stabilityMin = stabMin,
+            stabilityFallMgdlPerMin = fallGrenze,
             cancelledU = menge("cancelledU"),
         ).let { basis ->
             if (!early) return@let basis

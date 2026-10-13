@@ -960,6 +960,30 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
         assertEquals(0.0, zyklen.sumOf { it.dErw() }, 0.0)
     }
 
+    /** Leichtes Abdriften vor dem Druck (unter einem halben mg/dl je Minute), BG weit ueber der Grenze. */
+    private val fDrift = Fuse20Folgen.Folge(
+        "DRIFT", 1_700_733_600_000L, -90, 180,
+        listOf(-90 to 140.0, -40 to 132.0, 0 to 120.0, 60 to 200.0, 180 to 130.0),
+        markerMin = 0,
+    )
+
+    /** Bank N2, A1, Befund 1: die Fallgrenze der Strecke ist einstellbar - Standard unveraendert, Gegenprobe mit 1. */
+    @Test
+    fun `die Fallgrenze der Strecke entscheidet ueber die Startlage bei leichtem Abdriften`(@TempDir dir: File) {
+        val standard = fruehLauf(fDrift, File(dir, "standard")) { fruehKonfiguration(g1 = true, g2 = true, skalaTief = 0.0) }
+        val kStandard = standard.first { it.o.erwartungskonto?.zyklus?.armiertInDiesemZyklus == true }.o.erwartungskonto!!.zyklus!!
+        assertFalse(kStandard.state.startStable) { "Probe zeigt nichts: leichtes Abdriften gilt schon mit Standard nicht als Fallen" }
+        val locker = fruehLauf(fDrift, File(dir, "locker")) {
+            fruehKonfiguration(g1 = true, g2 = true, skalaTief = 0.0)
+            whenever(preferences.get(FuseDoubleKey.ExpectationStabilityFallMgdlPerMin)).thenReturn(1.0)
+        }
+        val kLocker = locker.first { it.o.erwartungskonto?.zyklus?.armiertInDiesemZyklus == true }.o.erwartungskonto!!.zyklus!!
+        assertTrue(kLocker.state.startStable)
+        assertEquals(1.0, kLocker.state.stabilityFallMgdlPerMin, 0.0)
+        assertTrue(kLocker.state.a0U > 0.0)
+        pruefeMechanik(locker, 0.5, 1.0, 2.0)
+    }
+
     @Test
     fun `das spaete Abwaertsrisiko sperrt jede Portion der fruehen Versorgung`(@TempDir dir: File) {
         val zyklen = fruehLauf(fFall, dir) {

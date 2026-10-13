@@ -67,6 +67,15 @@ object ExpectationAccount {
     const val MAX_STABILITY_BG_MGDL = 180.0
     const val MIN_STABILITY_MIN = 5
     const val MAX_STABILITY_MIN = 60
+
+    /**
+     * Fallgrenze der Stabilitaetsstrecke als RUECKGANG [mg/dl/min, positiv]: ein UKF-Trend unter -Grenze unterbricht
+     * die Strecke. Standard = die Kanalkonstante ([LivenessChannel.UKF_FLOOR_MGDL_PER_MIN]) - so war die Strecke immer
+     * gebaut. Positiv, damit die Einstellung ohne Vorzeichen eingegeben wird.
+     */
+    const val DEFAULT_STABILITY_FALL_MGDL_PER_MIN = -LivenessChannel.UKF_FLOOR_MGDL_PER_MIN
+    const val MIN_STABILITY_FALL_MGDL_PER_MIN = 0.0
+    const val MAX_STABILITY_FALL_MGDL_PER_MIN = 3.0
     const val MAX_RELEASE_THRESHOLD_U = 2.0
     const val MAX_CURVE_U = 30.0
 
@@ -162,6 +171,7 @@ object ExpectationAccount {
         val stabilityMin: Int,
         val releaseThresholdU: Double,
         val guardException: Boolean,
+        val stabilityFallMgdlPerMin: Double = DEFAULT_STABILITY_FALL_MGDL_PER_MIN,
     ) {
         companion object {
 
@@ -174,6 +184,7 @@ object ExpectationAccount {
                 stabilityMin: Int,
                 releaseThresholdU: Double,
                 guardException: Boolean,
+                stabilityFallMgdlPerMin: Double = DEFAULT_STABILITY_FALL_MGDL_PER_MIN,
             ): Params? {
                 val curve = Curve.of(curveValues) ?: return null
                 if (horizonMin !in MIN_HORIZON_MIN..MAX_HORIZON_MIN) return null
@@ -183,9 +194,12 @@ object ExpectationAccount {
                     return null
                 if (stabilityMin !in MIN_STABILITY_MIN..MAX_STABILITY_MIN) return null
                 if (!releaseThresholdU.isFinite() || releaseThresholdU !in 0.0..MAX_RELEASE_THRESHOLD_U) return null
+                if (!stabilityFallMgdlPerMin.isFinite() ||
+                    stabilityFallMgdlPerMin !in MIN_STABILITY_FALL_MGDL_PER_MIN..MAX_STABILITY_FALL_MGDL_PER_MIN
+                ) return null
                 return Params(
                     curve, horizonMin, phi0Stable, phi0AfterLow, stabilityBgMgdl, stabilityMin,
-                    releaseThresholdU, guardException,
+                    releaseThresholdU, guardException, stabilityFallMgdlPerMin,
                 )
             }
         }
@@ -233,6 +247,8 @@ object ExpectationAccount {
         val expectationOn: Boolean = true,
         val stabilityBgMgdl: Double = MIN_STABILITY_BG_MGDL,
         val stabilityMin: Int = MAX_STABILITY_MIN,
+        /** Fallgrenze der Stabilitaetsstrecke als Rueckgang [mg/dl/min, positiv], gepinnt wie Grenze und Dauer. */
+        val stabilityFallMgdlPerMin: Double = DEFAULT_STABILITY_FALL_MGDL_PER_MIN,
         /** Storniert: gebucht, aber nachweislich nie gesendet [U], nur steigend. */
         val cancelledU: Double = 0.0,
         /**
@@ -303,6 +319,7 @@ object ExpectationAccount {
             expectationOn = true,
             stabilityBgMgdl = params.stabilityBgMgdl,
             stabilityMin = params.stabilityMin,
+            stabilityFallMgdlPerMin = params.stabilityFallMgdlPerMin,
         )
     }
 

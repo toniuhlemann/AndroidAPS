@@ -3313,6 +3313,7 @@ class FuseCycleRunner(
                 "LOW_THREAT".takeIf { lowThreatResult.verdict != LowThreatGate.Verdict.NONE },
             ),
             faellt = !signal.ukfRatePerMin.isFinite() || signal.ukfRatePerMin < LivenessChannel.UKF_FLOOR_MGDL_PER_MIN,
+            ukfRateMgdlPerMin = signal.ukfRatePerMin,
             technisch = listOfNotNull(
                 "HEALTH".takeIf { step.health != Health.READY },
                 "REJOIN".takeIf { signal.rejoin.active },
@@ -6848,6 +6849,7 @@ class FuseCycleRunner(
                 expectationPhi0AfterLow = FuseDoubleKey.ExpectationPhi0AfterLow.defaultValue,
                 expectationStabilityBgMgdl = FuseDoubleKey.ExpectationStabilityBgMgdl.defaultValue,
                 expectationStabilityMin = FuseIntKey.ExpectationStabilityMin.defaultValue,
+                expectationStabilityFallMgdlPerMin = FuseDoubleKey.ExpectationStabilityFallMgdlPerMin.defaultValue,
                 expectationReleaseThresholdU = FuseDoubleKey.ExpectationReleaseThresholdU.defaultValue,
                 expectationHorizonMin = FuseIntKey.ExpectationHorizonMin.defaultValue,
                 expectationCurveText = FuseStringKey.ExpectationCurve.defaultValue,
@@ -7012,6 +7014,13 @@ class FuseCycleRunner(
         /** Gemessene Sperren dieses Zyklus (Namen); leer = keine. */
         sperren: List<String>,
         faellt: Boolean,
+        /**
+         * UKF-Trend dieses Zyklus [mg/dl/min] fuer die STABILITAETSSTRECKE - sie
+         * hat eine eigene, einstellbare Fallgrenze. Die Pause beim Fallen
+         * ([faellt]) bleibt bei der Kanalkonstante: waehrend der Lieferung
+         * unveraendert streng.
+         */
+        ukfRateMgdlPerMin: Double,
         /** Signal-, Pumpen-, Ledger- und Bahnzustaende (Namen); leer = keine. */
         technisch: List<String>,
         /** Gemessenes Tief in diesem Zyklus (K5): nimmt die Freigabe zurueck. */
@@ -7039,11 +7048,13 @@ class FuseCycleRunner(
         val laufend = episodes.expectation?.takeIf { ekGilt && it.authId == dosingCtx.authorizationId }
         val grenzeBg = laufend?.stabilityBgMgdl ?: cfg.expectationStabilityBgMgdl
         val dauerMin = laufend?.stabilityMin ?: cfg.expectationStabilityMin
+        val fallGrenze = laufend?.stabilityFallMgdlPerMin ?: cfg.expectationStabilityFallMgdlPerMin
+        val faelltFuerStrecke = !ukfRateMgdlPerMin.isFinite() || ukfRateMgdlPerMin < -fallGrenze
         if (ekStabilLetzteTs > 0L && computeTs - ekStabilLetzteTs > ExpectationAccount.MAX_OBSERVATION_GAP_MIN * 60_000L)
             ekStabilSeit = null
         ekStabilLetzteTs = computeTs
         ekStabilSeit = ExpectationAccount.Stability.since(
-            ekStabilSeit, computeTs, bgMgdl, grenzeBg, falling = faellt, measuredLock = gemesseneSperre,
+            ekStabilSeit, computeTs, bgMgdl, grenzeBg, falling = faelltFuerStrecke, measuredLock = gemesseneSperre,
         )
         val stabil = ExpectationAccount.Stability.stable(ekStabilSeit, computeTs, dauerMin)
         if (!ekGilt || vorschau == null) return null
@@ -7645,6 +7656,7 @@ class FuseCycleRunner(
                 "LATCH".takeIf { descentLatch.blocksPositive },
             ),
             faellt = !signal.ukfRatePerMin.isFinite() || signal.ukfRatePerMin < LivenessChannel.UKF_FLOOR_MGDL_PER_MIN,
+            ukfRateMgdlPerMin = signal.ukfRatePerMin,
             technisch = listOf("NO_TRAJECTORY"),
             // K5: ohne Bahn kein Null-Tor - der gemessene Rohwert-Befund genuegt.
             gemessenesTief = step.safetyReasons.isNotEmpty(),
@@ -8828,6 +8840,8 @@ class FuseCycleRunner(
         val expectationPhi0AfterLow: Double = FuseDoubleKey.ExpectationPhi0AfterLow.defaultValue,
         val expectationStabilityBgMgdl: Double = FuseDoubleKey.ExpectationStabilityBgMgdl.defaultValue,
         val expectationStabilityMin: Int = FuseIntKey.ExpectationStabilityMin.defaultValue,
+        /** Fallgrenze der Stabilitaetsstrecke als Rueckgang [mg/dl/min] - s. [FuseDoubleKey.ExpectationStabilityFallMgdlPerMin]. */
+        val expectationStabilityFallMgdlPerMin: Double = FuseDoubleKey.ExpectationStabilityFallMgdlPerMin.defaultValue,
         val expectationReleaseThresholdU: Double = FuseDoubleKey.ExpectationReleaseThresholdU.defaultValue,
         val expectationHorizonMin: Int = FuseIntKey.ExpectationHorizonMin.defaultValue,
         /** Die Kurve als Einstellungstext, unveraendert (Export: konfiguriert). */
@@ -8866,6 +8880,7 @@ class FuseCycleRunner(
                     stabilityMin = expectationStabilityMin,
                     releaseThresholdU = expectationReleaseThresholdU,
                     guardException = expectationGuardException,
+                    stabilityFallMgdlPerMin = expectationStabilityFallMgdlPerMin,
                 )
             }
 
@@ -9016,6 +9031,7 @@ class FuseCycleRunner(
             expectationPhi0AfterLow = preferences.get(FuseDoubleKey.ExpectationPhi0AfterLow),
             expectationStabilityBgMgdl = preferences.get(FuseDoubleKey.ExpectationStabilityBgMgdl),
             expectationStabilityMin = preferences.get(FuseIntKey.ExpectationStabilityMin),
+            expectationStabilityFallMgdlPerMin = preferences.get(FuseDoubleKey.ExpectationStabilityFallMgdlPerMin),
             expectationReleaseThresholdU = preferences.get(FuseDoubleKey.ExpectationReleaseThresholdU),
             expectationHorizonMin = preferences.get(FuseIntKey.ExpectationHorizonMin),
             // Die wirksame Kurve (Toni): vier Eckwerte vor Expertenzeile.

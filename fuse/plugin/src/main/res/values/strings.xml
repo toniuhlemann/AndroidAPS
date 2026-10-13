@@ -217,6 +217,8 @@
     <string name="fuse_expectation_stability_bg_title">Stabil ab Zucker [mg/dl]</string>
     <string name="fuse_expectation_stability_bg_summary">Stabil heisst: Zucker ueber diesem Wert, nicht fallend, keine gemessene Sperre - ununterbrochen fuer die Dauer darunter. Erst dann fliesst ein gesperrter Vorgriff (nach Tief oder im Fallen). Niedriger = frueher nach einem Tief, hoeher = vorsichtiger. Ab dem naechsten Marker.</string>
     <string name="fuse_expectation_stability_min_title">Stabil fuer [min]</string>
+    <string name="fuse_expectation_stability_fall_title">Stabilitaet: Fallgrenze (Rueckgang in mg/dl/min)</string>
+    <string name="fuse_expectation_stability_fall_summary">Ab welchem Rueckgang je Minute der Zucker fuer die Stabilitaetsstrecke als fallend gilt (ohne Vorzeichen eingeben). Standard 0,1: schon ein ganz leichter Rueckgang in einem einzigen Zyklus unterbricht die Strecke. 1 = erst ein deutlicher Abfall. Gilt fuer die Startlage am Marker (stabil oder nach Tief) und fuer die Wiederfreigabe nach einem Tief. Die Pause beim Fallen waehrend der Lieferung bleibt unveraendert streng. Ab dem naechsten Marker.</string>
     <string name="fuse_expectation_stability_min_summary">Wie viele Minuten am Stueck die Stabilitaet gelten muss, bevor ein gesperrter Vorgriff fliesst. Ab dem naechsten Marker.</string>
     <string name="fuse_expectation_release_threshold_title">Schutz: Mahlzeit bleibt aus [U]</string>
     <string name="fuse_expectation_release_threshold_summary">Zeigt sich bis eine halbe Stunde nach dem Marker weniger Mahlzeitwirkung als diese Menge (in Insulin umgerechnet), wird der Rest des Vorgriffs eingefroren - die Mahlzeit kam noch nicht. Kommt sie spaeter im Fenster, wird er wieder frei. Ab dem naechsten Marker.</string>

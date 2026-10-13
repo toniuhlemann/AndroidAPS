@@ -144,6 +144,17 @@ class ExpectationAccountEarlyTest {
     }
 
     @Test
+    fun `die Fallgrenze der Strecke wird geprueft und am Marker festgehalten`() {
+        assertEquals(null, ExpectationAccount.Params.of(werte, 120, 0.5, 0.5, 90.0, 15, 0.3, true, stabilityFallMgdlPerMin = 3.5))
+        assertEquals(null, ExpectationAccount.Params.of(werte, 120, 0.5, 0.5, 90.0, 15, 0.3, true, stabilityFallMgdlPerMin = -0.5))
+        val p = requireNotNull(ExpectationAccount.Params.of(werte, 120, 0.5, 0.5, 90.0, 15, 0.3, true, stabilityFallMgdlPerMin = 1.0))
+        val s = ExpectationAccount.armEarly(t0, t0 + 120 * 60_000L, p, einstellung, alle, true, t0, 100.0, 50.0, wirkung)
+        assertEquals(1.0, s.stabilityFallMgdlPerMin, 0.0)
+        // Standard = die bisherige Kanalkonstante, als Rueckgang.
+        assertEquals(-LivenessChannel.UKF_FLOOR_MGDL_PER_MIN, konto().stabilityFallMgdlPerMin, 0.0)
+    }
+
+    @Test
     fun `die v1-Ausnahme gilt in v2 nie`() {
         val (_, e) = schritt(konto(), 0)
         assertEquals(0.0, ExpectationAccount.guardExceptionFloorU(e, normalPassedU = 10.0), 0.0)

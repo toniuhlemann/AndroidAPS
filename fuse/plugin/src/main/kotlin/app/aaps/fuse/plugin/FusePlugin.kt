@@ -3094,6 +3094,7 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
             addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.ExpectationPhi0AfterLow, dialogMessage = R.string.fuse_expectation_phi0_after_low_summary, title = R.string.fuse_expectation_phi0_after_low_title))
             addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.ExpectationStabilityBgMgdl, dialogMessage = R.string.fuse_expectation_stability_bg_summary, title = R.string.fuse_expectation_stability_bg_title))
             addPreference(AdaptiveIntPreference(ctx = context, intKey = FuseIntKey.ExpectationStabilityMin, dialogMessage = R.string.fuse_expectation_stability_min_summary, title = R.string.fuse_expectation_stability_min_title))
+            addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.ExpectationStabilityFallMgdlPerMin, dialogMessage = R.string.fuse_expectation_stability_fall_summary, title = R.string.fuse_expectation_stability_fall_title))
             addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.ExpectationReleaseThresholdU, dialogMessage = R.string.fuse_expectation_release_threshold_summary, title = R.string.fuse_expectation_release_threshold_title))
             addPreference(AdaptiveIntPreference(ctx = context, intKey = FuseIntKey.ExpectationHorizonMin, dialogMessage = R.string.fuse_expectation_horizon_summary, title = R.string.fuse_expectation_horizon_title))
             // Leer ist erlaubt und der Standard: Erwartung aus.

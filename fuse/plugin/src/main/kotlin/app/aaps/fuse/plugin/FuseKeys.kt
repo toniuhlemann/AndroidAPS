@@ -459,6 +459,21 @@ enum class FuseDoubleKey(
         "fuse_expectation_release_threshold_u", 0.3, 0.0,
         app.aaps.fuse.core.controller.ExpectationAccount.MAX_RELEASE_THRESHOLD_U,
     ),
+
+    /**
+     * Fallgrenze der Stabilitaetsstrecke als RUECKGANG [mg/dl/min, positiv]:
+     * ein UKF-Trend unter -Grenze unterbricht sie. Standard = die bisherige
+     * Kanalkonstante (schon ein leichter Rueckgang in einem Zyklus zaehlt als
+     * Fallen). Gilt fuer die Startlage am Marker und die Wiederfreigabe nach
+     * einem Tief; die Pause beim Fallen waehrend der Lieferung bleibt
+     * unveraendert.
+     */
+    ExpectationStabilityFallMgdlPerMin(
+        "fuse_expectation_stability_fall_mgdl_per_min",
+        app.aaps.fuse.core.controller.ExpectationAccount.DEFAULT_STABILITY_FALL_MGDL_PER_MIN,
+        app.aaps.fuse.core.controller.ExpectationAccount.MIN_STABILITY_FALL_MGDL_PER_MIN,
+        app.aaps.fuse.core.controller.ExpectationAccount.MAX_STABILITY_FALL_MGDL_PER_MIN,
+    ),
     /**
      * DIE ERWARTUNGSKURVE IN VIER ECKWERTEN (Toni): erwartete
      * Mahlzeitwirkung [U] nach 30, 60, 90 und 120 min ab Marker, dazwischen

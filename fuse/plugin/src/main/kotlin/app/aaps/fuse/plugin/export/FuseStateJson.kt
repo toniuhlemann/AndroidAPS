@@ -2333,6 +2333,11 @@ object FuseStateJson {
             // Zuordnungsarm EK-RBheute: nur wenn gesetzt - die Hashes der
             // uebrigen Arme bleiben, wie sie waren.
             "benchReboundToday".takeIf { p.expectationBenchReboundToday },
+            // Die Fallgrenze der Stabilitaetsstrecke: nur wenn abweichend -
+            // ein Konto mit Standard behaelt seinen bisherigen Hash.
+            p.expectationStabilityFallMgdlPerMin
+                .takeIf { it != app.aaps.fuse.core.controller.ExpectationAccount.DEFAULT_STABILITY_FALL_MGDL_PER_MIN }
+                ?.let { "stabilityFall:" + Sha.lossless(it) },
         ) + kontoZahlen.map { Sha.lossless(it) } + listOf(
             app.aaps.fuse.core.controller.ExpectationAccount.Curve.parse(p.expectationCurveText)
                 ?.values()?.joinToString(",") { Sha.lossless(it) } ?: "curve:none",

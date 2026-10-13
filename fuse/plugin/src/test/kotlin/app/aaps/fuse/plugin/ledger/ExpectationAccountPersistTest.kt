@@ -154,6 +154,18 @@ class ExpectationAccountPersistTest {
     }
 
     @Test
+    fun `die Fallgrenze steht nur abweichend in der Datei und fehlt sie, gilt der Standard`() {
+        val standard = konto()
+        assertFalse(LedgerCodec.encodeEpisodes(episoden(standard)).getJSONObject("expectation").has("stabilityFallMgdlPerMin"))
+        val abweichend = standard.copy(stabilityFallMgdlPerMin = 1.0)
+        val json = LedgerCodec.encodeEpisodes(episoden(abweichend))
+        assertTrue(json.getJSONObject("expectation").has("stabilityFallMgdlPerMin"))
+        assertEquals(abweichend, LedgerCodec.decodeEpisodes(json).expectation)
+        json.getJSONObject("expectation").put("stabilityFallMgdlPerMin", 9.0)
+        assertNull(LedgerCodec.decodeEpisodes(json).expectation)
+    }
+
+    @Test
     fun `das Konto geht durch die ganze Datei`() {
         val e = episoden(konto())
         val datei = LedgerCodec.encode(LedgerState(), e, 3L, InterventionStamp("test-epoche", 1L))
