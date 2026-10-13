@@ -195,7 +195,7 @@ class FuseScreenInventarWaechterTest {
      * sich in ebenso vielen erkannten Zeilen wiederfinden.
      */
     /**
-     * DER FUENFTE UI-FEHLER AM GERAET (E-034 v2, 13.10.): ein neuer Abschnitt `cat("fuse_early_supply", ...)` war
+     * DER FUENFTE UI-FEHLER AM GERAET (E-034 v2): ein neuer Abschnitt `cat("fuse_early_supply", ...)` war
      * vollstaendig gebaut, nur in der sichtbaren Reihenfolge fehlte er - die Wache in `addPreferenceScreen` warf
      * beim Oeffnen der Einstellungen ("Abschnitte und sichtbare Reihenfolge sind auseinandergelaufen"). Derselbe
      * statische Blick wie oben: jeder gebaute Abschnitt steht in der Reihenfolge und umgekehrt.
