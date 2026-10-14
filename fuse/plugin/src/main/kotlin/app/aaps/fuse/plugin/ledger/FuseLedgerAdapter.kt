@@ -751,6 +751,9 @@ class EpisodeBudgets {
         val ekAuthId: Long = 0L,
         val ekErwU: Double = 0.0,
         val ekDirektU: Double = 0.0,
+        /** KI-221: s. [Reservation.ekAtTs] und [Reservation.ekAnfang]. */
+        val ekAtTs: Long = 0L,
+        val ekAnfang: Boolean = false,
     )
 
     /** @param mealTs 0 = nicht in [mealDeliveries] gebucht. */
@@ -792,6 +795,13 @@ class EpisodeBudgets {
         var ekAuthId: Long = 0L
         var ekErwU: Double = 0.0
         var ekDirektU: Double = 0.0
+
+        /**
+         * KI-221 (v2): der Zyklus der Buchung - unter ihm steht die Portion im Zeitraumbuch - und ob DIESE Buchung die
+         * Anfangsportion war. Ohne beides nahm der Storno nur die Menge zurueck, Portion und Marke blieben stehen.
+         */
+        var ekAtTs: Long = 0L
+        var ekAnfang: Boolean = false
     }
 }
 
@@ -2052,10 +2062,18 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
      * spaete Gutschrift aus einer frueheren Mahlzeit entlastet kein neues
      * Konto, aus demselben Grund wie bei der Huelle.
      */
-    private fun stornoErwartungskonto(ekAuthId: Long, erwU: Double, direktU: Double) {
+    private fun stornoErwartungskonto(
+        ekAuthId: Long,
+        erwU: Double,
+        direktU: Double,
+        gebuchtUmTs: Long = 0L,
+        anfangNieGesendet: Boolean = false,
+    ) {
         val konto = episodes.expectation ?: return
         if (ekAuthId == 0L || konto.authId != ekAuthId) return
-        episodes.expectation = app.aaps.fuse.core.controller.ExpectationAccount.cancel(konto, erwU, direktU)
+        episodes.expectation = app.aaps.fuse.core.controller.ExpectationAccount.cancel(
+            konto, erwU, direktU, bookedAtTs = gebuchtUmTs, initialNeverSent = anfangNieGesendet,
+        )
     }
 
     fun resolveReservation(computeTs: Long, publishedU: Double, proposalId: String? = null) {
@@ -2125,6 +2143,8 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
                 ekAuthId = r.ekAuthId,
                 ekErwU = (r.ekErwU - (r.amountU - bleibt)).coerceAtLeast(0.0),
                 ekDirektU = kotlin.math.min(r.ekDirektU, bleibt),
+                ekAtTs = r.ekAtTs,
+                ekAnfang = r.ekAnfang,
             ) else null
 
         val frei = (r.amountU - (if (publishedU.isFinite()) publishedU else r.amountU)).coerceAtLeast(0.0)
@@ -2134,8 +2154,12 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
         if (r.onset) episodes.onsetSpentU = (episodes.onsetSpentU - frei).coerceAtLeast(0.0)
         // E-034: das Erwartungskonto derselben Autorisierung genauso - der nie
         // gesendete oberste Teil ist zuerst d_erw (d_mess liegt unten).
+        val erwStorno = kotlin.math.min(r.ekErwU, frei)
         stornoErwartungskonto(
-            r.ekAuthId, erwU = kotlin.math.min(r.ekErwU, frei), direktU = kotlin.math.min(r.ekDirektU, frei),
+            r.ekAuthId, erwU = erwStorno, direktU = kotlin.math.min(r.ekDirektU, frei),
+            gebuchtUmTs = r.ekAtTs,
+            // KI-221: nie gegeben ist die Anfangsportion nur, wenn NICHTS von ihr hinausging.
+            anfangNieGesendet = r.ekAnfang && erwStorno + 1e-9 >= r.ekErwU,
         )
         // Der Evidenz-Zaehler wird IMMER zurueckgedreht, ohne Kanal-Bedingung:
         // er zaehlt jede Abgabe der Episode, also muss er auch jede
@@ -2303,6 +2327,10 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
         // E-034: das Konto nur, wenn die Buchung zu SEINER Autorisierung gehoert.
         stornoErwartungskonto(
             s.ekAuthId, erwU = kotlin.math.min(s.ekErwU, menge), direktU = kotlin.math.min(s.ekDirektU, menge),
+            gebuchtUmTs = s.ekAtTs,
+            // KI-221: der Beweis gilt der ganzen publizierten Menge. Was von der Anfangsportion publiziert war, ging
+            // nie hinaus - den nicht publizierten Rest hat [resolveReservation] schon zurueckgenommen.
+            anfangNieGesendet = s.ekAnfang && s.ekErwU > 1e-9,
         )
         run {
             val vorherCommitted = episodes.evidenceCommittedU

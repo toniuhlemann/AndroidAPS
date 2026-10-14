@@ -294,4 +294,82 @@ class ExpectationAccountEarlyTest {
         val (_, e) = schritt(konto(), 0)
         assertEquals(0.0, ExpectationAccount.guardExceptionFloorU(e, normalPassedU = 10.0), 0.0)
     }
+
+    // ---- KI-221: der Storno nimmt auch Portion und Anfangsportion zurueck ----------------------------------------
+
+    /** Die Anfangsportion ging nachweislich nie hinaus: sie war nie gegeben und ist wieder offen. */
+    @Test
+    fun `eine ganz nie gesendete Anfangsportion ist wieder offen`() {
+        val (s0, e0) = schritt(konto(), 0)
+        val (gebucht, split) = ExpectationAccount.book(s0, e0, e0.restEffU)
+        assertTrue(gebucht.initialDone)
+        val storno = ExpectationAccount.cancel(
+            gebucht, erwU = split.dErwU, directU = 0.0, bookedAtTs = e0.atTs, initialNeverSent = true,
+        )
+        assertFalse(storno.initialDone)
+        assertEquals(0.0, storno.bookedU, 1e-12)
+        val (_, e1) = schritt(storno, 1)
+        assertTrue(e1.early!!.initial)
+        assertEquals(e0.restEffU, e1.restEffU, 1e-12)
+        // Teilweise gesendet (ohne die Angabe): gegeben - einmalig, wie bei einer kleineren Anforderung.
+        assertTrue(ExpectationAccount.cancel(gebucht, erwU = split.dErwU / 2, directU = 0.0, bookedAtTs = e0.atTs).initialDone)
+    }
+
+    /** Das Tief hat die Marke gesetzt; ein spaeter Beweis darf die Anfangsportion danach nie wieder oeffnen (Hypo). */
+    @Test
+    fun `nach einem gemessenen Tief bleibt die Anfangsportion zu, auch beim Storno`() {
+        val (s0, e0) = schritt(konto(), 0)
+        val gebucht = ExpectationAccount.book(s0, e0, e0.restEffU).first
+        val nachTief = zyklus(gebucht, 3, tief = true).first
+        assertTrue(nachTief.earlyAfterLow && nachTief.initialDone)
+        val storno = ExpectationAccount.cancel(
+            nachTief, erwU = e0.restEffU, directU = 0.0, bookedAtTs = e0.atTs, initialNeverSent = true,
+        )
+        assertTrue(storno.initialDone)
+        val (_, e) = schritt(storno, 4)
+        assertFalse(e.early!!.initial)
+        assertEquals(0.0, e.restEffU, 0.0)
+        // Auch die Bestaetigung nach dem Tief bringt keine Anfangsportion zurueck.
+        val bestaetigt = zyklus(storno, 30, bestaetigt = ts(25)).first
+        assertTrue(bestaetigt.initialDone)
+    }
+
+    /** Ein Beweis nach dem Ende des Anfangsfensters: es bleibt bei Portionen. */
+    @Test
+    fun `nach dem Anfangsfenster bleibt es bei Portionen, auch nach dem Storno`() {
+        val letzte = EarlySupply.INITIAL_WINDOW_MIN.toInt() - 1
+        var s = konto()
+        for (m in 0 until letzte) s = schritt(s, m, pause = true).first
+        val (sL, eL) = schritt(s, letzte)
+        assertTrue(eL.early!!.initial)
+        val gebucht = ExpectationAccount.book(sL, eL, eL.restEffU).first
+        val storno = ExpectationAccount.cancel(
+            gebucht, erwU = eL.restEffU, directU = 0.0, bookedAtTs = eL.atTs, initialNeverSent = true,
+        )
+        val (danach, e) = schritt(storno, EarlySupply.INITIAL_WINDOW_MIN.toInt())
+        assertTrue(danach.initialDone)
+        assertFalse(e.early!!.initial)
+        assertTrue(e.restEffU <= 1.0 + 1e-12)
+    }
+
+    /** Der Zeitraumrest kommt aus dem tatsaechlich Gelieferten - eine nie gesendete Portion belegt ihn nicht. */
+    @Test
+    fun `eine nie gesendete Portion verlaesst das Zeitraumbuch`() {
+        val (s0, e0) = schritt(konto(), 0)
+        val s = ExpectationAccount.book(s0, e0, e0.restEffU).first
+        val (s1, e1) = schritt(s, 1)
+        val gebucht = ExpectationAccount.book(s1, e1, 1.0).first
+        assertEquals(1.0, gebucht.portions.sumOf { it.amountU }, 1e-12)
+        // Ganz nie gesendet: die Portion ist weg, der Zeitraum wieder voll offen; die Anfangsportion bleibt gegeben.
+        val storno = ExpectationAccount.cancel(gebucht, erwU = 1.0, directU = 0.0, bookedAtTs = e1.atTs)
+        assertTrue(storno.portions.isEmpty())
+        assertTrue(storno.initialDone)
+        assertEquals(2.0, schritt(storno, 2).second.early!!.periodLeftU, 1e-12)
+        // Teilweise gesendet: nur der nie gesendete Teil geht.
+        val teil = ExpectationAccount.cancel(gebucht, erwU = 0.4, directU = 0.0, bookedAtTs = e1.atTs)
+        assertEquals(0.6, teil.portions.single().amountU, 1e-12)
+        assertEquals(1.4, schritt(teil, 2).second.early!!.periodLeftU, 1e-12)
+        // Ohne Buchungszeit bleibt das Buch wie bisher.
+        assertEquals(1.0, ExpectationAccount.cancel(gebucht, erwU = 1.0, directU = 0.0).portions.sumOf { it.amountU }, 1e-12)
+    }
 }
